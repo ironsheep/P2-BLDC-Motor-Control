@@ -42,11 +42,15 @@ The steering object also provides an alternative form of control where you can m
 
 The BLDC motor object controls a single BLDC Motor. You can turn a motor on or off, control its power level, or turn the motor on for a specified amount of time or rotation.
 
+### LEGO Control form
+
 | LEGO Motor Interface |
 | --- |
 | PUB move_duration(power, bBrakeAtEnd, duration)
 | PUB move_degrees(power, bBrakeAtEnd, degrees)
 | PUB move_rotations(power, bBrakeAtEnd, rotations)
+
+### BlocklyProp Feedback 360° control form
 
 The BLDC motor object provides an alternative form of control which works as if you are controlling a Feedback 360° Servo.
 
@@ -59,16 +63,23 @@ The BLDC motor object provides an alternative form of control which works as if 
 | PUB resetTurnCount() | use to reset to zero 
 | PUB getTurnCount(count) | returns +/- revolutions since last reset
 | PUB setHome() | tells motor that current position should be thought of as home
-| PUB setSpeed(degrPerSec) +/- degrees/second rotation rate
+| PUB setSpeed(degrPerSec) | +/- degrees/second rotation rate
 | PUB setAngle(degrees) | +/- degrees - go to (relative to home)
 | PUB moveAngle(degrees) | +/- degrees (relative to curr position)
 | PUB setPosition(degrees) | [0-359] rotate to position (code uses shortest amount of movement)
 | PUB getPosition() | [0-359] return the current postion of the motor
 | PUB initialize() | reset motor position tracking
 
+
+### BlocklyProp CR Servo control form
+
+The BLDC motor object provides an alternative form of control which works as if you are controlling a Continuous Rotation (CR) Servo.
+
 | CR Servo-like Interface | Description |
 | --- | --- |
-| TBA...
+| PUB setSpeed(speed) | where speed is [(-200) - 200], neg values backward, pos forward, 0 is stop
+| PUB setRamp(ramp) | where ramp [0 - 100] is amount of change ea. 20ms cycle
+
 
 ### ...
 
