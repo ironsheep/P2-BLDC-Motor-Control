@@ -48,9 +48,9 @@ The BLDC motor object controls a single BLDC Motor. You can turn a motor on or o
 | --- | --- |
 |  **>--- CONTROL**
 | <PRE>PUB moveDuration(power, bBrakeAtEnd, seconds) </PRE>| Turns the motor on for the number of {seconds}, then turns it off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of the motor using the {power}. 
-| <PRE>PUB moveDegrees(power, bBrakeAtEnd, degrees)</PRE>| Turns the motor on for the number of degrees of rotation in {degrees}, then turns it off (or holds) based on {bBrakeAtEnd}. 360 degrees of rotation results in one full turn of the motor. Control the speed and direction of the motor using the {power}.
-| <PRE>PUB moveRotations(power, bBrakeAtEnd, rotations) </PRE>| Turns the motor on for the number of {rotations}, then turns it off (or holds) based on {bBrakeAtEnd}. 1 rotation (or 360 degrees)  results in one full turn of the motor. Control the speed and direction of the motor using the {power}.
-| PUB disable() | Turns off active motor control
+| <PRE>PUB moveDegrees(power, bBrakeAtEnd, degrees)</PRE>| Turns the motor on for the number of degrees of rotation in {degrees}, then turns it off (or holds) based on {bBrakeAtEnd}.  Control the speed and direction of the motor using the {power}. </br>360 degrees of rotation results in one full turn of the motor.
+| <PRE>PUB moveRotations(power, bBrakeAtEnd, rotations) </PRE>| Turns the motor on for the number of {rotations}, then turns it off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of the motor using the {power}.</br>1 rotation (or 360 degrees)  results in one full turn of the motor.
+| PUB disable() | Turns off active motor control 
 |  **>--- CONFIG**
 | PUB resetTracking()| Resets the position tracking values returned by getDegrees()/getRotations()
 |  **>--- STATUS**
