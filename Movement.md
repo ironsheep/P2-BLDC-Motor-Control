@@ -9,7 +9,7 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 As I'm researching I'm studying both LEGO Mindstorms motor control since this is for 9-14 year olds to program and I'm studying BlocklyProp the Parallax Offering.  I'm intending to develop either side by side interchangable control methods or some sort of blend of the different methods. Let's see how it turns out! For now I'm recording initial thoughts here and it will all gradually be whittled down to the target interface specs for the steering and motor objects.
 
-My thinking so far is that the motor control system is a live system. We as programmers simply adjust the control values and can read the current state/historical status values from the system.  This form of thinking allows us to place code that monitors the motors and other sensors and influences the drive system or with very little effort a simple multi-variable controller like our Futaba RC controller.
+My thinking so far is that the motor control system is a live system. We as programmers simply adjust the control values and can read the current state/historical status values from the system.  This form of thinking allows us to use code that monitors the motors and other sensors and sends values to the drive system -OR- with very little effort  use serial receiver code which listens to a multi-variable controller like our Futaba RC controller and forwards value changes to the drive system.
 
 ## Object: isp_steering.spin2
 
