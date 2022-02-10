@@ -7,6 +7,10 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 **-- This is a work in progress!! --**
 
+As I'm researching I'm studying both LEGO Mindstorms motor control since this is for 9-14 year olds to program and I'm studying BlocklyProp the Parallax Offering.  I'm intending to develop either side by side interchangable control methods or some sort of blend of the different methods. Let's see how it turns out! For now I'm recording initial thoughts here and it will all gradually be whittled down to the target interface specs for the steering and motor objects.
+
+My thinking so far is that the motor control system is a live system. We as programmers simply adjust the control values and can read the current state/historical status values from the system.  This form of thinking allows us to place code that monitors the motors and other sensors and influences the drive system or with very little effort a simple multi-variable controller like our Futaba RC controller.
+
 ## Object: isp_steering.spin2
 
 The steering object makes it easy to make your robot drive forward, backward, turn, or stop. You can adjust the steering to make your robot go straight, drive in arcs, or make tight turns.
@@ -17,7 +21,7 @@ The steering object is for robot vehicles that have two Large Motors, with one m
 
 The steering object controls both motors at the same time, to drive your vehicle in the direction that you choose.
 
-| Drive Interface |
+| LEGO Drive Interface |
 | --- |
 | PUB drive\_both_duration(power, direction, bBrakeAtEnd, duration)
 | PUB drive\_both_degrees(power, direction, bBrakeAtEnd, degrees)
@@ -27,7 +31,7 @@ The steering object controls both motors at the same time, to drive your vehicle
 
 The steering object also provides an alternative form of control where you can make the two motors go at different speeds or in different directions to make your robot turn.
 
-| Drive Interface |
+| LEGO Drive Interface |
 | --- |
 | PUB drive\_each\_duration(leftPower, rightPower, bBrakeAtEnd, duration)
 | PUB drive\_each\_degrees(leftPower, rightPower, bBrakeAtEnd, degrees)
@@ -38,7 +42,7 @@ The steering object also provides an alternative form of control where you can m
 
 The BLDC motor object controls a single BLDC Motor. You can turn a motor on or off, control its power level, or turn the motor on for a specified amount of time or rotation.
 
-| Drive Interface |
+| LEGO Motor Interface |
 | --- |
 | PUB move_duration(power, bBrakeAtEnd, duration)
 | PUB move_degrees(power, bBrakeAtEnd, degrees)
