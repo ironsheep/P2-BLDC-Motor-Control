@@ -23,9 +23,9 @@ The steering object controls both motors at the same time, to drive your vehicle
 
 | LEGO Drive Interface |
 | --- |
-| PUB drive\_both_duration(power, direction, bBrakeAtEnd, duration)
-| PUB drive\_both_degrees(power, direction, bBrakeAtEnd, degrees)
-| PUB drive\_both_rotations(power, direction, bBrakeAtEnd, rotations)
+| PUB driveBothDuration(power, direction, bBrakeAtEnd, duration)
+| PUB driveBothDegrees(power, direction, bBrakeAtEnd, degrees)
+| PUB driveBothRotations(power, direction, bBrakeAtEnd, rotations)
 
 #### Alternatively: Provide power for each wheel
 
@@ -33,42 +33,53 @@ The steering object also provides an alternative form of control where you can m
 
 | LEGO Drive Interface |
 | --- |
-| PUB drive\_each\_duration(leftPower, rightPower, bBrakeAtEnd, duration)
-| PUB drive\_each\_degrees(leftPower, rightPower, bBrakeAtEnd, degrees)
-| PUB drive\_each\_rotations(leftPower, rightPower, bBrakeAtEnd, rotations)
+| PUB driveEachDuration(leftPower, rightPower, bBrakeAtEnd, duration)
+| PUB driveEachDegrees(leftPower, rightPower, bBrakeAtEnd, degrees)
+| PUB driveEachRotations(leftPower, rightPower, bBrakeAtEnd, rotations)
 
 
-## Object: isp\_bldc_motor.spin2
+## Object: ispBldc_motor.spin2
 
 The BLDC motor object controls a single BLDC Motor. You can turn a motor on or off, control its power level, or turn the motor on for a specified amount of time or rotation.
 
-### LEGO Control form
+### LEGO Control/Status form
 
-| LEGO Motor Interface |
-| --- |
-| PUB move_duration(power, bBrakeAtEnd, duration)
-| PUB move_degrees(power, bBrakeAtEnd, degrees)
-| PUB move_rotations(power, bBrakeAtEnd, rotations)
+| LEGO Motor Interface | Notes |
+| --- | --- |
+|  **>--- CONTROL**
+| PUB moveDuration(power, bBrakeAtEnd, duration)
+| PUB moveDegrees(power, bBrakeAtEnd, degrees)
+| PUB moveRotations(power, bBrakeAtEnd, rotations)
+| **>--- STATUS**
+| PUB getDegrees() | returns accumulated degrees since last reset
+| PUB getRotations() | returns decimal number degrees/360 as count of rotations since last reset
+| PUB getPower() | returns the current motor power level if the motor is running (1-100), or 0 if the motor is stopped
+| PUB reset() | resets the position tracking values returned by getDegrees()/getRotations()
 
 ### BlocklyProp Feedback 360° control form
 
-The BLDC motor object provides an alternative form of control which works as if you are controlling a Feedback 360° Servo.
+The BLDC motor object provides an alternative form of control which works as if you are controlling a Feedback 360° Servo. Control for these servos offers Velocity Control and Angular Control subsystems.
 
 | Fb360 Servo-like Interface | Description |
 | --- | --- |
-| PUB configureAccel() 
-| PUB configureMaxSpeed() 
-| PUB configureVelocityControlSpeed(kP, kL, kD, I)
-| PUB configureVelocityControlPosition(kP, kL, kD, I)
-| PUB resetTurnCount() | use to reset to zero 
-| PUB getTurnCount(count) | returns +/- revolutions since last reset
-| PUB setHome() | tells motor that current position should be thought of as home
-| PUB setSpeed(degrPerSec) | +/- degrees/second rotation rate
-| PUB setAngle(degrees) | +/- degrees - go to (relative to home)
-| PUB moveAngle(degrees) | +/- degrees (relative to curr position)
+|  **>--- CONTROL**
+| PUB setSpeed(degrPerSec) | where +/- degrees/Sec rotation rate
+| PUB gotoAngle(degrees) | where +/- degrees : go to (relative to home)
+| PUB moveAngle(degrees) | where +/- degrees (relative to curr position)
 | PUB setPosition(degrees) | [0-359] rotate to position (code uses shortest amount of movement)
-| PUB getPosition() | [0-359] return the current postion of the motor
-| PUB initialize() | reset motor position tracking
+| PUB disable() | turns off active motor control
+|  **>--- CONFIGURATION**
+| PUB limitAccel(value) | where value (°/s2) [600 - 7200] determines how quickly the servo will transition to a new speed setting, in units of degrees per second squared
+| PUB limitSpeed(value) | where value (°/s2) [1 - 1080] determines the maximum rotation speed in units of degrees per second, independent of direction
+| PUB adjustVelocityControl(kP,kL,kD,I) | (speed) defaults: kP=500,kI=0,kD=0 and I=0
+| PUB adjustAngularControl(kP,kL,kD,I) | (position) defaults: kP=12000,kI=600,kD=6000 and I=1000
+| PUB resetTracking() | reset motor position tracking
+| PUB setHome() | tells motor that current position should be thought of as home
+| **>--- STATUS**
+| PUB getTurnCount() | returns +/- count of revolutions since last reset
+| PUB getPosition() | [0-359] return the current postion of the motor where 0 is home position as last set
+| PUB getStatus() | returns: moving to position, holding position or off
+| PUB getSpeed() | returns +/- degrees/Sec rotation rate, 0 if stopped
 
 
 ### BlocklyProp CR Servo control form
