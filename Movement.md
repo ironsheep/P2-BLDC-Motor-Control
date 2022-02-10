@@ -44,17 +44,24 @@ The BLDC motor object controls a single BLDC Motor. You can turn a motor on or o
 
 ### LEGO Control/Status form
 
-| LEGO Motor Interface | Notes |
+| LEGO Motor-likeInterface | Notes |
 | --- | --- |
 |  **>--- CONTROL**
-| PUB moveDuration(power, bBrakeAtEnd, duration)
-| PUB moveDegrees(power, bBrakeAtEnd, degrees)
-| PUB moveRotations(power, bBrakeAtEnd, rotations)
-| **>--- STATUS**
-| PUB getDegrees() | returns accumulated degrees since last reset
-| PUB getRotations() | returns decimal number degrees/360 as count of rotations since last reset
-| PUB getPower() | returns the current motor power level if the motor is running (1-100), or 0 if the motor is stopped
-| PUB reset() | resets the position tracking values returned by getDegrees()/getRotations()
+| <PRE>PUB moveDuration(power, bBrakeAtEnd, seconds) </PRE>| Turns the motor on for the number of {seconds}, then turns it off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of the motor using the {power}. 
+| <PRE>PUB moveDegrees(power, bBrakeAtEnd, degrees)</PRE>| Turns the motor on for the number of degrees of rotation in {degrees}, then turns it off (or holds) based on {bBrakeAtEnd}. 360 degrees of rotation results in one full turn of the motor. Control the speed and direction of the motor using the {power}.
+| <PRE>PUB moveRotations(power, bBrakeAtEnd, rotations) </PRE>| Turns the motor on for the number of {rotations}, then turns it off (or holds) based on {bBrakeAtEnd}. 1 rotation (or 360 degrees)  results in one full turn of the motor. Control the speed and direction of the motor using the {power}.
+| PUB disable() | Turns off active motor control
+|  **>--- CONFIG**
+| PUB resetTracking()| Resets the position tracking values returned by getDegrees()/getRotations()
+|  **>--- STATUS**
+| PUB getDegrees() | Returns accumulated degrees since last reset
+| PUB getRotations() | Returns decimal number degrees/360 as count of rotations since last reset
+| PUB getPower() | Returns the current motor power level if the motor is running (1-100), or 0 if the motor is stopped
+| PUB getStatus() | Returns: moving to position, holding position or off
+
+**NOTE1** {power} is [(-100) - 100] where neg is drive backwards, pos is forward, 0 is hold
+
+**NOTE2** {bBrakeAtEnd} is T/F where T means stop the motor by holding at the ending position and F means just turn off motor control (effectively coast)
 
 ### BlocklyProp Feedback 360° control form
 
@@ -63,23 +70,22 @@ The BLDC motor object provides an alternative form of control which works as if 
 | Fb360 Servo-like Interface | Description |
 | --- | --- |
 |  **>--- CONTROL**
-| PUB setSpeed(degrPerSec) | where +/- degrees/Sec rotation rate
-| PUB gotoAngle(degrees) | where +/- degrees : go to (relative to home)
-| PUB moveAngle(degrees) | where +/- degrees (relative to curr position)
-| PUB setPosition(degrees) | [0-359] rotate to position (code uses shortest amount of movement)
-| PUB disable() | turns off active motor control
-|  **>--- CONFIGURATION**
-| PUB limitAccel(value) | where value (°/s2) [600 - 7200] determines how quickly the servo will transition to a new speed setting, in units of degrees per second squared
-| PUB limitSpeed(value) | where value (°/s2) [1 - 1080] determines the maximum rotation speed in units of degrees per second, independent of direction
-| PUB adjustVelocityControl(kP,kL,kD,I) | (speed) defaults: kP=500,kI=0,kD=0 and I=0
-| PUB adjustAngularControl(kP,kL,kD,I) | (position) defaults: kP=12000,kI=600,kD=6000 and I=1000
-| PUB resetTracking() | reset motor position tracking
-| PUB setHome() | tells motor that current position should be thought of as home
+| PUB setSpeed(degrPerSec) | Where +/- degrees/Sec rotation rate (capped by limitSpeed())
+| PUB gotoAngle(degrees) | Where +/- degrees (relative to home as last set)
+| PUB moveAngle(degrees) | Where +/- degrees (relative to curr position)
+| PUB disable() | Turns off active motor control
+|  **>--- CONFIG**
+| PUB limitAccel(value) | Where value (°/s2) [600 - 7200] determines how quickly the servo will transition to a new speed setting, in units of degrees per second squared
+| PUB limitSpeed(value) | Where value (°/s2) [1 - 1080] determines the maximum rotation speed in units of degrees per second, independent of direction
+| <PRE>PUB adjustVelocityControl(kP,kL,kD,I)</PRE> | (Speed) Defaults: kP=500,kI=0,kD=0 and I=0
+| <PRE>PUB adjustAngularControl(kP,kL,kD,I)</PRE> | (Position) Defaults: kP=12000,kI=600,kD=6000 and I=1000
+| PUB resetTracking() | Reset motor position tracking
+| PUB setHome() | Tells motor that current position should be thought of as home
 | **>--- STATUS**
-| PUB getTurnCount() | returns +/- count of revolutions since last reset
-| PUB getPosition() | [0-359] return the current postion of the motor where 0 is home position as last set
-| PUB getStatus() | returns: moving to position, holding position or off
-| PUB getSpeed() | returns +/- degrees/Sec rotation rate, 0 if stopped
+| PUB getTurnCount() | Returns +/- count of revolutions since last reset
+| PUB getPosition() | [0-359] Return the current postion of the motor where 0 is home position as last set
+| PUB getStatus() | Returns: moving to position, holding position or off
+| PUB getSpeed() | Returns +/- degrees/Sec rotation rate, 0 if stopped
 
 
 ### BlocklyProp CR Servo control form
@@ -88,8 +94,14 @@ The BLDC motor object provides an alternative form of control which works as if 
 
 | CR Servo-like Interface | Description |
 | --- | --- |
-| PUB setSpeed(speed) | where speed is [(-200) - 200], neg values backward, pos forward, 0 is stop
-| PUB setRamp(ramp) | where ramp [0 - 100] is amount of change ea. 20ms cycle
+|  **>--- CONTROL**
+| PUB setSpeed(speed) | Where speed is [(-200) - 200], neg values backward, pos forward, 0 is stop
+| PUB setRamp(ramp) | Where ramp [0 - 100] is amount of change ea. 20ms cycle
+| PUB disable() | Turns off active motor control
+| **>--- STATUS**
+| PUB getSpeed() | Returns speed [(-200) - 200], neg values backward, pos forward, 0 stopped
+| PUB getRamp() | Returns ramp [0 - 100] the requested amount of change ea. 20ms cycle
+| PUB getStatus() | Returns: moving, holding position or off
 
 
 ### ...
