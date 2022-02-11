@@ -75,7 +75,7 @@ A two wheeled robot can turn by slowing or stopping one wheel while keeping the 
 
 **DOC ISSUE?:** Default of 600 ticks/s setMaxSpeedForDistance(speed) can't be set. **Does this mean the docs are incorrect?**
 
-## Object: ispBldc_motor.spin2
+## Object: isp\_bldc_motor.spin2
 
 The BLDC motor object controls a single BLDC Motor. You can turn a motor on or off, control its power level, or turn the motor on for a specified amount of time or rotation.
 
