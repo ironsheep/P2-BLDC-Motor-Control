@@ -13,30 +13,65 @@ My thinking so far is that the motor control system is a live system. We as prog
 
 ## Object: isp_steering.spin2
 
-The steering object makes it easy to make your robot drive forward, backward, turn, or stop. You can adjust the steering to make your robot go straight, drive in arcs, or make tight turns.
+The steering object makes it easy to make your robot drive forward, backward, turn, or stop. You can adjust the steering to make your robot go straight, drive in arcs, or make tight turns. The steering object is for robot vehicles that have two motors, with one motor driving the left side of the vehicle and the other the right side. 
 
-The steering object is for robot vehicles that have two Large Motors, with one motor driving the left side of the vehicle and the other the right side. 
+#### Provide steering-direction and power-for-both-wheels 
 
-#### Provide steering direction and power-for-both-wheels 
-
-The steering object controls both motors at the same time, to drive your vehicle in the direction that you choose.
-
-| LEGO Drive Interface |
-| --- |
-| PUB driveBothDuration(power, direction, bBrakeAtEnd, duration)
-| PUB driveBothDegrees(power, direction, bBrakeAtEnd, degrees)
-| PUB driveBothRotations(power, direction, bBrakeAtEnd, rotations)
+The steering object controls both motors at the same time, to drive your vehicle in the direction that you choose. Steering-direction is used to re-interpet the power value that is actually sent to each wheel.
 
 #### Alternatively: Provide power for each wheel
 
 The steering object also provides an alternative form of control where you can make the two motors go at different speeds or in different directions to make your robot turn.
 
-| LEGO Drive Interface |
-| --- |
-| PUB driveEachDuration(leftPower, rightPower, bBrakeAtEnd, duration)
-| PUB driveEachDegrees(leftPower, rightPower, bBrakeAtEnd, degrees)
-| PUB driveEachRotations(leftPower, rightPower, bBrakeAtEnd, rotations)
+#### Turning 
 
+A two wheeled robot can turn by slowing or stopping 1 wheel while keeping the other rotating. This would cause the robot to pivot around one of the wheels. An alternative form of turning is actually turning the held wheel in the opposite direction. In this form of turn the robot pivots around it's center instead of around one of the wheels.  Our drive system needs to accommodate both of these forms of turns.
+
+### LEGO Drive Control/Status
+
+| LEGO Drive-like Interface | Description |
+| --- | --- |
+|  **>--- CONTROL**
+| <PRE>PUB driveBothDuration(power, direction, bBrakeAtEnd, seconds)</PRE> | Turns both motors on for the number of {seconds}, then turns them off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {power} and {direction} inputs.
+| <PRE>PUB driveBothDegrees(power, direction, bBrakeAtEnd, degrees)</PRE> | Turns both motors on, waits until one of them has turned for the number of degrees of rotation {degrees}, then turns both motors off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {power} and {direction} inputs.</br> This can be used to make your robot travel a specific distance or turn a specific amount.</br> 360 degrees of rotation corresponds to one full turn of a motor. 
+| <PRE>PUB driveBothRotations(power, direction, bBrakeAtEnd, rotations)</PRE> | Turns both motors on, waits until one of them has turned for the number of {rotations}, then turns both motors off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {power} and {direction} inputs.</br>This can be used to make your robot travel a specific distance or turn a specific amount.
+| <PRE>PUB driveEachDuration(leftPower, rightPower, bBrakeAtEnd, seconds)</PRE> | Turns both motors on for the number of {seconds}, then turns them off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
+| <PRE>PUB driveEachDegrees(leftPower, rightPower, bBrakeAtEnd, degrees)</PRE> | Turns both motors on, waits until one of them has turned for the number of degrees of rotation {degrees}, and then turns both motors off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.</br> This can be used to make your robot travel a specific distance or turn a specific amount.</br> 360 degrees of rotation corresponds to one full turn of a motor.
+| <PRE>PUB driveEachRotations(leftPower, rightPower, bBrakeAtEnd, rotations)</PRE> | Turns both motors on, waits until one of them has turned for the number of {rotations}, then turns both motors off (or holds) based on {bBrakeAtEnd}.  Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.</br> This can be used to make your robot travel a specific distance or turn a specific amount.
+| PUB stop() | stops both motors, killing any motion that was still in progress
+|  **>--- CONFIG**
+| PUB resetTracking()| Resets the position tracking values returned by getDegrees()/getRotations()
+|  **>--- STATUS**
+| PUB getDegrees() | Returns accumulated degrees since last reset for each of the motors
+| PUB getRotations() | Returns decimal number degrees/360 as count of rotations since last reset for each of the motors
+| PUB getStatus() | Returns: moving to position, holding position or off
+
+**NOTE1** {*power} is [(-100) - 100] where neg. values drive backwards, pos. values forward, 0 is hold
+
+**NOTE2** {direction} is [(-100) - 100] A value of 0 (zero) will make your robot drive straight. A positive number (greater than zero) will make the robot turn to the right, and a negative number will make the robot turn to the left. The farther the steering value is from zero, the tighter the turn will be.
+
+**NOTE3** {bBrakeAtEnd} is T/F where T means the motor is stopped and is held in position and F means motor power turned off and the motor is allowed to coast
+
+### BlocklyProp Drive Control/Status
+
+| BlocklyProp-like Interface | Description |
+| --- | --- |
+|  **>--- CONTROL**
+| PUB setDriveDistance(ltDistance, rtDistance, units) | where {*distance} is in {units} [ticks, in., or mm]
+| PUB setDriveSpeed(ltSpeed, rtSpeed) | where {*speed} is [(-128) - 128] and zero stops the motor 
+| PUB stop() | stops both motors
+|  **>--- CONFIG**
+| PUB setAcceleration(rate) | where {rate} is [100 - 2000] ticks/s squared (default is 400 ticks/s squared)
+| PUB setMaxSpeed(speed) | where {speed} is [0 - 128] ticks/s (default is 128 ticks/s)
+| PUB setMaxSpeedForDistance(speed) | where {speed} is [0 - 128] ticks/s (default is 600? ticks/s)
+| PUB calibrate() | (we may need this?)
+| PUB resetDistance()| Resets the distance tracking values
+|  **>--- STATUS**
+| PUB getDistance(units) | Returns the distance in {units} [ticks, in., or mm] travelled by each motor since last reset
+
+**NOTE** "ticks" in BlocklyProp: are single encoder ticks, which are 3.25 mm long and are used as (ticks|in|mm) distance values.
+
+**SUGGESTION:** *Let's rethink the use of ticks (not applicable to our BLDC motor.) Let's use a unit of measure that makes sense.*
 
 ## Object: ispBldc_motor.spin2
 
@@ -44,7 +79,7 @@ The BLDC motor object controls a single BLDC Motor. You can turn a motor on or o
 
 ### LEGO Control/Status form
 
-| LEGO Motor-likeInterface | Notes |
+| LEGO Motor-like Interface | Notes |
 | --- | --- |
 |  **>--- CONTROL**
 | <PRE>PUB moveDuration(power, bBrakeAtEnd, seconds) </PRE>| Turns the motor on for the number of {seconds}, then turns it off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of the motor using the {power}. 
@@ -61,7 +96,7 @@ The BLDC motor object controls a single BLDC Motor. You can turn a motor on or o
 
 **NOTE1** {power} is [(-100) - 100] where neg is drive backwards, pos is forward, 0 is hold
 
-**NOTE2** {bBrakeAtEnd} is T/F where T means stop the motor by holding at the ending position and F means just turn off motor control (effectively coast)
+**NOTE2** {bBrakeAtEnd} is T/F where T means the motor is stopped and is held in position and F means motor power turned off and the motor is allowed to coast
 
 ### BlocklyProp Feedback 360° control form
 
