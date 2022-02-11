@@ -57,7 +57,7 @@ A two wheeled robot can turn by slowing or stopping one wheel while keeping the 
 | BlocklyProp-like Interface | Description |
 | --- | --- |
 |  **>--- CONTROL**
-| PUB setDriveDistance(ltDistance, rtDistance, units) | where {*distance} is in {units} [ticks, in., or mm]
+| <PRE>PUB setDriveDistance(ltDistance, rtDistance, units)</PRE> | where {*distance} is in {units} [ticks, in., or mm]
 | PUB setDriveSpeed(ltSpeed, rtSpeed) | where {*speed} is [(-128) - 128] and zero stops the motor 
 | PUB stop() | stops both motors
 |  **>--- CONFIG**
