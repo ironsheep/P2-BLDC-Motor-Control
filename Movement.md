@@ -25,7 +25,7 @@ The steering object also provides an alternative form of control where you can m
 
 #### Turning 
 
-A two wheeled robot can turn by slowing or stopping 1 wheel while keeping the other rotating. This would cause the robot to pivot around one of the wheels. An alternative form of turning is actually turning the held wheel in the opposite direction. In this form of turn the robot pivots around it's center instead of around one of the wheels.  Our drive system needs to accommodate both of these forms of turns.
+A two wheeled robot can turn by slowing or stopping one wheel while keeping the other rotating. This would cause the robot to pivot around one of the wheels. An alternative form of turning is actually turning the held wheel in the opposite direction. In this form of turn the robot pivots around a point somewhere on the radius between its center-point and the faster wheel instead of around one of the wheels. If the motor speeds are identitical but in opposite directions the robot pivots around its center-point. Our drive system needs to accommodate both of these forms of turns.
 
 ### LEGO Drive Control/Status
 
@@ -72,6 +72,8 @@ A two wheeled robot can turn by slowing or stopping 1 wheel while keeping the ot
 **NOTE** "ticks" in BlocklyProp: are single encoder ticks, which are 3.25 mm long and are used as (ticks|in|mm) distance values.
 
 **SUGGESTION:** *Let's rethink the use of ticks (not applicable to our BLDC motor.) Let's use a unit of measure that makes sense.*
+
+**DOC ISSUE?:** Default of 600 ticks/s setMaxSpeedForDistance(speed) can't be set. **Does this mean the docs are incorrect?**
 
 ## Object: ispBldc_motor.spin2
 
