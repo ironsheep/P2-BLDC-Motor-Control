@@ -16,16 +16,16 @@ The drive subsystem currently uses two cogs, one for each motor.  Conceptually,
 
 The interface for these two objects is described in [BLDC Motor Drive Objects](DRIVE-OBJECTS.md)
 
-## References
-
-A study of Motor Control and Drive Techniques found in LEGO Mindstorms and in Parallax BlocklyProp is presented in: [Movement API Study](Movement-STUDY.md)
-
 ## How to Contribute
 
 This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
 
 - File Feature Requests or Issues (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
 - Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
+
+## References
+
+A study of Motor Control and Drive Techniques found in LEGO Mindstorms and in Parallax BlocklyProp is presented in: [Movement API Study](Movement-STUDY.md)
 
 
 ---
