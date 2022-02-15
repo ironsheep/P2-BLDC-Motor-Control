@@ -14,7 +14,7 @@ If you are working with a dual motor device then you'll be coding to the interfa
 
 The drive subsystem currently uses two cogs, one for each motor.  Conceptually, the drive system is always running. It is influenced by updating control variable values. When the values change the drive subsystem responds accordingly. The public methods of both the steering object and the motor object simply write to these control variables and/or read from associated status variables returning their current value or an interpretation thereof.
 
-The interface for these two objects is described in [BLDC Motor Drive Objects](DIRVE-OBJECTS.md)
+The interface for these two objects is described in [BLDC Motor Drive Objects](DRIVE-OBJECTS.md)
 
 ## References
 
