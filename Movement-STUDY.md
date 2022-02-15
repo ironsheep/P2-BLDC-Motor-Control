@@ -1,11 +1,13 @@
 
-# P2-BLDC-Motor-Control
+# P2-BLDC-Motor-Control - Systems Review
 Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
+
+Last Udpated: 220211 14:36 MST
+
+**-- This is a work in progress!! --**
 
 ![Project Maintenance][maintenance-shield]
 [![License][license-shield]](LICENSE)
-
-**-- This is a work in progress!! --**
 
 As I'm researching I'm studying both LEGO Mindstorms motor control since this is for 9-14 year olds to program and I'm studying BlocklyProp the Parallax Offering.  I'm intending to develop either side by side interchangable control methods or some sort of blend of the different methods. Let's see how it turns out! For now I'm recording initial thoughts here and it will all gradually be whittled down to the target interface specs for the steering and motor objects.
 

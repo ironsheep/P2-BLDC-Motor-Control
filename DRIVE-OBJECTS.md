@@ -1,15 +1,14 @@
 
-# P2-BLDC-Motor-Control
+# P2-BLDC-Motor-Control - The drive objects
+
 Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
 
 ![Project Maintenance][maintenance-shield]
 [![License][license-shield]](LICENSE)
 
-**-- This is a work in progress!! --**
+There are two objects in our motor control system. There is a lower level object (**isp\_bldc_motor.spin2**) that controls a single motor and there's an upper level object (**isp_steering.spin2**) which coordinates a pair of motors as a drive subsystem.
 
-As I'm researching I'm studying both LEGO Mindstorms motor control since this is for 9-14 year olds to program and I'm studying BlocklyProp the Parallax Offering.  I'm intending to develop either side by side interchangable control methods or some sort of blend of the different methods. Let's see how it turns out! For now I'm recording initial thoughts here and it will all gradually be whittled down to the target interface specs for the steering and motor objects.
-
-My thinking so far is that the motor control system is a live system. We as programmers simply adjust the control values and can read the current state/historical status values from the system.  This form of thinking allows us to use code that monitors the motors and other sensors and sends values to the drive system -OR- with very little effort  use serial receiver code which listens to a multi-variable controller like our Futaba RC controller and forwards value changes to the drive system.
+If you are working with a dual motor device then you'll be coding to the interface of this upper level object as you develop your drive algorithms.
 
 ## Object: isp_steering.spin2
 

@@ -23,10 +23,6 @@ Getting started with two-wheeled robot develop.
 ## Disclaimer and Legal
 
 > *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
->
-> This project is a community project not for commercial use.
->
-> This project is in no way affiliated with, authorized, maintained, sponsored or endorsed by *Parallax Inc., dba Parallax Semiconductor* or any of its affiliates or subsidiaries.
 
 ---
 
