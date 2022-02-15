@@ -1,78 +1,71 @@
 
-# P2-BLDC-Motor-Control - The drive objects
+# P2-BLDC-Motor-Control - Drive Objects
 
 Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
 
 ![Project Maintenance][maintenance-shield]
 [![License][license-shield]](LICENSE)
 
-There are two objects in our motor control system. There is a lower level object (**isp\_bldc_motor.spin2**) that controls a single motor and there's an upper level object (**isp_steering.spin2**) which coordinates a pair of motors as a drive subsystem.
+There are two objects in our motor control system. There is a lower-level object (**isp\_bldc_motor.spin2**) that controls a single motor and there's an upper-level object (**isp\_steering_2wheel.spin2**) which coordinates a pair of motors as a drive subsystem.
 
-If you are working with a dual motor device then you'll be coding to the interface of this upper level object as you develop your drive algorithms.
+If you are working with a dual motor device then you'll be coding to the interface of this upper-level object as you develop your drive algorithms.  If you were to work with say a three-wheeled device then you may want to create a steering object that can better coordinate all three motors at the same time. (*And, if you do please consider contributing it to this project so it can be available to us all!*)
 
-## Object: isp_steering.spin2
+The drive subsystem currently uses two cogs, one for each motor.  Conceptually, the drive system is always running. It is influenced by updating control variable values. When the values change the drive subsystem responds accordingly. The public methods of both the steering object and the motor object simply write to these control variables and/or read from associated status variables returning their current value or an interpretation thereof.
+## Object: isp\_steering_2wheel.spin2
 
-The steering object makes it easy to make your robot drive forward, backward, turn, or stop. You can adjust the steering to make your robot go straight, drive in arcs, or make tight turns. The steering object is for robot vehicles that have two motors, with one motor driving the left side of the vehicle and the other the right side. 
+This steering object makes it easy to make your robot drive forward, backward, turn, or stop. You can adjust the steering to make your robot go straight, drive in arcs, or make tight turns. This steering object is for robot vehicles that have two motors, with one motor driving the left side of the vehicle and the other the right side. 
 
 #### Provide steering-direction and power-for-both-wheels 
 
 The steering object controls both motors at the same time, to drive your vehicle in the direction that you choose. Steering-direction is used to re-interpet the power value that is actually sent to each wheel.
 
-#### Alternatively: Provide power for each wheel
+#### Alternatively: Provide power for each wheel seperately
 
-The steering object also provides an alternative form of control where you can make the two motors go at different speeds or in different directions to make your robot turn.
+The steering object also provides an alternative form of control where you can make the two motors go at different speeds or in different directions to make your robot turn in more precise ways.
 
-#### Turning 
+#### Turning Concepts
 
-A two wheeled robot can turn by slowing or stopping one wheel while keeping the other rotating. This would cause the robot to pivot around one of the wheels. An alternative form of turning is actually turning the held wheel in the opposite direction. In this form of turn the robot pivots around a point somewhere on the radius between its center-point and the faster wheel instead of around one of the wheels. If the motor speeds are identitical but in opposite directions the robot pivots around its center-point. Our drive system needs to accommodate both of these forms of turns.
+When you think of turning your robot vehicle you think of turning about some point relative to the robot position (e.g., spin about its center point, spin about one of the wheels, or even make some large arcing turn.) All of these turns can be thought of within a singular concept. If you draw a radial line from the center point of your robot vehicle out thru the center point of the slowest wheel, continuing out beyond your robot... all possible turns that your robot vehicle can make have their center-point somewhere on this line!  By adjusting the power of each wheel and the direction of each wheel you are specifying where the center-point of your turn will be on this line.  Fun, right?
 
-### LEGO Drive Control/Status
+- If you drive one wheel backward and one wheel forward but at the same velocity this spins the robot vehicle about its center-point, one end of our line.
 
-| LEGO Drive-like Interface | Description |
+- Ignoring friction issues for this discussion, if you stop one wheel and power the other your robot vehicle is now spinning about the center-point of the stopped wheel, another point on our line.
+
+- Now instead of stopping the wheel just drive it at a slower speed than the other but in the opposite direction. Now our center-point of the spin has moved yet again but this time it moved from over the slower wheel to instead between the slower wheel and the center point of the robot vehicle.
+
+- Lastly, let's instead drive this slow wheel in the same direction as the faster wheel but keep the speed slower. This time the robot vehicle is now moving in a large arc as the center-point of our turn has now moved on our line beyond the exterior of our robot, out past the slower wheel.
+
+
+#### The Object PUBLIC Interface
+
+The object **isp\_steering_2wheel.spin2** provides the following methods:
+
+| Steering Interface | Description |
 | --- | --- |
 |  **>--- CONTROL**
-| <PRE>PUB driveBothDuration(power, direction, bBrakeAtEnd, seconds)</PRE> | Turns both motors on for the number of {seconds}, then turns them off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {power} and {direction} inputs.
-| <PRE>PUB driveBothDegrees(power, direction, bBrakeAtEnd, degrees)</PRE> | Turns both motors on, waits until one of them has turned for the number of degrees of rotation {degrees}, then turns both motors off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {power} and {direction} inputs.</br> This can be used to make your robot travel a specific distance or turn a specific amount.</br> 360 degrees of rotation corresponds to one full turn of a motor. 
-| <PRE>PUB driveBothRotations(power, direction, bBrakeAtEnd, rotations)</PRE> | Turns both motors on, waits until one of them has turned for the number of {rotations}, then turns both motors off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {power} and {direction} inputs.</br>This can be used to make your robot travel a specific distance or turn a specific amount.
-| <PRE>PUB driveEachDuration(leftPower, rightPower, bBrakeAtEnd, seconds)</PRE> | Turns both motors on for the number of {seconds}, then turns them off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
-| <PRE>PUB driveEachDegrees(leftPower, rightPower, bBrakeAtEnd, degrees)</PRE> | Turns both motors on, waits until one of them has turned for the number of degrees of rotation {degrees}, and then turns both motors off (or holds) based on {bBrakeAtEnd}. Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.</br> This can be used to make your robot travel a specific distance or turn a specific amount.</br> 360 degrees of rotation corresponds to one full turn of a motor.
-| <PRE>PUB driveEachRotations(leftPower, rightPower, bBrakeAtEnd, rotations)</PRE> | Turns both motors on, waits until one of them has turned for the number of {rotations}, then turns both motors off (or holds) based on {bBrakeAtEnd}.  Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.</br> This can be used to make your robot travel a specific distance or turn a specific amount.
+| <PRE>PUB driveDirection(power, direction)</PRE> | Control the speed and direction of your robot using the {power} and {direction} inputs.</br>Turns both motors on at {power, [(-100) to 100]} but adjusted by {direction, [(-100) to 100]}.</br> AFFECTED BY:  setAcceleration(), setMaxSpeed()
+| <PRE>PUB driveForDistance(ltDistance, rtDistance, units)</PRE> | Turn both motors on then turn them off again when either reaches the specified distance {ltDistance} or {rtDistance}, where {*distance} is in {units} [DDU\_IN or DDU\_MM].</BR> Control the forward direction or rate of turn.</br>AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance()
+| PUB driveAtPower(leftPower, rightPower) | Turns left motor on at {leftPower} and right at {rightPower}.</br>  Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.</br>AFFECTED BY:  setAcceleration(), setMaxSpeed()
+| PUB stopAfterRotations(rotations) | stops both motors, after either of the motors reaches {rotations}.</br>USE WITH:  driveDirection(), drive()
+| PUB stopAfterDistance(distance, units) | stops both motors, after either of the motors reaches {distance} specified in {units} [DDU\_IN or DDU\_MM].</br>USE WITH:  driveDirection(), drive()
 | PUB stop() | stops both motors, killing any motion that was still in progress
 |  **>--- CONFIG**
+| PUB setAcceleration(rate) | Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
+| PUB setMaxSpeed(speed) | Limit top-speed to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
+| PUB setMaxSpeedForDistance(speed) | Limit top-speed of driveDistance() operations to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
+| PUB calibrate() | (we may need this?)
+| PUB holdAtStop(bEnable)| Informs the motor subsystem to actively hold postiion (bEnable=true) or coast (bEnable=false) at end of motion 
 | PUB resetTracking()| Resets the position tracking values returned by getDegrees()/getRotations()
 |  **>--- STATUS**
-| PUB getDegrees() | Returns accumulated degrees since last reset for each of the motors
-| PUB getRotations() | Returns decimal number degrees/360 as count of rotations since last reset for each of the motors
-| PUB getStatus() | Returns: moving to position, holding position or off
+| PUB getDistance(units) : distanceInUnits | Returns the distance in {units} [DDU\_IN or DDU\_MM] travelled by each motor since last reset
+| PUB getDegrees() : ltDegrees, rtDegrees | Returns accumulated degrees, since last reset, for each of the motors
+| PUB getRotations() : ltRotations, rtRotations | Returns accumulated rotations, since last reset, for each of the motors
+| PUB getStatus() : eStatus | Returns: enumerated constant: DS\_MOVING, DS\_HOLDING or DS\_OFF
 
-**NOTE1** {*power} is [(-100) - 100] where neg. values drive backwards, pos. values forward, 0 is hold
+**NOTE1** {power} is [(-100) - 100] where neg. values drive backwards, pos. values forward, 0 is hold/stop
 
-**NOTE2** {direction} is [(-100) - 100] A value of 0 (zero) will make your robot drive straight. A positive number (greater than zero) will make the robot turn to the right, and a negative number will make the robot turn to the left. The farther the steering value is from zero, the tighter the turn will be.
+**NOTE2** {direction} is [(-100) - 100] A value of 0 (zero) will make your robot vehicle drive straight. A positive number (greater than zero) will make the robot turn to the right, and a negative number will make the robot turn to the left. The farther the steering value is from zero, the tighter the turn will be.
 
-**NOTE3** {bBrakeAtEnd} is T/F where T means the motor is stopped and is held in position and F means motor power turned off and the motor is allowed to coast
-
-### BlocklyProp Drive Control/Status
-
-| BlocklyProp-like Interface | Description |
-| --- | --- |
-|  **>--- CONTROL**
-| <PRE>PUB setDriveDistance(ltDistance, rtDistance, units)</PRE> | where {*distance} is in {units} [ticks, in., or mm]
-| PUB setDriveSpeed(ltSpeed, rtSpeed) | where {*speed} is [(-128) - 128] and zero stops the motor 
-| PUB stop() | stops both motors
-|  **>--- CONFIG**
-| PUB setAcceleration(rate) | where {rate} is [100 - 2000] ticks/s squared (default is 400 ticks/s squared)
-| PUB setMaxSpeed(speed) | where {speed} is [0 - 128] ticks/s (default is 128 ticks/s)
-| PUB setMaxSpeedForDistance(speed) | where {speed} is [0 - 128] ticks/s (default is 600? ticks/s)
-| PUB calibrate() | (we may need this?)
-| PUB resetDistance()| Resets the distance tracking values
-|  **>--- STATUS**
-| PUB getDistance(units) | Returns the distance in {units} [ticks, in., or mm] travelled by each motor since last reset
-
-**NOTE** "ticks" in BlocklyProp: are single encoder ticks, which are 3.25 mm long and are used as (ticks|in|mm) distance values.
-
-**SUGGESTION:** *Let's rethink the use of ticks (not applicable to our BLDC motor.) Let's use a unit of measure that makes sense.*
-
-**DOC ISSUE?:** Default of 600 ticks/s setMaxSpeedForDistance(speed) can't be set. **Does this mean the docs are incorrect?**
 
 ## Object: isp\_bldc_motor.spin2
 
