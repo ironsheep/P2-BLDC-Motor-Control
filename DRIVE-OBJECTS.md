@@ -44,12 +44,14 @@ The object **isp\_steering_2wheel.spin2** provides the following methods:
 | --- | --- |
 |  **>--- CONTROL**
 | <PRE>PUB driveDirection(power, direction)</PRE> | Control the speed and direction of your robot using the {power} and {direction} inputs.</br>Turns both motors on at {power, [(-100) to 100]} but adjusted by {direction, [(-100) to 100]}.</br> AFFECTED BY:  setAcceleration(), setMaxSpeed()
-| <PRE>PUB driveForDistance(ltDistance, rtDistance, units)</PRE> | Turn both motors on then turn them off again when either reaches the specified distance {ltDistance} or {rtDistance}, where {*distance} is in {units} [DDU\_IN or DDU\_MM].</BR> Control the forward direction or rate of turn.</br>AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance()
+| <PRE>PUB driveForDistance(leftDistance, rightDistance, units)</PRE> | Turn both motors on then turn them off again when either reaches the specified distance {ltDistance} or {rtDistance}, where {*distance} is in {units} [DDU\_IN or DDU\_MM].</BR> Control the forward direction or rate of turn.</br>AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance()
 | PUB driveAtPower(leftPower, rightPower) | Turns left motor on at {leftPower} and right at {rightPower}.</br>  Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.</br>AFFECTED BY:  setAcceleration(), setMaxSpeed()
 | PUB stopAfterRotations(rotations) | stops both motors, after either of the motors reaches {rotations}.</br>USE WITH:  driveDirection(), drive()
 | PUB stopAfterDistance(distance, units) | stops both motors, after either of the motors reaches {distance} specified in {units} [DDU\_IN or DDU\_MM].</br>USE WITH:  driveDirection(), drive()
 | PUB stop() | stops both motors, killing any motion that was still in progress
 |  **>--- CONFIG**
+| PUB start(leftMotorBasePin, rightMotorBasePin) | Specify motor control board connect location for left and right
+| PUB stop() | stop cogs and release pins assigned to motor drivers
 | PUB setAcceleration(rate) | Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
 | PUB setMaxSpeed(speed) | Limit top-speed to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
 | PUB setMaxSpeedForDistance(speed) | Limit top-speed of driveDistance() operations to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
