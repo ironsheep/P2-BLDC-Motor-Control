@@ -2,32 +2,29 @@
 # P2-BLDC-Motor-Control - Systems Review
 Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
 
-Last Udpated: 220211 14:36 MST
+Last Udpated: 220215 15:44 MST
 
 **-- This is a work in progress!! --**
 
 ![Project Maintenance][maintenance-shield]
 [![License][license-shield]](LICENSE)
 
-As I'm researching I'm studying both LEGO Mindstorms motor control since this is for 9-14 year olds to program and I'm studying BlocklyProp the Parallax Offering.  I'm intending to develop either side by side interchangable control methods or some sort of blend of the different methods. Let's see how it turns out! For now I'm recording initial thoughts here and it will all gradually be whittled down to the target interface specs for the steering and motor objects.
+As I'm researching I'm studying both LEGO Mindstorms motor control since this is for 9-14 year olds to program and I'm studying BlocklyProp, the Parallax Offering.  I'm intending to develop either side by side interchangable control methods or some sort of blend of the different methods. Let's see how it turns out! For now I'm recording initial thoughts here and it will all gradually be whittled down to the target interface specs for the steering and motor objects.
 
 My thinking so far is that the motor control system is a live system. We as programmers simply adjust the control values and can read the current state/historical status values from the system.  This form of thinking allows us to use code that monitors the motors and other sensors and sends values to the drive system -OR- with very little effort  use serial receiver code which listens to a multi-variable controller like our Futaba RC controller and forwards value changes to the drive system.
 
-## Object: isp_steering.spin2
+## Steering Control/Status APIs
 
-The steering object makes it easy to make your robot drive forward, backward, turn, or stop. You can adjust the steering to make your robot go straight, drive in arcs, or make tight turns. The steering object is for robot vehicles that have two motors, with one motor driving the left side of the vehicle and the other the right side. 
+The steering API makes it easy to make your robot drive forward, backward, turn, or stop. You can adjust the steering to make your robot go straight, drive in arcs, or make tight turns. The steering object is for robot vehicles that have two motors, with one motor driving the left side of the vehicle and the other the right side. 
 
 #### Provide steering-direction and power-for-both-wheels 
 
-The steering object controls both motors at the same time, to drive your vehicle in the direction that you choose. Steering-direction is used to re-interpet the power value that is actually sent to each wheel.
+The steering API controls both motors at the same time, to drive your vehicle in the direction that you choose. Steering-direction is used to re-interpet the power value that is actually sent to each wheel.
 
 #### Alternatively: Provide power for each wheel
 
-The steering object also provides an alternative form of control where you can make the two motors go at different speeds or in different directions to make your robot turn.
+The steering API also provides an alternative form of control where you can make the two motors go at different speeds or in different directions to make your robot turn.
 
-#### Turning 
-
-A two wheeled robot can turn by slowing or stopping one wheel while keeping the other rotating. This would cause the robot to pivot around one of the wheels. An alternative form of turning is actually turning the held wheel in the opposite direction. In this form of turn the robot pivots around a point somewhere on the radius between its center-point and the faster wheel instead of around one of the wheels. If the motor speeds are identitical but in opposite directions the robot pivots around its center-point. Our drive system needs to accommodate both of these forms of turns.
 
 ### LEGO Drive Control/Status
 
@@ -77,11 +74,13 @@ A two wheeled robot can turn by slowing or stopping one wheel while keeping the 
 
 **DOC ISSUE?:** Default of 600 ticks/s setMaxSpeedForDistance(speed) can't be set. **Does this mean the docs are incorrect?**
 
-## Object: isp\_bldc_motor.spin2
+## Motor Control/Status APIs
 
-The BLDC motor object controls a single BLDC Motor. You can turn a motor on or off, control its power level, or turn the motor on for a specified amount of time or rotation.
+With the Motor Control API you can turn a motor on or off, control its power level, or turn the motor on for a specified amount of time or rotation and retrieve its status.
 
-### LEGO Control/Status form
+### LEGO Motor Control/Status API
+
+LEGO Mindstorms provides control over large, medium and small motors using the following API:
 
 | LEGO Motor-like Interface | Notes |
 | --- | --- |
@@ -102,9 +101,9 @@ The BLDC motor object controls a single BLDC Motor. You can turn a motor on or o
 
 **NOTE2** {bBrakeAtEnd} is T/F where T means the motor is stopped and is held in position and F means motor power turned off and the motor is allowed to coast
 
-### BlocklyProp Feedback 360° control form
+### BlocklyProp: Feedback 360° control API
 
-The BLDC motor object provides an alternative form of control which works as if you are controlling a Feedback 360° Servo. Control for these servos offers Velocity Control and Angular Control subsystems.
+BlocklyProp provides control of a Feedback 360° Servo. Control for these servos offers Velocity Control and Angular Control subsystems.
 
 | Fb360 Servo-like Interface | Description |
 | --- | --- |
@@ -127,9 +126,9 @@ The BLDC motor object provides an alternative form of control which works as if 
 | PUB getSpeed() | Returns +/- degrees/Sec rotation rate, 0 if stopped
 
 
-### BlocklyProp CR Servo control form
+### BlocklyProp: CR Servo control API
 
-The BLDC motor object provides an alternative form of control which works as if you are controlling a Continuous Rotation (CR) Servo.
+BlocklyProp also provides control for a Continuous Rotation (CR) Servo.
 
 | CR Servo-like Interface | Description |
 | --- | --- |
