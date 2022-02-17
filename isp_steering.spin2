@@ -10,6 +10,34 @@
 ''   Updated.... 9 Feb 2022
 ''
 '' =================================================================================================
+CON { forward our interface constants }
+
+  ' board connection Enum
+    PINS_P0_P15     = ltWheel.PINS_P0_P15
+    PINS_P16_P31    = ltWheel.PINS_P16_P31
+    PINS_P32_P47    = ltWheel.PINS_P32_P47
+    PINS_P48_P63    = ltWheel.PINS_P48_P63
+
+  ' Driver Distance-Units Enum
+    DDU_Unknown     = ltWheel.DDU_Unknown
+    DDU_IN          = ltWheel.DDU_IN
+    DDU_MM          = ltWheel.DDU_MM
+
+  ' Driver Rotation-Units Enum
+    DRU_Unknown     = ltWheel.DRU_Unknown
+    DRU_DEGREES     = ltWheel.DRU_DEGREES
+    DRU_ROTATIONS   = ltWheel.DRU_ROTATIONS
+
+  ' Driver Time-Unit Enum
+    DTU_Unknown     = ltWheel.DTU_Unknown
+    DTU_MILLISEC    = ltWheel.DTU_MILLISEC
+    DTU_SEC         = ltWheel.DTU_SEC
+
+  ' Driver Status Enum
+    DS_Unknown      = ltWheel.DS_Unknown
+    DS_MOVING       = ltWheel.DS_MOVING
+    DS_HOLDING      = ltWheel.DS_HOLDING
+    DS_OFF          = ltWheel.DS_OFF
 
 OBJ { our Motors }
 
@@ -19,6 +47,8 @@ OBJ { our Motors }
 PUB null()
 
 '' This is not a top-level object
+
+CON { --- Subsystem Configuration --- }
 
 PUB start(leftBasePin, rightBasePin)
 
@@ -30,9 +60,123 @@ PUB start(leftBasePin, rightBasePin)
 PUB stop()
 
 '' Stop our left/right drive cogs and release allocated pins
-
   ltWheel.stop()
   rtWheel.stop()
+
+PUB setAcceleration(rate)
+'' Limit Acceleration to {rate}
+    ltWheel.setAcceleration(rate)
+    rtWheel.setAcceleration(rate)
+
+PUB setMaxSpeed(speed)
+'' 	Limit top-speed to {speed}
+    ltWheel.setMaxSpeed(speed)
+    rtWheel.setMaxSpeed(speed)
+
+PUB setMaxSpeedForDistance(speed)
+'' Limit top-speed of driveDistance() operations to {speed}
+    ltWheel.setMaxSpeedForDistance(speed)
+    rtWheel.setMaxSpeedForDistance(speed)
+
+PUB calibrate()
+'' have motor drivers determine fixed-offset constants
+    ltWheel.calibrate()
+    rtWheel.calibrate()
+
+PUB holdAtStop(bEnable)
+'' Informs the motor drivers to actively hold postiion (bEnable=true) or coast (bEnable=false) at end of motion
+    ltWheel.holdAtStop(bEnable)
+    rtWheel.holdAtStop(bEnable)
+
+PUB resetTracking()
+'' Resets the position tracking values returned by getDistance() and getRotations()
+''  Effectively: use current postion as home from now on
+    ltWheel.resetTracking()
+    rtWheel.resetTracking()
+
+CON { --- Subsystem Control --- }
+
+PUB driveDirection(power, direction) | ltPower, rtPower
+'' Control the speed and direction of your robot using the {power} and {direction} inputs.
+'' Turns both motors on at {power, [(-100) to 100]} but adjusted by {direction, [(-100) to 100]}.
+'' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
+    ' calculate effective power based on direction
+    ltPower, rtPower := calcPowerForDirection(power, direction)
+    ' now tell our motor of their own power
+    ltWheel.driveAtPower(ltPower)
+    rtWheel.driveAtPower(rtPower)
+
+PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits)
+'' Control the forward direction or rate of turn of your robot using the {leftDistance} and {rightDistance} inputs.
+'' Turn both motors on then turn them off again when either reaches the specified distance {leftDistance} or
+''  {rightDistance}, where {*distance} is in {distanceUnits} [DDU_IN or DDU_MM].
+'' AFFECTED BY: setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
+    ltWheel.driveForDistance(leftDistance, eDistanceUnits)
+    rtWheel.driveForDistance(rightDistance, eDistanceUnits)
+
+PUB driveAtPower(leftPower, rightPower)
+'' Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
+'' Turns left motor on at {leftPower} and right at {rightPower}. Where {*Power} are in the range [(-100) to 100].
+'' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
+    ltWheel.driveAtPower(leftPower)
+    rtWheel.driveAtPower(rightPower)
+
+PUB stopAfterRotation(rotationCount, eRotationUnits)
+'' Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS].
+'' USE WITH: driveDirection(), drive()
+    ltWheel.stopAfterRotation(rotationCount, eRotationUnits)
+    rtWheel.stopAfterRotation(rotationCount, eRotationUnits)
+
+PUB stopAfterDistance(distance, eDistanceUnits)
+'' Stops both motors, after either of the motors reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
+'' USE WITH: driveDirection(), drive()
+    ltWheel.stopAfterDistance(distance, eDistanceUnits)
+    rtWheel.stopAfterDistance(distance, eDistanceUnits)
+
+PUB stopAfterTime(time, eTimeUnits)
+'' Stops both motors, after either of the motors reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
+''USE WITH: driveDirection(), drive()
+    ltWheel.stopAfterTime(time, eTimeUnits)
+    rtWheel.stopAfterTime(time, eTimeUnits)
+
+PUB stopMotors()
+'' Stops both motors, killing any motion that was still in progress
+'' AFFECTED BY:holdAtStop()
+    ltWheel.stopMotor()
+    rtWheel.stopMotor()
+
+CON { --- Subsystem Status --- }
+
+PUB getDistance(eDistanceUnits) : leftDistance, rightDistance
+'' Returns the distance in {distanceUnits} [DDU_IN or DDU_MM] travelled by each motor since last reset
+    leftDistance := ltWheel.getDistance(eDistanceUnits)
+    rightDistance := rtWheel.getDistance(eDistanceUnits)
+
+PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
+'' Returns accumulated {*RotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for each of the motors.
+    leftRotationCount := ltWheel.getRotationCount(eRotationUnits)
+    rightRotationCount := rtWheel.getRotationCount(eRotationUnits)
+
+PUB getPower() : leftPower, rightPower
+'' Returns the last specified power value for each of the motors (will be zero if the motor is stopped).
+    leftPower := ltWheel.getPower()
+    rightPower := rtWheel.getPower()
+
+PUB getStatus() : eLeftStatus, eRightStatus
+'' Returns status of motor drive state for each motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
+    eLeftStatus := ltWheel.getStatus()
+    eRightStatus := rtWheel.getStatus()
+
+CON { --- PRIVATE Utility Methods --- }
+
+PRI calcPowerForDirection(power, direction) : ltPower, rtPower | bIsLeft, absPower, absDir, limitPwr, limitDir
+' determine porportional power based on direction
+    limitPwr :=  -100 #> power <# 100
+    limitDir :=  -100 #> direction <# 100
+    bIsLeft := (limitDir < 0) ? true :false
+    absDir := abs(limitDir)
+    ltPower := (bIsLeft) ? (absDir * limitPwr) / 100 : ((100 - absDir) * limitPwr) / 100
+    rtPower := (bIsLeft) ? ((100 - absDir) * limitPwr) / 100 : (absDir * limitPwr) / 100
 
 
 CON { license }
