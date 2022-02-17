@@ -11,8 +11,6 @@
 ''
 '' =================================================================================================
 
-
-
 CON { Public Interface Constants }
 
   '  ID where the P2 Eval Motor Board is plugged in (Enum)
@@ -51,15 +49,17 @@ PUB null()
 
 '' This is not a top-level object
 
-PUB start(basePin)
-'' Start our drive cog connected to our motor control pin-set
+CON { --- Subsystem Configuration --- }
 
-    pinbase := basePin
+PUB start(motorBasePin)
+'' Specify motor control board connect location for this motor
+
+    pinbase := motorBasePin
     params_ptr := @params
     motorcog := coginit(newcog, @driver, @pinbase) + 1
 
 PUB stop()
-'' Stop our drive cog and release allocated pins
+'' Stop cog and release pins assigned to this motor
 
     if motorcog
         cogstop(motorcog - 1)
@@ -68,9 +68,72 @@ PUB stop()
     ' CHIP? why clear only top 8 pins?
     pinclear(pinbase+8 addpins 7)
 
+PUB setAcceleration(rate)
+'' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
+
+PUB setMaxSpeed(speed)
+'' Limit top-speed to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
+
+PUB setMaxSpeedForDistance(speed)
+'' Limit top-speed of driveDistance() operations to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
+
+PUB calibrate()
+'' (we may need this?)
+
+PUB holdAtStop(bEnable)
+'' Informs the motor control cog to actively hold postiion (bEnable=true) or coast (bEnable=false) at end of motion
+
+PUB resetTracking()
+'' Resets the position tracking values returned by getDistance() and getRotations()
+
+CON { --- Subsystem Control --- }
+
+PUB driveForDistance(distance, distanceUnits)
+'' Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
+'' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN or DDU_MM].
+'' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
+
+PUB driveAtPower(power) | limitPwr
+'' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
+'' Turns the motor on at {power}.
+'' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
+    limitPwr :=  -100 #> power <# 100
+
+PUB stopAfterRotation(rotationCount, rotationUnits)
+'' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS].
+'' USE WITH:  driveDirection(), drive()
+
+PUB stopAfterDistance(distance, distanceUnits)
+'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
+'' USE WITH:  driveDirection(), drive()
+
+PUB stopAfterTime(time, timeUnits)
+'' Stops the motor, after {time} specified in {timeUnits} [DTU_IN_MILLISEC or DTU_IN_SEC] has elapsed.
+'' USE WITH:  driveDirection(), drive()
+
+PUB stopMotor()
+'' Stops the motor, killing any motion that was still in progress
+''  AFFECTED BY:holdAtStop()
+
+CON { --- Subsystem Status --- }
+
+PUB getDistance(distanceUnits) : distanceInUnits
+'' Returns the distance in {distanceUnits} [DDU_IN or DDU_MM] travelled by this motor since last reset
+
+PUB getRotationCount(rotationUnits) : rotationCount
+'' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for this motor.
+
+PUB getStatus() : eStatus
+'' Returns status of motor drive state for this motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
+    eStatus := DS_OFF   ' force this for now...
+
+CON { --- PRIVATE Utility Methods --- }
 
 
-PUB test() | h, j, k, motorcog
+CON { --- The Motor driver --- }
+
+PUB test() | h, k, j
+'' h, j, k, motorcog
 '' invoke start() before invoke of test()
   debug(`logic l title 'Hall Effect' pos 650 500 'Hall' 3)
 
@@ -366,11 +429,15 @@ bias        long    FRAME / 2		'PWM center-frame bias
 third       long    1 FRAC 3		'120 degrees
 numerator   long    3300 << 11		'numerator for ADC calculations
 
-adc_modes   long    p_adc_gio | p_adc   'adc modes, by state
-            long    p_adc_vio | p_adc
-            long    p_adc_1x  | p_adc
+adc_modes   long    p_adc_gio
+'' p_adc   'adc modes, by state
+            long    p_adc_vio
+'' p_adc
+            long    p_adc_1x
+'' p_adc
 
-deltas	    byte	0, 0, 0, 0, 0, 0, 0, 0	'Hall-effect-sensor position deltas from (old<<3 | new)
+deltas	    byte	0, 0, 0, 0, 0, 0, 0, 0	'Hall-effect-sensor position deltas from (old<<3
+'' new)
             byte	0, 0, 0,-1, 0, 1, 0, 0
             byte	0, 0, 0, 1, 0, 0,-1, 0
             byte	0, 1,-1, 0, 0, 0, 0, 0

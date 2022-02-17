@@ -48,7 +48,7 @@ The object **isp\_steering_2wheel.spin2** provides the following methods:
 | PUB driveAtPower(leftPower, rightPower) | Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.</br>Turns left motor on at {leftPower} and right at {rightPower}. Where {*Power} are in the range [(-100) to 100].</br>AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
 | PUB stopAfterRotation(rotationCount, rotationUnits) | Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU\_DEGREES, DRU\_ROTATIONS].</BR>USE WITH:  driveDirection(), drive()
 | PUB stopAfterDistance(distance, distanceUnits) | Stops both motors, after either of the motors reaches {distance} specified in {distanceUnits} [DDU\_IN or DDU\_MM].</br>USE WITH:  driveDirection(), drive()
-| PUB stopAfterTime(time, timeUnits) | Stops both motors, after {time} specified in {timeUnits} [DTU\_IN\_MILLSEC or DTU\_IN\_SEC] has elapsed.</br>USE WITH:  driveDirection(), drive()
+| PUB stopAfterTime(time, timeUnits) | Stops both motors, after {time} specified in {timeUnits} [DTU\_IN\_MILLISEC or DTU\_IN\_SEC] has elapsed.</br>USE WITH:  driveDirection(), drive()
 | PUB stopMotors() | Stops both motors, killing any motion that was still in progress</BR> AFFECTED BY:holdAtStop()
 |  **>--- CONFIG**
 | PUB start(leftMotorBasePin, rightMotorBasePin) | Specify motor control board connect location for each of the left and right motor control boards
@@ -60,7 +60,7 @@ The object **isp\_steering_2wheel.spin2** provides the following methods:
 | PUB holdAtStop(bEnable)| Informs the motor subsystem to actively hold postiion (bEnable=true) or coast (bEnable=false) at end of motion 
 | PUB resetTracking()| Resets the position tracking values returned by getDistance() and getRotations()
 |  **>--- STATUS**
-| PUB getDistance(distanceUnits) : distanceInUnits | Returns the distance in {distanceUnits} [DDU\_IN or DDU\_MM] travelled by each motor since last reset
+| PUB getDistance(distanceUnits) : leftDistanceInUnits, rightDistanceInUnits | Returns the distance in {distanceUnits} [DDU\_IN or DDU\_MM] travelled by each motor since last reset
 | PUB getRotationCount(rotationUnits) : leftRotationCount, rightRotationCount | Returns accumulated {*RotationCount} in {rotationUnits} [DRU\_DEGREES, DRU\_ROTATIONS], since last reset, for each of the motors.
 | PUB getPower() : leftPower, rightPower | Returns the last specified power value for each of the motors (will be zero if the motor is stopped).
 | PUB getStatus() : eLeftStatus, eRightStatus | Returns status of motor drive state for each motor: enumerated constant: DS\_MOVING, DS\_HOLDING or DS\_OFF
@@ -86,7 +86,7 @@ The object **isp\_bldc_motor.spin2** provides the following methods:
 | PUB driveAtPower(power) | Control the speed and direction of this motor using the {power, [(-100) to 100]} input.</br>Turns the motor on at {power}.</br>AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
 | PUB stopAfterRotation(rotationCount, rotationUnits) | Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU\_DEGREES, DRU\_ROTATIONS].</BR>USE WITH:  driveDirection(), drive()
 | PUB stopAfterDistance(distance, distanceUnits) | Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU\_IN or DDU\_MM].</br>USE WITH:  driveDirection(), drive()
-| PUB stopAfterTime(time, timeUnits) | Stops the motor, after {time} specified in {timeUnits} [DTU\_IN\_MILLSEC or DTU\_IN\_SEC] has elapsed.</br>USE WITH:  driveDirection(), drive()
+| PUB stopAfterTime(time, timeUnits) | Stops the motor, after {time} specified in {timeUnits} [DTU\_IN\_MILLISEC or DTU\_IN\_SEC] has elapsed.</br>USE WITH:  driveDirection(), drive()
 | PUB stopMotor() | Stops the motor, killing any motion that was still in progress</BR> AFFECTED BY:holdAtStop()
 |  **>--- CONFIG**
 | PUB start(motorBasePin) | Specify motor control board connect location for this motor
