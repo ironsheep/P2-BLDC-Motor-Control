@@ -30,9 +30,10 @@ CON { Public Interface Constants }
 
 CON { driver internal Constants}
 
-  FRAME    = 1024 * 7 / 2		'7 ADC samples make 1 PWM frame, divide by two for triangle PWM
-  OFFSET   = 40				'dead time in double-clock cycles
-  PWMLIM   = FRAME - OFFSET - 1		'PWM duty hard limit
+'  FRAME    = 1024 * 7 / 2		'7 ADC samples make 1 PWM frame, divide by two for triangle PWM
+  FRAME    = 1024 * 6 / 2		'6 ADC samples make 1 PWM frame, divide by two for triangle PWM
+  OFFSET   = 40				   ' enforced dead time in clock cycles (at 200_000_000)
+  PWMLIM   = FRAME - OFFSET		'PWM duty hard limit
 
 VAR { Data Structure for PASM Driver }
 
@@ -178,11 +179,11 @@ DAT
 '
 ' Motor Parameters
 '
-params		long					'motor-control parameters, reloaded every frame
-offset_fwd	long	20 frac 360			'96 frac 360 (Doug's motor)
-offset_rev	long	20 frac 360			'132 frac 360 (Doug's motor)
-duty_min	long	100 << 4
-duty_max	long	PWMLIM << 4
+params		long					    ' motor-control parameters, reloaded every frame
+offset_fwd	long	20 frac 360		    ' 96 frac 360 (Doug's motor)
+offset_rev	long	340 frac 360	    ' 228 frac 360 (Doug's motor)
+duty_min	long	100 << 4  #> OFFSET << 4
+duty_max	long	PWMLIM << 4 <# PWMLIM << 4
 duty_up		long	16
 duty_dn		long	4
 '
@@ -192,7 +193,7 @@ duty_dn		long	4
 	            org
 
 driver		    rdlong	x,ptra++			'get base pin
-                rdlong	params_ptr_,ptra++		'get parameters pointer
+                rdlong	params_ptr_,ptra++	'get parameters pointer
                 add	    ptra,#1*4			'point to return data, angle is at long index [-1]
 
                 or	    all_pins,x			'make all-pins variable
@@ -204,19 +205,19 @@ driver		    rdlong	x,ptra++			'get base pin
                 incmod	y,#15		wc
 	if_nc	    jmp	    #.pin
 
-                dirl	all_pins			'disable PWM and ADC pins for configuration
+                dirl	all_pins			' disable PWM and ADC pins for configuration
 
-                wrpin	adc_modes+0,adc_u_i		'set up ADC pins
+                wrpin	adc_modes+0,adc_u_i ' set up ADC pins
                 wrpin	adc_modes+0,adc_v_i
                 wrpin	adc_modes+0,adc_w_i
                 wrpin	adc_modes+0,adc_i
 
-                wxpin	#10,adc_u_i			'(#10 = 1024-clock / 11-bit conversion)
+                wxpin	#10,adc_u_i			' (#10 = 1024-clock / 11-bit conversion)
                 wxpin	#10,adc_v_i
                 wxpin	#10,adc_w_i
                 wxpin	#10,adc_i
 
-                wrpin   pwmn,pwm_u_l			'set up PWM pins
+                wrpin   pwmn,pwm_u_l		' set up PWM pins
                 wrpin   pwmt,pwm_u_h
                 wrpin   pwmn,pwm_v_l
                 wrpin   pwmt,pwm_v_h
@@ -348,25 +349,25 @@ driver		    rdlong	x,ptra++			'get base pin
                 sub     drive_v_,x
                 sub     drive_w_,x
 
-                add     drive_u_,bias			'add center-bias and dead-time offsets to update PWMs
-                add	    drive_u_,#offset
+                add     drive_u_,bias       ' add center-bias and dead-time offsets to update PWMs
+                add	    drive_u_,#OFFSET
                 wypin   drive_u_,pwm_u_l
-                sub	    drive_u_,#offset
+                sub	    drive_u_,#OFFSET
                 wypin   drive_u_,pwm_u_h
 
                 add     drive_v_,bias
-                add	    drive_v_,#offset
+                add	    drive_v_,#OFFSET
                 wypin   drive_v_,pwm_v_l
-                sub	    drive_v_,#offset
+                sub	    drive_v_,#OFFSET
                 wypin   drive_v_,pwm_v_h
 
                 add     drive_w_,bias
-                add	    drive_w_,#offset
+                add	    drive_w_,#OFFSET
                 wypin   drive_w_,pwm_w_l
-                sub	    drive_w_,#offset
+                sub	    drive_w_,#OFFSET
                 wypin   drive_w_,pwm_w_h
 
-                call	#.next				'allow ADC rest period
+'                call	#.next				'allow ADC rest period (uncomment if 7 vs. 6)
 
                 testp	hall_w		wc		'read hall effect sensor
                 rcl	    hall_,#1
@@ -383,17 +384,18 @@ driver		    rdlong	x,ptra++			'get base pin
                 setq	#6-1				'load fresh parameter table
                 rdlong	params_ptr_+1,params_ptr_
 
+' verify the following code (3 lines)
                 cmpm	angle_,angle2	wcz		'if angle has changed, forward or reverse?
 	if_nz	    wrc	    fwdrev
                 mov     angle2,angle_
 
-                testb	fwdrev,#0	wc
+                testb	fwdrev,#0	wc      'determine error
                 bitc	hall_,#3
-                and     hall_,#%1111			'determine error
+                and     hall_,#%1111
                 alts	hall_,#hall_angles
                 mov     err_,0-0
     if_c        add	    err_,offset_fwd_
-    if_nc       sub	    err_,offset_rev_
+    if_nc       add	    err_,offset_rev_
                 subr	err_,angle_
                 sar	    err_,#24
                 bitl	hall_,#3
@@ -436,7 +438,7 @@ adc_modes   long    p_adc_gio
             long    p_adc_1x
 '' p_adc
 
-deltas	    byte	0, 0, 0, 0, 0, 0, 0, 0	'Hall-effect-sensor position deltas from (old<<3
+deltas	    byte	0, 0, 0, 0, 0, 0, 0, 0	'Hall-effect-sensor position deltas from (old<<3)
 '' new)
             byte	0, 0, 0,-1, 0, 1, 0, 0
             byte	0, 0, 0, 1, 0, 0,-1, 0
