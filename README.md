@@ -29,6 +29,8 @@ This is a project supporting our P2 Development Community. Please feel free to c
 
 1. [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
 
+1. [Drawing File (.dwg)](DOCs/Drawings/EdgeMiniRoundV1.dwg) I sent this off to be make by [SendCutSend.com](https://sendcutsend.com/) - I spec'd 0.375" MDF as the material. at ~$32 USD it's a pretty good deal. 
+
 ---
 
 > If you like my work and/or this has helped you in some way then feel free to help me out for a couple of :coffee:'s or :pizza: slices!
