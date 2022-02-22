@@ -14,7 +14,7 @@
 CON { Public Interface Constants }
 
   '  ID where the P2 Eval Motor Board is plugged in (Enum)
-  #0[16], PINS_P0_P15, PINS_P16_P31, PINS_P32_P47, PINS_P48_P63
+  #0[16], PINS_P0_P15, PINS_P16_P31, PINS_P32_P47
 
   ' Driver Distance-Units Enum
   #0, DDU_Unknown, DDU_IN, DDU_MM
@@ -35,7 +35,7 @@ CON { driver internal Constants}
   PWMLIM   = FRAME - OFFSET     'PWM duty hard limit
 
 VAR { Data Structure for PASM Driver }
-
+  ' remember these are zeroed at run time
   long  motorcog                            ' record the ID of cog we start
 
   long  pinbase                             ' 1 long                must set initially
@@ -54,22 +54,24 @@ CON { --- Subsystem Configuration --- }
 
   INVALID_PIN_BASE = -1
 
-PUB start(motorBasePin) | legalBase
+PUB start(motorBasePin) : ok | legalBase
 '' Specify motor control board connect location for this motor
   legalBase := motorBasePin
+  ' ensure we only use legal values
   CASE motorBasePin
     PINS_P0_P15 :
     PINS_P16_P31 :
     PINS_P32_P47 :
-    PINS_P48_P63 :
-      legalBase := motorBasePin
     OTHER :
         legalBase := INVALID_PIN_BASE
 
+  ' if legal base-pin then start cog
   if legalBase <> INVALID_PIN_BASE
-    pinbase := motorBasePin
-    params_ptr := @params
+    pinbase := motorBasePin     ' record base pin number
+    params_ptr := @params       ' point to driver variables
+
     motorcog := coginit(newcog, @driver, @pinbase) + 1
+    ok := (motorcog <> 0) ? true : false
 
 PUB stop()
 '' Stop cog and release pins assigned to this motor
@@ -80,6 +82,7 @@ PUB stop()
 
     ' Bottom 8 pins are sensed, top 8 are driven, so clear only the top 8
     pinclear(pinbase+8 addpins 7)
+
 
 PUB setAcceleration(rate)
 '' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
@@ -140,10 +143,13 @@ PUB getStatus() : eStatus
 '' Returns status of motor drive state for this motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
     eStatus := DS_OFF   ' force this for now...
 
+
 CON { --- PRIVATE Utility Methods --- }
 
 
 CON { --- The Motor driver --- }
+
+  STABILIZE_LOOP_CT = 2000
 
 PUB testMotor() | h, k, j, tmpPtr
 '' invoke start() before invoke of testMotor()
@@ -151,9 +157,9 @@ PUB testMotor() | h, k, j, tmpPtr
 
   debug(`term t title 'Status' pos 650 650 size 30 1 textsize 20 update)
 
-  debug(`term v title 'VARs' pos 650 30 size 70 5 textsize 12 update)
-  tmpPtr := @params
-  debug(`v '`uhex_long(params_ptr) `uhex_long(tmpPtr)' update)
+  'debug(`term v title 'VARs' pos 650 30 size 70 5 textsize 12 update)
+  'tmpPtr := @params
+  'debug(`v '`uhex_long(params_ptr) `uhex_long(tmpPtr)' update)
 
   debug(`scope r title 'Duty and Error' pos 363 439 size 256 256 samples 256 rate 50)
   debug(`r 'Duty' 0 `(PWMLIM<<4) 256 0)
@@ -178,19 +184,21 @@ PUB testMotor() | h, k, j, tmpPtr
     debug(`r `sdec_(duty, err))
     debug(`s `sdec_long_array_(@drive_u,3) `sdec_long_array_(@sense_u,4))
 
+    'angle += 10_000_000 'qsin(1<<28, k += 100000, 0)		'update angle to turn motor
     angle += qsin(1<<28, k += 100000, 0)        'update angle to turn motor
 
-    if j++ < 2000                   'if fault, shut down
+    if j++ < STABILIZE_LOOP_CT                   'if fault, shut down
       fault~
-    if fault and j > 2000
+    if fault and j > STABILIZE_LOOP_CT
       debug(`t 0 'FAULT' update)
       stop()
       repeat    ' and lock here!
 
-    waitus(500)                     'wait to create time base
+    waitus(1000)                     'wait to create time base (500 faults motor w/angle)
 
-DAT  {  Motor Parameters, Driver  }
+DAT  {  DRIVER w/Motor Parameters  }
 '
+
 params      long                        ' motor-control parameters, reloaded every frame
 offset_fwd  long    20 frac 360         ' 96 frac 360 (Doug's motor)
 offset_rev  long    340 frac 360        ' 228 frac 360 (Doug's motor)
@@ -250,7 +258,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 dirl    hall_w
 
                 mov     duty_, #0                   ' reset duty
-
+                mov     pos_, #0                    ' reset pos
 
 .loop           call    #.next                      ' allow ADC rest period
 
@@ -385,11 +393,11 @@ driver          rdlong  x, ptra++                   ' get base pin
                 rcl     hall_, #1
                 testp   hall_u      wc
                 rcl     hall_, #1
-                and     hall_, #%111_111
-                altgb   hall_, #deltas
+                and     hall_, #%111_111            ' (old << 3 | new) [ooo:nnn]
+                altgb   hall_, #deltas              ' load byte deltas[hall_] -> [-1, 0, 1]
                 getbyte x
-                signx   x, #7
-                add     pos_, x
+                signx   x, #7                       ' sign-extend bit7
+                add     pos_, x                     ' add to current pos_
 
                 setq    #6-1                        ' load fresh parameter table
                 rdlong  params_ptr_+1, params_ptr_
@@ -445,7 +453,7 @@ adc_modes   long    p_adc_gio | p_adc       ' adc modes, by state
             long    p_adc_vio | p_adc
             long    p_adc_1x  | p_adc
 
-deltas      byte    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3) | new)
+deltas      byte    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3 | new)
             byte    0, 0, 0,-1, 0, 1, 0, 0
             byte    0, 0, 0, 1, 0, 0,-1, 0
             byte    0, 1,-1, 0, 0, 0, 0, 0
