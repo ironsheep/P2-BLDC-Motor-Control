@@ -28,6 +28,15 @@ CON { Public Interface Constants }
   ' Driver Status Enum
   #0, DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF
 
+CON { test pins for LA measurement }
+
+  ' PIN_8 - PIN_15
+  TEST_BASE_PIN = 8
+  TEST_ALL_PINS = TEST_BASE_PIN addpins 7
+  TEST_PIN_OUTER_LOOP = 8
+  TEST_PIN_SENSE_LOOP = 9
+
+
 CON { driver internal Constants}
 
   FRAME    = 1024 * 6 / 2       '6 ADC samples make 1 PWM frame, divide by two for triangle PWM
@@ -36,18 +45,29 @@ CON { driver internal Constants}
 
 VAR { Data Structure for PASM Driver }
   ' remember these are zeroed at run time
-  long  motorCog                            ' record the ID of cog we start
-  long  senseCog                            ' record the ID of cog we start
-  long  rpmIn10ths
-  long  cntsInSec
+    long    motorCog                            ' record ID of cog we start (0 = not started)
+    long    senseCog                            ' record ID of cog we start (0 = not started)
 
-  long  pinbase                             ' 1 long                must set initially
-  long  params_ptr                          ' 1 long                must set initially
-  long  angle                               ' 1 long                must set continually
-  long  drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
-  long  sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
-  long  hall, pos, duty, err                ' 4 sequential longs    returns data continually
-  long  fault                               ' 1 sequential long     written to 1 on fault
+    long    pinbase                             ' 1 long                must set initially
+    long    params_ptr                          ' 1 long                must set initially
+    long    angle                               ' 1 long                must set continually
+    ' 12 longs come from driver, 13th fault also from driver but only when happens
+    long    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
+    long    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
+    long    hall, pos, duty, err                ' 4 sequential longs    returns data continually
+    long    loop_ticks                          ' 1 sequential long     returns loop duration in ticks continually
+    long    fault                               ' 1 sequential long     written to 1 on fault
+
+DAT
+    msTicks     long    0
+    ticks125ms  long    0                     ' time constants based on CPU freq
+    ticks500us  long    0                     '
+    ticks750us  long    0                     '
+    ticks800us  long    0                     '
+    ticks1ms    long    0                     '
+
+    maxDrvTics  long    0                     ' accumulators for study of driver
+    minDrvTics  long    65535                 '
 
 PUB null()
 
@@ -59,26 +79,35 @@ CON { --- Subsystem Configuration --- }
 
 PUB start(motorBasePin) : ok | legalBase
 '' Specify motor control board connect location for this motor
-  legalBase := motorBasePin
-  ' ensure we only use legal values
-  CASE motorBasePin
-    PINS_P0_P15 :
-    PINS_P16_P31 :
-    PINS_P32_P47 :
-    OTHER :
-        legalBase := INVALID_PIN_BASE
+' setup runtime constants
+        ticks125ms := (CLKFREQ / 1_000) * 125
+        ticks500us := (CLKFREQ / 1_000_000) * 500
+        ticks750us := (CLKFREQ / 1_000_000) * 750
+        ticks800us := (CLKFREQ / 1_000_000) * 800
+        msTicks := ticks1ms := (CLKFREQ / 1_000)
 
-  ' if legal base-pin then start cog
-  if legalBase <> INVALID_PIN_BASE
-    pinbase := motorBasePin     ' record base pin number
-    params_ptr := @params       ' point to driver variables
+        loop_ticks := 0
 
-    motorCog := coginit(newcog, @driver, @pinbase) + 1
-    ok := (motorCog <> 0) ? true : false
+    ' ensure we only use legal values
+    legalBase := motorBasePin
+    CASE motorBasePin
+        PINS_P0_P15 :
+        PINS_P16_P31 :
+        PINS_P32_P47 :
+        OTHER :
+            legalBase := INVALID_PIN_BASE
 
-    senseCog := cogspin(newcog, taskPostionSense(), @taskStack)
-    if senseCog == -1    ' did fail?
+    ' if legal base-pin then start cog
+    if legalBase <> INVALID_PIN_BASE
+        pinbase := motorBasePin     ' record base pin number
+        params_ptr := @params       ' point to driver variables
+        ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
+
+PUB startSenseCog() : ok
+    ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
+    if senseCog == 0    ' did fail?
         debug("!! ERROR filed to start Position Sense task")
+    ok := senseCog
 
 PUB stop()
 '' Stop cog and release pins assigned to this motor
@@ -152,89 +181,171 @@ PUB getStatus() : eStatus
 
 
 CON { --- PRIVATE Utility Methods --- }
+DAT { debug vars }
 
+    maxRpm  long    0               ' tracking max for debug out reasons
 
 CON { --- The Motor driver --- }
 
   STABILIZE_LOOP_CT = 2000
 
-PUB testMotor() | priorHall, angleIncr, faultHoldoffCtr
+PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoopCount, increment, decrement, angleTarget, bStartingUp, loopCtr
 '' invoke start() before invoke of testMotor()
-  debug(`logic l title 'Hall Effect' pos 650 500 'Hall' 3)
+    debug(`logic l title 'Hall Effect' pos 25 440 'Hall' 3)
 
-  debug(`term t title 'Status' pos 650 650 size 30 1 textsize 20 update)
+    debug(`term t title 'Status' pos 650 650 size 30 1 textsize 20 update)
 
-  debug(`term v title 'Distance/Speed' pos 650 30 size 70 5 textsize 12 update)
+    debug(`term v title 'Distance/Speed' pos 650 30 size 70 5 textsize 12 update)
 
-  debug(`term i title 'Instrument' pos 650 165 size 70 5 textsize 12 update)
+    debug(`term c title 'Calcs' pos 650 294 size 70 5 textsize 12 update)
 
-  debug(`scope r title 'Duty and Error' pos 363 439 size 256 256 samples 256 rate 50)
-  debug(`r 'Duty' 0 `(PWMLIM<<4) 256 0)
-  debug(`r 'Error' -128 128 256 0 15)
+    debug(`term i title 'Instrument' pos 650 165 size 70 5 textsize 12 update)
 
-  debug(`scope s title 'Voltages' pos 105 60 size 512 300 samples 256 rate 256)
-  debug(`s 'U' 0 `(FRAME) 128 170)
-  debug(`s 'V' 0 `(FRAME) 128 170)
-  debug(`s 'W' 0 `(FRAME) 128 170)
-  debug(`s 'Iu' 0 2000 128 70)
-  debug(`s 'Iv' 0 2000 128 70)
-  debug(`s 'Iw' 0 2000 128 70)
-  debug(`s 'P' 0 100 128 10)
+    debug(`scope r title 'Duty and Error' pos 363 439 size 256 256 samples 256 rate 50)
+    debug(`r 'Duty' 0 `(PWMLIM<<4) 256 0)
+    debug(`r 'Error' -128 128 256 0 15)
 
-  repeat
+    debug(`scope s title 'Voltages' pos 105 60 size 512 300 samples 256 rate 256)
+    debug(`s 'U' 0 `(FRAME) 128 170)
+    debug(`s 'V' 0 `(FRAME) 128 170)
+    debug(`s 'W' 0 `(FRAME) 128 170)
+    debug(`s 'Iu' 0 2000 128 70)
+    debug(`s 'Iv' 0 2000 128 70)
+    debug(`s 'Iw' 0 2000 128 70)
+    debug(`s 'P' 0 100 128 10)
+    pintoggle(TEST_ALL_PINS)
+    pintoggle(TEST_ALL_PINS)
+    pintoggle(TEST_ALL_PINS)
+    pinlow(TEST_ALL_PINS)
 
-    if hall <> priorHall                    'if hall effect changed, update logic display
-      debug(`l `ubin_byte_(hall))
-      priorHall := hall
+    bStartingUp := true
+    angleTarget := 210_000_000
+    increment := 50_000
+    decrement := 50_000
+    angleIncrement := 0
 
-    debug(`t 0 '`sdec(duty, pos)' update)       'update terminal and scope displays
-    debug(`r `sdec_(duty, err))
-    debug(`s `sdec_long_array_(@drive_u,3) `sdec_long_array_(@sense_u,4))
-    debug(`v 0 'cnts=`udec_(cntsInSec) rpm=`udec_(rpm).`udec_(rpmTenths)' update)       'update speed/distance display
+    'runLoopCount := 20_000 ' count of 1 ms loops (20 seconds)
+    'runLoopCount := 30_000 ' count of 1 ms loops (30 seconds)
+    runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
 
-    'angle += 10_000_000                                'update angle to turn motor
-    angle += qsin(1<<28, angleIncr += 100000, 0)        'update angle to turn motor
 
-    if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
-      fault~
-    if fault and faultHoldoffCtr > STABILIZE_LOOP_CT    ' if fault, shut down
-      debug(`t 0 'FAULT' update)
-      stop()
-      repeat    ' and lock here!
+    'repeat
 
-    waitus(500)    ' wait to create time base (500 faults motor w/angle!!)
+    repeat
+        loopCtr++
+        pintoggle(TEST_PIN_OUTER_LOOP)
+        pintoggle(TEST_PIN_OUTER_LOOP)
+
+        startTicks := getct()
+
+        if runLoopCount > 0 && bStartingUp == false
+            runLoopCount--
+            if runLoopCount +// 1000 == 0
+                debug(`i 0 'calc lpCt=`udec_(runLoopCount)' update)
+
+        if hall <> priorHall                    'if hall effect changed, update logic display
+            debug(`l `ubin_byte_(hall))
+            priorHall := hall
+
+        debug(`t 0 '`sdec(duty, pos)' update)       'update terminal and scope displays
+        debug(`r `sdec_(duty, err))
+        debug(`s `sdec_long_array_(@drive_u,3) `sdec_long_array_(@sense_u,4))
+        maxDrvTics := loop_ticks > maxDrvTics ? loop_ticks : maxDrvTics
+        minDrvTics := loop_ticks > 10 && loop_ticks < minDrvTics  ? loop_ticks : minDrvTics
+        if rpm > maxRpm
+            maxRpm := rpm
+            debug(`v 0 'cnts=`udec_(cntsInSec) rpm=`udec_(rpm).`udec_(rpmTenths) drvCt=`udec_(loop_ticks) [`sdec_(minDrvTics) - `udec_(maxDrvTics)]' update)       'update speed/distance display
+
+        '  ---------------------------------------------------------------
+        '  increment the angle for 30 seconds, then slow-down, stop motor
+        '  ---------------------------------------------------------------
+        ' ramp down to ZERO at end
+        if runLoopCount == 0
+            if angleIncrement > decrement
+                angleIncrement -= decrement
+            elseif angleIncrement <= decrement
+                angleIncrement := 0
+            'debug(`i 0 'calc lpCt=`udec_(runLoopCount), incr=`udec_(angleIncrement), decr=`udec_(decrement)' update)
+
+        ' ramp up to TARGET
+        if bStartingUp
+            ' every N iterations increment ramp
+            if loopCtr +// 4 == 0
+                if angleIncrement <> angleTarget
+                    angleIncrement += increment
+                    if angleIncrement > angleTarget
+                        angleIncrement := angleTarget
+                else
+                    bStartingUp := false    ' done starting...
+            'debug(`i 0 'calc lpct=`udec_(runLoopCount), incr=`udec_(angleIncrement), decr=`udec_(angleTarget)' update)
+
+        angle += 10_000_000                                'update angle to turn motor
+        'angle += angleIncrement                                'update angle to turn motor
+        'angle += qsin(1<<28, angleIncrement += 90_000, 0)        'update angle to turn motor
+
+        if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
+            fault~
+        if fault and faultHoldoffCtr > STABILIZE_LOOP_CT and 0   ' if fault, shut down
+            debug(`t 0 'FAULT' update)
+            stop()
+            repeat    ' and lock here!
+
+        'waitus(1000)
+        waitct(startTicks + ticks1ms)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
 
 CON { TASK position tracking }
 
   STACK_SIZE_LONGS = 48
+  WINDOW_SIZE = 5
 
 DAT
+    countsWindow    long    0[WINDOW_SIZE]
     taskStack       long    0[STACK_SIZE_LONGS]
 
-PRI taskPostionSense()
-  msTicks := clkfreq / 1_000
-'  usTicks := clkfreq / 1_000_000
+PRI taskPostionSense() | senseStartTicks
+' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
 
-  repeat
-    preTicks := getct()
-    cntsInSec := distanceIn90ths(pos) * 8
-    rpmIn10ths := (cntsInSec * 60) / 9
-    rpm := rpmIn10ths / 10
-    rpmTenths := rpmIn10ths // 10
-    'deltaTicks := getct() - preTicks
-    'debug(`i 0 'tic Delta=`udec_(deltaTicks), ms=`udec_(msTicks), us=`udec_(usTicks)' update)
-    ' wait until next 250msec period
-    WAITCT(preTicks + (msTicks * 125))    ' wait to create sense time base
+    longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
+
+    repeat
+        senseStartTicks := getct()
+        pintoggle(TEST_PIN_SENSE_LOOP)
+        pintoggle(TEST_PIN_SENSE_LOOP)
+
+        newCntsInSec := distanceIn90ths(pos)            ' Read the next sensor value
+        windowSum -= long[@countsWindow][winIndex]          ' Remove the oldest entry from the sum
+        long [@countsWindow][winIndex] := newCntsInSec      ' place the newest reading into the window
+        windowSum += newCntsInSec                           ' Add the newest reading to the sum
+        winIndex := (winIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
+        if winEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
+            winEntryCt ++
+
+        cntsInSec := (windowSum / winEntryCt) * 8                 ' moving average, scaled
+        'debug(`i 0 'calc new=`udec_(newCntsInSec), sum=`udec_(windowSum), idx=`udec_(winIndex), ct=`udec_(winEntryCt), avg=`udec_(cntsInSec)' update)
+        rpmIn10ths := (cntsInSec * 60) / 9
+        rpm := rpmIn10ths / 10
+        rpmTenths := rpmIn10ths +// 10
+
+        'deltaTicks := getct() - senseStartTicks
+        'debug(`i 0 'tic Delta=`udec_(deltaTicks), ms=`udec_(msTicks)' update)
+
+        ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
+        '   wait remainder of 125 mSec before next sample
+        waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
 
 VAR { misc. vars }
 
  '   long usTicks
-    long msTicks
-    long preTicks
-    long deltaTicks
-    long priorPos
-    long rpm
-    long rpmTenths
+    long    winIndex
+    long    winEntryCt
+    long    rpmIn10ths
+    long    newCntsInSec
+    long    windowSum
+    long    cntsInSec
+    long    deltaTicks
+    long    priorPos
+    long    rpm
+    long    rpmTenths
 
 PRI distanceIn90ths(newPos) : n90ths
     if newPos == priorPos
@@ -258,7 +369,7 @@ PRI distanceIn90ths(newPos) : n90ths
             ' 9 -> 6 = 6 - 9 = abs(-3) = 3
             ' 9 -> 12 = 12 - 9 = abs(3) = 3
             n90ths := abs(newPos - priorPos)
-    'debug(`v 'pri=`sdec_(priorPos) pos=`sdec_(newPos) dist=`udec_(n90ths)' 13 10 update)       'update speed/distance display
+    'debug(`c 'pri=`sdec_(priorPos) pos=`sdec_(newPos) dist=`udec_(n90ths)' 13 10 update)       'update speed/distance display
     priorPos := newPos
 
 
@@ -325,8 +436,10 @@ driver          rdlong  x, ptra++                   ' get base pin
 
                 mov     duty_, #0                   ' reset duty
                 mov     pos_, #0                    ' reset pos
+                mov     loop_ticks_, #0             ' just in case
 
-.loop           call    #.next                      ' allow ADC rest period
+.loop           getct   drvrSrtTicks
+                call    #.next                      ' allow ADC rest period
 
                 rdpin   vio_levels+0, adc_u_i       ' VIO samples done, read them
                 rdpin   vio_levels+1, adc_v_i
@@ -486,7 +599,7 @@ driver          rdlong  x, ptra++                   ' get base pin
 
                 abs     x, err_                     ' fault?
                 cmp     x, #125     wc
-    if_nc       wrlong  #1, ptra[11]
+    if_nc       wrlong  #1, ptra[12]
                 sub     x, #256/6   wc              ' modulate duty
     if_nc       muls    x, duty_up_
     if_c        muls    x, duty_dn_
@@ -495,9 +608,17 @@ driver          rdlong  x, ptra++                   ' get base pin
                 fles    duty_, duty_max_            ' keep duty within limits
                 fges    duty_, duty_min_
 
-                setq    #11-1                       ' write drive[3]/sense[4]/hall/pos/duty/err to hub
+                getct   loop_ticks_                 ' how long was this iteration? send to host
+                sub     loop_ticks_, drvrSrtTicks
+
+                setq    #12-1                       ' write drive[3]/sense[4]/hall/pos/duty/err/drvTics to hub
                 wrlong  drive_u_, ptra
 
+                ' wait for end of 150 ticks to pass (since start of loop)
+                '  fixing loop run-time to 150 ticks @200MHz clock (750nS / 1.33 MHz)
+                mov     drvrEndTicks, drvrSrtTicks
+                addct1  drvrEndTicks, #150
+                waitct1
                 jmp     #.loop                      ' main loop
 
 
@@ -549,6 +670,9 @@ hall_angles long    0           ' forward-direction table
 x           res     1           ' miscellaneous
 y           res     1
 
+drvrSrtTicks res 1
+drvrEndTicks res 1
+
 angle_      res 1
 angle2      res 1
 fwdrev      res 1
@@ -582,7 +706,7 @@ duty_max_   res 1
 duty_up_    res 1
 duty_dn_    res 1
 
-drive_u_    res 1               '   11 contiguous longs for return data structure
+drive_u_    res 1               '   12 contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -593,7 +717,7 @@ hall_       res 1
 pos_        res 1
 duty_       res 1
 err_        res 1
-
+loop_ticks_ res 1
 
 CON { license }
 {{
