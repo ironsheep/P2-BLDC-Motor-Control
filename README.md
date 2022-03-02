@@ -34,10 +34,11 @@ This is a project supporting our P2 Development Community. Please feel free to c
 These are the various design files I sent off to be make by [SendCutSend.com](https://sendcutsend.com/) - their prices are quite good!:
 
 1. [Drawing File - outboard wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV1.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
-
+![File w/Outboard Wheels](images/EdgeMiniRoundV1-dwg.png)
 1. [Drawing File - enclosed wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV2_encl.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
-
-1. [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD. 
+![File w/Enclosed Wheels](images/EdgeMiniRoundV2_encl-dwg.png)
+1. [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
+![Spacer](images/SpacerV1.png)
 
 ![Opened Package](images/EdgeMiniRoundV1.jpg)
 **The Package arrived with these contents..**  This was quite well packaged. The MDF part was shrink-wrapped to the backing cardboard. The laser cuts were all clean with a little bit of scorch mark on one side of the MDF as you might expect. *And yes, the Skittles package made me smile!*
