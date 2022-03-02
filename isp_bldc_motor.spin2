@@ -14,7 +14,7 @@
 CON { Public Interface Constants }
 
   '  ID where the P2 Eval Motor Board is plugged in (Enum)
-  #0[16], PINS_P0_P15, PINS_P16_P31, PINS_P32_P47, PINS_P48_P63
+  #0[16], PINS_P0_P15, PINS_P16_P31, PINS_P32_P47
 
   ' Driver Distance-Units Enum
   #0, DDU_Unknown, DDU_IN, DDU_MM
@@ -28,23 +28,46 @@ CON { Public Interface Constants }
   ' Driver Status Enum
   #0, DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF
 
+CON { test pins for LA measurement }
+
+  ' PIN_8 - PIN_15
+  TEST_BASE_PIN = 8
+  TEST_ALL_PINS = TEST_BASE_PIN addpins 7
+  TEST_PIN_OUTER_LOOP = 8
+  TEST_PIN_SENSE_LOOP = 9
+
+
 CON { driver internal Constants}
 
-'  FRAME    = 1024 * 7 / 2		'7 ADC samples make 1 PWM frame, divide by two for triangle PWM
-  FRAME    = 1024 * 6 / 2		'6 ADC samples make 1 PWM frame, divide by two for triangle PWM
-  OFFSET   = 40				   ' enforced dead time in clock cycles (at 200_000_000)
-  PWMLIM   = FRAME - OFFSET		'PWM duty hard limit
+  FRAME    = 1024 * 6 / 2       '6 ADC samples make 1 PWM frame, divide by two for triangle PWM
+  OFFSET   = 40                ' enforced dead time in clock cycles (at 200_000_000)
+  PWMLIM   = FRAME - OFFSET     'PWM duty hard limit
 
 VAR { Data Structure for PASM Driver }
+  ' remember these are zeroed at run time
+    long    motorCog                            ' record ID of cog we start (0 = not started)
+    long    senseCog                            ' record ID of cog we start (0 = not started)
 
-  long  pinbase					'1 long			must set initially
-  long  params_ptr				'1 long			must set initially
-  long  angle					'1 long			must set continually
-  long  drive_u, drive_v, drive_w		'3 sequential longs	returns data continually
-  long  sense_u, sense_v, sense_w, sense_i	'4 sequential longs	returns data continually
-  long  hall, pos, duty, err			'4 sequential longs	returns data continually
-  long  fault					'1 sequential long	written to 1 on fault
-  long  motorcog                ' record the ID of cog we started
+    long    pinbase                             ' 1 long                must set initially
+    long    params_ptr                          ' 1 long                must set initially
+    long    angle                               ' 1 long                must set continually
+    ' 12 longs come from driver, 13th fault also from driver but only when happens
+    long    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
+    long    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
+    long    hall, pos, duty, err                ' 4 sequential longs    returns data continually
+    long    loop_ticks                          ' 1 sequential long     returns loop duration in ticks continually
+    long    fault                               ' 1 sequential long     written to 1 on fault
+
+DAT
+    msTicks     long    0
+    ticks125ms  long    0                     ' time constants based on CPU freq
+    ticks500us  long    0                     '
+    ticks750us  long    0                     '
+    ticks800us  long    0                     '
+    ticks1ms    long    0                     '
+
+    maxDrvTics  long    0                     ' accumulators for study of driver
+    minDrvTics  long    65535                 '
 
 PUB null()
 
@@ -52,22 +75,50 @@ PUB null()
 
 CON { --- Subsystem Configuration --- }
 
-PUB start(motorBasePin)
-'' Specify motor control board connect location for this motor
+  INVALID_PIN_BASE = -1
 
-    pinbase := motorBasePin
-    params_ptr := @params
-    motorcog := coginit(newcog, @driver, @pinbase) + 1
+PUB start(motorBasePin) : ok | legalBase
+'' Specify motor control board connect location for this motor
+' setup runtime constants
+        ticks125ms := (CLKFREQ / 1_000) * 125
+        ticks500us := (CLKFREQ / 1_000_000) * 500
+        ticks750us := (CLKFREQ / 1_000_000) * 750
+        ticks800us := (CLKFREQ / 1_000_000) * 800
+        msTicks := ticks1ms := (CLKFREQ / 1_000)
+
+        loop_ticks := 0
+
+    ' ensure we only use legal values
+    legalBase := motorBasePin
+    CASE motorBasePin
+        PINS_P0_P15 :
+        PINS_P16_P31 :
+        PINS_P32_P47 :
+        OTHER :
+            legalBase := INVALID_PIN_BASE
+
+    ' if legal base-pin then start cog
+    if legalBase <> INVALID_PIN_BASE
+        pinbase := motorBasePin     ' record base pin number
+        params_ptr := @params       ' point to driver variables
+        ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
+
+PUB startSenseCog() : ok
+    ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
+    if senseCog == 0    ' did fail?
+        debug("!! ERROR filed to start Position Sense task")
+    ok := senseCog
 
 PUB stop()
 '' Stop cog and release pins assigned to this motor
 
-    if motorcog
-        cogstop(motorcog - 1)
-        motorcog := 0
+    if motorCog
+        cogstop(motorCog - 1)
+        motorCog := 0
 
-    ' CHIP? why clear only top 8 pins?
+    ' Bottom 8 pins are sensed, top 8 are driven, so clear only the top 8
     pinclear(pinbase+8 addpins 7)
+
 
 PUB setAcceleration(rate)
 '' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
@@ -128,393 +179,546 @@ PUB getStatus() : eStatus
 '' Returns status of motor drive state for this motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
     eStatus := DS_OFF   ' force this for now...
 
-CON { --- PRIVATE Utility Methods --- }
 
+CON { --- PRIVATE Utility Methods --- }
+DAT { debug vars }
+
+    maxRpm  long    0               ' tracking max for debug out reasons
 
 CON { --- The Motor driver --- }
 
-PUB test() | h, k, j
-'' h, j, k, motorcog
-'' invoke start() before invoke of test()
-  debug(`logic l title 'Hall Effect' pos 650 500 'Hall' 3)
+  STABILIZE_LOOP_CT = 2000
 
-  debug(`term t title 'Status' pos 650 650 size 30 1 textsize 20 update)
+PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoopCount, increment, decrement, angleTarget, bStartingUp, loopCtr
+'' invoke start() before invoke of testMotor()
+    debug(`logic l title 'Hall Effect' pos 25 440 'Hall' 3)
 
-  debug(`scope r title 'Duty and Error' pos 100 900 size 256 256 samples 256 rate 50)
-  debug(`r 'Duty' 0 `(PWMLIM<<4) 256 0)
-  debug(`r 'Error' -128 128 256 0 15)
+    debug(`term t title 'Status' pos 650 650 size 30 1 textsize 20 update)
 
-  debug(`scope s title 'Voltages' pos 100 500 size 512 300 samples 256 rate 256)
-  debug(`s 'U' 0 `(FRAME) 128 170)
-  debug(`s 'V' 0 `(FRAME) 128 170)
-  debug(`s 'W' 0 `(FRAME) 128 170)
-  debug(`s 'Iu' 0 2000 128 70)
-  debug(`s 'Iv' 0 2000 128 70)
-  debug(`s 'Iw' 0 2000 128 70)
-  debug(`s 'P' 0 100 128 10)
+    debug(`term v title 'Distance/Speed' pos 650 30 size 70 5 textsize 12 update)
 
-  repeat
+    debug(`term c title 'Calcs' pos 650 294 size 70 5 textsize 12 update)
 
-    if hall <> h					'if hall effect changed, update logic display
-      debug(`l `ubin_byte_(hall))
-      h := hall
+    debug(`term i title 'Instrument' pos 650 165 size 70 5 textsize 12 update)
 
-    debug(`t 0 '`sdec(duty, pos)' update)		'update terminal and scope displays
-    debug(`r `sdec_(duty, err))
-    debug(`s `sdec_long_array_(@drive_u,3) `sdec_long_array_(@sense_u,4))
+    debug(`scope r title 'Duty and Error' pos 363 439 size 256 256 samples 256 rate 50)
+    debug(`r 'Duty' 0 `(PWMLIM<<4) 256 0)
+    debug(`r 'Error' -128 128 256 0 15)
 
-    angle += qsin(1<<28, k += 100000, 0)		'update angle to turn motor
+    debug(`scope s title 'Voltages' pos 105 60 size 512 300 samples 256 rate 256)
+    debug(`s 'U' 0 `(FRAME) 128 170)
+    debug(`s 'V' 0 `(FRAME) 128 170)
+    debug(`s 'W' 0 `(FRAME) 128 170)
+    debug(`s 'Iu' 0 2000 128 70)
+    debug(`s 'Iv' 0 2000 128 70)
+    debug(`s 'Iw' 0 2000 128 70)
+    debug(`s 'P' 0 100 128 10)
+    pintoggle(TEST_ALL_PINS)
+    pintoggle(TEST_ALL_PINS)
+    pintoggle(TEST_ALL_PINS)
+    pinlow(TEST_ALL_PINS)
 
-    if j++ < 2000					'if fault, shut down
-      fault~
-    if fault and j > 2000
-      debug(`t 0 'FAULT' update)
-      stop()
-      repeat
+    bStartingUp := true
+    angleTarget := 210_000_000
+    increment := 50_000
+    decrement := 50_000
+    angleIncrement := 0
 
-    waitus(500)						'wait to create time base
+    'runLoopCount := 20_000 ' count of 1 ms loops (20 seconds)
+    'runLoopCount := 30_000 ' count of 1 ms loops (30 seconds)
+    runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
+
+
+    'repeat
+
+    repeat
+        loopCtr++
+        pintoggle(TEST_PIN_OUTER_LOOP)
+        pintoggle(TEST_PIN_OUTER_LOOP)
+
+        startTicks := getct()
+
+        if runLoopCount > 0 && bStartingUp == false
+            runLoopCount--
+            if runLoopCount +// 1000 == 0
+                debug(`i 0 'calc lpCt=`udec_(runLoopCount)' update)
+
+        if hall <> priorHall                    'if hall effect changed, update logic display
+            debug(`l `ubin_byte_(hall))
+            priorHall := hall
+
+        debug(`t 0 '`sdec(duty, pos)' update)       'update terminal and scope displays
+        debug(`r `sdec_(duty, err))
+        debug(`s `sdec_long_array_(@drive_u,3) `sdec_long_array_(@sense_u,4))
+        maxDrvTics := loop_ticks > maxDrvTics ? loop_ticks : maxDrvTics
+        minDrvTics := loop_ticks > 10 && loop_ticks < minDrvTics  ? loop_ticks : minDrvTics
+        if rpm > maxRpm
+            maxRpm := rpm
+            debug(`v 0 'cnts=`udec_(cntsInSec) rpm=`udec_(rpm).`udec_(rpmTenths) drvCt=`udec_(loop_ticks) [`sdec_(minDrvTics) - `udec_(maxDrvTics)]' update)       'update speed/distance display
+
+        '  ---------------------------------------------------------------
+        '  increment the angle for 30 seconds, then slow-down, stop motor
+        '  ---------------------------------------------------------------
+        ' ramp down to ZERO at end
+        if runLoopCount == 0
+            if angleIncrement > decrement
+                angleIncrement -= decrement
+            elseif angleIncrement <= decrement
+                angleIncrement := 0
+            'debug(`i 0 'calc lpCt=`udec_(runLoopCount), incr=`udec_(angleIncrement), decr=`udec_(decrement)' update)
+
+        ' ramp up to TARGET
+        if bStartingUp
+            ' every N iterations increment ramp
+            if loopCtr +// 4 == 0
+                if angleIncrement <> angleTarget
+                    angleIncrement += increment
+                    if angleIncrement > angleTarget
+                        angleIncrement := angleTarget
+                else
+                    bStartingUp := false    ' done starting...
+            'debug(`i 0 'calc lpct=`udec_(runLoopCount), incr=`udec_(angleIncrement), decr=`udec_(angleTarget)' update)
+
+        angle += 10_000_000                                'update angle to turn motor
+        'angle += angleIncrement                                'update angle to turn motor
+        'angle += qsin(1<<28, angleIncrement += 90_000, 0)        'update angle to turn motor
+
+        if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
+            fault~
+        if fault and faultHoldoffCtr > STABILIZE_LOOP_CT and 0   ' if fault, shut down
+            debug(`t 0 'FAULT' update)
+            stop()
+            repeat    ' and lock here!
+
+        'waitus(1000)
+        waitct(startTicks + ticks1ms)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
+
+CON { TASK position tracking }
+
+  STACK_SIZE_LONGS = 48
+  WINDOW_SIZE = 5
 
 DAT
+    countsWindow    long    0[WINDOW_SIZE]
+    taskStack       long    0[STACK_SIZE_LONGS]
+
+PRI taskPostionSense() | senseStartTicks
+' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
+
+    longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
+
+    repeat
+        senseStartTicks := getct()
+        pintoggle(TEST_PIN_SENSE_LOOP)
+        pintoggle(TEST_PIN_SENSE_LOOP)
+
+        newCntsInSec := distanceIn90ths(pos)            ' Read the next sensor value
+        windowSum -= long[@countsWindow][winIndex]          ' Remove the oldest entry from the sum
+        long [@countsWindow][winIndex] := newCntsInSec      ' place the newest reading into the window
+        windowSum += newCntsInSec                           ' Add the newest reading to the sum
+        winIndex := (winIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
+        if winEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
+            winEntryCt ++
+
+        cntsInSec := (windowSum / winEntryCt) * 8                 ' moving average, scaled
+        'debug(`i 0 'calc new=`udec_(newCntsInSec), sum=`udec_(windowSum), idx=`udec_(winIndex), ct=`udec_(winEntryCt), avg=`udec_(cntsInSec)' update)
+        rpmIn10ths := (cntsInSec * 60) / 9
+        rpm := rpmIn10ths / 10
+        rpmTenths := rpmIn10ths +// 10
+
+        'deltaTicks := getct() - senseStartTicks
+        'debug(`i 0 'tic Delta=`udec_(deltaTicks), ms=`udec_(msTicks)' update)
+
+        ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
+        '   wait remainder of 125 mSec before next sample
+        waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
+
+VAR { misc. vars }
+
+ '   long usTicks
+    long    winIndex
+    long    winEntryCt
+    long    rpmIn10ths
+    long    newCntsInSec
+    long    windowSum
+    long    cntsInSec
+    long    deltaTicks
+    long    priorPos
+    long    rpm
+    long    rpmTenths
+
+PRI distanceIn90ths(newPos) : n90ths
+    if newPos == priorPos
+        n90ths := 0
+    elseif newPos < 0
+        ' handle pos negative case
+        if priorPos < 0
+            '  -7 -> -9 = abs(-9) - abs(-7) = abs(2) = 2
+            '  -11 -> -9 = abs(-9) - abs(-11) = abs(-2) = 2
+            n90ths := abs(abs(newPos) - abs(priorPos))
+        else
+            '  9 -> -9 = 18 = abs(9) + abs(-9) = 18
+            n90ths := abs(newPos) + abs(priorPos)
+    else
+        ' handle pos positive case
+        if priorPos < 0
+            ' -9 -> 6 = 6 + abs(-9) = 15
+            ' -3 -> 6 = 6 + abs(-3) = 9
+            n90ths := newPos + abs(priorPos)
+        else
+            ' 9 -> 6 = 6 - 9 = abs(-3) = 3
+            ' 9 -> 12 = 12 - 9 = abs(3) = 3
+            n90ths := abs(newPos - priorPos)
+    'debug(`c 'pri=`sdec_(priorPos) pos=`sdec_(newPos) dist=`udec_(n90ths)' 13 10 update)       'update speed/distance display
+    priorPos := newPos
+
+
+DAT  {  DRIVER w/Motor Parameters  }
 '
-'
-' Motor Parameters
-'
-params		long					    ' motor-control parameters, reloaded every frame
-offset_fwd	long	20 frac 360		    ' 96 frac 360 (Doug's motor)
-offset_rev	long	340 frac 360	    ' 228 frac 360 (Doug's motor)
-duty_min	long	100 << 4  #> OFFSET << 4
-duty_max	long	PWMLIM << 4 <# PWMLIM << 4
-duty_up		long	16
-duty_dn		long	4
+
+params      long                        ' motor-control parameters, reloaded every frame
+offset_fwd  long    20 frac 360         ' 96 frac 360 (Doug's motor)
+offset_rev  long    340 frac 360        ' 228 frac 360 (Doug's motor)
+duty_min    long    100 << 4 #> OFFSET << 4
+duty_max    long    PWMLIM << 4 <# PWMLIM << 4
+duty_up     long    16
+duty_dn     long    4
 '
 '
 ' PASM Driver Program
 '
-	            org
+                org
 
-driver		    rdlong	x,ptra++			'get base pin
-                rdlong	params_ptr_,ptra++	'get parameters pointer
-                add	    ptra,#1*4			'point to return data, angle is at long index [-1]
+driver          rdlong  x, ptra++                   ' get base pin
+                rdlong  params_ptr_, ptra++         ' get parameters pointer
+                add     ptra, #1*4                  ' point to return data, angle is at long index [-1]
 
-                or	    all_pins,x			'make all-pins variable
+                or      all_pins, x                 ' make all-pins variable
 
-                mov	    y,#0				'make single-pin variables
-.pin		    altd	y,#adc_u_i
-                mov	    0-0,x
-                add	    x,#1
-                incmod	y,#15		wc
-	if_nc	    jmp	    #.pin
+                mov     y, #0                       ' make single-pin variables
+.pin            altd    y, #adc_u_i
+                mov     0-0, x
+                add     x, #1
+                incmod  y, #15      wc
+    if_nc       jmp     #.pin
 
-                dirl	all_pins			' disable PWM and ADC pins for configuration
+                dirl    all_pins                    ' disable PWM and ADC pins for configuration
 
-                wrpin	adc_modes+0,adc_u_i ' set up ADC pins
-                wrpin	adc_modes+0,adc_v_i
-                wrpin	adc_modes+0,adc_w_i
-                wrpin	adc_modes+0,adc_i
+                wrpin   adc_modes+0, adc_u_i        ' set up ADC pins
+                wrpin   adc_modes+0, adc_v_i
+                wrpin   adc_modes+0, adc_w_i
+                wrpin   adc_modes+0, adc_i
 
-                wxpin	#10,adc_u_i			' (#10 = 1024-clock / 11-bit conversion)
-                wxpin	#10,adc_v_i
-                wxpin	#10,adc_w_i
-                wxpin	#10,adc_i
+                wxpin   #10, adc_u_i                ' (#10 = 1024-clock / 11-bit conversion)
+                wxpin   #10, adc_v_i
+                wxpin   #10, adc_w_i
+                wxpin   #10, adc_i
 
-                wrpin   pwmn,pwm_u_l		' set up PWM pins
-                wrpin   pwmt,pwm_u_h
-                wrpin   pwmn,pwm_v_l
-                wrpin   pwmt,pwm_v_h
-                wrpin   pwmn,pwm_w_l
-                wrpin   pwmt,pwm_w_h
+                wrpin   pwmn, pwm_u_l               ' set up PWM pins
+                wrpin   pwmt, pwm_u_h
+                wrpin   pwmn, pwm_v_l
+                wrpin   pwmt, pwm_v_h
+                wrpin   pwmn, pwm_w_l
+                wrpin   pwmt, pwm_w_h
 
-                wxpin   fram,pwm_u_l
-                wxpin   fram,pwm_u_h
-                wxpin   fram,pwm_v_l
-                wxpin   fram,pwm_v_h
-                wxpin   fram,pwm_w_l
-                wxpin   fram,pwm_w_h
+                wxpin   fram, pwm_u_l
+                wxpin   fram, pwm_u_h
+                wxpin   fram, pwm_v_l
+                wxpin   fram, pwm_v_h
+                wxpin   fram, pwm_w_l
+                wxpin   fram, pwm_w_h
 
-                dirh	all_pins			'enable ADC and PWM pins simultaneously for phase-locked operation
+                dirh    all_pins                    ' enable ADC and PWM pins simultaneously for phase-locked operation
 
-                dirl	hall_u				'remake HALL pins inputs (they were in-between ADC and PWM pins)
-                dirl	hall_v
-                dirl	hall_w
+                dirl    hall_u                      ' remake HALL pins inputs (they were in-between ADC and PWM pins)
+                dirl    hall_v
+                dirl    hall_w
 
-                mov	    duty_,#0			'reset duty
+                mov     duty_, #0                   ' reset duty
+                mov     pos_, #0                    ' reset pos
+                mov     loop_ticks_, #0             ' just in case
 
+.loop           getct   drvrSrtTicks
+                call    #.next                      ' allow ADC rest period
 
-.loop		    call	#.next				'allow ADC rest period
+                rdpin   vio_levels+0, adc_u_i       ' VIO samples done, read them
+                rdpin   vio_levels+1, adc_v_i
+                rdpin   vio_levels+2, adc_w_i
+                rdpin   vio_levels+3, adc_i
 
-                rdpin	vio_levels+0,adc_u_i		'VIO samples done, read them
-                rdpin	vio_levels+1,adc_v_i
-                rdpin	vio_levels+2,adc_w_i
-                rdpin	vio_levels+3,adc_i
+                wrpin   adc_modes+2, adc_u_i        ' switch ADC to pin
+                wrpin   adc_modes+2, adc_v_i
+                wrpin   adc_modes+2, adc_w_i
+                wrpin   adc_modes+2, adc_i
 
-                wrpin	adc_modes+2,adc_u_i		'switch ADC to pin
-                wrpin	adc_modes+2,adc_v_i
-                wrpin	adc_modes+2,adc_w_i
-                wrpin	adc_modes+2,adc_i
+                call    #.next
+                call    #.next                      ' allow ADC rest period
 
-                call	#.next
-                call	#.next				'allow ADC rest period
+                rdpin   sense_u_, adc_u_i           ' pin samples done, read them
+                rdpin   sense_v_, adc_v_i
+                rdpin   sense_w_, adc_w_i
+                rdpin   sense_i_, adc_i
 
-                rdpin	sense_u_,adc_u_i			'pin samples done, read them
-                rdpin	sense_v_,adc_v_i
-                rdpin	sense_w_,adc_w_i
-                rdpin	sense_i_,adc_i
+                wrpin   adc_modes+0, adc_u_i        ' switch ADC to GIO calibration
+                wrpin   adc_modes+0, adc_v_i
+                wrpin   adc_modes+0, adc_w_i
+                wrpin   adc_modes+0, adc_i
 
-                wrpin	adc_modes+0,adc_u_i		'switch ADC to GIO calibration
-                wrpin	adc_modes+0,adc_v_i
-                wrpin	adc_modes+0,adc_w_i
-                wrpin	adc_modes+0,adc_i
+                call    #.next
 
-                call	#.next
+                sub     vio_levels+0, gio_levels+0  ' compute (3300 << 11) / (vio_level - gio_level)
+                sub     vio_levels+1, gio_levels+1
+                sub     vio_levels+2, gio_levels+2
+                sub     vio_levels+3, gio_levels+3
 
-                sub	    vio_levels+0,gio_levels+0	'compute (3300 << 11) / (vio_level - gio_level)
-                sub	    vio_levels+1,gio_levels+1
-                sub	    vio_levels+2,gio_levels+2
-                sub	    vio_levels+3,gio_levels+3
+                qdiv    numerator, vio_levels+0
+                qdiv    numerator, vio_levels+1
+                qdiv    numerator, vio_levels+2
+                qdiv    numerator, vio_levels+3
 
-                qdiv	numerator,vio_levels+0
-                qdiv	numerator,vio_levels+1
-                qdiv	numerator,vio_levels+2
-                qdiv	numerator,vio_levels+3
+                getqx   scl_levels+0
+                waitx   #4
+                getqx   scl_levels+1
+                waitx   #4
+                getqx   scl_levels+2
+                waitx   #4
+                getqx   scl_levels+3
 
-                getqx	scl_levels+0
-                waitx	#4
-                getqx	scl_levels+1
-                waitx	#4
-                getqx	scl_levels+2
-                waitx	#4
-                getqx	scl_levels+3
+                sub     sense_u_, gio_levels+0      ' compute (quotient * (pin_level - gio_level)) >> 11
+                muls    sense_u_, scl_levels+0
+                sar     sense_u_, #11
 
-                sub	    sense_u_,gio_levels+0		'compute (quotient * (pin_level - gio_level)) >> 11
-                muls	sense_u_,scl_levels+0
-                sar	    sense_u_,#11
+                sub     sense_v_, gio_levels+1
+                muls    sense_v_, scl_levels+1
+                sar     sense_v_, #11
 
-                sub	    sense_v_,gio_levels+1
-                muls	sense_v_,scl_levels+1
-                sar	    sense_v_,#11
+                sub     sense_w_, gio_levels+2
+                muls    sense_w_, scl_levels+2
+                sar     sense_w_, #11
 
-                sub	    sense_w_,gio_levels+2
-                muls	sense_w_,scl_levels+2
-                sar	    sense_w_,#11
+                sub     sense_i_, gio_levels+3
+                muls    sense_i_, scl_levels+3
+                sar     sense_i_, #11
 
-                sub	    sense_i_,gio_levels+3
-                muls	sense_i_,scl_levels+3
-                sar	    sense_i_,#11
+                call    #.next
 
-                call	#.next
+                rdpin   gio_levels+0, adc_u_i       ' GIO samples done, read them
+                rdpin   gio_levels+1, adc_v_i
+                rdpin   gio_levels+2, adc_w_i
+                rdpin   gio_levels+3, adc_i
 
-                rdpin	gio_levels+0,adc_u_i		'GIO samples done, read them
-                rdpin	gio_levels+1,adc_v_i
-                rdpin	gio_levels+2,adc_w_i
-                rdpin	gio_levels+3,adc_i
+                wrpin   adc_modes+1, adc_u_i        ' switch ADC to VIO calibration
+                wrpin   adc_modes+1, adc_v_i
+                wrpin   adc_modes+1, adc_w_i
+                wrpin   adc_modes+1, adc_i
 
-                wrpin	adc_modes+1,adc_u_i		'switch ADC to VIO calibration
-                wrpin	adc_modes+1,adc_v_i
-                wrpin	adc_modes+1,adc_w_i
-                wrpin	adc_modes+1,adc_i
+                call    #.next
 
-                call	#.next
+                rdlong  angle_, ptra[-1]            ' get angle
 
-                rdlong  angle_,ptra[-1]             	'get angle
+                mov     y, duty_                    ' feed three CORDIC operations to get phase drive levels
+                shr     y, #4
+                mov     x, angle_
+                qrotate y, x
+                add     x, third
+                qrotate y, x
+                add     x, third
+                qrotate y, x
 
-                mov	    y,duty_				'feed three CORDIC operations to get phase drive levels
-                shr	    y,#4
-                mov	    x,angle_
-                qrotate y,x
-                add     x,third
-                qrotate y,x
-                add     x,third
-                qrotate y,x
-
-                getqy   drive_u_			'get three CORDIC results
+                getqy   drive_u_                    ' get three CORDIC results
                 getqy   drive_v_
                 getqy   drive_w_
 
-                mov	    x,drive_u_			'get smallest drive level into x
-                cmps	x,drive_v_	wc
-	if_nc       mov	    x,drive_v_
-                cmps	x,drive_w_	wc
-	if_nc       mov	    x,drive_w_
+                mov     x, drive_u_                 ' get smallest drive level into x
+                cmps    x, drive_v_ wc
+    if_nc       mov     x, drive_v_
+                cmps    x, drive_w_ wc
+    if_nc       mov     x, drive_w_
 
-                mov	    y,drive_u_			'get largest drive level into y
-                cmps	y,drive_v_	wc
-    if_c        mov	    y,drive_v_
-                cmps    y,drive_w_	wc
-    if_c        mov     y,drive_w_
+                mov     y, drive_u_                 ' get largest drive level into y
+                cmps    y, drive_v_ wc
+    if_c        mov     y, drive_v_
+                cmps    y, drive_w_ wc
+    if_c        mov     y, drive_w_
 
-                add	    x,y				'sum smallest and largest, then divide by 2
-                sar	    x,#1
+                add     x, y                        ' sum smallest and largest, then divide by 2
+                sar     x, #1
 
-                sub     drive_u_,x			'subtract difference from drive levels
-                sub     drive_v_,x
-                sub     drive_w_,x
+                sub     drive_u_, x                 ' subtract difference from drive levels
+                sub     drive_v_, x
+                sub     drive_w_, x
 
-                add     drive_u_,bias       ' add center-bias and dead-time offsets to update PWMs
-                add	    drive_u_,#OFFSET
-                wypin   drive_u_,pwm_u_l
-                sub	    drive_u_,#OFFSET
-                wypin   drive_u_,pwm_u_h
+                add     drive_u_, bias              ' add center-bias and dead-time offsets to update PWMs
+                add     drive_u_, #OFFSET
+                wypin   drive_u_, pwm_u_l
+                sub     drive_u_, #OFFSET
+                wypin   drive_u_, pwm_u_h
 
-                add     drive_v_,bias
-                add	    drive_v_,#OFFSET
-                wypin   drive_v_,pwm_v_l
-                sub	    drive_v_,#OFFSET
-                wypin   drive_v_,pwm_v_h
+                add     drive_v_, bias
+                add     drive_v_, #OFFSET
+                wypin   drive_v_, pwm_v_l
+                sub     drive_v_, #OFFSET
+                wypin   drive_v_, pwm_v_h
 
-                add     drive_w_,bias
-                add	    drive_w_,#OFFSET
-                wypin   drive_w_,pwm_w_l
-                sub	    drive_w_,#OFFSET
-                wypin   drive_w_,pwm_w_h
+                add     drive_w_, bias
+                add     drive_w_, #OFFSET
+                wypin   drive_w_, pwm_w_l
+                sub     drive_w_, #OFFSET
+                wypin   drive_w_, pwm_w_h
 
-'                call	#.next				'allow ADC rest period (uncomment if 7 vs. 6)
+                testp   hall_w      wc              ' read hall effect sensor
+                rcl     hall_, #1
+                testp   hall_v      wc
+                rcl     hall_, #1
+                testp   hall_u      wc
+                rcl     hall_, #1
+                and     hall_, #%111_111            ' (old << 3 | new) [ooo:nnn]
+                altgb   hall_, #deltas              ' load byte deltas[hall_] -> [-1, 0, 1]
+                getbyte x
+                signx   x, #7                       ' sign-extend bit7
+                add     pos_, x                     ' add to current pos_
 
-                testp	hall_w		wc		'read hall effect sensor
-                rcl	    hall_,#1
-                testp	hall_v		wc
-                rcl	    hall_,#1
-                testp	hall_u		wc
-                rcl	    hall_,#1
-                and	    hall_,#%111_111
-                altgb	hall_,#deltas
-                getbyte	x
-                signx	x,#7
-                add	    pos_,x
-
-                setq	#6-1				'load fresh parameter table
-                rdlong	params_ptr_+1,params_ptr_
+                setq    #6-1                        ' load fresh parameter table
+                rdlong  params_ptr_+1, params_ptr_
 
 ' verify the following code (3 lines)
-                cmpm	angle_,angle2	wcz		'if angle has changed, forward or reverse?
-	if_nz	    wrc	    fwdrev
-                mov     angle2,angle_
+                cmpm    angle_, angle2  wcz         ' if angle has changed, forward or reverse?
+    if_nz       wrc     fwdrev
+                mov     angle2, angle_
 
-                testb	fwdrev,#0	wc      'determine error
-                bitc	hall_,#3
-                and     hall_,#%1111
-                alts	hall_,#hall_angles
-                mov     err_,0-0
-    if_c        add	    err_,offset_fwd_
-    if_nc       add	    err_,offset_rev_
-                subr	err_,angle_
-                sar	    err_,#24
-                bitl	hall_,#3
+                testb   fwdrev, #0  wc              ' determine error
+                bitc    hall_, #3
+                and     hall_, #%1111
+                alts    hall_, #hall_angles
+                mov     err_, 0-0
+    if_c        add     err_, offset_fwd_
+    if_nc       add     err_, offset_rev_
+                subr    err_, angle_
+                sar     err_, #24
+                bitl    hall_, #3
 
-                abs	    x,err_
-                cmp	    x,#125		wc		'fault?
-	if_nc	    wrlong  #1,ptra[11]
-                sub	    x,#256/6	wc		'modulate duty
-	if_nc	    muls	x,duty_up_
-	if_c	    muls	x,duty_dn_
-                sar	    x,#8
-                add	    duty_,x
-                fles	duty_,duty_max_			'keep duty within limits
-                fges	duty_,duty_min_
+                abs     x, err_                     ' fault?
+                cmp     x, #125     wc
+    if_nc       wrlong  #1, ptra[12]
+                sub     x, #256/6   wc              ' modulate duty
+    if_nc       muls    x, duty_up_
+    if_c        muls    x, duty_dn_
+                sar     x, #8
+                add     duty_, x
+                fles    duty_, duty_max_            ' keep duty within limits
+                fges    duty_, duty_min_
 
-                setq	#11-1				'write drive[3]/sense[4]/hall/pos/duty/err to hub
-                wrlong	drive_u_,ptra
+                getct   loop_ticks_                 ' how long was this iteration? send to host
+                sub     loop_ticks_, drvrSrtTicks
 
-                jmp     #.loop				'main loop
+                setq    #12-1                       ' write drive[3]/sense[4]/hall/pos/duty/err/drvTics to hub
+                wrlong  drive_u_, ptra
 
-
-.next		    testp	adc_u_i		wc		'wait for next ADC sample (7 samples = PWM frame)
-	if_nc	    jmp	    #.next
-
-	_ret_	    akpin	adc_u_i
-
-
-all_pins    long    15 << 6			'all-pins variable
-pwmt        long    %000_000000_01_01000_0	'PWM true
-pwmn        long    %001_000000_01_01000_0	'PWM not
-fram        long    FRAME << 16 + 1 'PWM frame setting
-bias        long    FRAME / 2		'PWM center-frame bias
-third       long    1 FRAC 3		'120 degrees
-numerator   long    3300 << 11		'numerator for ADC calculations
-
-adc_modes   long    p_adc_gio
-'' p_adc   'adc modes, by state
-            long    p_adc_vio
-'' p_adc
-            long    p_adc_1x
-'' p_adc
-
-deltas	    byte	0, 0, 0, 0, 0, 0, 0, 0	'Hall-effect-sensor position deltas from (old<<3)
-'' new)
-            byte	0, 0, 0,-1, 0, 1, 0, 0
-            byte	0, 0, 0, 1, 0, 0,-1, 0
-            byte	0, 1,-1, 0, 0, 0, 0, 0
-            byte	0, 0, 0, 0, 0,-1, 1, 0
-            byte	0,-1, 0, 0, 1, 0, 0, 0
-            byte	0, 0, 1, 0,-1, 0, 0, 0
-            byte	0, 0, 0, 0, 0, 0, 0, 0
-
-hall_angles long	0       'forward-direction table
-            long	0 frac 6	'%001
-            long	4 frac 6	'%010
-            long	5 frac 6	'%011
-            long	2 frac 6	'%100
-            long	1 frac 6	'%101
-            long	3 frac 6	'%110
-            long	0
-            long	0           'reverse-direction table
-            long	5 frac 6	'%001
-            long	3 frac 6	'%010
-            long	4 frac 6	'%011
-            long	1 frac 6	'%100
-            long	0 frac 6	'%101
-            long	2 frac 6	'%110
-            long	0
+                ' wait for end of 150 ticks to pass (since start of loop)
+                '  fixing loop run-time to 150 ticks @200MHz clock (750nS / 1.33 MHz)
+                mov     drvrEndTicks, drvrSrtTicks
+                addct1  drvrEndTicks, #150
+                waitct1
+                jmp     #.loop                      ' main loop
 
 
-x           res     1	'miscellaneous
+.next           testp   adc_u_i     wc              ' wait for next ADC sample (6 samples = PWM frame)
+    if_nc       jmp     #.next
+
+    _ret_       akpin   adc_u_i
+
+
+all_pins    long    15 << 6                 ' all-pins variable
+pwmt        long    %000_000000_01_01000_0  ' PWM true
+pwmn        long    %001_000000_01_01000_0  ' PWM not
+fram        long    FRAME << 16 + 1         ' PWM frame setting
+bias        long    FRAME / 2               ' PWM center-frame bias
+third       long    1 FRAC 3                ' 120 degrees
+numerator   long    3300 << 11              ' numerator for ADC calculations
+
+adc_modes   long    p_adc_gio | p_adc       ' adc modes, by state
+            long    p_adc_vio | p_adc
+            long    p_adc_1x  | p_adc
+
+deltas      byte    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3 | new)
+            byte    0, 0, 0,-1, 0, 1, 0, 0
+            byte    0, 0, 0, 1, 0, 0,-1, 0
+            byte    0, 1,-1, 0, 0, 0, 0, 0
+            byte    0, 0, 0, 0, 0,-1, 1, 0
+            byte    0,-1, 0, 0, 1, 0, 0, 0
+            byte    0, 0, 1, 0,-1, 0, 0, 0
+            byte    0, 0, 0, 0, 0, 0, 0, 0
+
+hall_angles long    0           ' forward-direction table
+            long    0 frac 6    '%001
+            long    4 frac 6    '%010
+            long    5 frac 6    '%011
+            long    2 frac 6    '%100
+            long    1 frac 6    '%101
+            long    3 frac 6    '%110
+            long    0
+            long    0           ' reverse-direction table
+            long    5 frac 6    '%001
+            long    3 frac 6    '%010
+            long    4 frac 6    '%011
+            long    1 frac 6    '%100
+            long    0 frac 6    '%101
+            long    2 frac 6    '%110
+            long    0
+
+
+x           res     1           ' miscellaneous
 y           res     1
 
-angle_		res	1
-angle2		res	1
-fwdrev		res	1
+drvrSrtTicks res 1
+drvrEndTicks res 1
 
-adc_u_i		res	1	'single-pin variables
-adc_v_i		res	1
-adc_w_i		res	1
-adc_x_i		res	1
-adc_i		res	1
-hall_u		res	1
-hall_v		res	1
-hall_w		res	1
-pwm_u_l		res	1
-pwm_u_h		res	1
-pwm_v_l		res	1
-pwm_v_h		res	1
-pwm_w_l		res	1
-pwm_w_h		res	1
-pwm_x_l		res	1
-pwm_x_h		res	1
+angle_      res 1
+angle2      res 1
+fwdrev      res 1
 
-gio_levels	res	4	'ADC variables
-vio_levels	res	4
-scl_levels	res	4
+adc_u_i     res 1               ' single-pin variables
+adc_v_i     res 1
+adc_w_i     res 1
+adc_x_i     res 1
+adc_i       res 1
+hall_u      res 1
+hall_v      res 1
+hall_w      res 1
+pwm_u_l     res 1
+pwm_u_h     res 1
+pwm_v_l     res 1
+pwm_v_h     res 1
+pwm_w_l     res 1
+pwm_w_h     res 1
+pwm_x_l     res 1
+pwm_x_h     res 1
 
-params_ptr_	res	1	'params_ptr must be followed by the six parameters
-offset_fwd_	res	1
-offset_rev_	res	1
-duty_min_	res	1
-duty_max_	res	1
-duty_up_	res	1
-duty_dn_	res	1
+gio_levels  res 4               ' ADC variables
+vio_levels  res 4
+scl_levels  res 4
 
-drive_u_	res 1	'11 contiguous longs for return data structure
-drive_v_	res 1
-drive_w_	res 1
-sense_u_	res	1
-sense_v_	res	1
-sense_w_	res	1
-sense_i_	res	1
-hall_		res	1
-pos_		res	1
-duty_		res	1
-err_		res	1
+params_ptr_ res 1               ' params_ptr must be followed by the six parameters
+offset_fwd_ res 1
+offset_rev_ res 1
+duty_min_   res 1
+duty_max_   res 1
+duty_up_    res 1
+duty_dn_    res 1
 
-            fit
+drive_u_    res 1               '   12 contiguous longs for return data structure
+drive_v_    res 1
+drive_w_    res 1
+sense_u_    res 1
+sense_v_    res 1
+sense_w_    res 1
+sense_i_    res 1
+hall_       res 1
+pos_        res 1
+duty_       res 1
+err_        res 1
+loop_ticks_ res 1
+
 CON { license }
 {{
 
