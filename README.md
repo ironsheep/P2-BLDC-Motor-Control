@@ -40,6 +40,10 @@ These are the various design files I sent off to be make by [SendCutSend.com](ht
 1. [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
 ![Spacer](images/SpacerV1.png)
 
+### Packaging (order arrives)
+
+This is what I found when I opened my first order:
+
 ![Opened Package](images/EdgeMiniRoundV1.jpg)
 **The Package arrived with these contents..**  This was quite well packaged. The MDF part was shrink-wrapped to the backing cardboard. The laser cuts were all clean with a little bit of scorch mark on one side of the MDF as you might expect. *And yes, the Skittles package made me smile!*
 
