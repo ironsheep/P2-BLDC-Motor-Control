@@ -36,7 +36,6 @@ CON { test pins for LA measurement }
   TEST_PIN_OUTER_LOOP = 8
   TEST_PIN_SENSE_LOOP = 9
 
-
 CON { driver internal Constants}
 
   FRAME    = 1024 * 6 / 2       '6 ADC samples make 1 PWM frame, divide by two for triangle PWM
@@ -48,6 +47,9 @@ VAR { Data Structure for PASM Driver }
     long    motorCog                            ' record ID of cog we start (0 = not started)
     long    senseCog                            ' record ID of cog we start (0 = not started)
 
+    long    maxDrvTics                      ' accumulators for study of driver
+    long    minDrvTics
+
     long    pinbase                             ' 1 long                must set initially
     long    params_ptr                          ' 1 long                must set initially
     long    angle                               ' 1 long                must set continually
@@ -58,6 +60,74 @@ VAR { Data Structure for PASM Driver }
     long    loop_ticks                          ' 1 sequential long     returns loop duration in ticks continually
     long    fault                               ' 1 sequential long     written to 1 on fault
 
+VAR { Data Structure for Motor Position }
+
+    long    winIndex
+    long    winEntryCt
+    long    rpmIn10ths
+    long    newCntsInSec
+    long    windowSum
+    long    cntsInSec
+    long    deltaTicks
+    long    priorPos
+    long    rpm
+    long    rpmTenths
+
+CON { Constants for HDMI Debug }
+
+    DBG_SECTION_CT = 2
+    DBG_MAX_VARS_IN_SECTION_CT = 4
+
+VAR { Data Structure for HDMI Debug }
+
+    long    pTitles[DBG_SECTION_CT]
+    long    pNamesAr[DBG_SECTION_CT]
+    long    pVarCtAr[DBG_SECTION_CT]
+    long    pVarsAr[DBG_SECTION_CT * DBG_MAX_VARS_IN_SECTION_CT]
+
+PRI debugSetup() | nGrpOffset, pVarNamesAr
+' do internal one-time setup of driver debug data
+    nGrpOffset := 0
+    LONG[@pTitles][nGrpOffset] := @@nameTitle1
+    LONG[@pVarCtAr][nGrpOffset] := 4
+    LONG[@pNamesAr][nGrpOffset] := @@names1x
+    LONG[@pVarsAr][nGrpOffset + 0] := @@hall
+    LONG[@pVarsAr][nGrpOffset + 1] := @@pos
+    LONG[@pVarsAr][nGrpOffset + 2] := @@duty
+    LONG[@pVarsAr][nGrpOffset + 3] := @@err
+    pVarNamesAr := @names1x
+    LONG[@pVarNamesAr][nGrpOffset + 0] := @@name10
+    LONG[@pVarNamesAr][nGrpOffset + 1] := @@name11
+    LONG[@pVarNamesAr][nGrpOffset + 2] := @@name12
+    LONG[@pVarNamesAr][nGrpOffset + 3] := @@name13
+
+    nGrpOffset := 1
+    LONG[@pTitles][nGrpOffset] := @@nameTitle2
+    LONG[@pVarCtAr][nGrpOffset] := 4
+    LONG[@pNamesAr][nGrpOffset] := @@names2x
+    LONG[@pVarsAr][nGrpOffset + 0] := @@rpmIn10ths
+    LONG[@pVarsAr][nGrpOffset + 1] := @@rpm
+    LONG[@pVarsAr][nGrpOffset + 2] := @@cntsInSec
+    LONG[@pVarsAr][nGrpOffset + 3] := @@deltaTicks
+    pVarNamesAr := @names2x
+    LONG[@pVarNamesAr][nGrpOffset + 0] := @@name20
+    LONG[@pVarNamesAr][nGrpOffset + 1] := @@name21
+    LONG[@pVarNamesAr][nGrpOffset + 2] := @@name22
+    LONG[@pVarNamesAr][nGrpOffset + 3] := @@name23
+    debug("** debugSetup():", uhex_long_array_(@pTitles, 14))
+    debug("** Strings():", uhex_long_array_(@nameTitle1, 48))
+
+    repeat' hold so we can eval debug
+
+
+PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
+'' Return pointers to debug data structures for this motor-object instance
+    nGroups := DBG_SECTION_CT
+    pGroupTitles := @@pTitles           ' pStr = long[pGroupTitles][grpIdx]
+    pGroupNames := @@pNamesAr           ' pNameAr = long[pGroupNames][grpIdx], while pVarName:=long[pNameAr][grpIdx] <> 0
+    pGroupVarCts := @@pVarCtAr          ' nNbrVars = long[pGroupVarCts][grpIdx]
+    pGroupVars := @@pVarsAr             ' pLongVar = long[pGroupVars][grpIdx][varIdx]  where varIdx is from 0 to nNbrVars - 1
+
 DAT
     msTicks     long    0
     ticks125ms  long    0                     ' time constants based on CPU freq
@@ -66,8 +136,23 @@ DAT
     ticks800us  long    0                     '
     ticks1ms    long    0                     '
 
-    maxDrvTics  long    0                     ' accumulators for study of driver
-    minDrvTics  long    65535                 '
+' motor drive data
+    nameTitle1   byte    "Motor Drv",0
+    name10      byte    "hall",0
+    name11      byte    "pos",0
+    name12      byte    "duty",0
+    name13      byte    "err",0
+
+    names1x     long    0[DBG_MAX_VARS_IN_SECTION_CT]
+
+' motor sense data
+    nameTitle2   byte    "Motor Sns",0
+    name20      byte    "RPM 10ths",0
+    name21      byte    "RPM",0
+    name22      byte    "cnts/sec",0
+    name23      byte    "delta",0
+
+    names2x     long    0[DBG_MAX_VARS_IN_SECTION_CT]
 
 PUB null()
 
@@ -78,7 +163,7 @@ CON { --- Subsystem Configuration --- }
   INVALID_PIN_BASE = -1
 
 PUB start(motorBasePin) : ok | legalBase
-'' Specify motor control board connect location for this motor
+'' Specify motor control board connect location for this motor and start the driver
 ' setup runtime constants
         ticks125ms := (CLKFREQ / 1_000) * 125
         ticks500us := (CLKFREQ / 1_000_000) * 500
@@ -87,6 +172,9 @@ PUB start(motorBasePin) : ok | legalBase
         msTicks := ticks1ms := (CLKFREQ / 1_000)
 
         loop_ticks := 0
+        minDrvTics := 65535
+
+        'debugSetup()    ' get this done once...
 
     ' ensure we only use legal values
     legalBase := motorBasePin
@@ -107,7 +195,6 @@ PUB startSenseCog() : ok
     ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
     if senseCog == 0    ' did fail?
         debug("!! ERROR filed to start Position Sense task")
-    ok := senseCog
 
 PUB stop()
 '' Stop cog and release pins assigned to this motor
@@ -118,6 +205,7 @@ PUB stop()
 
     ' Bottom 8 pins are sensed, top 8 are driven, so clear only the top 8
     pinclear(pinbase+8 addpins 7)
+
 
 
 PUB setAcceleration(rate)
@@ -219,14 +307,14 @@ PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoo
     pinlow(TEST_ALL_PINS)
 
     bStartingUp := true
-    angleTarget := 210_000_000
+    angleTarget := 110_000_000
     increment := 50_000
     decrement := 50_000
     angleIncrement := 0
 
-    'runLoopCount := 20_000 ' count of 1 ms loops (20 seconds)
+    runLoopCount := 20_000 ' count of 1 ms loops (20 seconds)
     'runLoopCount := 30_000 ' count of 1 ms loops (30 seconds)
-    runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
+    'runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
 
 
     'repeat
@@ -298,9 +386,9 @@ CON { TASK position tracking }
   STACK_SIZE_LONGS = 48
   WINDOW_SIZE = 5
 
-DAT
-    countsWindow    long    0[WINDOW_SIZE]
-    taskStack       long    0[STACK_SIZE_LONGS]
+VAR { arrays }
+    long    countsWindow[WINDOW_SIZE]
+    long    taskStack[STACK_SIZE_LONGS]
 
 PRI taskPostionSense() | senseStartTicks
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
@@ -313,7 +401,7 @@ PRI taskPostionSense() | senseStartTicks
         pintoggle(TEST_PIN_SENSE_LOOP)
 
         newCntsInSec := distanceIn90ths(pos)            ' Read the next sensor value
-        windowSum -= long[@countsWindow][winIndex]          ' Remove the oldest entry from the sum
+        windowSum -= LONG[@countsWindow][winIndex]          ' Remove the oldest entry from the sum
         long [@countsWindow][winIndex] := newCntsInSec      ' place the newest reading into the window
         windowSum += newCntsInSec                           ' Add the newest reading to the sum
         winIndex := (winIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
@@ -333,19 +421,6 @@ PRI taskPostionSense() | senseStartTicks
         '   wait remainder of 125 mSec before next sample
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
 
-VAR { misc. vars }
-
- '   long usTicks
-    long    winIndex
-    long    winEntryCt
-    long    rpmIn10ths
-    long    newCntsInSec
-    long    windowSum
-    long    cntsInSec
-    long    deltaTicks
-    long    priorPos
-    long    rpm
-    long    rpmTenths
 
 PRI distanceIn90ths(newPos) : n90ths
     if newPos == priorPos
