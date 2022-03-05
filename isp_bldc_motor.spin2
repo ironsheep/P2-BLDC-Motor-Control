@@ -14,7 +14,15 @@
 CON { Public Interface Constants }
 
   '  ID where the P2 Eval Motor Board is plugged in (Enum)
+' Names of supported PinGroups
   #0[16], PINS_P0_P15, PINS_P16_P31, PINS_P32_P47
+  ' return value when user makes bad choice
+  INVALID_PIN_BASE = -1
+
+' Names of supported voltages
+#0, PWR_6V, PWR_12V, PWR_18p5V, PWR_24V
+  ' return value when user makes bad choice
+  INVALID_VOLTAGE = -1
 
   ' Driver Distance-Units Enum
   #0, DDU_Unknown, DDU_IN, DDU_MM
@@ -93,6 +101,138 @@ DAT { misc time constants }
     ticks750us  long    0                     '
     ticks800us  long    0                     '
     ticks1ms    long    0                     '
+
+
+PUB null()
+
+'' This is not a top-level object
+
+PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
+'' Specify motor control board connect location for this motor and start the driver
+' setup runtime constants
+        ticks125ms := (CLKFREQ / 1_000) * 125
+        ticks500us := (CLKFREQ / 1_000_000) * 500
+        ticks750us := (CLKFREQ / 1_000_000) * 750
+        ticks800us := (CLKFREQ / 1_000_000) * 800
+        msTicks := ticks1ms := (CLKFREQ / 1_000)
+
+        ctrl_ticks := ticks500us
+
+        loop_ticks := 0
+        minDrvTics := 65535
+        eCtrlState := DCS_STOPPED
+
+    ' ensure we only use legal values
+    legalBase := eMotorBasePin
+    CASE eMotorBasePin
+        PINS_P0_P15 :
+        PINS_P16_P31 :
+        PINS_P32_P47 :
+        OTHER :
+            legalBase := INVALID_PIN_BASE
+
+    ' if legal base-pin then start cog
+    if legalBase <> INVALID_PIN_BASE
+        pinbase := eMotorBasePin     ' record base pin number
+        params_ptr := @params       ' point to driver variables
+        ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
+
+PUB startSenseCog() : ok
+    ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
+    if senseCog == 0    ' did fail?
+        debug("!! ERROR filed to start Position Sense task")
+
+PUB stop()
+'' Stop cog and release pins assigned to this motor
+
+    if motorCog
+        cogstop(motorCog - 1)
+        motorCog := 0
+
+    ' Bottom 8 pins are sensed, top 8 are driven, so clear only the top 8
+    pinclear(pinbase+8 addpins 7)
+
+PUB validBasePinForChoice(userBasePin) : legalBasePin
+'' VALIDATE users' base-pin choice returns legalBasePin or INVALID_PIN_BASE
+    legalBasePin := userBasePin
+    CASE userBasePin
+        PINS_P0_P15 :
+        PINS_P16_P31 :
+        PINS_P32_P47 :
+        OTHER :
+            legalBasePin := INVALID_PIN_BASE
+
+PUB validVoltageForChoice(userVoltage) : legalVoltage
+'' VALIDATE users' voltage choice returns legalVoltage or INVALID_VOLTAGE
+    legalVoltage := userVoltage
+    CASE userVoltage
+        PWR_6V :
+        PWR_12V :
+        PWR_18p5V :
+        PWR_24V :
+        OTHER :
+            legalVoltage := INVALID_VOLTAGE
+
+PUB setAcceleration(rate)
+'' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
+
+PUB setMaxSpeed(speed)
+'' Limit top-speed to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
+
+PUB setMaxSpeedForDistance(speed)
+'' Limit top-speed of driveDistance() operations to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
+
+PUB calibrate()
+'' (we may need this?)
+
+PUB holdAtStop(bEnable)
+'' Informs the motor control cog to actively hold postiion (bEnable=true) or coast (bEnable=false) at end of motion
+
+PUB resetTracking()
+'' Resets the position tracking values returned by getDistance() and getRotations()
+
+CON { --- Subsystem Control --- }
+
+PUB driveForDistance(distance, distanceUnits)
+'' Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
+'' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN or DDU_MM].
+'' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
+
+PUB driveAtPower(power) | limitPwr
+'' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
+'' Turns the motor on at {power}.
+'' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
+    limitPwr :=  -100 #> power <# 100
+
+PUB stopAfterRotation(rotationCount, rotationUnits)
+'' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS].
+'' USE WITH:  driveDirection(), drive()
+
+PUB stopAfterDistance(distance, distanceUnits)
+'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
+'' USE WITH:  driveDirection(), drive()
+
+PUB stopAfterTime(time, timeUnits)
+'' Stops the motor, after {time} specified in {timeUnits} [DTU_IN_MILLISEC or DTU_IN_SEC] has elapsed.
+'' USE WITH:  driveDirection(), drive()
+
+PUB stopMotor()
+'' Stops the motor, killing any motion that was still in progress
+''  AFFECTED BY:holdAtStop()
+
+CON { --- Subsystem Status --- }
+
+PUB getDistance(distanceUnits) : distanceInUnits
+'' Returns the distance in {distanceUnits} [DDU_IN or DDU_MM] travelled by this motor since last reset
+
+PUB getRotationCount(rotationUnits) : rotationCount
+'' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for this motor.
+
+PUB getStatus() : eStatus
+'' Returns status of motor drive state for this motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
+    eStatus := DS_OFF   ' force this for now...
+
+CON { --- HDMI Debug Support --- }
 
 CON { Constants for HDMI Debug }
 
@@ -187,121 +327,6 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     debug("* -------------")
     debug("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
     debug("* =============")
-
-
-PUB null()
-
-'' This is not a top-level object
-
-CON { --- Subsystem Configuration --- }
-
-  INVALID_PIN_BASE = -1
-
-PUB start(motorBasePin) : ok | legalBase
-'' Specify motor control board connect location for this motor and start the driver
-' setup runtime constants
-        ticks125ms := (CLKFREQ / 1_000) * 125
-        ticks500us := (CLKFREQ / 1_000_000) * 500
-        ticks750us := (CLKFREQ / 1_000_000) * 750
-        ticks800us := (CLKFREQ / 1_000_000) * 800
-        msTicks := ticks1ms := (CLKFREQ / 1_000)
-
-        ctrl_ticks := ticks500us
-
-        loop_ticks := 0
-        minDrvTics := 65535
-        eCtrlState := DCS_STOPPED
-
-    ' ensure we only use legal values
-    legalBase := motorBasePin
-    CASE motorBasePin
-        PINS_P0_P15 :
-        PINS_P16_P31 :
-        PINS_P32_P47 :
-        OTHER :
-            legalBase := INVALID_PIN_BASE
-
-    ' if legal base-pin then start cog
-    if legalBase <> INVALID_PIN_BASE
-        pinbase := motorBasePin     ' record base pin number
-        params_ptr := @params       ' point to driver variables
-        ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
-
-PUB startSenseCog() : ok
-    ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
-    if senseCog == 0    ' did fail?
-        debug("!! ERROR filed to start Position Sense task")
-
-PUB stop()
-'' Stop cog and release pins assigned to this motor
-
-    if motorCog
-        cogstop(motorCog - 1)
-        motorCog := 0
-
-    ' Bottom 8 pins are sensed, top 8 are driven, so clear only the top 8
-    pinclear(pinbase+8 addpins 7)
-
-
-
-PUB setAcceleration(rate)
-'' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
-
-PUB setMaxSpeed(speed)
-'' Limit top-speed to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
-
-PUB setMaxSpeedForDistance(speed)
-'' Limit top-speed of driveDistance() operations to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
-
-PUB calibrate()
-'' (we may need this?)
-
-PUB holdAtStop(bEnable)
-'' Informs the motor control cog to actively hold postiion (bEnable=true) or coast (bEnable=false) at end of motion
-
-PUB resetTracking()
-'' Resets the position tracking values returned by getDistance() and getRotations()
-
-CON { --- Subsystem Control --- }
-
-PUB driveForDistance(distance, distanceUnits)
-'' Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
-'' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN or DDU_MM].
-'' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
-
-PUB driveAtPower(power) | limitPwr
-'' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
-'' Turns the motor on at {power}.
-'' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
-    limitPwr :=  -100 #> power <# 100
-
-PUB stopAfterRotation(rotationCount, rotationUnits)
-'' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS].
-'' USE WITH:  driveDirection(), drive()
-
-PUB stopAfterDistance(distance, distanceUnits)
-'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
-'' USE WITH:  driveDirection(), drive()
-
-PUB stopAfterTime(time, timeUnits)
-'' Stops the motor, after {time} specified in {timeUnits} [DTU_IN_MILLISEC or DTU_IN_SEC] has elapsed.
-'' USE WITH:  driveDirection(), drive()
-
-PUB stopMotor()
-'' Stops the motor, killing any motion that was still in progress
-''  AFFECTED BY:holdAtStop()
-
-CON { --- Subsystem Status --- }
-
-PUB getDistance(distanceUnits) : distanceInUnits
-'' Returns the distance in {distanceUnits} [DDU_IN or DDU_MM] travelled by this motor since last reset
-
-PUB getRotationCount(rotationUnits) : rotationCount
-'' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for this motor.
-
-PUB getStatus() : eStatus
-'' Returns status of motor drive state for this motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
-    eStatus := DS_OFF   ' force this for now...
 
 
 CON { --- PRIVATE Utility Methods --- }
@@ -867,6 +892,9 @@ pos_        res 1
 duty_       res 1
 err_        res 1
 loop_ticks_ res 1
+
+
+
 
 CON { license }
 {{
