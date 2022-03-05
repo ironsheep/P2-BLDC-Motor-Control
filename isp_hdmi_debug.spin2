@@ -41,7 +41,7 @@ PUB start() : ok
 '' Start the HDMI debug driver
     nDriverCmd := DC_RUN
     nDriverArg := 0
-    dsplyEntryIdx := 0
+    currDLEntryIdx := 0
     ok := hdmiCog := cogspin(NEWCOG, taskShowDebug(@nDriverCmd, @nDriverArg, @dsplyList), @taskStack) + 1
 
 PUB stop()
@@ -68,13 +68,13 @@ CON { HDMI Debug Constants }
     FLAGS = (0*vid.DOUBLE_HIGH + 0*vid.DOUBLE_WIDE + 1*vid.FLASH_TEXT)
 
     STACK_SIZE_LONGS = 128  ' was 64
-    MAX_DISPLAYS = 6
-    MAX_VARS_PER_DISPLAY = 5
+    MAX_DL_ENTRIES = 6
+    NBR_LONGS_PER_DL_ENTRY = 6
 
     FOREGROUND = vid.FOREGROUND
     BACKGROUND = vid.BACKGROUND
 
-    #0, IDX_NGROUPS, IDX_GRP_TITLES, IDX_GRP_NAMES, IDX_GRP_VAR_CTS, IDX_GRP_VAR_PTRS
+    #0, IDX_MAX_GRP_VARS, IDX_NGROUPS, IDX_GRP_TITLES, IDX_GRP_NAMES, IDX_GRP_VAR_CTS, IDX_GRP_VAR_PTRS
 
 DAT { TASK: DEBUG w/Vars }
 
@@ -101,15 +101,16 @@ DAT { TASK: DEBUG w/Vars }
                     byte    0   ' terminator
     hzBarsText      byte    "---------|",0
 
-    dsplyEntryIdx   long    0
-    dsplyList       long    0[MAX_DISPLAYS * MAX_VARS_PER_DISPLAY]
+    currDLEntryIdx  long    0
+    dsplyList       long    0[MAX_DL_ENTRIES * NBR_LONGS_PER_DL_ENTRY]
 
     drvrCommand     long    0
     drvrArg         long    0
-    dsplyIdx        long    0
+    dsplyListIdx    long    0
     grpIdx          long    0
     nbrGroups       long    0
-    dsplyOffset     long    0
+    dsplyLstOffset     long    0
+    maxGrpSize      long    0
 
 ' for new driver
     vidCog     long    0
@@ -120,45 +121,47 @@ DAT { TASK: DEBUG w/Vars }
 PUB registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars) | nDsplyOffset, pTitleStr
 '' record a new display-list to be shown
     debug("HDMI Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
-    debug("INTRP: ENTRY ", udec_long(dsplyEntryIdx))
+    debug("INTRP: ENTRY ", udec_long(currDLEntryIdx))
     ' calculate the offset from current index
-    nDsplyOffset := dsplyEntryIdx * MAX_VARS_PER_DISPLAY
-    long [@dsplyList][nDsplyOffset + IDX_NGROUPS] := nGroups
-    long [@dsplyList][nDsplyOffset + IDX_GRP_TITLES] := pGroupTitles
-    long [@dsplyList][nDsplyOffset + IDX_GRP_NAMES] := pGroupNames
-    long [@dsplyList][nDsplyOffset + IDX_GRP_VAR_CTS] := pGroupVarCts
-    long [@dsplyList][nDsplyOffset + IDX_GRP_VAR_PTRS] := pGroupVars
+    nDsplyOffset := currDLEntryIdx * NBR_LONGS_PER_DL_ENTRY
+    LONG[@dsplyList][nDsplyOffset + IDX_MAX_GRP_VARS] := LONG[pGroupTitles][nGroups]
+    LONG[@dsplyList][nDsplyOffset + IDX_NGROUPS] := nGroups
+    LONG[@dsplyList][nDsplyOffset + IDX_GRP_TITLES] := pGroupTitles
+    LONG[@dsplyList][nDsplyOffset + IDX_GRP_NAMES] := pGroupNames
+    LONG[@dsplyList][nDsplyOffset + IDX_GRP_VAR_CTS] := pGroupVarCts
+    LONG[@dsplyList][nDsplyOffset + IDX_GRP_VAR_PTRS] := pGroupVars
     ' mark that we have a set
     '   bump index to next entry
-    dsplyEntryIdx++
-    debug("HDMI Stored as: #", udec_long_(dsplyEntryIdx), uhex_long_array(@dsplyEntryIdx,(MAX_DISPLAYS * MAX_VARS_PER_DISPLAY)+1))
+    currDLEntryIdx++
+    debug("HDMI Stored as: #", udec_long_(currDLEntryIdx), uhex_long_array(@currDLEntryIdx,(MAX_DL_ENTRIES * NBR_LONGS_PER_DL_ENTRY)+1))
     debug("* -------------")
-    debug("INTRP: List Count=", udec_long_(dsplyEntryIdx))
-    if dsplyEntryIdx == 1
-        repeat dsplyIdx from 0 to dsplyEntryIdx - 1
+    debug("INTRP: List Count=", udec_long_(currDLEntryIdx))
+    if currDLEntryIdx == 1
+        repeat dsplyListIdx from 0 to currDLEntryIdx - 1
             ' get arrays, then index to display info for each group
-            dsplyOffset := dsplyIdx * MAX_VARS_PER_DISPLAY
-            nbrGroups := long [@dsplyList][dsplyOffset + IDX_NGROUPS]
-            ' pStr = long[pGroupTitles][grpIdx]
-            pTitlesAr := long [@dsplyList][dsplyOffset + IDX_GRP_TITLES]
+            dsplyLstOffset := dsplyListIdx * NBR_LONGS_PER_DL_ENTRY
+            maxGrpSize := LONG[@dsplyList][dsplyLstOffset + IDX_MAX_GRP_VARS]
+            nbrGroups := LONG[@dsplyList][dsplyLstOffset + IDX_NGROUPS]
+            ' pStr = LONG[pGroupTitles][grpIdx]
+            pTitlesAr := LONG[@dsplyList][dsplyLstOffset + IDX_GRP_TITLES]
             debug("HDMI pTitlesAr: #", uhex_long_(pTitlesAr), uhex_long_array(pTitlesAr, nbrGroups))
-            ' nNbrGrpVars = long[pVarCtAr][grpIdx]
-            pVarCtsAr := long [@dsplyList][dsplyOffset + IDX_GRP_VAR_CTS]
+            ' nNbrGrpVars = LONG[pVarCtAr][grpIdx]
+            pVarCtsAr := LONG[@dsplyList][dsplyLstOffset + IDX_GRP_VAR_CTS]
             debug("HDMI pVarCtsAr: #", uhex_long_(pVarCtsAr), uhex_long_array(pVarCtsAr, nbrGroups))
-            ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-            pGrpNamesAr := long [@dsplyList][dsplyOffset + IDX_GRP_NAMES]
+            ' pGrpNameAr = LONG[pNamesAr][grpIdx], pVarName = LONG[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+            pGrpNamesAr := LONG[@dsplyList][dsplyLstOffset + IDX_GRP_NAMES]
             debug("HDMI pGrpNamesAr: #", uhex_long_(pGrpNamesAr), uhex_long_array(pGrpNamesAr, 10))
-            ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-            pGrpValuesAr := long [@dsplyList][dsplyOffset + IDX_GRP_VAR_PTRS]
+            ' pGrpLongVar = LONG[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+            pGrpValuesAr := LONG[@dsplyList][dsplyLstOffset + IDX_GRP_VAR_PTRS]
             debug("HDMI pGrpValuesAr: #", uhex_long_(pGrpValuesAr), uhex_long_array(pGrpValuesAr, 10))
             debug("INTRP: #grps", udec_long(nbrGroups))
             repeat grpIdx from 0 to nbrGroups - 1
-                pTitleStr := long[pTitlesAr][grpIdx]
+                pTitleStr := LONG[pTitlesAr][grpIdx]
                 debug("INTRP: grp-", udec_(grpIdx), " Title=", zstr_(pTitleStr))
 
    ' tell video subsystem to chase the new display-list
     nDriverCmd := DC_RELOAD
-    'debug("** passed parms:", uhex_long_array_(@dsplyEntryIdx, 33))
+    'debug("** passed parms:", uhex_long_array_(@currDLEntryIdx, 33))
     logMsg(string("* have display set! *"))
 
 PUB writeMessageToLog(pMessage)
@@ -225,19 +228,19 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
 
     vid.setCursor(vid.HIDDEN, 0) ' hide primary cursor
     placeLabelAtRC(8, 0, string("NbrEntries "))
-    placeValueOfWidthAtRC(8, 11, dsplyEntryIdx, 0)
-    if dsplyEntryIdx > 0
+    placeValueOfWidthAtRC(8, 11, currDLEntryIdx, 0)
+    if currDLEntryIdx > 0
         placeLabelAtRC(9, 0, string("NbrGroups "))
-        nbrGroups := long[pDsplyList][0]
+        nbrGroups := LONG[pDsplyList][0]
         placeValueOfWidthAtRC(9, 11, nbrGroups, 0)
-        pVarCtsAr := long [pDsplyList][dsplyOffset + IDX_GRP_VAR_CTS]
+        pVarCtsAr := LONG[pDsplyList][dsplyLstOffset + IDX_GRP_VAR_CTS]
 
         placeLabelAtRC(9, 15, string("Grp1: "))
-        nbrGroups := long[pDsplyList][0]
-        nbrGrpVars :=  long[pVarCtsAr][0]
+        nbrGroups := LONG[pDsplyList][0]
+        nbrGrpVars :=  LONG[pVarCtsAr][0]
         placeValueOfWidthAtRC(9, 21, nbrGrpVars, 0)
         placeLabelAtRC(9, 23, string("Grp2: "))
-        nbrGrpVars :=  long[pVarCtsAr][1]
+        nbrGrpVars :=  LONG[pVarCtsAr][1]
         placeValueOfWidthAtRC(9, 29, nbrGrpVars, 0)
 
     'repeat  ' stop here !!!
@@ -252,54 +255,56 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
         ' ------------------------
         ' do static updates
         ' ------------------------
-        if dsplyEntryIdx > 0
+        if currDLEntryIdx > 0
             ' ------------------------
             ' do static updates
             ' ------------------------
-            repeat dsplyIdx from 0 to dsplyEntryIdx - 1
+            repeat dsplyListIdx from 0 to currDLEntryIdx - 1
                 ' nGroups := DBG_GROUPS_CT
-                ' pGroupTitles := @@pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
-                ' pGroupVarCts := @@pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
-                ' pGroupNames := @@pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-                ' pGroupVars := @@pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+                ' pGroupTitles := @@pTitlesAr         ' pStr = LONG[pTitlesAr][grpIdx]
+                ' pGroupVarCts := @@pVarCtAr          ' nNbrGrpVars = LONG[pVarCtAr][grpIdx]
+                ' pGroupNames := @@pNamesAr           ' pGrpNameAr = LONG[pNamesAr][grpIdx], pVarName = LONG[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+                ' pGroupVars := @@pValsAr             ' pGrpLongVar = LONG[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
 
                 ' get arrays, then index to display info for each group
-                dsplyOffset := dsplyIdx * MAX_VARS_PER_DISPLAY
-                nbrGroups := long [pDsplyList][dsplyOffset + IDX_NGROUPS]
-                ' pStr = long[pGroupTitles][grpIdx]
-                pTitlesAr := long [pDsplyList][dsplyOffset + IDX_GRP_TITLES]
-                ' nNbrGrpVars = long[pVarCtAr][grpIdx]
-                pVarCtsAr := long [pDsplyList][dsplyOffset + IDX_GRP_VAR_CTS]
-                ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-                pGrpNamesAr := long [pDsplyList][dsplyOffset + IDX_GRP_NAMES]
-                ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-                pGrpValuesAr := long [pDsplyList][dsplyOffset + IDX_GRP_VAR_PTRS]
+                dsplyLstOffset := dsplyListIdx * NBR_LONGS_PER_DL_ENTRY
+                maxGrpSize := LONG[@dsplyList][dsplyLstOffset + IDX_MAX_GRP_VARS]
+                nbrGroups := LONG[pDsplyList][dsplyLstOffset + IDX_NGROUPS]
+                ' pStr = LONG[pGroupTitles][grpIdx]
+                pTitlesAr := LONG[pDsplyList][dsplyLstOffset + IDX_GRP_TITLES]
+                ' nNbrGrpVars = LONG[pVarCtAr][grpIdx]
+                pVarCtsAr := LONG[pDsplyList][dsplyLstOffset + IDX_GRP_VAR_CTS]
+                ' pGrpNameAr = LONG[pNamesAr][grpIdx], pVarName = LONG[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+                pGrpNamesAr := LONG[pDsplyList][dsplyLstOffset + IDX_GRP_NAMES]
+                ' pGrpLongVar = LONG[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+                pGrpValuesAr := LONG[pDsplyList][dsplyLstOffset + IDX_GRP_VAR_PTRS]
 
                 repeat grpIdx from 0 to nbrGroups - 1
+                    nGrpOffset := grpIdx * maxGrpSize
                     nGrpRow := 11
-                    pGrpTitle := long[pTitlesAr][grpIdx] ' retrieve ptr to title for this group
+                    pGrpTitle := LONG[pTitlesAr][grpIdx] ' retrieve ptr to title for this group
                     placeTitleAtRC(nGrpRow, colForGroupIdx(grpIdx) + 2, pGrpTitle)
                     nGrpRow++
-                    nbrGrpVars :=  long[pVarCtsAr][grpIdx]
+                    nbrGrpVars :=  LONG[pVarCtsAr][grpIdx]
                     repeat nVarIdx from 0 to nbrGrpVars - 1
-                        nGrpOffset := grpIdx * nbrGrpVars
-                        pGrpStr := long[pGrpNamesAr][nGrpOffset + nVarIdx] ' retrieve ptr to name of variable within this group
+                        pGrpStr := LONG[pGrpNamesAr][nGrpOffset + nVarIdx] ' retrieve ptr to name of variable within this group
                         placeLabelAtRC(nGrpRow++, colForGroupIdx(grpIdx) + 1, pGrpStr)
 
             repeat
                 ' ---------------------------------
                 ' loop on live updates until RELOAD
                 ' ---------------------------------
-                repeat dsplyIdx from 0 to dsplyEntryIdx - 1
+                repeat dsplyListIdx from 0 to currDLEntryIdx - 1
                     repeat grpIdx from 0 to nbrGroups - 1
+                        nGrpOffset := grpIdx * maxGrpSize
                         nGrpRow := 11 + 1 ' +1 skips title
-                        nbrGrpVars :=  long[pVarCtsAr][grpIdx]
+                        nbrGrpVars :=  LONG[pVarCtsAr][grpIdx]
                         repeat nVarIdx from 0 to nbrGrpVars - 1
                             ' the value pointers are grouped into a contiguous array
                             ' group0 ptrs first, then group1 ptrs second, etc.
-                            nGrpOffset := grpIdx * nbrGrpVars
-                            pGrpValue := long[pGrpValuesAr][nGrpOffset + nVarIdx] ' retrieve ptr to variable within this group
-                            placeValueOfWidthAtRC(nGrpRow++, colForGroupIdx(grpIdx) + 11, long[pGrpValue], 5)
+                            pGrpValue := LONG[pGrpValuesAr][nGrpOffset + nVarIdx] ' retrieve ptr to variable within this group
+                            placeValueOfWidthAtRC(nGrpRow++, colForGroupIdx(grpIdx) + 11, LONG[pGrpValue], 5)
+                waitus(80)  ' slight delay to prevent bad video effects
 
                 drvrCommand := LONG[pDriverCmd]
 
@@ -313,7 +318,7 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
             drvrCommand := DC_RUN
             placeWarningAtRC(10,0, string("** Clear RELOAD **"))
             showTextOfWidth(string(" : grpCt="), 0)
-            showValueOfWidth(dsplyEntryIdx, 0)
+            showValueOfWidth(currDLEntryIdx, 0)
 
         elseif drvrCommand == DC_RUN
             placeWarningAtRC(8,0, string("** No Groups Identified **"))
@@ -331,9 +336,9 @@ PRI handleDriverCommand(pDriverCmd, pDriverArg) : endingCommand | dvrCmd, dvrArg
         dvrArg := LONG[pDriverArg]
         if dvrArg <> 0
             logMsg(dvrArg)
-            long[pDriverArg] := 0   ' clear ptr- we used it
+            LONG[pDriverArg] := 0   ' clear ptr- we used it
         ' reset command to run
-        long[pDriverCmd] := endingCommand := DC_RUN
+        LONG[pDriverCmd] := endingCommand := DC_RUN
 
 DAT { workplace - to be removed }
     nGrpRow         long    0

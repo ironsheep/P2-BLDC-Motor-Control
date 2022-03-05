@@ -57,12 +57,16 @@ VAR { Data Structure for PASM Driver }
 
     long    pinbase                             ' 1 long                must set initially
     long    params_ptr                          ' 1 long                must set initially
+    ' / ----------------------------
     long    angle                               ' 1 long                must set continually
     ' 12 longs come from driver, 13th fault also from driver but only when happens
     long    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
     long    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
+    '  ----- HDMI monitored! ----
     long    hall, pos, duty, err                ' 4 sequential longs    returns data continually
+    '  --------------------------
     long    loop_ticks                          ' 1 sequential long     returns loop duration in ticks continually
+    ' \ ----------------------------
     long    fault                               ' 1 sequential long     written to 1 on fault
 
 VAR { Data for Motor Position Tracking }
@@ -71,12 +75,12 @@ VAR { Data for Motor Position Tracking }
     long    winEntryCt
     long    newCntsInSec
     long    windowSum
-    ' ------ HDMI monitored! -----
+    '  ----- HDMI monitored! ----
     long    rpmIn10ths
     long    rpm
     long    cntsInSec
     long    deltaTicks
-    ' -----------------------------
+    '  --------------------------
     long    priorPos
     long    rpmTenths
 
@@ -97,7 +101,7 @@ CON { Constants for HDMI Debug }
 
 VAR { Data Structure for HDMI Debug }
 
-    long    pTitlesAr[DBG_GROUPS_CT]
+    long    pTitlesAr[DBG_GROUPS_CT + 1]    ' first value is max vars
     long    pVarCtAr[DBG_GROUPS_CT]
     long    pNamesAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
     long    pValsAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
@@ -129,7 +133,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pTitlesAr][nGrpOffset] := @nameTitle1
     LONG[@pVarCtAr][nGrpOffset] := nVarsInGroup
     ' populate the empty name/value ptr tables
-    nValsGrpOffset := nGrpOffset * nVarsInGroup
+    nValsGrpOffset := nGrpOffset * DBG_MAX_VARS_IN_GROUP
     LONG[@pNamesAr][nValsGrpOffset + 0] := @name10
     LONG[@pNamesAr][nValsGrpOffset + 1] := @name11
     LONG[@pNamesAr][nValsGrpOffset + 2] := @name12
@@ -146,7 +150,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pTitlesAr][nGrpOffset] := @nameTitle2
     LONG[@pVarCtAr][nGrpOffset] := nVarsInGroup
      ' populate the empty name/value ptr tables
-    nValsGrpOffset := nGrpOffset * nVarsInGroup
+    nValsGrpOffset := nGrpOffset * DBG_MAX_VARS_IN_GROUP ' mult by vars in prior group
     LONG[@pNamesAr][nValsGrpOffset + 0] := @name20
     LONG[@pNamesAr][nValsGrpOffset + 1] := @name21
     LONG[@pNamesAr][nValsGrpOffset + 2] := @name22
@@ -155,6 +159,10 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pValsAr][nValsGrpOffset + 1] := @rpm
     LONG[@pValsAr][nValsGrpOffset + 2] := @cntsInSec
     LONG[@pValsAr][nValsGrpOffset + 3] := @deltaTicks
+
+    ' tell our table size to reader
+    nGrpOffset := 2
+    LONG[@pTitlesAr][nGrpOffset] := DBG_MAX_VARS_IN_GROUP
 
 PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars | tmpAbsPtr
 '' Return pointers to debug data structures for this motor-object instance
@@ -170,7 +178,10 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     debug("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
     debug("* NAMEs SOURCE2: ", uhex_long(@nameTitle2), uhex_byte_array(@nameTitle2, dataLen2))
     debug("* -------------")
-    debug("* MOTR Disply List: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, (2 * DBG_GROUPS_CT) + (2 * DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP)))
+    debug("* MOTR DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
+    debug("* MOTR DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
+    debug("* MOTR DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+    debug("* MOTR DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
     debug("* -------------")
     debug("* MOTR PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
     debug("* -------------")
@@ -359,7 +370,7 @@ PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoo
             if runLoopCount +// 1000 == 0
                 if useDebug
                     debug(`i 0 'calc lpCt=`udec_(runLoopCount)' update)
-        else
+        elseif bStartingUp == false
             eCtrlState := DCS_SPIN_DN
 
         if hall <> priorHall                    'if hall effect changed, update logic display
