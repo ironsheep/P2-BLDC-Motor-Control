@@ -28,13 +28,18 @@ CON { Public Interface Constants }
   ' Driver Status Enum
   #0, DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF
 
+  ' Driver Control State Enum
+  #0, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN
+
 CON { test pins for LA measurement }
 
   ' PIN_8 - PIN_15
   TEST_BASE_PIN = 8
   TEST_ALL_PINS = TEST_BASE_PIN addpins 7
-  TEST_PIN_OUTER_LOOP = 8
-  TEST_PIN_SENSE_LOOP = 9
+  TEST_PIN_OUTER_LOOP = TEST_BASE_PIN + 0       ' LA grey
+  TEST_PIN_SENSE_LOOP = TEST_BASE_PIN + 1       ' LA red
+  TEST_PIN_DRIVER_LOOP = TEST_BASE_PIN + 2            ' LA Yellow
+  TEST_PIN_DRIVER_TMR = TEST_BASE_PIN + 3             ' LA Green
 
 CON { driver internal Constants}
 
@@ -75,6 +80,16 @@ VAR { Data for Motor Position Tracking }
     long    priorPos
     long    rpmTenths
 
+    long    eCtrlState      ' uses ECS_* constant values
+
+DAT { misc time constants }
+    msTicks     long    0
+    ticks125ms  long    0                     ' time constants based on CPU freq
+    ticks500us  long    0                     '
+    ticks750us  long    0                     '
+    ticks800us  long    0                     '
+    ticks1ms    long    0                     '
+
 CON { Constants for HDMI Debug }
 
     DBG_GROUPS_CT = 2
@@ -94,6 +109,7 @@ DAT { Literals for HDMI Debug }
     name11      byte    "pos",0
     name12      byte    "duty",0
     name13      byte    "err",0
+    name14      byte    "state",0
     nextAddr1
     dataLen1     long    @nextAddr1 - @nameTitle1
 
@@ -109,7 +125,7 @@ DAT { Literals for HDMI Debug }
 PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
 ' do internal one-time setup of driver debug data
     nGrpOffset := 0
-    nVarsInGroup := 4
+    nVarsInGroup := 5
     LONG[@pTitlesAr][nGrpOffset] := @nameTitle1
     LONG[@pVarCtAr][nGrpOffset] := nVarsInGroup
     ' populate the empty name/value ptr tables
@@ -118,10 +134,12 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 1] := @name11
     LONG[@pNamesAr][nValsGrpOffset + 2] := @name12
     LONG[@pNamesAr][nValsGrpOffset + 3] := @name13
+    LONG[@pNamesAr][nValsGrpOffset + 4] := @name14
     LONG[@pValsAr][nValsGrpOffset + 0] := @hall
     LONG[@pValsAr][nValsGrpOffset + 1] := @pos
     LONG[@pValsAr][nValsGrpOffset + 2] := @duty
     LONG[@pValsAr][nValsGrpOffset + 3] := @err
+    LONG[@pValsAr][nValsGrpOffset + 4] := @eCtrlState
 
     nGrpOffset := 1
     nVarsInGroup := 4
@@ -159,13 +177,6 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     debug("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
     debug("* =============")
 
-DAT
-    msTicks     long    0
-    ticks125ms  long    0                     ' time constants based on CPU freq
-    ticks500us  long    0                     '
-    ticks750us  long    0                     '
-    ticks800us  long    0                     '
-    ticks1ms    long    0                     '
 
 PUB null()
 
@@ -184,8 +195,11 @@ PUB start(motorBasePin) : ok | legalBase
         ticks800us := (CLKFREQ / 1_000_000) * 800
         msTicks := ticks1ms := (CLKFREQ / 1_000)
 
+        ctrl_ticks := ticks500us
+
         loop_ticks := 0
         minDrvTics := 65535
+        eCtrlState := DCS_STOPPED
 
     ' ensure we only use legal values
     legalBase := motorBasePin
@@ -283,7 +297,7 @@ CON { --- PRIVATE Utility Methods --- }
 DAT { debug vars }
 
     maxRpm  long    0               ' tracking max for debug out reasons
-    useDebug   long    TRUE
+    useDebug   long    FALSE
 
 CON { --- The Motor driver --- }
 
@@ -320,6 +334,7 @@ PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoo
     pinlow(TEST_ALL_PINS)
 
     bStartingUp := true
+    eCtrlState := DCS_SPIN_UP
     angleTarget := 110_000_000
     increment := 50_000
     decrement := 50_000
@@ -344,6 +359,8 @@ PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoo
             if runLoopCount +// 1000 == 0
                 if useDebug
                     debug(`i 0 'calc lpCt=`udec_(runLoopCount)' update)
+        else
+            eCtrlState := DCS_SPIN_DN
 
         if hall <> priorHall                    'if hall effect changed, update logic display
             if useDebug
@@ -370,6 +387,7 @@ PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoo
                 angleIncrement -= decrement
             elseif angleIncrement <= decrement
                 angleIncrement := 0
+                eCtrlState := DCS_STOPPED
             'debug(`i 0 'calc lpCt=`udec_(runLoopCount), incr=`udec_(angleIncrement), decr=`udec_(decrement)' update)
 
         ' ramp up to TARGET
@@ -382,10 +400,12 @@ PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoo
                         angleIncrement := angleTarget
                 else
                     bStartingUp := false    ' done starting...
+                    eCtrlState := DCS_AT_SPEED
             'debug(`i 0 'calc lpct=`udec_(runLoopCount), incr=`udec_(angleIncrement), decr=`udec_(angleTarget)' update)
-
-        angle += 10_000_000                                'update angle to turn motor
-        'angle += angleIncrement                                'update angle to turn motor
+        ' @18.5V 10_000_000 is 5.8 RPM
+        ' @18.5V 10_000_000 is 5.8 RPM
+        'angle += 5_000_000                                'update angle to turn motor
+        angle += angleIncrement                                'update angle to turn motor
         'angle += qsin(1<<28, angleIncrement += 90_000, 0)        'update angle to turn motor
 
         if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
@@ -469,13 +489,15 @@ PRI distanceIn90ths(newPos) : n90ths
 DAT  {  DRIVER w/Motor Parameters  }
 '
 
-params      long                        ' motor-control parameters, reloaded every frame
+    ' ------ HDMI monitored! -----
+params                                  ' motor-control parameters, reloaded every frame
 offset_fwd  long    20 frac 360         ' 96 frac 360 (Doug's motor)
 offset_rev  long    340 frac 360        ' 228 frac 360 (Doug's motor)
 duty_min    long    100 << 4 #> OFFSET << 4
 duty_max    long    PWMLIM << 4 <# PWMLIM << 4
 duty_up     long    16
 duty_dn     long    4
+ctrl_ticks  long    0
 '
 '
 ' PASM Driver Program
@@ -487,6 +509,8 @@ driver          rdlong  x, ptra++                   ' get base pin
                 add     ptra, #1*4                  ' point to return data, angle is at long index [-1]
 
                 or      all_pins, x                 ' make all-pins variable
+                drvl    drvrLoopPnFld                ' preset test pins to low
+                drvl    drvrTmrPnFld
 
                 mov     y, #0                       ' make single-pin variables
 .pin            altd    y, #adc_u_i
@@ -530,9 +554,26 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     duty_, #0                   ' reset duty
                 mov     pos_, #0                    ' reset pos
                 mov     loop_ticks_, #0             ' just in case
+                getct   drvrSrtTicks
+                ' setup timer for 500uSec angle control loop
+                '  fixing loop run-time to 150 ticks @200MHz clock (750nS / 1.33 MHz)
+                mov     drvrEndTicks, drvrSrtTicks
+                addct1  drvrEndTicks, ctrl_ticks_
+
 
 .loop           getct   drvrSrtTicks
+                jnct1   #.noAdjust
+                ' time to adjust angle...
+                outnot  drvrTmrPnFld                ' toggle
+                outnot  drvrTmrPnFld
+                ' reset timer
+                mov     drvrEndTicks, drvrSrtTicks
+                addct1  drvrEndTicks, ctrl_ticks_
+                ' done, fall thru
+.noAdjust
                 call    #.next                      ' allow ADC rest period
+                outnot  drvrLoopPnFld                ' toggle
+                outnot  drvrLoopPnFld
 
                 rdpin   vio_levels+0, adc_u_i       ' VIO samples done, read them
                 rdpin   vio_levels+1, adc_v_i
@@ -671,7 +712,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 signx   x, #7                       ' sign-extend bit7
                 add     pos_, x                     ' add to current pos_
 
-                setq    #6-1                        ' load fresh parameter table
+                setq    #7-1                        ' load fresh parameter table (7 longs)
                 rdlong  params_ptr_+1, params_ptr_
 
 ' verify the following code (3 lines)
@@ -709,9 +750,9 @@ driver          rdlong  x, ptra++                   ' get base pin
 
                 ' wait for end of 150 ticks to pass (since start of loop)
                 '  fixing loop run-time to 150 ticks @200MHz clock (750nS / 1.33 MHz)
-                mov     drvrEndTicks, drvrSrtTicks
-                addct1  drvrEndTicks, #150
-                waitct1
+                'mov     drvrEndTicks, drvrSrtTicks
+                'addct1  drvrEndTicks, #150
+                'waitct1
                 jmp     #.loop                      ' main loop
 
 
@@ -728,6 +769,9 @@ fram        long    FRAME << 16 + 1         ' PWM frame setting
 bias        long    FRAME / 2               ' PWM center-frame bias
 third       long    1 FRAC 3                ' 120 degrees
 numerator   long    3300 << 11              ' numerator for ADC calculations
+
+drvrLoopPnFld   long    TEST_PIN_DRIVER_LOOP addpins 0  ' convert to pinfield
+drvrTmrPnFld    long    TEST_PIN_DRIVER_TMR addpins 0  ' convert to pinfield
 
 adc_modes   long    p_adc_gio | p_adc       ' adc modes, by state
             long    p_adc_vio | p_adc
@@ -798,6 +842,7 @@ duty_min_   res 1
 duty_max_   res 1
 duty_up_    res 1
 duty_dn_    res 1
+ctrl_ticks_ res 1
 
 drive_u_    res 1               '   12 contiguous longs for return data structure
 drive_v_    res 1
