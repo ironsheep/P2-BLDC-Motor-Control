@@ -12,10 +12,6 @@
 '' =================================================================================================
 CON { forward our interface constants }
 
-    HDMI_BASE_PIN = 0
-
-    STACK_SIZE_LONGS = 64
-
     ' terminal colors
     #0, TC_BLACK, TC_BLUE, TC_GREEN, TC_CYAN, TC_RED, TC_MAGENTA, TC_ORANGE, TC_WHITE
     ' terminal brightness
@@ -23,20 +19,62 @@ CON { forward our interface constants }
     TC_YELLOW = TC_BRIGHT | TC_ORANGE
     TC_GRAY = TC_BRIGHT | TC_BLACK
 
+    ' internal driver commands
+    #0, DC_UNKNOWN, DC_RUN, DC_RELOAD, DC_LOG_MSG
+
 OBJ { included objects }
 
-    hdmi    :   "hng034rm"  ' our HDMI driver (HDMI Eval Adapter)
+'    hdmi    :   "hng034rm"  ' our HDMI driver (HDMI Eval Adapter)
+    vid     :   "p2textdrv"
 
 DAT { debug display data }
 
-    hdmiCog long    0
+    hdmiCog         long    0
+    nDriverCmd      long    DC_RUN
+    nDriverArg      long    0
+
     taskStack       long    0[STACK_SIZE_LONGS]
 
 
 
 PUB start() : ok
+'' Start the HDMI debug driver
+    nDriverCmd := DC_RUN
+    nDriverArg := 0
+    dsplyEntryIdx := 0
+    ok := hdmiCog := cogspin(NEWCOG, taskShowDebug(@nDriverCmd, @nDriverArg, @dsplyList), @taskStack) + 1
 
-    ok := hdmiCog := cogspin(NEWCOG, taskShowDebug(), @taskStack) + 1
+PUB stop()
+'' Stop cog and release pins assigned
+
+    if hdmiCog
+        cogstop(hdmiCog - 1)
+        hdmiCog := 0
+
+    if vidCog
+        cogstop(vidCog - 1)
+        vidCog := 0
+
+    ' Bottom 8 pins for HDMI Eval Board
+    pinclear(HDMI_BASE_PIN addpins 7)
+
+
+CON { HDMI Debug Constants }
+
+    HDMI_BASE_PIN = 0
+    DVI_RES = vid.WVGA ' or try WVGA or SVGA_50H
+
+    ' control optional text screen flags by setting 1 or 0 in multipliers below
+    FLAGS = (0*vid.DOUBLE_HIGH + 0*vid.DOUBLE_WIDE + 1*vid.FLASH_TEXT)
+
+    STACK_SIZE_LONGS = 128  ' was 64
+    MAX_DISPLAYS = 6
+    MAX_VARS_PER_DISPLAY = 5
+
+    FOREGROUND = vid.FOREGROUND
+    BACKGROUND = vid.BACKGROUND
+
+    #0, IDX_NGROUPS, IDX_GRP_TITLES, IDX_GRP_NAMES, IDX_GRP_VAR_CTS, IDX_GRP_VAR_PTRS
 
 DAT { TASK: DEBUG w/Vars }
 
@@ -49,110 +87,363 @@ DAT { TASK: DEBUG w/Vars }
 
     currMode        long    0
     ccc             long    0
-    cpl             long    0
+    charsPerLn      long    0
     buf_ptr         long    0
     buflen          long    0
-    lines           long    0
-    x               long    0
-    y               long    0
-    fg              long    0
-    bg              long    0
-    ctr             long    0
+    lnsPerScrn      long    0
+    ' driver vars
+    textRow             long    0
+    col             long    0
+    logRow          long    0
 
     colorText       byte    "color-"
     nbrAscii        byte    "0"
                     byte    0   ' terminator
-    hzBarsText       byte    "---------|",0
+    hzBarsText      byte    "---------|",0
 
-PRI taskShowDebug()
+    dsplyEntryIdx   long    0
+    dsplyList       long    0[MAX_DISPLAYS * MAX_VARS_PER_DISPLAY]
 
-    hdmi.start(512+64+48, HDMI_BASE_PIN)
-    hdmi.setfontfamily(0)
-    hdmi.waitvbl(100)
-    hdmi.outtextxycg(0,0,hdmi.inttostr(long[0]),11,1)
-    hdmi.waitvbl(200)
+    drvrCommand     long    0
+    drvrArg         long    0
+    dsplyIdx        long    0
+    grpIdx          long    0
+    nbrGroups       long    0
+    dsplyOffset     long    0
 
-    'currMode := 672
-    currMode := 736
-    hdmi.setfontfamily(4)
-    hdmi.setmode(currMode)   ' 100 x
+' for new driver
+    vidCog     long    0
+    origfont     long    0
+    dsplyOffset1     long    0
+    dsplyOffset2     long    0
 
-    hdmi.cls(0,0)   ' ? 1 ? -> cls(fg,bg)
+PUB registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars) | nDsplyOffset, pTitleStr
+'' record a new display-list to be shown
+    debug("HDMI Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+    debug("INTRP: ENTRY ", udec_long(dsplyEntryIdx))
+    ' calculate the offset from current index
+    nDsplyOffset := dsplyEntryIdx * MAX_VARS_PER_DISPLAY
+    long [@dsplyList][nDsplyOffset + IDX_NGROUPS] := nGroups
+    long [@dsplyList][nDsplyOffset + IDX_GRP_TITLES] := pGroupTitles
+    long [@dsplyList][nDsplyOffset + IDX_GRP_NAMES] := pGroupNames
+    long [@dsplyList][nDsplyOffset + IDX_GRP_VAR_CTS] := pGroupVarCts
+    long [@dsplyList][nDsplyOffset + IDX_GRP_VAR_PTRS] := pGroupVars
+    ' mark that we have a set
+    '   bump index to next entry
+    dsplyEntryIdx++
+    debug("HDMI Stored as: #", udec_long_(dsplyEntryIdx), uhex_long_array(@dsplyEntryIdx,(MAX_DISPLAYS * MAX_VARS_PER_DISPLAY)+1))
+    debug("* -------------")
+    debug("INTRP: List Count=", udec_long_(dsplyEntryIdx))
+    if dsplyEntryIdx == 1
+        repeat dsplyIdx from 0 to dsplyEntryIdx - 1
+            ' get arrays, then index to display info for each group
+            dsplyOffset := dsplyIdx * MAX_VARS_PER_DISPLAY
+            nbrGroups := long [@dsplyList][dsplyOffset + IDX_NGROUPS]
+            ' pStr = long[pGroupTitles][grpIdx]
+            pTitlesAr := long [@dsplyList][dsplyOffset + IDX_GRP_TITLES]
+            debug("HDMI pTitlesAr: #", uhex_long_(pTitlesAr), uhex_long_array(pTitlesAr, nbrGroups))
+            ' nNbrGrpVars = long[pVarCtAr][grpIdx]
+            pVarCtsAr := long [@dsplyList][dsplyOffset + IDX_GRP_VAR_CTS]
+            debug("HDMI pVarCtsAr: #", uhex_long_(pVarCtsAr), uhex_long_array(pVarCtsAr, nbrGroups))
+            ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+            pGrpNamesAr := long [@dsplyList][dsplyOffset + IDX_GRP_NAMES]
+            debug("HDMI pGrpNamesAr: #", uhex_long_(pGrpNamesAr), uhex_long_array(pGrpNamesAr, 10))
+            ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+            pGrpValuesAr := long [@dsplyList][dsplyOffset + IDX_GRP_VAR_PTRS]
+            debug("HDMI pGrpValuesAr: #", uhex_long_(pGrpValuesAr), uhex_long_array(pGrpValuesAr, 10))
+            debug("INTRP: #grps", udec_long(nbrGroups))
+            repeat grpIdx from 0 to nbrGroups - 1
+                pTitleStr := long[pTitlesAr][grpIdx]
+                debug("INTRP: grp-", udec_(grpIdx), " Title=", zstr_(pTitleStr))
 
-    cpl := hdmi.getCharPerLine()
-    lines := hdmi.getNumberLines()
+   ' tell video subsystem to chase the new display-list
+    nDriverCmd := DC_RELOAD
+    'debug("** passed parms:", uhex_long_array_(@dsplyEntryIdx, 33))
+    logMsg(string("* have display set! *"))
 
-    hdmi.outtextxycg(0,0,string("mode"),  TC_WHITE, TC_BLACK)
-    hdmi.outtextxycg(0,16,string("cpl"), TC_BRIGHT | TC_BLACK, TC_BLACK)'
-    hdmi.outtextxycg(0,32,string("lines"), TC_BRIGHT | TC_BLACK, TC_BLACK)
-    hdmi.outtextxycg(0,48,string("--ctr"), TC_WHITE, TC_GRAY)
-    hdmi.outtextxycg(64,0,hdmi.inttostr(currMode), TC_BRIGHT | TC_RED, TC_BLACK)
-    hdmi.outtextxycg(64,16,hdmi.inttostr(cpl), TC_BRIGHT | TC_RED, TC_BLACK)
-    hdmi.outtextxycg(64,32,hdmi.inttostr(lines), TC_BRIGHT | TC_RED, TC_BLACK)
+PUB writeMessageToLog(pMessage)
+'' record a new display to be shown
+    ' block until prior message accepted
+    'repeat
+    '    if nDriverArg <> 0
+    '        waitms(50)
+    '    else
+     '       quit
+    ' request next message
+    nDriverArg := pMessage
+    nDriverCmd := DC_LOG_MSG
 
-    x := 0
-    y := 64
-    fg := 0
-    repeat 16
-        byte [@nbrAscii] := (fg > 9) ? fg + $41 - 10 : fg + $30
-        bg := (fg == 0) ? TC_WHITE : TC_BLACK
-        hdmi.outtextxycg(x,y,@colorText,fg,bg)     ' blue
-        y += 16
-        fg += 1
-    ' blue
-    ' green
-    ' red
-    ' violet
-    ' orange
+PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
 
-    fg := 1
-    x := 0
-    repeat 12
-        hdmi.outtextxycg(x,y,@hzBarsText,fg,bg)     ' blue
-        fg += 1
-        x += 8*10
+    vidCog := vid.initDvi(-1, HDMI_BASE_PIN, 0, FLAGS, DVI_RES) + 1
 
-    repeat
-        ctr++
-        'hdmi.waitvbl(40)
-        ' cls(fg,bg)
-        hdmi.outtextxycg(64,48,hdmi.inttostr(ctr), TC_BRIGHT | TC_RED, TC_BLACK)
+    logRow := 15    ' log starts at 15
+    ' now we can map SEND to output to the active text region
+    send:=@vid.tx
 
+    ' preserve default font pointer
+    origfont := vid.getFontAddr()
 
+    ' now put some text on the screen to demonstrate basic features
+    vid.setTextColours(vid.CYAN, vid.BLACK)
+    send("-- BLDC Motor Driver DEBUG --", 13, 10)
+'{
+    vid.setTextColours(vid.YELLOW, vid.BLACK)
+    send("Current P2 frequency = ")
+    showValueOfWidth(clkfreq, 0)  ' can print simple decimals or hex
+    send(" MHz")
+    send(13, 10, "Video COGID: ")
+    showValueOfWidth(vidCog, 0)
+    send(13, 10, "tvDbg COGID: ")
+    showValueOfWidth(hdmiCog, 0)
+    send(13,10,"Nbr Cols: ")
+    showValueOfWidth(vid.getCurrentColumns(), 0)
+    send(13,10,"Nbr Rows:  ")
+    showValueOfWidth(vid.getCurrentRows(), 0)
+    send(13,10,"Font Ht:   ")
+    showValueOfWidth(vid.getFontHeight(), 0)
+    waitms(5)
+'}
 {
-    repeat ' stop here
+    textRow := 1
+    vid.setTextColours(vid.YELLOW, vid.BLACK)
+    placeTextAtRC(textRow++, 0, string("Current P2 freq: "))
+    showValueOfWidth(clkfreq, 0)  ' can print simple decimals or hex
+    showTextOfWidth(string(" MHz"), 0)
+    placeTextAtRC(textRow++, 0, string("Video COGID: "))
+    showValueOfWidth(vidCog, 0)
+    placeTextAtRC(textRow++, 0, string("COGID: "))
+    showValueOfWidth(hdmiCog, 0)
+    placeTextAtRC(textRow++, 0, string("Nbr Cols: "))
+    showValueOfWidth(vid.getCurrentColumns(), 0)
+    placeTextAtRC(textRow++, 0, string("Nbr Rows:  "))
+    showValueOfWidth(vid.getCurrentRows(), 0)
+    placeTextAtRC(textRow++, 0, string("Font Ht:   "))
+    showValueOfWidth(vid.getFontHeight(), 0)
+'}
 
-    'hdmi.setfontfamily(4)
 
-    modeIdx := 0
+    vid.setCursor(vid.HIDDEN, 0) ' hide primary cursor
+    placeLabelAtRC(8, 0, string("NbrEntries "))
+    placeValueOfWidthAtRC(8, 11, dsplyEntryIdx, 0)
+    if dsplyEntryIdx > 0
+        placeLabelAtRC(9, 0, string("NbrGroups "))
+        nbrGroups := long[pDsplyList][0]
+        placeValueOfWidthAtRC(9, 11, nbrGroups, 0)
+        pVarCtsAr := long [pDsplyList][dsplyOffset + IDX_GRP_VAR_CTS]
+
+        placeLabelAtRC(9, 15, string("Grp1: "))
+        nbrGroups := long[pDsplyList][0]
+        nbrGrpVars :=  long[pVarCtsAr][0]
+        placeValueOfWidthAtRC(9, 21, nbrGrpVars, 0)
+        placeLabelAtRC(9, 23, string("Grp2: "))
+        nbrGrpVars :=  long[pVarCtsAr][1]
+        placeValueOfWidthAtRC(9, 29, nbrGrpVars, 0)
+
+    'repeat  ' stop here !!!
+
     repeat
-        currMode := long [@displayModes][modeIdx++]
-        if currMode == 0
-            quit
+        drvrCommand := LONG[pDriverCmd]
+        drvrArg := LONG[pDriverArg]
 
-        hdmi.setmode(currMode)
-        hdmi.waitvbl(10)
+        if drvrCommand <> DC_RUN
+            drvrCommand := handleDriverCommand(pDriverCmd, pDriverArg)
 
-        cpl := hdmi.getCharPerLine()
-        lines := hdmi.getNumberLines()
-        buflen := hdmi.getBufferLength()
-        buf_ptr := hdmi.getBufferPtr()
+        ' ------------------------
+        ' do static updates
+        ' ------------------------
+        if dsplyEntryIdx > 0
+            ' ------------------------
+            ' do static updates
+            ' ------------------------
+            repeat dsplyIdx from 0 to dsplyEntryIdx - 1
+                ' nGroups := DBG_GROUPS_CT
+                ' pGroupTitles := @@pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
+                ' pGroupVarCts := @@pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
+                ' pGroupNames := @@pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+                ' pGroupVars := @@pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
 
-        hdmi.cls(0,0)
-        hdmi.outtextxycg(0,0,string("Bmode"),3,0)
-        hdmi.outtextxycg(0,16,string("cpl"),3,0)'
-        hdmi.outtextxycg(0,32,string("buf_ptr"),3,0)
-        hdmi.outtextxycg(0,48,string("buflen"),3,0)
-        hdmi.outtextxycg(0,64,string("lines"),3,0)
-        hdmi.outtextxycg(64,0,hdmi.inttostr(currMode),2,0)
-        hdmi.outtextxycg(64,16,hdmi.inttostr(cpl),2,0)
-        hdmi.outtextxycg(64,32,hdmi.inttostr(buf_ptr),2,0)
-        hdmi.outtextxycg(64,48,hdmi.inttostr(buflen),2,0)
-        hdmi.outtextxycg(64,64,hdmi.inttostr(lines),2,0)
-        hdmi.waitvbl(200)
+                ' get arrays, then index to display info for each group
+                dsplyOffset := dsplyIdx * MAX_VARS_PER_DISPLAY
+                nbrGroups := long [pDsplyList][dsplyOffset + IDX_NGROUPS]
+                ' pStr = long[pGroupTitles][grpIdx]
+                pTitlesAr := long [pDsplyList][dsplyOffset + IDX_GRP_TITLES]
+                ' nNbrGrpVars = long[pVarCtAr][grpIdx]
+                pVarCtsAr := long [pDsplyList][dsplyOffset + IDX_GRP_VAR_CTS]
+                ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+                pGrpNamesAr := long [pDsplyList][dsplyOffset + IDX_GRP_NAMES]
+                ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+                pGrpValuesAr := long [pDsplyList][dsplyOffset + IDX_GRP_VAR_PTRS]
 
-        'repeat  ' only do 1st ieration and stop
-}
+                repeat grpIdx from 0 to nbrGroups - 1
+                    nGrpRow := 11
+                    pGrpTitle := long[pTitlesAr][grpIdx] ' retrieve ptr to title for this group
+                    placeTitleAtRC(nGrpRow, colForGroupIdx(grpIdx) + 2, pGrpTitle)
+                    nGrpRow++
+                    nbrGrpVars :=  long[pVarCtsAr][grpIdx]
+                    repeat nVarIdx from 0 to nbrGrpVars - 1
+                        nGrpOffset := grpIdx * nbrGrpVars
+                        pGrpStr := long[pGrpNamesAr][nGrpOffset + nVarIdx] ' retrieve ptr to name of variable within this group
+                        placeLabelAtRC(nGrpRow++, colForGroupIdx(grpIdx) + 1, pGrpStr)
+
+            repeat
+                ' ---------------------------------
+                ' loop on live updates until RELOAD
+                ' ---------------------------------
+                repeat dsplyIdx from 0 to dsplyEntryIdx - 1
+                    repeat grpIdx from 0 to nbrGroups - 1
+                        nGrpRow := 11 + 1 ' +1 skips title
+                        nbrGrpVars :=  long[pVarCtsAr][grpIdx]
+                        repeat nVarIdx from 0 to nbrGrpVars - 1
+                            ' the value pointers are grouped into a contiguous array
+                            ' group0 ptrs first, then group1 ptrs second, etc.
+                            nGrpOffset := grpIdx * nbrGrpVars
+                            pGrpValue := long[pGrpValuesAr][nGrpOffset + nVarIdx] ' retrieve ptr to variable within this group
+                            placeValueOfWidthAtRC(nGrpRow++, colForGroupIdx(grpIdx) + 11, long[pGrpValue], 5)
+
+                drvrCommand := LONG[pDriverCmd]
+
+                if drvrCommand <> DC_RUN and drvrCommand <> DC_RELOAD
+                    drvrCommand := handleDriverCommand(pDriverCmd, pDriverArg)
+
+            until drvrCommand == DC_RELOAD
+            drvrCommand := LONG[pDriverCmd] := DC_RUN  ' reset the command
+
+        elseif drvrCommand == DC_RELOAD
+            drvrCommand := DC_RUN
+            placeWarningAtRC(10,0, string("** Clear RELOAD **"))
+            showTextOfWidth(string(" : grpCt="), 0)
+            showValueOfWidth(dsplyEntryIdx, 0)
+
+        elseif drvrCommand == DC_RUN
+            placeWarningAtRC(8,0, string("** No Groups Identified **"))
+
+        else
+            placeWarningAtRC(9,0, string("** NOT in RUN mode **"))
+            showTextOfWidth(string(" : drvCmd="), 0)
+            showValueOfWidth(drvrCommand, 0)
+        waitms(250) ' idle until group/command arrives
+
+PRI handleDriverCommand(pDriverCmd, pDriverArg) : endingCommand | dvrCmd, dvrArg
+    endingCommand := dvrCmd := LONG[pDriverCmd]
+    ' if we are asked to log a message, do so then return to run
+    if dvrCmd == DC_LOG_MSG
+        dvrArg := LONG[pDriverArg]
+        if dvrArg <> 0
+            logMsg(dvrArg)
+            long[pDriverArg] := 0   ' clear ptr- we used it
+        ' reset command to run
+        long[pDriverCmd] := endingCommand := DC_RUN
+
+DAT { workplace - to be removed }
+    nGrpRow         long    0
+    pTitlesAr       long    0
+    pGrpNamesAr     long    0
+    pGrpStr         long    0
+    pVarCtsAr       long    0
+    nbrGrpVars      long    0
+    nVarIdx         long    0
+    pGrpTitle       long    0
+    pGrpValuesAr    long    0
+    pNamesAr        long    0
+    pGrpValue       long    0
+    pVarsAr         long    0
+    nGrpOffset      long    0
+
+CON { Timing Constants }
+
+  POS_DELAY_IN_US = 100
+
+  COLR_BG = vid.BLACK
+  COLR_TITLE = vid.GREEN
+  COLR_TEXT = vid.YELLOW
+  COLR_LABEL = vid.LIGHT_GREY
+  COLR_VALUE = vid.RED
+
+PRI logMsg(pMessage) | nRow, nCol
+' write message to log area of screen
+    return
+    nRow, nCol := vid.getTextPos()  ' preserve cursor locn
+    setTextPos(logRow, 0)
+    logRow += 1
+    vid.setTextColours(FOREGROUND, BACKGROUND)
+    vid.printStr(pMessage)
+    setTextPos(nRow, nCol)  ' restore cursor locn
+
+PRI placeWarningAtRC(nRow, nCol, pMsg)
+' place label-colored string on screen
+    setTextPos(nRow, nCol)
+    vid.setTextColours(vid.RED, vid.WHITE)
+    vid.printStr(pMsg)
+
+PRI placeTitleAtRC(nRow, nCol, pLabel) | pValidLabel
+' place title-colored string on screen
+    pValidLabel := verifyLabel(pLabel)
+    setTextPos(nRow, nCol)
+    vid.setTextColours(COLR_TITLE, COLR_BG)
+    vid.printStr(pValidLabel)
+DAT
+
+    badLabel    byte    "-?lbl?-",0
+
+PRI verifyLabel(pStr) : pOkLabel | nLen
+    nLen := strsize(pStr)
+    pOkLabel := (nLen > 20) ? @badLabel : pStr
+
+PRI placeTextAtRC(nRow, nCol, pText)
+' place text-colored string on screen
+    setTextPos(nRow, nCol)
+    vid.setTextColours(COLR_TEXT, COLR_BG)
+    vid.printStr(pText)
+
+PRI placeLabelAtRC(nRow, nCol, pLabel)
+' place label-colored string at R,C on screen
+    setTextPos(nRow, nCol)
+    vid.setTextColours(COLR_LABEL, COLR_BG)
+    vid.printStr(pLabel)
+
+PRI placeValueOfWidthAtRC(nRow, nCol, nValue, nWidth) '| fg, bg
+' place value-colored string at R,C on screen
+    'fg, bg := vid.getTextColours()  ' preserve colors
+    clear(nRow, nCol, nWidth)
+    setTextPos(nRow, nCol)
+    vid.setTextColours(COLR_VALUE, COLR_BG)
+    vid.dec(nValue)
+    'vid.setTextColours(fg, bg)  ' restore colors
+
+PRI showValueOfWidth(nValue, nWidth) | fg, bg, nRow, nCol
+' place value-colored string on screen
+    'nRow, nCol := vid.getTextPos()
+    nRow, nCol := vid.getTextPos()
+    clear(nRow, nCol, nWidth)
+    fg, bg := vid.getTextColours()  ' preserve colors
+    vid.setTextColours(COLR_VALUE, COLR_BG)
+    vid.dec(nValue)
+    vid.setTextColours(fg, bg)  ' restore colors
+
+PRI showTextOfWidth(pStr, nWidth) '| nRow, nCol
+' place text-colored string on screen
+    'nRow, nCol := vid.getTextPos()
+    'setTextPos(nRow, nCol)
+    vid.setTextColours(COLR_TEXT, COLR_BG)
+    vid.printStr(pStr)
+
+PRI setTextPos(nRow, nCol)
+' do driver call to set then wait
+    vid.setTextPos(nRow, nCol)
+    'waitus(POS_DELAY_IN_US)
+
+PRI clear(nRow, nCol, nWidth)
+    setTextPos(nRow, nCol)
+    if nWidth > 0
+        repeat nWidth
+            vid.out($20)
+
+PRI colForGroupIdx(nGroupIdx) : nColumn
+' column for group is every 30 chars
+    nColumn := nGroupIdx * 22
+
+
 CON { license }
 {{
 
