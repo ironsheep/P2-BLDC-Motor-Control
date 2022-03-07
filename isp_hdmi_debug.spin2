@@ -142,19 +142,19 @@ PUB registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
             dsplyLstOffset := dsplyListIdx * NBR_LONGS_PER_DL_ENTRY
             maxGrpSize := LONG[@dsplyList][dsplyLstOffset + IDX_MAX_GRP_VARS]
             nbrGroups := LONG[@dsplyList][dsplyLstOffset + IDX_NGROUPS]
+            debug("INTRP: #grps: ", udec_long(nbrGroups))
             ' pStr = LONG[pGroupTitles][grpIdx]
             pTitlesAr := LONG[@dsplyList][dsplyLstOffset + IDX_GRP_TITLES]
-            debug("HDMI pTitlesAr: #", uhex_long_(pTitlesAr), uhex_long_array(pTitlesAr, nbrGroups))
+            debug("HDMI pTitlesAr: #", uhex_long_(pTitlesAr), uhex_long_array(pTitlesAr, nbrGroups + 1))
             ' nNbrGrpVars = LONG[pVarCtAr][grpIdx]
             pVarCtsAr := LONG[@dsplyList][dsplyLstOffset + IDX_GRP_VAR_CTS]
             debug("HDMI pVarCtsAr: #", uhex_long_(pVarCtsAr), uhex_long_array(pVarCtsAr, nbrGroups))
             ' pGrpNameAr = LONG[pNamesAr][grpIdx], pVarName = LONG[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
             pGrpNamesAr := LONG[@dsplyList][dsplyLstOffset + IDX_GRP_NAMES]
-            debug("HDMI pGrpNamesAr: #", uhex_long_(pGrpNamesAr), uhex_long_array(pGrpNamesAr, 10))
+            debug("HDMI pGrpNamesAr: #", uhex_long_(pGrpNamesAr), uhex_long_array(pGrpNamesAr, nbrGroups * maxGrpSize))
             ' pGrpLongVar = LONG[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
             pGrpValuesAr := LONG[@dsplyList][dsplyLstOffset + IDX_GRP_VAR_PTRS]
-            debug("HDMI pGrpValuesAr: #", uhex_long_(pGrpValuesAr), uhex_long_array(pGrpValuesAr, 10))
-            debug("INTRP: #grps", udec_long(nbrGroups))
+            debug("HDMI pGrpValuesAr: #", uhex_long_(pGrpValuesAr), uhex_long_array(pGrpValuesAr, nbrGroups * maxGrpSize))
             repeat grpIdx from 0 to nbrGroups - 1
                 pTitleStr := LONG[pTitlesAr][grpIdx]
                 debug("INTRP: grp-", udec_(grpIdx), " Title=", zstr_(pTitleStr))
@@ -188,10 +188,10 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
     origfont := vid.getFontAddr()
 
     ' now put some text on the screen to demonstrate basic features
-    vid.setTextColours(vid.CYAN, vid.BLACK)
+    vid.setTextColours(COLR_TITLE, vid.BLACK)
     send("-- BLDC Motor Driver DEBUG --", 13, 10)
 '{
-    vid.setTextColours(vid.YELLOW, vid.BLACK)
+    vid.setTextColours(COLR_TEXT, vid.BLACK)
     send("Current P2 frequency = ")
     showValueOfWidth(clkfreq, 0)  ' can print simple decimals or hex
     send(" MHz")
@@ -209,7 +209,7 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
 '}
 {
     textRow := 1
-    vid.setTextColours(vid.YELLOW, vid.BLACK)
+    vid.setTextColours(COLR_TEXT, vid.BLACK)
     placeTextAtRC(textRow++, 0, string("Current P2 freq: "))
     showValueOfWidth(clkfreq, 0)  ' can print simple decimals or hex
     showTextOfWidth(string(" MHz"), 0)
@@ -226,23 +226,6 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
 '}
 
 
-    vid.setCursor(vid.HIDDEN, 0) ' hide primary cursor
-    placeLabelAtRC(8, 0, string("NbrEntries "))
-    placeValueOfWidthAtRC(8, 11, currDLEntryIdx, 0)
-    if currDLEntryIdx > 0
-        placeLabelAtRC(9, 0, string("NbrGroups "))
-        nbrGroups := LONG[pDsplyList][0]
-        placeValueOfWidthAtRC(9, 11, nbrGroups, 0)
-        pVarCtsAr := LONG[pDsplyList][dsplyLstOffset + IDX_GRP_VAR_CTS]
-
-        placeLabelAtRC(9, 15, string("Grp1: "))
-        nbrGroups := LONG[pDsplyList][0]
-        nbrGrpVars :=  LONG[pVarCtsAr][0]
-        placeValueOfWidthAtRC(9, 21, nbrGrpVars, 0)
-        placeLabelAtRC(9, 23, string("Grp2: "))
-        nbrGrpVars :=  LONG[pVarCtsAr][1]
-        placeValueOfWidthAtRC(9, 29, nbrGrpVars, 0)
-
     'repeat  ' stop here !!!
 
     repeat
@@ -255,7 +238,40 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
         ' ------------------------
         ' do static updates
         ' ------------------------
+
         if currDLEntryIdx > 0
+            clear(25, 0, 60)    ' clear message area - we'll paint it again if needed...
+            clear(26, 0, 60)
+            clear(27, 0, 60)
+
+            vid.setCursor(vid.HIDDEN, 0) ' hide primary cursor
+            placeLabelAtRC(8, 0, string("NbrEntries "))
+            placeValueOfWidthAtRC(8, 11, currDLEntryIdx, 0)
+            if currDLEntryIdx > 0
+                placeLabelAtRC(9, 0, string("NbrGroups "))
+                nbrGroups := LONG[pDsplyList][IDX_NGROUPS]
+                placeValueOfWidthAtRC(9, 11, nbrGroups, 0)
+                pVarCtsAr := LONG[pDsplyList][IDX_GRP_VAR_CTS]
+
+                placeLabelAtRC(9, 15, string("Grp1: "))
+                nbrGrpVars :=  LONG[pVarCtsAr][0]
+                placeValueOfWidthAtRC(9, 21, nbrGrpVars, 0)
+                placeLabelAtRC(9, 23, string("Grp2: "))
+                nbrGrpVars :=  LONG[pVarCtsAr][1]
+                placeValueOfWidthAtRC(9, 29, nbrGrpVars, 0)
+
+
+            placeBoxAtRC(rowForGroupRow(1), colForGroupIdx(2), 18, 10)
+            placeBoxAtRC(rowForGroupRow(1), colForGroupIdx(3), 18, 10)
+            placeBoxAtRC(rowForGroupRow(1), colForGroupIdx(4), 18, 10)
+{
+    ' NOTE: let's use this space for scolling log
+            placeBoxAtRC(rowForGroupRow(2), colForGroupIdx(0), 18, 10)
+            placeBoxAtRC(rowForGroupRow(2), colForGroupIdx(1), 18, 10)
+            placeBoxAtRC(rowForGroupRow(2), colForGroupIdx(2), 18, 10)
+            placeBoxAtRC(rowForGroupRow(2), colForGroupIdx(3), 18, 10)
+            placeBoxAtRC(rowForGroupRow(2), colForGroupIdx(4), 18, 10)
+'}
             ' ------------------------
             ' do static updates
             ' ------------------------
@@ -281,14 +297,14 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
 
                 repeat grpIdx from 0 to nbrGroups - 1
                     nGrpOffset := grpIdx * maxGrpSize
-                    nGrpRow := 11
+                    nGrpRow := rowForGroupRow(1) + 1
                     pGrpTitle := LONG[pTitlesAr][grpIdx] ' retrieve ptr to title for this group
-                    placeTitleAtRC(nGrpRow, colForGroupIdx(grpIdx) + 2, pGrpTitle)
+                    placeTitleAtRC(nGrpRow, colForGroupIdx(grpIdx + 2) + 3, pGrpTitle)
                     nGrpRow++
                     nbrGrpVars :=  LONG[pVarCtsAr][grpIdx]
                     repeat nVarIdx from 0 to nbrGrpVars - 1
                         pGrpStr := LONG[pGrpNamesAr][nGrpOffset + nVarIdx] ' retrieve ptr to name of variable within this group
-                        placeLabelAtRC(nGrpRow++, colForGroupIdx(grpIdx) + 1, pGrpStr)
+                        placeLabelAtRC(nGrpRow++, colForGroupIdx(grpIdx + 2) + 2, pGrpStr)
 
             repeat
                 ' ---------------------------------
@@ -297,14 +313,14 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
                 repeat dsplyListIdx from 0 to currDLEntryIdx - 1
                     repeat grpIdx from 0 to nbrGroups - 1
                         nGrpOffset := grpIdx * maxGrpSize
-                        nGrpRow := 11 + 1 ' +1 skips title
+                        nGrpRow := rowForGroupRow(1) + 2 ' +2 skips title
                         nbrGrpVars :=  LONG[pVarCtsAr][grpIdx]
                         repeat nVarIdx from 0 to nbrGrpVars - 1
                             ' the value pointers are grouped into a contiguous array
                             ' group0 ptrs first, then group1 ptrs second, etc.
                             pGrpValue := LONG[pGrpValuesAr][nGrpOffset + nVarIdx] ' retrieve ptr to variable within this group
-                            placeValueOfWidthAtRC(nGrpRow++, colForGroupIdx(grpIdx) + 11, LONG[pGrpValue], 5)
-                waitus(80)  ' slight delay to prevent bad video effects
+                            placeValueOfWidthAtRC(nGrpRow++, colForGroupIdx(grpIdx + 2) + 12, LONG[pGrpValue], 5)
+                waitms(2)  ' slight delay to prevent bad video effects
 
                 drvrCommand := LONG[pDriverCmd]
 
@@ -314,17 +330,17 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
             until drvrCommand == DC_RELOAD
             drvrCommand := LONG[pDriverCmd] := DC_RUN  ' reset the command
 
-        elseif drvrCommand == DC_RELOAD
+        if drvrCommand == DC_RELOAD
             drvrCommand := DC_RUN
-            placeWarningAtRC(10,0, string("** Clear RELOAD **"))
-            showTextOfWidth(string(" : grpCt="), 0)
+            placeWarningAtRC(27,0, string("** Clear RELOAD **"))
+            showTextOfWidth(string(" : dlIdx="), 0)
             showValueOfWidth(currDLEntryIdx, 0)
 
-        elseif drvrCommand == DC_RUN
-            placeWarningAtRC(8,0, string("** No Groups Identified **"))
+        elseif drvrCommand == DC_RUN and currDLEntryIdx == 0
+            placeWarningAtRC(25,0, string("** No Display List **"))
 
         else
-            placeWarningAtRC(9,0, string("** NOT in RUN mode **"))
+            placeWarningAtRC(26,0, string("** NOT in RUN mode **"))
             showTextOfWidth(string(" : drvCmd="), 0)
             showValueOfWidth(drvrCommand, 0)
         waitms(250) ' idle until group/command arrives
@@ -358,12 +374,54 @@ DAT { workplace - to be removed }
 CON { Timing Constants }
 
   POS_DELAY_IN_US = 100
-
+{
+        ' default colour mappings for VGA
+        BLACK         = 0
+        BLUE          = 1
+        GREEN         = 2
+        CYAN          = 3
+        RED           = 4
+        MAGENTA       = 5
+        BROWN         = 6
+        LIGHT_GREY    = 7
+        DARK_GREY     = 8
+        LIGHT_BLUE    = 9
+        LIGHT_GREEN   = 10
+        LIGHT_CYAN    = 11
+        LIGHT_RED     = 12
+        LIGHT_MAGENTA = 13
+        YELLOW        = 14
+        WHITE         = 15
+'}
   COLR_BG = vid.BLACK
-  COLR_TITLE = vid.GREEN
-  COLR_TEXT = vid.YELLOW
+  COLR_TITLE = vid.MAGENTA
+  COLR_SUBTITLE = vid.BROWN
+  COLR_TEXT = vid.WHITE
   COLR_LABEL = vid.LIGHT_GREY
-  COLR_VALUE = vid.RED
+  COLR_VALUE = vid.CYAN
+  COLR_BOX = vid.DARK_GREY
+
+CON { Parallax Line Draw Chars }
+
+    LDC_MID_VT  = 145
+    LDC_MID_HZ  = 144
+
+    LDC_TOP        = 155
+    LDC_BOT        = 150
+    LDC_LT        = 149
+    LDC_RT        = 148
+    LDC_CNTR        = 146
+
+    LDC_CNTR_DOT    = 147
+    LDC_BOT_DOT    = 154
+    LDC_LT_DOT    = 153
+    LDC_RT_DOT    = 152
+    LDC_TOP_DOT    = 151
+
+    LDC_CRNR_TL    = 159
+    LDC_CRNR_TR    = 158
+    LDC_CRNR_BL    = 157
+    LDC_CRNR_BR    = 156
 
 PRI logMsg(pMessage) | nRow, nCol
 ' write message to log area of screen
@@ -385,7 +443,7 @@ PRI placeTitleAtRC(nRow, nCol, pLabel) | pValidLabel
 ' place title-colored string on screen
     pValidLabel := verifyLabel(pLabel)
     setTextPos(nRow, nCol)
-    vid.setTextColours(COLR_TITLE, COLR_BG)
+    vid.setTextColours(COLR_SUBTITLE, COLR_BG)
     vid.printStr(pValidLabel)
 DAT
 
@@ -400,6 +458,35 @@ PRI placeTextAtRC(nRow, nCol, pText)
     setTextPos(nRow, nCol)
     vid.setTextColours(COLR_TEXT, COLR_BG)
     vid.printStr(pText)
+
+PRI placeBoxAtRC(nRow, nCol, nWidth, nHeight) | bxRow ,bxCol, nChr
+' place text-colored string on screen
+    vid.setTextColours(COLR_BOX, COLR_BG)
+    repeat bxCol from nCol to nCol+nWidth-1
+        repeat bxRow from nRow to nRow+nHeight-1
+            nChr := 0
+            if bxRow == nRow and bxCol == nCol
+                ' place tl corner
+                nChr := LDC_CRNR_TL
+            elseif bxRow == nRow and bxCol == nCol+nWidth-1
+                ' place tr corner
+                nChr := LDC_CRNR_TR
+            elseif bxRow == nRow+nHeight-1 and bxCol == nCol
+                ' place bl corner
+                nChr := LDC_CRNR_BL
+            elseif bxRow == nRow+nHeight-1 and bxCol == nCol+nWidth-1
+                ' place br corner
+                nChr := LDC_CRNR_BR
+            elseif bxRow == nRow or bxRow == nRow+nHeight-1
+                ' place horiz edge
+                nChr := LDC_MID_HZ
+            elseif bxCol == nCol or bxCol == nCol+nWidth-1
+                ' place vert edge
+                nChr := LDC_MID_VT
+
+            if nChr <> 0
+                setTextPos(bxRow, bxCol)
+                vid.txraw(nChr)
 
 PRI placeLabelAtRC(nRow, nCol, pLabel)
 ' place label-colored string at R,C on screen
@@ -444,9 +531,13 @@ PRI clear(nRow, nCol, nWidth)
         repeat nWidth
             vid.out($20)
 
+PRI rowForGroupRow(nGroupRow) : nBoxRow
+' row for group is every 11 rows
+    nBoxRow := ((nGroupRow - 1) * 10) + 1
+
 PRI colForGroupIdx(nGroupIdx) : nColumn
-' column for group is every 30 chars
-    nColumn := nGroupIdx * 22
+' column for group is every 19 chars
+    nColumn := (nGroupIdx * 19) + 1
 
 
 CON { license }
