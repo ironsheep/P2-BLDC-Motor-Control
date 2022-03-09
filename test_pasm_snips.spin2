@@ -35,7 +35,7 @@ DAT
     tStr    byte    "TRUE",0
     fStr    byte    "false",0
 
-PUB main() | bResult, nLHS, nRHS, pStr
+PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outDrvState, outDrvIncr, rampDn
 '' DEMO Run Snippets
 
     debug("* checks for same sign:")
@@ -59,6 +59,7 @@ PUB main() | bResult, nLHS, nRHS, pStr
     bResult := isSameSign(nLHS, nRHS)
     showResult(bResult, nLHS, nRHS)
 
+    debug(" ")
     debug("* checks for LHS is smaller when same sign:")
     nLHS := -2
     nRHS := -5  ' larger
@@ -79,6 +80,62 @@ PUB main() | bResult, nLHS, nRHS, pStr
     nRHS := +1
     bResult := isLhsSmaller(nLHS, nRHS)
     showResult(bResult, nLHS, nRHS)
+
+    debug(" ")
+    debug("* ramp up to FWD speed")
+    tgtIncr := 20_000
+    drvIncr := 0
+    rampUp := 3300
+    drvState := DCS_SPIN_UP
+    repeat
+        outDrvState, outDrvIncr := spinUp(tgtIncr, drvIncr, drvState, rampUp)
+        showRampResult(tgtIncr, outDrvIncr, drvIncr, outDrvState, rampUp, drvState)
+        drvState := outDrvState
+        drvIncr := outDrvIncr
+    until drvState == DCS_AT_SPEED
+    debug("- Worked?  FWD SPIN-UP to AT-SPEED!")
+
+    debug(" ")
+    debug("* ramp up to REV speed")
+    tgtIncr := -20_000
+    drvIncr := 0
+    rampUp := 3300
+    drvState := DCS_SPIN_UP
+    repeat
+        outDrvState, outDrvIncr := spinUp(tgtIncr, drvIncr, drvState, rampUp)
+        showRampResult(tgtIncr, outDrvIncr, drvIncr, outDrvState, rampUp, drvState)
+        drvState := outDrvState
+        drvIncr := outDrvIncr
+    until drvState == DCS_AT_SPEED
+    debug("- Worked?  REV SPIN-UP to AT-SPEED!")
+
+    debug(" ")
+    debug("* ramp down from FWD speed")
+    tgtIncr := 0
+    drvIncr := 20_000
+    rampDn := 3300
+    drvState := DCS_SPIN_DN
+    repeat
+        outDrvState, outDrvIncr := spinDn(tgtIncr, drvIncr, drvState, rampDn)
+        showRampResult(tgtIncr, outDrvIncr, drvIncr, outDrvState, rampDn, drvState)
+        drvState := outDrvState
+        drvIncr := outDrvIncr
+    until drvState == DCS_STOPPED
+    debug("- Worked?  FWD SPIN-DN from AT-SPEED to STOPPED!")
+
+    debug(" ")
+    debug("* ramp down from REV speed")
+    tgtIncr := 0
+    drvIncr := -20_000
+    rampDn := 3200
+    drvState := DCS_SPIN_DN
+    repeat
+        outDrvState, outDrvIncr := spinDn(tgtIncr, drvIncr, drvState, rampDn)
+        showRampResult(tgtIncr, outDrvIncr, drvIncr, outDrvState, rampDn, drvState)
+        drvState := outDrvState
+        drvIncr := outDrvIncr
+    until drvState == DCS_STOPPED
+    debug("- Worked?  REV SPIN-DN from AT-SPEED to STOPPED!")
 
 PRI showResult(result, lhs, rhs) | pStr
     pStr := (result) ? @tStr : @fStr
@@ -106,6 +163,98 @@ PRI isLhsSmaller(lhs, rhs) : result
     end
 
     result := (result == 0) ? false: true
+
+CON
+
+    '  DCS_STOPPED          - motor is stopped
+    '  DCS_SPIN_UP          - motor is ramping up to speed, then will be at AT_SPEED
+    '  DCS_AT_SPEED         - motor is holding at speed
+    '  DCS_SPIN_DN          - motor is stopping, then will be at STOPPED
+    '  DCS_SLOWING_DN       - motor is slowing down (just a speed change), then will be at AT_SPEED
+    '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
+    '
+    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG
+
+PRI showRampResult(tgtIncre, inDrvIncr, prevDrvIncr, inState, nRampUp, prevState) | pOld, pNew
+    if inDrvIncr <> prevDrvIncr
+        debug("  drvIncr (", sdec_long_(prevDrvIncr), ") -> (", sdec_long_(inDrvIncr), ")")
+    if inState <> prevState
+        pOld := stringForDriveState(prevState)
+        pNew := stringForDriveState(inState)
+        debug("  drvState [", zstr_(pOld), "] -> [", zstr_(pNew), "]")
+
+PRI spinUp(tgtIncre, inDrvIncr, inState, nRampUp) : outState, outIncre
+    outState := inState
+    outIncre := inDrvIncr
+    org
+                    ' do next UP adjustment or set at-speed
+                testb   tgtIncre, #31               wc  ' Q: moving FWD or REV? (CY=REV)
+    if_c        jmp     #.haveRev
+                adds    outIncre, nRampUp              ' FWD: increase increment (speeding up)
+                cmps    tgtIncre, outIncre          wc  ' Q: Did we exceed target?
+                jmp     #.lastTest
+    .haveRev
+                subs    outIncre, nRampUp              ' REV: decrease increment (speeding up)
+                cmps    outIncre, tgtIncre          wc  ' Q: Did we exceed target?
+    .lastTest
+    if_c        mov     outIncre, tgtIncre              ' yes, reset to target!
+                cmps    tgtIncre, outIncre          wz  ' Q: Are we at target? (compare again to handle both cases)
+    if_z        mov     outState, #DCS_AT_SPEED       ' yes, show we got here!
+    end
+
+PRI spinDn(tgtIncre, inDrvIncr, inState, nRampDn) : outState, outIncre | nZero
+    outState := inState
+    outIncre := inDrvIncr
+    nZero := 0
+    'debug("spinDn: ", uhex_long(tgtIncre))
+
+                org
+                testb   inDrvIncr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
+    if_c        jmp     #.haveRDnRev
+                subs    outIncre, nRampDn              ' FWD: decrease increment (slowing down)
+                cmps    outIncre, #0                wcz
+    if_nc_and_nz jmp    #.lastRDnExit
+                jmp     #.lastRDnzero
+.haveRDnRev
+                adds    outIncre, nRampDn              ' REV: increase increment, toward zero (slowing down)
+                cmps    outIncre, #0                wc
+    if_c        jmp    #.lastRDnExit
+.lastRDnzero
+                sub     outIncre, outIncre              ' set to zero
+                mov     outState, #DCS_STOPPED        ' report that we are stopped
+                ' if we are to freewheel the motor let's float all drive pins
+.lastRDnExit
+                end
+
+DAT
+
+    strUnk      byte    "Unknown",0
+    strBad      byte    "??bad??",0
+    strStopped  byte    "STOPPED",0
+    strSpinUp   byte    "SPIN_UP",0
+    strAtSpeed  byte    "AT_SPEED",0
+    strSpinDn   byte    "SPIN_DN",0
+    strSlowDn   byte    "SLOWING_DN",0
+    strSlow2Chg byte    "SLOW_TO_CHG",0
+
+PRI stringForDriveState(nDrvState) :pInterpStr
+    case nDrvState
+        DCS_Unknown:
+            pInterpStr := @strUnk
+        DCS_STOPPED:
+            pInterpStr := @strStopped
+        DCS_SPIN_UP:
+            pInterpStr := @strSpinUp
+        DCS_AT_SPEED:
+            pInterpStr := @strAtSpeed
+        DCS_SPIN_DN:
+            pInterpStr := @strSpinDn
+        DCS_SLOWING_DN:
+            pInterpStr := @strSlowDn
+        DCS_SLOW_TO_CHG:
+            pInterpStr := @strSlow2Chg
+        other:
+            pInterpStr := @strBad
 
 CON { license }
 {{

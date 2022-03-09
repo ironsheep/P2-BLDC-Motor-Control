@@ -372,7 +372,7 @@ PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, a
         ' @18.5V 10_000_000 is 5.8 RPM
 
         if bStartingUp and targetIncre == 0
-            setTargetAccel(97_200_000)  ' request run at speed
+            setTargetAccel(97_000_000)  ' request run at speed
 
         if drv_state == DCS_AT_SPEED
             bStartingUp := false
@@ -890,12 +890,13 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     duty_, #0                       ' reset duty
                 mov     pos_, #0                        ' reset pos
                 mov     loop_dtcks_, #0                 ' just in case
+                mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
                 mov     prior_incr, #0                 ' just in case
-                mov     drv_state_, #0                 ' reset state
+                mov     drv_state_, #0                 ' reset state to Unknown
 
                 ' preset our starting angle
-                call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
+                'call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
 
                 ' start driver
                 jmp     #.run1stTime
@@ -984,9 +985,14 @@ driver          rdlong  x, ptra++                   ' get base pin
     if_z        call    #.initAngleFmHall               ' then, let's first get motor initial angle for smooth startup
                 ' do next UP adjustment or set at-speed
                 testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
-    if_nc       add     drv_incr, ramp_up_              ' FWD: increase increment (speeding up)
-    if_c        sub     drv_incr, ramp_up_              ' REV: decrease increment (speeding up)
+    if_c        jmp     #.haveRUpRev
+                adds    drv_incr, ramp_up_              ' FWD: increase increment (speeding up)
                 cmps    tgt_incr, drv_incr          wc  ' Q: Did we exceed target?
+                jmp     #.lastRUpZero
+.haveRUpRev
+    if_c        subs    drv_incr, ramp_up_              ' REV: decrease increment (speeding up)
+                cmps    drv_incr, tgt_incr          wc  ' Q: Did we exceed target?
+.lastRUpZero
     if_c        mov     drv_incr, tgt_incr              ' yes, reset to target!
                 cmps    tgt_incr, drv_incr          wz  ' Q: Are we at target? (compare again to handle both cases)
     if_z        mov     drv_state_, #DCS_AT_SPEED       ' yes, show we got here!
@@ -998,12 +1004,21 @@ driver          rdlong  x, ptra++                   ' get base pin
 .rampDn
                 ' do next DOWN adjustment or set stopped
                 '  (increment > 0, we are not stopped)
-                testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
-    if_nc       sub     drv_incr, ramp_dn_              ' FWD: decrease increment (slowing down)
-    if_c        add     drv_incr, ramp_dn_              ' REV: increase increment, toward zero (slowing down)
+                ' NOTE!!! tgt_incr is likely ZERO so we don't test its sign bit here
+                '  instead we test the sign bit of the current driver target as we are spinning down
+                '  from the current driver target to ZERO!
+                testb   drv_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
+    if_c        jmp     #.haveRDnRev
+                subs    drv_incr, ramp_dn_              ' FWD: decrease increment (slowing down)
                 cmps    drv_incr, #0                wcz
     if_nc_and_nz jmp    #.justIncr
-                sub     drv_incr, drv_incr              ' set to zero
+                jmp     #.lastRDnzero
+.haveRDnRev
+                adds    drv_incr, ramp_dn_              ' REV: increase increment, toward zero (slowing down)
+                cmps    drv_incr, #0                wcz
+    if_c        jmp    #.justIncr
+.lastRDnzero
+                subs    drv_incr, drv_incr              ' set to zero
                 mov     drv_state_, #DCS_STOPPED        ' report that we are stopped
                 ' if we are to freewheel the motor let's float all drive pins
                 cmp     stop_mode_, #SM_FLOAT       wz
@@ -1016,11 +1031,21 @@ driver          rdlong  x, ptra++                   ' get base pin
 .slow2Chg
                 ' do next DOWN adjustment, if stopped do spinup
                 '  (increment > 0, we are not stopped)
-                testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
-    if_nc       sub     drv_incr, ramp_dn_              ' FWD: decrease increment (slowing down)
-    if_c        add     drv_incr, ramp_dn_              ' REV: increase increment, toward zero (slowing down)
+                ' NOTE!!! tgt_incr is where we are going after we spin down so we don't test its sign bit here
+                '  instead we test the sign bit of the current driver target as we are spinning down
+                '  from the current driver target to ZERO!
+                testb   drv_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
+    if_c        jmp     #.haveS2CRev
+                subs    drv_incr, ramp_dn_              ' FWD: decrease increment (slowing down)
                 cmps    drv_incr, #0                wcz
     if_nc_and_nz jmp    #.justIncr
+                jmp     #.lastS2CZero
+.haveS2CRev
+                adds    drv_incr, ramp_dn_              ' REV: increase increment, toward zero (slowing down)
+                cmps    drv_incr, #0                wcz
+    if_c        jmp    #.justIncr
+.lastS2CZero
+                subs    drv_incr, drv_incr              ' set to zero
                 sub     drv_incr, drv_incr              ' set to zero
                 mov     drv_state_, #DCS_SPIN_UP        ' report that we are stopped
                 jmp     #.rampUp        ' go immediately start moving in opposite direction
@@ -1032,14 +1057,18 @@ driver          rdlong  x, ptra++                   ' get base pin
                 ' do next DOWN adjustment or set at speed
                 '  (increment > 0, we are not stopped)
                 testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
-    if_nc       sub     drv_incr, ramp_dn_              ' FWD: decrease increment (slowing down)
-    if_c        add     drv_incr, ramp_dn_              ' REV: increase increment, toward zero (slowing down)
+    if_c        jmp     #.haveSDnRev
+                subs    drv_incr, ramp_dn_              ' FWD: increase increment (speeding up)
                 cmps    tgt_incr, drv_incr          wc  ' Q: Did we exceed target?
+                jmp     #.lastSDnZero
+.haveSDnRev
+    if_c        adds    drv_incr, ramp_dn_              ' REV: decrease increment (speeding up)
+                cmps    drv_incr, tgt_incr          wc  ' Q: Did we exceed target?
+.lastSDnZero
     if_c        mov     drv_incr, tgt_incr              ' yes, reset to target!
                 cmps    tgt_incr, drv_incr          wz  ' Q: Are we at target? (compare again to handle both cases)
     if_z        mov     drv_state_, #DCS_AT_SPEED       ' yes, show we got here!
                 jmp     #.justIncr      ' go increment motor angle, then exit
-
 
     ' ------------------------------------
 .justIncr   ' just do our increment of angle and we're done!
