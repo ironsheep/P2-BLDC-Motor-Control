@@ -24,19 +24,21 @@ CON { Public Interface Constants }
     ' return value when user makes bad choice
     INVALID_VOLTAGE = -1
 
-    ' Driver Distance-Units Enum (Inches, Millimeters, Feet, Meters, Miles, Kilometers)
+    ' Driver Distance-Units Enum: (Inches, Millimeters, Feet, Meters, Miles, Kilometers)
     #0, DDU_Unknown, DDU_IN, DDU_MM, DDU_FT, DDU_M, DDU_MI, DDU_KM
 
-    ' Driver Rotation-Units Enum
+    ' Driver Rotation-Units Enum:
     #0, DRU_Unknown, DRU_DEGREES, DRU_ROTATIONS
 
-    ' Driver Time-Unit Enum
+    ' Driver Time-Unit Enum:
     #0, DTU_Unknown, DTU_MILLISEC, DTU_SEC
 
-    ' Driver Status Enum
+    ' Driver Status Enum:
     #10, DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF
 
+    ' Driver Control Stop-State Enum:
     #0, SM_Unknown, SM_FLOAT, SM_BRAKE
+
 
 OBJ { objects / constants included by this object }
 
@@ -61,7 +63,7 @@ DAT { misc time constants / debug enable }
     ticks1ms    long    0                     '
     ticks1us    long    0                     '
 
-    useDebug   long    TRUE
+    useDebug   long    FALSE
 
     circInMMx10    long     0
 
@@ -72,31 +74,35 @@ PUB null()
 PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
 '' Specify motor control board connect location for this motor and start the driver
         ' setup runtime constants
-        ticks1ms   := (CLKFREQ / 1_000)
-        ticks1us   := (CLKFREQ / 1_000_000)
-        ticks125ms := ticks1ms * 125
-        ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
-        ticks750us := (ticks1ms * 750) / 1_000  ' phrased this way for better result
-        ticks800us := (ticks1ms * 800) / 1_000  ' phrased this way for better result
+    ticks1ms   := (CLKFREQ / 1_000)
+    ticks1us   := (CLKFREQ / 1_000_000)
+    ticks125ms := ticks1ms * 125
+    ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
+    ticks750us := (ticks1ms * 750) / 1_000  ' phrased this way for better result
+    ticks800us := (ticks1ms * 800) / 1_000  ' phrased this way for better result
 
-        ' setup driver parameters based on clock rate
-        ctrl_ticks := ticks500us
-        dead_gap    := (ticks1us * 80) / 1_000    ' 80 of these made into "value nS"
-        duty_min    := 100 << 4 #> dead_gap << 4
-        pwm_limit   := FRAME - dead_gap     'PWM duty hard limit 1/2 freq of PWM
-        duty_max    := pwm_limit << 4 <# pwm_limit << 4
+    ' setup driver parameters based on clock rate
+    ctrl_ticks := ticks500us
+    dead_gap    := (ticks1us * 260) / 1_000    ' 400 of these made into "value nS"
+    duty_min    := 100 << 4 #> dead_gap << 4
+    pwm_limit   := FRAME - dead_gap     'PWM duty hard limit 1/2 freq of PWM
+    duty_max    := pwm_limit << 4 <# pwm_limit << 4
 
-        loop_ticks := 0
-        minDrvTics := 65535
-        drv_state := DS_Unknown
+    loop_ticks := 0
+    minDrvTics := 65535
+    drv_state := DS_Unknown
 
-        maxMmPerSec := 0
-        maxFps := 0
-        maxMPH := 0
-        maxkPH := 0
+    maxMmPerSec := 0
+    maxFps := 0
+    maxMPH := 0
+    maxkPH := 0
 
 
-        circInMMx10 := circOfWheelOfDia(user.MOTOR_DIA_HALF_IN_UNITS)
+    circInMMx10 := circOfWheelOfDia(user.MOTOR_DIA_HALF_IN_UNITS)
+
+    debug("* init values ", udec_long(dead_gap), udec_long(ctrl_ticks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
+
+    'repeat
 
     ' ensure we only use legal values
     legalBase := eMotorBasePin
@@ -218,6 +224,265 @@ PUB validVoltageForChoice(userVoltage) : legalVoltage
         OTHER :
             legalVoltage := INVALID_VOLTAGE
 
+CON { --- PRIVATE TEST Methods --- }
+
+  STABILIZE_LOOP_CT = 2000
+
+VAR
+    long    bStartingUp
+    long    runLoopCount
+    long    startTicks
+    long    faultHoldoffCtr
+    long    currTarget
+    long    minRange
+    long    maxRange
+    long    rangeStep
+    long    prior_drv_state
+
+PUB findFaultForCurrV()
+'' invoke start() before invoke of findFaultForCurrV()
+    useDebug := false    ' NO debug in findFaultForCurrV()
+    debug("* ========  TEST Started!  =============================")
+
+    minRange := 60_000_000
+    maxRange := 685_000_000
+    rangeStep := 25_000_000
+
+    pinlow(TEST_ALL_PINS)
+
+
+    repeat
+
+        debug("* RUN: ", udec(minRange), udec(maxRange), udec(rangeStep))
+        prior_drv_state := DCS_Unknown
+        runLoopCount := 15_000 ' count of 1 ms loops (15 seconds)
+        bStartingUp := true
+        setTargetAccel(0)
+        fault := faultHoldoffCtr := 0
+
+        repeat currTarget from minRange to maxRange step rangeStep
+
+            pintoggle(TEST_PIN_OUTER_LOOP)  ' to HI
+            pintoggle(TEST_PIN_OUTER_LOOP)  ' to LOW
+
+            startTicks := getct()
+
+            if bStartingUp == true and targetIncre == 0
+                debug("  ", udec(currTarget))
+                setTargetAccel(currTarget)  ' request run at speed
+
+                if pos == 0 and targetIncre <> 0
+                    debug("* HOLD until Motor moves...")
+                    repeat until pos <> 0 or fault
+
+                    if pos == 0
+                        debug("* Motor never moved")
+                    if fault
+                        clearFault(currTarget, rangeStep)
+                        quit   ' FAULT and exit to next test
+
+            if drv_state == DCS_Unknown
+                debug("* HOLD until Motor driver starts...")
+                repeat until drv_state <> DCS_Unknown
+                if drv_state <> DCS_Unknown
+                    debug("* Motor ready")
+
+            if drv_state <> prior_drv_state and drv_state == DCS_AT_SPEED
+                debug("- at SPEED")
+                bStartingUp := false
+
+            if runLoopCount > 0 and drv_state == DCS_AT_SPEED
+                runLoopCount--
+                debug("-  ", udec(runLoopCount))
+                if runLoopCount == 0
+                    setTargetAccel(0)    ' request stop
+
+            if drv_state <> prior_drv_state and drv_state == DCS_STOPPED
+                debug("- DONE, stopped")
+                quit    ' COMPLETE, exit to next test
+
+            if fault  ' if fault, end this pass
+                ' setup for next iteration
+                clearFault(currTarget, rangeStep)
+                quit   ' FAULT and exit to next test
+
+            'debug("- set prior")
+            prior_drv_state := drv_state
+            'debug("- wait")
+            waitms(1000)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
+
+        if rangeStep < 2_000_000
+            debug("- MIN stepsize, leave loop!")
+            quit    ' ended last loop, exit
+        elseif fault == 0
+            debug("?? out of loop ??")
+        fault := 0
+        waitms(500)     ' kill time for 1/2 sec!
+
+    debug("* RUN Complete!!")
+    debug("* ======================================================")
+    repeat  ' LOCK (stay) here!
+
+PRI clearFault(tgt, stepCt)
+    debug("  !!  FAULT at ", udec(tgt), udec(stepCt))
+    minRange := tgt - stepCt
+    maxRange := tgt
+    rangeStep := (maxRange - minRange) / 5
+    maxRange -= rangeStep   ' apply correction so we don't test failing value again
+    faultHoldoffCtr := 0
+    setTargetAccel(0)
+
+PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, angleTarget
+'' invoke start() before invoke of TestMotorRampUpHoldDn()
+    if useDebug
+        debug(`logic l title 'Hall Effect' pos 25 440 'Hall' 3)
+
+        debug(`term t title 'Status' pos 650 650 size 30 1 textsize 20 update)
+
+        debug(`scope r title 'Duty and Error' pos 363 439 size 256 256 samples 256 rate 50)
+        debug(`r 'Duty' 0 `(pwm_limit<<4) 256 0)
+        debug(`r 'Error' -128 128 256 0 15)
+
+        debug(`scope s title 'Voltages' pos 105 60 size 512 300 samples 256 rate 256)
+        debug(`s 'U' 0 `(FRAME) 128 170)
+        debug(`s 'V' 0 `(FRAME) 128 170)
+        debug(`s 'W' 0 `(FRAME) 128 170)
+        debug(`s 'Iu' 0 2000 128 70)
+        debug(`s 'Iv' 0 2000 128 70)
+        debug(`s 'Iw' 0 2000 128 70)
+        debug(`s 'P' 0 100 128 10)
+
+    'pintoggle(TEST_ALL_PINS)
+    'pintoggle(TEST_ALL_PINS)
+    'pintoggle(TEST_ALL_PINS)
+    pinlow(TEST_ALL_PINS)
+
+    bStartingUp := true
+
+    runLoopCount := 30_000 ' count of 1 ms loops (20 seconds)
+    'runLoopCount := 30_000 ' count of 1 ms loops (30 seconds)
+    'runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
+
+    repeat
+        pintoggle(TEST_PIN_OUTER_LOOP)
+        pintoggle(TEST_PIN_OUTER_LOOP)
+
+        startTicks := getct()
+        ' @18.5V 10_000_000 is 5.8 RPM
+        ' @18.5V 10_000_000 is 5.8 RPM
+
+        if bStartingUp and targetIncre == 0
+            setTargetAccel(97_200_000)  ' request run at speed
+
+        if drv_state == DCS_AT_SPEED
+            bStartingUp := false
+
+        if runLoopCount > 0 && bStartingUp == false
+            runLoopCount--
+            if runLoopCount == 0
+                setTargetAccel(0)    ' request stop
+
+        if hall <> priorHall                    'if hall effect changed, update logic display
+            priorHall := hall
+            if useDebug
+                debug(`l `ubin_byte_(hall))
+
+        if useDebug
+            debug(`t 0 '`sdec(duty, pos)' update)       'update terminal and scope displays
+            debug(`r `sdec_(duty, err))
+            debug(`s `sdec_long_array_(@drive_u,3) `sdec_long_array_(@sense_u,4))
+
+        maxDrvTics := loop_ticks > maxDrvTics ? loop_ticks : maxDrvTics
+        minDrvTics := loop_ticks > 10 && loop_ticks < minDrvTics  ? loop_ticks : minDrvTics
+
+        if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
+            fault~
+        if fault and faultHoldoffCtr > STABILIZE_LOOP_CT and 0   ' if fault, shut down
+            if useDebug
+                debug(`t 0 'FAULT' update)
+            stop()
+            repeat    ' and lock here!
+
+        'waitus(1000)
+        waitct(startTicks + ticks1ms)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
+
+PUB testMotorNoFault() | priorHall, angleIncrement, increment, decrement, angleTarget
+'' invoke start() before invoke of testMotorNoFault()
+    useDebug := true    ' force use of debug in testMotorNoFault()
+
+    if useDebug
+        debug(`logic l title 'Hall Effect' pos 25 440 'Hall' 3)
+
+        debug(`term t title 'Status' pos 650 650 size 30 1 textsize 20 update)
+
+        debug(`scope r title 'Duty and Error' pos 363 439 size 256 256 samples 256 rate 50)
+        debug(`r 'Duty' 0 `(pwm_limit<<4) 256 0)
+        debug(`r 'Error' -128 128 256 0 15)
+
+        debug(`scope s title 'Voltages' pos 105 60 size 512 300 samples 256 rate 256)
+        debug(`s 'U' 0 `(FRAME) 128 170)
+        debug(`s 'V' 0 `(FRAME) 128 170)
+        debug(`s 'W' 0 `(FRAME) 128 170)
+        debug(`s 'Iu' 0 2000 128 70)
+        debug(`s 'Iv' 0 2000 128 70)
+        debug(`s 'Iw' 0 2000 128 70)
+        debug(`s 'P' 0 100 128 10)
+
+    'pintoggle(TEST_ALL_PINS)
+    'pintoggle(TEST_ALL_PINS)
+    'pintoggle(TEST_ALL_PINS)
+    pinlow(TEST_ALL_PINS)
+
+    bStartingUp := true
+
+    runLoopCount := 30_000 ' count of 1 ms loops (20 seconds)
+    'runLoopCount := 30_000 ' count of 1 ms loops (30 seconds)
+    'runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
+
+    repeat
+        pintoggle(TEST_PIN_OUTER_LOOP)
+        pintoggle(TEST_PIN_OUTER_LOOP)
+
+        startTicks := getct()
+        ' @18.5V 10_000_000 is 5.8 RPM
+        ' @18.5V 10_000_000 is 5.8 RPM
+
+        if bStartingUp and targetIncre == 0
+            setTargetAccel(10_000_000)  ' request run at slow speed continually
+
+        if drv_state == DCS_AT_SPEED
+            bStartingUp := false
+{
+        if runLoopCount > 0 && bStartingUp == false
+            runLoopCount--
+            if runLoopCount == 0
+                setTargetAccel(0)    ' request stop
+'}
+        if hall <> priorHall                    'if hall effect changed, update logic display
+            priorHall := hall
+            if useDebug
+                debug(`l `ubin_byte_(hall))
+
+        if useDebug
+            debug(`t 0 '`sdec(duty, pos)' update)       'update terminal and scope displays
+            debug(`r `sdec_(duty, err))
+            debug(`s `sdec_long_array_(@drive_u,3) `sdec_long_array_(@sense_u,4))
+
+        maxDrvTics := loop_ticks > maxDrvTics ? loop_ticks : maxDrvTics
+        minDrvTics := loop_ticks > 10 && loop_ticks < minDrvTics  ? loop_ticks : minDrvTics
+
+{
+        if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
+            fault~
+        if fault and faultHoldoffCtr > STABILIZE_LOOP_CT and 0   ' if fault, shut down
+            if useDebug
+                debug(`t 0 'FAULT' update)
+            stop()
+            repeat    ' and lock here!
+'}
+
+        'waitus(1000)
+        waitct(startTicks + ticks1ms)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
 
 CON { --- PRIVATE Utility Methods --- }
 
@@ -376,147 +641,8 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     debug("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
     debug("* =============")
 
-CON { --- The Motor driver --- }
 
-  STABILIZE_LOOP_CT = 2000
-
-PUB findFaultForCurrV() | bStartingUp, runLoopCount, startTicks, priorHall, faultHoldoffCtr, currTarget, minRange, maxRange, rangeStep
-'' invoke start() before invoke of findFaultForCurrV()
-
-    minRange := 60_000_000
-    maxRange := 685_000_000
-    rangeStep := 25_000_000
-
-    repeat
-
-        pinlow(TEST_ALL_PINS)
-
-        debug("* RUN: ", udec(minRange), udec(maxRange), udec(rangeStep))
-
-        runLoopCount := 15_000 ' count of 1 ms loops (15 seconds)
-        bStartingUp := true
-        setTargetAccel(0)
-        fault := faultHoldoffCtr := 0
-
-        repeat currTarget from minRange to maxRange step rangeStep
-
-            pintoggle(TEST_PIN_OUTER_LOOP)
-            pintoggle(TEST_PIN_OUTER_LOOP)
-
-            startTicks := getct()
-
-            if bStartingUp == true and targetIncre == 0
-                debug("-  ", udec(currTarget))
-                setTargetAccel(currTarget)  ' request run at speed
-
-            if drv_state == DCS_AT_SPEED
-                debug("- at SPEED")
-                bStartingUp := false
-
-            if runLoopCount > 0 and drv_state == DCS_AT_SPEED
-                runLoopCount--
-                debug("-  ", udec(runLoopCount))
-                if runLoopCount == 0
-                    setTargetAccel(0)    ' request stop
-
-            if drv_state == DCS_STOPPED and bStartingUp == false and targetIncre == 0
-                debug("- stopped")
-                quit    ' exit, this pass worked....
-
-            if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
-                fault~
-
-            if fault and faultHoldoffCtr > STABILIZE_LOOP_CT    ' if fault, end this pass
-                ' setup for next iteration
-                debug("- FAULT at ", udec(currTarget), udec(rangeStep))
-                minRange := currTarget - rangeStep
-                maxRange := currTarget
-                rangeStep := (maxRange - minRange) / 10
-                fault := faultHoldoffCtr := 0
-                setTargetAccel(0)
-                quit   ' and exit
-
-            waitct(startTicks + ticks1ms)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
-
-        debug("- out of loop?!")
-
-        waitms(500)     ' kill time for 1/2 sec!
-
-PUB testMotor() | priorHall, angleIncrement, faultHoldoffCtr, startTicks, runLoopCount, increment, decrement, angleTarget, bStartingUp
-'' invoke start() before invoke of testMotor()
-    if useDebug
-        debug(`logic l title 'Hall Effect' pos 25 440 'Hall' 3)
-
-        debug(`term t title 'Status' pos 650 650 size 30 1 textsize 20 update)
-
-        debug(`scope r title 'Duty and Error' pos 363 439 size 256 256 samples 256 rate 50)
-        debug(`r 'Duty' 0 `(pwm_limit<<4) 256 0)
-        debug(`r 'Error' -128 128 256 0 15)
-
-        debug(`scope s title 'Voltages' pos 105 60 size 512 300 samples 256 rate 256)
-        debug(`s 'U' 0 `(FRAME) 128 170)
-        debug(`s 'V' 0 `(FRAME) 128 170)
-        debug(`s 'W' 0 `(FRAME) 128 170)
-        debug(`s 'Iu' 0 2000 128 70)
-        debug(`s 'Iv' 0 2000 128 70)
-        debug(`s 'Iw' 0 2000 128 70)
-        debug(`s 'P' 0 100 128 10)
-
-    'pintoggle(TEST_ALL_PINS)
-    'pintoggle(TEST_ALL_PINS)
-    'pintoggle(TEST_ALL_PINS)
-    pinlow(TEST_ALL_PINS)
-
-    bStartingUp := true
-
-    runLoopCount := 30_000 ' count of 1 ms loops (20 seconds)
-    'runLoopCount := 30_000 ' count of 1 ms loops (30 seconds)
-    'runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
-
-    repeat
-        pintoggle(TEST_PIN_OUTER_LOOP)
-        pintoggle(TEST_PIN_OUTER_LOOP)
-
-        startTicks := getct()
-        ' @18.5V 10_000_000 is 5.8 RPM
-        ' @18.5V 10_000_000 is 5.8 RPM
-
-        if bStartingUp and targetIncre == 0
-            setTargetAccel(144_375_000)  ' request run at speed
-
-        if drv_state == DCS_AT_SPEED
-            bStartingUp := false
-
-        if runLoopCount > 0 && bStartingUp == false
-            runLoopCount--
-            if runLoopCount == 0
-                setTargetAccel(0)    ' request stop
-
-        if hall <> priorHall                    'if hall effect changed, update logic display
-            priorHall := hall
-            if useDebug
-                debug(`l `ubin_byte_(hall))
-
-        if useDebug
-            debug(`t 0 '`sdec(duty, pos)' update)       'update terminal and scope displays
-            debug(`r `sdec_(duty, err))
-            debug(`s `sdec_long_array_(@drive_u,3) `sdec_long_array_(@sense_u,4))
-
-        maxDrvTics := loop_ticks > maxDrvTics ? loop_ticks : maxDrvTics
-        minDrvTics := loop_ticks > 10 && loop_ticks < minDrvTics  ? loop_ticks : minDrvTics
-
-        if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
-            fault~
-        if fault and faultHoldoffCtr > STABILIZE_LOOP_CT and 0   ' if fault, shut down
-            if useDebug
-                debug(`t 0 'FAULT' update)
-            stop()
-            repeat    ' and lock here!
-
-        'waitus(1000)
-        waitct(startTicks + ticks1ms)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
-
-CON { TASK position tracking }
+CON { -- TASK position tracking -- }
 
   STACK_SIZE_LONGS = 48
   WINDOW_SIZE = 5
@@ -611,6 +737,7 @@ PRI distanceIn90ths(newPos) : n90ths
             n90ths := abs(newPos - priorPos)
     priorPos := newPos
 
+CON { --- The Motor driver --- }
 
 CON { driver interface Constants}
 
@@ -621,7 +748,7 @@ CON { driver interface Constants}
     '  DCS_SLOWING_DN       - motor is slowing down (just a speed change), then will be at AT_SPEED
     '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
     '
-    #0, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG
+    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG
 
 
 CON { driver internal Constants}
@@ -631,7 +758,7 @@ CON { driver internal Constants}
 '    OFFSET   = 80                ' enforced dead time in clock cycles (at 200_000_000 -> 400 nSec)
 '    OFFSET   = 108                ' enforced dead time in clock cycles (at 270_000_000 -> 400 nSec)
 '    PWMLIM   = FRAME - OFFSET     'PWM duty hard limit 1/2 freq of PWM
-    ' Driver Control State Enum:
+
 VAR { Data Structure for PASM Driver }
   ' remember these are zeroed at run time
     long    motorCog                            ' record ID of cog we start (0 = not started)
@@ -700,7 +827,7 @@ DAT  {  DRIVER w/Motor Parameters  }
     pwm_limit   long    0           ' this was PWMLIM but now runtime loaded
     ctrl_ticks  long    0           ' # clock ticks needed to create 2 kHz motor control loop
     stop_mode   long    SM_FLOAT    ' enum: [SM_FLOAT, SM_BRAKE]
-    ramp_up     long    12_500      ' 25k angle increment: add this every 500 uSec to ramp up to speed
+    ramp_up     long    25_000      ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
     ramp_dn     long    25_000      ' 25k angle decrement: subtract this every 500 uSec to ramp down to 0
     ' ------ --------------- -----
 
@@ -765,6 +892,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     loop_dtcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
                 mov     prior_incr, #0                 ' just in case
+                mov     drv_state_, #0                 ' reset state
 
                 ' preset our starting angle
                 call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
