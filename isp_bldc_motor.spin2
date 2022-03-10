@@ -24,11 +24,13 @@ CON { Public Interface Constants }
     ' return value when user makes bad choice
     INVALID_VOLTAGE = -1
 
-    ' Driver Distance-Units Enum: (Inches, Millimeters, Feet, Meters, Miles, Kilometers)
-    #0, DDU_Unknown, DDU_IN, DDU_MM, DDU_FT, DDU_M, DDU_MI, DDU_KM
+    VALUE_NOT_SET = -1
+
+    ' Driver Distance-Units Enum: (Millimeters, Centimeters, Inches, Feet, Meters, Kilometers, Miles)
+    #0, DDU_Unknown, DDU_MM, DDU_CM, DDDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI
 
     ' Driver Rotation-Units Enum:
-    #0, DRU_Unknown, DRU_DEGREES, DRU_ROTATIONS
+    #0, DRU_Unknown, DRU_HALL_TICKS, DRU_DEGREES, DRU_ROTATIONS
 
     ' Driver Time-Unit Enum:
     #0, DTU_Unknown, DTU_MILLISEC, DTU_SEC
@@ -64,6 +66,7 @@ DAT { misc time constants / debug enable }
     ticks1us    long    0                     '
 
     useDebug   long    FALSE
+    showHDMIDebug   long    FALSE
 
     circInMMx10    long     0
 
@@ -92,17 +95,19 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     minDrvTics := 65535
     drv_state := DS_Unknown
 
-    maxMmPerSec := 0
-    maxFps := 0
-    maxMPH := 0
-    maxkPH := 0
+    tvMaxMmPerSec := 0
+    tvMaxFps := 0
+    tvMaxMPH := 0
+    tvMaxkPH := 0
+
+    userSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
+
+    'debug("* init values ", udec_long(dead_gap), udec_long(ctrl_ticks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
 
 
-    circInMMx10 := circOfWheelOfDia(user.MOTOR_DIA_HALF_IN_UNITS)
+    circInMMx10 := circOfWheelOfDia(user.MOTOR_DIA_IN_INCH_X10)
 
-    debug("* init values ", udec_long(dead_gap), udec_long(ctrl_ticks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
-
-    'repeat
+    confgurePowerLimits(user.DRIVE_VOLTAGE)
 
     ' ensure we only use legal values
     legalBase := eMotorBasePin
@@ -142,6 +147,18 @@ PUB stop()
         cogstop(senseCog - 1)
         senseCog := 0
 
+VAR { -- user request values -- }
+
+    LONG    userSelectedVolts     ' remember the value specified by the user
+    ' limits based on user voltage
+    LONG    minFwdIncreAtPwr
+    LONG    maxFwdIncreAtPwr
+    LONG    minRevIncreAtPwr
+    LONG    maxRevIncreAtPwr
+    ' stop point in time based on passing mSec or tick counts
+    LONG    motorStopMSecs      ' stop motor when we've passed this time in milliseconds
+    LONG    motorStopHallTicks  ' stop motor when we've passed this tick count
+
 PUB setAcceleration(rate)
 '' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
 
@@ -160,7 +177,7 @@ PUB holdAtStop(bEnable)
 
 PUB resetTracking()
 '' Resets the position tracking values returned by getDistance() and getRotations()
-    trk_mm := trk_90ths := 0    ' reset all of our trackers (they are incremented in sensor loop)
+    posTrkHallTicks := 0    ' reset all of our trackers (they are incremented in sensor loop)
 
 CON { --- Subsystem Control --- }
 
@@ -169,27 +186,78 @@ PUB driveForDistance(distance, distanceUnits)
 '' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN or DDU_MM].
 '' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
 
-PUB driveAtPower(power) | limitPwr
+PUB driveAtPower(power) | limitPwr, motorIncre
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
 '' Turns the motor on at {power}.
 '' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
     limitPwr :=  -100 #> power <# 100
+    if limitPwr <> power
+        debug("! WARNING: driveAtPower() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
+    debug("driveAtPower() ", sdec_long(limitPwr))
+    motorIncre := incrementForPower(limitPwr)
+    setTargetAccel(motorIncre)
 
-PUB stopAfterRotation(rotationCount, rotationUnits)
-'' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS].
+PUB stopAfterRotation(nRotationCount, eRotationUnits)
+'' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
+'' USE WITH:  driveDirection(), drive()
+    if nRotationCount < 1
+        debug("! ERROR: invalid RotationCount Value:", udec_long(nRotationCount), " - must be > 0!")
+        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+        abort
+
+    ' FIXME: UNDONE convert this to use runtime values based on user specified wheel size
+
+    ' FIXME: UNDONE remove # ticks for spin-up/down ramps!!!
+
+    motorStopHallTicks := 0
+    case eRotationUnits
+        DRU_HALL_TICKS:
+            motorStopHallTicks := nRotationCount
+        DRU_DEGREES:
+            ' ticks = degrees / 4
+            motorStopHallTicks := nRotationCount / 4
+        DRU_ROTATIONS:
+            ' ticks = rotations * 90
+            motorStopHallTicks := nRotationCount * 90
+        other:
+            debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
+            abort
+
+PUB stopAfterDistance(nDistance, eDistanceUnits)
+'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDDU_IN, DDU_FT, DDU_M, DDU_KM, or DDU_MI].
 '' USE WITH:  driveDirection(), drive()
 
-PUB stopAfterDistance(distance, distanceUnits)
-'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
+PUB stopAfterTime(nTime, eTimeUnits) | timeNow
+'' Stops the motor, after {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
 '' USE WITH:  driveDirection(), drive()
+    if nTime < 1
+        debug("! ERROR: invalid nTime Value:", udec_long(nTime), " - must be > 0!")
+        ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
+        abort
 
-PUB stopAfterTime(time, timeUnits)
-'' Stops the motor, after {time} specified in {timeUnits} [DTU_IN_MILLISEC or DTU_IN_SEC] has elapsed.
-'' USE WITH:  driveDirection(), drive()
+    case eTimeUnits
+        DTU_MILLISEC:
+        DTU_SEC:
+        other:
+            debug("! ERROR: invalid timeUnits Value:", udec_long(eTimeUnits))
+            abort
+
+    ' FIXME: UNDONE remove time needed for spin-up/down ramps!!!
+
+    if eTimeUnits == DTU_SEC
+        timeNow := getms()
+        motorStopMSecs := timeNow + (nTime * 1_000)
+    else
+        timeNow := getms()
+        motorStopMSecs := timeNow + nTime
+
+    if motorStopMSecs > 0
+        debug("* stop motor at ", udec_long(motorStopMSecs), ", now: ", udec_long(timeNow))
 
 PUB stopMotor()
 '' Stops the motor, killing any motion that was still in progress
 ''  AFFECTED BY:holdAtStop()
+    setTargetAccel(0)
 
 CON { --- Subsystem Status --- }
 
@@ -200,35 +268,28 @@ PUB getRotationCount(rotationUnits) : rotationCount
 '' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for this motor.
 
 PUB getStatus() : eStatus
-'' Returns status of motor drive state for this motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
-    eStatus := DS_OFF   ' force this for now...
+'' Returns status of motor drive state for this motor: enumerated constant: DS_Unknown, DS_MOVING, DS_HOLDING, or DS_OFF
+    if isStopped()
+        if stop_mode == SM_BRAKE
+            eStatus := DS_HOLDING
+        elseif stop_mode == SM_FLOAT
+            eStatus := DS_OFF
+    elseif isReady()
+        eStatus := DS_MOVING
+    else
+        eStatus := DS_Unknown
 
-PUB validBasePinForChoice(userBasePin) : legalBasePin
-'' VALIDATE users' base-pin choice returns legalBasePin or INVALID_PIN_BASE
-    legalBasePin := userBasePin
-    CASE userBasePin
-        PINS_P0_P15 :
-        PINS_P16_P31 :
-        PINS_P32_P47 :
-        OTHER :
-            legalBasePin := INVALID_PIN_BASE
+PUB isReady() : bState
+    bState := (drv_state <> DCS_Unknown) ? true : false
 
-PUB validVoltageForChoice(userVoltage) : legalVoltage
-'' VALIDATE users' voltage choice returns legalVoltage or INVALID_VOLTAGE
-    legalVoltage := userVoltage
-    CASE userVoltage
-        PWR_6V :
-        PWR_12V :
-        PWR_18p5V :
-        PWR_24V :
-        OTHER :
-            legalVoltage := INVALID_VOLTAGE
+PUB isStopped() : bState
+    bState := (drv_state == DCS_STOPPED) ? true : false
 
 CON { --- PRIVATE TEST Methods --- }
 
   STABILIZE_LOOP_CT = 2000
 
-VAR
+VAR { test method data }
     long    bStartingUp
     long    runLoopCount
     long    startTicks
@@ -359,7 +420,7 @@ PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, a
 
     bStartingUp := true
 
-    runLoopCount := 30_000 ' count of 1 ms loops (20 seconds)
+    runLoopCount := 15_000 ' count of 1 ms loops (15 seconds)
     'runLoopCount := 30_000 ' count of 1 ms loops (30 seconds)
     'runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
 
@@ -372,7 +433,7 @@ PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, a
         ' @18.5V 10_000_000 is 5.8 RPM
 
         if bStartingUp and targetIncre == 0
-            setTargetAccel(97_000_000)  ' request run at speed
+            setTargetAccel(60_000_000)  ' request run at speed
 
         if drv_state == DCS_AT_SPEED
             bStartingUp := false
@@ -486,6 +547,66 @@ PUB testMotorNoFault() | priorHall, angleIncrement, increment, decrement, angleT
 
 CON { --- PRIVATE Utility Methods --- }
 
+PUB validBasePinForChoice(userBasePin) : legalBasePin
+'' VALIDATE users' base-pin choice returns legalBasePin or INVALID_PIN_BASE
+    legalBasePin := userBasePin
+    CASE userBasePin
+        PINS_P0_P15 :
+        PINS_P16_P31 :
+        PINS_P32_P47 :
+        OTHER :
+            legalBasePin := INVALID_PIN_BASE
+
+PUB validVoltageForChoice(userVoltage) : legalVoltage
+'' VALIDATE users' voltage choice returns legalVoltage or INVALID_VOLTAGE
+    legalVoltage := userVoltage
+    CASE userVoltage
+        PWR_6V:
+        PWR_12V:
+        PWR_18p5V:
+        PWR_24V:
+        OTHER:
+            legalVoltage := INVALID_VOLTAGE
+    debug("*VAL* ", sdec_long(legalVoltage))
+
+PRI map(value, inmin, inmax, outmin, outmax) : result
+' Maps value in range inmin..inmax to new value in range outmin..outmax
+    result := 0
+    if value <> 0
+        if (value > 0)
+            ' treat positive values out-of-bounds
+            if (value <= inmin)
+                result := outmin
+            elseif (value >= inmax)
+                result :=  outmax
+        elseif (value < 0)
+            ' treat negative values out-of-bounds
+            if (value >= inmin)
+                result := outmin
+            elseif (value <= inmax)
+                result :=  outmax
+        ' NOT  out-of-bounds, so scale the value
+        if result == 0
+            result :=  (value - inmin) * (outmax - outmin) / (inmax - inmin) + outmin
+    debug("- map() ", sdec_long(value - inmin) , sdec_long(inmin) , sdec_long(inmax), sdec_long(inmax - inmin))
+    debug("-       ", sdec_long(outmin) , sdec_long(outmax), sdec_long(outmax - outmin))
+    debug("-       ", sdec_long(value) , " --> ", sdec_long(result))
+
+PRI incrementForPower(nUserPower) : nMotorIncre
+' translate -100 to +100 value to Incre value needed by motor
+    if userSelectedVolts == VALUE_NOT_SET
+        abort
+
+    if nUserPower < 0
+        ' map REV request
+        nMotorIncre := map(nUserPower, -1, -100, minRevIncreAtPwr, maxRevIncreAtPwr)
+    elseif nUserPower > 0
+        ' map FWD request
+        nMotorIncre := map(nUserPower, +1, +100, minFwdIncreAtPwr, maxFwdIncreAtPwr)
+    else
+        ' this is a STOP request
+        nMotorIncre := 0    ' stop!
+
 PRI circOfWheelOfDia(diaInInchTenths) : nCircInMMx10
 ' Return circumference in mm for diameter in inches
 '  FIXME: UNDONE replace this with math!
@@ -501,9 +622,41 @@ PRI circOfWheelOfDia(diaInInchTenths) : nCircInMMx10
         '   in mm is: 518.67689mm
         nCircInMMx10 := 5187
 
+PRI confgurePowerLimits(userVoltage) | selectedPower
+' set up our motor drive limits based upon the user configured Voltage selection
+    selectedPower := validVoltageForChoice(userVoltage)
+    debug("* ENTRY CFG ", sdec_long(selectedPower))
+    if selectedPower == INVALID_VOLTAGE
+        abort
+
+    userSelectedVolts := VALUE_NOT_SET  ' preset
+    minFwdIncreAtPwr := VALUE_NOT_SET
+    maxFwdIncreAtPwr := VALUE_NOT_SET
+    minRevIncreAtPwr := VALUE_NOT_SET
+    maxRevIncreAtPwr := VALUE_NOT_SET
+
+    CASE selectedPower
+        PWR_12V:
+            minFwdIncreAtPwr := 5_000_000       ' anything below yeilds RPM 5.3, cts/Sec 8
+            maxFwdIncreAtPwr := 97_000_000      ' anything above yeilds RPM 181.3, cts/Sec 272
+            minRevIncreAtPwr := -5_000_000      ' anything below yeilds RPM 5.3, cts/Sec 8
+            maxRevIncreAtPwr := -97_000_000     ' anything above yeilds RPM 181.3, cts/Sec 272
+            debug("* CFG ", sdec_long(minFwdIncreAtPwr))
+        PWR_6V:
+        PWR_18p5V:
+        PWR_24V:
+        other:
+            debug("*???* Unknown: ", sdec_long(selectedPower))
+            abort   ' SHOULD NEVER get here!
+
+    if minFwdIncreAtPwr <> VALUE_NOT_SET
+        userSelectedVolts := selectedPower
+    debug("* EXIT 2 CFG ", sdec_long(userSelectedVolts))
+
 PRI setTargetAccel(nTgtIncr)
     targetIncre := nTgtIncr
-    targetIncreInM := nTgtIncr / 10_000
+    debug("-MOT- ", sdec_long(targetIncre))
+    tvTargetIncreInM := nTgtIncr / 10_000
 
 CON { --- HDMI Debug Support --- }
 
@@ -586,7 +739,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 1] := @name21
     LONG[@pNamesAr][nValsGrpOffset + 2] := @name22
     LONG[@pNamesAr][nValsGrpOffset + 3] := @name23
-    LONG[@pValsAr][nValsGrpOffset + 0] := @rpmIn10ths
+    LONG[@pValsAr][nValsGrpOffset + 0] := @tvRpmIn10ths
     LONG[@pValsAr][nValsGrpOffset + 1] := @rpm
     LONG[@pValsAr][nValsGrpOffset + 2] := @cntsInSec
     LONG[@pValsAr][nValsGrpOffset + 3] := @deltaTicks
@@ -604,13 +757,13 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 4] := @name34
     LONG[@pNamesAr][nValsGrpOffset + 5] := @name35
     LONG[@pNamesAr][nValsGrpOffset + 6] := @name36
-    LONG[@pValsAr][nValsGrpOffset + 0] := @maxRpmIn10ths
-    LONG[@pValsAr][nValsGrpOffset + 1] := @maxCntsInSec
-    LONG[@pValsAr][nValsGrpOffset + 2] := @maxFps
-    LONG[@pValsAr][nValsGrpOffset + 3] := @maxMPH
-    LONG[@pValsAr][nValsGrpOffset + 4] := @maxkPH
-    LONG[@pValsAr][nValsGrpOffset + 5] := @maxMmPerSec
-    LONG[@pValsAr][nValsGrpOffset + 6] := @targetIncreInM
+    LONG[@pValsAr][nValsGrpOffset + 0] := @tvMaxRpmIn10ths
+    LONG[@pValsAr][nValsGrpOffset + 1] := @tvMaxCntsInSec
+    LONG[@pValsAr][nValsGrpOffset + 2] := @tvMaxFps
+    LONG[@pValsAr][nValsGrpOffset + 3] := @tvMaxMPH
+    LONG[@pValsAr][nValsGrpOffset + 4] := @tvMaxkPH
+    LONG[@pValsAr][nValsGrpOffset + 5] := @tvMaxMmPerSec
+    LONG[@pValsAr][nValsGrpOffset + 6] := @tvTargetIncreInM
 
     ' tell our table size to reader
     nGrpOffset := 3
@@ -624,22 +777,23 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
     pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
     pGroupVars := @pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-    debug("* -------------")
-    debug("* MOTR DAT values: ", uhex_long(@hall), uhex_long_array(@hall, 4))
-    debug("* MOTR VAR values: ", uhex_long(@rpmIn10ths), uhex_long_array(@rpmIn10ths, 4))
-    debug("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
-    debug("* NAMEs SOURCE2: ", uhex_long(@nameTitle2), uhex_byte_array(@nameTitle2, dataLen2))
-    debug("* NAMEs SOURCE3: ", uhex_long(@nameTitle3), uhex_byte_array(@nameTitle3, dataLen3))
-    debug("* -------------")
-    debug("* MOTR DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
-    debug("* MOTR DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
-    debug("* MOTR DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
-    debug("* MOTR DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
-    debug("* -------------")
-    debug("* MOTR PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
-    debug("* -------------")
-    debug("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
-    debug("* =============")
+    if showHDMIDebug
+        debug("* -------------")
+        debug("* MOTR DAT values: ", uhex_long(@hall), uhex_long_array(@hall, 4))
+        debug("* MOTR VAR values: ", uhex_long(@tvRpmIn10ths), uhex_long_array(@tvRpmIn10ths, 4))
+        debug("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
+        debug("* NAMEs SOURCE2: ", uhex_long(@nameTitle2), uhex_byte_array(@nameTitle2, dataLen2))
+        debug("* NAMEs SOURCE3: ", uhex_long(@nameTitle3), uhex_byte_array(@nameTitle3, dataLen3))
+        debug("* -------------")
+        debug("* MOTR DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
+        debug("* MOTR DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
+        debug("* MOTR DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+        debug("* MOTR DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+        debug("* -------------")
+        debug("* MOTR PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
+        debug("* -------------")
+        debug("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        debug("* =============")
 
 
 CON { -- TASK position tracking -- }
@@ -651,12 +805,12 @@ VAR { arrays }
     long    countsWindow[WINDOW_SIZE]
     long    taskStack[STACK_SIZE_LONGS]
 
-PRI taskPostionSense() | senseStartTicks, posThis8th, mmThis8th, fValue, fFps
+PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
 
     longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
-    maxRpmIn10ths := maxCntsInSec := maxMmPerSec := 0
-    maxFps := maxMPH := maxkPH := 0
+    tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec := 0
+    tvMaxFps := tvMaxMPH := tvMaxkPH := 0
 
     repeat
         senseStartTicks := getct()
@@ -672,24 +826,21 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, mmThis8th, fValue, fFps
             winEntryCt++
 
         cntsInSec := (windowSum / winEntryCt) * 8                 ' moving average, scaled
-        rpmIn10ths := (cntsInSec * 60) / 9
-        rpm := rpmIn10ths / 10
-        rpmTenths := rpmIn10ths +// 10
+        tvRpmIn10ths := (cntsInSec * 60) / 9
+        rpm := tvRpmIn10ths / 10
+        rpmTenths := tvRpmIn10ths +// 10
 
-        maxRpmIn10ths := max(rpmIn10ths, maxRpmIn10ths)
-        maxCntsInSec := max(cntsInSec, maxCntsInSec)
+        tvMaxRpmIn10ths := max(tvRpmIn10ths, tvMaxRpmIn10ths)
+        tvMaxCntsInSec := max(cntsInSec, tvMaxCntsInSec)
 
         posThis8th := windowSum / winEntryCt
-        trk_90ths += posThis8th
+        posTrkHallTicks += posThis8th
         ' pos is in hall-steps of 4Degr each.
         ' circumference of wheel is in mm x10
         '   degrees of rotation is pos * 4
         '   number of rotations is degrees / 360
         '   dist in mm is (circInMMx10 * rotations) / 10
-        mmThis8th := (((posThis8th * 4) * circInMMx10) / 360) / 10
-        trk_mm += mmThis8th
         mmPerSec := (((cntsInSec * 4) * circInMMx10) / 360)
-        maxMmPerSec := max(mmPerSec, maxMmPerSec)
         ' RULE: 1 mm/sec = 0.00328084 ft/sec
         fFps := float(mmPerSec) *. 0.00328084 /. 10.0
         ftPerSec := trunc(fFps *. 10.0)
@@ -699,9 +850,22 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, mmThis8th, fValue, fFps
         ' RULE: 1 ft/sec = 0.681818 mi/hr
         fValue := fFps *. 0.681818
         mph := trunc(fValue *. 10.0)
-        maxFps := MAX(ftPerSec, maxFps)
-        maxMPH := MAX(mph, maxMPH)
-        maxkPH := MAX(kmh, maxkPH)
+
+        tvMaxMmPerSec := max(mmPerSec, tvMaxMmPerSec)
+        tvMaxFps := MAX(ftPerSec, tvMaxFps)
+        tvMaxMPH := MAX(mph, tvMaxMPH)
+        tvMaxkPH := MAX(kmh, tvMaxkPH)
+
+        ' if user set time/distance to stop then stop if we are past the time or distance
+        if motorStopMSecs > 0
+            timeNow := getms()
+            if timeNow > motorStopMSecs
+                setTargetAccel(0)
+                motorStopMSecs := 0 ' and clear user request
+        elseif motorStopHallTicks > 0
+            if posTrkHallTicks > motorStopHallTicks
+                setTargetAccel(0)
+                motorStopHallTicks := 0 ' and clear user request
 
         deltaTicks := getct() - senseStartTicks
 
@@ -766,7 +930,6 @@ VAR { Data Structure for PASM Driver }
 
     long    maxDrvTics                          ' accumulators for study of driver
     long    minDrvTics
-    long    targetIncreInM
 
     long    pinbase                             ' 1 long                must set initially
     long    params_ptr                          ' 1 long                must set initially
@@ -790,16 +953,17 @@ VAR { Data for Motor Position Tracking }
     long    newCntsInSec
     long    windowSum
     '  ----- HDMI monitored! ----
-    long    rpmIn10ths
+    long    tvRpmIn10ths
     long    rpm
     long    cntsInSec
     long    deltaTicks
-    long    maxRpmIn10ths
-    long    maxFps
-    long    maxMPH
-    long    maxkPH
-    long    maxMmPerSec
-    long    maxCntsInSec
+    long    tvMaxRpmIn10ths
+    long    tvMaxFps
+    long    tvMaxMPH
+    long    tvMaxkPH
+    long    tvMaxMmPerSec
+    long    tvMaxCntsInSec
+    long    tvTargetIncreInM
     '  --------------------------
     long    priorPos
     long    rpmTenths
@@ -808,8 +972,7 @@ VAR { Data for Motor Position Tracking }
     long    kmh
     long    mph
     '  --------------------------
-    long    trk_mm
-    long    trk_90ths
+    long    posTrkHallTicks
 
 DAT  {  DRIVER w/Motor Parameters  }
 '
@@ -893,7 +1056,6 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
                 mov     prior_incr, #0                 ' just in case
-                mov     drv_state_, #0                 ' reset state to Unknown
 
                 ' preset our starting angle
                 'call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
