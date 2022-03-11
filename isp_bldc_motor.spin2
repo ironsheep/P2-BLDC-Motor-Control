@@ -424,7 +424,7 @@ CON { driver testing constants }
 
 #0, MD_Unknown, MD_DONE, MD_START, MD_RUN_UP, MD_SLOW, MD_STOP, MD_SPEED_UP, MD_WAIT_AT_SPEED, MD_AT_SPEED_DONE, MD_WAIT_FOR_STOP, MD_STOPPED, MD_GAP_TWEEN_TESTS, MD_CHANGE_SPEED
 
-#0, TS_Unknown, TS_DONE, TS_RAMP_FWD, TS_RAMP_REV, TS_SLOWDN_FWD, TS_SLOWDN_REV, TS_SPEEDUP_FWD, TS_SPEEDUP_REV, TS_CHG_FWD_REV, TS_CHG_F_REV_FWD
+#0, TS_Unknown, TS_DONE, TS_RAMP_FWD, TS_RAMP_REV, TS_SLOWDN_FWD, TS_SLOWDN_REV, TS_SPEEDUP_FWD, TS_SPEEDUP_REV, TS_CHG_FWD_REV, TS_CHG_REV_FWD
 
 PUB TestMotorRampUpHoldDn() | priorHall, eTestState, eTest, desiredAccel, desireAtSpeedSecs, endAtSecs
 '' invoke start() before invoke of TestMotorRampUpHoldDn()
@@ -454,7 +454,7 @@ PUB TestMotorRampUpHoldDn() | priorHall, eTestState, eTest, desiredAccel, desire
     targetIncre := 0
     bStartingUp := true
     eTestState := MD_START
-    eTest := TS_SPEEDUP_REV
+    eTest := TS_RAMP_FWD        ' first test to run
     desiredAccel := 0
     desireAtSpeedSecs := 0
     endAtSecs := 0
@@ -472,85 +472,165 @@ PUB TestMotorRampUpHoldDn() | priorHall, eTestState, eTest, desiredAccel, desire
 
         case eTest
             TS_RAMP_FWD:
-                    case eTestState
-                        MD_START:
-                            desiredAccel := -85_000_000  ' request run at + speed
-                            desireAtSpeedSecs := 5
-                            eTestState := MD_RUN_UP
+                case eTestState
+                    MD_START:
+                        desiredAccel := -85_000_000  ' request run at + speed
+                        desireAtSpeedSecs := 5
+                        eTestState := MD_RUN_UP
 
-                        MD_AT_SPEED_DONE:
-                            eTestState := MD_STOP
+                    MD_AT_SPEED_DONE:
+                        eTestState := MD_STOP
 
-                        MD_STOPPED:
-                            eTest := TS_SPEEDUP_FWD
-                            eTestState := MD_START
-                            bStartingUp := true
+                    MD_STOPPED:
+                        eTest := TS_RAMP_REV
+                        eTestState := MD_START
+                        bStartingUp := true
 
-                        other:
-                            ' nothing more here
+                    other:
+                        ' nothing more here
             TS_RAMP_REV:
-                    case eTestState
-                        MD_START:
-                            desiredAccel := 85_000_000  ' request run at + speed
-                            desireAtSpeedSecs := 5
-                            eTestState := MD_RUN_UP
+                case eTestState
+                    MD_START:
+                        desiredAccel := 85_000_000  ' request run at + speed
+                        desireAtSpeedSecs := 5
+                        eTestState := MD_RUN_UP
 
-                        MD_AT_SPEED_DONE:
+                    MD_AT_SPEED_DONE:
+                        eTestState := MD_STOP
+
+                    MD_STOP:
+                        eTest := TS_SLOWDN_FWD
+                        eTestState := MD_START
+                        bStartingUp := true
+
+                    other:
+                        ' nothing more here
+            TS_SLOWDN_FWD:
+                case eTestState
+                    MD_START:
+                        desiredAccel := 85_000_000  ' request run at + speed
+                        desireAtSpeedSecs := 5
+                        eTestState := MD_RUN_UP
+
+                    MD_AT_SPEED_DONE:
+                        if desiredAccel == 85_000_000
+                            desiredAccel := 60_000_000  ' request run at + speed
+                            eTestState := MD_CHANGE_SPEED
+                        else
                             eTestState := MD_STOP
 
-                        MD_STOP:
-                            eTest := TS_Unknown
-                            eTestState := MD_START
-                            bStartingUp := true
+                    MD_STOP:
+                        eTest := TS_SLOWDN_REV ' no more tests...
+                        eTestState := MD_START
+                        bStartingUp := true
 
-                        other:
-                            ' nothing more here
-            TS_SLOWDN_FWD:
+                    other:
+                        ' nothing more here
             TS_SLOWDN_REV:
-            TS_SPEEDUP_FWD:
-                    case eTestState
-                        MD_START:
-                            desiredAccel := 60_000_000  ' request run at + speed
-                            desireAtSpeedSecs := 5
-                            eTestState := MD_RUN_UP
+                case eTestState
+                    MD_START:
+                        desiredAccel := -85_000_000  ' request run at + speed
+                        desireAtSpeedSecs := 5
+                        eTestState := MD_RUN_UP
 
-                        MD_AT_SPEED_DONE:
-                            if desiredAccel == 60_000_000
-                                desiredAccel := 85_000_000  ' request run at + speed
-                                eTestState := MD_CHANGE_SPEED
-                            else
-                                eTestState := MD_STOP
-
-                        MD_STOP:
-                            eTest := TS_Unknown ' no more tests...
-                            eTestState := MD_START
-                            bStartingUp := true
-
-                        other:
-                            ' nothing more here
-            TS_SPEEDUP_REV:
-                    case eTestState
-                        MD_START:
+                    MD_AT_SPEED_DONE:
+                        if desiredAccel == -85_000_000
                             desiredAccel := -60_000_000  ' request run at + speed
-                            desireAtSpeedSecs := 5
-                            eTestState := MD_RUN_UP
+                            eTestState := MD_CHANGE_SPEED
+                        else
+                            eTestState := MD_STOP
 
-                        MD_AT_SPEED_DONE:
-                            if desiredAccel == -60_000_000
-                                desiredAccel := -85_000_000  ' request run at + speed
-                                eTestState := MD_CHANGE_SPEED
-                            else
-                                eTestState := MD_STOP
+                    MD_STOP:
+                        eTest := TS_SPEEDUP_FWD ' no more tests...
+                        eTestState := MD_START
+                        bStartingUp := true
 
-                        MD_STOP:
-                            eTest := TS_Unknown ' no more tests...
-                            eTestState := MD_START
-                            bStartingUp := true
+                    other:
+                        ' nothing more here
+            TS_SPEEDUP_FWD:
+                case eTestState
+                    MD_START:
+                        desiredAccel := 60_000_000  ' request run at + speed
+                        desireAtSpeedSecs := 5
+                        eTestState := MD_RUN_UP
 
-                        other:
-                            ' nothing more here
+                    MD_AT_SPEED_DONE:
+                        if desiredAccel == 60_000_000
+                            desiredAccel := 85_000_000  ' request run at + speed
+                            eTestState := MD_CHANGE_SPEED
+                        else
+                            eTestState := MD_STOP
+
+                    MD_STOP:
+                        eTest := TS_SPEEDUP_REV ' no more tests...
+                        eTestState := MD_START
+                        bStartingUp := true
+
+                    other:
+                        ' nothing more here
+            TS_SPEEDUP_REV:
+                case eTestState
+                    MD_START:
+                        desiredAccel := -60_000_000  ' request run at + speed
+                        desireAtSpeedSecs := 5
+                        eTestState := MD_RUN_UP
+
+                    MD_AT_SPEED_DONE:
+                        if desiredAccel == -60_000_000
+                            desiredAccel := -85_000_000  ' request run at + speed
+                            eTestState := MD_CHANGE_SPEED
+                        else
+                            eTestState := MD_STOP
+
+                    MD_STOP:
+                        eTest := TS_CHG_FWD_REV ' no more tests...
+                        eTestState := MD_START
+                        bStartingUp := true
+
+                    other:
+                        ' nothing more here
             TS_CHG_FWD_REV:
-            TS_CHG_F_REV_FWD:
+                case eTestState
+                    MD_START:
+                        desiredAccel := 60_000_000  ' request run at + speed
+                        desireAtSpeedSecs := 5
+                        eTestState := MD_RUN_UP
+
+                    MD_AT_SPEED_DONE:
+                        if desiredAccel == 60_000_000
+                            desiredAccel := -60_000_000  ' request run at + speed
+                            eTestState := MD_CHANGE_SPEED
+                        else
+                            eTestState := MD_STOP
+
+                    MD_STOP:
+                        eTest := TS_CHG_REV_FWD ' no more tests...
+                        eTestState := MD_START
+                        bStartingUp := true
+
+                    other:
+                        ' nothing more here
+            TS_CHG_REV_FWD:
+                case eTestState
+                    MD_START:
+                        desiredAccel := -60_000_000  ' request run at + speed
+                        desireAtSpeedSecs := 5
+                        eTestState := MD_RUN_UP
+
+                    MD_AT_SPEED_DONE:
+                        if desiredAccel == -60_000_000
+                            desiredAccel := 60_000_000  ' request run at + speed
+                            eTestState := MD_CHANGE_SPEED
+                        else
+                            eTestState := MD_STOP
+
+                    MD_STOP:
+                        eTest := TS_Unknown ' no more tests...
+                        eTestState := MD_START
+                        bStartingUp := true
+
+                    other:
+                        ' nothing more here
             other:  ' nothing more here
 
         showStateNTest(eTest, eTestState)
@@ -656,7 +736,7 @@ DAT { interp strings }
     pTSSpeedUpFwd   byte    "TS_SPEEDUP_FWD",0
     pTSSpeedUpRev   byte    "TS_SPEEDUP_REV",0
     pTSChgFwdRev    byte    "TS_CHG_FWD_REV",0
-    pTSChgRevFwd    byte    "TS_CHG_F_REV_FWD",0
+    pTSChgRevFwd    byte    "TS_CHG_REV_FWD",0
     pTSDone         byte    "TS_DONE",0
 
     priorState      long     MD_Unknown
@@ -710,7 +790,7 @@ PRI showStateNTest(enumTest, enumTestState) | pTestStr, pStateStr
             pTestStr := @pTSSpeedUpRev
         TS_CHG_FWD_REV:
             pTestStr := @pTSChgFwdRev
-        TS_CHG_F_REV_FWD:
+        TS_CHG_REV_FWD:
             pTestStr := @pTSChgRevFwd
         other:
             pTestStr := @pUnkMsg
@@ -1258,10 +1338,10 @@ driver          rdlong  x, ptra++                   ' get base pin
 
                 mov     drv_state_, #DCS_STOPPED    ' motor is currently stopped
 
-                or      all_pins, x                 ' make all-pins variable
-                add     drive_pins, x               ' make drive-pins variable
+                or      all_pins, x                 ' finish the all-pins variable
+                add     drive_pins, x               ' finish the drive-pins variable
 
-                drvl    drvrLoopPnFld                ' preset test pins to low
+                drvl    drvrLoopPnFld               ' preset test pins to low
                 drvl    drvrTmrPnFld
 
                 mov     y, #0                       ' make single-pin variables
@@ -1308,7 +1388,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     loop_dtcks_, #0                 ' just in case
                 mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
-                mov     prior_incr, #0                 ' just in case
+                mov     prior_incr, #0                  ' just in case
 
                 ' preset our starting angle
                 'call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
@@ -1345,10 +1425,15 @@ driver          rdlong  x, ptra++                   ' get base pin
     if_z        jmp     #.rampDn
                 ' have start or speed adjustment
                 cmp     drv_state_, #DCS_STOPPED    wz  ' Q: is start request?
-    if_z        mov     prior_incr, tgt_incr            ' have new request - set this a latest prior!
-    if_z        mov     drv_state_, #DCS_SPIN_UP        ' yes, go ramp up
-    if_z        jmp     #.rampUp
+    if_nz       jmp     #.notStart
+                mov     prior_incr, tgt_incr            ' have new request - set this a latest prior!
+                mov     drv_state_, #DCS_SPIN_UP        ' yes, go ramp up
+                ' if we have floated all drive pins, reenable them
+                cmp     stop_mode_, #SM_FLOAT       wz
+    if_z        dirh    drive_pins                      ' float all control pins (make them inputs)
+                jmp     #.rampUp
 
+.notStart
     ' ------------------------------------
                ' no, We have a speed adjustment (determine how to do...)
                 '  NOTEs: [ + >> +, + >> -, - >> -, - >> +]
@@ -1384,7 +1469,7 @@ driver          rdlong  x, ptra++                   ' get base pin
     if_nc       mov     drv_state_, #DCS_SPIN_UP        ' CY=1: speed up
     if_nc       jmp     #.rampUp
     if_c        mov     drv_state_, #DCS_SLOWING_DN     ' CY=0: slow down
-    if_c         jmp     #.slowDn
+    if_c        jmp     #.slowDn
     ' ------------------------------------
 .notSame    ' we have prior and new but NOT the same sign, let's slowdown then change direction
                 ' let's change direction
