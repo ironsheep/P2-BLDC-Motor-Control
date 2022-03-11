@@ -299,11 +299,21 @@ VAR { test method data }
     long    maxRange
     long    rangeStep
     long    prior_drv_state
+    long    end_in_sec
+    long    prior_MaxRpmIn10ths
 
 PUB findFaultForCurrV()
 '' invoke start() before invoke of findFaultForCurrV()
     useDebug := false    ' NO debug in findFaultForCurrV()
     debug("* ========  TEST Started!  =============================")
+
+    ' find loop theory
+    ' - find UPPER limit:
+    '     search up from 60_000_000 to 400_000_000 (step 25_000_000)
+    '          where max is motor fault or increment yields no change in RPM!
+    ' - find LOWER limit:
+    '     search down from 60_000_000 to 2_500_000 (step -2_500_000)
+    '          where min no change in RPM or reached low end of range cps=8,rpm=5.3
 
     minRange := 60_000_000
     maxRange := 685_000_000
@@ -311,12 +321,18 @@ PUB findFaultForCurrV()
 
     pinlow(TEST_ALL_PINS)
 
+    if drv_state == DCS_Unknown
+        debug("* HOLD until Motor driver starts...")
+        repeat until drv_state <> DCS_Unknown
+        if drv_state <> DCS_Unknown
+            debug("* Motor ready")
+            repeat  ' lock here
 
     repeat
 
         debug("* RUN: ", udec(minRange), udec(maxRange), udec(rangeStep))
         prior_drv_state := DCS_Unknown
-        runLoopCount := 15_000 ' count of 1 ms loops (15 seconds)
+        runLoopCount := 5_000 ' count of 1 ms loops (5 seconds)
         bStartingUp := true
         setTargetAccel(0)
         fault := faultHoldoffCtr := 0
@@ -342,24 +358,21 @@ PUB findFaultForCurrV()
                         clearFault(currTarget, rangeStep)
                         quit   ' FAULT and exit to next test
 
-            if drv_state == DCS_Unknown
-                debug("* HOLD until Motor driver starts...")
-                repeat until drv_state <> DCS_Unknown
-                if drv_state <> DCS_Unknown
-                    debug("* Motor ready")
-
             if drv_state <> prior_drv_state and drv_state == DCS_AT_SPEED
                 debug("- at SPEED")
                 bStartingUp := false
 
-            if runLoopCount > 0 and drv_state == DCS_AT_SPEED
-                runLoopCount--
-                debug("-  ", udec(runLoopCount))
-                if runLoopCount == 0
-                    setTargetAccel(0)    ' request stop
+            if end_in_sec == 0 and drv_state == DCS_AT_SPEED
+                debug("- time to spindown set - 5 sec")
+                end_in_sec := getsec() + 5 ' spindown in 5 seconds
+
+            if end_in_sec <> 0 and getsec() > end_in_sec and targetIncre <> 0
+                'debug("-  stopping motor for this pass")
+                setTargetAccel(0)    ' request stop
 
             if drv_state <> prior_drv_state and drv_state == DCS_STOPPED
                 debug("- DONE, stopped")
+                ' capture status from this test
                 quit    ' COMPLETE, exit to next test
 
             if fault  ' if fault, end this pass
@@ -369,15 +382,29 @@ PUB findFaultForCurrV()
 
             'debug("- set prior")
             prior_drv_state := drv_state
+
             'debug("- wait")
             waitms(1000)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
 
         if rangeStep < 2_000_000
             debug("- MIN stepsize, leave loop!")
             quit    ' ended last loop, exit
+
         elseif fault == 0
-            debug("?? out of loop ??")
-        fault := 0
+            debug("?? out of loop ?? --   WHY!!!")
+
+        if fault <> 0
+            debug("- end with FAULT")
+            quit
+
+            debug("- atEND:  ", udec_long(currTarget), udec_long(tvMaxRpmIn10ths), udec_long(cntsInSec))
+
+        if prior_MaxRpmIn10ths == tvMaxRpmIn10ths
+            ' have new power with same outcome end loop
+            debug("- end with same value!")
+            quit
+
+
         waitms(500)     ' kill time for 1/2 sec!
 
     debug("* RUN Complete!!")
@@ -393,7 +420,13 @@ PRI clearFault(tgt, stepCt)
     faultHoldoffCtr := 0
     setTargetAccel(0)
 
-PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, angleTarget
+CON { driver testing constants }
+
+#0, MD_Unknown, MD_DONE, MD_START, MD_RUN_UP, MD_SLOW, MD_STOP, MD_SPEED_UP, MD_WAIT_AT_SPEED, MD_AT_SPEED_DONE, MD_WAIT_FOR_STOP, MD_STOPPED, MD_GAP_TWEEN_TESTS, MD_CHANGE_SPEED
+
+#0, TS_Unknown, TS_DONE, TS_RAMP_FWD, TS_RAMP_REV, TS_SLOWDN_FWD, TS_SLOWDN_REV, TS_SPEEDUP_FWD, TS_SPEEDUP_REV, TS_CHG_FWD_REV, TS_CHG_F_REV_FWD
+
+PUB TestMotorRampUpHoldDn() | priorHall, eTestState, eTest, desiredAccel, desireAtSpeedSecs, endAtSecs
 '' invoke start() before invoke of TestMotorRampUpHoldDn()
     if useDebug
         debug(`logic l title 'Hall Effect' pos 25 440 'Hall' 3)
@@ -418,11 +451,13 @@ PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, a
     'pintoggle(TEST_ALL_PINS)
     pinlow(TEST_ALL_PINS)
 
+    targetIncre := 0
     bStartingUp := true
-
-    runLoopCount := 15_000 ' count of 1 ms loops (15 seconds)
-    'runLoopCount := 30_000 ' count of 1 ms loops (30 seconds)
-    'runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
+    eTestState := MD_START
+    eTest := TS_SPEEDUP_REV
+    desiredAccel := 0
+    desireAtSpeedSecs := 0
+    endAtSecs := 0
 
     repeat
         pintoggle(TEST_PIN_OUTER_LOOP)
@@ -432,16 +467,138 @@ PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, a
         ' @18.5V 10_000_000 is 5.8 RPM
         ' @18.5V 10_000_000 is 5.8 RPM
 
-        if bStartingUp and targetIncre == 0
-            setTargetAccel(60_000_000)  ' request run at speed
+        showStateNTest(eTest, eTestState)
 
-        if drv_state == DCS_AT_SPEED
-            bStartingUp := false
 
-        if runLoopCount > 0 && bStartingUp == false
-            runLoopCount--
-            if runLoopCount == 0
-                setTargetAccel(0)    ' request stop
+        case eTest
+            TS_RAMP_FWD:
+                    case eTestState
+                        MD_START:
+                            desiredAccel := -85_000_000  ' request run at + speed
+                            desireAtSpeedSecs := 5
+                            eTestState := MD_RUN_UP
+
+                        MD_AT_SPEED_DONE:
+                            eTestState := MD_STOP
+
+                        MD_STOPPED:
+                            eTest := TS_SPEEDUP_FWD
+                            eTestState := MD_START
+                            bStartingUp := true
+
+                        other:
+                            ' nothing more here
+            TS_RAMP_REV:
+                    case eTestState
+                        MD_START:
+                            desiredAccel := 85_000_000  ' request run at + speed
+                            desireAtSpeedSecs := 5
+                            eTestState := MD_RUN_UP
+
+                        MD_AT_SPEED_DONE:
+                            eTestState := MD_STOP
+
+                        MD_STOP:
+                            eTest := TS_Unknown
+                            eTestState := MD_START
+                            bStartingUp := true
+
+                        other:
+                            ' nothing more here
+            TS_SLOWDN_FWD:
+            TS_SLOWDN_REV:
+            TS_SPEEDUP_FWD:
+                    case eTestState
+                        MD_START:
+                            desiredAccel := 60_000_000  ' request run at + speed
+                            desireAtSpeedSecs := 5
+                            eTestState := MD_RUN_UP
+
+                        MD_AT_SPEED_DONE:
+                            if desiredAccel == 60_000_000
+                                desiredAccel := 85_000_000  ' request run at + speed
+                                eTestState := MD_CHANGE_SPEED
+                            else
+                                eTestState := MD_STOP
+
+                        MD_STOP:
+                            eTest := TS_Unknown ' no more tests...
+                            eTestState := MD_START
+                            bStartingUp := true
+
+                        other:
+                            ' nothing more here
+            TS_SPEEDUP_REV:
+                    case eTestState
+                        MD_START:
+                            desiredAccel := -60_000_000  ' request run at + speed
+                            desireAtSpeedSecs := 5
+                            eTestState := MD_RUN_UP
+
+                        MD_AT_SPEED_DONE:
+                            if desiredAccel == -60_000_000
+                                desiredAccel := -85_000_000  ' request run at + speed
+                                eTestState := MD_CHANGE_SPEED
+                            else
+                                eTestState := MD_STOP
+
+                        MD_STOP:
+                            eTest := TS_Unknown ' no more tests...
+                            eTestState := MD_START
+                            bStartingUp := true
+
+                        other:
+                            ' nothing more here
+            TS_CHG_FWD_REV:
+            TS_CHG_F_REV_FWD:
+            other:  ' nothing more here
+
+        showStateNTest(eTest, eTestState)
+
+        if eTest == TS_DONE
+            quit    ' all tests complete, exit loop
+
+        case eTestState
+            MD_RUN_UP:
+                if bStartingUp and targetIncre == 0
+                    setTargetAccel(desiredAccel)  ' request run at speed
+                    eTestState := MD_WAIT_AT_SPEED
+                    debug("* coast")
+            MD_CHANGE_SPEED:
+                if targetIncre <> 0
+                    setTargetAccel(desiredAccel)  ' request run at speed
+                    endAtSecs := getsec() + desireAtSpeedSecs
+                    eTestState := MD_WAIT_AT_SPEED
+
+            MD_WAIT_AT_SPEED:
+                if bStartingUp and drv_state == DCS_AT_SPEED
+                    debug("* starting up == false")
+                    endAtSecs := getsec() + desireAtSpeedSecs
+                    bStartingUp := false
+                if drv_state == DCS_AT_SPEED and getsec() > endAtSecs
+                    debug("* coast time Expired")
+                    eTestState := MD_AT_SPEED_DONE
+
+            MD_STOP:
+                setTargetAccel(0)  ' request stop
+                eTestState := MD_WAIT_FOR_STOP
+                debug("* stopping")
+
+            MD_WAIT_FOR_STOP:
+                if targetIncre == 0 and drv_state == DCS_STOPPED
+                    debug("* STOPPED")
+                    endAtSecs := getsec() + desireAtSpeedSecs
+                    eTestState := MD_GAP_TWEEN_TESTS
+
+            MD_GAP_TWEEN_TESTS:
+                if drv_state == DCS_STOPPED and getsec() > endAtSecs
+                    debug("* idle time Expired")
+                    eTestState := MD_STOPPED
+
+            other:
+                ' nothing to do here
+
+        showStateNTest(eTest, eTestState)
 
         if hall <> priorHall                    'if hall effect changed, update logic display
             priorHall := hall
@@ -456,6 +613,10 @@ PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, a
         maxDrvTics := loop_ticks > maxDrvTics ? loop_ticks : maxDrvTics
         minDrvTics := loop_ticks > 10 && loop_ticks < minDrvTics  ? loop_ticks : minDrvTics
 
+        if fault and faultHoldoffCtr > STABILIZE_LOOP_CT
+            debug("** FAULT **")
+            quit
+
         if faultHoldoffCtr++ < STABILIZE_LOOP_CT            ' if still getting sense of motor hold-off faults
             fault~
         if fault and faultHoldoffCtr > STABILIZE_LOOP_CT and 0   ' if fault, shut down
@@ -467,7 +628,98 @@ PUB TestMotorRampUpHoldDn() | priorHall, angleIncrement, increment, decrement, a
         'waitus(1000)
         waitct(startTicks + ticks1ms)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
 
-PUB testMotorNoFault() | priorHall, angleIncrement, increment, decrement, angleTarget
+    debug("** Run Complete")
+    repeat   ' HOLD here forever
+
+DAT { interp strings }
+
+    pUnkMsg         byte    "?unk?",0
+    pMDDone         byte    "MD_DONE",0
+    pMDStart        byte    "MD_START",0
+    pMDRunUp        byte    "MD_RUN_UP",0
+    pMDSlow         byte    "MD_SLOW",0
+    pMDStop         byte    "MD_STOP",0
+    pMDSpeedUp      byte    "MD_SPEED_UP",0
+    pMDWaitAtSpeed  byte    "MD_WT_AT_SPEED",0
+    pMDWaitForStop  byte   "MD_WT_FOR_STOP",0
+    pMDAtSpeedDone  byte    "MD_AT_SPEED_DONE",0
+    pMDStopped      byte    "MD_STOPPED",0
+    pMDGapTween     byte    "MD_GAP_TWEEN_TESTS",0
+    pMDChgSpeed     byte    "MD_CHANGE_SPEED",0
+
+    pBadCode        byte    "?BAD-CODE?",0
+
+    pTSRampFwd      byte    "TS_RAMP_FWD",0
+    pTSRampRev      byte    "TS_RAMP_REV",0
+    pTSSlowDnFwd    byte    "TS_SLOWDN_FWD",0
+    pTSSlowDnRev    byte    "TS_SLOWDN_REV",0
+    pTSSpeedUpFwd   byte    "TS_SPEEDUP_FWD",0
+    pTSSpeedUpRev   byte    "TS_SPEEDUP_REV",0
+    pTSChgFwdRev    byte    "TS_CHG_FWD_REV",0
+    pTSChgRevFwd    byte    "TS_CHG_F_REV_FWD",0
+    pTSDone         byte    "TS_DONE",0
+
+    priorState      long     MD_Unknown
+    priorTest       long    TS_Unknown
+
+PRI showStateNTest(enumTest, enumTestState) | pTestStr, pStateStr
+    pStateStr := @pBadCode
+    case enumTestState
+        MD_DONE:
+            pStateStr := @pMDDone
+        MD_START:
+            pStateStr := @pMDStart
+        MD_RUN_UP:
+             pStateStr := @pMDRunUp
+        MD_SLOW:
+            pStateStr := @pMDSlow
+        MD_STOP:
+            pStateStr := @pMDStop
+        MD_SPEED_UP:
+            pStateStr := @pMDSpeedUp
+        MD_WAIT_AT_SPEED:
+            pStateStr := @pMDWaitAtSpeed
+        MD_AT_SPEED_DONE:
+            pStateStr := @pMDAtSpeedDone
+        MD_WAIT_FOR_STOP:
+            pStateStr := @pMDWaitForStop
+        MD_STOPPED:
+            pStateStr := @pMDStopped
+        MD_GAP_TWEEN_TESTS:
+            pStateStr := @pMDGapTween
+        MD_CHANGE_SPEED:
+            pStateStr := @pMDChgSpeed
+        other:
+            pStateStr := @pUnkMsg
+
+    pTestStr := @pBadCode
+    case enumTest
+        TS_Unknown:
+            pTestStr := @pUnkMsg
+        TS_RAMP_FWD:
+            pTestStr := @pTSRampFwd
+        TS_RAMP_REV:
+            pTestStr := @pTSRampRev
+        TS_SLOWDN_FWD:
+            pTestStr := @pTSSlowDnFwd
+        TS_SLOWDN_REV:
+            pTestStr := @pTSSlowDnRev
+        TS_SPEEDUP_FWD:
+            pTestStr := @pTSSpeedUpFwd
+        TS_SPEEDUP_REV:
+            pTestStr := @pTSSpeedUpRev
+        TS_CHG_FWD_REV:
+            pTestStr := @pTSChgFwdRev
+        TS_CHG_F_REV_FWD:
+            pTestStr := @pTSChgRevFwd
+        other:
+            pTestStr := @pUnkMsg
+    if priorState <> enumTestState or priorTest <> enumTest
+        debug("--> TST:[", zstr_(pTestStr), "], ST:[", zstr_(pStateStr), "] <--")
+        priorState := enumTestState
+        priorTest := enumTest
+
+PUB testMotorNoFault() | priorHall, increment, decrement
 '' invoke start() before invoke of testMotorNoFault()
     useDebug := true    ' force use of debug in testMotorNoFault()
 
@@ -1013,7 +1265,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 drvl    drvrTmrPnFld
 
                 mov     y, #0                       ' make single-pin variables
-.pin            altd    y, #adc_u_i
+.pin            altd    y, #pin_adc_u_i
                 mov     0-0, x
                 add     x, #1
                 incmod  y, #15      wc
@@ -1021,35 +1273,35 @@ driver          rdlong  x, ptra++                   ' get base pin
 
                 dirl    all_pins                    ' disable PWM and ADC pins for configuration
 
-                wrpin   adc_modes+0, adc_u_i        ' set up ADC pins
-                wrpin   adc_modes+0, adc_v_i
-                wrpin   adc_modes+0, adc_w_i
-                wrpin   adc_modes+0, adc_i
+                wrpin   adc_modes+0, pin_adc_u_i        ' set up ADC pins
+                wrpin   adc_modes+0, pin_adc_v_i
+                wrpin   adc_modes+0, pin_adc_w_i
+                wrpin   adc_modes+0, pin_adc_cur_i
 
-                wxpin   #10, adc_u_i                ' (#10 = 1024-clock / 11-bit conversion)
-                wxpin   #10, adc_v_i
-                wxpin   #10, adc_w_i
-                wxpin   #10, adc_i
+                wxpin   #10, pin_adc_u_i                ' (#10 = 1024-clock / 11-bit conversion)
+                wxpin   #10, pin_adc_v_i
+                wxpin   #10, pin_adc_w_i
+                wxpin   #10, pin_adc_cur_i
 
-                wrpin   pwmn, pwm_u_l               ' set up PWM pins
-                wrpin   pwmt, pwm_u_h
-                wrpin   pwmn, pwm_v_l
-                wrpin   pwmt, pwm_v_h
-                wrpin   pwmn, pwm_w_l
-                wrpin   pwmt, pwm_w_h
+                wrpin   pwmn, pin_pwm_u_l               ' set up PWM pins
+                wrpin   pwmt, pin_pwm_u_h
+                wrpin   pwmn, pin_pwm_v_l
+                wrpin   pwmt, pin_pwm_v_h
+                wrpin   pwmn, pin_pwm_w_l
+                wrpin   pwmt, pin_pwm_w_h
 
-                wxpin   fram, pwm_u_l
-                wxpin   fram, pwm_u_h
-                wxpin   fram, pwm_v_l
-                wxpin   fram, pwm_v_h
-                wxpin   fram, pwm_w_l
-                wxpin   fram, pwm_w_h
+                wxpin   fram, pin_pwm_u_l
+                wxpin   fram, pin_pwm_u_h
+                wxpin   fram, pin_pwm_v_l
+                wxpin   fram, pin_pwm_v_h
+                wxpin   fram, pin_pwm_w_l
+                wxpin   fram, pin_pwm_w_h
 
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
 
-                dirl    hall_u                          ' remake HALL pins inputs (they were in-between ADC and PWM pins)
-                dirl    hall_v
-                dirl    hall_w
+                dirl    pin_hall_u                          ' remake HALL pins inputs (they were in-between ADC and PWM pins)
+                dirl    pin_hall_v
+                dirl    pin_hall_w
 
                 mov     duty_, #0                       ' reset duty
                 mov     pos_, #0                        ' reset pos
@@ -1108,22 +1360,31 @@ driver          rdlong  x, ptra++                   ' get base pin
                 '    - to smaller - -> ramp down to new
 
                 ' first do we have same sign?
-                testb   prior_incr, #31     wc      ' find dual '-' signs (CY=both neg)
-                testb   tgt_incr, #31       andc
+                testb   prior_incr, #31             wc  ' find dual '-' signs (CY=both neg)
+                testb   tgt_incr, #31               andc
     if_c        jmp     #.endSame
-                testbn  prior_incr, #31     wc      ' find dual '+' signs (CY=both pos)
-                testbn  tgt_incr, #31       andc
+                testbn  prior_incr, #31             wc  ' find dual '+' signs (CY=both pos)
+                testbn  tgt_incr, #31               andc
 .endSame
     if_nc       jmp     #.notSame
 .haveSame   ' we have prior and new with same sign, so should we slow down or speed up?
                 ' let's change speed
+                testb   tgt_incr, #31               wc
+    if_c        jmp     #.doSloNeg
+.doSloPos
                 cmps    prior_incr, tgt_incr        wcz ' Q: Should we slow dn or speed up? (CY=speed up)
                 mov     prior_incr, tgt_incr            ' have new request - set this a latest prior!
     if_c        mov     drv_state_, #DCS_SPIN_UP        ' CY=1: speed up
     if_c        jmp     #.rampUp
     if_nc       mov     drv_state_, #DCS_SLOWING_DN     ' CY=0: slow down
     if_nc       jmp     #.slowDn
-
+.doSloNeg
+                cmps    prior_incr, tgt_incr        wcz ' Q: Should we slow dn or speed up? (CY=speed up)
+                mov     prior_incr, tgt_incr            ' have new request - set this a latest prior!
+    if_nc       mov     drv_state_, #DCS_SPIN_UP        ' CY=1: speed up
+    if_nc       jmp     #.rampUp
+    if_c        mov     drv_state_, #DCS_SLOWING_DN     ' CY=0: slow down
+    if_c         jmp     #.slowDn
     ' ------------------------------------
 .notSame    ' we have prior and new but NOT the same sign, let's slowdown then change direction
                 ' let's change direction
@@ -1183,6 +1444,8 @@ driver          rdlong  x, ptra++                   ' get base pin
 .lastRDnzero
                 subs    drv_incr, drv_incr              ' set to zero
                 mov     drv_state_, #DCS_STOPPED        ' report that we are stopped
+                xor     err_, err_                      ' zero our error tracker
+                xor     duty_, duty_                      ' zero our error tracker
                 ' if we are to freewheel the motor let's float all drive pins
                 cmp     stop_mode_, #SM_FLOAT       wz
     if_z        dirl    drive_pins                      ' float all control pins (make them inputs)
@@ -1257,28 +1520,28 @@ driver          rdlong  x, ptra++                   ' get base pin
                 outnot  drvrLoopPnFld               ' toggle TEST marker pin
                 outnot  drvrLoopPnFld
 
-                rdpin   vio_levels+0, adc_u_i       ' VIO samples done, read them
-                rdpin   vio_levels+1, adc_v_i
-                rdpin   vio_levels+2, adc_w_i
-                rdpin   vio_levels+3, adc_i
+                rdpin   vio_levels+0, pin_adc_u_i       ' VIO samples done, read them
+                rdpin   vio_levels+1, pin_adc_v_i
+                rdpin   vio_levels+2, pin_adc_w_i
+                rdpin   vio_levels+3, pin_adc_cur_i
 
-                wrpin   adc_modes+2, adc_u_i        ' switch ADC to pin
-                wrpin   adc_modes+2, adc_v_i
-                wrpin   adc_modes+2, adc_w_i
-                wrpin   adc_modes+2, adc_i
+                wrpin   adc_modes+2, pin_adc_u_i        ' switch ADC to pin
+                wrpin   adc_modes+2, pin_adc_v_i
+                wrpin   adc_modes+2, pin_adc_w_i
+                wrpin   adc_modes+2, pin_adc_cur_i
 
                 call    #.wait4adc                  ' allow ADC rest period (Period 2 of 6)
                 call    #.wait4adc                  ' allow ADC rest period (Period 3 of 6)
 
-                rdpin   sense_u_, adc_u_i           ' pin samples done, read them
-                rdpin   sense_v_, adc_v_i
-                rdpin   sense_w_, adc_w_i
-                rdpin   sense_i_, adc_i
+                rdpin   sense_u_, pin_adc_u_i           ' pin samples done, read them
+                rdpin   sense_v_, pin_adc_v_i
+                rdpin   sense_w_, pin_adc_w_i
+                rdpin   sense_i_, pin_adc_cur_i
 
-                wrpin   adc_modes+0, adc_u_i        ' switch ADC to GIO calibration
-                wrpin   adc_modes+0, adc_v_i
-                wrpin   adc_modes+0, adc_w_i
-                wrpin   adc_modes+0, adc_i
+                wrpin   adc_modes+0, pin_adc_u_i        ' switch ADC to GIO calibration
+                wrpin   adc_modes+0, pin_adc_v_i
+                wrpin   adc_modes+0, pin_adc_w_i
+                wrpin   adc_modes+0, pin_adc_cur_i
 
                 call    #.wait4adc                  ' allow ADC rest period (Period 4 of 6)
 
@@ -1318,15 +1581,15 @@ driver          rdlong  x, ptra++                   ' get base pin
 
                 call    #.wait4adc                  ' allow ADC rest period (Period 5 of 6)
 
-                rdpin   gio_levels+0, adc_u_i       ' GIO samples done, read them
-                rdpin   gio_levels+1, adc_v_i
-                rdpin   gio_levels+2, adc_w_i
-                rdpin   gio_levels+3, adc_i
+                rdpin   gio_levels+0, pin_adc_u_i       ' GIO samples done, read them
+                rdpin   gio_levels+1, pin_adc_v_i
+                rdpin   gio_levels+2, pin_adc_w_i
+                rdpin   gio_levels+3, pin_adc_cur_i
 
-                wrpin   adc_modes+1, adc_u_i        ' switch ADC to VIO calibration
-                wrpin   adc_modes+1, adc_v_i
-                wrpin   adc_modes+1, adc_w_i
-                wrpin   adc_modes+1, adc_i
+                wrpin   adc_modes+1, pin_adc_u_i        ' switch ADC to VIO calibration
+                wrpin   adc_modes+1, pin_adc_v_i
+                wrpin   adc_modes+1, pin_adc_w_i
+                wrpin   adc_modes+1, pin_adc_cur_i
 
                 call    #.wait4adc                  ' allow ADC rest period (Period 6 of 6)
 
@@ -1364,27 +1627,27 @@ driver          rdlong  x, ptra++                   ' get base pin
 
                 add     drive_u_, bias              ' add center-bias and dead-time offsets to update PWMs
                 add     drive_u_, dead_gap_
-                wypin   drive_u_, pwm_u_l
+                wypin   drive_u_, pin_pwm_u_l
                 sub     drive_u_, dead_gap_
-                wypin   drive_u_, pwm_u_h
+                wypin   drive_u_, pin_pwm_u_h
 
                 add     drive_v_, bias
                 add     drive_v_, dead_gap_
-                wypin   drive_v_, pwm_v_l
+                wypin   drive_v_, pin_pwm_v_l
                 sub     drive_v_, dead_gap_
-                wypin   drive_v_, pwm_v_h
+                wypin   drive_v_, pin_pwm_v_h
 
                 add     drive_w_, bias
                 add     drive_w_, dead_gap_
-                wypin   drive_w_, pwm_w_l
+                wypin   drive_w_, pin_pwm_w_l
                 sub     drive_w_, dead_gap_
-                wypin   drive_w_, pwm_w_h
+                wypin   drive_w_, pin_pwm_w_h
 
-                testp   hall_w              wc      ' read hall effect sensor
+                testp   pin_hall_w              wc      ' read hall effect sensor
                 rcl     hall_, #1
-                testp   hall_v              wc
+                testp   pin_hall_v              wc
                 rcl     hall_, #1
-                testp   hall_u              wc
+                testp   pin_hall_u              wc
                 rcl     hall_, #1
                 and     hall_, #%111_111            ' (old << 3 | new) [ooo:nnn]
                 altgb   hall_, #deltas              ' load byte deltas[hall_] -> [-1, 0, 1]
@@ -1433,18 +1696,18 @@ driver          rdlong  x, ptra++                   ' get base pin
     ' =========================================================================
     '  PRIVATE (Utiility) Subroutines
     ' -------------------------------------------------------------------------
-.wait4adc       testp   adc_u_i             wc      ' wait for next ADC sample (6 samples = PWM frame)
+.wait4adc       testp   pin_adc_u_i             wc      ' wait for next ADC sample (6 samples = PWM frame)
     if_nc       jmp     #.wait4adc
 
-    _ret_       akpin   adc_u_i
+    _ret_       akpin   pin_adc_u_i
 
 .initAngleFmHall
                 ' init angle & prior from current motor position
-                testp   hall_w              wc      ' read hall effect sensor
+                testp   pin_hall_w              wc      ' read hall effect sensor
                 rcl     hall_, #1
-                testp   hall_v              wc
+                testp   pin_hall_v              wc
                 rcl     hall_, #1
-                testp   hall_u              wc
+                testp   pin_hall_u              wc
                 rcl     hall_, #1
                 and     hall_, #%111                ' assume forward
                 alts    hall_, #hall_angles
@@ -1503,6 +1766,7 @@ hall_angles long    0           ' forward-direction table
 x           res     1           ' miscellaneous
 y           res     1
 
+' measurements
 drvrSrtTix  res 1
 drvrEndTix  res 1
 ctrlSrtTix  res 1
@@ -1518,26 +1782,27 @@ prior_angle res 1       ' prior driver angle
 fwdrev      res 1       ' driver current direction used for indexing into hall angle table
 
 ' PIN names
-adc_u_i     res 1       ' single-pin variables
-adc_v_i     res 1
-adc_w_i     res 1
-adc_x_i     res 1
-adc_i       res 1
-hall_u      res 1
-hall_v      res 1
-hall_w      res 1
-pwm_u_l     res 1
-pwm_u_h     res 1
-pwm_v_l     res 1
-pwm_v_h     res 1
-pwm_w_l     res 1
-pwm_w_h     res 1
-pwm_x_l     res 1
-pwm_x_h     res 1
+pin_adc_u_i     res 1       ' single-pin variables
+pin_adc_v_i     res 1
+pin_adc_w_i     res 1
+pin_adc_x_i     res 1
+pin_adc_cur_i   res 1
+pin_hall_u      res 1
+pin_hall_v      res 1
+pin_hall_w      res 1
+pin_pwm_u_l     res 1
+pin_pwm_u_h     res 1
+pin_pwm_v_l     res 1
+pin_pwm_v_h     res 1
+pin_pwm_w_l     res 1
+pin_pwm_w_h     res 1
+pin_pwm_x_l     res 1
+pin_pwm_x_h     res 1
 
-gio_levels  res 4               ' ADC variables
-vio_levels  res 4
-scl_levels  res 4
+'  ADC variables
+gio_levels      res 4
+vio_levels      res 4
+scl_levels      res 4
 
 ' ------------------------------
 '  PRECISE FORMAT:
