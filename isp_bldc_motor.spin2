@@ -20,7 +20,8 @@ CON { Public Interface Constants }
     INVALID_PIN_BASE = -1
 
     ' Names of supported voltages
-    #0, PWR_Unknown, PWR_6V, PWR_12V, PWR_18p5V, PWR_24V
+    '  Lipo battery sizes: 2s-7.4v, 3s-11.1v, 4s-14.8v, 5s-18.5v, 6s-22.2v, 7s-25.9v
+    #0, PWR_Unknown, PWR_6V, PWR_7p4V, PWR_11p1V, PWR_12V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24V
     ' return value when user makes bad choice
     INVALID_VOLTAGE = -1
 
@@ -302,9 +303,9 @@ VAR { test method data }
     long    end_in_sec
     long    prior_MaxRpmIn10ths
 
-PUB findFaultForCurrV()
-'' invoke start() before invoke of findFaultForCurrV()
-    useDebug := false    ' NO debug in findFaultForCurrV()
+PUB findFaultAtVoltage()
+'' invoke start() before invoke of findFaultAtVoltage()
+    useDebug := false    ' NO debug in findFaultAtVoltage()
     debug("* ========  TEST Started!  =============================")
 
     ' find loop theory
@@ -314,12 +315,8 @@ PUB findFaultForCurrV()
     ' - find LOWER limit:
     '     search down from 60_000_000 to 2_500_000 (step -2_500_000)
     '          where min no change in RPM or reached low end of range cps=8,rpm=5.3
-
-    minRange := 60_000_000
-    maxRange := 685_000_000
-    rangeStep := 25_000_000
-
     pinlow(TEST_ALL_PINS)
+    setTargetAccel(0)   ' ensure starting at zero
 
     if drv_state == DCS_Unknown
         debug("* HOLD until Motor driver starts...")
@@ -328,97 +325,189 @@ PUB findFaultForCurrV()
             debug("* Motor ready")
             repeat  ' lock here
 
+    ' -----------------------------
+    ' locate UPPER bound
+    minRange := 60_000_000
+    maxRange := 685_000_000
+    rangeStep := 25_000_000
+
+'{
     repeat
-
-        debug("* RUN: ", udec(minRange), udec(maxRange), udec(rangeStep))
-        prior_drv_state := DCS_Unknown
-        runLoopCount := 5_000 ' count of 1 ms loops (5 seconds)
-        bStartingUp := true
-        setTargetAccel(0)
-        fault := faultHoldoffCtr := 0
-
+        debug(" ")
+        debug("* --------------")
+        debug("* RUN(UP-BND): ", udec(minRange), " --> ", udec(maxRange), udec(rangeStep))
         repeat currTarget from minRange to maxRange step rangeStep
+            runAtSpeedToStopOrFault(currTarget)
 
-            pintoggle(TEST_PIN_OUTER_LOOP)  ' to HI
-            pintoggle(TEST_PIN_OUTER_LOOP)  ' to LOW
-
-            startTicks := getct()
-
-            if bStartingUp == true and targetIncre == 0
-                debug("  ", udec(currTarget))
-                setTargetAccel(currTarget)  ' request run at speed
-
-                if pos == 0 and targetIncre <> 0
-                    debug("* HOLD until Motor moves...")
-                    repeat until pos <> 0 or fault
-
-                    if pos == 0
-                        debug("* Motor never moved")
-                    if fault
-                        clearFault(currTarget, rangeStep)
-                        quit   ' FAULT and exit to next test
-
-            if drv_state <> prior_drv_state and drv_state == DCS_AT_SPEED
-                debug("- at SPEED")
-                bStartingUp := false
-
-            if end_in_sec == 0 and drv_state == DCS_AT_SPEED
-                debug("- time to spindown set - 5 sec")
-                end_in_sec := getsec() + 5 ' spindown in 5 seconds
-
-            if end_in_sec <> 0 and getsec() > end_in_sec and targetIncre <> 0
-                'debug("-  stopping motor for this pass")
-                setTargetAccel(0)    ' request stop
-
-            if drv_state <> prior_drv_state and drv_state == DCS_STOPPED
-                debug("- DONE, stopped")
-                ' capture status from this test
-                quit    ' COMPLETE, exit to next test
-
-            if fault  ' if fault, end this pass
-                ' setup for next iteration
+            if fault
+                ' exceeded limits, report  and quit
+                'debug("- atFAULT:  ", udec_long(currTarget), udec_long(tvMaxRpmIn10ths), udec_long(tvMaxCntsInSec))
                 clearFault(currTarget, rangeStep)
-                quit   ' FAULT and exit to next test
+                waitms(500) ' delay for 1/2 sec (let motor settle)
+                quit    ' done with loop, exit inner
+            else
+                ' good run check values done if only increasing current
+                debug("- atEND:  ", udec_long(currTarget), udec_long(tvMaxRpmIn10ths), udec_long(tvMaxCntsInSec))
 
-            'debug("- set prior")
-            prior_drv_state := drv_state
+                if prior_MaxRpmIn10ths == tvMaxRpmIn10ths
+                    ' have new power with same outcome end loop
+                    debug("- end with more CURRENT, same value!")
+                    quit    ' done with loop, exit inner
 
-            'debug("- wait")
-            waitms(1000)    ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
+                waitms(500) ' delay for 1/2 sec (let motor settle)
 
-        if rangeStep < 2_000_000
-            debug("- MIN stepsize, leave loop!")
-            quit    ' ended last loop, exit
+            prior_MaxRpmIn10ths := tvMaxRpmIn10ths
 
-        elseif fault == 0
-            debug("?? out of loop ?? --   WHY!!!")
+        prior_MaxRpmIn10ths := 0
+        minRange, maxRange, rangeStep := newUpperSearchRange(currTarget, minRange, maxRange, rangeStep)
+        if rangeStep == 0
+            debug("* RUN(UP-BND): Done...")
+            quit    ' done with loop, exit outer
 
-        if fault <> 0
-            debug("- end with FAULT")
-            quit
+    'debug("-- HOLD --")
+    'repeat
 
-            debug("- atEND:  ", udec_long(currTarget), udec_long(tvMaxRpmIn10ths), udec_long(cntsInSec))
+'}
+    ' -----------------------------
+    ' locate LOWER bound
+    minRange := 2_000_000
+    maxRange := 60_000_000
+    rangeStep := -10_000_000
+    prior_MaxRpmIn10ths := 0
 
-        if prior_MaxRpmIn10ths == tvMaxRpmIn10ths
-            ' have new power with same outcome end loop
-            debug("- end with same value!")
-            quit
+    repeat
+        debug(" ")
+        debug("* --------------")
+        debug("* RUN(LO-BND): ", sdec_long(minRange), " --> ", sdec_long(maxRange), sdec_long(rangeStep))
+        repeat currTarget from maxRange to minRange step rangeStep
+            tvMaxRpmIn10ths := tvMaxCntsInSec := 0  ' clear accum
+            runAtSpeedToStopOrFault(currTarget)
+            if fault
+                ' exceeded limits, report  and quit
+                'debug("- atFAULT:  ", udec_long(currTarget), udec_long(tvMaxRpmIn10ths), udec_long(tvMaxCntsInSec))
+                clearFault(currTarget, rangeStep)
+                quit
+            else
+                ' good run check values done if only increasing current
+                debug("- atEND: ", sdec_long(currTarget), udec_long(tvMaxRpmIn10ths), udec_long(tvMaxCntsInSec))
+                if (prior_MaxRpmIn10ths == tvMaxRpmIn10ths and tvMaxCntsInSec == 8)
+                    ' have new power with same outcome end loop
+                    debug("- end with same value, diff current!")
+                    quit
+            prior_MaxRpmIn10ths := tvMaxRpmIn10ths
 
-
-        waitms(500)     ' kill time for 1/2 sec!
+        prior_MaxRpmIn10ths := 0
+        minRange, maxRange, rangeStep := newLowerSearchRange(currTarget, minRange, maxRange, rangeStep)
+        if rangeStep == 0
+            debug("* RUN(DN-BND): Done...")
+            quit    ' done with loop, exit outer
 
     debug("* RUN Complete!!")
     debug("* ======================================================")
     repeat  ' LOCK (stay) here!
 
+PRI runAtSpeedToStopOrFault(nNewTarget) | endTimeInMS
+' run motor to speed so we can check RPM and counts achieved
+    'debug("* RUN-UP to ", sdec_long_(nNewTarget))
+    prior_drv_state := DCS_Unknown
+    bStartingUp := true
+    end_in_sec := fault := faultHoldoffCtr := 0
+
+    repeat
+        pintoggle(TEST_PIN_OUTER_LOOP)  ' to HI
+
+        endTimeInMS := getms() + 1000
+
+        if bStartingUp == true and targetIncre == 0
+            'debug("  ", udec(nNewTarget))
+            setTargetAccel(nNewTarget)  ' request run at speed
+
+            if pos == 0 and targetIncre <> 0
+                'debug("* HOLD until Motor moves...")
+                repeat until pos <> 0 or fault
+
+                if pos == 0
+                    debug("* Motor never moved")
+                if fault
+                    quit   ' FAULT and exit to next test
+
+        if drv_state <> prior_drv_state and drv_state == DCS_AT_SPEED
+            'debug("- at SPEED")
+            bStartingUp := false
+
+        if end_in_sec == 0 and drv_state == DCS_AT_SPEED
+            'debug("- spindown in 5 sec")
+            end_in_sec := getsec() + 5 ' spindown in 5 seconds
+
+        if fault  ' if fault, end this pass
+            quit   ' FAULT and exit to next test
+
+        if targetIncre <> 0 and end_in_sec <> 0 and getsec() > end_in_sec
+            'debug("-  stopping motor for this pass")
+            setTargetAccel(0)    ' request stop
+
+        elseif targetIncre == 0 and drv_state <> prior_drv_state and drv_state == DCS_STOPPED
+            'debug("-LP- GOOD Run!")
+            ' capture status from this test, and allow to loop to next run
+            quit
+
+        'debug("- set prior")
+        prior_drv_state := drv_state
+
+        'debug("- wait")
+        pintoggle(TEST_PIN_OUTER_LOOP)  ' to LOW
+
+        repeat until getms() > endTimeInMS   ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
+
+        if fault  ' if fault, end this pass
+            quit   ' FAULT and exit to next test
+
+    if fault == 0
+        if drv_state <> DCS_STOPPED
+            debug("-LP- ?? out of loop ?? --   WHY!!!")
+    else
+        debug("-LP- FAULT!")
+
 PRI clearFault(tgt, stepCt)
-    debug("  !!  FAULT at ", udec(tgt), udec(stepCt))
-    minRange := tgt - stepCt
-    maxRange := tgt
-    rangeStep := (maxRange - minRange) / 5
-    maxRange -= rangeStep   ' apply correction so we don't test failing value again
-    faultHoldoffCtr := 0
+    debug("- FAULT: ", sdec_long(tgt), sdec_long(stepCt))
+    debug("-        ", udec_long(tvMaxRpmIn10ths), udec_long(tvMaxCntsInSec))
     setTargetAccel(0)
+    fault := faultHoldoffCtr := 0
+    tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec := 0
+
+PRI newUpperSearchRange(target, nMinRange, nMaxRange, nRangeStep) : outMinRange, outMaxRange, outRangeStep
+    ' locate UPPER bound
+    '    minRange := 60_000_000
+    '    maxRange := 685_000_000
+    '    rangeStep := 25_000_000
+    case nRangeStep
+        25_000_000:
+            outRangeStep := 5_000_000
+        5_000_000:
+            outRangeStep := 2_000_000
+        other:
+            ' do nothing, we don't go smaller
+            outRangeStep := 0   ' force loop end
+
+    outMinRange := target - nRangeStep
+    outMaxRange := target - 1_000_000    ' apply correction so we don't test failing value again
+
+PRI newLowerSearchRange(target, nMinRange, nMaxRange, nRangeStep) : outMinRange, outMaxRange, outRangeStep
+    ' locate LOWER bound
+    '    minRange := 5_000_000
+    '    maxRange := 60_000_000
+    '    rangeStep := -7_500_000
+    case nRangeStep
+        -10_000_000:
+            outRangeStep := -5_000_000
+        -5_000_000:
+            outRangeStep := -2_000_000
+        other:
+            ' do nothing, we don't go smaller
+            outRangeStep := 0   ' force loop end
+
+    outMinRange := nMinRange
+    outMaxRange := nMinRange + abs(nRangeStep)    ' apply correction so we don't test failing value again
 
 CON { driver testing constants }
 
@@ -895,8 +984,12 @@ PUB validVoltageForChoice(userVoltage) : legalVoltage
     legalVoltage := userVoltage
     CASE userVoltage
         PWR_6V:
+        PWR_7p4V:
+        PWR_11p1V:
         PWR_12V:
+        PWR_14p8V:
         PWR_18p5V:
+        PWR_22p2V:
         PWR_24V:
         OTHER:
             legalVoltage := INVALID_VOLTAGE
@@ -970,21 +1063,32 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
     maxRevIncreAtPwr := VALUE_NOT_SET
 
     CASE selectedPower
-        PWR_12V:
-            minFwdIncreAtPwr := 5_000_000       ' anything below yeilds RPM 5.3, cts/Sec 8
-            maxFwdIncreAtPwr := 97_000_000      ' anything above yeilds RPM 181.3, cts/Sec 272
-            minRevIncreAtPwr := -5_000_000      ' anything below yeilds RPM 5.3, cts/Sec 8
-            maxRevIncreAtPwr := -97_000_000     ' anything above yeilds RPM 181.3, cts/Sec 272
-            debug("* CFG ", sdec_long(minFwdIncreAtPwr))
         PWR_6V:
+        PWR_7p4V:
+        PWR_11p1V:
+            maxFwdIncreAtPwr := 90_000_000      ' anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
+            maxRevIncreAtPwr := -90_000_000     ' anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
+        PWR_12V:
+            maxFwdIncreAtPwr := 97_000_000      ' anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
+            maxRevIncreAtPwr := -97_000_000     ' anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
+        PWR_14p8V:
+            maxFwdIncreAtPwr := 120_000_000     ' anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
+            maxRevIncreAtPwr := -120_000_000    ' anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
         PWR_18p5V:
+            maxFwdIncreAtPwr := 147_000_000     ' anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
+            maxRevIncreAtPwr := -147_000_000    ' anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
+        PWR_22p2V:
+            maxFwdIncreAtPwr := 172_000_000     ' anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
+            maxRevIncreAtPwr := -172_000_000    ' anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
         PWR_24V:
-        other:
+       other:
             debug("*???* Unknown: ", sdec_long(selectedPower))
             abort   ' SHOULD NEVER get here!
 
-    if minFwdIncreAtPwr <> VALUE_NOT_SET
+    if maxFwdIncreAtPwr <> VALUE_NOT_SET
         userSelectedVolts := selectedPower
+        minFwdIncreAtPwr := 5_000_000           ' anything below yields RPM 5.3, cts/Sec 8
+        minRevIncreAtPwr := 0 - minFwdIncreAtPwr
     debug("* EXIT 2 CFG ", sdec_long(userSelectedVolts))
 
 PRI setTargetAccel(nTgtIncr)
@@ -1142,11 +1246,19 @@ VAR { arrays }
 PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
 
-    longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
+    'longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
+    'tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec := 0
+    'tvMaxFps := tvMaxMPH := tvMaxkPH := 0
     tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec := 0
-    tvMaxFps := tvMaxMPH := tvMaxkPH := 0
 
     repeat
+        ' if just starting up (or MOTOR FAULT), reset our tracker
+        if drv_state == DCS_FAULTED or senseStartTicks == 0
+            longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
+            tvMaxFps := tvMaxMPH := tvMaxkPH := 0
+            winEntryCt := windowSum := winIndex := 0
+            posTrkHallTicks := 0
+
         senseStartTicks := getct()
         pintoggle(TEST_PIN_SENSE_LOOP)
         pintoggle(TEST_PIN_SENSE_LOOP)
@@ -1246,7 +1358,7 @@ CON { driver interface Constants}
     '  DCS_SLOWING_DN       - motor is slowing down (just a speed change), then will be at AT_SPEED
     '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
     '
-    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG
+    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG, DCS_FAULTED
 
 
 CON { driver internal Constants}
@@ -1390,6 +1502,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
                 mov     prior_incr, #0                  ' just in case
+                mov     fwdrev, #0                      ' just in case
 
                 ' preset our starting angle
                 'call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
@@ -1425,14 +1538,27 @@ driver          rdlong  x, ptra++                   ' get base pin
     if_z        mov     drv_state_, #DCS_SPIN_DN        ' yes, so start ramp down
     if_z        jmp     #.rampDn
                 ' have start or speed adjustment
+                cmp     drv_state_, #DCS_FAULTED    wz  ' Q: is MOTOR faulted?
+    if_nz       jmp     #.chkStopped
+            ' MOTOR faulted, clear fault so we can run again
+                mov     tgt_incr, #0                    ' reset incr to stopped
+                mov     drv_incr, #0                    ' reset incr to stopped
+                mov     prior_incr, #0                  ' along with prior
+                mov     fwdrev, #0                      ' just in case
+                mov     duty_, #0                       ' just in case
+                mov     drv_state_, #DCS_STOPPED        ' reset fault to stopped
+                call    #.initAngleFmHall               ' figure out where motor is once again
+                dirh    drive_pins                      ' set control pins back to output
+                ' fall thru to next handling code
+.chkStopped
                 cmp     drv_state_, #DCS_STOPPED    wz  ' Q: is start request?
     if_nz       jmp     #.notStart
                 mov     prior_incr, tgt_incr            ' have new request - set this a latest prior!
-                mov     drv_state_, #DCS_SPIN_UP        ' yes, go ramp up
-                ' if we have floated all drive pins, reenable them
-                cmp     stop_mode_, #SM_FLOAT       wz
-    if_z        dirh    drive_pins                      ' float all control pins (make them inputs)
-                jmp     #.rampUp
+                mov     drv_state_, #DCS_SPIN_UP        ' yes, we are going to ramp up
+                ' if we have floated all drive pins, re-enable them
+                cmp     stop_mode_, #SM_FLOAT       wz  ' Q: did we float pins at last stop?
+    if_z        dirh    drive_pins                      ' yes, set control pins back to output
+                jmp     #.rampUp            ' now go ramp up!
 
 .notStart
     ' ------------------------------------
@@ -1530,8 +1656,8 @@ driver          rdlong  x, ptra++                   ' get base pin
 .lastRDnzero
                 subs    drv_incr, drv_incr              ' set to zero
                 mov     drv_state_, #DCS_STOPPED        ' report that we are stopped
-                xor     err_, err_                      ' zero our error tracker
-                xor     duty_, duty_                      ' zero our error tracker
+                mov     err_, #0                        ' reset err
+                mov     duty_, #0                       ' reset duty
                 ' if we are to freewheel the motor let's float all drive pins
                 cmp     stop_mode_, #SM_FLOAT       wz
     if_z        dirl    drive_pins                      ' float all control pins (make them inputs)
@@ -1602,9 +1728,9 @@ driver          rdlong  x, ptra++                   ' get base pin
     '       keep our error rate low...
     ' -------------------------------------------------------------------------
                 getct   drvrSrtTix                  ' remember when we started this loop
-                call    #.wait4adc                  ' allow ADC rest period (Period 1 of 6)
                 outnot  drvrLoopPnFld               ' toggle TEST marker pin
                 outnot  drvrLoopPnFld
+                call    #.wait4adc                  ' allow ADC rest period (Period 1 of 6)
 
                 rdpin   vio_levels+0, pin_adc_u_i       ' VIO samples done, read them
                 rdpin   vio_levels+1, pin_adc_v_i
@@ -1761,8 +1887,9 @@ driver          rdlong  x, ptra++                   ' get base pin
 
                 abs     x, err_                     ' fault?
                 cmp     x, #125             wc
-    if_nc       wrlong  #1, ptra[14]                ' report fault
-    if_nc       dirl    drive_pins                  '  also on FAULT: float all control pins (make them inputs)
+    if_nc       dirl    drive_pins                  ' at FAULT: float all control pins (make them inputs)
+    if_nc       mov     drv_state_,#DCS_FAULTED     '  also on FAULT: mark our motor as FAULTED
+    if_nc       wrlong  #1, ptra[14]                '  also on FAULT: report fault
                 sub     x, #256/6           wc      ' modulate duty
     if_nc       muls    x, duty_up_
     if_c        muls    x, duty_dn_
