@@ -40,6 +40,14 @@ These are the various design files I sent off to be make by [SendCutSend.com](ht
 1. [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
 ![Spacer](images/SpacerV1.png)
 
+NOTE: the 4 center small holes (for M3 screws) are for mounting the twin motors boards connected to the Mini Edge Breakout Board. 
+
+There are 2 ea. holes for each motor (for 1/4" - 20 Screws.)
+
+There are 4 ea. holes for each castor - (for 1/4" - 20 Screws.)
+
+There are 2 ea. holes for each spacer board (shim) (for 1/4" - 20 Screws.)
+
 ### Packaging (order arrives)
 
 This is what I found when I opened my first order:
