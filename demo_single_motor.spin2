@@ -32,11 +32,18 @@ OBJ { our Motor(s) }
     tvDebug :   "isp_hdmi_debug"    ' the single BLDC motor
     wheel   :   "isp_bldc_motor"    ' the single BLDC motor
 
+DAT { run-time condition vars }
+
+    bUseHDMI  long   TRUE       ' set to false to disable HDMI use/output
+
+
 PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motorCog, senseCog, basePin, voltage
 '' DEMO Driving a single wheeled platform
 
     ' start our HDMI debug output
-    tvDebug.start()
+    if bUseHDMI
+        tvDebug.start()
+
     basePin := wheel.validBasePinForChoice(user.ONLY_MOTOR_BASE)
     voltage := wheel.validVoltageForChoice(user.DRIVE_VOLTAGE)
 
@@ -48,43 +55,47 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
         ' for single motor let's start the single motor sense task
         senseCog := wheel.startSenseCog()
 
-        nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheel.getDebugData()
-        debug("* Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
-        'waitms(500)
-        'tvDebug.writeMessageToLog(string("Got vars"))
-        'waitus(500)
+        if bUseHDMI
+            nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheel.getDebugData()
+            debug("* Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
 
-        tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
-        'waitms(500)
-        'tvDebug.writeMessageToLog(string("Sent vars"))
-        'waitms(500)
+            tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+
 '{ - testing NEW Control Method -
         ' ensure motor is ready be commanded
         waitUntilMotorReady()
 
         ' now drive!
-        wheel.driveAtPower(50)                  ' FWD at 30% pwr
-        wheel.stopAfterTime(15, wheel.DTU_SEC)  ' hold at speed for 15 Sec
+        wheel.driveAtPower(50)                      ' FWD at 30% pwr
+        wheel.stopAfterTime(15, wheel.DTU_SEC)      ' hold at speed for 15 Sec
+
 
         waitUntilMotorDone()
 
-        wheel.driveAtPower(-50)                 ' REV at 30% pwr
-        wheel.stopAfterTime(15, wheel.DTU_SEC)  ' hold at speed for 15 Sec
+        wheel.driveAtPower(-50)                     ' REV at 30% pwr
+        wheel.stopAfterTime(15, wheel.DTU_SEC)      ' hold at speed for 15 Sec
 
         waitUntilMotorDone()
 '}
        ' just run the Chip's go() for now
 
+{ - testing: checkout motor-control functions -
         '   single motor debug apps
-        'wheel.TestMotorRampUpHoldDn()          ' basic test
+        wheel.TestExerciseMotorControl()            ' basic test
+'}
 
+{ - testing: checkout motor-control functions -
         ' FOR CHARACTERIZATION
-        'wheel.findFaultAtVoltage()              ' find extremes
+        wheel.findFaultAtVoltage()                  ' find extremes
         ' FOR CHARACTERIZATION
+'}
 
+{ - testing: run motor constantly so we can scope board -
+        ' NOTE: generally, we keep the motor power supply off for this...
         ' SPECIAL for hardware failure diagnosis
-        'wheel.testMotorNoFault()               ' hold at speed no break on fault - to use scope
+        wheel.testMotorNoFault()                    ' hold at speed no break on fault - to use scope
         ' SPECIAL for hardware failure diagnosis
+'}
 
         ' TBA  let's add a drive loop
 
@@ -99,10 +110,18 @@ PRI waitUntilMotorReady()
                 quit
             else
                 waitms(2)
-        debug("* Motor ready, let's drive!")
+    debug("* Motor ready, let's drive!")
 
 
 PRI waitUntilMotorDone()
+    if wheel.isStarting() == false
+         debug("* wait until motor starts...")
+         repeat
+            if wheel.isStarting()
+                quit
+            else
+                waitms(2)
+
     if wheel.isStopped() == false
         debug("* wait until motor finishes...")
         repeat
@@ -110,7 +129,7 @@ PRI waitUntilMotorDone()
                 quit
             else
                 waitms(2)
-        debug("* Motor finished!")
+    debug("* Motor stopped!")
 
 CON { license }
 {{

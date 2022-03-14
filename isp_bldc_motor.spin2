@@ -7,7 +7,7 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Feb 2022
-''   Updated.... 9 Feb 2022
+''   Updated.... 14 Mar 2022
 ''
 '' =================================================================================================
 
@@ -28,7 +28,7 @@ CON { Public Interface Constants }
     VALUE_NOT_SET = -1
 
     ' Driver Distance-Units Enum: (Millimeters, Centimeters, Inches, Feet, Meters, Kilometers, Miles)
-    #0, DDU_Unknown, DDU_MM, DDU_CM, DDDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI
+    #0, DDU_Unknown, DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI
 
     ' Driver Rotation-Units Enum:
     #0, DRU_Unknown, DRU_HALL_TICKS, DRU_DEGREES, DRU_ROTATIONS
@@ -45,7 +45,8 @@ CON { Public Interface Constants }
 
 OBJ { objects / constants included by this object }
 
-    user    :   "isp_bldc_motor_userconfig"     ' driver configuration
+    user        :   "isp_bldc_motor_userconfig"     ' driver configuration
+    distConv    :   "isp_dist_utils"                ' distance conversion utils
 
 CON { test pins for LA measurement }
 
@@ -69,8 +70,6 @@ DAT { misc time constants / debug enable }
     useDebug   long    FALSE
     showHDMIDebug   long    FALSE
 
-    circInMMx10    long     0
-
 PUB null()
 
 '' This is not a top-level object
@@ -87,7 +86,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
 
     ' setup driver parameters based on clock rate
     ctrl_ticks := ticks500us
-    dead_gap    := (ticks1us * 260) / 1_000    ' 400 of these made into "value nS"
+    dead_gap    := (ticks1us * 260) / 1_000    ' 260 of these made into "value nS"
     duty_min    := 100 << 4 #> dead_gap << 4
     pwm_limit   := FRAME - dead_gap     'PWM duty hard limit 1/2 freq of PWM
     duty_max    := pwm_limit << 4 <# pwm_limit << 4
@@ -96,17 +95,17 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     minDrvTics := 65535
     drv_state := DS_Unknown
 
-    tvMaxMmPerSec := 0
-    tvMaxFps := 0
-    tvMaxMPH := 0
-    tvMaxkPH := 0
+    tvMaxMmPerSec_x10 := 0
+    tvMaxFps_x10 := 0
+    tvMaxMPH_x10 := 0
+    tvMaxkPH_x10 := 0
 
     userSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
 
-    'debug("* init values ", udec_long(dead_gap), udec_long(ctrl_ticks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
+    debug("* init values ", udec_long(dead_gap), udec_long(ctrl_ticks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
 
 
-    circInMMx10 := circOfWheelOfDia(user.MOTOR_DIA_IN_INCH_X10)
+    circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.MOTOR_DIA_IN_INCH)
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
 
@@ -130,12 +129,13 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
             debug("!! ERROR filed to start Motor Control task")
 
 PUB startSenseCog() : ok
+'' Start the single motor sense task (tracks position of motor, distance travelled, etc.)
     ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
     if senseCog == 0    ' did fail?
         debug("!! ERROR filed to start Position Sense task")
 
 PUB stop()
-'' Stop cog and release pins assigned to this motor
+'' Stop cogs and release pins assigned to this motor
 
     if motorCog     ' stop motor drive
         cogstop(motorCog - 1)
@@ -159,21 +159,22 @@ VAR { -- user request values -- }
     ' stop point in time based on passing mSec or tick counts
     LONG    motorStopMSecs      ' stop motor when we've passed this time in milliseconds
     LONG    motorStopHallTicks  ' stop motor when we've passed this tick count
+    LONG    motorPower          ' remember last power requested
 
 PUB setAcceleration(rate)
-'' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
+'' NOT WORKING: Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
 
 PUB setMaxSpeed(speed)
-'' Limit top-speed to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
+'' NOT WORKING: Limit top-speed to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
 
 PUB setMaxSpeedForDistance(speed)
-'' Limit top-speed of driveDistance() operations to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
+'' NOT WORKING: Limit top-speed of driveDistance() operations to {speed} where {speed} is [??? - ???] mm/s (default is ??? mm/s)
 
 PUB calibrate()
-'' (we may need this?)
+'' NOT WORKING: (we may need this?)
 
 PUB holdAtStop(bEnable)
-'' Informs the motor control cog to actively hold postiion (bEnable=true) or coast (bEnable=false) at end of motion
+'' Informs the motor control cog to actively hold position (bEnable=true) or coast (bEnable=false) at end of motion
     stop_mode := (bEnable) ? SM_BRAKE : SM_FLOAT
 
 PUB resetTracking()
@@ -183,7 +184,7 @@ PUB resetTracking()
 CON { --- Subsystem Control --- }
 
 PUB driveForDistance(distance, distanceUnits)
-'' Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
+'' NOT WORKING: Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
 '' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN or DDU_MM].
 '' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
 
@@ -195,6 +196,7 @@ PUB driveAtPower(power) | limitPwr, motorIncre
     if limitPwr <> power
         debug("! WARNING: driveAtPower() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
     debug("driveAtPower() ", sdec_long(limitPwr))
+    motorPower := limitPwr
     motorIncre := incrementForPower(limitPwr)
     setTargetAccel(motorIncre)
 
@@ -225,7 +227,7 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits)
             abort
 
 PUB stopAfterDistance(nDistance, eDistanceUnits)
-'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDDU_IN, DDU_FT, DDU_M, DDU_KM, or DDU_MI].
+'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, or DDU_MI].
 '' USE WITH:  driveDirection(), drive()
 
 PUB stopAfterTime(nTime, eTimeUnits) | timeNow
@@ -268,6 +270,10 @@ PUB getDistance(distanceUnits) : distanceInUnits
 PUB getRotationCount(rotationUnits) : rotationCount
 '' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for this motor.
 
+PUB getPower() : nPower
+'' Returns the last specified power value [-100 thru +100] for motor (will be zero if the motor is stopped).
+    nPower := motorPower
+
 PUB getStatus() : eStatus
 '' Returns status of motor drive state for this motor: enumerated constant: DS_Unknown, DS_MOVING, DS_HOLDING, or DS_OFF
     if isStopped()
@@ -281,10 +287,16 @@ PUB getStatus() : eStatus
         eStatus := DS_Unknown
 
 PUB isReady() : bState
+'' Return T/F where T means the motor cog is running
     bState := (drv_state <> DCS_Unknown) ? true : false
 
 PUB isStopped() : bState
+'' Return T/F where T means the motor is stopped
     bState := (drv_state == DCS_STOPPED) ? true : false
+
+PUB isStarting() : bState
+'' Return T/F where T means the motor is spinning up
+    bState := (drv_state == DCS_SPIN_UP) ? true : false
 
 CON { --- PRIVATE TEST Methods --- }
 
@@ -304,11 +316,12 @@ VAR { test method data }
     long    prior_MaxRpmIn10ths
 
 PUB findFaultAtVoltage()
-'' invoke start() before invoke of findFaultAtVoltage()
+'' TEST ONLY: routine for locating motor speed limits
+'' NOTE: invoke start() before invoking this method
     useDebug := false    ' NO debug in findFaultAtVoltage()
     debug("* ========  TEST Started!  =============================")
 
-    ' find loop theory
+    ' find loop initial theory
     ' - find UPPER limit:
     '     search up from 60_000_000 to 400_000_000 (step 25_000_000)
     '          where max is motor fault or increment yields no change in RPM!
@@ -473,7 +486,7 @@ PRI clearFault(tgt, stepCt)
     debug("-        ", udec_long(tvMaxRpmIn10ths), udec_long(tvMaxCntsInSec))
     setTargetAccel(0)
     fault := faultHoldoffCtr := 0
-    tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec := 0
+    tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
 
 PRI newUpperSearchRange(target, nMinRange, nMaxRange, nRangeStep) : outMinRange, outMaxRange, outRangeStep
     ' locate UPPER bound
@@ -515,8 +528,9 @@ CON { driver testing constants }
 
 #0, TS_Unknown, TS_DONE, TS_RAMP_FWD, TS_RAMP_REV, TS_SLOWDN_FWD, TS_SLOWDN_REV, TS_SPEEDUP_FWD, TS_SPEEDUP_REV, TS_CHG_FWD_REV, TS_CHG_REV_FWD
 
-PUB TestMotorRampUpHoldDn() | priorHall, eTestState, eTest, desiredAccel, desireAtSpeedSecs, endAtSecs
-'' invoke start() before invoke of TestMotorRampUpHoldDn()
+PUB TestExerciseMotorControl() | priorHall, eTestState, eTest, desiredAccel, desireAtSpeedSecs, endAtSecs
+'' TEST ONLY: exercise all motor driver control forms (8 of them)
+'' invoke start() before invoke of TestExerciseMotorControl()
     if useDebug
         debug(`logic l title 'Hall Effect' pos 25 440 'Hall' 3)
 
@@ -535,9 +549,6 @@ PUB TestMotorRampUpHoldDn() | priorHall, eTestState, eTest, desiredAccel, desire
         debug(`s 'Iw' 0 2000 128 70)
         debug(`s 'P' 0 100 128 10)
 
-    'pintoggle(TEST_ALL_PINS)
-    'pintoggle(TEST_ALL_PINS)
-    'pintoggle(TEST_ALL_PINS)
     pinlow(TEST_ALL_PINS)
 
     targetIncre := 0
@@ -890,6 +901,8 @@ PRI showStateNTest(enumTest, enumTestState) | pTestStr, pStateStr
         priorTest := enumTest
 
 PUB testMotorNoFault() | priorHall, increment, decrement
+'' TEST ONLY: run motor at medium speed without reacting to "fault" we do this
+''  so we can probe the motor board
 '' invoke start() before invoke of testMotorNoFault()
     useDebug := true    ' force use of debug in testMotorNoFault()
 
@@ -911,9 +924,6 @@ PUB testMotorNoFault() | priorHall, increment, decrement
         debug(`s 'Iw' 0 2000 128 70)
         debug(`s 'P' 0 100 128 10)
 
-    'pintoggle(TEST_ALL_PINS)
-    'pintoggle(TEST_ALL_PINS)
-    'pintoggle(TEST_ALL_PINS)
     pinlow(TEST_ALL_PINS)
 
     bStartingUp := true
@@ -1015,9 +1025,9 @@ PRI map(inValue, inMin, inMax, outMin, outMax) : nResult | slope
         if nResult == 0
             slope := (outMax - outMin) / (inMax - inMin)
             nResult := outMin + slope * (inValue - inMin)
-    debug("- map() ", sdec_long(inValue - inMin), sdec_long(inMin) , sdec_long(inMax), sdec_long(inMax - inMin))
-    debug("-       ", sdec_long(slope), sdec_long(outMin) , sdec_long(outMax), sdec_long(outMax - outMin))
-    debug("-       ", sdec_long(inValue) , " --> ", sdec_long(nResult))
+    'debug("- map() ", sdec_long(inValue - inMin), sdec_long(inMin) , sdec_long(inMax), sdec_long(inMax - inMin))
+    'debug("-       ", sdec_long(slope), sdec_long(outMin) , sdec_long(outMax), sdec_long(outMax - outMin))
+    debug("- map() ", sdec_long(inValue) , " --> ", sdec_long(nResult))
 
 PRI incrementForPower(nUserPower) : nMotorIncre
 ' translate -100 to +100 value to Incre value needed by motor
@@ -1033,21 +1043,6 @@ PRI incrementForPower(nUserPower) : nMotorIncre
     else
         ' this is a STOP request
         nMotorIncre := 0    ' stop!
-
-PRI circOfWheelOfDia(diaInInchTenths) : nCircInMMx10
-' Return circumference in mm for diameter in inches
-'  FIXME: UNDONE replace this with math!
-'     circumference = 2*pi*r - where r is 1/2 * dia
-'     circumference in mm = circumference in inches x 25.4
-
-    nCircInMMx10 := 0
-    if diaInInchTenths == 65
-        ' our 6.5 in wheel
-        '  diameter is 6.5"
-        '  radius is 3.25"
-        '  cirumference is 20.42035"
-        '   in mm is: 518.67689mm
-        nCircInMMx10 := 5187
 
 PRI confgurePowerLimits(userVoltage) | selectedPower
 ' set up our motor drive limits based upon the user configured Voltage selection
@@ -1177,7 +1172,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 1] := @name21
     LONG[@pNamesAr][nValsGrpOffset + 2] := @name22
     LONG[@pNamesAr][nValsGrpOffset + 3] := @name23
-    LONG[@pValsAr][nValsGrpOffset + 0] := @tvRpmIn10ths
+    LONG[@pValsAr][nValsGrpOffset + 0] := @tvRpm_x10
     LONG[@pValsAr][nValsGrpOffset + 1] := @rpm
     LONG[@pValsAr][nValsGrpOffset + 2] := @cntsInSec
     LONG[@pValsAr][nValsGrpOffset + 3] := @deltaTicks
@@ -1197,10 +1192,10 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 6] := @name36
     LONG[@pValsAr][nValsGrpOffset + 0] := @tvMaxRpmIn10ths
     LONG[@pValsAr][nValsGrpOffset + 1] := @tvMaxCntsInSec
-    LONG[@pValsAr][nValsGrpOffset + 2] := @tvMaxFps
-    LONG[@pValsAr][nValsGrpOffset + 3] := @tvMaxMPH
-    LONG[@pValsAr][nValsGrpOffset + 4] := @tvMaxkPH
-    LONG[@pValsAr][nValsGrpOffset + 5] := @tvMaxMmPerSec
+    LONG[@pValsAr][nValsGrpOffset + 2] := @tvMaxFps_x10
+    LONG[@pValsAr][nValsGrpOffset + 3] := @tvMaxMPH_x10
+    LONG[@pValsAr][nValsGrpOffset + 4] := @tvMaxkPH_x10
+    LONG[@pValsAr][nValsGrpOffset + 5] := @tvMaxMmPerSec_x10
     LONG[@pValsAr][nValsGrpOffset + 6] := @tvTargetIncreInM
 
     ' tell our table size to reader
@@ -1208,7 +1203,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pTitlesAr][nGrpOffset] := DBG_MAX_VARS_IN_GROUP
 
 PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars | tmpAbsPtr
-'' Return pointers to debug data structures for this motor-object instance
+'' Return pointers to HDMI-debug data structures for this motor-object instance
     loadDisplayList()
     nGroups := DBG_GROUPS_CT
     pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
@@ -1218,7 +1213,7 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     if showHDMIDebug
         debug("* -------------")
         debug("* MOTR DAT values: ", uhex_long(@hall), uhex_long_array(@hall, 4))
-        debug("* MOTR VAR values: ", uhex_long(@tvRpmIn10ths), uhex_long_array(@tvRpmIn10ths, 4))
+        debug("* MOTR VAR values: ", uhex_long(@tvRpm_x10), uhex_long_array(@tvRpm_x10, 4))
         debug("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
         debug("* NAMEs SOURCE2: ", uhex_long(@nameTitle2), uhex_byte_array(@nameTitle2, dataLen2))
         debug("* NAMEs SOURCE3: ", uhex_long(@nameTitle3), uhex_byte_array(@nameTitle3, dataLen3))
@@ -1247,15 +1242,15 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
 
     'longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
-    'tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec := 0
-    'tvMaxFps := tvMaxMPH := tvMaxkPH := 0
-    tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec := 0
+    'tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
+    'tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
+    tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
 
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
         if drv_state == DCS_FAULTED or senseStartTicks == 0
             longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
-            tvMaxFps := tvMaxMPH := tvMaxkPH := 0
+            tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
             winEntryCt := windowSum := winIndex := 0
             posTrkHallTicks := 0
 
@@ -1272,35 +1267,29 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
             winEntryCt++
 
         cntsInSec := (windowSum / winEntryCt) * 8                 ' moving average, scaled
-        tvRpmIn10ths := (cntsInSec * 60) / 9
-        rpm := tvRpmIn10ths / 10
-        rpmTenths := tvRpmIn10ths +// 10
+        tvRpm_x10 := (cntsInSec * 60) / 9
+        rpm := tvRpm_x10 / 10
+        rpmTenths := tvRpm_x10 +// 10
 
-        tvMaxRpmIn10ths := max(tvRpmIn10ths, tvMaxRpmIn10ths)
-        tvMaxCntsInSec := max(cntsInSec, tvMaxCntsInSec)
+        tvMaxRpmIn10ths := MAX(tvRpm_x10, tvMaxRpmIn10ths)
+        tvMaxCntsInSec := MAX(cntsInSec, tvMaxCntsInSec)
 
         posThis8th := windowSum / winEntryCt
         posTrkHallTicks += posThis8th
         ' pos is in hall-steps of 4Degr each.
         ' circumference of wheel is in mm x10
-        '   degrees of rotation is pos * 4
+        '   degrees of rotation is cntsInSec * 4
         '   number of rotations is degrees / 360
-        '   dist in mm is (circInMMx10 * rotations) / 10
-        mmPerSec := (((cntsInSec * 4) * circInMMx10) / 360)
-        ' RULE: 1 mm/sec = 0.00328084 ft/sec
-        fFps := float(mmPerSec) *. 0.00328084 /. 10.0
-        ftPerSec := trunc(fFps *. 10.0)
-        ' RULE: 1 mm/sec = 0.0036 km/hr
-        fValue := float(mmPerSec) *. 0.0036 /. 10.0
-        kmh := trunc(fValue *. 10.0)
-        ' RULE: 1 ft/sec = 0.681818 mi/hr
-        fValue := fFps *. 0.681818
-        mph := trunc(fValue *. 10.0)
+        '   dist in mm is (circInMM_x10 * rotations) / 10
+        mmPerSec_x10 := (((cntsInSec * 4) * circInMM_x10) / 360)
+        ftPerSec_x10 := distConv.mmps2fps(mmPerSec_x10 * 10)
+        kmh_x10 := distConv.mmps2kmh(mmPerSec_x10 * 10)
+        mph_x10 := distConv.fps2mph(ftPerSec_x10)
 
-        tvMaxMmPerSec := max(mmPerSec, tvMaxMmPerSec)
-        tvMaxFps := MAX(ftPerSec, tvMaxFps)
-        tvMaxMPH := MAX(mph, tvMaxMPH)
-        tvMaxkPH := MAX(kmh, tvMaxkPH)
+        tvMaxMmPerSec_x10 := MAX(mmPerSec_x10, tvMaxMmPerSec_x10)
+        tvMaxFps_x10 := MAX(ftPerSec_x10, tvMaxFps_x10)
+        tvMaxMPH_x10 := MAX(mph_x10, tvMaxMPH_x10)
+        tvMaxkPH_x10 := MAX(kmh_x10, tvMaxkPH_x10)
 
         ' if user set time/distance to stop then stop if we are past the time or distance
         if motorStopMSecs > 0
@@ -1319,7 +1308,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
         '   wait remainder of 125 mSec before next sample
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
 
-PRI max(a,b) : nMax
+PRI MAX(a,b) : nMax
 ' return max of a or b
     nMax := (a > b) ? a : b
 
@@ -1399,26 +1388,28 @@ VAR { Data for Motor Position Tracking }
     long    newCntsInSec
     long    windowSum
     '  ----- HDMI monitored! ----
-    long    tvRpmIn10ths
+    long    tvRpm_x10
     long    rpm
     long    cntsInSec
     long    deltaTicks
     long    tvMaxRpmIn10ths
-    long    tvMaxFps
-    long    tvMaxMPH
-    long    tvMaxkPH
-    long    tvMaxMmPerSec
+    long    tvMaxFps_x10
+    long    tvMaxMPH_x10
+    long    tvMaxkPH_x10
+    long    tvMaxMmPerSec_x10
     long    tvMaxCntsInSec
     long    tvTargetIncreInM
     '  --------------------------
     long    priorPos
     long    rpmTenths
-    long    mmPerSec
-    long    ftPerSec
-    long    kmh
-    long    mph
+    long    mmPerSec_x10
+    long    ftPerSec_x10
+    long    kmh_x10
+    long    mph_x10
     '  --------------------------
     long    posTrkHallTicks
+    long    circInMM_x10
+
 
 DAT  {  DRIVER w/Motor Parameters  }
 '
@@ -1507,6 +1498,9 @@ driver          rdlong  x, ptra++                   ' get base pin
                 ' preset our starting angle
                 'call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
 
+                ' reset timer (schedule next control time)
+                getct   ctrlEndTix                      ' get now
+                addct1  ctrlEndTix, cfg_ctcks_          '   add in next time we need to run
                 ' start driver
                 jmp     #.run1stTime
     ' -------------------------------------------------------------------------
