@@ -28,16 +28,34 @@ CON { fixed io pins }
 
 OBJ { our Motor(s) }
 
-    'user    :   "isp_bldc_motor_userconfig"     ' driver configuration
+    user        :   "isp_bldc_motor_userconfig"     ' driver configuration
     'tvDebug :   "isp_hdmi_debug"    ' the single BLDC motor
     'wheel   :   "isp_bldc_motor"    ' the single BLDC motor
+    distConv    :   "isp_dist_utils"                ' distance conversion utils
+
 DAT
-    tStr    byte    "TRUE",0
-    fStr    byte    "false",0
+    tStr            byte    "TRUE",0
+    fStr            byte    "false",0
+    circInMM_x10    long    0
+    tickInMM_x10    long    0
+
 
 PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outDrvState, outDrvIncr, rampDn
 '' DEMO Run Snippets
 
+    circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.MOTOR_DIA_IN_INCH)
+    tickInMM_x10 := circInMM_x10 / 9
+
+    debug("* ", sdec_long(circInMM_x10), sdec_long(tickInMM_x10))
+
+    stopAfterDistance(32, DDU_MM)
+    stopAfterDistance(12, DDU_CM)
+    stopAfterDistance(15, DDU_IN)
+    stopAfterDistance(3, DDU_FT)
+    stopAfterDistance(2, DDU_M)
+
+
+{
     debug("* checks for same sign:")
     nLHS := -2
     nRHS := +5
@@ -80,7 +98,7 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outD
     nRHS := +1
     bResult := isLhsSlower(nLHS, nRHS)
     showResult(bResult, nLHS, nRHS)
-
+'}
 {
     debug(" ")
     debug("* ramp up to FWD speed")
@@ -138,6 +156,48 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outD
     until drvState == DCS_STOPPED
     debug("- Worked?  REV SPIN-DN from AT-SPEED to STOPPED!")
 '}
+    debug("* DONE")
+    repeat      ' HALT here
+
+CON
+
+    ' Driver Distance-Units Enum: (Millimeters, Centimeters, Inches, Feet, Meters, Kilometers, Miles)
+    #0, DDU_Unknown, DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI
+
+PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue, motorStopHallTicks
+'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
+'' USE WITH:  driveAtPower()
+'' Will ABORT if {distance} < 1
+    if nDistance < 1
+        debug("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
+        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+        abort
+
+    ' FIXME: UNDONE convert this to use runtime values based on user specified wheel size ( we assume wheel is 90 tics! )
+
+    ' FIXME: UNDONE remove time needed for spin-up/down ramps!!!
+
+' -------------- VERYIFY VERIFY VERIFY ------------------
+    tickInMM_x10 := circInMM_x10 / 9
+    ' convert distance to ticks (will stop at ticks limit)
+    case eDistanceUnits
+        DDU_MM:
+            motorStopHallTicks := (nDistance * 10) / tickInMM_x10
+        DDU_CM:
+            motorStopHallTicks := (nDistance * 10 * 10) / tickInMM_x10
+        DDU_IN:
+            fValue := distConv.fIn2mm(nDistance)
+            motorStopHallTicks := trunc(fValue *. 10.0) / tickInMM_x10
+        DDU_FT:
+            fValue := distConv.fIn2mm(nDistance * 12)
+            motorStopHallTicks := trunc(fValue *. 10.0) / tickInMM_x10
+        DDU_M:
+            motorStopHallTicks := (nDistance * 100 * 10) / tickInMM_x10
+        other:
+            debug("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
+            abort
+' -------------- VERYIFY VERIFY VERIFY ------------------
+    debug("- stopAfterDistance(", sdec_long(nDistance), sdec_long(eDistanceUnits), ") ->", sdec_long(motorStopHallTicks))
 
 PRI showResult(result, lhs, rhs) | pStr
     pStr := (result) ? @tStr : @fStr
