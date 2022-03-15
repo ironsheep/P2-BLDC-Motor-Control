@@ -106,6 +106,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
 
 
     circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.MOTOR_DIA_IN_INCH)
+    tickInMM_x10 := circInMM_x10 / 90
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
 
@@ -228,7 +229,7 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits)
             debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
             abort
 
-PUB stopAfterDistance(nDistance, eDistanceUnits) | tickInMM_x10, fValue
+PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
 '' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
 '' USE WITH:  driveAtPower()
 '' Will ABORT if {distance} < 1
@@ -241,7 +242,6 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | tickInMM_x10, fValue
 
     ' FIXME: UNDONE remove time needed for spin-up/down ramps!!!
 
-    tickInMM_x10 := circInMM_x10 / 9
     ' convert distance to ticks (will stop at ticks limit)
     case eDistanceUnits
         DDU_MM:
@@ -295,9 +295,32 @@ PUB stopMotor()
 
 CON { --- Subsystem Status --- }
 
-PUB getDistance(distanceUnits) : distanceInUnits
+PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
-' FIXME: UNDONE!
+    fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
+    case eDistanceUnits
+        DDU_MM:
+            nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick)
+        DDU_CM:
+            nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick /. 10.0)
+        DDU_IN:
+            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
+        DDU_FT:
+            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
+        DDU_M:
+            fValue := float(posTrkHallTicks) *. fMMpTick
+            nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
+        DDU_MI:
+            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
+        DDU_KM:
+            fValue := float(posTrkHallTicks) *. fMMpTick
+            nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
+        other:
+            debug("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
+            abort
 
 PUB getRotationCount(eRotationUnits) : rotationCount
 '' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
@@ -1454,7 +1477,7 @@ VAR { Data for Motor Position Tracking }
     '  --------------------------
     long    posTrkHallTicks
     long    circInMM_x10
-
+    long    tickInMM_x10
 
 DAT  {  DRIVER w/Motor Parameters  }
 '
