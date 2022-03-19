@@ -50,6 +50,7 @@ OBJ { objects / constants included by this object }
 
 CON { test pins for LA measurement }
 
+{
     ' PIN_8 - PIN_15
     TEST_BASE_PIN = 8
     TEST_ALL_PINS = TEST_BASE_PIN addpins 7
@@ -58,18 +59,16 @@ CON { test pins for LA measurement }
     TEST_PIN_DRIVER_LOOP = TEST_BASE_PIN + 2            ' LA Yellow
     TEST_PIN_DRIVER_TMR = TEST_BASE_PIN + 3             ' LA Green
     TEST_PIN_DRIVER_TMR2 = TEST_BASE_PIN + 4             ' LA Blue
+'}
 
-DAT { misc time constants / debug enable }
+DAT { misc time constants }
 
     ticks125ms  long    0                     ' time constants based on CPU freq
     ticks500us  long    0                     '
     ticks750us  long    0                     '
     ticks800us  long    0                     '
-    ticks1ms    long    0                     '
-    ticks1us    long    0                     '
-
-    useDebug   long    FALSE
-    showHDMIDebug   long    FALSE
+    ticks1ms    LONG    0                     '
+    ticks1us    LONG    0                     '
 
 PUB null()
 
@@ -85,17 +84,38 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     ticks750us := (ticks1ms * 750) / 1_000  ' phrased this way for better result
     ticks800us := (ticks1ms * 800) / 1_000  ' phrased this way for better result
 
-    ' setup driver parameters based on clock rate
-    ctrl_ticks := ticks500us
-    dead_gap    := (ticks1us * 260) / 1_000    ' 260 of these made into "value nS"
-    duty_min    := 100 << 4 #> dead_gap << 4
-    pwm_limit   := FRAME - dead_gap     'PWM duty hard limit 1/2 freq of PWM
-    duty_max    := pwm_limit << 4 <# pwm_limit << 4
+    ' set up test variables
+    priorState := MD_Unknown
+    priorTest := TS_Unknown
 
+    ' set up debug variables
+    useDebug := FALSE
+    showHDMIDebug := FALSE
+
+
+    ' setup driver parameters based on clock rate
+    dead_gap    := (ticks1us * 260) / 1_000 ' 260 of these made into "value nS"
+    pwm_limit   := FRAME - dead_gap         'PWM duty hard limit 1/2 freq of PWM
+    ' .. and set up rest
+    offset_fwd  := 20 frac 360              ' 96 frac 360 (Doug's motor)
+    offset_rev  := 340 frac 360             ' 228 frac 360 (Doug's motor)
+    duty_min    := 100 << 4 #> dead_gap << 4
+    duty_max    := pwm_limit << 4 <# pwm_limit << 4
+    duty_up     := 16
+    duty_dn     := 4
+    ctrl_ticks  := ticks500us
+    stop_mode   := SM_FLOAT                 ' enum: [SM_FLOAT, SM_BRAKE]
+    ramp_up     := 25_000                   ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
+    ramp_dn     := 25_000                   ' 25k angle decrement: subtract this every 500 uSec to ramp down to 0
+
+    motorIsReversed := FALSE    ' by default our motor direction is not reversed
+
+    ' init status variables
     loop_ticks := 0
     minDrvTics := 65535
     drv_state := DS_Unknown
 
+    ' preset HDMI Monitor values
     tvMaxMmPerSec_x10 := 0
     tvMaxFps_x10 := 0
     tvMaxMPH_x10 := 0
@@ -123,7 +143,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     ' if legal base-pin then start cog
     if legalBase <> INVALID_PIN_BASE
         pinbase := legalBase        ' record base pin number
-        params_ptr := @params       ' point to driver variables
+        params_ptr := @offset_fwd   ' point to driver variables
         setTargetAccel(0)           ' do NOT move at startup
 
         ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
@@ -150,7 +170,7 @@ PUB stop()
         cogstop(senseCog - 1)
         senseCog := 0
 
-VAR { -- user request values -- }
+VAR { * user request values * }
 
     LONG    userSelectedVolts     ' remember the value specified by the user
     ' limits based on user voltage
@@ -162,6 +182,11 @@ VAR { -- user request values -- }
     LONG    motorStopMSecs      ' stop motor when we've passed this time in milliseconds
     LONG    motorStopHallTicks  ' stop motor when we've passed this tick count
     LONG    motorPower          ' remember last power requested
+    LONG    motorIsReversed     ' T/F where T means we need to flip direction: FWD <-> REV
+    ' debug control variables
+    LONG    useDebug
+    LONG    showHDMIDebug
+
 
 PUB setAcceleration(rate)
 '' NOT WORKING: Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
@@ -190,7 +215,7 @@ PUB driveForDistance(distance, distanceUnits)
 '' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN or DDU_MM].
 '' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
 
-PUB driveAtPower(power) | limitPwr, motorIncre
+PUB driveAtPower(power) | limitPwr, motorIncre, correctedPower
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
 '' Turns the motor on at {power}.
 '' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
@@ -199,7 +224,8 @@ PUB driveAtPower(power) | limitPwr, motorIncre
         debug("! WARNING: driveAtPower() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
     debug("driveAtPower() ", sdec_long(limitPwr))
     motorPower := limitPwr
-    motorIncre := incrementForPower(limitPwr)
+    correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
+    motorIncre := incrementForPower(correctedPower)
     setTargetAccel(motorIncre)
 
 PUB stopAfterRotation(nRotationCount, eRotationUnits)
@@ -294,6 +320,10 @@ PUB stopMotor()
 ''  AFFECTED BY:holdAtStop()
     setTargetAccel(0)
 
+PUB forwardIsReverse()
+'' call when we have two motors and one of them needs to be reversed
+    motorIsReversed := TRUE
+
 CON { --- Subsystem Status --- }
 
 PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
@@ -355,6 +385,14 @@ PUB getStatus() : eStatus
     else
         eStatus := DS_Unknown
 
+PUB getDriveState() : eDrvState
+'' Return Enum [DCS_*] value representing state of driver
+    eDrvState := drv_state
+
+PUB getRawHallTicks() : nPos
+'' Return the raw driver-maintained tick count
+    nPos := pos
+
 PUB isReady() : bState
 '' Return T/F where T means the motor cog is running
     bState := (drv_state <> DCS_Unknown) ? true : false
@@ -371,18 +409,24 @@ CON { --- PRIVATE TEST Methods --- }
 
   STABILIZE_LOOP_CT = 2000
 
-VAR { test method data }
-    long    bStartingUp
-    long    runLoopCount
-    long    startTicks
-    long    faultHoldoffCtr
-    long    currTarget
-    long    minRange
-    long    maxRange
-    long    rangeStep
-    long    prior_drv_state
-    long    end_in_sec
-    long    prior_MaxRpmIn10ths
+VAR { * test method data * }
+
+    LONG    bStartingUp
+    LONG    runLoopCount
+    LONG    startTicks
+    LONG    faultHoldoffCtr
+    LONG    currTarget
+    LONG    minRange
+    LONG    maxRange
+    LONG    rangeStep
+    LONG    prior_drv_state
+    LONG    end_in_sec
+    LONG    prior_MaxRpmIn10ths
+
+    ' debug display variables
+    LONG    priorState
+    LONG    priorTest
+
 
 PUB findFaultAtVoltage()
 '' TEST ONLY: routine for locating motor speed limits
@@ -397,7 +441,7 @@ PUB findFaultAtVoltage()
     ' - find LOWER limit:
     '     search down from 60_000_000 to 2_500_000 (step -2_500_000)
     '          where min no change in RPM or reached low end of range cps=8,rpm=5.3
-    pinlow(TEST_ALL_PINS)
+    'pinlow(TEST_ALL_PINS)
     setTargetAccel(0)   ' ensure starting at zero
 
     if drv_state == DCS_Unknown
@@ -496,7 +540,7 @@ PRI runAtSpeedToStopOrFault(nNewTarget) | endTimeInMS
     end_in_sec := fault := faultHoldoffCtr := 0
 
     repeat
-        pintoggle(TEST_PIN_OUTER_LOOP)  ' to HI
+        'pintoggle(TEST_PIN_OUTER_LOOP)  ' to HI
 
         endTimeInMS := getms() + 1000
 
@@ -537,7 +581,7 @@ PRI runAtSpeedToStopOrFault(nNewTarget) | endTimeInMS
         prior_drv_state := drv_state
 
         'debug("- wait")
-        pintoggle(TEST_PIN_OUTER_LOOP)  ' to LOW
+        'pintoggle(TEST_PIN_OUTER_LOOP)  ' to LOW
 
         repeat until getms() > endTimeInMS   ' wait to create time base (1000 ok, 500 faults motor w/angle!!)
 
@@ -618,7 +662,7 @@ PUB TestExerciseMotorControl() | priorHall, eTestState, eTest, desiredAccel, des
         debug(`s 'Iw' 0 2000 128 70)
         debug(`s 'P' 0 100 128 10)
 
-    pinlow(TEST_ALL_PINS)
+    'pinlow(TEST_ALL_PINS)
 
     targetIncre := 0
     bStartingUp := true
@@ -629,8 +673,8 @@ PUB TestExerciseMotorControl() | priorHall, eTestState, eTest, desiredAccel, des
     endAtSecs := 0
 
     repeat
-        pintoggle(TEST_PIN_OUTER_LOOP)
-        pintoggle(TEST_PIN_OUTER_LOOP)
+        'pintoggle(TEST_PIN_OUTER_LOOP)
+        'pintoggle(TEST_PIN_OUTER_LOOP)
 
         startTicks := getct()
         ' @18.5V 10_000_000 is 5.8 RPM
@@ -883,34 +927,31 @@ PUB TestExerciseMotorControl() | priorHall, eTestState, eTest, desiredAccel, des
 
 DAT { interp strings }
 
-    pUnkMsg         byte    "?unk?",0
-    pMDDone         byte    "MD_DONE",0
-    pMDStart        byte    "MD_START",0
-    pMDRunUp        byte    "MD_RUN_UP",0
-    pMDSlow         byte    "MD_SLOW",0
-    pMDStop         byte    "MD_STOP",0
-    pMDSpeedUp      byte    "MD_SPEED_UP",0
-    pMDWaitAtSpeed  byte    "MD_WT_AT_SPEED",0
-    pMDWaitForStop  byte   "MD_WT_FOR_STOP",0
-    pMDAtSpeedDone  byte    "MD_AT_SPEED_DONE",0
-    pMDStopped      byte    "MD_STOPPED",0
-    pMDGapTween     byte    "MD_GAP_TWEEN_TESTS",0
-    pMDChgSpeed     byte    "MD_CHANGE_SPEED",0
+    pUnkMsg         BYTE    "?unk?",0
+    pMDDone         BYTE    "MD_DONE",0
+    pMDStart        BYTE    "MD_START",0
+    pMDRunUp        BYTE    "MD_RUN_UP",0
+    pMDSlow         BYTE    "MD_SLOW",0
+    pMDStop         BYTE    "MD_STOP",0
+    pMDSpeedUp      BYTE    "MD_SPEED_UP",0
+    pMDWaitAtSpeed  BYTE    "MD_WT_AT_SPEED",0
+    pMDWaitForStop  BYTE   "MD_WT_FOR_STOP",0
+    pMDAtSpeedDone  BYTE    "MD_AT_SPEED_DONE",0
+    pMDStopped      BYTE    "MD_STOPPED",0
+    pMDGapTween     BYTE    "MD_GAP_TWEEN_TESTS",0
+    pMDChgSpeed     BYTE    "MD_CHANGE_SPEED",0
 
-    pBadCode        byte    "?BAD-CODE?",0
+    pBadCode        BYTE    "?BAD-CODE?",0
 
-    pTSRampFwd      byte    "TS_RAMP_FWD",0
-    pTSRampRev      byte    "TS_RAMP_REV",0
-    pTSSlowDnFwd    byte    "TS_SLOWDN_FWD",0
-    pTSSlowDnRev    byte    "TS_SLOWDN_REV",0
-    pTSSpeedUpFwd   byte    "TS_SPEEDUP_FWD",0
-    pTSSpeedUpRev   byte    "TS_SPEEDUP_REV",0
-    pTSChgFwdRev    byte    "TS_CHG_FWD_REV",0
-    pTSChgRevFwd    byte    "TS_CHG_REV_FWD",0
-    pTSDone         byte    "TS_DONE",0
-
-    priorState      long     MD_Unknown
-    priorTest       long    TS_Unknown
+    pTSRampFwd      BYTE    "TS_RAMP_FWD",0
+    pTSRampRev      BYTE    "TS_RAMP_REV",0
+    pTSSlowDnFwd    BYTE    "TS_SLOWDN_FWD",0
+    pTSSlowDnRev    BYTE    "TS_SLOWDN_REV",0
+    pTSSpeedUpFwd   BYTE    "TS_SPEEDUP_FWD",0
+    pTSSpeedUpRev   BYTE    "TS_SPEEDUP_REV",0
+    pTSChgFwdRev    BYTE    "TS_CHG_FWD_REV",0
+    pTSChgRevFwd    BYTE    "TS_CHG_REV_FWD",0
+    pTSDone         BYTE    "TS_DONE",0
 
 PRI showStateNTest(enumTest, enumTestState) | pTestStr, pStateStr
     pStateStr := @pBadCode
@@ -993,7 +1034,7 @@ PUB testMotorNoFault() | priorHall, increment, decrement
         debug(`s 'Iw' 0 2000 128 70)
         debug(`s 'P' 0 100 128 10)
 
-    pinlow(TEST_ALL_PINS)
+    'pinlow(TEST_ALL_PINS)
 
     bStartingUp := true
 
@@ -1002,8 +1043,8 @@ PUB testMotorNoFault() | priorHall, increment, decrement
     'runLoopCount := 40_000 ' count of 1 ms loops (40 seconds)
 
     repeat
-        pintoggle(TEST_PIN_OUTER_LOOP)
-        pintoggle(TEST_PIN_OUTER_LOOP)
+        'pintoggle(TEST_PIN_OUTER_LOOP)
+        'pintoggle(TEST_PIN_OUTER_LOOP)
 
         startTicks := getct()
         ' @18.5V 10_000_000 is 5.8 RPM
@@ -1167,46 +1208,47 @@ CON { Constants for HDMI Debug }
     DBG_GROUPS_CT = 3
     DBG_MAX_VARS_IN_GROUP = 7
 
-VAR { Data Structure for HDMI Debug }
+VAR { * Data Structure for HDMI Debug * }
 
-    long    pTitlesAr[DBG_GROUPS_CT + 1]    ' first value is max vars
-    long    pVarCtAr[DBG_GROUPS_CT]
-    long    pNamesAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
-    long    pValsAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
+    LONG    pTitlesAr[DBG_GROUPS_CT + 1]    ' first value is max vars
+    LONG    pVarCtAr[DBG_GROUPS_CT]
+    LONG    pNamesAr[DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP]
+    LONG    pValsAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
 
 DAT { Literals for HDMI Debug }
+
 ' motor drive data
-    nameTitle1  byte    "Motor Drive",0
-    name10      byte    "hall",0
-    name11      byte    "pos",0
-    name12      byte    "duty",0
-    name13      byte    "err",0
-    name14      byte    "loopTicks",0
-    name15      byte    "state",0
-    name16      byte    "FAULT",0
+    nameTitle1  BYTE    "Motor Drive",0
+    name10      BYTE    "hall",0
+    name11      BYTE    "pos",0
+    name12      BYTE    "duty",0
+    name13      BYTE    "err",0
+    name14      BYTE    "loopTicks",0
+    name15      BYTE    "state",0
+    name16      BYTE    "FAULT",0
     nextAddr1
-    dataLen1     long    @nextAddr1 - @nameTitle1
+    dataLen1     LONG    @nextAddr1 - @nameTitle1
 
 ' motor sense data
-    nameTitle2  byte    "Motor Sense",0
-    name20      byte    "RPM 10ths",0
-    name21      byte    "RPM",0
-    name22      byte    "cnts/sec",0
-    name23      byte    "delta",0
+    nameTitle2  BYTE    "Motor Sense",0
+    name20      BYTE    "RPM 10ths",0
+    name21      BYTE    "RPM",0
+    name22      BYTE    "cnts/sec",0
+    name23      BYTE    "delta",0
     nextAddr2
-    dataLen2     long    @nextAddr2 - @nameTitle2
+    dataLen2     LONG    @nextAddr2 - @nameTitle2
 
 ' motor rate  data
-    nameTitle3  byte    "Motor Rate(.1)",0
-    name30      byte    "RPM",0
-    name31      byte    "cnts/sec",0
-    name32      byte    "f/s",0
-    name33      byte    "MPH",0
-    name34      byte    "kM/H",0
-    name35      byte    "mm/s",0
-    name36      byte    "Angl/10k",0
+    nameTitle3  BYTE    "Motor Rate(.1)",0
+    name30      BYTE    "RPM",0
+    name31      BYTE    "cnts/sec",0
+    name32      BYTE    "f/s",0
+    name33      BYTE    "MPH",0
+    name34      BYTE    "kM/H",0
+    name35      BYTE    "mm/s",0
+    name36      BYTE    "Angl/10k",0
     nextAddr3
-    dataLen3     long    @nextAddr3 - @nameTitle3
+    dataLen3     LONG    @nextAddr3 - @nameTitle3
 
 PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
 ' do internal one-time setup of driver debug data
@@ -1303,9 +1345,9 @@ CON { -- TASK position tracking -- }
   STACK_SIZE_LONGS = 48
   WINDOW_SIZE = 5
 
-VAR { arrays }
-    long    countsWindow[WINDOW_SIZE]
-    long    taskStack[STACK_SIZE_LONGS]
+VAR { * sense buffer and stack arrays * }
+    LONG    countsWindow[WINDOW_SIZE]
+    LONG    taskStack[STACK_SIZE_LONGS]
 
 PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
@@ -1324,8 +1366,8 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
             posTrkHallTicks := 0
 
         senseStartTicks := getct()
-        pintoggle(TEST_PIN_SENSE_LOOP)
-        pintoggle(TEST_PIN_SENSE_LOOP)
+        'pintoggle(TEST_PIN_SENSE_LOOP)
+        'pintoggle(TEST_PIN_SENSE_LOOP)
 
         newCntsInSec := distanceIn90ths(pos)            ' Read the next sensor value
         windowSum -= LONG[@countsWindow][winIndex]          ' Remove the oldest entry from the sum
@@ -1427,78 +1469,77 @@ CON { driver internal Constants}
 '    OFFSET   = 108                ' enforced dead time in clock cycles (at 270_000_000 -> 400 nSec)
 '    PWMLIM   = FRAME - OFFSET     'PWM duty hard limit 1/2 freq of PWM
 
-VAR { Data Structure for PASM Driver }
+VAR { * Data Structure for PASM Driver * }
+
   ' remember these are zeroed at run time
-    long    motorCog                            ' record ID of cog we start (0 = not started)
-    long    senseCog                            ' record ID of cog we start (0 = not started)
+    LONG    motorCog                            ' record ID of cog we start (0 = not started)
+    LONG    senseCog                            ' record ID of cog we start (0 = not started)
 
-    long    maxDrvTics                          ' accumulators for study of driver
-    long    minDrvTics
+    LONG    maxDrvTics                          ' accumulators for study of driver
+    LONG    minDrvTics
 
-    long    pinbase                             ' 1 long                must set initially
-    long    params_ptr                          ' 1 long                must set initially
+    LONG    pinbase                             ' 1 long                must set initially
+    LONG    params_ptr                          ' 1 long                must set initially
     ' / ----------------------------
-    long    targetIncre                         ' 1 long                must set to cause motion
+    LONG    targetIncre                         ' 1 long                must set to cause motion
     ' 14 longs come from driver, the 14th, fault also from driver but only when happens
-    long    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
-    long    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
+    LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
+    LONG    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
     '  ----- HDMI monitored! ----
-    long    hall, pos, duty, err                ' 4 sequential longs    returns data continually
-    long    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
-    long    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
-    long    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN]
+    LONG    hall, pos, duty, err                ' 4 sequential longs    returns data continually
+    LONG    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
+    LONG    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
+    LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN]
     ' \ ----------------------------
-    long    fault                               ' 1 sequential long     written to 1 on fault
+    LONG    fault                               ' 1 sequential long     written to 1 on fault
 
-VAR { Data for Motor Position Tracking }
+VAR { * Data for Motor Position Tracking * }
 
-    long    winIndex
-    long    winEntryCt
-    long    newCntsInSec
-    long    windowSum
+    LONG    winIndex
+    LONG    winEntryCt
+    LONG    newCntsInSec
+    LONG    windowSum
     '  ----- HDMI monitored! ----
-    long    tvRpm_x10
-    long    rpm
-    long    cntsInSec
-    long    deltaTicks
-    long    tvMaxRpmIn10ths
-    long    tvMaxFps_x10
-    long    tvMaxMPH_x10
-    long    tvMaxkPH_x10
-    long    tvMaxMmPerSec_x10
-    long    tvMaxCntsInSec
-    long    tvTargetIncreInM
+    LONG    tvRpm_x10
+    LONG    rpm
+    LONG    cntsInSec
+    LONG    deltaTicks
+    LONG    tvMaxRpmIn10ths
+    LONG    tvMaxFps_x10
+    LONG    tvMaxMPH_x10
+    LONG    tvMaxkPH_x10
+    LONG    tvMaxMmPerSec_x10
+    LONG    tvMaxCntsInSec
+    LONG    tvTargetIncreInM
     '  --------------------------
-    long    priorPos
-    long    rpmTenths
-    long    mmPerSec_x10
-    long    ftPerSec_x10
-    long    kmh_x10
-    long    mph_x10
+    LONG    priorPos
+    LONG    rpmTenths
+    LONG    mmPerSec_x10
+    LONG    ftPerSec_x10
+    LONG    kmh_x10
+    LONG    mph_x10
     '  --------------------------
-    long    posTrkHallTicks
-    long    circInMM_x10
-    long    tickInMM_x10
+    LONG    posTrkHallTicks
+    LONG    circInMM_x10
+    LONG    tickInMM_x10
 
-DAT  {  DRIVER w/Motor Parameters  }
-'
 
-    ' ------ HDMI monitored! -----
-    ' (driver reads this into own memory each iteration)
-    params                                  ' motor-control parameters, reloaded every frame
-    offset_fwd  long    20 frac 360         ' 96 frac 360 (Doug's motor)
-    offset_rev  long    340 frac 360        ' 228 frac 360 (Doug's motor)
-    duty_min    long    0                   ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
-    duty_max    long    0                   ' was PWMLIM << 4 <# PWMLIM << 4 but now runtime loaded
-    duty_up     long    16
-    duty_dn     long    4
-    dead_gap    long    0           ' this was OFFSET but now runtime loaded
-    pwm_limit   long    0           ' this was PWMLIM but now runtime loaded
-    ctrl_ticks  long    0           ' # clock ticks needed to create 2 kHz motor control loop
-    stop_mode   long    SM_FLOAT    ' enum: [SM_FLOAT, SM_BRAKE]
-    ramp_up     long    25_000      ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
-    ramp_dn     long    25_000      ' 25k angle decrement: subtract this every 500 uSec to ramp down to 0
-    ' ------ --------------- -----
+VAR  {  Motor Parameters  }
+
+    LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
+    LONG    offset_rev      ' 228 frac 360 (Doug's motor)
+    LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
+    LONG    duty_max        ' was PWMLIM << 4 <# PWMLIM << 4 but now runtime loaded
+    LONG    duty_up
+    LONG    duty_dn
+    LONG    dead_gap        ' delay between driving h/l side of driver (never drive both at once)
+    LONG    pwm_limit       ' max freq of our pwm
+    LONG    ctrl_ticks      ' # clock ticks needed to create 2 kHz motor control loop
+    LONG    stop_mode       ' control / user setting, enum: [SM_FLOAT, SM_BRAKE]
+    LONG    ramp_up         ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
+    LONG    ramp_dn         ' 25k angle decrement: subtract this every 500 uSec to ramp down to 0
+
+DAT  {  Motor DRIVER  }
 
 '
 ' PASM Driver Program
@@ -1514,9 +1555,9 @@ driver          rdlong  x, ptra++                   ' get base pin
                 or      all_pins, x                 ' finish the all-pins variable
                 add     drive_pins, x               ' finish the drive-pins variable
 
-                drvl    drvrLoopPnFld               ' preset test pins to low
-                drvl    drvrTmrPnFld
-                drvl    drvrTmr2PnFld
+                'drvl    drvrLoopPnFld               ' preset test pins to low
+                'drvl    drvrTmrPnFld
+                'drvl    drvrTmr2PnFld
 
                 mov     y, #0                       ' make single-pin variables
 .pin            altd    y, #pin_adc_u_i
@@ -1583,9 +1624,9 @@ driver          rdlong  x, ptra++                   ' get base pin
     ' -------------------------------------------------------------------------
 .drvMotor
                 getct   ctrlSrtTix                      ' remember when we started this loop
-                outnot  drvrTmrPnFld                    ' toggle TEST marker pin
-                outnot  drvrTmrPnFld                    ' toggle TEST marker pin
-                outnot  drvrTmr2PnFld                   ' rising edge of duration meas.
+                'outnot  drvrTmrPnFld                    ' toggle TEST marker pin
+                'outnot  drvrTmrPnFld                    ' toggle TEST marker pin
+                'outnot  drvrTmr2PnFld                   ' rising edge of duration meas.
 
                 ' let's see if user wants to change speed
                 ' have new drive command?
@@ -1783,7 +1824,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 ' reset timer (schedule next control loop run)
                 mov     ctrlEndTix, ctrlSrtTix
                 addct1  ctrlEndTix, cfg_ctcks_
-                outnot  drvrTmr2PnFld                   ' falling edge of duration meas.
+                'outnot  drvrTmr2PnFld                   ' falling edge of duration meas.
                'jmp    #.ctlMotor      ' done, fall thru
     ' -------------------------------------------------------------------------
 
@@ -1794,8 +1835,8 @@ driver          rdlong  x, ptra++                   ' get base pin
     '       keep our error rate low...
     ' -------------------------------------------------------------------------
                 getct   drvrSrtTix                  ' remember when we started this loop
-                outnot  drvrLoopPnFld               ' toggle TEST marker pin
-                outnot  drvrLoopPnFld
+                'outnot  drvrLoopPnFld               ' toggle TEST marker pin
+                'outnot  drvrLoopPnFld
                 call    #.wait4adc                  ' allow ADC rest period (Period 1 of 6)
 
                 rdpin   vio_levels+0, pin_adc_u_i       ' VIO samples done, read them
@@ -1997,69 +2038,69 @@ driver          rdlong  x, ptra++                   ' get base pin
     '
     ' =========================================================================
 
-all_pins	long	15 << 6			            ' all-pins variable (addpins 15) needs OR of basepin
-drive_pins	long	(7 << 6) + 8	            ' drive-pins variable (+8 addpins 7) needs ADD of basepin
-pwmt        long    %000_000000_01_01000_0  ' PWM true
-pwmn        long    %001_000000_01_01000_0  ' PWM not
-fram        long    FRAME << 16 + 1         ' PWM frame setting
-bias        long    FRAME / 2               ' PWM center-frame bias
-third       long    1 FRAC 3                ' 120 degrees
-numerator   long    3300 << 11              ' numerator for ADC calculations
-stop_requst long    0                       ' 32-bits of zero
-ramp_up_dly long    8                       ' cycles 8,7,6... -> 0 then back to 8, over and over
+all_pins	LONG	15 << 6			            ' all-pins variable (addpins 15) needs OR of basepin
+drive_pins	LONG	(7 << 6) + 8	            ' drive-pins variable (+8 addpins 7) needs ADD of basepin
+pwmt        LONG    %000_000000_01_01000_0  ' PWM true
+pwmn        LONG    %001_000000_01_01000_0  ' PWM not
+fram        LONG    FRAME << 16 + 1         ' PWM frame setting
+bias        LONG    FRAME / 2               ' PWM center-frame bias
+third       LONG    1 FRAC 3                ' 120 degrees
+numerator   LONG    3300 << 11              ' numerator for ADC calculations
+stop_requst LONG    0                       ' 32-bits of zero
+ramp_up_dly LONG    8                       ' cycles 8,7,6... -> 0 then back to 8, over and over
 
-drvrLoopPnFld   long    TEST_PIN_DRIVER_LOOP addpins 0  ' convert to pinfield
-drvrTmrPnFld    long    TEST_PIN_DRIVER_TMR addpins 0  ' convert to pinfield
-drvrTmr2PnFld   long    TEST_PIN_DRIVER_TMR2 addpins 0  ' convert to pinfield
+'drvrLoopPnFld   LONG    TEST_PIN_DRIVER_LOOP addpins 0  ' convert to pinfield
+'drvrTmrPnFld    LONG    TEST_PIN_DRIVER_TMR addpins 0  ' convert to pinfield
+'drvrTmr2PnFld   LONG    TEST_PIN_DRIVER_TMR2 addpins 0  ' convert to pinfield
 
-adc_modes   long    p_adc_gio | p_adc       ' adc modes, by state
-            long    p_adc_vio | p_adc
-            long    p_adc_1x  | p_adc
+adc_modes   LONG    p_adc_gio | p_adc       ' adc modes, by state
+            LONG    p_adc_vio | p_adc
+            LONG    p_adc_1x  | p_adc
 
-deltas      byte    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3 | new)
-            byte    0, 0, 0,-1, 0, 1, 0, 0
-            byte    0, 0, 0, 1, 0, 0,-1, 0
-            byte    0, 1,-1, 0, 0, 0, 0, 0
-            byte    0, 0, 0, 0, 0,-1, 1, 0
-            byte    0,-1, 0, 0, 1, 0, 0, 0
-            byte    0, 0, 1, 0,-1, 0, 0, 0
-            byte    0, 0, 0, 0, 0, 0, 0, 0
+deltas      BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3 | new)
+            BYTE    0, 0, 0,-1, 0, 1, 0, 0
+            BYTE    0, 0, 0, 1, 0, 0,-1, 0
+            BYTE    0, 1,-1, 0, 0, 0, 0, 0
+            BYTE    0, 0, 0, 0, 0,-1, 1, 0
+            BYTE    0,-1, 0, 0, 1, 0, 0, 0
+            BYTE    0, 0, 1, 0,-1, 0, 0, 0
+            BYTE    0, 0, 0, 0, 0, 0, 0, 0
 
-hall_angles long    0           ' forward-direction table
-            long    0 frac 6    '%001
-            long    4 frac 6    '%010
-            long    5 frac 6    '%011
-            long    2 frac 6    '%100
-            long    1 frac 6    '%101
-            long    3 frac 6    '%110
-            long    0
-            long    0           ' reverse-direction table
-            long    5 frac 6    '%001
-            long    3 frac 6    '%010
-            long    4 frac 6    '%011
-            long    1 frac 6    '%100
-            long    0 frac 6    '%101
-            long    2 frac 6    '%110
-            long    0
+hall_angles LONG    0           ' forward-direction table
+            LONG    0 frac 6    '%001
+            LONG    4 frac 6    '%010
+            LONG    5 frac 6    '%011
+            LONG    2 frac 6    '%100
+            LONG    1 frac 6    '%101
+            LONG    3 frac 6    '%110
+            LONG    0
+            LONG    0           ' reverse-direction table
+            LONG    5 frac 6    '%001
+            LONG    3 frac 6    '%010
+            LONG    4 frac 6    '%011
+            LONG    1 frac 6    '%100
+            LONG    0 frac 6    '%101
+            LONG    2 frac 6    '%110
+            LONG    0
 
 
-x           res     1           ' miscellaneous
-y           res     1
+x               res 1           ' miscellaneous
+y               res 1
 
 ' measurements
-drvrSrtTix  res 1
-drvrEndTix  res 1
-ctrlSrtTix  res 1
-ctrlEndTix  res 1
+drvrSrtTix      res 1
+drvrEndTix      res 1
+ctrlSrtTix      res 1
+ctrlEndTix      res 1
 
 ' driver inputs
-tgt_incr    res 1       ' current user requested target increment
-prior_incr  res 1       ' prior user requested target increment
+tgt_incr        res 1       ' current user requested target increment
+prior_incr      res 1       ' prior user requested target increment
 ' control loop variables
-drv_incr    res 1       ' current driver increment
-angle       res 1       ' current driver angle
-prior_angle res 1       ' prior driver angle
-fwdrev      res 1       ' driver current direction used for indexing into hall angle table
+drv_incr        res 1       ' current driver increment
+angle           res 1       ' current driver angle
+prior_angle     res 1       ' prior driver angle
+fwdrev          res 1       ' driver current direction used for indexing into hall angle table
 
 ' PIN names
 pin_adc_u_i     res 1       ' single-pin variables
