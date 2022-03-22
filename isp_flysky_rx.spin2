@@ -1,0 +1,457 @@
+'' =================================================================================================
+''
+''   File....... isp_flysky_rx.spin2
+''   Purpose.... Interface to FlySky - it's SBus Receiver (SINGLETON)
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2021 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 03 Jul 2021
+''   Updated.... 03 Jul 2021
+''
+'' =================================================================================================
+
+con
+
+  #true,  ON, OFF
+  #false, NO, YES
+
+' possible switch states
+  #0, SST_UNKNOWN, SST_OFF, SST_MID, SST_ON
+
+' numbered channels [0-17] -> [1-18]
+  #0, CH_00, CH_01, CH_02, CH_03, CH_04, CH_5, CH_06, CH_07
+  #8, CH_08, CH_09, CH_10, CH_11, CH_12, CH_13, CH_14, CH_15
+  #16, CH_16, CH_17
+
+  MAX_CHANNELS = CH_17 + 1
+
+' same channels, named
+  #0, CTL_NADA, CTL_RT_JOY_HZ, CTL_RT_JOY_VT  ' 251 - 1024ish - 1807
+  #3, CTL_LT_JOY_VT, CTL_LT_JOY_HZ  ' 251 - 1024ish - 1783
+  #5, CTL_VRA, CTL_VRB
+  #7, CTL_SW_A, CTL_SW_B, CTL_SW_C, CTL_SW_D
+
+' number of controls for which we track min/max range
+  MAX_CTLS = CTL_SW_D + 1
+
+obj
+
+'    main                                                       ' * master Spin cog
+    sbus    : "jm_sbus_rx"                                      ' * s.bus serial input/decoding
+    'term    : "isp_serial_singleton"                         ' debug terminal output
+
+' * uses cog when loaded
+
+
+dat
+
+    Defaults        word    1023, 1023,    0, 1023,    0,    0,    0,    0,    0
+                    word       0, 1023, 1023, 1023, 1023, 1023, 1023,    0,    0
+
+' NOTE: in following: 0th channel min/max is not used - these are defaults used when cal is not run
+'  if your FlySky reports diff values run call in your code and then adjust these values (unless you always want to run cal.)
+    ctlMinValue     word    0, 246, 248, 250, 254, 240
+                    word    240, 240, 240, 240, 240
+    ctlMaxValue     word    0, 1807, 1801, 1766, 1786, 1807
+                    word    1807, 1807, 1807, 1807, 1807
+
+    bShowDebug      BYTE    FALSE
+
+PUB null()
+    '' This is not a top-level object
+
+pub setup(desiredRxPin) : cog
+    '' Configure IO and objects for application
+    bShowDebug := FALSE ' default
+    cog := sbus.start(desiredRxPin, @Defaults)                                ' start s.bus rx
+    waitms(250)
+    show_sbus()
+
+PUB showDebug(bEnable)
+    if bEnable <> TRUE
+        bEnable := FALSE
+    if bShowDebug <> bEnable
+        if not bEnable
+            'term.fstr1(string("- showDebug(%d) - now OFF\r\n"), bEnable)
+            debug("- showDebug(", udec_(bEnable), ") - now OFF")
+        else
+            'term.fstr1(string("- showDebug(%d) - now ON\r\n"), bEnable)
+            debug("- showDebug(", udec_(bEnable), ") - now ON")
+   bShowDebug := bEnable
+
+PUB readChannel(chan) : retValue | validChan
+    validChan := 1 #> chan <# MAX_CHANNELS                      ' legal SBUS Rcvr channel
+    retValue := sbus.read(validChan)                        ' get value from receiver [0-2047]
+    if bShowDebug
+        'term.fstr2(string("- readChannel(%d) - %d\r\n"), chan, retValue)
+        debug("- readChannel(", udec_(chan), ") - ", udec(retValue))
+
+PUB swIsOn(swChan) : bOnState
+    '' Return T/F where T = switch is ON [swA, swB, swC, swD]
+    bOnState := readSwitch(swChan) == SST_ON
+
+PUB swIsOff(swChan) : bOffState
+    '' Return T/F where T = switch is OFF [swA, swB, swC, swD]
+    bOffState := readSwitch(swChan) == SST_OFF
+
+PUB swIsMiddle(swChan) : bMiddleState
+    '' Return T/F where T = switch is in Middle position (only useful for swC)
+    bMiddleState := readSwitch(swChan) == SST_MID
+
+PUB readSwitch(swChan) : eSwState | validSwChan
+    '' Read switch value and decode into switch state (2-pos sw) [if 3-pos divert to other routine]
+    validSwChan := CTL_SW_A #> swChan <# CTL_SW_D                                ' legal SBUS Rxcvr channel
+    if validSwChan == CTL_SW_C   ' if 3-way sw don't allow it
+        return readSw3Way(swChan)
+    else
+        eSwState := readChannel(validSwChan) > 1023 ? SST_OFF : SST_ON
+    if bShowDebug
+        'term.fstr2(string("- readSwitch(%d) - %d\r\n"), validSwChan, eSwState)
+        debug("- readSwitch(", udec_(validSwChan), ") - ", udec(eSwState))
+
+PUB readSw3Way(swChan) : eSwState | validSwChan, rawValue
+    '' Read 3-pos switch value and decode into switch state
+    validSwChan := CTL_SW_C #> swChan <# CTL_SW_C                                ' legal SBUS Rxcvr channel
+    rawValue := readChannel(validSwChan)
+    if rawValue < 684   ' bottom 3rd of 0-2047
+        eSwState := SST_ON
+    else
+        eSwState := rawValue < 1367 ? SST_MID : SST_OFF ' bottom 2/3 rds or top 3rd?
+    if bShowDebug
+        'term.fstr2(string("- readSw3Way(%d) - %d\r\n"), validSwChan, eSwState)
+        debug("- readSw3Way(", udec_(validSwChan), ") - ", udec(eSwState))
+
+
+pub show_sbus() | ch, pos, x, y
+    '' Show status indication
+
+    if (sbus.has_signal())
+        'term.fstr0(string("- SBUS OK Online\r\n"))
+        debug("- SBUS OK Online")
+    else
+        if (sbus.in_failsafe())
+            'term.fstr0(string("- SBUS Error FAILSAFE\r\n"))
+            debug("- SBUS Error FAILSAFE")
+        else
+            'term.fstr0(string("- SBUS Error FRAME LOST\r\n"))
+            debug("- SBUS Error FRAME LOST")
+
+PUB manualCalibrate()
+'' prompt and let user set controls to get best readings...
+    'term.fstr0(string("- Calibration - flip swA DOWN to start\r\n"))
+    debug("- Calibration - flip swA DOWN to start")
+    repeat
+        if swIsOn(CTL_SW_A)
+            quit
+
+    'term.fstr0(string("- Calibrate Right Joystick\r\n"))
+    debug(" ")
+    debug("- Calibrate Right Joystick")
+    calJoyStick(CTL_RT_JOY_HZ, CTL_RT_JOY_VT)
+
+    'term.fstr0(string("- Calibrate Left Joystick\r\n"))
+    debug(" ")
+    debug("- Calibrate Left Joystick")
+    calJoyStick(CTL_LT_JOY_HZ, CTL_LT_JOY_VT)
+
+    'term.fstr0(string("- Calibrate Switch A\r\n"))
+    debug(" ")
+    debug("- Calibrate Switch A")
+    calSwitch(CTL_SW_A)
+    'term.fstr0(string("- Calibrate Switch b\r\n"))
+    debug(" ")
+    debug("- Calibrate Switch B")
+    calSwitch(CTL_SW_B)
+    'term.fstr0(string("- Calibrate Switch C\r\n"))
+    debug(" ")
+    debug("- Calibrate Switch C")
+    calSwitch(CTL_SW_C)
+    'term.fstr0(string("- Calibrate Switch D\r\n"))
+    debug(" ")
+    debug("- Calibrate Switch D")
+    calSwitch(CTL_SW_D)
+
+    'term.fstr0(string("- Calibrate Variable A\r\n"))
+    debug(" ")
+    debug("- Calibrate Variable A")
+    calVariable(CTL_VRA)
+    'term.fstr0(string("- Calibrate Variable B\r\n"))
+    debug(" ")
+    debug("- Calibrate Variable B")
+    calVariable(CTL_VRB)
+
+    'term.fstr0(string("- END Calibration - flip swA UP to end\r\n"))
+    debug("- END Calibration - flip swA UP to end")
+    debug(" ")
+    repeat
+        if swIsOn(CTL_SW_A)
+            quit
+
+
+PRI calJoyStick(hzJoyChan, vtJoyChan)
+    ' Calibrate horiz and vert joy stick controls
+    calJoyStickHz(hzJoyChan)
+    calJoyStickVt(vtJoyChan)
+
+PRI calJoyStickVt(vtJoyChan) | legalChan, priorPosn, currPosn, newPosn, deltaPosn, bHaveGoodValue, nSampleCt, chanMin, chanMax
+    ' Calibrate vert joy stick controls
+    legalChan := 0
+    if vtJoyChan == CTL_RT_JOY_VT || vtJoyChan == CTL_LT_JOY_VT
+        legalChan := vtJoyChan
+    if legalChan <> 0
+        repeat 3
+            'term.fstr0(string("\r\n- Push Stick FULL UP\r\n"))
+            debug("- Push Stick FULL UP")
+            waitms(2000)
+            currPosn := sbus.read(legalChan)                                      ' get value from receiver
+            'term.fstr2(string("- init UP chan%d = %d\r\n"), legalChan, currPosn)
+            bHaveGoodValue := FALSE
+            nSampleCt := 0
+            priorPosn := -1
+            repeat while not bHaveGoodValue
+                newPosn := sbus.read(legalChan)                                      ' get value from receiver
+                deltaPosn := abs(currPosn - newPosn)
+                'term.fstr3(string("- large UP chan%d = %d (%d)\r\n"), legalChan, newPosn, deltaPosn)
+                if newPosn < 1030
+                    next    ' insiginificant move, read again
+                'term.fstr2(string("- UP chan%d = %d\r\n"), legalChan, newPosn)
+                updMinMaxValueForChan(newPosn, legalChan)
+                if priorPosn == -1
+                    priorPosn := newPosn
+                deltaPosn := abs(newPosn - priorPosn)
+                if deltaPosn < 5
+                    nSampleCt++
+                if nSampleCt > 2
+                    bHaveGoodValue := TRUE
+                'term.fstr3(string("   DBG deltaPosn = %d, nSampleCt = %d, bHaveGoodValue = %d\r\n"), deltaPosn, nSampleCt, bHaveGoodValue)
+                priorPosn := newPosn
+            'term.fstr0(string("\r\n- Push Stick FULL DOWN\r\n"))
+            debug("- Push Stick FULL DOWN")
+            waitms(2000)
+            bHaveGoodValue := FALSE
+            nSampleCt := 0
+            priorPosn := -1
+            repeat while not bHaveGoodValue
+                newPosn := sbus.read(legalChan)                                      ' get value from receiver
+                deltaPosn := abs(currPosn - newPosn)
+                if newPosn > 1020
+                    next    ' insiginificant move, read again
+                'term.fstr2(string("- DN chan%d = %d\r\n"), legalChan, newPosn)
+                updMinMaxValueForChan(newPosn, legalChan)
+                if priorPosn == -1
+                    priorPosn := newPosn
+                deltaPosn := abs(newPosn - priorPosn)
+                if deltaPosn < 5
+                    nSampleCt++
+                if nSampleCt > 2
+                    bHaveGoodValue := TRUE
+                priorPosn := newPosn
+        chanMin, chanMax := chanMinMax(legalChan)
+        'term.fstr3(string("- END CAL: Chan%d Vert MIN=%d MAX=%d\r\n\r\n"), legalChan, chanMin, chanMax)
+        debug("- END CAL: Chan", udec_(legalChan), " Vert MIN=", udec_(chanMin), " MAX=", udec_(chanMax))
+        waitms(5000)
+
+
+PRI calJoyStickHz(hzJoyChan) | legalChan, priorPosn, currPosn, newPosn, deltaPosn, bHaveGoodValue, nSampleCt, chanMin, chanMax
+    ' Calibrate horiz joy stick controls
+    legalChan := 0
+    if hzJoyChan == CTL_RT_JOY_HZ || hzJoyChan == CTL_LT_JOY_HZ
+        legalChan := hzJoyChan
+    if legalChan <> 0
+        repeat 3
+            'term.fstr0(string("\r\n- Push Stick FULL RIGHT\r\n"))
+            debug("- Push Stick FULL RIGHT")
+            waitms(2000)
+            currPosn := sbus.read(legalChan)                                      ' get value from receiver
+            'term.fstr2(string("- init RT chan%d = %d\r\n"), legalChan, currPosn)
+            bHaveGoodValue := FALSE
+            nSampleCt := 0
+            priorPosn := -1
+            repeat while not bHaveGoodValue
+                newPosn := sbus.read(legalChan)                                      ' get value from receiver
+                deltaPosn := abs(currPosn - newPosn)
+                'term.fstr3(string("- large RT chan%d = %d (%d)\r\n"), legalChan, newPosn, deltaPosn)
+                if newPosn < 1030
+                    next    ' insiginificant move, read again
+                'term.fstr2(string("- RT chan%d = %d\r\n"), legalChan, newPosn)
+                updMinMaxValueForChan(newPosn, legalChan)
+                if priorPosn == -1
+                    priorPosn := newPosn
+                deltaPosn := abs(newPosn - priorPosn)
+                if deltaPosn < 5
+                    nSampleCt++
+                if nSampleCt > 2
+                    bHaveGoodValue := TRUE
+                'term.fstr3(string("   DBG deltaPosn = %d, nSampleCt = %d, bHaveGoodValue = %d\r\n"), deltaPosn, nSampleCt, bHaveGoodValue)
+                priorPosn := newPosn
+            'term.fstr0(string("\r\n- Push Stick FULL LEFT\r\n"))
+            debug("- Push Stick FULL LEFT")
+            waitms(2000)
+            bHaveGoodValue := FALSE
+            nSampleCt := 0
+            priorPosn := -1
+            repeat while not bHaveGoodValue
+                newPosn := sbus.read(legalChan)                                      ' get value from receiver
+                deltaPosn := abs(currPosn - newPosn)
+                if newPosn > 1030
+                    next    ' insiginificant move, read again
+                'term.fstr2(string("- LT chan%d = %d\r\n"), legalChan, newPosn)
+                updMinMaxValueForChan(newPosn, legalChan)
+                if priorPosn == -1
+                    priorPosn := newPosn
+                deltaPosn := abs(newPosn - priorPosn)
+                if deltaPosn < 5
+                    nSampleCt++
+                if nSampleCt > 2
+                    bHaveGoodValue := TRUE
+                priorPosn := newPosn
+        chanMin, chanMax := chanMinMax(legalChan)
+        'term.fstr3(string("- END CAL: Chan%d Horiz MIN=%d MAX=%d\r\n\r\n"), legalChan, chanMin, chanMax)
+        debug("- END CAL: Chan", udec_(legalChan), " Horiz MIN=", udec_(chanMin), " MAX=", udec_(chanMax))
+        waitms(5000)
+
+PRI calSwitch(swChan) | legalChan, currPosn, newPosn, deltaPosn, loopNbr, chanMin, chanMax
+    legalChan := 0
+    if swChan >= CTL_SW_A && swChan <= CTL_SW_D
+        legalChan := swChan
+    if legalChan <> 0
+        repeat loopNbr from 1 to 4
+            currPosn := sbus.read(legalChan)                                      ' get initial value from receiver
+            'term.fstr2(string("- Flip SWITCH #%d of 4 (try #%d of 4)\r\n"), swChan - CTL_SW_A, loopNbr)
+            debug("- Flip SWITCH #", udec_(swChan - CTL_SW_A), " of 4 (try #", udec_(loopNbr), " of 4)")
+            waitms(1500)
+            repeat  ' loop until significant change
+                newPosn := sbus.read(legalChan)                                      ' get new value from receiver
+                updMinMaxValueForChan(newPosn, legalChan)
+                'deltaPosn := currPosn - newPosn
+                deltaPosn := abs(currPosn - newPosn)
+                'term.fstr1(string("   DBG deltaPosn = %d\r\n"), deltaPosn)
+                ' if switch flipped... end this tight loop and move to next...
+                if deltaPosn > 1000  ' we use 1000 so that we can ignore SwC mid position
+                    ' have Switch flip
+                    quit
+                waitms(250) ' pause before next read
+        chanMin, chanMax := chanMinMax(legalChan)
+        'term.fstr3(string("- END CAL: Chan%d MIN=%d MAX=%d\r\n\r\n"), legalChan, chanMin, chanMax)
+        debug("- END CAL: Chan", udec_(legalChan), " MIN=", udec_(chanMin), " MAX=", udec_(chanMax))
+        waitms(5000)
+    else
+        'term.fstr1(string("- ERROR: Bad SWITCH ID: Chan%d\r\n"), legalChan)
+        debug("- ERROR: Bad SWITCH ID: Chan", udec_(legalChan))
+
+
+PRI calVariable(varChan) | legalChan, priorPosn, currPosn, deltaPosn, bHaveGoodValue, nSampleCt, chanMin, chanMax
+    legalChan := 0
+    if varChan >= CTL_VRA && varChan <= CTL_VRB
+        legalChan := varChan
+    if legalChan <> 0
+        repeat 3
+            'term.fstr0(string("\r\n- Rotate to Min or Max\r\n"))
+            debug("- Rotate to Min or Max")
+            waitms(2000)
+            bHaveGoodValue := FALSE
+            nSampleCt := 0
+            priorPosn := -1
+            repeat while not bHaveGoodValue
+                currPosn := sbus.read(legalChan)                                      ' get value from receiver
+                'term.fstr2(string("- chan%d = %d\r\n"), legalChan, currPosn)
+                updMinMaxValueForChan(currPosn, legalChan)
+                if priorPosn == -1
+                    priorPosn := currPosn
+                deltaPosn := abs(currPosn - priorPosn)
+                if deltaPosn < 5
+                    nSampleCt++
+                if nSampleCt > 2
+                    bHaveGoodValue := TRUE
+                priorPosn := currPosn
+            'term.fstr0(string("\r\n- Rotate to Other end of range\r\n"))
+            debug("- Rotate to Other end of range")
+            waitms(2000)
+            bHaveGoodValue := FALSE
+            nSampleCt := 0
+            priorPosn := -1
+            repeat while not bHaveGoodValue
+                currPosn := sbus.read(legalChan)                                      ' get value from receiver
+                'term.fstr2(string("- other chan%d = %d\r\n"), legalChan, currPosn)
+                updMinMaxValueForChan(currPosn, legalChan)
+                if priorPosn == -1
+                    priorPosn := currPosn
+                deltaPosn := abs(currPosn - priorPosn)
+                if deltaPosn < 5
+                    nSampleCt++
+                if nSampleCt > 2
+                    bHaveGoodValue := TRUE
+                priorPosn := currPosn
+        chanMin, chanMax := chanMinMax(legalChan)
+        'term.fstr3(string("- END CAL: Chan%d MIN=%d MAX=%d\r\n\r\n"), legalChan, chanMin, chanMax)
+        debug("- END CAL: Chan", udec_(legalChan), " MIN=", udec_(chanMin), " MAX=", udec_(chanMax))
+        waitms(5000)
+
+PUB chanMinMax(chan) : minVal, maxVal | validChan
+    '' Return calculated min max for given channel
+    validChan := 0 #> chan <# MAX_CTLS - 1                                ' legal SBUS Rxcvr channel
+    minVal := WORD [@ctlMinValue][validChan]
+    maxVal := WORD [@ctlMaxValue][validChan]
+
+PRI updMinMaxValueForChan(value, chan) : minVal, maxVal | currMinValue, currMaxValue, newValue, validChan
+    ' upd min max for given channel
+    validChan := 0 #> chan <# MAX_CTLS - 1                                ' legal SBUS Rxcvr channel
+    'term.fstr2(string("- UPD Val: Chan%d Val = %d\r\n"), validChan, value)
+    if chan == validChan
+        currMinValue, currMaxValue := chanMinMax(validChan)
+        minVal, maxVal := currMinValue, currMaxValue
+        newValue := MIN(value, currMinValue)
+        if currMinValue <> newValue
+            'term.fstr3(string("- chan%d MIN %d -> %d\r\n"), chan, currMinValue, newValue)
+            debug("- chan", udec_(chan), " MIN ", udec_(currMinValue), " -> ", udec_(newValue))
+            WORD [@ctlMinValue][validChan] := newValue
+            minVal := newValue
+
+        newValue := MAX(value, currMaxValue)
+        if currMaxValue <> newValue
+            'term.fstr3(string("- chan%d MAX %d -> %d\r\n"), chan, currMaxValue, newValue)
+            debug("- chan", udec_(chan), " MAX ", udec_(currMaxValue), " -> ", udec_(newValue))
+            WORD [@ctlMaxValue][validChan] := newValue
+            maxVal := newValue
+
+PRI MIN(ltVal, rtVal) : minValue
+    minValue := ltVal < rtVal ? ltVal : rtVal
+
+PRI MAX(ltVal, rtVal) : maxValue
+    maxValue := ltVal < rtVal ? rtVal : ltVal
+
+pri map(value, inmin, inmax, outmin, outmax) : result
+    ' Maps value in range inmin..inmax to new value in range outmin..outmax
+    if (value <= inmin)
+        result := outmin
+    elseif (value >= inmax)
+        result :=  outmax
+    else
+        result :=  (value - inmin) * (outmax - outmin) / (inmax - inmin) + outmin
+
+con { license }
+
+{{
+
+ -------------------------------------------------------------------------------------------------
+  Terms of Use: MIT License
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  software and associated documentation files (the "Software"), to deal in the Software
+  without restriction, including without limitation the rights to use, copy, modify,
+  merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to the following
+  conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies
+  or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+  PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+  HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+  CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+  OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ =================================================================================================
+}}
