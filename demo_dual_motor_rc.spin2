@@ -60,29 +60,23 @@ PUB main() | statusOK
     'debug("-- HOLD --")
     'repeat  ' hold here for now
     ' ---- TEST TEST TEST ----
-    {
-    ' ----------- drive arm using controller - showing positions always
-    if statusOK
-        debug("arm remote control")
-        remoteCog := remoteCtl.setup()
-        statusOK := remoteCog <> 0 ? TRUE : FALSE
-        resetServoController(statusOK)
-        remoteControlArm()
-    '}
+
     debug("* Set up - remote control")
 
-    remoteCog := remoteCtl.setup(SBUS_RX)
+    remoteCog := remoteCtl.start(SBUS_RX)
     statusOK := remoteCog <> 0 ? TRUE : FALSE
     if statusOK
         'remoteCtl.manualCalibrate()
+        debug("R/C Running...")
         remoteControlMotor()
     else
         debug("EEEE: SBUS rcvr not started?!")
 
+{
     debug("* HOLD here - not starting motors...")
     repeat
-
-
+'}
+{
     ' now drive!
     waitUntilMotorReady()
 
@@ -96,7 +90,7 @@ PUB main() | statusOK
     wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
 
     waitUntilMotorDone()
-
+'}
 {
     debug("* LT Wheel")
     wheels.driveAtPower(50, 0)
@@ -110,6 +104,9 @@ PUB main() | statusOK
 
     waitUntilMotorDone()
 '}
+
+    ' turn off our SBUS drivers
+    remoteCtl.stop()
     ' turn off our motor drivers
     wheels.stop()
 
@@ -144,8 +141,18 @@ PRI waitUntilMotorDone()
                 waitms(2)
     debug("* Motors stopped!")
 
+CON
 
-PUB remoteControlMotor() | bLastIgnoreJoyStks, bIgnoreJoySticks, bDoneTesting, bLastShowState, bShowState, loopCt, bShowDebugStatus, speed, direction
+   VALUE_NOT_SET = -2
+
+VAR
+
+    long    priorSpeed
+    long    priorDirection
+    long    rcSpeed
+    long    rcDirection
+
+PUB remoteControlMotor() | bLastIgnoreJoyStks, bIgnoreJoySticks, bDoneTesting, bLastShowState, bShowState, loopCt, bShowDebugStatus
 
     waitms(3000)    ' wait for 3 sec for backend to catch up
 
@@ -162,8 +169,8 @@ PUB remoteControlMotor() | bLastIgnoreJoyStks, bIgnoreJoySticks, bDoneTesting, b
     debug("* swD DN - end control")
     debug("------------")
 
-    bLastShowState := -2 ' value can't happen
-    bLastIgnoreJoyStks := -2 ' value can't happen
+    bLastShowState := VALUE_NOT_SET ' value can't happen
+    bLastIgnoreJoyStks := VALUE_NOT_SET ' value can't happen
 
     loopCt := 0
     repeat
@@ -178,10 +185,10 @@ PUB remoteControlMotor() | bLastIgnoreJoyStks, bIgnoreJoySticks, bDoneTesting, b
         ' SwD done, end loop!
         bDoneTesting := remoteCtl.swIsOff(remoteCtl.CTL_SW_D)
 
-        if bLastShowState == -2
+        if bLastShowState == VALUE_NOT_SET
             bLastShowState := bShowState
 
-        if bLastIgnoreJoyStks == -2
+        if bLastIgnoreJoyStks == VALUE_NOT_SET
             bLastIgnoreJoyStks := bIgnoreJoySticks
 
         if bShowState <> bLastShowState
@@ -214,18 +221,22 @@ PUB remoteControlMotor() | bLastIgnoreJoyStks, bIgnoreJoySticks, bDoneTesting, b
             bLastIgnoreJoyStks := bIgnoreJoySticks
 
         if not bIgnoreJoySticks
-            speed, direction := updPosnBothJoy(1)
-            debug("- JOY ", sdec_long(speed), sdec_long(direction))
+            rcSpeed, rcDirection := updPosnBothJoy(1)
+            if priorDirection <> rcDirection or priorSpeed <> rcSpeed
+                debug("- JOY ", sdec_long(rcSpeed), sdec_long(rcDirection))
+                wheels.driveDirection(rcSpeed, rcDirection)
+                priorDirection := rcDirection
+                priorSpeed := rcSpeed
 
         if bDoneTesting
             debug("--> quit loop")
             quit
 
-        waitms(250) ' wait 1/4 second, before next loop
+        waitms(500) ' wait 1/4 second, before next loop
         loopCt++
 
     ' done, stop our motors
-    'wheels.stop()
+    wheels.stop()
 
 {
 PRI showServoPositions()
@@ -265,7 +276,6 @@ PRI updPosnBothJoy(nLoopCount): speed, direction | rawSpeed, rawDirection, rngMi
         rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_LT_JOY_VT)
         arm.positionServo(arm.SERVO_ELBOW, posn, rngMin, rngMax)
 '}
-        'wheels.driveDirection(speed, direction)
 
 PRI map(inValue,  inMin,  inMax,  outMin,  outMax) : outValue
 {
