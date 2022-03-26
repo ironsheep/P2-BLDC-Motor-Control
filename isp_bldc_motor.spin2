@@ -107,6 +107,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     stop_mode   := SM_FLOAT                 ' enum: [SM_FLOAT, SM_BRAKE]
     ramp_up     := 25_000                   ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
     ramp_dn     := 25_000                   ' 25k angle decrement: subtract this every 500 uSec to ramp down to 0
+    ramp_slo    := 2_000                    ' 2k angle decrement: subtract this every 500 uSec to ramp down to slower speed
 
     motorIsReversed := FALSE    ' by default our motor direction is not reversed
 
@@ -1482,16 +1483,15 @@ VAR { * Data Structure for PASM Driver * }
     LONG    params_ptr                          ' 1 long                must set initially
     ' / ----------------------------
     LONG    targetIncre                         ' 1 long                must set to cause motion
-    ' 14 longs come from driver, the 14th, fault also from driver but only when happens
+    ' 14 longs come from driver, the 15th, "fault" also from driver but only when happens
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
     LONG    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
-    '  ----- HDMI monitored! ----
     LONG    hall, pos, duty, err                ' 4 sequential longs    returns data continually
     LONG    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
     LONG    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
     LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN]
     ' \ ----------------------------
-    LONG    fault                               ' 1 sequential long     written to 1 on fault
+    LONG    fault                               ' 1 sequential long     written to 1 on fault (pins are floated when this happens)
 
 VAR { * Data for Motor Position Tracking * }
 
@@ -1526,6 +1526,7 @@ VAR { * Data for Motor Position Tracking * }
 
 VAR  {  Motor Parameters  }
 
+' TABLE of  13 parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -1537,7 +1538,8 @@ VAR  {  Motor Parameters  }
     LONG    ctrl_ticks      ' # clock ticks needed to create 2 kHz motor control loop
     LONG    stop_mode       ' control / user setting, enum: [SM_FLOAT, SM_BRAKE]
     LONG    ramp_up         ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
-    LONG    ramp_dn         ' 25k angle decrement: subtract this every 500 uSec to ramp down to 0
+    LONG    ramp_dn         ' subtract this every 500 uSec to ramp down to 0
+    LONG    ramp_slo        ' subtract this every 500 uSec to ramp down to slower speed
 
 DAT  {  Motor DRIVER  }
 
@@ -1628,8 +1630,16 @@ driver          rdlong  x, ptra++                   ' get base pin
                 'outnot  drvrTmrPnFld                    ' toggle TEST marker pin
                 'outnot  drvrTmr2PnFld                   ' rising edge of duration meas.
 
+                ' NEW accept a new drive command only when not in middle of change
+                cmp     drv_state_, #DCS_STOPPED    wz      ' STOPPED not doing anything
+    if_nz       cmp     drv_state_, #DCS_AT_SPEED   wz      ' AT_SPEED not doing anything
+    if_nz       cmp     drv_state_, #DCS_FAULTED    wz      ' FAULTED not doing anything
+    if_nz       jmp     #.currRqst
+                ' matched one, fall through to process new request...
+
                 ' let's see if user wants to change speed
                 ' have new drive command?
+.newCmd
                 rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
                 cmp     prior_incr, tgt_incr        wz  ' Q: do we have a new request?
     if_z        jmp     #.currRqst      ' nope, just continue what we are doing
@@ -1802,11 +1812,11 @@ driver          rdlong  x, ptra++                   ' get base pin
                 '  (increment > 0, we are not stopped)
                 testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
     if_c        jmp     #.haveSDnRev
-                subs    drv_incr, ramp_dn_              ' FWD: increase increment (speeding up)
+                subs    drv_incr, ramp_slo_             ' FWD: decrease increment (slowing down)
                 cmps    tgt_incr, drv_incr          wc  ' Q: Did we exceed target?
                 jmp     #.lastSDnZero
 .haveSDnRev
-    if_c        adds    drv_incr, ramp_dn_              ' REV: decrease increment (speeding up)
+    if_c        adds    drv_incr, ramp_slo_             ' REV: increase increment (slowing down)
                 cmps    drv_incr, tgt_incr          wc  ' Q: Did we exceed target?
 .lastSDnZero
     if_c        mov     drv_incr, tgt_incr              ' yes, reset to target!
@@ -1974,7 +1984,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 signx   x, #7                       ' sign-extend bit7
                 add     pos_, x                     ' add to current pos_
 
-                setq    #12-1                       ' load fresh parameter table (12 longs)
+                setq    #13-1                       ' load fresh parameter table (13 longs)
                 rdlong  params_ptr_+1, params_ptr_
 
                 cmpm    angle, prior_angle  wcz     ' if angle has changed, forward or reverse?
@@ -2128,7 +2138,7 @@ scl_levels      res 4
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
-params_ptr_ res 1               ' params_ptr must be followed by the 12 parameters
+params_ptr_ res 1               ' params_ptr must be followed by the 13 parameters
 offset_fwd_ res 1
 offset_rev_ res 1
 duty_min_   res 1
@@ -2141,6 +2151,7 @@ cfg_ctcks_  res 1
 stop_mode_  res 1
 ramp_up_    res 1               ' angle increment: add this every 500 uSec to ramp up to speed
 ramp_dn_    res 1               ' angle decrement: subtract this every 500 uSec to ramp down to 0
+ramp_slo_   res 1               ' angle decrement: subtract this every 500 uSec to ramp down to slower speed
 
 ' ------------------------------
 '  PRECISE FORMAT:
