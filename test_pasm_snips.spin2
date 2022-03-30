@@ -33,19 +33,61 @@ OBJ { our Motor(s) }
     'wheel   :   "isp_bldc_motor"    ' the single BLDC motor
     distConv    :   "isp_dist_utils"                ' distance conversion utils
 
+CON { driver interface Constants}
+
+    '  DCS_STOPPED          - motor is stopped
+    '  DCS_SPIN_UP          - motor is ramping up to speed, then will be at AT_SPEED
+    '  DCS_AT_SPEED         - motor is holding at speed
+    '  DCS_SPIN_DN          - motor is stopping, then will be at STOPPED
+    '  DCS_SLOWING_DN       - motor is slowing down (just a speed change), then will be at AT_SPEED
+    '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
+    '
+    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG, DCS_FAULTED
+
 DAT
     tStr            byte    "TRUE",0
     fStr            byte    "false",0
     circInMM_x10    long    0
     tickInMM_x10    long    0
 
+VAR
+    long    testDriveState      ' motor state
+    long    testTargetIncr      ' desired motor increment
+    long    testDriveIncr       ' curr motor increment
+
 
 PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outDrvState, outDrvIncr, rampDn
 '' DEMO Run Snippets
 
-    circInMM_x10 := trunc(distConv.floatCircInMMforDiaInInchFloat(user.MOTOR_DIA_IN_INCH) *. 10.0)
-    tickInMM_x10 := circInMM_x10 / 90
+    testDriveState := DCS_SLOWING_DN
+    testDriveIncr := 75_000_000
 
+    testTargetIncr := 74_000_000
+
+    debug("* at ", sdec_long(testDriveIncr), " heading to ", sdec_long(testTargetIncr), udec_long(testDriveState))
+
+    REPEAT
+        testDriveIncr, testDriveState := rampDown(testTargetIncr, testDriveIncr, testDriveState)
+        debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
+    WHILE testDriveIncr <> testTargetIncr
+
+    debug("  ---------------------")
+    testDriveState := DCS_SLOWING_DN
+    testDriveIncr := -73_000_000
+
+    testTargetIncr := -72_000_000
+
+    debug("* at ", sdec_long(testDriveIncr), " heading to ", sdec_long(testTargetIncr), udec_long(testDriveState))
+
+    REPEAT
+        testDriveIncr, testDriveState := rampDown(testTargetIncr, testDriveIncr, testDriveState)
+        debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
+    WHILE testDriveIncr <> testTargetIncr
+
+    'circInMM_x10 := trunc(distConv.floatCircInMMforDiaInInchFloat(user.MOTOR_DIA_IN_INCH) *. 10.0)
+    'tickInMM_x10 := circInMM_x10 / 90
+
+{
     debug("* ", sdec_long(circInMM_x10), sdec_long(tickInMM_x10))
 
     stopAfterDistance(32, DDU_MM)
@@ -65,7 +107,7 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outD
     getDistance(DDU_M, 350)
     getDistance(DDU_MI, 565_000)
     getDistance(DDU_KM, 530_000)
-
+'}
 {
     debug("* checks for same sign:")
     nLHS := -2
@@ -169,6 +211,39 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outD
 '}
     debug("* DONE")
     repeat      ' HALT here
+
+pri rampDown(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
+    drv_incr := inDrv_incr
+    drv_state_ := inDrv_state
+    org
+.slowDn
+    debug("rampDown: ", sdec_long(drv_incr), sdec_long(tgt_incr), udec_long(drv_state_), udec_long(ramp_slo_))
+                ' do next DOWN adjustment or set at speed
+                '  (increment > 0, we are not stopped)
+                testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
+    if_c        jmp     #.haveSDnRev
+                subs     drv_incr, ramp_slo_             ' FWD: decrease increment (slowing down)
+                debug("  rd: - ", sdec_long(drv_incr))
+                cmps     tgt_incr, drv_incr           wc  ' Q: Did we exceed target?
+    if_nc       jmp     #.nodebug1
+                debug("  rd: CY!")
+.nodebug1
+                jmp     #.lastSDnZero
+.haveSDnRev
+                adds    drv_incr, ramp_slo_             ' REV: increase increment (slowing down)
+                'debug("  rd: + ", sdec_long(drv_incr))
+                cmps    drv_incr, tgt_incr          wc  ' Q: Did we exceed target?
+    if_nc       jmp     #.nodebug2
+                debug("  rd: CY!")
+.nodebug2
+.lastSDnZero
+    if_nc        mov     drv_incr, tgt_incr              ' yes, reset to target!
+                cmps    tgt_incr, drv_incr          wz  ' Q: Are we at target? (compare again to handle both cases)
+    if_z        mov     drv_state_, #DCS_AT_SPEED       ' yes, show we got here!
+                ret
+
+ramp_slo_   long    25_000
+    end
 
 
 PUB getDistance(eDistanceUnits, posTrkHallTicks) : nDistanceInUnits | fMMpTick, fValue
@@ -306,16 +381,6 @@ PRI isLhsSlower(lhs, rhs) : result
 
     result := (result == 0) ? false: true
 
-CON
-
-    '  DCS_STOPPED          - motor is stopped
-    '  DCS_SPIN_UP          - motor is ramping up to speed, then will be at AT_SPEED
-    '  DCS_AT_SPEED         - motor is holding at speed
-    '  DCS_SPIN_DN          - motor is stopping, then will be at STOPPED
-    '  DCS_SLOWING_DN       - motor is slowing down (just a speed change), then will be at AT_SPEED
-    '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
-    '
-    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG
 
 PRI showRampResult(tgtIncre, inDrvIncr, prevDrvIncr, inState, nRampUp, prevState) | pOld, pNew
     if inDrvIncr <> prevDrvIncr
