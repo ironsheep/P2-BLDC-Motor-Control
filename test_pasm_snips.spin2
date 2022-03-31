@@ -56,9 +56,10 @@ VAR
     long    testDriveIncr       ' curr motor increment
 
 
-PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outDrvState, outDrvIncr, rampDn
+PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, drvState, outDrvState, outDrvIncr, rampDn
 '' DEMO Run Snippets
 
+{
     testDriveState := DCS_SLOWING_DN
     testDriveIncr := 75_000_000
 
@@ -67,7 +68,7 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outD
     debug("* at ", sdec_long(testDriveIncr), " heading to ", sdec_long(testTargetIncr), udec_long(testDriveState))
 
     REPEAT
-        testDriveIncr, testDriveState := rampDown(testTargetIncr, testDriveIncr, testDriveState)
+        testDriveIncr, testDriveState := rampSlow(testTargetIncr, testDriveIncr, testDriveState)
         debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
     WHILE testDriveIncr <> testTargetIncr
 
@@ -80,8 +81,51 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outD
     debug("* at ", sdec_long(testDriveIncr), " heading to ", sdec_long(testTargetIncr), udec_long(testDriveState))
 
     REPEAT
-        testDriveIncr, testDriveState := rampDown(testTargetIncr, testDriveIncr, testDriveState)
+        testDriveIncr, testDriveState := rampSlow(testTargetIncr, testDriveIncr, testDriveState)
         debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
+    WHILE testDriveIncr <> testTargetIncr
+
+
+    debug("  ---------------------")
+'}
+{
+    testDriveState := DCS_SPIN_DN
+    testDriveIncr := 310_000
+
+    REPEAT
+        testDriveIncr, testDriveState := rampDown(testDriveIncr, testDriveState)
+            debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
+    WHILE testDriveIncr <> 0
+
+    debug("  ---------------------")
+
+    testDriveState := DCS_SPIN_DN
+    testDriveIncr := -310_000
+
+    REPEAT
+        testDriveIncr, testDriveState := rampDown(testDriveIncr, testDriveState)
+            debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
+    WHILE testDriveIncr <> 0
+'}
+
+    testDriveState := DCS_SPIN_UP
+    testDriveIncr := 0
+    testTargetIncr := 310_000
+
+    REPEAT
+        testDriveIncr, testDriveState := rampUp(testTargetIncr, testDriveIncr, testDriveState)
+            debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
+    WHILE testDriveIncr <> testTargetIncr
+
+    debug("  ---------------------")
+
+    testDriveState := DCS_SPIN_UP
+    testDriveIncr := 0
+    testTargetIncr := -310_000
+
+    REPEAT
+        testDriveIncr, testDriveState := rampUp(testTargetIncr, testDriveIncr, testDriveState)
+            debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
     WHILE testDriveIncr <> testTargetIncr
 
     'circInMM_x10 := trunc(distConv.floatCircInMMforDiaInInchFloat(user.MOTOR_DIA_IN_INCH) *. 10.0)
@@ -212,12 +256,69 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, rampUp, drvState, outD
     debug("* DONE")
     repeat      ' HALT here
 
-pri rampDown(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
+
+pri rampUp(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
+    drv_incr := inDrv_incr
+    drv_state_ := inDrv_state
+    org
+.rampUp
+    debug("rampUp: ", sdec_long(drv_incr), sdec_long(tgt_incr), udec_long(drv_state_), udec_long(ramp_up_))
+                ' do next UP adjustment or set at-speed
+                testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
+    if_c        jmp     #.haveRUpRev
+                adds    drv_incr, ramp_up_              ' FWD: increase increment (speeding up)
+                cmps    tgt_incr, drv_incr          wc  ' Q: Did we exceed target?
+                jmp     #.lastRUpZero
+.haveRUpRev
+                subs    drv_incr, ramp_up_              ' REV: decrease increment (speeding up)
+                cmps    drv_incr, tgt_incr          wc  ' Q: Did we exceed target?
+.lastRUpZero
+    if_c        mov     drv_incr, tgt_incr              ' yes, reset to target!
+                cmps    tgt_incr, drv_incr          wz  ' Q: Are we at target? (compare again to handle both cases)
+    if_z        mov     drv_state_, #DCS_AT_SPEED       ' yes, show we got here!
+                ret
+
+ramp_up_   long    25_000
+    end
+
+
+pri rampDown(inDrv_incr, inDrv_state) : drv_incr, drv_state_
+    drv_incr := inDrv_incr
+    drv_state_ := inDrv_state
+    org
+.rampDn
+     debug("rampDown: ", sdec_long(drv_incr), udec_long(drv_state_), udec_long(ramp_dn_))
+               ' do next DOWN adjustment or set stopped
+                '  (increment > 0, we are not stopped)
+                ' NOTE!!! tgt_incr is likely ZERO so we don't test its sign bit here
+                '  instead we test the sign bit of the current driver target as we are spinning down
+                '  from the current driver target to ZERO!
+                testb   drv_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
+    if_c        jmp     #.haveRDnRev
+                subs    drv_incr, ramp_dn_              ' FWD: decrease increment (slowing down)
+                cmps    drv_incr, #0                wcz
+    if_nc_and_nz jmp    #.justIncr                       ' just increment motor angle, then exit
+                jmp     #.lastRDnzero
+.haveRDnRev
+                adds    drv_incr, ramp_dn_              ' REV: increase increment, toward zero (slowing down)
+                cmps    drv_incr, #0                wcz
+    if_c        jmp    #.justIncr                       ' just increment motor angle, then exit
+.lastRDnzero
+                subs    drv_incr, drv_incr              ' set to zero
+                mov     drv_state_, #DCS_STOPPED        ' report that we are stopped
+.justIncr
+                ret
+
+ramp_dn_   long    25_000
+    end
+
+
+pri rampSlow(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
     drv_incr := inDrv_incr
     drv_state_ := inDrv_state
     org
 .slowDn
-    debug("rampDown: ", sdec_long(drv_incr), sdec_long(tgt_incr), udec_long(drv_state_), udec_long(ramp_slo_))
+    debug("rampSlow: ", sdec_long(drv_incr), sdec_long(tgt_incr), udec_long(drv_state_), udec_long(ramp_slo_))
                 ' do next DOWN adjustment or set at speed
                 '  (increment > 0, we are not stopped)
                 testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)

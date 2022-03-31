@@ -64,6 +64,8 @@ The object **isp\_steering_2wheel.spin2** provides the following methods:
 | PUB getRotationCount(rotationUnits) : leftRotationCount, rightRotationCount | Returns accumulated {*RotationCount} in {rotationUnits} [DRU\_DEGREES, DRU\_ROTATIONS, or DRU\_HALL_TICKS], since last reset, for each of the motors.  
 | PUB getPower() : leftPower, rightPower | Returns the last specified power value for each of the motors (will be zero if the motor is stopped).
 | PUB getStatus() : eLeftStatus, eRightStatus | Returns status of motor drive state for each motor: enumerated constant: DS\_MOVING, DS\_HOLDING, DS\_OFF, or DS_Unknown
+| PUB getMaxSpeed() : maxSpeed | Returns the last specified {maxSpeed}
+| PUB getMaxSpeedForDistance() : maxSpeed4dist | Returns the last specified {maxSpeedForDistance}
 
 **NOTE1** {power} whenever used is [(-100) - 100] where neg. values drive backwards, pos. values forward, 0 is hold/stop
 
@@ -106,7 +108,9 @@ The object **isp\_bldc_motor.spin2** provides the following methods:
 | PUB getDistance(distanceUnits) : distanceInUnits | Returns the distance in {distanceUnits} [DDU\_IN, DDU\_CM, DDU\_FT or DDU\_M] travelled by this motor since last reset
 | PUB getRotationCount(rotationUnits) : rotationCount | Returns accumulated {rotationCount} in {rotationUnits} [DRU\_DEGREES, DRU\_ROTATIONS, or DRU\_HALL_TICKS], since last reset, for this motor.
 | PUB getStatus() : eStatus | Returns status of motor drive state for this motor: enumerated constant: DS\_MOVING, DS\_HOLDING, DS\_OFF, or DS_Unknown
-| PUB getRawHallTicks() : count | Return the raw driver-maintained tick count<BR>See: getDistance() for ticks accumulated since last reset
+| PUB getMaxSpeed() : maxSpeed | Returns the last specified {maxSpeed}
+| PUB getMaxSpeedForDistance() : maxSpeed4dist | Returns the last specified {maxSpeedForDistance}
+| PUB getRawHallTicks() : rawTickCount | Return the raw driver-maintained tick count<BR>See: getDistance() for ticks accumulated since last reset
 | PUB isReady() : bState | Return T/F where T means the motor COG is running
 | PUB isStopped() : bState |  Return T/F where T means the motor is stopped
 | PUB isStarting() : bState | Return T/F where T means the motor is spinning up

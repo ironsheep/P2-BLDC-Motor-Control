@@ -105,9 +105,10 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     duty_dn     := 4
     ctrl_ticks  := ticks500us
     stop_mode   := SM_FLOAT                 ' enum: [SM_FLOAT, SM_BRAKE]
-    ramp_up     := 25_000                   ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
-    ramp_dn     := 25_000                   ' 25k angle decrement: subtract this every 500 uSec to ramp down to 0
-    ramp_slo    := 25_000                    ' 2k angle decrement: subtract this every 500 uSec to ramp down to slower speed
+    ' 50_000 for 12v & 18_5v
+    ramp_up     := 50_000                   ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
+    ramp_dn     := 50_000                   ' 25k angle decrement: subtract this every 500 uSec to ramp down to 0
+    ramp_slo    := 50_000                    ' 2k angle decrement: subtract this every 500 uSec to ramp down to slower speed
 
     motorIsReversed := FALSE    ' by default our motor direction is not reversed
 
@@ -115,6 +116,9 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     loop_ticks := 0
     minDrvTics := 65535
     drv_state := DS_Unknown
+
+    maxSpeed := 75            ' [1-100] default 75
+    maxSpeed4dist := 75      ' [1-100] default 75
 
     ' preset HDMI Monitor values
     tvMaxMmPerSec_x10 := 0
@@ -179,6 +183,9 @@ VAR { * user request values * }
     LONG    maxFwdIncreAtPwr
     LONG    minRevIncreAtPwr
     LONG    maxRevIncreAtPwr
+    ' user max speeds
+    LONG    maxSpeed            ' [1-100] default 75
+    LONG    maxSpeed4dist       ' [1-100] default 75
     ' stop point in time based on passing mSec or tick counts
     LONG    motorStopMSecs      ' stop motor when we've passed this time in milliseconds
     LONG    motorStopHallTicks  ' stop motor when we've passed this tick count
@@ -192,11 +199,21 @@ VAR { * user request values * }
 PUB setAcceleration(rate)
 '' NOT WORKING: Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
 
-PUB setMaxSpeed(speed)
-'' NOT WORKING: Limit top-speed to {speed} where {speed} is [(-100) to 100]  (default is +50)
+PUB setMaxSpeed(speed) | limitSpeed
+'' Limit top-speed to {speed} where {speed} is [1 to 100]  (default is 75)
+    limitSpeed :=  1 #> speed <# 100
+    if limitSpeed <> speed
+        debug("! WARNING: driveAtPower() speed out of range (corrected):", udec_long(speed), " - must be [1 to 100]")
+    debug("setMaxSpeed() ", udec_long(limitSpeed))
+    maxSpeed := limitSpeed      ' remember user value
 
-PUB setMaxSpeedForDistance(speed)
-'' NOT WORKING: Limit top-speed of driveDistance() operations to {speed} where {speed} is [(-100) to 100]  (default is +50)
+PUB setMaxSpeedForDistance(speed) | limitSpeed4dist
+'' Limit top-speed of driveDistance() operations to {speed} where {speed} is [1 to 100]  (default is 75)
+    limitSpeed4dist :=  1 #> speed <# 100
+    if limitSpeed4dist <> speed
+        debug("! WARNING: driveAtPower() speed out of range (corrected):", udec_long(speed), " - must be [1 to 100]")
+    debug("setMaxSpeedForDistance() ", udec_long(limitSpeed4dist))
+    maxSpeed4dist := limitSpeed4dist      ' remember user value
 
 PUB calibrate()
 '' NOT WORKING: (we may need this?)
@@ -212,9 +229,11 @@ PUB resetTracking()
 CON { --- Subsystem Control --- }
 
 PUB driveForDistance(distance, distanceUnits)
-'' NOT WORKING: Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
-'' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN or DDU_MM].
+'' Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
+'' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN, DDU_CM, DDU_FT or DDU_M].
 '' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
+    stopAfterDistance(distance, distanceUnits)
+    driveAtPower(maxSpeed4dist)
 
 PUB driveAtPower(power) | limitPwr, motorIncre, correctedPower
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
@@ -224,6 +243,14 @@ PUB driveAtPower(power) | limitPwr, motorIncre, correctedPower
     if limitPwr <> power
         debug("! WARNING: driveAtPower() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
     debug("driveAtPower() ", sdec_long(limitPwr))
+    if limitPwr < 0
+        ' handle reverse speed
+        if limitPwr < 0 - maxSpeed
+            limitPwr := 0 - maxSpeed    ' cap at max speed in reverse
+    else
+        ' handle forward speed
+        if limitPwr > maxSpeed
+            limitPwr := maxSpeed    ' cap at max speed forward
     motorPower := limitPwr
     correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
     motorIncre := incrementForPower(correctedPower)
@@ -373,6 +400,14 @@ PUB getRotationCount(eRotationUnits) : rotationCount
 PUB getPower() : nPower
 '' Returns the last specified power value [-100 thru +100] for motor (will be zero if the motor is stopped).
     nPower := motorPower
+
+PUB getMaxSpeed() : nSpeed
+'' Returns the last specified {maxSpeed}
+    nSpeed := maxSpeed  ' return last specified user value
+
+PUB getMaxSpeedForDistance() : nSpeed4dist
+'' Returns the last specified {maxSpeedForDistance}
+    nSpeed4dist := maxSpeed4dist  ' return last specified user value
 
 PUB getStatus() : eStatus
 '' Returns status of motor drive state for this motor: enumerated constant: DS_Unknown, DS_MOVING, DS_HOLDING, or DS_OFF
