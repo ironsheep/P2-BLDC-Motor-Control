@@ -1,16 +1,60 @@
-# P2-BLDC-Motor-Control
+# P2-BLDC-Motor-Control - README
 Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
-
-Getting started with two-wheeled robot develop.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
 
-## Future Home of Single and Two-wheeled Motor Control Objects
+## Single and Two-wheeled Motor Control Objects
 
-**-- Content TBA --**
+There are two objects in our motor control system. There is a lower-level object (**isp\_bldc_motor.spin2**) that controls a single motor and there's an upper-level object (**isp\_steering_2wheel.spin2**) which coordinates a pair of motors as a drive subsystem.
+
+If you are working with a dual motor device then you'll be coding to the interface of this upper-level object as you develop your drive algorithms.  If you were to work with say a three-wheeled device then you may want to create a steering object that can better coordinate all three motors at the same time. Actually this is true for any other number of motors you decide to control. Create you own better suited steering object, base it on this project's 2-wheel version. (*And, if you do please consider contributing your work to this project so it can be available to us all! See: [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control/tree/develop#how-to-contribute) below.*)
+
+The drive subsystem currently uses two cogs, one for each motor.  Conceptually, the drive system is always running. It is influenced by updating control variable values. When the values change the drive subsystem responds accordingly. The public methods of both the steering object and the motor object simply write to these control variables and/or read from associated status variables returning their current value or an interpretation thereof.
+
+The interfaces for these two objects are described in [BLDC Motor Drive Objects](DRIVE-OBJECTS.md)
+
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File Feature Requests or Issues (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
+
+## References
+
+1. A study of Motor Control and Drive Techniques found in LEGO Mindstorms and in Parallax BlocklyProp is presented in: [Movement API Study](Movement-STUDY.md)
+
+1. [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
+
+### Drawing Files
+
+These are the various design files I sent off to be make by [SendCutSend.com](https://sendcutsend.com/) - their prices are quite good!:
+
+1. [Drawing File - outboard wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV1.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
+![File w/Outboard Wheels](images/EdgeMiniRoundV1-dwg.png)
+1. [Drawing File - enclosed wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV2_encl.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
+![File w/Enclosed Wheels](images/EdgeMiniRoundV2_encl-dwg.png)
+1. [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
+![Spacer](images/SpacerV1.png)
+
+NOTE: the 4 center small holes (for M3 screws) are for mounting the twin motors boards connected to the Mini Edge Breakout Board. 
+
+There are 2 ea. holes for each motor (for 1/4" - 20 Screws.)
+
+There are 4 ea. holes for each castor - (for 1/4" - 20 Screws.)
+
+There are 2 ea. holes for each spacer board (shim) (for 1/4" - 20 Screws.)
+
+### Packaging (order arrives)
+
+This is what I found when I opened my first order:
+
+![Opened Package](images/EdgeMiniRoundV1.jpg)
+**The Package arrived with these contents..**  This was quite well packaged. The MDF part was shrink-wrapped to the backing cardboard. The laser cuts were all clean with a little bit of scorch mark on one side of the MDF as you might expect. *And yes, the Skittles package made me smile!*
+
 
 ---
 
@@ -23,10 +67,6 @@ Getting started with two-wheeled robot develop.
 ## Disclaimer and Legal
 
 > *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
->
-> This project is a community project not for commercial use.
->
-> This project is in no way affiliated with, authorized, maintained, sponsored or endorsed by *Parallax Inc., dba Parallax Semiconductor* or any of its affiliates or subsidiaries.
 
 ---
 

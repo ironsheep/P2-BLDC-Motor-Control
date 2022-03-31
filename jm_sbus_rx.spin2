@@ -1,0 +1,345 @@
+'' =================================================================================================
+''
+''   File....... jm_sbus_rx.spin2
+''   Purpose.... Futaba S.BUS receiver / decoder
+''   Author..... Jon "JonnyMac" McPhalen
+''               Copyright (c) 2021 Jon McPhalen
+''               -- see below for terms of use
+''   E-mail..... jon.mcphalen@gmail.com
+''   Started....
+''   Updated.... 06 MAY 2021
+''
+''   {$P2}
+''
+'' =================================================================================================
+
+{
+   S.BUS is a 25-byte frame sent at 100K baud, using inverted 8E2 format (9 bits)
+   -- mark level is 0v
+   -- space level is ~3.3v
+
+   [header] [data1] ... [data22] [flags] [footer]
+
+   -- header is $0F and footer is $00
+
+   * There is confusing information published on the internet vis-a-vis bit order. I have looked
+     at S.BUS output on a 'scope and seen other 'scope captures that confirm the data is sent
+     like other serial streams: LSBFIRST.
+
+   Testing at 200MHz shows that the array can be unpacked and written to the hub in about
+   3.7 microseconds -- this suggests that a busy flag my not be necessary, and that the code
+   will work in standard and fast modes.
+
+   Flags
+   -- bit0 = Ch17
+   -- bit1 = Ch18
+   -- bit2 = frame lost
+   -- bit3 = failsafe activated
+
+   If a parity error is detected the frame lost flag will be set and the receiver/decoder will
+   wait for the next frame.
+
+   Special thanks to Tony B and Evan H in the forums for helpful suggestions that simplified
+   the unpacking code and made it faster.
+
+   Tested with SkyFly FS-IA10B receiver configured for S.BUS output (fast, 130 frames/second)
+}
+
+
+con { fixed io pins }
+
+  PGM_RX   = 63  { I }                                          ' programming / debug
+  PGM_TX   = 62  { O }
+
+  SF_CS    = 61  { O }                                          ' serial flash
+  SF_SCK   = 60  { O }
+  SF_SDO   = 59  { O }
+  SF_SDI   = 58  { I }
+
+
+con
+
+  #true,  ON, OFF
+  #false, NO, YES
+
+  POS_MIN = $0000
+  POS_MAX = $07FF
+
+  POS_CTR = (POS_MAX - POS_MIN) >> 1
+
+OBJ
+    term                : "isp_serial_singleton"                 ' terminal output
+
+var
+
+  long  cog                                                     ' cog running S.BUS receive code
+
+  ' do not change order of these variables
+
+  long  rxp         { ptra[0] }                                 ' from S.BUS pin on RC receiver
+  long  us1ticks    { ptra[1] }                                 ' ticks in 1us
+  long  p_chans     { ptra[2] }                                 ' pointer to channel data
+  long  frameloss   { ptra[3] }                                 ' frame lost
+  long  failsafe    { ptra[4] }                                 ' packet indicated failsafe mode
+  long  frames      { ptra[5] }                                 ' # of frames written
+  long  updating    { ptra[6] }                                 ' cog is writing to hub
+
+  word  channel[18]                                             ' latest channel values
+
+
+pub null()
+
+'' This is not a top-level object
+
+
+pub start(rxpin, p_defaults) : result | m, x
+
+'' Start S.BUS receiver cog
+'' -- rxpin is connect to S.BUS output on RC receiver
+'' -- p_defaults is pointer to default values
+''    * if no connection established
+
+  stop()                                                        ' stop if already running
+
+  rxp      := rxpin                                             ' configure parameters for cog
+  us1ticks := clkfreq / 1_000_000
+  p_chans  := @channel
+
+  if (p_defaults > 0)                                           ' start-up values specified?
+    wordmove(@channel, p_defaults, 18)                          '  copy default values
+
+  pinclear(rxpin)                                               ' remove old settings
+
+  x := muldiv64(clkfreq, $1_0000, 100_000) & $FFFFFC00          ' set bit timing
+  x |= (9-1)                                                    ' set bits (9: 8 data, 1 parity)
+
+  pinstart(rxpin, M_SBUS, x, 0)                                 ' start smart pin rx for S.BUS
+
+  cog := coginit(COGEXEC_NEW, @entry, @rxp) + 1                 ' start s.bus rx/decode cog
+  if cog == 0
+    debug("!!ERROR!!  failed to start SBUS Cog")
+
+  result := cog    ' return cog+1 (0 = no cog started)
+
+
+pub stop()
+
+'' Stops S.BUS cog if running
+
+  if (cog)                                                      ' if running
+    cogstop(cog-1)                                              '  stop the cog
+    cog := 0                                                    '  mark stopped
+
+  longfill(@rxp, 0, 7)                                          ' clear object globals
+  frameloss := true                                             ' force rc device to clear
+
+  wordfill(@channel, POS_CTR, 18)                               ' initialize positions
+
+
+pub read(ch) : position
+
+'' Returns channel value
+'' -- channels are 1..18
+
+  if ((ch < 1) || (ch > 18))
+    return POS_CTR
+  else
+    return channel[ch-1]
+
+
+pub busy() : result
+
+'' Returns true when cog is updating hub
+'' -- process takes about 4us @ 200MHz
+
+  return (updating) ? true : false
+
+
+pub has_signal() : result
+
+'' Returns true when signal present
+
+  return (frameloss) ? false : true
+
+
+pub in_failsafe() : result
+
+'' Returns true when in failsafe mode
+
+  return failsafe
+
+
+pub count() : result
+
+  return frames
+
+
+pub reset_count()
+
+  frames := 0
+
+
+pub address() : p_channels
+
+'' Returns hub address of channel data
+
+  return @channel
+
+
+dat { s.bus rx driver }
+
+                org
+
+entry           setq      #3-1                                  ' get 3 longs from hub
+                rdlong    rxd, ptra
+
+
+                ' S.BUS rx loop
+                ' -- wait for space between packets
+                ' -- receive and store packet in cog array
+
+sbus_rx         fltl      rxd                                   ' reset uart, release smart pin
+                wrpin     #0, rxd                               ' restore tri-state mode
+
+wquiet          mov       t1, #250                              ' wait for low between packets
+.wq1            waitx     us1
+                testp     rxd                           wc      ' check state of rx pin
+    if_c        jmp       #wquiet                               ' if activity, restart wait
+                djnz      t1, #.wq1
+
+                wrpin     M_SBUS, rxd                           ' restore smart pin uart
+                drvl      rxd                                   ' re-enable smart pin
+                mov       icog, #0                              ' initialize array index
+
+get_sbus        testp     rxd                           wc      ' anything waiting?
+    if_nc       jmp       #get_sbus                             '  not yet
+
+                rdpin     t1, rxd                               ' read new byte
+                shr       t1, #23                               ' align lsb
+                ones      t2, t1                        wc      ' check parity (even)
+    if_c        jmp       #bad_packet                           ' parity error
+                altsb     icog, #sbusraw                        ' store in hub array
+                setbyte   t1
+                incmod    icog, #24                     wc      ' update cog pointer for next byte
+    if_nc       jmp       #get_sbus                             ' continue if more
+
+
+                ' verify header ($0F) and footer ($00) bytes
+
+verify          mov       icog, #24                             ' footer
+                altgb     icog, #sbusraw
+                getbyte   t1
+                mov       icog, #0                              ' header
+                altgb     icog, #sbusraw
+                rolbyte   t1
+                cmp       t1, #$00_0F                   wcz
+    if_ne       jmp       #bad_packet                           ' if no match, wait for next packet
+
+
+                ' unpack s.bus bytes to channel values
+
+                wrlong    ##ON, ptra[6]                         ' set updating flag
+
+decode          mov       ptrb, p_hub                           ' point to hub array
+                mov       ihub, #0                              ' channel index (hub)
+                mov       chwork, #0                            ' clear workspace
+                mov       bc, #0                                ' bits in workspace
+                mov       icog, #1                              ' s.bus data index (cog)
+
+.build_ch       altgb     icog, #sbusraw                        ' get s.bus byte from cog array
+                getbyte   t1                                    ' get new byte
+                add       icog, #1                              ' bump byte array index
+                shl       t1, bc                                ' prep new byte
+                or        chwork, t1                            ' add into work
+                add       bc, #8                                ' update bit count
+                cmpsub    bc, #11                       wc      ' enough bits for channel value?
+    if_nc       jmp       #.build_ch
+
+                mov       t1, chwork                            ' make a copy
+                and       t1, ##$07FF                           ' clean-up
+                wrword    t1, ptrb++                            ' write to hub
+                shr       chwork, #11                           ' remove last value
+                incmod    ihub, #15                     wc      ' update hub index
+    if_nc       jmp       #.build_ch                            ' keep going if more channels
+
+
+                ' get digital channels from flags byte
+
+                altgb     icog, #sbusraw                        ' get flags byte
+                getbyte   t1
+                mov       chwork, #0                            ' clear ch17/ch18 workspace
+                testb     t1, #0                        wc      ' ch17 is digital
+                bitc      chwork, #00 + (10 << 5)               ' 0 if nc, 2047 if c (low word)
+                testb     t1, #1                        wc      ' ch18 is digital
+                bitc      chwork, #16 + (10 << 5)               ' 0 if nc, 2047 if c (high word)
+                wrlong    chwork, ptrb                          ' write both to hub
+
+
+                ' check frame lost and failsafe flags
+
+chk_frlost      testb     t1, #2                        wc
+                subx      t2, t2                                ' if c, true; if nc, false
+                wrlong    t2, ptra[3]                           ' write to hub
+
+chk_failsafe    testb     t1, #3                        wc
+                subx      t2, t2                                ' if c, true; if nc, false
+                wrlong    t2, ptra[4]                           ' write to hub
+
+                rdlong    t2, ptra[5]                           ' update packet count
+                add       t2, #1
+                wrlong    t2, ptra[5]
+
+                wrlong    #NO, ptra[6]                          ' clear updating flag
+
+                jmp       #sbus_rx                              ' back to top
+
+
+bad_packet      wrlong    ##ON, ptra[3]                         ' lost frame flag on
+                jmp       #sbus_rx                              ' back to top
+
+
+' -------------------------------------------------------------------------------------------------
+
+M_SBUS          long      P_ASYNC_RX | P_INVERT_IN              ' smart pin rx uart, inverted
+
+rxd             res       1                                     ' rx pin
+us1             res       1                                     ' ticks in 1 microsecond
+p_hub           res       1                                     ' pointer to channels in hub
+
+icog            res       1                                     ' cog index
+sbusraw         res       7                                     ' array to hold incoming bytes
+
+ihub            res       1                                     ' hub index
+chwork          res       1                                     ' workspace for channel value
+bc              res       1                                     ' bit count in channel workspace
+
+t1              res       1                                     ' temp vars
+t2              res       1
+
+                fit       496
+
+
+con { license }
+
+{{
+
+  Terms of Use: MIT License
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  software and associated documentation files (the "Software"), to deal in the Software
+  without restriction, including without limitation the rights to use, copy, modify,
+  merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to the following
+  conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies
+  or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+  PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+  HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+  CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+  OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+}}
