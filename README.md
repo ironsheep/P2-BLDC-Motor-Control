@@ -16,21 +16,24 @@ NOTE: *If you wish to add more than a couple of sensors to your platform then yo
 
 Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardware](https://www.parallax.com/product/6-5-hub-motors-with-encoders-and-mounting-blocks-bundle/) which is perfect for use with the drivers from this project.
 
+This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project provide all you need to get your platform moving!  
+
 
 ## Table of Contents
 
 On this Page:
 
-- [Motor Object Introduction](https://github.com/ironsheep/P2-BLDC-Motor-Control#single-and-two-wheeled-motor-control-objects) - overview of the objects provided by this project
-- [System Diagram](https://github.com/ironsheep/P2-BLDC-Motor-Control#system-diagram) - quick visual overview of the motor and steering runtime structure
+- [Motor Object Introduction](https://github.com/ironsheep/P2-BLDC-Motor-Control#single-and-two-wheeled-motor-control-objects) - An overview of the objects provided by this project
+- [System Diagram](https://github.com/ironsheep/P2-BLDC-Motor-Control#system-diagram) - A quick visual overview of the motor and steering runtime structure
 - [DEMOs](https://github.com/ironsheep/P2-BLDC-Motor-Control#demos) - Example files that show how to interact with the motor control and steering objects provided by this project
-- [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control#how-to-contribute) - we welcome contributions back to this project for all of us to use. Learn how, here!
+- [Reference](https://github.com/ironsheep/P2-BLDC-Motor-Control#references) - We looked at a number of control systems before deciding on the public interfaces for our steering and motor control objects
+- [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control#how-to-contribute) - We welcome contributions back to this project for all of us to use. Learn how, here!
 
 Additional pages:
 
-- [Steering and Motor control](DRIVE-OBJECTS.md) - the object public interfaces
-- [Drawings](DRAWINGS.md) - .dwg files you can use to order your own platform inexpensively
-- [Background Sources we used to develop our public interfaces](Movement-STUDY) - Interfaces of Blockly Prop robotic control objects, LEGO Mindstorms motor control / steering as well as Digital Continuous Rotation Servo interfaces
+- [Steering and Motor control](DRIVE-OBJECTS.md) - The object public interfaces
+- [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
+- [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
 
 
 ## Single and Two-wheeled Motor Control Objects
@@ -51,7 +54,7 @@ The following diagram shows the nested motor control and sense subsystem compris
 
 ![Motor Control System Diagram](./images/objects-cogs.png)
 
-In this diagram there are three **rectangular objects** depicting files (yellow background) of code. There are three methods within the files (white and green backgrounds) that are run in separate cogs.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are runing in their own Cog. You can see that the users' top-leve control application runs in its own Cog as well.
+In this diagram there are three **rectangular objects** depicting files (yellow background) of code. There are three methods within the files (white and green backgrounds) that are run in separate cogs.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
 
 ## DEMOs
 
@@ -59,23 +62,21 @@ A small number of demos are provided with this project:
 
 | Spin2 File Name(s) | Demonstration
 | --- | --- | 
-| [demo\_single_motor.spin2](demo_single_motor.spin2) | Provides example code for controlling a single motor and position sensing of the single motor.
+| [demo\_single_motor.spin2](demo_single_motor.spin2) | Provides example code for controlling a single motor and position sensing of the single motor. (Uses HDMI (DVI) as display of live motor details.
 | [demo\_dual_motor.spin2](demo_dual_motor.spin2) | Provides example code for controlling a pair of motors and using the 2-wheel steering object.
-| [demo\_dual\_motor_rc.spin2](demo_dual_motor_rc.spin2) | Provides example code for using our FlySky Remote Controller and the SBUS receiver to control the pair of motors via the 2-wheel steering object 
+| [demo\_dual\_motor_rc.spin2](demo_dual_motor_rc.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object 
 
+## References
+
+- A study of Motor Control and Drive Techniques found in LEGO Mindstorms and in Parallax BlocklyProp is presented in: [Movement API Study](Movement-STUDY.md)
 
 ## How to Contribute
 
 This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
 
-- File Feature Requests or Issues (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
 - Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
 
-## References
-
-1. A study of Motor Control and Drive Techniques found in LEGO Mindstorms and in Parallax BlocklyProp is presented in: [Movement API Study](Movement-STUDY.md)
-
-1. [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
 
 ---
 
