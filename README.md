@@ -14,15 +14,17 @@ Provide ready-to-use objects easily incorporated into your own code which contro
 
 NOTE: *If you wish to add more than a couple of sensors to your platform then you'll want to use the larger of the two as it provides more unused pins.*
 
+Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardware](https://www.parallax.com/product/6-5-hub-motors-with-encoders-and-mounting-blocks-bundle/) which is perfect for use with the drivers from this project.
+
 
 ## Table of Contents
 
 On this Page:
 
-- [Motor Object Introduction](https://github.com/ironsheep/P2-BLDC-Motor-Control#system-diagram) - overview of the objects provided by this project
+- [Motor Object Introduction](https://github.com/ironsheep/P2-BLDC-Motor-Control#single-and-two-wheeled-motor-control-objects) - overview of the objects provided by this project
 - [System Diagram](https://github.com/ironsheep/P2-BLDC-Motor-Control#system-diagram) - quick visual overview of the motor and steering runtime structure
 - [DEMOs](https://github.com/ironsheep/P2-BLDC-Motor-Control#demos) - Example files that show how to interact with the motor control and steering objects provided by this project
-- [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control#demos) - we welcome contributions back to this project for all of us to use. Learn how, here!
+- [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control#how-to-contribute) - we welcome contributions back to this project for all of us to use. Learn how, here!
 
 Additional pages:
 
@@ -55,8 +57,8 @@ In this diagram there are three **rectangular objects** depicting files (yellow 
 
 A small number of demos are provided with this project:
 
-| Spin2/webPage File Name(s) | Demonstration
-| --- | --- | --- | --- |
+| Spin2 File Name(s) | Demonstration
+| --- | --- | 
 | [demo\_single_motor.spin2](demo_single_motor.spin2) | Provides example code for controlling a single motor and position sensing of the single motor.
 | [demo\_dual_motor.spin2](demo_dual_motor.spin2) | Provides example code for controlling a pair of motors and using the 2-wheel steering object.
 | [demo\_dual\_motor_rc.spin2](demo_dual_motor_rc.spin2) | Provides example code for using our FlySky Remote Controller and the SBUS receiver to control the pair of motors via the 2-wheel steering object 
