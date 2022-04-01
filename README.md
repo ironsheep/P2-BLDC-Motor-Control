@@ -66,6 +66,8 @@ A small number of demos are provided with this project:
 | [demo\_dual_motor.spin2](demo_dual_motor.spin2) | Provides example code for controlling a pair of motors and using the 2-wheel steering object.
 | [demo\_dual\_motor_rc.spin2](demo_dual_motor_rc.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object 
 
+*NOTE: we built these demos over time as we developed the driver. There can be better examples but in the interest of time, so that we can get more of us using this driver as soon as possible, we are releasing these in their current state and will improve them over time.*
+
 ## References
 
 - A study of Motor Control and Drive Techniques found in LEGO Mindstorms and in Parallax BlocklyProp is presented in: [Movement API Study](Movement-STUDY.md)
