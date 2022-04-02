@@ -9,6 +9,7 @@ Add a BLDC drive control subsystem to your own project!
 
 On this Page:
 
+- [Download the latest release .zip file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#add-steering-and-config-objects-to-your-p2-project) 
 - [Add Steering and Config Objects to your P2 Project](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#add-steering-and-config-objects-to-your-p2-project) 
 - [Make calls to steering or motor object to drive platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
 
@@ -19,6 +20,10 @@ Additional pages:
 - [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
 
 ---
+
+## Download the latest release demo-archive-set.zip file
+
+Go to the project [Releases page](https://github.com/ironsheep/P2-BLDC-Motor-Control/releases) expand the **Assets** heading to see the demo-archive-set.zip file link. Click on it to download the .zip file. Unpack it and move the files into your project. 
 
 ## Add Steering and Config Objects to your P2 Project
 
