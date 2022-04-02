@@ -10,7 +10,7 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 Provide ready-to-use objects easily incorporated into your own code which control Brushless DC  (BLDC) motors via the [Parallax 64010 Universal Motor Driver P2 Add-on Boards](https://www.parallax.com/product/universal-motor-driver-p2-add-on-board/)  These boards can be used with either the:
 
 - [Parallax 64020 P2 Edge Module Breadboard](https://www.parallax.com/product/p2-edge-module-breadboard/) - larger, extra unused pins
-- or [Parallax 64019 P2 Edge Mini Breakout Board](https://www.parallax.com/product/p2-edge-mini-breakout-board/) - smaller fewer unused pins
+- or [Parallax 64019 P2 Edge Mini Breakout Board](https://www.parallax.com/product/p2-edge-mini-breakout-board/) - smaller, fewer unused pins
 
 NOTE: *If you wish to add more than a couple of sensors to your platform then you'll want to use the larger of the two as it provides more unused pins.*
 
@@ -32,6 +32,7 @@ On this Page:
 Additional pages:
 
 - [Steering and Motor control](DRIVE-OBJECTS.md) - The object public interfaces
+- [Start your drive project using these objects](DEVELOP.md) - Walks thru configuration and setup of your own project using these objects
 - [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
 - [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
 
