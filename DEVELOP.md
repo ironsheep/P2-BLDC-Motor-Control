@@ -9,8 +9,8 @@ Add a BLDC drive control subsystem to your own project!
 
 On this Page:
 
-- [Add Steering and Config Objects to your P2 Project](https://github.com/ironsheep/P2-RPi-IoT-gateway/blob/main/DEVELOP.md#add-gateway-to-p2-project) 
-- [Make calls to steering or motor object](https://github.com/ironsheep/P2-RPi-IoT-gateway/blob/main/DEVELOP.md#make-calls-to-gateway-object) 
+- [Add Steering and Config Objects to your P2 Project](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#add-steering-and-config-objects-to-your-p2-project) 
+- [Make calls to steering or motor object to drive platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
 
 Additional pages:
 
@@ -151,7 +151,7 @@ PUB main() | motorCog, senseCog, basePin, voltage
 You are now at the `... and do your app stuff from here on ...` section of this page.
 From here on, just use any of the Public Methods found in the [Steering and Motor control](DRIVE-OBJECTS.md) interface description.  
 
-**Remember:** if you are two wheeled you are calling methods of the **isp\_steering_2wheel.spin2** object `wheels.*` and if you are a single wheel then you are calling methods of the **isp\_bldc_motor.spin2** object `wheel.*`.
+**Remember:** if you are two wheeled you are calling methods of the [**isp\_steering_2wheel.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-2-wheel-steering-object-public-interface) object `wheels.*` and if you are a single wheel then you are calling methods of the [**isp\_bldc_motor.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-motor-object-public-interface) object `wheel.*`.
 
 Have Fun!
 
