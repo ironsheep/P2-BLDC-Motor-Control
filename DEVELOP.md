@@ -9,9 +9,12 @@ Add a BLDC drive control subsystem to your own project!
 
 On this Page:
 
-- [Download the latest release .zip file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#add-steering-and-config-objects-to-your-p2-project) 
-- [Add Steering and Config Objects to your P2 Project](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#add-steering-and-config-objects-to-your-p2-project) 
-- [Make calls to steering or motor object to drive platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
+*Follow these steps to add motor control to your project:*
+
+- [Download the latest release .zip file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#download-the-latest-release-demo-archive-setzip-file) - get project files
+- [Adjust config file to your desired configuration](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#adjust-config-file-to-your-desired-configuration) 
+- [Include project objects in your top-object-file]()
+- [Make calls to steering or motor object to drive your platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
 
 Additional pages:
 
@@ -25,13 +28,11 @@ Additional pages:
 
 Go to the project [Releases page](https://github.com/ironsheep/P2-BLDC-Motor-Control/releases) expand the **Assets** heading to see the demo-archive-set.zip file link. Click on it to download the .zip file. Unpack it and move the files into your project. 
 
-## Add Steering and Config Objects to your P2 Project
-
-The objects provided by this project read a user configuration to determine how to cinfiugure themselves.  You'll first adjust this file to describe your setup.  Then you'll include the motor/steering objects you need into your top-level file.
+The objects provided by this project read a user configuration to determine how to configure themselves.  You'll first adjust this file to describe your setup.  Then you'll include the motor/steering objects you need into your top-level file.
 
 Lastly you'll start the objects and then add your drive code and any sensor code you wish to use.
 
-### Adjust config file to your desired configuration
+## Adjust config file to your desired configuration
 
 Edit the user configuration file and adjust the settings to describe the configuration you will be using.
 
@@ -70,11 +71,11 @@ as well as:
 
 Save your changes and you are ready to start adding the driver to your code.
 
-### Include Project Objects
+## Include Project Objects in your top-object-file
 
-Yuu now need to select objects based on if you are a one-wheel or two-wheel confuration.
+You now need to select objects based on if you are a one-wheel or two-wheel confuration.
 
-#### Using Two Motor Objects
+### Using Two Motor Objects
 
 - isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size
 - isp\_steering_2wheel.spin2 - the steering object which include the motor objects
@@ -88,7 +89,7 @@ OBJ { Objects Used by this Object }
     wheels  :    "isp_steering_2wheel"           ' steering and motor drivers and tracking
 ```
 
-#### Start the Objects
+#### Start the Two-motor Objects
 
 Starting the wheels object in Spin2 is also pretty simple:
 
@@ -109,7 +110,7 @@ PUB main() | eOpStatus, nIdx, nCollId, eRxQStatus, eCmdId, tmpVar
 ```
 
 
-#### Using A Single Motor Object
+### Using A Single Motor Object
 
 - isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size
 - isp\_bldc_motor.spin2 - the motor object which includes a single motor tracking object
@@ -123,7 +124,7 @@ OBJ { Objects Used by this Object }
     wheel   :    "isp_bldc_motor"                ' motor driver
 ```
 
-#### Start the Objects
+#### Start the Single-motor Objects
 
 Starting the wheel and tracking objects in Spin2 is also pretty simple:
 
