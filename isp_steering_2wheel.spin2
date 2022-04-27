@@ -256,12 +256,24 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
     if motorStopMSecs > 0
         debug("* stop motor at ", udec_long(motorStopMSecs), ", now: ", udec_long(timeNow))
 
-
 PUB stopMotors()
 '' Stops both motors, killing any motion that was still in progress
 '' AFFECTED BY:holdAtStop()
     ltWheel.stopMotor()
     rtWheel.stopMotor()
+
+PUB emergencyCutoff()
+'' EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress
+    ltWheel.emergencyCutoff()
+    rtWheel.emergencyCutoff()
+
+PUB clearEmergency()
+'' Remove emergency override allowing motors to be driven again
+' used by wheels*.spin2 methods
+    ltWheel.clearEmergency()
+    rtWheel.clearEmergency()
+    debug("--------clear EMERGENCY--------")
+
 
 CON { --- Subsystem Status --- }
 
@@ -279,6 +291,11 @@ PUB getPower() : leftPower, rightPower
 '' Returns the last specified power value [-100 thru +100] for each of the motors (will be zero if the motor is stopped).
     leftPower := ltWheel.getPower()
     rightPower := rtWheel.getPower()
+
+PUB getCurrent() : nLtAmps, nLtWatts, nRtAmps, nRtWatts
+'' Returns the latest current sense values for each motor
+    nLtAmps, nLtWatts := ltWheel.getCurrent()
+    nRtAmps, nRtWatts := rtWheel.getCurrent()
 
 PUB getStatus() : eLeftStatus, eRightStatus
 '' Returns status of motor drive state for each motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
@@ -353,9 +370,6 @@ VAR { Data for Motor Position Tracking }
     '  --------------------------
     long    ltPosTrkHallTicks
     long    rtPosTrkHallTicks
-'    long    cntsInSec
-'    long    circInMM_x10
-'    long    tickInMM_x10
     long    deltaTicks
     long    priorPos
     long    circInMM_x10
@@ -367,10 +381,12 @@ VAR { Data for Motor Position Tracking }
     long    motorStopMSecs
 
 
-PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
+PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
     pinlow(TEST_PIN_SNS_LOOP)
     pinlow(TEST_PIN_SNS_LP_ACTV)
+
+    eStopCtr := 0
 
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
@@ -432,11 +448,30 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
 
         pintoggle(TEST_PIN_SNS_LP_ACTV)    ' end of active side
 
+        ' iff driver reports e-stop then clear the emergency stop request
+        '  user will request it again if needed
+        ' NOTE: we leave e_stop set for at least 1/4 second before clearing!
+        if isEmergency()
+            eStopCtr++
+        elseif (ltWheel.isEmergency() or rtWheel.isEmergency()) && eStopCtr > 1
+            clearEmergency()
+            eStopCtr := 0
+
         deltaTicks := getct() - senseStartTicks
 
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
         '   wait remainder of 125 mSec before next sample
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
+
+PRI isEmergency() : bEmergencyState
+' return T/F where T means one or both wheels are in emergency cutoff state
+    bEmergencyState := ltWheel.isEmergency()
+    if not bEmergencyState
+        bEmergencyState := rtWheel.isEmergency()
+    if bEmergencyState
+        debug("--------WHEEL in EMERGENCY!!--------")
+
+
 
 PRI MAX(a,b) : nMax
 ' return max of a or b

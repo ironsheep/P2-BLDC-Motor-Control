@@ -50,6 +50,8 @@ The object **isp\_steering_2wheel.spin2** provides the following methods:
 | PUB stopAfterDistance(distance, distanceUnits) | Stops both motors, after either of the motors reaches {distance} specified in {distanceUnits} [DDU\_IN, DDU\_CM, DDU\_FT or DDU\_M].</br>USE WITH:  driveDirection(), drive()
 | PUB stopAfterTime(time, timeUnits) | Stops both motors, after {time} specified in {timeUnits} [DTU\_IN\_MILLISEC or DTU\_IN\_SEC] has elapsed.</br>USE WITH:  driveDirection(), drive()
 | PUB stopMotors() | Stops both motors, killing any motion that was still in progress</BR> AFFECTED BY:holdAtStop()
+| PUB emergencyCutoff() | EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress
+| PUB clearEmergency() | clear the emergency stop status allowing motors to be controlled again
 |  **>--- CONFIG**
 | PUB start(eLeftMotorBasePin, eRightMotorBasePin, eMotorVoltage) | Specify motor control board connect location for each of the left and right motor control boards
 | PUB stop() | Stop cogs and release pins assigned to motor drivers
@@ -95,6 +97,8 @@ The object **isp\_bldc_motor.spin2** provides the following methods:
 | PUB stopAfterDistance(distance, distanceUnits) | Stops the motor after it reaches {distance} specified in {distanceUnits} [DDU\_IN, DDU\_CM, DDU\_FT or DDU\_M].</br>USE WITH:  driveDirection(), drive()
 | PUB stopAfterTime(time, timeUnits) | Stops the motor, after {time} specified in {timeUnits} [DTU\_IN\_MILLISEC or DTU\_IN\_SEC] has elapsed.</br>USE WITH:  driveDirection(), drive()
 | PUB stopMotor() | Stops the motor, killing any motion that was still in progress</BR> AFFECTED BY:holdAtStop()
+| PUB emergencyCutoff() | EMERGENCY-Stop - Immediately stop motor, killing any motion that was still in progress (floats the drive pins)
+| PUB clearEmergency() | clear EMERGENCY-Stop - allow the motors to be controlled again 
 |  **>--- CONFIG**
 | PUB start(eMotorBasePin, eMotorVoltage) | Specify motor control board connect location for this motor
 | PUB stop() | stop cog and release pins assigned to this motor
@@ -114,6 +118,7 @@ The object **isp\_bldc_motor.spin2** provides the following methods:
 | PUB isReady() : bState | Return T/F where T means the motor COG is running
 | PUB isStopped() : bState |  Return T/F where T means the motor is stopped
 | PUB isStarting() : bState | Return T/F where T means the motor is spinning up
+| PUB isEmergency() : bState | Return T/F where T means the motor is emergency-stopped
 
 **NOTE1** {power} whenever used is [(-100) - 100] where neg. values drive backwards, pos. values forward, 0 is hold/stop
 

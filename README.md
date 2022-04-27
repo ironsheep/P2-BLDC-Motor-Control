@@ -18,6 +18,18 @@ Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardwa
 
 This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project provide all you need to get your platform moving!  
 
+## Current status
+
+Latest Changes:
+
+```
+27 Apr 2022 v1.1.0
+- Add emergency stop methods to isp_bldc_motor.spin2, and isp_steering_2wheel.spin2
+- Adjust spin-up ramp to start slower then speed up (better traction on loose surfaces but faster speed-up as well.)
+- Add FlySky control mapping info to this README
+02 Apr 2022  v1.0.1
+- Initial Public Release
+```
 
 ## Table of Contents
 
@@ -65,9 +77,26 @@ A small number of demos are provided with this project:
 | --- | --- | 
 | [demo\_single_motor.spin2](demo_single_motor.spin2) | Provides example code for controlling a single motor and position sensing of the single motor. (Uses HDMI (DVI) as display of live motor details.
 | [demo\_dual_motor.spin2](demo_dual_motor.spin2) | Provides example code for controlling a pair of motors and using the 2-wheel steering object.
-| [demo\_dual\_motor_rc.spin2](demo_dual_motor_rc.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object 
+| [demo\_dual\_motor_rc.spin2](demo_dual_motor_rc.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object
 
 *NOTE: we built these demos over time as we developed the driver. There can be better examples but in the interest of time, so that we can get more of us using this driver as soon as possible, we are releasing these in their current state and will improve them over time.*
+
+### FlySky Controls for demo
+
+The R/C demo uses the following controls:
+
+| Control | Purpose
+| --- | --- | 
+|  | **SWITCHES**
+| SwA | Motor Control Toggle: Up - disabled, Down - Enabled
+| SwB | not used
+| SwC | Stop Demo - Up - running, Down - exit demo
+| SwD | Emergency Cutoff: Up - disabled, Down - Immediatly stop motors!
+| | **JOYSTICKS**
+| Left Joystick | Steering: Left - turn to left (slow right motor), Right - turn to right (slow down left motor)
+| Right Joystick | Acceleration: Up - go foward, Down - go backward (speed controlled by joystick center is stopped, at extremes is fastest)
+
+
 
 ## References
 
