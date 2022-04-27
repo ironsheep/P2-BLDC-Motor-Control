@@ -154,63 +154,86 @@ VAR
     long    priorDirection
     long    rcSpeed
     long    rcDirection
+    long    nLtAmps
+    long    nLtWatts
+    long    nRtAmps
+    long    nRtWatts
 
-PUB remoteControlMotor() | bLastIgnoreJoyStks, bIgnoreJoySticks, bDoneTesting, bLastShowState, bShowState, loopCt, bShowDebugStatus
+PUB remoteControlMotor() | bLastIgnoreJoyStks, bIgnoreJoySticks, bDoneTesting, bLastShowState, bShowState, loopCt, bShowDebugStatus, bEmerCutoff, bLastEmerCutoff
 
-    waitms(3000)    ' wait for 3 sec for backend to catch up
+    waitms(500)    ' wait for 3 sec for backend to catch up
 
     'arm.gripClosed()
-    debug("------------")
+    debug("------")
     debug("- Lt Joy Hz - direction")
     debug("- Rt Joy Vt - speed")
-    debug("------------")
-    debug("* swA DN    - enable joystick servo control")
-    'debug("* swB Toggle - ---")
-    'debug("* swC UP - ---")
-    'debug("* swC MID - ---")
-    'debug("* swC DN - ---")
-    debug("* swD DN - end control")
-    debug("------------")
+    debug("------")
+    debug("* swA DN     - enable joystick servo control")
+    debug("* swB Toggle - show state")
+    'debug("* swC UP     - ---")
+    'debug("* swC MID    - ---")
+    debug("* swC DN     - end control")
+    debug("* swD DN     - emer cutoff")
+    debug("------")
 
     bLastShowState := VALUE_NOT_SET ' value can't happen
     bLastIgnoreJoyStks := VALUE_NOT_SET ' value can't happen
+    bLastEmerCutoff := VALUE_NOT_SET ' value can't happen
 
     loopCt := 0
     repeat
-
-        bShowDebugStatus := loopCt < 2 ? TRUE : FALSE
-        remoteCtl.showDebug(bShowDebugStatus)
+        'debug("* ", udec_long(loopCt))
+        bShowDebugStatus := loopCt < 20 ? TRUE : FALSE
+        'remoteCtl.showDebug(bShowDebugStatus)
 
         ' SwA Ignore JoySticks
+        debug("-- -- SW -- --")
         bIgnoreJoySticks := remoteCtl.swIsOn(remoteCtl.CTL_SW_A)
-        'bShowState := remoteCtl.swIsOn(remoteCtl.CTL_SW_B)
-        'eJawStateSW := remoteCtl.readSwitch(remoteCtl.CTL_SW_C)
-        ' SwD done, end loop!
-        bDoneTesting := remoteCtl.swIsOff(remoteCtl.CTL_SW_D)
-
-        if bLastShowState == VALUE_NOT_SET
-            bLastShowState := bShowState
-
-        if bLastIgnoreJoyStks == VALUE_NOT_SET
-            bLastIgnoreJoyStks := bIgnoreJoySticks
+        bShowState := remoteCtl.swIsOff(remoteCtl.CTL_SW_B)
+        ' SwC done, end loop!
+        bDoneTesting := remoteCtl.swIsOff(remoteCtl.CTL_SW_C)
+        ' SwD down = Emergency Cutoff
+        remoteCtl.showDebug(bShowDebugStatus)
+        bEmerCutoff := remoteCtl.swIsOff(remoteCtl.CTL_SW_D)
+        remoteCtl.showDebug(FALSE)
 
         if bShowState <> bLastShowState
             'showServoPositions()
+            if bShowState
+                nLtAmps, nLtWatts, nRtAmps, nRtWatts := wheels.getCurrent()
+                debug("  ltA=", sdec_long_(nLtAmps), ", rtA=", sdec_long_(nRtAmps))
             bLastShowState := bShowState
 
-        if bLastIgnoreJoyStks <> bIgnoreJoySticks
+        if bEmerCutoff <> bLastEmerCutoff
+            'debug("  NEW E VALUE")
+            if bEmerCutoff
+                debug("-------  Motor E-OFF")
+                wheels.emergencyCutoff()
+            elseif not bIgnoreJoySticks
+                debug("  Motor Enabled")
+            else
+                debug("  Motor Disabled")
+            bLastEmerCutoff := bEmerCutoff
+
+        if not bShowDebugStatus and bLastIgnoreJoyStks <> bIgnoreJoySticks
             if bIgnoreJoySticks
                 debug("  Motor CTL OFF")
             else
                 debug("  Motor CTL enabled")
             bLastIgnoreJoyStks := bIgnoreJoySticks
 
-        if not bIgnoreJoySticks
-            rcSpeed, rcDirection := updPosnBothJoy(1)
-            rcDirection := 0 - rcDirection  ' invert this to apply to our motors
-            if priorDirection <> rcDirection or priorSpeed <> rcSpeed
-
-                debug("- JOY ", sdec_long(rcSpeed), sdec_long(rcDirection))
+        if not bEmerCutoff
+            rcSpeed, rcDirection := updPosnBothJoy()
+            if not bIgnoreJoySticks
+                rcDirection := 0 - rcDirection  ' invert this to apply to our motors
+                if priorDirection <> rcDirection or priorSpeed <> rcSpeed
+                    debug("- JOY ", sdec_long(rcSpeed), sdec_long(rcDirection))
+                    wheels.driveDirection(rcSpeed, rcDirection)
+                    priorDirection := rcDirection
+                    priorSpeed := rcSpeed
+            elseif priorSpeed <> 0 and rcSpeed == 0
+                ' if we were running when motors control stopped then allow a stop when it happens
+                debug("- JOY (last) ", sdec_long(rcSpeed), sdec_long(rcDirection))
                 wheels.driveDirection(rcSpeed, rcDirection)
                 priorDirection := rcDirection
                 priorSpeed := rcSpeed
@@ -219,41 +242,23 @@ PUB remoteControlMotor() | bLastIgnoreJoyStks, bIgnoreJoySticks, bDoneTesting, b
             debug("--> quit loop")
             quit
 
-        waitms(500) ' wait 1/4 second, before next loop
+        waitms(250) ' wait 1/4 second, before next loop
         loopCt++
 
     ' done, stop our motors
     wheels.stop()
 
-PRI updPosnBothJoy(nLoopCount): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
-    ' loop on joysitck values forwarding them to our servos
-    if nLoopCount < 1
-        nLoopCount := 1
-    repeat nLoopCount
+PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
+    ' route Rt Joystick Vt (spring center) to FWD/REV (speed)
+    debug("-- JOY -- JOY --")
+    rawSpeed := remoteCtl.readChannel(remoteCtl.CTL_RT_JOY_VT)
+    rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_RT_JOY_VT)
+    speed := map(rawSpeed, rngMin, rngMax, -100, +100)
 
-        ' route Rt Joystick Vt (spring center) to FWD/REV (speed)
-        rawSpeed := remoteCtl.readChannel(remoteCtl.CTL_RT_JOY_VT)
-        rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_RT_JOY_VT)
-        speed := map(rawSpeed, rngMin, rngMax, -100, +100)
-
-{
-        ' route Rt Joystick Hz (spring center) to direction
-        posn := remoteCtl.readChannel(remoteCtl.CTL_RT_JOY_HZ)
-        rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_RT_JOY_HZ)
-        arm.positionServo(arm.SERVO_WRIST_FLEX, posn, rngMin, rngMax)
-'}
-
-        ' route Lt Joystick Hz (spring center) to direction
-        rawDirection := remoteCtl.readChannel(remoteCtl.CTL_LT_JOY_HZ)
-        rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_LT_JOY_HZ)
-        direction := map(rawDirection, rngMin, rngMax, -100, +100)
-
-{
-        ' route Lt Joystick Vt to Elbow
-        posn := remoteCtl.readChannel(remoteCtl.CTL_LT_JOY_VT)
-        rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_LT_JOY_VT)
-        arm.positionServo(arm.SERVO_ELBOW, posn, rngMin, rngMax)
-'}
+    ' route Lt Joystick Hz (spring center) to direction
+    rawDirection := remoteCtl.readChannel(remoteCtl.CTL_LT_JOY_HZ)
+    rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_LT_JOY_HZ)
+    direction := map(rawDirection, rngMin, rngMax, -100, +100)
 
 PRI map(inValue,  inMin,  inMax,  outMin,  outMax) : outValue
 {
