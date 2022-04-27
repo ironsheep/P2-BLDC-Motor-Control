@@ -308,6 +308,13 @@ PUB getMaxSpeedForDistance() : nSpeed4dist
     'nSpeed4dist := ltWheel.getMaxSpeed()  ' return last specified user value
     nSpeed4dist := rtWheel.getMaxSpeed()  ' return last specified user value
 
+PUB clearEmergency()
+'' remove emergency override
+' used by wheels*.spin2 methods
+    ltWheel.clearEmergency()
+    rtWheel.clearEmergency()
+    debug("--------clear EMERGENCY--------")
+
 CON { --- PRIVATE Utility Methods --- }
 
 PRI calcPowerForDirection(power, direction) : ltPower, rtPower | bIsLeft, absPower, absDir, limitPwr, limitDir
@@ -364,9 +371,6 @@ VAR { Data for Motor Position Tracking }
     '  --------------------------
     long    ltPosTrkHallTicks
     long    rtPosTrkHallTicks
-'    long    cntsInSec
-'    long    circInMM_x10
-'    long    tickInMM_x10
     long    deltaTicks
     long    priorPos
     long    circInMM_x10
@@ -378,10 +382,12 @@ VAR { Data for Motor Position Tracking }
     long    motorStopMSecs
 
 
-PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
+PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
     pinlow(TEST_PIN_SNS_LOOP)
     pinlow(TEST_PIN_SNS_LP_ACTV)
+
+    eStopCtr := 0
 
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
@@ -443,11 +449,30 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow
 
         pintoggle(TEST_PIN_SNS_LP_ACTV)    ' end of active side
 
+        ' iff driver reports e-stop then clear the emergency stop request
+        '  user will request it again if needed
+        ' NOTE: we leave e_stop set for at least 1/4 second before clearing!
+        if isEmergency()
+            eStopCtr++
+        elseif (ltWheel.isEmergency() or rtWheel.isEmergency()) && eStopCtr > 1
+            clearEmergency()
+            eStopCtr := 0
+
         deltaTicks := getct() - senseStartTicks
 
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
         '   wait remainder of 125 mSec before next sample
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
+
+PRI isEmergency() : bEmergencyState
+' return T/F where T means one or both wheels are in emergency cutoff state
+    bEmergencyState := ltWheel.isEmergency()
+    if not bEmergencyState
+        bEmergencyState := rtWheel.isEmergency()
+    if bEmergencyState
+        debug("--------WHEEL in EMERGENCY!!--------")
+
+
 
 PRI MAX(a,b) : nMax
 ' return max of a or b

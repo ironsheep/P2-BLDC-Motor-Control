@@ -107,7 +107,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     ' NOTES: 220413 -  at 14.8V 10_000 better on gravel surface  but too slow a ramp to 15_000 and PWR_14p8V to see if motors stay operational
     ' 50_000 for 12v & 18_5v
     ramp_fast   := 50_000                   ' 50k angle increment: add/sub this every 500 uSec to ramp up to speed, or ramp down to zer
-    ramp_slo    := 5_000                   ' 10k angle decrement: add/sub this every 500 uSec to ramp up from zero (slower initial ramp so we don't fault)
+    ramp_slo    := 8_000                    ' 8k angle decrement: add/sub this every 500 uSec to ramp up from zero (slower initial ramp so we don't fault)
 
     motorIsReversed := FALSE    ' by default our motor direction is not reversed
 
@@ -352,6 +352,12 @@ PUB emergencyCutoff()
 '' EMERGENCY-Stop - Immediately stop motor, killing any motion that was still in progress
     e_stop := TRUE
     setTargetAccel(0)
+    debug("-- EMERGENCY STOP --")
+
+PUB clearEmergency()
+'' clear EMERGENCY-Stop - remove the need to stop!
+    e_stop := FALSE
+    debug("-- EMERGENCY -- CLEARED --")
 
 PUB forwardIsReverse()
 '' call when we have two motors and one of them needs to be reversed
@@ -989,6 +995,10 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     prior_incr, #0                  ' just in case
                 mov     fwdrev, #0                      ' just in case
 
+                ' do initial read of parms so control loop can use them
+                setq    #13-1                       ' load fresh parameter table (13 longs)
+                rdlong  params_ptr_+1, params_ptr_
+
                 ' preset our starting angle
                 'call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
 
@@ -1131,17 +1141,18 @@ driver          rdlong  x, ptra++                   ' get base pin
     if_z        or      drv_incr, drv_incr          wz  ' -and- we are stopped, just about to spin up
     if_z        call    #.initAngleFmHall               ' then, let's first get motor initial angle for smooth startup
                 ' do next UP adjustment or set at-speed
-'                cmps    drv_incr, ramp_thresh       wc  ' Q: need early(slo) ramp?
-'    if_nc       mov     curr_ramp, ramp_fast_           ' NO: use fast ramp rate
-'    if_c        mov     curr_ramp, ramp_slo_            ' YES: use slow ramp rate
+                abs     abs_incr, drv_incr              ' get abs(drv_incr)
+                cmps    abs_incr, ramp_thresh       wc  ' Q: need early(slo) ramp?
+    if_nc       mov     curr_ramp, ramp_fast_           ' NO: use fast ramp rate
+    if_c        mov     curr_ramp, ramp_slo_            ' YES: use slow ramp rate
                 testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
     if_c        jmp     #.haveRUpRev
 
-                adds    drv_incr, ramp_fast_             ' FWD: increase increment (speeding up)
+                adds    drv_incr, curr_ramp             ' FWD: increase increment (speeding up)
                 cmps    tgt_incr, drv_incr          wc  ' Q: Did we exceed target?
                 jmp     #.lastRUpZero
 .haveRUpRev
-                subs    drv_incr, ramp_fast_             ' REV: decrease increment (speeding up)
+                subs    drv_incr, curr_ramp             ' REV: decrease increment (speeding up)
                 cmps    drv_incr, tgt_incr          wc  ' Q: Did we exceed target?
 .lastRUpZero
     if_c        mov     drv_incr, tgt_incr              ' yes, reset to target!
@@ -1459,7 +1470,7 @@ bias        LONG    FRAME / 2               ' PWM center-frame bias
 third       LONG    1 FRAC 3                ' 120 degrees
 numerator   LONG    3300 << 11              ' numerator for ADC calculations
 stop_requst LONG    0                       ' 32-bits of zero
-ramp_thresh LONG    20_000_000              ' fm zero - slow ramp to here then fast ramp ( 1/6 of 0-max )
+ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then fast ramp ( ~1/5 of 0-max )
 
 'drvrLoopPnFld   LONG    TEST_PIN_DRIVER_LOOP addpins 0  ' convert to pinfield
 'drvrTmrPnFld    LONG    TEST_PIN_DRIVER_TMR addpins 0  ' convert to pinfield
@@ -1514,6 +1525,7 @@ angle           res 1       ' current driver angle
 prior_angle     res 1       ' prior driver angle
 fwdrev          res 1       ' driver current direction used for indexing into hall angle table
 curr_ramp       res 1
+abs_incr        res 1
 
 ' PIN names
 pin_adc_u_i     res 1       ' single-pin variables
