@@ -27,6 +27,7 @@ Latest Changes:
 - Add emergency stop methods to isp_bldc_motor.spin2, and isp_steering_2wheel.spin2
 - Adjust spin-up ramp to start slower then speed up (better traction on loose surfaces but faster speed-up as well.)
 - Add FlySky control mapping info to this README
+- Map FlySky SwD to emergency stop!
 02 Apr 2022  v1.0.1
 - Initial Public Release
 ```
