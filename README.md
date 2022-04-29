@@ -38,6 +38,7 @@ On this Page:
 
 - [Motor Object Introduction](https://github.com/ironsheep/P2-BLDC-Motor-Control#single-and-two-wheeled-motor-control-objects) - An overview of the objects provided by this project
 - [System Diagram](https://github.com/ironsheep/P2-BLDC-Motor-Control#system-diagram) - A quick visual overview of the motor and steering runtime structure
+- [Future Directions]() - Notes about areas we can improve over time
 - [DEMOs](https://github.com/ironsheep/P2-BLDC-Motor-Control#demos) - Example files that show how to interact with the motor control and steering objects provided by this project
 - [Reference](https://github.com/ironsheep/P2-BLDC-Motor-Control#references) - We looked at a number of control systems before deciding on the public interfaces for our steering and motor control objects
 - [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control#how-to-contribute) - We welcome contributions back to this project for all of us to use. Learn how, here!
@@ -69,6 +70,14 @@ The following diagram shows the nested motor control and sense subsystem compris
 ![Motor Control System Diagram](./images/objects-cogs.png)
 
 In this diagram there are three **rectangular objects** depicting files (yellow background) of code. There are three methods within the files (white and green backgrounds) that are run in separate cogs.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
+
+## Future directions
+
+We now have a working motor drive system that is fun to use.  While this was being developed we kept track of further improvements that can be made in the future.  Here's our list of the most notable:
+
+- Add acceleration control
+- Replace simple built-in spin-up, spin-down ramps with better
+
 
 ## DEMOs
 
