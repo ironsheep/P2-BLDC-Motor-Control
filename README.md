@@ -38,8 +38,9 @@ On this Page:
 
 - [Motor Object Introduction](https://github.com/ironsheep/P2-BLDC-Motor-Control#single-and-two-wheeled-motor-control-objects) - An overview of the objects provided by this project
 - [System Diagram](https://github.com/ironsheep/P2-BLDC-Motor-Control#system-diagram) - A quick visual overview of the motor and steering runtime structure
-- [Future Directions]() - Notes about areas we can improve over time
+- [Future Directions](https://github.com/ironsheep/P2-BLDC-Motor-Control#future-directions) - Notes about areas we can improve over time
 - [DEMOs](https://github.com/ironsheep/P2-BLDC-Motor-Control#demos) - Example files that show how to interact with the motor control and steering objects provided by this project
+- [FlySky Controls for DEMO](https://github.com/ironsheep/P2-BLDC-Motor-Control#flysky-controls-for-demo) - How our Switches and Joysticks are tasked
 - [Reference](https://github.com/ironsheep/P2-BLDC-Motor-Control#references) - We looked at a number of control systems before deciding on the public interfaces for our steering and motor control objects
 - [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control#how-to-contribute) - We welcome contributions back to this project for all of us to use. Learn how, here!
 
