@@ -1,0 +1,586 @@
+'' =================================================================================================
+''
+''   File....... isp_serial.spin2
+''   Purpose.... True mode, unbuffererd serial coms using smart pins
+''               -- same features as original jm_serial.spin2 by Jon McPhalen with minor enhancements
+''   Authors.... Eric Smith, Chip Gracey, and Jon McPhalen
+''               -- formatted strings inspired by clib.spin for P1 (author unknown)
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Feb 2022
+''   Updated.... 4 Feb 2022
+''
+'' =================================================================================================
+
+'' stop bit support added by Stephen M Moraco 13 Jan 2022
+
+CON { fixed io pins }
+
+  RX1 = 63
+  TX1 = 62
+
+
+CON { smart pin modes }
+
+  TX_MODE = %0000_0000_000_0000000000000_01_11110_0
+  RX_MODE = %0000_0000_000_0000000000000_00_11111_0
+
+CON { serial configuration }
+
+    DATA_BITS = 8
+    STOP_BITS = 2
+
+    ' (following ignored for now)
+    #0, PARITY_NONE, PARITY_EVEN, PARITY_ODD
+
+    ' tx pin pull-up constants
+    #0, PU_NONE, PU_1K5, PU_3K3, PU_15K                           ' pull-up options
+
+
+CON { pst formatting }
+
+  HOME    =  1
+  CRSR_XY =  2
+  CRSR_LF =  3
+  CRSR_RT =  4
+  CRSR_UP =  5
+  CRSR_DN =  6
+  BELL    =  7
+  BKSP    =  8
+  TAB     =  9
+  LF      = 10
+  CLR_EOL = 11
+  CLR_DN  = 12
+  CR      = 13
+  CRSR_X  = 14
+  CRSR_Y  = 15
+  CLS     = 16
+
+
+OBJ
+
+  nstr : "jm_nstr"
+
+var
+
+  long  rxp
+  long  txp
+  long  baud
+
+  long  byteMask
+  long  byteExtraBits
+
+  byte  pbuf[80]                                                ' padded strings
+
+
+PUB null()
+
+  '' This is not a top level object
+
+
+PUB start(baudrate)
+
+'' Start simple serial coms on default pins at baudrate
+
+  startx(RX1, TX1, baudrate, P_HIGH_15K)
+
+
+PUB startx(rxpin, txpin, baudrate, txPullup) | bitperiod, bitmode, databits
+
+'' Start simple serial coms on rxpin and txpin at baudrate
+
+  longmove(@rxp, @rxpin, 3)  ' also save baudrate incase driver is asked
+  bitperiod := clkfreq / baudrate
+
+  case txPullup
+    PU_NONE : txPullup := P_HIGH_FLOAT                            ' use external pull-up
+    PU_1K5  : txPullup := P_HIGH_1K5                              ' 1.5k
+    PU_3K3  : txPullup := P_HIGH_1MA                              ' acts like ~3.3k
+    other   : txPullup := P_HIGH_15K                              ' 15K
+
+  databits := DATA_BITS
+  if (STOP_BITS == 2)
+    databits += 1
+
+  bitmode := 7 + (bitperiod << 16)
+
+  ' setup constants for tx() to use
+    byteMask := $FF
+    if (DATA_BITS == 7)
+      byteMask := $7f
+
+    byteExtraBits := 0
+    if (STOP_BITS == 2)
+      byteExtraBits |= $100
+
+  pinf(txp)
+  wrpin(txp, TX_MODE | txPullup)
+  wxpin(txp, bitmode)
+  pinl(txp)
+
+  pinf(rxp)
+  wrpin(rxp, RX_MODE)
+  wxpin(rxp, bitmode)
+  pinl(rxp)
+
+PUB getBaudrate() : baudrate
+'' Return the configured baud rate
+    baudrate := baud    '' was saved by startx()
+
+PUB rxflush()
+
+'' Clear serial input
+
+  repeat
+  while (rxcheck() >= 0)
+
+
+PUB rxcheck() : rxbyte | check
+
+'' Check for serial input
+'' -- returns -1 if nothing available
+
+  rxbyte := -1
+  check := pinr(rxp)
+  if (check)
+    rxbyte := rdpin(rxp) >> 24
+    rxbyte &= byteMask  ' handle 7bit data (e.g., 7N1 vs. 8N1)
+
+
+PUB rxtime(ms) : b | mstix, t
+
+'' Wait ms milliseconds for a byte to be received
+'' -- returns -1 if no byte received, $00..$FF if byte
+
+  mstix := clkfreq / 1000
+
+  t := getct()
+  repeat
+  until ((b := rxcheck()) >= 0) or (((getct() - t) / mstix) > ms)
+
+
+PUB rx() : rxbyte
+
+'' Wait for serial input
+'' -- blocks!
+
+  repeat
+    rxbyte := rxcheck()
+  until (rxbyte >= 0)
+
+
+PUB tx(b) | byt, mask
+
+'' Emit byte
+
+  b &= byteMask
+  b |= byteExtraBits
+
+  wypin(txp, b)
+  txflush()
+
+
+PUB txn(b, n)
+
+'' Emit byte n times
+
+  repeat n
+    tx(b)
+
+
+PUB txflush() | check
+
+'' Wait until last byte has finished
+
+  repeat
+    check := pinr(txp)
+  while (check == 0)
+
+
+PUB str(p_str)
+
+'' Emit z-string at p_str
+
+  repeat (strsize(p_str))
+    tx(byte[p_str++])
+
+
+PUB substr(p_str, len) | b
+
+'' Emit len characters of string at p_str
+'' -- aborts if end of string detected
+
+  repeat len
+    b := byte[p_str++]
+    if (b > 0)
+      tx(b)
+    else
+      quit
+
+
+PUB padstr(p_str, width, pad)
+
+'' Emit p_str as padded field of width characters
+'' -- pad is character to use to fill out field
+'' -- positive width causes right alignment
+'' -- negative width causes left alignment
+
+  str(nstr.padstr(p_str, width, pad))
+
+
+CON { formatted strings }
+
+{{
+    Escape sequences
+
+      \\          backslash char
+      \%          percent char
+      \r          carriage return
+      \n          new line (vertical tab)
+      \t          tab (horizontal)
+      \q          double quote
+      \nnn        arbitrary ASCII value (nnn is decimal)
+
+    Formatted arguments
+
+      %w.pf       print argument as decimal width decimal point
+      %[w[.p]]d   print argument as decimal
+      %[w[.p]]x   print argument as hex
+      %[w[.p]]o   print argument as octal
+      %[w[.p]]q   print argument as quarternary
+      %[w[.p]]b   print argument as binary
+      %[w]s       print argument as string
+      %[w]c       print argument as character (
+
+                  -- w is field width
+                     * positive n causes right alignment in field
+                     * negative n causes left align ment in field
+                  -- %ns aligns s in field (may truncate)
+                  -- %nc prints n copies of c
+                  -- p is precision characters
+                     * number of characters to use, aligned in field
+                       -- for %n.pf, p is number of digits after dpoint
+
+}}
+
+
+PUB fstr0(p_str)
+
+'' Emit string with formatting characters.
+
+  format(p_str, 0)
+
+
+PUB fstr1(p_str, arg1)
+
+'' Emit string with formatting characters and one argument.
+
+  format(p_str, @arg1)
+
+
+PUB fstr2(p_str, arg1, arg2)
+
+'' Emit string with formatting characters and two arguments.
+
+  format(p_str, @arg1)
+
+
+PUB fstr3(p_str, arg1, arg2, arg3)
+
+'' Emit string with formatting characters and three arguments.
+
+  format(p_str, @arg1)
+
+
+PUB fstr4(p_str, arg1, arg2, arg3, arg4)
+
+'' Emit string with formatting characters and four arguments.
+
+  format(p_str, @arg1)
+
+
+PUB fstr5(p_str, arg1, arg2, arg3, arg4, arg5)
+
+'' Emit string with formatting characters and five arguments.
+
+  format(p_str, @arg1)
+
+
+PUB fstr6(p_str, arg1, arg2, arg3, arg4, arg5, arg6)
+
+'' Emit string with formatting characters and six arguments.
+
+  format(p_str, @arg1)
+
+
+PUB format(p_str, p_args) | idx, c, asc, field, digits
+
+'' Emit formatted string with escape sequences and embedded values
+'' -- p_str is a pointer to the format control string
+'' -- p_args is pointer to array of longs that hold field values
+''    * field values can be numbers, characters, or pointers to strings
+
+  idx := 0                                                     ' value index
+
+  repeat
+    c := byte[p_str++]
+    if (c == 0)
+      return
+
+    elseif (c == "\")
+      c := byte[p_str++]
+      if (c == "\")
+        tx("\")
+      elseif (c == "%")
+        tx("%")
+      elseif (c == "r")
+        tx(CR)
+      elseif (c == "n")
+        tx(LF)
+      elseif (c == "t")
+        tx(TAB)
+      elseif (c == "q")
+        tx(34)
+      elseif ((c >= "0") and (c <= "9"))
+        --p_str
+        p_str, asc, _ := get_nargs(p_str)
+        if ((asc >= 0) and (asc <= 255))
+          tx(asc)
+
+    elseif (c == "%")
+      p_str, field, digits := get_nargs(p_str)
+      c := byte[p_str++]
+      if (c == "f")
+        str(nstr.fmt_number(long[p_args][idx++], 99, digits, field, " "))
+      elseif (c == "d")
+        str(nstr.fmt_number(long[p_args][idx++], 10, digits, field, " "))
+      elseif (c == "x")
+        str(nstr.fmt_number(long[p_args][idx++], 16, digits, field, " "))
+      elseif (c == "o")
+        str(nstr.fmt_number(long[p_args][idx++], 08, digits, field, " "))
+      elseif (c == "q")
+        str(nstr.fmt_number(long[p_args][idx++], 04, digits, field, " "))
+      elseif (c == "b")
+        str(nstr.fmt_number(long[p_args][idx++], 02, digits, field, " "))
+      elseif (c == "s")
+        str(nstr.padstr(long[p_args][idx++], field, " "))
+      elseif (c == "c")
+        txn(long[p_args][idx++], abs field)
+
+    else
+      tx(c)
+
+
+PRI get_nargs(p_str) : p_str1, val1, val2 | c, sign
+
+'' Parse one or two numbers from string in n, -n, n.n, or -n.n format
+'' -- dpoint separates values
+'' -- only first # may be negative
+'' -- returns pointer to 1st char after value(s)
+
+  c := byte[p_str]                                              ' check for negative on first value
+  if (c == "-")
+    sign := -1
+    ++p_str
+  else
+    sign := 0
+
+  repeat                                                        ' get first value
+    c := byte[p_str++]
+    if ((c >= "0") and (c <= "9"))
+      val1 := (val1 * 10) + (c - "0")
+    else
+      if (sign)
+        val1 := -val1
+      quit
+
+  if (c == ".")                                                 ' if dpoint
+    repeat                                                      '  get second value
+      c := byte[p_str++]
+      if ((c >= "0") and (c <= "9"))
+        val2 := (val2 * 10) + (c - "0")
+      else
+        quit
+
+  p_str1 := p_str - 1                                           ' back up to non-digit
+
+
+PUB fmt_number(value, base, digits, width, pad)
+
+'' Emit value converted to number in padded field
+'' -- value is converted using base as radix
+''    * 99 for decimal with digits after decimal point
+'' -- digits is max number of digits to use
+'' -- width is width of final field (max)
+'' -- pad is character that fills out field
+
+  str(nstr.fmt_number(value, base, digits, width, pad))
+
+
+PUB dec(value)
+
+'' Emit value as decimal
+
+' str(nstr.dec(value, 0))
+  str(nstr.itoa(value, 10, 0))
+
+
+PUB fwdec(value, digits)
+
+'' Emit value as decimal using fixed # of digits
+'' -- may add leading zeros
+
+' str(nstr.dec(value, digits))
+  str(nstr.itoa(value, 10, digits))
+
+
+PUB jdec(value, digits, width, pad)
+
+'' Emit value as decimal using fixed # of digits
+'' -- aligned in padded field (negative width to left-align)
+'' -- digits is max number of digits to use
+'' -- width is width of final field (max)
+'' -- pad is character that fills out field
+
+  str(nstr.fmt_number(value, 10, digits, width, pad))
+
+
+PUB dpdec(value, dp)
+
+'' Emit value as decimal with decimal point
+'' -- dp is number of digits after decimal point
+
+  str(nstr.dpdec(value, dp))
+
+
+
+PUB jdpdec(value, dp, width, pad)
+
+'' Emit value as decimal with decimal point
+'' -- aligned in padded field (negative width to left-align)
+'' -- dp is number of digits after decimal point
+'' -- width is width of final field (max)
+'' -- pad is character that fills out field
+
+  str(nstr.fmt_number(value, 99, dp, width, pad))
+
+
+PUB hex(value)
+
+'' Emit value as hexadecimal
+
+  str(nstr.itoa(value, 16, 0))
+
+
+PUB fwhex(value, digits)
+
+'' Emit value as hexadecimal using fixed # of digits
+
+  str(nstr.itoa(value, 16, digits))
+
+
+PUB jhex(value, digits, width, pad)
+
+'' Emit value as quarternary using fixed # of digits
+'' -- aligned inside field
+'' -- pad fills out field
+
+  str(nstr.fmt_number(value, 16, digits, width, pad))
+
+
+PUB oct(value)
+
+'' Emit value as octal
+
+  str(nstr.itoa(value, 8, 0))
+
+
+PUB fwoct(value, digits)
+
+'' Emit value as octal using fixed # of digits
+
+  str(nstr.itoa(value, 8, digits))
+
+
+PUB joct(value, digits, width, pad)
+
+'' Emit value as octal using fixed # of digits
+'' -- aligned inside field
+'' -- pad fills out field
+
+  str(nstr.fmt_number(value, 8, digits, width, pad))
+
+
+PUB qrt(value)
+
+'' Emit value as quarternary
+
+  str(nstr.itoa(value, 4, 0))
+
+
+PUB fwqrt(value, digits)
+
+'' Emit value as quarternary using fixed # of digits
+
+  str(nstr.itoa(value, 4, digits))
+
+
+PUB jqrt(value, digits, width, pad)
+
+'' Emit value as quarternary using fixed # of digits
+'' -- aligned inside field
+'' -- pad fills out field
+
+  str(nstr.fmt_number(value, 4, digits, width, pad))
+
+
+PUB bin(value)
+
+'' Emit value as binary
+
+  str(nstr.itoa(value, 2, 0))
+
+
+PUB fwbin(value, digits)
+
+'' Emit value as binary using fixed # of digits
+
+  str(nstr.itoa(value, 2, digits))
+
+
+PUB jbin(value, digits, width, pad)
+
+'' Emit value as binary using fixed # of digits
+'' -- aligned inside field
+'' -- pad fills out field
+
+  str(nstr.fmt_number(value, 2, digits, width, pad))
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

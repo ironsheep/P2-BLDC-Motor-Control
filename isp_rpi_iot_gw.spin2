@@ -1,0 +1,279 @@
+'' =================================================================================================
+''
+''   File....... isp_rpi_iot_gw.spin2
+''   Purpose.... (Singleton) Provide IoT access methods
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Jan 2022
+''   Updated.... 11 Jan 2022
+''
+'' =================================================================================================
+
+' Enum: Folder Id values (EFI_*) - use in fileAccess() calls
+    #100, EFI_VAR, EFI_TMP, EFI_CONTROL, EFI_STATUS, EFI_LOG, EFI_MAIL, EFI_PROC
+    #200, FM_READONLY, FM_WRITE, FM_WRITE_CREATE, FM_LISTEN
+
+CON { fixed io pins }
+
+    RX1      = 63  { I }                                          ' programming / debug
+    TX1      = 62  { O }
+
+    SF_CS    = 61  { O }                                          ' serial flash
+    SF_SCK   = 60  { O }
+    SF_SDO   = 59  { O }
+    SF_SDI   = 58  { I }
+
+OBJ { Objects Used by this Object }
+
+    RPi         : "isp_serial"                                   ' serial I/O
+    RPiRxQ      : "isp_queue_serial"                            ' Queued Receive on top of serial I/O
+
+CON { Object Interface: PUBLIC ENUMs }
+
+    OP_SUCCESS = RPiRxQ.OP_SUCCESS
+    OP_FAILURE = RPiRxQ.OP_FAILURE
+
+    ' tx pin pull-up constants
+    PU_NONE = RPi.PU_NONE
+    PU_1K5 = RPi.PU_1K5
+    PU_3K3 = RPi.PU_3K3
+    PU_15K = RPi.PU_15K                           ' pull-up options
+
+CON { driver config values}
+
+
+DAT { pin info saves }
+
+    pinRx               long    0
+    pinTx               long    0
+
+DAT { string constants }
+
+    spin2ver    byte    "1.0.0",0
+
+    ' -------------------------------
+    ' the following are identical to that found in our deamon python script
+    '   (!!!they must be kept in sync!!!)
+    parmSep     byte    "^|^",0     ' chars that will not be found in user data
+    bodyStart   byte    "email|Start",0
+    bodyEnd     byte    "email|End",0
+    ' -------------------------------
+
+PUB null()
+'' This is not a top level object
+
+PUB startx(rxpin, txpin, baud, pullup)
+'' Start RPi gateway serial coms on rxpin and txpin at baud
+    pinRx := rxpin
+    pinTx := txpin
+    RPi.startx(pinRx, pinTx, baud, pullup)                              ' use user serial port
+    RPiRxQ.startx(pinRx, pinTx, baud, pullup)  ' start back-end cog
+
+PUB stop()
+'' Release the serial pins (if needed)
+    RPiRxQ.stop()   ' stop back-end cog
+    RPi.rxflush()   ' git rid of any pending input
+    ' free the pins used
+    pinf(pinRx)    ' de-assert
+    pinf(pinTx)    ' de-assert
+
+PUB identify(pHardwareId)
+'' Report to the RPi the name of this device (for email signature, etc.)
+    RPi.fstr3(string("ident:hwName=%s%sobjVer=%s\n"), pHardwareId, @parmSep, @spin2ver)
+    ' parse expected result display error (via debug) if occurred
+    handleResponseFor(string("ident"))
+
+PUB sendEmail(pEmailTo, pEmailFrom, pEmailSubj, pEmailBody)
+'' Tell the RPi to send an email given these specifics
+    RPi.fstr5(string("email-send:to=%s%sfm=%s%ssu=%s\n"), pEmailTo, @parmSep, pEmailFrom, @parmSep, pEmailSubj)
+    RPi.fstr3(string("%s\n%s\n%s\n"), @bodyStart, pEmailBody, @bodyEnd)
+    ' parse expected result display error (via debug) if occurred
+    handleResponseFor(string("email-send"))
+
+PUB sendSMS(pSmsPhoneNbr, pSmsTextMessage)
+'' Tell the RPi to send an SMS text message given these specifics
+    RPi.fstr3(string("sms-send:phone=%s%smessage=%s\n"), pSmsPhoneNbr, @parmSep, pSmsTextMessage)
+    ' parse expected result display error (via debug) if occurred
+    handleResponseFor(string("sms-send"))
+
+PUB fileAccess(nFolderId, nFileMode, pFileName) : opStatus, nCollId
+'' Tell the RPi to establish access to a named KV collection
+''  - returns {nCollId} our handle to the collection
+    RPi.fstr5(string("file-access:dir=%d%smode=%d%scname=%s\n"), nFolderId, @parmSep, nFileMode, @parmSep, pFileName)
+    ' parse expected result display error (via debug) if occurred
+    opStatus, _  := handleResponseFor(string("file-access"))
+    if (opStatus == OP_SUCCESS)
+        nCollId := RPiRxQ.getParsedCollectionID()
+
+PUB fileWriteLong(nCollId, pVarName, nVarValue) : opStatus
+'' Tell the RPi to write a named long to collection {nCollId}
+    opStatus := OP_FAILURE
+    RPi.fstr5(string("file-write:cid=%d%skey=%s%sval=%d\n"), nCollId, @parmSep, pVarName, @parmSep, nVarValue)
+    ' parse expected result display error (via debug) if occurred
+    opStatus, _  := handleResponseFor(string("file-write"))
+
+PUB fileReadLong(nCollId, pVarName) : opStatus, nVarValue
+'' Tell the RPi to read a named long from collection {nCollId}
+    RPi.fstr3(string("file-read:cid=%d%skey=%s\n"), nCollId, @parmSep, pVarName)
+    ' parse expected result display error (via debug) if occurred
+    opStatus, _  := handleResponseFor(string("file-read"))
+    if (opStatus == OP_SUCCESS)
+        nVarValue := RPiRxQ.getParsedValue()
+
+PUB fileWriteString(nCollId, pVarName, pVarString) : opStatus
+'' Tell the RPi to write a named string to collection {nCollId}
+    RPi.fstr5(string("file-write:cid=%d%skey=%s%sval=%s\n"), nCollId, @parmSep, pVarName, @parmSep, pVarString)
+    ' parse expected result display error (via debug) if occurred
+    opStatus, _ := handleResponseFor(string("file-write"))
+
+PUB fileReadString(nCollId, pVarName, pTargetBffr, nTargetLen) : opStatus, pVarStr | nLen, pStatusMsg
+'' Tell the RPi to read a named string from collection {nCollId}
+    opStatus := OP_FAILURE
+    RPi.fstr3(string("file-read:cid=%d%skey=%s\n"), nCollId, @parmSep, pVarName)
+    ' parse expected result display error (via debug) if occurred
+    opStatus, pStatusMsg := handleResponseFor(string("file-read"))
+    if (opStatus == OP_SUCCESS)
+        bytefill(pTargetBffr, 0, nTargetLen+1)  ' clear target buffer
+        ' copy return value to target buffer
+        nLen := strsize(pStatusMsg)
+        if nLen > nTargetLen
+            nLen := nTargetLen
+        bytemove(pTargetBffr, pStatusMsg, nLen)
+        ' return address of received string to caller
+        pVarStr := pTargetBffr
+
+PUB getCollectionNames(nFolderId) : opStatus, pNameSet
+'' Request the list of filenames found in {nFolderId} on RPi
+''
+''  returns {pNameSet} which is the pointer to a contiguous set of longs
+''  the first of which contains the count of additional longs in the set.
+''  each additional long is a pointer to a zstr (name of a collection)
+    opStatus := OP_FAILURE
+    RPi.fstr1(string("folder-list:dir=%d\n"), nFolderId)
+    ' Ex: folist:status=True^|^ct=2^|^names=P2-P2-Edge-GWDemo3,rpiHostInfo\n'
+    ' parse expected result display error (via debug) if occurred
+    opStatus, _ := handleResponseFor(string("folder-list"))
+    if (opStatus == OP_SUCCESS)
+        pNameSet := RPiRxQ.getParsedNameSet()
+
+PUB getKeyNamesInCollection(nCollId) : opStatus, pKeySet
+'' Request the list of keys found in {nCollId} on RPi
+''
+''  returns {pNameSet} which is the pointer to a contiguous set of longs
+''  the first of which contains the count of additional longs in the set.
+''  each additional long is a pointer to a zstr (key found in collection)
+    opStatus := OP_FAILURE
+    RPi.fstr1(string("key-list:cid=%d\n"), nCollId)
+    ' Ex: kylist:status=True^|^ct=2^|^names=FQDN,Hostname\n'
+    ' parse expected result display error (via debug) if occurred
+    opStatus, _ := handleResponseFor(string("key-list"))
+    if (opStatus == OP_SUCCESS)
+        pKeySet := RPiRxQ.getParsedNameSet()
+
+PUB sendTestMessage(bShouldReset) : eOpStatus, nRpiErrCt, pRpiMsg | pResetVal, pTestMsg, pRxTestMsg
+'' Tell the RPi to send a test message and compare responses, etc.
+''   invoke getErrorCtrs() after testing loop to get ending status
+    if bShouldReset
+        testTxCount := testRxCount := 0
+    pTestMsg := genTestMessage(testTxCount++)
+    pResetVal := (bShouldReset) ? @valTrueStr : @valFalseStr
+    RPi.fstr3(string("test:reset=%s%smsg=%s\n"), pResetVal, @parmSep, pTestMsg)
+    ' parse expected result display error (via debug) if occurred
+    eOpStatus, pRpiMsg  := handleResponseFor(string("test"))
+    if (eOpStatus == OP_SUCCESS)
+        nRpiErrCt := testTxErrCt := RPiRxQ.getParsedValue()
+        pRxTestMsg := genRxTestMessage(testRxCount++)
+        if strcomp(pRpiMsg, pRxTestMsg)
+            ' do match, we have our value
+            debug("stm: GOOD Rx Compare!")
+        else
+            ' don't match, bad
+            testRxErrCt++
+            debug("stm: BAD Rx Compare! [", zstr_(pRpiMsg), "] <> [", zstr_(pRxTestMsg), "]")
+    else
+        debug("stm: ERROR!")
+
+PUB getErrorCtrs() : nRPiCt, nP2Ct
+'' Return the test Tx and Rx error counters (cleared on sendTestMessage(reset=true))
+nRPiCt := testTxErrCt
+nP2Ct := testRxErrCt
+
+DAT { -----------  PRIVATE Serial Test support ----------- }
+
+  testTxCount   long    0
+  testRxCount   long    0
+
+  testTxErrCt   long    0
+  testRxErrCt   long    0
+
+  valTrueStr    byte    "True",0
+  valFalseStr   byte    "False",0
+
+  testTxMsg     byte    "P2TestMsg#"
+  testTxMsgCt   byte    "00000",0
+
+  testRxMsg     byte    "RPiTestMsg#"
+  testRxMsgCt   byte    "00000",0
+
+PRI genRxTestMessage(nCountValue) : pStr | nThous, nHun, nTens, nOnes, nRemainder
+' fill-in expected Rx Message with count
+    placeMessageCount(nCountValue, @testRxMsgCt)
+    pStr := @testRxMsg
+
+PRI genTestMessage(nCountValue) : pStr | nThous, nHun, nTens, nOnes, nRemainder
+' fill-in next Tx Message with count
+    placeMessageCount(nCountValue, @testTxMsgCt)
+    pStr := @testTxMsg
+
+PRI placeMessageCount(nCountValue, pCountOffset) | nThous, nHun, nTens, nOnes, nRemainder
+' place digits representing count into our message
+    bytefill(pCountOffset, $30, 5)  ' preload w/ASCII ZEROs
+    nThous := nCountValue / 1000
+    nRemainder := nCountValue - (nThous * 1000)
+    nHun := nRemainder / 100
+    nRemainder := nRemainder - (nHun * 100)
+    nTens := nRemainder / 10
+    nOnes := nRemainder - (nTens * 10)
+    byte[pCountOffset][1] := nThous + $30
+    byte[pCountOffset][2] := nHun + $30
+    byte[pCountOffset][3] := nTens + $30
+    byte[pCountOffset][4] := nOnes + $30
+
+CON { -----------  PRIVATE Methods  ----------- }
+
+PRI handleResponseFor(pCmdId) : opStatus, pStatusMsg
+' get expected response from RPi, if error occurred report it via debug
+    opStatus, pStatusMsg := RPiRxQ.getNParseStatusReponse()
+    if (opStatus <> OP_SUCCESS)
+        debug("hrf: ERROR: ", zstr_(pCmdId), ": str=[", zstr_(pStatusMsg), "]")
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

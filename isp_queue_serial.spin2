@@ -1,0 +1,1018 @@
+'' =================================================================================================
+''
+''   File....... isp_queue_serial.spin2
+''   Purpose.... provide serial line receiver that queues each line received
+''
+''   Authors.... Stephen M. Moraco
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Jan 2022
+''   Updated.... 20 Jan 2022
+''
+'' =================================================================================================
+
+' implemented as a receive COG storing characters in a larger circular buffer. As complete strings
+' are identified (denoted by LF char at end) the LF is replaced by a zero terminator and the
+' pointer to the newly arrived string is stored in a circular queue of arrived strings.
+
+' There are two types of strings being received:  strings prefixed with "ctrl:" which denote
+' control value changes arriving at P2 from RPi and all others which are status reports
+' or lists of information requested by the P2 of the RPi.
+
+' control value changes are stored in one queue while status reports are stored in another
+'  this provides a means to isolate the two streams so status messages can arrive without
+'  having to wait for the control messages to be processed.
+
+' another advantage is that a whole group of control value changes can arrive before any of
+' them need to be processed.
+
+CON { Object Interface: PUBLIC ENUMs }
+
+  #200, FM_READONLY, FM_WRITE, FM_WRITE_CREATE, FM_LISTEN
+  #0, OP_SUCCESS, OP_FAILURE
+
+CON { fixed io pins }
+
+  RX1      = 63  { I }                                          ' programming / debug
+  TX1      = 62  { O }
+
+  SF_CS    = 61  { O }                                          ' serial flash
+  SF_SCK   = 60  { O }
+  SF_SDO   = 59  { O }
+  SF_SDI   = 58  { I }
+
+OBJ { Objects Used by this Object }
+
+    RPi         : "isp_serial"                                   ' serial I/O
+    nstr        : "jm_nstr"                                 ' number-to-string
+
+CON { driver config values }
+
+    STACK_SIZE_LONGS = 64   ' 48, 32 crashes!
+
+    RX_CHR_Q_MAX_BYTES = 512    ' 80 = testing size, else 512
+    MAX_SINGLE_STRING_LEN = 128 ' 79 = testing size, else 128
+    RX_STR_Q_MAX_LONGS = 10  ' 10 strings waiting to be picked up - MAX
+
+    RX_BFFR_LEN = 128
+    RX_SYSTEM_ID_LEN = 20
+    RX_MAX_NAMES = 20
+
+CON { test values }
+{
+  CLK_FREQ = 200_000_000                                        ' system freq as a constant
+  _clkfreq = CLK_FREQ                                           ' set system clock
+
+  RX_GW    = 25  '- I -                                          ' Raspberry Pi (RPi) Gateway
+  TX_GW    = 24  '- O -
+
+  GW_BAUDRATE = 624_000   ' 624kb/s - allow P2 rx to keep up!
+}
+  DO_NOT_WRITE_MARK = $addee5e5
+  NOT_WRITTEN_MARK = $a5a50df0
+
+VAR { pin info saves }
+
+    long    pinRx
+    long    pinTx
+
+    long    rxCogId
+
+
+DAT { Queued RX data }
+
+' user set variables at task init
+pRxByteStart    long    0
+nRxByteMax      long    0
+
+bTestMode       long    FALSE
+
+' TASK use variables
+taskStack       long    0[STACK_SIZE_LONGS]
+endStackMark    long    DO_NOT_WRITE_MARK
+
+pRxByteHead     long    0   ' our QUEUE control vars - received BYTEs
+nRxByteCount    long    0
+
+bInString       long    FALSE
+pNewStrStart    long    0
+
+pRsltStrStart   long    0
+pRsltQueOverrun long    FALSE
+
+bQueOverrun     long    FALSE
+bStrQueOverrun  long    FALSE
+
+nQStrHeadIdx    long    0   ' our QUEUE control vars - received strings
+nQStrTailIdx    long    0
+nQStrCount      long    0
+nQStrFill       long    $deadf00d
+rxStrPtrSet     long    0[RX_STR_Q_MAX_LONGS]   ' our circular buffer - ptrs to received strings
+
+serialRxBffr    byte    0[RX_CHR_Q_MAX_BYTES]   ' our circular buffer - received chars
+
+' task vars
+nLoopCt         long    0
+pNextMsg        long    0
+nTaskChr        long    0
+' tsk vars
+
+    ' used by controlParse()
+strCtrlPrefix       byte    "ctrl:",0
+' -------------------------------
+' the following are identical to that found in our deamon python script
+'   (!!!they must be kept in sync!!!)
+parmSep     byte    "^|^",0     ' chars that will not be found in user data
+' -------------------------------
+
+    ' filled by statusParse() when error returned
+parsedFileId        long    0
+parsedLongVal       long    0
+
+parsedNameSet       long    0[RX_MAX_NAMES+1]
+parsedNamesValue    byte    0[RX_BFFR_LEN+1]
+bffrRx              byte    0[RX_BFFR_LEN+1]
+
+
+statusMsg           byte    0[RX_BFFR_LEN+1]
+subsysId            byte    0[RX_SYSTEM_ID_LEN+1]
+keyName             byte    0[RX_SYSTEM_ID_LEN+1]
+
+CON { - - - - - }
+
+CON { test control values }
+
+  #0, CT_UNKNOWN, CT_IDLE, CT_STOP, CT_PLACE_STR, CT_PLACE_N_MSGS
+
+  #0, TST_UNKNOWN, TST_PASS, TST_FAIL
+
+DAT { test control vars }
+
+bDbgShoMem      long    FALSE
+
+eTestCtrl       long    0
+eTestParam      long    0
+eTestCtrlPrior  long    0
+
+ctStrIdle       byte    "IDLE",0
+ctStrStop       byte    "STOP",0
+ctStrPlcStr     byte    "PLACE_STR",0
+ctStrPlcNMsgs   byte    "PLACE_N_MSGS",0
+ctStrUnknown    byte    "CT_????",0
+
+greenStr        byte    "Green String", $0a, 0
+redStr        byte    "Red String", $0a, 0
+
+userRxBuffer    byte    0[MAX_SINGLE_STRING_LEN+1]
+
+nStackDepth          long    STACK_SIZE_LONGS
+
+PUB null() | pWrappedStr, bStatus, pStr, bWaitStatus, nCtParm, bPassFail
+'' This is not a top level object
+
+    if bTestMode == TRUE
+    ' but is our test code main for now...
+        'startx(RX_GW, TX_GW, GW_BAUDRATE, PU_15K)
+        ' =========================================
+        ' test code
+        ' -----------------------------------------
+    {
+        ' have serial place str in buffer
+        eTestCtrl := CT_IDLE
+        waitms(250)
+
+        eTestParam := @greenStr
+        eTestCtrl := CT_PLACE_STR
+        ' then report the string arrived
+        ' check to see if string arrived
+        '  display string
+        '  free string
+        bWaitStatus := TRUE ' yes, let's wait for strings to arrive
+        pStr := getCtrlString(@userRxBuffer, MAX_SINGLE_STRING_LEN, bWaitStatus)
+
+        waitms(25077)
+        eTestParam := @redStr
+        eTestCtrl := CT_PLACE_STR
+        ' then report the string arrived
+        ' check to see if string arrived
+        '  display string
+        '  free string
+
+        pStr := getCtrlString(@userRxBuffer, MAX_SINGLE_STRING_LEN, bWaitStatus)
+
+        bStatus := haveRxString()
+        debug(">> 001 is T/F:", ubin_byte(bStatus))
+    }
+
+        ' - drop buffer size to smaller so fewer messages needed for following tests
+
+        resetRxStatus() ' reset problem indicators
+        eTestCtrl := CT_IDLE
+        waitms(250)
+
+        ' - fill to buffer max detect goood everrun
+        nCtParm := 9    ' our N      EXACT FILL of queue space
+        eTestParam := nCtParm
+        eTestCtrl := CT_PLACE_N_MSGS
+        waitms(500)
+
+        if rxStringsCount() < nCtParm
+            debug(">> ERR too few strings reported")
+        else
+            debug(">> all strings reported in")
+        'repeat ' hold here
+
+        repeat nCtParm
+            pStr := getCtrlString(@userRxBuffer, MAX_SINGLE_STRING_LEN, bWaitStatus)
+
+        bStatus := haveRxString()
+        debug(">> 002 is T/F:", ubin_byte(bStatus))
+
+        ' this test should overrun
+        bPassFail :=  (bQueOverrun == TRUE) ? TST_PASS : TST_FAIL
+        testReport(string("(1) Rx too many"), bPassFail)
+
+        resetRxStatus() ' reset problem indicators
+        flushRxQueue()
+
+        ' - fill to buffer N strings, see if all report correctly
+        ' - fill with exactfit messages - ensure wrap works
+        nCtParm := 8    ' our N      EXACT FILL of queue space
+        eTestParam := nCtParm
+        eTestCtrl := CT_PLACE_N_MSGS
+        waitms(250)
+
+        repeat while rxStringsCount() < nCtParm
+        debug(">> all strings reported in")
+        'repeat ' hold here
+
+        repeat nCtParm
+            pStr := getCtrlString(@userRxBuffer, MAX_SINGLE_STRING_LEN, bWaitStatus)
+
+        bStatus := haveRxString()
+        debug(">> 003 is T/F:", ubin_byte(bStatus))
+
+        ' this test should NOT overrun
+        bPassFail :=  (bQueOverrun == FALSE) ? TST_PASS : TST_FAIL
+        testReport(string("(2) Rx Exact full"), bPassFail)
+
+        resetRxStatus() ' reset problem indicators
+
+        ' - fill with non-exact fit messages - ensure wrap works
+        bPassFail := TST_PASS
+        repeat 4    ' 3 ok
+            nCtParm := 3    ' our N      EXACT FILL of queue space
+            eTestParam := nCtParm
+            eTestCtrl := CT_PLACE_N_MSGS
+            waitms(250)
+
+            if rxStringsCount() < nCtParm
+                debug(">> ERR too few strings reported")
+                bPassFail := TST_FAIL
+            else
+                debug(">> all strings reported in")
+
+            repeat rxStringsCount()
+                pStr := getCtrlString(@userRxBuffer, MAX_SINGLE_STRING_LEN, bWaitStatus)
+
+        bStatus := haveRxString()
+        debug(">> 003 is T/F:", ubin_byte(bStatus))
+
+        ' this test should NOT overrun
+        if (bQueOverrun == TRUE)
+            bPassFail := TST_FAIL
+
+        testReport(string("(3) Rx wrap test"), bPassFail)
+
+        resetRxStatus() ' reset problem indicators
+
+
+        ' next tests:
+        ' - restore buffer to production size [512b]
+        ' - cut over to actual RX with RPi
+        ' - do multi-message rx and unload - ensuring this all works
+        ' ========= ready for production use =========
+
+        ' =========================================
+        stop()
+
+CON { - - - - - }
+
+PUB startx(rxpin, txpin, baud, pullup)
+'' Start RPi gateway serial coms on rxpin and txpin at baud
+    pinRx := rxpin
+    pinTx := txpin
+    RPi.startx(pinRx, pinTx, baud, pullup)                              ' use user serial port
+
+    prepStackForCheck() ' for our internal test use
+
+    ' start our rx task in own cog
+    rxCogId := cogspin(newcog, TaskSerialRx(@serialRxBffr, RX_CHR_Q_MAX_BYTES), @taskStack)
+    if rxCogId == -1    ' did fail?
+        debug("!! ERROR filed to start RX-QUE task")
+
+PUB stop()
+'' Release the serial pins and free up the rcvr cog
+    RPi.rxflush()   ' git rid of any pending input
+    ' free the pins used
+    pinf(pinRx)    ' de-assert
+    pinf(pinTx)    ' de-assert
+
+    ' free the cog used
+    if(rxCogId)
+        cogstop(rxCogId - 1)
+        rxCogId := 0
+
+CON { ----- Status-Reponse Interface ----- }
+
+  WAIT_FOR_STRING = TRUE
+
+PUB getNParseStatusReponse() : opStatus, pStatusMsg | pStr
+'' Wait for expected response string then parse it returning values from it
+    pStr := getResultString(@bffrRx, RX_BFFR_LEN, WAIT_FOR_STRING)
+    debug("gnpsr: rsp=[", zstr_(pStr), "]")
+    ' parse result for success and error message and return both
+    opStatus, pStatusMsg := statusParse(pStr)
+
+PUB haveStatusUpdate() : bResponseStatus
+'' Return T/F where T means a reponse has been received and needs to be handled
+    bResponseStatus := (pRsltStrStart > 0) ? TRUE : FALSE
+
+PUB rxResultStringsCount() : nCount
+'' Return count of strings received
+    nCount := (pRsltStrStart <> 0) ? 1 : 0
+
+PUB getParsedCollectionID(): nCollId
+'' Return the collection ID stashed by statusParse()
+    nCollId := parsedFileId
+
+PUB getParsedValue() : nLongValue
+'' Return the long value stashed by statusParse()
+    nLongValue := parsedLongVal
+
+PUB getParsedNameSet() : pNameSet
+'' Return a pointer to a string pointer-array filled-in by statusParse()
+    pNameSet := @parsedNameSet
+
+CON { ----- Control Changes Interface ----- }
+
+PUB haveControlUpdate() : bControlStatus
+'' Return T/F where T means a control value change has been received and needs to be handled
+    bControlStatus := (rxStringsCount() > 0) ? TRUE : FALSE' none for now...
+    'if (bControlStatus == TRUE)
+    '    debug("!! control message arrived")
+
+PUB getControlAndValue(pName, nLenName, pValue, nLenValue) : opStatus | pStr
+'' Interpret control change request and return KV parts
+    pstr := getCtrlString(@userRxBuffer, MAX_SINGLE_STRING_LEN, WAIT_FOR_STRING)
+    'debug("gcav: ctl=[", zstr_(pStr), "]") ', uhex_long(pName), udec(nLenName), uhex_long(pValue), udec(nLenValue))
+    ' now split string into our two parts
+    ' Ex: 'ctrl:tempSensorStr=48 degr F',0
+    opStatus := controlParse(pStr, pName, nLenName, pValue, nLenValue)
+
+CON { ----- General Strings Interface ----- }
+
+PUB haveRxString() : presentStatus
+'' Return T/F where T means have received a string!
+    presentStatus := (nQStrCount > 0) ? TRUE : FALSE
+    'debug("?? haveRxString[T/F]: ", ubin_byte(presentStatus))
+
+PUB rxStringsCount() : nCount
+'' Return count of strings received
+    nCount := nQStrCount
+
+PUB getCtrlString(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedStr, nLen
+'' Return {pStr} or 0 if none
+''  if {bShouldWait} is TRUE wait until string arrives before returning
+    'debug("getCtrlString: ENTRY")
+    pStr := 0
+    if bShouldWait == TRUE
+        bStringArrived := TRUE
+        repeat until haveControlUpdate() == TRUE
+    else
+        bStringArrived := haveControlUpdate()
+
+    if bStringArrived == TRUE
+        pStr := pUserDest
+        pWrappedStr := dequeueRxStr()
+        copyWrappedStr(pUserDest, pWrappedStr, lenDest)
+        nLen := strsize(pUserDest)
+        freeWrappedString(pWrappedStr, nLen)
+        'debug("gcs: str=[", zstr_(pUserDest), "]")
+    else
+        debug("gcs: ERROR str=[] - NOT PRESENT")
+
+PUB flushRxQueue()
+'' Reset all Rx Queue control and data (emptying it!)
+    bytefill(@serialRxBffr, 0, RX_CHR_Q_MAX_BYTES)
+    longfill(@rxStrPtrSet, 0, RX_STR_Q_MAX_LONGS)
+    pRxByteHead := pRxByteStart
+
+    bInString := FALSE
+
+    nQStrHeadIdx := 0
+    nQStrTailIdx := 0
+
+    nRxByteCount := 0
+    nQStrCount := 0
+
+    pRsltStrStart := 0
+
+PUB resetRxStatus()
+'' Reset all task failure indicators
+    bQueOverrun := FALSE
+    bStrQueOverrun := FALSE
+
+PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx
+'' Return long value for given decimal string
+    decimalValue := 0
+    nCharCt := strsize(pDecimalStr)
+    if (nCharCt > 0)
+        repeat nIdx from 0 to nCharCt - 1
+            decimalValue := (decimalValue * 10) + (byte[pDecimalStr][nIdx] - $30)
+
+PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitValue
+    nOffset := 0
+    'debug("CONV: [", zstr_(pHexStr), "]")
+    if(strHasPrefix(pHexStr, string("0x"))) ' handle both 0xFEA94 and FEA94
+        ' skip over prefix
+        nOffset := 2
+    valueOfHex := 0
+    repeat nIdx from nOffset to strsize(pHexStr) - 1
+        valueOfHex *= 16
+        nChar := BYTE[pHexStr][nIdx] & $DF    ' convert upper case to lower
+        if nchar >= $30 && nchar <= $46
+            if nChar > $39
+                nDigitValue := nChar - $41 + 10  ' remove 'A' but leave as 10-15
+            else
+                nDigitValue := nChar - $30  ' remove '0' leave as 0-9
+            valueOfHex += nDigitValue
+            'debug("CONV: ", uhex(nIdx), ", ",uhex(nChar), ", ", uhex(nDigitValue), ", ", uhex(valueOfHex))
+
+    'debug("CONV: [", zstr_(pHexStr), "]= ", uhex_long(valueOfHex))
+
+CON { ----- TASK ----- }
+' ====================================================
+'  SERIAL RX QUEUE routines
+'
+PRI TaskSerialRx(pRxBffr, lenRxBffr)
+' our serial receive to queue loop
+    ' preserve incoming values
+    pRxByteStart := pRxBffr
+    nRxByteMax := lenRxBffr
+
+    ' NOTE parameters are for DEBUG use only
+    flushRxQueue()
+
+    debug("TASK[Rx] started ", uhex(pRxByteStart), ", ", udec(nRxByteMax), ", rxBffr=[", uhex_(@serialRxBffr), "]")
+
+    if bTestMode
+        ' run loop (test-version for now)
+        debug("TASK[Rx] ** TEST LOOP Running **")
+        repeat
+            checkStack()
+            if (eTestCtrl == CT_PLACE_STR)
+                eTestCtrl := CT_IDLE
+                tskFakeRxStr(eTestParam)
+            elseif (eTestCtrl == CT_PLACE_N_MSGS)
+                eTestCtrl := CT_IDLE
+                nLoopCt := eTestParam
+                repeat nLoopCt
+                        pNextMsg := genTestMsg()
+                        tskFakeRxStr(pNextMsg)
+            if (eTestCtrlPrior <> eTestCtrl)
+                showTestState(eTestCtrlPrior, eTestCtrl)
+                eTestCtrlPrior := eTestCtrl
+    else
+        ' read serial input forever placing chars in RX Circ Queue
+        debug("TASK[Rx] ** Live LOOP rcvg fm RPi **")
+        repeat
+            nTaskChr := RPi.rxtime(1000)
+            if (nTaskChr <> -1)
+                tskEnqueueChar(nTaskChr)
+
+PRI tskFakeRxStr(pStr) | nIdx, nStatusValue
+' place string into buffer as if it was received
+    debug("TASK[Rx] str=[", zstr_(pStr), "]")
+    repeat nIdx from 0 to strsize(pStr) - 1
+       nStatusValue := tskEnqueueChar(byte[pStr][nIdx])
+       if nStatusValue
+            debug("EEE Abort string write EEE")
+            quit
+
+PRI tskEnqueueChar(nChr) : bFailedStatus
+' place byte into rx queue, if EOL then place term instead and engueue string ptr!
+    bFailedStatus := FALSE
+    if (nRxByteCount < nRxByteMax)
+        if bInString == FALSE
+            bInString := TRUE
+            pNewStrStart := pRxByteHead
+            'debug("TASK[Rx] ", uhex_long(pNewStrStart), ubin_byte(bInString))
+        'debug("TASK[Rx] rxChr=", uhex_(nChr))
+        nRxByteCount++
+        if (nChr <> $0a)
+            byte [pRxByteHead++] := nChr
+        else
+            byte [pRxByteHead++] := $00 ' place term instead of EOL
+            if bInString == TRUE
+                bInString := FALSE
+                'debug("TASK[Rx]  STR=[", zstr_(pNewStrStart), "]")
+                if strHasPrefix(pNewStrStart, @strCtrlPrefix) == TRUE
+                    tskEnqueueCtrlStr(pNewStrStart)
+                else
+                    tskEnqueueStatusStr(pNewStrStart)
+        ' wrap ptr if needed...
+        if pRxByteHead > @BYTE [@serialRxBffr][RX_CHR_Q_MAX_BYTES - 1]
+            pRxByteHead := @serialRxBffr
+    else
+        bQueOverrun := TRUE ' signal that we lost incoming data!!!
+        debug("TASK[Rx] !! ERROR  char-queue full!! ", sdec(nRxByteCount), sdec(nRxByteMax))
+        bFailedStatus := TRUE
+
+PRI tskEnqueueStatusStr(pStr)
+' report string arrival to listener (place string pointer in queue)
+    if pRsltStrStart <> 0
+        pRsltQueOverrun := TRUE
+        debug("TASK[Rx] !! ERROR status-Q full!!")
+    else
+        pRsltStrStart := pStr
+        'debug("TASK[Rx] enqueueRsltStr(", udec_(strsize(pStr)), ")=[", zstr_(pStr), "] ", uhex_long(pStr))
+
+PRI tskEnqueueCtrlStr(pStr)
+' report string arrival to listener (place string pointer in queue)
+    checkGoodStringPtr(pStr)
+    if nQStrCount < RX_STR_Q_MAX_LONGS
+        LONG [@rxStrPtrSet][nQStrHeadIdx++] := pStr
+        ' if head goes off end-of-set then wrap
+        if nQStrHeadIdx > RX_STR_Q_MAX_LONGS - 1
+            nQStrHeadIdx := 0
+        ' mark arrival of new in queue
+        nQStrCount++
+        'debug("TASK[Rx] enqueueStr(", udec_(strsize(pStr)), ")=[", zstr_(pStr), "] ", uhex_long(pStr))
+    else
+        bStrQueOverrun := TRUE ' signal that we lost incoming data!!!
+        debug("TASK[Rx] !! ERROR ctrl-Q full!!")
+    'debug("TASK[Rx] enqueueStr: ", udec(nQStrCount))
+
+PRI checkGoodStringPtr(pStr)
+' report and halt if string not valid (with circular queue range)
+if pStr < @serialRxBffr or pStr > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
+   debug("EEE have BAD ptr to string! ", uhex_long(pStr), uhex_long(pRxByteStart), uhex_long(pRxByteStart + RX_CHR_Q_MAX_BYTES - 1))
+   lockupForAnly()
+
+PRI lockupForAnly()
+' tell that we are halting then halt (effictivly)
+    debug("---- FAIL - stopping here for Analysis of above ^^^")
+    repeat      ' hold here for now
+
+CON { ----- Support ----- }
+
+PRI dequeueRxStr() : pRmStr
+' remove string from queue, listener done with it
+    'dumpStrQ(string("B4 String Ptr Que"))
+    if nQStrCount > 0
+        pRmStr := LONG[@rxStrPtrSet][nQStrTailIdx++]
+        if nQStrTailIdx > RX_STR_Q_MAX_LONGS - 1
+            nQStrTailIdx := 0
+        nQStrCount--
+        if bDbgShoMem
+            debug("-- dqrs:", uhex_long(pRmStr), udec(nQStrCount))
+    else
+        debug("-- dequeueRxStr() !! ERROR string-queue empty!!")
+    'dumpStrQ(string("FTER String Ptr Que"))
+
+PRI dequeueResultRxStr() : pRsltStr
+' remove string from queue, listener done with it
+    'dumpStrQ(string("B4 String Ptr Que"))
+    pRsltStr := 0
+    if pRsltStrStart <> 0
+        pRsltStr := pRsltStrStart
+        pRsltStrStart := 0  ' mark as empty
+
+PRI freeWrappedString(pRmStr, nLen)
+    ' zero our string memory
+    if bDbgShoMem
+        debug("-- fws:", uhex_long(pRmStr))
+    zeroWrappedStr(pRmStr, nLen)
+
+PRI zeroWrappedStr(pRmStr, nLen) | nIdx, pSrc
+' fill space occuppied by string with zero's
+'  NOTE handle buffer wrap!
+'    string can start near and and wrap to front!
+    pSrc := pRmStr
+    repeat nIdx from 0 to nLen - 1
+        ' if pointing beyond end, wrap to front!
+        if pSrc > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
+          pSrc -= RX_CHR_Q_MAX_BYTES
+        BYTE[pSrc++] := 0
+    nRxByteCount -= nLen + 1
+    if bDbgShoMem
+        debug("-- zws: ", uhex_long(pRmStr), udec(nLen), udec(nRxByteCount))
+
+PRI copyWrappedStr(pUserDest, pSrcStr, lenDest) | nIdx, pSrc, pDest
+' copy possible wrapped string {pSrcStr} to {pUserDest} (use min(strlen,lenDest) as bytes to move)
+'  NOTE handle buffer wrap!
+'    string can start near and and wrap to front!
+    pDest := pUserDest
+    pSrc:= pSrcStr
+    repeat nIdx from 0 to lenDest - 1
+        ' if pointing beyond end, wrap to front!
+        if pSrc > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
+          pSrc -= RX_CHR_Q_MAX_BYTES
+        if BYTE[pSrc] == 0
+            quit    ' at string end, quit loop
+        BYTE[pDest++] := BYTE[pSrc++]
+    BYTE[pDest] := 0  ' place final terminator
+    if bDbgShoMem
+        debug("-- cws: str(", udec_(strsize(pSrcStr)), ")=[", zstr_(pUserDest), "]")
+
+PRI getResultString(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedStr, nLen
+' Return {pStr} or 0 if none
+' if {bShouldWait} is TRUE wait until string arrives before returning
+    'debug("getCtrlString: ENTRY")
+    pStr := 0
+    if bShouldWait == TRUE
+        bStringArrived := TRUE
+        repeat until haveStatusUpdate() == TRUE
+    else
+        bStringArrived := haveStatusUpdate()
+
+    if bStringArrived == TRUE
+        pStr := pUserDest
+        pWrappedStr := dequeueResultRxStr()
+        copyWrappedStr(pUserDest, pWrappedStr, lenDest)
+        nLen := strsize(pUserDest)
+        freeWrappedString(pWrappedStr, nLen)
+        'debug("grs: str=[", zstr_(pUserDest), "]")
+    else
+        debug("grs: ERROR str=[] - NOT PRESENT")
+
+PRI controlParse(pRxBffr, pUserKey, nLenUserKey, pUserValue, nLenUserValue) : nStatus | lenRemaining, sep, nIdx, pSrchBffr, pKey, pVal, nChr
+    ' Examples: "ctrl:enableColor=true\n"
+    ' Examples: "ctrl:ledColor=0x445501\n"
+    ' Examples: "ctrl:tempSensorStr=48 degr F\n"
+    '
+    bytefill(pUserKey, 0, nLenUserKey)                        ' reset buffers
+    bytefill(pUserValue, 0, nLenUserValue)
+    'debug("cp: ", uhex_long(pUserKey), udec(nLenUserKey), uhex_long(pUserValue), udec(nLenUserValue))
+    nStatus := OP_FAILURE ' preset to failure
+
+  pSrchBffr := pRxBffr
+  lenRemaining := strsize(pRxBffr)                                         ' get length of input
+  sep := -1                                                     ' separator not found
+
+' copy our subsys ID from rx buffer
+  repeat nIdx from 0 to RX_SYSTEM_ID_LEN
+    nChr := byte[pSrchBffr][nIdx]
+    if (nChr == ":")
+      sep := nIdx                                                  ' mark separator
+    elseif (nChr == $00)
+      byte[pSrchBffr][nIdx] := 0
+      quit
+    if nIdx > lenRemaining
+      quit
+
+  if (lenRemaining > 0)
+    if (sep >= 0)
+      ' capture subsystem ID for this status
+      bytemove(@subsysId, pSrchBffr, sep)
+
+    ' point past subsystem ID
+    pSrchBffr := pSrchBffr + sep + 1  ' +1 = point past sep
+
+    ' there should be a single {name}={value} pair
+    pKey, pVal, nIdx := locateNextKeyValue(pSrchBffr)
+    'debug("cp: ", zstr(pKey), ", ", zstr(pVal), sdec(nIdx))
+
+    nStatus := OP_SUCCESS
+
+    ' copy KeyName to user space (limited to size of user space)
+    lenRemaining := strsize(pKey)
+    if (lenRemaining > nLenUserKey)
+        lenRemaining := nLenUserKey
+    bytemove(pUserKey, pKey, lenRemaining)
+
+    ' copy Value to user space (limited to size of user space)
+    lenRemaining := strsize(pVal)
+    if (lenRemaining > nLenUserValue)
+        lenRemaining := nLenUserValue
+    bytemove(pUserValue, pVal, lenRemaining)
+
+PRI statusParse(pRxBffr) : nStatus, pStatusMsg | lenRemaining, sep, nIdx, fullIdx, nChr, pSrchBffr, pName, pValue, ignore, matchStatus, nLongIdx
+    ' Examples: "faccess:status=True,fileid=9999,exists=False\n"
+    ' Examples: "faccess:status=True,fileid=9999,exists=True\n"
+    ' Examples: "faccess:status=False,msg=error dir=999\n"
+    ' Examples: "faccess:status=False,msg=error failed-to-create\n"
+    ' Examples: "folist:status=True^|^ct=2^|^names=P2-P2-Edge-GWDemo3,rpiHostInfo\n"
+    ' Examples: "kylist:status=True^|^ct=2^|^names=FQDN,Hostname\n"
+  bytefill(@statusMsg, 0, RX_BFFR_LEN+1)                        ' reset buffers
+  bytefill(@subsysId, 0, RX_SYSTEM_ID_LEN+1)
+
+  nStatus := OP_FAILURE ' preset to failure
+  pStatusMsg := @statusMsg
+
+  pSrchBffr := pRxBffr
+  lenRemaining := strsize(pRxBffr)                                         ' get length of input
+  sep := -1                                                     ' separator not found
+
+' copy our subsys ID from rx buffer
+  repeat nIdx from 0 to RX_SYSTEM_ID_LEN
+    nChr := byte[pSrchBffr][nIdx]
+    if (nChr == ":")
+      sep := nIdx                                                  ' mark separator
+    elseif (nChr == $00)
+      byte[pSrchBffr][nIdx] := 0
+      quit
+    if nIdx > lenRemaining
+      quit
+
+  if (lenRemaining > 0)
+    if (sep >= 0)
+      ' record subsystem ID for this status
+      bytemove(@subsysId, pSrchBffr, sep)
+
+    ' point past subsystem ID
+    pSrchBffr := pSrchBffr + sep + 1  ' +1 = point past sep
+
+    ' this should be status=
+    pName, pValue, nIdx := locateNextKeyValue(pSrchBffr)
+    'debug("sp: ", zstr(pName), ", ", zstr(pValue), sdec(nIdx))
+    fullIdx := nIdx
+
+    matchStatus, ignore := indexOfStr(string("status"), pName)
+    if (matchStatus == 0)
+        matchStatus, ignore := indexOfStr(string("True"), pValue)
+        nStatus := (matchStatus == 0) ? OP_SUCCESS : OP_FAILURE
+
+        ' locate next key/value pair
+        pName, pValue, nIdx := locateNextKeyValue(pSrchBffr + nIdx)
+        'debug("sp: ", zstr(pName), ", ", zstr(pValue), sdec(nIdx))
+        fullIdx += nIdx
+
+        if (nStatus == OP_SUCCESS)
+            ' in this case there's more to decode
+            ' this should be nCollId= -or- varVal=
+            matchStatus, ignore := indexOfStr(string("collId"), pName)
+            if (matchStatus == 0)
+                parsedFileId := decimalForString(pValue)
+            else
+                matchStatus, ignore := indexOfStr(string("varVal"), pName)
+                if (matchStatus == 0)
+                    parsedLongVal := decimalForString(pValue)
+                    ' also copy string form into status msg buffer to hold it
+                    lenRemaining := strsize(pValue)
+                    if lenRemaining > RX_BFFR_LEN
+                    lenRemaining := RX_BFFR_LEN   ' ensure fits in buffer
+                    bytemove(@statusMsg, pValue, lenRemaining)
+                else
+                    matchStatus, ignore := indexOfStr(string("ct"), pName)
+                    if (matchStatus == 0)
+                        ' located out count of names
+                        parsedLongVal := decimalForString(pValue)
+                        LONG[@parsedNameSet][0] := parsedLongVal
+                        ' locate next key/value pair
+                        pName, pValue, nIdx := locateNextKeyValue(pSrchBffr + fullIdx)
+                        'debug("sp: ", zstr(pName), ", ", zstr(pValue), sdec(nIdx))
+                        matchStatus, ignore := indexOfStr(string("names"), pName)
+                        if (matchStatus == 0)
+                            ' located our list of names
+                            lenRemaining := strsize(pValue)
+                            if lenRemaining > RX_BFFR_LEN
+                                lenRemaining := RX_BFFR_LEN
+                            bytefill(@parsedNamesValue, 0, RX_BFFR_LEN+1)            ' reset buffer
+                            bytemove(@parsedNamesValue, pValue, lenRemaining)
+                            debug("- ptr[0]=0x", uhex_long_(LONG[@parsedNameSet][0]))
+                            nLongIdx := 1
+                            LONG[@parsedNameSet][nLongIdx++] := @parsedNamesValue  ' ptr to first name
+                            debug("- ptr[", udec_(nLongIdx-1), "]=0x", uhex_long_(LONG[@parsedNameSet][nLongIdx-1]))
+                            repeat nIdx from 1 to lenRemaining - 1
+                                if BYTE[@parsedNamesValue][nIdx] == $2c ' comma char
+                                    BYTE[@parsedNamesValue][nIdx] := $00  ' terminate prior name string
+                                    LONG[@parsedNameSet][nLongIdx++] := @BYTE[@parsedNamesValue][nIdx + 1] ' ptr to next name
+                                    debug("- ptr[", udec_(nLongIdx-1), "]=0x", uhex_long_(LONG[@parsedNameSet][nLongIdx-1]))
+                                elseif BYTE[@parsedNamesValue][nIdx] == $0a or BYTE[@parsedNamesValue][nIdx] == $00
+                                    quit
+                                        matchStatus, ignore := indexOfStr(string("msg"), pName)
+                                        if (matchStatus == 0)
+                                            pStatusMsg := pValue
+                        else
+                    else
+                        ' nothing more to do here, no idea what this is....
+
+        else
+            ' this should be msg=
+            matchStatus, ignore := indexOfStr(string("msg"), pName)
+            if (matchStatus == 0)
+                lenRemaining := strsize(pValue)
+                if lenRemaining > RX_BFFR_LEN
+                  lenRemaining := RX_BFFR_LEN   ' ensure fits in buffer
+                bytemove(@statusMsg, pValue, lenRemaining)
+
+PRI strHasPrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
+    bHasStatus := TRUE
+    repeat nIdx from 0 to strsize(pPrefix) - 1
+        if BYTE[pTargetStr][nIdx] <> BYTE[pPrefix][nIdx]
+            bHasStatus := False
+            quit    ' outta here, we have our answer!
+
+
+PRI locateNextKeyValue(pRxBffr) : pUserKey, pUserValue, nLength | lenRemaining, endOfPair, endOfKey, valueStartIdx, lenValue, idxNextKey, idxOfValue, multiPairStatus, ignore
+' parse for key-value pair in given string (value ends with $00 or Sep)
+  lenRemaining := strsize(pRxBffr)                  ' get length of input
+  bytefill(@keyName, 0, RX_SYSTEM_ID_LEN+1)         ' reset buffers
+  bytefill(@statusMsg, 0, RX_BFFR_LEN+1)            ' reset buffers
+
+  multiPairStatus, ignore := indexOfStr(@parmSep, pRxBffr)
+
+  endOfKey, idxOfValue := indexOfStr(string("="), pRxBffr)
+
+  if (endOfKey <> -1 )
+    bytemove(@keyName, pRxBffr, endOfKey)
+
+  if (multiPairStatus <> -1)
+    endOfPair, idxNextKey := indexOfStr(@parmSep, pRxBffr)
+    if (endOfPair <> -1 and endOfKey <> -1 and endOfKey < endOfPair)
+        valueStartIdx := endOfKey + 1
+        lenValue := endOfPair - valueStartIdx
+        bytemove(@statusMsg, @byte[pRxBffr][valueStartIdx], lenValue)
+        nLength := idxNextKey
+        pUserKey := @keyName
+        pUserValue := @statusMsg
+        'debug("lnxKV: ", zstr(@keyName), ", ", zstr(@statusMsg), sdec(nLength))
+    else
+      debug("lnxKV: failed to locate KV in [", zstr(pRxBffr),"]")
+  else
+    endOfPair := strsize(pRxBffr)
+    if (endOfKey <> -1 and endOfKey < endOfPair)
+        valueStartIdx := endOfKey + 1
+        lenValue := endOfPair - valueStartIdx
+        bytemove(@statusMsg, @byte[pRxBffr][valueStartIdx], lenValue)
+        nLength := idxNextKey
+        pUserKey := @keyName
+        pUserValue := @statusMsg
+        'debug("lnxKV: ", zstr(@keyName), ", ", zstr(@statusMsg), sdec(nLength))
+    else
+        debug("lnxKV: failed to locate KV in [", zstr(pRxBffr),"]")
+
+PRI indexOfStr(pSrchStr, pRxBffr) : nIdx, idxAfter | lenRemaining, srchLen, srchIdx, srcIdx, bSrchMatch
+  nIdx := -1   ' preset NOT found
+  lenRemaining := strsize(pRxBffr)                  ' get length of input
+  srchLen := strsize(pSrchStr)
+  if (srchLen <= lenRemaining)
+    repeat srcIdx from 0 to lenRemaining - srchLen
+        bSrchMatch := True
+        repeat srchIdx from 0 to srchLen - 1
+          if (byte[pSrchStr][srchIdx] <> byte[pRxBffr][srcIdx + srchIdx])
+            bSrchMatch := False
+            quit    ' abort srchStr compare
+        if bSrchMatch == True
+            nIdx := srcIdx
+            idxAfter := srcIdx + srchLen
+            quit   ' abort rxBuffer compare
+  'debug("idxOf: ", zstr(pSrchStr), ", ", zstr(pRxBffr), ", nIdx=", sdec_(nIdx))
+
+CON { ----- TEST Support ----- }
+
+PRI prepStackForCheck()
+' reset all failure indicators
+
+    longfill(@taskStack, NOT_WRITTEN_MARK, STACK_SIZE_LONGS)
+    endStackMark := DO_NOT_WRITE_MARK
+
+PRI checkStack()
+    if endStackMark <> DO_NOT_WRITE_MARK
+        debug("^^^ STACK Overflow! Depth greater than ", udec(nStackDepth),  " longs")
+        lockupForAnly()
+
+PRI reportStackUse()
+    nStkChkUsed := 0
+    repeat nStkChkIdx from 0 to STACK_SIZE_LONGS - 1
+        if LONG[@taskStack][nStkChkIdx] <> NOT_WRITTEN_MARK
+            nStkChkUsed++
+        else
+            quit    ' done we have our count
+    debug("^^^ STACK used ", udec(nStkChkUsed), " of ", udec(nStackDepth))
+
+PRI testReport(pTestId, bPassFail) | pResult
+    pResult := (bPassFail == TST_PASS) ? @rsltPass : @rsltFail
+    debug("+++ ---------")
+    debug("+++ TEST [", zstr_(pTestId), "] - ", zstr_(pResult))
+    reportStackUse()
+    checkStack()
+    'dumpStack()
+
+    if bPassFail == TST_FAIL
+        lockupForAnly()
+
+PRI dumpStack()
+    dbgMemDump(@taskStack, (STACK_SIZE_LONGS + 1) * 4, string("TASK Stack"))
+
+DAT { test message things }
+
+testMsgCt       LONG    0
+
+testMsgStr      BYTE    "Test "
+testMsgNbr      BYTE    "000x"
+testMsgEOL      BYTE    $0a, 0
+
+rsltPass        BYTE    "pass",0
+rsltFail        BYTE    "FAIL",0
+
+nStkChkUsed     LONG    0
+nStkChkIdx      LONG    0
+
+PRI genTestMsg() : pMsg | nDigit, nRemainder
+' return pointer to a simple message
+    pMsg := @testMsgStr
+    nRemainder := testMsgCt++
+    if nRemainder > 999
+        nDigit := nRemainder / 1000
+        nRemainder -= nDigit * 1000
+        BYTE[@testMsgNbr][0] := nDigit + $30
+    if nRemainder > 99
+        nDigit := nRemainder / 100
+        nRemainder -= nDigit * 100
+        BYTE[@testMsgNbr][1] := nDigit + $30
+    if nRemainder > 9
+        nDigit := nRemainder / 10
+        nRemainder -= nDigit * 10
+        BYTE[@testMsgNbr][2] := nDigit + $30
+    BYTE[@testMsgNbr][3] := nRemainder + $30
+
+PRI showTestState(ePrior, eNew) | pFrom, pTo
+' display task state
+    pFrom := nameForState(ePrior)
+    pTo := nameForState(eNew)
+    debug("TEST state [", zstr_(pFrom), "] -> [", zstr_(pTo), "]")
+
+PRI nameForState(eNew) : pStr
+' return string for state value
+    if eNew == CT_IDLE
+      pStr := @ctStrIdle
+    elseif  eNew == CT_STOP
+      pStr := @ctStrStop
+    elseif  eNew == CT_PLACE_STR
+      pStr := @ctStrPlcStr
+    elseif  eNew == CT_PLACE_N_MSGS
+      pStr := @ctStrPlcNMsgs
+    else
+      pStr := @ctStrUnknown
+
+PRI dumpStrQ(pMsg)
+' dump our full string-que so we can visually inspect
+    dbgMemDump(@nQStrHeadIdx, (4 + RX_STR_Q_MAX_LONGS) * 4, pMsg)
+
+PRI dbgMemDump(pBytes, lenBytes, pMessage) | rowCount, rowLen, pCurrByte, lastRowByteCount, bytesSoFar
+' Dump rows of hex values with address preceeding
+
+    if pMessage
+        debug("** ", zstr_(pMessage), ":")
+
+    rowCount := lenBytes / 16
+    lastRowByteCount := lenBytes - (rowCount * 16)
+    pCurrByte := pBytes
+    bytesSoFar := 0
+
+    ' emit full lines
+    if rowCount > 0
+        repeat rowCount
+            dbgMemDumpRow(pCurrByte, 16)
+            pCurrByte += 16
+            bytesSoFar += 16
+
+    if  bytesSoFar < lenBytes
+        ' emit last line
+        dbgMemDumpRow(pCurrByte, lastRowByteCount)
+
+PRI dbgMemDumpRow(pBytes, lenBytes) '| rowCount, rowLen, pCurrByte, bytIndex
+' emit address followed by bytes
+    debug(" ", uhex_long_(pBytes), ": ", uhex_byte_array_(pBytes, lenBytes))
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}
