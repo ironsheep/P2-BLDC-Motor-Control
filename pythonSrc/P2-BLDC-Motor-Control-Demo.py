@@ -520,13 +520,21 @@ def waitForMotorsStopped():
 # run our loop
 try:
     # -------------------------
+    # configure drive system
+    # -------------------------
+    # override defaults, use 100 %
+    wheels.setMaxSpeed(100);
+    wheels.setMaxSpeedForDistance(100);
+    # and don't draw current at stop
+    wheels.holdAtStop(False);
+
+    # -------------------------
     #  drive a square pattern
     #   2-second sides 50% power, 90° corners
     # -------------------------
     # forward for 2 seconds at 50% power
     desiredPower = 50
     lengthOfSideInSeconds = 2
-    dirHardRightTurn = 100
     dirStraightAhead = 0
     wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS);
     wheels.driveDirection(desiredPower, dirStraightAhead);
@@ -539,6 +547,7 @@ try:
     #     wheel diameter = 6.5"
     #     travel dist is 1.346 rotations
     #     rotations * 90 = 121 hall ticks
+    dirHardRightTurn = 100
     ticksIn90DegreeTurn = 121
     wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS);
     wheels.driveDirection(desiredPower, dirHardRightTurn);
