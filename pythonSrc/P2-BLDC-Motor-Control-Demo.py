@@ -39,6 +39,13 @@ script_info     = '{} v{}'.format(script_name, script_version)
 project_name    = 'P2-RPi-IoT-gw'
 project_url     = 'https://github.com/ironsheep/P2-RPi-IoT-gateway'
 
+# -----------------------------------------------------------------------------
+# the BELOW are identical to that found in our gateway .spin2 object
+#   (!!!they must be kept in sync!!!)
+# -----------------------------------------------------------------------------
+
+# markers found within the data arriving from the P2 but likely will NOT be found in normal user data sent by the P2
+parm_sep    = '^|^'
 
 # -----------------------------------------------------------------------------
 #  External Interface constants (Enums) exposed by isp_bldc_motor.spin2
@@ -248,6 +255,14 @@ class RuntimeConfig:
         if name not in self.configKnownKeys:
             print_line('CONFIG-Dict: Unexpected key=[{}]!!'.format(name), warning=True)
 
+    def containsKey(self, possKey):
+        # ensure a key we are trying to set/get is expect by this system
+        #   generate warning if NOT
+        foundKeyStatus = False
+        if possKey in self.configDictionary:
+            foundKeyStatus = True
+        return foundKeyStatus
+
     def setConfigNamedVarValue(self, name, value):
         # set a config value for name
         global configDictionary
@@ -298,6 +313,9 @@ class RxLineQueue:
             oldestLine = self.lineBuffer.popleft()
         return oldestLine
 
+    def lineCount(self):
+        return len(self.lineBuffer)
+
 
 # -----------------------------------------------------------------------------
 #  TASK: dedicated serial listener
@@ -314,6 +332,7 @@ def taskSerialListener(serPort):
             queueRxLines.pushLine(currLine)
             #sleep(0.1)
     else:
+        # queue lines received as quickly as they come in...
         while True:
             received_data = serPort.readline()              #read serial port
             if len(received_data) > 0:
@@ -321,6 +340,23 @@ def taskSerialListener(serPort):
                 currLine = received_data.decode('utf-8', 'replace').rstrip()
                 #print_line('TASK-RX line({}=[{}]'.format(len(currLine), currLine), debug=True)
                 queueRxLines.pushLine(currLine)
+
+
+# -----------------------------------------------------------------------------
+#  TASK: dedicated receive line processor
+# -----------------------------------------------------------------------------
+
+def taskProcessRxStrings(serPort):
+    global queueRxLines
+    print_line('Thread: processRxStrings() started', verbose=True)
+    while True:
+        # process an incoming line
+        currLine = queueRxLines.popLine()
+
+        if len(currLine) > 0:
+            processIncomingRequest(currLine, serPort)
+        else:
+            sleep(0.1)
 
 class BLDCMotorControl:
     serPort = ''
@@ -374,6 +410,7 @@ class BLDCMotorControl:
     def setMaxSpeed(self, speed):
         commandStr = 'setspeed {}\n'.format(speed)
         self.sendCommand(commandStr)
+        self.processResponse()
 
     def setMaxSpeedForDistance(self, speed):
         commandStr = 'setspeedfordist {}\n'.format(speed)
@@ -419,10 +456,17 @@ class BLDCMotorControl:
         self.serPort.write(newOutLine)
 
 
+    # common rx repsonse method
+    def processResponse(self):
+        global queueRxLines
+        while queueRxLines.lineCount() == 0:
+            sleep(0.2)
+
 # -----------------------------------------------------------------------------
 #  Main loop
 # -----------------------------------------------------------------------------
 # commands from P2
+cmdIdentifyHW  = "ident:"
 responseOK  = "OK"
 responseERROR = "ERROR"
 
@@ -438,25 +482,77 @@ def processIncomingRequest(newLine, serPort):
         print_line('* Incoming error', verbose=True)
         print_line('processIncomingRequest nameValueStr({})=({}) ! missing hardware keys !'.format(len(newLine), newLine), warning=True)
 
+    elif newLine.startswith(cmdIdentifyHW):
+        print_line('* HANDLE id P2 Hardware', verbose=True)
+        nameValuePairs = getNameValuePairs(newLine, cmdIdentifyHW)
+        if len(nameValuePairs) > 0:
+            findingsDict = processNameValuePairs(nameValuePairs)
+            # Record the hardware info for later use
+            if len(findingsDict) > 0:
+                p2ProcDict = {}
+                for key in findingsDict:
+                    runtimeConfig.setConfigNamedVarValue(key, findingsDict[key])
+                    p2ProcDict[key] = findingsDict[key]
+                sendValidationSuccess(serPort, "fident", "", "")
+            else:
+                print_line('processIncomingRequest nameValueStr({})=({}) ! missing hardware keys !'.format(len(newLine), newLine), warning=True)
+
     else:
         print_line('ERROR: line({})=[{}] ! P2 LINE NOT Recognized !'.format(len(newLine), newLine), error=True)
 
+
 def processInput(serPort):
+    # process all queued lines then stop
     global queueRxLines
-    while True:             # get Loop (if something, get another)
-        # process an incoming line - creates our windows as needed
+    while True:
+        # process an incoming line
         currLine = queueRxLines.popLine()
 
         if len(currLine) > 0:
             processIncomingRequest(currLine, serPort)
         else:
+            # if no more lines, exit loop
             break
 
-def mainLoop(serPort):
-    print_line('Thread: MainLoop() running', verbose=True)
-    while True:             # Event Loop
-        processInput(serPort)
-        sleep(0.2)  # pause 2/10ths of second
+def getNameValuePairs(strRequest, cmdStr):
+    # isolate name-value pairs found within {strRequest} (after removing prefix {cmdStr})
+    rmdr = strRequest.replace(cmdStr,'')
+    nameValuePairs = rmdr.split(parm_sep)
+    print_line('getNameValuePairs nameValuePairs({})=({})'.format(len(nameValuePairs), nameValuePairs), debug=True)
+    return nameValuePairs
+
+def processNameValuePairs(nameValuePairsAr):
+    # parse the name value pairs - return of dictionary of findings
+    findingsDict = {}
+    for nameValueStr in nameValuePairsAr:
+        if '=' in nameValueStr:
+            name,value = nameValueStr.split('=', 1)
+            print_line('  [{}]=[{}]'.format(name, value), debug=True)
+            findingsDict[name] = value
+        else:
+            print_line('processNameValuePairs nameValueStr({})=({}) ! missing "=" !'.format(len(nameValueStr), nameValueStr), warning=True)
+    return findingsDict
+
+def sendValidationError(serPort, cmdPrefixStr, errorMessage):
+    # format and send an error message via outgoing serial
+    successStatus = False
+    responseStr = '{}:status={}{}msg={}\n'.format(cmdPrefixStr, successStatus, parm_sep, errorMessage)
+    newOutLine = responseStr.encode('utf-8')
+    print_line('sendValidationError line({})=[{}]'.format(len(newOutLine), newOutLine), error=True)
+    serPort.write(newOutLine)
+
+def sendValidationSuccess(serPort, cmdPrefixStr, returnKeyStr, returnValueStr):
+    # format and send an error message via outgoing serial
+    successStatus = True
+    if(len(returnKeyStr) > 0):
+        # if we have a key we're sending along an extra KV pair
+        responseStr = '{}:status={}{}{}={}\n'.format(cmdPrefixStr, successStatus, parm_sep, returnKeyStr, returnValueStr)
+    else:
+        # no key so just send final status
+        responseStr = '{}:status={}\n'.format(cmdPrefixStr, successStatus)
+    newOutLine = responseStr.encode('utf-8')
+    print_line('sendValidationSuccess line({})=({})'.format(len(newOutLine), newOutLine), verbose=True)
+    serPort.write(newOutLine)
 
 
 # -----------------------------------------------------------------------------
@@ -503,7 +599,9 @@ queueRxLines = RxLineQueue()
 
 _thread.start_new_thread(taskSerialListener, ( serialPort, ))
 
-sleep(1)    # aloow threads to start...
+_thread.start_new_thread(taskProcessRxStrings, ( serialPort, ))
+
+sleep(1)    # allow threads to start...
 
 wheels = BLDCMotorControl(serialPort)
 
@@ -511,78 +609,87 @@ def waitForMotorsStopped():
     bothStopped = False
     while bothStopped == False:
         # get status
-        wheels.getStatus();
+        wheels.getStatus()
         #while not stopped loop
         # get "stat" response (lt and rt status)
         # if both are stopped the set bothStopped = true
-        bothStopped = True;
+        bothStopped = True
 
 # run our loop
 try:
+    # wait for runtimeConfig to get our hardware ID from P2 (saying it's alive)
+    print_line('- waiting P2 startup', verbose=True)
+    while not runtimeConfig.containsKey("hwName"):
+        sleep(0.5)
+
+    print_line('- P2 is alive!', verbose=True)
+
     # -------------------------
     # configure drive system
     # -------------------------
     # override defaults, use 100 %
-    wheels.setMaxSpeed(100);
-    wheels.setMaxSpeedForDistance(100);
+    wheels.setMaxSpeed(100)
+    wheels.setMaxSpeedForDistance(100)
     # and don't draw current at stop
-    wheels.holdAtStop(False);
+    wheels.holdAtStop(False)
 
+    """
+        # -------------------------
+        #  drive a square pattern
+        #   2-second sides 50% power, 90° corners
+        # -------------------------
+        # forward for 2 seconds at 50% power
+        desiredPower = 50
+        lengthOfSideInSeconds = 2
+        dirStraightAhead = 0
+        wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
+        wheels.driveDirection(desiredPower, dirStraightAhead)
+        waitForMotorsStopped()
+        # hard 90° right turn
+        #   [circ = 2 * PI * r]
+        #   rotate about 1 wheel means effective-platform-radius is actual-platform-diameter!
+        #     dist to travel = (effective-platform-circumference / 4) / wheel circumference
+        #     effective-platform-radius = 17.5"
+        #     wheel diameter = 6.5"
+        #     travel dist is 1.346 rotations
+        #     rotations * 90 = 121 hall ticks
+        dirHardRightTurn = 100
+        ticksIn90DegreeTurn = 121
+        wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
+        wheels.driveDirection(desiredPower, dirHardRightTurn)
+        waitForMotorsStopped()
+
+        # forward for 2 seconds at 50% power
+        wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
+        wheels.driveDirection(desiredPower, dirStraightAhead)
+        waitForMotorsStopped()
+
+        # hard 90° right turn
+        wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
+        wheels.driveDirection(desiredPower, dirHardRightTurn)
+        waitForMotorsStopped()
+
+        # forward for 2 seconds at 50% power
+        wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
+        wheels.driveDirection(desiredPower, dirStraightAhead)
+        waitForMotorsStopped()
+
+        # hard 90° right turn
+        wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
+        wheels.driveDirection(desiredPower, dirHardRightTurn)
+        waitForMotorsStopped()
+
+    # forward for 2 seconds at 50% power
+        wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
+        wheels.driveDirection(desiredPower, dirStraightAhead)
+        waitForMotorsStopped()
+
+        # hard 90° right turn
+        wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
+        wheels.driveDirection(desiredPower, dirHardRightTurn)
+        waitForMotorsStopped()
     # -------------------------
-    #  drive a square pattern
-    #   2-second sides 50% power, 90° corners
-    # -------------------------
-    # forward for 2 seconds at 50% power
-    desiredPower = 50
-    lengthOfSideInSeconds = 2
-    dirStraightAhead = 0
-    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS);
-    wheels.driveDirection(desiredPower, dirStraightAhead);
-    waitForMotorsStopped();
-    # hard 90° right turn
-    #   [circ = 2 * PI * r]
-    #   rotate about 1 wheel means effective-platform-radius is actual-platform-diameter!
-    #     dist to travel = (effective-platform-circumference / 4) / wheel circumference
-    #     effective-platform-radius = 17.5"
-    #     wheel diameter = 6.5"
-    #     travel dist is 1.346 rotations
-    #     rotations * 90 = 121 hall ticks
-    dirHardRightTurn = 100
-    ticksIn90DegreeTurn = 121
-    wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS);
-    wheels.driveDirection(desiredPower, dirHardRightTurn);
-    waitForMotorsStopped();
-
-    # forward for 2 seconds at 50% power
-    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS);
-    wheels.driveDirection(desiredPower, dirStraightAhead);
-    waitForMotorsStopped();
-
-    # hard 90° right turn
-    wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS);
-    wheels.driveDirection(desiredPower, dirHardRightTurn);
-    waitForMotorsStopped();
-
-    # forward for 2 seconds at 50% power
-    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS);
-    wheels.driveDirection(desiredPower, dirStraightAhead);
-    waitForMotorsStopped();
-
-    # hard 90° right turn
-    wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS);
-    wheels.driveDirection(desiredPower, dirHardRightTurn);
-    waitForMotorsStopped();
-
-   # forward for 2 seconds at 50% power
-    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS);
-    wheels.driveDirection(desiredPower, dirStraightAhead);
-    waitForMotorsStopped();
-
-    # hard 90° right turn
-    wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS);
-    wheels.driveDirection(desiredPower, dirHardRightTurn);
-    waitForMotorsStopped();
-   # -------------------------
+    """
 
 finally:
     # normal shutdown

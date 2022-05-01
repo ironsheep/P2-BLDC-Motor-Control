@@ -13,7 +13,7 @@
 
 CON { timing }
 
-  CLK_FREQ = 270_000_000                                        ' system freq as a constant
+  CLK_FREQ = 200_000_000                                        ' system freq as a constant
   _clkfreq = CLK_FREQ                                           ' set system clock
 
 CON { fixed io pins }
@@ -28,10 +28,10 @@ CON { fixed io pins }
 
 CON { application io pins }
 
-  GW_RX2      = 57  { I }                                      ' programming / debug
+  GW_RX2      = 57  { I }                                       ' programming / debug
   GW_TX2      = 56  { O }
 
-  GW_BAUDRATE = 624_000   ' 624kb/s - allow P2 rx to keep up!
+  GW_BAUDRATE = 624_000                                         ' 624kb/s - allow P2 rx to keep up!
 
 DAT { our hardware ID strings and 1-wire buffers, collection names }
 
@@ -40,31 +40,260 @@ p2HardwareID    byte    "P2 Edge - 2WheelBot",0
 OBJ { our Motors }
 
     wheels      : "isp_steering_2wheel"                         ' our steering object
-    IoT_GW      : "isp_rpi_iot_gw"                              ' serial I/O to/from host (RPi, Arduino, etc.)
-    rxQue       : "isp_queue_serial"                            ' access to our received data
+    hostIF      : "isp_host_serial"                             ' serial I/O to/from host (RPi, Arduino, etc.)
+    serialQueue : "isp_queue_serial"                            ' access to our received data
+    strFmt      : "isp_mem_strings"                             ' format to memory routines
+
+CON { command-names enum }
+
+#0, CMD_Unknown, CMD_DRV_DIR, CMD_DRV_DIST, CMD_DRV_PWR
+#4, CMD_STP_ROT, CMD_STP_DIST, CMD_STP_TIME, CMD_STP_MOT
+#8, CMD_EMER_CUT, CMD_EMER_CLR
+#10, CMD_SET_ACCEL, CMD_SET_SPD, CMD_SET_DIST_SPD
+#13, CMD_HOLD, CMD_RST_TRKG
+#15, CMD_GET_DIST, CMD_GET_ROT, CMD_GET_PWR
+#18, CMD_GET_STAT, CMD_GET_MAX_SPD, CMD_GET_MAX_DIST_SPD
+
+DAT { command table }
+
+    cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
+                long  @cmdDrvDist, CMD_DRV_DIST, 3
+                long  @cmdDrvPwr, CMD_DRV_PWR, 2
+                long  @cmdStpAftRot, CMD_STP_ROT, 2
+                long  @cmdStpAftDist, CMD_STP_DIST, 2
+                long  @cmdStpAftTime, CMD_STP_TIME, 2
+                long  @cmdStpMot, CMD_STP_MOT, 0
+                long  @cmdEmerCut, CMD_EMER_CUT, 0
+                long  @cmdEmerClr, CMD_EMER_CLR, 0
+                long  @cmdSetAccel, CMD_SET_ACCEL, 1
+                long  @cmdSetSpd, CMD_SET_SPD, 1
+                long  @cmdSetDistSpd, CMD_SET_DIST_SPD, 1
+                long  @cmdHold, CMD_HOLD, 1
+                long  @cmdRstTrack, CMD_RST_TRKG, 0
+                long  @cmdGetDist, CMD_GET_DIST, 1
+                long  @cmdGetRot, CMD_GET_ROT, 1
+                long  @cmdGetPwr, CMD_GET_PWR, 0
+                long  @cmdGetStat, CMD_GET_STAT, 0
+                long  @cmdGetMaxSpd, CMD_GET_MAX_SPD, 0
+                long  @cmdGetMaxDistSpd, CMD_GET_MAX_DIST_SPD, 0
+    cmdLast
+
+    cmdEntryCt long @cmdLast - @cmdsFirst / 3
+
+    ' NOTE these MUST all be lower-case!!
+    cmdDrvDir           BYTE    "drivedir",0
+    cmdDrvDist          BYTE    "drivedist",0
+    cmdDrvPwr           BYTE    "drivepwr",0
+    cmdStpAftRot        BYTE    "stopaftrot",0
+    cmdStpAftDist       BYTE    "stopaftdist",0
+    cmdStpAftTime       BYTE    "stopafttime",0
+    cmdStpMot           BYTE    "stopmotors",0
+    cmdEmerCut          BYTE    "emercutoff",0
+    cmdEmerClr          BYTE    "emerclear",0
+    cmdSetAccel         BYTE    "setaccel",0
+    cmdSetSpd           BYTE    "setspeed",0
+    cmdSetDistSpd       BYTE    "setspeedfordist",0
+    cmdHold             BYTE    "hold",0
+    cmdRstTrack         BYTE    "resettracking",0
+    cmdGetDist          BYTE    "getdist",0
+    cmdGetRot           BYTE    "getrot",0
+    cmdGetPwr           BYTE    "getpwr",0
+    cmdGetStat          BYTE    "getstatus",0
+    cmdGetMaxSpd        BYTE    "getmaxspd",0
+    cmdGetMaxDistSpd    BYTE    "getmaxspdfordist",0
+
+    msgWork             BYTE    0[256]     ' 256 bytes in which to format the outgoing message
 
 
-PUB main()
+PUB main() | opStatus, pValues
 '' DEMO Driving a two wheeled platform
 
-    debug("* serial I/F to dual motor platform")
+    debug("* Serial I/F to dual motor platform")
 
     '' DEMO send status values to a web page and act on control values sent by the web page
-    IoT_GW.startx(GW_RX2, GW_TX2, GW_BAUDRATE, IoT_GW.PU_15K)    ' tell singleton our pins and rate
+    hostIF.startx(GW_RX2, GW_TX2, GW_BAUDRATE, hostIF.PU_15K)    ' tell singleton our pins and rate
 
     ' (one time) tell the RPi about how to identify this hardware
-    IoT_GW.identify(@p2HardwareID)
+    hostIF.identify(@p2HardwareID)
 
     ' start our motor drivers (left and right)
     wheels.start(wheels.PINS_P0_P15, wheels.PINS_P16_P31, wheels.PWR_14p8V)
 
     ' override defaults, use 100 %
-    wheels.setMaxSpeed(100)
-    wheels.setMaxSpeedForDistance(100)
+    'wheels.setMaxSpeed(100)
+    'wheels.setMaxSpeedForDistance(100)
     ' just don't draw current at stop
-    wheels.holdAtStop(false)
+    'wheels.holdAtStop(false)
 
+    debug("* command loop *")
 
+    repeat
+        if serialQueue.haveCommand(@cmdsFirst, cmdEntryCt)
+            opStatus, pValues := serialQueue.getCommandAndValue()
+            if opStatus == serialQueue.OP_SUCCESS
+                processCommand(pValues)
+        else
+            waitms(1000)    ' for 1 sec
+
+DAT { parse work variables }
+
+    cmdEnum         LONG    0
+    drvDir          LONG    0
+    drvPwr1         LONG    0
+    drvPwr2         LONG    0
+    ltStatus        LONG    0
+    rtStatus        LONG    0
+    nRot            LONG    0
+    nRotUnits       LONG    0
+    nTime           LONG    0
+    nTimeUnits      LONG    0
+    nSpeed          LONG    0
+    bHoldEnable     LONG    0
+
+PRI processCommand(pValues)
+    '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")
+    '              [1:pStr] -> "full string"
+    '              [2:pCmd] -> "cmd"
+    '              [3:eCmd]
+    '              [4:nValue1]
+    '              [5:nValue2]
+    '              [6:nValue3]
+    '              [etc] - up to 6 max values
+    cmdEnum := long [pValues][serialQueue.ENT_CMDENUM_IDX]
+    case cmdEnum
+        CMD_DRV_DIR:
+            ' get incoming parm values
+            drvPwr1 := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            drvDir := LONG[pValues][serialQueue.ENT_PARM2_IDX]
+            ' validate values
+            if not inRange(drvPwr1, -100, 100)
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"Power (%d) out of range [-100, 100]", drvPwr1)
+                serialQueue.sendError(@msgWork)
+            elseif not inRange(drvDir, -100, 100)
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"Direction (%d) out of range [-100, 100]", drvDir)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.driveDirection(drvDir, drvPwr1)
+
+        CMD_DRV_DIST:
+        CMD_DRV_PWR:
+        CMD_STP_ROT:
+            ' get incoming parm values
+            nRot := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            nRotUnits := LONG[pValues][serialQueue.ENT_PARM2_IDX]
+            ' validate values
+            if not isValidRotationUnit(nRotUnits)
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"RotationUnits (%d) not [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS]", nRotUnits)
+                serialQueue.sendError(@msgWork)
+            elseif not isPostiveValue(nRot)
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"Rotation Count (%d) must be positive value", nRot)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.stopAfterRotation(nRot, nRotUnits)
+
+        CMD_STP_DIST:
+        CMD_STP_TIME:
+            ' get incoming parm values
+            nTime := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            nTimeUnits := LONG[pValues][serialQueue.ENT_PARM2_IDX]
+            ' validate values
+            if not isValidTimeUnit(nTimeUnits)
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"TimeUnits (%d) not [DTU_MILLISEC, DTU_SEC]", nTimeUnits)
+                serialQueue.sendError(@msgWork)
+            elseif nRot >= 0
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"Time Value (%d) must be positive", nTime)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.stopAfterTime(nTime, nTimeUnits)
+
+        CMD_STP_MOT:
+        CMD_EMER_CUT:
+        CMD_EMER_CLR:
+        CMD_SET_ACCEL:
+        CMD_SET_SPD:
+            ' get incoming parm values
+            nSpeed := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values
+            if not inRange(nSpeed, 1, 100)
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"MaxSpeed (%d) out of range [1, 100]", nSpeed)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.setMaxSpeed(nSpeed)
+
+        CMD_SET_DIST_SPD:
+            ' get incoming parm values
+            nSpeed := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values
+            if not inRange(nSpeed, 1, 100)
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"MaxSpeedForDistance (%d) out of range [1, 100]", nSpeed)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.setMaxSpeedForDistance(nSpeed)
+
+        CMD_HOLD:
+            ' get incoming parm values
+            bHoldEnable := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values
+            if not (bHoldEnable == TRUE or bHoldEnable == FALSE)
+                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"HoldAtStop (%d) out of range [-1, 0] (T/F)", bHoldEnable)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.holdAtStop(bHoldEnable)
+
+        CMD_RST_TRKG:
+        CMD_GET_DIST:
+        CMD_GET_ROT:
+        CMD_GET_PWR:
+        CMD_GET_STAT:
+            ' get requested values
+            ltStatus, rtStatus := wheels.getStatus()
+            ' format response
+            strFmt.sFormatStr2(@BYTE[@msgWork][0], @"stat %d %d\r\n", ltStatus, rtStatus)
+            ' send to host
+            serialQueue.sendResponse(@msgWork)
+        CMD_GET_MAX_SPD:
+        CMD_GET_MAX_DIST_SPD:
+        other:
+            debug("ERROR bad ENUM for command:", udec_(cmdEnum))
+
+PRI inRange(value, min, max) : bInRangeStatus
+    bInRangeStatus := TRUE
+    if value < min or value > max
+        bInRangeStatus := FALSE
+
+PRI isPostiveValue(value) : bPositiveStatus
+    bPositiveStatus := TRUE
+    if value < 0
+        bPositiveStatus := FALSE
+
+PRI isValidTimeUnit(timeUnits) : bValidStatus
+    bValidStatus := TRUE
+    case timeUnits
+        wheels.DTU_MILLISEC:
+        wheels.DTU_SEC:
+        other:
+            bValidStatus := FALSE
+
+PRI isValidRotationUnit(rotUnits) : bValidStatus
+    bValidStatus := TRUE
+    case rotUnits
+        wheels.DRU_DEGREES:
+        wheels.DRU_ROTATIONS:
+        wheels.DRU_HALL_TICKS:
+        other:
+            bValidStatus := FALSE
 
 
 CON { license }
