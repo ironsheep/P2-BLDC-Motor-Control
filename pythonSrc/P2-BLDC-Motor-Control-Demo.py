@@ -697,13 +697,14 @@ try:
 #    wheels.setMaxSpeed(200)
 #    wheels.setMaxSpeedForDistance(-5)
     # override defaults, use 100 %
-    wheels.setMaxSpeed(100)
-    wheels.setMaxSpeedForDistance(100)
+    #wheels.setMaxSpeed(100)
+    #wheels.setMaxSpeedForDistance(100)
     # and don't draw current at stop
-    wheels.holdAtStop(False)
+    #wheels.holdAtStop(False)
 
-    #ltStatus, rtStatus = wheels.getStatus()
-    #print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
+    ltStatus, rtStatus = wheels.getStatus()
+    print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
+    """
 
     # -------------------------
     #  drive a square pattern
@@ -717,6 +718,7 @@ try:
     wheels.driveDirection(desiredPower, dirStraightAhead)
     waitForMotorsStopped()
 
+    """
     """
         # hard 90° right turn
         #   [circ = 2 * PI * r]

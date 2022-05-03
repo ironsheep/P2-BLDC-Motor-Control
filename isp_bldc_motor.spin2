@@ -114,7 +114,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     ' init status variables
     loop_ticks := 0
     minDrvTics := 65535
-    drv_state := DS_Unknown
+    drv_state := DCS_Unknown
 
     maxSpeed := 75            ' [1-100] default 75
     maxSpeed4dist := 75      ' [1-100] default 75
@@ -153,6 +153,8 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
         ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
         if motorCog == 0    ' did fail?
             debug("!! ERROR filed to start Motor Control task")
+        else
+            debug("* Motor COG #", sdec_(motorCog- 1))
 
 PUB startSenseCog() : ok
 '' Start the single motor sense task (tracks position of motor, distance travelled, etc.)
@@ -216,6 +218,7 @@ PUB setMaxSpeedForDistance(speed) | limitSpeed4dist
 
 PUB calibrate()
 '' NOT WORKING: (we may need this?)
+'' have motor drivers determine fixed-offset constants
 
 PUB holdAtStop(bEnable)
 '' Informs the motor control cog to actively hold position (bEnable=true) or coast (bEnable=false) at end of motion
@@ -360,7 +363,7 @@ PUB clearEmergency()
     debug("-- EMERGENCY -- CLEARED --")
 
 PUB forwardIsReverse()
-'' call when we have two motors and one of them needs to be reversed
+'' Call when we have two motors and one of them needs to be reversed
     motorIsReversed := TRUE
 
 CON { --- Subsystem Status --- }
@@ -437,9 +440,9 @@ PUB getStatus() : eStatus
     else
         eStatus := DS_Unknown
 
-PUB getDriveState() : eDrvState
+PUB getDriverState() : eDrvrState
 '' Return Enum [DCS_*] value representing state of driver
-    eDrvState := drv_state
+    eDrvrState := drv_state
 
 PUB getRawHallTicks() : nPos
 '' Return the raw driver-maintained tick count
@@ -841,9 +844,10 @@ CON { driver interface Constants}
     '  DCS_SPIN_DN          - motor is stopping, then will be at STOPPED
     '  DCS_SLOWING_DN       - motor is slowing down (just a speed change), then will be at AT_SPEED
     '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
+    '  DCS_FAULTED          - motor faulted (couldn't drive to requested speed)
+    '  DCS_ESTOP            - motor in emergency stop (external stop requested)
     '
     #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP
-
 
 CON { driver internal Constants}
 
@@ -871,9 +875,9 @@ VAR { * Data Structure for PASM Driver * }
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
     LONG    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
     LONG    hall, pos, duty, err                ' 4 sequential longs    returns data continually
+    LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN]
     LONG    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
     LONG    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
-    LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN]
     ' \ ----------------------------
     LONG    fault                               ' 1 sequential long     written to 1 on fault (pins are floated when this happens)
 
@@ -1582,12 +1586,12 @@ hall_       res 1
 pos_        res 1
 duty_       res 1
 err_        res 1
+drv_state_  res 1       ' enum: DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, etc
 loop_dtcks_ res 1
 loop_ctcks_ res 1
-drv_state_  res 1       ' enum: DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, etc
 ' fault is here... (but external only)
 
-    fit     496
+    fit     $1f8
 CON { license }
 {{
 

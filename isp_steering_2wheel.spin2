@@ -1,7 +1,7 @@
 '' =================================================================================================
 ''
 ''   File....... isp_steering_2wheel.spin2
-''   Purpose.... Object providing control interface for stearing a twin-bldc-motor platform
+''   Purpose.... Object providing control interface for steering a twin-bldc-motor platform
 ''   Authors.... Stephen M Moraco
 ''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
 ''               -- see below for terms of use
@@ -53,14 +53,27 @@ CON { forward our interface constants }
     DS_HOLDING      = ltWheel.DS_HOLDING
     DS_OFF          = ltWheel.DS_OFF
 
+  ' Driver State Enum
+    DCS_Unknown     = ltWheel.DCS_Unknown
+    DCS_STOPPED     = ltWheel.DCS_STOPPED
+    DCS_SPIN_UP     = ltWheel.DCS_SPIN_UP
+    DCS_AT_SPEED    = ltWheel.DCS_AT_SPEED
+    DCS_SPIN_DN     = ltWheel.DCS_SPIN_DN
+    DCS_SLOWING_DN  = ltWheel.DCS_SLOWING_DN
+    DCS_SLOW_TO_CHG = ltWheel.DCS_SLOW_TO_CHG
+    DCS_FAULTED     = ltWheel.DCS_FAULTED
+    DCS_ESTOP       = ltWheel.DCS_ESTOP
+
+
 CON { test pins for LA measurement }
 
+{
     ' PIN_56 - PIN_63
     TEST_BASE_PIN = 56
-    TEST_ALL_PINS = TEST_BASE_PIN addpins 7
+    TEST_PINS_ALL = TEST_BASE_PIN addpins 7
     TEST_PIN_SNS_LOOP = TEST_BASE_PIN + 0       ' LA grey
     TEST_PIN_SNS_LP_ACTV = TEST_BASE_PIN + 1       ' LA red
-
+'}
 
 OBJ { our Motors }
 
@@ -68,7 +81,6 @@ OBJ { our Motors }
     rtWheel     :   "isp_bldc_motor"    ' right wheel drive
     user        :   "isp_bldc_motor_userconfig"     ' driver configuration
     distConv    :   "isp_dist_utils"                ' distance conversion utils
-
 
 PUB null()
 
@@ -106,12 +118,12 @@ PUB stop()
     rtWheel.stop()
 
 PUB setAcceleration(rate)
-'' Limit Acceleration to {rate}
+'' NOT WORKING: Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
     ltWheel.setAcceleration(rate)
     rtWheel.setAcceleration(rate)
 
 PUB setMaxSpeed(speed)
-'' 	Limit top-speed to {speed}
+'' Limit top-speed to {speed}
     ltWheel.setMaxSpeed(speed)
     rtWheel.setMaxSpeed(speed)
 
@@ -121,6 +133,7 @@ PUB setMaxSpeedForDistance(speed)
     rtWheel.setMaxSpeedForDistance(speed)
 
 PUB calibrate()
+'' NOT WORKING: (we may need this?)
 '' have motor drivers determine fixed-offset constants
     ltWheel.calibrate()
     rtWheel.calibrate()
@@ -302,6 +315,11 @@ PUB getStatus() : eLeftStatus, eRightStatus
     eLeftStatus := ltWheel.getStatus()
     eRightStatus := rtWheel.getStatus()
 
+PRI getDriverState() : eLeftState, eRightState
+' Returns status of motor-driver state for each motor: enumerated constants: DCS_*
+    eLeftState := ltWheel.getDriverState()
+    eRightState := rtWheel.getDriverState()
+
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
     ' NOTE: they both contain same value so return only right-wheel value
@@ -383,27 +401,32 @@ VAR { Data for Motor Position Tracking }
 
 PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
-    pinlow(TEST_PIN_SNS_LOOP)
-    pinlow(TEST_PIN_SNS_LP_ACTV)
+    'pinlow(TEST_PIN_SNS_LOOP)
+    'pinlow(TEST_PIN_SNS_LP_ACTV)
 
     eStopCtr := 0
 
+    priorLtStatus := priorRtStatus := -1
+
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
-        if ltWheel.getDriveState() == ltWheel.DCS_FAULTED or senseStartTicks == 0
+        if ltWheel.getDriverState() == DCS_FAULTED or senseStartTicks == 0
             longfill(@ltCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
             ltWinEntryCt := ltWindowSum := ltWinIndex := 0
             ltPosTrkHallTicks := 0
 
-        if rtWheel.getDriveState() == rtWheel.DCS_FAULTED or senseStartTicks == 0
+        if rtWheel.getDriverState() == DCS_FAULTED or senseStartTicks == 0
             longfill(@rtCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
             rtWinEntryCt := rtWindowSum := rtWinIndex := 0
             rtPosTrkHallTicks := 0
 
+        reportMotorStatus()
+        reportDrvStatus()
+
         senseStartTicks := getct()
-        pintoggle(TEST_PIN_SNS_LOOP)        ' set HI
-        pintoggle(TEST_PIN_SNS_LP_ACTV)     ' start of active side
-        pintoggle(TEST_PIN_SNS_LOOP)        ' set low   - start of loop
+        'pintoggle(TEST_PIN_SNS_LOOP)        ' set HI
+        'pintoggle(TEST_PIN_SNS_LP_ACTV)     ' start of active side
+        'pintoggle(TEST_PIN_SNS_LOOP)        ' set low   - start of loop
 
         ' ------------------------------------------
         ' PROCESS left motor
@@ -446,7 +469,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
                 stopMotors()
                 motorStopHallTicks := 0 ' and clear user request
 
-        pintoggle(TEST_PIN_SNS_LP_ACTV)    ' end of active side
+        'pintoggle(TEST_PIN_SNS_LP_ACTV)    ' end of active side
 
         ' iff driver reports e-stop then clear the emergency stop request
         '  user will request it again if needed
@@ -471,6 +494,90 @@ PRI isEmergency() : bEmergencyState
     if bEmergencyState
         debug("--------WHEEL in EMERGENCY!!--------")
 
+PRI reportDrvStatus() | ltState, rtState
+    ltState, rtState := getDriverState()
+    if priorLtState <> ltState
+        showDriverState(ltState, @"ltMot")
+        priorLtState := ltState
+
+    if priorRtState <> rtState
+        showDriverState(rtState, @"rtMot")
+        priorRtState := rtState
+
+PRI reportMotorStatus() | ltStatus, rtStatus
+    ltStatus, rtStatus := getStatus()
+    if priorLtStatus <> ltStatus
+        showStatus(ltStatus, @"ltMot")
+        priorLtStatus := ltStatus
+
+    if priorRtStatus <> rtStatus
+        showStatus(rtStatus, @"rtMot")
+        priorRtStatus := rtStatus
+
+DAT { debug strings }
+
+    dsUnknown       BYTE    "dsUnk",0
+    dsMOVING        BYTE    "dsMov",0
+    dsHOLDING       BYTE    "dsHld",0
+    dsOFF           BYTE    "dsOff",0
+    dsOther         BYTE    "???[dsCODE]???",0
+
+    dcsUnknown      BYTE    "dcsUnk",0
+    dcsSTOPPED      BYTE    "dcsSTOPPED",0
+    dcsSPIN_UP      BYTE    "dcsSPIN_UP",0
+    dcsAT_SPEED     BYTE    "dcsAT_SPEED",0
+    dcsSPIN_DN      BYTE    "dcsSPIN_DN",0
+    dcsSLOWING_DN   BYTE    "dcsSLOWING_DN",0
+    dcsSLOW_TO_CHG  BYTE    "dcsSLOW_TO_CHG",0
+    dcsFAULTED      BYTE    "dcsFAULTED",0
+    dcsESTOP        BYTE    "dcsESTOP",0
+    dcsOther        BYTE    "???[dcsCODE]???",0
+
+    pStatVal        LONG    0
+    priorLtStatus   LONG    -1
+    priorRtStatus   LONG    -1
+    priorLtState    LONG    -1
+    priorRtState    LONG    -1
+
+
+PRI showDriverState(eState, pMsg)
+    case eState
+        DCS_Unknown:
+            pStatVal := @dcsUnknown
+        DCS_STOPPED:
+            pStatVal := @dcsSTOPPED
+        DCS_SPIN_UP:
+            pStatVal := @dcsSPIN_UP
+        DCS_AT_SPEED:
+            pStatVal := @dcsAT_SPEED
+        DCS_SPIN_DN:
+            pStatVal := @dcsSPIN_DN
+        DCS_SLOWING_DN:
+            pStatVal := @dcsSLOWING_DN
+        DCS_SLOW_TO_CHG:
+            pStatVal := @dcsSLOW_TO_CHG
+        DCS_FAULTED:
+            pStatVal := @dcsFAULTED
+        DCS_ESTOP:
+            pStatVal := @dcsESTOP
+        other:
+            pStatVal := @dcsOther
+    debug("- STATE ", zstr_(pMsg), ": ", zstr_(pStatVal))
+
+
+PRI showStatus(eStatus, pMsg)
+    case eStatus
+        DS_Unknown:
+            pStatVal := @dsUnknown
+        DS_MOVING:
+            pStatVal := @dsMOVING
+        DS_HOLDING:
+            pStatVal := @dsHOLDING
+        DS_OFF:
+            pStatVal := @dsOFF
+        other:
+            pStatVal := @dsOther
+    debug("- STATUS ", zstr_(pMsg), ": ", zstr_(pStatVal))
 
 
 PRI MAX(a,b) : nMax
