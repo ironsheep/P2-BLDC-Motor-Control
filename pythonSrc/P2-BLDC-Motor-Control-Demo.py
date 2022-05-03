@@ -470,12 +470,12 @@ class BLDCMotorControl:
         while queueRxLines.lineCount() == 0:
             sleep(0.2)
 
-        currLine = queueRxLines.popLine()
+        currLine = queueRxLines.popLine().replace('\\n', '')
         if currLine.startswith(responseOK):
             print_line('Incoming OK', debug=True)
 
         elif currLine.startswith(responseERROR):
-            print_line('! {}'.format(currLine.replace('\\n', '')), error=True)
+            print_line('! {}'.format(currLine), error=True)
         else:
             responseStr = currLine
         return responseStr;
@@ -498,11 +498,9 @@ class BLDCMotorControl:
     def statusEnumFor(self, iValue):
         # return enum member assoc with int value
         desiredValue = DrvStatus.DS_Unknown
-        possValues = [item.value for item in DrvStatus]
-        if iValue in possValues:
-            desiredValue = DrvStatus(iValue)
-
-        print_line('found ENUM {} for {}'.format(iValue, desiredValue), debug=True)
+        if int(iValue) in DrvStatus._value2member_map_:
+            desiredValue = DrvStatus(int(iValue))
+        #print_line('found ENUM {} for {}'.format(desiredValue, iValue), debug=True)
         return desiredValue
 
 # -----------------------------------------------------------------------------
@@ -527,14 +525,14 @@ def taskSerialListener(serPort):
                 print_line('TASK-RX rxD({})=({})'.format(len(received_data),received_data), debug=True)
                 currLine = received_data.decode('utf-8', 'replace').rstrip()
                 #print_line('TASK-RX line({}=[{}]'.format(len(currLine), currLine), debug=True)
-                queueRxLines.pushLine(currLine)
-                if currLine.startswith(cmdIdentifyHW):
-                    processInput(serPort)
+                if currLine != '\\n':    # skip blank lines...
+                    queueRxLines.pushLine(currLine)
+                    if currLine.startswith(cmdIdentifyHW):
+                        processInput(serPort)
+                else:
+                    print_line('TASK-RX skip empty-line({}=[{}]'.format(len(currLine), currLine), warning=True)
 
 
-# -----------------------------------------------------------------------------
-#  Main loop
-# -----------------------------------------------------------------------------
 # commands from P2
 cmdIdentifyHW  = "ident:"
 responseOK  = "OK"
@@ -704,10 +702,9 @@ try:
     # and don't draw current at stop
     wheels.holdAtStop(False)
 
-    ltStatus, rtStatus = wheels.getStatus()
-    print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
+    #ltStatus, rtStatus = wheels.getStatus()
+    #print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
 
-    """
     # -------------------------
     #  drive a square pattern
     #   2-second sides 50% power, 90° corners
@@ -719,7 +716,6 @@ try:
     wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
     wheels.driveDirection(desiredPower, dirStraightAhead)
     waitForMotorsStopped()
-    """
 
     """
         # hard 90° right turn
