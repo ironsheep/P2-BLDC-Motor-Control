@@ -22,7 +22,7 @@
 }
 
 
-con { fixed io pins }
+CON { fixed io pins }
 
   RX1      = 63  { I }                                          ' programming / debug
   TX1      = 62  { O }
@@ -33,7 +33,23 @@ con { fixed io pins }
   SF_SDI   = 58  { I }
 
 
-con { pst formatting }
+CON { smart pin modes }
+
+  TX_MODE = %0000_0000_000_0000000000000_01_11110_0
+  RX_MODE = %0000_0000_000_0000000000000_00_11111_0
+
+CON { serial configuration }
+
+    DATA_BITS = 8
+    STOP_BITS = 2
+
+    ' (following ignored for now)
+    #0, PARITY_NONE, PARITY_EVEN, PARITY_ODD
+
+    ' tx pin pull-up constants
+    #0, PU_NONE, PU_1K5, PU_3K3, PU_15K                         ' pull-up options
+
+CON { pst formatting }
 
   HOME     =  1
   CRSR_XY  =  2
@@ -53,66 +69,84 @@ con { pst formatting }
   CLS      = 16
 
 
-obj
+OBJ
 
   nstr : "jm_nstr"                                              ' number-to-string
 
 
-dat
+DAT
 
-rxp  long  0
-txp  long  0
+rxp             long  0
+txp             long  0
+baud            long  0
 
-pbuf  byte  0[80]                                                ' padded strings
+byteMask        long  0
+byteExtraBits   long  0
 
-kLock byte  0
+pbuf            byte  0[80]                                     ' padded strings
 
-pub null()
+kLock           byte  0
+
+PUB null()
 
   '' This is not a top level object
 
 
-pub start(baudrate)
-
+PUB start(baudrate)
 '' Start simple serial coms on default pins at baudrate
 
-  startx(RX1, TX1, baudrate)                                    ' use programming port
+  startx(RX1, TX1, baudrate, P_HIGH_15K)                        ' use programming port
 
 
-pub startx(rxpin, txpin, baud) | bitmode
-
+PUB startx(rxpin, txpin, baudrate, txPullup) | bitperiod, bitmode, databits
 '' Start simple serial coms on rxpin and txpin at baud
 
-  'longmove(@rxp, @rxpin, 2)                                     ' save pins
-    rxp := rxpin
-    txp := txpin
+  longmove(@rxp, @rxpin, 3)  ' also save baudrate incase driver is asked
+  bitperiod := clkfreq / baudrate
 
+  case txPullup
+    PU_NONE : txPullup := P_HIGH_FLOAT                            ' use external pull-up
+    PU_1K5  : txPullup := P_HIGH_1K5                              ' 1.5k
+    PU_3K3  : txPullup := P_HIGH_1MA                              ' acts like ~3.3k
+    other   : txPullup := P_HIGH_15K                              ' 15K
 
-  bitmode := muldiv64(clkfreq, $1_0000, baud) & $FFFFFC00       ' set bit timing
-  bitmode |= 7                                                  ' set bits (8)
+  databits := DATA_BITS
+  if (STOP_BITS == 2)
+    databits += 1
 
-  org
-                fltl      rxpin                                 ' configure rx smart pin
-                wrpin     ##P_ASYNC_RX, rxpin
-                wxpin     bitmode, rxpin
-                drvl      rxpin
-                fltl      txpin                                 ' configure tx smart pin
-                wrpin     ##(P_ASYNC_TX | P_OE), txpin
-                wxpin     bitmode, txpin
-                drvl      txpin
-  end
+  bitmode := 7 + (bitperiod << 16)
 
+  ' setup constants for tx() to use
+    byteMask := $FF
+    if (DATA_BITS == 7)
+      byteMask := $7f
 
-pub rxflush()
+    byteExtraBits := 0
+    if (STOP_BITS == 2)
+      byteExtraBits |= $100
 
+  pinf(txp)
+  wrpin(txp, TX_MODE | txPullup)
+  wxpin(txp, bitmode)
+  pinl(txp)
+
+  pinf(rxp)
+  wrpin(rxp, RX_MODE)
+  wxpin(rxp, bitmode)
+  pinl(rxp)
+
+PUB getBaudrate() : baudrate
+'' Return the configured baud rate
+    baudrate := baud    '' was saved by startx()
+
+PUB rxflush()
 '' Clear serial input
 
   repeat
   while (rxcheck() >= 0)
 
 
-pub rxcheck() : rxbyte | check
-
+PUB rxcheck() : rxbyte | check
 '' Check for serial input
 '' -- returns -1 if nothing available
 
@@ -120,10 +154,9 @@ pub rxcheck() : rxbyte | check
   check := pinr(rxp)
   if (check)
     rxbyte := rdpin(rxp) >> 24
+    rxbyte &= byteMask  ' handle 7bit data (e.g., 7N1 vs. 8N1)
 
-
-pub rxtime(ms) : b | mstix, t
-
+PUB rxtime(ms) : b | mstix, t
 '' Wait ms milliseconds for a byte to be received
 '' -- returns -1 if no byte received, $00..$FF if byte
 
@@ -134,7 +167,7 @@ pub rxtime(ms) : b | mstix, t
   until ((b := rxcheck()) >= 0) or (((getct() - t) / mstix) > ms)
 
 
-pub rx() : rxbyte
+PUB rx() : rxbyte
 
 '' Wait for serial input
 '' -- blocks!
@@ -144,15 +177,18 @@ pub rx() : rxbyte
   until (rxbyte >= 0)
 
 
-pub tx(b)
+PUB tx(b)
 
 '' Emit byte
+
+  b &= byteMask
+  b |= byteExtraBits
 
   wypin(txp, b)
   txflush()
 
 
-pub txn(b, n)
+PUB txn(b, n)
 
 '' Emit byte n times
 
@@ -160,7 +196,7 @@ pub txn(b, n)
     tx(b)
 
 
-pub txflush() | check
+PUB txflush() | check
 
 '' Wait until last byte has finished
 
@@ -169,7 +205,7 @@ pub txflush() | check
   while (check == 0)
 
 
-pub str(p_str)
+PUB str(p_str)
 
 '' Emit z-string at p_str
 
@@ -177,7 +213,7 @@ pub str(p_str)
     tx(byte[p_str++])
 
 
-pub substr(p_str, len) | b
+PUB substr(p_str, len) | b
 
 '' Emit len characters of string at p_str
 '' -- aborts if end of string detected
@@ -190,7 +226,7 @@ pub substr(p_str, len) | b
       quit
 
 
-pub padstr(p_str, width, pad)
+PUB padstr(p_str, width, pad)
 
 '' Emit p_str as padded field of width characters
 '' -- pad is character to use to fill out field
@@ -200,7 +236,7 @@ pub padstr(p_str, width, pad)
   str(nstr.padstr(p_str, width, pad))
 
 
-con { formatted strings }
+CON { formatted strings }
 
 {{
     Escaped characters
@@ -237,62 +273,62 @@ con { formatted strings }
 }}
 
 
-pub fstr0(p_str)
+PUB fstr0(p_str)
 
 '' Emit string with formatting characters.
 
   format(p_str, 0)
 
 
-pub fstr1(p_str, arg1)
+PUB fstr1(p_str, arg1)
 
 '' Emit string with formatting characters and one argument.
 
   format(p_str, @arg1)
 
 
-pub fstr2(p_str, arg1, arg2)
+PUB fstr2(p_str, arg1, arg2)
 
 '' Emit string with formatting characters and two arguments.
 
   format(p_str, @arg1)
 
 
-pub fstr3(p_str, arg1, arg2, arg3)
+PUB fstr3(p_str, arg1, arg2, arg3)
 
 '' Emit string with formatting characters and three arguments.
 
   format(p_str, @arg1)
 
 
-pub fstr4(p_str, arg1, arg2, arg3, arg4)
+PUB fstr4(p_str, arg1, arg2, arg3, arg4)
 
 '' Emit string with formatting characters and four arguments.
 
   format(p_str, @arg1)
 
 
-pub fstr5(p_str, arg1, arg2, arg3, arg4, arg5)
+PUB fstr5(p_str, arg1, arg2, arg3, arg4, arg5)
 
 '' Emit string with formatting characters and five arguments.
 
   format(p_str, @arg1)
 
 
-pub fstr6(p_str, arg1, arg2, arg3, arg4, arg5, arg6)
+PUB fstr6(p_str, arg1, arg2, arg3, arg4, arg5, arg6)
 
 '' Emit string with formatting characters and six arguments.
 
   format(p_str, @arg1)
 
-pub fstr7(p_str, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
+PUB fstr7(p_str, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
 
 '' Emit string with formatting characters and seven arguments.
 
   format(p_str, @arg1)
 
 
-pub format(p_str, p_args) | idx, c, asc, field, digits, kindaLock
+PUB format(p_str, p_args) | idx, c, asc, field, digits, kindaLock
 
 '' Emit formatted string with escape sequences and embedded values
 '' -- p_str is a pointer to the format control string
@@ -397,7 +433,7 @@ pri get_nargs(p_str) : p_str1, val1, val2 | c, sign
   p_str1 := p_str - 1                                           ' back up to non-digit
 
 
-pub fmt_number(value, base, digits, width, pad)
+PUB fmt_number(value, base, digits, width, pad)
 
 '' Emit value converted to number in padded field
 '' -- value is converted using base as radix
@@ -409,14 +445,14 @@ pub fmt_number(value, base, digits, width, pad)
   str(nstr.fmt_number(value, base, digits, width, pad))
 
 
-pub dec(value)
+PUB dec(value)
 
 '' Emit value as decimal
 
   str(nstr.itoa(value, 10, 0))
 
 
-pub fwdec(value, digits)
+PUB fwdec(value, digits)
 
 '' Emit value as decimal using fixed # of digits
 '' -- may add leading zeros
@@ -424,7 +460,7 @@ pub fwdec(value, digits)
   str(nstr.itoa(value, 10, digits))
 
 
-pub jdec(value, digits, width, pad)
+PUB jdec(value, digits, width, pad)
 
 '' Emit value as decimal using fixed # of digits
 '' -- aligned in padded field (negative width to left-align)
@@ -435,7 +471,7 @@ pub jdec(value, digits, width, pad)
   str(nstr.fmt_number(value, 10, digits, width, pad))
 
 
-pub dpdec(value, dp)
+PUB dpdec(value, dp)
 
 '' Emit value as decimal with decimal point
 '' -- dp is number of digits after decimal point
@@ -443,7 +479,7 @@ pub dpdec(value, dp)
   str(nstr.dpdec(value, dp))
 
 
-pub jdpdec(value, dp, width, pad)
+PUB jdpdec(value, dp, width, pad)
 
 '' Emit value as decimal with decimal point
 '' -- aligned in padded field (negative width to left-align)
@@ -454,21 +490,21 @@ pub jdpdec(value, dp, width, pad)
   str(nstr.fmt_number(value, 99, dp, width, pad))
 
 
-pub hex(value)
+PUB hex(value)
 
 '' Emit value as hexadecimal
 
   str(nstr.itoa(value, 16, 0))
 
 
-pub fwhex(value, digits)
+PUB fwhex(value, digits)
 
 '' Emit value as hexadecimal using fixed # of digits
 
   str(nstr.itoa(value, 16, digits))
 
 
-pub jhex(value, digits, width, pad)
+PUB jhex(value, digits, width, pad)
 
 '' Emit value as quarternary using fixed # of digits
 '' -- aligned inside field
@@ -477,21 +513,21 @@ pub jhex(value, digits, width, pad)
   str(nstr.fmt_number(value, 16, digits, width, pad))
 
 
-pub oct(value)
+PUB oct(value)
 
 '' Emit value as octal
 
   str(nstr.itoa(value, 8, 0))
 
 
-pub foct(value, digits)
+PUB foct(value, digits)
 
 '' Emit value as octal using fixed # of digits
 
   str(nstr.itoa(value, 8, digits))
 
 
-pub joct(value, digits, width, pad)
+PUB joct(value, digits, width, pad)
 
 '' Emit value as octal using fixed # of digits
 '' -- aligned inside field
@@ -500,21 +536,21 @@ pub joct(value, digits, width, pad)
   str(nstr.fmt_number(value, 8, digits, width, pad))
 
 
-pub qrt(value)
+PUB qrt(value)
 
 '' Emit value as quarternary
 
   str(nstr.itoa(value, 4, 0))
 
 
-pub fqrt(value, digits)
+PUB fqrt(value, digits)
 
 '' Emit value as quarternary using fixed # of digits
 
   str(nstr.itoa(value, 4, digits))
 
 
-pub jqrt(value, digits, width, pad)
+PUB jqrt(value, digits, width, pad)
 
 '' Emit value as quarternary using fixed # of digits
 '' -- aligned inside field
@@ -523,21 +559,21 @@ pub jqrt(value, digits, width, pad)
   str(nstr.fmt_number(value, 4, digits, width, pad))
 
 
-pub bin(value)
+PUB bin(value)
 
 '' Emit value as binary
 
   str(nstr.itoa(value, 2, 0))
 
 
-pub fwbin(value, digits)
+PUB fwbin(value, digits)
 
 '' Emit value as binary using fixed # of digits
 
   str(nstr.itoa(value, 2, digits))
 
 
-pub jbin(value, digits, width, pad)
+PUB jbin(value, digits, width, pad)
 
 '' Emit value as binary using fixed # of digits
 '' -- aligned inside field
@@ -545,7 +581,7 @@ pub jbin(value, digits, width, pad)
 
   str(nstr.fmt_number(value, 2, digits, width, pad))
 
-pub memDump(pBytes, lenBytes, pMessage) | rowCount, rowLen, pCurrByte, lastRowByteCount, bytesSoFar
+PUB memDump(pBytes, lenBytes, pMessage) | rowCount, rowLen, pCurrByte, lastRowByteCount, bytesSoFar
 
 '' Dump rows of hex values with address preceeding
 
@@ -581,7 +617,7 @@ pri memDumpRow(pBytes, lenBytes) | rowCount, rowLen, pCurrByte, bytIndex
     fstr0(string("\r\n"))
 
 
-con { license }
+CON { license }
 
 {{
 

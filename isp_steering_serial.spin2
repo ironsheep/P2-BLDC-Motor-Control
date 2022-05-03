@@ -56,31 +56,7 @@ CON { command-names enum }
 
 DAT { command table }
 
-    cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
-                long  @cmdDrvDist, CMD_DRV_DIST, 3
-                long  @cmdDrvPwr, CMD_DRV_PWR, 2
-                long  @cmdStpAftRot, CMD_STP_ROT, 2
-                long  @cmdStpAftDist, CMD_STP_DIST, 2
-                long  @cmdStpAftTime, CMD_STP_TIME, 2
-                long  @cmdStpMot, CMD_STP_MOT, 0
-                long  @cmdEmerCut, CMD_EMER_CUT, 0
-                long  @cmdEmerClr, CMD_EMER_CLR, 0
-                long  @cmdSetAccel, CMD_SET_ACCEL, 1
-                long  @cmdSetSpd, CMD_SET_SPD, 1
-                long  @cmdSetDistSpd, CMD_SET_DIST_SPD, 1
-                long  @cmdHold, CMD_HOLD, 1
-                long  @cmdRstTrack, CMD_RST_TRKG, 0
-                long  @cmdGetDist, CMD_GET_DIST, 1
-                long  @cmdGetRot, CMD_GET_ROT, 1
-                long  @cmdGetPwr, CMD_GET_PWR, 0
-                long  @cmdGetStat, CMD_GET_STAT, 0
-                long  @cmdGetMaxSpd, CMD_GET_MAX_SPD, 0
-                long  @cmdGetMaxDistSpd, CMD_GET_MAX_DIST_SPD, 0
-    cmdLast
-
-    cmdEntryCt long @cmdLast - @cmdsFirst / 3
-
-    ' NOTE these MUST all be lower-case!!
+    ' first our command strings
     cmdDrvDir           BYTE    "drivedir",0
     cmdDrvDist          BYTE    "drivedist",0
     cmdDrvPwr           BYTE    "drivepwr",0
@@ -102,6 +78,32 @@ DAT { command table }
     cmdGetMaxSpd        BYTE    "getmaxspd",0
     cmdGetMaxDistSpd    BYTE    "getmaxspdfordist",0
 
+    ' now describe cmd enum and # parms for each string
+    cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
+                long  @cmdDrvDist, CMD_DRV_DIST, 3
+                long  @cmdDrvPwr, CMD_DRV_PWR, 2
+                long  @cmdStpAftRot, CMD_STP_ROT, 2
+                long  @cmdStpAftDist, CMD_STP_DIST, 2
+                long  @cmdStpAftTime, CMD_STP_TIME, 2
+                long  @cmdStpMot, CMD_STP_MOT, 0
+                long  @cmdEmerCut, CMD_EMER_CUT, 0
+                long  @cmdEmerClr, CMD_EMER_CLR, 0
+                long  @cmdSetAccel, CMD_SET_ACCEL, 1
+                long  @cmdSetSpd, CMD_SET_SPD, 1
+                long  @cmdSetDistSpd, CMD_SET_DIST_SPD, 1
+                long  @cmdHold, CMD_HOLD, 1
+                long  @cmdRstTrack, CMD_RST_TRKG, 0
+                long  @cmdGetDist, CMD_GET_DIST, 1
+                long  @cmdGetRot, CMD_GET_ROT, 1
+                long  @cmdGetPwr, CMD_GET_PWR, 0
+                long  @cmdGetStat, CMD_GET_STAT, 0
+                long  @cmdGetMaxSpd, CMD_GET_MAX_SPD, 0
+                long  @cmdGetMaxDistSpd, CMD_GET_MAX_DIST_SPD, 0
+    cmdLast
+    ' calculate the number of entries in table
+    cmdEntryCt long ((@cmdLast - @cmdsFirst) / 4) / 3
+
+
     msgWork             BYTE    0[256]     ' 256 bytes in which to format the outgoing message
 
 
@@ -109,6 +111,28 @@ PUB main() | opStatus, pValues
 '' DEMO Driving a two wheeled platform
 
     debug("* Serial I/F to dual motor platform")
+
+    ' replace addresses with better pointers
+    long[@cmdsFirst][0 * 3] := @cmdDrvDir
+    long[@cmdsFirst][1 * 3] := @cmdDrvDist
+    long[@cmdsFirst][2 * 3] := @cmdDrvPwr
+    long[@cmdsFirst][3 * 3] := @cmdStpAftRot
+    long[@cmdsFirst][4 * 3] := @cmdStpAftDist
+    long[@cmdsFirst][5 * 3] := @cmdStpAftTime
+    long[@cmdsFirst][6 * 3] := @cmdStpMot
+    long[@cmdsFirst][7 * 3] := @cmdEmerCut
+    long[@cmdsFirst][8 * 3] := @cmdEmerClr
+    long[@cmdsFirst][9 * 3] := @cmdSetAccel
+    long[@cmdsFirst][10 * 3] := @cmdSetSpd
+    long[@cmdsFirst][11 * 3] := @cmdSetDistSpd
+    long[@cmdsFirst][12 * 3] := @cmdHold
+    long[@cmdsFirst][13 * 3] := @cmdRstTrack
+    long[@cmdsFirst][14 * 3] := @cmdGetDist
+    long[@cmdsFirst][15 * 3] := @cmdGetRot
+    long[@cmdsFirst][16 * 3] := @cmdGetPwr
+    long[@cmdsFirst][17 * 3] := @cmdGetStat
+    long[@cmdsFirst][18 * 3] := @cmdGetMaxSpd
+    long[@cmdsFirst][19 * 3] := @cmdGetMaxDistSpd
 
     '' DEMO send status values to a web page and act on control values sent by the web page
     hostIF.startx(GW_RX2, GW_TX2, GW_BAUDRATE, hostIF.PU_15K)    ' tell singleton our pins and rate
@@ -129,7 +153,7 @@ PUB main() | opStatus, pValues
 
     repeat
         if serialQueue.haveCommand(@cmdsFirst, cmdEntryCt)
-            opStatus, pValues := serialQueue.getCommandAndValue()
+            opStatus, pValues := serialQueue.getCommandParms()
             if opStatus == serialQueue.OP_SUCCESS
                 processCommand(pValues)
         else
@@ -151,14 +175,16 @@ DAT { parse work variables }
     bHoldEnable     LONG    0
 
 PRI processCommand(pValues)
-    '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")
-    '              [1:pStr] -> "full string"
-    '              [2:pCmd] -> "cmd"
-    '              [3:eCmd]
-    '              [4:nValue1]
-    '              [5:nValue2]
-    '              [6:nValue3]
-    '              [etc] - up to 6 max values
+    debug("* HANDLE ", zstr_(long [pValues][serialQueue.ENT_CMDSTR_IDX]))
+'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+'              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+'              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+'              [3:eCmd]                                             ENT_CMDENUM_IDX
+'              [4:nValue1]                                          ENT_PARM1_IDX
+'              [5:nValue2]                                          ENT_PARM2_IDX
+'              [6:nValue3]                                          ENT_PARM3_IDX
+'              [7:nValue4]                                          ENT_PARM4_IDX
+'              [etc] - up to 6 max values
     cmdEnum := long [pValues][serialQueue.ENT_CMDENUM_IDX]
     case cmdEnum
         CMD_DRV_DIR:
@@ -167,10 +193,10 @@ PRI processCommand(pValues)
             drvDir := LONG[pValues][serialQueue.ENT_PARM2_IDX]
             ' validate values
             if not inRange(drvPwr1, -100, 100)
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"Power (%d) out of range [-100, 100]", drvPwr1)
+                strFmt.sFormatStr1(@msgWork, @"Power (%d) out of range [-100, 100]", drvPwr1)
                 serialQueue.sendError(@msgWork)
             elseif not inRange(drvDir, -100, 100)
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"Direction (%d) out of range [-100, 100]", drvDir)
+                strFmt.sFormatStr1(@msgWork, @"Direction (%d) out of range [-100, 100]", drvDir)
                 serialQueue.sendError(@msgWork)
             else
                 ' all good, say so, then act on request
@@ -185,10 +211,10 @@ PRI processCommand(pValues)
             nRotUnits := LONG[pValues][serialQueue.ENT_PARM2_IDX]
             ' validate values
             if not isValidRotationUnit(nRotUnits)
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"RotationUnits (%d) not [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS]", nRotUnits)
+                strFmt.sFormatStr1(@msgWork, @"RotationUnits (%d) not [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS]", nRotUnits)
                 serialQueue.sendError(@msgWork)
             elseif not isPostiveValue(nRot)
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"Rotation Count (%d) must be positive value", nRot)
+                strFmt.sFormatStr1(@msgWork, @"Rotation Count (%d) must be positive value", nRot)
                 serialQueue.sendError(@msgWork)
             else
                 ' all good, say so, then act on request
@@ -202,10 +228,10 @@ PRI processCommand(pValues)
             nTimeUnits := LONG[pValues][serialQueue.ENT_PARM2_IDX]
             ' validate values
             if not isValidTimeUnit(nTimeUnits)
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"TimeUnits (%d) not [DTU_MILLISEC, DTU_SEC]", nTimeUnits)
+                strFmt.sFormatStr1(@msgWork, @"TimeUnits (%d) not [DTU_MILLISEC, DTU_SEC]", nTimeUnits)
                 serialQueue.sendError(@msgWork)
-            elseif nRot >= 0
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"Time Value (%d) must be positive", nTime)
+            elseif NOT nRot >= 0
+                strFmt.sFormatStr1(@msgWork, @"Time Value (%d) must be positive", nTime)
                 serialQueue.sendError(@msgWork)
             else
                 ' all good, say so, then act on request
@@ -217,11 +243,12 @@ PRI processCommand(pValues)
         CMD_EMER_CLR:
         CMD_SET_ACCEL:
         CMD_SET_SPD:
+            'debug("* CMD setSpeed")
             ' get incoming parm values
             nSpeed := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             ' validate values
             if not inRange(nSpeed, 1, 100)
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"MaxSpeed (%d) out of range [1, 100]", nSpeed)
+                strFmt.sFormatStr1(@msgWork, @"MaxSpeed (%d) out of range [1, 100]", nSpeed)
                 serialQueue.sendError(@msgWork)
             else
                 ' all good, say so, then act on request
@@ -233,7 +260,7 @@ PRI processCommand(pValues)
             nSpeed := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             ' validate values
             if not inRange(nSpeed, 1, 100)
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"MaxSpeedForDistance (%d) out of range [1, 100]", nSpeed)
+                strFmt.sFormatStr1(@msgWork, @"MaxSpeedForDistance (%d) out of range [1, 100]", nSpeed)
                 serialQueue.sendError(@msgWork)
             else
                 ' all good, say so, then act on request
@@ -245,7 +272,7 @@ PRI processCommand(pValues)
             bHoldEnable := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             ' validate values
             if not (bHoldEnable == TRUE or bHoldEnable == FALSE)
-                strFmt.sFormatStr1(@BYTE[@msgWork][0], @"HoldAtStop (%d) out of range [-1, 0] (T/F)", bHoldEnable)
+                strFmt.sFormatStr1(@msgWork, @"HoldAtStop (%d) out of range [-1, 0] (T/F)", bHoldEnable)
                 serialQueue.sendError(@msgWork)
             else
                 ' all good, say so, then act on request
@@ -260,7 +287,7 @@ PRI processCommand(pValues)
             ' get requested values
             ltStatus, rtStatus := wheels.getStatus()
             ' format response
-            strFmt.sFormatStr2(@BYTE[@msgWork][0], @"stat %d %d\r\n", ltStatus, rtStatus)
+            strFmt.sFormatStr2(@msgWork, @"stat %d %d\n", ltStatus, rtStatus)
             ' send to host
             serialQueue.sendResponse(@msgWork)
         CMD_GET_MAX_SPD:

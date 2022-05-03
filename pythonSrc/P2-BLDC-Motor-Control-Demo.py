@@ -3,6 +3,7 @@
 import _thread
 from datetime import datetime
 from math import e
+from pickle import TRUE
 from time import time, sleep, localtime, strftime
 import os
 import subprocess
@@ -157,7 +158,7 @@ if opt_debug:
 
 
 # -----------------------------------------------------------------------------
-#  methods indentifying RPi host hardware/software
+#  CLASS methods indentifying RPi host hardware/software
 # -----------------------------------------------------------------------------
 
 #  object that provides access to information about the RPi on which we are running
@@ -226,7 +227,7 @@ class RPiHostInfo:
         return lcl_hostname, lcl_fqdn
 
 # -----------------------------------------------------------------------------
-#  Maintain Runtime Configuration values
+#  CLASS: Maintain Runtime Configuration values
 # -----------------------------------------------------------------------------
 
 #  object that provides access to gateway runtime confiration data
@@ -291,7 +292,7 @@ class RuntimeConfig:
 
 
 # -----------------------------------------------------------------------------
-#  Circular queue for serial input lines & serial listener
+#  CLASS: Circular queue for serial input lines & serial listener
 # -----------------------------------------------------------------------------
 
 # object which is a queue of text lines
@@ -316,6 +317,193 @@ class RxLineQueue:
     def lineCount(self):
         return len(self.lineBuffer)
 
+# -----------------------------------------------------------------------------
+#  CLASS: An interface for easy BLDC Motor control (over serial I/F)
+# -----------------------------------------------------------------------------
+
+class BLDCMotorControl:
+    serPort = ''
+
+    # create a new instance with the given serial port
+    def __init__(self, serialPort):
+        self.serPort = serialPort
+
+    # -----------------------
+    # PUBLIC Control Methods
+    # -----------------------
+    # PUB driveDirection(power, direction)
+    def driveDirection(self, power, direction):
+        commandStr = 'drivedir {} {}\n'.format(power, direction)
+        self.sendCommand(commandStr)
+
+    # PUB driveForDistance(leftDistance, rightDistance, distanceUnits)
+    def driveForDistance(self, leftDistance, rightDistance, eDistanceUnits):
+        commandStr = 'drivedist {} {} {}\n'.format(leftDistance, rightDistance, eDistanceUnits.value)
+        self.sendCommand(commandStr)
+
+    # PUB driveAtPower(leftPower, rightPower)
+    def driveAtPower(self, leftPower, rightPower):
+        commandStr = 'drivepwr {} {}\n'.format(leftPower, rightPower)
+        self.sendCommand(commandStr)
+
+    # PUB stopAfterRotation(rotationCount, rotationUnits)
+    def stopAfterRotation(self, rotationCount, eRotationUnits):
+        commandStr = 'stopaftrot {} {}\n'.format(rotationCount, eRotationUnits.value)
+        self.sendCommand(commandStr)
+
+    # PUB stopAfterDistance(distance, distanceUnits)
+    def stopAfterDistance(self, distance, eDistanceUnits):
+        commandStr = 'stopaftdist {} {}\n'.format(distance, eDistanceUnits.value)
+        self.sendCommand(commandStr)
+
+    # PUB stopAfterTime(time, timeUnits)
+    def stopAfterTime(self, time, eTimeUnits):
+        commandStr = 'stopafttime {} {}\n'.format(time, eTimeUnits.value)
+        self.sendCommand(commandStr)
+
+    # PUB stopMotors()
+    def stopMotors(self):
+        commandStr = 'stopmotors\n'
+        self.sendCommand(commandStr)
+
+    # PUB emergencyCutoff()
+    def emergencyCutoff(self):
+        commandStr = 'emercutoff\n'
+        self.sendCommand(commandStr)
+
+    # PUB clearEmergency()
+    def clearEmergency(self):
+        commandStr = 'emerclear\n'
+        self.sendCommand(commandStr)
+
+    # -------------------------
+    # PUBLIC Configure Methods
+    # -------------------------
+    # PUB setAcceleration(rate)
+    def setAcceleration(self, rate):
+        commandStr = 'setaccel {}\n'.format(rate)
+        self.sendCommand(commandStr)
+
+    # PUB setMaxSpeed(speed)
+    def setMaxSpeed(self, speed):
+        commandStr = 'setspeed {}\n'.format(speed)
+        self.sendCommand(commandStr)
+
+    # PUB setMaxSpeedForDistance(speed)
+    def setMaxSpeedForDistance(self, speed):
+        commandStr = 'setspeedfordist {}\n'.format(speed)
+        self.sendCommand(commandStr)
+
+    # PUB holdAtStop(bEnable)
+    def holdAtStop(self, bEnable):
+        commandStr = 'hold {}\n'.format(bEnable)
+        self.sendCommand(commandStr)
+
+    # PUB resetTracking()
+    def resetTracking(self):
+        commandStr = 'resettracking\n'
+        self.sendCommand(commandStr)
+
+    # ----------------------
+    # PUBLIC Status Methods
+    # ----------------------
+    # PUB getDistance(distanceUnits) : leftDistanceInUnits, rightDistanceInUnits
+    def getDistance(self, eDistanceUnits):
+        commandStr = 'getdist {}\n'.format(eDistanceUnits.value)
+        responseStr = self.sendCommand(commandStr)
+        ltValue, rtValue = self.getValues('dist', responseStr, 2)
+        return ltValue, rtValue
+
+    # PUB getRotationCount(rotationUnits) : leftRotationCount, rightRotationCount
+    def getRotationCount(self, eRotationUnits) :
+        commandStr = 'getrot {}\n'.format(eRotationUnits.value)
+        responseStr = self.sendCommand(commandStr)
+        ltValue, rtValue = self.getValues('rot', responseStr, 2)
+        return ltValue, rtValue
+
+    # PUB getPower() : leftPower, rightPower
+    def getPower(self):
+        commandStr = 'getpwr\n'
+        responseStr = self.sendCommand(commandStr)
+        ltValue, rtValue = self.getValues('pwr', responseStr, 2)
+        return ltValue, rtValue
+
+    # PUB getStatus() : eLeftStatus, eRightStatus
+    def getStatus(self):
+        commandStr = 'getstatus\n'
+        responseStr = self.sendCommand(commandStr)
+        ltValue, rtValue = self.getValues('stat', responseStr, 2)
+        return self.statusEnumFor(ltValue), self.statusEnumFor(rtValue)
+
+    # PUB getMaxSpeed() : maxSpeed
+    def getMaxSpeed(self):
+        commandStr = 'getmaxspd\n'
+        responseStr = self.sendCommand(commandStr)
+        onlyValue = self.getValues('speedmax', responseStr, 1)
+        return onlyValue
+
+    # PUB getMaxSpeedForDistance() : maxSpeed4dist
+    def getMaxSpeedForDistance(self):
+        commandStr = 'getmaxspdfordist\n'
+        responseStr = self.sendCommand(commandStr)
+        onlyValue = self.getValues('speeddistmax', responseStr, 1)
+        return onlyValue
+
+    # ------- PRIVATE (Support) Methods --------
+    # common send method
+    def sendCommand(self, cmdStr):
+        # format and send command, then wait for single line response
+        # if other than error|OK then return the response string
+        newOutLine = cmdStr.encode('utf-8')
+        print_line('send line({})=({})'.format(len(newOutLine), newOutLine), verbose=True)
+        self.serPort.write(newOutLine)
+        responseStr = self.processResponse()
+        return responseStr
+
+    # common rx repsonse method
+    def processResponse(self):
+        # wait for 1-line response
+        # show debug/error if OK|error
+        # otherwise return the response string
+        global queueRxLines
+        responseStr = ''
+        while queueRxLines.lineCount() == 0:
+            sleep(0.2)
+
+        currLine = queueRxLines.popLine()
+        if currLine.startswith(responseOK):
+            print_line('Incoming OK', debug=True)
+
+        elif currLine.startswith(responseERROR):
+            print_line('! {}'.format(currLine.replace('\\n', '')), error=True)
+        else:
+            responseStr = currLine
+        return responseStr;
+
+    def getValues(self, linePrefix, line, ctExpected):
+        # given the response string, isolate and return the response values
+        lineParts = line.split(' ')
+        if len(lineParts) < 2:
+            print_line('! ERROR: not enough parts in line={}'.format(line.replace('\\n', '')), error=True)
+        elif lineParts[0] != linePrefix:
+              print_line('! ERROR: BAD line={} missing prefix [{}]'.format(line.replace('\\n', ''), linePrefix), error=True)
+        elif len(lineParts) != ctExpected + 1:
+              print_line('! ERROR: BAD line={} wrong number reponses, expected ({})'.format(line.replace('\\n', ''), ctExpected), error=True)
+        else:
+            if len(lineParts) == 3:
+                return lineParts[1], lineParts[2]
+            else:
+                return lineParts[1]
+
+    def statusEnumFor(self, iValue):
+        # return enum member assoc with int value
+        desiredValue = DrvStatus.DS_Unknown
+        possValues = [item.value for item in DrvStatus]
+        if iValue in possValues:
+            desiredValue = DrvStatus(iValue)
+
+        print_line('found ENUM {} for {}'.format(iValue, desiredValue), debug=True)
+        return desiredValue
 
 # -----------------------------------------------------------------------------
 #  TASK: dedicated serial listener
@@ -340,127 +528,9 @@ def taskSerialListener(serPort):
                 currLine = received_data.decode('utf-8', 'replace').rstrip()
                 #print_line('TASK-RX line({}=[{}]'.format(len(currLine), currLine), debug=True)
                 queueRxLines.pushLine(currLine)
+                if currLine.startswith(cmdIdentifyHW):
+                    processInput(serPort)
 
-
-# -----------------------------------------------------------------------------
-#  TASK: dedicated receive line processor
-# -----------------------------------------------------------------------------
-
-def taskProcessRxStrings(serPort):
-    global queueRxLines
-    print_line('Thread: processRxStrings() started', verbose=True)
-    while True:
-        # process an incoming line
-        currLine = queueRxLines.popLine()
-
-        if len(currLine) > 0:
-            processIncomingRequest(currLine, serPort)
-        else:
-            sleep(0.1)
-
-class BLDCMotorControl:
-    serPort = ''
-
-        # create a new instance with all details given!
-    def __init__(self, serialPort):
-        self.serPort = serialPort
-
-    #  Control Methods
-    def driveDirection(self, power, direction):
-        commandStr = 'drivedir {} {}\n'.format(power, direction)
-        self.sendCommand(commandStr)
-
-    def driveForDistance(self, leftDistance, rightDistance, eDistanceUnits):
-        commandStr = 'drivedist {} {} {}\n'.format(leftDistance, rightDistance, eDistanceUnits)
-        self.sendCommand(commandStr)
-
-    def driveAtPower(self, leftPower, rightPower):
-        commandStr = 'drivepwr {} {}\n'.format(leftPower, rightPower)
-        self.sendCommand(commandStr)
-
-    def stopAfterRotation(self, rotationCount, eRotationUnits):
-        commandStr = 'stopaftrot {} {}\n'.format(rotationCount, eRotationUnits)
-        self.sendCommand(commandStr)
-
-    def stopAfterDistance(self, distance, eDistanceUnits):
-        commandStr = 'stopaftdist {} {}\n'.format(distance, eDistanceUnits)
-        self.sendCommand(commandStr)
-
-    def stopAfterTime(self, time, eTimeUnits):
-        commandStr = 'stopafttime {} {}\n'.format(time, eTimeUnits)
-        self.sendCommand(commandStr)
-
-    def stopMotors(self):
-        commandStr = 'stopmotors\n'
-        self.sendCommand(commandStr)
-
-    def emergencyCutoff(self):
-        commandStr = 'emercutoff\n'
-        self.sendCommand(commandStr)
-
-    def clearEmergency(self):
-        commandStr = 'emerclear\n'
-        self.sendCommand(commandStr)
-
-    #  Configure Methods
-    def setAcceleration(self, rate):
-        commandStr = 'setaccel {}\n'.format(rate)
-        self.sendCommand(commandStr)
-
-    def setMaxSpeed(self, speed):
-        commandStr = 'setspeed {}\n'.format(speed)
-        self.sendCommand(commandStr)
-        self.processResponse()
-
-    def setMaxSpeedForDistance(self, speed):
-        commandStr = 'setspeedfordist {}\n'.format(speed)
-        self.sendCommand(commandStr)
-
-    def holdAtStop(self, bEnable):
-        commandStr = 'hold {}\n'.format(bEnable)
-        self.sendCommand(commandStr)
-
-    def resetTracking(self):
-        commandStr = 'resettracking\n'
-        self.sendCommand(commandStr)
-
-    #  Status Methods
-    def getDistance(self, eDistanceUnits):
-        commandStr = 'getdist {}\n'.format(eDistanceUnits)
-        self.sendCommand(commandStr)
-
-    def getRotationCount(self, eRotationUnits) :
-        commandStr = 'getrot {}\n'.format(eRotationUnits)
-        self.sendCommand(commandStr)
-
-    def getPower(self):
-        commandStr = 'getpwr\n'
-        self.sendCommand(commandStr)
-
-    def getStatus(self):
-        commandStr = 'getstatus\n'
-        self.sendCommand(commandStr)
-
-    def getMaxSpeed(self):
-        commandStr = 'getmaxspd\n'
-        self.sendCommand(commandStr)
-
-    def getMaxSpeedForDistance(self):
-        commandStr = 'getmaxspdfordist\n'
-        self.sendCommand(commandStr)
-
-    # common send method
-    def sendCommand(self, cmdStr):
-        newOutLine = cmdStr.encode('utf-8')
-        print_line('send line({})=({})'.format(len(newOutLine), newOutLine), verbose=True)
-        self.serPort.write(newOutLine)
-
-
-    # common rx repsonse method
-    def processResponse(self):
-        global queueRxLines
-        while queueRxLines.lineCount() == 0:
-            sleep(0.2)
 
 # -----------------------------------------------------------------------------
 #  Main loop
@@ -470,7 +540,6 @@ cmdIdentifyHW  = "ident:"
 responseOK  = "OK"
 responseERROR = "ERROR"
 
-
 def processIncomingRequest(newLine, serPort):
 
     print_line('Incoming line({})=[{}]'.format(len(newLine), newLine), debug=True)
@@ -479,8 +548,7 @@ def processIncomingRequest(newLine, serPort):
         print_line('Incoming OK', debug=True)
 
     elif newLine.startswith(responseERROR):
-        print_line('* Incoming error', verbose=True)
-        print_line('processIncomingRequest nameValueStr({})=({}) ! missing hardware keys !'.format(len(newLine), newLine), warning=True)
+        print_line('Incoming errStr({})=({})'.format(len(newLine), newLine), error=True)
 
     elif newLine.startswith(cmdIdentifyHW):
         print_line('* HANDLE id P2 Hardware', verbose=True)
@@ -599,8 +667,6 @@ queueRxLines = RxLineQueue()
 
 _thread.start_new_thread(taskSerialListener, ( serialPort, ))
 
-_thread.start_new_thread(taskProcessRxStrings, ( serialPort, ))
-
 sleep(1)    # allow threads to start...
 
 wheels = BLDCMotorControl(serialPort)
@@ -609,11 +675,14 @@ def waitForMotorsStopped():
     bothStopped = False
     while bothStopped == False:
         # get status
-        wheels.getStatus()
+        ltStatus, rtStatus = wheels.getStatus()
         #while not stopped loop
         # get "stat" response (lt and rt status)
         # if both are stopped the set bothStopped = true
-        bothStopped = True
+        if ltStatus == DrvStatus.DS_OFF and rtStatus == DrvStatus.DS_OFF:
+            bothStopped = TRUE
+            break
+        sleep(0.25)
 
 # run our loop
 try:
@@ -627,24 +696,32 @@ try:
     # -------------------------
     # configure drive system
     # -------------------------
+#    wheels.setMaxSpeed(200)
+#    wheels.setMaxSpeedForDistance(-5)
     # override defaults, use 100 %
     wheels.setMaxSpeed(100)
     wheels.setMaxSpeedForDistance(100)
     # and don't draw current at stop
     wheels.holdAtStop(False)
 
+    ltStatus, rtStatus = wheels.getStatus()
+    print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
+
     """
-        # -------------------------
-        #  drive a square pattern
-        #   2-second sides 50% power, 90° corners
-        # -------------------------
-        # forward for 2 seconds at 50% power
-        desiredPower = 50
-        lengthOfSideInSeconds = 2
-        dirStraightAhead = 0
-        wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
-        wheels.driveDirection(desiredPower, dirStraightAhead)
-        waitForMotorsStopped()
+    # -------------------------
+    #  drive a square pattern
+    #   2-second sides 50% power, 90° corners
+    # -------------------------
+    # forward for 2 seconds at 50% power
+    desiredPower = 50
+    lengthOfSideInSeconds = 2
+    dirStraightAhead = 0
+    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
+    wheels.driveDirection(desiredPower, dirStraightAhead)
+    waitForMotorsStopped()
+    """
+
+    """
         # hard 90° right turn
         #   [circ = 2 * PI * r]
         #   rotate about 1 wheel means effective-platform-radius is actual-platform-diameter!

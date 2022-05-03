@@ -35,7 +35,7 @@ CON { fixed io pins }
 
 OBJ { Objects Used by this Object }
 
-    serial         : "isp_serial"                                   ' serial I/O
+    serialChan         : "isp_serial_singleton"                 ' serial I/O
 
 CON { driver config values }
 
@@ -111,14 +111,15 @@ pNextMsg        long    0
 nTaskChr        long    0
 ' tsk vars
 
-                '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")
-                '              [1:pStr] -> "full string"
-                '              [2:pCmd] -> "cmd"
-                '              [3:eCmd]
-                '              [4:nValue1]
-                '              [5:nValue2]
-                '              [6:nValue3]
-                '              [etc] - up to 6 max values
+            '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+            '              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+            '              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+            '              [3:eCmd]                                             ENT_CMDENUM_IDX
+            '              [4:nValue1]                                          ENT_PARM1_IDX
+            '              [5:nValue2]                                          ENT_PARM2_IDX
+            '              [6:nValue3]                                          ENT_PARM3_IDX
+            '              [7:nValue4]                                          ENT_PARM4_IDX
+            '              [etc] - up to 6 max values
 
 currParsedCommand   LONG    0[MAX_COMMAND_PARTS]
 
@@ -158,140 +159,13 @@ nStackDepth     long    STACK_SIZE_LONGS
 PUB null() | pWrappedStr, bStatus, pStr, bWaitStatus, nCtParm, bPassFail
 '' This is not a top level object
 
-    'if bTestMode == TRUE
-    ' but is our test code main for now...
-        'startx(RX_GW, TX_GW, GW_BAUDRATE, PU_15K)
-        ' =========================================
-        ' test code
-        ' -----------------------------------------
-    {
-        ' have serial place str in buffer
-        eTestCtrl := CT_IDLE
-        waitms(250)
-
-        eTestParam := @greenStr
-        eTestCtrl := CT_PLACE_STR
-        ' then report the string arrived
-        ' check to see if string arrived
-        '  display string
-        '  free string
-        bWaitStatus := TRUE ' yes, let's wait for strings to arrive
-        pStr := getLine(@currSingleLineBffr, MAX_SINGLE_STRING_LEN, bWaitStatus)
-
-        waitms(25077)
-        eTestParam := @redStr
-        eTestCtrl := CT_PLACE_STR
-        ' then report the string arrived
-        ' check to see if string arrived
-        '  display string
-        '  free string
-
-        pStr := getLine(@currSingleLineBffr, MAX_SINGLE_STRING_LEN, bWaitStatus)
-
-        bStatus := haveRxString()
-        debug(">> 001 is T/F:", ubin_byte(bStatus))
-    }
-
-        ' - drop buffer size to smaller so fewer messages needed for following tests
-    {
-        resetRxStatus() ' reset problem indicators
-        eTestCtrl := CT_IDLE
-        waitms(250)
-
-        ' - fill to buffer max detect goood everrun
-        nCtParm := 9    ' our N      EXACT FILL of queue space
-        eTestParam := nCtParm
-        eTestCtrl := CT_PLACE_N_MSGS
-        waitms(500)
-
-        if rxStringsCount() < nCtParm
-            debug(">> ERR too few strings reported")
-        else
-            debug(">> all strings reported in")
-        'repeat ' hold here
-
-        repeat nCtParm
-            pStr := getLine(@currSingleLineBffr, MAX_SINGLE_STRING_LEN, bWaitStatus)
-
-        bStatus := haveRxString()
-        debug(">> 002 is T/F:", ubin_byte(bStatus))
-
-        ' this test should overrun
-        bPassFail :=  (bQueOverrun == TRUE) ? TST_PASS : TST_FAIL
-        testReport(string("(1) Rx too many"), bPassFail)
-
-        resetRxStatus() ' reset problem indicators
-        flushRxQueue()
-
-        ' - fill to buffer N strings, see if all report correctly
-        ' - fill with exactfit messages - ensure wrap works
-        nCtParm := 8    ' our N      EXACT FILL of queue space
-        eTestParam := nCtParm
-        eTestCtrl := CT_PLACE_N_MSGS
-        waitms(250)
-
-        repeat while rxStringsCount() < nCtParm
-        debug(">> all strings reported in")
-        'repeat ' hold here
-
-        repeat nCtParm
-            pStr := getLine(@currSingleLineBffr, MAX_SINGLE_STRING_LEN, bWaitStatus)
-
-        bStatus := haveRxString()
-        debug(">> 003 is T/F:", ubin_byte(bStatus))
-
-        ' this test should NOT overrun
-        bPassFail :=  (bQueOverrun == FALSE) ? TST_PASS : TST_FAIL
-        testReport(string("(2) Rx Exact full"), bPassFail)
-
-        resetRxStatus() ' reset problem indicators
-
-        ' - fill with non-exact fit messages - ensure wrap works
-        bPassFail := TST_PASS
-        repeat 4    ' 3 ok
-            nCtParm := 3    ' our N      EXACT FILL of queue space
-            eTestParam := nCtParm
-            eTestCtrl := CT_PLACE_N_MSGS
-            waitms(250)
-
-            if rxStringsCount() < nCtParm
-                debug(">> ERR too few strings reported")
-                bPassFail := TST_FAIL
-            else
-                debug(">> all strings reported in")
-
-            repeat rxStringsCount()
-                pStr := getLine(@currSingleLineBffr, MAX_SINGLE_STRING_LEN, bWaitStatus)
-
-        bStatus := haveRxString()
-        debug(">> 003 is T/F:", ubin_byte(bStatus))
-
-        ' this test should NOT overrun
-        if (bQueOverrun == TRUE)
-            bPassFail := TST_FAIL
-
-        testReport(string("(3) Rx wrap test"), bPassFail)
-
-        resetRxStatus() ' reset problem indicators
-
-
-        ' next tests:
-        ' - restore buffer to production size [512b]
-        ' - cut over to actual RX with serial
-        ' - do multi-message rx and unload - ensuring this all works
-        ' ========= ready for production use =========
-
-        ' =========================================
-        stop()
-        '}
-
 CON { - - - - - }
 
 PUB startx(rxpin, txpin, baud, pullup)
 '' Start serial gateway serial coms on rxpin and txpin at baud
     pinRx := rxpin
     pinTx := txpin
-    serial.startx(pinRx, pinTx, baud, pullup)                              ' use user serial port
+    serialChan.startx(pinRx, pinTx, baud, pullup)                              ' use user serial port
 
     prepStackForCheck() ' for our internal test use
 
@@ -302,7 +176,7 @@ PUB startx(rxpin, txpin, baud, pullup)
 
 PUB stop()
 '' Release the serial pins and free up the rcvr cog
-    serial.rxflush()   ' git rid of any pending input
+    serialChan.rxflush()   ' git rid of any pending input
     ' free the pins used
     pinf(pinRx)    ' de-assert
     pinf(pinTx)    ' de-assert
@@ -316,13 +190,18 @@ CON { ----- Control Changes Interface ----- }
 
     WAIT_FOR_STRING = TRUE
 
-#0, TBLIDX_POSSCMD, TBLIDX_ECMD, TBLIDX_PARAMCT
+    ' offsets for incoming table entries
+    #0, TBLIDX_POSSCMD, TBLIDX_ECMD, TBLIDX_PARAMCT
 
-PUB haveCommand(pEntries, nEntryCount) : bControlStatus | opStatus, pValues, nIdx, nParamCt, pCmd, eCmd, bGoodCmd
+PUB haveCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nIdx, nParamCt, pCmd, eCmd, bGoodCmd
 '' Return T/F where T means a control value change has been received and needs to be handled
-    bControlStatus := (rxStringsCount() > 0) ? TRUE : FALSE' none for now...
-    debug("- hvcmd: ", uhex_long(pEntries), udec_long(nEntryCount))
+    bHaveCmdStatus := haveRxString()
+    if nQStrCount <> 0
+        debug("- hvcmd: ", uhex_long(pEntries), udec_long(nEntryCount), udec_long(nQStrCount))
+    'repeat  ' lock here
+
     ' validation table: (nEntryCount) entries where each is:
+    ' TBLIDX_POSSCMD, TBLIDX_ECMD, TBLIDX_PARAMCT
     '    [pCmdStr][eCmdValue][nParamCt]
     '    [pCmdStr][eCmdValue][nParamCt]
     '    :
@@ -332,8 +211,8 @@ PUB haveCommand(pEntries, nEntryCount) : bControlStatus | opStatus, pValues, nId
     ' Interpret string, do partial validation
     ' if NOT valid, send ERROR w/cause over serial and say we have no string
     ' else return OK and say we have request to be handled
-    if (bControlStatus == TRUE)
-        bControlStatus := FALSE
+    if (bHaveCmdStatus == TRUE)
+        bHaveCmdStatus := FALSE ' preset as invalid command...
         ' debug("!! message arrived")
         opStatus, pValues := parseCommandAndValue()
         if opStatus <> OP_SUCCESS
@@ -352,10 +231,10 @@ PUB haveCommand(pEntries, nEntryCount) : bControlStatus | opStatus, pValues, nId
             ' locate command in table
             bGoodCmd := FALSE
             repeat nIdx from 0 to nEntryCount - 1
-                pCmd := LONG [pEntries][nIdx * 3 + TBLIDX_POSSCMD]
-                eCmd := LONG [pEntries][nIdx * 3 + TBLIDX_ECMD]
-                nParamCt := LONG [pEntries][nIdx * 3 + TBLIDX_PARAMCT]
-                debug("- hvcmd: tblent #", udec_(nIdx), " [", zstr_(pCmd), "]")
+                pCmd := LONG [pEntries][(nIdx * 3) + TBLIDX_POSSCMD]
+                eCmd := LONG [pEntries][(nIdx * 3) + TBLIDX_ECMD]
+                nParamCt := LONG [pEntries][(nIdx * 3) + TBLIDX_PARAMCT]
+                'debug("- hvcmd: tblent #", udec_(nIdx), " [", zstr_(pCmd), "] eCmd=", sdec_(eCmd))
                 ' is this our cmd?
                 if strIgnoreCaseMatch(pCmd, LONG[pValues][ENT_CMDSTR_IDX])
                     bGoodCmd := TRUE
@@ -372,63 +251,67 @@ PUB haveCommand(pEntries, nEntryCount) : bControlStatus | opStatus, pValues, nId
                     sendError(@"Missing/Extra parameter(s)")
                 else
                     ' return valid-so-far command
-                    bControlStatus := TRUE
+                    bHaveCmdStatus := TRUE
                     dumpParsedCommand(@"hvCmd")
 
 PUB sendError(pMsg)
 ' reply to sender with error message
-    serial.str(@"ERROR ")
-    serial.str(pMsg)
-    serial.str(@"\r\n")
-    debug(" ERROR: [", zstr(pMsg), "] raw=[", zstr_(@currSingleLineBffr), "]")
+    serialChan.str(@"ERROR ")
+    serialChan.str(pMsg)
+    serialChan.str(@"\n")
+    debug(" ERROR: [", zstr_(pMsg), "] raw=[", zstr_(@currSingleLineBffr), "]")
 
 PUB sendOK()
 ' reply to sender with OK message
-    serial.str(@"OK\r\n")
+    serialChan.str(@"OK\n")
     debug(" OK: raw=[", zstr_(@currSingleLineBffr), "]")
 
 PUB sendResponse(pMsg)
 ' reply to sender with OK message
-    serial.str(pMsg)
-    serial.str(@"\r\n")
+    serialChan.str(pMsg)
+    serialChan.str(@"\n")
     debug(" response: ", zstr_(pMsg))
 
 PRI parseCommandAndValue() : opStatus, pValues | pStr
 '' Interpret command and return descriptor
-' where:
-'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")
-'              [1:pStr] -> "full string"
-'              [2:pCmd] -> "cmd"
-'              [3:eCmd]
-'              [4:nValue1]
-'              [5:nValue2]
-'              [6:nValue3]
+    debug("- parseCommandAndValue()")
+' where descriptor is:
+'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+'              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+'              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+'              [3:eCmd]                                             ENT_CMDENUM_IDX
+'              [4:nValue1]                                          ENT_PARM1_IDX
+'              [5:nValue2]                                          ENT_PARM2_IDX
+'              [6:nValue3]                                          ENT_PARM3_IDX
+'              [7:nValue4]                                          ENT_PARM4_IDX
 '              [etc] - up to 6 max values
     pStr := getLine(@currSingleLineBffr, MAX_SINGLE_STRING_LEN, WAIT_FOR_STRING)
     ' now split string into useful parts
     opStatus, pValues := commandParse(pStr)
 
-PUB getCommandAndValue() : opStatus, pValues
+PUB getCommandParms() : opStatus, pValues
 '' return latest descriptor to caller
-' where:
-'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")
-'              [1:pStr] -> "full string"
-'              [2:pCmd] -> "cmd"
-'              [3:eCmd]
-'              [4:nValue1]
-'              [5:nValue2]
-'              [6:nValue3]
+    debug("- getCommandParms()")
+' where descriptor is:
+'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+'              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+'              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+'              [3:eCmd]                                             ENT_CMDENUM_IDX
+'              [4:nValue1]                                          ENT_PARM1_IDX
+'              [5:nValue2]                                          ENT_PARM2_IDX
+'              [6:nValue3]                                          ENT_PARM3_IDX
+'              [7:nValue4]                                          ENT_PARM4_IDX
 '              [etc] - up to 6 max values
 
-    ' if we have values in parsed table ()
-    opStatus := (LONG[@currParsedCommand][0] > 0) ? OP_SUCCESS : OP_FAILURE
+    ' if we have values in parsed table () (PROXY: is command was recognized)
+    opStatus := (LONG[@currParsedCommand][ENT_CMDENUM_IDX] > 0) ? OP_SUCCESS : OP_FAILURE
     pValues := @currParsedCommand
 
 CON { ----- General Strings Interface ----- }
 
-PUB haveRxString() : presentStatus
-'' Return T/F where T means have received a string!
-    presentStatus := (nQStrCount > 0) ? TRUE : FALSE
+PUB haveRxString() : bPresentStatus
+'' Return T/F where T means a control value change has been received and needs to be handled
+    bPresentStatus := (nQStrCount > 0) ? TRUE : FALSE
     'debug("?? haveRxString[T/F]: ", ubin_byte(presentStatus))
 
 PUB rxStringsCount() : nCount
@@ -442,13 +325,14 @@ PUB getLine(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedSt
     pStr := 0
     if bShouldWait == TRUE
         bStringArrived := TRUE
-        repeat until haveRxLine() == TRUE
+        repeat until haveRxString() == TRUE
     else
-        bStringArrived := haveRxLine()
+        bStringArrived := haveRxString()
 
     if bStringArrived == TRUE
         pStr := pUserDest
         pWrappedStr := dequeueRxStr()
+        bytefill(pUserDest, 0, lenDest)
         copyWrappedStr(pUserDest, pWrappedStr, lenDest)
         nLen := strsize(pUserDest)
         freeWrappedString(pWrappedStr, nLen)
@@ -457,9 +341,6 @@ PUB getLine(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedSt
     else
         debug("gtln: ERROR str=[] - NOT PRESENT")
 
-PRI haveRxLine() : bControlStatus
-'' Return T/F where T means a control value change has been received and needs to be handled
-    bControlStatus := (rxStringsCount() > 0) ? TRUE : FALSE
 
 PUB flushRxQueue()
 '' Reset all Rx Queue control and data (emptying it!)
@@ -482,13 +363,20 @@ PUB resetRxStatus()
     bQueOverrun := FALSE
     bStrQueOverrun := FALSE
 
-PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx
+PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx, bHaveNeg
 '' Return long value for given decimal string
     decimalValue := 0
     nCharCt := strsize(pDecimalStr)
     if (nCharCt > 0)
-        repeat nIdx from 0 to nCharCt - 1
-            decimalValue := (decimalValue * 10) + (byte[pDecimalStr][nIdx] - $30)
+        bHaveNeg := (BYTE[pDecimalStr][0] == "-") ? TRUE : FALSE
+        if bHaveNeg
+            pDecimalStr++   ' point past neg sign
+            nCharCt--
+        if (nCharCt > 0)
+            repeat nIdx from 0 to nCharCt - 1
+                decimalValue := (decimalValue * 10) + (BYTE[pDecimalStr][nIdx] - $30)
+        if bHaveNeg
+            decimalValue := 0 - decimalValue
 
 PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitValue
     nOffset := 0
@@ -546,7 +434,7 @@ PRI TaskSerialRx(pRxBffr, lenRxBffr)
         ' read serial input forever placing chars in RX Circ Queue
         debug("TASK[Rx] ** Live LOOP rcvg fm serial **")
         repeat
-            nTaskChr := serial.rxtime(1000)
+            nTaskChr := serialChan.rxtime(1000)
             if (nTaskChr <> -1)
                 tskEnqueueChar(nTaskChr)
 
@@ -683,27 +571,45 @@ PRI commandParse(pRxLine) : nStatus, pValues | nLenRemaining, nSepIdx, pSrchBffr
     ' Examples: "drivedir {pwr} {dir}\n"
     ' Examples: "drivedist {ltdist} {rtdist} {d-u}\n"
     ' Examples: "emercutoff\n"
-    LONG [@currParsedCommand][1] := pRxLine ' store raw line
+
+    ' BUILD THIS:
+    '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+    '              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+    '              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+    '              [3:eCmd]                                             ENT_CMDENUM_IDX
+    '              [4:nValue1]                                          ENT_PARM1_IDX
+    '              [5:nValue2]                                          ENT_PARM2_IDX
+    '              [6:nValue3]                                          ENT_PARM3_IDX
+    '              [7:nValue4]                                          ENT_PARM4_IDX
+    '              [etc] - up to 6 max values
+
+    LONG [@currParsedCommand][ENT_RAWSTR_IDX] := @currSingleLineBffr ' record location of raw line
+    LONG [@currParsedCommand][ENT_VALUE_CT_IDX] := 0                ' preset not recognized
+    LONG [@currParsedCommand][ENT_CMDENUM_IDX] := 0                 ' preset not recognized
+    debug("- cp: raw=[", zstr_(LONG [@currParsedCommand][ENT_RAWSTR_IDX]), "]")
     '
-    bytefill(@currCommandName, 0, RX_COMMAND_MAX_LEN+1)                        ' reset buffers
+    bytefill(@currCommandName, 0, RX_COMMAND_MAX_LEN+1)             ' reset buffers
 
     pValues := @currParsedCommand
     nStatus := OP_FAILURE ' preset to failure
 
     pSrchBffr := pRxLine
-    nLenRemaining := strsize(pRxLine)                                         ' get length of input
-    nSepIdx := -1                                                     ' separator not found
+    nLenRemaining := strsize(pRxLine)                               ' get length of input
+    nSepIdx := -1                                                   ' separator not found
 
     ' locate our command string within rx buffer
     pRemainingBffr, nSepIdx := locationNextNonWhiteValue(pSrchBffr, nLenRemaining)
 
+    ' if we have non-empty line...
     if (nLenRemaining > 0)
+        ' if we bounded the command name...
         if (nSepIdx >= 0)
             ' capture subsystem ID for this status
             nCmdLen := (nSepIdx <= RX_COMMAND_MAX_LEN) ? nSepIdx : RX_COMMAND_MAX_LEN
             bytemove(@currCommandName, pRemainingBffr, nCmdLen)
-            LONG [@currParsedCommand][2] := @currCommandName    ' store command name
-            LONG [@currParsedCommand][0] := 1                   ' note that we have command name
+            LONG [@currParsedCommand][ENT_CMDSTR_IDX] := @currCommandName    ' store command name
+            LONG [@currParsedCommand][ENT_VALUE_CT_IDX] := 1                   ' note that we have command name
+            debug("- cp: cmd=[", zstr_(LONG [@currParsedCommand][ENT_CMDSTR_IDX]), "]")
 
         ' point past command
         pSrchBffr := pSrchBffr + nSepIdx + 1  ' +1 = point past sep
@@ -713,56 +619,61 @@ PRI commandParse(pRxLine) : nStatus, pValues | nLenRemaining, nSepIdx, pSrchBffr
 
         ' if anything left, identify params
         if (nLenRemaining > 0)
-            nParmIdx := 4   ' first param is at [4] into structure
+            nParmIdx := ENT_PARM1_IDX   ' first param is at [4] into structure
             repeat
                 bytefill(@tmpValueStr, 0, RX_VALUE_MAX_LEN+1)                        ' reset work buffer
 
                 pRemainingBffr, nSepIdx := locationNextNonWhiteValue(pSrchBffr, nLenRemaining)
 
-                ' if we have another place it in structure
-                if pRemainingBffr <> 0
-                    ' tmpValueStr         byte    0[RX_VALUE_MAX_LEN+1]
-                    ' save into terminated string
-                    nCmdLen := (nSepIdx <= RX_VALUE_MAX_LEN) ? nSepIdx : RX_VALUE_MAX_LEN
-                    bytemove(@tmpValueStr, pRemainingBffr, nCmdLen)
-                    ' convert string into value
-                    if strHasLowCasePrefix(@tmpValueStr, @"true")
-                        LONG [@currParsedCommand][nParmIdx] := TRUE
-                    elseif strHasLowCasePrefix(@tmpValueStr, @"false")
-                        LONG [@currParsedCommand][nParmIdx] := FALSE
-                    else
-                        LONG [@currParsedCommand][nParmIdx] := decimalForString(@tmpValueStr)
-                    ' increment count of parms
-                    LONG [@currParsedCommand][0] := LONG [@currParsedCommand][0] + 1
+                ' tmpValueStr         byte    0[RX_VALUE_MAX_LEN+1]
+                ' save into terminated string
+                nCmdLen := (nSepIdx <= RX_VALUE_MAX_LEN) ? nSepIdx : RX_VALUE_MAX_LEN
+                if nCmdLen == 0
+                    quit
 
-            until pRemainingBffr == 0
+                bytemove(@tmpValueStr, pRemainingBffr, nCmdLen)
+                debug("- cp: valStr=[", zstr_(@tmpValueStr), "]")
+                ' convert string into value
+                if strHasLowCasePrefix(@tmpValueStr, @"true")
+                    LONG [@currParsedCommand][nParmIdx] := TRUE
+                elseif strHasLowCasePrefix(@tmpValueStr, @"false")
+                    LONG [@currParsedCommand][nParmIdx] := FALSE
+                else
+                    LONG [@currParsedCommand][nParmIdx] := decimalForString(@tmpValueStr)
+                ' increment count of parms
+                debug("- cp: val=(", sdec_long_(LONG [@currParsedCommand][nParmIdx]), ")")
+                LONG [@currParsedCommand][ENT_VALUE_CT_IDX] += 1
+                nParmIdx++
+                pSrchBffr := pSrchBffr + nSepIdx + 1  ' +1 = point past sep
 
-    if nStatus == OP_SUCCESS
-        dumpParsedCommand(@"cmdprse")
+                if pRemainingBffr == 0
+                    quit
+
+    'dumpParsedCommand(@"cmdprse")
 
 PRI dumpParsedCommand(pMsg) | nIdx, nParams
-    '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")
-    '              [1:pStr] -> "full string"
-    '              [2:pCmd] -> "cmd"
-    '              [3:eCmd]
-    '              [4:nValue1]
-    '              [5:nValue2]
-    '              [6:nValue3]
-    '              [etc] - up to 6 max values
+'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+'              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+'              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+'              [3:eCmd]                                             ENT_CMDENUM_IDX
+'              [4:nValue1]                                          ENT_PARM1_IDX
+'              [5:nValue2]                                          ENT_PARM2_IDX
+'              [6:nValue3]                                          ENT_PARM3_IDX
+'              [7:nValue4]                                          ENT_PARM4_IDX
+'              [etc] - up to 6 max values
     debug("* Command: - ", zstr_(pMsg))
-    debug(" -- raw=[", zstr_(LONG [@currParsedCommand][1]), "]")
-    debug(" --  ct=(", udec_(LONG [@currParsedCommand][0]), ")")
-    debug(" -- cmd=[", zstr_(LONG [@currParsedCommand][2]), "]")
-    debug(" -- eCmd=(", udec_(LONG [@currParsedCommand][3]), ")")
+    debug(" -- raw=[", zstr_(LONG [@currParsedCommand][ENT_RAWSTR_IDX]), "]")
+    debug(" --  ct=(", udec_(LONG [@currParsedCommand][ENT_VALUE_CT_IDX]), ")")
+    debug(" -- cmd=[", zstr_(LONG [@currParsedCommand][ENT_CMDSTR_IDX]), "]")
+    debug(" -- eCmd=(", udec_(LONG [@currParsedCommand][ENT_CMDENUM_IDX]), ")")
     nParams := LONG [@currParsedCommand][0] - 1
     if nParams > 0
-        repeat nIdx from 4 to 4 + nParams - 1
+        repeat nIdx from ENT_PARM1_IDX to ENT_PARM1_IDX + nParams - 1
             debug(" -- param#", udec_(nIdx), "=(", sdec_(LONG [@currParsedCommand][nIdx]), ")")
 
 PRI locationNextNonWhiteValue(pBffr, lenRemaining) : pStart, nSepIdx | pBffrStart, nLenRemaining, nIdx, nChr
 ' Return ptr and index of end char of next non-white value
     nSepIdx := -1           ' separator not found
-
     ' skip any starting white-space
     pStart, nLenRemaining := skipWhiteSpace(pBffr, lenRemaining)
     ' locate end of this non-white value
@@ -772,6 +683,7 @@ PRI locationNextNonWhiteValue(pBffr, lenRemaining) : pStart, nSepIdx | pBffrStar
         if (nChr == $20 or nChr == $09 or nChr == $00)
             nSepIdx := nIdx
             quit
+    debug("- lnnwv: str=[",  zstr_(pBffr), "] ", uhex_long(pBffr), udec_long(lenRemaining), " -> ", uhex_long(pStart), udec_long(nSepIdx))
 
 PRI skipWhiteSpace(pBffr, lenRemaining) : pStart, nLenRemaining | nIdx, nChr
 ' Return ptr to first non-white char with adjusted len which is len of non-white to end of string
@@ -784,6 +696,7 @@ PRI skipWhiteSpace(pBffr, lenRemaining) : pStart, nLenRemaining | nIdx, nChr
             pStart := @byte[pBffr][nIdx]
             nLenRemaining := lenRemaining - nIdx
             quit
+    'debug("- sws: str=[",  zstr_(pBffr), "] ", uhex_long(pBffr), udec_long(lenRemaining), " -> ", uhex_long(pStart), udec_long(nLenRemaining))
 
 PRI strHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
     bHasStatus := TRUE
@@ -795,7 +708,7 @@ PRI strHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
 
 PRI strIgnoreCaseMatch(pLtStr, pRtStr) : bMatchStatus | nIdx
     bMatchStatus := FALSE
-    debug("- sicm: lt(", udec_(strsize(pLtStr)), ")=[", zstr_(pLtStr), "], rt(", udec_(strsize(pRtStr)), ")=[", zstr_(pRtStr), "]")
+    'debug("- sicm: lt(", udec_(strsize(pLtStr)), ")=[", zstr_(pLtStr), "], rt(", udec_(strsize(pRtStr)), ")=[", zstr_(pRtStr), "]")
     if strsize(pLtStr) == strsize(pRtStr)
         bMatchStatus := TRUE
         repeat nIdx from 0 to strsize(pRtStr) - 1
@@ -803,7 +716,7 @@ PRI strIgnoreCaseMatch(pLtStr, pRtStr) : bMatchStatus | nIdx
             if (BYTE[pLtStr][nIdx] | $20) <> BYTE[pRtStr][nIdx] | $20
                 bMatchStatus := FALSE
                 quit    ' outta here, we have our answer!
-    debug(" -- ", sdec_(bMatchStatus))
+    'debug(" -- ", sdec_(bMatchStatus))
 
 PRI indexOfStr(pSrchStr, pRxBffr) : nIdx, idxAfter | nLenRemaining, srchLen, srchIdx, srcIdx, bSrchMatch
   nIdx := -1   ' preset NOT found
