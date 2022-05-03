@@ -420,8 +420,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
             rtWinEntryCt := rtWindowSum := rtWinIndex := 0
             rtPosTrkHallTicks := 0
 
-        reportMotorStatus()
-        reportDrvStatus()
+        showDriveStatesOnChange()
 
         senseStartTicks := getct()
         'pintoggle(TEST_PIN_SNS_LOOP)        ' set HI
@@ -494,7 +493,26 @@ PRI isEmergency() : bEmergencyState
     if bEmergencyState
         debug("--------WHEEL in EMERGENCY!!--------")
 
+PUB showDriveStates()
+'' for TESTING dump curr drive states
+    reportMotorStatus()
+    reportDrvStatus()
+
 PRI reportDrvStatus() | ltState, rtState
+    ltState, rtState := getDriverState()
+    showDriverState(ltState, @"ltMot")
+    showDriverState(rtState, @"rtMot")
+
+PRI reportMotorStatus() | ltStatus, rtStatus
+    ltStatus, rtStatus := getStatus()
+    showStatus(ltStatus, @"ltMot")
+    showStatus(rtStatus, @"rtMot")
+
+PRI showDriveStatesOnChange()
+    reportDrvStatusOnChange()
+    reportMotorStatusOnChange()
+
+PRI reportDrvStatusOnChange() | ltState, rtState
     ltState, rtState := getDriverState()
     if priorLtState <> ltState
         showDriverState(ltState, @"ltMot")
@@ -504,7 +522,7 @@ PRI reportDrvStatus() | ltState, rtState
         showDriverState(rtState, @"rtMot")
         priorRtState := rtState
 
-PRI reportMotorStatus() | ltStatus, rtStatus
+PRI reportMotorStatusOnChange() | ltStatus, rtStatus
     ltStatus, rtStatus := getStatus()
     if priorLtStatus <> ltStatus
         showStatus(ltStatus, @"ltMot")
@@ -520,7 +538,8 @@ DAT { debug strings }
     dsMOVING        BYTE    "dsMov",0
     dsHOLDING       BYTE    "dsHld",0
     dsOFF           BYTE    "dsOff",0
-    dsOther         BYTE    "???[dsCODE]???",0
+    dsOther         BYTE    "?ds0x"
+    dsOtherVal      BYTE    "00-[CODE]?",0
 
     dcsUnknown      BYTE    "dcsUnk",0
     dcsSTOPPED      BYTE    "dcsSTOPPED",0
@@ -531,7 +550,8 @@ DAT { debug strings }
     dcsSLOW_TO_CHG  BYTE    "dcsSLOW_TO_CHG",0
     dcsFAULTED      BYTE    "dcsFAULTED",0
     dcsESTOP        BYTE    "dcsESTOP",0
-    dcsOther        BYTE    "???[dcsCODE]???",0
+    dcsOther        BYTE    "?dcs0x"
+    dcsOtherVal     BYTE    "00-[CODE]?",0
 
     pStatVal        LONG    0
     priorLtStatus   LONG    -1
@@ -561,9 +581,9 @@ PRI showDriverState(eState, pMsg)
         DCS_ESTOP:
             pStatVal := @dcsESTOP
         other:
+            placeAsciiDigits(@dcsOtherVal, eState)
             pStatVal := @dcsOther
     debug("- STATE ", zstr_(pMsg), ": ", zstr_(pStatVal))
-
 
 PRI showStatus(eStatus, pMsg)
     case eStatus
@@ -576,8 +596,19 @@ PRI showStatus(eStatus, pMsg)
         DS_OFF:
             pStatVal := @dsOFF
         other:
+            placeAsciiDigits(@dsOtherVal, eStatus)
             pStatVal := @dsOther
     debug("- STATUS ", zstr_(pMsg), ": ", zstr_(pStatVal))
+
+PRI placeAsciiDigits(pStrBytes, byt) | hiNyb, lowNyb
+        hiNyb := byt & $f0 >> 4 + $30
+        if hiNyb > $39
+            hiNyb += 7
+        lowNyb := byt & $0f      + $30
+        if lowNyb > $39
+            lowNyb += 7
+        BYTE [pStrBytes][0] := hiNyb
+        BYTE [pStrBytes][1] := lowNyb
 
 
 PRI MAX(a,b) : nMax
