@@ -28,7 +28,7 @@ On this Page:
 - [System Diagram](#system-diagram) - what are we setting up?
 - [Download the latest files](#download-the-project-files) - get latest project files
 - [Configure the RPi](#configuring-your-rpi) - one time configure your RPi 
-- [Wiring the Serial Connection](#wiring-our-serial-connection) - Connect the RPi to the P2
+- [Wiring the Serial Connection](#wiring-the-serial-connection) - Connect the RPi to the P2
 - [Flashing your P2](#flashing-your-p2-edge) - flash to P2 with the drive code
 - [Building your own drive code](#developing-your-own-drive-code) - write your own drive code!
 
@@ -96,7 +96,7 @@ sudo pip3 install -r requirements.txt   # install supporting files
 ```
 
 
-## Wiring our Serial Connection
+## Wiring the Serial Connection
 
 The **P2-BLDC-Motor-Control-Demo.py** script is built to use the main serial I/O channel at the RPi GPIO Interface.  These are GPIO pins 14 & 15 (header pins 8 & 10).
 
