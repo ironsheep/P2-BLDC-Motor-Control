@@ -17,15 +17,17 @@ The code for this project implements an active serial receiver running on the P2
 Latest Changes:
 
 ```
-04 May 2022 v1.0.0
-- Initial Public Release
+04 May 2022 v2.0.0
+- Initial Public Release of Serial support
 ```
 
 ## Table of Contents
 
 On this Page:
 
-- TBA
+- System Diagram
+- Wiring the Serial Connection
+- RPi set up
 
 Additional pages:
 
@@ -34,7 +36,18 @@ Additional pages:
 - [Start your drive project using these objects](DEVELOP.md) - Walks thru configuration and setup of your own project using these objects
 - [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
 - [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
+- [The author's development platform](AUTHORS-Platform.md) - Overview of the robot platform used when developing and testing the code for this project
 
+
+---
+
+## System Diagram
+
+The following diagram shows the top-level serial object which hands off commands to the drive subsystem as they are received. It also shows the nested motor control and sense subsystem comprised of the two objects: steering and motor control.
+
+![Motor Control System Diagram](./images/serial-objects-cogs.png)
+
+In this diagram there are three **rectangular objects** depicting files (yellow background) of code. There are three methods within the files (white and green backgrounds) that are run in separate cogs.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
 
 ## Wiring our Serial Connection
 
