@@ -25,9 +25,9 @@ Latest Changes:
 
 On this Page:
 
-- [System Diagram]()
-- [Download the latest files]()
-- [Configure the RPi]()
+- [System Diagram](#system-diagram)
+- [Download the latest files](#download-the-project-files)
+- [Configure the RPi](#configuring-your-rpi)
 - [Wiring the Serial Connection]()
 - [Flashing your P2]()
 - [Building your own drive code]()
