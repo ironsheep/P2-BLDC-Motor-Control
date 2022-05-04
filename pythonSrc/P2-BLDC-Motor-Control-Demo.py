@@ -419,7 +419,7 @@ class BLDCMotorControl:
         commandStr = 'getrot {}\n'.format(eRotationUnits.value)
         responseStr = self.sendCommand(commandStr)
         ltValue, rtValue = self.getValues('rot', responseStr, 2)
-        return ltValue, rtValue
+        return int(ltValue), int(rtValue)
 
     # PUB getPower() : leftPower, rightPower
     def getPower(self):
@@ -671,15 +671,21 @@ wheels = BLDCMotorControl(serialPort)
 
 def waitForMotorsStopped():
     bothStopped = False
+    priorLtCt = -1
+    priorRtCt = -1
     while bothStopped == False:
         # get status
-        ltStatus, rtStatus = wheels.getStatus()
+        # PUB getRotationCount(rotationUnits) : leftRotationCount, rightRotationCount
+        ltCount, rtCount = wheels.getRotationCount(DrvRotUnits.DRU_HALL_TICKS)
+        print_line('- counts {}, {}'.format(ltCount, rtCount), debug=True)
         #while not stopped loop
         # get "stat" response (lt and rt status)
         # if both are stopped the set bothStopped = true
-        if ltStatus == DrvStatus.DS_OFF and rtStatus == DrvStatus.DS_OFF:
+        if priorLtCt == ltCount and priorRtCt == rtCount:
             bothStopped = TRUE
             break
+        priorLtCt = ltCount
+        priorRtCt = rtCount
         sleep(0.25)
 
 # run our loop
@@ -697,28 +703,30 @@ try:
 #    wheels.setMaxSpeed(200)
 #    wheels.setMaxSpeedForDistance(-5)
     # override defaults, use 100 %
-    #wheels.setMaxSpeed(100)
-    #wheels.setMaxSpeedForDistance(100)
+    wheels.setMaxSpeed(100)
+    wheels.setMaxSpeedForDistance(100)
     # and don't draw current at stop
-    #wheels.holdAtStop(False)
+    wheels.holdAtStop(False)
 
-    ltStatus, rtStatus = wheels.getStatus()
-    print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
-    """
+    #ltStatus, rtStatus = wheels.getStatus()
+    #print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
+
+    ltCount, rtCount = wheels.getRotationCount(DrvRotUnits.DRU_HALL_TICKS)
+    wheels.resetTracking()
+    ltCount, rtCount = wheels.getRotationCount(DrvRotUnits.DRU_HALL_TICKS)
 
     # -------------------------
     #  drive a square pattern
     #   2-second sides 50% power, 90° corners
     # -------------------------
     # forward for 2 seconds at 50% power
-    desiredPower = 50
-    lengthOfSideInSeconds = 2
+    desiredPower = 75
+    lengthOfSideInSeconds = 3
     dirStraightAhead = 0
-    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
     wheels.driveDirection(desiredPower, dirStraightAhead)
+    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
     waitForMotorsStopped()
 
-    """
     """
         # hard 90° right turn
         #   [circ = 2 * PI * r]

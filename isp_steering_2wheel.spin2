@@ -35,6 +35,8 @@ CON { forward our interface constants }
     DDU_CM          = ltWheel.DDU_CM
     DDU_FT          = ltWheel.DDU_FT
     DDU_M           = ltWheel.DDU_M
+    DDU_KM          = ltWheel.DDU_KM
+    DDU_MI          = ltWheel.DDU_MI
 
   ' Driver Rotation-Units Enum
     DRU_Unknown     = ltWheel.DRU_Unknown
@@ -146,8 +148,8 @@ PUB holdAtStop(bEnable)
 PUB resetTracking()
 '' Resets the position tracking values returned by getDistance() and getRotations()
 ''  Effectively: use current postion as home from now on
-    ltWheel.resetTracking()
-    rtWheel.resetTracking()
+    resetAccumLeft()
+    resetAccumRight()
 
 CON { --- Subsystem Control --- }
 
@@ -292,13 +294,51 @@ CON { --- Subsystem Status --- }
 
 PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
 '' Returns the distance in {distanceUnits} [DDU_IN or DDU_MM] travelled by each motor since last reset
-    leftDistanceInUnits := ltWheel.getDistance(eDistanceUnits)
-    rightDistanceInUnits := rtWheel.getDistance(eDistanceUnits)
+    leftDistanceInUnits := convertDistance(ltPosTrkHallTicks, eDistanceUnits)
+    rightDistanceInUnits := convertDistance(rtPosTrkHallTicks, eDistanceUnits)
+
+PRI convertDistance(nValue, eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
+'' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
+    fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
+    case eDistanceUnits
+        DDU_MM:
+            nDistanceInUnits := trunc(float(nValue) *. fMMpTick)
+        DDU_CM:
+            nDistanceInUnits := trunc(float(nValue) *. fMMpTick /. 10.0)
+        DDU_IN:
+            fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
+        DDU_FT:
+            fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
+        DDU_M:
+            fValue := float(nValue) *. fMMpTick
+            nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
+        DDU_MI:
+            fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
+        DDU_KM:
+            fValue := float(nValue) *. fMMpTick
+            nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
 
 PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
 '' Returns accumulated {*RotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for each of the motors.
-    leftRotationCount := ltWheel.getRotationCount(eRotationUnits)
-    rightRotationCount := rtWheel.getRotationCount(eRotationUnits)
+    debug("- grc ", sdec_long(ltPosTrkHallTicks), sdec_long(rtPosTrkHallTicks))
+    leftRotationCount := convertRotationCount(ltPosTrkHallTicks, eRotationUnits)
+    rightRotationCount := convertRotationCount(rtPosTrkHallTicks, eRotationUnits)
+
+PRI convertRotationCount(nValue, eRotationUnits) : rotationCount
+' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
+    rotationCount := -1
+    case eRotationUnits
+        DRU_HALL_TICKS:
+            rotationCount := nValue
+        DRU_DEGREES:
+            ' degrees = ticks * 4
+            rotationCount := nValue * 4
+        DRU_ROTATIONS:
+            ' rotations = ticks / 90
+            rotationCount := nValue / 90
 
 PUB getPower() : leftPower, rightPower
 '' Returns the last specified power value [-100 thru +100] for each of the motors (will be zero if the motor is stopped).
@@ -378,6 +418,13 @@ VAR { time values & arrays }
 
 VAR { Data for Motor Position Tracking }
 
+    long    ltPosTrkHallTicks
+    long    rtPosTrkHallTicks
+    long    deltaTicks
+    long    priorPos
+    long    circInMM_x10
+    long    tickInMM_x10
+    '  --------------------------
     long    newCntsInSec
     long    ltWinIndex
     long    ltWinEntryCt
@@ -385,19 +432,21 @@ VAR { Data for Motor Position Tracking }
     long    rtWinIndex
     long    rtWinEntryCt
     long    rtWindowSum
-    '  --------------------------
-    long    ltPosTrkHallTicks
-    long    rtPosTrkHallTicks
-    long    deltaTicks
-    long    priorPos
-    long    circInMM_x10
-    long    tickInMM_x10
 
 
     '  Position Tracking vars
     long    motorStopHallTicks
     long    motorStopMSecs
 
+PRI resetAccumLeft()
+    longfill(@ltCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
+    ltWinEntryCt := ltWindowSum := ltWinIndex := 0
+    ltPosTrkHallTicks := 0
+
+PRI resetAccumRight()
+    longfill(@rtCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
+    rtWinEntryCt := rtWindowSum := rtWinIndex := 0
+    rtPosTrkHallTicks := 0
 
 PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
@@ -405,20 +454,17 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
     'pinlow(TEST_PIN_SNS_LP_ACTV)
 
     eStopCtr := 0
-
+    resetAccumLeft()
+    resetAccumRight()
     priorLtStatus := priorRtStatus := -1
 
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
-        if ltWheel.getDriverState() == DCS_FAULTED or senseStartTicks == 0
-            longfill(@ltCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
-            ltWinEntryCt := ltWindowSum := ltWinIndex := 0
-            ltPosTrkHallTicks := 0
+        if ltWheel.getDriverState() == DCS_FAULTED or ltWheel.getDriverState() == DCS_ESTOP or senseStartTicks == 0
+            resetAccumLeft()
 
-        if rtWheel.getDriverState() == DCS_FAULTED or senseStartTicks == 0
-            longfill(@rtCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
-            rtWinEntryCt := rtWindowSum := rtWinIndex := 0
-            rtPosTrkHallTicks := 0
+        if rtWheel.getDriverState() == DCS_FAULTED or rtWheel.getDriverState() == DCS_ESTOP or senseStartTicks == 0
+            resetAccumRight()
 
         showDriveStatesOnChange()
 
@@ -443,7 +489,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         ltPosTrkHallTicks += posThis8th
 
         ' ------------------------------------------
-        ' PROCESS left motor
+        ' PROCESS right motor
         '
         newCntsInSec := distanceIn90ths(rtWheel.getRawHallTicks())  ' Read the next sensor value
         rtWindowSum -= LONG[@rtCountsWindow][rtWinIndex]            ' Remove the oldest entry from the sum
@@ -456,6 +502,9 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
 '        cntsInSec := (rtWindowSum / rtWinEntryCt) * 8               ' moving average, scaled
         posThis8th := rtWindowSum / rtWinEntryCt
         rtPosTrkHallTicks += posThis8th
+
+        ' ------------------------------------------
+        ' EVALUATE any motor stop requests
 
         ' if user set time/distance to stop then stop if we are past the time or distance
         if motorStopMSecs > 0
@@ -470,6 +519,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
 
         'pintoggle(TEST_PIN_SNS_LP_ACTV)    ' end of active side
 
+        ' ------------------------------------------
         ' iff driver reports e-stop then clear the emergency stop request
         '  user will request it again if needed
         ' NOTE: we leave e_stop set for at least 1/4 second before clearing!
@@ -479,6 +529,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
             clearEmergency()
             eStopCtr := 0
 
+        ' keep track of runtime for this sensor loop (for debug, HDMI, etc.)
         deltaTicks := getct() - senseStartTicks
 
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
