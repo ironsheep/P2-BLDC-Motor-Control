@@ -50,7 +50,7 @@ The following diagram shows the top-level serial object which hands off commands
 
 ![Motor Control System Diagram](./images/serial-bldc-system.png)
 
-In this diagram there are three **rectangular objects** depicting files (yellow background) of code. There are three methods within the motor files (white and green backgrounds) that are run in separate cogs and there is one method (white background) within the serial files that runs in a separate cog.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
+In this diagram there are five **rectangular objects** depicting files (yellow background) of code. There are three methods within the motor files (white and green backgrounds) that are run in separate cogs and there is one method (white background) within the serial files that runs in a separate cog.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
 
 ## Download the project files
 
@@ -137,12 +137,13 @@ If this is working for you, congratulations, you are all set up and ready to do 
 ## Developing your own drive code
 
 On your RPi copy the `P2-BLDC-Motor-Control-Demo.py` file to your own name:
+
 ```shell
 cd ~/projects/platform-drive                        # make sure we are your project files are
 cp /P2-BLDC-Motor-Control-Demo.py {newName}.py      # create new copy
 ```
 
-In this new file replace the sqaure-pattern drive code with you own.  
+Do all your development in this new file. Start by replacing the sqaure-pattern drive code with your own.  
 
 Have fun!
 
