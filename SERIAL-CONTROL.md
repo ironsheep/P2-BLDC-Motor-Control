@@ -25,12 +25,12 @@ Latest Changes:
 
 On this Page:
 
-- [System Diagram](#system-diagram)
-- [Download the latest files](#download-the-project-files)
-- [Configure the RPi](#configuring-your-rpi)
-- [Wiring the Serial Connection]()
-- [Flashing your P2]()
-- [Building your own drive code]()
+- [System Diagram](#system-diagram) - what are we setting up?
+- [Download the latest files](#download-the-project-files) - get latest project files
+- [Configure the RPi](#configuring-your-rpi) - one time configure your RPi 
+- [Wiring the Serial Connection](#wiring-our-serial-connection) - Connect the RPi to the P2
+- [Flashing your P2](#flashing-your-p2-edge) - flash to P2 with the drive code
+- [Building your own drive code]() - write your own drive code!
 
 Additional pages:
 
@@ -131,10 +131,18 @@ cd ~/projects/platform-drive            # make sure we are your project files ar
 ./P2-BLDC-Motor-Control-Demo.py -d -v   # run with debug and verbose messaging enabled
 ```
 
-
 If this is working for you, congratulations, you are all set up and ready to do your own drive code!
 
-On your RPi copy the `P2-BLDC-Motor-Control-Demo.py` file to your own name and then replace the sqaure pattern drive code with you own.  
+
+## Developing your own drive code
+
+On your RPi copy the `P2-BLDC-Motor-Control-Demo.py` file to your own name:
+```shell
+cd ~/projects/platform-drive                        # make sure we are your project files are
+cp /P2-BLDC-Motor-Control-Demo.py {newName}.py      # create new copy
+```
+
+In this new file replace the sqaure-pattern drive code with you own.  
 
 Have fun!
 
