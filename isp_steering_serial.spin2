@@ -165,14 +165,16 @@ DAT { parse work variables }
     drvDir          LONG    0
     drvPwr1         LONG    0
     drvPwr2         LONG    0
-    ltStatus        LONG    0
-    rtStatus        LONG    0
-    ltRotationCount LONG    0
-    rtRotationCount LONG    0
+    onlyValue       LONG    0
+    ltValue         LONG    0
+    rtValue         LONG    0
+    nRate           LONG    0
     nRot            LONG    0
     nRotUnits       LONG    0
     nTime           LONG    0
     nTimeUnits      LONG    0
+    nDist           LONG    0
+    nDistUnits      LONG    0
     nSpeed          LONG    0
     bHoldEnable     LONG    0
 
@@ -195,9 +197,11 @@ PRI processCommand(pValues)
             drvDir := LONG[pValues][serialQueue.ENT_PARM2_IDX]
             ' validate values
             if not inRange(drvPwr1, -100, 100)
+                ' invalid, report so...
                 strFmt.sFormatStr1(@msgWork, @"Power (%d) out of range [-100, 100]", drvPwr1)
                 serialQueue.sendError(@msgWork)
             elseif not inRange(drvDir, -100, 100)
+                ' invalid, report so...
                 strFmt.sFormatStr1(@msgWork, @"Direction (%d) out of range [-100, 100]", drvDir)
                 serialQueue.sendError(@msgWork)
             else
@@ -206,17 +210,56 @@ PRI processCommand(pValues)
                 wheels.driveDirection(drvPwr1, drvDir)
 
         CMD_DRV_DIST:
+            ' get incoming parm values
+            ltValue := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            rtValue := LONG[pValues][serialQueue.ENT_PARM2_IDX]
+            nDistUnits := LONG[pValues][serialQueue.ENT_PARM3_IDX]
+            ' validate values
+            if not isPostiveValue(ltValue)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"LT-distance (%d)  must be positive value", ltValue)
+                serialQueue.sendError(@msgWork)
+            elseif not isPostiveValue(rtValue)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"RT-distance (%d)  must be positive value", rtValue)
+                serialQueue.sendError(@msgWork)
+            elseif not isValidDistanceUnit(nDistUnits, @msgWork)    ' fills in msgWork with error msg
+                ' invalid, report so...
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.driveForDistance(ltValue, rtValue, nDistUnits)
+
         CMD_DRV_PWR:
+            ' get incoming parm values
+            drvPwr1 := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            drvPwr2 := LONG[pValues][serialQueue.ENT_PARM2_IDX]
+            ' validate values
+            if not inRange(drvPwr1, -100, 100)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"LT-Power (%d) out of range [-100, 100]", drvPwr1)
+                serialQueue.sendError(@msgWork)
+            elseif not inRange(drvPwr2, -100, 100)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"RT-Power (%d) out of range [-100, 100]", drvPwr2)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.driveAtPower(drvPwr1, drvPwr2)
+
         CMD_STP_ROT:
             ' get incoming parm values
             nRot := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             nRotUnits := LONG[pValues][serialQueue.ENT_PARM2_IDX]
             ' validate values
-            if not isValidRotationUnit(nRotUnits)
-                strFmt.sFormatStr1(@msgWork, @"RotationUnits (%d) not [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS]", nRotUnits)
+            if not isValidRotationUnit(nRotUnits, @msgWork)    ' fills in msgWork with error msg
+                ' invalid, report so...
                 serialQueue.sendError(@msgWork)
             elseif not isPostiveValue(nRot)
-                strFmt.sFormatStr1(@msgWork, @"Rotation Count (%d) must be positive value", nRot)
+                 ' invalid, report so...
+               strFmt.sFormatStr1(@msgWork, @"Rotation Count (%d) must be positive value", nRot)
                 serialQueue.sendError(@msgWork)
             else
                 ' all good, say so, then act on request
@@ -224,15 +267,32 @@ PRI processCommand(pValues)
                 wheels.stopAfterRotation(nRot, nRotUnits)
 
         CMD_STP_DIST:
+            ' get incoming parm values
+            nDist := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            nDistUnits := LONG[pValues][serialQueue.ENT_PARM2_IDX]
+            ' validate values
+            if not isValidDistanceUnit(nDistUnits, @msgWork)    ' fills in msgWork with error msg
+                ' invalid, report so...
+                serialQueue.sendError(@msgWork)
+            elseif not isPostiveValue(nDist)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"Distance Value (%d) must be positive", nDist)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.stopAfterDistance(nDist, nDistUnits)
+
         CMD_STP_TIME:
             ' get incoming parm values
             nTime := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             nTimeUnits := LONG[pValues][serialQueue.ENT_PARM2_IDX]
             ' validate values
-            if not isValidTimeUnit(nTimeUnits)
-                strFmt.sFormatStr1(@msgWork, @"TimeUnits (%d) not [DTU_MILLISEC, DTU_SEC]", nTimeUnits)
+            if not isValidTimeUnit(nTimeUnits, @msgWork)    ' fills in msgWork with error msg
+                ' invalid, report so...
                 serialQueue.sendError(@msgWork)
-            elseif NOT nRot >= 0
+            elseif not isPostiveValue(nTime)
+                ' invalid, report so...
                 strFmt.sFormatStr1(@msgWork, @"Time Value (%d) must be positive", nTime)
                 serialQueue.sendError(@msgWork)
             else
@@ -241,15 +301,45 @@ PRI processCommand(pValues)
                 wheels.stopAfterTime(nTime, nTimeUnits)
 
         CMD_STP_MOT:
+            ' all good, say so, then act on request
+            serialQueue.sendOK()
+            wheels.stopMotors()
+
         CMD_EMER_CUT:
+            ' all good, say so, then act on request
+            ' NOTE: in this case we act first then send response! (best we can do <shrug>)
+            wheels.emergencyCutoff()
+            serialQueue.sendOK()
+
         CMD_EMER_CLR:
+            ' all good, say so, then act on request
+            serialQueue.sendOK()
+            wheels.clearEmergency()
+
         CMD_SET_ACCEL:
+            ' NOTE: this is not yet functional, say so
+            strFmt.sFormatStr0(@msgWork, @"setAcceleration(rate) is NOT yet supported")
+            serialQueue.sendError(@msgWork)
+            {
+            ' get incoming parm values
+            nRate := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values
+            if not inRange(nRate, ??, ??)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"Accel Rate (%d) out of range [??, ??]", nRate)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, say so, then act on request
+                serialQueue.sendOK()
+                wheels.setAcceleration(nRate)
+            '}
+
         CMD_SET_SPD:
-            'debug("* CMD setSpeed")
             ' get incoming parm values
             nSpeed := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             ' validate values
             if not inRange(nSpeed, 1, 100)
+                ' invalid, report so...
                 strFmt.sFormatStr1(@msgWork, @"MaxSpeed (%d) out of range [1, 100]", nSpeed)
                 serialQueue.sendError(@msgWork)
             else
@@ -262,6 +352,7 @@ PRI processCommand(pValues)
             nSpeed := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             ' validate values
             if not inRange(nSpeed, 1, 100)
+                ' invalid, report so...
                 strFmt.sFormatStr1(@msgWork, @"MaxSpeedForDistance (%d) out of range [1, 100]", nSpeed)
                 serialQueue.sendError(@msgWork)
             else
@@ -274,6 +365,7 @@ PRI processCommand(pValues)
             bHoldEnable := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             ' validate values
             if not (bHoldEnable == TRUE or bHoldEnable == FALSE)
+                ' invalid, report so...
                 strFmt.sFormatStr1(@msgWork, @"HoldAtStop (%d) out of range [-1, 0] (T/F)", bHoldEnable)
                 serialQueue.sendError(@msgWork)
             else
@@ -285,29 +377,69 @@ PRI processCommand(pValues)
             ' all good, say so, then act on request
             serialQueue.sendOK()
             wheels.resetTracking()
+
         CMD_GET_DIST:
+             ' get incoming parm values
+            nDistUnits := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values
+            if not isValidDistanceUnit(nDistUnits, @msgWork)    ' fills in msgWork with error msg
+                ' invalid, report so...
+                serialQueue.sendError(@msgWork)
+            else
+                ' get requested value(s)
+                ltValue, rtValue := wheels.getDistance(nDistUnits)
+                ' format response
+                strFmt.sFormatStr2(@msgWork, @"dist %d %d\n", ltValue, rtValue)
+                ' send to host
+                serialQueue.sendResponse(@msgWork)
+
         CMD_GET_ROT:
             ' get incoming parm values
             nRotUnits := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             ' validate values
-            if not isValidRotationUnit(nRotUnits)
-                strFmt.sFormatStr1(@msgWork, @"RotationUnits (%d) not [DRU_DEGREES, DRU_ROTATIONS, DRU_HALL_TICKS]", nRotUnits)
+            if not isValidRotationUnit(nRotUnits, @msgWork)    ' fills in msgWork with error msg
+                ' invalid, report so...
                 serialQueue.sendError(@msgWork)
             else
-                ltRotationCount, rtRotationCount := wheels.getRotationCount(nRotUnits)
-                strFmt.sFormatStr2(@msgWork, @"rot %d %d\n", ltRotationCount, rtRotationCount)
+                ' get requested value(s)
+                ltValue, rtValue := wheels.getRotationCount(nRotUnits)
+                ' format response
+                strFmt.sFormatStr2(@msgWork, @"rot %d %d\n", ltValue, rtValue)
                 ' send to host
                 serialQueue.sendResponse(@msgWork)
+
         CMD_GET_PWR:
-        CMD_GET_STAT:
-            ' get requested values
-            ltStatus, rtStatus := wheels.getStatus()
+            ' get requested value(s)
+            ltValue, rtValue := wheels.getPower()
             ' format response
-            strFmt.sFormatStr2(@msgWork, @"stat %d %d\n", ltStatus, rtStatus)
+            strFmt.sFormatStr2(@msgWork, @"pwr %d %d\n", ltValue, rtValue)
             ' send to host
             serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_STAT:
+            ' get requested value(s)
+            ltValue, rtValue := wheels.getStatus()
+            ' format response
+            strFmt.sFormatStr2(@msgWork, @"stat %d %d\n", ltValue, rtValue)
+            ' send to host
+            serialQueue.sendResponse(@msgWork)
+
         CMD_GET_MAX_SPD:
+            ' get requested value(s)
+            onlyValue := wheels.getMaxSpeed()
+            ' format response
+            strFmt.sFormatStr1(@msgWork, @"speedmax %d\n", onlyValue)
+            ' send to host
+            serialQueue.sendResponse(@msgWork)
+
         CMD_GET_MAX_DIST_SPD:
+            ' get requested value(s)
+            onlyValue := wheels.getMaxSpeedForDistance()
+            ' format response
+            strFmt.sFormatStr1(@msgWork, @"speeddistmax %d\n", onlyValue)
+            ' send to host
+            serialQueue.sendResponse(@msgWork)
+
         other:
             debug("ERROR bad ENUM for command:", udec_(cmdEnum))
 
@@ -321,15 +453,19 @@ PRI isPostiveValue(value) : bPositiveStatus
     if value < 0
         bPositiveStatus := FALSE
 
-PRI isValidTimeUnit(timeUnits) : bValidStatus
+PRI isValidTimeUnit(timeUnits, pMsgBffr) : bValidStatus
+' validate and return message when invalid
     bValidStatus := TRUE
     case timeUnits
         wheels.DTU_MILLISEC:
         wheels.DTU_SEC:
         other:
             bValidStatus := FALSE
+            if pMsgBffr <> 0
+                strFmt.sFormatStr1(pMsgBffr, @"TimeUnits (%d) not [DTU_MILLISEC, DTU_SEC]", timeUnits)
 
-PRI isValidRotationUnit(rotUnits) : bValidStatus
+PRI isValidRotationUnit(rotUnits, pMsgBffr) : bValidStatus
+' validate and return message when invalid
     bValidStatus := TRUE
     case rotUnits
         wheels.DRU_DEGREES:
@@ -337,7 +473,24 @@ PRI isValidRotationUnit(rotUnits) : bValidStatus
         wheels.DRU_HALL_TICKS:
         other:
             bValidStatus := FALSE
+            if pMsgBffr <> 0
+                strFmt.sFormatStr1(pMsgBffr, @"RotationUnits (%d) not [DRU_DEGREES, DRU_ROTATIONS, DRU_HALL_TICKS]", rotUnits)
 
+PRI isValidDistanceUnit(distUnits, pMsgBffr) : bValidStatus
+' validate and return message when invalid
+    bValidStatus := TRUE
+    case distUnits
+        wheels.DDU_IN:
+        wheels.DDU_MM:
+        wheels.DDU_CM:
+        wheels.DDU_FT:
+        wheels.DDU_M:
+        wheels.DDU_KM:
+        wheels.DDU_MI:
+        other:
+            bValidStatus := FALSE
+            if pMsgBffr <> 0
+                strFmt.sFormatStr1(pMsgBffr, @"DistanceUnits (%d) not [DDU_IN, DDU_MM, DDU_CM, DDU_FT, DDU_M, DDU_KM, DDU_MI]", distUnits)
 
 CON { license }
 {{

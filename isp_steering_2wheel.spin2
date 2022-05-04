@@ -294,6 +294,7 @@ CON { --- Subsystem Status --- }
 
 PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
 '' Returns the distance in {distanceUnits} [DDU_IN or DDU_MM] travelled by each motor since last reset
+    debug("- gdi ", sdec_long(ltPosTrkHallTicks), sdec_long(rtPosTrkHallTicks))
     leftDistanceInUnits := convertDistance(ltPosTrkHallTicks, eDistanceUnits)
     rightDistanceInUnits := convertDistance(rtPosTrkHallTicks, eDistanceUnits)
 
@@ -401,7 +402,7 @@ PUB isStarting() : bState
 
 CON { -- TASK position tracking -- }
 
-  STACK_SIZE_LONGS = 48
+  STACK_SIZE_LONGS = 64 ' WARNING! we exceed stack at 48!
   WINDOW_SIZE = 5
 
 VAR { time values & arrays }
@@ -421,7 +422,8 @@ VAR { Data for Motor Position Tracking }
     long    ltPosTrkHallTicks
     long    rtPosTrkHallTicks
     long    deltaTicks
-    long    priorPos
+    long    priorLtPos
+    long    priorRtPos
     long    circInMM_x10
     long    tickInMM_x10
     '  --------------------------
@@ -447,6 +449,11 @@ PRI resetAccumRight()
     longfill(@rtCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
     rtWinEntryCt := rtWindowSum := rtWinIndex := 0
     rtPosTrkHallTicks := 0
+
+CON
+
+   LEFT_WHEEL = TRUE
+   RIGHT_WHEEL = FALSE
 
 PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
@@ -476,7 +483,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         ' ------------------------------------------
         ' PROCESS left motor
         '
-        newCntsInSec := distanceIn90ths(ltWheel.getRawHallTicks())  ' Read the next sensor value
+        newCntsInSec := distanceIn90ths(ltWheel.getRawHallTicks(), LEFT_WHEEL)  ' Read the next sensor value
         ltWindowSum -= LONG[@ltCountsWindow][ltWinIndex]            ' Remove the oldest entry from the sum
         long [@ltCountsWindow][ltWinIndex] := newCntsInSec          ' place the newest reading into the window
         ltWindowSum += newCntsInSec                                 ' Add the newest reading to the sum
@@ -491,7 +498,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         ' ------------------------------------------
         ' PROCESS right motor
         '
-        newCntsInSec := distanceIn90ths(rtWheel.getRawHallTicks())  ' Read the next sensor value
+        newCntsInSec := distanceIn90ths(rtWheel.getRawHallTicks(), RIGHT_WHEEL)  ' Read the next sensor value
         rtWindowSum -= LONG[@rtCountsWindow][rtWinIndex]            ' Remove the oldest entry from the sum
         long [@rtCountsWindow][rtWinIndex] := newCntsInSec          ' place the newest reading into the window
         rtWindowSum += newCntsInSec                                 ' Add the newest reading to the sum
@@ -666,7 +673,8 @@ PRI MAX(a,b) : nMax
 ' return max of a or b
     nMax := (a > b) ? a : b
 
-PRI distanceIn90ths(newPos) : n90ths
+PRI distanceIn90ths(newPos, bIsLeftWheel) : n90ths | priorPos
+    priorPos := (bIsLeftWheel) ? priorLtPos : priorRtPos
     if newPos == priorPos
         n90ths := 0
     elseif newPos < 0
@@ -688,7 +696,17 @@ PRI distanceIn90ths(newPos) : n90ths
             ' 9 -> 6 = 6 - 9 = abs(-3) = 3
             ' 9 -> 12 = 12 - 9 = abs(3) = 3
             n90ths := abs(newPos - priorPos)
-    priorPos := newPos
+{
+    if priorPos <> newPos
+        if bIsLeftWheel
+            debug("di90s-LT: ", sdec_long(newPos), sdec_long(priorPos), sdec_long(n90ths))
+        else
+            debug("di90s-RT: ", sdec_long(newPos), sdec_long(priorPos), sdec_long(n90ths))
+'}
+    if bIsLeftWheel
+        priorLtPos := newPos
+    else
+        priorRtPos := newPos
 
 
 CON { license }

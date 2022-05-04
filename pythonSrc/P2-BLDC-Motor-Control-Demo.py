@@ -711,6 +711,7 @@ try:
     #ltStatus, rtStatus = wheels.getStatus()
     #print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
 
+    # TEST showing defect in position tracking/reset (left wheel doesn't reset!)
     ltCount, rtCount = wheels.getRotationCount(DrvRotUnits.DRU_HALL_TICKS)
     wheels.resetTracking()
     ltCount, rtCount = wheels.getRotationCount(DrvRotUnits.DRU_HALL_TICKS)
@@ -727,52 +728,50 @@ try:
     wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
     waitForMotorsStopped()
 
-    """
-        # hard 90° right turn
-        #   [circ = 2 * PI * r]
-        #   rotate about 1 wheel means effective-platform-radius is actual-platform-diameter!
-        #     dist to travel = (effective-platform-circumference / 4) / wheel circumference
-        #     effective-platform-radius = 17.5"
-        #     wheel diameter = 6.5"
-        #     travel dist is 1.346 rotations
-        #     rotations * 90 = 121 hall ticks
-        dirHardRightTurn = 100
-        ticksIn90DegreeTurn = 121
-        wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
-        wheels.driveDirection(desiredPower, dirHardRightTurn)
-        waitForMotorsStopped()
-
-        # forward for 2 seconds at 50% power
-        wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
-        wheels.driveDirection(desiredPower, dirStraightAhead)
-        waitForMotorsStopped()
-
-        # hard 90° right turn
-        wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
-        wheels.driveDirection(desiredPower, dirHardRightTurn)
-        waitForMotorsStopped()
-
-        # forward for 2 seconds at 50% power
-        wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
-        wheels.driveDirection(desiredPower, dirStraightAhead)
-        waitForMotorsStopped()
-
-        # hard 90° right turn
-        wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
-        wheels.driveDirection(desiredPower, dirHardRightTurn)
-        waitForMotorsStopped()
+    # hard 90° right turn
+    #   [circ = 2 * PI * r]
+    #   rotate about 1 wheel means effective-platform-radius is actual-platform-diameter!
+    #     dist to travel = (effective-platform-circumference / 4) / wheel circumference
+    #     effective-platform-radius = 17.5"
+    #     wheel diameter = 6.5"
+    #     travel dist is 1.346 rotations
+    #     rotations * 90 = 121 hall ticks
+    dirHardRightTurn = 100
+    ticksIn90DegreeTurn = 121
+    wheels.driveDirection(desiredPower, dirHardRightTurn)
+    wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
+    waitForMotorsStopped()
 
     # forward for 2 seconds at 50% power
-        wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
-        wheels.driveDirection(desiredPower, dirStraightAhead)
-        waitForMotorsStopped()
+    wheels.driveDirection(desiredPower, dirStraightAhead)
+    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
+    waitForMotorsStopped()
 
-        # hard 90° right turn
-        wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
-        wheels.driveDirection(desiredPower, dirHardRightTurn)
-        waitForMotorsStopped()
+    # hard 90° right turn
+    wheels.driveDirection(desiredPower, dirHardRightTurn)
+    wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
+    waitForMotorsStopped()
+
+    # forward for 2 seconds at 50% power
+    wheels.driveDirection(desiredPower, dirStraightAhead)
+    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
+    waitForMotorsStopped()
+
+    # hard 90° right turn
+    wheels.driveDirection(desiredPower, dirHardRightTurn)
+    wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
+    waitForMotorsStopped()
+
+    # forward for 2 seconds at 50% power
+    wheels.driveDirection(desiredPower, dirStraightAhead)
+    wheels.stopAfterTime(lengthOfSideInSeconds, DrvTimeUnits.DTU_SECS)
+    waitForMotorsStopped()
+
+    # hard 90° right turn
+    wheels.driveDirection(desiredPower, dirHardRightTurn)
+    wheels.stopAfterRotation(ticksIn90DegreeTurn, DrvRotUnits.DRU_HALL_TICKS)
+    waitForMotorsStopped()
     # -------------------------
-    """
 
 finally:
     # normal shutdown
