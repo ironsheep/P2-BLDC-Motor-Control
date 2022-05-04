@@ -30,7 +30,7 @@ On this Page:
 - [Configure the RPi](#configuring-your-rpi) - one time configure your RPi 
 - [Wiring the Serial Connection](#wiring-our-serial-connection) - Connect the RPi to the P2
 - [Flashing your P2](#flashing-your-p2-edge) - flash to P2 with the drive code
-- [Building your own drive code]() - write your own drive code!
+- [Building your own drive code](#developing-your-own-drive-code) - write your own drive code!
 
 Additional pages:
 
@@ -88,7 +88,7 @@ mkdir -p ~/projects/platform-drive    # make new directory (inclu. ~/projects/ i
 cd ~/projects/platform-drive
 ```
 
-Place the files from the ./pythnSrc folder into this directory. One if the files should be a `requirements.txt` file and the other should be the demo script `P2-BLDC-Motor-Control-Demo.py`.  Finish up your system prep by ensuring the files needed for you drive script are installed with the following commands:
+Head back to the folder where you unpacked the `serial-control-archive-set.zip` file. Let's  unpack the `pythonSrc.zip` file found within.  Now copy the files from the newly created ./pythnSrc folder into this new directory on your RPi. One if the files should be a `requirements.txt` file and the other should be the demo script `P2-BLDC-Motor-Control-Demo.py`.  Finish up your system prep by ensuring the files needed for you drive script are installed with the following commands:
 
 ```shell
 cd ~/projects/platform-drive            # make sure we are where the new files arrived
