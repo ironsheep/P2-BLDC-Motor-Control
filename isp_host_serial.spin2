@@ -1,0 +1,165 @@
+'' =================================================================================================
+''
+''   File....... isp_host_serial.spin2
+''   Purpose.... (Singleton) Provide host access methods
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Jan 2022
+''   Updated.... 11 Jan 2022
+''
+'' =================================================================================================
+CON { Object Interface: PUBLIC ENUMs }
+
+    OP_SUCCESS = serialQueue.OP_SUCCESS
+    OP_FAILURE = serialQueue.OP_FAILURE
+
+    ' tx pin pull-up constants
+    PU_NONE = serialIF.PU_NONE
+    PU_1K5 = serialIF.PU_1K5
+    PU_3K3 = serialIF.PU_3K3
+    PU_15K = serialIF.PU_15K                                    ' pull-up options
+
+
+OBJ { Objects Used by this Object }
+
+    serialIF        : "isp_serial_singleton"                    ' serial I/O
+    serialQueue     : "isp_queue_serial"                        ' Queued Receive on top of serial I/O
+
+DAT { pin info saves }
+
+    pinRx               long    0
+    pinTx               long    0
+
+DAT { string constants }
+
+    spin2ver    byte    "1.0.0",0
+
+    ' -------------------------------
+    ' the following are identical to that found in our deamon python script
+    '   (!!!they must be kept in sync!!!)
+    parmSep     byte    "^|^",0     ' chars that will not be found in user data
+    ' -------------------------------
+
+PUB null()
+'' This is not a top level object
+
+PUB startx(rxpin, txpin, baud, pullup)
+'' Start serial gateway serial coms on rxpin and txpin at baud
+    pinRx := rxpin
+    pinTx := txpin
+    serialIF.startx(pinRx, pinTx, baud, pullup)                              ' use user serial port
+    serialQueue.startx(pinRx, pinTx, baud, pullup)  ' start back-end cog
+
+PUB stop()
+'' Release the serial pins (if needed)
+    serialQueue.stop()   ' stop back-end cog
+    serialIF.rxflush()   ' git rid of any pending input
+    ' free the pins used
+    pinf(pinRx)    ' de-assert
+    pinf(pinTx)    ' de-assert
+
+PUB identify(pHardwareId)
+'' Report to the serial host the name of this device (and object version)
+    serialIF.fstr3(string("ident:hwName=%s%sobjVer=%s\n"), pHardwareId, @parmSep, @spin2ver)
+    ' parse expected result display error (via debug) if occurred
+    handleResponseFor(string("fident"))
+
+
+PUB getErrorCtrs() : nRPiCt, nP2Ct
+'' Return the test Tx and Rx error counters (cleared on sendTestMessage(reset=true))
+nRPiCt := testTxErrCt
+nP2Ct := testRxErrCt
+
+DAT { -----------  PRIVATE Serial Test support ----------- }
+
+  testTxCount   long    0
+  testRxCount   long    0
+
+  testTxErrCt   long    0
+  testRxErrCt   long    0
+
+  valTrueStr    byte    "True",0
+  valFalseStr   byte    "False",0
+
+  testTxMsg     byte    "P2TestMsg#"
+  testTxMsgCt   byte    "00000",0
+
+  testRxMsg     byte    "RPiTestMsg#"
+  testRxMsgCt   byte    "00000",0
+
+PRI genRxTestMessage(nCountValue) : pStr | nThous, nHun, nTens, nOnes, nRemainder
+' fill-in expected Rx Message with count
+    placeMessageCount(nCountValue, @testRxMsgCt)
+    pStr := @testRxMsg
+
+PRI genTestMessage(nCountValue) : pStr | nThous, nHun, nTens, nOnes, nRemainder
+' fill-in next Tx Message with count
+    placeMessageCount(nCountValue, @testTxMsgCt)
+    pStr := @testTxMsg
+
+PRI placeMessageCount(nCountValue, pCountOffset) | nThous, nHun, nTens, nOnes, nRemainder
+' place digits representing count into our message
+    bytefill(pCountOffset, $30, 5)  ' preload w/ASCII ZEROs
+    nThous := nCountValue / 1000
+    nRemainder := nCountValue - (nThous * 1000)
+    nHun := nRemainder / 100
+    nRemainder := nRemainder - (nHun * 100)
+    nTens := nRemainder / 10
+    nOnes := nRemainder - (nTens * 10)
+    byte[pCountOffset][1] := nThous + $30
+    byte[pCountOffset][2] := nHun + $30
+    byte[pCountOffset][3] := nTens + $30
+    byte[pCountOffset][4] := nOnes + $30
+
+CON { -----------  PRIVATE Methods  ----------- }
+
+    MAX_LEN_USERMSG = 128
+    WAIT_FOR_STRING = TRUE
+
+DAT
+    userMsgBuffer   BYTE    0[MAX_LEN_USERMSG+1]
+
+PRI handleResponseFor(pStr)
+    serialQueue.getLine(@userMsgBuffer, MAX_LEN_USERMSG, WAIT_FOR_STRING)
+    if not strHasPrefix(@userMsgBuffer, pStr)
+        debug("hrf: unexpected response!")
+        debug("hrf: ERROR: [", zstr_(pStr), "] NOT found in [", zstr_(@userMsgBuffer), "]")
+    else
+        debug("hrf: RX str(", udec_(strsize(pStr)), ")=[", zstr_(pStr), "]")
+
+PRI strHasPrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
+    bHasStatus := TRUE
+    repeat nIdx from 0 to strsize(pPrefix) - 1
+        if BYTE[pTargetStr][nIdx] <> BYTE[pPrefix][nIdx]
+            bHasStatus := False
+            quit    ' outta here, we have our answer!
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

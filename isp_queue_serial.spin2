@@ -1,0 +1,883 @@
+'' =================================================================================================
+''
+''   File....... isp_queue_serial.spin2
+''   Purpose.... provide serial line receiver that queues each line received
+''
+''   Authors.... Stephen M. Moraco
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Jan 2022
+''   Updated.... 04 May 2022
+''
+'' =================================================================================================
+
+' implemented as a receive COG storing characters in a larger circular buffer. As complete strings
+' are identified (denoted by LF char at end) the LF is replaced by a zero terminator and the
+' pointer to the newly arrived string is stored in a circular queue of arrived strings.
+
+
+CON { Object Interface: PUBLIC ENUMs }
+
+  #200, FM_READONLY, FM_WRITE, FM_WRITE_CREATE, FM_LISTEN
+  #0, OP_SUCCESS, OP_FAILURE
+
+#0, ENT_VALUE_CT_IDX, ENT_RAWSTR_IDX, ENT_CMDSTR_IDX, ENT_CMDENUM_IDX, ENT_PARM1_IDX, ENT_PARM2_IDX, ENT_PARM3_IDX, ENT_PARM4_IDX
+
+CON { fixed io pins }
+
+  RX1      = 63  { I }                                          ' programming / debug
+  TX1      = 62  { O }
+
+  SF_CS    = 61  { O }                                          ' serial flash
+  SF_SCK   = 60  { O }
+  SF_SDO   = 59  { O }
+  SF_SDI   = 58  { I }
+
+OBJ { Objects Used by this Object }
+
+    serialChan         : "isp_serial_singleton"                 ' serial I/O
+
+CON { driver config values }
+
+    STACK_SIZE_LONGS = 64   ' 48, 32 crashes!
+
+    RX_CHR_Q_MAX_BYTES = 512    ' 80 = testing size, else 512
+    MAX_SINGLE_STRING_LEN = 128 ' 79 = testing size, else 128
+    RX_STR_Q_MAX_LONGS = 10  ' 10 strings waiting to be picked up - MAX
+
+    RX_BFFR_LEN = 128
+    RX_COMMAND_MAX_LEN = 32
+    RX_VALUE_MAX_LEN = 32
+    RX_MAX_NAMES = 20
+
+    MAX_COMMAND_PARTS = 10      ' count, raw string, cmdStr, eCmd, 6 paramValues
+
+CON { test values }
+{
+  CLK_FREQ = 270_000_000                                        ' system freq as a constant
+  _clkfreq = CLK_FREQ                                           ' set system clock
+
+  RX_GW    = 25  '- I -                                         ' Exxternal Host (RPi/Arduino) Gateway
+  TX_GW    = 24  '- O -
+
+  GW_BAUDRATE = 624_000   ' 624kb/s - allow P2 rx to keep up!
+}
+  DO_NOT_WRITE_MARK = $addee5e5
+  NOT_WRITTEN_MARK = $a5a50df0
+
+VAR { pin info saves }
+
+    long    pinRx
+    long    pinTx
+
+    long    rxCogId
+
+
+DAT { Queued RX data }
+
+' user set variables at task init
+pRxByteStart    long    0
+nRxByteMax      long    0
+
+bTestMode       long    FALSE
+
+' TASK use variables
+taskStack       long    0[STACK_SIZE_LONGS]
+endStackMark    long    DO_NOT_WRITE_MARK
+
+pRxByteHead     long    0   ' our QUEUE control vars - received BYTEs
+nRxByteCount    long    0
+
+bInString       long    FALSE
+pNewStrStart    long    0
+
+pRsltStrStart   long    0
+pRsltQueOverrun long    FALSE
+
+bQueOverrun     long    FALSE
+bStrQueOverrun  long    FALSE
+
+nQStrHeadIdx    long    0   ' our QUEUE control vars - received strings
+nQStrTailIdx    long    0
+nQStrCount      long    0
+nQStrFill       long    $deadf00d
+rxStrPtrSet     long    0[RX_STR_Q_MAX_LONGS]   ' our circular buffer - ptrs to received strings
+
+serialRxBffr    byte    0[RX_CHR_Q_MAX_BYTES]   ' our circular buffer - received chars
+
+' task vars
+nLoopCt         long    0
+pNextMsg        long    0
+nTaskChr        long    0
+' tsk vars
+
+            '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+            '              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+            '              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+            '              [3:eCmd]                                             ENT_CMDENUM_IDX
+            '              [4:nValue1]                                          ENT_PARM1_IDX
+            '              [5:nValue2]                                          ENT_PARM2_IDX
+            '              [6:nValue3]                                          ENT_PARM3_IDX
+            '              [7:nValue4]                                          ENT_PARM4_IDX
+            '              [etc] - up to 6 max values
+
+currParsedCommand   LONG    0[MAX_COMMAND_PARTS]
+
+currSingleLineBffr  byte    0[MAX_SINGLE_STRING_LEN+1]
+currCommandName     byte    0[RX_COMMAND_MAX_LEN+1]
+
+tmpValueStr         byte    0[RX_VALUE_MAX_LEN+1]
+
+
+CON { - - - - - }
+
+CON { test control values }
+
+  #0, CT_UNKNOWN, CT_IDLE, CT_STOP, CT_PLACE_STR, CT_PLACE_N_MSGS
+
+  #0, TST_UNKNOWN, TST_PASS, TST_FAIL
+
+DAT { test control vars }
+
+bDbgShoMem      long    FALSE
+
+eTestCtrl       long    0
+eTestParam      long    0
+eTestCtrlPrior  long    0
+
+ctStrIdle       byte    "IDLE",0
+ctStrStop       byte    "STOP",0
+ctStrPlcStr     byte    "PLACE_STR",0
+ctStrPlcNMsgs   byte    "PLACE_N_MSGS",0
+ctStrUnknown    byte    "CT_????",0
+
+greenStr        byte    "Green String", $0a, 0
+redStr          byte    "Red String", $0a, 0
+
+nStackDepth     long    STACK_SIZE_LONGS
+
+PUB null() | pWrappedStr, bStatus, pStr, bWaitStatus, nCtParm, bPassFail
+'' This is not a top level object
+
+CON { - - - - - }
+
+PUB startx(rxpin, txpin, baud, pullup)
+'' Start serial gateway serial coms on rxpin and txpin at baud
+    pinRx := rxpin
+    pinTx := txpin
+    serialChan.startx(pinRx, pinTx, baud, pullup)                              ' use user serial port
+
+    prepStackForCheck() ' for our internal test use
+
+    ' start our rx task in own cog
+    rxCogId := cogspin(newcog, TaskSerialRx(@serialRxBffr, RX_CHR_Q_MAX_BYTES), @taskStack)
+    if rxCogId == -1    ' did fail?
+        debug("!! ERROR filed to start RX-QUE task")
+
+PUB stop()
+'' Release the serial pins and free up the rcvr cog
+    serialChan.rxflush()   ' git rid of any pending input
+    ' free the pins used
+    pinf(pinRx)    ' de-assert
+    pinf(pinTx)    ' de-assert
+
+    ' free the cog used
+    if(rxCogId)
+        cogstop(rxCogId - 1)
+        rxCogId := 0
+
+CON { ----- Control Changes Interface ----- }
+
+    WAIT_FOR_STRING = TRUE
+
+    ' offsets for incoming table entries
+    #0, TBLIDX_POSSCMD, TBLIDX_ECMD, TBLIDX_PARAMCT
+
+PUB haveCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nIdx, nParamCt, pCmd, eCmd, bGoodCmd
+'' Return T/F where T means a control value change has been received and needs to be handled
+    bHaveCmdStatus := haveRxString()
+    if nQStrCount <> 0
+        debug("- hvcmd: ", uhex_long(pEntries), udec_long(nEntryCount), udec_long(nQStrCount))
+    'repeat  ' lock here
+
+    ' validation table: (nEntryCount) entries where each is:
+    ' TBLIDX_POSSCMD, TBLIDX_ECMD, TBLIDX_PARAMCT
+    '    [pCmdStr][eCmdValue][nParamCt]
+    '    [pCmdStr][eCmdValue][nParamCt]
+    '    :
+    '    :
+    '    [pCmdStr][eCmdValue][nParamCt]
+
+    ' Interpret string, do partial validation
+    ' if NOT valid, send ERROR w/cause over serial and say we have no string
+    ' else return OK and say we have request to be handled
+    if (bHaveCmdStatus == TRUE)
+        bHaveCmdStatus := FALSE ' preset as invalid command...
+        ' debug("!! message arrived")
+        opStatus, pValues := parseCommandAndValue()
+        if opStatus <> OP_SUCCESS
+            sendError(@"Unrecognized String")
+        else
+            '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+            '              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+            '              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+            '              [3:eCmd]                                             ENT_CMDENUM_IDX
+            '              [4:nValue1]                                          ENT_PARM1_IDX
+            '              [5:nValue2]                                          ENT_PARM2_IDX
+            '              [6:nValue3]                                          ENT_PARM3_IDX
+            '              [7:nValue4]                                          ENT_PARM4_IDX
+            '              [etc] - up to 6 max values
+
+            ' locate command in table
+            bGoodCmd := FALSE
+            repeat nIdx from 0 to nEntryCount - 1
+                pCmd := LONG [pEntries][(nIdx * 3) + TBLIDX_POSSCMD]
+                eCmd := LONG [pEntries][(nIdx * 3) + TBLIDX_ECMD]
+                nParamCt := LONG [pEntries][(nIdx * 3) + TBLIDX_PARAMCT]
+                'debug("- hvcmd: tblent #", udec_(nIdx), " [", zstr_(pCmd), "] eCmd=", sdec_(eCmd))
+                ' is this our cmd?
+                if strIgnoreCaseMatch(pCmd, LONG[pValues][ENT_CMDSTR_IDX])
+                    bGoodCmd := TRUE
+                    quit
+            '  if not found ERROR unknown command, return NO command
+            if not bGoodCmd
+                sendError(@"Command NOT found")
+            else
+                ' record enum for found command
+                LONG[pValues][ENT_CMDENUM_IDX] := eCmd
+                ' check nbr params (in table)
+                '  if not match ERROR bad nbr params, return NO command
+                if nParamCt <> LONG[pValues][ENT_VALUE_CT_IDX] - 1
+                    sendError(@"Missing/Extra parameter(s)")
+                else
+                    ' return valid-so-far command
+                    bHaveCmdStatus := TRUE
+                    dumpParsedCommand(@"hvCmd")
+
+PUB sendError(pMsg)
+'' Reply to sender with validation error message
+    serialChan.str(@"ERROR ")
+    serialChan.str(pMsg)
+    serialChan.str(@"\n")
+    debug(" ERROR: [", zstr_(pMsg), "] raw=[", zstr_(@currSingleLineBffr), "]")
+
+PUB sendOK()
+'' Reply to sender with OK message
+    serialChan.str(@"OK\n")
+    debug(" OK: raw=[", zstr_(@currSingleLineBffr), "]")
+
+PUB sendResponse(pMsg)
+'' Send requested data back to sender
+    serialChan.str(pMsg)
+    serialChan.str(@"\n")
+    debug(" response: ", zstr_(pMsg))
+
+PRI parseCommandAndValue() : opStatus, pValues | pStr
+' Interpret command and return descriptor
+    debug("- parseCommandAndValue()")
+' where descriptor is:
+'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+'              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+'              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+'              [3:eCmd]                                             ENT_CMDENUM_IDX
+'              [4:nValue1]                                          ENT_PARM1_IDX
+'              [5:nValue2]                                          ENT_PARM2_IDX
+'              [6:nValue3]                                          ENT_PARM3_IDX
+'              [7:nValue4]                                          ENT_PARM4_IDX
+'              [etc] - up to 6 max values
+    pStr := getLine(@currSingleLineBffr, MAX_SINGLE_STRING_LEN, WAIT_FOR_STRING)
+    ' now split string into useful parts
+    opStatus, pValues := commandParse(pStr)
+
+PUB getCommandParms() : opStatus, pValues
+'' Return latest descriptor to caller
+    debug("- getCommandParms()")
+' where descriptor is:
+'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+'              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+'              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+'              [3:eCmd]                                             ENT_CMDENUM_IDX
+'              [4:nValue1]                                          ENT_PARM1_IDX
+'              [5:nValue2]                                          ENT_PARM2_IDX
+'              [6:nValue3]                                          ENT_PARM3_IDX
+'              [7:nValue4]                                          ENT_PARM4_IDX
+'              [etc] - up to 6 max values
+
+    ' if we have values in parsed table () (PROXY: is command was recognized)
+    opStatus := (LONG[@currParsedCommand][ENT_CMDENUM_IDX] > 0) ? OP_SUCCESS : OP_FAILURE
+    pValues := @currParsedCommand
+
+CON { ----- General Strings Interface ----- }
+
+PUB haveRxString() : bPresentStatus
+'' Return T/F where T means a control value change has been received and needs to be handled
+    bPresentStatus := (nQStrCount > 0) ? TRUE : FALSE
+    'debug("?? haveRxString[T/F]: ", ubin_byte(presentStatus))
+
+PUB rxStringsCount() : nCount
+'' Return count of strings received
+    nCount := nQStrCount
+
+PUB getLine(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedStr, nLen
+'' Return {pStr} or 0 if none
+''  if {bShouldWait} is TRUE wait until string arrives before returning
+    'debug("getLine: ENTRY")
+    pStr := 0
+    if bShouldWait == TRUE
+        bStringArrived := TRUE
+        repeat until haveRxString() == TRUE
+    else
+        bStringArrived := haveRxString()
+
+    if bStringArrived == TRUE
+        pStr := pUserDest
+        pWrappedStr := dequeueRxStr()
+        bytefill(pUserDest, 0, lenDest)
+        copyWrappedStr(pUserDest, pWrappedStr, lenDest)
+        nLen := strsize(pUserDest)
+        freeWrappedString(pWrappedStr, nLen)
+        'debug("gcs: str=[", zstr_(pUserDest), "]")
+        'debug("- gtln: str(", udec_(nLen), ")=[", zstr_(pUserDest), "]")
+    else
+        debug("gtln: ERROR str=[] - NOT PRESENT")
+
+
+PUB flushRxQueue()
+'' Reset all Rx Queue control and data (emptying it!)
+    bytefill(@serialRxBffr, 0, RX_CHR_Q_MAX_BYTES)
+    longfill(@rxStrPtrSet, 0, RX_STR_Q_MAX_LONGS)
+    pRxByteHead := pRxByteStart
+
+    bInString := FALSE
+
+    nQStrHeadIdx := 0
+    nQStrTailIdx := 0
+
+    nRxByteCount := 0
+    nQStrCount := 0
+
+    pRsltStrStart := 0
+
+PUB resetRxStatus()
+'' Reset all task failure indicators
+    bQueOverrun := FALSE
+    bStrQueOverrun := FALSE
+
+PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx, bHaveNeg
+'' Return long value for given decimal string
+    decimalValue := 0
+    nCharCt := strsize(pDecimalStr)
+    if (nCharCt > 0)
+        bHaveNeg := (BYTE[pDecimalStr][0] == "-") ? TRUE : FALSE
+        if bHaveNeg
+            pDecimalStr++   ' point past neg sign
+            nCharCt--
+        if (nCharCt > 0)
+            repeat nIdx from 0 to nCharCt - 1
+                decimalValue := (decimalValue * 10) + (BYTE[pDecimalStr][nIdx] - $30)
+        if bHaveNeg
+            decimalValue := 0 - decimalValue
+
+PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitValue
+'' Return long value for given hexadecimal string
+    nOffset := 0
+    'debug("CONV: [", zstr_(pHexStr), "]")
+    if(strHasLowCasePrefix(pHexStr, string("0x"))) ' handle both 0xFEA94 and FEA94
+        ' skip over prefix
+        nOffset := 2
+    valueOfHex := 0
+    repeat nIdx from nOffset to strsize(pHexStr) - 1
+        valueOfHex *= 16
+        nChar := BYTE[pHexStr][nIdx] & $DF    ' convert upper case to lower
+        if nchar >= $30 && nchar <= $46
+            if nChar > $39
+                nDigitValue := nChar - $41 + 10  ' remove 'A' but leave as 10-15
+            else
+                nDigitValue := nChar - $30  ' remove '0' leave as 0-9
+            valueOfHex += nDigitValue
+            'debug("CONV: ", uhex(nIdx), ", ",uhex(nChar), ", ", uhex(nDigitValue), ", ", uhex(valueOfHex))
+
+    'debug("CONV: [", zstr_(pHexStr), "]= ", uhex_long(valueOfHex))
+
+CON { ----- TASK ----- }
+' ====================================================
+'  SERIAL RX QUEUE routines
+'
+PRI TaskSerialRx(pRxBffr, lenRxBffr)
+' our serial receive to queue loop
+    ' preserve incoming values
+    pRxByteStart := pRxBffr
+    nRxByteMax := lenRxBffr
+
+    ' NOTE parameters are for DEBUG use only
+    flushRxQueue()
+
+    debug("TASK[Rx] started ", uhex(pRxByteStart), ", ", udec(nRxByteMax), ", rxBffr=[", uhex_(@serialRxBffr), "]")
+
+    if bTestMode
+        ' run loop (test-version for now)
+        debug("TASK[Rx] ** TEST LOOP Running **")
+        repeat
+            checkStack()
+            if (eTestCtrl == CT_PLACE_STR)
+                eTestCtrl := CT_IDLE
+                tskFakeRxStr(eTestParam)
+            elseif (eTestCtrl == CT_PLACE_N_MSGS)
+                eTestCtrl := CT_IDLE
+                nLoopCt := eTestParam
+                repeat nLoopCt
+                    pNextMsg := genTestMsg()
+                    tskFakeRxStr(pNextMsg)
+            if (eTestCtrlPrior <> eTestCtrl)
+                showTestState(eTestCtrlPrior, eTestCtrl)
+                eTestCtrlPrior := eTestCtrl
+    else
+        ' read serial input forever placing chars in RX Circ Queue
+        debug("TASK[Rx] ** Live LOOP rcvg fm serial **")
+        repeat
+            nTaskChr := serialChan.rxtime(1000)
+            if (nTaskChr <> -1)
+                tskEnqueueChar(nTaskChr)
+
+PRI tskFakeRxStr(pStr) | nIdx, nStatusValue
+' place string into buffer as if it was received
+    debug("TASK[Rx] str=[", zstr_(pStr), "]")
+    repeat nIdx from 0 to strsize(pStr) - 1
+       nStatusValue := tskEnqueueChar(byte[pStr][nIdx])
+       if nStatusValue
+            debug("EEE Abort string write EEE")
+            quit
+
+PRI tskEnqueueChar(nChr) : bFailedStatus
+' place byte into rx queue, if EOL then place term instead and engueue string ptr!
+    bFailedStatus := FALSE
+    if (nRxByteCount < nRxByteMax)
+        if bInString == FALSE
+            bInString := TRUE
+            pNewStrStart := pRxByteHead
+            'debug("TASK[Rx] ", uhex_long(pNewStrStart), ubin_byte(bInString))
+        'debug("TASK[Rx] rxChr=", uhex_(nChr))
+        nRxByteCount++
+        if (nChr <> $0a)
+            ' if NOT LF then save it
+            byte [pRxByteHead++] := nChr
+        else
+            ' have LF terminate line
+            byte [pRxByteHead++] := $00 ' place term instead of EOL
+            if bInString == TRUE
+                bInString := FALSE
+                'debug("TASK[Rx]  STR=[", zstr_(pNewStrStart), "]")
+                tskEnqueueStr(pNewStrStart)
+        ' wrap ptr if needed...
+        if pRxByteHead > @BYTE [@serialRxBffr][RX_CHR_Q_MAX_BYTES - 1]
+            pRxByteHead := @serialRxBffr
+    else
+        bQueOverrun := TRUE ' signal that we lost incoming data!!!
+        debug("TASK[Rx] !! ERROR  char-queue full!! ", sdec(nRxByteCount), sdec(nRxByteMax))
+        bFailedStatus := TRUE
+
+
+PRI tskEnqueueStr(pStr) | strIdx
+' report string arrival to listener (place string pointer in queue)
+    checkGoodStringPtr(pStr)
+    if nQStrCount < RX_STR_Q_MAX_LONGS
+        strIdx := nQStrHeadIdx  ' save for debug
+        LONG [@rxStrPtrSet][nQStrHeadIdx++] := pStr
+        ' if head goes off end-of-set then wrap
+        if nQStrHeadIdx > RX_STR_Q_MAX_LONGS - 1
+            nQStrHeadIdx := 0
+        ' mark arrival of new in queue
+        nQStrCount++
+        ' report new string arrival
+        debug("TASK[Rx] newStr: ", uhex_long_(pStr), " #(", udec_(strIdx), ")")
+    else
+        bStrQueOverrun := TRUE ' signal that we lost incoming data!!!
+        debug("TASK[Rx] !! ERROR ctrl-Q full!!")
+    'debug("TASK[Rx] enqueueStr: ", udec(nQStrCount))
+
+PRI checkGoodStringPtr(pStr) | pStrLastByte
+' report and halt if string not valid (with circular queue range)
+' NOTE: string can wrap in circ-que so we don't check end of string...
+    if pStr < @serialRxBffr or pStr > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
+        debug("EEE have BAD ptr to string! ", uhex_long(pStr), uhex_long(pRxByteStart), uhex_long(pRxByteStart + RX_CHR_Q_MAX_BYTES - 1))
+        lockupForAnly()
+
+PRI lockupForAnly()
+' tell that we are halting then halt (effictivly)
+    debug("---- FAIL - stopping here for Analysis of above ^^^")
+    repeat      ' hold here for now
+
+CON { ----- Support ----- }
+
+PRI dequeueRxStr() : pRmStr
+' remove string from queue, listener done with it
+    'dumpStrQ(string("B4 String Ptr Que"))
+    if nQStrCount > 0
+        pRmStr := LONG[@rxStrPtrSet][nQStrTailIdx++]
+        if nQStrTailIdx > RX_STR_Q_MAX_LONGS - 1
+            nQStrTailIdx := 0
+        nQStrCount--
+        if bDbgShoMem
+            debug("-- dqrs:", uhex_long(pRmStr), udec(nQStrCount))
+    else
+        debug("-- dequeueRxStr() !! ERROR string-queue empty!!")
+    'dumpStrQ(string("FTER String Ptr Que"))
+
+PRI dequeueResultRxStr() : pRsltStr
+' remove string from queue, listener done with it
+    'dumpStrQ(string("B4 String Ptr Que"))
+    pRsltStr := 0
+    if pRsltStrStart <> 0
+        pRsltStr := pRsltStrStart
+        pRsltStrStart := 0  ' mark as empty
+
+PRI freeWrappedString(pRmStr, nLen)
+    ' zero our string memory
+    if bDbgShoMem
+        debug("-- fws:", uhex_long(pRmStr))
+    zeroWrappedStr(pRmStr, nLen)
+
+PRI zeroWrappedStr(pRmStr, nLen) | nIdx, pSrc
+' fill space occuppied by string with zero's
+'  NOTE handle buffer wrap!
+'    string can start near and and wrap to front!
+    pSrc := pRmStr
+    repeat nIdx from 0 to nLen - 1
+        ' if pointing beyond end, wrap to front!
+        if pSrc > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
+          pSrc -= RX_CHR_Q_MAX_BYTES
+        BYTE[pSrc++] := 0
+    nRxByteCount -= nLen + 1
+    if bDbgShoMem
+        debug("-- zws: ", uhex_long(pRmStr), udec(nLen), udec(nRxByteCount))
+
+PRI copyWrappedStr(pUserDest, pSrcStr, lenDest) | nIdx, pSrc, pDest
+' copy possible wrapped string {pSrcStr} to {pUserDest} (use min(strlen,lenDest) as bytes to move)
+'  NOTE handle buffer wrap!
+'    string can start near and and wrap to front!
+    pDest := pUserDest
+    pSrc:= pSrcStr
+    repeat nIdx from 0 to lenDest - 1
+        ' if pointing beyond end, wrap to front!
+        if pSrc > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
+          pSrc -= RX_CHR_Q_MAX_BYTES
+        if BYTE[pSrc] == 0
+            quit    ' at string end, quit loop
+        BYTE[pDest++] := BYTE[pSrc++]
+    BYTE[pDest] := 0  ' place final terminator
+    if bDbgShoMem
+        debug("-- cws: str(", udec_(strsize(pSrcStr)), ")=[", zstr_(pUserDest), "]")
+
+PRI commandParse(pRxLine) : nStatus, pValues | nLenRemaining, nSepIdx, pSrchBffr, pRemainingBffr, nCmdLen, nParmIdx
+    ' Examples: "drivedir {pwr} {dir}\n"
+    ' Examples: "drivedist {ltdist} {rtdist} {d-u}\n"
+    ' Examples: "emercutoff\n"
+
+    ' BUILD THIS:
+    '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+    '              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+    '              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+    '              [3:eCmd]                                             ENT_CMDENUM_IDX
+    '              [4:nValue1]                                          ENT_PARM1_IDX
+    '              [5:nValue2]                                          ENT_PARM2_IDX
+    '              [6:nValue3]                                          ENT_PARM3_IDX
+    '              [7:nValue4]                                          ENT_PARM4_IDX
+    '              [etc] - up to 6 max values
+
+    LONG [@currParsedCommand][ENT_RAWSTR_IDX] := @currSingleLineBffr ' record location of raw line
+    LONG [@currParsedCommand][ENT_VALUE_CT_IDX] := 0                ' preset not recognized
+    LONG [@currParsedCommand][ENT_CMDENUM_IDX] := 0                 ' preset not recognized
+    debug("- cp: raw=[", zstr_(LONG [@currParsedCommand][ENT_RAWSTR_IDX]), "]")
+    '
+    bytefill(@currCommandName, 0, RX_COMMAND_MAX_LEN+1)             ' reset buffers
+
+    pValues := @currParsedCommand
+    nStatus := OP_FAILURE ' preset to failure
+
+    pSrchBffr := pRxLine
+    nLenRemaining := strsize(pRxLine)                               ' get length of input
+    nSepIdx := -1                                                   ' separator not found
+
+    ' locate our command string within rx buffer
+    pRemainingBffr, nSepIdx := locationNextNonWhiteValue(pSrchBffr, nLenRemaining)
+
+    ' if we have non-empty line...
+    if (nLenRemaining > 0)
+        ' if we bounded the command name...
+        if (nSepIdx >= 0)
+            ' capture subsystem ID for this status
+            nCmdLen := (nSepIdx <= RX_COMMAND_MAX_LEN) ? nSepIdx : RX_COMMAND_MAX_LEN
+            bytemove(@currCommandName, pRemainingBffr, nCmdLen)
+            LONG [@currParsedCommand][ENT_CMDSTR_IDX] := @currCommandName    ' store command name
+            LONG [@currParsedCommand][ENT_VALUE_CT_IDX] := 1                   ' note that we have command name
+            debug("- cp: cmd=[", zstr_(LONG [@currParsedCommand][ENT_CMDSTR_IDX]), "]")
+
+        ' point past command
+        pSrchBffr := pSrchBffr + nSepIdx + 1  ' +1 = point past sep
+        nLenRemaining := strsize(pSrchBffr)                                         ' get length of input remainder
+
+        nStatus := OP_SUCCESS
+
+        ' if anything left, identify params
+        if (nLenRemaining > 0)
+            nParmIdx := ENT_PARM1_IDX   ' first param is at [4] into structure
+            repeat
+                bytefill(@tmpValueStr, 0, RX_VALUE_MAX_LEN+1)                        ' reset work buffer
+
+                pRemainingBffr, nSepIdx := locationNextNonWhiteValue(pSrchBffr, nLenRemaining)
+
+                ' tmpValueStr         byte    0[RX_VALUE_MAX_LEN+1]
+                ' save into terminated string
+                nCmdLen := (nSepIdx <= RX_VALUE_MAX_LEN) ? nSepIdx : RX_VALUE_MAX_LEN
+                if nCmdLen == 0
+                    quit
+
+                bytemove(@tmpValueStr, pRemainingBffr, nCmdLen)
+                debug("- cp: valStr=[", zstr_(@tmpValueStr), "]")
+                ' convert string into value
+                if strHasLowCasePrefix(@tmpValueStr, @"true")
+                    LONG [@currParsedCommand][nParmIdx] := TRUE
+                elseif strHasLowCasePrefix(@tmpValueStr, @"false")
+                    LONG [@currParsedCommand][nParmIdx] := FALSE
+                else
+                    LONG [@currParsedCommand][nParmIdx] := decimalForString(@tmpValueStr)
+                ' increment count of parms
+                debug("- cp: val=(", sdec_long_(LONG [@currParsedCommand][nParmIdx]), ")")
+                LONG [@currParsedCommand][ENT_VALUE_CT_IDX] += 1
+                nParmIdx++
+                pSrchBffr := pSrchBffr + nSepIdx + 1  ' +1 = point past sep
+
+                if pRemainingBffr == 0
+                    quit
+
+    'dumpParsedCommand(@"cmdprse")
+
+PRI dumpParsedCommand(pMsg) | nIdx, nParams
+'   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
+'              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
+'              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
+'              [3:eCmd]                                             ENT_CMDENUM_IDX
+'              [4:nValue1]                                          ENT_PARM1_IDX
+'              [5:nValue2]                                          ENT_PARM2_IDX
+'              [6:nValue3]                                          ENT_PARM3_IDX
+'              [7:nValue4]                                          ENT_PARM4_IDX
+'              [etc] - up to 6 max values
+    debug("* Command: - ", zstr_(pMsg))
+    debug(" -- raw=[", zstr_(LONG [@currParsedCommand][ENT_RAWSTR_IDX]), "]")
+    debug(" --  ct=(", udec_(LONG [@currParsedCommand][ENT_VALUE_CT_IDX]), ")")
+    debug(" -- cmd=[", zstr_(LONG [@currParsedCommand][ENT_CMDSTR_IDX]), "]")
+    debug(" -- eCmd=(", udec_(LONG [@currParsedCommand][ENT_CMDENUM_IDX]), ")")
+    nParams := LONG [@currParsedCommand][0] - 1
+    if nParams > 0
+        repeat nIdx from ENT_PARM1_IDX to ENT_PARM1_IDX + nParams - 1
+            debug(" -- param#", udec_(nIdx), "=(", sdec_(LONG [@currParsedCommand][nIdx]), ")")
+
+PRI locationNextNonWhiteValue(pBffr, lenRemaining) : pStart, nSepIdx | pBffrStart, nLenRemaining, nIdx, nChr
+' Return ptr and index of end char of next non-white value
+    nSepIdx := -1           ' separator not found
+    ' skip any starting white-space
+    pStart, nLenRemaining := skipWhiteSpace(pBffr, lenRemaining)
+    ' locate end of this non-white value
+    repeat nIdx from 0 to nLenRemaining
+        nChr := byte[pStart][nIdx]
+        ' if have space, tab or EOL...
+        if (nChr == $20 or nChr == $09 or nChr == $00)
+            nSepIdx := nIdx
+            quit
+    'debug("- lnnwv: str=[",  zstr_(pBffr), "] ", uhex_long(pBffr), udec_long(lenRemaining), " -> ", uhex_long(pStart), udec_long(nSepIdx))
+
+PRI skipWhiteSpace(pBffr, lenRemaining) : pStart, nLenRemaining | nIdx, nChr
+' Return ptr to first non-white char with adjusted len which is len of non-white to end of string
+    pStart := pBffr
+    nLenRemaining := lenRemaining
+    repeat nIdx from 0 to lenRemaining
+        nChr := byte[pBffr][nIdx]
+        ' if NOT have space, tab or EOL...
+        if (nChr <> $20 and nChr <> $09 and nChr <> $00)
+            pStart := @byte[pBffr][nIdx]
+            nLenRemaining := lenRemaining - nIdx
+            quit
+    'debug("- sws: str=[",  zstr_(pBffr), "] ", uhex_long(pBffr), udec_long(lenRemaining), " -> ", uhex_long(pStart), udec_long(nLenRemaining))
+
+PRI strHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
+    bHasStatus := TRUE
+    repeat nIdx from 0 to strsize(pPrefix) - 1
+        if (BYTE[pTargetStr][nIdx] | $20) <> BYTE[pPrefix][nIdx]
+            bHasStatus := False
+            quit    ' outta here, we have our answer!
+
+
+PRI strIgnoreCaseMatch(pLtStr, pRtStr) : bMatchStatus | nIdx
+    bMatchStatus := FALSE
+    'debug("- sicm: lt(", udec_(strsize(pLtStr)), ")=[", zstr_(pLtStr), "], rt(", udec_(strsize(pRtStr)), ")=[", zstr_(pRtStr), "]")
+    if strsize(pLtStr) == strsize(pRtStr)
+        bMatchStatus := TRUE
+        repeat nIdx from 0 to strsize(pRtStr) - 1
+            ' compare lowCase lt-byte to lowcase rt-byte
+            if (BYTE[pLtStr][nIdx] | $20) <> BYTE[pRtStr][nIdx] | $20
+                bMatchStatus := FALSE
+                quit    ' outta here, we have our answer!
+    'debug(" -- ", sdec_(bMatchStatus))
+
+PRI indexOfStr(pSrchStr, pRxBffr) : nIdx, idxAfter | nLenRemaining, srchLen, srchIdx, srcIdx, bSrchMatch
+  nIdx := -1   ' preset NOT found
+  nLenRemaining := strsize(pRxBffr)                  ' get length of input
+  srchLen := strsize(pSrchStr)
+  if (srchLen <= nLenRemaining)
+    repeat srcIdx from 0 to nLenRemaining - srchLen
+        bSrchMatch := True
+        repeat srchIdx from 0 to srchLen - 1
+          if (byte[pSrchStr][srchIdx] <> byte[pRxBffr][srcIdx + srchIdx])
+            bSrchMatch := False
+            quit    ' abort srchStr compare
+        if bSrchMatch == True
+            nIdx := srcIdx
+            idxAfter := srcIdx + srchLen
+            quit   ' abort rxBuffer compare
+  'debug("idxOf: ", zstr(pSrchStr), ", ", zstr(pRxBffr), ", nIdx=", sdec_(nIdx))
+
+CON { ----- TEST Support ----- }
+
+PRI prepStackForCheck()
+' reset all failure indicators
+
+    longfill(@taskStack, NOT_WRITTEN_MARK, STACK_SIZE_LONGS)
+    endStackMark := DO_NOT_WRITE_MARK
+
+PRI checkStack()
+    if endStackMark <> DO_NOT_WRITE_MARK
+        debug("^^^ STACK Overflow! Depth greater than ", udec(nStackDepth),  " longs")
+        lockupForAnly()
+
+PRI reportStackUse()
+    nStkChkUsed := 0
+    repeat nStkChkIdx from 0 to STACK_SIZE_LONGS - 1
+        if LONG[@taskStack][nStkChkIdx] <> NOT_WRITTEN_MARK
+            nStkChkUsed++
+        else
+            quit    ' done we have our count
+    debug("^^^ STACK used ", udec(nStkChkUsed), " of ", udec(nStackDepth))
+
+PRI testReport(pTestId, bPassFail) | pResult
+    pResult := (bPassFail == TST_PASS) ? @rsltPass : @rsltFail
+    debug("+++ ---------")
+    debug("+++ TEST [", zstr_(pTestId), "] - ", zstr_(pResult))
+    reportStackUse()
+    checkStack()
+    'dumpStack()
+
+    if bPassFail == TST_FAIL
+        lockupForAnly()
+
+PRI dumpStack()
+    dbgMemDump(@taskStack, (STACK_SIZE_LONGS + 1) * 4, string("TASK Stack"))
+
+DAT { test message things }
+
+testMsgCt       LONG    0
+
+testMsgStr      BYTE    "Test "
+testMsgNbr      BYTE    "000x"
+testMsgEOL      BYTE    $0a, 0
+
+rsltPass        BYTE    "pass",0
+rsltFail        BYTE    "FAIL",0
+
+nStkChkUsed     LONG    0
+nStkChkIdx      LONG    0
+
+PRI genTestMsg() : pMsg | nDigit, nRemainder
+' return pointer to a simple message
+    pMsg := @testMsgStr
+    nRemainder := testMsgCt++
+    if nRemainder > 999
+        nDigit := nRemainder / 1000
+        nRemainder -= nDigit * 1000
+        BYTE[@testMsgNbr][0] := nDigit + $30
+    if nRemainder > 99
+        nDigit := nRemainder / 100
+        nRemainder -= nDigit * 100
+        BYTE[@testMsgNbr][1] := nDigit + $30
+    if nRemainder > 9
+        nDigit := nRemainder / 10
+        nRemainder -= nDigit * 10
+        BYTE[@testMsgNbr][2] := nDigit + $30
+    BYTE[@testMsgNbr][3] := nRemainder + $30
+
+PRI showTestState(ePrior, eNew) | pFrom, pTo
+' display task state
+    pFrom := nameForState(ePrior)
+    pTo := nameForState(eNew)
+    debug("TEST state [", zstr_(pFrom), "] -> [", zstr_(pTo), "]")
+
+PRI nameForState(eNew) : pStr
+' return string for state value
+    if eNew == CT_IDLE
+      pStr := @ctStrIdle
+    elseif  eNew == CT_STOP
+      pStr := @ctStrStop
+    elseif  eNew == CT_PLACE_STR
+      pStr := @ctStrPlcStr
+    elseif  eNew == CT_PLACE_N_MSGS
+      pStr := @ctStrPlcNMsgs
+    else
+      pStr := @ctStrUnknown
+
+PRI dumpStrQ(pMsg)
+' dump our full string-que so we can visually inspect
+    dbgMemDump(@nQStrHeadIdx, (4 + RX_STR_Q_MAX_LONGS) * 4, pMsg)
+
+PRI dbgMemDump(pBytes, lenBytes, pMessage) | rowCount, rowLen, pCurrByte, lastRowByteCount, bytesSoFar
+' Dump rows of hex values with address preceeding
+
+    if pMessage
+        debug("** ", zstr_(pMessage), ":")
+
+    rowCount := lenBytes / 16
+    lastRowByteCount := lenBytes - (rowCount * 16)
+    pCurrByte := pBytes
+    bytesSoFar := 0
+
+    ' emit full lines
+    if rowCount > 0
+        repeat rowCount
+            dbgMemDumpRow(pCurrByte, 16)
+            pCurrByte += 16
+            bytesSoFar += 16
+
+    if  bytesSoFar < lenBytes
+        ' emit last line
+        dbgMemDumpRow(pCurrByte, lastRowByteCount)
+
+PRI dbgMemDumpRow(pBytes, lenBytes) '| rowCount, rowLen, pCurrByte, bytIndex
+' emit address followed by bytes
+    debug(" ", uhex_long_(pBytes), ": ", uhex_byte_array_(pBytes, lenBytes))
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

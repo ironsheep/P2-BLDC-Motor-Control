@@ -114,7 +114,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     ' init status variables
     loop_ticks := 0
     minDrvTics := 65535
-    drv_state := DS_Unknown
+    drv_state := DCS_Unknown
 
     maxSpeed := 75            ' [1-100] default 75
     maxSpeed4dist := 75      ' [1-100] default 75
@@ -153,9 +153,11 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
         ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
         if motorCog == 0    ' did fail?
             debug("!! ERROR filed to start Motor Control task")
+        else
+            debug("* Motor COG #", sdec_(motorCog- 1))
 
 PUB startSenseCog() : ok
-'' Start the single motor sense task (tracks position of motor, distance travelled, etc.)
+'' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
     ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
     if senseCog == 0    ' did fail?
         debug("!! ERROR filed to start Position Sense task")
@@ -216,6 +218,7 @@ PUB setMaxSpeedForDistance(speed) | limitSpeed4dist
 
 PUB calibrate()
 '' NOT WORKING: (we may need this?)
+'' have motor drivers determine fixed-offset constants
 
 PUB holdAtStop(bEnable)
 '' Informs the motor control cog to actively hold position (bEnable=true) or coast (bEnable=false) at end of motion
@@ -360,7 +363,7 @@ PUB clearEmergency()
     debug("-- EMERGENCY -- CLEARED --")
 
 PUB forwardIsReverse()
-'' call when we have two motors and one of them needs to be reversed
+'' Call when we have two motors and one of them needs to be reversed
     motorIsReversed := TRUE
 
 CON { --- Subsystem Status --- }
@@ -394,16 +397,16 @@ PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
 
 PUB getRotationCount(eRotationUnits) : rotationCount
 '' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
-    rotationCount := 0
+    rotationCount := -1
     case eRotationUnits
         DRU_HALL_TICKS:
-            rotationCount := motorStopHallTicks
+            rotationCount := posTrkHallTicks
         DRU_DEGREES:
             ' degrees = ticks * 4
-            rotationCount := motorStopHallTicks * 4
+            rotationCount := posTrkHallTicks * 4
         DRU_ROTATIONS:
             ' rotations = ticks / 90
-            rotationCount := motorStopHallTicks / 90
+            rotationCount := posTrkHallTicks / 90
         other:
             debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
             abort
@@ -437,9 +440,9 @@ PUB getStatus() : eStatus
     else
         eStatus := DS_Unknown
 
-PUB getDriveState() : eDrvState
+PUB getDriverState() : eDrvrState
 '' Return Enum [DCS_*] value representing state of driver
-    eDrvState := drv_state
+    eDrvrState := drv_state
 
 PUB getRawHallTicks() : nPos
 '' Return the raw driver-maintained tick count
@@ -841,9 +844,10 @@ CON { driver interface Constants}
     '  DCS_SPIN_DN          - motor is stopping, then will be at STOPPED
     '  DCS_SLOWING_DN       - motor is slowing down (just a speed change), then will be at AT_SPEED
     '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
+    '  DCS_FAULTED          - motor faulted (couldn't drive to requested speed)
+    '  DCS_ESTOP            - motor in emergency stop (external stop requested)
     '
     #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOWING_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP
-
 
 CON { driver internal Constants}
 
@@ -852,6 +856,9 @@ CON { driver internal Constants}
 '    OFFSET   = 80                ' enforced dead time in clock cycles (at 200_000_000 -> 400 nSec)
 '    OFFSET   = 108                ' enforced dead time in clock cycles (at 270_000_000 -> 400 nSec)
 '    PWMLIM   = FRAME - OFFSET     'PWM duty hard limit 1/2 freq of PWM
+
+    DRVR_STATUS_LONGS_COUNT = 14
+    DRVR_PARAMS_LONGS_COUNT = 13
 
 VAR { * Data Structure for PASM Driver * }
 
@@ -867,10 +874,11 @@ VAR { * Data Structure for PASM Driver * }
     ' / ----------------------------
     LONG    targetIncre                         ' 1 long                must set to cause motion
     LONG    emerStop                            ' 1 long                T/F where T means float all pins
-    ' 14 longs come from driver, the 15th, "fault" also from driver but only when happens
+    ' 14 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 15th, "fault" also from driver but only when happens
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
     LONG    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
-    LONG    hall, pos, duty, err                ' 4 sequential longs    returns data continually
+    LONG    hall, pos                           ' 2 sequential longs    returns data continually
+    LONG    duty, err                           ' 2 sequential longs    returns data continually
     LONG    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
     LONG    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
     LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN]
@@ -910,7 +918,7 @@ VAR { * Data for Motor Position Tracking * }
 
 VAR  {  Motor Parameters  }
 
-' TABLE of  13 parameters the pasm2 driver reads every cycle
+' TABLE of  13 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -930,7 +938,7 @@ DAT  {  Motor DRIVER  }
 '
 ' PASM Driver Program
 '
-                org
+                org     0
 
 driver          rdlong  x, ptra++                   ' get base pin
                 rdlong  params_ptr_, ptra++         ' get parameters pointer
@@ -996,7 +1004,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     fwdrev, #0                      ' just in case
 
                 ' do initial read of parms so control loop can use them
-                setq    #13-1                       ' load fresh parameter table (13 longs)
+                setq    #DRVR_PARAMS_LONGS_COUNT-1                       ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
                 ' preset our starting angle
@@ -1394,7 +1402,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 signx   x, #7                       ' sign-extend bit7
                 add     pos_, x                     ' add to current pos_
 
-                setq    #13-1                       ' load fresh parameter table (13 longs)
+                setq    #DRVR_PARAMS_LONGS_COUNT-1                       ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
                 cmpm    angle, prior_angle  wcz     ' if angle has changed, forward or reverse?
@@ -1416,7 +1424,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 cmp     x, #125             wc
     if_nc       dirl    drive_pins                  ' at FAULT: float all control pins (make them inputs)
     if_nc       mov     drv_state_,#DCS_FAULTED     '  also on FAULT: mark our motor as FAULTED
-    if_nc       wrlong  #1, ptra[14]                '  also on FAULT: report fault
+    if_nc       wrlong  #1, ptra[DRVR_STATUS_LONGS_COUNT]                '  also on FAULT: report fault
                 sub     x, #256/6           wc      ' modulate duty
     if_nc       muls    x, duty_up_
     if_c        muls    x, duty_dn_
@@ -1428,7 +1436,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 getct   loop_dtcks_                 ' how long was this iteration? send to host
                 sub     loop_dtcks_, drvrSrtTix
 
-                setq    #14-1                       ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state to hub
+                setq    #DRVR_STATUS_LONGS_COUNT-1                       ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state to hub
                 wrlong  drive_u_, ptra
 
                 jmp     #.loop                      ' main loop
@@ -1553,7 +1561,7 @@ scl_levels      res 4
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
-params_ptr_ res 1               ' params_ptr must be followed by the 13 parameters
+params_ptr_ res 1               ' params_ptr must be followed by the 13  (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_fwd_ res 1
 offset_rev_ res 1
 duty_min_   res 1
@@ -1571,7 +1579,7 @@ ramp_slo_   res 1               ' angle decrement: subtract this every 500 uSec 
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied out-of driver each loop iteration
-drive_u_    res 1               '   14 contiguous longs for return data structure
+drive_u_    res 1               ' 14 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -1587,7 +1595,8 @@ loop_ctcks_ res 1
 drv_state_  res 1       ' enum: DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, etc
 ' fault is here... (but external only)
 
-    fit     496
+' $1f8 for reg cogs
+    fit     496  ' $1f8(504)? - 470 currently works
 CON { license }
 {{
 

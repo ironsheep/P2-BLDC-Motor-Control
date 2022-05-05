@@ -16,13 +16,17 @@ NOTE: *If you wish to add more than a couple of sensors to your platform then yo
 
 Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardware](https://www.parallax.com/product/6-5-hub-motors-with-encoders-and-mounting-blocks-bundle/) which is perfect for use with the drivers from this project.
 
-This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project provide all you need to get your platform moving!  
+This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project are all you need to get your platform moving!  
 
 ## Current status
 
 Latest Changes:
 
 ```
+04 May 2022 v2.0.0
+- Add new Serial Top-Level object as interface to 2-wheel steering object. 
+  -- Drive your platform from RPi or Arduino (RPi example provided)
+- Fixed issues with position tracking and reporting within isp_steering_2wheel.spin2
 27 Apr 2022 v1.1.0
 - Add emergency stop methods to isp_bldc_motor.spin2, and isp_steering_2wheel.spin2
 - Adjust spin-up ramp to start slower then speed up (better traction on loose surfaces but faster speed-up as well.)
@@ -32,13 +36,27 @@ Latest Changes:
 - Initial Public Release
 ```
 
+## Known Issues
+
+Things we know about that still need attention:
+
+```
+v2.0.0
+- Drive status reporting is not working in base objects so is also reported badly over serial I/F
+v1.1.0
+- Issues with position tracking not working in isp_steering_2wheel.spin2
+- Drive status reporting is not working in base objects (motor and steering)
+```
+
 ## Table of Contents
 
 On this Page:
 
 - [Motor Object Introduction](https://github.com/ironsheep/P2-BLDC-Motor-Control#single-and-two-wheeled-motor-control-objects) - An overview of the objects provided by this project
 - [System Diagram](https://github.com/ironsheep/P2-BLDC-Motor-Control#system-diagram) - A quick visual overview of the motor and steering runtime structure
+- [Future Directions](https://github.com/ironsheep/P2-BLDC-Motor-Control#future-directions) - Notes about areas we can improve over time if you have experience and want to help us with these, please contact us in Forums [(in this thread)](https://forums.parallax.com/discussion/174516/universal-motor-driver-dual-wheel-steering-motor-control-and-position-tracking-objects-for-p2#latest)
 - [DEMOs](https://github.com/ironsheep/P2-BLDC-Motor-Control#demos) - Example files that show how to interact with the motor control and steering objects provided by this project
+- [FlySky Controls for DEMO](https://github.com/ironsheep/P2-BLDC-Motor-Control#flysky-controls-for-demo) - How our Switches and Joysticks are tasked
 - [Reference](https://github.com/ironsheep/P2-BLDC-Motor-Control#references) - We looked at a number of control systems before deciding on the public interfaces for our steering and motor control objects
 - [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control#how-to-contribute) - We welcome contributions back to this project for all of us to use. Learn how, here!
 
@@ -46,15 +64,16 @@ Additional pages:
 
 - [Steering and Motor control](DRIVE-OBJECTS.md) - The object public interfaces
 - [Start your drive project using these objects](DEVELOP.md) - Walks thru configuration and setup of your own project using these objects
+- [Use RPi or Arduino to control your platform](SERIAL-CONTROL.md) - Walks thru configuration and setup of RPi control system (extrapolate to Arduino)
 - [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
 - [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
-
+- [The author's development platform](AUTHORS-Platform.md) - Overview of the robot platform used when developing and testing the code for this project
 
 ## Single and Two-wheeled Motor Control Objects
 
 There are two objects in our motor control system. There is a lower-level object (**isp\_bldc_motor.spin2**) that controls a single motor and there's an upper-level object (**isp\_steering_2wheel.spin2**) which coordinates a pair of motors as a drive subsystem.
 
-If you are working with a dual motor device then you'll be coding to the interface of this upper-level steering object as you develop your drive algorithms.  If you were to work with say a three-wheeled device then you may want to create a steering object that can better coordinate all three motors at the same time. Actually this is true for any other number of motors you decide to control. Create your own better-suited steering object, base it on this project's 2-wheel version. (*And, if you do please consider contributing your work to this project so it can be available to us all! See: [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control/tree/develop#how-to-contribute) below.*)
+If you are working with a dual motor device then you'll be coding to the interface of this upper-level steering object as you develop your drive algorithms.  If you were to work with say a three-wheeled device then you may want to create a steering object that can better coordinate all three motors at the same time. Actually this is true for any other number of motors you decide to control. Create your own better-suited steering object, base it on this project's 2-wheel version. (*And, if you do, please consider contributing your work to this project so it can be available to us all! See: [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control/tree/develop#how-to-contribute) below.*)
 
 The drive subsystem currently uses two cogs, one for each motor and a third cog for active tracking of wheel position. Conceptually, the drive system is always running. It is influenced by updating control variable values. When the values change the drive subsystem responds accordingly. The public methods of both the steering object and the motor object simply write to these control variables and/or read from associated status variables returning their current value or an interpretation thereof.
 
@@ -69,6 +88,14 @@ The following diagram shows the nested motor control and sense subsystem compris
 ![Motor Control System Diagram](./images/objects-cogs.png)
 
 In this diagram there are three **rectangular objects** depicting files (yellow background) of code. There are three methods within the files (white and green backgrounds) that are run in separate cogs.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
+
+## Future directions
+
+We now have a working motor drive system that is fun to use.  While this was being developed we kept track of further improvements that can be made in the future.  Here's our list of the most notable:
+
+- Add acceleration control
+- Replace simple built-in spin-up, spin-down ramps with better
+
 
 ## DEMOs
 
@@ -118,6 +145,10 @@ This is a project supporting our P2 Development Community. Please feel free to c
 > [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
 
 ---
+
+## Credits
+
+This work is entirely based upon **Chip Gracey**'s excellent **BLDC Motor Driver written in Pasm2** which he demonstrated to us in many of our [live forums](https://www.youtube.com/playlist?list=PLt_MJJ1F_EXa25_TWa4Sdi77daQaxA_ZU).  This project allows us all to use this driver.  Thank you Chip!
 
 ## Disclaimer and Legal
 
