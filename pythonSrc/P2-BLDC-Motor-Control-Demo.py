@@ -34,11 +34,11 @@ if False:
     print_line('Sorry, this script requires a python3 runtime environment.', file=sys.stderr)
     os._exit(1)
 
-script_version  = "0.0.1"
+script_version  = "1.0.0"
 script_name     = 'P2-BLDC-Motor-Control-Demo.py'
 script_info     = '{} v{}'.format(script_name, script_version)
-project_name    = 'P2-RPi-IoT-gw'
-project_url     = 'https://github.com/ironsheep/P2-RPi-IoT-gateway'
+project_name    = 'P2-BLDC-Motor-Control'
+project_url     = 'https://github.com/ironsheep/P2-BLDC-Motor-Control'
 
 # -----------------------------------------------------------------------------
 # the BELOW are identical to that found in our gateway .spin2 object
@@ -468,7 +468,7 @@ class BLDCMotorControl:
         global queueRxLines
         responseStr = ''
         while queueRxLines.lineCount() == 0:
-            sleep(0.2)
+            sleep(0.2)  # wait for 2/10th of second before asking again
 
         currLine = queueRxLines.popLine().replace('\\n', '')
         if currLine.startswith(responseOK):
@@ -667,8 +667,11 @@ _thread.start_new_thread(taskSerialListener, ( serialPort, ))
 
 sleep(1)    # allow threads to start...
 
+# create our motor interface handing it our serial port to use
 wheels = BLDCMotorControl(serialPort)
 
+# a quick method using wheels lack-of-motion to determine when
+#   can ask motors to do another command...
 def waitForMotorsStopped():
     bothStopped = False
     priorLtCt = -1
@@ -686,41 +689,31 @@ def waitForMotorsStopped():
             break
         priorLtCt = ltCount
         priorRtCt = rtCount
-        sleep(0.25)
+        sleep(0.20) # wait for 1/5 second before asking again...
 
-# run our loop
+# run our drive pattern
 try:
     # wait for runtimeConfig to get our hardware ID from P2 (saying it's alive)
     print_line('- waiting P2 startup', verbose=True)
     while not runtimeConfig.containsKey("hwName"):
-        sleep(0.5)
+        sleep(0.5) # wait for 1/2 second before asking again...
 
     print_line('- P2 is alive!', verbose=True)
 
     # -------------------------
     # configure drive system
     # -------------------------
-#    wheels.setMaxSpeed(200)
-#    wheels.setMaxSpeedForDistance(-5)
     # override defaults, use 100 %
     wheels.setMaxSpeed(100)
     wheels.setMaxSpeedForDistance(100)
     # and don't draw current at stop
     wheels.holdAtStop(False)
 
-    #ltStatus, rtStatus = wheels.getStatus()
-    #print_line('- status lt={}, rt={}'.format(ltStatus, rtStatus), debug=True)
-
-    # TEST showing defect in position tracking/reset (left wheel doesn't reset!)
-    ltCount, rtCount = wheels.getRotationCount(DrvRotUnits.DRU_HALL_TICKS)
-    wheels.resetTracking()
-    ltCount, rtCount = wheels.getRotationCount(DrvRotUnits.DRU_HALL_TICKS)
-
     # -------------------------
     #  drive a square pattern
-    #   2-second sides 50% power, 90° corners
+    #   3-second sides 75% power, 90° corners
     # -------------------------
-    # forward for 2 seconds at 50% power
+    # forward for 3 seconds at 75% power
     desiredPower = 75
     lengthOfSideInSeconds = 3
     dirStraightAhead = 0
