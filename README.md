@@ -18,6 +18,8 @@ Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardwa
 
 This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project are all you need to get your platform moving!  
 
+**NEW!** If you are looking for **Serial control of our BLDC Motor platform** then head over to: [Serial Control Page](SERIAL-CONTROL.md)
+
 ## Current status
 
 Latest Changes:

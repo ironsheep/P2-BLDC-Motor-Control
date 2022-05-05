@@ -52,6 +52,8 @@ The following diagram shows the top-level serial object which hands off commands
 
 In this diagram there are five **rectangular objects** depicting files (yellow background) of code. There are three methods within the motor files (white and green backgrounds) that are run in separate cogs and there is one method (white background) within the serial files that runs in a separate cog.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
 
+Video of author running the system: [Control our 2-wheel BLDC robot platform from an RPi](https://youtu.be/QF4qI9yVwWc) @ youtube
+
 ## Download the project files
 
 Head to the BLDC Motor repository [releases page](https://github.com/ironsheep/P2-BLDC-Motor-Control/releases) and download the `serial-control-archive-set.zip` file from the Assets section of the latest release. *(only present in v2.0.0 and later releases)*

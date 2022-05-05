@@ -1,9 +1,16 @@
 # P2-BLDC-Motor-Control - The Authors' Test Platform
-as I work on these drivers I need to use a test platform.  This page describes what my platofrm looks like and how it is set up.
+as I work on these drivers I need to use a test platform.  This page describes what my platform looks like and how it is set up.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
+
+## Videos of my Platform
+
+Video of author running the system: [Control our 2-wheel BLDC robot platform from an RPi](https://youtu.be/QF4qI9yVwWc) @ youtube
+
+Earlier video of the [Platform under FlySky R/C control](https://youtu.be/EeIrPzJ0THU) @ YouTube
+
 
 ## Images of my Platform
 
