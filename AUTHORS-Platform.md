@@ -23,7 +23,7 @@ You can see there are a number of predrilled holes for screws, castors, and cabl
 
 After unboxing the parts need to be mounted:
 
-![Assembling the platform v2](images/building-the-platform.jpg)
+![Assembling the platform v2](images/building-the-platform.JPG)
 
 The pencil marks show where I drilled additional holes as I determined what additional parts I needed to mount.
 
@@ -31,7 +31,7 @@ The pencil marks show where I drilled additional holes as I determined what addi
 
 The finished platform looks like this:
 
-![Finished Platform](images/assembled-platform.jpg)
+![Finished Platform](images/assembled-platform.JPG)
 
 Here are links to key parts I used:
 
@@ -47,13 +47,13 @@ Here are links to key parts I used:
 
 And here I'm running tests of the FlySky remote control demo. (Of course, running on the test-bench required an empty amazon box.   ;-)
 
-![Driving with FlySly](images/drivingWithFlySky.png)
+![Driving with FlySly](images/drivingWithFlySky.PNG)
 
 ---
 
 Here's an updated bech-setup with the RPi in the drivers' seat!
 
-![Now with RPi in drivers' seat](images/more-complex-hasRPi.jpg)
+![Now with RPi in drivers' seat](images/more-complex-hasRPi.JPG)
 
 **NOTE:** the nVolt to 5V DC step-down supply was chosen so that I can power the P2 as well as the RPi from the same 5v. This picture shows me using a Y-splitter on the 5v with the two legs then feeding the P2 and the RPi.
 
