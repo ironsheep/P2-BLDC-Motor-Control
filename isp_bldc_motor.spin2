@@ -13,6 +13,11 @@
 
 CON { Public Interface Constants }
 
+    ' Names of supported Motors
+    #0, MOTR_6_5_INCH, MOTR_DOCO_4KRPM
+    ' return value when user makes bad choice
+    INVALID_MOTOR = -1
+
     '  ID where the P2 Eval Motor Board is plugged in (Enum)
     '    (Names of supported PinGroups)
     #0[16], PINS_P0_P15, PINS_P16_P31, PINS_P32_P47
@@ -74,7 +79,7 @@ PUB null()
 
 '' This is not a top-level object
 
-PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
+PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees
 '' Specify motor control board connect location for this motor and start the driver
         ' setup runtime constants
     ticks1ms   := (CLKFREQ / 1_000)
@@ -88,13 +93,49 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     useDebug := FALSE
     showHDMIDebug := FALSE
 
+    targetAngle := $FFFFFFFF    ' set to not used! (other values only used during testing)
+
+    case user.MOTOR_TYPE
+      MOTR_DOCO_4KRPM:
+        degrPerTic := 15
+        hallTicsPerRotation := 24
+        ' NOTES:
+        ' 15 degrees per tic so +- 15 is our offset?
+        fwdDegrees := 1
+        offset_fwd  := fwdDegrees frac 360
+        offset_rev  := (360 - fwdDegrees) frac 360
+      other:
+        ' 4 degrees per tic, offset was actually 5 tics!
+        '  or 20 degrees (0.0556 of rotation)
+        degrPerTic := 4
+        hallTicsPerRotation := 90
+        fwdDegrees := 20
+        offset_fwd  := fwdDegrees frac 360              ' 96 frac 360 (Doug's motor)
+        offset_rev  := (360 - fwdDegrees) frac 360             ' 228 frac 360 (Doug's motor)
+
+    ' new build up our hall angle table for specific motor
+    if user.MOTOR_TYPE == MOTR_6_5_INCH
+        longmove(@hall_angles, @hltb_angles, 16)
+    else
+        longmove(@hall_angles, @hltb_angl4k, 16)
+
+    ' new build up our position increment table for specific motor
+    if user.MOTOR_TYPE == MOTR_6_5_INCH
+        bytemove(@deltas, @deltas65, 64)
+    else
+        bytemove(@deltas, @deltas4k, 64)
+
+' average is middle plus deflection for forward or reverse
+'  responsiveness of motor to desire
+'  middle value is angular diff and motor postion relative to hall position
+'  deflection is direction and speed dependent
 
     ' setup driver parameters based on clock rate
     dead_gap    := (ticks1us * 260) / 1_000 ' 260 of these made into "value nS"
     pwm_limit   := FRAME - dead_gap         'PWM duty hard limit 1/2 freq of PWM
     ' .. and set up rest
-    offset_fwd  := 20 frac 360              ' 96 frac 360 (Doug's motor)
-    offset_rev  := 340 frac 360             ' 228 frac 360 (Doug's motor)
+    'offset_fwd  := 20 frac 360              ' 96 frac 360 (Doug's motor)
+    'offset_rev  := 340 frac 360             ' 228 frac 360 (Doug's motor)
     duty_min    := 100 << 4 #> dead_gap << 4
     duty_max    := pwm_limit << 4 <# pwm_limit << 4
     duty_up     := 16
@@ -110,6 +151,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
     ramp_slo    := 8_000                    ' 8k angle decrement: add/sub this every 500 uSec to ramp up from zero (slower initial ramp so we don't fault)
 
     motorIsReversed := FALSE    ' by default our motor direction is not reversed
+    fault := FALSE
 
     ' init status variables
     loop_ticks := 0
@@ -129,9 +171,12 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
 
     debug("* init values ", udec_long(dead_gap), udec_long(ctrl_ticks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
 
-
     circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.MOTOR_DIA_IN_INCH)
-    tickInMM_x10 := circInMM_x10 / 90
+    if circInMM_x10 <> 0
+        if user.MOTOR_TYPE == MOTR_6_5_INCH
+            tickInMM_x10 := circInMM_x10 / 90
+    else
+        tickInMM_x10 := 0
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
 
@@ -196,6 +241,10 @@ VAR { * user request values * }
     LONG    useDebug
     LONG    showHDMIDebug
 
+    ' values specific to user selected motor
+    LONG    degrPerTic
+    LONG    hallTicsPerRotation
+
 
 PUB setAcceleration(rate)
 '' NOT WORKING: Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
@@ -227,6 +276,14 @@ PUB holdAtStop(bEnable)
 PUB resetTracking()
 '' Resets the position tracking values returned by getDistance() and getRotations()
     posTrkHallTicks := 0    ' reset all of our trackers (they are incremented in sensor loop)
+
+PUB moveShaftToAngle(desiredAngle)
+'' TEST: force motor to specific angle
+    if targetAngle == $ffffffff
+        targetAngle := desiredAngle
+        debug("MOT: move to ", sdec(targetAngle))
+    else
+        debug("MOT: busy!!")
 
 CON { --- Subsystem Control --- }
 
@@ -278,11 +335,11 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits)
         DRU_HALL_TICKS:
             motorStopHallTicks := nRotationCount
         DRU_DEGREES:
-            ' ticks = degrees / 4
-            motorStopHallTicks := nRotationCount / 4
+            ' ticks = degrees / 4 (6.5")
+            motorStopHallTicks := nRotationCount / degrPerTic
         DRU_ROTATIONS:
-            ' ticks = rotations * 90
-            motorStopHallTicks := nRotationCount * 90
+            ' ticks = rotations * 90 (6.5")
+            motorStopHallTicks := nRotationCount * hallTicsPerRotation
         other:
             debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
             abort
@@ -294,6 +351,10 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
     if nDistance < 1
         debug("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
         ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+        abort
+
+    if user.MOTOR_DIA_IN_INCH == 0.0
+        debug("! ERROR: stopAfterDistance() not supported when wheel dia. is unknown!")
         abort
 
     ' FIXME: UNDONE convert this to use runtime values based on user specified wheel size ( we assume wheel is 90 tics! )
@@ -370,30 +431,33 @@ CON { --- Subsystem Status --- }
 
 PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
-    fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
-    case eDistanceUnits
-        DDU_MM:
-            nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick)
-        DDU_CM:
-            nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick /. 10.0)
-        DDU_IN:
-            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
-        DDU_FT:
-            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
-        DDU_M:
-            fValue := float(posTrkHallTicks) *. fMMpTick
-            nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
-        DDU_MI:
-            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
-        DDU_KM:
-            fValue := float(posTrkHallTicks) *. fMMpTick
-            nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
-        other:
-            debug("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
-            abort
+    nDistanceInUnits := 0
+    ' if we know the wheel diameter, then calculate value and return it
+    if user.MOTOR_DIA_IN_INCH <> 0.0
+        fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
+        case eDistanceUnits
+            DDU_MM:
+                nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick)
+            DDU_CM:
+                nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick /. 10.0)
+            DDU_IN:
+                fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+                nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
+            DDU_FT:
+                fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+                nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
+            DDU_M:
+                fValue := float(posTrkHallTicks) *. fMMpTick
+                nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
+            DDU_MI:
+                fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+                nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
+            DDU_KM:
+                fValue := float(posTrkHallTicks) *. fMMpTick
+                nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
+            other:
+                debug("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
+                abort
 
 PUB getRotationCount(eRotationUnits) : rotationCount
 '' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
@@ -402,11 +466,11 @@ PUB getRotationCount(eRotationUnits) : rotationCount
         DRU_HALL_TICKS:
             rotationCount := posTrkHallTicks
         DRU_DEGREES:
-            ' degrees = ticks * 4
-            rotationCount := posTrkHallTicks * 4
+            ' degrees = ticks * 4 (6.5" wheel)
+            rotationCount := posTrkHallTicks * degrPerTic
         DRU_ROTATIONS:
-            ' rotations = ticks / 90
-            rotationCount := posTrkHallTicks / 90
+            ' rotations = ticks / 90 (6.5" wheel)
+            rotationCount := posTrkHallTicks / hallTicsPerRotation
         other:
             debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
             abort
@@ -493,6 +557,17 @@ PUB validVoltageForChoice(userVoltage) : legalVoltage
             legalVoltage := INVALID_VOLTAGE
     debug("*VAL* ", sdec_long(legalVoltage))
 
+PUB validMotorForChoice(userMotor) : legalMotor
+'' VALIDATE users' motor choice returns legalMotor or INVALID_MOTOR
+    legalMotor := userMotor
+    CASE userMotor
+        MOTR_6_5_INCH:
+        MOTR_DOCO_4KRPM:
+        OTHER:
+            legalMotor := INVALID_MOTOR
+    debug("*VAL* ", sdec_long(legalMotor))
+
+
 PRI map(inValue, inMin, inMax, outMin, outMax) : nResult | slope
 ' Maps inValue in range inMin..inMax to new value in range outMin..outMax
     nResult := 0
@@ -545,28 +620,52 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
     minRevIncreAtPwr := VALUE_NOT_SET
     maxRevIncreAtPwr := VALUE_NOT_SET
 
-    CASE selectedPower
-        PWR_6V:
-        PWR_7p4V:
-        PWR_11p1V:
-            maxFwdIncreAtPwr := 90_000_000      ' anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
-            maxRevIncreAtPwr := -90_000_000     ' anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
-        PWR_12V:
-            maxFwdIncreAtPwr := 97_000_000      ' anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
-            maxRevIncreAtPwr := -97_000_000     ' anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
-        PWR_14p8V:
-            maxFwdIncreAtPwr := 120_000_000     ' anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
-            maxRevIncreAtPwr := -120_000_000    ' anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
-        PWR_18p5V:
-            maxFwdIncreAtPwr := 147_000_000     ' anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
-            maxRevIncreAtPwr := -147_000_000    ' anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
-        PWR_22p2V:
-            maxFwdIncreAtPwr := 172_000_000     ' anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
-            maxRevIncreAtPwr := -172_000_000    ' anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
-        PWR_24V:
-       other:
-            debug("*???* Unknown: ", sdec_long(selectedPower))
-            abort   ' SHOULD NEVER get here!
+    if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
+        CASE selectedPower
+            PWR_6V:
+            PWR_7p4V:
+            PWR_11p1V:
+                maxFwdIncreAtPwr := 90_000_000      ' anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
+                maxRevIncreAtPwr := -90_000_000     ' anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
+            PWR_12V:
+                maxFwdIncreAtPwr := 125_000_000      ' anything above yields RPM 440.0, cts/Sec 176 (until fault at 186.6 280)
+                maxRevIncreAtPwr := -100_000_000     ' anything above yields RPM 440.0, cts/Sec 176 (until fault at 186.6 280)
+            PWR_14p8V:
+                maxFwdIncreAtPwr := 120_000_000     ' anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
+                maxRevIncreAtPwr := -120_000_000    ' anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
+            PWR_18p5V:
+                maxFwdIncreAtPwr := 147_000_000     ' anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
+                maxRevIncreAtPwr := -147_000_000    ' anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
+            PWR_22p2V:
+                maxFwdIncreAtPwr := 172_000_000     ' anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
+                maxRevIncreAtPwr := -172_000_000    ' anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
+            PWR_24V:
+            other:
+                debug("*???* Unknown: ", sdec_long(selectedPower))
+                abort   ' SHOULD NEVER get here!
+    else
+        CASE selectedPower
+            PWR_6V:
+            PWR_7p4V:
+            PWR_11p1V:
+                maxFwdIncreAtPwr := 90_000_000      ' anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
+                maxRevIncreAtPwr := -90_000_000     ' anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
+            PWR_12V:
+                maxFwdIncreAtPwr := 97_000_000      ' anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
+                maxRevIncreAtPwr := -97_000_000     ' anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
+            PWR_14p8V:
+                maxFwdIncreAtPwr := 120_000_000     ' anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
+                maxRevIncreAtPwr := -120_000_000    ' anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
+            PWR_18p5V:
+                maxFwdIncreAtPwr := 147_000_000     ' anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
+                maxRevIncreAtPwr := -147_000_000    ' anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
+            PWR_22p2V:
+                maxFwdIncreAtPwr := 172_000_000     ' anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
+                maxRevIncreAtPwr := -172_000_000    ' anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
+            PWR_24V:
+            other:
+                debug("*???* Unknown: ", sdec_long(selectedPower))
+                abort   ' SHOULD NEVER get here!
 
     if maxFwdIncreAtPwr <> VALUE_NOT_SET
         userSelectedVolts := selectedPower
@@ -578,6 +677,72 @@ PRI setTargetAccel(nTgtIncr)
     targetIncre := nTgtIncr
     debug("-MOT- ", sdec_long(targetIncre))
     tvTargetIncreInM := nTgtIncr / 10_000
+
+DAT { --- MOTOR TYPE TABLES --- }
+
+' These table represent contants for use in BLDC pasm driver
+'  tables specific to a given motor are copied into pasm driver image
+'  before the driver is started
+'
+' old bit shift up by 3 then new bits
+'   old is outer index
+'   new is inner index
+deltas65    BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3 | new)
+            BYTE    0, 0, 0,-1, 0, 1, 0, 0
+            BYTE    0, 0, 0, 1, 0, 0,-1, 0
+            BYTE    0, 1,-1, 0, 0, 0, 0, 0
+            BYTE    0, 0, 0, 0, 0,-1, 1, 0
+            BYTE    0,-1, 0, 0, 1, 0, 0, 0
+            BYTE    0, 0, 1, 0,-1, 0, 0, 0
+            BYTE    0, 0, 0, 0, 0, 0, 0, 0
+
+deltas4k    BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' old=0 - Hall-effect-sensor position deltas from (old<<3 | new)
+            BYTE    0, 0, 0,-1, 0, 1, 0, 0  ' old=1
+            BYTE    0, 0, 0, 1, 0, 0,-1, 0  ' old=2
+            BYTE    0, 1,-1, 0, 0, 0, 0, 0  ' old=3
+            BYTE    0, 0, 0, 0, 0,-1, 1, 0  ' old=4
+            BYTE    0,-1, 0, 0, 1, 0, 0, 0  ' old=5
+            BYTE    0, 0, 1, 0,-1, 0, 0, 0  ' old=6
+            BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' old=7
+
+'   amount of rotation within hall cycle - 6.5" wheel
+hltb_angles LONG    0           '-%000- can't happen forward-direction table
+            LONG    0 frac 6    '%001
+            LONG    4 frac 6    '%010
+            LONG    5 frac 6    '%011
+            LONG    2 frac 6    '%100
+            LONG    1 frac 6    '%101
+            LONG    3 frac 6    '%110
+            LONG    0           '-%111- can't happen
+
+            LONG    0           '-%000- can't happen - reverse-direction table
+            LONG    5 frac 6    '%001
+            LONG    3 frac 6    '%010
+            LONG    4 frac 6    '%011
+            LONG    1 frac 6    '%100
+            LONG    0 frac 6    '%101
+            LONG    2 frac 6    '%110
+            LONG    0           '-%111- can't happen
+
+'   amount of rotation within hall cycle - docoEng.com 4kRPM, 24V
+hltb_angl4k LONG    0           '-%000- can't happen - forward-direction table
+            LONG    0 frac 6    '%001
+            LONG    4 frac 6    '%010
+            LONG    5 frac 6    '%011
+            LONG    1 frac 6    '%100
+            LONG    3 frac 6    '%101
+            LONG    2 frac 6    '%110
+            LONG    0           '-%111- can't happen
+
+            LONG    0           '-%000- can't happen - reverse-direction table
+            LONG    5 frac 6    '%001
+            LONG    1 frac 6    '%010
+            LONG    4 frac 6    '%011
+            LONG    3 frac 6    '%100
+            LONG    0 frac 6    '%101
+            LONG    2 frac 6    '%110
+            LONG    0           '-%111- can't happen
+
 
 CON { --- HDMI Debug Support --- }
 
@@ -679,7 +844,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 4] := @name34
     LONG[@pNamesAr][nValsGrpOffset + 5] := @name35
     LONG[@pNamesAr][nValsGrpOffset + 6] := @name36
-    LONG[@pValsAr][nValsGrpOffset + 0] := @tvMaxRpmIn10ths
+    LONG[@pValsAr][nValsGrpOffset + 0] := @maxRpm
     LONG[@pValsAr][nValsGrpOffset + 1] := @tvMaxCntsInSec
     LONG[@pValsAr][nValsGrpOffset + 2] := @tvMaxFps_x10
     LONG[@pValsAr][nValsGrpOffset + 3] := @tvMaxMPH_x10
@@ -747,7 +912,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         'pintoggle(TEST_PIN_SENSE_LOOP)
         'pintoggle(TEST_PIN_SENSE_LOOP)
 
-        newCntsInSec := distanceIn90ths(pos)            ' Read the next sensor value
+        newCntsInSec := absDistanceInTics(pos)            ' Read the next sensor value
         windowSum -= LONG[@countsWindow][winIndex]          ' Remove the oldest entry from the sum
         long [@countsWindow][winIndex] := newCntsInSec      ' place the newest reading into the window
         windowSum += newCntsInSec                           ' Add the newest reading to the sum
@@ -755,30 +920,33 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         if winEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
             winEntryCt++
 
-        cntsInSec := (windowSum / winEntryCt) * 8                 ' moving average, scaled
-        tvRpm_x10 := (cntsInSec * 60) / 9
+        cntsInSec := (windowSum / winEntryCt) * 8           ' moving average, scaled
+        tvRpm_x10 := ((cntsInSec * 60) * 10) / hallTicsPerRotation
         rpm := tvRpm_x10 / 10
         rpmTenths := tvRpm_x10 +// 10
 
         tvMaxRpmIn10ths := MAX(tvRpm_x10, tvMaxRpmIn10ths)
+        maxRpm := tvMaxRpmIn10ths / 10
         tvMaxCntsInSec := MAX(cntsInSec, tvMaxCntsInSec)
 
         posThis8th := windowSum / winEntryCt
         posTrkHallTicks += posThis8th
-        ' pos is in hall-steps of 4Degr each.
-        ' circumference of wheel is in mm x10
-        '   degrees of rotation is cntsInSec * 4
-        '   number of rotations is degrees / 360
-        '   dist in mm is (circInMM_x10 * rotations) / 10
-        mmPerSec_x10 := (((cntsInSec * 4) * circInMM_x10) / 360)
-        ftPerSec_x10 := distConv.mmps2fps(mmPerSec_x10 * 10)
-        kmh_x10 := distConv.mmps2kmh(mmPerSec_x10 * 10)
-        mph_x10 := distConv.fps2mph(ftPerSec_x10)
 
-        tvMaxMmPerSec_x10 := MAX(mmPerSec_x10, tvMaxMmPerSec_x10)
-        tvMaxFps_x10 := MAX(ftPerSec_x10, tvMaxFps_x10)
-        tvMaxMPH_x10 := MAX(mph_x10, tvMaxMPH_x10)
-        tvMaxkPH_x10 := MAX(kmh_x10, tvMaxkPH_x10)
+        if user.MOTOR_TYPE == MOTR_6_5_INCH
+            ' pos is in hall-steps of 4Degr each.
+            ' circumference of wheel is in mm x10
+            '   degrees of rotation is cntsInSec * 4
+            '   number of rotations is degrees / 360
+            '   dist in mm is (circInMM_x10 * rotations) / 10
+            mmPerSec_x10 := (((cntsInSec * 4) * circInMM_x10) / 360)
+            ftPerSec_x10 := distConv.mmps2fps(mmPerSec_x10 * 10)
+            kmh_x10 := distConv.mmps2kmh(mmPerSec_x10 * 10)
+            mph_x10 := distConv.fps2mph(ftPerSec_x10)
+
+            tvMaxMmPerSec_x10 := MAX(mmPerSec_x10, tvMaxMmPerSec_x10)
+            tvMaxFps_x10 := MAX(ftPerSec_x10, tvMaxFps_x10)
+            tvMaxMPH_x10 := MAX(mph_x10, tvMaxMPH_x10)
+            tvMaxkPH_x10 := MAX(kmh_x10, tvMaxkPH_x10)
 
         ' if user set time/distance to stop then stop if we are past the time or distance
         if motorStopMSecs > 0
@@ -810,29 +978,30 @@ PRI MAX(a,b) : nMax
 ' return max of a or b
     nMax := (a > b) ? a : b
 
-PRI distanceIn90ths(newPos) : n90ths
+PRI absDistanceInTics(newPos) : nHallTics
     if newPos == priorPos
-        n90ths := 0
+        nHallTics := 0
     elseif newPos < 0
         ' handle pos negative case
         if priorPos < 0
             '  -7 -> -9 = abs(-9) - abs(-7) = abs(2) = 2
             '  -11 -> -9 = abs(-9) - abs(-11) = abs(-2) = 2
-            n90ths := abs(abs(newPos) - abs(priorPos))
+            nHallTics := abs(abs(newPos) - abs(priorPos))
         else
             '  9 -> -9 = 18 = abs(9) + abs(-9) = 18
-            n90ths := abs(newPos) + abs(priorPos)
+            nHallTics := abs(newPos) + abs(priorPos)
     else
         ' handle pos positive case
         if priorPos < 0
             ' -9 -> 6 = 6 + abs(-9) = 15
             ' -3 -> 6 = 6 + abs(-3) = 9
-            n90ths := newPos + abs(priorPos)
+            nHallTics := newPos + abs(priorPos)
         else
             ' 9 -> 6 = 6 - 9 = abs(-3) = 3
             ' 9 -> 12 = 12 - 9 = abs(3) = 3
-            n90ths := abs(newPos - priorPos)
+            nHallTics := abs(newPos - priorPos)
     priorPos := newPos
+
 
 CON { --- The Motor driver --- }
 
@@ -869,12 +1038,21 @@ VAR { * Data Structure for PASM Driver * }
     LONG    maxDrvTics                          ' accumulators for study of driver
     LONG    minDrvTics
 
+    ' -------------------------------------
+    ' VALUES passed to driver at startup
+    '
+    ' / ----------------------------
     LONG    pinbase                             ' 1 long                must set initially
     LONG    params_ptr                          ' 1 long                must set initially
-    ' / ----------------------------
+    LONG    targetAngle                         ' 1 long                TEST used during testing
     LONG    targetIncre                         ' 1 long                must set to cause motion
-    LONG    emerStop                            ' 1 long                T/F where T means float all pins
+    ' \ ----------------------------
+
+    ' -------------------------------------
+    ' VALUES copied from driver each cycle
     ' 14 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 15th, "fault" also from driver but only when happens
+    '
+    ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
     LONG    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
     LONG    hall, pos                           ' 2 sequential longs    returns data continually
@@ -894,6 +1072,7 @@ VAR { * Data for Motor Position Tracking * }
     '  ----- HDMI monitored! ----
     LONG    tvRpm_x10
     LONG    rpm
+    LONG    maxRpm
     LONG    cntsInSec
     LONG    deltaTicks
     LONG    tvMaxRpmIn10ths
@@ -918,6 +1097,9 @@ VAR { * Data for Motor Position Tracking * }
 
 VAR  {  Motor Parameters  }
 
+' -----------------------------------
+' VALUES copied to driver each cycle
+' -----------------------------------
 ' TABLE of  13 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
@@ -940,27 +1122,27 @@ DAT  {  Motor DRIVER  }
 '
                 org     0
 
-driver          rdlong  x, ptra++                   ' get base pin
-                rdlong  params_ptr_, ptra++         ' get parameters pointer
-                add     ptra, #1*4                  ' point to return data, angle is at long index [-1]
+driver          rdlong  x, ptra++                       ' get base pin
+                rdlong  params_ptr_, ptra++             ' get parameters pointer
+                add     ptra, #2*4                      ' point to return data, targetIncre is at long index [-1]
+                                                        '                       targetAngle is at long index [-2]
+                mov     drv_state_, #DCS_STOPPED        ' motor is currently stopped
 
-                mov     drv_state_, #DCS_STOPPED    ' motor is currently stopped
+                or      all_pins, x                     ' finish the all-pins variable
+                add     drive_pins, x                   ' finish the drive-pins variable
 
-                or      all_pins, x                 ' finish the all-pins variable
-                add     drive_pins, x               ' finish the drive-pins variable
-
-                'drvl    drvrLoopPnFld               ' preset test pins to low
+                'drvl    drvrLoopPnFld                  ' preset test pins to low
                 'drvl    drvrTmrPnFld
                 'drvl    drvrTmr2PnFld
 
-                mov     y, #0                       ' make single-pin variables
+                mov     y, #0                           ' make single-pin variables
 .pin            altd    y, #pin_adc_u_i
                 mov     0-0, x
                 add     x, #1
                 incmod  y, #15      wc
     if_nc       jmp     #.pin
 
-                dirl    all_pins                    ' disable PWM and ADC pins for configuration
+                dirl    all_pins                        ' disable PWM and ADC pins for configuration
 
                 wrpin   adc_modes+0, pin_adc_u_i        ' set up ADC pins
                 wrpin   adc_modes+0, pin_adc_v_i
@@ -1002,6 +1184,7 @@ driver          rdlong  x, ptra++                   ' get base pin
                 mov     drv_incr, #0                    ' reset incr to stopped
                 mov     prior_incr, #0                  ' just in case
                 mov     fwdrev, #0                      ' just in case
+                mov     angle, #0                       ' just in case
 
                 ' do initial read of parms so control loop can use them
                 setq    #DRVR_PARAMS_LONGS_COUNT-1                       ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
@@ -1024,23 +1207,23 @@ driver          rdlong  x, ptra++                   ' get base pin
     '       time to adjust angle...
     ' -------------------------------------------------------------------------
 .drvMotor
-                getct   ctrlSrtTix                      ' remember when we started this loop
-                'outnot  drvrTmrPnFld                    ' toggle TEST marker pin
-                'outnot  drvrTmrPnFld                    ' toggle TEST marker pin
-                'outnot  drvrTmr2PnFld                   ' rising edge of duration meas.
-                or      e_stop_, e_stop_        wz      ' Q: Emergency Stop Requested?
-    if_z        jmp     #.noEStop                       ' No: continue on..
+                getct   ctrlSrtTix                          ' remember when we started this loop
+                'outnot  drvrTmrPnFld                       ' toggle TEST marker pin
+                'outnot  drvrTmrPnFld                       ' toggle TEST marker pin
+                'outnot  drvrTmr2PnFld                      ' rising edge of duration meas.
+                or      e_stop_, e_stop_            wz      ' Q: Emergency Stop Requested?
+    if_z        jmp     #.noEStop                           ' No: continue on..
 .eStop
-                dirl    drive_pins                      ' YES, at Emergency STOP: float all control pins (make them inputs)
-                mov     drv_state_, #DCS_ESTOP          ' report that we are stopped
+                dirl    drive_pins                          ' YES, at Emergency STOP: float all control pins (make them inputs)
+                mov     drv_state_, #DCS_ESTOP              ' report that we are stopped
                 jmp     #.endRqst
 
 .noEStop
-                cmp     drv_state_, #DCS_ESTOP  wz      ' Q: were we emergency stopped?
-    if_z        mov     drv_state_, #DCS_STOPPED        ' YES: reset to simply stopped so we start out pins correctly
-                rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
-                or      tgt_incr, tgt_incr      wz      ' Q: being asked to stop?
-    if_z        jmp     #.newCmd                        ' YES, allow 'stop' to proceed
+                cmp     drv_state_, #DCS_ESTOP      wz      ' Q: were we emergency stopped?
+    if_z        mov     drv_state_, #DCS_STOPPED            ' YES: reset to simply stopped so we start out pins correctly
+                rdlong  tgt_incr, ptra[-1]                  ' get rate of increment ( +/- drive power, or 0 stop)
+                or      tgt_incr, tgt_incr          wz      ' Q: being asked to stop?
+    if_z        jmp     #.newCmd                            ' YES, allow 'stop' to proceed
 
                 ' Accept a new drive command only when not in middle of change
                 cmp     drv_state_, #DCS_STOPPED    wz      ' Q: STOPPED not doing anything?
@@ -1052,6 +1235,14 @@ driver          rdlong  x, ptra++                   ' get base pin
                 ' let's see if user wants to change speed
                 ' have new drive command?
 .newCmd
+'  NEW TEST SUPPORT CODE
+                rdlong  tgt_incr, ptra[-2]              ' get desired targetAngle for test
+                cmp     tgt_incr, minus1            wz  ' Q: do we have a request?
+    if_nz       mov     angle, tgt_incr                 ' post this value to driver
+    if_nz       wrlong  minus1, ptra[-2]                ' git it, now clear it ready for user to send another
+    if_nz       jmp     #.endRqst                       ' and position motor there
+                ' no? then just fall thru
+'  END OF NEW TEST SUPPORT CODE
                 rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
                 cmp     prior_incr, tgt_incr        wz  ' Q: do we have a new request?
     if_z        jmp     #.currRqst      ' nope, just continue what we are doing
@@ -1478,6 +1669,7 @@ bias        LONG    FRAME / 2               ' PWM center-frame bias
 third       LONG    1 FRAC 3                ' 120 degrees
 numerator   LONG    3300 << 11              ' numerator for ADC calculations
 stop_requst LONG    0                       ' 32-bits of zero
+minus1      LONG    $FFFFFFFF               ' 32-bits of one
 ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then fast ramp ( ~1/5 of 0-max )
 
 'drvrLoopPnFld   LONG    TEST_PIN_DRIVER_LOOP addpins 0  ' convert to pinfield
@@ -1488,32 +1680,59 @@ adc_modes   LONG    p_adc_gio | p_adc       ' adc modes, by state
             LONG    p_adc_vio | p_adc
             LONG    p_adc_1x  | p_adc
 
-deltas      BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3 | new)
-            BYTE    0, 0, 0,-1, 0, 1, 0, 0
-            BYTE    0, 0, 0, 1, 0, 0,-1, 0
-            BYTE    0, 1,-1, 0, 0, 0, 0, 0
-            BYTE    0, 0, 0, 0, 0,-1, 1, 0
-            BYTE    0,-1, 0, 0, 1, 0, 0, 0
-            BYTE    0, 0, 1, 0,-1, 0, 0, 0
-            BYTE    0, 0, 0, 0, 0, 0, 0, 0
+' turn motor to view hall sequence ...  learn in known direction
+'   efficient: low current draw at given speed
 
-hall_angles LONG    0           ' forward-direction table
+' max frequency is this...
+' max ramp rate is this...
+
+' old bit shift up by 3 then new bits
+'   old is outer index
+'   new is inner index
+deltas      BYTE    0,  0,  0,  0,  0,  0,  0,  0  ' Hall-effect-sensor position deltas from (old<<3 | new)
+            BYTE    0,  0,  0, -1,  0,  1,  0,  0
+            BYTE    0,  0,  0,  1,  0,  0, -1,  0
+            BYTE    0,  1, -1,  0,  0,  0,  0,  0
+            BYTE    0,  0,  0,  0,  0, -1,  1,  0
+            BYTE    0, -1,  0,  0,  1,  0,  0,  0
+            BYTE    0,  0,  1,  0, -1,  0,  0,  0
+            BYTE    0,  0,  0,  0,  0,  0,  0,  0
+
+' 32bit angles
+'  6.5" wheel
+'    1 wheel revolution is 360 degrees
+'   90 tics per 360 degrees
+'    1 tic is 4 degrees
+'    6 tics per tic-cycle
+'   15 tic-cycles per 360 degrees
+'    1 tic-cycle is 24 degrees
+'
+'  docoEng.com 4k RPM 24v motor
+'    1 shaft revolution is 360 degrees
+'    1 tic is 15 degrees
+'   24 tics per 360 degrees
+'    6 tics per tic-cycle
+'    4 tic-cycles per 360 degrees
+'    1 tic-cycle is 90 degrees
+'
+'   amount of rotation within hall cycle - 6.5" wheel
+hall_angles LONG    0           '-%000- can't happen forward-direction table
             LONG    0 frac 6    '%001
             LONG    4 frac 6    '%010
             LONG    5 frac 6    '%011
             LONG    2 frac 6    '%100
             LONG    1 frac 6    '%101
             LONG    3 frac 6    '%110
-            LONG    0
-            LONG    0           ' reverse-direction table
+            LONG    0           '-%111- can't happen
+
+            LONG    0           '-%000- can't happen - reverse-direction table
             LONG    5 frac 6    '%001
             LONG    3 frac 6    '%010
             LONG    4 frac 6    '%011
             LONG    1 frac 6    '%100
             LONG    0 frac 6    '%101
             LONG    2 frac 6    '%110
-            LONG    0
-
+            LONG    0           '-%111- can't happen
 
 x               res 1           ' miscellaneous
 y               res 1
@@ -1561,8 +1780,8 @@ scl_levels      res 4
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
-params_ptr_ res 1               ' params_ptr must be followed by the 13  (DRVR_PARAMS_LONGS_COUNT) parameters
-offset_fwd_ res 1
+params_ptr_ res 1               ' params_ptr must be followed by:
+offset_fwd_ res 1               '  13 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
 duty_min_   res 1
 duty_max_   res 1

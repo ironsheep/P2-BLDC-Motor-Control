@@ -1,0 +1,216 @@
+'' =================================================================================================
+''
+''   File....... isp_3wire_joystick.spin2
+''   Purpose.... Simple interface to 4 button membrane pad from AdaFruit
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Jun 2022
+''   Updated.... 22 Jun 2022
+''
+'' =================================================================================================
+'
+' REF: https://www.adafruit.com/product/1332?gclid=CjwKCAjw-8qVBhANEiwAfjXLrgOfNmIy0Tp_7TiHA-3YJoKO367xb6WtFIXK-7LjjbdGB2ZaoTS9NRoC11cQAvD_BwE
+
+CON { PUBLIC Interface Constants }
+
+  #true,  ON, OFF
+  #false, NO, YES
+
+CON { PRIVATE Constants }
+
+  STACK_SIZE_LONGS = 48
+
+  MIN_ANALOG_VALUE = 0
+  MAX_ANALOG_VALUE = 3_300
+
+OBJ
+
+    analog[2]  :   "jm_ez_analog"      ' JM's analog input object
+
+PUB null()
+    '' This is not a top-level object
+
+VAR
+
+    LONG    pinSW
+    LONG    pinAnaJoyX
+    LONG    pinAnaJoyY
+
+    LONG    swValue
+
+    LONG    joyCog
+    LONG    taskStack[STACK_SIZE_LONGS]
+
+    LONG    xMinRange
+    LONG    xMaxRange
+    LONG    yMinRange
+    LONG    yMaxRange
+
+    LONG    xMin
+    LONG    xMax
+    LONG    yMin
+    LONG    yMax
+
+
+pub start(pnSW, pnAnaJoyX, pnAnaJoyY) : cog | idx
+    '' Configure IO fro application
+    pinSW := pnSW
+    pinAnaJoyX := pnAnaJoyX
+    pinAnaJoyY := pnAnaJoyY
+
+    cog := startJoyStickCog()                                ' start s.bus rx
+
+pub stop()
+'' Stop cogs, release pins
+    if joyCog     ' stop motor reads
+        cogstop(joyCog - 1)
+        joyCog := 0
+
+PUB isSwitchPressed() : bPressedState
+'' Return T/F for switch
+''  where T means it was pressed
+    bPressedState := swValue
+    swValue := FALSE   ' clear pressed state
+
+PUB joyPositionX() : xPosn
+'' Return the current analog values for the X axis
+''  NOTE: accumulates min max values too
+''  (see clearMinMax() to reset min/max readings)
+    xPosn := analog[0].read()
+    ' accumulate range info
+    xMin := MIN(xMin, xPosn)
+    xMax := MAX(xMax, xPosn)
+    ' keep track of global values as well
+    '  this is the widest range we've ever seen
+    xMinRange := MIN(xMin, xMinRange)
+    xMaxRange := MAX(xMax, xMaxRange)
+
+PUB joyPositionY() : yPosn
+'' Return the current analog values for the Y axis
+''  NOTE: accumulates min max values too
+''  (see clearMinMax() to reset min/max readings)
+    yPosn := analog[1].read()
+    ' accumulate range info
+    yMin := MIN(yMin, yPosn)
+    yMax := MAX(yMax, yPosn)
+    ' keep track of global values as well
+    '  this is the widest range we've ever seen
+    yMinRange := MIN(yMin, yMinRange)
+    yMaxRange := MAX(yMax, yMaxRange)
+
+PUB joyPosition() : xPosn, yPosn
+'' Return the current analog values for X,Y axis
+''  NOTE: accumulates min max values too
+''  (see clearMinMax() to reset min/max readings)
+    xPosn := joyPositionY()
+    yPosn := joyPositionX()
+
+PUB joyPositionMinMax() : xPosnMin, xPosnMax, yPosnMin, yPosnMax
+'' Return the min and max joystick readings (since last clear)
+    xPosnMin := xMin
+    xPosnMax := xMax
+    yPosnMin := yMin
+    yPosnMax := yMax
+
+PUB joyRangeMinMax() : xRangeMin, xRangeMax, yRangeMin, yRangeMax
+'' Return the min and max joystick readings ever seen by this driver
+    xRangeMin := xMinRange
+    xRangeMax := xMaxRange
+    yRangeMin := yMinRange
+    yRangeMax := yMaxRange
+
+PUB clearMinMax()
+'' Reset our min/max tracking values
+    xMin := yMin := $7fffffff   ' max positive value
+    xMax := yMax := $ffffffff   ' max negative value
+
+PUB joystickTest() | xVal ,yVal, minX, maxX, minY, maxY
+'' Show debug output so we can figure live min/max values and how joystick works
+    debug("JOY: TESTING: press button, then move and hold stick")
+    debug("     TESTING: readings summarized at end of each pass")
+
+    repeat 1000
+        if isSwitchPressed()
+            debug("* have joystick SW press")
+
+            clearMinMax()
+            repeat 15
+                xVal ,yVal := joyPosition()
+                debug("JOY: x,y=(", udec_(xVal), udec_(yVal), ")")
+                waitms(20)
+
+            minX, maxX, minY, maxY := joyPositionMinMax()
+            debug(" --- ")
+            debug("JOY: X min,max(", udec_(minX), udec_(maxX), "), Y min,max(", udec_(minY), udec_(maxY), ")")
+            debug("   ")
+        waitms(125) ' 1/8 second
+
+PRI startJoyStickCog() : ok
+' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
+    ok := joyCog := cogspin(NEWCOG, taskJoyStickSense(), @taskStack) + 1
+    if joyCog == 0    ' did fail?
+        debug("!! ERROR filed to start JoyStick Sense task")
+
+PRI MIN(a, b) : nMinVal
+' return the whichever is lesser of a or b
+    nMinVal := (a < b) ? a : b
+
+PRI MAX(a, b) : nMaxVal
+' return the whichever is greater of a or b
+    nMaxVal := (a > b) ? a : b
+
+PRI taskJoyStickSense() | currValue, priorValue
+    debug("TK joystick reader running...")
+
+    ' start our two analog channels
+    analog[0].start(pinAnaJoyX, MIN_ANALOG_VALUE, MAX_ANALOG_VALUE)
+    analog[1].start(pinAnaJoyY, MIN_ANALOG_VALUE, MAX_ANALOG_VALUE)
+
+    ' add pullup on our switch pin
+    pinstart(pinSW,P_HIGH_15K,0,0)
+    pinhigh(pinSW)
+
+    ' init values to not pressed
+    swValue := false
+    priorValue := 1
+
+    ' loop watching our switch for closures
+    repeat
+            currValue := pinread(pinSW)
+            if priorValue <> currValue
+                if currValue == 0
+                    swValue := true
+                    debug("tk: Switch pressed!")
+            priorValue := currValue
+            waitms(25)  ' 25ms for debounce
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

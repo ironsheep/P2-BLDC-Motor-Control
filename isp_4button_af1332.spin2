@@ -1,0 +1,152 @@
+'' =================================================================================================
+''
+''   File....... isp_4button_af1332.spin2
+''   Purpose.... Simple interface to 4 button membrane pad from AdaFruit
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Jun 2022
+''   Updated.... 22 Jun 2022
+''
+'' =================================================================================================
+'
+' REF: https://www.adafruit.com/product/1332?gclid=CjwKCAjw-8qVBhANEiwAfjXLrgOfNmIy0Tp_7TiHA-3YJoKO367xb6WtFIXK-7LjjbdGB2ZaoTS9NRoC11cQAvD_BwE
+
+CON { PUBLIC Interface Constants }
+
+  #TRUE,  ON, OFF
+  #FALSE, NO, YES
+
+CON { PRIVATE Constants }
+
+  STACK_SIZE_LONGS = 48
+  BUTTON_COUNT = 4
+
+
+PUB null()
+    '' This is not a top-level object
+
+VAR
+
+    LONG    buttonPins[BUTTON_COUNT]
+    LONG    btnCog
+    LONG    taskStack[STACK_SIZE_LONGS]
+
+    BYTE    buttonState[BUTTON_COUNT]
+    BYTE    buttonActual[BUTTON_COUNT]
+
+pub start(pnBtn1, pnBtn2, pnBtn3, pnBtn4) : cog | idx
+    '' Configure IO fro application
+    buttonPins[0] := pnBtn1
+    buttonPins[1] := pnBtn2
+    buttonPins[2] := pnBtn3
+    buttonPins[3] := pnBtn4
+    buttonActual[3] := 2
+    buttonActual[2] := 3
+    buttonActual[1] := 0
+    buttonActual[0] := 1
+
+    repeat idx from 0 to BUTTON_COUNT - 1
+        buttonState[idx] := FALSE
+
+    cog := startButtonCog()                                ' start s.bus rx
+
+pub stop()
+'' Stop cogs, release pins
+    if btnCog     ' stop motor reads
+        cogstop(btnCog - 1)
+        btnCog := 0
+
+PUB buttonPressed() : pressedNbr | idx
+'' Return number of pressed button (1 thru 4)
+''   NOTE: only first of list pressed is returned (0 if none are pressed)
+''   subsequent call will return another if it has also been pressed
+    pressedNbr := 0
+    repeat idx from 0 to BUTTON_COUNT - 1
+        if isButtonPressed(idx)
+            pressedNbr := idx + 1   ' return 1-4 for 0-3
+            quit
+
+    'debug("pressedNbr() ", udec(pressedNbr))
+
+PUB isButtonPressed(btnIndex_03) : bPressedState
+'' Return T/F for button index {btnIndex_03} - [0-3]
+''  where T means it was pressed
+    if btnIndex_03 >= 0 and btnIndex_03<= 3
+        bPressedState := buttonState[btnIndex_03]
+        buttonState[btnIndex_03] := FALSE   ' clear pressed state
+
+PUB buttonsTest() | btnNbr
+'' Show debug output so we can figure live min/max values and how joystick works
+    debug("BTN: TESTING: press of buttons")
+    debug("     TESTING: each button pressed is identified")
+
+    ' button test
+    repeat 1000
+        btnNbr := buttonPressed()
+        if btnNbr <> 0
+            debug("* have button press: ", udec(btnNbr))
+
+PRI startButtonCog() : ok
+' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
+    ok := btnCog := cogspin(NEWCOG, taskButtonSense(), @taskStack) + 1
+    if btnCog == 0    ' did fail?
+        debug("!! ERROR filed to start Button Sense task")
+
+PRI taskButtonSense() | pinValue[BUTTON_COUNT], idx, currValue, btnActual
+    debug("TK button reader running...")
+
+    ' init values to not pressed(1)
+    repeat idx from 0 to BUTTON_COUNT - 1
+        pinValue[idx] := 1          ' not pressed
+        buttonState[idx] := FALSE   ' not pressed
+
+    ' apply pullups to our pins
+    repeat idx from 0 to BUTTON_COUNT - 1
+        pinstart(buttonPins[idx],P_HIGH_15K,0,0)
+        pinhigh(buttonPins[idx])
+
+    ' loop forever reading our buttons
+    repeat
+        repeat idx from 0 to BUTTON_COUNT - 1
+            currValue := pinread(buttonPins[idx])
+            if pinValue[idx] <> currValue
+                if idx > 1
+                    btnActual := (idx == 2) ? 3 : 2
+                else
+                    btnActual := (idx == 0) ? 1 : 0
+                if currValue == 0   ' button press reads as ZERO!
+                    buttonState[btnActual] := TRUE
+                    debug("tk: ", udec(idx), " btn=", udec_(btnActual + 1), " pressed")
+            pinValue[idx] := currValue
+        waitms(25)  ' 25ms for debounce
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}
