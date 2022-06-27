@@ -5,6 +5,18 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 [![License][license-shield]](LICENSE)
 
+## WARNING Addition of 2nd supported motor in progress!
+
+We are adding support for a smaller BLDC motor from DocoEng.com.  The code is in flux at at the moment to be careful with the latest code in this repository.  I shoud have done this on a development branch but missed my chance to do so.  Please bear with me for the next week or two while I get this sorted.
+
+-Stephen
+
+By the way: here's the info on the next motor: 
+
+- [How to select the motor in your project code](MOTOR_CHOICE.md)
+- [Notes on adding a new motor](NEW_MOTOR.md)
+
+
 ## The Project
 
 Provide ready-to-use objects easily incorporated into your own code which control Brushless DC  (BLDC) motors via the [Parallax 64010 Universal Motor Driver P2 Add-on Boards](https://www.parallax.com/product/universal-motor-driver-p2-add-on-board/)  These boards can be used with either the:
@@ -25,6 +37,11 @@ This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Cont
 Latest Changes:
 
 ```
+27 June 2022
+- Forward working reasonably well
+- Reverse is not yet working...
+21 June 2022
+- Adding support for 2nd BLDC Motor - from DocoEng.com - 4000 RPM, 24v
 04 May 2022 v2.0.0
 - Add new Serial Top-Level object as interface to 2-wheel steering object. 
   -- Drive your platform from RPi or Arduino (RPi example provided)
