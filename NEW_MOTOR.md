@@ -8,9 +8,74 @@ We just had the occasion to add support for a new BLDC Motor.  This page helps u
 
 ## Motors Supported
 
+The motor currently supported by this driver (at the time of this writing):
+
+| Category | Value | Description |
+| --- | --- | --- |
+| **-- 6.5" Wheel --** || the Parallax Hoverboard-like motors
+| Hall Tics per Revolution | 90 ticks | 
+| Degrees per hall tick | 4 degrees
+| Ticks per hall-cycle | 6 ticks | FWD 110 -> 100 -> 101 -> 010 -> 100 -> 101</br>-or-</br>001 -> 101 -> 100 -> 110 -> 010 -> 011</br>etc.
+| Hall-cycles per Revolution | 15 hall-cycles |
+| Degrees per Hall-cycle | 24 degrees |
+
+
+The new Motor we're adding:
+
+| Category | Value | Description |
+| --- | --- | --- |
+| **-- docoEng.com 4k RPM 24v motor --** || the new Parallax small motor
+| Hall Tics per Revolution | 24 ticks | 
+| Degrees per hall tick | 15 degrees
+| Ticks per hall-cycle | 6 ticks | FWD: 1-5-4-6-2-3</br>REV: 1-3-2-6-4-5
+| Hall-cycles per Revolution | 4 hall-cycles |
+| Degrees per Hall-cycle | 90 degrees |
+
+## Cabling of new Motor
+
+We're adding the DocoEng.com BLDC motor - 4,000 RPM, 24V to the driver. The motor [specifications are here](Docs/DOCOMotor.pdf). These are the connections I used. I ended up cutting off the end of some female connector wires and soldering them to the motor wires to make a connector. While most of use would simply solder on connectors, I was on a road trip and this is what I had access to. ;-) 
+
+| Wire Color | Purpose | Adapter Wire Color | board Connector |
+| --- | --- | --- | --- |
+| **Hall Sensor Wires** | | *- 26 AWG wires (thinner) -*
+| Red | +5V Hall Pwr | adapt Red | Hall IN: +v
+| Yellow | Hall U | adapt Yellow | Hall IN: U
+| Green | Hall V | adapt Green  | Hall IN: V
+| Blue | Hall W | adapt Orange  | Hall IN: W
+| Black | Ground | adapt Brown  | Hall IN: +v
+| **Motor Drive Wires** | | *- 20 AWG wires -*
+| Yellow | Phase U | -no adapter- | Motor out U
+| Green | Phase V | -no adapter- | Motor out V
+| Blue | Phase W | -no adapter- | Motor out W
+
+**FIGURE 1**: *This is the cabling per the table above.*
+
+![coffee](images/new-motor-connect.jpg)
+
+**FIGURE 2**: *The new motor hooked up.*
+
+![coffee](images/motor-hooked-up.jpg)
+
+*NOTE: the electrical tape "flag" so i can tell relative position of shaft during movement.
+
 ## Process of adding a new motor
 
-- determine geometry of motor
+- Determine geometry of motor
+- Validate hall sequence
+- Add new enum value for motor
+- Add hall tables for new sequence if needed
+- Associate tables with new motor constant (creating new tables if needed)
+- Determine new fwd/rev offset constants that yield lowest current draw at fixed speed/rpm
+- Adjust motor position sense code to new motor hall geometry so rotation positon tracking are correct for the motor
+
+## Wrapup
+
+This is where I have gotten to at the moment. I'm not quite done with the adjustments to the driver to support this new motor.
+
+As I complete the adjustments, if I find anything here I missed I'll update this list.
+
+-Stephen
+(last updated 27: June 2022)
 
 ---
 
