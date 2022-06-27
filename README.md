@@ -7,7 +7,7 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 ## WARNING Addition of 2nd supported motor in progress!
 
-We are adding support for a smaller BLDC motor from DocoEng.com.  The code is in flux at at the moment to be careful with the latest code in this repository.  I shoud have done this on a development branch but missed my chance to do so.  Please bear with me for the next week or two while I get this sorted.
+We are adding support for a smaller BLDC motor from DocoEng.com.  The code is in flux at at the moment so PLEASE be careful with the latest code in this repository.  I shoud have done this on a development branch but missed my chance to do so.  Please bear with me for the next week or two while I get this sorted.
 
 -Stephen
 
