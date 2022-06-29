@@ -15,13 +15,14 @@ The motors currently supported by this driver:
 | `MOTR_6_5_INCH` | **-- 6.5" Motor-in-Wheel --** | the Parallax Hoverboard-like motors
 | Hall Tics per Revolution | 90 ticks | 
 | Degrees per hall tick | 4 degrees
-| Ticks per hall-cycle | 6 ticks | FWD 110 -> 100 -> 101 -> 010 -> 100 -> 101</br>-or-</br>001 -> 101 -> 100 -> 110 -> 010 -> 011</br>etc.
+| Ticks per hall-cycle | 6 ticks | FWD (CW): 1-3-2-6-4-5</br>REV (CCW): 1-5-4-6-2-3
 | Hall-cycles per Revolution | 15 hall-cycles |
 | Degrees per Hall-cycle | 24 degrees |
+| |
 | `MOTR_DOCO_4KRPM` | **-- docoEng.com 4k RPM 24v motor --** | the new Parallax small motor
 | Hall Tics per Revolution | 24 ticks | 
 | Degrees per hall tick | 15 degrees
-| Ticks per hall-cycle | 6 ticks | 001 -> 011 -> 010 -> 110 -> 100 -> 101</br>-or-</br>001 -> 101 -> 100 -> 110 -> 010 -> 011</br>etc.
+| Ticks per hall-cycle | 6 ticks | FWD (CW): 1-5-4-6-2-3</br>REV (CCW): 1-3-2-6-4-5
 | Hall-cycles per Revolution | 4 hall-cycles |
 | Degrees per Hall-cycle | 90 degrees |
 
