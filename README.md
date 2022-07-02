@@ -39,7 +39,8 @@ Latest Changes:
 ```
 2 July 2022
 - Small motor working well
-- Finishing first pass at characterization of limits
+- Finished first pass at characterization of limits
+- Same voltages now supported as the 6.5" in-wheel motor
 27 June 2022
 - Forward working reasonably well
 - Reverse is not yet working...
@@ -65,6 +66,7 @@ Things we know about that still need attention:
 ```
 v2.0.0
 - Drive status reporting is not working in base objects so is also reported badly over serial I/F
+- Motor can fault at higher load conditions (we need to add a fallback algortihm so motor doesn't "give up" under load
 v1.1.0
 - Issues with position tracking not working in isp_steering_2wheel.spin2
 - Drive status reporting is not working in base objects (motor and steering)

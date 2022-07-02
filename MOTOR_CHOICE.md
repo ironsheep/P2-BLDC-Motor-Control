@@ -39,6 +39,40 @@ That's all there is to selecting your motor for use with this driver.
 
 Enjoy!
 
+
+## Motor Reference: Attainable RPM at Power
+
+When characterizing the motors for this driver we search for the maximum attainable RPM at each power level and we set this as the limit for the motor
+at a given voltage. This way the driver can take a "Set power to 100%" request and "I'm driving the motor with a 12V supply" and can scale the request correctly for the power system. 
+
+This "limiting" of the reqeust at a given power level allows us to drive the motor at the highest RPM possible without the motor faulting.  (That is without the driver being unable to keep the motor at the requested RPM value.)
+
+**NOTE:** While there is a range of max rpm requests that all come up with the same achievable RPM at given power level we choose the lowest value (*the value which gives the same RPM but at the lowest possible current draw that can achieve the RPM value.*)
+
+**NOTE2:** these limits are all based on "no load" conditions. Which means under load the motor can fault. We are planning on adding a fall back so we can drive the motor as best we can while still handling a given load.
+
+| Motor Power (+V) | RPM | Max hall-tics / sec |
+| --- | --- | --- |
+| `MOTR_DOCO_4KRPM` | **-- docoEng.com 4k RPM 24v motor --**</br>&nbsp;&nbsp;(+ is Fwd/CW, - is Rev/CCW ) |
+| `PWR_6V` 6.0V | *tba*
+| `PWR_7p4V` 7.4V | *tba*
+| `PWR_11p1V` 11.1V | +1640/-1640 | 656
+| `PWR_12V` 12.0V | +1660/-1660 | 664
+| `PWR_14p8V` 14.8V | +2500/-2500 | 1000
+| `PWR_18p5V` 18.5V | +2860/-2860 | 1144
+| `PWR_22p2V` 12.2V | +2860/-2860 | 1144
+| `PWR_24V` 24.0V | *tba*
+| |
+| `MOTR_6_5_INCH` | **-- 6.5" Motor-in-Wheel --** 
+| `PWR_6V` 6.0V | *tba*
+| `PWR_7p4V` 7.4V | *tba*
+| `PWR_11p1V` 11.1V | +165.3/-165.3 | 248
+| `PWR_12V` 12.0V | +181.3/-181.3 | 272
+| `PWR_14p8V` 14.8V | +224.0/-224.0 | 336
+| `PWR_18p5V` 18.5V | +272.0/-272.0 | 408
+| `PWR_22p2V` 12.2V | +320.0/-320.0 | 480
+| `PWR_24V` 24.0V | *tba*
+
 ---
 
 > If you like my work and/or this has helped you in some way then feel free to help me out for a couple of :coffee:'s or :pizza: slices!
