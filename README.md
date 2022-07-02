@@ -37,6 +37,9 @@ This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Cont
 Latest Changes:
 
 ```
+2 July 2022
+- Small motor working well
+- Finishing first pass at characterization of limits
 27 June 2022
 - Forward working reasonably well
 - Reverse is not yet working...
