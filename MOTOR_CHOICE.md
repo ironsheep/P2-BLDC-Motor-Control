@@ -60,7 +60,7 @@ This "limiting" of the reqeust at a given power level allows us to drive the mot
 | `PWR_12V` 12.0V | +1660/-1660 | 664
 | `PWR_14p8V` 14.8V | +2500/-2500 | 1000
 | `PWR_18p5V` 18.5V | +2860/-2860 | 1144
-| `PWR_22p2V` 12.2V | +2860/-2860 | 1144
+| `PWR_22p2V` 22.2V | +2860/-2860 | 1144
 | `PWR_24V` 24.0V | *tba*
 | |
 | `MOTR_6_5_INCH` | **-- 6.5" Motor-in-Wheel --** 
@@ -70,7 +70,7 @@ This "limiting" of the reqeust at a given power level allows us to drive the mot
 | `PWR_12V` 12.0V | +181.3/-181.3 | 272
 | `PWR_14p8V` 14.8V | +224.0/-224.0 | 336
 | `PWR_18p5V` 18.5V | +272.0/-272.0 | 408
-| `PWR_22p2V` 12.2V | +320.0/-320.0 | 480
+| `PWR_22p2V` 22.2V | +320.0/-320.0 | 480
 | `PWR_24V` 24.0V | *tba*
 
 ---
