@@ -26,12 +26,13 @@ The motors currently supported by this driver:
 | Hall-cycles per Revolution | 4 hall-cycles |
 | Degrees per Hall-cycle | 90 degrees |
 
-## Select a motor
+## Select a motor, Select wheel size
 
 - Select an Enum constant value from the list of values
   - If you have the **6.5" In-wheel motor** then use the `MOTR_6_5_INCH` enum value
   - If, instead, you have the **DocoEng.com 4000 RPM, 24V smaller motor** use the `MOTR_DOCO_4KRPM` enum value
 - In your project open the file **isp\_bldc\_motor\_userconfig.spin2** and set `MOTOR_TYPE = {motorEnumValue}` to the value you selected
+- Also in this same file, the DocoEng motor does not have a wheel attached. Until you add a wheel or gear to it you will need to set `WHEEL_DIA_IN_INCH = 0.0`. This will disable all distance based status as well as distance based methods (Since they are meaningless without an attached gear or wheel diameter.
 
 The next time you compile the driver will now handle your new motor correctly.
 

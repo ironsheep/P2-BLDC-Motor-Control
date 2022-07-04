@@ -17,9 +17,11 @@ NOTE: *If you wish to add more than a couple of sensors to your platform then yo
 
 Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardware](https://www.parallax.com/product/6-5-hub-motors-with-encoders-and-mounting-blocks-bundle/) which is perfect for use with the drivers from this project.
 
+A new smaller higher RPM motor is also available from Parallax that works with this driver. [SKU 750-90020](https://www.parallax.com/product/motor-bldc-24v-4000-rpm/)
+
 This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project are all you need to get your platform moving!  
 
-**NEW!** If you are looking for **Serial control of our BLDC Motor platform** then head over to: [Serial Control Page](SERIAL-CONTROL.md)
+**Serial Control:** If you are looking for **Serial control of our BLDC Motor platform** then head over to: [Serial Control Page](SERIAL-CONTROL.md)
 
 ## Two Motors now Supported
 
