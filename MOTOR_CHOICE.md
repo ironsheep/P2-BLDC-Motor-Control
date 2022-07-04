@@ -1,6 +1,6 @@
 # P2-BLDC-Motor-Control - Configuring the driver for your motor
 
-We just had the occasion to add support for a new BLDC Motor.  This page helps us reminds us of steps needed to properly select a motor in our project code.
+We just had the occasion to add support for a new BLDC Motor.  This page reminds us of steps needed to properly select a motor in our project code.
 
 ![Project Maintenance][maintenance-shield]
 
@@ -12,7 +12,7 @@ The motors currently supported by this driver:
 
 | Category | Value | Description |
 | --- | --- | --- |
-| `MOTR_6_5_INCH` | **-- 6.5" Motor-in-Wheel --** | the Parallax Hoverboard-like motors
+| `MOTR_6_5_INCH` | **-- 6.5" Motor-in-Wheel --** | the Parallax Hoverboard-like motor
 | Hall Tics per Revolution | 90 ticks | 
 | Degrees per hall tick | 4 degrees
 | Ticks per hall-cycle | 6 ticks | FWD (CW): 1-3-2-6-4-5</br>REV (CCW): 1-5-4-6-2-3
@@ -72,6 +72,8 @@ This "limiting" of the reqeust at a given power level allows us to drive the mot
 | `PWR_18p5V` 18.5V | +272.0/-272.0 | 408
 | `PWR_22p2V` 22.2V | +320.0/-320.0 | 480
 | `PWR_24V` 24.0V | *tba*
+
+**NOTE:** This smaller motor is supposed to achieve 4,000 RPM, we are still working on getting to this speed.
 
 ---
 

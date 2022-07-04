@@ -5,17 +5,6 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 [![License][license-shield]](LICENSE)
 
-## WARNING Addition of 2nd supported motor in progress!
-
-We are adding support for a smaller BLDC motor from DocoEng.com.  The code is in flux at at the moment so PLEASE be careful with the latest code in this repository.  I shoud have done this on a development branch but missed my chance to do so.  Please bear with me for the next week or two while I get this sorted.
-
--Stephen
-
-By the way: here's the info on the next motor: 
-
-- [How to select the motor in your project code](MOTOR_CHOICE.md)
-- [Notes on adding a new motor](NEW_MOTOR.md)
-
 
 ## The Project
 
@@ -31,6 +20,20 @@ Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardwa
 This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project are all you need to get your platform moving!  
 
 **NEW!** If you are looking for **Serial control of our BLDC Motor platform** then head over to: [Serial Control Page](SERIAL-CONTROL.md)
+
+## Two Motors now Supported
+
+This driver now supports the smaller BLDC motor from DocoEng.com sold by parallax.com in addition to the 6.5" Hub Motor w/Encoder.
+
+![Supported Motors](./images/supportedMotors.png)
+
+**FIGURE:** &nbsp;&nbsp;LEFT: 6.5" hub motor [SKU 27860](https://www.parallax.com/product/6-5-hub-motor-with-encoder/) &nbsp;&nbsp;|&nbsp;&nbsp; RIGHT: new smaller motor with DocoEng.com label. [SKU 750-90020](https://www.parallax.com/product/motor-bldc-24v-4000-rpm/)
+
+See also:
+
+- [How to select the motor in your project code](MOTOR_CHOICE.md) - has motor reference info
+- [Connecting the smaller motor](DOCOENG_MOTOR.md) - wiring information
+
 
 ## Current status
 
