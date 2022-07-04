@@ -46,7 +46,7 @@ We're adding the DocoEng.com BLDC motor - 4,000 RPM, 24V to the driver. The moto
 
 *NOTE: the electrical tape "flag" so i can tell relative position of shaft during movement.
 
-Once this cabling of your new motor is completed, you are ready to configure your driver then run the code.
+Once this cabling of your new motor is completed, you are ready to [configure your driver](MOTOR_CHOICE.md) then run the code.
 
 Enjoy!
 -Stephen
