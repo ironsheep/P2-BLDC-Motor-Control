@@ -39,6 +39,7 @@ p2HardwareID    byte    "P2 Edge - 2WheelBot",0
 
 OBJ { our Motors }
 
+    user        : "isp_bldc_motor_userconfig"                   ' driver configuration
     wheels      : "isp_steering_2wheel"                         ' our steering object
     hostIF      : "isp_host_serial"                             ' serial I/O to/from host (RPi, Arduino, etc.)
     serialQueue : "isp_queue_serial"                            ' access to our received data
@@ -107,7 +108,7 @@ DAT { command table }
     msgWork             BYTE    0[256]     ' 256 bytes in which to format the outgoing message
 
 
-PUB main() | opStatus, pValues
+PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor
 '' DEMO Driving a two wheeled platform
 
     debug("* Serial I/F to dual motor platform")
@@ -134,30 +135,38 @@ PUB main() | opStatus, pValues
     long[@cmdsFirst][18 * 3] := @cmdGetMaxSpd
     long[@cmdsFirst][19 * 3] := @cmdGetMaxDistSpd
 
-    ' start our motor drivers (left and right)
-    wheels.start(wheels.PINS_P0_P15, wheels.PINS_P16_P31, wheels.PWR_14p8V)
+    ' validate user settings/choicess
+    '  do NOT start motor unless all are legit!
+    basePinLt := wheels.validBasePinForChoice(user.LEFT_MOTOR_BASE)
+    basePinRt := wheels.validBasePinForChoice(user.RIGHT_MOTOR_BASE)
+    voltage := wheels.validVoltageForChoice(user.DRIVE_VOLTAGE)
+    motor := wheels.validMotorForChoice(user.MOTOR_TYPE)
 
-    '' start our serial host communications
-    hostIF.startx(GW_RX2, GW_TX2, GW_BAUDRATE, hostIF.PU_15K)    ' tell singleton our pins and rate
+    if basePinLt <> wheels.INVALID_PIN_BASE and basePinRt <> wheels.INVALID_PIN_BASE and voltage <> wheels.INVALID_VOLTAGE and motor <> wheels.INVALID_MOTOR
+        ' start our dual motor driver
 
-    ' (one time) tell the RPi about how to identify this hardware
-    hostIF.identify(@p2HardwareID)
+        ' start our motor drivers (left and right)
+        wheels.start(basePinLt, basePinRt, voltage)
 
-    ' override defaults, use 100 %
-    'wheels.setMaxSpeed(100)
-    'wheels.setMaxSpeedForDistance(100)
-    ' just don't draw current at stop
-    'wheels.holdAtStop(false)
+        '' start our serial host communications
+        hostIF.startx(GW_RX2, GW_TX2, GW_BAUDRATE, hostIF.PU_15K)    ' tell singleton our pins and rate
 
-    debug("* command loop *")
+        ' (one time) tell the RPi about how to identify this hardware
+        hostIF.identify(@p2HardwareID)
 
-    repeat
-        if serialQueue.haveCommand(@cmdsFirst, cmdEntryCt)
-            opStatus, pValues := serialQueue.getCommandParms()
-            if opStatus == serialQueue.OP_SUCCESS
-                processCommand(pValues)
-        else
-            waitms(1000)    ' for 1 sec
+        debug("* command loop *")
+
+        repeat
+            if serialQueue.haveCommand(@cmdsFirst, cmdEntryCt)
+                opStatus, pValues := serialQueue.getCommandParms()
+                if opStatus == serialQueue.OP_SUCCESS
+                    processCommand(pValues)
+            else
+                waitms(1000)    ' for 1 sec
+    else
+        debug("* ERROR user configuration NOT valid!")
+
+    debug("* DONE")
 
 DAT { parse work variables }
 
