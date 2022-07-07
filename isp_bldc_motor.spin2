@@ -79,7 +79,7 @@ PUB null()
 
 '' This is not a top-level object
 
-PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
+PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees, ofsDegr
 '' Specify motor control board connect location for this motor and start the driver
         ' setup runtime constants
     ticks1ms   := (CLKFREQ / 1_000)
@@ -93,6 +93,8 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
     useDebug := FALSE
     showHDMIDebug := FALSE
 
+    bResetSenseData := FALSE
+
     targetAngle := $FFFFFFFF    ' set to not used! (other values only used during testing)
 
     case user.MOTOR_TYPE
@@ -101,10 +103,18 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
         hallTicsPerRotation := 24
         ' NOTES:
         ' 15 degrees per tic so +- 15 is our offset?
-        fwdDegrees := 360 - 52 ' 0 is bad > 2A!
+        if user.DRIVE_VOLTAGE == PWR_18p5V
+            ofsDegr := 41
+        elseif user.DRIVE_VOLTAGE == PWR_12V
+            ofsDegr := 52
+        elseif user.DRIVE_VOLTAGE == PWR_14p8V
+            ofsDegr := 52
+        else
+            ofsDegr := 52
+        fwdDegrees := 360 - ofsDegr                 ' 0 is bad > 2A!
         offset_fwd  := fwdDegrees frac 360
-        'revDegrees := 310 ' 360 - fwdDegrees - 10 ' 360 - 60 '  360 - fwdDegrees
-        revDegrees := 360 - fwdDegrees ' vs. using 360?
+        'revDegrees := 310 ' 360 - fwdDegrees - 10  ' 360 - 60 '  360 - fwdDegrees
+        revDegrees := 360 - fwdDegrees              ' vs. using 360?
         offset_rev  := revDegrees frac 360
       other:
         ' 4 degrees per tic, offset was actually 5 tics!
@@ -307,7 +317,7 @@ PUB driveAtPower(power) | limitPwr, motorIncre, correctedPower
     limitPwr :=  -100 #> power <# 100
     if limitPwr <> power
         debug("! WARNING: driveAtPower() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
-    debug("driveAtPower() ", sdec_long(limitPwr), udec_long(ramp_fast), udec_long(ramp_slo))
+    debug("-MOT- driveAtPower() ", sdec_long(limitPwr), udec_long(ramp_fast), udec_long(ramp_slo))
     if limitPwr < 0
         ' handle reverse speed
         if limitPwr < 0 - maxSpeed
@@ -320,7 +330,7 @@ PUB driveAtPower(power) | limitPwr, motorIncre, correctedPower
     correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
     motorIncre := incrementForPower(correctedPower)
     setTargetAccel(motorIncre)
-    debug("driveAtPower() EXIT ")
+    debug("-MOT- driveAtPower() EXIT ")
 
 PUB stopAfterRotation(nRotationCount, eRotationUnits)
 '' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
@@ -592,6 +602,10 @@ PUB testResetFault()
 '' TEST reset our fault indicator that we tripped during test
     fault := FALSE
 
+PUB testResetMaxValues()
+'' TEST reset our fault indicator that we tripped during test
+    bResetSenseData := TRUE
+
 
 PRI map(inValue, inMin, inMax, outMin, outMax) : nResult | slope
 ' Maps inValue in range inMin..inMax to new value in range outMin..outMax
@@ -615,7 +629,7 @@ PRI map(inValue, inMin, inMax, outMin, outMax) : nResult | slope
             nResult := outMin + slope * (inValue - inMin)
     'debug("- map() ", sdec_long(inValue - inMin), sdec_long(inMin) , sdec_long(inMax), sdec_long(inMax - inMin))
     'debug("-       ", sdec_long(slope), sdec_long(outMin) , sdec_long(outMax), sdec_long(outMax - outMin))
-    debug("- map() ", sdec_long(inValue) , " --> ", sdec_long(nResult))
+    'debug("- map() ", sdec_long(inValue) , " --> ", sdec_long(nResult))
 
 PRI incrementForPower(nUserPower) : nMotorIncre
 ' translate -100 to +100 value to Incre value needed by motor
@@ -648,87 +662,21 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
     if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
         CASE selectedPower
             PWR_6V:
+                ' doesn't/barely spin(s)
             PWR_7p4V:
+                ' doesn't/barely spin(s)
             PWR_11p1V:
-                'maxFwdIncreAtPwr := 234_000_000      ' 100% anything above yields RPM 1620.0, cts/Sec 648
-                'maxRevIncreAtPwr := -234_000_000     ' 100% anything above yields RPM 1620.0, cts/Sec 648
-                maxFwdIncreAtPwr := 235_000_000      ' 100% anything above yields RPM 1640.0, cts/Sec 656
-                maxRevIncreAtPwr := -235_000_000     ' 100% anything above yields RPM 1640.0, cts/Sec 656
+                maxFwdIncreAtPwr := 363_000_000      ' 100% anything above yields RPM 2520.0, cts/Sec 1008
+                maxRevIncreAtPwr := -363_000_000     ' 100% anything above yields RPM 2520.0, cts/Sec 1008
             PWR_12V:
-                'maxFwdIncreAtPwr := 125_000_000      ' 75% anything above yields RPM 440.0, cts/Sec 176
-                'maxFwdIncreAtPwr := 130_000_000      ' 75% anything above yields RPM 680.0, cts/Sec 272
-                'maxFwdIncreAtPwr := 150_000_000      ' 75% anything above yields RPM 780.0, cts/Sec 312
-                'maxFwdIncreAtPwr := 175_000_000      ' 75% anything above yields RPM 920.0, cts/Sec 368
-                'maxFwdIncreAtPwr := 250_000_000      ' 75% anything above yields RPM 1300.0, cts/Sec 520
-                'maxFwdIncreAtPwr := 500_000_000      ' 75% anything above yields RPM ----.0, cts/Sec --- - Fault at 2080r/832c
-                'maxFwdIncreAtPwr := 370_000_000      ' 75% anything above yields RPM ----.0, cts/Sec --- - Fault at 1920r/768c
-                'maxFwdIncreAtPwr := 270_000_000      ' 75% anything above yields RPM 1420.0, cts/Sec 568
-                'maxFwdIncreAtPwr := 280_000_000      ' 75% anything above yields RPM 1460.0, cts/Sec 584
-                'maxFwdIncreAtPwr := 290_000_000      ' 75% anything above yields RPM 1520.0, cts/Sec 608
-                'maxFwdIncreAtPwr := 300_000_000      ' 75% anything above yields RPM 1560.0, cts/Sec 624
-                'maxFwdIncreAtPwr := 270_000_000      ' 100% anything above yields RPM 1560.0, cts/Sec 624 - faults at 1880r/752c
-                'maxFwdIncreAtPwr := 260_000_000      ' 100% anything above yields RPM ----.0, cts/Sec --- - faults at 1800r/720c
-                'maxFwdIncreAtPwr := 250_000_000      ' 100% anything above yields RPM ----.0, cts/Sec --- - faults at 1740r/696c
-                'maxFwdIncreAtPwr := 240_000_000      ' 100% anything above yields RPM ----.0, cts/Sec --- - faults at 1660r/664c
-                'maxFwdIncreAtPwr := 230_000_000      ' 100% anything above yields RPM 1600.0, cts/Sec 640
-                'maxFwdIncreAtPwr := 235_000_000      ' 100% anything above yields RPM 1640.0, cts/Sec 656
-                'maxFwdIncreAtPwr := 238_000_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664 (ticking sound!)
-                'maxFwdIncreAtPwr := 237_900_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664 (NO ticking sound! same values!)
-                'maxFwdIncreAtPwr := 237_500_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664 (NO ticking sound! 1.72A)
-                'maxFwdIncreAtPwr := 237_400_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxRevIncreAtPwr := -237_400_000     ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxFwdIncreAtPwr := 238_000_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxRevIncreAtPwr := -238_000_000     ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxFwdIncreAtPwr := 239_000_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxRevIncreAtPwr := -239_000_000     ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                maxFwdIncreAtPwr := 237_400_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                maxRevIncreAtPwr := -237_400_000     ' 100% anything above yields RPM 1660.0, cts/Sec 664
+                maxFwdIncreAtPwr := 338_000_000      ' 100% anything above yields RPM 2360.0, cts/Sec 944
+                maxRevIncreAtPwr := -338_000_000     ' 100% anything above yields RPM 2360.0, cts/Sec 944
             PWR_14p8V:
-                'maxFwdIncreAtPwr := 237_400_000      ' 100% anything above yields RPM 1640.0, cts/Sec 656
-                'maxRevIncreAtPwr := -237_400_000     ' 100% anything above yields RPM 1640.0, cts/Sec 656
-                'maxFwdIncreAtPwr := 239_000_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxRevIncreAtPwr := -239_000_000     ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxFwdIncreAtPwr := 240_000_000      ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxRevIncreAtPwr := -240_000_000     ' 100% anything above yields RPM 1660.0, cts/Sec 664
-                'maxFwdIncreAtPwr := 242_000_000      ' 100% anything above yields RPM 1680.0, cts/Sec 672
-                'maxRevIncreAtPwr := -242_000_000     ' 100% anything above yields RPM 1680.0, cts/Sec 672
-                'maxFwdIncreAtPwr := 244_000_000      ' 100% anything above yields RPM 1700.0, cts/Sec 680
-                'maxRevIncreAtPwr := -244_000_000     ' 100% anything above yields RPM 1700.0, cts/Sec 680
-                'maxFwdIncreAtPwr := 250_000_000      ' 100% anything above yields RPM 1740.0, cts/Sec 696
-                'maxRevIncreAtPwr := -250_000_000     ' 100% anything above yields RPM 1740.0, cts/Sec 696
-                'maxFwdIncreAtPwr := 260_000_000      ' 100% anything above yields RPM 1800.0, cts/Sec 720
-                'maxRevIncreAtPwr := -260_000_000     ' 100% anything above yields RPM 1800.0, cts/Sec 720
-                'maxFwdIncreAtPwr := 270_000_000      ' 100% anything above yields RPM 1880.0, cts/Sec 752
-                'maxRevIncreAtPwr := -270_000_000     ' 100% anything above yields RPM 1880.0, cts/Sec 752
-                'maxFwdIncreAtPwr := 290_000_000      ' 100% anything above yields RPM 2020.0, cts/Sec 808
-                'maxRevIncreAtPwr := -290_000_000     ' 100% anything above yields RPM 2020.0, cts/Sec 808
-                'maxFwdIncreAtPwr := 310_000_000      ' 100% anything above yields RPM 2160.0, cts/Sec 864
-                'maxRevIncreAtPwr := -310_000_000     ' 100% anything above yields RPM 2020.0, cts/Sec 808
-                'maxFwdIncreAtPwr := 350_000_000      ' 100% anything above yields RPM 2440.0, cts/Sec 976
-                'maxRevIncreAtPwr := -350_000_000     ' 100% anything above yields RPM 2440.0, cts/Sec 976
-                'maxFwdIncreAtPwr := 370_000_000      ' 100% anything above yields RPM ????.0, cts/Sec ??? (until fault at 2560.0 1024, until fault at 2540.0 1016)
-                'maxRevIncreAtPwr := -370_000_000     ' 100% anything above yields RPM ????.0, cts/Sec ??? (---)
-                'maxFwdIncreAtPwr := 360_000_000      ' 100% anything above yields RPM 2520.0, cts/Sec 1008 (vibration FWD)
-                'maxRevIncreAtPwr := -360_000_000     ' 100% anything above yields RPM 2500.0!, cts/Sec 1000!
-                'maxFwdIncreAtPwr := 359_000_000      ' 100% anything above yields RPM 2500.0, cts/Sec 1000 (vibration FWD)
-                'maxRevIncreAtPwr := -359_000_000     ' 100% anything above yields RPM 2500.0!, cts/Sec 1000! (until fault at 2500.0 1000)
-                maxFwdIncreAtPwr := 358_000_000      ' 100% anything above yields RPM 2500.0, cts/Sec 1000
-                maxRevIncreAtPwr := -358_000_000     ' 100% anything above yields RPM 2500.0!, cts/Sec 1000
+                maxFwdIncreAtPwr := 370_500_000     ' 100% anything above yields RPM 2580.0!, cts/Sec 1032 @0.89A
+                maxRevIncreAtPwr := -370_500_000    ' 100% anything above yields RPM 2580.0!, cts/Sec 1032 @0.88A
             PWR_18p5V:
-                'maxFwdIncreAtPwr := 370_000_000      ' 100% anything above yields RPM 2580.0, cts/Sec 1032
-                'maxRevIncreAtPwr := -370_000_000     ' 100% anything above yields RPM 2580.0, cts/Sec 1032
-                'maxFwdIncreAtPwr := 390_000_000      ' 100% anything above yields RPM 2580.0, cts/Sec 1032
-                'maxRevIncreAtPwr := -390_000_000     ' 100% anything above yields RPM 2720.0, cts/Sec 1088
-                'maxFwdIncreAtPwr := 410_000_000      ' 100% anything above yields RPM 2860.0, cts/Sec 1144 (until fault at 2860.0 1144)
-                'maxRevIncreAtPwr := -410_000_000     ' 100% anything above yields RPM 2720.0, cts/Sec 1088
-                'maxFwdIncreAtPwr := 400_000_000      ' 100% anything above yields RPM 2780.0, cts/Sec 1112
-                'maxRevIncreAtPwr := -400_000_000     ' 100% anything above yields RPM 2780.0, cts/Sec 1112
-                'maxFwdIncreAtPwr := 405_000_000      ' 100% anything above yields RPM 2820.0, cts/Sec 1128
-                'maxRevIncreAtPwr := -405_000_000     ' 100% anything above yields RPM 2820.0, cts/Sec 1128
-                'maxFwdIncreAtPwr := 408_000_000      ' 100% anything above yields RPM 2840.0, cts/Sec 1136
-                'maxRevIncreAtPwr := -408_000_000     ' 100% anything above yields RPM 2840.0, cts/Sec 1136
-                maxFwdIncreAtPwr := 409_500_000      ' 100% anything above yields RPM 2860.0, cts/Sec 1144
-                maxRevIncreAtPwr := -409_500_000     ' 100% anything above yields RPM 2860.0, cts/Sec 1144
+                maxFwdIncreAtPwr := 385_000_000      ' 100% anything above yields RPM 2720.0, cts/Sec 1088
+                maxRevIncreAtPwr := -385_000_000     ' 100% anything above yields RPM 2720.0, cts/Sec 1088
             PWR_22p2V:
                 'maxFwdIncreAtPwr := 410_000_000      ' 100% anything above yields RPM 2860.0, cts/Sec 1144 (until fault at 2860.0 1144)
                 'maxRevIncreAtPwr := -410_000_000     ' 100% anything above yields RPM 2860.0, cts/Sec 1144
@@ -1051,22 +999,25 @@ CON { -- TASK position tracking -- }
 VAR { * sense buffer and stack arrays * }
     LONG    countsWindow[WINDOW_SIZE]
     LONG    taskStack[STACK_SIZE_LONGS]
+    LONG    bResetSenseData
+
 
 PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
 
-    'longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
-    'tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
-    'tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
     eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
 
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
-        if drv_state == DCS_FAULTED or senseStartTicks == 0
+        if drv_state == DCS_FAULTED or senseStartTicks == 0 or bResetSenseData
             longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
             tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
             winEntryCt := windowSum := winIndex := 0
             posTrkHallTicks := 0
+
+        if bResetSenseData
+            bResetSenseData := FALSE
+            eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
 
         senseStartTicks := getct()
         'pintoggle(TEST_PIN_SENSE_LOOP)
