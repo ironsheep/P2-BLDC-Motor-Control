@@ -49,6 +49,9 @@ CON { application io pins }
 
     MOTOR_BASE_PIN       = user.ONLY_MOTOR_BASE
 
+
+    NOT_SET = -1
+
 OBJ { our Motor(s) }
 
     user        :   "isp_bldc_motor_userconfig"     ' driver configuration
@@ -131,7 +134,12 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, limitValue, stepSize, 
                 stepSize := stepSize / 2
             else
                 ' where done!
+                ' emit:                 maxFwdIncreAtPwr := 407_000_000      ' 100% anything above yields RPM 2840.0, cts/Sec 1136
+
                 debug("* quit: last digit checked")
+                debug("  ")
+                debug("    maxFwdIncreAtPwr := ", udec_long(failSpd), "   ' 100% anything above yields RPM ", udec_(highestRPM), ", cts/sec ", udec_(highestTics))
+                debug("  ")
                 quit
 
             'if (stepSize * 10) >= limitValue
@@ -155,6 +163,7 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, limitValue, stepSize, 
 PRI searchSpeedValues(fromSpd, toSpd, stepSpd) : bDidFault, goodSpd | nbrSteps, midStep, midSpd
 ' search left or right half of this range
     nbrSteps := (toSpd - fromSpd) / stepSpd
+    highestRPM := NOT_SET
     midStep := nbrSteps / 2
     if nbrSteps & $01 == 1
         midStep++   ' if odd move to middle step
@@ -167,29 +176,42 @@ PRI searchSpeedValues(fromSpd, toSpd, stepSpd) : bDidFault, goodSpd | nbrSteps, 
     else
         bDidFault, goodSpd := evalRange(midSpd, toSpd, stepSpd)
 
-PRI evalSpeed(testSpd) : bDidFault
+PRI evalSpeed(testSpd) : bDidFault | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
     debug("* TEST pass(", udec_(passNbr++), ")", udec(testSpd))
     wheel.testResetFault()
     wheel.testSetLimit(testSpd)
     wheel.resetTracking()
     driveForwardToFail()
-    bDidFault := reportEndCondition()
+    bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
     if bDidFault
         wheel.testResetMaxValues()
         wheel.testResetFault()
     debug("   ")
 
-PRI evalRange(fromSpd, toSpd, stepSpd) : bDidFault, failSpd | limitValue
+PRI evalRange(fromSpd, toSpd, stepSpd) : bDidFault, failSpd | limitValue, endMaxRPM, endMaxTics
 ' search range for failure
     debug("* START pass(", udec_(passNbr), ") curr: ", udec_(fromSpd), ", stop: ", udec_(toSpd), ", step: ", udec_(stepSpd))
     repeat limitValue from fromSpd to toSpd step stepSpd
         wheel.testSetLimit(limitValue)
         wheel.resetTracking()
         driveForwardToFail()
-        bDidFault := reportEndCondition()
+        bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
         if not bDidFault
             ' setup for next value in this loop
+            if highestRPM <> endMaxRPM
+                ' have diff value, set as first
+                highestRPM := endMaxRPM
+                highestTics := endMaxTics
+                repeatCt := 1
+                debug("* -NEW1st! pass(", udec_(passNbr++), ") rpm: ", udec_(highestRPM))
+            else
+                repeatCt++
+                if repeatCt > 2
+                    debug("* -THIRD is same! pass(", udec_(passNbr++), ") rpm: ", udec_(highestRPM))
+                    failSpd := limitValue
+                    quit
+
             ' or exit if done
             if limitValue == toSpd
                 failSpd := limitValue
@@ -211,17 +233,20 @@ VAR
     LONG    maxX
     LONG    maxY
     LONG    passNbr
+    LONG    highestRPM
+    LONG    highestTics
+    LONG    repeatCt
 
 DAT
 
 passCt    LONG    0
 
 
-PRI reportEndCondition() : bDidFault | endMaxRPM, endMaxTICs
+PRI reportEndCondition() : bDidFault, endMaxRPM, endMaxTics
     ' just finished pass which ended in NOT fault or fault
     '  report max RPM and max Tics
     '  report fault or not
-    endMaxRPM, endMaxTICs, bDidFault := wheel.testGetResults()
+    endMaxRPM, endMaxTics, bDidFault := wheel.testGetResults()
     debug("* RPT: ", udec(endMaxRPM), udec(endMaxTICs), sdec(bDidFault))
     debug("  ")
 
@@ -300,13 +325,13 @@ PRI waitUntilMotorDone() : bDidFault
 
 PRI showPowerSetting(ePower)
     CASE ePower
-        wheel.PWR_6V:
+        wheel.PWR_6p0V:
             debug("* PWR - 6.0V")
         wheel.PWR_7p4V:
             debug("* PWR - 7.4V")
         wheel.PWR_11p1V:
             debug("* PWR - 11.1V")
-        wheel.PWR_12V:
+        wheel.PWR_12p0V:
             debug("* PWR - 12.0V")
         wheel.PWR_14p8V:
             debug("* PWR - 14.8V")
@@ -314,7 +339,7 @@ PRI showPowerSetting(ePower)
             debug("* PWR - 18.5V")
         wheel.PWR_22p2V:
             debug("* PWR - 22.2V")
-        wheel.PWR_24V:
+        wheel.PWR_24p0V:
             debug("* PWR - 24.0V")
         OTHER:
             debug("* PWR unknown value!!")
