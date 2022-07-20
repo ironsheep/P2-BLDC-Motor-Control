@@ -99,32 +99,18 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
 
     case user.MOTOR_TYPE
       MOTR_DOCO_4KRPM:
+        ' 15 degrees per tic
         degrPerTic := 15
         hallTicsPerRotation := 24
-        ' NOTES:
-        ' 15 degrees per tic so +- 15 is our offset?
-        if user.DRIVE_VOLTAGE == PWR_18p5V
-            ofsDegr := 41   ' 41-43 best
-        elseif user.DRIVE_VOLTAGE == PWR_12p0V
-            ofsDegr := 53    ' 52-54 best
-        elseif user.DRIVE_VOLTAGE == PWR_14p8V
-            ofsDegr := 52
-        else
-            ofsDegr := 52
-        fwdDegrees := 360 - ofsDegr                 ' 0 is bad > 2A!
-        offset_fwd  := fwdDegrees frac 360
-        'revDegrees := 310 ' 360 - fwdDegrees - 10  ' 360 - 60 '  360 - fwdDegrees
-        revDegrees := 360 - fwdDegrees              ' vs. using 360?
-        offset_rev  := revDegrees frac 360
       other:
-        ' 4 degrees per tic, offset was actually 5 tics!
-        '  or 20 degrees (0.0556 of rotation)
+        ' 4 degrees per tic
         degrPerTic := 4
         hallTicsPerRotation := 90
-        fwdDegrees := 20
-        offset_fwd  := fwdDegrees frac 360              ' 96 frac 360 (Doug's motor)
-        revDegrees := 360 - fwdDegrees
-        offset_rev  := revDegrees frac 360             ' 228 frac 360 (Doug's motor)
+
+    fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE)
+    offset_fwd  := fwdDegrees frac 360
+    offset_rev  := revDegrees frac 360
+
     debug("MOT: ", udec(fwdDegrees), uhex_long(offset_fwd))
     debug("     ", udec(revDegrees), uhex_long(offset_rev))
 
@@ -216,6 +202,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
             debug("!! ERROR filed to start Motor Control task")
         else
             debug("* Motor COG #", sdec_(motorCog- 1))
+
 
 PUB startSenseCog() : ok
 '' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
@@ -646,6 +633,31 @@ PRI incrementForPower(nUserPower) : nMotorIncre
         ' this is a STOP request
         nMotorIncre := 0    ' stop!
 
+PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
+    case eMotorType
+      MOTR_DOCO_4KRPM:
+        ' NOTES:
+        ' 15 degrees per tic so +- 15 is our offset?
+        if user.DRIVE_VOLTAGE == PWR_11p1V
+            ofsDegr := 53   ' 52-54 best, 55 fault?!
+        elseif user.DRIVE_VOLTAGE == PWR_12p0V
+            ofsDegr := 53   ' 52-54 best
+        elseif user.DRIVE_VOLTAGE == PWR_14p8V
+            ofsDegr := 54   ' 52-54 best
+        elseif user.DRIVE_VOLTAGE == PWR_18p5V
+            ofsDegr := 41   ' 41-43 best
+        else
+            ofsDegr := 52
+        fwdDegrees := 360 - ofsDegr                 ' 0 is bad > 2A!
+        'revDegrees := 310 ' 360 - fwdDegrees - 10  ' 360 - 60 '  360 - fwdDegrees
+        revDegrees := 360 - fwdDegrees              ' vs. using 360?
+      other:
+        ' 4 degrees per tic, offset was actually 5 tics!
+        '  or 20 degrees (0.0556 of rotation)
+        ofsDegr := 20
+        fwdDegrees := ofsDegr
+        revDegrees := 360 - fwdDegrees
+
 PRI confgurePowerLimits(userVoltage) | selectedPower
 ' set up our motor drive limits based upon the user configured Voltage selection
     selectedPower := validVoltageForChoice(userVoltage)
@@ -667,16 +679,19 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
                 ' doesn't/barely spin(s)
             PWR_11p1V:
                 ' maxFwdIncreAtPwr := 324_500_000   ' Characterized: 100% anything above yields RPM 2_260, cts/sec 904
-                maxFwdIncreAtPwr := 324_500_000      ' 100% anything above yields RPM 2520.0, cts/Sec 1008
-                maxRevIncreAtPwr := -324_500_000     ' 100% anything above yields RPM 2520.0, cts/Sec 1008
+                ' maxFwdIncreAtPwr := 336_000_000   ' v+ Characterized: 100% anything above yields RPM 2_340, cts/sec 936
+                maxFwdIncreAtPwr := 335_000_000      ' 100% anything above yields RPM 2340.0, cts/Sec 936, @0.097A
+                maxRevIncreAtPwr := -335_000_000     ' 100% anything above yields RPM 2340.0, cts/Sec 936, @0.102A
             PWR_12p0V:
                 'maxFwdIncreAtPwr := 296_000_000   ' Characterized: 100% anything above yields RPM 2_060, cts/sec 824
-                maxFwdIncreAtPwr := 338_000_000      ' 100% anything above yields RPM 2360.0, cts/Sec 944
-                maxRevIncreAtPwr := -338_000_000     ' 100% anything above yields RPM 2360.0, cts/Sec 944
+                'maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
+                maxFwdIncreAtPwr := 296_000_000      ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.074A
+                maxRevIncreAtPwr := -296_000_000     ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.082A
             PWR_14p8V:
                 'maxFwdIncreAtPwr := 296_000_000   ' Characterized: 100% anything above yields RPM 2_060, cts/sec 824
-                maxFwdIncreAtPwr := 370_500_000     ' 100% anything above yields RPM 2580.0!, cts/Sec 1032 @0.89A
-                maxRevIncreAtPwr := -370_500_000    ' 100% anything above yields RPM 2580.0!, cts/Sec 1032 @0.88A
+                'maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
+                maxFwdIncreAtPwr := 296_000_000     ' 100% anything above yields RPM 2060.0!, cts/Sec 824 @0.061A
+                maxRevIncreAtPwr := -296_000_000    ' 100% anything above yields RPM 2060.0!, cts/Sec 824 @0.074A
             PWR_18p5V:
                 'maxFwdIncreAtPwr := 396_000_000   ' Characterized: 100% anything above yields RPM 2_760, cts/sec 1_104
                 maxFwdIncreAtPwr := 385_000_000      ' 100% anything above yields RPM 2720.0, cts/Sec 1088
@@ -890,7 +905,8 @@ DAT { Literals for HDMI Debug }
     name21      BYTE    "RPM",0
     name22      BYTE    "cnts/sec",0
     name23      BYTE    "delta",0
-    name24      BYTE    "curnt",0
+    name24      BYTE    "Amp",0
+    name25      BYTE    "maxAmp",0
     nextAddr2
     dataLen2     LONG    @nextAddr2 - @nameTitle2
 
@@ -930,7 +946,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pValsAr][nValsGrpOffset + 6] := @fault
 
     nGrpOffset := 1
-    nVarsInGroup := 5
+    nVarsInGroup := 6
     LONG[@pTitlesAr][nGrpOffset] := @nameTitle2
     LONG[@pVarCtAr][nGrpOffset] := nVarsInGroup
      ' populate the empty name/value ptr tables
@@ -940,11 +956,13 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 2] := @name22
     LONG[@pNamesAr][nValsGrpOffset + 3] := @name23
     LONG[@pNamesAr][nValsGrpOffset + 4] := @name24
+    LONG[@pNamesAr][nValsGrpOffset + 5] := @name25
     LONG[@pValsAr][nValsGrpOffset + 0] := @tvRpm_x10
     LONG[@pValsAr][nValsGrpOffset + 1] := @rpm
     LONG[@pValsAr][nValsGrpOffset + 2] := @cntsInSec
     LONG[@pValsAr][nValsGrpOffset + 3] := @deltaTicks
     LONG[@pValsAr][nValsGrpOffset + 4] := @sense_i
+    LONG[@pValsAr][nValsGrpOffset + 5] := @tvMaxSenseI
 
     nGrpOffset := 2
     nVarsInGroup := 7
@@ -1012,7 +1030,7 @@ VAR { * sense buffer and stack arrays * }
 PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
 
-    eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
+    eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := tvMaxSenseI := 0
 
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
@@ -1021,10 +1039,11 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
             tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
             winEntryCt := windowSum := winIndex := 0
             posTrkHallTicks := 0
+            tvMaxSenseI := 0
 
         if bResetSenseData
             bResetSenseData := FALSE
-            eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
+            tvMaxSenseI := eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
 
         senseStartTicks := getct()
         'pintoggle(TEST_PIN_SENSE_LOOP)
@@ -1046,6 +1065,8 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         tvMaxRpmIn10ths := MAX(tvRpm_x10, tvMaxRpmIn10ths)
         maxRpm := tvMaxRpmIn10ths / 10
         tvMaxCntsInSec := MAX(cntsInSec, tvMaxCntsInSec)
+
+        tvMaxSenseI := MAX(sense_i, tvMaxSenseI)
 
         posThis8th := windowSum / winEntryCt
         posTrkHallTicks += posThis8th
@@ -1200,6 +1221,7 @@ VAR { * Data for Motor Position Tracking * }
     LONG    tvMaxMmPerSec_x10
     LONG    tvMaxCntsInSec
     LONG    tvTargetIncreInM
+    LONG    tvMaxSenseI
     '  --------------------------
     LONG    priorPos
     LONG    rpmTenths
@@ -1619,7 +1641,7 @@ driver          rdlong  x, ptra++                       ' get base pin
                 waitx   #4
                 getqx   scl_levels+3
 
-                sub     sense_u_, gio_levels+0      ' compute (quotient * (pin_level - gio_level)) >> 11
+                sub     sense_u_, gio_levels+0      ' compute (numerator * (pin_level - gio_level)) >> 11
                 muls    sense_u_, scl_levels+0
                 sar     sense_u_, #11
 
@@ -1705,7 +1727,7 @@ driver          rdlong  x, ptra++                       ' get base pin
                 rcl     hall_, #1
                 testp   pin_hall_u              wc
                 rcl     hall_, #1
-                and     hall_, #%111_111            ' (old << 3 | new) [ooo:nnn]
+                and     hall_, #%111_111            ' (old << 3 | new) [_x_:ooo:nnn]
                 altgb   hall_, #deltas              ' load byte deltas[hall_] -> [-1, 0, 1]
                 getbyte x
                 signx   x, #7                       ' sign-extend bit7
@@ -1794,9 +1816,9 @@ ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then f
 'drvrTmrPnFld    LONG    TEST_PIN_DRIVER_TMR addpins 0  ' convert to pinfield
 'drvrTmr2PnFld   LONG    TEST_PIN_DRIVER_TMR2 addpins 0  ' convert to pinfield
 
-adc_modes   LONG    p_adc_gio | p_adc       ' adc modes, by state
-            LONG    p_adc_vio | p_adc
-            LONG    p_adc_1x  | p_adc
+adc_modes   LONG    p_adc_gio | p_adc       ' +0 : adc modes, by state
+            LONG    p_adc_vio | p_adc       ' +1
+            LONG    p_adc_1x  | p_adc       ' +2
 
 ' turn motor to view hall sequence ...  learn in known direction
 '   efficient: low current draw at given speed
