@@ -55,25 +55,29 @@ OBJ { objects / constants included by this object }
 
 CON { test pins for LA measurement }
 
-{
+'{
     ' PIN_8 - PIN_15
-    TEST_BASE_PIN = 8
+    TEST_BASE_PIN = 40
     TEST_ALL_PINS = TEST_BASE_PIN addpins 7
-    TEST_PIN_OUTER_LOOP = TEST_BASE_PIN + 0       ' LA grey
-    TEST_PIN_SENSE_LOOP = TEST_BASE_PIN + 1       ' LA red
-    TEST_PIN_DRIVER_LOOP = TEST_BASE_PIN + 2            ' LA Yellow
-    TEST_PIN_DRIVER_TMR = TEST_BASE_PIN + 3             ' LA Green
-    TEST_PIN_DRIVER_TMR2 = TEST_BASE_PIN + 4             ' LA Blue
+    TEST_PIN_SENSE_LP = TEST_BASE_PIN + 0           ' LA ch0
+    TEST_PIN_DRIVE_LP = TEST_BASE_PIN + 1           ' LA ch1
+    TEST_PIN_MOTR_CTL_LP = TEST_BASE_PIN + 2        ' LA ch2
+    TEST_PIN_DRIVE_LP2 = TEST_BASE_PIN + 3          ' LA ch3
+    TEST_PIN_OUTER_LP = TEST_BASE_PIN + 4           ' LA ch4
 '}
 
 DAT { misc time constants }
-
-    ticks125ms  long    0                     ' time constants based on CPU freq
-    ticks500us  long    0                     '
-    ticks750us  long    0                     '
-    ticks800us  long    0                     '
+    ' time constants based on CPU freq
     ticks1ms    LONG    0                     '
     ticks1us    LONG    0                     '
+    ticks24us   long    0                     '
+    ticks500us  long    0                     ' 2 kHz
+    ticks125ms  long    0                       ' 8 Hz
+'    ticks31p25ms long   0                       ' 32 Hz
+'    ticks15p625ms long   0                      ' 64 Hz
+'    ticks7p813ms long   0                      ' 128 Hz
+'    ticks750us  long    0                     '
+'    ticks800us  long    0                     '
 
 PUB null()
 
@@ -84,10 +88,14 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
         ' setup runtime constants
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
-    ticks125ms := ticks1ms * 125
+    ticks24us  := (ticks1ms * 24) / 1_000
     ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
-    ticks750us := (ticks1ms * 750) / 1_000  ' phrased this way for better result
-    ticks800us := (ticks1ms * 800) / 1_000  ' phrased this way for better result
+'    ticks750us := (ticks1ms * 750) / 1_000  '
+'    ticks800us := (ticks1ms * 800) / 1_000  '
+    ticks125ms := ticks1ms * 125
+'    ticks31p25ms := (ticks1ms * 3125) / 100
+'    ticks15p625ms := ((ticks31p25ms + 1) / 2) + 1
+'    ticks7p813ms := ((ticks15p625ms + 1) / 2) + 1
 
     ' set up debug variables
     useDebug := FALSE
@@ -141,7 +149,8 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
     duty_max    := pwm_limit << 4 <# pwm_limit << 4
     duty_up     := 16
     duty_dn     := 4
-    ctrl_ticks  := ticks500us
+    cfg_ctcks   := ticks500us               ' drive control loop period
+    motr_ctcks  := ticks24us                ' motor control loop period
     stop_mode   := SM_FLOAT                 ' enum: [SM_FLOAT, SM_BRAKE]
     e_stop      := FALSE
     ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
@@ -171,7 +180,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
 
     userSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
 
-    debug("* init values ", udec_long(dead_gap), udec_long(ctrl_ticks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
+    debug("* init values ", udec_long(dead_gap), udec_long(cfg_ctcks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
 
     circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH)
     if circInMM_x10 <> 0
@@ -645,12 +654,16 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
         elseif user.DRIVE_VOLTAGE == PWR_14p8V
             ofsDegr := 54   ' 52-54 best
         elseif user.DRIVE_VOLTAGE == PWR_18p5V
-            ofsDegr := 41   ' 41-43 best
+            ofsDegr := 43   ' 41-43 best
+        elseif user.DRIVE_VOLTAGE == PWR_22p2V
+            ofsDegr := 54   ' 51-54 best
+        elseif user.DRIVE_VOLTAGE == PWR_24p0V
+            ofsDegr := 55   ' 52-56 best
         else
             ofsDegr := 52
         fwdDegrees := 360 - ofsDegr                 ' 0 is bad > 2A!
         'revDegrees := 310 ' 360 - fwdDegrees - 10  ' 360 - 60 '  360 - fwdDegrees
-        revDegrees := 360 - fwdDegrees              ' vs. using 360?
+        revDegrees := ofsDegr                       ' vs. using 360?
       other:
         ' 4 degrees per tic, offset was actually 5 tics!
         '  or 20 degrees (0.0556 of rotation)
@@ -683,27 +696,30 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
                 maxFwdIncreAtPwr := 335_000_000      ' 100% anything above yields RPM 2340.0, cts/Sec 936, @0.097A
                 maxRevIncreAtPwr := -335_000_000     ' 100% anything above yields RPM 2340.0, cts/Sec 936, @0.102A
             PWR_12p0V:
-                'maxFwdIncreAtPwr := 296_000_000   ' Characterized: 100% anything above yields RPM 2_060, cts/sec 824
-                'maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
+                ' maxFwdIncreAtPwr := 296_000_000   ' Characterized: 100% anything above yields RPM 2_060, cts/sec 824
+                ' maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
                 maxFwdIncreAtPwr := 296_000_000      ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.074A
                 maxRevIncreAtPwr := -296_000_000     ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.082A
             PWR_14p8V:
-                'maxFwdIncreAtPwr := 296_000_000   ' Characterized: 100% anything above yields RPM 2_060, cts/sec 824
-                'maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
-                maxFwdIncreAtPwr := 296_000_000     ' 100% anything above yields RPM 2060.0!, cts/Sec 824 @0.061A
-                maxRevIncreAtPwr := -296_000_000    ' 100% anything above yields RPM 2060.0!, cts/Sec 824 @0.074A
+                ' maxFwdIncreAtPwr := 296_000_000   ' Characterized: 100% anything above yields RPM 2_060, cts/sec 824
+                ' maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
+                maxFwdIncreAtPwr := 296_000_000     ' 100% anything above yields RPM 2060.0!, cts/Sec 824, @0.061A
+                maxRevIncreAtPwr := -296_000_000    ' 100% anything above yields RPM 2060.0!, cts/Sec 824, @0.074A
             PWR_18p5V:
-                'maxFwdIncreAtPwr := 396_000_000   ' Characterized: 100% anything above yields RPM 2_760, cts/sec 1_104
-                maxFwdIncreAtPwr := 385_000_000      ' 100% anything above yields RPM 2720.0, cts/Sec 1088
-                maxRevIncreAtPwr := -385_000_000     ' 100% anything above yields RPM 2720.0, cts/Sec 1088
+                ' maxFwdIncreAtPwr := 396_000_000   ' Characterized: 100% anything above yields RPM 2_760, cts/sec 1_104
+                ' maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
+                maxFwdIncreAtPwr := 296_000_000      ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.103A
+                maxRevIncreAtPwr := -296_000_000     ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.164A
             PWR_22p2V:
-                'maxFwdIncreAtPwr := 335_500_000   ' Characterized: 100% anything above yields RPM 2_340, cts/sec 936
-                maxFwdIncreAtPwr := 407_000_000      ' 100% anything above yields RPM 2840.0, cts/Sec 1136
-                maxRevIncreAtPwr := -407_000_000     ' 100% anything above yields RPM 2840.0, cts/Sec 1136
+                ' maxFwdIncreAtPwr := 335_500_000   ' Characterized: 100% anything above yields RPM 2_340, cts/sec 936
+                ' maxFwdIncreAtPwr := 372_500_000   ' v+ Characterized: 100% anything above yields RPM 2_600, cts/sec 1_040
+                maxFwdIncreAtPwr := 371_500_000      ' 100% anything above yields RPM 2600.0, cts/Sec 1040, @0.620A
+                maxRevIncreAtPwr := -371_500_000     ' 100% anything above yields RPM 2600.0, cts/Sec 1040, @0.530A
             PWR_24p0V:
                 ' maxFwdIncreAtPwr := 336_000_000   ' Characterized: 100% anything above yields RPM 2_340, cts/sec 936
-                maxFwdIncreAtPwr := 407_000_000      ' 100% anything above yields RPM 2840.0, cts/Sec 1136
-                maxRevIncreAtPwr := -407_000_000     ' 100% anything above yields RPM 2840.0, cts/Sec 1136
+                ' maxFwdIncreAtPwr := 372_500_000   ' v+ Characterized: 100% anything above yields RPM 2_600, cts/sec 1_040
+                maxFwdIncreAtPwr := 372_000_000      ' 100% anything above yields RPM 2600.0, cts/Sec 1040, @0.620A
+                maxRevIncreAtPwr := -372_000_000     ' 100% anything above yields RPM 2600.0, cts/Sec 1040, @0.640A
             other:
                 debug("*???* Unknown: ", sdec_long(selectedPower))
                 abort   ' SHOULD NEVER get here!
@@ -1026,11 +1042,22 @@ VAR { * sense buffer and stack arrays * }
     LONG    taskStack[STACK_SIZE_LONGS]
     LONG    bResetSenseData
 
+CON { Sense Constants }
+
+    ' at 125 ms
+    SENSE_LOOP_HZ = 8
+    ' at 31.25 ms
+    'SENSE_LOOP_HZ = 32
+        ' at 15.625 ms
+    'SENSE_LOOP_HZ = 64
+    ' at 7.813 ms
+    'SENSE_LOOP_HZ = 128
 
 PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
 
     eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := tvMaxSenseI := 0
+    pinlow(TEST_PIN_SENSE_LP)
 
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
@@ -1046,8 +1073,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
             tvMaxSenseI := eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
 
         senseStartTicks := getct()
-        'pintoggle(TEST_PIN_SENSE_LOOP)
-        'pintoggle(TEST_PIN_SENSE_LOOP)
+        pinhigh(TEST_PIN_SENSE_LP)
 
         newCntsInSec := absDistanceInTics(pos)            ' Read the next sensor value
         windowSum -= LONG[@countsWindow][winIndex]          ' Remove the oldest entry from the sum
@@ -1057,7 +1083,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         if winEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
             winEntryCt++
 
-        cntsInSec := (windowSum / winEntryCt) * 8           ' moving average, scaled
+        cntsInSec := (windowSum / winEntryCt) * SENSE_LOOP_HZ           ' moving average, scaled
         tvRpm_x10 := ((cntsInSec * 60) * 10) / hallTicsPerRotation
         rpm := tvRpm_x10 / 10
         rpmTenths := tvRpm_x10 +// 10
@@ -1111,6 +1137,7 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
 
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
         '   wait remainder of 125 mSec before next sample
+        pinlow(TEST_PIN_SENSE_LP)
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
 
 PRI MAX(a,b) : nMax
@@ -1166,7 +1193,7 @@ CON { driver internal Constants}
 '    PWMLIM   = FRAME - OFFSET     'PWM duty hard limit 1/2 freq of PWM
 
     DRVR_STATUS_LONGS_COUNT = 14
-    DRVR_PARAMS_LONGS_COUNT = 13
+    DRVR_PARAMS_LONGS_COUNT = 14
 
 VAR { * Data Structure for PASM Driver * }
 
@@ -1240,7 +1267,7 @@ VAR  {  Motor Parameters  }
 ' -----------------------------------
 ' VALUES copied to driver each cycle
 ' -----------------------------------
-' TABLE of  13 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
+' TABLE of  14 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -1249,7 +1276,8 @@ VAR  {  Motor Parameters  }
     LONG    duty_dn
     LONG    dead_gap        ' delay between driving h/l side of driver (never drive both at once)
     LONG    pwm_limit       ' max freq of our pwm
-    LONG    ctrl_ticks      ' # clock ticks needed to create 2 kHz motor control loop
+    LONG    cfg_ctcks       ' # clock ticks needed to create 2 kHz motor drive loop
+    LONG    motr_ctcks      ' # clock ticks needed to create 43 kHz motor control loop
     LONG    stop_mode       ' control / user setting, enum: [SM_FLOAT, SM_BRAKE]
     LONG    e_stop          ' T/F where T means stop all motor function
     LONG    ramp_fast       ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
@@ -1271,9 +1299,9 @@ driver          rdlong  x, ptra++                       ' get base pin
                 or      all_pins, x                     ' finish the all-pins variable
                 add     drive_pins, x                   ' finish the drive-pins variable
 
-                'drvl    drvrLoopPnFld                  ' preset test pins to low
-                'drvl    drvrTmrPnFld
-                'drvl    drvrTmr2PnFld
+                drvl    motrCtlLpPnFld                  ' preset test pins to low
+                drvl    drvrTmrPnFld                    ' preset test pins to low
+                drvl    drvrTmr2PnFld                   ' preset test pins to low
 
                 mov     y, #0                           ' make single-pin variables
 .pin            altd    y, #pin_adc_u_i
@@ -1348,9 +1376,9 @@ driver          rdlong  x, ptra++                       ' get base pin
     ' -------------------------------------------------------------------------
 .drvMotor
                 getct   ctrlSrtTix                          ' remember when we started this loop
-                'outnot  drvrTmrPnFld                       ' toggle TEST marker pin
-                'outnot  drvrTmrPnFld                       ' toggle TEST marker pin
-                'outnot  drvrTmr2PnFld                      ' rising edge of duration meas.
+                drvh    drvrTmrPnFld                       ' HIGH while doing drive determination
+'                outnot  drvrTmr2PnFld                       ' toggle TEST marker pin
+'                outnot  drvrTmr2PnFld                       ' toggle TEST marker pin
                 or      e_stop_, e_stop_            wz      ' Q: Emergency Stop Requested?
     if_z        jmp     #.noEStop                           ' No: continue on..
 .eStop
@@ -1583,7 +1611,7 @@ driver          rdlong  x, ptra++                       ' get base pin
                 ' reset timer (schedule next control loop run)
                 mov     ctrlEndTix, ctrlSrtTix
                 addct1  ctrlEndTix, cfg_ctcks_
-                'outnot  drvrTmr2PnFld                   ' falling edge of duration meas.
+                drvl    drvrTmrPnFld                   ' LOW drive determination complete
                'jmp    #.ctlMotor      ' done, fall thru
     ' -------------------------------------------------------------------------
 
@@ -1594,8 +1622,7 @@ driver          rdlong  x, ptra++                       ' get base pin
     '       keep our error rate low...
     ' -------------------------------------------------------------------------
                 getct   drvrSrtTix                  ' remember when we started this loop
-                'outnot  drvrLoopPnFld               ' toggle TEST marker pin
-                'outnot  drvrLoopPnFld
+                drvh    motrCtlLpPnFld              ' HIGH while affecting change to motor
                 call    #.wait4adc                  ' allow ADC rest period (Period 1 of 6)
 
                 rdpin   vio_levels+0, pin_adc_u_i       ' VIO samples done, read them
@@ -1769,7 +1796,7 @@ driver          rdlong  x, ptra++                       ' get base pin
 
                 setq    #DRVR_STATUS_LONGS_COUNT-1                       ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state to hub
                 wrlong  drive_u_, ptra
-
+                drvl    motrCtlLpPnFld              ' LOW after accecting change to motor
                 jmp     #.loop                      ' main loop
 
     ' =========================================================================
@@ -1812,9 +1839,9 @@ stop_requst LONG    0                       ' 32-bits of zero
 minus1      LONG    $FFFFFFFF               ' 32-bits of one
 ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then fast ramp ( ~1/5 of 0-max )
 
-'drvrLoopPnFld   LONG    TEST_PIN_DRIVER_LOOP addpins 0  ' convert to pinfield
-'drvrTmrPnFld    LONG    TEST_PIN_DRIVER_TMR addpins 0  ' convert to pinfield
-'drvrTmr2PnFld   LONG    TEST_PIN_DRIVER_TMR2 addpins 0  ' convert to pinfield
+motrCtlLpPnFld   LONG    TEST_PIN_MOTR_CTL_LP addpins 0  ' convert to pinfield
+drvrTmrPnFld    LONG    TEST_PIN_DRIVE_LP addpins 0  ' convert to pinfield
+drvrTmr2PnFld   LONG    TEST_PIN_DRIVE_LP2 addpins 0  ' convert to pinfield
 
 adc_modes   LONG    p_adc_gio | p_adc       ' +0 : adc modes, by state
             LONG    p_adc_vio | p_adc       ' +1
@@ -1921,7 +1948,7 @@ scl_levels      res 4
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
 params_ptr_ res 1               ' params_ptr must be followed by:
-offset_fwd_ res 1               '  13 (DRVR_PARAMS_LONGS_COUNT) parameters
+offset_fwd_ res 1               '  14 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
 duty_min_   res 1
 duty_max_   res 1
@@ -1930,6 +1957,7 @@ duty_dn_    res 1
 dead_gap_   res 1               ' this was OFFSET but now passed into driver
 pwm_limit_  res 1               ' this was PWMLIM but now passed into driver
 cfg_ctcks_  res 1
+motr_ctcks_ res 1
 stop_mode_  res 1
 e_stop_     res 1               ' T/F where T means stopal motor function
 ramp_fast_  res 1               ' angle increment: add this every 500 uSec to ramp up to speed
