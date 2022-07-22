@@ -56,8 +56,8 @@ The steering API also provides an alternative form of control where you can make
 | BlocklyProp-like Interface | Description |
 | --- | --- |
 |  **>--- CONTROL**
-| <PRE>PUB setDriveDistance(ltDistance, rtDistance, units)</PRE> | where {*distance} is in {units} [ticks, in., or mm]
-| PUB setDriveSpeed(ltSpeed, rtSpeed) | where {*speed} is [(-128) - 128] and zero stops the motor 
+| <PRE>PUB setDriveDistance(ltDistance, rtDistance, units)</PRE> | where {\*distance} is in {units} [ticks, in., or mm]
+| PUB setDriveSpeed(ltSpeed, rtSpeed) | where {\*speed} is [(-128) - 128] and zero stops the motor 
 | PUB stop() | stops both motors
 |  **>--- CONFIG**
 | PUB setAcceleration(rate) | where {rate} is [100 - 2000] ticks/s squared (default is 400 ticks/s squared)
@@ -73,6 +73,11 @@ The steering API also provides an alternative form of control where you can make
 **SUGGESTION:** *Let's rethink the use of ticks (not applicable to our BLDC motor.) Let's use a unit of measure that makes sense.*
 
 **DOC ISSUE?:** Default of 600 ticks/s setMaxSpeedForDistance(speed) can't be set. **Does this mean the docs are incorrect?**
+
+### BlocklyProp Robot Control Reference
+
+The reference material studied and from which the above information was extracted is found at: [Robot API docs](https://learn.parallax.com/support/reference/propeller-blocklyprop-block-reference/robot)
+
 
 ## Motor Control/Status APIs
 
@@ -113,8 +118,8 @@ BlocklyProp provides control of a Feedback 360° Servo. Control for these servos
 | PUB moveAngle(degrees) | Where +/- degrees (relative to curr position)
 | PUB disable() | Turns off active motor control
 |  **>--- CONFIG**
-| PUB limitAccel(value) | Where value (°/s2) [600 - 7200] determines how quickly the servo will transition to a new speed setting, in units of degrees per second squared
-| PUB limitSpeed(value) | Where value (°/s2) [1 - 1080] determines the maximum rotation speed in units of degrees per second, independent of direction
+| PUB limitAccel(value) | Where value (°/s^2) [600 - 7200] determines how quickly the servo will transition to a new speed setting, in units of degrees per second squared
+| PUB limitSpeed(value) | Where value (°/s) [1 - 1080] determines the maximum rotation speed in units of degrees per second, independent of direction
 | <PRE>PUB adjustVelocityControl(kP,kL,kD,I)</PRE> | (Speed) Defaults: kP=500,kI=0,kD=0 and I=0
 | <PRE>PUB adjustAngularControl(kP,kL,kD,I)</PRE> | (Position) Defaults: kP=12000,kI=600,kD=6000 and I=1000
 | PUB resetTracking() | Reset motor position tracking
@@ -124,7 +129,6 @@ BlocklyProp provides control of a Feedback 360° Servo. Control for these servos
 | PUB getPosition() | [0-359] Return the current postion of the motor where 0 is home position as last set
 | PUB getStatus() | Returns: moving to position, holding position or off
 | PUB getSpeed() | Returns +/- degrees/Sec rotation rate, 0 if stopped
-
 
 ### BlocklyProp: CR Servo control API
 
@@ -140,6 +144,10 @@ BlocklyProp also provides control for a Continuous Rotation (CR) Servo.
 | PUB getSpeed() | Returns speed [(-200) - 200], neg values backward, pos forward, 0 stopped
 | PUB getRamp() | Returns ramp [0 - 100] the requested amount of change ea. 20ms cycle
 | PUB getStatus() | Returns: moving, holding position or off
+
+### BlocklyProp Servo Reference
+
+The reference material studied and from which the above information was extracted is found at: [Feedback 360° and CR Servo API docs](https://learn.parallax.com/support/reference/propeller-blocklyprop-block-reference/servo)
 
 
 ### ...
