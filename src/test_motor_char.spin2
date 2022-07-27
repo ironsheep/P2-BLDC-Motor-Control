@@ -108,10 +108,11 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, limitValue, stepSize, 
 
         showPowerSetting(voltage)
 
+        ' just don't draw current at stop
+        wheel.holdAtStop(false)
+
         wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
         wheel.resetTracking()
-
-        wheel.testResetFault()  ' reset any fault indication before start
 
         ' couple of loops:
         '  find 100_000_000 limit [100_000_000 to 900_000_000 step 100_000_000] -> result100s
@@ -165,8 +166,8 @@ PRI searchSpeedValues(fromSpd, toSpd, stepSpd) : bDidFault, goodSpd | nbrSteps, 
     nbrSteps := (toSpd - fromSpd) / stepSpd
     highestRPM := NOT_SET
     midStep := nbrSteps / 2
-    if nbrSteps & $01 == 1
-        midStep++   ' if odd move to middle step
+    if nbrSteps & $01 == 0
+        midStep++   ' if even move to upper middle step
     midSpd := fromSpd + ((midStep - 1) * stepSpd)
     debug("   ")
     debug("* BINARY pass(", udec_(passNbr), ") from: ", udec_(fromSpd), ", stop: ", udec_(toSpd), ", step: ", udec_(stepSpd), udec(midSpd))
@@ -179,23 +180,36 @@ PRI searchSpeedValues(fromSpd, toSpd, stepSpd) : bDidFault, goodSpd | nbrSteps, 
 PRI evalSpeed(testSpd) : bDidFault | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
     debug("* TEST pass(", udec_(passNbr++), ")", udec(testSpd))
-    wheel.testResetFault()
+    clearFault()
     wheel.testSetLimit(testSpd)
-    wheel.resetTracking()
     driveForwardToFail()
     bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
     if bDidFault
-        wheel.testResetMaxValues()
-        wheel.testResetFault()
+        clearFault()
     debug("   ")
 
-PRI evalRange(fromSpd, toSpd, stepSpd) : bDidFault, failSpd | limitValue, endMaxRPM, endMaxTics
+PRI evalRange(fromSpd, toSpd, stepSpd) : bDidFault, failSpd | limitValue, endMaxRPM, endMaxTics, bBadStart, tryCt
 ' search range for failure
+    clearFault()
     debug("* START pass(", udec_(passNbr), ") curr: ", udec_(fromSpd), ", stop: ", udec_(toSpd), ", step: ", udec_(stepSpd))
     repeat limitValue from fromSpd to toSpd step stepSpd
         wheel.testSetLimit(limitValue)
-        wheel.resetTracking()
-        driveForwardToFail()
+        'wheel.resetTracking()
+        repeat 2
+            clearFault()
+            bBadStart := driveForwardToFail()
+            if not bBadStart
+                'debug("* good start")
+                quit
+            else
+                debug("*E BAD start! trying again?")
+
+        if bBadStart
+            debug("*E failed to startup motor!  Abort")
+            quit
+
+        'debug("- start done...")
+
         bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
         if not bDidFault
             ' setup for next value in this loop
@@ -207,7 +221,7 @@ PRI evalRange(fromSpd, toSpd, stepSpd) : bDidFault, failSpd | limitValue, endMax
                 debug("* -NEW1st! pass(", udec_(passNbr++), ") rpm: ", udec_(highestRPM))
             else
                 repeatCt++
-                if repeatCt > 2
+                if repeatCt > 1 ' abort after 2nd occurrnce of same value
                     debug("* -THIRD is same! pass(", udec_(passNbr++), ") rpm: ", udec_(highestRPM))
                     failSpd := limitValue
                     quit
@@ -220,10 +234,11 @@ PRI evalRange(fromSpd, toSpd, stepSpd) : bDidFault, failSpd | limitValue, endMax
                 limitValue += stepSpd
                 debug("* -NEXT pass(", udec_(passNbr++), ") curr: ", udec_(limitValue))
         else
-            ' found break, just exit
+            ' faulted! found break, just exit
             failSpd := limitValue
-            wheel.testResetMaxValues()
-            wheel.testResetFault()
+            'debug("**  hold forever for eval...")
+            'repeat ' hold here for evaluation
+            clearFault()
             quit
 
 VAR
@@ -241,6 +256,13 @@ DAT
 
 passCt    LONG    0
 
+PRI clearFault() | bDidFault
+    wheel.resetTracking()
+    wheel.testResetMaxValues()
+
+    if wheel.isFaulted()
+        debug("S clearFault()")
+        wheel.testResetFault()
 
 PRI reportEndCondition() : bDidFault, endMaxRPM, endMaxTics
     ' just finished pass which ended in NOT fault or fault
@@ -250,30 +272,32 @@ PRI reportEndCondition() : bDidFault, endMaxRPM, endMaxTics
     debug("* RPT: ", udec(endMaxRPM), udec(endMaxTICs), sdec(bDidFault))
     debug("  ")
 
-PRI driveForwardToFail() | bDidFault
-
-
-    'waitms(125)
-    'return  ' do nothing for now
-
+PRI driveForwardToFail() : bBadStart | bDidFault
+    bBadStart := FALSE
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
         wheel.stopAfterTime(15, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
         wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
 
-        waitUntilMotorDone()
+        bDidFault, bBadStart := waitUntilMotorDone()
+
+    else
+        debug("*E motor not ready")
 
 
-PRI driveReverseToFail() | bDidFault
-
+PRI driveReverseToFail() : bBadStart | bDidFault
+    bBadStart := FALSE
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
         wheel.stopAfterTime(15, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
         wheel.driveAtPower(-100)                      ' now go FWD at 100% pwr
 
-        waitUntilMotorDone()
+        bDidFault, bBadStart := waitUntilMotorDone()
+
+    else
+        debug("*E motor not ready")
 
 
 PRI waitUntilMotorReady() : bDidFault
@@ -285,7 +309,7 @@ PRI waitUntilMotorReady() : bDidFault
             if wheel.isReady()
                 quit
             elseif bDidFault
-                debug("* Ready? FAULT!")
+                debug("*E Motor NOT Ready? FAULT!")
                 quit
             else
                 waitms(2)
@@ -294,16 +318,18 @@ PRI waitUntilMotorReady() : bDidFault
     '    debug("* Motor ready, let's drive!")
 
 
-PRI waitUntilMotorDone() : bDidFault
+PRI waitUntilMotorDone() : bDidFault, bBadStart
     bDidFault := FALSE
-    if wheel.isStarting() == false
-         'debug("* wait until motor starts...")
+    bBadStart := FALSE
+    if not wheel.isTurning()
+         debug("* wait until motor starts...")
          repeat
             _, _, bDidFault := wheel.testGetResults()
-            if wheel.isStarting()
+            if wheel.isTurning()
                 quit
             elseif bDidFault
-                debug("* Done? FAULT!")
+                bBadStart := TRUE
+                debug("*E NOT turning? Start ended w/FAULT!")
                 quit
             else
                 waitms(2)
@@ -315,7 +341,7 @@ PRI waitUntilMotorDone() : bDidFault
             if wheel.isStopped()
                 quit
             elseif bDidFault
-                debug("* Done? FAULT!")
+                debug("*E NOT Stopped?  wait Finish ended w/FAULT!")
                 quit
             else
                 waitms(2)

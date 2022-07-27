@@ -288,6 +288,7 @@ PUB holdAtStop(bEnable)
 PUB resetTracking()
 '' Resets the position tracking values returned by getDistance() and getRotations()
     posTrkHallTicks := 0    ' reset all of our trackers (they are incremented in sensor loop)
+    waitms(200) ' values will clear in 125ms
 
 PUB moveShaftToAngle(desiredAngle)
 '' TEST: force motor to specific angle
@@ -522,9 +523,20 @@ PUB isStopped() : bState
 '' Return T/F where T means the motor is stopped
     bState := (drv_state == DCS_STOPPED) ? true : false
 
+PUB isFaulted() : bState
+'' Return T/F where T means the motor has faulted
+    bState := (drv_state == DCS_FAULTED) ? true : false
+
 PUB isStarting() : bState
 '' Return T/F where T means the motor is spinning up
+    'bState := (drv_state == DCS_SPIN_UP or drv_state == DCS_AT_SPEED) ? true : false
     bState := (drv_state == DCS_SPIN_UP) ? true : false
+    if not bState
+        debug("MOT not at spin_up but at ", udec(drv_state))
+
+PUB isTurning() : bState
+'' Return T/F where T means the motor is rotating
+    bState := isReady() and not isStopped() and not isFaulted() and not isEmergency()
 
 PUB isEmergency() : bState
 '' Return T/F where T means the motor is emergency-stopped
@@ -584,13 +596,28 @@ PUB testGetResults() : nMaxRPM, maxTics, bDidFault
     bDidFault := fault
     'debug("MOT: result: ", udec(nMaxRPM), udec(maxTics), sdec(bDidFault))
 
-PUB testResetFault()
+PUB testResetFault() | bDidFault
 '' TEST reset our fault indicator that we tripped during test
-    fault := FALSE
+    if fault
+        setTargetAccel(0)
+        fault := FALSE
+        waitms(30) ' values will clear in 20ms but leave extra time to occur
+        if not isStopped()
+            debug("MOT: wait until motor resets...")
+            repeat
+                if isStopped()
+                    quit
+                else
+                    waitms(2)
+            if fault
+                debug("* WAIT-fault-reset ended still-FAULT!")
+    else
+        debug("mE testResetFault() NOT faulted!?")
 
 PUB testResetMaxValues()
 '' TEST reset our fault indicator that we tripped during test
     bResetSenseData := TRUE
+    waitms(200) ' values will clear in 125ms
 
 
 PRI map(inValue, inMin, inMax, outMin, outMax) : nResult | slope
@@ -698,19 +725,21 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
             PWR_18p5V:
                 ' maxFwdIncreAtPwr := 396_000_000   ' Characterized: 100% anything above yields RPM 2_760, cts/sec 1_104
                 ' maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
-                maxFwdIncreAtPwr := 296_000_000      ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.103A
-                maxRevIncreAtPwr := -296_000_000     ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.164A
+                ' maxFwdIncreAtPwr := 379_500_000   ' v+ Characterized: 100% anything above yields RPM 2_640, cts/sec 1056 @0.7A fwd & rev (latest code changes but still above reliable)
+                maxFwdIncreAtPwr := 377_500_000      ' 100% anything above yields RPM 2640.0, cts/Sec 1056, @0.6A
+                maxRevIncreAtPwr := -377_500_000     ' 100% anything above yields RPM 2640.0, cts/Sec 1056, @0.7A
             PWR_22p2V:
                 ' maxFwdIncreAtPwr := 335_500_000   ' Characterized: 100% anything above yields RPM 2_340, cts/sec 936
                 ' maxFwdIncreAtPwr := 372_500_000   ' v+ Characterized: 100% anything above yields RPM 2_600, cts/sec 1_040
-                maxFwdIncreAtPwr := 371_500_000      ' 100% anything above yields RPM 2600.0, cts/Sec 1040, @0.620A
-                maxRevIncreAtPwr := -371_500_000     ' 100% anything above yields RPM 2600.0, cts/Sec 1040, @0.530A
+                ' maxFwdIncreAtPwr := 370_000_000   ' v+ Characterized: 100% anything above yields RPM 2_580, cts/sec 1_032 (latest code changes but still above reliable)
+                maxFwdIncreAtPwr := 370_000_000      ' 100% anything above yields RPM 2580.0, cts/Sec 1032, @0.620A
+                maxRevIncreAtPwr := -370_000_000     ' 100% anything above yields RPM 2580.0, cts/Sec 1032, @0.530A
             PWR_24p0V:
                 ' maxFwdIncreAtPwr := 336_000_000   ' Characterized: 100% anything above yields RPM 2_340, cts/sec 936
                 ' maxFwdIncreAtPwr := 372_500_000   ' v+ Characterized: 100% anything above yields RPM 2_600, cts/sec 1_040
-                ' maxFwdIncreAtPwr := 381_000_000   ' v+ Characterized: 100% anything above yields RPM 2_660, cts/sec 1_064 (latest code changes but still above reliable)
-                maxFwdIncreAtPwr := 372_000_000      ' 100% anything above yields RPM 2600.0, cts/Sec 1040, @0.620A
-                maxRevIncreAtPwr := -372_000_000     ' 100% anything above yields RPM 2600.0, cts/Sec 1040, @0.640A
+                ' maxFwdIncreAtPwr := 380_000_000   ' v+ Characterized: 100% anything above yields RPM 2_660, cts/sec 1_064 (latest code changes but still above reliable)
+                maxFwdIncreAtPwr := 380_000_000      ' 100% anything above yields RPM 2660.0, cts/Sec 1064, @0.620A
+                maxRevIncreAtPwr := -380_000_000     ' 100% anything above yields RPM 2660.0, cts/Sec 1064, @0.640A
             other:
                 debug("*???* Unknown: ", sdec_long(selectedPower))
                 abort   ' SHOULD NEVER get here!
@@ -1394,14 +1423,16 @@ driver          rdlong  x, ptra++                       ' get base pin
                 ' let's see if user wants to change speed
                 ' have new drive command?
 .newCmd
-'  NEW TEST SUPPORT CODE
+'
+'  NEW TEST SUPPORT CODE (alternate input path (angle) for TESTing!)
                 rdlong  tgt_incr, ptra[-2]              ' get desired targetAngle for test
                 cmp     tgt_incr, minus1            wz  ' Q: do we have a request?
     if_nz       mov     angle, tgt_incr                 ' post this value to driver
-    if_nz       wrlong  minus1, ptra[-2]                ' git it, now clear it ready for user to send another
+    if_nz       wrlong  minus1, ptra[-2]                ' got it, now clear it ready for user to send another
     if_nz       jmp     #.endRqst                       ' and position motor there
                 ' no? then just fall thru
 '  END OF NEW TEST SUPPORT CODE
+'
                 rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
                 cmp     prior_incr, tgt_incr        wz  ' Q: do we have a new request?
     if_z        jmp     #.currRqst      ' nope, just continue what we are doing
@@ -1410,27 +1441,34 @@ driver          rdlong  x, ptra++                       ' get base pin
 .newRqst    ' have new request
             ' determine what we need to do
     ' ====================================
+                ' first, if faulted, clear fault
+                cmp     drv_state_, #DCS_FAULTED    wz  ' Q: is MOTOR faulted?
+    if_nz       jmp     #.chkStopCmd                    ' NO, go to next check
+            ' MOTOR faulted, clear fault so we can run again
+.resetFault
+                mov     tgt_incr, #0                    ' YES, reset incr to stopped
+                mov     drv_incr, #0                    ' reset incr to stopped
+                mov     prior_incr, #0                  ' reset prior
+                mov     fwdrev, #0                      ' just in case
+                mov     duty_, #0                       ' just in case
+                mov     angle, #0                       ' just in case
+                'call    #.initAngleFmHall               ' figure out where motor is once again
+                mov     drv_state_, #DCS_STOPPED        ' reset fault -> to stopped
+                cmp     stop_mode_, #SM_FLOAT       wz  ' Q: are we floating pins during stop?
+    if_nz       dirh    drive_pins                      ' NO, set control pins back to output
+                ' if we were faulted, we are already stopped so just do nothing if stop request
+                cmp     tgt_incr, stop_requst       wz  ' Q: is stop request?
+    if_z        mov     prior_incr, tgt_incr            ' YES, just a stop and we already are - set this as latest prior!
+    if_z        jmp     #.currRqst      ' exit, just continue what we are doing
+.chkStopCmd
                 ' if NEW request is stop
                 cmp     tgt_incr, stop_requst       wz  ' Q: is stop request?
-    if_z        mov     prior_incr, tgt_incr            ' have new request - set this a latest prior!
+    if_z        mov     prior_incr, tgt_incr            ' have new request - set this as latest prior!
     if_z        mov     drv_state_, #DCS_SPIN_DN        ' yes, so start ramp down
     if_z        jmp     #.rampDn
                 ' have start or speed adjustment
-                cmp     drv_state_, #DCS_FAULTED    wz  ' Q: is MOTOR faulted?
-    if_nz       jmp     #.chkStopped                    ' NO, go to next check
-            ' MOTOR faulted, clear fault so we can run again
-                mov     tgt_incr, #0                    ' YES, reset incr to stopped
-                mov     drv_incr, #0                    ' reset incr to stopped
-                mov     prior_incr, #0                  ' along with prior
-                mov     fwdrev, #0                      ' just in case
-                mov     duty_, #0                       ' just in case
-                mov     drv_state_, #DCS_STOPPED        ' reset fault to stopped
-                call    #.initAngleFmHall               ' figure out where motor is once again
-                cmp     stop_mode_, #SM_FLOAT       wz  ' Q: are we floating pins during stop?
-    if_nz       dirh    drive_pins                      ' NO, set control pins back to output
-                ' fall thru to next handling code
 .chkStopped
-                cmp     drv_state_, #DCS_STOPPED    wz  ' Q: iare we stopped?
+                cmp     drv_state_, #DCS_STOPPED    wz  ' Q: are we stopped?
     if_nz       jmp     #.notStart                      ' NO, go to next check
                 mov     prior_incr, tgt_incr            ' YES, have new request - set this a latest prior!
                 mov     drv_state_, #DCS_SPIN_UP        ' We are going to ramp up
