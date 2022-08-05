@@ -1003,35 +1003,7 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
 
 
 CON { -- TASK position tracking -- }
-
-  STACK_SIZE_LONGS = 48
-  WINDOW_SIZE = 5
-
-VAR { * sense buffer and stack arrays * }
-    LONG    taskStack[STACK_SIZE_LONGS]
-    LONG    bResetSenseData
-
-    ' summing sense values at 1/8 sec period
-    LONG    fstCountsWindow[WINDOW_SIZE]
-    LONG    fstWinIndex
-    LONG    fstWinEntryCt
-    LONG    fstCntsInSec
-    LONG    fstWindowSum
-    ' summing sense values at 1 sec period
-    LONG    sloCountsWindow[WINDOW_SIZE]
-    LONG    sloWinIndex
-    LONG    sloWinEntryCt
-    LONG    sloCntsInSec
-    LONG    sloWindowSum
-    ' summing 360 sensor values at 1 sec period
-    LONG    r360CountsWindow[WINDOW_SIZE]
-    LONG    r360WinIndex
-    LONG    r360WinEntryCt
-    LONG    r360degrPerSec
-    LONG    r360WindowSum
-
-CON { Sense Constants }
-
+' Sense Constants
     ' at 125 ms
     SENSE_LOOP_HZ = 8
     ' at 31.25 ms
@@ -1041,30 +1013,46 @@ CON { Sense Constants }
     ' at 7.813 ms
     'SENSE_LOOP_HZ = 128
 
+  STACK_SIZE_LONGS = 48
+  R360_WINDOW_SIZE = 5
+  HALL_WINDOW_SIZE = SENSE_LOOP_HZ
+
+VAR { * sense buffer and stack arrays * }
+    LONG    taskStack[STACK_SIZE_LONGS]
+    LONG    bResetSenseData
+
+    ' summing sense values at 1/8 sec period
+    LONG    hallCountsWindow[SENSE_LOOP_HZ]
+    LONG    hallWinIndex
+    LONG    hallWinEntryCt
+    LONG    hallCntsIn8thSec
+    LONG    hallWindowSum
+    ' summing 360 sensor values at 1 sec period
+    LONG    r360CountsWindow[R360_WINDOW_SIZE]
+    LONG    r360WinIndex
+    LONG    r360WinEntryCt
+    LONG    r360degrPerSec
+    LONG    r360WindowSum
+
 PRI resetWindowAccumulators()
 ' reset our window accumulator data
-    longfill(@fstCountsWindow, 0, WINDOW_SIZE) ' zero our windowed accum
-    longfill(@sloCountsWindow, 0, WINDOW_SIZE) ' zero our windowed accum
-    longfill(@r360CountsWindow, 0, WINDOW_SIZE) ' zero our windowed accum
-    fstWinEntryCt := fstWindowSum := fstWinIndex := 0
-    sloWinEntryCt := sloWindowSum := sloWinIndex := 0
+    longfill(@hallCountsWindow, 0, HALL_WINDOW_SIZE) ' zero our windowed accum
+    longfill(@r360CountsWindow, 0, R360_WINDOW_SIZE) ' zero our windowed accum
+    hallWinEntryCt := hallWindowSum := hallWinIndex := 0
     r360WinEntryCt := r360WindowSum := r360WinIndex := 0
-    r360degrPerSec := fstCntsInSec := sloCntsInSec := 0
+    r360degrPerSec := hallCntsIn8thSec := 0
 
-PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr,  loopCtr
-' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
+PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loopCtr
+' TASK: every 1/8 Sec (8Hz) read motor posn and calculate RPM and countOf90ths/Sec
 
-    eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := tvMaxSenseI := prioro1SecPos := prioro8thSecPos := 0
+    eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := tvMaxSenseI := 0
+    prioro8thSecPos := pos  ' reset by adopting current value
     r360degrPerSec := tv360rpm_x10 := tv360rpm := 0
     r360WinEntryCt := r360WindowSum := r360WinIndex := 0
 
     pinlow(TEST_PIN_SENSE_LP)
 
     ' configure our R/P sensor pins
-    'pinstart(TEST_ALL2_PINS,P_HIGH_1K5,0,0)
-    'pinstart(TEST_ALL2_PINS,P_HIGH_15K,0,0)         ' pretty good
-    'pinstart(TEST_ALL2_PINS,P_HIGH_150K,0,0)        ' nope
-
     pinfloat(TEST_ALL2_PINS)    ' set to inputs
     ' configure for quadrature A+B X=run continuous, reset Y
     pinstart(TEST_PIN_RP_SNS1, P_QUADRATURE | P_PLUS1_B, 0, 0)
@@ -1078,37 +1066,23 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
             tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
             tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
             tv360rpm_x10 := tv360rpm := 0
-            prioro1SecPos := prioro8thSecPos := 0
+            prioro8thSecPos := pos  ' reset by adopting current value
             posTrkHallTicks := 0
             tvMaxSenseI := 0
-
-        if bResetSenseData
-            bResetSenseData := FALSE
-            tvMaxSenseI := eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
+            eStopCtr := 0
+            if bResetSenseData
+                bResetSenseData := FALSE
 
         senseStartTicks := getct()
         pinhigh(TEST_PIN_SENSE_LP)
 
-        fstCntsInSec := absDistanceInTics(pos, prioro8thSecPos) ' Read the next sensor value
+        hallCntsIn8thSec := absDistanceInTics(pos, prioro8thSecPos) ' Read the next sensor value
         prioro8thSecPos := pos                              ' save prior
 
         ' accum our fast & slow windowed values
         if loopCtr +// SENSE_LOOP_HZ == 0             ' once every second compute slow cts in case we are slow
-            if fstCntsInSec < 2
-                ' every 1 sec calculate low-speed posn
-                sloCntsInSec := absDistanceInTics(pos, prioro1SecPos)
-                prioro1SecPos := pos
-
-                ' less than 8-tics per sec...
-                sloWindowSum -= LONG[@sloCountsWindow][sloWinIndex]          ' Remove the oldest entry from the sum
-                long [@sloCountsWindow][sloWinIndex] := sloCntsInSec      ' place the newest reading into the window
-                sloWindowSum += sloCntsInSec                           ' Add the newest reading to the sum
-                sloWinIndex := (sloWinIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
-                if sloWinEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
-                    sloWinEntryCt++
-
             ' ---------------------------------------------------------------------------------
-            ' also, capture 360 Sensor data
+            ' Capture 360 Sensor data
             '
             r360degrPerSec := abs(rqpin(TEST_PIN_RP_SNS1) sar 2)  ' divide by 4 to get degrees
             'debug("MTR: ", sdec(r360degrPerSec))
@@ -1119,31 +1093,25 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
             r360WindowSum -= LONG[@r360CountsWindow][r360WinIndex]          ' Remove the oldest entry from the sum
             long [@r360CountsWindow][r360WinIndex] := r360degrPerSec      ' place the newest reading into the window
             r360WindowSum += r360degrPerSec                           ' Add the newest reading to the sum
-            r360WinIndex := (r360WinIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
-            if r360WinEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
+            r360WinIndex := (r360WinIndex + 1) +// R360_WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
+            if r360WinEntryCt < R360_WINDOW_SIZE                         ' incr number of samples in sum until is window size
                 r360WinEntryCt++
 
-            tv360rpm_x10 := ((r360WindowSum / r360WinEntryCt) * 60) / 36
+            'tv360rpm_x10 := ((r360WindowSum / r360WinEntryCt) * 60) / 36
+            tv360rpm_x10 := (r360degrPerSec * 60) / 36
             tv360rpm := tv360rpm_x10 / 10
             '
             ' ---------------------------------------------------------------------------------
 
-        ' accum our fast windowed values
-        if fstCntsInSec > 1
-            ' 8-tics per sec or more...
-            fstWindowSum -= LONG[@fstCountsWindow][fstWinIndex]          ' Remove the oldest entry from the sum
-            long [@fstCountsWindow][fstWinIndex] := fstCntsInSec      ' place the newest reading into the window
-            fstWindowSum += fstCntsInSec                           ' Add the newest reading to the sum
-            fstWinIndex := (fstWinIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
-            if fstWinEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
-                fstWinEntryCt++
-            cntsInSec := (fstWindowSum / fstWinEntryCt) * SENSE_LOOP_HZ           ' moving average, scaled
-            posThis8th := fstWindowSum / fstWinEntryCt
-            posTrkHallTicks += posThis8th
-        else
-            ' preload in case we have no fast value
-            cntsInSec := (sloWindowSum / sloWinEntryCt)
-            posTrkHallTicks := ((posTrkHallTicks * SENSE_LOOP_HZ) + cntsInSec) / SENSE_LOOP_HZ
+        ' accum our windowed values
+        hallWindowSum -= LONG[@hallCountsWindow][hallWinIndex]          ' Remove the oldest entry from the sum
+        long [@hallCountsWindow][hallWinIndex] := hallCntsIn8thSec      ' place the newest reading into the window
+        hallWindowSum += hallCntsIn8thSec                           ' Add the newest reading to the sum
+        hallWinIndex := (hallWinIndex + 1) +// HALL_WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
+        if hallWinEntryCt < HALL_WINDOW_SIZE                         ' incr number of samples in sum until is window size
+            hallWinEntryCt++
+        cntsInSec := hallWindowSum          ' moving average, scaled
+        posTrkHallTicks += hallCntsIn8thSec
 
         tvRpm_x10 := ((cntsInSec * 60) * 10) / hallTicsPerRotation
         rpm := tvRpm_x10 / 10
@@ -1205,7 +1173,7 @@ PRI absDistanceInTics(newPos, priorPos) : nHallTics
     if newPos == priorPos
         nHallTics := 0
     elseif newPos < 0
-        ' handle pos negative case
+        ' handle new-negative case
         if priorPos < 0
             '  -7 -> -9 = abs(-9) - abs(-7) = abs(2) = 2
             '  -11 -> -9 = abs(-9) - abs(-11) = abs(-2) = 2
@@ -1214,7 +1182,7 @@ PRI absDistanceInTics(newPos, priorPos) : nHallTics
             '  9 -> -9 = 18 = abs(9) + abs(-9) = 18
             nHallTics := abs(newPos) + abs(priorPos)
     else
-        ' handle pos positive case
+        ' handle new-positive case
         if priorPos < 0
             ' -9 -> 6 = 6 + abs(-9) = 15
             ' -3 -> 6 = 6 + abs(-3) = 9
@@ -1223,8 +1191,6 @@ PRI absDistanceInTics(newPos, priorPos) : nHallTics
             ' 9 -> 6 = 6 - 9 = abs(-3) = 3
             ' 9 -> 12 = 12 - 9 = abs(3) = 3
             nHallTics := abs(newPos - priorPos)
-    priorPos := newPos
-
 
 CON { --- The Motor driver --- }
 
@@ -1305,7 +1271,6 @@ VAR { * Data for Motor Position Tracking * }
     LONG    tv360rpm_x10
     LONG    tv360rpm
     '  --------------------------
-    LONG    prioro1SecPos
     LONG    prioro8thSecPos
     LONG    mmPerSec_x10
     LONG    ftPerSec_x10
@@ -1524,10 +1489,10 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 '    - to smaller - -> ramp down to new
 
                 ' first do we have same sign?
-                testb   prior_incr, #31             wc  ' find dual '-' signs (CY=both neg)
+                testb   prior_incr, #31             wc  ' find dual '-' signs (CY=both nega)
                 testb   tgt_incr, #31               andc
     if_c        jmp     #.endSame
-                testbn  prior_incr, #31             wc  ' find dual '+' signs (CY=both pos)
+                testbn  prior_incr, #31             wc  ' find dual '+' signs (CY=both posi)
                 testbn  tgt_incr, #31               andc
 .endSame
     if_nc       jmp     #.notSame
