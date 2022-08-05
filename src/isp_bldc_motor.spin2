@@ -56,7 +56,7 @@ OBJ { objects / constants included by this object }
 CON { test pins for LA measurement }
 
 '{
-    ' PIN_8 - PIN_15
+    ' PIN_40 - PIN_47 - general LA header
     TEST_BASE_PIN = 40
     TEST_ALL_PINS = TEST_BASE_PIN addpins 7
     TEST_PIN_SENSE_LP = TEST_BASE_PIN + 0           ' LA ch0
@@ -64,6 +64,13 @@ CON { test pins for LA measurement }
     TEST_PIN_MOTR_CTL_LP = TEST_BASE_PIN + 2        ' LA ch2
     TEST_PIN_DRIVE_LP2 = TEST_BASE_PIN + 3          ' LA ch3
     TEST_PIN_OUTER_LP = TEST_BASE_PIN + 4           ' LA ch4
+'}
+'{
+    ' PIN 48, 49 our rot/360 R/P Sensor
+    TEST_BASE2_PIN = 48
+    TEST_ALL2_PINS = TEST_BASE2_PIN addpins 1
+    TEST_PIN_RP_SNS1 = TEST_BASE2_PIN + 0
+    TEST_PIN_RP_SNS2 = TEST_BASE2_PIN + 1
 '}
 
 DAT { misc time constants }
@@ -847,67 +854,6 @@ hltbAngl4k2 LONG    0           '-%000- can't happen - reverse-direction table
             LONG    3 frac 6    '%110
             LONG    0           '-%111- can't happen
 
-{
-'   amount of rotation within hall cycle - docoEng.com 4kRPM, 24V
-hltbAngl4k  LONG    0           '-%000- can't happen - forward-direction table
-            LONG    0 frac 6    '%001
-            LONG    4 frac 6    '%010
-            LONG    5 frac 6    '%011
-            LONG    1 frac 6    '%100
-            LONG    3 frac 6    '%101
-            LONG    2 frac 6    '%110
-            LONG    0           '-%111- can't happen
-
-hltbAngl4k2 LONG    0           '-%000- can't happen - reverse-direction table
-            LONG    5 frac 6    '%001
-            LONG    1 frac 6    '%010
-            LONG    4 frac 6    '%011
-            LONG    3 frac 6    '%100
-            LONG    0 frac 6    '%101
-            LONG    2 frac 6    '%110
-            LONG    0           '-%111- can't happen
-'}
-{
-' working
-hltb_angl4k LONG    0           '-%000- can't happen - forward-direction table
-            LONG    0 frac 6    '%001
-            LONG    4 frac 6    '%010
-            LONG    5 frac 6    '%011
-            LONG    1 frac 6    '%100
-            LONG    3 frac 6    '%101
-            LONG    2 frac 6    '%110
-            LONG    0           '-%111- can't happen
-
-            LONG    0           '-%000- can't happen - reverse-direction table
-            LONG    5 frac 6    '%001
-            LONG    1 frac 6    '%010
-            LONG    4 frac 6    '%011
-            LONG    3 frac 6    '%100
-            LONG    0 frac 6    '%101
-            LONG    2 frac 6    '%110
-            LONG    0           '-%111- can't happen
-'}
-{
-hltb_angl4k LONG    0           '-%000- can't happen - reverse-direction table
-            LONG    3 frac 6    '%001
-            LONG    4 frac 6    '%010
-            LONG    5 frac 6    '%011
-            LONG    1 frac 6    '%100
-            LONG    2 frac 6    '%101
-            LONG    0 frac 6    '%110
-            LONG    0           '-%111- can't happen
-
-            LONG    0           '-%000- can't happen - forward-direction table
-            LONG    3 frac 6    '%001
-            LONG    1 frac 6    '%010
-            LONG    2 frac 6    '%011
-            LONG    5 frac 6    '%100
-            LONG    4 frac 6    '%101
-            LONG    0 frac 6    '%110
-            LONG    0           '-%111- can't happen
-
-'}
-
 CON { --- HDMI Debug Support --- }
 
 CON { Constants for HDMI Debug }
@@ -944,6 +890,7 @@ DAT { Literals for HDMI Debug }
     name23      BYTE    "delta",0
     name24      BYTE    "Amp",0
     name25      BYTE    "maxAmp",0
+    name26      BYTE    "RPMb10ths",0
     nextAddr2
     dataLen2     LONG    @nextAddr2 - @nameTitle2
 
@@ -983,7 +930,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pValsAr][nValsGrpOffset + 6] := @fault
 
     nGrpOffset := 1
-    nVarsInGroup := 6
+    nVarsInGroup := 7
     LONG[@pTitlesAr][nGrpOffset] := @nameTitle2
     LONG[@pVarCtAr][nGrpOffset] := nVarsInGroup
      ' populate the empty name/value ptr tables
@@ -994,12 +941,14 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 3] := @name23
     LONG[@pNamesAr][nValsGrpOffset + 4] := @name24
     LONG[@pNamesAr][nValsGrpOffset + 5] := @name25
+    LONG[@pNamesAr][nValsGrpOffset + 6] := @name26
     LONG[@pValsAr][nValsGrpOffset + 0] := @tvRpm_x10
     LONG[@pValsAr][nValsGrpOffset + 1] := @rpm
     LONG[@pValsAr][nValsGrpOffset + 2] := @cntsInSec
     LONG[@pValsAr][nValsGrpOffset + 3] := @deltaTicks
     LONG[@pValsAr][nValsGrpOffset + 4] := @sense_i
     LONG[@pValsAr][nValsGrpOffset + 5] := @tvMaxSenseI
+    LONG[@pValsAr][nValsGrpOffset + 6] := @tv360rpm_x10
 
     nGrpOffset := 2
     nVarsInGroup := 7
@@ -1059,9 +1008,27 @@ CON { -- TASK position tracking -- }
   WINDOW_SIZE = 5
 
 VAR { * sense buffer and stack arrays * }
-    LONG    countsWindow[WINDOW_SIZE]
     LONG    taskStack[STACK_SIZE_LONGS]
     LONG    bResetSenseData
+
+    ' summing sense values at 1/8 sec period
+    LONG    fstCountsWindow[WINDOW_SIZE]
+    LONG    fstWinIndex
+    LONG    fstWinEntryCt
+    LONG    fstCntsInSec
+    LONG    fstWindowSum
+    ' summing sense values at 1 sec period
+    LONG    sloCountsWindow[WINDOW_SIZE]
+    LONG    sloWinIndex
+    LONG    sloWinEntryCt
+    LONG    sloCntsInSec
+    LONG    sloWindowSum
+    ' summing 360 sensor values at 1 sec period
+    LONG    r360CountsWindow[WINDOW_SIZE]
+    LONG    r360WinIndex
+    LONG    r360WinEntryCt
+    LONG    r360degrPerSec
+    LONG    r360WindowSum
 
 CON { Sense Constants }
 
@@ -1074,18 +1041,44 @@ CON { Sense Constants }
     ' at 7.813 ms
     'SENSE_LOOP_HZ = 128
 
-PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
+PRI resetWindowAccumulators()
+' reset our window accumulator data
+    longfill(@fstCountsWindow, 0, WINDOW_SIZE) ' zero our windowed accum
+    longfill(@sloCountsWindow, 0, WINDOW_SIZE) ' zero our windowed accum
+    longfill(@r360CountsWindow, 0, WINDOW_SIZE) ' zero our windowed accum
+    fstWinEntryCt := fstWindowSum := fstWinIndex := 0
+    sloWinEntryCt := sloWindowSum := sloWinIndex := 0
+    r360WinEntryCt := r360WindowSum := r360WinIndex := 0
+    r360degrPerSec := fstCntsInSec := sloCntsInSec := 0
+
+PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr,  loopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
 
-    eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := tvMaxSenseI := 0
+    eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := tvMaxSenseI := prioro1SecPos := prioro8thSecPos := 0
+    r360degrPerSec := tv360rpm_x10 := tv360rpm := 0
+    r360WinEntryCt := r360WindowSum := r360WinIndex := 0
+
     pinlow(TEST_PIN_SENSE_LP)
 
+    ' configure our R/P sensor pins
+    'pinstart(TEST_ALL2_PINS,P_HIGH_1K5,0,0)
+    'pinstart(TEST_ALL2_PINS,P_HIGH_15K,0,0)         ' pretty good
+    'pinstart(TEST_ALL2_PINS,P_HIGH_150K,0,0)        ' nope
+
+    pinfloat(TEST_ALL2_PINS)    ' set to inputs
+    ' configure for quadrature A+B X=run continuous, reset Y
+    pinstart(TEST_PIN_RP_SNS1, P_QUADRATURE | P_PLUS1_B, 0, 0)
+    'pinhigh(TEST_PIN_RP_SNS1)     ' enable
+
     repeat
+        loopCtr++
         ' if just starting up (or MOTOR FAULT), reset our tracker
         if drv_state == DCS_FAULTED or senseStartTicks == 0 or bResetSenseData
-            longfill(@countsWindow, 0, WINDOW_SIZE) ' zero our window accum
+            resetWindowAccumulators()
             tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
-            winEntryCt := windowSum := winIndex := 0
+            tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
+            tv360rpm_x10 := tv360rpm := 0
+            prioro1SecPos := prioro8thSecPos := 0
             posTrkHallTicks := 0
             tvMaxSenseI := 0
 
@@ -1096,27 +1089,70 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         senseStartTicks := getct()
         pinhigh(TEST_PIN_SENSE_LP)
 
-        newCntsInSec := absDistanceInTics(pos)            ' Read the next sensor value
-        windowSum -= LONG[@countsWindow][winIndex]          ' Remove the oldest entry from the sum
-        long [@countsWindow][winIndex] := newCntsInSec      ' place the newest reading into the window
-        windowSum += newCntsInSec                           ' Add the newest reading to the sum
-        winIndex := (winIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
-        if winEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
-            winEntryCt++
+        fstCntsInSec := absDistanceInTics(pos, prioro8thSecPos) ' Read the next sensor value
+        prioro8thSecPos := pos                              ' save prior
 
-        cntsInSec := (windowSum / winEntryCt) * SENSE_LOOP_HZ           ' moving average, scaled
+        ' accum our fast & slow windowed values
+        if loopCtr +// SENSE_LOOP_HZ == 0             ' once every second compute slow cts in case we are slow
+            if fstCntsInSec < 2
+                ' every 1 sec calculate low-speed posn
+                sloCntsInSec := absDistanceInTics(pos, prioro1SecPos)
+                prioro1SecPos := pos
+
+                ' less than 8-tics per sec...
+                sloWindowSum -= LONG[@sloCountsWindow][sloWinIndex]          ' Remove the oldest entry from the sum
+                long [@sloCountsWindow][sloWinIndex] := sloCntsInSec      ' place the newest reading into the window
+                sloWindowSum += sloCntsInSec                           ' Add the newest reading to the sum
+                sloWinIndex := (sloWinIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
+                if sloWinEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
+                    sloWinEntryCt++
+
+            ' ---------------------------------------------------------------------------------
+            ' also, capture 360 Sensor data
+            '
+            r360degrPerSec := abs(rqpin(TEST_PIN_RP_SNS1) sar 2)  ' divide by 4 to get degrees
+            'debug("MTR: ", sdec(r360degrPerSec))
+            ' reset reader
+            pinfloat(TEST_PIN_RP_SNS1)    ' set to input
+            pinhigh(TEST_PIN_RP_SNS1)     ' set to output
+
+            r360WindowSum -= LONG[@r360CountsWindow][r360WinIndex]          ' Remove the oldest entry from the sum
+            long [@r360CountsWindow][r360WinIndex] := r360degrPerSec      ' place the newest reading into the window
+            r360WindowSum += r360degrPerSec                           ' Add the newest reading to the sum
+            r360WinIndex := (r360WinIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
+            if r360WinEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
+                r360WinEntryCt++
+
+            tv360rpm_x10 := ((r360WindowSum / r360WinEntryCt) * 60) / 36
+            tv360rpm := tv360rpm_x10 / 10
+            '
+            ' ---------------------------------------------------------------------------------
+
+        ' accum our fast windowed values
+        if fstCntsInSec > 1
+            ' 8-tics per sec or more...
+            fstWindowSum -= LONG[@fstCountsWindow][fstWinIndex]          ' Remove the oldest entry from the sum
+            long [@fstCountsWindow][fstWinIndex] := fstCntsInSec      ' place the newest reading into the window
+            fstWindowSum += fstCntsInSec                           ' Add the newest reading to the sum
+            fstWinIndex := (fstWinIndex + 1) +// WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
+            if fstWinEntryCt < WINDOW_SIZE                         ' incr number of samples in sum until is window size
+                fstWinEntryCt++
+            cntsInSec := (fstWindowSum / fstWinEntryCt) * SENSE_LOOP_HZ           ' moving average, scaled
+            posThis8th := fstWindowSum / fstWinEntryCt
+            posTrkHallTicks += posThis8th
+        else
+            ' preload in case we have no fast value
+            cntsInSec := (sloWindowSum / sloWinEntryCt)
+            posTrkHallTicks := ((posTrkHallTicks * SENSE_LOOP_HZ) + cntsInSec) / SENSE_LOOP_HZ
+
         tvRpm_x10 := ((cntsInSec * 60) * 10) / hallTicsPerRotation
         rpm := tvRpm_x10 / 10
-        rpmTenths := tvRpm_x10 +// 10
 
         tvMaxRpmIn10ths := MAX(tvRpm_x10, tvMaxRpmIn10ths)
         maxRpm := tvMaxRpmIn10ths / 10
         tvMaxCntsInSec := MAX(cntsInSec, tvMaxCntsInSec)
 
         tvMaxSenseI := MAX(sense_i, tvMaxSenseI)
-
-        posThis8th := windowSum / winEntryCt
-        posTrkHallTicks += posThis8th
 
         if user.MOTOR_TYPE == MOTR_6_5_INCH
             ' pos is in hall-steps of 4Degr each.
@@ -1165,7 +1201,7 @@ PRI MAX(a,b) : nMax
 ' return max of a or b
     nMax := (a > b) ? a : b
 
-PRI absDistanceInTics(newPos) : nHallTics
+PRI absDistanceInTics(newPos, priorPos) : nHallTics
     if newPos == priorPos
         nHallTics := 0
     elseif newPos < 0
@@ -1252,10 +1288,6 @@ VAR { * Data Structure for PASM Driver * }
 
 VAR { * Data for Motor Position Tracking * }
 
-    LONG    winIndex
-    LONG    winEntryCt
-    LONG    newCntsInSec
-    LONG    windowSum
     '  ----- HDMI monitored! ----
     LONG    tvRpm_x10
     LONG    rpm
@@ -1270,9 +1302,11 @@ VAR { * Data for Motor Position Tracking * }
     LONG    tvMaxCntsInSec
     LONG    tvTargetIncreInM
     LONG    tvMaxSenseI
+    LONG    tv360rpm_x10
+    LONG    tv360rpm
     '  --------------------------
-    LONG    priorPos
-    LONG    rpmTenths
+    LONG    prioro1SecPos
+    LONG    prioro8thSecPos
     LONG    mmPerSec_x10
     LONG    ftPerSec_x10
     LONG    kmh_x10
@@ -1902,6 +1936,7 @@ deltas      BYTE    0,  0,  0,  0,  0,  0,  0,  0  ' Hall-effect-sensor position
 '    1 tic is 4 degrees
 '    6 tics per tic-cycle
 '   15 tic-cycles per 360 degrees
+'   30 pole motor
 '    1 tic-cycle is 24 degrees
 '
 '  docoEng.com 4k RPM 24v motor
@@ -1910,6 +1945,7 @@ deltas      BYTE    0,  0,  0,  0,  0,  0,  0,  0  ' Hall-effect-sensor position
 '   24 tics per 360 degrees
 '    6 tics per tic-cycle
 '    4 tic-cycles per 360 degrees
+'    8 pole motor
 '    1 tic-cycle is 90 degrees
 '
 '   amount of rotation within hall cycle - 6.5" wheel
