@@ -42,6 +42,9 @@ See also:
 Latest Changes:
 
 ```
+1-5 Aug 2022
+- Improve resolution of single drive position sense loop
+- Adjust top-end constants for DocoEng motor (after more characterization)
 2 July 2022
 - Small motor working well
 - Finished first pass at characterization of limits
