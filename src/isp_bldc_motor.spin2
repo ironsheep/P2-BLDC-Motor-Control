@@ -55,7 +55,10 @@ OBJ { objects / constants included by this object }
 
 CON { test pins for LA measurement }
 
-'{
+' -----------------------------------
+' Logic Analyzer Instrumentation Code
+' -----------------------------------
+{
     ' PIN_40 - PIN_47 - general LA header
     TEST_BASE_PIN = 40
     TEST_ALL_PINS = TEST_BASE_PIN addpins 7
@@ -65,7 +68,7 @@ CON { test pins for LA measurement }
     TEST_PIN_DRIVE_LP2 = TEST_BASE_PIN + 3          ' LA ch3
     TEST_PIN_OUTER_LP = TEST_BASE_PIN + 4           ' LA ch4
 '}
-'{
+{
     ' PIN 48, 49 our rot/360 R/P Sensor
     TEST_BASE2_PIN = 48
     TEST_ALL2_PINS = TEST_BASE2_PIN addpins 1
@@ -1050,6 +1053,10 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
     r360degrPerSec := tv360rpm_x10 := tv360rpm := 0
     r360WinEntryCt := r360WindowSum := r360WinIndex := 0
 
+    ' -----------------------------------
+    ' Logic Analyzer Instrumentation Code
+    ' -----------------------------------
+{
     pinlow(TEST_PIN_SENSE_LP)
 
     ' configure our R/P sensor pins
@@ -1057,6 +1064,7 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
     ' configure for quadrature A+B X=run continuous, reset Y
     pinstart(TEST_PIN_RP_SNS1, P_QUADRATURE | P_PLUS1_B, 0, 0)
     'pinhigh(TEST_PIN_RP_SNS1)     ' enable
+'}
 
     repeat
         loopCtr++
@@ -1074,11 +1082,21 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
                 bResetSenseData := FALSE
 
         senseStartTicks := getct()
+
+    ' -----------------------------------
+    ' Logic Analyzer Instrumentation Code
+    ' -----------------------------------
+{
         pinhigh(TEST_PIN_SENSE_LP)
+'}
 
         hallCntsIn8thSec := absDistanceInTics(pos, prioro8thSecPos) ' Read the next sensor value
         prioro8thSecPos := pos                              ' save prior
 
+    ' -----------------------------------
+    ' Logic Analyzer Instrumentation Code
+    ' -----------------------------------
+{
         ' accum our fast & slow windowed values
         if loopCtr +// SENSE_LOOP_HZ == 0             ' once every second compute slow cts in case we are slow
             ' ---------------------------------------------------------------------------------
@@ -1102,6 +1120,7 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
             tv360rpm := tv360rpm_x10 / 10
             '
             ' ---------------------------------------------------------------------------------
+'}
 
         ' accum our windowed values
         hallWindowSum -= LONG[@hallCountsWindow][hallWinIndex]          ' Remove the oldest entry from the sum
@@ -1160,9 +1179,15 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
             e_stop := FALSE
             eStopCtr := 0
 
+    ' -----------------------------------
+    ' Logic Analyzer Instrumentation Code
+    ' -----------------------------------
+{
+        pinlow(TEST_PIN_SENSE_LP)
+'}
+
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
         '   wait remainder of 125 mSec before next sample
-        pinlow(TEST_PIN_SENSE_LP)
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
 
 PRI MAX(a,b) : nMax
@@ -1319,10 +1344,12 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 or      all_pins, tmpX                     ' finish the all-pins variable
                 add     drive_pins, tmpX                   ' finish the drive-pins variable
 
+{
+                ' Logic Analyzer Instrumentation Code
                 drvl    motrCtlLpPnFld                  ' preset test pins to low
                 drvl    drvrTmrPnFld                    ' preset test pins to low
                 drvl    drvrTmr2PnFld                   ' preset test pins to low
-
+'}
                 mov     tmpY, #0                           ' make single-pin variables
 .pin            altd    tmpY, #pin_adc_u_i
                 mov     0-0, tmpX
@@ -1396,7 +1423,11 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
     ' -------------------------------------------------------------------------
 .drvMotor
                 getct   ctrlSrtTix                          ' remember when we started this loop
+{
+                ' Logic Analyzer Instrumentation Code
                 drvh    drvrTmrPnFld                       ' HIGH while doing drive determination
+'}
+
 '                outnot  drvrTmr2PnFld                       ' toggle TEST marker pin
 '                outnot  drvrTmr2PnFld                       ' toggle TEST marker pin
                 or      e_stop_, e_stop_            wz      ' Q: Emergency Stop Requested?
@@ -1640,7 +1671,10 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 ' reset timer (schedule next control loop run)
                 mov     ctrlEndTix, ctrlSrtTix
                 addct1  ctrlEndTix, cfg_ctcks_
+{
+                ' Logic Analyzer Instrumentation Code
                 drvl    drvrTmrPnFld                   ' LOW drive determination complete
+'}
                'jmp    #.ctlMotor      ' done, fall thru
     ' -------------------------------------------------------------------------
 
@@ -1651,7 +1685,10 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
     '       keep our error rate low...
     ' -------------------------------------------------------------------------
                 getct   drvrSrtTix                  ' remember when we started this loop
+{
+                ' Logic Analyzer Instrumentation Code
                 drvh    motrCtlLpPnFld              ' HIGH while affecting change to motor
+'}
                 call    #.wait4adc                  ' allow ADC rest period (Period 1 of 6)
 
                 rdpin   vio_levels+0, pin_adc_u_i       ' VIO samples done, read them
@@ -1825,7 +1862,10 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
 
                 setq    #DRVR_STATUS_LONGS_COUNT-1                       ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state to hub
                 wrlong  drive_u_, ptra
+{
+                ' Logic Analyzer Instrumentation Code
                 drvl    motrCtlLpPnFld              ' LOW after accecting change to motor
+'}
                 jmp     #.loop                      ' main loop
 
     ' =========================================================================
@@ -1868,9 +1908,14 @@ stop_requst LONG    0                       ' 32-bits of zero
 minus1      LONG    $FFFFFFFF               ' 32-bits of one
 ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then fast ramp ( ~1/5 of 0-max )
 
+    ' -----------------------------------
+    ' Logic Analyzer Instrumentation Code
+    ' -----------------------------------
+{
 motrCtlLpPnFld  LONG    TEST_PIN_MOTR_CTL_LP addpins 0  ' convert to pinfield
 drvrTmrPnFld    LONG    TEST_PIN_DRIVE_LP addpins 0  ' convert to pinfield
 drvrTmr2PnFld   LONG    TEST_PIN_DRIVE_LP2 addpins 0  ' convert to pinfield
+'}
 
 adc_modes   LONG    p_adc_gio | p_adc       ' +0 : adc modes, by state
             LONG    p_adc_vio | p_adc       ' +1
@@ -2015,6 +2060,7 @@ drv_state_  res 1       ' enum: DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN
 
 ' $1f8 for reg cogs
     fit     496  ' $1f8(504)? - 470 currently works
+
 CON { license }
 {{
 
