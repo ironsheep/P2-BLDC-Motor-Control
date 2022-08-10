@@ -58,7 +58,7 @@ CON { test pins for LA measurement }
 ' -----------------------------------
 ' Logic Analyzer Instrumentation Code
 ' -----------------------------------
-{
+'{
     ' PIN_40 - PIN_47 - general LA header
     TEST_BASE_PIN = 40
     TEST_ALL_PINS = TEST_BASE_PIN addpins 7
@@ -68,7 +68,7 @@ CON { test pins for LA measurement }
     TEST_PIN_DRIVE_LP2 = TEST_BASE_PIN + 3          ' LA ch3
     TEST_PIN_OUTER_LP = TEST_BASE_PIN + 4           ' LA ch4
 '}
-{
+'{
     ' PIN 48, 49 our rot/360 R/P Sensor
     TEST_BASE2_PIN = 48
     TEST_ALL2_PINS = TEST_BASE2_PIN addpins 1
@@ -80,7 +80,12 @@ DAT { misc time constants }
     ' time constants based on CPU freq
     ticks1ms    LONG    0                     '
     ticks1us    LONG    0                     '
+    ticks10us   long    0                     '
+    ticks10p23us  long    0                     '
+    ticks15p36us long 0
+    ticks20us   long    0                     '
     ticks24us   long    0                     '
+    ticks50us   long    0                     '
     ticks500us  long    0                     ' 2 kHz
     ticks125ms  long    0                       ' 8 Hz
 '    ticks31p25ms long   0                       ' 32 Hz
@@ -93,12 +98,17 @@ PUB null()
 
 '' This is not a top-level object
 
-PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees, ofsDegr
+PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees, ofsDegr, vFrame
 '' Specify motor control board connect location for this motor and start the driver
         ' setup runtime constants
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
+    ticks10us  := (ticks1ms * 10) / 1_000
+    ticks15p36us  := (ticks1ms * 1536) / 100_000
+    ticks10p23us  := (ticks1ms * 1033) / 100_000
+    ticks20us  := (ticks1ms * 20) / 1_000
     ticks24us  := (ticks1ms * 24) / 1_000
+    ticks50us  := (ticks1ms * 50) / 1_000
     ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
 '    ticks750us := (ticks1ms * 750) / 1_000  '
 '    ticks800us := (ticks1ms * 800) / 1_000  '
@@ -150,17 +160,26 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
 '  deflection is direction and speed dependent
 
     ' setup driver parameters based on clock rate
-    dead_gap    := (ticks1us * 260) / 1_000 ' 260 of these made into "value nS"
-    pwm_limit   := FRAME - dead_gap         'PWM duty hard limit 1/2 freq of PWM
+    dead_gap    := (ticks1us * 260) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
+    pwm_limit   := (FRAME / 2) - dead_gap         'PWM duty hard limit 1/2 freq of PWM
+    vFrame := FRAME
     ' .. and set up rest
     'offset_fwd  := 20 frac 360              ' 96 frac 360 (Doug's motor)
     'offset_rev  := 340 frac 360             ' 228 frac 360 (Doug's motor)
-    duty_min    := 100 << 4 #> dead_gap << 4
+' orig higher power code used this
+   duty_min    := 100 << 4 #> dead_gap << 4
+'    duty_min    := dead_gap << 4 #> dead_gap << 4
+' Chip'snew code adjusted this, why?
+'    duty_min    := 200 << 4 #> dead_gap << 4
     duty_max    := pwm_limit << 4 <# pwm_limit << 4
-    duty_up     := 16
+' orig higher power code used this
+    duty_up     := 18
     duty_dn     := 4
+' Chip'snew code adjusted this, why?
+'    duty_up     := 8   ' this drops our top-end power by 45%
+'    duty_dn     := 2
     cfg_ctcks   := ticks500us               ' drive control loop period
-    motr_ctcks  := ticks24us                ' motor control loop period
+    motr_ctcks  := ticks10p23us             ' motor control loop period
     stop_mode   := SM_FLOAT                 ' enum: [SM_FLOAT, SM_BRAKE]
     e_stop      := FALSE
     ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
@@ -190,7 +209,8 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
 
     userSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
 
-    debug("* init values ", udec_long(dead_gap), udec_long(cfg_ctcks), udec_long(duty_min), udec_long(pwm_limit), udec_long(duty_max))
+    debug("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(vFrame), udec_long(duty_min), udec_long(duty_max))
+    debug("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks), udec_long(motr_ctcks))
 
     circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH)
     if circInMM_x10 <> 0
@@ -541,8 +561,8 @@ PUB isStarting() : bState
 '' Return T/F where T means the motor is spinning up
     'bState := (drv_state == DCS_SPIN_UP or drv_state == DCS_AT_SPEED) ? true : false
     bState := (drv_state == DCS_SPIN_UP) ? true : false
-    if not bState
-        debug("MOT not at spin_up but at ", udec(drv_state))
+    'if not bState
+    '    debug("MOT not at spin_up but at ", udec(drv_state))
 
 PUB isTurning() : bState
 '' Return T/F where T means the motor is rotating
@@ -568,17 +588,31 @@ PUB validBasePinForChoice(userBasePin) : legalBasePin
 PUB validVoltageForChoice(userVoltage) : legalVoltage
 '' VALIDATE users' voltage choice returns legalVoltage or INVALID_VOLTAGE
     legalVoltage := userVoltage
-    CASE userVoltage
-        PWR_6p0V:
-        PWR_7p4V:
-        PWR_11p1V:
-        PWR_12p0V:
-        PWR_14p8V:
-        PWR_18p5V:
-        PWR_22p2V:
-        PWR_24p0V:
-        OTHER:
-            legalVoltage := INVALID_VOLTAGE
+    if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
+        CASE userVoltage
+            PWR_7p4V:
+            PWR_11p1V:
+            PWR_12p0V:
+            PWR_14p8V:
+            PWR_18p5V:
+            PWR_22p2V:
+            PWR_24p0V:
+            ' NOTE 6.0V is not legal for this motor
+            ' NOTE 25.9V is not legal for this motor
+            OTHER:
+                legalVoltage := INVALID_VOLTAGE
+    else
+        CASE userVoltage
+            PWR_6p0V:
+            PWR_7p4V:
+            PWR_11p1V:
+            PWR_12p0V:
+            PWR_14p8V:
+            PWR_18p5V:
+            PWR_22p2V:
+            PWR_24p0V:
+            OTHER:
+                legalVoltage := INVALID_VOLTAGE
     debug("*VAL* ", sdec_long(legalVoltage))
 
 PUB validMotorForChoice(userMotor) : legalMotor
@@ -597,6 +631,8 @@ PUB testSetLimit(newMaxLimit)
 '' TEST set override limit so we can characterize motor
     maxFwdIncreAtPwr := newMaxLimit
     maxRevIncreAtPwr := 0 - newMaxLimit
+    minFwdIncreAtPwr := 0
+    minRevIncreAtPwr := 0
     debug("MOT: new limits: ", sdec(maxFwdIncreAtPwr), sdec(maxRevIncreAtPwr))
 
 PUB testGetResults() : nMaxRPM, maxTics, bDidFault
@@ -716,37 +752,40 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
             PWR_6p0V:
                 ' doesn't/barely spin(s)
             PWR_7p4V:
-                ' doesn't/barely spin(s)
+                maxFwdIncreAtPwr := 235_000_000     ' 100% anything above yields RPM 1640.0, cts/Sec 656, @0.11A
+                maxRevIncreAtPwr := -235_000_000    ' 100% anything above yields RPM 1640.0, cts/Sec 656, @0.13A
+                ' minFwdIncreAtPwr := 544_628   ' v+ Characterized: 100% anything lower yields NO rotation
+                minFwdIncreAtPwr := 544_628         ' anything lower yields NO rotation
+                minRevIncreAtPwr := -544_628        ' anything lower yields NO rotation
             PWR_11p1V:
-                ' maxFwdIncreAtPwr := 324_500_000   ' Characterized: 100% anything above yields RPM 2_260, cts/sec 904
                 ' maxFwdIncreAtPwr := 336_000_000   ' v+ Characterized: 100% anything above yields RPM 2_340, cts/sec 936
+                ' maxFwdIncreAtPwr := 154_000_000   ' newDrv Characterized: 100% anything above yields RPM 4_294_967_295, cts/sec 441
                 maxFwdIncreAtPwr := 335_000_000      ' 100% anything above yields RPM 2340.0, cts/Sec 936, @0.097A
                 maxRevIncreAtPwr := -335_000_000     ' 100% anything above yields RPM 2340.0, cts/Sec 936, @0.102A
             PWR_12p0V:
-                ' maxFwdIncreAtPwr := 296_000_000   ' Characterized: 100% anything above yields RPM 2_060, cts/sec 824
                 ' maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
-                maxFwdIncreAtPwr := 296_000_000      ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.074A
-                maxRevIncreAtPwr := -296_000_000     ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.082A
+                ' maxFwdIncreAtPwr := 100_000_000   ' newDrv Characterized: 100% anything above yields RPM 700, cts/sec 280
+                maxFwdIncreAtPwr := 296_000_000     ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.074A
+                maxRevIncreAtPwr := -296_000_000    ' 100% anything above yields RPM 2060.0, cts/Sec 824, @0.082A
+                'minFwdIncreAtPwr := 544_628        ' v+ Characterized: 100% anything lower yields NO rotation
+                minFwdIncreAtPwr := 544_628         ' anything lower yields NO rotation
+                minRevIncreAtPwr := -544_628        ' anything lower yields NO rotation
             PWR_14p8V:
-                ' maxFwdIncreAtPwr := 296_000_000   ' Characterized: 100% anything above yields RPM 2_060, cts/sec 824
                 ' maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
                 ' maxFwdIncreAtPwr := 344_500_000   ' v+ Characterized: 100% anything above yields RPM 2_400, cts/sec 960
                 maxFwdIncreAtPwr := 344_500_000     ' 100% anything above yields RPM 2400.0!, cts/Sec 960, @0.6A
                 maxRevIncreAtPwr := -344_500_000    ' 100% anything above yields RPM 2400.0!, cts/Sec 960, @0.6A
             PWR_18p5V:
-                ' maxFwdIncreAtPwr := 396_000_000   ' Characterized: 100% anything above yields RPM 2_760, cts/sec 1_104
                 ' maxFwdIncreAtPwr := 296_000_000   ' v+ Characterized: 100% anything above yields RPM 2_060, cts/sec 824
                 ' maxFwdIncreAtPwr := 379_500_000   ' v+ Characterized: 100% anything above yields RPM 2_640, cts/sec 1056 @0.7A fwd & rev (latest code changes but still above reliable)
                 maxFwdIncreAtPwr := 377_500_000      ' 100% anything above yields RPM 2640.0, cts/Sec 1056, @0.6A
                 maxRevIncreAtPwr := -377_500_000     ' 100% anything above yields RPM 2640.0, cts/Sec 1056, @0.7A
             PWR_22p2V:
-                ' maxFwdIncreAtPwr := 335_500_000   ' Characterized: 100% anything above yields RPM 2_340, cts/sec 936
                 ' maxFwdIncreAtPwr := 372_500_000   ' v+ Characterized: 100% anything above yields RPM 2_600, cts/sec 1_040
                 ' maxFwdIncreAtPwr := 370_000_000   ' v+ Characterized: 100% anything above yields RPM 2_580, cts/sec 1_032 (latest code changes but still above reliable)
                 maxFwdIncreAtPwr := 370_000_000      ' 100% anything above yields RPM 2580.0, cts/Sec 1032, @0.620A
                 maxRevIncreAtPwr := -370_000_000     ' 100% anything above yields RPM 2580.0, cts/Sec 1032, @0.4A
             PWR_24p0V:
-                ' maxFwdIncreAtPwr := 336_000_000   ' Characterized: 100% anything above yields RPM 2_340, cts/sec 936
                 ' maxFwdIncreAtPwr := 372_500_000   ' v+ Characterized: 100% anything above yields RPM 2_600, cts/sec 1_040
                 ' maxFwdIncreAtPwr := 380_000_000   ' v+ Characterized: 100% anything above yields RPM 2_660, cts/sec 1_064 (latest code changes but still above reliable)
                 maxFwdIncreAtPwr := 380_000_000      ' 100% anything above yields RPM 2660.0, cts/Sec 1064, @0.620A
@@ -1056,7 +1095,7 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
     ' -----------------------------------
-{
+'{
     pinlow(TEST_PIN_SENSE_LP)
 
     ' configure our R/P sensor pins
@@ -1086,7 +1125,7 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
     ' -----------------------------------
-{
+'{
         pinhigh(TEST_PIN_SENSE_LP)
 '}
 
@@ -1096,7 +1135,7 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
     ' -----------------------------------
-{
+'{
         ' accum our fast & slow windowed values
         if loopCtr +// SENSE_LOOP_HZ == 0             ' once every second compute slow cts in case we are slow
             ' ---------------------------------------------------------------------------------
@@ -1182,7 +1221,7 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
     ' -----------------------------------
-{
+'{
         pinlow(TEST_PIN_SENSE_LP)
 '}
 
@@ -1234,11 +1273,36 @@ CON { driver interface Constants}
 
 CON { driver internal Constants}
 
-    FRAME    = 1024 * 6 / 2       '6 ADC samples make 1 PWM frame, divide by two for triangle PWM
-'    OFFSET   = 40                ' enforced dead time in clock cycles (at 200_000_000 -> 200 nSec)
-'    OFFSET   = 80                ' enforced dead time in clock cycles (at 200_000_000 -> 400 nSec)
-'    OFFSET   = 108                ' enforced dead time in clock cycles (at 270_000_000 -> 400 nSec)
-'    PWMLIM   = FRAME - OFFSET     'PWM duty hard limit 1/2 freq of PWM
+'    FRAME    = 7200             ' 37.50 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 6750             ' 40.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 6700             ' 40.30 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 6600             ' 40.92 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 6500             ' 41.54 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'43.96KHz seems to be sweetspot for DocoEng Motor
+    FRAME    = 6142             ' 43.96 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 5600             ' 48.21 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 5534             ' 48.79 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 5400             ' 50.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 5300             ' 50.94 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 4550             ' 59.33 KHz: (no drive power?) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 4500             ' 59.98 KHz: (no drive power?) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 4498             ' 60.104 KHz: (no drive power?) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 4495             ' 60.10 KHz: (no drive power?) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 4490             ' 60.15 KHz: (no drive power?) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 4480             ' 60.27 KHz: (no drive power?) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 4450             ' 60.68 KHz: (no drive power?) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 4240             ' 63.68 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 3565             ' 77.76 KHz: (low drive power) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 2750             ' 98.19 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 2760             ' 97.81 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 2762             ' 97.73 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 2765             ' 97.66 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 2780             ' 97.13 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME    = 1525             ' 177.05 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    OFFSET   = 40              ' enforced dead time in clock cycles (at 200_000_000 -> 200 nSec)
+'    OFFSET   = 80              ' enforced dead time in clock cycles (at 200_000_000 -> 400 nSec)
+'    OFFSET   = 108             ' enforced dead time in clock cycles (at 270_000_000 -> 400 nSec)
+'    PWMLIM   = FRAME - OFFSET  ' PWM duty hard limit 1/2 freq of PWM
 
     DRVR_STATUS_LONGS_COUNT = 14
     DRVR_PARAMS_LONGS_COUNT = 14
@@ -1329,13 +1393,12 @@ VAR  {  Motor Parameters  }
     LONG    ramp_slo        ' subtract this every 500 uSec to ramp down to slower speed
 
 DAT  {  Motor DRIVER  }
-
 '
 ' PASM Driver Program
 '
                 org     0
 
-driver          rdlong  tmpX, ptra++                       ' get base pin
+driver          rdlong  tmpX, ptra++                    ' get base pin
                 rdlong  params_ptr_, ptra++             ' get parameters pointer
                 add     ptra, #2*4                      ' point to return data, targetIncre is at long index [-1]
                                                         '                       targetAngle is at long index [-2]
@@ -1344,7 +1407,7 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 or      all_pins, tmpX                     ' finish the all-pins variable
                 add     drive_pins, tmpX                   ' finish the drive-pins variable
 
-{
+'{
                 ' Logic Analyzer Instrumentation Code
                 drvl    motrCtlLpPnFld                  ' preset test pins to low
                 drvl    drvrTmrPnFld                    ' preset test pins to low
@@ -1359,15 +1422,15 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
 
                 dirl    all_pins                        ' disable PWM and ADC pins for configuration
 
-                wrpin   adc_modes+0, pin_adc_u_i        ' set up ADC pins
+                wrpin   adc_modes+0, pin_adc_u_i        ' switch ADC to GIO calibration
                 wrpin   adc_modes+0, pin_adc_v_i
                 wrpin   adc_modes+0, pin_adc_w_i
                 wrpin   adc_modes+0, pin_adc_cur_i
 
-                wxpin   #10, pin_adc_u_i                ' (#10 = 1024-clock / 11-bit conversion)
-                wxpin   #10, pin_adc_v_i
-                wxpin   #10, pin_adc_w_i
-                wxpin   #10, pin_adc_cur_i
+                wxpin   #11, pin_adc_u_i                ' (#11 = 2048-clock / 12-bit conversion)
+                wxpin   #11, pin_adc_v_i
+                wxpin   #11, pin_adc_w_i
+                wxpin   #11, pin_adc_cur_i
 
                 wrpin   pwmn, pin_pwm_u_l               ' set up PWM pins
                 wrpin   pwmt, pin_pwm_u_h
@@ -1384,6 +1447,52 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 wxpin   fram, pin_pwm_w_h
 
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
+
+                call    #.wait4adc                      ' allow ADC rest period (wait for sample ready)
+                'debug("DRV: adc ready A")
+
+                rdpin   gio_levels+0, pin_adc_u_i       ' GIO samples done, read them
+                rdpin   gio_levels+1, pin_adc_v_i
+                rdpin   gio_levels+2, pin_adc_w_i
+                rdpin   gio_levels+3, pin_adc_cur_i
+
+                wrpin   adc_modes+1, pin_adc_u_i        ' switch ADC to VIO calibration
+                wrpin   adc_modes+1, pin_adc_v_i
+                wrpin   adc_modes+1, pin_adc_w_i
+                wrpin   adc_modes+1, pin_adc_cur_i
+
+                call    #.wait4adc                      ' allow ADC rest period (wait for sample ready)
+                'debug("DRV: adc ready B")
+
+                rdpin   vio_levels+0, pin_adc_u_i       ' VIO samples done, read them
+                rdpin   vio_levels+1, pin_adc_v_i
+                rdpin   vio_levels+2, pin_adc_w_i
+                rdpin   vio_levels+3, pin_adc_cur_i
+
+                qdiv    numerator, vio_levels+0
+                qdiv    numerator, vio_levels+1
+                qdiv    numerator, vio_levels+2
+                qdiv    numerator, vio_levels+3
+
+                getqx   scl_levels+0
+                waitx   #5                              ' wait 20ns: 4 @ 200 MHz, 5.4 @ 270 MHz
+                getqx   scl_levels+1
+                waitx   #5
+                getqx   scl_levels+2
+                waitx   #5
+                getqx   scl_levels+3
+
+                wrpin   adc_modes+2, pin_adc_u_i        ' switch ADC to pin sampling
+                wrpin   adc_modes+2, pin_adc_v_i
+                wrpin   adc_modes+2, pin_adc_w_i
+                wrpin   adc_modes+2, pin_adc_cur_i
+
+                wxpin   #11, pin_adc_u_i                ' (#11 = 2048-clock / 12-bit conversion)
+                wxpin   #11, pin_adc_v_i
+                wxpin   #11, pin_adc_w_i
+                wxpin   #11, pin_adc_cur_i
+
+                dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
                 ' if we are to freewheel the motor let's float all drive pins
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: should motor be freewheeling?
     if_z        dirl    drive_pins                      ' YES: float all control pins (make them inputs)
@@ -1392,21 +1501,21 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 dirl    pin_hall_v
                 dirl    pin_hall_w
 
-                mov     duty_, #0                       ' reset duty
+                mov     duty_, #duty_min_               ' reset duty
                 mov     pos_, #0                        ' reset pos
                 mov     loop_dtcks_, #0                 ' just in case
                 mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
                 mov     prior_incr, #0                  ' just in case
                 mov     fwdrev, #0                      ' just in case
-                mov     angle, #0                       ' just in case
+                mov     angle_, #0                       ' just in case
 
                 ' do initial read of parms so control loop can use them
-                setq    #DRVR_PARAMS_LONGS_COUNT-1                       ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
+                setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
                 ' preset our starting angle
-                'call    #.initAngleFmHall   ' NOTE: may not need this a SPIN_UP does this
+                'call    #.initAngleFmHall      ' NOTE: may not need this a SPIN_UP does this
 
                 ' reset timer (schedule next control time)
                 getct   ctrlEndTix                      ' get now
@@ -1423,7 +1532,7 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
     ' -------------------------------------------------------------------------
 .drvMotor
                 getct   ctrlSrtTix                          ' remember when we started this loop
-{
+'{
                 ' Logic Analyzer Instrumentation Code
                 drvh    drvrTmrPnFld                       ' HIGH while doing drive determination
 '}
@@ -1458,7 +1567,7 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
 '  NEW TEST SUPPORT CODE (alternate input path (angle) for TESTing!)
                 rdlong  tgt_incr, ptra[-2]              ' get desired targetAngle for test
                 cmp     tgt_incr, minus1            wz  ' Q: do we have a request?
-    if_nz       mov     angle, tgt_incr                 ' post this value to driver
+    if_nz       mov     angle_, tgt_incr                 ' post this value to driver
     if_nz       wrlong  minus1, ptra[-2]                ' got it, now clear it ready for user to send another
     if_nz       jmp     #.endRqst                       ' and position motor there
                 ' no? then just fall thru
@@ -1481,8 +1590,8 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 mov     drv_incr, #0                    ' reset incr to stopped
                 mov     prior_incr, #0                  ' reset prior
                 mov     fwdrev, #0                      ' just in case
-                mov     duty_, #0                       ' just in case
-                mov     angle, #0                       ' just in case
+                mov     duty_, #duty_min_               ' just in case
+                mov     angle_, #0                      ' just in case
                 'call    #.initAngleFmHall               ' figure out where motor is once again
                 mov     drv_state_, #DCS_STOPPED        ' reset fault -> to stopped
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: are we floating pins during stop?
@@ -1610,7 +1719,7 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 subs    drv_incr, drv_incr              ' set to zero
                 mov     drv_state_, #DCS_STOPPED        ' report that we are stopped
                 mov     err_, #0                        ' reset err
-                mov     duty_, #0                       ' reset duty
+                mov     duty_, #duty_min_               ' reset duty
                 ' if we are to freewheel the motor let's float all drive pins
                 cmp     stop_mode_, #SM_FLOAT       wz
     if_z        dirl    drive_pins                      ' float all control pins (make them inputs)
@@ -1663,7 +1772,7 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
 
     ' ------------------------------------
 .justIncr   ' just do our increment of angle and we're done!
-                add     angle, drv_incr
+                add     angle_, drv_incr
                 'jmp    #.endRqst      ' done, fall thru
 .endRqst
                 getct   loop_ctcks_                 ' how long was this pass? send to host
@@ -1671,7 +1780,7 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 ' reset timer (schedule next control loop run)
                 mov     ctrlEndTix, ctrlSrtTix
                 addct1  ctrlEndTix, cfg_ctcks_
-{
+'{
                 ' Logic Analyzer Instrumentation Code
                 drvl    drvrTmrPnFld                   ' LOW drive determination complete
 '}
@@ -1685,55 +1794,19 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
     '       keep our error rate low...
     ' -------------------------------------------------------------------------
                 getct   drvrSrtTix                  ' remember when we started this loop
-{
+                addct2  drvrSrtTix, motr_ctcks_     '   add in next time we need to run
+
+'{
                 ' Logic Analyzer Instrumentation Code
                 drvh    motrCtlLpPnFld              ' HIGH while affecting change to motor
 '}
-                call    #.wait4adc                  ' allow ADC rest period (Period 1 of 6)
-
-                rdpin   vio_levels+0, pin_adc_u_i       ' VIO samples done, read them
-                rdpin   vio_levels+1, pin_adc_v_i
-                rdpin   vio_levels+2, pin_adc_w_i
-                rdpin   vio_levels+3, pin_adc_cur_i
-
-                wrpin   adc_modes+2, pin_adc_u_i        ' switch ADC to pin
-                wrpin   adc_modes+2, pin_adc_v_i
-                wrpin   adc_modes+2, pin_adc_w_i
-                wrpin   adc_modes+2, pin_adc_cur_i
-
-                call    #.wait4adc                  ' allow ADC rest period (Period 2 of 6)
-                call    #.wait4adc                  ' allow ADC rest period (Period 3 of 6)
+                call    #.wait4adc                  ' allow ADC rest period (wait for sample ready)
 
                 rdpin   sense_u_, pin_adc_u_i           ' pin samples done, read them
                 rdpin   sense_v_, pin_adc_v_i
                 rdpin   sense_w_, pin_adc_w_i
                 rdpin   sense_i_, pin_adc_cur_i
-
-                wrpin   adc_modes+0, pin_adc_u_i        ' switch ADC to GIO calibration
-                wrpin   adc_modes+0, pin_adc_v_i
-                wrpin   adc_modes+0, pin_adc_w_i
-                wrpin   adc_modes+0, pin_adc_cur_i
-
-                call    #.wait4adc                  ' allow ADC rest period (Period 4 of 6)
-
-                sub     vio_levels+0, gio_levels+0  ' compute (3300 << 11) / (vio_level - gio_level)
-                sub     vio_levels+1, gio_levels+1
-                sub     vio_levels+2, gio_levels+2
-                sub     vio_levels+3, gio_levels+3
-
-                qdiv    numerator, vio_levels+0
-                qdiv    numerator, vio_levels+1
-                qdiv    numerator, vio_levels+2
-                qdiv    numerator, vio_levels+3
-
-                getqx   scl_levels+0
-                waitx   #4
-                getqx   scl_levels+1
-                waitx   #4
-                getqx   scl_levels+2
-                waitx   #4
-                getqx   scl_levels+3
-
+{
                 sub     sense_u_, gio_levels+0      ' compute (numerator * (pin_level - gio_level)) >> 11
                 muls    sense_u_, scl_levels+0
                 sar     sense_u_, #11
@@ -1749,24 +1822,10 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 sub     sense_i_, gio_levels+3
                 muls    sense_i_, scl_levels+3
                 sar     sense_i_, #11
-
-                call    #.wait4adc                  ' allow ADC rest period (Period 5 of 6)
-
-                rdpin   gio_levels+0, pin_adc_u_i       ' GIO samples done, read them
-                rdpin   gio_levels+1, pin_adc_v_i
-                rdpin   gio_levels+2, pin_adc_w_i
-                rdpin   gio_levels+3, pin_adc_cur_i
-
-                wrpin   adc_modes+1, pin_adc_u_i        ' switch ADC to VIO calibration
-                wrpin   adc_modes+1, pin_adc_v_i
-                wrpin   adc_modes+1, pin_adc_w_i
-                wrpin   adc_modes+1, pin_adc_cur_i
-
-                call    #.wait4adc                  ' allow ADC rest period (Period 6 of 6)
-
-                mov     tmpY, duty_                    ' feed three CORDIC operations to get phase drive levels
+'}
+                mov     tmpY, duty_                 ' feed three CORDIC operations to get phase drive levels
                 shr     tmpY, #4
-                mov     tmpX, angle
+                mov     tmpX, angle_
                 qrotate tmpY, tmpX
                 add     tmpX, third
                 qrotate tmpY, tmpX
@@ -1777,41 +1836,47 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 getqy   drive_v_
                 getqy   drive_w_
 
-                mov     tmpX, drive_u_                 ' get smallest drive level into tmpX
+                mov     tmpX, drive_u_              ' get smallest drive level into tmpX
                 cmps    tmpX, drive_v_         wc
     if_nc       mov     tmpX, drive_v_
                 cmps    tmpX, drive_w_         wc
     if_nc       mov     tmpX, drive_w_
 
-                mov     tmpY, drive_u_                 ' get largest drive level into tmpY
+                mov     tmpY, drive_u_              ' get largest drive level into tmpY
                 cmps    tmpY, drive_v_         wc
     if_c        mov     tmpY, drive_v_
                 cmps    tmpY, drive_w_         wc
     if_c        mov     tmpY, drive_w_
 
-                add     tmpX, tmpY                        ' sum smallest and largest, then divide by 2
+                add     tmpX, tmpY                  ' sum smallest and largest, then divide by 2
                 sar     tmpX, #1
 
-                sub     drive_u_, tmpX                 ' subtract difference from drive levels
+                sub     drive_u_, tmpX              ' subtract difference from drive levels
                 sub     drive_v_, tmpX
                 sub     drive_w_, tmpX
 
                 add     drive_u_, bias              ' add center-bias and dead-time offsets to update PWMs
-                add     drive_u_, dead_gap_
+'                fles    drive_u_, drv_max_          ' keep drive-u within limits
+                'fges    drive_u_, drv_min_
+                add     drive_u_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_u_, pin_pwm_u_l
-                sub     drive_u_, dead_gap_
+                sub     drive_u_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_u_, pin_pwm_u_h
 
                 add     drive_v_, bias
-                add     drive_v_, dead_gap_
+'                fles    drive_v_, drv_max_          ' keep drive-v within limits
+                'fges    drive_v_, drv_min_
+                add     drive_v_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_v_, pin_pwm_v_l
-                sub     drive_v_, dead_gap_
+                sub     drive_v_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_v_, pin_pwm_v_h
 
                 add     drive_w_, bias
-                add     drive_w_, dead_gap_
+'                fles    drive_w_, drv_max_          ' keep drive-w within limits
+                'fges    drive_w_, drv_min_
+                add     drive_w_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_w_, pin_pwm_w_l
-                sub     drive_w_, dead_gap_
+                sub     drive_w_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_w_, pin_pwm_w_h
 
                 testp   pin_hall_w              wc      ' read hall effect sensor
@@ -1829,9 +1894,9 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 setq    #DRVR_PARAMS_LONGS_COUNT-1                       ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
-                cmpm    angle, prior_angle  wcz     ' if angle has changed, forward or reverse?
+                cmpm    angle_, prior_angle  wcz     ' if angle has changed, forward or reverse?
     if_nz       wrc     fwdrev
-                mov     prior_angle, angle
+                mov     prior_angle, angle_
 
                 testb   fwdrev, #0          wc      ' determine error
                 bitc    hall_, #3
@@ -1840,7 +1905,7 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
                 mov     err_, 0-0
     if_c        add     err_, offset_fwd_
     if_nc       add     err_, offset_rev_
-                subr    err_, angle
+                subr    err_, angle_
                 sar     err_, #24
                 bitl    hall_, #3
 
@@ -1849,7 +1914,8 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
     if_nc       dirl    drive_pins                  ' at FAULT: float all control pins (make them inputs)
     if_nc       mov     drv_state_,#DCS_FAULTED     '  also on FAULT: mark our motor as FAULTED
     if_nc       wrlong  #1, ptra[DRVR_STATUS_LONGS_COUNT]                '  also on FAULT: report fault
-                sub     tmpX, #256/6           wc      ' modulate duty
+'                sub     tmpX, #256/6           wc   ' modulate duty FIXME: (Chip why 6 here?)
+                sub     tmpX, #256/8           wc   ' modulate duty SMM puts 8 here
     if_nc       muls    tmpX, duty_up_
     if_c        muls    tmpX, duty_dn_
                 sar     tmpX, #8
@@ -1862,19 +1928,22 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
 
                 setq    #DRVR_STATUS_LONGS_COUNT-1                       ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state to hub
                 wrlong  drive_u_, ptra
-{
+'{
                 ' Logic Analyzer Instrumentation Code
                 drvl    motrCtlLpPnFld              ' LOW after accecting change to motor
 '}
+                ' wait for rest of time here...
+'.motWtLp
+'                jnct2   #.motWtLp                   ' wait until delay expires
                 jmp     #.loop                      ' main loop
 
     ' =========================================================================
     '  PRIVATE (Utiility) Subroutines
     ' -------------------------------------------------------------------------
-.wait4adc       testp   pin_adc_u_i             wc      ' wait for next ADC sample (6 samples = PWM frame)
+.wait4adc       testp   pin_adc_cur_i             wc      ' wait for ADC sample to be avail. (wtg on 4th pin set up)
     if_nc       jmp     #.wait4adc
 
-    _ret_       akpin   pin_adc_u_i
+    _ret_       akpin   pin_adc_cur_i
 
 .initAngleFmHall
                 ' init angle & prior from current motor position
@@ -1889,29 +1958,34 @@ driver          rdlong  tmpX, ptra++                       ' get base pin
     if_c        or      hall_ , #%1000              ' REV point to REV half of table
     if_nc       and     hall_, #%111                ' FWD point to FWD half of table
                 alts    hall_, #hall_angles
-                mov     angle, 0-0
-                add     angle, offset_fwd_          ' adjust phase offset for hall sensor
-    _ret_       mov     prior_angle, angle          ' show we are already here
+                mov     angle_, 0-0
+                add     angle_, offset_fwd_          ' adjust phase offset for hall sensor
+    _ret_       mov     prior_angle, angle_          ' show we are already here
 
     '
     ' =========================================================================
 
 all_pins	LONG	15 << 6			            ' all-pins variable (addpins 15) needs OR of basepin
 drive_pins	LONG	(7 << 6) + 8	            ' drive-pins variable (+8 addpins 7) needs ADD of basepin
-pwmt        LONG    %000_000000_01_01000_0  ' PWM true
-pwmn        LONG    %001_000000_01_01000_0  ' PWM not
-fram        LONG    FRAME << 16 + 1         ' PWM frame setting
-bias        LONG    FRAME / 2               ' PWM center-frame bias
+pwmt        LONG    %000_000000_01_01000_0  ' PWM true (P_BITDAC | P_PWM_TRIANGLE)
+pwmn        LONG    %001_000000_01_01000_0  ' PWM not (P_INVERT_OUTPUT | P_BITDAC | P_PWM_TRIANGLE)
+fram        LONG    (FRAME / 2) << 16 + 1   ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
+bias        LONG    FRAME / 4               ' PWM center-frame bias
 third       LONG    1 FRAC 3                ' 120 degrees
-numerator   LONG    3300 << 11              ' numerator for ADC calculations
+numerator   LONG    3300 << 11              ' numerator for ADC calculations:     3.3V << 11 BITS
 stop_requst LONG    0                       ' 32-bits of zero
 minus1      LONG    $FFFFFFFF               ' 32-bits of one
 ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then fast ramp ( ~1/5 of 0-max )
 
+' following is experiment in limiting PWM drive request... didn't really solve the problem
+'   FIXME: Chip what could we do to prevent this?, do we need to?
+'drv_max_    LONG    (FRAME / 2) - 1         ' maximum PWM drive value
+'drv_min_    LONG    ((FRAME / 2) / 1000) + 1 ' minimum PWM drive value (.01%) + 1
+
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
     ' -----------------------------------
-{
+'{
 motrCtlLpPnFld  LONG    TEST_PIN_MOTR_CTL_LP addpins 0  ' convert to pinfield
 drvrTmrPnFld    LONG    TEST_PIN_DRIVE_LP addpins 0  ' convert to pinfield
 drvrTmr2PnFld   LONG    TEST_PIN_DRIVE_LP2 addpins 0  ' convert to pinfield
@@ -1991,7 +2065,7 @@ tgt_incr        res 1       ' current user requested target increment
 prior_incr      res 1       ' prior user requested target increment
 ' control loop variables
 drv_incr        res 1       ' current driver increment
-angle           res 1       ' current driver angle
+angle_          res 1       ' current driver angle
 prior_angle     res 1       ' prior driver angle
 fwdrev          res 1       ' driver current direction used for indexing into hall angle table
 curr_ramp       res 1
