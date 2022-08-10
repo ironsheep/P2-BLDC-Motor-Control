@@ -1,0 +1,333 @@
+'' =================================================================================================
+''
+''   File....... test_motor_char_ofsts.spin2
+''   Purpose.... Characterize a new motor at given voltage - test range of fwd/rev offsets
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Aug 2022
+''   Updated.... 9 Aug 2022
+''
+'' =================================================================================================
+
+CON { timing }
+
+  CLK_FREQ = 270_000_000                                        ' system freq as a constant
+  _clkfreq = CLK_FREQ                                           ' set system clock
+
+    ' SPECIAL for LOGGING on RPi
+{
+    DEBUG_PIN_TX = 1
+    DEBUG_PIN_RX = 0
+'}
+
+CON { fixed io pins }
+
+  RX1      = 63  { I }                                          ' programming / debug
+  TX1      = 62  { O }
+
+  SF_CS    = 61  { O }                                          ' serial flash
+  SF_SCK   = 60  { O }
+  SF_SDO   = 59  { O }
+  SF_SDI   = 58  { I }
+
+CON { application io pins }
+
+    ' describe where things are attached to our JonnyMac eval board
+
+    NUM_PAD_SW1     = 32
+    NUM_PAD_SW2     = 33
+    NUM_PAD_SW3     = 34
+    NUM_PAD_SW4     = 35
+
+    JOYSTICK_SW     = 40    ' grn
+    JOYSTICK_Y_AXIS = 41    ' yel
+    JOYSTICK_X_AXIS = 42    ' org
+
+    HDMI_BASE_PIN       = tvDebug.PINS_P8_P15
+
+    MOTOR_BASE_PIN       = user.ONLY_MOTOR_BASE
+
+
+    NOT_SET = -1
+
+OBJ { our Motor(s) }
+
+    user        :   "isp_bldc_motor_userconfig"     ' driver configuration
+    tvDebug     :   "isp_hdmi_debug"         ' HDMI debug object
+    wheel       :   "isp_bldc_motor"        ' the single BLDC motor
+
+DAT { run-time condition vars }
+
+    bUseHDMI    LONG   TRUE       ' set to TRUE to enable HDMI use/output
+
+    nGroups         LONG    0
+    pGroupTitles    LONG    0
+    pGroupNames     LONG    0
+    pGroupVarCts    LONG    0
+    pGroupVars      LONG    0
+
+PUB main() | motorCog, senseCog, basePin, voltage, motor, bDidFault, failSpeed, testSpeed, bNoMovement, bFwdIsInverse, ofstInDegr
+'' DEMO Driving a single wheeled platform
+
+    ' start our HDMI debug output
+    if bUseHDMI
+        basePin := tvDebug.validBasePinForChoice(HDMI_BASE_PIN)
+        if basePin <> tvDebug.INVALID_PIN_BASE
+            tvDebug.start(basePin)
+
+
+    ' validate user settings/choicess
+    '  do NOT start motor unless all are legit!
+    basePin := wheel.validBasePinForChoice(MOTOR_BASE_PIN)
+    voltage := wheel.validVoltageForChoice(user.DRIVE_VOLTAGE)
+    motor := wheel.validMotorForChoice(user.MOTOR_TYPE)
+
+    if basePin <> wheel.INVALID_PIN_BASE and voltage <> wheel.INVALID_VOLTAGE and motor <> wheel.INVALID_MOTOR
+        ' start our single motor driver
+        motorCog := wheel.start(basePin, voltage)
+        'tvDebug.reportMotorCog(motorCog)
+
+        ' for single motor let's start the single motor sense task
+        senseCog := wheel.startSenseCog()
+
+        if bUseHDMI
+            nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheel.getDebugData()
+            debug("* Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+
+            tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+
+        showPowerSetting(voltage)
+
+        ' just don't draw current at stop
+        wheel.holdAtStop(false)
+
+        wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
+        wheel.resetTracking()
+
+        ' binary search to find lowest speed that motor turns at this voltage
+        passNbr := 1
+        testSpeed := 200_000_000
+        wheel.testSetLimit(testSpeed)
+        debug(" --- ")
+
+        bFwdIsInverse := (user.MOTOR_TYPE == wheel.MOTR_DOCO_4KRPM) ? TRUE : FALSE
+
+        debug("* test: 0 to 180, incr by 10")
+        debug(" --- ")
+        repeat ofstInDegr from 0 to 180 step 10
+            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
+
+        debug("* test: 5 to 180, incr by 10")
+        debug(" --- ")
+        repeat ofstInDegr from 5 to 180 step 10
+            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
+
+        ' TBA  let's add a reverse drive loop
+        debug("* quit: all checked")
+        debug("  ")
+
+        debug("* END TEST: holding for 30 secs...")
+        waitms(30000)   ' 30 seconds, then stop
+
+        ' turn off our motor drivers
+        wheel.stop()
+
+PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed) | bDidFault, bNoMovement
+' test these offsets speed to see if current is best
+    wheel.testResetMaxValues()
+    wheel.testSetFwdRevOffsets(newOffsetInDegr, bFwdIsInverse)
+    debug("* OFFSET pass(", udec_(passNbr), "), ", udec(newOffsetInDegr))
+    bDidFault, bNoMovement := evalSpeed(speed)
+    if bNoMovement
+        debug(" -  Didn't move ", udec(speed))
+    if bDidFault or not bNoMovement
+        wheel.resetTracking()
+
+    passNbr++
+    waitms(500) ' slight delay between passes
+
+PRI evalSpeed(testSpd) : bDidFault, bNoMovement | endMaxRPM, endMaxTics
+' test this speed to see if would fail
+    clearFault()
+    debug("   ")
+
+    debug("* TEST FWD pass(", udec_(passNbr), ")", udec(testSpd))
+    driveForwardToFail()
+    bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
+    bNoMovement := (endMaxRPM > 0) ? FALSE : TRUE
+    if bDidFault
+        clearFault()
+    debug("   ")
+
+    if not bDidFault and not bNoMovement
+        debug("* TEST REV pass(", udec_(passNbr++), ")", udec(testSpd))
+        waitms(1000) ' slight delay between FWD/REV
+        drivereverseToFail()
+        bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
+        bNoMovement := (endMaxRPM > 0) ? FALSE : TRUE
+        if bDidFault
+            clearFault()
+        debug("   ")
+
+    debug(" --- ")
+    waitms(3000) ' slight delay between FWD/REV
+
+
+VAR
+    ' work values
+    LONG    minX
+    LONG    minY
+    LONG    maxX
+    LONG    maxY
+    LONG    passNbr
+    LONG    highestRPM
+    LONG    highestTics
+    LONG    repeatCt
+
+DAT
+
+passCt    LONG    0
+
+PRI clearFault() | bDidFault
+    wheel.resetTracking()
+    wheel.testResetMaxValues()
+
+    if wheel.isFaulted()
+        debug("S clearFault()")
+        wheel.testResetFault()
+
+PRI reportEndCondition() : bDidFault, endMaxRPM, endMaxTics
+    ' just finished pass which ended in NOT fault or fault
+    '  report max RPM and max Tics
+    '  report fault or not
+    endMaxRPM, endMaxTics, bDidFault := wheel.testGetResults()
+    debug("* RPT: ", udec(endMaxRPM), udec(endMaxTICs), sdec(bDidFault))
+    debug("  ")
+
+PRI driveForwardToFail() : bBadStart | bDidFault
+    bBadStart := FALSE
+    bDidFault := waitUntilMotorReady()
+    if not bDidFault
+        ' now drive!
+        wheel.stopAfterTime(15, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
+
+        bDidFault, bBadStart := waitUntilMotorDone()
+
+    else
+        debug("*E motor not ready")
+
+
+PRI driveReverseToFail() : bBadStart | bDidFault
+    bBadStart := FALSE
+    bDidFault := waitUntilMotorReady()
+    if not bDidFault
+        ' now drive!
+        wheel.stopAfterTime(15, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.driveAtPower(-100)                      ' now go FWD at 100% pwr
+
+        bDidFault, bBadStart := waitUntilMotorDone()
+
+    else
+        debug("*E motor not ready")
+
+
+PRI waitUntilMotorReady() : bDidFault
+    bDidFault := FALSE
+    if wheel.isReady() == false
+        'debug("* wait motor ready...")
+        repeat
+            _, _, bDidFault := wheel.testGetResults()
+            if wheel.isReady()
+                quit
+            elseif bDidFault
+                debug("*E Motor NOT Ready? FAULT!")
+                quit
+            else
+                waitms(2)
+
+    'if not bDidFault
+    '    debug("* Motor ready, let's drive!")
+
+
+PRI waitUntilMotorDone() : bDidFault, bBadStart
+    bDidFault := FALSE
+    bBadStart := FALSE
+    if not wheel.isTurning()
+         debug("* wait until motor starts...")
+         repeat
+            _, _, bDidFault := wheel.testGetResults()
+            if wheel.isTurning()
+                quit
+            elseif bDidFault
+                bBadStart := TRUE
+                debug("*E NOT turning? Start ended w/FAULT!")
+                quit
+            else
+                waitms(2)
+
+    if not bDidFault and wheel.isStopped() == false
+        debug("* wait until motor finishes...")
+        repeat
+            _, _, bDidFault := wheel.testGetResults()
+            if wheel.isStopped()
+                quit
+            elseif bDidFault
+                debug("*E NOT Stopped?  wait Finish ended w/FAULT!")
+                quit
+            else
+                waitms(2)
+
+    if not bDidFault
+        debug("* Motor stopped!")
+
+PRI showPowerSetting(ePower)
+    CASE ePower
+        wheel.PWR_6p0V:
+            debug("* PWR - 6.0V")
+        wheel.PWR_7p4V:
+            debug("* PWR - 7.4V")
+        wheel.PWR_11p1V:
+            debug("* PWR - 11.1V")
+        wheel.PWR_12p0V:
+            debug("* PWR - 12.0V")
+        wheel.PWR_14p8V:
+            debug("* PWR - 14.8V")
+        wheel.PWR_18p5V:
+            debug("* PWR - 18.5V")
+        wheel.PWR_22p2V:
+            debug("* PWR - 22.2V")
+        wheel.PWR_24p0V:
+            debug("* PWR - 24.0V")
+        OTHER:
+            debug("* PWR unknown value!!")
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

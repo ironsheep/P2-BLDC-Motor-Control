@@ -66,7 +66,8 @@ CON { test pins for LA measurement }
     TEST_PIN_DRIVE_LP = TEST_BASE_PIN + 1           ' LA ch1
     TEST_PIN_MOTR_CTL_LP = TEST_BASE_PIN + 2        ' LA ch2
     TEST_PIN_DRIVE_LP2 = TEST_BASE_PIN + 3          ' LA ch3
-    TEST_PIN_OUTER_LP = TEST_BASE_PIN + 4           ' LA ch4
+    TEST_PIN_LP_TOGL = TEST_BASE_PIN + 4           ' LA ch4
+    TEST_PIN_UNKNOWN = TEST_BASE_PIN + 5           ' LA ch4
 '}
 '{
     ' PIN 48, 49 our rot/360 R/P Sensor
@@ -160,14 +161,15 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
 '  deflection is direction and speed dependent
 
     ' setup driver parameters based on clock rate
+    charge_time := ticks1us
     dead_gap    := (ticks1us * 260) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
-    pwm_limit   := (FRAME / 2) - dead_gap         'PWM duty hard limit 1/2 freq of PWM
+    pwm_limit   := (FRAME / 2) - dead_gap - charge_time        'PWM duty hard limit 1/2 freq of PWM
     vFrame := FRAME
     ' .. and set up rest
     'offset_fwd  := 20 frac 360              ' 96 frac 360 (Doug's motor)
     'offset_rev  := 340 frac 360             ' 228 frac 360 (Doug's motor)
 ' orig higher power code used this
-   duty_min    := 100 << 4 #> dead_gap << 4
+    duty_min    := 100 << 4 #> dead_gap << 4
 '    duty_min    := dead_gap << 4 #> dead_gap << 4
 ' Chip'snew code adjusted this, why?
 '    duty_min    := 200 << 4 #> dead_gap << 4
@@ -634,6 +636,22 @@ PUB testSetLimit(newMaxLimit)
     minFwdIncreAtPwr := 0
     minRevIncreAtPwr := 0
     debug("MOT: new limits: ", sdec(maxFwdIncreAtPwr), sdec(maxRevIncreAtPwr))
+
+PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) | fwdDegrees, revDegrees
+'' TEST set offsets so we can characterize motor current draw
+    if bFwdIsInverse
+        ' forward is the inverse of reverse (ex. docoEng.com motor)
+        fwdDegrees := 360 - newOfsDegr
+        revDegrees := newOfsDegr
+    else
+        ' reverse is the inverse of forward (ex. 6.5" wheel motor)
+        fwdDegrees := newOfsDegr
+        revDegrees := 360 - fwdDegrees
+
+    offset_fwd  := fwdDegrees frac 360
+    offset_rev  := revDegrees frac 360
+    debug("MOT: ", udec(fwdDegrees), uhex_long(offset_fwd))
+    debug("(tst)", udec(revDegrees), uhex_long(offset_rev))
 
 PUB testGetResults() : nMaxRPM, maxTics, bDidFault
 '' TEST return results of test pass
@@ -1302,7 +1320,6 @@ CON { driver internal Constants}
 '    OFFSET   = 40              ' enforced dead time in clock cycles (at 200_000_000 -> 200 nSec)
 '    OFFSET   = 80              ' enforced dead time in clock cycles (at 200_000_000 -> 400 nSec)
 '    OFFSET   = 108             ' enforced dead time in clock cycles (at 270_000_000 -> 400 nSec)
-'    PWMLIM   = FRAME - OFFSET  ' PWM duty hard limit 1/2 freq of PWM
 
     DRVR_STATUS_LONGS_COUNT = 14
     DRVR_PARAMS_LONGS_COUNT = 14
@@ -1392,6 +1409,9 @@ VAR  {  Motor Parameters  }
     LONG    ramp_fast       ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
     LONG    ramp_slo        ' subtract this every 500 uSec to ramp down to slower speed
 
+' -----------------------------------
+    LONG    charge_time     ' delay between driving h/l side of driver (never drive both at once)
+
 DAT  {  Motor DRIVER  }
 '
 ' PASM Driver Program
@@ -1411,7 +1431,7 @@ driver          rdlong  tmpX, ptra++                    ' get base pin
                 ' Logic Analyzer Instrumentation Code
                 drvl    motrCtlLpPnFld                  ' preset test pins to low
                 drvl    drvrTmrPnFld                    ' preset test pins to low
-                drvl    drvrTmr2PnFld                   ' preset test pins to low
+'                drvl    drvrTmr2PnFld                   ' preset test pins to low
 '}
                 mov     tmpY, #0                           ' make single-pin variables
 .pin            altd    tmpY, #pin_adc_u_i
@@ -1482,17 +1502,24 @@ driver          rdlong  tmpX, ptra++                    ' get base pin
                 waitx   #5
                 getqx   scl_levels+3
 
+                ' configure current sense pins for main loop
+                dirl    all_pins                        ' disable PWM and ADC pins for configuration
                 wrpin   adc_modes+2, pin_adc_u_i        ' switch ADC to pin sampling
                 wrpin   adc_modes+2, pin_adc_v_i
                 wrpin   adc_modes+2, pin_adc_w_i
                 wrpin   adc_modes+2, pin_adc_cur_i
 
-                wxpin   #11, pin_adc_u_i                ' (#11 = 2048-clock / 12-bit conversion)
-                wxpin   #11, pin_adc_v_i
-                wxpin   #11, pin_adc_w_i
-                wxpin   #11, pin_adc_cur_i
+                wxpin   adc_fram, pin_adc_u_i           ' set count period to match our PWM frame width
+                wxpin   adc_fram, pin_adc_v_i
+                wxpin   adc_fram, pin_adc_w_i
+                wxpin   adc_fram, pin_adc_cur_i
 
+                wypin   #0, pin_adc_u_i                 ' set mode to incrment on highs, only (vs. #1 incr & decr)
+                wypin   #0, pin_adc_v_i
+                wypin   #0, pin_adc_w_i
+                wypin   #0, pin_adc_cur_i
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
+
                 ' if we are to freewheel the motor let's float all drive pins
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: should motor be freewheeling?
     if_z        dirl    drive_pins                      ' YES: float all control pins (make them inputs)
@@ -1801,7 +1828,10 @@ driver          rdlong  tmpX, ptra++                    ' get base pin
                 drvh    motrCtlLpPnFld              ' HIGH while affecting change to motor
 '}
                 call    #.wait4adc                  ' allow ADC rest period (wait for sample ready)
-
+'{
+                ' Logic Analyzer Instrumentation Code
+                drvnot  drvrTgglPnFld               ' our loop TOGGLE (Chip's drvnot P0)
+'}
                 rdpin   sense_u_, pin_adc_u_i           ' pin samples done, read them
                 rdpin   sense_v_, pin_adc_v_i
                 rdpin   sense_w_, pin_adc_w_i
@@ -1856,28 +1886,30 @@ driver          rdlong  tmpX, ptra++                    ' get base pin
                 sub     drive_w_, tmpX
 
                 add     drive_u_, bias              ' add center-bias and dead-time offsets to update PWMs
-'                fles    drive_u_, drv_max_          ' keep drive-u within limits
-                'fges    drive_u_, drv_min_
+                fles    drive_u_, drv_max_          ' keep drive-u within limits
+                fges    drive_u_, drv_min_
                 add     drive_u_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_u_, pin_pwm_u_l
                 sub     drive_u_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_u_, pin_pwm_u_h
 
                 add     drive_v_, bias
-'                fles    drive_v_, drv_max_          ' keep drive-v within limits
-                'fges    drive_v_, drv_min_
+                fles    drive_v_, drv_max_          ' keep drive-v within limits
+                fges    drive_v_, drv_min_
                 add     drive_v_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_v_, pin_pwm_v_l
                 sub     drive_v_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_v_, pin_pwm_v_h
 
                 add     drive_w_, bias
-'                fles    drive_w_, drv_max_          ' keep drive-w within limits
-                'fges    drive_w_, drv_min_
+                fles    drive_w_, drv_max_          ' keep drive-w within limits
+                fges    drive_w_, drv_min_
                 add     drive_w_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_w_, pin_pwm_w_l
                 sub     drive_w_, dead_gap_         ' dead-gap was OFFSET
                 wypin   drive_w_, pin_pwm_w_h
+
+
 
                 testp   pin_hall_w              wc      ' read hall effect sensor
                 rcl     hall_, #1
@@ -1914,11 +1946,10 @@ driver          rdlong  tmpX, ptra++                    ' get base pin
     if_nc       dirl    drive_pins                  ' at FAULT: float all control pins (make them inputs)
     if_nc       mov     drv_state_,#DCS_FAULTED     '  also on FAULT: mark our motor as FAULTED
     if_nc       wrlong  #1, ptra[DRVR_STATUS_LONGS_COUNT]                '  also on FAULT: report fault
-'                sub     tmpX, #256/6           wc   ' modulate duty FIXME: (Chip why 6 here?)
-                sub     tmpX, #256/8           wc   ' modulate duty SMM puts 8 here
+                sub     tmpX, #256/6           wc   ' modulate duty (256 frac 6 - where 6 is # of hall cycles)
     if_nc       muls    tmpX, duty_up_
     if_c        muls    tmpX, duty_dn_
-                sar     tmpX, #8
+                sar     tmpX, #8                    ' 8-bits is multiplying agressiveness of correction
                 add     duty_, tmpX
                 fles    duty_, duty_max_            ' keep duty within limits
                 fges    duty_, duty_min_
@@ -1930,7 +1961,7 @@ driver          rdlong  tmpX, ptra++                    ' get base pin
                 wrlong  drive_u_, ptra
 '{
                 ' Logic Analyzer Instrumentation Code
-                drvl    motrCtlLpPnFld              ' LOW after accecting change to motor
+                drvl    motrCtlLpPnFld              ' LOW after accepting change to motor
 '}
                 ' wait for rest of time here...
 '.motWtLp
@@ -1940,10 +1971,19 @@ driver          rdlong  tmpX, ptra++                    ' get base pin
     ' =========================================================================
     '  PRIVATE (Utiility) Subroutines
     ' -------------------------------------------------------------------------
-.wait4adc       testp   pin_adc_cur_i             wc      ' wait for ADC sample to be avail. (wtg on 4th pin set up)
-    if_nc       jmp     #.wait4adc
-
-    _ret_       akpin   pin_adc_cur_i
+.wait4adc
+'{
+                ' Logic Analyzer Instrumentation Code
+                drvh  drvrTggl2PnFld
+'}
+.wait4adcAgn    testp   pin_adc_cur_i           wc      ' wait for ADC sample to be avail. (wtg on 4th pin set up)
+    if_nc       jmp     #.wait4adcAgn
+'{
+                ' Logic Analyzer Instrumentation Code
+                drvl  drvrTggl2PnFld
+'}
+.noWait4adc     RET
+'    _ret_       akpin   pin_adc_cur_i  ' NO LONGER NEEDED
 
 .initAngleFmHall
                 ' init angle & prior from current motor position
@@ -1969,6 +2009,7 @@ all_pins	LONG	15 << 6			            ' all-pins variable (addpins 15) needs OR of
 drive_pins	LONG	(7 << 6) + 8	            ' drive-pins variable (+8 addpins 7) needs ADD of basepin
 pwmt        LONG    %000_000000_01_01000_0  ' PWM true (P_BITDAC | P_PWM_TRIANGLE)
 pwmn        LONG    %001_000000_01_01000_0  ' PWM not (P_INVERT_OUTPUT | P_BITDAC | P_PWM_TRIANGLE)
+adc_fram    LONG    FRAME                   ' set ADC to full PWM frame counts
 fram        LONG    (FRAME / 2) << 16 + 1   ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
 bias        LONG    FRAME / 4               ' PWM center-frame bias
 third       LONG    1 FRAC 3                ' 120 degrees
@@ -1979,8 +2020,8 @@ ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then f
 
 ' following is experiment in limiting PWM drive request... didn't really solve the problem
 '   FIXME: Chip what could we do to prevent this?, do we need to?
-'drv_max_    LONG    (FRAME / 2) - 1         ' maximum PWM drive value
-'drv_min_    LONG    ((FRAME / 2) / 1000) + 1 ' minimum PWM drive value (.01%) + 1
+drv_max_    LONG    (FRAME / 2) - 1         ' maximum PWM drive value
+drv_min_    LONG    ((FRAME / 2) / 1000) + 1 ' minimum PWM drive value (.01%) + 1
 
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
@@ -1989,11 +2030,13 @@ ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then f
 motrCtlLpPnFld  LONG    TEST_PIN_MOTR_CTL_LP addpins 0  ' convert to pinfield
 drvrTmrPnFld    LONG    TEST_PIN_DRIVE_LP addpins 0  ' convert to pinfield
 drvrTmr2PnFld   LONG    TEST_PIN_DRIVE_LP2 addpins 0  ' convert to pinfield
+drvrTgglPnFld   LONG    TEST_PIN_LP_TOGL addpins 0  ' convert to pinfield
+drvrTggl2PnFld   LONG   TEST_PIN_UNKNOWN addpins 0  ' convert to pinfield
 '}
 
 adc_modes   LONG    p_adc_gio | p_adc       ' +0 : adc modes, by state
             LONG    p_adc_vio | p_adc       ' +1
-            LONG    p_adc_1x  | p_adc       ' +2
+            LONG    p_adc_1x | p_count_highs   ' +2 ' WAS p_adc_1x | p_adc
 
 ' turn motor to view hall sequence ...  learn in known direction
 '   efficient: low current draw at given speed
