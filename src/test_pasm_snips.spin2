@@ -16,6 +16,12 @@ CON { timing }
   CLK_FREQ = 270_000_000                                        ' system freq as a constant
   _clkfreq = CLK_FREQ                                           ' set system clock
 
+    ' SPECIAL for LOGGING on RPi
+{
+    DEBUG_PIN_TX = 1
+    DEBUG_PIN_RX = 0
+'}
+
 CON { fixed io pins }
 
   RX1      = 63  { I }                                          ' programming / debug
@@ -55,10 +61,68 @@ VAR
     long    testTargetIncr      ' desired motor increment
     long    testDriveIncr       ' curr motor increment
 
+    long    duty_       ' curr motor drive value
+    long    angle_       ' curr motor drive value
 
-PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, drvState, outDrvState, outDrvIncr, rampDn
+    long    drive_u_       ' curr motor drive value
+    long    drive_v_       ' curr motor drive value
+    long    drive_w_       ' curr motor drive value
+
+    long    raw_u_       ' curr cordic output value
+    long    raw_v_       ' curr cordic output value
+    long    raw_w_       ' curr cordic output value
+    long    minRaw
+    long    maxRaw
+CON
+
+    FRAME    = 6136             ' 43.96 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+
+PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, drvState, outDrvState, outDrvIncr, rampDn, nAngle, vAngle
 '' DEMO Run Snippets
+    debug("   ")
 
+    duty_ := 31_062
+    angle_ := -785_140_934
+
+    repeat 100
+        drive_u_, drive_v_, drive_w_, raw_u_, raw_v_, raw_w_ := calcFromDutyAngle(duty_, angle_)
+
+        minRaw := min(minRaw, raw_u_)
+        minRaw := min(minRaw, raw_v_)
+        minRaw := min(minRaw, raw_w_)
+        maxRaw := max(maxRaw, raw_u_)
+        maxRaw := max(maxRaw, raw_v_)
+        maxRaw := max(maxRaw, raw_w_)
+
+        angle_ += duty_
+
+
+
+    debug("- range: [", sdec(minRaw), ", ", sdec(maxRaw), "]")
+{
+    repeat angle_ from 0 to 720
+        nAngle := (angle_ >= 360) ? 0 - (angle_ - 360) : angle_
+        if nAngle == 0
+            vAngle := 0
+        else
+            vAngle := (nAngle << 24) / 360
+        'debug("- ", udec(angle_), " ", sdec(nAngle), " ", sdec(vAngle))
+        debug("- ", sdec(nAngle), " ", uhex_long(vAngle), sdec(vAngle))
+'}
+{
+    nLHS := 5
+    nRHS := 7
+    checkem(nLHS, nRHS)
+    nLHS := -3
+    nRHS := 7
+    checkem(nLHS, nRHS)
+    nLHS := 5
+    nRHS := -9
+    checkem(nLHS, nRHS)
+    nLHS := -4
+    nRHS := -8
+    checkem(nLHS, nRHS)
+'}
 {
     testDriveState := DCS_SLOWING_DN
     testDriveIncr := 75_000_000
@@ -108,6 +172,7 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, drvState, outDrvState,
     WHILE testDriveIncr <> 0
 '}
 
+{
     testDriveState := DCS_SPIN_UP
     testDriveIncr := 0
     testTargetIncr := 310_000
@@ -127,7 +192,7 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, drvState, outDrvState,
         testDriveIncr, testDriveState := rampUp(testTargetIncr, testDriveIncr, testDriveState)
             debug("  -- ", sdec_long(testDriveIncr), ", ", udec_long(testDriveState))
     WHILE testDriveIncr <> testTargetIncr
-
+'}
     'circInMM_x10 := trunc(distConv.floatCircInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) *. 10.0)
     'tickInMM_x10 := circInMM_x10 / 90
 
@@ -256,6 +321,88 @@ PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, drvState, outDrvState,
     debug("* DONE")
     repeat      ' HALT here
 
+PRI checkem(nLHS, nRHS)
+    debug("min (", sdec_(nLHS), ", ", sdec_(nRHS), ") = ", sdec(min(nLHS, nRHS)))
+    debug("max (", sdec_(nLHS), ", ", sdec_(nRHS), ") = ", sdec(max(nLHS, nRHS)))
+
+PRI calcFromDutyAngle(duty, angle) : drive_u, drive_v, drive_w, raw_u, raw_v, raw_w
+    debug("- duty,angle [", sdec_(duty), ", ", sdec_(angle), "]")
+
+                org
+                mov     tmpY, duty                  ' feed three CORDIC operations to get phase drive levels
+                shr     tmpY, #4
+                mov     tmpX, angle
+                qrotate tmpY, tmpX
+                add     tmpX, third
+                qrotate tmpY, tmpX
+                add     tmpX, third
+                qrotate tmpY, tmpX
+
+                getqy   drive_u                     ' get three CORDIC results
+                getqy   drive_v
+                getqy   drive_w
+
+                mov     raw_u, drive_u              ' copy results to output
+                mov     raw_v, drive_v
+                mov     raw_w, drive_w
+
+                debug(" -+ raw u,v,w=(", sdec_(drive_u), ", ", sdec_(drive_v), ", ", sdec_(drive_w), ")")
+
+                mov     tmpX, drive_u              ' get smallest drive level into tmpX
+                cmps    tmpX, drive_v         wc
+    if_nc       mov     tmpX, drive_v
+                cmps    tmpX, drive_w         wc
+    if_nc       mov     tmpX, drive_w
+
+                mov     tmpY, drive_u              ' get largest drive level into tmpY
+                cmps    tmpY, drive_v         wc
+    if_c        mov     tmpY, drive_v
+                cmps    tmpY, drive_w         wc
+    if_c        mov     tmpY, drive_w
+
+                add     tmpX, tmpY                  ' sum smallest and largest, then divide by 2
+                sar     tmpX, #1
+
+                sub     drive_u, tmpX              ' subtract difference from drive levels
+                sub     drive_v, tmpX
+                sub     drive_w, tmpX
+
+                add     drive_u, bias              ' add center-bias and dead-time offsets to update PWMs
+                add     drive_v, bias
+                add     drive_w, bias
+
+                cmps    drive_u, minDrvU_      wc  ' Q:is drive_u < minDrvU_
+    if_c        mov     minDrvU_, drive_u          ' Y: save new min
+                cmps    maxDrvU_, drive_u      wc  ' Q:is maxDrvU_ < drive_u
+    if_c        mov     maxDrvU_, drive_u          ' Y: save new max
+                ret
+
+tmpX            LONG    0
+tmpY            LONG    0
+minDrvU_        LONG    0
+maxDrvU_        LONG    0
+third           LONG    1 FRAC 3                ' 120 degrees
+bias            LONG    FRAME / 4               ' PWM center-frame bias
+dead_gap_       LONG    70
+
+                end
+    debug(" -- drive u,v,w =(", sdec_(drive_u), ", ", sdec_(drive_v), ", ", sdec_(drive_w), ") +/- 70")
+    debug("   ")
+
+
+PRI min(a,b) : minVal
+            org
+            cmps    a,b     wc
+    if_c    mov minVal, a
+    if_nc   mov minVal, b
+            end
+
+PRI max(a,b) : maxVal
+            org
+            cmps    a,b     wc
+    if_c    mov maxVal, b
+    if_nc   mov maxVal, a
+            end
 
 pri rampUp(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
     drv_incr := inDrv_incr

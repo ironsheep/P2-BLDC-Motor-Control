@@ -1,0 +1,165 @@
+'' =================================================================================================
+''
+''   File....... test_pasm_snips.spin2
+''   Purpose.... Demonstrate working snippets of pasm2
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Mar 2022
+''   Updated.... 21 Jul 2022
+''
+'' =================================================================================================
+
+CON { timing }
+
+  CLK_FREQ = 270_000_000                                        ' system freq as a constant
+  _clkfreq = CLK_FREQ                                           ' set system clock
+
+    ' SPECIAL for LOGGING on RPi
+'{
+    DEBUG_PIN_TX = 1
+    DEBUG_PIN_RX = 0
+'}
+
+CON { fixed io pins }
+
+  RX1      = 63  { I }                                          ' programming / debug
+  TX1      = 62  { O }
+
+  SF_CS    = 61  { O }                                          ' serial flash
+  SF_SCK   = 60  { O }
+  SF_SDO   = 59  { O }
+  SF_SDI   = 58  { I }
+
+OBJ { our Motor(s) }
+
+
+CON { driver interface Constants}
+
+
+DAT
+
+VAR
+    long    duty_       ' curr motor drive value
+    long    angle_       ' curr motor drive value
+
+    long    drive_u_       ' curr motor drive value
+    long    drive_v_       ' curr motor drive value
+    long    drive_w_       ' curr motor drive value
+
+CON
+
+    FRAME    = 6136             ' 43.96 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+
+PUB main()
+'' DEMO Run Snippets
+    debug("   ")
+
+    ' range check duty_ and angle_ for poss outcomes
+    duty_ := 31_062
+    angle_ := -785_140_934
+    drive_u_, drive_v_, drive_w_ := calcFromDutyAngle(duty_, angle_)
+
+    duty_ := 29_913
+    angle_ := 1_381_835_823
+    drive_u_, drive_v_, drive_w_ := calcFromDutyAngle(duty_, angle_)
+
+    duty_ := 29_913
+    angle_ := 1_381_835_823
+    drive_u_, drive_v_, drive_w_ := calcFromDutyAngle(duty_, angle_)
+
+    duty_ := 48_528
+    angle_ := -829_998_396
+    drive_u_, drive_v_, drive_w_ := calcFromDutyAngle(duty_, angle_)
+
+    debug("* DONE")
+
+
+PRI calcFromDutyAngle(duty, angle) : drive_u, drive_v, drive_w
+    debug("- duty,angle [", sdec_(duty), ", ", sdec_(angle), "]")
+
+                org
+                mov     tmpY, duty                 ' feed three CORDIC operations to get phase drive levels
+                shr     tmpY, #4
+                mov     tmpX, angle
+                qrotate tmpY, tmpX
+                add     tmpX, third
+                qrotate tmpY, tmpX
+                add     tmpX, third
+                qrotate tmpY, tmpX
+
+                getqy   drive_u                    ' get three CORDIC results
+                getqy   drive_v
+                getqy   drive_w
+                debug(" -+ fmCordic: u,v,w=(", sdec_(drive_u), ", ", sdec_(drive_v), ", ", sdec_(drive_w), ")")
+
+                mov     tmpX, drive_u              ' get smallest drive level into tmpX
+                cmps    tmpX, drive_v         wc
+    if_nc       mov     tmpX, drive_v
+                cmps    tmpX, drive_w         wc
+    if_nc       mov     tmpX, drive_w
+
+                mov     tmpY, drive_u              ' get largest drive level into tmpY
+                cmps    tmpY, drive_v         wc
+    if_c        mov     tmpY, drive_v
+                cmps    tmpY, drive_w         wc
+    if_c        mov     tmpY, drive_w
+
+                add     tmpX, tmpY                  ' sum smallest and largest, then divide by 2
+                sar     tmpX, #1
+
+                sub     drive_u, tmpX              ' subtract difference from drive levels
+                sub     drive_v, tmpX
+                sub     drive_w, tmpX
+
+                add     drive_u, bias              ' add center-bias and dead-time offsets to update PWMs
+                add     drive_v, bias
+                add     drive_w, bias
+
+                cmps    drive_u, minDrvU_      wc  ' Q:is drive_u < minDrvU_
+    if_c        mov     minDrvU_, drive_u          ' Y: save new min
+                cmps    maxDrvU_, drive_u      wc  ' Q:is maxDrvU_ < drive_u
+    if_c        mov     maxDrvU_, drive_u          ' Y: save new max
+                ret
+
+tmpX            LONG    0
+tmpY            LONG    0
+minDrvU_        LONG    0
+maxDrvU_        LONG    0
+third           LONG    1 FRAC 3                ' 120 degrees
+bias            LONG    FRAME / 4               ' PWM center-frame bias
+dead_gap_       LONG    70
+
+                end
+    debug(" -- drive u,v,w =(", sdec_(drive_u), ", ", sdec_(drive_v), ", ", sdec_(drive_w), ") +/- 70")
+    debug("   ")
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}
