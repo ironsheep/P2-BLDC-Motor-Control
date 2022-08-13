@@ -17,7 +17,7 @@ CON { timing }
   _clkfreq = CLK_FREQ                                           ' set system clock
 
     ' SPECIAL for LOGGING on RPi
-{
+'{
     DEBUG_PIN_TX = 1
     DEBUG_PIN_RX = 0
 '}
@@ -113,23 +113,35 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, bDidFault, failSpeed, 
         debug(" --- ")
 
         bFwdIsInverse := (user.MOTOR_TYPE == wheel.MOTR_DOCO_4KRPM) ? TRUE : FALSE
-
+{
+        ' do 10's check - FIXME: this check a waste of time... do 5's only, not 10's!
         debug("* test: 0 to 180, incr by 10")
         debug(" --- ")
         repeat ofstInDegr from 0 to 180 step 10
             evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
+'}
 
+{
+        ' do 5's check
         debug("* test: 5 to 180, incr by 10")
         debug(" --- ")
-        repeat ofstInDegr from 5 to 180 step 10
+        'repeat ofstInDegr from 5 to 180 step 10
+        repeat ofstInDegr from 55 to 180 step 10
             evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
-
+'}
+'{
+        ' lastly do local value check...
+        debug("* test: 45 to 60, incr by 1")
+        debug(" --- ")
+        repeat ofstInDegr from 45 to 60 step 1
+            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
+'}
         ' TBA  let's add a reverse drive loop
         debug("* quit: all checked")
         debug("  ")
 
         debug("* END TEST: holding for 30 secs...")
-        waitms(30000)   ' 30 seconds, then stop
+        waitms(30_000)   ' 30 seconds, then stop
 
         ' turn off our motor drivers
         wheel.stop()
@@ -137,7 +149,9 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, bDidFault, failSpeed, 
 PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed) | bDidFault, bNoMovement
 ' test these offsets speed to see if current is best
     wheel.testResetMaxValues()
+    debug(" ----------------------- ")
     wheel.testSetFwdRevOffsets(newOffsetInDegr, bFwdIsInverse)
+    debug(" ----------------------- ")
     debug("* OFFSET pass(", udec_(passNbr), "), ", udec(newOffsetInDegr))
     bDidFault, bNoMovement := evalSpeed(speed)
     if bNoMovement
@@ -146,7 +160,10 @@ PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed) | bDidFault, bNoMovement
         wheel.resetTracking()
 
     passNbr++
-    waitms(500) ' slight delay between passes
+    debug("   ")
+    debug(" ======================= ")
+    debug("   8 sec...")
+    waitms(8_000) ' slight delay between passes
 
 PRI evalSpeed(testSpd) : bDidFault, bNoMovement | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
@@ -159,20 +176,22 @@ PRI evalSpeed(testSpd) : bDidFault, bNoMovement | endMaxRPM, endMaxTics
     bNoMovement := (endMaxRPM > 0) ? FALSE : TRUE
     if bDidFault
         clearFault()
+        waitms(5_000) ' slight delay between FWD/REV
+
     debug("   ")
 
     if not bDidFault and not bNoMovement
         debug("* TEST REV pass(", udec_(passNbr++), ")", udec(testSpd))
-        waitms(1000) ' slight delay between FWD/REV
+        waitms(2_000) ' slight delay between FWD/REV
         drivereverseToFail()
         bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
         bNoMovement := (endMaxRPM > 0) ? FALSE : TRUE
         if bDidFault
             clearFault()
+            waitms(5_000) ' slight delay between FWD/REV
         debug("   ")
 
     debug(" --- ")
-    waitms(3000) ' slight delay between FWD/REV
 
 
 VAR
@@ -215,6 +234,7 @@ PRI driveForwardToFail() : bBadStart | bDidFault
         wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
 
         bDidFault, bBadStart := waitUntilMotorDone()
+        wheel.driveAtPower(0)                      ' force STOP
 
     else
         debug("*E motor not ready")
@@ -229,6 +249,7 @@ PRI driveReverseToFail() : bBadStart | bDidFault
         wheel.driveAtPower(-100)                      ' now go FWD at 100% pwr
 
         bDidFault, bBadStart := waitUntilMotorDone()
+        wheel.driveAtPower(0)                      ' force STOP
 
     else
         debug("*E motor not ready")
