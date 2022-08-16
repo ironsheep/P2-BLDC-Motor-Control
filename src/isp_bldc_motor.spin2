@@ -78,45 +78,26 @@ CON { test pins for LA measurement }
 '}
 
 DAT { misc time constants }
+
     ' time constants based on CPU freq
     ticks1ms    LONG    0                     '
     ticks1us    LONG    0                     '
-    ticks10us   long    0                     '
     ticks10p23us  long    0                     '
-    ticks15p36us long 0
-    ticks20us   long    0                     '
-    ticks24us   long    0                     '
-    ticks50us   long    0                     '
     ticks500us  long    0                     ' 2 kHz
     ticks125ms  long    0                       ' 8 Hz
-'    ticks31p25ms long   0                       ' 32 Hz
-'    ticks15p625ms long   0                      ' 64 Hz
-'    ticks7p813ms long   0                      ' 128 Hz
-'    ticks750us  long    0                     '
-'    ticks800us  long    0                     '
 
 PUB null()
 
 '' This is not a top-level object
 
-PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees, ofsDegr, vFrame
+PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees, ofsDegr
 '' Specify motor control board connect location for this motor and start the driver
         ' setup runtime constants
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
-    ticks10us  := (ticks1ms * 10) / 1_000
-    ticks15p36us  := (ticks1ms * 1536) / 100_000
     ticks10p23us  := (ticks1ms * 1033) / 100_000
-    ticks20us  := (ticks1ms * 20) / 1_000
-    ticks24us  := (ticks1ms * 24) / 1_000
-    ticks50us  := (ticks1ms * 50) / 1_000
     ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
-'    ticks750us := (ticks1ms * 750) / 1_000  '
-'    ticks800us := (ticks1ms * 800) / 1_000  '
     ticks125ms := ticks1ms * 125
-'    ticks31p25ms := (ticks1ms * 3125) / 100
-'    ticks15p625ms := ((ticks31p25ms + 1) / 2) + 1
-'    ticks7p813ms := ((ticks15p625ms + 1) / 2) + 1
 
     ' set up debug variables
     useDebug := FALSE
@@ -160,14 +141,22 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
 '  middle value is angular diff and motor postion relative to hall position
 '  deflection is direction and speed dependent
 
+    frame_cnt := (ticks1us * (1_000_000_000 / PWM_RATE_IN_HZ)) / 1_000
+    debug(" - Calc FRAME: ", udec(frame_cnt))
+
+    ' preload driver values before driver start
+    adc_fram    :=    frame_cnt                   ' set ADC to full PWM frame counts
+    fram        :=    (frame_cnt / 2) << 16 + 1   ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
+    bias        :=    frame_cnt / 4               ' PWM center-frame bias
+
+
     ' setup driver parameters based on clock rate
     charge_time := ticks1us
     dead_gap    := (ticks1us * 260) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
-    pwm_limit   := (FRAME / 2) - (dead_gap  / 2)        'PWM duty hard limit 1/2 freq of PWM
-    vFrame := FRAME
+    pwm_limit   := (frame_cnt / 2) - (dead_gap  / 2)        'PWM duty hard limit 1/2 freq of PWM
+
     ' .. and set up rest
-    'offset_fwd  := 20 frac 360              ' 96 frac 360 (Doug's motor)
-    'offset_rev  := 340 frac 360             ' 228 frac 360 (Doug's motor)
+
 ' orig higher power code used this
     duty_min    := 100 << 4 #> (dead_gap / 2) << 4
 '    duty_min    := dead_gap << 4 #> dead_gap << 4
@@ -213,7 +202,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
 
     userSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
 
-    debug("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(vFrame), udec_long(duty_min), udec_long(duty_max))
+    debug("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(adc_fram), udec_long(duty_min), udec_long(duty_max))
     debug("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks), udec_long(motr_ctcks))
 
     circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH)
@@ -594,6 +583,7 @@ PUB validVoltageForChoice(userVoltage) : legalVoltage
     legalVoltage := userVoltage
     if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
         CASE userVoltage
+            ' NOTE 6.0V is not legal for this motor
             PWR_7p4V:
             PWR_11p1V:
             PWR_12p0V:
@@ -601,7 +591,6 @@ PUB validVoltageForChoice(userVoltage) : legalVoltage
             PWR_18p5V:
             PWR_22p2V:
             PWR_24p0V:
-            ' NOTE 6.0V is not legal for this motor
             ' NOTE 25.9V is not legal for this motor
             OTHER:
                 legalVoltage := INVALID_VOLTAGE
@@ -615,6 +604,7 @@ PUB validVoltageForChoice(userVoltage) : legalVoltage
             PWR_18p5V:
             PWR_22p2V:
             PWR_24p0V:
+            PWR_25p9V:
             OTHER:
                 legalVoltage := INVALID_VOLTAGE
     debug("*VAL* ", sdec_long(legalVoltage))
@@ -854,71 +844,6 @@ PRI setTargetAccel(nTgtIncr)
     debug("-MOT- ", sdec_long(targetIncre))
     tvTargetIncreInM := nTgtIncr / 10_000
 
-DAT { --- MOTOR TYPE TABLES --- }
-
-' These table represent contants for use in BLDC pasm driver
-'  tables specific to a given motor are copied into pasm driver image
-'  before the driver is started
-'
-' old bit shift up by 3 then new bits
-'   old is outer index
-'   new is inner index
-deltas65    BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3 | new)
-            BYTE    0, 0, 0,-1, 0, 1, 0, 0
-            BYTE    0, 0, 0, 1, 0, 0,-1, 0
-            BYTE    0, 1,-1, 0, 0, 0, 0, 0
-            BYTE    0, 0, 0, 0, 0,-1, 1, 0
-            BYTE    0,-1, 0, 0, 1, 0, 0, 0
-            BYTE    0, 0, 1, 0,-1, 0, 0, 0
-            BYTE    0, 0, 0, 0, 0, 0, 0, 0
-
-deltas4k    BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' old=0 - Hall-effect-sensor position deltas from (old<<3 | new)
-            BYTE    0, 0, 0,-1, 0, 1, 0, 0  ' old=1
-            BYTE    0, 0, 0, 1, 0, 0,-1, 0  ' old=2
-            BYTE    0, 1,-1, 0, 0, 0, 0, 0  ' old=3
-            BYTE    0, 0, 0, 0, 0,-1, 1, 0  ' old=4
-            BYTE    0,-1, 0, 0, 1, 0, 0, 0  ' old=5
-            BYTE    0, 0, 1, 0,-1, 0, 0, 0  ' old=6
-            BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' old=7
-
-'   amount of rotation within hall cycle - 6.5" wheel
-hltbAngles  LONG    0           '-%000- can't happen forward-direction table
-            LONG    0 frac 6    '%001
-            LONG    4 frac 6    '%010
-            LONG    5 frac 6    '%011
-            LONG    2 frac 6    '%100
-            LONG    1 frac 6    '%101
-            LONG    3 frac 6    '%110
-            LONG    0           '-%111- can't happen
-
-hltbAngle2  LONG    0           '-%000- can't happen - reverse-direction table
-            LONG    5 frac 6    '%001
-            LONG    3 frac 6    '%010
-            LONG    4 frac 6    '%011
-            LONG    1 frac 6    '%100
-            LONG    0 frac 6    '%101
-            LONG    2 frac 6    '%110
-            LONG    0           '-%111- can't happen
-
-
-'   amount of rotation within hall cycle - docoEng.com 4kRPM, 24V
-hltbAngl4k  LONG    0           '-%000- can't happen - forward-direction table
-            LONG    5 frac 6    '%001
-            LONG    3 frac 6    '%010
-            LONG    4 frac 6    '%011
-            LONG    1 frac 6    '%100
-            LONG    0 frac 6    '%101
-            LONG    2 frac 6    '%110
-            LONG    0           '-%111- can't happen
-
-hltbAngl4k2 LONG    0           '-%000- can't happen - reverse-direction table
-            LONG    0 frac 6    '%001
-            LONG    4 frac 6    '%010
-            LONG    5 frac 6    '%011
-            LONG    2 frac 6    '%100
-            LONG    1 frac 6    '%101
-            LONG    3 frac 6    '%110
-            LONG    0           '-%111- can't happen
 
 CON { --- HDMI Debug Support --- }
 
@@ -927,7 +852,7 @@ CON { Constants for HDMI Debug }
     DBG_GROUPS_CT = 3
     DBG_MAX_VARS_IN_GROUP = 7
 
-VAR { * Data Structure for HDMI Debug * }
+VAR { Data Structure for HDMI Debug }
 
     LONG    pTitlesAr[DBG_GROUPS_CT + 1]    ' first value is max vars
     LONG    pVarCtAr[DBG_GROUPS_CT]
@@ -1074,7 +999,7 @@ CON { -- TASK position tracking -- }
     SENSE_LOOP_HZ = 8
     ' at 31.25 ms
     'SENSE_LOOP_HZ = 32
-        ' at 15.625 ms
+    ' at 15.625 ms
     'SENSE_LOOP_HZ = 64
     ' at 7.813 ms
     'SENSE_LOOP_HZ = 128
@@ -1188,11 +1113,11 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
         ' accum our windowed values
         hallWindowSum -= LONG[@hallCountsWindow][hallWinIndex]          ' Remove the oldest entry from the sum
         long [@hallCountsWindow][hallWinIndex] := hallCntsIn8thSec      ' place the newest reading into the window
-        hallWindowSum += hallCntsIn8thSec                           ' Add the newest reading to the sum
-        hallWinIndex := (hallWinIndex + 1) +// HALL_WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
-        if hallWinEntryCt < HALL_WINDOW_SIZE                         ' incr number of samples in sum until is window size
+        hallWindowSum += hallCntsIn8thSec                               ' Add the newest reading to the sum
+        hallWinIndex := (hallWinIndex + 1) +// HALL_WINDOW_SIZE         ' Increment the index, and wrap to 0 if it exceeds the window size
+        if hallWinEntryCt < HALL_WINDOW_SIZE                            ' incr number of samples in sum until is window size
             hallWinEntryCt++
-        cntsInSec := hallWindowSum          ' moving average, scaled
+        cntsInSec := hallWindowSum                                      ' moving sum
         posTrkHallTicks += hallCntsIn8thSec
 
         tvRpm_x10 := ((cntsInSec * 60) * 10) / hallTicsPerRotation
@@ -1280,6 +1205,74 @@ PRI absDistanceInTics(newPos, priorPos) : nHallTics
             ' 9 -> 12 = 12 - 9 = abs(3) = 3
             nHallTics := abs(newPos - priorPos)
 
+DAT { --- MOTOR TYPE TABLES --- }
+
+' These table represent contants for use in BLDC pasm driver
+'  tables specific to a given motor are copied into pasm driver image
+'  before the driver is started
+'
+' old bit shift up by 3 then new bits
+'   old is outer index
+'   new is inner index
+
+deltas65    BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' Hall-effect-sensor position deltas from (old<<3 | new)
+            BYTE    0, 0, 0,-1, 0, 1, 0, 0
+            BYTE    0, 0, 0, 1, 0, 0,-1, 0
+            BYTE    0, 1,-1, 0, 0, 0, 0, 0
+            BYTE    0, 0, 0, 0, 0,-1, 1, 0
+            BYTE    0,-1, 0, 0, 1, 0, 0, 0
+            BYTE    0, 0, 1, 0,-1, 0, 0, 0
+            BYTE    0, 0, 0, 0, 0, 0, 0, 0
+
+deltas4k    BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' old=0 - Hall-effect-sensor position deltas from (old<<3 | new)
+            BYTE    0, 0, 0,-1, 0, 1, 0, 0  ' old=1
+            BYTE    0, 0, 0, 1, 0, 0,-1, 0  ' old=2
+            BYTE    0, 1,-1, 0, 0, 0, 0, 0  ' old=3
+            BYTE    0, 0, 0, 0, 0,-1, 1, 0  ' old=4
+            BYTE    0,-1, 0, 0, 1, 0, 0, 0  ' old=5
+            BYTE    0, 0, 1, 0,-1, 0, 0, 0  ' old=6
+            BYTE    0, 0, 0, 0, 0, 0, 0, 0  ' old=7
+
+'   amount of rotation within hall cycle - 6.5" wheel
+hltbAngles  LONG    0           '-%000- can't happen forward-direction table
+            LONG    0 frac 6    '%001
+            LONG    4 frac 6    '%010
+            LONG    5 frac 6    '%011
+            LONG    2 frac 6    '%100
+            LONG    1 frac 6    '%101
+            LONG    3 frac 6    '%110
+            LONG    0           '-%111- can't happen
+
+hltbAngle2  LONG    0           '-%000- can't happen - reverse-direction table
+            LONG    5 frac 6    '%001
+            LONG    3 frac 6    '%010
+            LONG    4 frac 6    '%011
+            LONG    1 frac 6    '%100
+            LONG    0 frac 6    '%101
+            LONG    2 frac 6    '%110
+            LONG    0           '-%111- can't happen
+
+
+'   amount of rotation within hall cycle - docoEng.com 4kRPM, 24V
+hltbAngl4k  LONG    0           '-%000- can't happen - forward-direction table
+            LONG    5 frac 6    '%001
+            LONG    3 frac 6    '%010
+            LONG    4 frac 6    '%011
+            LONG    1 frac 6    '%100
+            LONG    0 frac 6    '%101
+            LONG    2 frac 6    '%110
+            LONG    0           '-%111- can't happen
+
+hltbAngl4k2 LONG    0           '-%000- can't happen - reverse-direction table
+            LONG    0 frac 6    '%001
+            LONG    4 frac 6    '%010
+            LONG    5 frac 6    '%011
+            LONG    2 frac 6    '%100
+            LONG    1 frac 6    '%101
+            LONG    3 frac 6    '%110
+            LONG    0           '-%111- can't happen
+
+
 CON { --- The Motor driver --- }
 
 CON { driver interface Constants}
@@ -1298,9 +1291,10 @@ CON { driver interface Constants}
 CON { driver internal Constants}
 
 '44KHz seems to be sweetspot for DocoEng Motor
-    FRAME   = 6_136             ' 44.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+'    FRAME   = 6_136             ' 44.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
 '22KHz EXPERIMENT
 '    FRAME   = 12_273            ' 22.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+    PWM_RATE_IN_HZ   = 44_000
 
     DRVR_STATUS_LONGS_COUNT     = 14
     DRVR_PARAMS_LONGS_COUNT     = 14
@@ -1392,6 +1386,7 @@ VAR  {  Motor Parameters  }
 
 ' -----------------------------------
     LONG    charge_time     ' delay between driving h/l side of driver (never drive both at once)
+    LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
 
 DAT  {  Motor DRIVER  }
 '
@@ -1983,20 +1978,16 @@ drive_pins	LONG	(6 << 6) + 8	        ' drive-pins variable (+8 addpins 6) needs 
 adc_pins	LONG	(4 << 6) + 0	        ' drive-pins variable (+0 addpins 4) needs ADD/OR of basepin
 pwmt        LONG    %000_000000_01_01000_0  ' PWM true (P_BITDAC | P_PWM_TRIANGLE)
 pwmn        LONG    %001_000000_01_01000_0  ' PWM not (P_INVERT_OUTPUT | P_BITDAC | P_PWM_TRIANGLE)
-adc_fram    LONG    FRAME                   ' set ADC to full PWM frame counts
-fram        LONG    (FRAME / 2) << 16 + 1   ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
-bias        LONG    FRAME / 4               ' PWM center-frame bias
+adc_fram    LONG    0                       ' set ADC to full PWM frame counts [was: LONG    FRAME]
+fram        LONG    0                       ' PWM frame: width=FRAME/2, div sysclk by 1 (no division) [was: LONG (FRAME / 2) << 16 + 1 ]
+bias        LONG    0                       ' PWM center-frame bias [was: LONG    FRAME / 4]
 third       LONG    1 FRAC 3                ' 120 degrees
 numerator   LONG    3300 << 11              ' numerator for ADC calculations:     3.3V << 11 BITS
 stop_requst LONG    0                       ' 32-bits of zero
 maxNeg      LONG    $FFFF_FFFF              ' 32-bits of one (max negative signed value)
 maxPos      LONG    $7FFF_FFFF              ' max positive signed value
 ramp_thresh LONG    25_000_000              ' fm zero - slow ramp to here then fast ramp ( ~1/5 of 0-max )
-twoPercent  LONG    FRAME / 10              ' 2% of frame/2
-' following is experiment in limiting PWM drive request... didn't really solve the problem
-'   FIXME: Chip what could we do to prevent this?, do we need to?
-drv_max_    LONG    (FRAME / 2) - 1         ' maximum PWM drive value
-drv_min_    LONG    0 + 1                   ' minimum PWM drive value  + 1
+'twoPercent  LONG    FRAME / 10              ' 2% of frame/2
 'maxDrvU_     LONG    -1
 'minDrvU_     LONG    $7fff_ffff
 

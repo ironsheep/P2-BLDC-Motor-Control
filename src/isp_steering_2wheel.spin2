@@ -107,7 +107,11 @@ PUB start(leftBasePin, rightBasePin, driveVoltage) : ok
     ticks125ms := ticks1ms * 125
 
     circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH)
-    tickInMM_x10 := circInMM_x10 / 90
+    if circInMM_x10 <> 0
+        if user.MOTOR_TYPE == user.MOTR_6_5_INCH
+            tickInMM_x10 := circInMM_x10 / 90
+    else
+        tickInMM_x10 := 0
 
     ' iff HDMI is needed, then we need this!
     'if clkfreq <> 270_000_000
@@ -160,8 +164,8 @@ PUB holdAtStop(bEnable)
 PUB resetTracking()
 '' Resets the position tracking values returned by getDistance() and getRotations()
 ''  Effectively: use current position as home from now on
-    resetAccumLeft()
-    resetAccumRight()
+    resetLtWindowAccumulator()
+    resetRtWindowAccumulator()
 
 CON { --- Subsystem Control --- }
 
@@ -191,7 +195,7 @@ PUB driveAtPower(leftPower, rightPower)
     ltWheel.driveAtPower(leftPower)
     rtWheel.driveAtPower(rightPower)
 
-PUB stopAfterRotation(nRotationCount, eRotationUnits)
+PUB stopAfterRotation(nRotationCount, eRotationUnits) | degreesPerTic, ticsPerRotation
 '' Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
 '' USE WITH: driveDirection(), drive()
 '' USE WITH:  driveAtPower()
@@ -201,6 +205,8 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits)
         ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
         abort
 
+    degreesPerTic, ticsPerRotation := hallTicInfoForMotor()
+
     ' convert rotation info to ticks (will stop at ticks limit)
     motorStopHallTicks := 0
     case eRotationUnits
@@ -208,13 +214,14 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits)
             motorStopHallTicks := nRotationCount
         DRU_DEGREES:
             ' ticks = degrees / 4
-            motorStopHallTicks := nRotationCount / 4
+            motorStopHallTicks := nRotationCount / degreesPerTic
         DRU_ROTATIONS:
             ' ticks = rotations * 90
-            motorStopHallTicks := nRotationCount * 90
+            motorStopHallTicks := nRotationCount * ticsPerRotation
         other:
             debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
             abort
+
 
 '' Stops both motors, after either of the motors reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
 '' USE WITH: driveDirection(), drive()
@@ -225,6 +232,12 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
     if nDistance < 1
         debug("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
         ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+        abort
+
+    ' if user configured wheel-diameter is 0.0 then tickInMM_x10 is 0
+    ' if so, abort this method as we can't do this!
+    if tickInMM_x10 == 0
+        debug("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
         abort
 
     ' convert distance to ticks (will stop at ticks limit)
@@ -302,27 +315,32 @@ PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
 
 PRI convertDistance(nValue, eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
 ' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
-    fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
-    case eDistanceUnits
-        DDU_MM:
-            nDistanceInUnits := trunc(float(nValue) *. fMMpTick)
-        DDU_CM:
-            nDistanceInUnits := trunc(float(nValue) *. fMMpTick /. 10.0)
-        DDU_IN:
-            fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
-        DDU_FT:
-            fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
-        DDU_M:
-            fValue := float(nValue) *. fMMpTick
-            nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
-        DDU_MI:
-            fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
-        DDU_KM:
-            fValue := float(nValue) *. fMMpTick
-            nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
+    nDistanceInUnits := 0
+    if circInMM_x10 <> 0
+        fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
+        case eDistanceUnits
+            DDU_MM:
+                nDistanceInUnits := trunc(float(nValue) *. fMMpTick)
+            DDU_CM:
+                nDistanceInUnits := trunc(float(nValue) *. fMMpTick /. 10.0)
+            DDU_IN:
+                fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
+                nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
+            DDU_FT:
+                fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
+                nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
+            DDU_M:
+                fValue := float(nValue) *. fMMpTick
+                nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
+            DDU_MI:
+                fValue := distConv.fMm2inFloat(float(nValue) *. fMMpTick)
+                nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
+            DDU_KM:
+                fValue := float(nValue) *. fMMpTick
+                nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
+    else
+        debug("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
+
 
 PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
 '' Returns accumulated {*RotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for each of the motors.
@@ -330,18 +348,21 @@ PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
     leftRotationCount := convertRotationCount(ltPosTrkHallTicks, eRotationUnits)
     rightRotationCount := convertRotationCount(rtPosTrkHallTicks, eRotationUnits)
 
-PRI convertRotationCount(nValue, eRotationUnits) : rotationCount
+PRI convertRotationCount(nValue, eRotationUnits) : rotationCount | degreesPerTic, ticsPerRotation
 ' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
     rotationCount := -1
+
+    degreesPerTic, ticsPerRotation := hallTicInfoForMotor()
+
     case eRotationUnits
         DRU_HALL_TICKS:
             rotationCount := nValue
         DRU_DEGREES:
-            ' degrees = ticks * 4
-            rotationCount := nValue * 4
+            ' degrees = ticks * 15, 4
+            rotationCount := nValue * degreesPerTic
         DRU_ROTATIONS:
-            ' rotations = ticks / 90
-            rotationCount := nValue / 90
+            ' rotations = ticks / 24, 90
+            rotationCount := nValue / ticsPerRotation
 
 PUB getPower() : leftPower, rightPower
 '' Returns the last specified power value [-100 thru +100] for each of the motors (will be zero if the motor is stopped).
@@ -405,6 +426,20 @@ PRI calcPowerForDirection(power, direction) : ltPower, rtPower | bIsLeft, absPow
 
     debug("* calcPowerForDirection(", sdec_long(power), ", ", sdec_long(direction), ") -> ", sdec_long(ltPower), sdec_long(rtPower))
 
+PRI hallTicInfoForMotor() : degreesPerTic, ticsPerRotation
+' return numbers for user selected motor
+    if user.MOTOR_TYPE == user.MOTR_DOCO_4KRPM
+        ' degrees = ticks * 15
+        degreesPerTic := 15
+        ' rotations = ticks / 24
+        ticsPerRotation :=  24
+    else
+        ' degrees = ticks * 4
+        degreesPerTic := 4
+        ' rotations = ticks / 90
+        ticsPerRotation :=  90
+
+
 PUB isReady() : bState
 '' Return T/F where T means the both motor cogs are running
     bState := ltWheel.isReady() and rtWheel.isReady()
@@ -423,8 +458,12 @@ PUB isTurning() : bState
 
 CON { -- TASK position tracking -- }
 
-  STACK_SIZE_LONGS = 64 ' WARNING! we exceed stack at 48!
-  WINDOW_SIZE = 5
+    STACK_SIZE_LONGS = 64 ' WARNING! we exceed stack at 48!
+
+    ' at 125 ms
+    SENSE_LOOP_HZ = 8
+
+    HALL_WINDOW_SIZE = SENSE_LOOP_HZ
 
 VAR { time values & arrays }
 
@@ -434,11 +473,22 @@ VAR { time values & arrays }
 
     long    senseCog
 
-    long    ltCountsWindow[WINDOW_SIZE]
-    long    rtCountsWindow[WINDOW_SIZE]
     long    taskStack[STACK_SIZE_LONGS]
 
 VAR { Data for Motor Position Tracking }
+
+    ' summing sense values at 1/8 sec period
+    LONG    ltHallCountsWindow[HALL_WINDOW_SIZE]
+    LONG    ltHallWinIndex
+    LONG    ltHallWinEntryCt
+    LONG    ltHallCntsIn8thSec
+    LONG    ltHallWindowSum
+
+    LONG    rtHallCountsWindow[HALL_WINDOW_SIZE]
+    LONG    rtHallWinIndex
+    LONG    rtHallWinEntryCt
+    LONG    rtHallCntsIn8thSec
+    LONG    rtHallWindowSum
 
     long    ltPosTrkHallTicks
     long    rtPosTrkHallTicks
@@ -448,27 +498,21 @@ VAR { Data for Motor Position Tracking }
     long    circInMM_x10
     long    tickInMM_x10
     '  --------------------------
-    long    newCntsInSec
-    long    ltWinIndex
-    long    ltWinEntryCt
-    long    ltWindowSum
-    long    rtWinIndex
-    long    rtWinEntryCt
-    long    rtWindowSum
+    long    hallCntsIn8thSec
 
 
     '  Position Tracking vars
     long    motorStopHallTicks
     long    motorStopMSecs
 
-PRI resetAccumLeft()
-    longfill(@ltCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
-    ltWinEntryCt := ltWindowSum := ltWinIndex := 0
+PRI resetLtWindowAccumulator()
+    longfill(@ltHallCountsWindow, 0, HALL_WINDOW_SIZE) ' zero our window accum
+    ltHallWinEntryCt := ltHallWindowSum := ltHallWinIndex := 0
     ltPosTrkHallTicks := 0
 
-PRI resetAccumRight()
-    longfill(@rtCountsWindow, 0, WINDOW_SIZE) ' zero our window accum
-    rtWinEntryCt := rtWindowSum := rtWinIndex := 0
+PRI resetRtWindowAccumulator()
+    longfill(@rtHallCountsWindow, 0, HALL_WINDOW_SIZE) ' zero our window accum
+    rtHallWinEntryCt := rtHallWindowSum := rtHallWinIndex := 0
     rtPosTrkHallTicks := 0
 
 CON
@@ -476,23 +520,23 @@ CON
    LEFT_WHEEL = TRUE
    RIGHT_WHEEL = FALSE
 
-PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eStopCtr
+PRI taskPostionSense() | senseStartTicks, timeNow, eStopCtr
 ' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
     'pinlow(TEST_PIN_SNS_LOOP)
     'pinlow(TEST_PIN_SNS_LP_ACTV)
 
     eStopCtr := 0
-    resetAccumLeft()
-    resetAccumRight()
+    resetLtWindowAccumulator()
+    resetRtWindowAccumulator()
     priorLtStatus := priorRtStatus := -1
 
     repeat
         ' if just starting up (or MOTOR FAULT), reset our tracker
         if ltWheel.getDriverState() == DCS_FAULTED or ltWheel.getDriverState() == DCS_ESTOP or senseStartTicks == 0
-            resetAccumLeft()
+            resetLtWindowAccumulator()
 
         if rtWheel.getDriverState() == DCS_FAULTED or rtWheel.getDriverState() == DCS_ESTOP or senseStartTicks == 0
-            resetAccumRight()
+            resetRtWindowAccumulator()
 
         showDriveStatesOnChange()
 
@@ -504,32 +548,28 @@ PRI taskPostionSense() | senseStartTicks, posThis8th, fValue, fFps, timeNow, eSt
         ' ------------------------------------------
         ' PROCESS left motor
         '
-        newCntsInSec := distanceIn90ths(ltWheel.getRawHallTicks(), LEFT_WHEEL)  ' Read the next sensor value
-        ltWindowSum -= LONG[@ltCountsWindow][ltWinIndex]            ' Remove the oldest entry from the sum
-        long [@ltCountsWindow][ltWinIndex] := newCntsInSec          ' place the newest reading into the window
-        ltWindowSum += newCntsInSec                                 ' Add the newest reading to the sum
-        ltWinIndex := (ltWinIndex + 1) +// WINDOW_SIZE              ' Increment the index, and wrap to 0 if it exceeds the window size
-        if ltWinEntryCt < WINDOW_SIZE                               ' incr number of samples in sum until is window size
-            ltWinEntryCt++
+        hallCntsIn8thSec := distanceIn90ths(ltWheel.getRawHallTicks(), LEFT_WHEEL)  ' Read the next sensor value
+        ltHallWindowSum -= LONG[@ltHallCountsWindow][ltHallWinIndex]            ' Remove the oldest entry from the sum
+        long [@ltHallCountsWindow][ltHallWinIndex] := hallCntsIn8thSec          ' place the newest reading into the window
+        ltHallWindowSum += hallCntsIn8thSec                                 ' Add the newest reading to the sum
+        ltHallWinIndex := (ltHallWinIndex + 1) +// HALL_WINDOW_SIZE              ' Increment the index, and wrap to 0 if it exceeds the window size
+        if ltHallWinEntryCt < HALL_WINDOW_SIZE                               ' incr number of samples in sum until is window size
+            ltHallWinEntryCt++
 
-'        cntsInSec := (ltWindowSum / ltWinEntryCt) * 8               ' moving average, scaled
-        posThis8th := ltWindowSum / ltWinEntryCt
-        ltPosTrkHallTicks += posThis8th
+        ltPosTrkHallTicks += hallCntsIn8thSec
 
         ' ------------------------------------------
         ' PROCESS right motor
         '
-        newCntsInSec := distanceIn90ths(rtWheel.getRawHallTicks(), RIGHT_WHEEL)  ' Read the next sensor value
-        rtWindowSum -= LONG[@rtCountsWindow][rtWinIndex]            ' Remove the oldest entry from the sum
-        long [@rtCountsWindow][rtWinIndex] := newCntsInSec          ' place the newest reading into the window
-        rtWindowSum += newCntsInSec                                 ' Add the newest reading to the sum
-        rtWinIndex := (rtWinIndex + 1) +// WINDOW_SIZE              ' Increment the index, and wrap to 0 if it exceeds the window size
-        if rtWinEntryCt < WINDOW_SIZE                               ' incr number of samples in sum until is window size
-            rtWinEntryCt++
+        hallCntsIn8thSec := distanceIn90ths(rtWheel.getRawHallTicks(), RIGHT_WHEEL)  ' Read the next sensor value
+        rtHallWindowSum -= LONG[@rtHallCountsWindow][rtHallWinIndex]            ' Remove the oldest entry from the sum
+        long [@rtHallCountsWindow][rtHallWinIndex] := hallCntsIn8thSec          ' place the newest reading into the window
+        rtHallWindowSum += hallCntsIn8thSec                                 ' Add the newest reading to the sum
+        rtHallWinIndex := (rtHallWinIndex + 1) +// HALL_WINDOW_SIZE              ' Increment the index, and wrap to 0 if it exceeds the window size
+        if rtHallWinEntryCt < HALL_WINDOW_SIZE                               ' incr number of samples in sum until is window size
+            rtHallWinEntryCt++
 
-'        cntsInSec := (rtWindowSum / rtWinEntryCt) * 8               ' moving average, scaled
-        posThis8th := rtWindowSum / rtWinEntryCt
-        rtPosTrkHallTicks += posThis8th
+        rtPosTrkHallTicks += hallCntsIn8thSec
 
         ' ------------------------------------------
         ' EVALUATE any motor stop requests
