@@ -18,6 +18,7 @@ The motors currently supported by this driver:
 | Ticks per hall-cycle | 6 ticks | FWD (CW): 1-3-2-6-4-5</br>REV (CCW): 1-5-4-6-2-3
 | Hall-cycles per Revolution | 15 hall-cycles |
 | Degrees per Hall-cycle | 24 degrees |
+| Magnets	| 30 pole |
 | |
 | `MOTR_DOCO_4KRPM` | **-- docoEng.com 4k RPM 24v motor --** | the new Parallax small motor
 | Hall Tics per Revolution | 24 ticks | 
@@ -25,6 +26,7 @@ The motors currently supported by this driver:
 | Ticks per hall-cycle | 6 ticks | FWD (CW): 1-5-4-6-2-3</br>REV (CCW): 1-3-2-6-4-5
 | Hall-cycles per Revolution | 4 hall-cycles |
 | Degrees per Hall-cycle | 90 degrees |
+| Magnets	| 8 pole |
 
 ## Select a motor, Select wheel size
 
@@ -55,24 +57,25 @@ This "limiting" of the reqeust at a given power level allows us to drive the mot
 | Motor Power (+V) | RPM | Max hall-tics / sec |
 | --- | --- | --- |
 | `MOTR_DOCO_4KRPM` | **-- docoEng.com 4k RPM 24v motor --**</br>&nbsp;&nbsp;(+ is Fwd/CW, - is Rev/CCW ) |
-| `PWR_6V` 6.0V | *tba*
-| `PWR_7p4V` 7.4V | *tba*
-| `PWR_11p1V` 11.1V | +1640/-1640 | 656
-| `PWR_12V` 12.0V | +1660/-1660 | 664
-| `PWR_14p8V` 14.8V | +2500/-2500 | 1000
-| `PWR_18p5V` 18.5V | +2860/-2860 | 1144
-| `PWR_22p2V` 22.2V | +2860/-2860 | 1144
-| `PWR_24V` 24.0V | *tba*
+| `PWR_6p0V`   6.0V | (*Voltage too low*)
+| `PWR_7p4V`   7.4V | +1885/-1885 | 754
+| `PWR_11p1V` 11.1V | +3645/-3645 | 1458
+| `PWR_12p0V` 12.0V | +2242/-2242 | 897
+| `PWR_14p8V` 14.8V | +2517/-2517 | 1007
+| `PWR_18p5V` 18.5V | +2662/-2662 | 1065
+| `PWR_22p2V` 22.2V | +3145/-3145 | 1258
+| `PWR_24p0V` 24.0V | +2615/-2615 | 1046
+| `PWR_25p9V` 24.0V | (*N/A Motor rated for 24V!*)
 | |
 | `MOTR_6_5_INCH` | **-- 6.5" Motor-in-Wheel --** 
-| `PWR_6V` 6.0V | *tba*
+| `PWR_6p0V` 6.0V | *tba*
 | `PWR_7p4V` 7.4V | *tba*
 | `PWR_11p1V` 11.1V | +165.3/-165.3 | 248
-| `PWR_12V` 12.0V | +181.3/-181.3 | 272
+| `PWR_12p0V` 12.0V | +181.3/-181.3 | 272
 | `PWR_14p8V` 14.8V | +224.0/-224.0 | 336
 | `PWR_18p5V` 18.5V | +272.0/-272.0 | 408
 | `PWR_22p2V` 22.2V | +320.0/-320.0 | 480
-| `PWR_24V` 24.0V | *tba*
+| `PWR_24p0V` 24.0V | *tba*
 
 **NOTE:** This smaller motor is supposed to achieve 4,000 RPM, we are still working on getting to this speed.
 

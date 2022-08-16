@@ -18,7 +18,7 @@ The motor currently supported by this driver (at the time of this writing):
 | Ticks per hall-cycle | 6 ticks | FWD (CW): 1-3-2-6-4-5</br>REV (CCW): 1-5-4-6-2-3
 | Hall-cycles per Revolution | 15 hall-cycles |
 | Degrees per Hall-cycle | 24 degrees |
-
+| Magnets	| 30 pole |
 
 The new Motor we're adding:
 
@@ -30,6 +30,7 @@ The new Motor we're adding:
 | Ticks per hall-cycle | 6 ticks | FWD (CW): 1-5-4-6-2-3</br>REV (CCW): 1-3-2-6-4-5
 | Hall-cycles per Revolution | 4 hall-cycles |
 | Degrees per Hall-cycle | 90 degrees |
+| Magnets	| 8 pole |
 
 ## Cabling of new Motor
 

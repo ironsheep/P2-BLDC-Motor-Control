@@ -42,6 +42,10 @@ See also:
 Latest Changes:
 
 ```
+15 Aug 2022
+- Finished re-characteriation of DocoEng motor, limits in code revised.
+12 Aug 2022
+- Found and fixed bug in the PWM generation! Now have better top-end to motor drive!
 1-5 Aug 2022
 - Improve resolution of single drive position sense loop
 - Adjust top-end constants for DocoEng motor (after more characterization)
