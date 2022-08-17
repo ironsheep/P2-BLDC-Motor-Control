@@ -50,9 +50,9 @@ at a given voltage. This way the driver can take a "Set power to 100%" request a
 
 This "limiting" of the reqeust at a given power level allows us to drive the motor at the highest RPM possible without the motor faulting.  (That is without the driver being unable to keep the motor at the requested RPM value.)
 
-**NOTE:** While there is a range of max rpm requests that all come up with the same achievable RPM at given power level we choose the lowest value (*the value which gives the same RPM but at the lowest possible current draw that can achieve the RPM value.*)
+**NOTE**(1): While there is a range of max rpm requests that all come up with the same achievable RPM at given power level we choose the lowest value (*the value which gives the same RPM but at the lowest possible current draw that can achieve the RPM value.*)
 
-**NOTE2:** these limits are all based on "no load" conditions. Which means under load the motor can fault. We are planning on adding a fall back so we can drive the motor as best we can while still handling a given load.
+**NOTE**(2) these limits are all based on "no load" conditions. Which means under load the motor can fault. We are planning on adding a fall back so we can drive the motor as best we can while still handling a given load.
 
 | Motor Power (+V) | RPM | Max hall-tics / sec |
 | --- | --- | --- |
@@ -77,7 +77,9 @@ This "limiting" of the reqeust at a given power level allows us to drive the mot
 | `PWR_22p2V` 22.2V | +320.0/-320.0 | 480
 | `PWR_24p0V` 24.0V | *tba*
 
-**NOTE:** This smaller motor is supposed to achieve 4,000 RPM, we are still working on getting to this speed.
+**NOTE**(3): *With the v3.0.0 release of the driver, the top-end performance is much better. The 6.5" motor needs to be studies to see how these number have improved.  Ad of this v3.0.0 release, this is upcoming work.*
+
+**NOTE**(4): *This smaller motor is supposed to achieve 4,000 RPM, we've managed to get this motor up to 3,645 RPM pretty reliably but only at certain drive voltages.  Just "why this is" will take time time understand...*
 
 ---
 
