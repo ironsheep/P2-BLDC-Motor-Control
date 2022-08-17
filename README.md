@@ -82,7 +82,8 @@ Things we know about that still need attention:
 ```
 v3.0.0
 - Drive status reporting is not working in base objects so is also reported badly over serial I/F
-- Motor can fault at higher load conditions (we need to add a fallback algortihm so motor doesn't "give up" under loadv2.0.0
+- Motor can fault at higher load conditions (we need to add a fallback algortihm so motor doesn't "give up" under load
+v2.0.0
 - Drive status reporting is not working in base objects so is also reported badly over serial I/F
 - Motor can fault at higher load conditions (we need to add a fallback algortihm so motor doesn't "give up" under load
 v1.1.0
