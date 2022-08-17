@@ -32,7 +32,9 @@ The objects provided by this project read a user configuration to determine how 
 
 Lastly you'll start the objects and then add your drive code and any sensor code you wish to use.
 
-## Adjust config file to your desired configuration
+
+
+### Adjust config file to your desired configuration
 
 Edit the user configuration file and adjust the settings to describe the configuration you will be using.
 
@@ -47,7 +49,11 @@ Here's the Author's two-wheel setup:
     LEFT_MOTOR_BASE = PINS_P0_P15
     RIGHT_MOTOR_BASE = PINS_P16_P31
 
-    DRIVE_VOLTAGE = PWR_12V
+	' using 6.5" hub motors
+    MOTOR_TYPE = MOTR_6_5_INCH
+    
+    ' using a 5s battery
+    DRIVE_VOLTAGE = PWR_18p5V
 
     MOTOR_DIA_IN_INCH = 6.5   ' 6.5 inches (floating point constant)
     
@@ -59,15 +65,59 @@ You will need to configure one of:
 - `ONLY_MOTOR_BASE` =  &nbsp; {pinBaseConstant}  &nbsp;  -OR-
 - `LEFT_MOTOR_BASE` = &nbsp; {pinBaseConstant} and `RIGHT_MOTOR_BASE` = {pinBase}
 
+and then set your motor type:
+
+- `MOTOR_TYPE ` =  &nbsp; {motorTypeConstant}
+
 and then set:
 
 - `DRIVE_VOLTAGE` =  &nbsp; {voltageConstant}
 
 as well as:
 
-- `MOTOR_DIA_IN_INCH` = &nbsp; {wheelDiameterInInches}  (loating point value)
+- `MOTOR_DIA_IN_INCH` = &nbsp; {wheelDiameterInInches}  (floating point value)
 
-**NOTE:** *The constants you can use for {pinBaseConstant} and {voltageConstant} are provided in the file for you.*
+Here's the Author's single motor setup:
+
+```
+' -------------------------------------------------------------------
+' AUTHORs  TEST configuration (docEng single Motor)
+' -------------------------------------------------------------------
+{
+    ' using JonnyMac breakout board
+
+    ONLY_MOTOR_BASE = PINS_P16_P31
+
+	' using smaller docoEng.com motor
+    MOTOR_TYPE = MOTR_DOCO_4KRPM
+    
+    ' using a 5s battery
+    DRIVE_VOLTAGE = PWR_18p5V
+
+	' no wheel attached to this motor
+    MOTOR_DIA_IN_INCH = 0.0   ' 0 inches (floating point constant)
+    
+'}
+```
+
+In this case you configure:
+
+- `ONLY_MOTOR_BASE` =  &nbsp; {pinBaseConstant}  
+
+and then set your motor type:
+
+- `MOTOR_TYPE ` =  &nbsp; {motorTypeConstant}
+
+and then set:
+
+- `DRIVE_VOLTAGE` =  &nbsp; {voltageConstant}
+
+as well as:
+
+- `MOTOR_DIA_IN_INCH` = &nbsp; {wheelDiameterInInches}  (floating point value)
+
+
+**NOTE:** *The constants you can use for {pinBaseConstant}, {motorTypeConstant} and {voltageConstant} are provided at the top of the file for you.*
 
 Save your changes and you are ready to start adding the driver to your code.
 
@@ -109,7 +159,6 @@ PUB main() | eOpStatus, nIdx, nCollId, eRxQStatus, eCmdId, tmpVar
    
 ```
 
-
 ### Using A Single Motor Object
 
 - isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size
@@ -124,7 +173,7 @@ OBJ { Objects Used by this Object }
     wheel   :    "isp_bldc_motor"                ' motor driver
 ```
 
-#### Start the Single-motor Objects
+#### Start the Single-motor Object
 
 Starting the wheel and tracking objects in Spin2 is also pretty simple:
 
