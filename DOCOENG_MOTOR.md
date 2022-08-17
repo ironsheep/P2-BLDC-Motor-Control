@@ -18,7 +18,7 @@ The new Motor we've added:
 | Ticks per hall-cycle | 6 ticks | FWD (CW): 1-5-4-6-2-3</br>REV (CCW): 1-3-2-6-4-5
 | Hall-cycles per Revolution | 4 hall-cycles |
 | Degrees per Hall-cycle | 90 degrees |
-| Magnets	| 8 pole |
+| Magnets	| 8 poles |
 
 ## Cabling of new Motor
 
