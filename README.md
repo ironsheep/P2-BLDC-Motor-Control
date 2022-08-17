@@ -42,13 +42,17 @@ See also:
 Latest Changes:
 
 ```
-15 Aug 2022
+16 August 2022  v3.0.0
+- Final cleanup, documentation update for new motor capability
+15 August 2022
 - Finished re-characteriation of DocoEng motor, limits in code revised.
-12 Aug 2022
+12 August 2022
 - Found and fixed bug in the PWM generation! Now have better top-end to motor drive!
-1-5 Aug 2022
+1-5 August 2022
 - Improve resolution of single drive position sense loop
 - Adjust top-end constants for DocoEng motor (after more characterization)
+7 July 2022 V2.1.0
+- Release initial support for the DocoEng.com smaller 24v 4,000 RPM motor
 2 July 2022
 - Small motor working well
 - Finished first pass at characterization of limits
@@ -76,7 +80,9 @@ Latest Changes:
 Things we know about that still need attention:
 
 ```
-v2.0.0
+v3.0.0
+- Drive status reporting is not working in base objects so is also reported badly over serial I/F
+- Motor can fault at higher load conditions (we need to add a fallback algortihm so motor doesn't "give up" under loadv2.0.0
 - Drive status reporting is not working in base objects so is also reported badly over serial I/F
 - Motor can fault at higher load conditions (we need to add a fallback algortihm so motor doesn't "give up" under load
 v1.1.0
