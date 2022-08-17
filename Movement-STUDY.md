@@ -4,8 +4,6 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 Last Udpated: 220215 15:44 MST
 
-**-- This is a work in progress!! --**
-
 ![Project Maintenance][maintenance-shield]
 [![License][license-shield]](LICENSE)
 
