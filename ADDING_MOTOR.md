@@ -67,6 +67,8 @@ We're adding the DocoEng.com BLDC motor - 4,000 RPM, 24V to the driver. The moto
 - Associate tables with new motor constant (creating new tables if needed)
 - Determine new fwd/rev offset constants that yield lowest current draw at fixed speed/rpm
 - Adjust motor position sense code to new motor hall geometry so rotation positon tracking are correct for the motor
+- Determine and add max request values for each voltage we support
+- Validate all your work, when it's complete, share it with us!
 
 ## What Driver needs to know about a motor
 
