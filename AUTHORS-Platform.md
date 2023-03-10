@@ -56,6 +56,22 @@ And here I'm running tests of the FlySky remote control demo. (Of course, runnin
 
 ![Driving with FlySly](images/drivingWithFlySky.PNG)
 
+#### The FlySky Connection
+
+*I used the* **P2 Edge Mini Breakout Board (#64019)** *for my Platform. I chose pin 58 for SBus receive*
+
+The top-level file `demo_dual_motor_rc.spin2` provided by this project defines the rx pin as 58. This was due to the two motor control boards occupying most of the remaining pins on the Mini Edge Breakout board. Feel free to choose a different pin. Just remember to adjust the constants in your code to use your pin choice.
+
+**P2 Wiring for SBus Receiver:**
+
+| P2 Pin# | P2 Purpose | P2 Pin # |
+| --- | --- | --- | 
+| GND | GND | Signal ground | 
+| Vcc | Vcc | 5v Power for the Receiver | 
+| 58 | Rx | Data from SBus Rcvr to the P2 | 
+
+**NOTE**: *with the dual BLDC motor boards occupying the most of the pins finding 5v was challenging. I ended up soldering in a pin between the two headers, routing 5v to it and then connecting the SBus Rcvr Vcc to this pin.*
+
 ---
 
 Here's an updated bech-setup with the RPi in the drivers' seat!

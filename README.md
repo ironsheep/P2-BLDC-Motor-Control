@@ -42,6 +42,8 @@ See also:
 Latest Changes:
 
 ```
+10 March 2023
+- Add FlySky Receiver wiring descriptions
 16 August 2022  v3.0.0
 - Final cleanup, documentation update for new motor capability
 15 August 2022
@@ -152,7 +154,29 @@ A small number of demos are provided with this project:
 
 *NOTE: we built these demos over time as we developed the driver. There can be better examples but in the interest of time, so that we can get more of us using this driver as soon as possible, we are releasing these in their current state and will improve them over time.*
 
-### FlySky Controls for demo
+*NOTE: We also have a demo using the RPi to control the motors via serial comms with the P2. See: [Use RPi or Arduino to control your platform](SERIAL-CONTROL.md).*
+
+### Preparing to run the FlySky Demo
+
+In getting ready to run the FlySky R/C demo you'll need to wire up the FlySky SBus Receiver to your platform and then understand what the controls on the R/C Transmitter do. These next sections help with this. 
+
+#### Wiring the FlySky Connection
+
+*We used the* **P2 Edge Mini Breakout Board (#64019)** *for our Platform. We chose pin 58 for SBus receive*
+
+The top-level file `demo_dual_motor_rc.spin2` provided by this project defines the rx pin as 58. This was due to the two motor control boards occupying most of the remaining pins on the Mini Edge Breakout board. Feel free to choose a different pin. Just remember to adjust the constants in your code to use your pin choice.
+
+**P2 Wiring for SBus Receiver:**
+
+| P2 Pin# | P2 Purpose | P2 Pin # |
+| --- | --- | --- | 
+| GND | GND | Signal ground | 
+| Vcc | Vcc | 5v Power for the Receiver | 
+| 58 | Rx | Data from SBus Rcvr to the P2 | 
+
+**NOTE**: *with the dual BLDC motor boards occupying the most of the pins finding 5v was challenging. I ended up soldering in a pin between the two headers, routing 5v to it and then connecting the SBus Rcvr Vcc to this pin.*
+
+#### FlySky Controls for demo
 
 The R/C demo uses the following controls:
 
