@@ -990,7 +990,7 @@ DAT { Literals for HDMI Debug }
     name11      BYTE    "pos",0
     name12      BYTE    "duty",0
     name13      BYTE    "err",0
-    name14      BYTE    "loopTicks",0
+    name14      BYTE    "lpTicks",0
     name15      BYTE    "state",0
     name16      BYTE    "FAULT",0
     nextAddr1
@@ -998,25 +998,25 @@ DAT { Literals for HDMI Debug }
 
 ' motor sense data
     nameTitle2  BYTE    "Motor Sense",0
-    name20      BYTE    "RPM 10ths",0
+    name20      BYTE    "RPM10th",0
     name21      BYTE    "RPM",0
-    name22      BYTE    "cnts/sec",0
+    name22      BYTE    "cts/sec",0
     name23      BYTE    "delta",0
     name24      BYTE    "Amp",0
     name25      BYTE    "maxAmp",0
-    name26      BYTE    "RPMb10ths",0
+    name26      BYTE    "RPMb10",0
     nextAddr2
     dataLen2     LONG    @nextAddr2 - @nameTitle2
 
 ' motor rate  data
     nameTitle3  BYTE    "Motor Rate(.1)",0
     name30      BYTE    "RPM",0
-    name31      BYTE    "cnts/sec",0
+    name31      BYTE    "cts/sec",0
     name32      BYTE    "f/s",0
     name33      BYTE    "MPH",0
     name34      BYTE    "kM/H",0
     name35      BYTE    "mm/s",0
-    name36      BYTE    "Angl/10k",0
+    name36      BYTE    "Ang/10k",0
     nextAddr3
     dataLen3     LONG    @nextAddr3 - @nameTitle3
 
@@ -1300,6 +1300,36 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
         '   wait remainder of 125 mSec before next sample
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
+
+PUB updateSenseData(nHallCntsIn8thSec, nHallWindowSum)
+    cntsInSec := nHallWindowSum                                      ' moving sum
+    posTrkHallTicks += nHallCntsIn8thSec
+
+    tvRpm_x10 := ((cntsInSec * 60) * 10) / hallTicsPerRotation
+    rpm := tvRpm_x10 / 10
+
+    tvMaxRpmIn10ths := max(tvRpm_x10, tvMaxRpmIn10ths)
+    maxRpm := tvMaxRpmIn10ths / 10
+    tvMaxCntsInSec := max(cntsInSec, tvMaxCntsInSec)
+
+    tvMaxSenseI := max(sense_i, tvMaxSenseI)
+
+    if user.MOTOR_TYPE == MOTR_6_5_INCH
+        ' pos is in hall-steps of 4Degr each.
+        ' circumference of wheel is in mm x10
+        '   degrees of rotation is cntsInSec * 4
+        '   number of rotations is degrees / 360
+        '   dist in mm is (circInMM_x10 * rotations) / 10
+        mmPerSec_x10 := (((cntsInSec * 4) * circInMM_x10) / 360)
+        ftPerSec_x10 := distConv.mmps2fps(mmPerSec_x10 * 10)
+        kmh_x10 := distConv.mmps2kmh(mmPerSec_x10 * 10)
+        mph_x10 := distConv.fps2mph(ftPerSec_x10)
+
+        tvMaxMmPerSec_x10 := max(mmPerSec_x10, tvMaxMmPerSec_x10)
+        tvMaxFps_x10 := max(ftPerSec_x10, tvMaxFps_x10)
+        tvMaxMPH_x10 := max(mph_x10, tvMaxMPH_x10)
+        tvMaxkPH_x10 := max(kmh_x10, tvMaxkPH_x10)
+
 
 PRI max(a,b) : nMax
 ' return max of a or b
