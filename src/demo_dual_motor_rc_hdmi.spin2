@@ -1,0 +1,350 @@
+'' =================================================================================================
+''
+''   File....... demo_dual_motor_rc_hdmi.spin2
+''   Purpose.... Demonstrate R/C driving of a two-wheeled platform
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2023 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Mar 2023
+''   Updated.... 11 Mar 2023
+''
+'' =================================================================================================
+
+CON { timing }
+
+  CLK_FREQ = 270_000_000                                        ' system freq as a constant
+  _clkfreq = CLK_FREQ                                           ' set system clock
+
+CON { fixed io pins }
+
+    RX1      = 63  { I }                                          ' programming / debug
+    TX1      = 62  { O }
+
+    SF_CS    = 61  { O }                                          ' serial flash
+    SF_SCK   = 60  { O }
+    SF_SDO   = 59  { O }
+    SF_SDI   = 58  { I }
+
+    LA_CHAN0 = 56  { O }
+    LA_CHAN1 = 57  { O }
+
+    ' describe where things are attached to our newer larger edge breakout board (#64029)
+
+    SBUS_RX  = 58  { I }
+
+    HDMI_BASE_PIN       = tvDebug.PINS_P0_P7
+
+    ' NOTE: motor pins are set in:  isp_bldc_motor_userconfig.spin2
+
+OBJ { our Drive Subsystem }
+
+    user        :   "isp_bldc_motor_userconfig"                     ' driver configuration
+    wheels      :   "isp_steering_2wheel"                           ' the dual-drive BLDC motors
+    remoteCtl   :   "isp_flysky_rx"                                 ' the FlySky Transmitter
+    tvDebug     :   "isp_hdmi_debug"                                ' HDMI debug object
+
+VAR
+
+    long    remoteCog
+
+DAT { run-time condition vars }
+
+    bUseHDMI    LONG   TRUE       ' set to TRUE to enable HDMI use/output
+
+PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, basePin
+'' DEMO Driving a two wheeled platform
+
+    debug("* demo dual motor control via R/C w/HDMI")
+
+    if bUseHDMI
+        basePin := tvDebug.validBasePinForChoice(HDMI_BASE_PIN)
+        if basePin <> tvDebug.INVALID_PIN_BASE
+            tvDebug.start(basePin)
+            debug("* HDMI started")
+        else
+            debug("* ERROR bad pin #")
+
+    ' validate user settings/choicess
+    '  do NOT start motor unless all are legit!
+    basePinLt := wheels.validBasePinForChoice(user.LEFT_MOTOR_BASE)
+    basePinRt := wheels.validBasePinForChoice(user.RIGHT_MOTOR_BASE)
+    voltage := wheels.validVoltageForChoice(user.DRIVE_VOLTAGE)
+    motor := wheels.validMotorForChoice(user.MOTOR_TYPE)
+
+
+    ' repeat
+
+    if basePinLt <> wheels.INVALID_PIN_BASE and basePinRt <> wheels.INVALID_PIN_BASE and voltage <> wheels.INVALID_VOLTAGE and motor <> wheels.INVALID_MOTOR
+        ' start our dual motor driver
+
+        ' start our motor drivers (left and right)
+        wheels.start(basePinLt, basePinRt, voltage)
+
+        ' override defaults, use 100 %
+        wheels.setMaxSpeed(100)
+        wheels.setMaxSpeedForDistance(100)
+        ' just don't draw current at stop
+        wheels.holdAtStop(false)
+
+        if bUseHDMI
+            connectMotorToHDMI()
+
+        ' ---- TEST TEST TEST ----
+        'remoteCtl.manualCalibrate()
+        'debug("-- HOLD --")
+        'repeat  ' hold here for now
+        ' ---- TEST TEST TEST ----
+
+        debug("* Set up - remote control")
+
+        remoteCog := remoteCtl.start(SBUS_RX)
+        statusOK := remoteCog <> 0 ? TRUE : FALSE
+        if statusOK
+            'remoteCtl.manualCalibrate()
+            debug("R/C Running...")
+            remoteControlMotor()
+        else
+            debug("EEEE: SBUS rcvr not started?!")
+
+        ' turn off our SBUS drivers
+        remoteCtl.stop()
+        ' turn off our motor drivers
+        wheels.stop()
+    else
+        debug("* ERROR user configuration NOT valid!")
+
+    debug("* DONE")
+
+PRI connectMotorToHDMI() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
+' connect our two motors to the HDMI display mech
+    if bUseHDMI
+        nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheels.getLeftDebugData()
+        debug("* Received Lt: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+
+ '{  -- in-active until this can work! --
+        nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheels.getRightDebugData()
+        debug("* Received Rt: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+'}
+
+PRI waitUntilMotorReady()
+    if wheels.isReady() == false
+        debug("* wait motors ready...")
+        repeat
+            if wheels.isReady()
+                quit
+            else
+                waitms(2)
+    debug("* Motors ready, let's drive!")
+
+
+PRI waitUntilMotorDone()
+    if wheels.isStarting() == false
+         debug("* wait until motors start...")
+         repeat
+            if wheels.isStarting()
+                quit
+            else
+                waitms(2)
+
+    if wheels.isStopped() == false
+        debug("* wait until motors finish...")
+        repeat
+            if wheels.isStopped()
+                quit
+            else
+                waitms(2)
+    debug("* Motors stopped!")
+
+CON
+
+   VALUE_NOT_SET = -2
+
+VAR
+
+    long    priorSpeed
+    long    priorDirection
+    long    rcSpeed
+    long    rcDirection
+    long    nLtAmps
+    long    nLtWatts
+    long    nRtAmps
+    long    nRtWatts
+
+    long    bLastShowState
+    long    bLastEmerCutoff
+    long    bLastIgnoreJoyStks
+    long    bLastShowDriveStates
+
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, bShowDebugStatus, bEmerCutoff, bShowDriveStates
+'' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
+    waitms(500)    ' wait for 1/2 sec for backend to catch up
+
+    'arm.gripClosed()
+    debug("------")
+    debug("- Lt Joy Hz - direction")
+    debug("- Rt Joy Vt - speed")
+    debug("------")
+    debug("* swA DN     - enable joystick servo control")
+    debug("* swB Toggle - show state")
+    'debug("* swC UP     - ---")
+    'debug("* swC MID    - ---")
+    debug("* swC DN     - end control")
+    debug("* swD DN     - emer cutoff")
+    debug("------")
+
+    bLastShowState := VALUE_NOT_SET ' value can't happen
+    bLastIgnoreJoyStks := VALUE_NOT_SET ' value can't happen
+    bLastEmerCutoff := VALUE_NOT_SET ' value can't happen
+    bLastShowDriveStates := VALUE_NOT_SET ' value can't happen
+
+    loopCt := 0
+    repeat
+        'debug("* ", udec_long(loopCt))
+        bShowDebugStatus := FALSE 'loopCt < 2 ? TRUE : FALSE
+        'remoteCtl.showDebug(bShowDebugStatus)
+
+        ' SwA Ignore JoySticks
+        'debug("-- -- SW -- --")
+        bIgnoreJoySticks := remoteCtl.swIsOn(remoteCtl.CTL_SW_A)
+        bShowState := remoteCtl.swIsOff(remoteCtl.CTL_SW_B)
+        ' SwC done, end loop!
+        bDoneTesting := remoteCtl.swIsOff(remoteCtl.CTL_SW_C)
+        bShowDriveStates := remoteCtl.swIsMiddle(remoteCtl.CTL_SW_C)
+        ' SwD down = Emergency Cutoff
+        remoteCtl.showDebug(bShowDebugStatus)
+        bEmerCutoff := remoteCtl.swIsOff(remoteCtl.CTL_SW_D)
+        remoteCtl.showDebug(FALSE)
+
+        if bLastShowDriveStates <> bShowDriveStates
+            debug("- sho ", sdec_long_(bShowDriveStates))
+            if bShowDriveStates
+                wheels.showDriveStates()
+            bLastShowDriveStates := bShowDriveStates
+
+        if bShowState <> bLastShowState
+            'showServoPositions()
+            if bShowState
+                nLtAmps, nLtWatts, nRtAmps, nRtWatts := wheels.getCurrent()
+                debug("  ltA=", sdec_long_(nLtAmps), ", rtA=", sdec_long_(nRtAmps))
+            bLastShowState := bShowState
+
+        if bEmerCutoff <> bLastEmerCutoff
+            'debug("  NEW E VALUE")
+            if bEmerCutoff
+                debug("-------  Motor E-OFF")
+                wheels.emergencyCutoff()
+            else
+                wheels.clearEmergency()
+                if not bIgnoreJoySticks
+                    debug("  Motor Enabled")
+                else
+                    debug("  Motor Disabled")
+            bLastEmerCutoff := bEmerCutoff
+
+        if not bShowDebugStatus and bLastIgnoreJoyStks <> bIgnoreJoySticks
+            if bIgnoreJoySticks
+                debug("  Motor CTL OFF")
+            else
+                debug("  Motor CTL enabled")
+            bLastIgnoreJoyStks := bIgnoreJoySticks
+
+        if not bEmerCutoff
+            rcSpeed, rcDirection := updPosnBothJoy()
+            if not bIgnoreJoySticks
+                rcDirection := 0 - rcDirection  ' invert this to apply to our motors
+                if priorDirection <> rcDirection or priorSpeed <> rcSpeed
+                    debug("- JOY ", sdec_long(rcSpeed), sdec_long(rcDirection))
+                    wheels.driveDirection(rcSpeed, rcDirection)
+                    priorDirection := rcDirection
+                    priorSpeed := rcSpeed
+            elseif priorSpeed <> 0 and rcSpeed == 0
+                ' if we were running when motors control stopped then allow a stop when it happens
+                debug("- JOY (last) ", sdec_long(rcSpeed), sdec_long(rcDirection))
+                wheels.driveDirection(rcSpeed, rcDirection)
+                priorDirection := rcDirection
+                priorSpeed := rcSpeed
+
+        if bDoneTesting
+            debug("--> quit loop")
+            quit
+
+        waitms(250) ' wait 1/4 second, before next loop
+        loopCt++
+
+    ' done, stop our motors
+    wheels.stop()
+
+PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
+    ' route Rt Joystick Vt (spring center) to FWD/REV (speed)
+    'debug("-- JOY -- JOY --")
+    rawSpeed := remoteCtl.readChannel(remoteCtl.CTL_RT_JOY_VT)
+    rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_RT_JOY_VT)
+    speed := map(rawSpeed, rngMin, rngMax, -100, +100)
+
+    ' route Lt Joystick Hz (spring center) to direction
+    rawDirection := remoteCtl.readChannel(remoteCtl.CTL_LT_JOY_HZ)
+    rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_LT_JOY_HZ)
+    direction := map(rawDirection, rngMin, rngMax, -100, +100)
+
+PRI map(inValue,  inMin,  inMax,  outMin,  outMax) : outValue
+{
+    REF: https://www.arduino.cc/reference/en/language/functions/math/map
+
+    Re-maps a number from one range to another. That is, a value of fromLow would get mapped to toLow,
+    a value of fromHigh to toHigh, values in-between to values in-between, etc.
+
+    Does not constrain values to within the range, because out-of-range values are sometimes intended and
+    useful. The constrain() function may be used either before or after this function, if limits to the ranges are desired.
+
+    Note that the "lower bounds" of either range may be larger or smaller than the "upper bounds" so the
+    map() function may be used to reverse a range of numbers, for example
+
+    y = map(x, 1, 50, 50, 1);
+
+    The function also handles negative numbers well, so that this example
+
+    y = map(x, 1, 50, 50, -100);
+
+    is also valid and works well.
+
+    The map() function uses integer math so will not generate fractions, when the math might indicate that
+    it should do so. Fractional remainders are truncated, and are not rounded or averaged.
+}
+    if (inValue <= inMin)
+        outValue := outMin
+    elseif (inValue >= inMax)
+        outValue :=  outMax
+    else
+        outValue := (inValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2023 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

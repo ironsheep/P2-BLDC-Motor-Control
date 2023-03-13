@@ -32,6 +32,9 @@ CON { Public Interface Constants }
 
     VALUE_NOT_SET = -1
 
+    ' RevIDs of BLDC driver board
+    #20, REV_Unknown, REV_A, REV_B
+
     ' Driver Distance-Units Enum: (Millimeters, Centimeters, Inches, Feet, Meters, Kilometers, Miles)
     #0, DDU_Unknown, DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI
 
@@ -89,9 +92,66 @@ PUB null()
 
 '' This is not a top-level object
 
-PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees, ofsDegr
+PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
 '' Specify motor control board connect location for this motor and start the driver
         ' setup runtime constants
+    init(eMotorBasePin, eMotorVoltage)
+
+    ' ensure we only use legal values
+    legalBase := eMotorBasePin
+    CASE eMotorBasePin
+        PINS_P0_P15 :
+        PINS_P16_P31 :
+        PINS_P32_P47 :
+        OTHER :
+            legalBase := INVALID_PIN_BASE
+
+    ' if legal base-pin then start cog
+    if legalBase <> INVALID_PIN_BASE
+        pinbase := legalBase        ' record base pin number
+        params_ptr := @offset_fwd   ' point to driver variables
+        setTargetAccel(0)           ' do NOT move at startup
+
+        ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
+        if motorCog == 0    ' did fail?
+            debug("!! ERROR filed to start Motor Control task")
+        else
+            debug("* Motor COG #", sdec_(motorCog- 1))
+
+PUB stop()
+'' Stop cogs and release pins assigned to this motor
+
+    if motorCog     ' stop motor drive
+        cogstop(motorCog - 1)
+        motorCog := 0
+
+    if senseCog     ' stop motor reads
+        cogstop(senseCog - 1)
+        senseCog := 0
+
+    ' Bottom 8 pins are sensed, top 8 are driven, so clear only the top 8
+    if pinbase <> VALUE_NOT_SET
+        pinclear(pinbase+8 addpins 7)
+        pinbase := VALUE_NOT_SET
+
+PUB testSetup(eMotorBasePin, eMotorVoltage) | legalBase
+'' Specify motor control board connect location for this motor BUT DON'T start the driver
+    init(eMotorBasePin, eMotorVoltage)
+    ' ensure we only use legal values
+    legalBase := eMotorBasePin
+    CASE eMotorBasePin
+        PINS_P0_P15 :
+        PINS_P16_P31 :
+        PINS_P32_P47 :
+        OTHER :
+            legalBase := INVALID_PIN_BASE
+
+    ' if legal base-pin then start cog
+    if legalBase <> INVALID_PIN_BASE
+        pinbase := legalBase        ' record base pin number
+
+PRI init(eMotorBasePin, eMotorVoltage) | fwdDegrees, revDegrees
+'' Specify motor control board connect location for this motor BUT DON'T start the driver
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
     ticks10p23us  := (ticks1ms * 1033) / 100_000
@@ -101,6 +161,7 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
     ' set up debug variables
     useDebug := FALSE
     showHDMIDebug := FALSE
+    pinbase := VALUE_NOT_SET        ' record base pin number
 
     bResetSenseData := FALSE
 
@@ -205,47 +266,11 @@ PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase, fwdDegrees, revDegrees
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
 
-    ' ensure we only use legal values
-    legalBase := eMotorBasePin
-    CASE eMotorBasePin
-        PINS_P0_P15 :
-        PINS_P16_P31 :
-        PINS_P32_P47 :
-        OTHER :
-            legalBase := INVALID_PIN_BASE
-
-    ' if legal base-pin then start cog
-    if legalBase <> INVALID_PIN_BASE
-        pinbase := legalBase        ' record base pin number
-        params_ptr := @offset_fwd   ' point to driver variables
-        setTargetAccel(0)           ' do NOT move at startup
-
-        ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
-        if motorCog == 0    ' did fail?
-            debug("!! ERROR filed to start Motor Control task")
-        else
-            debug("* Motor COG #", sdec_(motorCog- 1))
-
-
 PUB startSenseCog() : ok
 '' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
     ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
     if senseCog == 0    ' did fail?
         debug("!! ERROR filed to start Position Sense task")
-
-PUB stop()
-'' Stop cogs and release pins assigned to this motor
-
-    if motorCog     ' stop motor drive
-        cogstop(motorCog - 1)
-        motorCog := 0
-
-    ' Bottom 8 pins are sensed, top 8 are driven, so clear only the top 8
-    pinclear(pinbase+8 addpins 7)
-
-    if senseCog     ' stop motor reads
-        cogstop(senseCog - 1)
-        senseCog := 0
 
 VAR { * user request values * }
 
@@ -528,6 +553,100 @@ PUB getDriverState() : eDrvrState
 PUB getRawHallTicks() : nPos
 '' Return the raw driver-maintained tick count
     nPos := pos
+
+CON { meas. pin constants }
+'    measMode       = %0000_0000_000_0100110110110_01_11111_0 'async rx mode, input  enabled for smart input
+    measMode       =  (P_SCHMITT_A_FB | P_SYNC_IO | P_HIGH_10UA | P_LOW_10UA | P_TRUE_IN | P_INVERT_OUTPUT | P_TT_01)  ' Schmitt w/Feedback, Clocked
+
+PUB getBoardType() : eBoardRev | pSenseCommon, lowCount, pinValue, highCount, priorValue, idleCount, loopCount
+'' ID Revision of attached BLDC driver board
+    ' returns one of REV_Unknown, REV_A, REV_B
+    eBoardRev := REV_Unknown
+    ' if we know the base pin of the board...
+    if pinbase <> VALUE_NOT_SET
+        debug("BLDC: getBoardType() pinbase=(", udec_(pinbase), ")")
+        pSenseCommon := pinbase + 4 addPins 0
+        pinl(pSenseCommon)
+        {
+        repeat 10
+            pinh(pSenseCommon)
+            pinl(pSenseCommon)
+        '}
+
+        debug("--- getBoardType(B) pSenseCommon=(", uhex_Long_(pSenseCommon), ")")
+        lowCount := 0
+        highCount := 0
+        idleCount := 0
+        priorValue := -1
+        org
+'---+-----------+---+---+---+-------------------+---+---+---+---+---+-----------+
+                mov    pinSense, pSenseCommon                ' de-assert
+                outl    pinSense                ' de-assert
+{
+                rep     @endToglLp, #101
+                drvh  pinSense                ' toggle pin
+                nop
+                nop
+                drvl  pinSense                ' toggle pin
+                nop
+                nop
+endToglLp
+'}
+                rep     @endSampLp, #68
+                testp   pinSense            wc  ' read pin
+    if_nc       add     lowCount,#1                 ' if pin == 0 incr count
+endSampLp
+
+                outh    pinSense                ' set high
+                rep     @holdHiLp, #9
+                nop                                 ' delay
+                nop
+holdHiLp
+                fltl    pinSense                ' de-assert
+
+                rep     @endFallCt, #100
+                testp   pinSense            wc  ' read pin
+    if_c        add     highCount,#1                ' if pin == 1 incr count
+                ret
+
+pinSense        long    0
+endFallCt
+        end
+{
+                fltl      rxpin                                   ' reset smart pin
+                wrpin     ##(P_ADC | P_ADC_GIO), rxpin            ' read ground reference
+                wxpin     #%00_1101, pin                        ' 8192 samples
+                wypin     #0, rxpin
+                dirh      rxpin                                   ' enable
+
+        .rcvr   testp  #rxpin  wc
+        if_nc   jmp    #.rcvr
+                rdpin   rcvd_data, #rxpin
+}
+      {
+        pinclear(pSenseCommon)
+        lowCount := 0
+        repeat 100
+            pinValue := pinr(pSenseCommon)
+            if pinValue == 0
+                lowCount++
+        highCount := 0
+        idleCount := 0
+        priorValue := -1
+        pinh(pSenseCommon)
+        repeat 4
+        pinf(pSenseCommon)
+        repeat
+            pinValue := pinr(pSenseCommon)
+            if pinValue <> 0
+                highCount++
+            if priorValue == pinValue and pinValue == 0
+                idleCount++
+            priorValue := pinValue
+        while idleCount < 100
+        }
+        debug("BLDC: getBoardType() lowCount=(", udec_(lowCount), "), highCount=(", udec_(highCount), ")")
+
 
 PUB isReady() : bState
 '' Return T/F where T means the motor cog is running

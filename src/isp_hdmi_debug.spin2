@@ -42,7 +42,7 @@ DAT { debug display data }
     nDriverCmd      long    DC_RUN
     nDriverArg      long    0
 
-    pinHDMIbase     long    0
+    pinHDMIbase     long    INVALID_PIN_BASE
 
     taskStack       long    0[STACK_SIZE_LONGS]
     showHDMIDebug   long    FALSE
@@ -54,7 +54,11 @@ PUB start(hdmiBasePin) : ok
     nDriverCmd := DC_RUN
     nDriverArg := 0
     currDLEntryIdx := 0
-    ok := hdmiCog := cogspin(NEWCOG, taskShowDebug(@nDriverCmd, @nDriverArg, @dsplyList), @taskStack) + 1
+    pinHDMIbase := validBasePinForChoice(hdmiBasePin)
+    if pinHDMIbase <> INVALID_PIN_BASE
+        ok := hdmiCog := cogspin(NEWCOG, taskShowDebug(@nDriverCmd, @nDriverArg, @dsplyList), @taskStack) + 1
+    else
+        ok := -1    ' fake a no-cog-free condition if bad base pin
 
 PUB stop()
 '' Stop cog and release pins assigned
@@ -68,7 +72,8 @@ PUB stop()
         vidCog := 0
 
     ' Bottom 8 pins for HDMI Eval Board
-    pinclear(HDMI_BASE_PIN addpins 7)
+    if pinHDMIbase <> INVALID_PIN_BASE
+        pinclear(pinHDMIbase addpins 7)
 
 PUB validBasePinForChoice(userBasePin) : legalBasePin
 '' VALIDATE users' base-pin choice returns legalBasePin or INVALID_PIN_BASE
@@ -87,14 +92,13 @@ PUB validBasePinForChoice(userBasePin) : legalBasePin
 
 CON { HDMI Debug Constants }
 
-    HDMI_BASE_PIN = 8  ' was 0 for initial demo
     DVI_RES = vid.WVGA ' or try WVGA or SVGA_50H
 
     ' control optional text screen flags by setting 1 or 0 in multipliers below
     FLAGS = (0*vid.DOUBLE_HIGH + 0*vid.DOUBLE_WIDE + 1*vid.FLASH_TEXT)
 
     STACK_SIZE_LONGS = 128  ' was 64
-    MAX_DL_ENTRIES = 6
+    MAX_DL_ENTRIES = 9
     NBR_LONGS_PER_DL_ENTRY = 6
 
     FOREGROUND = vid.FOREGROUND
@@ -149,6 +153,7 @@ PUB registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
     if showHDMIDebug
         debug("HDMI Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
         debug("INTRP: ENTRY ", udec_long(currDLEntryIdx))
+
     ' calculate the offset from current index
     nDsplyOffset := currDLEntryIdx * NBR_LONGS_PER_DL_ENTRY
     LONG[@dsplyList][nDsplyOffset + IDX_MAX_GRP_VARS] := LONG[pGroupTitles][nGroups]
@@ -160,6 +165,7 @@ PUB registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
     ' mark that we have a set
     '   bump index to next entry
     currDLEntryIdx++
+
     if showHDMIDebug
         debug("HDMI Stored as: #", udec_long_(currDLEntryIdx), uhex_long_array(@currDLEntryIdx,(MAX_DL_ENTRIES * NBR_LONGS_PER_DL_ENTRY)+1))
         debug("* -------------")
@@ -206,7 +212,7 @@ PUB writeMessageToLog(pMessage)
 
 PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
 
-    vidCog := vid.initDvi(-1, HDMI_BASE_PIN, 0, FLAGS, DVI_RES) + 1
+    vidCog := vid.initDvi(-1, pinHDMIbase, 0, FLAGS, DVI_RES) + 1
 
     logRow := 15    ' log starts at 15
     ' now we can map SEND to output to the active text region
@@ -289,9 +295,10 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
                 placeValueOfWidthAtRC(9, 29, nbrGrpVars, 0)
 
 
-            placeBoxAtRC(rowForGroupRow(1), colForGroupIdx(2), 18, 10)
-            placeBoxAtRC(rowForGroupRow(1), colForGroupIdx(3), 18, 10)
-            placeBoxAtRC(rowForGroupRow(1), colForGroupIdx(4), 18, 10)
+            repeat dsplyListIdx from 0 to currDLEntryIdx - 1
+                placeBoxAtRC(rowForGroupRow(dsplyListIdx + 1), colForGroupIdx(2), 18, 10)
+                placeBoxAtRC(rowForGroupRow(dsplyListIdx + 1), colForGroupIdx(3), 18, 10)
+                placeBoxAtRC(rowForGroupRow(dsplyListIdx + 1), colForGroupIdx(4), 18, 10)
 {
     ' NOTE: let's use this space for scolling log
             placeBoxAtRC(rowForGroupRow(2), colForGroupIdx(0), 18, 10)
@@ -325,7 +332,7 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
 
                 repeat grpIdx from 0 to nbrGroups - 1
                     nGrpOffset := grpIdx * maxGrpSize
-                    nGrpRow := rowForGroupRow(1) + 1
+                    nGrpRow := rowForGroupRow(dsplyListIdx + 1) + 1
                     pGrpTitle := LONG[pTitlesAr][grpIdx] ' retrieve ptr to title for this group
                     placeTitleAtRC(nGrpRow, colForGroupIdx(grpIdx + 2) + 3, pGrpTitle)
                     nGrpRow++
@@ -339,15 +346,23 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
                 ' loop on live updates until RELOAD
                 ' ---------------------------------
                 repeat dsplyListIdx from 0 to currDLEntryIdx - 1
+
+                    dsplyLstOffset := dsplyListIdx * NBR_LONGS_PER_DL_ENTRY
+                    maxGrpSize := LONG[@dsplyList][dsplyLstOffset + IDX_MAX_GRP_VARS]
+                    nbrGroups := LONG[pDsplyList][dsplyLstOffset + IDX_NGROUPS]
+                    pVarCtsAr := LONG[pDsplyList][dsplyLstOffset + IDX_GRP_VAR_CTS]
+                    pGrpValuesAr := LONG[pDsplyList][dsplyLstOffset + IDX_GRP_VAR_PTRS]
+
                     repeat grpIdx from 0 to nbrGroups - 1
                         nGrpOffset := grpIdx * maxGrpSize
-                        nGrpRow := rowForGroupRow(1) + 2 ' +2 skips title
+                        nGrpRow := rowForGroupRow(dsplyListIdx + 1) + 2 ' +2 skips title
                         nbrGrpVars :=  LONG[pVarCtsAr][grpIdx]
                         repeat nVarIdx from 0 to nbrGrpVars - 1
                             ' the value pointers are grouped into a contiguous array
                             ' group0 ptrs first, then group1 ptrs second, etc.
                             pGrpValue := LONG[pGrpValuesAr][nGrpOffset + nVarIdx] ' retrieve ptr to variable within this group
                             placeValueOfWidthAtRC(nGrpRow++, colForGroupIdx(grpIdx + 2) + 12, LONG[pGrpValue], 5)
+
                 waitus(500)  ' slight delay to prevent bad video effects
 
                 drvrCommand := LONG[pDriverCmd]
