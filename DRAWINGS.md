@@ -19,15 +19,16 @@ NOTE: the 8 center small holes (for M3 screws) are for mounting the twin motor b
 
 There are 2 ea. holes for each motor (for 1/4" - 20 Screws.)
 
-There are 4 ea. holes for each castor - (for 1/4" - 20 Screws.)
+There are 4 ea. holes for each castor - (for 1/4" - 20 Screws.). One of the castor holes is longer to provide access to the hex nut.
 
-There are 2 ea. holes for each spacer board (shim) (for 1/4" - 20 Screws.)
 
 #### 2. Spacer Board
 
 [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
 ![Spacer](images/SpacerV1.png)
 
+
+There are 2 ea. holes for each spacer board (shim) (for 1/4" - 20 Screws.)
 
 ### Packaging (order arrives)
 
