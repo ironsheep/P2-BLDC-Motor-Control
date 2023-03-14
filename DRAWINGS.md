@@ -10,10 +10,8 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 These are the various design files I sent off to be make by [SendCutSend.com](https://sendcutsend.com/) - their prices are quite good!:
 
-1. [Drawing File - outboard wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV1.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
-![File w/Outboard Wheels](images/EdgeMiniRoundV1-dwg.png)
-1. [Drawing File - enclosed wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV2_encl.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
-![File w/Enclosed Wheels](images/EdgeMiniRoundV2_encl-dwg.png)
+1. **NEW!** [Drawing File - outboard wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV3b.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
+![File w/Outboard Wheels](images/EdgeMiniRoundV3b-ss.png)
 1. [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
 ![Spacer](images/SpacerV1.png)
 
@@ -40,6 +38,16 @@ This is what I found when I opened my first order:
 > [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
 
 ---
+
+## Older Drawing Files
+
+These are my earlier designs including the version you see in the pictures above.
+
+1. **OLD:** [Drawing File - outboard wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV1.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
+![File w/Outboard Wheels](images/EdgeMiniRoundV1-dwg.png)
+1. **OLD:** [Drawing File - enclosed wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV2_encl.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
+![File w/Enclosed Wheels](images/EdgeMiniRoundV2_encl-dwg.png)
+
 
 ## Disclaimer and Legal
 
