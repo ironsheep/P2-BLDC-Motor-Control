@@ -8,14 +8,14 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 ### Drawing Files
 
-These are the various design files I sent off to be make by [SendCutSend.com](https://sendcutsend.com/) - their prices are quite good!:
+These are the two design files I sent off to be make by [SendCutSend.com](https://sendcutsend.com/) - their prices are quite good!:
 
-1. **NEW!** [Drawing File - outboard wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV3b.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
+#### 1. Platform Board
+
+[Drawing File - outboard wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV3b.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
 ![File w/Outboard Wheels](images/EdgeMiniRoundV3b-ss-anno.png)
-1. [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
-![Spacer](images/SpacerV1.png)
 
-NOTE: the 4 center small holes (for M3 screws) are for mounting the twin motors boards connected to the Mini Edge Breakout Board. 
+NOTE: the 8 center small holes (for M3 screws) are for mounting the twin motor boards connected to the **Mini Edge Breakout Board** (#64019) or the newer **Edge Breakout Board** (#64029).  The inner-most 4 holes are for the new, smaller RevB boards, while the outer four are for the larger RevA motor boards.
 
 There are 2 ea. holes for each motor (for 1/4" - 20 Screws.)
 
@@ -23,12 +23,18 @@ There are 4 ea. holes for each castor - (for 1/4" - 20 Screws.)
 
 There are 2 ea. holes for each spacer board (shim) (for 1/4" - 20 Screws.)
 
+#### 2. Spacer Board
+
+[Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
+![Spacer](images/SpacerV1.png)
+
+
 ### Packaging (order arrives)
 
-This is what I found when I opened my first order:
+This is what I found when I opened my order:
 
-![Opened Package](images/EdgeMiniRoundV1.jpg)
-**The Package arrived with these contents..**  This was quite well packaged. The MDF part was shrink-wrapped to the backing cardboard. The laser cuts were all clean with a little bit of scorch mark on one side of the MDF as you might expect. *And yes, the Skittles package made me smile!*
+![Opened Package](images/unboxing-platform.jpg)
+**The Package arrived with these contents..**  This was quite well packaged. The MDF part was shrink-wrapped to the backing cardboard. The laser cuts were all clean with a little bit of scorch mark on one side of the MDF as you might expect. 
 
 
 ---
