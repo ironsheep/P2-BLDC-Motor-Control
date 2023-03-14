@@ -11,7 +11,7 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 These are the various design files I sent off to be make by [SendCutSend.com](https://sendcutsend.com/) - their prices are quite good!:
 
 1. **NEW!** [Drawing File - outboard wheels (.dwg)](DOCs/DesignFiles/EdgeMiniRoundV3b.dwg) - I spec'd 0.250" MDF as the material at ~$29 USD. 
-![File w/Outboard Wheels](images/EdgeMiniRoundV3b-ss.png)
+![File w/Outboard Wheels](images/EdgeMiniRoundV3b-ss-anno.png)
 1. [Drawing File - spacer to drop motors below castors (.dwg)](DOCs/DesignFiles/SpacerV1.dwg) - I spec'd 0.025" MDF as the material w/Ten of these for ~$14.20 USD.</br>
 ![Spacer](images/SpacerV1.png)
 
