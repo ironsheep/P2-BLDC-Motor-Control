@@ -122,6 +122,14 @@ PUB start(leftBasePin, rightBasePin, driveVoltage) : ok
     rtWheel.start(rightBasePin, driveVoltage)
     rtWheel.forwardIsReverse()
 
+    ' init user tracking vars
+    motorStopHallTicks := 0
+    motorStopMSecs := 0
+    rqstPower := 0
+    rqstDirection := 0
+    userCutoff := FALSE
+    notUsed := 0
+
     ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
     if senseCog == 0    ' did fail?
         debug("!! ERROR filed to start Position Sense task")
@@ -174,6 +182,8 @@ PUB driveDirection(power, direction) | ltPower, rtPower
 '' Turns both motors on at {power, [(-100) to 100]} but adjusted by {direction, [(-100) to 100]}.
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
     ' calculate effective power based on direction
+    rqstPower := power
+    rqstDirection := direction
     ltPower, rtPower := calcPowerForDirection(power, direction)
 
     ' now tell our motor of their own power
@@ -289,17 +299,21 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
 PUB stopMotors()
 '' Stops both motors, killing any motion that was still in progress
 '' AFFECTED BY:holdAtStop()
+    rqstPower := 0
     ltWheel.stopMotor()
     rtWheel.stopMotor()
 
 PUB emergencyCutoff()
 '' EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress
+    rqstPower := 0
+    userCutoff := TRUE
     ltWheel.emergencyCutoff()
     rtWheel.emergencyCutoff()
 
 PUB clearEmergency()
 '' Remove emergency override allowing motors to be driven again
 ' used by wheels*.spin2 methods
+    userCutoff := FALSE
     ltWheel.clearEmergency()
     rtWheel.clearEmergency()
     debug("--------clear EMERGENCY--------")
@@ -494,10 +508,16 @@ VAR { Data for Motor Position Tracking }
     '  --------------------------
     long    hallCntsIn8thSec
 
-
+    ' USER REQUESTS
     '  Position Tracking vars
     long    motorStopHallTicks
     long    motorStopMSecs
+    '  Drive vars
+    long    rqstPower
+    long    rqstDirection
+    long    userCutoff
+
+    long    notUsed
 
 PRI resetLtWindowAccumulator()
     longfill(@ltHallCountsWindow, 0, HALL_WINDOW_SIZE) ' zero our window accum
@@ -765,6 +785,87 @@ PRI distanceIn90ths(newPos, bIsLeftWheel) : n90ths | priorPos
         priorLtPos := newPos
     else
         priorRtPos := newPos
+
+CON { --- HDMI Debug Support --- }
+
+CON { Constants for HDMI Debug }
+
+    DBG_GROUPS_CT = 1
+    DBG_MAX_VARS_IN_GROUP = 7
+
+VAR { Data Structure for HDMI Debug }
+
+    LONG    pTitlesAr[DBG_GROUPS_CT + 1]    ' first value is max vars
+    LONG    pVarCtAr[DBG_GROUPS_CT]
+    LONG    pNamesAr[DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP]
+    LONG    pValsAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
+
+DAT { Literals for HDMI Debug }
+
+showHDMIDebug   LONG    FALSE
+
+' user stearing data
+'---+-----------+---+---+---+-------------------+---+---+---+---+---+-----------+
+nameTitle1      BYTE    "Steering",0
+name10          BYTE    "power",0
+name11          BYTE    "direc.",0
+name12          BYTE    "---",0
+name13          BYTE    "---",0
+name14          BYTE    "stpTck",0
+name15          BYTE    "stpmSec",0
+name16          BYTE    "Cutoff",0
+nextAddr1
+dataLen1        LONG    @nextAddr1 - @nameTitle1
+
+PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
+' do internal one-time setup of driver debug data
+    nGrpOffset := 0
+    nVarsInGroup := 7
+    LONG[@pTitlesAr][nGrpOffset] := @nameTitle1
+    LONG[@pVarCtAr][nGrpOffset] := nVarsInGroup
+    ' populate the empty name/value ptr tables
+    nValsGrpOffset := nGrpOffset * DBG_MAX_VARS_IN_GROUP
+    LONG[@pNamesAr][nValsGrpOffset + 0] := @name10
+    LONG[@pNamesAr][nValsGrpOffset + 1] := @name11
+    LONG[@pNamesAr][nValsGrpOffset + 2] := @name12
+    LONG[@pNamesAr][nValsGrpOffset + 3] := @name13
+    LONG[@pNamesAr][nValsGrpOffset + 4] := @name14
+    LONG[@pNamesAr][nValsGrpOffset + 5] := @name15
+    LONG[@pNamesAr][nValsGrpOffset + 6] := @name16
+    LONG[@pValsAr][nValsGrpOffset + 0] := @rqstPower
+    LONG[@pValsAr][nValsGrpOffset + 1] := @rqstDirection
+    LONG[@pValsAr][nValsGrpOffset + 2] := @notUsed
+    LONG[@pValsAr][nValsGrpOffset + 3] := @notUsed
+    LONG[@pValsAr][nValsGrpOffset + 4] := @motorStopHallTicks
+    LONG[@pValsAr][nValsGrpOffset + 5] := @motorStopMSecs
+    LONG[@pValsAr][nValsGrpOffset + 6] := @userCutoff
+
+    ' tell our table size to reader
+    nGrpOffset := 1
+    LONG[@pTitlesAr][nGrpOffset] := DBG_MAX_VARS_IN_GROUP
+
+PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars | tmpAbsPtr
+'' Return pointers to HDMI-debug data structures for this motor-object instance
+    loadDisplayList()
+    nGroups := DBG_GROUPS_CT
+    pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
+    pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
+    pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+    pGroupVars := @pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+    if showHDMIDebug
+        debug("* -------------")
+        debug("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
+        debug("* -------------")
+        debug("* Steer DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
+        debug("* Steer DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
+        debug("* Steer DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+        debug("* Steer DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+        debug("* -------------")
+        debug("* Steer PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
+        debug("* -------------")
+        debug("* Steer Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        debug("* =============")
+
 
 
 CON { license }
