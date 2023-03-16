@@ -35,6 +35,9 @@ CON { Public Interface Constants }
     ' RevIDs of BLDC driver board
     #20, REV_Unknown, REV_A, REV_B
 
+    ' Driver Detection Mode of BLDC driver boards
+    #30, BRD_AUTO_DET, BRD_REV_A, BRD_REV_B
+
     ' Driver Distance-Units Enum: (Millimeters, Centimeters, Inches, Feet, Meters, Kilometers, Miles)
     #0, DDU_Unknown, DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI
 
@@ -266,6 +269,10 @@ PRI init(eMotorBasePin, eMotorVoltage) | fwdDegrees, revDegrees
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
 
+    userBoardType := configureBoardDetection(user.BOARD_TYPE)
+
+
+
 PUB startSenseCog() : ok
 '' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
     ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
@@ -274,7 +281,8 @@ PUB startSenseCog() : ok
 
 VAR { * user request values * }
 
-    LONG    userSelectedVolts     ' remember the value specified by the user
+    LONG    userSelectedVolts   ' remember the value specified by the user
+    LONG    userBoardType       ' remember the value specified by the user
     ' limits based on user voltage
     LONG    minFwdIncreAtPwr
     LONG    maxFwdIncreAtPwr
@@ -554,98 +562,53 @@ PUB getRawHallTicks() : nPos
 '' Return the raw driver-maintained tick count
     nPos := pos
 
-CON { meas. pin constants }
-'    measMode       = %0000_0000_000_0100110110110_01_11111_0 'async rx mode, input  enabled for smart input
-    measMode       =  (P_SCHMITT_A_FB | P_SYNC_IO | P_HIGH_10UA | P_LOW_10UA | P_TRUE_IN | P_INVERT_OUTPUT | P_TT_01)  ' Schmitt w/Feedback, Clocked
+PUB boardIdString() : pZStr | eBoardRev
+'' return board ID string for this board revision
+    eBoardRev := getBoardType()
+    case eBoardRev
+        REV_Unknown:
+            pZStr := @"No Board Connected"
+        REV_A:
+            pZStr := @"64010 Rev A"
+        REV_B:
+            pZStr := @"64010 Rev B"
+        other:
+            debug("* [CODE] bad return value from getBoardType()")
+            pZStr := @"????"
 
-PUB getBoardType() : eBoardRev | pSenseCommon, lowCount, pinValue, highCount, priorValue, idleCount, loopCount
+PUB getBoardType() : eBoardRev | pSenseCommon, pinSum
 '' ID Revision of attached BLDC driver board
     ' returns one of REV_Unknown, REV_A, REV_B
     eBoardRev := REV_Unknown
+    pinSum := 0
     ' if we know the base pin of the board...
     if pinbase <> VALUE_NOT_SET
-        debug("BLDC: getBoardType() pinbase=(", udec_(pinbase), ")")
-        pSenseCommon := pinbase + 4 addPins 0
-        pinl(pSenseCommon)
-        {
-        repeat 10
-            pinh(pSenseCommon)
-            pinl(pSenseCommon)
-        '}
+        pSenseCommon := pinbase + 4
+        'debug("BLDC: getBoardType() pinbase=(", udec_(pinbase), "), pSenseCommon=(", uhex_Long_(pSenseCommon), ")")
+        pinhigh(pSenseCommon)                ' charge capacitor on RevB boards
+        waitms(1)
+        pinfloat(pSenseCommon)               ' release the pin, ready to read state
 
-        debug("--- getBoardType(B) pSenseCommon=(", uhex_Long_(pSenseCommon), ")")
-        lowCount := 0
-        highCount := 0
-        idleCount := 0
-        priorValue := -1
-        org
-'---+-----------+---+---+---+-------------------+---+---+---+---+---+-----------+
-                mov    pinSense, pSenseCommon                ' de-assert
-                outl    pinSense                ' de-assert
-{
-                rep     @endToglLp, #101
-                drvh  pinSense                ' toggle pin
-                nop
-                nop
-                drvl  pinSense                ' toggle pin
-                nop
-                nop
-endToglLp
-'}
-                rep     @endSampLp, #68
-                testp   pinSense            wc  ' read pin
-    if_nc       add     lowCount,#1                 ' if pin == 0 incr count
-endSampLp
+        repeat 500                    ' check pin state 500 times, x = sum of results
+            pinSum += pinread(pSenseCommon)
 
-                outh    pinSense                ' set high
-                rep     @holdHiLp, #9
-                nop                                 ' delay
-                nop
-holdHiLp
-                fltl    pinSense                ' de-assert
+        ' Handle the result!
+        ' Note: RevA will always be 0 due to a 1K pulldown on that board.
+        '       RevB count will vary with clkfreq (due to capacitor discharge)- typically in the range of 40 to 180
+        '       If no board attached, count will always be >250, and typically will be 500.
 
-                rep     @endFallCt, #100
-                testp   pinSense            wc  ' read pin
-    if_c        add     highCount,#1                ' if pin == 1 incr count
-                ret
+        if pinSum == 0
+            debug("--- ", udec(pinSum), ", 64010 Rev A")
+            eBoardRev := REV_A
+        elseif pinSum > 250
+            debug("--- ", udec(pinSum), ", Board not detected!")
+        else
+            debug("--- ", udec(pinSum), ", 64010 Rev B")
+            eBoardRev := REV_B
 
-pinSense        long    0
-endFallCt
-        end
-{
-                fltl      rxpin                                   ' reset smart pin
-                wrpin     ##(P_ADC | P_ADC_GIO), rxpin            ' read ground reference
-                wxpin     #%00_1101, pin                        ' 8192 samples
-                wypin     #0, rxpin
-                dirh      rxpin                                   ' enable
-
-        .rcvr   testp  #rxpin  wc
-        if_nc   jmp    #.rcvr
-                rdpin   rcvd_data, #rxpin
-}
-      {
-        pinclear(pSenseCommon)
-        lowCount := 0
-        repeat 100
-            pinValue := pinr(pSenseCommon)
-            if pinValue == 0
-                lowCount++
-        highCount := 0
-        idleCount := 0
-        priorValue := -1
-        pinh(pSenseCommon)
-        repeat 4
-        pinf(pSenseCommon)
-        repeat
-            pinValue := pinr(pSenseCommon)
-            if pinValue <> 0
-                highCount++
-            if priorValue == pinValue and pinValue == 0
-                idleCount++
-            priorValue := pinValue
-        while idleCount < 100
-        }
-        debug("BLDC: getBoardType() lowCount=(", udec_(lowCount), "), highCount=(", udec_(highCount), ")")
+        'debug("--- getBoardType() pinSum=(", udec_(pinSum), "), eBoardRev=(", udec_(eBoardRev), ")")
+    else
+        debug("BLDC: getBoardType() pinbase: ** NOT SET **")
 
 
 PUB isReady() : bState
@@ -870,6 +833,25 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
         ofsDegr := 20
         fwdDegrees := ofsDegr
         revDegrees := 360 - fwdDegrees
+
+PRI configureBoardDetection(eDetectMode) : eValidMode | legalMode
+' ensure suer specifies a good value
+    eValidMode := VALUE_NOT_SET
+
+    legalMode := eDetectMode
+    CASE eDetectMode
+        user.BRD_AUTO_DET:
+            legalMode := BRD_AUTO_DET    ' xlate to our internal value
+        user.BRD_REV_A:
+            legalMode := BRD_REV_A
+        user.BRD_REV_B:
+            legalMode := BRD_REV_B
+        OTHER :
+            legalMode := VALUE_NOT_SET
+
+    ' if legal base-pin then start cog
+    if legalMode <> VALUE_NOT_SET
+        eValidMode := legalMode        ' record base pin number
 
 PRI confgurePowerLimits(userVoltage) | selectedPower
 ' set up our motor drive limits based upon the user configured Voltage selection
