@@ -65,7 +65,6 @@ CON { forward our interface constants }
     DCS_SPIN_UP     = ltWheel.DCS_SPIN_UP
     DCS_AT_SPEED    = ltWheel.DCS_AT_SPEED
     DCS_SPIN_DN     = ltWheel.DCS_SPIN_DN
-    DCS_SLOWING_DN  = ltWheel.DCS_SLOWING_DN
     DCS_SLOW_TO_CHG = ltWheel.DCS_SLOW_TO_CHG
     DCS_FAULTED     = ltWheel.DCS_FAULTED
     DCS_ESTOP       = ltWheel.DCS_ESTOP
@@ -119,13 +118,17 @@ PUB start(leftBasePin, rightBasePin, driveVoltage) : ok
     '    repeat ' halt here
 
     ltWheel.start(leftBasePin, driveVoltage)
+    ltWheel.testSetMotorId(@"ltMot")
     rtWheel.start(rightBasePin, driveVoltage)
+    rtWheel.testSetMotorId(@"rtMot")
     rtWheel.forwardIsReverse()
 
     ' init user tracking vars
     motorStopHallTicks := 0
     motorStopMSecs := 0
     rqstPower := 0
+    rqstLtPower := 0
+    rqstRtPower := 0
     rqstDirection := 0
     userCutoff := FALSE
     notUsed := 0
@@ -184,11 +187,11 @@ PUB driveDirection(power, direction) | ltPower, rtPower
     ' calculate effective power based on direction
     rqstPower := power
     rqstDirection := direction
-    ltPower, rtPower := calcPowerForDirection(power, direction)
+    rqstLtPower, rqstRtPower := calcPowerForDirection(power, direction)
 
     ' now tell our motor of their own power
-    ltWheel.driveAtPower(ltPower)
-    rtWheel.driveAtPower(rtPower)
+    ltWheel.driveAtPower(rqstLtPower)
+    rtWheel.driveAtPower(rqstRtPower)
 
 PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits)
 '' Control the forward direction or rate of turn of your robot using the {leftDistance} and {rightDistance} inputs.
@@ -202,8 +205,11 @@ PUB driveAtPower(leftPower, rightPower)
 '' Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
 '' Turns left motor on at {leftPower} and right at {rightPower}. Where {*Power} are in the range [(-100) to 100].
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
-    ltWheel.driveAtPower(leftPower)
-    rtWheel.driveAtPower(rightPower)
+    rqstLtPower := leftPower
+    rqstRtPower := rightPower
+
+    ltWheel.driveAtPower(rqstLtPower)
+    rtWheel.driveAtPower(rqstRtPower)
 
 PUB stopAfterRotation(nRotationCount, eRotationUnits) | degreesPerTic, ticsPerRotation
 '' Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
@@ -299,13 +305,13 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
 PUB stopMotors()
 '' Stops both motors, killing any motion that was still in progress
 '' AFFECTED BY:holdAtStop()
-    rqstPower := 0
+    rqstPower := rqstLtPower := rqstRtPower := 0
     ltWheel.stopMotor()
     rtWheel.stopMotor()
 
 PUB emergencyCutoff()
 '' EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress
-    rqstPower := 0
+    rqstPower := rqstLtPower := rqstRtPower := 0
     userCutoff := TRUE
     ltWheel.emergencyCutoff()
     rtWheel.emergencyCutoff()
@@ -397,6 +403,11 @@ PRI getDriverState() : eLeftState, eRightState
 ' Returns status of motor-driver state for each motor: enumerated constants: DCS_*
     eLeftState := ltWheel.getDriverState()
     eRightState := rtWheel.getDriverState()
+
+PRI getFaultStatus() : bLeftStatus, bRightStatus
+' Returns status of motor-driver fault-state for each motor: T/F
+    bLeftStatus := ltWheel.isFaulted()
+    bRightStatus := rtWheel.isFaulted()
 
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
@@ -515,6 +526,8 @@ VAR { Data for Motor Position Tracking }
     '  Drive vars
     long    rqstPower
     long    rqstDirection
+    long    rqstLtPower
+    long    rqstRtPower
     long    userCutoff
 
     long    notUsed
@@ -633,6 +646,7 @@ PUB showDriveStates()
 '' for TESTING dump curr drive states
     reportMotorStatus()
     reportDrvStatus()
+    reportFaultStatus()
 
 PRI reportDrvStatus() | ltState, rtState
     ltState, rtState := getDriverState()
@@ -644,9 +658,15 @@ PRI reportMotorStatus() | ltStatus, rtStatus
     showStatus(ltStatus, @"ltMot")
     showStatus(rtStatus, @"rtMot")
 
+PRI reportFaultStatus() | bLeftStatus, bRightStatus
+    bLeftStatus, bRightStatus := getFaultStatus()
+    showFaultStatus(bLeftStatus, @"ltMot", false)       ' false = only show if faulted
+    showFaultStatus(bRightStatus, @"rtMot", false)
+
 PRI showDriveStatesOnChange()
     reportDrvStatusOnChange()
     reportMotorStatusOnChange()
+    reportMotorFaultOnChange()
 
 PRI reportDrvStatusOnChange() | ltState, rtState
     ltState, rtState := getDriverState()
@@ -668,6 +688,16 @@ PRI reportMotorStatusOnChange() | ltStatus, rtStatus
         showStatus(rtStatus, @"rtMot")
         priorRtStatus := rtStatus
 
+PRI reportMotorFaultOnChange() | bLeftStatus, bRightStatus
+    bLeftStatus, bRightStatus := getFaultStatus()
+    if priorLtFault <> bLeftStatus
+        showFaultStatus(bLeftStatus, @"ltMot", true)       ' force output
+        priorLtFault := bLeftStatus
+
+    if priorRtFault <> bRightStatus
+        showFaultStatus(bRightStatus, @"rtMot", true)
+        priorRtFault := bRightStatus
+
 DAT { debug strings }
 
     dsUnknown       BYTE    "dsUnk",0
@@ -682,7 +712,6 @@ DAT { debug strings }
     dcsSPIN_UP      BYTE    "dcsSPIN_UP",0
     dcsAT_SPEED     BYTE    "dcsAT_SPEED",0
     dcsSPIN_DN      BYTE    "dcsSPIN_DN",0
-    dcsSLOWING_DN   BYTE    "dcsSLOWING_DN",0
     dcsSLOW_TO_CHG  BYTE    "dcsSLOW_TO_CHG",0
     dcsFAULTED      BYTE    "dcsFAULTED",0
     dcsESTOP        BYTE    "dcsESTOP",0
@@ -694,6 +723,8 @@ DAT { debug strings }
     priorRtStatus   LONG    -1
     priorLtState    LONG    -1
     priorRtState    LONG    -1
+    priorLtFault   LONG    -3
+    priorRtFault   LONG    -3
 
 
 PRI showDriverState(eState, pMsg)
@@ -708,8 +739,6 @@ PRI showDriverState(eState, pMsg)
             pStatVal := @dcsAT_SPEED
         DCS_SPIN_DN:
             pStatVal := @dcsSPIN_DN
-        DCS_SLOWING_DN:
-            pStatVal := @dcsSLOWING_DN
         DCS_SLOW_TO_CHG:
             pStatVal := @dcsSLOW_TO_CHG
         DCS_FAULTED:
@@ -735,6 +764,12 @@ PRI showStatus(eStatus, pMsg)
             placeAsciiDigits(@dsOtherVal, eStatus)
             pStatVal := @dsOther
     debug("- STATUS ", zstr_(pMsg), ": ", zstr_(pStatVal))
+
+PRI showFaultStatus(bStatus, pMsg, bForceOutput)
+    if bStatus == true
+        debug("- FAULT! ", zstr_(pMsg))
+    elseif bStatus == false and bForceOutput == true
+        debug("- no FAULT ", zstr_(pMsg))
 
 PRI placeAsciiDigits(pStrBytes, byt) | hiNyb, lowNyb
         hiNyb := byt & $f0 >> 4 + $30
@@ -809,8 +844,8 @@ showHDMIDebug   LONG    FALSE
 nameTitle1      BYTE    "Steering",0
 name10          BYTE    "power",0
 name11          BYTE    "direc.",0
-name12          BYTE    "---",0
-name13          BYTE    "---",0
+name12          BYTE    "ltPwr",0
+name13          BYTE    "rtPwr",0
 name14          BYTE    "stpTck",0
 name15          BYTE    "stpmSec",0
 name16          BYTE    "Cutoff",0
@@ -834,8 +869,8 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 6] := @name16
     LONG[@pValsAr][nValsGrpOffset + 0] := @rqstPower
     LONG[@pValsAr][nValsGrpOffset + 1] := @rqstDirection
-    LONG[@pValsAr][nValsGrpOffset + 2] := @notUsed
-    LONG[@pValsAr][nValsGrpOffset + 3] := @notUsed
+    LONG[@pValsAr][nValsGrpOffset + 2] := @rqstLtPower
+    LONG[@pValsAr][nValsGrpOffset + 3] := @rqstRtPower
     LONG[@pValsAr][nValsGrpOffset + 4] := @motorStopHallTicks
     LONG[@pValsAr][nValsGrpOffset + 5] := @motorStopMSecs
     LONG[@pValsAr][nValsGrpOffset + 6] := @userCutoff

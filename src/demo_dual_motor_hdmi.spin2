@@ -1,0 +1,188 @@
+'' =================================================================================================
+''
+''   File....... demo_dual_motor_hdmi.spin2
+''   Purpose.... Demonstrate driving a two-wheeled platform
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Mar 2023
+''   Updated.... 21 Mar 2023
+''
+'' =================================================================================================
+
+CON { timing }
+
+  CLK_FREQ = 270_000_000                                        ' system freq as a constant
+  _clkfreq = CLK_FREQ                                           ' set system clock
+
+CON { fixed io pins }
+
+    RX1      = 63  { I }                                          ' programming / debug
+    TX1      = 62  { O }
+
+    SF_CS    = 61  { O }                                          ' serial flash
+    SF_SCK   = 60  { O }
+    SF_SDO   = 59  { O }
+    SF_SDI   = 58  { I }
+
+    HDMI_BASE_PIN       = tvDebug.PINS_P0_P7
+
+OBJ { our Drive Subsystem }
+
+    user    :   "isp_bldc_motor_userconfig"     ' driver configuration
+    wheels  :   "isp_steering_2wheel"                  ' the dual-drive BLDC motors
+    tvDebug     :   "isp_hdmi_debug"                                ' HDMI debug object
+
+DAT { run-time condition vars }
+
+    bUseHDMI    LONG   TRUE       ' set to TRUE to enable HDMI use/output
+
+PUB main() | basePinLt, basePinRt, voltage, motor, basePin
+'' DEMO Driving a two wheeled platform
+
+    debug("* dual motor demo w/HDMI")
+
+    if bUseHDMI
+        basePin := tvDebug.validBasePinForChoice(HDMI_BASE_PIN)
+        if basePin <> tvDebug.INVALID_PIN_BASE
+            tvDebug.start(basePin)
+            debug("* HDMI started")
+        else
+            debug("* ERROR bad pin #")
+
+    ' validate user settings/choicess
+    '  do NOT start motor unless all are legit!
+    basePinLt := wheels.validBasePinForChoice(user.LEFT_MOTOR_BASE)
+    basePinRt := wheels.validBasePinForChoice(user.RIGHT_MOTOR_BASE)
+    voltage := wheels.validVoltageForChoice(user.DRIVE_VOLTAGE)
+    motor := wheels.validMotorForChoice(user.MOTOR_TYPE)
+
+    if basePinLt <> wheels.INVALID_PIN_BASE and basePinRt <> wheels.INVALID_PIN_BASE and voltage <> wheels.INVALID_VOLTAGE and motor <> wheels.INVALID_MOTOR
+        ' start our dual motor driver
+
+        ' start our motor drivers (left and right)
+        wheels.start(basePinLt, basePinRt, voltage)
+
+        ' just don't draw current at stop
+        wheels.holdAtStop(false)
+        'wheels.setMaxSpeed(100)  ' override 75% with 100%
+
+
+        if bUseHDMI
+            connectMotorToHDMI()
+
+        ' now drive!
+        'waitUntilMotorReady()
+
+{
+        debug("* BOTH Wheels")
+        wheels.driveDirection(80, -25)
+        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+
+        waitUntilMotorDone()
+
+        wheels.driveDirection(80, 25)
+        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+
+        waitUntilMotorDone()
+'}
+'{
+        debug("* LT Wheel")
+        wheels.driveAtPower(40, 50)
+        wheels.stopAfterTime(10, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+
+        waitUntilMotorDone()
+'}
+{
+        debug("* RT Wheel")
+        wheels.driveAtPower(0, 100)
+        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+
+        waitUntilMotorDone()
+'}
+        ' turn off our motor drivers
+        wheels.stop()
+    else
+        debug("* ERROR user configuration NOT valid!")
+
+    debug("* DONE")
+
+
+PRI connectMotorToHDMI() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
+' connect our two motors to the HDMI display mech
+    if bUseHDMI
+        nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheels.getLeftDebugData()
+        debug("* Received Lt: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+
+ '{  -- in-active until this can work! --
+        nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheels.getRightDebugData()
+        debug("* Received Rt: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+'}
+
+ '{  -- in-active until this can work! --
+        nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheels.getDebugData()
+        debug("* Received Steer: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+'}
+
+
+PRI waitUntilMotorReady()
+    if wheels.isReady() == false
+        debug("* wait motors ready...")
+        repeat
+            if wheels.isReady()
+                quit
+            else
+                waitms(2)
+    debug("* Motors ready, let's drive!")
+
+
+PRI waitUntilMotorDone()
+    if wheels.isStarting() == false
+         debug("* wait until motors start...")
+         repeat
+            if wheels.isStarting()
+                quit
+            else
+                waitms(2)
+
+    if wheels.isStopped() == false
+        debug("* wait until motors finish...")
+        repeat
+            if wheels.isStopped()
+                quit
+            else
+                waitms(2)
+    debug("* Motors stopped!")
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2022 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}
