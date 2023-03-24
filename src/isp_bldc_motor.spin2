@@ -276,7 +276,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
 
-    eUserDetectionMode := getInternalDetectMode(eDetectionMode)
+    eUserDetectionMode, bUserForced := getInternalDetectMode(eDetectionMode)
 
     ' set the mode now used by the driver to condition things (current-sense scaling, etc.)
     eDetectedBoard := getBoardType()
@@ -293,6 +293,7 @@ VAR { * user request values * }
     LONG    userSelectedVolts   ' remember the value specified by the user
     LONG    eUserDetectionMode   ' remember the value specified by the user
     LONG    eDetectedBoard      ' remember the board type detected (or overridden)
+    LONG    bUserForced         ' T/F: where T means user is NOT using autodetect
     ' limits based on user voltage
     LONG    minFwdIncreAtPwr
     LONG    maxFwdIncreAtPwr
@@ -581,16 +582,15 @@ PUB getRawHallTicks() : nPos
 '' Return the raw driver-maintained tick count
     nPos := pos
 
-PUB boardIdString() : pZStr | eBoardRev
+PUB boardIdString() : pZStr
 '' return board ID string for this board revision
-    eBoardRev := getBoardType()
-    case eBoardRev
+    case eDetectedBoard
         REV_Unknown:
             pZStr := @"No Board Connected"
         REV_A:
-            pZStr := @"64010 Rev A"
+            pZStr := bUserForced ? @"64010 Rev A -USER FORCED" : @"64010 Rev A"
         REV_B:
-            pZStr := @"64010 Rev B"
+            pZStr := bUserForced ? @"64010 Rev B -USER FORCED" : @"64010 Rev B"
         other:
             debug("* [CODE] bad return value from getBoardType()")
             pZStr := @"????"
@@ -884,18 +884,20 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
         fwdDegrees := ofsDegr
         revDegrees := 360 - fwdDegrees
 
-PRI getInternalDetectMode(eDetectMode) : eValidMode | legalMode
+PRI getInternalDetectMode(eDetectMode) : eValidMode, bUserOverride | legalMode
 ' ensure suer specifies a good value
     eValidMode := BRD_AUTO_DET
-
+    bUserOverride := FALSE
     legalMode := VALUE_NOT_SET
     CASE eDetectMode
         user.BRD_AUTO_DET:
             legalMode := BRD_AUTO_DET    ' xlate to our internal value
         user.BRD_REV_A:
             legalMode := BRD_REV_A
+            bUserOverride := TRUE
         user.BRD_REV_B:
             legalMode := BRD_REV_B
+            bUserOverride := TRUE
         OTHER :
             legalMode := VALUE_NOT_SET
 
