@@ -37,6 +37,7 @@ CON { Public Interface Constants }
 
     ' Driver Detection Mode of BLDC driver boards
     #30, BRD_AUTO_DET, BRD_REV_A, BRD_REV_B
+    INVALID_DET_MODE = -1
 
     ' Driver Distance-Units Enum: (Millimeters, Centimeters, Inches, Feet, Meters, Kilometers, Miles)
     #0, DDU_Unknown, DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI
@@ -75,8 +76,11 @@ CON { test pins for LA measurement }
     TEST_PIN_DRIVE_LP2 = TEST_BASE_PIN + 3          ' LA ch3
     TEST_PIN_LP_TOGL = TEST_BASE_PIN + 4           ' LA ch4
     TEST_PIN_UNKNOWN = TEST_BASE_PIN + 5           ' LA ch4
+'}
+'{
 
     ' PIN 48, 49 our rot/360 R/P Sensor
+    '   (Optical Rotary Encoder 360P/R)
     TEST_BASE2_PIN = 48
     TEST_ALL2_PINS = TEST_BASE2_PIN addpins 1
     TEST_PIN_RP_SNS1 = TEST_BASE2_PIN + 0
@@ -96,10 +100,10 @@ PUB null()
 
 '' This is not a top-level object
 
-PUB start(eMotorBasePin, eMotorVoltage) : ok | legalBase
+PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok | legalBase
 '' Specify motor control board connect location for this motor and start the driver
         ' setup runtime constants
-    init(eMotorBasePin, eMotorVoltage)
+    init(eMotorBasePin, eMotorVoltage, eDetectionMode)
 
     ' ensure we only use legal values
     legalBase := eMotorBasePin
@@ -138,9 +142,9 @@ PUB stop()
         pinclear(pinbase+8 addpins 7)
         pinbase := VALUE_NOT_SET
 
-PUB testSetup(eMotorBasePin, eMotorVoltage) | legalBase
+PUB testSetup(eMotorBasePin, eMotorVoltage, eDetectionMode) | legalBase
 '' Specify motor control board connect location for this motor BUT DON'T start the driver
-    init(eMotorBasePin, eMotorVoltage)
+    init(eMotorBasePin, eMotorVoltage, eDetectionMode)
     ' ensure we only use legal values
     legalBase := eMotorBasePin
     CASE eMotorBasePin
@@ -154,7 +158,7 @@ PUB testSetup(eMotorBasePin, eMotorVoltage) | legalBase
     if legalBase <> INVALID_PIN_BASE
         pinbase := legalBase        ' record base pin number
 
-PRI init(eMotorBasePin, eMotorVoltage) | fwdDegrees, revDegrees
+PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
 '' Specify motor control board connect location for this motor BUT DON'T start the driver
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
@@ -272,8 +276,10 @@ PRI init(eMotorBasePin, eMotorVoltage) | fwdDegrees, revDegrees
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
 
-    userBoardType := configureBoardDetection(user.BOARD_TYPE)
+    eUserDetectionMode := getInternalDetectMode(eDetectionMode)
 
+    ' set the mode now used by the driver to condition things (current-sense scaling, etc.)
+    eDetectedBoard := getBoardType()
 
 
 PUB startSenseCog() : ok
@@ -285,7 +291,8 @@ PUB startSenseCog() : ok
 VAR { * user request values * }
 
     LONG    userSelectedVolts   ' remember the value specified by the user
-    LONG    userBoardType       ' remember the value specified by the user
+    LONG    eUserDetectionMode   ' remember the value specified by the user
+    LONG    eDetectedBoard      ' remember the board type detected (or overridden)
     ' limits based on user voltage
     LONG    minFwdIncreAtPwr
     LONG    maxFwdIncreAtPwr
@@ -588,39 +595,50 @@ PUB boardIdString() : pZStr | eBoardRev
             debug("* [CODE] bad return value from getBoardType()")
             pZStr := @"????"
 
-PUB getBoardType() : eBoardRev | pSenseCommon, pinSum
+PUB getBoardType() : eBoardRev | pSenseCommon, pinSum, bDetectBoard
 '' ID Revision of attached BLDC driver board
     ' returns one of REV_Unknown, REV_A, REV_B
     eBoardRev := REV_Unknown
-    pinSum := 0
-    ' if we know the base pin of the board...
-    if pinbase <> VALUE_NOT_SET
-        pSenseCommon := pinbase + 4
-        'debug("BLDC: getBoardType() pinbase=(", udec_(pinbase), "), pSenseCommon=(", uhex_Long_(pSenseCommon), ")")
-        pinhigh(pSenseCommon)                ' charge capacitor on RevB boards
-        waitms(1)
-        pinfloat(pSenseCommon)               ' release the pin, ready to read state
-
-        repeat 500                    ' check pin state 500 times, x = sum of results
-            pinSum += pinread(pSenseCommon)
-
-        ' Handle the result!
-        ' Note: RevA will always be 0 due to a 1K pulldown on that board.
-        '       RevB count will vary with clkfreq (due to capacitor discharge)- typically in the range of 40 to 180
-        '       If no board attached, count will always be >250, and typically will be 500.
-
-        if pinSum == 0
-            debug("--- ", udec(pinSum), ", 64010 Rev A")
+    ' if user is overriding detection then use users' override value
+    bDetectBoard := false
+     case eUserDetectionMode    ' setup by init()
+        REV_A:
             eBoardRev := REV_A
-        elseif pinSum > 250
-            debug("--- ", udec(pinSum), ", Board not detected!")
-        else
-            debug("--- ", udec(pinSum), ", 64010 Rev B")
+        REV_B:
             eBoardRev := REV_B
+        other:
+            bDetectBoard := true
+    if bDetectBoard
+        ' do we know the base pin of the board...??
+        if pinbase == VALUE_NOT_SET
+            debug("BLDC: getBoardType() pinbase: ** NOT SET **")
+        else
+            ' yes, detect the board rev
+            pinSum := 0
+            pSenseCommon := pinbase + 4
+            'debug("BLDC: getBoardType() pinbase=(", udec_(pinbase), "), pSenseCommon=(", uhex_Long_(pSenseCommon), ")")
+            pinhigh(pSenseCommon)                ' charge capacitor on RevB boards
+            waitms(1)
+            pinfloat(pSenseCommon)               ' release the pin, ready to read state
 
-        'debug("--- getBoardType() pinSum=(", udec_(pinSum), "), eBoardRev=(", udec_(eBoardRev), ")")
-    else
-        debug("BLDC: getBoardType() pinbase: ** NOT SET **")
+            repeat 500                    ' check pin state 500 times, x = sum of results
+                pinSum += pinread(pSenseCommon)
+
+            ' Handle the result!
+            ' Note: RevA will always be 0 due to a 1K pulldown on that board.
+            '       RevB count will vary with clkfreq (due to capacitor discharge)- typically in the range of 40 to 180
+            '       If no board attached, count will always be >250, and typically will be 500.
+
+            if pinSum == 0
+                debug("--- ", udec(pinSum), ", 64010 Rev A")
+                eBoardRev := REV_A
+            elseif pinSum > 250
+                debug("--- ", udec(pinSum), ", Board not detected!")
+            else
+                debug("--- ", udec(pinSum), ", 64010 Rev B")
+                eBoardRev := REV_B
+
+            'debug("--- getBoardType() pinSum=(", udec_(pinSum), "), eBoardRev=(", udec_(eBoardRev), ")")
 
 
 PUB isReady() : bState
@@ -711,6 +729,18 @@ PUB validMotorForChoice(userMotor) : legalMotor
         OTHER:
             legalMotor := INVALID_MOTOR
     debug("*VAL* ", sdec_long(legalMotor))
+
+PUB validDetectModeForChoice(userDetMode) : legalMode
+'' VALIDATE users' detection mode choice returns legalMode or INVALID_DET_MODE
+    legalMode := userDetMode
+    CASE userDetMode
+        user.BRD_AUTO_DET:
+        user.BRD_REV_A:
+        user.BRD_REV_B:
+        OTHER:
+            legalMode := INVALID_DET_MODE
+    debug("*VAL* ", sdec_long(legalMode))
+
 
 PUB hallTicInfoForMotor() : degreesPerTic, ticsPerRotation
 '' Return numbers for user selected motor (for use by two-wheel-steering object!)
@@ -854,11 +884,11 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
         fwdDegrees := ofsDegr
         revDegrees := 360 - fwdDegrees
 
-PRI configureBoardDetection(eDetectMode) : eValidMode | legalMode
+PRI getInternalDetectMode(eDetectMode) : eValidMode | legalMode
 ' ensure suer specifies a good value
-    eValidMode := VALUE_NOT_SET
+    eValidMode := BRD_AUTO_DET
 
-    legalMode := eDetectMode
+    legalMode := VALUE_NOT_SET
     CASE eDetectMode
         user.BRD_AUTO_DET:
             legalMode := BRD_AUTO_DET    ' xlate to our internal value
@@ -1169,8 +1199,8 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
     ' -----------------------------------
-{
-    pinlow(TEST_PIN_SENSE_LP)
+'{
+    'pinlow(TEST_PIN_SENSE_LP)
 
     ' configure our R/P sensor pins
     pinfloat(TEST_ALL2_PINS)    ' set to inputs
@@ -1206,29 +1236,30 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
         hallCntsIn8thSec := absDistanceInTics(pos, prioro8thSecPos) ' Read the next sensor value
         prioro8thSecPos := pos                              ' save prior
 
-    ' -----------------------------------
-    ' Logic Analyzer Instrumentation Code
-    ' -----------------------------------
-{
+    ' ------------------------------------------
+    ' Special 360 cts/Rotation Sensor Code
+    '   (Optical Rotary Encoder 360P/R)
+    ' https://www.amazon.com/Signswise-Incremental-Encoder-Dc5-24v-Voltage/dp/B00Y9KDDCY
+    ' ------------------------------------------
+'{
         ' accum our fast & slow windowed values
         if loopCtr +// SENSE_LOOP_HZ == 0             ' once every second compute slow cts in case we are slow
             ' ---------------------------------------------------------------------------------
             ' Capture 360 Sensor data
             '
             r360degrPerSec := abs(rqpin(TEST_PIN_RP_SNS1) sar 2)  ' divide by 4 to get degrees
-            'debug("MTR: ", sdec(r360degrPerSec))
+            debug("MTR: ROT ", sdec(r360degrPerSec))
             ' reset reader
             pinfloat(TEST_PIN_RP_SNS1)    ' set to input
             pinhigh(TEST_PIN_RP_SNS1)     ' set to output
 
-            r360WindowSum -= LONG[@r360CountsWindow][r360WinIndex]          ' Remove the oldest entry from the sum
-            long [@r360CountsWindow][r360WinIndex] := r360degrPerSec      ' place the newest reading into the window
-            r360WindowSum += r360degrPerSec                           ' Add the newest reading to the sum
-            r360WinIndex := (r360WinIndex + 1) +// R360_WINDOW_SIZE          ' Increment the index, and wrap to 0 if it exceeds the window size
-            if r360WinEntryCt < R360_WINDOW_SIZE                         ' incr number of samples in sum until is window size
+            r360WindowSum -= LONG[@r360CountsWindow][r360WinIndex]              ' Remove the oldest entry from the sum
+            long [@r360CountsWindow][r360WinIndex] := r360degrPerSec            ' place the newest reading into the window
+            r360WindowSum += r360degrPerSec                                     ' Add the newest reading to the sum
+            r360WinIndex := (r360WinIndex + 1) +// R360_WINDOW_SIZE             ' Increment the index, and wrap to 0 if it exceeds the window size
+            if r360WinEntryCt < R360_WINDOW_SIZE                                ' incr number of samples in sum until is window size
                 r360WinEntryCt++
 
-            'tv360rpm_x10 := ((r360WindowSum / r360WinEntryCt) * 60) / 36
             tv360rpm_x10 := (r360degrPerSec * 60) / 36
             tv360rpm := tv360rpm_x10 / 10
             '
