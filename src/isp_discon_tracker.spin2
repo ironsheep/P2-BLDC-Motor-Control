@@ -23,6 +23,7 @@ CON { internal constants }
 
     MAX_OFS_ENTRIES = 45
     LONGS_PER_OFS = 2
+    MAX_OFS_MVS = 2
 
 ' indexes into OFS entry fields
 #0, IDX_OFS_OFFSET, IDX_OFS_MV
@@ -35,6 +36,7 @@ DAT { class variables }
 
     offsetEntries   LONG    0[MAX_OFS_ENTRIES * LONGS_PER_OFS]
     nbrOfsEntries   LONG    0
+    ofsMin_mVolt    LONG    99_999[MAX_OFS_MVS]
 
 VAR { Instance Variables }
 
@@ -112,6 +114,7 @@ PUB addWorkingOffset(offset, mVolt) | pEntry
     LONG[pEntry][IDX_OFS_MV] := mVolt
     showOfsEntry(nbrOfsEntries, pEntry)
     nbrOfsEntries++
+    trackMin_mVolts(mVolt)
 
 PUB replaceWorkingOffset(offset, mVolt) | pEntry, ofsIdx, nOffset, prior_mVolt
 '' replace Existing entry rating with new rating
@@ -151,16 +154,49 @@ PUB isWorkingOffsetChecked(offset) : bIsChecked | ofsIdx, pEntry, nOffset
                 bIsChecked := TRUE
                 quit    ' have answer, get outta here!
 
+PUB showAccumTables()
+'' run has ended show our internal tables
+    debug("TRK: tables at end:")
+    debug("TRK: REC ", udec_(nbrSpanEntries), " Entries")
+    showAllSpanEntries()
+    debug("   ")
+    debug("TRK ofs: REC ", udec_(nbrOfsEntries), " Entries")
+    showAllOfsEntries()
+    debug("   ")
+    debug("TRK ofs min_mV: REC ", udec_(MAX_OFS_MVS), " Entries")
+    showAllMinVEntries()
+
 CON ' ---- Private (Utility) Methods ----
 
+PRI trackMin_mVolts(mVolt) | savIdx, bValueSaved
+    ' see if this value already in table
+    bValueSaved := FALSE
+    repeat savIdx from 0 to MAX_OFS_MVS - 1
+        if LONG[@ofsMin_mVolt][savIdx] == mVolt
+            bValueSaved := TRUE
+            quit
+    ' is our new value a low value in our table?
+    if not bValueSaved
+        ' no, so if this value is lower than a table entry replace it
+        repeat savIdx from 0 to MAX_OFS_MVS - 1
+            if mVolt < LONG[@ofsMin_mVolt][savIdx]
+                LONG[@ofsMin_mVolt][savIdx] := mVolt
+                quit    ' outta here we're done checking
+
+PRI showAllMinVEntries() | nIdx, nMin_mVolt
+' show all entries via debug
+    repeat nIdx from 0 to MAX_OFS_MVS - 1
+        nMin_mVolt := LONG[@ofsMin_mVolt][nIdx]
+        debug("TRK: MIN mV #", udec_(nIdx + 1), " mV [", sdec_(nMin_mVolt), "]")
+
 PRI showAllSpanEntries() | nIdx, pEntry
-' show all entries over debug
+' show all entries via debug
         repeat nIdx from 0 to nbrSpanEntries - 1
             pEntry := @LONG[@spanEntries][nIdx * LONGS_PER_SPAN]
             showSpanEntry(nIdx, pEntry)
 
 PRI showSpanEntry(nIdx, pEntry) | minOfs, maxOfs, min_mVolt, max_mVolt
-' show single entry over debug
+' show single entry via debug
     minOfs := LONG[pEntry][IDX_START]
     maxOfs := LONG[pEntry][IDX_END]
     min_mVolt := LONG[pEntry][IDX_MIN_MV]
@@ -168,13 +204,13 @@ PRI showSpanEntry(nIdx, pEntry) | minOfs, maxOfs, min_mVolt, max_mVolt
     debug("TRK: SPAN #", udec_(nIdx + 1), " ofs [", sdec_(minOfs), ":", sdec_(maxOfs), "], mV [", sdec_(min_mVolt), ":", sdec_(max_mVolt), "]")
 
 PRI showAllOfsEntries() | nIdx, pEntry
-' show all entries over debug
+' show all entries via debug
         repeat nIdx from 0 to nbrOfsEntries - 1
             pEntry := @LONG[@offsetEntries][nIdx * LONGS_PER_OFS]
             showOfsEntry(nIdx, pEntry)
 
 PRI showOfsEntry(nIdx, pEntry) | nOfs, max_mVolt
-' show single entry over debug
+' show single entry via debug
     nOfs := LONG[pEntry][IDX_OFS_OFFSET]
     max_mVolt := LONG[pEntry][IDX_OFS_MV]
     debug("TRK: OFS #", udec_(nIdx + 1), " ofs [", sdec_(nOfs), "], mV [", sdec_(max_mVolt), "]")
