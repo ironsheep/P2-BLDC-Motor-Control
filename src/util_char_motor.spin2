@@ -1,14 +1,15 @@
 '' =================================================================================================
 ''
-''   File....... test_motor_char_ofsts.spin2
-''   Purpose.... Characterize a new motor at given voltage - test range of fwd/rev offsets
+''   File....... util_char_motor.spin2
+''   Purpose.... Characterize aspects of a new motor at given voltage
 ''   Authors.... Stephen M Moraco
-''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- Copyright (c) 2023 Iron Sheep Productions, LLC
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
-''   Started.... Aug 2022
-''   Updated.... 9 Aug 2022
+''   Started.... Mar 2023
+''   Updated.... 31 Mar 2023
 ''
+'' Oh, and I'm a Blynk: a k-pop Blackpink fandom member and today is Jisoo's Solo Album release day!
 '' =================================================================================================
 
 CON { timing }
@@ -18,8 +19,9 @@ CON { timing }
 
     ' SPECIAL for LOGGING on RPi
 '{
-    DEBUG_PIN_TX = 1
-    DEBUG_PIN_RX = 0
+    DEBUG_PIN_TX = 56
+    DEBUG_PIN_RX = 57
+    DEBUG_BAUD = 2_000_000
 '}
 
 CON { fixed io pins }
@@ -51,13 +53,14 @@ CON { application io pins }
 
 OBJ { our Motor(s) }
 
-    user        :   "isp_bldc_motor_userconfig"     ' driver configuration
-    tvDebug     :   "isp_hdmi_debug"         ' HDMI debug object
-    wheel       :   "isp_bldc_motor"        ' the single BLDC motor
+    user        :   "isp_bldc_motor_userconfig"         ' driver configuration
+    tvDebug     :   "isp_hdmi_debug"                    ' HDMI debug object
+    wheel       :   "isp_bldc_motor"                    ' the single BLDC motor
+    ofsTrk      :   "isp_discon_tracker"                ' data struct for tracking offset ranges
 
 DAT { run-time condition vars }
 
-    bUseHDMI    LONG   TRUE       ' set to TRUE to enable HDMI use/output
+    bUseHDMI        LONG   TRUE       ' set to TRUE to enable HDMI use/output
 
     nGroups         LONG    0
     pGroupTitles    LONG    0
@@ -65,7 +68,18 @@ DAT { run-time condition vars }
     pGroupVarCts    LONG    0
     pGroupVars      LONG    0
 
-PUB main() | motorCog, senseCog, basePin, voltage, motor, bDidFault, failSpeed, testSpeed, bNoMovement, bFwdIsInverse, ofstInDegr, detectMode
+    motorCog        LONG    0
+    senseCog        LONG    0
+
+    basePin         LONG    0
+    detectMode      LONG    0
+    voltage         LONG    0
+    motor           LONG    0
+
+    prior_mV        LONG    0
+    priorOfs        LONG    0
+
+PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDegr, bRuns, end_mV, spanIdx, srtOfst, endOffset, currOffset, min_mV
 '' DEMO Driving a single wheeled platform
 
     ' start our HDMI debug output
@@ -104,36 +118,73 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, bDidFault, failSpeed, 
         wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
         wheel.resetTracking()
 
-        ' binary search to find lowest speed that motor turns at this voltage
+        ' Motor notes:
+        ' --------------
+        '  6.5" 30 pole, 12degr/pole(magnet),  4degr/hall tic, 3 hall tics/magnet
+        ' Doco   8 pole, 45degr/pole(magnet), 15degr/hall tic, 3 hall tics/magnet
+
+        ' ----------------------------------------------------------------------------
+        ' PASS 1: let's see if we find working offsets within 1st 90 degrees of rotation
+        '  and how many of them work
+        ofsPassNbr := 1
         passNbr := 1
-        testSpeed := 200_000_000
-        wheel.testSetLimit(testSpeed)
-        debug(" --- ")
-
+        testSpeed := 50_000_000
         bFwdIsInverse := (user.MOTOR_TYPE == wheel.MOTR_DOCO_4KRPM) ? TRUE : FALSE
-{
-        ' do 10's check - FIXME: this check a waste of time... do 5's only, not 10's!
-        debug("* test: 0 to 180, incr by 10")
-        debug(" --- ")
-        repeat ofstInDegr from 0 to 180 step 10
-            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
-'}
+        debug("  ")
+        debug(" ---------------- < * > ----------------")
+        debug("* Determine Offset: scan 1 to 90 degr, incr by 3")
+        'debug(" --- ")
+        repeat ofstInDegr from 3 to 90 step 3
+            bRuns, end_mV := evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
+            if bRuns
+                ofsTrk.addSpan(ofstInDegr, end_mV, 3)
+                ofsTrk.addWorkingOffset(ofstInDegr, end_mV)
+                debug("   ")
+            else
+                debug(" ----------------------- ")
+                debug("   3 sec...")
+                waitms(3_000) ' Nsec delay between passes - motor cool down
 
-{
-        ' do 5's check
-        debug("* test: 5 to 180, incr by 10")
-        debug(" --- ")
-        'repeat ofstInDegr from 5 to 180 step 10
-        repeat ofstInDegr from 55 to 180 step 10
-            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
-'}
-'{
-        ' lastly do local value check...
-        debug("* test: 45 to 60, incr by 1")
-        debug(" --- ")
-        repeat ofstInDegr from 45 to 60 step 1
-            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
-'}
+        ' ----------------------------------------------------------------------------
+        ' PASS 2: within the ranges that worked, let's do discrete current-use checks
+        debug("  ")
+        debug(" ---------------- < * > ----------------")
+        debug("* Determine lowest current for each offset works")
+        spanIdx := ofsTrk.spanCount()
+        if spanIdx > 0
+            debug("* studying ", udec_(spanIdx), " span(s)")
+            spanIdx := 0    ' start from first!
+            repeat
+                srtOfst, endOffset := ofsTrk.offsetsForSpan(spanIdx)
+                debug("  -- Studying SPAN: ", udec_(srtOfst), " to ", udec_(endOffset))
+                repeat currOffset from srtOfst to endOffset step 1
+                        bRuns, end_mV := evalOffset(currOffset, bFwdIsInverse, testSpeed)
+                        if bRuns
+                            if ofsTrk.isWorkingOffsetChecked(currOffset) == TRUE
+                                priorOfs, prior_mV := ofsTrk.valuesForOffset(currOffset)
+                                if prior_mV > end_mV
+                                    ofsTrk.replaceWorkingOffset(currOffset, end_mV)
+                                else
+                                    debug("  -- keeping prior run: ofs=(", udec_(currOffset), "), mV=(", udec_(prior_mV), ")")
+                            else
+                                ofsTrk.addWorkingOffset(currOffset, end_mV)
+                            debug("   ")
+                        else
+                            debug(" ----------------------- ")
+                            debug("   3 sec...")
+                            waitms(3_000) ' Nsec delay between passes - motor cool down
+
+                ' are are more spans?
+                spanIdx++
+                if spanIdx >= ofsTrk.spanCount() - 1
+                    ' no, outta here!
+                    quit
+        else
+            debug("* EEEE no spans to study!!")
+
+        ' ----------------------------------------------------------------------------
+        ' PASS 3: within the top 5 let's do discrete current use at speed checks
+
         ' TBA  let's add a reverse drive loop
         debug("* quit: all checked")
         debug("  ")
@@ -144,52 +195,54 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, bDidFault, failSpeed, 
         ' turn off our motor drivers
         wheel.stop()
 
-PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed) | bDidFault, bNoMovement
+PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed): bDidSpin, end_mV | bDidFault, bDidMove
 ' test these offsets speed to see if current is best
+    bDidSpin := FALSE
     wheel.testResetMaxValues()
-    debug(" ----------------------- ")
+    debug(" ======================= ")
+    debug("* OFFSET pass(", udec_(ofsPassNbr), "), ", udec(newOffsetInDegr))
     wheel.testSetFwdRevOffsets(newOffsetInDegr, bFwdIsInverse)
     debug(" ----------------------- ")
-    debug("* OFFSET pass(", udec_(passNbr), "), ", udec(newOffsetInDegr))
-    bDidFault, bNoMovement := evalSpeed(speed)
-    if bNoMovement
+    bDidFault, bDidMove, end_mV := evalSpeed(speed)
+    if not bDidMove
         debug(" -  Didn't move ", udec(speed))
-    if bDidFault or not bNoMovement
+    else
+        bDidSpin := TRUE
+    if bDidFault or bDidMove
         wheel.resetTracking()
+    if not bDidFault
+        debug(" -  PASS #", udec_(ofsPassNbr), " - OFS ", udec_(newOffsetInDegr), ", mV:", udec_(end_mV))
+    else
+        debug(" -  PASS #", udec_(ofsPassNbr), " - OFS ", udec_(newOffsetInDegr), ", FAULT")
+        debug("  ")
 
-    passNbr++
-    debug("   ")
-    debug(" ======================= ")
-    debug("   8 sec...")
-    waitms(8_000) ' slight delay between passes
+    ofsPassNbr++
 
-PRI evalSpeed(testSpd) : bDidFault, bNoMovement | endMaxRPM, endMaxTics
+PRI evalSpeed(testSpd): bDidFault, bDidMove, end_mV | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
     clearFault()
-    debug("   ")
 
+    debug("  ")
     debug("* TEST FWD pass(", udec_(passNbr), ")", udec(testSpd))
-    driveForwardToFail()
-    bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
-    bNoMovement := (endMaxRPM > 0) ? FALSE : TRUE
+    driveForwardAtSpeed(testSpd)
+    bDidFault, endMaxRPM, endMaxTics, end_mV := reportEndCondition()
+    bDidMove := (endMaxRPM > 0 and not bDidFault) ? TRUE : FALSE
     if bDidFault
         clearFault()
-        waitms(5_000) ' slight delay between FWD/REV
+        waitms(5_000) ' 5sec slight delay when clearing FAULT
 
-    debug("   ")
-
-    if not bDidFault and not bNoMovement
-        debug("* TEST REV pass(", udec_(passNbr++), ")", udec(testSpd))
-        waitms(2_000) ' slight delay between FWD/REV
-        drivereverseToFail()
-        bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
-        bNoMovement := (endMaxRPM > 0) ? FALSE : TRUE
+    ' if work on FWD then test REV
+    if not bDidFault and bDidMove
+        debug("* TEST REV pass(", udec_(passNbr), ")", udec(testSpd))
+        waitms(2_000) ' 2Sec delay between FWD/REV
+        driveReverseAtSpeed(testSpd)
+        bDidFault, endMaxRPM, endMaxTics, end_mV := reportEndCondition()
+        bDidMove := (endMaxRPM > 0 and not bDidFault) ? TRUE : FALSE
         if bDidFault
             clearFault()
-            waitms(5_000) ' slight delay between FWD/REV
-        debug("   ")
+            waitms(5_000) ' 5sec slight delay when clearing FAULT
 
-    debug(" --- ")
+    passNbr++
 
 
 VAR
@@ -199,6 +252,7 @@ VAR
     LONG    maxX
     LONG    maxY
     LONG    passNbr
+    LONG    ofsPassNbr
     LONG    highestRPM
     LONG    highestTics
     LONG    repeatCt
@@ -211,19 +265,48 @@ PRI clearFault() | bDidFault
     wheel.resetTracking()
     wheel.testResetMaxValues()
 
-    if wheel.isFaulted()
+    if wheel.isFaultSignal()
         debug("S clearFault()")
         wheel.testResetFault()
+        wheel.clearFaultSignal()                        ' extra in case it didn't??
 
-PRI reportEndCondition() : bDidFault, endMaxRPM, endMaxTics
+PRI reportEndCondition(): bDidFault, endMaxRPM, endMaxTics, max_mV
     ' just finished pass which ended in NOT fault or fault
     '  report max RPM and max Tics
     '  report fault or not
-    endMaxRPM, endMaxTics, bDidFault, _ := wheel.testGetResults()
-    debug("* RPT: ", udec(endMaxRPM), udec(endMaxTICs), sdec(bDidFault))
+    endMaxRPM, endMaxTics, bDidFault, max_mV := wheel.testGetResults()
+    debug("* RPT: ", udec(endMaxRPM), udec(endMaxTICs), sdec(bDidFault), udec(max_mV))
     debug("  ")
 
-PRI driveForwardToFail() : bBadStart | bDidFault
+PRI driveForwardAtSpeed(speed): bBadStart | bDidFault
+    bBadStart := FALSE
+    bDidFault := waitUntilMotorReady()
+    if not bDidFault
+        ' now drive!
+        wheel.stopAfterTime(10, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.testDriveAtMotorIncrement(speed)
+
+        bDidFault, bBadStart := waitUntilMotorDone()
+        'wheel.driveAtPower(0)                      ' no need to force STOPwill timeout
+    else
+        debug("*E motor not ready")
+
+PRI driveReverseAtSpeed(speed): bBadStart | bDidFault
+    bBadStart := FALSE
+    bDidFault := waitUntilMotorReady()
+    if not bDidFault
+        ' now drive!
+        wheel.stopAfterTime(10, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.testDriveAtMotorIncrement(0 - speed)
+
+        bDidFault, bBadStart := waitUntilMotorDone()
+        'wheel.driveAtPower(0)                      ' no need to force STOPwill timeout
+
+    else
+        debug("*E motor not ready")
+
+
+PRI driveForwardToFail(): bBadStart | bDidFault
     bBadStart := FALSE
     bDidFault := waitUntilMotorReady()
     if not bDidFault
@@ -238,7 +321,7 @@ PRI driveForwardToFail() : bBadStart | bDidFault
         debug("*E motor not ready")
 
 
-PRI driveReverseToFail() : bBadStart | bDidFault
+PRI driveReverseToFail(): bBadStart | bDidFault
     bBadStart := FALSE
     bDidFault := waitUntilMotorReady()
     if not bDidFault
@@ -253,7 +336,7 @@ PRI driveReverseToFail() : bBadStart | bDidFault
         debug("*E motor not ready")
 
 
-PRI waitUntilMotorReady() : bDidFault
+PRI waitUntilMotorReady(): bDidFault
     bDidFault := FALSE
     if wheel.isReady() == false
         'debug("* wait motor ready...")
@@ -271,7 +354,7 @@ PRI waitUntilMotorReady() : bDidFault
     '    debug("* Motor ready, let's drive!")
 
 
-PRI waitUntilMotorDone() : bDidFault, bBadStart
+PRI waitUntilMotorDone(): bDidFault, bBadStart
     bDidFault := FALSE
     bBadStart := FALSE
     if not wheel.isTurning()
@@ -331,7 +414,7 @@ CON { license }
  -------------------------------------------------------------------------------------------------
   MIT License
 
-  Copyright (c) 2022 Iron Sheep Productions, LLC
+  Copyright (c) 2023 Iron Sheep Productions, LLC
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal

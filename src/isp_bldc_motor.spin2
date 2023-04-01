@@ -262,7 +262,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
     tvMaxMPH_x10 := 0
     tvMaxkPH_x10 := 0
 
-    userSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
+    eUserSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
 
     debug("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(adc_fram), udec_long(duty_min), udec_long(duty_max))
     debug("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks), udec_long(motr_ctcks))
@@ -281,6 +281,12 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
     ' set the mode now used by the driver to condition things (current-sense scaling, etc.)
     eDetectedBoard := getBoardType()
 
+    rSenseForBoard := VALUE_NOT_SET
+    if eDetectedBoard == REV_A
+        rSenseForBoard := F_REV_A_RSENSE
+    elseif eDetectedBoard == REV_B
+        rSenseForBoard := F_REV_B_RSENSE
+
 
 PUB startSenseCog() : ok
 '' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
@@ -290,8 +296,9 @@ PUB startSenseCog() : ok
 
 VAR { * user request values * }
 
-    LONG    userSelectedVolts   ' remember the value specified by the user
-    LONG    eUserDetectionMode   ' remember the value specified by the user
+    LONG    eUserSelectedVolts  ' remember the value specified by the user
+    LONG    fMotorVolts         ' float representation of user selected volts (used internally)
+    LONG    eUserDetectionMode  ' remember the value specified by the user
     LONG    eDetectedBoard      ' remember the board type detected (or overridden)
     LONG    bUserForced         ' T/F: where T means user is NOT using autodetect
     ' limits based on user voltage
@@ -549,10 +556,10 @@ PUB getPower() : nPower
 '' Returns the last specified power value [-100 thru +100] for motor (will be zero if the motor is stopped).
     nPower := motorPower
 
-PUB getCurrent() : nAmps, nWatts
+PUB getCurrent() : fAmps, fWatts
 '' Returns the latest current sense values
-    nAmps := sense_i
-    nWatts := 0
+    fAmps := FLOAT(tv_mA) /. F_SCALE_AMPS
+    fWatts := FLOAT(tv_mW) /. F_SCALE_WATTS
 
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
@@ -675,7 +682,9 @@ PUB isFaultSignal() : bState
 PUB clearFaultSignal()
 '' reset top-level fault indicator
 ' used by two-wheel steering
-    fault := false
+    if fault
+        debug("MTR: did reset fault ind.")
+        fault := false
 
 CON { --- PUBLIC Utility Methods --- }
 
@@ -755,10 +764,10 @@ PUB hallTicInfoForMotor() : degreesPerTic, ticsPerRotation
         ' rotations = ticks / 90
         ticsPerRotation := 90
 
-CON { --- TEST-USE ONLY Methods --- }
+CON ' --- TEST-USE ONLY Methods ---
 
 PUB testSetLimit(newMaxLimit)
-'' TEST set override limit so we can characterize motor
+'' TESTING USE: set override limit so we can characterize motor
     maxFwdIncreAtPwr := newMaxLimit
     maxRevIncreAtPwr := 0 - newMaxLimit
     minFwdIncreAtPwr := 0
@@ -766,7 +775,7 @@ PUB testSetLimit(newMaxLimit)
     debug("MOT: new limits: ", sdec(maxFwdIncreAtPwr), sdec(maxRevIncreAtPwr))
 
 PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) | fwdDegrees, revDegrees
-'' TEST set offsets so we can characterize motor current draw
+'' TESTING USE: set offsets so we can characterize motor current draw
     if bFwdIsInverse
         ' forward is the inverse of reverse (ex. docoEng.com motor)
         fwdDegrees := 360 - newOfsDegr
@@ -781,19 +790,27 @@ PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) | fwdDegrees, revDegrees
     debug("MOT:  ", sdec(fwdDegrees), uhex_long(offset_fwd))
     debug(" (tst)", sdec(revDegrees), uhex_long(offset_rev))
 
-PUB testGetResults() : nMaxRPM, maxTics, bDidFault
-'' TEST return results of test pass
+PUB testDriveAtMotorIncrement(motorIncre)
+'' TESTING USE: set target accelleration to fix value
+    setTargetAccel(motorIncre)
+
+PUB testGetResults() : nMaxRPM, maxTics, bDidFault, max_mV
+'' TESTING USE: return results of test pass
     nMaxRPM := maxRpm
     maxTics := tvMaxCntsInSec
     bDidFault := fault
+    max_mV := tvMaxSenseI
     'debug("MOT: result: ", udec(nMaxRPM), udec(maxTics), sdec(bDidFault))
 
 PUB testResetFault() | bDidFault
-'' TEST reset our fault indicator that we tripped during test
+'' TESTING USE: reset our fault indicator that we tripped during test
     if fault
-        fault := FALSE
-        setTargetAccel(0)
+        debug("MOT: reset fault...")
+        ' setTargetAccel(0) . Nope, our motor run will timeout
+        clearFaultSignal()
+
         waitms(30) ' values will clear in 20ms but leave extra time to occur
+
         if not isStopped()
             debug("MOT: wait until motor resets...")
             repeat
@@ -803,16 +820,17 @@ PUB testResetFault() | bDidFault
                     waitms(2)
             if fault
                 debug("* WAIT-fault-reset ended still-FAULT!")
+                clearFaultSignal()
     else
         debug("mE testResetFault() NOT faulted!?")
 
 PUB testResetMaxValues()
-'' TEST reset our fault indicator that we tripped during test
+'' TESTING USE: reset our fault indicator that we tripped during test
     bResetSenseData := TRUE
-    waitms(200) ' values will clear in 125ms
+    waitms(200) ' values should clear in 125ms
 
 
-CON { --- PRIVATE Utility Methods --- }
+CON ' --- PRIVATE (Utility) Methods ---
 
 PRI map(inValue, inMin, inMax, outMin, outMax) : nResult | slope
 ' Maps inValue in range inMin..inMax to new value in range outMin..outMax
@@ -840,7 +858,7 @@ PRI map(inValue, inMin, inMax, outMin, outMax) : nResult | slope
 
 PRI incrementForPower(nUserPower) : nMotorIncre
 ' translate -100 to +100 value to Incre value needed by motor
-    if userSelectedVolts == VALUE_NOT_SET
+    if eUserSelectedVolts == VALUE_NOT_SET
         abort
 
     if nUserPower < 0
@@ -863,7 +881,7 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
         elseif user.DRIVE_VOLTAGE == PWR_11p1V
             ofsDegr := 53   ' 52-54 best, 55 fault?! (Verif)
         elseif user.DRIVE_VOLTAGE == PWR_12p0V
-            ofsDegr := 53   ' 52-54 best (Verif)
+            ofsDegr := 18   ' 52-54 best (Verif)
         elseif user.DRIVE_VOLTAGE == PWR_14p8V
             ofsDegr := 53   ' 51-55 best (Verif)
         elseif user.DRIVE_VOLTAGE == PWR_18p5V
@@ -912,7 +930,7 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
     if selectedPower == INVALID_VOLTAGE
         abort
 
-    userSelectedVolts := VALUE_NOT_SET  ' preset
+    eUserSelectedVolts := VALUE_NOT_SET  ' preset
     minFwdIncreAtPwr := VALUE_NOT_SET
     maxFwdIncreAtPwr := VALUE_NOT_SET
     minRevIncreAtPwr := VALUE_NOT_SET
@@ -990,19 +1008,42 @@ PRI confgurePowerLimits(userVoltage) | selectedPower
                 debug("*???* Unknown: ", sdec_long(selectedPower))
                 abort   ' SHOULD NEVER get here!
 
+    fMotorVolts := 0.0  ' default
     if maxFwdIncreAtPwr <> VALUE_NOT_SET
-        userSelectedVolts := selectedPower
+        eUserSelectedVolts := selectedPower
+        fMotorVolts := motorVoltage(selectedPower)
         minFwdIncreAtPwr := 544_628           ' anything below yields NO rotation
         minRevIncreAtPwr := 0 - minFwdIncreAtPwr
-    debug("* EXIT 2 CFG ", sdec_long(userSelectedVolts))
+    debug("* EXIT 2 CFG ", sdec_long(eUserSelectedVolts))
 
 PRI setTargetAccel(nTgtIncr)
     targetIncre := nTgtIncr
     debug("-MOT- ", sdec_long(targetIncre))
     tvTargetIncreInM := nTgtIncr / 10_000
 
+PRI motorVoltage(eSelectedPower) : fVolts
+    CASE eSelectedPower
+        PWR_6p0V:
+            fVolts := 6.0
+        PWR_7p4V:
+            fVolts := 7.4
+        PWR_11p1V:
+            fVolts := 11.1
+        PWR_12p0V:
+            fVolts := 12.0
+        PWR_14p8V:
+            fVolts := 14.8
+        PWR_18p5V:
+            fVolts := 18.5
+        PWR_22p2V:
+            fVolts := 22.2
+        PWR_24p0V:
+            fVolts := 24.0
+        other:
+            debug("*???* Unknown: ", sdec_long(eSelectedPower))
+            abort   ' SHOULD NEVER get here!
 
-CON { --- HDMI Debug Support --- }
+CON ' --- HDMI Debug Support ---
 
 CON { Constants for HDMI Debug }
 
@@ -1046,8 +1087,8 @@ nextAddr2
     nameTitle3  BYTE    "Motor Rate(.1)",0
     name30      BYTE    "RPM",0
     name31      BYTE    "cts/sec",0
-    name32      BYTE    "f/s",0
-    name33      BYTE    "MPH",0
+    name32      BYTE    "mAmp",0
+    name33      BYTE    "mWatt",0
     name34      BYTE    "kM/H",0
     name35      BYTE    "mm/s",0
     name36      BYTE    "Ang/10k",0
@@ -1094,7 +1135,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pValsAr][nValsGrpOffset + 1] := @rpm
     LONG[@pValsAr][nValsGrpOffset + 2] := @cntsInSec
     LONG[@pValsAr][nValsGrpOffset + 3] := @deltaTicks
-    LONG[@pValsAr][nValsGrpOffset + 4] := @sense_i
+    LONG[@pValsAr][nValsGrpOffset + 4] := @sense_i_mV
     LONG[@pValsAr][nValsGrpOffset + 5] := @tvMaxSenseI
     LONG[@pValsAr][nValsGrpOffset + 6] := @tv360rpm_x10
 
@@ -1113,12 +1154,20 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pNamesAr][nValsGrpOffset + 6] := @name36
     LONG[@pValsAr][nValsGrpOffset + 0] := @maxRpm
     LONG[@pValsAr][nValsGrpOffset + 1] := @tvMaxCntsInSec
+    LONG[@pValsAr][nValsGrpOffset + 2] := @tv_mA
+    LONG[@pValsAr][nValsGrpOffset + 3] := @tv_mW
+    LONG[@pValsAr][nValsGrpOffset + 4] := @tvMaxkPH_x10
+    LONG[@pValsAr][nValsGrpOffset + 5] := @tvMaxMmPerSec_x10
+    LONG[@pValsAr][nValsGrpOffset + 6] := @tvTargetIncreInM
+{
+    LONG[@pValsAr][nValsGrpOffset + 0] := @maxRpm
+    LONG[@pValsAr][nValsGrpOffset + 1] := @tvMaxCntsInSec
     LONG[@pValsAr][nValsGrpOffset + 2] := @tvMaxFps_x10
     LONG[@pValsAr][nValsGrpOffset + 3] := @tvMaxMPH_x10
     LONG[@pValsAr][nValsGrpOffset + 4] := @tvMaxkPH_x10
     LONG[@pValsAr][nValsGrpOffset + 5] := @tvMaxMmPerSec_x10
     LONG[@pValsAr][nValsGrpOffset + 6] := @tvTargetIncreInM
-
+}
     ' tell our table size to reader
     nGrpOffset := 3
     LONG[@pTitlesAr][nGrpOffset] := DBG_MAX_VARS_IN_GROUP
@@ -1150,7 +1199,8 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
         debug("* =============")
 
 
-CON { -- TASK position tracking -- }
+CON ' -- TASK: position tracking --
+
 ' Sense Constants
     ' at 125 ms
     SENSE_LOOP_HZ = 8
@@ -1164,6 +1214,16 @@ CON { -- TASK position tracking -- }
   STACK_SIZE_LONGS = 48
   R360_WINDOW_SIZE = 5
   HALL_WINDOW_SIZE = SENSE_LOOP_HZ
+
+    ' shift 4 digits to left of decimal
+  F_SCALE_AMPS = 10_000.0
+  SCALE_AMPS = 10_000
+    ' shift 3 digits to left of decimal
+  F_SCALE_WATTS = 1_000.0
+  SCALE_WATTS = 1_000
+
+  F_REV_A_RSENSE = 5        ' .005 Ohms
+  F_REV_B_RSENSE = 3        ' .003 Ohms
 
 VAR { * sense buffer and stack arrays * }
     LONG    taskStack[STACK_SIZE_LONGS]
@@ -1181,6 +1241,8 @@ VAR { * sense buffer and stack arrays * }
     LONG    r360WinEntryCt
     LONG    r360degrPerSec
     LONG    r360WindowSum
+
+    LONG    rSenseForBoard
 
 PRI resetWindowAccumulators()
 ' reset our window accumulator data
@@ -1208,7 +1270,6 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
     pinfloat(TEST_ALL2_PINS)    ' set to inputs
     ' configure for quadrature A+B X=run continuous, reset Y
     pinstart(TEST_PIN_RP_SNS1, P_QUADRATURE | P_PLUS1_B, 0, 0)
-    'pinhigh(TEST_PIN_RP_SNS1)     ' enable
 '}
 
     repeat
@@ -1250,7 +1311,7 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
             ' Capture 360 Sensor data
             '
             r360degrPerSec := abs(rqpin(TEST_PIN_RP_SNS1) sar 2)  ' divide by 4 to get degrees
-            debug("MTR: ROT ", sdec(r360degrPerSec))
+            'debug("MTR: ROT ", sdec(r360degrPerSec))
             ' reset reader
             pinfloat(TEST_PIN_RP_SNS1)    ' set to input
             pinhigh(TEST_PIN_RP_SNS1)     ' set to output
@@ -1275,42 +1336,19 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
         hallWinIndex := (hallWinIndex + 1) +// HALL_WINDOW_SIZE         ' Increment the index, and wrap to 0 if it exceeds the window size
         if hallWinEntryCt < HALL_WINDOW_SIZE                            ' incr number of samples in sum until is window size
             hallWinEntryCt++
-        cntsInSec := hallWindowSum                                      ' moving sum
-        posTrkHallTicks += hallCntsIn8thSec
 
-        tvRpm_x10 := ((cntsInSec * 60) * 10) / hallTicsPerRotation
-        rpm := tvRpm_x10 / 10
-
-        tvMaxRpmIn10ths := max(tvRpm_x10, tvMaxRpmIn10ths)
-        maxRpm := tvMaxRpmIn10ths / 10
-        tvMaxCntsInSec := max(cntsInSec, tvMaxCntsInSec)
-
-        tvMaxSenseI := max(sense_i, tvMaxSenseI)
-
-        if user.MOTOR_TYPE == MOTR_6_5_INCH
-            ' pos is in hall-steps of 4Degr each.
-            ' circumference of wheel is in mm x10
-            '   degrees of rotation is cntsInSec * 4
-            '   number of rotations is degrees / 360
-            '   dist in mm is (circInMM_x10 * rotations) / 10
-            mmPerSec_x10 := (((cntsInSec * 4) * circInMM_x10) / 360)
-            ftPerSec_x10 := distConv.mmps2fps(mmPerSec_x10 * 10)
-            kmh_x10 := distConv.mmps2kmh(mmPerSec_x10 * 10)
-            mph_x10 := distConv.fps2mph(ftPerSec_x10)
-
-            tvMaxMmPerSec_x10 := max(mmPerSec_x10, tvMaxMmPerSec_x10)
-            tvMaxFps_x10 := max(ftPerSec_x10, tvMaxFps_x10)
-            tvMaxMPH_x10 := max(mph_x10, tvMaxMPH_x10)
-            tvMaxkPH_x10 := max(kmh_x10, tvMaxkPH_x10)
+        updateSenseData(hallCntsIn8thSec, hallWindowSum)                        ' used internally and by 2-wheel-steering
 
         ' if user set time/distance to stop then stop if we are past the time or distance
         if motorStopMSecs > 0
             timeNow := getms()
             if timeNow > motorStopMSecs
+                debug("-MOT- time limit reached")
                 setTargetAccel(0)
                 motorStopMSecs := 0 ' and clear user request
         elseif motorStopHallTicks > 0
             if posTrkHallTicks > motorStopHallTicks
+                debug("-MOT- distance limit reached")
                 setTargetAccel(0)
                 motorStopHallTicks := 0 ' and clear user request
 
@@ -1347,7 +1385,10 @@ PUB updateSenseData(nHallCntsIn8thSec, nHallWindowSum)
     maxRpm := tvMaxRpmIn10ths / 10
     tvMaxCntsInSec := max(cntsInSec, tvMaxCntsInSec)
 
-    tvMaxSenseI := max(sense_i, tvMaxSenseI)
+    tvMaxSenseI := max(sense_i_mV, tvMaxSenseI)
+    ' power calcs
+    tv_mA := sense_i_mV / rSenseForBoard
+    tv_mW :=  trunc(tv_mA *. fMotorVolts *. F_SCALE_WATTS) ' * SCALE is give me 3 digits to right of decimal
 
     if user.MOTOR_TYPE == MOTR_6_5_INCH
         ' pos is in hall-steps of 4Degr each.
@@ -1392,7 +1433,9 @@ PRI absDistanceInTics(newPos, priorPos) : nHallTics
             ' 9 -> 12 = 12 - 9 = abs(3) = 3
             nHallTics := abs(newPos - priorPos)
 
-DAT { --- MOTOR TYPE TABLES --- }
+CON ' --- The Motor driver ---
+
+DAT { MOTOR-TYPE TABLES }
 
 ' These table represent contants for use in BLDC pasm driver
 '  tables specific to a given motor are copied into pasm driver image
@@ -1460,9 +1503,7 @@ hltbAngl4k2 LONG    0           '-%000- can't happen - reverse-direction table
             LONG    0           '-%111- can't happen
 
 
-CON { --- The Motor driver --- }
-
-CON { driver interface Constants}
+CON { driver interface Constants }
 
     '  DCS_STOPPED          - motor is stopped
     '  DCS_SPIN_UP          - motor is ramping up to speed, then will be at AT_SPEED
@@ -1474,7 +1515,7 @@ CON { driver interface Constants}
     '
     #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP
 
-CON { driver internal Constants}
+CON { driver internal Constants }
 
 '44KHz seems to be sweetspot for DocoEng Motor
 '    FRAME   = 6_136             ' 44.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
@@ -1510,7 +1551,7 @@ VAR { * Data Structure for PASM Driver * }
     '
     ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
-    LONG    sense_u, sense_v, sense_w, sense_i  ' 4 sequential longs    returns data continually
+    LONG    sense_u_mV, sense_v_mV, sense_w_mV, sense_i_mV  ' 4 sequential longs    returns data continually
     LONG    hall, pos                           ' 2 sequential longs    returns data continually
     LONG    duty, err                           ' 2 sequential longs    returns data continually
     LONG    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
@@ -1537,6 +1578,8 @@ VAR { * Data for Motor Position Tracking * }
     LONG    tvMaxSenseI
     LONG    tv360rpm_x10
     LONG    tv360rpm
+    LONG    tv_mA      'aadddd = xx.dddd A
+    LONG    tv_mW     'wwwddd= www.ddd W
     '  --------------------------
     LONG    prioro8thSecPos
     LONG    mmPerSec_x10
@@ -1741,7 +1784,6 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     if_nz       jmp     #.notRqStop                         ' NO, not exception, check next
                 ' this is a stop request
                 cmp     drv_state_, #DCS_STOPPED    wz      ' Q: are we already stopped?
-    if_nz       cmp     drv_state_, #DCS_FAULTED    wz      ' Q: -or- FAULTED not doing anything?
     if_nz       jmp     #.newRqst                           ' NO, not stopped, go do stop!
                 jmp     #.endRqst                           ' YES, motor at STOP, just exit (w/o increment)
 .notRqStop
@@ -2035,7 +2077,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     '       keep our error rate low...
     ' -------------------------------------------------------------------------
                 getct   drvrSrtTix                  ' remember when we started this loop
-                'addct2  drvrSrtTix, motr_ctcks_     '   add in next time we need to run
+                'addct2  drvrSrtTix, motr_ctcks_    '   add in next time we need to run
 
                 call    #.wait4adc                  ' allow ADC rest period (wait for sample ready)
                 rdpin   sense_u_, pin_adc_u_i           ' pin samples done, read them
@@ -2057,7 +2099,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
 
                 sub     sense_i_, gio_levels+3
                 muls    sense_i_, scl_levels+3
-                sar     sense_i_, #11
+                sar     sense_i_, #11               ' reduced to milliVolts
 
                 mov     tmpY, duty_                 ' feed three CORDIC operations to get phase drive levels
                 shr     tmpY, #4

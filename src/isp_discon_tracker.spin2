@@ -1,0 +1,208 @@
+'' =================================================================================================
+''
+''   File....... isp_discon_tracker.spin2
+''   Purpose.... Discontiguous Range Tracker
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2023 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Mar 2023
+''   Updated.... 31 Mar 2023
+''
+'' Oh, and I'm a Blynk: a k-pop Blackpink fandom member and today is Jisoo's Solo Album release day!
+'' =================================================================================================
+
+CON { internal constants }
+
+    MAX_SPAN_ENTRIES = 10
+    LONGS_PER_SPAN = 4
+
+' indexes into SPAN entry fields
+#0, IDX_START, IDX_END, IDX_MIN_MV, IDX_MAX_MV
+
+
+    MAX_OFS_ENTRIES = 45
+    LONGS_PER_OFS = 2
+
+' indexes into OFS entry fields
+#0, IDX_OFS_OFFSET, IDX_OFS_MV
+
+DAT { class variables }
+
+    spanEntries     LONG    0[MAX_SPAN_ENTRIES * LONGS_PER_SPAN]
+    nbrSpanEntries  LONG    0
+    rcdCount        LONG    0
+
+    offsetEntries   LONG    0[MAX_OFS_ENTRIES * LONGS_PER_OFS]
+    nbrOfsEntries   LONG    0
+
+VAR { Instance Variables }
+
+PUB null()
+
+'' This is not a top-level object
+
+CON ' ---- Working SPANs TRACKER ----
+
+PUB addSpan(offset, mVolt, stepWidth) | pEntry, minOffset, maxOffset, bFillNewEntry, nIdx
+'' Add new entry or extend entry if overlaps
+    minOffset := offset - (stepWidth - 1)
+    maxOffset := offset + (stepWidth - 1)
+    debug("TRK: REC #", udec_(++rcdCount), " ofs=", sdec_(offset), ", mV=", udec_(mVolt))
+    bFillNewEntry := TRUE
+    if nbrSpanEntries > 0
+        ' determine if overlaps existing entry
+        repeat nIdx from 0 to nbrSpanEntries - 1
+            pEntry := @LONG[@spanEntries][nIdx * LONGS_PER_SPAN]
+            ' Q: do we overlap with this entry
+            if not minOffset > LONG[pEntry][IDX_END] and not maxOffset < LONG[pEntry][IDX_START]
+                ' yes! merge them
+                bFillNewEntry := FALSE
+                quit    ' break, have answer, get outta here
+
+    if bFillNewEntry
+        ' now fill the new entry
+        pEntry := @LONG[@spanEntries][nbrSpanEntries * LONGS_PER_SPAN]
+        LONG[pEntry][IDX_START] := minOffset
+        LONG[pEntry][IDX_END] := maxOffset
+        LONG[pEntry][IDX_MIN_MV] := mVolt
+        LONG[pEntry][IDX_MAX_MV] := mVolt
+        nbrSpanEntries++
+    else
+        ' else extend existing entry
+        if minOffset <= LONG[pEntry][IDX_END]
+            ' overlaps right edge - replace max
+            LONG[pEntry][IDX_END] := maxOffset
+        else
+            ' overlaps left edge - replace min
+            LONG[pEntry][IDX_START] := minOffset
+        ' now update our range of mVolt values for this entry
+        if mVolt < LONG[pEntry][IDX_MIN_MV]
+            ' have new minimum!
+            LONG[pEntry][IDX_MIN_MV] := mVolt
+        elseif mVolt > LONG[pEntry][IDX_MAX_MV]
+            ' have new maximum!
+            LONG[pEntry][IDX_MAX_MV] := mVolt
+
+    showAllSpanEntries()
+
+PUB spanCount() : nbrSpans
+'' Return count of discontiguous spans on file
+    nbrSpans := nbrSpanEntries
+
+PUB offsetsForSpan(spanIdx) : minOffset, maxOffset | pEntry
+'' Return the start and end values of given span
+    if spanIdx < nbrSpanEntries
+        pEntry := @LONG[@spanEntries][spanIdx * LONGS_PER_SPAN]
+        minOffset := LONG[pEntry][IDX_START]
+        maxOffset := LONG[pEntry][IDX_END]
+    else
+        ' no such span!
+        debug("EE Invalid span index (", sdec_(spanIdx), ") - must be [0-", sdec_(nbrSpanEntries-1), "]")
+        minOffset := maxOffset := -1
+
+CON ' ---- Working Offsets TRACKER ----
+
+PUB addWorkingOffset(offset, mVolt) | pEntry
+'' Add new entry with rating
+    ' now fill the new entry
+    debug("TRK ofs: REC #", udec_(nbrOfsEntries + 1), " ofs=", sdec_(offset), ", mV=", udec_(mVolt))
+    pEntry := @LONG[@offsetEntries][nbrOfsEntries * LONGS_PER_OFS]
+    LONG[pEntry][IDX_OFS_OFFSET] := offset
+    LONG[pEntry][IDX_OFS_MV] := mVolt
+    showOfsEntry(nbrOfsEntries, pEntry)
+    nbrOfsEntries++
+
+PUB replaceWorkingOffset(offset, mVolt) | pEntry, ofsIdx, nOffset, prior_mV
+'' replace Existing entry rating with new rating
+    if nbrOfsEntries > 0
+        repeat ofsIdx from 0 to nbrOfsEntries - 1
+            pEntry := @LONG[@offsetEntries][ofsIdx * LONGS_PER_OFS]
+            nOffset := LONG[pEntry][IDX_OFS_OFFSET]
+            if nOffset == offset
+                prior_mV := LONG[pEntry][IDX_OFS_MV]
+                LONG[pEntry][IDX_OFS_MV] := mVolt
+                debug("TRK ofs: REC #", udec_(ofsIdx + 1), " ofs=", sdec_(offset), ", mV=", udec_(prior_mV), " -> ", udec_(mVolt))
+                quit    ' made change, get outta here!
+
+PUB offsetsCount() : nbrOffsets
+'' Return count of working offsets on file
+    nbrOffsets := nbrOfsEntries
+
+PUB valuesForOffset(ofsIdx) : nOffset, max_mV | pEntry
+'' Return the start and end values of given span
+    if ofsIdx < nbrOfsEntries
+        pEntry := @LONG[@offsetEntries][ofsIdx * LONGS_PER_OFS]
+        nOffset := LONG[pEntry][IDX_OFS_OFFSET]
+        max_mV := LONG[pEntry][IDX_OFS_MV]
+    else
+        ' no such OFS!
+        debug("EE Invalid ofs index (", sdec_(ofsIdx), ") - must be [0-", sdec_(nbrOfsEntries-1), "]")
+        nOffset := max_mV := -1
+
+PUB isWorkingOffsetChecked(offset) : bIsChecked | ofsIdx, pEntry, nOffset
+'' Return T/F where T means we aleady have mV for this offset
+    bIsChecked := FALSE
+    if nbrOfsEntries > 0
+        repeat ofsIdx from 0 to nbrOfsEntries - 1
+            pEntry := @LONG[@offsetEntries][ofsIdx * LONGS_PER_OFS]
+            nOffset := LONG[pEntry][IDX_OFS_OFFSET]
+            if nOffset == offset
+                bIsChecked := TRUE
+                quit    ' have answer, get outta here!
+
+CON ' ---- Private (Utility) Methods ----
+
+PRI showAllSpanEntries() | nIdx, pEntry
+' show all entries over debug
+        repeat nIdx from 0 to nbrSpanEntries - 1
+            pEntry := @LONG[@spanEntries][nIdx * LONGS_PER_SPAN]
+            showSpanEntry(nIdx, pEntry)
+
+PRI showSpanEntry(nIdx, pEntry) | minOfs, maxOfs, min_mV, max_mV
+' show single entry over debug
+    minOfs := LONG[pEntry][IDX_START]
+    maxOfs := LONG[pEntry][IDX_END]
+    min_mV := LONG[pEntry][IDX_MIN_MV]
+    max_mV := LONG[pEntry][IDX_MAX_MV]
+    debug("TRK: SPAN #", udec_(nIdx + 1), " ofs [", sdec_(minOfs), ":", sdec_(maxOfs), "], mV [", sdec_(min_mV), ":", sdec_(max_mV), "]")
+
+PRI showAllOfsEntries() | nIdx, pEntry
+' show all entries over debug
+        repeat nIdx from 0 to nbrOfsEntries - 1
+            pEntry := @LONG[@offsetEntries][nIdx * LONGS_PER_OFS]
+            showOfsEntry(nIdx, pEntry)
+
+PRI showOfsEntry(nIdx, pEntry) | nOfs, max_mV
+' show single entry over debug
+    nOfs := LONG[pEntry][IDX_OFS_OFFSET]
+    max_mV := LONG[pEntry][IDX_OFS_MV]
+    debug("TRK: OFS #", udec_(nIdx + 1), " ofs [", sdec_(nOfs), "], mV [", sdec_(max_mV), "]")
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2023 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}
