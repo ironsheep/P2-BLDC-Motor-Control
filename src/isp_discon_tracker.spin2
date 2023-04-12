@@ -20,7 +20,6 @@ CON { internal constants }
 ' indexes into SPAN entry fields
 #0, IDX_START, IDX_END, IDX_MIN_MV, IDX_MAX_MV
 
-
     MAX_OFS_ENTRIES = 45
     LONGS_PER_OFS = 2
     MAX_OFS_MVS = 2
@@ -28,8 +27,18 @@ CON { internal constants }
 ' indexes into OFS entry fields
 #0, IDX_OFS_OFFSET, IDX_OFS_MV
 
-DAT { class variables }
+    MAX_CURR4SPD_ENTRIES = 15
+    LONGS_PER_CURR4SPD = 3
 
+' indexes into currentForSpeed entry fields
+#0, IDX_SPD_OFS, IDX_SPD_SPEED, IDX_SPD_MAX_MV
+
+    MAX_TEST_OFFSETS = 30
+
+
+DAT { class variables }
+'{
+    ' LIVE
     spanEntries     LONG    0[MAX_SPAN_ENTRIES * LONGS_PER_SPAN]
     nbrSpanEntries  LONG    0
     rcdCount        LONG    0
@@ -37,8 +46,66 @@ DAT { class variables }
     offsetEntries   LONG    0[MAX_OFS_ENTRIES * LONGS_PER_OFS]
     nbrOfsEntries   LONG    0
     ofsMin_mVolt    LONG    99_999[MAX_OFS_MVS]
+'}
 
-VAR { Instance Variables }
+    testEntries     LONG    0[MAX_TEST_OFFSETS]
+    nbrTestEntries  LONG    0
+
+    mvSpeedEntries     LONG    0[MAX_CURR4SPD_ENTRIES * LONGS_PER_CURR4SPD]
+    mvSpeedEntryCount  LONG    0
+
+{
+    ' TESTING!
+    ' fixed data for testing later passes
+    spanEntries     LONG     4, 41, 1_471, 2_463
+                    LONG    43, 47, 2_470, 2_470
+    nbrSpanEntries  LONG    2
+    rcdCount        LONG    2
+
+    offsetEntries   LONG    6, 2_463
+                    LONG    9, 1_504
+                    LONG    12, 1_499
+                    LONG    15, 1_493
+                    LONG    18, 1_484
+                    LONG    21, 1_484
+                    LONG    24, 1_477
+                    LONG    27, 1_477
+                    LONG    30, 1_474
+                    LONG    33, 1_472
+                    LONG    36, 1_471
+                    LONG    39, 1_474
+                    LONG    45, 2_470
+                    LONG    4, 1_533
+                    LONG    5, 1_528
+                    LONG    7, 1_516
+                    LONG    8, 2_403
+                    LONG    10, 2_393
+                    LONG    11, 1_504
+                    LONG    13, 1_496
+                    LONG    14, 1_493
+                    LONG    16, 1_491
+                    LONG    17, 1_488
+                    LONG    19, 1_484
+                    LONG    20, 1_483
+                    LONG    22, 1_481
+                    LONG    23, 1_481
+                    LONG    25, 1_481
+                    LONG    26, 1_476
+                    LONG    28, 1_476
+                    LONG    29, 1_476
+                    LONG    31, 1_474
+                    LONG    32, 1_474
+                    LONG    34, 1_476
+                    LONG    35, 1_472
+                    LONG    37, 1_474
+                    LONG    38, 1_472
+                    LONG    41, 2_463
+    nbrOfsEntries   LONG    38
+    ofsMin_mVolt    LONG    1_471, 1_472
+
+
+'}
+'VAR { Instance Variables }
 
 PUB null()
 
@@ -165,6 +232,68 @@ PUB showAccumTables()
     debug("   ")
     debug("TRK ofs min_mV: REC ", udec_(MAX_OFS_MVS), " Entries")
     showAllMinVEntries()
+    debug("   ")
+
+PUB offsetsToEvaluate(): pEntries, nCountEntries | nIdx, nMin_mVolt
+    ' zero return list
+    nbrTestEntries := 0
+    ' generate return list
+    repeat nIdx from 0 to MAX_OFS_MVS - 1
+        nMin_mVolt := LONG[@ofsMin_mVolt][nIdx]
+        ' add group to return list
+        addEntriesForMV(nMin_mVolt)
+
+    sortTestValues()
+
+    pEntries := @testEntries
+    nCountEntries := nbrTestEntries
+
+PUB addCurrentForSpeedAtOffset(end_mV, speed, offset) | pEntry
+'' Add new entry for speed
+    ' now fill the new entry
+    debug("TRK ofs: REC #", udec_(mvSpeedEntryCount + 1), " mV=", sdec_(end_mV), ", spd=", udec_(speed), ", ofs=", udec_(offset))
+    pEntry := @LONG[@mvSpeedEntries][mvSpeedEntryCount * LONGS_PER_CURR4SPD]
+    LONG[pEntry][IDX_SPD_OFS] := offset
+    LONG[pEntry][IDX_SPD_SPEED] := speed
+    LONG[pEntry][IDX_SPD_MAX_MV] := end_mV
+    showCurr4SpdEntry(mvSpeedEntryCount, pEntry)
+    mvSpeedEntryCount++
+
+DAT
+
+    spdCount    LONG    0
+    spd_mVMin   LONG    0
+    spdAvg      LONG    0
+    spdSum      LONG    0
+
+PUB showCurrentAtSpeedTables() | nIdx, pEntry, testIdx, offset, spdOfs
+' show all entries via debug
+    debug("   ")
+    repeat testIdx from 0 to nbrTestEntries - 2
+        offset := LONG[@testEntries][testIdx]
+        debug("---- test #", udec_(testIdx + 1), " ofs [", sdec_(offset), "] ----")
+        ' reset stats
+        spdCount := spdSum := spdAvg := 0
+        spd_mVMin := 99999
+        repeat nIdx from 0 to mvSpeedEntryCount - 1
+            pEntry := @LONG[@mvSpeedEntries][nIdx * LONGS_PER_CURR4SPD]
+            spdOfs := LONG[pEntry][IDX_SPD_OFS]
+            if spdOfs == offset
+                showCurr4SpdEntry(nIdx, pEntry)
+        debug("     test #", udec_(testIdx + 1), " ct=(", sdec_(spdCount), "), avg=(", sdec_(spdAvg), "), min=(", sdec_(spd_mVMin), ") ----")
+    debug("   ")
+
+PRI showCurr4SpdEntry(nIdx, pEntry) | nOfs, nSpeed, max_mVolt
+' show single entry via debug
+    nOfs := LONG[pEntry][IDX_SPD_OFS]
+    nSpeed := LONG[pEntry][IDX_SPD_SPEED]
+    max_mVolt := LONG[pEntry][IDX_SPD_MAX_MV]
+    spdCount++
+    spdSum += max_mVolt
+    spdAvg := spdSum / spdCount
+    if max_mVolt < spd_mVMin
+        spd_mVMin := max_mVolt
+    debug("TRK: SPD #", udec_(nIdx + 1), " ofs [", sdec_(nOfs), "], mV [", sdec_(max_mVolt), "], spd [", sdec_(nSpeed), "]")
 
 CON ' ---- Private (Utility) Methods ----
 
@@ -205,15 +334,52 @@ PRI showSpanEntry(nIdx, pEntry) | minOfs, maxOfs, min_mVolt, max_mVolt
 
 PRI showAllOfsEntries() | nIdx, pEntry
 ' show all entries via debug
-        repeat nIdx from 0 to nbrOfsEntries - 1
-            pEntry := @LONG[@offsetEntries][nIdx * LONGS_PER_OFS]
-            showOfsEntry(nIdx, pEntry)
+    repeat nIdx from 0 to nbrOfsEntries - 1
+        pEntry := @LONG[@offsetEntries][nIdx * LONGS_PER_OFS]
+        showOfsEntry(nIdx, pEntry)
 
 PRI showOfsEntry(nIdx, pEntry) | nOfs, max_mVolt
 ' show single entry via debug
     nOfs := LONG[pEntry][IDX_OFS_OFFSET]
     max_mVolt := LONG[pEntry][IDX_OFS_MV]
     debug("TRK: OFS #", udec_(nIdx + 1), " ofs [", sdec_(nOfs), "], mV [", sdec_(max_mVolt), "]")
+
+PRI addEntriesForMV(mVolt) | ofsIdx, pEntry, nOffset, max_mVolt
+    'debug("* recording offsets for (", udec_(mVolt), ")")
+    repeat ofsIdx from 0 to nbrOfsEntries - 1
+        nOffset, max_mVolt := valuesForOffset(ofsIdx)
+        'debug("  -- checking ofs (", udec_(nOffset), ") mV (", sdec_(max_mVolt), ")")
+        if max_mVolt == mVolt
+            ' record this value
+            recordTestValue(nOffset)
+
+PRI recordTestValue(offset)
+    'debug("  -- found offset (", udec_(offset), ")")
+    if not isKnownTestValue(offset)
+        'debug("  -- new test #", udec_(nbrTestEntries+1), "(", udec_(offset), ")")
+        LONG[@testEntries][nbrTestEntries++] := offset
+
+PRI isKnownTestValue(offset) : bKnownStatus | testIdx
+    bKnownStatus := FALSE
+    if nbrTestEntries > 0
+        repeat testIdx from 0 to nbrTestEntries - 1
+            if LONG[@testEntries][testIdx] == offset
+                bKnownStatus := TRUE
+                quit    ' outta here we have our answer
+
+PRI sortTestValues() | testIdx, bNoChanges, tmpValue
+    repeat
+        bNoChanges := true
+        repeat testIdx from 0 to nbrTestEntries - 2
+            if LONG[@testEntries][testIdx] > LONG[@testEntries][testIdx+1]
+                ' swap entries
+                'debug("SWAP lt=[", udec_(LONG[@testEntries][testIdx]), "], rt=[", udec_(LONG[@testEntries][testIdx+1]), "]")
+                tmpValue := LONG[@testEntries][testIdx]
+                LONG[@testEntries][testIdx] := LONG[@testEntries][testIdx+1]
+                LONG[@testEntries][testIdx+1] := tmpValue
+                bNoChanges := FALSE
+    while bNoChanges == FALSE
+
 
 CON { license }
 {{

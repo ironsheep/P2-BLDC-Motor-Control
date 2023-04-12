@@ -43,6 +43,8 @@ See also:
 Latest Changes:
 
 ```
+10 April 2023
+- Completing RevB board support for both motors
 12 March 2023
 - Add new demo Dual-motor w/FlySky and HDMI debug out - used when upgrading dual wheel behavior
 10 March 2023

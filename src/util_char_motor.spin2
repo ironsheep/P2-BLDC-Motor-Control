@@ -50,6 +50,7 @@ CON { application io pins }
     HDMI_BASE_PIN       = tvDebug.PINS_P8_P15
 
     NOT_SET = -1
+    DEFAULT_OFFSET = 38
 
 OBJ { our Motor(s) }
 
@@ -78,6 +79,15 @@ DAT { run-time condition vars }
 
     prior_mV        LONG    0
     priorOfs        LONG    0
+
+    pEntries        LONG    0
+    nCountEntries   LONG    0
+    entryIdx        LONG    0
+
+    offsetThisPass  LONG    0
+
+    speedTable      LONG    100_000_000, 150_000_000, 200_000_000, 250_000_000
+    nbrSpeedEntries LONG    4
 
 PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDegr, bRuns, end_mV, spanIdx, srtOfst, endOffset, currOffset, min_mV
 '' DEMO Driving a single wheeled platform
@@ -118,75 +128,86 @@ PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDeg
         wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
         wheel.resetTracking()
 
+        firstWorkingOffset := DEFAULT_OFFSET
         ' Motor notes:
         ' --------------
         '  6.5" 30 pole, 12degr/pole(magnet),  4degr/hall tic, 3 hall tics/magnet
         ' Doco   8 pole, 45degr/pole(magnet), 15degr/hall tic, 3 hall tics/magnet
+        if ofsTrk.spanCount() == 0
+            ' ----------------------------------------------------------------------------
+            ' PASS 1: let's see if we find working offsets within 1st 90 degrees of rotation
+            '  and how many of them work
+            ofsPassNbr := 1
+            passNbr := 1
+            testSpeed := 50_000_000
+            bFwdIsInverse := (user.MOTOR_TYPE == wheel.MOTR_DOCO_4KRPM) ? TRUE : FALSE
+            debug("  ")
+            debug(" ---------------- < * > ----------------")
+            debug("* Determine Offset: scan 1 to 90 degr, incr by 3")
+            'debug(" --- ")
+            repeat ofstInDegr from 3 to 90 step 3
+                bRuns, end_mV := evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
+                if bRuns
+                    ofsTrk.addSpan(ofstInDegr, end_mV, 3)
+                    ofsTrk.addWorkingOffset(ofstInDegr, end_mV)
+                    if firstWorkingOffset == DEFAULT_OFFSET
+                        firstWorkingOffset := ofstInDegr
+                    debug("   ")
+                else
+                    debug(" ----------------------- ")
+                    debug("   3 sec...")
+                    waitms(3_000) ' Nsec delay between passes - motor cool down
 
-        ' ----------------------------------------------------------------------------
-        ' PASS 1: let's see if we find working offsets within 1st 90 degrees of rotation
-        '  and how many of them work
-        ofsPassNbr := 1
-        passNbr := 1
-        testSpeed := 50_000_000
-        bFwdIsInverse := (user.MOTOR_TYPE == wheel.MOTR_DOCO_4KRPM) ? TRUE : FALSE
-        debug("  ")
-        debug(" ---------------- < * > ----------------")
-        debug("* Determine Offset: scan 1 to 90 degr, incr by 3")
-        'debug(" --- ")
-        repeat ofstInDegr from 3 to 90 step 3
-            bRuns, end_mV := evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
-            if bRuns
-                ofsTrk.addSpan(ofstInDegr, end_mV, 3)
-                ofsTrk.addWorkingOffset(ofstInDegr, end_mV)
-                debug("   ")
-            else
-                debug(" ----------------------- ")
-                debug("   3 sec...")
-                waitms(3_000) ' Nsec delay between passes - motor cool down
-
-        ' ----------------------------------------------------------------------------
-        ' PASS 2: within the ranges that worked, let's do discrete current-use checks
-        debug("  ")
-        debug(" ---------------- < * > ----------------")
-        debug("* Determine lowest current for each offset works")
-        spanIdx := ofsTrk.spanCount()
-        if spanIdx > 0
-            debug("* studying ", udec_(spanIdx), " span(s)")
-            spanIdx := 0    ' start from first!
-            repeat
-                srtOfst, endOffset := ofsTrk.offsetsForSpan(spanIdx)
-                debug("  -- Studying SPAN: ", udec_(srtOfst), " to ", udec_(endOffset))
-                repeat currOffset from srtOfst to endOffset step 1
-                        bRuns, end_mV := evalOffset(currOffset, bFwdIsInverse, testSpeed)
-                        if bRuns
-                            if ofsTrk.isWorkingOffsetChecked(currOffset) == TRUE
-                                priorOfs, prior_mV := ofsTrk.valuesForOffset(currOffset)
-                                if prior_mV > end_mV
-                                    ofsTrk.replaceWorkingOffset(currOffset, end_mV)
+            ' ----------------------------------------------------------------------------
+            ' PASS 2: within the ranges that worked, let's do discrete current-use checks
+            debug("  ")
+            debug(" ---------------- < * > ----------------")
+            debug("* Determine lowest current for each offset works")
+            spanIdx := ofsTrk.spanCount()
+            if spanIdx > 0
+                debug("* studying ", udec_(spanIdx), " span(s)")
+                spanIdx := 0    ' start from first!
+                repeat
+                    srtOfst, endOffset := ofsTrk.offsetsForSpan(spanIdx)
+                    debug("  -- Studying SPAN: ", udec_(srtOfst), " to ", udec_(endOffset))
+                    repeat currOffset from srtOfst to endOffset step 1
+                            bRuns, end_mV := evalOffset(currOffset, bFwdIsInverse, testSpeed)
+                            if bRuns
+                                if ofsTrk.isWorkingOffsetChecked(currOffset) == TRUE
+                                    priorOfs, prior_mV := ofsTrk.valuesForOffset(currOffset)
+                                    if prior_mV > end_mV
+                                        ofsTrk.replaceWorkingOffset(currOffset, end_mV)
+                                    else
+                                        debug("  -- keeping prior run: ofs=(", udec_(currOffset), "), mV=(", udec_(prior_mV), ")")
                                 else
-                                    debug("  -- keeping prior run: ofs=(", udec_(currOffset), "), mV=(", udec_(prior_mV), ")")
+                                    ofsTrk.addWorkingOffset(currOffset, end_mV)
+                                    debug("   ")
                             else
-                                ofsTrk.addWorkingOffset(currOffset, end_mV)
-                            debug("   ")
-                        else
-                            debug(" ----------------------- ")
-                            debug("   3 sec...")
-                            waitms(3_000) ' Nsec delay between passes - motor cool down
+                                debug(" ----------------------- ")
+                                debug("   3 sec...")
+                                waitms(3_000) ' Nsec delay between passes - motor cool down
 
-                ' are are more spans?
-                spanIdx++
-                if spanIdx >= ofsTrk.spanCount() - 1
-                    ' no, outta here!
-                    quit
-        else
-            debug("* EEEE no spans to study!!")
-
+                    ' are are more spans?
+                    spanIdx++
+                    if spanIdx >= ofsTrk.spanCount() - 1
+                        ' no, outta here!
+                        quit
+            else
+                debug("* EEEE no spans to study!!")
 
         ofsTrk.showAccumTables()
 
+
         ' ----------------------------------------------------------------------------
-        ' PASS 3: within the top 5 let's do discrete current use at speed checks
+        ' PASS 3: within the least-current offsets let's do discrete current use "at speed" checks
+        pEntries, nCountEntries := ofsTrk.offsetsToEvaluate()
+        'repeat entryIdx from 0 to nCountEntries - 1
+        '    debug("- entry #", udec_(entryIdx+1), ": ", udec_(LONG[pEntries][entryIdx]))
+        repeat entryIdx from 0 to nCountEntries - 1
+            offsetThisPass := LONG[pEntries][entryIdx]
+            evalOffsetAtSpeeds(offsetThisPass, bFwdIsInverse)
+
+        ofsTrk.showCurrentAtSpeedTables()
 
         ' TBA  let's add a reverse drive loop
         debug("* quit: all checked")
@@ -198,12 +219,22 @@ PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDeg
         ' turn off our motor drivers
         wheel.stop()
 
+PRI evalOffsetAtSpeeds(newOffsetInDegr, bFwdIsInverse) | speedIdx, testSpeed, bRuns, end_mV
+    repeat speedIdx from 0 to nbrSpeedEntries - 1
+        testSpeed := LONG[@speedTable][speedIdx]
+        bRuns, end_mV := evalOffset(newOffsetInDegr, bFwdIsInverse, testSpeed)
+        if bRuns
+            ofsTrk.addCurrentForSpeedAtOffset(end_mV, testSpeed, newOffsetInDegr)
+
+
 PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed): bDidSpin, end_mV | bDidFault, bDidMove
 ' test these offsets speed to see if current is best
     bDidSpin := FALSE
     wheel.testResetMaxValues()
     debug(" ======================= ")
     debug("* OFFSET pass(", udec_(ofsPassNbr), "), ", udec(newOffsetInDegr))
+    latestOffset := newOffsetInDegr
+    latestFwdInd := bFwdIsInverse
     wheel.testSetFwdRevOffsets(newOffsetInDegr, bFwdIsInverse)
     debug(" ----------------------- ")
     bDidFault, bDidMove, end_mV := evalSpeed(speed)
@@ -260,18 +291,59 @@ VAR
     LONG    highestTics
     LONG    repeatCt
 
+    LONG    firstWorkingOffset
+
+    LONG    latestOffset
+    LONG    latestFwdInd
+
+    LONG    saveOffset
+    LONG    saveFwdInd
+
 DAT
 
 passCt    LONG    0
 
-PRI clearFault() | bDidFault
+PRI clearFault()
     wheel.resetTracking()
     wheel.testResetMaxValues()
 
     if wheel.isFaultSignal()
         debug("S clearFault()")
         wheel.testResetFault()
-        wheel.clearFaultSignal()                        ' extra in case it didn't??
+        if wheel.isFaultSignal()
+            debug("S clearFault() 2nd")
+            ' poss recovery: push offset, make motor move some, restore offset
+            clearFaultByMotMove()
+            if wheel.isFaultSignal()
+                wheel.clearFaultSignal()                        ' extra in case it didn't??
+
+PRI clearFaultByMotMove() | bDidFault, bBadStart
+    if firstWorkingOffset <> DEFAULT_OFFSET
+        debug("S Jog at offset=(", udec_(firstWorkingOffset), ")")
+        ' push offset
+        saveOffset := latestOffset
+        saveFwdInd := latestFwdInd
+        ' set working offset
+        wheel.testSetFwdRevOffsets(firstWorkingOffset, latestFwdInd)
+
+        ' make motor move some
+        wheel.stopAfterTime(2, wheel.DTU_SEC)      ' set to hold at speed for 2 Sec
+        wheel.testDriveAtMotorIncrement(50_000_000)
+        ' wait for timeout or fail
+        bDidFault, bBadStart := waitUntilMotorDone()
+        if not bDidFault and not bBadStart
+            debug("S good jog!")
+        else
+            if bDidFault
+                debug("S jog end w/Fault !")
+            if bBadStart
+                debug("S jog end w/BadStart !")
+
+        ' pop  offset
+        latestOffset := saveOffset
+        latestFwdInd := saveFwdInd
+    else
+        debug("S can't jog - no offset!")
 
 PRI reportEndCondition(): bDidFault, endMaxRPM, endMaxTics, max_mV
     ' just finished pass which ended in NOT fault or fault
@@ -286,7 +358,7 @@ PRI driveForwardAtSpeed(speed): bBadStart | bDidFault
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
-        wheel.stopAfterTime(10, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.stopAfterTime(10, wheel.DTU_SEC)      ' set to hold at speed for 10 Sec
         wheel.testDriveAtMotorIncrement(speed)
 
         bDidFault, bBadStart := waitUntilMotorDone()
@@ -299,7 +371,7 @@ PRI driveReverseAtSpeed(speed): bBadStart | bDidFault
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
-        wheel.stopAfterTime(10, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.stopAfterTime(10, wheel.DTU_SEC)      ' set to hold at speed for 10 Sec
         wheel.testDriveAtMotorIncrement(0 - speed)
 
         bDidFault, bBadStart := waitUntilMotorDone()
