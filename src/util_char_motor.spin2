@@ -52,6 +52,10 @@ CON { application io pins }
     NOT_SET = -1
     DEFAULT_OFFSET = 38
 
+    DRIVE_FOR_JOG_SECS = 2
+    DRIVE_TO_FAIL_SECS = 15
+    DRIVE_AT_SPEED_SECS = 5
+
 OBJ { our Motor(s) }
 
     user        :   "isp_bldc_motor_userconfig"         ' driver configuration
@@ -62,6 +66,8 @@ OBJ { our Motor(s) }
 DAT { run-time condition vars }
 
     bUseHDMI        LONG   TRUE       ' set to TRUE to enable HDMI use/output
+
+    startSec        LONG    0
 
     nGroups         LONG    0
     pGroupTitles    LONG    0
@@ -77,7 +83,8 @@ DAT { run-time condition vars }
     voltage         LONG    0
     motor           LONG    0
 
-    prior_mV        LONG    0
+    priorFwd_mV        LONG    0
+    priorRev_mV        LONG    0
     priorOfs        LONG    0
 
     pEntries        LONG    0
@@ -89,8 +96,10 @@ DAT { run-time condition vars }
     speedTable      LONG    100_000_000, 150_000_000, 200_000_000, 250_000_000
     nbrSpeedEntries LONG    4
 
-PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDegr, bRuns, end_mV, spanIdx, srtOfst, endOffset, currOffset, min_mV
+PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDegr, bRuns, fwd_mV, rev_mV, spanIdx, srtOfst, endOffset, currOffset, min_mV
 '' DEMO Driving a single wheeled platform
+
+    startSec := getsec()    ' time we started this run
 
     ' start our HDMI debug output
     if bUseHDMI
@@ -146,10 +155,10 @@ PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDeg
             debug("* Determine Offset: scan 1 to 90 degr, incr by 3")
             'debug(" --- ")
             repeat ofstInDegr from 3 to 90 step 3
-                bRuns, end_mV := evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
+                bRuns, fwd_mV, rev_mV := evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
                 if bRuns
-                    ofsTrk.addSpan(ofstInDegr, end_mV, 3)
-                    ofsTrk.addWorkingOffset(ofstInDegr, end_mV)
+                    ofsTrk.addSpan(ofstInDegr, rev_mV, 3)
+                    ofsTrk.addWorkingOffset(ofstInDegr, fwd_mV, rev_mV)
                     if firstWorkingOffset == DEFAULT_OFFSET
                         firstWorkingOffset := ofstInDegr
                     debug("   ")
@@ -171,16 +180,16 @@ PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDeg
                     srtOfst, endOffset := ofsTrk.offsetsForSpan(spanIdx)
                     debug("  -- Studying SPAN: ", udec_(srtOfst), " to ", udec_(endOffset))
                     repeat currOffset from srtOfst to endOffset step 1
-                            bRuns, end_mV := evalOffset(currOffset, bFwdIsInverse, testSpeed)
+                            bRuns, fwd_mV, rev_mV := evalOffset(currOffset, bFwdIsInverse, testSpeed)
                             if bRuns
                                 if ofsTrk.isWorkingOffsetChecked(currOffset) == TRUE
-                                    priorOfs, prior_mV := ofsTrk.valuesForOffset(currOffset)
-                                    if prior_mV > end_mV
-                                        ofsTrk.replaceWorkingOffset(currOffset, end_mV)
+                                    priorOfs, priorFwd_mV, priorRev_mV := ofsTrk.valuesForOffset(currOffset)
+                                    if priorFwd_mV > fwd_mV or priorRev_mV > rev_mV
+                                        ofsTrk.replaceWorkingOffset(currOffset, fwd_mV, rev_mV)
                                     else
-                                        debug("  -- keeping prior run: ofs=(", udec_(currOffset), "), mV=(", udec_(prior_mV), ")")
+                                        debug("  -- keeping prior run: ofs=(", udec_(currOffset), "), FWDmV=(", udec_(priorFwd_mV), "), REVmV=(", udec_(priorRev_mV), ")")
                                 else
-                                    ofsTrk.addWorkingOffset(currOffset, end_mV)
+                                    ofsTrk.addWorkingOffset(currOffset, fwd_mV, rev_mV)
                                     debug("   ")
                             else
                                 debug(" ----------------------- ")
@@ -213,21 +222,29 @@ PUB main() | bDidFault, failSpeed, testSpeed, bDidMove, bFwdIsInverse, ofstInDeg
         debug("* quit: all checked")
         debug("  ")
 
+        showRunDuration()
+
         debug("* END TEST: holding for 30 secs...")
         waitms(30_000)   ' 30 seconds, then stop
 
         ' turn off our motor drivers
         wheel.stop()
 
-PRI evalOffsetAtSpeeds(newOffsetInDegr, bFwdIsInverse) | speedIdx, testSpeed, bRuns, end_mV
+PRI showRunDuration() | durationSec, minutes, seconds
+        durationSec := getsec() - startSec    ' duration of this run
+        minutes := durationSec / 60
+        seconds := durationSec - (minutes * 60)
+        debug("* END: after ", udec_(minutes), " minutes, ", udec_(seconds), " seconds")
+
+PRI evalOffsetAtSpeeds(newOffsetInDegr, bFwdIsInverse) | speedIdx, testSpeed, bRuns, fwd_mV, rev_mV
     repeat speedIdx from 0 to nbrSpeedEntries - 1
         testSpeed := LONG[@speedTable][speedIdx]
-        bRuns, end_mV := evalOffset(newOffsetInDegr, bFwdIsInverse, testSpeed)
+        bRuns, fwd_mV, rev_mV := evalOffset(newOffsetInDegr, bFwdIsInverse, testSpeed)
         if bRuns
-            ofsTrk.addCurrentForSpeedAtOffset(end_mV, testSpeed, newOffsetInDegr)
+            ofsTrk.addCurrentForSpeedAtOffset(rev_mV, testSpeed, newOffsetInDegr)
 
 
-PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed): bDidSpin, end_mV | bDidFault, bDidMove
+PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed): bDidSpin, fwd_mV, rev_mV | bDidFault, bDidMove
 ' test these offsets speed to see if current is best
     bDidSpin := FALSE
     wheel.testResetMaxValues()
@@ -237,7 +254,7 @@ PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed): bDidSpin, end_mV | bDidFa
     latestFwdInd := bFwdIsInverse
     wheel.testSetFwdRevOffsets(newOffsetInDegr, bFwdIsInverse)
     debug(" ----------------------- ")
-    bDidFault, bDidMove, end_mV := evalSpeed(speed)
+    bDidFault, bDidMove, fwd_mV, rev_mV := evalSpeed(speed)
     if not bDidMove
         debug(" -  Didn't move ", udec(speed))
     else
@@ -245,21 +262,21 @@ PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed): bDidSpin, end_mV | bDidFa
     if bDidFault or bDidMove
         wheel.resetTracking()
     if not bDidFault
-        debug(" -  PASS #", udec_(ofsPassNbr), " - OFS ", udec_(newOffsetInDegr), ", mV:", udec_(end_mV))
+        debug(" -  PASS #", udec_(ofsPassNbr), " - OFS ", udec_(newOffsetInDegr), ", FWDmV:", udec_(fwd_mV), ", REVmV:", udec_(rev_mV))
     else
         debug(" -  PASS #", udec_(ofsPassNbr), " - OFS ", udec_(newOffsetInDegr), ", FAULT")
         debug("  ")
 
     ofsPassNbr++
 
-PRI evalSpeed(testSpd): bDidFault, bDidMove, end_mV | endMaxRPM, endMaxTics
+PRI evalSpeed(testSpd): bDidFault, bDidMove, fwd_mV, rev_mV | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
     clearFault()
 
     debug("  ")
     debug("* TEST FWD pass(", udec_(passNbr), ")", udec(testSpd))
     driveForwardAtSpeed(testSpd)
-    bDidFault, endMaxRPM, endMaxTics, end_mV := reportEndCondition()
+    bDidFault, endMaxRPM, endMaxTics, fwd_mV := reportEndCondition()
     bDidMove := (endMaxRPM > 0 and not bDidFault) ? TRUE : FALSE
     if bDidFault
         clearFault()
@@ -270,7 +287,7 @@ PRI evalSpeed(testSpd): bDidFault, bDidMove, end_mV | endMaxRPM, endMaxTics
         debug("* TEST REV pass(", udec_(passNbr), ")", udec(testSpd))
         waitms(2_000) ' 2Sec delay between FWD/REV
         driveReverseAtSpeed(testSpd)
-        bDidFault, endMaxRPM, endMaxTics, end_mV := reportEndCondition()
+        bDidFault, endMaxRPM, endMaxTics, rev_mV := reportEndCondition()
         bDidMove := (endMaxRPM > 0 and not bDidFault) ? TRUE : FALSE
         if bDidFault
             clearFault()
@@ -326,8 +343,8 @@ PRI clearFaultByMotMove() | bDidFault, bBadStart
         ' set working offset
         wheel.testSetFwdRevOffsets(firstWorkingOffset, latestFwdInd)
 
-        ' make motor move some
-        wheel.stopAfterTime(2, wheel.DTU_SEC)      ' set to hold at speed for 2 Sec
+        ' jog: just make motor move a bit
+        wheel.stopAfterTime(DRIVE_FOR_JOG_SECS, wheel.DTU_SEC)      ' set to hold at speed for 2 Sec
         wheel.testDriveAtMotorIncrement(50_000_000)
         ' wait for timeout or fail
         bDidFault, bBadStart := waitUntilMotorDone()
@@ -358,7 +375,7 @@ PRI driveForwardAtSpeed(speed): bBadStart | bDidFault
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
-        wheel.stopAfterTime(10, wheel.DTU_SEC)      ' set to hold at speed for 10 Sec
+        wheel.stopAfterTime(DRIVE_AT_SPEED_SECS, wheel.DTU_SEC)      ' set to hold at speed for 10 Sec
         wheel.testDriveAtMotorIncrement(speed)
 
         bDidFault, bBadStart := waitUntilMotorDone()
@@ -371,7 +388,7 @@ PRI driveReverseAtSpeed(speed): bBadStart | bDidFault
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
-        wheel.stopAfterTime(10, wheel.DTU_SEC)      ' set to hold at speed for 10 Sec
+        wheel.stopAfterTime(DRIVE_AT_SPEED_SECS, wheel.DTU_SEC)      ' set to hold at speed for 10 Sec
         wheel.testDriveAtMotorIncrement(0 - speed)
 
         bDidFault, bBadStart := waitUntilMotorDone()
@@ -386,7 +403,7 @@ PRI driveForwardToFail(): bBadStart | bDidFault
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
-        wheel.stopAfterTime(15, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.stopAfterTime(DRIVE_TO_FAIL_SECS, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
         wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
 
         bDidFault, bBadStart := waitUntilMotorDone()
@@ -401,7 +418,7 @@ PRI driveReverseToFail(): bBadStart | bDidFault
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
-        wheel.stopAfterTime(15, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.stopAfterTime(DRIVE_TO_FAIL_SECS, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
         wheel.driveAtPower(-100)                      ' now go FWD at 100% pwr
 
         bDidFault, bBadStart := waitUntilMotorDone()
