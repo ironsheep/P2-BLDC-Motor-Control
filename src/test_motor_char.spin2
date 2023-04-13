@@ -18,8 +18,9 @@ CON { timing }
 
     ' SPECIAL for LOGGING on RPi
 '{
-    DEBUG_PIN_TX = 1
-    DEBUG_PIN_RX = 0
+    DEBUG_PIN_TX = 56
+    DEBUG_PIN_RX = 57
+    DEBUG_BAUD = 2_000_000
 '}
 
 CON { fixed io pins }
@@ -49,6 +50,10 @@ CON { application io pins }
 
     NOT_SET = -1
 
+    DRIVE_FOR_JOG_SECS = 2
+    DRIVE_TO_FAIL_SECS = 15
+    DRIVE_AT_SPEED_SECS = 15
+
 OBJ { our Motor(s) }
 
     user        :   "isp_bldc_motor_userconfig"     ' driver configuration
@@ -73,8 +78,12 @@ DAT { run-time condition vars }
     pGroupVarCts    LONG    0
     pGroupVars      LONG    0
 
+    startSec        LONG    0
+
 PUB main() | motorCog, senseCog, basePin, voltage, motor, limitValue, stepSize, stopVal, bNextLoop, bDidFault, subPass, failSpd, detectMode
 '' DEMO Driving a single wheeled platform
+
+    startSec := getsec()    ' time we started this run
 
     ' start our HDMI debug output
     if bUseHDMI
@@ -152,11 +161,19 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, limitValue, stepSize, 
 
         ' TBA  let's add a reverse drive loop
 
+        showRunDuration()
+
         debug("* END TEST: holding for 30 secs...")
         waitms(30000)   ' 30 seconds, then stop
 
         ' turn off our motor drivers
         wheel.stop()
+
+PRI showRunDuration() | durationSec, minutes, seconds
+        durationSec := getsec() - startSec    ' duration of this run
+        minutes := durationSec / 60
+        seconds := durationSec - (minutes * 60)
+        debug("* END: after ", udec_(minutes), " minutes, ", udec_(seconds), " seconds")
 
 PRI searchSpeedValues(fromSpd, toSpd, stepSpd) : bDidFault, goodSpd | nbrSteps, midStep, midSpd
 ' search left or right half of this range
@@ -253,13 +270,34 @@ DAT
 
 passCt    LONG    0
 
-PRI clearFault() | bDidFault
+PRI clearFault()
     wheel.resetTracking()
     wheel.testResetMaxValues()
 
-    if wheel.isFaulted()
+    if wheel.isFaultSignal()
         debug("S clearFault()")
         wheel.testResetFault()
+        if wheel.isFaultSignal()
+            debug("S clearFault() 2nd")
+            ' poss recovery: push offset, make motor move some, restore offset
+            clearFaultByMotMove()
+            if wheel.isFaultSignal()
+                wheel.clearFaultSignal()                        ' extra in case it didn't??
+
+PRI clearFaultByMotMove() | bDidFault, bBadStart
+
+    ' jog: just make motor move a bit
+    wheel.stopAfterTime(DRIVE_FOR_JOG_SECS, wheel.DTU_SEC)      ' set to hold at speed for 2 Sec
+    wheel.testDriveAtMotorIncrement(50_000_000)
+    ' wait for timeout or fail
+    bDidFault, bBadStart := waitUntilMotorDone()
+    if not bDidFault and not bBadStart
+        debug("S good jog!")
+    else
+        if bDidFault
+            debug("S jog end w/Fault !")
+        if bBadStart
+            debug("S jog end w/BadStart !")
 
 PRI reportEndCondition() : bDidFault, endMaxRPM, endMaxTics
     ' just finished pass which ended in NOT fault or fault
@@ -274,7 +312,7 @@ PRI driveForwardToFail() : bBadStart | bDidFault
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
-        wheel.stopAfterTime(15, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.stopAfterTime(DRIVE_AT_SPEED_SECS, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
         wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
 
         bDidFault, bBadStart := waitUntilMotorDone()
@@ -288,7 +326,7 @@ PRI driveReverseToFail() : bBadStart | bDidFault
     bDidFault := waitUntilMotorReady()
     if not bDidFault
         ' now drive!
-        wheel.stopAfterTime(15, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+        wheel.stopAfterTime(DRIVE_AT_SPEED_SECS, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
         wheel.driveAtPower(-100)                      ' now go FWD at 100% pwr
 
         bDidFault, bBadStart := waitUntilMotorDone()
