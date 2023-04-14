@@ -1,0 +1,340 @@
+'' =================================================================================================
+''
+''   File....... test_new_ramps.spin2
+''   Purpose.... Demonstrate working snippets of pasm2
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2023 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Mar 2023
+''   Updated.... 21 Mar 2023
+''
+'' =================================================================================================
+
+CON { timing }
+
+  CLK_FREQ = 270_000_000                                        ' system freq as a constant
+  _clkfreq = CLK_FREQ                                           ' set system clock
+
+    ' SPECIAL for LOGGING on RPi
+{
+    DEBUG_PIN_TX = 1
+    DEBUG_PIN_RX = 0
+'}
+
+CON { fixed io pins }
+
+  RX1      = 63  { I }                                          ' programming / debug
+  TX1      = 62  { O }
+
+  SF_CS    = 61  { O }                                          ' serial flash
+  SF_SCK   = 60  { O }
+  SF_SDO   = 59  { O }
+  SF_SDI   = 58  { I }
+
+OBJ { our Motor(s) }
+
+    user        :   "isp_bldc_motor_userconfig"     ' driver configuration
+    'tvDebug :   "isp_hdmi_debug"    ' the single BLDC motor
+    'wheel   :   "isp_bldc_motor"    ' the single BLDC motor
+    distConv    :   "isp_dist_utils"                ' distance conversion utils
+
+CON { driver interface Constants}
+
+    '  DCS_STOPPED          - motor is stopped
+    '  DCS_SPIN_UP          - motor is ramping up to speed, then will be at AT_SPEED
+    '  DCS_AT_SPEED         - motor is holding at speed
+    '  DCS_SPIN_DN          - motor is stopping, then will be at STOPPED
+    '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
+    '  DCS_FAULTED          - motor faulted (couldn't drive to requested speed)
+    '  DCS_ESTOP            - motor in emergency stop (external stop requested)
+    '
+    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP
+
+DAT
+    tStr            byte    "TRUE",0
+    fStr            byte    "false",0
+    circInMM_x10    long    0
+    tickInMM_x10    long    0
+
+VAR
+    long    testDriveState      ' motor state
+    long    testTargetIncr      ' desired motor increment
+    long    testDriveIncr       ' curr motor increment
+
+    long    duty_       ' curr motor drive value
+    long    angle_       ' curr motor drive value
+
+    long    drive_u_       ' curr motor drive value
+    long    drive_v_       ' curr motor drive value
+    long    drive_w_       ' curr motor drive value
+
+    long    raw_u_       ' curr cordic output value
+    long    raw_v_       ' curr cordic output value
+    long    raw_w_       ' curr cordic output value
+    long    minRaw
+    long    maxRaw
+CON
+
+    FRAME    = 6136             ' 43.96 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
+
+PUB main() | bResult, nLHS, nRHS, pStr, tgtIncr, drvIncr, drvState, outDrvState, outDrvIncr, rampDn, nAngle, vAngle, loopCt
+'' DEMO Run Snippets
+    debug("   ")
+
+    duty_ := 31_062
+    angle_ := -785_140_934
+
+    testDriveState := DCS_SPIN_DN
+    testDriveIncr := 270_000
+
+    testTargetIncr := 0
+
+    loopCt := 10
+    debug("* at ", sdec_long(testDriveIncr), " heading to ", sdec_long(testTargetIncr), ": ", zstr_(stringForDriveState(testDriveState)))
+
+    REPEAT
+        testDriveIncr, testDriveState := newRampDn(testTargetIncr, testDriveIncr, testDriveState)
+        debug("  -- ", sdec_long(testDriveIncr), ": ", zstr_(stringForDriveState(testDriveState)))
+        loopCt--
+    'WHILE testDriveIncr <> testTargetIncr and testDriveState <> DCS_AT_SPEED and loopCt > 0
+    WHILE testDriveState <> DCS_AT_SPEED and testDriveState <> DCS_STOPPED and loopCt > 0
+
+    debug("* DONE")
+    repeat      ' HALT here
+
+
+pri newRampDn(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
+    drv_incr := inDrv_incr
+    drv_state_ := inDrv_state
+    org
+.rampDn
+    debug("rampDn: ", sdec_long(drv_incr), sdec_long(tgt_incr), ": ", udec_long(drv_state_))
+                ' do next UP adjustment or set at-speed
+
+                ' if we don't have it, preset our starting angle (assume motor moved during float!)
+                ' do next UP adjustment or set at-speed
+                cmps    drv_incr, tgt_incr          wz ' Q: Did we match target?
+    if_z        jmp     #.endRDnAtTgt                  ' YES, (Matched) go mark done
+                mov     final_ramp, tgt_incr
+                subs    final_ramp, drv_incr
+                debug(" --- ", sdec_long(final_ramp))
+                ' now are we moving FWD or REV?
+                or      tgt_incr, tgt_incr          wz  ' Q: are we stopping? (if stopping don't use sign of tgt_incr)
+    if_z        testb   drv_incr, #31               wc  ' YES, moving FWD or REV? (bCY=REV)
+    if_nz       testb   tgt_incr, #31               wc  ' NO, moving FWD or REV? (bCY=REV)
+    if_c        jmp     #.haveRDnRev
+.haveRDnFwd
+                neg     final_ramp                        ' change to pos value for compare
+                cmps    final_ramp, ramp_fast_         wc  ' Q: is delta larger than ramp
+    if_nc       subs    drv_incr, ramp_fast_             ' YES, just add ramp value
+    if_c        subs    drv_incr, final_ramp              ' NO, add remaining final delta
+                debug(" --- sub ", sdec_long(drv_incr), udec_long(ramp_fast_))
+                jmp     #.justIncr                      ' increment motor angle, then exit
+.haveRDnRev
+                cmps    final_ramp, ramp_fast_         wc  ' Q: is delta larger than ramp
+    if_nc       adds    drv_incr, ramp_fast_             ' YES, just add ramp value
+    if_c        adds    drv_incr, final_ramp              ' NO, add remaining final delta
+                debug(" --- add ", sdec_long(drv_incr), udec_long(ramp_fast_))
+                jmp     #.justIncr
+.endRDnAtTgt
+                ' AT TARGET now adjust state
+                or      tgt_incr, tgt_incr          wz  ' Q: was our target ZERO? (are we stopping?)
+    if_z        mov     drv_state_, #DCS_STOPPED       ' YES, show we got to desired speed!
+    if_nz       mov     drv_state_, #DCS_AT_SPEED       ' YES, show we got to desired speed!
+                jmp     #.endRqst                       ' motor AT_SPEED, just exit (w/o increment)
+.endRqst
+.justIncr
+                ret
+
+final_ramp   long    0
+end_ramp   long    0
+curr_ramp   long    0
+abs_incr   long    0
+ramp_thresh     LONG    50_000              ' fm zero - TEST slow ramp to here then fast ramp ( ~1/5 of 0-max )
+ramp_fast_   long    50_000                   ' 50k angle increment: add/sub this every 500 uSec to ramp up to speed, or ramp down to zer
+ramp_slo_   long    12_000                    ' 8k angle decrement: add/sub this every 500 uSec to ramp up from zero (slower initial ramp so we don't fault)
+    end
+
+pri newRampUp(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
+    drv_incr := inDrv_incr
+    drv_state_ := inDrv_state
+    org
+.rampUp
+    debug("rampUp: ", sdec_long(drv_incr), sdec_long(tgt_incr), ": ", udec_long(drv_state_))
+                ' do next UP adjustment or set at-speed
+
+                ' if we don't have it, preset our starting angle (assume motor moved during float!)
+                ' do next UP adjustment or set at-speed
+                cmps    drv_incr, tgt_incr          wz  ' Q: Did we match target?
+    if_z        jmp     #.endRUpAtSpeed                 ' YES, (Matched) go mark done
+                abs     abs_incr, drv_incr              ' get abs(tgt_incr)
+                cmps    abs_incr, ramp_thresh       wc  ' Q: too early to ramp up fast?
+    if_nc       mov     curr_ramp, ramp_fast_           ' NO, use fast ramp rate
+    if_c        mov     curr_ramp, ramp_slo_            ' YES, use slow ramp rate
+                mov     delta, tgt_incr
+                subs    delta, drv_incr
+                debug(" --- ", sdec_long(delta))
+                testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (bCY=REV)
+    if_c        jmp     #.haveRUpRev
+.haveRUpFwd
+                cmps    delta, curr_ramp    wc
+    if_nc       adds    drv_incr, curr_ramp             ' FWD: increase increment (speeding up)
+    if_c        adds    drv_incr, delta             ' FWD: increase increment (speeding up)
+                jmp     #.justIncr
+.haveRUpRev
+                neg     delta
+                cmps    delta, curr_ramp    wc
+    if_nc       subs    drv_incr, curr_ramp             ' FWD: increase increment (speeding up)
+    if_c        subs    drv_incr, delta             ' FWD: increase increment (speeding up)
+                debug(" --- ", sdec_long(drv_incr), udec_long(curr_ramp))
+                jmp     #.justIncr
+.endRUpAtSpeed
+                mov     drv_state_, #DCS_AT_SPEED       ' YES, show we got to desired speed!
+                jmp     #.endRqst                       ' motor AT_SPEED, just exit (w/o increment)
+.endRqst
+.justIncr
+                ret
+
+delta   long    0
+end_ramp   long    0
+curr_ramp   long    0
+abs_incr   long    0
+ramp_thresh     LONG    50_000              ' fm zero - TEST slow ramp to here then fast ramp ( ~1/5 of 0-max )
+ramp_fast_   long    50_000                   ' 50k angle increment: add/sub this every 500 uSec to ramp up to speed, or ramp down to zer
+ramp_slo_   long    12_000                    ' 8k angle decrement: add/sub this every 500 uSec to ramp up from zero (slower initial ramp so we don't fault)
+    end
+
+pri newRampUpOld(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
+    drv_incr := inDrv_incr
+    drv_state_ := inDrv_state
+    org
+.rampUp
+    debug("rampUp: ", sdec_long(drv_incr), sdec_long(tgt_incr), ": ", udec_long(drv_state_))
+                ' do next UP adjustment or set at-speed
+
+                ' if we don't have it, preset our starting angle (assume motor moved during float!)
+                ' do next UP adjustment or set at-speed
+                cmps    drv_incr, tgt_incr          wz ' Q: Did we exceed or match target?
+    if_z        jmp     #.endRUpAtSpeed                  ' YES, (Matched) go mark done
+                abs     abs_incr, drv_incr              ' get abs(tgt_incr)
+                cmps    abs_incr, ramp_thresh       wc  ' Q: too early to ramp up fast?
+    if_nc       mov     curr_ramp, ramp_fast_           ' NO, use fast ramp rate
+    if_c        mov     curr_ramp, ramp_slo_            ' YES, use slow ramp rate
+                testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (bCY=REV)
+    if_c        jmp     #.haveRUpRev
+.haveRUpFwd
+                adds    drv_incr, curr_ramp             ' FWD: increase increment (speeding up)
+                cmps    tgt_incr, drv_incr          wc ' Q: Did we exceed target?
+    if_nc       jmp     #.justIncr                      ' go increment motor angle, then exit
+                subs    drv_incr, curr_ramp             ' convert to remainder
+                mov     end_ramp, drv_incr
+                debug(" --- ", sdec_long(end_ramp), sdec_long(drv_incr), udec_long(curr_ramp))
+                subs    end_ramp, tgt_incr              ' convert to remainder
+                debug(" --- ", sdec_long(end_ramp))
+                subs    drv_incr, end_ramp             ' FWD: increase increment (speeding up)
+                jmp     #.justIncr
+.haveRUpRev
+                subs    drv_incr, curr_ramp             ' REV: decrease increment (speeding up)
+                cmps    drv_incr, tgt_incr          wc ' Q: Did we exceed target?
+    if_nc       jmp     #.justIncr                      ' go increment motor angle, then exit
+                adds    drv_incr, curr_ramp             ' convert to remainder
+                mov     end_ramp, drv_incr
+                debug(" --- ", sdec_long(end_ramp), sdec_long(drv_incr), udec_long(curr_ramp))
+                subs    end_ramp, tgt_incr              ' convert to remainder
+                debug(" --- ", sdec_long(end_ramp))
+                subs    drv_incr, end_ramp             ' FWD: increase increment (speeding up)
+                jmp     #.justIncr
+.endRUpAtSpeed
+                mov     drv_state_, #DCS_AT_SPEED       ' YES, show we got to desired speed!
+                jmp     #.endRqst                       ' motor AT_SPEED, just exit (w/o increment)
+.endRqst
+.justIncr
+                ret
+
+end_ramp   long    0
+curr_ramp   long    0
+abs_incr   long    0
+ramp_thresh     LONG    50_000              ' fm zero - TEST slow ramp to here then fast ramp ( ~1/5 of 0-max )
+ramp_fast_   long    50_000                   ' 50k angle increment: add/sub this every 500 uSec to ramp up to speed, or ramp down to zer
+ramp_slo_   long    12_000                    ' 8k angle decrement: add/sub this every 500 uSec to ramp up from zero (slower initial ramp so we don't fault)
+    end
+
+
+
+pri rampDown(inDrv_incr, inDrv_state) : drv_incr, drv_state_
+    drv_incr := inDrv_incr
+    drv_state_ := inDrv_state
+    org
+.rampDn
+     debug("rampDown: ", sdec_long(drv_incr), udec_long(drv_state_), udec_long(ramp_dn_))
+               ' do next DOWN adjustment or set stopped
+                '  (increment > 0, we are not stopped)
+                ' NOTE!!! tgt_incr is likely ZERO so we don't test its sign bit here
+                '  instead we test the sign bit of the current driver target as we are spinning down
+                '  from the current driver target to ZERO!
+                testb   drv_incr, #31               wc  ' Q: moving FWD or REV? (CY=REV)
+    if_c        jmp     #.haveRDnRev
+                subs    drv_incr, ramp_dn_              ' FWD: decrease increment (slowing down)
+                cmps    drv_incr, #0                wcz
+    if_nc_and_nz jmp    #.justIncr                       ' just increment motor angle, then exit
+                jmp     #.lastRDnzero
+.haveRDnRev
+                adds    drv_incr, ramp_dn_              ' REV: increase increment, toward zero (slowing down)
+                cmps    drv_incr, #0                wcz
+    if_c        jmp    #.justIncr                       ' just increment motor angle, then exit
+.lastRDnzero
+                subs    drv_incr, drv_incr              ' set to zero
+                mov     drv_state_, #DCS_STOPPED        ' report that we are stopped
+.justIncr
+                ret
+
+ramp_dn_   long    25_000
+    end
+
+
+
+PRI stringForDriveState(nDrvState) :pInterpStr
+    case nDrvState
+        DCS_Unknown:
+            pInterpStr := @"Unknown"
+        DCS_STOPPED:
+            pInterpStr := @"STOPPED"
+        DCS_SPIN_UP:
+            pInterpStr := @"SPIN_UP"
+        DCS_AT_SPEED:
+            pInterpStr := @"AT_SPEED"
+        DCS_SPIN_DN:
+            pInterpStr := @"SPIN_DN"
+        DCS_SLOW_TO_CHG:
+            pInterpStr := @"SLOW_TO_CHG"
+        other:
+            pInterpStr := @"??{bad}??"
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2023 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

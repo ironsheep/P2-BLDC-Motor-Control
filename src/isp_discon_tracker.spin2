@@ -1,0 +1,439 @@
+'' =================================================================================================
+''
+''   File....... isp_discon_tracker.spin2
+''   Purpose.... Discontiguous Range Tracker
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2023 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Mar 2023
+''   Updated.... 31 Mar 2023
+''
+'' Oh, and I'm a Blynk: a k-pop Blackpink fandom member and today is Jisoo's Solo Album release day!
+'' =================================================================================================
+
+CON { internal constants }
+
+    MAX_SPAN_ENTRIES = 10
+    LONGS_PER_SPAN = 4
+
+' indexes into SPAN entry fields
+#0, IDX_START, IDX_END, IDX_MIN_MV, IDX_MAX_MV
+
+    MAX_OFS_ENTRIES = 45
+    LONGS_PER_OFS = 3
+    MAX_OFS_MVS = 2
+
+' indexes into OFS entry fields
+#0, IDX_OFS_OFFSET, IDX_OFS_FWD_MV, IDX_OFS_REV_MV
+
+    MAX_CURR4SPD_ENTRIES = 15
+    LONGS_PER_CURR4SPD = 3
+
+' indexes into currentForSpeed entry fields
+#0, IDX_SPD_OFS, IDX_SPD_SPEED, IDX_SPD_MAX_MV
+
+    MAX_TEST_OFFSETS = 30
+
+
+DAT { class variables }
+'{
+    ' LIVE
+    spanEntries     LONG    0[MAX_SPAN_ENTRIES * LONGS_PER_SPAN]
+    nbrSpanEntries  LONG    0
+    rcdCount        LONG    0
+
+    offsetEntries   LONG    0[MAX_OFS_ENTRIES * LONGS_PER_OFS]
+    nbrOfsEntries   LONG    0
+    ofsMin_mVolt    LONG    99_999[MAX_OFS_MVS]
+'}
+
+    testEntries     LONG    0[MAX_TEST_OFFSETS]
+    nbrTestEntries  LONG    0
+
+    mvSpeedEntries     LONG    0[MAX_CURR4SPD_ENTRIES * LONGS_PER_CURR4SPD]
+    mvSpeedEntryCount  LONG    0
+
+{
+    ' TESTING!
+    ' fixed data for testing later passes
+    spanEntries     LONG     4, 41, 1_471, 2_463
+                    LONG    43, 47, 2_470, 2_470
+    nbrSpanEntries  LONG    2
+    rcdCount        LONG    2
+
+    offsetEntries   LONG    6, 2_463
+                    LONG    9, 1_504
+                    LONG    12, 1_499
+                    LONG    15, 1_493
+                    LONG    18, 1_484
+                    LONG    21, 1_484
+                    LONG    24, 1_477
+                    LONG    27, 1_477
+                    LONG    30, 1_474
+                    LONG    33, 1_472
+                    LONG    36, 1_471
+                    LONG    39, 1_474
+                    LONG    45, 2_470
+                    LONG    4, 1_533
+                    LONG    5, 1_528
+                    LONG    7, 1_516
+                    LONG    8, 2_403
+                    LONG    10, 2_393
+                    LONG    11, 1_504
+                    LONG    13, 1_496
+                    LONG    14, 1_493
+                    LONG    16, 1_491
+                    LONG    17, 1_488
+                    LONG    19, 1_484
+                    LONG    20, 1_483
+                    LONG    22, 1_481
+                    LONG    23, 1_481
+                    LONG    25, 1_481
+                    LONG    26, 1_476
+                    LONG    28, 1_476
+                    LONG    29, 1_476
+                    LONG    31, 1_474
+                    LONG    32, 1_474
+                    LONG    34, 1_476
+                    LONG    35, 1_472
+                    LONG    37, 1_474
+                    LONG    38, 1_472
+                    LONG    41, 2_463
+    nbrOfsEntries   LONG    38
+    ofsMin_mVolt    LONG    1_471, 1_472
+
+
+'}
+'VAR { Instance Variables }
+
+PUB null()
+
+'' This is not a top-level object
+
+CON ' ---- Working SPANs TRACKER ----
+
+PUB addSpan(offset, mVolt, stepWidth) | pEntry, minOffset, maxOffset, bFillNewEntry, nIdx
+'' Add new entry or extend entry if overlaps
+    minOffset := offset - (stepWidth - 1)
+    maxOffset := offset + (stepWidth - 1)
+    debug("TRK: REC #", udec_(++rcdCount), " ofs=", sdec_(offset), ", mV=", udec_(mVolt))
+    bFillNewEntry := TRUE
+    if nbrSpanEntries > 0
+        ' determine if overlaps existing entry
+        repeat nIdx from 0 to nbrSpanEntries - 1
+            pEntry := @LONG[@spanEntries][nIdx * LONGS_PER_SPAN]
+            ' Q: do we overlap with this entry
+            if not minOffset > LONG[pEntry][IDX_END] and not maxOffset < LONG[pEntry][IDX_START]
+                ' yes! merge them
+                bFillNewEntry := FALSE
+                quit    ' break, have answer, get outta here
+
+    if bFillNewEntry
+        ' now fill the new entry
+        pEntry := @LONG[@spanEntries][nbrSpanEntries * LONGS_PER_SPAN]
+        LONG[pEntry][IDX_START] := minOffset
+        LONG[pEntry][IDX_END] := maxOffset
+        LONG[pEntry][IDX_MIN_MV] := mVolt
+        LONG[pEntry][IDX_MAX_MV] := mVolt
+        nbrSpanEntries++
+    else
+        ' else extend existing entry
+        if minOffset <= LONG[pEntry][IDX_END]
+            ' overlaps right edge - replace max
+            LONG[pEntry][IDX_END] := maxOffset
+        else
+            ' overlaps left edge - replace min
+            LONG[pEntry][IDX_START] := minOffset
+        ' now update our range of mVolt values for this entry
+        if mVolt < LONG[pEntry][IDX_MIN_MV]
+            ' have new minimum!
+            LONG[pEntry][IDX_MIN_MV] := mVolt
+        elseif mVolt > LONG[pEntry][IDX_MAX_MV]
+            ' have new maximum!
+            LONG[pEntry][IDX_MAX_MV] := mVolt
+
+    showAllSpanEntries()
+
+PUB spanCount() : nbrSpans
+'' Return count of discontiguous spans on file
+    nbrSpans := nbrSpanEntries
+
+PUB offsetsForSpan(spanIdx) : minOffset, maxOffset | pEntry
+'' Return the start and end values of given span
+    if spanIdx < nbrSpanEntries
+        pEntry := @LONG[@spanEntries][spanIdx * LONGS_PER_SPAN]
+        minOffset := LONG[pEntry][IDX_START]
+        maxOffset := LONG[pEntry][IDX_END]
+    else
+        ' no such span!
+        debug("EE Invalid span index (", sdec_(spanIdx), ") - must be [0-", sdec_(nbrSpanEntries-1), "]")
+        minOffset := maxOffset := -1
+
+CON ' ---- Working Offsets TRACKER ----
+
+PUB addWorkingOffset(offset, fwd_mVolt, rev_mVolt) | pEntry, avg_mV
+'' Add new entry with rating
+    ' now fill the new entry
+    debug("TRK ofs: REC #", udec_(nbrOfsEntries + 1), " ofs=", sdec_(offset), ", FWDmV=", udec_(fwd_mVolt), ", REVmV=", udec_(rev_mVolt))
+    pEntry := @LONG[@offsetEntries][nbrOfsEntries * LONGS_PER_OFS]
+    LONG[pEntry][IDX_OFS_OFFSET] := offset
+    LONG[pEntry][IDX_OFS_FWD_MV] := fwd_mVolt
+    LONG[pEntry][IDX_OFS_REV_MV] := rev_mVolt
+    avg_mV := (fwd_mVolt + rev_mVolt) / 2
+    showOfsEntry(nbrOfsEntries, pEntry)
+    nbrOfsEntries++
+    trackMin_mVolts(avg_mV)
+
+PUB replaceWorkingOffset(offset, fwd_mVolt, rev_mVolt) | pEntry, ofsIdx, nOffset, priorFwd_mVolt, priorRev_mVolt, avg_mV
+'' replace Existing entry rating with new rating
+    if nbrOfsEntries > 0
+        repeat ofsIdx from 0 to nbrOfsEntries - 1
+            pEntry := @LONG[@offsetEntries][ofsIdx * LONGS_PER_OFS]
+            nOffset := LONG[pEntry][IDX_OFS_OFFSET]
+            if nOffset == offset
+                priorFwd_mVolt := LONG[pEntry][IDX_OFS_FWD_MV]
+                priorRev_mVolt := LONG[pEntry][IDX_OFS_REV_MV]
+                LONG[pEntry][IDX_OFS_FWD_MV] := fwd_mVolt
+                LONG[pEntry][IDX_OFS_REV_MV] := rev_mVolt
+                avg_mV := (fwd_mVolt + rev_mVolt) / 2
+                trackMin_mVolts(avg_mV)
+                debug("TRK ofs: REC #", udec_(ofsIdx + 1), " ofs=", sdec_(offset), ", REV mV=", udec_(priorRev_mVolt), " -> ", udec_(rev_mVolt))
+                quit    ' made change, get outta here!
+
+PUB offsetsCount() : nbrOffsets
+'' Return count of working offsets on file
+    nbrOffsets := nbrOfsEntries
+
+PUB valuesForOffset(ofsIdx) : nOffset, fwd_mVolt, rev_mVolt | pEntry
+'' Return the start and end values of given span
+    if ofsIdx < nbrOfsEntries
+        pEntry := @LONG[@offsetEntries][ofsIdx * LONGS_PER_OFS]
+        nOffset := LONG[pEntry][IDX_OFS_OFFSET]
+        fwd_mVolt := LONG[pEntry][IDX_OFS_FWD_MV]
+        rev_mVolt := LONG[pEntry][IDX_OFS_REV_MV]
+    else
+        ' no such OFS!
+        debug("EE Invalid ofs index (", sdec_(ofsIdx), ") - must be [0-", sdec_(nbrOfsEntries-1), "]")
+        nOffset := fwd_mVolt := rev_mVolt := -1
+
+PUB isWorkingOffsetChecked(offset) : bIsChecked | ofsIdx, pEntry, nOffset
+'' Return T/F where T means we aleady have mV for this offset
+    bIsChecked := FALSE
+    if nbrOfsEntries > 0
+        repeat ofsIdx from 0 to nbrOfsEntries - 1
+            pEntry := @LONG[@offsetEntries][ofsIdx * LONGS_PER_OFS]
+            nOffset := LONG[pEntry][IDX_OFS_OFFSET]
+            if nOffset == offset
+                bIsChecked := TRUE
+                quit    ' have answer, get outta here!
+
+PUB showAccumTables()
+'' run has ended show our internal tables
+    debug("TRK: tables at end:")
+    debug("TRK: REC ", udec_(nbrSpanEntries), " Entries")
+    showAllSpanEntries()
+    debug("   ")
+    debug("TRK ofs: REC ", udec_(nbrOfsEntries), " Entries")
+    showAllOfsEntries()
+    debug("   ")
+    debug("TRK ofs min_mV: REC ", udec_(MAX_OFS_MVS), " Entries")
+    showAllMinVEntries()
+    debug("   ")
+
+PUB offsetsToEvaluate(): pEntries, nCountEntries | nIdx, nMin_mVolt
+    ' zero return list
+    nbrTestEntries := 0
+    ' generate return list
+    repeat nIdx from 0 to MAX_OFS_MVS - 1
+        nMin_mVolt := LONG[@ofsMin_mVolt][nIdx]
+        ' add group to return list
+        addEntriesForMV(nMin_mVolt)
+
+    sortTestValues()
+
+    pEntries := @testEntries
+    nCountEntries := nbrTestEntries
+
+PUB addCurrentForSpeedAtOffset(end_mV, speed, offset) | pEntry
+'' Add new entry for speed
+    ' now fill the new entry
+    debug("TRK ofs: REC #", udec_(mvSpeedEntryCount + 1), " mV=", sdec_(end_mV), ", spd=", udec_(speed), ", ofs=", udec_(offset))
+    pEntry := @LONG[@mvSpeedEntries][mvSpeedEntryCount * LONGS_PER_CURR4SPD]
+    LONG[pEntry][IDX_SPD_OFS] := offset
+    LONG[pEntry][IDX_SPD_SPEED] := speed
+    LONG[pEntry][IDX_SPD_MAX_MV] := end_mV
+    showCurr4SpdEntry(mvSpeedEntryCount, pEntry)
+    mvSpeedEntryCount++
+
+DAT
+
+    spdCount    LONG    0
+    spd_mVMin   LONG    0
+    spdAvg      LONG    0
+    spdSum      LONG    0
+
+    choiceOfs   LONG    0
+    choiceCt    LONG    0
+    choice_mV   LONG    0
+
+PUB showCurrentAtSpeedTables() | nIdx, pEntry, testIdx, offset, spdOfs
+' show all entries via debug
+    debug("   ")
+    repeat testIdx from 0 to nbrTestEntries - 2
+        offset := LONG[@testEntries][testIdx]
+        debug("---- test #", udec_(testIdx + 1), " ofs [", sdec_(offset), "] ----")
+        ' reset stats
+        spdCount := spdSum := spdAvg := 0
+        spd_mVMin := 99999
+        repeat nIdx from 0 to mvSpeedEntryCount - 1
+            pEntry := @LONG[@mvSpeedEntries][nIdx * LONGS_PER_CURR4SPD]
+            spdOfs := LONG[pEntry][IDX_SPD_OFS]
+            if spdOfs == offset
+                showCurr4SpdEntry(nIdx, pEntry)
+        debug("     test #", udec_(testIdx + 1), " ct=(", sdec_(spdCount), "), avg=(", sdec_(spdAvg), "), min=(", sdec_(spd_mVMin), ") ----")
+        gatherFinalSelection(offset, spdCount, spdAvg)
+
+    debug("   ")
+    debug("     FINAL: offset=(", sdec_(choiceOfs), "), ct=(", sdec_(choiceCt), "), AVG mV=(", sdec_(choice_mV), ") ----")
+    debug("   ")
+
+PRI gatherFinalSelection(offset, count, avg_mVolt) | bSaveSelection
+    bSaveSelection := FALSE
+    if count > choiceCt
+        bSaveSelection := TRUE
+    elseif count == choiceCt and avg_mVolt < choice_mV
+        bSaveSelection := TRUE
+
+    if bSaveSelection
+        choiceOfs := offset
+        choiceCt := count
+        choice_mV := avg_mVolt
+
+PRI showCurr4SpdEntry(nIdx, pEntry) | nOfs, nSpeed, max_mVolt
+' show single entry via debug
+    nOfs := LONG[pEntry][IDX_SPD_OFS]
+    nSpeed := LONG[pEntry][IDX_SPD_SPEED]
+    max_mVolt := LONG[pEntry][IDX_SPD_MAX_MV]
+    spdCount++
+    spdSum += max_mVolt
+    spdAvg := spdSum / spdCount
+    if max_mVolt < spd_mVMin
+        spd_mVMin := max_mVolt
+    debug("TRK: SPD #", udec_(nIdx + 1), " ofs [", sdec_(nOfs), "], mV [", sdec_(max_mVolt), "], spd [", sdec_(nSpeed), "]")
+
+CON ' ---- Private (Utility) Methods ----
+
+PRI trackMin_mVolts(mVolt) | savIdx, bValueSaved
+    ' see if this value already in table
+    bValueSaved := FALSE
+    repeat savIdx from 0 to MAX_OFS_MVS - 1
+        if LONG[@ofsMin_mVolt][savIdx] == mVolt
+            bValueSaved := TRUE
+            quit
+    ' is our new value a low value in our table?
+    if not bValueSaved
+        ' no, so if this value is lower than a table entry replace it
+        repeat savIdx from 0 to MAX_OFS_MVS - 1
+            if mVolt < LONG[@ofsMin_mVolt][savIdx]
+                LONG[@ofsMin_mVolt][savIdx] := mVolt
+                quit    ' outta here we're done checking
+
+PRI showAllMinVEntries() | nIdx, nMin_mVolt
+' show all entries via debug
+    repeat nIdx from 0 to MAX_OFS_MVS - 1
+        nMin_mVolt := LONG[@ofsMin_mVolt][nIdx]
+        debug("TRK: MIN mV #", udec_(nIdx + 1), " mV [", sdec_(nMin_mVolt), "]")
+
+PRI showAllSpanEntries() | nIdx, pEntry
+' show all entries via debug
+        repeat nIdx from 0 to nbrSpanEntries - 1
+            pEntry := @LONG[@spanEntries][nIdx * LONGS_PER_SPAN]
+            showSpanEntry(nIdx, pEntry)
+
+PRI showSpanEntry(nIdx, pEntry) | minOfs, maxOfs, min_mVolt, max_mVolt
+' show single entry via debug
+    minOfs := LONG[pEntry][IDX_START]
+    maxOfs := LONG[pEntry][IDX_END]
+    min_mVolt := LONG[pEntry][IDX_MIN_MV]
+    max_mVolt := LONG[pEntry][IDX_MAX_MV]
+    debug("TRK: SPAN #", udec_(nIdx + 1), " ofs [", sdec_(minOfs), ":", sdec_(maxOfs), "], mV [", sdec_(min_mVolt), ":", sdec_(max_mVolt), "]")
+
+PRI showAllOfsEntries() | nIdx, pEntry
+' show all entries via debug
+    repeat nIdx from 0 to nbrOfsEntries - 1
+        pEntry := @LONG[@offsetEntries][nIdx * LONGS_PER_OFS]
+        showOfsEntry(nIdx, pEntry)
+
+PRI showOfsEntry(nIdx, pEntry) | nOfs, fwd_mVolt, rev_mVolt
+' show single entry via debug
+    nOfs := LONG[pEntry][IDX_OFS_OFFSET]
+    fwd_mVolt := LONG[pEntry][IDX_OFS_FWD_MV]
+    rev_mVolt := LONG[pEntry][IDX_OFS_REV_MV]
+    debug("TRK: OFS #", udec_(nIdx + 1), " ofs [", sdec_(nOfs), "], FWD mV [", sdec_(fwd_mVolt), "], REV mV [", sdec_(rev_mVolt), "]")
+
+PRI addEntriesForMV(desired_mV) | ofsIdx, pEntry, nOffset, fwd_mVolt, rev_mVolt, avg_mV
+    'debug("* recording offsets for (", udec_(desired_mV), ")")
+    repeat ofsIdx from 0 to nbrOfsEntries - 1
+        nOffset, fwd_mVolt, rev_mVolt := valuesForOffset(ofsIdx)
+        avg_mV := (fwd_mVolt + rev_mVolt) / 2
+        'debug("  -- checking ofs (", udec_(nOffset), ") AVG mV (", sdec_(avg_mV), ")")
+        if avg_mV == desired_mV
+            ' record this value
+            recordTestValue(nOffset)
+
+PRI recordTestValue(offset)
+    'debug("  -- found offset (", udec_(offset), ")")
+    if not isKnownTestValue(offset)
+        'debug("  -- new test #", udec_(nbrTestEntries+1), "(", udec_(offset), ")")
+        LONG[@testEntries][nbrTestEntries++] := offset
+
+PRI isKnownTestValue(offset) : bKnownStatus | testIdx
+    bKnownStatus := FALSE
+    if nbrTestEntries > 0
+        repeat testIdx from 0 to nbrTestEntries - 1
+            if LONG[@testEntries][testIdx] == offset
+                bKnownStatus := TRUE
+                quit    ' outta here we have our answer
+
+PRI sortTestValues() | testIdx, bNoChanges, tmpValue
+    repeat
+        bNoChanges := true
+        repeat testIdx from 0 to nbrTestEntries - 2
+            if LONG[@testEntries][testIdx] > LONG[@testEntries][testIdx+1]
+                ' swap entries
+                'debug("SWAP lt=[", udec_(LONG[@testEntries][testIdx]), "], rt=[", udec_(LONG[@testEntries][testIdx+1]), "]")
+                tmpValue := LONG[@testEntries][testIdx]
+                LONG[@testEntries][testIdx] := LONG[@testEntries][testIdx+1]
+                LONG[@testEntries][testIdx+1] := tmpValue
+                bNoChanges := FALSE
+    while bNoChanges == FALSE
+
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2023 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

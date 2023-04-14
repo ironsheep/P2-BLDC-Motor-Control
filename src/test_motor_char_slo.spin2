@@ -18,8 +18,9 @@ CON { timing }
 
     ' SPECIAL for LOGGING on RPi
 '{
-    DEBUG_PIN_TX = 1
-    DEBUG_PIN_RX = 0
+    DEBUG_PIN_TX = 56
+    DEBUG_PIN_RX = 57
+    DEBUG_BAUD = 2_000_000
 '}
 
 CON { fixed io pins }
@@ -47,9 +48,6 @@ CON { application io pins }
 
     HDMI_BASE_PIN       = tvDebug.PINS_P8_P15
 
-    MOTOR_BASE_PIN       = user.ONLY_MOTOR_BASE
-
-
     NOT_SET = -1
 
 OBJ { our Motor(s) }
@@ -68,8 +66,12 @@ DAT { run-time condition vars }
     pGroupVarCts    LONG    0
     pGroupVars      LONG    0
 
-PUB main() | motorCog, senseCog, basePin, voltage, motor, lowVal, highVal, bDidFault, failSpeed, testSpeed, bNoMovement
+    startSec        LONG    0
+
+PUB main() | motorCog, senseCog, basePin, voltage, motor, lowVal, highVal, bDidFault, failSpeed, testSpeed, bNoMovement, detectMode
 '' DEMO Driving a single wheeled platform
+
+    startSec := getsec()    ' time we started this run
 
     ' start our HDMI debug output
     if bUseHDMI
@@ -80,13 +82,14 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, lowVal, highVal, bDidF
 
     ' validate user settings/choicess
     '  do NOT start motor unless all are legit!
-    basePin := wheel.validBasePinForChoice(MOTOR_BASE_PIN)
+    basePin := wheel.validBasePinForChoice(user.ONLY_MOTOR_BASE)
+    detectMode := wheel.validDetectModeForChoice(user.ONLY_BOARD_TYPE)
     voltage := wheel.validVoltageForChoice(user.DRIVE_VOLTAGE)
     motor := wheel.validMotorForChoice(user.MOTOR_TYPE)
 
-    if basePin <> wheel.INVALID_PIN_BASE and voltage <> wheel.INVALID_VOLTAGE and motor <> wheel.INVALID_MOTOR
+    if basePin <> wheel.INVALID_PIN_BASE and voltage <> wheel.INVALID_VOLTAGE and motor <> wheel.INVALID_MOTOR and detectMode <> wheel.INVALID_DET_MODE
         ' start our single motor driver
-        motorCog := wheel.start(basePin, voltage)
+        motorCog := wheel.start(basePin, voltage, detectMode)
         'tvDebug.reportMotorCog(motorCog)
 
         ' for single motor let's start the single motor sense task
@@ -145,6 +148,7 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, lowVal, highVal, bDidF
         debug("    minFwdIncreAtPwr := ", udec_long(testSpeed), "   ' 100% anything lower yields NO rotation")
         debug("  ")
 
+        showRunDuration()
 
         debug("* END TEST: holding for 30 secs...")
         waitms(30000)   ' 30 seconds, then stop
@@ -152,6 +156,11 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, lowVal, highVal, bDidF
         ' turn off our motor drivers
         wheel.stop()
 
+PRI showRunDuration() | durationSec, minutes, seconds
+        durationSec := getsec() - startSec    ' duration of this run
+        minutes := durationSec / 60
+        seconds := durationSec - (minutes * 60)
+        debug("* END: after ", udec_(minutes), " minutes, ", udec_(seconds), " seconds")
 
 PRI evalSpeed(testSpd) : bDidFault, bNoMovement | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
@@ -192,7 +201,7 @@ PRI reportEndCondition() : bDidFault, endMaxRPM, endMaxTics
     ' just finished pass which ended in NOT fault or fault
     '  report max RPM and max Tics
     '  report fault or not
-    endMaxRPM, endMaxTics, bDidFault := wheel.testGetResults()
+    endMaxRPM, endMaxTics, bDidFault, _ := wheel.testGetResults()
     debug("* RPT: ", udec(endMaxRPM), udec(endMaxTICs), sdec(bDidFault))
     debug("  ")
 
@@ -229,7 +238,7 @@ PRI waitUntilMotorReady() : bDidFault
     if wheel.isReady() == false
         'debug("* wait motor ready...")
         repeat
-            _, _, bDidFault := wheel.testGetResults()
+            _, _, bDidFault, _ := wheel.testGetResults()
             if wheel.isReady()
                 quit
             elseif bDidFault
@@ -248,7 +257,7 @@ PRI waitUntilMotorDone() : bDidFault, bBadStart
     if not wheel.isTurning()
          debug("* wait until motor starts...")
          repeat
-            _, _, bDidFault := wheel.testGetResults()
+            _, _, bDidFault, _ := wheel.testGetResults()
             if wheel.isTurning()
                 quit
             elseif bDidFault
@@ -261,7 +270,7 @@ PRI waitUntilMotorDone() : bDidFault, bBadStart
     if not bDidFault and wheel.isStopped() == false
         debug("* wait until motor finishes...")
         repeat
-            _, _, bDidFault := wheel.testGetResults()
+            _, _, bDidFault, _ := wheel.testGetResults()
             if wheel.isStopped()
                 quit
             elseif bDidFault

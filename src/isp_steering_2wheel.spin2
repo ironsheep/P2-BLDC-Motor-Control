@@ -65,7 +65,6 @@ CON { forward our interface constants }
     DCS_SPIN_UP     = ltWheel.DCS_SPIN_UP
     DCS_AT_SPEED    = ltWheel.DCS_AT_SPEED
     DCS_SPIN_DN     = ltWheel.DCS_SPIN_DN
-    DCS_SLOWING_DN  = ltWheel.DCS_SLOWING_DN
     DCS_SLOW_TO_CHG = ltWheel.DCS_SLOW_TO_CHG
     DCS_FAULTED     = ltWheel.DCS_FAULTED
     DCS_ESTOP       = ltWheel.DCS_ESTOP
@@ -79,6 +78,9 @@ CON { forward our interface constants }
     ' return value when user makes bad choice
     INVALID_VOLTAGE     = ltWheel.INVALID_VOLTAGE
 
+    ' return value when user makes bad choice
+    INVALID_DET_MODE     = ltWheel.INVALID_DET_MODE
+
 CON { test pins for LA measurement }
 
 {
@@ -91,16 +93,16 @@ CON { test pins for LA measurement }
 
 OBJ { our Motors }
 
-    ltWheel     :   "isp_bldc_motor"    ' left wheel drive
-    rtWheel     :   "isp_bldc_motor"    ' right wheel drive
-    user        :   "isp_bldc_motor_userconfig"     ' driver configuration
-    distConv    :   "isp_dist_utils"                ' distance conversion utils
+    ltWheel     :   "isp_bldc_motor"                    ' left wheel drive
+    rtWheel     :   "isp_bldc_motor"                    ' right wheel drive
+    user        :   "isp_bldc_motor_userconfig"         ' driver configuration
+    distConv    :   "isp_dist_utils"                    ' distance conversion utils
 
 PUB null()
 
 '' This is not a top-level object
 
-PUB start(leftBasePin, rightBasePin, driveVoltage) : ok
+PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok
 '' Start our drive cogs connected to our left and right motor control pin-sets
     ticks1ms   := (clkfreq / 1_000)
     ticks1us   := (clkfreq / 1_000_000)
@@ -118,9 +120,21 @@ PUB start(leftBasePin, rightBasePin, driveVoltage) : ok
     '    debug("!! ERROR bad CLOCK value")
     '    repeat ' halt here
 
-    ltWheel.start(leftBasePin, driveVoltage)
-    rtWheel.start(rightBasePin, driveVoltage)
+    ltWheel.start(leftBasePin, driveVoltage, leftDetectMode)
+    ltWheel.testSetMotorId(@"ltMot")
+    rtWheel.start(rightBasePin, driveVoltage, rightDetectMode)
+    rtWheel.testSetMotorId(@"rtMot")
     rtWheel.forwardIsReverse()
+
+    ' init user tracking vars
+    motorStopHallTicks := 0
+    motorStopMSecs := 0
+    rqstPower := 0
+    rqstLtPower := 0
+    rqstRtPower := 0
+    rqstDirection := 0
+    userCutoff := FALSE
+    notUsed := 0
 
     ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
     if senseCog == 0    ' did fail?
@@ -174,11 +188,13 @@ PUB driveDirection(power, direction) | ltPower, rtPower
 '' Turns both motors on at {power, [(-100) to 100]} but adjusted by {direction, [(-100) to 100]}.
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
     ' calculate effective power based on direction
-    ltPower, rtPower := calcPowerForDirection(power, direction)
+    rqstPower := power
+    rqstDirection := direction
+    rqstLtPower, rqstRtPower := calcPowerForDirection(power, direction)
 
     ' now tell our motor of their own power
-    ltWheel.driveAtPower(ltPower)
-    rtWheel.driveAtPower(rtPower)
+    ltWheel.driveAtPower(rqstLtPower)
+    rtWheel.driveAtPower(rqstRtPower)
 
 PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits)
 '' Control the forward direction or rate of turn of your robot using the {leftDistance} and {rightDistance} inputs.
@@ -192,8 +208,11 @@ PUB driveAtPower(leftPower, rightPower)
 '' Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
 '' Turns left motor on at {leftPower} and right at {rightPower}. Where {*Power} are in the range [(-100) to 100].
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
-    ltWheel.driveAtPower(leftPower)
-    rtWheel.driveAtPower(rightPower)
+    rqstLtPower := leftPower
+    rqstRtPower := rightPower
+
+    ltWheel.driveAtPower(rqstLtPower)
+    rtWheel.driveAtPower(rqstRtPower)
 
 PUB stopAfterRotation(nRotationCount, eRotationUnits) | degreesPerTic, ticsPerRotation
 '' Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
@@ -289,17 +308,21 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
 PUB stopMotors()
 '' Stops both motors, killing any motion that was still in progress
 '' AFFECTED BY:holdAtStop()
+    rqstPower := rqstLtPower := rqstRtPower := 0
     ltWheel.stopMotor()
     rtWheel.stopMotor()
 
 PUB emergencyCutoff()
 '' EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress
+    rqstPower := rqstLtPower := rqstRtPower := 0
+    userCutoff := TRUE
     ltWheel.emergencyCutoff()
     rtWheel.emergencyCutoff()
 
 PUB clearEmergency()
 '' Remove emergency override allowing motors to be driven again
 ' used by wheels*.spin2 methods
+    userCutoff := FALSE
     ltWheel.clearEmergency()
     rtWheel.clearEmergency()
     debug("--------clear EMERGENCY--------")
@@ -384,6 +407,38 @@ PRI getDriverState() : eLeftState, eRightState
     eLeftState := ltWheel.getDriverState()
     eRightState := rtWheel.getDriverState()
 
+DAT { fault tracking }
+
+ltFaultSeenMS    long  0
+rtFaultSeenMS    long  0
+
+PRI getFaultStatus() : bLeftStatus, bRightStatus | bLeftSignal, bRightSignal
+' Returns status of motor-driver fault-state for each motor: T/F
+    bLeftStatus := ltWheel.isFaulted()
+    bRightStatus := rtWheel.isFaulted()
+
+    bLeftSignal := ltWheel.isFaultSignal()
+    bRightSignal := rtWheel.isFaultSignal()
+
+    ' if fault appears then let it stay for 3*1000 mSec
+    ' . after that, clear it
+
+    if bLeftSignal == TRUE and ltFaultSeenMS == 0
+        ltFaultSeenMS := getms() + 3000
+        debug(" -------------- LtMotr See FAULT! --------------")
+    elseif bLeftSignal == TRUE and ltFaultSeenMS <> 0 and getms() > ltFaultSeenMS
+        debug(" -------------- LtMotr Cleared FAULT --------------")
+        ltWheel.clearFaultSignal()
+        ltFaultSeenMS := 0
+
+    if bRightSignal == TRUE and rtFaultSeenMS == 0
+        rtFaultSeenMS := getms() + 3000
+        debug(" -------------- RtMotr See FAULT! --------------")
+    elseif bRightSignal == TRUE and rtFaultSeenMS <> 0 and getms() > rtFaultSeenMS
+        debug(" -------------- RtMotr Cleared FAULT --------------")
+        rtWheel.clearFaultSignal()
+        rtFaultSeenMS := 0
+
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
     ' NOTE: they both contain same value so return only right-wheel value
@@ -395,6 +450,14 @@ PUB getMaxSpeedForDistance() : nSpeed4dist
     ' NOTE: they both contain same value so return only right-wheel value
     'nSpeed4dist := ltWheel.getMaxSpeed()  ' return last specified user value
     nSpeed4dist := rtWheel.getMaxSpeed()  ' return last specified user value
+
+PUB getLeftDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
+'' Return pointers to HDMI-debug data structures for LEFT motor-object instance
+    nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := ltWheel.getDebugData()
+
+PUB getRightDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
+'' Return pointers to HDMI-debug data structures for LEFT motor-object instance
+    nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := rtWheel.getDebugData()
 
 CON { --- PUBLIC Utility Methods --- }
 
@@ -410,6 +473,9 @@ PUB validMotorForChoice(userMotor) : legalMotor
 '' VALIDATE users' motor choice returns legalMotor or INVALID_MOTOR
     legalMotor := ltWheel.validMotorForChoice(userMotor)
 
+PUB validDetectModeForChoice(userDetMode) : legalMode
+'' VALIDATE users' detection mode choice returns legalMode or INVALID_DET_MODE
+    legalMode := ltWheel.validMotorForChoice(userDetMode)
 
 CON { --- PRIVATE Utility Methods --- }
 
@@ -486,10 +552,18 @@ VAR { Data for Motor Position Tracking }
     '  --------------------------
     long    hallCntsIn8thSec
 
-
+    ' USER REQUESTS
     '  Position Tracking vars
     long    motorStopHallTicks
     long    motorStopMSecs
+    '  Drive vars
+    long    rqstPower
+    long    rqstDirection
+    long    rqstLtPower
+    long    rqstRtPower
+    long    userCutoff
+
+    long    notUsed
 
 PRI resetLtWindowAccumulator()
     longfill(@ltHallCountsWindow, 0, HALL_WINDOW_SIZE) ' zero our window accum
@@ -537,12 +611,14 @@ PRI taskPostionSense() | senseStartTicks, timeNow, eStopCtr
         hallCntsIn8thSec := distanceIn90ths(ltWheel.getRawHallTicks(), LEFT_WHEEL)  ' Read the next sensor value
         ltHallWindowSum -= LONG[@ltHallCountsWindow][ltHallWinIndex]            ' Remove the oldest entry from the sum
         long [@ltHallCountsWindow][ltHallWinIndex] := hallCntsIn8thSec          ' place the newest reading into the window
-        ltHallWindowSum += hallCntsIn8thSec                                 ' Add the newest reading to the sum
-        ltHallWinIndex := (ltHallWinIndex + 1) +// HALL_WINDOW_SIZE              ' Increment the index, and wrap to 0 if it exceeds the window size
-        if ltHallWinEntryCt < HALL_WINDOW_SIZE                               ' incr number of samples in sum until is window size
+        ltHallWindowSum += hallCntsIn8thSec                                     ' Add the newest reading to the sum
+        ltHallWinIndex := (ltHallWinIndex + 1) +// HALL_WINDOW_SIZE             ' Increment the index, and wrap to 0 if it exceeds the window size
+        if ltHallWinEntryCt < HALL_WINDOW_SIZE                                  ' incr number of samples in sum until is window size
             ltHallWinEntryCt++
 
         ltPosTrkHallTicks += hallCntsIn8thSec
+
+        ltWheel.updateSenseData(hallCntsIn8thSec, ltHallWindowSum)
 
         ' ------------------------------------------
         ' PROCESS right motor
@@ -550,13 +626,14 @@ PRI taskPostionSense() | senseStartTicks, timeNow, eStopCtr
         hallCntsIn8thSec := distanceIn90ths(rtWheel.getRawHallTicks(), RIGHT_WHEEL)  ' Read the next sensor value
         rtHallWindowSum -= LONG[@rtHallCountsWindow][rtHallWinIndex]            ' Remove the oldest entry from the sum
         long [@rtHallCountsWindow][rtHallWinIndex] := hallCntsIn8thSec          ' place the newest reading into the window
-        rtHallWindowSum += hallCntsIn8thSec                                 ' Add the newest reading to the sum
-        rtHallWinIndex := (rtHallWinIndex + 1) +// HALL_WINDOW_SIZE              ' Increment the index, and wrap to 0 if it exceeds the window size
-        if rtHallWinEntryCt < HALL_WINDOW_SIZE                               ' incr number of samples in sum until is window size
+        rtHallWindowSum += hallCntsIn8thSec                                     ' Add the newest reading to the sum
+        rtHallWinIndex := (rtHallWinIndex + 1) +// HALL_WINDOW_SIZE             ' Increment the index, and wrap to 0 if it exceeds the window size
+        if rtHallWinEntryCt < HALL_WINDOW_SIZE                                  ' incr number of samples in sum until is window size
             rtHallWinEntryCt++
 
         rtPosTrkHallTicks += hallCntsIn8thSec
 
+        rtWheel.updateSenseData(hallCntsIn8thSec, rtHallWindowSum)
         ' ------------------------------------------
         ' EVALUATE any motor stop requests
 
@@ -602,6 +679,7 @@ PUB showDriveStates()
 '' for TESTING dump curr drive states
     reportMotorStatus()
     reportDrvStatus()
+    reportFaultStatus()
 
 PRI reportDrvStatus() | ltState, rtState
     ltState, rtState := getDriverState()
@@ -613,9 +691,15 @@ PRI reportMotorStatus() | ltStatus, rtStatus
     showStatus(ltStatus, @"ltMot")
     showStatus(rtStatus, @"rtMot")
 
+PRI reportFaultStatus() | bLeftStatus, bRightStatus
+    bLeftStatus, bRightStatus := getFaultStatus()
+    showFaultStatus(bLeftStatus, @"ltMot", false)       ' false = only show if faulted
+    showFaultStatus(bRightStatus, @"rtMot", false)
+
 PRI showDriveStatesOnChange()
     reportDrvStatusOnChange()
     reportMotorStatusOnChange()
+    reportMotorFaultOnChange()
 
 PRI reportDrvStatusOnChange() | ltState, rtState
     ltState, rtState := getDriverState()
@@ -637,6 +721,16 @@ PRI reportMotorStatusOnChange() | ltStatus, rtStatus
         showStatus(rtStatus, @"rtMot")
         priorRtStatus := rtStatus
 
+PRI reportMotorFaultOnChange() | bLeftStatus, bRightStatus
+    bLeftStatus, bRightStatus := getFaultStatus()
+    if priorLtFault <> bLeftStatus
+        showFaultStatus(bLeftStatus, @"ltMot", true)       ' force output
+        priorLtFault := bLeftStatus
+
+    if priorRtFault <> bRightStatus
+        showFaultStatus(bRightStatus, @"rtMot", true)
+        priorRtFault := bRightStatus
+
 DAT { debug strings }
 
     dsUnknown       BYTE    "dsUnk",0
@@ -651,7 +745,6 @@ DAT { debug strings }
     dcsSPIN_UP      BYTE    "dcsSPIN_UP",0
     dcsAT_SPEED     BYTE    "dcsAT_SPEED",0
     dcsSPIN_DN      BYTE    "dcsSPIN_DN",0
-    dcsSLOWING_DN   BYTE    "dcsSLOWING_DN",0
     dcsSLOW_TO_CHG  BYTE    "dcsSLOW_TO_CHG",0
     dcsFAULTED      BYTE    "dcsFAULTED",0
     dcsESTOP        BYTE    "dcsESTOP",0
@@ -663,6 +756,8 @@ DAT { debug strings }
     priorRtStatus   LONG    -1
     priorLtState    LONG    -1
     priorRtState    LONG    -1
+    priorLtFault   LONG    -3
+    priorRtFault   LONG    -3
 
 
 PRI showDriverState(eState, pMsg)
@@ -677,8 +772,6 @@ PRI showDriverState(eState, pMsg)
             pStatVal := @dcsAT_SPEED
         DCS_SPIN_DN:
             pStatVal := @dcsSPIN_DN
-        DCS_SLOWING_DN:
-            pStatVal := @dcsSLOWING_DN
         DCS_SLOW_TO_CHG:
             pStatVal := @dcsSLOW_TO_CHG
         DCS_FAULTED:
@@ -704,6 +797,12 @@ PRI showStatus(eStatus, pMsg)
             placeAsciiDigits(@dsOtherVal, eStatus)
             pStatVal := @dsOther
     debug("- STATUS ", zstr_(pMsg), ": ", zstr_(pStatVal))
+
+PRI showFaultStatus(bStatus, pMsg, bForceOutput)
+    if bStatus == true
+        debug("- FAULT! ", zstr_(pMsg))
+    elseif bStatus == false and bForceOutput == true
+        debug("- no FAULT ", zstr_(pMsg))
 
 PRI placeAsciiDigits(pStrBytes, byt) | hiNyb, lowNyb
         hiNyb := byt & $f0 >> 4 + $30
@@ -754,6 +853,87 @@ PRI distanceIn90ths(newPos, bIsLeftWheel) : n90ths | priorPos
         priorLtPos := newPos
     else
         priorRtPos := newPos
+
+CON { --- HDMI Debug Support --- }
+
+CON { Constants for HDMI Debug }
+
+    DBG_GROUPS_CT = 1
+    DBG_MAX_VARS_IN_GROUP = 7
+
+VAR { Data Structure for HDMI Debug }
+
+    LONG    pTitlesAr[DBG_GROUPS_CT + 1]    ' first value is max vars
+    LONG    pVarCtAr[DBG_GROUPS_CT]
+    LONG    pNamesAr[DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP]
+    LONG    pValsAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
+
+DAT { Literals for HDMI Debug }
+
+showHDMIDebug   LONG    FALSE
+
+' user stearing data
+'---+-----------+---+---+---+-------------------+---+---+---+---+---+-----------+
+nameTitle1      BYTE    "Steering",0
+name10          BYTE    "power",0
+name11          BYTE    "direc.",0
+name12          BYTE    "ltPwr",0
+name13          BYTE    "rtPwr",0
+name14          BYTE    "stpTck",0
+name15          BYTE    "stpmSec",0
+name16          BYTE    "Cutoff",0
+nextAddr1
+dataLen1        LONG    @nextAddr1 - @nameTitle1
+
+PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
+' do internal one-time setup of driver debug data
+    nGrpOffset := 0
+    nVarsInGroup := 7
+    LONG[@pTitlesAr][nGrpOffset] := @nameTitle1
+    LONG[@pVarCtAr][nGrpOffset] := nVarsInGroup
+    ' populate the empty name/value ptr tables
+    nValsGrpOffset := nGrpOffset * DBG_MAX_VARS_IN_GROUP
+    LONG[@pNamesAr][nValsGrpOffset + 0] := @name10
+    LONG[@pNamesAr][nValsGrpOffset + 1] := @name11
+    LONG[@pNamesAr][nValsGrpOffset + 2] := @name12
+    LONG[@pNamesAr][nValsGrpOffset + 3] := @name13
+    LONG[@pNamesAr][nValsGrpOffset + 4] := @name14
+    LONG[@pNamesAr][nValsGrpOffset + 5] := @name15
+    LONG[@pNamesAr][nValsGrpOffset + 6] := @name16
+    LONG[@pValsAr][nValsGrpOffset + 0] := @rqstPower
+    LONG[@pValsAr][nValsGrpOffset + 1] := @rqstDirection
+    LONG[@pValsAr][nValsGrpOffset + 2] := @rqstLtPower
+    LONG[@pValsAr][nValsGrpOffset + 3] := @rqstRtPower
+    LONG[@pValsAr][nValsGrpOffset + 4] := @motorStopHallTicks
+    LONG[@pValsAr][nValsGrpOffset + 5] := @motorStopMSecs
+    LONG[@pValsAr][nValsGrpOffset + 6] := @userCutoff
+
+    ' tell our table size to reader
+    nGrpOffset := 1
+    LONG[@pTitlesAr][nGrpOffset] := DBG_MAX_VARS_IN_GROUP
+
+PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars | tmpAbsPtr
+'' Return pointers to HDMI-debug data structures for this motor-object instance
+    loadDisplayList()
+    nGroups := DBG_GROUPS_CT
+    pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
+    pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
+    pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+    pGroupVars := @pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+    if showHDMIDebug
+        debug("* -------------")
+        debug("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
+        debug("* -------------")
+        debug("* Steer DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
+        debug("* Steer DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
+        debug("* Steer DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+        debug("* Steer DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+        debug("* -------------")
+        debug("* Steer PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
+        debug("* -------------")
+        debug("* Steer Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        debug("* =============")
+
 
 
 CON { license }

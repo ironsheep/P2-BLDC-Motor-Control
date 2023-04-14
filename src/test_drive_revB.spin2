@@ -1,13 +1,13 @@
 '' =================================================================================================
 ''
-''   File....... test_motor_char_ofsts.spin2
-''   Purpose.... Characterize a new motor at given voltage - test range of fwd/rev offsets
+''   File....... test_drive_revB.spin2
+''   Purpose.... driver motor instrumented on RevA then RevB to compare drive signals
 ''   Authors.... Stephen M Moraco
-''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- Copyright (c) 2023 Iron Sheep Productions, LLC
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
-''   Started.... Aug 2022
-''   Updated.... 9 Aug 2022
+''   Started.... Mar 2023
+''   Updated.... 23 Mar 2023
 ''
 '' =================================================================================================
 
@@ -18,9 +18,8 @@ CON { timing }
 
     ' SPECIAL for LOGGING on RPi
 {
-    DEBUG_PIN_TX = 56
-    DEBUG_PIN_RX = 57
-    DEBUG_BAUD = 2_000_000
+    DEBUG_PIN_TX = 1
+    DEBUG_PIN_RX = 0
 '}
 
 CON { fixed io pins }
@@ -50,6 +49,8 @@ CON { application io pins }
 
     NOT_SET = -1
 
+    MTR_HOLD_AT_SPEED_IN_SEC = 30
+
 OBJ { our Motor(s) }
 
     user        :   "isp_bldc_motor_userconfig"     ' driver configuration
@@ -66,12 +67,8 @@ DAT { run-time condition vars }
     pGroupVarCts    LONG    0
     pGroupVars      LONG    0
 
-    startSec        LONG    0
-
-PUB main() | motorCog, senseCog, basePin, voltage, motor, bDidFault, failSpeed, testSpeed, bNoMovement, bFwdIsInverse, ofstInDegr, detectMode
+PUB main() | motorCog, senseCog, basePin, voltage, motor, lowVal, highVal, bDidFault, failSpeed, testSpeed, bNoMovement, detectMode
 '' DEMO Driving a single wheeled platform
-
-    startSec := getsec()    ' time we started this run
 
     ' start our HDMI debug output
     if bUseHDMI
@@ -104,105 +101,44 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, bDidFault, failSpeed, 
         showPowerSetting(voltage)
 
         ' just don't draw current at stop
-        wheel.holdAtStop(false)
+        wheel.holdAtStop(true)
 
         wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
         wheel.resetTracking()
 
-        ' binary search to find lowest speed that motor turns at this voltage
-        passNbr := 1
-        testSpeed := 200_000_000
-        wheel.testSetLimit(testSpeed)
-        debug(" --- ")
 
-        bFwdIsInverse := (user.MOTOR_TYPE == wheel.MOTR_DOCO_4KRPM) ? TRUE : FALSE
-{
-        ' do 10's check - FIXME: this check a waste of time... do 5's only, not 10's!
-        debug("* test: 0 to 180, incr by 10")
-        debug(" --- ")
-        repeat ofstInDegr from 0 to 180 step 10
-            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
-'}
+        ' drive forward at 25%
+        ' drive reverse at 20%
+        ' stop
+        wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' set to hold at speed for 2 Sec
+        wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
 
-{
-        ' do 5's check
-        debug("* test: 5 to 180, incr by 10")
-        debug(" --- ")
-        'repeat ofstInDegr from 5 to 180 step 10
-        repeat ofstInDegr from 55 to 180 step 10
-            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
-'}
-'{
-        ' lastly do local value check...
-        debug("* test: 45 to 60, incr by 1")
-        debug(" --- ")
-        repeat ofstInDegr from 45 to 60 step 1
-            evalOffset(ofstInDegr, bFwdIsInverse, testSpeed)
-'}
-        debug("* quit: all checked")
-        debug("  ")
+        waitUntilMotorDone()
 
-        showRunDuration()
+        wheel.driveAtPower(-20)                     ' REV at 100% pwr
+        wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' hold at speed for 2 Sec
 
-        debug("* END TEST: holding for 30 secs...")
-        waitms(30_000)   ' 30 seconds, then stop
+        waitUntilMotorDone()
+
+        debug("* holding for 20 secs...")
+        waitms(20000)   ' 20 seconds, then stop
+
 
         ' turn off our motor drivers
         wheel.stop()
 
-PRI showRunDuration() | durationSec, minutes, seconds
-        durationSec := getsec() - startSec    ' duration of this run
-        minutes := durationSec / 60
-        seconds := durationSec - (minutes * 60)
-        debug("* END: after ", udec_(minutes), " minutes, ", udec_(seconds), " seconds")
-
-PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed) | bDidFault, bNoMovement
-' test these offsets speed to see if current is best
-    wheel.testResetMaxValues()
-    debug(" ----------------------- ")
-    wheel.testSetFwdRevOffsets(newOffsetInDegr, bFwdIsInverse)
-    debug(" ----------------------- ")
-    debug("* OFFSET pass(", udec_(passNbr), "), ", udec(newOffsetInDegr))
-    bDidFault, bNoMovement := evalSpeed(speed)
-    if bNoMovement
-        debug(" -  Didn't move ", udec(speed))
-    if bDidFault or not bNoMovement
-        wheel.resetTracking()
-
-    passNbr++
-    debug("   ")
-    debug(" ======================= ")
-    debug("   8 sec...")
-    waitms(8_000) ' slight delay between passes
 
 PRI evalSpeed(testSpd) : bDidFault, bNoMovement | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
+    debug("* TEST pass(", udec_(passNbr++), ")", udec(testSpd))
     clearFault()
-    debug("   ")
-
-    debug("* TEST FWD pass(", udec_(passNbr), ")", udec(testSpd))
+    wheel.testSetLimit(testSpd)
     driveForwardToFail()
     bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
     bNoMovement := (endMaxRPM > 0) ? FALSE : TRUE
     if bDidFault
         clearFault()
-        waitms(5_000) ' slight delay between FWD/REV
-
     debug("   ")
-
-    if not bDidFault and not bNoMovement
-        debug("* TEST REV pass(", udec_(passNbr++), ")", udec(testSpd))
-        waitms(2_000) ' slight delay between FWD/REV
-        drivereverseToFail()
-        bDidFault, endMaxRPM, endMaxTics := reportEndCondition()
-        bNoMovement := (endMaxRPM > 0) ? FALSE : TRUE
-        if bDidFault
-            clearFault()
-            waitms(5_000) ' slight delay between FWD/REV
-        debug("   ")
-
-    debug(" --- ")
-
 
 VAR
     ' work values
@@ -244,7 +180,6 @@ PRI driveForwardToFail() : bBadStart | bDidFault
         wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
 
         bDidFault, bBadStart := waitUntilMotorDone()
-        wheel.driveAtPower(0)                      ' force STOP
 
     else
         debug("*E motor not ready")
@@ -259,7 +194,6 @@ PRI driveReverseToFail() : bBadStart | bDidFault
         wheel.driveAtPower(-100)                      ' now go FWD at 100% pwr
 
         bDidFault, bBadStart := waitUntilMotorDone()
-        wheel.driveAtPower(0)                      ' force STOP
 
     else
         debug("*E motor not ready")
@@ -343,7 +277,7 @@ CON { license }
  -------------------------------------------------------------------------------------------------
   MIT License
 
-  Copyright (c) 2022 Iron Sheep Productions, LLC
+  Copyright (c) 2023 Iron Sheep Productions, LLC
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
