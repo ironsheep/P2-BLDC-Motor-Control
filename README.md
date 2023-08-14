@@ -150,7 +150,8 @@ In this diagram there are three **rectangular objects** depicting files (yellow 
 
 We now have a working motor drive system that is fun to use.  While this was being developed we kept track of further improvements that can be made in the future.  Here's our list of the most notable:
 
-- Add acceleration control
+- Implement reading (and correct scaling) of the actual current draw of the motor (or both motors if two-wheeled system) - this is now possible with RevB boards
+- Implement acceleration control
 - Replace simple built-in spin-up, spin-down ramps with better
 
 
