@@ -8,13 +8,16 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 
 ## The Project
 
-Provide ready-to-use objects easily incorporated into your own code which control Brushless DC  (BLDC) motors via the [Parallax 64010 Universal Motor Driver P2 Add-on Boards](https://www.parallax.com/product/universal-motor-driver-p2-add-on-board/)  These boards can be used with either the:
+Provide ready-to-use objects easily incorporated into your own code which control Brushless DC  (BLDC) motors via the [Parallax 64010 Universal Motor Driver P2 Add-on Boards](https://www.parallax.com/product/universal-motor-driver-p2-add-on-board/)  These boards can be used with any of the following boards:
 
-- [Parallax 64020 P2 Edge Module Breadboard](https://www.parallax.com/product/p2-edge-module-breadboard/) - larger, solder-free prototyping area, extra unused pins
-- of [Parallax 64029 P2 Edge Breakout Board](https://www.parallax.com/product/p2-edge-breakout-board/) - medium size, NO solder-free prototyping area, extra unused pins
-- or [Parallax 64019 P2 Edge Mini Breakout Board](https://www.parallax.com/product/p2-edge-mini-breakout-board/) - smaller, fewer unused pins
+| Board | Features 
+| --- | --- |
+| [Parallax 64020 P2 Edge Module Breadboard](https://www.parallax.com/product/p2-edge-module-breadboard/) | larger size, solder-free prototyping area, 4 12-pin header pairs
+| [Parallax 64029 P2 Edge Breakout Board](https://www.parallax.com/product/p2-edge-breakout-board/) | medium size, NO solder-free prototyping area, 4 12-pin header pairs <br><br>(**Recommended for mobile platforms** *unless you need smaller form factor of Mini Edge 64019 and not using the extra pins provided by this board*)
+| [Parallax 64019 P2 Edge Mini Breakout Board](https://www.parallax.com/product/p2-edge-mini-breakout-board/) | smaller, only 2 12-pin header pairs plus an extra 12-pn header (partially used)<br><br>(**Alternate recommendation for mobile platforms** *if you have less space and use fewer pins*)
+| [Parallax 64000 Propeller 2 Evaluation Board (Rev C)](https://www.parallax.com/product/propeller-2-evaluation-board-rev-c/) |medium size, NO solder-free prototyping area, 4 12-pin header pairs
 
-NOTE: *If you wish to add more than a couple of sensors to your platform then you'll want to use the larger of the two as it provides more unused pins.*
+NOTE: *If you wish to add more than a couple of sensors to your mobile platform then you'll want to use the larger 64029 P2 Edge Breakout board as it provides more pins for connecting your additonal sensors.*
 
 Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardware](https://www.parallax.com/product/6-5-hub-motors-with-encoders-and-mounting-blocks-bundle/) which is perfect for use with the drivers from this project.
 
@@ -22,7 +25,7 @@ A new smaller higher RPM motor is also available from Parallax that works with t
 
 This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project are all you need to get your platform moving!  
 
-**Serial Control:** If you are looking for **Serial control of our BLDC Motor platform** then head over to: [Serial Control Page](SERIAL-CONTROL.md)
+**Serial Control:** If you wish to use an Arduino or Rapspberry Pi to control your **BLDC Motor platform** then head over to our: [Serial Control Page](SERIAL-CONTROL.md) for example instructions using a Raspberry Pi.
 
 ## Two Motors now Supported
 
@@ -159,12 +162,13 @@ We now have a working motor drive system that is fun to use.  While this was bei
 
 A small number of demos are provided with this project:
 
-| Spin2 File Name(s) | Demonstration
-| --- | --- | 
-| [demo\_single_motor.spin2](src/demo_single_motor.spin2) | Provides example code for controlling a single motor and position sensing of the single motor. (Uses HDMI (DVI) as display of live motor details.
-| [demo\_dual_motor.spin2](src/demo_dual_motor.spin2) | Provides example code for controlling a pair of motors and using the 2-wheel steering object.
-| [demo\_dual\_motor_rc.spin2](src/demo_dual_motor_rc.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object
-| [demo\_dual\_motor\_rc_hdmi.spin2](src/demo_dual_motor_rc_hdmi.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables
+| Spin2 File Name(s) | Demonstration | Required Board
+| --- | --- | --- |
+| [demo\_single_motor.spin2](src/demo_single_motor.spin2) | Provides example code for controlling a single motor and position sensing of the single motor. (Uses HDMI (DVI) as display of live motor details. | 64019 P2 Edge Mini Breakout Board,<br>-or-<br>64029 P2 Edge Breakout Board
+| [demo\_dual_motor.spin2](src/demo_dual_motor.spin2) | Provides example code for controlling a pair of motors and using the 2-wheel steering object. | 64019 P2 Edge Mini Breakout Board,<br>-or-<br>64029 P2 Edge Breakout Board
+| [demo\_dual\_motor_hdmi.spin2](src/demo_dual_motor_hdmi.spin2) | Provides example code for controlling a pair of motors and using the 2-wheel steering object. | 64029 P2 Edge Breakout Board
+| [demo\_dual\_motor_rc.spin2](src/demo_dual_motor_rc.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object | 64019 P2 Edge Mini Breakout Board,<br>-or-<br>64029 P2 Edge Breakout Board
+| [demo\_dual\_motor\_rc_hdmi.spin2](src/demo_dual_motor_rc_hdmi.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables | 64029 P2 Edge Breakout Board
 
 *NOTE: we built these demos over time as we developed the driver. There can be better examples but in the interest of time, so that we can get more of us using this driver as soon as possible, we are releasing these in their current state and will improve them over time.*
 
