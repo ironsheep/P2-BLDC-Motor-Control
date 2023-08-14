@@ -43,6 +43,8 @@ See also:
 Latest Changes:
 
 ```
+11 August 2023
+- fix 2-wheel steering object
 10 April 2023
 - Completing RevB board support for both motors
 12 March 2023
@@ -87,6 +89,11 @@ Latest Changes:
 Things we know about that still need attention:
 
 ```
+v4.1.0
+- Calculation of current and power not yet correct.
+v4.0.0
+- Calculation of current and power not yet correct.
+- BUG in isp_steering_2wheel.spin2 (validDetectModeForChoice() calling incorrect underlying method
 v3.0.0
 - Drive status reporting is not working in base objects so is also reported badly over serial I/F
 - Motor can fault at higher load conditions (we need to add a fallback algortihm so motor doesn't "give up" under load
