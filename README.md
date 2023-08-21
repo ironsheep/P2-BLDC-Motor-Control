@@ -235,6 +235,8 @@ This is a project supporting our P2 Development Community. Please feel free to c
 
 This work is entirely based upon **Chip Gracey**'s excellent **BLDC Motor Driver written in Pasm2** which he demonstrated to us in many of our [live forums](https://www.youtube.com/playlist?list=PLt_MJJ1F_EXa25_TWa4Sdi77daQaxA_ZU).  This project allows us all to use this driver.  Thank you Chip!
 
+The FlySky support and some of the serial support was written by **Jon McPhalen**. Thank you Jon!
+
 ## Disclaimer and Legal
 
 > *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
