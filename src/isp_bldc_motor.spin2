@@ -903,8 +903,8 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
         }
 
         ' Chips values (orig driver)
-        ' CHIP ORIG: offset_fwd	long	280 frac 360			'280 frac 360 (Doug's motor) 20
-        ' CHIP ORIG: offset_rev	long	230 frac 360			'230 frac 360 (Doug's motor) 340
+        ' CHIP ORIG: offset_fwd long    280 frac 360                    '280 frac 360 (Doug's motor) 20
+        ' CHIP ORIG: offset_rev long    230 frac 360                    '230 frac 360 (Doug's motor) 340
 
         ' my values from characterization at 18v5:
         ofsDegr := 43
@@ -1757,10 +1757,6 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
 
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
 
-                ' if we are to freewheel the motor let's float all drive pins
-                cmp     stop_mode_, #SM_FLOAT       wz  ' Q: should motor be freewheeling?
-    if_z        dirl    drive_pins                      ' YES, float all control pins (make them inputs)
-
                 dirl    pin_hall_u                      ' remake HALL pins inputs (they were in-between ADC and PWM pins)
                 dirl    pin_hall_v
                 dirl    pin_hall_w
@@ -1780,8 +1776,11 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
-                ' preset our starting angle
-                'call    #.initAngleFmHall      ' NOTE: may not need this as SPIN_UP does this
+                mov     curr_stop, stop_mode_           ' save current stop mode
+                cmp     stop_mode_, #SM_FLOAT       wz  ' Q: should motor be freewheeling?
+                call    #.initAngleFmHall               ' make sure angle set correctly, so motor doesn't jerk first time enters ctlMotor
+    if_nz       dirh    drive_pins                      ' NO, set control pins back to output
+    if_z        dirl    drive_pins                      ' Yes, float drive pins
 
                 ' reset timer (schedule next control time)
                 getct   ctrlEndTix                      ' get now
@@ -1828,6 +1827,14 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 ' this is a stop request
                 cmp     drv_state_, #DCS_STOPPED    wz      ' Q: are we already stopped?
     if_nz       jmp     #.newRqst                           ' NO, not stopped, go do stop!
+                cmp     curr_stop, stop_mode_       wz      ' stopped, see if stop mode has changed and update drive_pin state
+    if_z        jmp     #.endRqst                           ' no change so done
+                mov     curr_stop, stop_mode_               ' update curr stop mode
+                cmp     stop_mode_, #SM_FLOAT       wz      ' Q: what is new stop mode, should motor be freewheeling?
+    if_nz       call    #.initAngleFmHall                   ' make sure angle set correctly, so motor doesn't jerk when enters ctlMotor
+                                                            ' fault -> nofault -> stop mode=BRAKE, will cause jerk without .initAngleFmHall
+    if_nz       dirh    drive_pins                          ' NO, set control pins back to output
+    if_z        dirl    drive_pins                          ' Yes, float drive pins
                 jmp     #.endRqst                           ' YES, motor at STOP, just exit (w/o increment)
 .notRqStop
                 cmp     sv_tgt_incr, tgt_incr       wz      ' Q: do we have a new request?
@@ -1873,6 +1880,8 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 'call    #.initAngleFmHall               ' figure out where motor is once again
                 mov     drv_state_, #DCS_STOPPED        ' reset fault -> to stopped
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: are we floating pins during stop?
+    if_nz       call    #.initAngleFmHall               ' No, figure out where motor is before enabling drive pins
+                                                        ' stops jerk coming out of fault
     if_nz       dirh    drive_pins                      ' NO, set control pins back to output
                 ' if we were faulted, we are already stopped so just do nothing if new stop request
                 or      tgt_incr, tgt_incr          wz  ' Q: is stop request?
@@ -1891,6 +1900,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 mov     drv_state_, #DCS_SPIN_UP        ' We are going to ramp up
                 ' if we have floated all drive pins, re-enable them
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: did we float pins at last stop?
+    if_z        call    #.initAngleFmHall               ' then, let's first get motor initial angle for smooth startup
     if_z        dirh    drive_pins                      ' YES, set control pins back to output
                 jmp     #.rampUp                        ' now go ramp up!
 
@@ -2401,6 +2411,7 @@ final_ramp        res 1
 angle_          res 1       ' current driver angle
 prior_angle     res 1       ' prior driver angle
 fwdrev          res 1       ' driver current direction used for indexing into hall angle table
+curr_stop       res 1       ' current stop mode
 
 ' debug variables
 prior_angle_    res 1
