@@ -210,7 +210,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
     adc_fram    :=    frame_cnt                   ' set ADC to full PWM frame counts
     fram        :=    (frame_cnt / 2) << 16 + 1   ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
     bias        :=    frame_cnt / 4               ' PWM center-frame bias
-
+    numerator   :=    3300 * adc_fram                   ' calculate the adc scaling based off the adc_fram count
 
     ' setup driver parameters based on clock rate
     charge_time := ticks1us
@@ -558,8 +558,14 @@ PUB getPower() : nPower
 
 PUB getCurrent() : fAmps, fWatts
 '' Returns the latest current sense values
-    fAmps := FLOAT(tv_mA) /. F_SCALE_AMPS
-    fWatts := FLOAT(tv_mW) /. F_SCALE_WATTS
+    ' for REVA gain is 1, R is 0.005
+    ' for REVB gain is 50, R is 0.003
+    ' gain and R is combined into rSenseForBoard -> RevA rSenseForBoard 5, RevB rSenseForBoard 150
+    ' RevB. 10A, through 0,003R -> 0.03mV -> (50gain) -> 1.5V. 20A -> 3V, 10A -> 1.5V, 1A -> 0.15V
+    ' RevA. 10A, through 0.005R -> 0.05mV -> (1gain) -> 50mW, 20A -> 0.1V, 10A -> 50mV, 1A -> 5mV
+    ' however, adc isn't in standard adc but in p_count_highs with a period, so scaling needed by SCALE_AMPS
+    fAmps := sense_i_mV/rSenseForBoard                                          ' in multiples of 0.1mA
+    fWatts := round((float(fAmps) *. fMotorVolts)/. F_SCALE_WATTS)              ' in mW
 
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
@@ -903,8 +909,8 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
         }
 
         ' Chips values (orig driver)
-        ' CHIP ORIG: offset_fwd	long	280 frac 360			'280 frac 360 (Doug's motor) 20
-        ' CHIP ORIG: offset_rev	long	230 frac 360			'230 frac 360 (Doug's motor) 340
+        ' CHIP ORIG: offset_fwd long    280 frac 360                    '280 frac 360 (Doug's motor) 20
+        ' CHIP ORIG: offset_rev long    230 frac 360                    '230 frac 360 (Doug's motor) 340
 
         ' my values from characterization at 18v5:
         ofsDegr := 43
@@ -1258,15 +1264,10 @@ CON ' -- TASK: position tracking --
   R360_WINDOW_SIZE = 5
   HALL_WINDOW_SIZE = SENSE_LOOP_HZ
 
-    ' shift 4 digits to left of decimal
-  F_SCALE_AMPS = 10_000.0
-  SCALE_AMPS = 10_000
-    ' shift 3 digits to left of decimal
-  F_SCALE_WATTS = 1_000.0
-  SCALE_WATTS = 1_000
+  F_SCALE_WATTS = 10.0
 
   F_REV_A_RSENSE = 5        ' .005 Ohms
-  F_REV_B_RSENSE = 3        ' .003 Ohms
+  F_REV_B_RSENSE = 3*50     ' .003 Ohms * gain 50 from INA180B2
 
 VAR { * sense buffer and stack arrays * }
     LONG    taskStack[STACK_SIZE_LONGS]
@@ -1430,8 +1431,8 @@ PUB updateSenseData(nHallCntsIn8thSec, nHallWindowSum)
 
     tvMaxSenseI := max(sense_i_mV, tvMaxSenseI)
     ' power calcs
-    tv_mA := sense_i_mV / rSenseForBoard
-    tv_mW :=  trunc(tv_mA *. fMotorVolts *. F_SCALE_WATTS) ' * SCALE is give me 3 digits to right of decimal
+    tv_mA := sense_i_mV/rSenseForBoard                                          ' in multiples of 0.1mA
+    tv_mW := round((float(tv_mA) *. fMotorVolts)/. F_SCALE_WATTS)               ' in mW
 
     if user.MOTOR_TYPE == MOTR_6_5_INCH
         ' pos is in hall-steps of 4Degr each.
@@ -1714,7 +1715,8 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
 
                 ' ADC setup 1
                 wrpin   adc_modes+0, adc_pins           ' switch ADC to GIO calibration
-                wxpin   #11, adc_pins                   ' (#11 = 2048-clock / 12-bit conversion)
+                wxpin   adc_fram, adc_pins              ' set count period to match our PWM frame width
+                wypin   #0, adc_pins
 
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
 
@@ -1735,6 +1737,11 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 rdpin   vio_levels+2, pin_adc_w_i
                 rdpin   vio_levels+3, pin_adc_cur_i
 
+                sub     vio_levels+0, gio_levels+0      ' sub gio from vio to get range
+                sub     vio_levels+1, gio_levels+1      ' sub gio from vio to get range
+                sub     vio_levels+2, gio_levels+2      ' sub gio from vio to get range
+                sub     vio_levels+3, gio_levels+3      ' sub gio from vio to get range
+
                 qdiv    numerator, vio_levels+0         ' calculate our values from readings
                 qdiv    numerator, vio_levels+1
                 qdiv    numerator, vio_levels+2
@@ -1752,8 +1759,6 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 dirl    all_pins                        ' disable ADC pins for configuration
 
                 wrpin   adc_modes+2, adc_pins           ' switch ADC to pin sampling
-                wxpin   adc_fram, adc_pins              ' set count period to match our PWM frame width
-                wypin   #0, adc_pins                    ' set mode to incrment on highs, only (vs. #1 incr & decr)
 
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
 
@@ -2128,21 +2133,17 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 rdpin   sense_w_, pin_adc_w_i
                 rdpin   sense_i_, pin_adc_cur_i
 
-                sub     sense_u_, gio_levels+0      ' compute (numerator * (pin_level - gio_level)) >> 11
+                sub     sense_u_, gio_levels+0
                 muls    sense_u_, scl_levels+0
-                sar     sense_u_, #11
 
                 sub     sense_v_, gio_levels+1
                 muls    sense_v_, scl_levels+1
-                sar     sense_v_, #11
 
                 sub     sense_w_, gio_levels+2
                 muls    sense_w_, scl_levels+2
-                sar     sense_w_, #11
 
                 sub     sense_i_, gio_levels+3
                 muls    sense_i_, scl_levels+3
-                sar     sense_i_, #11               ' reduced to milliVolts
 
                 mov     tmpY, duty_                 ' feed three CORDIC operations to get phase drive levels
                 shr     tmpY, #4
@@ -2315,9 +2316,9 @@ drvrTgglPnFld   LONG    TEST_PIN_LP_TOGL addpins 0  ' convert to pinfield
 drvrTggl2PnFld  LONG   TEST_PIN_UNKNOWN addpins 0  ' convert to pinfield
 '}
 
-adc_modes       LONG    p_adc_gio | p_adc       ' +0 : adc modes, by state
-                LONG    p_adc_vio | p_adc       ' +1
-                LONG    p_adc_1x | p_count_highs   ' +2 ' WAS p_adc_1x | p_adc
+adc_modes       LONG    p_adc_gio | p_count_highs  ' +0 : adc modes, by state
+                LONG    p_adc_vio | p_count_highs  ' +1
+                LONG    p_adc_1x | p_count_highs   ' +2
 
 ' turn motor to view hall sequence ...  learn in known direction
 '   efficient: low current draw at given speed
