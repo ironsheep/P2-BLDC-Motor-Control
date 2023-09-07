@@ -51,20 +51,38 @@ dat
 
 ' NOTE: in following: 0th channel min/max is not used - these are defaults used when cal is not run
 '  if your FlySky reports diff values run call in your code and then adjust these values (unless you always want to run cal.)
+'  or call starttx and pass in a min/max table
     ctlMinValue     word    0, 246, 248, 250, 254, 240
                     word    240, 240, 240, 240, 240
     ctlMaxValue     word    0, 1807, 1801, 1766, 1786, 1807
                     word    1807, 1807, 1807, 1807, 1807
 
+    validswitches   byte    CTL_SW_A, CTL_SW_B, CTL_SW_C, CTL_SW_D, CTL_NADA
+    valid3Ways      byte    CTL_SW_C, CTL_NADA
+
     bShowDebug      BYTE    FALSE
+
+    pctlMinValue    long    0
+    pctlMaxValue    long    0
+    pvalidswitches  long    0
+    pvalid3Ways     long    0
+    maxctrls        long    0
 
 PUB null()
     '' This is not a top-level object
 
 pub start(desiredRxPin) : cog
-    '' Configure IO and objects for application
+  cog := starttx(desiredRxPin, @ctlMinValue, @ctlMaxValue, @validswitches, @valid3Ways, MAX_CTLS)
+
+pub starttx(desiredRxPin, pctlMin, pctlMax, pvalidsw, pvalid3W, tmaxctrls) : cog
+'' Configure IO and objects for application
+'' config of min/max channel values
+'' config allowed switch and 3way switches
+    longmove(@pctlMinValue, @pctlMin, 5)
     bShowDebug := FALSE ' default
     cog := sbus.start(desiredRxPin, @Defaults)                                ' start s.bus rx
+    if cog == 0
+        debug("!!ERROR!!  failed to start SBUS Cog")
     waitms(250)
     showSbus()
 
@@ -106,21 +124,39 @@ PUB swIsMiddle(swChan) : bMiddleState
     bMiddleState := readSwitch(swChan) == SST_MID
     'debug("- swIsMiddle() = ", sdec_Long_(bMiddleState))
 
-PUB readSwitch(swChan) : eSwState | validSwChan
+PUB readSwitch(swChan) : eSwState
     '' Read switch value and decode into switch state (2-pos sw) [if 3-pos divert to other routine]
-    validSwChan := CTL_SW_A #> swChan <# CTL_SW_D                                ' legal SBUS Rxcvr channel
-    if validSwChan == CTL_SW_C   ' if 3-way sw don't allow it
+    ifnot checkSwitch(swChan)                                                   ' legal SBUS Rxcvr channel
+      eSwState := SST_OFF
+      swChan := 0                                                               ' for debug below
+    elseif check3Way(swChan)
         return readSw3Way(swChan)
     else
-        eSwState := readChannel(validSwChan) > 1023 ? SST_OFF : SST_ON
+        eSwState := readChannel(swChan) > 1023 ? SST_OFF : SST_ON
     if bShowDebug
-        'term.fstr2(string("- readSwitch(%d) - %d\r\n"), validSwChan, eSwState)
-        debug("- readSwitch(", udec_(validSwChan), ") - ", udec(eSwState))
+        debug("- readSwitch(", udec_(swChan), ") - ", udec(eSwState))
 
-PUB readSw3Way(swChan) : eSwState | validSwChan, rawValue
+PRI checkctl(swChan, pctllist) : validctl | index
+    repeat until byte[pctllist][index] == CTL_NADA
+        if byte[pctllist][index++] == swChan
+            validctl~~
+            quit
+
+PRI checkSwitch(swChan) : validSwitch
+    validSwitch := checkctl(swChan, pvalidswitches)
+    'debug("- checkswitch(", udec_(swChan), ") - ", udec(validswitch))
+
+PRI check3Way(swChan) : valid3Way
+    valid3Way := checkctl(swChan, pvalid3Ways)
+    'debug("- check3Way(", udec_(swChan), ") - ", udec(valid3Way))
+
+PUB readSw3Way(swChan) : eSwState | rawValue
     '' Read 3-pos switch value and decode into switch state
-    validSwChan := CTL_SW_C #> swChan <# CTL_SW_C                                ' legal SBUS Rxcvr channel
-    rawValue := readChannel(validSwChan)
+    ifnot check3Way(swChan)
+      eSwState := SST_OFF
+      swChan := 0                                                               ' for debug below
+    else
+        rawValue := readChannel(swChan)
     'debug("- readSw3Way() = ", udec_(rawValue))
     if rawValue < 684   ' bottom 3rd of 0-2047
         eSwState := SST_ON
@@ -128,8 +164,7 @@ PUB readSw3Way(swChan) : eSwState | validSwChan, rawValue
         eSwState := rawValue < 1367 ? SST_MID : SST_OFF ' bottom 2/3 rds or top 3rd?
     if bShowDebug
         'term.fstr2(string("- readSw3Way(%d) - %d\r\n"), validSwChan, eSwState)
-        debug("- readSw3Way(", udec_(validSwChan), ") - ", udec(eSwState))
-
+        debug("- readSw3Way(", udec_(swChan), ") - ", udec(eSwState))
 
 PUB showSbus() | ch, pos, x, y
     '' Show status indication
@@ -398,13 +433,13 @@ PRI calVariable(varChan) | legalChan, priorPosn, currPosn, deltaPosn, bHaveGoodV
 
 PUB chanMinMax(chan) : minVal, maxVal | validChan
     '' Return calculated min max for given channel
-    validChan := 0 #> chan <# MAX_CTLS - 1                                ' legal SBUS Rxcvr channel
-    minVal := WORD [@ctlMinValue][validChan]
-    maxVal := WORD [@ctlMaxValue][validChan]
+    validChan := 0 #> chan <# maxctrls - 1                                      ' legal SBUS Rxcvr channel
+    minVal := WORD [pctlMinValue][validChan]
+    maxVal := WORD [pctlMaxValue][validChan]
 
 PRI updMinMaxValueForChan(value, chan) : minVal, maxVal | currMinValue, currMaxValue, newValue, validChan
     ' upd min max for given channel
-    validChan := 0 #> chan <# MAX_CTLS - 1                                ' legal SBUS Rxcvr channel
+    validChan := 0 #> chan <# maxctrls - 1                                      ' legal SBUS Rxcvr channel
     'term.fstr2(string("- UPD Val: Chan%d Val = %d\r\n"), validChan, value)
     if chan == validChan
         currMinValue, currMaxValue := chanMinMax(validChan)
@@ -413,14 +448,14 @@ PRI updMinMaxValueForChan(value, chan) : minVal, maxVal | currMinValue, currMaxV
         if currMinValue <> newValue
             'term.fstr3(string("- chan%d MIN %d -> %d\r\n"), chan, currMinValue, newValue)
             debug("- chan", udec_(chan), " MIN ", udec_(currMinValue), " -> ", udec_(newValue))
-            WORD [@ctlMinValue][validChan] := newValue
+            WORD [pctlMinValue][validChan] := newValue
             minVal := newValue
 
         newValue := MAX(value, currMaxValue)
         if currMaxValue <> newValue
             'term.fstr3(string("- chan%d MAX %d -> %d\r\n"), chan, currMaxValue, newValue)
             debug("- chan", udec_(chan), " MAX ", udec_(currMaxValue), " -> ", udec_(newValue))
-            WORD [@ctlMaxValue][validChan] := newValue
+            WORD [pctlMaxValue][validChan] := newValue
             maxVal := newValue
 
 PRI MIN(ltVal, rtVal) : minValue
@@ -429,6 +464,7 @@ PRI MIN(ltVal, rtVal) : minValue
 PRI MAX(ltVal, rtVal) : maxValue
     maxValue := ltVal < rtVal ? rtVal : ltVal
 
+{
 pri map(value, inmin, inmax, outmin, outmax) : result
     ' Maps value in range inmin..inmax to new value in range outmin..outmax
     if (value <= inmin)
@@ -437,7 +473,7 @@ pri map(value, inmin, inmax, outmin, outmax) : result
         result :=  outmax
     else
         result :=  (value - inmin) * (outmax - outmin) / (inmax - inmin) + outmin
-
+'}
 con { license }
 
 {{
