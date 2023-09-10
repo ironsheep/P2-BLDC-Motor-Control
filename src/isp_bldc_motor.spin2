@@ -104,27 +104,14 @@ PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok | legalBase
 '' Specify motor control board connect location for this motor and start the driver
         ' setup runtime constants
     init(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    params_ptr := @offset_fwd   ' point to driver variables
+    setTargetAccel(0)           ' do NOT move at startup
 
-    ' ensure we only use legal values
-    legalBase := eMotorBasePin
-    CASE eMotorBasePin
-        PINS_P0_P15 :
-        PINS_P16_P31 :
-        PINS_P32_P47 :
-        OTHER :
-            legalBase := INVALID_PIN_BASE
-
-    ' if legal base-pin then start cog
-    if legalBase <> INVALID_PIN_BASE
-        pinbase := legalBase        ' record base pin number
-        params_ptr := @offset_fwd   ' point to driver variables
-        setTargetAccel(0)           ' do NOT move at startup
-
-        ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
-        if motorCog == 0    ' did fail?
-            debug("!! ERROR filed to start Motor Control task")
-        else
-            debug("* Motor COG #", sdec_(motorCog- 1))
+    ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
+    if motorCog == 0    ' did fail?
+        debug("!! ERROR filed to start Motor Control task")
+    else
+        debug("* Motor COG #", sdec_(motorCog- 1))
 
 PUB stop()
 '' Stop cogs and release pins assigned to this motor
@@ -145,18 +132,12 @@ PUB stop()
 PUB testSetup(eMotorBasePin, eMotorVoltage, eDetectionMode) | legalBase
 '' Specify motor control board connect location for this motor BUT DON'T start the driver
     init(eMotorBasePin, eMotorVoltage, eDetectionMode)
-    ' ensure we only use legal values
-    legalBase := eMotorBasePin
-    CASE eMotorBasePin
-        PINS_P0_P15 :
-        PINS_P16_P31 :
-        PINS_P32_P47 :
-        OTHER :
-            legalBase := INVALID_PIN_BASE
 
-    ' if legal base-pin then start cog
-    if legalBase <> INVALID_PIN_BASE
-        pinbase := legalBase        ' record base pin number
+PRI validatePinBase(eMotorBasePin) : legalBase
+
+  legalBase := VALUE_NOT_SET
+  if lookdown(eMotorBasePin: PINS_P0_P15, PINS_P16_P31, PINS_P32_P47) <> 0
+    legalBase := eMotorBasePin
 
 PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
 '' Specify motor control board connect location for this motor BUT DON'T start the driver
@@ -169,7 +150,12 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
     ' set up debug variables
     useDebug := FALSE
     showHDMIDebug := FALSE
-    pinbase := VALUE_NOT_SET        ' record base pin number
+    pinbase := validatePinBase(eMotorBasePin)           ' record base pin number
+
+    eUserDetectionMode, bUserForced := getInternalDetectMode(eDetectionMode)
+
+    ' set the mode now used by the driver to condition things (current-sense scaling, configpowerLimits, etc.)
+    eDetectedBoard := getBoardType()
 
     bResetSenseData := FALSE
 
@@ -275,11 +261,6 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
         tickInMM_x10 := 0
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
-
-    eUserDetectionMode, bUserForced := getInternalDetectMode(eDetectionMode)
-
-    ' set the mode now used by the driver to condition things (current-sense scaling, etc.)
-    eDetectedBoard := getBoardType()
 
     rSenseForBoard := VALUE_NOT_SET
     if eDetectedBoard == REV_A
@@ -903,8 +884,8 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr
         }
 
         ' Chips values (orig driver)
-        ' CHIP ORIG: offset_fwd	long	280 frac 360			'280 frac 360 (Doug's motor) 20
-        ' CHIP ORIG: offset_rev	long	230 frac 360			'230 frac 360 (Doug's motor) 340
+        ' CHIP ORIG: offset_fwd long    280 frac 360                    '280 frac 360 (Doug's motor) 20
+        ' CHIP ORIG: offset_rev long    230 frac 360                    '230 frac 360 (Doug's motor) 340
 
         ' my values from characterization at 18v5:
         ofsDegr := 43
