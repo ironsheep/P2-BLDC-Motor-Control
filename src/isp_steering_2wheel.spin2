@@ -102,7 +102,7 @@ PUB null()
 
 '' This is not a top-level object
 
-PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok
+PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog
 '' Start our drive cogs connected to our left and right motor control pin-sets
     ticks1ms   := (clkfreq / 1_000)
     ticks1us   := (clkfreq / 1_000_000)
@@ -120,11 +120,15 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
     '    debug("!! ERROR bad CLOCK value")
     '    repeat ' halt here
 
-    ltWheel.start(leftBasePin, driveVoltage, leftDetectMode)
+    ltcog := ltWheel.startEx(leftBasePin, driveVoltage, leftDetectMode, true)
     ltWheel.testSetMotorId(@"ltMot")
-    rtWheel.start(rightBasePin, driveVoltage, rightDetectMode)
+    rtcog := rtWheel.startEx(rightBasePin, driveVoltage, rightDetectMode, true)
     rtWheel.testSetMotorId(@"rtMot")
     rtWheel.forwardIsReverse()
+    cogmask := (1<<(ltcog-1))|(1<<(rtcog-1))
+    waitms(100)
+    debug(" sendatn: ", sdec(ltcog-1), " ", sdec(rtcog-1))
+    cogatn(cogmask)                                     ' sync the 2 motor cogs
 
     ' init user tracking vars
     motorStopHallTicks := 0
@@ -208,11 +212,13 @@ PUB driveAtPower(leftPower, rightPower)
 '' Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
 '' Turns left motor on at {leftPower} and right at {rightPower}. Where {*Power} are in the range [(-100) to 100].
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
-    rqstLtPower := leftPower
-    rqstRtPower := rightPower
+    rqstLtPower, rqstRtPower := leftPower, rightPower
 
-    ltWheel.driveAtPower(rqstLtPower)
-    rtWheel.driveAtPower(rqstRtPower)
+    ltWheel.driveAtPowerEx(rqstLtPower, true)
+    rtWheel.driveAtPowerEx(rqstRtPower, true)
+    cogatn(cogmask)                                     ' sync the 2 motor cogs
+    ltWheel.SyncStatus()                                ' make sure both motors have taken value
+    rtWheel.SyncStatus()
 
 PUB stopAfterRotation(nRotationCount, eRotationUnits) | degreesPerTic, ticsPerRotation
 '' Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
@@ -566,6 +572,9 @@ VAR { Data for Motor Position Tracking }
     long    rqstLtPower
     long    rqstRtPower
     long    userCutoff
+
+    ' bitmask of motor cogs, used to sync updated to the 2 motors
+    long    cogmask
 
     long    notUsed
 

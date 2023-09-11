@@ -99,12 +99,15 @@ PUB null()
 
 '' This is not a top-level object
 
-PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok | legalBase
+PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
+    ok := startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, false)
+
+PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | legalBase
 '' Specify motor control board connect location for this motor and start the driver
-        ' setup runtime constants
-    init(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    sync_required := sync
+    init(eMotorBasePin, eMotorVoltage, eDetectionMode)  ' setup runtime constants
     params_ptr := @offset_fwd   ' point to driver variables
-    setTargetAccel(0)           ' do NOT move at startup
+    setTargetAccel(0, false)                            ' do NOT move at startup
 
     ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
     if motorCog == 0    ' did fail?
@@ -352,19 +355,22 @@ PUB driveForDistance(distance, distanceUnits)
     stopAfterDistance(distance, distanceUnits)
     driveAtPower(maxSpeed4dist)
 
-PUB driveAtPower(power) | limitPwr, motorIncre, correctedPower
+PUB driveAtPower(power)
+  driveAtPowerEx(power, false)
+
+PUB driveAtPowerEx(power, sync) | limitPwr, motorIncre, correctedPower
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
 '' Turns the motor on at {power}.
 '' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
     limitPwr :=  -100 #> power <# 100
     if limitPwr <> power
-        debug("! WARNING: driveAtPower() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
-    debug("-MOT- driveAtPower(", zstr_(@motorId), ") ", sdec_long(limitPwr), udec_long(ramp_fast), udec_long(ramp_slo))
+        debug("! WARNING: driveAtPowerEx() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
+    debug("-MOT- driveAtPowerEx(", zstr_(@motorId), ") ", sdec_long(limitPwr), udec_long(ramp_fast), udec_long(ramp_slo))
     motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
     correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
     motorIncre := incrementForPower(correctedPower)
-    setTargetAccel(motorIncre)
-    'debug("-MOT- driveAtPower() EXIT ")
+    setTargetAccel(motorIncre, sync)
+    'debug("-MOT- driveAtPowerEx() EXIT ")
 
 PUB stopAfterRotation(nRotationCount, eRotationUnits)
 '' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
@@ -450,12 +456,12 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
 PUB stopMotor()
 '' Stops the motor, killing any motion that was still in progress
 ''  AFFECTED BY:holdAtStop()
-    setTargetAccel(0)
+    setTargetAccel(0, false)
 
 PUB emergencyCutoff()
 '' EMERGENCY-Stop - Immediately stop motor, killing any motion that was still in progress
     e_stop := TRUE
-    setTargetAccel(0)
+    setTargetAccel(0, false)
     debug("-- EMERGENCY STOP --")
 
 PUB clearEmergency()
@@ -729,7 +735,7 @@ PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) | fwdDegrees, revDegrees
 
 PUB testDriveAtMotorIncrement(motorIncre)
 '' TESTING USE: set target accelleration to fix value
-    setTargetAccel(motorIncre)
+    setTargetAccel(motorIncre, false)
 
 PUB testGetResults() : nMaxRPM, maxTics, bDidFault, max_mV
 '' TESTING USE: return results of test pass
@@ -956,10 +962,16 @@ PRI confgurePowerLimits(userVoltage) | selectedPower, index
         minRevIncreAtPwr := 0 - minFwdIncreAtPwr
     debug("* EXIT 2 CFG ", sdec_long(eUserSelectedVolts), " ", sdec(maxFwdIncreAtPwr), " ", sdec(minFwdIncreAtPwr))
 
-PRI setTargetAccel(nTgtIncr)
+PRI setTargetAccel(nTgtIncr, sync) | inincr
+    inincr := nTgtIncr
+    nTgtIncr ZEROX= 30                                  ' clear bit 31
+    nTgtIncr |= (sync << 31)                            ' bit 31 set if sync required
     targetIncre := nTgtIncr
-    debug("-MOT- ", sdec_long(targetIncre))
-    tvTargetIncreInM := nTgtIncr / 10_000
+    debug("-MOT- ", sdec_long(inincr), " ", uhex_long(nTgtIncr), " ", sdec_(nTgtIncr>>31), " ", sdec_long(ramp_fast), " ", sdec_long(ramp_slo))
+    tvTargetIncreInM := inincr / 10_000
+
+PUB SyncStatus()
+    repeat while targetIncre & $8000_0000
 
 PRI motorVoltage(eSelectedPower) : fVolts | index
     if (index := lookdown(eSelectedPower:PWR_6p0V..PWR_25p9V)) <> 0
@@ -1264,12 +1276,12 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
             timeNow := getms()
             if timeNow > motorStopMSecs
                 debug("-MOT- time limit reached")
-                setTargetAccel(0)
+                setTargetAccel(0, false)
                 motorStopMSecs := 0 ' and clear user request
         elseif motorStopHallTicks > 0
             if posTrkHallTicks > motorStopHallTicks
                 debug("-MOT- distance limit reached")
-                setTargetAccel(0)
+                setTargetAccel(0, false)
                 motorStopHallTicks := 0 ' and clear user request
 
         deltaTicks := getct() - senseStartTicks
@@ -1642,6 +1654,9 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
 
                 wrpin   adc_modes+2, adc_pins           ' switch ADC to pin sampling
 
+                testb   sync_required, #0           wc      ' do we need to wait for attention?
+    if_c        waitatn                                     ' Y: wait to be atn by caller
+
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
 
                 dirl    pin_hall_u                      ' remake HALL pins inputs (they were in-between ADC and PWM pins)
@@ -1699,7 +1714,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 cmp     drv_state_, #DCS_ESTOP      wz      ' Q: were we emergency stopped?
     if_z        mov     drv_state_, #DCS_STOPPED            ' YES, reset to simply stopped so we start out pins correctly
                 mov     sv_tgt_incr, tgt_incr
-                rdlong  tgt_incr, ptra[-1]                  ' get rate of increment ( +/- drive power, or 0 stop)
+                call    #.gettgtincr                        ' get rate of increment ( +/- drive power, or 0 stop)
                 or      tgt_incr, tgt_incr          wz      ' Q: being asked to stop?
     if_nz       jmp     #.notRqStop                         ' NO, not exception, check next
                 ' this is a stop request
@@ -2117,6 +2132,15 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     ' =========================================================================
     '  PRIVATE (Utiility) Subroutines
     ' -------------------------------------------------------------------------
+.gettgtincr
+                rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
+                testb   tgt_incr, #31               wc  ' bit 31 is used to carry sync info
+    if_c        pollatn                             wz  ' need to sync, but dont want to wait so if atn not ready
+    if_c_and_nz mov     tgt_incr, sv_tgt_incr           ' reset tgt_incr, if wanting atn and not received it yet
+    if_c_and_z  bitl    tgt_incr, #31                   ' have the atn, so
+    if_c_and_z  wrlong  tgt_incr, ptra[-1]              ' let caller know we have taken it by clearing sync bit
+    _ret_       signx   tgt_incr, #30                   ' sign extend back to normal tgt_incr
+
 .wait4adc
 .wait4adcAgn    testp   pin_adc_cur_i           wc      ' wait for ADC sample to be avail. (wtg on 4th pin set up)
     if_nc       jmp     #.wait4adcAgn
@@ -2154,7 +2178,7 @@ bias            LONG    0                       ' PWM center-frame bias [was: LO
 third           LONG    1 FRAC 3                ' 120 degrees
 numerator       LONG    3300 << 11              ' numerator for ADC calculations, configured from init to match the adc_fram coutn rather than 1 << 11
 maxNeg          LONG    $FFFF_FFFF              ' 32-bits of one (max negative signed value)
-maxPos          LONG    $7FFF_FFFF              ' max positive signed value
+sync_required   LONG    0                       ' non zero if motor loop should wait to start
 ramp_thresh     LONG    25_000_000              ' fm zero - slow ramp to here then fast ramp ( ~1/5 of 0-max )
 
 'twoPercent      LONG    FRAME / 10              ' 2% of frame/2
