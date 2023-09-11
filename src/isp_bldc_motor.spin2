@@ -1600,7 +1600,8 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
 
                 ' ADC setup 1
                 wrpin   adc_modes+0, adc_pins           ' switch ADC to GIO calibration
-                wxpin   #11, adc_pins                   ' (#11 = 2048-clock / 12-bit conversion)
+                wxpin   adc_fram, adc_pins              ' set count period to match our PWM frame width
+                wypin   #0, adc_pins
 
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
 
@@ -1621,6 +1622,11 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 rdpin   vio_levels+2, pin_adc_w_i
                 rdpin   vio_levels+3, pin_adc_cur_i
 
+                sub     vio_levels+0, gio_levels+0      ' sub gio from vio to get range
+                sub     vio_levels+1, gio_levels+1      ' sub gio from vio to get range
+                sub     vio_levels+2, gio_levels+2      ' sub gio from vio to get range
+                sub     vio_levels+3, gio_levels+3      ' sub gio from vio to get range
+
                 qdiv    numerator, vio_levels+0         ' calculate our values from readings
                 qdiv    numerator, vio_levels+1
                 qdiv    numerator, vio_levels+2
@@ -1638,8 +1644,6 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 dirl    all_pins                        ' disable ADC pins for configuration
 
                 wrpin   adc_modes+2, adc_pins           ' switch ADC to pin sampling
-                wxpin   adc_fram, adc_pins              ' set count period to match our PWM frame width
-                wypin   #0, adc_pins                    ' set mode to incrment on highs, only (vs. #1 incr & decr)
 
                 dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
 
@@ -2025,21 +2029,17 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 rdpin   sense_w_, pin_adc_w_i
                 rdpin   sense_i_, pin_adc_cur_i
 
-                sub     sense_u_, gio_levels+0      ' compute (numerator * (pin_level - gio_level)) >> 11
+                sub     sense_u_, gio_levels+0
                 muls    sense_u_, scl_levels+0
-                sar     sense_u_, #11
 
                 sub     sense_v_, gio_levels+1
                 muls    sense_v_, scl_levels+1
-                sar     sense_v_, #11
 
                 sub     sense_w_, gio_levels+2
                 muls    sense_w_, scl_levels+2
-                sar     sense_w_, #11
 
                 sub     sense_i_, gio_levels+3
                 muls    sense_i_, scl_levels+3
-                sar     sense_i_, #11               ' reduced to milliVolts
 
                 mov     tmpY, duty_                 ' feed three CORDIC operations to get phase drive levels
                 shr     tmpY, #4
@@ -2210,9 +2210,9 @@ drvrTgglPnFld   LONG    TEST_PIN_LP_TOGL addpins 0  ' convert to pinfield
 drvrTggl2PnFld  LONG   TEST_PIN_UNKNOWN addpins 0  ' convert to pinfield
 '}
 
-adc_modes       LONG    p_adc_gio | p_adc       ' +0 : adc modes, by state
-                LONG    p_adc_vio | p_adc       ' +1
-                LONG    p_adc_1x | p_count_highs   ' +2 ' WAS p_adc_1x | p_adc
+adc_modes       LONG    p_adc_gio | p_count_highs  ' +0 : adc modes, by state
+                LONG    p_adc_vio | p_count_highs  ' +1
+                LONG    p_adc_1x | p_count_highs   ' +2
 
 ' turn motor to view hall sequence ...  learn in known direction
 '   efficient: low current draw at given speed
