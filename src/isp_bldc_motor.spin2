@@ -220,9 +220,13 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
     ' NOTES: 220410 -  at 14.8V 40_000 seems to fault a lot on gravel surface (i'm switching) to 10_000 and PWR_14p8V to see if motors stay operational (5_000 dog slow)
     ' NOTES: 220413 -  at 14.8V 10_000 better on gravel surface  but too slow a ramp to 15_000 and PWR_14p8V to see if motors stay operational
     ' 50_000 for 12v & 18_5v
-
-    ramp_fast   := 50_000                   ' 50k angle increment: add/sub this every 500 uSec to ramp up to speed, or ramp down to zero
-    ramp_slo    := 12_000                   ' 8k angle decrement: add/sub this every 500 uSec to ramp up from zero (slower initial ramp so we don't fault)
+    '   ramp_min - start ramping at this value
+    '   ramp_max - max ramping at this value, once reach this value, keep incrementing with this value
+    '   ramp_inc - ramping increment, added to ramp_min every 500us. Effectively defines the acceleration
+    ramp_max := 200_000                                 ' 200k angle max increment/decrement
+    ramp_min := 1_500                                   ' 1k5 angle min increment: start add this every 500 uSec to ramp up from zero
+    ramp_inc := 22                                      ' increment to ramping speed, add to ramp_min every 500us until ramp_max reached
+    ramp_down := 50_000                                 ' fixed ramp down speed
 
     motorIsReversed := FALSE    ' by default our motor direction is not reversed
     fault := FALSE
@@ -295,7 +299,7 @@ VAR { * user request values * }
     ' values specific to user selected motor
     LONG    degrPerTic
     LONG    hallTicsPerRotation
-
+    LONG    pwm_limit                                   ' max freq of our pwm
 
     BYTE    motorId[MOTOR_ID_STRLEN+1]
 
@@ -304,7 +308,22 @@ PUB testSetMotorId(pIDStr)
     strcopy(@motorId, pIdStr, MOTOR_ID_STRLEN)
 
 PUB setAcceleration(rate)
-'' NOT WORKING: Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
+'' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
+  ' need to convert from units to ramp increment
+    setRampingValues(ramp_min, ramp_max, rate, ramp_down)
+
+PUB setRampingValues(min_, max_, inc_, down_)
+'' Change the ramping parameters
+    ramp_min := min_
+    ramp_max := max_
+    ramp_inc := inc_
+    ramp_down := down_
+
+PUB getRampingValues() : min_, max_, inc_, down_
+    min_ := ramp_min
+    max_ := ramp_max
+    inc_ := ramp_inc
+    down_ := ramp_down
 
 PUB setMaxSpeed(speed) | limitSpeed
 '' Limit top-speed to {speed} where {speed} is [1 to 100]  (default is 75)
@@ -359,7 +378,7 @@ PUB driveAtPower(power) | limitPwr, motorIncre, correctedPower
     limitPwr :=  -100 #> power <# 100
     if limitPwr <> power
         debug("! WARNING: driveAtPower() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
-    debug("-MOT- driveAtPower(", zstr_(@motorId), ") ", sdec_long(limitPwr), udec_long(ramp_fast), udec_long(ramp_slo))
+    debug("-MOT- driveAtPower(", zstr_(@motorId), ") ", sdec_long(limitPwr), udec_long(ramp_max), udec_long(ramp_min))
     motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
     correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
     motorIncre := incrementForPower(correctedPower)
@@ -1535,16 +1554,15 @@ VAR  {  Motor Parameters  }
     LONG    duty_up
     LONG    duty_dn
     LONG    dead_gap        ' delay between driving h/l side of driver (never drive both at once)
-    LONG    pwm_limit       ' max freq of our pwm
+    LONG    ramp_down       ' angle decrement when slowing down
     LONG    cfg_ctcks       ' # clock ticks needed to create 2 kHz motor drive loop
-    LONG    motr_ctcks      ' # clock ticks needed to create 43 kHz motor control loop
     LONG    stop_mode       ' control / user setting, enum: [SM_FLOAT, SM_BRAKE]
     LONG    e_stop          ' T/F where T means stop all motor function
-    LONG    ramp_fast       ' 12_500-18.5V 25k angle increment: add this every 500 uSec to ramp up to speed
-    LONG    ramp_slo        ' subtract this every 500 uSec to ramp down to slower speed
+    LONG    ramp_max        ' angle increment: max rap up every 500 uSec
+    LONG    ramp_min        ' angle increment: start of ramp up every 500 uSec
+    LONG    ramp_inc        ' angle increment: inc every 500uSec from min to max
 
 ' -----------------------------------
-    LONG    charge_time     ' delay between driving h/l side of driver (never drive both at once)
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
 
 DAT  {  Motor DRIVER  }
@@ -1663,6 +1681,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
+                mov     ramp_curr, ramp_min_                ' set initial inc ramp
                 mov     duty_, duty_min_                ' reset duty
                 mov     curr_stop, stop_mode_           ' save current stop mode
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: should motor be freewheeling?
@@ -1833,15 +1852,16 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 ' if we don't have it, preset our starting angle (assume motor moved during float!)
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: are we floating pins at stop?
     if_z        or      drv_incr, drv_incr          wz  ' -and- are we stopped, just about to spin up?
+    if_z        mov     ramp_curr, ramp_min_                ' set initial ramp if starting from 0
     if_z        call    #.initAngleFmHall               ' then, let's first get motor initial angle for smooth startup
                 ' if we are at target, stop the ramp effort
                 cmps    drv_incr, tgt_incr          wz ' Q: Did we match target?
     if_z        jmp     #.endRUpAtSpeed                  ' YES, (Matched) go mark done
                 ' do next UP adjustment or set at-speed
-                abs     abs_incr, drv_incr              ' get abs(drv_incr)
-                cmps    abs_incr, ramp_thresh       wc  ' Q: too early to ramp up fast?
-    if_nc       mov     curr_ramp, ramp_fast_           ' NO, use fast ramp rate
-    if_c        mov     curr_ramp, ramp_slo_            ' YES, use slow ramp rate
+                mov     curr_ramp, ramp_curr                ' current ramp
+                add     ramp_curr, ramp_inc_                ' increase ramp for next time
+                cmps    ramp_curr, ramp_max_        wc      ' too high?
+    if_nc       mov     ramp_curr, ramp_max_                ' Y set to ramp_max
                 ' calculate how far we are from desired
                 mov     final_ramp, tgt_incr              ' compute our delta from curr to target
                 subs    final_ramp, drv_incr
@@ -1882,7 +1902,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     if_z        testbn  drv_incr, #31                   wc  ' YES, moving FWD or REV? (bCY=FWD)
     if_nz       testbn  tgt_incr, #31                   wc  ' NO, moving FWD or REV? (bCY=FWD)
 .havefast
-                mov     curr_ramp, ramp_fast_               ' we want to ramp fast
+                mov     curr_ramp, ramp_down_               ' we want to ramp down
                 jmp     #.havefast1                         ' jmp to previous ramping code
 .endRDnAtTgt
                 ' AT TARGET now adjust state
@@ -1921,15 +1941,15 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     if_c        jmp     #.haveS2CRev                    ' REV, go handle reverse
 .haveS2CFwd
                 neg     final_ramp                        ' change to pos value for compare
-                cmps    final_ramp, ramp_fast_         wc  ' Q: is delta larger than ramp
-    if_nc       subs    drv_incr, ramp_fast_             ' YES, just add ramp value
+                cmps    final_ramp, ramp_down_        wc  ' Q: is delta larger than ramp
+    if_nc       subs    drv_incr, ramp_down_              ' YES, just add ramp value
     if_c        subs    drv_incr, final_ramp              ' NO, add remaining final delta
-                jmp     #.justIncr                      ' increment motor angle, then exit
+                jmp     #.justIncr                        ' increment motor angle, then exit
 .haveS2CRev
-                cmps    final_ramp, ramp_fast_         wc  ' Q: is delta larger than ramp
-    if_nc       adds    drv_incr, ramp_fast_             ' YES, just add ramp value
+                cmps    final_ramp, ramp_down_        wc  ' Q: is delta larger than ramp
+    if_nc       adds    drv_incr, ramp_down_              ' YES, just add ramp value
     if_c        adds    drv_incr, final_ramp              ' NO, add remaining final delta
-                jmp     #.justIncr                      ' increment motor angle, then exit
+                jmp     #.justIncr                        ' increment motor angle, then exit
 
 .endS2CAtZero
                 mov     drv_state_, #DCS_SPIN_UP        ' report that we are spinning up in new direction
@@ -2249,11 +2269,10 @@ sv_tgt_incr     res 1       ' holding area for prior value
 
 ' control loop variables
 drv_incr        res 1       ' current driver increment
-abs_incr        res 1
-
-' ramp up rate (slow, fast), down is always fast
-curr_ramp       res 1
-final_ramp        res 1
+' ramp up rate, down is always fast
+curr_ramp       res 1           ' ramp to add/sub from drv_incr
+final_ramp      res 1           ' from current to target
+ramp_curr       res 1           ' current ramping up value, ramps up from ramp_min_ to ramp_max_
 ' driver actual
 angle_          res 1       ' current driver angle
 prior_angle     res 1       ' prior driver angle
@@ -2297,18 +2316,18 @@ scl_levels      res 4
 params_ptr_ res 1               ' params_ptr must be followed by:
 offset_fwd_ res 1               '  14 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
-duty_min_   res 1
-duty_max_   res 1
-duty_up_    res 1
-duty_dn_    res 1
-dead_gap_   res 1               ' this was OFFSET but now passed into driver
-pwm_limit_  res 1               ' this was PWMLIM but now passed into driver
-cfg_ctcks_  res 1
-motr_ctcks_ res 1               ' not used
+duty_min_   res 1               ' minimum duty cycle for pwm
+duty_max_   res 1               ' maximum duty cycle for pwm
+duty_up_    res 1               ' up rate for duty cycle for pwm
+duty_dn_    res 1               ' down rate for duty cycle for pwm
+dead_gap_   res 1               ' gap between driving high and low side pwm
+ramp_down_  res 1               ' angle decrement when slowing down
+cfg_ctcks_  res 1               ' clocks for drv loop
 stop_mode_  res 1               ' float or brake mode
 e_stop_     res 1               ' T/F where T means stopal motor function
-ramp_fast_  res 1               ' angle increment: add this every 500 uSec to ramp up to speed
-ramp_slo_   res 1               ' angle decrement: subtract this every 500 uSec to ramp down to slower speed
+ramp_max_   res 1               ' angle increment: max rap up every 500 uSec
+ramp_min_   res 1               ' angle increment: start of ramp up every 500 uSec
+ramp_inc_   res 1               ' angle increment: inc every 500uSec from min to max
 
 ' ------------------------------
 '  PRECISE FORMAT:
