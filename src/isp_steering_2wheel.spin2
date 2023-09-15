@@ -187,18 +187,12 @@ PUB resetTracking()
 
 CON { --- Subsystem Control --- }
 
-PUB driveDirection(power, direction) | ltPower, rtPower
+PUB driveDirection(power, direction)
 '' Control the speed and direction of your robot using the {power} and {direction} inputs.
 '' Turns both motors on at {power, [(-100) to 100]} but adjusted by {direction, [(-100) to 100]}.
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
-    ' calculate effective power based on direction
-    rqstPower := power
-    rqstDirection := direction
-    rqstLtPower, rqstRtPower := calcPowerForDirection(power, direction)
-
-    ' now tell our motor of their own power
-    ltWheel.driveAtPower(rqstLtPower)
-    rtWheel.driveAtPower(rqstRtPower)
+    rqstPower, rqstDirection := power, direction        ' calculate effective power based on direction
+    driveAtPower(calcPowerForDirection(power, direction))
 
 PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits)
 '' Control the forward direction or rate of turn of your robot using the {leftDistance} and {rightDistance} inputs.
@@ -431,6 +425,8 @@ PRI getFaultStatus() : bLeftStatus, bRightStatus | bLeftSignal, bRightSignal
 
     if bLeftSignal == TRUE and ltFaultSeenMS == 0
         ltFaultSeenMS := getms() + 3000
+        if ltFaultSeenMS == 0                                                   ' just in case happens to add to 0
+          ltFaultSeenMS := 1
         debug(" -------------- LtMotr See FAULT! --------------")
     elseif bLeftSignal == TRUE and ltFaultSeenMS <> 0 and getms() > ltFaultSeenMS
         debug(" -------------- LtMotr Cleared FAULT --------------")
@@ -439,6 +435,8 @@ PRI getFaultStatus() : bLeftStatus, bRightStatus | bLeftSignal, bRightSignal
 
     if bRightSignal == TRUE and rtFaultSeenMS == 0
         rtFaultSeenMS := getms() + 3000
+        if rtFaultSeenMS == 0                                                   ' just in case happens to add to 0
+          rtFaultSeenMS := 1
         debug(" -------------- RtMotr See FAULT! --------------")
     elseif bRightSignal == TRUE and rtFaultSeenMS <> 0 and getms() > rtFaultSeenMS
         debug(" -------------- RtMotr Cleared FAULT --------------")
@@ -834,27 +832,8 @@ PRI MAX(a,b) : nMax
 
 PRI distanceIn90ths(newPos, bIsLeftWheel) : n90ths | priorPos
     priorPos := (bIsLeftWheel) ? priorLtPos : priorRtPos
-    if newPos == priorPos
-        n90ths := 0
-    elseif newPos < 0
-        ' handle pos negative case
-        if priorPos < 0
-            '  -7 -> -9 = abs(-9) - abs(-7) = abs(2) = 2
-            '  -11 -> -9 = abs(-9) - abs(-11) = abs(-2) = 2
-            n90ths := abs(abs(newPos) - abs(priorPos))
-        else
-            '  9 -> -9 = 18 = abs(9) + abs(-9) = 18
-            n90ths := abs(newPos) + abs(priorPos)
-    else
-        ' handle pos positive case
-        if priorPos < 0
-            ' -9 -> 6 = 6 + abs(-9) = 15
-            ' -3 -> 6 = 6 + abs(-3) = 9
-            n90ths := newPos + abs(priorPos)
-        else
-            ' 9 -> 6 = 6 - 9 = abs(-3) = 3
-            ' 9 -> 12 = 12 - 9 = abs(3) = 3
-            n90ths := abs(newPos - priorPos)
+
+    n90ths := abs(priorPos - newPos)
 {
     if priorPos <> newPos
         if bIsLeftWheel
