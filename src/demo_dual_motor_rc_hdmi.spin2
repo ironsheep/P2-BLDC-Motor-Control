@@ -7,7 +7,7 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Mar 2023
-''   Updated.... 11 Mar 2023
+''   Updated.... 16 Sep 2023
 ''
 '' =================================================================================================
 
@@ -192,8 +192,9 @@ VAR
     long    bLastIgnoreJoyStks
     long    bLastShowDriveStates
     long    nAccelerationRate
+    long    nDoingOneRotation
 
-PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, bShowDebugStatus, bEmerCutoff, bShowDriveStates, accrate
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, bShowDebugStatus, bEmerCutoff, bShowDriveStates, accrate, bOneRotation
 '' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
     waitms(500)    ' wait for 1/2 sec for backend to catch up
 
@@ -208,6 +209,7 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
     'debug("* swC MID    - ---")
     debug("* swC DN     - end control")
     debug("* swD DN     - emer cutoff")
+    debug("* swE DN     - 1 rotation")
     debug("* VRA        - acceleration")
     debug("------")
 
@@ -233,6 +235,8 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
         remoteCtl.showDebug(bShowDebugStatus)
         bEmerCutoff := remoteCtl.swIsOff(remoteCtl.CTL_SW_D)
         remoteCtl.showDebug(FALSE)
+
+        bOneRotation := remoteCtl.swIsOn(remoteCtl.CH_11)
 
         accrate := remoteCtl.readchannel(remoteCtl.CTL_VRA)/10
 
@@ -289,6 +293,11 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
                 wheels.driveDirection(rcSpeed, rcDirection)
                 priorDirection := rcDirection
                 priorSpeed := rcSpeed
+            elseif bOneRotation == false and nDoingOneRotation == false         ' no emergency cutoff and no joystick before accept 1 rotation
+                nDoingOneRotation := true
+                doOneRotation()
+            elseif bOneRotation == true and nDoingOneRotation == true           ' switch must be reset before allowed again
+                nDoingOneRotation := false
 
         if bDoneTesting
             debug("--> quit loop")
@@ -299,6 +308,18 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
 
     ' done, stop our motors
     wheels.stop()
+
+PRI doOneRotation() | ltdegree, rtdegree
+
+    ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' get current wheel rotation
+    wheels.driveDirection(10, 0)                                                ' drive forward slowly
+    debug("  Onrotation Driving:", sdec(ltdegree), " ", sdec(rtdegree))
+    wheels.stopAfterRotation(ltdegree+360, wheels.DRU_DEGREES)                  ' stop after 360degree wheel rotation
+    ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' get current wheel rotation
+    debug("  Onrotation Stopped:", sdec(ltdegree), " ", sdec(rtdegree))
+    waitms(1000)
+    ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' get current wheel rotation
+    debug("  Onrotation Check:", sdec(ltdegree), " ", sdec(rtdegree))
 
 PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
     ' route Rt Joystick Vt (spring center) to FWD/REV (speed)
