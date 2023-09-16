@@ -61,32 +61,6 @@ OBJ { objects / constants included by this object }
     user        :   "isp_bldc_motor_userconfig"     ' driver configuration
     distConv    :   "isp_dist_utils"                ' distance conversion utils
 
-CON { test pins for LA measurement }
-
-' -----------------------------------
-' Logic Analyzer Instrumentation Code
-' -----------------------------------
-{
-    ' PIN_40 - PIN_47 - general LA header
-    TEST_BASE_PIN = 40
-    TEST_ALL_PINS = TEST_BASE_PIN addpins 7
-    TEST_PIN_SENSE_LP = TEST_BASE_PIN + 0           ' LA ch0
-    TEST_PIN_DRIVE_LP = TEST_BASE_PIN + 1           ' LA ch1
-    TEST_PIN_MOTR_CTL_LP = TEST_BASE_PIN + 2        ' LA ch2
-    TEST_PIN_DRIVE_LP2 = TEST_BASE_PIN + 3          ' LA ch3
-    TEST_PIN_LP_TOGL = TEST_BASE_PIN + 4            ' LA ch4
-    TEST_PIN_UNKNOWN = TEST_BASE_PIN + 5            ' LA ch4
-'}
-{
-
-    ' PIN 48, 49 our rot/360 R/P Sensor
-    '   (Optical Rotary Encoder 360P/R)
-    TEST_BASE2_PIN = 48
-    TEST_ALL2_PINS = TEST_BASE2_PIN addpins 1
-    TEST_PIN_RP_SNS1 = TEST_BASE2_PIN + 0
-    TEST_PIN_RP_SNS2 = TEST_BASE2_PIN + 1
-'}
-
 DAT { misc time constants }
 
     ' time constants based on CPU freq
@@ -241,22 +215,16 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees
     maxSpeed4dist := 75      ' [1-100] default 75
 
     ' preset HDMI Monitor values
-    tvMaxMmPerSec_x10 := 0
-    tvMaxFps_x10 := 0
-    tvMaxMPH_x10 := 0
-    tvMaxkPH_x10 := 0
+    resetHdmiData()
 
     eUserSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
 
     debug("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(adc_fram), udec_long(duty_min), udec_long(duty_max))
     debug("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks))
 
-    circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH)
-    if circInMM_x10 <> 0
-        if user.MOTOR_TYPE == MOTR_6_5_INCH
-            tickInMM_x10 := circInMM_x10 / 90
-    else
-        tickInMM_x10 := 0
+    if user.WHEEL_DIA_IN_INCH <> 0
+        circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) * 10
+        tickInMM_x10 := circInMM_x10 / hallTicsPerRotation
 
     confgurePowerLimits(user.DRIVE_VOLTAGE)
 
@@ -413,8 +381,8 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits)
             debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
             abort
 
-PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
-'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
+PUB stopAfterDistance(nDistance, eDistanceUnits)
+'' Stops the motor after it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
 '' USE WITH:  driveAtPower()
 '' Will ABORT if {distance} < 1
     if nDistance < 1
@@ -433,11 +401,9 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
         DDU_CM:
             motorStopHallTicks := (nDistance * 10 * 10) / tickInMM_x10
         DDU_IN:
-            fValue := distConv.fIn2mm(nDistance)
-            motorStopHallTicks := trunc(fValue *. 10.0) / tickInMM_x10
+            motorStopHallTicks := round(distConv.fIn2mm(nDistance) *. 10.0) / tickInMM_x10
         DDU_FT:
-            fValue := distConv.fIn2mm(nDistance * 12)
-            motorStopHallTicks := trunc(fValue *. 10.0) / tickInMM_x10
+            motorStopHallTicks := round(distConv.fIn2mm(nDistance * 12) *. 10.0) / tickInMM_x10
         DDU_M:
             motorStopHallTicks := (nDistance * 100 * 10) / tickInMM_x10
         other:
@@ -463,9 +429,13 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
     if eTimeUnits == DTU_SEC
         timeNow := getms()
         motorStopMSecs := timeNow + (nTime * 1_000)
+        if motorStopMSecs == 0
+            motorStopMSecs := 1
     else
         timeNow := getms()
         motorStopMSecs := timeNow + nTime
+        if motorStopMSecs == 0
+            motorStopMSecs := 1
 
     if motorStopMSecs > 0
         debug("* stop motor at ", udec_long(motorStopMSecs), ", now: ", udec_long(timeNow))
@@ -497,27 +467,27 @@ PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
     nDistanceInUnits := 0
     ' if we know the wheel diameter, then calculate value and return it
     if user.WHEEL_DIA_IN_INCH <> 0.0
-        fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
+        fMMpTick := float(circInMM_x10) /. float(hallTicsPerRotation) /. 10.0
         case eDistanceUnits
             DDU_MM:
-                nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick)
+                nDistanceInUnits := round(float(posTrkHallTicks) *. fMMpTick)
             DDU_CM:
-                nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick /. 10.0)
+                nDistanceInUnits := round(float(posTrkHallTicks) *. fMMpTick /. 10.0)
             DDU_IN:
                 fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-                nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
+                nDistanceInUnits := round(fValue)
             DDU_FT:
                 fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-                nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
+                nDistanceInUnits := round(fValue /. 12.0)                       ' in FT
             DDU_M:
                 fValue := float(posTrkHallTicks) *. fMMpTick
-                nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
+                nDistanceInUnits := round(fValue /. 1000.0)                     ' in M
             DDU_MI:
                 fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-                nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
+                nDistanceInUnits := round(fValue /. 5280.0 /. 12.0)             ' in MI
             DDU_KM:
                 fValue := float(posTrkHallTicks) *. fMMpTick
-                nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
+                nDistanceInUnits := round(fValue /. 1000.0 /. 1000.0)           ' in kM
             other:
                 debug("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
                 abort
@@ -1125,7 +1095,6 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
         debug("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
         debug("* =============")
 
-
 CON ' -- TASK: position tracking --
 
 ' Sense Constants
@@ -1157,6 +1126,45 @@ VAR { * sense buffer and stack arrays * }
     LONG    hallWinEntryCt
     LONG    hallCntsIn8thSec
     LONG    hallWindowSum
+
+    LONG    rSenseForBoard
+
+CON { test pins for LA measurement }
+' -----------------------------------
+' Logic Analyzer Instrumentation Code
+' -----------------------------------
+'{
+' if not using Logic Analyzer uncomment these routines
+PRI LAINIT()
+
+PRI LARESET()
+
+PRI LALOOPSTART()
+
+PRI LALOOPEND()
+'}
+{
+' if using Logic Analyzer uncomment these routines
+
+    ' PIN_40 - PIN_47 - general LA header
+    TEST_BASE_PIN = 40
+    TEST_ALL_PINS = TEST_BASE_PIN addpins 7
+    TEST_PIN_SENSE_LP = TEST_BASE_PIN + 0                                       ' LA ch0
+    TEST_PIN_DRIVE_LP = TEST_BASE_PIN + 1                                       ' LA ch1
+    TEST_PIN_MOTR_CTL_LP = TEST_BASE_PIN + 2                                    ' LA ch2
+    TEST_PIN_DRIVE_LP2 = TEST_BASE_PIN + 3                                      ' LA ch3
+    TEST_PIN_LP_TOGL = TEST_BASE_PIN + 4                                        ' LA ch4
+    TEST_PIN_UNKNOWN = TEST_BASE_PIN + 5                                        ' LA ch4
+
+    ' PIN 48, 49 our rot/360 R/P Sensor
+    '   (Optical Rotary Encoder 360P/R)
+    TEST_BASE2_PIN = 48
+    TEST_ALL2_PINS = TEST_BASE2_PIN addpins 1
+    TEST_PIN_RP_SNS1 = TEST_BASE2_PIN + 0
+    TEST_PIN_RP_SNS2 = TEST_BASE2_PIN + 1
+
+VAR
+    LONG loopCtr
     ' summing 360 sensor values at 1 sec period
     LONG    r360CountsWindow[R360_WINDOW_SIZE]
     LONG    r360WinIndex
@@ -1164,71 +1172,29 @@ VAR { * sense buffer and stack arrays * }
     LONG    r360degrPerSec
     LONG    r360WindowSum
 
-    LONG    rSenseForBoard
-
-PRI resetWindowAccumulators()
-' reset our window accumulator data
-    longfill(@hallCountsWindow, 0, HALL_WINDOW_SIZE) ' zero our windowed accum
-    longfill(@r360CountsWindow, 0, R360_WINDOW_SIZE) ' zero our windowed accum
-    hallWinEntryCt := hallWindowSum := hallWinIndex := 0
-    r360WinEntryCt := r360WindowSum := r360WinIndex := 0
-    r360degrPerSec := hallCntsIn8thSec := 0
-
-PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loopCtr
-' TASK: every 1/8 Sec (8Hz) read motor posn and calculate RPM and countOf90ths/Sec
-
-    eStopCtr := tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := tvMaxSenseI := 0
-    prioro8thSecPos := pos  ' reset by adopting current value
-    r360degrPerSec := tv360rpm_x10 := tv360rpm := 0
-    r360WinEntryCt := r360WindowSum := r360WinIndex := 0
-
-    ' -----------------------------------
-    ' Logic Analyzer Instrumentation Code
-    ' -----------------------------------
-{
+PRI LAINIT()
+    LARESET()
     'pinlow(TEST_PIN_SENSE_LP)
 
     ' configure our R/P sensor pins
     pinfloat(TEST_ALL2_PINS)    ' set to inputs
     ' configure for quadrature A+B X=run continuous, reset Y
     pinstart(TEST_PIN_RP_SNS1, P_QUADRATURE | P_PLUS1_B, 0, 0)
-'}
 
-    repeat
-        loopCtr++
-        ' if just starting up (or MOTOR FAULT), reset our tracker
-        if drv_state == DCS_FAULTED or senseStartTicks == 0 or bResetSenseData
-            resetWindowAccumulators()
-            tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
-            tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
-            tv360rpm_x10 := tv360rpm := 0
-            prioro8thSecPos := pos  ' reset by adopting current value
-            posTrkHallTicks := 0
-            tvMaxSenseI := 0
-            eStopCtr := 0
-            if bResetSenseData
-                bResetSenseData := FALSE
+PRI LARESET()
+    longfill(@r360CountsWindow, 0, R360_WINDOW_SIZE)                            ' zero our windowed accum
+    r360WinEntryCt := r360WindowSum := r360WinIndex := 0
+    r360degrPerSec := 0
 
-        senseStartTicks := getct()
-
-    ' -----------------------------------
-    ' Logic Analyzer Instrumentation Code
-    ' -----------------------------------
-{
+PRI LALOOPSTART()
         pinhigh(TEST_PIN_SENSE_LP)
-'}
-
-        hallCntsIn8thSec := absDistanceInTics(pos, prioro8thSecPos) ' Read the next sensor value
-        prioro8thSecPos := pos                              ' save prior
-
     ' ------------------------------------------
     ' Special 360 cts/Rotation Sensor Code
     '   (Optical Rotary Encoder 360P/R)
     ' https://www.amazon.com/Signswise-Incremental-Encoder-Dc5-24v-Voltage/dp/B00Y9KDDCY
     ' ------------------------------------------
-{
         ' accum our fast & slow windowed values
-        if loopCtr +// SENSE_LOOP_HZ == 0             ' once every second compute slow cts in case we are slow
+    if ++loopCtr +// SENSE_LOOP_HZ == 0                                         ' once every second compute slow cts in case we are slow
             ' ---------------------------------------------------------------------------------
             ' Capture 360 Sensor data
             '
@@ -1247,24 +1213,62 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
 
             tv360rpm_x10 := (r360degrPerSec * 60) / 36
             tv360rpm := tv360rpm_x10 / 10
-            '
-            ' ---------------------------------------------------------------------------------
+
+PRI LALOOPEND()
+    pinlow(TEST_PIN_SENSE_LP)
 '}
 
+PUB resetWindowAccumulators()
+' reset our window accumulator data
+    longfill(@hallCountsWindow, 0, HALL_WINDOW_SIZE)                            ' zero our windowed accum
+    hallWinEntryCt := hallWindowSum := hallWinIndex := 0
+    hallCntsIn8thSec := 0
+    prioro8thSecPos := pos                                                      ' reset by adopting current value
+    resetHdmiData()
+
+PUB updateWindowAccumulators() | nHallCntsIn8thSec
         ' accum our windowed values
+    nHallCntsIn8thSec := absDistanceInTics(pos, prioro8thSecPos)                ' Read the next sensor value
+    prioro8thSecPos := pos                                                      ' save prior
         hallWindowSum -= LONG[@hallCountsWindow][hallWinIndex]                  ' Remove the oldest entry from the sum
-        long [@hallCountsWindow][hallWinIndex] := hallCntsIn8thSec              ' place the newest reading into the window
+    long [@hallCountsWindow][hallWinIndex] := nHallCntsIn8thSec                 ' place the newest reading into the window
         hallWindowSum += hallCntsIn8thSec                                       ' Add the newest reading to the sum
         hallWinIndex := (hallWinIndex + 1) +// HALL_WINDOW_SIZE                 ' Increment the index, and wrap to 0 if it exceeds the window size
         if hallWinEntryCt < HALL_WINDOW_SIZE                                    ' incr number of samples in sum until is window size
             hallWinEntryCt++
 
-        updateSenseData(hallCntsIn8thSec, hallWindowSum)                        ' used internally and by 2-wheel-steering
+    posTrkHallTicks += nHallCntsIn8thSec
+
+    updateHdmiData()
+
+PRI taskPostionSense() | senseStartTicks, eStopState
+' TASK: every 1/8 Sec (8Hz) read motor posn and calculate RPM and countOf90ths/Sec
+
+    eStopState := false
+    resetWindowAccumulators()                                                   ' used internally and by 2-wheel-steering
+
+    LAINIT()                                                                    ' init LA
+
+    repeat
+        senseStartTicks := getct()
+
+        ' if MOTOR FAULT or reset our tracker
+        ' if we get this efault, motor is stopped but distance/time checks are still in place?
+        if getDriverState() == DCS_FAULTED or getDriverState() == DCS_ESTOP or bResetSenseData
+            resetWindowAccumulators()                                           ' used internally and by 2-wheel-steering
+            posTrkHallTicks := 0
+            bResetSenseData := FALSE
+            LARESET()                                                           ' reset LA tracking
+
+        LALOOPSTART()                                                           ' main LA tracking code
+
+        updateWindowAccumulators()                                              ' used internally and by 2-wheel-steering
 
         ' if user set time/distance to stop then stop if we are past the time or distance
+        ' if you set both distance and time, checks time only, stops motor but distance check is still in place
+        ' change to check both and reset both?
         if motorStopMSecs > 0
-            timeNow := getms()
-            if timeNow > motorStopMSecs
+            if getms() > motorStopMSecs
                 debug("-MOT- time limit reached")
                 setTargetAccel(0, false)
                 motorStopMSecs := 0 ' and clear user request
@@ -1274,32 +1278,33 @@ PRI taskPostionSense() | senseStartTicks, fValue, fFps, timeNow, eStopCtr,  loop
                 setTargetAccel(0, false)
                 motorStopHallTicks := 0 ' and clear user request
 
-        deltaTicks := getct() - senseStartTicks
-
         ' iff driver reports e-stop then clear the emergency stop request
         '  user will request it again if needed
         ' NOTE: we leave e_stop set for at least 1/8 second before clearing!
-        if drv_state == DCS_ESTOP && eStopCtr == 0
-            eStopCtr++
-        elseif drv_state == DCS_ESTOP && eStopCtr > 0
-            e_stop := FALSE
-            eStopCtr := 0
+        if isEmergency()
+            if eStopState == true
+                clearEmergency()
+            !!= eStopState                                                      ' toggle stop flag
 
-    ' -----------------------------------
-    ' Logic Analyzer Instrumentation Code
-    ' -----------------------------------
-{
-        pinlow(TEST_PIN_SENSE_LP)
-'}
+        LALOOPEND()                                                             ' let LA know end of loop
+
+        deltaTicks := getct() - senseStartTicks
 
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
         '   wait remainder of 125 mSec before next sample
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
 
-PUB updateSenseData(nHallCntsIn8thSec, nHallWindowSum)
-    cntsInSec := nHallWindowSum                                                 ' moving sum
-    posTrkHallTicks += nHallCntsIn8thSec
+PUB getposTrkHallTicks() : retv
+    retv := posTrkHallTicks
 
+PRI resetHdmiData()
+    tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
+    tvMaxRpmIn10ths := tvMaxCntsInSec := tvMaxMmPerSec_x10 := 0
+    tv360rpm_x10 := tv360rpm := 0
+    tvMaxSenseI := 0
+
+PRI updateHdmiData()
+    cntsInSec := hallWindowSum                                                  ' moving sum
     tvRpm_x10 := ((cntsInSec * 60) * 10) / hallTicsPerRotation
     rpm := tvRpm_x10 / 10
 
@@ -1312,13 +1317,13 @@ PUB updateSenseData(nHallCntsIn8thSec, nHallWindowSum)
     tv_mA := sense_i_mV/rSenseForBoard                                          ' in multiples of 0.1mA
     tv_mW := round((float(tv_mA) *. fMotorVolts)/. F_SCALE_WATTS)               ' in mW
 
-    if user.MOTOR_TYPE == MOTR_6_5_INCH
-        ' pos is in hall-steps of 4Degr each.
+    if user.WHEEL_DIA_IN_INCH <> 0
+        ' pos is in hall-steps of 4Degr each (4deg for 6.5motor, 15deg for doco4k).
         ' circumference of wheel is in mm x10
         '   degrees of rotation is cntsInSec * 4
         '   number of rotations is degrees / 360
         '   dist in mm is (circInMM_x10 * rotations) / 10
-        mmPerSec_x10 := (((cntsInSec * 4) * circInMM_x10) / 360)
+        mmPerSec_x10 := (((cntsInSec * degrPerTic) * circInMM_x10) / 360)
         ftPerSec_x10 := distConv.mmps2fps(mmPerSec_x10 * 10)
         kmh_x10 := distConv.mmps2kmh(mmPerSec_x10 * 10)
         mph_x10 := distConv.fps2mph(ftPerSec_x10)
@@ -1470,8 +1475,14 @@ VAR { * Data Structure for PASM Driver * }
     LONG    fault                               ' 1 sequential long     written to 1 on fault (pins are floated when this happens)
 
 VAR { * Data for Motor Position Tracking * }
+    LONG    posTrkHallTicks
 
-    '  ----- HDMI monitored! ----
+    LONG    circInMM_x10
+    LONG    tickInMM_x10
+
+    LONG    prioro8thSecPos
+
+VAR { * HDMI Data for Motor Position Tracking * }
     LONG    tvRpm_x10
     LONG    rpm
     LONG    maxRpm
@@ -1489,17 +1500,10 @@ VAR { * Data for Motor Position Tracking * }
     LONG    tv360rpm
     LONG    tv_mA      'aadddd = xx.dddd A
     LONG    tv_mW     'wwwddd= www.ddd W
-    '  --------------------------
-    LONG    prioro8thSecPos
     LONG    mmPerSec_x10
     LONG    ftPerSec_x10
     LONG    kmh_x10
     LONG    mph_x10
-    '  --------------------------
-    LONG    posTrkHallTicks
-    LONG    circInMM_x10
-    LONG    tickInMM_x10
-
 
 VAR  {  Motor Parameters  }
 
