@@ -3,11 +3,11 @@
 ''   File....... isp_bldc_motor.spin2
 ''   Purpose.... Object providing control interface for a single BLDC motor
 ''   Authors.... Stephen M Moraco
-''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- Copyright (c) 2023 Iron Sheep Productions, LLC
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Feb 2022
-''   Updated.... 21 Jul 2022
+''   Updated.... 16 Sep 2023
 ''
 '' =================================================================================================
 
@@ -74,10 +74,13 @@ PUB null()
 '' This is not a top-level object
 
 PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
+'' Specify motor control board connect location for this motor and start the driver
+
     ok := startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, false)
 
 PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | legalBase
-'' Specify motor control board connect location for this motor and start the driver
+'' Specify motor control board connect location for this motor and start the driver, specify sync setting
+
     sync_required := sync
     init(eMotorBasePin, eMotorVoltage, eDetectionMode)  ' setup runtime constants
     params_ptr := @offset_fwd   ' point to driver variables
@@ -106,7 +109,7 @@ PUB stop()
         pinbase := VALUE_NOT_SET
 
 PUB testSetup(eMotorBasePin, eMotorVoltage, eDetectionMode) | legalBase
-'' Specify motor control board connect location for this motor BUT DON'T start the driver
+'' TESTING USE: Specify motor control board connect location for this motor BUT DON'T start the driver
     init(eMotorBasePin, eMotorVoltage, eDetectionMode)
 
 PRI validatePinBase(eMotorBasePin) : legalBase
@@ -273,7 +276,7 @@ VAR { * user request values * }
     BYTE    motorId[MOTOR_ID_STRLEN+1]
 
 PUB testSetMotorId(pIDStr)
-' save name used in debug messages
+'' TESTING USE: save name used in debug messages
     strcopy(@motorId, pIdStr, MOTOR_ID_STRLEN)
 
 PUB setAcceleration(rate)
@@ -281,18 +284,19 @@ PUB setAcceleration(rate)
   ' need to convert from units to ramp increment
     setRampingValues(ramp_min, ramp_max, rate, ramp_down)
 
-PUB setRampingValues(min_, max_, inc_, down_)
+PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp)
 '' Change the ramping parameters
-    ramp_min := min_
-    ramp_max := max_
-    ramp_inc := inc_
-    ramp_down := down_
+    ramp_min := minRamp
+    ramp_max := maxRamp
+    ramp_inc := incRamp
+    ramp_down := decrRamp
 
-PUB getRampingValues() : min_, max_, inc_, down_
-    min_ := ramp_min
-    max_ := ramp_max
-    inc_ := ramp_inc
-    down_ := ramp_down
+PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
+'' Return the ramping parameters
+    minRamp := ramp_min
+    maxRamp := ramp_max
+    incRamp := ramp_inc
+    decrRamp := ramp_down
 
 PUB setMaxSpeed(speed) | limitSpeed
 '' Limit top-speed to {speed} where {speed} is [1 to 100]  (default is 75)
@@ -311,8 +315,8 @@ PUB setMaxSpeedForDistance(speed) | limitSpeed4dist
     maxSpeed4dist := limitSpeed4dist      ' remember user value
 
 PUB calibrate()
-'' NOT WORKING: (we may need this?)
-'' have motor drivers determine fixed-offset constants
+'' NOT WORKING: (we may or may not need this?)
+''  have motor drivers determine fixed-offset constants
 
 PUB holdAtStop(bEnable)
 '' Informs the motor control cog to actively hold position (bEnable=true) or coast (bEnable=false) at end of motion
@@ -324,7 +328,7 @@ PUB resetTracking()
     waitms(200) ' values will clear in 125ms
 
 PUB moveShaftToAngle(desiredAngle)
-'' TEST: force motor to specific angle
+'' TESTING USE: force motor to specific angle
     if targetAngle == $ffffffff
         targetAngle := desiredAngle
         debug("MOT: move to ", sdec(targetAngle))
@@ -341,10 +345,13 @@ PUB driveForDistance(distance, distanceUnits)
     driveAtPower(maxSpeed4dist)
 
 PUB driveAtPower(power)
+'' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
+'' Turns the motor on at {power}.
+'' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
   driveAtPowerEx(power, false)
 
 PUB driveAtPowerEx(power, sync) | limitPwr, motorIncre, correctedPower
-'' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
+'' Control the speed and direction of this motor using the {power, [(-100) to 100]} input. (allow sync setting)
 '' Turns the motor on at {power}.
 '' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
     limitPwr :=  -100 #> power <# 100
@@ -452,7 +459,7 @@ PUB emergencyCutoff()
     debug("-- EMERGENCY STOP --")
 
 PUB clearEmergency()
-'' clear EMERGENCY-Stop - remove the need to stop!
+'' Clear EMERGENCY-Stop - remove the need to stop!
     e_stop := FALSE
     debug("-- EMERGENCY -- CLEARED --")
 
@@ -552,7 +559,7 @@ PUB getRawHallTicks() : nPos
     nPos := pos
 
 PUB boardIdString() : pZStr
-'' return board ID string for this board revision
+'' Return board ID string for this board revision
     case eDetectedBoard
         REV_Unknown:
             pZStr := @"No Board Connected"
@@ -636,7 +643,7 @@ PUB isFaultSignal() : bState
     bState := (fault <> false) ? true : false
 
 PUB clearFaultSignal()
-'' reset top-level fault indicator
+'' Reset top-level fault indicator
 ' used by two-wheel steering
     if fault
         debug("MTR: did reset fault ind.")
@@ -931,6 +938,7 @@ PRI setTargetAccel(nTgtIncr, sync) | inincr
     tvTargetIncreInM := inincr / 10_000
 
 PUB SyncStatus()
+'' Wait until both motors are in sync (when configured for synchronization)
     repeat while targetIncre & $8000_0000
 
 PRI motorVoltage(eSelectedPower) : fVolts | index
@@ -1070,7 +1078,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pTitlesAr][nGrpOffset] := DBG_MAX_VARS_IN_GROUP
 
 PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars | tmpAbsPtr
-'' Return pointers to HDMI-debug data structures for this motor-object instance
+'' TESTING USE: Return pointers to HDMI-debug data structures for this motor-object instance
     loadDisplayList()
     nGroups := DBG_GROUPS_CT
     pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
@@ -1219,7 +1227,7 @@ PRI LALOOPEND()
 '}
 
 PUB resetWindowAccumulators()
-' reset our window accumulator data
+'' INTERNAL USE: reset our window accumulator data
     longfill(@hallCountsWindow, 0, HALL_WINDOW_SIZE)                            ' zero our windowed accum
     hallWinEntryCt := hallWindowSum := hallWinIndex := 0
     hallCntsIn8thSec := 0
@@ -1227,7 +1235,7 @@ PUB resetWindowAccumulators()
     resetHdmiData()
 
 PUB updateWindowAccumulators() | nHallCntsIn8thSec
-        ' accum our windowed values
+'' INTERNAL USE: accum our windowed values
     nHallCntsIn8thSec := absDistanceInTics(pos, prioro8thSecPos)                ' Read the next sensor value
     prioro8thSecPos := pos                                                      ' save prior
         hallWindowSum -= LONG[@hallCountsWindow][hallWinIndex]                  ' Remove the oldest entry from the sum
@@ -1295,6 +1303,7 @@ PRI taskPostionSense() | senseStartTicks, eStopState
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
 
 PUB getposTrkHallTicks() : retv
+'' INTERNAL USE: return our position tracking hall-ticks
     retv := posTrkHallTicks
 
 PRI resetHdmiData()
@@ -2300,7 +2309,7 @@ CON { license }
  -------------------------------------------------------------------------------------------------
   MIT License
 
-  Copyright (c) 2022 Iron Sheep Productions, LLC
+  Copyright (c) 2023 Iron Sheep Productions, LLC
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
