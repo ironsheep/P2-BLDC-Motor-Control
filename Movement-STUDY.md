@@ -5,6 +5,7 @@ Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with 
 Last Udpated: 220215 15:44 MST
 
 ![Project Maintenance][maintenance-shield]
+
 [![License][license-shield]](LICENSE)
 
 As I'm researching I'm studying both LEGO Mindstorms motor control since this is for 9-14 year olds to program and I'm studying BlocklyProp, the Parallax Offering.  I'm intending to develop either side by side interchangable control methods or some sort of blend of the different methods. Let's see how it turns out! For now I'm recording initial thoughts here and it will all gradually be whittled down to the target interface specs for the steering and motor objects.
@@ -166,8 +167,6 @@ The reference material studied and from which the above information was extracte
 
 ## License
 
-Copyright © 2022 Iron Sheep Productions, LLC. All rights reserved.
-
 Licensed under the MIT License.
 
 Follow these links for more information:
@@ -182,4 +181,7 @@ Follow these links for more information:
 
 [marketplace-rating]: https://vsmarketplacebadge.apphb.com/rating-short/ironsheepproductionsllc.spin2.svg
 
-[license-shield]: https://camo.githubusercontent.com/bc04f96d911ea5f6e3b00e44fc0731ea74c8e1e9/68747470733a2f2f696d672e736869656c64732e696f2f6769746875622f6c6963656e73652f69616e74726963682f746578742d646976696465722d726f772e7376673f7374796c653d666f722d7468652d6261646765
+
+[license-shield]: https://img.shields.io/badge/License-MIT-yellow.svg
+
+
