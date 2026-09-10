@@ -394,47 +394,64 @@ is needed to establish that both stop modes behave as named.
 
 **S-9a — what survives, and it is sharper than what it replaces.**
 
-> ### PROVENANCE FOUND 2026-09-10 — S-9a is a regression from PR #17, and a revert was prepared and abandoned
+> ### PR #17 EXAMINED 2026-09-10 — and a claim made earlier the same day is WITHDRAWN
 >
-> A git branch audit dated this defect exactly.
+> **WITHDRAWN: "S-9a is a regression introduced by PR #17."** That was written earlier on
+> 2026-09-10 from the PR's diff hunks without checking the pre-PR-17 fault path itself. It is
+> wrong. **Ignoring `stop_mode_` at fault predates PR #17.** The pre-PR-17 code:
+>
+> ```
+>                 dirl    drive_pins      ' at FAULT: float all control pins (make them inputs)
+>                 wypin   #0, drive_pins  ' reset all pwm values to OFF (better restart after fault)
+>                 mov     drv_state_,#DCS_FAULTED
+> ```
+>
+> — unconditional, no `stop_mode_` test, exactly as today. **S-9a stands as a defect; it has
+> no PR #17 provenance.** It has been there all along.
+>
+> ### What PR #17 *did* change: the mechanism, not the policy
+>
+> | | pre-PR-17 | today |
+> |---|---|---|
+> | at fault | `dirl drive_pins` — **pins physically floated (high-Z)**, plus `wypin #0` | `call #.driveoff` — sets a **software flag**; `.driveinit`'s comment says the PWM smart pins *"are never disabled after this"* |
+> | flag's effect | — | at `:2057-2058`, `driveoff=1` causes `wypin #0, drive_pins` — **duty 0 with the pins still enabled as outputs** |
+>
+> **This is a real difference, and it sharpens T1-1 considerably.** Pre-PR-17 a fault left the
+> half-bridge high-Z, unambiguously a freewheel. Today a fault leaves the smart pins enabled
+> and commands duty 0. Whether duty 0 on complementary `pwmt`/`pwmn` pairs leaves the phases
+> floating or **shorted together** — which would be a brake, the opposite of S-9a's
+> assumption — depends on smart-pin output polarity at zero duty, and **must be measured
+> rather than reasoned about.**
+>
+> > **T1-1's post-fault stop mode is therefore not a confirmation of S-9a — it is an open
+> > question with two opposite plausible answers.** Measure the post-fault coast-down against
+> > the float and brake baselines from the same test. If it matches brake, S-9a's *impact*
+> > claim inverts even though the missing `stop_mode_` test is real.
+>
+> ### PR #17 also made two things better — do not revert it
+>
+> - It **added fault suppression while drive is off**: `testb driveoff, #0 orc` at `:2105`,
+>   so manually spinning a floated wheel no longer trips a fault. No pre-PR-17 equivalent.
+> - It **consolidated the anti-jerk work rather than dropping it.** A first reading of the
+>   diff suggested PR #17 removed the `.initAngleFmHall` calls whose comments say *"so motor
+>   doesn't jerk"*. It did not: they were folded into a `SKIP`-based family —
+>   `.checkstop` / `.checkstopfloatoff` / `.checkstopfloaton` at `:2150-2161` — where
+>   `.checkstop` still calls `.initAngleFmHall` and still resets `duty_`, *"reduces jerk if
+>   not fully aligned"*. **The jerk handling survives PR #17 intact.**
+>
+> ### The branch itself
 >
 > | | |
 > |---|---|
-> | `7f526a8` | **2023-09-10** — *"change how pwm enable/disable works"*, **Tim Moore** (external contributor) |
-> | `f1c7402` | **2023-09-14** — *Merge pull request #17 from timmmoore/pwm-enable-disable* → **shipped to `main`** |
-> | `86a3e7b` | **2023-09-14** — *Revert "change how pwm enable/disable works"* → branch `revert-17-pwm-enable-disable`, **never merged, still on origin** |
+> | `7f526a8` | 2023-09-10 — *"change how pwm enable/disable works"*, **Tim Moore** |
+> | `f1c7402` | 2023-09-14 — **PR #17 merged to `main`**, shipping since |
+> | `86a3e7b` | 2023-09-14 — *Revert "…"*, branch `revert-17-pwm-enable-disable`, **never merged** |
 >
-> **The PR introduced the exact behaviour S-9a describes.** From its own diff:
->
-> ```diff
-> -                dirl    drive_pins                    ' NO, float all control pins (make them inputs)
-> +                call    #.driveoff                    ' set drive pwm off, regardless of stop mode
-> ```
->
-> — and it replaced the sites that *did* consult the stop mode with a call that does not:
->
-> ```diff
-> -                cmp     stop_mode_, #SM_FLOAT     wz  ' Q: should motor be freewheeling?
-> -    if_nz       dirh    drive_pins
-> -    if_z        dirl    drive_pins
-> +                call    #.checkstop                   ' set drive on or off according to stop mode
-> ```
->
-> **Before PR #17 the fault path honoured `stop_mode_`. After it, it does not** — the
-> refactor into `.driveinit` / `.driveoff` / `.checkstop` moved the stop-mode test out of the
-> fault path and into `.checkstop`, which the fault path never calls.
->
-> **A revert was opened the same day the PR merged and then abandoned.** Whatever the doubt
-> was, it was contemporaneous with the merge and never resolved — the branch has sat on
-> `origin` for three years, now 23 commits behind `main` and **no longer applying cleanly**
-> (it conflicts with `2269894`, the dead-gap commit, in the same region).
->
-> **What this changes:** S-9a is no longer an unexplained design choice to be argued about —
-> it is a **dated regression with a named cause and a recorded contemporaneous objection.**
-> The fix is to restore the pre-PR-17 intent (consult `stop_mode_` on the fault path) without
-> reverting the rest of the refactor, which is otherwise a reasonable cleanup. **Do not
-> resurrect `revert-17-pwm-enable-disable`** — it would undo `.driveinit`/`.checkstop` wholesale
-> and conflicts with the dead-gap work.
+> A revert was opened the same day the PR merged, then abandoned. Given the above, abandoning
+> it looks correct: PR #17 is a net improvement. **Do not resurrect the branch** — it would
+> undo the SKIP consolidation and the fault suppression, it is 24 commits behind, and it
+> conflicts with `2269894` in the same region. Keep it as evidence of the pre-PR-17
+> hardware-float behaviour, which is the one thing today's code cannot show you.
 
 Three semantically different events reach the same code:
 
