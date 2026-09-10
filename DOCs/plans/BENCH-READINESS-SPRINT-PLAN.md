@@ -86,8 +86,9 @@ green because files were never examined. PL-1 records why the exclusion is perma
 **This is the entry baseline `sprint-closeout` will assert the exit baseline against:** build
 clean with 0 warnings, gate 39/39 with both release demos certified, one named exclusion.
 Exit must be no worse. §1 adds `tools/check_style.sh`, whose **entry state is expected to be
-red** on the pre-existing tree — that is a new instrument being introduced, not a regression,
-and §1 scopes it to hold new and modified code only.
+red** on the pre-existing tree — that is a new instrument being introduced, not a regression.
+**§1b commits to clearing it tree-wide before the tag**, so at closeout this gate is green
+rather than deferred.
 
 ---
 
@@ -163,9 +164,46 @@ non-zero on failure. It is a gate, and the guide says a FAIL is a defect like an
   `PUB null()` at `:232`) must not crash or report spuriously.
 - *Error:* deliberately break one rule per check in a scratch file and confirm each is caught
   by name — a checker whose failure path has never fired is not known to work.
-- **Baseline expectation: the existing tree will FAIL.** It predates the guide. The gate's
-  job this sprint is to hold **new and modified** code; a full-tree cleanup is not in scope.
-  Record the entry failure count in the punch list as its own item.
+- **Baseline expectation: the existing tree will FAIL.** It predates the guide.
+
+### 1b. Bring the whole tree to conformance — **scope decision, Stephen 2026-09-10**
+
+> *"we'll close out the work prior to release with the style gate green"*
+
+**This widens §1 from "hold new and modified code" to "the tree is conformant before
+`v5.0.3` is tagged."** It is recorded here as a scope decision made at sprint start, not as
+a discovery made mid-sprint.
+
+**The size is genuinely unknown until §1 builds the instrument.** No honest estimate exists
+before then — 40 files all predating the guide, but the guide's mechanically-checkable subset
+may flag a handful of patterns repeated everywhere (one fix shape, many sites) or many
+distinct ones. **The first action of this section is to measure, and report the count and its
+grouping before any file is edited.**
+
+**Fix by group, not by file** — `baseline-health` §4's rule applies to conformance findings
+exactly as it does to test failures. One diagnosis usually clears a cluster: every missing
+blank `''` separator is one fix shape; every `''` on a `PRI` is another.
+
+**If the measured count is large enough to threaten the bench sessions, that is a scope
+conversation, not something to silently defer or half-do.** The bench work is the sprint's
+reason for existing; conformance is a release gate on it. Report the number and let Stephen
+decide whether to widen the sprint, split the cleanup out, or delay the tag.
+
+**Hazard this section must respect:** these are edits to files with **no behavioural test
+coverage**, made for style reasons. A conformance fix that changes behaviour is the worst
+possible outcome of a cosmetic pass.
+- Doc-comment, spacing and tag changes are safe by construction — they cannot alter emitted
+  code. **Prefer them; do them first.**
+- Any finding whose fix would touch an *expression, identifier or control flow* — a renamed
+  local, a single-letter variable, a restructured exit path — is **held and listed**, not
+  applied in a batch. Each is a code change wearing a style finding's clothes.
+- After every group: `tools/build-check.sh` green, 39/39, both release demos certified.
+
+**Verification.** *Normal:* `tools/check_style.sh` exits 0 over all of `src/`. *Edge:* files
+with no `PUB` methods, and `hng034rm.spin2` — which cannot compile and is excluded from the
+build gate; decide explicitly whether the style gate also excludes it and record the answer
+next to PL-1. *Error:* the compile gate stays green after every group, so a cosmetic pass
+cannot silently break a release demo.
 
 ---
 
@@ -579,7 +617,7 @@ the file count. If any file is added to `src/`, that string and `DOCs/analyses/`
 ## Exit criteria
 
 - `tools/build-check.sh` — 39/39, both release demos certified
-- `tools/check_style.sh` — green on every file this sprint modified
+- `tools/check_style.sh` — **green over all of `src/`** (§1b, Stephen's call at sprint start), not merely on files this sprint modified
 - `tools/doc-audit.sh` — no new ORPHAN or COUNT drift
 - Both bench sessions run; every test carries a verdict or an explicit INCONCLUSIVE naming
   what was missing
