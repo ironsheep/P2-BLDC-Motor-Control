@@ -15,6 +15,82 @@ motor behaviour.
 
 ---
 
+## Sprint Start Record — 2026-09-10
+
+Recorded by `sprint-start`. These are the things that depend on *when* execution begins and
+could not be pinned at plan-authoring time.
+
+### 1. Outgoing build number — **5.0.3**
+
+Agreed with Stephen 2026-09-10: *"this will be a patch release of the driver as we build it,
+but we're not fixing the driver yet."* Entry `VERSION` = 5.0.2; `git describe` = `v5.0.2-13`.
+`VERSION` is bumped in §10 and tagged after §8 completes, so the release carries the bench
+results rather than only the scaffolding.
+
+### 2. Working tree audit — **clean, no decision needed**
+
+Re-checked live rather than trusting the session preamble:
+
+| Check | Result |
+| --- | --- |
+| Uncommitted edits | **none** |
+| Untracked files in `src/`, `tools/`, `DOCs/`, `.claude/` | **none** |
+| Branch vs. origin | `main` in sync; `develop` identical |
+
+Neither hazard this step exists to catch is present: nothing mid-edit in a file the sprint
+will modify, and no untracked source the plan assumes exists. The 5,035 lines of study work
+that were uncommitted earlier on 2026-09-10 were committed and pushed before this audit.
+
+### 3. Tracking-tool readiness — **READY**
+
+| System | State | Action |
+| --- | --- | --- |
+| todo-mcp tasks | 1 total, 1 completed (`#3470`), 0 pending / in-progress / paused | Archived to `tasks/archives/archive_20260910_152316.md` |
+| todo-mcp context | **0 keys** | None needed — iron rule #3 fired correctly on `#3470`'s completion |
+| auto-memory | 7 files, `MEMORY.md` 13 lines (audit threshold ~150) | Superseded the time-bounded `project_driver_audit_resume_2026_09_09.md` with a sprint pointer; predecessor deleted in the same operation |
+
+No stranded `task_#N_*` keys, no leftover pending tasks, no in-progress task to adjudicate.
+**Cross-audit (§4): no prior audit exists for this project, so there is no recurrence signal
+yet — a single occurrence is data, not a process finding.**
+
+### 4. Entry baseline — **clean build, gate green, zero failure groups**
+
+**§1 Clean build** — `BUILD_COMMAND` over the six library objects: exit 0,
+**0 warnings, 0 errors.** §1's zero-warnings rule is absolute and is met with nothing to sweep.
+
+**§2 / §2a Substitute gate.** This project has no automated behavioural suite, so `TEST_COMMAND`
+is a **compile-all sweep**, `tools/build-check.sh`. Restated in its own terms per the project
+overlay:
+
+- **Failure unit:** a `.spin2` file in `src/` that compiles under **no** config block. Failing
+  under *some* blocks is normal and expected — a dual-motor top cannot compile under a
+  single-motor configuration — so a per-config failure is not a finding.
+- **Result: PASS — 39/39 tops certified**, both release demos certified
+  (`demo_single_motor` @ config `:130`, `demo_dual_motor` @ config `:180`).
+- **Failure groups: none.** The overlay's first triage question — config mismatch or real
+  error — does not arise.
+
+**§3 Skips — one exclusion, named.** `hng034rm.spin2`, printed on every run with its reason.
+39 examined + 1 excluded = 40 files in `src/`, matching the tree. The gate derives its file
+list **mechanically** from `src/*.spin2` rather than a hand-kept roster, so it cannot report
+green because files were never examined. PL-1 records why the exclusion is permanent.
+
+> **A green gate is a compile result and nothing more.** It says every file compiles somewhere
+> and both flagship demos are certified. **It says nothing about whether a motor turns, holds
+> position, or ramps correctly.** Behavioural verification lives on hardware — against
+> `{{CANONICAL_TEST_TARGET}}`, the P2 Edge Module with Universal Motor Driver boards — and
+> producing it is precisely what §3-§8 of this sprint exist to do.
+
+**Fix-when decision: not required.** There are no failure groups to fix, fold, or defer.
+
+**This is the entry baseline `sprint-closeout` will assert the exit baseline against:** build
+clean with 0 warnings, gate 39/39 with both release demos certified, one named exclusion.
+Exit must be no worse. §1 adds `tools/check_style.sh`, whose **entry state is expected to be
+red** on the pre-existing tree — that is a new instrument being introduced, not a regression,
+and §1 scopes it to hold new and modified code only.
+
+---
+
 ## Open Questions
 
 **None.** The questions pass reached empty on 2026-09-10. Every item that was open has been
