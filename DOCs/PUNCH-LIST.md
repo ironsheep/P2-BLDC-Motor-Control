@@ -52,12 +52,15 @@ loses nothing by this file being unbuildable.**
 | Location | What it says |
 | --- | --- |
 | `tools/build-check.sh` `EXCLUDED` | Names the file with the full reason; printed on every run, so the gate is never silently incomplete |
+| `tools/check_style.sh` `EXCLUDED` | Same file, excluded from the style gate too -- but for the D1 authorship reason (pik33/MIT, vendored, not Stephen's), not the compile reason. See `.claude/skill-conventions.md`'s D1 note next to `CONFORMANCE_GUIDES`, task #3471, 2026-09-10 |
 | `src/hng034rm.spin2` header | A banner: not built, not used, cannot compile, superseded, see PL-1 |
 | `src/isp_hdmi_debug.spin2:36` | A note at the commented-out reference: superseded by `p2textdrv`, do not uncomment |
 | This entry | The reasoning and the decision |
 
 **Cost of keeping it:** the compile gate covers 39 of 40 files rather than 40 of 40, and the
-one gap is named and printed on every run.
+one gap is named and printed on every run. `tools/check_style.sh` covers 34 of 40 -- this file
+plus the five other D1-excluded, not-Stephen's-code files (`p2videodrv.spin2`,
+`p2textdrv.spin2`, `jm_ez_analog.spin2`, `jm_nstr.spin2`, `jm_sbus_rx.spin2`).
 
 **If it is ever wanted back**, this is a *feature* — re-enabling the HDMI debug display —
 not a font-file restoration, and it needs all four data files supplied first. Restoring them
@@ -98,6 +101,62 @@ tags, no blank line before code. Nothing caught it: `tools/build-check.sh`
 compiles clean either way, because conformance is not a compile property. It was
 found only by reading the guide by hand and reverting. A script would have caught
 it in one second.
+
+**Update 2026-09-10 (task #3471):** `tools/check_style.sh` now exists and
+`STYLE_GATE_COMMAND` is set -- the *tooling* debt this item describes is
+discharged. The tree itself reports RED under it (576 findings across 34 of
+40 `src/*.spin2` files, by design -- the tree predates the guide). That is
+`tools/check_style.sh` surfacing latent findings, not a regression, and is
+task #3472's job to clear. This item stays open until the tree is green.
+
+### PL-10 -- deferred: `@param`/`@returns` completeness (element->tag direction)
+
+`central:spin2-authoring-guide` 4.3 requires, in full, that every parameter
+has a matching `@param` tag and every return value has a matching `@returns`
+tag (the element->tag direction), in addition to the direction
+`tools/check_style.sh` actually enforces (every *existing* tag must name a
+real signature element -- the tag->element direction). Measured 2026-09-10:
+approximately **621 sites** across the 34 in-scope files would need a new
+tag added.
+
+**Deferred by Stephen, 2026-09-10**, to protect the bench-readiness sprint:
+a 621-site documentation pass is a different shape of work than the bench
+sessions this sprint exists to unblock, and `tools/check_style.sh` says so
+plainly in its own header comment rather than silently under-enforcing 4.3.
+Revisit as its own sprint.
+
+### PL-11 -- deferred: PUB-before-PRI ordering (guide 3.2)
+
+`central:spin2-authoring-guide` 3.2 requires all `PUB` methods to precede all
+`PRI` methods in a file. `tools/check_style.sh` does not check this --
+detection is trivial, but the *fix* is bulk method reordering, and one of the
+**10 files** with PUB/PRI interleaved is `src/isp_bldc_motor.spin2`: 2392
+lines carrying the Spin2<->PASM2 hub-offset ABI (see CLAUDE.md, "The
+Spin2<->PASM2 shared-memory contract") as an EXCLUSIVE_RESOURCE this sprint.
+Bulk-reordering methods in that file is the wrong risk for a cosmetic pass,
+and is deferred as its own reviewed change, not folded into #3471/#3472.
+
+### PL-12 -- latent: `check_pri_docs` conflates "has a trailing comment" with "is a comment line"
+
+`tools/check_style.sh`'s C4 check (guide 4.4, PRI docs must use `'` not `''`)
+tests `rec['comment_kind'] == "''"` line-by-line after a PRI signature without
+first checking that the line's **code portion is blank**. `comment_kind` records
+*"this line carries a comment"*, not *"this line is comment-only"* -- so a PRI
+**code** line ending in a trailing `''` comment would be reported as "PRI method
+doc uses `''`" when it is not a doc line at all.
+
+**No in-tree site trips this today** -- verified independently, no PRI body line
+in `src/` carries a trailing `''`. So C4's current count of 9 is correct and
+there is no observable defect. It is recorded because it is *latent*: the first
+PRI body line written with a trailing `''` comment turns it into a false
+positive, and a gate's false positives are what get gates switched off.
+
+This is the **same conflation class** that caused the C3c defect fixed during
+#3471 (see the root cause note in `tools/check_style.sh`), found while auditing
+the other checks for that pattern. C3a/C3b/C3c/C3d/C3e are not affected -- they
+all read the `prologue` list, which the C3c fix corrected at source. The
+remaining checks were not exhaustively audited for it; doing that audit is part
+of this item.
 
 ### PL-9 -- HAZARD GUARD: do not "fix" A1's enum comparison on its own
 
