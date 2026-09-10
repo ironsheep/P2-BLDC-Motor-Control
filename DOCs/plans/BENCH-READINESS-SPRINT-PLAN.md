@@ -367,8 +367,10 @@ clock sweep, which is inherently three builds and is driven by §5.
    `STEER_DBG_MASK` to 0 in the user config. No library file is edited per build.
 
 **Hold-and-announce mode** (this is what makes the meter usable — §5, §8): at each ladder rung,
-drive it, let it settle, print `#HOLD,<test>,<rung>,<incr>`, then dwell for a read window and
-wait for Enter. **T1-7 is trial-selectable** — prompt for a `ramp_inc` trial index, or `0` for
+drive it, let it settle, print `#HOLD,<test>,<rung>,<incr>`, then hold **until Enter** with a
+**20-25 s minimum** — the meter's display rotates one reading every 2 s, so a full rotation is
+~16 s and the plan's original ~10 s window would silently cost a reading. The dwell is a floor;
+the keypress advances. **T1-7 is trial-selectable** — prompt for a `ramp_inc` trial index, or `0` for
 the whole sequence. That single design choice makes the harness indifferent to how the meter's
 peak registers reset: button-reset runs `0`; power-cycle-reset runs one trial per invocation,
 with the power cycle as the natural boundary. **No persistence, no branch, no code change
@@ -486,9 +488,18 @@ driver cog, so nothing can move. T0-10 wants the rail on anyway.
 
 While Tier 0 runs, characterise the meter — the answers shape §4's pacing, not its code:
 
-1. Is there a reset control for `Ap`/`Vm`/`Wp`, or does it need a power cycle?
-2. If a power cycle: does that necessarily drop power to the P2, or can it be isolated?
+1. ~~Is there a reset control for `Ap`/`Vm`/`Wp`, or does it need a power cycle?~~
+   **ANSWERED 2026-09-10 (Stephen): power cycle only, no reset control.** The harness needs no
+   change — T1-7's trial-selectable design already absorbs it. Procedure updated in the bench
+   plan's T1-7 and §2B.
+2. **NOW THE LIVE QUESTION — does the P2 survive a pack disconnect?** The meter sits between
+   pack and system, so resetting it breaks the pack connection. If the P2 Edge is USB-powered
+   from the Mac it stays alive and trials can be prompted in sequence inside one run; if it
+   dies with the pack it is one trial per program invocation. Changes session length
+   substantially, changes no code either way.
 3. Do `Ah`/`Wh` reset with the peaks, or separately?
+   **Also record the display's ROTATION ORDER and full cycle time** — the sheet's column order
+   is generated from it (§7), and it sets the hold dwell.
 4. Quiescent zero: with motors stopped and rail on, what are **V**, **A**, **W**?
 5. **Does `Ap` latch after the current drops, or decay?** — *If it decays, the
    `Ap`-for-fault-current technique in T1-7 collapses and that measurement returns to needing

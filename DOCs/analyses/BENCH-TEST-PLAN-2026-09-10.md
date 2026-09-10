@@ -349,14 +349,64 @@ Repeat per `ramp_inc` value and you get the fault boundary *in amps*, which is t
 `Vm` from the same trial gives the sag floor at fault — which is the other half of the story,
 and feeds **C-6c** directly.
 
-> **Two things to check on the meter before relying on this:**
+> ### ANSWERED 2026-09-10 (Stephen): **the peak registers reset ONLY on a power cycle.**
 >
-> 1. **How are the peak registers reset?** If it needs a power cycle rather than a button,
->    that is one trial per cycle and the session must be paced accordingly.
-> 2. **What is the peak detector's sampling bandwidth?** Unspecified above. A peak detector
->    sampling at ~100 Hz will under-capture a fast excursion. Treat `Ap` as a **lower bound**
->    on true peak current until it has been sanity-checked — for instance against a rung whose
->    steady current is already known from the `A` reading.
+> There is no reset control. Every `Ap` / `Vm` / `Wp` reading is the extremum since the meter
+> last received power, so **each trial that needs a fresh peak needs a power cycle first.**
+>
+> **The harness already accommodates this and needs no change** — T1-7 is trial-selectable by
+> design (prompt for a `ramp_inc` index, or `0` for the whole sequence). Under this regime the
+> operator runs trials one at a time and the power cycle *is* the natural boundary. That was
+> the point of building it that way before the answer was known.
+>
+> **What it costs is pacing, and the size of that cost turns on one thing not yet
+> determined:**
+>
+> > **Does the P2 survive a pack disconnect?** The meter sits between the pack and the whole
+> > system, so cycling it means breaking the pack connection. **If the P2 Edge is USB-powered
+> > from the Mac it stays alive** — the motor rail drops, the meter resets, and the harness
+> > keeps running, so trials can be prompted in sequence within a single run. **If the P2 dies
+> > with the pack**, it is one trial per program invocation and T1-7's sweep costs a full
+> > load-and-run each. Determine this at **§8.1**; it changes session length substantially and
+> > changes no code either way.
+>
+> **Two consequences to build into the procedure:**
+>
+> - **Re-take the quiescent zero after every power cycle.** If the peaks reset with power, so
+>   do `Ah`/`Wh`. Never carry a zero across a cycle.
+> - **That reset is also a convenience:** each cycle hands you a clean `Ah` baseline, which is
+>   exactly what the N-repetition energy method (above) wants — no arithmetic to subtract a
+>   previous run's accumulation.
+>
+> ### ALSO 2026-09-10 (Stephen): **the display CYCLES, one reading every two seconds.**
+>
+> The meter does not show all eight readings at once — it rotates through them. **A full
+> rotation is therefore ~16 s for 8 readings**, and two values you want are never on screen
+> at the same instant.
+>
+> **This sets the hold dwell, and the plan's original ~10 s is too short.** A steady rung must
+> be held for **at least one full rotation plus margin — budget 20-25 s per anchored rung**,
+> not 10. Holding for less means the operator either misses a reading or has to command the
+> rung twice.
+>
+> **What it does *not* affect:** the latched extrema. `Ap`/`Vm`/`Wp` hold their value until the
+> next power cycle, so they can be read at leisure *after* the event, however long the rotation
+> takes. This is a second, independent reason the latched registers are the right instrument
+> for **T1-7** and the live display is not.
+>
+> **Two procedural consequences:**
+>
+> - **Enter-driven, never timer-driven.** The harness must wait for Enter rather than advancing
+>   on a fixed dwell — a fixed dwell that happens to be shorter than the rotation silently
+>   costs a reading. The dwell is a *minimum*, the keypress is the advance.
+> - **Order the reading sheet's columns to match the display rotation**, so the operator writes
+>   values down in the order they appear instead of hunting for them. Record the actual
+>   rotation order at §8.1 and generate the sheet's column order from it.
+>
+> **Still to check:** **the peak detector's sampling bandwidth.** Unspecified by the vendor. A
+> detector sampling at ~100 Hz will under-capture a fast excursion, so treat `Ap` as a **lower
+> bound** on true peak current until it is sanity-checked against a rung whose steady current
+> is already known from the `A` reading.
 
 ### The Ah accumulator needs repetition — a single stop is far below resolution
 
@@ -429,8 +479,10 @@ The analyser already expects `manual.csv` alongside the captured stream. Make th
 cooperate:
 
 1. **Add a hold-and-announce mode.** At each ladder rung the harness drives the rung, waits
-   for the reading to settle, then prints `#HOLD,<test>,<rung>,<incr>` and dwells ~10 s before
-   advancing. That dwell is the read window.
+   for the reading to settle, then prints `#HOLD,<test>,<rung>,<incr>` and **holds until Enter**.
+   **Minimum dwell 20-25 s**, because the meter's display rotates one reading every 2 s and a
+   full rotation is ~16 s — a 10 s window silently costs a reading. The dwell is a floor; the
+   keypress is what advances.
 2. **Read and write down** volts / amps / watts against the rung number. Paper is fine.
 3. **Type it into `manual.csv`** after the session, keyed by `<test>,<rung>`, and let
    `bench-verdict.py` join it to the logged `sense_*_mV`.
@@ -801,7 +853,17 @@ whether `duty_` saturates before the lag runs away.
 
 > **UPDATED 2026-09-10 — the current at fault is readable without the front end.** The
 > system meter latches **Peak Amps (`Ap`)**, **Peak Watts (`Wp`)** and **Minimum Volts
-> (`Vm`)**. Reset the peaks, run one ramp trial, let it fault, then read all three: `Ap` is
+> (`Vm`)**.
+>
+> **Procedure per trial, given the peaks reset only on a power cycle (confirmed 2026-09-10):**
+>
+> 1. **Power-cycle the pack** — this is the only way to clear `Ap`/`Vm`/`Wp`.
+> 2. **Re-read the quiescent zero** (motors stopped, rail on) — `Ah`/`Wh` reset too.
+> 3. Select the `ramp_inc` trial index at the harness prompt.
+> 4. Run it; let it fault.
+> 5. Read `Ap`, `Vm`, `Wp` and write them on the sheet against this trial index.
+>
+> Then read all three: `Ap` is
 > the fault current, `Vm` the sag floor at fault (feeding **C-6c**), `Wp` the severity. Repeat
 > per `ramp_inc` value to map the fault boundary **in amps** — the number **S-2**'s limiter
 > will be designed against. See **§2B**, including the two things to verify about the meter's
