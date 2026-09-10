@@ -128,10 +128,23 @@ PYEOF
 # Exclusions must be named here with a reason, and are printed on every run.
 # Nothing is excluded silently.
 EXCLUDED="hng034rm"
-# hng034rm  -- dead. Requires a DAT preload of vgafont.def, which is not in the
-#              repo, so it cannot compile. Its only reference (isp_hdmi_debug.spin2
-#              line 36) is commented out. Tracked in git but built by nothing.
-#              Remove the file or restore vgafont.def, then drop this exclusion.
+# hng034rm  -- superseded, unused, and cannot compile. KEEP the file (Stephen,
+#              2026-09-10); this exclusion is permanent until that changes.
+#              It is "Nostalgic displaylisted HDMI for P2 Retromachine" v0.34
+#              alpha, (c) Piotr Kardasz (pik33), MIT.
+#              * It needs FOUR external files via DAT `file` directives, not one:
+#                vgafont.def, st4font.def, atari8.fnt, ataripalettep2.def
+#                (hng034rm.spin2:1199-1205). None is in the repo and none has ever
+#                been in git history. These four lines are the ONLY external file
+#                dependency anywhere in src/.
+#              * It was REPLACED by p2textdrv.spin2, which is present, compiles
+#                under every config, and needs no external files.
+#              * Its sole reference is COMMENTED OUT at isp_hdmi_debug.spin2:36.
+#                isp_hdmi_debug itself is very much alive -- 8 top-levels use it,
+#                including the release demo demo_single_motor -- but it drives
+#                HDMI through p2textdrv, not through this file.
+#              So HDMI debug works today and loses nothing by this exclusion.
+#              See PL-1 in DOCs/PUNCH-LIST.md.
 
 TOPS=$(ls *.spin2 2>/dev/null | sed 's/\.spin2$//' \
        | while read -r n; do

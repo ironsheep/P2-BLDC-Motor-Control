@@ -9,21 +9,59 @@ Opened 2026-09-09 by the `bootstrap-conventions` / `baseline-health` bootstrap.
 
 ## Open
 
-### PL-1 — `src/hng034rm.spin2` is dead and unbuildable
+### PL-1 — `src/hng034rm.spin2`: superseded, unused, uncompilable — **kept on purpose**
 
-Tracked in git, but:
+**Disposition decided 2026-09-10 (Stephen): KEEP the file. Do not delete.** This entry now
+exists to record *why*, so the question is not reopened every time someone trips over it.
 
-- it cannot compile — needs a `DAT` preload of `vgafont.def`, which is not
-  anywhere in the repo (`hng034rm.spin2:1199: error: DAT file not found`);
-- its only reference is **commented out** — `isp_hdmi_debug.spin2` line 36,
-  `'    hdmi    :   "hng034rm"`;
-- nothing else in `src/` includes it.
+The file is *"Nostalgic displaylisted HDMI for P2 Retromachine"* v0.34 alpha,
+© 2012-2021 Piotr Kardasz (pik33@o2.pl), MIT.
 
-It is excluded by name from `tools/build-check.sh`, so the gate stays honest,
-but a 62 KB tracked file that builds under no configuration is dead weight.
+**It cannot compile — and it needs four files, not one.** `hng034rm.spin2:1199-1205` pulls
+in external data through `DAT` `file` directives:
 
-**Decision needed:** delete the file, or restore `vgafont.def` and re-enable the
-HDMI driver. Then drop it from `EXCLUDED` in `tools/build-check.sh`.
+```spin2
+vga_font       file "vgafont.def"
+st_font        file "st4font.def"
+a8_font        file "atari8.fnt"
+ataripalette   file "ataripalettep2.def"
+```
+
+`vgafont.def` is merely the first one the compiler trips on. **None of the four is in the
+repo, and none has ever been in git history** (searched across all refs and the full object
+list). **These four lines are the only external file dependency anywhere in `src/`.**
+
+They are also not reachable through the tooling here: the object was distributed via the
+Parallax forums rather than OBEX, and the OBEX index carries no objects by that author.
+
+**Nothing requires it — it was replaced.** `hng034rm` is named exactly once in the tree, and
+that line is commented out:
+
+```
+src/isp_hdmi_debug.spin2:36:'    hdmi    :   "hng034rm"  ' our HDMI driver (HDMI Eval Adapter)
+```
+
+`isp_hdmi_debug` itself is **alive and shipping** — eight top-levels use it, including the
+certified release demo `demo_single_motor.spin2` and `util_char_motor.spin2`, which bench
+test T1-10 reuses. But it drives HDMI through **`p2textdrv.spin2`**, which is present,
+compiles under every config, and needs no external files. **So HDMI debug works today and
+loses nothing by this file being unbuildable.**
+
+**Consequences, recorded at each place someone would trip over it:**
+
+| Location | What it says |
+| --- | --- |
+| `tools/build-check.sh` `EXCLUDED` | Names the file with the full reason; printed on every run, so the gate is never silently incomplete |
+| `src/hng034rm.spin2` header | A banner: not built, not used, cannot compile, superseded, see PL-1 |
+| `src/isp_hdmi_debug.spin2:36` | A note at the commented-out reference: superseded by `p2textdrv`, do not uncomment |
+| This entry | The reasoning and the decision |
+
+**Cost of keeping it:** the compile gate covers 39 of 40 files rather than 40 of 40, and the
+one gap is named and printed on every run.
+
+**If it is ever wanted back**, this is a *feature* — re-enabling the HDMI debug display —
+not a font-file restoration, and it needs all four data files supplied first. Restoring them
+alone would make a 62 KB file compile and change nothing else.
 
 ### PL-7 — Six blocks of prose are maintained in two or more documents
 
