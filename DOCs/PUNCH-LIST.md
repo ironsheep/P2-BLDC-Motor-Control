@@ -158,6 +158,31 @@ all read the `prologue` list, which the C3c fix corrected at source. The
 remaining checks were not exhaustively audited for it; doing that audit is part
 of this item.
 
+### PL-13 -- `isp_serial` and `isp_serial_singleton` disagree on two method names
+
+The two objects are the same serial interface, one adapted as a singleton
+("singleton adaptation by Stephen M. Moraco" in its header), and their method
+families otherwise mirror each other exactly. Two names do not match:
+
+| `isp_serial.spin2` | `isp_serial_singleton.spin2` |
+| --- | --- |
+| `PUB fwoct(nNumber, digits)` | `PUB foct(nNumber, digits)` |
+| `PUB fwqrt(nNumber, digits)` | `PUB fqrt(nNumber, digits)` |
+
+Every sibling in that family agrees across both files -- `fwdec`, `fwhex`,
+`fwbin` are `fw`-prefixed in both -- so the singleton's `foct`/`fqrt` read as
+typos rather than as a deliberate difference.
+
+**Why it matters:** the two objects are meant to be interchangeable at the
+call site; an application that swaps one for the other silently loses those
+two methods and fails to compile on a line that has nothing obviously wrong
+with it. **Not fixed here** because renaming a `PUB` is an API change, not a
+style finding -- it needs Stephen's call on whether to rename the singleton's
+two to match (consistent, but breaks any existing caller) or to add aliases.
+
+Found while verifying the #3472 conformance renames, which touched both
+files' parameter lists and so put the two families side by side.
+
 ### PL-9 -- HAZARD GUARD: do not "fix" A1's enum comparison on its own
 
 **This is a booby trap, and it looks like a one-word fix.**
