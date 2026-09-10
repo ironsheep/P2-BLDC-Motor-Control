@@ -45,6 +45,46 @@ See also:
 Latest Changes:
 
 ```
+21 February 2025  v5.0.2
+- BUGFIX: consecutive drive-for-distance calls now work (#23)
+- Motor drive gap is now adjusted by board type - REV_B uses a shorter gap,
+  which reduces jerk when starting
+- Two additional motor-board connection points are now supported
+13 February 2025  v5.0.1
+- BUGFIX: drive-for-distance in the 2-wheel steering object
+- License information updated throughout the docs
+16 September 2023  v5.0.0
+- Multiple motors can now be started in sync with each other
+- Ramping is now dynamic (ramp_min climbing to ramp_max) instead of fixed
+- BUGFIX: getCurrent() now reports correct current and power
+  (this closes the long-standing "current and power not yet correct" issue)
+- BUGFIX: direction and fault handling for the DocoEng 4,000 RPM motor
+- BUGFIX: wheel-diameter handling for the DocoEng motor; position-sense
+  task reworked
+- BUGFIX: DCS_SLOW_TO_CHG state, stop-mode handling, duty_min, and initial
+  angle-from-hall calculation
+- Board revision is now detected before it is used
+- FlySky receiver pin is now configurable; the same changes applied to the
+  _rc_hdmi demo
+- Reworked how PWM enable/disable operates
+- Thanks to TimM for pull-request contributions
+15 August 2023  v4.2.0
+- Motor object update; documentation corrections
+14 August 2023  v4.1.0
+- BUGFIX: validDetectModeForChoice() in the 2-wheel steering object was
+  calling the wrong underlying method (closes the v4.0.0 known issue)
+14 April 2023  v4.0.0
+- Automatic board revision detection (REV_A / REV_B); all demos and tests
+  converted to use it
+- RevB board support completed for both motors
+- Motor characterization re-run; best RevB DocoEng offsets applied
+- Fault detection added, shown on HDMI and self-clearing after 3 seconds
+- HDMI display of steering added
+- Position tracking awakened in the driver for dual-wheel steering;
+  HDMI display field overruns fixed
+- Support for the larger Edge Breakout board (#64029) running dual motor
+  with HDMI
+- New platform layout drawings; FlySky wiring documentation added
 11 August 2023
 - fix 2-wheel steering object
 10 April 2023
@@ -91,6 +131,13 @@ Latest Changes:
 Things we know about that still need attention:
 
 ```
+  v5.0.2
+- Drive status reporting is not working in the base objects, so it is also
+  reported badly over the serial interface.
+- Motor can fault under higher load conditions (we need a fallback algorithm
+  so the motor doesn't "give up" under load).
+  (Current and power calculation, listed here since v3.0.0, was fixed in
+   v5.0.0 and is no longer a known issue.)
   v4.1.0
 - Calculation of current and power not yet correct.
   v4.0.0

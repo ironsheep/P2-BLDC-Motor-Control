@@ -75,11 +75,25 @@ PUB null()
 
 PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
 '' Specify motor control board connect location for this motor and start the driver
+''
+'' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
+'' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
+'' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
+'' @returns ok - The COG ID of the motor driver task or (-1) if failed to start
 
     ok := startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, false)
 
 PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | legalBase
 '' Specify motor control board connect location for this motor and start the driver, specify sync setting
+''
+'' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
+'' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
+'' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
+'' @param sync - non zero if motor loop should wait to start
+'' @returns ok - The COG ID of the motor driver task or (-1) if failed to start
+
+' Local Variables:
+' @local legalBase -
 
     sync_required := sync
     init(eMotorBasePin, eMotorVoltage, eDetectionMode)  ' setup runtime constants
@@ -90,7 +104,7 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | legalBase
     if motorCog == 0    ' did fail?
         debug("!! ERROR filed to start Motor Control task")
     else
-        debug("* Motor COG #", sdec_(motorCog- 1))
+        debug("* Motor COG #", sdec_(motorCog - 1))
 
 PUB stop()
 '' Stop cogs and release pins assigned to this motor
@@ -110,6 +124,14 @@ PUB stop()
 
 PUB testSetup(eMotorBasePin, eMotorVoltage, eDetectionMode) | legalBase
 '' TESTING USE: Specify motor control board connect location for this motor BUT DON'T start the driver
+''
+'' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
+'' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
+'' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
+
+' Local Variables:
+' @local legalBase -
+
     init(eMotorBasePin, eMotorVoltage, eDetectionMode)
 
 PRI validatePinBase(eMotorBasePin) : legalBase
@@ -760,6 +782,39 @@ PUB testResetMaxValues()
 '' TESTING USE: reset our fault indicator that we tripped during test
     bResetSenseData := TRUE
     waitms(200) ' values should clear in 125ms
+
+PUB testGetTelemetry() : nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrState, bDidFault
+'' TESTING USE: snapshot the per-cycle driver status values in a single call
+''
+'' @returns nDuty - latest duty value reported by the driver
+'' @returns nErr - latest position-error value reported by the driver
+'' @returns nSenseI - latest current-sense reading, in mV
+'' @returns nSenseU - latest phase-U sense reading, in mV
+'' @returns nSenseV - latest phase-V sense reading, in mV
+'' @returns nSenseW - latest phase-W sense reading, in mV
+'' @returns eDrvrState - state of driver: enumerated constant DCS_*
+'' @returns bDidFault - T/F where T means the driver has faulted
+
+    ' NOTE: these longs are block-copied out of the driver every cycle. Reading them as one
+    '  group here is far tighter than a series of separate calls, but it is still not atomic
+    '  with respect to the driver - a sample can straddle a driver update.
+    nDuty := duty
+    nErr := err
+    nSenseI := sense_i_mV
+    nSenseU := sense_u_mV
+    nSenseV := sense_v_mV
+    nSenseW := sense_w_mV
+    eDrvrState := drv_state
+    bDidFault := (fault <> false) ? true : false
+
+PUB testSetMotorReversed(bEnable)
+'' TESTING USE: set -or clear- the reversed-motor flag for this motor
+''
+'' @param bEnable - T/F where T means forward and reverse are swapped for this motor
+
+    ' NOTE: forwardIsReverse() is deliberately one-way. A test that measures this motor both
+    '  with and without the reversal needs to be able to put it back.
+    motorIsReversed := bEnable
 
 
 CON ' --- PRIVATE (Utility) Methods ---

@@ -145,6 +145,9 @@ PUB stop()
 
 PUB setAcceleration(rate)
 '' Updates the ramping speed of the motors
+''
+'' @param rate - the desired acceleration rate in ticks per second
+
     ltWheel.setAcceleration(rate)
     rtWheel.setAcceleration(rate)
 
@@ -480,6 +483,187 @@ PUB validMotorForChoice(userMotor) : legalMotor
 PUB validDetectModeForChoice(userDetMode) : legalMode
 '' VALIDATE users' detection mode choice returns legalMode or INVALID_DET_MODE
     legalMode := ltWheel.validDetectModeForChoice(userDetMode)
+
+CON ' --- TEST-USE ONLY Methods ---
+
+{
+    Bench-harness pass-throughs. These are NOT product API and are deliberately absent from
+    DRIVE-OBJECTS.md. They exist so a test top-level can reach each wheel's driver state,
+    fault latch and raw telemetry: a test cannot simply declare its own isp_bldc_motor,
+    because that second instance would fight this object's two for the same pins.
+
+    Mirrors the TEST-USE ONLY convention already used in isp_bldc_motor.spin2.
+}
+
+PUB testGetDriverState() : eLeftState, eRightState
+'' TESTING USE: return motor-driver state for each motor
+''
+'' @returns eLeftState - state of left-motor driver: enumerated constant DCS_*
+'' @returns eRightState - state of right-motor driver: enumerated constant DCS_*
+
+    eLeftState := ltWheel.getDriverState()
+    eRightState := rtWheel.getDriverState()
+
+PUB testGetFaultStatus() : bLtFaulted, bLtSignal, bRtFaulted, bRtSignal
+'' TESTING USE: return fault state and fault signal for each motor, without side effects
+''
+'' @returns bLtFaulted - T/F where T means the left motor has faulted
+'' @returns bLtSignal - T/F where T means the left motor's fault signal is latched
+'' @returns bRtFaulted - T/F where T means the right motor has faulted
+'' @returns bRtSignal - T/F where T means the right motor's fault signal is latched
+
+    ' NOTE: this deliberately does NOT call getFaultStatus(). That method clears the fault
+    '  latch 3 seconds after the fault appears, so calling it from a test would destroy the
+    '  very thing the test is watching. This read has no side effects - which also lets a
+    '  test observe that 3-second clear happening underneath it.
+    bLtFaulted := ltWheel.isFaulted()
+    bLtSignal := ltWheel.isFaultSignal()
+    bRtFaulted := rtWheel.isFaulted()
+    bRtSignal := rtWheel.isFaultSignal()
+
+PUB testGetRawHallTicks() : nLeftPos, nRightPos
+'' TESTING USE: return the raw driver-maintained tick count for each motor
+''
+'' @returns nLeftPos - raw hall-tick count for the left motor
+'' @returns nRightPos - raw hall-tick count for the right motor
+
+    nLeftPos := ltWheel.getRawHallTicks()
+    nRightPos := rtWheel.getRawHallTicks()
+
+PUB testLeftGetTelemetry() : nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrState, bDidFault
+'' TESTING USE: snapshot the LEFT motor's per-cycle driver status values in a single call
+''
+'' @returns nDuty - latest duty value reported by the driver
+'' @returns nErr - latest position-error value reported by the driver
+'' @returns nSenseI - latest current-sense reading, in mV
+'' @returns nSenseU - latest phase-U sense reading, in mV
+'' @returns nSenseV - latest phase-V sense reading, in mV
+'' @returns nSenseW - latest phase-W sense reading, in mV
+'' @returns eDrvrState - state of driver: enumerated constant DCS_*
+'' @returns bDidFault - T/F where T means the driver has faulted
+
+    nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrState, bDidFault := ltWheel.testGetTelemetry()
+
+PUB testRightGetTelemetry() : nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrState, bDidFault
+'' TESTING USE: snapshot the RIGHT motor's per-cycle driver status values in a single call
+''
+'' @returns nDuty - latest duty value reported by the driver
+'' @returns nErr - latest position-error value reported by the driver
+'' @returns nSenseI - latest current-sense reading, in mV
+'' @returns nSenseU - latest phase-U sense reading, in mV
+'' @returns nSenseV - latest phase-V sense reading, in mV
+'' @returns nSenseW - latest phase-W sense reading, in mV
+'' @returns eDrvrState - state of driver: enumerated constant DCS_*
+'' @returns bDidFault - T/F where T means the driver has faulted
+
+    nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrState, bDidFault := rtWheel.testGetTelemetry()
+
+PUB testLeftGetResults() : nMaxRPM, maxTics, bDidFault, max_mV
+'' TESTING USE: return results of a test pass for the LEFT motor
+''
+'' @returns nMaxRPM - highest RPM seen during the pass
+'' @returns maxTics - highest hall-tick count seen in one second during the pass
+'' @returns bDidFault - T/F where T means the motor faulted during the pass
+'' @returns max_mV - highest current-sense reading seen during the pass, in mV
+
+    nMaxRPM, maxTics, bDidFault, max_mV := ltWheel.testGetResults()
+
+PUB testRightGetResults() : nMaxRPM, maxTics, bDidFault, max_mV
+'' TESTING USE: return results of a test pass for the RIGHT motor
+''
+'' @returns nMaxRPM - highest RPM seen during the pass
+'' @returns maxTics - highest hall-tick count seen in one second during the pass
+'' @returns bDidFault - T/F where T means the motor faulted during the pass
+'' @returns max_mV - highest current-sense reading seen during the pass, in mV
+
+    nMaxRPM, maxTics, bDidFault, max_mV := rtWheel.testGetResults()
+
+PUB testLeftDriveAtMotorIncrement(motorIncre)
+'' TESTING USE: drive the LEFT motor at a raw increment
+''
+'' @param motorIncre - signed raw driver increment; sign selects the commutation offset
+
+    ' NOTE: this path bypasses incrementForPower() and the reversed-motor flag, so the sign
+    '  passed here is the sign the driver sees.
+    ltWheel.testDriveAtMotorIncrement(motorIncre)
+
+PUB testRightDriveAtMotorIncrement(motorIncre)
+'' TESTING USE: drive the RIGHT motor at a raw increment
+''
+'' @param motorIncre - signed raw driver increment; sign selects the commutation offset
+
+    ' NOTE: see testLeftDriveAtMotorIncrement() - the reversed-motor flag is bypassed here.
+    rtWheel.testDriveAtMotorIncrement(motorIncre)
+
+PUB testLeftSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
+'' TESTING USE: set the LEFT motor's commutation offsets so we can characterize current draw
+''
+'' @param newOfsDegr - commutation offset, in degrees
+'' @param bFwdIsInverse - T/F where T means forward is the inverse of reverse
+
+    ltWheel.testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
+
+PUB testRightSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
+'' TESTING USE: set the RIGHT motor's commutation offsets so we can characterize current draw
+''
+'' @param newOfsDegr - commutation offset, in degrees
+'' @param bFwdIsInverse - T/F where T means forward is the inverse of reverse
+
+    rtWheel.testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
+
+PUB testLeftSetLimit(newMaxLimit)
+'' TESTING USE: set the LEFT motor's override increment limit
+''
+'' @param newMaxLimit - maximum raw driver increment allowed at full power
+
+    ltWheel.testSetLimit(newMaxLimit)
+
+PUB testRightSetLimit(newMaxLimit)
+'' TESTING USE: set the RIGHT motor's override increment limit
+''
+'' @param newMaxLimit - maximum raw driver increment allowed at full power
+
+    rtWheel.testSetLimit(newMaxLimit)
+
+PUB testLeftSetMotorReversed(bEnable)
+'' TESTING USE: set -or clear- the LEFT motor's reversed-motor flag
+''
+'' @param bEnable - T/F where T means forward and reverse are swapped for this motor
+
+    ltWheel.testSetMotorReversed(bEnable)
+
+PUB testRightSetMotorReversed(bEnable)
+'' TESTING USE: set -or clear- the RIGHT motor's reversed-motor flag
+''
+'' @param bEnable - T/F where T means forward and reverse are swapped for this motor
+
+    ' NOTE: start() calls forwardIsReverse() on the right wheel. Clearing it here is how a
+    '  test measures both wheels on the same commutation offset.
+    rtWheel.testSetMotorReversed(bEnable)
+
+PUB testLeftResetFault()
+'' TESTING USE: reset the LEFT motor's fault indicator tripped during test
+''
+
+    ltWheel.testResetFault()
+
+PUB testRightResetFault()
+'' TESTING USE: reset the RIGHT motor's fault indicator tripped during test
+''
+
+    rtWheel.testResetFault()
+
+PUB testLeftResetMaxValues()
+'' TESTING USE: reset the LEFT motor's accumulated maximum sense values
+''
+
+    ltWheel.testResetMaxValues()
+
+PUB testRightResetMaxValues()
+'' TESTING USE: reset the RIGHT motor's accumulated maximum sense values
+''
+
+    rtWheel.testResetMaxValues()
 
 CON { --- PRIVATE Utility Methods --- }
 
