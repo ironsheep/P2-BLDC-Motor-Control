@@ -2,11 +2,22 @@
 
 **Written:** 2026-09-10
 **Entry build:** `VERSION` = 5.0.2 · `main` = `develop` = `a80f8e6`
-**Target build:** **5.0.3** (patch — tooling, test scaffolding and documentation; **no driver behaviour changes**)
+**Target build:** ~~5.0.3 (patch)~~ → **6.0.0** *(revised 2026-09-11)*
 
-**Scope, confirmed by Stephen 2026-09-10:** get the bench suite built, run it, and record
-what it decides. **The driver fixes are a separate sprint.** Nothing in this plan changes
-motor behaviour.
+> ⛔ **READ THE REVISIONS BEFORE THE BODY.** Two things on this line were true on
+> 2026-09-10 and are not true now. The build is **6.0.0**, a major bump, and this
+> plan **does** change motor behaviour. The live ordering is
+> [*Execution model — revised 2026-09-11*](#execution-model--revised-2026-09-11);
+> the dated findings are in [*Sprint Revision — 2026-09-11*](#sprint-revision--2026-09-11).
+> Everything between them is preserved as written and is dated, not current.
+
+**Scope as written 2026-09-10 — SUPERSEDED:** *"get the bench suite built, run it, and
+record what it decides. The driver fixes are a separate sprint. Nothing in this plan changes
+motor behaviour."*
+
+**Scope now:** the driver fixes are **in** this plan, built in parallel silos and certified
+in batched bench passes, and the motor subsystem's cog shape changes before release. That is
+why the bump is major.
 
 **Governing analysis:** [`../analyses/BENCH-TEST-PLAN-2026-09-10.md`](../analyses/BENCH-TEST-PLAN-2026-09-10.md),
 [`../analyses/DRIVER-AUDIT-2026-09-09.md`](../analyses/DRIVER-AUDIT-2026-09-09.md),
@@ -171,7 +182,7 @@ All five fixes committed in `aea4981` confirmed against their predictions:
 | DOCO single-motor bench | **Deferred past the next release.** Dual 6.5″ only. |
 | Instrument cog shape | **One** cog sampling front end *and* driver status on one timebase. |
 | `TASKSPIN` for the instrument | **Rejected** — cooperative; an instrument must not yield. |
-| `TASKSPIN` for the shipped sense cog | **OPEN — Stephen's call.** Hands users back a cog; raises minimum compiler to v47. |
+| `TASKSPIN` for the shipped sense cog | **DECIDED 2026-09-11 — REJECTED.** The library never conscripts the caller's cog. See *The motor subsystem's cog shape* in the Execution model. Still live *inside* the subsystem boundary. |
 
 ### Amendments to the sections above
 
@@ -185,27 +196,34 @@ All five fixes committed in `aea4981` confirmed against their predictions:
 - **§3 (Tier 0)** — extended with T0-11 quiescent current-sense baseline, T0-12 hand-rotation
   ground truth, T0-13 counter readback, T0-14 detection repeatability, T0-15 `start()` return
   matrix.
-- **§10 (release)** — **the version number is no longer settled at 5.0.3.** Release A changes
-  behaviour users will feel: `AE` now rejects pin configurations that work today, `DDU_M` stops
-  10× further, distance shifts 1.1 %, and `rpm` starts returning real numbers where callers may
-  assume 0. A minor bump is arguable. **Open — Stephen's call.**
+- **§10 (release)** — **ANSWERED 2026-09-11: 6.0.0, not 5.0.3.** A major bump, because the
+  behaviour changes are real (`AE` now rejects pin configurations that work today, `DDU_M` stops
+  10× further, distance shifts 1.1 %, `rpm` starts returning real numbers) *and* because the
+  motor subsystem's cog shape changes before release. See *Version — 6.0.0* in the Execution
+  model.
 - **Exit criteria** — `tools/build-check.sh` is now **41/41**, not 39/39, and the bench carries
   its own peer config selected by `-D BENCH_CFG`.
 
-### Proposed re-baseline — NOT YET APPROVED
+### Re-baseline — SUPERSEDED the same day by the silo model
 
-A split into two releases has been proposed and is awaiting Stephen's read:
+A two-release split (stability / characterization) was proposed here and is
+**no longer the plan**. Stephen replaced it with vertical silos built in parallel
+and certified in batched passes — see **Execution model — revised 2026-09-11**
+below, which is the live ordering. The A/B split was still a *schedule*; the silo
+model is not, and it collapses what would have been four bench passes into
+roughly one.
 
-- **Release A — stability.** The confirmed defect fixes, gated by an extended Tier 0. Does not
-  depend on the Tier 1 harness, the analyser, the reading sheet or the front end.
-- **Release B — characterization.** Front end, §2 DEBUG channels, Tier 1 harness, analyser,
-  reading sheet, session two, the C-4 curves, and `SENSE_LOOP_HZ` once measured.
+What survives from it: **§2 DEBUG channels is not near-term work** (its whole
+justification is silencing chatter in silo 5's timed sections), and the ten tasks
+created 2026-09-11 carry `stability` / `characterization` tags which remain useful
+as a rough silo hint. The tasks themselves are to be **archived and regenerated
+from this plan** via `plan-to-tasks` once it is fully scoped — with the plan
+absorbing their operational detail *first*, since archiving otherwise discards it.
 
-Under that split **§2 moves to Release B** — its entire justification is silencing library
-chatter during Tier 1's timed sections, which Tier 0 does not need.
-
-**Until that is approved the sequencing above stands unchanged.** The ten tasks created
-2026-09-11 carry `stability` / `characterization` tags so the split is mechanical when called.
+**One gap this revision closes:** nothing tasked the **S-3 scale fix** itself. The
+old plan deferred every driver fix to a later sprint, so `#3490` is the front-end
+*build* with no task for the correction it exists to validate. Silo 3 owns it now;
+the mechanism and the four-instruction fix are written up in the Execution model.
 
 ---
 
@@ -721,7 +739,450 @@ the file count. If any file is added to `src/`, that string and `DOCs/analyses/`
 
 ---
 
+## Execution model — revised 2026-09-11
+
+**This section supersedes *Sequencing* below.** The original plan ordered work by
+**layer**: build every instrument, then run every measurement, then write it all
+back. Stephen replaced that on 2026-09-11 with vertical silos built in parallel
+and certified in **batched passes**. His words, and the correction that matters:
+
+> *"For every vertical slice, I build the foundational pieces simultaneously, and
+> then I certify the vertical piece. I certify as many foundational pieces as I
+> have built in one pass. This way you're running a bunch of vertical silos side
+> by side, and you're reducing the number of bench runs."*
+
+### The unit of cost is a bench pass, not a task
+
+Code costs nothing but my time. **A bench pass costs Stephen, the hardware, the
+pack and a block of his attention.** So the objective is not "finish a silo" — it
+is **maximise certified capability per bench pass**. Everything follows from that.
+
+⚠ **A vertical silo is not a schedule.** Four silos executed in sequence is four
+bench passes, which is the layered shape wearing different clothes. The silos are
+built **concurrently** and certified **together**.
+
+### Dependency is on the FIX landing, not on a prior certification
+
+The current magnitude anchor does not require board detection to be *certified*
+first. It requires detection to be **fixed in the same binary** — then one pass
+certifies both, and detection's own test in that same run is what licenses the
+current reading. Read the foundation results first, then the results that rest
+on them.
+
+This is the single reordering insight. It is what collapses four passes into one.
+
+### The silos
+
+Each is *foundation* (code, no bench) plus *certification* (bench). Foundations
+are built in parallel; they serialise only because
+`src/isp_bldc_motor.spin2` is a declared `EXCLUSIVE_RESOURCE`, which is a
+dispatch constraint and not a plan one.
+
+| # | Silo | Foundation | Certified by |
+| --- | --- | --- | --- |
+| **1** | **Measurement trust** | `start()` return (6 sites); board detection | `start()` return matrix; the A/B sweep binary (own artifact — see below) |
+| **2** | **Hall / position** | integrity counters **in the driver control loop**; rpm accumulator; `tickInMM_x10` | hand-rotation ground truth; counter readback; `rpm` tracking the raw tick delta |
+| **3** | **Current sensing** | the S-3 scale restore (see below) | quiescent baseline; **the magnitude anchor against Stephen's meter** |
+| **4** | **Stop latency** | `SENSE_LOOP_HZ` / C-3 | measured overshoot against the ~294 mm prediction, then a rate sweep |
+| **5** | **Motion behaviour** | — | speed law, C-4 decel curves, fault boundary, commutation offsets, clock sweep |
+| **6** | **Instrumentation** | §2A front end; DEBUG channels; analyser; reading sheet | serves silo 5 |
+
+**Silo 2's "right location" is already settled:** the counters must sit beside the
+existing `altgb hall_, #deltas` in the driver control loop. The sense cog runs at
+`SENSE_LOOP_HZ = 8` and the motor turns ~411 ticks/s at top speed, so a counter
+there would miss essentially every transition.
+
+### Silo 3 — "the right location" for current sensing, and the fix
+
+⭐ **The fix is to restore a shift, not to add a divide — four instructions, and
+they belong in the driver loop.**
+
+`isp_bldc_motor.spin2:2435` still carries the original fixed-point form as its
+DAT default:
+
+```
+numerator       LONG    3300 << 11
+```
+
+`init()` at `:276` overwrites it with `3300 * adc_fram`, and the matching
+`sar` was never restored. So `scl ≈ 3300`, `(pin − gio)` spans `0..adc_fram`,
+and `sense_x_mV` comes out as **millivolts × `adc_fram`** — 6136× at 270 MHz.
+That is S-3, and its error factor is exactly `adc_fram`.
+
+Restoring `numerator = 3300 << 11` and adding `sar sense_x_, #11` after each of
+the four `muls` puts it back: `scl = 3300·2048/6136 = 1101`, full scale
+`6136 × 1101 >> 11 = 3299` — correct, ~0.5 mV per count. A larger shift buys
+headroom if wanted.
+
+**Correcting at the source rather than in `getCurrent()` is deliberate.** A
+future current limiter (S-2 / C-5) needs the corrected value *inside* the control
+loop, so an API-level correction would have to be undone later. The cost is four
+instructions against a ~6100-clock iteration.
+
+⚠ This is a reading of the PASM, not a measurement. **The magnitude anchor is
+what verifies it**, and that measurement should be taken *before* the fix is
+written — see the early characterisation run.
+
+### Two harness requirements that batching forces
+
+**1. `NOT-BUILT` must be distinct from `FAILED`.** "Certify as many as I have
+built" means passes are opportunistic: whatever is ready gets run. A test whose
+foundation has not landed must report as *not built*, never as a failure —
+otherwise a partial pass reads as a regression and the session is spent chasing
+it. **Three outcomes, not two.**
+
+**2. Foundation results come first, and dependents are tagged.** If a foundation
+fix is wrong, everything certified through it in that pass is void — detection
+being wrong makes every current number 30× suspect. The harness emits foundation
+results first and names which tests depend on them, so a bad foundation
+invalidates a **named set** rather than silently poisoning the log.
+
+### Three bench binaries, not one
+
+The original plan had one Tier 1 harness. Blast radius and one-shot hardware
+force a split.
+
+#### (a) The A/B detection sweep — its own binary, detached from every pass
+
+**The A boards are a one-shot, no-motion resource.** They are at risk precisely
+because the protection that would make them safe — correct revision detection
+feeding correct current scaling, `rSenseForBoard` 5 vs 150 — is the thing that is
+broken. **A-board protection needs the A-board data**, so a thin run leaves us
+stuck in that loop. Over-capture.
+
+**How it runs (Stephen, 2026-09-11):** two systems side by side, identically
+wired. Connect to the B boards, run it, capture the log. Disconnect, connect to
+the A boards, run the same binary, capture the log. Both logs come back for
+comparison.
+
+**Why a separate binary, decisively:** the main harness contains motion tests, and
+loading it on the A rig puts a menu between an unprotected board and a spinning
+motor. **A binary with no motion code compiled into it at all is the guard**, and
+it is a better guard than discipline. It also makes the two logs diffable
+line-for-line — no menu, no branch, one fixed sequence — and it can sweep
+**all six declared pin groups** rather than assuming a config, which is what
+yields the false-positive data (the B run showed an *empty* P32_P47 reading a
+confident "64010 Rev B" at `pinSum 104`).
+
+⭐ **Measure the discharge in microseconds, not in counts.** `getBoardType()`
+charges the cap, floats the pin, and sums 500 `pinread`s. **That sum is
+clock-dependent** — the code's own comment says so — because 500 reads take less
+wall time at 270 MHz than at whatever clock the `0` / `≤250` / `>250` thresholds
+were characterised against. **That alone could be the entire defect.** So the
+binary records the sample index and `getct()` at which the pin first reads low —
+the real RC discharge time, convertible to µs and clock-independent — alongside
+the raw sum, the loop's elapsed ticks, N repeats per group for a distribution,
+and the verdict today's code *would* return.
+
+**Two phases, and the second is skippable:**
+
+- **Phase 1 — fully passive.** No driver cog, no PWM. All six groups, N repeats.
+  Safe on any board in any state. Its data is written to the log before phase 2
+  begins.
+- **Phase 2 — the poisoning probe.** Start a driver cog at zero on the populated
+  group, stop it, re-read. This is the only thing that separates *"the threshold
+  is wrong"* from *"`stop()` clears only the top 8 pins and poisons the next
+  read"* — which want opposite fixes. **Run with the motors physically unplugged
+  from the A boards**; with no motor connected there is no current path whatever
+  the output stage does. The binary states that precondition and waits.
+
+*Note: sweeping all six groups briefly drives `base+4` on each, which for
+`PINS_P40_P55` is P44, inside the commented-out LA header range.*
+
+#### (b) The early motor characterisation run — offered by Stephen, accepted
+
+Quarter speed, constant rate, forward and reverse, **before** the current and hall
+infrastructure exists. Accepted because **almost nothing it measures is
+invalidated by the pending fixes**:
+
+| Fix | Effect on this data |
+| --- | --- |
+| S-3 restore | divides `sense_i_mV` by a constant |
+| board detection | affects `getCurrent()`, **not** raw `sense_i_mV` |
+| hall counters | purely additive |
+| W / rpm | makes `rpm` work; does not touch `pos` |
+| `tickInMM_x10` | distance conversions only; not raw ticks |
+| `SENSE_LOOP_HZ` | stop latency only; steady state unaffected |
+
+**A constant scale error hides neither a ratio, an asymmetry, nor a shape.**
+Quarter speed helps independently: ~100 ticks/s against a 43.9 kHz loop is one
+transition per ~440 iterations, so `pos` is as trustworthy as it will ever be —
+which matters because the integrity counters do not exist yet.
+
+**What it buys, most valuable first:**
+
+1. ⭐ **It turns the S-3 prediction into a measurement before we build on it.**
+   `adc_fram` = 6136 is *derived from reading the PASM* and has never been
+   measured. Known pack voltage + our raw reading + Stephen's meter amps is
+   exactly that experiment. Land near 6136 and the fix becomes verification; land
+   elsewhere and the whole current-sensing analysis is wrong — **found before the
+   fix is written or the front-end parts are bought.**
+2. **Forward vs reverse asymmetry (AI/AJ) — the user's actual field fault.** The
+   reverse offset is derived (`360 − 43`), never measured, and the field report is
+   one wheel in one direction. An asymmetry shows straight through a constant
+   scale error.
+3. **A go/no-go on the current channel itself.** Nothing has ever confirmed it is
+   alive and load-responsive. Dead or stuck ⇒ the S-3 fix is pointless and the
+   front-end build is premature.
+4. **Left/right hardware equivalence baseline** at matched commanded rate.
+
+**Deliberately not attempted early:** the fault boundary (needs ramp
+instrumentation, and it is the one genuinely risky item); anything depending on
+stop distance (`SENSE_LOOP_HZ` unfixed); `rpm` or `cntsInSec` (broken); 
+`getCurrent()` absolute (depends on two unfixed things); high speed (where missed
+hall ticks are most likely and there are no counters to see them).
+
+**Shape:** reuse `src/util_char_motor.spin2`'s drive-measure loop rather than
+rewriting it. Quiescent zero, then four holds — left fwd, left rev, right fwd,
+right rev — idle wheel **floating**, never `holdAtStop(true)`, whose holding
+current lands straight in the meter reading. Quarter speed is ~37×10⁶ against the
+147×10⁶ ceiling at 18.5 V, well inside the linear region. Optionally a second
+rung at half speed to confirm current scales with load. **25-second dwell floor**
+— the meter cycles five screens at ~4 s each.
+
+⛔ **The condition this run is accepted under: record raw values as raw.** Ratios,
+asymmetries and liveness are fair game. Absolute magnitudes are logged with the
+scale factor **unresolved** and converted afterward — never asserted during the
+session.
+
+**It rides along with the A/B visit** — both rigs are up anyway; this is B-only
+and motion-only, so it is a second binary in the same bench session, not a
+separate trip.
+
+#### (c) The main harness — silo 5, and smaller than it was
+
+`src/test_bench_dual.spin2` is no longer an 8-hour monolith built before anything
+is certified. Board detection leaves it entirely (→ binary *a*), and the early
+characterisation leaves it (→ binary *b*). What remains is silo 5: the speed law,
+the C-4 decel curves, the fault boundary, commutation offsets and the clock
+sweep — built once the instruments it reads have been certified.
+
+### What cannot be batched
+
+Three things are irreducibly multi-load. Group them so the churn lands in one
+place rather than scattered through a session:
+
+- **The A/B swap** — physical, and now detached into its own artifact, which
+  removes a hardware swap from the middle of a certification pass.
+- **The clock sweep (T1-4)** — three builds by construction.
+- **T1-7 fault trials** — one trial per program load, since the P2 dies with the
+  pack.
+
+### The motor subsystem's cog shape — decided 2026-09-11, executed before release
+
+**Stephen's ruling, which overturns a proposal made earlier the same day:**
+
+> *"I'm going to push back on your suggestion that we push tasking to the caller.
+> That's not a shape that I want. What I want is a motor subsystem that is a fixed
+> number of cogs, that is highly reliable, and that is the minimum number of cogs
+> we can do a motor system in."*
+
+⛔ **The library never conscripts the user's application cog.** A `TASKSPIN`'d
+sense task running on the *caller's* cog was proposed in order to hand users back
+a cog. **Rejected.** A fixed, known cog cost the user can budget around is worth
+more than a cog returned with strings attached — and the proposal would have made
+the library dictate the consumer's structure, which a drop-in object must not do.
+
+**The target shape:** two PASM driver cogs as **backend**, plus one **front cog**
+that is the API for the entire motor system and the only thing that talks to the
+drivers. Three cogs is fine. Two is fine if it can be made to work correctly.
+
+The existing code is already the seed of this and never grew into the role:
+`taskPostionSense()` services both wheels, owns the distance and time stop checks,
+and is the only Spin2 code reading driver state.
+
+**Timing: this is a final shape change before release, not now.** But near-term
+work must not fight it:
+
+- C-3's `SENSE_LOOP_HZ` change lands in the cog that becomes the front cog
+- the integrity counters' readback path must be reachable from that cog
+- ⭐ **`TASKSPIN` is still live *inside* the subsystem boundary** — if the front
+  cog needs both a sense loop and an API service loop, tasks on that one cog do it
+  without a fourth cog. Same tool, right side of the line.
+
+### Version — 6.0.0
+
+**Stephen, 2026-09-11:** *"I'm assuming that this is not a 5.0 driver, that this is
+a 6.0.0 driver, because it's going to be so much better."*
+
+*(Noted with it: the version question was raised too early. It is a release-time
+decision, not a plan-time one.)*
+
+⭐ **A major bump licenses things a patch did not, and that changes the near-term
+calculus.** Under 5.0.3 several of the confirmed fixes were breaking changes to be
+apologised for; at a major boundary they are expected corrections:
+
+- **AE** now *rejects* pin configurations that are accepted today
+- **`DDU_M`** stops 10× further — anyone using it was stopping short
+- distance readings shift ~1.1% when `tickInMM_x10` stops truncating
+- **`rpm`** starts returning real numbers where callers may have coded around a
+  constant 0
+- the **cog shape change** above is major-version-appropriate and no longer has to
+  be smuggled in
+
+**So the fixes do not need to be contorted to preserve bad behaviour.** Say what
+changed, plainly, in the README's *Latest Changes* block — which is this project's
+changelog, per `CONFORMANCE_GUIDES`.
+
+`BUILD_VERSION_LOCATION` is `VERSION` (whole file) and git tags match it: bump
+`VERSION`, then tag `v6.0.0`.
+
+### Pre-execution research — 2026-09-11, and it moved two findings
+
+#### Board detection: the mechanism is found, and the discriminator is not the defect
+
+**`pinbase+4` is simultaneously the detection pin and `pin_adc_cur_i`.**
+`getBoardType()` sets `pSenseCommon := pinbase + 4` (`:777`); the driver declares
+`pin_adc_cur_i  res 1  ' basepin + 4` (`:2550`). `BOARD-REVISION-FACTS.md` §2.6
+already established this and concluded *"the heuristic is sound"* — and it is. The
+**circuit** discriminates correctly. What is broken is the **read**.
+
+The chain:
+
+1. `adc_pins LONG (4 << 6) + 0` (`:2428`) — base+0 **addpins 4**, so five pins,
+   base+0 through **base+4**. The driver puts all five into `P_ADC_1X |
+   P_COUNT_HIGHS` smart-pin mode.
+2. `stop()` (`:125`) does `pinclear(pinbase+8 addpins 7)` — it clears base+8..14
+   only. Its comment, *"Bottom 8 pins are sensed, top 8 are driven, so clear only
+   the top 8"*, is the error: the sensed pins are **smart pins too**, and nothing
+   releases them.
+3. So after any driver cog has run and stopped, **base+4 is still a configured ADC
+   smart pin.**
+4. `getBoardType()` then does `pinhigh` → `waitms(1)` → `pinfloat` → 500×
+   `pinread`. **Neither `pinhigh` nor `pinfloat` clears a smart-pin mode** — only
+   `pinclear` (`wrpin #0`) does.
+5. `pinread` reads the **IN register**, and p2kb (`p2kbSpin2Pinread`) confirms it
+   "can read pins configured as smart pins." For an ADC in `COUNT_HIGHS`, **IN is
+   the conversion-ready flag**, not the pin's electrical level — which is exactly
+   why the driver reads the *value* with `rdpin`.
+
+**So the 500 reads sample a data-ready flag toggling, not an RC discharge.** The
+result is a plausible-looking number with no physical meaning.
+
+This explains the 2026-09-11 log precisely: **T0-10 ran a driver cog on P16_P31,
+`stop()` left base+4 in ADC mode, and T0-8's detection on that same board five
+milliseconds later returned `pinSum 0` → "64010 Rev A"** where T0-10 itself had
+read 99 → Rev B.
+
+**The fix follows, and it is small — but do both halves:**
+
+- **`stop()` must release every pin it configured**, not just the driven half.
+- **`getBoardType()` must `pinclear(pSenseCommon)` before measuring** — defensive,
+  and correct regardless of who else leaves a pin dirty.
+
+⚠ **CORRECTED — the poisoning is only half the defect, and §2.6's "the heuristic
+is sound" does not survive contact with the bench.**
+
+The bench is a **dual** 6.5" platform, so there are **two** boards, and
+`isp_bldc_motor_userconfig_bench.spin2:48-49` says where — it is explicit and
+comments itself *"the bench, as it actually is"*:
+
+```
+LEFT_MOTOR_BASE  = PINS_P0_P15
+RIGHT_MOTOR_BASE = PINS_P16_P31
+```
+
+Against that, the 2026-09-11 log shows detection failing in **three** distinct
+ways in one run:
+
+| Group | Populated? | Read | Verdict | Mode |
+| --- | --- | --- | --- | --- |
+| P16_P31 | **yes** | 99 | Rev B ✓ | correct, cold |
+| P16_P31 *(after a cog ran)* | **yes** | 0 | **Rev A ✗** | **poisoned** — the smart-pin leak above |
+| **P0_P15** | **yes** | 500 | **"Board not detected!" ✗** | **false negative on a real board, read cold** |
+| P32_P47 | **no** | 104 | **Rev B ✗** | **false positive on empty pins** |
+
+**Only the second row is explained by the smart-pin leak.** P0_P15 was touched for
+the first time in T0-7, with no cog ever having run on it, and still missed a
+board that is physically there. That is a separate defect and it is the more
+serious one — a false negative silently drops a wheel.
+
+**A hypothesis worth testing rather than assuming, because it would explain both
+remaining rows:** the RC model in the code assumes a *passive* sense-common node.
+On Rev B that node is the **INA180B2 output**, and the rail was on for this run.
+A powered INA180 **actively drives** its output, so there is no capacitor
+discharge to measure — the pin reads the amplifier's output for the current
+flowing, which at rest is near zero and would read *low* immediately. Whether a
+Rev B board reads as "Rev B" may therefore depend on **whether its rail is
+powered**, which is not something `getBoardType()` knows or checks.
+
+**So the sweep binary must vary board power, not just pin state.** Per group, per
+population: cold vs after-a-cog, `pinclear`ed vs not, **and rail on vs rail off**.
+That is the 2×2×2 that separates three failure modes which currently look like one
+flaky heuristic.
+
+**Consequence for the sweep binary:** it can now *test the hypothesis directly*
+rather than only gather data. Read each group **paired** — once as the code does
+it today, once with a `pinclear` first — and **before vs after** a driver cog has
+run and stopped. If the paired reads diverge only in the after-cog case, the
+mechanism above is confirmed on the bench in one pass.
+
+#### S-3 is verified against three reference implementations, not hypothesised
+
+All three read-only reference drivers in the repo root carry the missing
+instruction immediately after each `muls`:
+
+| File | |
+| --- | --- |
+| `BLDC_Motor_Driver-REF.spin2` | `sar sense_u_,#11` … ×4 |
+| `BLDC_Motor_Driver_ChipNew.spin2` | `sar sense_u_, #11` … ×4 |
+| `isp_bldc_motor-REF.spin2` | `sar sense_u_,#11` … ×4 |
+
+The shipped driver deleted all four and replaced `numerator = 3300 << 11` with
+`3300 * adc_fram`. **The fix is now mechanical** — restore the DAT default and
+re-add four `sar` — with three working implementations to copy from. It is no
+longer a reading that needs defending.
+
+*The magnitude anchor in binary (b) still runs. It converts a verified-by-source
+fix into a verified-by-measurement one, and it is the only thing that can catch a
+second, unrelated error in the same path.*
+
+#### `util_char_motor.spin2` gives more than the reuse claim assumed
+
+530 lines, and it already does most of binary (b): `driveForwardAtSpeed()` /
+`driveReverseAtSpeed()`, `waitUntilMotorReady()` / `waitUntilMotorDone()`,
+`clearFault()`, `testSetFwdRevOffsets()`, and — the useful surprise —
+`evalOffset()` already returns **`fwd_mV, rev_mV`**, a per-direction current
+measurement. **The AI/AJ forward-vs-reverse asymmetry measurement is therefore
+nearly free.**
+
+⚠ **It is single-motor** (`wheel.`), which suits the bench's apparent state — see
+the open question on how many boards are actually connected.
+
+### Standing rules
+
+⛔ **All development and all vertical testing happens on the B boards**
+(Stephen, 2026-09-11). The A boards are touched exactly once, by binary *a*, with
+no motion, and not again until the driver genuinely protects them. This is a
+rule, not a preference.
+
+⛔ **Force `BRD_REV_B` in every bench build** rather than trusting auto-detect,
+until board detection is fixed. Only possible because the A2/A3 fix landed in
+`aea4981`; T0-2 in the 2026-09-11 log proves forcing now takes effect.
+
+⚠ **`pnut-ts` silently ignores an unknown `-D`** — measured 2026-09-11: exit 0,
+binary written, no warning. A typo in `-D BENCH_CFG` falls through to the regular
+user config and the harness measures the wrong pin group while producing entirely
+plausible numbers. **Confirm the config banner in the run log; no banner voids the
+run.**
+
+### Effect on the sections above
+
+| Section | Effect |
+| --- | --- |
+| §3 Tier 0 | extended — T0-11 quiescent sense baseline, T0-12 hand-rotation ground truth, T0-13 counter readback, T0-14 detection repeatability, T0-15 `start()` return matrix |
+| §4 Tier 1 | reduced to silo 5; detection and early characterisation move to their own binaries |
+| §5 Runner | unchanged; gains two more binaries to drive |
+| §6 Analyser | serves silo 5; must also diff the two A/B logs |
+| §7 Reading sheet | serves silo 5 |
+| §2 DEBUG channels | moves to silo 6 — its whole justification is silencing chatter in silo 5's timed sections |
+| §8.1 / §8.2 | replaced by batched passes; §8.1 is closed («#3476») |
+| §10 Release | **5.0.3 → 6.0.0** (Stephen, 2026-09-11). The major bump licenses the breaking fixes and the cog shape change; see *Version* above. |
+
 ## Sequencing
+
+> ⛔ **SUPERSEDED 2026-09-11** by *Execution model* above. Preserved as written;
+> the layered ordering it describes is no longer the plan.
 
 §1 precedes all Spin2 authoring — it is the instrument that protects §2, §3 and §4.
 §2 precedes §4, which depends on masking the library to 0.
@@ -730,21 +1191,32 @@ the file count. If any file is added to `src/`, that string and `DOCs/analyses/`
 
 ## Exit criteria
 
-- `tools/build-check.sh` — 39/39, both release demos certified
+- `tools/build-check.sh` — ~~39/39~~ **41/41**, both release demos certified *(count corrected 2026-09-11)*
 - `tools/check_style.sh` — **green over all of `src/`** (§1b, Stephen's call at sprint start), not merely on files this sprint modified
 - `tools/doc-audit.sh` — no new ORPHAN or COUNT drift
 - Both bench sessions run; every test carries a verdict or an explicit INCONCLUSIVE naming
   what was missing
 - Findings updated in place with measured results
-- `VERSION` = 5.0.3, tagged, release notes written
+- `VERSION` = ~~5.0.3~~ **6.0.0**, tagged `v6.0.0`, release notes written *(revised 2026-09-11)*
+- **Silo foundations certified**, each by a bench pass that emitted foundation results first
+  and reported `NOT-BUILT` distinctly from `FAILED`
+- **The A/B detection sweep run on both rigs** and its two logs compared
 
-**Not in this sprint, and deliberately so:** every driver fix. **PL-9 stands as a hazard
+**~~Not in this sprint, and deliberately so:~~ SUPERSEDED 2026-09-11 — the driver fixes are
+now in scope.** The sentence below stood while the plan was scaffolding-only.
+**Not in this sprint:** every driver fix. **PL-9 stands as a hazard
 guard** — A1's apparent one-word fix must not be applied here or anywhere until the fix sprint
 takes it with the value change in the same commit.
 
 ---
 
 ## Section ↔ task cross-reference
+
+> ⛔ **STALE as of 2026-09-11.** This maps the plan's original §-numbered
+> deliverables onto the task set generated 2026-09-10. That task set is to be
+> **archived and regenerated** from *Execution model — revised 2026-09-11*, which
+> is organised by silo rather than by §. Preserved for provenance — do not
+> dispatch from it.
 
 Generated by `plan-to-tasks` 2026-09-10. Sprint tag: **`bench-readiness`**. `seq` is the only
 ordering signal — `priority` is deliberately unset on every task.
@@ -817,3 +1289,103 @@ a second agent implements the approved design:
 
 Reviewing a design costs one round trip. Reviewing four hours of implementation built on the
 wrong one costs four hours plus every task that already built on it.
+
+---
+
+## Silo ↔ task cross-reference — generated 2026-09-11
+
+Generated by `plan-to-tasks` from *Execution model — revised 2026-09-11*. Sprint
+tag **`bench-readiness`**. `seq` is the only ordering signal; `priority` is
+deliberately unset on every task. This table supersedes the §-numbered one above.
+
+| seq | Task | Silo | Deliverable | Profile | est |
+| --- | --- | --- | --- | --- | --- |
+| 1 | «#3496» | 1 | A/B detection sweep binary | task-design **(two-phase)** | 3h |
+| 2 | «#3497» | 3 | Early motor characterisation binary | task-standard | 2h30 |
+| 3 | «#3498» | — | **BENCH PASS 1** — both pre-fix binaries | task-survey | 2h |
+| 4 | «#3499» | 1 | `start()` returns 0 — 6 sites | task-standard | 1h30 |
+| 5 | «#3500» | 1 | Board detection — the smart-pin leak | task-design | 3h |
+| 6 | «#3501» | 2 | Hall integrity counters, ABI 14→16 | task-design **(two-phase)** | 2h30 |
+| 7 | «#3502» | 2 | Position math — rpm + `tickInMM_x10` | task-standard | 1h30 |
+| 8 | «#3503» | 3 | S-3 scale restore — four `sar` | task-mechanical | 1h |
+| 9 | «#3504» | 2 | Tier 0 extension, T0-11…T0-15 | task-standard | 2h30 |
+| 10 | «#3505» | — | **BENCH PASS 2** — certify the foundations | task-survey | 1h30 |
+| 11 | «#3506» | 6 | §2A front end build | task-mechanical | 3h |
+| 12 | «#3507» | 6 | DEBUG channels (closes PL-8) | task-design **(two-phase)** | 3h |
+| 13 | «#3508» | 5 | Motion harness `test_bench_dual.spin2` | task-design **(two-phase)** | 7h |
+| 14 | «#3509» | 6 | Analyser `bench-verdict.py` + A/B diff | task-standard | 3h30 |
+| 15 | «#3510» | 6 | Printable reading sheet | task-mechanical | 1h30 |
+| 16 | «#3511» | — | **BENCH PASS 3** — motion behaviour | task-survey | 3h |
+| 17 | «#3512» | 4 | C-3 stop latency — measure then raise | task-standard | 2h |
+| 18 | «#3513» | 1 | **Fixed cog shape** — final pre-release change | task-design **(two-phase)** | 5h |
+| 19 | «#3514» | — | Write results back into the findings | task-standard | 3h |
+| 20 | «#3515» | — | Documentation blast radius | task-standard | 3h |
+| 21 | «#3516» | — | **Ship 6.0.0** | task-mechanical | 1h30 |
+| 22 | «#3517» | — | v12(g) gate binding *(skills adoption)* | task-design | 4h |
+
+**Total ≈ 60 h of effort.** Three bench passes, each requiring Stephen.
+
+### Dispatch shape — `arbiter-serial`, unchanged
+
+Confirmed against `{{EXCLUSIVE_RESOURCES}}` rather than inherited. Two entries
+force it and neither can be designed away for this sprint:
+
+- **The P2 board on USB** — a physical device, the top grade. One device, one
+  agent, never negotiable.
+- **`src/isp_bldc_motor.spin2`** — nominally a single-file artifact (the grade
+  that *can* often be staged per agent and merged), but it is 2 400 lines of
+  interleaved Spin2 API, PASM2 driver and sense task, and **six of the twenty-two
+  tasks write to it**. Staging and merging that file is more risk than the
+  concurrency buys.
+
+`src/isp_bldc_motor_userconfig.spin2` adds a third: one config block is active at
+a time and every compile depends on which.
+
+**Coupling independently forbids fan-out** at the head of the set: the hall
+counters change the status-block ABI that the Tier 0 extension reads, and the
+harness record format is what the analyser and reading sheet are generated from.
+
+**Five tasks are two-phase** — «#3496», «#3501», «#3507», «#3508», «#3513» —
+design returned and reviewed before implementation. Each is one whose *shape*
+later work inherits: a one-shot hardware record format, the most fragile ABI in
+the codebase, a channel numbering scheme, a record format with two generated
+consumers, and an architecture every caller inherits.
+
+### RESOLVED 2026-09-11 — the cog shape change is gated, and the decertification is accepted
+
+**«#3513» (the fixed cog shape) decertifies «#3511» (bench pass 3).** A
+verification run certifies the tree it ran against, and §3a-ii's rule is that any
+edit afterwards decertifies it — so an architecture change scheduled *after* the
+motion pass invalidates what that pass proved.
+
+It is placed late anyway because **Stephen scoped it that way**: *"That's going to
+be a final shape change before release."* The exposure is bounded and worth
+stating precisely rather than pretending it is zero:
+
+- **Safe** — the C-4 deceleration curves, the speed law, the fault boundary and
+  the commutation offsets are **driver-cog** behaviour, and the two PASM driver
+  cogs are unchanged by «#3513».
+- **Not safe** — anything touching the Spin2-side coordination: the distance and
+  time stop checks, telemetry cadence, and therefore **C-3's measured overshoot**,
+  which «#3512» produces from the very loop «#3513» restructures.
+
+So «#3513» must re-confirm C-3 and the stop behaviour, and «#3516»'s three
+release gates are the re-certification of everything else.
+
+**The trade was put to Stephen and he took the decertification.** In his words,
+2026-09-11:
+
+> *"No, I don't want to do this yet. We'll decertify and recertify later. I want
+> to stay with the existing cog shape because I want to get to the bench with all
+> the fixes we can as soon as possible. Changing cog shapes means we have to
+> certify that the new cog shape is working, and that's going to be a distractor.
+> No cog shape change before we get our first bench results. Let's not take on
+> more work that can perturb our ability to get to the bench and get good
+> findings."*
+
+⛔ **So «#3513» stays at seq 18 and does not start before «#3498» has produced
+results.** Do not propose pulling it earlier to tidy the decertification problem
+— that is the exact trade he declined. The principle generalises for the rest of
+this sprint: **nothing that perturbs the path to the first bench results gets
+taken on before them**, however tidy it would make the ordering.
+
