@@ -362,13 +362,15 @@ and feeds **C-6c** directly.
 > **What it costs is pacing, and the size of that cost turns on one thing not yet
 > determined:**
 >
-> > **Does the P2 survive a pack disconnect?** The meter sits between the pack and the whole
-> > system, so cycling it means breaking the pack connection. **If the P2 Edge is USB-powered
-> > from the Mac it stays alive** — the motor rail drops, the meter resets, and the harness
-> > keeps running, so trials can be prompted in sequence within a single run. **If the P2 dies
-> > with the pack**, it is one trial per program invocation and T1-7's sweep costs a full
-> > load-and-run each. Determine this at **§8.1**; it changes session length substantially and
-> > changes no code either way.
+> > **Does the P2 survive a pack disconnect? — ANSWERED 2026-09-10 (Stephen): NO.** With the
+> > pack connected **the P2 is powered from the pack**, so a disconnect drops the P2 with it.
+> > **T1-7 is therefore one trial per program load** — cycle the pack, re-zero, load, select
+> > the trial index, run to fault, read `Ap`/`Vm`/`Wp` — and the peaks must be **read before
+> > cycling**, because the cycle is what clears them. This needs no bench time to determine.
+> > It costs session length and no code; T1-7's trial-selectable design already absorbs it.
+> > *(Original wording: the meter sits between pack and system, so cycling it means breaking
+> > the pack connection; had the P2 Edge been USB-powered from the Mac it would have stayed
+> > alive and trials could have run in sequence within a single load.)*
 >
 > **Two consequences to build into the procedure:**
 >

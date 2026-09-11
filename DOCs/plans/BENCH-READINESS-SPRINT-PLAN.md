@@ -492,11 +492,18 @@ While Tier 0 runs, characterise the meter — the answers shape §4's pacing, no
    **ANSWERED 2026-09-10 (Stephen): power cycle only, no reset control.** The harness needs no
    change — T1-7's trial-selectable design already absorbs it. Procedure updated in the bench
    plan's T1-7 and §2B.
-2. **NOW THE LIVE QUESTION — does the P2 survive a pack disconnect?** The meter sits between
-   pack and system, so resetting it breaks the pack connection. If the P2 Edge is USB-powered
-   from the Mac it stays alive and trials can be prompted in sequence inside one run; if it
-   dies with the pack it is one trial per program invocation. Changes session length
-   substantially, changes no code either way.
+2. **ANSWERED 2026-09-10 (Stephen) — NO, the P2 does NOT survive a pack disconnect.**
+   *Original question retained below for the record; it needs no bench time.* With the pack
+   connected **the P2 is powered from the pack**, so a disconnect drops the P2 with it.
+   Therefore: every pack power cycle reboots the P2 and restarts the program; **T1-7 is one
+   trial per program load** (cycle pack, re-zero, load, select trial index, run to fault, read
+   `Ap`/`Vm`/`Wp`); the peaks must be **read before cycling**, since the cycle is what clears
+   them; and in §8.1 the Tier 0 run and any power-cycling meter work are **sequential, not
+   concurrent** — cycling mid-run loses the run. Changes session length substantially, changes
+   no code. The harness's trial-selectable design already absorbs it.
+   *(Original: the meter sits between pack and system, so resetting it breaks the pack
+   connection. If the P2 Edge were USB-powered from the Mac it would stay alive and trials
+   could be prompted in sequence inside one run.)*
 3. Do `Ah`/`Wh` reset with the peaks, or separately?
    **Also record the display's ROTATION ORDER and full cycle time** — the sheet's column order
    is generated from it (§7), and it sets the hold dwell.
