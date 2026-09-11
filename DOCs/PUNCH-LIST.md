@@ -183,6 +183,51 @@ two to match (consistent, but breaks any existing caller) or to add aliases.
 Found while verifying the #3472 conformance renames, which touched both
 files' parameter lists and so put the two families side by side.
 
+### PL-14 -- `eMotorVoltage` is a documented public parameter that does nothing
+
+**Found 2026-09-10 while building the Tier 0 harness («#3474»). Not in the
+24 findings of `DRIVER-AUDIT-2026-09-09.md` -- this is a new one.**
+
+`start()`, `startEx()` and `testSetup()` all take `eMotorVoltage` and all
+document it:
+
+```
+'' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
+```
+
+It is never read. The parameter appears **only** in method signatures and in
+those doc comments; no method body references it. `init()` passes the
+compile-time constant instead:
+
+```
+isp_bldc_motor.spin2:259:    confgurePowerLimits(user.DRIVE_VOLTAGE)
+```
+
+So `start(pins, PWR_18p5V, mode)` and `start(pins, PWR_25p9V, mode)` behave
+identically, and the drive voltage is whatever `isp_bldc_motor_userconfig.spin2`
+was compiled with. A user following the published interface can select a
+voltage, observe no change, and have no way to tell why -- the API accepts the
+argument and the documentation promises it means something.
+
+**Likely history:** voltage selection moved to the user-config file (the
+documented mechanism -- users edit section 2) and the parameter was left in
+place rather than removed.
+
+**Two possible fixes, and it is an API decision, not a defect fix:** honour the
+parameter (a behaviour change for every existing caller, and it would then
+disagree with the compile-time power tables), or delete it from all three
+signatures and the docs (a breaking signature change for every caller). Either
+way `DRIVE-OBJECTS.md` and the generated `isp_bldc_motor.txt` move with it.
+
+**Consequence for the bench suite, already absorbed:** T0-4 (finding O,
+voltage legality) cannot sweep voltages through `testSetup()` in a single
+build -- only the active config's voltage is ever exercised. Confirming O for
+a second voltage needs a rebuild with `DRIVE_VOLTAGE` changed. The harness
+documents this inline.
+
+Write this back into `DRIVER-AUDIT-2026-09-09.md` as a new finding when
+«#3481» runs.
+
 ### PL-9 -- HAZARD GUARD: do not "fix" A1's enum comparison on its own
 
 **This is a booby trap, and it looks like a one-word fix.**

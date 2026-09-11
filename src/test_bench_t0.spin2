@@ -1,0 +1,331 @@
+'' =================================================================================================
+''
+''   File....... test_bench_t0.spin2
+''   Purpose.... Tier 0 bench harness -- ten driver-audit findings provable with no motor,
+''               no motion and no risk (DOCs/analyses/BENCH-TEST-PLAN-2026-09-10.md Section 3)
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 10 Sep 2026
+''   Updated.... 10 Sep 2026
+''
+'' =================================================================================================
+
+{ Rig: P2 + Rev B board on the bench. Build against the single-motor 6.5" config
+  block in isp_bldc_motor_userconfig.spin2 (ONLY_MOTOR_BASE / DRIVE_VOLTAGE come
+  from there, per project convention -- never copied locally).
+
+  Every test below calls testSetup(), which runs the whole of init() -- board
+  detection, constant derivation, power tables, unit conversion -- WITHOUT
+  starting a driver cog, so the motor rail can stay off and the motor can stay
+  unplugged. The one exception is T0-10, which needs a real, running driver cog
+  so the fourth ADC channel is actively calibrated and frame-locked; it still
+  commands zero speed, so nothing turns. Keep the motor rail on only for T0-10.
+
+  Output: one tagged line per data point, "T0-n,field,value,...", on the plain
+  debug stream, consumed later by tools/bench-verdict.py (separate task). Two
+  findings (T0-4, O and T0-6, I/T and K) trap their target calls with \ so an
+  abort can never crash this harness -- see the per-test comments for how to
+  read those two, since the trapped return value alone cannot distinguish "the
+  call finished and returned zero" from "the call aborted with no value" when
+  no driver cog is running. Ground truth for those two is the object's own
+  pre-existing "! ERROR:" / "*???*" debug() line, which fires immediately
+  before every abort site this harness exercises and appears in the same
+  capture right after this harness's own tag.
+
+  T0-1's six derived constants (dead_gap, pwm_limit, duty_min, duty_max,
+  adc_fram, frame_cnt) and T0-3 (finding F) both read via two new TEST-USE
+  ONLY getters on isp_bldc_motor.spin2: testGetDriveConstants() and
+  testGetStopHallTicks(). Both are pure read-only snapshots.
+
+  If anything behaves unexpectedly during T0-10 (the one test with the rail
+  on): physical battery disconnect, not emergencyCutoff() -- it self-cancels
+  in about 250 ms (finding S-4).
+}
+
+CON { timing }
+
+    CLK_FREQ = 270_000_000                                      ' matches the audit's worked dead_gap example
+    _clkfreq = CLK_FREQ
+
+CON { cog-exhaustion probe (T0-8) }
+
+    MAX_SPACER_COGS   = 7                                       ' every cog besides this harness's own
+    SPACER_STACK_LONGS = 32                                     ' generous headroom for a trivial idle loop
+
+OBJ { objects under test }
+
+    user    : "isp_bldc_motor_userconfig"                       ' active compile-time hardware config
+    motor   : "isp_bldc_motor"                                  ' primary instance, T0-1/2/4/5/6/8/10
+    motorA  : "isp_bldc_motor"                                  ' second instance, T0-7 overlap probe only
+    motorB  : "isp_bldc_motor"                                  ' second instance, T0-7 overlap probe only
+
+VAR { cog-exhaustion probe stacks (T0-8) }
+
+    LONG    spacerStacks[MAX_SPACER_COGS * SPACER_STACK_LONGS]
+
+PUB main()
+'' Run every Tier 0 test in sequence and tag its result on the debug stream.
+''
+
+    debug("* test_bench_t0 -- Tier 0: no motor, no motion, no risk (T0-10 excepted)")
+    debug("* active config: motor_type_enum=", udec_(user.MOTOR_TYPE), " base=", udec_(user.ONLY_MOTOR_BASE), " voltage_enum=", udec_(user.DRIVE_VOLTAGE), " wheel_dia_x10=", udec_(round(user.WHEEL_DIA_IN_INCH *. 10.0)))
+    debug("* this plan wants MOTOR_TYPE=MOTR_6_5_INCH (0); if motor_type_enum above is not 0, switch the active block in isp_bldc_motor_userconfig.spin2 before trusting T0-3..T0-6")
+
+    testT0_1()
+    testT0_2()
+    testT0_3()
+    testT0_4()
+    testT0_5()
+    testT0_6()
+    testT0_7()
+    testT0_8()
+    testT0_10()
+
+    debug("* test_bench_t0 -- DONE")
+
+PRI testT0_1() | eBoardRev, rSenseOhms, pBoardStr, deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt
+' A1 / A3: run the whole of init() through testSetup() and read back what is
+' publicly readable, plus the six derived drive constants via the new
+' testGetDriveConstants() getter. A1's criterion is dead_gap == 70 (not 14)
+' at 270 MHz -- see this test's tagged "consts" line.
+'
+' @local eBoardRev - value returned by getBoardType() after testSetup()
+' @local rSenseOhms - F_REV_A_RSENSE or F_REV_B_RSENSE for the detected board
+' @local pBoardStr - pointer to boardIdString()'s result
+' @local deadGap - dead_gap, expect 70 at 270 MHz (A1); 14 means STOP, re-read at a second clock
+' @local pwmLimit - pwm_limit, the PWM duty hard limit derived from dead_gap
+' @local dutyMin - duty_min, minimum PWM duty cycle
+' @local dutyMax - duty_max, maximum PWM duty cycle
+' @local adcFrame - adc_fram, ADC sample period matching the PWM frame width
+' @local frameCnt - frame_cnt, clock-ticks for one PWM_RATE_IN_HZ period
+
+    debug("T0-1,begin,clkfreq,", udec_(CLKFREQ))
+    motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    eBoardRev := motor.getBoardType()
+    pBoardStr := motor.boardIdString()
+    rSenseOhms := (eBoardRev == motor.REV_B) ? motor.F_REV_B_RSENSE : motor.F_REV_A_RSENSE
+    deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt := motor.testGetDriveConstants()
+    debug("T0-1,consts,dead_gap,", udec_(deadGap), ",pwm_limit,", udec_(pwmLimit), ",duty_min,", udec_(dutyMin), ",duty_max,", udec_(dutyMax), ",adc_fram,", udec_(adcFrame), ",frame_cnt,", udec_(frameCnt))
+    debug("T0-1,end,detected_board,", udec_(eBoardRev), ",rsense,", udec_(rSenseOhms), ",boardstring,", zstr_(pBoardStr))
+
+PRI testT0_2() | eBoardRev, pBoardStr
+' A2 / A3: force BRD_REV_A on a board that auto-detects Rev B. bUserForced has
+' no getter, but getInternalDetectMode() sets it TRUE unconditionally whenever
+' the caller passes BRD_REV_A/BRD_REV_B -- true by construction for this call.
+' boardIdString() carries the empirical half: it embeds "-USER FORCED" only
+' when bUserForced was actually set, so the returned text is A3's evidence,
+' not a recomputation of it.
+'
+' @local eBoardRev - value returned by getBoardType() after the forced testSetup()
+' @local pBoardStr - pointer to boardIdString()'s result
+
+    debug("T0-2,begin,requested,BRD_REV_A")
+    motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_REV_A)
+    eBoardRev := motor.getBoardType()
+    pBoardStr := motor.boardIdString()
+    debug("T0-2,end,detected_board,", udec_(eBoardRev), ",expect_forced,TRUE,boardstring,", zstr_(pBoardStr))
+
+PRI testT0_3() | ticksM, ticksCm, ticksMm
+' F: stopAfterDistance() computes its tick target in three equivalent ways --
+' 1 DDU_M, 100 DDU_CM, 1000 DDU_MM -- and stores it in the private VAR
+' motorStopHallTicks, read back here via the new testGetStopHallTicks()
+' getter. All three should agree; DDU_M coming out a factor of ten short of
+' the other two CONFIRMS finding F.
+'
+' @local ticksM - motorStopHallTicks after stopAfterDistance(1, DDU_M)
+' @local ticksCm - motorStopHallTicks after stopAfterDistance(100, DDU_CM)
+' @local ticksMm - motorStopHallTicks after stopAfterDistance(1000, DDU_MM)
+
+    debug("T0-3,begin")
+
+    motor.stopAfterDistance(1, motor.DDU_M)
+    ticksM := motor.testGetStopHallTicks()
+    debug("T0-3,ddu_m,1,ticks,", udec_(ticksM))
+
+    motor.stopAfterDistance(100, motor.DDU_CM)
+    ticksCm := motor.testGetStopHallTicks()
+    debug("T0-3,ddu_cm,100,ticks,", udec_(ticksCm))
+
+    motor.stopAfterDistance(1000, motor.DDU_MM)
+    ticksMm := motor.testGetStopHallTicks()
+    debug("T0-3,ddu_mm,1000,ticks,", udec_(ticksMm))
+
+    debug("T0-3,end,agree,", udec_((ticksM == ticksCm) and (ticksCm == ticksMm) ? 1 : 0))
+
+PRI testT0_4() | pwrEnum, legalVolt, trappedResult
+' O: validVoltageForChoice() never aborts, so the full PWR_* sweep is safe.
+' testSetup()/init() take an eMotorVoltage parameter but never read it -- the
+' voltage that actually reaches confgurePowerLimits() is always the
+' compile-time user.DRIVE_VOLTAGE (a distinct finding from O, noted in the
+' dispatch report). So only the ACTIVE config's voltage can be exercised
+' through testSetup() in any one build; confirming O specifically for
+' PWR_25p9V needs a rebuild with DRIVE_VOLTAGE = PWR_25p9V. Either way the
+' \-trapped call below cannot crash this harness.
+'
+' @local pwrEnum - PWR_* value under test, PWR_6p0V..PWR_25p9V
+' @local legalVolt - validVoltageForChoice()'s return for pwrEnum
+' @local trappedResult - testSetup()'s trapped return value (see note above)
+
+    repeat pwrEnum from motor.PWR_6p0V to motor.PWR_25p9V
+        legalVolt := motor.validVoltageForChoice(pwrEnum)
+        debug("T0-4,validate,pwr_enum,", udec_(pwrEnum), ",legal,", udec_((legalVolt <> motor.INVALID_VOLTAGE) ? 1 : 0))
+
+    debug("T0-4,testsetup,begin,active_drive_voltage_enum,", udec_(user.DRIVE_VOLTAGE))
+    trappedResult := \motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    debug("T0-4,testsetup,end,trapped_result,", sdec_(trappedResult), ",note,zero_is_ambiguous_see_library_ERROR_line")
+
+PRI testT0_5() | minRamp, maxRamp, incRamp, decrRamp
+' G: setAcceleration() writes {rate} straight into ramp_inc with no
+' validation. Sweep 0, -1, 1, 10_000_000 and read back via getRampingValues().
+'
+' @local minRamp - ramp_min read back after each setAcceleration() call
+' @local maxRamp - ramp_max read back after each setAcceleration() call
+' @local incRamp - ramp_inc read back after each setAcceleration() call
+' @local decrRamp - ramp_down read back after each setAcceleration() call
+
+    motor.setAcceleration(0)
+    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
+    debug("T0-5,accel,0,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
+
+    motor.setAcceleration(-1)
+    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
+    debug("T0-5,accel,-1,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
+
+    motor.setAcceleration(1)
+    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
+    debug("T0-5,accel,1,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
+
+    motor.setAcceleration(10_000_000)
+    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
+    debug("T0-5,accel,10000000,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
+
+PRI testT0_6() | trappedResult
+' I/T, K: getDistance(DDU_KM)/(DDU_MI) are valid units and are not expected to
+' abort -- read straight off the trapped result. getRotationCount(99) and
+' stopAfterDistance(0, DDU_IN) are deliberately invalid/out-of-range and DO
+' abort in the current code. All four calls are \-trapped so an actual abort
+' can never crash this harness. Tier 0 has no motion, so every one of these
+' methods' non-abort return is also 0 (posTrkHallTicks never advances without
+' a running driver) -- the trapped result alone cannot distinguish "completed,
+' returned 0" from "aborted with no value" for any of the four. Ground truth
+' is the object's own "! ERROR:" debug() line, already emitted immediately
+' before each abort site, visible in the same capture right after this tag.
+'
+' @local trappedResult - the trapped call's return value (see note above)
+
+    trappedResult := \motor.getDistance(motor.DDU_KM)
+    debug("T0-6,call,getDistance_KM,trapped_result,", sdec_(trappedResult))
+
+    trappedResult := \motor.getDistance(motor.DDU_MI)
+    debug("T0-6,call,getDistance_MI,trapped_result,", sdec_(trappedResult))
+
+    trappedResult := \motor.getRotationCount(99)
+    debug("T0-6,call,getRotationCount_99,trapped_result,", sdec_(trappedResult))
+
+    trappedResult := \motor.stopAfterDistance(0, motor.DDU_IN)
+    debug("T0-6,call,stopAfterDistance_0in,trapped_result,", sdec_(trappedResult))
+
+PRI testT0_7()
+' AE: two separate isp_bldc_motor instances, testSetup() on deliberately
+' overlapping pin groups -- PINS_P0_P15 and PINS_P8_P23 overlap on P8-P15, the
+' audit's own example. Neither call may fault; the point is that nothing
+' detects the overlap, not that anything breaks. No real board is wired to
+' either base, so this only ever toggles unused pins briefly while probing for
+' a board that is not there.
+'
+
+    debug("T0-7,begin,left_base,P0_P15,right_base,P8_P23")
+    motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    motorB.testSetup(motorB.PINS_P8_P23, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
+    debug("T0-7,end,harness_survived,TRUE")
+
+PRI testT0_8() | spacerIdx, spacerCogId, spacerCount, startResult, spacerId[MAX_SPACER_COGS]
+' C, AD: occupy every other cog, then call the real start() (not testSetup())
+' and print its raw return. coginit() returns -1 on failure; start() adds one
+' to that, so a failed start reports 0 -- indistinguishable from a cog id
+' without a separate check, which is exactly what isp_steering_2wheel.spin2
+' fails to do (AD) atop the wrong contract documented for start() (C).
+'
+' @local spacerIdx - loop index over the spacer-cog array
+' @local spacerCogId - cogspin()'s return for the current spacer attempt
+' @local spacerCount - number of spacer cogs actually started
+' @local startResult - start()'s raw return value under cog exhaustion
+
+    debug("T0-8,begin")
+    spacerCount := 0
+    repeat spacerIdx from 0 to MAX_SPACER_COGS - 1
+        spacerCogId := cogspin(NEWCOG, spacerLoop(), @spacerStacks[spacerIdx * SPACER_STACK_LONGS])
+        if spacerCogId == -1
+            quit
+        spacerId[spacerIdx] := spacerCogId
+        spacerCount += 1
+
+    startResult := motor.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    debug("T0-8,end,cogs_occupied,", udec_(spacerCount), ",start_return,", sdec_(startResult))
+
+    if startResult <> 0
+        motor.stop()                                            ' should not happen under full exhaustion; release it if it did
+
+    repeat spacerIdx from 0 to spacerCount - 1
+        cogstop(spacerId[spacerIdx])
+
+PRI spacerLoop()
+' Idle forever -- exists only to occupy a cog so start() has none left (T0-8).
+'
+
+    repeat
+        waitms(1000)
+
+PRI testT0_10() | startResult, pinAdcX, xNodeCounts
+' C-6b: pin_adc_x_i (base+3) falls inside adc_pins, so the driver already
+' samples it as a calibrated, frame-locked ADC every cycle -- it is simply
+' never read. Start the REAL driver (rail must be on for this one test) so the
+' fourth channel is live, then read it with RQPIN so this harness never steals
+' the driver's own acknowledge on a pin the driver cog rdpin's every cycle.
+' Commanded speed stays at zero (start() calls setTargetAccel(0) before the
+' cog launches), so nothing turns.
+'
+' @local startResult - start()'s return value
+' @local pinAdcX - pinbase + 3, the X-node ADC pin
+' @local xNodeCounts - RQPIN()'s lower 31 bits (bit 31 is the pin's C flag)
+
+    debug("T0-10,begin,rail_must_be_on,TRUE")
+    startResult := motor.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    if startResult == 0
+        debug("T0-10,end,start_failed,TRUE")
+    else
+        waitms(50)                                              ' let the driver cog reach its running, calibrated state
+        pinAdcX := user.ONLY_MOTOR_BASE + 3
+        xNodeCounts := RQPIN(pinAdcX) & $7FFF_FFFF
+        debug("T0-10,end,pin,", udec_(pinAdcX), ",x_node_counts,", udec_(xNodeCounts))
+        motor.stop()
+
+CON { license }
+
+{{
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ -------------------------------------------------------------------------------------------------
+}}
