@@ -24,15 +24,20 @@
   commands zero speed, so nothing turns. Keep the motor rail on only for T0-10.
 
   Output: one tagged line per data point, "T0-n,field,value,...", on the plain
-  debug stream, consumed later by tools/bench-verdict.py (separate task). Two
-  findings (T0-4, O and T0-6, I/T and K) trap their target calls with \ so an
-  abort can never crash this harness -- see the per-test comments for how to
-  read those two, since the trapped return value alone cannot distinguish "the
+  debug stream, consumed later by tools/bench-verdict.py (separate task). Every
+  call this harness makes into a method that can abort() (per an audit of
+  isp_bldc_motor.spin2's `abort` sites against every motor.*/motorA.*/motorB.*
+  call below) is \-trapped so an abort can never crash this harness and take
+  the rest of the suite down with it -- see the per-test comments for how to
+  read each, since the trapped return value alone cannot distinguish "the
   call finished and returned zero" from "the call aborted with no value" when
-  no driver cog is running. Ground truth for those two is the object's own
-  pre-existing "! ERROR:" / "*???*" debug() line, which fires immediately
-  before every abort site this harness exercises and appears in the same
-  capture right after this harness's own tag.
+  no driver cog is running. Ground truth is the object's own pre-existing
+  "! ERROR:" / "*???*" debug() line, which fires immediately before every
+  abort site this harness exercises and appears in the same capture right
+  after this harness's own tag. As a second line of defense, main() also
+  \-traps each testT0_n() call itself, so even an abort site this audit
+  missed cannot stop the suite short -- a test that goes silent after its own
+  "begin" tag but before its "end" tag is the sign of exactly that.
 
   T0-1's six derived constants (dead_gap, pwm_limit, duty_min, duty_max,
   adc_fram, frame_cnt) and T0-3 (finding F) both read via two new TEST-USE
@@ -65,31 +70,53 @@ VAR { cog-exhaustion probe stacks (T0-8) }
 
     LONG    spacerStacks[MAX_SPACER_COGS * SPACER_STACK_LONGS]
 
-PUB main()
+PUB main() | trapResult
 '' Run every Tier 0 test in sequence and tag its result on the debug stream.
+'' Every test's own abort-capable calls are individually \-trapped (see the
+'' per-test comments); this loop also \-traps each testT0_n() call itself as
+'' a backstop, so a single test failing -- whether from a trapped call this
+'' harness reports on, or from an abort site the per-test trapping missed --
+'' can never stop the rest of the suite from running or keep DONE from
+'' printing. The very last thing printed, alone on its own line with nothing
+'' else in that debug() call, is the literal text DEBUG_END_SESSION --
+'' tools/bench-run.sh runs pnut-term-ts with --exit-on-end-session, and that
+'' phrase is its end-of-session marker. Emitting it here, only after DONE,
+'' lets that batch mode close the terminal itself once the suite has
+'' genuinely finished, instead of waiting on an operator keypress or a fixed
+'' timeout. No other debug() output anywhere in this harness may contain
+'' this phrase, or the session would end early.
 ''
+
+' @local trapResult - discarded; testT0_n() returns nothing meaningful, this
+'                      exists only so \testT0_n() has somewhere to land
 
     debug("* test_bench_t0 -- Tier 0: no motor, no motion, no risk (T0-10 excepted)")
     debug("* active config: motor_type_enum=", udec_(user.MOTOR_TYPE), " base=", udec_(user.ONLY_MOTOR_BASE), " voltage_enum=", udec_(user.DRIVE_VOLTAGE), " wheel_dia_x10=", udec_(round(user.WHEEL_DIA_IN_INCH *. 10.0)))
     debug("* this plan wants MOTOR_TYPE=MOTR_6_5_INCH (0); if motor_type_enum above is not 0, switch the active block in isp_bldc_motor_userconfig.spin2 before trusting T0-3..T0-6")
 
-    testT0_1()
-    testT0_2()
-    testT0_3()
-    testT0_4()
-    testT0_5()
-    testT0_6()
-    testT0_7()
-    testT0_8()
-    testT0_10()
+    trapResult := \testT0_1()
+    trapResult := \testT0_2()
+    trapResult := \testT0_3()
+    trapResult := \testT0_4()
+    trapResult := \testT0_5()
+    trapResult := \testT0_6()
+    trapResult := \testT0_7()
+    trapResult := \testT0_8()
+    trapResult := \testT0_10()
 
     debug("* test_bench_t0 -- DONE")
+    debug("DEBUG_END_SESSION")
 
-PRI testT0_1() | eBoardRev, rSenseOhms, pBoardStr, deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt
+PRI testT0_1() | eBoardRev, rSenseOhms, pBoardStr, deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt, trappedResult
 ' A1 / A3: run the whole of init() through testSetup() and read back what is
 ' publicly readable, plus the six derived drive constants via the new
 ' testGetDriveConstants() getter. A1's criterion is dead_gap == 70 (not 14)
-' at 270 MHz -- see this test's tagged "consts" line.
+' at 270 MHz -- see this test's tagged "consts" line. testSetup() reaches
+' confgurePowerLimits() (via init()), which aborts if user.DRIVE_VOLTAGE is
+' not legal for user.MOTOR_TYPE, so it is \-trapped; every field it sets
+' before that point (pinbase, eDetectedBoard, the six drive constants) is
+' already valid by the time confgurePowerLimits() runs, so a trapped abort
+' here does not invalidate the rest of this test's readback.
 '
 ' @local eBoardRev - value returned by getBoardType() after testSetup()
 ' @local rSenseOhms - F_REV_A_RSENSE or F_REV_B_RSENSE for the detected board
@@ -100,9 +127,11 @@ PRI testT0_1() | eBoardRev, rSenseOhms, pBoardStr, deadGap, pwmLimit, dutyMin, d
 ' @local dutyMax - duty_max, maximum PWM duty cycle
 ' @local adcFrame - adc_fram, ADC sample period matching the PWM frame width
 ' @local frameCnt - frame_cnt, clock-ticks for one PWM_RATE_IN_HZ period
+' @local trappedResult - testSetup()'s trapped return value (0 is ambiguous, see header)
 
     debug("T0-1,begin,clkfreq,", udec_(CLKFREQ))
-    motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    trappedResult := \motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    debug("T0-1,testsetup,trapped_result,", sdec_(trappedResult))
     eBoardRev := motor.getBoardType()
     pBoardStr := motor.boardIdString()
     rSenseOhms := (eBoardRev == motor.REV_B) ? motor.F_REV_B_RSENSE : motor.F_REV_A_RSENSE
@@ -110,47 +139,64 @@ PRI testT0_1() | eBoardRev, rSenseOhms, pBoardStr, deadGap, pwmLimit, dutyMin, d
     debug("T0-1,consts,dead_gap,", udec_(deadGap), ",pwm_limit,", udec_(pwmLimit), ",duty_min,", udec_(dutyMin), ",duty_max,", udec_(dutyMax), ",adc_fram,", udec_(adcFrame), ",frame_cnt,", udec_(frameCnt))
     debug("T0-1,end,detected_board,", udec_(eBoardRev), ",rsense,", udec_(rSenseOhms), ",boardstring,", zstr_(pBoardStr))
 
-PRI testT0_2() | eBoardRev, pBoardStr
+PRI testT0_2() | eBoardRev, pBoardStr, trappedResult
 ' A2 / A3: force BRD_REV_A on a board that auto-detects Rev B. bUserForced has
 ' no getter, but getInternalDetectMode() sets it TRUE unconditionally whenever
 ' the caller passes BRD_REV_A/BRD_REV_B -- true by construction for this call.
 ' boardIdString() carries the empirical half: it embeds "-USER FORCED" only
 ' when bUserForced was actually set, so the returned text is A3's evidence,
-' not a recomputation of it.
+' not a recomputation of it. testSetup() is \-trapped for the same reason as
+' T0-1 -- confgurePowerLimits() (reached via init()) aborts on an illegal
+' user.DRIVE_VOLTAGE / user.MOTOR_TYPE pairing, and the board-detect fields
+' this test reads are set before that point regardless.
 '
 ' @local eBoardRev - value returned by getBoardType() after the forced testSetup()
 ' @local pBoardStr - pointer to boardIdString()'s result
+' @local trappedResult - testSetup()'s trapped return value (0 is ambiguous, see header)
 
     debug("T0-2,begin,requested,BRD_REV_A")
-    motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_REV_A)
+    trappedResult := \motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_REV_A)
+    debug("T0-2,testsetup,trapped_result,", sdec_(trappedResult))
     eBoardRev := motor.getBoardType()
     pBoardStr := motor.boardIdString()
     debug("T0-2,end,detected_board,", udec_(eBoardRev), ",expect_forced,TRUE,boardstring,", zstr_(pBoardStr))
 
-PRI testT0_3() | ticksM, ticksCm, ticksMm
+PRI testT0_3() | ticksM, ticksCm, ticksMm, trappedM, trappedCm, trappedMm
 ' F: stopAfterDistance() computes its tick target in three equivalent ways --
 ' 1 DDU_M, 100 DDU_CM, 1000 DDU_MM -- and stores it in the private VAR
 ' motorStopHallTicks, read back here via the new testGetStopHallTicks()
 ' getter. All three should agree; DDU_M coming out a factor of ten short of
-' the other two CONFIRMS finding F.
+' the other two CONFIRMS finding F. stopAfterDistance() also aborts outright
+' when user.WHEEL_DIA_IN_INCH is 0.0 (unknown wheel diameter) -- the exact
+' failure that killed the whole T0 suite on the 2026-09-10 bench run, since
+' the active config at the time had WHEEL_DIA_IN_INCH = 0.0 and this call was
+' not trapped. All three calls are now \-trapped, matching the T0-4/T0-6
+' pattern, so an abort here can never stop T0-4..T0-10 from running. As with
+' those two, the trapped result alone cannot distinguish "completed, ticks
+' still 0" from "aborted with no value" -- ground truth is the object's own
+' "! ERROR:" debug() line, which appears in the same capture right after each
+' tag below when the call actually aborted.
 '
 ' @local ticksM - motorStopHallTicks after stopAfterDistance(1, DDU_M)
 ' @local ticksCm - motorStopHallTicks after stopAfterDistance(100, DDU_CM)
 ' @local ticksMm - motorStopHallTicks after stopAfterDistance(1000, DDU_MM)
+' @local trappedM - stopAfterDistance(1, DDU_M)'s trapped return value
+' @local trappedCm - stopAfterDistance(100, DDU_CM)'s trapped return value
+' @local trappedMm - stopAfterDistance(1000, DDU_MM)'s trapped return value
 
     debug("T0-3,begin")
 
-    motor.stopAfterDistance(1, motor.DDU_M)
+    trappedM := \motor.stopAfterDistance(1, motor.DDU_M)
     ticksM := motor.testGetStopHallTicks()
-    debug("T0-3,ddu_m,1,ticks,", udec_(ticksM))
+    debug("T0-3,ddu_m,1,trapped_result,", sdec_(trappedM), ",ticks,", udec_(ticksM))
 
-    motor.stopAfterDistance(100, motor.DDU_CM)
+    trappedCm := \motor.stopAfterDistance(100, motor.DDU_CM)
     ticksCm := motor.testGetStopHallTicks()
-    debug("T0-3,ddu_cm,100,ticks,", udec_(ticksCm))
+    debug("T0-3,ddu_cm,100,trapped_result,", sdec_(trappedCm), ",ticks,", udec_(ticksCm))
 
-    motor.stopAfterDistance(1000, motor.DDU_MM)
+    trappedMm := \motor.stopAfterDistance(1000, motor.DDU_MM)
     ticksMm := motor.testGetStopHallTicks()
-    debug("T0-3,ddu_mm,1000,ticks,", udec_(ticksMm))
+    debug("T0-3,ddu_mm,1000,trapped_result,", sdec_(trappedMm), ",ticks,", udec_(ticksMm))
 
     debug("T0-3,end,agree,", udec_((ticksM == ticksCm) and (ticksCm == ticksMm) ? 1 : 0))
 
@@ -227,19 +273,24 @@ PRI testT0_6() | trappedResult
     trappedResult := \motor.stopAfterDistance(0, motor.DDU_IN)
     debug("T0-6,call,stopAfterDistance_0in,trapped_result,", sdec_(trappedResult))
 
-PRI testT0_7()
+PRI testT0_7() | trappedA, trappedB
 ' AE: two separate isp_bldc_motor instances, testSetup() on deliberately
 ' overlapping pin groups -- PINS_P0_P15 and PINS_P8_P23 overlap on P8-P15, the
 ' audit's own example. Neither call may fault; the point is that nothing
 ' detects the overlap, not that anything breaks. No real board is wired to
 ' either base, so this only ever toggles unused pins briefly while probing for
-' a board that is not there.
+' a board that is not there. Both testSetup() calls are \-trapped anyway, same
+' as every other testSetup()/start() call in this harness, since they still
+' reach confgurePowerLimits() (via init()), which can abort on an illegal
+' user.DRIVE_VOLTAGE / user.MOTOR_TYPE pairing.
 '
+' @local trappedA - motorA.testSetup()'s trapped return value
+' @local trappedB - motorB.testSetup()'s trapped return value
 
     debug("T0-7,begin,left_base,P0_P15,right_base,P8_P23")
-    motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
-    motorB.testSetup(motorB.PINS_P8_P23, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
-    debug("T0-7,end,harness_survived,TRUE")
+    trappedA := \motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    trappedB := \motorB.testSetup(motorB.PINS_P8_P23, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
+    debug("T0-7,end,harness_survived,TRUE,trapped_a,", sdec_(trappedA), ",trapped_b,", sdec_(trappedB))
 
 PRI testT0_8() | spacerIdx, spacerCogId, spacerCount, startResult, spacerId[MAX_SPACER_COGS]
 ' C, AD: occupy every other cog, then call the real start() (not testSetup())
@@ -251,7 +302,13 @@ PRI testT0_8() | spacerIdx, spacerCogId, spacerCount, startResult, spacerId[MAX_
 ' @local spacerIdx - loop index over the spacer-cog array
 ' @local spacerCogId - cogspin()'s return for the current spacer attempt
 ' @local spacerCount - number of spacer cogs actually started
-' @local startResult - start()'s raw return value under cog exhaustion
+' @local startResult - start()'s trapped, raw return value under cog exhaustion
+'                       (start() also reaches confgurePowerLimits() via init(),
+'                       so it is \-trapped like every other testSetup()/start()
+'                       call in this harness; its own 0-on-failure convention
+'                       already overlaps the trapped-abort-returns-0 case, so
+'                       this adds no new ambiguity beyond what start()'s doc
+'                       already carries)
 
     debug("T0-8,begin")
     spacerCount := 0
@@ -262,7 +319,7 @@ PRI testT0_8() | spacerIdx, spacerCogId, spacerCount, startResult, spacerId[MAX_
         spacerId[spacerIdx] := spacerCogId
         spacerCount += 1
 
-    startResult := motor.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    startResult := \motor.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     debug("T0-8,end,cogs_occupied,", udec_(spacerCount), ",start_return,", sdec_(startResult))
 
     if startResult <> 0
@@ -287,12 +344,15 @@ PRI testT0_10() | startResult, pinAdcX, xNodeCounts
 ' Commanded speed stays at zero (start() calls setTargetAccel(0) before the
 ' cog launches), so nothing turns.
 '
-' @local startResult - start()'s return value
+' @local startResult - start()'s trapped return value (see T0-8's note --
+'                       start() reaches confgurePowerLimits() via init() and
+'                       can abort, so this call is \-trapped like every other
+'                       testSetup()/start() call in this harness)
 ' @local pinAdcX - pinbase + 3, the X-node ADC pin
 ' @local xNodeCounts - RQPIN()'s lower 31 bits (bit 31 is the pin's C flag)
 
     debug("T0-10,begin,rail_must_be_on,TRUE")
-    startResult := motor.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    startResult := \motor.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     if startResult == 0
         debug("T0-10,end,start_failed,TRUE")
     else
