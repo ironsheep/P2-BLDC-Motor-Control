@@ -12,9 +12,18 @@
 ''
 '' =================================================================================================
 
-{ Rig: P2 + Rev B board on the bench. Build against the single-motor 6.5" config
-  block in isp_bldc_motor_userconfig.spin2 (ONLY_MOTOR_BASE / DRIVE_VOLTAGE come
-  from there, per project convention -- never copied locally).
+{ Rig: the dual 6.5" platform -- two Rev B boards, 18.5V pack. Builds under ANY
+  of the six config blocks in isp_bldc_motor_userconfig.spin2, single or dual:
+  MOTOR_TYPE, DRIVE_VOLTAGE and WHEEL_DIA_IN_INCH come from whichever block is
+  active (per project convention -- never copied locally), while the motor this
+  harness talks to is T0_MOTOR_BASE below, fixed rather than read from the user
+  config because a dual block defines no ONLY_MOTOR_BASE to read.
+
+  For the real bench, activate the dual 6.5"/18.5V block (LEFT = PINS_P0_P15,
+  RIGHT = PINS_P16_P31). That gives MOTR_6_5_INCH and a 6.5 inch wheel, so
+  T0-3 and T0-6 can convert distance to hall ticks -- under a block with
+  WHEEL_DIA_IN_INCH = 0.0 they correctly report the conversion as unavailable
+  instead, and finding F stays unsettled.
 
   Every test below calls testSetup(), which runs the whole of init() -- board
   detection, constant derivation, power tables, unit conversion -- WITHOUT
@@ -48,6 +57,20 @@
   on): physical battery disconnect, not emergencyCutoff() -- it self-cancels
   in about 250 ms (finding S-4).
 }
+
+CON { bench target }
+
+' Which motor this harness talks to. Deliberately NOT read from the user
+' config: a dual-motor block defines LEFT_MOTOR_BASE and RIGHT_MOTOR_BASE and
+' no ONLY_MOTOR_BASE at all, so reading that user constant will not COMPILE on
+' a dual bench -- which is what the real bench is (dual 6.5" wheels, Rev B
+' boards, 18.5V pack). PINS_P16_P31 is a real motor under every config block
+' in isp_bldc_motor_userconfig.spin2: the right wheel on the dual 6.5"/18.5V
+' block, the left wheel on the alternate dual block, and the sole motor on
+' every single-motor block. Everything else -- motor type, drive voltage,
+' wheel diameter -- still comes from whichever block is active, so the harness
+' describes the hardware the operator says is connected.
+    T0_MOTOR_BASE = motor.PINS_P16_P31
 
 CON { timing }
 
@@ -91,8 +114,8 @@ PUB main() | trapResult
 '                      exists only so \testT0_n() has somewhere to land
 
     debug("* test_bench_t0 -- Tier 0: no motor, no motion, no risk (T0-10 excepted)")
-    debug("* active config: motor_type_enum=", udec_(user.MOTOR_TYPE), " base=", udec_(user.ONLY_MOTOR_BASE), " voltage_enum=", udec_(user.DRIVE_VOLTAGE), " wheel_dia_x10=", udec_(round(user.WHEEL_DIA_IN_INCH *. 10.0)))
-    debug("* this plan wants MOTOR_TYPE=MOTR_6_5_INCH (0); if motor_type_enum above is not 0, switch the active block in isp_bldc_motor_userconfig.spin2 before trusting T0-3..T0-6")
+    debug("* active config: motor_type_enum=", udec_(user.MOTOR_TYPE), " base=", udec_(T0_MOTOR_BASE), " voltage_enum=", udec_(user.DRIVE_VOLTAGE), " wheel_dia_x10=", udec_(round(user.WHEEL_DIA_IN_INCH *. 10.0)))
+    debug("* bench expects MOTOR_TYPE=MOTR_6_5_INCH (0) and wheel_dia_x10=65; with wheel_dia_x10=0 the T0-3/T0-6 distance conversions report unavailable rather than a tick count")
 
     trapResult := \testT0_1()
     trapResult := \testT0_2()
@@ -101,8 +124,15 @@ PUB main() | trapResult
     trapResult := \testT0_5()
     trapResult := \testT0_6()
     trapResult := \testT0_7()
-    trapResult := \testT0_8()
+
+    ' T0-10 runs BEFORE T0-8 deliberately. Both drive the same motor object,
+    ' and T0-8 is the destructive one: it occupies every spare cog so that
+    ' start() must fail, which leaves the object half-initialised. Run in the
+    ' other order, T0-10's own start() then returns 0 and its ADC reading is
+    ' never taken -- observed in the 2026-09-10 bench run. Destructive tests
+    ' go last.
     trapResult := \testT0_10()
+    trapResult := \testT0_8()
 
     debug("* test_bench_t0 -- DONE")
     debug("DEBUG_END_SESSION")
@@ -130,7 +160,7 @@ PRI testT0_1() | eBoardRev, rSenseOhms, pBoardStr, deadGap, pwmLimit, dutyMin, d
 ' @local trappedResult - testSetup()'s trapped return value (0 is ambiguous, see header)
 
     debug("T0-1,begin,clkfreq,", udec_(CLKFREQ))
-    trappedResult := \motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    trappedResult := \motor.testSetup(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     debug("T0-1,testsetup,trapped_result,", sdec_(trappedResult))
     eBoardRev := motor.getBoardType()
     pBoardStr := motor.boardIdString()
@@ -155,7 +185,7 @@ PRI testT0_2() | eBoardRev, pBoardStr, trappedResult
 ' @local trappedResult - testSetup()'s trapped return value (0 is ambiguous, see header)
 
     debug("T0-2,begin,requested,BRD_REV_A")
-    trappedResult := \motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_REV_A)
+    trappedResult := \motor.testSetup(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_REV_A)
     debug("T0-2,testsetup,trapped_result,", sdec_(trappedResult))
     eBoardRev := motor.getBoardType()
     pBoardStr := motor.boardIdString()
@@ -219,7 +249,7 @@ PRI testT0_4() | pwrEnum, legalVolt, trappedResult
         debug("T0-4,validate,pwr_enum,", udec_(pwrEnum), ",legal,", udec_((legalVolt <> motor.INVALID_VOLTAGE) ? 1 : 0))
 
     debug("T0-4,testsetup,begin,active_drive_voltage_enum,", udec_(user.DRIVE_VOLTAGE))
-    trappedResult := \motor.testSetup(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    trappedResult := \motor.testSetup(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     debug("T0-4,testsetup,end,trapped_result,", sdec_(trappedResult), ",note,zero_is_ambiguous_see_library_ERROR_line")
 
 PRI testT0_5() | minRamp, maxRamp, incRamp, decrRamp
@@ -319,11 +349,14 @@ PRI testT0_8() | spacerIdx, spacerCogId, spacerCount, startResult, spacerId[MAX_
         spacerId[spacerIdx] := spacerCogId
         spacerCount += 1
 
-    startResult := \motor.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    startResult := \motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     debug("T0-8,end,cogs_occupied,", udec_(spacerCount), ",start_return,", sdec_(startResult))
 
-    if startResult <> 0
-        motor.stop()                                            ' should not happen under full exhaustion; release it if it did
+    ' stop() unconditionally. A start() that returned 0 may STILL have gotten
+    ' partway -- the 2026-09-10 run shows a driver cog reaching INIT on a call
+    ' that reported failure -- so the object can be left half-initialised, and
+    ' anything that starts it afterwards then fails too. Leave it clean.
+    motor.stop()
 
     repeat spacerIdx from 0 to spacerCount - 1
         cogstop(spacerId[spacerIdx])
@@ -352,12 +385,12 @@ PRI testT0_10() | startResult, pinAdcX, xNodeCounts
 ' @local xNodeCounts - RQPIN()'s lower 31 bits (bit 31 is the pin's C flag)
 
     debug("T0-10,begin,rail_must_be_on,TRUE")
-    startResult := \motor.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    startResult := \motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     if startResult == 0
         debug("T0-10,end,start_failed,TRUE")
     else
         waitms(50)                                              ' let the driver cog reach its running, calibrated state
-        pinAdcX := user.ONLY_MOTOR_BASE + 3
+        pinAdcX := T0_MOTOR_BASE + 3
         xNodeCounts := RQPIN(pinAdcX) & $7FFF_FFFF
         debug("T0-10,end,pin,", udec_(pinAdcX), ",x_node_counts,", udec_(xNodeCounts))
         motor.stop()
