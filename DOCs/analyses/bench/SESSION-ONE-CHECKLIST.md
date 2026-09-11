@@ -7,10 +7,15 @@ It self-cancels in ~250 ms (finding S-4). **PHYSICAL BATTERY DISCONNECT ONLY.**
 ## Pre-flight
 
 - [ ] P2 Edge Module seated on Edge Mini Breakout #64019
-- [ ] Universal Motor Driver (Rev B) board attached
-- [ ] Pack connected — safe: no test in this session starts motion except T0-10, which commands zero speed
-- [ ] `tools/bench-run.sh` activates the single-motor 6.5″ config block itself — no manual edit needed
-- [ ] Banner will print `motor_type_enum=` — **must read `0`**. Anything else: STOP, switch the active block in `src/isp_bldc_motor_userconfig.spin2`, rerun.
+- [ ] Dual 6.5″ platform, two Rev B Universal Motor Driver boards, 18.5 V pack
+- [ ] Pack connected — safe: no test starts motion except T0-10, which commands zero speed
+- [ ] Active config block describes **the hardware actually connected** — for this
+      bench the dual 6.5″/18.5 V block (`LEFT = PINS_P0_P15`, `RIGHT = PINS_P16_P31`).
+      **You set this by hand**; the runner reads it and reports it, and never edits it.
+- [ ] Banner prints `motor_type_enum=` and `wheel_dia_x10=` — expect `0` and `65`.
+      Other values are not a stop: the run proceeds and each test says what it
+      could determine. With `wheel_dia_x10=0`, T0-3 and part of T0-6 report the
+      distance conversion as unavailable rather than a tick count.
 - [ ] Meter inline between pack and whole system (already confirmed placement)
 
 ## Part A — Tier 0 (fully automatic)
@@ -38,7 +43,8 @@ commanded speed stays 0, but the driver cog runs and the phases are energized �
 a connected motor may hold or twitch at commutation. **T0-10 needs the rail on**
 or its reading is meaningless.
 
-- [ ] Rail was ON during the T0-10 portion (last test in the run)
+- [ ] Rail was ON during T0-10 (runs second-to-last — T0-8, which occupies every
+      spare cog, deliberately runs last so nothing follows it)
 
 ### The reading that matters most — T0-1's `dead_gap`
 
