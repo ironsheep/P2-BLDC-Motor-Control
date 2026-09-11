@@ -40,12 +40,17 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="${SCRIPT_DIR}/../src"
-PROJECT_ROOT="${SCRIPT_DIR}/.."
+SRC_DIR="$(cd "${SCRIPT_DIR}/../src" && pwd)"
+# Resolved, not "${SCRIPT_DIR}/.." -- otherwise every path this script prints
+# carries a "tools/.." in the middle and is annoying to copy-paste.
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG="isp_bldc_motor_userconfig.spin2"
 BENCH_TOP="test_bench_t0.spin2"
-PNUT="${PNUT_TS:-/Applications/pnut_ts/pnut-ts}"
-PNUT_TERM="${PNUT_TERM_TS:-/Applications/PNut-Term-TS.app/Contents/Resources/bin/pnut-term-ts}"
+# Both tools are on PATH -- invoke them by name, exactly as they are run by
+# hand. The echoed command line is then the same one you would type, which is
+# the point. PNUT_TS / PNUT_TERM_TS override for testing without a board.
+PNUT="${PNUT_TS:-pnut-ts}"
+PNUT_TERM="${PNUT_TERM_TS:-pnut-term-ts}"
 
 # echo a command verbatim, then run it. "$@" is the real argv -- nothing
 # paraphrased, nothing elided.
@@ -87,13 +92,15 @@ case "$TIER" in
 esac
 
 # ---- sanity checks ----------------------------------------------------------
-if [ ! -x "$PNUT" ]; then
-    echo "ERROR: pnut-ts not found at $PNUT (override with PNUT_TS=/path)" >&2
+# command -v, not [ -x ] -- these are PATH names, not paths, and -x on a bare
+# name tests a file in the current directory.
+if ! command -v "$PNUT" >/dev/null 2>&1; then
+    echo "ERROR: '$PNUT' not found on PATH (override with PNUT_TS=/path/to/pnut-ts)" >&2
     exit 2
 fi
 
-if [ ! -x "$PNUT_TERM" ]; then
-    echo "ERROR: pnut-term-ts not found at $PNUT_TERM (override with PNUT_TERM_TS=/path)" >&2
+if ! command -v "$PNUT_TERM" >/dev/null 2>&1; then
+    echo "ERROR: '$PNUT_TERM' not found on PATH (override with PNUT_TERM_TS=/path/to/pnut-term-ts)" >&2
     exit 2
 fi
 
@@ -158,13 +165,23 @@ fi
 
 echo "bench-run.sh: active config block: line $ACTIVE_LINE (MOTOR_TYPE = $ACTIVE_MOTOR_TYPE)"
 
+# NOT a gate. The active config must describe the hardware actually on the
+# bench, and only the operator knows what that is -- a script that refuses to
+# run because the config disagrees with a plan document is enforcing the
+# document over the bench, which is backwards. Report, then run.
+#
+# Tier 0 is motor-type agnostic except where a wheel diameter is needed:
+# T0-3 and part of T0-6 convert distance to hall ticks and cannot do that
+# with WHEEL_DIA_IN_INCH = 0.0. Those calls are \-trapped in the harness, so
+# they report the condition and the other tests still run.
 if [ "$IS_REQUIRED" != "1" ]; then
-    echo "ERROR: tier '$TIER' requires $REQUIRE_DESC" >&2
-    echo "       the active block (line $ACTIVE_LINE, MOTOR_TYPE = $ACTIVE_MOTOR_TYPE) is not it." >&2
-    echo "       edit src/$CONFIG by hand: comment out the active block's '{'" >&2
-    echo "       and uncomment the single-motor 6.5\" block's '{' (line 152 as of" >&2
-    echo "       this writing), then re-run. This script will not do it for you." >&2
-    exit 2
+    echo "bench-run.sh: NOTE -- the bench plan's Tier 0 assumes $REQUIRE_DESC;"
+    echo "              the active block is line $ACTIVE_LINE, MOTOR_TYPE = $ACTIVE_MOTOR_TYPE."
+    echo "              Running anyway -- the active config should match the motor"
+    echo "              actually connected, and that is your call, not this script's."
+    echo "              If WHEEL_DIA_IN_INCH is 0.0, T0-3 and part of T0-6 will"
+    echo "              report 'wheel diameter unknown' instead of a tick count;"
+    echo "              every other test is unaffected."
 fi
 
 # ---- optionally patch CLK_FREQ in test_bench_t0.spin2 -------------------------
@@ -200,8 +217,12 @@ else
 fi
 
 # ---- compile the bench top, with src/ as cwd -----------------------------------
-if ! run "$PNUT" -l -d "$BENCH_FILE"; then
-    STATUS=$?
+# NOTE: capture $? from the command itself, NOT from inside `if ! cmd; then`
+# -- there $? is the status of the negation (always 0), so the error line
+# would report a failure with "exit 0" and hide the one number worth having.
+run "$PNUT" -l -d "$BENCH_FILE"
+STATUS=$?
+if [ $STATUS -ne 0 ]; then
     echo "ERROR: command failed (exit $STATUS): $PNUT -l -d $BENCH_FILE" >&2
     exit 2
 fi
@@ -219,8 +240,9 @@ fi
 # DEBUG_END_SESSION marker (the tool's own documented default end-marker
 # phrase), instead of waiting on a keypress or a fixed timeout.
 LOG_CUTOFF=$(date +%s)
-if ! run "$PNUT_TERM" -r "$BINARY" --console-mode --exit-on-end-session; then
-    STATUS=$?
+run "$PNUT_TERM" -r "$BINARY" --console-mode --exit-on-end-session
+STATUS=$?
+if [ $STATUS -ne 0 ]; then
     echo "ERROR: command failed (exit $STATUS): $PNUT_TERM -r $BINARY --console-mode --exit-on-end-session" >&2
     exit 2
 fi
