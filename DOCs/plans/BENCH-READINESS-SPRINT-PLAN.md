@@ -368,8 +368,10 @@ clock sweep, which is inherently three builds and is driven by §5.
 
 **Hold-and-announce mode** (this is what makes the meter usable — §5, §8): at each ladder rung,
 drive it, let it settle, print `#HOLD,<test>,<rung>,<incr>`, then hold **until Enter** with a
-**20-25 s minimum** — the meter's display rotates one reading every 2 s, so a full rotation is
-~16 s and the plan's original ~10 s window would silently cost a reading. The dwell is a floor;
+**25 s minimum** — MEASURED 2026-09-10: the display cycles **5 screens** (`Ah`, `Wh`, `Ap`,
+`Vm`, `Wp`) at **~4 s each, 20 s per rotation**; `A`/`V`/`W` are not in the rotation. This
+supersedes the earlier estimate of 8 readings at 2 s (~16 s). 20 s is one rotation exactly, so
+arriving mid-screen can need ~24 s to see all five — hence 25 s. The dwell is a floor;
 the keypress advances. **T1-7 is trial-selectable** — prompt for a `ramp_inc` trial index, or `0` for
 the whole sequence. That single design choice makes the harness indifferent to how the meter's
 peak registers reset: button-reset runs `0`; power-cycle-reset runs one trial per invocation,

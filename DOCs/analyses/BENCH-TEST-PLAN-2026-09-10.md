@@ -380,7 +380,11 @@ and feeds **C-6c** directly.
 >   exactly what the N-repetition energy method (above) wants — no arithmetic to subtract a
 >   previous run's accumulation.
 >
-> ### ALSO 2026-09-10 (Stephen): **the display CYCLES, one reading every two seconds.**
+> ### MEASURED 2026-09-10 (Stephen): **the display cycles 5 screens at ~4 s each, 20 s per rotation.**
+>
+> > **Ah, Wh, Ap, Vm, Wp** rotate; **A, V, W do not** — they are not part of the cycle. A full
+> > rotation is **20 s**, so the hold dwell floor is **25 s**, since arriving mid-screen can need
+> > ~24 s to see all five. *The estimate below (8 readings at 2 s, ~16 s) is superseded.*
 >
 > The meter does not show all eight readings at once — it rotates through them. **A full
 > rotation is therefore ~16 s for 8 readings**, and two values you want are never on screen
@@ -482,8 +486,9 @@ cooperate:
 
 1. **Add a hold-and-announce mode.** At each ladder rung the harness drives the rung, waits
    for the reading to settle, then prints `#HOLD,<test>,<rung>,<incr>` and **holds until Enter**.
-   **Minimum dwell 20-25 s**, because the meter's display rotates one reading every 2 s and a
-   full rotation is ~16 s — a 10 s window silently costs a reading. The dwell is a floor; the
+   **Minimum dwell 25 s** — MEASURED 2026-09-10: 5 rotating screens (`Ah`, `Wh`, `Ap`, `Vm`,
+   `Wp`) at ~4 s each, 20 s per rotation, so arriving mid-screen can need ~24 s. The dwell is a
+   floor; the
    keypress is what advances.
 2. **Read and write down** volts / amps / watts against the rung number. Paper is fine.
 3. **Type it into `manual.csv`** after the session, keyed by `<test>,<rung>`, and let

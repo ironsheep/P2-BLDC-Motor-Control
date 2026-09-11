@@ -66,7 +66,10 @@ dead_gap observed = __________
 
 Already known — do not re-ask:
 - Peak registers `Ap` / `Vm` / `Wp` reset **only** on a power cycle — no reset control.
-- Display cycles; one full rotation of all 8 readings ≈ 16 s.
+- Display cycles **5 screens** — `Ah`, `Wh`, `Ap`, `Vm`, `Wp` — **~4 s each, 20 s per full
+  rotation** (measured 2026-09-10). `A`, `V`, `W` are not part of the rotation.
+- So the hold dwell floor is **25 s, not 20 s**: arriving mid-screen means a full
+  rotation can take up to ~24 s from the moment you start watching.
 
 ### 1. Pack disconnect — **ANSWERED, nothing to test**
 
