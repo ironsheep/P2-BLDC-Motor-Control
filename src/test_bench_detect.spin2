@@ -1,0 +1,1491 @@
+'' =================================================================================================
+''
+''   File....... test_bench_detect.spin2
+''   Purpose.... A/B board-detection sweep -- characterise getBoardType() across all six pin
+''               groups, on a Rev B rig and then on a Rev A rig, from one identical binary
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 11 Sep 2026
+''   Updated.... 11 Sep 2026
+''
+'' =================================================================================================
+
+{ WHY THIS IS ITS OWN BINARY
+
+  The main bench harness contains motion tests. Loading it on the Rev A rig puts a menu
+  between an unprotected board and a spinning motor. This binary has NO MOTION CODE
+  COMPILED IN AT ALL in its default build -- that is the guard, and it is a better guard
+  than discipline. It also makes the two runs diffable line-for-line: no menu, no runtime
+  branch, one fixed sequence start to finish.
+
+  THE REV A BOARDS ARE ONE-SHOT. They are at risk precisely because the protection that
+  would make them safe -- correct revision detection feeding rSenseForBoard, 5 ohm vs
+  150 ohm, a 30x current-scaling swing -- is the broken thing. So Rev A protection needs
+  the Rev A data. This over-captures on purpose; a thin run leaves us stuck in that loop.
+
+  HOW IT IS RUN
+
+      cd src
+      ../tools/bench-run.sh <tier>          ' echoes the two commands; run them by hand
+
+  or directly:
+
+      pnut-ts -l -d -D BENCH_CFG test_bench_detect.spin2
+      pnut-term-ts -r test_bench_detect.bin --console-mode --exit-on-end-session
+
+  Two systems side by side, identically wired, both dual 6.5" with two boards each.
+  Connect to the Rev B boards, run, capture the log; disconnect, connect to the Rev A
+  boards, run the SAME binary, capture. Both logs come back for comparison.
+
+  BUILD VARIANTS
+
+    (default)           phase 1 only. Fully passive. NO OBJ reference to isp_bldc_motor,
+                        therefore provably zero driver PASM2 in the image, therefore
+                        physically incapable of starting a driver cog.
+    -D BENCH_CFG        selects isp_bldc_motor_userconfig_bench.spin2. Required. A log
+                        whose BD-CFG does not read cfg_id,BENCH is VOID.
+    -D DETECT_PHASE2    adds phase 2 -- the poisoning probe. Links isp_bldc_motor and
+                        starts a REAL DRIVER COG at commanded zero. MOTORS MUST BE
+                        PHYSICALLY UNPLUGGED.
+    -D DETECT_NO_TAIL   sweeps only the four electrically-safe groups, dropping the two
+                        gate-adjacent tail groups. Use for a rail-ON run.
+    -D DETECT_RAIL_ON   optional. States in the log that the motor rail was powered.
+    -D DETECT_RAIL_OFF  optional. States in the log that the motor rail was not powered.
+
+  THE GATE ON PHASE 2 IS COMPILE-TIME AND ONLY COMPILE-TIME. There is no keypress, no
+  timeout and no runtime branch anywhere in this binary. Stephen types the compile command
+  at the bench himself, seconds before the run, so -D DETECT_PHASE2 is a deliberate
+  operator act at the moment it matters -- and its absence makes motion impossible rather
+  than merely unlikely. A keypress can be fumbled; an absent compile flag cannot produce
+  motion.
+
+  RECORD DISCIPLINE
+
+  Tag-first, comma-separated name,value pairs, all tags beginning BD-. Fixed-field: every
+  record type always emits every field in the same order, never conditionally omitted.
+  Absence is a TOKEN value (NEVER, NOMEAS, NA, NOLIB), never a missing field and never 0.
+  That is what makes the A/B diff work line-for-line. No debug() ever appears inside a
+  measured interval -- every repeat's numbers go into a VAR long array and the whole
+  cell's records emit after the last repeat.
+
+  Records are assembled into a byte buffer and emitted with a single debug(zstr_()) each,
+  because a pnut-ts DEBUG statement carries at most 255 bytes of debug data and the wider
+  records overrun that by a factor of three. One record is therefore always exactly one
+  line, which is what the line-for-line A/B diff depends on.
+
+  HAZARD: every read of a driver-owned pin here is pinread() (the IN register). There is
+  no RDPIN and no RQPIN anywhere in this file -- the hazard is avoided by construction
+  rather than by care.
+}
+
+CON { timing }
+
+    CLK_FREQ = 270_000_000                                  ' every top in this tree runs at 270 MHz
+    _clkfreq = CLK_FREQ
+
+CON { build identity }
+
+' Hand-bumped whenever this file changes, so a stale binary is visible in the log.
+    SRC_REV     = 1
+    FMT_VERSION = 1                                         ' BD-BANNER record-format version
+
+' DETECT_PHASE2 implies DETECT_LIB: if phase 2 is compiled, the library must be linked
+#ifdef DETECT_PHASE2
+#define DETECT_LIB
+#endif
+
+
+CON { local pin-group base table }
+
+' DELIBERATE LOCAL COPY of the library's PINS_* enum, and the one place guide rule 2.4
+' (never copy an object's constants) is knowingly set aside. The default build has no OBJ
+' reference to isp_bldc_motor at all, so motor.PINS_* is not nameable there -- yet the
+' sweep must still name all six groups. The copy is not trusted: BD-ENUM cross-checks
+' every one of these against the library's own value whenever the library IS linked, and
+' a single mismatch voids the run.
+'  GRP_P0_P15   - left board on the bench; base pin 0
+'  GRP_P8_P23   - overlaps both boards; base pin 8; tail group
+'  GRP_P16_P31  - right board on the bench; base pin 16
+'  GRP_P24_P39  - PINS_NO_USE_P24_P39; not a legal base; base pin 24; tail group
+'  GRP_P32_P47  - unpopulated on the bench; base pin 32
+'  GRP_P40_P55  - unpopulated on the bench; base pin 40
+    GRP_P0_P15  = 0
+    GRP_P8_P23  = 8
+    GRP_P16_P31 = 16
+    GRP_P24_P39 = 24
+    GRP_P32_P47 = 32
+    GRP_P40_P55 = 40
+
+    GROUP_COUNT      = 6
+    TAIL_GROUP_COUNT = 2                                    ' P8_P23 and NO_USE_P24_P39, swept last
+    NO_GROUP         = -1                                   ' "no group" / "no cog" sentinel
+    LIB_ABSENT       = -1                                   ' library object not linked into this build
+
+CON { pin-field geometry }
+
+' R1: ADDPINS cannot cross a 32-pin port boundary -- 24 addpins 15 silently wraps to
+' 24..31 plus 0..7, which for PINS_NO_USE_P24_P39 would have read (and pinclear'd) the
+' LEFT board's P0-P7, its ADC and hall pins. Every 16-pin operation in this file is
+' therefore split into two 8-pin operations, uniformly, for all six groups, with no
+' special-casing. 24..31 and 32..39 each sit within their own group of 32.
+    HALF_GROUP_SPAN  = 7                                    ' addpins operand: 8 pins
+    GROUP_HI_OFFSET  = 8                                    ' second half of a 16-pin group
+    HIGH_HALF_SHIFT  = 8                                    ' pre/post: high half into bits 8-15
+    SENSE_PIN_OFFSET = 4                                    ' pinbase + 4, exactly as getBoardType()
+    PWM_W_L_OFFSET   = 12                                   ' pin_pwm_w_l is pinbase + 12
+    GROUP_SPAN       = 16                                   ' pins per motor pin group
+
+CON { measurement parameters }
+
+' N_REP is a detection probability, not a round number. The modes being chased are
+' intermittent flips; for a 1-in-10 mode the chance of missing it entirely in one cell is
+' 0.9^N -- 12% at N=20, 3.4% at N=32. A 1-in-8 chance of a clean-looking cell that is
+' actually lying is how you end up back at a one-shot bench. 32 is also a power of two.
+    N_REP            = 32                                   ' repeats per passive cell
+    N_LIVE           = 8                                    ' repeats per cell with a driver cog RUNNING
+    SUM_ITER         = 500                                  ' the library's own pinread count
+    PROBE_MAX_ITER   = 2_000                                ' first-low probe ceiling
+    BOUNCE_SAMPLES   = 64                                   ' samples taken after first-low
+    CAL_ITER         = 500                                  ' poll-loop calibration iterations
+    CHARGE_MS        = 1                                    ' the library's own waitms(1)
+    REVB_SUM_LIMIT   = 250                                  ' pinSum > this reads as "not detected"
+    SETTLE_MS        = 200                                  ' let a started driver cog reach steady state
+
+' The calibration pin is held DRIVEN HIGH so the poll loop can never exit early. P44 is
+' PINS_P40_P55's sense pin, inside the commented-out LA header range -- nothing is
+' connected there, and every sweep already drives it high for a millisecond anyway.
+    CAL_PIN = GRP_P40_P55 + SENSE_PIN_OFFSET
+
+    CAL_IDX_PRE_PHASE1  = 1
+    CAL_IDX_POST_PHASE1 = 2
+    CAL_IDX_POST_PHASE2 = 3
+
+CON { record assembly buffer }
+
+    LINE_BUF_SIZE   = 640                                   ' widest record is well under this
+    MAX_DEC_DIGITS  = 11                                    ' a 32-bit value needs at most 10
+    DEC_RADIX       = 10
+    DIGITS_PER_GROUP = 3                                    ' underscore every three digits
+    HEX4_DIGITS     = 4
+    BITS_PER_NIBBLE = 4
+    NIBBLE_MASK     = $F
+
+CON { sweep identifiers }
+
+' The 8-sweep matrix. One fixed unconditional sequence; sweeps 3-8 exist only in the
+' -D DETECT_PHASE2 build.
+'  SW_COLD_NOCLR        - phase 1, all groups, N_REP, no cog ever, not pinclear'd
+'  SW_COLD_CLR          - phase 1, all groups, N_REP, no cog ever, pinclear'd
+'  SW_LIVE_LEFT         - phase 2, P0_P15 only, N_LIVE, driver cog RUNNING on P0_P15
+'  SW_STOPPED_LEFT      - phase 2, all groups, N_REP, cog on P0_P15 STOPPED, not pinclear'd
+'  SW_STOPPED_CLR_LEFT  - phase 2, all groups, N_REP, cog on P0_P15 STOPPED, pinclear'd
+'  SW_LIVE_RIGHT        - phase 2, P16_P31 only, N_LIVE, driver cog RUNNING on P16_P31
+'  SW_STOPPED_RIGHT     - phase 2, all groups, N_REP, cog on P16_P31 STOPPED, not pinclear'd
+'  SW_STOPPED_CLR_RIGHT - phase 2, all groups, N_REP, cog on P16_P31 STOPPED, pinclear'd
+    #1, SW_COLD_NOCLR, SW_COLD_CLR, SW_LIVE_LEFT, SW_STOPPED_LEFT, SW_STOPPED_CLR_LEFT, ...
+        SW_LIVE_RIGHT, SW_STOPPED_RIGHT, SW_STOPPED_CLR_RIGHT
+
+CON { cell axis codes }
+
+' Cog-state axis of the 2x2x2 matrix:
+'  CST_NONE     - no driver cog has ever run in this power cycle
+'  CST_RUNNING  - a driver cog is running on the cell's own group right now
+'  CST_STOPPED  - a driver cog ran on some group and has been stop()ped
+    #0, CST_NONE, CST_RUNNING, CST_STOPPED
+
+' pinclear axis of the 2x2x2 matrix:
+'  CLR_NO   - pins left exactly as the previous sweep left them
+'  CLR_YES  - every swept group pinclear'd before this sweep
+    #0, CLR_NO, CLR_YES
+
+' Verdict codes -- the replica's, the library's, and the per-cell modal value:
+'  VRD_REVA     - pinSum == 0
+'  VRD_REVB     - pinSum in 1..REVB_SUM_LIMIT
+'  VRD_NODET    - pinSum > REVB_SUM_LIMIT, "Board not detected!"
+'  VRD_TIE      - per-cell modal only: no single verdict held a majority
+'  VRD_UNKNOWN  - library returned something outside REV_A/REV_B/REV_Unknown
+'  VRD_NOBASE   - group is not a legal base, so getBoardType() never measured
+'  VRD_ABORT    - the library call aborted with a value
+'  VRD_NOLIB    - the library object is not linked into this build
+    #0, VRD_REVA, VRD_REVB, VRD_NODET, VRD_TIE, VRD_UNKNOWN, VRD_NOBASE, VRD_ABORT, VRD_NOLIB
+
+' Pin-overlap classification for a group's sense pin:
+'  OVL_SELF       - the sense pin belongs to this group's own configured board
+'  OVL_NONE       - the sense pin is inside no configured board's range
+'  OVL_LEFT_PWM   - the sense pin is the LEFT board's base+12, its W low-side gate input
+'  OVL_RIGHT_PWM  - the sense pin is the RIGHT board's base+12, its W low-side gate input
+'  OVL_OTHER      - overlaps a configured board at some other offset (non-bench config)
+    #0, OVL_SELF, OVL_NONE, OVL_LEFT_PWM, OVL_RIGHT_PWM, OVL_OTHER
+
+CON { build-variant flags }
+
+#ifdef DETECT_NO_TAIL
+    TAIL_GROUPS_ON = 0
+#else
+    TAIL_GROUPS_ON = 1
+#endif
+
+#ifdef DETECT_PHASE2
+    PHASE2_COMPILED = 1
+#else
+    PHASE2_COMPILED = 0
+#endif
+
+#ifdef DETECT_LIB
+    LIB_LINKED = 1
+#else
+    LIB_LINKED = 0
+#endif
+
+' rail_declared is an operator statement carried into the log, not a measurement. It is
+' UNDECLARED unless the operator says otherwise at compile time. pnut-ts silently ignores
+' an unknown -D, so a typo lands on UNDECLARED -- the honest default -- rather than on a
+' confident lie. The objective evidence is elsewhere: bits 5,6,7 of a BD-REP pre field are
+' pin_hall_u/v/w, so with a motor plugged in a valid 3-bit hall code proves the rail is up.
+'  RAIL_UNDECLARED - operator said nothing
+'  RAIL_ON         - built with -D DETECT_RAIL_ON
+'  RAIL_OFF        - built with -D DETECT_RAIL_OFF
+    #0, RAIL_UNDECLARED, RAIL_ON, RAIL_OFF
+
+#ifdef DETECT_RAIL_ON
+    RAIL_DECLARED = RAIL_ON
+#elseifdef DETECT_RAIL_OFF
+    RAIL_DECLARED = RAIL_OFF
+#else
+    RAIL_DECLARED = RAIL_UNDECLARED
+#endif
+
+    SWEPT_GROUP_COUNT = GROUP_COUNT - ((1 - TAIL_GROUPS_ON) * TAIL_GROUP_COUNT)
+
+OBJ { objects under test }
+
+#ifdef BENCH_CFG
+    user    : "isp_bldc_motor_userconfig_bench"             ' bench compile-time hardware config (-D BENCH_CFG)
+#else
+    user    : "isp_bldc_motor_userconfig"                   ' active compile-time hardware config
+#endif
+#ifdef DETECT_LIB
+    motor   : "isp_bldc_motor"                              ' linked when DETECT_LIB is set; DETECT_PHASE2 implies DETECT_LIB
+#endif
+
+DAT { sweep and enumeration order }
+
+' Sweep order: the four electrically-safe groups first, the two gate-adjacent groups as a
+' clearly-marked tail, so an aborted run still has the valuable data in the log.
+grpSweepOrder   LONG    GRP_P0_P15, GRP_P16_P31, GRP_P32_P47, GRP_P40_P55, GRP_P8_P23, GRP_P24_P39
+
+' Enumeration order: ascending base pin, used by the BD-ENUM and BD-MAP static tables.
+grpEnumOrder    LONG    GRP_P0_P15, GRP_P8_P23, GRP_P16_P31, GRP_P24_P39, GRP_P32_P47, GRP_P40_P55
+
+DAT { record assembly state }
+
+lineBuf         BYTE    0[LINE_BUF_SIZE]
+lineLen         LONG    0
+
+DAT { record token strings }
+
+sGrpP0P15       BYTE    "P0_P15", 0
+sGrpP8P23       BYTE    "P8_P23", 0
+sGrpP16P31      BYTE    "P16_P31", 0
+sGrpP24P39      BYTE    "NO_USE_P24_P39", 0
+sGrpP32P47      BYTE    "P32_P47", 0
+sGrpP40P55      BYTE    "P40_P55", 0
+
+sVrdRevA        BYTE    "REVA", 0
+sVrdRevB        BYTE    "REVB", 0
+sVrdNoDet       BYTE    "NODET", 0
+sVrdTie         BYTE    "TIE", 0
+sVrdUnknown     BYTE    "UNKNOWN", 0
+sVrdNoBase      BYTE    "NOBASE", 0
+sVrdAbort       BYTE    "ABORT", 0
+sVrdNoLib       BYTE    "NOLIB", 0
+
+sCstNone        BYTE    "NONE", 0
+sCstRunning     BYTE    "RUNNING", 0
+sCstStopped     BYTE    "STOPPED", 0
+
+sClrNo          BYTE    "NOCLR", 0
+sClrYes         BYTE    "CLR", 0
+
+sOvlSelf        BYTE    "SELF", 0
+sOvlNone        BYTE    "NONE", 0
+sOvlLeftPwm     BYTE    "P0_P15+12_PWM_W_L", 0
+sOvlRightPwm    BYTE    "P16_P31+12_PWM_W_L", 0
+sOvlOther       BYTE    "OVL_OTHER", 0
+
+sRailOn         BYTE    "ON", 0
+sRailOff        BYTE    "OFF", 0
+sRailUndecl     BYTE    "UNDECLARED", 0
+
+sFlagTrue       BYTE    "1", 0
+sFlagFalse      BYTE    "0", 0
+sTokNA          BYTE    "NA", 0
+sTokNever       BYTE    "NEVER", 0
+sTokNoMeas      BYTE    "NOMEAS", 0
+sTokUnknown     BYTE    "UNKNOWN", 0
+sTokAll         BYTE    "ALL", 0
+
+sExitLow        BYTE    "LOW", 0
+sExitMaxed      BYTE    "MAXED", 0
+
+sCfgBench       BYTE    "BENCH", 0
+sCfgUser        BYTE    "USER", 0
+sCfgFileBench   BYTE    "isp_bldc_motor_userconfig_bench", 0
+sCfgFileUser    BYTE    "isp_bldc_motor_userconfig", 0
+
+sGateCompiled   BYTE    "COMPILED", 0
+sGateNotComp    BYTE    "NOTCOMPILED", 0
+sPhase2Ran      BYTE    "RAN", 0
+
+sMarkBegin      BYTE    "begin", 0
+sMarkEnd        BYTE    "end", 0
+sMarkSkipped    BYTE    "skipped", 0
+sMarkBuild      BYTE    "build", 0
+
+sPh2Pre         BYTE    "pre", 0
+sPh2Starting    BYTE    "starting", 0
+sPh2Running     BYTE    "running", 0
+sPh2Stopping    BYTE    "stopping", 0
+sPh2Stopped     BYTE    "stopped", 0
+sPh2Started     BYTE    "started", 0
+
+VAR { per-cell measurement capture }
+
+' One slot per repeat. Filled silently during the measured passes; read back only after
+' the last repeat of a cell, so no debug() ever lands inside a measured interval.
+    LONG    measured_sum[N_REP]                             ' the library's own 500-pinread sum
+    LONG    measured_sum_ticks[N_REP]                       ' getct() ticks spanning that sum loop
+    LONG    measured_iter[N_REP]                            ' 1-based sample index of the first low read
+    LONG    measured_flt_ticks[N_REP]                       ' getct() ticks from pinfloat() to first low
+    LONG    measured_bounce[N_REP]                          ' highs among BOUNCE_SAMPLES after first low
+    LONG    measured_low_seen[N_REP]                        ' TRUE when the pin ever read low
+    LONG    measured_pre[N_REP]                             ' 16-pin IN snapshot before the charge
+    LONG    measured_post[N_REP]                            ' 16-pin IN snapshot after the probe pass
+
+VAR { run-wide counters }
+
+    LONG    emittedRepCount                                 ' BD-REP records emitted in the current phase
+
+PUB main() | phase1Recs, phase2Recs
+'' Run the whole board-detection characterisation sweep and tag every data point on the
+'' debug stream. One fixed sequence, start to finish, with no runtime branch of any kind.
+''
+
+' Local Variables:
+' @local phase1Recs - BD-REP records emitted by phase 1, the truncation detector's count
+' @local phase2Recs - BD-REP records emitted by phase 2, zero when phase 2 is not compiled
+
+    emitBannerBlock()
+
+    emitCalibration(CAL_IDX_PRE_PHASE1)
+
+    emittedRepCount := 0
+    emitPhaseMark(1, @sMarkBegin, FALSE, 0, @sTokNA)
+    runSweep(SW_COLD_NOCLR, NO_GROUP, N_REP, NO_GROUP, CST_NONE, CLR_NO)
+    emitNote(@"sweep 2 follows a pinclear of every swept group -- two 8-pin calls per group per ruling R1")
+    clearSweptGroups()
+    runSweep(SW_COLD_CLR, NO_GROUP, N_REP, NO_GROUP, CST_NONE, CLR_YES)
+    phase1Recs := emittedRepCount
+    emitCalibration(CAL_IDX_POST_PHASE1)
+    emitPhaseMark(1, @sMarkEnd, TRUE, phase1Recs, @sTokNA)
+
+    phase2Recs := 0
+#ifdef DETECT_PHASE2
+    emitPhaseMark(2, @sMarkBegin, FALSE, 0, @sTokNA)
+    emittedRepCount := 0
+    runPhase2ForGroup(GRP_P0_P15, SW_LIVE_LEFT, SW_STOPPED_LEFT, SW_STOPPED_CLR_LEFT)
+    runPhase2ForGroup(GRP_P16_P31, SW_LIVE_RIGHT, SW_STOPPED_RIGHT, SW_STOPPED_CLR_RIGHT)
+    phase2Recs := emittedRepCount
+    emitPhaseMark(2, @sMarkEnd, TRUE, phase2Recs, @sTokNA)
+#else
+    emitPhaseMark(2, @sMarkSkipped, FALSE, 0, @sGateNotComp)
+#endif
+
+    emitCalibration(CAL_IDX_POST_PHASE2)
+
+    lineReset()
+    lineAddText(@"BD-DONE")
+    lineField(@"recs", phase1Recs + phase2Recs)
+    lineTextField(@"phase2", phase2Token())
+    lineEmit()
+
+    ' The literal text below is pnut-term-ts's end-of-session marker under
+    ' --exit-on-end-session. It is printed exactly once, alone, as the final line, and no
+    ' other output anywhere in this file may contain this phrase.
+    debug("DEBUG_END_SESSION")
+
+PRI emitBannerBlock()
+' Emit the whole banner block, once, before anything else touches a pin.
+
+    lineReset()
+    lineAddText(@"BD-BANNER")
+    lineField(@"fmt", FMT_VERSION)
+    lineTextField(@"tool", @"test_bench_detect")
+    lineTextField(@"purpose", @"getBoardType_characterization")
+    lineEmit()
+
+    emitConfigRecord()
+
+    lineReset()
+    lineAddText(@"BD-CLK")
+    lineField(@"clkfreq_declared", CLK_FREQ)
+    lineField(@"clkfreq_runtime", CLKFREQ)
+    lineTextField(@"match", flagToken(CLKFREQ == CLK_FREQ))
+    lineEmit()
+
+    lineReset()
+    lineAddText(@"BD-BUILD")
+    lineField(@"src_rev", SRC_REV)
+    lineField(@"lib_linked", LIB_LINKED)
+    lineField(@"phase2_compiled", PHASE2_COMPILED)
+    lineTextField(@"rail_declared", railToken())
+    lineField(@"n_rep", N_REP)
+    lineField(@"n_live", N_LIVE)
+    lineField(@"probe_max", PROBE_MAX_ITER)
+    lineField(@"cal_iter", CAL_ITER)
+    lineField(@"tail_groups", TAIL_GROUPS_ON)
+    lineEmit()
+
+    lineReset()
+    lineAddText(@"BD-RUN")
+    lineField(@"run_ct", getct())
+    lineTextField(@"run_ts", @"HOSTLOG")
+    lineEmit()
+
+    emitEnumRecords()
+    emitMapRecords()
+    emitPlanRecords()
+
+    lineReset()
+    lineAddText(@"BD-GATE")
+    lineTextField(@"mark", @sMarkBuild)
+    lineTextField(@"answer", gateToken())
+    lineEmit()
+
+    emitNoteRecords()
+
+PRI emitConfigRecord()
+' Emit BD-CFG. This record CANNOT lie about which config file was compiled in, because it
+' is emitted from the same #ifdef BENCH_CFG that selects the OBJ. pnut-ts silently ignores
+' an unknown -D (measured 2026-09-11: exit 0, binary written, no warning), so a mistyped
+' -D BENCH_CFJ takes the #else arm here exactly as it does in the OBJ block and the record
+' reads cfg_id,USER.
+
+    lineReset()
+    lineAddText(@"BD-CFG")
+#ifdef BENCH_CFG
+    lineTextField(@"cfg_id", @sCfgBench)
+    lineTextField(@"cfg_file", @sCfgFileBench)
+#else
+    lineTextField(@"cfg_id", @sCfgUser)
+    lineTextField(@"cfg_file", @sCfgFileUser)
+#endif
+    lineField(@"motor_type", user.MOTOR_TYPE)
+    lineField(@"drive_voltage", user.DRIVE_VOLTAGE)
+    lineField(@"wheel_dia_x10", round(user.WHEEL_DIA_IN_INCH *. 10.0))
+    lineField(@"left_base", user.LEFT_MOTOR_BASE)
+    lineField(@"right_base", user.RIGHT_MOTOR_BASE)
+    lineEmit()
+
+PRI emitEnumRecords() | grpIdx, grpBase, libBase
+' Cross-check this binary's local base-pin table against the library's own PINS_* values.
+' A match,0 on any line voids the run. In a build with no library linked every line reads
+' lib,NOLIB and match,NA -- absence is a token, never a zero.
+'
+' @local grpIdx - index into grpEnumOrder
+' @local grpBase - base pin of the group being reported
+' @local libBase - the library object's value for the same group, or LIB_ABSENT
+
+    repeat grpIdx from 0 to GROUP_COUNT - 1
+        grpBase := LONG[@grpEnumOrder][grpIdx]
+        libBase := libraryGroupBase(grpBase)
+        lineReset()
+        lineAddText(@"BD-ENUM")
+        lineField(@"grp", grpBase)
+        lineTextField(@"gnm", groupName(grpBase))
+        lineField(@"local", grpBase)
+        if libBase == LIB_ABSENT
+            lineTextField(@"lib", @sVrdNoLib)
+            lineTextField(@"match", @sTokNA)
+        else
+            lineField(@"lib", libBase)
+            lineTextField(@"match", flagToken(grpBase == libBase))
+        lineEmit()
+
+PRI emitMapRecords() | grpIdx, grpBase
+' Emit the sense-pin map: which physical pin each group's detection probe touches, and
+' whose pin that actually is.
+'
+' @local grpIdx - index into grpEnumOrder
+' @local grpBase - base pin of the group being reported
+
+    repeat grpIdx from 0 to GROUP_COUNT - 1
+        grpBase := LONG[@grpEnumOrder][grpIdx]
+        lineReset()
+        lineAddText(@"BD-MAP")
+        lineField(@"grp", grpBase)
+        lineTextField(@"gnm", groupName(grpBase))
+        lineField(@"pin", grpBase + SENSE_PIN_OFFSET)
+        lineTextField(@"ovl", overlapToken(grpBase))
+        lineEmit()
+
+PRI emitPlanRecords()
+' Declare the sweep matrix before any of it runs, so the analyser can compute the expected
+' BD-REP count and compare it against BD-PHASE's recs field. A truncated run then renders
+' as a count mismatch rather than as silence. Sweeps 3-8 are declared only in the build
+' that actually contains them, so the computed expectation is right in either build.
+
+    emitPlanRecord(SW_COLD_NOCLR, 1, @sTokAll, N_REP, NO_GROUP, CST_NONE, CLR_NO)
+    emitPlanRecord(SW_COLD_CLR, 1, @sTokAll, N_REP, NO_GROUP, CST_NONE, CLR_YES)
+#ifdef DETECT_PHASE2
+    emitPlanRecord(SW_LIVE_LEFT, 2, @sGrpP0P15, N_LIVE, GRP_P0_P15, CST_RUNNING, CLR_NO)
+    emitPlanRecord(SW_STOPPED_LEFT, 2, @sTokAll, N_REP, GRP_P0_P15, CST_STOPPED, CLR_NO)
+    emitPlanRecord(SW_STOPPED_CLR_LEFT, 2, @sTokAll, N_REP, GRP_P0_P15, CST_STOPPED, CLR_YES)
+    emitPlanRecord(SW_LIVE_RIGHT, 2, @sGrpP16P31, N_LIVE, GRP_P16_P31, CST_RUNNING, CLR_NO)
+    emitPlanRecord(SW_STOPPED_RIGHT, 2, @sTokAll, N_REP, GRP_P16_P31, CST_STOPPED, CLR_NO)
+    emitPlanRecord(SW_STOPPED_CLR_RIGHT, 2, @sTokAll, N_REP, GRP_P16_P31, CST_STOPPED, CLR_YES)
+#endif
+
+PRI emitPlanRecord(swNum, phaseNum, pGroupSpec, nRep, cogGrp, cogState, clrState)
+' Emit one BD-PLAN line.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param phaseNum - 1 or 2
+' @param pGroupSpec - pointer to ALL or to a single group's name
+' @param nRep - repeats per cell
+' @param cogGrp - base pin of the group a driver cog is or was running on or NO_GROUP
+' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
+' @param clrState - CLR_NO / CLR_YES
+
+    lineReset()
+    lineAddText(@"BD-PLAN")
+    lineField(@"sw", swNum)
+    lineField(@"phase", phaseNum)
+    lineTextField(@"groups", pGroupSpec)
+    lineField(@"n", nRep)
+    lineTextField(@"cog", cogGroupToken(cogGrp))
+    lineTextField(@"cogst", cogStateToken(cogState))
+    lineTextField(@"clr", clearToken(clrState))
+    lineEmit()
+
+PRI emitNoteRecords()
+' The operator and analyser preamble. Constant text, part of the diff alignment key: every
+' one of these lines must be byte-identical between the Rev A run and the Rev B run. The
+' text avoids commas so a naive field splitter cannot mistake prose for fields.
+
+#ifdef DETECT_PHASE2
+    emitNote(@"*** THIS BUILD STARTS A REAL DRIVER COG *** -- phase 2 is compiled in")
+    emitNote(@"THE MOTORS MUST BE PHYSICALLY UNPLUGGED -- with no motor connected there is no current path whatever the output stage does")
+    emitNote(@"PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4) and is NOT a panic button")
+    emitNote(@"phase 2 starts a driver cog at commanded zero on P0_P15 then on P16_P31 and stops it; nothing is ever commanded to turn")
+#elseifdef DETECT_LIB
+    emitNote(@"the library isp_bldc_motor IS linked and is probed passively using testSetup() and getBoardType() -- no driver cog is started")
+    emitNote(@"this binary contains no phase 2 motion code -- rebuild with -D DETECT_PHASE2 to add the cog-running sweeps")
+    emitNote(@"the panic procedure at this bench is PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+#else
+    emitNote(@"phase 2 is NOT compiled into this build -- there is no OBJ reference to isp_bldc_motor and no driver PASM2 anywhere in this image")
+    emitNote(@"this binary is therefore physically incapable of starting a driver cog; rebuild with -D DETECT_PHASE2 to add phase 2")
+    emitNote(@"even so the panic procedure at this bench is PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+#endif
+    emitNote(@"the gate on phase 2 is compile-time only -- there is no keypress and no runtime branch anywhere in this binary")
+    emitNote(@"BD-GATE answer and BD-BUILD phase2_compiled carry the same fact from two places and MUST agree; a disagreement voids the run")
+    emitNote(@"sweeping a group briefly drives its base+4 -- the tail groups' sense pins are P12 and P28 which are the LEFT and RIGHT boards' W low-side gate inputs (base+12 = pin_pwm_w_l)")
+    emitNote(@"all six groups may be swept RAIL-OFF: P2 pins are inputs at reset so all six gate inputs already sit floating whenever no driver cog runs")
+    emitNote(@"and rail-off means no bus voltage and therefore no shoot-through path whatever the gate driver does with a floating complementary input")
+    emitNote(@"a RAIL-ON run should use -D DETECT_NO_TAIL which drops the two gate-adjacent tail groups")
+    emitNote(@"P44 is PINS_P40_P55's sense pin and is also the calibration pin; it is inside the commented-out LA header range and nothing is connected there")
+    emitNote(@"VOID RULE: a log with no BD-BANNER or with cfg_id not equal to BENCH or with BD-CLK match 0 is VOID -- not suspect but void")
+    emitNote(@"VOID RULE: any BD-ENUM match 0 voids the run -- the local pin-group table has drifted from the library's")
+    emitNote(@"SUM RULE: sum 0 is real data on a Rev A board and is also what a loop that never executed produces")
+    emitNote(@"SUM RULE: sum 0 is trustworthy ONLY when sumtix is at least 500 -- 500 Spin2 pinreads cannot complete in under 500 ticks")
+    emitNote(@"CAL RULE: BD-CAL is emitted three times against a pin held driven high so the loop can never exit early")
+    emitNote(@"CAL RULE: if the three tix_per_iter values differ by more than a few percent then every sumtix and every fltix in this log is void")
+    emitNote(@"CROSS-CHECK: iter and (fltix / tix_per_iter) are two independent routes to the same number; if they disagree the instrumentation is lying")
+    emitNote(@"R1 NOTE: pre and post are each assembled from TWO 8-pin pinread calls (low half in bits 0-7 high half in bits 8-15)")
+    emitNote(@"R1 NOTE: that split is required because ADDPINS cannot cross a 32-pin port boundary; pre and post are therefore NOT atomic")
+    emitNote(@"R1 NOTE: the lost atomicity is acceptable because pre and post are context snapshots and are not the measured interval")
+    emitNote(@"HALL: bits 5 6 and 7 of a pre field are pin_hall_u/v/w so with a motor plugged in a valid 3-bit hall code is objective evidence the rail is powered")
+    emitNote(@"DIFF: take the A/B diff over ^BD- lines only and exclude everything between a BD-LIB mark begin and its matching mark end")
+    emitNote(@"DIFF: that exclusion is required because the library's own output line count varies with its own verdict")
+    emitNote(@"DIFF: logs from different build variants are not comparable -- compare a default-build log only against another default-build log")
+    emitNote(@"LIBVRD: a bare abort returns 0 and is indistinguishable from a completed call so ABORT appears only for a valued abort")
+    emitNote(@"LIBVRD: ground truth for an abort is the library's own ! ERROR: line inside the BD-LIB bracket")
+    emitNote(@"UNREACHABLE: cold-after-a-cog-has-run is impossible in one power cycle by definition -- that is why every cog NONE cell is phase 1")
+    emitNote(@"UNREACHABLE: and it is why phase 2 can never be re-run without a reset")
+    emitNote(@"UNREACHABLE: cogst RUNNING is measured only on the cog's OWN group because the cog's effect is per-pin")
+    emitNote(@"UNREACHABLE: cogst RUNNING with clr CLR is meaningless and dangerous -- pinclear on a running driver's own pins destroys it -- so it is not in the matrix")
+    emitNote(@"sweeps 3 and 6 deliberately charge and float a pin the running driver cog owns as an ADC smart pin -- that is exactly the T0-10 condition")
+    emitNote(@"sweeps 3 and 6 are bounded at n_live rather than n_rep to minimise interference with that running cog")
+
+PRI runSweep(swNum, groupSel, nRep, cogGrp, cogState, clrState) | orderIdx
+' Run one sweep: either every swept group in the fixed tail-last order or a single group.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param groupSel - base pin of the only group to sweep or NO_GROUP for all swept groups
+' @param nRep - repeats per cell
+' @param cogGrp - base pin of the group a driver cog is or was running on or NO_GROUP
+' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
+' @param clrState - CLR_NO / CLR_YES
+'
+' @local orderIdx - index into grpSweepOrder
+
+    emitSweepMark(swNum, @sMarkBegin)
+    if groupSel == NO_GROUP
+        repeat orderIdx from 0 to SWEPT_GROUP_COUNT - 1
+            runCell(swNum, LONG[@grpSweepOrder][orderIdx], nRep, cogGrp, cogState, clrState)
+    else
+        runCell(swNum, groupSel, nRep, cogGrp, cogState, clrState)
+    emitSweepMark(swNum, @sMarkEnd)
+
+PRI runCell(swNum, grpBase, nRep, cogGrp, cogState, clrState) | repIdx, libVerdict
+' Measure one cell of the matrix -- nRep repeats on one group -- then emit every repeat,
+' then probe the library on the same group, then summarise. Measurement first and emission
+' second is deliberate: no debug() may land inside a measured interval.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param grpBase - base pin of the group under measurement
+' @param nRep - repeats in this cell
+' @param cogGrp - base pin of the group a driver cog is or was running on or NO_GROUP
+' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
+' @param clrState - CLR_NO / CLR_YES
+'
+' @local repIdx - repeat index within this cell
+' @local libVerdict - VRD_* the library itself returned for this group
+
+    repeat repIdx from 0 to nRep - 1
+        measureOneRepeat(grpBase, repIdx)
+
+    repeat repIdx from 0 to nRep - 1
+        emitRepeatRecord(swNum, grpBase, repIdx, cogGrp, cogState, clrState)
+
+    libVerdict := runLibraryProbe(swNum, grpBase)
+    emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict)
+
+PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, ctBefore, ctAfter, iterCount, lastLevel, bounceCnt, sampleIdx, bLowSeen
+' Take one repeat: the library's own 500-read sum pass and then, with its own fresh charge,
+' the first-low probe pass. The two passes never share state. Results go into the VAR
+' arrays; nothing is printed.
+'
+' @param grpBase - base pin of the group under measurement
+' @param repIdx - slot in the VAR capture arrays to fill
+'
+' @local sensePin - grpBase + SENSE_PIN_OFFSET, exactly as getBoardType() computes it
+' @local pinSum - running sum of the 500 pinread results
+' @local ctBefore - getct() immediately before a measured loop
+' @local ctAfter - getct() immediately after a measured loop
+' @local iterCount - 1-based count of first-low probe samples taken
+' @local lastLevel - the most recent pinread result in the probe loop
+' @local bounceCnt - highs seen among BOUNCE_SAMPLES after first-low
+' @local sampleIdx - index over the post-first-low bounce samples
+' @local bLowSeen - TRUE when the probe loop exited because the pin read low
+
+    sensePin := grpBase + SENSE_PIN_OFFSET
+    measured_pre[repIdx] := snapshotGroupPins(grpBase)
+
+    ' Pass one is a transcription of isp_bldc_motor.spin2:776-784 with the two debug()
+    ' calls removed and two getct() calls added OUTSIDE the repeat. The loop body is one
+    ' statement, character-for-character the library's. Nothing is added inside the
+    ' measured interval.
+    pinSum := 0
+    pinhigh(sensePin)                                       ' charge 0.1uF capacitor on RevB boards
+    waitms(CHARGE_MS)
+    pinfloat(sensePin)                                      ' release the pin, ready to read state
+    ctBefore := getct()
+    repeat SUM_ITER
+        pinSum += pinread(sensePin)
+    ctAfter := getct()
+    measured_sum[repIdx] := pinSum
+    measured_sum_ticks[repIdx] := ctAfter - ctBefore
+
+    ' Pass two is the measurement that is the point: the sample index and the tick delta at
+    ' which the pin FIRST reads low -- the real RC discharge time, convertible to
+    ' microseconds and clock-independent. The 500-read sum is clock-dependent by the
+    ' library's own comment at isp_bldc_motor.spin2:787. During this probe the pin is
+    ' floating and not driven, so a long probe on an empty group is electrically inert.
+    pinhigh(sensePin)
+    waitms(CHARGE_MS)
+    pinfloat(sensePin)
+    ctBefore := getct()
+    iterCount := 0
+    repeat
+        lastLevel := pinread(sensePin)
+        iterCount += 1
+    until (lastLevel == 0) or (iterCount == PROBE_MAX_ITER)
+    ctAfter := getct()
+
+    bLowSeen := (lastLevel == 0)
+    measured_iter[repIdx] := iterCount
+    measured_flt_ticks[repIdx] := ctAfter - ctBefore
+    measured_low_seen[repIdx] := bLowSeen
+
+    ' Everything below is AFTER ctAfter and so cannot perturb the measured interval. A
+    ' clean RC discharge bounces zero times; a floating pin flapping at the input threshold
+    ' bounces well above zero, which is the expected discriminator for the false positive
+    ' seen on the empty P32_P47 group.
+    bounceCnt := 0
+    if bLowSeen == TRUE
+        repeat sampleIdx from 1 to BOUNCE_SAMPLES
+            if pinread(sensePin) <> 0
+                bounceCnt += 1
+    measured_bounce[repIdx] := bounceCnt
+    measured_post[repIdx] := snapshotGroupPins(grpBase)
+
+PRI emitRepeatRecord(swNum, grpBase, repIdx, cogGrp, cogState, clrState)
+' Emit one BD-REP line for one captured repeat. The three first-low fields are numbers when
+' the pin went low and the tokens NEVER / NEVER / NOMEAS when it never did -- they are
+' never independently absent, because all three come from the same single fact.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param grpBase - base pin of the group under measurement
+' @param repIdx - slot in the VAR capture arrays to report
+' @param cogGrp - base pin of the group a driver cog is or was running on or NO_GROUP
+' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
+' @param clrState - CLR_NO / CLR_YES
+
+    lineReset()
+    lineAddText(@"BD-REP")
+    lineField(@"sw", swNum)
+    lineField(@"grp", grpBase)
+    lineTextField(@"gnm", groupName(grpBase))
+    lineField(@"pin", grpBase + SENSE_PIN_OFFSET)
+    lineTextField(@"ovl", overlapToken(grpBase))
+    lineField(@"rep", repIdx + 1)
+    lineTextField(@"cog", cogGroupToken(cogGrp))
+    lineTextField(@"cogst", cogStateToken(cogState))
+    lineTextField(@"clr", clearToken(clrState))
+    lineField(@"sum", measured_sum[repIdx])
+    lineField(@"sumtix", measured_sum_ticks[repIdx])
+    lineTextField(@"vrd", verdictToken(verdictForSum(measured_sum[repIdx])))
+    if measured_low_seen[repIdx] == TRUE
+        lineField(@"iter", measured_iter[repIdx])
+        lineField(@"fltix", measured_flt_ticks[repIdx])
+        lineField(@"bnc", measured_bounce[repIdx])
+        lineTextField(@"exit", @sExitLow)
+    else
+        lineTextField(@"iter", @sTokNever)
+        lineTextField(@"fltix", @sTokNever)
+        lineTextField(@"bnc", @sTokNoMeas)
+        lineTextField(@"exit", @sExitMaxed)
+    lineHexField(@"pre", measured_pre[repIdx])
+    lineHexField(@"post", measured_post[repIdx])
+    lineEmit()
+
+    emittedRepCount += 1
+
+PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict) | repIdx, sumMin, sumMax, sumTotal, cntA, cntB, cntN, modalVrd, flMin, flMax, flNever, bncMax
+' Summarise one cell. agree compares the library's verdict against this cell's modal
+' replica verdict -- that is the honesty check on the replica, and a wrong replica renders
+' as agree,0. It is a check that can genuinely fail.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param grpBase - base pin of the group under measurement
+' @param nRep - repeats in this cell
+' @param cogGrp - base pin of the group a driver cog is or was running on or NO_GROUP
+' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
+' @param clrState - CLR_NO / CLR_YES
+' @param libVerdict - VRD_* the library itself returned for this group
+'
+' @local repIdx - repeat index within this cell
+' @local sumMin - smallest pinSum seen in this cell
+' @local sumMax - largest pinSum seen in this cell
+' @local sumTotal - running total of pinSum used to derive the mean
+' @local cntA - repeats whose replica verdict was VRD_REVA
+' @local cntB - repeats whose replica verdict was VRD_REVB
+' @local cntN - repeats whose replica verdict was VRD_NODET
+' @local modalVrd - majority replica verdict for this cell or VRD_TIE
+' @local flMin - smallest first-low sample index among repeats that went low
+' @local flMax - largest first-low sample index among repeats that went low
+' @local flNever - repeats whose pin never read low
+' @local bncMax - largest bounce count among repeats that went low
+
+    sumMin := POSX
+    sumMax := NEGX
+    sumTotal := 0
+    cntA := 0
+    cntB := 0
+    cntN := 0
+    flMin := POSX
+    flMax := NEGX
+    flNever := 0
+    bncMax := 0
+
+    repeat repIdx from 0 to nRep - 1
+        sumMin := sumMin <# measured_sum[repIdx]
+        sumMax := sumMax #> measured_sum[repIdx]
+        sumTotal += measured_sum[repIdx]
+        case verdictForSum(measured_sum[repIdx])
+            VRD_REVA:
+                cntA += 1
+            VRD_REVB:
+                cntB += 1
+            VRD_NODET:
+                cntN += 1
+        if measured_low_seen[repIdx] == TRUE
+            flMin := flMin <# measured_iter[repIdx]
+            flMax := flMax #> measured_iter[repIdx]
+            bncMax := bncMax #> measured_bounce[repIdx]
+        else
+            flNever += 1
+
+    modalVrd := modalVerdict(cntA, cntB, cntN)
+
+    lineReset()
+    lineAddText(@"BD-CELL")
+    lineField(@"sw", swNum)
+    lineField(@"grp", grpBase)
+    lineTextField(@"gnm", groupName(grpBase))
+    lineTextField(@"cog", cogGroupToken(cogGrp))
+    lineTextField(@"cogst", cogStateToken(cogState))
+    lineTextField(@"clr", clearToken(clrState))
+    lineField(@"n", nRep)
+    lineField(@"sum_min", sumMin)
+    lineField(@"sum_max", sumMax)
+    lineField(@"sum_mean", sumTotal / nRep)
+    lineField(@"va", cntA)
+    lineField(@"vb", cntB)
+    lineField(@"vn", cntN)
+    lineTextField(@"modal", verdictToken(modalVrd))
+    if flNever == nRep
+        lineTextField(@"fl_min", @sTokNever)
+        lineTextField(@"fl_max", @sTokNever)
+        lineField(@"fl_never", flNever)
+        lineTextField(@"bnc_max", @sTokNoMeas)
+    else
+        lineField(@"fl_min", flMin)
+        lineField(@"fl_max", flMax)
+        lineField(@"fl_never", flNever)
+        lineField(@"bnc_max", bncMax)
+    lineTextField(@"libvrd", verdictToken(libVerdict))
+    lineTextField(@"agree", agreeToken(libVerdict, modalVrd))
+    lineEmit()
+
+PRI emitCalibration(calIdx) | ctBefore, ctAfter, iterCount, lastLevel, elapsedTix
+' Run the first-low poll loop's exact shape against a pin held DRIVEN HIGH so it can never
+' exit early, and report ticks per iteration. That number is the resolution error bar on
+' every fltix in this log. Emitted three times -- before phase 1, after phase 1, after
+' phase 2 -- and if the three differ by more than a few percent every sumtix and fltix in
+' the log is void. The iter field reports the count ACTUALLY reached rather than the
+' constant CAL_ITER, so an early exit is visible instead of being asserted away.
+'
+' @param calIdx - CAL_IDX_* identifying which of the three calibrations this is
+'
+' @local ctBefore - getct() immediately before the calibration loop
+' @local ctAfter - getct() immediately after the calibration loop
+' @local iterCount - calibration loop iterations actually executed
+' @local lastLevel - the most recent pinread result in the calibration loop
+' @local elapsedTix - ctAfter - ctBefore
+
+    pinhigh(CAL_PIN)
+    ctBefore := getct()
+    iterCount := 0
+    repeat
+        lastLevel := pinread(CAL_PIN)
+        iterCount += 1
+    until (lastLevel == 0) or (iterCount == CAL_ITER)
+    ctAfter := getct()
+    pinfloat(CAL_PIN)
+
+    elapsedTix := ctAfter - ctBefore
+    lineReset()
+    lineAddText(@"BD-CAL")
+    lineField(@"idx", calIdx)
+    lineField(@"iter", iterCount)
+    lineField(@"tix", elapsedTix)
+    lineField(@"tix_per_iter", elapsedTix / iterCount)
+    lineEmit()
+
+PRI emitPhaseMark(phaseNum, pMarkName, bHasRecs, recCount, pReason)
+' Emit one BD-PHASE line. recs is a number only on a mark that has actually counted
+' records; otherwise it is the token NOMEAS.
+'
+' @param phaseNum - 1 or 2
+' @param pMarkName - pointer to begin / end / skipped
+' @param bHasRecs - TRUE when recCount is meaningful
+' @param recCount - BD-REP records emitted in this phase
+' @param pReason - pointer to NA or to a reason token
+
+    lineReset()
+    lineAddText(@"BD-PHASE")
+    lineField(@"n", phaseNum)
+    lineTextField(@"mark", pMarkName)
+    if bHasRecs == TRUE
+        lineField(@"recs", recCount)
+    else
+        lineTextField(@"recs", @sTokNoMeas)
+    lineTextField(@"reason", pReason)
+    lineEmit()
+
+PRI emitSweepMark(swNum, pMarkName)
+' Emit one BD-SWEEP line.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param pMarkName - pointer to begin or end
+
+    lineReset()
+    lineAddText(@"BD-SWEEP")
+    lineField(@"sw", swNum)
+    lineTextField(@"mark", pMarkName)
+    lineEmit()
+
+PRI emitNote(pNoteText)
+' Emit one BD-NOTE line. Constant operator/analyser text, one clause per line.
+'
+' @param pNoteText - pointer to the note text
+
+    lineReset()
+    lineAddText(@"BD-NOTE,")
+    lineAddText(pNoteText)
+    lineEmit()
+
+PRI clearSweptGroups() | orderIdx
+' pinclear every group this build sweeps. The four electrically-safe groups already span
+' P0-P55 between them so the tail groups add no pins here.
+'
+' @local orderIdx - index into grpSweepOrder
+
+    repeat orderIdx from 0 to SWEPT_GROUP_COUNT - 1
+        clearGroupPins(LONG[@grpSweepOrder][orderIdx])
+
+PRI clearGroupPins(grpBase)
+' Clear all sixteen of a group's pins as TWO 8-pin operations. See ruling R1: ADDPINS
+' cannot cross a 32-pin port boundary, and pinclear(24 addpins 15) would have wrapped and
+' cleared the LEFT board's P0-P7 -- its ADC and hall pins -- silently contaminating the
+' very axis being measured.
+'
+' @param grpBase - base pin of the group to clear
+
+    pinclear(grpBase addpins HALF_GROUP_SPAN)
+    pinclear(grpBase + GROUP_HI_OFFSET addpins HALF_GROUP_SPAN)
+
+PRI snapshotGroupPins(grpBase) : pinBits
+' Read all sixteen of a group's IN bits as TWO 8-pin reads, low half in bits 0-7 and high
+' half in bits 8-15. Split for the same ADDPINS reason as clearGroupPins(). The two halves
+' are therefore NOT sampled atomically -- acceptable because pre and post are context
+' snapshots and not the measured interval.
+'
+' @param grpBase - base pin of the group to snapshot
+' @returns pinBits - the group's sixteen IN bits
+
+    pinBits := pinread(grpBase addpins HALF_GROUP_SPAN)
+    pinBits |= pinread(grpBase + GROUP_HI_OFFSET addpins HALF_GROUP_SPAN) << HIGH_HALF_SHIFT
+
+PRI verdictForSum(pinSum) : verdictCode
+' The library's three-branch verdict cascade, in the same order, so a sum of exactly 250 or
+' 251 lands where isp_bldc_motor.spin2:789-796 lands it.
+'
+' @param pinSum - the 500-pinread sum
+' @returns verdictCode - VRD_REVA / VRD_REVB / VRD_NODET
+
+    if pinSum == 0
+        verdictCode := VRD_REVA
+    elseif pinSum > REVB_SUM_LIMIT
+        verdictCode := VRD_NODET
+    else
+        verdictCode := VRD_REVB
+
+PRI modalVerdict(cntA, cntB, cntN) : verdictCode
+' Return the majority replica verdict for a cell or VRD_TIE when no single verdict leads.
+'
+' @param cntA - repeats whose replica verdict was VRD_REVA
+' @param cntB - repeats whose replica verdict was VRD_REVB
+' @param cntN - repeats whose replica verdict was VRD_NODET
+' @returns verdictCode - VRD_REVA / VRD_REVB / VRD_NODET / VRD_TIE
+
+    verdictCode := VRD_TIE
+    if (cntA > cntB) and (cntA > cntN)
+        verdictCode := VRD_REVA
+    elseif (cntB > cntA) and (cntB > cntN)
+        verdictCode := VRD_REVB
+    elseif (cntN > cntA) and (cntN > cntB)
+        verdictCode := VRD_NODET
+
+PRI runLibraryProbe(swNum, grpBase) : libVerdict | trappedLib, eBoardRev
+' Bracket the library's own detection output and report the verdict IT returned. The
+' library's "--- pinSum = N, 64010 Rev X" line lands between the markers; this method does
+' not reprint it, and the A/B diff excludes everything between the markers because the
+' library's line count varies with its own verdict.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param grpBase - base pin of the group to probe
+' @returns libVerdict - VRD_* the library returned
+'
+' @local trappedLib - the trapped return of the library setup call; a bare abort returns 0
+'                      and is indistinguishable from a completed call
+' @local eBoardRev - the library's REV_* return value
+
+    lineReset()
+    lineAddText(@"BD-LIB")
+    lineField(@"sw", swNum)
+    lineField(@"grp", grpBase)
+    lineTextField(@"mark", @sMarkBegin)
+    lineEmit()
+
+    libVerdict := VRD_NOLIB
+    trappedLib := 0
+    eBoardRev := 0
+#ifdef DETECT_LIB
+    ' One shared instance is used for every probe and for phase 2. claimPinBase() releases
+    ' this instance's own claim before re-claiming, so walking every group on one instance
+    ' never self-conflicts -- and a second instance could not be used, because it would
+    ' collide with this one's claim on exactly the groups that matter most.
+    trappedLib := \motor.testSetup(grpBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    if trappedLib <> 0
+        libVerdict := VRD_ABORT
+    elseif not isLegalLibraryBase(grpBase)
+        ' PINS_NO_USE_P24_P39 is rejected by validatePinBase()'s lookdown, so pinbase stays
+        ' unset and getBoardType() takes its "** NOT SET **" branch without ever measuring.
+        ' The illegal group is reachable only through the replica -- a documented property
+        ' of today's code, not a defect this binary is asked to fix.
+        libVerdict := VRD_NOBASE
+    else
+        eBoardRev := motor.getBoardType()
+        case eBoardRev
+            motor.REV_A:
+                libVerdict := VRD_REVA
+            motor.REV_B:
+                libVerdict := VRD_REVB
+            motor.REV_Unknown:
+                libVerdict := VRD_NODET
+            other:
+                libVerdict := VRD_UNKNOWN
+#endif
+
+    lineReset()
+    lineAddText(@"BD-LIB")
+    lineField(@"sw", swNum)
+    lineField(@"grp", grpBase)
+    lineTextField(@"mark", @sMarkEnd)
+    lineTextField(@"libvrd", verdictToken(libVerdict))
+    lineField(@"trapped", trappedLib)
+    lineEmit()
+
+#ifdef DETECT_PHASE2
+
+PRI runPhase2ForGroup(cogGrp, swLive, swStopped, swStoppedClr)
+' Phase 2 for one group: start a real driver cog at commanded zero, sweep the group while
+' it runs, stop it, sweep every group immediately afterwards, pinclear and sweep again.
+' This is the only thing that separates "the threshold is wrong" from "stop() clears only
+' the top 8 pins and poisons the next read" -- two diagnoses that want opposite fixes.
+'
+' start() is called with BRD_REV_B FORCED rather than BRD_AUTO_DET so getBoardType() takes
+' its early-out and the cog start performs no charge/float of its own, isolating the cog's
+' pin-configuration effect from the detection measurement.
+'
+' @param cogGrp - base pin of the group to run a driver cog on
+' @param swLive - SW_* identifier of the cog-running sweep
+' @param swStopped - SW_* identifier of the post-stop sweep
+' @param swStoppedClr - SW_* identifier of the post-stop pinclear'd sweep
+
+    emitPhase2Step(cogGrp, @sPh2Pre)
+    emitPhase2Step(cogGrp, @sPh2Starting)
+    startDriverCog(cogGrp)
+    waitms(SETTLE_MS)
+    emitPhase2Step(cogGrp, @sPh2Running)
+
+    runSweep(swLive, cogGrp, N_LIVE, cogGrp, CST_RUNNING, CLR_NO)
+
+    emitPhase2Step(cogGrp, @sPh2Stopping)
+    motor.stop()
+    ' The pins field of the record below is the within-a-millisecond-of-stop() snapshot of
+    ' the driver's own group. The sweep that follows walks the groups in the fixed
+    ' tail-last order, so for the right-hand group its own cell is not the first one taken
+    ' after stop() -- this record is where that immediate observation lives.
+    emitPhase2Step(cogGrp, @sPh2Stopped)
+
+    runSweep(swStopped, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_NO)
+    clearSweptGroups()
+    runSweep(swStoppedClr, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_YES)
+
+PRI startDriverCog(cogGrp) | startRet, rawMotorCog
+' Start the driver cog on {cogGrp} at commanded zero and report both start()'s raw return
+' and the object's own motorCog snapshot, because start()'s return alone has been observed
+' to read 0 on a call that genuinely started a cog.
+'
+' @param cogGrp - base pin of the group to run a driver cog on
+'
+' @local startRet - start()'s trapped raw return value
+' @local rawMotorCog - testGetMotorCog()'s snapshot of the object's own motorCog
+
+    startRet := \motor.start(cogGrp, user.DRIVE_VOLTAGE, motor.BRD_REV_B)
+    rawMotorCog := motor.testGetMotorCog()
+
+    lineReset()
+    lineAddText(@"BD-PH2")
+    lineField(@"grp", cogGrp)
+    lineTextField(@"step", @sPh2Started)
+    lineTextField(@"detmode", @"BRD_REV_B")
+    lineField(@"start_ret", startRet)
+    lineField(@"motorcog", rawMotorCog)
+    lineHexField(@"pins", snapshotGroupPins(cogGrp))
+    lineEmit()
+
+PRI emitPhase2Step(cogGrp, pStepName)
+' Emit one BD-PH2 record for a step that carries no start() return of its own.
+'
+' @param cogGrp - base pin of the group to run a driver cog on
+' @param pStepName - pointer to the step-name token
+
+    lineReset()
+    lineAddText(@"BD-PH2")
+    lineField(@"grp", cogGrp)
+    lineTextField(@"step", pStepName)
+    lineTextField(@"detmode", @"BRD_REV_B")
+    lineTextField(@"start_ret", @sTokNoMeas)
+    lineTextField(@"motorcog", @sTokNoMeas)
+    lineHexField(@"pins", snapshotGroupPins(cogGrp))
+    lineEmit()
+
+#endif
+
+PRI isLegalLibraryBase(grpBase) : bLegal
+' Replicate validatePinBase()'s lookdown list so the NOBASE case is decided the way the
+' library decides it rather than by hardcoding one group number.
+'
+' @param grpBase - base pin of the group to test
+' @returns bLegal - TRUE when the library accepts this base
+
+    bLegal := (grpBase == GRP_P0_P15) or (grpBase == GRP_P8_P23) or (grpBase == GRP_P16_P31) or (grpBase == GRP_P32_P47) or (grpBase == GRP_P40_P55)
+
+
+PRI libraryGroupBase(grpBase) : libBase
+' Return the library object's OWN PINS_* value for a group, or LIB_ABSENT when the library
+' is not linked into this build. This is the cross-check behind BD-ENUM: if the library's
+' enum ever moves, the local table stops matching and the run is voided.
+'
+' @param grpBase - base pin of the group to look up in the local table
+' @returns libBase - the library's value for the same group or LIB_ABSENT
+
+    libBase := LIB_ABSENT
+#ifdef DETECT_LIB
+    case grpBase
+        GRP_P0_P15:
+            libBase := motor.PINS_P0_P15
+        GRP_P8_P23:
+            libBase := motor.PINS_P8_P23
+        GRP_P16_P31:
+            libBase := motor.PINS_P16_P31
+        GRP_P24_P39:
+            libBase := motor.PINS_NO_USE_P24_P39
+        GRP_P32_P47:
+            libBase := motor.PINS_P32_P47
+        GRP_P40_P55:
+            libBase := motor.PINS_P40_P55
+#endif
+
+PRI groupName(grpBase) : pGrpName
+' Return the printable name of a pin group.
+'
+' @param grpBase - base pin of the group to name
+' @returns pGrpName - pointer to the group's name string
+
+    pGrpName := @sTokUnknown
+    case grpBase
+        GRP_P0_P15:
+            pGrpName := @sGrpP0P15
+        GRP_P8_P23:
+            pGrpName := @sGrpP8P23
+        GRP_P16_P31:
+            pGrpName := @sGrpP16P31
+        GRP_P24_P39:
+            pGrpName := @sGrpP24P39
+        GRP_P32_P47:
+            pGrpName := @sGrpP32P47
+        GRP_P40_P55:
+            pGrpName := @sGrpP40P55
+
+PRI overlapClass(grpBase) : ovlCode | sensePin
+' Classify whose pin a group's sense pin actually is, at RUNTIME from the active config's
+' LEFT_MOTOR_BASE and RIGHT_MOTOR_BASE -- never hardcoded. On the bench config this makes
+' P8_P23's sense pin P12 the LEFT board's W low-side gate input and NO_USE_P24_P39's sense
+' pin P28 the RIGHT board's, which is exactly why those two groups are swept last.
+'
+' @param grpBase - base pin of the group being classified
+' @returns ovlCode - OVL_SELF / OVL_NONE / OVL_LEFT_PWM / OVL_RIGHT_PWM / OVL_OTHER
+'
+' @local sensePin - grpBase + SENSE_PIN_OFFSET
+
+    sensePin := grpBase + SENSE_PIN_OFFSET
+    if (grpBase == user.LEFT_MOTOR_BASE) or (grpBase == user.RIGHT_MOTOR_BASE)
+        ovlCode := OVL_SELF
+    elseif pinIsInsideGroup(sensePin, user.LEFT_MOTOR_BASE)
+        ovlCode := (sensePin - user.LEFT_MOTOR_BASE == PWM_W_L_OFFSET) ? OVL_LEFT_PWM : OVL_OTHER
+    elseif pinIsInsideGroup(sensePin, user.RIGHT_MOTOR_BASE)
+        ovlCode := (sensePin - user.RIGHT_MOTOR_BASE == PWM_W_L_OFFSET) ? OVL_RIGHT_PWM : OVL_OTHER
+    else
+        ovlCode := OVL_NONE
+
+PRI pinIsInsideGroup(pinNum, grpBase) : bInside
+' Test whether a pin falls inside a sixteen-pin motor group.
+'
+' @param pinNum - the pin to test
+' @param grpBase - base pin of the group to test against
+' @returns bInside - TRUE when pinNum lies in grpBase..grpBase+15
+
+    bInside := (pinNum >= grpBase) and (pinNum < grpBase + GROUP_SPAN)
+
+PRI overlapToken(grpBase) : pOvlTok
+' Return the printable overlap classification for a group's sense pin.
+'
+' @param grpBase - base pin of the group being classified
+' @returns pOvlTok - pointer to the overlap token string
+
+    pOvlTok := @sOvlOther
+    case overlapClass(grpBase)
+        OVL_SELF:
+            pOvlTok := @sOvlSelf
+        OVL_NONE:
+            pOvlTok := @sOvlNone
+        OVL_LEFT_PWM:
+            pOvlTok := @sOvlLeftPwm
+        OVL_RIGHT_PWM:
+            pOvlTok := @sOvlRightPwm
+
+PRI verdictToken(verdictCode) : pVrdTok
+' Return the printable form of a VRD_* verdict code.
+'
+' @param verdictCode - VRD_* code to render
+' @returns pVrdTok - pointer to the verdict token string
+
+    pVrdTok := @sTokUnknown
+    case verdictCode
+        VRD_REVA:
+            pVrdTok := @sVrdRevA
+        VRD_REVB:
+            pVrdTok := @sVrdRevB
+        VRD_NODET:
+            pVrdTok := @sVrdNoDet
+        VRD_TIE:
+            pVrdTok := @sVrdTie
+        VRD_UNKNOWN:
+            pVrdTok := @sVrdUnknown
+        VRD_NOBASE:
+            pVrdTok := @sVrdNoBase
+        VRD_ABORT:
+            pVrdTok := @sVrdAbort
+        VRD_NOLIB:
+            pVrdTok := @sVrdNoLib
+
+PRI cogGroupToken(cogGrp) : pCogTok
+' Return the printable name of the group a driver cog is or was running on.
+'
+' @param cogGrp - base pin of that group or NO_GROUP
+' @returns pCogTok - pointer to the token string
+
+    pCogTok := (cogGrp == NO_GROUP) ? @sCstNone : groupName(cogGrp)
+
+PRI cogStateToken(cogState) : pStateTok
+' Return the printable form of a CST_* cog-state code.
+'
+' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
+' @returns pStateTok - pointer to the token string
+
+    pStateTok := @sCstNone
+    case cogState
+        CST_RUNNING:
+            pStateTok := @sCstRunning
+        CST_STOPPED:
+            pStateTok := @sCstStopped
+
+PRI clearToken(clrState) : pClrTok
+' Return the printable form of a CLR_* pinclear-axis code.
+'
+' @param clrState - CLR_NO / CLR_YES
+' @returns pClrTok - pointer to the token string
+
+    pClrTok := (clrState == CLR_YES) ? @sClrYes : @sClrNo
+
+PRI flagToken(bCond) : pFlagTok
+' Return "1" or "0" for a boolean, so a fixed-field record never has to change shape to
+' carry a yes/no answer.
+'
+' @param bCond - the condition to render
+' @returns pFlagTok - pointer to the token string
+
+    pFlagTok := (bCond == TRUE) ? @sFlagTrue : @sFlagFalse
+
+PRI agreeToken(libVerdict, modalVrd) : pAgreeTok
+' Compare the library's verdict against this cell's modal replica verdict. NA whenever the
+' library produced no comparable verdict at all; otherwise a 1 or a 0 that can genuinely
+' come out 0 -- this is the honesty check on the replica.
+'
+' @param libVerdict - VRD_* the library returned
+' @param modalVrd - VRD_* majority replica verdict for the cell
+' @returns pAgreeTok - pointer to the token string
+
+    if (libVerdict == VRD_REVA) or (libVerdict == VRD_REVB) or (libVerdict == VRD_NODET)
+        pAgreeTok := flagToken(libVerdict == modalVrd)
+    else
+        pAgreeTok := @sTokNA
+
+PRI railToken() : pRailTok
+' Return the printable form of the operator's compile-time rail declaration.
+'
+' @returns pRailTok - pointer to the token string
+
+    pRailTok := @sRailUndecl
+    case RAIL_DECLARED
+        RAIL_ON:
+            pRailTok := @sRailOn
+        RAIL_OFF:
+            pRailTok := @sRailOff
+
+PRI gateToken() : pGateTok
+' Return COMPILED or NOTCOMPILED, the whole of what the phase-2 gate now is.
+'
+' @returns pGateTok - pointer to the token string
+
+    pGateTok := (PHASE2_COMPILED == 1) ? @sGateCompiled : @sGateNotComp
+
+PRI phase2Token() : pPhaseTok
+' Return RAN or NOTCOMPILED for the BD-DONE record.
+'
+' @returns pPhaseTok - pointer to the token string
+
+    pPhaseTok := (PHASE2_COMPILED == 1) ? @sPhase2Ran : @sGateNotComp
+
+PRI lineReset()
+' Begin a new record.
+
+    lineLen := 0
+    BYTE[@lineBuf][0] := 0
+
+PRI lineAddChar(charByte)
+' Append one character to the record under assembly, silently dropping anything past the
+' buffer. The widest record is well under LINE_BUF_SIZE; truncation would show as a short
+' line in the log rather than as memory corruption.
+'
+' @param charByte - the character to append
+
+    if lineLen < LINE_BUF_SIZE - 1
+        BYTE[@lineBuf][lineLen] := charByte
+        lineLen += 1
+        BYTE[@lineBuf][lineLen] := 0
+
+PRI lineAddText(pText) | srcIdx
+' Append a zero-terminated string to the record under assembly. The loop is bounded as
+' well as terminated: an unterminated source string would otherwise spin forever and hang
+' a bench run with no output at all, which is the one failure mode a one-shot rig cannot
+' afford. Every caller passes a DAT or literal string, so the bound should never bite.
+'
+' @param pText - pointer to the text to append
+'
+' @local srcIdx - index into the source text
+
+    repeat srcIdx from 0 to LINE_BUF_SIZE - 1
+        if BYTE[pText][srcIdx] == 0
+            quit
+        lineAddChar(BYTE[pText][srcIdx])
+
+PRI lineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absValue, digitIdx
+' Append a signed decimal number with an underscore every three digits, matching the
+' grouping udec_() and sdec_() use everywhere else in this tree's bench logs.
+'
+' @param numValue - the value to append
+'
+' @local digitStack - decimal digits of numValue, least significant first
+' @local digitCount - how many entries of digitStack are in use
+' @local absValue - magnitude of numValue, consumed by the extraction loop
+' @local digitIdx - index into digitStack while emitting
+
+    absValue := numValue
+    if numValue < 0
+        lineAddChar("-")
+        absValue := -numValue
+
+    digitCount := 0
+    repeat
+        digitStack[digitCount] := absValue // DEC_RADIX
+        absValue /= DEC_RADIX
+        digitCount += 1
+    until (absValue == 0) or (digitCount == MAX_DEC_DIGITS)
+
+    repeat digitIdx from digitCount - 1 to 0
+        lineAddChar("0" + digitStack[digitIdx])
+        if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
+            lineAddChar("_")
+
+PRI lineAddHex4(hexValue) | nibIdx, nibble
+' Append a four-digit hex value with a leading dollar sign.
+'
+' @param hexValue - the value to append, low 16 bits used
+'
+' @local nibIdx - index of the nibble being emitted, most significant first
+' @local nibble - the nibble's value
+
+    lineAddChar("$")
+    repeat nibIdx from HEX4_DIGITS - 1 to 0
+        nibble := (hexValue >> (nibIdx * BITS_PER_NIBBLE)) & NIBBLE_MASK
+        if nibble < DEC_RADIX
+            lineAddChar("0" + nibble)
+        else
+            lineAddChar("A" + nibble - DEC_RADIX)
+
+PRI lineField(pFieldName, numValue)
+' Append one ",name,<number>" field to the record under assembly.
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+
+    lineAddChar(",")
+    lineAddText(pFieldName)
+    lineAddChar(",")
+    lineAddNum(numValue)
+
+PRI lineTextField(pFieldName, pFieldValue)
+' Append one ",name,<token>" field to the record under assembly.
+'
+' @param pFieldName - pointer to the field name
+' @param pFieldValue - pointer to the field's token text
+
+    lineAddChar(",")
+    lineAddText(pFieldName)
+    lineAddChar(",")
+    lineAddText(pFieldValue)
+
+PRI lineHexField(pFieldName, hexValue)
+' Append one ",name,$HHHH" field to the record under assembly.
+'
+' @param pFieldName - pointer to the field name
+' @param hexValue - the field's value, low 16 bits used
+
+    lineAddChar(",")
+    lineAddText(pFieldName)
+    lineAddChar(",")
+    lineAddHex4(hexValue)
+
+PRI lineEmit()
+' Emit the assembled record as exactly one debug line. One debug() statement carries at
+' most 255 bytes of debug data, which the wider records overrun by a factor of three, so
+' the whole record travels as a single zero-terminated string instead.
+
+    debug(zstr_(@lineBuf))
+
+CON { license }
+
+{{
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ -------------------------------------------------------------------------------------------------
+}}

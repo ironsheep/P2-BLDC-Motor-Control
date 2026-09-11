@@ -298,6 +298,83 @@ solve quieting another way.
 
 Found 2026-09-10 while adding the TEST-USE ONLY pass-throughs.
 
+### PL-15 -- no way for a bench binary to ask the operator a question
+
+**Found 2026-09-11 during «#3496» (the A/B detection sweep binary). Raised by
+Stephen, not by the code.**
+
+`src/test_bench_detect.spin2` wanted an operator confirmation at the bench --
+"the motors are physically unplugged, proceed" -- before starting a driver cog.
+There is currently **no established way for a bench binary to prompt and read a
+reply.** Three candidate channels were considered and none is usable today:
+
+- **`PC_KEY` via a `` `Term `` debug display.** No precedent anywhere in `src/`;
+  this would be its first use. Its documented failure mode is that it compiles
+  clean and fails silently at runtime. It is additionally **line-buffered** --
+  Stephen confirms the console transmits only when Enter is pressed -- so a
+  design waiting on a bare keystroke would hang with the operator sitting there
+  having pressed it.
+- **Plain serial to `pnut-term-ts`'s terminal.** `pnut-ts` classifies traffic
+  and routes anything that is not a cog message or a tick message to the
+  terminal, so the path exists. But **the serial singleton would have to share
+  the debug port**, which Stephen states is not an easy thing to do, and this
+  binary's deliverable is an uncorruptible one-shot log.
+- **A DEBUG `PLOT` panel with clickable controls.** ✅ **This is the answer, and
+  it is not an experiment.** Stephen has a documented, exercised technique for
+  it -- see `DOCs/REF-NO-COMMIT/dbg-display-theory/` (crop-and-overlay sprite
+  blitting, a Pillow asset pipeline, and `pc_key`/`pc_mouse` input). It sidesteps
+  the port-sharing problem entirely by staying **inside** the DEBUG channel that
+  already owns the port. `pc_mouse` fills 7 consecutive longs
+  (`xpos, ypos, wheeldelta, lbutton, mbutton, rbutton, pixel`), buttons read
+  `-1` when down, and clicks are hit-tested against bounding boxes -- an OK
+  button and a typed value field are both standard patterns there.
+
+**Disposition for «#3496»: the question was designed out rather than answered.**
+Phase 2 is gated at COMPILE TIME (`-D DETECT_PHASE2`) instead. That is not a
+downgrade -- `tools/bench-run.sh` echoes the compile command and Stephen runs it
+by hand at the bench, so the flag is a deliberate operator act at the moment it
+matters, and its absence makes the binary physically incapable of starting a
+driver cog. It also leaves that binary with no runtime branch at all, which is
+what the task text asked for.
+
+**Why this stays on the list:** the need recurs. Any future bench binary that
+wants a **mid-run** operator decision hits the same wall, because compile-time
+gating only works for a decision that can be made *before* the run.
+
+**Corrected 2026-09-11, same day, and the correction makes this CHEAPER than
+first written.** This entry originally claimed a PLOT panel could not run under
+`tools/bench-run.sh` because that script passes `--console-mode`. That was
+wrong, and it was wrong by inference rather than by evidence. `pnut-term-ts
+--help` states: `--console-mode` "adds delay before close"; `--headless` is the
+flag that suppresses GUI windows; and `--exit-on-end-session`, which the script
+also passes, is documented as **"Headed batch mode"**. `bench-run.sh` never
+passes `--headless`, so **the bench has been running windowed all along and
+PLOT windows, `pc_key` and `pc_mouse` work in the existing invocation
+unchanged.** There is therefore NO runner integration cost -- the estimate this
+entry was filed with was simply wrong.
+
+Also resolved by the same `--help` read: `-b` defaults to *read from the binary
+being downloaded, else 2000000*, which confirms this project's standing rule
+never to pass it. The `-b 2000000` "mandatory" claim in
+`HOWTO-build-debug-displays-with-claude.md` §5 is scoped to headless runs or to
+an older build, and should not be copied into this project.
+
+**Tooling confirmed present 2026-09-11:** Pillow 11.3.0 on Python 3.10.7 for the
+BMP art, `pnut-ts -d` for the `{Spin2_v50}` PLOT syntax, PNG round-trip so the
+artwork can be verified before a run, and `src/logs/debug_*.log` for the
+after-action read. Nothing needs installing. What this project does NOT yet have
+is any precedent: no `{Spin2_v50}` file in `src/`, no BMP assets, no generator
+script. So the first panel here is a build job, not a rediscovery -- but it is a
+build job, and it must not ride on a one-shot hardware session.
+
+**Two defects in the reference docs, to fix at their source (they are not in
+this repo):** `DISPLAY-PATTERNS-builders-guide.md:246` uses
+`(ypos => 129) and (ypos =< 179)`, which its own companion HOWTO §5 says fails
+in `pnut-ts` with "Expected end of line" -- copying that line reproduces the
+error the other document warns about. And `DOCs/REF-NO-COMMIT/` is **not
+gitignored** despite its name; it is currently untracked, so a `git add -A`
+would sweep it in.
+
 ---
 
 ## Recently closed
