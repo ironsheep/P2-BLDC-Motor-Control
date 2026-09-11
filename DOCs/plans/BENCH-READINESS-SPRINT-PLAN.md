@@ -115,6 +115,100 @@ changes session *pacing*, never harness *code*.
 
 ---
 
+## Sprint Revision — 2026-09-11
+
+**The Open Questions section above reached empty on 2026-09-10 and is preserved as written.
+It is no longer true.** The Tier 0 regression run and the analysis around it reopened
+questions and added work. This section records what changed; the sections it amends are
+marked inline below rather than rewritten.
+
+### Tier 0 regression — PASSED
+
+Evidence: [`DOCs/analyses/bench/2026-09-11/debug_260911-143911.log`](../analyses/bench/2026-09-11/debug_260911-143911.log)
+
+All five fixes committed in `aea4981` confirmed against their predictions:
+
+| Fix | Predicted | Measured |
+| --- | --- | --- |
+| **F** | 175 ticks, `agree,1` | `ddu_m` / `ddu_cm` / `ddu_mm` all 175, `agree,1` |
+| **A1** | `dead_gap,70` unchanged | `dead_gap,70` |
+| **A2/A3** | `detected_board,21`, "Rev A -USER FORCED" | exactly that |
+| **AE** | abort on P8_P23, success on P32_P47 | `! ERROR: validatePinBase() … overlaps`, then clean |
+| **PL-14** | no observable change | none |
+
+«#3484» and «#3476» are closed on this run.
+
+### Five new findings
+
+1. **AD+ is answered, and it is library-wide.** `start_return,0,raw_motor_cog,2` with the cog
+   demonstrably running. The chained `ok := motorCog := coginit(…) + 1` does not propagate;
+   `p2kbSpin2Operators` documents no assignment-as-expression in Spin2. The same idiom is at
+   **six** sites, so **every `start()` in this library returns 0 whether it succeeded or
+   failed.** `if motorCog == 0` also cannot detect failure — cog exhaustion returns
+   `$8000_000F`. *(`NEWCOG` was checked for the COGINIT pair-form trap and cleared.)*
+2. **`getBoardType()` is order-dependent and false-positives.** In one run the same board on
+   P16_P31 read Rev B (`pinSum 99`) then Rev A (`pinSum 0`) five milliseconds apart, an empty
+   P32_P47 read a confident "64010 Rev B" (`pinSum 104`), and a populated P0_P15 read "not
+   detected" (`pinSum 500`). `rSenseForBoard` is 150 vs 5 — **a 30× swing in current scaling**,
+   which would silently invalidate T1-5.
+3. **C-3 has a mechanism.** The distance-stop check runs in `taskPostionSense()` at 8 Hz, so
+   `stopAfterDistance()` is up to 125 ms late before the stop is commanded — ~51 ticks,
+   **~294 mm** at top speed. That cog is idle 99.99 % of the time.
+4. **`tickInMM_x10` truncates** — 5186/90 = 57, i.e. 5.7 mm/tick against a true 5.763, a
+   systematic **−1.1 %** in every distance conversion.
+5. **Hall integrity is unmeasured.** The `deltas` table returns 0 for illegal codes *and* for
+   skipped transitions, with no counter and no fault. A dead hall faults via lag; an
+   intermittently missed one silently under-counts `pos` — the basis of every distance API and
+   every published curve.
+
+### Decisions taken 2026-09-11
+
+| Decision | Outcome |
+| --- | --- |
+| Hall integrity counters | **Build them** — a robustness defect, not a bench fixture. No ask. |
+| §2A front end | **Build it** (option A over anchoring on the meter). Order parts first. |
+| 360 P/R encoder | **Unavailable** — incompatible with 6.5″ wheels. Hand-rotation ground truth replaces it. |
+| DOCO single-motor bench | **Deferred past the next release.** Dual 6.5″ only. |
+| Instrument cog shape | **One** cog sampling front end *and* driver status on one timebase. |
+| `TASKSPIN` for the instrument | **Rejected** — cooperative; an instrument must not yield. |
+| `TASKSPIN` for the shipped sense cog | **OPEN — Stephen's call.** Hands users back a cog; raises minimum compiler to v47. |
+
+### Amendments to the sections above
+
+- **§4 (Tier 1 harness)** — three new requirements before it is written: force `BRD_REV_B`
+  rather than trusting auto-detect; read the extended status block (14 → 16 longs) for the
+  integrity counters; drive the merged instrument cog. Settle the `TASKSPIN` question first —
+  if the sense cog becomes a task, the harness wants writing against that shape.
+- **§4 / T1-2 criterion is wrong as written.** It predicts `hallWindowSum == 0`. Because
+  `:1539` subtracts real values while `:1541` adds zero, the sum goes **negative** after the
+  window wraps (~1 s). Expect zero for one second, then increasingly negative.
+- **§3 (Tier 0)** — extended with T0-11 quiescent current-sense baseline, T0-12 hand-rotation
+  ground truth, T0-13 counter readback, T0-14 detection repeatability, T0-15 `start()` return
+  matrix.
+- **§10 (release)** — **the version number is no longer settled at 5.0.3.** Release A changes
+  behaviour users will feel: `AE` now rejects pin configurations that work today, `DDU_M` stops
+  10× further, distance shifts 1.1 %, and `rpm` starts returning real numbers where callers may
+  assume 0. A minor bump is arguable. **Open — Stephen's call.**
+- **Exit criteria** — `tools/build-check.sh` is now **41/41**, not 39/39, and the bench carries
+  its own peer config selected by `-D BENCH_CFG`.
+
+### Proposed re-baseline — NOT YET APPROVED
+
+A split into two releases has been proposed and is awaiting Stephen's read:
+
+- **Release A — stability.** The confirmed defect fixes, gated by an extended Tier 0. Does not
+  depend on the Tier 1 harness, the analyser, the reading sheet or the front end.
+- **Release B — characterization.** Front end, §2 DEBUG channels, Tier 1 harness, analyser,
+  reading sheet, session two, the C-4 curves, and `SENSE_LOOP_HZ` once measured.
+
+Under that split **§2 moves to Release B** — its entire justification is silencing library
+chatter during Tier 1's timed sections, which Tier 0 does not need.
+
+**Until that is approved the sequencing above stands unchanged.** The ten tasks created
+2026-09-11 carry `stability` / `characterization` tags so the split is mechanical when called.
+
+---
+
 ## 1. Spin2 conformance gate — `tools/check_style.sh`
 
 **Why, and why first.** `.claude/skill-conventions.md` declares `central:spin2-authoring-guide`
