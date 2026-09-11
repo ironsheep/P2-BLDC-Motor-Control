@@ -308,24 +308,42 @@ PRI testT0_6() | trappedResult
     trappedResult := \motor.stopAfterDistance(0, motor.DDU_IN)
     debug("T0-6,call,stopAfterDistance_0in,trapped_result,", sdec_(trappedResult))
 
-PRI testT0_7() | trappedA, trappedB
+PRI testT0_7() | trappedA, trappedB, trappedC
 ' AE: two separate isp_bldc_motor instances, testSetup() on deliberately
 ' overlapping pin groups -- PINS_P0_P15 and PINS_P8_P23 overlap on P8-P15, the
-' audit's own example. Neither call may fault; the point is that nothing
-' detects the overlap, not that anything breaks. No real board is wired to
-' either base, so this only ever toggles unused pins briefly while probing for
-' a board that is not there. Both testSetup() calls are \-trapped anyway, same
-' as every other testSetup()/start() call in this harness, since they still
-' reach confgurePowerLimits() (via init()), which can abort on an illegal
-' user.DRIVE_VOLTAGE / user.MOTOR_TYPE pairing.
+' audit's own example. AE is now FIXED (task #3484): validatePinBase() claims a
+' shared DAT-level registry of in-use pin ranges and ABORTS on overlap (a
+' deliberate choice -- two driver cogs sharing pins is a wiring hazard, not
+' something to merely warn about). So motorA's testSetup() is expected to
+' succeed and claim P0-P15, and motorB's is expected to ABORT (its own
+' "! ERROR: validatePinBase() ..." line appears right after this test's
+' "begin" tag) because P8-P23 overlaps what motorA already holds. No real
+' board is wired to either base, so this only ever toggles unused pins briefly
+' while probing for a board that is not there. Both testSetup() calls are
+' \-trapped anyway, same as every other testSetup()/start() call in this
+' harness, since they still reach confgurePowerLimits() (via init()), which
+' can also abort on an illegal user.DRIVE_VOLTAGE / user.MOTOR_TYPE pairing.
 '
-' @local trappedA - motorA.testSetup()'s trapped return value
-' @local trappedB - motorB.testSetup()'s trapped return value
+' @local trappedA - motorA.testSetup()'s trapped return value (expect success)
+' @local trappedB - motorB.testSetup()'s trapped return value (expect a
+'                    trapped abort -- the overlap AE now rejects)
+' @local trappedC - motorB retried on a NON-overlapping base (expect success)
 
     debug("T0-7,begin,left_base,P0_P15,right_base,P8_P23")
     trappedA := \motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
     trappedB := \motorB.testSetup(motorB.PINS_P8_P23, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
     debug("T0-7,end,harness_survived,TRUE,trapped_a,", sdec_(trappedA), ",trapped_b,", sdec_(trappedB))
+
+    ' AE's other half, and the one that matters to shipped code: two motors on
+    ' NON-overlapping ranges must STILL BOTH INITIALISE. AE is the only fix in
+    ' this batch able to break a working setup, and every two-wheel platform is
+    ' exactly this case -- without this check nothing in Tier 0 would notice if
+    ' the overlap test started rejecting legitimate configurations. motorA still
+    ' holds P0_P15 from above; P32_P47 neither overlaps it nor is held by the
+    ' main `motor` instance (which holds T0_MOTOR_BASE from T0-1 onward).
+    debug("T0-7,nonoverlap,begin,held_base,P0_P15,new_base,P32_P47")
+    trappedC := \motorB.testSetup(motorB.PINS_P32_P47, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
+    debug("T0-7,nonoverlap,end,trapped_c,", sdec_(trappedC), ",note,no_ERROR_line_above_means_both_motors_coexist")
 
 PRI testT0_8() | spacerIdx, spacerCogId, spacerCount, startResult, spacerId[MAX_SPACER_COGS]
 ' C, AD: occupy every other cog, then call the real start() (not testSetup())
@@ -373,7 +391,7 @@ PRI spacerLoop()
     repeat
         waitms(1000)
 
-PRI testT0_10() | startResult, pinAdcX, xNodeCounts
+PRI testT0_10() | startResult, rawMotorCog, pinAdcX, xNodeCounts
 ' C-6b: pin_adc_x_i (base+3) falls inside adc_pins, so the driver already
 ' samples it as a calibrated, frame-locked ADC every cycle -- it is simply
 ' never read. Start the REAL driver (rail must be on for this one test) so the
@@ -386,18 +404,23 @@ PRI testT0_10() | startResult, pinAdcX, xNodeCounts
 '                       start() reaches confgurePowerLimits() via init() and
 '                       can abort, so this call is \-trapped like every other
 '                       testSetup()/start() call in this harness)
+' @local rawMotorCog - AD+: testGetMotorCog()'s snapshot of the object's own motorCog,
+'                       printed beside startResult so tomorrow's run can tell whether
+'                       start()'s return or the chained assignment that sets motorCog is
+'                       where AD+'s unreliable value comes from
 ' @local pinAdcX - pinbase + 3, the X-node ADC pin
 ' @local xNodeCounts - RQPIN()'s lower 31 bits (bit 31 is the pin's C flag)
 
     debug("T0-10,begin,rail_must_be_on,TRUE")
     startResult := \motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    rawMotorCog := motor.testGetMotorCog()
 
     ' Do NOT gate the reading on start()'s return. The 2026-09-10 bench run
     ' had the object print "* Motor COG #1" -- a driver cog genuinely running
     ' -- on a call this harness saw return 0, so gating skipped the one
     ' measurement T0-10 exists to take. Report both numbers and let the
     ' analyst judge; a test's job is to report, not to decide.
-    debug("T0-10,start_return,", sdec_(startResult), ",note,see_Motor_COG_line_above_for_whether_a_cog_actually_started")
+    debug("T0-10,start_return,", sdec_(startResult), ",raw_motor_cog,", sdec_(rawMotorCog), ",note,see_Motor_COG_line_above_for_whether_a_cog_actually_started")
     waitms(50)                                              ' let the driver cog reach its running, calibrated state
     pinAdcX := T0_MOTOR_BASE + 3
     xNodeCounts := RQPIN(pinAdcX) & $7FFF_FFFF

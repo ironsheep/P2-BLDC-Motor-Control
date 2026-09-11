@@ -127,6 +127,8 @@ PUB stop()
         pinclear(pinbase+8 addpins 7)
         pinbase := VALUE_NOT_SET
 
+    releasePinBaseClaim()    ' AE: free this instance's pin-range claim, if any
+
 PUB testSetup(eMotorBasePin, eMotorVoltage, eDetectionMode) | legalBase
 '' TESTING USE: Specify motor control board connect location for this motor BUT DON'T start the driver
 ''
@@ -139,10 +141,84 @@ PUB testSetup(eMotorBasePin, eMotorVoltage, eDetectionMode) | legalBase
 
     init(eMotorBasePin, eMotorVoltage, eDetectionMode)
 
+DAT { pin-range allocation tracking (AE) }
+
+' One owner slot per legal PINS_* base. Holds @pinbase (a unique per-instance hub address) for
+' whichever isp_bldc_motor instance currently claims that 16-pin range, or 0 when free. DAT is
+' shared across every instance of this object (unlike VAR, which is per-instance), which is
+' exactly the shared registry overlap detection needs.
+    gOwnerP0P15     LONG    0
+    gOwnerP8P23     LONG    0
+    gOwnerP16P31    LONG    0
+    gOwnerP32P47    LONG    0
+    gOwnerP40P55    LONG    0
+
+PRI releasePinBaseClaim()
+' AE: free whichever slot this instance currently owns (matched by @pinbase, a stable
+' per-instance identity), so re-init or stop()/restart on the same or a different base never
+' self-conflicts and never leaks a stale claim.
+
+    if gOwnerP0P15 == @pinbase
+        gOwnerP0P15 := 0
+    if gOwnerP8P23 == @pinbase
+        gOwnerP8P23 := 0
+    if gOwnerP16P31 == @pinbase
+        gOwnerP16P31 := 0
+    if gOwnerP32P47 == @pinbase
+        gOwnerP32P47 := 0
+    if gOwnerP40P55 == @pinbase
+        gOwnerP40P55 := 0
+
+PRI claimPinBase(eMotorBasePin) : bClaimed
+' AE: claim {eMotorBasePin}'s 16-pin range for this instance, first releasing whatever range
+' this same instance previously held. Fails (does not claim) if the requested range overlaps a
+' range another instance already owns. The only overlapping legal-base pairs are the adjacent
+' ones 8 pins apart: (P0_P15, P8_P23), (P8_P23, P16_P31) and (P32_P47, P40_P55); PINS_NO_USE_P24_P39
+' is not a legal base (see validatePinBase()) and never enters this check.
+
+    ' Release first, so a re-init or a restart on the same base never conflicts with
+    ' this instance's own previous claim. Each case below must therefore also test its
+    ' OWN slot: after the release, a non-zero own-slot can only mean ANOTHER instance
+    ' holds it -- which is the identical-base collision, the most obvious one of all.
+    releasePinBaseClaim()
+    bClaimed := TRUE
+    case eMotorBasePin
+        PINS_P0_P15:
+            if gOwnerP0P15 <> 0 or gOwnerP8P23 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP0P15 := @pinbase
+        PINS_P8_P23:
+            if gOwnerP8P23 <> 0 or gOwnerP0P15 <> 0 or gOwnerP16P31 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP8P23 := @pinbase
+        PINS_P16_P31:
+            if gOwnerP16P31 <> 0 or gOwnerP8P23 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP16P31 := @pinbase
+        PINS_P32_P47:
+            if gOwnerP32P47 <> 0 or gOwnerP40P55 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP32P47 := @pinbase
+        PINS_P40_P55:
+            if gOwnerP40P55 <> 0 or gOwnerP32P47 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP40P55 := @pinbase
+
 PRI validatePinBase(eMotorBasePin) : legalBase
+' AE: an overlapping pin-group choice is a wiring conflict -- two driver cogs would be
+' commanding the shared pins -- so this ABORTS rather than warns; see the AE finding for why
+' this decision is deliberate and what it changes for existing configs.
 
   legalBase := VALUE_NOT_SET
   if lookdown(eMotorBasePin: PINS_P0_P15, PINS_P8_P23, PINS_P16_P31, PINS_P32_P47, PINS_P40_P55) <> 0
+    if not claimPinBase(eMotorBasePin)
+        debug("! ERROR: validatePinBase() pin base ", udec_long(eMotorBasePin), " overlaps a pin range already in use by another motor instance")
+        abort
     legalBase := eMotorBasePin
 
 PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInMS
@@ -200,10 +276,13 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     numerator   :=    3300 * adc_fram                   ' calculate the adc scaling based off the adc_fram count
 
     ' setup driver parameters based on clock rate
-    if eDetectedBoard == BRD_REV_B
-        gapInMS:= 52
-    else
-        gapInMS:= 260
+    ' A1 / PL-9: both 64010 manuals specify a 250 ns minimum dead-gap regardless of board
+    ' revision (MOSFET response time sets the floor, not driver speed), so there is no
+    ' per-revision value to select here. The removed conditional intended 52 ns for Rev B,
+    ' which would have been ~5x under spec; it never actually took that branch (see A2 --
+    ' eDetectedBoard's REV_A/REV_B values can't match a BRD_REV_A/BRD_REV_B comparison), so
+    ' every board has always gotten the compliant 260 ns. Deleted, not repaired.
+    gapInMS := 260
     dead_gap    := (ticks1us * gapInMS) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
     pwm_limit   := (frame_cnt / 2) - (dead_gap  / 2)    'PWM duty hard limit 1/2 freq of PWM
 
@@ -260,7 +339,12 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
         circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) * 10
         tickInMM_x10 := circInMM_x10 / hallTicsPerRotation
 
-    confgurePowerLimits(user.DRIVE_VOLTAGE)
+    ' PL-14: honour the caller's eMotorVoltage parameter instead of silently re-reading the
+    ' compile-time user.DRIVE_VOLTAGE. Behaviour-neutral today (every shipped caller already
+    ' passes user.DRIVE_VOLTAGE here), but it makes the parameter -- and the caller's own
+    ' validVoltageForChoice() check on it -- meaningful, and lets two motors run at different
+    ' voltages.
+    confgurePowerLimits(eMotorVoltage)
 
     rSenseForBoard := VALUE_NOT_SET
     if eDetectedBoard == REV_A
@@ -474,7 +558,10 @@ PUB stopAfterDistance(nDistance, eDistanceUnits)
         DDU_FT:
             motorStopHallTicks := round(distConv.fIn2mm(nDistance * 12) *. 10.0) / tickInMM_x10
         DDU_M:
-            motorStopHallTicks := (nDistance * 100 * 10) / tickInMM_x10
+            ' F: 1 m = 1000 mm, not 100 -- the prior "* 100" scaled DDU_M ten times short of
+            ' DDU_CM/DDU_MM for the same physical distance (measured: DDU_M -> 17 ticks vs.
+            ' the equivalent DDU_CM/DDU_MM -> 175 ticks each).
+            motorStopHallTicks := (nDistance * 1000 * 10) / tickInMM_x10
         other:
             debug("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
             abort
@@ -670,10 +757,15 @@ PUB getBoardType() : eBoardRev | pSenseCommon, pinSum
     ' returns one of REV_Unknown, REV_A, REV_B
     eBoardRev := REV_Unknown
     ' if user is overriding detection then use users' override value
+    ' A2: eUserDetectionMode holds BRD_REV_A/BRD_REV_B (getInternalDetectMode()'s internal
+    ' enum, 31/32), not REV_A/REV_B (21/22) -- comparing it against REV_A/REV_B here could
+    ' never match, so a forced choice silently fell through to auto-detect every time. That in
+    ' turn made A3's "-USER FORCED" string in boardIdString() describe the auto-detected value,
+    ' not the one the user actually asked for. Fixing the comparison fixes both.
      case eUserDetectionMode    ' setup by init()
-        REV_A:
+        BRD_REV_A:
             eBoardRev := REV_A
-        REV_B:
+        BRD_REV_B:
             eBoardRev := REV_B
         other:
             ' do we know the base pin of the board...??
@@ -945,6 +1037,16 @@ PUB testGetStopHallTicks() : stopTicks
 '' @returns stopTicks - hall ticks remaining until the commanded stop, 0 when none is pending
 
     stopTicks := motorStopHallTicks
+
+PUB testGetMotorCog() : cogValue
+'' TESTING USE: snapshot start()/startEx()'s raw motorCog value (AD+) -- (cogid + 1) on
+'' success, 0 if coginit() never ran or the object was never started. Exists so a caller can
+'' compare this against start()'s own return to help settle whether AD+'s unreliable return
+'' comes from start() itself or from the chained assignment that sets motorCog.
+''
+'' @returns cogValue - the object's raw motorCog value
+
+    cogValue := motorCog
 
 
 CON ' --- PRIVATE (Utility) Methods ---
