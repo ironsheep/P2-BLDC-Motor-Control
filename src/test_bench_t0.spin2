@@ -12,18 +12,19 @@
 ''
 '' =================================================================================================
 
-{ Rig: the dual 6.5" platform -- two Rev B boards, 18.5V pack. Builds under ANY
-  of the six config blocks in isp_bldc_motor_userconfig.spin2, single or dual:
-  MOTOR_TYPE, DRIVE_VOLTAGE and WHEEL_DIA_IN_INCH come from whichever block is
-  active (per project convention -- never copied locally), while the motor this
-  harness talks to is T0_MOTOR_BASE below, fixed rather than read from the user
-  config because a dual block defines no ONLY_MOTOR_BASE to read.
+{ Rig: the dual 6.5" platform -- two Rev B boards, 18.5V pack.
 
-  For the real bench, activate the dual 6.5"/18.5V block (LEFT = PINS_P0_P15,
-  RIGHT = PINS_P16_P31). That gives MOTR_6_5_INCH and a 6.5 inch wheel, so
-  T0-3 and T0-6 can convert distance to hall ticks -- under a block with
-  WHEEL_DIA_IN_INCH = 0.0 they correctly report the conversion as unavailable
-  instead, and finding F stays unsettled.
+  BUILD WITH -D BENCH_CFG. That selects isp_bldc_motor_userconfig_bench.spin2,
+  a peer config file stating the bench and nothing else, in place of
+  isp_bldc_motor_userconfig.spin2. Nobody has to activate a block, and the
+  file end users edit is neither read nor written by a bench run:
+
+      pnut-ts -l -d -D BENCH_CFG test_bench_t0.spin2
+
+  It still compiles without the flag -- build-check.sh does exactly that --
+  against whichever user block is active. Under a block with
+  WHEEL_DIA_IN_INCH = 0.0 the T0-3 and T0-6 distance conversions correctly
+  report themselves unavailable rather than returning a tick count.
 
   Every test below calls testSetup(), which runs the whole of init() -- board
   detection, constant derivation, power tables, unit conversion -- WITHOUT
@@ -390,14 +391,18 @@ PRI testT0_10() | startResult, pinAdcX, xNodeCounts
 
     debug("T0-10,begin,rail_must_be_on,TRUE")
     startResult := \motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
-    if startResult == 0
-        debug("T0-10,end,start_failed,TRUE")
-    else
-        waitms(50)                                              ' let the driver cog reach its running, calibrated state
-        pinAdcX := T0_MOTOR_BASE + 3
-        xNodeCounts := RQPIN(pinAdcX) & $7FFF_FFFF
-        debug("T0-10,end,pin,", udec_(pinAdcX), ",x_node_counts,", udec_(xNodeCounts))
-        motor.stop()
+
+    ' Do NOT gate the reading on start()'s return. The 2026-09-10 bench run
+    ' had the object print "* Motor COG #1" -- a driver cog genuinely running
+    ' -- on a call this harness saw return 0, so gating skipped the one
+    ' measurement T0-10 exists to take. Report both numbers and let the
+    ' analyst judge; a test's job is to report, not to decide.
+    debug("T0-10,start_return,", sdec_(startResult), ",note,see_Motor_COG_line_above_for_whether_a_cog_actually_started")
+    waitms(50)                                              ' let the driver cog reach its running, calibrated state
+    pinAdcX := T0_MOTOR_BASE + 3
+    xNodeCounts := RQPIN(pinAdcX) & $7FFF_FFFF
+    debug("T0-10,end,pin,", udec_(pinAdcX), ",x_node_counts,", udec_(xNodeCounts))
+    motor.stop()
 
 CON { license }
 

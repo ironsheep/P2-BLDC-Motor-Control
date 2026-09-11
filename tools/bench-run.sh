@@ -5,8 +5,8 @@
 # Stephen runs the underlying tools (pnut-ts, pnut-term-ts) by hand and wants
 # to be able to keep doing that: "when you hide them behind scripts i have no
 # idea what's going to run. then i can't help you figure out why." This
-# script exists ONLY because a tier run is a fixed sequence of three separate
-# tool invocations, and it does exactly those three steps and nothing else:
+# script exists ONLY because a tier run is a fixed sequence of two separate
+# tool invocations, and it does exactly those two steps and nothing else:
 #
 #   1. COMPILE  -- pnut-ts, with -D BENCH_CFG, src/ as the working directory.
 #                  BENCH_CFG selects isp_bldc_motor_userconfig_bench.spin2 --
@@ -18,9 +18,8 @@
 #   2. RUN      -- pnut-term-ts, batch mode, also with src/ as the working
 #                  directory (so its logs land in src/logs/ as a natural
 #                  consequence, not because this script moves them there).
-#   3. CURATE   -- copy the one log the run just produced to
-#                  DOCs/analyses/bench/<date>/<tier>.log (tracked; kept as
-#                  .log because .gitignore excludes *.txt).
+# It does NOT touch the logs. pnut-term-ts names them by timestamp and puts
+# them in src/logs/; that is already right and this script leaves it alone.
 #
 # Every external command this script runs is echoed verbatim, immediately
 # before it runs, prefixed "+ " -- so the transcript is something you can
@@ -161,7 +160,6 @@ fi
 # pnut-term-ts closes itself once test_bench_t0.spin2 prints its
 # DEBUG_END_SESSION marker (the tool's own documented default end-marker
 # phrase), instead of waiting on a keypress or a fixed timeout.
-LOG_CUTOFF=$(date +%s)
 run "$PNUT_TERM" -r "$BINARY" --console-mode --exit-on-end-session
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
@@ -169,44 +167,13 @@ if [ $STATUS -ne 0 ]; then
     exit 2
 fi
 
-# ---- curate the log -------------------------------------------------------------
-# Only accept a log file newer than LOG_CUTOFF (taken before the run started)
-# -- a stale log already in src/logs/ must never be curated as if it were
-# this run's evidence.
-if [ ! -d "logs" ]; then
-    echo "ERROR: no src/logs directory found after pnut-term-ts run" >&2
-    exit 2
-fi
-
-NEW_LOG=""
-for f in logs/*.log; do
-    [ -e "$f" ] || continue
-    MTIME=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)
-    if [ -n "$MTIME" ] && [ "$MTIME" -ge "$LOG_CUTOFF" ]; then
-        if [ -z "$NEW_LOG" ] || [ "$MTIME" -gt "$(stat -f %m "$NEW_LOG" 2>/dev/null || stat -c %Y "$NEW_LOG" 2>/dev/null)" ]; then
-            NEW_LOG="$f"
-        fi
-    fi
-done
-
-if [ -z "$NEW_LOG" ]; then
-    echo "bench-run.sh: no new log produced in src/logs/ since this run started -- nothing curated"
-    exit 2
-fi
-
-DATE=$(date +%Y-%m-%d)
-BENCH_LOGS_DIR="${PROJECT_ROOT}/DOCs/analyses/bench/${DATE}"
-if [ "$CLK_OVERRIDE" = "270000000" ]; then
-    CURATED_LOG="${BENCH_LOGS_DIR}/${TIER}.log"
-else
-    CURATED_LOG="${BENCH_LOGS_DIR}/${TIER}-${CLK_OVERRIDE}.log"
-fi
-
-mkdir -p "$BENCH_LOGS_DIR" || exit 2
-cp "$NEW_LOG" "$CURATED_LOG" || exit 2
-
-# ---- summary ----------------------------------------------------------------
-echo "bench-run.sh: binary:       src/$BINARY"
-echo "bench-run.sh: log curated:  $CURATED_LOG"
+# ---- done ---------------------------------------------------------------------
+# NO LOG CURATION. pnut-term-ts already writes src/logs/debug_<date>-<time>.log,
+# whose name carries when the run happened. Copying that to a name of this
+# script's choosing threw the timestamp away and silently overwrote the earlier
+# run of the same tier on the same day. The log stays where the tool put it,
+# under the name the tool gave it.
+echo "bench-run.sh: binary:  src/$BINARY"
+echo "bench-run.sh: log:     src/logs/ (newest debug_*.log -- named by the tool, left where it landed)"
 
 exit 0
