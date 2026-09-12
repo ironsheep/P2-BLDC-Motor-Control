@@ -62,12 +62,19 @@ run() {
 usage() {
     cat >&2 <<'EOF'
 Usage:  tools/bench-run.sh <tier> [clkfreq]
-  <tier>      -- tier name: "t0" (Tier 0, no motor, no motion, no risk)
+  <tier>      -- one of:
+                   t0             Tier 0 -- no motor, no motion, no risk
+                   detect         board-detection sweep, PASSIVE (no driver code in the image)
+                   detect-lib     as above + the library cross-check (still no driver cog)
+                   detect-phase2  adds the driver-cog poisoning probe  [MOTORS UNPLUGGED]
+                   char           motor characterisation, PLOT panel   [MOTORS CONNECTED]
+                   char-nopanel   as above, no PLOT window, keyboard only
   [clkfreq]   -- optional clock frequency in Hz (default: 270000000)
 
 Examples:
-  tools/bench-run.sh t0
-  tools/bench-run.sh t0 200000000
+  tools/bench-run.sh detect
+  tools/bench-run.sh detect-lib
+  tools/bench-run.sh char
 EOF
     exit 2
 }
@@ -79,11 +86,40 @@ fi
 TIER="$1"
 CLK_OVERRIDE="${2:-}"
 
-# Validate tier name.
+# Validate tier name, and map it to a top file plus its -D options.
+#
+# WHY THE OPTIONS LIVE HERE. pnut-ts SILENTLY IGNORES AN UNKNOWN -D -- exit 0,
+# binary written, no warning -- so a mistyped option does not fail, it produces
+# a plausible WRONG run against the wrong config or the wrong build variant.
+# Typing "-D BENCH_CFG -D DETECT_LIB" by hand at a bench, repeatedly, is exactly
+# where that typo comes from. Naming each combination once, here, removes the
+# whole failure class. Every command is still echoed verbatim before it runs, so
+# nothing is hidden -- you can always see, and replay, precisely what ran.
+#
+# EXTRA_DEFS is an array so the echoed line is the real argv, not a re-quoted
+# approximation of it.
+EXTRA_DEFS=()
+PRECONDITION=""
 case "$TIER" in
-    t0) BENCH_FILE="test_bench_t0.spin2"
-        ;;
-    *)  echo "ERROR: unknown tier '$TIER' (only 't0' is supported)" >&2
+    t0)             BENCH_FILE="test_bench_t0.spin2"
+                    ;;
+    detect)         BENCH_FILE="test_bench_detect.spin2"
+                    ;;
+    detect-lib)     BENCH_FILE="test_bench_detect.spin2"
+                    EXTRA_DEFS=(-D DETECT_LIB)
+                    ;;
+    detect-phase2)  BENCH_FILE="test_bench_detect.spin2"
+                    EXTRA_DEFS=(-D DETECT_PHASE2)
+                    PRECONDITION="THE MOTORS MUST BE PHYSICALLY UNPLUGGED -- this build starts a real driver cog"
+                    ;;
+    char)           BENCH_FILE="test_bench_char.spin2"
+                    PRECONDITION="MOTORS CONNECTED and the pack voltage recorded -- the wheels will turn"
+                    ;;
+    char-nopanel)   BENCH_FILE="test_bench_char.spin2"
+                    EXTRA_DEFS=(-D BENCH_NO_PANEL)
+                    PRECONDITION="MOTORS CONNECTED and the pack voltage recorded -- the wheels will turn"
+                    ;;
+    *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage
         ;;
 esac
@@ -99,6 +135,16 @@ fi
 if ! command -v "$PNUT_TERM" >/dev/null 2>&1; then
     echo "ERROR: '$PNUT_TERM' not found on PATH (override with PNUT_TERM_TS=/path/to/pnut-term-ts)" >&2
     exit 2
+fi
+
+if [ -n "$PRECONDITION" ]; then
+    echo ""
+    echo "  ****************************************************************"
+    echo "  ** $PRECONDITION"
+    echo "  ** PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY."
+    echo "  ** emergencyCutoff() self-cancels in ~250ms and is NOT a panic button."
+    echo "  ****************************************************************"
+    echo ""
 fi
 
 echo "bench-run.sh: cd $SRC_DIR"
@@ -141,10 +187,10 @@ fi
 # NOTE: capture $? from the command itself, NOT from inside `if ! cmd; then`
 # -- there $? is the status of the negation (always 0), so the error line
 # would report a failure with "exit 0" and hide the one number worth having.
-run "$PNUT" -l -d -D BENCH_CFG "$BENCH_FILE"
+run "$PNUT" -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
-    echo "ERROR: command failed (exit $STATUS): $PNUT -l -d -D BENCH_CFG $BENCH_FILE" >&2
+    echo "ERROR: command failed (exit $STATUS): $PNUT -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE" >&2
     exit 2
 fi
 

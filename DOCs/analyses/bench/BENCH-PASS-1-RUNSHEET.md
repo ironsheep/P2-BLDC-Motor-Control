@@ -12,125 +12,121 @@ collapse to a result line. Observations go to `BENCH-OBSERVATIONS.md`, never her
 
 ---
 
+## Two facts corrected 2026-09-11, before this sheet was first run
+
+**The Rev A boards are NOT one-shot.** The constraint is narrower and ordinary: **no motor
+movement on the A boards.** They can be re-run freely. An earlier draft of this sheet — and the
+sprint plan behind it — treated them as a single unrepeatable opportunity, which shaped an
+ordering argument that is no longer needed. If bench time runs short, **the A steps can simply be
+done another day.**
+
+**The rail on/off axis is UNREACHABLE on this rig, not merely unrun.** The P2 is powered from the
+pack: rail off means no P2, so a rail-off run cannot exist. Every step below is therefore a
+**rail-ON** run, and the 2×2×2 matrix is really 2×2×1.
+
+That is itself a finding for «#3500»: the hypothesis that Rev B detection depends on the
+INA180B2 output being actively driven **cannot be tested by removing rail power** on this
+hardware. It needs a different experiment — or a board modification — and that should be said
+plainly in the findings rather than left looking untested.
+
+---
+
 ## Before you start
 
 **Panic procedure, and it is the only one: PHYSICAL BATTERY DISCONNECT.**
 `emergencyCutoff()` self-cancels in about 250 ms (finding S-4) and is **not** a panic button.
 Nothing in this pass calls it.
 
+**The pack is connected for every step**, because the P2 needs it. The motor rail is therefore
+live throughout. What keeps the passive steps safe is not a dead rail — it is that those builds
+contain **no driver code in the image at all**, so no cog can be started to drive anything.
+
 **A log with no config banner is VOID.** `pnut-ts` silently ignores an unknown `-D` — exit 0,
-binary written, no warning — so a typo in `-D BENCH_CFG` falls through to the regular user config
-and the harness measures the wrong pin group while producing entirely plausible numbers. Every
-step below says what the banner must read. **If it does not read that, stop and re-run.**
+binary written, no warning — so a typo falls through to the regular user config and the harness
+measures the wrong pin group while producing entirely plausible numbers. Every step says what the
+banner must read. **If it does not read that, stop and re-run.**
 
-**`bench-run.sh` only knows the `t0` tier.** These two binaries are run by hand, two commands
-each, exactly as the script would have echoed them. That is deliberate — no new wrapper before a
-bench pass.
+**Run everything through `tools/bench-run.sh <tier>`.** It names the `-D` options once so they
+cannot be mistyped at the bench — which matters because `pnut-ts` ignores an unknown `-D`
+*silently*, turning a typo into a plausible wrong run rather than an error. It still echoes both
+commands verbatim with a `+ ` prefix before running them, so you can always see and replay exactly
+what ran. Tiers: `detect`, `detect-lib`, `detect-phase2`, `char`, `char-nopanel`, `t0`.
 
-**Logs stay where the tool puts them.** `pnut-term-ts` writes `src/logs/debug_<date>-<time>.log`.
-Curated **copies** go to `DOCs/analyses/bench/2026-09-11/` **keeping the `.log` extension** —
-`*.txt` is gitignored and a curated log saved as `.txt` silently vanishes from git.
-
----
-
-## Ordering, and why it is this order
-
-1. **B boards first, A boards second.** The A boards are one-shot. Running the binary on the B
-   rig first proves the instrument works before the single A opportunity is spent.
-2. **`-D DETECT_LIB` on B before A.** That build carries `agree` — the check that our replica of
-   `getBoardType()` matches the real library. Confirm the replica is faithful on repeatable
-   hardware *before* relying on it for the run that cannot be repeated.
-3. **All motor-unplugged work together**, so there is one unplug and one replug.
-4. **Characterisation last.** It is the longest step, it needs the pack connected and wheels
-   turning, and if anything goes wrong earlier the detection data is already captured.
+**Logs stay where the tool puts them:** `src/logs/debug_<date>-<time>.log`. Curated **copies** go
+to `DOCs/analyses/bench/2026-09-11/` **keeping the `.log` extension** — `*.txt` is gitignored and
+a curated log saved as `.txt` silently vanishes from git.
 
 ---
 
-## Step 1 — B boards, passive sweep, default build
+## Ordering
 
-Motors may stay connected. Nothing moves; this build contains no driver code at all.
+**One board swap, B rig complete first, A rig last.** B is the development rig and the only one
+that may turn a motor, so everything needing motion happens there; A is passive-only and, being
+repeatable, is the safe thing to leave until last or defer entirely.
+
+Within each rig: passive sweeps with motors connected (the hall bits in `pre` then corroborate
+that the rail is powered, for free), then unplug for the driver-cog probe.
+
+---
+
+## Step 1 — B boards, passive sweep, default build · motors connected
 
 ```bash
-cd src
-/Applications/pnut_ts/pnut-ts -l -d -D BENCH_CFG test_bench_detect.spin2
-pnut-term-ts -r test_bench_detect.bin --console-mode --exit-on-end-session
+tools/bench-run.sh detect
 ```
 
-- Banner must read `BD-CFG,cfg_id,BENCH` and `BD-BUILD,...,phase2_compiled,0,lib_linked,0`
-- Expect **384** `BD-REP` records — `grep -c '^BD-REP' <log>`
+- Banner: `BD-CFG,cfg_id,BENCH` and `BD-BUILD,...,phase2_compiled,0,lib_linked,0`
+- Expect **384** `BD-REP` — `grep -c '^BD-REP' <log>`
 - Expect `BD-CLK,...,match,1`
 
 **Result:** ______ · **Log:** ______________ · pass / fail
 
 ---
 
-## Step 2 — B boards, passive sweep + library cross-check
+## Step 2 — B boards, passive sweep + library cross-check · motors connected
 
 ```bash
-/Applications/pnut_ts/pnut-ts -l -d -D BENCH_CFG -D DETECT_LIB test_bench_detect.spin2
-pnut-term-ts -r test_bench_detect.bin --console-mode --exit-on-end-session
+tools/bench-run.sh detect-lib
 ```
 
-- Banner must read `lib_linked,1` and still `phase2_compiled,0` — **no driver cog starts**
+- Banner: `lib_linked,1`, still `phase2_compiled,0` — **no driver cog starts**
 - Still **384** `BD-REP`
-- **The line that matters:** every `BD-CELL` carries `agree,1` or `agree,0`.
-  `grep -o 'agree,[01N][A]*' <log> | sort | uniq -c`
-- **Any `agree,0` is a finding, not a failure to work around** — it means the replica and the
-  library disagree on the same board in the same second, and the whole `vrd` column is void.
-  Capture it and tell me; do not proceed to step 3.
+- **The line that matters:** `grep -o 'agree,[01A-Z]*' <log> | sort | uniq -c`
+- **Any `agree,0` is a finding, not something to work around** — the replica and the library
+  disagree about the same board in the same second, and the whole `vrd` column is void. Capture
+  it and tell me before going further.
 
 **Result:** ______ · **Log:** ______________ · pass / fail
 
 ---
 
-## Step 3 — ⚠ A BOARDS, ONE-SHOT, NO MOTION ⚠
+## Step 3 — ⚠ UNPLUG THE B MOTORS ⚠ the poisoning probe
 
-**Same binary as step 2, unchanged. Do not rebuild. Do not run anything else on the A boards.**
-
-Connect the A boards, then:
-
-```bash
-pnut-term-ts -r test_bench_detect.bin --console-mode --exit-on-end-session
-```
-
-- Banner must read `cfg_id,BENCH`, `lib_linked,1`, `phase2_compiled,0`
-- Expect **384** `BD-REP`, same as step 2 — the two logs are meant to diff line-for-line
-- Copy this log to `DOCs/analyses/bench/2026-09-11/` **immediately**, before anything else
-
-**Result:** ______ · **Log:** ______________ · pass / fail
-
----
-
-## Step 4 — ⚠ MOTORS PHYSICALLY UNPLUGGED ⚠ B boards, the poisoning probe
-
-**Precondition: the motors must be physically unplugged from the B boards.** With no motor
-connected there is no current path whatever the output stage does. This build starts a real
-driver cog at commanded zero.
+**Precondition: motors physically unplugged from the B boards.** With no motor connected there is
+no current path whatever the output stage does. This build starts a real driver cog at commanded
+zero.
 
 ```bash
-/Applications/pnut_ts/pnut-ts -l -d -D BENCH_CFG -D DETECT_PHASE2 test_bench_detect.spin2
-pnut-term-ts -r test_bench_detect.bin --console-mode --exit-on-end-session
+tools/bench-run.sh detect-phase2
 ```
 
-- Banner must read `phase2_compiled,1` **and** `BD-GATE,mark,build,answer,COMPILED` — those two
-  carry the same fact from two places and must agree
+- Banner: `phase2_compiled,1` **and** `BD-GATE,mark,build,answer,COMPILED` — the same fact from
+  two places; if they disagree the run is void
 - Expect **1168** `BD-REP`
-- This is the step that separates *"the threshold is wrong"* from *"`stop()` clears only the top
-  8 pins and poisons the next read"* — the two want opposite fixes
+- This separates *"the threshold is wrong"* from *"`stop()` clears only the top 8 pins and poisons
+  the next read"* — the two want opposite fixes
 
 **Result:** ______ · **Log:** ______________ · pass / fail
 
 ---
 
-## Step 5 — B boards, characterisation run
+## Step 4 — B boards, characterisation run · MOTORS RECONNECTED
 
-**Reconnect the motors. Pack connected.** Say the pack voltage out loud and write it at the top
-of your sheet — without it the S-3 ratio cannot be computed afterward and the run is worth much
-less.
+**Say the pack voltage and write it at the top of your sheet.** Without it the S-3 ratio cannot
+be computed afterward and the run is worth much less.
 
 ```bash
-/Applications/pnut_ts/pnut-ts -l -d -D BENCH_CFG test_bench_char.spin2
-pnut-term-ts -r test_bench_char.bin --console-mode --exit-on-end-session
+tools/bench-run.sh char          # or: char-nopanel, if the PLOT window misbehaves
 ```
 
 A **PLOT window** opens. At each hold: read the meter, write the row, then click **GO AHEAD** —
@@ -138,13 +134,9 @@ or press **G** with the window focused. The button is inert until the 25-second 
 elapsed from steady state; the counter shows it. An early click flashes the counter white and is
 logged, not obeyed.
 
-**Nine holds are compiled in** (`HOLD_LAST = HOLD_R_REV_HALF`) — quiescent zero, four at quarter
-speed, four at half speed. That is roughly 4 minutes of dwell alone plus your reading time. **If
-you want the short version**, change `HOLD_LAST` to `HOLD_R_REV_QTR` in `src/test_bench_char.spin2`
-and rebuild — five holds, the essential set. Your call on bench time; the half-speed rung only
-confirms that current scales with load.
-
-### Reading sheet
+**Nine holds are compiled in** (`HOLD_LAST = HOLD_R_REV_HALF`). **For the short version** — five
+holds, the essential set — change `HOLD_LAST` to `HOLD_R_REV_QTR` and rebuild. Your call on bench
+time; the half-speed rung only confirms that current scales with load.
 
 | # | Hold | Amps | Notes |
 |---|---|---|---|
@@ -162,37 +154,64 @@ confirms that current scales with load.
 
 **Result:** ______ · **Log:** ______________ · pass / fail
 
----
-
-## Step 6 — the three meter questions
-
-While the motors are turning, these cost no extra setup:
+### While the motors are turning — three meter questions
 
 1. Does **Ah/Wh** reset with the peaks, or separately? ______
-2. What is the **quiescent zero** — V, A, W with the rail on and motors stopped? ______
+2. **Quiescent zero** — V, A, W with the rail on and motors stopped? ______
 3. **Does Ap LATCH after the current drops, or decay?** ______
 
 Question 3 can change a design decision: if Ap decays, T1-7's Ap-for-fault-current technique
-collapses and that measurement depends on the section 2A front end instead. Say so rather than
-working around it.
+collapses and that measurement depends on the section 2A front end instead.
 
-Already settled, do not re-derive: the meter cycles **five** screens (Ah, Wh, Ap, Vm, Wp) at ~4 s
-each, ~20 s per rotation; A/V/W are not in that cycle. Peaks must be **read before cycling**.
+Settled, do not re-derive: the meter cycles **five** screens (Ah, Wh, Ap, Vm, Wp) at ~4 s each,
+~20 s per rotation; A/V/W are not in that cycle. Peaks must be **read before cycling**.
+
+---
+
+## Step 5 — swap to the A boards · passive sweep · NO MOTOR MOVEMENT
+
+```bash
+tools/bench-run.sh detect-lib
+```
+
+Same tier as step 2, so the same binary is rebuilt from the same source — that is what makes the
+two logs diffable.
+
+- Banner: `cfg_id,BENCH`, `lib_linked,1`, `phase2_compiled,0`
+- Expect **384** `BD-REP` — this log is meant to diff line-for-line against step 2's
+
+**Result:** ______ · **Log:** ______________ · pass / fail
+
+---
+
+## Step 6 — ⚠ UNPLUG THE A MOTORS ⚠ poisoning probe on Rev A
+
+Now worth doing, because the A boards are repeatable. It gives the A/B diff a second dimension
+rather than one.
+
+```bash
+tools/bench-run.sh detect-phase2
+```
+
+- Banner: `phase2_compiled,1`, `BD-GATE,...,COMPILED`; expect **1168** `BD-REP`
+- Diffs against step 3
+
+**Result:** ______ · **Log:** ______________ · pass / fail
 
 ---
 
 ## Hard stops — stop the step and hand back
 
-Per `dual-agent-handoff` §4. Any of these stops the binary it belongs to; steps that do not
-depend on it stay runnable, and you cross back when nothing runnable remains.
+Per `dual-agent-handoff` §4. Any of these stops the binary it belongs to; steps that do not depend
+on it stay runnable, and you cross back when nothing runnable remains.
 
-- **No config banner, or `cfg_id` ≠ `BENCH`, or `BD-CLK,match,0`** — the run is void, not suspect
-- **Any `agree,0`** in step 2 or 3 — the replica disagrees with the library
-- **`BD-GATE` and `BD-BUILD,phase2_compiled` disagreeing** — two records of one fact, drifted
-- **A `BD-REP` count that is not 384 / 1168** — the run was truncated
-- **A driver fault during step 5** — the hold ends itself with `result,FAULT`; the reading is void
+- **No config banner, `cfg_id` ≠ `BENCH`, or `BD-CLK,match,0`** — void, not suspect
+- **Any `agree,0`** — the replica disagrees with the library
+- **`BD-GATE` and `phase2_compiled` disagreeing** — two records of one fact, drifted
+- **A `BD-REP` count that is not 384 / 1168** — truncated run
+- **A driver fault during step 4** — the hold ends itself with `result,FAULT`; that reading is void
 - **Anything that would need a source edit to proceed** — hand back; I turn it into a build option
-- **Anything irreversible on the A boards** — they are one-shot and cannot be recaptured
+- **Any motor movement on the A boards** — the one hard constraint there
 
 ---
 
@@ -210,21 +229,6 @@ answer.
 6. Is there a forward-versus-reverse asymmetry at matched commanded rate?
 7. Is the current channel alive and load-responsive at all?
 
----
-
-## ⛔ One thing I need from you before step 1, because it changes this sheet
-
-The sweep design has a **rail on / rail off** axis — the idea being that on Rev B the sense node
-is the INA180B2 *output*, and a powered INA180 actively drives it, so there may be no capacitor
-discharge to measure at all. That would mean detection depends on whether the board's rail is
-powered, which `getBoardType()` neither knows nor checks.
-
-**I cannot tell from the repo whether a rail-off run is even possible.** Two of your own notes
-disagree: the doctrine overlay says the P2 Edge is USB-powered and takes a RAM download any time,
-while the meter notes say the P2 does not survive a pack disconnect because it is powered from
-the pack. If the second is right for this rig, "rail off" means the P2 is off and the axis cannot
-be run at all — in which case every step above is a rail-ON run and should be labelled as such.
-
-The sheet above assumes **rail ON throughout** and does not attempt the axis. Tell me which it
-is and I will either add the rail-off steps or write the axis off as unreachable on this rig and
-say so in the findings.
+**Not answerable by this pass, and it is worth stating so it is not silently assumed:** whether
+Rev B detection depends on the INA180B2 being powered. Rail-off is unreachable here — no pack, no
+P2. That question needs a different experiment.
