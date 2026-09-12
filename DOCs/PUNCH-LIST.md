@@ -425,6 +425,50 @@ sprint's standing rule exists to prevent. Do it as part of «#3508», not before
 ⚠ Until then the two copies must not drift: the grouping behaviour is what makes
 `sum`/`dwell_s` and every other numeric field parseable by the same analyser.
 
+### PL-18 -- two motor instances share one DAT region, so `init()` writes one driver image
+
+**Found 2026-09-11 while checking why two wheels reported identical tick counts.**
+
+`p2kbSpin2ObjectImageDedup`: *"DAT is shared per compiled image; VAR is per instance."*
+pnut-ts de-duplicates object images by compiled-image content, so two `OBJ` declarations
+of the same file **with no overrides** resolve to ONE image and therefore ONE DAT region.
+
+Measured on `test_bench_spin.spin2`, which declares `wheelL` and `wheelR` with no
+overrides -- from the `-m` map:
+
+```
+WHEELL : isp_bldc_motor (6911 bytes)     GOWNERP0P15  $00308     DRIVER  HUB $00188
+WHEELR : isp_bldc_motor (6911 bytes)     GOWNERP0P15  $00308     DRIVER  HUB $00188
+```
+
+Same DAT symbol address, same driver hub address, both instances.
+
+**Mostly this is fine, and one part of it is deliberate.** The `gOwner*` pin-range registry
+at `isp_bldc_motor.spin2:144` is DAT *on purpose* -- its comment says so, and shared is
+exactly what overlap detection needs. The Spin2/PASM2 status block (`drive_u` .. `drv_state`,
+including `pos`) is in `VAR`, so per-wheel position and telemetry are correctly per-instance.
+`coginit` snapshots the image into cog RAM at launch, so sharing the code is harmless.
+
+**The latent hazard is `init()`.** It copies the selected motor's `deltas*` / `hltbAngles*`
+tables **into the shared driver image** before starting the cog. With two instances of the
+same motor type -- every current configuration -- both write identical bytes and nothing is
+wrong. **With two instances of DIFFERENT motor types, the second `init()` overwrites the
+first's tables in the shared image**, and whether the first cog is affected depends only on
+whether it has already latched its copy. That is an ordering-dependent corruption with no
+diagnostic.
+
+Nothing in the library prevents or detects the mixed-type case, and `ADDING_MOTOR.md` does
+not mention it.
+
+**Options, if it is ever wanted:** fork the image per instance by seeding a DAT long from an
+overridable CON (the documented mechanism), or assert at `init()` that a second instance's
+motor type matches the first's and abort if not. The second is cheap and turns silent
+corruption into a refusal.
+
+⚠ Not a defect in any shipped configuration today -- both wheels are always the same motor.
+Recorded because the mechanism is invisible at the `OBJ` line and the failure would look
+like flaky hardware.
+
 ---
 
 ## Recently closed
