@@ -15,7 +15,7 @@ The pack is connected for every step; the P2 is powered from it.
 | 1 | B · `detect` | ✅ done — 21:00 |
 | 2 | B · `detect-lib` | ✅ done — 21:01 |
 | 3 | B · `detect-phase2` · motors unplugged | ✅ done — 21:02 |
-| 4 | B · `char` | ❌ **blocked** — PLOT panel was blank. Defect found and being fixed; do not re-run yet. |
+| 4 | B · `char` | 🔁 **re-run** — panel defect fixed. Ready. |
 | 5 | A · `detect-lib` | ⬜ not run |
 | 6 | A · `detect-phase2` · motors unplugged | ⬜ not run |
 
@@ -38,8 +38,6 @@ tools/bench-run.sh detect-phase2
 ```
 
 ### Step 4 (re-run) — B boards · MOTORS CONNECTED · wheels will turn
-
-**Wait for me** — the panel defect is not fixed yet. When it is:
 
 ```bash
 tools/bench-run.sh char
