@@ -7,10 +7,31 @@ Run the commands. Do the physical steps. Write down what the meter says.
 
 ---
 
+## Step 0 — WIRING CHECK, do this first
+
+The 21:41 run showed the **left wheel never turned** in either direction (tick_rate 0, then
+faulted) while the right one did. Settle that before spending the pass on holds.
+
+**Both wheels turn at 50%. Lift or support the platform.**
+
+```bash
+tools/bench-run.sh spin
+```
+
+Forward 50% -> down -> reverse 50% -> down, about 11 seconds. It prints a plain line per wheel
+per phase — `MOVED`, `DID NOT MOVE`, or `FAULTED`, with the tick delta. Faults do not stop it;
+every phase is attempted so you get the whole picture in one run.
+
+Then fix whatever it points at and re-run it until both wheels read `MOVED` in both directions.
+Steps 4–6 are worth nothing until they do.
+
+---
+
 ## Status
 
 | | step | state |
 |---|---|---|
+| 0 | **wiring check** · `spin` | 🔴 **do first** |
 | 1 | B · `detect` | ✅ 21:00 |
 | 2 | B · `detect-lib` | ✅ 21:01 |
 | 3 | B · `detect-phase2` · motors unplugged | ✅ 21:02 |

@@ -64,6 +64,7 @@ usage() {
 Usage:  tools/bench-run.sh <tier> [clkfreq]
   <tier>      -- one of:
                    t0             Tier 0 -- no motor, no motion, no risk
+                   spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    detect         board-detection sweep, PASSIVE (no driver code in the image)
                    detect-lib     as above + the library cross-check (still no driver cog)
                    detect-phase2  adds the driver-cog poisoning probe  [MOTORS UNPLUGGED]
@@ -102,6 +103,9 @@ EXTRA_DEFS=()
 PRECONDITION=""
 case "$TIER" in
     t0)             BENCH_FILE="test_bench_t0.spin2"
+                    ;;
+    spin)           BENCH_FILE="test_bench_spin.spin2"
+                    PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"
                     ;;
     detect)         BENCH_FILE="test_bench_detect.spin2"
                     ;;

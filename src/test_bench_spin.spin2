@@ -1,0 +1,219 @@
+'' =================================================================================================
+''
+''   File....... test_bench_spin.spin2
+''   Purpose.... Wiring sanity check -- both wheels forward at half power, down, both reverse at
+''               half power, down. Reports per wheel whether it actually turned, so a dead wheel
+''               is attributable before any measurement run is attempted
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 11 Sep 2026
+''   Updated.... 11 Sep 2026
+''
+'' =================================================================================================
+
+'' -------------------------------------------------------------------------------------------
+''  WHY THIS EXISTS
+''
+''  The 2026-09-11 characterisation attempt showed the LEFT wheel reporting tick_rate 0 in both
+''  directions and then faulting, while the RIGHT wheel turned (tick_rate 96). That is a wiring
+''  question, not a measurement question, and it must be settled before bench time is spent on
+''  holds and meter reads.
+''
+''  This binary answers exactly one question, per wheel, per direction: DID IT TURN. It reads
+''  hall ticks before and after each phase and prints the delta. A wheel that does not move
+''  reports delta 0 and says so in words.
+''
+''  !! THE WHEELS TURN. Both, together, at half power. Lift or support the platform.
+''  !! PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY. emergencyCutoff() self-cancels in
+''    about 250 ms (finding S-4) and is NOT a panic button; this file does not call it.
+''
+''  Faults do not stop the run. Each wheel is cleared and the next phase attempted, because
+''  "left faults in both directions and right is clean" is more informative than one fault.
+'' -------------------------------------------------------------------------------------------
+
+CON { timing }
+
+    _clkfreq = CLK_FREQ
+
+    CLK_FREQ        = 270_000_000                           ' every top in this tree runs at 270 MHz
+    MS_PER_SEC      = 1_000
+
+CON { test shape }
+
+    DRIVE_POWER     = 50                                    ' half power, both wheels, both directions
+    SPIN_MS         = 3_000                                 ' time held at power before ticks are read
+    COAST_MS        = 2_000                                 ' time allowed to come back to rest
+    READY_TIMEOUT_MS = 3_000                                ' bounded wait for a driver cog to report ready
+    SETTLE_MS       = 250                                   ' pause after a command before sampling
+
+CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
+
+' Hardcoded rather than read from user.*, so this file compiles under every config block --
+' the same rationale test_bench_t0.spin2 documents for T0_MOTOR_BASE.
+    LEFT_TEST_BASE  = wheelL.PINS_P0_P15
+    RIGHT_TEST_BASE = wheelL.PINS_P16_P31
+    TEST_VOLTAGE    = wheelL.PWR_18p5V
+    TEST_DET_MODE   = wheelL.BRD_REV_B                      ' forced: detection is still unreliable
+
+OBJ { objects under test }
+
+    wheelL  : "isp_bldc_motor"
+    wheelR  : "isp_bldc_motor"
+
+PUB main()
+'' Run the four phases and report. Entry point.
+''
+
+    debug("* test_bench_spin -- WIRING CHECK. BOTH WHEELS WILL TURN AT ", udec_(DRIVE_POWER), "% POWER.")
+    debug("* LIFT OR SUPPORT THE PLATFORM. Panic = PHYSICAL BATTERY DISCONNECT.")
+    debug("* left base=", udec_(LEFT_TEST_BASE), " right base=", udec_(RIGHT_TEST_BASE), " forced Rev B")
+
+    wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+    wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+
+    reportReady()
+
+    runPhase(@"FWD", DRIVE_POWER)
+    runPhase(@"FWD-DOWN", 0)
+    runPhase(@"REV", -DRIVE_POWER)
+    runPhase(@"REV-DOWN", 0)
+
+    wheelL.stop()
+    wheelR.stop()
+
+    debug("* WIRING CHECK COMPLETE -- read the SP-PHASE lines above.")
+    debug("* A wheel whose ticks did not change in a powered phase did not turn.")
+    debug(`DEBUG_END_SESSION)
+
+PRI reportReady() | okL, okR
+' Poll both driver cogs for readiness and record the pair on one line.
+'
+' @local okL - non-zero when the left driver cog reported ready
+' @local okR - non-zero when the right driver cog reported ready
+
+    okL := waitReady(@"LEFT")
+    okR := waitReady(@"RIGHT")
+    debug("SP-READY,left,", udec_(okL <> 0), ",right,", udec_(okR <> 0))
+
+PRI runPhase(pPhaseName, power) | ltBefore, rtBefore, ltAfter, rtAfter, holdMs
+' Command both wheels to {power}, hold, then report each wheel's tick movement.
+'
+' @param pPhaseName - printable phase name, used as the SP-PHASE tag value
+' @param power - [-100..100] commanded to BOTH wheels; 0 is the spin-down phase
+'
+' @local ltBefore - left hall ticks sampled before the phase
+' @local rtBefore - right hall ticks sampled before the phase
+' @local ltAfter - left hall ticks sampled after the phase
+' @local rtAfter - right hall ticks sampled after the phase
+' @local holdMs - how long this phase is held, longer when powered than when coasting
+
+    ltBefore := wheelL.getRawHallTicks()
+    rtBefore := wheelR.getRawHallTicks()
+
+    wheelL.driveAtPower(power)
+    wheelR.driveAtPower(power)
+
+    holdMs := (power == 0) ? COAST_MS : SPIN_MS
+    waitms(holdMs)
+
+    ltAfter := wheelL.getRawHallTicks()
+    rtAfter := wheelR.getRawHallTicks()
+
+    reportWheel(pPhaseName, @"LEFT", power, ltAfter - ltBefore, wheelL.isFaultSignal())
+    reportWheel(pPhaseName, @"RIGHT", power, rtAfter - rtBefore, wheelR.isFaultSignal())
+
+    clearIfFaulted()
+    waitms(SETTLE_MS)
+
+PRI reportWheel(pPhaseName, pWheelName, power, tickDelta, bFaulted) | pVerdict
+' Emit one tagged line and one plain-language line for a single wheel in a single phase.
+'
+' @param pPhaseName - printable phase name
+' @param pWheelName - "LEFT" or "RIGHT"
+' @param power - the power commanded during this phase
+' @param tickDelta - hall ticks accumulated during the phase, signed
+' @param bFaulted - TRUE when the driver is reporting a fault at the end of the phase
+'
+' @local pVerdict - pointer to the plain-language verdict for this wheel and phase
+
+    if bFaulted
+        pVerdict := @sVerdictFault
+    elseif power == 0
+        pVerdict := @sVerdictCoast
+    elseif tickDelta == 0
+        pVerdict := @sVerdictDead
+    else
+        pVerdict := @sVerdictMoved
+
+    debug("SP-PHASE,phase,", zstr_(pPhaseName), ",wheel,", zstr_(pWheelName), ",power,", sdec_(power), ",ticks,", sdec_(tickDelta), ",fault,", udec_(bFaulted <> 0), ",verdict,", zstr_(pVerdict))
+    debug("   ", zstr_(pWheelName), " ", zstr_(pPhaseName), ": ", zstr_(pVerdict), "  (ticks ", sdec_(tickDelta), ")")
+
+PRI clearIfFaulted()
+' Clear a fault on either wheel so the next phase still runs. A dead wheel that faults in
+' every phase is a more useful report than a run that stops at the first one.
+
+    if wheelL.isFaultSignal()
+        wheelL.testResetFault()
+    if wheelR.isFaultSignal()
+        wheelR.testResetFault()
+
+PRI waitReady(pWheelName) : bReady | waitedMs
+' Wait, bounded, for a driver cog to report ready. Selected by name rather than by a passed
+' reference, because Spin2 objects are not addressable -- @wheelL is not a legal expression.
+'
+' @param pWheelName - "LEFT" or "RIGHT", selects which object to poll
+' @returns bReady - TRUE when the cog reported ready before the timeout
+'
+' @local waitedMs - milliseconds waited so far
+
+    waitedMs := 0
+    repeat
+        if byte[pWheelName] == "L"
+            bReady := wheelL.isReady()
+        else
+            bReady := wheelR.isReady()
+        if bReady
+            quit
+        waitms(SETTLE_MS)
+        waitedMs += SETTLE_MS
+    until waitedMs >= READY_TIMEOUT_MS
+
+    if not bReady
+        debug("! ", zstr_(pWheelName), " driver cog never reported ready")
+
+DAT { verdict strings }
+
+sVerdictMoved   BYTE    "MOVED", 0
+sVerdictDead    BYTE    "DID NOT MOVE", 0
+sVerdictCoast   BYTE    "stopped", 0
+sVerdictFault   BYTE    "FAULTED", 0
+
+CON { license }
+
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  software and associated documentation files (the "Software"), to deal in the Software
+  without restriction, including without limitation the rights to use, copy, modify, merge,
+  publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+  to whom the Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ -------------------------------------------------------------------------------------------------
+}}
