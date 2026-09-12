@@ -156,7 +156,15 @@ CON { measurement parameters }
 ' The calibration pin is held DRIVEN HIGH so the poll loop can never exit early. P44 is
 ' PINS_P40_P55's sense pin, inside the commented-out LA header range -- nothing is
 ' connected there, and every sweep already drives it high for a millisecond anyway.
-    CAL_PIN = GRP_P40_P55 + SENSE_PIN_OFFSET
+    ' The calibration pin is DRIVEN HIGH for CAL_ITER iterations, so it must be a pin that is
+    ' electrically dead on this rig. It was GRP_P40_P55 + SENSE_PIN_OFFSET = P44 -- which, with
+    ' the boards where they actually are (RIGHT P16_P31, LEFT P32_P47, measured 2026-09-11), is
+    ' 32 + 12 = the LEFT board's pin_pwm_w_l gate-driver input. Driving a gate input high for
+    ' the whole calibration is not something to do to a populated board.
+    ' P15 is outside both board ranges on this rig and inside the empty PINS_P0_P15 group.
+    ' isCalPinSafe() re-checks that at runtime against the DECLARED bases and refuses to
+    ' calibrate if the assumption ever stops holding.
+    CAL_PIN = 15
 
     CAL_IDX_PRE_PHASE1  = 1
     CAL_IDX_POST_PHASE1 = 2
@@ -591,11 +599,11 @@ PRI emitNoteRecords()
 #endif
     emitNote(@"the gate on phase 2 is compile-time only -- there is no keypress and no runtime branch anywhere in this binary")
     emitNote(@"BD-GATE answer and BD-BUILD phase2_compiled carry the same fact from two places and MUST agree; a disagreement voids the run")
-    emitNote(@"sweeping a group briefly drives its base+4 -- the tail groups' sense pins are P12 and P28 which are the LEFT and RIGHT boards' W low-side gate inputs (base+12 = pin_pwm_w_l)")
+    emitNote(@"sweeping a group briefly drives its base+4; with the boards at RIGHT P16_P31 and LEFT P32_P47 the gate-adjacent sense pins are P28 (right board base+12) and P44 (left board base+12)")
     emitNote(@"all six groups may be swept RAIL-OFF: P2 pins are inputs at reset so all six gate inputs already sit floating whenever no driver cog runs")
     emitNote(@"and rail-off means no bus voltage and therefore no shoot-through path whatever the gate driver does with a floating complementary input")
     emitNote(@"a RAIL-ON run should use -D DETECT_NO_TAIL which drops the two gate-adjacent tail groups")
-    emitNote(@"P44 is PINS_P40_P55's sense pin and is also the calibration pin; it is inside the commented-out LA header range and nothing is connected there")
+    emitNote(@"P44 is PINS_P40_P55's sense pin and IS the LEFT board's W low-side gate input -- it is NOT unconnected; the calibration pin is P15, which is outside both board ranges")
     emitNote(@"VOID RULE: a log with no BD-BANNER or with cfg_id not equal to BENCH or with BD-CLK match 0 is VOID -- not suspect but void")
     emitNote(@"VOID RULE: any BD-ENUM match 0 voids the run -- the local pin-group table has drifted from the library's")
     emitNote(@"SUM RULE: sum 0 is real data on a Rev A board and is also what a loop that never executed produces")
@@ -861,6 +869,16 @@ PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict
     lineTextField(@"agree", agreeToken(libVerdict, modalVrd))
     lineEmit()
 
+PRI isCalPinSafe() : bSafe
+' TRUE when CAL_PIN lies outside BOTH declared motor pin ranges, so driving it high cannot
+' reach a gate-driver input. Checked against the declared bases at runtime rather than
+' assumed, because the previous CAL_PIN was chosen under a wrong belief about where the
+' boards were and silently became a gate pin when that was corrected.
+'
+' @returns bSafe - TRUE when the calibration pin is electrically dead on this configuration
+
+    bSafe := not (pinIsInsideGroup(CAL_PIN, user.LEFT_MOTOR_BASE) or pinIsInsideGroup(CAL_PIN, user.RIGHT_MOTOR_BASE))
+
 PRI emitCalibration(calIdx) | ctBefore, ctAfter, iterCount, lastLevel, elapsedTix
 ' Run the first-low poll loop's exact shape against a pin held DRIVEN HIGH so it can never
 ' exit early, and report ticks per iteration. That number is the resolution error bar on
@@ -876,6 +894,17 @@ PRI emitCalibration(calIdx) | ctBefore, ctAfter, iterCount, lastLevel, elapsedTi
 ' @local iterCount - calibration loop iterations actually executed
 ' @local lastLevel - the most recent pinread result in the calibration loop
 ' @local elapsedTix - ctAfter - ctBefore
+
+    if not isCalPinSafe()
+        lineReset()
+        lineAddText(@"BD-CAL")
+        lineField(@"idx", calIdx)
+        lineField(@"iter", 0)
+        lineTextField(@"tix", @sTokNoMeas)
+        lineTextField(@"tix_per_iter", @sTokNoMeas)
+        lineEmit()
+        emitNote(@"CAL SKIPPED -- CAL_PIN falls inside a declared board's pin range and would drive a gate input")
+        return
 
     pinhigh(CAL_PIN)
     ctBefore := getct()
