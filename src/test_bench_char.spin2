@@ -133,6 +133,8 @@ CON { dwell / steady-state timing }
     PANEL_REDRAW_MS         = 200                            ' throttled panel redraw cadence
     SENSE_MEAN_UPDATE_MS    = 1_000                          ' on-screen sense mV update cadence
     IDLE_SHOW_MS            = 4_000                          ' completion screen dwell before the session ends
+    PREFLIGHT_MS            = 700                            ' nudge duration per wheel in the pre-flight check
+    PREFLIGHT_INCRE         = 18_375_000                     ' half of quarter speed -- enough to turn, gentle
     MAX_CLICK_LOG           = 5                              ' BC-CLICK is "first clicks", not every click
 
 CON ' ---- Hold Sequence ----
@@ -319,6 +321,12 @@ PUB main()
 
     setupWindow()
     emitBanner()
+    if not preflightWheels()
+        debug("! ABORTING -- see BC-PREFLIGHT above. Fix the wiring or the declared pin group,")
+        debug("!   then re-run. Running nine holds against a wheel that cannot turn wastes the session.")
+        shutdownMotors()
+        debug("DEBUG_END_SESSION")
+        return
     runAllHolds()
     shutdownMotors()
 
@@ -398,6 +406,36 @@ PRI emitBanner()
     lineEmit()
 
     debug("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+
+PRI preflightWheels() : bOk | side, before, after, moved
+' Prove each declared wheel can actually turn before committing the session to nine holds.
+'
+' WHY THIS IS NOT A getBoardType() CHECK: detection is the thing this sprint is investigating,
+' so validating the configuration with it would be circular. Motion is independent -- command
+' the wheel briefly and see whether its hall ticks move. On 2026-09-11 the bench config named a
+' pin group with no board on it, and nine holds ran against it before anyone noticed.
+'
+' @returns bOk - TRUE when both declared wheels moved
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local before - hall ticks before the nudge
+' @local after - hall ticks after the nudge
+' @local moved - signed tick delta across the nudge
+
+    bOk := TRUE
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        ensureSide(side)
+        before := activeHallTicks(side)
+        commandMotor(side, PREFLIGHT_INCRE)
+        waitms(PREFLIGHT_MS)
+        after := activeHallTicks(side)
+        commandMotor(side, 0)
+        waitms(PREFLIGHT_MS)
+        moved := after - before
+        debug("BC-PREFLIGHT,side,", udec_(side), ",base,", udec_((side == SIDE_LEFT) ? LEFT_TEST_BASE : RIGHT_TEST_BASE), ",ticks,", sdec_(moved), ",ok,", udec_(moved <> 0))
+        if moved == 0
+            bOk := FALSE
+            debug("!  wheel on that pin group did NOT turn -- wrong pin group, or wiring, or a dead board")
 
 PRI runAllHolds() | holdIdx
 ' Run every configured hold in sequence, quiescent zero through HOLD_LAST.
