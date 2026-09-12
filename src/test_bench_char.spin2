@@ -1,0 +1,1302 @@
+{Spin2_v50}
+'' =================================================================================================
+''
+''   File....... test_bench_char.spin2
+''   Purpose.... Early motor characterisation binary -- quarter/half-speed, constant-rate,
+''               forward and reverse, hold-and-announce on a live PLOT panel
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 11 Sep 2026
+''   Updated.... 11 Sep 2026
+''
+'' =================================================================================================
+
+{ WHY THIS RUN, AND WHY NOW
+
+  This runs BEFORE the current-scaling and hall-counting fixes land. Almost nothing it
+  measures is invalidated by those pending fixes -- the S-3 restore divides sense_i_mV by a
+  constant, the board-detection fix touches getCurrent() but not raw sense_i_mV, the hall
+  counters are purely additive, tickInMM_x10 changes distance conversion but not raw ticks --
+  and a constant scale error hides neither a ratio, an asymmetry, nor a shape. Quarter speed
+  (~100 ticks/s against a 43.9kHz control loop) makes pos as trustworthy as it will ever be.
+
+  WHAT THIS BUYS, most valuable first:
+   (1) turns the S-3 adc_fram=6136 prediction into a measurement, before anything is built on
+       it -- log raw sense_i_mV, Stephen reads meter amps, the ratio should land near 6136;
+   (2) forward-vs-reverse asymmetry (the reverse offset is derived, 360-43, never measured);
+   (3) a go/no-go on the current channel itself -- is it alive and load-responsive at all;
+   (4) left/right hardware equivalence at matched commanded rate.
+
+  THE CONDITION THIS RUN IS ACCEPTED UNDER: record raw values AS RAW. Ratios, asymmetries and
+  liveness are fair game; absolute magnitudes are logged with the scale factor UNRESOLVED and
+  converted afterward, never asserted during the session. sense_i_mV on the panel is
+  deliberately demoted -- labelled "P2 SENSE mV", never "amps", never converted -- so it
+  answers "is this hold real" without anchoring Stephen's meter transcription.
+
+  DELIBERATELY NOT ATTEMPTED: the fault boundary, anything depending on stop distance, rpm or
+  cntsInSec (broken, finding W), getCurrent() absolute, high speed.
+
+  THE IDLE WHEEL FLOATS BY CONSTRUCTION. The wheel not under test is never start()ed at all --
+  no driver cog, pins left as inputs, bridges off -- rather than started and told to hold.
+  holdAtStop() appears nowhere in this file; init()'s own default (SM_FLOAT) already gives a
+  floating stop, so there is nothing to call.
+
+  NO STOP TIMER. util_char_motor.spin2:379,392 call stopAfterTime(DRIVE_AT_SPEED_SECS=5, ...)
+  before every drive -- an operator hold is indefinite, and that timer would stop the motor
+  five seconds in while the panel kept looking correct. This file commands motion with
+  testDriveAtMotorIncrement() alone and never calls stopAfterTime() from a hold.
+
+  PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY. emergencyCutoff() self-cancels in
+  about 250 ms (finding S-4) and is NOT a panic button; this file does not call it.
+
+  HOW IT IS RUN
+
+      cd src
+      pnut-ts -l -d -D BENCH_CFG test_bench_char.spin2      ' the bench PLOT panel
+      pnut-ts -l -d -D BENCH_NO_PANEL test_bench_char.spin2 ' plain debug-line fallback
+
+  -D BENCH_CFG selects isp_bldc_motor_userconfig_bench.spin2 for the banner's cfg_id only --
+  the pin bases, voltage and detection mode this file actually drives are hardcoded (see CON
+  { bench target } below) so this file compiles and drives the same fixed hardware regardless
+  of which block happens to be active in isp_bldc_motor_userconfig.spin2, exactly the reasoning
+  test_bench_t0.spin2 documents at its own T0_MOTOR_BASE.
+
+  -D BENCH_NO_PANEL opens a bare PLOT window (needed only so pc_key has a window to read from)
+  with no drawing at all, and prints the prompt and counter as plain debug lines instead.
+  Nothing that matters may exist only on the panel -- every BC- log record is identical
+  between the two builds.
+
+  RECORD DISCIPLINE
+
+  Tag-first, comma-separated name,value pairs, all tags prefixed BC-. Fixed-field: every
+  record type always emits every field in the same order; absence is a TOKEN (NOMEAS / NA /
+  NEVER), never a missing field and never a 0. Records are assembled into a byte buffer and
+  emitted with one debug(zstr_()) each, because a single DEBUG statement carries at most 255
+  bytes and several of these records would overrun that. The line-assembly idiom
+  (lineReset/lineAddText/lineAddNum/lineField/lineTextField/lineEmit) is transcribed from
+  test_bench_detect.spin2, which cannot be OBJ-included because it is itself a top-level file.
+
+  THE STRUCTURAL GUARANTEE
+
+  Exactly one statement in this file assigns the dwell-gate flag -- comparing elapsed
+  milliseconds since steady state against the dwell floor -- inside the poll loop of
+  runDwellLoop() below. No input path (mouse, keyboard, or the BENCH_NO_PANEL keyboard path)
+  may set that flag -- all three write only bAdvanceRequested, and a hold advances only when
+  the gate flag AND bAdvanceRequested are both true.
+}
+
+CON { build identity }
+
+    SRC_REV     = 1                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 1                                          ' BC-BANNER record-format version
+
+CON { timing }
+
+    CLK_FREQ = 270_000_000                                  ' every top in this tree runs at 270 MHz
+    _clkfreq = CLK_FREQ
+    MS_PER_SEC = 1000
+
+CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
+
+' Hardcoded rather than read from `user`, for the same reason test_bench_t0.spin2 hardcodes
+' T0_MOTOR_BASE: a dual-motor active config block defines LEFT_MOTOR_BASE/RIGHT_MOTOR_BASE
+' and no ONLY_MOTOR_BASE, and vice versa for a single-motor block, so reading either through
+' `user` would fail to compile under whichever block happens to be active. This file needs
+' BOTH a left and a right base, so it names the library's own PINS_*/PWR_*/BRD_* constants
+' directly -- legal under every config block, because they belong to the isp_bldc_motor
+' object, not to the user config.
+    LEFT_TEST_BASE  = wheelL.PINS_P0_P15
+    RIGHT_TEST_BASE = wheelL.PINS_P16_P31
+    TEST_VOLTAGE    = wheelL.PWR_18p5V
+    TEST_DET_MODE   = wheelL.BRD_AUTO_DET
+    PACK_NOMINAL_MV = 18_500                                ' 5S pack, nominal -- Stephen states the true value at the meter
+
+CON { drive speed }
+
+' isp_bldc_motor.spin2:1202 -- ~147_000_000 is the motor-increment ceiling at 18.5V.
+    DRIVE_CEILING_INCRE = 147_000_000
+    QTR_SPEED_INCRE     = DRIVE_CEILING_INCRE / 4           ' ~36_750_000, quarter speed
+    HALF_SPEED_INCRE    = DRIVE_CEILING_INCRE / 2           ' ~73_500_000, optional second rung
+
+CON { dwell / steady-state timing }
+
+    DWELL_FLOOR_SECS       = 25                             ' 5 meter screens x ~4s + margin
+    STEADY_SAMPLE_MS        = 250
+    STEADY_CONFIRM_SAMPLES  = 4
+    STEADY_TOL_PCT          = 5
+    STEADY_TIMEOUT_MS       = 6_000
+    EARLY_FLASH_MS          = 300
+    BTN_ACK_HOLD_MS         = 250
+    DWELL_POLL_MS           = 50                             ' input + panel poll cadence
+    PANEL_REDRAW_MS         = 200                            ' throttled panel redraw cadence
+    SENSE_MEAN_UPDATE_MS    = 1_000                          ' on-screen sense mV update cadence
+    MAX_CLICK_LOG           = 5                              ' BC-CLICK is "first clicks", not every click
+
+CON ' ---- Hold Sequence ----
+  ' The nine-hold run: quiescent zero, then left/right x fwd/rev at quarter speed, then
+  ' left/right x fwd/rev again at half speed. HOLD_LAST selects how far the run actually
+  ' goes; default is the whole sequence.
+    #0, HOLD_ZERO, HOLD_L_FWD_QTR, HOLD_L_REV_QTR, HOLD_R_FWD_QTR, HOLD_R_REV_QTR, ...
+        HOLD_L_FWD_HALF, HOLD_L_REV_HALF, HOLD_R_FWD_HALF, HOLD_R_REV_HALF
+    HOLD_COUNT = HOLD_R_REV_HALF + 1
+    HOLD_LAST  = HOLD_R_REV_HALF                            ' edit to stop the run earlier
+
+CON ' ---- Motor-Side / Button / Result Enums ----
+  ' Which wheel (if any) is under test:
+  '  SIDE_NONE  - neither wheel started (the quiescent-zero hold)
+  '  SIDE_LEFT  - wheelL started, wheelR never started (floating)
+  '  SIDE_RIGHT - wheelR started, wheelL never started (floating)
+    #0, SIDE_NONE, SIDE_LEFT, SIDE_RIGHT
+
+  ' Panel button visual states:
+  '  PNL_BTN_INERT - dwell floor not yet reached, click/keypress ignored
+  '  PNL_BTN_LIVE  - floor reached, waiting for the operator's acknowledgement
+  '  PNL_BTN_ACK   - acknowledgement just accepted, brief visible feedback
+    #0, PNL_BTN_INERT, PNL_BTN_LIVE, PNL_BTN_ACK
+
+  ' Steady-state source, hold outcome, and advance-source tokens are carried as string
+  ' pointers (see DAT token strings below) rather than numeric enums, since they go straight
+  ' into BC- log fields.
+
+CON { panel geometry -- see file header table; sizes chosen for arm's-length legibility }
+
+    HDR_X = 0,   HDR_Y = 0,   HDR_W = 640, HDR_H = 44
+    CAP_X = 16,  CAP_Y = 52,  CAP_W = 608, CAP_H = 48
+    MODE_X = 16, MODE_Y = 110, MODE_W = 268, MODE_H = 44
+    CNT_X = 16,  CNT_Y = 164, CNT_W = 236, CNT_H = 104
+    BAR_X = 16,  BAR_Y = 272, BAR_W = 236, BAR_H = 14
+    BTN_X = 300, BTN_Y = 150, BTN_W = 316, BTN_H = 120
+    CHIP_X = 16, CHIP_Y = 286, CHIP_W = 268, CHIP_H = 44
+    SNS_X = 300, SNS_Y = 286, SNS_W = 316, SNS_H = 44
+    FOOT_X = 0,  FOOT_Y = 340, FOOT_W = 640, FOOT_H = 60
+
+    PANEL_W = 640
+    PANEL_H = 400
+    PANEL_POS_X = 60
+    PANEL_POS_Y = 80
+
+    TXTSTYLE_CENTER    = 0                                  ' halign/valign both center (default)
+    TXTSTYLE_LEFT_MID  = $30                                ' halign left (%11<<4), valign center
+
+CON { panel feature flags }
+
+    PNL_SHOW_SENSE = 1                                      ' one-constant removal per spec
+
+CON { record assembly buffer }
+
+    LINE_BUF_SIZE    = 640
+    MAX_DEC_DIGITS   = 11
+    DEC_RADIX        = 10
+    DIGITS_PER_GROUP = 3
+
+OBJ { objects under test }
+
+#ifdef BENCH_CFG
+    user   : "isp_bldc_motor_userconfig_bench"              ' banner cfg_id only -- see CON { bench target }
+#else
+    user   : "isp_bldc_motor_userconfig"
+#endif
+    wheelL : "isp_bldc_motor"                                ' left wheel instance
+    wheelR : "isp_bldc_motor"                                ' right wheel instance
+
+DAT { record assembly state }
+
+lineBuf         BYTE    0[LINE_BUF_SIZE]
+lineLen         LONG    0
+
+DAT { token strings }
+
+sMotNone        BYTE    "NONE", 0
+sMotLeft        BYTE    "LEFT", 0
+sMotRight       BYTE    "RIGHT", 0
+
+sDirZero        BYTE    "ZERO", 0
+sDirFwd         BYTE    "FWD", 0
+sDirRev         BYTE    "REV", 0
+
+sRungZero       BYTE    "ZERO", 0
+sRungQtr        BYTE    "QTR", 0
+sRungHalf       BYTE    "HALF", 0
+
+sSteadyRamped   BYTE    "RAMPED", 0
+sSteadyTimeout  BYTE    "TIMEOUT", 0
+sSteadyZerocmd  BYTE    "ZEROCMD", 0
+
+sAdvMouse       BYTE    "MOUSE", 0
+sAdvKey         BYTE    "KEY", 0
+sAdvKeynp       BYTE    "KEYNP", 0
+
+sResultOk       BYTE    "OK", 0
+sResultFault    BYTE    "FAULT", 0
+
+sInZoneYes      BYTE    "1", 0
+sInZoneNo       BYTE    "0", 0
+
+sPanelYes       BYTE    "YES", 0
+sPanelNo        BYTE    "NO", 0
+
+sCfgBench       BYTE    "BENCH", 0
+sCfgUser        BYTE    "USER", 0
+
+sStatZero       BYTE    "ZERO COMMAND", 0
+sStatRunning    BYTE    "MOTOR RUNNING", 0
+sStatFault      BYTE    "DRIVER FAULT", 0
+
+sModeDwell      BYTE    "DWELL REMAINING", 0
+sModeHeld       BYTE    "HELD - SEC", 0
+
+DAT { hold caption strings }
+
+sHold0Caption   BYTE    "HOLD 1 of 9 - QUIESCENT ZERO", 0
+sHold1Caption   BYTE    "HOLD 2 of 9 - LEFT WHEEL FORWARD - 1/4 SPEED", 0
+sHold2Caption   BYTE    "HOLD 3 of 9 - LEFT WHEEL REVERSE - 1/4 SPEED", 0
+sHold3Caption   BYTE    "HOLD 4 of 9 - RIGHT WHEEL FORWARD - 1/4 SPEED", 0
+sHold4Caption   BYTE    "HOLD 5 of 9 - RIGHT WHEEL REVERSE - 1/4 SPEED", 0
+sHold5Caption   BYTE    "HOLD 6 of 9 - LEFT WHEEL FORWARD - 1/2 SPEED", 0
+sHold6Caption   BYTE    "HOLD 7 of 9 - LEFT WHEEL REVERSE - 1/2 SPEED", 0
+sHold7Caption   BYTE    "HOLD 8 of 9 - RIGHT WHEEL FORWARD - 1/2 SPEED", 0
+sHold8Caption   BYTE    "HOLD 9 of 9 - RIGHT WHEEL REVERSE - 1/2 SPEED", 0
+
+VAR { mouse read -- pc_mouse fills these 7 adjacent longs in this exact order }
+
+    LONG    mouseXpos
+    LONG    mouseYpos
+    LONG    mouseWheelDelta
+    LONG    mouseLtButton
+    LONG    mouseMidButton
+    LONG    mouseRtButton
+    LONG    mousePixel
+
+VAR { keyboard read }
+
+    LONG    keyCode
+
+VAR { run-wide state }
+
+    LONG    currentSide                                     ' SIDE_* -- which wheel (if any) has a running cog
+    LONG    prevMouseLt                                      ' previous poll's left-button reading, for edge detect
+    LONG    bKeyArmed                                         ' TRUE once keyCode has read 0 since the last accepted press
+    LONG    clickLogCount                                     ' BC-CLICK emitted so far, this whole run
+
+PUB main()
+'' Run the whole bench characterisation sequence: quiescent zero, then each wheel forward and
+'' reverse at quarter and (optionally) half speed, hold-and-announce on every step.
+''
+
+    currentSide := SIDE_NONE
+    prevMouseLt := 0
+    bKeyArmed := TRUE
+    clickLogCount := 0
+
+    setupWindow()
+    emitBanner()
+    runAllHolds()
+    shutdownMotors()
+
+    repeat
+        drawIdlePanel()
+        waitms(500)
+
+PRI setupWindow()
+' Open the PLOT window once. Screen-native Y-down (CARTESIAN 1, per ruling R2) so the zone
+' table in the file header is valid as written, and so pc_mouse's cursor_coordinate reports
+' in the same basis this file draws in -- no inversion needed for the button hit test.
+' hidexy suppresses the measurement-cursor readout; it does not disable pc_mouse.
+' Opened identically in both builds -- BENCH_NO_PANEL just never draws into it afterward.
+
+    debug(`PLOT bench SIZE PANEL_W PANEL_H POS PANEL_POS_X PANEL_POS_Y HIDEXY UPDATE)
+    debug(`bench CARTESIAN 1)
+
+PRI emitBanner()
+' Emit BC-BANNER once. cfg_id and panel are each sourced from their own #ifdef, never from a
+' runtime test -- pnut-ts silently ignores an unknown -D, so a mistyped flag must still land
+' on the honest #else token rather than a confident lie.
+
+    lineReset()
+    lineAddText(@"BC-BANNER")
+    lineField(@"src_rev", SRC_REV)
+    lineField(@"fmt", FMT_VERSION)
+#ifdef BENCH_CFG
+    lineTextField(@"cfg_id", @sCfgBench)
+#else
+    lineTextField(@"cfg_id", @sCfgUser)
+#endif
+#ifdef BENCH_NO_PANEL
+    lineTextField(@"panel", @sPanelNo)
+#else
+    lineTextField(@"panel", @sPanelYes)
+#endif
+    lineField(@"dwell_floor_s", DWELL_FLOOR_SECS)
+    lineField(@"steady_tol_pct", STEADY_TOL_PCT)
+    lineField(@"steady_timeout_ms", STEADY_TIMEOUT_MS)
+    lineField(@"pack_nominal_mV", PACK_NOMINAL_MV)
+    lineField(@"hold_last", HOLD_LAST)
+    lineField(@"clkfreq", CLKFREQ)
+    ' The pin bases, voltage and detect mode are compile-time constants in this file rather
+    ' than reads of user.*, so that it compiles under every config block (the same rationale
+    ' test_bench_t0.spin2 documents). That makes cfg_id alone unable to say WHICH boards were
+    ' measured, so the banner states the hardware identity outright: a log is attributable to
+    ' hardware on its own evidence, never by inference from which -D was believed to be set.
+    lineField(@"left_base", LEFT_TEST_BASE)
+    lineField(@"right_base", RIGHT_TEST_BASE)
+    lineField(@"voltage_enum", TEST_VOLTAGE)
+    lineField(@"det_mode", TEST_DET_MODE)
+    lineField(@"qtr_incre", QTR_SPEED_INCRE)
+    lineField(@"half_incre", HALF_SPEED_INCRE)
+    lineEmit()
+
+    debug("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+
+PRI runAllHolds() | holdIdx
+' Run every configured hold in sequence, quiescent zero through HOLD_LAST.
+'
+' @local holdIdx - HOLD_* identifier of the hold currently running
+
+    repeat holdIdx from HOLD_ZERO to HOLD_LAST
+        runOneHold(holdIdx)
+
+PRI runOneHold(holdIdx) | side, sign, speedIncre, pCaption, pMotorTok, pDirTok, pRungTok, ...
+    motorIncre, steadySrcTok, tSteadyMs, tickRate, dwellSecs, pAdvancedByTok, earlyPresses, ...
+    pHoldOutcomeTok, iMinMv, iMaxMv, iAvgMv, sampleCount, lastDuty, lastErr, lastDrvState
+' Run one hold end to end: announce it, command the motor, wait for steady state, run the
+' interactive dwell loop, then log the sense summary and the advance record.
+'
+' @param holdIdx - HOLD_* identifier of the hold to run
+'
+' @local side - SIDE_* the hold drives, or SIDE_NONE for the quiescent-zero hold
+' @local sign - +1 forward, -1 reverse, 0 for the quiescent-zero hold
+' @local speedIncre - unsigned motor-increment magnitude for this hold's rung
+' @local pCaption - pointer to this hold's on-screen/log caption
+' @local pMotorTok - pointer to this hold's motor token (NONE/LEFT/RIGHT)
+' @local pDirTok - pointer to this hold's direction token (ZERO/FWD/REV)
+' @local pRungTok - pointer to this hold's speed-rung token (ZERO/QTR/HALF)
+' @local motorIncre - signed motor increment actually commanded (sign * speedIncre)
+' @local steadySrcTok - pointer to the steady-state source token (RAMPED/TIMEOUT/ZEROCMD)
+' @local tSteadyMs - milliseconds from command issue to steady-state declaration
+' @local tickRate - hall-tick rate observed at steady-state declaration
+' @local dwellSecs - actual seconds from steady state to acknowledgement
+' @local pAdvancedByTok - pointer to the advance-source token (MOUSE/KEY/KEYNP)
+' @local earlyPresses - ignored-click count for this hold
+' @local pHoldOutcomeTok - pointer to the hold outcome token (OK/FAULT)
+' @local iMinMv - smallest sense_i_mV sample seen during the dwell
+' @local iMaxMv - largest sense_i_mV sample seen during the dwell
+' @local iAvgMv - mean sense_i_mV sample over the dwell
+' @local sampleCount - number of sense samples averaged into iAvgMv
+' @local lastDuty - most recent duty value at dwell exit
+' @local lastErr - most recent position-error value at dwell exit
+' @local lastDrvState - most recent DCS_* driver state at dwell exit
+
+    side, sign, speedIncre, pCaption, pMotorTok, pDirTok, pRungTok := holdInfo(holdIdx)
+    emitSheet(holdIdx, pCaption)
+
+    ensureSide(side)
+    motorIncre := sign * speedIncre
+    commandMotor(side, motorIncre)
+    emitHoldEntry(holdIdx, pCaption, pMotorTok, pDirTok, pRungTok, motorIncre)
+
+    steadySrcTok, tSteadyMs, tickRate := waitForSteady(side, motorIncre)
+    emitSteady(holdIdx, steadySrcTok, tSteadyMs, tickRate)
+
+    dwellSecs, pAdvancedByTok, earlyPresses, pHoldOutcomeTok, iMinMv, iMaxMv, iAvgMv, ...
+        sampleCount, lastDuty, lastErr, lastDrvState := runDwellLoop(holdIdx, side, pCaption)
+
+    emitSense(holdIdx, iMinMv, iMaxMv, iAvgMv, sampleCount, lastDuty, lastErr, lastDrvState)
+    emitAdvance(holdIdx, dwellSecs, DWELL_FLOOR_SECS, tSteadyMs / MS_PER_SEC, pAdvancedByTok, ...
+        earlyPresses, pHoldOutcomeTok)
+
+    if pHoldOutcomeTok == @sResultFault
+        emitFault(holdIdx, dwellSecs, lastDrvState, iMaxMv)
+        clearActiveFault(side)
+        commandMotor(side, 0)
+
+PRI holdInfo(holdIdx) : side, sign, speedIncre, pCaption, pMotorTok, pDirTok, pRungTok
+' Return the fixed description of one hold. This is the single source of truth for the hold
+' sequence's per-hold shape -- side, direction, speed rung, and every token used in its log
+' records.
+'
+' @param holdIdx - HOLD_* identifier to describe
+' @returns side - SIDE_* the hold drives
+' @returns sign - +1 forward, -1 reverse, 0 for the quiescent-zero hold
+' @returns speedIncre - unsigned motor-increment magnitude for this hold's rung
+' @returns pCaption - pointer to this hold's caption text
+' @returns pMotorTok - pointer to this hold's motor token
+' @returns pDirTok - pointer to this hold's direction token
+' @returns pRungTok - pointer to this hold's speed-rung token
+
+    case holdIdx
+        HOLD_ZERO:
+            side := SIDE_NONE
+            sign := 0
+            speedIncre := 0
+            pCaption := @sHold0Caption
+            pMotorTok := @sMotNone
+            pDirTok := @sDirZero
+            pRungTok := @sRungZero
+        HOLD_L_FWD_QTR:
+            side := SIDE_LEFT
+            sign := 1
+            speedIncre := QTR_SPEED_INCRE
+            pCaption := @sHold1Caption
+            pMotorTok := @sMotLeft
+            pDirTok := @sDirFwd
+            pRungTok := @sRungQtr
+        HOLD_L_REV_QTR:
+            side := SIDE_LEFT
+            sign := -1
+            speedIncre := QTR_SPEED_INCRE
+            pCaption := @sHold2Caption
+            pMotorTok := @sMotLeft
+            pDirTok := @sDirRev
+            pRungTok := @sRungQtr
+        HOLD_R_FWD_QTR:
+            side := SIDE_RIGHT
+            sign := 1
+            speedIncre := QTR_SPEED_INCRE
+            pCaption := @sHold3Caption
+            pMotorTok := @sMotRight
+            pDirTok := @sDirFwd
+            pRungTok := @sRungQtr
+        HOLD_R_REV_QTR:
+            side := SIDE_RIGHT
+            sign := -1
+            speedIncre := QTR_SPEED_INCRE
+            pCaption := @sHold4Caption
+            pMotorTok := @sMotRight
+            pDirTok := @sDirRev
+            pRungTok := @sRungQtr
+        HOLD_L_FWD_HALF:
+            side := SIDE_LEFT
+            sign := 1
+            speedIncre := HALF_SPEED_INCRE
+            pCaption := @sHold5Caption
+            pMotorTok := @sMotLeft
+            pDirTok := @sDirFwd
+            pRungTok := @sRungHalf
+        HOLD_L_REV_HALF:
+            side := SIDE_LEFT
+            sign := -1
+            speedIncre := HALF_SPEED_INCRE
+            pCaption := @sHold6Caption
+            pMotorTok := @sMotLeft
+            pDirTok := @sDirRev
+            pRungTok := @sRungHalf
+        HOLD_R_FWD_HALF:
+            side := SIDE_RIGHT
+            sign := 1
+            speedIncre := HALF_SPEED_INCRE
+            pCaption := @sHold7Caption
+            pMotorTok := @sMotRight
+            pDirTok := @sDirFwd
+            pRungTok := @sRungHalf
+        other:                                               ' HOLD_R_REV_HALF
+            side := SIDE_RIGHT
+            sign := -1
+            speedIncre := HALF_SPEED_INCRE
+            pCaption := @sHold8Caption
+            pMotorTok := @sMotRight
+            pDirTok := @sDirRev
+            pRungTok := @sRungHalf
+
+PRI ensureSide(side)
+' Bring exactly the requested wheel's driver cog up, and make certain the other wheel has no
+' driver cog at all -- the idle wheel floats by construction, never by being started and told
+' to hold. stop() on the outgoing side releases its pin claim and pinclears its driven half,
+' which is what makes the outgoing wheel's bridges float during the incoming wheel's holds.
+'
+' @param side - SIDE_* the caller is about to drive
+
+    if side <> currentSide
+        if currentSide == SIDE_LEFT
+            wheelL.stop()
+        elseif currentSide == SIDE_RIGHT
+            wheelR.stop()
+        currentSide := side
+        if side == SIDE_LEFT
+            wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+            waitUntilReady(side)
+        elseif side == SIDE_RIGHT
+            wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+            waitUntilReady(side)
+
+PRI waitUntilReady(side) | waitedMs
+' Wait for the just-started driver cog to report ready, the same pattern
+' util_char_motor.spin2:432-444 (waitUntilMotorReady) uses, bounded here rather than looped
+' forever so a cog that never comes up cannot hang the whole bench run.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT, the wheel just started
+'
+' @local waitedMs - milliseconds waited so far
+
+    waitedMs := 0
+    repeat until isSideReady(side) or (waitedMs >= STEADY_TIMEOUT_MS)
+        waitms(2)
+        waitedMs += 2
+
+PRI isSideReady(side) : bReady
+' Report whether the named wheel's driver cog is ready.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bReady - TRUE when that wheel's isReady() is TRUE
+
+    if side == SIDE_RIGHT
+        bReady := wheelR.isReady()
+    else
+        bReady := wheelL.isReady()
+
+PRI commandMotor(side, motorIncre)
+' Command a signed motor increment directly -- the TESTING USE raw-increment path, never
+' driveAtPower()'s [-100..100] mapping, and never followed by stopAfterTime(): the motor
+' holds at this increment until explicitly recommanded.
+'
+' @param side - SIDE_* to command; SIDE_NONE commands nothing (both wheels stay unstarted)
+' @param motorIncre - signed motor increment to drive at
+
+    if side == SIDE_LEFT
+        wheelL.testDriveAtMotorIncrement(motorIncre)
+    elseif side == SIDE_RIGHT
+        wheelR.testDriveAtMotorIncrement(motorIncre)
+
+PRI activeHallTicks(side) : nPos
+' Read raw hall ticks from the wheel currently under test. SIDE_NONE and SIDE_LEFT both read
+' wheelL, which for SIDE_NONE (never started) legitimately returns 0.
+'
+' @param side - SIDE_* under test
+' @returns nPos - raw hall-tick position from getRawHallTicks()
+
+    if side == SIDE_RIGHT
+        nPos := wheelR.getRawHallTicks()
+    else
+        nPos := wheelL.getRawHallTicks()
+
+PRI activeTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault
+' Snapshot the wheel currently under test's per-cycle driver status.
+'
+' @param side - SIDE_* under test
+' @returns nDuty - latest duty value
+' @returns nErr - latest position-error value
+' @returns nSenseI - latest current-sense reading, in mV, raw and unconverted
+' @returns eDrvrState - DCS_* driver state
+' @returns bDidFault - TRUE when the driver has faulted
+
+    if side == SIDE_RIGHT
+        nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelR.testGetTelemetry()
+    else
+        nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelL.testGetTelemetry()
+
+PRI activeIsFaulted(side) : bFaulted
+' Report whether the wheel currently under test has signalled a fault.
+'
+' @param side - SIDE_* under test
+' @returns bFaulted - TRUE when that wheel's isFaultSignal() is TRUE
+
+    if side == SIDE_RIGHT
+        bFaulted := wheelR.isFaultSignal()
+    else
+        bFaulted := wheelL.isFaultSignal()
+
+PRI clearActiveFault(side)
+' Clear a fault on the wheel currently under test, the same pattern
+' util_char_motor.spin2:324-336 (clearFault) uses, without the motion-jog recovery step --
+' this harness never needs to recover a working offset, it only needs the fault flag cleared
+' so the run can move on to the next hold.
+'
+' @param side - SIDE_* under test
+
+    if side == SIDE_RIGHT
+        if wheelR.isFaultSignal()
+            wheelR.testResetFault()
+    else
+        if wheelL.isFaultSignal()
+            wheelL.testResetFault()
+
+PRI shutdownMotors()
+' Bring both wheels to a safe floating stop at the end of the run.
+
+    if currentSide == SIDE_LEFT
+        wheelL.stop()
+    elseif currentSide == SIDE_RIGHT
+        wheelR.stop()
+    currentSide := SIDE_NONE
+
+PRI waitForSteady(side, cmdIncre) : steadySrcTok, elapsedMs, tickRate | prevPos, curPos, ...
+    prevRate, curRate, consecCount, bTimedOut, diffPct
+' Declare steady state either instantly (the quiescent-zero hold, ZEROCMD) or once
+' STEADY_CONFIRM_SAMPLES consecutive hall-tick-rate samples agree within STEADY_TOL_PCT, or
+' at STEADY_TIMEOUT_MS regardless (declare steady anyway, source TIMEOUT).
+'
+' @param side - SIDE_* under test
+' @param cmdIncre - signed motor increment just commanded; 0 selects the ZEROCMD path
+' @returns steadySrcTok - pointer to RAMPED / TIMEOUT / ZEROCMD
+' @returns elapsedMs - milliseconds from command issue to this steady-state declaration
+' @returns tickRate - hall-tick rate observed at the declaration (0 for ZEROCMD)
+'
+' @local prevPos - hall-tick position at the previous sample
+' @local curPos - hall-tick position at the current sample
+' @local prevRate - hall-tick rate at the previous sample, -1 before the first sample
+' @local curRate - hall-tick rate at the current sample
+' @local consecCount - consecutive samples agreeing within STEADY_TOL_PCT
+' @local bTimedOut - TRUE once STEADY_TIMEOUT_MS has elapsed without confirmation
+' @local diffPct - percent difference between curRate and prevRate
+
+    if cmdIncre == 0
+        steadySrcTok := @sSteadyZerocmd
+        elapsedMs := 0
+        tickRate := 0
+    else
+        prevPos := activeHallTicks(side)
+        prevRate := -1
+        consecCount := 0
+        elapsedMs := 0
+        bTimedOut := FALSE
+        repeat
+            waitms(STEADY_SAMPLE_MS)
+            elapsedMs += STEADY_SAMPLE_MS
+            curPos := activeHallTicks(side)
+            curRate := absValue(curPos - prevPos) * (MS_PER_SEC / STEADY_SAMPLE_MS)
+            prevPos := curPos
+            if prevRate == -1
+                consecCount := 1
+            elseif prevRate == 0
+                consecCount := (curRate == 0) ? consecCount + 1 : 1
+            else
+                diffPct := (absValue(curRate - prevRate) * 100) / prevRate
+                consecCount := (diffPct <= STEADY_TOL_PCT) ? consecCount + 1 : 1
+            prevRate := curRate
+            bTimedOut := (elapsedMs >= STEADY_TIMEOUT_MS)
+        until (consecCount >= STEADY_CONFIRM_SAMPLES) or bTimedOut
+        tickRate := curRate
+        steadySrcTok := bTimedOut ? @sSteadyTimeout : @sSteadyRamped
+
+PRI absValue(signedVal) : magnitude
+' Return the absolute value of a signed number.
+'
+' @param signedVal - value to make non-negative
+' @returns magnitude - |signedVal|
+
+    magnitude := (signedVal < 0) ? (0 - signedVal) : signedVal
+
+PRI runDwellLoop(holdIdx, side, pCaption) : dwellSecs, pAdvancedByTok, earlyPresses, ...
+    pHoldOutcomeTok, iMinMv, iMaxMv, iAvgMv, sampleCount, lastDuty, lastErr, lastDrvState | ...
+    elapsedDwellMs, bGateOpen, bAdvanceRequested, btnState, ackUntilMs, flashUntilMs, ...
+    nextPanelMs, nextSenseMs, senseSumMv, senseDisplayMv, remainMs, counterVal, ...
+    bCounterFlash, barPct, curSenseMv, curDuty, curErr, curDrvState, bFaulted, keyEvent, ...
+    mouseClickNow
+
+' Poll mouse, keyboard, sense telemetry and the fault flag every DWELL_POLL_MS until the
+' operator's acknowledgement is both requested and permitted, or the driver faults. The dwell
+' clock (elapsedDwellMs) starts at 0 here -- at steady state, not at the prompt (BC-HOLD was
+' already emitted by the caller before waitForSteady() ran).
+'
+' @param holdIdx - HOLD_* identifier of the hold in progress
+' @param side - SIDE_* under test
+' @param pCaption - pointer to this hold's caption text
+' @returns dwellSecs - actual seconds from steady state to acknowledgement (or to fault)
+' @returns pAdvancedByTok - pointer to MOUSE / KEY / KEYNP, meaningless when pHoldOutcomeTok
+'                            is FAULT
+' @returns earlyPresses - ignored-click/keypress count during this hold's inert period
+' @returns pHoldOutcomeTok - pointer to OK or FAULT
+' @returns iMinMv - smallest sense_i_mV sample seen
+' @returns iMaxMv - largest sense_i_mV sample seen
+' @returns iAvgMv - mean sense_i_mV sample over the dwell
+' @returns sampleCount - number of sense samples averaged into iAvgMv
+' @returns lastDuty - most recent duty value at exit
+' @returns lastErr - most recent position-error value at exit
+' @returns lastDrvState - most recent DCS_* driver state at exit
+'
+' @local elapsedDwellMs - software-accumulated milliseconds since steady state (never a raw
+'                          CNT delta -- a 25+ second interval exceeds the signed-CNT-delta
+'                          safe window at 270 MHz)
+' @local bGateOpen - the ONE place in this file the dwell floor is computed
+' @local bAdvanceRequested - set by the mouse path or the keyboard path, never by the gate
+' @local btnState - PNL_BTN_INERT / PNL_BTN_LIVE / PNL_BTN_ACK for this frame
+' @local ackUntilMs - elapsedDwellMs value at which the ACK visual feedback ends
+' @local flashUntilMs - elapsedDwellMs value at which an early-press counter flash ends
+' @local nextPanelMs - elapsedDwellMs value at which the panel is next redrawn
+' @local nextSenseMs - elapsedDwellMs value at which the on-screen sense mean next updates
+' @local senseSumMv - running sum of sense_i_mV samples this hold
+' @local senseDisplayMv - the on-screen sense mV value, updated at SENSE_MEAN_UPDATE_MS
+' @local remainMs - milliseconds remaining to the dwell floor, for the countdown display
+' @local counterVal - the large on-screen digits: seconds remaining or seconds held
+' @local bCounterFlash - TRUE while an early-press flash is active
+' @local barPct - dwell-bar fill percentage, 0..100
+' @local curSenseMv - this poll's raw sense_i_mV sample
+' @local curDuty - this poll's duty sample
+' @local curErr - this poll's position-error sample
+' @local curDrvState - this poll's DCS_* driver state sample
+' @local bFaulted - this poll's fault-signal sample
+' @local keyEvent - TRUE when this poll saw a new, armed G/g keypress
+' @local mouseClickNow - TRUE when this poll saw a new left-button press edge
+
+    elapsedDwellMs := 0
+    bAdvanceRequested := FALSE
+    pAdvancedByTok := @sAdvKeynp
+    earlyPresses := 0
+    ackUntilMs := 0
+    flashUntilMs := 0
+    nextPanelMs := 0
+    nextSenseMs := 0
+    senseSumMv := 0
+    senseDisplayMv := 0
+    sampleCount := 0
+    iMinMv := POSX
+    iMaxMv := NEGX
+    lastDuty := 0
+    lastErr := 0
+    lastDrvState := 0
+    pHoldOutcomeTok := @sResultOk
+
+    repeat
+        waitms(DWELL_POLL_MS)
+        elapsedDwellMs += DWELL_POLL_MS
+
+        curDuty, curErr, curSenseMv, curDrvState, bFaulted := activeTelemetry(side)
+        lastDuty := curDuty
+        lastErr := curErr
+        lastDrvState := curDrvState
+        sampleCount += 1
+        senseSumMv += curSenseMv
+        iMinMv := iMinMv <# curSenseMv
+        iMaxMv := iMaxMv #> curSenseMv
+
+        ' -- THE ONE PLACE THE DWELL FLOOR IS COMPUTED --
+        bGateOpen := (elapsedDwellMs >= (DWELL_FLOOR_SECS * MS_PER_SEC)) ? TRUE : FALSE
+
+        keyEvent := pollKeyEdge()
+        mouseClickNow := FALSE
+#ifndef BENCH_NO_PANEL
+        mouseClickNow := pollMouseEdge(holdIdx)
+#endif
+
+        if bFaulted
+            pHoldOutcomeTok := @sResultFault
+        elseif mouseClickNow and buttonHit(mouseXpos, mouseYpos)
+            if bGateOpen and (bAdvanceRequested == FALSE)
+                bAdvanceRequested := TRUE
+                pAdvancedByTok := @sAdvMouse
+                ackUntilMs := elapsedDwellMs + BTN_ACK_HOLD_MS
+            elseif bGateOpen == FALSE
+                earlyPresses += 1
+                flashUntilMs := elapsedDwellMs + EARLY_FLASH_MS
+                emitEarly(holdIdx, (DWELL_FLOOR_SECS * MS_PER_SEC - elapsedDwellMs) / MS_PER_SEC, @sAdvMouse)
+        elseif keyEvent
+            if bGateOpen and (bAdvanceRequested == FALSE)
+                bAdvanceRequested := TRUE
+#ifdef BENCH_NO_PANEL
+                pAdvancedByTok := @sAdvKeynp
+#else
+                pAdvancedByTok := @sAdvKey
+#endif
+                ackUntilMs := elapsedDwellMs + BTN_ACK_HOLD_MS
+            elseif bGateOpen == FALSE
+                earlyPresses += 1
+                flashUntilMs := elapsedDwellMs + EARLY_FLASH_MS
+                emitEarly(holdIdx, (DWELL_FLOOR_SECS * MS_PER_SEC - elapsedDwellMs) / MS_PER_SEC, @sAdvKey)
+
+        if elapsedDwellMs >= nextSenseMs
+            senseDisplayMv := (sampleCount > 0) ? (senseSumMv / sampleCount) : 0
+            nextSenseMs += SENSE_MEAN_UPDATE_MS
+
+        if elapsedDwellMs >= nextPanelMs
+            bCounterFlash := (elapsedDwellMs <= flashUntilMs)
+            if bGateOpen == FALSE
+                remainMs := (DWELL_FLOOR_SECS * MS_PER_SEC) - elapsedDwellMs
+                counterVal := (remainMs + MS_PER_SEC - 1) / MS_PER_SEC
+                barPct := (elapsedDwellMs * 100) / (DWELL_FLOOR_SECS * MS_PER_SEC)
+                btnState := PNL_BTN_INERT
+            else
+                counterVal := elapsedDwellMs / MS_PER_SEC
+                barPct := 100
+                btnState := (elapsedDwellMs <= ackUntilMs) ? PNL_BTN_ACK : PNL_BTN_LIVE
+            drawPanel(holdIdx, pCaption, counterVal, bCounterFlash, barPct, btnState, ...
+                statusToken(side, bFaulted), senseDisplayMv)
+            nextPanelMs += PANEL_REDRAW_MS
+
+    until (pHoldOutcomeTok == @sResultFault) or (bGateOpen and bAdvanceRequested)
+
+    if pHoldOutcomeTok == @sResultOk
+        waitms(BTN_ACK_HOLD_MS)
+
+    dwellSecs := elapsedDwellMs / MS_PER_SEC
+    iAvgMv := (sampleCount > 0) ? (senseSumMv / sampleCount) : 0
+
+PRI statusToken(side, bFaulted) : pStatusTok
+' Choose the status-chip token for the current frame.
+'
+' @param side - SIDE_* under test
+' @param bFaulted - this frame's fault-signal sample
+' @returns pStatusTok - pointer to ZERO COMMAND / MOTOR RUNNING / DRIVER FAULT
+
+    if bFaulted
+        pStatusTok := @sStatFault
+    elseif side == SIDE_NONE
+        pStatusTok := @sStatZero
+    else
+        pStatusTok := @sStatRunning
+
+PRI pollKeyEdge() : bPressed
+' Read pc_key and edge-detect a G/g press. pc_key(@keyCode) is always the LAST command in its
+' own debug() call, per the panel's input-reading rule. The latch auto-clears after about
+' 100 ms; bKeyArmed requires a 0 reading before the next press can register, so a single
+' physical keydown cannot be read as two presses while its latch is still set.
+'
+' @returns bPressed - TRUE on a newly-armed G/g press this poll
+
+    debug(`bench pc_key(@keyCode))
+    bPressed := FALSE
+    if keyCode == 0
+        bKeyArmed := TRUE
+    elseif ((keyCode == "G") or (keyCode == "g")) and bKeyArmed
+        bPressed := TRUE
+        bKeyArmed := FALSE
+
+#ifndef BENCH_NO_PANEL
+PRI pollMouseEdge(holdIdx) : bClicked | rawX, rawY, pInZoneTok
+' Read pc_mouse and edge-detect a left-button press. pc_mouse(@mouseXpos) is always the LAST
+' command in its own debug() call. Buttons read -1 when pressed; mid/right are read and
+' discarded so a stray right-click can never advance a hold. The first MAX_CLICK_LOG clicks
+' of the whole run are logged raw, proving the CARTESIAN 1 coordinate basis empirically
+' rather than merely asserting it.
+'
+' @param holdIdx - HOLD_* identifier of the hold in progress
+' @returns bClicked - TRUE on a newly-pressed left button this poll
+'
+' @local rawX - this poll's raw mouseXpos, captured before any other read can change it
+' @local rawY - this poll's raw mouseYpos
+' @local pInZoneTok - pointer to "1" or "0", whether the click landed in the button zone
+
+    debug(`bench pc_mouse(@mouseXpos))
+    bClicked := (mouseLtButton == -1) and (prevMouseLt <> -1)
+    prevMouseLt := mouseLtButton
+
+    if bClicked and (clickLogCount < MAX_CLICK_LOG)
+        rawX := mouseXpos
+        rawY := mouseYpos
+        pInZoneTok := buttonHit(rawX, rawY) ? @sInZoneYes : @sInZoneNo
+        emitClick(holdIdx, rawX, rawY, pInZoneTok)
+        clickLogCount += 1
+#endif
+
+PRI buttonHit(px, py) : bInside
+' Hit-test a point against the button zone, in the same CARTESIAN 1 screen-native basis this
+' file draws in -- no inversion needed, per ruling R2.
+'
+' @param px - x coordinate to test
+' @param py - y coordinate to test
+' @returns bInside - TRUE when (px, py) falls inside the button rectangle
+
+    bInside := (px >= BTN_X) and (px <= (BTN_X + BTN_W)) and (py >= BTN_Y) and (py <= (BTN_Y + BTN_H))
+
+PRI drawPanel(holdIdx, pCaption, counterVal, bCounterFlash, barPct, btnState, pStatusTok, senseMv) | barWidthPx
+' Redraw the whole panel frame. A full CLEAR-and-redraw every PANEL_REDRAW_MS is simpler and
+' more robust than partial updates -- three signals (label, counter, bar, button) must always
+' agree, and a full redraw can never let one zone drift out of sync with another.
+'
+' @param holdIdx - HOLD_* identifier of the hold in progress, used only for the NO_PANEL text
+' @param pCaption - pointer to this hold's caption text
+' @param counterVal - seconds remaining (dwell phase) or seconds held (post-floor phase)
+' @param bCounterFlash - TRUE while an ignored-click flash is active
+' @param barPct - dwell-bar fill percentage, 0..100
+' @param btnState - PNL_BTN_INERT / PNL_BTN_LIVE / PNL_BTN_ACK
+' @param pStatusTok - pointer to the status-chip token
+' @param senseMv - current on-screen P2 SENSE mV running mean
+'
+' @local barWidthPx - BAR_W scaled by barPct, the actual drawn bar width
+
+#ifdef BENCH_NO_PANEL
+    debug("BC-UI,hold,", udec_(holdIdx), ",caption,", zstr_(pCaption), ",counter,", udec_(counterVal), ",btn,", udec_(btnState))
+#else
+    barWidthPx := (BAR_W * barPct) / 100
+
+    debug(`bench CLEAR)
+
+    ' header
+    debug(`bench COLOR ORANGE 8)
+    debug(`bench SET (HDR_X + (HDR_W / 2)) (HDR_Y + (HDR_H / 2)))
+    debug(`bench BOX HDR_W HDR_H 0)
+    debug(`bench COLOR WHITE)
+    debug(`bench TEXTSIZE 20)
+    debug(`bench TEXTSTYLE TXTSTYLE_CENTER)
+    debug(`bench SET (HDR_X + (HDR_W / 2)) (HDR_Y + (HDR_H / 2)))
+    debug(`bench TEXT 'BENCH CHARACTERISATION -- HOLD FOR METER READ')
+
+    ' caption
+    debug(`bench COLOR WHITE)
+    debug(`bench TEXTSIZE 18)
+    debug(`bench TEXTSTYLE TXTSTYLE_LEFT_MID)
+    debug(`bench SET (CAP_X + 8) (CAP_Y + (CAP_H / 2)))
+    debug(`bench TEXT zstr_(pCaption))
+
+    ' mode label
+    debug(`bench COLOR GRAY 10)
+    debug(`bench TEXTSIZE 14)
+    debug(`bench TEXTSTYLE TXTSTYLE_LEFT_MID)
+    debug(`bench SET (MODE_X + 4) (MODE_Y + (MODE_H / 2)))
+    if barPct < 100
+        debug(`bench TEXT zstr_(@sModeDwell))
+    else
+        debug(`bench TEXT zstr_(@sModeHeld))
+
+    ' counter -- the largest thing on the panel
+    if bCounterFlash
+        debug(`bench COLOR WHITE)
+    else
+        debug(`bench COLOR CYAN 10)
+    debug(`bench TEXTSIZE 90)
+    debug(`bench TEXTSTYLE TXTSTYLE_CENTER)
+    debug(`bench SET (CNT_X + (CNT_W / 2)) (CNT_Y + (CNT_H / 2)))
+    debug(`bench TEXT udec_(counterVal))
+
+    ' dwell bar
+    debug(`bench COLOR GRAY 6)
+    debug(`bench SET (BAR_X + (BAR_W / 2)) (BAR_Y + (BAR_H / 2)))
+    debug(`bench BOX BAR_W BAR_H 0)
+    if barWidthPx > 0
+        debug(`bench COLOR GREEN 10)
+        debug(`bench SET (BAR_X + (barWidthPx / 2)) (BAR_Y + (BAR_H / 2)))
+        debug(`bench BOX barWidthPx BAR_H 0)
+
+    ' button
+    drawButton(btnState)
+
+    ' status chip
+    debug(`bench COLOR GRAY 4)
+    debug(`bench SET (CHIP_X + (CHIP_W / 2)) (CHIP_Y + (CHIP_H / 2)))
+    debug(`bench BOX CHIP_W CHIP_H 0)
+    debug(`bench COLOR WHITE)
+    debug(`bench TEXTSIZE 16)
+    debug(`bench TEXTSTYLE TXTSTYLE_CENTER)
+    debug(`bench SET (CHIP_X + (CHIP_W / 2)) (CHIP_Y + (CHIP_H / 2)))
+    debug(`bench TEXT zstr_(pStatusTok))
+
+    if PNL_SHOW_SENSE
+        debug(`bench COLOR GRAY 10)
+        debug(`bench TEXTSIZE 12)
+        debug(`bench TEXTSTYLE TXTSTYLE_CENTER)
+        debug(`bench SET (SNS_X + (SNS_W / 2)) (SNS_Y + (SNS_H / 2) - 8))
+        debug(`bench TEXT 'P2 SENSE mV')
+        debug(`bench SET (SNS_X + (SNS_W / 2)) (SNS_Y + (SNS_H / 2) + 8))
+        debug(`bench TEXT sdec_(senseMv))
+
+    ' footer
+    debug(`bench COLOR GRAY 8)
+    debug(`bench TEXTSIZE 14)
+    debug(`bench TEXTSTYLE TXTSTYLE_CENTER)
+    debug(`bench SET (FOOT_X + (FOOT_W / 2)) (FOOT_Y + 16))
+    debug(`bench TEXT 'WRITE DOWN: the AMPS reading for this row on the sheet.')
+    debug(`bench SET (FOOT_X + (FOOT_W / 2)) (FOOT_Y + 40))
+    debug(`bench TEXT 'Then click GO AHEAD.  Keyboard: press G (panel must have focus).')
+#endif
+
+PRI drawButton(btnState)
+' Draw the button in one of its three states: 0 dark-slate/dim "GO AHEAD (WAIT)", 1 saturated
+' green "GO AHEAD", 2 darker-green "ADVANCING...".
+'
+' @param btnState - PNL_BTN_INERT / PNL_BTN_LIVE / PNL_BTN_ACK
+
+#ifndef BENCH_NO_PANEL
+    case btnState
+        PNL_BTN_LIVE:
+            debug(`bench COLOR GREEN 12)
+        PNL_BTN_ACK:
+            debug(`bench COLOR GREEN 5)
+        other:
+            debug(`bench COLOR GRAY 3)
+    debug(`bench SET (BTN_X + (BTN_W / 2)) (BTN_Y + (BTN_H / 2)))
+    debug(`bench OBOX BTN_W BTN_H 12 12 0)
+
+    debug(`bench TEXTSIZE 26)
+    debug(`bench TEXTSTYLE TXTSTYLE_CENTER)
+    case btnState
+        PNL_BTN_LIVE:
+            debug(`bench COLOR WHITE)
+            debug(`bench SET (BTN_X + (BTN_W / 2)) (BTN_Y + (BTN_H / 2)))
+            debug(`bench TEXT 'GO AHEAD')
+        PNL_BTN_ACK:
+            debug(`bench COLOR WHITE)
+            debug(`bench SET (BTN_X + (BTN_W / 2)) (BTN_Y + (BTN_H / 2)))
+            debug(`bench TEXT 'ADVANCING...')
+        other:
+            debug(`bench COLOR GRAY 12)
+            debug(`bench SET (BTN_X + (BTN_W / 2)) (BTN_Y + (BTN_H / 2) - 14))
+            debug(`bench TEXT 'GO AHEAD')
+            debug(`bench TEXTSIZE 16)
+            debug(`bench SET (BTN_X + (BTN_W / 2)) (BTN_Y + (BTN_H / 2) + 18))
+            debug(`bench TEXT '(WAIT)')
+#endif
+
+PRI drawIdlePanel()
+' Final screen once the whole sequence has completed -- shown until the operator closes the
+' terminal. Not logged (the run is already fully described by the BC- records emitted).
+
+#ifdef BENCH_NO_PANEL
+    debug("* BENCH CHAR RUN COMPLETE")
+#else
+    debug(`bench CLEAR)
+    debug(`bench COLOR WHITE)
+    debug(`bench TEXTSIZE 24)
+    debug(`bench TEXTSTYLE TXTSTYLE_CENTER)
+    debug(`bench SET (PANEL_W / 2) (PANEL_H / 2))
+    debug(`bench TEXT 'RUN COMPLETE -- SAFE TO DISCONNECT')
+#endif
+
+PRI emitSheet(holdIdx, pCaption)
+' Emit BC-SHEET once per hold, up front, so the operator's paper sheet and this log share row
+' numbering.
+'
+' @param holdIdx - HOLD_* identifier
+' @param pCaption - pointer to this hold's caption text
+
+    lineReset()
+    lineAddText(@"BC-SHEET")
+    lineField(@"row", holdIdx + 1)
+    lineTextField(@"name", pCaption)
+    lineEmit()
+
+PRI emitHoldEntry(holdIdx, pCaption, pMotorTok, pDirTok, pRungTok, cmdIncre)
+' Emit BC-HOLD -- this is the task body's "print HOLD,<test>,<rung>".
+'
+' @param holdIdx - HOLD_* identifier
+' @param pCaption - pointer to this hold's caption text
+' @param pMotorTok - pointer to the motor token
+' @param pDirTok - pointer to the direction token
+' @param pRungTok - pointer to the speed-rung token
+' @param cmdIncre - signed motor increment just commanded
+
+    lineReset()
+    lineAddText(@"BC-HOLD")
+    lineField(@"hold", holdIdx)
+    lineTextField(@"name", pCaption)
+    lineTextField(@"motor", pMotorTok)
+    lineTextField(@"dir", pDirTok)
+    lineTextField(@"rung", pRungTok)
+    lineField(@"cmd_incre", cmdIncre)
+    lineEmit()
+
+PRI emitSteady(holdIdx, pSteadySrcTok, tSteadyMs, tickRate)
+' Emit BC-STEADY at steady-state declaration.
+'
+' @param holdIdx - HOLD_* identifier
+' @param pSteadySrcTok - pointer to RAMPED / TIMEOUT / ZEROCMD
+' @param tSteadyMs - milliseconds from command issue to this declaration
+' @param tickRate - hall-tick rate observed at the declaration
+
+    lineReset()
+    lineAddText(@"BC-STEADY")
+    lineField(@"hold", holdIdx)
+    lineTextField(@"steady_src", pSteadySrcTok)
+    lineField(@"t_steady_ms", tSteadyMs)
+    lineField(@"tick_rate", tickRate)
+    lineEmit()
+
+PRI emitClick(holdIdx, rawX, rawY, pInZoneTok)
+' Emit BC-CLICK for one of the first MAX_CLICK_LOG clicks of the run, proving the coordinate
+' basis empirically.
+'
+' @param holdIdx - HOLD_* identifier of the hold in progress
+' @param rawX - raw mouseXpos at the click
+' @param rawY - raw mouseYpos at the click
+' @param pInZoneTok - pointer to "1" or "0"
+
+    lineReset()
+    lineAddText(@"BC-CLICK")
+    lineField(@"hold", holdIdx)
+    lineField(@"raw_x", rawX)
+    lineField(@"raw_y", rawY)
+    lineTextField(@"in_zone", pInZoneTok)
+    lineEmit()
+
+PRI emitEarly(holdIdx, remainSecs, pSrcTok)
+' Emit BC-EARLY for one ignored press during the inert period.
+'
+' @param holdIdx - HOLD_* identifier
+' @param remainSecs - seconds remaining to the dwell floor at the moment of the press
+' @param pSrcTok - pointer to MOUSE or KEY
+
+    lineReset()
+    lineAddText(@"BC-EARLY")
+    lineField(@"hold", holdIdx)
+    lineField(@"remain_s", remainSecs)
+    lineTextField(@"src", pSrcTok)
+    lineEmit()
+
+PRI emitSense(holdIdx, iMinMv, iMaxMv, iAvgMv, sampleCount, duty, err, drvState)
+' Emit BC-SENSE at hold exit.
+'
+' @param holdIdx - HOLD_* identifier
+' @param iMinMv - smallest sense_i_mV sample seen
+' @param iMaxMv - largest sense_i_mV sample seen
+' @param iAvgMv - mean sense_i_mV sample over the dwell
+' @param sampleCount - number of sense samples averaged
+' @param duty - most recent duty value at exit
+' @param err - most recent position-error value at exit
+' @param drvState - most recent DCS_* driver state at exit
+
+    lineReset()
+    lineAddText(@"BC-SENSE")
+    lineField(@"hold", holdIdx)
+    lineField(@"i_mV_min", iMinMv)
+    lineField(@"i_mV_max", iMaxMv)
+    lineField(@"i_mV_avg", iAvgMv)
+    lineField(@"samples", sampleCount)
+    lineField(@"duty", duty)
+    lineField(@"err", err)
+    lineField(@"drv_state", drvState)
+    lineEmit()
+
+PRI emitAdvance(holdIdx, dwellSecs, floorSecs, promptToSteadySecs, pAdvancedByTok, earlyPresses, pHoldOutcomeTok)
+' Emit BC-ADV at hold exit. dwellSecs is the actual seconds from steady state to
+' acknowledgement, which is what makes the floor auditable after the run rather than merely
+' enforced during it -- a dwellSecs below floorSecs is a finding about the instrument.
+'
+' @param holdIdx - HOLD_* identifier
+' @param dwellSecs - actual seconds from steady state to acknowledgement
+' @param floorSecs - DWELL_FLOOR_SECS, so every record states the floor it ran under
+' @param promptToSteadySecs - seconds from command issue to steady-state declaration
+' @param pAdvancedByTok - pointer to MOUSE / KEY / KEYNP
+' @param earlyPresses - ignored-press tally for this hold
+' @param pHoldOutcomeTok - pointer to OK or FAULT
+
+    lineReset()
+    lineAddText(@"BC-ADV")
+    lineField(@"hold", holdIdx)
+    lineField(@"dwell_s", dwellSecs)
+    lineField(@"floor_s", floorSecs)
+    lineField(@"prompt_to_steady_s", promptToSteadySecs)
+    lineTextField(@"advanced_by", pAdvancedByTok)
+    lineField(@"early_presses", earlyPresses)
+    lineTextField(@"result", pHoldOutcomeTok)
+    lineEmit()
+
+PRI emitFault(holdIdx, dwellSecs, drvState, iMvAtFault)
+' Emit BC-FAULT when a hold ends in a driver fault.
+'
+' @param holdIdx - HOLD_* identifier
+' @param dwellSecs - actual seconds from steady state to the fault
+' @param drvState - DCS_* driver state at the fault
+' @param iMvAtFault - sense_i_mV sample at the fault (the running max, as a proxy)
+
+    lineReset()
+    lineAddText(@"BC-FAULT")
+    lineField(@"hold", holdIdx)
+    lineField(@"dwell_s", dwellSecs)
+    lineField(@"drv_state", drvState)
+    lineField(@"i_mV_at_fault", iMvAtFault)
+    lineEmit()
+
+PRI lineReset()
+' Begin a new record.
+
+    lineLen := 0
+    BYTE[@lineBuf][0] := 0
+
+PRI lineAddChar(charByte)
+' Append one character to the record under assembly, silently dropping anything past the
+' buffer. Every record in this file is well under LINE_BUF_SIZE; truncation would show as a
+' short line in the log rather than as memory corruption.
+'
+' @param charByte - the character to append
+
+    if lineLen < LINE_BUF_SIZE - 1
+        BYTE[@lineBuf][lineLen] := charByte
+        lineLen += 1
+        BYTE[@lineBuf][lineLen] := 0
+
+PRI lineAddText(pText) | srcIdx
+' Append a zero-terminated string to the record under assembly. The loop is bounded as well
+' as terminated, so an unterminated source string cannot hang the run.
+'
+' @param pText - pointer to the text to append
+'
+' @local srcIdx - index into the source text
+
+    repeat srcIdx from 0 to LINE_BUF_SIZE - 1
+        if BYTE[pText][srcIdx] == 0
+            quit
+        lineAddChar(BYTE[pText][srcIdx])
+
+PRI lineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absMagnitude, digitIdx
+' Append a signed decimal number with an underscore every three digits, matching udec_() and
+' sdec_() elsewhere in this tree's bench logs.
+'
+' @param numValue - the value to append
+'
+' @local digitStack - decimal digits of numValue, least significant first
+' @local digitCount - how many entries of digitStack are in use
+' @local absMagnitude - magnitude of numValue, consumed by the extraction loop
+' @local digitIdx - index into digitStack while emitting
+
+    absMagnitude := numValue
+    if numValue < 0
+        lineAddChar("-")
+        absMagnitude := -numValue
+
+    digitCount := 0
+    repeat
+        digitStack[digitCount] := absMagnitude // DEC_RADIX
+        absMagnitude /= DEC_RADIX
+        digitCount += 1
+    until (absMagnitude == 0) or (digitCount == MAX_DEC_DIGITS)
+
+    repeat digitIdx from digitCount - 1 to 0
+        lineAddChar("0" + digitStack[digitIdx])
+        if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
+            lineAddChar("_")
+
+PRI lineField(pFieldName, numValue)
+' Append one ",name,<number>" field to the record under assembly.
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+
+    lineAddChar(",")
+    lineAddText(pFieldName)
+    lineAddChar(",")
+    lineAddNum(numValue)
+
+PRI lineTextField(pFieldName, pFieldValue)
+' Append one ",name,<token>" field to the record under assembly.
+'
+' @param pFieldName - pointer to the field name
+' @param pFieldValue - pointer to the field's token text
+
+    lineAddChar(",")
+    lineAddText(pFieldName)
+    lineAddChar(",")
+    lineAddText(pFieldValue)
+
+PRI lineEmit()
+' Emit the assembled record as exactly one debug line. One debug() statement carries at most
+' 255 bytes of debug data; the whole record travels as a single zero-terminated string
+' instead so wider records are never silently truncated by that limit.
+
+    debug(zstr_(@lineBuf))
+
+CON { license }
+
+{{
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ -------------------------------------------------------------------------------------------------
+}}

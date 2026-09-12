@@ -375,6 +375,56 @@ error the other document warns about. And `DOCs/REF-NO-COMMIT/` is **not
 gitignored** despite its name; it is currently untracked, so a `git add -A`
 would sweep it in.
 
+### PL-16 -- `util_char_motor.spin2` drive helpers: comment says 10 s, constant is 5 s
+
+**Found 2026-09-11 while building `src/test_bench_char.spin2` («#3497»).**
+
+`src/util_char_motor.spin2:379` and `:392`:
+
+```
+wheel.stopAfterTime(DRIVE_AT_SPEED_SECS, wheel.DTU_SEC)      ' set to hold at speed for 10 Sec
+```
+
+`DRIVE_AT_SPEED_SECS = 5` at `:57`. The comment says ten seconds on both lines; the
+constant has been five. A reader trusting the comment mis-times every
+characterisation run made with this tool, and the error is invisible because a
+five-second drive still looks like a drive.
+
+**This nearly propagated.** «#3497»'s task body said to reuse
+`driveForwardAtSpeed()` / `driveReverseAtSpeed()` for operator-held meter reads.
+An operator hold is indefinite; either helper would have stopped the motor five
+seconds in, collapsing the meter reading toward zero **while the panel kept
+displaying a correct-looking hold**, and the operator would have written down a
+number taken from a stopped motor. `test_bench_char.spin2` therefore commands
+motion with `testDriveAtMotorIncrement()` and no stop timer at all.
+
+**Fix:** correct both comments to match the constant, or name the constant in the
+comment rather than restating its value -- a comment that repeats a number is a
+second place for that number to be wrong.
+
+### PL-17 -- the bench line-builder is now duplicated across two binaries
+
+**Found 2026-09-11 during «#3497»'s quality pass.**
+
+`src/test_bench_detect.spin2` and `src/test_bench_char.spin2` each carry their own
+copy of the tagged-record line builder -- `lineReset` / `lineAddChar` /
+`lineAddText` / `lineAddNum` / `lineField` / `lineTextField` / `lineEmit`, roughly
+110 lines including the `udec_()`-compatible underscore grouping that the record
+formats depend on being byte-identical.
+
+The duplication is **structural, not careless**: both files are top-level programs,
+Spin2 cannot share `PRI` methods between them, and neither can `OBJ`-include the
+other. Extraction means a new shared object, e.g. `isp_bench_log.spin2`.
+
+**Deliberately deferred, with the shape recorded so it is not re-derived.** Two
+consumers is the point where extraction is arguable; **«#3508» (the motion
+harness) will be the third**, which is where it clearly pays. Extracting now would
+decertify two binaries that are verified and queued for Bench Pass 1, which the
+sprint's standing rule exists to prevent. Do it as part of «#3508», not before.
+
+⚠ Until then the two copies must not drift: the grouping behaviour is what makes
+`sum`/`dwell_s` and every other numeric field parseable by the same analyser.
+
 ---
 
 ## Recently closed
