@@ -570,6 +570,7 @@ Sites found by search, 2026-09-12, with the task that owns each:
 |---|---|---|
 | `test_bench_char.spin2:435` `ok` | `udec_(moved <> 0)` -- prints the large value | «#3521» rewrites this binary |
 | `test_bench_spin.spin2:106` `left`/`right`, `:158` `fault` | `udec_(ok <> 0)` -- large value | no task touches it -- fix when it is next built |
+| `isp_bldc_motor.spin2` `testGetResults()` `bDidFault` | returns the raw `fault` long (`$FFFF_FFFF`), not TRUE/FALSE; `util_char_motor.spin2` prints it with `sdec` | found by the «#3501» design agent; fix when the test API is next touched |
 | `test_bench_t0.spin2:236` `agree`, `:254` `legal` | `? 1 : 0` -- small, but a number | «#3504» extends this binary |
 | `test_bench_detect.spin2` `agree` and similar 0/1 fields | `? 1 : 0` | **deliberately left** until Bench Pass 2b's re-run is diffed against the 2026-09-11 log, whose format it must match |
 
@@ -596,6 +597,48 @@ restart names an illegal group.
 pin group; since «#3500» the overlapping-group case reports `REV_Unknown` too. **Fix
 direction:** a not-detected board yields a stated "no measurement" value, not a sign-flipped
 reading; decide alongside «#3503», which changes the same scale path.
+
+### PL-26 -- the commutation scheme departs from the board designer's principles
+
+**Raised 2026-09-12** from the board designer's notes, relayed by Stephen and recorded in
+[`analyses/BLDC-COMMUTATION-PRINCIPLES.md`](analyses/BLDC-COMMUTATION-PRINCIPLES.md): drive at
+±90° electrical from the rotor's position, with electrical angle known to 12 bits.
+
+DERIVED from `src/isp_bldc_motor.spin2`: the field angle is commanded and corrected, not placed
+from the rotor's position; the duty servo holds the field **60°** (`256/6`) from a hall
+estimate, not 90° from the rotor; rotor angle is known to **6 positions** per electrical cycle,
+not 4,096; and each per-direction offset mixes hall alignment with lead angle.
+
+**Disposition needs Stephen** -- this is a change to what the driver *is*, not a defect fix.
+The offset scan («#3520», Bench Pass 2a) comes first and supplies the evidence: the midpoint of
+the two per-direction minima estimates the hall zero, and whether the minima draw equal current
+tests whether alignment alone explains the asymmetry. The candidate changes (separate alignment
+from lead; a 90° lead target; sub-sector rotor angle by edge-time interpolation or from the
+phase voltages already sampled) are written up in that document.
+
+**Top speed is part of this.** The source records each speed ceiling as a fault point, and
+anything that wastes torque per amp at speed lowers it. DERIVED prediction: on the 6.5″ hub the
+negative-increment direction faults at a lower speed than the positive one; no per-direction
+ceiling has ever been measured. Bench Pass 3's C-1 speed ladder (T1-3) should run in **both**
+directions, before and after the scanned offsets are applied.
+
+### PL-27 -- the Doco motor's offset and speed-ceiling tables were characterised while board detection was broken
+
+**Found 2026-09-12** (DERIVED from `src/isp_bldc_motor.spin2` `offsetsForMotor()` and
+`confgurePowerLimits()`). For `MOTR_DOCO_4KRPM` both tables branch on `eDetectedBoard`: offsets
+Rev B 33–45° vs Rev A 52–54°, and different speed ceilings per revision. Until «#3500», a Rev B
+board read as Rev A after any stop and restart (MEASURED 2026-09-12). Two consequences:
+
+1. **Behaviour changes for Doco users.** A Doco on a Rev B board that was stopped and restarted
+   used to get the Rev A commutation offset (about 15–20° different) and the Rev A speed
+   ceiling. It now keeps the Rev B values. That is a correct fix, but a user-visible one —
+   release note for «#3515».
+2. **Which board each Doco column was measured on is uncertain.** If characterisation involved
+   stop/start cycles, a "Rev A" value may have come from a misdetected Rev B board. The Rev A
+   ceiling column is also non-monotonic in voltage (282M at 7.4 V, 545M at 11.1 V, 335M at
+   12 V). **The measurement history is Stephen's to confirm**: which boards the Doco columns came
+   from, and whether motors were restarted between readings. It needs no answer before the 6.5″
+   bench work; the Doco bench is deferred past the next release (decision 2026-09-11).
 
 ---
 
