@@ -304,6 +304,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     adc_fram    :=    frame_cnt                         ' set ADC to full PWM frame counts
     fram        :=    (frame_cnt / 2) << 16 + 1         ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
     bias        :=    frame_cnt / 4                     ' PWM center-frame bias
+    lutCodePtr  :=    @lutCodeStart                     ' task 3535: hub addr of LUT-resident start sequence, block-loaded by the driver at coginit
 
     ' setup driver parameters based on clock rate
     ' A1 / PL-9: both 64010 manuals specify a 250 ns minimum dead-gap regardless of board
@@ -2045,157 +2046,48 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 drvl    drvrTmrPnFld                    ' preset test pins to low
 '                drvl    drvrTmr2PnFld                  ' preset test pins to low
 '}
-
-                rdlong  tmpX, ptra++                    ' get base pin
-                or      all_pins, tmpX                  '  finish the all-pins variable
-                add     drive_pins, tmpX                '  finish the drive-pins variable
-                add     adc_pins, tmpX                  '  finish the adc-pins variable
-
-                mov     tmpY, #0                        ' make the single-pin variables
-.pin            altd    tmpY, #pin_adc_u_i              ' only 14, dont use last 2
-                mov     0-0, tmpX
-                add     tmpX, #1
-                incmod  tmpY, #13                   wc
-    if_nc       jmp     #.pin
-
-                rdlong  params_ptr_, ptra++             ' get parameters pointer
-                add     ptra, #2*4                      '  point to return data, targetIncre is at long index [-1]
-                                                        '                        targetAngle is at long index [-2]
-
-                dirl    all_pins                        ' disable PWM and ADC pins for configuration
-
-                wrpin   pwmn, pin_pwm_u_l               ' set up PWM pins, low side is inverted
-                wrpin   pwmt, pin_pwm_u_h               ' high side is not inverted
-                wrpin   pwmn, pin_pwm_v_l
-                wrpin   pwmt, pin_pwm_v_h
-                wrpin   pwmn, pin_pwm_w_l
-                wrpin   pwmt, pin_pwm_w_h
-
-                wxpin   fram, drive_pins                '  and set PWM frame width, too, matches adc period
-                wypin   #0, drive_pins                  ' make sure pwm is off
-
-                ' ADC setup - GIO level
-                wrpin   adc_modes+0, adc_pins           ' switch ADC to GIO calibration
-
-                ' PL-32 (P2AN001 source_switch_flush): a single-frame read after a source switch
-                ' carries the switch's settling transient and is not safe to keep for the cog's
-                ' lifetime -- see PL-32 for the measured per-start zero drift this caused. Rather
-                ' than software-loop N separate 1-frame reads (the fit budget below has no room
-                ' for that loop; see the ABI-adjacent size note at the driver's `fit` line), widen
-                ' the smart pin's own count period to ADC_CAL_AVG_FRAMES normal frames, so ONE
-                ' hardware-integrated read here sums that many clean samples in silicon. The first
-                ' widened frame still carries the switch transient (now diluted 1/ADC_CAL_AVG_FRAMES
-                ' by the longer window) so it is discarded like any other flush read, satisfying
-                ' P2AN001's discard-then-sum shape with more margin, not less. calibPeriod is a
-                ' driver working register (not part of the Spin2<->PASM2 ABI); tmpX/tmpY are
-                ' re-initialized before .ctlMotor runs.
-                mov     calibPeriod, adc_fram
-                shl     calibPeriod, #ADC_CAL_AVG_SHIFT ' calibPeriod := adc_fram * ADC_CAL_AVG_FRAMES
-                wxpin   calibPeriod, adc_pins           ' count period widened for calibration only
-                wypin   #0, adc_pins
-
-                dirh    adc_pins                        ' enable ADC pins to use adc
-
-                call    #.wait4adc                      ' 1st widened frame: still carries the switch
-                rdpin   tmpX, pin_adc_cur_i             ' transient (diluted) -- discard it
-
-                call    #.wait4adc                      ' 2nd widened frame: settled, hardware-summed
-                rdpin   gio_levels+0, pin_adc_u_i       ' over ADC_CAL_AVG_FRAMES normal-frame periods
-                rdpin   gio_levels+1, pin_adc_v_i
-                rdpin   gio_levels+2, pin_adc_w_i
-                rdpin   gio_levels+3, pin_adc_cur_i
-                shr     gio_levels+0, #ADC_CAL_AVG_SHIFT ' back to a single-frame-equivalent count
-                shr     gio_levels+1, #ADC_CAL_AVG_SHIFT ' (power-of-two average, sum / ADC_CAL_AVG_FRAMES)
-                shr     gio_levels+2, #ADC_CAL_AVG_SHIFT
-                shr     gio_levels+3, #ADC_CAL_AVG_SHIFT
-
-                ' ADC setup - VIO level
-                dirl    adc_pins                        ' disable ADC pins for configuration
-                wrpin   adc_modes+1, adc_pins           ' switch ADC to VIO calibration
-                dirh    adc_pins                        ' enable ADC to use adc
-                                                         ' (count period is still calibPeriod: WXPIN
-                                                         ' persists across a WRPIN mode change, exactly
-                                                         ' as the original single-frame code relied on)
-
-                call    #.wait4adc                      ' discard the switch transient (as for GIO, above)
-                rdpin   tmpX, pin_adc_cur_i
-
-                call    #.wait4adc                      ' settled, hardware-summed frame
-                rdpin   vio_levels+0, pin_adc_u_i
-                rdpin   vio_levels+1, pin_adc_v_i
-                rdpin   vio_levels+2, pin_adc_w_i
-                rdpin   vio_levels+3, pin_adc_cur_i
-                shr     vio_levels+0, #ADC_CAL_AVG_SHIFT
-                shr     vio_levels+1, #ADC_CAL_AVG_SHIFT
-                shr     vio_levels+2, #ADC_CAL_AVG_SHIFT
-                shr     vio_levels+3, #ADC_CAL_AVG_SHIFT
-
-                sub     vio_levels+0, gio_levels+0      ' sub gio from vio to get range
-                sub     vio_levels+1, gio_levels+1      ' sub gio from vio to get range
-                sub     vio_levels+2, gio_levels+2      ' sub gio from vio to get range
-                sub     vio_levels+3, gio_levels+3      ' sub gio from vio to get range
-
-                qdiv    numerator, vio_levels+0         ' calculate our values from readings
-                qdiv    numerator, vio_levels+1
-                qdiv    numerator, vio_levels+2
-                qdiv    numerator, vio_levels+3
-
-                getqx   scl_levels+0                    ' getqx waits for the results, but need to get result before next is written
-                getqx   scl_levels+1
-                getqx   scl_levels+2
-                getqx   scl_levels+3
-
-
-                ' finally, configure the current sense pins for main loop
-                dirl    adc_pins                        ' disable ADC pins for configuration
-                wxpin   adc_fram, adc_pins              ' restore the normal (un-widened) count period,
-                                                         ' see the calibPeriod comment block, above
-
-                 ' ADC setup for actual values
-               wrpin   adc_modes+2, adc_pins            ' switch ADC to pin sampling
-
-                testb   sync_required, #0           wc  ' do we need to wait for attention?
-    if_c        waitatn                                 ' Y: wait to be atn by caller
-
-                call    #.driveinit                     ' enable ADC and PWM pins, leaving the hall pins undriven
-                                                        ' from now on, the adc and pwm run continously
-
-                mov     pos_, #0                        ' reset pos
-                mov     hall_missed_, #0                ' integrity counts restart with every driver start
-                mov     hall_illegal_, #0
-                mov     hall_, #0                       ' prime hall_ from a real read: first control pass then sees old == new
-                testp   pin_hall_w                  wc  '  (hall pins are inputs: nothing ever raises their DIR)
-                rcl     hall_, #1
-                testp   pin_hall_v                  wc
-                rcl     hall_, #1
-                testp   pin_hall_u                  wc
-                rcl     hall_, #1
-                cmp     hall_, #%000                wz  ' Q: sensor already reading an illegal code at start?
-    if_nz       cmp     hall_, #%111                wz  ' Q: ...or the other illegal code?
-    if_z        add     hall_illegal_, #1               ' YES: count it now -- old == new on the first pass cannot
-                mov     loop_dtcks_, #0                 ' just in case
-                mov     loop_ctcks_, #0                 ' just in case
-                mov     drv_incr, #0                    ' reset incr to stopped
-                mov     prior_incr, #0                  ' just in case
-                mov     tgt_incr, #0                    ' just in case
-                mov     sv_tgt_incr, #0                 ' just in case
-                mov     fwdrev, #0                      ' just in case
-                mov     angle_, #0                      ' just in case
-
-                ' do initial read of parms so control loop can use them
-                setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
-                rdlong  params_ptr_+1, params_ptr_
-
-                mov     ramp_curr, ramp_min_            ' set initial inc ramp
-                mov     duty_, duty_min_                ' reset duty
-                mov     curr_stop, stop_mode_           ' save current stop mode
-                call    #.checkstop                     ' set drive on or off according to stop mode
+                ' task 3535 (fixed layout defect found in review): the one-time start sequence
+                ' (pin setup through the initial checkstop, plus gettgtincr and driveinit) never
+                ' overlaps .drvMotor/.ctlMotor, so it is loaded into LUT RAM ($200-$3FF) instead
+                ' of staying resident in cog RAM, freeing cog longs for upcoming work. Every
+                ' register/constant/table it touches still lives in cog RAM ($000-$1FF); only
+                ' the instructions moved -- D/S operand fields address $000-$1FF the same whether
+                ' the executing code is in cog or LUT. lutCodePtr is filled in by init() (Spin2)
+                ' before coginit, exactly like the motor tables are. PTRB (not PTRA) carries the
+                ' block-load pointer: PTRA is still walking the @pinbase launch block just below
+                ' and must reach it unchanged.
+                '
+                ' IMPORTANT: the org $200 block (lutCodeStart..lutCodeEnd, below the `fit 496`
+                ' near the end of this DAT) must sit AFTER every org-0 item in the file, never
+                ' between them. COGINIT copies cog $000-$1F7 from hub RAM contiguously starting
+                ' at @driver (p2kbSpin2Coginit); the hub image is laid out strictly in source
+                ' order regardless of ORG value, so any hub bytes interposed between two org-0
+                ' items shift every later org-0 label's hub address away from its cog address,
+                ' and COGINIT would then load the wrong hub bytes into that cog register. Keeping
+                ' the LUT block textually after `fit 496` keeps the org-0 image's hub layout
+                ' contiguous and matching its cog addresses, 1:1.
+                mov     ptrb, lutCodePtr                ' hub address of the LUT-resident code (set by init())
+                setq2   #(lutCodeEnd - lutCodeStart - 1) ' block-load size, in longs, minus 1
+                rdlong  0, ptrb                          ' hub -> LUT: D is a LUT-relative address (0-511) under
+                                                        ' SETQ2's block-to-LUT mode, so D=0 is LUT address 0,
+                                                        ' i.e. cog address $200 -- lutCodeStart's own address,
+                                                        ' since it is the very first instruction placed there
+                jmp     #lutCodeStart                   ' enter LUT-resident start sequence
+                                                        ' NOTE: lutCodeStart/lutCodeEnd, and wait4adc, checkstop,
+                                                        ' initAngleFmHall, gettgtincr, driveinit, drvMotor, are
+                                                        ' plain (non-dot) labels: PASM2 local (dot-prefixed)
+                                                        ' labels are scoped to the nearest preceding global label,
+                                                        ' and these are all referenced from both the LUT-resident
+                                                        ' block and the cog-resident block, so they must be
+                                                        ' globally visible (task 3535). .driveoff, .checkstopfloaton
+                                                        ' and .checkstopfloatoff stayed dot-local: nothing outside
+                                                        ' cog RAM calls them.
 
     ' =========================================================================
     '  MOTOR DRIVE LOOP - runs at 2.0 kHz (500.0 uSec period)
     '       time to adjust angle...
     ' -------------------------------------------------------------------------
-.drvMotor
+drvMotor                                                ' global (task 3535): entered via cross-boundary jmp from the LUT-resident loader
                 getct   ctrlSrtTix                      ' remember when we started this loop
 {
                 ' Logic Analyzer Instrumentation Code
@@ -2220,7 +2112,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     if_z        mov     drv_state_, #DCS_STOPPED        ' YES, reset to simply stopped so we start out pins correctly
                 mov     sv_tgt_incr, tgt_incr
 
-                call    #.gettgtincr                    ' get rate of increment ( +/- drive power, or 0 stop)
+                call    #gettgtincr                     ' get rate of increment ( +/- drive power, or 0 stop)
                 or      tgt_incr, tgt_incr          wz  ' Q: being asked to stop?
     if_nz       jmp     #.notRqStop                     ' NO, not exception, check next
                 ' this is a stop request
@@ -2228,7 +2120,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     if_nz       jmp     #.newRqst                       ' NO, not stopped, go do stop!
                 cmp     curr_stop, stop_mode_       wz  ' stopped, see if stop mode has changed and update drive_pin state
     if_nz       mov     curr_stop, stop_mode_           ' update curr stop mode
-    if_nz       call    #.checkstop                     ' set drive on or off according to stop mode
+    if_nz       call    #checkstop                   ' set drive on or off according to stop mode
                 jmp     #.endRqst                       ' YES, motor at STOP, just exit (w/o increment)
 .notRqStop
                 cmp     sv_tgt_incr, tgt_incr       wz  ' Q: do we have a new request?
@@ -2270,7 +2162,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 mov     angle_, #0                      ' just in case
                 mov     drv_state_, #DCS_STOPPED        ' reset fault -> to stopped
                                                         ' drive_pins were floated when detect fault
-                call    #.checkstop                     ' set drive pwm according to stop mode
+                call    #checkstop                   ' set drive pwm according to stop mode
                 ' if we were faulted, we are already stopped so just do nothing if new stop request
                 or      tgt_incr, tgt_incr          wz  ' Q: is stop request?
     if_z        jmp     #.endRqst                       ' YES, is stop and motor STOPPED, just exit (w/o increment)
@@ -2473,7 +2365,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     ' -------------------------------------------------------------------------
                 getct   drvrSrtTix                      ' remember when we started this loop
 
-                call    #.wait4adc                      ' allow ADC rest period (wait for sample ready), also wait for start of ctl loop
+                call    #wait4adc                      ' allow ADC rest period (wait for sample ready), also wait for start of ctl loop
                 rdpin   sense_u_, pin_adc_u_i           ' pin samples done, read them
                 rdpin   sense_v_, pin_adc_v_i
                 rdpin   sense_w_, pin_adc_w_i
@@ -2625,31 +2517,20 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal to hub
                 wrlong  drive_u_, ptra
 .loop           jnct1   #.ctlMotor                      ' if not time for drv loop just go to ctl loop
-                jmp     #.drvMotor
+                jmp     #drvMotor
 
     ' =========================================================================
     '  PRIVATE (Utiility) Subroutines
     ' -------------------------------------------------------------------------
-
-.gettgtincr
-                rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
-                testb   tgt_incr, #31               wc  ' bit 31 is used to carry sync info
-    if_c        pollatn                             wz  ' need to sync, but dont want to wait so if atn not ready
-    if_c_and_nz mov     tgt_incr, sv_tgt_incr           ' reset tgt_incr, if wanting atn and not received it yet
-    if_c_and_z  bitl    tgt_incr, #31                   ' have the atn, so
-    if_c_and_z  wrlong  tgt_incr, ptra[-1]              ' let caller know we have taken it by clearing sync bit
-    _ret_       signx   tgt_incr, #30                   ' sign extend back to normal tgt_incr
-
-.driveinit                                              ' init drive pwm
-                dirh    adc_pins                        ' enable ADC pins (base+0..4)
-                dirh    drive_pins                      ' enable PWM pins (base+8..13)
-                                                        ' the ADC and PWM smart pins are never disabled after this.
-                                                        ' Never DIRH the whole 0..13 range: it spans the hall inputs (base+5..7) and
-                                                        ' drives them low, and the first hall read after start then sees an illegal code
-                                                        ' before the 3.9k pull-up recovers. ADC enabled two instructions ahead of PWM is
-                                                        ' harmless: each ADC count spans exactly one PWM frame (adc_fram = frame_cnt), and
-                                                        ' a whole period of a periodic signal integrates the same at any start phase.
-    _ret_       mov     driveoff, #0                    ' drive pwm output enabled, though checkstop is called before ctlMotor loop and may change this
+    ' gettgtincr and driveinit moved to the LUT-resident block (task 3535):
+    ' gettgtincr is called only from drvMotor (cog-resident, calls across the
+    ' boundary); driveinit is called only from the LUT-resident start sequence
+    ' itself. See lutCodeStart..lutCodeEnd, below the `fit 496` line.
+    '
+    ' .driveoff, .checkstopfloaton and .checkstopfloatoff stay dot-local
+    ' (task 3535): nothing outside cog RAM calls them, so they don't need to
+    ' be globally visible the way checkstop/wait4adc/initAngleFmHall/
+    ' gettgtincr/driveinit/drvMotor/lutCodeStart/lutCodeEnd do.
 
 .driveoff                                               ' disable pwm always
     _ret_       mov     driveoff, #1                    ' drive pwm output disabled
@@ -2658,21 +2539,21 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 skip    #%1000101                       ' same as inverted floatoff without drive disable
 .checkstopfloatoff                                      ' set drive disabled according to stop mode
                 skip    #%001100                        ' same as checkstop without initAngleFmHall and duty reset
-.checkstop                                              ' set drive disabled to correct state
+checkstop                                               ' set drive disabled to correct state
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: what is new stop mode, should motor be freewheeling?
                 modz    _nz                         wz  ' invert Z, allows skipping invert by floaton
-    if_z        call    #.initAngleFmHall               ' make sure angle set correctly, so motor doesn't jerk when enters ctlMotor
+    if_z        call    #initAngleFmHall                ' make sure angle set correctly, so motor doesn't jerk when enters ctlMotor
     if_z        mov     duty_, duty_min_                ' reset duty, reduces jerk if not fully aligned
     if_z        mov     driveoff, #0                    ' drive pwm output enabled
     if_nz       mov     driveoff, #1                    ' drive pwm output disabled
                 ret
 
-.wait4adc
+wait4adc
 .wait4adcAgn    testp   pin_adc_cur_i               wc  ' wait for ADC sample to be avail. (wtg on 4th pin set up)
     if_nc       jmp     #.wait4adcAgn
 .noWait4adc     ret
 
-.initAngleFmHall
+initAngleFmHall
                 ' init angle & prior from current motor position
                 testp   pin_hall_w                  wc  ' read hall effect sensor
                 rcl     hall_, #1
@@ -2702,6 +2583,7 @@ third           LONG    1 FRAC 3                ' 120 degrees
 numerator       LONG    3300 << 11              ' ADC scale numerator: 3300 mV in fixed point, the control loop's sar #11 returns millivolts
 maxNeg          LONG    $FFFF_FFFF              ' 32-bits of one (max negative signed value)
 sync_required   LONG    0                       ' non zero if motor loop should wait to start
+lutCodePtr      LONG    0                       ' hub addr of LUT-resident start sequence (task 3535); set by init()
 
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
@@ -2871,7 +2753,205 @@ hall_illegal_ res 1         ' entries into an illegal hall code (%000 or %111), 
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 492 currently used (476 before PL-32; +16 for calibPeriod + widened-period calibration)
+    fit     496  ' 390 currently used (492 before task 3535 moved the one-time start sequence,
+                 ' plus gettgtincr and driveinit, into the LUT-resident block below at $200-$3FF;
+                 ' see lutCodeStart..lutCodeEnd -- 108 of the LUT's 512-long capacity used)
+
+' =========================================================================
+'  LUT-RESIDENT CODE ($200-$3FF): the one-time start sequence only (task 3535).
+'  drvMotor (2 kHz), .ctlMotor (43.9 kHz) and everything .ctlMotor calls
+'  (wait4adc, .driveoff, the fault path) stay resident in cog RAM, above.
+'
+'  MUST stay textually after the `fit 496` line above: this block's hub bytes
+'  must not sit between two org-0 items (see the note at the loader's `jmp
+'  #lutCodeStart`, above) -- COGINIT's contiguous cog-$000-$1F7-from-hub copy
+'  depends on the org-0 image's hub layout being unbroken.
+' =========================================================================
+                org     $200
+
+lutCodeStart
+                rdlong  tmpX, ptra++                    ' get base pin
+                or      all_pins, tmpX                  '  finish the all-pins variable
+                add     drive_pins, tmpX                '  finish the drive-pins variable
+                add     adc_pins, tmpX                  '  finish the adc-pins variable
+
+                mov     tmpY, #0                        ' make the single-pin variables
+.pin            altd    tmpY, #pin_adc_u_i              ' only 14, dont use last 2
+                mov     0-0, tmpX
+                add     tmpX, #1
+                incmod  tmpY, #13                   wc
+    if_nc       jmp     #.pin
+
+                rdlong  params_ptr_, ptra++             ' get parameters pointer
+                add     ptra, #2*4                      '  point to return data, targetIncre is at long index [-1]
+                                                        '                        targetAngle is at long index [-2]
+
+                dirl    all_pins                        ' disable PWM and ADC pins for configuration
+
+                wrpin   pwmn, pin_pwm_u_l               ' set up PWM pins, low side is inverted
+                wrpin   pwmt, pin_pwm_u_h               ' high side is not inverted
+                wrpin   pwmn, pin_pwm_v_l
+                wrpin   pwmt, pin_pwm_v_h
+                wrpin   pwmn, pin_pwm_w_l
+                wrpin   pwmt, pin_pwm_w_h
+
+                wxpin   fram, drive_pins                '  and set PWM frame width, too, matches adc period
+                wypin   #0, drive_pins                  ' make sure pwm is off
+
+                ' ADC setup - GIO level
+                wrpin   adc_modes+0, adc_pins           ' switch ADC to GIO calibration
+
+                ' PL-32 (P2AN001 source_switch_flush): a single-frame read after a source switch
+                ' carries the switch's settling transient and is not safe to keep for the cog's
+                ' lifetime -- see PL-32 for the measured per-start zero drift this caused. Rather
+                ' than software-loop N separate 1-frame reads (the fit budget below has no room
+                ' for that loop; see the ABI-adjacent size note at the driver's `fit` line), widen
+                ' the smart pin's own count period to ADC_CAL_AVG_FRAMES normal frames, so ONE
+                ' hardware-integrated read here sums that many clean samples in silicon. The first
+                ' widened frame still carries the switch transient (now diluted 1/ADC_CAL_AVG_FRAMES
+                ' by the longer window) so it is discarded like any other flush read, satisfying
+                ' P2AN001's discard-then-sum shape with more margin, not less. calibPeriod is a
+                ' driver working register (not part of the Spin2<->PASM2 ABI); tmpX/tmpY are
+                ' re-initialized before .ctlMotor runs.
+                mov     calibPeriod, adc_fram
+                shl     calibPeriod, #ADC_CAL_AVG_SHIFT ' calibPeriod := adc_fram * ADC_CAL_AVG_FRAMES
+                wxpin   calibPeriod, adc_pins           ' count period widened for calibration only
+                wypin   #0, adc_pins
+
+                dirh    adc_pins                        ' enable ADC pins to use adc
+
+                call    #wait4adc                      ' 1st widened frame: still carries the switch
+                rdpin   tmpX, pin_adc_cur_i             ' transient (diluted) -- discard it
+
+                call    #wait4adc                      ' 2nd widened frame: settled, hardware-summed
+                rdpin   gio_levels+0, pin_adc_u_i       ' over ADC_CAL_AVG_FRAMES normal-frame periods
+                rdpin   gio_levels+1, pin_adc_v_i
+                rdpin   gio_levels+2, pin_adc_w_i
+                rdpin   gio_levels+3, pin_adc_cur_i
+                shr     gio_levels+0, #ADC_CAL_AVG_SHIFT ' back to a single-frame-equivalent count
+                shr     gio_levels+1, #ADC_CAL_AVG_SHIFT ' (power-of-two average, sum / ADC_CAL_AVG_FRAMES)
+                shr     gio_levels+2, #ADC_CAL_AVG_SHIFT
+                shr     gio_levels+3, #ADC_CAL_AVG_SHIFT
+
+                ' ADC setup - VIO level
+                dirl    adc_pins                        ' disable ADC pins for configuration
+                wrpin   adc_modes+1, adc_pins           ' switch ADC to VIO calibration
+                dirh    adc_pins                        ' enable ADC to use adc
+                                                         ' (count period is still calibPeriod: WXPIN
+                                                         ' persists across a WRPIN mode change, exactly
+                                                         ' as the original single-frame code relied on)
+
+                call    #wait4adc                      ' discard the switch transient (as for GIO, above)
+                rdpin   tmpX, pin_adc_cur_i
+
+                call    #wait4adc                      ' settled, hardware-summed frame
+                rdpin   vio_levels+0, pin_adc_u_i
+                rdpin   vio_levels+1, pin_adc_v_i
+                rdpin   vio_levels+2, pin_adc_w_i
+                rdpin   vio_levels+3, pin_adc_cur_i
+                shr     vio_levels+0, #ADC_CAL_AVG_SHIFT
+                shr     vio_levels+1, #ADC_CAL_AVG_SHIFT
+                shr     vio_levels+2, #ADC_CAL_AVG_SHIFT
+                shr     vio_levels+3, #ADC_CAL_AVG_SHIFT
+
+                sub     vio_levels+0, gio_levels+0      ' sub gio from vio to get range
+                sub     vio_levels+1, gio_levels+1      ' sub gio from vio to get range
+                sub     vio_levels+2, gio_levels+2      ' sub gio from vio to get range
+                sub     vio_levels+3, gio_levels+3      ' sub gio from vio to get range
+
+                qdiv    numerator, vio_levels+0         ' calculate our values from readings
+                qdiv    numerator, vio_levels+1
+                qdiv    numerator, vio_levels+2
+                qdiv    numerator, vio_levels+3
+
+                getqx   scl_levels+0                    ' getqx waits for the results, but need to get result before next is written
+                getqx   scl_levels+1
+                getqx   scl_levels+2
+                getqx   scl_levels+3
+
+
+                ' finally, configure the current sense pins for main loop
+                dirl    adc_pins                        ' disable ADC pins for configuration
+                wxpin   adc_fram, adc_pins              ' restore the normal (un-widened) count period,
+                                                         ' see the calibPeriod comment block, above
+
+                 ' ADC setup for actual values
+               wrpin   adc_modes+2, adc_pins            ' switch ADC to pin sampling
+
+                testb   sync_required, #0           wc  ' do we need to wait for attention?
+    if_c        waitatn                                 ' Y: wait to be atn by caller
+
+                call    #driveinit                     ' enable ADC and PWM pins, leaving the hall pins undriven
+                                                        ' from now on, the adc and pwm run continously
+
+                mov     pos_, #0                        ' reset pos
+                mov     hall_missed_, #0                ' integrity counts restart with every driver start
+                mov     hall_illegal_, #0
+                mov     hall_, #0                       ' prime hall_ from a real read: first control pass then sees old == new
+                testp   pin_hall_w                  wc  '  (hall pins are inputs: nothing ever raises their DIR)
+                rcl     hall_, #1
+                testp   pin_hall_v                  wc
+                rcl     hall_, #1
+                testp   pin_hall_u                  wc
+                rcl     hall_, #1
+                cmp     hall_, #%000                wz  ' Q: sensor already reading an illegal code at start?
+    if_nz       cmp     hall_, #%111                wz  ' Q: ...or the other illegal code?
+    if_z        add     hall_illegal_, #1               ' YES: count it now -- old == new on the first pass cannot
+                mov     loop_dtcks_, #0                 ' just in case
+                mov     loop_ctcks_, #0                 ' just in case
+                mov     drv_incr, #0                    ' reset incr to stopped
+                mov     prior_incr, #0                  ' just in case
+                mov     tgt_incr, #0                    ' just in case
+                mov     sv_tgt_incr, #0                 ' just in case
+                mov     fwdrev, #0                      ' just in case
+                mov     angle_, #0                      ' just in case
+                mov     prior_angle, angle_             ' .ctlMotor's first cmpm reads prior_angle; only .initAngleFmHall
+                                                        '  set it, and only in SM_FLOAT -- so a start in SM_BRAKE read a
+                                                        '  register COGINIT never initialised (task 3535 review)
+
+                ' do initial read of parms so control loop can use them
+                setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
+                rdlong  params_ptr_+1, params_ptr_
+
+                mov     ramp_curr, ramp_min_            ' set initial inc ramp
+                mov     duty_, duty_min_                ' reset duty
+                mov     curr_stop, stop_mode_           ' save current stop mode
+                call    #checkstop                     ' set drive on or off according to stop mode
+
+                jmp     #drvMotor                       ' boundary crossing: LUT -> cog RAM, resume 2 kHz loop
+
+    ' -------------------------------------------------------------------------
+    ' gettgtincr and driveinit also moved here (task 3535): gettgtincr is used
+    ' only by drvMotor (cog-resident; reaches it by a cross-boundary call, same
+    ' as drvMotor calling checkstop the other way -- see the loader's NOTE,
+    ' above, for the full list of cross-boundary-visible labels); driveinit is
+    ' used only by the start sequence just above. Neither is ever fallen into
+    ' -- both are reached only by CALL -- so their position after the jmp
+    ' above is dead space, same as the equivalent cog-resident layout.
+    ' -------------------------------------------------------------------------
+gettgtincr
+                rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
+                testb   tgt_incr, #31               wc  ' bit 31 is used to carry sync info
+    if_c        pollatn                             wz  ' need to sync, but dont want to wait so if atn not ready
+    if_c_and_nz mov     tgt_incr, sv_tgt_incr           ' reset tgt_incr, if wanting atn and not received it yet
+    if_c_and_z  bitl    tgt_incr, #31                   ' have the atn, so
+    if_c_and_z  wrlong  tgt_incr, ptra[-1]              ' let caller know we have taken it by clearing sync bit
+    _ret_       signx   tgt_incr, #30                   ' sign extend back to normal tgt_incr
+
+driveinit                                               ' init drive pwm
+                dirh    adc_pins                        ' enable ADC pins (base+0..4)
+                dirh    drive_pins                      ' enable PWM pins (base+8..13)
+                                                        ' the ADC and PWM smart pins are never disabled after this.
+                                                        ' Never DIRH the whole 0..13 range: it spans the hall inputs (base+5..7) and
+                                                        ' drives them low, and the first hall read after start then sees an illegal code
+                                                        ' before the 3.9k pull-up recovers. ADC enabled two instructions ahead of PWM is
+                                                        ' harmless: each ADC count spans exactly one PWM frame (adc_fram = frame_cnt), and
+                                                        ' a whole period of a periodic signal integrates the same at any start phase.
+    _ret_       mov     driveoff, #0                    ' drive pwm output enabled, though checkstop is called before ctlMotor loop and may change this
+
+lutCodeEnd                                               ' LUT-resident code ends here (task 3535)
+
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 108 of 512 used
 
 CON { license }
 {{
