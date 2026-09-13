@@ -1019,6 +1019,9 @@ PUB hallTicInfoForMotor() : degreesPerTic, ticsPerRotation
 
 CON ' --- TEST-USE ONLY Methods ---
 
+    DEGREES_PER_TURN      = 360     ' one turn of a commutation offset, in degrees
+    DEGREE_NORM_MAX_STEPS = 16      ' bounded add/subtract-360 steps: inputs within +/-5_760 degrees normalise exactly
+
 PUB testSetLimit(newMaxLimit)
 '' TESTING USE: set override limit so we can characterize motor
 ''
@@ -1053,9 +1056,10 @@ PUB testSetFwdRevIndep(fwdDegrees, revDegrees)
 '' TESTING USE: set forward and reverse commutation offsets independently
 ''
 '' This method allows separate control of the two offsets to characterize
-'' motor current draw with asymmetric commutation angles. Angles are stored
-'' as-is without normalisation; callers may pass values outside 0..359 and
-'' testGetFwdRevIndep() will return them unchanged.
+'' motor current draw with asymmetric commutation angles. Both inputs are
+'' normalised into 0..359 (by bounded add/subtract-360 steps) before they are
+'' converted and applied, and the NORMALISED degrees are what testGetFwdRevIndep()
+'' returns.
 ''
 '' DETAIL: offset_fwd is applied to NEGATIVE motor increments and offset_rev to POSITIVE
 '' motor increments -- the names do not describe the direction of travel.
@@ -1065,15 +1069,17 @@ PUB testSetFwdRevIndep(fwdDegrees, revDegrees)
 '' CMPM sets C to MSB of (D - S), making NEGATIVE increments use offset_fwd (default 43 degrees
 '' for 6.5in motor) and POSITIVE increments use offset_rev (default 317 degrees).
 ''
-'' @param fwdDegrees - commutation offset for negative increments, in degrees (not normalised)
-'' @param revDegrees - commutation offset for positive increments, in degrees (not normalised)
+'' @param fwdDegrees - commutation offset for negative increments, in degrees (normalised into 0..359)
+'' @param revDegrees - commutation offset for positive increments, in degrees (normalised into 0..359)
 
-    offset_fwd  := fwdDegrees frac 360
-    offset_rev  := revDegrees frac 360
-    offset_fwd_degrees := fwdDegrees
-    offset_rev_degrees := revDegrees
-    debug("MOT:  ", sdec(fwdDegrees), uhex_long(offset_fwd))
-    debug(" (ind)", sdec(revDegrees), uhex_long(offset_rev))
+    ' FRAC's behaviour for a negative or >= 360 operand is not established, so the operand is
+    '  always brought into 0..359 first
+    offset_fwd_degrees := normalisedDegrees(fwdDegrees)
+    offset_rev_degrees := normalisedDegrees(revDegrees)
+    offset_fwd  := offset_fwd_degrees frac DEGREES_PER_TURN
+    offset_rev  := offset_rev_degrees frac DEGREES_PER_TURN
+    debug("MOT:  ", sdec(offset_fwd_degrees), uhex_long(offset_fwd))
+    debug(" (ind)", sdec(offset_rev_degrees), uhex_long(offset_rev))
 
 PUB testGetFwdRevIndep() : fwdDegrees, revDegrees
 '' TESTING USE: return the currently-applied forward and reverse commutation offsets
@@ -1285,6 +1291,24 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr, index
         fwdDegrees := ofsDegr                 ' chip #2 fwd 230 / rev 130
         revDegrees := 360 - fwdDegrees
 }
+
+PRI normalisedDegrees(inDegrees) : outDegrees | stepCount
+' Bring a degree value into 0..359 with bounded add/subtract-360 steps.
+'
+' @param inDegrees - degree value, any sign
+' @returns outDegrees - the same angle in 0..359; an input beyond +/-5_760 degrees is clamped into 0..359 after the bounded steps
+'
+' @local stepCount - add/subtract steps taken so far
+
+    outDegrees := inDegrees
+    stepCount := 0
+    repeat while (outDegrees < 0) and (stepCount < DEGREE_NORM_MAX_STEPS)
+        outDegrees += DEGREES_PER_TURN
+        stepCount += 1
+    repeat while (outDegrees >= DEGREES_PER_TURN) and (stepCount < DEGREE_NORM_MAX_STEPS)
+        outDegrees -= DEGREES_PER_TURN
+        stepCount += 1
+    outDegrees := (outDegrees #> 0) <# (DEGREES_PER_TURN - 1)
 
 PRI getInternalDetectMode(eDetectMode) : eValidMode, bUserOverride | legalMode
 ' ensure suer specifies a good value

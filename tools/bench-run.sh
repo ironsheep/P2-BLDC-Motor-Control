@@ -26,17 +26,22 @@
 # replay by hand line for line.
 #
 # --exit-on-end-session (batch mode, not --ide -- that flag is for VSCode/IDE
-# integration only) makes pnut-term-ts close itself once test_bench_t0.spin2
+# integration only) makes pnut-term-ts close itself once the tier's binary
 # prints its DEBUG_END_SESSION marker, so this produces one binary and one
-# log with no keypress and no interrupt needed.
+# log with no keypress and no interrupt needed. Every tier's binary emits
+# that marker: test_bench_t0, test_bench_spin, test_bench_detect,
+# test_bench_char and test_bench_scan.
 #
 # Usage:  tools/bench-run.sh <tier> [clkfreq]
-#   <tier>      -- tier name: currently "t0" only
+#   <tier>      -- tier name, see usage() below
 #   [clkfreq]   -- optional clock frequency in Hz (e.g., 270000000). The ONLY
 #                  thing that may cause this script to write to a source file
-#                  (test_bench_t0.spin2's CLK_FREQ) -- omit it and the script
-#                  is read-only with respect to the tree. Restored on exit,
-#                  including on interrupt.
+#                  (the tier binary's "CLK_FREQ = ..." line) -- omit it and the
+#                  script is read-only with respect to the tree. Restored on
+#                  exit, including on interrupt. test_bench_t0, test_bench_detect,
+#                  test_bench_char and test_bench_scan carry that line;
+#                  test_bench_spin does not, so for the spin tier the patch
+#                  changes nothing.
 
 set -u
 
@@ -70,6 +75,7 @@ Usage:  tools/bench-run.sh <tier> [clkfreq]
                    detect-phase2  adds the driver-cog poisoning probe  [MOTORS UNPLUGGED]
                    char           motor characterisation, PLOT panel   [MOTORS CONNECTED]
                    char-nopanel   as above, no PLOT window, keyboard only
+                   scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
   [clkfreq]   -- optional clock frequency in Hz (default: 270000000)
 
 Examples:
@@ -122,6 +128,9 @@ case "$TIER" in
     char-nopanel)   BENCH_FILE="test_bench_char.spin2"
                     EXTRA_DEFS=(-D BENCH_NO_PANEL)
                     PRECONDITION="MOTORS CONNECTED and the pack voltage recorded -- the wheels will turn"
+                    ;;
+    scan)           BENCH_FILE="test_bench_scan.spin2"
+                    PRECONDITION="MOTORS CONNECTED, BOTH WHEELS FREE TO TURN -- UNATTENDED offset scan, up to 30 minutes, each wheel both directions to half speed"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage
@@ -183,7 +192,7 @@ if [ -n "$CLK_OVERRIDE" ]; then
         exit 2
     fi
 else
-    CLK_OVERRIDE="270000000"  # default already in test_bench_t0.spin2; no file touched
+    CLK_OVERRIDE="270000000"  # the tier binary's own CLK_FREQ default; no file touched
     echo "bench-run.sh: no clkfreq override given -- using the file's own default (270000000), no source file written"
 fi
 
@@ -207,7 +216,7 @@ fi
 # ---- run, with src/ as cwd, batch mode -----------------------------------------
 # Batch (not --ide -- that's VSCode/IDE integration, not a terminal session):
 # --console-mode for a console-friendly run, --exit-on-end-session so
-# pnut-term-ts closes itself once test_bench_t0.spin2 prints its
+# pnut-term-ts closes itself once the tier's binary prints its
 # DEBUG_END_SESSION marker (the tool's own documented default end-marker
 # phrase), instead of waiting on a keypress or a fixed timeout.
 run "$PNUT_TERM" -r "$BINARY" --console-mode --exit-on-end-session

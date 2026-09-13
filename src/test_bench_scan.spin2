@@ -1,0 +1,3377 @@
+'' =================================================================================================
+''
+''   File....... test_bench_scan.spin2
+''   Purpose.... Unattended per-direction commutation-offset scan: per motor and per increment
+''               sign, find the offset that minimises the driver's own sensed current
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 12 Sep 2026
+''   Updated.... 12 Sep 2026
+''
+'' =================================================================================================
+
+{ WHY THIS RUN
+
+  Bench Pass 1 (DOCs/analyses/bench/2026-09-12/CHAR-RUN-EVALUATION.md finding 1) measured a
+  NEGATIVE motor increment drawing 1.76-1.97x the current of a POSITIVE one, on both motors.
+  A negative increment is served by offset_fwd (43 degrees for the 6.5in motor) and a positive
+  one by offset_rev (317). DOCs/analyses/BLDC-COMMUTATION-PRINCIPLES.md explains why an offset
+  pair symmetric about 0 is right only if the hall pattern's electrical zero sits at 0. This
+  binary finds each direction's own minimum-current offset, unattended, from the driver's own
+  sense channel -- no meter, no keypress, no operator reading.
+
+  THE APPROACH is util_char_motor.spin2's drive-measure-fault-reset loop, with these deltas:
+  independent per-sign offsets (testSetFwdRevIndep), an averaged sense_i_mV over a settled,
+  hall-tick-gated window instead of a peak, the fixed bench target as compile-time constants,
+  one wheel at a time with the idle wheel never started, no HDMI, and no increment above the
+  147_000_000 ceiling logged at 18.5V.
+
+  SEQUENCE
+   (0) header records; preflight that each declared wheel turns
+   (1) per motor: start checks, zero-current reading, self-check at 43/317 (+1/4 and -1/4 speed).
+       A miss ends the run: a broken foundation must not produce a sweep that looks like data.
+   (2) per motor per sign at 1/4 speed: REF at default, coarse walk out from the default,
+       bracket test, interleaved fine points, quadratic fit (one extension), REF again
+   (3) per motor per sign at 1/2 speed: re-locate the minimum around the 1/4-speed minimum
+   (4) RESULT records: fitted minima, currents, their midpoint and ratio, the 1/2-speed shift
+
+  SAFETY, because nobody is watching: an absolute current abort that stops the wheel inside the
+  sampling loop, a per-point relative current abort, consecutive and run-wide fault caps, a
+  charge cap, a run time cap, both wheels stop() on every exit path, and the QUOTED
+  DEBUG_END_SESSION marker. The driver's own angle-lag fault disables PWM regardless.
+  PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY.
+
+  RECOVERY after a faulted point sends a ZERO command first: the driver leaves DCS_FAULTED only
+  when a changed command arrives, so testResetFault() alone would wait out its timeout.
+
+  RECORD DISCIPLINE
+
+  Tag-first, comma-separated name,value pairs, all tags prefixed BS-. Every record prints every
+  field in the same order; absence is the token NA. Booleans are the tokens TRUE/FALSE. Motors
+  are LEFT/RIGHT and increments are signed; this binary never says FWD/REV (PL-19). Every
+  numeric field is clamped to a stated width and every token field to a stated length, so no
+  record can exceed 280 bytes -- the longest record measured intact through debug(zstr_()).
+
+  The line builder (lineReset through lineEmit) is transcribed byte-identical from
+  test_bench_char.spin2; extraction into a shared object is planned at task 3508.
+
+  NO timed window contains a debug() statement: every record is emitted after the motor has
+  been commanded to zero and has stopped.
+
+  HOW IT IS RUN
+
+      tools/bench-run.sh scan
+}
+
+CON { build identity }
+
+    SRC_REV     = 1                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 1                                         ' BS- record-format version
+
+CON { timing }
+
+    CLK_FREQ = 270_000_000                                  ' every top in this tree runs at 270 MHz
+    _clkfreq = CLK_FREQ
+    MS_PER_SEC = 1000
+
+CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
+
+' Hardcoded rather than read from `user`, for the reason test_bench_char.spin2 documents: this
+' file needs BOTH a left and a right base, so it names the library's own PINS_*/PWR_*/BRD_*
+' constants, which are legal under every config block.
+    LEFT_TEST_BASE  = wheelL.PINS_P32_P47                    ' the LEFT board is at P32, measured 2026-09-11
+    RIGHT_TEST_BASE = wheelL.PINS_P16_P31
+    TEST_VOLTAGE    = wheelL.PWR_18p5V
+    TEST_DET_MODE   = wheelL.BRD_AUTO_DET
+    MAX_COG_ID      = 7                                      ' start() returns a cog id 0..7 on success
+
+CON { drive increments -- NONE may exceed DRIVE_CEILING_INCRE }
+
+' isp_bldc_motor.spin2 confgurePowerLimits(): 147_000_000 is the 18.5V motor-increment ceiling,
+' logged as maxFwdIncreAtPwr at debug_260912-153807.log:471. commandMotor() refuses anything above.
+    DRIVE_CEILING_INCRE = 147_000_000
+    QTR_SPEED_INCRE     = DRIVE_CEILING_INCRE / 4           ' 36_750_000, quarter speed
+    HALF_SPEED_INCRE    = DRIVE_CEILING_INCRE / 2           ' 73_500_000, half speed
+    PREFLIGHT_INCRE     = DRIVE_CEILING_INCRE / 8           ' 18_375_000, gentle nudge
+    JOG_INCRE           = QTR_SPEED_INCRE                   ' recovery jog, at the self-checked rate
+
+CON { run sequencing enums }
+
+  ' Which wheel has a running driver cog:
+  '  SIDE_NONE  - neither wheel started
+  '  SIDE_LEFT  - wheelL started, wheelR never started
+  '  SIDE_RIGHT - wheelR started, wheelL never started
+    #0, SIDE_NONE, SIDE_LEFT, SIDE_RIGHT
+    SIDE_SLOTS = 2
+
+  ' Motor increment sign under test:
+  '  SIGN_NEG - negative increments, served by offset_fwd (default 43)
+  '  SIGN_POS - positive increments, served by offset_rev (default 317, carried as -43)
+    #0, SIGN_NEG, SIGN_POS
+    SIGN_SLOTS = 2
+
+  ' Speed rung:
+  '  SPEED_QTR  - QTR_SPEED_INCRE
+  '  SPEED_HALF - HALF_SPEED_INCRE
+    #0, SPEED_QTR, SPEED_HALF
+    SPEED_SLOTS = 2
+    RESULT_SLOTS = SIDE_SLOTS * SIGN_SLOTS * SPEED_SLOTS
+
+  ' Point phase:
+  '  PH_SELF      - self-check point at 43/317
+  '  PH_REF_START - leg reference at the default offset, before the sweep
+  '  PH_COARSE    - coarse walk point
+  '  PH_FINE      - fine (or half-speed confirm) point
+  '  PH_EXTEND    - one-time extension beyond a fit edge
+  '  PH_REF_END   - leg reference at the default offset, after the sweep
+    #0, PH_SELF, PH_REF_START, PH_COARSE, PH_FINE, PH_EXTEND, PH_REF_END
+
+  ' Point result:
+  '  PR_OK             - window completed at speed, no fault
+  '  PR_FAULT          - the driver faulted during the point
+  '  PR_ABORT_I        - the per-point relative current abort stopped the wheel
+  '  PR_STEADY_TIMEOUT - AT_SPEED not reached within STEADY_TIMEOUT_MS
+  '  PR_WINDOW_TIMEOUT - the tick-gated window did not complete in time
+  '  PR_NO_COG         - the driver cog was not running
+    #0, PR_OK, PR_FAULT, PR_ABORT_I, PR_STEADY_TIMEOUT, PR_WINDOW_TIMEOUT, PR_NO_COG
+
+  ' Coarse-walk side stop:
+  '  WS_RISE       - current rose RISE_PCT above the low with MIN_PAST points beyond it
+  '  WS_FAULTS     - SIDE_FAULT_STOP consecutive faulted points
+  '  WS_HARD_LIMIT - reached default +/- HARD_LIMIT_DEG
+  '  WS_RUN_ABORT  - the run aborted
+    #0, WS_RISE, WS_FAULTS, WS_HARD_LIMIT, WS_RUN_ABORT
+
+  ' Bracket verdict:
+  '  BR_OK              - a high point exists on both sides of the low
+  '  BR_EDGE_HARD_LIMIT - a side ran to the hard limit without rising
+  '  BR_EDGE_FAULT      - a side ended in faults without rising
+  '  BR_NO_VALID        - no valid coarse point at all
+  '  BR_RUN_ABORT       - the run aborted during the walk
+    #0, BR_OK, BR_EDGE_HARD_LIMIT, BR_EDGE_FAULT, BR_NO_VALID, BR_RUN_ABORT
+
+  ' Fit status:
+  '  FS_OK            - convex, interior vertex, residual acceptable
+  '  FS_NOT_BRACKETED - no fit: the coarse walk did not bracket a minimum
+  '  FS_NOT_CONVEX    - fitted curvature <= 0
+  '  FS_TOO_FEW       - fewer valid points than the fit needs, or a degenerate system
+  '  FS_EDGE          - vertex within FIT_EDGE_MARGIN_DEG of a span edge after the extension
+  '  FS_POOR          - fitted, but the residual exceeds the POOR threshold
+  '  FS_SKIPPED       - not attempted
+    #0, FS_OK, FS_NOT_BRACKETED, FS_NOT_CONVEX, FS_TOO_FEW, FS_EDGE, FS_POOR, FS_SKIPPED
+
+  ' Leg exit:
+  '  LX_DONE      - leg completed
+  '  LX_FAULT_CAP - LEG_FAULT_CAP consecutive faulted fine points ended the leg
+  '  LX_RUN_ABORT - the run aborted during the leg
+  '  LX_SKIPPED   - leg not run (reference invalid, or its prerequisite fit failed)
+    #0, LX_DONE, LX_FAULT_CAP, LX_RUN_ABORT, LX_SKIPPED
+
+  ' Abort reason (first cause is kept, never overwritten):
+    #0, AR_NONE, AR_PREFLIGHT, AR_START_FAIL, AR_START_CHECK, AR_SELF_CHECK_MISS, AR_ABS_CURRENT, ...
+        AR_ABORT_I_CAP, AR_FAULT_CAP, AR_CHARGE_CAP, AR_TIME_CAP, AR_RECOVERY_FAIL, AR_LIB_ABORT, ...
+        AR_INCRE_GUARD, AR_OFFSET_READBACK, AR_ABORT_I
+
+  ' Abort scope:
+  '  SCOPE_RUN   - ends the run
+  '  SCOPE_POINT - one point, the run continues
+  '  SCOPE_LEG   - one leg, the run continues
+    #0, SCOPE_RUN, SCOPE_POINT, SCOPE_LEG
+
+  ' Fault-recovery step:
+  '  FX_ZERO_CMD - zero command, wait STOPPED
+  '  FX_RESET    - testResetFault()
+  '  FX_JOG      - jog at the default offsets
+  '  FX_RESTART  - stop() and start() with start checks
+    #0, FX_ZERO_CMD, FX_RESET, FX_JOG, FX_RESTART
+
+  ' Self-check first miss:
+    #0, MISS_NONE, MISS_START, MISS_ZERO, MISS_I_POS, MISS_I_NEG, MISS_RATIO, MISS_RATE, MISS_INTEG, MISS_FAULT
+
+CON { sampling and windows }
+
+    SAMPLE_MS                = 5                            ' telemetry poll cadence
+    SAMPLE_DT_MAX_MS         = 1_000                        ' charge integration step ceiling
+    SETTLE_MS                = 1_000                        ' after AT_SPEED, before the window
+    STEADY_TIMEOUT_MS        = 4_000                        ' AT_SPEED expected ~0.9 s (1/4) / ~1.3 s (1/2)
+    STOP_TIMEOUT_MS          = 3_000                        ' ramp-down ~0.37 s (1/4) / ~0.75 s (1/2)
+    READY_TIMEOUT_MS         = 2_000                        ' driver cog reports ready after start()
+    REST_MS                  = 500                          ' stopped rest between points
+    FAULT_COOL_MS            = 5_000                        ' util_char_motor's post-fault delay
+    JOG_MS                   = 1_000                        ' recovery jog duration
+    PREFLIGHT_MS             = 700                          ' preflight nudge and coast
+    ZERO_SAMPLES             = 200                          ' zero-current reading, ~1 s
+    BATCH_TICKS              = 30                           ' 5 electrical cycles per batch mean
+    MAX_BATCHES              = 20
+    MIN_BATCHES_FOR_SE       = 2
+    WIN_TICKS_COARSE         = 180                          ' 2 wheel revolutions
+    WIN_TICKS_FINE           = 270                          ' 3 wheel revolutions (also REF at 1/4)
+    WIN_TICKS_SELF           = 450                          ' 5 wheel revolutions
+    WIN_TICKS_HALF           = 540                          ' 6 wheel revolutions at 1/2 speed
+    WINDOW_TIMEOUT_MARGIN_MS = 1_000
+    SAMPLE_CAP               = 8_000                        ' with the clamp below, |sum| <= 5.3e7
+    SAMPLE_CLAMP_LO_MV       = -3_300
+    SAMPLE_CLAMP_HI_MV       = 6_600
+    RATE_X10_SCALE           = 10_000                       ' ticks * this / ms = ticks per second x10
+    X10                      = 10                           ' fixed-point scale of every _x10 field
+    X100                     = 100                          ' percent / x100 scale
+    X1000                    = 1_000                        ' _x1000 scale
+
+CON { expected rates and self-check bands }
+
+    RATE_QTR_EXPECTED  = 99                                 ' DERIVED from the 2 kHz drive loop
+    RATE_QTR_LO        = 90
+    RATE_QTR_HI        = 106
+    RATE_HALF_EXPECTED = 198
+    RATE_HALF_LO       = 182
+    RATE_HALF_HI       = 212
+
+    ' Pass 1 means /6136: +1/4 90.7/91.6 mV, -1/4 169.5/168.2 mV; bands +/-25%
+    POS_QTR_LO_MV      = 68
+    POS_QTR_HI_MV      = 114
+    NEG_QTR_LO_MV      = 127
+    NEG_QTR_HI_MV      = 212
+    RATIO_LO_X1000     = 1_550                              ' Pass 1 raw -/+ ratio 1.87 / 1.84
+    RATIO_HI_X1000     = 2_200
+    ZERO_LO_MV         = -10                                ' Pass 1 fit intercept 9.1 mV
+    ZERO_HI_MV         = 30
+
+CON { sweep geometry -- offsets in electrical degrees }
+
+    DEF_NEG_DEG        = 43                                 ' offset_fwd default, negative increments
+    DEF_POS_DEG        = 317                                ' offset_rev default, positive increments
+    DEGREES_PER_TURN   = 360
+    NORM_MAX_STEPS     = 4                                  ' scan offsets stay within +/-360 of range
+    COARSE_STEP_DEG    = 10
+    HARD_LIMIT_DEG     = 90                                 ' never beyond default +/- this
+    COARSE_MAX_STEPS   = HARD_LIMIT_DEG / COARSE_STEP_DEG
+    FINE_STEP_DEG      = 5
+    FINE_HALF_DEG      = 20
+    CONFIRM_HALF_DEG   = 15
+    FINE_ORDER_COUNT   = 9
+    CONFIRM_ORDER_COUNT = 7
+    EXTEND_PTS         = 4
+    CONFIRM_EXTEND_PTS = 2
+    RISE_PCT           = 15
+    MIN_PAST           = 2
+    SIDE_FAULT_STOP    = 2
+    LEG_FAULT_CAP      = 3
+    FIT_MIN_PTS        = 6
+    CONFIRM_MIN_PTS    = 5
+    FIT_PARAMS         = 3                                  ' quadratic: curvature, slope, level
+    MAX_LEG_POINTS     = 48
+
+CON { fit arithmetic (float) }
+
+    FIT_DEG_SCALE       = 10.0                              ' u = (offset - centre) / 10 degrees
+    FIT_DET_MIN         = 0.001                             ' below this the normal matrix is degenerate
+    FIT_POOR_MIN_MV     = 3.0
+    FIT_POOR_SE_FACTOR  = 3.0
+    FIT_EDGE_MARGIN_DEG = 1.25                              ' a quarter of a fine step
+    FIT_MODEL_CURV      = 0.01523087                        ' (pi/18)^2 / 2: the 1/cos law per (10 deg)^2
+    FIT_FLAT_FRACTION   = 0.02                              ' 2% band for flat2_deg_x10
+    SHIFT_SIG_FACTOR    = 2.0
+
+CON { safety thresholds }
+
+    ABS_ABORT_MV        = 1_500                             ' 10 A at 150 mV/A; 1.6x the highest Pass 1 sample
+    ABS_ABORT_SAMPLES   = 4
+    POINT_ABORT_X100    = 250                               ' 2.5x the leg reference
+    POINT_ABORT_SAMPLES = 40
+    SPEED_CURRENT_RATIO = 5                                 ' Pass 1 half/quarter current ratio
+    RUN_TIME_CAP_S      = 1_800
+    RUN_CHARGE_CAP_MVS  = 432_000                           ' 0.8 Ah at 150 mV/A
+    RUN_FAULT_CAP       = 24
+    RUN_ABORT_I_CAP     = 6
+    DRIFT_FLAG_PCT      = 8
+    IMBALANCE_PCT       = 10
+    UNSETTLED_PCT       = 3
+
+CON { record widths -- every numeric field is clamped to one of these }
+
+    LIM_TINY  = 999                                         ' prints at most 4 bytes: -999
+    LIM_SMALL = 99_999                                      ' prints at most 7 bytes: -99_999
+    LIM_MID   = 9_999_999                                   ' prints at most 10 bytes: -9_999_999
+    LIM_BIG   = 999_999_999                                 ' prints at most 12 bytes: -999_999_999
+    BOOL_BYTES = 5                                          ' FALSE
+
+    ' token field length limits (a longer token prints as "?")
+    TOKMAX_MOTOR     = 5
+    TOKMAX_SPEED     = 4
+    TOKMAX_SIGN      = 3
+    TOKMAX_PHASE     = 9
+    TOKMAX_RESULT    = 14
+    TOKMAX_SERVED    = 10
+    TOKMAX_WALK_SIDE = 4
+    TOKMAX_WALK_STOP = 10
+    TOKMAX_BRACKET   = 15
+    TOKMAX_FIT       = 13
+    TOKMAX_LEG_EXIT  = 9
+    TOKMAX_REASON    = 15
+    TOKMAX_SCOPE     = 5
+    TOKMAX_STEP      = 8
+    TOKMAX_VERDICT   = 4
+    TOKMAX_MISS      = 5
+    TOKMAX_CFG       = 5
+    TOKMAX_FRAME     = 5
+    TOKMAX_BOARD     = 7
+    TOKMAX_ORDER     = 9
+    TOKMAX_EXIT      = 8
+    TOKMAX_OKFAIL    = 4
+
+CON { record assembly buffer }
+
+    LINE_BUF_SIZE    = 640
+    MAX_DEC_DIGITS   = 11
+    DEC_RADIX        = 10
+    DIGITS_PER_GROUP = 3
+
+OBJ { objects under test }
+
+#ifdef BENCH_CFG
+    user   : "isp_bldc_motor_userconfig_bench"              ' banner cfg_id and motor_type only
+#else
+    user   : "isp_bldc_motor_userconfig"
+#endif
+    wheelL : "isp_bldc_motor"                                ' left wheel instance
+    wheelR : "isp_bldc_motor"                                ' right wheel instance
+
+DAT { record assembly state }
+
+lineBuf         BYTE    0[LINE_BUF_SIZE]
+lineLen         LONG    0
+
+DAT { point orders -- in FINE_STEP_DEG units, interleaved so drift does not tilt the fit }
+
+fineOrder       LONG    0, 2, -2, 4, -4, 1, -1, 3, -3
+confirmOrder    LONG    0, 2, -2, 1, -1, 3, -3
+
+DAT { token strings }
+
+sNa             BYTE    "NA", 0
+sTrue           BYTE    "TRUE", 0
+sFalse          BYTE    "FALSE", 0
+sBadTok         BYTE    "?", 0
+
+sMotNone        BYTE    "NONE", 0
+sMotLeft        BYTE    "LEFT", 0
+sMotRight       BYTE    "RIGHT", 0
+
+sSpeedQtr       BYTE    "QTR", 0
+sSpeedHalf      BYTE    "HALF", 0
+
+sSignNeg        BYTE    "NEG", 0
+sSignPos        BYTE    "POS", 0
+
+sServedFwd      BYTE    "OFFSET_FWD", 0
+sServedRev      BYTE    "OFFSET_REV", 0
+
+sPhSelf         BYTE    "SELF", 0
+sPhRefStart     BYTE    "REF_START", 0
+sPhCoarse       BYTE    "COARSE", 0
+sPhFine         BYTE    "FINE", 0
+sPhExtend       BYTE    "EXTEND", 0
+sPhRefEnd       BYTE    "REF_END", 0
+
+sPrOk           BYTE    "OK", 0
+sPrFault        BYTE    "FAULT", 0
+sPrAbortI       BYTE    "ABORT_I", 0
+sPrSteadyTo     BYTE    "STEADY_TIMEOUT", 0
+sPrWindowTo     BYTE    "WINDOW_TIMEOUT", 0
+sPrNoCog        BYTE    "NO_COG", 0
+
+sSideUp         BYTE    "UP", 0
+sSideDown       BYTE    "DOWN", 0
+
+sWsRise         BYTE    "RISE", 0
+sWsFaults       BYTE    "FAULTS", 0
+sWsHardLimit    BYTE    "HARD_LIMIT", 0
+sWsRunAbort     BYTE    "RUN_ABORT", 0
+
+sBrOk           BYTE    "OK", 0
+sBrEdgeLimit    BYTE    "EDGE_HARD_LIMIT", 0
+sBrEdgeFault    BYTE    "EDGE_FAULT", 0
+sBrNoValid      BYTE    "NO_VALID", 0
+sBrRunAbort     BYTE    "RUN_ABORT", 0
+
+sFsOk           BYTE    "OK", 0
+sFsNotBracket   BYTE    "NOT_BRACKETED", 0
+sFsNotConvex    BYTE    "NOT_CONVEX", 0
+sFsTooFew       BYTE    "TOO_FEW", 0
+sFsEdge         BYTE    "EDGE", 0
+sFsPoor         BYTE    "POOR", 0
+sFsSkipped      BYTE    "SKIPPED", 0
+
+sLxDone         BYTE    "DONE", 0
+sLxFaultCap     BYTE    "FAULT_CAP", 0
+sLxRunAbort     BYTE    "RUN_ABORT", 0
+sLxSkipped      BYTE    "SKIPPED", 0
+
+sArNone         BYTE    "NONE", 0
+sArPreflight    BYTE    "PREFLIGHT", 0
+sArStartFail    BYTE    "START_FAIL", 0
+sArStartCheck   BYTE    "START_CHECK", 0
+sArSelfMiss     BYTE    "SELF_CHECK_MISS", 0
+sArAbsCurrent   BYTE    "ABS_CURRENT", 0
+sArAbortICap    BYTE    "ABORT_I_CAP", 0
+sArFaultCap     BYTE    "FAULT_CAP", 0
+sArChargeCap    BYTE    "CHARGE_CAP", 0
+sArTimeCap      BYTE    "TIME_CAP", 0
+sArRecovFail    BYTE    "RECOVERY_FAIL", 0
+sArLibAbort     BYTE    "LIB_ABORT", 0
+sArIncreGuard   BYTE    "INCRE_GUARD", 0
+sArOfsReadback  BYTE    "OFFSET_READBACK", 0
+sArAbortI       BYTE    "ABORT_I", 0
+
+sScopeRun       BYTE    "RUN", 0
+sScopePoint     BYTE    "POINT", 0
+sScopeLeg       BYTE    "LEG", 0
+
+sFxZeroCmd      BYTE    "ZERO_CMD", 0
+sFxReset        BYTE    "RESET", 0
+sFxJog          BYTE    "JOG", 0
+sFxRestart      BYTE    "RESTART", 0
+
+sMissNone       BYTE    "NONE", 0
+sMissStart      BYTE    "START", 0
+sMissZero       BYTE    "ZERO", 0
+sMissIPos       BYTE    "I_POS", 0
+sMissINeg       BYTE    "I_NEG", 0
+sMissRatio      BYTE    "RATIO", 0
+sMissRate       BYTE    "RATE", 0
+sMissInteg      BYTE    "INTEG", 0
+sMissFault      BYTE    "FAULT", 0
+
+sVerdictPass    BYTE    "PASS", 0
+sVerdictFail    BYTE    "FAIL", 0
+
+sOk             BYTE    "OK", 0
+sFail           BYTE    "FAIL", 0
+
+sCfgBench       BYTE    "BENCH", 0
+sCfgUser        BYTE    "USER", 0
+sFrameMotor     BYTE    "MOTOR", 0
+
+sBoardRevA      BYTE    "REV_A", 0
+sBoardRevB      BYTE    "REV_B", 0
+sBoardUnknown   BYTE    "UNKNOWN", 0
+
+sOrderNegFirst  BYTE    "NEG_FIRST", 0
+sOrderPosFirst  BYTE    "POS_FIRST", 0
+
+sExitComplete   BYTE    "COMPLETE", 0
+sExitAborted    BYTE    "ABORTED", 0
+
+VAR { run-wide state }
+
+    LONG    currentSide                                     ' SIDE_* with a running driver cog
+    LONG    runStartMs                                      ' getms() at run start
+    LONG    abortReason                                     ' AR_* first run-abort cause, AR_NONE while running
+    LONG    bRunReturned                                    ' TRUE once runScan() reached its end
+    LONG    pointSeq                                        ' points measured so far, run-wide
+    LONG    runFaults                                       ' faulted/timed-out points, run-wide
+    LONG    runAbortsI                                      ' per-point current aborts, run-wide
+    LONG    runChargeMvS                                    ' integrated sense, mV x s
+    LONG    lastIncre                                       ' last commanded motor increment
+    LONG    bLastStartOk                                    ' result of the most recent start checks
+    LONG    bLeftDone
+    LONG    bRightDone
+
+VAR { sampling state }
+
+    LONG    sampPrevMs
+    LONG    sampChargeMvMs
+    LONG    sampAbsCount
+    LONG    sampOverCount
+    LONG    sampLimitMv
+    LONG    bSampPointAbort
+    LONG    bSampFaultSeen
+    LONG    bSampNoCog
+    LONG    sampSense
+    LONG    sampDuty
+    LONG    sampErr
+    LONG    sampState
+
+VAR { the point just measured }
+
+    LONG    ptResult
+    LONG    bPtCommanded
+    LONG    ptSteadyMs
+    LONG    bPtWinRan
+    LONG    ptTicks
+    LONG    ptWinMs
+    LONG    ptRateX10
+    LONG    bPtRateOk
+    LONG    ptSamples
+    LONG    ptMeanX10
+    LONG    ptSeX10
+    LONG    bPtSeValid
+    LONG    ptHalfAX10
+    LONG    ptHalfBX10
+    LONG    bPtHalvesValid
+    LONG    bPtUnsettled
+    LONG    ptMinMv
+    LONG    ptMaxMv
+    LONG    ptDutyMean
+    LONG    ptErrMean
+    LONG    ptMissedD
+    LONG    ptIllegalD
+    LONG    bPtIntegValid
+    LONG    ptChargeMvS
+    LONG    ptNegDeg
+    LONG    ptPosDeg
+    LONG    batchMeanF[MAX_BATCHES]
+
+VAR { the leg in progress }
+
+    LONG    legCount
+    LONG    legDeg[MAX_LEG_POINTS]
+    LONG    legMeanX10[MAX_LEG_POINTS]
+    LONG    legSeX10[MAX_LEG_POINTS]
+    LONG    bLegSeValid[MAX_LEG_POINTS]
+    LONG    legResult[MAX_LEG_POINTS]
+    LONG    legPhase[MAX_LEG_POINTS]
+    LONG    bLegRateOk[MAX_LEG_POINTS]
+    LONG    legLowIdx
+    LONG    legConsecFaults
+    LONG    legFaults
+    LONG    legAbortsI
+    LONG    seScratch[MAX_LEG_POINTS]
+
+VAR { the fit just computed }
+
+    LONG    fitStatus
+    LONG    fitN
+    LONG    fitCentre
+    LONG    fitSpanLo
+    LONG    fitSpanHi
+    LONG    bFitExtended
+    LONG    bFitSolved
+    LONG    fitMinF
+    LONG    fitSeF
+    LONG    bFitSeValid
+    LONG    fitMinMvF
+    LONG    fitRmsF
+    LONG    fitMedSeX10
+    LONG    fitCurvF
+
+VAR { results, index = resultSlot(side, sign, speed) }
+
+    LONG    resStatus[RESULT_SLOTS]
+    LONG    resMinF[RESULT_SLOTS]
+    LONG    resSeF[RESULT_SLOTS]
+    LONG    bResSeValid[RESULT_SLOTS]
+    LONG    resIminF[RESULT_SLOTS]
+    LONG    resRmsF[RESULT_SLOTS]
+    LONG    resIdefX10[RESULT_SLOTS]
+    LONG    bResIdefValid[RESULT_SLOTS]
+    LONG    bResDrift[RESULT_SLOTS]
+    LONG    selfMeanX10[SIDE_SLOTS * SIGN_SLOTS]
+    LONG    zeroMeanX10[SIDE_SLOTS]
+    LONG    bZeroOk[SIDE_SLOTS]
+
+PUB main() | trapCode
+'' Run the unattended commutation-offset scan, then stop both wheels and end the session.
+''
+
+' Local Variables:
+' @local trapCode - value delivered by the abort trap around runScan()
+
+    initRunState()
+    emitHeaderRecords()
+    bRunReturned := FALSE
+    trapCode := \runScan()                                  ' a library abort lands here, not past the stop()s
+    if bRunReturned == FALSE
+        setRunAbort(AR_LIB_ABORT, trapCode)
+    shutdownMotors()                                        ' EVERY path: both wheels stop()
+    emitEnd()
+    ' QUOTED, not backticked -- a backtick makes it a display command and the marker is missed.
+    debug("DEBUG_END_SESSION")
+
+PRI initRunState() | slotIdx
+' Reset every run-wide counter and result slot.
+'
+' @local slotIdx - result or self-check slot index
+
+    currentSide := SIDE_NONE
+    runStartMs := getms()
+    abortReason := AR_NONE
+    bRunReturned := FALSE
+    pointSeq := 0
+    runFaults := 0
+    runAbortsI := 0
+    runChargeMvS := 0
+    lastIncre := 0
+    bLastStartOk := FALSE
+    bLeftDone := FALSE
+    bRightDone := FALSE
+    sampPrevMs := runStartMs
+    sampChargeMvMs := 0
+    repeat slotIdx from 0 to RESULT_SLOTS - 1
+        resStatus[slotIdx] := FS_SKIPPED
+        bResSeValid[slotIdx] := FALSE
+        bResIdefValid[slotIdx] := FALSE
+        bResDrift[slotIdx] := FALSE
+    repeat slotIdx from 0 to (SIDE_SLOTS * SIGN_SLOTS) - 1
+        selfMeanX10[slotIdx] := 0
+    repeat slotIdx from 0 to SIDE_SLOTS - 1
+        zeroMeanX10[slotIdx] := 0
+        bZeroOk[slotIdx] := FALSE
+
+PRI runScan() : bCompleted
+' Preflight, then the LEFT and RIGHT motor blocks. Every stage is skipped once the run aborts.
+'
+' @returns bCompleted - TRUE when no run abort occurred
+
+    bCompleted := FALSE
+    if preflightWheels() == FALSE
+        setRunAbort(AR_PREFLIGHT, 0)                        ' kept only if no earlier cause was recorded
+    if abortReason == AR_NONE
+        runMotorBlock(SIDE_LEFT, SIGN_NEG)
+    if abortReason == AR_NONE
+        bLeftDone := TRUE
+        runMotorBlock(SIDE_RIGHT, SIGN_POS)
+    if abortReason == AR_NONE
+        bRightDone := TRUE
+    bCompleted := (abortReason == AR_NONE)
+    bRunReturned := TRUE
+
+PRI setRunAbort(reason, detailValue)
+' Record the first run-abort cause and emit its BS-ABORT; later causes are ignored.
+'
+' @param reason - AR_* cause
+' @param detailValue - the reading or code that triggered it
+
+    if abortReason == AR_NONE
+        abortReason := reason
+        emitAbort(SCOPE_RUN, reason, currentSide, lastIncre, detailValue)
+
+PRI runGuard() | elapsedS
+' Check the run-wide caps between points.
+'
+' @local elapsedS - seconds since run start
+
+    if abortReason == AR_NONE
+        elapsedS := (getms() - runStartMs) / MS_PER_SEC
+        if elapsedS >= RUN_TIME_CAP_S
+            setRunAbort(AR_TIME_CAP, elapsedS)
+        elseif runChargeMvS >= RUN_CHARGE_CAP_MVS
+            setRunAbort(AR_CHARGE_CAP, runChargeMvS)
+        elseif runFaults >= RUN_FAULT_CAP
+            setRunAbort(AR_FAULT_CAP, runFaults)
+        elseif runAbortsI >= RUN_ABORT_I_CAP
+            setRunAbort(AR_ABORT_I_CAP, runAbortsI)
+
+PRI shutdownMotors()
+' Stop both wheels unconditionally. stop() on a never-started instance touches no pin.
+
+    wheelL.stop()
+    wheelR.stop()
+    currentSide := SIDE_NONE
+
+PRI preflightWheels() : bAllMoved | side, ticksBefore, ticksAfter, ticksMoved, bNudgeFault
+' Prove each declared wheel turns before committing the session to the scan.
+'
+' @returns bAllMoved - TRUE when both wheels moved and the run has not aborted
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local ticksBefore - hall ticks before the nudge
+' @local ticksAfter - hall ticks after the nudge
+' @local ticksMoved - signed tick delta across the nudge
+' @local bNudgeFault - TRUE when the nudge faulted
+
+    bAllMoved := TRUE
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        if abortReason == AR_NONE
+            restartSide(side)
+        if abortReason == AR_NONE
+            ticksBefore := sideTicks(side)
+            bNudgeFault := driveForMs(side, PREFLIGHT_INCRE, PREFLIGHT_MS)
+            ticksAfter := sideTicks(side)
+            if sideCogRunning(side)
+                commandMotor(side, 0)
+                waitStopped(side)
+            ticksMoved := ticksAfter - ticksBefore
+            emitPreflight(side, ticksMoved)
+            if ticksMoved == 0
+                bAllMoved := FALSE
+            if bNudgeFault and (abortReason == AR_NONE)
+                runFaults += 1
+                recoverFromFault(side, PREFLIGHT_INCRE, DEF_NEG_DEG)
+    bAllMoved := bAllMoved and (abortReason == AR_NONE)
+
+PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
+' Run one motor's start checks, zero reading, self-check, both quarter-speed legs, both
+' half-speed legs, and its RESULT records.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param firstSign - SIGN_NEG or SIGN_POS, the sign whose legs run first
+'
+' @local secondSign - the other sign
+' @local bSelfPassed - TRUE when the self-check passed
+
+    secondSign := SIGN_POS - firstSign
+    bSelfPassed := FALSE
+    restartSide(side)
+    if abortReason == AR_NONE
+        measureZero(side)
+    if abortReason == AR_NONE
+        bSelfPassed := runSelfCheck(side)
+    if abortReason == AR_NONE
+        runLeg(side, SPEED_QTR, firstSign)
+    if abortReason == AR_NONE
+        runLeg(side, SPEED_QTR, secondSign)
+    if abortReason == AR_NONE
+        runLeg(side, SPEED_HALF, firstSign)
+    if abortReason == AR_NONE
+        runLeg(side, SPEED_HALF, secondSign)
+    if bSelfPassed
+        emitResults(side, firstSign)
+
+PRI restartSide(side) : bStartOk
+' Stop whichever wheel is running and this wheel, then start this wheel with start checks.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bStartOk - TRUE when every start check passed
+
+    if (currentSide <> SIDE_NONE) and (currentSide <> side)
+        sideStop(currentSide)
+    sideStop(side)
+    currentSide := SIDE_NONE
+    bStartOk := startSide(side)
+
+PRI startSide(side) : bStartOk | startedCog, initNeg, initPos, eBoardRev, nMissed, nIllegal, ...
+    readNeg, readPos, bCogOk, bRevB, bOffsetsOk, bIntegOk
+' Start one wheel and run the start checks: cog id, Rev B, integrity counts, and the offsets
+' read back AFTER 43/317 are set explicitly. init()'s own offsets are logged, not required.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bStartOk - TRUE when every start check passed
+'
+' @local startedCog - start()'s return
+' @local initNeg - offset_fwd degrees init() applied
+' @local initPos - offset_rev degrees init() applied
+' @local eBoardRev - REV_* recorded at start
+' @local nMissed - missed hall transitions since start
+' @local nIllegal - illegal hall codes since start
+' @local readNeg - offset_fwd degrees read back after setting 43
+' @local readPos - offset_rev degrees read back after setting 317
+' @local bCogOk - TRUE when start() returned 0..MAX_COG_ID
+' @local bRevB - TRUE when the board is Rev B
+' @local bOffsetsOk - TRUE when the read-back is exactly 43/317
+' @local bIntegOk - TRUE when no illegal hall code was seen at start
+
+    startedCog := sideStart(side)
+    currentSide := side
+    waitReady(side)
+    initNeg, initPos := sideGetOffsets(side)
+    eBoardRev := sideBoardType(side)
+    nMissed, nIllegal := sideIntegrity(side)
+    sideSetOffsets(side, DEF_NEG_DEG, DEF_POS_DEG)
+    readNeg, readPos := sideGetOffsets(side)
+    bCogOk := (startedCog >= 0) and (startedCog <= MAX_COG_ID)
+    bRevB := (eBoardRev == wheelL.REV_B)
+    bOffsetsOk := (readNeg == DEF_NEG_DEG) and (readPos == DEF_POS_DEG)
+    bIntegOk := (nIllegal == 0)
+    bStartOk := bCogOk and bRevB and bOffsetsOk and bIntegOk
+    bLastStartOk := bStartOk
+    emitStart(side, startedCog, bCogOk, eBoardRev, bRevB, initNeg, initPos, readNeg, readPos, ...
+        bOffsetsOk, nMissed, nIllegal, bIntegOk, bStartOk)
+    if bCogOk == FALSE
+        setRunAbort(AR_START_FAIL, startedCog)
+    elseif bStartOk == FALSE
+        setRunAbort(AR_START_CHECK, eBoardRev)
+
+PRI waitReady(side) | startMs
+' Wait, bounded, for the just-started driver cog to report ready.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local startMs - getms() when the wait began
+
+    startMs := getms()
+    repeat until sideIsReady(side) or ((getms() - startMs) >= READY_TIMEOUT_MS)
+        waitms(SAMPLE_MS)
+
+PRI measureZero(side) | sampleIdx, senseMv, senseSum, sampleCnt, minMv, maxMv, meanX10, slotIdx, ...
+    bValid, bInBand
+' Read the current-sense zero with the cog running and the motor stopped (never a stopped cog: PL-21).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local sampleIdx - sample counter
+' @local senseMv - clamped sample
+' @local senseSum - sum of samples
+' @local sampleCnt - samples taken
+' @local minMv - smallest sample
+' @local maxMv - largest sample
+' @local meanX10 - mean sense x10
+' @local slotIdx - per-side slot
+' @local bValid - TRUE when at least one sample was taken
+' @local bInBand - TRUE when the mean is inside ZERO_LO_MV..ZERO_HI_MV
+
+    beginSampling(0)
+    senseSum := 0
+    sampleCnt := 0
+    minMv := POSX
+    maxMv := NEGX
+    repeat sampleIdx from 1 to ZERO_SAMPLES
+        waitms(SAMPLE_MS)
+        pollSample(side)
+        if bSampNoCog or (abortReason <> AR_NONE)
+            quit
+        senseMv := clampSense(sampSense)
+        senseSum += senseMv
+        sampleCnt += 1
+        minMv := minMv <# senseMv
+        maxMv := maxMv #> senseMv
+    flushCharge()
+    bValid := (sampleCnt > 0)
+    meanX10 := 0
+    if bValid
+        meanX10 := (senseSum * X10) / sampleCnt
+    bInBand := bValid and (meanX10 >= ZERO_LO_MV * X10) and (meanX10 <= ZERO_HI_MV * X10)
+    slotIdx := sideSlot(side)
+    zeroMeanX10[slotIdx] := meanX10
+    bZeroOk[slotIdx] := bInBand
+    emitZero(side, sampleCnt, meanX10, minMv, maxMv, (minMv == maxMv), bInBand, bValid)
+
+PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, negMeanX10, bPosIOk, ...
+    bNegIOk, bRateOk, bIntegOk, bFaultOk, bThisFaultOk, bThisIOk, bThisRateOk, bThisIntegOk, ...
+    ratioX1000, bRatioOk, bStartOk, bZeroPass, missCode
+' Self-check at 43/317: +1/4 then -1/4 speed, against the Pass 1 bands. A miss ends the run.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bPassed - TRUE when every check passed
+'
+' @local orderPos - 0 for the positive point, 1 for the negative point
+' @local signIdx - SIGN_* of the point
+' @local loMv - band low for this sign
+' @local hiMv - band high for this sign
+' @local posMeanX10 - +1/4 mean sense x10
+' @local negMeanX10 - -1/4 mean sense x10
+' @local bPosIOk - +1/4 current in band
+' @local bNegIOk - -1/4 current in band
+' @local bRateOk - both rates in band
+' @local bIntegOk - both points free of hall integrity events
+' @local bFaultOk - both points completed without fault
+' @local bThisFaultOk - this point completed without fault
+' @local bThisIOk - this point's current in band
+' @local bThisRateOk - this point's rate in band
+' @local bThisIntegOk - this point free of hall integrity events
+' @local ratioX1000 - negative/positive mean ratio x1000
+' @local bRatioOk - ratio in band
+' @local bStartOk - the start checks passed
+' @local bZeroPass - the zero reading was in band
+' @local missCode - MISS_* first miss
+
+    posMeanX10 := 0
+    negMeanX10 := 0
+    bPosIOk := FALSE
+    bNegIOk := FALSE
+    bRateOk := TRUE
+    bIntegOk := TRUE
+    bFaultOk := TRUE
+    repeat orderPos from 0 to SIGN_SLOTS - 1
+        signIdx := (orderPos == 0) ? SIGN_POS : SIGN_NEG
+        if abortReason <> AR_NONE
+            bFaultOk := FALSE
+            quit
+        loMv := (signIdx == SIGN_POS) ? POS_QTR_LO_MV : NEG_QTR_LO_MV
+        hiMv := (signIdx == SIGN_POS) ? POS_QTR_HI_MV : NEG_QTR_HI_MV
+        measurePoint(side, SPEED_QTR, signIdx, PH_SELF, defaultSwept(signIdx), WIN_TICKS_SELF, ...
+            (hiMv * POINT_ABORT_X100) / X100)
+        bThisFaultOk := (ptResult == PR_OK)
+        bThisIOk := bThisFaultOk and (ptMeanX10 >= loMv * X10) and (ptMeanX10 <= hiMv * X10)
+        bThisRateOk := bThisFaultOk and bPtRateOk
+        bThisIntegOk := bPtIntegValid and (ptMissedD == 0) and (ptIllegalD == 0)
+        emitCheck(side, signedIncre(SPEED_QTR, signIdx), loMv, hiMv, bThisIOk, bThisRateOk, ...
+            bThisIntegOk, bThisFaultOk)
+        if signIdx == SIGN_POS
+            posMeanX10 := ptMeanX10
+            bPosIOk := bThisIOk
+        else
+            negMeanX10 := ptMeanX10
+            bNegIOk := bThisIOk
+        bRateOk := bRateOk and bThisRateOk
+        bIntegOk := bIntegOk and bThisIntegOk
+        bFaultOk := bFaultOk and bThisFaultOk
+        selfMeanX10[selfSlot(side, signIdx)] := bThisIOk ? ptMeanX10 : 0
+
+    ratioX1000 := 0
+    if (posMeanX10 > 0) and bPosIOk and bNegIOk
+        ratioX1000 := (negMeanX10 * X1000) / posMeanX10
+    bRatioOk := (ratioX1000 >= RATIO_LO_X1000) and (ratioX1000 <= RATIO_HI_X1000)
+    bStartOk := bLastStartOk
+    bZeroPass := bZeroOk[sideSlot(side)]
+    missCode := MISS_NONE
+    if bStartOk == FALSE
+        missCode := MISS_START
+    elseif bZeroPass == FALSE
+        missCode := MISS_ZERO
+    elseif bPosIOk == FALSE
+        missCode := MISS_I_POS
+    elseif bNegIOk == FALSE
+        missCode := MISS_I_NEG
+    elseif bRatioOk == FALSE
+        missCode := MISS_RATIO
+    elseif bRateOk == FALSE
+        missCode := MISS_RATE
+    elseif bIntegOk == FALSE
+        missCode := MISS_INTEG
+    elseif bFaultOk == FALSE
+        missCode := MISS_FAULT
+    bPassed := (missCode == MISS_NONE)
+    emitChecksum(side, bStartOk, bZeroPass, bPosIOk, bNegIOk, ratioX1000, bRatioOk, bRateOk, ...
+        bIntegOk, bFaultOk, bPassed, missCode)
+    if bPassed == FALSE
+        setRunAbort(AR_SELF_CHECK_MISS, missCode)
+
+PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) : ptRes | motorIncre, ...
+    missedBefore, illegalBefore, missedAfter, illegalAfter, cmdMs, bAtSpeed, bWinDone, bSettleOk
+' Measure one point: set and read back offsets, command, wait AT_SPEED, settle, take the
+' tick-gated window, command zero, wait stopped, emit BS-POINT/BS-POINT2, then recover.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param ptPhase - PH_* of this point
+' @param sweptDeg - signed swept offset, degrees
+' @param winTicks - window length in hall ticks
+' @param limitMv - per-point relative abort threshold, mV (0 disables it)
+' @returns ptRes - PR_* result
+'
+' @local motorIncre - signed increment commanded
+' @local missedBefore - missed transitions before the point
+' @local illegalBefore - illegal codes before the point
+' @local missedAfter - missed transitions after the point
+' @local illegalAfter - illegal codes after the point
+' @local cmdMs - getms() at the command
+' @local bAtSpeed - TRUE once DCS_AT_SPEED was seen
+' @local bWinDone - TRUE when the window reached winTicks
+' @local bSettleOk - TRUE when the settle rate was in band
+
+    pointSeq += 1
+    clearPointRecord()
+    motorIncre := signedIncre(speedIdx, signIdx)
+    applyOffsets(side, signIdx, sweptDeg)
+    missedBefore, illegalBefore := sideIntegrity(side)
+    beginSampling(limitMv)
+    bAtSpeed := FALSE
+    bWinDone := FALSE
+    if abortReason == AR_NONE
+        bPtCommanded := TRUE
+        commandMotor(side, motorIncre)
+        cmdMs := getms()
+        repeat
+            waitms(SAMPLE_MS)
+            pollSample(side)
+            if pointInterrupted()
+                quit
+            if sampState == wheelL.DCS_AT_SPEED
+                bAtSpeed := TRUE
+                quit
+            if (getms() - cmdMs) >= STEADY_TIMEOUT_MS
+                quit
+        ptSteadyMs := getms() - cmdMs
+        if bAtSpeed
+            bSettleOk := settlePoint(side, speedIdx)
+            if pointInterrupted() == FALSE
+                bPtWinRan := TRUE
+                bWinDone := windowPoint(side, speedIdx, winTicks)
+                bPtRateOk := bSettleOk and rateInBand(speedIdx, ptRateX10)
+        if sideCogRunning(side)
+            commandMotor(side, 0)
+            waitStopped(side)
+
+    if bSampPointAbort
+        ptRes := PR_ABORT_I
+    elseif bSampFaultSeen
+        ptRes := PR_FAULT
+    elseif bSampNoCog
+        ptRes := PR_NO_COG
+    elseif bAtSpeed == FALSE
+        ptRes := PR_STEADY_TIMEOUT
+    elseif bWinDone == FALSE
+        ptRes := PR_WINDOW_TIMEOUT
+    else
+        ptRes := PR_OK
+    ptResult := ptRes
+
+    if sideCogRunning(side) and (bSampPointAbort == FALSE)
+        missedAfter, illegalAfter := sideIntegrity(side)
+        ptMissedD := missedAfter - missedBefore
+        ptIllegalD := illegalAfter - illegalBefore
+        bPtIntegValid := TRUE
+    ptChargeMvS := flushCharge()
+    emitPoint(side, speedIdx, motorIncre, ptPhase, sweptDeg)
+    emitPoint2(side, motorIncre)
+
+    if ptRes == PR_ABORT_I
+        runAbortsI += 1
+        emitAbort(SCOPE_POINT, AR_ABORT_I, side, motorIncre, sampSense)
+        if abortReason == AR_NONE
+            restartSide(side)
+    elseif (ptRes <> PR_OK) and (abortReason == AR_NONE)
+        runFaults += 1
+        recoverFromFault(side, motorIncre, sweptDeg)
+    if abortReason == AR_NONE
+        waitms(REST_MS)
+    runGuard()
+
+PRI clearPointRecord()
+' Reset every field of the point record to its not-measured state.
+
+    ptResult := PR_NO_COG
+    bPtCommanded := FALSE
+    ptSteadyMs := 0
+    bPtWinRan := FALSE
+    ptTicks := 0
+    ptWinMs := 0
+    ptRateX10 := 0
+    bPtRateOk := FALSE
+    ptSamples := 0
+    ptMeanX10 := 0
+    ptSeX10 := 0
+    bPtSeValid := FALSE
+    ptHalfAX10 := 0
+    ptHalfBX10 := 0
+    bPtHalvesValid := FALSE
+    bPtUnsettled := FALSE
+    ptMinMv := 0
+    ptMaxMv := 0
+    ptDutyMean := 0
+    ptErrMean := 0
+    ptMissedD := 0
+    ptIllegalD := 0
+    bPtIntegValid := FALSE
+    ptChargeMvS := 0
+
+PRI settlePoint(side, speedIdx) : bSettleOk | startMs, startTicks, spanMs, spanTicks, settleRateX10
+' Hold SETTLE_MS after AT_SPEED, polling the abort checks, and test the settle rate.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @returns bSettleOk - TRUE when the settle rate was in band
+'
+' @local startMs - getms() at settle start
+' @local startTicks - hall ticks at settle start
+' @local spanMs - settle duration
+' @local spanTicks - ticks during the settle
+' @local settleRateX10 - ticks per second x10 during the settle
+
+    startMs := getms()
+    startTicks := sideTicks(side)
+    repeat
+        waitms(SAMPLE_MS)
+        pollSample(side)
+        if pointInterrupted()
+            quit
+        if (getms() - startMs) >= SETTLE_MS
+            quit
+    spanMs := getms() - startMs
+    spanTicks := abs(sideTicks(side) - startTicks)
+    settleRateX10 := 0
+    if spanMs > 0
+        settleRateX10 := (spanTicks * RATE_X10_SCALE) / spanMs
+    bSettleOk := rateInBand(speedIdx, settleRateX10)
+
+PRI windowPoint(side, speedIdx, winTicks) : bWinDone | startMs, startTicks, ticksNow, senseMv, senseSum, ...
+    sampleCnt, minMv, maxMv, dutySum, errSum, halfTicks, halfASum, halfACnt, halfBSum, halfBCnt, ...
+    batchSum, batchCnt, nBatches, timeoutMs, expectedRate, thresholdX10
+' Sample every SAMPLE_MS until winTicks hall ticks have passed, then fill the point record.
+' No debug() inside this loop.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param winTicks - window length in hall ticks
+' @returns bWinDone - TRUE when winTicks was reached
+'
+' @local startMs - getms() at window start
+' @local startTicks - hall ticks at window start
+' @local ticksNow - ticks since window start
+' @local senseMv - clamped sample
+' @local senseSum - sum of samples
+' @local sampleCnt - samples taken
+' @local minMv - smallest sample
+' @local maxMv - largest sample
+' @local dutySum - sum of duty samples
+' @local errSum - sum of err samples
+' @local halfTicks - tick position of the half split
+' @local halfASum - first-half sum
+' @local halfACnt - first-half samples
+' @local halfBSum - second-half sum
+' @local halfBCnt - second-half samples
+' @local batchSum - current batch sum
+' @local batchCnt - current batch samples
+' @local nBatches - completed batches
+' @local timeoutMs - window time bound
+' @local expectedRate - expected ticks per second
+' @local thresholdX10 - unsettled threshold x10
+
+    bWinDone := FALSE
+    expectedRate := (speedIdx == SPEED_HALF) ? RATE_HALF_EXPECTED : RATE_QTR_EXPECTED
+    timeoutMs := ((winTicks * MS_PER_SEC * 2) / expectedRate) + WINDOW_TIMEOUT_MARGIN_MS
+    halfTicks := winTicks / 2
+    senseSum := 0
+    sampleCnt := 0
+    minMv := POSX
+    maxMv := NEGX
+    dutySum := 0
+    errSum := 0
+    halfASum := 0
+    halfACnt := 0
+    halfBSum := 0
+    halfBCnt := 0
+    batchSum := 0
+    batchCnt := 0
+    nBatches := 0
+    ticksNow := 0
+    startMs := getms()
+    startTicks := sideTicks(side)
+    repeat
+        waitms(SAMPLE_MS)
+        pollSample(side)
+        if pointInterrupted()
+            quit
+        ticksNow := abs(sideTicks(side) - startTicks)
+        senseMv := clampSense(sampSense)
+        senseSum += senseMv
+        sampleCnt += 1
+        minMv := minMv <# senseMv
+        maxMv := maxMv #> senseMv
+        dutySum += sampDuty
+        errSum += sampErr
+        if ticksNow < halfTicks
+            halfASum += senseMv
+            halfACnt += 1
+        else
+            halfBSum += senseMv
+            halfBCnt += 1
+        batchSum += senseMv
+        batchCnt += 1
+        if (ticksNow >= (nBatches + 1) * BATCH_TICKS) and (nBatches < MAX_BATCHES)
+            batchMeanF[nBatches] := float(batchSum) /. float(batchCnt)
+            nBatches += 1
+            batchSum := 0
+            batchCnt := 0
+        if ticksNow >= winTicks
+            bWinDone := TRUE
+            quit
+        if sampleCnt >= SAMPLE_CAP
+            quit
+        if (getms() - startMs) >= timeoutMs
+            quit
+
+    ptWinMs := getms() - startMs
+    ptTicks := ticksNow
+    ptSamples := sampleCnt
+    if ptWinMs > 0
+        ptRateX10 := (ptTicks * RATE_X10_SCALE) / ptWinMs
+    if sampleCnt > 0
+        ptMeanX10 := (senseSum * X10) / sampleCnt
+        ptMinMv := minMv
+        ptMaxMv := maxMv
+        ptDutyMean := dutySum / sampleCnt
+        ptErrMean := errSum / sampleCnt
+    ptSeX10, bPtSeValid := batchStandardError(nBatches)
+    if (halfACnt > 0) and (halfBCnt > 0)
+        ptHalfAX10 := (halfASum * X10) / halfACnt
+        ptHalfBX10 := (halfBSum * X10) / halfBCnt
+        bPtHalvesValid := TRUE
+        thresholdX10 := (ptMeanX10 * UNSETTLED_PCT) / X100
+        if bPtSeValid
+            thresholdX10 := thresholdX10 #> (2 * ptSeX10)
+        bPtUnsettled := (abs(ptHalfAX10 - ptHalfBX10) > thresholdX10)
+
+PRI batchStandardError(nBatches) : seX10, bSeValid | batchIdx, meanF, devF, sumSqF, varF, seF
+' Standard error of the window mean from its batch means, in float.
+'
+' @param nBatches - completed batch means in batchMeanF[]
+' @returns seX10 - standard error x10, mV
+' @returns bSeValid - TRUE when at least MIN_BATCHES_FOR_SE batches existed and the root is a number
+'
+' @local batchIdx - batch index
+' @local meanF - mean of batch means
+' @local devF - one batch's deviation
+' @local sumSqF - sum of squared deviations
+' @local varF - variance of the mean
+' @local seF - standard error
+
+    seX10 := 0
+    bSeValid := FALSE
+    if nBatches >= MIN_BATCHES_FOR_SE
+        meanF := 0.0
+        repeat batchIdx from 0 to nBatches - 1
+            meanF := meanF +. batchMeanF[batchIdx]
+        meanF := meanF /. float(nBatches)
+        sumSqF := 0.0
+        repeat batchIdx from 0 to nBatches - 1
+            devF := batchMeanF[batchIdx] -. meanF
+            sumSqF := sumSqF +. (devF *. devF)
+        varF := sumSqF /. (float(nBatches - 1) *. float(nBatches))
+        seF := fsqrt(varF)
+        if nan(seF) == FALSE
+            seX10 := floatToBoundedInt(seF *. 10.0, LIM_SMALL)
+            bSeValid := TRUE
+
+PRI beginSampling(limitMv)
+' Start a sampling span: bank earlier charge and reset the abort counters.
+'
+' @param limitMv - per-point relative abort threshold, mV (0 disables it)
+
+    flushCharge()
+    sampAbsCount := 0
+    sampOverCount := 0
+    sampLimitMv := limitMv
+    bSampPointAbort := FALSE
+    bSampFaultSeen := FALSE
+    bSampNoCog := FALSE
+    sampPrevMs := getms()
+
+PRI flushCharge() : chargeMvS
+' Move whole mV-seconds of integrated sense into the run total.
+'
+' @returns chargeMvS - mV-seconds moved
+
+    chargeMvS := sampChargeMvMs / MS_PER_SEC
+    runChargeMvS += chargeMvS
+    sampChargeMvMs -= chargeMvS * MS_PER_SEC
+
+PRI pollSample(side) | nowMs, stepMs, senseMv, bCogUp, bFaultNow
+' Take one telemetry sample: integrate charge, run the absolute and per-point current aborts
+' (both stop the wheel HERE, inside the loop), and latch a fault.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local nowMs - getms() now
+' @local stepMs - ms since the previous sample, capped
+' @local senseMv - clamped sample
+' @local bCogUp - TRUE when the driver cog is running
+' @local bFaultNow - this sample's fault flag
+
+    sampDuty, sampErr, sampSense, sampState, bFaultNow, bCogUp := sideTelemetry(side)
+    nowMs := getms()
+    stepMs := (nowMs - sampPrevMs) <# SAMPLE_DT_MAX_MS
+    sampPrevMs := nowMs
+    if bCogUp == FALSE
+        bSampNoCog := TRUE
+    else
+        if bFaultNow
+            bSampFaultSeen := TRUE
+        senseMv := clampSense(sampSense)
+        if senseMv > 0
+            sampChargeMvMs += senseMv * stepMs
+        if sampSense >= ABS_ABORT_MV
+            sampAbsCount += 1
+        else
+            sampAbsCount := 0
+        if sampAbsCount >= ABS_ABORT_SAMPLES
+            sideStop(side)                                  ' P6: disable the bridge first
+            setRunAbort(AR_ABS_CURRENT, sampSense)
+        elseif (sampLimitMv > 0) and (sampSense > sampLimitMv)
+            sampOverCount += 1
+            if (sampOverCount >= POINT_ABORT_SAMPLES) and (bSampPointAbort == FALSE)
+                sideStop(side)
+                bSampPointAbort := TRUE
+        else
+            sampOverCount := 0
+
+PRI pointInterrupted() : bInterrupted
+' Report whether the sampling span must end now.
+'
+' @returns bInterrupted - TRUE on a fault, a point abort, a stopped cog or a run abort
+
+    bInterrupted := bSampFaultSeen or bSampPointAbort or bSampNoCog or (abortReason <> AR_NONE)
+
+PRI waitStopped(side) : bStopped | startMs
+' Wait, bounded, for the wheel to report STOPPED, polling the abort checks.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bStopped - TRUE when STOPPED was seen
+'
+' @local startMs - getms() when the wait began
+
+    bStopped := FALSE
+    startMs := getms()
+    repeat
+        if sideCogRunning(side) == FALSE
+            quit
+        if sideIsStopped(side)
+            bStopped := TRUE
+            quit
+        if (getms() - startMs) >= STOP_TIMEOUT_MS
+            quit
+        waitms(SAMPLE_MS)
+        pollSample(side)
+
+PRI driveForMs(side, motorIncre, durationMs) : bFaulted | startMs
+' Command an increment and hold it for durationMs, polling the abort checks. The caller stops it.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+' @param durationMs - hold time
+' @returns bFaulted - TRUE when a fault was seen
+'
+' @local startMs - getms() at the command
+
+    beginSampling(0)
+    commandMotor(side, motorIncre)
+    startMs := getms()
+    repeat
+        waitms(SAMPLE_MS)
+        pollSample(side)
+        if bSampFaultSeen or bSampNoCog or (abortReason <> AR_NONE)
+            quit
+        if (getms() - startMs) >= durationMs
+            quit
+    bFaulted := bSampFaultSeen
+    flushCharge()
+
+PRI recoverFromFault(side, motorIncre, sweptDeg) : bCleared | jogIncre
+' Clear a fault the util_char_motor way, zero command first: ZERO_CMD, RESET, JOG, RESTART.
+' A fault that survives all four ends the run (P11). Cools FAULT_COOL_MS afterwards.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - increment of the faulted point
+' @param sweptDeg - swept offset of the faulted point
+' @returns bCleared - TRUE when the wheel is stopped with no fault
+'
+' @local jogIncre - jog increment, same sign as the faulted point
+
+    bCleared := FALSE
+    if sideCogRunning(side)
+        commandMotor(side, 0)                               ' a CHANGED command: the driver leaves DCS_FAULTED
+        waitStopped(side)
+        bCleared := sideIsStopped(side) and (sideIsFault(side) == FALSE)
+    emitFault(side, motorIncre, sweptDeg, FX_ZERO_CMD, bCleared)
+    if (bCleared == FALSE) and sideCogRunning(side) and (abortReason == AR_NONE)
+        sideResetFault(side)
+        bCleared := sideIsStopped(side) and (sideIsFault(side) == FALSE)
+        emitFault(side, motorIncre, sweptDeg, FX_RESET, bCleared)
+    if (bCleared == FALSE) and sideCogRunning(side) and (abortReason == AR_NONE)
+        jogIncre := (motorIncre < 0) ? (0 - JOG_INCRE) : JOG_INCRE
+        sideSetOffsets(side, DEF_NEG_DEG, DEF_POS_DEG)
+        driveForMs(side, jogIncre, JOG_MS)
+        if sideCogRunning(side)
+            commandMotor(side, 0)
+            waitStopped(side)
+            sideResetFault(side)
+        bCleared := sideIsStopped(side) and (sideIsFault(side) == FALSE)
+        emitFault(side, motorIncre, sweptDeg, FX_JOG, bCleared)
+    if (bCleared == FALSE) and (abortReason == AR_NONE)
+        bCleared := restartSide(side)
+        emitFault(side, motorIncre, sweptDeg, FX_RESTART, bCleared)
+    if (bCleared == FALSE) and (abortReason == AR_NONE)
+        setRunAbort(AR_RECOVERY_FAIL, sweptDeg)
+    if abortReason == AR_NONE
+        waitms(FAULT_COOL_MS)
+
+PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, refLimitMv, pointLimitMv, ...
+    refStartIdx, refEndIdx, centreDeg, legExit, stopUp, stopDown, bBracketed, driftPctX10, bDriftValid
+' Run one leg. 1/4 speed: REF_START, coarse walk both ways, bracket, fine, fit (one extension),
+' REF_END. 1/2 speed: REF_START, confirm points around the 1/4-speed minimum, fit, REF_END.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+'
+' @local slotIdx - this leg's result slot
+' @local qtrSlot - the same motor and sign's 1/4-speed result slot
+' @local defSwept - default offset in signed swept degrees
+' @local refWinTicks - reference window ticks
+' @local refLimitMv - REF_START relative abort threshold
+' @local pointLimitMv - relative abort threshold for every later point
+' @local refStartIdx - leg index of REF_START
+' @local refEndIdx - leg index of REF_END
+' @local centreDeg - fine/confirm centre, swept degrees
+' @local legExit - LX_* exit
+' @local stopUp - walk stop of the up side
+' @local stopDown - walk stop of the down side
+' @local bBracketed - TRUE when the minimum is bracketed (always TRUE at 1/2 speed)
+' @local driftPctX10 - REF_END vs REF_START drift, percent x10
+' @local bDriftValid - TRUE when both references were valid
+
+    slotIdx := resultSlot(side, signIdx, speedIdx)
+    qtrSlot := resultSlot(side, signIdx, SPEED_QTR)
+    defSwept := defaultSwept(signIdx)
+    legReset()
+    clearFit()
+    legExit := LX_DONE
+    refEndIdx := -1
+    if speedIdx == SPEED_QTR
+        refWinTicks := WIN_TICKS_FINE
+        refLimitMv := (selfMeanX10[selfSlot(side, signIdx)] * POINT_ABORT_X100) / (X100 * X10)
+    else
+        refWinTicks := WIN_TICKS_HALF
+        refLimitMv := (selfMeanX10[selfSlot(side, signIdx)] * SPEED_CURRENT_RATIO * POINT_ABORT_X100) / (X100 * X10)
+
+    if (speedIdx == SPEED_HALF) and (resStatus[qtrSlot] <> FS_OK) and (resStatus[qtrSlot] <> FS_POOR)
+        legExit := LX_SKIPPED
+    else
+        refStartIdx := legMeasure(side, speedIdx, signIdx, PH_REF_START, defSwept, refWinTicks, refLimitMv)
+        if isValidIdx(refStartIdx) == FALSE
+            legExit := LX_SKIPPED
+        else
+            pointLimitMv := (legMeanX10[refStartIdx] * POINT_ABORT_X100) / (X100 * X10)
+            bBracketed := TRUE
+            centreDeg := defSwept
+            if speedIdx == SPEED_QTR
+                stopUp := walkSide(side, signIdx, 1, defSwept, pointLimitMv)
+                stopDown := walkSide(side, signIdx, -1, defSwept, pointLimitMv)
+                bBracketed := evaluateBracket(side, signIdx, stopUp, stopDown)
+                if bBracketed
+                    centreDeg := legDeg[legLowIdx]
+                else
+                    fitStatus := FS_NOT_BRACKETED
+            else
+                centreDeg := floatToBoundedInt(resMinF[qtrSlot], LIM_TINY)
+            if bBracketed and (abortReason == AR_NONE)
+                legExit := runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv)
+                fitLeg(centreDeg, (speedIdx == SPEED_QTR) ? FIT_MIN_PTS : CONFIRM_MIN_PTS)
+                if (fitStatus == FS_EDGE) and (legExit == LX_DONE) and (abortReason == AR_NONE)
+                    legExit := runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv)
+                    fitLeg(centreDeg, (speedIdx == SPEED_QTR) ? FIT_MIN_PTS : CONFIRM_MIN_PTS)
+                    bFitExtended := TRUE
+            if abortReason == AR_NONE
+                refEndIdx := legMeasure(side, speedIdx, signIdx, PH_REF_END, defSwept, refWinTicks, pointLimitMv)
+    if (abortReason <> AR_NONE) and (legExit == LX_DONE)
+        legExit := LX_RUN_ABORT
+
+    ' store results
+    resStatus[slotIdx] := fitStatus
+    resMinF[slotIdx] := fitMinF
+    resSeF[slotIdx] := fitSeF
+    bResSeValid[slotIdx] := bFitSeValid
+    resIminF[slotIdx] := fitMinMvF
+    resRmsF[slotIdx] := fitRmsF
+    bResIdefValid[slotIdx] := FALSE
+    resIdefX10[slotIdx] := 0
+    driftPctX10 := 0
+    bDriftValid := FALSE
+    if (legCount > 0) and isValidIdx(0) and (legPhase[0] == PH_REF_START)
+        resIdefX10[slotIdx] := legMeanX10[0]
+        bResIdefValid[slotIdx] := TRUE
+        if isValidIdx(refEndIdx)
+            resIdefX10[slotIdx] := (legMeanX10[0] + legMeanX10[refEndIdx]) / 2
+            if legMeanX10[0] > 0
+                driftPctX10 := ((legMeanX10[refEndIdx] - legMeanX10[0]) * X1000) / legMeanX10[0]
+                bDriftValid := TRUE
+    bResDrift[slotIdx] := bDriftValid and (abs(driftPctX10) > DRIFT_FLAG_PCT * X10)
+    emitFit(side, speedIdx, signIdx)
+    emitFit2(side, speedIdx, signIdx)
+    emitLeg(side, speedIdx, signIdx, legExit, refEndIdx, driftPctX10, bDriftValid, bResDrift[slotIdx])
+
+PRI legReset()
+' Empty the leg point store.
+
+    legCount := 0
+    legLowIdx := -1
+    legConsecFaults := 0
+    legFaults := 0
+    legAbortsI := 0
+
+PRI clearFit()
+' Reset the fit record to not attempted.
+
+    fitStatus := FS_SKIPPED
+    fitN := 0
+    fitCentre := 0
+    fitSpanLo := 0
+    fitSpanHi := 0
+    bFitExtended := FALSE
+    bFitSolved := FALSE
+    fitMinF := 0.0
+    fitSeF := 0.0
+    bFitSeValid := FALSE
+    fitMinMvF := 0.0
+    fitRmsF := 0.0
+    fitMedSeX10 := 0
+    fitCurvF := 0.0
+
+PRI legMeasure(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) : ptIdx
+' Measure one point and store it in the leg.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param ptPhase - PH_* of this point
+' @param sweptDeg - signed swept offset, degrees
+' @param winTicks - window length in hall ticks
+' @param limitMv - per-point relative abort threshold, mV
+' @returns ptIdx - leg index of the stored point, -1 when the store is full
+
+    ptIdx := -1
+    if legCount < MAX_LEG_POINTS
+        measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv)
+        ptIdx := legCount
+        legDeg[ptIdx] := sweptDeg
+        legMeanX10[ptIdx] := ptMeanX10
+        legSeX10[ptIdx] := ptSeX10
+        bLegSeValid[ptIdx] := bPtSeValid
+        legResult[ptIdx] := ptResult
+        legPhase[ptIdx] := ptPhase
+        bLegRateOk[ptIdx] := bPtRateOk
+        legCount += 1
+        if ptResult == PR_OK
+            legConsecFaults := 0
+        elseif ptResult == PR_ABORT_I
+            legAbortsI += 1
+        else
+            legConsecFaults += 1
+            legFaults += 1
+
+PRI isValidIdx(ptIdx) : bValid
+' Report whether a leg point is usable data: completed at the right rate.
+'
+' @param ptIdx - leg index, may be -1
+' @returns bValid - TRUE when the point is OK with rate in band
+
+    bValid := FALSE
+    if (ptIdx >= 0) and (ptIdx < legCount)
+        bValid := (legResult[ptIdx] == PR_OK) and (bLegRateOk[ptIdx] <> FALSE)
+
+PRI isFaultLikeIdx(ptIdx) : bFaultLike
+' Report whether a leg point ended in a fault, a timeout or a lost cog.
+'
+' @param ptIdx - leg index, may be -1
+' @returns bFaultLike - TRUE for FAULT, STEADY_TIMEOUT, WINDOW_TIMEOUT, NO_COG or a missing point
+
+    bFaultLike := TRUE
+    if (ptIdx >= 0) and (ptIdx < legCount)
+        bFaultLike := (legResult[ptIdx] <> PR_OK) and (legResult[ptIdx] <> PR_ABORT_I)
+
+PRI isHighIdx(ptIdx) : bHigh
+' Report whether a coarse point is RISE_PCT above the current low (a current abort always is).
+'
+' @param ptIdx - leg index, may be -1
+' @returns bHigh - TRUE when the point rises above the low
+
+    bHigh := FALSE
+    if (legLowIdx >= 0) and (ptIdx >= 0) and (ptIdx < legCount) and (ptIdx <> legLowIdx)
+        if legResult[ptIdx] == PR_ABORT_I
+            bHigh := TRUE
+        elseif isValidIdx(ptIdx)
+            bHigh := (legMeanX10[ptIdx] * X100) >= (legMeanX10[legLowIdx] * (X100 + RISE_PCT))
+
+PRI updateLegLow() | ptIdx
+' Recompute the lowest valid REF_START/COARSE point.
+'
+' @local ptIdx - leg index
+
+    legLowIdx := -1
+    if legCount > 0
+        repeat ptIdx from 0 to legCount - 1
+            if ((legPhase[ptIdx] == PH_REF_START) or (legPhase[ptIdx] == PH_COARSE)) and isValidIdx(ptIdx)
+                if legLowIdx < 0
+                    legLowIdx := ptIdx
+                elseif legMeanX10[ptIdx] < legMeanX10[legLowIdx]
+                    legLowIdx := ptIdx
+
+PRI beyondLowCount(walkDir, defSwept) : nBeyond | ptIdx
+' Count coarse points on this side beyond the low that are valid or current-aborted.
+'
+' @param walkDir - +1 up, -1 down
+' @param defSwept - default offset, swept degrees
+' @returns nBeyond - qualifying point count
+'
+' @local ptIdx - leg index
+
+    nBeyond := 0
+    if (legLowIdx >= 0) and (legCount > 0)
+        repeat ptIdx from 0 to legCount - 1
+            if legPhase[ptIdx] == PH_COARSE
+                if ((walkDir * (legDeg[ptIdx] - defSwept)) > 0) and ((walkDir * (legDeg[ptIdx] - legDeg[legLowIdx])) > 0)
+                    if isValidIdx(ptIdx) or (legResult[ptIdx] == PR_ABORT_I)
+                        nBeyond += 1
+
+PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepIdx, sweptDeg, ptIdx, ...
+    sideConsec, nPts, lastSwept
+' Walk coarse points out from the default until RISE, FAULTS, HARD_LIMIT or a run abort.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param walkDir - +1 up, -1 down
+' @param defSwept - default offset, swept degrees
+' @param pointLimitMv - per-point relative abort threshold, mV
+' @returns walkStop - WS_* stop reason
+'
+' @local stepIdx - coarse step number
+' @local sweptDeg - this point's swept offset
+' @local ptIdx - leg index of this point
+' @local sideConsec - consecutive fault-like points on this side
+' @local nPts - points measured on this side
+' @local lastSwept - last swept offset measured
+
+    walkStop := WS_HARD_LIMIT
+    sideConsec := 0
+    nPts := 0
+    lastSwept := defSwept
+    legConsecFaults := 0
+    updateLegLow()
+    repeat stepIdx from 1 to COARSE_MAX_STEPS
+        if abortReason <> AR_NONE
+            walkStop := WS_RUN_ABORT
+            quit
+        sweptDeg := defSwept + (walkDir * stepIdx * COARSE_STEP_DEG)
+        ptIdx := legMeasure(side, SPEED_QTR, signIdx, PH_COARSE, sweptDeg, WIN_TICKS_COARSE, pointLimitMv)
+        nPts += 1
+        lastSwept := sweptDeg
+        updateLegLow()
+        if isFaultLikeIdx(ptIdx)
+            sideConsec += 1
+        else
+            sideConsec := 0
+        if abortReason <> AR_NONE
+            walkStop := WS_RUN_ABORT
+            quit
+        if sideConsec >= SIDE_FAULT_STOP
+            walkStop := WS_FAULTS
+            quit
+        if isHighIdx(ptIdx) and (beyondLowCount(walkDir, defSwept) >= MIN_PAST)
+            walkStop := WS_RISE
+            quit
+    emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
+
+PRI evaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelowOk, bAboveOk, reason, missingStop
+' Decide whether a high point exists on both sides of the low; emit BS-BRACKET.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param stopUp - walk stop of the up side
+' @param stopDown - walk stop of the down side
+' @returns bBracketed - TRUE when bracketed
+'
+' @local ptIdx - leg index
+' @local bBelowOk - a high point below the low exists
+' @local bAboveOk - a high point above the low exists
+' @local reason - BR_* verdict
+' @local missingStop - walk stop of the side that did not bracket
+
+    bBelowOk := FALSE
+    bAboveOk := FALSE
+    updateLegLow()
+    if (legLowIdx >= 0) and (legCount > 0)
+        repeat ptIdx from 0 to legCount - 1
+            if ((legPhase[ptIdx] == PH_REF_START) or (legPhase[ptIdx] == PH_COARSE)) and isHighIdx(ptIdx)
+                if legDeg[ptIdx] < legDeg[legLowIdx]
+                    bBelowOk := TRUE
+                elseif legDeg[ptIdx] > legDeg[legLowIdx]
+                    bAboveOk := TRUE
+    bBracketed := bBelowOk and bAboveOk
+    if legLowIdx < 0
+        reason := (abortReason <> AR_NONE) ? BR_RUN_ABORT : BR_NO_VALID
+    elseif bBracketed
+        reason := BR_OK
+    else
+        missingStop := (bBelowOk == FALSE) ? stopDown : stopUp
+        if missingStop == WS_FAULTS
+            reason := BR_EDGE_FAULT
+        elseif missingStop == WS_RUN_ABORT
+            reason := BR_RUN_ABORT
+        else
+            reason := BR_EDGE_HARD_LIMIT
+    emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
+
+PRI withinHardLimit(sweptDeg, defSwept) : bWithin
+' Report whether an offset lies within default +/- HARD_LIMIT_DEG.
+'
+' @param sweptDeg - candidate swept offset
+' @param defSwept - default offset, swept degrees
+' @returns bWithin - TRUE when inside the hard limit
+
+    bWithin := (abs(sweptDeg - defSwept) <= HARD_LIMIT_DEG)
+
+PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : legExit | orderIdx, ...
+    orderCount, pOrder, sweptDeg, winTicks
+' Measure the interleaved fine (1/4) or confirm (1/2) points around centreDeg.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param centreDeg - centre, swept degrees
+' @param defSwept - default offset, swept degrees
+' @param pointLimitMv - per-point relative abort threshold, mV
+' @returns legExit - LX_DONE or LX_FAULT_CAP
+'
+' @local orderIdx - index into the order table
+' @local orderCount - entries in the order table
+' @local pOrder - pointer to the order table
+' @local sweptDeg - this point's swept offset
+' @local winTicks - window ticks for this speed
+
+    legExit := LX_DONE
+    legConsecFaults := 0
+    if speedIdx == SPEED_QTR
+        pOrder := @fineOrder
+        orderCount := FINE_ORDER_COUNT
+        winTicks := WIN_TICKS_FINE
+    else
+        pOrder := @confirmOrder
+        orderCount := CONFIRM_ORDER_COUNT
+        winTicks := WIN_TICKS_HALF
+    repeat orderIdx from 0 to orderCount - 1
+        if abortReason <> AR_NONE
+            quit
+        if legConsecFaults >= LEG_FAULT_CAP
+            quit
+        sweptDeg := centreDeg + (LONG[pOrder][orderIdx] * FINE_STEP_DEG)
+        if withinHardLimit(sweptDeg, defSwept)
+            legMeasure(side, speedIdx, signIdx, PH_FINE, sweptDeg, winTicks, pointLimitMv)
+    if legConsecFaults >= LEG_FAULT_CAP
+        legExit := LX_FAULT_CAP
+        emitAbort(SCOPE_LEG, AR_FAULT_CAP, side, signedIncre(speedIdx, signIdx), legConsecFaults)
+
+PRI runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv) : legExit | extDir, edgeDeg, extIdx, ...
+    extCount, sweptDeg, winTicks
+' Add points beyond the span edge nearest the fitted vertex (once per leg).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param defSwept - default offset, swept degrees
+' @param pointLimitMv - per-point relative abort threshold, mV
+' @returns legExit - LX_DONE or LX_FAULT_CAP
+'
+' @local extDir - +1 beyond the high edge, -1 beyond the low edge
+' @local edgeDeg - the edge being extended
+' @local extIdx - extension point number
+' @local extCount - extension points for this speed
+' @local sweptDeg - this point's swept offset
+' @local winTicks - window ticks for this speed
+
+    legExit := LX_DONE
+    legConsecFaults := 0
+    extCount := (speedIdx == SPEED_QTR) ? EXTEND_PTS : CONFIRM_EXTEND_PTS
+    winTicks := (speedIdx == SPEED_QTR) ? WIN_TICKS_FINE : WIN_TICKS_HALF
+    if fitMinF >. float(fitCentre)
+        extDir := 1
+        edgeDeg := fitSpanHi
+    else
+        extDir := -1
+        edgeDeg := fitSpanLo
+    repeat extIdx from 1 to extCount
+        if abortReason <> AR_NONE
+            quit
+        if legConsecFaults >= LEG_FAULT_CAP
+            quit
+        sweptDeg := edgeDeg + (extDir * extIdx * FINE_STEP_DEG)
+        if withinHardLimit(sweptDeg, defSwept)
+            legMeasure(side, speedIdx, signIdx, PH_EXTEND, sweptDeg, winTicks, pointLimitMv)
+    if legConsecFaults >= LEG_FAULT_CAP
+        legExit := LX_FAULT_CAP
+        emitAbort(SCOPE_LEG, AR_FAULT_CAP, side, signedIncre(speedIdx, signIdx), legConsecFaults)
+
+PRI fitLeg(centreDeg, minPts) | ptIdx, nPts, seCnt, uF, yF, u2F, sumOneF, sumUF, sumU2F, sumU3F, sumU4F, ...
+    sumYF, sumUYF, sumU2YF, cof00F, cof01F, cof02F, cof11F, cof12F, cof22F, detF, curvF, slopeF, levelF, ...
+    predF, residF, rssF, resVarF, varCurvF, varSlopeF, covF, uStarF, varUF, poorF, seLimitF
+' Least-squares quadratic y = curv*u^2 + slope*u + level over the leg's valid FINE/EXTEND
+' points, u = (offset - centre) / 10 degrees, solved by cofactors of the normal matrix.
+' Fills the fit record and its status (TOO_FEW, NOT_CONVEX, EDGE, POOR, OK).
+'
+' @param centreDeg - centre, swept degrees
+' @param minPts - fewest valid points the fit accepts
+'
+' @local ptIdx - leg index
+' @local nPts - points in the fit
+' @local seCnt - points with a valid standard error
+' @local uF - scaled offset
+' @local yF - mean sense, mV
+' @local u2F - uF squared
+' @local sumOneF - point count as float
+' @local sumUF - sum u
+' @local sumU2F - sum u^2
+' @local sumU3F - sum u^3
+' @local sumU4F - sum u^4
+' @local sumYF - sum y
+' @local sumUYF - sum u*y
+' @local sumU2YF - sum u^2*y
+' @local cof00F - cofactor 0,0
+' @local cof01F - cofactor 0,1
+' @local cof02F - cofactor 0,2
+' @local cof11F - cofactor 1,1
+' @local cof12F - cofactor 1,2
+' @local cof22F - cofactor 2,2
+' @local detF - determinant
+' @local curvF - fitted curvature, mV per u^2
+' @local slopeF - fitted slope, mV per u
+' @local levelF - fitted level at the centre, mV
+' @local predF - fitted value at a point
+' @local residF - residual at a point
+' @local rssF - residual sum of squares
+' @local resVarF - residual variance
+' @local varCurvF - variance of the curvature
+' @local varSlopeF - variance of the slope
+' @local covF - curvature/slope covariance
+' @local uStarF - vertex, u units
+' @local varUF - vertex variance, u units
+' @local poorF - POOR threshold, mV
+' @local seLimitF - SE-based POOR threshold, mV
+
+    fitCentre := centreDeg
+    fitStatus := FS_TOO_FEW
+    bFitSolved := FALSE
+    bFitSeValid := FALSE
+    nPts := 0
+    seCnt := 0
+    sumOneF := 0.0
+    sumUF := 0.0
+    sumU2F := 0.0
+    sumU3F := 0.0
+    sumU4F := 0.0
+    sumYF := 0.0
+    sumUYF := 0.0
+    sumU2YF := 0.0
+    fitSpanLo := POSX
+    fitSpanHi := NEGX
+    if legCount > 0
+        repeat ptIdx from 0 to legCount - 1
+            if ((legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_EXTEND)) and isValidIdx(ptIdx)
+                uF := float(legDeg[ptIdx] - centreDeg) /. FIT_DEG_SCALE
+                yF := float(legMeanX10[ptIdx]) /. 10.0
+                u2F := uF *. uF
+                sumOneF := sumOneF +. 1.0
+                sumUF := sumUF +. uF
+                sumU2F := sumU2F +. u2F
+                sumU3F := sumU3F +. (u2F *. uF)
+                sumU4F := sumU4F +. (u2F *. u2F)
+                sumYF := sumYF +. yF
+                sumUYF := sumUYF +. (uF *. yF)
+                sumU2YF := sumU2YF +. (u2F *. yF)
+                fitSpanLo := fitSpanLo <# legDeg[ptIdx]
+                fitSpanHi := fitSpanHi #> legDeg[ptIdx]
+                if bLegSeValid[ptIdx]
+                    seScratch[seCnt] := legSeX10[ptIdx]
+                    seCnt += 1
+                nPts += 1
+    fitN := nPts
+    fitMedSeX10 := medianSeX10(seCnt)
+    if (nPts >= minPts) and (nPts > FIT_PARAMS)
+        cof00F := (sumU2F *. sumOneF) -. (sumUF *. sumUF)
+        cof01F := (sumUF *. sumU2F) -. (sumU3F *. sumOneF)
+        cof02F := (sumU3F *. sumUF) -. (sumU2F *. sumU2F)
+        cof11F := (sumU4F *. sumOneF) -. (sumU2F *. sumU2F)
+        cof12F := (sumU2F *. sumU3F) -. (sumU4F *. sumUF)
+        cof22F := (sumU4F *. sumU2F) -. (sumU3F *. sumU3F)
+        detF := ((sumU4F *. cof00F) +. (sumU3F *. cof01F)) +. (sumU2F *. cof02F)
+        if fabs(detF) >. FIT_DET_MIN
+            curvF := (((cof00F *. sumU2YF) +. (cof01F *. sumUYF)) +. (cof02F *. sumYF)) /. detF
+            slopeF := (((cof01F *. sumU2YF) +. (cof11F *. sumUYF)) +. (cof12F *. sumYF)) /. detF
+            levelF := (((cof02F *. sumU2YF) +. (cof12F *. sumUYF)) +. (cof22F *. sumYF)) /. detF
+            fitCurvF := curvF
+            if curvF <=. 0.0
+                fitStatus := FS_NOT_CONVEX
+            else
+                bFitSolved := TRUE
+                uStarF := (0.0 -. slopeF) /. (2.0 *. curvF)
+                fitMinF := float(centreDeg) +. (uStarF *. FIT_DEG_SCALE)
+                fitMinMvF := levelF -. ((slopeF *. slopeF) /. (4.0 *. curvF))
+                rssF := 0.0
+                repeat ptIdx from 0 to legCount - 1
+                    if ((legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_EXTEND)) and isValidIdx(ptIdx)
+                        uF := float(legDeg[ptIdx] - centreDeg) /. FIT_DEG_SCALE
+                        yF := float(legMeanX10[ptIdx]) /. 10.0
+                        predF := ((curvF *. (uF *. uF)) +. (slopeF *. uF)) +. levelF
+                        residF := yF -. predF
+                        rssF := rssF +. (residF *. residF)
+                resVarF := rssF /. float(nPts - FIT_PARAMS)
+                fitRmsF := fsqrt(resVarF)
+                varCurvF := (resVarF *. cof00F) /. detF
+                varSlopeF := (resVarF *. cof11F) /. detF
+                covF := (resVarF *. cof01F) /. detF
+                varUF := (((varSlopeF /. 4.0) +. ((uStarF *. uStarF) *. varCurvF)) +. (uStarF *. covF)) /. (curvF *. curvF)
+                if varUF >=. 0.0
+                    fitSeF := FIT_DEG_SCALE *. fsqrt(varUF)
+                    bFitSeValid := (nan(fitSeF) == FALSE)
+                poorF := FIT_POOR_MIN_MV
+                seLimitF := FIT_POOR_SE_FACTOR *. (float(fitMedSeX10) /. 10.0)
+                if seLimitF >. poorF
+                    poorF := seLimitF
+                if (fitMinF <. (float(fitSpanLo) +. FIT_EDGE_MARGIN_DEG)) or (fitMinF >. (float(fitSpanHi) -. FIT_EDGE_MARGIN_DEG))
+                    fitStatus := FS_EDGE
+                elseif fitRmsF >. poorF
+                    fitStatus := FS_POOR
+                else
+                    fitStatus := FS_OK
+    if nPts == 0
+        fitSpanLo := 0
+        fitSpanHi := 0
+
+PRI medianSeX10(seCnt) : medX10 | outerIdx, innerIdx, heldX10
+' Median of the first seCnt entries of seScratch[] (sorted in place).
+'
+' @param seCnt - entries to consider
+' @returns medX10 - median standard error x10, 0 when there are none
+'
+' @local outerIdx - insertion-sort outer index
+' @local innerIdx - insertion-sort inner index
+' @local heldX10 - entry being inserted
+
+    medX10 := 0
+    if seCnt > 1
+        repeat outerIdx from 1 to seCnt - 1
+            heldX10 := seScratch[outerIdx]
+            innerIdx := outerIdx - 1
+            repeat while innerIdx >= 0
+                if seScratch[innerIdx] <= heldX10
+                    quit
+                seScratch[innerIdx + 1] := seScratch[innerIdx]
+                innerIdx -= 1
+            seScratch[innerIdx + 1] := heldX10
+    if seCnt > 0
+        if (seCnt // 2) == 1
+            medX10 := seScratch[seCnt / 2]
+        else
+            medX10 := (seScratch[(seCnt / 2) - 1] + seScratch[seCnt / 2]) / 2
+
+PRI floatToBoundedInt(valueF, limitAbs) : intValue
+' Round a float to the nearest integer, clamped to +/- limitAbs; NaN becomes 0.
+'
+' @param valueF - float to convert
+' @param limitAbs - clamp magnitude
+' @returns intValue - rounded, clamped integer
+
+    intValue := 0
+    if nan(valueF) == FALSE
+        if valueF >. float(limitAbs)
+            intValue := limitAbs
+        elseif valueF <. float(0 - limitAbs)
+            intValue := 0 - limitAbs
+        else
+            intValue := round(valueF)
+
+PRI normDegrees(inDegrees) : outDegrees | stepCount
+' Bring a swept offset into 0..359 with bounded add/subtract-360 steps (never FRAC or //).
+'
+' @param inDegrees - degrees, any sign
+' @returns outDegrees - degrees in 0..359
+'
+' @local stepCount - steps taken
+
+    outDegrees := inDegrees
+    stepCount := 0
+    repeat while (outDegrees < 0) and (stepCount < NORM_MAX_STEPS)
+        outDegrees += DEGREES_PER_TURN
+        stepCount += 1
+    repeat while (outDegrees >= DEGREES_PER_TURN) and (stepCount < NORM_MAX_STEPS)
+        outDegrees -= DEGREES_PER_TURN
+        stepCount += 1
+    outDegrees := (outDegrees #> 0) <# (DEGREES_PER_TURN - 1)
+
+PRI defaultSwept(signIdx) : sweptDeg
+' Default offset for a sign in signed swept degrees: 43 for NEG, -43 (317) for POS.
+'
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @returns sweptDeg - default, swept degrees
+
+    sweptDeg := (signIdx == SIGN_NEG) ? DEF_NEG_DEG : (DEF_POS_DEG - DEGREES_PER_TURN)
+
+PRI signedIncre(speedIdx, signIdx) : motorIncre
+' Signed motor increment for a speed and sign.
+'
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @returns motorIncre - signed increment
+
+    motorIncre := (speedIdx == SPEED_HALF) ? HALF_SPEED_INCRE : QTR_SPEED_INCRE
+    if signIdx == SIGN_NEG
+        motorIncre := 0 - motorIncre
+
+PRI applyOffsets(side, signIdx, sweptDeg) | wantNeg, wantPos
+' Set the swept sign's offset and hold the other at its default; read both back into the point
+' record. A read-back mismatch ends the run.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param sweptDeg - signed swept offset, degrees
+'
+' @local wantNeg - offset_fwd degrees to apply
+' @local wantPos - offset_rev degrees to apply
+
+    if signIdx == SIGN_NEG
+        wantNeg := normDegrees(sweptDeg)
+        wantPos := DEF_POS_DEG
+    else
+        wantNeg := DEF_NEG_DEG
+        wantPos := normDegrees(sweptDeg)
+    sideSetOffsets(side, wantNeg, wantPos)
+    ptNegDeg, ptPosDeg := sideGetOffsets(side)
+    if (ptNegDeg <> wantNeg) or (ptPosDeg <> wantPos)
+        setRunAbort(AR_OFFSET_READBACK, ptNegDeg)
+
+PRI sideSlot(side) : slotIdx
+' Per-side array index: LEFT 0, RIGHT 1.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns slotIdx - 0 or 1
+
+    slotIdx := (side == SIDE_RIGHT) ? 1 : 0
+
+PRI selfSlot(side, signIdx) : slotIdx
+' Self-check mean index for a side and sign.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @returns slotIdx - index into selfMeanX10[]
+
+    slotIdx := (sideSlot(side) * SIGN_SLOTS) + signIdx
+
+PRI resultSlot(side, signIdx, speedIdx) : slotIdx
+' Result index for a side, sign and speed.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @returns slotIdx - index into the res*[] arrays
+
+    slotIdx := (((sideSlot(side) * SIGN_SLOTS) + signIdx) * SPEED_SLOTS) + speedIdx
+
+PRI rateInBand(speedIdx, rateX10) : bInBand
+' Report whether a tick rate is inside the band for its speed.
+'
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param rateX10 - ticks per second x10
+' @returns bInBand - TRUE when inside the band
+
+    if speedIdx == SPEED_HALF
+        bInBand := (rateX10 >= RATE_HALF_LO * X10) and (rateX10 <= RATE_HALF_HI * X10)
+    else
+        bInBand := (rateX10 >= RATE_QTR_LO * X10) and (rateX10 <= RATE_QTR_HI * X10)
+
+PRI clampSense(rawMv) : clampedMv
+' Clamp a sense sample so the accumulators cannot overflow (PL-20).
+'
+' @param rawMv - sense_i_mV sample
+' @returns clampedMv - sample clamped to SAMPLE_CLAMP_LO_MV..SAMPLE_CLAMP_HI_MV
+
+    clampedMv := (rawMv #> SAMPLE_CLAMP_LO_MV) <# SAMPLE_CLAMP_HI_MV
+
+PRI commandMotor(side, motorIncre) | safeIncre
+' Command a signed motor increment -- the ONLY place an increment reaches the library. Anything
+' above DRIVE_CEILING_INCRE is refused, commanded as zero, and ends the run (P13).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment requested
+'
+' @local safeIncre - increment actually commanded
+
+    safeIncre := motorIncre
+    if abs(motorIncre) > DRIVE_CEILING_INCRE
+        safeIncre := 0
+        setRunAbort(AR_INCRE_GUARD, motorIncre)
+    lastIncre := safeIncre
+    if side == SIDE_RIGHT
+        wheelR.testDriveAtMotorIncrement(safeIncre)
+    elseif side == SIDE_LEFT
+        wheelL.testDriveAtMotorIncrement(safeIncre)
+
+PRI sideStart(side) : startedCog
+' start() the named wheel on its fixed bench base.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns startedCog - start()'s return: cog id 0..7, or -1
+
+    startedCog := -1
+    if side == SIDE_RIGHT
+        startedCog := wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+    elseif side == SIDE_LEFT
+        startedCog := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+
+PRI sideStop(side)
+' stop() the named wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    if side == SIDE_RIGHT
+        wheelR.stop()
+    elseif side == SIDE_LEFT
+        wheelL.stop()
+
+PRI sideCogRunning(side) : bRunning
+' Report whether the named wheel has a running driver cog (stop() zeroes motorCog).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bRunning - TRUE when the driver cog is running
+
+    bRunning := FALSE
+    if side == SIDE_RIGHT
+        bRunning := (wheelR.testGetMotorCog() <> 0)
+    elseif side == SIDE_LEFT
+        bRunning := (wheelL.testGetMotorCog() <> 0)
+
+PRI sideIsReady(side) : bReady
+' Report whether the named wheel's running driver cog reports ready.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bReady - TRUE when running and ready
+
+    bReady := FALSE
+    if sideCogRunning(side)
+        bReady := (side == SIDE_RIGHT) ? wheelR.isReady() : wheelL.isReady()
+
+PRI sideIsStopped(side) : bStopped
+' Report whether the named wheel's running driver reports STOPPED (never a stale stopped cog).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bStopped - TRUE when running and STOPPED
+
+    bStopped := FALSE
+    if sideCogRunning(side)
+        bStopped := (side == SIDE_RIGHT) ? wheelR.isStopped() : wheelL.isStopped()
+
+PRI sideIsFault(side) : bFaulted
+' Report the named wheel's hub fault flag.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bFaulted - TRUE when the fault flag is set
+
+    bFaulted := (side == SIDE_RIGHT) ? wheelR.isFaultSignal() : wheelL.isFaultSignal()
+
+PRI sideResetFault(side)
+' testResetFault() the named wheel when its fault flag is set.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    if sideIsFault(side)
+        if side == SIDE_RIGHT
+            wheelR.testResetFault()
+        else
+            wheelL.testResetFault()
+
+PRI sideDriverState(side) : eDrvrState
+' Driver state of the named wheel, DCS_Unknown when no cog is running.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eDrvrState - DCS_* state
+
+    eDrvrState := wheelL.DCS_Unknown
+    if sideCogRunning(side)
+        eDrvrState := (side == SIDE_RIGHT) ? wheelR.getDriverState() : wheelL.getDriverState()
+
+PRI sideTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault, bCogUp
+' Snapshot telemetry, only from a running cog (PL-21).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nDuty - duty
+' @returns nErr - position error
+' @returns nSenseI - sense_i_mV, true millivolts
+' @returns eDrvrState - DCS_* state
+' @returns bDidFault - fault flag
+' @returns bCogUp - TRUE when the driver cog is running
+
+    nDuty := 0
+    nErr := 0
+    nSenseI := 0
+    eDrvrState := wheelL.DCS_Unknown
+    bDidFault := FALSE
+    bCogUp := sideCogRunning(side)
+    if bCogUp
+        if side == SIDE_RIGHT
+            nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelR.testGetTelemetry()
+        else
+            nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelL.testGetTelemetry()
+
+PRI sideTicks(side) : nTicks
+' Raw hall ticks of the named wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nTicks - hall-tick position
+
+    nTicks := (side == SIDE_RIGHT) ? wheelR.getRawHallTicks() : wheelL.getRawHallTicks()
+
+PRI sideIntegrity(side) : nMissed, nIllegal
+' Hall integrity counts of the named wheel since its last start.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nMissed - missed transitions
+' @returns nIllegal - illegal hall codes
+
+    if side == SIDE_RIGHT
+        nMissed, nIllegal := wheelR.getHallIntegrityCounts()
+    else
+        nMissed, nIllegal := wheelL.getHallIntegrityCounts()
+
+PRI sideSetOffsets(side, negDeg, posDeg)
+' Apply both commutation offsets through the TEST-USE ONLY independent setter.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param negDeg - offset_fwd degrees (negative increments)
+' @param posDeg - offset_rev degrees (positive increments)
+
+    if side == SIDE_RIGHT
+        wheelR.testSetFwdRevIndep(negDeg, posDeg)
+    else
+        wheelL.testSetFwdRevIndep(negDeg, posDeg)
+
+PRI sideGetOffsets(side) : negDeg, posDeg
+' Read both applied commutation offsets back.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns negDeg - offset_fwd degrees
+' @returns posDeg - offset_rev degrees
+
+    if side == SIDE_RIGHT
+        negDeg, posDeg := wheelR.testGetFwdRevIndep()
+    else
+        negDeg, posDeg := wheelL.testGetFwdRevIndep()
+
+PRI sideBoardType(side) : eBoardRev
+' Board revision recorded at start.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eBoardRev - REV_* value
+
+    eBoardRev := (side == SIDE_RIGHT) ? wheelR.getBoardType() : wheelL.getBoardType()
+
+PRI emitHeaderRecords()
+' Emit the run's identity, limits, plan and bands before anything moves.
+
+    emitBanner()
+    emitDrive()
+    emitLimits()
+    emitLimits2()
+    emitPlanT()
+    emitPlanS()
+    emitBands()
+    debug("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+
+PRI emitBanner()
+' Emit BS-BANNER. cfg_id is sourced from its own #ifdef, never a runtime test: pnut-ts silently
+' ignores an unknown -D, so a mistyped flag must land on the honest #else token.
+
+    lineReset()
+    lineAddText(@"BS-BANNER")
+    boundedField(@"src_rev", SRC_REV, LIM_SMALL)
+    boundedField(@"fmt", FMT_VERSION, LIM_SMALL)
+#ifdef BENCH_CFG
+    tokenField(@"cfg_id", @sCfgBench, TOKMAX_CFG)
+#else
+    tokenField(@"cfg_id", @sCfgUser, TOKMAX_CFG)
+#endif
+    tokenField(@"frame", @sFrameMotor, TOKMAX_FRAME)
+    boundedField(@"clkfreq", CLKFREQ, LIM_BIG)
+    boundedField(@"left_base", LEFT_TEST_BASE, LIM_SMALL)
+    boundedField(@"right_base", RIGHT_TEST_BASE, LIM_SMALL)
+    boundedField(@"voltage_enum", TEST_VOLTAGE, LIM_SMALL)
+    boundedField(@"det_mode", TEST_DET_MODE, LIM_SMALL)
+    boundedField(@"motor_type", user.MOTOR_TYPE, LIM_SMALL)
+    boundedField(@"def_neg_deg", DEF_NEG_DEG, LIM_SMALL)
+    boundedField(@"def_pos_deg", DEF_POS_DEG, LIM_SMALL)
+    lineEmit()
+
+PRI emitDrive()
+' Emit BS-DRIVE: every increment this binary can command.
+
+    lineReset()
+    lineAddText(@"BS-DRIVE")
+    boundedField(@"ceiling_incre", DRIVE_CEILING_INCRE, LIM_BIG)
+    boundedField(@"qtr_incre", QTR_SPEED_INCRE, LIM_BIG)
+    boundedField(@"half_incre", HALF_SPEED_INCRE, LIM_BIG)
+    boundedField(@"preflight_incre", PREFLIGHT_INCRE, LIM_BIG)
+    boundedField(@"jog_incre", JOG_INCRE, LIM_BIG)
+    lineEmit()
+
+PRI emitLimits()
+' Emit BS-LIMITS: current and run caps.
+
+    lineReset()
+    lineAddText(@"BS-LIMITS")
+    boundedField(@"abs_abort_mV", ABS_ABORT_MV, LIM_SMALL)
+    boundedField(@"abs_abort_samples", ABS_ABORT_SAMPLES, LIM_SMALL)
+    boundedField(@"point_abort_x100", POINT_ABORT_X100, LIM_SMALL)
+    boundedField(@"point_abort_samples", POINT_ABORT_SAMPLES, LIM_SMALL)
+    boundedField(@"run_time_cap_s", RUN_TIME_CAP_S, LIM_SMALL)
+    boundedField(@"run_charge_cap_mVs", RUN_CHARGE_CAP_MVS, LIM_MID)
+    boundedField(@"run_fault_cap", RUN_FAULT_CAP, LIM_SMALL)
+    boundedField(@"run_abort_i_cap", RUN_ABORT_I_CAP, LIM_SMALL)
+    lineEmit()
+
+PRI emitLimits2()
+' Emit BS-LIMITS2: leg caps, hard limit and flag thresholds.
+
+    lineReset()
+    lineAddText(@"BS-LIMITS2")
+    boundedField(@"leg_fault_cap", LEG_FAULT_CAP, LIM_SMALL)
+    boundedField(@"side_fault_stop", SIDE_FAULT_STOP, LIM_SMALL)
+    boundedField(@"hard_limit_deg", HARD_LIMIT_DEG, LIM_SMALL)
+    boundedField(@"drift_flag_pct", DRIFT_FLAG_PCT, LIM_SMALL)
+    boundedField(@"imbalance_pct", IMBALANCE_PCT, LIM_SMALL)
+    lineEmit()
+
+PRI emitPlanT()
+' Emit BS-PLAN-T: timing and window sizes.
+
+    lineReset()
+    lineAddText(@"BS-PLAN-T")
+    boundedField(@"sample_ms", SAMPLE_MS, LIM_SMALL)
+    boundedField(@"settle_ms", SETTLE_MS, LIM_SMALL)
+    boundedField(@"steady_timeout_ms", STEADY_TIMEOUT_MS, LIM_SMALL)
+    boundedField(@"stop_timeout_ms", STOP_TIMEOUT_MS, LIM_SMALL)
+    boundedField(@"rest_ms", REST_MS, LIM_SMALL)
+    boundedField(@"fault_cool_ms", FAULT_COOL_MS, LIM_SMALL)
+    boundedField(@"jog_ms", JOG_MS, LIM_SMALL)
+    boundedField(@"batch_ticks", BATCH_TICKS, LIM_SMALL)
+    boundedField(@"win_ticks_coarse", WIN_TICKS_COARSE, LIM_SMALL)
+    boundedField(@"win_ticks_fine", WIN_TICKS_FINE, LIM_SMALL)
+    boundedField(@"win_ticks_self", WIN_TICKS_SELF, LIM_SMALL)
+    boundedField(@"win_ticks_half", WIN_TICKS_HALF, LIM_SMALL)
+    lineEmit()
+
+PRI emitPlanS()
+' Emit BS-PLAN-S: sweep geometry.
+
+    lineReset()
+    lineAddText(@"BS-PLAN-S")
+    boundedField(@"coarse_step_deg", COARSE_STEP_DEG, LIM_SMALL)
+    boundedField(@"fine_step_deg", FINE_STEP_DEG, LIM_SMALL)
+    boundedField(@"fine_half_deg", FINE_HALF_DEG, LIM_SMALL)
+    boundedField(@"extend_pts", EXTEND_PTS, LIM_SMALL)
+    boundedField(@"confirm_half_deg", CONFIRM_HALF_DEG, LIM_SMALL)
+    boundedField(@"confirm_extend_pts", CONFIRM_EXTEND_PTS, LIM_SMALL)
+    boundedField(@"rise_pct", RISE_PCT, LIM_SMALL)
+    boundedField(@"min_past", MIN_PAST, LIM_SMALL)
+    boundedField(@"fit_min_pts", FIT_MIN_PTS, LIM_SMALL)
+    boundedField(@"confirm_min_pts", CONFIRM_MIN_PTS, LIM_SMALL)
+    lineEmit()
+
+PRI emitBands()
+' Emit BS-BANDS: the self-check tolerance bands.
+
+    lineReset()
+    lineAddText(@"BS-BANDS")
+    boundedField(@"pos_qtr_lo_mV", POS_QTR_LO_MV, LIM_SMALL)
+    boundedField(@"pos_qtr_hi_mV", POS_QTR_HI_MV, LIM_SMALL)
+    boundedField(@"neg_qtr_lo_mV", NEG_QTR_LO_MV, LIM_SMALL)
+    boundedField(@"neg_qtr_hi_mV", NEG_QTR_HI_MV, LIM_SMALL)
+    boundedField(@"ratio_lo_x1000", RATIO_LO_X1000, LIM_SMALL)
+    boundedField(@"ratio_hi_x1000", RATIO_HI_X1000, LIM_SMALL)
+    boundedField(@"zero_lo_mV", ZERO_LO_MV, LIM_SMALL)
+    boundedField(@"zero_hi_mV", ZERO_HI_MV, LIM_SMALL)
+    boundedField(@"rate_qtr_lo", RATE_QTR_LO, LIM_SMALL)
+    boundedField(@"rate_qtr_hi", RATE_QTR_HI, LIM_SMALL)
+    boundedField(@"rate_half_lo", RATE_HALF_LO, LIM_SMALL)
+    boundedField(@"rate_half_hi", RATE_HALF_HI, LIM_SMALL)
+    lineEmit()
+
+PRI emitPreflight(side, ticksMoved)
+' Emit BS-PREFLIGHT.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param ticksMoved - signed tick delta across the nudge
+
+    lineReset()
+    lineAddText(@"BS-PREFLIGHT")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"base", (side == SIDE_RIGHT) ? RIGHT_TEST_BASE : LEFT_TEST_BASE, LIM_SMALL)
+    boundedField(@"ticks", ticksMoved, LIM_SMALL)
+    boolField(@"moved", (ticksMoved <> 0))
+    lineEmit()
+
+PRI emitStart(side, startedCog, bCogOk, eBoardRev, bRevB, initNeg, initPos, readNeg, readPos, ...
+    bOffsetsOk, nMissed, nIllegal, bIntegOk, bStartOk)
+' Emit BS-START.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param startedCog - start()'s return
+' @param bCogOk - cog id in 0..7
+' @param eBoardRev - REV_* recorded at start
+' @param bRevB - board is Rev B
+' @param initNeg - offset_fwd degrees init() applied
+' @param initPos - offset_rev degrees init() applied
+' @param readNeg - offset_fwd read back after setting 43
+' @param readPos - offset_rev read back after setting 317
+' @param bOffsetsOk - read-back is exactly 43/317
+' @param nMissed - missed transitions since start
+' @param nIllegal - illegal hall codes since start
+' @param bIntegOk - no illegal code at start
+' @param bStartOk - every start check passed
+
+    lineReset()
+    lineAddText(@"BS-START")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"base", (side == SIDE_RIGHT) ? RIGHT_TEST_BASE : LEFT_TEST_BASE, LIM_TINY)
+    boundedField(@"cog", startedCog, LIM_TINY)
+    boolField(@"cog_ok", bCogOk)
+    boundedField(@"board_rev", eBoardRev, LIM_TINY)
+    boolField(@"rev_b", bRevB)
+    tokenField(@"board_id", boardToken(eBoardRev), TOKMAX_BOARD)
+    boundedField(@"init_neg_deg", initNeg, LIM_TINY)
+    boundedField(@"init_pos_deg", initPos, LIM_TINY)
+    boundedField(@"neg_deg", readNeg, LIM_TINY)
+    boundedField(@"pos_deg", readPos, LIM_TINY)
+    boolField(@"offsets_ok", bOffsetsOk)
+    boundedField(@"missed", nMissed, LIM_SMALL)
+    boundedField(@"illegal", nIllegal, LIM_SMALL)
+    boolField(@"integ_ok", bIntegOk)
+    tokenField(@"result", bStartOk ? @sOk : @sFail, TOKMAX_OKFAIL)
+    lineEmit()
+
+PRI emitZero(side, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand, bValid)
+' Emit BS-ZERO.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param sampleCnt - samples taken
+' @param meanX10 - mean sense x10
+' @param minMv - smallest sample
+' @param maxMv - largest sample
+' @param bFrozen - min equals max
+' @param bInBand - mean inside the zero band
+' @param bValid - at least one sample
+
+    lineReset()
+    lineAddText(@"BS-ZERO")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"samples", sampleCnt, LIM_SMALL)
+    naOrBoundedField(@"i_mean_mV_x10", meanX10, LIM_SMALL, bValid)
+    naOrBoundedField(@"i_min_mV", minMv, LIM_SMALL, bValid)
+    naOrBoundedField(@"i_max_mV", maxMv, LIM_SMALL, bValid)
+    boolField(@"frozen", bFrozen and bValid)
+    boolField(@"in_band", bInBand)
+    lineEmit()
+
+PRI emitPoint(side, speedIdx, motorIncre, ptPhase, sweptDeg)
+' Emit BS-POINT from the point record.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param motorIncre - signed increment
+' @param ptPhase - PH_* of the point
+' @param sweptDeg - signed swept offset
+
+    lineReset()
+    lineAddText(@"BS-POINT")
+    boundedField(@"seq", pointSeq, LIM_TINY)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    boundedField(@"incre", motorIncre, LIM_BIG)
+    tokenField(@"phase", phaseToken(ptPhase), TOKMAX_PHASE)
+    boundedField(@"neg_deg", ptNegDeg, LIM_TINY)
+    boundedField(@"pos_deg", ptPosDeg, LIM_TINY)
+    boundedField(@"swept_deg", sweptDeg, LIM_TINY)
+    tokenField(@"result", resultToken(ptResult), TOKMAX_RESULT)
+    naOrBoundedField(@"steady_ms", ptSteadyMs, LIM_SMALL, bPtCommanded)
+    naOrBoundedField(@"ticks", ptTicks, LIM_SMALL, bPtWinRan)
+    naOrBoundedField(@"win_ms", ptWinMs, LIM_SMALL, bPtWinRan)
+    naOrBoundedField(@"rate_x10", ptRateX10, LIM_SMALL, bPtWinRan)
+    boolField(@"rate_ok", bPtRateOk)
+    naOrBoundedField(@"samples", ptSamples, LIM_SMALL, bPtWinRan)
+    naOrBoundedField(@"i_mean_mV_x10", ptMeanX10, LIM_SMALL, bPtWinRan and (ptSamples > 0))
+    naOrBoundedField(@"i_se_mV_x10", ptSeX10, LIM_SMALL, bPtSeValid)
+    lineEmit()
+
+PRI emitPoint2(side, motorIncre)
+' Emit BS-POINT2 from the point record.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+
+    lineReset()
+    lineAddText(@"BS-POINT2")
+    boundedField(@"seq", pointSeq, LIM_TINY)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"incre", motorIncre, LIM_BIG)
+    naOrBoundedField(@"i_halfA_mV_x10", ptHalfAX10, LIM_SMALL, bPtHalvesValid)
+    naOrBoundedField(@"i_halfB_mV_x10", ptHalfBX10, LIM_SMALL, bPtHalvesValid)
+    boolField(@"unsettled", bPtUnsettled)
+    naOrBoundedField(@"i_min_mV", ptMinMv, LIM_SMALL, ptSamples > 0)
+    naOrBoundedField(@"i_max_mV", ptMaxMv, LIM_SMALL, ptSamples > 0)
+    naOrBoundedField(@"duty_mean", ptDutyMean, LIM_SMALL, ptSamples > 0)
+    naOrBoundedField(@"err_mean", ptErrMean, LIM_TINY, ptSamples > 0)
+    naOrBoundedField(@"missed_d", ptMissedD, LIM_SMALL, bPtIntegValid)
+    naOrBoundedField(@"illegal_d", ptIllegalD, LIM_SMALL, bPtIntegValid)
+    boolField(@"fault", bSampFaultSeen)
+    boolField(@"abort_i", bSampPointAbort)
+    boundedField(@"charge_mVs", ptChargeMvS, LIM_MID)
+    boundedField(@"drv_state", sampState, LIM_TINY)
+    lineEmit()
+
+PRI emitCheck(side, motorIncre, loMv, hiMv, bIOk, bRateOk, bIntegOk, bFaultOk)
+' Emit BS-CHECK for one self-check point.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+' @param loMv - band low
+' @param hiMv - band high
+' @param bIOk - current in band
+' @param bRateOk - rate in band
+' @param bIntegOk - no hall integrity events
+' @param bFaultOk - completed without fault
+
+    lineReset()
+    lineAddText(@"BS-CHECK")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"incre", motorIncre, LIM_BIG)
+    boundedField(@"lo_mV", loMv, LIM_SMALL)
+    boundedField(@"hi_mV", hiMv, LIM_SMALL)
+    boolField(@"i_ok", bIOk)
+    boolField(@"rate_ok", bRateOk)
+    boolField(@"integ_ok", bIntegOk)
+    boolField(@"fault_ok", bFaultOk)
+    lineEmit()
+
+PRI emitChecksum(side, bStartOk, bZeroPass, bPosIOk, bNegIOk, ratioX1000, bRatioOk, bRateOk, bIntegOk, ...
+    bFaultOk, bPassed, missCode)
+' Emit BS-CHECKSUM, the self-check verdict.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param bStartOk - start checks passed
+' @param bZeroPass - zero in band
+' @param bPosIOk - +1/4 current in band
+' @param bNegIOk - -1/4 current in band
+' @param ratioX1000 - negative/positive ratio x1000
+' @param bRatioOk - ratio in band
+' @param bRateOk - both rates in band
+' @param bIntegOk - no hall integrity events
+' @param bFaultOk - no fault
+' @param bPassed - every check passed
+' @param missCode - MISS_* first miss
+
+    lineReset()
+    lineAddText(@"BS-CHECKSUM")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boolField(@"start_ok", bStartOk)
+    boolField(@"zero_ok", bZeroPass)
+    boolField(@"pos_i_ok", bPosIOk)
+    boolField(@"neg_i_ok", bNegIOk)
+    boundedField(@"ratio_x1000", ratioX1000, LIM_SMALL)
+    boolField(@"ratio_ok", bRatioOk)
+    boolField(@"rate_ok", bRateOk)
+    boolField(@"integ_ok", bIntegOk)
+    boolField(@"fault_ok", bFaultOk)
+    tokenField(@"verdict", bPassed ? @sVerdictPass : @sVerdictFail, TOKMAX_VERDICT)
+    tokenField(@"first_miss", missToken(missCode), TOKMAX_MISS)
+    lineEmit()
+
+PRI emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
+' Emit BS-WALK for one coarse side.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param walkDir - +1 up, -1 down
+' @param nPts - points measured on this side
+' @param lastSwept - last swept offset measured
+' @param walkStop - WS_* stop reason
+
+    lineReset()
+    lineAddText(@"BS-WALK")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"speed", @sSpeedQtr, TOKMAX_SPEED)
+    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    tokenField(@"side", (walkDir > 0) ? @sSideUp : @sSideDown, TOKMAX_WALK_SIDE)
+    boundedField(@"pts", nPts, LIM_TINY)
+    boundedField(@"last_swept_deg", lastSwept, LIM_TINY)
+    tokenField(@"stop", walkStopToken(walkStop), TOKMAX_WALK_STOP)
+    naOrBoundedField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
+    naOrBoundedField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
+    lineEmit()
+
+PRI emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
+' Emit BS-BRACKET.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param bBelowOk - high point below the low exists
+' @param bAboveOk - high point above the low exists
+' @param bBracketed - both exist
+' @param reason - BR_* verdict
+
+    lineReset()
+    lineAddText(@"BS-BRACKET")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"speed", @sSpeedQtr, TOKMAX_SPEED)
+    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    naOrBoundedField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
+    naOrBoundedField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
+    boolField(@"below_ok", bBelowOk)
+    boolField(@"above_ok", bAboveOk)
+    boolField(@"bracketed", bBracketed)
+    tokenField(@"reason", bracketToken(reason), TOKMAX_BRACKET)
+    lineEmit()
+
+PRI lowDegOrZero() : lowDeg
+' Swept offset of the leg's low point, 0 when there is none.
+'
+' @returns lowDeg - swept degrees
+
+    lowDeg := 0
+    if legLowIdx >= 0
+        lowDeg := legDeg[legLowIdx]
+
+PRI lowMeanOrZero() : lowMeanX10
+' Mean sense of the leg's low point x10, 0 when there is none.
+'
+' @returns lowMeanX10 - mean sense x10
+
+    lowMeanX10 := 0
+    if legLowIdx >= 0
+        lowMeanX10 := legMeanX10[legLowIdx]
+
+PRI emitFit(side, speedIdx, signIdx)
+' Emit BS-FIT: status and span of the fit record.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+
+    lineReset()
+    lineAddText(@"BS-FIT")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    tokenField(@"status", fitToken(fitStatus), TOKMAX_FIT)
+    boundedField(@"n", fitN, LIM_TINY)
+    naOrBoundedField(@"centre_deg", fitCentre, LIM_TINY, fitStatus <> FS_SKIPPED and fitStatus <> FS_NOT_BRACKETED)
+    naOrBoundedField(@"span_lo_deg", fitSpanLo, LIM_TINY, fitN > 0)
+    naOrBoundedField(@"span_hi_deg", fitSpanHi, LIM_TINY, fitN > 0)
+    boolField(@"extended", bFitExtended)
+    lineEmit()
+
+PRI emitFit2(side, speedIdx, signIdx) | bSolved
+' Emit BS-FIT2: the fitted numbers.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+'
+' @local bSolved - TRUE when a convex vertex was solved
+
+    bSolved := bFitSolved
+    lineReset()
+    lineAddText(@"BS-FIT2")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    naOrBoundedField(@"min_deg_x10", floatToBoundedInt(fitMinF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
+    naOrBoundedField(@"min_se_deg_x10", floatToBoundedInt(fitSeF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved and bFitSeValid)
+    naOrBoundedField(@"min_mV_x10", floatToBoundedInt(fitMinMvF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
+    naOrBoundedField(@"rms_mV_x10", floatToBoundedInt(fitRmsF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
+    naOrBoundedField(@"med_se_mV_x10", fitMedSeX10, LIM_SMALL, fitN > 0)
+    naOrBoundedField(@"curv_x100", floatToBoundedInt(fitCurvF *. 100.0, LIM_MID), LIM_MID, fitN > FIT_PARAMS)
+    naOrBoundedField(@"curv_model_pct", curvModelPct(), LIM_SMALL, bSolved and (fitMinMvF >. 0.0))
+    naOrBoundedField(@"flat2_deg_x10", flatHalfWidthX10(), LIM_SMALL, bSolved and (fitMinMvF >. 0.0))
+    lineEmit()
+
+PRI curvModelPct() : modelPct
+' Fitted curvature as a percentage of the 1/cos law's curvature at the fitted minimum.
+'
+' @returns modelPct - percent, 0 when undefined
+
+    modelPct := 0
+    if bFitSolved and (fitMinMvF >. 0.0)
+        modelPct := floatToBoundedInt((fitCurvF /. (fitMinMvF *. FIT_MODEL_CURV)) *. 100.0, LIM_SMALL)
+
+PRI flatHalfWidthX10() : halfWidthX10
+' Half-width, degrees x10, over which the fit stays within FIT_FLAT_FRACTION of its minimum.
+'
+' @returns halfWidthX10 - degrees x10, 0 when undefined
+
+    halfWidthX10 := 0
+    if bFitSolved and (fitMinMvF >. 0.0) and (fitCurvF >. 0.0)
+        halfWidthX10 := floatToBoundedInt(fsqrt((FIT_FLAT_FRACTION *. fitMinMvF) /. fitCurvF) *. FIT_DEG_SCALE *. 10.0, LIM_SMALL)
+
+PRI emitFault(side, motorIncre, sweptDeg, fxStep, bCleared)
+' Emit BS-FAULT for one recovery step.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - increment of the faulted point
+' @param sweptDeg - swept offset of the faulted point
+' @param fxStep - FX_* step
+' @param bCleared - TRUE when the wheel is stopped with no fault after this step
+
+    lineReset()
+    lineAddText(@"BS-FAULT")
+    boundedField(@"seq", pointSeq, LIM_TINY)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"incre", motorIncre, LIM_BIG)
+    boundedField(@"swept_deg", sweptDeg, LIM_TINY)
+    boundedField(@"drv_state", sideDriverState(side), LIM_TINY)
+    tokenField(@"step", stepToken(fxStep), TOKMAX_STEP)
+    boolField(@"cleared", bCleared)
+    boundedField(@"consec", legConsecFaults, LIM_TINY)
+    boundedField(@"run_faults", runFaults, LIM_TINY)
+    lineEmit()
+
+PRI emitLeg(side, speedIdx, signIdx, legExit, refEndIdx, driftPctX10, bDriftValid, bDrift)
+' Emit BS-LEG.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param legExit - LX_* exit
+' @param refEndIdx - leg index of REF_END, -1 when not measured
+' @param driftPctX10 - drift percent x10
+' @param bDriftValid - both references valid
+' @param bDrift - drift beyond DRIFT_FLAG_PCT
+
+    lineReset()
+    lineAddText(@"BS-LEG")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    tokenField(@"served_by", servedToken(signIdx), TOKMAX_SERVED)
+    boundedField(@"pts", legCount, LIM_TINY)
+    boundedField(@"faults", legFaults, LIM_TINY)
+    boundedField(@"aborts_i", legAbortsI, LIM_TINY)
+    naOrBoundedField(@"ref_start_mV_x10", refStartMeanOrZero(), LIM_SMALL, isValidIdx(0) and (legPhase[0] == PH_REF_START))
+    naOrBoundedField(@"ref_end_mV_x10", refEndMeanOrZero(refEndIdx), LIM_SMALL, isValidIdx(refEndIdx))
+    naOrBoundedField(@"drift_pct_x10", driftPctX10, LIM_SMALL, bDriftValid)
+    boolField(@"drift_flag", bDrift)
+    tokenField(@"exit", legExitToken(legExit), TOKMAX_LEG_EXIT)
+    lineEmit()
+
+PRI refStartMeanOrZero() : meanX10
+' REF_START mean x10 of the leg, 0 when absent.
+'
+' @returns meanX10 - mean sense x10
+
+    meanX10 := 0
+    if legCount > 0
+        meanX10 := legMeanX10[0]
+
+PRI refEndMeanOrZero(refEndIdx) : meanX10
+' REF_END mean x10 of the leg, 0 when absent.
+'
+' @param refEndIdx - leg index of REF_END, -1 when not measured
+' @returns meanX10 - mean sense x10
+
+    meanX10 := 0
+    if (refEndIdx >= 0) and (refEndIdx < legCount)
+        meanX10 := legMeanX10[refEndIdx]
+
+PRI emitResults(side, firstSign) | orderPos, signIdx
+' Emit one motor's RESULT, RESULT-HALF and PAIR records.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param firstSign - the sign whose legs ran first
+'
+' @local orderPos - 0 then 1
+' @local signIdx - SIGN_* for this position
+
+    repeat orderPos from 0 to SIGN_SLOTS - 1
+        signIdx := (orderPos == 0) ? firstSign : (SIGN_POS - firstSign)
+        emitResult(side, signIdx)
+        emitResultHalf(side, signIdx)
+    emitPair(side, firstSign)
+    emitPair2(side)
+
+PRI hasMinimum(slotIdx) : bHasMin
+' Report whether a result slot carries a usable fitted minimum (OK or POOR).
+'
+' @param slotIdx - result slot
+' @returns bHasMin - TRUE when the status is FS_OK or FS_POOR
+
+    bHasMin := (resStatus[slotIdx] == FS_OK) or (resStatus[slotIdx] == FS_POOR)
+
+PRI emitResult(side, signIdx) | slotIdx, bHasMin, iminX10, savingX10
+' Emit BS-RESULT for one sign at 1/4 speed.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+'
+' @local slotIdx - 1/4-speed result slot
+' @local bHasMin - a usable minimum exists
+' @local iminX10 - fitted minimum current x10
+' @local savingX10 - saving at the minimum vs default, percent x10
+
+    slotIdx := resultSlot(side, signIdx, SPEED_QTR)
+    bHasMin := hasMinimum(slotIdx)
+    iminX10 := floatToBoundedInt(resIminF[slotIdx] *. 10.0, LIM_SMALL)
+    savingX10 := 0
+    if bHasMin and bResIdefValid[slotIdx] and (resIdefX10[slotIdx] > 0)
+        savingX10 := ((resIdefX10[slotIdx] - iminX10) * X1000) / resIdefX10[slotIdx]
+    lineReset()
+    lineAddText(@"BS-RESULT")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    tokenField(@"served_by", servedToken(signIdx), TOKMAX_SERVED)
+    boundedField(@"def_deg", defaultSwept(signIdx), LIM_TINY)
+    tokenField(@"status", fitToken(resStatus[slotIdx]), TOKMAX_FIT)
+    naOrBoundedField(@"min_deg_x10", floatToBoundedInt(resMinF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)
+    naOrBoundedField(@"applied_deg", normDegrees(floatToBoundedInt(resMinF[slotIdx], LIM_TINY)), LIM_TINY, bHasMin)
+    naOrBoundedField(@"min_se_deg_x10", floatToBoundedInt(resSeF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin and bResSeValid[slotIdx])
+    naOrBoundedField(@"i_min_mV_x10", iminX10, LIM_SMALL, bHasMin)
+    naOrBoundedField(@"i_def_mV_x10", resIdefX10[slotIdx], LIM_SMALL, bResIdefValid[slotIdx])
+    naOrBoundedField(@"saving_pct_x10", savingX10, LIM_SMALL, bHasMin and bResIdefValid[slotIdx])
+    naOrBoundedField(@"fit_rms_mV_x10", floatToBoundedInt(resRmsF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)
+    boolField(@"drift_flag", bResDrift[slotIdx])
+    lineEmit()
+
+PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bShift, bShiftSe, shiftDegF, shiftSeF, bSig
+' Emit BS-RESULT-HALF for one sign: the 1/2-speed minimum and its shift from 1/4 speed.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+'
+' @local halfSlot - 1/2-speed result slot
+' @local qtrSlot - 1/4-speed result slot
+' @local bHalfMin - a usable 1/2-speed minimum exists
+' @local bShift - both minima exist
+' @local bShiftSe - both minima carry a standard error
+' @local shiftDegF - shift, degrees
+' @local shiftSeF - shift standard error, degrees
+' @local bSig - |shift| > SHIFT_SIG_FACTOR * shift SE
+
+    halfSlot := resultSlot(side, signIdx, SPEED_HALF)
+    qtrSlot := resultSlot(side, signIdx, SPEED_QTR)
+    bHalfMin := hasMinimum(halfSlot)
+    bShift := bHalfMin and hasMinimum(qtrSlot)
+    bShiftSe := bShift and bResSeValid[halfSlot] and bResSeValid[qtrSlot]
+    shiftDegF := resMinF[halfSlot] -. resMinF[qtrSlot]
+    shiftSeF := fsqrt((resSeF[halfSlot] *. resSeF[halfSlot]) +. (resSeF[qtrSlot] *. resSeF[qtrSlot]))
+    bSig := bShiftSe and (fabs(shiftDegF) >. (SHIFT_SIG_FACTOR *. shiftSeF))
+    lineReset()
+    lineAddText(@"BS-RESULT-HALF")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    tokenField(@"status", fitToken(resStatus[halfSlot]), TOKMAX_FIT)
+    naOrBoundedField(@"min_deg_x10", floatToBoundedInt(resMinF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)
+    naOrBoundedField(@"min_se_deg_x10", floatToBoundedInt(resSeF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin and bResSeValid[halfSlot])
+    naOrBoundedField(@"i_min_mV_x10", floatToBoundedInt(resIminF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)
+    naOrBoundedField(@"i_def_mV_x10", resIdefX10[halfSlot], LIM_SMALL, bResIdefValid[halfSlot])
+    naOrBoundedField(@"shift_deg_x10", floatToBoundedInt(shiftDegF *. 10.0, LIM_SMALL), LIM_SMALL, bShift)
+    naOrBoundedField(@"shift_se_deg_x10", floatToBoundedInt(shiftSeF *. 10.0, LIM_SMALL), LIM_SMALL, bShiftSe)
+    boolField(@"shift_sig", bSig)
+    lineEmit()
+
+PRI emitPair(side, firstSign) | negSlot, posSlot, bComplete, bPairSe, midF, midSeF, leadF
+' Emit BS-PAIR: the two 1/4-speed minima, their midpoint (hall-zero estimate) and half-difference (lead).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param firstSign - the sign whose legs ran first
+'
+' @local negSlot - NEG 1/4-speed slot
+' @local posSlot - POS 1/4-speed slot
+' @local bComplete - both minima exist
+' @local bPairSe - both minima carry a standard error
+' @local midF - midpoint, degrees
+' @local midSeF - midpoint standard error, degrees
+' @local leadF - half-difference, degrees
+
+    negSlot := resultSlot(side, SIGN_NEG, SPEED_QTR)
+    posSlot := resultSlot(side, SIGN_POS, SPEED_QTR)
+    bComplete := hasMinimum(negSlot) and hasMinimum(posSlot)
+    bPairSe := bComplete and bResSeValid[negSlot] and bResSeValid[posSlot]
+    midF := (resMinF[negSlot] +. resMinF[posSlot]) /. 2.0
+    leadF := (resMinF[negSlot] -. resMinF[posSlot]) /. 2.0
+    midSeF := 0.5 *. fsqrt((resSeF[negSlot] *. resSeF[negSlot]) +. (resSeF[posSlot] *. resSeF[posSlot]))
+    lineReset()
+    lineAddText(@"BS-PAIR")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boolField(@"complete", bComplete)
+    naOrBoundedField(@"neg_min_deg_x10", floatToBoundedInt(resMinF[negSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(negSlot))
+    naOrBoundedField(@"pos_min_deg_x10", floatToBoundedInt(resMinF[posSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(posSlot))
+    naOrBoundedField(@"mid_deg_x10", floatToBoundedInt(midF *. 10.0, LIM_SMALL), LIM_SMALL, bComplete)
+    naOrBoundedField(@"mid_se_deg_x10", floatToBoundedInt(midSeF *. 10.0, LIM_SMALL), LIM_SMALL, bPairSe)
+    naOrBoundedField(@"lead_deg_x10", floatToBoundedInt(leadF *. 10.0, LIM_SMALL), LIM_SMALL, bComplete)
+    tokenField(@"sign_order", (firstSign == SIGN_NEG) ? @sOrderNegFirst : @sOrderPosFirst, TOKMAX_ORDER)
+    lineEmit()
+
+PRI emitPair2(side) | negSlot, posSlot, bComplete, zeroF, negF, posF, ratioRawX1000, ratioNetX1000, bNet
+' Emit BS-PAIR2: currents at the two minima, the measured zero, and their ratio raw and net.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local negSlot - NEG 1/4-speed slot
+' @local posSlot - POS 1/4-speed slot
+' @local bComplete - both minima exist
+' @local zeroF - measured zero, mV
+' @local negF - NEG minimum current, mV
+' @local posF - POS minimum current, mV
+' @local ratioRawX1000 - negF/posF x1000
+' @local ratioNetX1000 - zero-removed ratio x1000
+' @local bNet - the zero-removed denominator is positive
+
+    negSlot := resultSlot(side, SIGN_NEG, SPEED_QTR)
+    posSlot := resultSlot(side, SIGN_POS, SPEED_QTR)
+    bComplete := hasMinimum(negSlot) and hasMinimum(posSlot)
+    zeroF := float(zeroMeanX10[sideSlot(side)]) /. 10.0
+    negF := resIminF[negSlot]
+    posF := resIminF[posSlot]
+    ratioRawX1000 := 0
+    ratioNetX1000 := 0
+    bNet := FALSE
+    if bComplete and (posF >. 0.0)
+        ratioRawX1000 := floatToBoundedInt((negF /. posF) *. 1000.0, LIM_SMALL)
+        if (posF -. zeroF) >. 0.0
+            ratioNetX1000 := floatToBoundedInt(((negF -. zeroF) /. (posF -. zeroF)) *. 1000.0, LIM_SMALL)
+            bNet := TRUE
+    lineReset()
+    lineAddText(@"BS-PAIR2")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    naOrBoundedField(@"i_neg_min_mV_x10", floatToBoundedInt(negF *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(negSlot))
+    naOrBoundedField(@"i_pos_min_mV_x10", floatToBoundedInt(posF *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(posSlot))
+    boundedField(@"zero_mV_x10", zeroMeanX10[sideSlot(side)], LIM_SMALL)
+    naOrBoundedField(@"ratio_raw_x1000", ratioRawX1000, LIM_SMALL, bComplete and (posF >. 0.0))
+    naOrBoundedField(@"ratio_net_x1000", ratioNetX1000, LIM_SMALL, bNet)
+    boolField(@"imbalance", bComplete and (posF >. 0.0) and (abs(ratioRawX1000 - X1000) > IMBALANCE_PCT * X10))
+    lineEmit()
+
+PRI emitAbort(scope, reason, side, motorIncre, detailValue)
+' Emit BS-ABORT.
+'
+' @param scope - SCOPE_* scope
+' @param reason - AR_* reason
+' @param side - SIDE_* context
+' @param motorIncre - last increment
+' @param detailValue - the reading or code that triggered it
+
+    lineReset()
+    lineAddText(@"BS-ABORT")
+    tokenField(@"scope", scopeToken(scope), TOKMAX_SCOPE)
+    tokenField(@"reason", reasonToken(reason), TOKMAX_REASON)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"incre", motorIncre, LIM_BIG)
+    boundedField(@"seq", pointSeq, LIM_TINY)
+    boundedField(@"value", detailValue, LIM_MID)
+    boundedField(@"elapsed_s", (getms() - runStartMs) / MS_PER_SEC, LIM_SMALL)
+    lineEmit()
+
+PRI emitEnd()
+' Emit BS-END, the last record before the end marker.
+
+    flushCharge()
+    lineReset()
+    lineAddText(@"BS-END")
+    tokenField(@"exit", (abortReason == AR_NONE) ? @sExitComplete : @sExitAborted, TOKMAX_EXIT)
+    tokenField(@"reason", reasonToken(abortReason), TOKMAX_REASON)
+    boundedField(@"elapsed_s", (getms() - runStartMs) / MS_PER_SEC, LIM_SMALL)
+    boundedField(@"points", pointSeq, LIM_TINY)
+    boundedField(@"faults", runFaults, LIM_TINY)
+    boundedField(@"aborts_i", runAbortsI, LIM_TINY)
+    boundedField(@"charge_mVs", runChargeMvS, LIM_MID)
+    boolField(@"left_done", bLeftDone)
+    boolField(@"right_done", bRightDone)
+    boolField(@"lib_abort", (abortReason == AR_LIB_ABORT))
+    lineEmit()
+
+PRI boundedField(pFieldName, numValue, limitAbs)
+' Append a numeric field clamped to +/- limitAbs, so its printed width is bounded.
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+' @param limitAbs - clamp magnitude (one of the LIM_* widths)
+
+    lineField(pFieldName, (numValue #> (0 - limitAbs)) <# limitAbs)
+
+PRI naOrBoundedField(pFieldName, numValue, limitAbs, bValid)
+' Append a clamped numeric field, or the token NA when the value was not measured.
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+' @param limitAbs - clamp magnitude (one of the LIM_* widths)
+' @param bValid - TRUE when numValue is a measurement
+
+    if bValid
+        boundedField(pFieldName, numValue, limitAbs)
+    else
+        lineTextField(pFieldName, @sNa)
+
+PRI boolField(pFieldName, bFlag)
+' Append a boolean field as the token TRUE or FALSE, never a number (PL-23).
+'
+' @param pFieldName - pointer to the field name
+' @param bFlag - the field's value; any non-zero prints TRUE
+
+    lineTextField(pFieldName, (bFlag <> FALSE) ? @sTrue : @sFalse)
+
+PRI tokenField(pFieldName, pToken, maxLen)
+' Append a token field; a token longer than maxLen prints as "?" so the width stays bounded.
+'
+' @param pFieldName - pointer to the field name
+' @param pToken - pointer to the token text
+' @param maxLen - the longest token this field may print
+
+    if tokenFits(pToken, maxLen)
+        lineTextField(pFieldName, pToken)
+    else
+        lineTextField(pFieldName, @sBadTok)
+
+PRI tokenFits(pToken, maxLen) : bFits | charIdx
+' Report whether a zero-terminated token is at most maxLen bytes, reading no more than maxLen + 1.
+'
+' @param pToken - pointer to the token text
+' @param maxLen - the longest acceptable token
+' @returns bFits - TRUE when the terminator is found within maxLen bytes
+'
+' @local charIdx - index into the token
+
+    bFits := FALSE
+    repeat charIdx from 0 to maxLen
+        if BYTE[pToken][charIdx] == 0
+            bFits := TRUE
+            quit
+
+PRI motorToken(side) : pTok
+' Motor token for a side.
+'
+' @param side - SIDE_* value
+' @returns pTok - LEFT, RIGHT or NONE
+
+    case side
+        SIDE_LEFT:
+            pTok := @sMotLeft
+        SIDE_RIGHT:
+            pTok := @sMotRight
+        other:
+            pTok := @sMotNone
+
+PRI speedToken(speedIdx) : pTok
+' Speed token.
+'
+' @param speedIdx - SPEED_* value
+' @returns pTok - QTR or HALF
+
+    pTok := (speedIdx == SPEED_HALF) ? @sSpeedHalf : @sSpeedQtr
+
+PRI signToken(signIdx) : pTok
+' Increment-sign token.
+'
+' @param signIdx - SIGN_* value
+' @returns pTok - NEG or POS
+
+    pTok := (signIdx == SIGN_NEG) ? @sSignNeg : @sSignPos
+
+PRI servedToken(signIdx) : pTok
+' Name of the offset that serves a sign.
+'
+' @param signIdx - SIGN_* value
+' @returns pTok - OFFSET_FWD for NEG, OFFSET_REV for POS
+
+    pTok := (signIdx == SIGN_NEG) ? @sServedFwd : @sServedRev
+
+PRI phaseToken(ptPhase) : pTok
+' Point-phase token.
+'
+' @param ptPhase - PH_* value
+' @returns pTok - phase token
+
+    case ptPhase
+        PH_SELF:
+            pTok := @sPhSelf
+        PH_REF_START:
+            pTok := @sPhRefStart
+        PH_COARSE:
+            pTok := @sPhCoarse
+        PH_FINE:
+            pTok := @sPhFine
+        PH_EXTEND:
+            pTok := @sPhExtend
+        other:
+            pTok := @sPhRefEnd
+
+PRI resultToken(ptRes) : pTok
+' Point-result token.
+'
+' @param ptRes - PR_* value
+' @returns pTok - result token
+
+    case ptRes
+        PR_OK:
+            pTok := @sPrOk
+        PR_FAULT:
+            pTok := @sPrFault
+        PR_ABORT_I:
+            pTok := @sPrAbortI
+        PR_STEADY_TIMEOUT:
+            pTok := @sPrSteadyTo
+        PR_WINDOW_TIMEOUT:
+            pTok := @sPrWindowTo
+        other:
+            pTok := @sPrNoCog
+
+PRI walkStopToken(walkStop) : pTok
+' Walk-stop token.
+'
+' @param walkStop - WS_* value
+' @returns pTok - walk-stop token
+
+    case walkStop
+        WS_RISE:
+            pTok := @sWsRise
+        WS_FAULTS:
+            pTok := @sWsFaults
+        WS_HARD_LIMIT:
+            pTok := @sWsHardLimit
+        other:
+            pTok := @sWsRunAbort
+
+PRI bracketToken(reason) : pTok
+' Bracket-verdict token.
+'
+' @param reason - BR_* value
+' @returns pTok - bracket token
+
+    case reason
+        BR_OK:
+            pTok := @sBrOk
+        BR_EDGE_HARD_LIMIT:
+            pTok := @sBrEdgeLimit
+        BR_EDGE_FAULT:
+            pTok := @sBrEdgeFault
+        BR_NO_VALID:
+            pTok := @sBrNoValid
+        other:
+            pTok := @sBrRunAbort
+
+PRI fitToken(fitCode) : pTok
+' Fit-status token.
+'
+' @param fitCode - FS_* value
+' @returns pTok - fit token
+
+    case fitCode
+        FS_OK:
+            pTok := @sFsOk
+        FS_NOT_BRACKETED:
+            pTok := @sFsNotBracket
+        FS_NOT_CONVEX:
+            pTok := @sFsNotConvex
+        FS_TOO_FEW:
+            pTok := @sFsTooFew
+        FS_EDGE:
+            pTok := @sFsEdge
+        FS_POOR:
+            pTok := @sFsPoor
+        other:
+            pTok := @sFsSkipped
+
+PRI legExitToken(legExit) : pTok
+' Leg-exit token.
+'
+' @param legExit - LX_* value
+' @returns pTok - leg-exit token
+
+    case legExit
+        LX_DONE:
+            pTok := @sLxDone
+        LX_FAULT_CAP:
+            pTok := @sLxFaultCap
+        LX_RUN_ABORT:
+            pTok := @sLxRunAbort
+        other:
+            pTok := @sLxSkipped
+
+PRI reasonToken(reason) : pTok
+' Abort-reason token.
+'
+' @param reason - AR_* value
+' @returns pTok - reason token
+
+    case reason
+        AR_NONE:
+            pTok := @sArNone
+        AR_PREFLIGHT:
+            pTok := @sArPreflight
+        AR_START_FAIL:
+            pTok := @sArStartFail
+        AR_START_CHECK:
+            pTok := @sArStartCheck
+        AR_SELF_CHECK_MISS:
+            pTok := @sArSelfMiss
+        AR_ABS_CURRENT:
+            pTok := @sArAbsCurrent
+        AR_ABORT_I_CAP:
+            pTok := @sArAbortICap
+        AR_FAULT_CAP:
+            pTok := @sArFaultCap
+        AR_CHARGE_CAP:
+            pTok := @sArChargeCap
+        AR_TIME_CAP:
+            pTok := @sArTimeCap
+        AR_RECOVERY_FAIL:
+            pTok := @sArRecovFail
+        AR_LIB_ABORT:
+            pTok := @sArLibAbort
+        AR_INCRE_GUARD:
+            pTok := @sArIncreGuard
+        AR_OFFSET_READBACK:
+            pTok := @sArOfsReadback
+        other:
+            pTok := @sArAbortI
+
+PRI scopeToken(scope) : pTok
+' Abort-scope token.
+'
+' @param scope - SCOPE_* value
+' @returns pTok - RUN, POINT or LEG
+
+    case scope
+        SCOPE_RUN:
+            pTok := @sScopeRun
+        SCOPE_POINT:
+            pTok := @sScopePoint
+        other:
+            pTok := @sScopeLeg
+
+PRI stepToken(fxStep) : pTok
+' Fault-recovery step token.
+'
+' @param fxStep - FX_* value
+' @returns pTok - step token
+
+    case fxStep
+        FX_ZERO_CMD:
+            pTok := @sFxZeroCmd
+        FX_RESET:
+            pTok := @sFxReset
+        FX_JOG:
+            pTok := @sFxJog
+        other:
+            pTok := @sFxRestart
+
+PRI missToken(missCode) : pTok
+' Self-check first-miss token.
+'
+' @param missCode - MISS_* value
+' @returns pTok - miss token
+
+    case missCode
+        MISS_NONE:
+            pTok := @sMissNone
+        MISS_START:
+            pTok := @sMissStart
+        MISS_ZERO:
+            pTok := @sMissZero
+        MISS_I_POS:
+            pTok := @sMissIPos
+        MISS_I_NEG:
+            pTok := @sMissINeg
+        MISS_RATIO:
+            pTok := @sMissRatio
+        MISS_RATE:
+            pTok := @sMissRate
+        MISS_INTEG:
+            pTok := @sMissInteg
+        other:
+            pTok := @sMissFault
+
+PRI boardToken(eBoardRev) : pTok
+' Board-revision token.
+'
+' @param eBoardRev - REV_* value
+' @returns pTok - REV_A, REV_B or UNKNOWN
+
+    if eBoardRev == wheelL.REV_A
+        pTok := @sBoardRevA
+    elseif eBoardRev == wheelL.REV_B
+        pTok := @sBoardRevB
+    else
+        pTok := @sBoardUnknown
+
+PRI lineReset()
+' Begin a new record.
+
+    lineLen := 0
+    BYTE[@lineBuf][0] := 0
+
+PRI lineAddChar(charByte)
+' Append one character to the record under assembly, silently dropping anything past the
+' buffer. Every record in this file is well under LINE_BUF_SIZE; truncation would show as a
+' short line in the log rather than as memory corruption.
+'
+' @param charByte - the character to append
+
+    if lineLen < LINE_BUF_SIZE - 1
+        BYTE[@lineBuf][lineLen] := charByte
+        lineLen += 1
+        BYTE[@lineBuf][lineLen] := 0
+
+PRI lineAddText(pText) | srcIdx
+' Append a zero-terminated string to the record under assembly. The loop is bounded as well
+' as terminated, so an unterminated source string cannot hang the run.
+'
+' @param pText - pointer to the text to append
+'
+' @local srcIdx - index into the source text
+
+    repeat srcIdx from 0 to LINE_BUF_SIZE - 1
+        if BYTE[pText][srcIdx] == 0
+            quit
+        lineAddChar(BYTE[pText][srcIdx])
+
+PRI lineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absMagnitude, digitIdx
+' Append a signed decimal number with an underscore every three digits, matching udec_() and
+' sdec_() elsewhere in this tree's bench logs.
+'
+' @param numValue - the value to append
+'
+' @local digitStack - decimal digits of numValue, least significant first
+' @local digitCount - how many entries of digitStack are in use
+' @local absMagnitude - magnitude of numValue, consumed by the extraction loop
+' @local digitIdx - index into digitStack while emitting
+
+    absMagnitude := numValue
+    if numValue < 0
+        lineAddChar("-")
+        absMagnitude := -numValue
+
+    digitCount := 0
+    repeat
+        digitStack[digitCount] := absMagnitude // DEC_RADIX
+        absMagnitude /= DEC_RADIX
+        digitCount += 1
+    until (absMagnitude == 0) or (digitCount == MAX_DEC_DIGITS)
+
+    repeat digitIdx from digitCount - 1 to 0
+        lineAddChar("0" + digitStack[digitIdx])
+        if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
+            lineAddChar("_")
+
+PRI lineField(pFieldName, numValue)
+' Append one ",name,<number>" field to the record under assembly.
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+
+    lineAddChar(",")
+    lineAddText(pFieldName)
+    lineAddChar(",")
+    lineAddNum(numValue)
+
+PRI lineTextField(pFieldName, pFieldValue)
+' Append one ",name,<token>" field to the record under assembly.
+'
+' @param pFieldName - pointer to the field name
+' @param pFieldValue - pointer to the field's token text
+
+    lineAddChar(",")
+    lineAddText(pFieldName)
+    lineAddChar(",")
+    lineAddText(pFieldValue)
+
+PRI lineEmit()
+' Emit the assembled record as exactly one debug line. One debug() statement carries at most
+' 255 bytes of debug data; the whole record travels as a single zero-terminated string
+' instead so wider records are never silently truncated by that limit.
+
+    debug(zstr_(@lineBuf))
+
+CON { license }
+
+{{
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ -------------------------------------------------------------------------------------------------
+}}
