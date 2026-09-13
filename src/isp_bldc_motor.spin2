@@ -347,6 +347,13 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 
     motorIsReversed := FALSE    ' by default our motor direction is not reversed
     fault := FALSE
+    hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
+    hall_illegal := 0
+
+    ' ABI guard: the driver block-copies DRVR_STATUS_LONGS_COUNT longs starting at drive_u and writes
+    '  fault at the long right after them, so fault must sit exactly that many longs past drive_u
+    if (@fault - @drive_u) <> DRVR_STATUS_LONGS_COUNT * 4
+        debug("! ERROR: driver status block ABI mismatch: fault is ", udec_long_(@fault - @drive_u), " bytes past drive_u, expected ", udec_long_(DRVR_STATUS_LONGS_COUNT * 4))
 
     ' init status variables
     loop_ticks := 0
@@ -773,6 +780,15 @@ PUB getRawHallTicks() : nPos
 ''
 
     nPos := pos
+
+PUB getHallIntegrityCounts() : nMissedTransitions, nIllegalCodes
+'' Return the hall-sensor integrity counts the driver has accumulated since this motor was last started
+''
+'' @returns nMissedTransitions - times the hall code changed without a countable single step (a skipped transition), each leaving pos at least one tick short
+'' @returns nIllegalCodes - times the hall sensors entered an illegal code (%000 or %111), meaning a dead or disconnected sensor; 0 before start
+
+    nMissedTransitions := hall_missed
+    nIllegalCodes := hall_illegal
 
 PUB boardIdString() : pZStr
 '' Return board ID string for this board revision
@@ -1837,7 +1853,7 @@ CON { driver internal Constants }
 '    FRAME   = 12_273            ' 22.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
     PWM_RATE_IN_HZ   = 44_000
 
-    DRVR_STATUS_LONGS_COUNT     = 14
+    DRVR_STATUS_LONGS_COUNT     = 16
     DRVR_PARAMS_LONGS_COUNT     = 14
 
 VAR { * Data Structure for PASM Driver * }
@@ -1861,7 +1877,7 @@ VAR { * Data Structure for PASM Driver * }
 
     ' -------------------------------------
     ' VALUES copied from driver each cycle
-    ' 14 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 15th, "fault" also from driver but only when happens
+    ' 16 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 17th, "fault" also from driver but only when happens
     '
     ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
@@ -1871,6 +1887,7 @@ VAR { * Data Structure for PASM Driver * }
     LONG    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
     LONG    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
     LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP]
+    LONG    hall_missed, hall_illegal           ' 2 sequential longs    hall integrity counts since driver start (see getHallIntegrityCounts())
     ' \ ----------------------------
     LONG    fault                               ' 1 sequential long     written to 1 on fault (pins are floated when this happens)
 
@@ -2026,6 +2043,18 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                                                         ' from now on, the adc and pwm run continously
 
                 mov     pos_, #0                        ' reset pos
+                mov     hall_missed_, #0                ' integrity counts restart with every driver start
+                mov     hall_illegal_, #0
+                mov     hall_, #0                       ' prime hall_ from a real read: first control pass then sees old == new
+                testp   pin_hall_w                  wc  '  (hall pins are inputs now, set by .driveinit)
+                rcl     hall_, #1
+                testp   pin_hall_v                  wc
+                rcl     hall_, #1
+                testp   pin_hall_u                  wc
+                rcl     hall_, #1
+                cmp     hall_, #%000                wz  ' Q: sensor already reading an illegal code at start?
+    if_nz       cmp     hall_, #%111                wz  ' Q: ...or the other illegal code?
+    if_z        add     hall_illegal_, #1               ' YES: count it now -- old == new on the first pass cannot
                 mov     loop_dtcks_, #0                 ' just in case
                 mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
@@ -2036,7 +2065,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 mov     angle_, #0                      ' just in case
 
                 ' do initial read of parms so control loop can use them
-                setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
+                setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
                 mov     ramp_curr, ramp_min_            ' set initial inc ramp
@@ -2414,7 +2443,29 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 signx   tmpY, #7                        ' sign-extend bit7
                 add     pos_, tmpY                      ' add to current pos_
 
-                setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (13 DRVR_PARAMS_LONGS_COUNT longs)
+                ' hall integrity counters: hall_ is (old << 3 | new), tmpY is the table delta
+                '  counts EVENTS: a missed transition (legal -> different legal, no step), or an entry into
+                '  an illegal code (%000/%111); an illegal code is never also counted as a missed transition
+                mov     tmpX, hall_                     ' tmpX := old<<3 | new
+                shr     tmpX, #3                        ' tmpX := old
+                xor     tmpX, hall_                     ' low 3 bits := old ^ new
+                test    tmpX, #%111                 wz  ' Q: hall code unchanged since last pass?
+    if_z        jmp     #.hallCounted                   ' YES (NORMAL): nothing to count
+                cmp     tmpY, #0                    wz  ' Q: did the table report a step (delta <> 0)?
+    if_nz       jmp     #.hallCounted                   ' YES: legal adjacent transition, already in pos_
+                mov     tmpY, hall_                     ' tmpY := old<<3 | new (delta no longer needed)
+                and     tmpY, #%111                     ' tmpY := new
+                cmp     tmpY, #%000                 wz  ' Q: changed INTO illegal 000?
+    if_nz       cmp     tmpY, #%111                 wz  ' Q: ...or illegal 111?
+    if_z        add     hall_illegal_, #1               ' YES: one illegal-code entry
+    if_z        jmp     #.hallCounted                   ' ...never also a missed transition
+                mov     tmpY, hall_
+                shr     tmpY, #3                        ' tmpY := old
+                cmp     tmpY, #%000                 wz  ' Q: leaving an illegal code (already counted on entry)?
+    if_nz       cmp     tmpY, #%111                 wz
+    if_nz       add     hall_missed_, #1                ' legal -> different legal with no step: missed transition
+.hallCounted
+                setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
                 cmpm    angle_, prior_angle         wcz ' if angle has changed, forward or reverse?
@@ -2449,7 +2500,7 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 getct   loop_dtcks_                     ' how long was this iteration? send to host
                 sub     loop_dtcks_, drvrSrtTix
 
-                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state to hub
+                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal to hub
                 wrlong  drive_u_, ptra
 .loop           jnct1   #.ctlMotor                      ' if not time for drv loop just go to ctl loop
                 jmp     #.drvMotor
@@ -2675,7 +2726,7 @@ ramp_inc_   res 1           ' angle increment: inc every 500uSec from min to max
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied out-of driver each loop iteration
-drive_u_    res 1           ' 14 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
+drive_u_    res 1           ' 16 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -2689,6 +2740,8 @@ err_        res 1
 loop_dtcks_ res 1
 loop_ctcks_ res 1
 drv_state_  res 1           ' enum: DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, etc
+hall_missed_  res 1         ' hall code changed with no countable single step (missed transition), zeroed at driver start
+hall_illegal_ res 1         ' entries into an illegal hall code (%000 or %111), zeroed at driver start
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
