@@ -194,12 +194,21 @@ stopped.**
 - `GETMS` wraps only after 49.7 days (`p2kbSpin2Getms`). `WAITMS` compiles to a single `WAITX`
   (`p2kbSpin2Waitms`).
 
-**The lead under investigation (DERIVED, not proven):**
-- `p2kbSpin2Debug` says the `DLY()` formatter *"RELEASES LOCK[15] while it waits, so other cogs
-  can emit DEBUG output"*. So a `debug()` takes hardware lock 15 to transmit.
-- A `debug()` that cannot take the lock would wait, which fits every observation.
-- What could hold lock 15, and whether the debug transmit path can stall any other way, is
-  being established in «#3534».
+**What is still unexplained:**
+- **Not the debug mechanism.** STEPHEN: *"it is highly unlikely that debug() mech itself is
+  involved - 99% sure it's not... so we are looking for state that prevented the test from going
+  further"*.
+- **Also cleared, read from source (DERIVED):**
+  - every getter on the path is a single read;
+  - the pin-claim registry is comparisons only;
+  - no lock use and no active PASM `debug()`;
+  - no pin expression reaches the debug pins;
+  - the driver's hub writes stay inside its status block, and the start-up layout check did not
+    fire.
+- **No path found on paper leaves cog 0 unable to continue.**
+- «#3534» therefore adds a **watchdog** to the scan. A second cog watches cog 0's heartbeat and
+  last checkpoint. On a stall it records the scan's state and both drivers' state, stops both
+  wheels, and ends the session. A recurrence then names its own state.
 
 **What the lock-up cost:** the right motor's negative-leg fit, both of its half-speed legs, the
 RIGHT `BS-RESULT`/`BS-PAIR` records, and the run's end record.
