@@ -230,6 +230,12 @@ Write this back into `DRIVER-AUDIT-2026-09-09.md` as a new finding when
 
 ### PL-9 -- HAZARD GUARD: do not "fix" A1's enum comparison on its own
 
+> **DONE IN THE TREE — sweep at closeout.** MEASURED 2026-09-12 against source `d4f9d39`: the
+> conditional is already deleted and `gapInMS := 260` is unconditional
+> (`isp_bldc_motor.spin2:278-286`, with an A1/PL-9 comment). Bench Pass 1 printed
+> `dead_gap = 70` under both Rev A and Rev B detection (`2026-09-12/debug_260912-153807.log:467`).
+> The rename of `gapInMS` (it holds nanoseconds) is still owed.
+
 **This is a booby trap, and it looks like a one-word fix.**
 
 `isp_bldc_motor.spin2:198` compares `eDetectedBoard` (which holds `REV_*`, 21/22)
@@ -318,7 +324,7 @@ reply.** Three candidate channels were considered and none is usable today:
   and routes anything that is not a cog message or a tick message to the
   terminal, so the path exists. But **the serial singleton would have to share
   the debug port**, which Stephen states is not an easy thing to do, and this
-  binary's deliverable is an uncorruptible one-shot log.
+  binary's deliverable is an uncorruptible log.
 - **A DEBUG `PLOT` panel with clickable controls.** ✅ **This is the answer, and
   it is not an experiment.** Stephen has a documented, exercised technique for
   it -- see `DOCs/REF-NO-COMMIT/dbg-display-theory/` (crop-and-overlay sprite
@@ -365,7 +371,7 @@ artwork can be verified before a run, and `src/logs/debug_*.log` for the
 after-action read. Nothing needs installing. What this project does NOT yet have
 is any precedent: no `{Spin2_v50}` file in `src/`, no BMP assets, no generator
 script. So the first panel here is a build job, not a rediscovery -- but it is a
-build job, and it must not ride on a one-shot hardware session.
+build job, and it must not ride on the critical path of a measurement session.
 
 **Two defects in the reference docs, to fix at their source (they are not in
 this repo):** `DISPLAY-PATTERNS-builders-guide.md:246` uses
@@ -468,6 +474,128 @@ corruption into a refusal.
 ⚠ Not a defect in any shipped configuration today -- both wheels are always the same motor.
 Recorded because the mechanism is invisible at the `OBJ` line and the failure would look
 like flaky hardware.
+
+### PL-19 -- `test_bench_char.spin2` drives the right wheel in motor frame, but captions it in robot frame
+
+**Found 2026-09-12 in Bench Pass 1 step 4, by Stephen at the bench** -- the right wheel turned
+opposite to the plan on all four RIGHT holds (his meter sheet marks them `REV???` / `FWD???`).
+
+`test_bench_spin.spin2:77-79` calls `wheelR.forwardIsReverse()`, because the two motors face
+opposite directions on the chassis. `test_bench_char.spin2` `ensureSide()` (:604-609) starts
+`wheelR` without it, so "RIGHT WHEEL FORWARD" commands a positive increment, which on the
+right motor is robot-reverse. The correction was made to the spin binary at 23:40 on
+2026-09-11 and never searched into its sibling -- a doctrine-overlay P8 miss.
+
+**The data is valid.** `BC-HOLD` logs the signed `cmd_incre`, so every hold is attributable,
+and motor frame is the frame that exposed the forward/reverse current asymmetry
+([evaluation](analyses/bench/2026-09-12/CHAR-RUN-EVALUATION.md)).
+
+**Fix (my call, per P3):** keep characterisation in motor frame -- it is a per-motor
+measurement -- and make the frame explicit: captions name both frames (e.g. *RIGHT MOTOR +
+INCREMENT (robot reverse)*), and `BC-HOLD` gains a `robot_dir` field. The captions are bitmaps,
+so regenerate with `tools/gen_bench_char_assets.py`. Check `test_bench_t0.spin2` and
+`test_bench_detect.spin2` for the same class in the same change.
+
+### PL-20 -- `BC-SENSE` `i_mV_avg` overflows a long at the pre-S-3 scale
+
+**Found 2026-09-12 in Bench Pass 1 step 4.** `debug_260912-153807.log:2853` and `:3650` report
+`i_mV_avg` -3_173_500 and -3_067_089 with `i_mV_min`/`i_mV_max` both positive. `senseSumMv`
+(`test_bench_char.spin2:847`) adds ~516 samples of ~5.2x10^6 -- past 2^31.
+
+Recovered exactly, because the sum wraps once and the result lands inside `[min, max]`:
+5_150_080 and 5_176_610 raw, i.e. 839.3 and 843.6 mV after dividing by `adc_fram`.
+
+«#3503» shrinks the readings ~6136x and hides this at today's dwell, but an accumulator's
+correctness must not depend on another fix landing or on how long the operator waits. **Fix:**
+carry the sum in two longs, or accumulate per-second means. The analyser («#3509») should
+treat `avg` outside `[min, max]` as an instrument fault, never as a reading.
+
+### PL-21 -- the quiescent-zero hold reads a stopped instance's frozen telemetry
+
+**Found 2026-09-12 in Bench Pass 1 step 4.** `debug_260912-153807.log:460`: 542 samples with
+`i_mV_min` = `i_mV_max` = `i_mV_avg` = 562_020, `drv_state` 1, while every motion hold swings
+~±100 mV. That is not a noisy zero; it is no measurement at all.
+
+Mechanism, from source: preflight leaves `currentSide` = RIGHT; hold 0's `ensureSide(SIDE_NONE)`
+stops the right cog; `activeTelemetry(SIDE_NONE)` then reads `wheelL`
+(`test_bench_char.spin2:671-674`), whose cog was stopped during preflight. Its status `VAR`
+block is whatever the driver last copied out before `cogstop`.
+
+**Consequence:** hold 0 gives the meter's zero (0.00 A) but not the sense channel's offset.
+Until fixed, that offset comes from the 8-hold fit -- ~9 mV at 0 A, DERIVED. **Fix:** run the
+quiescent hold with a driver started at zero command, so the bridge is idle and the ADC live,
+or report the sense fields as `NOMEAS` when no cog is running.
+
+### PL-22 -- the two-wheel sync release is built from `start()`'s return, which was always 0
+
+**Found 2026-09-12 while verifying «#3499».** `isp_steering_2wheel.spin2:110-118` starts both
+motors with `startEx(..., sync: true)` -- each driver cog parks on `waitatn` -- then releases
+them with `cogatn((1<<(ltcog-1))|(1<<(rtcog-1)))`, where `ltcog`/`rtcog` are `startEx()`'s
+returns.
+
+MEASURED 2026-09-11 (`DOCs/analyses/bench/2026-09-11/debug_260911-143911.log:127`,
+`T0-10,start_return,0,raw_motor_cog,2`): before «#3499» that return was **0** on success. So
+the mask was `1<<-1` twice. PASM2 `SHL` takes its count from `Src[4:0]` (`p2kbPasm2Shl`: "Src
+is a register or 5-bit literal"), so a count of -1 acts as 31 and the mask is `$8000_0000`
+(DERIVED -- `p2kbSpin2Operators` does not document the Spin2 `<<` count separately; the
+5-bit behaviour is inferred from the instruction). `p2kbSpin2Cogatn`: bits 0-7 select cogs,
+so that mask strobes **no cog**, and both driver cogs stay parked on `waitatn`.
+
+**It shipped.** `git grep` on tag `v5.0.2`: `isp_bldc_motor.spin2:89` carries the chained
+`ok := motorCog := coginit(...) + 1` and `isp_steering_2wheel.spin2:113` the `(1<<(ltcog-1))`
+mask. **DERIVED conclusion: in 5.0.2 the two-wheel steering object's `start()` cannot start its
+motors.** `demo_dual_motor` is the only top that uses it; no bench log this sprint ever ran it
+(no `sendatn` line anywhere). The 2026-09-09 user report of dual motors running is consistent
+only with that user not using the steering object's synchronized start. Release-note candidate
+for «#3515», stated as derived until the bench shows the fixed path moving.
+
+**After «#3499»** `startEx()` returns cog id + 1, so the mask is correct by construction --
+but the shipped dual path's behaviour before and after has never been observed. **Owed:** a
+two-wheel steering-object liveness check on the bench (start, brief low-power drive, both
+wheels' ticks move) in Bench Pass 2b. Also: `start()` here returns only the sense cog's
+result, discarding a failed motor start.
+
+### PL-23 -- bench binaries print booleans as numbers
+
+**Raised by Stephen 2026-09-12:** *"true and false are very large. One of them is a very large
+value when printed as a decimal. I think when we're printing out boolean values, we have a new
+debug directive that prints it as true and false."* A Spin2 `TRUE` is -1, so `udec_()` prints
+`4_294_967_295` (MEASURED: `BC-PREFLIGHT,...,ok,4_294_967_295`,
+`2026-09-12/debug_260912-153807.log:35`). The directive is `BOOL()` / `BOOL_()`
+(`p2kbSpin2DbgDebugFormattersComplete`); a line-builder record emits the text token instead.
+
+Sites found by search, 2026-09-12, with the task that owns each:
+
+| Site | Form | Owner |
+|---|---|---|
+| `test_bench_char.spin2:435` `ok` | `udec_(moved <> 0)` -- prints the large value | «#3521» rewrites this binary |
+| `test_bench_spin.spin2:106` `left`/`right`, `:158` `fault` | `udec_(ok <> 0)` -- large value | no task touches it -- fix when it is next built |
+| `test_bench_t0.spin2:236` `agree`, `:254` `legal` | `? 1 : 0` -- small, but a number | «#3504» extends this binary |
+| `test_bench_detect.spin2` `agree` and similar 0/1 fields | `? 1 : 0` | **deliberately left** until Bench Pass 2b's re-run is diffed against the 2026-09-11 log, whose format it must match |
+
+The rule now travels with every dispatch (sprint established decisions, item 13).
+
+### PL-24 -- a second `start()` on a running motor orphans the first driver cog
+
+**Found 2026-09-12 by the «#3500» agent** (DERIVED from source, not observed on hardware).
+`startEx()` in `src/isp_bldc_motor.spin2` launches a new driver cog without stopping one this
+instance already runs. The first cog keeps driving the same pins with no handle left to stop
+it, and since «#3500» `getBoardType()` then returns the revision recorded at the first start --
+possibly for a different pin group. **Being fixed in «#3499»:** `startEx()` calls `stop()`
+first whenever this instance already runs a driver or holds a pin claim, so the cog is freed,
+the pins and claim are released, and the new start begins clean -- an orphaned cog can never
+exist. STEPHEN 2026-09-12: *"why wouldn't a second start do a driver stop to free the cog then
+start?"* The same stop-first removes the stale claim `validatePinBase()` could leave when a
+restart names an illegal group.
+
+### PL-25 -- a board reported as not detected makes every current reading negative
+
+**Found 2026-09-12 by the «#3500» agent** (DERIVED from source). `REV_Unknown` leaves
+`rSenseForBoard` at -1 (VALUE_NOT_SET), and `getCurrent()` and the telemetry path divide
+`sense_i_mV` by it, so current and watts come out negative. This already applied to an empty
+pin group; since «#3500» the overlapping-group case reports `REV_Unknown` too. **Fix
+direction:** a not-detected board yields a stated "no measurement" value, not a sign-flipped
+reading; decide alongside «#3503», which changes the same scale path.
 
 ---
 

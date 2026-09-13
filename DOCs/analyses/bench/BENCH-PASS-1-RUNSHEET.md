@@ -31,13 +31,13 @@ Steps 4–6 are worth nothing until they do.
 
 | | step | state |
 |---|---|---|
-| 0 | **wiring check** · `spin` | 🔴 **do first** |
+| 0 | **wiring check** · `spin` | ✅ 23:40 — both wheels MOVED both ways |
 | 1 | B · `detect` | ✅ 21:00 |
 | 2 | B · `detect-lib` | ✅ 21:01 |
 | 3 | B · `detect-phase2` · motors unplugged | ✅ 21:02 |
-| 4 | B · `char` | 🔁 **re-run — panel rebuilt** |
-| 5 | A · `detect-lib` | ⬜ |
-| 6 | A · `detect-phase2` · motors unplugged | ⬜ |
+| 4 | B · `char` | ✅ 2026-09-12 15:38 |
+| 5 | A · `detect-lib` | ✅ 2026-09-12 17:02 |
+| 6 | A · `detect-phase2` · motors unplugged | ✅ 2026-09-12 17:06 |
 
 Logs 1–3 are good. Nothing to redo. **B is still the connected rig, so do step 4 first — one board swap.**
 

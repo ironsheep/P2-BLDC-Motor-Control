@@ -62,12 +62,12 @@ dead_gap observed = __________
 
 ## Part B — characterise the meter (the human work)
 
-8 readings, rotating one every ~2 s: **A, V, W, Ah, Wh, Ap (peak A), Vm (min V), Wp (peak W).**
+Every screen shows **A, V, W** live, plus one rotating value: **Ah, Wh, Ap (peak A), Vm (min V), Wp (peak W).**
 
 Already known — do not re-ask:
 - Peak registers `Ap` / `Vm` / `Wp` reset **only** on a power cycle — no reset control.
 - Display cycles **5 screens** — `Ah`, `Wh`, `Ap`, `Vm`, `Wp` — **~4 s each, 20 s per full
-  rotation** (measured 2026-09-10). `A`, `V`, `W` are not part of the rotation.
+  rotation** (measured 2026-09-10). `A`, `V`, `W` are on every screen (STEPHEN 2026-09-12).
 - So the hold dwell floor is **25 s, not 20 s**: arriving mid-screen means a full
   rotation can take up to ~24 s from the moment you start watching.
 

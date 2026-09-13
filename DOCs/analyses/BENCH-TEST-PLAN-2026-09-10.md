@@ -6,6 +6,23 @@ and [`DRIVER-SAFETY-AND-CAPABILITY-STUDY-2026-09-09.md`](DRIVER-SAFETY-AND-CAPAB
 **Hardware policy:** 6.5″ hub motors, **Rev B boards only** (see §1).
 **Design goal:** the fewest physical setups, the most verdicts, the least bench time.
 
+> **Revised 2026-09-12, after Bench Pass 1 — read before any section below.** The governing
+> record is *Sprint Revision — 2026-09-12* in
+> [`BENCH-READINESS-SPRINT-PLAN.md`](../plans/BENCH-READINESS-SPRINT-PLAN.md). Where this plan
+> disagrees with it, the revision wins:
+>
+> - **No meter transcription anywhere** (STEPHEN: *"I don't want to do any more meter
+>   transcription that's very costly in time"*). Every reading in this document that a person
+>   takes off the inline meter — hold-and-announce prompts, the 25-second dwell floor, the
+>   reading sheet, `manual.csv`, `Ap`/`Vm`/`Wp` reads after a fault — is superseded by the
+>   driver's own current sense (calibrated in Bench Pass 1 at 150 mV/A) and the §2A front end.
+> - **T1-7's one power cycle per fault trial** existed only to clear the meter's peak
+>   registers and is no longer needed.
+> - **T1-10, the reverse offset sweep, moved to Bench Pass 2a** as an automated scan that sweeps
+>   each increment sign's offset independently. **T1-11 was largely answered** by Bench Pass 1
+>   step 4: a negative increment draws 1.76–1.97× a positive one on both motors (MEASURED).
+> - **Board detection is no longer forced to Rev B** in any bench build; it is fixed and certified.
+
 ---
 
 ## 0. The idea that shapes this plan
@@ -374,17 +391,21 @@ and feeds **C-6c** directly.
 >
 > **Two consequences to build into the procedure:**
 >
-> - **Re-take the quiescent zero after every power cycle.** If the peaks reset with power, so
->   do `Ah`/`Wh`. Never carry a zero across a cycle.
+> - **Re-take the quiescent zero after every power cycle.** A pack disconnect clears `Ah`/`Wh`
+>   together with the peaks — MEASURED 2026-09-12, all five read zero at the start of Bench Pass 1
+>   step 4 after current-drawing runs the day before, with the pack disconnected in between
+>   (STEPHEN: *"yes battery would have been dead if i hadn't"*). Never carry a zero across a cycle.
 > - **That reset is also a convenience:** each cycle hands you a clean `Ah` baseline, which is
 >   exactly what the N-repetition energy method (above) wants — no arithmetic to subtract a
 >   previous run's accumulation.
 >
 > ### MEASURED 2026-09-10 (Stephen): **the display cycles 5 screens at ~4 s each, 20 s per rotation.**
 >
-> > **Ah, Wh, Ap, Vm, Wp** rotate; **A, V, W do not** — they are not part of the cycle. A full
+> > **Every screen shows A, V and W live, plus one rotating value** — **Ah, Wh, Ap, Vm, Wp** in
+> > turn (STEPHEN 2026-09-12: *"5 screens, 4 values per screen, AH,Wh,Ap,Vm, and Wp"*). A full
 > > rotation is **20 s**, so the hold dwell floor is **25 s**, since arriving mid-screen can need
-> > ~24 s to see all five. *The estimate below (8 readings at 2 s, ~16 s) is superseded.*
+> > ~24 s to see all five rotating values; A/V/W are readable on any screen, five times per
+> > rotation. *The estimate below (8 readings at 2 s, ~16 s) is superseded.*
 >
 > The meter does not show all eight readings at once — it rotates through them. **A full
 > rotation is therefore ~16 s for 8 readings**, and two values you want are never on screen
@@ -571,7 +592,8 @@ limiter when **S-2** is built. Build it before the limiter, not before this benc
 
 ## 3. TIER 0 — no motor, no motion, no risk
 
-**Rig:** P2 + Rev B board on the bench. Motor rail off. Motor may be unplugged.
+**Rig:** P2 + Rev B board on the bench. Motor rail live — the P2 is powered from the pack
+(STEPHEN 2026-09-11; corrected 2026-09-12 from "Motor rail off"). Motor may be unplugged.
 **Harness:** `src/test_bench_t0.spin2`, built against the **single-motor 6.5″**
 config block.
 **Why this works:** `testSetup()` (`isp_bldc_motor.spin2:125`) runs the whole of
@@ -1016,6 +1038,18 @@ in the source contradict each other across `offsetsForMotor()` and
 what the 2026-09-09 user report describes
 ([`user-report-2026-09-09-ANALYSIS.md`](user-report-2026-09-09-ANALYSIS.md)).
 
+> **MEASURED 2026-09-12** — Bench Pass 1 step 4
+> ([evaluation](bench/2026-09-12/CHAR-RUN-EVALUATION.md)). Each motor driven alone, unloaded,
+> at matched tick rate: a **negative increment draws 1.76–1.97× the current of a positive
+> one, on both motors**, by the meter and the on-board sense channel independently; the motors
+> agree within 6% at the same sign. The selection sites agree with each other in behaviour
+> (DERIVED, `isp_bldc_motor.spin2:2416` and `:2329`): the **negative increment takes
+> `offset_fwd_` (43°)** and the positive takes `offset_rev_` (317°) — so the high-current
+> direction runs on the *characterised* value. The pair is still the suspect, since 43/−43
+> assumes the hall pattern's electrical zero is at 0°; this test and T1-10 now resolve **where
+> that zero is**, not merely whether 317 is wrong. Under `forwardIsReverse()` the right wheel
+> runs the negative increment when the robot drives forward.
+
 **Method:** run the **identical T1-3 increment ladder** on the left motor alone,
 then on the right motor alone, on the assembled rig, at the same battery state.
 Then repeat both with `forwardIsReverse()` deliberately **not** applied, so each
@@ -1206,7 +1240,7 @@ This is better than a purpose-built single-motor harness, for three reasons:
 src/test_bench_dual.spin2    ' the suite — shaped like demo_dual_motor.spin2,
                              '   drives the real isp_steering_2wheel stack
 src/test_bench_t0.spin2      ' dry tier — one isp_bldc_motor, testSetup() only,
-                             '   never starts a driver cog, motor rail off
+                             '   never starts a driver cog
 ```
 
 **The flagship demos stay untouched.** `tools/build-check.sh` certifies both

@@ -227,6 +227,102 @@ the mechanism and the four-instruction fix are written up in the Execution model
 
 ---
 
+## Sprint Revision — 2026-09-12 (after Bench Pass 1)
+
+**Bench Pass 1 («#3498») is complete.** All six steps ran and every log is valid and curated.
+Evaluations: [`CHAR-RUN-EVALUATION.md`](../analyses/bench/2026-09-12/CHAR-RUN-EVALUATION.md)
+(step 4) and [`DETECT-A-EVALUATION.md`](../analyses/bench/2026-09-12/DETECT-A-EVALUATION.md)
+(steps 5–6 against the Rev B step 3). This section records what the pass changed; the sections
+it amends are named below rather than rewritten.
+
+### What Bench Pass 1 established
+
+| Result | Provenance |
+|---|---|
+| **A negative increment draws 1.76–1.97× the current of a positive one**, both motors, meter and on-board sense agreeing; the motors match each other within 6% at the same sign | MEASURED |
+| The negative increment is served by `offset_fwd_` (43°), the positive by `offset_rev_` (317°) — the high-current direction runs on the *characterised* value; 43/−43 assumes the hall pattern's electrical zero is at 0° | DERIVED (`isp_bldc_motor.spin2:2416`, `:2329`) |
+| **S-3 confirmed end to end:** sense = 150.1 mV/A × amps + 9.1 mV; implied factor 6138 against the predicted 6136 | MEASURED + DERIVED fit |
+| **Board detection:** a real Rev B board reads Rev A after its own cog stops (4 of 4); `pinclear` before the read restores Rev B; on Rev A the defect is invisible | MEASURED |
+| The deadtime conditional (A1 / PL-9) is **already deleted** in the tree; `dead_gap` = 70 under both detections | MEASURED |
+| On the 6.5″ motor neither offsets nor power limits depend on the detected board, so fixing detection changes only the current scale on this rig | DERIVED (`:1092-1118`, `:1158-1175`) + MEASURED (`maxFwdIncreAtPwr` identical under both) |
+| Meter: `Ap`/`Vm`/`Wp` latch; a pack disconnect clears `Ah`/`Wh` with them; `A`/`V`/`W` show on every screen; meter V agrees with a DMM to 0.01 V | MEASURED + STEPHEN |
+
+### Rulings taken 2026-09-12
+
+> **STEPHEN:** *"I don't want to do any more meter transcription that's very costly in time.
+> That was 25 minutes just to capture those values, transcribe them, and hand them to you. I
+> don't want to do that. We should have enough learning from that."*
+
+> **STEPHEN:** *"fix all you can now, and then the first effort in the bench run, automated
+> without my help, is for you to run the scan. Let's try and get the motor load forward and
+> reverse near-identical, if at all possible."*
+
+> **STEPHEN:** *"this all looks good let's do it... should be able to do bench if you get it
+> ready"* — approving the shape below.
+
+### Consequences — the meter is retired from live use
+
+The meter's work is done: it calibrated the on-board current sense. **From here every current
+reading comes from the driver's own sense channel** (after «#3503» and «#3500»), sampled every
+control cycle. DERIVED consequences, applied to the tasks in this revision:
+
+- **Deleted:** the printable reading sheet («#3510») — it existed only for transcription.
+- **Removed from every harness:** hold-and-announce prompts, the 25-second dwell floor (sized to
+  the meter's screen rotation), operator advance by click or key, and the hand-typed
+  `manual.csv` input to the analyser.
+- **Fault-boundary trials** no longer need one power cycle per trial to clear the meter's peak
+  registers; the driver's own sense peak is the reading.
+- **§2A front end** validates its current channel against the calibrated on-board sense, not
+  against the meter.
+
+### Consequences — Bench Pass 2 becomes an automated session
+
+Pass 2 is split into two tasks with a fix between them:
+
+1. **Bench Pass 2a — the automated offset scan**, loaded, run and evaluated by Claude
+   (delegated by STEPHEN above). It begins with a **self-check at today's offsets** that must
+   reproduce Pass 1's pattern on the on-board sense; a miss means a foundation fix is wrong and
+   the scan aborts. It then sweeps each increment sign's offset **independently**, per motor,
+   at ¼ speed with a ½-speed confirmation, and reports each sign's minimum-current offset.
+   **The goal is each direction at its own minimum; the load is never equalised by detuning
+   the better direction.**
+2. **Apply the measured offsets** to `offsetsForMotor()` for the 6.5″ motor — only if both
+   motors and both speeds agree.
+3. **Bench Pass 2b — certification**, automated: the characterisation regression run
+   (sense-based, against the Pass 1 tables), extended Tier 0, and the detection sweep re-run on
+   Rev B. **Stephen's hands** are needed only for T0-12's hand rotation and the Rev A board swap.
+
+**Moved out of Bench Pass 3:** T1-10 (the offset sweep) is Pass 2a. T1-11 (both wheels on both
+offsets) was largely answered by Pass 1 step 4, which ran each motor alone on both signs.
+
+### New work
+
+- **Independent offset setter** on the motor object — the driver already carries `offset_fwd`
+  and `offset_rev` as separate parameter longs; only the test API ties them together.
+- **The scan binary** `src/test_bench_scan.spin2` — two-phase: design reviewed before
+  implementation. Follows `util_char_motor.spin2`'s drive-measure-fault-reset loop (Stephen's
+  proven approach), with stated deltas.
+- **Automated characterisation binary** — `test_bench_char.spin2` without panel, prompts or
+  meter; PL-19, PL-20, PL-21 fixed; logs `getCurrent()`, rpm, hall counters, detected board,
+  applied offsets.
+
+### Amendments to tasks already written
+
+- **«#3502»** — rpm's hardware check moves to Pass 2b's automated characterisation run.
+- **«#3503»** — its pre-fix measurement is done (factor 6138). The "pre-fix quiescent baseline"
+  its verify line relied on **does not exist** (PL-21); verify against the 150 mV/A fit instead.
+- **«#3504»** — do **not** force `BRD_REV_B` (the bench config is on auto-detect, and forcing
+  would hide the fix being certified); T0-11 reads a running driver; T0-14 is judged on Rev B;
+  T0-12 separable so the automated part runs without Stephen.
+- **«#3505»** — becomes Bench Pass 2b.
+- **«#3506», «#3508», «#3509», «#3511»** — meter dependence removed as above.
+- **«#3515»** — the offset change is user-visible and joins the release-note list.
+
+**Dispatch shape unchanged:** `arbiter-serial`. Two-phase: the scan binary, «#3501», «#3507»,
+«#3508», «#3513». The cross-reference table at the end of this plan is regenerated.
+
+---
+
 ## 1. Spin2 conformance gate — `tools/check_style.sh`
 
 **Why, and why first.** `.claude/skill-conventions.md` declares `central:spin2-authoring-guide`
@@ -481,7 +577,7 @@ clock sweep, which is inherently three builds and is driven by §5.
 **Hold-and-announce mode** (this is what makes the meter usable — §5, §8): at each ladder rung,
 drive it, let it settle, print `#HOLD,<test>,<rung>,<incr>`, then hold **until Enter** with a
 **25 s minimum** — MEASURED 2026-09-10: the display cycles **5 screens** (`Ah`, `Wh`, `Ap`,
-`Vm`, `Wp`) at **~4 s each, 20 s per rotation**; `A`/`V`/`W` are not in the rotation. This
+`Vm`, `Wp`) at **~4 s each, 20 s per rotation**; `A`/`V`/`W` are on every screen (STEPHEN 2026-09-12). This
 supersedes the earlier estimate of 8 readings at 2 s (~16 s). 20 s is one rotation exactly, so
 arriving mid-screen can need ~24 s to see all five — hence 25 s. The dwell is a floor;
 the keypress advances. **T1-7 is trial-selectable** — prompt for a `ramp_inc` trial index, or `0` for
@@ -839,16 +935,18 @@ invalidates a **named set** rather than silently poisoning the log.
 
 ### Three bench binaries, not one
 
-The original plan had one Tier 1 harness. Blast radius and one-shot hardware
-force a split.
+The original plan had one Tier 1 harness. Blast radius — no motor may turn on the
+Rev A boards — forces a split. *(Corrected 2026-09-12: this read "one-shot hardware".)*
 
 #### (a) The A/B detection sweep — its own binary, detached from every pass
 
-**The A boards are a one-shot, no-motion resource.** They are at risk precisely
-because the protection that would make them safe — correct revision detection
+**The A boards are a no-motion resource — repeatable, but no motor may turn on
+them.** STEPHEN 2026-09-11: *"A is not one-off just no motor movement"*. They are at
+risk because the protection that would make them safe — correct revision detection
 feeding correct current scaling, `rSenseForBoard` 5 vs 150 — is the thing that is
-broken. **A-board protection needs the A-board data**, so a thin run leaves us
-stuck in that loop. Over-capture.
+broken, so **A-board protection needs the A-board data.** *(Corrected 2026-09-12:
+this paragraph called them "one-shot", a DERIVED paraphrase of "this might be the
+only sweep we need".)*
 
 **How it runs (Stephen, 2026-09-11):** two systems side by side, identically
 wired. Connect to the B boards, run it, capture the log. Disconnect, connect to
@@ -860,9 +958,10 @@ loading it on the A rig puts a menu between an unprotected board and a spinning
 motor. **A binary with no motion code compiled into it at all is the guard**, and
 it is a better guard than discipline. It also makes the two logs diffable
 line-for-line — no menu, no branch, one fixed sequence — and it can sweep
-**all six declared pin groups** rather than assuming a config, which is what
-yields the false-positive data (the B run showed an *empty* P32_P47 reading a
-confident "64010 Rev B" at `pinSum 104`).
+**all six declared pin groups** rather than assuming a config. *(Corrected
+2026-09-12: this cited P32_P47 as an empty group reading Rev B. P32_P47 is the left
+board — MEASURED by `test_bench_spin`, 2026-09-11, pin groups corrected in `fe83cb0` —
+so that reading was a true positive.)*
 
 ⭐ **Measure the discharge in microseconds, not in counts.** `getBoardType()`
 charges the cap, floats the pin, and sums 500 `pinread`s. **That sum is
@@ -932,9 +1031,8 @@ stop distance (`SENSE_LOOP_HZ` unfixed); `rpm` or `cntsInSec` (broken);
 `getCurrent()` absolute (depends on two unfixed things); high speed (where missed
 hall ticks are most likely and there are no counters to see them).
 
-**Shape:** reuse `src/util_char_motor.spin2`'s drive-measure loop rather than
-rewriting it. Quiescent zero, then four holds — left fwd, left rev, right fwd,
-right rev — idle wheel **floating**, never `holdAtStop(true)`, whose holding
+**Shape:** quiescent zero, then holds per wheel and direction — the hold table in
+`src/test_bench_char.spin2` is the authority for which — idle wheel **floating**, never `holdAtStop(true)`, whose holding
 current lands straight in the meter reading. Quarter speed is ~37×10⁶ against the
 147×10⁶ ceiling at 18.5 V, well inside the linear region. Optionally a second
 rung at half speed to confirm current scales with load. **25-second dwell floor**
@@ -1089,16 +1187,18 @@ ways in one run:
 | --- | --- | --- | --- | --- |
 | P16_P31 | **yes** | 99 | Rev B ✓ | correct, cold |
 | P16_P31 *(after a cog ran)* | **yes** | 0 | **Rev A ✗** | **poisoned** — the smart-pin leak above |
-| **P0_P15** | **yes** | 500 | **"Board not detected!" ✗** | **false negative on a real board, read cold** |
-| P32_P47 | **no** | 104 | **Rev B ✗** | **false positive on empty pins** |
+| P0_P15 | no | 500 | "Board not detected!" ✓ | correct — nothing is wired there *(row corrected 2026-09-12)* |
+| P32_P47 | yes — the left board | 104 | Rev B ✓ | correct *(row corrected 2026-09-12)* |
 
-**Only the second row is explained by the smart-pin leak.** P0_P15 was touched for
-the first time in T0-7, with no cog ever having run on it, and still missed a
-board that is physically there. That is a separate defect and it is the more
-serious one — a false negative silently drops a wheel.
+**Only the second row is a defect, and the smart-pin leak explains it.**
+*(Corrected 2026-09-12: this section read the bench config's copied
+`LEFT_MOTOR_BASE = PINS_P0_P15` as fact and called rows 3 and 4 a false negative and a
+false positive. The boards are at P16_P31 and P32_P47 — MEASURED, `test_bench_spin`,
+2026-09-11; STEPHEN 2026-09-11: *"right is pin group p16 left is p32"*. The invented
+defect is withdrawn in «#3500».)*
 
-**A hypothesis worth testing rather than assuming, because it would explain both
-remaining rows:** the RC model in the code assumes a *passive* sense-common node.
+**An open question, not an axis this rig can test:** the RC model in the code
+assumes a *passive* sense-common node.
 On Rev B that node is the **INA180B2 output**, and the rail was on for this run.
 A powered INA180 **actively drives** its output, so there is no capacitor
 discharge to measure — the pin reads the amplifier's output for the current
@@ -1106,10 +1206,11 @@ flowing, which at rest is near zero and would read *low* immediately. Whether a
 Rev B board reads as "Rev B" may therefore depend on **whether its rail is
 powered**, which is not something `getBoardType()` knows or checks.
 
-**So the sweep binary must vary board power, not just pin state.** Per group, per
-population: cold vs after-a-cog, `pinclear`ed vs not, **and rail on vs rail off**.
-That is the 2×2×2 that separates three failure modes which currently look like one
-flaky heuristic.
+**Removing rail power cannot settle it here** — the P2 is powered from the pack, so
+no rail means no P2 (STEPHEN 2026-09-11: *"rail off (no power means no p2)"*). Every
+bench log is rail-on. It stays an open question until an experiment that keeps the
+P2 alive is designed. *(Corrected 2026-09-12: this proposed a rail-on/rail-off sweep
+axis.)*
 
 **Consequence for the sweep binary:** it can now *test the hypothesis directly*
 rather than only gather data. Read each group **paired** — once as the code does
@@ -1191,7 +1292,7 @@ run.**
 
 ## Exit criteria
 
-- `tools/build-check.sh` — ~~39/39~~ **41/41**, both release demos certified *(count corrected 2026-09-11)*
+- `tools/build-check.sh` — every top certified, both release demos certified *(pinned count removed 2026-09-12: a count goes stale as files are added)*
 - `tools/check_style.sh` — **green over all of `src/`** (§1b, Stephen's call at sprint start), not merely on files this sprint modified
 - `tools/doc-audit.sh` — no new ORPHAN or COUNT drift
 - Both bench sessions run; every test carries a verdict or an explicit INCONCLUSIVE naming
@@ -1325,6 +1426,51 @@ deliberately unset on every task. This table supersedes the §-numbered one abov
 
 **Total ≈ 60 h of effort.** Three bench passes, each requiring Stephen.
 
+*Superseded by the regenerated table below (2026-09-12).*
+
+## Silo ↔ task cross-reference — regenerated 2026-09-12
+
+Regenerated by `plan-to-tasks` §6 from *Sprint Revision — 2026-09-12*. Bench Pass 1 done;
+the reading sheet («#3510») deleted; Bench Pass 2 split into an automated scan (2a) and an
+automated certification (2b), with the offset fix between them. `seq` is the only ordering
+signal.
+
+| seq | Task | Silo | Deliverable | Profile | est |
+| --- | --- | --- | --- | --- | --- |
+| 1 | «#3496» | 1 | A/B detection sweep binary — **done** | task-design (two-phase) | 3h |
+| 2 | «#3497» | 3 | Early characterisation binary — **done** | task-standard | 2h30 |
+| 3 | «#3498» | — | **BENCH PASS 1** — **done** | task-survey | 2h |
+| 4 | «#3499» | 1 | `start()` return — 6 sites | task-standard | 1h30 |
+| 5 | «#3500» | 1 | Board detection — the smart-pin leak, fix measured | task-design | 3h |
+| 6 | «#3501» | 2 | Hall integrity counters, ABI 14→16 | task-design (two-phase) | 2h30 |
+| 7 | «#3503» | 3 | S-3 scale restore — four `sar` | task-mechanical | 1h |
+| 8 | «#3502» | 2 | Position math — rpm + `tickInMM_x10` | task-standard | 1h30 |
+| 9 | «#3519» | 5 | Independent fwd/rev offset setter | task-mechanical | 45m |
+| 10 | «#3520» | 5 | Automated offset scan `test_bench_scan.spin2` | task-design (two-phase) | 5h |
+| 11 | «#3504» | 2 | Tier 0 extension, T0-11…T0-15 | task-standard | 2h30 |
+| 12 | «#3521» | 3 | `test_bench_char` automated, meter-free | task-standard | 2h30 |
+| 13 | «#3522» | — | **BENCH PASS 2a** — automated offset scan | inline run + task-survey | 1h30 |
+| 14 | «#3523» | 5 | Apply the measured offsets (if 2a says apply) | task-mechanical | 30m |
+| 15 | «#3505» | — | **BENCH PASS 2b** — automated certification | inline runs + task-survey | 1h30 |
+| 16 | «#3506» | 6 | §2A front end build | task-mechanical | 3h |
+| 17 | «#3507» | 6 | DEBUG channels (closes PL-8) | task-design (two-phase) | 3h |
+| 18 | «#3508» | 5 | Motion harness `test_bench_dual.spin2` | task-design (two-phase) | 7h |
+| 19 | «#3509» | 6 | Analyser `bench-verdict.py` + detection/scan diffs | task-standard | 3h30 |
+| 20 | «#3511» | — | **BENCH PASS 3** — motion behaviour | task-survey | 3h |
+| 21 | «#3512» | 4 | C-3 stop latency — measure then raise | task-standard | 2h |
+| 22 | «#3513» | 1 | Fixed cog shape — final pre-release change | task-design (two-phase) | 5h |
+| 23 | «#3514» | — | Write results back into the findings | task-standard | 3h |
+| 24 | «#3515» | — | Documentation blast radius | task-standard | 3h |
+| 25 | «#3516» | — | **Ship 6.0.0** | task-mechanical | 1h30 |
+| 26 | «#3517» | — | v12(g) gate binding *(skills adoption)* | task-design | 4h |
+
+**Rework check (§3a), DERIVED:** the offset setter precedes both binaries that call it; S-3,
+detection and the counters precede the scan, whose self-check depends on all three; the scan
+precedes the apply task, which precedes 2b, so the certification runs on the final constants;
+the Tier 0 extension precedes 2b. **Green-ordering (§3b):** no pair is expected to leave the
+gates red. **Dispatch:** `arbiter-serial`, unchanged — `src/isp_bldc_motor.spin2` is touched by
+«#3499»–«#3503», «#3519» and «#3523».
+
 ### Dispatch shape — `arbiter-serial`, unchanged
 
 Confirmed against `{{EXCLUSIVE_RESOURCES}}` rather than inherited. Two entries
@@ -1347,7 +1493,7 @@ harness record format is what the analyser and reading sheet are generated from.
 
 **Five tasks are two-phase** — «#3496», «#3501», «#3507», «#3508», «#3513» —
 design returned and reviewed before implementation. Each is one whose *shape*
-later work inherits: a one-shot hardware record format, the most fragile ABI in
+later work inherits: an A/B-comparable hardware record format, the most fragile ABI in
 the codebase, a channel numbering scheme, a record format with two generated
 consumers, and an architecture every caller inherits.
 
@@ -1385,7 +1531,10 @@ release gates are the re-certification of everything else.
 
 ⛔ **So «#3513» stays at seq 18 and does not start before «#3498» has produced
 results.** Do not propose pulling it earlier to tidy the decertification problem
-— that is the exact trade he declined. The principle generalises for the rest of
-this sprint: **nothing that perturbs the path to the first bench results gets
-taken on before them**, however tidy it would make the ordering.
+— that is the exact trade he declined.
+
+*DERIVED — my generalisation of that ruling, not his words (labelled 2026-09-12):*
+nothing that changes **what the first bench results measure** is taken on before
+them. Tooling that does not change what gets measured is outside it (doctrine
+overlay P2).
 
