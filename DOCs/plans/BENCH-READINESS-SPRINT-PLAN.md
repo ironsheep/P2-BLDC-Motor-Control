@@ -344,7 +344,7 @@ the cross-reference table at the end of this section.
 | Each minimum sits **7–10° from a fault edge with no load**; the edge is not sharp, and at half speed the usable window closes in on the minimum | MEASURED |
 | Half-speed minima are **not yet resolved**; the scan could not probe toward the fault edge at half speed | MEASURED + DERIVED from source |
 | **The driver calibrates its ADCs once per start from a single settling sample**, so every channel's zero is re-drawn at each start (up to 75 mV ≈ 0.5 A). PL-30's "right board offset" was one such value (**PL-32**) | MEASURED + DERIVED from source and `p2kbAppNoteP2an001SinglePinInstrumentationAdc` |
-| Run 5's log stopped because host debug logging stopped; the P2 kept running | STEPHEN |
+| Run 5's log stopped because **the P2 stopped emitting debug** while it kept running (no reset, no power loss, host logging fine). Cog 0 locked up somewhere after zeroing the motor command; the cause is «#3534» | STEPHEN + MEASURED (last log line) |
 
 ### Rulings and observations taken 2026-09-13
 
@@ -358,90 +358,104 @@ the cross-reference table at the end of this section.
 > keep moving against the plan, we need to do both from here forward measurements while
 > advancing the driver state as required by the plan"*
 
-### The cadence from here: every bench visit measures AND certifies
+### The cadence from here: a bench visit is earned by a batch
 
-This carries the 2026-09-11 rule (*the unit of cost is a bench pass*) forward to the rest of the
-sprint. It is DERIVED from Stephen's ruling above.
+> **STEPHEN, 2026-09-13:** *"another way to think about bench prep. - a force - we don't go to
+> bench until we have delivered a number of fixes, or new capabilites we need to ceritfy. not
+> just one each time."*
 
-- **Every bench visit carries a measurement** the plan still needs.
-- **Every visit also certifies each driver fix that has landed since the previous visit**, using
-  records the measuring binary emits anyway, or one extra binary in the same session.
-- **Code that needs no hardware keeps landing while a visit is being prepared or waited for**,
-  in the order below, so the next visit always has something to certify.
-- A fix is not scheduled against a visit that cannot observe it. It rides the next visit that
-  can.
+This sharpens the 2026-09-11 rule (*the unit of cost is a bench pass*):
+- **A bench visit is earned by a batch.** We go only once a number of fixes or new capabilities
+  have landed that need certifying, never for one or two.
+- **Every visit both measures and certifies.** It carries the measurements the plan still needs
+  and certifies everything landed since the previous visit.
+- **Code that needs no hardware keeps landing** in the order below until the batch is complete.
+- **A measurement that decides later code** (the offset pair, C-3's overshoot) rides the visit
+  whose batch is ready. It does not trigger a visit of its own.
+- **Anything that could lose a visit's data is fixed before that visit.** Run 5 stopped emitting
+  debug partway through, so «#3534» precedes visit 1.
 
-### The order, as three bench visits
+### The order, as three batches and three bench visits
 
-**Before visit 1** — the fastest path back to the bench:
-1. «#3529» — ADC calibration fix (PL-32).
-2. «#3530» — scan v4: judge on each point's net-of-own-zero, probe the half-speed fault edge,
+**Batch 1** — everything that has landed or is certifiable without the motion harness:
+1. «#3534» — find and fix scan run 5's lock-up, so a visit cannot silently lose its data.
+2. «#3529» — ADC calibration fix (PL-32).
+3. «#3530» — scan v4: judge on each point's net-of-own-zero, probe the half-speed fault edge,
    fix the pair record.
+4. «#3502» — position math: rpm and mm/tick precision.
+5. «#3533» — PL-28 fault recovery, PL-22 steering start result, PL-9 rename.
+6. «#3504» — Tier 0 extension, T0-11…T0-15. T0-11 restarts the driver repeatedly, which
+   certifies «#3529».
+7. «#3521» — the automated, meter-free characterisation run with the steering liveness phase.
 
-**Visit 1 — Bench Pass 2a, scan run 6** («#3522»), unattended.
-- *Measures:* the right motor's complete legs and both motors' half-speed minima.
-- *Certifies:* «#3529». The scan restarts the driver after every current abort and reads a zero
-  before every point, so zeros that stay within a few mV across restarts are the proof. It also
-  certifies scan v4.
+**Visit 1 — Bench Pass 2a scan run 6 («#3522») and Bench Pass 2b («#3505»), one session,
+mostly unattended.**
+- *Measures:*
+  - the right motor's complete scan legs and both motors' half-speed minima;
+  - a hold-for-hold regression against Pass 1 on the default offsets;
+  - the first vibration evidence, if «#3532» has been scoped by then.
+- *Certifies:* «#3499»–«#3503», «#3524», «#3529» (zeros across the scan's restarts and T0-11),
+  «#3530», «#3533», «#3534», and the steering object's synchronized start (PL-22).
+- *Stephen's hands:* T0-12 hand rotation and the Rev A detection re-run.
 - *Then Stephen's decision:* which offset pair, if any, and with what margin, given fault edges
-  7–10° from the minima. «#3523» applies it or is ruled out.
+  7–10° from the minima.
 
-**Built while visit 1 is prepared and evaluated** (none needs hardware):
-3. «#3502» — position math: rpm and mm/tick precision.
-4. «#3533» — PL-28 fault recovery, PL-22 steering start result, PL-9 rename.
-5. «#3504» — Tier 0 extension, T0-11…T0-15. T0-11 gains repeated starts so it also certifies
-   «#3529».
-6. «#3521» — the automated, meter-free characterisation run with the steering liveness phase.
-7. «#3523» — apply the offsets, if Stephen's decision says so.
+**Batch 2** — the motion capabilities:
+- «#3523» — apply the offsets, per that decision.
+- «#3506» — the §2A front end (parts first).
+- «#3507» — DEBUG channels.
+- «#3508» — the motion harness.
+- «#3509» — the analyser.
+- «#3532»'s instrument, once its scope is set.
 
-**Visit 2 — Bench Pass 2b** («#3505»), mostly unattended.
-- *Certifies:* «#3499»–«#3503», «#3524», «#3529», «#3533», the applied offsets, and the steering
-  object's synchronized start (PL-22).
-- *Measures:* a hold-for-hold regression against Pass 1, and the first vibration evidence if
-  «#3532» has been scoped by then.
+**Visit 2 — Bench Pass 3 («#3511»).**
+- *Measures:* the speed law in both directions, C-4 deceleration, the fault boundary, C-3
+  overshoot, and the vibration study.
+- *Certifies:* the applied offsets (the characterisation run repeated on them), the front end,
+  and the harness.
 
-**Built for visit 3:** «#3506» front end (parts first), «#3507» DEBUG channels, «#3508» motion
-harness, «#3509» analyser.
+**Batch 3** — the release-shaping changes:
+- «#3512» — C-3 stop latency, fixed from visit 2's overshoot.
+- «#3513» — the fixed cog shape.
 
-**Visit 3 — Bench Pass 3** («#3511»).
-- *Measures:* the speed law in both directions, C-4 deceleration, the fault boundary, and C-3
-  overshoot for «#3512».
-- A C-3 rate sweep follows as its own short run.
+**Visit 3 — release certification.**
+- *Measures:* the C-3 rate sweep.
+- *Certifies:* «#3512», and «#3513»'s cog shape re-confirming C-3 and the stop behaviour.
 
-**Then:** «#3513» cog shape (re-confirms C-3), «#3514» write-back, «#3515» documentation,
-«#3517» gate binding, «#3516» ship.
+**Then:** «#3514» write-back, «#3515» documentation, «#3517» gate binding, «#3516» ship.
 
 **Vibration study «#3532»:** starts about 2026-09-15, when Stephen calls it and sets its scope.
-Its first discriminator, the same speeds at default and candidate offsets, fits visit 2's
-characterisation run if the scope is set by then.
+Its first evidence rides the first visit after it is scoped. Its discriminator is the same speeds
+on the default and the candidate offsets.
 
 ### Section ↔ task cross-reference — regenerated 2026-09-13
 
 This supersedes the 2026-09-12 table at the end of this plan. The table order is the live order.
 
-| order | Task | Silo | Deliverable | Certified at |
-|---|---|---|---|---|
-| 1 | «#3529» | 3 | ADC calibration: settle and average at start (PL-32) | Visit 1 (zeros across restarts), Visit 2 (T0-11) |
-| 2 | «#3530» | 5 | Scan v4 | Visit 1 |
-| 3 | «#3522» | — | **VISIT 1 — Bench Pass 2a, scan run 6** | — |
-| 4 | «#3502» | 2 | Position math — rpm + `tickInMM_x10` | Visit 2 |
-| 5 | «#3533» | 1 | PL-28 / PL-22 / PL-9 | Visit 2 |
-| 6 | «#3504» | 2 | Tier 0 extension, T0-11…T0-15 | Visit 2 |
-| 7 | «#3521» | 3 | Automated characterisation + steering liveness | Visit 2 |
-| 8 | «#3523» | 5 | Apply offsets, per Stephen's decision after visit 1 | Visit 2 |
-| 9 | «#3505» | — | **VISIT 2 — Bench Pass 2b** | — |
-| 10 | «#3532» | — | Vibration study (scope: Stephen, ~2026-09-15) | Visit 2 onward |
-| 11 | «#3506» | 6 | §2A front end (parts first) | Visit 3 |
-| 12 | «#3507» | 6 | DEBUG channels (PL-8) | Visit 3 |
-| 13 | «#3508» | 5 | Motion harness | Visit 3 |
-| 14 | «#3509» | 6 | Analyser | Visit 3 |
-| 15 | «#3511» | — | **VISIT 3 — Bench Pass 3** | — |
-| 16 | «#3512» | 4 | C-3 stop latency — measure, then sweep | Visit 3 + sweep run |
-| 17 | «#3513» | 1 | Fixed cog shape | re-confirms C-3 |
-| 18 | «#3514» | — | Write results back into the findings | — |
-| 19 | «#3515» | — | Documentation blast radius | — |
-| 20 | «#3517» | — | v12(g) gate binding | — |
-| 21 | «#3516» | — | **Ship 6.0.0** | three release gates |
+| order | Task | Batch | Silo | Deliverable | Certified at |
+|---|---|---|---|---|---|
+| 1 | «#3534» | 1 | — | Find and fix scan run 5's lock-up (P2 stopped emitting debug) | Visit 1 (a run that does not lock up and ends on its own) |
+| 2 | «#3529» | 1 | 3 | ADC calibration: settle and average at start (PL-32) | Visit 1 (zeros across the scan's restarts, T0-11) |
+| 3 | «#3530» | 1 | 5 | Scan v4 | Visit 1 |
+| 4 | «#3502» | 1 | 2 | Position math — rpm + `tickInMM_x10` | Visit 1 |
+| 5 | «#3533» | 1 | 1 | PL-28 / PL-22 / PL-9 | Visit 1 |
+| 6 | «#3504» | 1 | 2 | Tier 0 extension, T0-11…T0-15 | Visit 1 |
+| 7 | «#3521» | 1 | 3 | Automated characterisation + steering liveness | Visit 1 |
+| 8 | «#3522» + «#3505» | — | — | **VISIT 1 — Bench Pass 2a scan run 6 + Bench Pass 2b** | — |
+| 9 | «#3523» | 2 | 5 | Apply offsets, per Stephen's decision after visit 1 | Visit 2 |
+| 10 | «#3506» | 2 | 6 | §2A front end (parts first) | Visit 2 |
+| 11 | «#3507» | 2 | 6 | DEBUG channels (PL-8) | Visit 2 |
+| 12 | «#3508» | 2 | 5 | Motion harness | Visit 2 |
+| 13 | «#3509» | 2 | 6 | Analyser | Visit 2 |
+| 14 | «#3532» | 2 | — | Vibration study (scope: Stephen, ~2026-09-15) | first visit after scoping |
+| 15 | «#3511» | — | — | **VISIT 2 — Bench Pass 3** | — |
+| 16 | «#3512» | 3 | 4 | C-3 stop latency, fixed from visit 2's overshoot | Visit 3 (rate sweep) |
+| 17 | «#3513» | 3 | 1 | Fixed cog shape | Visit 3 (re-confirms C-3) |
+| 18 | — | — | — | **VISIT 3 — release certification** | — |
+| 19 | «#3514» | — | — | Write results back into the findings | — |
+| 20 | «#3515» | — | — | Documentation blast radius | — |
+| 21 | «#3517» | — | — | v12(g) gate binding | — |
+| 22 | «#3516» | — | — | **Ship 6.0.0** | three release gates |
 
 **Dispatch:** `arbiter-serial`, unchanged. «#3529», «#3502» and «#3533» all write
 `src/isp_bldc_motor.spin2`, and no two tasks share the board.
