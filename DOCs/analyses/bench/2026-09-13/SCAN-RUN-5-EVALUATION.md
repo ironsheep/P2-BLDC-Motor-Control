@@ -4,10 +4,11 @@
 **Source:** `e39f98d`. Banner: `src_rev 4, fmt 4, cfg_id BENCH`, left base 32, right base 16.
 **Run:** started 12:08:45. Stephen ran it.
 
-**The log is incomplete.** Debug logging stopped at 12:16:50, about 485 s into the run, while
-the right motor's negative quarter-speed leg was running fine points. The P2 kept running:
-there was no reset and no loss of power (§7). Everything after that point, including the right
-motor's fit, its half-speed legs, its results and `BS-END`, was never recorded.
+**The log is incomplete.** At 12:16:50, about 485 s into the run, **the P2 stopped emitting
+debug output while it kept running**: no reset, no loss of power, and host logging was fine
+(§7). The scan's cog 0 locked up somewhere after it zeroed the right motor's command during
+the right motor's negative quarter-speed leg. The right motor's fit, its half-speed legs, its
+results and `BS-END` were never produced. The lock-up is under investigation in «#3534».
 
 **Provenance tags:**
 - **MEASURED** = a log line.
@@ -150,11 +151,11 @@ The 63° point was `ABORT_I`.
    quarter-speed walk.
 4. **The reference drift flag is computed on raw means**, so a zero shift reads as drift.
 
-## 7 · Why the log stops
+## 7 · The lock-up
 
 **What the log shows (MEASURED):**
 - The last record is the library's `-MOT- inincr = -36_750_000` for point 75 (RIGHT, negative
-  increment, fine, 8°), at 12:16:50.488.
+  increment, fine, 8°), at 12:16:50.488 (log line 796).
 - Every earlier point logged its zero command about 4.7 s after the drive command. This one did
   not.
 - The session was closed at 12:18:52.
@@ -162,23 +163,45 @@ The 63° point was `ABORT_I`.
 **STEPHEN, 2026-09-13:**
 - *"the run just stopped??? with no indication why but didn't terminate correctly.... stopped
   like maybe processor was in a loop?"*
-- Then, asked what the wheels were doing: *"both wheels were stopped and free (not breaking)"*.
-- Then: *"processor was running, no power loss... just logging stopped so no furhter debug
-  output. you can tell from the log that no P2 reset occurred"*.
+- Asked what the wheels were doing after the output stopped: *"both wheels were stopped and free
+  (not breaking)"*.
+- *"processor was running, no power loss... just logging stopped so no furhter debug output.
+  you can tell from the log that no P2 reset occurred"*.
+- *"the logging from the P2 stopped, the host side logging did not. Evidence from the P2 - still
+  running, not reset, but must be in some wait/spin loop is it is no longer emitting debug."*
 
-**Reading:**
-- The P2 and the scan kept running; debug logging on the host stopped. That is why the session
-  never saw the scan's end marker and did not end on its own.
-- The scan's own code is consistent with that. Every loop on the point path is time-bounded:
-  steady 4 s, settle 1 s, window, stop 3 s (`test_bench_scan.spin2:1083-1102`, `:1182-1188`,
-  `:1249-1281`, `:1414-1423`). Every library method it calls is loop-free or bounded, and the
-  library's one unbounded loop, `SyncStatus()` (`isp_bldc_motor.spin2:1411`), has no caller
-  (DERIVED).
-- Wheels found stopped and free are consistent with the scan having finished or aborted and
-  run `shutdownMotors()`, which stops both wheels. Whether it finished, and what it measured
-  after 12:16:50, is not recoverable from the log.
+**What the wheels locate (DERIVED from source):**
 
-**What the stop cost:** the right motor's negative-leg fit, both of its half-speed legs, the
+On every path out of point 75, the scan stops the wheel **before** its next `debug()`:
+- **Normal and fault paths:** the scan calls `commandMotor(side, 0)`. In
+  `isp_bldc_motor.spin2` `setTargetAccel()`, `targetIncre := 0` (`:1403`) executes before that
+  method's `debug()` (`:1404`).
+- **Current-abort path:** `sideStop()` stops the driver cog, and the next `debug()` is the
+  `BS-POINT` record.
+
+A cog 0 stuck in one of the timed loops before either step would have left the right driver
+cog running the −¼ command, with the wheel turning, unless the driver had also faulted.
+**So the lock-up most likely sits at, or just before, the first `debug()` after the wheel was
+stopped.**
+
+**What the source rules out (DERIVED):**
+- Every loop on the point path is time-bounded: steady 4 s, settle 1 s, window, stop 3 s
+  (`test_bench_scan.spin2:1083-1102`, `:1182-1188`, `:1249-1281`, `:1414-1423`).
+- Every library method on the path is loop-free or bounded. The library's one unbounded loop,
+  `SyncStatus()` (`isp_bldc_motor.spin2:1411`), has no caller.
+- The record builder is bounded: `lineAddText` by `LINE_BUF_SIZE`, `lineAddNum` by
+  `MAX_DEC_DIGITS`, and every numeric field is clamped before it is printed.
+- `GETMS` wraps only after 49.7 days (`p2kbSpin2Getms`). `WAITMS` compiles to a single `WAITX`
+  (`p2kbSpin2Waitms`).
+
+**The lead under investigation (DERIVED, not proven):**
+- `p2kbSpin2Debug` says the `DLY()` formatter *"RELEASES LOCK[15] while it waits, so other cogs
+  can emit DEBUG output"*. So a `debug()` takes hardware lock 15 to transmit.
+- A `debug()` that cannot take the lock would wait, which fits every observation.
+- What could hold lock 15, and whether the debug transmit path can stall any other way, is
+  being established in «#3534».
+
+**What the lock-up cost:** the right motor's negative-leg fit, both of its half-speed legs, the
 RIGHT `BS-RESULT`/`BS-PAIR` records, and the run's end record.
 
 ## 8 · What run 5 establishes
@@ -207,11 +230,11 @@ Against «#3522»'s rule:
 - the half-speed confirmation holds: **not met**. Both left half-speed legs are `TOO_FEW`, with
   their minima unresolved at the fault-bounded window edge.
 - The right motor's positive minimum comes from a parabola, not a fit (§6.2).
-- The right motor's half-speed legs were not logged (§7).
+- The right motor's half-speed legs never ran: cog 0 locked up first (§7).
 
 **Carried forward as the candidate pair (not a value to ship):** `offset_fwd` ≈ 14° (negative
 increments) and `offset_rev` ≈ 339° (positive increments). The margin question — what survives
 load and higher speed with a fault edge 7–10° away — is unchanged from run 4, and that decision
 is Stephen's.
 
-**Next:** scan v4 («#3530») fixes §6 and re-runs.
+**Next:** fix the lock-up («#3534») and scan v4 («#3530»), then re-run in Visit 1.
