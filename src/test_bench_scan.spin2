@@ -8,7 +8,10 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... 12 Sep 2026
-''   Updated.... 12 Sep 2026
+''   Updated.... 13 Sep 2026 -- scan v2 (PL-31): fine-walk into a fault edge instead of stopping
+''               at coarse resolution, a BS-CLIFF record per leg reporting the edge and its
+''               margin to the minimum, and a re-measured zero (BS-ZERO, phase-tagged) before
+''               every REF_START/REF_END/self-check point
 ''
 '' =================================================================================================
 
@@ -67,8 +70,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 1                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 1                                         ' BS- record-format version
+    SRC_REV     = 2                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 2                                         ' BS- record-format version
 
 CON { timing }
 
@@ -126,7 +129,9 @@ CON { run sequencing enums }
   '  PH_FINE      - fine (or half-speed confirm) point
   '  PH_EXTEND    - one-time extension beyond a fit edge
   '  PH_REF_END   - leg reference at the default offset, after the sweep
-    #0, PH_SELF, PH_REF_START, PH_COARSE, PH_FINE, PH_EXTEND, PH_REF_END
+  '  PH_CLIFF     - fine-walk probe toward a coarse-walk fault edge (scan v2)
+  '  PH_ZERO_INIT - the motor-block's initial zero check, before the self-check (scan v2)
+    #0, PH_SELF, PH_REF_START, PH_COARSE, PH_FINE, PH_EXTEND, PH_REF_END, PH_CLIFF, PH_ZERO_INIT
 
   ' Point result:
   '  PR_OK             - window completed at speed, no fault
@@ -248,6 +253,7 @@ CON { sweep geometry -- offsets in electrical degrees }
     HARD_LIMIT_DEG     = 90                                 ' never beyond default +/- this
     COARSE_MAX_STEPS   = HARD_LIMIT_DEG / COARSE_STEP_DEG
     FINE_STEP_DEG      = 5
+    CLIFF_HALF_STEP_DEG = 2                                 ' second, smaller probe into a fault edge when the fine probe faults
     FINE_HALF_DEG      = 20
     CONFIRM_HALF_DEG   = 15
     FINE_ORDER_COUNT   = 9
@@ -374,6 +380,8 @@ sPhCoarse       BYTE    "COARSE", 0
 sPhFine         BYTE    "FINE", 0
 sPhExtend       BYTE    "EXTEND", 0
 sPhRefEnd       BYTE    "REF_END", 0
+sPhCliff        BYTE    "CLIFF", 0
+sPhZeroInit     BYTE    "ZERO_INIT", 0
 
 sPrOk           BYTE    "OK", 0
 sPrFault        BYTE    "FAULT", 0
@@ -539,6 +547,9 @@ VAR { the leg in progress }
     LONG    legFaults
     LONG    legAbortsI
     LONG    seScratch[MAX_LEG_POINTS]
+    LONG    legCliffFound
+    LONG    legCliffGoodDeg
+    LONG    legCliffFaultDeg
 
 VAR { the fit just computed }
 
@@ -716,7 +727,7 @@ PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
     bSelfPassed := FALSE
     restartSide(side)
     if abortReason == AR_NONE
-        measureZero(side)
+        measureZero(side, PH_ZERO_INIT)
     if abortReason == AR_NONE
         bSelfPassed := runSelfCheck(side)
     if abortReason == AR_NONE
@@ -795,11 +806,16 @@ PRI waitReady(side) | startMs
     repeat until sideIsReady(side) or ((getms() - startMs) >= READY_TIMEOUT_MS)
         waitms(SAMPLE_MS)
 
-PRI measureZero(side) | sampleIdx, senseMv, senseSum, sampleCnt, minMv, maxMv, meanX10, slotIdx, ...
-    bValid, bInBand
-' Read the current-sense zero with the cog running and the motor stopped (never a stopped cog: PL-21).
+PRI measureZero(side, phaseTag) | sampleIdx, senseMv, senseSum, sampleCnt, minMv, maxMv, meanX10, ...
+    slotIdx, bValid, bInBand
+' Read the current-sense zero with the cog running and the motor stopped (never a stopped cog:
+' PL-21), tagged by phase. Only PH_ZERO_INIT -- the motor-block's own check -- sets the zero
+' band verdict and the zero BS-PAIR2 reports; every other call (PH_SELF, PH_REF_START,
+' PH_REF_END) only logs its reading, so a point's net current is computed at evaluation from the
+' BS-ZERO record before it.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param phaseTag - PH_ZERO_INIT, PH_SELF, PH_REF_START or PH_REF_END
 '
 ' @local sampleIdx - sample counter
 ' @local senseMv - clamped sample
@@ -832,11 +848,12 @@ PRI measureZero(side) | sampleIdx, senseMv, senseSum, sampleCnt, minMv, maxMv, m
     meanX10 := 0
     if bValid
         meanX10 := (senseSum * X10) / sampleCnt
-    bInBand := bValid and (meanX10 >= ZERO_LO_MV * X10) and (meanX10 <= ZERO_HI_MV * X10)
     slotIdx := sideSlot(side)
-    zeroMeanX10[slotIdx] := meanX10
-    bZeroOk[slotIdx] := bInBand
-    emitZero(side, sampleCnt, meanX10, minMv, maxMv, (minMv == maxMv), bInBand, bValid)
+    if phaseTag == PH_ZERO_INIT
+        bInBand := bValid and (meanX10 >= ZERO_LO_MV * X10) and (meanX10 <= ZERO_HI_MV * X10)
+        bZeroOk[slotIdx] := bInBand
+        zeroMeanX10[slotIdx] := meanX10
+    emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, (minMv == maxMv), bZeroOk[slotIdx], bValid)
 
 PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, negMeanX10, bPosIOk, ...
     bNegIOk, bRateOk, bIntegOk, bFaultOk, bThisFaultOk, bThisIOk, bThisRateOk, bThisIntegOk, ...
@@ -881,6 +898,7 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
             quit
         loMv := (signIdx == SIGN_POS) ? POS_QTR_LO_MV : NEG_QTR_LO_MV
         hiMv := (signIdx == SIGN_POS) ? POS_QTR_HI_MV : NEG_QTR_HI_MV
+        measureZero(side, PH_SELF)
         measurePoint(side, SPEED_QTR, signIdx, PH_SELF, defaultSwept(signIdx), WIN_TICKS_SELF, ...
             (hiMv * POINT_ABORT_X100) / X100)
         bThisFaultOk := (ptResult == PR_OK)
@@ -1411,6 +1429,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
     if (speedIdx == SPEED_HALF) and (resStatus[qtrSlot] <> FS_OK) and (resStatus[qtrSlot] <> FS_POOR)
         legExit := LX_SKIPPED
     else
+        measureZero(side, PH_REF_START)
         refStartIdx := legMeasure(side, speedIdx, signIdx, PH_REF_START, defSwept, refWinTicks, refLimitMv)
         if isValidIdx(refStartIdx) == FALSE
             legExit := LX_SKIPPED
@@ -1436,9 +1455,11 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
                     fitLeg(centreDeg, (speedIdx == SPEED_QTR) ? FIT_MIN_PTS : CONFIRM_MIN_PTS)
                     bFitExtended := TRUE
             if abortReason == AR_NONE
+                measureZero(side, PH_REF_END)
                 refEndIdx := legMeasure(side, speedIdx, signIdx, PH_REF_END, defSwept, refWinTicks, pointLimitMv)
     if (abortReason <> AR_NONE) and (legExit == LX_DONE)
         legExit := LX_RUN_ABORT
+    computeLegCliff(defSwept, signIdx)
 
     ' store results
     resStatus[slotIdx] := fitStatus
@@ -1462,6 +1483,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
     bResDrift[slotIdx] := bDriftValid and (abs(driftPctX10) > DRIFT_FLAG_PCT * X10)
     emitFit(side, speedIdx, signIdx)
     emitFit2(side, speedIdx, signIdx)
+    emitCliff(side, speedIdx, signIdx)
     emitLeg(side, speedIdx, signIdx, legExit, refEndIdx, driftPctX10, bDriftValid, bResDrift[slotIdx])
 
 PRI legReset()
@@ -1472,6 +1494,9 @@ PRI legReset()
     legConsecFaults := 0
     legFaults := 0
     legAbortsI := 0
+    legCliffFound := FALSE
+    legCliffGoodDeg := 0
+    legCliffFaultDeg := 0
 
 PRI clearFit()
 ' Reset the fit record to not attempted.
@@ -1633,7 +1658,76 @@ PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepId
         if isHighIdx(ptIdx) and (beyondLowCount(walkDir, defSwept) >= MIN_PAST)
             walkStop := WS_RISE
             quit
+    if walkStop == WS_FAULTS
+        refineCliffEdge(side, signIdx, walkDir, defSwept, stepIdx, sideConsec, pointLimitMv)
     emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
+
+PRI refineCliffEdge(side, signIdx, walkDir, defSwept, curStep, curConsec, pointLimitMv) | goodStep, ...
+    goodDeg, midDeg, halfDeg, midIdx
+' Fine-walk into the fault edge the coarse walk just found (PL-31 / BS-CLIFF): reset this
+' phase's consecutive-fault counter (mirrors runFinePoints/runExtension), probe FINE_STEP_DEG
+' from the last good coarse point, and CLIFF_HALF_STEP_DEG from it too when that also faults.
+' computeLegCliff() later picks the tightest good/fault pair from every point in the leg.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param walkDir - +1 up, -1 down -- the direction that just stopped on faults
+' @param defSwept - default offset, swept degrees
+' @param curStep - the coarse step number at which the walk stopped
+' @param curConsec - consecutive fault-like coarse points that stopped the walk
+' @param pointLimitMv - per-point relative abort threshold, mV
+'
+' @local goodStep - coarse step number of the last good point before the fault run
+' @local goodDeg - that point's swept offset
+' @local midDeg - fine-step probe, swept degrees
+' @local halfDeg - half-fine-step probe, swept degrees
+' @local midIdx - leg index of the fine-step probe
+
+    legConsecFaults := 0
+    goodStep := curStep - curConsec
+    goodDeg := defSwept + (walkDir * goodStep * COARSE_STEP_DEG)
+    if (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
+        midDeg := goodDeg + (walkDir * FINE_STEP_DEG)
+        midIdx := legMeasure(side, SPEED_QTR, signIdx, PH_CLIFF, midDeg, WIN_TICKS_COARSE, pointLimitMv)
+        if isFaultLikeIdx(midIdx) and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
+            halfDeg := goodDeg + (walkDir * CLIFF_HALF_STEP_DEG)
+            legMeasure(side, SPEED_QTR, signIdx, PH_CLIFF, halfDeg, WIN_TICKS_COARSE, pointLimitMv)
+
+PRI computeLegCliff(defSwept, signIdx) | dir, ptIdx, dist, goodDist, faultDist
+' Find the tightest last-good/first-fault transition, among every point stored in this leg, on
+' the side of defSwept that trends toward the hall electrical zero (swept offset 0). Works from
+' whatever phases are present -- coarse, the PH_CLIFF fine-walk probes, fine/confirm points and
+' the REF_START/REF_END references -- so it needs no separate up/down bookkeeping of its own.
+'
+' @param defSwept - default offset, swept degrees
+' @param signIdx - SIGN_NEG or SIGN_POS
+'
+' @local dir - +1 (SIGN_POS) or -1 (SIGN_NEG), the direction from defSwept toward zero
+' @local ptIdx - leg index
+' @local dist - (point's offset - defSwept) * dir; toward-zero distance, may be negative
+' @local goodDist - largest valid toward-zero distance found (>= 0)
+' @local faultDist - smallest fault-like toward-zero distance beyond goodDist, -1 when none
+
+    legCliffFound := FALSE
+    legCliffGoodDeg := 0
+    legCliffFaultDeg := 0
+    dir := (signIdx == SIGN_NEG) ? -1 : 1
+    goodDist := 0
+    faultDist := -1
+    if legCount > 0
+        repeat ptIdx from 0 to legCount - 1
+            dist := (legDeg[ptIdx] - defSwept) * dir
+            if (dist >= 0) and isValidIdx(ptIdx)
+                goodDist := goodDist #> dist
+        repeat ptIdx from 0 to legCount - 1
+            dist := (legDeg[ptIdx] - defSwept) * dir
+            if (dist > goodDist) and isFaultLikeIdx(ptIdx)
+                if (faultDist < 0) or (dist < faultDist)
+                    faultDist := dist
+    if faultDist >= 0
+        legCliffFound := TRUE
+        legCliffGoodDeg := defSwept + (dir * goodDist)
+        legCliffFaultDeg := defSwept + (dir * faultDist)
 
 PRI evaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelowOk, bAboveOk, reason, missingStop
 ' Decide whether a high point exists on both sides of the low; emit BS-BRACKET.
@@ -2326,6 +2420,7 @@ PRI emitPlanS()
     lineAddText(@"BS-PLAN-S")
     boundedField(@"coarse_step_deg", COARSE_STEP_DEG, LIM_SMALL)
     boundedField(@"fine_step_deg", FINE_STEP_DEG, LIM_SMALL)
+    boundedField(@"cliff_half_step_deg", CLIFF_HALF_STEP_DEG, LIM_SMALL)
     boundedField(@"fine_half_deg", FINE_HALF_DEG, LIM_SMALL)
     boundedField(@"extend_pts", EXTEND_PTS, LIM_SMALL)
     boundedField(@"confirm_half_deg", CONFIRM_HALF_DEG, LIM_SMALL)
@@ -2408,21 +2503,24 @@ PRI emitStart(side, startedCog, bCogOk, eBoardRev, bRevB, initNeg, initPos, read
     tokenField(@"result", bStartOk ? @sOk : @sFail, TOKMAX_OKFAIL)
     lineEmit()
 
-PRI emitZero(side, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand, bValid)
+PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand, bValid)
 ' Emit BS-ZERO.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param phaseTag - PH_ZERO_INIT, PH_SELF, PH_REF_START or PH_REF_END: which reference point
+'   this zero read precedes
 ' @param sampleCnt - samples taken
 ' @param meanX10 - mean sense x10
 ' @param minMv - smallest sample
 ' @param maxMv - largest sample
 ' @param bFrozen - min equals max
-' @param bInBand - mean inside the zero band
+' @param bInBand - mean inside the zero band (PH_ZERO_INIT only; carried from that reading otherwise)
 ' @param bValid - at least one sample
 
     lineReset()
     lineAddText(@"BS-ZERO")
     tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"phase", phaseToken(phaseTag), TOKMAX_PHASE)
     boundedField(@"samples", sampleCnt, LIM_SMALL)
     naOrBoundedField(@"i_mean_mV_x10", meanX10, LIM_SMALL, bValid)
     naOrBoundedField(@"i_min_mV", minMv, LIM_SMALL, bValid)
@@ -2670,6 +2768,51 @@ PRI flatHalfWidthX10() : halfWidthX10
     halfWidthX10 := 0
     if bFitSolved and (fitMinMvF >. 0.0) and (fitCurvF >. 0.0)
         halfWidthX10 := floatToBoundedInt(fsqrt((FIT_FLAT_FRACTION *. fitMinMvF) /. fitCurvF) *. FIT_DEG_SCALE *. 10.0, LIM_SMALL)
+
+PRI emitCliff(side, speedIdx, signIdx) | bFromFit, edgeF, refF, marginF, edgeX10, marginX10, bMarginValid
+' Emit BS-CLIFF: the fault edge nearest the hall electrical zero for this leg (PL-31), and its
+' margin to the fitted minimum, or, when there is no fit, to the lowest measured point.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+'
+' @local bFromFit - TRUE when the margin is measured from the fitted minimum
+' @local edgeF - edge estimate, degrees (midpoint of last-good and first-fault)
+' @local refF - reference offset for the margin, degrees
+' @local marginF - |edge - reference|, degrees
+' @local edgeX10 - edge estimate x10
+' @local marginX10 - margin x10
+' @local bMarginValid - TRUE when a reference offset exists to measure the margin from
+
+    bFromFit := legCliffFound and bFitSolved
+    edgeF := 0.0
+    marginF := 0.0
+    bMarginValid := FALSE
+    if legCliffFound
+        edgeF := float(legCliffGoodDeg + legCliffFaultDeg) /. 2.0
+        if bFitSolved
+            refF := fitMinF
+            bMarginValid := TRUE
+        elseif legLowIdx >= 0
+            refF := float(legDeg[legLowIdx])
+            bMarginValid := TRUE
+        if bMarginValid
+            marginF := fabs(edgeF -. refF)
+    edgeX10 := floatToBoundedInt(edgeF *. 10.0, LIM_SMALL)
+    marginX10 := floatToBoundedInt(marginF *. 10.0, LIM_SMALL)
+    lineReset()
+    lineAddText(@"BS-CLIFF")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    boolField(@"found", legCliffFound)
+    naOrBoundedField(@"last_good_deg", legCliffGoodDeg, LIM_TINY, legCliffFound)
+    naOrBoundedField(@"first_fault_deg", legCliffFaultDeg, LIM_TINY, legCliffFound)
+    naOrBoundedField(@"edge_deg_x10", edgeX10, LIM_SMALL, legCliffFound)
+    naOrBoundedField(@"margin_deg_x10", marginX10, LIM_SMALL, legCliffFound and bMarginValid)
+    boolField(@"margin_from_fit", bFromFit)
+    lineEmit()
 
 PRI emitFault(side, motorIncre, sweptDeg, fxStep, bCleared)
 ' Emit BS-FAULT for one recovery step.
@@ -3058,8 +3201,12 @@ PRI phaseToken(ptPhase) : pTok
             pTok := @sPhFine
         PH_EXTEND:
             pTok := @sPhExtend
-        other:
+        PH_REF_END:
             pTok := @sPhRefEnd
+        PH_CLIFF:
+            pTok := @sPhCliff
+        other:
+            pTok := @sPhZeroInit
 
 PRI resultToken(ptRes) : pTok
 ' Point-result token.

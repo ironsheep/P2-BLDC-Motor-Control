@@ -53,12 +53,21 @@ running them:
 **What the evaluation reports, per motor and increment sign:**
 - the fitted minimum-current offset, its uncertainty and the fit residual;
 - the current at the minimum against the current at the default;
-- whether the minimum was bracketed (a minimum at the window edge is not a minimum);
+- whether the minimum was bracketed (a minimum at the window edge is not a minimum) -- and when it
+  is not, the fault edge instead: scan v2 (PL-31) fine-walks into a coarse-walk fault stop (5°,
+  then 2° if that also faults) and reports the last-good/first-fault swept degrees, the edge
+  estimate (their midpoint) and the margin from the fitted minimum, or from the lowest measured
+  point when there is no fit (`BS-CLIFF`, per motor/speed/sign);
 - the half-speed re-located minimum and its shift.
 
 **Per motor, it also reports:**
 - the midpoint of the two minima, which estimates the hall zero;
-- the current ratio at the pair of minima — the designer's principle predicts near-equal current.
+- the current ratio at the pair of minima — the designer's principle predicts near-equal current;
+- the current-sense zero, re-measured (driver running, zero commanded) immediately before every
+  self-check point and every leg's `REF_START`/`REF_END` (`BS-ZERO`, phase-tagged), because run 3
+  found a ~13-16 mV sense-side bias that appeared after some high-current or fault events. The
+  evaluation nets each point's current against the `BS-ZERO` record before it; the binary's
+  fits run on the raw mean, and only the first zero (`ZERO_INIT`) is judged against the band.
 
 **Disposition:** apply the measured pair («#3523») only if both motors agree on each sign's
 minimum within the fit uncertainty and the half-speed result holds. Otherwise the disagreement

@@ -687,6 +687,48 @@ motor command in the scan goes through `if`/`else`. **The hazard is the class:**
 branches have side effects acts on both, e.g. commanding both wheels. **Fix direction:** side
 selection that calls methods uses `if`/`else`; a ternary selects values only.
 
+### PL-30 -- the right board's current sense reads +73 mV at zero command, and Pass 1 did not
+
+**Found 2026-09-12 in Bench Pass 2a scan run 3** (MEASURED,
+`analyses/bench/2026-09-12/SCAN-RUN-3-EVALUATION.md` §6). The right motor's `BS-ZERO` read
+73.4 mV (range 71–76) with its driver running at zero command; the left read 7.0 mV. The right
+¼-speed points read 161.2 / 237.3 mV against Pass 1's 91.6 / 168.2. With the zero subtracted they
+match Pass 1 within 6 %, and duty matches the left. So the right channel gained a constant
+~0.45 A-equivalent offset since Pass 1, while the left is unchanged through the same source
+changes.
+
+**Two explanations, told apart only at the rig:** a sense-path offset on the right board
+(ground or connector shift, or the amplifier), or a real ~0.45 A idle draw in the right bridge
+(≈ 8 W, which would warm it). Raised with Stephen as a hardware confirm question.
+STEPHEN 2026-09-13: *"no idea about the board. but the bench stand might be interferring...i'm
+reseating it"*. That adds a third explanation, a mechanical one (DERIVED). A stand pressing on
+the right wheel adds a roughly constant friction torque in motion, which shows as a constant
+extra current in both directions, as measured. At zero command it would show only if the stand
+pushes the held wheel to turn. The next scan's right-motor zero, taken after the reseat, is the
+check. The scan's
+zero band stopped the run correctly and is not loosened. Tier 0's T0-11 (quiescent sense
+including the phase-voltage channels, «#3504») would separate a ground shift, which moves every
+channel, from a current, which moves only the current channel.
+
+### PL-31 -- the offset scan finds the no-load minimum but not the fault cliff beside it
+
+**Found 2026-09-12 in scan run 3** (DERIVED from MEASURED, evaluation §4, §5, §8). On the left
+motor every minimum-current offset sits within 10° of an offset that faults, measured with the
+wheels unloaded:
+- positive ¼: minimum −21°, fault by −8°;
+- positive ½: still falling at −11°, fault at −6°;
+- negative ¼: still falling at +13°, fault at +3°, so the minimum is not bracketed.
+
+A no-load minimum therefore cannot be shipped as the offset without a margin measured under
+load.
+
+**Scan changes:**
+1. fine-walk (5°) into a fault edge before declaring `EDGE_FAULT`;
+2. report the cliff location and the minimum-to-cliff margin per leg;
+3. re-measure the zero at every reference point, because a ~13–16 mV sense-side bias appeared
+   after some high-current or fault events (coarse points read higher than fine points at the
+   same offset, with the same duty).
+
 ---
 
 ## Recently closed
