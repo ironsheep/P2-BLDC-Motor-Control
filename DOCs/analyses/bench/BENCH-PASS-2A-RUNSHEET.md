@@ -45,7 +45,7 @@ every point, not just the references (about 1s added per point, run-wide). Budge
 minutes, at most about 30, ending on its own.
 
 **Before trusting any number:**
-- The banner must say `cfg_id BENCH`, `fmt 4`, left base 32, right base 16. `pnut-ts` silently
+- The banner must say `cfg_id BENCH`, `fmt 5`, left base 32, right base 16. `pnut-ts` silently
   ignores an unknown `-D`, so no banner voids the run.
 - The **self-check** must pass, per motor, at the default 43/317 offsets. It checks (scan v3.1):
   Rev B at every start, `start()` returning a cog id, hall counters at 0, the zero health (not
@@ -94,6 +94,42 @@ goes to Stephen as a finding before any constant changes.
 The log is curated to `DOCs/analyses/bench/<date>/` (`.log` extension), with the evaluation
 beside it.
 
+**The run now ends itself on a stall (task 3534).** Scan run 5 locked up mid-run: cog 0 stopped
+emitting debug while still running, with both wheels stopped and free, and the log simply
+stopped -- no `BS-END`, no session-end marker
+(`DOCs/analyses/bench/2026-09-13/SCAN-RUN-5-EVALUATION.md` section 7). A second cog now watches
+cog 0's heartbeat and last checkpoint (`fmt 5`'s new instrumentation) and, if cog 0 has not
+advanced for `WD_STALL_MS` (4 s -- above every legitimate gap this file's own loops or the
+motor library's own methods can leave between beats), it:
+1. emits `BS-WATCHDOG` (cog 0's last checkpoint, since when, and its sampling-loop state) and
+   `BS-WATCHDOG2` (both wheels' raw driver telemetry, read directly);
+2. stops both wheels;
+3. emits `BS-END` with `exit ABORTED` and `reason WATCHDOG`;
+4. emits the `DEBUG_END_SESSION` marker, then idles forever.
+
+**A recurrence now names its own state**, from `BS-WATCHDOG`'s `checkpoint`/`checkpoint_tok`
+field: which loop, library call, or `lineEmit()` cog 0 was last known to be inside.
+`BS-WATCHDOG2`'s last field, `stack_ok`, reports whether the watchdog cog's own stack sentinel
+survived building the stall report -- `FALSE` means the watchdog's 128-long stack itself
+overran on that path and everything else in the record is suspect.
+
+**A silent stop with NO `BS-WATCHDOG` record is itself evidence:** it means the stall was not
+confined to cog 0 (the watchdog cog also stopped advancing, or the whole P2 stopped), which is a
+different, more serious class of failure than task 3534 was built to catch -- treat it as a
+finding for Stephen, not as "the watchdog didn't fire this time."
+
+**`BS-WDSTART`, the first record of every run, confirms the watchdog cog itself started**
+(`started TRUE/FALSE`, `cog` = the cog id or the negative failure code). `started FALSE` means
+the run is proceeding unwatched -- the scan's own current aborts, fault caps, time cap and the
+driver's own angle-lag fault are still in force, but a cog-0 lockup like run 5's would not be
+caught or reported; treat it as a finding, not as "the scan is fine, just quieter."
+
+**A single `BS-END`/`DEBUG_END_SESSION`, always.** cog 0 stops the watchdog cog before its own
+`BS-END`/marker on every normal-ending path, so a normal run never produces a second, bogus
+`BS-WATCHDOG`/`BS-END` a few seconds after the real one (found and fixed in review, before this
+was ever run). If a run's log ever shows two `BS-END` records, that fix regressed -- report it,
+do not curate the log as if it were two runs.
+
 ---
 
 ## Stop and tell Claude if
@@ -101,3 +137,4 @@ beside it.
 - A wheel does not turn when the scan starts it, or turns the wrong way on a hold
 - Anything smells, gets hot, or makes a noise it did not make in Bench Pass 1
 - The run is still going after 30 minutes
+- A `BS-WATCHDOG` record appears at all -- the run ended itself on a detected stall

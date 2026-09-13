@@ -379,14 +379,22 @@ This sharpens the 2026-09-11 rule (*the unit of cost is a bench pass*):
 
 **Batch 1** — everything that has landed or is certifiable without the motion harness:
 1. «#3534» — find and fix scan run 5's lock-up, so a visit cannot silently lose its data.
-2. «#3529» — ADC calibration fix (PL-32).
-3. «#3530» — scan v4: judge on each point's net-of-own-zero, probe the half-speed fault edge,
+2. «#3529» — ADC calibration fix (PL-32). **Landed** (`02d29cf`).
+3. «#3535» — free driver cog RAM by moving driver *code* into the cog's lookup RAM
+   (`$200-$3FF`), keeping every register, constant and table in cog RAM. The driver uses 492 of
+   496 longs after «#3529», and every coming driver change needs room.
+   - **No execution penalty.** LUT code runs at 2 clocks per instruction, the same as cog RAM
+     (`p2kbArchCog`).
+   - **`COGINIT` does not load the LUT,** so a loader at the driver's start copies the section in
+     with `SETQ2` + `RDLONG`.
+   - Stephen asked whether the LUT could help.
+4. «#3530» — scan v4: judge on each point's net-of-own-zero, probe the half-speed fault edge,
    fix the pair record.
-4. «#3502» — position math: rpm and mm/tick precision.
-5. «#3533» — PL-28 fault recovery, PL-22 steering start result, PL-9 rename.
-6. «#3504» — Tier 0 extension, T0-11…T0-15. T0-11 restarts the driver repeatedly, which
+5. «#3502» — position math: rpm and mm/tick precision.
+6. «#3533» — PL-28 fault recovery, PL-22 steering start result, PL-9 rename.
+7. «#3504» — Tier 0 extension, T0-11…T0-15. T0-11 restarts the driver repeatedly, which
    certifies «#3529».
-7. «#3521» — the automated, meter-free characterisation run with the steering liveness phase.
+8. «#3521» — the automated, meter-free characterisation run with the steering liveness phase.
 
 **Visit 1 — Bench Pass 2a scan run 6 («#3522») and Bench Pass 2b («#3505»), one session,
 mostly unattended.**
@@ -395,7 +403,8 @@ mostly unattended.**
   - a hold-for-hold regression against Pass 1 on the default offsets;
   - the first vibration evidence, if «#3532» has been scoped by then.
 - *Certifies:* «#3499»–«#3503», «#3524», «#3529» (zeros across the scan's restarts and T0-11),
-  «#3530», «#3533», «#3534», and the steering object's synchronized start (PL-22).
+  «#3530», «#3533», «#3534», «#3535» (every start reaches ready, hall counters 0 and tick rate
+  unchanged with driver code running from the LUT), and the steering object's synchronized start (PL-22).
 - *Stephen's hands:* T0-12 hand rotation and the Rev A detection re-run.
 - *Then Stephen's decision:* which offset pair, if any, and with what margin, given fault edges
   7–10° from the minima.
@@ -435,7 +444,8 @@ This supersedes the 2026-09-12 table at the end of this plan. The table order is
 | order | Task | Batch | Silo | Deliverable | Certified at |
 |---|---|---|---|---|---|
 | 1 | «#3534» | 1 | — | Find and fix scan run 5's lock-up (P2 stopped emitting debug) | Visit 1 (a run that does not lock up and ends on its own) |
-| 2 | «#3529» | 1 | 3 | ADC calibration: settle and average at start (PL-32) | Visit 1 (zeros across the scan's restarts, T0-11) |
+| 2 | «#3529» | 1 | 3 | ADC calibration: settle and average at start (PL-32) — landed `02d29cf` | Visit 1 (zeros across the scan's restarts, T0-11) |
+| 2b | «#3535» | 1 | — | Free driver cog RAM: driver code into the cog's lookup RAM ($200-$3FF), data stays in cog RAM | Visit 1 (every start reaches ready, hall counters 0, tick rate unchanged) |
 | 3 | «#3530» | 1 | 5 | Scan v4 | Visit 1 |
 | 4 | «#3502» | 1 | 2 | Position math — rpm + `tickInMM_x10` | Visit 1 |
 | 5 | «#3533» | 1 | 1 | PL-28 / PL-22 / PL-9 | Visit 1 |
