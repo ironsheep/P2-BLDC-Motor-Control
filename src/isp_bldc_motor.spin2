@@ -302,7 +302,6 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     adc_fram    :=    frame_cnt                         ' set ADC to full PWM frame counts
     fram        :=    (frame_cnt / 2) << 16 + 1         ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
     bias        :=    frame_cnt / 4                     ' PWM center-frame bias
-    numerator   :=    3300 * adc_fram                   ' calculate the adc scaling based off the adc_fram count
 
     ' setup driver parameters based on clock rate
     ' A1 / PL-9: both 64010 manuals specify a 250 ns minimum dead-gap regardless of board
@@ -733,15 +732,18 @@ PUB getPower() : nPower
 PUB getCurrent() : fAmps, fWatts
 '' Returns the latest current sense values
 ''
+'' @returns fAmps - motor current in units of 0.1 mA (amps x 10_000)
+'' @returns fWatts - motor power in mW
 
     ' for REVA gain is 1, R is 0.005
     ' for REVB gain is 50, R is 0.003
     ' gain and R is combined into rSenseForBoard -> RevA rSenseForBoard 5, RevB rSenseForBoard 150
     ' RevB. 10A, through 0,003R -> 0.03mV -> (50gain) -> 1.5V. 20A -> 3V, 10A -> 1.5V, 1A -> 0.15V
     ' RevA. 10A, through 0.005R -> 0.05mV -> (1gain) -> 50mW, 20A -> 0.1V, 10A -> 50mV, 1A -> 5mV
-    ' adc uses p_count_highs with a period, so scaling needed for period
-    ' this is handled by updating numerator in init() to include period (adc_fram)
-    fAmps := sense_i_mV/rSenseForBoard                                          ' in multiples of 0.1mA
+    ' the driver's sense_i_mV is true millivolts (numerator 3300 << 11, restored by sar #11 in the
+    '  control loop), and rSenseForBoard is millivolts per amp, so scale up before dividing -- a plain
+    '  sense_i_mV / rSenseForBoard would truncate to whole amps
+    fAmps := sense_i_mV * CURRENT_UNITS_PER_AMP / rSenseForBoard                ' in multiples of 0.1mA
     fWatts := round((float(fAmps) *. fMotorVolts)/. F_SCALE_WATTS)              ' in mW
 
 PUB getMaxSpeed() : nSpeed
@@ -1522,6 +1524,7 @@ CON ' -- TASK: position tracking --
   HALL_WINDOW_SIZE = SENSE_LOOP_HZ
 
   F_SCALE_WATTS = 10.0
+  CURRENT_UNITS_PER_AMP = 10_000    ' getCurrent() reports current in 0.1 mA units (amps x 10_000)
 
   F_REV_A_RSENSE = 5        ' .005 Ohms
   F_REV_B_RSENSE = 3*50     ' .003 Ohms * gain 50 from INA180B2
@@ -1730,7 +1733,7 @@ PRI updateHdmiData()
 
     tvMaxSenseI := max(sense_i_mV, tvMaxSenseI)
     ' power calcs
-    tv_mA := sense_i_mV/rSenseForBoard                                          ' in multiples of 0.1mA
+    tv_mA := sense_i_mV * CURRENT_UNITS_PER_AMP / rSenseForBoard                ' in multiples of 0.1mA
     tv_mW := round((float(tv_mA) *. fMotorVolts)/. F_SCALE_WATTS)               ' in mW
 
     if user.WHEEL_DIA_IN_INCH <> 0
@@ -2361,17 +2364,21 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 rdpin   sense_w_, pin_adc_w_i
                 rdpin   sense_i_, pin_adc_cur_i
 
-                sub     sense_u_, gio_levels+0          ' compute (numerator * (pin_level - gio_level))
+                sub     sense_u_, gio_levels+0          ' compute (numerator * (pin_level - gio_level)) >> 11
                 muls    sense_u_, scl_levels+0
+                sar     sense_u_, #11
 
                 sub     sense_v_, gio_levels+1
                 muls    sense_v_, scl_levels+1
+                sar     sense_v_, #11
 
                 sub     sense_w_, gio_levels+2
                 muls    sense_w_, scl_levels+2
+                sar     sense_w_, #11
 
                 sub     sense_i_, gio_levels+3
                 muls    sense_i_, scl_levels+3
+                sar     sense_i_, #11
 
                 mov     tmpY, duty_                     ' feed three CORDIC operations to get phase drive levels
                 shr     tmpY, #4
@@ -2574,7 +2581,7 @@ adc_fram        LONG    0                       ' set ADC to full PWM frame coun
 fram            LONG    0                       ' PWM frame: width=FRAME/2, div sysclk by 1 (no division) [was: LONG (FRAME / 2) << 16 + 1 ]
 bias            LONG    0                       ' PWM center-frame bias [was: LONG    FRAME / 4]
 third           LONG    1 FRAC 3                ' 120 degrees
-numerator       LONG    3300 << 11              ' numerator for ADC calculations, configured from init to match the adc_fram count rather than 1 << 11
+numerator       LONG    3300 << 11              ' ADC scale numerator: 3300 mV in fixed point, the control loop's sar #11 returns millivolts
 maxNeg          LONG    $FFFF_FFFF              ' 32-bits of one (max negative signed value)
 sync_required   LONG    0                       ' non zero if motor loop should wait to start
 
