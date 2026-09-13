@@ -12,6 +12,12 @@
 ''               at coarse resolution, a BS-CLIFF record per leg reporting the edge and its
 ''               margin to the minimum, and a re-measured zero (BS-ZERO, phase-tagged) before
 ''               every REF_START/REF_END/self-check point
+''   Updated.... 13 Sep 2026 -- scan v3, from run 4 (DOCs/analyses/bench/2026-09-13/
+''               SCAN-RUN-4-EVALUATION.md, PL-30, PL-31): a coarse walk that stopped on faults
+''               now bounds that side's sweep window at the last good point (fine points,
+''               extensions and the fit never cross it), a relaxed rise threshold lets a point
+''               inside that window bracket the minimum, BS-FIT reports a vertex pinned against
+''               that edge, and every point re-measures its own zero (not just the references)
 ''
 '' =================================================================================================
 
@@ -39,6 +45,10 @@
        bracket test, interleaved fine points, quadratic fit (one extension), REF again
    (3) per motor per sign at 1/2 speed: re-locate the minimum around the 1/4-speed minimum
    (4) RESULT records: fitted minima, currents, their midpoint and ratio, the 1/2-speed shift
+
+  RUN TIME (scan v3): every point now re-measures its own zero (measureZero() is ZERO_SAMPLES=200
+  samples at SAMPLE_MS=5ms, ~1s), so this adds about 1s per point measured, run-wide -- roughly
+  1s x (points per leg) x (legs run).
 
   SAFETY, because nobody is watching: an absolute current abort that stops the wheel inside the
   sampling loop, a per-point relative current abort, consecutive and run-wide fault caps, a
@@ -70,8 +80,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 2                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 2                                         ' BS- record-format version
+    SRC_REV     = 3                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 3                                         ' BS- record-format version
 
 CON { timing }
 
@@ -261,6 +271,13 @@ CON { sweep geometry -- offsets in electrical degrees }
     EXTEND_PTS         = 4
     CONFIRM_EXTEND_PTS = 2
     RISE_PCT           = 15
+    ' Scan v3 (CHANGE 1): the rise threshold for a point inside a fault-bounded window (the last
+    ' good point before a coarse-walk fault edge, refined by BS-CLIFF). 4% of run 4's negative-leg
+    ' low (20.4 mV) is 0.816 mV; the two points' i_se_mV_x10 was 2 (0.2 mV) each, so their combined
+    ' standard error is ~0.283 mV (sqrt(0.2^2+0.2^2)) -- 4% is ~2.9x that combined SE, comfortably
+    ' above noise, while still well under the measured rise (8 vs 13: 21.5 vs 20.4mV, +5.4%, ~3.9
+    ' combined-SE). RISE_PCT (15%) cannot be met in the <=10 deg between a low and a fault edge.
+    FAULT_RISE_PCT     = 4
     MIN_PAST           = 2
     SIDE_FAULT_STOP    = 2
     LEG_FAULT_CAP      = 3
@@ -550,6 +567,10 @@ VAR { the leg in progress }
     LONG    legCliffFound
     LONG    legCliffGoodDeg
     LONG    legCliffFaultDeg
+    LONG    legLimitUpDeg                                    ' CHANGE 1: fault-bounded window, up side
+    LONG    legLimitDownDeg                                  ' CHANGE 1: fault-bounded window, down side
+    LONG    bLegLimitUpFault                                 ' TRUE when legLimitUpDeg came from a fault, not the hard limit
+    LONG    bLegLimitDownFault                               ' TRUE when legLimitDownDeg came from a fault, not the hard limit
 
 VAR { the fit just computed }
 
@@ -810,12 +831,19 @@ PRI measureZero(side, phaseTag) | sampleIdx, senseMv, senseSum, sampleCnt, minMv
     slotIdx, bValid, bInBand
 ' Read the current-sense zero with the cog running and the motor stopped (never a stopped cog:
 ' PL-21), tagged by phase. Only PH_ZERO_INIT -- the motor-block's own check -- sets the zero
-' band verdict and the zero BS-PAIR2 reports; every other call (PH_SELF, PH_REF_START,
-' PH_REF_END) only logs its reading, so a point's net current is computed at evaluation from the
-' BS-ZERO record before it.
+' band verdict and the zero BS-PAIR2 reports; every other call only logs its reading, so a
+' point's net current is computed at evaluation from the BS-ZERO record before it. CHANGE 2
+' (scan v3): measurePoint() calls this at the start of every point, tagged with that point's own
+' phase (PH_SELF, PH_REF_START, PH_COARSE, PH_FINE, PH_EXTEND, PH_REF_END, PH_CLIFF), so every
+' BS-POINT now has a BS-ZERO immediately before it, including right after a driver restart; the
+' motor-block's PH_ZERO_INIT is the only call not made from inside measurePoint().
+' Every zero is read with the drive floated: isp_bldc_motor's init() sets stop_mode to SM_FLOAT,
+' this scan never changes it, and the driver's .checkstop disables PWM at zero command in that
+' mode. So no bridge current can flow during a zero read, and an out-of-band zero is an offset
+' in the sense path (PL-30).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param phaseTag - PH_ZERO_INIT, PH_SELF, PH_REF_START or PH_REF_END
+' @param phaseTag - PH_* of the point this zero precedes, or PH_ZERO_INIT
 '
 ' @local sampleIdx - sample counter
 ' @local senseMv - clamped sample
@@ -898,7 +926,6 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
             quit
         loMv := (signIdx == SIGN_POS) ? POS_QTR_LO_MV : NEG_QTR_LO_MV
         hiMv := (signIdx == SIGN_POS) ? POS_QTR_HI_MV : NEG_QTR_HI_MV
-        measureZero(side, PH_SELF)
         measurePoint(side, SPEED_QTR, signIdx, PH_SELF, defaultSwept(signIdx), WIN_TICKS_SELF, ...
             (hiMv * POINT_ABORT_X100) / X100)
         bThisFaultOk := (ptResult == PR_OK)
@@ -949,7 +976,9 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
 
 PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) : ptRes | motorIncre, ...
     missedBefore, illegalBefore, missedAfter, illegalAfter, cmdMs, bAtSpeed, bWinDone, bSettleOk
-' Measure one point: set and read back offsets, command, wait AT_SPEED, settle, take the
+' Measure one point: re-measure the zero tagged with this point's own phase (CHANGE 2, scan v3 --
+' PL-31's drift finding was a sense-zero shift, so every point needs its own BS-ZERO, not just
+' the references), set and read back offsets, command, wait AT_SPEED, settle, take the
 ' tick-gated window, command zero, wait stopped, emit BS-POINT/BS-POINT2, then recover.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -972,6 +1001,7 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
 ' @local bSettleOk - TRUE when the settle rate was in band
 
     pointSeq += 1
+    measureZero(side, ptPhase)
     clearPointRecord()
     motorIncre := signedIncre(speedIdx, signIdx)
     applyOffsets(side, signIdx, sweptDeg)
@@ -1391,6 +1421,12 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
     refStartIdx, refEndIdx, centreDeg, legExit, stopUp, stopDown, bBracketed, driftPctX10, bDriftValid
 ' Run one leg. 1/4 speed: REF_START, coarse walk both ways, bracket, fine, fit (one extension),
 ' REF_END. 1/2 speed: REF_START, confirm points around the 1/4-speed minimum, fit, REF_END.
+' CHANGE 1 (scan v3): legLimitUpDeg/legLimitDownDeg bound the sweep window at whichever side's
+' last good point precedes a fault edge (refreshLegLimits(), fed by every legMeasure() in this
+' leg); runFinePoints()/runExtension() never command an offset past that limit, and evaluateBracket()
+' accepts a smaller rise (FAULT_RISE_PCT) from a point inside a fault-bounded window.
+' CHANGE 2 (scan v3): every legMeasure()/measurePoint() now re-measures the zero for itself
+' (tagged with its own phase), so no separate REF_START/REF_END zero call is needed here.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param speedIdx - SPEED_QTR or SPEED_HALF
@@ -1417,6 +1453,8 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
     defSwept := defaultSwept(signIdx)
     legReset()
     clearFit()
+    legLimitUpDeg := defSwept + HARD_LIMIT_DEG              ' CHANGE 1: unrestricted until a fault tightens it
+    legLimitDownDeg := defSwept - HARD_LIMIT_DEG
     legExit := LX_DONE
     refEndIdx := -1
     if speedIdx == SPEED_QTR
@@ -1429,7 +1467,6 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
     if (speedIdx == SPEED_HALF) and (resStatus[qtrSlot] <> FS_OK) and (resStatus[qtrSlot] <> FS_POOR)
         legExit := LX_SKIPPED
     else
-        measureZero(side, PH_REF_START)
         refStartIdx := legMeasure(side, speedIdx, signIdx, PH_REF_START, defSwept, refWinTicks, refLimitMv)
         if isValidIdx(refStartIdx) == FALSE
             legExit := LX_SKIPPED
@@ -1440,6 +1477,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
             if speedIdx == SPEED_QTR
                 stopUp := walkSide(side, signIdx, 1, defSwept, pointLimitMv)
                 stopDown := walkSide(side, signIdx, -1, defSwept, pointLimitMv)
+                refreshLegLimits(defSwept)                  ' CHANGE 1: bound the window at the fault edge
                 bBracketed := evaluateBracket(side, signIdx, stopUp, stopDown)
                 if bBracketed
                     centreDeg := legDeg[legLowIdx]
@@ -1455,7 +1493,6 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
                     fitLeg(centreDeg, (speedIdx == SPEED_QTR) ? FIT_MIN_PTS : CONFIRM_MIN_PTS)
                     bFitExtended := TRUE
             if abortReason == AR_NONE
-                measureZero(side, PH_REF_END)
                 refEndIdx := legMeasure(side, speedIdx, signIdx, PH_REF_END, defSwept, refWinTicks, pointLimitMv)
     if (abortReason <> AR_NONE) and (legExit == LX_DONE)
         legExit := LX_RUN_ABORT
@@ -1497,6 +1534,10 @@ PRI legReset()
     legCliffFound := FALSE
     legCliffGoodDeg := 0
     legCliffFaultDeg := 0
+    legLimitUpDeg := 0                                      ' set for real by runLeg once defSwept is known
+    legLimitDownDeg := 0
+    bLegLimitUpFault := FALSE
+    bLegLimitDownFault := FALSE
 
 PRI clearFit()
 ' Reset the fit record to not attempted.
@@ -1574,12 +1615,23 @@ PRI isHighIdx(ptIdx) : bHigh
 ' @param ptIdx - leg index, may be -1
 ' @returns bHigh - TRUE when the point rises above the low
 
+    bHigh := isHighIdxFor(ptIdx, RISE_PCT)
+
+PRI isHighIdxFor(ptIdx, risePct) : bHigh
+' Report whether a point is risePct above the current low (a current abort always is). CHANGE 1:
+' lets evaluateBracket() use a smaller threshold (FAULT_RISE_PCT) inside a fault-bounded window
+' without touching the coarse walk's own RISE_PCT stop test, which still calls isHighIdx().
+'
+' @param ptIdx - leg index, may be -1
+' @param risePct - rise threshold, percent of the low
+' @returns bHigh - TRUE when the point rises above the low by at least risePct
+
     bHigh := FALSE
     if (legLowIdx >= 0) and (ptIdx >= 0) and (ptIdx < legCount) and (ptIdx <> legLowIdx)
         if legResult[ptIdx] == PR_ABORT_I
             bHigh := TRUE
         elseif isValidIdx(ptIdx)
-            bHigh := (legMeanX10[ptIdx] * X100) >= (legMeanX10[legLowIdx] * (X100 + RISE_PCT))
+            bHigh := (legMeanX10[ptIdx] * X100) >= (legMeanX10[legLowIdx] * (X100 + risePct))
 
 PRI updateLegLow() | ptIdx
 ' Recompute the lowest valid REF_START/COARSE point.
@@ -1729,8 +1781,13 @@ PRI computeLegCliff(defSwept, signIdx) | dir, ptIdx, dist, goodDist, faultDist
         legCliffGoodDeg := defSwept + (dir * goodDist)
         legCliffFaultDeg := defSwept + (dir * faultDist)
 
-PRI evaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelowOk, bAboveOk, reason, missingStop
-' Decide whether a high point exists on both sides of the low; emit BS-BRACKET.
+PRI evaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelowOk, bAboveOk, reason, ...
+    missingStop, risePctUp, risePctDown
+' Decide whether a high point exists on both sides of the low; emit BS-BRACKET. CHANGE 1: a side
+' whose walk stopped WS_FAULTS is judged inside its fault-bounded window (legLimitUpDeg/Down,
+' set by refreshLegLimits() before this call) at the relaxed FAULT_RISE_PCT, and PH_CLIFF points
+' (the fine-walk probes toward that edge) are eligible, not just REF_START/COARSE -- the limit
+' point itself is one of them, so it qualifies on its own reading like any other point.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signIdx - SIGN_NEG or SIGN_POS
@@ -1743,17 +1800,23 @@ PRI evaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelo
 ' @local bAboveOk - a high point above the low exists
 ' @local reason - BR_* verdict
 ' @local missingStop - walk stop of the side that did not bracket
+' @local risePctUp - rise threshold for the up side: FAULT_RISE_PCT when it stopped on faults
+' @local risePctDown - rise threshold for the down side: FAULT_RISE_PCT when it stopped on faults
 
     bBelowOk := FALSE
     bAboveOk := FALSE
+    risePctUp := (stopUp == WS_FAULTS) ? FAULT_RISE_PCT : RISE_PCT
+    risePctDown := (stopDown == WS_FAULTS) ? FAULT_RISE_PCT : RISE_PCT
     updateLegLow()
     if (legLowIdx >= 0) and (legCount > 0)
         repeat ptIdx from 0 to legCount - 1
-            if ((legPhase[ptIdx] == PH_REF_START) or (legPhase[ptIdx] == PH_COARSE)) and isHighIdx(ptIdx)
+            if (legPhase[ptIdx] == PH_REF_START) or (legPhase[ptIdx] == PH_COARSE) or (legPhase[ptIdx] == PH_CLIFF)
                 if legDeg[ptIdx] < legDeg[legLowIdx]
-                    bBelowOk := TRUE
+                    if isHighIdxFor(ptIdx, risePctDown)
+                        bBelowOk := TRUE
                 elseif legDeg[ptIdx] > legDeg[legLowIdx]
-                    bAboveOk := TRUE
+                    if isHighIdxFor(ptIdx, risePctUp)
+                        bAboveOk := TRUE
     bBracketed := bBelowOk and bAboveOk
     if legLowIdx < 0
         reason := (abortReason <> AR_NONE) ? BR_RUN_ABORT : BR_NO_VALID
@@ -1778,6 +1841,76 @@ PRI withinHardLimit(sweptDeg, defSwept) : bWithin
 
     bWithin := (abs(sweptDeg - defSwept) <= HARD_LIMIT_DEG)
 
+PRI withinWindowLimit(sweptDeg) : bWithin
+' CHANGE 1: report whether an offset lies within this leg's current fault-bounded window (both
+' sides). Unrestricted (defSwept +/- HARD_LIMIT_DEG, already checked by withinHardLimit()) until
+' refreshLegLimits() tightens one side toward a fault edge.
+'
+' @param sweptDeg - candidate swept offset
+' @returns bWithin - TRUE when inside the window
+
+    bWithin := (sweptDeg <= legLimitUpDeg) and (sweptDeg >= legLimitDownDeg)
+
+PRI legLimitForDir(defSwept, dir) : limitDeg, bFromFault | ptIdx, dist, faultDist, goodDist
+' CHANGE 1: the fault-bounded window limit in one direction from defSwept -- the farthest valid
+' point (any phase) before the nearest fault-like point beyond it, mirroring computeLegCliff()'s
+' good/fault scan but kept per-side instead of only the toward-zero side. Unrestricted
+' (defSwept +/- HARD_LIMIT_DEG) when this leg has no fault-like point in this direction.
+'
+' @param defSwept - default offset, swept degrees
+' @param dir - +1 up, -1 down
+' @returns limitDeg - swept degrees, the window's edge in this direction
+' @returns bFromFault - TRUE when limitDeg came from a fault, not the hard limit
+'
+' @local ptIdx - leg index
+' @local dist - (point's offset - defSwept) * dir; distance in dir, may be negative
+' @local faultDist - smallest fault-like distance in dir beyond a good point, -1 when none
+' @local goodDist - largest valid distance in dir strictly less than faultDist
+
+    faultDist := -1
+    if legCount > 0
+        repeat ptIdx from 0 to legCount - 1
+            dist := (legDeg[ptIdx] - defSwept) * dir
+            if (dist > 0) and isFaultLikeIdx(ptIdx)
+                if (faultDist < 0) or (dist < faultDist)
+                    faultDist := dist
+    bFromFault := (faultDist >= 0)
+    if bFromFault
+        goodDist := 0
+        repeat ptIdx from 0 to legCount - 1
+            dist := (legDeg[ptIdx] - defSwept) * dir
+            if (dist >= 0) and (dist < faultDist) and isValidIdx(ptIdx)
+                goodDist := goodDist #> dist
+    else
+        goodDist := HARD_LIMIT_DEG
+    limitDeg := defSwept + (dir * goodDist)
+
+PRI refreshLegLimits(defSwept)
+' CHANGE 1: recompute legLimitUpDeg/legLimitDownDeg from every point stored in this leg so far
+' (any phase, any speed). Safe to call repeatedly -- runLeg() calls it once after the coarse walk,
+' and runFinePoints()/runExtension() call it again after every point they measure, so a fault
+' discovered mid-fine-walk (either speed) tightens the window for the very next candidate.
+'
+' @param defSwept - default offset, swept degrees
+
+    legLimitUpDeg, bLegLimitUpFault := legLimitForDir(defSwept, 1)
+    legLimitDownDeg, bLegLimitDownFault := legLimitForDir(defSwept, -1)
+
+PRI fitPinnedNearLimit() : bPinned
+' CHANGE 1: report whether the just-solved fit's vertex lies within one FINE_STEP_DEG of a
+' fault-derived window limit -- a minimum pinned against a fault edge must never read as a free
+' minimum. Only a fault-derived limit counts; the unrestricted default (+/- HARD_LIMIT_DEG) never
+' triggers this (FS_EDGE, from the measured span, already covers that case).
+'
+' @returns bPinned - TRUE when the fit solved and its vertex sits against a fault-bounded edge
+
+    bPinned := FALSE
+    if bFitSolved
+        if bLegLimitUpFault and (fabs(fitMinF -. float(legLimitUpDeg)) <. float(FINE_STEP_DEG))
+            bPinned := TRUE
+        elseif bLegLimitDownFault and (fabs(fitMinF -. float(legLimitDownDeg)) <. float(FINE_STEP_DEG))
+            bPinned := TRUE
+
 PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : legExit | orderIdx, ...
     orderCount, pOrder, sweptDeg, winTicks
 ' Measure the interleaved fine (1/4) or confirm (1/2) points around centreDeg.
@@ -1795,6 +1928,11 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
 ' @local pOrder - pointer to the order table
 ' @local sweptDeg - this point's swept offset
 ' @local winTicks - window ticks for this speed
+'
+' CHANGE 1 (scan v3): a candidate outside the current fault-bounded window (withinWindowLimit())
+' is skipped -- never measured -- and refreshLegLimits() re-runs after every point measured, so a
+' fault at this speed (e.g. a half-speed confirm point) tightens the window for the rest of this
+' leg, quarter or half speed alike.
 
     legExit := LX_DONE
     legConsecFaults := 0
@@ -1812,8 +1950,9 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
         if legConsecFaults >= LEG_FAULT_CAP
             quit
         sweptDeg := centreDeg + (LONG[pOrder][orderIdx] * FINE_STEP_DEG)
-        if withinHardLimit(sweptDeg, defSwept)
+        if withinHardLimit(sweptDeg, defSwept) and withinWindowLimit(sweptDeg)
             legMeasure(side, speedIdx, signIdx, PH_FINE, sweptDeg, winTicks, pointLimitMv)
+            refreshLegLimits(defSwept)
     if legConsecFaults >= LEG_FAULT_CAP
         legExit := LX_FAULT_CAP
         emitAbort(SCOPE_LEG, AR_FAULT_CAP, side, signedIncre(speedIdx, signIdx), legConsecFaults)
@@ -1835,6 +1974,8 @@ PRI runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv) : legExit | ex
 ' @local extCount - extension points for this speed
 ' @local sweptDeg - this point's swept offset
 ' @local winTicks - window ticks for this speed
+'
+' CHANGE 1 (scan v3): same window gating as runFinePoints() -- never past legLimitUpDeg/Down.
 
     legExit := LX_DONE
     legConsecFaults := 0
@@ -1852,8 +1993,9 @@ PRI runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv) : legExit | ex
         if legConsecFaults >= LEG_FAULT_CAP
             quit
         sweptDeg := edgeDeg + (extDir * extIdx * FINE_STEP_DEG)
-        if withinHardLimit(sweptDeg, defSwept)
+        if withinHardLimit(sweptDeg, defSwept) and withinWindowLimit(sweptDeg)
             legMeasure(side, speedIdx, signIdx, PH_EXTEND, sweptDeg, winTicks, pointLimitMv)
+            refreshLegLimits(defSwept)
     if legConsecFaults >= LEG_FAULT_CAP
         legExit := LX_FAULT_CAP
         emitAbort(SCOPE_LEG, AR_FAULT_CAP, side, signedIncre(speedIdx, signIdx), legConsecFaults)
@@ -2392,6 +2534,7 @@ PRI emitLimits2()
     boundedField(@"hard_limit_deg", HARD_LIMIT_DEG, LIM_SMALL)
     boundedField(@"drift_flag_pct", DRIFT_FLAG_PCT, LIM_SMALL)
     boundedField(@"imbalance_pct", IMBALANCE_PCT, LIM_SMALL)
+    boundedField(@"fault_rise_pct", FAULT_RISE_PCT, LIM_SMALL)
     lineEmit()
 
 PRI emitPlanT()
@@ -2507,8 +2650,8 @@ PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand,
 ' Emit BS-ZERO.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param phaseTag - PH_ZERO_INIT, PH_SELF, PH_REF_START or PH_REF_END: which reference point
-'   this zero read precedes
+' @param phaseTag - PH_* of the point this zero precedes (any phase, scan v3), or PH_ZERO_INIT
+'   for the motor-block's own check
 ' @param sampleCnt - samples taken
 ' @param meanX10 - mean sense x10
 ' @param minMv - smallest sample
@@ -2707,7 +2850,9 @@ PRI lowMeanOrZero() : lowMeanX10
         lowMeanX10 := legMeanX10[legLowIdx]
 
 PRI emitFit(side, speedIdx, signIdx)
-' Emit BS-FIT: status and span of the fit record.
+' Emit BS-FIT: status and span of the fit record. CHANGE 1 (scan v3): pinned, appended at the end,
+' is TRUE when the vertex sits within one FINE_STEP_DEG of a fault-derived window limit -- a
+' minimum pinned against a fault edge, which fitPinnedNearLimit() must never report as free.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param speedIdx - SPEED_QTR or SPEED_HALF
@@ -2724,6 +2869,7 @@ PRI emitFit(side, speedIdx, signIdx)
     naOrBoundedField(@"span_lo_deg", fitSpanLo, LIM_TINY, fitN > 0)
     naOrBoundedField(@"span_hi_deg", fitSpanHi, LIM_TINY, fitN > 0)
     boolField(@"extended", bFitExtended)
+    boolField(@"pinned", fitPinnedNearLimit())
     lineEmit()
 
 PRI emitFit2(side, speedIdx, signIdx) | bSolved

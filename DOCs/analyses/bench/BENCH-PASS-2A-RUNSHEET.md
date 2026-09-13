@@ -40,11 +40,13 @@ running them:
 + pnut-term-ts -r test_bench_scan.bin --console-mode --exit-on-end-session
 ```
 
-**Expected length:** about 13 minutes, at most about 20, ending on its own.
+**Expected length:** longer than Pass 2a's earlier runs -- scan v3 re-measures the zero before
+every point, not just the references (about 1s added per point, run-wide). Budget at least 20
+minutes, at most about 30, ending on its own.
 
 **Before trusting any number:**
-- The banner must say `cfg_id BENCH`, left base 32, right base 16. `pnut-ts` silently ignores an
-  unknown `-D`, so no banner voids the run.
+- The banner must say `cfg_id BENCH`, `fmt 3`, left base 32, right base 16. `pnut-ts` silently
+  ignores an unknown `-D`, so no banner voids the run.
 - The **self-check** must pass, per motor, at the default 43/317 offsets. It checks: Rev B at
   every start, `start()` returning a cog id, hall counters at 0, the zero reading, the ¼-speed
   currents and their ratio, and the tick rate. **If it aborts, the scan did not run and a
@@ -54,20 +56,30 @@ running them:
 - the fitted minimum-current offset, its uncertainty and the fit residual;
 - the current at the minimum against the current at the default;
 - whether the minimum was bracketed (a minimum at the window edge is not a minimum) -- and when it
-  is not, the fault edge instead: scan v2 (PL-31) fine-walks into a coarse-walk fault stop (5°,
+  is not, the fault edge instead: scan v2/v3 (PL-31) fine-walks into a coarse-walk fault stop (5°,
   then 2° if that also faults) and reports the last-good/first-fault swept degrees, the edge
   estimate (their midpoint) and the margin from the fitted minimum, or from the lowest measured
   point when there is no fit (`BS-CLIFF`, per motor/speed/sign);
+- scan v3 (from run 4): a side that stopped on faults is now bounded, not excluded -- the last
+  good point before that fault becomes the sweep window's limit on that side, and a point inside
+  the window brackets the minimum at a smaller rise (4%, `fault_rise_pct` in `BS-LIMITS2`) than an
+  unbounded side needs (15%, `rise_pct`), justified against the points' own standard error. Fine
+  points, the one extension and the fit never cross that limit, at either speed. `BS-FIT`'s new
+  `pinned` field is TRUE when the fitted vertex sits within one `FINE_STEP_DEG` of a fault-derived
+  limit -- treat a pinned minimum as up against the wall, not as a free minimum;
 - the half-speed re-located minimum and its shift.
 
 **Per motor, it also reports:**
 - the midpoint of the two minima, which estimates the hall zero;
 - the current ratio at the pair of minima — the designer's principle predicts near-equal current;
-- the current-sense zero, re-measured (driver running, zero commanded) immediately before every
-  self-check point and every leg's `REF_START`/`REF_END` (`BS-ZERO`, phase-tagged), because run 3
-  found a ~13-16 mV sense-side bias that appeared after some high-current or fault events. The
-  evaluation nets each point's current against the `BS-ZERO` record before it; the binary's
-  fits run on the raw mean, and only the first zero (`ZERO_INIT`) is judged against the band.
+- the current-sense zero, re-measured (driver running, zero commanded) immediately before **every**
+  point, of any phase (`BS-ZERO`, phase-tagged), because run 3 found a ~13-16 mV sense-side bias
+  that appeared after some high-current or fault events, and run 4 confirmed it as a zero shift
+  (not a current change) that can appear soon after a driver restart. The evaluation nets each
+  point's current against the `BS-ZERO` record before it; the binary's fits run on the raw mean,
+  and only the first zero (`ZERO_INIT`) is judged against the band. Every zero is read with the
+  drive floated (the driver's default stop mode, which disables PWM at zero command), so an
+  out-of-band zero is a sense-path offset, not bridge current (PL-30).
 
 **Disposition:** apply the measured pair («#3523») only if both motors agree on each sign's
 minimum within the fit uncertainty and the half-speed result holds. Otherwise the disagreement

@@ -705,7 +705,24 @@ reseating it"*. That adds a third explanation, a mechanical one (DERIVED). A sta
 the right wheel adds a roughly constant friction torque in motion, which shows as a constant
 extra current in both directions, as measured. At zero command it would show only if the stand
 pushes the held wheel to turn. The next scan's right-motor zero, taken after the reseat, is the
-check. The scan's
+check.
+
+**Scan run 4, after the reseat (MEASURED, `analyses/bench/2026-09-13/SCAN-RUN-4-EVALUATION.md`
+§5):** the right zero read 72.1 / 72.6 / 71.4 mV, unchanged. Net of it, the ¼-speed currents
+are 91.1 / 168.8 mV, matching the left motor within 10 % and Pass 1. DERIVED: a mechanical cause
+is effectively excluded, because the reading is taken with the wheel stopped and the reseat did
+not move it.
+
+**Resolved from source, 2026-09-13 (DERIVED): it is a sense-path offset.**
+- Every zero was already read with the drive floated: `isp_bldc_motor.spin2` `init()` sets
+  `stop_mode := SM_FLOAT`, the scan never changes it, and `.checkstop` disables PWM at zero command
+  in that mode.
+- No bridge current can flow during the reading, so the idle-current explanation is excluded.
+
+**Still open:**
+1. Why the right board's sense path gained ~64 mV since Pass 1 (a hardware question).
+2. Whether the scan may run the right motor on currents net of its zero instead of stopping at the
+   zero band. That is Stephen's decision; the band stays until he makes it. The scan's
 zero band stopped the run correctly and is not loosened. Tier 0's T0-11 (quiescent sense
 including the phase-voltage channels, «#3504») would separate a ground shift, which moves every
 channel, from a current, which moves only the current channel.
@@ -728,6 +745,18 @@ load.
 3. re-measure the zero at every reference point, because a ~13–16 mV sense-side bias appeared
    after some high-current or fault events (coarse points read higher than fine points at the
    same offset, with the same duty).
+
+**Scan v2 (`5ea0510`) in run 4 (MEASURED, `analyses/bench/2026-09-13/SCAN-RUN-4-EVALUATION.md`):**
+- Both left cliffs were located: negative edge 5.5°, positive −15.5°, each 7.5° from its lowest
+  point.
+- The bias is a zero shift: references of 89.3 and 100.4 mV sat on zeros of 7.7 and 18.9, giving
+  identical net readings of 81.6 and 81.5. The 18.9 zero was read 1.5 s after an `ABORT_I` restart.
+- Remaining defect: `evaluateBracket` never brackets a side whose walk stopped on faults, even
+  when the cliff probe rises above the low. Both legs therefore reported NOT_BRACKETED, neither
+  fitted, and both ½-speed legs were skipped.
+
+Scan v3 fixes it by ending the sweep window at the last good point, and reads the zero before
+every point, including after every restart.
 
 ---
 
