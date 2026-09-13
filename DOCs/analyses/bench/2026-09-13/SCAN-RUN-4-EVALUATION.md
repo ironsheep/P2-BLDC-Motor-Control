@@ -1,6 +1,6 @@
 # Bench Pass 2a — scan run 4 (scan v2, stand reseated)
 
-**Log:** `src/logs/debug_260913-012757.log` (342 lines; curation pending).
+**Log:** `debug_260913-012757.log` (this folder, 342 lines).
 **Source:** `5ea0510`. Banner: `src_rev 2, fmt 2, cfg_id BENCH`, left 32, right 16.
 **Run:** 01:27:57. It ended on its own at 134 s with `BS-END ABORTED SELF_CHECK_MISS` (RIGHT,
 first miss ZERO), after the left motor finished both ¼-speed legs.

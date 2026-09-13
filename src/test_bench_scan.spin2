@@ -80,8 +80,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 3                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 3                                         ' BS- record-format version
+    SRC_REV     = 4                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 4                                         ' BS- record-format version
 
 CON { timing }
 
@@ -250,8 +250,24 @@ CON { expected rates and self-check bands }
     NEG_QTR_HI_MV      = 212
     RATIO_LO_X1000     = 1_550                              ' Pass 1 raw -/+ ratio 1.87 / 1.84
     RATIO_HI_X1000     = 2_200
-    ZERO_LO_MV         = -10                                ' Pass 1 fit intercept 9.1 mV
+    ZERO_LO_MV         = -10                                ' Pass 1 fit intercept 9.1 mV (informational only)
     ZERO_HI_MV         = 30
+
+    ' Zero health check: replaces the band-based verdict. Spread from runs 3/4 measured 6-8 mV on both
+    ' motors; absolute reads ranged 69-76 mV (right) to 4-12 mV (left). The ceiling sits far above
+    ' the right board's steady ~72 mV offset, leaving room for it to drift, and far below a railed
+    ' ADC (~3300 mV). 300 mV is 2 A equivalent at 150 mV/A: no idle zero can honestly read that high.
+    ZERO_SPREAD_MAX_MV = 10                                 ' max(max - min) of zero samples, mV
+    ZERO_ABS_MAX_MV    = 300                                ' max |mean|, mV
+
+    ' Self-check current bands, net of Pass 1's 9.1 mV zero intercept. Derived from raw bands
+    ' by subtracting 9 mV: pos_qtr 68-114 -> 59-105; neg_qtr 127-212 -> 118-203.
+    ' Run 4 net values (left 83.4/164.0, right 91.6/168.1) fall within these bounds; a dead channel
+    ' (frozen zero, net near 0) fails both the zero health check and these bands.
+    POS_QTR_NET_LO_MV  = 59                                 ' 68 - 9
+    POS_QTR_NET_HI_MV  = 105                                ' 114 - 9
+    NEG_QTR_NET_LO_MV  = 118                                ' 127 - 9
+    NEG_QTR_NET_HI_MV  = 203                                ' 212 - 9
 
 CON { sweep geometry -- offsets in electrical degrees }
 
@@ -828,10 +844,11 @@ PRI waitReady(side) | startMs
         waitms(SAMPLE_MS)
 
 PRI measureZero(side, phaseTag) | sampleIdx, senseMv, senseSum, sampleCnt, minMv, maxMv, meanX10, ...
-    slotIdx, bValid, bInBand
+    slotIdx, bValid, bInBand, bHealthOk, meanAbsX10, spreadMv, senseUmv, senseVmv, senseWmv, ...
+    senseUsum, senseVsum, senseWsum, senseUmean, senseVmean, senseWmean
 ' Read the current-sense zero with the cog running and the motor stopped (never a stopped cog:
 ' PL-21), tagged by phase. Only PH_ZERO_INIT -- the motor-block's own check -- sets the zero
-' band verdict and the zero BS-PAIR2 reports; every other call only logs its reading, so a
+' health verdict and the zero BS-PAIR2 reports; every other call only logs its reading, so a
 ' point's net current is computed at evaluation from the BS-ZERO record before it. CHANGE 2
 ' (scan v3): measurePoint() calls this at the start of every point, tagged with that point's own
 ' phase (PH_SELF, PH_REF_START, PH_COARSE, PH_FINE, PH_EXTEND, PH_REF_END, PH_CLIFF), so every
@@ -841,6 +858,10 @@ PRI measureZero(side, phaseTag) | sampleIdx, senseMv, senseSum, sampleCnt, minMv
 ' this scan never changes it, and the driver's .checkstop disables PWM at zero command in that
 ' mode. So no bridge current can flow during a zero read, and an out-of-band zero is an offset
 ' in the sense path (PL-30).
+' CHANGE 3 (scan v3.1): bZeroOk is now the health verdict -- replaces the zero band check.
+' Passes when samples were taken, reading not frozen (min != max), spread <= ZERO_SPREAD_MAX_MV,
+' and |mean| <= ZERO_ABS_MAX_MV. Also accumulates phase-voltage readings (sense_u/v/w_mV) to
+' help locate the offset source.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param phaseTag - PH_* of the point this zero precedes, or PH_ZERO_INIT
@@ -854,10 +875,19 @@ PRI measureZero(side, phaseTag) | sampleIdx, senseMv, senseSum, sampleCnt, minMv
 ' @local meanX10 - mean sense x10
 ' @local slotIdx - per-side slot
 ' @local bValid - TRUE when at least one sample was taken
-' @local bInBand - TRUE when the mean is inside ZERO_LO_MV..ZERO_HI_MV
+' @local bInBand - TRUE when the mean is inside ZERO_LO_MV..ZERO_HI_MV (informational)
+' @local bHealthOk - TRUE when the health checks pass (samples, not frozen, spread, absolute)
+' @local meanAbsX10 - absolute value of mean x10
+' @local spreadMv - max - min sample spread
+' @local senseUmv, senseVmv, senseWmv - phase voltage samples
+' @local senseUsum, senseVsum, senseWsum - accumulated phase voltages
+' @local senseUmean, senseVmean, senseWmean - mean phase voltages x10
 
     beginSampling(0)
     senseSum := 0
+    senseUsum := 0
+    senseVsum := 0
+    senseWsum := 0
     sampleCnt := 0
     minMv := POSX
     maxMv := NEGX
@@ -871,54 +901,84 @@ PRI measureZero(side, phaseTag) | sampleIdx, senseMv, senseSum, sampleCnt, minMv
         sampleCnt += 1
         minMv := minMv <# senseMv
         maxMv := maxMv #> senseMv
+        ' Also accumulate phase voltages for offset source detection (PL-30)
+        senseUmv, senseVmv, senseWmv := sidePhaseVoltages(side)
+        senseUsum += senseUmv
+        senseVsum += senseVmv
+        senseWsum += senseWmv
     flushCharge()
     bValid := (sampleCnt > 0)
     meanX10 := 0
+    senseUmean := 0
+    senseVmean := 0
+    senseWmean := 0
     if bValid
         meanX10 := (senseSum * X10) / sampleCnt
+        senseUmean := (senseUsum * X10) / sampleCnt
+        senseVmean := (senseVsum * X10) / sampleCnt
+        senseWmean := (senseWsum * X10) / sampleCnt
     slotIdx := sideSlot(side)
+    ' in_band: this reading against the nominal zero band -- informational, never judged
+    bInBand := bValid and (meanX10 >= ZERO_LO_MV * X10) and (meanX10 <= ZERO_HI_MV * X10)
     if phaseTag == PH_ZERO_INIT
-        bInBand := bValid and (meanX10 >= ZERO_LO_MV * X10) and (meanX10 <= ZERO_HI_MV * X10)
-        bZeroOk[slotIdx] := bInBand
+        ' Health check: samples taken, not frozen, spread ok, absolute value ok
+        bHealthOk := FALSE
+        if bValid
+            spreadMv := maxMv - minMv
+            meanAbsX10 := abs(meanX10)
+            bHealthOk := (minMv <> maxMv) and (spreadMv <= ZERO_SPREAD_MAX_MV) and (meanAbsX10 <= ZERO_ABS_MAX_MV * X10)
+        bZeroOk[slotIdx] := bHealthOk
         zeroMeanX10[slotIdx] := meanX10
-    emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, (minMv == maxMv), bZeroOk[slotIdx], bValid)
+    emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, (minMv == maxMv), bInBand, bValid, bZeroOk[slotIdx], ...
+        senseUmean, senseVmean, senseWmean)
 
 PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, negMeanX10, bPosIOk, ...
     bNegIOk, bRateOk, bIntegOk, bFaultOk, bThisFaultOk, bThisIOk, bThisRateOk, bThisIntegOk, ...
-    ratioX1000, bRatioOk, bStartOk, bZeroPass, missCode
-' Self-check at 43/317: +1/4 then -1/4 speed, against the Pass 1 bands. A miss ends the run.
+    ratioX1000, bRatioOk, bStartOk, bZeroPass, missCode, zeroBase, posNetMeanX10, negNetMeanX10, ...
+    netLoMv, netHiMv, netThisIOk
+' Self-check at 43/317: +1/4 then -1/4 speed, against the net-of-zero bands (CHANGE 3). A miss ends
+' the run. Net means are raw means minus the ZERO_INIT reading (the motor-block's initial zero).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bPassed - TRUE when every check passed
 '
 ' @local orderPos - 0 for the positive point, 1 for the negative point
 ' @local signIdx - SIGN_* of the point
-' @local loMv - band low for this sign
-' @local hiMv - band high for this sign
-' @local posMeanX10 - +1/4 mean sense x10
-' @local negMeanX10 - -1/4 mean sense x10
-' @local bPosIOk - +1/4 current in band
-' @local bNegIOk - -1/4 current in band
+' @local loMv - raw band low for this sign
+' @local hiMv - raw band high for this sign
+' @local posMeanX10 - +1/4 raw mean sense x10
+' @local negMeanX10 - -1/4 raw mean sense x10
+' @local bPosIOk - +1/4 net current in band
+' @local bNegIOk - -1/4 net current in band
 ' @local bRateOk - both rates in band
 ' @local bIntegOk - both points free of hall integrity events
 ' @local bFaultOk - both points completed without fault
 ' @local bThisFaultOk - this point completed without fault
-' @local bThisIOk - this point's current in band
+' @local bThisIOk - this point's net current in band
 ' @local bThisRateOk - this point's rate in band
 ' @local bThisIntegOk - this point free of hall integrity events
-' @local ratioX1000 - negative/positive mean ratio x1000
+' @local ratioX1000 - negative/positive net mean ratio x1000
 ' @local bRatioOk - ratio in band
 ' @local bStartOk - the start checks passed
-' @local bZeroPass - the zero reading was in band
+' @local bZeroPass - the zero reading was healthy
 ' @local missCode - MISS_* first miss
+' @local zeroBase - ZERO_INIT reading x10, the net reference
+' @local posNetMeanX10 - +1/4 net mean sense x10
+' @local negNetMeanX10 - -1/4 net mean sense x10
+' @local netLoMv - net band low for this sign
+' @local netHiMv - net band high for this sign
+' @local netThisIOk - this point's net mean x10, mV (raw mean minus zeroBase)
 
     posMeanX10 := 0
     negMeanX10 := 0
+    posNetMeanX10 := 0
+    negNetMeanX10 := 0
     bPosIOk := FALSE
     bNegIOk := FALSE
     bRateOk := TRUE
     bIntegOk := TRUE
     bFaultOk := TRUE
+    zeroBase := zeroMeanX10[sideSlot(side)]
     repeat orderPos from 0 to SIGN_SLOTS - 1
         signIdx := (orderPos == 0) ? SIGN_POS : SIGN_NEG
         if abortReason <> AR_NONE
@@ -926,28 +986,35 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
             quit
         loMv := (signIdx == SIGN_POS) ? POS_QTR_LO_MV : NEG_QTR_LO_MV
         hiMv := (signIdx == SIGN_POS) ? POS_QTR_HI_MV : NEG_QTR_HI_MV
+        netLoMv := (signIdx == SIGN_POS) ? POS_QTR_NET_LO_MV : NEG_QTR_NET_LO_MV
+        netHiMv := (signIdx == SIGN_POS) ? POS_QTR_NET_HI_MV : NEG_QTR_NET_HI_MV
         measurePoint(side, SPEED_QTR, signIdx, PH_SELF, defaultSwept(signIdx), WIN_TICKS_SELF, ...
             (hiMv * POINT_ABORT_X100) / X100)
         bThisFaultOk := (ptResult == PR_OK)
-        bThisIOk := bThisFaultOk and (ptMeanX10 >= loMv * X10) and (ptMeanX10 <= hiMv * X10)
+        ' Check net current: raw mean minus the ZERO_INIT reference
+        netThisIOk := ptMeanX10 - zeroBase
+        bThisIOk := bThisFaultOk and (netThisIOk >= netLoMv * X10) and (netThisIOk <= netHiMv * X10)
         bThisRateOk := bThisFaultOk and bPtRateOk
         bThisIntegOk := bPtIntegValid and (ptMissedD == 0) and (ptIllegalD == 0)
         emitCheck(side, signedIncre(SPEED_QTR, signIdx), loMv, hiMv, bThisIOk, bThisRateOk, ...
-            bThisIntegOk, bThisFaultOk)
+            bThisIntegOk, bThisFaultOk, netLoMv, netHiMv, netThisIOk)
         if signIdx == SIGN_POS
             posMeanX10 := ptMeanX10
+            posNetMeanX10 := netThisIOk
             bPosIOk := bThisIOk
         else
             negMeanX10 := ptMeanX10
+            negNetMeanX10 := netThisIOk
             bNegIOk := bThisIOk
         bRateOk := bRateOk and bThisRateOk
         bIntegOk := bIntegOk and bThisIntegOk
         bFaultOk := bFaultOk and bThisFaultOk
         selfMeanX10[selfSlot(side, signIdx)] := bThisIOk ? ptMeanX10 : 0
 
+    ' Ratio check uses net means
     ratioX1000 := 0
-    if (posMeanX10 > 0) and bPosIOk and bNegIOk
-        ratioX1000 := (negMeanX10 * X1000) / posMeanX10
+    if (posNetMeanX10 > 0) and bPosIOk and bNegIOk
+        ratioX1000 := (negNetMeanX10 * X1000) / posNetMeanX10
     bRatioOk := (ratioX1000 >= RATIO_LO_X1000) and (ratioX1000 <= RATIO_HI_X1000)
     bStartOk := bLastStartOk
     bZeroPass := bZeroOk[sideSlot(side)]
@@ -2409,6 +2476,23 @@ PRI sideTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault, bCogUp
         else
             nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelL.testGetTelemetry()
 
+PRI sidePhaseVoltages(side) : nSenseU, nSenseV, nSenseW
+' Snapshot phase-voltage readings from the named wheel's driver (PL-30: offset source detection).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nSenseU - phase-U sense_u_mV
+' @returns nSenseV - phase-V sense_v_mV
+' @returns nSenseW - phase-W sense_w_mV
+
+    nSenseU := 0
+    nSenseV := 0
+    nSenseW := 0
+    if sideCogRunning(side)
+        if side == SIDE_RIGHT
+            _, _, _, nSenseU, nSenseV, nSenseW, _, _ := wheelR.testGetTelemetry()
+        else
+            _, _, _, nSenseU, nSenseV, nSenseW, _, _ := wheelL.testGetTelemetry()
+
 PRI sideTicks(side) : nTicks
 ' Raw hall ticks of the named wheel.
 '
@@ -2525,7 +2609,7 @@ PRI emitLimits()
     lineEmit()
 
 PRI emitLimits2()
-' Emit BS-LIMITS2: leg caps, hard limit and flag thresholds.
+' Emit BS-LIMITS2: leg caps, hard limit, flag thresholds, and zero health checks.
 
     lineReset()
     lineAddText(@"BS-LIMITS2")
@@ -2535,6 +2619,8 @@ PRI emitLimits2()
     boundedField(@"drift_flag_pct", DRIFT_FLAG_PCT, LIM_SMALL)
     boundedField(@"imbalance_pct", IMBALANCE_PCT, LIM_SMALL)
     boundedField(@"fault_rise_pct", FAULT_RISE_PCT, LIM_SMALL)
+    boundedField(@"zero_spread_max_mV", ZERO_SPREAD_MAX_MV, LIM_SMALL)
+    boundedField(@"zero_abs_max_mV", ZERO_ABS_MAX_MV, LIM_SMALL)
     lineEmit()
 
 PRI emitPlanT()
@@ -2575,7 +2661,7 @@ PRI emitPlanS()
     lineEmit()
 
 PRI emitBands()
-' Emit BS-BANDS: the self-check tolerance bands.
+' Emit BS-BANDS: the self-check tolerance bands (raw and net-of-zero).
 
     lineReset()
     lineAddText(@"BS-BANDS")
@@ -2591,6 +2677,11 @@ PRI emitBands()
     boundedField(@"rate_qtr_hi", RATE_QTR_HI, LIM_SMALL)
     boundedField(@"rate_half_lo", RATE_HALF_LO, LIM_SMALL)
     boundedField(@"rate_half_hi", RATE_HALF_HI, LIM_SMALL)
+    ' Net-of-zero bands for self-check (scan v3.1): raw bands minus Pass 1's 9 mV intercept
+    boundedField(@"pos_qtr_net_lo_mV", POS_QTR_NET_LO_MV, LIM_SMALL)
+    boundedField(@"pos_qtr_net_hi_mV", POS_QTR_NET_HI_MV, LIM_SMALL)
+    boundedField(@"neg_qtr_net_lo_mV", NEG_QTR_NET_LO_MV, LIM_SMALL)
+    boundedField(@"neg_qtr_net_hi_mV", NEG_QTR_NET_HI_MV, LIM_SMALL)
     lineEmit()
 
 PRI emitPreflight(side, ticksMoved)
@@ -2646,7 +2737,8 @@ PRI emitStart(side, startedCog, bCogOk, eBoardRev, bRevB, initNeg, initPos, read
     tokenField(@"result", bStartOk ? @sOk : @sFail, TOKMAX_OKFAIL)
     lineEmit()
 
-PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand, bValid)
+PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand, bValid, bHealthOk, ...
+    senseUmeanX10, senseVmeanX10, senseWmeanX10)
 ' Emit BS-ZERO.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -2657,8 +2749,12 @@ PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand,
 ' @param minMv - smallest sample
 ' @param maxMv - largest sample
 ' @param bFrozen - min equals max
-' @param bInBand - mean inside the zero band (PH_ZERO_INIT only; carried from that reading otherwise)
+' @param bInBand - mean inside the zero band (informational, backward compatibility)
 ' @param bValid - at least one sample
+' @param bHealthOk - health verdict (zero not railed, spread ok, absolute ok)
+' @param senseUmeanX10 - mean phase-U voltage x10, mV
+' @param senseVmeanX10 - mean phase-V voltage x10, mV
+' @param senseWmeanX10 - mean phase-W voltage x10, mV
 
     lineReset()
     lineAddText(@"BS-ZERO")
@@ -2670,6 +2766,11 @@ PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand,
     naOrBoundedField(@"i_max_mV", maxMv, LIM_SMALL, bValid)
     boolField(@"frozen", bFrozen and bValid)
     boolField(@"in_band", bInBand)
+    boolField(@"health_ok", bHealthOk)
+    ' Phase voltages to help locate the offset source (PL-30)
+    naOrBoundedField(@"u_mV_x10", senseUmeanX10, LIM_SMALL, bValid)
+    naOrBoundedField(@"v_mV_x10", senseVmeanX10, LIM_SMALL, bValid)
+    naOrBoundedField(@"w_mV_x10", senseWmeanX10, LIM_SMALL, bValid)
     lineEmit()
 
 PRI emitPoint(side, speedIdx, motorIncre, ptPhase, sweptDeg)
@@ -2728,17 +2829,21 @@ PRI emitPoint2(side, motorIncre)
     boundedField(@"drv_state", sampState, LIM_TINY)
     lineEmit()
 
-PRI emitCheck(side, motorIncre, loMv, hiMv, bIOk, bRateOk, bIntegOk, bFaultOk)
-' Emit BS-CHECK for one self-check point.
+PRI emitCheck(side, motorIncre, loMv, hiMv, bIOk, bRateOk, bIntegOk, bFaultOk, ...
+    netLoMv, netHiMv, netMeanX10)
+' Emit BS-CHECK for one self-check point (scan v3.1: adds net-of-zero band and mean).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param motorIncre - signed increment
-' @param loMv - band low
-' @param hiMv - band high
-' @param bIOk - current in band
+' @param loMv - raw band low (informational)
+' @param hiMv - raw band high (informational)
+' @param bIOk - net current in band (verdict)
 ' @param bRateOk - rate in band
 ' @param bIntegOk - no hall integrity events
 ' @param bFaultOk - completed without fault
+' @param netLoMv - net band low
+' @param netHiMv - net band high
+' @param netMeanX10 - net mean x10, mV (raw mean minus ZERO_INIT)
 
     lineReset()
     lineAddText(@"BS-CHECK")
@@ -2750,6 +2855,10 @@ PRI emitCheck(side, motorIncre, loMv, hiMv, bIOk, bRateOk, bIntegOk, bFaultOk)
     boolField(@"rate_ok", bRateOk)
     boolField(@"integ_ok", bIntegOk)
     boolField(@"fault_ok", bFaultOk)
+    ' Net-of-zero bands and mean (scan v3.1)
+    boundedField(@"net_lo_mV", netLoMv, LIM_SMALL)
+    boundedField(@"net_hi_mV", netHiMv, LIM_SMALL)
+    boundedField(@"net_mean_mV_x10", netMeanX10, LIM_SMALL)
     lineEmit()
 
 PRI emitChecksum(side, bStartOk, bZeroPass, bPosIOk, bNegIOk, ratioX1000, bRatioOk, bRateOk, bIntegOk, ...

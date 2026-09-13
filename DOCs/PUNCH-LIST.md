@@ -720,9 +720,32 @@ not move it.
 - No bridge current can flow during the reading, so the idle-current explanation is excluded.
 
 **Still open:**
-1. Why the right board's sense path gained ~64 mV since Pass 1 (a hardware question).
-2. Whether the scan may run the right motor on currents net of its zero instead of stopping at the
-   zero band. That is Stephen's decision; the band stays until he makes it. The scan's
+1. Why the right board's sense path gained ~64 mV since Pass 1. This is a hardware finding for
+   Stephen to look at when convenient, not a blocker. STEPHEN 2026-09-13: *"no idea about the
+   board"*.
+
+**Root-cause status, 2026-09-13 (DERIVED unless marked):**
+
+Excluded:
+- *Bridge current:* every zero is read floated.
+- *Stand drag:* the reading is taken with the wheel stopped, and the reseat did not move it (MEASURED).
+- *Scan/driver code:* the driver code is identical for both pin groups, and GIO/VIO calibration is per pin. The only arithmetic change since Pass 1 is the S-3 scale shift, which cannot add a constant to one board. The left board is unchanged (MEASURED).
+
+Also:
+- The sense node's discharge on the right board is normal: detection high time is 72–73 µs, against the left's 71–74 µs (MEASURED, run 4 detection lines). So the amplifier still drives it.
+- The offset is new since 2026-09-12 15:44. Pass 1's single fit over both motors has a worst residual of 4.7 mV, which a 64 mV right-motor offset would have broken.
+
+Remaining:
+1. A ground or reference shift between the right board and the P2, such as connector or ribbon contact resistance. This would also shift the U/V/W phase-voltage channels.
+2. A change in the current-sense path itself, such as amplifier offset or the shunt's Kelvin connection. This would shift only the current channel.
+
+Scan v3.1 logs the phase-channel means with every zero, so run 5 separates the two.
+
+**Instrument response (scan v3.1, «#3527»):** the self-check now judges zero *health* (not frozen,
+small spread, below an absolute ceiling) and net-of-zero currents. A working channel that is
+merely offset passes; a dead or railed one still fails. This is instrument design and the
+arbiter's to decide (doctrine overlay P3), so the right motor is scanned in the same run as the
+left. The scan's
 zero band stopped the run correctly and is not loosened. Tier 0's T0-11 (quiescent sense
 including the phase-voltage channels, «#3504») would separate a ground shift, which moves every
 channel, from a current, which moves only the current channel.

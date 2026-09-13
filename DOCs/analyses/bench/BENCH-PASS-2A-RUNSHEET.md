@@ -45,12 +45,13 @@ every point, not just the references (about 1s added per point, run-wide). Budge
 minutes, at most about 30, ending on its own.
 
 **Before trusting any number:**
-- The banner must say `cfg_id BENCH`, `fmt 3`, left base 32, right base 16. `pnut-ts` silently
+- The banner must say `cfg_id BENCH`, `fmt 4`, left base 32, right base 16. `pnut-ts` silently
   ignores an unknown `-D`, so no banner voids the run.
-- The **self-check** must pass, per motor, at the default 43/317 offsets. It checks: Rev B at
-  every start, `start()` returning a cog id, hall counters at 0, the zero reading, the ¼-speed
-  currents and their ratio, and the tick rate. **If it aborts, the scan did not run and a
-  foundation fix is wrong.** Report which, stop the pass, and never loosen a band to get past it.
+- The **self-check** must pass, per motor, at the default 43/317 offsets. It checks (scan v3.1):
+  Rev B at every start, `start()` returning a cog id, hall counters at 0, the zero health (not
+  frozen, spread <= 10 mV, |mean| <= 300 mV), net-of-zero ¼-speed currents and their ratio, and
+  the tick rate. **If it aborts, the scan did not run and a foundation fix is wrong.** Report which,
+  stop the pass, and never loosen a band to get past it.
 
 **What the evaluation reports, per motor and increment sign:**
 - the fitted minimum-current offset, its uncertainty and the fit residual;
@@ -75,11 +76,14 @@ minutes, at most about 30, ending on its own.
 - the current-sense zero, re-measured (driver running, zero commanded) immediately before **every**
   point, of any phase (`BS-ZERO`, phase-tagged), because run 3 found a ~13-16 mV sense-side bias
   that appeared after some high-current or fault events, and run 4 confirmed it as a zero shift
-  (not a current change) that can appear soon after a driver restart. The evaluation nets each
-  point's current against the `BS-ZERO` record before it; the binary's fits run on the raw mean,
-  and only the first zero (`ZERO_INIT`) is judged against the band. Every zero is read with the
-  drive floated (the driver's default stop mode, which disables PWM at zero command), so an
-  out-of-band zero is a sense-path offset, not bridge current (PL-30).
+  (not a current change) that can appear soon after a driver restart (scan v3.1: now checked by
+  a health verdict — not frozen, spread <= 10 mV, absolute <= 300 mV — instead of a fixed band,
+  and the `BS-ZERO` record now includes phase-voltage means to help locate the offset source).
+  The evaluation nets each point's current against the `BS-ZERO` record before it; the binary's
+  fits run on the raw mean, and only the first zero (`ZERO_INIT`) verdict is used for the
+  self-check. Every zero is read with the drive floated (the driver's default stop mode, which
+  disables PWM at zero command), so an out-of-band zero is a sense-path offset, not bridge
+  current (PL-30).
 
 **Disposition:** apply the measured pair («#3523») only if both motors agree on each sign's
 minimum within the fit uncertainty and the half-speed result holds. Otherwise the disagreement
