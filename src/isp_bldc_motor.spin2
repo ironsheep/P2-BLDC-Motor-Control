@@ -279,6 +279,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE)
     offset_fwd  := fwdDegrees frac 360
     offset_rev  := revDegrees frac 360
+    offset_fwd_degrees := fwdDegrees
+    offset_rev_degrees := revDegrees
 
     debug("MOT: ", udec(fwdDegrees), uhex_long(offset_fwd))
     debug("     ", udec(revDegrees), uhex_long(offset_rev))
@@ -1042,8 +1044,49 @@ PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) | fwdDegrees, revDegrees
 
     offset_fwd  := fwdDegrees frac 360
     offset_rev  := revDegrees frac 360
+    offset_fwd_degrees := fwdDegrees
+    offset_rev_degrees := revDegrees
     debug("MOT:  ", sdec(fwdDegrees), uhex_long(offset_fwd))
     debug(" (tst)", sdec(revDegrees), uhex_long(offset_rev))
+
+PUB testSetFwdRevIndep(fwdDegrees, revDegrees)
+'' TESTING USE: set forward and reverse commutation offsets independently
+''
+'' This method allows separate control of the two offsets to characterize
+'' motor current draw with asymmetric commutation angles. Angles are stored
+'' as-is without normalisation; callers may pass values outside 0..359 and
+'' testGetFwdRevIndep() will return them unchanged.
+''
+'' DETAIL: offset_fwd is applied to NEGATIVE motor increments and offset_rev to POSITIVE
+'' motor increments -- the names do not describe the direction of travel.
+'' These offsets are selected in the PASM2 driver at two locations:
+'' - Hall-angle initialiser: testb tgt_incr, #31 wc / if_c add angle_, offset_fwd_
+'' - Control loop: cmpm angle_, prior_angle wcz / wrc fwdrev / if_c add err_, offset_fwd_
+'' CMPM sets C to MSB of (D - S), making NEGATIVE increments use offset_fwd (default 43 degrees
+'' for 6.5in motor) and POSITIVE increments use offset_rev (default 317 degrees).
+''
+'' @param fwdDegrees - commutation offset for negative increments, in degrees (not normalised)
+'' @param revDegrees - commutation offset for positive increments, in degrees (not normalised)
+
+    offset_fwd  := fwdDegrees frac 360
+    offset_rev  := revDegrees frac 360
+    offset_fwd_degrees := fwdDegrees
+    offset_rev_degrees := revDegrees
+    debug("MOT:  ", sdec(fwdDegrees), uhex_long(offset_fwd))
+    debug(" (ind)", sdec(revDegrees), uhex_long(offset_rev))
+
+PUB testGetFwdRevIndep() : fwdDegrees, revDegrees
+'' TESTING USE: return the currently-applied forward and reverse commutation offsets
+''
+'' Returns the offsets that are ACTUALLY applied by the driver, whether set by init(),
+'' testSetFwdRevOffsets(), or testSetFwdRevIndep(). This getter is used
+'' by automated offset scans (Bench Pass 2a) to verify the offsets before sweeping.
+''
+'' @returns fwdDegrees - commutation offset for negative increments, in degrees
+'' @returns revDegrees - commutation offset for positive increments, in degrees
+
+    fwdDegrees := offset_fwd_degrees
+    revDegrees := offset_rev_degrees
 
 PUB testDriveAtMotorIncrement(motorIncre)
 '' TESTING USE: set target accelleration to fix value
@@ -1948,6 +1991,10 @@ VAR  {  Motor Parameters  }
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
+
+VAR { Offset tracking for independent setter/getter }
+    LONG    offset_fwd_degrees   ' last-applied forward offset, in degrees
+    LONG    offset_rev_degrees   ' last-applied reverse offset, in degrees
 
 DAT  {  Motor DRIVER  }
 '
