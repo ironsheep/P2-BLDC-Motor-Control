@@ -130,7 +130,7 @@ PUB stop()
 
     ' Release EVERY pin of the group, AFTER the cogstop. The driver is not "sensed half, driven
     ' half": it WRPINs ADC smart-pin modes onto base+0..4 (adc_pins) as well as PWM modes onto
-    ' base+8..13 (drive_pins), and raises DIR on base+0..13 (all_pins). A smart pin whose DIR
+    ' base+8..13 (drive_pins), and raises DIR on both (never on the hall inputs, base+5..7). A smart pin whose DIR
     ' goes low keeps its WRPIN mode, and while a mode is set its IN is the smart pin's handshake
     ' flag, not the pin level -- so leaving base+0..4 configured made the next getBoardType()
     ' read a Rev B board as Rev A. Only pinclear() zeroes the mode (DIR := 0, WRPIN := 0).
@@ -2113,14 +2113,14 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 testb   sync_required, #0           wc  ' do we need to wait for attention?
     if_c        waitatn                                 ' Y: wait to be atn by caller
 
-                call    #.driveinit                     ' enable ADC and PWM pins simultaneously for phase-locked operation
+                call    #.driveinit                     ' enable ADC and PWM pins, leaving the hall pins undriven
                                                         ' from now on, the adc and pwm run continously
 
                 mov     pos_, #0                        ' reset pos
                 mov     hall_missed_, #0                ' integrity counts restart with every driver start
                 mov     hall_illegal_, #0
                 mov     hall_, #0                       ' prime hall_ from a real read: first control pass then sees old == new
-                testp   pin_hall_w                  wc  '  (hall pins are inputs now, set by .driveinit)
+                testp   pin_hall_w                  wc  '  (hall pins are inputs: nothing ever raises their DIR)
                 rcl     hall_, #1
                 testp   pin_hall_v                  wc
                 rcl     hall_, #1
@@ -2597,11 +2597,14 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     _ret_       signx   tgt_incr, #30                   ' sign extend back to normal tgt_incr
 
 .driveinit                                              ' init drive pwm
-                dirh    all_pins                        ' enable ADC and PWM pins simultaneously for phase-locked operation
+                dirh    adc_pins                        ' enable ADC pins (base+0..4)
+                dirh    drive_pins                      ' enable PWM pins (base+8..13)
                                                         ' the ADC and PWM smart pins are never disabled after this.
-                dirl    pin_hall_u                      ' make sure HALL pins are inputs
-                dirl    pin_hall_v
-                dirl    pin_hall_w
+                                                        ' Never DIRH the whole 0..13 range: it spans the hall inputs (base+5..7) and
+                                                        ' drives them low, and the first hall read after start then sees an illegal code
+                                                        ' before the 3.9k pull-up recovers. ADC enabled two instructions ahead of PWM is
+                                                        ' harmless: each ADC count spans exactly one PWM frame (adc_fram = frame_cnt), and
+                                                        ' a whole period of a periodic signal integrates the same at any start phase.
     _ret_       mov     driveoff, #0                    ' drive pwm output enabled, though checkstop is called before ctlMotor loop and may change this
 
 .driveoff                                               ' disable pwm always

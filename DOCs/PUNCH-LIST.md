@@ -665,6 +665,28 @@ observed on hardware). Three related defects in the TEST-USE ONLY drive path:
 a stated not-running value; the jog recovery re-applies the saved offsets. Worth doing before the
 motion harness («#3508») reuses this path.
 
+### PL-29 -- a `? :` whose branches call methods ran both calls
+
+**Found 2026-09-12 in the first Bench Pass 2a scan runs.** MEASURED:
+`analyses/bench/2026-09-12/debug_260912-205538.log:39-40` and `-205612.log:39-40` each print
+`getBoardType() pinbase: ** NOT SET **` then `getBoardType() driver running ... 22`. The scan has
+one call site, `test_bench_scan.spin2` `sideBoardType()`:
+`(side == SIDE_RIGHT) ? wheelR.getBoardType() : wheelL.getBoardType()`, called with side LEFT.
+`wheelR` was never started (the NOT SET branch) and `wheelL` was running (the driver-running
+branch), so both method bodies ran for one evaluation. The only other `getBoardType()` call, inside
+`startEx()`, printed earlier (line 27).
+
+**Not yet shown at compiler level.** The `pnut-ts -l` listing is a symbol table without readable
+bytecode, so whether `? :` compiles as evaluate-both-then-select or as a branch is unconfirmed.
+That is a `pnut-ts` question for Stephen, and the Spin2 language reference
+(`p2kbSpin2OpOpTernary`) does not state which is intended.
+
+**No harm today.** Every scan ternary that calls a wheel method (`isReady`, `isStopped`,
+`isFaultSignal`, `getDriverState`, `getRawHallTicks`, `getBoardType`) only reads status, and every
+motor command in the scan goes through `if`/`else`. **The hazard is the class:** a `? :` whose
+branches have side effects acts on both, e.g. commanding both wheels. **Fix direction:** side
+selection that calls methods uses `if`/`else`; a ternary selects values only.
+
 ---
 
 ## Recently closed
