@@ -689,6 +689,12 @@ selection that calls methods uses `if`/`else`; a ternary selects values only.
 
 ### PL-30 -- the right board's current sense reads +73 mV at zero command, and Pass 1 did not
 
+> **CAUSE FOUND 2026-09-13 in scan run 5 — see PL-32.** The 72–75 mV is not a board offset.
+> After a driver restart the right motor's zero fell to 12.6 mV and then 12.1 mV, and the left
+> motor's zero moved as well (MEASURED). Each driver start recalibrates the ADCs from one
+> settling sample (DERIVED from source). The hypotheses below were written before this and are
+> kept as history.
+
 **Found 2026-09-12 in Bench Pass 2a scan run 3** (MEASURED,
 `analyses/bench/2026-09-12/SCAN-RUN-3-EVALUATION.md` §6). The right motor's `BS-ZERO` read
 73.4 mV (range 71–76) with its driver running at zero command; the left read 7.0 mV. The right
@@ -780,6 +786,61 @@ load.
 
 Scan v3 fixes it by ending the sweep window at the last good point, and reads the zero before
 every point, including after every restart.
+
+### PL-32 -- the driver calibrates its ADCs once, at start, from a single settling sample
+
+**Found 2026-09-13 in Bench Pass 2a scan run 5.** This is the cause of PL-30's right-board
+offset and PL-31's zero shifts.
+
+**What was measured** (`analyses/bench/2026-09-13/debug_260913-120844.log`, `BS-ZERO` records).
+Within one driver cog's lifetime the zeros are steady. At every `stop()`/`start()` each channel
+takes a new value, independently of the others:
+
+| Motor | Driver start | i | u | v | w |
+|---|---|---|---|---|---|
+| LEFT | 1st | 8.6 | 0.7 | 6.3 | 6.8 |
+| LEFT | 2nd | 5.2 | 0.0 | 18.0 | 4.7 |
+| LEFT | 3rd | 19.8 | -0.2 | 4.7 | 5.2 |
+| RIGHT | 1st | 74.9 | 88.2 | 69.3 | -0.9 |
+| RIGHT | 2nd | 12.6 | 17.6 | 0.7 | 1.4 |
+| RIGHT | 3rd | 12.1 | 3.6 | 1.5 | 0.4 |
+
+All values are mV. The "starts" are the ones logged within run 5.
+
+**Mechanism, read from source:**
+- `src/isp_bldc_motor.spin2:2065-2104` switches the ADC pins to GIO, raises DIR, and reads one
+  frame. It then switches to VIO, raises DIR again, and reads one more frame. It computes
+  `gio_levels` and `scl_levels` from those two samples and never revisits them.
+- The control loop (`:2432-2452`) subtracts that frozen `gio_levels` every cycle.
+- Chip's reference driver (`BLDC_Motor_Driver-REF.spin2:132-205`, repo root, read-only) instead
+  cycles pin → GIO → VIO inside the loop, so it recalibrates on every pass.
+- `p2kbAppNoteP2an001SinglePinInstrumentationAdc` `source_switch_flush`: *"discard 3 samples
+  after each source switch (2 SINC2 + 1 front-end), then sum 8 clean"*.
+
+**What that means (DERIVED):**
+- The driver keeps exactly the sample the application note says to discard, and keeps it for
+  the cog's lifetime.
+- At `adc_fram` 6136 one count is about 0.54 mV (3300/6136). So PL-30's ~65 mV is a ~120-count
+  error in one calibration sample. This is arithmetic from the constants, not a measurement.
+  The ADC mode here is not SINC2, so the note's front-end-settling sample is the part that
+  applies.
+
+**User-visible consequence (DERIVED):**
+- `getCurrent()` carries a per-start offset. Run 5 measured offsets up to 75 mV, about
+  **0.5 A** at 150 mV/A, and the value changes every time the motor is started.
+- The phase-voltage readings carry the same kind of offset.
+- A future current limiter (S-2 / C-5) would inherit it.
+- Every earlier on-board current reading in this sprint sits on an unknown per-start zero. The
+  scans' net-of-zero figures are unaffected, because they subtract a zero read in the same
+  driver lifetime.
+
+**Fix direction:**
+- Calibrate from settled, averaged samples: flush after each source switch, then sum several
+  frames, as P2AN001 does. That leaves the control loop untouched.
+- Whether to also recalibrate periodically, as the reference driver does, is a separate trade
+  against control-loop cadence, and is decided with the fix.
+- Run-time proof: repeated `stop()`/`start()` cycles show zeros that stay within a few mV of
+  each other on every channel.
 
 ---
 

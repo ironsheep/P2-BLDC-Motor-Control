@@ -124,3 +124,17 @@ instead.
 **Do not apply.** The left motor has no fit and no ½-speed data; the right motor has no scan
 data; every minimum sits 6–7° from a fault edge measured without load. §3's centred pair is the
 candidate to carry forward, not a value to ship.
+
+---
+
+## Revision history
+
+- **2026-09-13, after scan run 5 — §5's conclusion is withdrawn.** §5 says the right motor's
+  72 mV "is an offset in its sense path". Run 5 measured the right zero at 74.9 mV, then
+  12.6 mV and 12.1 mV after two driver restarts, and the left zero moved as well
+  (`SCAN-RUN-5-EVALUATION.md` §5, MEASURED).
+  - The value is re-drawn at every driver start.
+  - Cause (DERIVED from source, PL-32): the driver calibrates its ADCs once, from a single
+    settling sample.
+  - The floated-drive reasoning in §5 still holds: no bridge current flows during a zero read.
+    What was wrong was the conclusion that the offset belongs to the board.

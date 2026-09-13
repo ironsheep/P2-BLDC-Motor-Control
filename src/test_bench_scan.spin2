@@ -254,9 +254,12 @@ CON { expected rates and self-check bands }
     ZERO_HI_MV         = 30
 
     ' Zero health check: replaces the band-based verdict. Spread from runs 3/4 measured 6-8 mV on both
-    ' motors; absolute reads ranged 69-76 mV (right) to 4-12 mV (left). The ceiling sits far above
-    ' the right board's steady ~72 mV offset, leaving room for it to drift, and far below a railed
-    ' ADC (~3300 mV). 300 mV is 2 A equivalent at 150 mV/A: no idle zero can honestly read that high.
+    ' motors; absolute reads ranged 69-76 mV (right) to 4-12 mV (left). Run 5 showed those absolute
+    ' values are re-drawn at every driver start (75 -> 12 mV on the right after a restart): the driver
+    ' calibrates its ADCs once from a single settling sample (PL-32), so a zero is a per-start value,
+    ' not a board property. The ceiling sits far above the largest per-start zero measured, and far
+    ' below a railed ADC (~3300 mV). 300 mV is 2 A equivalent at 150 mV/A: no idle zero can honestly
+    ' read that high.
     ZERO_SPREAD_MAX_MV = 10                                 ' max(max - min) of zero samples, mV
     ZERO_ABS_MAX_MV    = 300                                ' max |mean|, mV
 
@@ -856,8 +859,10 @@ PRI measureZero(side, phaseTag) | sampleIdx, senseMv, senseSum, sampleCnt, minMv
 ' motor-block's PH_ZERO_INIT is the only call not made from inside measurePoint().
 ' Every zero is read with the drive floated: isp_bldc_motor's init() sets stop_mode to SM_FLOAT,
 ' this scan never changes it, and the driver's .checkstop disables PWM at zero command in that
-' mode. So no bridge current can flow during a zero read, and an out-of-band zero is an offset
-' in the sense path (PL-30).
+' mode. So no bridge current can flow during a zero read. An out-of-band zero is the driver's
+' per-start ADC calibration offset: the driver calibrates once, at cog start, from a single
+' settling sample, so each channel's zero is re-drawn at every driver start (PL-32, which
+' replaces PL-30's board-offset reading). A zero is valid only within its own driver lifetime.
 ' CHANGE 3 (scan v3.1): bZeroOk is now the health verdict -- replaces the zero band check.
 ' Passes when samples were taken, reading not frozen (min != max), spread <= ZERO_SPREAD_MAX_MV,
 ' and |mean| <= ZERO_ABS_MAX_MV. Also accumulates phase-voltage readings (sense_u/v/w_mV) to

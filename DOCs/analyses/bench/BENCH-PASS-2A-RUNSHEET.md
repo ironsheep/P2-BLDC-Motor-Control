@@ -82,8 +82,10 @@ minutes, at most about 30, ending on its own.
   The evaluation nets each point's current against the `BS-ZERO` record before it; the binary's
   fits run on the raw mean, and only the first zero (`ZERO_INIT`) verdict is used for the
   self-check. Every zero is read with the drive floated (the driver's default stop mode, which
-  disables PWM at zero command), so an out-of-band zero is a sense-path offset, not bridge
-  current (PL-30).
+  disables PWM at zero command), so an out-of-band zero is not bridge current. Run 5 showed
+  where it comes from: the driver calibrates its ADCs once per start from a single settling
+  sample, so every channel's zero is re-drawn at each driver start (PL-32; this replaces
+  PL-30's board-offset reading). A zero is valid only within its own driver lifetime.
 
 **Disposition:** apply the measured pair («#3523») only if both motors agree on each sign's
 minimum within the fit uncertainty and the half-speed result holds. Otherwise the disagreement
