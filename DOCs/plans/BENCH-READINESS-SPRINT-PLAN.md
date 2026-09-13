@@ -323,6 +323,131 @@ offsets) was largely answered by Pass 1 step 4, which ran each motor alone on bo
 
 ---
 
+## Sprint Revision — 2026-09-13 (after scan runs 3–5)
+
+**Bench Pass 2a has run five times.** Evaluations are in `DOCs/analyses/bench/`:
+- [`SCAN-ABORT-EVALUATION.md`](../analyses/bench/2026-09-12/SCAN-ABORT-EVALUATION.md) (runs 1–2)
+- [`SCAN-RUN-3-EVALUATION.md`](../analyses/bench/2026-09-12/SCAN-RUN-3-EVALUATION.md)
+- [`SCAN-RUN-4-EVALUATION.md`](../analyses/bench/2026-09-13/SCAN-RUN-4-EVALUATION.md)
+- [`SCAN-RUN-5-EVALUATION.md`](../analyses/bench/2026-09-13/SCAN-RUN-5-EVALUATION.md)
+
+No offsets have been applied. This section records what the runs changed. The live order is
+the cross-reference table at the end of this section.
+
+### What the runs established
+
+| Result | Provenance |
+|---|---|
+| The driver drove the hall inputs low at start, so the first hall read went illegal. **Fixed** («#3524»); `illegal 0` at every start since | MEASURED |
+| Both motors put the hall electrical zero near **−3.5°**. Each direction's quarter-speed minimum-current offset agrees across motors within ~2°: negative increment ≈ +14°, positive ≈ −21° | MEASURED + DERIVED fit |
+| At those minima the forward/reverse current ratio falls from ~1.9 to ~1.1–1.2. With no load the defaults draw 8–14× the minimum current | DERIVED from MEASURED |
+| Each minimum sits **7–10° from a fault edge with no load**; the edge is not sharp, and at half speed the usable window closes in on the minimum | MEASURED |
+| Half-speed minima are **not yet resolved**; the scan could not probe toward the fault edge at half speed | MEASURED + DERIVED from source |
+| **The driver calibrates its ADCs once per start from a single settling sample**, so every channel's zero is re-drawn at each start (up to 75 mV ≈ 0.5 A). PL-30's "right board offset" was one such value (**PL-32**) | MEASURED + DERIVED from source and `p2kbAppNoteP2an001SinglePinInstrumentationAdc` |
+| Run 5's log stopped because host debug logging stopped; the P2 kept running | STEPHEN |
+
+### Rulings and observations taken 2026-09-13
+
+> **STEPHEN:** *"processor was running, no power loss... just logging stopped so no furhter
+> debug output. you can tell from the log that no P2 reset occurred"*
+
+> **STEPHEN:** *"one thing i'm noticiing is that some speeds? show significant vibration... in a
+> couple of days i'd like to characterise the cause so note this as an upcoming study."*
+
+> **STEPHEN:** *"how do we appply what we've just leanred and then get back to our plan and also
+> keep moving against the plan, we need to do both from here forward measurements while
+> advancing the driver state as required by the plan"*
+
+### The cadence from here: every bench visit measures AND certifies
+
+This carries the 2026-09-11 rule (*the unit of cost is a bench pass*) forward to the rest of the
+sprint. It is DERIVED from Stephen's ruling above.
+
+- **Every bench visit carries a measurement** the plan still needs.
+- **Every visit also certifies each driver fix that has landed since the previous visit**, using
+  records the measuring binary emits anyway, or one extra binary in the same session.
+- **Code that needs no hardware keeps landing while a visit is being prepared or waited for**,
+  in the order below, so the next visit always has something to certify.
+- A fix is not scheduled against a visit that cannot observe it. It rides the next visit that
+  can.
+
+### The order, as three bench visits
+
+**Before visit 1** — the fastest path back to the bench:
+1. «#3529» — ADC calibration fix (PL-32).
+2. «#3530» — scan v4: judge on each point's net-of-own-zero, probe the half-speed fault edge,
+   fix the pair record.
+
+**Visit 1 — Bench Pass 2a, scan run 6** («#3522»), unattended.
+- *Measures:* the right motor's complete legs and both motors' half-speed minima.
+- *Certifies:* «#3529». The scan restarts the driver after every current abort and reads a zero
+  before every point, so zeros that stay within a few mV across restarts are the proof. It also
+  certifies scan v4.
+- *Then Stephen's decision:* which offset pair, if any, and with what margin, given fault edges
+  7–10° from the minima. «#3523» applies it or is ruled out.
+
+**Built while visit 1 is prepared and evaluated** (none needs hardware):
+3. «#3502» — position math: rpm and mm/tick precision.
+4. «#3533» — PL-28 fault recovery, PL-22 steering start result, PL-9 rename.
+5. «#3504» — Tier 0 extension, T0-11…T0-15. T0-11 gains repeated starts so it also certifies
+   «#3529».
+6. «#3521» — the automated, meter-free characterisation run with the steering liveness phase.
+7. «#3523» — apply the offsets, if Stephen's decision says so.
+
+**Visit 2 — Bench Pass 2b** («#3505»), mostly unattended.
+- *Certifies:* «#3499»–«#3503», «#3524», «#3529», «#3533», the applied offsets, and the steering
+  object's synchronized start (PL-22).
+- *Measures:* a hold-for-hold regression against Pass 1, and the first vibration evidence if
+  «#3532» has been scoped by then.
+
+**Built for visit 3:** «#3506» front end (parts first), «#3507» DEBUG channels, «#3508» motion
+harness, «#3509» analyser.
+
+**Visit 3 — Bench Pass 3** («#3511»).
+- *Measures:* the speed law in both directions, C-4 deceleration, the fault boundary, and C-3
+  overshoot for «#3512».
+- A C-3 rate sweep follows as its own short run.
+
+**Then:** «#3513» cog shape (re-confirms C-3), «#3514» write-back, «#3515» documentation,
+«#3517» gate binding, «#3516» ship.
+
+**Vibration study «#3532»:** starts about 2026-09-15, when Stephen calls it and sets its scope.
+Its first discriminator, the same speeds at default and candidate offsets, fits visit 2's
+characterisation run if the scope is set by then.
+
+### Section ↔ task cross-reference — regenerated 2026-09-13
+
+This supersedes the 2026-09-12 table at the end of this plan. The table order is the live order.
+
+| order | Task | Silo | Deliverable | Certified at |
+|---|---|---|---|---|
+| 1 | «#3529» | 3 | ADC calibration: settle and average at start (PL-32) | Visit 1 (zeros across restarts), Visit 2 (T0-11) |
+| 2 | «#3530» | 5 | Scan v4 | Visit 1 |
+| 3 | «#3522» | — | **VISIT 1 — Bench Pass 2a, scan run 6** | — |
+| 4 | «#3502» | 2 | Position math — rpm + `tickInMM_x10` | Visit 2 |
+| 5 | «#3533» | 1 | PL-28 / PL-22 / PL-9 | Visit 2 |
+| 6 | «#3504» | 2 | Tier 0 extension, T0-11…T0-15 | Visit 2 |
+| 7 | «#3521» | 3 | Automated characterisation + steering liveness | Visit 2 |
+| 8 | «#3523» | 5 | Apply offsets, per Stephen's decision after visit 1 | Visit 2 |
+| 9 | «#3505» | — | **VISIT 2 — Bench Pass 2b** | — |
+| 10 | «#3532» | — | Vibration study (scope: Stephen, ~2026-09-15) | Visit 2 onward |
+| 11 | «#3506» | 6 | §2A front end (parts first) | Visit 3 |
+| 12 | «#3507» | 6 | DEBUG channels (PL-8) | Visit 3 |
+| 13 | «#3508» | 5 | Motion harness | Visit 3 |
+| 14 | «#3509» | 6 | Analyser | Visit 3 |
+| 15 | «#3511» | — | **VISIT 3 — Bench Pass 3** | — |
+| 16 | «#3512» | 4 | C-3 stop latency — measure, then sweep | Visit 3 + sweep run |
+| 17 | «#3513» | 1 | Fixed cog shape | re-confirms C-3 |
+| 18 | «#3514» | — | Write results back into the findings | — |
+| 19 | «#3515» | — | Documentation blast radius | — |
+| 20 | «#3517» | — | v12(g) gate binding | — |
+| 21 | «#3516» | — | **Ship 6.0.0** | three release gates |
+
+**Dispatch:** `arbiter-serial`, unchanged. «#3529», «#3502» and «#3533» all write
+`src/isp_bldc_motor.spin2`, and no two tasks share the board.
+
+---
+
 ## 1. Spin2 conformance gate — `tools/check_style.sh`
 
 **Why, and why first.** `.claude/skill-conventions.md` declares `central:spin2-authoring-guide`
@@ -1257,9 +1382,12 @@ the open question on how many boards are actually connected.
 no motion, and not again until the driver genuinely protects them. This is a
 rule, not a preference.
 
-⛔ **Force `BRD_REV_B` in every bench build** rather than trusting auto-detect,
+~~⛔ **Force `BRD_REV_B` in every bench build** rather than trusting auto-detect,
 until board detection is fixed. Only possible because the A2/A3 fix landed in
-`aea4981`; T0-2 in the 2026-09-11 log proves forcing now takes effect.
+`aea4981`; T0-2 in the 2026-09-11 log proves forcing now takes effect.~~
+*Retired 2026-09-12:* detection is fixed («#3500»), the bench config is on auto-detect, and Bench
+Pass 2 certifies auto-detect, which forcing would hide. Struck on 2026-09-13; it stayed live in
+this list for a day after the reversal.
 
 ⚠ **`pnut-ts` silently ignores an unknown `-D`** — measured 2026-09-11: exit 0,
 binary written, no warning. A typo in `-D BENCH_CFG` falls through to the regular
@@ -1429,6 +1557,9 @@ deliberately unset on every task. This table supersedes the §-numbered one abov
 *Superseded by the regenerated table below (2026-09-12).*
 
 ## Silo ↔ task cross-reference — regenerated 2026-09-12
+
+> ⛔ **SUPERSEDED 2026-09-13** by the table in *Sprint Revision — 2026-09-13*. That table is the
+> live order. This one is preserved for provenance.
 
 Regenerated by `plan-to-tasks` §6 from *Sprint Revision — 2026-09-12*. Bench Pass 1 done;
 the reading sheet («#3510») deleted; Bench Pass 2 split into an automated scan (2a) and an
