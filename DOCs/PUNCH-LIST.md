@@ -424,7 +424,11 @@ other. Extraction means a new shared object, e.g. `isp_bench_log.spin2`.
 
 **Deliberately deferred, with the shape recorded so it is not re-derived.** Two
 consumers is the point where extraction is arguable; **«#3508» (the motion
-harness) will be the third**, which is where it clearly pays. Extracting now would
+harness) will be the third**, which is where it clearly pays. *(2026-09-12: the offset scan
+`test_bench_scan.spin2` («#3520») became the third consumer first. It copies the builder
+byte-identical rather than extracting, because extracting would edit `test_bench_detect`, whose
+log Bench Pass 2b diffs against Pass 1, and `test_bench_char` while «#3521» rewrites it. So
+«#3508» extracts from three identical copies.)* Extracting now would
 decertify two binaries that are verified and queued for Bench Pass 1, which the
 sprint's standing rule exists to prevent. Do it as part of «#3508», not before.
 
@@ -639,6 +643,27 @@ board read as Rev A after any stop and restart (MEASURED 2026-09-12). Two conseq
    12 V). **The measurement history is Stephen's to confirm**: which boards the Doco columns came
    from, and whether motors were restarted between readings. It needs no answer before the 6.5″
    bench work; the Doco bench is deferred past the next release (decision 2026-09-11).
+
+### PL-28 -- the test fault-recovery path cannot clear a fault on its own
+
+**Found 2026-09-12 by the «#3520» design agent** (DERIVED from `src/isp_bldc_motor.spin2`, not
+observed on hardware). Three related defects in the TEST-USE ONLY drive path:
+
+1. **`testResetFault()` waits for a stop that never comes.** It clears the hub `fault` long and
+   then waits for `isStopped()`, but the driver leaves `DCS_FAULTED` only when a *changed* command
+   arrives. With the increment unchanged, the wait always runs to its timeout.
+   `util_char_motor.spin2` escaped this only because its sense task's `stopAfterTime` zeroed the
+   command. The offset scan works around it by sending a zero command before resetting.
+2. **`stop()` leaves `drv_state` stale**, so `isReady()` / `isStopped()` still answer on a stopped
+   instance -- the same mechanism behind PL-21's frozen telemetry. Callers must test
+   `testGetMotorCog() <> 0` to know a cog is running.
+3. **`util_char_motor.spin2` `clearFaultByMotMove()`** "pops" the saved offset into its local
+   variables but never re-applies it to the driver, so a jog-recovered sweep continues on the jog
+   offset.
+
+**Fix direction:** `testResetFault()` issues the zero command itself; `stop()` sets `drv_state` to
+a stated not-running value; the jog recovery re-applies the saved offsets. Worth doing before the
+motion harness («#3508») reuses this path.
 
 ---
 
