@@ -57,13 +57,23 @@ DAT { debug display data }
 PUB start(hdmiBasePin) : ok
 '' Start the HDMI debug driver
 ''
+'' @returns ok - the started cog's id (0-7), or (-1) if failed to start
+
+    if hdmiCog or (pinHDMIbase <> INVALID_PIN_BASE)
+        stop()    ' D2: free this instance's own cog and pins before starting fresh -- stop() is idempotent
 
     nDriverCmd := DC_RUN
     nDriverArg := 0
     currDLEntryIdx := 0
     pinHDMIbase := validBasePinForChoice(hdmiBasePin)
     if pinHDMIbase <> INVALID_PIN_BASE
-        ok := hdmiCog := cogspin(NEWCOG, taskShowDebug(@nDriverCmd, @nDriverArg, @dsplyList), @taskStack) + 1
+        hdmiCog := cogspin(NEWCOG, taskShowDebug(@nDriverCmd, @nDriverArg, @dsplyList), @taskStack)
+        if hdmiCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+            hdmiCog := 0    ' keep the "not started" sentinel
+            ok := -1
+        else
+            hdmiCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
+            ok := hdmiCog - 1    ' public contract: the started cog's id (0-7)
     else
         ok := -1    ' fake a no-cog-free condition if bad base pin
 

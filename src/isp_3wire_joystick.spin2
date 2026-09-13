@@ -58,6 +58,7 @@ VAR
 pub start(pnSW, pnAnaJoyX, pnAnaJoyY) : cog | idx
     '' Configure IO fro application
 ''
+'' @returns cog - the started task's cog id (0-7), or (-1) if failed to start
 
     pinSW := pnSW
     pinAnaJoyX := pnAnaJoyX
@@ -170,9 +171,19 @@ PUB joystickTest() | xVal ,yVal, minX, maxX, minY, maxY
 
 PRI startJoyStickCog() : ok
 ' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
-    ok := joyCog := cogspin(NEWCOG, taskJoyStickSense(), @taskStack) + 1
-    if joyCog == 0    ' did fail?
+' @returns ok - the started cog's id (0-7), or (-1) if failed to start
+    if joyCog    ' D2: free this instance's own cog before starting a fresh one
+        cogstop(joyCog - 1)
+        joyCog := 0
+
+    joyCog := cogspin(NEWCOG, taskJoyStickSense(), @taskStack)
+    if joyCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+        joyCog := 0    ' keep the "not started" sentinel
+        ok := -1
         debug("!! ERROR filed to start JoyStick Sense task")
+    else
+        joyCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
+        ok := joyCog - 1    ' public contract: the started cog's id (0-7)
 
 PRI MIN(nLtVal, nRtVal) : nMinVal
 ' return the whichever is lesser of nLtVal or nRtVal

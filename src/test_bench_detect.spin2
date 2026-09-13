@@ -88,7 +88,7 @@ CON { timing }
 CON { build identity }
 
 ' Hand-bumped whenever this file changes, so a stale binary is visible in the log.
-    SRC_REV     = 1
+    SRC_REV     = 2
     FMT_VERSION = 1                                         ' BD-BANNER record-format version
 
 ' DETECT_PHASE2 implies DETECT_LIB: if phase 2 is compiled, the library must be linked
@@ -151,6 +151,8 @@ CON { measurement parameters }
     CAL_ITER         = 500                                  ' poll-loop calibration iterations
     CHARGE_MS        = 1                                    ' the library's own waitms(1)
     REVB_SUM_LIMIT   = 250                                  ' pinSum > this reads as "not detected"
+    REVB_MIN_US      = 20                                   ' high time below this reads as "not detected" (library DETECT_REVB_MIN_US)
+    USEC_PER_SEC     = 1_000_000                            ' converts CLKFREQ to ticks per microsecond
     SETTLE_MS        = 200                                  ' let a started driver cog reach steady state
 
 ' The calibration pin is held DRIVEN HIGH so the poll loop can never exit early. P44 is
@@ -210,8 +212,8 @@ CON { cell axis codes }
 
 ' Verdict codes -- the replica's, the library's, and the per-cell modal value:
 '  VRD_REVA     - pinSum == 0
-'  VRD_REVB     - pinSum in 1..REVB_SUM_LIMIT
-'  VRD_NODET    - pinSum > REVB_SUM_LIMIT, "Board not detected!"
+'  VRD_REVB     - pinSum in 1..REVB_SUM_LIMIT and high time >= REVB_MIN_US
+'  VRD_NODET    - pinSum > REVB_SUM_LIMIT, or high time < REVB_MIN_US, "Board not detected!"
 '  VRD_TIE      - per-cell modal only: no single verdict held a majority
 '  VRD_UNKNOWN  - library returned something outside REV_A/REV_B/REV_Unknown
 '  VRD_NOBASE   - group is not a legal base, so getBoardType() never measured
@@ -765,7 +767,7 @@ PRI emitRepeatRecord(swNum, grpBase, repIdx, cogGrp, cogState, clrState)
     lineTextField(@"clr", clearToken(clrState))
     lineField(@"sum", measured_sum[repIdx])
     lineField(@"sumtix", measured_sum_ticks[repIdx])
-    lineTextField(@"vrd", verdictToken(verdictForSum(measured_sum[repIdx])))
+    lineTextField(@"vrd", verdictToken(verdictForSum(measured_sum[repIdx], measured_sum_ticks[repIdx])))
     if measured_low_seen[repIdx] == TRUE
         lineField(@"iter", measured_iter[repIdx])
         lineField(@"fltix", measured_flt_ticks[repIdx])
@@ -823,7 +825,7 @@ PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict
         sumMin := sumMin <# measured_sum[repIdx]
         sumMax := sumMax #> measured_sum[repIdx]
         sumTotal += measured_sum[repIdx]
-        case verdictForSum(measured_sum[repIdx])
+        case verdictForSum(measured_sum[repIdx], measured_sum_ticks[repIdx])
             VRD_REVA:
                 cntA += 1
             VRD_REVB:
@@ -1000,16 +1002,25 @@ PRI snapshotGroupPins(grpBase) : pinBits
     pinBits := pinread(grpBase addpins HALF_GROUP_SPAN)
     pinBits |= pinread(grpBase + GROUP_HI_OFFSET addpins HALF_GROUP_SPAN) << HIGH_HALF_SHIFT
 
-PRI verdictForSum(pinSum) : verdictCode
-' The library's three-branch verdict cascade, in the same order, so a sum of exactly 250 or
-' 251 lands where isp_bldc_motor.spin2:789-796 lands it.
+PRI verdictForSum(pinSum, sumTicks) : verdictCode | highTimeUs
+' The library getBoardType() verdict cascade, in the same order and with the same integer
+' arithmetic, so a sum of exactly 250 or 251, or a high time of exactly 19 or 20 uS, lands
+' where the library lands it: sum 0 REVA, sum > 250 NODET, high time < 20 uS NODET, else REVB.
+' High time is pinSum x (loop ticks / SUM_ITER) in microseconds, from the sumtix this file
+' already records around the same loop.
 '
 ' @param pinSum - the 500-pinread sum
+' @param sumTicks - ticks the 500-pinread loop took (sumtix)
 ' @returns verdictCode - VRD_REVA / VRD_REVB / VRD_NODET
+'
+' @local highTimeUs - how long the released pin stayed high, in microseconds
 
+    highTimeUs := (pinSum * sumTicks / SUM_ITER) / ((CLKFREQ / USEC_PER_SEC) #> 1)
     if pinSum == 0
         verdictCode := VRD_REVA
     elseif pinSum > REVB_SUM_LIMIT
+        verdictCode := VRD_NODET
+    elseif highTimeUs < REVB_MIN_US
         verdictCode := VRD_NODET
     else
         verdictCode := VRD_REVB

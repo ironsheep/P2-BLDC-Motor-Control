@@ -40,6 +40,7 @@ VAR
 pub start(pnBtn1, pnBtn2, pnBtn3, pnBtn4) : cog | idx
     '' Configure IO fro application
 ''
+'' @returns cog - the started task's cog id (0-7), or (-1) if failed to start
 
     buttonPins[0] := pnBtn1
     buttonPins[1] := pnBtn2
@@ -101,9 +102,19 @@ PUB buttonsTest() | btnNbr
 
 PRI startButtonCog() : ok
 ' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
-    ok := btnCog := cogspin(NEWCOG, taskButtonSense(), @taskStack) + 1
-    if btnCog == 0    ' did fail?
+' @returns ok - the started cog's id (0-7), or (-1) if failed to start
+    if btnCog    ' D2: free this instance's own cog before starting a fresh one
+        cogstop(btnCog - 1)
+        btnCog := 0
+
+    btnCog := cogspin(NEWCOG, taskButtonSense(), @taskStack)
+    if btnCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+        btnCog := 0    ' keep the "not started" sentinel
+        ok := -1
         debug("!! ERROR filed to start Button Sense task")
+    else
+        btnCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
+        ok := btnCog - 1    ' public contract: the started cog's id (0-7)
 
 PRI taskButtonSense() | pinValue[BUTTON_COUNT], idx, currValue, btnActual
     debug("TK button reader running...")

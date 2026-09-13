@@ -100,14 +100,20 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | legalBase
 ' @local legalBase -
 
     sync_required := sync
+    if motorCog or senseCog or holdsPinBaseClaim()
+        stop()    ' D2: free this instance's own driver/sense cog and pin claim before starting fresh -- stop() is safe to call unconditionally too, but only actually needed here
     init(eMotorBasePin, eMotorVoltage, eDetectionMode)  ' setup runtime constants
     params_ptr := @offset_fwd   ' point to driver variables
     setTargetAccel(0, false)                            ' do NOT move at startup
 
-    ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1
-    if motorCog == 0    ' did fail?
+    motorCog := coginit(NEWCOG, @driver, @pinbase)
+    if motorCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+        motorCog := 0    ' keep the "not started" sentinel
+        ok := -1
         debug("!! ERROR filed to start Motor Control task")
     else
+        motorCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
+        ok := motorCog - 1    ' public contract: the started cog's id (0-7), per @returns
         debug("* Motor COG #", sdec_(motorCog - 1))
 
 PUB stop()
@@ -122,10 +128,23 @@ PUB stop()
         cogstop(senseCog - 1)
         senseCog := 0
 
-    ' Bottom 8 pins are sensed, top 8 are driven, so clear only the top 8
-    if pinbase <> VALUE_NOT_SET
-        pinclear(pinbase+8 addpins 7)
-        pinbase := VALUE_NOT_SET
+    ' Release EVERY pin of the group, AFTER the cogstop. The driver is not "sensed half, driven
+    ' half": it WRPINs ADC smart-pin modes onto base+0..4 (adc_pins) as well as PWM modes onto
+    ' base+8..13 (drive_pins), and raises DIR on base+0..13 (all_pins). A smart pin whose DIR
+    ' goes low keeps its WRPIN mode, and while a mode is set its IN is the smart pin's handshake
+    ' flag, not the pin level -- so leaving base+0..4 configured made the next getBoardType()
+    ' read a Rev B board as Rev A. Only pinclear() zeroes the mode (DIR := 0, WRPIN := 0).
+    ' base+14..15 are unused by the driver but were already cleared here, so the whole 16-pin
+    ' group is released. ADDPINS cannot cross a 32-pin port boundary, so this is two 8-pin
+    ' calls rather than one 16-pin call.
+    ' Only when THIS instance initialised the group: pinbase is 0 (not VALUE_NOT_SET) in an
+    ' instance that was never started, so pinbase alone would clear P0..P15 out from under
+    ' another motor. The AE claim is taken only by a successful init() and is keyed by this
+    ' instance's own @pinbase, so no other instance's state can satisfy it.
+    if (pinbase <> VALUE_NOT_SET) and (holdsPinBaseClaim() == TRUE)
+        pinclear(pinbase addpins HALF_GROUP_SPAN)
+        pinclear(pinbase + GROUP_HI_OFFSET addpins HALF_GROUP_SPAN)
+    pinbase := VALUE_NOT_SET
 
     releasePinBaseClaim()    ' AE: free this instance's pin-range claim, if any
 
@@ -168,6 +187,16 @@ PRI releasePinBaseClaim()
         gOwnerP32P47 := 0
     if gOwnerP40P55 == @pinbase
         gOwnerP40P55 := 0
+
+PRI holdsPinBaseClaim() : bHeld
+' Return TRUE when this instance currently owns a pin-range claim, i.e. a successful init()
+' (start()/startEx()/testSetup()) claimed a legal group and stop() has not yet released it.
+' A slot only ever holds @pinbase of the instance that claimed it, so an instance that was
+' never initialised -- or whose claim was refused -- cannot match.
+'
+' @returns bHeld - TRUE when one of the gOwner* slots holds this instance's @pinbase
+
+    bHeld := (gOwnerP0P15 == @pinbase) or (gOwnerP8P23 == @pinbase) or (gOwnerP16P31 == @pinbase) or (gOwnerP32P47 == @pinbase) or (gOwnerP40P55 == @pinbase)
 
 PRI claimPinBase(eMotorBasePin) : bClaimed
 ' AE: claim {eMotorBasePin}'s 16-pin range for this instance, first releasing whatever range
@@ -356,10 +385,20 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 PUB startSenseCog() : ok
 '' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
 ''
+'' @returns ok - The COG ID of the sense task or (-1) if failed to start
 
-    ok := senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack) + 1
-    if senseCog == 0    ' did fail?
+    if senseCog    ' D2: free this instance's own sense cog before starting a fresh one
+        cogstop(senseCog - 1)
+        senseCog := 0
+
+    senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack)
+    if senseCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+        senseCog := 0    ' keep the "not started" sentinel
+        ok := -1
         debug("!! ERROR filed to start Position Sense task")
+    else
+        senseCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
+        ok := senseCog - 1    ' public contract: the started cog's id (0-7), per @returns
 
 VAR { * user request values * }
 
@@ -750,9 +789,53 @@ PUB boardIdString() : pZStr
             debug("* [CODE] bad return value from getBoardType()")
             pZStr := @"????"
 
-PUB getBoardType() : eBoardRev | pSenseCommon, pinSum
+CON { board detection and pin-group geometry }
+
+    DETECT_SENSE_OFFSET  = 4                        ' detection pin is pinbase + 4, which is also the driver's pin_adc_cur_i
+    DETECT_CHARGE_MS     = 1                        ' pinhigh() time that charges the Rev B board's 0.1uF capacitor
+    DETECT_READ_COUNT    = 500                      ' pinread() samples taken after the pin is released
+    DETECT_NODET_MIN_SUM = DETECT_READ_COUNT / 2    ' more highs than this: nothing discharged the pin, no board
+    DETECT_REVB_MIN_US   = 20                       ' a pin high for less than this is not a Rev B sense node
+
+    ' ADDPINS cannot cross a 32-pin port boundary, so every 16-pin group operation is two 8-pin calls
+    HALF_GROUP_SPAN      = 7                        ' addpins operand: 8 pins
+    GROUP_HI_OFFSET      = 8                        ' second half of a 16-pin group
+
+PUB getBoardType() : eBoardRev | pSenseCommon, pinSum, readStartTicks, sumTicks, highTimeUs
 '' ID Revision of attached BLDC driver board
 ''
+'' @returns eBoardRev - REV_A or REV_B when a 64010 board is recognised at this pin group, else REV_Unknown (while this motor's driver is running: the revision recorded when it was started)
+
+' Local Variables:
+' @local pSenseCommon - the detection pin, pinbase + DETECT_SENSE_OFFSET
+' @local pinSum - how many of the DETECT_READ_COUNT reads found the pin high
+' @local readStartTicks - getct() taken just before the read loop
+' @local sumTicks - ticks the whole read loop took, measured so the threshold does not depend on CLKFREQ
+' @local highTimeUs - how long the released pin stayed high, in microseconds
+
+{ Detection contract (auto-detect only; a forced BRD_REV_A / BRD_REV_B is returned as given):
+
+   pinSum == 0                              -> REV_A        1K pulldown, first read already low
+   pinSum >  DETECT_NODET_MIN_SUM           -> REV_Unknown  nothing discharges the pin: empty group
+   high time <  DETECT_REVB_MIN_US          -> REV_Unknown  something pulls the pin down fast, but it is
+                                                            not a Rev B sense node -- e.g. a group that
+                                                            overlaps another board, whose base+4 is that
+                                                            board's W low-side gate input
+   otherwise                                -> REV_B        0.1uF sense node discharging
+
+  The pin sum alone depends on CLKFREQ (more reads fit in the same discharge at a faster clock),
+  so the Rev B floor is applied to the high TIME: pinSum x (loop ticks / reads) converted to
+  microseconds. The loop body is unchanged; getct() is taken outside it.
+
+  MEASURED at 270 MHz (bench 2026-09-11 / 2026-09-12, both rigs, rail on): real Rev B sums
+  93-104 = 69-77 uS; the overlapping-group signature sums 1 (Rev B rig) and 7-9 (Rev A rig)
+  = 1-7 uS; Rev A 0; empty 500. 20 uS sits about 3x above the overlap ceiling and 3x below the
+  Rev B floor. The Rev B band was characterised with the rail powered only.
+
+  Never measured under this motor's own running driver: base+4 is then the driver's ADC smart
+  pin, the reading is meaningless and the pinclear() below would break the driver. In that
+  case the revision recorded at start is returned unmeasured.
+}
 
     ' returns one of REV_Unknown, REV_A, REV_B
     eBoardRev := REV_Unknown
@@ -769,30 +852,38 @@ PUB getBoardType() : eBoardRev | pSenseCommon, pinSum
             eBoardRev := REV_B
         other:
             ' do we know the base pin of the board...??
-            if pinbase == VALUE_NOT_SET
+            if (pinbase == VALUE_NOT_SET) or (holdsPinBaseClaim() == FALSE)
+                ' never initialised (or released by stop()): touch no pin -- pinbase may still read 0
                 debug("BLDC: getBoardType() pinbase: ** NOT SET **")
+            elseif motorCog <> 0
+                ' this motor's driver owns base+0..13 right now: do not measure, do not pinclear
+                eBoardRev := eDetectedBoard
+                debug("BLDC: getBoardType() driver running, not measured; returning revision recorded at start ", udec_(eDetectedBoard))
             else
                 ' yes, detect the board rev
                 pinSum := 0
-                pSenseCommon := pinbase + 4
+                pSenseCommon := pinbase + DETECT_SENSE_OFFSET
                 'debug("BLDC: getBoardType() pinbase=(", udec_(pinbase), "), pSenseCommon=(", uhex_Long_(pSenseCommon), ")")
+                pinclear(pSenseCommon)                  ' drop any smart-pin mode left on the pin, or pinread() returns its handshake flag
                 pinhigh(pSenseCommon)                   ' charge 0.1uF capacitor on RevB boards
-                waitms(1)
+                waitms(DETECT_CHARGE_MS)
                 pinfloat(pSenseCommon)                  ' release the pin, ready to read state
 
-                repeat 500                              ' check pin state 500 times, x = sum of results
+                readStartTicks := getct()
+                repeat DETECT_READ_COUNT                ' check pin state DETECT_READ_COUNT times, x = sum of results
                     pinSum += pinread(pSenseCommon)
-                ' Handle the result!
-                ' Note: RevA will always be 0 due to a 1K pulldown on that board.
-                '       RevB count will vary with clkfreq (due to capacitor discharge)- typically in the range of 40 to 180
-                '       If no board attached, count will always be >250, and typically will be 500.
+                sumTicks := getct() - readStartTicks
+                highTimeUs := (pinSum * sumTicks / DETECT_READ_COUNT) / (ticks1us #> 1)
+                ' Handle the result! (the detection contract is in the block comment above)
                 if pinSum == 0
-                    debug("--- ", udec(pinSum), ", 64010 Rev A")
+                    debug("--- ", udec(pinSum), ", 64010 Rev A, ", udec(highTimeUs))
                     eBoardRev := REV_A
-                elseif pinSum > 250
-                    debug("--- ", udec(pinSum), ", Board not detected!")
+                elseif pinSum > DETECT_NODET_MIN_SUM
+                    debug("--- ", udec(pinSum), ", Board not detected!, ", udec(highTimeUs))
+                elseif highTimeUs < DETECT_REVB_MIN_US
+                    debug("--- ", udec(pinSum), ", Board not detected! (below Rev B band, overlapping group?), ", udec(highTimeUs))
                 else
-                    debug("--- ", udec(pinSum), ", 64010 Rev B")
+                    debug("--- ", udec(pinSum), ", 64010 Rev B, ", udec(highTimeUs))
                     eBoardRev := REV_B
 
                 'debug("--- getBoardType() pinSum=(", udec_(pinSum), "), eBoardRev=(", udec_(eBoardRev), ")")
