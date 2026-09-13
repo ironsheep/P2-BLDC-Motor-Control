@@ -1926,6 +1926,18 @@ CON { driver internal Constants }
     DRVR_STATUS_LONGS_COUNT     = 16
     DRVR_PARAMS_LONGS_COUNT     = 14
 
+    ' PL-32: GIO/VIO calibration averaging (see the DAT driver's start sequence, around the
+    ' calibPeriod comment block). adc_modes uses P_ADC_GIO/P_ADC_VIO with P_COUNT_HIGHS -- a
+    ' counting mode, not a SINC2 filter -- so only the front-end-settling term of P2AN001's
+    ' "discard 3 (2 SINC2 + 1 front-end), then sum 8 clean" strictly applies here. We widen the
+    ' smart pin's count period to ADC_CAL_AVG_FRAMES normal frames and take two such widened
+    ' reads: the first (still carrying the switch transient, now diluted 1/ADC_CAL_AVG_FRAMES) is
+    ' discarded, the second is kept. That is more discard margin than the 1-frame front-end term
+    ' calls for, and the same total frame count P2AN001 sums, without a software summing loop --
+    ' the `fit` budget at the end of this DAT block has no room for one (see that line's comment).
+    ADC_CAL_AVG_FRAMES          = 8         ' widened-period multiple; P2AN001: "sum 8 clean"
+    ADC_CAL_AVG_SHIFT           = 3         ' log2(ADC_CAL_AVG_FRAMES): >> 3 instead of a divide
+
 VAR { * Data Structure for PASM Driver * }
 
   ' remember these are zeroed at run time
@@ -2064,29 +2076,59 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
 
                 ' ADC setup - GIO level
                 wrpin   adc_modes+0, adc_pins           ' switch ADC to GIO calibration
-                wxpin   adc_fram, adc_pins              ' set count period to match our PWM frame width
+
+                ' PL-32 (P2AN001 source_switch_flush): a single-frame read after a source switch
+                ' carries the switch's settling transient and is not safe to keep for the cog's
+                ' lifetime -- see PL-32 for the measured per-start zero drift this caused. Rather
+                ' than software-loop N separate 1-frame reads (the fit budget below has no room
+                ' for that loop; see the ABI-adjacent size note at the driver's `fit` line), widen
+                ' the smart pin's own count period to ADC_CAL_AVG_FRAMES normal frames, so ONE
+                ' hardware-integrated read here sums that many clean samples in silicon. The first
+                ' widened frame still carries the switch transient (now diluted 1/ADC_CAL_AVG_FRAMES
+                ' by the longer window) so it is discarded like any other flush read, satisfying
+                ' P2AN001's discard-then-sum shape with more margin, not less. calibPeriod is a
+                ' driver working register (not part of the Spin2<->PASM2 ABI); tmpX/tmpY are
+                ' re-initialized before .ctlMotor runs.
+                mov     calibPeriod, adc_fram
+                shl     calibPeriod, #ADC_CAL_AVG_SHIFT ' calibPeriod := adc_fram * ADC_CAL_AVG_FRAMES
+                wxpin   calibPeriod, adc_pins           ' count period widened for calibration only
                 wypin   #0, adc_pins
 
                 dirh    adc_pins                        ' enable ADC pins to use adc
 
-                call    #.wait4adc                      ' allow ADC rest period (wait for sample ready)
+                call    #.wait4adc                      ' 1st widened frame: still carries the switch
+                rdpin   tmpX, pin_adc_cur_i             ' transient (diluted) -- discard it
 
-                rdpin   gio_levels+0, pin_adc_u_i       ' GIO samples done, read them
+                call    #.wait4adc                      ' 2nd widened frame: settled, hardware-summed
+                rdpin   gio_levels+0, pin_adc_u_i       ' over ADC_CAL_AVG_FRAMES normal-frame periods
                 rdpin   gio_levels+1, pin_adc_v_i
                 rdpin   gio_levels+2, pin_adc_w_i
                 rdpin   gio_levels+3, pin_adc_cur_i
+                shr     gio_levels+0, #ADC_CAL_AVG_SHIFT ' back to a single-frame-equivalent count
+                shr     gio_levels+1, #ADC_CAL_AVG_SHIFT ' (power-of-two average, sum / ADC_CAL_AVG_FRAMES)
+                shr     gio_levels+2, #ADC_CAL_AVG_SHIFT
+                shr     gio_levels+3, #ADC_CAL_AVG_SHIFT
 
                 ' ADC setup - VIO level
                 dirl    adc_pins                        ' disable ADC pins for configuration
                 wrpin   adc_modes+1, adc_pins           ' switch ADC to VIO calibration
                 dirh    adc_pins                        ' enable ADC to use adc
+                                                         ' (count period is still calibPeriod: WXPIN
+                                                         ' persists across a WRPIN mode change, exactly
+                                                         ' as the original single-frame code relied on)
 
-                call    #.wait4adc                      ' allow ADC rest period (wait for sample ready)
+                call    #.wait4adc                      ' discard the switch transient (as for GIO, above)
+                rdpin   tmpX, pin_adc_cur_i
 
-                rdpin   vio_levels+0, pin_adc_u_i       ' VIO samples done, read them
+                call    #.wait4adc                      ' settled, hardware-summed frame
+                rdpin   vio_levels+0, pin_adc_u_i
                 rdpin   vio_levels+1, pin_adc_v_i
                 rdpin   vio_levels+2, pin_adc_w_i
                 rdpin   vio_levels+3, pin_adc_cur_i
+                shr     vio_levels+0, #ADC_CAL_AVG_SHIFT
+                shr     vio_levels+1, #ADC_CAL_AVG_SHIFT
+                shr     vio_levels+2, #ADC_CAL_AVG_SHIFT
+                shr     vio_levels+3, #ADC_CAL_AVG_SHIFT
 
                 sub     vio_levels+0, gio_levels+0      ' sub gio from vio to get range
                 sub     vio_levels+1, gio_levels+1      ' sub gio from vio to get range
@@ -2106,6 +2148,8 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
 
                 ' finally, configure the current sense pins for main loop
                 dirl    adc_pins                        ' disable ADC pins for configuration
+                wxpin   adc_fram, adc_pins              ' restore the normal (un-widened) count period,
+                                                         ' see the calibPeriod comment block, above
 
                  ' ADC setup for actual values
                wrpin   adc_modes+2, adc_pins            ' switch ADC to pin sampling
@@ -2732,6 +2776,7 @@ hall_angles     LONG    0           '-%000- can't happen forward-direction table
 
 tmpX            res 1       ' miscellaneous
 tmpY            res 1
+calibPeriod     res 1       ' PL-32: widened ADC count period, start-of-driver GIO/VIO calibration only
 ' measurements
 drvrSrtTix      res 1
 ctrlSrtTix      res 1
@@ -2826,7 +2871,7 @@ hall_illegal_ res 1         ' entries into an illegal hall code (%000 or %111), 
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 443 currently works
+    fit     496  ' 492 currently used (476 before PL-32; +16 for calibPeriod + widened-period calibration)
 
 CON { license }
 {{

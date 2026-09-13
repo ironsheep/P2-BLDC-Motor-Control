@@ -842,6 +842,13 @@ All values are mV. The "starts" are the ones logged within run 5.
 - Run-time proof: repeated `stop()`/`start()` cycles show zeros that stay within a few mV of
   each other on every channel.
 
+**Fixed in tree 2026-09-13 («#3529»):** the GIO/VIO calibration in `isp_bldc_motor.spin2`'s start
+sequence now discards one settling read and keeps one averaged read, per level, where each read's
+ADC count period is temporarily widened to 8 normal frames (`ADC_CAL_AVG_FRAMES`) so the hardware
+sums 8 clean frames in silicon and the kept read is shifted right by 3 to renormalize -- a software
+per-frame summing loop did not fit the driver's `fit 496` cog-RAM budget (baseline usage 476 longs,
+~20 longs of headroom). Run-time proof owed to Visit 1 and Visit 2.
+
 ---
 
 ## Recently closed
