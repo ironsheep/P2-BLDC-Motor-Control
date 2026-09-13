@@ -45,7 +45,7 @@ every point, not just the references (about 1s added per point, run-wide). Budge
 minutes, at most about 30, ending on its own.
 
 **Before trusting any number:**
-- The banner must say `cfg_id BENCH`, `fmt 5`, left base 32, right base 16. `pnut-ts` silently
+- The banner must say `cfg_id BENCH`, `fmt 6`, left base 32, right base 16. `pnut-ts` silently
   ignores an unknown `-D`, so no banner voids the run.
 - The **self-check** must pass, per motor, at the default 43/317 offsets. It checks (scan v3.1):
   Rev B at every start, `start()` returning a cog id, hall counters at 0, the zero health (not
@@ -68,20 +68,49 @@ minutes, at most about 30, ending on its own.
   points, the one extension and the fit never cross that limit, at either speed. `BS-FIT`'s new
   `pinned` field is TRUE when the fitted vertex sits within one `FINE_STEP_DEG` of a fault-derived
   limit -- treat a pinned minimum as up against the wall, not as a free minimum;
-- the half-speed re-located minimum and its shift.
+- the half-speed re-located minimum and its shift. Scan v4 (from run 5, PL-32): a half-speed
+  confirm point that faults is now followed by the same fine-walk-into-the-fault-edge probe the
+  quarter-speed coarse walk already had (`BS-POINT`/`BS-POINT2`/`BS-POINT3` phase `CLIFF`), so a
+  fault no longer leaves an unmeasured gap between the last good confirm point and the edge, and
+  those probe points count toward the half-speed fit. `BS-CLIFF` at half speed reports its margin
+  from the fit whenever the fit solved, exactly as it already does at quarter speed.
+
+**Per-point zero and net (scan v4, PL-32; record split fixed at review):** the driver's sense zero
+is re-drawn at every driver start, so a zero is valid only within its own driver lifetime, never
+across a restart. A new record, **`BS-POINT3`**, is now emitted immediately after every
+`BS-POINT2` and carries `zero_mV_x10` (the `BS-ZERO` reading taken immediately before that point,
+`NA` when no sample was taken) and `net_mV_x10` (`BS-POINT`'s `i_mean_mV_x10` minus that zero,
+`NA` when the point has no valid mean). These two fields were first appended directly to
+`BS-POINT2` at v4's first cut, but that pushed `BS-POINT2`'s own worst case past the 280-byte
+bound (the longest record measured intact through one `debug(zstr_())` line -- a hard limit, not
+a style note), so review split them into `BS-POINT3` instead; `BS-POINT2` is back to its exact
+v3.1 field list. **Every judgement now runs on net means, not raw:** the coarse walk's low point,
+the rise/bracket tests, the quadratic fit itself (so `BS-FIT2`'s `min_mV_x10`/`rms_mV_x10` and
+`BS-RESULT`'s `i_min_mV_x10`/`i_def_mV_x10`/`saving_pct_x10` are net **from `fmt 6`**, under
+unchanged field names), the `BS-LEG` drift percent/flag, and `BS-PAIR2`'s two minima and their
+ratio. Every raw field (`BS-POINT`'s `i_mean_mV_x10`, `BS-LEG`'s `ref_start_mV_x10`/
+`ref_end_mV_x10`, `BS-PAIR2`'s `zero_mV_x10`) is kept unchanged for comparison. The one exception
+by design, not oversight: the per-point relative current abort's threshold (`pointLimitMv`) stays
+RAW, because `pollSample()` compares it against a raw live sample inside the tight polling loop,
+where no zero is available to subtract.
 
 **Per motor, it also reports:**
 - the midpoint of the two minima, which estimates the hall zero;
-- the current ratio at the pair of minima — the designer's principle predicts near-equal current;
+- the current ratio at the pair of minima — the designer's principle predicts near-equal current.
+  Scan v4: since the fit is now net (above), `BS-PAIR2`'s two minima are already net of their own
+  leg's zero, so there is no separate raw minimum left to ratio. **`ratio_raw_x1000` prints `NA`
+  from `fmt 6`** (review fix: printing the same net-derived number under both the raw and net
+  names would misrepresent it as an independent check); `ratio_net_x1000` carries the one ratio
+  that exists, and `imbalance` is computed from it. The old `ratio_net_x1000` (re-subtracting a
+  single `ZERO_INIT` from both minima) was the PL-32 bug: after a restart mid-run, `ZERO_INIT` is
+  the wrong lifetime's zero for a later leg;
 - the current-sense zero, re-measured (driver running, zero commanded) immediately before **every**
   point, of any phase (`BS-ZERO`, phase-tagged), because run 3 found a ~13-16 mV sense-side bias
   that appeared after some high-current or fault events, and run 4 confirmed it as a zero shift
   (not a current change) that can appear soon after a driver restart (scan v3.1: now checked by
   a health verdict — not frozen, spread <= 10 mV, absolute <= 300 mV — instead of a fixed band,
   and the `BS-ZERO` record now includes phase-voltage means to help locate the offset source).
-  The evaluation nets each point's current against the `BS-ZERO` record before it; the binary's
-  fits run on the raw mean, and only the first zero (`ZERO_INIT`) verdict is used for the
-  self-check. Every zero is read with the drive floated (the driver's default stop mode, which
+  Every zero is read with the drive floated (the driver's default stop mode, which
   disables PWM at zero command), so an out-of-band zero is not bridge current. Run 5 showed
   where it comes from: the driver calibrates its ADCs once per start from a single settling
   sample, so every channel's zero is re-drawn at each driver start (PL-32; this replaces

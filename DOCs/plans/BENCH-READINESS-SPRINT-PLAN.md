@@ -369,6 +369,11 @@ This sharpens the 2026-09-11 rule (*the unit of cost is a bench pass*):
   have landed that need certifying, never for one or two.
 - **Every visit both measures and certifies.** It carries the measurements the plan still needs
   and certifies everything landed since the previous visit.
+- **Every visit signs off automatically.** Each feature that landed since the last visit has a
+  test that exercises it and emits a PASS / FAIL / NOT_BUILT / NOMEAS verdict. A host script
+  collates the verdicts into that visit's sign-off sheet, and a feature with no test is a gap to
+  close before the visit. STEPHEN, 2026-09-13: *"this should be done in every bench run too so we
+  are maximizing our progress with every run"*. The mechanism is «#3537».
 - **Code that needs no hardware keeps landing** in the order below until the batch is complete.
 - **A measurement that decides later code** (the offset pair, C-3's overshoot) rides the visit
   whose batch is ready. It does not trigger a visit of its own.
@@ -390,6 +395,18 @@ This sharpens the 2026-09-11 rule (*the unit of cost is a bench pass*):
    - Stephen asked whether the LUT could help.
 4. «#3530» — scan v4: judge on each point's net-of-own-zero, probe the half-speed fault edge,
    fix the pair record.
+4b. **Visit 1 sign-off** (task filed 2026-09-13). Every Batch 1 feature gets an automated verdict:
+    PASS, FAIL, NOT_BUILT or NOMEAS, emitted by the binary that exercises it. A host script
+    collates them into `VISIT-1-SIGNOFF.md`. STEPHEN: *"on the bench run have you added automated
+    testing of the new features arriving so we can sign them off as present and working as
+    desired?"*
+    - The audit found most features only logged, a few with no test at all, and the
+      log-to-verdict analyser («#3509») still in Batch 2.
+    - Gaps with no test: the watchdog firing (a forced-stall self-test), the calibration's
+      cross-start zero spread, recovery from a fault via `testResetFault()` alone, `stop()`'s
+      not-running state, the steering start, and a start in SM_BRAKE.
+    - Designed now. Implemented after «#3530» and before «#3504» / «#3521» are built, so both
+      are built with their verdicts.
 5. «#3502» — position math: rpm and mm/tick precision.
 6. «#3533» — PL-28 fault recovery, PL-22 steering start result, PL-9 rename.
 7. «#3504» — Tier 0 extension, T0-11…T0-15. T0-11 restarts the driver repeatedly, which
