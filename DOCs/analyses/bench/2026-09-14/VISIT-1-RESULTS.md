@@ -46,11 +46,12 @@ that carry data.
 - **The three start-return FAILs and the brake-start NOMEAS come from the tests' capture, not
   from the library.** In every trapped call the library took the correct path and printed it,
   and every trapped capture read 0 (§6, §7). «#3499»'s return contract is therefore **not yet
-  certified**. Its no-orphan limb did pass, but the collation could not see that verdict (§6).
+  certified**. Its no-orphan limb did pass, and is signed off since the collation fix recovered that verdict (§6).
 - **The first scan run went silent under load, and the watchdog did not speak.** The watchdog
   was then proven working nine minutes later. After Stephen hardened the supply connections,
-  every run completed, including a scan through the exact point where run 6 stopped. That
-  supports his supply hypothesis. It does not prove it (§8).
+  every run completed, including a scan through the exact point where run 6 stopped. Stephen
+  found the supply connection unsound, repaired it, and certified the repair from those completed
+  runs (§8).
 - **T0-12, the only ground truth for 90 ticks per revolution, did not run.** Its panel draws
   nothing (§10).
 - **Scan run 7: DO NOT APPLY — but not because the motors disagree.**
@@ -222,19 +223,22 @@ held even where the library had just taken, and printed, a non-zero path:
   Every "cog" field that matched the library came from an **untrapped** call (scan `BS-START`,
   char `BC-START` and `BC-PREFLIGHT`).
 - **The P2 knowledge base says a trap returns the method's normal return value when no abort
-  occurs** (`p2kbSpin2Abort`). The toolchain's behaviour here differs. That is a question for
-  Stephen, whose compiler it is.
-- **Not yet told apart:** every receiving variable was already 0, so the logs cannot separate
-  "the trap yields 0" from "the trap assigns nothing". Filed as **PL-44**, with the fix direction:
-  capture the result without depending on the trap's value, and self-check a known non-zero
-  return.
+  occurs** (`p2kbSpin2Abort`). The compiler is presumed correct (STEPHEN).
+- **The root-cause study found no defect in our code beyond the patterns themselves**
+  ([`../../PL-44-ROOT-CAUSE-STUDY.md`](../../PL-44-ROOT-CAUSE-STUDY.md)). Those patterns are a trap
+  used to capture a normal return value, and a trap nested inside another trap.
+- **Disposition: design the patterns out** (PL-44, PL-47, «#3539»). The harness calls normally,
+  checks `getError()`, and keeps one top-level trap. STEPHEN: *"traps are an exeptional return path
+  - not normal use"*; *"design for "correct by construction" to reduce side-effects"*.
 - **It reaches back.** PL-22's MEASURED evidence that the pre-«#3499» `start()` "returned 0 on
   success" was T0-10's trapped capture on 2026-09-11, and the detect binary's `start_ret 0` on
   2026-09-12 was another. Both are void. Re-derived from the 2026-09-09 audit and the field report,
   5.0.2 returned cog id + 1 on success (§5).
-- **The no-orphan limb actually passed.** T0-15c printed `R1-T0-RESTART ... verdict,PASS`, but on
-  the tail of a corrupted line (`114636:1002`). The collation did not see it and reported NOMEAS
-  (PL-40). Free cogs went baseline 7 → 6 → 6 → 7, so the second `start()` left no orphan.
+- **The no-orphan limb passed and is now signed off.** T0-15c printed `R1-T0-RESTART ...
+  verdict,PASS` on the tail of a corrupted line (`114636:1002`). The first collation missed it and
+  reported NOMEAS. After the collation fix (PL-40, «#3541»), the re-collated sheet counts it as PASS,
+  flagged as recovered. Free cogs went baseline 7 → 6 → 6 → 7, so the second `start()` left no
+  orphan.
 - **A criterion was satisfied by the broken capture:** `claimsFreeCheck()` accepts any return
   from 0 to 7, and a stuck 0 is in range (`src/test_bench_char.spin2:1942,1945`) (DERIVED). The
   measured leak evidence stands on its own: free cogs after the failed start equalled the
@@ -265,20 +269,16 @@ result. The brake-mode start remains uncertified.
 **What that rules in and out (DERIVED):**
 - **Not a cog-0-only software stall.** The watchdog would have spoken. That was the assumption
   behind «#3534» and «#3536».
-- **Still open, told apart by what the wheels did after 11:36:46:**
+- **Not a jammed debug channel either.** STEPHEN: *"cogstop clears the locks"*, so no stopped cog
+  can leave lock 15 held (PL-41).
 
-  | Explanation | The wheels would have… |
-  |---|---|
-  | P2 brown-out or reset (supply connection sagging under the load step) | stopped and gone free at once |
-  | Debug channel jammed (every cog blocks at its next `debug()`) | finished the point, stopped and gone free about 4–5 s later |
-  | Host or link loss (the P2 carried on unheard) | kept running the scan's points for up to 30 minutes |
-
-- **For Stephen's hypothesis:** a download failure and a silence under a load step minutes apart,
-  then no recurrence in six runs after the connections were hardened — including through the
-  identical point.
-- **Against treating it as settled:** one clean scan after a change is not a property. Run 5's
-  silence came at a low-current point (8°, about 0.1 A). No rail voltage is logged, so a dip cannot
-  be seen. The fix is proven only by visits that keep not recurring.
+**Settled (STEPHEN, 2026-09-14):**
+- The cause: *"i found a corrected a power supply connection issue (was not sound)"*.
+- The certification: *"the repair is certified as proven by the completed logs after the bench
+  rewireing"*. After the rewiring, every run completed, including scan run 7 through the same 53°
+  load step.
+- Run 5's silence on 2026-09-13 predates the repair. That it had the same cause is consistent with
+  the evidence (DERIVED), but not certified. PL-43 is closed.
 
 ## 9 · The debug stream corrupts when cogs start and stop quickly
 
@@ -303,7 +303,8 @@ The panel is declared and never drawn into; the operator prompt went only to the
 - **R2-DETECT-OVERLAP:** needs the motors unplugged.
 - **«#3499» return contract, R10-CHAR-STEERFAIL, R13 brake start:** re-measure once the capture is
   fixed (§6).
-- **The lock-up's cause:** what the wheels did after 11:36:46 (§8).
+- **The lock-up's cause:** not owed. Stephen found and repaired the supply connection and certified
+  the repair from the completed runs (§8; PL-43 closed).
 
 ## 12 · Findings filed
 

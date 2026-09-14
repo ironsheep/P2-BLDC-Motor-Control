@@ -12,31 +12,31 @@
 1. `DOCs/analyses/bench/2026-09-14/debug_260914-113610.log` -- **TRUNCATED** -- TRUNCATED (no DEBUG_END_SESSION line)
    - identity: BS-BANNER src_rev 9 fmt 9 (line 21); download test_bench_scan.bin, 48748 bytes, modified 2026-09-14T17:36:09.301Z (line 14)
    - build key: banner BS-BANNER, src_rev 9, fmt 9, bin test_bench_scan.bin, size 48748 (modified time recorded, not keyed)
-   - records: 14 SIGNOFF-DECL, 0 SIGNOFF, 0 malformed
+   - records: 14 SIGNOFF-DECL, 0 SIGNOFF, 0 malformed; 0 message(s) recovered from corrupted lines
 2. `DOCs/analyses/bench/2026-09-14/debug_260914-114523.log` -- **COMPLETE** -- COMPLETE (DEBUG_END_SESSION at line 82, Cog1)
    - identity: BS-BANNER src_rev 9 fmt 9 (line 21); download test_bench_scan.bin, 48324 bytes, modified 2026-09-14T17:45:22.483Z (line 14)
    - build key: banner BS-BANNER, src_rev 9, fmt 9, bin test_bench_scan.bin, size 48324 (modified time recorded, not keyed)
-   - records: 4 SIGNOFF-DECL, 4 SIGNOFF, 0 malformed
+   - records: 4 SIGNOFF-DECL, 4 SIGNOFF, 0 malformed; 0 message(s) recovered from corrupted lines
 3. `DOCs/analyses/bench/2026-09-14/debug_260914-114608.log` -- **COMPLETE** -- COMPLETE (DEBUG_END_SESSION at line 1271, Cog0)
    - identity: BD-BANNER src_rev 3 fmt 2 (line 19); download test_bench_detect.bin, 31637 bytes, modified 2026-09-14T17:46:07.141Z (line 14)
    - build key: banner BD-BANNER, src_rev 3, fmt 2, bin test_bench_detect.bin, size 31637 (modified time recorded, not keyed)
-   - records: 0 SIGNOFF-DECL, 0 SIGNOFF, 0 malformed
+   - records: 0 SIGNOFF-DECL, 0 SIGNOFF, 0 malformed; 0 message(s) recovered from corrupted lines
 4. `DOCs/analyses/bench/2026-09-14/debug_260914-114636.log` -- **COMPLETE** -- COMPLETE (DEBUG_END_SESSION at line 1062, Cog0)
    - identity: banner '* test_bench_t0' at line 11 -- Tier 0 prints no src_rev/fmt, so the download header identifies its build; download test_bench_t0.bin, 30455 bytes, modified 2026-09-14T17:46:35.053Z (line 6)
    - build key: banner T0, src_rev NA, fmt NA, bin test_bench_t0.bin, size 30455 (modified time recorded, not keyed)
-   - records: 10 SIGNOFF-DECL, 14 SIGNOFF, 0 malformed
+   - records: 10 SIGNOFF-DECL, 15 SIGNOFF, 0 malformed; 1 message(s) recovered from corrupted lines
 5. `DOCs/analyses/bench/2026-09-14/debug_260914-114703.log` -- **COMPLETE** -- COMPLETE (DEBUG_END_SESSION at line 1412, Cog0)
    - identity: BS-BANNER src_rev 9 fmt 9 (line 21); download test_bench_scan.bin, 48748 bytes, modified 2026-09-14T17:47:02.817Z (line 14)
    - build key: banner BS-BANNER, src_rev 9, fmt 9, bin test_bench_scan.bin, size 48748 (modified time recorded, not keyed)
-   - records: 14 SIGNOFF-DECL, 41 SIGNOFF, 0 malformed
+   - records: 14 SIGNOFF-DECL, 41 SIGNOFF, 0 malformed; 0 message(s) recovered from corrupted lines
 6. `DOCs/analyses/bench/2026-09-14/debug_260914-115953.log` -- **COMPLETE** -- COMPLETE (DEBUG_END_SESSION at line 521, Cog0)
    - identity: BC-BANNER src_rev 5 fmt 5 (line 21); download test_bench_char.bin, 41233 bytes, modified 2026-09-14T17:59:52.303Z (line 14)
    - build key: banner BC-BANNER, src_rev 5, fmt 5, bin test_bench_char.bin, size 41233 (modified time recorded, not keyed)
-   - records: 8 SIGNOFF-DECL, 34 SIGNOFF, 0 malformed
+   - records: 8 SIGNOFF-DECL, 34 SIGNOFF, 0 malformed; 0 message(s) recovered from corrupted lines
 7. `DOCs/analyses/bench/2026-09-14/debug_260914-120126.log` -- **TRUNCATED** -- TRUNCATED (no DEBUG_END_SESSION line)
    - identity: banner '* test_bench_t0' at line 19 -- Tier 0 prints no src_rev/fmt, so the download header identifies its build; download test_bench_t0.bin, 30357 bytes, modified 2026-09-14T18:01:25.719Z (line 14)
    - build key: banner T0, src_rev NA, fmt NA, bin test_bench_t0.bin, size 30357 (modified time recorded, not keyed)
-   - records: 0 SIGNOFF-DECL, 0 SIGNOFF, 0 malformed
+   - records: 0 SIGNOFF-DECL, 0 SIGNOFF, 0 malformed; 0 message(s) recovered from corrupted lines
 
 ## Rows
 
@@ -72,9 +72,10 @@
   - speaking build: banner T0, src_rev NA, fmt NA, bin test_bench_t0.bin, size 30455 (1 log(s))
   - DOCs/analyses/bench/2026-09-14/debug_260914-114636.log: FAIL (BINARY_FAIL)
   - DOCs/analyses/bench/2026-09-14/debug_260914-114636.log:1060 motor NONE crit RET_NEG_NOLEAK measured FALSE lo TRUE hi TRUE units BOOL n 1 printed FAIL -> FAIL
-- **R1-T0-RESTART** (row 1, bin T0) -- **NOMEAS** (NOT_REACHED) -- crit NO_ORPHAN, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED
+- **R1-T0-RESTART** (row 1, bin T0) -- **PASS** -- crit NO_ORPHAN, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED; updated OWED -> SIGNED_OFF
   - speaking build: banner T0, src_rev NA, fmt NA, bin test_bench_t0.bin, size 30455 (1 log(s))
-  - DOCs/analyses/bench/2026-09-14/debug_260914-114636.log: NOMEAS (NOT_REACHED; declared, no SIGNOFF instance)
+  - DOCs/analyses/bench/2026-09-14/debug_260914-114636.log: PASS (1 of 1 counted PASS instances)
+  - DOCs/analyses/bench/2026-09-14/debug_260914-114636.log:1002 motor NONE crit NO_ORPHAN measured TRUE lo TRUE hi TRUE units BOOL n 1 printed PASS -> PASS [RECOVERED from a corrupted line: text after a hex-dump row's ASCII gutter]
 - **R2-SCAN-REVB** (row 2, bin SCAN) -- **PASS** -- crit STARTS_NOT_REVB, lo 0, hi 0, units COUNT, min_inst 2; manifest status SIGNED_OFF (ref V1:DOCs/analyses/bench/2026-09-14/debug_260914-114703.log:1369;V1:DOCs/analyses/bench/2026-09-14/debug_260914-114703.log:1390)
   - speaking build: banner BS-BANNER, src_rev 9, fmt 9, bin test_bench_scan.bin, size 48748 (2 log(s))
   - DOCs/analyses/bench/2026-09-14/debug_260914-113610.log: NOMEAS (NOT_REACHED; declared, no SIGNOFF instance)
@@ -323,6 +324,12 @@
 ## Parse errors
 
 - (none)
+
+## Records recovered from corrupted lines
+
+A record token is found anywhere in a line but never inside a hex dump's ASCII gutter. A recovered record keeps its file:line and is judged like a line-start record; a message whose end is not observed on its line is MALFORMED (SIGNOFF, SIGNOFF-DECL) or not read (any other family), never counted (PL-40).
+
+- DOCs/analyses/bench/2026-09-14/debug_260914-114636.log:1002 Cog0 SIGNOFF R1-T0-RESTART -- recovered: text after a hex-dump row's ASCII gutter -- parsed and counted like a line-start record
 
 ## Deferred cells (not owed to this visit)
 

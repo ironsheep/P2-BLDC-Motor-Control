@@ -441,7 +441,8 @@ mostly unattended.**
 - Eleven of thirteen sign-off rows signed off.
 - The start-return and brake-start cells were hidden by a test-capture defect (PL-44).
 - Scan run 7: do not apply. The half-speed confirmation is unmeasured (PL-46).
-- Run 6 went silent under load; the supply connection was found unsound (PL-43).
+- Run 6 went silent under load. The supply connection was found unsound and repaired. STEPHEN: *"the
+  repair is certified as proven by the completed logs after the bench rewireing"* (PL-43, closed).
 
 **Batch 1b** — Visit 1's follow-ups (added 2026-09-14). They are certified at Visit 2, alongside
 Batch 2, per the cadence rule.
@@ -475,8 +476,7 @@ Batch 2, per the cadence rule.
   - R1-T0-START, R1-T0-EXHAUST, R10-CHAR-STEERFAIL and R13-CHAR-BRAKESTART re-measured;
   - T0-12;
   - the Rev A detection re-run;
-  - scan v5;
-  - a watched repeat of run 6's load step.
+  - scan v5.
 - **Offsets:** «#3523» stays blocked until scan v5 meets the half-speed confirmation and Stephen
   has weighed the margin.
 

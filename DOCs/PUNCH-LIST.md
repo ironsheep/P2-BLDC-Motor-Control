@@ -1142,6 +1142,24 @@ without a word, and the corruption that causes it recurs (PL-41).
 - A fixture built from these exact lines proves both, and a record truncated inside the dump
   still reads as malformed.
 
+**Fixed in tree 2026-09-14 («#3541»).** In `tools/signoff-collate.py`, `scan_line()` finds a record
+token anywhere in a line, with two rules:
+- **Never inside a hex dump's 16-character ASCII gutter.** On a dump row, only the text after the
+  gutter is searched.
+- **A message whose end is not observed on its line is never counted.** A SIGNOFF or SIGNOFF-DECL
+  cut that way is MALFORMED; any other message is not read.
+
+Recovered records are flagged in their proving lines and listed in a new sheet section.
+
+**Selftest: 23 of 23**, including four new checks:
+- (t) a SIGNOFF recovered after a dump;
+- (u) a record cut across a dump, which is MALFORMED;
+- (v) line-start parsing identical to the old reader over 13 logs;
+- (w) SIGNOFF text inside a gutter, which is never a record.
+
+**Visit 1 re-collated** with the same seven logs. The only change is R1-T0-RESTART, NOMEAS →
+**PASS**, recovered from `debug_260914-114636.log:1002`; its manifest status went OWED → SIGNED_OFF.
+
 ### PL-41 -- the debug stream corrupts when bench binaries start and stop cogs in quick succession
 
 **Found 2026-09-14 in Visit 1.** Every instance sits in a phase that starts or stops several cogs
@@ -1264,8 +1282,8 @@ ground truth (PL-39).
 | Debug channel held (every cog blocks at its next `debug()`; see PL-41) | finished the point, stopped and gone free about 4–5 s later |
 | Host or link loss (the P2 carried on unheard) | kept stepping through points |
 
-**Not settled:** one clean scan after a change is not a property. Run 5's silence came at a
-low-current point. No rail voltage is logged.
+**Settled (see the closing note below):** the unsound supply connection was the cause. Stephen
+certified the repair from the runs that completed after the rewiring.
 
 **STEPHEN, 2026-09-14** (asked as «#3536» requires): *"i made no further checks as i was more
 concerned about the stop with nothing reporting... i found a corrected a power supply connection
@@ -1280,9 +1298,13 @@ evidence:
 - **most likely,** a P2 brown-out or reset from the unsound supply connection under a ~2.7 A step;
 - **otherwise,** a host or link loss.
 
-**Next:**
-- Watch a repeat of the load step at Visit 2.
-- The §2A front end's bus-voltage channel («#3506») would show a dip directly.
+**Closed 2026-09-14 — cause repaired and certified.** STEPHEN: *"the repair is certified as proven
+by the completed logs after the bench rewireing"*. After the rewiring, every run completed: the
+watchdog self-test, detection, Tier 0, scan run 7 (including the same 53° load step) and the
+characterisation run.
+
+Run 5's silence on 2026-09-13 predates the repair. That it had the same cause is consistent with the
+evidence (DERIVED), but not certified.
 
 ### PL-44 -- every value captured through an abort trap in the bench binaries reads 0
 

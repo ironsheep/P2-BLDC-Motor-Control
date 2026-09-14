@@ -47,6 +47,24 @@ OUTPUTS
       SIGNOFF-MANIFEST.md (a GENERATED view) is regenerated beside it. Without
       --update the manifest is read-only.
 
+CORRUPTED LINES (PL-40)
+    pnut-term-ts can print a cog message on the tail of another line: after a
+    "[ROUTING ERROR ...]" / "[BINARY DATA ...]" hex dump's closing '|', or joined
+    to a truncated message ("Cog1Cog0  ..."). The log reader therefore finds a
+    record token -- "CogN  " followed by SIGNOFF, SIGNOFF-DECL, DEBUG_END_SESSION,
+    a banner, a header or a BD- record -- anywhere in a line, with two limits:
+      - on a hex-dump row only the text after the fixed-width ASCII gutter is
+        searched; bytes shown inside the gutter are never parsed;
+      - a message ends at the end of its line. One that runs into a terminal
+        marker or into another record token on the same line has no observed
+        end: a SIGNOFF/SIGNOFF-DECL so cut is MALFORMED (never counted), any
+        other message so cut is not read. Missing fields are never supplied.
+    A recovered record keeps its file:line, is judged exactly like a line-start
+    record, and is flagged in the cell's proving lines and in the sheet's
+    "Records recovered from corrupted lines" section, which also lists any
+    SIGNOFF text seen inside a gutter or on a corrupted line that yielded no
+    record (listed only; it never carries a verdict).
+
 USAGE
     tools/signoff-collate.py --visit N --date D [--update] [--static-tree]
         [--manifest PATH] [--predictions PATH] [--baseline-detect PATH]
@@ -129,6 +147,16 @@ HEADER_TAGS = ("BS-BUILD", "BC-BUILD", "BD-BUILD", "BD-CFG")
 PL9_RE = re.compile(r"(?<![A-Za-z0-9_])gapinms(?![A-Za-z0-9_])", re.IGNORECASE)
 WDT_CELLS = ("R11-WDT-FIRES", "R11-WDT-CKPT", "R11-WDT-STOPPED", "R11-WDT-STACK")
 DECL_CALL_RE = re.compile(r"\b\w*signoffdecl\w*\s*\(", re.IGNORECASE)
+
+# PL-40: record tokens are found anywhere in a line. The families are exactly the payloads this script reads.
+READ_FAMILY_STARTS = ("SIGNOFF-DECL,", "SIGNOFF,", "DEBUG_END_SESSION", "BD-", T0_BANNER_PREFIX) + tuple(
+    tag + "," for tag in BANNER_TAGS + HEADER_TAGS if not tag.startswith("BD-"))
+RECORD_START_RE = re.compile(r"Cog([0-7])\s+(?=" + "|".join(re.escape(start) for start in READ_FAMILY_STARTS) + ")")
+LINE_TS_RE = re.compile(r"^\[[^\]]+\] ")
+# a pnut-term-ts hex-dump row: offset, 1-16 hex bytes, the 16-character ASCII gutter between '|', then any tail
+HEX_ROW_RE = re.compile(r"^\[[^\]]+\]\s+([0-9A-Fa-f]{4,8}): (?:[0-9A-Fa-f]{2} ){1,16} *\|(.{16})\|(.*)$")
+HEX_ROW_PREFIX_RE = re.compile(r"^\[[^\]]+\]\s+[0-9A-Fa-f]{4,8}: [0-9A-Fa-f]{2}\b")
+CORRUPTION_MARKERS = ("[ROUTING ERROR", "[BINARY DATA")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -392,15 +420,91 @@ def render_manifest_md(cells):
 # Log reader (design B.5, D.3) -- the part the 3509 analyser should import rather than copy
 # ---------------------------------------------------------------------------------------------
 
-class Record:
-    """One SIGNOFF or SIGNOFF-DECL line."""
+class Message:
+    """One cog message of a family this script reads, found in one log line (PL-40).
 
-    def __init__(self, kind, log, lineno, cog, payload):
+    recovered: the message did not start the line -- it sat after a hex-dump
+    row's ASCII gutter, mid-line after other text, or on a line with no
+    timestamp prefix; context says which, and which terminal markers the line
+    carries. cut: why the message has no observed end (it runs into a terminal
+    marker or another record token on the same line), else None.
+    """
+
+    def __init__(self, lineno, cog, payload, recovered, context, cut):
+        self.lineno = lineno
+        self.cog = cog
+        self.payload = payload
+        self.recovered = recovered
+        self.context = context
+        self.cut = cut
+        self.record = None                  # the Record built from it, for SIGNOFF / SIGNOFF-DECL
+
+    @property
+    def tag(self):
+        return self.payload.split(",", 1)[0]
+
+    @property
+    def flag(self):
+        return f"RECOVERED from a corrupted line: {self.context}" if self.recovered else ""
+
+
+def scan_line(lineno, line):
+    """Find every read-family cog message anywhere in one log line (PL-40).
+
+    Returns (messages, row, loose_signoff): row is (offset, gutter) for a
+    hex-dump row, else None; loose_signoff is True when a corrupted line shows
+    SIGNOFF text outside every SIGNOFF / SIGNOFF-DECL message found on it.
+    Only the text after a hex-dump row's gutter is searched; a row that does not
+    parse as a dump row is not searched at all.
+    """
+    row = HEX_ROW_RE.match(line)
+    if row:
+        region, row_info = row.group(3), (int(row.group(1), 16), row.group(2))
+        where = ["text after a hex-dump row's ASCII gutter"]
+    elif HEX_ROW_PREFIX_RE.match(line):
+        return [], None, "SIGNOFF" in line
+    else:
+        stamp = LINE_TS_RE.match(line)
+        region, row_info = (line[stamp.end():] if stamp else line), None
+        where = [] if stamp else ["a line with no timestamp prefix"]
+    markers = [marker for marker in CORRUPTION_MARKERS if marker in line]
+    starts = list(RECORD_START_RE.finditer(region))
+    messages = []
+    remainder = region
+    for index, match in enumerate(starts):
+        begin, end, cut = match.end(), len(region), None
+        if index + 1 < len(starts):
+            following = starts[index + 1]
+            end = following.start()
+            cut = (f"runs into another record token ({region[following.start():following.end()].strip()} "
+                   f"{region[following.end():following.end() + 16]}...) on the same line")
+        for marker in CORRUPTION_MARKERS:
+            at = region.find(marker, begin)
+            if at != -1 and at < end:
+                end, cut = at, f"runs into '{marker}' on the same line"
+        context = list(where)
+        if row is None and match.start() > 0:
+            context.append("mid-line, after other text")
+        recovered = bool(context)
+        context += [f"the line carries '{marker}'" for marker in markers]
+        payload = region[begin:end].rstrip()
+        messages.append(Message(lineno, int(match.group(1)), payload, recovered, "; ".join(context), cut))
+        if payload.startswith(("SIGNOFF,", "SIGNOFF-DECL,")):
+            remainder = remainder.replace(payload, "", 1)
+    corrupted = row is not None or bool(markers) or any(message.recovered for message in messages)
+    return messages, row_info, corrupted and "SIGNOFF" in remainder
+
+
+class Record:
+    """One SIGNOFF or SIGNOFF-DECL record."""
+
+    def __init__(self, kind, log, lineno, cog, payload, message=None):
         self.kind = kind                    # "SIGNOFF" or "DECL"
         self.log = log
         self.lineno = lineno
         self.cog = cog
         self.payload = payload
+        self.message = message
         self.fields = {}
         self.norm = {}
         self.error = None
@@ -415,6 +519,14 @@ class Record:
     def ref(self):
         return f"{self.log.display}:{self.lineno}"
 
+    @property
+    def recovered(self):
+        return self.message is not None and self.message.recovered
+
+    @property
+    def flag(self):
+        return self.message.flag if self.message is not None else ""
+
     def _parse(self):
         expected = SIGNOFF_FIELDS if self.kind == "SIGNOFF" else DECL_FIELDS
         rest = [token.strip() for token in self.payload.split(",")[1:]]
@@ -424,6 +536,10 @@ class Record:
             if name == "cell" and index < len(values) and values[index]:
                 self.cell = values[index]
                 break
+        if self.message is not None and self.message.cut:
+            # its end was not observed: never judged, whatever its fields look like (PL-40)
+            self.error = f"MALFORMED: the record {self.message.cut}, so its end was not observed"
+            return
         if len(rest) != 2 * len(expected):
             self.error = f"MALFORMED: {len(rest)} fields after the tag, expected {2 * len(expected)} ({len(expected)} name/value pairs)"
             return
@@ -489,51 +605,103 @@ class LogInfo:
         self.banner_pairs = {}
         self.header_pairs = {}
         self.header_lines = {}
+        self.header_messages = {}
+        self.banner_message = None
+        self.end_message = None
+        self.messages = []                  # every read-family message, in line order (the BD- reader uses it)
+        self.unparsed_signoff = []          # (first line, last line, what): SIGNOFF text that yielded no record
+        self._dump = None                   # [first line, last line, concatenated gutter text] of the open dump
         lines = text.splitlines()
-        self.lines = lines                  # kept for the detection host cells' BD- record reader
+        self.lines = lines
         self.line_count = len(lines)
         for lineno, line in enumerate(lines, start=1):
             self._scan_line(lineno, line)
+        self._close_dump()
         self.declared_cells = {rec.cell for rec in self.records if rec.kind == "DECL" and rec.cell}
+
+    def _close_dump(self):
+        if self._dump is not None and "SIGNOFF" in self._dump[2]:
+            self.unparsed_signoff.append((self._dump[0], self._dump[1],
+                                          "SIGNOFF text inside a hex dump's ASCII gutter (bytes the terminal "
+                                          "routed as binary; never parsed)"))
+        self._dump = None
 
     def _scan_line(self, lineno, line):
         session = SESSION_RE.match(line)
         if session:
+            self._close_dump()
             if self.first_ts is None:
                 self.first_ts = session.group(1)
             return
         download = DOWNLOAD_RE.match(line)
         if download:
+            self._close_dump()
             self.downloads.append((download.group(1).strip(), download.group(2), download.group(3), lineno))
             return
         match = LOG_LINE_RE.match(line)
-        if not match:
-            return
-        timestamp, cog, payload = match.group(1), int(match.group(2)), match.group(3)
-        if self.first_ts is None:
-            self.first_ts = timestamp
-        if payload == "DEBUG_END_SESSION":
-            if self.end_lineno is None:
-                self.end_lineno, self.end_cog = lineno, cog
-            return
+        if match and self.first_ts is None:
+            self.first_ts = match.group(1)
+        messages, row, loose_signoff = scan_line(lineno, line)
+        if row is None or row[0] == 0:
+            self._close_dump()
+        if row is not None:
+            if self._dump is None:
+                self._dump = [lineno, lineno, ""]
+            self._dump[1] = lineno
+            self._dump[2] += row[1]
+        if loose_signoff:
+            self.unparsed_signoff.append((lineno, lineno, "SIGNOFF text on a corrupted line outside any whole "
+                                                          "SIGNOFF / SIGNOFF-DECL record token; not parsed"))
+        for message in messages:
+            self._take(message)
+
+    def _take(self, message):
+        self.messages.append(message)
+        lineno, cog, payload = message.lineno, message.cog, message.payload
         # the ONLY verdict-bearing parse: nothing else in a log is read for a verdict (design E.1)
         if payload.startswith("SIGNOFF,"):
-            self.records.append(Record("SIGNOFF", self, lineno, cog, payload))
+            message.record = Record("SIGNOFF", self, lineno, cog, payload, message)
+            self.records.append(message.record)
             return
         if payload.startswith("SIGNOFF-DECL,"):
-            self.records.append(Record("DECL", self, lineno, cog, payload))
+            message.record = Record("DECL", self, lineno, cog, payload, message)
+            self.records.append(message.record)
+            return
+        if message.cut:
+            return                          # no observed end: never read (PL-40)
+        if payload == "DEBUG_END_SESSION":
+            if self.end_lineno is None:
+                self.end_lineno, self.end_cog, self.end_message = lineno, cog, message
             return
         if self.banner_tag is None:
             for tag in BANNER_TAGS:
                 if payload.startswith(tag + ","):
                     self.banner_tag, self.banner_lineno, self.banner_pairs = tag, lineno, pairs_of(payload)
+                    self.banner_message = message
                     break
             if self.banner_tag is None and payload.startswith(T0_BANNER_PREFIX):
                 self.banner_tag, self.banner_lineno, self.banner_pairs = "T0", lineno, {}
+                self.banner_message = message
         for tag in HEADER_TAGS:
             if payload.startswith(tag + ",") and tag not in self.header_pairs:
                 self.header_pairs[tag] = pairs_of(payload)
                 self.header_lines[tag] = lineno
+                self.header_messages[tag] = message
+
+    @property
+    def flagged_messages(self):
+        """Messages recovered from a corrupted line, or cut short on their line (PL-40)."""
+        return [message for message in self.messages if message.recovered or message.cut]
+
+    def message_status(self, message):
+        """How the collation used one flagged message, for the sheet."""
+        if message.record is not None:
+            if message.record.error:
+                return f"MALFORMED, not counted: {message.record.error}"
+            return "parsed and counted like a line-start record"
+        if message.cut:
+            return f"not read: it {message.cut}, so its end was not observed"
+        return "read like a line-start message"
 
     # ---- identity and completeness -------------------------------------------------------
 
@@ -651,6 +819,8 @@ class Instance:
             text += f" ({self.reason})"
         if not self.counts:
             text += " [outside count_filter]"
+        if self.rec.flag:
+            text += f" [{self.rec.flag}]"
         return text
 
 
@@ -861,26 +1031,31 @@ def host_wdtend(logs):
         problems = []
         if not log.complete:
             problems.append("LOG_TRUNCATED: the session did not end itself")
-        log_refs = []
+        log_refs, record_lines = [], []
         for cell_id in WDT_CELLS:
             records = [rec for rec in log.records if rec.kind == "SIGNOFF" and rec.cell == cell_id]
             if not records:
                 problems.append(f"{cell_id}_MISSING")
             for rec in records:
                 log_refs.append(rec.ref)
+                record_lines.append(f"{rec.ref} R11-WDT record from a non-zero cog" + (f" [{rec.flag}]" if rec.flag else ""))
                 if rec.cog == 0:
                     problems.append(f"{cell_id}_FROM_COG0 at {rec.ref}")
                 if log.end_lineno is not None and rec.lineno > log.end_lineno:
                     problems.append(f"{cell_id}_AFTER_END at {rec.ref}")
-        build_line = f"{log.display}:{log.header_lines['BS-BUILD']} BS-BUILD wd_selftest TRUE"
+        build_flag = log.header_messages["BS-BUILD"].flag
+        build_line = (f"{log.display}:{log.header_lines['BS-BUILD']} BS-BUILD wd_selftest TRUE"
+                      + (f" [{build_flag}]" if build_flag else ""))
         if problems:
             failing.append(log)
             detail.append(f"{log.display}: FAIL ({'; '.join(problems)})")
         else:
             detail.append(f"{log.display}: PASS")
             if not proving:
-                proving = [build_line] + [f"{ref} R11-WDT record from a non-zero cog" for ref in log_refs]
-                proving.append(f"{log.display}:{log.end_lineno} DEBUG_END_SESSION after them")
+                end_flag = log.end_message.flag
+                proving = [build_line] + record_lines
+                proving.append(f"{log.display}:{log.end_lineno} DEBUG_END_SESSION after them"
+                               + (f" [{end_flag}]" if end_flag else ""))
                 refs = [f"{log.display}:{log.header_lines['BS-BUILD']}"] + log_refs + [f"{log.display}:{log.end_lineno}"]
     if failing:
         return CellResult("FAIL", "WDTEND_CONDITION_FAILED", detail + ["measured FALSE, lo TRUE, hi TRUE, BOOL"],
@@ -978,11 +1153,10 @@ class DetectLog:
         self.sweep_ends = {}                # sw -> (pairs, lineno)
         self.duplicates = []
         in_lib = False
-        for lineno, line in enumerate(log.lines, start=1):
-            match = LOG_LINE_RE.match(line)
-            if not match or not match.group(3).startswith("BD-"):
+        for message in log.messages:         # line-start and recovered messages alike; a cut one is never read
+            if message.cut or not message.payload.startswith("BD-"):
                 continue
-            payload = match.group(3)
+            lineno, payload = message.lineno, message.payload
             tag = payload.split(",", 1)[0]
             if tag == "BD-NOTE":
                 continue
@@ -1076,6 +1250,15 @@ def detect_guard_plan(dlog):
             elif gnm in gate_groups:
                 skips[(sw, gnm)] = "GATE_OVERLAP"
     return skips, plan_groups, gate_groups, problems
+
+
+def recovered_bd_note(log, role=""):
+    """A detail line naming every BD- message recovered from a corrupted line or cut short (PL-40)."""
+    flagged = [message for message in log.flagged_messages if message.payload.startswith("BD-")]
+    if not flagged:
+        return []
+    return [f"{role}{log.display}: {len(flagged)} BD- message(s) recovered from corrupted lines or cut short -- "
+            + "; ".join(f"line {message.lineno} {message.tag}: {log.message_status(message)}" for message in flagged)]
 
 
 def _latest_build(logs):
@@ -1382,6 +1565,7 @@ def detdiff_compare(visit_logs, baseline_log, predictions_path):
     members, detail = _latest_build(visit_logs)
     detail.append(f"baseline {baseline_log.display}; predictions {display_path(predictions_path)} "
                   f"({len(rows)} prediction line(s))")
+    detail.extend(recovered_bd_note(baseline_log, "baseline "))
     results, per_log, refs_by_verdict = [], [], {"PASS": [], "FAIL": [], "NOMEAS": []}
     for log in members:
         out = detdiff_log(log, base, rows)
@@ -1393,6 +1577,7 @@ def detdiff_compare(visit_logs, baseline_log, predictions_path):
                       f"{len(out['not_occurred'])} predicted change(s) that did not occur, lo 0, hi 0, COUNT; "
                       f"{len(out['occurred'])} predicted change(s) occurred; {len(out['not_compared'])} cell(s) "
                       "NOT_COMPARED; itemised in the DETDIFF change list")
+        detail.extend(recovered_bd_note(log))
         detail.extend(out["void"] + out["blockers"])
         refs_by_verdict[out["verdict"]].extend(out["refs"])
     verdict, reason = _aggregate(results)
@@ -1501,6 +1686,7 @@ def detect_guard_check(visit_logs):
             lines.append(f"{log.display}: TRUNCATED, so its TRUE cannot yield PASS (design D.3.2)")
         results.append((verdict, reason))
         detail.extend(lines)
+        detail.extend(recovered_bd_note(log))
         refs_by_verdict[verdict].extend(refs)
     verdict, reason = _aggregate(results)
     detail.append(f"measured {dict(PASS='TRUE', FAIL='FALSE').get(verdict, 'NA')}, lo TRUE, hi TRUE, BOOL")
@@ -1553,7 +1739,8 @@ def collate(cells, logs, visit, static_tree, predictions_path, baseline_path, pl
         for rec in log.records:
             if rec.error:
                 owner = f"cell {rec.cell}" if rec.cell else "cell not recoverable"
-                col.parse_errors.append(f"{rec.ref}: {rec.kind_tag} {rec.error} ({owner})")
+                col.parse_errors.append(f"{rec.ref}: {rec.kind_tag} {rec.error} ({owner})"
+                                        + (f" [{rec.flag}]" if rec.flag else ""))
             if rec.cell is None:
                 continue
             cell = by_id.get(rec.cell)
@@ -1593,6 +1780,9 @@ def plan_updates(col, visit):
     return changes
 
 
+RECOVERED_SECTION = "## Records recovered from corrupted lines"
+
+
 def render_sheet(col, visit, date, manifest_path, static_tree, update, predictions_path, baseline_path, changes):
     out = [f"# Visit {visit} sign-off sheet -- {date}", ""]
     out.append("- Script: `tools/signoff-collate.py`")
@@ -1612,11 +1802,13 @@ def render_sheet(col, visit, date, manifest_path, static_tree, update, predictio
         declarations = sum(1 for rec in log.records if rec.kind == "DECL")
         verdicts = sum(1 for rec in log.records if rec.kind == "SIGNOFF")
         malformed = sum(1 for rec in log.records if rec.error)
+        recovered = sum(1 for message in log.messages if message.recovered)
         out.append(f"{index}. `{log.display}` -- **{'COMPLETE' if log.complete else 'TRUNCATED'}** -- "
                    f"{log.completeness_text}")
         out.append(f"   - identity: {log.identity_text()}")
         out.append(f"   - build key: {build_key_text(log.build_key)} (modified time recorded, not keyed)")
-        out.append(f"   - records: {declarations} SIGNOFF-DECL, {verdicts} SIGNOFF, {malformed} malformed")
+        out.append(f"   - records: {declarations} SIGNOFF-DECL, {verdicts} SIGNOFF, {malformed} malformed; "
+                   f"{recovered} message(s) recovered from corrupted lines")
     out.append("")
     out.append("## Rows")
     out.append("")
@@ -1676,6 +1868,25 @@ def render_sheet(col, visit, date, manifest_path, static_tree, update, predictio
     out.append("## Parse errors")
     out.append("")
     out.extend([f"- {line}" for line in col.parse_errors + col.notes] or ["- (none)"])
+    out.append("")
+    out.append(RECOVERED_SECTION)
+    out.append("")
+    out.append("A record token is found anywhere in a line but never inside a hex dump's ASCII gutter. A recovered "
+               "record keeps its file:line and is judged like a line-start record; a message whose end is not "
+               "observed on its line is MALFORMED (SIGNOFF, SIGNOFF-DECL) or not read (any other family), never "
+               "counted (PL-40).")
+    out.append("")
+    recovered_lines = []
+    for log in col.logs:
+        for message in log.flagged_messages:
+            cell = f" {message.record.cell}" if message.record is not None and message.record.cell else ""
+            where = f"recovered: {message.context}" if message.recovered else "line-start, cut short"
+            recovered_lines.append(f"- {log.display}:{message.lineno} Cog{message.cog} {message.tag[:40]}{cell} -- "
+                                   f"{where} -- {log.message_status(message)}")
+        for first, last, what in log.unparsed_signoff:
+            span = str(first) if first == last else f"{first}-{last}"
+            recovered_lines.append(f"- {log.display}:{span} {what} -- no record, no verdict")
+    out.extend(recovered_lines or ["- (none)"])
     out.append("")
     out.append("## Deferred cells (not owed to this visit)")
     out.append("")
@@ -2201,6 +2412,143 @@ def _st_s_guard_guarded():
     return ok, f"guarded log -> {result.verdict} ({result.reason or '-'}); {skip_line}"
 
 
+# PL-40 fixtures. t- copies DOCs/analyses/bench/2026-09-14/debug_260914-114636.log lines 993-1004 verbatim (the
+# R1-T0-RESTART record sits after the dump's closing '|' on fixture line 19 = log line 1002) with that log's
+# header, banner, two of its declarations and its DEBUG_END_SESSION line. u- is the same stretch with the record
+# cut: R1-T0-RESTART stops before ",verdict,PASS" (which follows in a second dump) and R10-T0-STOPREADY runs into a
+# "[BINARY DATA" marker on its own line. w- holds a deliberately built dump whose ASCII gutter carries a whole
+# SIGNOFF (one row's gutter shows ".|Cog0  SIGNOFF,"), then debug_260914-115953.log lines 250-254, 282-364,
+# 375-379 and 432-459 verbatim.
+RECOVERY_POSITIVE_FIXTURE = "t-recovered-after-dump.log"
+RECOVERY_TRUNCATED_FIXTURE = "u-truncated-in-dump.log"
+RECOVERY_GUTTER_FIXTURE = "w-gutter-no-recovery.log"
+LEGACY_FIXTURES = ("b-inconsistent.log", "d-rerun-A-fail.log", "d-rerun-B-pass.log", "e-partial-right.log",
+                   "e-partial-left.log", "f-truncated.log", "g-row8-nonfalsifiable.log", DETDIFF_PASS_FIXTURE,
+                   GUARD_PASS_FIXTURE, GUARD_FAIL_FIXTURE, RECOVERY_POSITIVE_FIXTURE)
+
+
+def _real_collate(logs):
+    return collate(load_manifest(DEFAULT_MANIFEST), logs, visit=1, static_tree=False,
+                   predictions_path=FIXTURE_DIR / "absent-predictions.tsv",
+                   baseline_path=FIXTURE_DIR / "absent-baseline.log")
+
+
+def _recovered_section(col):
+    sheet = render_sheet(col, 1, "selftest", DEFAULT_MANIFEST, False, False, FIXTURE_DIR / "absent-predictions.tsv",
+                         FIXTURE_DIR / "absent-baseline.log", [])
+    return sheet.split(RECOVERED_SECTION, 1)[1].split("\n## ", 1)[0] if RECOVERED_SECTION in sheet else ""
+
+
+def _st_t_recovered_after_dump():
+    path = FIXTURE_DIR / RECOVERY_POSITIVE_FIXTURE
+    log = read_log_file(path)
+    col = _real_collate([log])
+    tail_line = next((lineno for lineno, line in enumerate(log.lines, start=1)
+                      if HEX_ROW_RE.match(line) and "Cog0  SIGNOFF," in HEX_ROW_RE.match(line).group(3)), None)
+    ref = f"{display_path(path)}:{tail_line}"
+    restart, stopready = col.results["R1-T0-RESTART"], col.results["R10-T0-STOPREADY"]
+    rec = next((rec for rec in log.records if rec.lineno == tail_line), None)
+    proving = [line for line in restart.proving if line.startswith(ref + " ")]
+    section = _recovered_section(col)
+    ok = (tail_line is not None and rec is not None and rec.recovered and rec.error is None and rec.cog == 0
+          and restart.verdict == "PASS" and restart.refs == [ref]
+          and len(proving) == 1 and "RECOVERED from a corrupted line" in proving[0]
+          and stopready.verdict == "PASS" and not any("RECOVERED" in line for line in stopready.proving)
+          and f"- {ref} Cog0 SIGNOFF R1-T0-RESTART -- recovered:" in section
+          and "parsed and counted" in section and not col.parse_errors)
+    return ok, (f"R1-T0-RESTART on the dump tail at {ref} -> {restart.verdict}, refs {restart.refs}, proving "
+                f"{proving[:1]}; ordinary R10-T0-STOPREADY -> {stopready.verdict} unflagged; "
+                f"listed in the recovered section: {f'- {ref} Cog0 SIGNOFF R1-T0-RESTART' in section}")
+
+
+def _st_u_truncated_in_dump():
+    path = FIXTURE_DIR / RECOVERY_TRUNCATED_FIXTURE
+    log = read_log_file(path)
+    col = _real_collate([log])
+    got = {cell_id: _verdict(col, cell_id) for cell_id in ("R1-T0-RESTART", "R10-T0-STOPREADY")}
+    verdict_recs = {rec.cell: rec for rec in log.records if rec.kind == "SIGNOFF"}
+    restart, stopready = verdict_recs.get("R1-T0-RESTART"), verdict_recs.get("R10-T0-STOPREADY")
+    ok = (got == {"R1-T0-RESTART": ("NOMEAS", "MALFORMED"), "R10-T0-STOPREADY": ("NOMEAS", "MALFORMED")}
+          and len(verdict_recs) == 2 and restart is not None and stopready is not None
+          and restart.recovered and stopready.recovered
+          and restart.error is not None and "22 fields after the tag, expected 24" in restart.error
+          and stopready.error is not None and "[BINARY DATA" in stopready.error
+          and len(col.parse_errors) == 2 and all("RECOVERED from a corrupted line" in line for line in col.parse_errors)
+          and not any(result.verdict == "PASS" for result in col.results.values()))
+    return ok, (f"cut records -> {got}; parse errors {col.parse_errors}")
+
+
+def _legacy_scan(text):
+    """The pre-PL-40 reader: a message only where LOG_LINE_RE matches at line start."""
+    records, end, bd = [], None, []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        match = LOG_LINE_RE.match(line)
+        if not match:
+            continue
+        payload = match.group(3)
+        if payload == "DEBUG_END_SESSION":
+            end = end or lineno
+        elif payload.startswith(("SIGNOFF,", "SIGNOFF-DECL,")):
+            records.append((lineno, int(match.group(2)), payload))
+        elif payload.startswith("BD-"):
+            bd.append((lineno, payload))
+    return records, end, bd
+
+
+def _st_v_line_start_regression():
+    problems, compared = [], 0
+    sources = [(name, (FIXTURE_DIR / name).read_text(encoding="utf-8")) for name in LEGACY_FIXTURES]
+    sources.append((display_path(NEGCASE_LOG), NEGCASE_LOG.read_text(encoding="utf-8", errors="replace")))
+    sources.append(("in-memory", "\n".join(_fx_log("v-inline", [
+        _fx_decl("R3-T0-STOPPED", 3501),
+        _fx_signoff("R3-T0-STOPPED", 3501, "NONE", "STOPPED_COUNTS", 0, 0, 0, "COUNT", 1, "PASS")]).lines) + "\n"))
+    for name, text in sources:
+        log = LogInfo(name, text)
+        legacy_records, legacy_end, legacy_bd = _legacy_scan(text)
+        ordinary = [rec for rec in log.records if not rec.recovered]
+        if [(rec.lineno, rec.cog, rec.payload) for rec in ordinary] != legacy_records:
+            problems.append(f"{name}: line-start records differ from the legacy reader")
+        for rec in ordinary:
+            legacy = Record(rec.kind, log, rec.lineno, rec.cog, rec.payload)
+            compared += 1
+            if (rec.fields, rec.norm, rec.error, rec.cell) != (legacy.fields, legacy.norm, legacy.error, legacy.cell):
+                problems.append(f"{rec.ref}: parse differs from the legacy parse")
+        if log.end_lineno != legacy_end:
+            problems.append(f"{name}: DEBUG_END_SESSION line {log.end_lineno} != legacy {legacy_end}")
+        if [(m.lineno, m.payload) for m in log.messages if m.payload.startswith("BD-") and not m.recovered] != legacy_bd:
+            problems.append(f"{name}: line-start BD- messages differ from the legacy reader")
+        extra = [message for message in log.flagged_messages if name != RECOVERY_POSITIVE_FIXTURE or message.cut]
+        if extra:
+            problems.append(f"{name}: unexpected recovered/cut message(s) at line(s) {[m.lineno for m in extra]}")
+    positive = LogInfo(RECOVERY_POSITIVE_FIXTURE, sources[LEGACY_FIXTURES.index(RECOVERY_POSITIVE_FIXTURE)][1])
+    if [rec.lineno for rec in positive.records if rec.recovered] != [19]:
+        problems.append("the positive fixture's only recovered record is not its line 19")
+    return not problems, ("; ".join(problems) if problems else
+                          f"{len(sources)} logs: every line-start SIGNOFF/SIGNOFF-DECL, BD- record and DEBUG_END_SESSION "
+                          f"matches the legacy line-start reader; {compared} records re-parsed identically; the only "
+                          "addition anywhere is the positive fixture's recovered line 19")
+
+
+def _st_w_gutter_no_recovery():
+    path = FIXTURE_DIR / RECOVERY_GUTTER_FIXTURE
+    log = read_log_file(path)
+    col = _real_collate([log])
+    gutter_rows = [lineno for lineno, line in enumerate(log.lines, start=1)
+                   if HEX_ROW_RE.match(line) and "Cog0  SIGNOFF," in HEX_ROW_RE.match(line).group(2)]
+    naive_hits = [lineno for lineno, line in enumerate(log.lines, start=1)
+                  if "Cog0  SIGNOFF," in line and not LOG_LINE_RE.match(line)]
+    listed = [entry for entry in log.unparsed_signoff if gutter_rows and entry[0] <= gutter_rows[0] <= entry[1]]
+    section = _recovered_section(col)
+    ok = (len(gutter_rows) == 1 and naive_hits == gutter_rows
+          and not [rec for rec in log.records if rec.kind == "SIGNOFF"] and not log.flagged_messages
+          and _verdict(col, "R1-T0-RESTART") == ("NOMEAS", "NOT_REACHED") and not col.parse_errors
+          and len(listed) == 1 and "gutter" in listed[0][2] and "no record, no verdict" in section)
+    return ok, (f"gutter row(s) carrying 'Cog0  SIGNOFF,' at line(s) {gutter_rows}; SIGNOFF records "
+                f"{len([rec for rec in log.records if rec.kind == 'SIGNOFF'])}; recovered messages "
+                f"{len(log.flagged_messages)}; R1-T0-RESTART -> {_verdict(col, 'R1-T0-RESTART')}; listed unparsed "
+                f"{listed}")
+
+
 def selftest():
     checks = [
         ("(a)", "run-5 negative case", _st_a_negative_case),
@@ -2223,6 +2571,11 @@ def selftest():
         ("(q)", "R2-HOST-DETDIFF: no post-stop P0_P15 cell compared is NOMEAS", _st_q_detdiff_all_skipped),
         ("(r)", "R2-DETECT-GUARD: BD-REP for P40_P55 (SRC_REV 2 binary) is FAIL", _st_r_guard_unguarded),
         ("(s)", "R2-DETECT-GUARD: a guarded log is PASS", _st_s_guard_guarded),
+        ("(t)", "PL-40: a SIGNOFF after a hex dump's closing | is recovered, counted and flagged",
+         _st_t_recovered_after_dump),
+        ("(u)", "PL-40: a SIGNOFF cut short across a dump is MALFORMED and not counted", _st_u_truncated_in_dump),
+        ("(v)", "PL-40: line-start records parse exactly as before", _st_v_line_start_regression),
+        ("(w)", "PL-40: SIGNOFF text inside a dump's ASCII gutter is never a record", _st_w_gutter_no_recovery),
     ]
     failures = 0
     for label, title, function in checks:
