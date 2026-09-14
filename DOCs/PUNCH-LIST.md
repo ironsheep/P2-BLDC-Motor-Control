@@ -1260,6 +1260,15 @@ ground truth (PL-39).
 - Verify that the panel renders before the visit.
 - Record the direction turned alongside the sign of the tick change, per PL-39.
 
+**Fixed in tree 2026-09-14 («#3542»); certification is owed to Visit 2 (Stephen's hands).**
+- The panel draws with the documented LAYER/CROP/UPDATE technique. It shows the prompt, the state
+  and the live transition and illegal counts.
+- The assets come from `tools/gen_t0hand_assets.py` and are committed beside the source.
+- `T0-12,started/running/end` log the told direction (CW from the hub) and a signed tick position.
+  The position is decoded with `SIGNX 7` from a copy of `deltas65`.
+- The direction is fixed, because the artwork bakes it in.
+- DERIVED: compiles under the t0-hand tier's flags. UNVERIFIED: that the panel renders on the rig.
+
 ### PL-43 -- scan run 6 went silent under a load step, and the watchdog did not speak
 
 **Found 2026-09-14 in Visit 1** (`analyses/bench/2026-09-14/VISIT-1-RESULTS.md` §8). This is
