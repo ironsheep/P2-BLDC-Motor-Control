@@ -86,7 +86,7 @@
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R9-SCAN-PAIR2** (row 9, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit NET_RATIO_ONLY, lo TRUE, hi TRUE, units BOOL, min_inst 2; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
-- **R10-SCAN-RSTALONE** (row 10, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit RESET_ALONE_CLEARS, lo 0, hi 2030, units MS, min_inst 1; manifest status OWED
+- **R10-SCAN-RSTALONE** (row 10, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit RESET_ALONE_CLEARS, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R10-T0-STOPREADY** (row 10, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit STOP_NOT_READY, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it

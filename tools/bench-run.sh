@@ -76,6 +76,7 @@ Usage:  tools/bench-run.sh <tier> [clkfreq]
                    detect-phase2  adds the driver-cog poisoning probe  [MOTORS UNPLUGGED]
                    char           automated motor characterisation, nine holds  [MOTORS CONNECTED, UNATTENDED]
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
+                   scan-wdtest    watchdog self-test: preflight, deliberate stall, watchdog ends the run  [MOTORS CONNECTED]
   [clkfreq]   -- optional clock frequency in Hz (default: 270000000)
 
 Examples:
@@ -131,6 +132,10 @@ case "$TIER" in
                     ;;
     scan)           BENCH_FILE="test_bench_scan.spin2"
                     PRECONDITION="MOTORS CONNECTED, BOTH WHEELS FREE TO TURN -- UNATTENDED offset scan, up to 30 minutes, each wheel both directions to half speed"
+                    ;;
+    scan-wdtest)    BENCH_FILE="test_bench_scan.spin2"
+                    EXTRA_DEFS=(-D WD_SELFTEST)
+                    PRECONDITION="MOTORS CONNECTED, BOTH WHEELS FREE TO TURN -- WATCHDOG SELF-TEST: a brief preflight nudge per wheel, then the scan stalls ON PURPOSE; the watchdog must stop both drivers and end the session within about 15 s"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage

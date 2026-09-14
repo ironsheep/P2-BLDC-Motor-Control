@@ -1,6 +1,9 @@
 # Visit Sign-off Mechanism — Design («#3537», phase 1)
 
-**Written:** 2026-09-13 · **Status:** DESIGN, ARBITER-REVIEWED 2026-09-13 — nothing here is built.
+**Written:** 2026-09-13 · **Status:** DESIGN, ARBITER-REVIEWED 2026-09-13. **Built 2026-09-14**
+except §C.3's detection guard and the §C.2 host diff. Where the build differs from the tables
+below, the *As built* list after this header wins, and `DOCs/analyses/bench/SIGNOFF-MANIFEST.tsv`
+is the authority for every cell.
 
 **Review changes are applied in place and marked *(arbiter review 2026-09-13)*:**
 - booleans print as `TRUE`/`FALSE` in sign-off records (§B.1, §B.4);
@@ -13,6 +16,42 @@
 **J.2 is ruled** (no power-off and no unplugging: the detection sweep skips groups whose probe pin
 lands on a board's gate input, §C.3). No open owner questions remain.
 **Applies to:** every bench visit, starting with Visit 1 (Batch 1).
+
+**As built — where the build differs from this design (arbiter review 2026-09-14):**
+- **Multi-condition cells are BOOL.** Rule: a criterion with more than one condition prints its
+  combined result as TRUE/FALSE, so no record can print an in-band number beside a `FAIL`.
+  - As BOOL: `R1-T0-START`, `R1-T0-EXHAUST`, `R1-T0-RESTART`, `R4-T0-1M-TICKS` (commit 8413f69);
+    `R10-CHAR-STEERSTART`, `R10-CHAR-STEERFAIL`, `R13-CHAR-BRAKESTART` (43bf7f2); `R5-SCAN-SELF`,
+    `R12-SCAN-RATE`, `R11-SCAN-NOSTALL` (b300660).
+  - `R1-SCAN-COGOK` also counts a start whose return is not `testGetMotorCog() − 1`, so PL-22's
+    always-0 return fails it.
+- **Row 9 (530961a):**
+  - `R9-SCAN-HALFLEG` is crit `CLIFF_PROBED`, not `FIT_OR_CLIFF`: TRUE when every half-speed
+    confirm fault that left a gap wider than `CLIFF_HALF_STEP_DEG` was followed by a measured probe
+    point. It is NOMEAS when no leg had such a fault, and `min_inst` is 2.
+    - Why: `FIT_OR_CLIFF` would have passed on run 5, because `computeLegCliff()` finds a good/fault
+      pair without any probe.
+    - The facts are counted in `runFinePoints()` (`halfProbeEvents`, `halfProbeMissed`), not from
+      §F.2's `bResCliff`/`hasMinimum`.
+  - `R9-SCAN-OWNZERO` and `R9-SCAN-PAIR2` are COVERAGE. Scan v3 already re-measured a zero before
+    every point.
+- **§A.5-e incidental lifetimes:** these print as a plain `BS-ZXSALL` record, not `ZXSALL_*`
+  SIGNOFFs. A SIGNOFF with an unmanifested crit would read host-side as `CRIT_MISMATCH`.
+- **Row 10:** `R10-SCAN-RSTALONE` is BOOL: stopped and not faulted after `testResetFault()` alone.
+  The ms it took prints in `BS-RSTALONE`, and it is NOMEAS when a motor has no eligible fault.
+  - The criterion is state-based, checked by reading the driver (`isp_bldc_motor.spin2` drive
+    loop). A zero command while `DCS_FAULTED` goes `.newRqst` → `.resetFault`, which sets
+    `DCS_STOPPED` on the next pass, so "stopped" never waits for a coasting wheel.
+  - An unchanged non-zero command goes `.notRqStop` → `.currRqst` and stays `DCS_FAULTED`. That is
+    the unfixed `FAIL`.
+- **Row 11 (§B.3, §G.3, §G.4):**
+  - The watchdog stack counts 43 longs, not 42.
+  - The self-test build prints `bin SCANWD`.
+  - `declareStall()` snapshots, stops both wheels, and only then emits, in both builds.
+  - On the backstop path cog 0 prints the four `R11-WDT-*` records from `emitSignoffs()`, after
+    `main()` has stopped the watchdog. `FIRES` measures the elapsed stall (≥ 12 000 ms) and `FAIL`s
+    with that number; the other three are NOMEAS.
+  - `CKPT`, `STOPPED` and `STACK` are COVERAGE.
 
 > **STEPHEN, 2026-09-13:** *"on the bench run have you added automated testing of the new
 > features arriving so we can sign them off as present and working as desired?"*

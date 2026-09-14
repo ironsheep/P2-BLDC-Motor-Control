@@ -46,6 +46,11 @@
 ''               zeros per motor (phase XSTART) before the motor block, the R8-SCAN-ZXS verdict and
 ''               an informational BS-ZXSALL record, and the R9-SCAN-HALFLEG / R9-SCAN-OWNZERO /
 ''               R9-SCAN-PAIR2 verdicts
+''   Updated.... 14 Sep 2026 -- task 3537 phases 2b3 and 2c (SRC_REV 9, fmt 9): R10-SCAN-RSTALONE, a
+''               testResetFault()-alone attempt at each motor's first eligible natural fault (design
+''               sec J.1 ruled b) with a BS-RSTALONE record; the -D WD_SELFTEST watchdog self-test
+''               (design sec G) with BS-WDTEST-ARM, CP_SELFTEST and the four R11-WDT-* cells; and
+''               declareStall() now stops both wheels before it emits anything, in both builds
 ''
 '' =================================================================================================
 
@@ -94,16 +99,28 @@
   DCS_FAULTED only when a changed command arrives. Before commit 67d11f6 (task 3533, PL-28)
   testResetFault() did not send one, so a reset alone waited out its timeout; since that commit it
   sends the zero command itself. The zero-first order is kept because it is the sequence scan runs
-  3-5 measured, not because the reset still needs it.
+  3-5 measured, not because the reset still needs it. ONE exception per motor (fmt 9, design sec
+  J.1 ruled b): at that motor's first eligible natural fault, measurePoint() calls testResetFault()
+  ALONE, with the faulted non-zero command still set, before the zero command -- R10-SCAN-RSTALONE.
+  The unchanged zero-command recovery then follows. No bridge current flows meanwhile: the driver's
+  fault branch runs .driveoff before it marks DCS_FAULTED.
+
+  WATCHDOG SELF-TEST (-D WD_SELFTEST, fmt 9, design sec G): the same binary stops after preflight,
+  prints BS-WDTEST-ARM, beats CP_SELFTEST once and then stalls on purpose with the wheels at rest.
+  The watchdog cog must declare the stall, stop both wheels and emit the four R11-WDT-* verdicts
+  itself. If it has not declared after WD_SELFTEST_BACKSTOP_MS, cog 0 resumes and ends the session
+  normally with R11-WDT-FIRES FAIL. This build declares only the R11-WDT-* cells and prints bin
+  SCANWD.
 
   SIGN-OFF VERDICTS (task 3537; DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B, F). Right after BS-BANNER
   come BS-BUILD and one SIGNOFF-DECL per cell this build judges. The scan accumulates per-motor
   facts where it already has them (startSide, measureZero, measurePoint, runSelfCheck,
   applyOffsets) and emits every declared cell's SIGNOFF instances once, from emitSignoffs(), on
   cog 0's normal end path: after the watchdog is stopped and both wheels are shut down, before
-  BS-END. A cell with nothing measured is NOMEAS with n 0, never PASS. On the watchdog path the
-  only verdict is R11-SCAN-NOSTALL FAIL, emitted by the watchdog cog; the host reads every other
-  declared cell with no verdict as NOMEAS.
+  BS-END. A cell with nothing measured is NOMEAS with n 0, never PASS. On the watchdog path of the
+  normal build the only verdict is R11-SCAN-NOSTALL FAIL, emitted by the watchdog cog; the host
+  reads every other declared cell with no verdict as NOMEAS. The WD_SELFTEST build's watchdog path
+  emits the four R11-WDT-* verdicts instead (see WATCHDOG SELF-TEST above).
 
   RECORD DISCIPLINE
 
@@ -122,12 +139,25 @@
   HOW IT IS RUN
 
       tools/bench-run.sh scan
+      tools/bench-run.sh scan-wdtest                        (the -D WD_SELFTEST watchdog self-test)
 }
 
 CON { build identity }
 
-    SRC_REV     = 8                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 8                                         ' BS- record-format version
+    SRC_REV     = 9                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 9                                         ' BS- record-format version
+
+' fmt 9 changes (task 3537 phases 2b3 and 2c; no existing record's field names, order or content change):
+'   - new BS-RSTALONE record, immediately after BS-POINT3 of the point whose fault took that motor's
+'     one testResetFault()-alone attempt: motor, swept_deg, incre, ms, stopped, fault, cleared.
+'   - new SIGNOFF-DECL/SIGNOFF cell R10-SCAN-RSTALONE (normal build), one BOOL instance per motor.
+'   - new BS-WDTEST-ARM record (WD_SELFTEST build only), just before the deliberate stall.
+'   - new checkpoint CP_SELFTEST, token SELFTEST, appended to the CP_* enum.
+'   - the WD_SELFTEST build declares only R11-WDT-FIRES/CKPT/STOPPED/STACK and prints bin SCANWD in
+'     every sign-off record; the normal build declares none of them.
+'   - declareStall() snapshots cog 0's checkpoint and both wheels' BS-WATCHDOG2 values, stops both
+'     wheels, and only then emits BS-WATCHDOG/BS-WATCHDOG2 (before fmt 9 it emitted first and stopped
+'     after). The records carry the same pre-stop values as before.
 
 ' fmt 8 changes (task 3537 phase 2b2; no existing record's field names or order change):
 '   - new BS-ZXSALL record per motor, just before BS-END with the SIGNOFF records: the cross-lifetime
@@ -559,6 +589,26 @@ CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-D
     OWN_ZERO_MISSING_LO = 0
     OWN_ZERO_MISSING_HI = 0
 
+' R10-SCAN-RSTALONE (task 3533 PL-28 item 1, design sec J.1 ruled b), crit RESET_ALONE_CLEARS, units
+' BOOL, one instance per motor, printed by emitSignoffBool(): TRUE when, at that motor's first eligible
+' natural fault, testResetFault() ALONE -- the faulted point's non-zero command still set, no zero
+' command first -- leaves the wheel stopped and not faulted. The ms it took is in BS-RSTALONE.
+'   UNFIXED (DERIVED, isp_bldc_motor.spin2 testResetFault()): before commit 67d11f6 it issued no zero
+'   command. An unchanged non-zero command never reaches the driver's .newRqst path, so the reset
+'   waited 30 ms + 1000 x 2 ms = 2_030 ms and the wheel stayed FAULTED: stopped FALSE -> measured
+'   FALSE -> FAIL.
+'   NOMEAS when the motor had no eligible fault (see measurePoint()).
+
+' R11-WDT-* (task 3534, design sec G.4), bin SCANWD: judged only by the -D WD_SELFTEST build, from the
+' watchdog cog's declareStall(). FIRES is units MS (WDT_FIRES_LO_MS..WDT_FIRES_HI_MS, watchdog CON
+' block below); CKPT, STOPPED and STACK are units BOOL, lo TRUE hi TRUE.
+'   FIRES   -- unfixed (no working watchdog): nothing declares, cog 0's backstop prints the elapsed
+'              stall, >= WD_SELFTEST_BACKSTOP_MS 12_000, outside 4_000..4_500 -> FAIL.
+'   CKPT    -- COVERAGE of the heartbeat contract: a declared checkpoint other than CP_SELFTEST prints
+'              FALSE, but no pre-fix binary exists that printed one.
+'   STOPPED -- COVERAGE: a driver cog running before the stall and none after the watchdog's stop()s.
+'   STACK   -- COVERAGE: WD_STACK_SENTINEL intact at the end of the stall path.
+
 CON { cog-0 progress checkpoints -- watchdog heartbeat contract, task 3534 }
 
 ' A checkpoint id names the smallest statement group cog 0 is currently inside, so a stall's
@@ -581,11 +631,14 @@ CON { cog-0 progress checkpoints -- watchdog heartbeat contract, task 3534 }
         CP_LIB_COMMAND, CP_LIB_START, CP_LIB_STOP, CP_LIB_COGRUN, CP_LIB_ISREADY, ...
         CP_LIB_ISSTOPPED, CP_LIB_ISFAULT, CP_LIB_RESETFAULT, CP_LIB_DRVSTATE, CP_LIB_TELEMETRY, ...
         CP_LIB_PHASEV, CP_LIB_TICKS, CP_LIB_INTEGRITY, CP_LIB_SETOFFSETS, CP_LIB_GETOFFSETS, ...
-        CP_LIB_BOARDTYPE, CP_LIB_SHUTDOWN, CP_EMIT, CP_LOOP_XSTART, CP_LOOP_OWNZERO
+        CP_LIB_BOARDTYPE, CP_LIB_SHUTDOWN, CP_EMIT, CP_LOOP_XSTART, CP_LOOP_OWNZERO, CP_SELFTEST
   ' Appended (task 3537 phase 2b2), so no existing CP_* value renumbers:
   '  CP_LOOP_XSTART  - one beat per pass of runMotorBlock()'s deliberate cross-start loop, whose body
   '                    otherwise beats only inside the restart, zero and rest calls it makes
   '  CP_LOOP_OWNZERO - one beat per pass of storeLegOwnZero()'s count over the leg store
+  ' Appended (task 3537 phase 2c, design sec F.4):
+  '  CP_SELFTEST     - the LAST beat of runWatchdogSelfTest() (WD_SELFTEST build) before its deliberate
+  '                    beat-free stall; R11-WDT-CKPT requires the watchdog to report exactly this id
 
     TOKMAX_CP = 10                                          ' longest checkpoint token, e.g. LIB_ISSTOP
 
@@ -607,23 +660,39 @@ CON { watchdog cog, task 3534 }
     WD_POLL_MS    = 250                                     ' watchdog sample cadence
     WD_STALL_MS   = 4_000                                   ' declare a stall above this many ms
 
-' Stack sizing per p2kbAppNoteP2an006SizingCogTaskStacks: the deepest path (declareStall ->
-' emitWatchdog -> wdBoundedField -> wdLineField -> wdLineAddNum -> wdLineAddChar, the numeric-
-' field chain) only runs at a stall, which cannot be exercised off the bench, so the app note's
-' "start at 128, measure, then shrink to ~1.5x" cycle cannot be closed here. Counting frames by
-' its rule (params + returns + locals, packed in declaration order, summed over every frame
-' simultaneously on the stack at the deepest point) instead of measuring:
-'   watchdog()        0 params + 0 returns + 3 locals                        =  3
-'   declareStall()     1 param  + 0 returns + 0 locals                        =  1
-'   emitWatchdog()     1 param  + 0 returns + 6 locals                        =  7
-'   wdBoundedField()   3 params + 0 returns + 0 locals                        =  3
-'   wdLineField()      2 params + 0 returns + 0 locals                        =  2
-'   wdLineAddNum()     1 param  + 0 returns + 14 locals (digitStack[11] + 3)  = 15
-'   wdLineAddChar()    1 param  + 0 returns + 0 locals                        =  1
-'                                                                      total  = 32 longs
-' Task 3537 re-count: declareStall() now also calls wdEmitSignoffBool() (7 params + 1 local = 8),
-' whose deepest chain is its n field: 3 + 1 + 8 + wdBoundedField 3 + wdLineField 2 + wdLineAddNum
-' 15 + wdLineAddChar 1 = 33 longs. That is the new deepest path, one long deeper than above.
+' R11-WDT-FIRES band (design sec G.4), DERIVED from watchdog(): the reported msSinceBeat is >= WD_STALL_MS
+' by construction, and at most one poll of sampling offset plus one poll of scheduling jitter later.
+    WDT_FIRES_LO_MS = WD_STALL_MS                           ' 4_000
+    WDT_FIRES_HI_MS = WD_STALL_MS + (2 * WD_POLL_MS)        ' 4_500
+
+' WD_SELFTEST's backstop (design sec G.3), DERIVED: 3 x WD_STALL_MS = 12_000 ms, 2.7x the latest expected
+' declaration (WDT_FIRES_HI_MS 4_500), so a working watchdog is never pre-empted, while a dead one cannot
+' hang the session -- cog 0 resumes, returns to main() and ends it normally.
+    WD_SELFTEST_BACKSTOP_MS = 3 * WD_STALL_MS               ' 12_000
+
+' Stack sizing per p2kbAppNoteP2an006SizingCogTaskStacks: the deepest path only runs at a stall, which
+' cannot be exercised off the bench, so the app note's "start at 128, measure, then shrink to ~1.5x"
+' cycle cannot be closed here. Counting frames by its rule (params + returns + locals, packed in
+' declaration order, summed over every frame simultaneously on the stack at the deepest point) instead
+' of measuring. Task 3537 phase 2c re-count (fmt 9: declareStall() gained two locals and calls
+' wdSnapshotStall(); emitWatchdog() reads that snapshot instead of six locals; the WD_SELFTEST build
+' adds wdEmitSignoff()):
+'   watchdog()            0 params + 0 returns + 3 locals                       =  3
+'   declareStall()         1 param  + 0 returns + 2 locals                       =  3
+' deepest, WD_SELFTEST build -- R11-WDT-FIRES's measured field:
+'   wdEmitSignoff()       10 params + 0 returns + 2 locals                       = 12
+'   wdNaOrBoundedField()   4 params + 0 returns + 0 locals                       =  4
+'   wdBoundedField()       3 params + 0 returns + 0 locals                       =  3
+'   wdLineField()          2 params + 0 returns + 0 locals                       =  2
+'   wdLineAddNum()         1 param  + 0 returns + 14 locals (digitStack[11] + 3) = 15
+'   wdLineAddChar()        1 param  + 0 returns + 0 locals                       =  1
+'                                                                         total  = 43 longs
+' other chains, for comparison:
+'   normal build, wdEmitSignoffBool() (7 + 1 = 8) n field:  3 + 3 + 8 + 3 + 2 + 15 + 1 = 35 longs
+'   emitWatchdog() (1 + 0 = 1) numeric field:               3 + 3 + 1 + 3 + 2 + 15 + 1 = 28 longs
+'   wdEmitSignoff() token field -> wdTokenField() 3 -> tokenFits() (2 + 1 + 1 = 4): 3 + 3 + 12 + 3 + 4 = 25
+'   wdSnapshotStall() (0) -> isp_bldc_motor testGetTelemetry() (0 + 8 returns + 0 = 8):  3 + 3 + 0 + 8 = 14
+'   wheelL.stop() (0) -> holdsPinBaseClaim() (0 + 1 return + 0 = 1):                   3 + 3 + 0 + 1 = 7
 ' -- comfortably under half of 128, so WD_STACK_LONGS = 128 (the app note's own "can't overflow
 ' while measuring" starting point) is used directly rather than shrunk to ~1.5x an unmeasured
 ' number. The frame count does not add the interpreter's own per-call bookkeeping, which the app
@@ -797,7 +866,26 @@ sExitAborted    BYTE    "ABORTED", 0
 
 DAT { sign-off tokens, task 3537 -- each within its TOKMAX_* }
 
+' The bin token every SIGNOFF-DECL/SIGNOFF record of this build prints. From its own #ifdef, never a
+' runtime test (pnut-ts ignores an unknown -D): the WD_SELFTEST build judges only the manifest's SCANWD
+' cells (R11-WDT-*), so it must print SCANWD or the host reads each as BIN_MISMATCH.
+#ifdef WD_SELFTEST
+sSfBinScan      BYTE    "SCANWD", 0
+#else
 sSfBinScan      BYTE    "SCAN", 0
+#endif
+sSfTaskRstAlone BYTE    "3533", 0                           ' R10-SCAN-RSTALONE: PL-28 testResetFault() alone
+sSfCellRstAlone BYTE    "R10-SCAN-RSTALONE", 0
+sSfCritRstAlone BYTE    "RESET_ALONE_CLEARS", 0
+sSfCellWdtFires BYTE    "R11-WDT-FIRES", 0                  ' R11-WDT-*: task 3534, WD_SELFTEST build only
+sSfCellWdtCkpt  BYTE    "R11-WDT-CKPT", 0
+sSfCellWdtStop  BYTE    "R11-WDT-STOPPED", 0
+sSfCellWdtStack BYTE    "R11-WDT-STACK", 0
+sSfCritStallMs  BYTE    "STALL_MS", 0
+sSfCritCkptSelf BYTE    "CKPT_IS_SELFTEST", 0
+sSfCritWheelsSt BYTE    "WHEELS_STOPPED", 0
+sSfCritStackOk  BYTE    "STACK_OK", 0
+sSfUnitsMs      BYTE    "MS", 0
 sSfTaskCogOk    BYTE    "3499", 0                           ' R1-SCAN-COGOK: start() return contract
 sSfTaskRevB     BYTE    "3500", 0                           ' R2-SCAN-REVB: board detection
 sSfTaskInteg    BYTE    "3501", 0                           ' R3-SCAN-INTEG: hall integrity counters
@@ -880,6 +968,7 @@ sCpLibShutdown  BYTE    "LIB_SHTDN", 0
 sCpEmit         BYTE    "EMIT", 0
 sCpXstart       BYTE    "XSTART", 0
 sCpOwnZero      BYTE    "OWNZERO", 0
+sCpSelftest     BYTE    "SELFTEST", 0
 sCpUnknown      BYTE    "?", 0
 
 VAR { run-wide state }
@@ -1037,6 +1126,17 @@ VAR { sign-off accumulators, task 3537 -- index sideSlot(side); cog 0 only, the 
     LONG    resZeroChecked[RESULT_SLOTS]                    ' that leg's valid points (R9-SCAN-OWNZERO's n)
     LONG    bSfPair2Complete[SIDE_SLOTS]                    ' emitPair2()'s bComplete for this motor
     LONG    bSfPair2NetOk[SIDE_SLOTS]                       ' emitPair2()'s bRatio for this motor
+    ' task 3537 phase 2b3 -- R10-SCAN-RSTALONE, one testResetFault()-alone attempt per motor
+    LONG    bSfRstAloneDone[SIDE_SLOTS]                     ' TRUE once this motor's one attempt was taken
+    LONG    rstAloneMs[SIDE_SLOTS]                          ' ms testResetFault() took, via sideResetFault()
+    LONG    bRstAloneStopped[SIDE_SLOTS]                    ' sideIsStopped() right after it
+    LONG    bRstAloneFault[SIDE_SLOTS]                      ' sideIsFault() right after it
+    LONG    bRstAloneCleared[SIDE_SLOTS]                    ' stopped and not faulted: the R10 measured value
+    LONG    rstAloneIncre[SIDE_SLOTS]                       ' the faulted point's increment, still commanded
+    LONG    rstAloneSwept[SIDE_SLOTS]                       ' the faulted point's swept offset, degrees
+    ' task 3537 phase 2c -- WD_SELFTEST outcome as cog 0 saw it (the watchdog's own verdicts need none)
+    LONG    bWdtBackstopHit                                 ' TRUE when the stall reached WD_SELFTEST_BACKSTOP_MS
+    LONG    wdtBackstopMs                                   ' elapsed stall ms when it did
 
 VAR { watchdog cog, task 3534 }
 
@@ -1048,6 +1148,25 @@ VAR { watchdog cog, task 3534 }
                                                              ' of the stall path -- cogspin does
                                                              ' not detect an overflow itself
     LONG    wdCogId                                         ' cogspin()'s return; <0 if it failed
+
+VAR { watchdog stall snapshot, task 3537 phase 2c -- written only by the watchdog cog, in wdSnapshotStall(),
+      before declareStall() stops the wheels; read by emitWatchdog() and declareStall() afterwards }
+
+    LONG    wdSnapCheckpoint                                ' wdCheckpoint at the declaration
+    LONG    wdSnapLeftCog                                   ' wheelL.testGetMotorCog() before the stops
+    LONG    wdSnapLeftState                                 ' wheelL.getDriverState()
+    LONG    wdSnapLeftFault                                 ' wheelL.isFaultSignal()
+    LONG    wdSnapLeftDuty                                  ' wheelL.testGetTelemetry() duty
+    LONG    wdSnapLeftErr                                   ' wheelL.testGetTelemetry() err
+    LONG    wdSnapLeftSense                                 ' wheelL.testGetTelemetry() sense_i_mV
+    LONG    wdSnapLeftTicks                                 ' wheelL.getRawHallTicks()
+    LONG    wdSnapRightCog                                  ' wheelR.testGetMotorCog() before the stops
+    LONG    wdSnapRightState                                ' wheelR.getDriverState()
+    LONG    wdSnapRightFault                                ' wheelR.isFaultSignal()
+    LONG    wdSnapRightDuty                                 ' wheelR.testGetTelemetry() duty
+    LONG    wdSnapRightErr                                  ' wheelR.testGetTelemetry() err
+    LONG    wdSnapRightSense                                ' wheelR.testGetTelemetry() sense_i_mV
+    LONG    wdSnapRightTicks                                ' wheelR.getRawHallTicks()
 
 PUB main() | trapCode
 '' Run the unattended commutation-offset scan, then stop both wheels and end the session.
@@ -1114,6 +1233,8 @@ PRI initRunState() | slotIdx
     bRightDone := FALSE
     sampPrevMs := runStartMs
     sampChargeMvMs := 0
+    bWdtBackstopHit := FALSE                                ' task 3537 phase 2c: no backstop is NOMEAS
+    wdtBackstopMs := 0
     repeat slotIdx from 0 to RESULT_SLOTS - 1
         resStatus[slotIdx] := FS_SKIPPED
         bResSeValid[slotIdx] := FALSE
@@ -1153,15 +1274,30 @@ PRI initRunState() | slotIdx
         zxsAllN[slotIdx] := 0
         bSfPair2Complete[slotIdx] := FALSE
         bSfPair2NetOk[slotIdx] := FALSE
+        bSfRstAloneDone[slotIdx] := FALSE                   ' task 3537 R10: no attempt is NOMEAS
+        rstAloneMs[slotIdx] := 0
+        bRstAloneStopped[slotIdx] := FALSE
+        bRstAloneFault[slotIdx] := FALSE
+        bRstAloneCleared[slotIdx] := FALSE
+        rstAloneIncre[slotIdx] := 0
+        rstAloneSwept[slotIdx] := 0
 
 PRI runScan() : bCompleted
 ' Preflight, then the LEFT and RIGHT motor blocks. Every stage is skipped once the run aborts.
+' Under -D WD_SELFTEST (task 3537 phase 2c, design sec G.3) preflight is followed by the watchdog
+' self-test and the method returns: no motor block is ever on that path.
 '
 ' @returns bCompleted - TRUE when no run abort occurred
 
     bCompleted := FALSE
     if preflightWheels() == FALSE
         setRunAbort(AR_PREFLIGHT, 0)                        ' kept only if no earlier cause was recorded
+#ifdef WD_SELFTEST
+    runWatchdogSelfTest()                                   ' parks forever once the watchdog declares
+    bCompleted := (abortReason == AR_NONE)
+    bRunReturned := TRUE                                    ' before the return, or main() reads it as a library abort
+    return
+#endif
     if abortReason == AR_NONE
         runMotorBlock(SIDE_LEFT, SIGN_NEG)
     if abortReason == AR_NONE
@@ -1171,6 +1307,54 @@ PRI runScan() : bCompleted
         bRightDone := TRUE
     bCompleted := (abortReason == AR_NONE)
     bRunReturned := TRUE
+
+PRI runWatchdogSelfTest() | stallStartMs
+' The watchdog self-test (task 3537 phase 2c, design sec G.3; called only by the WD_SELFTEST build). With
+' the wheels at rest after preflight (the RIGHT driver cog still running at zero command), print
+' BS-WDTEST-ARM, beat CP_SELFTEST as the LAST beat, then stall on purpose: a beat-free loop that only
+' polls wdDeclaring. Once the watchdog declares, cog 0 parks forever without emitting or beating (the
+' watchdog cog owns the session's end and emits the four R11-WDT-* verdicts itself), mirroring beat()'s
+' PARK. If WD_SELFTEST_BACKSTOP_MS passes first, the watchdog is dead: record the elapsed stall and
+' return, so main() stops both wheels and emitSignoffs() prints R11-WDT-FIRES FAIL.
+' No watchdog cog, or an aborted preflight: nothing to test -- return at once, and emitSignoffs() prints
+' all four as NOMEAS, n 0. The only waitms() here is WD_POLL_MS, the one deliberate beat-free wait
+' (design sec F.4), far under WD_STALL_MS and WAITMS_MAX_MS.
+'
+' @local stallStartMs - getms() when the deliberate stall began
+
+    if (abortReason <> AR_NONE) or (wdCogId < 0)
+        return
+    emitWdTestArm()
+    beat(CP_SELFTEST)                                       ' the LAST beat: the watchdog must declare at this checkpoint
+    stallStartMs := getms()
+    repeat                                                  ' deliberate stall: NO beat() from here
+        waitms(WD_POLL_MS)
+        if wdDeclaring
+            repeat                                          ' park, never emit, never beat (see beat()'s PARK)
+                waitms(WD_IDLE_MS)
+        if (getms() - stallStartMs) >= WD_SELFTEST_BACKSTOP_MS
+            quit
+    wdtBackstopMs := getms() - stallStartMs
+    bWdtBackstopHit := TRUE
+
+PRI emitWdTestArm()
+' Emit BS-WDTEST-ARM (task 3537 phase 2c, fmt 9, WD_SELFTEST build): the state the deliberate stall starts
+' from -- both wheels' raw testGetMotorCog() values (as BS-WATCHDOG2's l_cog/r_cog print them), the
+' checkpoint the watchdog must report, and the compiled stall, poll and backstop bounds.
+' Worst case: tag(13) + l_cog(1+5+1+4=11) + r_cog(11) + checkpoint(1+10+1+4=16) +
+' checkpoint_tok(1+14+1+10=26) + stall_ms(1+8+1+7=17) + poll_ms(1+7+1+7=16) + backstop_ms(1+11+1+7=20)
+' = 130 bytes.
+
+    lineReset()
+    lineAddText(@"BS-WDTEST-ARM")
+    boundedField(@"l_cog", sideMotorCog(SIDE_LEFT), LIM_TINY)
+    boundedField(@"r_cog", sideMotorCog(SIDE_RIGHT), LIM_TINY)
+    boundedField(@"checkpoint", CP_SELFTEST, LIM_TINY)
+    tokenField(@"checkpoint_tok", checkpointToken(CP_SELFTEST), TOKMAX_CP)
+    boundedField(@"stall_ms", WD_STALL_MS, LIM_SMALL)
+    boundedField(@"poll_ms", WD_POLL_MS, LIM_SMALL)
+    boundedField(@"backstop_ms", WD_SELFTEST_BACKSTOP_MS, LIM_SMALL)
+    lineEmit()
 
 PRI setRunAbort(reason, detailValue)
 ' Record the first run-abort cause and emit its BS-ABORT; later causes are ignored.
@@ -1697,11 +1881,13 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
 
 PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) : ptRes | motorIncre, ...
     missedBefore, illegalBefore, missedAfter, illegalAfter, cmdMs, bAtSpeed, bWinDone, bSettleOk, ...
-    zeroX10, zeroValid, ptSlot
+    zeroX10, zeroValid, ptSlot, rstSlot, rstStartMs, bRstAloneNow
 ' Measure one point: re-measure the zero tagged with this point's own phase (CHANGE 2, scan v3 --
 ' PL-31's drift finding was a sense-zero shift, so every point needs its own BS-ZERO, not just
 ' the references), set and read back offsets, command, wait AT_SPEED, settle, take the
 ' tick-gated window, command zero, wait stopped, emit BS-POINT/BS-POINT2/BS-POINT3, then recover.
+' Task 3537 phase 2b3: at a motor's first eligible fault, testResetFault() alone runs before the zero
+' command (R10-SCAN-RSTALONE), and BS-RSTALONE follows BS-POINT3.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param speedIdx - SPEED_QTR or SPEED_HALF
@@ -1725,6 +1911,9 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
 '   resets ptZeroX10/ptNetX10 to their not-measured state
 ' @local zeroValid - TRUE when that zero call took at least one sample
 ' @local ptSlot - sideSlot(side), the sign-off accumulator index (task 3537)
+' @local rstSlot - sideSlot(side), for the R10-SCAN-RSTALONE facts (task 3537 phase 2b3)
+' @local rstStartMs - getms() immediately before the testResetFault()-alone attempt
+' @local bRstAloneNow - TRUE when this point took its motor's testResetFault()-alone attempt
 
     pointSeq += 1
     zeroX10, zeroValid := measureZero(side, ptPhase)
@@ -1737,6 +1926,7 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
     beginSampling(limitMv)
     bAtSpeed := FALSE
     bWinDone := FALSE
+    bRstAloneNow := FALSE
     if abortReason == AR_NONE
         bPtCommanded := TRUE
         commandMotor(side, motorIncre)
@@ -1760,6 +1950,27 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
                 bWinDone := windowPoint(side, speedIdx, winTicks)
                 bPtRateOk := bSettleOk and rateInBand(speedIdx, ptRateX10)
         if sideCogRunning(side)
+            ' R10-SCAN-RSTALONE (task 3537 phase 2b3, design sec J.1 ruled b): at this motor's FIRST
+            ' eligible fault, testResetFault() ALONE, BEFORE the zero command below -- that zero command
+            ' is exactly what hides the PL-28 defect. Eligible: a fault was seen, no per-point current
+            ' abort stopped the wheel, the run has not aborted, the hub fault flag is still set, and
+            ' this motor has not had its attempt; only an eligible fault consumes it. The wait sits in
+            ' sideResetFault()'s CP_LIB_RESETFAULT bracket, <= 2_030 ms, inside WD_STALL_MS (sec F.4).
+            ' Safe with the command still non-zero: the driver's fault branch runs .driveoff before it
+            ' marks DCS_FAULTED. The zero command, waitStopped() and recoverFromFault() run unchanged.
+            rstSlot := sideSlot(side)
+            if bSampFaultSeen and (bSampPointAbort == FALSE) and (abortReason == AR_NONE) and (bSfRstAloneDone[rstSlot] == FALSE)
+                if sideIsFault(side)
+                    bSfRstAloneDone[rstSlot] := TRUE
+                    bRstAloneNow := TRUE
+                    rstStartMs := getms()
+                    sideResetFault(side)
+                    rstAloneMs[rstSlot] := getms() - rstStartMs
+                    bRstAloneStopped[rstSlot] := sideIsStopped(side)
+                    bRstAloneFault[rstSlot] := sideIsFault(side)
+                    bRstAloneCleared[rstSlot] := bRstAloneStopped[rstSlot] and (bRstAloneFault[rstSlot] == FALSE)
+                    rstAloneIncre[rstSlot] := motorIncre
+                    rstAloneSwept[rstSlot] := sweptDeg
             commandMotor(side, 0)
             waitStopped(side)
 
@@ -1790,6 +2001,8 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
     emitPoint(side, speedIdx, motorIncre, ptPhase, sweptDeg)
     emitPoint2(side, motorIncre)
     emitPoint3(side)
+    if bRstAloneNow
+        emitRstAlone(side)                                  ' task 3537 R10: after the point records, outside the timed part
 
     if ptRes == PR_ABORT_I
         runAbortsI += 1
@@ -3779,6 +3992,29 @@ PRI emitPoint3(side)
     naOrBoundedField(@"net_mV_x10", ptNetX10, LIM_SMALL, (ptSamples > 0) and bPtZeroValid)   ' no zero, no net: never print a raw mean under a net label
     lineEmit()
 
+PRI emitRstAlone(side) | slotIdx
+' Emit BS-RSTALONE (task 3537 phase 2b3, fmt 9): this motor's one testResetFault()-alone attempt, from
+' the per-motor facts measurePoint() kept. Emitted right after BS-POINT3 of the faulted point, never
+' inside its timed part.
+' Worst case: tag(11) + motor(1+5+1+5=12) + swept_deg(1+9+1+4=15) + incre(1+5+1+12=19) +
+' ms(1+2+1+7=11) + stopped(1+7+1+5=14) + fault(1+5+1+5=12) + cleared(1+7+1+5=14) = 108 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local slotIdx - sideSlot(side)
+
+    slotIdx := sideSlot(side)
+    lineReset()
+    lineAddText(@"BS-RSTALONE")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"swept_deg", rstAloneSwept[slotIdx], LIM_TINY)
+    boundedField(@"incre", rstAloneIncre[slotIdx], LIM_BIG)
+    boundedField(@"ms", rstAloneMs[slotIdx], LIM_SMALL)
+    boolField(@"stopped", bRstAloneStopped[slotIdx])
+    boolField(@"fault", bRstAloneFault[slotIdx])
+    boolField(@"cleared", bRstAloneCleared[slotIdx])
+    lineEmit()
+
 PRI emitCheck(side, motorIncre, loMv, hiMv, bIOk, bRateOk, bIntegOk, bFaultOk, ...
     netLoMv, netHiMv, netMeanX10)
 ' Emit BS-CHECK for one self-check point (scan v3.1: adds net-of-zero band and mean).
@@ -4333,8 +4569,16 @@ PRI emitBuild()
     lineEmit()
 
 PRI emitSignoffDecls()
-' Emit one SIGNOFF-DECL per cell this build judges, right after BS-BUILD (task 3537).
+' Emit one SIGNOFF-DECL per cell this build judges, right after BS-BUILD (task 3537). The WD_SELFTEST
+' build judges only the four R11-WDT-* cells (design sec F.5, task 3537 phase 2c): a normal-scan cell
+' declared there could never get a verdict. The normal build declares none of them.
 
+#ifdef WD_SELFTEST
+    emitSignoffDecl(@sSfCellWdtFires, @sSfTaskNoStall)
+    emitSignoffDecl(@sSfCellWdtCkpt, @sSfTaskNoStall)
+    emitSignoffDecl(@sSfCellWdtStop, @sSfTaskNoStall)
+    emitSignoffDecl(@sSfCellWdtStack, @sSfTaskNoStall)
+#else
     emitSignoffDecl(@sSfCellCogOk, @sSfTaskCogOk)
     emitSignoffDecl(@sSfCellRevB, @sSfTaskRevB)
     emitSignoffDecl(@sSfCellInteg, @sSfTaskInteg)
@@ -4348,6 +4592,8 @@ PRI emitSignoffDecls()
     emitSignoffDecl(@sSfCellHalfLeg, @sSfTaskScanV4)
     emitSignoffDecl(@sSfCellOwnZero, @sSfTaskScanV4)
     emitSignoffDecl(@sSfCellPair2, @sSfTaskScanV4)
+    emitSignoffDecl(@sSfCellRstAlone, @sSfTaskRstAlone)
+#endif
 
 PRI emitSignoffDecl(pCell, pTask)
 ' Emit SIGNOFF-DECL for one cell.
@@ -4380,12 +4626,17 @@ PRI emitSignoffs() | side, slotIdx, bStarted
 '  R9-OWNZERO per slot that ran and bracketed, measured = points without own zero, n = valid points;
 '            one NOMEAS instance when the motor has no such slot
 '  R9-PAIR2  BOOL emitPair2()'s bRatio;                                    NOMEAS when the pair was incomplete
+'  R10-RSTALONE BOOL stopped and not faulted after testResetFault() alone; NOMEAS when no eligible fault
 '  then BS-ZXSALL, the informational every-lifetime spread (a BS- record, never a SIGNOFF)
+' The WD_SELFTEST build emits none of these (it declares none of them): only emitWdtSignoffs().
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
 ' @local slotIdx - sideSlot(side)
 ' @local bStarted - TRUE when the motor had at least one start
 
+#ifdef WD_SELFTEST
+    emitWdtSignoffs()
+#else
     repeat side from SIDE_LEFT to SIDE_RIGHT
         beat(CP_EMIT)
         slotIdx := sideSlot(side)
@@ -4404,9 +4655,32 @@ PRI emitSignoffs() | side, slotIdx, bStarted
         ' R9-SCAN-PAIR2 is COVERAGE: it proves the fmt 6 net-ratio path of emitPair2() ran to a valid
         ' ratio, not that the number is correct. bRatio implies bComplete, so it is the criterion.
         emitSignoffBool(@sSfCellPair2, @sSfTaskScanV4, side, @sSfCritNetRatio, bSfPair2Complete[slotIdx], bSfPair2NetOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        ' R10-SCAN-RSTALONE (task 3537 phase 2b3): unfixed, testResetFault() alone left the wheel
+        ' FAULTED and not stopped, so cleared is FALSE -> FAIL. Worst case: emitSignoffBool(), 173 bytes.
+        emitSignoffBool(@sSfCellRstAlone, @sSfTaskRstAlone, side, @sSfCritRstAlone, bSfRstAloneDone[slotIdx], bRstAloneCleared[slotIdx], SIGNOFF_ONE_INSTANCE)
         emitZxsAll(side, slotIdx)
     beat(CP_EMIT)
     emitSignoffBool(@sSfCellNoStall, @sSfTaskNoStall, SIDE_NONE, @sSfCritCog0End, TRUE, TRUE, SIGNOFF_ONE_INSTANCE)
+#endif
+
+PRI emitWdtSignoffs()
+' Emit the four R11-WDT-* SIGNOFF instances from cog 0 (task 3537 phase 2c, WD_SELFTEST build, design
+' sec G.3). Reached only when the watchdog did NOT declare -- a declaration parks cog 0 for good, and the
+' watchdog cog then emits these four itself from declareStall(). So from here:
+'  R11-WDT-FIRES   measured = the elapsed stall when the backstop was hit (>= WD_SELFTEST_BACKSTOP_MS,
+'                  outside WDT_FIRES_LO_MS..WDT_FIRES_HI_MS -> FAIL with its own number, never NA with
+'                  FAIL); NOMEAS when the stall never ran (no watchdog cog, preflight aborted, or a
+'                  library abort trapped in main() before it).
+'  R11-WDT-CKPT, R11-WDT-STOPPED, R11-WDT-STACK  always NOMEAS: only the declaring watchdog can observe them.
+' Every instance is motor NONE. One place for every cog-0 exit path, after the watchdog cog is stopped.
+' Worst case: emitSignoff(), 196 bytes.
+
+    beat(CP_EMIT)
+    emitSignoff(@sSfCellWdtFires, @sSfTaskNoStall, SIDE_NONE, @sSfCritStallMs, bWdtBackstopHit, wdtBackstopMs, ...
+        WDT_FIRES_LO_MS, WDT_FIRES_HI_MS, @sSfUnitsMs, SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellWdtCkpt, @sSfTaskNoStall, SIDE_NONE, @sSfCritCkptSelf, FALSE, FALSE, SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellWdtStop, @sSfTaskNoStall, SIDE_NONE, @sSfCritWheelsSt, FALSE, FALSE, SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellWdtStack, @sSfTaskNoStall, SIDE_NONE, @sSfCritStackOk, FALSE, FALSE, SIGNOFF_ONE_INSTANCE)
 
 PRI emitZxsSignoffs(side, slotIdx) | chIdx
 ' Emit R8-SCAN-ZXS for one motor: one SIGNOFF per channel, measured = the PH_XSTART spread (task 3537).
@@ -5171,6 +5445,8 @@ PRI checkpointToken(checkpointId) : pTok
             pTok := @sCpXstart
         CP_LOOP_OWNZERO:
             pTok := @sCpOwnZero
+        CP_SELFTEST:
+            pTok := @sCpSelftest
         other:
             pTok := @sCpUnknown
 
@@ -5195,24 +5471,44 @@ PRI watchdog() | lastSeenBeat, lastChangeMs, msSinceBeat
             if msSinceBeat >= WD_STALL_MS
                 declareStall(msSinceBeat)                   ' never returns
 
-PRI declareStall(msSinceBeat)
-' Cog 0 has not advanced for at least WD_STALL_MS: report its last checkpoint and both wheels'
-' state, stop both wheels, end the session, then idle forever. Runs in the watchdog cog. Touches
-' a motor only from here on -- never before a stall is declared -- and calls wheelL.stop()/
+PRI declareStall(msSinceBeat) | bRunningBefore, bStoppedAfter
+' Cog 0 has not advanced for at least WD_STALL_MS: snapshot its last checkpoint and both wheels'
+' state, stop both wheels, THEN report, end the session, and idle forever. Runs in the watchdog cog.
+' Touches a motor only from here on -- never before a stall is declared -- and calls wheelL.stop()/
 ' wheelR.stop() directly, never sideStop()/shutdownMotors(), which call beat() and would
 ' misattribute this cog's activity to cog 0's heartbeat. Sets wdDeclaring TRUE as its very first
 ' act, before touching anything else, so main() (which checks wdDeclaring right before it would
 ' otherwise cogstop this cog) can never observe this cog mid-record.
+' fmt 9 (task 3537 phase 2c, both builds): the wheels are stopped BEFORE any record is emitted, the
+' order test_bench_char.spin2 uses -- before fmt 9, BS-WATCHDOG/BS-WATCHDOG2 went out while both
+' drivers still ran. Those two records still carry the pre-stop values, from wdSnapshotStall().
 '
 ' @param msSinceBeat - ms since wdHeartbeat last changed
+'
+' @local bRunningBefore - TRUE when either wheel had a driver cog before the stops (R11-WDT-STOPPED)
+' @local bStoppedAfter - TRUE when neither wheel has a driver cog after the stops (R11-WDT-STOPPED)
 
     wdDeclaring := TRUE
-    emitWatchdog(msSinceBeat)
+    wdSnapshotStall()                                       ' checkpoint and both wheels' state, BEFORE the stops
+    bRunningBefore := (wdSnapLeftCog <> 0) or (wdSnapRightCog <> 0)
     wheelL.stop()
     wheelR.stop()
+    bStoppedAfter := (wheelL.testGetMotorCog() == 0) and (wheelR.testGetMotorCog() == 0)
+    emitWatchdog(msSinceBeat)                               ' from the snapshot: pre-stop cog ids and telemetry
+#ifdef WD_SELFTEST
+    ' Task 3537 phase 2c (design sec G.4): the self-test's four verdicts, from this non-zero cog, through
+    ' the wd* builder. STACK is last, so its sentinel read follows the deepest chain (43 longs, see
+    ' WD_STACK_LONGS), which wdEmitSignoff()'s measured field has just run.
+    wdEmitSignoff(@sSfCellWdtFires, @sSfTaskNoStall, SIDE_NONE, @sSfCritStallMs, TRUE, msSinceBeat, ...
+        WDT_FIRES_LO_MS, WDT_FIRES_HI_MS, @sSfUnitsMs, SIGNOFF_ONE_INSTANCE)
+    wdEmitSignoffBool(@sSfCellWdtCkpt, @sSfTaskNoStall, SIDE_NONE, @sSfCritCkptSelf, TRUE, (wdSnapCheckpoint == CP_SELFTEST), SIGNOFF_ONE_INSTANCE)
+    wdEmitSignoffBool(@sSfCellWdtStop, @sSfTaskNoStall, SIDE_NONE, @sSfCritWheelsSt, TRUE, bRunningBefore and bStoppedAfter, SIGNOFF_ONE_INSTANCE)
+    wdEmitSignoffBool(@sSfCellWdtStack, @sSfTaskNoStall, SIDE_NONE, @sSfCritStackOk, TRUE, (wdStackSentinel == WD_STACK_SENTINEL), SIGNOFF_ONE_INSTANCE)
+#else
     ' Task 3537 (design sec G.4, normal build): a real stall is a recorded failure of task 3534's
     ' certification. Emitted from this cog through the wd* builder, never cog 0's lineBuf.
     wdEmitSignoffBool(@sSfCellNoStall, @sSfTaskNoStall, SIDE_NONE, @sSfCritCog0End, TRUE, FALSE, SIGNOFF_ONE_INSTANCE)
+#endif
     wdEmitEnd()
     ' QUOTED, not backticked -- matches main()'s own marker exactly (a backtick makes it a
     ' display command and the marker is missed).
@@ -5222,10 +5518,30 @@ PRI declareStall(msSinceBeat)
     repeat
         waitms(WD_IDLE_MS)
 
-PRI emitWatchdog(msSinceBeat) | lDuty, lErr, lSenseI, rDuty, rErr, rSenseI
+PRI wdSnapshotStall()
+' Snapshot, from the watchdog cog, every value BS-WATCHDOG/BS-WATCHDOG2 report that the stops would
+' change (task 3537 phase 2c): cog 0's checkpoint, and each wheel's cog id, driver state, fault flag,
+' duty, err, sense and ticks. stop() zeroes testGetMotorCog() and sets drv_state to DCS_Unknown, so a
+' read after the stops would change what those records say. Direct wheelL/wheelR getters, in
+' emitWatchdog()'s pre-fmt-9 read order -- never a sideXxx() wrapper, which calls beat().
+
+    wdSnapCheckpoint := wdCheckpoint
+    wdSnapLeftDuty, wdSnapLeftErr, wdSnapLeftSense, _, _, _, _, _ := wheelL.testGetTelemetry()
+    wdSnapRightDuty, wdSnapRightErr, wdSnapRightSense, _, _, _, _, _ := wheelR.testGetTelemetry()
+    wdSnapLeftCog := wheelL.testGetMotorCog()
+    wdSnapLeftState := wheelL.getDriverState()
+    wdSnapLeftFault := wheelL.isFaultSignal()
+    wdSnapLeftTicks := wheelL.getRawHallTicks()
+    wdSnapRightCog := wheelR.testGetMotorCog()
+    wdSnapRightState := wheelR.getDriverState()
+    wdSnapRightFault := wheelR.isFaultSignal()
+    wdSnapRightTicks := wheelR.getRawHallTicks()
+
+PRI emitWatchdog(msSinceBeat)
 ' Emit BS-WATCHDOG and BS-WATCHDOG2 from the watchdog cog: cog 0's last checkpoint and its own
-' sampling-loop state, then both wheels' raw driver telemetry, read directly from wheelL/wheelR
-' with the same getters the scan uses -- never through the sideXxx()/commandMotor() wrappers,
+' sampling-loop state, then both wheels' raw driver telemetry. fmt 9: the checkpoint and every wheel
+' field come from wdSnapshotStall()'s pre-stop snapshot (declareStall() now stops the wheels first), so
+' the fields, order and meaning are unchanged. Never through the sideXxx()/commandMotor() wrappers,
 ' which call beat() and would corrupt the heartbeat being reported on. Uses the watchdog's own
 ' wdLine* builder, never lineBuf/lineLen (cog 0 may be mid-record). Two records, not one: the
 ' combined fields would exceed the 280-byte bound. BS-WATCHDOG2's LAST field, stack_ok, reports
@@ -5234,14 +5550,11 @@ PRI emitWatchdog(msSinceBeat) | lDuty, lErr, lSenseI, rDuty, rErr, rSenseI
 ' chain that cannot be exercised off the bench (p2kbAppNoteP2an006SizingCogTaskStacks).
 '
 ' @param msSinceBeat - ms since wdHeartbeat last changed
-'
-' @local lDuty, lErr, lSenseI - LEFT duty/err/sense_i_mV from testGetTelemetry()
-' @local rDuty, rErr, rSenseI - RIGHT duty/err/sense_i_mV from testGetTelemetry()
 
     wdLineReset()
     wdLineAddText(@"BS-WATCHDOG")
-    wdBoundedField(@"checkpoint", wdCheckpoint, LIM_TINY)
-    wdTokenField(@"checkpoint_tok", checkpointToken(wdCheckpoint), TOKMAX_CP)
+    wdBoundedField(@"checkpoint", wdSnapCheckpoint, LIM_TINY)
+    wdTokenField(@"checkpoint_tok", checkpointToken(wdSnapCheckpoint), TOKMAX_CP)
     wdBoundedField(@"since_ms", msSinceBeat, LIM_MID)
     wdBoundedField(@"heartbeat", wdHeartbeat, LIM_MID)
     wdBoundedField(@"seq", pointSeq, LIM_TINY)
@@ -5254,24 +5567,22 @@ PRI emitWatchdog(msSinceBeat) | lDuty, lErr, lSenseI, rDuty, rErr, rSenseI
     wdTokenField(@"reason", reasonToken(abortReason), TOKMAX_REASON)
     wdLineEmit()
 
-    lDuty, lErr, lSenseI, _, _, _, _, _ := wheelL.testGetTelemetry()
-    rDuty, rErr, rSenseI, _, _, _, _, _ := wheelR.testGetTelemetry()
     wdLineReset()
     wdLineAddText(@"BS-WATCHDOG2")
-    wdBoundedField(@"l_cog", wheelL.testGetMotorCog(), LIM_TINY)
-    wdBoundedField(@"l_state", wheelL.getDriverState(), LIM_TINY)
-    wdBoolField(@"l_fault", wheelL.isFaultSignal())
-    wdBoundedField(@"l_duty", lDuty, LIM_SMALL)
-    wdBoundedField(@"l_err", lErr, LIM_TINY)
-    wdBoundedField(@"l_sense_mV", lSenseI, LIM_SMALL)
-    wdBoundedField(@"l_ticks", wheelL.getRawHallTicks(), LIM_MID)
-    wdBoundedField(@"r_cog", wheelR.testGetMotorCog(), LIM_TINY)
-    wdBoundedField(@"r_state", wheelR.getDriverState(), LIM_TINY)
-    wdBoolField(@"r_fault", wheelR.isFaultSignal())
-    wdBoundedField(@"r_duty", rDuty, LIM_SMALL)
-    wdBoundedField(@"r_err", rErr, LIM_TINY)
-    wdBoundedField(@"r_sense_mV", rSenseI, LIM_SMALL)
-    wdBoundedField(@"r_ticks", wheelR.getRawHallTicks(), LIM_MID)
+    wdBoundedField(@"l_cog", wdSnapLeftCog, LIM_TINY)
+    wdBoundedField(@"l_state", wdSnapLeftState, LIM_TINY)
+    wdBoolField(@"l_fault", wdSnapLeftFault)
+    wdBoundedField(@"l_duty", wdSnapLeftDuty, LIM_SMALL)
+    wdBoundedField(@"l_err", wdSnapLeftErr, LIM_TINY)
+    wdBoundedField(@"l_sense_mV", wdSnapLeftSense, LIM_SMALL)
+    wdBoundedField(@"l_ticks", wdSnapLeftTicks, LIM_MID)
+    wdBoundedField(@"r_cog", wdSnapRightCog, LIM_TINY)
+    wdBoundedField(@"r_state", wdSnapRightState, LIM_TINY)
+    wdBoolField(@"r_fault", wdSnapRightFault)
+    wdBoundedField(@"r_duty", wdSnapRightDuty, LIM_SMALL)
+    wdBoundedField(@"r_err", wdSnapRightErr, LIM_TINY)
+    wdBoundedField(@"r_sense_mV", wdSnapRightSense, LIM_SMALL)
+    wdBoundedField(@"r_ticks", wdSnapRightTicks, LIM_MID)
     wdBoolField(@"stack_ok", (wdStackSentinel == WD_STACK_SENTINEL))
     wdLineEmit()
 
@@ -5339,6 +5650,66 @@ PRI wdEmitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instC
         wdBoundedField(@"n", 0, LIM_SMALL)
     wdTokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     wdLineEmit()
+
+PRI wdEmitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, pUnits, instCount) | boundedVal, pVerdict
+' Emit one numeric SIGNOFF verdict from the watchdog cog (task 3537 phase 2c, design sec B.3). Mirrors
+' emitSignoff() field for field against the watchdog's own wd* builder, never lineBuf/lineLen (cog 0 may
+' be stalled mid-record). Calls nothing that beats: motorToken() and tokenFits() only return or read DAT
+' text. Worst case: identical to emitSignoff(), 196 bytes.
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+' @param side - SIDE_* the instance belongs to
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the instance was measured
+' @param measuredVal - the instance's measured value
+' @param loLimit - lowest passing value, compiled in
+' @param hiLimit - highest passing value, compiled in
+' @param pUnits - pointer to the units token
+' @param instCount - declarations behind measuredVal
+'
+' @local boundedVal - measuredVal clamped to +/-LIM_BIG
+' @local pVerdict - PASS, FAIL or NOMEAS token
+
+    boundedVal := (measuredVal #> (0 - LIM_BIG)) <# LIM_BIG
+    if bMeasured == FALSE
+        pVerdict := @sSfNomeas
+    elseif (boundedVal >= loLimit) and (boundedVal <= hiLimit)
+        pVerdict := @sSfPass
+    else
+        pVerdict := @sSfFail
+    wdLineReset()
+    wdLineAddText(@"SIGNOFF")
+    wdBoundedField(@"sf", SF_VERSION, LIM_TINY)
+    wdTokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    wdTokenField(@"cell", pCell, TOKMAX_CELL)
+    wdTokenField(@"task", pTask, TOKMAX_TASK)
+    wdTokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    wdTokenField(@"crit", pCrit, TOKMAX_CRIT)
+    wdNaOrBoundedField(@"measured", boundedVal, LIM_BIG, bMeasured)
+    wdBoundedField(@"lo", loLimit, LIM_BIG)
+    wdBoundedField(@"hi", hiLimit, LIM_BIG)
+    wdTokenField(@"units", pUnits, TOKMAX_UNITS)
+    if bMeasured
+        wdBoundedField(@"n", instCount, LIM_SMALL)
+    else
+        wdBoundedField(@"n", 0, LIM_SMALL)
+    wdTokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+    wdLineEmit()
+
+PRI wdNaOrBoundedField(pFieldName, numValue, limitAbs, bValid)
+' Append a clamped numeric field, or the token NA when the value was not measured. Mirrors
+' naOrBoundedField() against the watchdog's own builder (task 3537 phase 2c).
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+' @param limitAbs - clamp magnitude (one of the LIM_* widths)
+' @param bValid - TRUE when numValue is a measurement
+
+    if bValid
+        wdBoundedField(pFieldName, numValue, limitAbs)
+    else
+        wdLineTextField(pFieldName, @sNa)
 
 PRI wdLineReset()
 ' Begin a new watchdog record, in wdLineBuf/wdLineLen. Mirrors lineReset() byte-for-byte against
