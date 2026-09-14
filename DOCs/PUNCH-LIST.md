@@ -1382,6 +1382,17 @@ pnut_ts's own guide, says a trap returns the method's normal return value when n
 
   These are listed in §4 of the study and are in «#3539»'s scope.
 
+**Fixed in tree 2026-09-14 («#3539»); certification is owed to Visit 2.**
+- `test_bench_t0.spin2` and `test_bench_char.spin2` make every normal-path library call untrapped
+  and judge its returned value, with a `testGetMotorCog()` cross-check as the positive control.
+- Each binary keeps one top-level trap, whose value prints on every run.
+- The remaining traps are the declared abort probes: T0-6, T0-7, and the char PL-36 claim starts.
+  Each judges an abort by a completion flag, never by the trapped value.
+- The char claim check now runs before cleanup, and `BC-STEER` reports `drive_done` separately.
+- The four cells keep their Visit 1 status and are carried to Visit 2 by the collation's scope.
+  `--check-ready` now checks that same scope, locked by selftest (y).
+- Not done, and still in this entry's scope: NA reason tokens on every emit, and sentinel pre-loads.
+
 **What it cost this visit:**
 - R1-T0-START and R1-T0-EXHAUST FAILed.
 - R10-CHAR-STEERFAIL FAILed.

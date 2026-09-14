@@ -2017,16 +2017,26 @@ def host_inputs_ready(cell):
     return True, "named inputs present: " + " ".join(match.group(1).split())
 
 
+def check_ready_cells(cells, visit):
+    """The cells --check-ready must find tests for: exactly the scope collate() judges at that visit.
+
+    A cell owed to an earlier visit and still OWED or FAILED is carried into this visit's scope by
+    cell_in_scope(), so the scheduling gate reads the same scope rather than a narrower copy of it.
+    """
+    return [cell for cell in cells if cell_in_scope(cell, visit)]
+
+
 def check_ready(manifest_path, visit):
     try:
         cells = load_manifest(manifest_path)
     except ManifestError as exc:
         print(f"signoff-collate: manifest error: {exc}", file=sys.stderr)
         return EXIT_INPUT
-    owed = [cell for cell in cells if cell.visit_n == visit and cell.status == "OWED"]
+    owed = check_ready_cells(cells, visit)
     sources = {}
     gaps = 0
-    print(f"check-ready visit {visit}: {len(owed)} OWED cell(s) in {display_path(manifest_path)}")
+    print(f"check-ready visit {visit}: {len(owed)} cell(s) in scope (owed to visit {visit}, or carried OWED/FAILED "
+          f"from an earlier visit) in {display_path(manifest_path)}")
     for cell in owed:
         if cell.bin == "HOST":
             ready, why = host_inputs_ready(cell)
@@ -2574,6 +2584,24 @@ def _st_x_r9_halfleg_collation():
                 f"measured TRUE on all four -> {all_true_verdict}")
 
 
+def _st_y_check_ready_scope():
+    """task 3539: --check-ready judges the same scope collate() does, so a cell owed to an earlier visit and
+    still OWED or FAILED is checked for its test at the next visit. The fixture manifest's rows are all
+    visit 1 OWED; before this fix a visit-2 readiness check saw none of them."""
+    cells = load_manifest(FIXTURE_DIR / "fx-manifest.tsv")
+    carried = [cell for cell in cells if cell.visit_n == 1 and cell.status in ("OWED", "FAILED")]
+    for visit in (1, 2):
+        ready_ids = [cell.cell for cell in check_ready_cells(cells, visit)]
+        scope_ids = [cell.cell for cell in cells if cell_in_scope(cell, visit)]
+        if ready_ids != scope_ids:
+            return False, f"visit {visit}: check-ready scope {ready_ids} differs from collate scope {scope_ids}"
+    visit2 = [cell.cell for cell in check_ready_cells(cells, 2)]
+    missing = [cell.cell for cell in carried if cell.cell not in visit2]
+    ok = bool(carried) and not missing
+    return ok, (f"{len(carried)} visit-1 OWED/FAILED fixture cell(s); check-ready visit 2 scope holds "
+                f"{len(visit2)}, missing {missing or 'none'}; scope equals collate's at visits 1 and 2")
+
+
 def selftest():
     checks = [
         ("(a)", "run-5 negative case", _st_a_negative_case),
@@ -2604,6 +2632,8 @@ def selftest():
         ("(x)", "task 3540 (PL-46): R9-SCAN-HALFLEG's MIN_BRACKETED_NEG/POS crit collates a measured "
          "FALSE to FAIL and a measured TRUE to PASS (collation only -- not a claim about what the "
          "scan binary prints)", _st_x_r9_halfleg_collation),
+        ("(y)", "task 3539: --check-ready judges collate's scope, carrying earlier-visit OWED/FAILED cells",
+         _st_y_check_ready_scope),
     ]
     failures = 0
     for label, title, function in checks:
