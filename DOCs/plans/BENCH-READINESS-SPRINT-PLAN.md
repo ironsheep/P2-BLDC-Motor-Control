@@ -408,7 +408,9 @@ This sharpens the 2026-09-11 rule (*the unit of cost is a bench pass*):
     - Designed now. Implemented after «#3530» and before «#3504» / «#3521» are built, so both
       are built with their verdicts.
 5. «#3502» — position math: rpm and mm/tick precision.
-6. «#3533» — PL-28 fault recovery, PL-22 steering start result, PL-9 rename.
+6. «#3533» — PL-28 fault recovery and the PL-9 rename. *(2026-09-13: its PL-22 steering
+   start-result item is already in the tree, `isp_steering_2wheel.spin2:120-129` and `:152-158`,
+   found while reviewing «#3537». The item is dropped from the task; Visit 1 still certifies it.)*
 7. «#3504» — Tier 0 extension, T0-11…T0-15. T0-11 restarts the driver repeatedly, which
    certifies «#3529».
 8. «#3521» — the automated, meter-free characterisation run with the steering liveness phase.
@@ -465,7 +467,7 @@ This supersedes the 2026-09-12 table at the end of this plan. The table order is
 | 2b | «#3535» | 1 | — | Free driver cog RAM: driver code into the cog's lookup RAM ($200-$3FF), data stays in cog RAM | Visit 1 (every start reaches ready, hall counters 0, tick rate unchanged) |
 | 3 | «#3530» | 1 | 5 | Scan v4 | Visit 1 |
 | 4 | «#3502» | 1 | 2 | Position math — rpm + `tickInMM_x10` | Visit 1 |
-| 5 | «#3533» | 1 | 1 | PL-28 / PL-22 / PL-9 | Visit 1 |
+| 5 | «#3533» | 1 | 1 | PL-28 / PL-9 (PL-22 start result already in tree, 2026-09-13) | Visit 1 |
 | 6 | «#3504» | 1 | 2 | Tier 0 extension, T0-11…T0-15 | Visit 1 |
 | 7 | «#3521» | 1 | 3 | Automated characterisation + steering liveness | Visit 1 |
 | 8 | «#3522» + «#3505» | — | — | **VISIT 1 — Bench Pass 2a scan run 6 + Bench Pass 2b** | — |

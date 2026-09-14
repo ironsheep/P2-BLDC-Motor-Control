@@ -553,11 +553,24 @@ motors.** `demo_dual_motor` is the only top that uses it; no bench log this spri
 only with that user not using the steering object's synchronized start. Release-note candidate
 for «#3515», stated as derived until the bench shows the fixed path moving.
 
-**After «#3499»** `startEx()` returns cog id + 1, so the mask is correct by construction --
-but the shipped dual path's behaviour before and after has never been observed. **Owed:** a
-two-wheel steering-object liveness check on the bench (start, brief low-power drive, both
-wheels' ticks move) in Bench Pass 2b. Also: `start()` here returns only the sense cog's
-result, discarding a failed motor start.
+**After «#3499»** `startEx()` returns the cog id (0-7), or -1 on failure (`isp_bldc_motor.spin2:116`).
+`start()` now builds the mask as `(1<<ltcog)|(1<<rtcog)` (`isp_steering_2wheel.spin2:132`), so it is
+correct by construction. *(Corrected 2026-09-13: this line said "cog id + 1", which was the draft
+contract before Stephen's option B.)* But the shipped dual path's behaviour before and after has
+never been observed.
+
+**Owed:** a two-wheel steering-object liveness check on the bench (start, a brief low-power drive,
+both wheels' ticks move) at Visit 1. It is cell `R10-CHAR-STEERLIVE` in
+`DOCs/plans/VISIT-SIGNOFF-DESIGN.md`.
+
+**Failed-start return — fixed in tree** (found 2026-09-13 while reviewing the «#3537» design; read
+from source). This entry used to say *"`start()` here returns only the sense cog's result,
+discarding a failed motor start"*. That is no longer true:
+- A failed motor start stops whichever motor did start and returns -1
+  (`isp_steering_2wheel.spin2:120-129`).
+- A failed sense-cog start stops both motors and returns -1 (`:152-158`).
+
+Run-time proof is owed to Visit 1 (cells `R10-CHAR-STEERFAIL` / `R10-CHAR-STEERSTART`).
 
 ### PL-23 -- bench binaries print booleans as numbers
 
@@ -848,6 +861,48 @@ ADC count period is temporarily widened to 8 normal frames (`ADC_CAL_AVG_FRAMES`
 sums 8 clean frames in silicon and the kept read is shifted right by 3 to renormalize -- a software
 per-frame summing loop did not fit the driver's `fit 496` cog-RAM budget (baseline usage 476 longs,
 ~20 longs of headroom). Run-time proof owed to Visit 1 and Visit 2.
+
+### PL-33 -- the steering object reads the user config even under `-D BENCH_CFG`
+
+**Found 2026-09-13** by the «#3537» design agent. Confirmed by reading.
+
+**The mismatch:**
+- `src/isp_bldc_motor.spin2:61-65` selects its `user` object with `#ifdef BENCH_CFG`: the bench
+  config under `-D BENCH_CFG`, otherwise the user config.
+- `src/isp_steering_2wheel.spin2:90` declares `user : "isp_bldc_motor_userconfig"` with no switch.
+
+So in a bench build the steering object reads the **user** config while its two wheels read the
+**bench** config.
+
+**Consequence (DERIVED):**
+- `start()` takes `WHEEL_DIA_IN_INCH` from the user config to compute `tickInMM_x10` (`:138-140`).
+  Distance conversions in a bench build therefore follow whatever wheel the active user-config
+  block declares, not the bench rig's.
+- Pin bases, voltage and detect mode are passed in as arguments, so starting the motors is not
+  affected.
+- The steering liveness cell judges hall ticks, not distance, so Visit 1's verdict is not affected.
+
+**Fix direction:** give the steering object the same `#ifdef BENCH_CFG` OBJ switch as the motor
+object. A candidate for «#3533»'s batch.
+
+### PL-34 -- per-point `BS-ZERO` records print the motor block's zero-health verdict as their own
+
+**Found 2026-09-13** by the «#3537» design agent. Confirmed against the source.
+
+**The mislabel:**
+- `measureZero()` passes `bZeroOk[slotIdx]` to `emitZero()` for every phase
+  (`src/test_bench_scan.spin2:1157`).
+- `bZeroOk` is set only when `phaseTag == PH_ZERO_INIT` (`:1148-1155`).
+
+So every per-point `BS-ZERO` (phases REF_START, COARSE, FINE, CLIFF and so on) prints
+`health_ok` from the motor block's first zero, under a field that reads as its own reading's
+health. The project's record rule forbids that.
+
+**Scope:** informational only. No scan judgement reads `health_ok` from a per-point zero; the
+self-check uses `bZeroOk` directly. Run 5's evaluation did not rely on it.
+
+**Fix:** scheduled in «#3537» phase 2 (`DOCs/plans/VISIT-SIGNOFF-DESIGN.md` §F.6). `health_ok`
+prints `NA` for every phase except `ZERO_INIT`, at FMT 7.
 
 ---
 
