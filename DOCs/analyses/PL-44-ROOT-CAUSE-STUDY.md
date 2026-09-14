@@ -68,7 +68,21 @@ already 0.
   trapped expression call returns its result. That can then be examined statically, by comparing
   the compiled form of `v := retK()` against `v := \retK()`, before anything is taken to Stephen.
 
-## 3 · Discriminating probe — `test_trap_probe.spin2` (spec)
+### Disposition (2026-09-14): design the patterns out; the probe below is not built
+
+STEPHEN: *"you are leaning to bench runs when you should be leaning to choosing code patterns that
+are not problemmatic... the possible patterns you cite sound like antipatterns that we shouldn't
+have in our code in the first place."*
+
+The suspects that remain are a trap used to capture a normal return value, and a trap nested inside
+another trap. Neither belongs in our code. «#3539» removes them:
+- normal calls are checked with `getError()`;
+- one top-level trap prints its value on every run;
+- traps remain only in deliberate abort-path tests, which assert a named code.
+
+The spec below is kept as a record of the analysis, not as planned work.
+
+## 3 · Discriminating probe — `test_trap_probe.spin2` (spec, not built)
 
 No motion. Cog 0 only. One child object, `probe_child`.
 

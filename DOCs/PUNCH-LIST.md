@@ -1181,9 +1181,29 @@ cut off mid-`INIT` line (`debug_260914-114636.log:983-1002`, `debug_260914-11595
 Only a truncated line and a partial byte (`$F9`, `$FF`) were lost. That fits the lock being freed
 when its holder stops, which is not what `p2kbSpin2Cogstop` says.
 
-Per doctrine overlay P7, the tools and silicon are presumed correct, and the conflict is settled by
-a probe binary (Batch 1b task). Whether a held channel can explain scan runs 5 and 6 (PL-43) waits
-on that result.
+**Settled by Stephen, 2026-09-14:** *"cogstop clears the locks but if the stopped cog didn't rlease
+them first they are leaked and those locks will never be reallocted"*.
+- A stopped cog's **held** locks are cleared, so another cog can take lock 15, and DEBUG output
+  resumes. That matches the logs.
+- A lock the stopped cog allocated and never released or returned is **leaked**. It is never
+  reallocated.
+
+**Consequences (DERIVED):**
+- **The corruption is a message cut off mid-byte** when its cog is stopped: a truncated line and a
+  partial byte. It is not a jammed channel.
+- **A held lock 15 cannot explain scan runs 5 and 6 going silent.** That candidate is removed from
+  PL-43.
+- **`p2kbSpin2Cogstop`'s "Locks owned by cog are NOT released" is incomplete.** It is filed as a
+  knowledge-base note.
+
+**Disposition:** design the pattern out, not characterise it (doctrine overlay P7). «#3543» adopts
+cog-lifecycle rules:
+- no stopping a cog that may be mid-DEBUG output;
+- cooperative task shutdown, with a bounded forced-stop fallback;
+- no cog thrashing in tests;
+- any cog that takes or allocates a lock releases and returns it before it can be stopped.
+
+No probe binary is built.
 
 **Fix direction:** establish the mechanism first. Then decide whether the bench binaries must
 not stop a cog until its debug output has drained, and whether the library's own restart path
@@ -1253,10 +1273,16 @@ issue (was not sound). no other observations."*
 - The supply connection **was** unsound, and it has been corrected (STEPHEN).
 - Nobody watched the wheels, so a held debug channel is not excluded by observation.
 
+**A held debug channel is ruled out** (STEPHEN, 2026-09-14): *"cogstop clears the locks"*. A
+stopped cog therefore cannot leave lock 15 held (PL-41), and a jammed debug channel would need a cog
+that is still running and never releases the lock. That leaves the explanations DERIVED from the
+evidence:
+- **most likely,** a P2 brown-out or reset from the unsound supply connection under a ~2.7 A step;
+- **otherwise,** a host or link loss.
+
 **Next:**
-- A watched repeat of the load step at Visit 2.
+- Watch a repeat of the load step at Visit 2.
 - The §2A front end's bus-voltage channel («#3506») would show a dip directly.
-- PL-41's lock-15 probe settles whether a held debug channel is even possible.
 
 ### PL-44 -- every value captured through an abort trap in the bench binaries reads 0
 
@@ -1309,10 +1335,15 @@ pnut_ts's own guide, says a trap returns the method's normal return value when n
 
   Every failing capture had both.
 - **The logs cannot tell "assigns 0" from "assigns nothing":** every receiver was already 0.
-- **A no-motion probe separates H1, H7 and a toolchain explanation in one run.** It uses 29 cells,
-  with K = 1000 + cell, a pre-loaded sentinel and a callee echo, top-level against nested, plus
-  library bisection. It is specified in §3 of the study and built in «#3539».
-- **No conclusion about the toolchain is drawn before that run.**
+- **Disposition (2026-09-14): design the patterns out, do not characterise them.** STEPHEN: *"you
+  are leaning to bench runs when you should be leaning to choosing code patterns that are not
+  problemmatic... the possible patterns you cite sound like antipatterns that we shouldn't have in
+  our code in the first place."*
+  - The surviving suspects are a trap used to capture a return value and a trap nested inside a
+    trap. Neither should exist in the harness.
+  - «#3539» removes both: normal calls checked with `getError()`, one top-level trap that prints its
+    value on every run, and traps only in deliberate abort-path tests.
+  - The probe in §3 of the study is not built, and no conclusion about the toolchain is drawn.
 - **Other harness defects the study found:**
   - the char PL-36 claims check was masked;
   - T0 guards accept a stuck 0;
