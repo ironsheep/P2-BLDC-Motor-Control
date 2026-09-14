@@ -1165,10 +1165,25 @@ complete through such a phase.
 **Mechanism: not established.** The pattern of a cog's `INIT` line cut short fits a cog stopped
 while its debug output is still being sent (DERIVED). Whether stopping a cog mid-output can
 also leave the debug channel held -- one candidate for scan runs 5 and 6 going silent -- is a
-P2 debugger question, answered from the P2 knowledge base or by Stephen, not guessed. What the
-knowledge base says so far: `cogstop` does **not** release locks the stopped cog owns
-(`p2kbSpin2Cogstop`). The DEBUG entries read (`p2kbSpin2DbgDebug`, `p2kbArchDebugInterrupt`) do not
-say how output from several cogs is kept apart.
+P2 debugger question, answered from the P2 knowledge base or by measurement, not guessed.
+
+What the knowledge base says (read 2026-09-14):
+- **DEBUG output from every cog is serialised by lock 15.**
+  - `p2kbSpin2Debug`, on `DLY()`: it *"RELEASES LOCK[15] while it waits, so other cogs can emit
+    DEBUG output"*.
+  - `p2kbPasm2Locktry` and `p2kbPasm2Lockrel` cite `Spin2_debugger.spin2` using lock 15.
+- **What happens to a stopped cog's lock is not settled.**
+  - `p2kbSpin2Cogstop` says locks owned by a stopped cog are **not** released.
+  - `p2kbPasm2Cogstop` is silent on locks.
+
+**That conflicts with the logs** (DERIVED from MEASURED). Output carried straight on after a cog was
+cut off mid-`INIT` line (`debug_260914-114636.log:983-1002`, `debug_260914-115953.log:250-254`).
+Only a truncated line and a partial byte (`$F9`, `$FF`) were lost. That fits the lock being freed
+when its holder stops, which is not what `p2kbSpin2Cogstop` says.
+
+Per doctrine overlay P7, the tools and silicon are presumed correct, and the conflict is settled by
+a probe binary (Batch 1b task). Whether a held channel can explain scan runs 5 and 6 (PL-43) waits
+on that result.
 
 **Fix direction:** establish the mechanism first. Then decide whether the bench binaries must
 not stop a cog until its debug output has drained, and whether the library's own restart path
@@ -1232,10 +1247,16 @@ ground truth (PL-39).
 **Not settled:** one clean scan after a change is not a property. Run 5's silence came at a
 low-current point. No rail voltage is logged.
 
+**STEPHEN, 2026-09-14** (asked as «#3536» requires): *"i made no further checks as i was more
+concerned about the stop with nothing reporting... i found a corrected a power supply connection
+issue (was not sound). no other observations."*
+- The supply connection **was** unsound, and it has been corrected (STEPHEN).
+- Nobody watched the wheels, so a held debug channel is not excluded by observation.
+
 **Next:**
-- The wheels' behaviour after 11:36:46 was raised with Stephen as «#3536» requires.
-- A recurrence should be caught with the wheels observed.
+- A watched repeat of the load step at Visit 2.
 - The §2A front end's bus-voltage channel («#3506») would show a dip directly.
+- PL-41's lock-15 probe settles whether a held debug channel is even possible.
 
 ### PL-44 -- every value captured through an abort trap in the bench binaries reads 0
 
@@ -1262,9 +1283,18 @@ Key lines: `debug_260914-114636.log:967-970`, `:1016-1018`, `:1038-1039`, `:1058
   correctly.
 
 **Not yet told apart:** every receiving variable was already 0 before its trap, so the logs cannot
-separate "the trap yields 0" from "the trap assigns nothing". `p2kbSpin2Abort` says a trap returns
-the method's normal return value when no abort occurs. The observed behaviour on this toolchain
-differs, and that is a question for Stephen.
+separate "the trap yields 0" from "the trap assigns nothing". `p2kbSpin2Abort`, which cites
+pnut_ts's own guide, says a trap returns the method's normal return value when no abort occurs.
+
+**Direction (STEPHEN, 2026-09-14):**
+- *"please expect the compiler to be behaving correctly and then chase to root cause... don't be
+  giving up without do the proper work required"*. The cause is presumed to be in our code, harness
+  or runtime interactions. It is proven with a discriminating probe binary, not attributed to the
+  tool (doctrine overlay P7). A root-cause study is under way; Batch 1b builds its probe.
+- *"traps are an exeptional return path - not normal use ... so we are we using them?"* We used a
+  trap per call only so that a library abort would become NOMEAS instead of ending the binary. That
+  is the exceptional path used as a routine capture. Under PL-47 the harness calls normally, checks
+  `getError()`, and keeps a single top-level trap to secure the hardware.
 
 **What it cost this visit:**
 - R1-T0-START and R1-T0-EXHAUST FAILed.
@@ -1363,6 +1393,61 @@ works.
 - Make R9-SCAN-HALFLEG fail when the lowest point sits at the window edge.
 - Give each SIGNOFF instance a slot token.
 - Report edge resolution beside every margin.
+
+### PL-47 -- the library has no abort and error contract
+
+**Raised 2026-09-14 by Stephen**, while PL-44 was discussed. His rules, verbatim:
+- *"an abort can return a value, we should never return a zero from an abort as it wouldn't be
+  recognizable as a bare abort returns zero"*
+- *"if the rhs method that was aborted returnes a value when not aborted we can't let abort values be
+  in the set of method returned values"*
+- *"a bare abort returns 0 so a method that also returns zero won't see the abort case"*
+- *"traps are an exeptional return path - not normal use (we likelly abort to protect hardware from
+  being damaged - or actuators harming their environmnet"*
+- *"if we are diving at high rate of speed and all of a sudden both motors start showing hi current
+  this probably means the platorm is now blocked by something... continuing to drive the motors in
+  this case would likely cause harm  this might be good cause for abortive behavior"*
+- *"for methods that can't signal an error why don't we have an error variable (do we need this per
+  calling cog) that carries the error or no-error which we then check in our tests"*
+
+**The contract** (a DERIVED statement of those rules):
+1. **No bare `abort`.** Every abort carries a named, non-zero code.
+2. **An abort code is never a value its method returns normally.** A method whose normal returns
+   span the whole range, such as a signed getter, has no free codes, so its errors go through
+   rule 4.
+3. **An abort is the exceptional, protective path.** It is used where continuing risks the hardware
+   or the surroundings, such as a blocked platform. It is never a normal return path.
+4. **Ordinary errors go to an error variable per calling cog.**
+   - `LONG lastError[8]` per instance, indexed by `COGID()`. Cogs other than the application's call
+     the same instance, for example the steering object's sense task.
+   - The first error is sticky until the read-and-clear `getError()` collects it.
+   - Codes are `ERR_*`, with `NO_ERROR = 0`, mirrored into `isp_steering_2wheel`.
+   - A method records its code before any abort, and aborts with the same code.
+   - The variable stays outside the PASM-addressed VAR runs, and separate from the driver's fault
+     latch.
+5. **A protective condition is acted on where it is detected** (DERIVED). The sense-task cog, not
+   the caller, sees a blocked platform. It secures the motors itself. The caller learns of it
+   through `getError()`, and through a non-zero abort from its next motion call, caught by its
+   top-level trap. Ties to audit findings S-2, C-5, Z and AF.
+
+**What exists today:** at least one bare abort, in `src/isp_bldc_motor.spin2`
+`confgurePowerLimits()` ("SHOULD NEVER get here"). No error variable has been found. The full
+inventory is not yet taken.
+
+**Bench consequence:**
+- Tests call library methods normally and check `getError()`.
+- One top-level trap per binary secures the hardware and ends the run.
+- Traps remain only where a test deliberately exercises an abort path.
+- That removes the per-call traps behind PL-44's lost values.
+
+**Fix direction (Batch 1b):**
+- Inventory every abort in the library and bench binaries: its value, its method's return set, and
+  whether a protective purpose justifies it.
+- Apply rules 1–4.
+- Document the codes and `getError()` in `DRIVE-OBJECTS.md`.
+- Convert the bench harness.
+- Rule 5's blocked-platform abort is designed together with the current-limit work (S-2 / C-5), not
+  bolted on.
 
 ---
 

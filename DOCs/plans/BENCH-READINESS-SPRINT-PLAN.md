@@ -437,6 +437,42 @@ mostly unattended.**
 - *Then Stephen's decision:* which offset pair, if any, and with what margin, given fault edges
   7–10° from the minima.
 
+**Visit 1 ran on 2026-09-14** ([`VISIT-1-RESULTS.md`](../analyses/bench/2026-09-14/VISIT-1-RESULTS.md)).
+- Eleven of thirteen sign-off rows signed off.
+- The start-return and brake-start cells were hidden by a test-capture defect (PL-44).
+- Scan run 7: do not apply. The half-speed confirmation is unmeasured (PL-46).
+- Run 6 went silent under load; the supply connection was found unsound (PL-43).
+
+**Batch 1b** — Visit 1's follow-ups (added 2026-09-14). They are certified at Visit 2, alongside
+Batch 2, per the cadence rule.
+- **The library's abort and error contract (PL-47), from Stephen's rules:**
+  - no bare `abort`, and every abort code non-zero and outside its method's normal return values;
+  - an abort is the exceptional, protective path, never a normal return. His model case: both
+    motors drawing high current at speed means the platform is blocked, and driving on would do
+    harm;
+  - ordinary errors go to a sticky error variable per calling cog, read and cleared by
+    `getError()`, with `ERR_*` codes mirrored into the steering object and documented in
+    `DRIVE-OBJECTS.md`.
+- **The bench harness follows the same contract:**
+  - no trap around a normal-path call; each step calls normally and checks `getError()`;
+  - one top-level trap secures the hardware and ends the run;
+  - traps remain only in deliberate abort-path tests;
+  - PL-44's root cause is proven with a discriminating probe;
+  - the bench-binary comments carrying the refuted PL-22 premise are corrected.
+- **Scan v5** (PL-46): a measurable half-speed confirmation, and a half-speed cell that can fail.
+- **The collation** reads a verdict inside a corrupted log line (PL-40).
+- **The T0-12 panel** is rebuilt on Stephen's proven display technique, and records turn
+  direction (PL-42, PL-39).
+- **The DEBUG lock-15 / `cogstop` probe** (PL-41).
+- **Visit 2 carries Visit 1's owed items:**
+  - R1-T0-START, R1-T0-EXHAUST, R10-CHAR-STEERFAIL and R13-CHAR-BRAKESTART re-measured;
+  - T0-12;
+  - the Rev A detection re-run;
+  - scan v5;
+  - a watched repeat of run 6's load step.
+- **Offsets:** «#3523» stays blocked until scan v5 meets the half-speed confirmation and Stephen
+  has weighed the margin.
+
 **Batch 2** — the motion capabilities:
 - «#3523» — apply the offsets, per that decision.
 - «#3506» — the §2A front end (parts first).
@@ -479,7 +515,13 @@ This supersedes the 2026-09-12 table at the end of this plan. The table order is
 | 5 | «#3533» | 1 | 1 | PL-28 / PL-9 (PL-22 start result already in tree, 2026-09-13) | Visit 1 |
 | 6 | «#3504» | 1 | 2 | Tier 0 extension, T0-11…T0-15 | Visit 1 |
 | 7 | «#3521» | 1 | 3 | Automated characterisation + steering liveness | Visit 1 |
-| 8 | «#3522» + «#3505» | — | — | **VISIT 1 — Bench Pass 2a scan run 6 + Bench Pass 2b** | — |
+| 8 | «#3522» + «#3505» | — | — | **VISIT 1 — Bench Pass 2a scan run 6 + Bench Pass 2b** (ran 2026-09-14; «#3522» closed; «#3505» owes T0-12, Rev A, re-measures) | — |
+| 8a | «#3538» | 1b | 1 | Library abort/error contract: no bare aborts, codes outside return sets, per-cog `getError()` (PL-47) | Visit 2 |
+| 8b | «#3539» | 1b | — | Bench harness on the contract; PL-44 root cause proven by probe; PL-22 comments corrected | Visit 2 (the re-measured start-return and brake-start cells) |
+| 8c | «#3540» | 1b | 5 | Scan v5: measurable half-speed confirmation (PL-46) | Visit 2 (scan run 8) |
+| 8d | «#3541» | 1b | 6 | Collation reads verdicts in corrupted lines (PL-40) | host selftest + Visit 1 re-collation |
+| 8e | «#3542» | 1b | 2 | T0-12 panel on the proven technique, with turn direction (PL-42, PL-39) | Visit 2 (Stephen's hands) |
+| 8f | «#3543» | 1b | — | DEBUG lock-15 / `cogstop` probe (PL-41) | Visit 2 or Stephen's rig |
 | 9 | «#3523» | 2 | 5 | Apply offsets, per Stephen's decision after visit 1 | Visit 2 |
 | 10 | «#3506» | 2 | 6 | §2A front end (parts first) | Visit 2 |
 | 11 | «#3507» | 2 | 6 | DEBUG channels (PL-8) | Visit 2 |
