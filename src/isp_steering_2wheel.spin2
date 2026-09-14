@@ -136,8 +136,13 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
 
         _, ticsPerRotation := ltWheel.hallTicInfoForMotor()
         if user.WHEEL_DIA_IN_INCH <> 0                      ' use wheel diameter independent of motor type
-            circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) * 10
-            tickInMM_x10 := circInMM_x10 / ticsPerRotation
+            ' task 3502: keep tenths of a mm -- circInMMforDiaInInchFloat() truncates to whole mm
+            '  (518 for a 6.5in wheel against 518.68) before the x10, losing 0.13% of every distance
+            circInMM_x10 := round(distConv.floatCircInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) *. 10.0)
+            ' task 3502: round-to-nearest at x100 scale instead of truncating at x10 --
+            '  matches isp_bldc_motor.spin2's init(). Signed '/' is safe: both operands are
+            '  always non-negative.
+            tickInMM_x100 := ((circInMM_x10 * 10) + (ticsPerRotation / 2)) / ticsPerRotation
 
         ' init user tracking vars
         motorStopHallTicks := 0
@@ -298,9 +303,9 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
         ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
         abort
 
-    ' if user configured wheel-diameter is 0.0 then tickInMM_x10 is 0
+    ' if user configured wheel-diameter is 0.0 then tickInMM_x100 is 0
     ' if so, abort this method as we can't do this!
-    if tickInMM_x10 == 0
+    if tickInMM_x100 == 0
         debug("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
         abort
 
@@ -313,19 +318,25 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
     ' So, call getDistance, then driveAtPower to start moving and then stopAfterDistance with total distance to stop.
     ' If a fault occurs, will stop immedetely and hall ticks are reset on the faulting motor.
     ' getDistance returns each motor separately. So use largest return distance to calculate stopAfterDistance
+    ' task 3502: numerators carry an extra x10 to match tickInMM_x100's x100 scale (was x10).
+    '  Largest assumed input is 1000 m: DDU_M's intermediate is then 1000 * 1000 * 100 =
+    '  100_000_000, safely inside a signed LONG (max 2_147_483_647).
     case eDistanceUnits
         DDU_MM:
-            motorStopHallTicks := (nDistance * 10) / tickInMM_x10
+            motorStopHallTicks := (nDistance * 100) / tickInMM_x100
         DDU_CM:
-            motorStopHallTicks := (nDistance * 10 * 10) / tickInMM_x10
+            motorStopHallTicks := (nDistance * 10 * 100) / tickInMM_x100
         DDU_IN:
             fValue := distConv.fIn2mm(nDistance)
-            motorStopHallTicks := round(fValue *. 10.0) / tickInMM_x10
+            motorStopHallTicks := round(fValue *. 100.0) / tickInMM_x100
         DDU_FT:
             fValue := distConv.fIn2mm(nDistance * 12)
-            motorStopHallTicks := round(fValue *. 10.0) / tickInMM_x10
+            motorStopHallTicks := round(fValue *. 100.0) / tickInMM_x100
         DDU_M:
-            motorStopHallTicks := (nDistance * 100 * 10) / tickInMM_x10
+            ' F, mirrored from isp_bldc_motor.spin2 (task 3502): 1 m = 1000 mm, not 100 -- the prior
+            '  "* 100" stopped DDU_M at one tenth of the distance DDU_CM/DDU_MM give for the same
+            '  physical distance.
+            motorStopHallTicks := (nDistance * 1000 * 100) / tickInMM_x100
         other:
             debug("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
             abort
@@ -406,8 +417,13 @@ PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
 PRI convertDistance(nValue, eDistanceUnits) : nDistanceInUnits | fValue
 ' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
     nDistanceInUnits := 0
-    if tickInMM_x10 <> 0
-        fValue := float(nValue) *. float(tickInMM_x10)
+    if tickInMM_x100 <> 0
+        ' task 3502: fValue is millimetres -- ticks x (mm per tick x100) / 100. Before 6.0.0 this
+        '  multiplied by the x10 constant and never divided the x10 back out, so every arm below
+        '  reported ten times the distance travelled (isp_bldc_motor.spin2 getDistance() divides
+        '  correctly). It uses the same tickInMM_x100 as stopAfterDistance(), so the two stay
+        '  inverses of each other.
+        fValue := float(nValue) *. float(tickInMM_x100) /. 100.0
         case eDistanceUnits
             DDU_MM:
                 nDistanceInUnits := round(fValue)
@@ -671,6 +687,22 @@ PUB testRightGetResults() : nMaxRPM, maxTics, bDidFault, max_mV
 
     nMaxRPM, maxTics, bDidFault, max_mV := rtWheel.testGetResults()
 
+PUB testLeftGetRpm() : nRpm
+'' TESTING USE: return the LEFT motor's current RPM, averaged over its hall-tick window
+''
+'' @returns nRpm - current RPM, averaged over the ~1 sec hall-tick window; see
+''  isp_bldc_motor.spin2's testGetRpm() for the sense-task precondition
+
+    nRpm := ltWheel.testGetRpm()
+
+PUB testRightGetRpm() : nRpm
+'' TESTING USE: return the RIGHT motor's current RPM, averaged over its hall-tick window
+''
+'' @returns nRpm - current RPM, averaged over the ~1 sec hall-tick window; see
+''  isp_bldc_motor.spin2's testGetRpm() for the sense-task precondition
+
+    nRpm := rtWheel.testGetRpm()
+
 PUB testLeftDriveAtMotorIncrement(motorIncre)
 '' TESTING USE: drive the LEFT motor at a raw increment
 ''
@@ -853,7 +885,9 @@ VAR { time values & arrays }
 VAR { Data for Motor Position Tracking }
     long    deltaTicks
     long    circInMM_x10
-    long    tickInMM_x10
+    ' task 3502: mm-per-tick carried at x100 (not x10) -- see isp_bldc_motor.spin2's
+    '  matching declaration comment for why.
+    long    tickInMM_x100
     '  --------------------------
 
     ' USER REQUESTS

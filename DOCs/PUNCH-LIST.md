@@ -904,6 +904,41 @@ self-check uses `bZeroOk` directly. Run 5's evaluation did not rely on it.
 **Fix:** scheduled in «#3537» phase 2 (`DOCs/plans/VISIT-SIGNOFF-DESIGN.md` §F.6). `health_ok`
 prints `NA` for every phase except `ZERO_INIT`, at FMT 7.
 
+### PL-35 -- the detection binary's safety notes describe the pin map from before the boards were measured
+
+**Found 2026-09-13** while answering whether Visit 1's detection re-run needs the motors
+unplugged. Read from `src/test_bench_detect.spin2` and its 2026-09-11 log.
+
+**The binary still describes the rig as it was believed to be before 2026-09-11** (left board at
+P0, right at P16). The boards were measured at LEFT P32 / RIGHT P16, and the bench config was
+corrected in `fe83cb0`. The binary itself was not:
+- The note (log `debug_260911-210229.log:51`) says the tail groups' sense pins are P12 and P28,
+  "the LEFT and RIGHT boards' W low-side gate inputs".
+  - P12 now sits on no board.
+  - P28 is the RIGHT board's `pin_pwm_w_l`.
+- **P44 is `PINS_P40_P55`'s sense pin, and it is the LEFT board's `pin_pwm_w_l` (32 + 12).**
+  - The note at log `:55` and the CON comment at `:158-160` still say nothing is connected there.
+    The newer comment at `:161-168` already knows, which is why the calibration pin moved to P15.
+  - `P40_P55` is **not** a tail group, so `-D DETECT_NO_TAIL`, described as the rail-on-safe
+    build, still pulses the LEFT board's gate input.
+  - The rail is always on at this bench: the P2 runs from the pack.
+- The overlap token strings are `"P0_P15+12_PWM_W_L"` / `"P16_P31+12_PWM_W_L"` (`:324-325`).
+  Whether `overlapToken()` classifies from the configured bases is still to be confirmed.
+- The group comments at `:108-113` name P0_P15 as the left board and P32_P47 as unpopulated.
+
+**Consequence (DERIVED):** every sweep of today's binary pulses both boards' W low-side gate
+inputs for about 1 ms, 32 times per cell, with the rail live. With the motors unplugged, as the
+phase-2 precondition requires, there is no current path through a winding. With motors connected,
+the effect depends on the gate driver's undriven-input behaviour, which is not in
+`BOARD-REVISION-FACTS.md`.
+
+**Fix:** «#3537» phase 2 (`DOCs/plans/VISIT-SIGNOFF-DESIGN.md` §C.3).
+- The sweep skips any group whose sense pin lands on a configured board's pin, computed from the
+  configured bases.
+- Phase 2 refuses a driver cog whose pins overlap another board.
+- The notes and tokens are corrected.
+- The detect-phase2 precondition in `tools/bench-run.sh` changes in the same commit.
+
 ---
 
 ## Recently closed

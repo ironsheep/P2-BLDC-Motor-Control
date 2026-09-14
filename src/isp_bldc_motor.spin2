@@ -374,8 +374,13 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     debug("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks))
 
     if user.WHEEL_DIA_IN_INCH <> 0
-        circInMM_x10 := distConv.circInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) * 10
-        tickInMM_x10 := circInMM_x10 / hallTicsPerRotation
+        ' task 3502: keep tenths of a mm -- circInMMforDiaInInchFloat() truncates to whole mm
+        '  (518 for a 6.5in wheel against 518.68) before the x10, losing 0.13% of every distance
+        circInMM_x10 := round(distConv.floatCircInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) *. 10.0)
+        ' task 3502: round-to-nearest at x100 scale instead of truncating at x10 -- see
+        '  tickInMM_x100's declaration comment. Signed '/' is safe here: both operands are
+        '  always non-negative (a wheel circumference and a tick count).
+        tickInMM_x100 := ((circInMM_x10 * 10) + (hallTicsPerRotation / 2)) / hallTicsPerRotation
 
     ' PL-14: honour the caller's eMotorVoltage parameter instead of silently re-reading the
     ' compile-time user.DRIVE_VOLTAGE. Behaviour-neutral today (every shipped caller already
@@ -596,20 +601,23 @@ PUB stopAfterDistance(nDistance, eDistanceUnits)
         abort
 
     ' convert distance to ticks (will stop at ticks limit)
+    ' task 3502: numerators carry an extra x10 to match tickInMM_x100's x100 scale
+    '  (was x10). Largest assumed input is 1000 m: DDU_M's intermediate is then
+    '  1000 * 1000 * 100 = 100_000_000, safely inside a signed LONG (max 2_147_483_647).
     case eDistanceUnits
         DDU_MM:
-            motorStopHallTicks := (nDistance * 10) / tickInMM_x10
+            motorStopHallTicks := (nDistance * 100) / tickInMM_x100
         DDU_CM:
-            motorStopHallTicks := (nDistance * 10 * 10) / tickInMM_x10
+            motorStopHallTicks := (nDistance * 10 * 100) / tickInMM_x100
         DDU_IN:
-            motorStopHallTicks := round(distConv.fIn2mm(nDistance) *. 10.0) / tickInMM_x10
+            motorStopHallTicks := round(distConv.fIn2mm(nDistance) *. 100.0) / tickInMM_x100
         DDU_FT:
-            motorStopHallTicks := round(distConv.fIn2mm(nDistance * 12) *. 10.0) / tickInMM_x10
+            motorStopHallTicks := round(distConv.fIn2mm(nDistance * 12) *. 100.0) / tickInMM_x100
         DDU_M:
             ' F: 1 m = 1000 mm, not 100 -- the prior "* 100" scaled DDU_M ten times short of
             ' DDU_CM/DDU_MM for the same physical distance (measured: DDU_M -> 17 ticks vs.
             ' the equivalent DDU_CM/DDU_MM -> 175 ticks each).
-            motorStopHallTicks := (nDistance * 1000 * 10) / tickInMM_x10
+            motorStopHallTicks := (nDistance * 1000 * 100) / tickInMM_x100
         other:
             debug("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
             abort
@@ -1197,6 +1205,19 @@ PUB testGetStopHallTicks() : stopTicks
 
     stopTicks := motorStopHallTicks
 
+PUB testGetRpm() : nRpm
+'' TESTING USE: return the motor's current RPM, averaged over the hall-tick window
+''
+'' The window is HALL_WINDOW_SIZE (SENSE_LOOP_HZ, 8) samples of 1/8 sec each, i.e. about
+'' 1 second of motion. Valid only while the sense task (taskPostionSense(), started by
+'' startSenseCog() for a single motor or automatically by isp_steering_2wheel's start())
+'' is running, and only from at least one full window (~1 sec) after motion starts --
+'' before that the window has not filled and the average understates the true rate.
+''
+'' @returns nRpm - current RPM, averaged over the ~1 sec hall-tick window
+
+    nRpm := rpm
+
 PUB testGetMotorCog() : cogValue
 '' TESTING USE: snapshot start()/startEx()'s raw motorCog value (AD+) -- (cogid + 1) on
 '' success, 0 if coginit() never ran or the object was never started. Exists so a caller can
@@ -1714,12 +1735,12 @@ PUB updateWindowAccumulators() | nHallCntsIn8thSec
 
     nHallCntsIn8thSec := absDistanceInTics(pos, prioro8thSecPos)                ' Read the next sensor value
     prioro8thSecPos := pos                                                      ' save prior
-        hallWindowSum -= LONG[@hallCountsWindow][hallWinIndex]                  ' Remove the oldest entry from the sum
+    hallWindowSum -= LONG[@hallCountsWindow][hallWinIndex]                      ' Remove the oldest entry from the sum
     long [@hallCountsWindow][hallWinIndex] := nHallCntsIn8thSec                 ' place the newest reading into the window
-        hallWindowSum += hallCntsIn8thSec                                       ' Add the newest reading to the sum
-        hallWinIndex := (hallWinIndex + 1) +// HALL_WINDOW_SIZE                 ' Increment the index, and wrap to 0 if it exceeds the window size
-        if hallWinEntryCt < HALL_WINDOW_SIZE                                    ' incr number of samples in sum until is window size
-            hallWinEntryCt++
+    hallWindowSum += nHallCntsIn8thSec                                          ' Add the newest reading to the sum
+    hallWinIndex := (hallWinIndex + 1) +// HALL_WINDOW_SIZE                     ' Increment the index, and wrap to 0 if it exceeds the window size
+    if hallWinEntryCt < HALL_WINDOW_SIZE                                        ' incr number of samples in sum until is window size
+        hallWinEntryCt++
 
     posTrkHallTicks += nHallCntsIn8thSec
 
@@ -1978,7 +1999,10 @@ VAR { * Data for Motor Position Tracking * }
     LONG    posTrkHallTicks
 
     LONG    circInMM_x10
-    LONG    tickInMM_x10
+    ' task 3502: mm-per-tick carried at x100 (not x10) so the stored constant keeps two
+    '  fractional digits instead of one -- at x10 scale, 6.5in-wheel/90-tick motors truncate
+    '  5.7 mm/tick against a true 5.763, a systematic -1.1% in every DDU_* conversion.
+    LONG    tickInMM_x100
 
     LONG    prioro8thSecPos
 

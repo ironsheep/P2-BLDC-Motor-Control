@@ -725,6 +725,13 @@ over 1 s alongside `rpm`, `cntsInSec`, `hallWindowSum`.
 **Criterion:** raw ticks advance while `rpm == 0` and `hallWindowSum == 0` →
 **W CONFIRMED.** *Automated, no instrument.*
 
+**Correction (2026-09-13, «#3502»):** before the fix, the window SUBTRACTS the
+real stored value while it ADDS zero, so `hallWindowSum` does not stay at zero
+once the window wraps (`HALL_WINDOW_SIZE` = `SENSE_LOOP_HZ` = 8, about one
+second of motion) -- it goes NEGATIVE and keeps going. Read the confirmation
+as: unfixed, `hallWindowSum`/`rpm` are zero for the first second of motion,
+then increasingly negative; fixed, they track ticks/s.
+
 ---
 
 ### T1-3 — The speed law and the real ceiling *(**C-1**, feeds **C-5**, **S-3**, **C-6**)*

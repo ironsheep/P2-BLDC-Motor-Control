@@ -10,7 +10,8 @@
 - `BS-ZERO health_ok` is fixed in the same scan change (§F.6);
 - the unverified assumptions about attention (`cogatn`/`waitatn`) and the rpm read are resolved (§K.1).
 
-**Still open:** J.2 needs Stephen's hands.
+**J.2 is ruled** (no power-off and no unplugging: the detection sweep skips groups whose probe pin
+lands on a board's gate input, §C.3). No open owner questions remain.
 **Applies to:** every bench visit, starting with Visit 1 (Batch 1).
 
 > **STEPHEN, 2026-09-13:** *"on the bench run have you added automated testing of the new
@@ -241,8 +242,11 @@ orphaned cog.**
   expected)`, and `PASS` requires 0.
 
 **b · 1 m in hall ticks** (R4-T0).
-- The 6.5″ wheel gives `circInMM_x10` = 5186 [M plan, finding 4], i.e. 518.6 mm, and
-  90 ticks/rev (`:1019`).
+- The 6.5″ wheel is 6.5 × 3.14159 × 25.4 = 518.68 mm [D], with 90 ticks/rev (`:1019`).
+  - *(Corrected 2026-09-13, «#3502» review.)* The plan's 5186 was the ideal value. Before
+    «#3502» the source truncated the circumference to whole mm, giving `circInMM_x10` = 5180.
+  - «#3502» now rounds it to 5187.
+  - Either way the pre-fix count for 1 m is 175, and the fixed count is 173.
 - 1000 mm × 90 / 518.6 = **173.5** [D], matching the task body's 173.5.
 - An integer tick target is either truncated (173) or rounded (174), depending on the rule
   «#3502» adopts, so the band is 173..174.
@@ -577,7 +581,39 @@ following makes the cell `NOMEAS` (reason `VOID`):
 **Verdict:**
 - Measured = count of unpredicted changes + count of predicted changes that did **not** occur.
 - `PASS` iff 0 and every predicted cell is present in both logs.
-- A prediction referencing a record absent from the visit log counts as not occurred.
+- A prediction referencing a record absent from the visit log counts as not occurred. **Except
+  when the visit log marks that cell `SKIPPED`** by the gate-input guard (§C.3). Such a
+  prediction is `NOT_COMPARED`: it is listed on the sheet, and it counts neither toward `PASS`
+  nor as a change. *(Arbiter review 2026-09-13.)*
+- **`R2-HOST-DETDIFF` passes only if at least one post-stop cell was compared on each of P0_P15
+  and P16_P31.** An all-skipped diff is `NOMEAS`, never `PASS`.
+
+### C.3 Detection binary change for Visit 1 — never pulse a board's gate input
+
+*(Arbiter ruling on J.2, 2026-09-13. Implemented in phase 2, in `src/test_bench_detect.spin2`.)*
+1. **Skip any group whose sense pin (base+4) lands on a configured board's pin other than that
+   board's own sense pin.** Compute it from `user.LEFT_MOTOR_BASE` / `user.RIGHT_MOTOR_BASE` and
+   the 16-pin span, for every sweep. Its cells emit as `SKIPPED` with reason `GATE_OVERLAP`,
+   fixed-field, so the record count still matches `BD-PLAN`.
+   - Today that is `NO_USE_P24_P39` (P28) and `P40_P55` (P44).
+   - Read `overlapToken()` first. If it already classifies from the configured bases, reuse it.
+2. **Refuse to start a phase-2 driver cog whose driven pins overlap another configured board.**
+   Emit the sweep as `SKIPPED`, reason `COG_OVERLAP`. Today neither phase-2 group overlaps a
+   board: P0_P15 is empty, and P16_P31 is the right board itself.
+3. **Fix the stale safety text** (PL-35):
+   - the `BD-NOTE`s that name P12/P28 as the tail groups' gate pins and call P44 unconnected;
+   - the overlap token strings that name `P0_P15`/`P16_P31` as the boards;
+   - the `DETECT_NO_TAIL` description, since it no longer maps to the gate-adjacent groups;
+   - the group comments at `:108-113`.
+4. **Bump `SRC_REV`.** The detect-phase2 tier's precondition in `tools/bench-run.sh` changes from
+   "MOTORS MUST BE PHYSICALLY UNPLUGGED" to a statement of the guard. It changes in the same
+   commit, not before: the precondition stays true for the current binary until this lands.
+5. **Proof the guard works** (sign-off cell `R2-DETECT-GUARD`, bin `HOST`, from the visit log):
+   - no `BD-REP` exists for a skipped group;
+   - `BD-MAP` shows those groups classified as gate overlaps;
+   - every `BD-SWEEP` count matches the plan less the skipped cells.
+
+   It can fail. A run of today's binary shows `BD-REP` records for P40_P55.
 - The sheet lists every unpredicted change with both log line numbers.
 
 ---
@@ -1140,12 +1176,14 @@ landing a feature* section:**
 
 ---
 
-## J · Open points: two arbiter rulings (J.1, J.3) and one question for the owner (J.2)
+## J · Open points: all three ruled by the arbiter (J.1, J.2, J.3)
 
 Everything about how the instrument judges a measurement is decided and argued above.
 - **J.1 and J.3 were drafted as owner questions.** On review they are instrument design, with the
   safety facts checked in source. So the arbiter rules on them (arbiter review 2026-09-13).
-- **J.2 needs Stephen's hands,** so it stays his.
+- **J.2 was asked.** Stephen's answer settled that the board stays powered. The gate-input fact
+  behind the unplug rule is not in our records, so the instrument was changed to remove the
+  exposure instead (§C.3).
 
 ### J.1 · How does the PL-28 "`testResetFault()` alone clears a fault" cell get its fault?
 
@@ -1196,8 +1234,39 @@ time), then replugs.
   `NOT_BUILT` at Visit 1. «#3500»'s post-stop behaviour would be certified only by T0-14b's
   dirtied-pin cell, one cell per base instead of the full matrix.
 
-**Recommendation: (a),** done at the start or end of the session, next to the already-planned
-Rev A board swap. It is the only way row 2's strongest cell exists.
+**Recommendation in the first draft: (a).** **Superseded by the arbiter ruling below.**
+
+**Arbiter ruling (2026-09-13): neither option as drafted. Motors stay plugged in, and the board
+stays powered.**
+
+**Why the question could not be settled from the records.** Stephen's answer was *"board will be
+powered on when i run the bench... if you need it powered off during a run i can do that but it
+will mess with the logs"*. The unplug precondition exists for a stated reason: *"with no motor
+connected there is no current path whatever the output stage does"*. The electrical fact behind
+it is whether a ~1 ms pulse on one board's W low-side gate input can put current through a
+connected motor while that board's other gate inputs are undriven. That fact is not in
+`DOCs/analyses/BOARD-REVISION-FACTS.md`, which carries no gate-driver input defaults.
+
+**What actually creates the exposure.** The sweep pulses each group's sense pin (base+4). With
+the boards where they are, two groups' sense pins land on a board's W low-side gate input:
+- `NO_USE_P24_P39` → P28, the RIGHT board's `pin_pwm_w_l`;
+- `P40_P55` → P44, the LEFT board's `pin_pwm_w_l`.
+
+Those two groups are the only exposure. So the binary stops pulsing them (§C.3), and no gate input
+is touched at all.
+
+**What remains is ordinary.** Phase 2's driver cogs start at commanded zero in float mode (PWM
+disabled), the same condition as every scan start with the motors connected. The P0_P15 cog's
+driven pins P8–P13 sit on no board.
+
+**Cost, stated plainly.** Two cells cannot run at Visit 1:
+- «#3500»'s check that an overlapping group is not reported as Rev B (the P40_P55 cells);
+- the `NO_USE_P24_P39` cells.
+
+Both become the deferred cell `R2-DETECT-OVERLAP`, owed to the first session where the motors are
+unplugged for another reason (e.g. around the Rev A swap). It is not re-asked. `R2-HOST-DETDIFF`
+at Visit 1 still covers the post-stop poisoning cells: sweeps 4/5 on P0_P15, 7/8 on P16_P31, and
+P32_P47. That is exactly the defect «#3500» fixed.
 
 ### J.3 · Watchdog self-test: stall with the wheels at rest (task text), or while one turns?
 
