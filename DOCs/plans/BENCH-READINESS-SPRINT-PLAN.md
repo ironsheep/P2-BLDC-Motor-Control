@@ -445,6 +445,13 @@ mostly unattended.**
 
 **Batch 1b** — Visit 1's follow-ups (added 2026-09-14). They are certified at Visit 2, alongside
 Batch 2, per the cadence rule.
+- **Design rule for every Batch 1b item: correct by construction.**
+  - STEPHEN 2026-09-14: *"never see the bench as an esy way out to avoid doing real engineering.
+    design for "correct by construction" to reduce side-effects"*.
+  - Each design names the invariant its construction guarantees.
+  - The bench certifies that invariant; it is never used to characterise a pattern we would not
+    choose. So no probe binaries are built for the trap or cog-stop questions: those patterns are
+    removed.
 - **The library's abort and error contract (PL-47), from Stephen's rules:**
   - no bare `abort`, and every abort code non-zero and outside its method's normal return values;
   - an abort is the exceptional, protective path, never a normal return. His model case: both
