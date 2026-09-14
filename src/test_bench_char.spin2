@@ -15,6 +15,8 @@
 ''               ternaries (PL-29)
 ''   Updated.... 13 Sep 2026 -- task 3521 phase B (SRC_REV 3, fmt 3): a watchdog cog names where
 ''               a cog-0 stall happened, stops both wheels and ends the session on its own
+''   Updated.... 13 Sep 2026 -- task 3521 phase C (SRC_REV 4, fmt 4): SIGNOFF-DECL / SIGNOFF
+''               verdicts for R5-CHAR-SENSE, R4-CHAR-RPM, R2-CHAR-ISCALE and R3-CHAR-INTEG
 ''
 '' =================================================================================================
 
@@ -84,12 +86,19 @@
   width and every token to a stated length, so each record's worst case is a stated number of
   bytes under 280 (the longest record measured intact through one debug(zstr_())). The worst
   case of each record is stated at its emitter.
+
+  SIGN-OFF VERDICTS (task 3521 phase C; DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B). Right after
+  BC-PLAN, one SIGNOFF-DECL per cell this binary judges. On cog 0's normal end path, after both
+  wheels are stopped and before BC-END, one SIGNOFF per instance of every declared cell, computed
+  only from the per-hold results. A verdict is PASS only when the instance was measured AND its
+  value lies in lo..hi; unmeasured is NOMEAS with n 0 and measured NA, never PASS. On the watchdog
+  path no verdict is emitted: the host reads a declared cell with no verdict as NOMEAS.
 }
 
 CON { build identity }
 
-    SRC_REV     = 3                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 3                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG)
+    SRC_REV     = 4                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 4                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG; 4: phase C adds SIGNOFF-DECL and SIGNOFF sf 1)
 
 CON { timing }
 
@@ -233,6 +242,73 @@ CON { record assembly buffer }
     DEC_RADIX        = 10
     DIGITS_PER_GROUP = 3
 
+CON ' ---- Sign-off Verdicts ----
+  ' Task 3521 phase C. Record contract: DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1, sign-off format 1.
+  ' Every limit is compiled in and printed in each record, so the host catches a stale build.
+    SF_VERSION = 1
+
+  ' The todo-mcp task that owns each cell (manifest sec A.4) prints as a plain text token -- the
+  ' sSfTask* DAT strings -- never through boundedField(), whose digit grouping would print 3_503
+  ' where Tier 0 prints 3503 for the same field.
+    TOKMAX_TASK = 5
+
+  ' Token field length limits (design sec B.3); a longer token prints "?" and cannot match a cell
+    TOKMAX_BIN       = 6
+    TOKMAX_CELL      = 20
+    TOKMAX_CRIT      = 18
+    TOKMAX_UNITS     = 8
+    TOKMAX_SFVERDICT = 9
+
+  ' R5-CHAR-SENSE, crit NET_VS_PASS1_PCT, units PCT_X10.
+  ' DERIVED (design sec A.5-d): 1.5 x the largest run-to-run deviation MEASURED at a matching hold
+  ' on default offsets in scan run 5 (L -1/2: +10.2 %) = 15.3 %, taken as +/-15.0 %.
+    SENSE_PCT_X10_LO = -150
+    SENSE_PCT_X10_HI = 150
+  ' MEASURED: least-squares fit sense_mV = 150.1 x meter_A + 9.1 over Pass 1's eight motion holds
+  ' (DOCs/analyses/bench/2026-09-12/CHAR-RUN-EVALUATION.md sec 2), held as mV x10 per amp. The
+  ' expected net omits the 9.1 intercept: net is already minus a same-lifetime zero (sec A.5-d).
+    PASS1_FIT_MV_X10_PER_A = 1501
+    MA_PER_A               = 1000
+    PCT_X10_PER_UNIT       = 1000                           ' (net - expected) x this / expected = percent x10
+  ' |net - expected| is clamped to this before x PCT_X10_PER_UNIT: 2_000_000 x 1000 = 2e9 < POSX.
+  ' A real post-S-3 net is under 10_000 (1 V); the clamp is reached only by a scale regression,
+  ' and it keeps the sign, so such a value still lands far outside the band.
+    SENSE_DIFF_X10_LIMIT   = 2_000_000
+
+  ' R4-CHAR-RPM, crit RPM_ERR, units RPM.
+  ' DERIVED (design sec A.5-c): the library's integer rpm truncates (<= 1 rpm), and its ~1 s window
+  ' differs from this file's window by ~1 tick/s = 60 / 90 = 0.67 rpm; 1.67 rounded up to 2.
+    RPM_ERR_LO = -2
+    RPM_ERR_HI = 2
+  ' expected rpm = ticks_per_s x 60 / 90 = (rate_x10 / 10) x 60 / 90 = rate_x10 / 15, where 90 is
+  ' the 6.5in motor's hall ticks per revolution (isp_bldc_motor.spin2 getRotationCount(): "ticks /
+  ' 90 (6.5in wheel)"). + RPM_ROUND_HALF_X10 makes the division round-to-nearest: 15 is odd, so no
+  ' non-negative integer rate sits exactly on a half.
+    HALL_TICKS_PER_REV = 90
+    SECS_PER_MIN       = 60
+    RATE_X10_PER_RPM   = (X10 * HALL_TICKS_PER_REV) / SECS_PER_MIN     ' 15
+    RPM_ROUND_HALF_X10 = RATE_X10_PER_RPM / 2                          ' 7
+
+  ' R2-CHAR-ISCALE, crit RSENSE_IMPLIED, units COUNT (mV per amp).
+  ' DERIVED (design sec A.4 row 2): getCurrent() = sense_i_mV x 10_000 / rSenseForBoard
+  ' (isp_bldc_motor.spin2 getCurrent()), rSenseForBoard 150 on Rev B and 5 on Rev A (its comment,
+  ' and init()'s REV_A/REV_B selection); +/-10 % of 150 absorbs per-sample truncation and the
+  ' non-atomic sampling of two window means, and a Rev A misdetect's 5 cannot pass.
+    RSENSE_IMPLIED_LO = 135
+    RSENSE_IMPLIED_HI = 165
+  ' raw_mV_x10 x 1000 / amps_x10k = (10 mV)(1000) / (10_000 A) = mV / A
+    ISCALE_RATIO_SCALE = 1000
+  ' |raw_mV_x10| at or under this: x ISCALE_RATIO_SCALE = 2e9 < POSX. The ADC spans 3.3 V (raw
+  ' under 33_000); larger is reachable only by a scale regression, handled without overflow.
+    ISCALE_DIRECT_RAW_X10_MAX = 2_000_000
+    ISCALE_QUOT_MAX           = LIM_BIG / ISCALE_RATIO_SCALE              ' 999_999: x 1000 fits LIM_BIG
+
+  ' R3-CHAR-INTEG, crit MISSED_ILLEGAL_SUM, units COUNT.
+  ' MEASURED (design sec A.4 row 3): missed 0 and illegal 0 at every start and every point of scan
+  ' run 5. DERIVED: at <= 212 ticks/s against the driver's 43.9 kHz loop no transition is skipped.
+    INTEG_SUM_LO = 0
+    INTEG_SUM_HI = 0
+
 CON ' ---- Cog-0 Progress Checkpoints ----
   ' The watchdog heartbeat contract, task 3521 phase B. beat(CP_*) records the smallest statement
   ' group cog 0 is inside, so a stall's last checkpoint (BC-WATCHDOG) pins it there. A CP_LIB_* id
@@ -240,10 +316,10 @@ CON ' ---- Cog-0 Progress Checkpoints ----
   ' inside that call or in the few statements of its wrapper's return path:
   '  CP_MAIN_INIT       - main(): watchdog start, BC-WDSTART, initRun()
   '  CP_MAIN_BANNER     - main(): emitBanner()
-  '  CP_MAIN_PLAN       - main(): emitPlan()
+  '  CP_MAIN_PLAN       - main(): emitPlan() and emitSignoffDecls()
   '  CP_MAIN_RUN        - main(): entering runSession()
   '  CP_MAIN_SHUTDOWN   - main(): runSession() returned or aborted; watchdog stop, both stop()s
-  '  CP_MAIN_END        - main(): BC-END and the end marker
+  '  CP_MAIN_END        - main(): SIGNOFF verdicts, BC-END and the end marker
   '  CP_PREFLIGHT_LEFT  - preflightWheels(), LEFT wheel pass, including its PREFLIGHT_MS nudge
   '  CP_PREFLIGHT_RIGHT - preflightWheels(), RIGHT wheel pass, including its PREFLIGHT_MS nudge
   '  CP_HOLD            - runAllHolds()/measureHold(): one hold's sequencing between its steps
@@ -436,6 +512,47 @@ sExitComplete   BYTE    "COMPLETE", 0
 sExitAborted    BYTE    "ABORTED", 0
 sExitWatchdog   BYTE    "WATCHDOG", 0
 
+DAT { sign-off tokens, task 3521 phase C -- each within its TOKMAX_* }
+
+sSfBinChar      BYTE    "CHAR", 0
+sSfTaskIscale   BYTE    "3500", 0                           ' R2-CHAR-ISCALE: board detection
+sSfTaskInteg    BYTE    "3501", 0                           ' R3-CHAR-INTEG: hall integrity counters
+sSfTaskRpm      BYTE    "3502", 0                           ' R4-CHAR-RPM: live rpm
+sSfTaskSense    BYTE    "3503", 0                           ' R5-CHAR-SENSE: S-3 ADC scale
+sSfCellSense    BYTE    "R5-CHAR-SENSE", 0
+sSfCellRpm      BYTE    "R4-CHAR-RPM", 0
+sSfCellIscale   BYTE    "R2-CHAR-ISCALE", 0
+sSfCellInteg    BYTE    "R3-CHAR-INTEG", 0
+sSfCritSense    BYTE    "NET_VS_PASS1_PCT", 0
+sSfCritRpm      BYTE    "RPM_ERR", 0
+sSfCritIscale   BYTE    "RSENSE_IMPLIED", 0
+sSfCritInteg    BYTE    "MISSED_ILLEGAL_SUM", 0
+sSfUnitsPct     BYTE    "PCT_X10", 0
+sSfUnitsRpm     BYTE    "RPM", 0
+sSfUnitsCount   BYTE    "COUNT", 0
+sSfPass         BYTE    "PASS", 0
+sSfFail         BYTE    "FAIL", 0
+sSfNomeas       BYTE    "NOMEAS", 0
+
+DAT { Pass 1 meter current per hold, task 3521 phase C -- index HOLD_*, milliamps }
+
+' Each value is the meter mean for one Pass 1 hold (CHAR-RUN-EVALUATION.md, Readings table), placed
+' on THIS file's hold by MOTOR and SIGNED MOTOR INCREMENT as the Pass 1 log's BC-HOLD record gives
+' them (DOCs/analyses/bench/2026-09-12/debug_260912-153807.log) -- never by caption (Pass 1's
+' captions named robot frame while it drove motor frame, PL-19) and never by position. 0 means no
+' Pass 1 value, which makes that hold's R5-CHAR-SENSE instance NOMEAS permanently. Cross-check,
+' MEASURED in scan run 5 at default offsets (design sec A.5-d): the negative increment is the
+' high-current direction on both motors, so both values under 0.6 A sit on positive quarter holds.
+pass1HoldMilliAmps  LONG    0                               ' HOLD_ZERO: quiescent, no motion current to compare
+                    LONG    536                             ' HOLD_L_FWD_QTR  <- log:476  BC-HOLD hold 1 motor LEFT  cmd_incre  36_750_000, meter 0.536 A
+                    LONG    1_054                           ' HOLD_L_REV_QTR  <- log:864  BC-HOLD hold 2 motor LEFT  cmd_incre -36_750_000, meter 1.054 A
+                    LONG    570                             ' HOLD_R_FWD_QTR  <- log:1265 BC-HOLD hold 3 motor RIGHT cmd_incre  36_750_000, meter 0.570 A
+                    LONG    1_058                           ' HOLD_R_REV_QTR  <- log:1656 BC-HOLD hold 4 motor RIGHT cmd_incre -36_750_000, meter 1.058 A
+                    LONG    3_004                           ' HOLD_L_FWD_HALF <- log:2074 BC-HOLD hold 5 motor LEFT  cmd_incre  73_500_000, meter 3.004 A
+                    LONG    5_564                           ' HOLD_L_REV_HALF <- log:2464 BC-HOLD hold 6 motor LEFT  cmd_incre -73_500_000, meter 5.564 A
+                    LONG    3_140                           ' HOLD_R_FWD_HALF <- log:2869 BC-HOLD hold 7 motor RIGHT cmd_incre  73_500_000, meter 3.140 A
+                    LONG    5_530                           ' HOLD_R_REV_HALF <- log:3258 BC-HOLD hold 8 motor RIGHT cmd_incre -73_500_000, meter 5.530 A
+
 DAT { checkpoint tokens, task 3521 phase B -- one per CP_* in checkpointToken(), each at most TOKMAX_CP }
 
 sCpMainInit     BYTE    "MAIN_INIT", 0
@@ -576,6 +693,7 @@ PUB main() | trapCode, bWdStarted
     emitBanner()
     beat(CP_MAIN_PLAN)
     emitPlan()
+    emitSignoffDecls()                                      ' task 3521 phase C: declare every judged cell before anything moves
     beat(CP_MAIN_RUN)
     bRunReturned := FALSE
     trapCode := \runSession()                               ' a library abort lands here, not past the stop()s
@@ -594,6 +712,7 @@ PUB main() | trapCode, bWdStarted
             cogstop(wdCogId)
         shutdownMotors()                                    ' EVERY non-watchdog path: both wheels stop()
         beat(CP_MAIN_END)
+        emitSignoffs()                                      ' task 3521 phase C: every declared cell's instances, after the wheels stopped
         emitEnd(trapCode)
         beat(CP_NOTE)
         debug("* BENCH CHAR RUN COMPLETE -- safe to disconnect")
@@ -1717,6 +1836,241 @@ PRI emitEnd(trapCode)
     boundedField(@"holds_run", holdsRun, LIM_TINY)
     boolField(@"lib_abort", (bRunReturned == FALSE))
     naOrBoundedField(@"trap", trapCode, LIM_MID, (bRunReturned == FALSE))
+    lineEmit()
+
+PRI emitSignoffDecls()
+' Emit one SIGNOFF-DECL per cell this binary judges, right after BC-PLAN (task 3521 phase C).
+'
+
+    emitSignoffDecl(@sSfCellSense, @sSfTaskSense)
+    emitSignoffDecl(@sSfCellRpm, @sSfTaskRpm)
+    emitSignoffDecl(@sSfCellIscale, @sSfTaskIscale)
+    emitSignoffDecl(@sSfCellInteg, @sSfTaskInteg)
+
+PRI emitSignoffDecl(pCell, pTask)
+' Emit SIGNOFF-DECL for one cell.
+' Worst case, by clamp widths: tag(12) + sf(8) + bin(11) + cell(26) + task(11) = 68 bytes.
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+
+    lineReset()
+    lineAddText(@"SIGNOFF-DECL")
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    tokenField(@"bin", @sSfBinChar, TOKMAX_BIN)
+    tokenField(@"cell", pCell, TOKMAX_CELL)
+    tokenField(@"task", pTask, TOKMAX_TASK)
+    lineEmit()
+
+PRI emitSignoffs() | holdIdx, side, bMeasured, measuredVal, instCount
+' Emit every declared cell's SIGNOFF instances from the per-hold results: R5, R4 and R2 once per
+' motion hold (holds 1..8, all eight whether or not they ran -- a hold never reached is NOT_RUN and
+' gives NOMEAS), then R3 once per motor. Runs on cog 0's normal end path only, after both wheels
+' are stopped; no library call, no wait.
+'
+' @local holdIdx - HOLD_* motion hold
+' @local side - SIDE_* of the hold, or the motor of an R3 instance
+' @local bMeasured - TRUE when the instance was measured
+' @local measuredVal - the instance's measured value
+' @local instCount - samples, ticks or holds behind measuredVal
+
+    repeat holdIdx from HOLD_L_FWD_QTR to HOLD_R_REV_HALF
+        beat(CP_EMIT)
+        side, _, _, _, _, _ := holdInfo(holdIdx)
+        bMeasured, measuredVal, instCount := senseSignoffValue(holdIdx)
+        emitSignoff(@sSfCellSense, @sSfTaskSense, side, @sSfCritSense, bMeasured, measuredVal, SENSE_PCT_X10_LO, SENSE_PCT_X10_HI, @sSfUnitsPct, instCount)
+    repeat holdIdx from HOLD_L_FWD_QTR to HOLD_R_REV_HALF
+        beat(CP_EMIT)
+        side, _, _, _, _, _ := holdInfo(holdIdx)
+        bMeasured, measuredVal, instCount := rpmSignoffValue(holdIdx)
+        emitSignoff(@sSfCellRpm, @sSfTaskRpm, side, @sSfCritRpm, bMeasured, measuredVal, RPM_ERR_LO, RPM_ERR_HI, @sSfUnitsRpm, instCount)
+    repeat holdIdx from HOLD_L_FWD_QTR to HOLD_R_REV_HALF
+        beat(CP_EMIT)
+        side, _, _, _, _, _ := holdInfo(holdIdx)
+        bMeasured, measuredVal, instCount := iscaleSignoffValue(holdIdx)
+        emitSignoff(@sSfCellIscale, @sSfTaskIscale, side, @sSfCritIscale, bMeasured, measuredVal, RSENSE_IMPLIED_LO, RSENSE_IMPLIED_HI, @sSfUnitsCount, instCount)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        beat(CP_EMIT)
+        bMeasured, measuredVal, instCount := integSignoffValue(side)
+        emitSignoff(@sSfCellInteg, @sSfTaskInteg, side, @sSfCritInteg, bMeasured, measuredVal, INTEG_SUM_LO, INTEG_SUM_HI, @sSfUnitsCount, instCount)
+
+PRI senseSignoffValue(holdIdx) : bMeasured, measuredVal, sampleCount | milliAmps, expectedX10, diffX10
+' R5-CHAR-SENSE for one motion hold: the net sense mean against Pass 1's expected net, percent x10.
+'   expectedX10 = PASS1_FIT_MV_X10_PER_A x A_mA / 1000   (<= 1501 x 5_564 = 8_351_564 before the
+'                 divide; every operand positive, so the divide truncates down: at most 0.1 mV low)
+'   measuredVal = (holdNetX10 - expectedX10) x 1000 / expectedX10
+' holdNetX10 is within +/-2e9 (sampleWindow() clamps both operands to LIM_BIG), so the subtraction
+' of at most 8_351 stays above NEGX; the difference is then clamped to +/-SENSE_DIFF_X10_LIMIT, so x
+' 1000 is within +/-2e9 < POSX. The smallest divisor is 804 (hold 1), never 0. The final divide is
+' signed; for a negative difference its rounding direction (toward zero or down) is UNVERIFIED
+' here, and moves the result by less than 1 unit (0.1 %) either way. NOMEAS when the hold's result
+' is not RES_OK, its window or its zero took no samples, or it has no Pass 1 value.
+'
+' @param holdIdx - HOLD_* motion hold
+' @returns bMeasured - TRUE when the instance was measured
+' @returns measuredVal - percent x10 deviation from the Pass 1 expectation, 0 when not measured
+' @returns sampleCount - window samples behind the mean, 0 when not measured
+'
+' @local milliAmps - Pass 1 meter current for this hold, mA
+' @local expectedX10 - expected net sense, mV x10
+' @local diffX10 - net minus expected, clamped, mV x10
+
+    bMeasured := FALSE
+    measuredVal := 0
+    sampleCount := 0
+    milliAmps := LONG[@pass1HoldMilliAmps][holdIdx]
+    if (holdResultCode[holdIdx] == RES_OK) and (holdSamples[holdIdx] > 0) and (holdZeroSamples[holdIdx] > 0) and (milliAmps > 0)
+        expectedX10 := (PASS1_FIT_MV_X10_PER_A * milliAmps) / MA_PER_A
+        if expectedX10 > 0
+            diffX10 := ((holdNetX10[holdIdx] - expectedX10) #> (0 - SENSE_DIFF_X10_LIMIT)) <# SENSE_DIFF_X10_LIMIT
+            measuredVal := (diffX10 * PCT_X10_PER_UNIT) / expectedX10
+            sampleCount := holdSamples[holdIdx]
+            bMeasured := TRUE
+
+PRI rpmSignoffValue(holdIdx) : bMeasured, measuredVal, tickCount | expectedRpm, rpmMagnitude
+' R4-CHAR-RPM for one motion hold: the library's rpm against the rpm this file's own tick rate
+' implies. testGetRpm() returns rpm = (hallWindowSum x 60 x 10 / 90) / 10, and hallWindowSum is a
+' sum of absDistanceInTics() = abs() deltas (isp_bldc_motor.spin2 updateWindowAccumulators(),
+' updateHdmiData()), so rpm is a non-negative magnitude for either increment sign; abs() is taken
+' anyway. holdRateX10 is non-negative (abs ticks) and at most 999_990_000, so + 7 cannot overflow:
+'   expectedRpm = (holdRateX10 + RPM_ROUND_HALF_X10) / RATE_X10_PER_RPM   (round to nearest)
+'   measuredVal = |holdRpm| - expectedRpm, both operands within 0..LIM_BIG
+' NOMEAS when the result is not RES_OK, the motion fields are not valid, the sense task did not
+' start, or nothing moved by either measure (ticks 0 and rpm 0: agreement at zero proves nothing).
+'
+' @param holdIdx - HOLD_* motion hold
+' @returns bMeasured - TRUE when the instance was measured
+' @returns measuredVal - rpm error, 0 when not measured
+' @returns tickCount - hall ticks over the window behind the tick rate, 0 when not measured
+'
+' @local expectedRpm - rpm implied by the window's tick rate, rounded to nearest
+' @local rpmMagnitude - |testGetRpm()| clamped to LIM_BIG
+
+    bMeasured := FALSE
+    measuredVal := 0
+    tickCount := 0
+    if (holdResultCode[holdIdx] == RES_OK) and (bHoldMotionValid[holdIdx] == TRUE) and (holdSenseCog[holdIdx] >= 0)
+        rpmMagnitude := absValue((holdRpm[holdIdx] #> (0 - LIM_BIG)) <# LIM_BIG)
+        if (holdTicks[holdIdx] <> 0) or (rpmMagnitude <> 0)
+            expectedRpm := ((holdRateX10[holdIdx] #> 0) + RPM_ROUND_HALF_X10) / RATE_X10_PER_RPM
+            measuredVal := rpmMagnitude - expectedRpm
+            tickCount := holdTicks[holdIdx]
+            bMeasured := TRUE
+
+PRI iscaleSignoffValue(holdIdx) : bMeasured, measuredVal, sampleCount | rawX10, ampsMean, ampsPerThousand, quotVal, bBoardKnown
+' R2-CHAR-ISCALE for one motion hold: the sense resistance getCurrent() used, recovered from its
+' two window means. Units: holdRawX10 is mV x10 and holdAmpsMean is amps x 10_000, so
+'   measuredVal = holdRawX10 x 1000 / holdAmpsMean = (10 mV)(1000) / (10_000 A) = mV / A
+' which is rSenseForBoard: 150 on Rev B, 5 on a board detected as Rev A. At the largest plausible
+' raw mean (half speed ~900 mV, holdRawX10 9_000) the product is 9_000_000, far under POSX; the
+' direct form is used up to ISCALE_DIRECT_RAW_X10_MAX (product 2e9). Beyond it (a scale regression
+' only) the divide goes first, so nothing overflows: by holdAmpsMean / 1000 when that is at least
+' 1 (within 0.01 % wherever the ratio is near the band), otherwise the quotient clamped to
+' ISCALE_QUOT_MAX then x 1000 (there the ratio exceeds 2_000_000, far outside the band). NOMEAS when
+' the result is not RES_OK, the window took no samples, the start-time board revision is not REV_A
+' or REV_B (PL-25: getCurrent() divides by -1 then), or holdAmpsMean <= 0.
+'
+' @param holdIdx - HOLD_* motion hold
+' @returns bMeasured - TRUE when the instance was measured
+' @returns measuredVal - implied sense resistance in mV per amp, 0 when not measured
+' @returns sampleCount - window samples behind the means, 0 when not measured
+'
+' @local rawX10 - window raw sense mean, mV x10
+' @local ampsMean - window getCurrent() mean, amps x 10_000
+' @local ampsPerThousand - ampsMean / ISCALE_RATIO_SCALE, for the divide-first form
+' @local quotVal - rawX10 / ampsMean, clamped, for the divide-first form
+' @local bBoardKnown - TRUE when the start-time board revision is REV_A or REV_B
+
+    bMeasured := FALSE
+    measuredVal := 0
+    sampleCount := 0
+    bBoardKnown := (holdBoardRev[holdIdx] == wheelL.REV_A) or (holdBoardRev[holdIdx] == wheelL.REV_B)
+    ampsMean := holdAmpsMean[holdIdx]
+    if (holdResultCode[holdIdx] == RES_OK) and (holdSamples[holdIdx] > 0) and bBoardKnown and (ampsMean > 0)
+        rawX10 := holdRawX10[holdIdx]
+        if absValue(rawX10) <= ISCALE_DIRECT_RAW_X10_MAX
+            measuredVal := (rawX10 * ISCALE_RATIO_SCALE) / ampsMean
+        else
+            ampsPerThousand := ampsMean / ISCALE_RATIO_SCALE
+            if ampsPerThousand > 0
+                measuredVal := rawX10 / ampsPerThousand
+            else
+                quotVal := ((rawX10 / ampsMean) #> (0 - ISCALE_QUOT_MAX)) <# ISCALE_QUOT_MAX
+                measuredVal := quotVal * ISCALE_RATIO_SCALE
+        sampleCount := holdSamples[holdIdx]
+        bMeasured := TRUE
+
+PRI integSignoffValue(side) : bMeasured, integSum, holdCount | holdIdx, holdSide
+' R3-CHAR-INTEG for one motor: missed + illegal hall counts summed over every hold of that motor
+' whose counts were read from a running cog, including hold 0 for HOLD_ZERO_SIDE. Each count's
+' magnitude is clamped to LIM_MID, so a negative (corrupt) count still adds and the sum is at most
+' 9 x 2 x 9_999_999 < POSX. NOMEAS with n 0 when no hold of that motor has valid counts.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bMeasured - TRUE when at least one hold's counts were summed
+' @returns integSum - missed + illegal over the summed holds
+' @returns holdCount - holds summed
+'
+' @local holdIdx - HOLD_* index
+' @local holdSide - SIDE_* of that hold
+
+    integSum := 0
+    holdCount := 0
+    repeat holdIdx from HOLD_ZERO to HOLD_COUNT - 1
+        beat(CP_EMIT)
+        holdSide, _, _, _, _, _ := holdInfo(holdIdx)
+        if (holdSide == side) and (bHoldIntegValid[holdIdx] == TRUE)
+            integSum += (absValue(holdMissed[holdIdx]) <# LIM_MID) + (absValue(holdIllegal[holdIdx]) <# LIM_MID)
+            holdCount += 1
+    bMeasured := (holdCount > 0)
+
+PRI emitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, pUnits, instCount) | boundedVal, pVerdict
+' Emit one SIGNOFF verdict (design sec B.1, sf 1) from the existing line builder. measured is
+' clamped to LIM_BIG first and the verdict is judged on that printed value, so a record always
+' agrees with its own numbers (every limit here is far inside LIM_BIG). PASS only when measured
+' AND in loLimit..hiLimit; FAIL when measured and outside; NOMEAS, with measured NA and n 0, when
+' not measured.
+' Worst case, by clamp widths: tag(7) + sf(8) + bin(11) + cell(26) + task(11) + motor(12) +
+' crit(24) + measured(22) + lo(16) + hi(16) + units(15) + n(10) + verdict(18) = 196 bytes.
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+' @param side - SIDE_* the instance belongs to
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the instance was measured
+' @param measuredVal - the instance's measured value
+' @param loLimit - lowest passing value, compiled in
+' @param hiLimit - highest passing value, compiled in
+' @param pUnits - pointer to the units token
+' @param instCount - samples, ticks or holds behind measuredVal
+'
+' @local boundedVal - measuredVal clamped to +/-LIM_BIG
+' @local pVerdict - PASS, FAIL or NOMEAS token
+
+    boundedVal := (measuredVal #> (0 - LIM_BIG)) <# LIM_BIG
+    if bMeasured == FALSE
+        pVerdict := @sSfNomeas
+    elseif (boundedVal >= loLimit) and (boundedVal <= hiLimit)
+        pVerdict := @sSfPass
+    else
+        pVerdict := @sSfFail
+    lineReset()
+    lineAddText(@"SIGNOFF")
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    tokenField(@"bin", @sSfBinChar, TOKMAX_BIN)
+    tokenField(@"cell", pCell, TOKMAX_CELL)
+    tokenField(@"task", pTask, TOKMAX_TASK)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    naOrBoundedField(@"measured", boundedVal, LIM_BIG, bMeasured)
+    boundedField(@"lo", loLimit, LIM_BIG)
+    boundedField(@"hi", hiLimit, LIM_BIG)
+    tokenField(@"units", pUnits, TOKMAX_UNITS)
+    if bMeasured
+        boundedField(@"n", instCount, LIM_SMALL)
+    else
+        boundedField(@"n", 0, LIM_SMALL)
+    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     lineEmit()
 
 PRI boundedField(pFieldName, numValue, limitAbs)
