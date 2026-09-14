@@ -36,11 +36,11 @@
 
 - **R1-SCAN-COGOK** (row 1, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit STARTS_COG_BAD, lo 0, hi 0, units COUNT, min_inst 2; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
-- **R1-T0-START** (row 1, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit RET_EQ_COG_M1, lo 0, hi 7, units COGID, min_inst 1; manifest status OWED
+- **R1-T0-START** (row 1, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit RET_EQ_COG_M1, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
-- **R1-T0-EXHAUST** (row 1, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit RET_NEG_NOLEAK, lo -1, hi -1, units COGID, min_inst 1; manifest status OWED
+- **R1-T0-EXHAUST** (row 1, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit RET_NEG_NOLEAK, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
-- **R1-T0-RESTART** (row 1, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit NO_ORPHAN, lo 0, hi 0, units COUNT, min_inst 1; manifest status OWED
+- **R1-T0-RESTART** (row 1, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit NO_ORPHAN, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R2-SCAN-REVB** (row 2, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit STARTS_NOT_REVB, lo 0, hi 0, units COUNT, min_inst 2; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
@@ -64,7 +64,7 @@
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R3-T0-STOPPED** (row 3, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit STOPPED_COUNTS, lo 0, hi 0, units COUNT, min_inst 1; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
-- **R4-T0-1M-TICKS** (row 4, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit DDU_M_TICKS, lo 173, hi 174, units TICKS, min_inst 1; manifest status OWED
+- **R4-T0-1M-TICKS** (row 4, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit DDU_M_TICKS, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R4-CHAR-RPM** (row 4, bin CHAR) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit RPM_ERR, lo -2, hi 2, units RPM, min_inst 8; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it

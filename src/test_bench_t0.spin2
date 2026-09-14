@@ -15,6 +15,9 @@
 ''               (cog exhaustion) runs last, T0-12 hand-rotation anchor split out under
 ''               -D T0_HAND, and PL-23's remaining T0 booleans (T0-3 agree, T0-4 legal) fixed
 ''               to print TRUE/FALSE.
+''               14 Sep 2026 -- task 3537 T0 BOOL: R4-T0-1M-TICKS, R1-T0-START, R1-T0-RESTART and
+''               R1-T0-EXHAUST are BOOL cells (measured TRUE/FALSE = every condition ANDed), so
+''               no record can print an in-band number beside a FAIL.
 ''
 '' =================================================================================================
 
@@ -323,9 +326,10 @@ PRI testT0_3() | ticksM, ticksCm, ticksMm, trappedM, trappedCm, trappedMm, bAgre
 ' "! ERROR:" debug() line, which appears in the same capture right after each
 ' tag below when the call actually aborted.
 '
-' task 3504 / R4-T0-1M-TICKS: the DDU_M reading (ticksM) is the cell's measured
-' value against SF_TICKS_LO..SF_TICKS_HI (SS A.5-b); the cell also FAILs if the
-' three units disagree, since agreement is required for any of them to be trusted.
+' task 3504 / R4-T0-1M-TICKS: a BOOL cell (task 3537). measured is TRUE only when
+' the DDU_M reading (ticksM) is in SF_TICKS_LO..SF_TICKS_HI (SS A.5-b) AND the
+' three units agree, since agreement is required for any of them to be trusted.
+' The three raw tick targets are printed on the T0-3 ddu_* lines above it.
 '
 ' @local ticksM - motorStopHallTicks after stopAfterDistance(1, DDU_M)
 ' @local ticksCm - motorStopHallTicks after stopAfterDistance(100, DDU_CM)
@@ -335,7 +339,7 @@ PRI testT0_3() | ticksM, ticksCm, ticksMm, trappedM, trappedCm, trappedMm, bAgre
 ' @local trappedMm - stopAfterDistance(1000, DDU_MM)'s trapped return value
 ' @local bAgree - TRUE when all three tick readings match (PL-23: printed as TRUE/FALSE)
 ' @local bTicksInBand - TRUE when ticksM falls in SF_TICKS_LO..SF_TICKS_HI
-' @local bPass - bAgree and bTicksInBand, this cell's verdict
+' @local bPass - bAgree and bTicksInBand, this cell's measured value and verdict
 
     debug("T0-3,begin")
 
@@ -356,7 +360,7 @@ PRI testT0_3() | ticksM, ticksCm, ticksMm, trappedM, trappedCm, trappedMm, bAgre
 
     bTicksInBand := (ticksM >= SF_TICKS_LO) and (ticksM <= SF_TICKS_HI)
     bPass := bAgree and bTicksInBand
-    debug("SIGNOFF,sf,1,bin,T0,cell,R4-T0-1M-TICKS,task,3502,motor,NONE,crit,DDU_M_TICKS,measured,", sdec_(ticksM), ",lo,", sdec_(SF_TICKS_LO), ",hi,", sdec_(SF_TICKS_HI), ",units,TICKS,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R4-T0-1M-TICKS,task,3502,motor,NONE,crit,DDU_M_TICKS,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
 PRI testT0_4() | pwrEnum, legalVolt, trappedResult
 ' O: validVoltageForChoice() never aborts, so the full PWR_* sweep is safe.
@@ -772,26 +776,28 @@ PRI countFreeCogs() : freeCount | idx, spareCogId, spareId[MAX_SPACER_COGS]
 
 PRI testT0_15a() | startResult, rawMotorCog, bPass
 ' R1-T0-START (task 3499), design SS H.1: start() on P16. The return must be
-' in 0..7 and equal testGetMotorCog() - 1.
+' in 0..7 and equal testGetMotorCog() - 1. A BOOL cell (task 3537): measured is
+' TRUE only when both hold; the two raw numbers are on the T0-15a line.
 '
 ' @local startResult - \-trapped start() return
 ' @local rawMotorCog - testGetMotorCog()'s snapshot, taken right after start()
-' @local bPass - this cell's verdict
+' @local bPass - this cell's measured value and verdict
 
     debug("T0-15,begin,start")
     startResult := \motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     rawMotorCog := motor.testGetMotorCog()
     bPass := (startResult >= SF_COG_LO) and (startResult <= SF_COG_HI) and (startResult == rawMotorCog - 1)
     debug("T0-15a,start_return,", sdec_(startResult), ",raw_motor_cog,", sdec_(rawMotorCog))
-    debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-START,task,3499,motor,NONE,crit,RET_EQ_COG_M1,measured,", sdec_(startResult), ",lo,", sdec_(SF_COG_LO), ",hi,", sdec_(SF_COG_HI), ",units,COGID,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-START,task,3499,motor,NONE,crit,RET_EQ_COG_M1,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
     motor.stop()
 
 PRI testT0_15c() | baseline, startResult1, free1, startResult2, free2, free3, diffFree, bPass
 ' R1-T0-RESTART (task 3499), design SS H.1: count free cogs (baseline) ->
 ' start() -> free1 -> start() again with NO stop() -> free2 -> stop() ->
-' free3. measured = |free2 - free1| + |free3 - baseline|; also requires
-' free1 == baseline - 1 (PL-24: a second start() must not orphan the first
-' cog). T0-15d reads state immediately after this test's own stop(), so it
+' free3. A BOOL cell (task 3537): measured is TRUE only when
+' |free2 - free1| + |free3 - baseline| == 0 AND free1 == baseline - 1 (PL-24:
+' a second start() must not orphan the first cog); the four free-cog counts
+' are on the T0-15c line. T0-15d reads state immediately after this test's own stop(), so it
 ' must be called right after this one from main().
 '
 ' @local baseline - free cogs before either start()
@@ -800,8 +806,8 @@ PRI testT0_15c() | baseline, startResult1, free1, startResult2, free2, free3, di
 ' @local startResult2 - \-trapped second start() return, no intervening stop()
 ' @local free2 - free cogs after the second start()
 ' @local free3 - free cogs after this test's stop()
-' @local diffFree - abs(free2-free1) + abs(free3-baseline), this cell's measured value
-' @local bPass - this cell's verdict
+' @local diffFree - abs(free2-free1) + abs(free3-baseline), one of this cell's two conditions
+' @local bPass - this cell's measured value and verdict
 
     debug("T0-15,begin,restart")
     baseline := countFreeCogs()
@@ -814,7 +820,7 @@ PRI testT0_15c() | baseline, startResult1, free1, startResult2, free2, free3, di
     diffFree := abs(free2 - free1) + abs(free3 - baseline)
     bPass := (diffFree == SF_RESTART_LO) and (free1 == baseline - 1)
     debug("T0-15c,baseline,", udec_(baseline), ",free1,", udec_(free1), ",start1,", sdec_(startResult1), ",free2,", udec_(free2), ",start2,", sdec_(startResult2), ",free3,", udec_(free3))
-    debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-RESTART,task,3499,motor,NONE,crit,NO_ORPHAN,measured,", sdec_(diffFree), ",lo,", sdec_(SF_RESTART_LO), ",hi,", sdec_(SF_RESTART_HI), ",units,COUNT,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-RESTART,task,3499,motor,NONE,crit,NO_ORPHAN,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
 PRI testT0_15d() | bReady, bStopped, eState, bPass
 ' R10-T0-STOPREADY (task 3533), design SS H.1: right after T0-15c's own
@@ -932,9 +938,10 @@ PRI testT0_10() | startResult, rawMotorCog, pinAdcX, xNodeCounts
 PRI testT0_15b() | spacerIdx, spacerCogId, spacerCount, spacerId[MAX_SPACER_COGS], baseline, startResult, rawMotorCog, freeAfter, bPass
 ' R1-T0-EXHAUST (task 3499), design SS H.1: runs LAST, after T0-8's slot.
 ' Count free cogs (baseline), occupy every free cog, call the real start(),
-' release the spacers, count free cogs again. measured = start()'s return;
-' also requires testGetMotorCog() == 0 and free cogs after release ==
-' baseline, so this test itself can never leave the suite short a cog.
+' release the spacers, count free cogs again. A BOOL cell (task 3537):
+' measured is TRUE only when start() returns -1 AND testGetMotorCog() == 0 AND
+' free cogs after release == baseline, so this test itself can never leave the
+' suite short a cog; the raw numbers are on the T0-15b line.
 '
 ' Deliberately its own spacer loop (not countFreeCogs(), which stops its
 ' spacers again immediately) -- this test needs the cogs held OCCUPIED across
@@ -948,7 +955,7 @@ PRI testT0_15b() | spacerIdx, spacerCogId, spacerCount, spacerId[MAX_SPACER_COGS
 ' @local startResult - \-trapped start() return under total cog exhaustion
 ' @local rawMotorCog - testGetMotorCog()'s snapshot after the failed start()
 ' @local freeAfter - free cogs after this test releases its spacers
-' @local bPass - this cell's verdict
+' @local bPass - this cell's measured value and verdict
 
     debug("T0-15,begin,exhaust")
     baseline := countFreeCogs()
@@ -971,7 +978,7 @@ PRI testT0_15b() | spacerIdx, spacerCogId, spacerCount, spacerId[MAX_SPACER_COGS
     freeAfter := countFreeCogs()
     bPass := (startResult == SF_EXHAUST_LO) and (rawMotorCog == 0) and (freeAfter == baseline)
     debug("T0-15b,cogs_occupied,", udec_(spacerCount), ",start_return,", sdec_(startResult), ",raw_motor_cog,", sdec_(rawMotorCog), ",baseline,", udec_(baseline), ",free_after,", udec_(freeAfter))
-    debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-EXHAUST,task,3499,motor,NONE,crit,RET_NEG_NOLEAK,measured,", sdec_(startResult), ",lo,", sdec_(SF_EXHAUST_LO), ",hi,", sdec_(SF_EXHAUST_HI), ",units,COGID,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-EXHAUST,task,3499,motor,NONE,crit,RET_NEG_NOLEAK,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
 #ifdef T0_HAND
 PRI testT0_12() | keyCode, bArmed, hallPin, hallCode, priorCode, transitions, illegalCount, pollIdx
