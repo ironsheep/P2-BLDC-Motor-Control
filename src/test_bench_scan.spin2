@@ -37,6 +37,11 @@
 ''               the same fine-walk-into-the-fault-edge probe the quarter-speed coarse walk
 ''               already had, so a fault no longer leaves an unmeasured gap between the last good
 ''               confirm point and the edge
+''   Updated.... 13 Sep 2026 -- task 3537 phase 2b1 (SRC_REV 7, fmt 7): BS-BUILD and SIGNOFF-DECL
+''               header records, run-level SIGNOFF verdicts on cog 0's normal end path, an
+''               R11-SCAN-NOSTALL FAIL from the watchdog on a stall, beat() parks cog 0 once the
+''               watchdog has declared, BS-ZERO health_ok is NA except at ZERO_INIT (PL-34), and
+''               unknown phase/reason values print UNKNOWN
 ''
 '' =================================================================================================
 
@@ -75,8 +80,20 @@
   DEBUG_END_SESSION marker. The driver's own angle-lag fault disables PWM regardless.
   PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY.
 
-  RECOVERY after a faulted point sends a ZERO command first: the driver leaves DCS_FAULTED only
-  when a changed command arrives, so testResetFault() alone would wait out its timeout.
+  RECOVERY after a faulted point sends a ZERO command first, then waits STOPPED: the driver leaves
+  DCS_FAULTED only when a changed command arrives. Before commit 67d11f6 (task 3533, PL-28)
+  testResetFault() did not send one, so a reset alone waited out its timeout; since that commit it
+  sends the zero command itself. The zero-first order is kept because it is the sequence scan runs
+  3-5 measured, not because the reset still needs it.
+
+  SIGN-OFF VERDICTS (task 3537; DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B, F). Right after BS-BANNER
+  come BS-BUILD and one SIGNOFF-DECL per cell this build judges. The scan accumulates per-motor
+  facts where it already has them (startSide, measureZero, measurePoint, runSelfCheck,
+  applyOffsets) and emits every declared cell's SIGNOFF instances once, from emitSignoffs(), on
+  cog 0's normal end path: after the watchdog is stopped and both wheels are shut down, before
+  BS-END. A cell with nothing measured is NOMEAS with n 0, never PASS. On the watchdog path the
+  only verdict is R11-SCAN-NOSTALL FAIL, emitted by the watchdog cog; the host reads every other
+  declared cell with no verdict as NOMEAS.
 
   RECORD DISCIPLINE
 
@@ -99,8 +116,16 @@
 
 CON { build identity }
 
-    SRC_REV     = 6                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 6                                         ' BS- record-format version
+    SRC_REV     = 7                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 7                                         ' BS- record-format version
+
+' fmt 7 changes (task 3537 phase 2b1; no existing record's field names or order change):
+'   - new BS-BUILD record right after BS-BANNER: wd_selftest TRUE/FALSE, sf.
+'   - new SIGNOFF-DECL records after BS-BUILD and SIGNOFF records before BS-END (sign-off format
+'     sf 1, design sec B.1). The watchdog path emits one SIGNOFF, R11-SCAN-NOSTALL FAIL.
+'   - BS-ZERO health_ok prints NA for every phase except ZERO_INIT (PL-34, design sec F.6); before
+'     fmt 7 a per-point zero printed the motor block's ZERO_INIT verdict under that label.
+'   - a phase or abort-reason value with no token prints UNKNOWN instead of ZERO_INIT / ABORT_I.
 
 ' fmt 6 meaning changes (field NAMES and record layouts are unchanged from fmt 5 except the new
 ' BS-POINT3 record -- these are the same fields now carrying a different, corrected quantity):
@@ -413,6 +438,65 @@ CON { record assembly buffer }
     DEC_RADIX        = 10
     DIGITS_PER_GROUP = 3
 
+CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1 }
+
+' Sign-off format version, independent of FMT_VERSION. Every limit below is compiled in and printed
+' in each SIGNOFF record, so the host catches a binary built with a stale limit.
+    SF_VERSION = 1
+
+' Token field length limits (design sec B.3); a longer token prints "?" and cannot match a cell.
+' The owning todo-mcp task prints as a plain DAT text token (sSfTask*), never through boundedField(),
+' whose digit grouping would print 3_499.
+    TOKMAX_TASK      = 5
+    TOKMAX_BIN       = 6
+    TOKMAX_CELL      = 20
+    TOKMAX_CRIT      = 18
+    TOKMAX_UNITS     = 8
+    TOKMAX_SFVERDICT = 9
+
+' R1-SCAN-COGOK, crit STARTS_COG_BAD, units COUNT. DERIVED (design sec A.4 row 1): the contract is
+' start()'s @returns (a cog id 0..7, or -1; isp_bldc_motor.spin2 start()). A start is bad when its
+' return is outside 0..7 OR does not equal testGetMotorCog() - 1 (the cog the driver really runs in),
+' and the count of bad starts must be 0. MEASURED negative limb: before task 3499 start() returned 0
+' while testGetMotorCog() read 2 (DOCs/analyses/bench/2026-09-11/debug_260911-143911.log, T0-10).
+    COG_BAD_LO = 0
+    COG_BAD_HI = 0
+
+' R2-SCAN-REVB, crit STARTS_NOT_REVB, units COUNT. MEASURED (design sec A.4 row 2): Rev B at all
+' eight starts of scan run 5 (SCAN-RUN-5-EVALUATION.md sec 1); the bench boards are both Rev B.
+    NOT_REVB_LO = 0
+    NOT_REVB_HI = 0
+
+' R3-SCAN-INTEG, crit MISSED_ILLEGAL_SUM, units COUNT. MEASURED (design sec A.4 row 3): missed 0 and
+' illegal 0 at every start and every point of scan run 5; DERIVED: at <= 212 ticks/s against the
+' driver's 43.9 kHz loop no hall transition can be skipped.
+    INTEG_SUM_LO = 0
+    INTEG_SUM_HI = 0
+
+' R6-SCAN-OFFSETS, crit READBACK_BAD, units COUNT. MEASURED (design sec A.4 row 6): offsets read back
+' exactly at every start of scan run 5; DERIVED: the read-back is integer degrees, so exact.
+    READBACK_BAD_LO = 0
+    READBACK_BAD_HI = 0
+
+' R7-SCAN-STARTILL, crit STARTS_ILLEGAL, units COUNT. MEASURED (design sec A.4 row 7): illegal 0 at
+' every start since the task 3524 fix; DERIVED: before it the first hall read went illegal.
+    START_ILLEGAL_LO = 0
+    START_ILLEGAL_HI = 0
+
+' R12-SCAN-ALIVE, crit STARTS_NOT_ALIVE, units COUNT. DERIVED from MEASURED (design sec A.5-g): a
+' start is alive when its driver reported ready within READY_TIMEOUT_MS AND the first zero of that
+' driver lifetime is not frozen (min <> max). A live channel spans 6-8 mV over ZERO_SAMPLES (see
+' ZERO_SPREAD_MAX_MV); a status block the driver is not rewriting reads min = max exactly (PL-21).
+    NOT_ALIVE_LO = 0
+    NOT_ALIVE_HI = 0
+
+' R5-SCAN-SELF (crit NET_I_IN_BAND), R12-SCAN-RATE (crit RATE_IN_BAND) and R11-SCAN-NOSTALL (crit
+' ENDED_BY_COG0) are units BOOL: lo TRUE, hi TRUE, printed by emitSignoffBool(). Their bands are the
+' scan's own: POS/NEG_QTR_NET_*_MV (MEASURED, design sec A.4 row 5), RATE_QTR_LO..HI (MEASURED, run 5
+' self-check 98.1/98.2 ticks/s, row 12), and reaching cog 0's end path (MEASURED: run 5 stopped
+' emitting without ending, row 11).
+    SIGNOFF_ONE_INSTANCE = 1
+
 CON { cog-0 progress checkpoints -- watchdog heartbeat contract, task 3534 }
 
 ' A checkpoint id names the smallest statement group cog 0 is currently inside, so a stall's
@@ -471,6 +555,9 @@ CON { watchdog cog, task 3534 }
 '   wdLineAddNum()     1 param  + 0 returns + 14 locals (digitStack[11] + 3)  = 15
 '   wdLineAddChar()    1 param  + 0 returns + 0 locals                        =  1
 '                                                                      total  = 32 longs
+' Task 3537 re-count: declareStall() now also calls wdEmitSignoffBool() (7 params + 1 local = 8),
+' whose deepest chain is its n field: 3 + 1 + 8 + wdBoundedField 3 + wdLineField 2 + wdLineAddNum
+' 15 + wdLineAddChar 1 = 33 longs. That is the new deepest path, one long deeper than above.
 ' -- comfortably under half of 128, so WD_STACK_LONGS = 128 (the app note's own "can't overflow
 ' while measuring" starting point) is used directly rather than shrunk to ~1.5x an unmeasured
 ' number. The frame count does not add the interpreter's own per-call bookkeeping, which the app
@@ -548,6 +635,7 @@ sPhExtend       BYTE    "EXTEND", 0
 sPhRefEnd       BYTE    "REF_END", 0
 sPhCliff        BYTE    "CLIFF", 0
 sPhZeroInit     BYTE    "ZERO_INIT", 0
+sPhUnknown      BYTE    "UNKNOWN", 0                        ' a PH_* value phaseToken() has no case for
 
 sPrOk           BYTE    "OK", 0
 sPrFault        BYTE    "FAULT", 0
@@ -599,6 +687,7 @@ sArIncreGuard   BYTE    "INCRE_GUARD", 0
 sArOfsReadback  BYTE    "OFFSET_READBACK", 0
 sArAbortI       BYTE    "ABORT_I", 0
 sArWatchdog     BYTE    "WATCHDOG", 0
+sArUnknown      BYTE    "UNKNOWN", 0                        ' an AR_* value reasonToken() has no case for
 
 sScopeRun       BYTE    "RUN", 0
 sScopePoint     BYTE    "POINT", 0
@@ -638,6 +727,41 @@ sOrderPosFirst  BYTE    "POS_FIRST", 0
 
 sExitComplete   BYTE    "COMPLETE", 0
 sExitAborted    BYTE    "ABORTED", 0
+
+DAT { sign-off tokens, task 3537 -- each within its TOKMAX_* }
+
+sSfBinScan      BYTE    "SCAN", 0
+sSfTaskCogOk    BYTE    "3499", 0                           ' R1-SCAN-COGOK: start() return contract
+sSfTaskRevB     BYTE    "3500", 0                           ' R2-SCAN-REVB: board detection
+sSfTaskInteg    BYTE    "3501", 0                           ' R3-SCAN-INTEG: hall integrity counters
+sSfTaskSelf     BYTE    "3503", 0                           ' R5-SCAN-SELF: S-3 ADC scale restore
+sSfTaskOffsets  BYTE    "3519", 0                           ' R6-SCAN-OFFSETS: independent offset setter
+sSfTaskStartIll BYTE    "3524", 0                           ' R7-SCAN-STARTILL: hall inputs not driven at start
+sSfTaskNoStall  BYTE    "3534", 0                           ' R11-SCAN-NOSTALL: scan watchdog
+sSfTaskLut      BYTE    "3535", 0                           ' R12-SCAN-ALIVE / R12-SCAN-RATE: driver start code in the cog LUT
+sSfCellCogOk    BYTE    "R1-SCAN-COGOK", 0
+sSfCellRevB     BYTE    "R2-SCAN-REVB", 0
+sSfCellInteg    BYTE    "R3-SCAN-INTEG", 0
+sSfCellSelf     BYTE    "R5-SCAN-SELF", 0
+sSfCellOffsets  BYTE    "R6-SCAN-OFFSETS", 0
+sSfCellStartIll BYTE    "R7-SCAN-STARTILL", 0
+sSfCellNoStall  BYTE    "R11-SCAN-NOSTALL", 0
+sSfCellAlive    BYTE    "R12-SCAN-ALIVE", 0
+sSfCellRate     BYTE    "R12-SCAN-RATE", 0
+sSfCritCogBad   BYTE    "STARTS_COG_BAD", 0
+sSfCritNotRevB  BYTE    "STARTS_NOT_REVB", 0
+sSfCritInteg    BYTE    "MISSED_ILLEGAL_SUM", 0
+sSfCritNetI     BYTE    "NET_I_IN_BAND", 0
+sSfCritReadback BYTE    "READBACK_BAD", 0
+sSfCritStartIll BYTE    "STARTS_ILLEGAL", 0
+sSfCritCog0End  BYTE    "ENDED_BY_COG0", 0
+sSfCritNotAlive BYTE    "STARTS_NOT_ALIVE", 0
+sSfCritRate     BYTE    "RATE_IN_BAND", 0
+sSfUnitsCount   BYTE    "COUNT", 0
+sSfUnitsBool    BYTE    "BOOL", 0
+sSfPass         BYTE    "PASS", 0
+sSfFail         BYTE    "FAIL", 0
+sSfNomeas       BYTE    "NOMEAS", 0
 
 DAT { checkpoint tokens, task 3534 -- one per CP_* in checkpointToken() }
 
@@ -798,6 +922,24 @@ VAR { results, index = resultSlot(side, sign, speed) }
     LONG    zeroMeanX10[SIDE_SLOTS]
     LONG    bZeroOk[SIDE_SLOTS]
 
+VAR { sign-off accumulators, task 3537 -- index sideSlot(side); cog 0 only, the watchdog reads none }
+
+    LONG    sfStarts[SIDE_SLOTS]                            ' startSide() calls
+    LONG    sfCogBad[SIDE_SLOTS]                            ' starts whose start() return was outside 0..MAX_COG_ID or not testGetMotorCog() - 1
+    LONG    sfRevbBad[SIDE_SLOTS]                           ' starts not detected as Rev B
+    LONG    sfReadbacks[SIDE_SLOTS]                         ' offset read-backs checked: every start + every applyOffsets()
+    LONG    sfOffsetsBad[SIDE_SLOTS]                        ' offset read-backs that did not match
+    LONG    sfStartIllegal[SIDE_SLOTS]                      ' starts whose start-time illegal hall count was non-zero
+    LONG    sfIntegSum[SIDE_SLOTS]                          ' missed + illegal over starts and integrity-valid points, saturated at LIM_BIG
+    LONG    sfIntegN[SIDE_SLOTS]                            ' integrity-valid points summed into sfIntegSum
+    LONG    sfAliveJudged[SIDE_SLOTS]                       ' starts judged alive or not (R12-SCAN-ALIVE's n)
+    LONG    sfNotAlive[SIDE_SLOTS]                          ' judged starts that were not alive
+    LONG    bSfLifetimeFresh[SIDE_SLOTS]                    ' TRUE from a ready start until its lifetime's first zero is judged
+    LONG    bSfSelfIRan[SIDE_SLOTS]                         ' TRUE when the self-check's net-current result is a measurement
+    LONG    bSfSelfIOk[SIDE_SLOTS]                          ' TRUE when both self-check net current bands held
+    LONG    bSfSelfRateRan[SIDE_SLOTS]                      ' TRUE when the self-check's rate result is a measurement
+    LONG    bSfSelfRateOk[SIDE_SLOTS]                       ' TRUE when the self-check's rate check held
+
 VAR { watchdog cog, task 3534 }
 
     LONG    wdStack[WD_STACK_LONGS]
@@ -827,7 +969,9 @@ PUB main() | trapCode
     trapCode := \runScan()                                  ' a library abort lands here, not past the stop()s
     if bRunReturned == FALSE
         setRunAbort(AR_LIB_ABORT, trapCode)
-    shutdownMotors()                                        ' EVERY path: both wheels stop()
+    shutdownMotors()                                        ' every cog-0 path: both wheels stop() (on the watchdog
+                                                             ' path beat() parks cog 0 before this; the watchdog
+                                                             ' has already stopped both wheels)
     ' Stop the watchdog cog (if it started) BEFORE emitEnd()/the marker, or a silent cog 0 -- now
     ' true, since main() is about to fall off the end -- would leave it counting toward its own
     ' WD_STALL_MS and firing a bogus second BS-WATCHDOG/BS-END/marker 4 s later (found in review).
@@ -841,6 +985,7 @@ PUB main() | trapCode
     if wdDeclaring == FALSE
         if wdCogId >= 0
             cogstop(wdCogId)
+        emitSignoffs()                                      ' task 3537: every declared cell, watchdog stopped, wheels stopped
         emitEnd()
         ' QUOTED, not backticked -- a backtick makes it a display command and the marker is missed.
         debug("DEBUG_END_SESSION")
@@ -881,6 +1026,21 @@ PRI initRunState() | slotIdx
     repeat slotIdx from 0 to SIDE_SLOTS - 1
         zeroMeanX10[slotIdx] := 0
         bZeroOk[slotIdx] := FALSE
+        sfStarts[slotIdx] := 0                              ' task 3537 sign-off accumulators
+        sfCogBad[slotIdx] := 0
+        sfRevbBad[slotIdx] := 0
+        sfReadbacks[slotIdx] := 0
+        sfOffsetsBad[slotIdx] := 0
+        sfStartIllegal[slotIdx] := 0
+        sfIntegSum[slotIdx] := 0
+        sfIntegN[slotIdx] := 0
+        sfAliveJudged[slotIdx] := 0
+        sfNotAlive[slotIdx] := 0
+        bSfLifetimeFresh[slotIdx] := FALSE
+        bSfSelfIRan[slotIdx] := FALSE
+        bSfSelfIOk[slotIdx] := FALSE
+        bSfSelfRateRan[slotIdx] := FALSE
+        bSfSelfRateOk[slotIdx] := FALSE
 
 PRI runScan() : bCompleted
 ' Preflight, then the LEFT and RIGHT motor blocks. Every stage is skipped once the run aborts.
@@ -1007,13 +1167,18 @@ PRI restartSide(side) : bStartOk
     bStartOk := startSide(side)
 
 PRI startSide(side) : bStartOk | startedCog, initNeg, initPos, eBoardRev, nMissed, nIllegal, ...
-    readNeg, readPos, bCogOk, bRevB, bOffsetsOk, bIntegOk
+    readNeg, readPos, bCogOk, bRevB, bOffsetsOk, bIntegOk, bReady, startSlot, bCogMatch
 ' Start one wheel and run the start checks: cog id, Rev B, integrity counts, and the offsets
 ' read back AFTER 43/317 are set explicitly. init()'s own offsets are logged, not required.
+' Task 3537: also accumulates this start's sign-off facts (R1, R2, R3, R6, R7, R12) for its motor.
+' A start whose driver did not report ready is judged not alive here; a ready start is judged at
+' its lifetime's first zero (measureZero()).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bStartOk - TRUE when every start check passed
 '
+' @local bReady - TRUE when waitReady() saw the driver report ready within READY_TIMEOUT_MS
+' @local startSlot - sideSlot(side), the sign-off accumulator index
 ' @local startedCog - start()'s return
 ' @local initNeg - offset_fwd degrees init() applied
 ' @local initPos - offset_rev degrees init() applied
@@ -1023,19 +1188,25 @@ PRI startSide(side) : bStartOk | startedCog, initNeg, initPos, eBoardRev, nMisse
 ' @local readNeg - offset_fwd degrees read back after setting 43
 ' @local readPos - offset_rev degrees read back after setting 317
 ' @local bCogOk - TRUE when start() returned 0..MAX_COG_ID
+' @local bCogMatch - TRUE when bCogOk AND the return equals testGetMotorCog() - 1 (R1-SCAN-COGOK
+'   only; the run's own start check still uses bCogOk)
 ' @local bRevB - TRUE when the board is Rev B
 ' @local bOffsetsOk - TRUE when the read-back is exactly 43/317
 ' @local bIntegOk - TRUE when no illegal hall code was seen at start
 
     startedCog := sideStart(side)
     currentSide := side
-    waitReady(side)
+    bReady := waitReady(side)
     initNeg, initPos := sideGetOffsets(side)
     eBoardRev := sideBoardType(side)
     nMissed, nIllegal := sideIntegrity(side)
     sideSetOffsets(side, DEF_NEG_DEG, DEF_POS_DEG)
     readNeg, readPos := sideGetOffsets(side)
     bCogOk := (startedCog >= 0) and (startedCog <= MAX_COG_ID)
+    ' R1-SCAN-COGOK (arbiter review, task 3537): a return in 0..7 is not enough -- PL-22's pre-3499
+    '  start() returned 0 while its driver ran in cog 1, which is inside 0..7. The return must also
+    '  name the cog the driver actually runs in, as R1-T0-START checks.
+    bCogMatch := bCogOk and (startedCog == sideMotorCog(side) - 1)
     bRevB := (eBoardRev == wheelL.REV_B)
     bOffsetsOk := (readNeg == DEF_NEG_DEG) and (readPos == DEF_POS_DEG)
     bIntegOk := (nIllegal == 0)
@@ -1043,20 +1214,56 @@ PRI startSide(side) : bStartOk | startedCog, initNeg, initPos, eBoardRev, nMisse
     bLastStartOk := bStartOk
     emitStart(side, startedCog, bCogOk, eBoardRev, bRevB, initNeg, initPos, readNeg, readPos, ...
         bOffsetsOk, nMissed, nIllegal, bIntegOk, bStartOk)
+    ' task 3537 sign-off accumulators -- every value below was computed in this call, above
+    startSlot := sideSlot(side)
+    sfStarts[startSlot] += 1
+    if bCogMatch == FALSE
+        sfCogBad[startSlot] += 1
+    if bRevB == FALSE
+        sfRevbBad[startSlot] += 1
+    sfReadbacks[startSlot] += 1
+    if bOffsetsOk == FALSE
+        sfOffsetsBad[startSlot] += 1
+    if nIllegal <> 0
+        sfStartIllegal[startSlot] += 1
+    addIntegritySum(startSlot, nMissed, nIllegal)
+    if bReady
+        bSfLifetimeFresh[startSlot] := TRUE                 ' judged at this lifetime's first zero
+    else
+        sfAliveJudged[startSlot] += 1                       ' never ready: not alive, no zero needed
+        sfNotAlive[startSlot] += 1
+        bSfLifetimeFresh[startSlot] := FALSE
     if bCogOk == FALSE
         setRunAbort(AR_START_FAIL, startedCog)
     elseif bStartOk == FALSE
         setRunAbort(AR_START_CHECK, eBoardRev)
 
-PRI waitReady(side) | startMs
-' Wait, bounded, for the just-started driver cog to report ready.
+PRI addIntegritySum(slotIdx, nMissed, nIllegal)
+' Add one start's or one point's hall integrity counts to its motor's R3-SCAN-INTEG sum (task 3537).
+' Each count is clamped to +/-LIM_MID before abs(), so a negative (corrupt) count still adds and
+' abs() never sees NEGX; the sum saturates at LIM_BIG: LIM_BIG + 2 x LIM_MID < POSX.
+'
+' @param slotIdx - sideSlot() of the motor
+' @param nMissed - missed hall transitions
+' @param nIllegal - illegal hall codes
+
+    sfIntegSum[slotIdx] := (sfIntegSum[slotIdx] + abs((nMissed #> (0 - LIM_MID)) <# LIM_MID) + abs((nIllegal #> (0 - LIM_MID)) <# LIM_MID)) <# LIM_BIG
+
+PRI waitReady(side) : bReady | startMs
+' Wait, bounded, for the just-started driver cog to report ready. Same poll as before task 3537;
+' it now returns the readiness its own bound test last saw, so the caller need not re-read it.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bReady - TRUE when the driver reported ready within READY_TIMEOUT_MS
 '
 ' @local startMs - getms() when the wait began
 
+    bReady := FALSE
     startMs := getms()
-    repeat until sideIsReady(side) or ((getms() - startMs) >= READY_TIMEOUT_MS)
+    repeat
+        bReady := sideIsReady(side)
+        if bReady or ((getms() - startMs) >= READY_TIMEOUT_MS)
+            quit
         beat(CP_LOOP_WAITREADY)
         waitms(SAMPLE_MS)
 
@@ -1143,18 +1350,32 @@ PRI measureZero(side, phaseTag) : zeroOutX10, bZeroOutValid | sampleIdx, senseMv
         senseVmean := (senseVsum * X10) / sampleCnt
         senseWmean := (senseWsum * X10) / sampleCnt
     slotIdx := sideSlot(side)
+    ' Task 3537 R12-SCAN-ALIVE: the FIRST zero of a ready start's driver lifetime judges it. A zero
+    ' with samples is alive unless frozen (min = max); a zero that lost its cog is not alive; a zero
+    ' that took no sample for any other reason (a run abort) is not a measurement and leaves the
+    ' lifetime to be judged by its next zero. bSampNoCog was reset by beginSampling() above.
+    if bSfLifetimeFresh[slotIdx]
+        if bValid
+            sfAliveJudged[slotIdx] += 1
+            if minMv == maxMv
+                sfNotAlive[slotIdx] += 1
+            bSfLifetimeFresh[slotIdx] := FALSE
+        elseif bSampNoCog
+            sfAliveJudged[slotIdx] += 1
+            sfNotAlive[slotIdx] += 1
+            bSfLifetimeFresh[slotIdx] := FALSE
     ' in_band: this reading against the nominal zero band -- informational, never judged
     bInBand := bValid and (meanX10 >= ZERO_LO_MV * X10) and (meanX10 <= ZERO_HI_MV * X10)
+    bHealthOk := FALSE                                      ' fmt 7: a verdict only for PH_ZERO_INIT (PL-34)
     if phaseTag == PH_ZERO_INIT
         ' Health check: samples taken, not frozen, spread ok, absolute value ok
-        bHealthOk := FALSE
         if bValid
             spreadMv := maxMv - minMv
             meanAbsX10 := abs(meanX10)
             bHealthOk := (minMv <> maxMv) and (spreadMv <= ZERO_SPREAD_MAX_MV) and (meanAbsX10 <= ZERO_ABS_MAX_MV * X10)
         bZeroOk[slotIdx] := bHealthOk
         zeroMeanX10[slotIdx] := meanX10
-    emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, (minMv == maxMv), bInBand, bValid, bZeroOk[slotIdx], ...
+    emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, (minMv == maxMv), bInBand, bValid, bHealthOk, ...
         senseUmean, senseVmean, senseWmean)
     zeroOutX10 := meanX10
     bZeroOutValid := bValid
@@ -1162,9 +1383,12 @@ PRI measureZero(side, phaseTag) : zeroOutX10, bZeroOutValid | sampleIdx, senseMv
 PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, negMeanX10, bPosIOk, ...
     bNegIOk, bRateOk, bIntegOk, bFaultOk, bThisFaultOk, bThisIOk, bThisRateOk, bThisIntegOk, ...
     ratioX1000, bRatioOk, bStartOk, bZeroPass, missCode, zeroBase, posNetMeanX10, negNetMeanX10, ...
-    netLoMv, netHiMv, netThisIOk
+    netLoMv, netHiMv, netThisIOk, nSelfPts, bAnyIMiss, bAnyRateMiss, checkSlot
 ' Self-check at 43/317: +1/4 then -1/4 speed, against the net-of-zero bands (CHANGE 3). A miss ends
 ' the run. Net means are raw means minus the ZERO_INIT reading (the motor-block's initial zero).
+' Task 3537: records the R5-SCAN-SELF and R12-SCAN-RATE facts for this motor. Each result is a
+' measurement only when both points were measured, or when a measured point already missed (a
+' definite FALSE); a point skipped by a run abort never turns an unmeasured result into a FAIL.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bPassed - TRUE when every check passed
@@ -1195,7 +1419,14 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
 ' @local netLoMv - net band low for this sign
 ' @local netHiMv - net band high for this sign
 ' @local netThisIOk - this point's net mean x10, mV (raw mean minus zeroBase)
+' @local nSelfPts - self-check points measured (task 3537)
+' @local bAnyIMiss - TRUE when a measured point's net current was out of band (task 3537)
+' @local bAnyRateMiss - TRUE when a measured point's rate was out of band (task 3537)
+' @local checkSlot - sideSlot(side), the sign-off accumulator index (task 3537)
 
+    nSelfPts := 0
+    bAnyIMiss := FALSE
+    bAnyRateMiss := FALSE
     posMeanX10 := 0
     negMeanX10 := 0
     posNetMeanX10 := 0
@@ -1223,6 +1454,11 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
         bThisIOk := bThisFaultOk and (netThisIOk >= netLoMv * X10) and (netThisIOk <= netHiMv * X10)
         bThisRateOk := bThisFaultOk and bPtRateOk
         bThisIntegOk := bPtIntegValid and (ptMissedD == 0) and (ptIllegalD == 0)
+        nSelfPts += 1                                       ' task 3537: this point was measured
+        if bThisIOk == FALSE
+            bAnyIMiss := TRUE
+        if bThisRateOk == FALSE
+            bAnyRateMiss := TRUE
         emitCheck(side, signedIncre(SPEED_QTR, signIdx), loMv, hiMv, bThisIOk, bThisRateOk, ...
             bThisIntegOk, bThisFaultOk, netLoMv, netHiMv, netThisIOk)
         if signIdx == SIGN_POS
@@ -1263,6 +1499,12 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
     elseif bFaultOk == FALSE
         missCode := MISS_FAULT
     bPassed := (missCode == MISS_NONE)
+    ' task 3537 sign-off facts: the same bPosIOk/bNegIOk/bRateOk BS-CHECKSUM prints below
+    checkSlot := sideSlot(side)
+    bSfSelfIRan[checkSlot] := (nSelfPts == SIGN_SLOTS) or bAnyIMiss
+    bSfSelfIOk[checkSlot] := bPosIOk and bNegIOk
+    bSfSelfRateRan[checkSlot] := (nSelfPts == SIGN_SLOTS) or bAnyRateMiss
+    bSfSelfRateOk[checkSlot] := bRateOk and (bAnyRateMiss == FALSE)
     emitChecksum(side, bStartOk, bZeroPass, bPosIOk, bNegIOk, ratioX1000, bRatioOk, bRateOk, ...
         bIntegOk, bFaultOk, bPassed, missCode)
     if bPassed == FALSE
@@ -1270,7 +1512,7 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
 
 PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) : ptRes | motorIncre, ...
     missedBefore, illegalBefore, missedAfter, illegalAfter, cmdMs, bAtSpeed, bWinDone, bSettleOk, ...
-    restStartMs, zeroX10, zeroValid
+    restStartMs, zeroX10, zeroValid, ptSlot
 ' Measure one point: re-measure the zero tagged with this point's own phase (CHANGE 2, scan v3 --
 ' PL-31's drift finding was a sense-zero shift, so every point needs its own BS-ZERO, not just
 ' the references), set and read back offsets, command, wait AT_SPEED, settle, take the
@@ -1298,6 +1540,7 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
 ' @local zeroX10 - scan v4 CHANGE 1: this point's own zero, captured before clearPointRecord()
 '   resets ptZeroX10/ptNetX10 to their not-measured state
 ' @local zeroValid - TRUE when that zero call took at least one sample
+' @local ptSlot - sideSlot(side), the sign-off accumulator index (task 3537)
 
     pointSeq += 1
     zeroX10, zeroValid := measureZero(side, ptPhase)
@@ -1355,6 +1598,9 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
         ptMissedD := missedAfter - missedBefore
         ptIllegalD := illegalAfter - illegalBefore
         bPtIntegValid := TRUE
+        ptSlot := sideSlot(side)                            ' task 3537 R3-SCAN-INTEG: every integrity-valid point
+        addIntegritySum(ptSlot, ptMissedD, ptIllegalD)
+        sfIntegN[ptSlot] += 1
     ptChargeMvS := flushCharge()
     ptNetX10 := ptMeanX10 - ptZeroX10                       ' scan v4 CHANGE 1: net of this point's own zero
     emitPoint(side, speedIdx, motorIncre, ptPhase, sweptDeg)
@@ -2635,9 +2881,10 @@ PRI signedIncre(speedIdx, signIdx) : motorIncre
     if signIdx == SIGN_NEG
         motorIncre := 0 - motorIncre
 
-PRI applyOffsets(side, signIdx, sweptDeg) | wantNeg, wantPos
+PRI applyOffsets(side, signIdx, sweptDeg) | wantNeg, wantPos, ofsSlot
 ' Set the swept sign's offset and hold the other at its default; read both back into the point
-' record. A read-back mismatch ends the run.
+' record. A read-back mismatch ends the run. Task 3537: counts every read-back, and every mismatch,
+' for R6-SCAN-OFFSETS.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signIdx - SIGN_NEG or SIGN_POS
@@ -2645,6 +2892,7 @@ PRI applyOffsets(side, signIdx, sweptDeg) | wantNeg, wantPos
 '
 ' @local wantNeg - offset_fwd degrees to apply
 ' @local wantPos - offset_rev degrees to apply
+' @local ofsSlot - sideSlot(side), the sign-off accumulator index
 
     if signIdx == SIGN_NEG
         wantNeg := normDegrees(sweptDeg)
@@ -2654,7 +2902,10 @@ PRI applyOffsets(side, signIdx, sweptDeg) | wantNeg, wantPos
         wantPos := normDegrees(sweptDeg)
     sideSetOffsets(side, wantNeg, wantPos)
     ptNegDeg, ptPosDeg := sideGetOffsets(side)
+    ofsSlot := sideSlot(side)
+    sfReadbacks[ofsSlot] += 1
     if (ptNegDeg <> wantNeg) or (ptPosDeg <> wantPos)
+        sfOffsetsBad[ofsSlot] += 1
         setRunAbort(AR_OFFSET_READBACK, ptNegDeg)
 
 PRI sideSlot(side) : slotIdx
@@ -2765,8 +3016,24 @@ PRI sideCogRunning(side) : bRunning
         bRunning := (wheelL.testGetMotorCog() <> 0)
     beat(CP_LIB_COGRUN)
 
+PRI sideMotorCog(side) : cogValue
+' testGetMotorCog() of the named wheel: the driver's cog id + 1, or 0 when no driver cog runs.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns cogValue - the wheel's raw motorCog value
+
+    cogValue := 0
+    beat(CP_LIB_COGRUN)
+    if side == SIDE_RIGHT
+        cogValue := wheelR.testGetMotorCog()
+    elseif side == SIDE_LEFT
+        cogValue := wheelL.testGetMotorCog()
+    beat(CP_LIB_COGRUN)
+
 PRI sideIsReady(side) : bReady
-' Report whether the named wheel's running driver cog reports ready.
+' Report whether the named wheel's running driver cog reports ready. The sideCogRunning() guard is
+' redundant but harmless since commit 67d11f6 (task 3533, PL-28): stop() now leaves drv_state at
+' DCS_Unknown, so isReady() already answers FALSE on a stopped instance. It is kept.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bReady - TRUE when running and ready
@@ -2778,7 +3045,10 @@ PRI sideIsReady(side) : bReady
     beat(CP_LIB_ISREADY)
 
 PRI sideIsStopped(side) : bStopped
-' Report whether the named wheel's running driver reports STOPPED (never a stale stopped cog).
+' Report whether the named wheel's running driver reports STOPPED (never a stale stopped cog). The
+' sideCogRunning() guard is redundant but harmless since commit 67d11f6 (task 3533, PL-28): stop()
+' now leaves drv_state at DCS_Unknown, so isStopped() already answers FALSE on a stopped instance.
+' It is kept.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bStopped - TRUE when running and STOPPED
@@ -2948,6 +3218,8 @@ PRI emitHeaderRecords()
 ' Emit the run's identity, limits, plan and bands before anything moves.
 
     emitBanner()
+    emitBuild()                                             ' task 3537: build variant, right after the banner
+    emitSignoffDecls()                                      ' task 3537: every judged cell, before anything moves
     emitDrive()
     emitLimits()
     emitLimits2()
@@ -3150,7 +3422,9 @@ PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand,
 ' @param bFrozen - min equals max
 ' @param bInBand - mean inside the zero band (informational, backward compatibility)
 ' @param bValid - at least one sample
-' @param bHealthOk - health verdict (zero not railed, spread ok, absolute ok)
+' @param bHealthOk - this zero's own health verdict (not frozen, spread ok, absolute ok); printed
+'   only for PH_ZERO_INIT, the one phase that computes it -- every other phase prints NA (fmt 7,
+'   PL-34). Worst case unchanged: NA is shorter than FALSE.
 ' @param senseUmeanX10 - mean phase-U voltage x10, mV
 ' @param senseVmeanX10 - mean phase-V voltage x10, mV
 ' @param senseWmeanX10 - mean phase-W voltage x10, mV
@@ -3165,7 +3439,10 @@ PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand,
     naOrBoundedField(@"i_max_mV", maxMv, LIM_SMALL, bValid)
     boolField(@"frozen", bFrozen and bValid)
     boolField(@"in_band", bInBand)
-    boolField(@"health_ok", bHealthOk)
+    if phaseTag == PH_ZERO_INIT
+        boolField(@"health_ok", bHealthOk)
+    else
+        lineTextField(@"health_ok", @sNa)
     ' Phase voltages to help locate the offset source (PL-30)
     naOrBoundedField(@"u_mV_x10", senseUmeanX10, LIM_SMALL, bValid)
     naOrBoundedField(@"v_mV_x10", senseVmeanX10, LIM_SMALL, bValid)
@@ -3778,6 +4055,227 @@ PRI emitEnd()
     boolField(@"lib_abort", (abortReason == AR_LIB_ABORT))
     lineEmit()
 
+PRI emitBuild()
+' Emit BS-BUILD (task 3537, design sec F.5), right after BS-BANNER: the build variant and the
+' sign-off format. wd_selftest is sourced from its own #ifdef, never a runtime test, following
+' emitBanner()'s cfg_id pattern: pnut-ts silently ignores an unknown -D, so a mistyped flag lands on
+' the honest FALSE. Every build today prints FALSE. The zxs_* fields arrive with the R8 phase.
+' Worst case: tag(8) + wd_selftest(1+11+1+5=18) + sf(1+2+1+4=8) = 34 bytes.
+
+    lineReset()
+    lineAddText(@"BS-BUILD")
+#ifdef WD_SELFTEST
+    boolField(@"wd_selftest", TRUE)
+#else
+    boolField(@"wd_selftest", FALSE)
+#endif
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    lineEmit()
+
+PRI emitSignoffDecls()
+' Emit one SIGNOFF-DECL per cell this build judges, right after BS-BUILD (task 3537).
+
+    emitSignoffDecl(@sSfCellCogOk, @sSfTaskCogOk)
+    emitSignoffDecl(@sSfCellRevB, @sSfTaskRevB)
+    emitSignoffDecl(@sSfCellInteg, @sSfTaskInteg)
+    emitSignoffDecl(@sSfCellSelf, @sSfTaskSelf)
+    emitSignoffDecl(@sSfCellOffsets, @sSfTaskOffsets)
+    emitSignoffDecl(@sSfCellStartIll, @sSfTaskStartIll)
+    emitSignoffDecl(@sSfCellNoStall, @sSfTaskNoStall)
+    emitSignoffDecl(@sSfCellAlive, @sSfTaskLut)
+    emitSignoffDecl(@sSfCellRate, @sSfTaskLut)
+
+PRI emitSignoffDecl(pCell, pTask)
+' Emit SIGNOFF-DECL for one cell.
+' Worst case, by clamp widths: tag(12) + sf(8) + bin(11) + cell(26) + task(11) = 68 bytes.
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+
+    lineReset()
+    lineAddText(@"SIGNOFF-DECL")
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    tokenField(@"cell", pCell, TOKMAX_CELL)
+    tokenField(@"task", pTask, TOKMAX_TASK)
+    lineEmit()
+
+PRI emitSignoffs() | side, slotIdx, bStarted
+' Emit every declared cell's SIGNOFF instances once, from the per-motor accumulators (task 3537).
+' Runs on cog 0's normal end path only: after the watchdog is stopped and both wheels are shut
+' down, before BS-END -- on every such path, including after a run abort. No library call, no wait.
+' A motor with no start (its block and its preflight never ran) prints NOMEAS with n 0.
+'  R1/R2/R7  measured = bad starts,           n = starts;               NOMEAS when starts = 0
+'  R3        measured = missed + illegal sum, n = starts + points;      NOMEAS when starts = 0
+'  R6        measured = bad read-backs,       n = read-backs;           NOMEAS when read-backs = 0
+'  R12-ALIVE measured = starts not alive,     n = starts judged;        NOMEAS when none judged
+'  R5, R12-RATE BOOL from the self-check;                                NOMEAS when not measured
+'  R11       BOOL TRUE, motor NONE: reaching this path is the evidence
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local slotIdx - sideSlot(side)
+' @local bStarted - TRUE when the motor had at least one start
+
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        beat(CP_EMIT)
+        slotIdx := sideSlot(side)
+        bStarted := (sfStarts[slotIdx] > 0)
+        emitSignoff(@sSfCellCogOk, @sSfTaskCogOk, side, @sSfCritCogBad, bStarted, sfCogBad[slotIdx], COG_BAD_LO, COG_BAD_HI, @sSfUnitsCount, sfStarts[slotIdx])
+        emitSignoff(@sSfCellRevB, @sSfTaskRevB, side, @sSfCritNotRevB, bStarted, sfRevbBad[slotIdx], NOT_REVB_LO, NOT_REVB_HI, @sSfUnitsCount, sfStarts[slotIdx])
+        emitSignoff(@sSfCellInteg, @sSfTaskInteg, side, @sSfCritInteg, bStarted, sfIntegSum[slotIdx], INTEG_SUM_LO, INTEG_SUM_HI, @sSfUnitsCount, sfStarts[slotIdx] + sfIntegN[slotIdx])
+        emitSignoffBool(@sSfCellSelf, @sSfTaskSelf, side, @sSfCritNetI, bSfSelfIRan[slotIdx], bSfSelfIOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitSignoff(@sSfCellOffsets, @sSfTaskOffsets, side, @sSfCritReadback, sfReadbacks[slotIdx] > 0, sfOffsetsBad[slotIdx], READBACK_BAD_LO, READBACK_BAD_HI, @sSfUnitsCount, sfReadbacks[slotIdx])
+        emitSignoff(@sSfCellStartIll, @sSfTaskStartIll, side, @sSfCritStartIll, bStarted, sfStartIllegal[slotIdx], START_ILLEGAL_LO, START_ILLEGAL_HI, @sSfUnitsCount, sfStarts[slotIdx])
+        emitSignoff(@sSfCellAlive, @sSfTaskLut, side, @sSfCritNotAlive, sfAliveJudged[slotIdx] > 0, sfNotAlive[slotIdx], NOT_ALIVE_LO, NOT_ALIVE_HI, @sSfUnitsCount, sfAliveJudged[slotIdx])
+        emitSignoffBool(@sSfCellRate, @sSfTaskLut, side, @sSfCritRate, bSfSelfRateRan[slotIdx], bSfSelfRateOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+    beat(CP_EMIT)
+    emitSignoffBool(@sSfCellNoStall, @sSfTaskNoStall, SIDE_NONE, @sSfCritCog0End, TRUE, TRUE, SIGNOFF_ONE_INSTANCE)
+
+PRI emitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, pUnits, instCount) | boundedVal, pVerdict
+' Emit one SIGNOFF verdict (design sec B.1, sf 1) from the existing line builder. measured is
+' clamped to LIM_BIG first and the verdict is judged on that printed value, so a record always
+' agrees with its own numbers (every limit here is far inside LIM_BIG). PASS only when measured
+' AND in loLimit..hiLimit; FAIL when measured and outside; NOMEAS, with measured NA and n 0, when
+' not measured.
+' Worst case, by clamp widths: tag(7) + sf(8) + bin(11) + cell(26) + task(11) + motor(12) +
+' crit(24) + measured(22) + lo(16) + hi(16) + units(15) + n(10) + verdict(18) = 196 bytes.
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+' @param side - SIDE_* the instance belongs to
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the instance was measured
+' @param measuredVal - the instance's measured value
+' @param loLimit - lowest passing value, compiled in
+' @param hiLimit - highest passing value, compiled in
+' @param pUnits - pointer to the units token
+' @param instCount - starts, points or read-backs behind measuredVal
+'
+' @local boundedVal - measuredVal clamped to +/-LIM_BIG
+' @local pVerdict - PASS, FAIL or NOMEAS token
+
+    boundedVal := (measuredVal #> (0 - LIM_BIG)) <# LIM_BIG
+    if bMeasured == FALSE
+        pVerdict := @sSfNomeas
+    elseif (boundedVal >= loLimit) and (boundedVal <= hiLimit)
+        pVerdict := @sSfPass
+    else
+        pVerdict := @sSfFail
+    lineReset()
+    lineAddText(@"SIGNOFF")
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    tokenField(@"cell", pCell, TOKMAX_CELL)
+    tokenField(@"task", pTask, TOKMAX_TASK)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    naOrBoundedField(@"measured", boundedVal, LIM_BIG, bMeasured)
+    boundedField(@"lo", loLimit, LIM_BIG)
+    boundedField(@"hi", hiLimit, LIM_BIG)
+    tokenField(@"units", pUnits, TOKMAX_UNITS)
+    if bMeasured
+        boundedField(@"n", instCount, LIM_SMALL)
+    else
+        boundedField(@"n", 0, LIM_SMALL)
+    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+    lineEmit()
+
+PRI emitSignoffEx(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, bHasLo, hiLimit, bHasHi, bConditionsOk, pUnits, instCount) | boundedVal, pVerdict
+' Emit one SIGNOFF verdict (design sec B.1, sf 1) whose limits may be NA and whose PASS may need a
+' condition beyond lo..hi. Same fields, order and clamps as emitSignoff(), which can do neither.
+' PASS only when measured AND bConditionsOk AND every present limit holds; FAIL when measured
+' otherwise; NOMEAS, with measured NA and n 0, when not measured. Judged on the clamped value.
+' No caller in phase 2b1: the task 3537 R8/R9 phases use it (ZXSALL_* prints lo/hi NA).
+' Worst case, by clamp widths: identical to emitSignoff(), 196 bytes (an NA limit is shorter).
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+' @param side - SIDE_* the instance belongs to
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the instance was measured
+' @param measuredVal - the instance's measured value
+' @param loLimit - lowest passing value, compiled in (ignored when bHasLo is FALSE)
+' @param bHasLo - TRUE when the cell has a low limit; FALSE prints lo NA
+' @param hiLimit - highest passing value, compiled in (ignored when bHasHi is FALSE)
+' @param bHasHi - TRUE when the cell has a high limit; FALSE prints hi NA
+' @param bConditionsOk - TRUE when every non-range condition of the criterion holds
+' @param pUnits - pointer to the units token
+' @param instCount - starts, points or read-backs behind measuredVal
+'
+' @local boundedVal - measuredVal clamped to +/-LIM_BIG
+' @local pVerdict - PASS, FAIL or NOMEAS token
+
+    boundedVal := (measuredVal #> (0 - LIM_BIG)) <# LIM_BIG
+    if bMeasured == FALSE
+        pVerdict := @sSfNomeas
+    elseif (bConditionsOk == TRUE) and ((bHasLo == FALSE) or (boundedVal >= loLimit)) and ((bHasHi == FALSE) or (boundedVal <= hiLimit))
+        pVerdict := @sSfPass
+    else
+        pVerdict := @sSfFail
+    lineReset()
+    lineAddText(@"SIGNOFF")
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    tokenField(@"cell", pCell, TOKMAX_CELL)
+    tokenField(@"task", pTask, TOKMAX_TASK)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    naOrBoundedField(@"measured", boundedVal, LIM_BIG, bMeasured)
+    naOrBoundedField(@"lo", loLimit, LIM_BIG, bHasLo)
+    naOrBoundedField(@"hi", hiLimit, LIM_BIG, bHasHi)
+    tokenField(@"units", pUnits, TOKMAX_UNITS)
+    if bMeasured
+        boundedField(@"n", instCount, LIM_SMALL)
+    else
+        boundedField(@"n", 0, LIM_SMALL)
+    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+    lineEmit()
+
+PRI emitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instCount) | pVerdict
+' Emit one boolean SIGNOFF verdict (design sec B.1, sf 1): measured TRUE/FALSE (NA when not
+' measured), lo TRUE, hi TRUE, units BOOL. PASS only when measured AND TRUE, so the verdict always
+' agrees with its own measured field.
+' Worst case: tag(7) + sf(8) + bin(11) + cell(26) + task(11) + motor(12) + crit(24) + measured(15)
+' + lo(8) + hi(8) + units(15) + n(10) + verdict(18) = 173 bytes.
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+' @param side - SIDE_* the instance belongs to
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the instance was measured
+' @param bCriterionMet - TRUE when the whole criterion held
+' @param instCount - self-checks or end paths behind the result
+'
+' @local pVerdict - PASS, FAIL or NOMEAS token
+
+    if bMeasured == FALSE
+        pVerdict := @sSfNomeas
+    elseif bCriterionMet == TRUE
+        pVerdict := @sSfPass
+    else
+        pVerdict := @sSfFail
+    lineReset()
+    lineAddText(@"SIGNOFF")
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    tokenField(@"cell", pCell, TOKMAX_CELL)
+    tokenField(@"task", pTask, TOKMAX_TASK)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    if bMeasured
+        boolField(@"measured", bCriterionMet)
+    else
+        lineTextField(@"measured", @sNa)
+    lineTextField(@"lo", @sTrue)
+    lineTextField(@"hi", @sTrue)
+    tokenField(@"units", @sSfUnitsBool, TOKMAX_UNITS)
+    if bMeasured
+        boundedField(@"n", instCount, LIM_SMALL)
+    else
+        boundedField(@"n", 0, LIM_SMALL)
+    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+    lineEmit()
+
 PRI boundedField(pFieldName, numValue, limitAbs)
 ' Append a numeric field clamped to +/- limitAbs, so its printed width is bounded.
 '
@@ -3894,8 +4392,10 @@ PRI phaseToken(ptPhase) : pTok
             pTok := @sPhRefEnd
         PH_CLIFF:
             pTok := @sPhCliff
-        other:
+        PH_ZERO_INIT:
             pTok := @sPhZeroInit
+        other:
+            pTok := @sPhUnknown                             ' never mislabel an unlisted phase as ZERO_INIT
 
 PRI resultToken(ptRes) : pTok
 ' Point-result token.
@@ -4029,7 +4529,7 @@ PRI reasonToken(reason) : pTok
         AR_WATCHDOG:
             pTok := @sArWatchdog
         other:
-            pTok := @sArAbortI
+            pTok := @sArUnknown                             ' never mislabel an unlisted reason as ABORT_I
 
 PRI scopeToken(scope) : pTok
 ' Abort-scope token.
@@ -4197,9 +4697,20 @@ PRI beat(checkpointId)
 ' lineEmit(), so a watchdog-declared stall's last checkpoint pins it to one statement group
 ' (task 3534). Cog 0 only -- the watchdog cog must never call this, directly or through a
 ' function that does, or it would corrupt the very heartbeat it is watching.
+' PARK (task 3537): once wdDeclaring is TRUE, beat() never returns. A cog 0 that was slow rather
+' than dead (blocked past WD_STALL_MS, then resuming) would otherwise carry on after the watchdog
+' stopped both wheels and ended the session, and could restart or command a wheel unwatched. Every
+' motor command path (commandMotor, sideStart, sideStop, shutdownMotors, every sideXxx wrapper)
+' passes through beat() before it reaches the library, so a parked cog 0 cannot command a motor.
+' Mirrors test_bench_char.spin2's beat().
 '
 ' @param checkpointId - CP_* naming the statement group cog 0 is now inside
 
+    if wdDeclaring
+        ' The watchdog has declared a stall, stopped both wheels and ended the session: park here
+        ' forever. A repeat of WD_IDLE_MS, never one long waitms(): see WAITMS_MAX_MS.
+        repeat
+            waitms(WD_IDLE_MS)
     wdCheckpoint := checkpointId
     wdHeartbeat += 1
 
@@ -4313,6 +4824,9 @@ PRI declareStall(msSinceBeat)
     emitWatchdog(msSinceBeat)
     wheelL.stop()
     wheelR.stop()
+    ' Task 3537 (design sec G.4, normal build): a real stall is a recorded failure of task 3534's
+    ' certification. Emitted from this cog through the wd* builder, never cog 0's lineBuf.
+    wdEmitSignoffBool(@sSfCellNoStall, @sSfTaskNoStall, SIDE_NONE, @sSfCritCog0End, TRUE, FALSE, SIGNOFF_ONE_INSTANCE)
     wdEmitEnd()
     ' QUOTED, not backticked -- matches main()'s own marker exactly (a backtick makes it a
     ' display command and the marker is missed).
@@ -4394,6 +4908,50 @@ PRI wdEmitEnd()
     wdBoolField(@"left_done", bLeftDone)
     wdBoolField(@"right_done", bRightDone)
     wdBoolField(@"lib_abort", FALSE)
+    wdLineEmit()
+
+PRI wdEmitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instCount) | pVerdict
+' Emit one boolean SIGNOFF verdict from the watchdog cog (task 3537). Mirrors emitSignoffBool()
+' field for field against the watchdog's own wd* builder, never lineBuf/lineLen (cog 0 may be
+' stalled mid-record). Calls nothing that beats: motorToken() and tokenFits() only return or read
+' DAT text. Worst case: identical to emitSignoffBool(), 173 bytes.
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+' @param side - SIDE_* the instance belongs to
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the instance was measured
+' @param bCriterionMet - TRUE when the whole criterion held
+' @param instCount - self-checks or end paths behind the result
+'
+' @local pVerdict - PASS, FAIL or NOMEAS token
+
+    if bMeasured == FALSE
+        pVerdict := @sSfNomeas
+    elseif bCriterionMet == TRUE
+        pVerdict := @sSfPass
+    else
+        pVerdict := @sSfFail
+    wdLineReset()
+    wdLineAddText(@"SIGNOFF")
+    wdBoundedField(@"sf", SF_VERSION, LIM_TINY)
+    wdTokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    wdTokenField(@"cell", pCell, TOKMAX_CELL)
+    wdTokenField(@"task", pTask, TOKMAX_TASK)
+    wdTokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    wdTokenField(@"crit", pCrit, TOKMAX_CRIT)
+    if bMeasured
+        wdBoolField(@"measured", bCriterionMet)
+    else
+        wdLineTextField(@"measured", @sNa)
+    wdLineTextField(@"lo", @sTrue)
+    wdLineTextField(@"hi", @sTrue)
+    wdTokenField(@"units", @sSfUnitsBool, TOKMAX_UNITS)
+    if bMeasured
+        wdBoundedField(@"n", instCount, LIM_SMALL)
+    else
+        wdBoundedField(@"n", 0, LIM_SMALL)
+    wdTokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     wdLineEmit()
 
 PRI wdLineReset()
