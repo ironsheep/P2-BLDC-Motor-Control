@@ -17,6 +17,9 @@
 ''               a cog-0 stall happened, stops both wheels and ends the session on its own
 ''   Updated.... 13 Sep 2026 -- task 3521 phase C (SRC_REV 4, fmt 4): SIGNOFF-DECL / SIGNOFF
 ''               verdicts for R5-CHAR-SENSE, R4-CHAR-RPM, R2-CHAR-ISCALE and R3-CHAR-INTEG
+''   Updated.... 13 Sep 2026 -- task 3521 phase D (SRC_REV 5, fmt 5): steering-object phase
+''               (R10-CHAR-STEERFAIL / STEERSTART / STEERLIVE) and brake-mode start phase
+''               (R13-CHAR-BRAKESTART) after the nine holds
 ''
 '' =================================================================================================
 
@@ -93,12 +96,29 @@
   only from the per-hold results. A verdict is PASS only when the instance was measured AND its
   value lies in lo..hi; unmeasured is NOMEAS with n 0 and measured NA, never PASS. On the watchdog
   path no verdict is emitted: the host reads a declared cell with no verdict as NOMEAS.
+
+  STEERING AND BRAKE-START PHASES (task 3521 phase D; design sec A.4 rows 10 and 13). Only when
+  preflight passed, after the nine holds:
+   (1) runSteeringPhase(): both wheelL/wheelR stopped first, because this file's wheels and the
+       steering object's own two share the pin-claim registry (PL-18). R10-CHAR-STEERFAIL starts
+       the steering object with exactly one free cog; R10-CHAR-STEERSTART starts it normally and
+       waits for both wheels' driver state; R10-CHAR-STEERLIVE drives both through the public
+       driveAtPower() for PREFLIGHT_MS and judges each wheel's raw hall-tick delta. BC-STEER is
+       printed after the stop wait and steering.stop().
+   (2) runBrakeStartPhase(): steering stopped first, then per motor x sign on this file's own
+       wheels (motor frame): startEx(sync) -> holdAtStop(TRUE) -> cogatn -> ready -> signed
+       PREFLIGHT_INCRE for PREFLIGHT_MS -> zero -> stopped -> holdAtStop(FALSE) -> stop(). One
+       BC-BRAKE per instance, printed after that instance's wheel is stopped.
+  The timed PREFLIGHT_MS windows contain no debug() from this file; the library calls that start
+  them (driveAtPower(), testDriveAtMotorIncrement()) print their own lines just before the wait,
+  exactly as the preflight nudge already does, and the steering object's sense task prints state
+  changes from its own cog. Neither window times anything but a tick delta.
 }
 
 CON { build identity }
 
-    SRC_REV     = 4                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 4                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG; 4: phase C adds SIGNOFF-DECL and SIGNOFF sf 1)
+    SRC_REV     = 5                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 5                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG; 4: phase C adds SIGNOFF-DECL and SIGNOFF sf 1; 5: phase D adds BC-STEER, BC-BRAKE and four sign-off cells)
 
 CON { timing }
 
@@ -309,6 +329,69 @@ CON ' ---- Sign-off Verdicts ----
     INTEG_SUM_LO = 0
     INTEG_SUM_HI = 0
 
+CON ' ---- Steering and Brake-Start Phases ----
+  ' Task 3521 phase D. Design DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec A.4 rows 10 and 13, sec H.2.
+
+  ' Liveness floor for R10-CHAR-STEERLIVE and R13-CHAR-BRAKESTART, TICKS.
+  ' MEASURED: a PREFLIGHT_INCRE (18_375_000) nudge held PREFLIGHT_MS moved 13 ticks
+  ' (DOCs/analyses/bench/2026-09-13/debug_260913-120844.log:46). DERIVED (design sec A.5-f): half of
+  ' it, 6. PL-22's parked cogs move exactly 0, so the floor rejects them and tolerates ramp spread.
+    LIVENESS_MIN_TICKS = 6
+
+  ' R10-CHAR-STEERLIVE drive power. DERIVED from isp_steering_2wheel.spin2 driveAtPower() ->
+  ' isp_bldc_motor.spin2 driveAtPowerEx(): power is clamped to [-100, 100], then to
+  ' [-maxSpeed, maxSpeed] (init() sets maxSpeed 75; nothing here calls setMaxSpeed(), so 13 passes
+  ' unclamped), negated for the right wheel (forwardIsReverse()), then incrementForPower() ->
+  ' map(power, 1, 100, minFwdIncreAtPwr, maxFwdIncreAtPwr). confgurePowerLimits() gives the 6.5in
+  ' motor at PWR_18p5V min 544_628 and max 147_000_000 (DRIVE_CEILING_INCRE). map()'s integer slope
+  ' is (147_000_000 - 544_628) / (100 - 1) = 146_455_372 / 99 = 1_479_347 (truncated), and the
+  ' result is 544_628 + 1_479_347 x (power - 1):
+  '   power 12 -> 16_817_445 (1_557_555 under PREFLIGHT_INCRE)
+  '   power 13 -> 18_296_792 (   78_208 under PREFLIGHT_INCRE)  <- nearest
+  '   power 14 -> 19_776_139 (1_401_139 over  PREFLIGHT_INCRE)
+  ' The negative branch maps to -18_296_792 by the same arithmetic, so the right wheel's commanded
+  ' increment is the same magnitude. STEER_CMD_INCRE repeats map()'s arithmetic at compile time.
+    STEER_POWER         = 13
+    POWER_FULL          = 100                               ' driveAtPowerEx() power ceiling
+    POWER_MIN_STEP      = 1                                 ' map()'s inMin for a forward request
+    LIB_MIN_FWD_INCRE   = 544_628                           ' confgurePowerLimits(): 6.5in minFwdIncreAtPwr
+    STEER_CMD_INCRE     = LIB_MIN_FWD_INCRE + ((DRIVE_CEILING_INCRE - LIB_MIN_FWD_INCRE) / (POWER_FULL - POWER_MIN_STEP)) * (STEER_POWER - POWER_MIN_STEP)
+
+  ' R10-CHAR-STEERFAIL, crit RET_NEG_NOLEAK, units BOOL. TRUE when start() returned STEERFAIL_RET
+  ' (DERIVED from isp_steering_2wheel.spin2 start(): a failed motor start stops whichever motor did
+  ' start and returns -1, :124-133) AND the free-cog count is back to baseline AND this file's own
+  ' wheels can claim both bench bases afterwards (PL-36: a failed start must release its pin claim)
+  ' AND nothing aborted.
+    STEERFAIL_RET          = -1
+    STEERFAIL_MIN_BASELINE = 1                              ' fewer free cogs than this: NOMEAS
+
+  ' R10-CHAR-STEERSTART, crit STEER_START_COG, units BOOL. TRUE when start() returned a cog id in
+  ' STEERSTART_COG_LO..STEERSTART_COG_HI (DERIVED: the sense cog's id on success,
+  ' isp_steering_2wheel.spin2:170) AND both wheels left DCS_Unknown AND nothing aborted.
+    STEERSTART_COG_LO = 0
+    STEERSTART_COG_HI = MAX_COG_ID
+
+  ' Every phase D sign-off instance stands on one start, one drive window or one brake start.
+    SIGNOFF_ONE_INSTANCE = 1
+
+  ' Free-cog counting (design sec A.5-a): cogspin() spacers until one returns < 0 (not == -1: the
+  ' library documents a $8000_xxxx exhaustion form, isp_bldc_motor.spin2:110), then cogstop() them.
+  ' spacerIdle() has no params, returns or locals and calls only waitms(); 32 longs covers its frame
+  ' plus the interpreter's per-call bookkeeping, which is not visible in this repo (UNVERIFIED).
+    SPACER_MAX         = MAX_COG_ID + 1
+    SPACER_STACK_LONGS = 32
+    COGATN_BIT         = 1                                  ' cogatn() mask bit for one cog: COGATN_BIT << cog
+
+  ' Brake-start instances, motor frame (no forwardIsReverse()):
+  '  BRK_L_POS - LEFT motor, + PREFLIGHT_INCRE
+  '  BRK_L_NEG - LEFT motor, - PREFLIGHT_INCRE
+  '  BRK_R_POS - RIGHT motor, + PREFLIGHT_INCRE
+  '  BRK_R_NEG - RIGHT motor, - PREFLIGHT_INCRE
+    #0, BRK_L_POS, BRK_L_NEG, BRK_R_POS, BRK_R_NEG
+    BRAKE_COUNT = BRK_R_NEG + 1
+
+    TOKMAX_ABORT = 5                                        ' BC-STEER aborted token: NONE / FAIL / START / DRIVE / MULTI
+
 CON ' ---- Cog-0 Progress Checkpoints ----
   ' The watchdog heartbeat contract, task 3521 phase B. beat(CP_*) records the smallest statement
   ' group cog 0 is inside, so a stall's last checkpoint (BC-WATCHDOG) pins it there. A CP_LIB_* id
@@ -350,13 +433,30 @@ CON ' ---- Cog-0 Progress Checkpoints ----
   '  CP_LIB_CONSTANTS   - brackets testGetDriveConstants()
   '  CP_EMIT            - brackets lineEmit(), so every BC- record from cog 0
   '  CP_NOTE            - brackets a plain debug() note line that is not a BC- record
+  ' Task 3521 phase D, appended so no earlier id renumbers:
+  '  CP_STEER           - runSteeringPhase(): sequencing between its steps
+  '  CP_SPACER_LOOP     - one pass of occupySpacers() or releaseSpacers()
+  '  CP_LIB_STEER_START - brackets steering.start()
+  '  CP_LOOP_STEER_RDY  - one pass of waitSteerReady()
+  '  CP_STEER_DRIVE     - brackets steering.driveAtPower(), and the PREFLIGHT_MS steering window
+  '  CP_LIB_STEER_STOP  - brackets steering.stopMotors() and steering.stop()
+  '  CP_LOOP_STEER_STOP - one pass of waitSteerStopped()
+  '  CP_LIB_STEER_READ  - brackets steering.testGetDriverState(), testGetRawHallTicks(), isStopped()
+  '  CP_BRAKE           - runBrakeStartPhase()/measureBrakeStart(): sequencing between steps
+  '  CP_LIB_BRAKE_START - brackets wheel startEx(..., TRUE)
+  '  CP_LIB_HOLDATSTOP  - brackets wheel holdAtStop()
+  '  CP_COGATN          - brackets the brake start's cogatn()
+  '  CP_BRAKE_DRIVE     - brackets the PREFLIGHT_MS brake-start window
     #0, CP_MAIN_INIT, CP_MAIN_BANNER, CP_MAIN_PLAN, CP_MAIN_RUN, CP_MAIN_SHUTDOWN, CP_MAIN_END, ...
         CP_PREFLIGHT_LEFT, CP_PREFLIGHT_RIGHT, CP_HOLD, CP_START_SIDE, CP_LIB_START, ...
         CP_LOOP_WAITREADY, CP_LIB_STARTSENSE, CP_LOOP_ZERO, CP_LIB_COMMAND, CP_LOOP_ATSPEED, ...
         CP_LOOP_STEADY, CP_LOOP_SETTLE, CP_LOOP_WINDOW, CP_LOOP_WAITSTOP, CP_LIB_STOP_LEFT, ...
         CP_LIB_STOP_RIGHT, CP_LIB_INTEGRITY, CP_LIB_DRVSTATE, CP_LIB_COGUP, CP_LIB_ISREADY, ...
         CP_LIB_ISSTOPPED, CP_LIB_TELEMETRY, CP_LIB_CURRENT, CP_LIB_TICKS, CP_LIB_OFFSETS, ...
-        CP_LIB_RPM, CP_LIB_BOARDTYPE, CP_LIB_CONSTANTS, CP_EMIT, CP_NOTE
+        CP_LIB_RPM, CP_LIB_BOARDTYPE, CP_LIB_CONSTANTS, CP_EMIT, CP_NOTE, ...
+        CP_STEER, CP_SPACER_LOOP, CP_LIB_STEER_START, CP_LOOP_STEER_RDY, CP_STEER_DRIVE, ...
+        CP_LIB_STEER_STOP, CP_LOOP_STEER_STOP, CP_LIB_STEER_READ, CP_BRAKE, CP_LIB_BRAKE_START, ...
+        CP_LIB_HOLDATSTOP, CP_COGATN, CP_BRAKE_DRIVE
 
     TOKMAX_CP = 10                                          ' longest checkpoint token, e.g. STOP_RIGHT
 
@@ -384,12 +484,31 @@ CON ' ---- Watchdog Cog ----
   '   testGetTelemetry(), getCurrent(), getRawHallTicks(), getHallIntegrityCounts(),
   '   testGetFwdRevIndep(), testGetRpm() -- hub reads (getCurrent() adds a float multiply); no wait
   '   lineEmit()        one debug(zstr_()) of at most 280 bytes: under 25 ms even at 115_200 baud
+  ' Task 3521 phase D adds (isp_steering_2wheel.spin2 unless named):
+  '   steering.start()  success path: waitms(100), two startEx() (each as start() above, <= 150 ms;
+  '                     sync TRUE only changes where the new cog parks), about 3 debug() lines,
+  '                     cogatn(), float arithmetic, cogspin() of the sense task (its waitms(200)
+  '                     runs in that cog). <= 100 + 2 x 150 + 75 = 475 ms. Failure path: no
+  '                     waitms(100), at most two startEx() and one stop(): <= 375 ms
+  '   steering.stop()   cogstop() and two motor stop()s; no wait, no debug()
+  '   steering.driveAtPower() -> two driveAtPowerEx() (two debug() lines each), cogatn(), then
+  '                     SyncStatus() on each wheel: it polls until that driver clears bit 31 of its
+  '                     command, which gettgtincr does on its next 2 kHz pass (0.5 ms) once it
+  '                     sees attention. Called only after both wheels reported a driver state, so
+  '                     under 1 ms plus ~100 ms of debug(). If a driver is not running it never
+  '                     returns -- a real stall, which the watchdog then correctly declares
+  '   steering.stopMotors() two setTargetAccel() debug() lines; no wait
+  '   steering.testGetDriverState(), testGetRawHallTicks(), isStopped() -- hub reads; no wait
+  '   wheel startEx()   as start() above; holdAtStop() one hub write; cogatn() a strobe
+  '   cogspin()/cogstop() of a spacer -- no wait; beat on every spacer
+  '   waitms(PREFLIGHT_MS = 700) the steering and brake-start windows, beat before and after
   ' This file never calls testResetFault() (~2_030 ms worst case, the scan's longest gap),
-  ' resetTracking() or testResetMaxValues() (200 ms each), or SyncStatus() (unbounded).
+  ' resetTracking() or testResetMaxValues() (200 ms each), or SyncStatus() other than inside
+  ' steering.driveAtPower() as bounded above.
   ' The debug baud is the pnut-ts default -- this file does not set one -- so every debug figure
   ' above is bounded at a deliberately slow 115_200 baud (the real rate is UNVERIFIED here).
-  ' Longest legitimate gap: 700 ms. WD_STALL_MS = 4_000 ms clears it by 3_300 ms (5.7x) and is
-  ' 16x WD_POLL_MS. The watchdog times a gap from the poll at which it SAW the last change, up to
+  ' Longest legitimate gap: 700 ms (the three PREFLIGHT_MS windows); next is steering.start() at
+  ' <= 475 ms. WD_STALL_MS = 4_000 ms clears 700 ms by 3_300 ms (5.7x) and is 16x WD_POLL_MS. The watchdog times a gap from the poll at which it SAW the last change, up to
   ' WD_POLL_MS after the real beat, so a legitimate gap always measures shorter than it was and
   ' cannot cross the bound; a real stall's since_ms reads low by up to WD_POLL_MS.
     WD_POLL_MS  = 250                                       ' watchdog sample cadence
@@ -411,6 +530,8 @@ CON ' ---- Watchdog Cog ----
   ' Every other chain is shallower: BC-WATCHDOG2 and BC-END numeric fields 25 (emitWatchdog2()
   ' and wdEmitEnd() have no locals: the stall values live in the wdSnap* DAT longs, not on the
   ' stack), wdSnapshot() -> testGetTelemetry() 3+1+1+8 = 13, wheelL.stop() under 10.
+  ' Task 3521 phase D: declareStall() -> steering.stop() (0) -> rtWheel.stop() (0) ->
+  ' holdsPinBaseClaim() (1 return) = 3+1+0+0+1 = 5. The deepest chain is unchanged at 27.
   ' The count leaves out the interpreter's per-call bookkeeping and expression scratch, which is
   ' not visible in this repo (UNVERIFIED); even at a generous 8 longs for each of the chain's 7
   ' calls, 27 + 56 = 83 < 128. WD_STACK_LONGS = 128 is the app note's own starting point, used
@@ -435,6 +556,7 @@ OBJ { objects under test }
 #endif
     wheelL : "isp_bldc_motor"                                ' left wheel instance
     wheelR : "isp_bldc_motor"                                ' right wheel instance
+    steering : "isp_steering_2wheel"                        ' task 3521 phase D: two-wheel object under test; never running while wheelL/wheelR are (PL-18)
 
 DAT { record assembly state }
 
@@ -534,6 +656,27 @@ sSfPass         BYTE    "PASS", 0
 sSfFail         BYTE    "FAIL", 0
 sSfNomeas       BYTE    "NOMEAS", 0
 
+DAT { sign-off and record tokens, task 3521 phase D -- each within its TOKMAX_* }
+
+sSfTaskSteer    BYTE    "3533", 0                           ' R10-CHAR-STEER*: PL-28, PL-22 and PL-9
+sSfTaskBrake    BYTE    "3535", 0                           ' R13-CHAR-BRAKESTART: commit b34e109, the task 3535 review fix
+sSfCellSteerFail  BYTE  "R10-CHAR-STEERFAIL", 0
+sSfCellSteerStart BYTE  "R10-CHAR-STEERSTART", 0
+sSfCellSteerLive  BYTE  "R10-CHAR-STEERLIVE", 0
+sSfCellBrake    BYTE    "R13-CHAR-BRAKESTART", 0
+sSfCritNoLeak   BYTE    "RET_NEG_NOLEAK", 0
+sSfCritStartCog BYTE    "STEER_START_COG", 0
+sSfCritTicks    BYTE    "WHEEL_TICKS", 0
+sSfCritBrake    BYTE    "BRAKE_START_MOVE", 0
+sSfUnitsTicks   BYTE    "TICKS", 0
+sSfUnitsBool    BYTE    "BOOL", 0
+
+sAbtNone        BYTE    "NONE", 0
+sAbtFail        BYTE    "FAIL", 0
+sAbtStart       BYTE    "START", 0
+sAbtDrive       BYTE    "DRIVE", 0
+sAbtMulti       BYTE    "MULTI", 0
+
 DAT { Pass 1 meter current per hold, task 3521 phase C -- index HOLD_*, milliamps }
 
 ' Each value is the meter mean for one Pass 1 hold (CHAR-RUN-EVALUATION.md, Readings table), placed
@@ -591,6 +734,19 @@ sCpLibBoardType BYTE    "LIB_BRDTYP", 0
 sCpLibConstants BYTE    "LIB_CONST", 0
 sCpEmit         BYTE    "EMIT", 0
 sCpNote         BYTE    "NOTE", 0
+sCpSteer        BYTE    "STEER", 0
+sCpSpacerLoop   BYTE    "SPACERS", 0
+sCpSteerStart   BYTE    "STR_START", 0
+sCpSteerReady   BYTE    "STR_READY", 0
+sCpSteerDrive   BYTE    "STR_DRIVE", 0
+sCpSteerStop    BYTE    "STR_STOP", 0
+sCpSteerStopWt  BYTE    "STR_STOPWT", 0
+sCpSteerRead    BYTE    "STR_READ", 0
+sCpBrake        BYTE    "BRAKE", 0
+sCpBrakeStart   BYTE    "BRK_START", 0
+sCpHoldAtStop   BYTE    "BRK_HOLD", 0
+sCpCogAtn       BYTE    "BRK_COGATN", 0
+sCpBrakeDrive   BYTE    "BRK_DRIVE", 0
 sCpUnknown      BYTE    "UNKNOWN", 0
 
 DAT { hold caption strings -- every caption names its frame (PL-19) }
@@ -669,6 +825,44 @@ VAR { watchdog cog, task 3521 phase B }
                                                             ' BC-WATCHDOG -- cogspin does not detect an overrun
     LONG    wdCogId                                         ' cogspin()'s return; negative when it failed
 
+VAR { steering and brake-start phase state, task 3521 phase D -- the seam emitPhaseDSignoffs() reads }
+
+    LONG    bTrapPending                                    ' set TRUE before a trapped library call, cleared by its wrapper on return: still TRUE means it aborted
+    LONG    spacerCog[SPACER_MAX]                           ' cogspin() ids of the running spacer cogs
+    LONG    spacerStack[SPACER_MAX * SPACER_STACK_LONGS]    ' one SPACER_STACK_LONGS stack per spacer
+
+    LONG    bSteerFailCounted                               ' TRUE once the baseline free-cog count was taken
+    LONG    bSteerFailAttempted                             ' TRUE when steering.start() was called with spacers holding cogs
+    LONG    bSteerFailMeasured                              ' TRUE when that start ran with exactly one free cog
+    LONG    steerFailBaseline                               ' free cogs before
+    LONG    steerFailSpacers                                ' spacers started to leave one cog free
+    LONG    steerFailReturn                                 ' steering.start()'s return with one free cog (the abort value if it aborted)
+    LONG    steerFailFreeAfter                              ' free cogs after the spacers were released
+    LONG    bSteerFailAbort                                 ' TRUE when that start aborted
+    LONG    bSteerFailClaimsFree                            ' TRUE when this file's wheels then claimed both bench bases (PL-36)
+    LONG    bSteerStartRan                                  ' TRUE when the normal steering.start() was called
+    LONG    steerStartReturn                                ' its return (the abort value if it aborted)
+    LONG    bSteerStartAbort                                ' TRUE when that start aborted
+    LONG    bSteerBothReady                                 ' TRUE when both wheels left DCS_Unknown within READY_TIMEOUT_MS
+    LONG    bSteerLiveRan                                   ' TRUE when the PREFLIGHT_MS tick window ran
+    LONG    bSteerDriveAbort                                ' TRUE when driveAtPower() aborted
+    LONG    steerLtState                                    ' left wheel DCS_* read just after the window's second tick read
+    LONG    steerRtState                                    ' right wheel DCS_* read just after the window's second tick read
+    LONG    steerLtTicksDelta                               ' |left raw hall ticks after - before|, clamped to LIM_SMALL
+    LONG    steerRtTicksDelta                               ' |right raw hall ticks after - before|, clamped to LIM_SMALL
+    LONG    bSteerStopped                                   ' TRUE when both wheels reported STOPPED after stopMotors()
+
+    LONG    bBrakeSteerClear                                ' TRUE when both steering wheels read DCS_Unknown before the brake phase
+    LONG    bBrakeRan[BRAKE_COUNT]                          ' TRUE when the instance was reached
+    LONG    brakeStartRet[BRAKE_COUNT]                      ' startEx()'s return (the abort value if it aborted)
+    LONG    bBrakeAbort[BRAKE_COUNT]                        ' TRUE when startEx() aborted
+    LONG    bBrakeStarted[BRAKE_COUNT]                      ' TRUE when startEx() returned the cog testGetMotorCog() reports
+    LONG    bBrakeReady[BRAKE_COUNT]                        ' TRUE when the released driver reported ready
+    LONG    brakeTicksDelta[BRAKE_COUNT]                    ' signed raw hall-tick delta over the window, clamped to LIM_SMALL
+    LONG    bBrakeFaultRead[BRAKE_COUNT]                    ' TRUE when the fault state was read from a running driver
+    LONG    bBrakeFault[BRAKE_COUNT]                        ' TRUE when the fault latch or DCS_FAULTED was seen
+    LONG    bBrakeStopped[BRAKE_COUNT]                      ' TRUE when STOPPED was seen after the zero command
+
 PUB main() | trapCode, bWdStarted
 '' Run the unattended characterisation under a watchdog: watchdog start, banner, preflight, every
 '' hold, then stop both wheels and end the session. This is the one exit path, unless the watchdog
@@ -711,6 +905,7 @@ PUB main() | trapCode, bWdStarted
         if bWdStarted
             cogstop(wdCogId)
         shutdownMotors()                                    ' EVERY non-watchdog path: both wheels stop()
+        steerStop()                                         ' task 3521 phase D: and the steering object's two, if an abort left them running
         beat(CP_MAIN_END)
         emitSignoffs()                                      ' task 3521 phase C: every declared cell's instances, after the wheels stopped
         emitEnd(trapCode)
@@ -736,9 +931,11 @@ PRI initRun() | holdIdx
         beat(CP_MAIN_INIT)
         clearHold(holdIdx)
         holdResultCode[holdIdx] := RES_NOT_RUN
+    initPhaseD()
 
 PRI runSession() : bCompleted
-' Preflight, then every configured hold. A preflight miss skips the holds.
+' Preflight, then every configured hold, then the steering and brake-start phases (task 3521
+' phase D). A preflight miss skips all three.
 '
 ' @returns bCompleted - TRUE when every configured hold ran
 
@@ -747,6 +944,8 @@ PRI runSession() : bCompleted
     if bPreflightOk
         runAllHolds()
         bCompleted := TRUE
+        runSteeringPhase()
+        runBrakeStartPhase()
     else
         beat(CP_NOTE)
         debug("! SKIPPING HOLDS -- see BC-PREFLIGHT above. Fix the wiring or the declared pin group,")
@@ -1576,6 +1775,521 @@ PRI wheelDriveConstants(side) : deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, f
         deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt := wheelL.testGetDriveConstants()
     beat(CP_LIB_CONSTANTS)
 
+PRI initPhaseD() | brakeIdx
+' Mark every phase D measurement not run, so an unreached instance is NOMEAS with n 0.
+'
+' @local brakeIdx - BRK_* index
+
+    bTrapPending := FALSE
+    bSteerFailCounted := FALSE
+    bSteerFailAttempted := FALSE
+    bSteerFailMeasured := FALSE
+    steerFailBaseline := 0
+    steerFailSpacers := 0
+    steerFailReturn := 0
+    steerFailFreeAfter := 0
+    bSteerFailAbort := FALSE
+    bSteerFailClaimsFree := FALSE
+    bSteerStartRan := FALSE
+    steerStartReturn := 0
+    bSteerStartAbort := FALSE
+    bSteerBothReady := FALSE
+    bSteerLiveRan := FALSE
+    bSteerDriveAbort := FALSE
+    steerLtState := steering.DCS_Unknown
+    steerRtState := steering.DCS_Unknown
+    steerLtTicksDelta := 0
+    steerRtTicksDelta := 0
+    bSteerStopped := FALSE
+    bBrakeSteerClear := FALSE
+    repeat brakeIdx from BRK_L_POS to BRAKE_COUNT - 1
+        beat(CP_MAIN_INIT)
+        bBrakeRan[brakeIdx] := FALSE
+        brakeStartRet[brakeIdx] := 0
+        bBrakeAbort[brakeIdx] := FALSE
+        bBrakeStarted[brakeIdx] := FALSE
+        bBrakeReady[brakeIdx] := FALSE
+        brakeTicksDelta[brakeIdx] := 0
+        bBrakeFaultRead[brakeIdx] := FALSE
+        bBrakeFault[brakeIdx] := FALSE
+        bBrakeStopped[brakeIdx] := FALSE
+
+PRI runSteeringPhase() | baseline, spacersStarted, startRet, bAborted, ltTicksBefore, rtTicksBefore, ltTicksAfter, rtTicksAfter
+' The steering-object phase (task 3521 phase D): R10-CHAR-STEERFAIL, R10-CHAR-STEERSTART and
+' R10-CHAR-STEERLIVE, then BC-STEER once every wheel is stopped. Prints nothing before that.
+'
+' ORDER (PL-18): this file's wheelL/wheelR and the steering object's ltWheel/rtWheel share the
+' pin-claim registry, so both of this file's wheels are stop()ped first, and the phase ends with
+' steering.stop() before runBrakeStartPhase() starts a wheel again.
+'
+' FREE COGS EXPECTED: 6 -- 8 cogs less cog 0 and the watchdog cog (7 when BC-WDSTART says the
+' watchdog did not start). Every hold and preflight pass ends in shutdownMotors(), and a motor
+' instance's stop() stops its sense cog as well as its driver cog (isp_bldc_motor.spin2 stop()),
+' so no driver or sense cog outlives a hold. That the -d debugger takes no cog of its own is not
+' visible in this repo (UNVERIFIED); fail_baseline in BC-STEER records the real count.
+'
+' STEERFAIL: all but one free cog is occupied, so ltWheel.startEx() takes the last cog and
+' rtWheel.startEx() fails; start() must stop the left driver and return -1. PASS needs the return
+' -1 AND the free-cog count after == baseline (a leaked driver cog reads one short) AND this file's
+' own wheelL and wheelR then start on the bench bases (claimsFreeCheck(): a failed rtWheel start
+' that kept its pin claim, PL-36, refuses wheelR's claim) AND no abort. No cleanup stop() runs
+' between the failed start and that check, so nothing can mask a leaked claim.
+' UNFIXED library (before the :124-133 failure path): the failed right start was ignored, the
+' left driver cog was never stopped, and the sense-cog start (no cog left) decided the return --
+' so free-after = baseline - 1 and the cell FAILs on the leak whatever the return was.
+'
+' STEERSTART: a normal start. PASS needs the return in 0..7 AND both wheels leaving DCS_Unknown,
+' read through the TEST-USE pass-through testGetDriverState(). No pass-through exposes a wheel's
+' motorCog, so driver state is the evidence: init() sets drv_state DCS_Unknown before coginit and
+' stop() sets it after cogstop, and only the driver's own status block-write in .ctlMotor changes
+' it -- which a sync-started driver reaches only after waitatn has returned. So a state other than
+' DCS_Unknown proves that driver cog runs AND was released. UNFIXED library (PL-22): start()
+' returned 0 and both cogs stayed parked on waitatn, so both states stay DCS_Unknown, the bounded
+' wait times out, and the cell FAILs on its readiness condition with measured 0.
+'
+' STEERLIVE: raw driver-maintained hall ticks (testGetRawHallTicks(), the driver's pos, rewritten
+' by the same block-write every control pass), read before and after a PREFLIGHT_MS window of
+' steering.driveAtPower(STEER_POWER, STEER_POWER). The sense task's getRotationCount() total is
+' not used: it is updated at 8 Hz, accumulates abs() deltas, is zeroed by resetTracking(), and
+' getRotationCount() prints a debug() line. Liveness at the reads is the driver state just after
+' the second read (l_state/r_state). The drive is commanded only when both wheels reported a
+' state: with a parked driver, driveAtPower()'s SyncStatus() would never return. The window runs
+' either way, so UNFIXED PL-22 gives measured 0 on both wheels and FAILs (its tick source is not
+' live precisely because the steering object did not start that driver). NOMEAS only when start()
+' returned outside 0..7 or aborted -- STEERSTART already FAILs that.
+'
+' @local baseline - free cogs before STEERFAIL
+' @local spacersStarted - spacers occupying cogs during STEERFAIL
+' @local startRet - steering.start()'s return, or the abort value
+' @local bAborted - TRUE when the trapped start aborted
+' @local ltTicksBefore - left raw hall ticks before the window
+' @local rtTicksBefore - right raw hall ticks before the window
+' @local ltTicksAfter - left raw hall ticks after the window
+' @local rtTicksAfter - right raw hall ticks after the window
+
+    wdHoldIdx := WD_NO_HOLD
+    wdSide := SIDE_NONE
+    beat(CP_STEER)
+    shutdownMotors()                                        ' PL-18: release wheelL/wheelR's pin claims before the steering object claims them
+
+    ' (a) R10-CHAR-STEERFAIL
+    baseline := countFreeCogs()
+    steerFailBaseline := baseline
+    bSteerFailCounted := TRUE
+    if baseline >= STEERFAIL_MIN_BASELINE
+        spacersStarted := occupySpacers(baseline - 1)
+        steerFailSpacers := spacersStarted
+        bSteerFailAttempted := TRUE
+        startRet, bAborted := steerStartTrapped()
+        steerFailReturn := startRet
+        bSteerFailAbort := bAborted
+        releaseSpacers(spacersStarted)
+        if startRet <> STEERFAIL_RET
+            steerStop()
+        beat(CP_STEER)
+        steerFailFreeAfter := countFreeCogs()
+        bSteerFailMeasured := (spacersStarted == baseline - 1)
+        ' PL-36: no steerStop() before this check -- it would release a leaked claim and mask it
+        bSteerFailClaimsFree := claimsFreeCheck()
+        ' only now release whatever an unfixed library still holds, so STEERSTART measures its own start
+        steerStop()
+
+    ' (b) R10-CHAR-STEERSTART
+    beat(CP_STEER)
+    startRet, bAborted := steerStartTrapped()
+    steerStartReturn := startRet
+    bSteerStartAbort := bAborted
+    bSteerStartRan := TRUE
+    if (bAborted == FALSE) and (startRet >= 0) and (startRet <= MAX_COG_ID)
+        bSteerBothReady := waitSteerReady()
+
+        ' (c) R10-CHAR-STEERLIVE
+        ltTicksBefore, rtTicksBefore := steerTicks()
+        if bSteerBothReady
+            bSteerDriveAbort := steerDriveTrapped()
+        beat(CP_STEER_DRIVE)
+        waitms(PREFLIGHT_MS)                                ' the same increment and duration the 13-tick measurement used
+        beat(CP_STEER_DRIVE)
+        ltTicksAfter, rtTicksAfter := steerTicks()
+        steerLtState, steerRtState := steerStates()
+        if bSteerBothReady
+            steerStopMotors()
+            bSteerStopped := waitSteerStopped()
+        steerLtTicksDelta := absValue(((ltTicksAfter - ltTicksBefore) #> (0 - LIM_SMALL)) <# LIM_SMALL)
+        steerRtTicksDelta := absValue(((rtTicksAfter - rtTicksBefore) #> (0 - LIM_SMALL)) <# LIM_SMALL)
+        bSteerLiveRan := TRUE
+    steerStop()
+    beat(CP_STEER)
+    emitSteer()
+
+PRI claimsFreeCheck() : bFree | startRet, bAborted
+' R10-CHAR-STEERFAIL's PL-36 limb: start this file's own wheelL and then wheelR on the bench bases
+' and require a driver cog id from each with no abort, then stop both. A pin group still claimed
+' by another instance (a failed steering rtWheel start that kept its claim) makes that wheel's
+' init() refuse the claim and abort inside the trap. The starts are brakeStartTrapped()'s sync
+' starts: each driver cog parks on waitatn before its PWM pins are enabled and is never released,
+' so nothing moves.
+'
+' @returns bFree - TRUE when both wheels started on their bench bases
+'
+' @local startRet - startEx()'s return, or the abort value
+' @local bAborted - TRUE when startEx() aborted
+
+    bFree := TRUE
+    beat(CP_STEER)
+    shutdownMotors()
+    startRet, bAborted := brakeStartTrapped(SIDE_LEFT)
+    if bAborted or (startRet < 0) or (startRet > MAX_COG_ID)
+        bFree := FALSE
+    startRet, bAborted := brakeStartTrapped(SIDE_RIGHT)
+    if bAborted or (startRet < 0) or (startRet > MAX_COG_ID)
+        bFree := FALSE
+    shutdownMotors()
+
+PRI steerStartTrapped() : startRet, bAborted
+' Call steering.start() on the bench pins under an abort trap, bracketed by CP_LIB_STEER_START.
+'
+' @returns startRet - start()'s return: the sense cog id 0..7, -1, or the abort value
+' @returns bAborted - TRUE when start() aborted
+
+    beat(CP_LIB_STEER_START)
+    bTrapPending := TRUE
+    startRet := \steerStartCall()
+    bAborted := bTrapPending
+    bTrapPending := FALSE
+    beat(CP_LIB_STEER_START)
+
+PRI steerStartCall() : startRet
+' steering.start() itself; clears bTrapPending only when it returns normally. Call only as
+' \steerStartCall() from steerStartTrapped().
+'
+' @returns startRet - start()'s return
+
+    startRet := steering.start(LEFT_TEST_BASE, RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TEST_DET_MODE)
+    bTrapPending := FALSE
+
+PRI steerDriveTrapped() : bAborted | bDriveDone
+' Drive both wheels straight through the steering object's public driveAtPower() at STEER_POWER
+' under an abort trap, bracketed by CP_STEER_DRIVE.
+'
+' @returns bAborted - TRUE when driveAtPower() aborted
+'
+' @local bDriveDone - steerDriveCall()'s return, or the abort value
+
+    beat(CP_STEER_DRIVE)
+    bTrapPending := TRUE
+    bDriveDone := \steerDriveCall()
+    bAborted := (bTrapPending == TRUE) or (bDriveDone <> TRUE)
+    bTrapPending := FALSE
+    beat(CP_STEER_DRIVE)
+
+PRI steerDriveCall() : bDriveDone
+' steering.driveAtPower() itself; clears bTrapPending only when it returns normally. Call only as
+' \steerDriveCall() from steerDriveTrapped().
+'
+' @returns bDriveDone - TRUE when driveAtPower() returned
+
+    steering.driveAtPower(STEER_POWER, STEER_POWER)
+    bTrapPending := FALSE
+    bDriveDone := TRUE
+
+PRI waitSteerReady() : bReady | startMs, eLeftState, eRightState
+' Wait, bounded by READY_TIMEOUT_MS, for both steering wheels to leave DCS_Unknown.
+'
+' @returns bReady - TRUE when both did
+'
+' @local startMs - getms() when the wait began
+' @local eLeftState - left wheel DCS_* sample
+' @local eRightState - right wheel DCS_* sample
+
+    bReady := FALSE
+    startMs := getms()
+    repeat
+        beat(CP_LOOP_STEER_RDY)
+        eLeftState, eRightState := steerStates()
+        if (eLeftState <> steering.DCS_Unknown) and (eRightState <> steering.DCS_Unknown)
+            bReady := TRUE
+            quit
+        if (getms() - startMs) >= READY_TIMEOUT_MS
+            quit
+        waitms(SAMPLE_MS)
+
+PRI waitSteerStopped() : bStopped | startMs
+' Wait, bounded by STOP_TIMEOUT_MS, for both steering wheels to report STOPPED.
+'
+' @returns bStopped - TRUE when both did
+'
+' @local startMs - getms() when the wait began
+
+    bStopped := FALSE
+    startMs := getms()
+    repeat
+        beat(CP_LOOP_STEER_STOP)
+        if steerIsStopped()
+            bStopped := TRUE
+            quit
+        if (getms() - startMs) >= STOP_TIMEOUT_MS
+            quit
+        waitms(SAMPLE_MS)
+
+PRI steerStates() : eLeftState, eRightState
+' Both steering wheels' driver state through the TEST-USE pass-through testGetDriverState().
+'
+' @returns eLeftState - left wheel DCS_*
+' @returns eRightState - right wheel DCS_*
+
+    beat(CP_LIB_STEER_READ)
+    eLeftState, eRightState := steering.testGetDriverState()
+    beat(CP_LIB_STEER_READ)
+
+PRI steerTicks() : nLeftPos, nRightPos
+' Both steering wheels' raw driver-maintained hall ticks through testGetRawHallTicks().
+'
+' @returns nLeftPos - left wheel raw hall ticks
+' @returns nRightPos - right wheel raw hall ticks
+
+    beat(CP_LIB_STEER_READ)
+    nLeftPos, nRightPos := steering.testGetRawHallTicks()
+    beat(CP_LIB_STEER_READ)
+
+PRI steerIsStopped() : bStopped
+' steering.isStopped(): TRUE when both wheels report STOPPED.
+'
+' @returns bStopped - TRUE when both are stopped
+
+    beat(CP_LIB_STEER_READ)
+    bStopped := steering.isStopped()
+    beat(CP_LIB_STEER_READ)
+
+PRI steerStopMotors()
+' Command both steering wheels to stop through the public stopMotors().
+
+    beat(CP_LIB_STEER_STOP)
+    steering.stopMotors()
+    beat(CP_LIB_STEER_STOP)
+
+PRI steerStop()
+' Stop the steering object: its sense cog, both driver cogs and both pin claims. Safe on a
+' never-started or already-stopped instance. Cog 0 only: it beats. declareStall() calls
+' steering.stop() directly instead.
+
+    beat(CP_LIB_STEER_STOP)
+    steering.stop()
+    beat(CP_LIB_STEER_STOP)
+
+PRI countFreeCogs() : freeCount
+' Count free cogs by starting spacers until one fails, then stopping them (design sec A.5-a).
+'
+' @returns freeCount - how many spacers started
+
+    freeCount := occupySpacers(SPACER_MAX)
+    releaseSpacers(freeCount)
+
+PRI occupySpacers(maxSpacers) : startedCount | spawnedCog
+' Start up to maxSpacers idle spacer cogs, stopping at the first cogspin() that returns < 0. The
+' spacers never beat; this loop beats once per pass.
+'
+' @param maxSpacers - most spacers to start
+' @returns startedCount - spacers now running, in spacerCog[0..startedCount-1]
+'
+' @local spawnedCog - cogspin()'s return (not newCog: names are case-insensitive, and NEWCOG is built in)
+
+    startedCount := 0
+    repeat
+        beat(CP_SPACER_LOOP)
+        if (startedCount >= maxSpacers) or (startedCount >= SPACER_MAX)
+            quit
+        spawnedCog := cogspin(NEWCOG, spacerIdle(), @spacerStack[startedCount * SPACER_STACK_LONGS])
+        if (spawnedCog < 0) or (spawnedCog > MAX_COG_ID)
+            quit
+        spacerCog[startedCount] := spawnedCog
+        startedCount += 1
+
+PRI releaseSpacers(spacerCount) | spacerIdx
+' Stop the first spacerCount spacer cogs.
+'
+' @param spacerCount - spacers to stop
+'
+' @local spacerIdx - index into spacerCog
+
+    if spacerCount > 0                                      ' repeat 0 to -1 would count down, not skip
+        repeat spacerIdx from 0 to spacerCount - 1
+            beat(CP_SPACER_LOOP)
+            cogstop(spacerCog[spacerIdx])
+
+PRI spacerIdle()
+' A spacer cog's whole life: idle until cogstop(). Runs in the spacer cog; never beats.
+
+    repeat
+        waitms(WD_IDLE_MS)
+
+PRI runBrakeStartPhase() | brakeIdx, eLeftState, eRightState
+' The brake-mode start phase (task 3521 phase D): R13-CHAR-BRAKESTART on this file's own wheels,
+' per motor x sign, one BC-BRAKE each after that instance's wheel is stopped. The steering object
+' is stop()ped first and must read DCS_Unknown on both wheels (PL-18); otherwise no instance runs
+' and all four are NOMEAS.
+'
+' @local brakeIdx - BRK_* index
+' @local eLeftState - steering left wheel DCS_* before the phase
+' @local eRightState - steering right wheel DCS_* before the phase
+
+    wdHoldIdx := WD_NO_HOLD
+    wdSide := SIDE_NONE
+    beat(CP_BRAKE)
+    steerStop()
+    eLeftState, eRightState := steerStates()
+    bBrakeSteerClear := (eLeftState == steering.DCS_Unknown) and (eRightState == steering.DCS_Unknown)
+    repeat brakeIdx from BRK_L_POS to BRAKE_COUNT - 1
+        beat(CP_BRAKE)
+        if bBrakeSteerClear
+            measureBrakeStart(brakeIdx)
+        emitBrake(brakeIdx)
+
+PRI brakeInfo(brakeIdx) : side, sign
+' Return which motor and increment sign one brake-start instance uses.
+'
+' @param brakeIdx - BRK_* index
+' @returns side - SIDE_LEFT or SIDE_RIGHT
+' @returns sign - +1 or -1
+
+    case brakeIdx
+        BRK_L_POS:
+            side := SIDE_LEFT
+            sign := 1
+        BRK_L_NEG:
+            side := SIDE_LEFT
+            sign := -1
+        BRK_R_POS:
+            side := SIDE_RIGHT
+            sign := 1
+        other:                                               ' BRK_R_NEG
+            side := SIDE_RIGHT
+            sign := -1
+
+PRI measureBrakeStart(brakeIdx) | side, sign, startRet, bAborted, ticksBefore, ticksAfter, eDrvrState, bDidFault
+' Measure one brake-mode start into the brake VAR longs; prints nothing.
+'
+' SEQUENCE (design sec A.5-h): startEx(base, TEST_VOLTAGE, TEST_DET_MODE, TRUE) -- init() forces
+' SM_FLOAT, then the new cog calibrates and parks on waitatn before its first parameter read --
+' then holdAtStop(TRUE), then cogatn(1 << cog). WAITATN returns at once if the attention flag is
+' already set, and the flag is cleared only at cog start or by WAITATN/POLLATN, so the driver's
+' first parameter read and checkstop see SM_BRAKE even if the cogatn lands during calibration
+' (verified by the arbiter). The cog id is used only when testGetMotorCog() agrees with it, so an
+' abort value that happens to read 0..7 can never strobe the wrong cog. Then ready, ticks,
+' signed PREFLIGHT_INCRE for PREFLIGHT_MS, ticks, zero, stopped, fault read, holdAtStop(FALSE),
+' stop(). Motor frame: testDriveAtMotorIncrement() bypasses the reversed-motor flag, and
+' forwardIsReverse() is never called on this file's wheels.
+'
+' WHAT THIS CELL CAN AND CANNOT PROVE (design sec A.5-h, corrected 2026-09-14): checkstop's
+' "cmp stop_mode_, #SM_FLOAT wz / modz _nz wz / if_z call #initAngleFmHall" inverts the SM_FLOAT
+' test (p2kbPasm2Modz: Z becomes the modifier applied to the current flags, and _nz is NOT Z), so
+' at driver start initAngleFmHall -- which ends "mov prior_angle, angle_" -- runs only in
+' SM_BRAKE. The uninitialised prior_angle that commit b34e109 fixed was the default SM_FLOAT
+' start's; a brake start always initialised it, so this cell CANNOT fail on that defect. It is
+' coverage of the brake-mode start path itself -- no fault, motion in the commanded direction --
+' which no earlier bench run exercised.
+'
+' @param brakeIdx - BRK_* instance to measure
+'
+' @local side - SIDE_* of the instance
+' @local sign - +1 or -1
+' @local startRet - startEx()'s return, or the abort value
+' @local bAborted - TRUE when startEx() aborted
+' @local ticksBefore - raw hall ticks before the window
+' @local ticksAfter - raw hall ticks after the window
+' @local eDrvrState - DCS_* at the fault read
+' @local bDidFault - fault latch at the fault read
+
+    side, sign := brakeInfo(brakeIdx)
+    wdHoldIdx := WD_NO_HOLD
+    wdSide := side
+    beat(CP_BRAKE)
+    bBrakeRan[brakeIdx] := TRUE
+    shutdownMotors()
+    startRet, bAborted := brakeStartTrapped(side)
+    brakeStartRet[brakeIdx] := startRet
+    bBrakeAbort[brakeIdx] := bAborted
+    if (bAborted == FALSE) and (startRet >= 0) and (startRet <= MAX_COG_ID)
+        bBrakeStarted[brakeIdx] := (wheelMotorCog(side) == startRet + 1)
+    if bBrakeStarted[brakeIdx]
+        brakeHoldAtStop(side, TRUE)
+        beat(CP_COGATN)
+        cogatn(COGATN_BIT << startRet)
+        beat(CP_COGATN)
+        bBrakeReady[brakeIdx] := waitUntilReady(side)
+        if bBrakeReady[brakeIdx]
+            ticksBefore := wheelTicks(side)
+            commandMotor(side, sign * PREFLIGHT_INCRE)
+            beat(CP_BRAKE_DRIVE)
+            waitms(PREFLIGHT_MS)                            ' same increment magnitude and duration as the 13-tick measurement
+            beat(CP_BRAKE_DRIVE)
+            ticksAfter := wheelTicks(side)
+            commandMotor(side, 0)
+            bBrakeStopped[brakeIdx] := waitStoppedFor(side)
+            brakeTicksDelta[brakeIdx] := ((ticksAfter - ticksBefore) #> (0 - LIM_SMALL)) <# LIM_SMALL
+            if wheelCogUp(side)
+                ' the fault long is a latch (only clearFaultSignal() resets it), so this one read
+                '  after the stop covers the whole window even though the zero command has
+                '  already taken the driver out of DCS_FAULTED
+                _, _, _, eDrvrState, bDidFault := wheelTelemetry(side)
+                bBrakeFault[brakeIdx] := bDidFault or (eDrvrState == wheelL.DCS_FAULTED)
+                bBrakeFaultRead[brakeIdx] := TRUE
+        brakeHoldAtStop(side, FALSE)
+    shutdownMotors()
+
+PRI brakeStartTrapped(side) : startRet, bAborted
+' Call the named wheel's startEx(..., TRUE) under an abort trap, bracketed by CP_LIB_BRAKE_START.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns startRet - startEx()'s return: cog id 0..7, -1, or the abort value
+' @returns bAborted - TRUE when startEx() aborted
+
+    beat(CP_LIB_BRAKE_START)
+    bTrapPending := TRUE
+    startRet := \brakeStartCall(side)
+    bAborted := bTrapPending
+    bTrapPending := FALSE
+    beat(CP_LIB_BRAKE_START)
+
+PRI brakeStartCall(side) : startRet
+' The named wheel's startEx(..., TRUE) itself; clears bTrapPending only when it returns normally.
+' Call only as \brakeStartCall() from brakeStartTrapped().
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns startRet - startEx()'s return
+
+    if side == SIDE_RIGHT
+        startRet := wheelR.startEx(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TRUE)
+    else
+        startRet := wheelL.startEx(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TRUE)
+    bTrapPending := FALSE
+
+PRI brakeHoldAtStop(side, bEnable)
+' holdAtStop() on the named wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param bEnable - TRUE for SM_BRAKE, FALSE for SM_FLOAT
+
+    beat(CP_LIB_HOLDATSTOP)
+    if side == SIDE_RIGHT
+        wheelR.holdAtStop(bEnable)
+    else
+        wheelL.holdAtStop(bEnable)
+    beat(CP_LIB_HOLDATSTOP)
+
+PRI wheelMotorCog(side) : cogValue
+' testGetMotorCog() of the named wheel: cog id + 1, or 0 when no driver cog runs.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns cogValue - the wheel's raw motorCog value
+
+    beat(CP_LIB_COGUP)
+    if side == SIDE_RIGHT
+        cogValue := wheelR.testGetMotorCog()
+    else
+        cogValue := wheelL.testGetMotorCog()
+    beat(CP_LIB_COGUP)
+
 PRI emitBanner()
 ' Emit BC-BANNER once. cfg_id is sourced from its own #ifdef, never a runtime test -- pnut-ts
 ' silently ignores an unknown -D, so a mistyped flag lands on the honest #else token. The pin
@@ -1613,7 +2327,9 @@ PRI emitPlan()
 ' Emit BC-PLAN once: every timing and wait bound the holds run under.
 ' Worst case: tag(7) + sample_ms(18) + zero_samples(21) + settle_ms(18) + window_ms(18) +
 ' ready_timeout_ms(25) + atspeed_timeout_ms(27) + steady_timeout_ms(26) + stop_timeout_ms(24) +
-' hold0_motor(18) = 202 bytes.
+' hold0_motor(18) + steer_power(17) + steer_cmd_incre(29) = 248 bytes. steer_power and
+' steer_cmd_incre are phase D's drive power and its commanded increment (STEER_CMD_INCRE: left +,
+' right - after forwardIsReverse()).
 
     lineReset()
     lineAddText(@"BC-PLAN")
@@ -1626,6 +2342,8 @@ PRI emitPlan()
     boundedField(@"steady_timeout_ms", STEADY_TIMEOUT_MS, LIM_SMALL)
     boundedField(@"stop_timeout_ms", STOP_TIMEOUT_MS, LIM_SMALL)
     tokenField(@"hold0_motor", motorToken(HOLD_ZERO_SIDE), TOKMAX_MOTOR)
+    boundedField(@"steer_power", STEER_POWER, LIM_TINY)
+    boundedField(@"steer_cmd_incre", STEER_CMD_INCRE, LIM_BIG)
     lineEmit()
 
 PRI emitWatchdogStart(bStarted, wdCog)
@@ -1846,6 +2564,10 @@ PRI emitSignoffDecls()
     emitSignoffDecl(@sSfCellRpm, @sSfTaskRpm)
     emitSignoffDecl(@sSfCellIscale, @sSfTaskIscale)
     emitSignoffDecl(@sSfCellInteg, @sSfTaskInteg)
+    emitSignoffDecl(@sSfCellSteerFail, @sSfTaskSteer)       ' task 3521 phase D
+    emitSignoffDecl(@sSfCellSteerStart, @sSfTaskSteer)
+    emitSignoffDecl(@sSfCellSteerLive, @sSfTaskSteer)
+    emitSignoffDecl(@sSfCellBrake, @sSfTaskBrake)
 
 PRI emitSignoffDecl(pCell, pTask)
 ' Emit SIGNOFF-DECL for one cell.
@@ -1865,8 +2587,8 @@ PRI emitSignoffDecl(pCell, pTask)
 PRI emitSignoffs() | holdIdx, side, bMeasured, measuredVal, instCount
 ' Emit every declared cell's SIGNOFF instances from the per-hold results: R5, R4 and R2 once per
 ' motion hold (holds 1..8, all eight whether or not they ran -- a hold never reached is NOT_RUN and
-' gives NOMEAS), then R3 once per motor. Runs on cog 0's normal end path only, after both wheels
-' are stopped; no library call, no wait.
+' gives NOMEAS), then R3 once per motor, then the phase D cells (emitPhaseDSignoffs()). Runs on
+' cog 0's normal end path only, after every wheel is stopped; no library call, no wait.
 '
 ' @local holdIdx - HOLD_* motion hold
 ' @local side - SIDE_* of the hold, or the motor of an R3 instance
@@ -1893,6 +2615,7 @@ PRI emitSignoffs() | holdIdx, side, bMeasured, measuredVal, instCount
         beat(CP_EMIT)
         bMeasured, measuredVal, instCount := integSignoffValue(side)
         emitSignoff(@sSfCellInteg, @sSfTaskInteg, side, @sSfCritInteg, bMeasured, measuredVal, INTEG_SUM_LO, INTEG_SUM_HI, @sSfUnitsCount, instCount)
+    emitPhaseDSignoffs()
 
 PRI senseSignoffValue(holdIdx) : bMeasured, measuredVal, sampleCount | milliAmps, expectedX10, diffX10
 ' R5-CHAR-SENSE for one motion hold: the net sense mean against Pass 1's expected net, percent x10.
@@ -2071,6 +2794,235 @@ PRI emitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLi
     else
         boundedField(@"n", 0, LIM_SMALL)
     tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+    lineEmit()
+
+PRI emitPhaseDSignoffs() | side, sign, brakeIdx, measuredVal, bCriterionMet
+' Emit the phase D verdicts (task 3521 phase D) from the phase VAR longs: R10-CHAR-STEERFAIL,
+' R10-CHAR-STEERSTART, R10-CHAR-STEERLIVE per wheel, R13-CHAR-BRAKESTART per motor x sign. An
+' instance never reached keeps initPhaseD()'s not-run state and prints NOMEAS with n 0.
+'  STEERFAIL  measured = TRUE/FALSE, units BOOL: TRUE when start() returned -1 AND free-after ==
+'             baseline AND claimsFreeCheck() passed (PL-36) AND no abort; the numbers are in
+'             BC-STEER. NOMEAS when the baseline was below STEERFAIL_MIN_BASELINE, or the spacers did
+'             not leave exactly one cog free.
+'  STEERSTART measured = TRUE/FALSE, units BOOL: TRUE when start() returned 0..7 AND both wheels
+'             left DCS_Unknown AND no abort; the numbers are in BC-STEER. NOMEAS when not reached.
+'  STEERLIVE  measured = |raw tick delta| per wheel, lo 6 hi NA. NOMEAS when start() returned
+'             outside 0..7 or aborted.
+'  BRAKESTART measured = TRUE/FALSE, units BOOL: TRUE when the fault state was read from a
+'             running driver AND no fault AND sign x delta >= LIVENESS_MIN_TICKS (the tick sign
+'             equals the increment sign and |delta| >= 6). The numbers are in that instance's
+'             BC-BRAKE. NOMEAS when startEx() failed or aborted, or the driver never became ready.
+' Every multi-condition criterion is a BOOL verdict, so each record agrees with its own measured
+' field (arbiter review 2026-09-14).
+'
+' @local side - SIDE_* of the instance
+' @local sign - +1 or -1 for a brake-start instance
+' @local brakeIdx - BRK_* index
+' @local measuredVal - the steering-live instance's tick delta
+' @local bCriterionMet - the brake-start instance's boolean result
+
+    beat(CP_EMIT)
+    emitSignoffBool(@sSfCellSteerFail, @sSfTaskSteer, SIDE_NONE, @sSfCritNoLeak, bSteerFailMeasured, (steerFailReturn == STEERFAIL_RET) and (steerFailFreeAfter == steerFailBaseline) and (bSteerFailClaimsFree == TRUE) and (bSteerFailAbort == FALSE), SIGNOFF_ONE_INSTANCE)
+    beat(CP_EMIT)
+    emitSignoffBool(@sSfCellSteerStart, @sSfTaskSteer, SIDE_NONE, @sSfCritStartCog, bSteerStartRan, (steerStartReturn >= STEERSTART_COG_LO) and (steerStartReturn <= STEERSTART_COG_HI) and (bSteerBothReady == TRUE) and (bSteerStartAbort == FALSE), SIGNOFF_ONE_INSTANCE)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        beat(CP_EMIT)
+        measuredVal := (side == SIDE_RIGHT) ? steerRtTicksDelta : steerLtTicksDelta     ' selects values only (PL-29)
+        emitSignoffEx(@sSfCellSteerLive, @sSfTaskSteer, side, @sSfCritTicks, bSteerLiveRan, measuredVal, LIVENESS_MIN_TICKS, TRUE, 0, FALSE, TRUE, @sSfUnitsTicks, SIGNOFF_ONE_INSTANCE)
+    repeat brakeIdx from BRK_L_POS to BRAKE_COUNT - 1
+        beat(CP_EMIT)
+        side, sign := brakeInfo(brakeIdx)
+        ' brakeTicksDelta is clamped to +/-LIM_SMALL, so sign x delta cannot overflow
+        bCriterionMet := (bBrakeFaultRead[brakeIdx] == TRUE) and (bBrakeFault[brakeIdx] == FALSE) and ((sign * brakeTicksDelta[brakeIdx]) >= LIVENESS_MIN_TICKS)
+        emitSignoffBool(@sSfCellBrake, @sSfTaskBrake, side, @sSfCritBrake, bBrakeStarted[brakeIdx] and bBrakeReady[brakeIdx], bCriterionMet, SIGNOFF_ONE_INSTANCE)
+
+PRI emitSignoffEx(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, bHasLo, hiLimit, bHasHi, bConditionsOk, pUnits, instCount) | boundedVal, pVerdict
+' Emit one SIGNOFF verdict (design sec B.1, sf 1) whose limits may be NA and whose PASS may need a
+' condition beyond lo..hi. Same fields, order and clamps as emitSignoff(), which can do neither.
+' PASS only when measured AND bConditionsOk AND every present limit holds; FAIL when measured
+' otherwise; NOMEAS, with measured NA and n 0, when not measured. Judged on the clamped value.
+' Worst case, by clamp widths: identical to emitSignoff(), 196 bytes (an NA limit is shorter).
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+' @param side - SIDE_* the instance belongs to
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the instance was measured
+' @param measuredVal - the instance's measured value
+' @param loLimit - lowest passing value, compiled in (ignored when bHasLo is FALSE)
+' @param bHasLo - TRUE when the cell has a low limit; FALSE prints lo NA
+' @param hiLimit - highest passing value, compiled in (ignored when bHasHi is FALSE)
+' @param bHasHi - TRUE when the cell has a high limit; FALSE prints hi NA
+' @param bConditionsOk - TRUE when every non-range condition of the criterion holds
+' @param pUnits - pointer to the units token
+' @param instCount - samples, ticks or starts behind measuredVal
+'
+' @local boundedVal - measuredVal clamped to +/-LIM_BIG
+' @local pVerdict - PASS, FAIL or NOMEAS token
+
+    boundedVal := (measuredVal #> (0 - LIM_BIG)) <# LIM_BIG
+    if bMeasured == FALSE
+        pVerdict := @sSfNomeas
+    elseif (bConditionsOk == TRUE) and ((bHasLo == FALSE) or (boundedVal >= loLimit)) and ((bHasHi == FALSE) or (boundedVal <= hiLimit))
+        pVerdict := @sSfPass
+    else
+        pVerdict := @sSfFail
+    lineReset()
+    lineAddText(@"SIGNOFF")
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    tokenField(@"bin", @sSfBinChar, TOKMAX_BIN)
+    tokenField(@"cell", pCell, TOKMAX_CELL)
+    tokenField(@"task", pTask, TOKMAX_TASK)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    naOrBoundedField(@"measured", boundedVal, LIM_BIG, bMeasured)
+    naOrBoundedField(@"lo", loLimit, LIM_BIG, bHasLo)
+    naOrBoundedField(@"hi", hiLimit, LIM_BIG, bHasHi)
+    tokenField(@"units", pUnits, TOKMAX_UNITS)
+    if bMeasured
+        boundedField(@"n", instCount, LIM_SMALL)
+    else
+        boundedField(@"n", 0, LIM_SMALL)
+    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+    lineEmit()
+
+PRI emitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instCount) | pVerdict
+' Emit one boolean SIGNOFF verdict (design sec B.1, sf 1): measured TRUE/FALSE (NA when not
+' measured), lo TRUE, hi TRUE, units BOOL. PASS only when measured AND TRUE, so the verdict always
+' agrees with its own measured field.
+' Worst case: tag(7) + sf(8) + bin(11) + cell(26) + task(11) + motor(12) + crit(24) + measured(15)
+' + lo(8) + hi(8) + units(15) + n(10) + verdict(18) = 173 bytes.
+'
+' @param pCell - pointer to the cell id token
+' @param pTask - pointer to the owning todo-mcp task id, as plain text
+' @param side - SIDE_* the instance belongs to
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the instance was measured
+' @param bCriterionMet - TRUE when the whole criterion held
+' @param instCount - starts or windows behind the result
+
+    if bMeasured == FALSE
+        pVerdict := @sSfNomeas
+    elseif bCriterionMet == TRUE
+        pVerdict := @sSfPass
+    else
+        pVerdict := @sSfFail
+    lineReset()
+    lineAddText(@"SIGNOFF")
+    boundedField(@"sf", SF_VERSION, LIM_TINY)
+    tokenField(@"bin", @sSfBinChar, TOKMAX_BIN)
+    tokenField(@"cell", pCell, TOKMAX_CELL)
+    tokenField(@"task", pTask, TOKMAX_TASK)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    if bMeasured
+        boolField(@"measured", bCriterionMet)
+    else
+        lineTextField(@"measured", @sNa)
+    lineTextField(@"lo", @sTrue)
+    lineTextField(@"hi", @sTrue)
+    tokenField(@"units", @sSfUnitsBool, TOKMAX_UNITS)
+    if bMeasured
+        boundedField(@"n", instCount, LIM_SMALL)
+    else
+        boundedField(@"n", 0, LIM_SMALL)
+    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+    lineEmit()
+
+PRI emitSteer() | bMovedBoth
+' Emit BC-STEER once, after steering.stop(): the STEERFAIL cog arithmetic and PL-36 claim check,
+' the normal start, the wheels' driver-state evidence and each wheel's tick delta. The drive power
+' and its commanded increment are compile-time constants, printed once in BC-PLAN. A field whose
+' step did not run prints NA. aborted names which trapped call aborted.
+' Worst case: tag(8) + steer_fail_return(23) + fail_baseline(19) + fail_spacers(18) +
+' fail_free_after(21) + claims_free(18) + start_return(18) + aborted(14) + l_state(13) +
+' r_state(13) + both_ready(17) + l_ticks_delta(22) + r_ticks_delta(22) + moved_both(17) +
+' stopped(14) = 257 bytes.
+'
+' @local bMovedBoth - TRUE when both wheels' deltas reached LIVENESS_MIN_TICKS
+
+    bMovedBoth := bSteerLiveRan and (steerLtTicksDelta >= LIVENESS_MIN_TICKS) and (steerRtTicksDelta >= LIVENESS_MIN_TICKS)
+    lineReset()
+    lineAddText(@"BC-STEER")
+    naOrBoundedField(@"steer_fail_return", steerFailReturn, LIM_TINY, bSteerFailAttempted)
+    naOrBoundedField(@"fail_baseline", steerFailBaseline, LIM_TINY, bSteerFailCounted)
+    naOrBoundedField(@"fail_spacers", steerFailSpacers, LIM_TINY, bSteerFailAttempted)
+    naOrBoundedField(@"fail_free_after", steerFailFreeAfter, LIM_TINY, bSteerFailAttempted)
+    if bSteerFailAttempted
+        boolField(@"claims_free", bSteerFailClaimsFree)
+    else
+        lineTextField(@"claims_free", @sNa)
+    naOrBoundedField(@"start_return", steerStartReturn, LIM_TINY, bSteerStartRan)
+    tokenField(@"aborted", steerAbortToken(), TOKMAX_ABORT)
+    naOrBoundedField(@"l_state", steerLtState, LIM_TINY, bSteerLiveRan)
+    naOrBoundedField(@"r_state", steerRtState, LIM_TINY, bSteerLiveRan)
+    boolField(@"both_ready", bSteerBothReady)
+    naOrBoundedField(@"l_ticks_delta", steerLtTicksDelta, LIM_SMALL, bSteerLiveRan)
+    naOrBoundedField(@"r_ticks_delta", steerRtTicksDelta, LIM_SMALL, bSteerLiveRan)
+    boolField(@"moved_both", bMovedBoth)
+    boolField(@"stopped", bSteerStopped)
+    lineEmit()
+
+PRI steerAbortToken() : pTok | abortCount
+' Name the steering-phase trapped call that aborted.
+'
+' @returns pTok - NONE, FAIL (STEERFAIL start), START (normal start), DRIVE, or MULTI
+'
+' @local abortCount - how many trapped calls aborted
+
+    abortCount := 0
+    pTok := @sAbtNone
+    if bSteerFailAbort
+        abortCount += 1
+        pTok := @sAbtFail
+    if bSteerStartAbort
+        abortCount += 1
+        pTok := @sAbtStart
+    if bSteerDriveAbort
+        abortCount += 1
+        pTok := @sAbtDrive
+    if abortCount > 1
+        pTok := @sAbtMulti
+
+PRI emitBrake(brakeIdx) | side, sign, bRan
+' Emit BC-BRAKE for one brake-start instance, after its wheel is stopped: motor, signed motor
+' increment, frame, whether it ran, startEx()'s return, abort, ready, signed tick delta, fault,
+' stopped. A field whose step did not run prints NA.
+' Worst case: tag(8) + motor(12) + incre(19) + frame(12) + ran(10) + start_return(18) + abort(12) +
+' ready(12) + ticks_delta(20) + fault(12) + stopped(14) = 149 bytes.
+'
+' @param brakeIdx - BRK_* index
+'
+' @local side - SIDE_* of the instance
+' @local sign - +1 or -1
+' @local bRan - TRUE when the instance was reached
+
+    side, sign := brakeInfo(brakeIdx)
+    bRan := bBrakeRan[brakeIdx]
+    lineReset()
+    lineAddText(@"BC-BRAKE")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"incre", sign * PREFLIGHT_INCRE, LIM_BIG)
+    tokenField(@"frame", @sFrameMotor, TOKMAX_FRAME)
+    boolField(@"ran", bRan)
+    naOrBoundedField(@"start_return", brakeStartRet[brakeIdx], LIM_TINY, bRan)
+    if bRan
+        boolField(@"abort", bBrakeAbort[brakeIdx])
+    else
+        lineTextField(@"abort", @sNa)
+    if bBrakeStarted[brakeIdx]
+        boolField(@"ready", bBrakeReady[brakeIdx])
+    else
+        lineTextField(@"ready", @sNa)
+    naOrBoundedField(@"ticks_delta", brakeTicksDelta[brakeIdx], LIM_SMALL, bBrakeReady[brakeIdx])
+    if bBrakeFaultRead[brakeIdx]
+        boolField(@"fault", bBrakeFault[brakeIdx])
+    else
+        lineTextField(@"fault", @sNa)
+    if bBrakeReady[brakeIdx]
+        boolField(@"stopped", bBrakeStopped[brakeIdx])
+    else
+        lineTextField(@"stopped", @sNa)
     lineEmit()
 
 PRI boundedField(pFieldName, numValue, limitAbs)
@@ -2385,6 +3337,32 @@ PRI checkpointToken(checkpointId) : pTok
             pTok := @sCpEmit
         CP_NOTE:
             pTok := @sCpNote
+        CP_STEER:
+            pTok := @sCpSteer
+        CP_SPACER_LOOP:
+            pTok := @sCpSpacerLoop
+        CP_LIB_STEER_START:
+            pTok := @sCpSteerStart
+        CP_LOOP_STEER_RDY:
+            pTok := @sCpSteerReady
+        CP_STEER_DRIVE:
+            pTok := @sCpSteerDrive
+        CP_LIB_STEER_STOP:
+            pTok := @sCpSteerStop
+        CP_LOOP_STEER_STOP:
+            pTok := @sCpSteerStopWt
+        CP_LIB_STEER_READ:
+            pTok := @sCpSteerRead
+        CP_BRAKE:
+            pTok := @sCpBrake
+        CP_LIB_BRAKE_START:
+            pTok := @sCpBrakeStart
+        CP_LIB_HOLDATSTOP:
+            pTok := @sCpHoldAtStop
+        CP_COGATN:
+            pTok := @sCpCogAtn
+        CP_BRAKE_DRIVE:
+            pTok := @sCpBrakeDrive
         other:
             pTok := @sCpUnknown
 
@@ -2417,7 +3395,10 @@ PRI declareStall(msSinceBeat)
 ' no debug() it makes can hold a wheel running (cog 0 may have stalled inside a debug() of its
 ' own). wdDeclaring is set first, before anything else, so main() -- which tests it immediately
 ' before it would cogstop this cog -- never stops a declaration in progress. Calls
-' wheelL.stop()/wheelR.stop() directly, never shutdownMotors(), which beats.
+' wheelL.stop()/wheelR.stop() directly, never shutdownMotors(), which beats. Task 3521 phase D:
+' also steering.stop() directly, never steerStop(), which beats, so a stall during the steering
+' phase stops its two wheels and its sense cog too (a no-op outside that phase). Spacer cogs a
+' stall leaves running are idle and touch no pin; they are not stopped here.
 '
 ' @param msSinceBeat - ms since the sample that last saw wdHeartbeat change
 
@@ -2425,6 +3406,7 @@ PRI declareStall(msSinceBeat)
     wdSnapshot()
     wheelL.stop()
     wheelR.stop()
+    steering.stop()
     emitWatchdog(msSinceBeat)
     emitWatchdog2()
     wdEmitEnd()

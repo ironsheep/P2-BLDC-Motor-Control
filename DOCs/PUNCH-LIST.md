@@ -986,6 +986,34 @@ clears the pins; with `motorCog` already 0 it stops no cog.
 **Run-time proof owed to Visit 1:** `R10-CHAR-STEERFAIL` requires this file's own wheels to start
 on the bench bases right after the failed two-wheel start.
 
+### PL-37 -- the meter-panel assets outlived the panel they drew
+
+**Found 2026-09-14 in «#3521».** The meter-free rework removed `test_bench_char.spin2`'s PLOT panel
+(commit `7595274`), so nothing in that binary references its layer assets any more.
+
+**The assets:**
+- `src/bc_bg.bmp`
+- `src/bc_caption.bmp`
+- `src/bc_digits.bmp`
+- `src/bc_labels.bmp`
+- `src/bc_button.bmp`
+- the generator `tools/gen_bench_char_assets.py`
+
+**Why they are still in the tree.** Deleting them first needs a tree-wide search confirming that
+nothing else consumes them. Neither the arbiter nor its agents had a search tool in that session,
+and the project does not search through the shell.
+
+**Decision.** STEPHEN, 2026-09-14: *"leave them for now"*.
+
+**What has been read so far:**
+- There is no reference in `src/test_bench_char.spin2`, `tools/build-check.sh`,
+  `tools/check_style.sh`, `tools/bench-run.sh` or `.gitignore`.
+- The rest of the tree has not been searched.
+- `DOCs/PUNCH-LIST.md` PL-19 still mentions the generator.
+
+**To close:** in a session with a search tool, confirm there are no consumers, then delete the six
+files and update PL-19's mention.
+
 ---
 
 ## Recently closed
