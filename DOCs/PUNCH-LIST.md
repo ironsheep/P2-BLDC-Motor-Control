@@ -1527,6 +1527,70 @@ inventory is not yet taken.
 - Rule 5's blocked-platform abort is designed together with the current-limit work (S-2 / C-5), not
   bolted on.
 
+**Design written 2026-09-14** (`plans/ABORT-ERROR-CONTRACT-DESIGN.md`, «#3538» phase 1). Its
+inventory: 22 aborts, 15 in the motor object and 7 in the steering object. Every one is bare, every
+value lies in its method's normal return set, and none is protective. All become ordinary errors.
+
+### PL-48 -- validating a pin group then calling `start()` clears pins P0-P15, including the release demos' HDMI pins
+
+**Found 2026-09-14** in «#3538»'s inventory. The arbiter confirmed it by reading source; it is not
+observed on hardware.
+
+**The chain (DERIVED):**
+1. `validBasePinForChoice()` calls `validatePinBase()`, which calls `claimPinBase()`
+   (`src/isp_bldc_motor.spin2:985-990`, `:250-260`, `:210-248`). That records the pin claim under
+   this instance's `@pinbase`, but leaves the `pinbase` VAR at 0.
+2. `start()` → `startEx()` sees the claim and calls `stop()` first (`:103-104`, the PL-24 restart
+   rule).
+3. `stop()`'s guard is `(pinbase <> VALUE_NOT_SET) and holdsPinBaseClaim()` (`:153`). On a fresh
+   instance `pinbase` is 0, not `VALUE_NOT_SET`, so the guard passes, and it runs `pinclear(0 addpins
+   7)` and `pinclear(8 addpins 7)` (`:154-155`).
+
+**Exposed callers:**
+- `src/demo_single_motor.spin2`, a certified release demo, starts HDMI on `PINS_P8_P15` (`:33`,
+  `:55-57`), validates the motor base (`:61`), then starts (`:68`).
+- `demo_dual_motor_hdmi.spin2` and `demo_dual_motor_rc_hdmi.spin2` use HDMI on P0-P7, and validate
+  through the steering object first.
+
+`PINCLEAR` zeroes each pin's smart-pin mode (`p2kbSpin2Pinclear`). Whether the HDMI output is
+actually lost depends on how `p2videodrv` drives those pins, and is UNVERIFIED.
+
+**When it came in (DERIVED):** this sprint. Both the stop-first restart (PL-24, «#3499») and the
+full 16-pin clear in `stop()` («#3500») are new since 5.0.2. It is a regression candidate in a
+release demo.
+
+**Fix (correct by construction, in «#3538» phase 2):**
+- `validBasePinForChoice()` becomes a pure check, as its own doc says ("VALIDATE users' base-pin
+  choice").
+- The claim is taken only by `start()`/`startEx()`/`testSetup()`, after validation.
+- `stop()` clears pins only when this instance's `init()` completed.
+
+### PL-49 -- «#3538»'s inventory found nine more defects in the start and stop-limit paths
+
+**Found 2026-09-14.** DERIVED from source, not observed on hardware. Every one is removed by the
+contract's construction in «#3538» phase 2. Evidence and line numbers are in
+`plans/ABORT-ERROR-CONTRACT-DESIGN.md` §1.4.
+
+- **F-2:** a `start()` rejected on its voltage keeps its pin claim with no cog behind it. The abort
+  skips PL-36's release.
+- **F-3:** `start()` with an illegal pin-group enum launches a driver cog on pins derived from −1.
+- **F-4:** a rejected `stopAfterRotation()` has already erased an armed limit, and the steering
+  object's `stopAfterDistance()` has already reset tracking.
+- **F-5:** some stop limits silently arm nothing:
+  - a request that rounds to 0 ticks;
+  - a single-motor limit with no sense cog running;
+  - a steering limit set before `start()`.
+- **F-6:** `SyncStatus()` busy-waits without a bound, so the steering object's `driveAtPower()` can
+  hang the application cog while a wheel is e-stopped or not started.
+- **F-7:** the serial commands `stopaftrot 0`, `stopaftdist 0` and `stopafttime 0` pass the host
+  validator, reach a bare abort, and end the serial program with the motors holding their last
+  command.
+- **F-8:** an illegal detection mode is silently replaced by auto-detect.
+- **F-9:** the ABI layout guard only prints, and still launches the driver. `CLAUDE.md` is also
+  stale: the status run is now 16 longs.
+- **F-13:** an abort from the right wheel inside the steering `start()` strands the left wheel's
+  driver cog, parked on `waitatn`.
+
 ---
 
 ## Recently closed
