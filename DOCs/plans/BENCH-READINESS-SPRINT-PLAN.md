@@ -451,27 +451,27 @@ Batch 2, per the cadence rule.
     design for "correct by construction" to reduce side-effects"*.
   - Each design names the invariant its construction guarantees.
   - The bench certifies that invariant; it is never used to characterise a pattern we would not
-    choose. So no probe binaries are built for the trap or cog-stop questions: those patterns are
-    removed.
-- **The library's abort and error contract (PL-47), from Stephen's rules:**
-  - no bare `abort`, and every abort code non-zero and outside its method's normal return values;
-  - an abort is the exceptional, protective path, never a normal return. His model case: both
-    motors drawing high current at speed means the platform is blocked, and driving on would do
-    harm;
-  - ordinary errors go to a sticky error variable per calling cog, read and cleared by
-    `getError()`, with `ERR_*` codes mirrored into the steering object and documented in
-    `DRIVE-OBJECTS.md`.
-- **The bench harness follows the same contract:**
-  - no trap around a normal-path call; each step calls normally and checks `getError()`;
-  - one top-level trap secures the hardware and ends the run;
-  - traps remain only in deliberate abort-path tests;
-  - PL-44's root cause is proven with a discriminating probe;
-  - the bench-binary comments carrying the refuted PL-22 premise are corrected.
-- **Scan v5** (PL-46): a measurable half-speed confirmation, and a half-speed cell that can fail.
-- **The collation** reads a verdict inside a corrupted log line (PL-40).
+    choose. So no probe binaries are built for the trap or cog-stop questions.
+- **Scope is held to the plan's goal.** STEPHEN 2026-09-14: *"my goal right now is to get our
+  driver working per plan - i think adjusting scope keeps us away from that goal longer... punch
+  list the need then let's work on what we should be"*. Two follow-ups had grown past what the
+  driver path needs, and both are **deferred to the punch list**:
+  - **The library's abort and error contract** (PL-47; «#3538», paused).
+    - The design is on file, `ABORT-ERROR-CONTRACT-DESIGN.md`.
+    - The defects its inventory found are PL-48 and PL-49.
+  - **Cog-lifecycle and lock patterns** (PL-41; «#3543», paused).
+- **Scan v5** (PL-46): a measurable half-speed confirmation, a half-speed cell that can fail, and a
+  top-level trap whose value is always printed. It comes first, because it unblocks the offsets
+  («#3523»).
+- **The bench harness stops hiding the owed cells** («#3539», PL-44), with no library change:
+  - value captures through a trap on a normal return are removed; `start()` already returns the cog
+    id or -1;
+  - each binary has one top-level trap, and its value is always printed;
+  - the checks that masked the owed cells are fixed;
+  - the comments carrying the refuted PL-22 premise are corrected.
+- **The collation** reads a verdict inside a corrupted log line (PL-40). Done («#3541»).
 - **The T0-12 panel** is rebuilt on Stephen's proven display technique, and records turn
   direction (PL-42, PL-39).
-- **The DEBUG lock-15 / `cogstop` probe** (PL-41).
 - **Visit 2 carries Visit 1's owed items:**
   - R1-T0-START, R1-T0-EXHAUST, R10-CHAR-STEERFAIL and R13-CHAR-BRAKESTART re-measured;
   - T0-12;
@@ -523,12 +523,12 @@ This supersedes the 2026-09-12 table at the end of this plan. The table order is
 | 6 | «#3504» | 1 | 2 | Tier 0 extension, T0-11…T0-15 | Visit 1 |
 | 7 | «#3521» | 1 | 3 | Automated characterisation + steering liveness | Visit 1 |
 | 8 | «#3522» + «#3505» | — | — | **VISIT 1 — Bench Pass 2a scan run 6 + Bench Pass 2b** (ran 2026-09-14; «#3522» closed; «#3505» owes T0-12, Rev A, re-measures) | — |
-| 8a | «#3538» | 1b | 1 | Library abort/error contract: no bare aborts, codes outside return sets, per-cog `getError()` (PL-47) | Visit 2 |
-| 8b | «#3539» | 1b | — | Bench harness on the contract; PL-44 root cause proven by probe; PL-22 comments corrected | Visit 2 (the re-measured start-return and brake-start cells) |
-| 8c | «#3540» | 1b | 5 | Scan v5: measurable half-speed confirmation (PL-46) | Visit 2 (scan run 8) |
-| 8d | «#3541» | 1b | 6 | Collation reads verdicts in corrupted lines (PL-40) | host selftest + Visit 1 re-collation |
-| 8e | «#3542» | 1b | 2 | T0-12 panel on the proven technique, with turn direction (PL-42, PL-39) | Visit 2 (Stephen's hands) |
-| 8f | «#3543» | 1b | — | DEBUG lock-15 / `cogstop` probe (PL-41) | Visit 2 or Stephen's rig |
+| 8a | «#3540» | 1b | 5 | Scan v5: measurable half-speed confirmation (PL-46) | Visit 2 (scan run 8) |
+| 8b | «#3539» | 1b | — | Harness stops hiding the owed cells: no trap captures, one printed top-level trap, masking checks fixed, PL-22 comments corrected (PL-44) | Visit 2 (the re-measured start-return, steer-fail and brake-start cells) |
+| 8c | «#3542» | 1b | 2 | T0-12 panel on the proven technique, with turn direction (PL-42, PL-39) | Visit 2 (Stephen's hands) |
+| 8d | «#3541» | 1b | 6 | Collation reads verdicts in corrupted lines (PL-40) — done | host selftest + Visit 1 re-collation |
+| — | «#3538» | deferred | 1 | Library abort/error contract (PL-47): design on file, implementation deferred to the punch list (STEPHEN 2026-09-14) | — |
+| — | «#3543» | deferred | — | Cog-lifecycle and lock patterns (PL-41): deferred to the punch list (STEPHEN 2026-09-14) | — |
 | 9 | «#3523» | 2 | 5 | Apply offsets, per Stephen's decision after visit 1 | Visit 2 |
 | 10 | «#3506» | 2 | 6 | §2A front end (parts first) | Visit 2 |
 | 11 | «#3507» | 2 | 6 | DEBUG channels (PL-8) | Visit 2 |

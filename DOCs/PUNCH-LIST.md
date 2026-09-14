@@ -1227,6 +1227,12 @@ No probe binary is built.
 not stop a cog until its debug output has drained, and whether the library's own restart path
 (`startEx()` calling `stop()`) has the same exposure.
 
+**Deferred 2026-09-14 — not in the driver path.** STEPHEN: *"my goal right now is to get our driver
+working per plan - i think adjusting scope keeps us away from that goal longer... punch list the need
+then let's work on what we should be"*. «#3543» is moved to the backlog. Until it is scheduled, a
+garbled line in a phase that stops cogs is a known cost. The collation already recovers a verdict
+printed after a corruption (PL-40), and a verdict cut inside one stays MALFORMED.
+
 ### PL-42 -- T0-12's hand-rotation panel draws nothing, so the operator cannot see the prompt
 
 **Found 2026-09-14 in Visit 1.** STEPHEN: *"the t0-hand test was aborted because the UI didn't draw
@@ -1337,12 +1343,12 @@ pnut_ts's own guide, says a trap returns the method's normal return value when n
 **Direction (STEPHEN, 2026-09-14):**
 - *"please expect the compiler to be behaving correctly and then chase to root cause... don't be
   giving up without do the proper work required"*. The cause is presumed to be in our code, harness
-  or runtime interactions. It is proven with a discriminating probe binary, not attributed to the
-  tool (doctrine overlay P7). A root-cause study is under way; Batch 1b builds its probe.
+  or runtime interactions. It is not attributed to the tool (doctrine overlay P7). The root-cause
+  study below settled the disposition, and no probe is built.
 - *"traps are an exeptional return path - not normal use ... so we are we using them?"* We used a
   trap per call only so that a library abort would become NOMEAS instead of ending the binary. That
-  is the exceptional path used as a routine capture. Under PL-47 the harness calls normally, checks
-  `getError()`, and keeps a single top-level trap to secure the hardware.
+  is the exceptional path used as a routine capture. The harness calls normally, and keeps a single
+  top-level trap to secure the hardware.
 
 **Root-cause study (2026-09-14, [`analyses/PL-44-ROOT-CAUSE-STUDY.md`](analyses/PL-44-ROOT-CAUSE-STUDY.md)):**
 - **No defect in our code explains the zeros.** Refuted, with evidence:
@@ -1363,8 +1369,10 @@ pnut_ts's own guide, says a trap returns the method's normal return value when n
   our code in the first place."*
   - The surviving suspects are a trap used to capture a return value and a trap nested inside a
     trap. Neither should exist in the harness.
-  - «#3539» removes both: normal calls checked with `getError()`, one top-level trap that prints its
-    value on every run, and traps only in deliberate abort-path tests.
+  - «#3539» removes both. Calls are made normally, reading `start()`'s cog id or -1. One top-level
+    trap prints its value on every run. Traps remain only in deliberate abort-path tests.
+  - The library's error contract (PL-47) was deferred the same day, so none of this depends on
+    `getError()`.
   - The probe in §3 of the study is not built, and no conclusion about the toolchain is drawn.
 - **Other harness defects the study found:**
   - the char PL-36 claims check was masked;
@@ -1530,6 +1538,16 @@ inventory is not yet taken.
 **Design written 2026-09-14** (`plans/ABORT-ERROR-CONTRACT-DESIGN.md`, «#3538» phase 1). Its
 inventory: 22 aborts, 15 in the motor object and 7 in the steering object. Every one is bare, every
 value lies in its method's normal return set, and none is protective. All become ordinary errors.
+
+**Deferred 2026-09-14 — not in the driver path.** STEPHEN: *"my goal right now is to get our driver
+working per plan - i think adjusting scope keeps us away from that goal longer... punch list the need
+then let's work on what we should be"*.
+- The need is held here, with the design on file.
+- The inventory's defects are PL-48 and PL-49.
+- «#3538» is paused. The bench harness («#3539») no longer depends on this contract: it calls
+  normally and reads `start()`'s cog id or -1, with no `getError()`.
+- The two open API questions (a result on methods that return nothing today, and the
+  protective-stop names) are unasked and go to Stephen when this is scheduled.
 
 ### PL-48 -- validating a pin group then calling `start()` clears pins P0-P15, including the release demos' HDMI pins
 
