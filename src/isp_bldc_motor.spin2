@@ -123,6 +123,10 @@ PUB stop()
     if motorCog     ' stop motor drive
         cogstop(motorCog - 1)
         motorCog := 0
+        ' PL-28(b): no driver cog remains to keep drv_state current, so mark it not-running
+        ' the same way init() marks a not-yet-started instance (DCS_Unknown), AFTER the cog
+        ' is stopped so this write cannot race the driver's own block-copy of the status run.
+        drv_state := DCS_Unknown
 
     if senseCog     ' stop motor reads
         cogstop(senseCog - 1)
@@ -250,7 +254,7 @@ PRI validatePinBase(eMotorBasePin) : legalBase
         abort
     legalBase := eMotorBasePin
 
-PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInMS
+PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs
 ' Specify motor control board connect location for this motor BUT DON'T start the driver
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
@@ -313,8 +317,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' which would have been ~5x under spec; it never actually took that branch (see A2 --
     ' eDetectedBoard's REV_A/REV_B values can't match a BRD_REV_A/BRD_REV_B comparison), so
     ' every board has always gotten the compliant 260 ns. Deleted, not repaired.
-    gapInMS := 260
-    dead_gap    := (ticks1us * gapInMS) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
+    gapInNs := 260
+    dead_gap    := (ticks1us * gapInNs) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
     pwm_limit   := (frame_cnt / 2) - (dead_gap  / 2)    'PWM duty hard limit 1/2 freq of PWM
 
     ' .. and set up rest
@@ -1125,7 +1129,13 @@ PUB testResetFault() | bDidFault
 
     if fault
         debug("MOT: reset fault...")
-        ' setTargetAccel(0) . Nope, our motor run will timeout
+        ' PL-28(a): the driver only leaves DCS_FAULTED via its .newRqst path. A STOP request
+        ' (tgt_incr == 0) always reaches .newRqst while not already DCS_STOPPED
+        ' (isp_bldc_motor.spin2:2140-2148), regardless of whether it differs from the prior
+        ' command; a nonzero command only gets there if it differs (:2150). So issuing zero
+        ' here, rather than waiting on the caller to have done so, guarantees the fault-clear
+        ' code (:2179-2189) runs on the driver's next pass.
+        setTargetAccel(0, false)
         clearFaultSignal()
         waitms(30) ' values will clear in 20ms but leave extra time to occur
 

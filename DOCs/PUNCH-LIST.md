@@ -236,6 +236,12 @@ Write this back into `DRIVER-AUDIT-2026-09-09.md` as a new finding when
 > `dead_gap = 70` under both Rev A and Rev B detection (`2026-09-12/debug_260912-153807.log:467`).
 > The rename of `gapInMS` (it holds nanoseconds) is still owed.
 
+> **Fixed in tree 2026-09-13 («#3533»):** `gapInMS` renamed to `gapInNs` throughout
+> `src/isp_bldc_motor.spin2` (it is a PRI-local variable, never PASM-addressed, so the rename is
+> pure text substitution -- confirmed by reading `init()`'s parameter list and both use sites
+> before renaming). This is a static/compile-only property; the build and style gates cover it.
+> No other `src/*.spin2` file names it.
+
 **This is a booby trap, and it looks like a one-word fix.**
 
 `isp_bldc_motor.spin2:198` compares `eDetectedBoard` (which holds `REV_*`, 21/22)
@@ -678,6 +684,16 @@ observed on hardware). Three related defects in the TEST-USE ONLY drive path:
 a stated not-running value; the jog recovery re-applies the saved offsets. Worth doing before the
 motion harness («#3508») reuses this path.
 
+**Fixed in tree 2026-09-13 («#3533»):** `testResetFault()` now calls `setTargetAccel(0, false)`
+before clearing the hub fault long and waiting, so the driver's `.newRqst` fault-clear path always
+runs on its next pass instead of depending on the caller having sent zero first. `stop()` now sets
+`drv_state := DCS_Unknown` (the same value `init()` gives a never-started instance) once its driver
+cog is stopped, so `isReady()` and `isStopped()` both answer FALSE on a stopped instance instead of
+echoing whatever the driver last reported. `util_char_motor.spin2`'s `clearFaultByMotMove()` now
+re-applies the popped offset with `testSetFwdRevOffsets()` after the jog, instead of only restoring
+its local copies. Run-time proof (fault clears within the stated bound; `isReady()`/`isStopped()`
+FALSE post-stop) is owed to Visit 1.
+
 ### PL-29 -- a `? :` whose branches call methods ran both calls
 
 **Found 2026-09-12 in the first Bench Pass 2a scan runs.** MEASURED:
@@ -884,6 +900,14 @@ So in a bench build the steering object reads the **user** config while its two 
 
 **Fix direction:** give the steering object the same `#ifdef BENCH_CFG` OBJ switch as the motor
 object. A candidate for «#3533»'s batch.
+
+**Fixed in tree 2026-09-13 («#3533»):** `isp_steering_2wheel.spin2`'s `user` OBJ now carries the
+same `#ifdef BENCH_CFG` / `#else` / `#endif` switch as `isp_bldc_motor.spin2`. Confirmed no top
+compiles the steering object under `-D BENCH_CFG` today -- `tools/bench-run.sh` and every
+`test_bench_*.spin2` OBJ block name `isp_bldc_motor` directly, never `isp_steering_2wheel` -- so
+this closes the gap before the motion harness needs it rather than fixing an observed failure.
+Run-time proof (a bench build of a steering-object consumer reads bench-config distances) is owed
+to Visit 1 if and when such a consumer exists.
 
 ### PL-34 -- per-point `BS-ZERO` records print the motor block's zero-health verdict as their own
 
