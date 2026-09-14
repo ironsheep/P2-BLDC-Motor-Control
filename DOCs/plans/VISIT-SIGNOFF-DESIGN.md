@@ -23,8 +23,9 @@ lands on a board's gate input, §C.3). No open owner questions remain.
   - As BOOL: `R1-T0-START`, `R1-T0-EXHAUST`, `R1-T0-RESTART`, `R4-T0-1M-TICKS` (commit 8413f69);
     `R10-CHAR-STEERSTART`, `R10-CHAR-STEERFAIL`, `R13-CHAR-BRAKESTART` (43bf7f2); `R5-SCAN-SELF`,
     `R12-SCAN-RATE`, `R11-SCAN-NOSTALL` (b300660).
-  - `R1-SCAN-COGOK` also counts a start whose return is not `testGetMotorCog() − 1`, so PL-22's
-    always-0 return fails it.
+  - `R1-SCAN-COGOK` also counts a start whose return is not `testGetMotorCog() − 1`, so 5.0.2's
+    cog id + 1 success return fails it [D, `DRIVER-AUDIT-2026-09-09.md` finding C]. *(Corrected
+    2026-09-14: this said "PL-22's always-0 return"; that 0 was a trapped capture — PL-44.)*
 - **Row 9 (530961a):**
   - `R9-SCAN-HALFLEG` is crit `CLIFF_PROBED`, not `FIT_OR_CLIFF`: TRUE when every half-speed
     confirm fault that left a gap wider than `CLIFF_HALF_STEP_DEG` was followed by a measured probe
@@ -387,9 +388,13 @@ orphaned cog.**
 **f · Liveness floor 6 ticks** (R10-STEERLIVE, R13).
 - The known-good response to a 1/8-ceiling nudge held 700 ms is **13 ticks** [M
   `debug_260913-120844.log:46`].
-- The floor is half of that, **6 ticks** [D]. It rejects the PL-22 defect (cogs parked on
-  `waitatn` move exactly 0 ticks) and a wheel merely rocked by the other, while tolerating ramp
+- The floor is half of that, **6 ticks** [D]. It rejects a wheel whose cog stays parked on
+  `waitatn` (it moves exactly 0 ticks) and a wheel merely rocked by the other, while tolerating ramp
   variation.
+- **It does not reject 5.0.2** [D]. 5.0.2's mask released both motors on a successful start
+  (`DRIVER-AUDIT-2026-09-09.md` findings C and AH), so its wheels would also have moved.
+  `R10-CHAR-STEERLIVE` is coverage of the fixed path, not a falsifier. *(Corrected 2026-09-14: this
+  said it "rejects the PL-22 defect"; that premise rested on a trapped capture — PL-44.)*
 - Condition: the test must use the same increment and duration, `PREFLIGHT_INCRE` / 700 ms. For
   the steering object, the power whose `incrementForPower()` is nearest 18 375 000 (§H.2).
 

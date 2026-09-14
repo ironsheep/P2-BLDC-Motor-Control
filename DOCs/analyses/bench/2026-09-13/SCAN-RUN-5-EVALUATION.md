@@ -210,6 +210,11 @@ stopped.**
   last checkpoint. On a stall it records the scan's state and both drivers' state, stops both
   wheels, and ends the session. A recurrence then names its own state.
 
+**Later evidence (Visit 1, 2026-09-14):** scan run 6 went silent in the same way, and the watchdog
+printed nothing, although it fired correctly in its self-test nine minutes later. So the silence
+was not confined to cog 0. See [`../2026-09-14/VISIT-1-RESULTS.md`](../2026-09-14/VISIT-1-RESULTS.md)
+§8 and PL-43.
+
 **What the lock-up cost:** the right motor's negative-leg fit, both of its half-speed legs, the
 RIGHT `BS-RESULT`/`BS-PAIR` records, and the run's end record.
 

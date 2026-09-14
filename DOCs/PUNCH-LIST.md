@@ -536,38 +536,50 @@ Until fixed, that offset comes from the 8-hold fit -- ~9 mV at 0 A, DERIVED. **F
 quiescent hold with a driver started at zero command, so the bridge is idle and the ADC live,
 or report the sense fields as `NOMEAS` when no cog is running.
 
-### PL-22 -- the two-wheel sync release is built from `start()`'s return, which was always 0
+### PL-22 -- the two-wheel sync release is built from `start()`'s return, whose contract «#3499» changed
+
+*(Corrected 2026-09-14: this entry said `start()` "was always 0" on success, so 5.0.2's steering
+object "cannot start its motors". Its only measurement was a trapped capture, which always reads 0
+-- PL-44. The 5.0.2 behaviour below is re-derived from the 2026-09-09 audit and the field report.)*
 
 **Found 2026-09-12 while verifying «#3499».** `isp_steering_2wheel.spin2:110-118` starts both
 motors with `startEx(..., sync: true)` -- each driver cog parks on `waitatn` -- then releases
-them with `cogatn((1<<(ltcog-1))|(1<<(rtcog-1)))`, where `ltcog`/`rtcog` are `startEx()`'s
-returns.
+them with a `cogatn` mask built from `startEx()`'s returns, `ltcog`/`rtcog`.
 
-MEASURED 2026-09-11 (`DOCs/analyses/bench/2026-09-11/debug_260911-143911.log:127`,
-`T0-10,start_return,0,raw_motor_cog,2`): before «#3499» that return was **0** on success. So
-the mask was `1<<-1` twice. PASM2 `SHL` takes its count from `Src[4:0]` (`p2kbPasm2Shl`: "Src
-is a register or 5-bit literal"), so a count of -1 acts as 31 and the mask is `$8000_0000`
-(DERIVED -- `p2kbSpin2Operators` does not document the Spin2 `<<` count separately; the
-5-bit behaviour is inferred from the instruction). `p2kbSpin2Cogatn`: bits 0-7 select cogs,
-so that mask strobes **no cog**, and both driver cogs stay parked on `waitatn`.
+**What 5.0.2 did (DERIVED, `analyses/DRIVER-AUDIT-2026-09-09.md`, read from source before any
+bench run):**
+- Finding C: `ok := motorCog := coginit(NEWCOG, @driver, @pinbase) + 1` returned cog id + 1 on
+  success and 0 on failure, while its doc comment promised the cog id or -1.
+- So the mask `(1<<(ltcog-1))|(1<<(rtcog-1))` was `1<<cog` for each motor on success and released
+  both. The audit records the two-motor sync handshake as correct (finding AH; "What is verifiably
+  correct").
+- The real 5.0.2 defect was finding AD: a **failed** start returned 0, the shift count became -1,
+  and the surviving motor was never released, with no diagnostic.
+- The field report agrees (DERIVED, `analyses/user-report-2026-09-09-ANALYSIS.md` observations 1
+  and 4): the reporter's `demo_dual_motor` starts both motors through the steering object, and
+  both motors drove. That is impossible if the mask selected no cog.
 
-**It shipped.** `git grep` on tag `v5.0.2`: `isp_bldc_motor.spin2:89` carries the chained
-`ok := motorCog := coginit(...) + 1` and `isp_steering_2wheel.spin2:113` the `(1<<(ltcog-1))`
-mask. **DERIVED conclusion: in 5.0.2 the two-wheel steering object's `start()` cannot start its
-motors.** `demo_dual_motor` is the only top that uses it; no bench log this sprint ever ran it
-(no `sendatn` line anywhere). The 2026-09-09 user report of dual motors running is consistent
-only with that user not using the steering object's synchronized start. Release-note candidate
-for «#3515», stated as derived until the bench shows the fixed path moving.
+**What this entry got wrong.** It read `T0-10,start_return,0,raw_motor_cog,2`
+(`analyses/bench/2026-09-11/debug_260911-143911.log:127`) as the return on success; that value is a
+trapped capture, void as evidence (PL-44). Its supporting argument -- the chained assignment "does
+not propagate" because `p2kbSpin2Operators` documents no assignment-as-expression -- was an
+argument from absence, and the field report contradicts it.
 
 **After «#3499»** `startEx()` returns the cog id (0-7), or -1 on failure (`isp_bldc_motor.spin2:116`).
 `start()` now builds the mask as `(1<<ltcog)|(1<<rtcog)` (`isp_steering_2wheel.spin2:132`), so it is
 correct by construction. *(Corrected 2026-09-13: this line said "cog id + 1", which was the draft
-contract before Stephen's option B.)* But the shipped dual path's behaviour before and after has
-never been observed.
+contract before Stephen's option B.)*
 
-**Owed:** a two-wheel steering-object liveness check on the bench (start, a brief low-power drive,
-both wheels' ticks move) at Visit 1. It is cell `R10-CHAR-STEERLIVE` in
-`DOCs/plans/VISIT-SIGNOFF-DESIGN.md`.
+**Release note for «#3515» -- a contract change, not the fix of an always-0 return.** «#3499»
+changed the success return from cog id + 1 to the documented cog id (0-7), and the failure return
+from 0 to -1 (STEPHEN 2026-09-12 chose that contract, option B). That repairs finding C and AD's
+unchecked failure. For a 5.0.2 caller it is a user-visible change: code that subtracts 1 from the
+return, or tests it against 0 for failure, must change (DERIVED).
+
+**Visit 1 ran the fixed path (MEASURED, `analyses/bench/2026-09-14/debug_260914-115953.log:402-420`):**
+`sendatn: ltcog = 2 rtcog = 3`, then both wheels reached AT_SPEED and moved 13 ticks each. Cell
+`R10-CHAR-STEERLIVE` signed off. It is coverage of the fixed path, not a falsifier of a 5.0.2
+defect: 5.0.2's wheels would also have moved (DERIVED).
 
 **Failed-start return — fixed in tree** (found 2026-09-13 while reviewing the «#3537» design; read
 from source). This entry used to say *"`start()` here returns only the sense cog's result,
@@ -576,7 +588,10 @@ discarding a failed motor start"*. That is no longer true:
   (`isp_steering_2wheel.spin2:120-129`).
 - A failed sense-cog start stops both motors and returns -1 (`:152-158`).
 
-Run-time proof is owed to Visit 1 (cells `R10-CHAR-STEERFAIL` / `R10-CHAR-STEERSTART`).
+Visit 1 (2026-09-14): `R10-CHAR-STEERSTART` signed off. `R10-CHAR-STEERFAIL` FAILed only because
+its return was read through an abort trap (PL-44). The library printed its −1 path, and free cogs
+after the failed start equalled the baseline (`analyses/bench/2026-09-14/debug_260914-115953.log:268-281`,
+`:420`). The return is re-measured at Visit 2, after the capture fix.
 
 ### PL-23 -- bench binaries print booleans as numbers
 
@@ -1036,6 +1051,318 @@ and the project does not search through the shell.
 
 **To close:** in a session with a search tool, confirm there are no consumers, then delete the six
 files and update PL-19's mention.
+
+### PL-38 -- the 6.5″ motor's 6.0 V and 7.4 V speed ceilings are the 11.1 V ceiling
+
+**Found 2026-09-14** while checking `MOTOR_CHOICE.md` against the bench runs. Read from source.
+
+**What the code does:**
+- `confgurePowerLimits()`, `MOTR_6_5_INCH` branch (`src/isp_bldc_motor.spin2:1411-1419`), maps the
+  range `PWR_6p0V..PWR_11p1V` to one ceiling. By the enum at `:29` that range is 6.0, 7.4 and
+  11.1 V.
+- All three get `90_000_000` / `-90_000_000`, which the comment at `:1412` records as the 11.1 V
+  ceiling: 165.3 rpm, 248 ticks/s.
+- 24.0 V gets the 22.2 V value, `172_000_000`, and the comment at `:1417` calls it `FAKE`.
+
+**What the doc says:** `MOTOR_CHOICE.md` lists 6.0 V, 7.4 V and 24.0 V as *tba*. So the doc says
+"not known" where the code has committed a value.
+
+**Consequence (DERIVED, not bench-tested):**
+- The measured rows scale at about 15 rpm per volt: 165.3 / 11.1 = 14.9, 181.3 / 12.0 = 15.1,
+  224.0 / 14.8 = 15.1, 272.0 / 18.5 = 14.7, 320.0 / 22.2 = 14.4.
+- On that slope a 6.0 V pack reaches about 90 rpm and 7.4 V about 110 rpm, while 100 % power
+  requests 165.3 rpm.
+- The table's own comments record a request above the reachable rate as the fault point ("until
+  fault at"). So full power on a 2S pack or a 6 V supply is expected to fault.
+- 24.0 V errs the other way. It under-limits by one voltage step, which costs top speed and does
+  not fault.
+
+**Fix direction:**
+- Measure the 6.0, 7.4 and 24.0 V ceilings. Per PL-26 that means both directions, on the offsets
+  that ship. This needs a supply or pack at each voltage, and that is Stephen's rig.
+- Until they are measured, a placeholder must err low. Scale it from the measured slope rather
+  than reuse a higher voltage's ceiling.
+- `MOTOR_CHOICE.md` then states what the code does.
+
+### PL-39 -- `MOTOR_CHOICE.md` labels the 6.5″ hall sequences opposite to the library's forward
+
+**Found 2026-09-14** while checking `MOTOR_CHOICE.md` against the bench runs.
+
+**The evidence:**
+- `deltas65` (`src/isp_bldc_motor.spin2:1885-1892`, indexed `old<<3 | new`) adds +1 to `pos` along
+  1-5-4-6-2-3 and −1 along 1-3-2-6-4-5. DERIVED, decoded by hand.
+- A positive command raises `pos` on a wheel that does not call `forwardIsReverse()`. MEASURED:
+  LEFT at +50 power moved +416 ticks, and at −50 moved −416
+  (`analyses/bench/2026-09-11/debug_260911-234012.log:49`, `:65`).
+- The driver's own table selection agrees. A rising `angle_` selects `offset_rev_` and the first
+  half of `hall_angles`, copied from `hltbAngles`, whose rising order is 1-5-4-6-2-3. DERIVED,
+  `:2524-2534` and `:1904-1911`.
+
+**The mislabel:**
+- `MOTOR_CHOICE.md:18` labels 1-3-2-6-4-5 "FWD (CW)" and 1-5-4-6-2-3 "REV (CCW)".
+- So the doc's **REV** is the sequence the library drives for **positive** power. The label
+  follows the naming inherited from Chip's driver, in which `offset_fwd` serves negative
+  increments (`analyses/bench/2026-09-12/CHAR-RUN-EVALUATION.md` finding 1). It does not follow the
+  library's public API.
+- `MOTOR_CHOICE.md:26` labels the Doco motor the other way round (FWD = 1-5-4-6-2-3), yet
+  `deltas4k` is byte-identical to `deltas65`. Either one row is wrong or the two motors' hall
+  wiring differs. Nothing in the repo shows which.
+- CW and CCW are given without a viewpoint, and no bench record ties a hall sequence to a
+  rotation seen from a stated side.
+
+**Fix direction:**
+- Label each sequence in the library's frame: "positive power, ticks rising" and "negative power,
+  ticks falling". Give CW/CCW only with a stated viewpoint, and only once observed.
+- T0-12, the hand-rotation test, is the natural place to observe it: record which way the wheel
+  was turned, seen from the hub side, alongside the sign of the tick change.
+- Resolve the Doco row by the same observation when the Doco bench runs.
+- Check whether `ADDING_MOTOR.md`'s procedure for building a deltas table reads these labels.
+  That was not checked here.
+
+### PL-40 -- the sign-off collation missed a verdict printed inside a corrupted log line
+
+**Found 2026-09-14 evaluating Visit 1** (`analyses/bench/2026-09-14/VISIT-1-RESULTS.md`).
+
+**What happened (MEASURED):**
+- Tier 0 printed `SIGNOFF,...,cell,R1-T0-RESTART,...,measured,TRUE,...,verdict,PASS`.
+- The terminal logged it on the tail of a hex-dump line that followed a
+  `[ROUTING ERROR: Binary data in COG message]` block (`debug_260914-114636.log:994-1002`; the
+  record starts after the dump's closing `|` on line 1002).
+- `tools/signoff-collate.py` reported the cell NOMEAS (NOT_REACHED): declared, no SIGNOFF instance
+  (`VISIT-1-SIGNOFF.md`, R1-T0-RESTART).
+
+**Why it matters:** a verdict the binary did print was scored as never reached. The sheet's rule
+that NOMEAS is never PASS held, so nothing was falsely signed off. But a real verdict was lost
+without a word, and the corruption that causes it recurs (PL-41).
+
+**Fix direction:**
+- The collation finds a record token anywhere in a line, not only at the line's start.
+- A record recovered from a routing-error or binary-data line is counted, and flagged on the sheet
+  as recovered from a corrupted line.
+- A fixture built from these exact lines proves both, and a record truncated inside the dump
+  still reads as malformed.
+
+### PL-41 -- the debug stream corrupts when bench binaries start and stop cogs in quick succession
+
+**Found 2026-09-14 in Visit 1.** Every instance sits in a phase that starts or stops several cogs
+within milliseconds.
+
+**Instances (MEASURED):**
+
+| Log line | What the log shows | What the binary was doing |
+|---|---|---|
+| `debug_260914-114636.log:983` | `Cog1  IN` cut off, then `Cog0` text | T0-15c: a second `start()` stops cog 1 about 5 ms after starting it |
+| `…114636.log:994-1002` | routing error, byte `$F9`, `Cog1Cog0` | T0-15c, same restart |
+| `…114636.log:1041`, `:1059` | `Cog1Cog1`, `Cog1Cog0` | T0-15b: spacer cogs started, then the exhaustion start |
+| `debug_260914-115953.log:250-254` | `Cog2  IN` + `$FF`, then a full `Cog2  INIT` | char STEERFAIL: five spacer cogs started |
+| `…115953.log:282-364` | 1,296 bytes, alternate bytes `$4F` | STEERFAIL: the failed steering start and the spacers' release |
+| `…115953.log:375-379` | `Cog3` + `$FF` + `Cog0` | steering start's second motor cog |
+| `…115953.log:432-459` | 273 + 142 bytes, a `$07` after most bytes, some low bits set | brake-start phase: a wheel stopped and restarted |
+
+**What it costs:** records are lost or unparseable (PL-40), and a log cannot be trusted to be
+complete through such a phase.
+
+**Mechanism: not established.** The pattern of a cog's `INIT` line cut short fits a cog stopped
+while its debug output is still being sent (DERIVED). Whether stopping a cog mid-output can
+also leave the debug channel held -- one candidate for scan runs 5 and 6 going silent -- is a
+P2 debugger question, answered from the P2 knowledge base or by Stephen, not guessed. What the
+knowledge base says so far: `cogstop` does **not** release locks the stopped cog owns
+(`p2kbSpin2Cogstop`). The DEBUG entries read (`p2kbSpin2DbgDebug`, `p2kbArchDebugInterrupt`) do not
+say how output from several cogs is kept apart.
+
+**Fix direction:** establish the mechanism first. Then decide whether the bench binaries must
+not stop a cog until its debug output has drained, and whether the library's own restart path
+(`startEx()` calling `stop()`) has the same exposure.
+
+### PL-42 -- T0-12's hand-rotation panel draws nothing, so the operator cannot see the prompt
+
+**Found 2026-09-14 in Visit 1.** STEPHEN: *"the t0-hand test was aborted because the UI didn't draw
+properly so i couldn't understand what was being asked."*
+
+**Read from source (DERIVED):**
+- `src/test_bench_t0.spin2:1232` declares `PLOT bench ... HIDEXY UPDATE` and never draws into it:
+  no text, no layer, no `UPDATE`.
+- The operator prompt at `:1233` is a plain `debug()` record, so it reaches only the terminal
+  text, not the panel.
+- The key poll at `:1239` targets the empty panel.
+- `:1219-1221` records the pattern as "UNVERIFIED (compile-checked only)".
+
+**What the log shows (MEASURED):** the declaration at `debug_260914-120126.log:22`, then `bench PC_KEY`
+polls about every 64 ms and no `T0-12,started` line. No key was ever received, and the session was
+closed from the host.
+
+**Consequence:** 90 ticks per revolution is still not measured on the bench. T0-12 is its only
+ground truth (PL-39).
+
+**Fix direction:**
+- Draw the prompt and state on the panel using Stephen's proven technique (PL-15;
+  `DOCs/REF-NO-COMMIT/dbg-display-theory/`). The characterisation panel removed in `7595274` is the
+  in-repo precedent that drew on this rig (`analyses/bench/2026-09-12/debug_260912-153807.log`).
+- Verify that the panel renders before the visit.
+- Record the direction turned alongside the sign of the tick change, per PL-39.
+
+### PL-43 -- scan run 6 went silent under a load step, and the watchdog did not speak
+
+**Found 2026-09-14 in Visit 1** (`analyses/bench/2026-09-14/VISIT-1-RESULTS.md` §8). This is
+«#3536»'s third outcome: a silent stop with no `BS-WATCHDOG` record.
+
+**What the logs show (MEASURED):**
+- At 11:35:47 the first download failed: "No Propeller v2 device found" (`debug_260914-113544.log:16-18`).
+- Run 6 passed its left self-check and reference point (`debug_260914-113610.log:210-218`).
+- It stepped to a 53° offset and commanded −¼ speed at 11:36:46.755 (`:220-222`). Nothing more
+  came from the P2; the session was closed at 11:39:07 (`:224`).
+- Run 7 drew about 2.7 A at that same point (`debug_260914-114703.log:224-226`). So the silence began
+  within 16 ms of a step to the highest non-aborting current in the leg.
+- No `BS-WATCHDOG` appeared. On a cog-0 stall the watchdog stops both wheels, then prints its
+  records and ends the session within 4.0–4.5 s (`src/test_bench_scan.spin2:5453-5515`, DERIVED).
+  In its self-test nine minutes later it did exactly that (`debug_260914-114523.log:74-82`).
+- STEPHEN then hardened the supply connections: *"i think vibration affected the power supply (just a
+  hypothesis)"*. Every later run completed, including run 7 through the same point.
+
+**What that establishes (DERIVED):** the silence was not a cog-0-only stall, which is the case
+«#3534»'s watchdog was built for. Three explanations remain, told apart by what the wheels did after
+11:36:46:
+
+| Explanation | The wheels would have… |
+|---|---|
+| P2 brown-out or reset | stopped and gone free at once |
+| Debug channel held (every cog blocks at its next `debug()`; see PL-41) | finished the point, stopped and gone free about 4–5 s later |
+| Host or link loss (the P2 carried on unheard) | kept stepping through points |
+
+**Not settled:** one clean scan after a change is not a property. Run 5's silence came at a
+low-current point. No rail voltage is logged.
+
+**Next:**
+- The wheels' behaviour after 11:36:46 was raised with Stephen as «#3536» requires.
+- A recurrence should be caught with the wheels observed.
+- The §2A front end's bus-voltage channel («#3506») would show a dip directly.
+
+### PL-44 -- every value captured through an abort trap in the bench binaries reads 0
+
+**Found 2026-09-14 evaluating Visit 1** (`analyses/bench/2026-09-14/VISIT-1-RESULTS.md` §6).
+
+**What was measured:** 12 logged instances at 6 source sites in `test_bench_t0.spin2` and
+`test_bench_char.spin2`, and 0 counterexamples. Each expression-context trap, `x := \method()`,
+logged 0 while the library took, and printed, a non-zero path:
+- `* Motor COG #1` / `#2`;
+- the −1 failure branches `!! ERROR filed to start Motor Control task` and
+  `!! ERROR filed to start left/right drive cog(s)`.
+
+Key lines: `debug_260914-114636.log:967-970`, `:1016-1018`, `:1038-1039`, `:1058-1059`;
+`debug_260914-115953.log:268-281` with `:420`, `:470-471`, `:483-484`.
+
+**What it is not (DERIVED from the same logs and source):**
+- *Not the library.* `isp_bldc_motor.spin2:109-122` is correct. Untrapped calls to the same method
+  return the printed cog: scan `BS-START`, char `BC-START` and `BC-PREFLIGHT`, and the steering
+  object's `ltcog = 2 rtcog = 3` (`debug_260914-115953.log:402`).
+- *Not caller and callee sharing a variable name.* T0-10 and T0-8 trap `\motor.start()` directly,
+  with different names, and read 0 too.
+- *Not the order in which the callee sets its result.*
+- *Not an enclosing trap.* Untrapped calls made inside `\runSession()` and `\runScan()` return
+  correctly.
+
+**Not yet told apart:** every receiving variable was already 0 before its trap, so the logs cannot
+separate "the trap yields 0" from "the trap assigns nothing". `p2kbSpin2Abort` says a trap returns
+the method's normal return value when no abort occurs. The observed behaviour on this toolchain
+differs, and that is a question for Stephen.
+
+**What it cost this visit:**
+- R1-T0-START and R1-T0-EXHAUST FAILed.
+- R10-CHAR-STEERFAIL FAILed.
+- R13-CHAR-BRAKESTART was NOMEAS on all four instances: its guard correctly refused the untrusted
+  cog id (`test_bench_char.spin2:2212-2213`).
+- `steerDriveTrapped()` reported `aborted,DRIVE` for a drive that moved 13 ticks per wheel.
+- `claimsFreeCheck()` accepts 0–7, so a stuck 0 passes it by accident.
+
+**It reaches back into the record:** T0-10's `start_return,0` on 2026-09-11
+(`analyses/bench/2026-09-11/debug_260911-143911.log:127`) came from the same trapped capture, as did
+T0-8's `start_return,0` in that log, the detect binary's `start_ret 0`
+(`analyses/bench/2026-09-12/DETECT-A-EVALUATION.md` §6) and the 2026-09-10 run. They were PL-22's
+basis for "start() returned 0 on success", so they are void as evidence of library behaviour.
+
+**Re-derived 2026-09-14 (DERIVED; see PL-22):**
+- 5.0.2's `start()` returned cog id + 1 on success and 0 on failure
+  (`analyses/DRIVER-AUDIT-2026-09-09.md` finding C).
+- Its steering mask therefore released both motors on success; only a failed start stranded the
+  survivor (findings AD and AH).
+- The field report's `demo_dual_motor` drove both motors through that start
+  (`analyses/user-report-2026-09-09-ANALYSIS.md` observations 1 and 4).
+
+The sprint plan, the 2026-09-13 plan-state analysis, the sign-off design, the manifest and
+DETECT-A-EVALUATION carry corrections dated 2026-09-14.
+
+**Fix direction:**
+- Capture a trapped call's result without depending on the trap's value: the callee writes its
+  result to a VAR before returning, and the caller reads that VAR after the trap.
+- Keep the completion flag for abort detection.
+- Add a self-check that a known non-zero return reads back non-zero, so a capture defect can
+  never again pass silently.
+
+### PL-45 -- `getCurrent()` reads about 0.05 A with the motor stopped on the left board
+
+**Found 2026-09-14 in Visit 1.** DERIVED from `src/isp_bldc_motor.spin2:752-767`, confirmed
+against the log.
+
+- `getCurrent()` divides the hub long `sense_i_mV` by the board's sense scale and subtracts no zero.
+  The only offset removed is the driver's start-time ADC calibration (`:2425-2427`).
+- The left board's sense channel sits about 7.7 mV above that with the drive floated, and the right
+  board about 0.4 mV. MEASURED: `zero_mV_x10` 72–82 left, 3–5 right,
+  `analyses/bench/2026-09-14/debug_260914-115953.log:80-248`.
+- So at rest the left board reports about 0.05 A, and 1 W at the nominal voltage: `amps_x10k` 535,
+  `watts_mW` 990 at `:80`.
+- Watts use the nominal drive voltage from the user config, not a measured one (`:767`, `:1427`).
+
+**Why it matters:** small against a running motor, but it is a standing offset in a public reading.
+A future current limiter (S-2 / C-5) and any user who thresholds on "current is zero" would
+inherit it.
+
+**Fix direction:** take a rest zero with the drive floated, then subtract it in `getCurrent()`.
+The scan and char binaries already measure that zero this way. Decide it together with PL-25,
+which touches the same scale path.
+
+### PL-46 -- scan v4 cannot demonstrate a half-speed minimum, and its half-speed cell passes anyway
+
+**Found 2026-09-14 in scan run 7** (`analyses/bench/2026-09-14/SCAN-RUN-7-EVALUATION.md` §5). Read
+from `src/test_bench_scan.spin2` against the log; DERIVED unless marked.
+
+**What was measured (MEASURED, `debug_260914-114703.log`):**
+- In all four half-speed legs, the lowest current is at the last clean point before a fault, and
+  nothing between the two was measured.
+- The fits are EDGE, EDGE, EDGE and POOR-pinned (L645, L741, L1276, L1358).
+- One leg printed a shift with `shift_sig TRUE` from that POOR fit (L748).
+- All four R9-SCAN-HALFLEG cells PASS (L1380-1381, L1401-1402).
+
+**The defects:**
+1. **D1:** `probeConfirmCliff()` stops at the first clean ±5° probe and probes ±2° only after a
+   fault (src:3050-3058). R9-SCAN-HALFLEG's `CLIFF_PROBED` counts that a probe ran, not that the
+   minimum was resolved (src:580-586). **Its criterion is met by the defect it exists to catch.**
+   The quarter-speed `refineCliffEdge()` has the same gate (src:2769-2774).
+2. **D2:** nothing applies the negative case.
+   - Half-speed legs are marked bracketed by assignment (src:2462).
+   - `hasMinimum()` accepts POOR (src:4345-4351).
+   - `fitPinnedNearLimit()` feeds only its print (src:4167), although its comment forbids a pinned
+     minimum reading as free (src:2928-2930).
+3. **D3:** `BS-RESULT` and `BS-PAIR2` use fitted minimum currents, not measured floors
+   (src:4368-4371, src:4490-4509). The right motor's `imbalance FALSE` (L1367) reads 1.29 on its
+   measured floors.
+4. **D4:** cliff-edge resolution (±1° or ±2.5°) is not reported, and one EDGE verdict turned on 0.05°.
+5. **D5:** raw means printed under neutral names (`low_mV_x10`, `ref_start` / `ref_end`).
+6. **D6:** R9-SCAN-OWNZERO and R9-SCAN-PAIR2 would also pass on the unfixed path.
+7. **D7:** duplicate SIGNOFF instances carry no slot identity, so the sheet reads "4 of 2".
+8. **D8:** R8's 5 mV falsifier was not shown to fail under back-to-back starts.
+
+**Consequence:** «#3522»'s half-speed confirmation cannot be met by this instrument, so no offset
+pair can be applied on its evidence. Visit 1's R9 sign-offs certify that code ran, not that it
+works.
+
+**Fix direction (scan v5):**
+- After a clean probe, keep probing toward the fault in 2° steps.
+- Do not count POOR or pinned fits as minima.
+- Apply the rise-on-both-sides test at half speed.
+- Judge pair ratios on measured floors.
+- Make R9-SCAN-HALFLEG fail when the lowest point sits at the window edge.
+- Give each SIGNOFF instance a slot token.
+- Report edge resolution beside every margin.
 
 ---
 

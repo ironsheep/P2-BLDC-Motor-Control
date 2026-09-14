@@ -151,12 +151,18 @@ All five fixes committed in `aea4981` confirmed against their predictions:
 
 ### Five new findings
 
-1. **AD+ is answered, and it is library-wide.** `start_return,0,raw_motor_cog,2` with the cog
-   demonstrably running. The chained `ok := motorCog := coginit(…) + 1` does not propagate;
-   `p2kbSpin2Operators` documents no assignment-as-expression in Spin2. The same idiom is at
-   **six** sites, so **every `start()` in this library returns 0 whether it succeeded or
-   failed.** `if motorCog == 0` also cannot detect failure — cog exhaustion returns
-   `$8000_000F`. *(`NEWCOG` was checked for the COGINIT pair-form trap and cleared.)*
+1. **AD+ — the `start()` return contract is wrong at six sites.** DERIVED from the 2026-09-09
+   audit (finding C): the chained `ok := motorCog := coginit(…) + 1`, at **six** sites, returns
+   cog id + 1 on success and 0 on failure, while its doc comment promises the cog id or −1. The
+   two-wheel mask `(1<<(ltcog-1))|(1<<(rtcog-1))` therefore released both motors on success; only
+   a failed start stranded the survivor (finding AD; PL-22). `if motorCog == 0` also cannot detect
+   failure — cog exhaustion returns `$8000_000F`. *(`NEWCOG` was checked for the COGINIT pair-form
+   trap and cleared.)* *(Corrected 2026-09-14: this item said the chained assignment "does not
+   propagate", so every `start()` returned 0 whether it succeeded or failed. Its evidence,
+   `start_return,0,raw_motor_cog,2`, was captured through an abort trap, and every trapped capture
+   reads 0 — PL-44. The propagation argument rested on `p2kbSpin2Operators` documenting no
+   assignment-as-expression, an argument from absence that the field report's two running motors
+   contradict.)*
 2. **`getBoardType()` is order-dependent and false-positives.** In one run the same board on
    P16_P31 read Rev B (`pinSum 99`) then Rev A (`pinSum 0`) five milliseconds apart, an empty
    P32_P47 read a confident "64010 Rev B" (`pinSum 104`), and a populated P0_P15 read "not
@@ -423,7 +429,10 @@ mostly unattended.**
   - the first vibration evidence, if «#3532» has been scoped by then.
 - *Certifies:* «#3499»–«#3503», «#3524», «#3529» (zeros across the scan's restarts and T0-11),
   «#3530», «#3533», «#3534», «#3535» (every start reaches ready, hall counters 0 and tick rate
-  unchanged with driver code running from the LUT), and the steering object's synchronized start (PL-22).
+  unchanged with driver code running from the LUT), and the steering object's fixed synchronized
+  start path, whose mask is built from real cog ids (PL-22). *(Corrected 2026-09-14: this does not
+  mean 5.0.2's start could not release its motors; that premise rested on a trapped capture —
+  PL-44.)*
 - *Stephen's hands:* T0-12 hand rotation and the Rev A detection re-run.
 - *Then Stephen's decision:* which offset pair, if any, and with what margin, given fault edges
   7–10° from the minima.
@@ -1044,7 +1053,7 @@ dispatch constraint and not a plan one.
 
 | # | Silo | Foundation | Certified by |
 | --- | --- | --- | --- |
-| **1** | **Measurement trust** | `start()` return (6 sites); board detection | `start()` return matrix; the A/B sweep binary (own artifact — see below) |
+| **1** | **Measurement trust** | `start()` return contract (cog id + 1 / 0 → cog id / −1), 6 sites *(corrected 2026-09-14, PL-44)*; board detection | `start()` return matrix; the A/B sweep binary (own artifact — see below) |
 | **2** | **Hall / position** | integrity counters **in the driver control loop**; rpm accumulator; `tickInMM_x10` | hand-rotation ground truth; counter readback; `rpm` tracking the raw tick delta |
 | **3** | **Current sensing** | the S-3 scale restore (see below) | quiescent baseline; **the magnitude anchor against Stephen's meter** |
 | **4** | **Stop latency** | `SENSE_LOOP_HZ` / C-3 | measured overshoot against the ~294 mm prediction, then a rate sweep |
@@ -1575,7 +1584,7 @@ deliberately unset on every task. This table supersedes the §-numbered one abov
 | 1 | «#3496» | 1 | A/B detection sweep binary | task-design **(two-phase)** | 3h |
 | 2 | «#3497» | 3 | Early motor characterisation binary | task-standard | 2h30 |
 | 3 | «#3498» | — | **BENCH PASS 1** — both pre-fix binaries | task-survey | 2h |
-| 4 | «#3499» | 1 | `start()` returns 0 — 6 sites | task-standard | 1h30 |
+| 4 | «#3499» | 1 | `start()` return contract (cog id + 1 / 0 → cog id / −1), 6 sites *(corrected 2026-09-14: read "returns 0", a trapped capture — PL-44)* | task-standard | 1h30 |
 | 5 | «#3500» | 1 | Board detection — the smart-pin leak | task-design | 3h |
 | 6 | «#3501» | 2 | Hall integrity counters, ABI 14→16 | task-design **(two-phase)** | 2h30 |
 | 7 | «#3502» | 2 | Position math — rpm + `tickInMM_x10` | task-standard | 1h30 |

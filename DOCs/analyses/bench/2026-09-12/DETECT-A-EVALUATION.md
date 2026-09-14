@@ -92,6 +92,14 @@ reads that low, so the band between the two real signatures can reject it. That 
 MEASURED: both phase-2 starts log `start_ret 0` with `motorcog 2` (`BD-PH2 step started`) — the
 «#3499» defect, reproduced on the second platform.
 
+> **Correction, 2026-09-14 (PUNCH-LIST PL-44).** The observation above stands as logged; its
+> reading does not. `start_ret` was captured through an expression-context abort trap, and every
+> such capture in the bench binaries reads 0 — 12 instances, 6 sites, 0 counterexamples (MEASURED,
+> [`../2026-09-14/VISIT-1-RESULTS.md`](../2026-09-14/VISIT-1-RESULTS.md) §6). So `start_ret 0` is
+> void as evidence of what `start()` returned, and reproduces no «#3499» defect. The pre-«#3499»
+> source returned cog id + 1 on success and 0 on failure (DERIVED,
+> [`../../DRIVER-AUDIT-2026-09-09.md`](../../DRIVER-AUDIT-2026-09-09.md) finding C; PL-22).
+
 ---
 
 ## Consequence for «#3500»
