@@ -42,6 +42,10 @@
 ''               R11-SCAN-NOSTALL FAIL from the watchdog on a stall, beat() parks cog 0 once the
 ''               watchdog has declared, BS-ZERO health_ok is NA except at ZERO_INIT (PL-34), and
 ''               unknown phase/reason values print UNKNOWN
+''   Updated.... 13 Sep 2026 -- task 3537 phase 2b2 (SRC_REV 8, fmt 8): five deliberate cross-start
+''               zeros per motor (phase XSTART) before the motor block, the R8-SCAN-ZXS verdict and
+''               an informational BS-ZXSALL record, and the R9-SCAN-HALFLEG / R9-SCAN-OWNZERO /
+''               R9-SCAN-PAIR2 verdicts
 ''
 '' =================================================================================================
 
@@ -63,7 +67,9 @@
 
   SEQUENCE
    (0) header records; preflight that each declared wheel turns
-   (1) per motor: start checks, zero-current reading, self-check at 43/317 (+1/4 and -1/4 speed).
+   (1) per motor: ZXS_STARTS (5) deliberate restarts, each with a zero (phase XSTART) and a rest,
+       wheel floated and nothing commanded; then start checks, zero-current reading, self-check
+       at 43/317 (+1/4 and -1/4 speed).
        A miss ends the run: a broken foundation must not produce a sweep that looks like data.
    (2) per motor per sign at 1/4 speed: REF at default, coarse walk out from the default,
        bracket test, interleaved fine points, quadratic fit (one extension), REF again
@@ -73,6 +79,10 @@
   RUN TIME (scan v3): every point now re-measures its own zero (measureZero() is ZERO_SAMPLES=200
   samples at SAMPLE_MS=5ms, ~1s), so this adds about 1s per point measured, run-wide -- roughly
   1s x (points per leg) x (legs run).
+
+  RUN TIME (fmt 8, task 3537): the XSTART block adds, per motor, ZXS_STARTS x (restart + ready, a
+  few ms when the driver reports ready promptly, READY_TIMEOUT_MS 2 s at worst + ~1 s zero +
+  REST_MS 0.5 s) -- about 7.6 s per motor nominal, 17.5 s per motor if every ready wait timed out.
 
   SAFETY, because nobody is watching: an absolute current abort that stops the wheel inside the
   sampling loop, a per-point relative current abort, consecutive and run-wide fault caps, a
@@ -116,8 +126,16 @@
 
 CON { build identity }
 
-    SRC_REV     = 7                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 7                                         ' BS- record-format version
+    SRC_REV     = 8                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 8                                         ' BS- record-format version
+
+' fmt 8 changes (task 3537 phase 2b2; no existing record's field names or order change):
+'   - new BS-ZXSALL record per motor, just before BS-END with the SIGNOFF records: the cross-lifetime
+'     spread of every driver lifetime's first full zero, per channel, and their count.
+'   - BS-BUILD gains zxs_starts and zxs_max_mV_x10 at its end (design sec F.5).
+'   - new BS-ZERO phase token XSTART (PH_XSTART, appended to the PH_* enum): the deliberate
+'     cross-start zeros before each motor block.
+'   - new SIGNOFF-DECL/SIGNOFF cells R8-SCAN-ZXS, R9-SCAN-HALFLEG, R9-SCAN-OWNZERO, R9-SCAN-PAIR2.
 
 ' fmt 7 changes (task 3537 phase 2b1; no existing record's field names or order change):
 '   - new BS-BUILD record right after BS-BANNER: wd_selftest TRUE/FALSE, sf.
@@ -207,7 +225,9 @@ CON { run sequencing enums }
   '  PH_REF_END   - leg reference at the default offset, after the sweep
   '  PH_CLIFF     - fine-walk probe toward a coarse-walk fault edge (scan v2)
   '  PH_ZERO_INIT - the motor-block's initial zero check, before the self-check (scan v2)
-    #0, PH_SELF, PH_REF_START, PH_COARSE, PH_FINE, PH_EXTEND, PH_REF_END, PH_CLIFF, PH_ZERO_INIT
+  '  PH_XSTART    - a deliberate cross-start zero, before the motor block (task 3537, fmt 8);
+  '                 appended at the end so no existing PH_* value renumbers
+    #0, PH_SELF, PH_REF_START, PH_COARSE, PH_FINE, PH_EXTEND, PH_REF_END, PH_CLIFF, PH_ZERO_INIT, PH_XSTART
 
   ' Point result:
   '  PR_OK             - window completed at speed, no fault
@@ -497,6 +517,48 @@ CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-D
 ' emitting without ending, row 11).
     SIGNOFF_ONE_INSTANCE = 1
 
+' R8-SCAN-ZXS (task 3529), crit ZXS_I/ZXS_U/ZXS_V/ZXS_W, units MV_X10: per motor and channel, the
+' spread (max - min) of the ZXS_STARTS deliberate cross-start zero means (design sec A.5-e, sec F.3).
+'   DERIVED: a fixed calibration predicts a spread under ~2.5 mV (sigma ~0.47 mV from an 8-frame sum,
+'   2.33 sigma range of 5 draws ~1.1 mV, plus ~1 mV lifetime drift; the 8-frame noise reduction is
+'   UNVERIFIED, design sec K.1 item 4). Limit = 2 x that prediction = 5.0 mV = 50 mV x10.
+'   MEASURED unfixed spreads over three starts (PL-32): LEFT i 14.6, u 0.9, v 13.3, w 2.1 mV;
+'   RIGHT i 62.8, u 84.6, v 68.6, w 2.3 mV.
+'   Only i and v on both motors, and u on RIGHT, exceeded 5.0 mV unfixed, so only those five
+'   instances can FAIL on the unfixed defect. LEFT u and w on both motors are coverage: judged, and a
+'   regression above 5.0 mV FAILs, but a PASS there is not evidence of the fix.
+'   ZXS_STARTS = 5: five draws make the range statistic 2.33 sigma instead of 1.69 sigma for three
+'   (DERIVED, normal range table, design sec A.5-e). Fewer than ZXS_STARTS full zeros -> NOMEAS.
+    ZXS_STARTS     = 5
+    ZXS_LO_MV_X10  = 0                                      ' a spread is never negative
+    ZXS_MAX_MV_X10 = 50                                     ' 5.0 mV, above
+
+  ' Zero channel, index = (sideSlot * ZXS_CHANNELS) + channel:
+  '  ZXS_CH_I - sense_i_mV, measureZero()'s meanX10
+  '  ZXS_CH_U - sense_u_mV, measureZero()'s senseUmean
+  '  ZXS_CH_V - sense_v_mV, measureZero()'s senseVmean
+  '  ZXS_CH_W - sense_w_mV, measureZero()'s senseWmean
+    #0, ZXS_CH_I, ZXS_CH_U, ZXS_CH_V, ZXS_CH_W
+    ZXS_CHANNELS = 4
+
+' R9-SCAN-OWNZERO (task 3530), crit PTS_NO_OWN_ZERO, units COUNT. DERIVED (design sec A.4 row 9):
+' scan v4 CHANGE 1/2's invariant is that every valid leg point carries its own lifetime's zero
+' (bPtZeroValid), so the count of valid points without one must be 0. COVERAGE, not a falsifier: scan
+' v3 already re-measured a zero before every point, so the unfixed code counts 0 too. Run 5's ratio
+' 0.440 vs 1.16 came from BS-PAIR2 netting both minima against ZERO_INIT, not from a point without its
+' own zero (SCAN-RUN-5-EVALUATION.md sec 6 item 1).
+' R9-SCAN-HALFLEG (task 3530), crit CLIFF_PROBED, units BOOL, one instance per half-speed result slot:
+' TRUE when every half-speed confirm point that faulted leaving a probeable gap (confirmGapProbeable())
+' was followed by at least one measured probe point; NOMEAS when the leg had no such fault. MEASURED
+' unfixed: run 5's LEFT half legs faulted at 4 and -11 deg with last good points 14 and -21 and nothing
+' measured between (SCAN-RUN-5-EVALUATION.md sec 3), so both instances FAIL. The first criterion,
+' FIT_OR_CLIFF, could not: computeLegCliff() finds a good/fault pair without any probe. This one also
+' FAILs the review-caught nesting defect, where a one-fine-step gap was never probed.
+' R9-SCAN-PAIR2 (crit NET_RATIO_ONLY) is units BOOL, lo TRUE hi TRUE. Both BOOL cells print by
+' emitSignoffBool().
+    OWN_ZERO_MISSING_LO = 0
+    OWN_ZERO_MISSING_HI = 0
+
 CON { cog-0 progress checkpoints -- watchdog heartbeat contract, task 3534 }
 
 ' A checkpoint id names the smallest statement group cog 0 is currently inside, so a stall's
@@ -519,7 +581,11 @@ CON { cog-0 progress checkpoints -- watchdog heartbeat contract, task 3534 }
         CP_LIB_COMMAND, CP_LIB_START, CP_LIB_STOP, CP_LIB_COGRUN, CP_LIB_ISREADY, ...
         CP_LIB_ISSTOPPED, CP_LIB_ISFAULT, CP_LIB_RESETFAULT, CP_LIB_DRVSTATE, CP_LIB_TELEMETRY, ...
         CP_LIB_PHASEV, CP_LIB_TICKS, CP_LIB_INTEGRITY, CP_LIB_SETOFFSETS, CP_LIB_GETOFFSETS, ...
-        CP_LIB_BOARDTYPE, CP_LIB_SHUTDOWN, CP_EMIT
+        CP_LIB_BOARDTYPE, CP_LIB_SHUTDOWN, CP_EMIT, CP_LOOP_XSTART, CP_LOOP_OWNZERO
+  ' Appended (task 3537 phase 2b2), so no existing CP_* value renumbers:
+  '  CP_LOOP_XSTART  - one beat per pass of runMotorBlock()'s deliberate cross-start loop, whose body
+  '                    otherwise beats only inside the restart, zero and rest calls it makes
+  '  CP_LOOP_OWNZERO - one beat per pass of storeLegOwnZero()'s count over the leg store
 
     TOKMAX_CP = 10                                          ' longest checkpoint token, e.g. LIB_ISSTOP
 
@@ -635,6 +701,7 @@ sPhExtend       BYTE    "EXTEND", 0
 sPhRefEnd       BYTE    "REF_END", 0
 sPhCliff        BYTE    "CLIFF", 0
 sPhZeroInit     BYTE    "ZERO_INIT", 0
+sPhXstart       BYTE    "XSTART", 0                         ' task 3537 fmt 8
 sPhUnknown      BYTE    "UNKNOWN", 0                        ' a PH_* value phaseToken() has no case for
 
 sPrOk           BYTE    "OK", 0
@@ -739,6 +806,20 @@ sSfTaskOffsets  BYTE    "3519", 0                           ' R6-SCAN-OFFSETS: i
 sSfTaskStartIll BYTE    "3524", 0                           ' R7-SCAN-STARTILL: hall inputs not driven at start
 sSfTaskNoStall  BYTE    "3534", 0                           ' R11-SCAN-NOSTALL: scan watchdog
 sSfTaskLut      BYTE    "3535", 0                           ' R12-SCAN-ALIVE / R12-SCAN-RATE: driver start code in the cog LUT
+sSfTaskZxs      BYTE    "3529", 0                           ' R8-SCAN-ZXS: ADC calibration from a settled average
+sSfTaskScanV4   BYTE    "3530", 0                           ' R9-SCAN-HALFLEG / OWNZERO / PAIR2: scan v4 logic ran
+sSfCellZxs      BYTE    "R8-SCAN-ZXS", 0
+sSfCellHalfLeg  BYTE    "R9-SCAN-HALFLEG", 0
+sSfCellOwnZero  BYTE    "R9-SCAN-OWNZERO", 0
+sSfCellPair2    BYTE    "R9-SCAN-PAIR2", 0
+sSfCritZxsI     BYTE    "ZXS_I", 0
+sSfCritZxsU     BYTE    "ZXS_U", 0
+sSfCritZxsV     BYTE    "ZXS_V", 0
+sSfCritZxsW     BYTE    "ZXS_W", 0
+sSfCritCliffPrb BYTE    "CLIFF_PROBED", 0
+sSfCritOwnZero  BYTE    "PTS_NO_OWN_ZERO", 0
+sSfCritNetRatio BYTE    "NET_RATIO_ONLY", 0
+sSfUnitsMvX10   BYTE    "MV_X10", 0
 sSfCellCogOk    BYTE    "R1-SCAN-COGOK", 0
 sSfCellRevB     BYTE    "R2-SCAN-REVB", 0
 sSfCellInteg    BYTE    "R3-SCAN-INTEG", 0
@@ -797,6 +878,8 @@ sCpLibGetOffs   BYTE    "LIB_GETOFS", 0
 sCpLibBoardType BYTE    "LIB_BRDTYP", 0
 sCpLibShutdown  BYTE    "LIB_SHTDN", 0
 sCpEmit         BYTE    "EMIT", 0
+sCpXstart       BYTE    "XSTART", 0
+sCpOwnZero      BYTE    "OWNZERO", 0
 sCpUnknown      BYTE    "?", 0
 
 VAR { run-wide state }
@@ -872,6 +955,7 @@ VAR { the leg in progress }
     LONG    legMeanX10[MAX_LEG_POINTS]
     LONG    legZeroX10[MAX_LEG_POINTS]                       ' scan v4 CHANGE 1: this point's own zero
     LONG    legNetX10[MAX_LEG_POINTS]                         ' scan v4 CHANGE 1: legMeanX10 - legZeroX10
+    LONG    bLegZeroValid[MAX_LEG_POINTS]                     ' task 3537 R9: that point's bPtZeroValid
     LONG    legSeX10[MAX_LEG_POINTS]
     LONG    bLegSeValid[MAX_LEG_POINTS]
     LONG    legResult[MAX_LEG_POINTS]
@@ -939,6 +1023,20 @@ VAR { sign-off accumulators, task 3537 -- index sideSlot(side); cog 0 only, the 
     LONG    bSfSelfIOk[SIDE_SLOTS]                          ' TRUE when both self-check net current bands held
     LONG    bSfSelfRateRan[SIDE_SLOTS]                      ' TRUE when the self-check's rate result is a measurement
     LONG    bSfSelfRateOk[SIDE_SLOTS]                       ' TRUE when the self-check's rate check held
+    ' task 3537 phase 2b2 -- R8 (index (sideSlot * ZXS_CHANNELS) + ZXS_CH_*) and R9
+    LONG    zxsMin[SIDE_SLOTS * ZXS_CHANNELS]               ' smallest PH_XSTART lifetime-first full zero mean, mV x10
+    LONG    zxsMax[SIDE_SLOTS * ZXS_CHANNELS]               ' largest PH_XSTART lifetime-first full zero mean, mV x10
+    LONG    zxsN[SIDE_SLOTS]                                ' PH_XSTART zeros folded into zxsMin/zxsMax
+    LONG    zxsAllMin[SIDE_SLOTS * ZXS_CHANNELS]            ' smallest lifetime-first full zero mean, any phase, mV x10
+    LONG    zxsAllMax[SIDE_SLOTS * ZXS_CHANNELS]            ' largest lifetime-first full zero mean, any phase, mV x10
+    LONG    zxsAllN[SIDE_SLOTS]                             ' zeros folded into zxsAllMin/zxsAllMax
+    LONG    bResLegRan[RESULT_SLOTS]                        ' TRUE when runLeg() ended this slot's leg other than LX_SKIPPED
+    LONG    halfProbeEvents[RESULT_SLOTS]                   ' half-speed confirm faults that left a probeable gap
+    LONG    halfProbeMissed[RESULT_SLOTS]                   ' those not followed by a measured probe point
+    LONG    resZeroMissing[RESULT_SLOTS]                    ' that leg's valid points without a valid own zero
+    LONG    resZeroChecked[RESULT_SLOTS]                    ' that leg's valid points (R9-SCAN-OWNZERO's n)
+    LONG    bSfPair2Complete[SIDE_SLOTS]                    ' emitPair2()'s bComplete for this motor
+    LONG    bSfPair2NetOk[SIDE_SLOTS]                       ' emitPair2()'s bRatio for this motor
 
 VAR { watchdog cog, task 3534 }
 
@@ -1021,6 +1119,16 @@ PRI initRunState() | slotIdx
         bResSeValid[slotIdx] := FALSE
         bResIdefValid[slotIdx] := FALSE
         bResDrift[slotIdx] := FALSE
+        bResLegRan[slotIdx] := FALSE                        ' task 3537 R9: never reached is NOMEAS
+        halfProbeEvents[slotIdx] := 0                       ' task 3537 R9: no event is NOMEAS
+        halfProbeMissed[slotIdx] := 0
+        resZeroMissing[slotIdx] := 0
+        resZeroChecked[slotIdx] := 0
+    repeat slotIdx from 0 to (SIDE_SLOTS * ZXS_CHANNELS) - 1
+        zxsMin[slotIdx] := POSX                             ' task 3537 R8: max < min reads as nothing folded
+        zxsMax[slotIdx] := NEGX
+        zxsAllMin[slotIdx] := POSX
+        zxsAllMax[slotIdx] := NEGX
     repeat slotIdx from 0 to (SIDE_SLOTS * SIGN_SLOTS) - 1
         selfMeanX10[slotIdx] := 0
     repeat slotIdx from 0 to SIDE_SLOTS - 1
@@ -1041,6 +1149,10 @@ PRI initRunState() | slotIdx
         bSfSelfIOk[slotIdx] := FALSE
         bSfSelfRateRan[slotIdx] := FALSE
         bSfSelfRateOk[slotIdx] := FALSE
+        zxsN[slotIdx] := 0
+        zxsAllN[slotIdx] := 0
+        bSfPair2Complete[slotIdx] := FALSE
+        bSfPair2NetOk[slotIdx] := FALSE
 
 PRI runScan() : bCompleted
 ' Preflight, then the LEFT and RIGHT motor blocks. Every stage is skipped once the run aborts.
@@ -1127,8 +1239,13 @@ PRI preflightWheels() : bAllMoved | side, ticksBefore, ticksAfter, ticksMoved, b
     bAllMoved := bAllMoved and (abortReason == AR_NONE)
 
 PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
-' Run one motor's start checks, zero reading, self-check, both quarter-speed legs, both
-' half-speed legs, and its RESULT records.
+' Run one motor's deliberate cross-start zeros, start checks, zero reading, self-check, both
+' quarter-speed legs, both half-speed legs, and its RESULT records.
+' Task 3537 phase 2b2 (design sec F.3): first, ZXS_STARTS cycles of restartSide() -> a PH_XSTART zero
+' -> a REST_MS rest, each skipped once the run has aborted. The wheel is floated throughout (init()
+' sets SM_FLOAT, nothing is commanded). restartSide()'s start checks still apply: a failed check
+' aborts the run inside startSide(), the loop quits on its next pass, and -- new guard -- the block's
+' own restartSide() below is then skipped too, so no wheel is started after an abort.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param firstSign - SIGN_NEG or SIGN_POS, the sign whose legs run first
@@ -1138,7 +1255,17 @@ PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
 
     secondSign := SIGN_POS - firstSign
     bSelfPassed := FALSE
-    restartSide(side)
+    repeat ZXS_STARTS
+        beat(CP_LOOP_XSTART)
+        if abortReason <> AR_NONE
+            quit
+        restartSide(side)
+        if abortReason == AR_NONE
+            measureZero(side, PH_XSTART)
+        if abortReason == AR_NONE
+            restLoop()
+    if abortReason == AR_NONE
+        restartSide(side)
     if abortReason == AR_NONE
         measureZero(side, PH_ZERO_INIT)
     if abortReason == AR_NONE
@@ -1249,6 +1376,57 @@ PRI addIntegritySum(slotIdx, nMissed, nIllegal)
 
     sfIntegSum[slotIdx] := (sfIntegSum[slotIdx] + abs((nMissed #> (0 - LIM_MID)) <# LIM_MID) + abs((nIllegal #> (0 - LIM_MID)) <# LIM_MID)) <# LIM_BIG
 
+PRI foldZeroSpread(slotIdx, bIntoControlled, iMeanX10, uMeanX10, vMeanX10, wMeanX10) | baseIdx
+' Fold one driver lifetime's first full zero into its motor's R8 spread accumulators (task 3537):
+' always into zxsAll* (BS-ZXSALL), and into the controlled zxs* (R8-SCAN-ZXS) when it is a PH_XSTART
+' zero.
+'
+' @param slotIdx - sideSlot() of the motor
+' @param bIntoControlled - TRUE for a PH_XSTART zero
+' @param iMeanX10 - the zero's sense_i mean x10, mV
+' @param uMeanX10 - the zero's sense_u mean x10, mV
+' @param vMeanX10 - the zero's sense_v mean x10, mV
+' @param wMeanX10 - the zero's sense_w mean x10, mV
+'
+' @local baseIdx - index of this motor's ZXS_CH_I entry
+
+    baseIdx := slotIdx * ZXS_CHANNELS
+    foldZxsChannel(baseIdx + ZXS_CH_I, iMeanX10, bIntoControlled)
+    foldZxsChannel(baseIdx + ZXS_CH_U, uMeanX10, bIntoControlled)
+    foldZxsChannel(baseIdx + ZXS_CH_V, vMeanX10, bIntoControlled)
+    foldZxsChannel(baseIdx + ZXS_CH_W, wMeanX10, bIntoControlled)
+    zxsAllN[slotIdx] += 1
+    if bIntoControlled
+        zxsN[slotIdx] += 1
+
+PRI foldZxsChannel(arrIdx, chMeanX10, bIntoControlled)
+' Widen one motor-channel's min/max by one zero mean (task 3537 R8).
+'
+' @param arrIdx - (sideSlot * ZXS_CHANNELS) + ZXS_CH_*
+' @param chMeanX10 - the channel's zero mean x10, mV
+' @param bIntoControlled - TRUE for a PH_XSTART zero
+
+    zxsAllMin[arrIdx] := zxsAllMin[arrIdx] <# chMeanX10
+    zxsAllMax[arrIdx] := zxsAllMax[arrIdx] #> chMeanX10
+    if bIntoControlled
+        zxsMin[arrIdx] := zxsMin[arrIdx] <# chMeanX10
+        zxsMax[arrIdx] := zxsMax[arrIdx] #> chMeanX10
+
+PRI zxsSpreadX10(arrIdx, bControlled) : spreadX10
+' Spread (max - min) of one motor-channel's folded zero means; 0 when nothing was folded (max < min).
+'
+' @param arrIdx - (sideSlot * ZXS_CHANNELS) + ZXS_CH_*
+' @param bControlled - TRUE for the PH_XSTART spread, FALSE for every lifetime's
+' @returns spreadX10 - spread x10, mV
+
+    spreadX10 := 0
+    if bControlled
+        if zxsMax[arrIdx] >= zxsMin[arrIdx]
+            spreadX10 := zxsMax[arrIdx] - zxsMin[arrIdx]
+    else
+        if zxsAllMax[arrIdx] >= zxsAllMin[arrIdx]
+            spreadX10 := zxsAllMax[arrIdx] - zxsAllMin[arrIdx]
+
 PRI waitReady(side) : bReady | startMs
 ' Wait, bounded, for the just-started driver cog to report ready. Same poll as before task 3537;
 ' it now returns the readiness its own bound test last saw, so the caller need not re-read it.
@@ -1277,7 +1455,8 @@ PRI measureZero(side, phaseTag) : zeroOutX10, bZeroOutValid | sampleIdx, senseMv
 ' (scan v3): measurePoint() calls this at the start of every point, tagged with that point's own
 ' phase (PH_SELF, PH_REF_START, PH_COARSE, PH_FINE, PH_EXTEND, PH_REF_END, PH_CLIFF), so every
 ' BS-POINT now has a BS-ZERO immediately before it, including right after a driver restart; the
-' motor-block's PH_ZERO_INIT is the only call not made from inside measurePoint().
+' motor-block's PH_ZERO_INIT and the deliberate cross-start PH_XSTART zeros (task 3537, fmt 8) are
+' the only calls not made from inside measurePoint().
 ' Every zero is read with the drive floated: isp_bldc_motor's init() sets stop_mode to SM_FLOAT,
 ' this scan never changes it, and the driver's .checkstop disables PWM at zero command in that
 ' mode. So no bridge current can flow during a zero read. An out-of-band zero is the driver's
@@ -1290,7 +1469,7 @@ PRI measureZero(side, phaseTag) : zeroOutX10, bZeroOutValid | sampleIdx, senseMv
 ' help locate the offset source.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param phaseTag - PH_* of the point this zero precedes, or PH_ZERO_INIT
+' @param phaseTag - PH_* of the point this zero precedes, or PH_ZERO_INIT or PH_XSTART
 '
 ' @local sampleIdx - sample counter
 ' @local senseMv - clamped sample
@@ -1350,6 +1529,12 @@ PRI measureZero(side, phaseTag) : zeroOutX10, bZeroOutValid | sampleIdx, senseMv
         senseVmean := (senseVsum * X10) / sampleCnt
         senseWmean := (senseWsum * X10) / sampleCnt
     slotIdx := sideSlot(side)
+    ' Task 3537 R8 (phase 2b2): fold this zero into the cross-lifetime spreads when it is the FIRST
+    ' zero of a ready start's lifetime (bSfLifetimeFresh, read here BEFORE the R12 block below clears
+    ' it) and took all ZERO_SAMPLES -- a zero cut short by a run abort or a lost cog is not a full
+    ' reading. PH_XSTART zeros also feed R8-SCAN-ZXS; every such zero feeds BS-ZXSALL.
+    if bSfLifetimeFresh[slotIdx] and (sampleCnt == ZERO_SAMPLES)
+        foldZeroSpread(slotIdx, (phaseTag == PH_XSTART), meanX10, senseUmean, senseVmean, senseWmean)
     ' Task 3537 R12-SCAN-ALIVE: the FIRST zero of a ready start's driver lifetime judges it. A zero
     ' with samples is alive unless frozen (min = max); a zero that lost its cog is not alive; a zero
     ' that took no sample for any other reason (a run abort) is not a measurement and leaves the
@@ -1512,7 +1697,7 @@ PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, ne
 
 PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) : ptRes | motorIncre, ...
     missedBefore, illegalBefore, missedAfter, illegalAfter, cmdMs, bAtSpeed, bWinDone, bSettleOk, ...
-    restStartMs, zeroX10, zeroValid, ptSlot
+    zeroX10, zeroValid, ptSlot
 ' Measure one point: re-measure the zero tagged with this point's own phase (CHANGE 2, scan v3 --
 ' PL-31's drift finding was a sense-zero shift, so every point needs its own BS-ZERO, not just
 ' the references), set and read back offsets, command, wait AT_SPEED, settle, take the
@@ -1536,7 +1721,6 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
 ' @local bAtSpeed - TRUE once DCS_AT_SPEED was seen
 ' @local bWinDone - TRUE when the window reached winTicks
 ' @local bSettleOk - TRUE when the settle rate was in band
-' @local restStartMs - getms() at the start of the post-point rest
 ' @local zeroX10 - scan v4 CHANGE 1: this point's own zero, captured before clearPointRecord()
 '   resets ptZeroX10/ptNetX10 to their not-measured state
 ' @local zeroValid - TRUE when that zero call took at least one sample
@@ -1616,15 +1800,22 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
         runFaults += 1
         recoverFromFault(side, motorIncre, sweptDeg)
     if abortReason == AR_NONE
-        ' Beat-polled, not one blind waitms(REST_MS): scan run 5's evaluation named this a
-        ' candidate long gap between beats (SCAN-RUN-5-EVALUATION.md section 7).
-        restStartMs := getms()
-        repeat
-            beat(CP_LOOP_REST)
-            waitms(SAMPLE_MS)
-            if (getms() - restStartMs) >= REST_MS
-                quit
+        restLoop()
     runGuard()
+
+PRI restLoop() | restStartMs
+' Rest REST_MS, stopped, beat-polled every SAMPLE_MS -- never one blind waitms(REST_MS): scan run 5's
+' evaluation named that a candidate long gap between beats (SCAN-RUN-5-EVALUATION.md section 7).
+' Factored out of measurePoint() unchanged (task 3537 phase 2b2) so the cross-start zeros share it.
+'
+' @local restStartMs - getms() at the start of the rest
+
+    restStartMs := getms()
+    repeat
+        beat(CP_LOOP_REST)
+        waitms(SAMPLE_MS)
+        if (getms() - restStartMs) >= REST_MS
+            quit
 
 PRI clearPointRecord()
 ' Reset every field of the point record to its not-measured state.
@@ -2105,10 +2296,38 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
                 driftPctX10 := ((legNetX10[refEndIdx] - legNetX10[0]) * X1000) / legNetX10[0]
                 bDriftValid := TRUE
     bResDrift[slotIdx] := bDriftValid and (abs(driftPctX10) > DRIFT_FLAG_PCT * X10)
+    ' task 3537 R9-SCAN-OWNZERO facts, from this leg's own exit and store -- the store is reused by the
+    ' next runLeg()'s legReset(), so they are taken here. "Ran" = legExit <> LX_SKIPPED: a half leg whose
+    ' quarter-speed prerequisite failed, or whose REF_START was invalid, exits LX_SKIPPED; a leg never
+    ' reached keeps initRunState()'s FALSE. R9-SCAN-HALFLEG's facts are taken in runFinePoints().
+    bResLegRan[slotIdx] := (legExit <> LX_SKIPPED)
+    storeLegOwnZero(slotIdx)
     emitFit(side, speedIdx, signIdx)
     emitFit2(side, speedIdx, signIdx)
     emitCliff(side, speedIdx, signIdx)
     emitLeg(side, speedIdx, signIdx, legExit, refEndIdx, driftPctX10, bDriftValid, bResDrift[slotIdx])
+
+PRI storeLegOwnZero(slotIdx) | ptIdx, nMissing, nValid
+' Count, over the leg store as it stands, the valid points and the valid points without a valid own
+' zero, into the result slot (task 3537 R9-SCAN-OWNZERO).
+'
+' @param slotIdx - this leg's result slot
+'
+' @local ptIdx - leg index
+' @local nMissing - valid points whose own zero took no sample
+' @local nValid - valid points
+
+    nMissing := 0
+    nValid := 0
+    if legCount > 0
+        repeat ptIdx from 0 to legCount - 1
+            beat(CP_LOOP_OWNZERO)
+            if isValidIdx(ptIdx)
+                nValid += 1
+                if bLegZeroValid[ptIdx] == FALSE
+                    nMissing += 1
+    resZeroMissing[slotIdx] := nMissing
+    resZeroChecked[slotIdx] := nValid
 
 PRI legReset()
 ' Empty the leg point store.
@@ -2164,6 +2383,7 @@ PRI legMeasure(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) : 
         legMeanX10[ptIdx] := ptMeanX10
         legZeroX10[ptIdx] := ptZeroX10                       ' scan v4 CHANGE 1
         legNetX10[ptIdx] := ptNetX10                          ' scan v4 CHANGE 1
+        bLegZeroValid[ptIdx] := bPtZeroValid                  ' task 3537 R9: set by measurePoint() above
         legSeX10[ptIdx] := ptSeX10
         bLegSeValid[ptIdx] := bPtSeValid
         legResult[ptIdx] := ptResult
@@ -2507,7 +2727,7 @@ PRI fitPinnedNearLimit() : bPinned
             bPinned := TRUE
 
 PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : legExit | orderIdx, ...
-    orderCount, pOrder, sweptDeg, winTicks, ptIdx
+    orderCount, pOrder, sweptDeg, winTicks, ptIdx, bProbeable, countBefore, probeSlot
 ' Measure the interleaved fine (1/4) or confirm (1/2) points around centreDeg. CHANGE 4 (scan
 ' v4): at SPEED_HALF, a confirm point that faults is immediately followed by probeConfirmCliff(),
 ' which fine-walks toward that fault from the leg's last good point -- exactly what
@@ -2530,6 +2750,9 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
 ' @local sweptDeg - this point's swept offset
 ' @local winTicks - window ticks for this speed
 ' @local ptIdx - leg index of the just-measured confirm/fine point
+' @local bProbeable - task 3537 R9-SCAN-HALFLEG: this confirm fault left a gap a probe can land in
+' @local countBefore - legCount before probeConfirmCliff(); a probe point was measured when it grew
+' @local probeSlot - this leg's result slot, for the R9-SCAN-HALFLEG counters
 '
 ' CHANGE 1 (scan v3): a candidate outside the current fault-bounded window (withinWindowLimit())
 ' is skipped -- never measured -- and refreshLegLimits() re-runs after every point measured, so a
@@ -2555,7 +2778,16 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
         if withinHardLimit(sweptDeg, defSwept) and withinWindowLimit(sweptDeg)
             ptIdx := legMeasure(side, speedIdx, signIdx, PH_FINE, sweptDeg, winTicks, pointLimitMv)
             if (speedIdx == SPEED_HALF) and isFaultLikeIdx(ptIdx) and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
+                ' task 3537 R9-SCAN-HALFLEG: judge the gap BEFORE the probe fills it, and count the
+                ' probe points by the store's growth, not by anything probeConfirmCliff() reports
+                bProbeable := (ptIdx >= 0) and confirmGapProbeable(defSwept, sweptDeg)
+                countBefore := legCount
                 probeConfirmCliff(side, speedIdx, signIdx, defSwept, sweptDeg, pointLimitMv)
+                if bProbeable
+                    probeSlot := resultSlot(side, signIdx, speedIdx)
+                    halfProbeEvents[probeSlot] += 1
+                    if legCount == countBefore
+                        halfProbeMissed[probeSlot] += 1
             refreshLegLimits(defSwept)
     if legConsecFaults >= LEG_FAULT_CAP
         legExit := LX_FAULT_CAP
@@ -2611,6 +2843,25 @@ PRI probeConfirmCliff(side, speedIdx, signIdx, defSwept, faultDeg, pointLimitMv)
             halfDeg := goodDeg + (dir * CLIFF_HALF_STEP_DEG)
             if ((dir * (faultDeg - halfDeg)) > 0) and ((dir * (halfDeg - goodDeg)) > 0)
                 legMeasure(side, speedIdx, signIdx, PH_CLIFF, halfDeg, WIN_TICKS_HALF, pointLimitMv)
+
+PRI confirmGapProbeable(defSwept, faultDeg) : bProbeable | dir, goodDeg, bFromFault
+' Task 3537 R9-SCAN-HALFLEG: report whether a half-speed confirm point that just faulted left a gap a
+' probe can land in -- more than CLIFF_HALF_STEP_DEG between the fault and the leg's last good point in
+' its direction, so at least probeConfirmCliff()'s half-step offset lies strictly inside. Judged from
+' the leg store by legLimitForDir(), not from probeConfirmCliff()'s own gates, so a probe that was owed
+' and never measured (run 5, or the nested half-step defect) reads as a miss.
+'
+' @param defSwept - default offset, swept degrees
+' @param faultDeg - the confirm point that just faulted, swept degrees
+' @returns bProbeable - TRUE when the gap is wider than CLIFF_HALF_STEP_DEG
+'
+' @local dir - +1 the fault lies above defSwept, -1 below
+' @local goodDeg - the last good point before the nearest fault in dir
+' @local bFromFault - TRUE when legLimitForDir() found a fault in dir
+
+    dir := (faultDeg > defSwept) ? 1 : -1
+    goodDeg, bFromFault := legLimitForDir(defSwept, dir)
+    bProbeable := bFromFault and ((dir * (faultDeg - goodDeg)) > CLIFF_HALF_STEP_DEG)
 
 PRI runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv) : legExit | extDir, edgeDeg, extIdx, ...
     extCount, sweptDeg, winTicks
@@ -3969,7 +4220,7 @@ PRI emitPair(side, firstSign) | negSlot, posSlot, bComplete, bPairSe, midF, midS
     tokenField(@"sign_order", (firstSign == SIGN_NEG) ? @sOrderNegFirst : @sOrderPosFirst, TOKMAX_ORDER)
     lineEmit()
 
-PRI emitPair2(side) | negSlot, posSlot, bComplete, negF, posF, ratioX1000, bRatio
+PRI emitPair2(side) | negSlot, posSlot, bComplete, negF, posF, ratioX1000, bRatio, pairSlot
 ' Emit BS-PAIR2: currents at the two minima, the measured zero, and their ratio. Scan v4 CHANGE 3:
 ' resIminF (negF/posF) is now the fit's NET-of-its-own-zero minimum (scan v4 CHANGE 2 -- fitLeg()
 ' fits legNetX10, netted point-by-point against the zero measured immediately before each point,
@@ -3995,6 +4246,7 @@ PRI emitPair2(side) | negSlot, posSlot, bComplete, negF, posF, ratioX1000, bRati
 ' @local posF - POS minimum current, mV, net
 ' @local ratioX1000 - negF/posF x1000, the net ratio (ratio_net_x1000)
 ' @local bRatio - the denominator is positive
+' @local pairSlot - sideSlot(side), the sign-off accumulator index (task 3537)
 
     negSlot := resultSlot(side, SIGN_NEG, SPEED_QTR)
     posSlot := resultSlot(side, SIGN_POS, SPEED_QTR)
@@ -4006,6 +4258,10 @@ PRI emitPair2(side) | negSlot, posSlot, bComplete, negF, posF, ratioX1000, bRati
     if bComplete and (posF >. 0.0)
         ratioX1000 := floatToBoundedInt((negF /. posF) *. 1000.0, LIM_SMALL)
         bRatio := TRUE
+    ' task 3537 R9-SCAN-PAIR2: the very bComplete/bRatio this record prints below, not a re-derivation
+    pairSlot := sideSlot(side)
+    bSfPair2Complete[pairSlot] := bComplete
+    bSfPair2NetOk[pairSlot] := bRatio
     lineReset()
     lineAddText(@"BS-PAIR2")
     tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
@@ -4059,8 +4315,10 @@ PRI emitBuild()
 ' Emit BS-BUILD (task 3537, design sec F.5), right after BS-BANNER: the build variant and the
 ' sign-off format. wd_selftest is sourced from its own #ifdef, never a runtime test, following
 ' emitBanner()'s cfg_id pattern: pnut-ts silently ignores an unknown -D, so a mistyped flag lands on
-' the honest FALSE. Every build today prints FALSE. The zxs_* fields arrive with the R8 phase.
-' Worst case: tag(8) + wd_selftest(1+11+1+5=18) + sf(1+2+1+4=8) = 34 bytes.
+' the honest FALSE. Every build today prints FALSE. zxs_starts and zxs_max_mV_x10 (fmt 8) print the
+' R8 limits compiled in.
+' Worst case: tag(8) + wd_selftest(1+11+1+5=18) + sf(1+2+1+4=8) + zxs_starts(1+10+1+4=16) +
+' zxs_max_mV_x10(1+14+1+4=20) = 70 bytes.
 
     lineReset()
     lineAddText(@"BS-BUILD")
@@ -4070,6 +4328,8 @@ PRI emitBuild()
     boolField(@"wd_selftest", FALSE)
 #endif
     boundedField(@"sf", SF_VERSION, LIM_TINY)
+    boundedField(@"zxs_starts", ZXS_STARTS, LIM_TINY)
+    boundedField(@"zxs_max_mV_x10", ZXS_MAX_MV_X10, LIM_TINY)
     lineEmit()
 
 PRI emitSignoffDecls()
@@ -4084,6 +4344,10 @@ PRI emitSignoffDecls()
     emitSignoffDecl(@sSfCellNoStall, @sSfTaskNoStall)
     emitSignoffDecl(@sSfCellAlive, @sSfTaskLut)
     emitSignoffDecl(@sSfCellRate, @sSfTaskLut)
+    emitSignoffDecl(@sSfCellZxs, @sSfTaskZxs)
+    emitSignoffDecl(@sSfCellHalfLeg, @sSfTaskScanV4)
+    emitSignoffDecl(@sSfCellOwnZero, @sSfTaskScanV4)
+    emitSignoffDecl(@sSfCellPair2, @sSfTaskScanV4)
 
 PRI emitSignoffDecl(pCell, pTask)
 ' Emit SIGNOFF-DECL for one cell.
@@ -4111,6 +4375,12 @@ PRI emitSignoffs() | side, slotIdx, bStarted
 '  R12-ALIVE measured = starts not alive,     n = starts judged;        NOMEAS when none judged
 '  R5, R12-RATE BOOL from the self-check;                                NOMEAS when not measured
 '  R11       BOOL TRUE, motor NONE: reaching this path is the evidence
+'  R8-ZXS    per channel, measured = PH_XSTART spread, n = zxsN;          NOMEAS when zxsN < ZXS_STARTS
+'  R9-HALFLEG per half slot, BOOL every probeable confirm fault probed;    NOMEAS when there was none
+'  R9-OWNZERO per slot that ran and bracketed, measured = points without own zero, n = valid points;
+'            one NOMEAS instance when the motor has no such slot
+'  R9-PAIR2  BOOL emitPair2()'s bRatio;                                    NOMEAS when the pair was incomplete
+'  then BS-ZXSALL, the informational every-lifetime spread (a BS- record, never a SIGNOFF)
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
 ' @local slotIdx - sideSlot(side)
@@ -4128,8 +4398,116 @@ PRI emitSignoffs() | side, slotIdx, bStarted
         emitSignoff(@sSfCellStartIll, @sSfTaskStartIll, side, @sSfCritStartIll, bStarted, sfStartIllegal[slotIdx], START_ILLEGAL_LO, START_ILLEGAL_HI, @sSfUnitsCount, sfStarts[slotIdx])
         emitSignoff(@sSfCellAlive, @sSfTaskLut, side, @sSfCritNotAlive, sfAliveJudged[slotIdx] > 0, sfNotAlive[slotIdx], NOT_ALIVE_LO, NOT_ALIVE_HI, @sSfUnitsCount, sfAliveJudged[slotIdx])
         emitSignoffBool(@sSfCellRate, @sSfTaskLut, side, @sSfCritRate, bSfSelfRateRan[slotIdx], bSfSelfRateOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitZxsSignoffs(side, slotIdx)
+        emitHalfLegSignoffs(side)
+        emitOwnZeroSignoffs(side)
+        ' R9-SCAN-PAIR2 is COVERAGE: it proves the fmt 6 net-ratio path of emitPair2() ran to a valid
+        ' ratio, not that the number is correct. bRatio implies bComplete, so it is the criterion.
+        emitSignoffBool(@sSfCellPair2, @sSfTaskScanV4, side, @sSfCritNetRatio, bSfPair2Complete[slotIdx], bSfPair2NetOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitZxsAll(side, slotIdx)
     beat(CP_EMIT)
     emitSignoffBool(@sSfCellNoStall, @sSfTaskNoStall, SIDE_NONE, @sSfCritCog0End, TRUE, TRUE, SIGNOFF_ONE_INSTANCE)
+
+PRI emitZxsSignoffs(side, slotIdx) | chIdx
+' Emit R8-SCAN-ZXS for one motor: one SIGNOFF per channel, measured = the PH_XSTART spread (task 3537).
+' Falsifiable on the unfixed calibration (PL-32): i and v on both motors, u on RIGHT; the rest are
+' coverage (see ZXS_MAX_MV_X10). Worst case: emitSignoff(), 196 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - sideSlot(side)
+'
+' @local chIdx - ZXS_CH_I .. ZXS_CH_W
+
+    repeat chIdx from ZXS_CH_I to ZXS_CH_W
+        beat(CP_EMIT)
+        emitSignoff(@sSfCellZxs, @sSfTaskZxs, side, zxsCritToken(chIdx), zxsN[slotIdx] >= ZXS_STARTS, ...
+            zxsSpreadX10((slotIdx * ZXS_CHANNELS) + chIdx, TRUE), ZXS_LO_MV_X10, ZXS_MAX_MV_X10, @sSfUnitsMvX10, zxsN[slotIdx])
+
+PRI zxsCritToken(chIdx) : pTok
+' R8 criterion token for a zero channel.
+'
+' @param chIdx - ZXS_CH_* value
+' @returns pTok - ZXS_I, ZXS_U, ZXS_V or ZXS_W
+
+    case chIdx
+        ZXS_CH_I:
+            pTok := @sSfCritZxsI
+        ZXS_CH_U:
+            pTok := @sSfCritZxsU
+        ZXS_CH_V:
+            pTok := @sSfCritZxsV
+        other:
+            pTok := @sSfCritZxsW
+
+PRI emitHalfLegSignoffs(side) | signIdx, resIdx
+' Emit R9-SCAN-HALFLEG for one motor: one BOOL SIGNOFF per half-speed result slot (task 3537).
+' measured TRUE when no half-speed confirm fault with a probeable gap went without a measured probe
+' point (halfProbeMissed 0). NOMEAS when the leg had no such fault (halfProbeEvents 0): no confirm
+' point faulted, the gap was too narrow to probe, the fault cap or a run abort came first, or the leg
+' never ran. Worst case: emitSignoffBool(), 173 bytes (CLIFF_PROBED is as long as FIT_OR_CLIFF was).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local signIdx - SIGN_NEG then SIGN_POS
+' @local resIdx - that sign's half-speed result slot
+
+    repeat signIdx from SIGN_NEG to SIGN_POS
+        beat(CP_EMIT)
+        resIdx := resultSlot(side, signIdx, SPEED_HALF)
+        emitSignoffBool(@sSfCellHalfLeg, @sSfTaskScanV4, side, @sSfCritCliffPrb, halfProbeEvents[resIdx] > 0, ...
+            halfProbeMissed[resIdx] == 0, SIGNOFF_ONE_INSTANCE)
+
+PRI emitOwnZeroSignoffs(side) | signIdx, speedIdx, resIdx, nInst
+' Emit R9-SCAN-OWNZERO for one motor (task 3537): one COUNT SIGNOFF per result slot whose leg ran and
+' was not FS_NOT_BRACKETED, measured = its valid points without a valid own zero, n = its valid
+' points; a single NOMEAS instance when no slot of this motor qualifies. Worst case: emitSignoff(),
+' 196 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local signIdx - SIGN_NEG then SIGN_POS
+' @local speedIdx - SPEED_QTR then SPEED_HALF
+' @local resIdx - the result slot
+' @local nInst - instances emitted for this motor
+
+    nInst := 0
+    repeat signIdx from SIGN_NEG to SIGN_POS
+        repeat speedIdx from SPEED_QTR to SPEED_HALF
+            beat(CP_EMIT)
+            resIdx := resultSlot(side, signIdx, speedIdx)
+            if (bResLegRan[resIdx] <> FALSE) and (resStatus[resIdx] <> FS_NOT_BRACKETED)
+                emitSignoff(@sSfCellOwnZero, @sSfTaskScanV4, side, @sSfCritOwnZero, TRUE, resZeroMissing[resIdx], ...
+                    OWN_ZERO_MISSING_LO, OWN_ZERO_MISSING_HI, @sSfUnitsCount, resZeroChecked[resIdx])
+                nInst += 1
+    if nInst == 0
+        emitSignoff(@sSfCellOwnZero, @sSfTaskScanV4, side, @sSfCritOwnZero, FALSE, 0, ...
+            OWN_ZERO_MISSING_LO, OWN_ZERO_MISSING_HI, @sSfUnitsCount, 0)
+
+PRI emitZxsAll(side, slotIdx) | baseIdx, bAny
+' Emit BS-ZXSALL for one motor (task 3537, fmt 8): the spread of EVERY driver lifetime's first full
+' zero (any phase: XSTART, ZERO_INIT, restarts after an abort), per channel, and their count. A plain
+' BS- record, never a SIGNOFF: it is informational (design sec A.5-e), and a SIGNOFF with an
+' unmanifested crit would read host-side as a crit mismatch. Spreads print NA when n is 0.
+' Worst case: tag(9) + motor(1+5+1+5=12) + n(1+1+1+7=10) + four spreads each
+' (1+15+1+10=27) = 139 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - sideSlot(side)
+'
+' @local baseIdx - index of this motor's ZXS_CH_I entry
+' @local bAny - TRUE when at least one zero was folded
+
+    baseIdx := slotIdx * ZXS_CHANNELS
+    bAny := (zxsAllN[slotIdx] > 0)
+    lineReset()
+    lineAddText(@"BS-ZXSALL")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"n", zxsAllN[slotIdx], LIM_SMALL)
+    naOrBoundedField(@"i_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_I, FALSE), LIM_MID, bAny)
+    naOrBoundedField(@"u_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_U, FALSE), LIM_MID, bAny)
+    naOrBoundedField(@"v_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_V, FALSE), LIM_MID, bAny)
+    naOrBoundedField(@"w_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_W, FALSE), LIM_MID, bAny)
+    lineEmit()
 
 PRI emitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, pUnits, instCount) | boundedVal, pVerdict
 ' Emit one SIGNOFF verdict (design sec B.1, sf 1) from the existing line builder. measured is
@@ -4185,7 +4563,9 @@ PRI emitSignoffEx(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, bH
 ' condition beyond lo..hi. Same fields, order and clamps as emitSignoff(), which can do neither.
 ' PASS only when measured AND bConditionsOk AND every present limit holds; FAIL when measured
 ' otherwise; NOMEAS, with measured NA and n 0, when not measured. Judged on the clamped value.
-' No caller in phase 2b1: the task 3537 R8/R9 phases use it (ZXSALL_* prints lo/hi NA).
+' No caller yet: phase 2b2's R8/R9 cells need neither NA limits nor extra conditions, and the
+' every-lifetime spread became the plain BS-ZXSALL record instead of ZXSALL_* SIGNOFFs. Kept for a
+' later task 3537 phase.
 ' Worst case, by clamp widths: identical to emitSignoff(), 196 bytes (an NA limit is shorter).
 '
 ' @param pCell - pointer to the cell id token
@@ -4394,6 +4774,8 @@ PRI phaseToken(ptPhase) : pTok
             pTok := @sPhCliff
         PH_ZERO_INIT:
             pTok := @sPhZeroInit
+        PH_XSTART:
+            pTok := @sPhXstart
         other:
             pTok := @sPhUnknown                             ' never mislabel an unlisted phase as ZERO_INIT
 
@@ -4785,6 +5167,10 @@ PRI checkpointToken(checkpointId) : pTok
             pTok := @sCpLibShutdown
         CP_EMIT:
             pTok := @sCpEmit
+        CP_LOOP_XSTART:
+            pTok := @sCpXstart
+        CP_LOOP_OWNZERO:
+            pTok := @sCpOwnZero
         other:
             pTok := @sCpUnknown
 

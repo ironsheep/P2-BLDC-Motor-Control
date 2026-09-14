@@ -80,7 +80,7 @@
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R8-T0-ZXS** (row 8, bin T0) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit ZXS, lo 0, hi 50, units MV_X10, min_inst 3, counts only RIGHT:ZXS_I,RIGHT:ZXS_U,RIGHT:ZXS_V; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
-- **R9-SCAN-HALFLEG** (row 9, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit FIT_OR_CLIFF, lo TRUE, hi TRUE, units BOOL, min_inst 4; manifest status OWED
+- **R9-SCAN-HALFLEG** (row 9, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit CLIFF_PROBED, lo TRUE, hi TRUE, units BOOL, min_inst 2; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R9-SCAN-OWNZERO** (row 9, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit PTS_NO_OWN_ZERO, lo 0, hi 0, units COUNT, min_inst 4; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
