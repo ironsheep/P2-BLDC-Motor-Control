@@ -1,96 +1,85 @@
-{Spin2_v50}
 '' =================================================================================================
 ''
 ''   File....... test_bench_char.spin2
-''   Purpose.... Early motor characterisation binary -- quarter/half-speed, constant-rate,
-''               forward and reverse, hold-and-announce on a live PLOT panel
+''   Purpose.... Unattended, meter-free motor characterisation -- quarter/half speed, both motors,
+''               both increment signs, every reading taken from the driver's own telemetry
 ''   Authors.... Stephen M Moraco
 ''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... 11 Sep 2026
-''   Updated.... 11 Sep 2026
+''   Updated.... 13 Sep 2026 -- task 3521 phase A: unattended automatic holds (no PLOT panel, no
+''               operator advance, no dwell floor), same-lifetime zero per hold (PL-32), overflow-
+''               proof accumulators (PL-20), quiescent hold from a started driver (PL-21), booleans
+''               as TRUE/FALSE (PL-23), motor frame named on every hold (PL-19), no method-calling
+''               ternaries (PL-29)
 ''
 '' =================================================================================================
 
-{ WHY THIS RUN, AND WHY NOW
+{ WHY THIS RUN
 
-  This runs BEFORE the current-scaling and hall-counting fixes land. Almost nothing it
-  measures is invalidated by those pending fixes -- the S-3 restore divides sense_i_mV by a
-  constant, the board-detection fix touches getCurrent() but not raw sense_i_mV, the hall
-  counters are purely additive, tickInMM_x10 changes distance conversion but not raw ticks --
-  and a constant scale error hides neither a ratio, an asymmetry, nor a shape. Quarter speed
-  (~100 ticks/s against a 43.9kHz control loop) makes pos as trustworthy as it will ever be.
+  Bench Pass 1 (DOCs/analyses/bench/2026-09-12/CHAR-RUN-EVALUATION.md) ran this binary as an
+  operator-held, meter-read session. The current channel is now confirmed (sense_i_mV is true
+  millivolts, about 150 mV/A on Rev B), so every hold is now measured from the driver's own
+  telemetry, unattended, with no meter and no keypress.
 
-  WHAT THIS BUYS, most valuable first:
-   (1) turns the S-3 adc_fram=6136 prediction into a measurement, before anything is built on
-       it -- log raw sense_i_mV, Stephen reads meter amps, the ratio should land near 6136;
-   (2) forward-vs-reverse asymmetry (the reverse offset is derived, 360-43, never measured);
-   (3) a go/no-go on the current channel itself -- is it alive and load-responsive at all;
-   (4) left/right hardware equivalence at matched commanded rate.
+  FRAME. Every hold is in MOTOR frame: the signed motor increment is what is commanded, and
+  forwardIsReverse() is never called on either wheel. Every BC-HOLD record carries the signed
+  increment, a robot_dir field (LEFT + = robot forward, RIGHT + = robot reverse, because the two
+  motors are mounted mirror-image), and frame,MOTOR. Every caption names its frame (PL-19).
 
-  THE CONDITION THIS RUN IS ACCEPTED UNDER: record raw values AS RAW. Ratios, asymmetries and
-  liveness are fair game; absolute magnitudes are logged with the scale factor UNRESOLVED and
-  converted afterward, never asserted during the session. sense_i_mV on the panel is
-  deliberately demoted -- labelled "P2 SENSE mV", never "amps", never converted -- so it
-  answers "is this hold real" without anchoring Stephen's meter transcription.
+  THE IDLE WHEEL IS NEVER RUNNING. Each hold stop()s both wheels and then start()s only the wheel
+  under test, so the other wheel has no driver cog, its pins are released and its bridges float.
+  holdAtStop() appears nowhere; init()'s default SM_FLOAT gives a floating stop.
 
-  DELIBERATELY NOT ATTEMPTED: the fault boundary, anything depending on stop distance, rpm or
-  cntsInSec (broken, finding W), getCurrent() absolute, high speed.
+  EACH HOLD IS ITS OWN DRIVER LIFETIME. The driver calibrates its ADCs at start (PL-32), so a sense
+  zero is valid only within the lifetime it was read in. Every hold, including the quiescent hold
+  0, starts its wheel, then reads its own zero at zero command, then measures -- never a zero from
+  before a restart.
 
-  THE IDLE WHEEL FLOATS BY CONSTRUCTION. The wheel not under test is never start()ed at all --
-  no driver cog, pins left as inputs, bridges off -- rather than started and told to hold.
-  holdAtStop() appears nowhere in this file; init()'s own default (SM_FLOAT) already gives a
-  floating stop, so there is nothing to call.
+  HOLD SEQUENCE (per motion hold):
+   (1) stop both wheels, start the hold's wheel, wait ready (READY_TIMEOUT_MS), startSenseCog()
+   (2) zero: ZERO_SAMPLES x SAMPLE_MS at zero command, same lifetime
+   (3) command the signed increment, wait DCS_AT_SPEED (ATSPEED_TIMEOUT_MS), waitForSteady()
+       (hall-rate confirmation, STEADY_TIMEOUT_MS), settle SETTLE_MS
+   (4) sample every SAMPLE_MS for WINDOW_MS; testGetRpm() read at the window's end, which is at
+       least SETTLE_MS + WINDOW_MS = 4 s after AT_SPEED (rpm needs ~1 s of motion to fill)
+   (5) command zero, wait STOPPED (STOP_TIMEOUT_MS), stop the wheel, and ONLY THEN print
+  Hold 0 is steps (1), (2), (4) and (5) on HOLD_ZERO_SIDE, started and held at zero command.
+  A bounded wait that times out becomes that hold's result token; it never aborts the run.
 
-  NO STOP TIMER. util_char_motor.spin2:379,392 call stopAfterTime(DRIVE_AT_SPEED_SECS=5, ...)
-  before every drive -- an operator hold is indefinite, and that timer would stop the motor
-  five seconds in while the panel kept looking correct. This file commands motion with
-  testDriveAtMotorIncrement() alone and never calls stopAfterTime() from a hold.
+  NO timed window (zero, AT_SPEED wait, steady wait, settle, sample window, stop wait) contains a
+  debug() statement or a call to a library method that emits one. Every record is emitted after
+  the wheel has stopped.
 
-  PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY. emergencyCutoff() self-cancels in
-  about 250 ms (finding S-4) and is NOT a panic button; this file does not call it.
+  NO STOP TIMER. Motion is commanded with testDriveAtMotorIncrement() alone; stopAfterTime() is
+  never called, so the sense task never zeroes a command behind this file's back.
+
+  PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY. emergencyCutoff() self-cancels in about
+  250 ms (finding S-4) and is NOT a panic button; this file does not call it.
 
   HOW IT IS RUN
 
-      cd src
-      pnut-ts -l -d -D BENCH_CFG test_bench_char.spin2      ' the bench PLOT panel
-      pnut-ts -l -d -D BENCH_NO_PANEL test_bench_char.spin2 ' plain debug-line fallback
+      tools/bench-run.sh char
 
-  -D BENCH_CFG selects isp_bldc_motor_userconfig_bench.spin2 for the banner's cfg_id only --
-  the pin bases, voltage and detection mode this file actually drives are hardcoded (see CON
-  { bench target } below) so this file compiles and drives the same fixed hardware regardless
-  of which block happens to be active in isp_bldc_motor_userconfig.spin2, exactly the reasoning
-  test_bench_t0.spin2 documents at its own T0_MOTOR_BASE.
-
-  -D BENCH_NO_PANEL opens a bare PLOT window (needed only so pc_key has a window to read from)
-  with no drawing at all, and prints the prompt and counter as plain debug lines instead.
-  Nothing that matters may exist only on the panel -- every BC- log record is identical
-  between the two builds.
+  -D BENCH_CFG selects isp_bldc_motor_userconfig_bench.spin2 for the banner's cfg_id only -- the
+  pin bases, voltage and detection mode this file drives are compile-time constants (CON
+  { bench target }) so it compiles under every block of isp_bldc_motor_userconfig.spin2.
 
   RECORD DISCIPLINE
 
-  Tag-first, comma-separated name,value pairs, all tags prefixed BC-. Fixed-field: every
-  record type always emits every field in the same order; absence is a TOKEN (NOMEAS / NA /
-  NEVER), never a missing field and never a 0. Records are assembled into a byte buffer and
-  emitted with one debug(zstr_()) each, because a single DEBUG statement carries at most 255
-  bytes and several of these records would overrun that. The line-assembly idiom
-  (lineReset/lineAddText/lineAddNum/lineField/lineTextField/lineEmit) is transcribed from
-  test_bench_detect.spin2, which cannot be OBJ-included because it is itself a top-level file.
-
-  THE STRUCTURAL GUARANTEE
-
-  Exactly one statement in this file assigns the dwell-gate flag -- comparing elapsed
-  milliseconds since steady state against the dwell floor -- inside the poll loop of
-  runDwellLoop() below. No input path (mouse, keyboard, or the BENCH_NO_PANEL keyboard path)
-  may set that flag -- all three write only bAdvanceRequested, and a hold advances only when
-  the gate flag AND bAdvanceRequested are both true.
+  Tag-first, comma-separated name,value pairs, all tags prefixed BC-. Every record type always
+  emits every field in the same order; absence is the token NA, never a missing field and never
+  a 0. Booleans are the tokens TRUE/FALSE (PL-23). Every numeric field is clamped to a stated
+  width and every token to a stated length, so each record's worst case is a stated number of
+  bytes under 280 (the longest record measured intact through one debug(zstr_())). The worst
+  case of each record is stated at its emitter.
 }
 
 CON { build identity }
 
-    SRC_REV     = 1                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 1                                          ' BC-BANNER record-format version
+    SRC_REV     = 2                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 2                                         ' BC- record-format version (2: task 3521 phase A)
 
 CON { timing }
 
@@ -100,118 +89,123 @@ CON { timing }
 
 CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
 
-' Hardcoded rather than read from `user`, for the same reason test_bench_t0.spin2 hardcodes
-' T0_MOTOR_BASE: a dual-motor active config block defines LEFT_MOTOR_BASE/RIGHT_MOTOR_BASE
-' and no ONLY_MOTOR_BASE, and vice versa for a single-motor block, so reading either through
-' `user` would fail to compile under whichever block happens to be active. This file needs
-' BOTH a left and a right base, so it names the library's own PINS_*/PWR_*/BRD_* constants
-' directly -- legal under every config block, because they belong to the isp_bldc_motor
-' object, not to the user config.
+' Hardcoded rather than read from `user`: a dual-motor config block defines LEFT_MOTOR_BASE /
+' RIGHT_MOTOR_BASE and no ONLY_MOTOR_BASE, and vice versa, so reading either through `user`
+' would fail to compile under whichever block is active. The library's own PINS_*/PWR_*/BRD_*
+' constants are legal under every config block.
     LEFT_TEST_BASE  = wheelL.PINS_P32_P47                    ' the LEFT board is at P32, measured 2026-09-11
     RIGHT_TEST_BASE = wheelL.PINS_P16_P31
     TEST_VOLTAGE    = wheelL.PWR_18p5V
     TEST_DET_MODE   = wheelL.BRD_AUTO_DET
-    PACK_NOMINAL_MV = 18_500                                ' 5S pack, nominal -- Stephen states the true value at the meter
+    MAX_COG_ID      = 7                                      ' start() returns a cog id 0..7, or -1
 
-CON { drive speed }
+CON { drive speed -- NO increment may exceed DRIVE_CEILING_INCRE }
 
-' isp_bldc_motor.spin2:1202 -- ~147_000_000 is the motor-increment ceiling at 18.5V.
+' isp_bldc_motor.spin2 confgurePowerLimits(): 147_000_000 is the 18.5V motor-increment ceiling.
     DRIVE_CEILING_INCRE = 147_000_000
-    QTR_SPEED_INCRE     = DRIVE_CEILING_INCRE / 4           ' ~36_750_000, quarter speed
-    HALF_SPEED_INCRE    = DRIVE_CEILING_INCRE / 2           ' ~73_500_000, optional second rung
+    QTR_SPEED_INCRE     = DRIVE_CEILING_INCRE / 4           ' 36_750_000, quarter speed
+    HALF_SPEED_INCRE    = DRIVE_CEILING_INCRE / 2           ' 73_500_000, half speed
+    PREFLIGHT_INCRE     = DRIVE_CEILING_INCRE / 8           ' 18_375_000, gentle nudge
 
-CON { dwell / steady-state timing }
+CON { sampling, windows and wait bounds }
 
-    DWELL_FLOOR_SECS       = 25                             ' 5 meter screens x ~4s + margin
-    STEADY_SAMPLE_MS        = 250
-    STEADY_CONFIRM_SAMPLES  = 4
-    STEADY_TOL_PCT          = 5
-    STEADY_TIMEOUT_MS       = 6_000
-    EARLY_FLASH_MS          = 300
-    BTN_ACK_HOLD_MS         = 250
-    DWELL_POLL_MS           = 50                             ' input + panel poll cadence
-    PANEL_REDRAW_MS         = 200                            ' throttled panel redraw cadence
-    SENSE_MEAN_UPDATE_MS    = 1_000                          ' on-screen sense mV update cadence
-    IDLE_SHOW_MS            = 4_000                          ' completion screen dwell before the session ends
-    PREFLIGHT_MS            = 700                            ' nudge duration per wheel in the pre-flight check
-    PREFLIGHT_INCRE         = 18_375_000                     ' half of quarter speed -- enough to turn, gentle
-    MAX_CLICK_LOG           = 5                              ' BC-CLICK is "first clicks", not every click
+    SAMPLE_MS          = 5                                  ' telemetry poll cadence in every timed loop
+    ZERO_SAMPLES       = 200                                ' same-lifetime zero: 200 x 5 ms, ~1 s
+    SETTLE_MS          = 1_000                              ' after AT_SPEED (and the rate check), before the window
+    ' WINDOW_MS: 3 s at ~99 ticks/s (quarter speed) is ~297 hall ticks, just over 3 wheel
+    ' revolutions (90 ticks/rev) -- the same span the offset scan uses for a fine point
+    ' (WIN_TICKS_FINE = 270) -- so the mean averages whole revolutions of hall/cogging ripple
+    ' rather than a fraction of one; ~600 samples at SAMPLE_MS. It also exceeds the ~1 s rpm
+    ' averaging window, so testGetRpm() at its end reads a full window of steady motion.
+    WINDOW_MS          = 3_000
+    READY_TIMEOUT_MS   = 2_000                              ' driver cog reports ready after start()
+    ATSPEED_TIMEOUT_MS = 4_000                              ' AT_SPEED observed ~0.9 s (1/4) / ~1.3 s (1/2) in the scan
+    STOP_TIMEOUT_MS    = 3_000                              ' ramp-down ~0.37 s (1/4) / ~0.75 s (1/2)
+    STEADY_SAMPLE_MS   = 250                                ' waitForSteady() hall-rate sample period
+    STEADY_CONFIRM_SAMPLES = 4
+    STEADY_TOL_PCT     = 5
+    STEADY_TIMEOUT_MS  = 6_000                              ' waitForSteady() bound
+    PREFLIGHT_MS       = 700                                ' preflight nudge duration per wheel
+    RATE_X10_SCALE     = 10_000                             ' ticks * this / ms = ticks per second x10
+    RATE_TICKS_CAP     = 99_999                             ' ticks clamp before * RATE_X10_SCALE: 999_990_000 < 2^31
+    X10                = 10
+
+CON { overflow-proof running mean (PL-20) }
+
+' Every accumulator is an EXACT incremental mean held as (mean, remainder, count), with the
+' invariant  sum == mean * count + remainder,  0 <= remainder < count  -- the true sum is never
+' stored, so it cannot overflow however long the window runs or however large the scale.
+' Adding sample x (clamped to +/-ACC_SAMPLE_LIMIT) at new count n computes
+'     delta = remainder + x - mean
+' and then mean += floor(delta / n), remainder = delta - floor(delta / n) * n.
+' Bound: remainder < n <= ACC_COUNT_CAP, |x| <= ACC_SAMPLE_LIMIT, and |mean| <= ACC_SAMPLE_LIMIT
+' (a floor mean of clamped samples), so
+'     |delta| < ACC_COUNT_CAP + 2 * ACC_SAMPLE_LIMIT = 100_000_000 + 1_000_000_000
+'             = 1_100_000_000  <  2_147_483_647 (POSX).
+' ACC_COUNT_CAP at SAMPLE_MS = 5 ms is 500_000 s (~5.8 days) of samples; past it further samples
+' are not added (the count stops, so the record still states how many samples the mean holds).
+' ACC_SAMPLE_LIMIT is ~100x the pre-S-3 scale's largest reading (~5.2e6 mV), so no real sample
+' is ever clamped. The x10 mean is (mean clamped to +/-ACC_MEAN_X10_LIMIT) * 10 + remainder * 10
+' / count, where remainder * 10 < ACC_COUNT_CAP * 10 = 1e9 < POSX.
+    ACC_SAMPLE_LIMIT   = 500_000_000
+    ACC_COUNT_CAP      = 100_000_000
+    ACC_MEAN_X10_LIMIT = 99_999_999
+
+  ' Accumulator slots:
+  '  ACC_ZERO  - sense_i_mV at zero command, same driver lifetime
+  '  ACC_SENSE - sense_i_mV over the sample window
+  '  ACC_AMPS  - getCurrent() amps x 10_000 over the window
+  '  ACC_WATTS - getCurrent() mW over the window
+  '  ACC_DUTY  - duty over the window
+  '  ACC_ERR   - position error over the window
+    #0, ACC_ZERO, ACC_SENSE, ACC_AMPS, ACC_WATTS, ACC_DUTY, ACC_ERR
+    ACC_SLOTS = ACC_ERR + 1
 
 CON ' ---- Hold Sequence ----
-  ' The nine-hold run: quiescent zero, then left/right x fwd/rev at quarter speed, then
-  ' left/right x fwd/rev again at half speed. HOLD_LAST selects how far the run actually
-  ' goes; default is the whole sequence.
+  ' The nine-hold run: quiescent zero, then left/right x +/- increment at quarter speed, then
+  ' left/right x +/- again at half speed. HOLD_LAST selects how far the run goes.
     #0, HOLD_ZERO, HOLD_L_FWD_QTR, HOLD_L_REV_QTR, HOLD_R_FWD_QTR, HOLD_R_REV_QTR, ...
         HOLD_L_FWD_HALF, HOLD_L_REV_HALF, HOLD_R_FWD_HALF, HOLD_R_REV_HALF
     HOLD_COUNT = HOLD_R_REV_HALF + 1
     HOLD_LAST  = HOLD_R_REV_HALF                            ' edit to stop the run earlier
+    HOLD_ZERO_SIDE = SIDE_LEFT                              ' hold 0's driver: LEFT, started at zero command (PL-21)
 
-CON ' ---- Motor-Side / Button / Result Enums ----
-  ' Which wheel (if any) is under test:
-  '  SIDE_NONE  - neither wheel started (the quiescent-zero hold)
-  '  SIDE_LEFT  - wheelL started, wheelR never started (floating)
-  '  SIDE_RIGHT - wheelR started, wheelL never started (floating)
+CON ' ---- Motor-Side / Result Enums ----
+  ' Which wheel a hold drives:
+  '  SIDE_NONE  - no wheel
+  '  SIDE_LEFT  - wheelL started, wheelR not running
+  '  SIDE_RIGHT - wheelR started, wheelL not running
     #0, SIDE_NONE, SIDE_LEFT, SIDE_RIGHT
 
-  ' Panel button visual states:
-  '  PNL_BTN_INERT - dwell floor not yet reached, click/keypress ignored
-  '  PNL_BTN_LIVE  - floor reached, waiting for the operator's acknowledgement
-  '  PNL_BTN_ACK   - acknowledgement just accepted, brief visible feedback
-    #0, PNL_BTN_INERT, PNL_BTN_LIVE, PNL_BTN_ACK
+  ' Hold result (the first cause is kept, except that a fault or a lost cog always overwrites):
+  '  RES_OK             - every step completed
+  '  RES_NOT_RUN        - the hold was never reached
+  '  RES_NO_COG         - start() failed, or the driver cog was not running when read
+  '  RES_READY_TIMEOUT  - the driver did not report ready within READY_TIMEOUT_MS
+  '  RES_STEADY_TIMEOUT - DCS_AT_SPEED not reached within ATSPEED_TIMEOUT_MS
+  '  RES_FAULT          - the driver faulted
+  '  RES_STOP_TIMEOUT   - STOPPED not reached within STOP_TIMEOUT_MS after the zero command
+    #0, RES_OK, RES_NOT_RUN, RES_NO_COG, RES_READY_TIMEOUT, RES_STEADY_TIMEOUT, ...
+        RES_FAULT, RES_STOP_TIMEOUT
 
-  ' Steady-state source, hold outcome, and advance-source tokens are carried as string
-  ' pointers (see DAT token strings below) rather than numeric enums, since they go straight
-  ' into BC- log fields.
+CON { record widths -- every numeric field is clamped to one of these }
 
-CON { panel geometry -- see file header table; sizes chosen for arm's-length legibility }
+    LIM_TINY  = 999                                         ' prints at most 4 bytes: -999
+    LIM_SMALL = 99_999                                      ' prints at most 7 bytes: -99_999
+    LIM_MID   = 9_999_999                                   ' prints at most 10 bytes: -9_999_999
+    LIM_BIG   = 999_999_999                                 ' prints at most 12 bytes: -999_999_999
 
-    HDR_X = 0,   HDR_Y = 0,   HDR_W = 640, HDR_H = 44
-    CAP_X = 16,  CAP_Y = 52,  CAP_W = 608, CAP_H = 48
-    MODE_X = 16, MODE_Y = 110, MODE_W = 268, MODE_H = 44
-    CNT_X = 16,  CNT_Y = 164, CNT_W = 236, CNT_H = 104
-    BAR_X = 16,  BAR_Y = 272, BAR_W = 236, BAR_H = 14
-    BTN_X = 300, BTN_Y = 150, BTN_W = 316, BTN_H = 120
-    CHIP_X = 16, CHIP_Y = 286, CHIP_W = 268, CHIP_H = 44
-    SNS_X = 300, SNS_Y = 286, SNS_W = 316, SNS_H = 44
-    FOOT_X = 0,  FOOT_Y = 340, FOOT_W = 640, FOOT_H = 60
-
-    PANEL_W = 640
-    PANEL_H = 400
-    PANEL_POS_X = 60
-    PANEL_POS_Y = 80
-
-    ' Layer/cell geometry -- GENERATED by tools/gen_bench_char_assets.py. That script draws the
-    ' BMPs from these same numbers and prints this block, so artwork and code cannot drift.
-    LYR_BG           = 1
-    LYR_CAP          = 2
-    LYR_DGT          = 3
-    LYR_LBL          = 4
-    LYR_BTN          = 5
-
-    DGT_X            = 16
-    DGT_Y            = 164
-    DGT_W            = 72
-    DGT_H            = 104
-    DGT_PITCH        = 82
-    DGT_COUNT        = 3
-    DGT_BLANK        = 10
-    DGT_ROW_NORM     = 0
-    DGT_ROW_FLASH    = 104
-
-    LBL_W            = 268
-    LBL_H            = 44
-    LBL_MODE_DWELL   = 0
-    LBL_MODE_HELD    = 1
-    LBL_STAT_ZERO    = 2
-    LBL_STAT_RUN     = 3
-    LBL_STAT_FAULT   = 4
-
-    TXTSTYLE_CENTER    = 0                                  ' halign/valign both center (default)
-    TXTSTYLE_LEFT_MID  = $30                                ' halign left (%11<<4), valign center
-
-CON { panel feature flags }
-
-    PNL_SHOW_SENSE = 1                                      ' one-constant removal per spec
+    ' token field length limits (a longer token prints as "?")
+    TOKMAX_MOTOR   = 5
+    TOKMAX_ROBOT   = 4
+    TOKMAX_FRAME   = 5
+    TOKMAX_RUNG    = 4
+    TOKMAX_RESULT  = 14
+    TOKMAX_STEADY  = 7
+    TOKMAX_CFG     = 5
+    TOKMAX_BOARD   = 7
+    TOKMAX_EXIT    = 8
+    TOKMAX_CAPTION = 96
 
 CON { record assembly buffer }
 
@@ -237,13 +231,18 @@ lineLen         LONG    0
 
 DAT { token strings }
 
+sNa             BYTE    "NA", 0
+sTrue           BYTE    "TRUE", 0
+sFalse          BYTE    "FALSE", 0
+sBadTok         BYTE    "?", 0
+
 sMotNone        BYTE    "NONE", 0
 sMotLeft        BYTE    "LEFT", 0
 sMotRight       BYTE    "RIGHT", 0
 
-sDirZero        BYTE    "ZERO", 0
-sDirFwd         BYTE    "FWD", 0
-sDirRev         BYTE    "REV", 0
+sRobotNone      BYTE    "NONE", 0
+sRobotFwd       BYTE    "FWD", 0
+sRobotRev       BYTE    "REV", 0
 
 sRungZero       BYTE    "ZERO", 0
 sRungQtr        BYTE    "QTR", 0
@@ -253,460 +252,608 @@ sSteadyRamped   BYTE    "RAMPED", 0
 sSteadyTimeout  BYTE    "TIMEOUT", 0
 sSteadyZerocmd  BYTE    "ZEROCMD", 0
 
-sAdvMouse       BYTE    "MOUSE", 0
-sAdvKey         BYTE    "KEY", 0
-sAdvKeynp       BYTE    "KEYNP", 0
-
-sResultOk       BYTE    "OK", 0
-sResultFault    BYTE    "FAULT", 0
-
-sInZoneYes      BYTE    "1", 0
-sInZoneNo       BYTE    "0", 0
-
-sPanelYes       BYTE    "YES", 0
-sPanelNo        BYTE    "NO", 0
+sResOk          BYTE    "OK", 0
+sResNotRun      BYTE    "NOT_RUN", 0
+sResNoCog       BYTE    "NO_COG", 0
+sResReadyTo     BYTE    "READY_TIMEOUT", 0
+sResSteadyTo    BYTE    "STEADY_TIMEOUT", 0
+sResFault       BYTE    "FAULT", 0
+sResStopTo      BYTE    "STOP_TIMEOUT", 0
 
 sCfgBench       BYTE    "BENCH", 0
 sCfgUser        BYTE    "USER", 0
+sFrameMotor     BYTE    "MOTOR", 0
 
-sStatZero       BYTE    "ZERO COMMAND", 0
-sStatRunning    BYTE    "MOTOR RUNNING", 0
-sStatFault      BYTE    "DRIVER FAULT", 0
+sBoardRevA      BYTE    "REV_A", 0
+sBoardRevB      BYTE    "REV_B", 0
+sBoardUnknown   BYTE    "UNKNOWN", 0
 
-sModeDwell      BYTE    "DWELL REMAINING", 0
-sModeHeld       BYTE    "HELD - SEC", 0
+sExitComplete   BYTE    "COMPLETE", 0
+sExitAborted    BYTE    "ABORTED", 0
 
-DAT { hold caption strings }
+DAT { hold caption strings -- every caption names its frame (PL-19) }
 
-sHold0Caption   BYTE    "HOLD 1 of 9 - QUIESCENT ZERO", 0
-sHold1Caption   BYTE    "HOLD 2 of 9 - LEFT WHEEL FORWARD - 1/4 SPEED", 0
-sHold2Caption   BYTE    "HOLD 3 of 9 - LEFT WHEEL REVERSE - 1/4 SPEED", 0
-sHold3Caption   BYTE    "HOLD 4 of 9 - RIGHT WHEEL FORWARD - 1/4 SPEED", 0
-sHold4Caption   BYTE    "HOLD 5 of 9 - RIGHT WHEEL REVERSE - 1/4 SPEED", 0
-sHold5Caption   BYTE    "HOLD 6 of 9 - LEFT WHEEL FORWARD - 1/2 SPEED", 0
-sHold6Caption   BYTE    "HOLD 7 of 9 - LEFT WHEEL REVERSE - 1/2 SPEED", 0
-sHold7Caption   BYTE    "HOLD 8 of 9 - RIGHT WHEEL FORWARD - 1/2 SPEED", 0
-sHold8Caption   BYTE    "HOLD 9 of 9 - RIGHT WHEEL REVERSE - 1/2 SPEED", 0
-
-VAR { mouse read -- pc_mouse fills these 7 adjacent longs in this exact order }
-
-    LONG    mouseXpos
-    LONG    mouseYpos
-    LONG    mouseWheelDelta
-    LONG    mouseLtButton
-    LONG    mouseMidButton
-    LONG    mouseRtButton
-    LONG    mousePixel
-
-VAR { keyboard read }
-
-    LONG    keyCode
+sHold0Caption   BYTE    "HOLD 1 of 9 - QUIESCENT ZERO - LEFT MOTOR STARTED AT ZERO COMMAND (motor frame)", 0
+sHold1Caption   BYTE    "HOLD 2 of 9 - LEFT MOTOR + INCREMENT 1/4 SPEED (motor frame, robot forward)", 0
+sHold2Caption   BYTE    "HOLD 3 of 9 - LEFT MOTOR - INCREMENT 1/4 SPEED (motor frame, robot reverse)", 0
+sHold3Caption   BYTE    "HOLD 4 of 9 - RIGHT MOTOR + INCREMENT 1/4 SPEED (motor frame, robot reverse)", 0
+sHold4Caption   BYTE    "HOLD 5 of 9 - RIGHT MOTOR - INCREMENT 1/4 SPEED (motor frame, robot forward)", 0
+sHold5Caption   BYTE    "HOLD 6 of 9 - LEFT MOTOR + INCREMENT 1/2 SPEED (motor frame, robot forward)", 0
+sHold6Caption   BYTE    "HOLD 7 of 9 - LEFT MOTOR - INCREMENT 1/2 SPEED (motor frame, robot reverse)", 0
+sHold7Caption   BYTE    "HOLD 8 of 9 - RIGHT MOTOR + INCREMENT 1/2 SPEED (motor frame, robot reverse)", 0
+sHold8Caption   BYTE    "HOLD 9 of 9 - RIGHT MOTOR - INCREMENT 1/2 SPEED (motor frame, robot forward)", 0
 
 VAR { run-wide state }
 
-    LONG    currentSide                                     ' SIDE_* -- which wheel (if any) has a running cog
-    LONG    prevMouseLt                                      ' previous poll's left-button reading, for edge detect
-    LONG    bKeyArmed                                         ' TRUE once keyCode has read 0 since the last accepted press
-    LONG    clickLogCount                                     ' BC-CLICK emitted so far, this whole run
+    LONG    bRunReturned                                    ' TRUE once runSession() reached its end
+    LONG    bPreflightOk                                    ' TRUE when both wheels turned in preflight
+    LONG    holdsRun                                        ' holds measured so far
 
-PUB main()
-'' Run the whole bench characterisation sequence: quiescent zero, then each wheel forward and
-'' reverse at quarter and (optionally) half speed, hold-and-announce on every step.
+VAR { overflow-proof running means, index ACC_* }
+
+    LONG    accMean[ACC_SLOTS]                              ' floor(sum / count)
+    LONG    accRem[ACC_SLOTS]                               ' sum - accMean * count, 0 <= rem < count
+    LONG    accCount[ACC_SLOTS]                             ' samples added
+    LONG    accMin[ACC_SLOTS]                               ' smallest clamped sample
+    LONG    accMax[ACC_SLOTS]                               ' largest clamped sample
+
+VAR { per-hold results, index HOLD_* -- the seam a later sign-off emitter reads }
+
+    LONG    holdResultCode[HOLD_COUNT]                      ' RES_*
+    LONG    holdIncre[HOLD_COUNT]                           ' signed motor increment commanded
+    LONG    bHoldStarted[HOLD_COUNT]                        ' TRUE when start() gave a cog that reported ready
+    LONG    holdStartCog[HOLD_COUNT]                        ' start()'s return
+    LONG    holdSenseCog[HOLD_COUNT]                        ' startSenseCog()'s return
+    LONG    holdBoardRev[HOLD_COUNT]                        ' REV_* recorded at start
+    LONG    holdDeadGap[HOLD_COUNT]                         ' testGetDriveConstants() deadGap
+    LONG    holdPwmLimit[HOLD_COUNT]
+    LONG    holdDutyMin[HOLD_COUNT]
+    LONG    holdDutyMax[HOLD_COUNT]
+    LONG    holdAdcFrame[HOLD_COUNT]
+    LONG    holdFrameCnt[HOLD_COUNT]
+    LONG    bHoldAtSpeed[HOLD_COUNT]                        ' TRUE when DCS_AT_SPEED was seen
+    LONG    holdSteadyMs[HOLD_COUNT]                        ' ms from command to AT_SPEED
+    LONG    holdSteadySrc[HOLD_COUNT]                       ' pointer to RAMPED / TIMEOUT / ZEROCMD, 0 when not run
+    LONG    holdSteadyRate[HOLD_COUNT]                      ' waitForSteady()'s hall-rate at its declaration
+    LONG    bHoldStopped[HOLD_COUNT]                        ' TRUE when STOPPED was seen after the zero command
+    LONG    holdZeroSamples[HOLD_COUNT]
+    LONG    holdZeroX10[HOLD_COUNT]                         ' same-lifetime zero, mV x10
+    LONG    holdSamples[HOLD_COUNT]                         ' window samples
+    LONG    holdWinMs[HOLD_COUNT]
+    LONG    holdRawX10[HOLD_COUNT]                          ' window sense mean, mV x10
+    LONG    holdNetX10[HOLD_COUNT]                          ' raw minus the same-lifetime zero, mV x10
+    LONG    holdMinMv[HOLD_COUNT]
+    LONG    holdMaxMv[HOLD_COUNT]
+    LONG    holdAmpsMean[HOLD_COUNT]                        ' getCurrent() amps x 10_000, window mean
+    LONG    holdWattsMean[HOLD_COUNT]                       ' getCurrent() mW, window mean
+    LONG    bHoldMotionValid[HOLD_COUNT]                    ' TRUE when the window ran and the cog was up at its end
+    LONG    holdRpm[HOLD_COUNT]
+    LONG    holdTicks[HOLD_COUNT]
+    LONG    holdRateX10[HOLD_COUNT]
+    LONG    holdNegDeg[HOLD_COUNT]                          ' testGetFwdRevIndep() fwd (negative increments)
+    LONG    holdPosDeg[HOLD_COUNT]                          ' testGetFwdRevIndep() rev (positive increments)
+    LONG    holdDutyMean[HOLD_COUNT]
+    LONG    holdErrMean[HOLD_COUNT]
+    LONG    bHoldIntegValid[HOLD_COUNT]                     ' TRUE when the counts were read from a running cog
+    LONG    holdMissed[HOLD_COUNT]                          ' hall missed transitions since this hold's start
+    LONG    holdIllegal[HOLD_COUNT]                         ' illegal hall codes since this hold's start
+    LONG    holdDrvState[HOLD_COUNT]                        ' DCS_* after the stop wait
+
+PUB main() | trapCode
+'' Run the unattended characterisation: banner, preflight, every hold, then stop both wheels and
+'' end the session. This is the one exit path.
 ''
 
-    currentSide := SIDE_NONE
-    prevMouseLt := 0
-    bKeyArmed := TRUE
-    clickLogCount := 0
+' Local Variables:
+' @local trapCode - value delivered by the abort trap around runSession()
 
-    setupWindow()
+    initRun()
     emitBanner()
-    if not preflightWheels()
-        debug("! ABORTING -- see BC-PREFLIGHT above. Fix the wiring or the declared pin group,")
-        debug("!   then re-run. Running nine holds against a wheel that cannot turn wastes the session.")
-        shutdownMotors()
-        debug("DEBUG_END_SESSION")
-        return
-    runAllHolds()
-    shutdownMotors()
-
-    ' Draw the completion screen once, leave it up long enough to read, then emit the marker
-    ' and stop. The previous shape looped forever redrawing it, so --exit-on-end-session never
-    ' fired: the terminal had to be killed by hand and the log never closed cleanly.
+    emitPlan()
+    bRunReturned := FALSE
+    trapCode := \runSession()                               ' a library abort lands here, not past the stop()s
+    shutdownMotors()                                        ' EVERY path: both wheels stop()
+    emitEnd(trapCode)
+    debug("* BENCH CHAR RUN COMPLETE -- safe to disconnect")
     ' QUOTED, not backticked -- a backtick makes it a display command and the marker is missed.
-    drawIdlePanel()
-    waitms(IDLE_SHOW_MS)
     debug("DEBUG_END_SESSION")
 
-PRI setupWindow()
-' Open the PLOT window once. Screen-native Y-down (CARTESIAN 1, per ruling R2) so the zone
-' table in the file header is valid as written, and so pc_mouse's cursor_coordinate reports
-' in the same basis this file draws in -- no inversion needed for the button hit test.
-' hidexy suppresses the measurement-cursor readout; it does not disable pc_mouse.
-' Opened identically in both builds -- BENCH_NO_PANEL just never draws into it afterward.
-
-    ' LITERALS, not `(PANEL_W, PANEL_H) -- see the note above this method. These four numbers
-    ' MUST equal PANEL_W / PANEL_H / PANEL_POS_X / PANEL_POS_Y. A mismatch is detectable rather
-    ' than silent: BC-BANNER emits the CON values and pnut-term-ts logs its own WINDOW_PLACED
-    ' line with the size it actually opened, so the two can be compared in any log.
-    debug(`PLOT bench TITLE 'P2-BLDC bench characterisation' SIZE 640 400 POS 60 80 HIDEXY UPDATE)
-
-    ' Bitmap layers, loaded once. This is the crop-and-overlay technique from
-    ' DOCs/REF-NO-COMMIT/dbg-display-theory/, as demonstrated by test_dog_panel.spin2:486-492 --
-    ' a panel known to work on this bench. No CARTESIAN: that reference does not use it, crop
-    ' coordinates are image coordinates already, and pc_mouse then reports in the same basis the
-    ' reference hit-tests in. Filenames are bare, so the terminal's cwd must be src/ -- which is
-    ' what tools/bench-run.sh does.
-    debug(`bench LAYER 1 'bc_bg.bmp')
-    debug(`bench LAYER 2 'bc_caption.bmp')
-    debug(`bench LAYER 3 'bc_digits.bmp')
-    debug(`bench LAYER 4 'bc_labels.bmp')
-    debug(`bench LAYER 5 'bc_button.bmp')
-    debug(`bench CROP 1)
-    debug(`bench UPDATE)
-
-PRI emitBanner()
-' Emit BC-BANNER once. cfg_id and panel are each sourced from their own #ifdef, never from a
-' runtime test -- pnut-ts silently ignores an unknown -D, so a mistyped flag must still land
-' on the honest #else token rather than a confident lie.
-
-    lineReset()
-    lineAddText(@"BC-BANNER")
-    lineField(@"src_rev", SRC_REV)
-    lineField(@"fmt", FMT_VERSION)
-#ifdef BENCH_CFG
-    lineTextField(@"cfg_id", @sCfgBench)
-#else
-    lineTextField(@"cfg_id", @sCfgUser)
-#endif
-#ifdef BENCH_NO_PANEL
-    lineTextField(@"panel", @sPanelNo)
-#else
-    lineTextField(@"panel", @sPanelYes)
-#endif
-    lineField(@"dwell_floor_s", DWELL_FLOOR_SECS)
-    lineField(@"steady_tol_pct", STEADY_TOL_PCT)
-    lineField(@"steady_timeout_ms", STEADY_TIMEOUT_MS)
-    lineField(@"pack_nominal_mV", PACK_NOMINAL_MV)
-    lineField(@"hold_last", HOLD_LAST)
-    lineField(@"clkfreq", CLKFREQ)
-    ' The pin bases, voltage and detect mode are compile-time constants in this file rather
-    ' than reads of user.*, so that it compiles under every config block (the same rationale
-    ' test_bench_t0.spin2 documents). That makes cfg_id alone unable to say WHICH boards were
-    ' measured, so the banner states the hardware identity outright: a log is attributable to
-    ' hardware on its own evidence, never by inference from which -D was believed to be set.
-    lineField(@"left_base", LEFT_TEST_BASE)
-    lineField(@"right_base", RIGHT_TEST_BASE)
-    lineField(@"voltage_enum", TEST_VOLTAGE)
-    lineField(@"det_mode", TEST_DET_MODE)
-    lineField(@"panel_w", PANEL_W)
-    lineField(@"panel_h", PANEL_H)
-    lineField(@"qtr_incre", QTR_SPEED_INCRE)
-    lineField(@"half_incre", HALF_SPEED_INCRE)
-    lineEmit()
-
-    debug("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
-
-PRI preflightWheels() : bOk | side, before, after, moved
-' Prove each declared wheel can actually turn before committing the session to nine holds.
+PRI initRun() | holdIdx
+' Reset run-wide state and mark every hold not run.
 '
-' WHY THIS IS NOT A getBoardType() CHECK: detection is the thing this sprint is investigating,
-' so validating the configuration with it would be circular. Motion is independent -- command
-' the wheel briefly and see whether its hall ticks move. On 2026-09-11 the bench config named a
-' pin group with no board on it, and nine holds ran against it before anyone noticed.
+' @local holdIdx - HOLD_* index
+
+    bRunReturned := FALSE
+    bPreflightOk := FALSE
+    holdsRun := 0
+    repeat holdIdx from HOLD_ZERO to HOLD_COUNT - 1
+        clearHold(holdIdx)
+        holdResultCode[holdIdx] := RES_NOT_RUN
+
+PRI runSession() : bCompleted
+' Preflight, then every configured hold. A preflight miss skips the holds.
+'
+' @returns bCompleted - TRUE when every configured hold ran
+
+    bCompleted := FALSE
+    bPreflightOk := preflightWheels()
+    if bPreflightOk
+        runAllHolds()
+        bCompleted := TRUE
+    else
+        debug("! SKIPPING HOLDS -- see BC-PREFLIGHT above. Fix the wiring or the declared pin group,")
+        debug("!   then re-run. Running nine holds against a wheel that cannot turn wastes the session.")
+    bRunReturned := TRUE
+
+PRI preflightWheels() : bOk | side, startedCog, bReady, ticksBefore, ticksAfter, ticksMoved, bStopped
+' Prove each declared wheel can actually turn before committing the session to nine holds.
+' Motion, not getBoardType(), is the check: detection is under investigation this sprint. On
+' 2026-09-11 the bench config named a pin group with no board on it, and nine holds ran on it.
 '
 ' @returns bOk - TRUE when both declared wheels moved
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
-' @local before - hall ticks before the nudge
-' @local after - hall ticks after the nudge
-' @local moved - signed tick delta across the nudge
+' @local startedCog - start()'s return
+' @local bReady - TRUE when the driver reported ready
+' @local ticksBefore - hall ticks before the nudge
+' @local ticksAfter - hall ticks after the nudge
+' @local ticksMoved - signed tick delta across the nudge
+' @local bStopped - TRUE when STOPPED was seen after the nudge
 
     bOk := TRUE
     repeat side from SIDE_LEFT to SIDE_RIGHT
-        ensureSide(side)
-        before := activeHallTicks(side)
-        commandMotor(side, PREFLIGHT_INCRE)
-        waitms(PREFLIGHT_MS)
-        after := activeHallTicks(side)
-        commandMotor(side, 0)
-        waitms(PREFLIGHT_MS)
-        moved := after - before
-        debug("BC-PREFLIGHT,side,", udec_(side), ",base,", udec_((side == SIDE_LEFT) ? LEFT_TEST_BASE : RIGHT_TEST_BASE), ",ticks,", sdec_(moved), ",ok,", udec_(moved <> 0))
-        if moved == 0
+        ticksMoved := 0
+        bStopped := FALSE
+        startedCog, bReady := startSide(side)
+        if bReady
+            ticksBefore := wheelTicks(side)
+            commandMotor(side, PREFLIGHT_INCRE)
+            waitms(PREFLIGHT_MS)
+            ticksAfter := wheelTicks(side)
+            commandMotor(side, 0)
+            bStopped := waitStoppedFor(side)
+            ticksMoved := ticksAfter - ticksBefore
+        shutdownMotors()
+        emitPreflight(side, startedCog, ticksMoved, bStopped)
+        if ticksMoved == 0
             bOk := FALSE
             debug("!  wheel on that pin group did NOT turn -- wrong pin group, or wiring, or a dead board")
 
 PRI runAllHolds() | holdIdx
-' Run every configured hold in sequence, quiescent zero through HOLD_LAST.
+' Run every configured hold in sequence, quiescent zero through HOLD_LAST, printing each after
+' its wheel has stopped.
 '
 ' @local holdIdx - HOLD_* identifier of the hold currently running
 
     repeat holdIdx from HOLD_ZERO to HOLD_LAST
-        runOneHold(holdIdx)
+        measureHold(holdIdx)
+        holdsRun += 1
+        emitHoldRecords(holdIdx)
 
-PRI runOneHold(holdIdx) | side, sign, speedIncre, pCaption, pMotorTok, pDirTok, pRungTok, ...
-    motorIncre, steadySrcTok, tSteadyMs, tickRate, dwellSecs, pAdvancedByTok, earlyPresses, ...
-    pHoldOutcomeTok, iMinMv, iMaxMv, iAvgMv, sampleCount, lastDuty, lastErr, lastDrvState
-' Run one hold end to end: announce it, command the motor, wait for steady state, run the
-' interactive dwell loop, then log the sense summary and the advance record.
-'
-' @param holdIdx - HOLD_* identifier of the hold to run
-'
-' @local side - SIDE_* the hold drives, or SIDE_NONE for the quiescent-zero hold
-' @local sign - +1 forward, -1 reverse, 0 for the quiescent-zero hold
-' @local speedIncre - unsigned motor-increment magnitude for this hold's rung
-' @local pCaption - pointer to this hold's on-screen/log caption
-' @local pMotorTok - pointer to this hold's motor token (NONE/LEFT/RIGHT)
-' @local pDirTok - pointer to this hold's direction token (ZERO/FWD/REV)
-' @local pRungTok - pointer to this hold's speed-rung token (ZERO/QTR/HALF)
-' @local motorIncre - signed motor increment actually commanded (sign * speedIncre)
-' @local steadySrcTok - pointer to the steady-state source token (RAMPED/TIMEOUT/ZEROCMD)
-' @local tSteadyMs - milliseconds from command issue to steady-state declaration
-' @local tickRate - hall-tick rate observed at steady-state declaration
-' @local dwellSecs - actual seconds from steady state to acknowledgement
-' @local pAdvancedByTok - pointer to the advance-source token (MOUSE/KEY/KEYNP)
-' @local earlyPresses - ignored-click count for this hold
-' @local pHoldOutcomeTok - pointer to the hold outcome token (OK/FAULT)
-' @local iMinMv - smallest sense_i_mV sample seen during the dwell
-' @local iMaxMv - largest sense_i_mV sample seen during the dwell
-' @local iAvgMv - mean sense_i_mV sample over the dwell
-' @local sampleCount - number of sense samples averaged into iAvgMv
-' @local lastDuty - most recent duty value at dwell exit
-' @local lastErr - most recent position-error value at dwell exit
-' @local lastDrvState - most recent DCS_* driver state at dwell exit
-
-    side, sign, speedIncre, pCaption, pMotorTok, pDirTok, pRungTok := holdInfo(holdIdx)
-    emitSheet(holdIdx, pCaption)
-
-    ensureSide(side)
-    motorIncre := sign * speedIncre
-    commandMotor(side, motorIncre)
-    emitHoldEntry(holdIdx, pCaption, pMotorTok, pDirTok, pRungTok, motorIncre)
-
-    steadySrcTok, tSteadyMs, tickRate := waitForSteady(side, motorIncre)
-    emitSteady(holdIdx, steadySrcTok, tSteadyMs, tickRate)
-
-    dwellSecs, pAdvancedByTok, earlyPresses, pHoldOutcomeTok, iMinMv, iMaxMv, iAvgMv, ...
-        sampleCount, lastDuty, lastErr, lastDrvState := runDwellLoop(holdIdx, side, pCaption)
-
-    emitSense(holdIdx, iMinMv, iMaxMv, iAvgMv, sampleCount, lastDuty, lastErr, lastDrvState)
-    emitAdvance(holdIdx, dwellSecs, DWELL_FLOOR_SECS, tSteadyMs / MS_PER_SEC, pAdvancedByTok, ...
-        earlyPresses, pHoldOutcomeTok)
-
-    if pHoldOutcomeTok == @sResultFault
-        emitFault(holdIdx, dwellSecs, lastDrvState, iMaxMv)
-        clearActiveFault(side)
-        commandMotor(side, 0)
-
-PRI holdInfo(holdIdx) : side, sign, speedIncre, pCaption, pMotorTok, pDirTok, pRungTok
-' Return the fixed description of one hold. This is the single source of truth for the hold
-' sequence's per-hold shape -- side, direction, speed rung, and every token used in its log
-' records.
+PRI holdInfo(holdIdx) : side, sign, speedIncre, pCaption, pRobotTok, pRungTok
+' Return the fixed description of one hold -- the single source of truth for the sequence.
+' Motor frame throughout: LEFT + increment is robot forward, RIGHT + increment is robot reverse.
 '
 ' @param holdIdx - HOLD_* identifier to describe
 ' @returns side - SIDE_* the hold drives
-' @returns sign - +1 forward, -1 reverse, 0 for the quiescent-zero hold
+' @returns sign - +1 positive increment, -1 negative increment, 0 for the quiescent hold
 ' @returns speedIncre - unsigned motor-increment magnitude for this hold's rung
 ' @returns pCaption - pointer to this hold's caption text
-' @returns pMotorTok - pointer to this hold's motor token
-' @returns pDirTok - pointer to this hold's direction token
+' @returns pRobotTok - pointer to the robot-frame direction token (FWD / REV / NONE)
 ' @returns pRungTok - pointer to this hold's speed-rung token
 
     case holdIdx
         HOLD_ZERO:
-            side := SIDE_NONE
+            side := HOLD_ZERO_SIDE
             sign := 0
             speedIncre := 0
             pCaption := @sHold0Caption
-            pMotorTok := @sMotNone
-            pDirTok := @sDirZero
+            pRobotTok := @sRobotNone
             pRungTok := @sRungZero
         HOLD_L_FWD_QTR:
             side := SIDE_LEFT
             sign := 1
             speedIncre := QTR_SPEED_INCRE
             pCaption := @sHold1Caption
-            pMotorTok := @sMotLeft
-            pDirTok := @sDirFwd
+            pRobotTok := @sRobotFwd
             pRungTok := @sRungQtr
         HOLD_L_REV_QTR:
             side := SIDE_LEFT
             sign := -1
             speedIncre := QTR_SPEED_INCRE
             pCaption := @sHold2Caption
-            pMotorTok := @sMotLeft
-            pDirTok := @sDirRev
+            pRobotTok := @sRobotRev
             pRungTok := @sRungQtr
         HOLD_R_FWD_QTR:
             side := SIDE_RIGHT
             sign := 1
             speedIncre := QTR_SPEED_INCRE
             pCaption := @sHold3Caption
-            pMotorTok := @sMotRight
-            pDirTok := @sDirFwd
+            pRobotTok := @sRobotRev
             pRungTok := @sRungQtr
         HOLD_R_REV_QTR:
             side := SIDE_RIGHT
             sign := -1
             speedIncre := QTR_SPEED_INCRE
             pCaption := @sHold4Caption
-            pMotorTok := @sMotRight
-            pDirTok := @sDirRev
+            pRobotTok := @sRobotFwd
             pRungTok := @sRungQtr
         HOLD_L_FWD_HALF:
             side := SIDE_LEFT
             sign := 1
             speedIncre := HALF_SPEED_INCRE
             pCaption := @sHold5Caption
-            pMotorTok := @sMotLeft
-            pDirTok := @sDirFwd
+            pRobotTok := @sRobotFwd
             pRungTok := @sRungHalf
         HOLD_L_REV_HALF:
             side := SIDE_LEFT
             sign := -1
             speedIncre := HALF_SPEED_INCRE
             pCaption := @sHold6Caption
-            pMotorTok := @sMotLeft
-            pDirTok := @sDirRev
+            pRobotTok := @sRobotRev
             pRungTok := @sRungHalf
         HOLD_R_FWD_HALF:
             side := SIDE_RIGHT
             sign := 1
             speedIncre := HALF_SPEED_INCRE
             pCaption := @sHold7Caption
-            pMotorTok := @sMotRight
-            pDirTok := @sDirFwd
+            pRobotTok := @sRobotRev
             pRungTok := @sRungHalf
         other:                                               ' HOLD_R_REV_HALF
             side := SIDE_RIGHT
             sign := -1
             speedIncre := HALF_SPEED_INCRE
             pCaption := @sHold8Caption
-            pMotorTok := @sMotRight
-            pDirTok := @sDirRev
+            pRobotTok := @sRobotFwd
             pRungTok := @sRungHalf
 
-PRI ensureSide(side)
-' Bring exactly the requested wheel's driver cog up, and make certain the other wheel has no
-' driver cog at all -- the idle wheel floats by construction, never by being started and told
-' to hold. stop() on the outgoing side releases its pin claim and pinclears its driven half,
-' which is what makes the outgoing wheel's bridges float during the incoming wheel's holds.
+PRI measureHold(holdIdx) | side, sign, speedIncre, motorIncre, bWindowGo, steadyTok, steadyMs, steadyRate
+' Measure one hold end to end into the per-hold VAR longs; prints nothing. Steps: start the
+' hold's wheel with the other wheel not running, same-lifetime zero, command, AT_SPEED, rate
+' check, settle, window, zero command, stop wait, read integrity counts, stop the wheel.
 '
-' @param side - SIDE_* the caller is about to drive
-
-    if side <> currentSide
-        if currentSide == SIDE_LEFT
-            wheelL.stop()
-        elseif currentSide == SIDE_RIGHT
-            wheelR.stop()
-        currentSide := side
-        if side == SIDE_LEFT
-            wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
-            waitUntilReady(side)
-        elseif side == SIDE_RIGHT
-            wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
-            waitUntilReady(side)
-
-PRI waitUntilReady(side) | waitedMs
-' Wait for the just-started driver cog to report ready, the same pattern
-' util_char_motor.spin2:432-444 (waitUntilMotorReady) uses, bounded here rather than looped
-' forever so a cog that never comes up cannot hang the whole bench run.
+' @param holdIdx - HOLD_* identifier of the hold to measure
 '
-' @param side - SIDE_LEFT or SIDE_RIGHT, the wheel just started
+' @local side - SIDE_* the hold drives
+' @local sign - +1, -1, or 0 for the quiescent hold
+' @local speedIncre - unsigned increment magnitude
+' @local motorIncre - signed increment commanded (sign * speedIncre)
+' @local bWindowGo - TRUE when the sample window may run
+' @local steadyTok - waitForSteady()'s source token
+' @local steadyMs - waitForSteady()'s elapsed ms (not recorded; AT_SPEED time is)
+' @local steadyRate - waitForSteady()'s hall rate at its declaration
+
+    side, sign, speedIncre, _, _, _ := holdInfo(holdIdx)
+    clearHold(holdIdx)
+    motorIncre := sign * speedIncre
+    holdIncre[holdIdx] := motorIncre
+    bWindowGo := FALSE
+    startHoldWheel(holdIdx, side)
+    if bHoldStarted[holdIdx]
+        measureZero(holdIdx, side)
+        if motorIncre == 0
+            steadyTok, steadyMs, steadyRate := waitForSteady(side, 0)
+            holdSteadySrc[holdIdx] := steadyTok
+            holdSteadyRate[holdIdx] := steadyRate
+            bWindowGo := (holdResultCode[holdIdx] == RES_OK)
+        elseif holdResultCode[holdIdx] == RES_OK
+            commandMotor(side, motorIncre)
+            if waitAtSpeed(holdIdx, side)
+                steadyTok, steadyMs, steadyRate := waitForSteady(side, motorIncre)
+                holdSteadySrc[holdIdx] := steadyTok
+                holdSteadyRate[holdIdx] := steadyRate
+                ' a rate-check timeout is recorded as steady_src TIMEOUT, never as the hold's result:
+                '  AT_SPEED (the driver's own ramp-complete state) has already been seen, and at
+                '  quarter speed one STEADY_SAMPLE_MS sample is ~25 ticks, so +/-1 tick of
+                '  quantisation is already 4% against STEADY_TOL_PCT 5 -- the hold is measured either way
+                bWindowGo := settleHold(holdIdx, side)
+        if bWindowGo
+            sampleWindow(holdIdx, side)
+        if wheelCogUp(side)
+            commandMotor(side, 0)
+            bHoldStopped[holdIdx] := waitStoppedFor(side)
+            if bHoldStopped[holdIdx] == FALSE
+                setHoldResult(holdIdx, RES_STOP_TIMEOUT)
+        if wheelCogUp(side)
+            holdMissed[holdIdx], holdIllegal[holdIdx] := wheelIntegrity(side)
+            bHoldIntegValid[holdIdx] := TRUE
+            holdDrvState[holdIdx] := wheelDrvState(side)
+    shutdownMotors()
+
+PRI clearHold(holdIdx)
+' Reset one hold's record to its not-measured state, result OK.
 '
-' @local waitedMs - milliseconds waited so far
+' @param holdIdx - HOLD_* index
 
-    waitedMs := 0
-    repeat until isSideReady(side) or (waitedMs >= STEADY_TIMEOUT_MS)
-        waitms(2)
-        waitedMs += 2
+    holdResultCode[holdIdx] := RES_OK
+    holdIncre[holdIdx] := 0
+    bHoldStarted[holdIdx] := FALSE
+    holdStartCog[holdIdx] := -1
+    holdSenseCog[holdIdx] := -1
+    holdBoardRev[holdIdx] := wheelL.REV_Unknown
+    holdDeadGap[holdIdx] := 0
+    holdPwmLimit[holdIdx] := 0
+    holdDutyMin[holdIdx] := 0
+    holdDutyMax[holdIdx] := 0
+    holdAdcFrame[holdIdx] := 0
+    holdFrameCnt[holdIdx] := 0
+    bHoldAtSpeed[holdIdx] := FALSE
+    holdSteadyMs[holdIdx] := 0
+    holdSteadySrc[holdIdx] := 0
+    holdSteadyRate[holdIdx] := 0
+    bHoldStopped[holdIdx] := FALSE
+    holdZeroSamples[holdIdx] := 0
+    holdZeroX10[holdIdx] := 0
+    holdSamples[holdIdx] := 0
+    holdWinMs[holdIdx] := 0
+    holdRawX10[holdIdx] := 0
+    holdNetX10[holdIdx] := 0
+    holdMinMv[holdIdx] := 0
+    holdMaxMv[holdIdx] := 0
+    holdAmpsMean[holdIdx] := 0
+    holdWattsMean[holdIdx] := 0
+    bHoldMotionValid[holdIdx] := FALSE
+    holdRpm[holdIdx] := 0
+    holdTicks[holdIdx] := 0
+    holdRateX10[holdIdx] := 0
+    holdNegDeg[holdIdx] := 0
+    holdPosDeg[holdIdx] := 0
+    holdDutyMean[holdIdx] := 0
+    holdErrMean[holdIdx] := 0
+    bHoldIntegValid[holdIdx] := FALSE
+    holdMissed[holdIdx] := 0
+    holdIllegal[holdIdx] := 0
+    holdDrvState[holdIdx] := wheelL.DCS_Unknown
 
-PRI isSideReady(side) : bReady
-' Report whether the named wheel's driver cog is ready.
+PRI setHoldResult(holdIdx, resCode)
+' Record a hold result: the first cause is kept, but a fault or a lost cog always overwrites,
+' because either one invalidates whatever timeout came before it.
+'
+' @param holdIdx - HOLD_* index
+' @param resCode - RES_* cause
+
+    if (holdResultCode[holdIdx] == RES_OK) or (resCode == RES_FAULT) or (resCode == RES_NO_COG)
+        holdResultCode[holdIdx] := resCode
+
+PRI startHoldWheel(holdIdx, side) | startedCog, bReady
+' Start the hold's wheel with the other wheel not running, start its sense task, and record the
+' start-time readings: start() return, detected board revision and the drive constants.
+'
+' @param holdIdx - HOLD_* index
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local startedCog - start()'s return
+' @local bReady - TRUE when the driver reported ready
+
+    startedCog, bReady := startSide(side)
+    holdStartCog[holdIdx] := startedCog
+    if (startedCog < 0) or (startedCog > MAX_COG_ID)
+        setHoldResult(holdIdx, RES_NO_COG)
+    elseif bReady == FALSE
+        setHoldResult(holdIdx, RES_READY_TIMEOUT)
+    else
+        bHoldStarted[holdIdx] := TRUE
+        holdSenseCog[holdIdx] := wheelStartSense(side)      ' rpm is maintained only by this task
+        holdBoardRev[holdIdx] := wheelBoardRev(side)
+        holdDeadGap[holdIdx], holdPwmLimit[holdIdx], holdDutyMin[holdIdx], holdDutyMax[holdIdx], ...
+            holdAdcFrame[holdIdx], holdFrameCnt[holdIdx] := wheelDriveConstants(side)
+
+PRI startSide(side) : startedCog, bReady
+' Stop both wheels, then start only the named wheel and wait (bounded) for it to report ready.
+' stop() on a never-started instance touches no pin (isp_bldc_motor stop() guards its pinclear
+' on this instance's own pin claim).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @returns bReady - TRUE when that wheel's isReady() is TRUE
+' @returns startedCog - start()'s return: cog id 0..7, or -1
+' @returns bReady - TRUE when the started driver reported ready within READY_TIMEOUT_MS
 
+    shutdownMotors()
+    startedCog := -1
+    bReady := FALSE
     if side == SIDE_RIGHT
-        bReady := wheelR.isReady()
+        startedCog := wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
     else
-        bReady := wheelL.isReady()
+        startedCog := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+    if startedCog >= 0
+        bReady := waitUntilReady(side)
 
-PRI commandMotor(side, motorIncre)
-' Command a signed motor increment directly -- the TESTING USE raw-increment path, never
-' driveAtPower()'s [-100..100] mapping, and never followed by stopAfterTime(): the motor
-' holds at this increment until explicitly recommanded.
+PRI waitUntilReady(side) : bReady | startMs
+' Wait, bounded by READY_TIMEOUT_MS, for the just-started driver cog to report ready.
 '
-' @param side - SIDE_* to command; SIDE_NONE commands nothing (both wheels stay unstarted)
-' @param motorIncre - signed motor increment to drive at
-
-    if side == SIDE_LEFT
-        wheelL.testDriveAtMotorIncrement(motorIncre)
-    elseif side == SIDE_RIGHT
-        wheelR.testDriveAtMotorIncrement(motorIncre)
-
-PRI activeHallTicks(side) : nPos
-' Read raw hall ticks from the wheel currently under test. SIDE_NONE and SIDE_LEFT both read
-' wheelL, which for SIDE_NONE (never started) legitimately returns 0.
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bReady - TRUE when ready was seen
 '
-' @param side - SIDE_* under test
-' @returns nPos - raw hall-tick position from getRawHallTicks()
+' @local startMs - getms() when the wait began
 
-    if side == SIDE_RIGHT
-        nPos := wheelR.getRawHallTicks()
-    else
-        nPos := wheelL.getRawHallTicks()
+    bReady := FALSE
+    startMs := getms()
+    repeat
+        if wheelIsReady(side)
+            bReady := TRUE
+            quit
+        if (getms() - startMs) >= READY_TIMEOUT_MS
+            quit
+        waitms(SAMPLE_MS)
 
-PRI activeTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault
-' Snapshot the wheel currently under test's per-cycle driver status.
+PRI measureZero(holdIdx, side) | sampleIdx, nDuty, nErr, nSenseI, eDrvrState, bDidFault
+' Read the current-sense zero at zero command, in this hold's own driver lifetime (PL-32).
+' No debug() and no debug-emitting library call inside this loop.
 '
-' @param side - SIDE_* under test
-' @returns nDuty - latest duty value
-' @returns nErr - latest position-error value
-' @returns nSenseI - latest current-sense reading, in mV, raw and unconverted
-' @returns eDrvrState - DCS_* driver state
-' @returns bDidFault - TRUE when the driver has faulted
-
-    if side == SIDE_RIGHT
-        nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelR.testGetTelemetry()
-    else
-        nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelL.testGetTelemetry()
-
-PRI activeIsFaulted(side) : bFaulted
-' Report whether the wheel currently under test has signalled a fault.
+' @param holdIdx - HOLD_* index
+' @param side - SIDE_LEFT or SIDE_RIGHT
 '
-' @param side - SIDE_* under test
-' @returns bFaulted - TRUE when that wheel's isFaultSignal() is TRUE
+' @local sampleIdx - sample counter
+' @local nDuty - duty sample (unused here)
+' @local nErr - error sample (unused here)
+' @local nSenseI - sense_i_mV sample
+' @local eDrvrState - DCS_* sample
+' @local bDidFault - fault sample
 
-    if side == SIDE_RIGHT
-        bFaulted := wheelR.isFaultSignal()
-    else
-        bFaulted := wheelL.isFaultSignal()
+    accReset(ACC_ZERO)
+    repeat sampleIdx from 1 to ZERO_SAMPLES
+        waitms(SAMPLE_MS)
+        if wheelCogUp(side) == FALSE
+            setHoldResult(holdIdx, RES_NO_COG)
+            quit
+        nDuty, nErr, nSenseI, eDrvrState, bDidFault := wheelTelemetry(side)
+        if bDidFault or (eDrvrState == wheelL.DCS_FAULTED)
+            setHoldResult(holdIdx, RES_FAULT)
+            quit
+        accAdd(ACC_ZERO, nSenseI)
+    holdZeroSamples[holdIdx] := accCount[ACC_ZERO]
+    holdZeroX10[holdIdx] := accMeanX10(ACC_ZERO)
 
-PRI clearActiveFault(side)
-' Clear a fault on the wheel currently under test, the same pattern
-' util_char_motor.spin2:324-336 (clearFault) uses, without the motion-jog recovery step --
-' this harness never needs to recover a working offset, it only needs the fault flag cleared
-' so the run can move on to the next hold.
+PRI waitAtSpeed(holdIdx, side) : bAtSpeed | startMs, eDrvrState, bDidFault, nDuty, nErr, nSenseI
+' Wait, bounded by ATSPEED_TIMEOUT_MS, for DCS_AT_SPEED after a motion command.
 '
-' @param side - SIDE_* under test
+' @param holdIdx - HOLD_* index
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bAtSpeed - TRUE when AT_SPEED was seen
+'
+' @local startMs - getms() at the wait start
+' @local eDrvrState - DCS_* sample
+' @local bDidFault - fault sample
+' @local nDuty - duty sample (unused here)
+' @local nErr - error sample (unused here)
+' @local nSenseI - sense sample (unused here)
 
-    if side == SIDE_RIGHT
-        if wheelR.isFaultSignal()
-            wheelR.testResetFault()
-    else
-        if wheelL.isFaultSignal()
-            wheelL.testResetFault()
+    bAtSpeed := FALSE
+    startMs := getms()
+    repeat
+        waitms(SAMPLE_MS)
+        if wheelCogUp(side) == FALSE
+            setHoldResult(holdIdx, RES_NO_COG)
+            quit
+        nDuty, nErr, nSenseI, eDrvrState, bDidFault := wheelTelemetry(side)
+        if bDidFault or (eDrvrState == wheelL.DCS_FAULTED)
+            setHoldResult(holdIdx, RES_FAULT)
+            quit
+        if eDrvrState == wheelL.DCS_AT_SPEED
+            bAtSpeed := TRUE
+            quit
+        if (getms() - startMs) >= ATSPEED_TIMEOUT_MS
+            setHoldResult(holdIdx, RES_STEADY_TIMEOUT)
+            quit
+    holdSteadyMs[holdIdx] := getms() - startMs
+    bHoldAtSpeed[holdIdx] := bAtSpeed
 
-PRI shutdownMotors()
-' Bring both wheels to a safe floating stop at the end of the run.
+PRI settleHold(holdIdx, side) : bSettled | startMs, eDrvrState, bDidFault, nDuty, nErr, nSenseI
+' Hold SETTLE_MS at the commanded increment, polling for a fault or a lost cog.
+'
+' @param holdIdx - HOLD_* index
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bSettled - TRUE when the settle completed without a fault or lost cog
+'
+' @local startMs - getms() at settle start
+' @local eDrvrState - DCS_* sample
+' @local bDidFault - fault sample
+' @local nDuty - duty sample (unused here)
+' @local nErr - error sample (unused here)
+' @local nSenseI - sense sample (unused here)
 
-    if currentSide == SIDE_LEFT
-        wheelL.stop()
-    elseif currentSide == SIDE_RIGHT
-        wheelR.stop()
-    currentSide := SIDE_NONE
+    bSettled := TRUE
+    startMs := getms()
+    repeat
+        waitms(SAMPLE_MS)
+        if wheelCogUp(side) == FALSE
+            setHoldResult(holdIdx, RES_NO_COG)
+            bSettled := FALSE
+            quit
+        nDuty, nErr, nSenseI, eDrvrState, bDidFault := wheelTelemetry(side)
+        if bDidFault or (eDrvrState == wheelL.DCS_FAULTED)
+            setHoldResult(holdIdx, RES_FAULT)
+            bSettled := FALSE
+            quit
+        if (getms() - startMs) >= SETTLE_MS
+            quit
+
+PRI sampleWindow(holdIdx, side) | startMs, startTicks, endTicks, nDuty, nErr, nSenseI, eDrvrState, ...
+    bDidFault, nAmps, nWatts, rateTicks
+' Sample every SAMPLE_MS for WINDOW_MS into the running means, then fill the hold's window
+' fields. testGetRpm() is read at the window's end: at least SETTLE_MS + WINDOW_MS after
+' AT_SPEED, past the ~1 s the sense task's rpm window needs. No debug() inside the loop, and
+' every library call in it (testGetMotorCog, testGetTelemetry, getCurrent) emits none.
+'
+' @param holdIdx - HOLD_* index
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local startMs - getms() at window start
+' @local startTicks - hall ticks at window start
+' @local endTicks - hall ticks at window end
+' @local nDuty - duty sample
+' @local nErr - position-error sample
+' @local nSenseI - sense_i_mV sample
+' @local eDrvrState - DCS_* sample
+' @local bDidFault - fault sample
+' @local nAmps - getCurrent() amps x 10_000 sample
+' @local nWatts - getCurrent() mW sample
+' @local rateTicks - tick count clamped for the rate arithmetic
+
+    accReset(ACC_SENSE)
+    accReset(ACC_AMPS)
+    accReset(ACC_WATTS)
+    accReset(ACC_DUTY)
+    accReset(ACC_ERR)
+    startTicks := wheelTicks(side)
+    startMs := getms()
+    repeat
+        waitms(SAMPLE_MS)
+        if wheelCogUp(side) == FALSE
+            setHoldResult(holdIdx, RES_NO_COG)
+            quit
+        nDuty, nErr, nSenseI, eDrvrState, bDidFault := wheelTelemetry(side)
+        if bDidFault or (eDrvrState == wheelL.DCS_FAULTED)
+            setHoldResult(holdIdx, RES_FAULT)
+            quit
+        nAmps, nWatts := wheelCurrent(side)
+        accAdd(ACC_SENSE, nSenseI)
+        accAdd(ACC_AMPS, nAmps)
+        accAdd(ACC_WATTS, nWatts)
+        accAdd(ACC_DUTY, nDuty)
+        accAdd(ACC_ERR, nErr)
+        if (getms() - startMs) >= WINDOW_MS
+            quit
+    holdWinMs[holdIdx] := getms() - startMs
+    holdSamples[holdIdx] := accCount[ACC_SENSE]
+    if accCount[ACC_SENSE] > 0
+        holdRawX10[holdIdx] := accMeanX10(ACC_SENSE)
+        holdMinMv[holdIdx] := accMin[ACC_SENSE]
+        holdMaxMv[holdIdx] := accMax[ACC_SENSE]
+        holdAmpsMean[holdIdx] := accMean[ACC_AMPS]
+        holdWattsMean[holdIdx] := accMean[ACC_WATTS]
+        holdDutyMean[holdIdx] := accMean[ACC_DUTY]
+        holdErrMean[holdIdx] := accMean[ACC_ERR]
+        ' both operands are clamped to LIM_BIG first, so the difference is within +/-2e9 < POSX
+        holdNetX10[holdIdx] := ((holdRawX10[holdIdx] #> -LIM_BIG) <# LIM_BIG) - ((holdZeroX10[holdIdx] #> -LIM_BIG) <# LIM_BIG)
+        if wheelCogUp(side)
+            endTicks := wheelTicks(side)
+            holdTicks[holdIdx] := abs(endTicks - startTicks)
+            rateTicks := holdTicks[holdIdx] <# RATE_TICKS_CAP
+            if holdWinMs[holdIdx] > 0
+                holdRateX10[holdIdx] := (rateTicks * RATE_X10_SCALE) / holdWinMs[holdIdx]
+            holdRpm[holdIdx] := wheelRpm(side)
+            holdNegDeg[holdIdx], holdPosDeg[holdIdx] := wheelOffsets(side)
+            bHoldMotionValid[holdIdx] := TRUE
+
+PRI waitStoppedFor(side) : bStopped | startMs
+' Wait, bounded by STOP_TIMEOUT_MS, for the named wheel's running driver to report STOPPED.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bStopped - TRUE when STOPPED was seen
+'
+' @local startMs - getms() when the wait began
+
+    bStopped := FALSE
+    startMs := getms()
+    repeat
+        if wheelCogUp(side) == FALSE
+            quit
+        if wheelIsStopped(side)
+            bStopped := TRUE
+            quit
+        if (getms() - startMs) >= STOP_TIMEOUT_MS
+            quit
+        waitms(SAMPLE_MS)
 
 PRI waitForSteady(side, cmdIncre) : steadySrcTok, elapsedMs, tickRate | prevPos, curPos, ...
     prevRate, curRate, consecCount, bTimedOut, diffPct
@@ -733,7 +880,7 @@ PRI waitForSteady(side, cmdIncre) : steadySrcTok, elapsedMs, tickRate | prevPos,
         elapsedMs := 0
         tickRate := 0
     else
-        prevPos := activeHallTicks(side)
+        prevPos := wheelTicks(side)
         prevRate := -1
         consecCount := 0
         elapsedMs := 0
@@ -741,7 +888,7 @@ PRI waitForSteady(side, cmdIncre) : steadySrcTok, elapsedMs, tickRate | prevPos,
         repeat
             waitms(STEADY_SAMPLE_MS)
             elapsedMs += STEADY_SAMPLE_MS
-            curPos := activeHallTicks(side)
+            curPos := wheelTicks(side)
             curRate := absValue(curPos - prevPos) * (MS_PER_SEC / STEADY_SAMPLE_MS)
             prevPos := curPos
             if prevRate == -1
@@ -765,444 +912,600 @@ PRI absValue(signedVal) : magnitude
 
     magnitude := (signedVal < 0) ? (0 - signedVal) : signedVal
 
-PRI runDwellLoop(holdIdx, side, pCaption) : dwellSecs, pAdvancedByTok, earlyPresses, ...
-    pHoldOutcomeTok, iMinMv, iMaxMv, iAvgMv, sampleCount, lastDuty, lastErr, lastDrvState | ...
-    elapsedDwellMs, bGateOpen, bAdvanceRequested, btnState, ackUntilMs, flashUntilMs, ...
-    nextPanelMs, nextSenseMs, senseSumMv, senseDisplayMv, remainMs, counterVal, ...
-    bCounterFlash, barPct, curSenseMv, curDuty, curErr, curDrvState, bFaulted, keyEvent, ...
-    mouseClickNow
-
-' Poll mouse, keyboard, sense telemetry and the fault flag every DWELL_POLL_MS until the
-' operator's acknowledgement is both requested and permitted, or the driver faults. The dwell
-' clock (elapsedDwellMs) starts at 0 here -- at steady state, not at the prompt (BC-HOLD was
-' already emitted by the caller before waitForSteady() ran).
+PRI accReset(accIdx)
+' Empty one running mean.
 '
-' @param holdIdx - HOLD_* identifier of the hold in progress
-' @param side - SIDE_* under test
-' @param pCaption - pointer to this hold's caption text
-' @returns dwellSecs - actual seconds from steady state to acknowledgement (or to fault)
-' @returns pAdvancedByTok - pointer to MOUSE / KEY / KEYNP, meaningless when pHoldOutcomeTok
-'                            is FAULT
-' @returns earlyPresses - ignored-click/keypress count during this hold's inert period
-' @returns pHoldOutcomeTok - pointer to OK or FAULT
-' @returns iMinMv - smallest sense_i_mV sample seen
-' @returns iMaxMv - largest sense_i_mV sample seen
-' @returns iAvgMv - mean sense_i_mV sample over the dwell
-' @returns sampleCount - number of sense samples averaged into iAvgMv
-' @returns lastDuty - most recent duty value at exit
-' @returns lastErr - most recent position-error value at exit
-' @returns lastDrvState - most recent DCS_* driver state at exit
+' @param accIdx - ACC_* slot
+
+    accMean[accIdx] := 0
+    accRem[accIdx] := 0
+    accCount[accIdx] := 0
+    accMin[accIdx] := POSX
+    accMax[accIdx] := NEGX
+
+PRI accAdd(accIdx, sampleVal) | clampedVal, newCount, deltaVal, quotVal, remVal
+' Add one sample to a running mean without ever storing the sum (PL-20; bound in the CON block
+' above). Floor division is built from truncating / by correcting a negative remainder, so the
+' result does not depend on whether / truncates or floors.
 '
-' @local elapsedDwellMs - software-accumulated milliseconds since steady state (never a raw
-'                          CNT delta -- a 25+ second interval exceeds the signed-CNT-delta
-'                          safe window at 270 MHz)
-' @local bGateOpen - the ONE place in this file the dwell floor is computed
-' @local bAdvanceRequested - set by the mouse path or the keyboard path, never by the gate
-' @local btnState - PNL_BTN_INERT / PNL_BTN_LIVE / PNL_BTN_ACK for this frame
-' @local ackUntilMs - elapsedDwellMs value at which the ACK visual feedback ends
-' @local flashUntilMs - elapsedDwellMs value at which an early-press counter flash ends
-' @local nextPanelMs - elapsedDwellMs value at which the panel is next redrawn
-' @local nextSenseMs - elapsedDwellMs value at which the on-screen sense mean next updates
-' @local senseSumMv - running sum of sense_i_mV samples this hold
-' @local senseDisplayMv - the on-screen sense mV value, updated at SENSE_MEAN_UPDATE_MS
-' @local remainMs - milliseconds remaining to the dwell floor, for the countdown display
-' @local counterVal - the large on-screen digits: seconds remaining or seconds held
-' @local bCounterFlash - TRUE while an early-press flash is active
-' @local barPct - dwell-bar fill percentage, 0..100
-' @local curSenseMv - this poll's raw sense_i_mV sample
-' @local curDuty - this poll's duty sample
-' @local curErr - this poll's position-error sample
-' @local curDrvState - this poll's DCS_* driver state sample
-' @local bFaulted - this poll's fault-signal sample
-' @local keyEvent - TRUE when this poll saw a new, armed G/g keypress
-' @local mouseClickNow - TRUE when this poll saw a new left-button press edge
-
-    elapsedDwellMs := 0
-    bAdvanceRequested := FALSE
-    pAdvancedByTok := @sAdvKeynp
-    earlyPresses := 0
-    ackUntilMs := 0
-    flashUntilMs := 0
-    nextPanelMs := 0
-    nextSenseMs := 0
-    senseSumMv := 0
-    senseDisplayMv := 0
-    sampleCount := 0
-    iMinMv := POSX
-    iMaxMv := NEGX
-    lastDuty := 0
-    lastErr := 0
-    lastDrvState := 0
-    pHoldOutcomeTok := @sResultOk
-
-    repeat
-        waitms(DWELL_POLL_MS)
-        elapsedDwellMs += DWELL_POLL_MS
-
-        curDuty, curErr, curSenseMv, curDrvState, bFaulted := activeTelemetry(side)
-        lastDuty := curDuty
-        lastErr := curErr
-        lastDrvState := curDrvState
-        sampleCount += 1
-        senseSumMv += curSenseMv
-        iMinMv := iMinMv <# curSenseMv
-        iMaxMv := iMaxMv #> curSenseMv
-
-        ' -- THE ONE PLACE THE DWELL FLOOR IS COMPUTED --
-        bGateOpen := (elapsedDwellMs >= (DWELL_FLOOR_SECS * MS_PER_SEC)) ? TRUE : FALSE
-
-        keyEvent := pollKeyEdge()
-        mouseClickNow := FALSE
-#ifndef BENCH_NO_PANEL
-        mouseClickNow := pollMouseEdge(holdIdx)
-#endif
-
-        if bFaulted
-            pHoldOutcomeTok := @sResultFault
-        elseif mouseClickNow and buttonHit(mouseXpos, mouseYpos)
-            if bGateOpen and (bAdvanceRequested == FALSE)
-                bAdvanceRequested := TRUE
-                pAdvancedByTok := @sAdvMouse
-                ackUntilMs := elapsedDwellMs + BTN_ACK_HOLD_MS
-            elseif bGateOpen == FALSE
-                earlyPresses += 1
-                flashUntilMs := elapsedDwellMs + EARLY_FLASH_MS
-                emitEarly(holdIdx, (DWELL_FLOOR_SECS * MS_PER_SEC - elapsedDwellMs) / MS_PER_SEC, @sAdvMouse)
-        elseif keyEvent
-            if bGateOpen and (bAdvanceRequested == FALSE)
-                bAdvanceRequested := TRUE
-#ifdef BENCH_NO_PANEL
-                pAdvancedByTok := @sAdvKeynp
-#else
-                pAdvancedByTok := @sAdvKey
-#endif
-                ackUntilMs := elapsedDwellMs + BTN_ACK_HOLD_MS
-            elseif bGateOpen == FALSE
-                earlyPresses += 1
-                flashUntilMs := elapsedDwellMs + EARLY_FLASH_MS
-                emitEarly(holdIdx, (DWELL_FLOOR_SECS * MS_PER_SEC - elapsedDwellMs) / MS_PER_SEC, @sAdvKey)
-
-        if elapsedDwellMs >= nextSenseMs
-            senseDisplayMv := (sampleCount > 0) ? (senseSumMv / sampleCount) : 0
-            nextSenseMs += SENSE_MEAN_UPDATE_MS
-
-        if elapsedDwellMs >= nextPanelMs
-            bCounterFlash := (elapsedDwellMs <= flashUntilMs)
-            if bGateOpen == FALSE
-                remainMs := (DWELL_FLOOR_SECS * MS_PER_SEC) - elapsedDwellMs
-                counterVal := (remainMs + MS_PER_SEC - 1) / MS_PER_SEC
-                barPct := (elapsedDwellMs * 100) / (DWELL_FLOOR_SECS * MS_PER_SEC)
-                btnState := PNL_BTN_INERT
-            else
-                counterVal := elapsedDwellMs / MS_PER_SEC
-                barPct := 100
-                btnState := (elapsedDwellMs <= ackUntilMs) ? PNL_BTN_ACK : PNL_BTN_LIVE
-            drawPanel(holdIdx, pCaption, counterVal, bCounterFlash, barPct, btnState, ...
-                statusToken(side, bFaulted), senseDisplayMv)
-            nextPanelMs += PANEL_REDRAW_MS
-
-    until (pHoldOutcomeTok == @sResultFault) or (bGateOpen and bAdvanceRequested)
-
-    if pHoldOutcomeTok == @sResultOk
-        waitms(BTN_ACK_HOLD_MS)
-
-    dwellSecs := elapsedDwellMs / MS_PER_SEC
-    iAvgMv := (sampleCount > 0) ? (senseSumMv / sampleCount) : 0
-
-PRI statusToken(side, bFaulted) : pStatusTok
-' Choose the status-chip token for the current frame.
+' @param accIdx - ACC_* slot
+' @param sampleVal - the sample
 '
-' @param side - SIDE_* under test
-' @param bFaulted - this frame's fault-signal sample
-' @returns pStatusTok - pointer to ZERO COMMAND / MOTOR RUNNING / DRIVER FAULT
+' @local clampedVal - sample clamped to +/-ACC_SAMPLE_LIMIT
+' @local newCount - count including this sample
+' @local deltaVal - remainder + sample - mean, |deltaVal| < 1_100_000_000
+' @local quotVal - deltaVal / newCount, corrected to a floor
+' @local remVal - deltaVal - quotVal * newCount, corrected into 0..newCount-1
 
-    if bFaulted
-        pStatusTok := @sStatFault
-    elseif side == SIDE_NONE
-        pStatusTok := @sStatZero
+    clampedVal := (sampleVal #> (0 - ACC_SAMPLE_LIMIT)) <# ACC_SAMPLE_LIMIT
+    if accCount[accIdx] < ACC_COUNT_CAP
+        newCount := accCount[accIdx] + 1
+        deltaVal := accRem[accIdx] + clampedVal - accMean[accIdx]
+        quotVal := deltaVal / newCount
+        remVal := deltaVal - (quotVal * newCount)
+        if remVal < 0
+            remVal += newCount
+            quotVal -= 1
+        accMean[accIdx] += quotVal
+        accRem[accIdx] := remVal
+        accCount[accIdx] := newCount
+        accMin[accIdx] := accMin[accIdx] <# clampedVal
+        accMax[accIdx] := accMax[accIdx] #> clampedVal
+
+PRI accMeanX10(accIdx) : meanX10 | boundedMean
+' Return a running mean x10, truncated toward negative infinity; 0 when empty.
+'
+' @param accIdx - ACC_* slot
+' @returns meanX10 - mean x10
+'
+' @local boundedMean - floor mean clamped to +/-ACC_MEAN_X10_LIMIT so the x10 cannot overflow
+
+    meanX10 := 0
+    if accCount[accIdx] > 0
+        boundedMean := (accMean[accIdx] #> (0 - ACC_MEAN_X10_LIMIT)) <# ACC_MEAN_X10_LIMIT
+        meanX10 := (boundedMean * X10) + ((accRem[accIdx] * X10) / accCount[accIdx])
+
+PRI commandMotor(side, motorIncre) | safeIncre
+' Command a signed motor increment -- the TESTING USE raw-increment path, never followed by
+' stopAfterTime(). Anything beyond DRIVE_CEILING_INCRE is commanded as zero.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed motor increment to drive at
+'
+' @local safeIncre - increment actually commanded
+
+    safeIncre := motorIncre
+    if abs(motorIncre) > DRIVE_CEILING_INCRE
+        safeIncre := 0
+    if side == SIDE_RIGHT
+        wheelR.testDriveAtMotorIncrement(safeIncre)
+    elseif side == SIDE_LEFT
+        wheelL.testDriveAtMotorIncrement(safeIncre)
+
+PRI shutdownMotors()
+' Stop both wheels unconditionally. stop() on a never-started instance touches no pin.
+
+    wheelL.stop()
+    wheelR.stop()
+
+PRI wheelCogUp(side) : bRunning
+' Report whether the named wheel has a running driver cog (stop() zeroes motorCog).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bRunning - TRUE when the driver cog is running
+
+    if side == SIDE_RIGHT
+        bRunning := (wheelR.testGetMotorCog() <> 0)
     else
-        pStatusTok := @sStatRunning
+        bRunning := (wheelL.testGetMotorCog() <> 0)
 
-PRI pollKeyEdge() : bPressed
-' Read pc_key and edge-detect a G/g press. pc_key(@keyCode) is always the LAST command in its
-' own debug() call, per the panel's input-reading rule. The latch auto-clears after about
-' 100 ms; bKeyArmed requires a 0 reading before the next press can register, so a single
-' physical keydown cannot be read as two presses while its latch is still set.
+PRI wheelIsReady(side) : bReady
+' Report whether the named wheel's running driver reports ready.
 '
-' @returns bPressed - TRUE on a newly-armed G/g press this poll
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bReady - TRUE when running and ready
 
-    debug(`bench `pc_key(@keyCode))                        ' own backtick -- see test_dog_panel.spin2:204
-    bPressed := FALSE
-    if keyCode == 0
-        bKeyArmed := TRUE
-    elseif ((keyCode == "G") or (keyCode == "g")) and bKeyArmed
-        bPressed := TRUE
-        bKeyArmed := FALSE
+    bReady := FALSE
+    if wheelCogUp(side)
+        if side == SIDE_RIGHT
+            bReady := wheelR.isReady()
+        else
+            bReady := wheelL.isReady()
 
-#ifndef BENCH_NO_PANEL
-PRI pollMouseEdge(holdIdx) : bClicked | rawX, rawY, pInZoneTok
-' Read pc_mouse and edge-detect a left-button press. pc_mouse(@mouseXpos) is always the LAST
-' command in its own debug() call. Buttons read -1 when pressed; mid/right are read and
-' discarded so a stray right-click can never advance a hold. The first MAX_CLICK_LOG clicks
-' of the whole run are logged raw, proving the CARTESIAN 1 coordinate basis empirically
-' rather than merely asserting it.
+PRI wheelIsStopped(side) : bStopped
+' Report whether the named wheel's running driver reports STOPPED.
 '
-' @param holdIdx - HOLD_* identifier of the hold in progress
-' @returns bClicked - TRUE on a newly-pressed left button this poll
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bStopped - TRUE when running and STOPPED
+
+    bStopped := FALSE
+    if wheelCogUp(side)
+        if side == SIDE_RIGHT
+            bStopped := wheelR.isStopped()
+        else
+            bStopped := wheelL.isStopped()
+
+PRI wheelDrvState(side) : eDrvrState
+' Driver state of the named wheel, DCS_Unknown when no cog is running.
 '
-' @local rawX - this poll's raw mouseXpos, captured before any other read can change it
-' @local rawY - this poll's raw mouseYpos
-' @local pInZoneTok - pointer to "1" or "0", whether the click landed in the button zone
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eDrvrState - DCS_* state
 
-    debug(`bench `pc_mouse(@mouseXpos))                     ' own backtick -- see test_dog_panel.spin2:215
-    bClicked := (mouseLtButton == -1) and (prevMouseLt <> -1)
-    prevMouseLt := mouseLtButton
+    eDrvrState := wheelL.DCS_Unknown
+    if wheelCogUp(side)
+        if side == SIDE_RIGHT
+            eDrvrState := wheelR.getDriverState()
+        else
+            eDrvrState := wheelL.getDriverState()
 
-    if bClicked and (clickLogCount < MAX_CLICK_LOG)
-        rawX := mouseXpos
-        rawY := mouseYpos
-        pInZoneTok := buttonHit(rawX, rawY) ? @sInZoneYes : @sInZoneNo
-        emitClick(holdIdx, rawX, rawY, pInZoneTok)
-        clickLogCount += 1
-#endif
-
-PRI buttonHit(px, py) : bInside
-' Hit-test a point against the button zone, in the same CARTESIAN 1 screen-native basis this
-' file draws in -- no inversion needed, per ruling R2.
+PRI wheelTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault
+' Snapshot the named wheel's per-cycle driver status. Callers check wheelCogUp() first (PL-21).
 '
-' @param px - x coordinate to test
-' @param py - y coordinate to test
-' @returns bInside - TRUE when (px, py) falls inside the button rectangle
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nDuty - latest duty value
+' @returns nErr - latest position-error value
+' @returns nSenseI - latest sense_i_mV, true millivolts
+' @returns eDrvrState - DCS_* driver state
+' @returns bDidFault - TRUE when the driver has faulted
 
-    bInside := (px >= BTN_X) and (px <= (BTN_X + BTN_W)) and (py >= BTN_Y) and (py <= (BTN_Y + BTN_H))
+    if side == SIDE_RIGHT
+        nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelR.testGetTelemetry()
+    else
+        nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelL.testGetTelemetry()
 
-PRI drawPanel(holdIdx, pCaption, counterVal, bCounterFlash, barPct, btnState, pStatusTok, senseMv) | modeCell, statCell, dgtRow, digits, idx, cell, bLeading
-' Compose one frame by blitting opaque cells over the background, then one UPDATE.
+PRI wheelCurrent(side) : nAmps, nWatts
+' getCurrent() of the named wheel: amps x 10_000 (0.1 mA units) and mW, per its doc comment.
+' Watts use the nominal TEST_VOLTAGE, not a measured pack voltage.
 '
-' Every cell exactly covers its well in bc_bg.bmp, so no erase step is needed -- the new cell
-' overwrites the old one. That is the whole economy of the crop-and-overlay technique
-' (test_dog_panel.spin2:422-426 is the same shape).
-'
-' @param holdIdx - HOLD_* identifier, selects the caption cell
-' @param pCaption - caption text, used only by the NO_PANEL build
-' @param counterVal - seconds remaining (dwell) or seconds held (post-floor)
-' @param bCounterFlash - TRUE while an ignored-click flash is active
-' @param barPct - retained for the NO_PANEL record; no bar is drawn
-' @param btnState - PNL_BTN_INERT / PNL_BTN_LIVE / PNL_BTN_ACK
-' @param pStatusTok - pointer to the status-chip token, mapped to a cell below
-' @param senseMv - running mean sense mV; logged, not displayed
-'
-' @local modeCell - LBL_MODE_* cell index for the mode label
-' @local statCell - LBL_STAT_* cell index for the status chip
-' @local dgtRow - digit sheet row: normal amber, or white while flashing
-' @local digits - counterVal clamped to the three digit positions
-' @local idx - digit position, 0 is the hundreds column
-' @local cell - digit glyph index, or DGT_BLANK for a suppressed leading zero
-' @local bLeading - TRUE while still in the leading-zero run
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nAmps - current, 0.1 mA units
+' @returns nWatts - power, mW
 
-#ifdef BENCH_NO_PANEL
-    debug("BC-UI,hold,", udec_(holdIdx), ",caption,", zstr_(pCaption), ",counter,", udec_(counterVal), ",btn,", udec_(btnState))
+    if side == SIDE_RIGHT
+        nAmps, nWatts := wheelR.getCurrent()
+    else
+        nAmps, nWatts := wheelL.getCurrent()
+
+PRI wheelTicks(side) : nTicks
+' Raw hall ticks of the named wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nTicks - hall-tick position
+
+    if side == SIDE_RIGHT
+        nTicks := wheelR.getRawHallTicks()
+    else
+        nTicks := wheelL.getRawHallTicks()
+
+PRI wheelIntegrity(side) : nMissed, nIllegal
+' Hall integrity counts of the named wheel since its last start.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nMissed - missed transitions
+' @returns nIllegal - illegal hall codes
+
+    if side == SIDE_RIGHT
+        nMissed, nIllegal := wheelR.getHallIntegrityCounts()
+    else
+        nMissed, nIllegal := wheelL.getHallIntegrityCounts()
+
+PRI wheelOffsets(side) : negDeg, posDeg
+' Applied commutation offsets of the named wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns negDeg - offset_fwd degrees (negative increments)
+' @returns posDeg - offset_rev degrees (positive increments)
+
+    if side == SIDE_RIGHT
+        negDeg, posDeg := wheelR.testGetFwdRevIndep()
+    else
+        negDeg, posDeg := wheelL.testGetFwdRevIndep()
+
+PRI wheelRpm(side) : nRpm
+' testGetRpm() of the named wheel (maintained only by its sense task).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nRpm - rpm over the sense task's ~1 s window
+
+    if side == SIDE_RIGHT
+        nRpm := wheelR.testGetRpm()
+    else
+        nRpm := wheelL.testGetRpm()
+
+PRI wheelStartSense(side) : senseCog
+' startSenseCog() for the named wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns senseCog - the sense task's cog id 0..7, or -1
+
+    if side == SIDE_RIGHT
+        senseCog := wheelR.startSenseCog()
+    else
+        senseCog := wheelL.startSenseCog()
+
+PRI wheelBoardRev(side) : eBoardRev
+' Board revision of the named wheel; with its driver running this is the revision recorded at start.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eBoardRev - REV_* value
+
+    if side == SIDE_RIGHT
+        eBoardRev := wheelR.getBoardType()
+    else
+        eBoardRev := wheelL.getBoardType()
+
+PRI wheelDriveConstants(side) : deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt
+' testGetDriveConstants() of the named wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns deadGap - commutation dead-time, system ticks
+' @returns pwmLimit - PWM duty hard limit
+' @returns dutyMin - minimum duty, 1/16ths
+' @returns dutyMax - maximum duty, 1/16ths
+' @returns adcFrame - ADC sample period
+' @returns frameCnt - PWM frame length, system ticks
+
+    if side == SIDE_RIGHT
+        deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt := wheelR.testGetDriveConstants()
+    else
+        deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt := wheelL.testGetDriveConstants()
+
+PRI emitBanner()
+' Emit BC-BANNER once. cfg_id is sourced from its own #ifdef, never a runtime test -- pnut-ts
+' silently ignores an unknown -D, so a mistyped flag lands on the honest #else token. The pin
+' bases, voltage and detect mode are stated outright so a log is attributable to hardware on its
+' own evidence.
+' Worst case: tag(9) + src_rev(16) + fmt(12) + cfg_id(13) + frame(12) + clkfreq(21) +
+' left_base(15) + right_base(16) + voltage_enum(18) + det_mode(14) + hold_last(15) +
+' qtr_incre(23) + half_incre(24) = 208 bytes.
+
+    lineReset()
+    lineAddText(@"BC-BANNER")
+    boundedField(@"src_rev", SRC_REV, LIM_SMALL)
+    boundedField(@"fmt", FMT_VERSION, LIM_SMALL)
+#ifdef BENCH_CFG
+    tokenField(@"cfg_id", @sCfgBench, TOKMAX_CFG)
 #else
-    modeCell := (btnState == PNL_BTN_INERT) ? LBL_MODE_DWELL : LBL_MODE_HELD
-
-    statCell := LBL_STAT_ZERO
-    if pStatusTok == @sStatFault
-        statCell := LBL_STAT_FAULT
-    elseif pStatusTok == @sStatRunning
-        statCell := LBL_STAT_RUN
-
-    dgtRow := bCounterFlash ? DGT_ROW_FLASH : DGT_ROW_NORM
-
-    debug(`bench CROP `(LYR_CAP, 0, holdIdx * CAP_H, CAP_W, CAP_H, CAP_X, CAP_Y))
-    debug(`bench CROP `(LYR_LBL, 0, modeCell * LBL_H, LBL_W, LBL_H, MODE_X, MODE_Y))
-    debug(`bench CROP `(LYR_LBL, 0, statCell * LBL_H, LBL_W, LBL_H, CHIP_X, CHIP_Y))
-
-    digits := counterVal <# 999
-    bLeading := TRUE
-    repeat idx from 0 to DGT_COUNT - 1
-        cell := digits / decPlaceValue(DGT_COUNT - 1 - idx) // 10
-        if (cell <> 0) or (idx == DGT_COUNT - 1)
-            bLeading := FALSE
-        debug(`bench CROP `(LYR_DGT, (bLeading ? DGT_BLANK : cell) * DGT_W, dgtRow, DGT_W, DGT_H, DGT_X + idx * DGT_PITCH, DGT_Y))
-
-    drawButton(btnState)
-    debug(`bench UPDATE)
+    tokenField(@"cfg_id", @sCfgUser, TOKMAX_CFG)
 #endif
+    tokenField(@"frame", @sFrameMotor, TOKMAX_FRAME)
+    boundedField(@"clkfreq", CLKFREQ, LIM_BIG)
+    boundedField(@"left_base", LEFT_TEST_BASE, LIM_TINY)
+    boundedField(@"right_base", RIGHT_TEST_BASE, LIM_TINY)
+    boundedField(@"voltage_enum", TEST_VOLTAGE, LIM_TINY)
+    boundedField(@"det_mode", TEST_DET_MODE, LIM_TINY)
+    boundedField(@"hold_last", HOLD_LAST, LIM_TINY)
+    boundedField(@"qtr_incre", QTR_SPEED_INCRE, LIM_BIG)
+    boundedField(@"half_incre", HALF_SPEED_INCRE, LIM_BIG)
+    lineEmit()
 
-PRI decPlaceValue(power) : placeValue
-' Return 10 raised to `power`, for splitting the counter into digit columns without a
-' floating-point or lookup dependency.
+    debug("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+
+PRI emitPlan()
+' Emit BC-PLAN once: every timing and wait bound the holds run under.
+' Worst case: tag(7) + sample_ms(18) + zero_samples(21) + settle_ms(18) + window_ms(18) +
+' ready_timeout_ms(25) + atspeed_timeout_ms(27) + steady_timeout_ms(26) + stop_timeout_ms(24) +
+' hold0_motor(18) = 202 bytes.
+
+    lineReset()
+    lineAddText(@"BC-PLAN")
+    boundedField(@"sample_ms", SAMPLE_MS, LIM_SMALL)
+    boundedField(@"zero_samples", ZERO_SAMPLES, LIM_SMALL)
+    boundedField(@"settle_ms", SETTLE_MS, LIM_SMALL)
+    boundedField(@"window_ms", WINDOW_MS, LIM_SMALL)
+    boundedField(@"ready_timeout_ms", READY_TIMEOUT_MS, LIM_SMALL)
+    boundedField(@"atspeed_timeout_ms", ATSPEED_TIMEOUT_MS, LIM_SMALL)
+    boundedField(@"steady_timeout_ms", STEADY_TIMEOUT_MS, LIM_SMALL)
+    boundedField(@"stop_timeout_ms", STOP_TIMEOUT_MS, LIM_SMALL)
+    tokenField(@"hold0_motor", motorToken(HOLD_ZERO_SIDE), TOKMAX_MOTOR)
+    lineEmit()
+
+PRI emitPreflight(side, startedCog, ticksMoved, bStopped)
+' Emit BC-PREFLIGHT for one wheel. The base is chosen with if/else, and ok prints TRUE/FALSE.
+' Worst case: tag(12) + motor(12) + base(10) + cog(9) + ticks(17) + ok(9) + stopped(14) = 83 bytes.
 '
-' @param power - 0, 1 or 2
-' @returns placeValue - 1, 10 or 100
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param startedCog - start()'s return
+' @param ticksMoved - signed tick delta across the nudge
+' @param bStopped - TRUE when STOPPED was seen after the nudge
 
-    placeValue := 1
-    repeat power
-        placeValue *= 10
+    lineReset()
+    lineAddText(@"BC-PREFLIGHT")
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    if side == SIDE_RIGHT
+        boundedField(@"base", RIGHT_TEST_BASE, LIM_TINY)
+    else
+        boundedField(@"base", LEFT_TEST_BASE, LIM_TINY)
+    boundedField(@"cog", startedCog, LIM_TINY)
+    boundedField(@"ticks", ticksMoved, LIM_MID)
+    boolField(@"ok", (ticksMoved <> 0))
+    boolField(@"stopped", bStopped)
+    lineEmit()
 
-PRI drawButton(btnState)
-' Blit the button cell for the given state. No UPDATE here -- drawPanel owns the frame and
-' issues the single UPDATE that shows it.
+PRI emitHoldRecords(holdIdx)
+' Emit one hold's records from its VAR longs, after its wheel has stopped: BC-SHEET, BC-START,
+' BC-HOLD, BC-SENSE, BC-MOTION.
 '
-' @param btnState - PNL_BTN_INERT / PNL_BTN_LIVE / PNL_BTN_ACK
+' @param holdIdx - HOLD_* index
 
-#ifndef BENCH_NO_PANEL
-    debug(`bench CROP `(LYR_BTN, 0, btnState * BTN_H, BTN_W, BTN_H, BTN_X, BTN_Y))
-#endif
+    emitSheet(holdIdx)
+    emitStart(holdIdx)
+    emitHold(holdIdx)
+    emitSense(holdIdx)
+    emitMotion(holdIdx)
 
-PRI drawIdlePanel()
-' Final screen once the sequence completes. Restores the untouched background, so no stale
-' hold caption or live-looking button is left on screen.
-
-    debug("* BENCH CHAR RUN COMPLETE -- safe to disconnect")
-#ifndef BENCH_NO_PANEL
-    debug(`bench CROP 1)
-    debug(`bench UPDATE)
-#endif
-
-PRI emitSheet(holdIdx, pCaption)
-' Emit BC-SHEET once per hold, up front, so the operator's paper sheet and this log share row
-' numbering.
+PRI emitSheet(holdIdx) | pCaption
+' Emit BC-SHEET: the hold's row number and caption (the caption names the frame).
+' Worst case: tag(8) + row(9) + name(1+4+1+96=102) = 119 bytes.
 '
-' @param holdIdx - HOLD_* identifier
-' @param pCaption - pointer to this hold's caption text
+' @param holdIdx - HOLD_* index
+'
+' @local pCaption - pointer to the caption
 
+    _, _, _, pCaption, _, _ := holdInfo(holdIdx)
     lineReset()
     lineAddText(@"BC-SHEET")
-    lineField(@"row", holdIdx + 1)
-    lineTextField(@"name", pCaption)
+    boundedField(@"row", holdIdx + 1, LIM_TINY)
+    tokenField(@"name", pCaption, TOKMAX_CAPTION)
     lineEmit()
 
-PRI emitHoldEntry(holdIdx, pCaption, pMotorTok, pDirTok, pRungTok, cmdIncre)
-' Emit BC-HOLD -- this is the task body's "print HOLD,<test>,<rung>".
+PRI emitStart(holdIdx) | side, bStarted
+' Emit BC-START: start() return, sense task cog, detected board revision and drive constants
+' (dead_gap in system ticks). Everything after cog prints NA when the driver did not start ready.
+' Worst case: tag(8) + hold(10) + motor(12) + cog(9) + sense_cog(15) + board_rev(15) +
+' board_id(17) + dead_gap(17) + pwm_limit(21) + duty_min(20) + duty_max(20) + adc_frame(21) +
+' frame_cnt(21) = 206 bytes.
 '
-' @param holdIdx - HOLD_* identifier
-' @param pCaption - pointer to this hold's caption text
-' @param pMotorTok - pointer to the motor token
-' @param pDirTok - pointer to the direction token
-' @param pRungTok - pointer to the speed-rung token
-' @param cmdIncre - signed motor increment just commanded
+' @param holdIdx - HOLD_* index
+'
+' @local side - SIDE_* of the hold
+' @local bStarted - TRUE when the driver started and reported ready
 
+    side, _, _, _, _, _ := holdInfo(holdIdx)
+    bStarted := bHoldStarted[holdIdx]
+    lineReset()
+    lineAddText(@"BC-START")
+    boundedField(@"hold", holdIdx, LIM_TINY)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"cog", holdStartCog[holdIdx], LIM_TINY)
+    naOrBoundedField(@"sense_cog", holdSenseCog[holdIdx], LIM_TINY, bStarted)
+    naOrBoundedField(@"board_rev", holdBoardRev[holdIdx], LIM_TINY, bStarted)
+    if bStarted
+        tokenField(@"board_id", boardToken(holdBoardRev[holdIdx]), TOKMAX_BOARD)
+    else
+        lineTextField(@"board_id", @sNa)
+    naOrBoundedField(@"dead_gap", holdDeadGap[holdIdx], LIM_SMALL, bStarted)
+    naOrBoundedField(@"pwm_limit", holdPwmLimit[holdIdx], LIM_MID, bStarted)
+    naOrBoundedField(@"duty_min", holdDutyMin[holdIdx], LIM_MID, bStarted)
+    naOrBoundedField(@"duty_max", holdDutyMax[holdIdx], LIM_MID, bStarted)
+    naOrBoundedField(@"adc_frame", holdAdcFrame[holdIdx], LIM_MID, bStarted)
+    naOrBoundedField(@"frame_cnt", holdFrameCnt[holdIdx], LIM_MID, bStarted)
+    lineEmit()
+
+PRI emitHold(holdIdx) | side, pRobotTok, pRungTok
+' Emit BC-HOLD: identity (signed increment, robot_dir, frame), result and wait outcomes.
+' Worst case: tag(7) + hold(10) + motor(12) + incre(19) + robot_dir(15) + frame(12) + rung(10) +
+' result(22) + at_speed(15) + steady_ms(18) + steady_src(19) + steady_rate(20) + stopped(14) =
+' 193 bytes.
+'
+' @param holdIdx - HOLD_* index
+'
+' @local side - SIDE_* of the hold
+' @local pRobotTok - robot-frame direction token
+' @local pRungTok - speed-rung token
+
+    side, _, _, _, pRobotTok, pRungTok := holdInfo(holdIdx)
     lineReset()
     lineAddText(@"BC-HOLD")
-    lineField(@"hold", holdIdx)
-    lineTextField(@"name", pCaption)
-    lineTextField(@"motor", pMotorTok)
-    lineTextField(@"dir", pDirTok)
-    lineTextField(@"rung", pRungTok)
-    lineField(@"cmd_incre", cmdIncre)
+    boundedField(@"hold", holdIdx, LIM_TINY)
+    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    boundedField(@"incre", holdIncre[holdIdx], LIM_BIG)
+    tokenField(@"robot_dir", pRobotTok, TOKMAX_ROBOT)
+    tokenField(@"frame", @sFrameMotor, TOKMAX_FRAME)
+    tokenField(@"rung", pRungTok, TOKMAX_RUNG)
+    tokenField(@"result", resultToken(holdResultCode[holdIdx]), TOKMAX_RESULT)
+    if holdIncre[holdIdx] <> 0
+        boolField(@"at_speed", bHoldAtSpeed[holdIdx])
+    else
+        lineTextField(@"at_speed", @sNa)                    ' hold 0 never commands motion
+    naOrBoundedField(@"steady_ms", holdSteadyMs[holdIdx], LIM_SMALL, bHoldStarted[holdIdx] and (holdIncre[holdIdx] <> 0))
+    if holdSteadySrc[holdIdx] <> 0
+        tokenField(@"steady_src", holdSteadySrc[holdIdx], TOKMAX_STEADY)
+    else
+        lineTextField(@"steady_src", @sNa)
+    naOrBoundedField(@"steady_rate", holdSteadyRate[holdIdx], LIM_SMALL, holdSteadySrc[holdIdx] <> 0)
+    boolField(@"stopped", bHoldStopped[holdIdx])
     lineEmit()
 
-PRI emitSteady(holdIdx, pSteadySrcTok, tSteadyMs, tickRate)
-' Emit BC-STEADY at steady-state declaration.
+PRI emitSense(holdIdx) | bWindow, bZero, bBoardKnown
+' Emit BC-SENSE: the window's raw sense mean, the same-lifetime zero, their difference (net), the
+' window min/max, and getCurrent()'s window means. Amps and watts print NA unless the board was
+' detected as REV_A or REV_B: isp_bldc_motor.spin2 init() leaves rSenseForBoard at -1 otherwise,
+' and getCurrent() then divides by it (PL-25).
+' Worst case: tag(8) + hold(10) + samples(16) + win_ms(15) + zero_samples(21) + raw_mV_x10(24) +
+' zero_mV_x10(25) + net_mV_x10(24) + min_mV(20) + max_mV(20) + amps_x10k(21) + watts_mW(20) =
+' 224 bytes.
 '
-' @param holdIdx - HOLD_* identifier
-' @param pSteadySrcTok - pointer to RAMPED / TIMEOUT / ZEROCMD
-' @param tSteadyMs - milliseconds from command issue to this declaration
-' @param tickRate - hall-tick rate observed at the declaration
-
-    lineReset()
-    lineAddText(@"BC-STEADY")
-    lineField(@"hold", holdIdx)
-    lineTextField(@"steady_src", pSteadySrcTok)
-    lineField(@"t_steady_ms", tSteadyMs)
-    lineField(@"tick_rate", tickRate)
-    lineEmit()
-
-PRI emitClick(holdIdx, rawX, rawY, pInZoneTok)
-' Emit BC-CLICK for one of the first MAX_CLICK_LOG clicks of the run, proving the coordinate
-' basis empirically.
+' @param holdIdx - HOLD_* index
 '
-' @param holdIdx - HOLD_* identifier of the hold in progress
-' @param rawX - raw mouseXpos at the click
-' @param rawY - raw mouseYpos at the click
-' @param pInZoneTok - pointer to "1" or "0"
+' @local bWindow - TRUE when the window took at least one sample
+' @local bZero - TRUE when the zero took at least one sample
+' @local bBoardKnown - TRUE when the start-time board revision is REV_A or REV_B
 
-    lineReset()
-    lineAddText(@"BC-CLICK")
-    lineField(@"hold", holdIdx)
-    lineField(@"raw_x", rawX)
-    lineField(@"raw_y", rawY)
-    lineTextField(@"in_zone", pInZoneTok)
-    lineEmit()
-
-PRI emitEarly(holdIdx, remainSecs, pSrcTok)
-' Emit BC-EARLY for one ignored press during the inert period.
-'
-' @param holdIdx - HOLD_* identifier
-' @param remainSecs - seconds remaining to the dwell floor at the moment of the press
-' @param pSrcTok - pointer to MOUSE or KEY
-
-    lineReset()
-    lineAddText(@"BC-EARLY")
-    lineField(@"hold", holdIdx)
-    lineField(@"remain_s", remainSecs)
-    lineTextField(@"src", pSrcTok)
-    lineEmit()
-
-PRI emitSense(holdIdx, iMinMv, iMaxMv, iAvgMv, sampleCount, duty, err, drvState)
-' Emit BC-SENSE at hold exit.
-'
-' @param holdIdx - HOLD_* identifier
-' @param iMinMv - smallest sense_i_mV sample seen
-' @param iMaxMv - largest sense_i_mV sample seen
-' @param iAvgMv - mean sense_i_mV sample over the dwell
-' @param sampleCount - number of sense samples averaged
-' @param duty - most recent duty value at exit
-' @param err - most recent position-error value at exit
-' @param drvState - most recent DCS_* driver state at exit
-
+    bWindow := (holdSamples[holdIdx] > 0)
+    bZero := (holdZeroSamples[holdIdx] > 0)
+    bBoardKnown := (holdBoardRev[holdIdx] == wheelL.REV_A) or (holdBoardRev[holdIdx] == wheelL.REV_B)
     lineReset()
     lineAddText(@"BC-SENSE")
-    lineField(@"hold", holdIdx)
-    lineField(@"i_mV_min", iMinMv)
-    lineField(@"i_mV_max", iMaxMv)
-    lineField(@"i_mV_avg", iAvgMv)
-    lineField(@"samples", sampleCount)
-    lineField(@"duty", duty)
-    lineField(@"err", err)
-    lineField(@"drv_state", drvState)
+    boundedField(@"hold", holdIdx, LIM_TINY)
+    boundedField(@"samples", holdSamples[holdIdx], LIM_SMALL)
+    naOrBoundedField(@"win_ms", holdWinMs[holdIdx], LIM_SMALL, bWindow)
+    boundedField(@"zero_samples", holdZeroSamples[holdIdx], LIM_SMALL)
+    naOrBoundedField(@"raw_mV_x10", holdRawX10[holdIdx], LIM_BIG, bWindow)
+    naOrBoundedField(@"zero_mV_x10", holdZeroX10[holdIdx], LIM_BIG, bZero)
+    naOrBoundedField(@"net_mV_x10", holdNetX10[holdIdx], LIM_BIG, bWindow and bZero)
+    naOrBoundedField(@"min_mV", holdMinMv[holdIdx], LIM_BIG, bWindow)
+    naOrBoundedField(@"max_mV", holdMaxMv[holdIdx], LIM_BIG, bWindow)
+    naOrBoundedField(@"amps_x10k", holdAmpsMean[holdIdx], LIM_MID, bWindow and bBoardKnown)
+    naOrBoundedField(@"watts_mW", holdWattsMean[holdIdx], LIM_MID, bWindow and bBoardKnown)
     lineEmit()
 
-PRI emitAdvance(holdIdx, dwellSecs, floorSecs, promptToSteadySecs, pAdvancedByTok, earlyPresses, pHoldOutcomeTok)
-' Emit BC-ADV at hold exit. dwellSecs is the actual seconds from steady state to
-' acknowledgement, which is what makes the floor auditable after the run rather than merely
-' enforced during it -- a dwellSecs below floorSecs is a finding about the instrument.
+PRI emitMotion(holdIdx) | bMotion, bWindow
+' Emit BC-MOTION: rpm, ticks and tick rate over the window, applied offsets, duty and err window
+' means, hall integrity counts since this hold's start, and the driver state after the stop wait.
+' Worst case: tag(9) + hold(10) + rpm(12) + ticks(17) + rate_x10(17) + neg_deg(13) + pos_deg(13) +
+' duty_mean(21) + err_mean(20) + missed(18) + illegal(19) + drv_state(15) = 184 bytes.
 '
-' @param holdIdx - HOLD_* identifier
-' @param dwellSecs - actual seconds from steady state to acknowledgement
-' @param floorSecs - DWELL_FLOOR_SECS, so every record states the floor it ran under
-' @param promptToSteadySecs - seconds from command issue to steady-state declaration
-' @param pAdvancedByTok - pointer to MOUSE / KEY / KEYNP
-' @param earlyPresses - ignored-press tally for this hold
-' @param pHoldOutcomeTok - pointer to OK or FAULT
+' @param holdIdx - HOLD_* index
+'
+' @local bMotion - TRUE when the window ran and the cog was up at its end
+' @local bWindow - TRUE when the window took at least one sample
+
+    bMotion := bHoldMotionValid[holdIdx]
+    bWindow := (holdSamples[holdIdx] > 0)
+    lineReset()
+    lineAddText(@"BC-MOTION")
+    boundedField(@"hold", holdIdx, LIM_TINY)
+    naOrBoundedField(@"rpm", holdRpm[holdIdx], LIM_SMALL, bMotion and (holdSenseCog[holdIdx] >= 0))
+    naOrBoundedField(@"ticks", holdTicks[holdIdx], LIM_MID, bMotion)
+    naOrBoundedField(@"rate_x10", holdRateX10[holdIdx], LIM_SMALL, bMotion)
+    naOrBoundedField(@"neg_deg", holdNegDeg[holdIdx], LIM_TINY, bMotion)
+    naOrBoundedField(@"pos_deg", holdPosDeg[holdIdx], LIM_TINY, bMotion)
+    naOrBoundedField(@"duty_mean", holdDutyMean[holdIdx], LIM_MID, bWindow)
+    naOrBoundedField(@"err_mean", holdErrMean[holdIdx], LIM_MID, bWindow)
+    naOrBoundedField(@"missed", holdMissed[holdIdx], LIM_MID, bHoldIntegValid[holdIdx])
+    naOrBoundedField(@"illegal", holdIllegal[holdIdx], LIM_MID, bHoldIntegValid[holdIdx])
+    naOrBoundedField(@"drv_state", holdDrvState[holdIdx], LIM_TINY, bHoldIntegValid[holdIdx])
+    lineEmit()
+
+PRI emitEnd(trapCode)
+' Emit BC-END, the last record before the end marker.
+' Worst case: tag(6) + exit(14) + preflight_ok(19) + holds_run(15) + lib_abort(16) + trap(16) =
+' 86 bytes.
+'
+' @param trapCode - value the abort trap delivered around runSession()
 
     lineReset()
-    lineAddText(@"BC-ADV")
-    lineField(@"hold", holdIdx)
-    lineField(@"dwell_s", dwellSecs)
-    lineField(@"floor_s", floorSecs)
-    lineField(@"prompt_to_steady_s", promptToSteadySecs)
-    lineTextField(@"advanced_by", pAdvancedByTok)
-    lineField(@"early_presses", earlyPresses)
-    lineTextField(@"result", pHoldOutcomeTok)
+    lineAddText(@"BC-END")
+    if bRunReturned and bPreflightOk and (holdsRun == HOLD_LAST + 1)
+        tokenField(@"exit", @sExitComplete, TOKMAX_EXIT)
+    else
+        tokenField(@"exit", @sExitAborted, TOKMAX_EXIT)
+    boolField(@"preflight_ok", bPreflightOk)
+    boundedField(@"holds_run", holdsRun, LIM_TINY)
+    boolField(@"lib_abort", (bRunReturned == FALSE))
+    naOrBoundedField(@"trap", trapCode, LIM_MID, (bRunReturned == FALSE))
     lineEmit()
 
-PRI emitFault(holdIdx, dwellSecs, drvState, iMvAtFault)
-' Emit BC-FAULT when a hold ends in a driver fault.
+PRI boundedField(pFieldName, numValue, limitAbs)
+' Append a numeric field clamped to +/- limitAbs, so its printed width is bounded.
 '
-' @param holdIdx - HOLD_* identifier
-' @param dwellSecs - actual seconds from steady state to the fault
-' @param drvState - DCS_* driver state at the fault
-' @param iMvAtFault - sense_i_mV sample at the fault (the running max, as a proxy)
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+' @param limitAbs - clamp magnitude (one of the LIM_* widths)
 
-    lineReset()
-    lineAddText(@"BC-FAULT")
-    lineField(@"hold", holdIdx)
-    lineField(@"dwell_s", dwellSecs)
-    lineField(@"drv_state", drvState)
-    lineField(@"i_mV_at_fault", iMvAtFault)
-    lineEmit()
+    lineField(pFieldName, (numValue #> (0 - limitAbs)) <# limitAbs)
+
+PRI naOrBoundedField(pFieldName, numValue, limitAbs, bValid)
+' Append a clamped numeric field, or the token NA when the value was not measured.
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+' @param limitAbs - clamp magnitude (one of the LIM_* widths)
+' @param bValid - TRUE when numValue is a measurement
+
+    if bValid
+        boundedField(pFieldName, numValue, limitAbs)
+    else
+        lineTextField(pFieldName, @sNa)
+
+PRI boolField(pFieldName, bFlag)
+' Append a boolean field as the token TRUE or FALSE, never a number (PL-23).
+'
+' @param pFieldName - pointer to the field name
+' @param bFlag - the field's value; any non-zero prints TRUE
+
+    if bFlag <> FALSE
+        lineTextField(pFieldName, @sTrue)
+    else
+        lineTextField(pFieldName, @sFalse)
+
+PRI tokenField(pFieldName, pToken, maxLen)
+' Append a token field; a token longer than maxLen prints as "?" so the width stays bounded.
+'
+' @param pFieldName - pointer to the field name
+' @param pToken - pointer to the token text
+' @param maxLen - the longest token this field may print
+
+    if tokenFits(pToken, maxLen)
+        lineTextField(pFieldName, pToken)
+    else
+        lineTextField(pFieldName, @sBadTok)
+
+PRI tokenFits(pToken, maxLen) : bFits | charIdx
+' Report whether a zero-terminated token is at most maxLen bytes, reading no more than maxLen + 1.
+'
+' @param pToken - pointer to the token text
+' @param maxLen - the longest acceptable token
+' @returns bFits - TRUE when the terminator is found within maxLen bytes
+'
+' @local charIdx - index into the token
+
+    bFits := FALSE
+    repeat charIdx from 0 to maxLen
+        if BYTE[pToken][charIdx] == 0
+            bFits := TRUE
+            quit
+
+PRI motorToken(side) : pTok
+' Motor token for a side.
+'
+' @param side - SIDE_* value
+' @returns pTok - LEFT, RIGHT or NONE
+
+    case side
+        SIDE_LEFT:
+            pTok := @sMotLeft
+        SIDE_RIGHT:
+            pTok := @sMotRight
+        other:
+            pTok := @sMotNone
+
+PRI boardToken(eBoardRev) : pTok
+' Board revision token.
+'
+' @param eBoardRev - REV_* value
+' @returns pTok - REV_A, REV_B or UNKNOWN
+
+    case eBoardRev
+        wheelL.REV_A:
+            pTok := @sBoardRevA
+        wheelL.REV_B:
+            pTok := @sBoardRevB
+        other:
+            pTok := @sBoardUnknown
+
+PRI resultToken(resCode) : pTok
+' Hold result token.
+'
+' @param resCode - RES_* value
+' @returns pTok - result token
+
+    case resCode
+        RES_OK:
+            pTok := @sResOk
+        RES_NO_COG:
+            pTok := @sResNoCog
+        RES_READY_TIMEOUT:
+            pTok := @sResReadyTo
+        RES_STEADY_TIMEOUT:
+            pTok := @sResSteadyTo
+        RES_FAULT:
+            pTok := @sResFault
+        RES_STOP_TIMEOUT:
+            pTok := @sResStopTo
+        other:
+            pTok := @sResNotRun
 
 PRI lineReset()
 ' Begin a new record.

@@ -74,8 +74,7 @@ Usage:  tools/bench-run.sh <tier> [clkfreq]
                    detect         board-detection sweep, PASSIVE (no driver code in the image)
                    detect-lib     as above + the library cross-check (still no driver cog)
                    detect-phase2  adds the driver-cog poisoning probe  [MOTORS UNPLUGGED]
-                   char           motor characterisation, PLOT panel   [MOTORS CONNECTED]
-                   char-nopanel   as above, no PLOT window, keyboard only
+                   char           automated motor characterisation, nine holds  [MOTORS CONNECTED, UNATTENDED]
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
   [clkfreq]   -- optional clock frequency in Hz (default: 270000000)
 
@@ -128,11 +127,7 @@ case "$TIER" in
                     PRECONDITION="THE MOTORS MUST BE PHYSICALLY UNPLUGGED -- this build starts a real driver cog"
                     ;;
     char)           BENCH_FILE="test_bench_char.spin2"
-                    PRECONDITION="MOTORS CONNECTED and the pack voltage recorded -- the wheels will turn"
-                    ;;
-    char-nopanel)   BENCH_FILE="test_bench_char.spin2"
-                    EXTRA_DEFS=(-D BENCH_NO_PANEL)
-                    PRECONDITION="MOTORS CONNECTED and the pack voltage recorded -- the wheels will turn"
+                    PRECONDITION="MOTORS CONNECTED, BOTH WHEELS FREE TO TURN -- UNATTENDED characterisation run"
                     ;;
     scan)           BENCH_FILE="test_bench_scan.spin2"
                     PRECONDITION="MOTORS CONNECTED, BOTH WHEELS FREE TO TURN -- UNATTENDED offset scan, up to 30 minutes, each wheel both directions to half speed"
