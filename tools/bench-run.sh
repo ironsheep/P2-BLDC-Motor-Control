@@ -69,6 +69,7 @@ usage() {
 Usage:  tools/bench-run.sh <tier> [clkfreq]
   <tier>      -- one of:
                    t0             Tier 0 -- no motor, no motion, no risk
+                   t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    detect         board-detection sweep, PASSIVE (no driver code in the image)
                    detect-lib     as above + the library cross-check (still no driver cog)
@@ -109,6 +110,10 @@ EXTRA_DEFS=()
 PRECONDITION=""
 case "$TIER" in
     t0)             BENCH_FILE="test_bench_t0.spin2"
+                    ;;
+    t0-hand)        BENCH_FILE="test_bench_t0.spin2"
+                    EXTRA_DEFS=(-D T0_HAND)
+                    PRECONDITION="OPERATOR TURNS ONE WHEEL BY HAND, EXACTLY N REVOLUTIONS -- T0-12 waits on a keypress, never a timer"
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"
                     PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"
