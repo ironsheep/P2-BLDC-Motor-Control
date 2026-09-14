@@ -51,6 +51,29 @@
 ''               sec J.1 ruled b) with a BS-RSTALONE record; the -D WD_SELFTEST watchdog self-test
 ''               (design sec G) with BS-WDTEST-ARM, CP_SELFTEST and the four R11-WDT-* cells; and
 ''               declareStall() now stops both wheels before it emits anything, in both builds
+''   Updated.... 14 Sep 2026 -- task 3540, scan v5 (SRC_REV 10, fmt 10), from run 7 (PL-46,
+''               SCAN-RUN-7-EVALUATION.md sec 5): D1 -- refineCliffEdge()/probeConfirmCliff() keep
+''               probing 2 degrees closer to the fault, at both speeds, after a clean probe, instead
+''               of stopping at the first one; D2 -- half-speed legs now run the rise-on-both-sides
+''               negative case for real (evaluateHalfBracket()), and hasMinimum() rejects a POOR fit
+''               or one fitPinnedNearLimit() finds pinned against a fault edge, so BS-RESULT-HALF
+''               emits no shift/shift_sig from either; D3 -- BS-RESULT's i_min/saving and BS-PAIR2's
+''               ratio/imbalance are now judged on each leg's measured floor (legMeasuredFloor()),
+''               with the old fitted minimum kept as a new field at the end of each record; D4 --
+''               BS-CLIFF gains edge_res_deg_x10, the edge estimate's own +/- resolution; D5 --
+''               BS-WALK/BS-BRACKET gain low_net_mV_x10 and BS-LEG gains ref_start_net_mV_x10/
+''               ref_end_net_mV_x10, the net figure beside each raw one under an unchanged name; D7
+''               -- R9-SCAN-HALFLEG's two per-motor instances carry crit MIN_BRACKETED_NEG/POS
+''               instead of one shared CLIFF_PROBED, so they no longer read as duplicates; R9-SCAN-
+''               HALFLEG's criterion is now MIN_BRACKETED itself (evaluateHalfBracket()'s verdict:
+''               FAILs when the leg's low sits at a fault-bounded window edge with nothing measured
+''               beyond it toward the fault); main()'s trap value now prints on every run
+''               (BS-END trap_value), not only on an abort
+''   Updated.... 14 Sep 2026 -- task 3540 coordinator review: probeTowardFault()'s last step before
+''               a fault clamps to CLIFF_LAST_STEP_DEG (1 deg, the finest the integer grid allows)
+''               instead of refusing to probe at all, so a good/fault gap of exactly
+''               CLIFF_HALF_STEP_DEG (2 deg) -- run 7's LEFT POS, good -11 fault -9 -- now gets one
+''               probe, at fault -/+ 1 deg, where the plain 2-deg-only version got none
 ''
 '' =================================================================================================
 
@@ -144,8 +167,24 @@
 
 CON { build identity }
 
-    SRC_REV     = 9                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 9                                         ' BS- record-format version
+    SRC_REV     = 10                                        ' hand-bumped whenever this file changes
+    FMT_VERSION = 10                                        ' BS- record-format version
+
+' fmt 10 changes (task 3540, scan v5, PL-46; no existing record's field names, order or content change):
+'   - BS-END gains trap_value, printed on every run (not only an abort).
+'   - BS-CLIFF gains edge_res_deg_x10.
+'   - BS-WALK and BS-BRACKET gain low_net_mV_x10; BS-LEG gains ref_start_net_mV_x10 and
+'     ref_end_net_mV_x10.
+'   - BS-FIT2/BS-RESULT/BS-RESULT-HALF/BS-PAIR2's min/i_min/i_neg_min/i_pos_min fields are
+'     unchanged fitted numbers in BS-FIT2, but BS-RESULT/BS-RESULT-HALF/BS-PAIR2's i_min/i_neg_min/
+'     i_pos_min now read each leg's measured floor (D3); the fitted value that used to be there
+'     moves to a new field (i_min_fit_mV_x10 / i_neg_min_fit_mV_x10 / i_pos_min_fit_mV_x10) at the
+'     end of each record.
+'   - hasMinimum() no longer accepts FS_POOR, and rejects a fit fitPinnedNearLimit() finds pinned
+'     against a fault-derived window edge (D2); half-speed legs are judged by the real rise-on-
+'     both-sides test (evaluateHalfBracket()), not marked bracketed by assignment.
+'   - R9-SCAN-HALFLEG's criterion is MIN_BRACKETED (D1/D2), and its two per-motor instances carry
+'     crit MIN_BRACKETED_NEG / MIN_BRACKETED_POS (D7), replacing the shared CLIFF_PROBED.
 
 ' fmt 9 changes (task 3537 phases 2b3 and 2c; no existing record's field names, order or content change):
 '   - new BS-RSTALONE record, immediately after BS-POINT3 of the point whose fault took that motor's
@@ -400,7 +439,11 @@ CON { sweep geometry -- offsets in electrical degrees }
     HARD_LIMIT_DEG     = 90                                 ' never beyond default +/- this
     COARSE_MAX_STEPS   = HARD_LIMIT_DEG / COARSE_STEP_DEG
     FINE_STEP_DEG      = 5
-    CLIFF_HALF_STEP_DEG = 2                                 ' second, smaller probe into a fault edge when the fine probe faults
+    CLIFF_HALF_STEP_DEG = 2                                 ' probeTowardFault()'s ordinary step toward a fault edge
+    CLIFF_LAST_STEP_DEG = 1                                 ' task 3540 (coordinator review): the finest step the
+                                                             ' integer offset grid allows -- probeTowardFault()'s
+                                                             ' final probe before a fault, never at or beyond the
+                                                             ' point that faulted
     FINE_HALF_DEG      = 20
     CONFIRM_HALF_DEG   = 15
     FINE_ORDER_COUNT   = 9
@@ -577,13 +620,15 @@ CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-D
 ' v3 already re-measured a zero before every point, so the unfixed code counts 0 too. Run 5's ratio
 ' 0.440 vs 1.16 came from BS-PAIR2 netting both minima against ZERO_INIT, not from a point without its
 ' own zero (SCAN-RUN-5-EVALUATION.md sec 6 item 1).
-' R9-SCAN-HALFLEG (task 3530), crit CLIFF_PROBED, units BOOL, one instance per half-speed result slot:
-' TRUE when every half-speed confirm point that faulted leaving a probeable gap (confirmGapProbeable())
-' was followed by at least one measured probe point; NOMEAS when the leg had no such fault. MEASURED
-' unfixed: run 5's LEFT half legs faulted at 4 and -11 deg with last good points 14 and -21 and nothing
-' measured between (SCAN-RUN-5-EVALUATION.md sec 3), so both instances FAIL. The first criterion,
-' FIT_OR_CLIFF, could not: computeLegCliff() finds a good/fault pair without any probe. This one also
-' FAILs the review-caught nesting defect, where a one-fine-step gap was never probed.
+' R9-SCAN-HALFLEG (task 3530, criterion redesigned task 3540 PL-46), crit MIN_BRACKETED_NEG /
+' MIN_BRACKETED_POS (one instance per sign, D7), units BOOL: TRUE when evaluateHalfBracket() finds a
+' point that rises RISE_PCT (or FAULT_RISE_PCT on a fault-bounded side) above the leg's low on BOTH
+' sides, among the confirm/cliff-probe points fitLeg() itself fits; NOMEAS when the leg never ran
+' (bResLegRan FALSE). FAILs exactly when the low sits at a fault-bounded window edge with nothing
+' measured beyond it toward the fault -- the failure mode scan run 7 could not get past even after
+' D1's deeper probing resolved three of its four EDGE/POOR fits (SCAN-RUN-7-EVALUATION.md sec 5 item
+' 1). The superseded CLIFF_PROBED criterion ("a probe ran") was met by the very defect it existed to
+' catch: run 7's four half-speed legs all passed it while none could show a bracketed minimum.
 ' R9-SCAN-PAIR2 (crit NET_RATIO_ONLY) is units BOOL, lo TRUE hi TRUE. Both BOOL cells print by
 ' emitSignoffBool().
     OWN_ZERO_MISSING_LO = 0
@@ -904,7 +949,8 @@ sSfCritZxsI     BYTE    "ZXS_I", 0
 sSfCritZxsU     BYTE    "ZXS_U", 0
 sSfCritZxsV     BYTE    "ZXS_V", 0
 sSfCritZxsW     BYTE    "ZXS_W", 0
-sSfCritCliffPrb BYTE    "CLIFF_PROBED", 0
+sSfCritMinBrNeg BYTE    "MIN_BRACKETED_NEG", 0                ' task 3540 (D7): replaces CLIFF_PROBED
+sSfCritMinBrPos BYTE    "MIN_BRACKETED_POS", 0
 sSfCritOwnZero  BYTE    "PTS_NO_OWN_ZERO", 0
 sSfCritNetRatio BYTE    "NET_RATIO_ONLY", 0
 sSfUnitsMvX10   BYTE    "MV_X10", 0
@@ -977,6 +1023,7 @@ VAR { run-wide state }
     LONG    runStartMs                                      ' getms() at run start
     LONG    abortReason                                     ' AR_* first run-abort cause, AR_NONE while running
     LONG    bRunReturned                                    ' TRUE once runScan() reached its end
+    LONG    runTrapCode                                     ' task 3540 TOP-LEVEL TRAP: \runScan()'s value, every run
     LONG    pointSeq                                        ' points measured so far, run-wide
     LONG    runFaults                                       ' faulted/timed-out points, run-wide
     LONG    runAbortsI                                      ' per-point current aborts, run-wide
@@ -1091,6 +1138,11 @@ VAR { results, index = resultSlot(side, sign, speed) }
     LONG    resIdefX10[RESULT_SLOTS]
     LONG    bResIdefValid[RESULT_SLOTS]
     LONG    bResDrift[RESULT_SLOTS]
+    LONG    bResPinned[RESULT_SLOTS]                          ' task 3540 D2: fitPinnedNearLimit() at this slot's fit
+    LONG    bResBracketed[RESULT_SLOTS]                       ' task 3540 D2: rise-on-both-sides held (real test, both speeds)
+    LONG    resFloorX10[RESULT_SLOTS]                          ' task 3540 D3: legMeasuredFloor()'s lowest measured net point
+    LONG    resFloorDeg[RESULT_SLOTS]                          ' that point's swept offset, degrees
+    LONG    bResFloorValid[RESULT_SLOTS]                       ' TRUE when this leg measured at least one valid point
     LONG    selfMeanX10[SIDE_SLOTS * SIGN_SLOTS]
     LONG    zeroMeanX10[SIDE_SLOTS]
     LONG    bZeroOk[SIDE_SLOTS]
@@ -1120,8 +1172,6 @@ VAR { sign-off accumulators, task 3537 -- index sideSlot(side); cog 0 only, the 
     LONG    zxsAllMax[SIDE_SLOTS * ZXS_CHANNELS]            ' largest lifetime-first full zero mean, any phase, mV x10
     LONG    zxsAllN[SIDE_SLOTS]                             ' zeros folded into zxsAllMin/zxsAllMax
     LONG    bResLegRan[RESULT_SLOTS]                        ' TRUE when runLeg() ended this slot's leg other than LX_SKIPPED
-    LONG    halfProbeEvents[RESULT_SLOTS]                   ' half-speed confirm faults that left a probeable gap
-    LONG    halfProbeMissed[RESULT_SLOTS]                   ' those not followed by a measured probe point
     LONG    resZeroMissing[RESULT_SLOTS]                    ' that leg's valid points without a valid own zero
     LONG    resZeroChecked[RESULT_SLOTS]                    ' that leg's valid points (R9-SCAN-OWNZERO's n)
     LONG    bSfPair2Complete[SIDE_SLOTS]                    ' emitPair2()'s bComplete for this motor
@@ -1184,6 +1234,7 @@ PUB main() | trapCode
     emitHeaderRecords()
     bRunReturned := FALSE
     trapCode := \runScan()                                  ' a library abort lands here, not past the stop()s
+    runTrapCode := trapCode                                 ' task 3540 TOP-LEVEL TRAP: printed by emitEnd() every run
     if bRunReturned == FALSE
         setRunAbort(AR_LIB_ABORT, trapCode)
     shutdownMotors()                                        ' every cog-0 path: both wheels stop() (on the watchdog
@@ -1240,9 +1291,12 @@ PRI initRunState() | slotIdx
         bResSeValid[slotIdx] := FALSE
         bResIdefValid[slotIdx] := FALSE
         bResDrift[slotIdx] := FALSE
+        bResPinned[slotIdx] := FALSE                        ' task 3540 D2
+        bResBracketed[slotIdx] := FALSE
+        resFloorX10[slotIdx] := 0                           ' task 3540 D3
+        resFloorDeg[slotIdx] := 0
+        bResFloorValid[slotIdx] := FALSE
         bResLegRan[slotIdx] := FALSE                        ' task 3537 R9: never reached is NOMEAS
-        halfProbeEvents[slotIdx] := 0                       ' task 3537 R9: no event is NOMEAS
-        halfProbeMissed[slotIdx] := 0
         resZeroMissing[slotIdx] := 0
         resZeroChecked[slotIdx] := 0
     repeat slotIdx from 0 to (SIDE_SLOTS * ZXS_CHANNELS) - 1
@@ -2425,7 +2479,9 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
 ' @local legExit - LX_* exit
 ' @local stopUp - walk stop of the up side
 ' @local stopDown - walk stop of the down side
-' @local bBracketed - TRUE when the minimum is bracketed (always TRUE at 1/2 speed)
+' @local bBracketed - TRUE when the minimum is bracketed: evaluateBracket() at 1/4 speed, and
+'   (task 3540 D2) evaluateHalfBracket() at 1/2 speed, run for real once runFinePoints() has
+'   measured the confirm/cliff-probe points it judges -- no longer marked bracketed by assignment
 ' @local driftPctX10 - REF_END vs REF_START drift, percent x10, net means (scan v4 CHANGE 2)
 ' @local bDriftValid - TRUE when both references were valid
 
@@ -2459,7 +2515,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
             ' moves every JUDGEMENT of an already-measured mean onto net means, but this
             ' threshold feeds a raw-sample comparison, so it must stay in the same, raw, units.
             pointLimitMv := (legMeanX10[refStartIdx] * POINT_ABORT_X100) / (X100 * X10)
-            bBracketed := TRUE
+            bBracketed := TRUE                              ' half speed: provisional, only to admit runFinePoints() below
             centreDeg := defSwept
             if speedIdx == SPEED_QTR
                 stopUp := walkSide(side, signIdx, 1, defSwept, pointLimitMv)
@@ -2479,6 +2535,10 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
                     legExit := runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv)
                     fitLeg(centreDeg, (speedIdx == SPEED_QTR) ? FIT_MIN_PTS : CONFIRM_MIN_PTS, speedIdx)
                     bFitExtended := TRUE
+                if speedIdx == SPEED_HALF
+                    ' task 3540 D2: the real rise-on-both-sides test, now that the confirm/cliff
+                    ' points exist to judge it against -- overwrites the provisional TRUE above.
+                    bBracketed := evaluateHalfBracket(side, signIdx)
             if abortReason == AR_NONE
                 refEndIdx := legMeasure(side, speedIdx, signIdx, PH_REF_END, defSwept, refWinTicks, pointLimitMv)
     if (abortReason <> AR_NONE) and (legExit == LX_DONE)
@@ -2492,6 +2552,10 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
     bResSeValid[slotIdx] := bFitSeValid
     resIminF[slotIdx] := fitMinMvF
     resRmsF[slotIdx] := fitRmsF
+    bResPinned[slotIdx] := fitPinnedNearLimit()             ' task 3540 D2: read while legLimitUp/DownDeg
+                                                             ' still describe THIS leg's window
+    bResBracketed[slotIdx] := bBracketed                    ' task 3540 D2: real test, both speeds
+    resFloorX10[slotIdx], resFloorDeg[slotIdx], bResFloorValid[slotIdx] := legMeasuredFloor()
     bResIdefValid[slotIdx] := FALSE
     resIdefX10[slotIdx] := 0
     driftPctX10 := 0
@@ -2675,6 +2739,82 @@ PRI updateLegLow() | ptIdx
                 elseif legNetX10[ptIdx] < legNetX10[legLowIdx]
                     legLowIdx := ptIdx
 
+PRI updateLegLowHalf() | ptIdx
+' Task 3540 D2: like updateLegLow(), but over the half-speed leg's own admitted phases
+' (PH_FINE/PH_CLIFF/PH_EXTEND -- the same set fitLeg() fits at SPEED_HALF), not
+' PH_REF_START/PH_COARSE which a half-speed leg never measures.
+'
+' @local ptIdx - leg index
+
+    legLowIdx := -1
+    if legCount > 0
+        repeat ptIdx from 0 to legCount - 1
+            if ((legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_CLIFF) or (legPhase[ptIdx] == PH_EXTEND)) and isValidIdx(ptIdx)
+                if legLowIdx < 0
+                    legLowIdx := ptIdx
+                elseif legNetX10[ptIdx] < legNetX10[legLowIdx]
+                    legLowIdx := ptIdx
+
+PRI evaluateHalfBracket(side, signIdx) : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctUp, risePctDown
+' Task 3540 D2: half-speed counterpart to evaluateBracket() -- the rise-on-both-sides negative
+' case, applied for real to the confirm/cliff-probe points fitLeg() itself fits, instead of the
+' half-speed leg being marked bracketed by assignment. A side whose window is fault-bounded
+' (bLegLimitUpFault/Down, kept current by refreshLegLimits() as runFinePoints()/probeConfirmCliff()
+' measured) is judged at the relaxed FAULT_RISE_PCT, exactly mirroring evaluateBracket()'s
+' quarter-speed test. FAILs (bBracketed FALSE) precisely when the low sits at that fault-bounded
+' edge with nothing measured beyond it -- the failure mode scan run 7 could not get past
+' (SCAN-RUN-7-EVALUATION.md sec 2 table, sec 5 item 1).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT (unused directly; kept for symmetry with evaluateBracket())
+' @param signIdx - SIGN_NEG or SIGN_POS (unused directly; kept for symmetry with evaluateBracket())
+' @returns bBracketed - TRUE when a high point exists on both sides of the low
+'
+' @local ptIdx - leg index
+' @local bBelowOk - a high point below the low exists
+' @local bAboveOk - a high point above the low exists
+' @local risePctUp - rise threshold for the up side: FAULT_RISE_PCT when it is fault-bounded
+' @local risePctDown - rise threshold for the down side: FAULT_RISE_PCT when it is fault-bounded
+
+    updateLegLowHalf()
+    bBelowOk := FALSE
+    bAboveOk := FALSE
+    risePctUp := bLegLimitUpFault ? FAULT_RISE_PCT : RISE_PCT
+    risePctDown := bLegLimitDownFault ? FAULT_RISE_PCT : RISE_PCT
+    if (legLowIdx >= 0) and (legCount > 0)
+        repeat ptIdx from 0 to legCount - 1
+            if (legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_CLIFF) or (legPhase[ptIdx] == PH_EXTEND)
+                if legDeg[ptIdx] < legDeg[legLowIdx]
+                    if isHighIdxFor(ptIdx, risePctDown)
+                        bBelowOk := TRUE
+                elseif legDeg[ptIdx] > legDeg[legLowIdx]
+                    if isHighIdxFor(ptIdx, risePctUp)
+                        bAboveOk := TRUE
+    bBracketed := bBelowOk and bAboveOk
+
+PRI legMeasuredFloor() : floorX10, floorDeg, bFound | ptIdx
+' Task 3540 D3: the leg's own lowest measured NET point (any phase, valid only), the "floor" the
+' evaluation documents describe -- e.g. run 7's L NEG floor of 13.05 mV at 13 deg (SCAN-RUN-7-
+' EVALUATION.md sec 2), as opposed to the fitted quadratic vertex (resIminF), which can sit below
+' every point actually measured. BS-RESULT/BS-RESULT-HALF/BS-PAIR2 judge on this; the fitted value
+' moves to an extra field at the end of each of those records.
+'
+' @returns floorX10 - lowest valid legNetX10 in the leg, 0 when none
+' @returns floorDeg - that point's swept offset, 0 when none
+' @returns bFound - TRUE when at least one valid point was measured
+'
+' @local ptIdx - leg index
+
+    floorX10 := 0
+    floorDeg := 0
+    bFound := FALSE
+    if legCount > 0
+        repeat ptIdx from 0 to legCount - 1
+            if isValidIdx(ptIdx)
+                if (bFound == FALSE) or (legNetX10[ptIdx] < floorX10)
+                    floorX10 := legNetX10[ptIdx]
+                    floorDeg := legDeg[ptIdx]
+                    bFound := TRUE
+
 PRI beyondLowCount(walkDir, defSwept) : nBeyond | ptIdx
 ' Count coarse points on this side beyond the low that are valid or current-aborted.
 '
@@ -2743,11 +2883,13 @@ PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepId
     emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
 
 PRI refineCliffEdge(side, signIdx, walkDir, defSwept, curStep, curConsec, pointLimitMv) | goodStep, ...
-    goodDeg, midDeg, halfDeg, midIdx
+    goodDeg, faultDeg
 ' Fine-walk into the fault edge the coarse walk just found (PL-31 / BS-CLIFF): reset this
-' phase's consecutive-fault counter (mirrors runFinePoints/runExtension), probe FINE_STEP_DEG
-' from the last good coarse point, and CLIFF_HALF_STEP_DEG from it too when that also faults.
-' computeLegCliff() later picks the tightest good/fault pair from every point in the leg.
+' phase's consecutive-fault counter (mirrors runFinePoints/runExtension), then hand off to
+' probeTowardFault() (task 3540 D1), which steps 2 deg at a time toward the fault -- clamped to
+' 1 deg (CLIFF_LAST_STEP_DEG) short of it on the last step, so even the standard 10-deg coarse gap
+' gets a final probe at fault-1 deg (coordinator review). computeLegCliff() later picks the
+' tightest good/fault pair from every point in the leg.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signIdx - SIGN_NEG or SIGN_POS
@@ -2759,19 +2901,56 @@ PRI refineCliffEdge(side, signIdx, walkDir, defSwept, curStep, curConsec, pointL
 '
 ' @local goodStep - coarse step number of the last good point before the fault run
 ' @local goodDeg - that point's swept offset
-' @local midDeg - fine-step probe, swept degrees
-' @local halfDeg - half-fine-step probe, swept degrees
-' @local midIdx - leg index of the fine-step probe
+' @local faultDeg - the first fault-like coarse point beyond it, swept degrees
 
     legConsecFaults := 0
     goodStep := curStep - curConsec
     goodDeg := defSwept + (walkDir * goodStep * COARSE_STEP_DEG)
-    if (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
-        midDeg := goodDeg + (walkDir * FINE_STEP_DEG)
-        midIdx := legMeasure(side, SPEED_QTR, signIdx, PH_CLIFF, midDeg, WIN_TICKS_COARSE, pointLimitMv)
-        if isFaultLikeIdx(midIdx) and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
-            halfDeg := goodDeg + (walkDir * CLIFF_HALF_STEP_DEG)
-            legMeasure(side, SPEED_QTR, signIdx, PH_CLIFF, halfDeg, WIN_TICKS_COARSE, pointLimitMv)
+    faultDeg := goodDeg + (walkDir * COARSE_STEP_DEG)
+    probeTowardFault(side, SPEED_QTR, signIdx, walkDir, goodDeg, faultDeg, WIN_TICKS_COARSE, pointLimitMv)
+
+PRI probeTowardFault(side, speedIdx, signIdx, dir, goodDeg, faultDeg, winTicks, pointLimitMv) | probeDeg, nextDeg, ptIdx
+' Task 3540 D1 (coordinator review): after a clean cliff probe, keep probing CLIFF_HALF_STEP_DEG
+' (2 deg) closer to the fault instead of stopping at the first one -- at both speeds
+' (refineCliffEdge()'s quarter-speed coarse-walk edge and probeConfirmCliff()'s half-speed confirm
+' edge share this loop). The ordinary 2 deg step is clamped to CLIFF_LAST_STEP_DEG (1 deg, the
+' finest the integer offset grid allows) when it would otherwise reach or pass the known fault, so
+' a good/fault gap of exactly CLIFF_HALF_STEP_DEG (the common case: confirm points sit
+' FINE_STEP_DEG=5 apart, and a coarse-walk edge is COARSE_STEP_DEG=10 apart, both leaving a
+' 2-deg-or-wider remainder somewhere) still gets one last probe 1 deg from the fault, instead of
+' none -- run 7's LEFT POS (good -11, fault -9, gap exactly 2 deg) got no probe at all under the
+' plain 2-deg-only version (SCAN-RUN-7-EVALUATION.md sec 2; found in coordinator review). Every
+' probe is tagged PH_CLIFF, strictly between goodDeg and faultDeg: nothing is ever commanded at or
+' beyond a point that faulted in this leg (faultDeg was already measured and faulted). Stops on the
+' first fault-like probe, on LEG_FAULT_CAP consecutive faults, on a run abort, or when the clamped
+' step makes no forward progress (the previous probe was already the closest the grid allows).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param dir - +1 the fault lies above goodDeg, -1 below
+' @param goodDeg - the last known-good point before the fault
+' @param faultDeg - the known fault-like point beyond it, swept degrees
+' @param winTicks - window length in hall ticks for this speed
+' @param pointLimitMv - per-point relative abort threshold, mV
+'
+' @local probeDeg - the last probed (or starting good) offset
+' @local nextDeg - the next candidate offset, clamped
+' @local ptIdx - leg index of the probe just measured
+
+    probeDeg := goodDeg
+    repeat
+        if (legConsecFaults >= LEG_FAULT_CAP) or (abortReason <> AR_NONE)
+            quit
+        nextDeg := probeDeg + (dir * CLIFF_HALF_STEP_DEG)
+        if (dir * (faultDeg - nextDeg)) <= 0
+            nextDeg := faultDeg - (dir * CLIFF_LAST_STEP_DEG) ' clamp to 1 deg short of the known fault
+        if (dir * (nextDeg - probeDeg)) <= 0
+            quit                                             ' no forward progress left on the integer grid
+        ptIdx := legMeasure(side, speedIdx, signIdx, PH_CLIFF, nextDeg, winTicks, pointLimitMv)
+        probeDeg := nextDeg
+        if isFaultLikeIdx(ptIdx)
+            quit
 
 PRI computeLegCliff(defSwept, signIdx) | dir, ptIdx, dist, goodDist, faultDist
 ' Find the tightest last-good/first-fault transition, among every point stored in this leg, on
@@ -2940,14 +3119,17 @@ PRI fitPinnedNearLimit() : bPinned
             bPinned := TRUE
 
 PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : legExit | orderIdx, ...
-    orderCount, pOrder, sweptDeg, winTicks, ptIdx, bProbeable, countBefore, probeSlot
+    orderCount, pOrder, sweptDeg, winTicks, ptIdx
 ' Measure the interleaved fine (1/4) or confirm (1/2) points around centreDeg. CHANGE 4 (scan
 ' v4): at SPEED_HALF, a confirm point that faults is immediately followed by probeConfirmCliff(),
-' which fine-walks toward that fault from the leg's last good point -- exactly what
-' refineCliffEdge() does for the quarter-speed coarse walk -- so the gap a fault-bounded window
-' would otherwise leave unmeasured (run 5's LEFT half-speed legs, both TOO_FEW, each with a 5deg
-' or better gap between their last good confirm point and their fault: SCAN-RUN-5-EVALUATION.md
-' section 3) is filled before refreshLegLimits() locks the window down to it.
+' which now (task 3540 D1) keeps probing 2 deg closer to the fault, clamped to a final 1-deg step
+' (CLIFF_LAST_STEP_DEG) so even a narrow gap gets one probe -- exactly what refineCliffEdge() does
+' for the quarter-speed coarse walk -- so the gap a fault-bounded window
+' would otherwise leave unmeasured (run 5's LEFT half-speed legs, both TOO_FEW: SCAN-RUN-5-
+' EVALUATION.md section 3; run 7's evaluation section 5, the same gap one step narrower) is filled
+' before refreshLegLimits() locks the window down to it. Whether the negative case actually held is
+' judged afterward, over the whole leg, by evaluateHalfBracket() (D2) -- not accounted point-by-
+' point here.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param speedIdx - SPEED_QTR or SPEED_HALF
@@ -2963,9 +3145,6 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
 ' @local sweptDeg - this point's swept offset
 ' @local winTicks - window ticks for this speed
 ' @local ptIdx - leg index of the just-measured confirm/fine point
-' @local bProbeable - task 3537 R9-SCAN-HALFLEG: this confirm fault left a gap a probe can land in
-' @local countBefore - legCount before probeConfirmCliff(); a probe point was measured when it grew
-' @local probeSlot - this leg's result slot, for the R9-SCAN-HALFLEG counters
 '
 ' CHANGE 1 (scan v3): a candidate outside the current fault-bounded window (withinWindowLimit())
 ' is skipped -- never measured -- and refreshLegLimits() re-runs after every point measured, so a
@@ -2991,42 +3170,29 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
         if withinHardLimit(sweptDeg, defSwept) and withinWindowLimit(sweptDeg)
             ptIdx := legMeasure(side, speedIdx, signIdx, PH_FINE, sweptDeg, winTicks, pointLimitMv)
             if (speedIdx == SPEED_HALF) and isFaultLikeIdx(ptIdx) and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
-                ' task 3537 R9-SCAN-HALFLEG: judge the gap BEFORE the probe fills it, and count the
-                ' probe points by the store's growth, not by anything probeConfirmCliff() reports
-                bProbeable := (ptIdx >= 0) and confirmGapProbeable(defSwept, sweptDeg)
-                countBefore := legCount
                 probeConfirmCliff(side, speedIdx, signIdx, defSwept, sweptDeg, pointLimitMv)
-                if bProbeable
-                    probeSlot := resultSlot(side, signIdx, speedIdx)
-                    halfProbeEvents[probeSlot] += 1
-                    if legCount == countBefore
-                        halfProbeMissed[probeSlot] += 1
             refreshLegLimits(defSwept)
     if legConsecFaults >= LEG_FAULT_CAP
         legExit := LX_FAULT_CAP
         emitAbort(SCOPE_LEG, AR_FAULT_CAP, side, signedIncre(speedIdx, signIdx), legConsecFaults)
 
-PRI probeConfirmCliff(side, speedIdx, signIdx, defSwept, faultDeg, pointLimitMv) | dir, goodDeg, ...
-    bFromFault, midDeg, halfDeg, midIdx, bProbeHalf
-' CHANGE 4 (scan v4): half-speed counterpart to refineCliffEdge(). A confirm point that just
-' faulted leaves a gap between the leg's last good point and this fault -- run 5's evaluation
-' section 3 found exactly this gap (9deg and -16deg never measured) because the window limit,
-' tightened to the last good point, would otherwise exclude everything between it and the fault.
-' So this probes that gap FIRST, at FINE_STEP_DEG then CLIFF_HALF_STEP_DEG toward the fault from
-' the last good point (found by legLimitForDir(), the same good/fault scan the window limit
-' itself uses), tagged PH_CLIFF exactly like the quarter-speed cliff probe. runFinePoints() calls
-' refreshLegLimits() again right after this returns, so these probes are counted before the
-' window limit is (re)applied to any later confirm point. fitLeg() admits PH_CLIFF points into
-' the confirm fit only at SPEED_HALF (its speedIdx parameter), so quarter-speed's own PH_CLIFF
-' probes (from the coarse walk) are unaffected. Never commands past the fault itself: both probe
-' offsets lie strictly between goodDeg and faultDeg.
-'
-' Unlike the coarse walk, whose good/fault gap is COARSE_STEP_DEG (10), confirm points sit
-' FINE_STEP_DEG (5) apart, so the usual gap here is exactly one fine step: the fine-step probe
-' then lands ON the fault and is not measured. The half-step probe must still run in that case --
-' it is gated on "the fine-step probe was not measured, or it faulted", never on the fine-step
-' probe alone (review fix: nesting it inside the fine-step result made this whole probe a no-op
-' for every one-step gap).
+PRI probeConfirmCliff(side, speedIdx, signIdx, defSwept, faultDeg, pointLimitMv) | dir, goodDeg, bFromFault
+' CHANGE 4 (scan v4); rewritten task 3540 D1 onto the shared probeTowardFault() loop. Half-speed
+' counterpart to refineCliffEdge(). A confirm point that just faulted leaves a gap between the
+' leg's last good point and this fault -- run 5's evaluation section 3 found exactly this gap (9deg
+' and -16deg never measured), and run 7's evaluation section 5 found the SAME gap surviving one
+' step narrower after the old single fine/half-step probe found its own probe clean and stopped
+' (D1). probeTowardFault() now keeps stepping CLIFF_HALF_STEP_DEG toward the fault from the last
+' good point (found by legLimitForDir(), the same good/fault scan the window limit itself uses),
+' clamped to CLIFF_LAST_STEP_DEG (1 deg) short of it on the last step -- so even the common
+' one-fine-step (5 deg) confirm gap still gets a probe 1 deg from the fault, and the exactly
+' CLIFF_HALF_STEP_DEG (2 deg) gap run 7's LEFT POS leg had (good -11, fault -9) now gets one probe
+' at -10 instead of none (coordinator review) -- until it hits a fault, runs out of room, or the
+' fault cap trips. runFinePoints() calls
+' refreshLegLimits() again right after this returns, so these probes are counted before the window
+' limit is (re)applied to any later confirm point. fitLeg() admits PH_CLIFF points into the confirm
+' fit only at SPEED_HALF (its speedIdx parameter), so quarter-speed's own PH_CLIFF probes (from the
+' coarse walk) are unaffected.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param speedIdx - SPEED_HALF (this file's only caller)
@@ -3038,43 +3204,11 @@ PRI probeConfirmCliff(side, speedIdx, signIdx, defSwept, faultDeg, pointLimitMv)
 ' @local dir - +1 the fault lies above defSwept, -1 below
 ' @local goodDeg - the last good point before this fault, from legLimitForDir()
 ' @local bFromFault - legLimitForDir()'s own flag; skip probing when FALSE (no fault found yet)
-' @local midDeg - fine-step probe, swept degrees
-' @local halfDeg - half-fine-step probe, swept degrees
-' @local midIdx - leg index of the fine-step probe
-' @local bProbeHalf - TRUE when the half-step probe should run: the fine-step probe was not
-'   strictly inside the gap (so not measured), or it was measured and faulted
 
     dir := (faultDeg > defSwept) ? 1 : -1
     goodDeg, bFromFault := legLimitForDir(defSwept, dir)
-    if bFromFault and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
-        bProbeHalf := TRUE
-        midDeg := goodDeg + (dir * FINE_STEP_DEG)
-        if ((dir * (faultDeg - midDeg)) > 0) and ((dir * (midDeg - goodDeg)) > 0)
-            midIdx := legMeasure(side, speedIdx, signIdx, PH_CLIFF, midDeg, WIN_TICKS_HALF, pointLimitMv)
-            bProbeHalf := isFaultLikeIdx(midIdx)
-        if bProbeHalf and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
-            halfDeg := goodDeg + (dir * CLIFF_HALF_STEP_DEG)
-            if ((dir * (faultDeg - halfDeg)) > 0) and ((dir * (halfDeg - goodDeg)) > 0)
-                legMeasure(side, speedIdx, signIdx, PH_CLIFF, halfDeg, WIN_TICKS_HALF, pointLimitMv)
-
-PRI confirmGapProbeable(defSwept, faultDeg) : bProbeable | dir, goodDeg, bFromFault
-' Task 3537 R9-SCAN-HALFLEG: report whether a half-speed confirm point that just faulted left a gap a
-' probe can land in -- more than CLIFF_HALF_STEP_DEG between the fault and the leg's last good point in
-' its direction, so at least probeConfirmCliff()'s half-step offset lies strictly inside. Judged from
-' the leg store by legLimitForDir(), not from probeConfirmCliff()'s own gates, so a probe that was owed
-' and never measured (run 5, or the nested half-step defect) reads as a miss.
-'
-' @param defSwept - default offset, swept degrees
-' @param faultDeg - the confirm point that just faulted, swept degrees
-' @returns bProbeable - TRUE when the gap is wider than CLIFF_HALF_STEP_DEG
-'
-' @local dir - +1 the fault lies above defSwept, -1 below
-' @local goodDeg - the last good point before the nearest fault in dir
-' @local bFromFault - TRUE when legLimitForDir() found a fault in dir
-
-    dir := (faultDeg > defSwept) ? 1 : -1
-    goodDeg, bFromFault := legLimitForDir(defSwept, dir)
-    bProbeable := bFromFault and ((dir * (faultDeg - goodDeg)) > CLIFF_HALF_STEP_DEG)
+    if bFromFault
+        probeTowardFault(side, speedIdx, signIdx, dir, goodDeg, faultDeg, WIN_TICKS_HALF, pointLimitMv)
 
 PRI runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv) : legExit | extDir, edgeDeg, extIdx, ...
     extCount, sweptDeg, winTicks
@@ -4101,6 +4235,7 @@ PRI emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
     tokenField(@"stop", walkStopToken(walkStop), TOKMAX_WALK_STOP)
     naOrBoundedField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
     naOrBoundedField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
+    naOrBoundedField(@"low_net_mV_x10", lowNetOrZero(), LIM_SMALL, legLowIdx >= 0)  ' task 3540 D5
     lineEmit()
 
 PRI emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
@@ -4124,6 +4259,7 @@ PRI emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
     boolField(@"above_ok", bAboveOk)
     boolField(@"bracketed", bBracketed)
     tokenField(@"reason", bracketToken(reason), TOKMAX_BRACKET)
+    naOrBoundedField(@"low_net_mV_x10", lowNetOrZero(), LIM_SMALL, legLowIdx >= 0)  ' task 3540 D5
     lineEmit()
 
 PRI lowDegOrZero() : lowDeg
@@ -4143,6 +4279,16 @@ PRI lowMeanOrZero() : lowMeanX10
     lowMeanX10 := 0
     if legLowIdx >= 0
         lowMeanX10 := legMeanX10[legLowIdx]
+
+PRI lowNetOrZero() : lowNetX10
+' Task 3540 D5: net sense of the leg's low point x10 (the figure lowMeanOrZero()'s raw mean is
+' printed under a neutral name beside), 0 when there is none.
+'
+' @returns lowNetX10 - net sense x10
+
+    lowNetX10 := 0
+    if legLowIdx >= 0
+        lowNetX10 := legNetX10[legLowIdx]
 
 PRI emitFit(side, speedIdx, signIdx)
 ' Emit BS-FIT: status and span of the fit record. CHANGE 1 (scan v3): pinned, appended at the end,
@@ -4212,7 +4358,7 @@ PRI flatHalfWidthX10() : halfWidthX10
     if bFitSolved and (fitMinMvF >. 0.0) and (fitCurvF >. 0.0)
         halfWidthX10 := floatToBoundedInt(fsqrt((FIT_FLAT_FRACTION *. fitMinMvF) /. fitCurvF) *. FIT_DEG_SCALE *. 10.0, LIM_SMALL)
 
-PRI emitCliff(side, speedIdx, signIdx) | bFromFit, edgeF, refF, marginF, edgeX10, marginX10, bMarginValid
+PRI emitCliff(side, speedIdx, signIdx) | bFromFit, edgeF, refF, marginF, edgeX10, marginX10, bMarginValid, edgeResX10
 ' Emit BS-CLIFF: the fault edge nearest the hall electrical zero for this leg (PL-31), and its
 ' margin to the fitted minimum, or, when there is no fit, to the lowest measured point.
 '
@@ -4227,6 +4373,9 @@ PRI emitCliff(side, speedIdx, signIdx) | bFromFit, edgeF, refF, marginF, edgeX10
 ' @local edgeX10 - edge estimate x10
 ' @local marginX10 - margin x10
 ' @local bMarginValid - TRUE when a reference offset exists to measure the margin from
+' @local edgeResX10 - task 3540 D4: the edge estimate's own +/- resolution x10 (half the good/fault
+'   gap it was resolved from), reported beside margin_deg_x10 -- an EDGE verdict at quarter speed
+'   used to turn on 0.05 deg unstated (SCAN-RUN-7-EVALUATION.md sec 5 item 4)
 
     bFromFit := legCliffFound and bFitSolved
     edgeF := 0.0
@@ -4244,6 +4393,9 @@ PRI emitCliff(side, speedIdx, signIdx) | bFromFit, edgeF, refF, marginF, edgeX10
             marginF := fabs(edgeF -. refF)
     edgeX10 := floatToBoundedInt(edgeF *. 10.0, LIM_SMALL)
     marginX10 := floatToBoundedInt(marginF *. 10.0, LIM_SMALL)
+    edgeResX10 := 0
+    if legCliffFound
+        edgeResX10 := floatToBoundedInt((float(legCliffFaultDeg - legCliffGoodDeg) /. 2.0) *. 10.0, LIM_SMALL)
     lineReset()
     lineAddText(@"BS-CLIFF")
     tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
@@ -4255,6 +4407,7 @@ PRI emitCliff(side, speedIdx, signIdx) | bFromFit, edgeF, refF, marginF, edgeX10
     naOrBoundedField(@"edge_deg_x10", edgeX10, LIM_SMALL, legCliffFound)
     naOrBoundedField(@"margin_deg_x10", marginX10, LIM_SMALL, legCliffFound and bMarginValid)
     boolField(@"margin_from_fit", bFromFit)
+    naOrBoundedField(@"edge_res_deg_x10", edgeResX10, LIM_SMALL, legCliffFound)  ' task 3540 D4, new field at the end
     lineEmit()
 
 PRI emitFault(side, motorIncre, sweptDeg, fxStep, bCleared)
@@ -4305,6 +4458,8 @@ PRI emitLeg(side, speedIdx, signIdx, legExit, refEndIdx, driftPctX10, bDriftVali
     naOrBoundedField(@"drift_pct_x10", driftPctX10, LIM_SMALL, bDriftValid)
     boolField(@"drift_flag", bDrift)
     tokenField(@"exit", legExitToken(legExit), TOKMAX_LEG_EXIT)
+    naOrBoundedField(@"ref_start_net_mV_x10", refStartNetOrZero(), LIM_SMALL, isValidIdx(0) and (legPhase[0] == PH_REF_START))  ' task 3540 D5
+    naOrBoundedField(@"ref_end_net_mV_x10", refEndNetOrZero(refEndIdx), LIM_SMALL, isValidIdx(refEndIdx))                       ' task 3540 D5
     lineEmit()
 
 PRI refStartMeanOrZero() : meanX10
@@ -4316,6 +4471,16 @@ PRI refStartMeanOrZero() : meanX10
     if legCount > 0
         meanX10 := legMeanX10[0]
 
+PRI refStartNetOrZero() : netX10
+' Task 3540 D5: REF_START NET x10 of the leg (the figure ref_start_mV_x10's raw mean is printed
+' under a neutral name beside), 0 when absent.
+'
+' @returns netX10 - net sense x10
+
+    netX10 := 0
+    if legCount > 0
+        netX10 := legNetX10[0]
+
 PRI refEndMeanOrZero(refEndIdx) : meanX10
 ' REF_END mean x10 of the leg, 0 when absent.
 '
@@ -4325,6 +4490,16 @@ PRI refEndMeanOrZero(refEndIdx) : meanX10
     meanX10 := 0
     if (refEndIdx >= 0) and (refEndIdx < legCount)
         meanX10 := legMeanX10[refEndIdx]
+
+PRI refEndNetOrZero(refEndIdx) : netX10
+' Task 3540 D5: REF_END NET x10 of the leg, 0 when absent.
+'
+' @param refEndIdx - leg index of REF_END, -1 when not measured
+' @returns netX10 - net sense x10
+
+    netX10 := 0
+    if (refEndIdx >= 0) and (refEndIdx < legCount)
+        netX10 := legNetX10[refEndIdx]
 
 PRI emitResults(side, firstSign) | orderPos, signIdx
 ' Emit one motor's RESULT, RESULT-HALF and PAIR records.
@@ -4343,31 +4518,42 @@ PRI emitResults(side, firstSign) | orderPos, signIdx
     emitPair2(side)
 
 PRI hasMinimum(slotIdx) : bHasMin
-' Report whether a result slot carries a usable fitted minimum (OK or POOR).
+' Report whether a result slot carries a usable fitted minimum. Task 3540 D2: FS_POOR is no
+' longer usable (a fit whose residual already exceeds the POOR threshold must not be counted as a
+' free minimum), and neither is a fit fitPinnedNearLimit() found pinned against a fault-derived
+' window edge, nor one whose leg failed the rise-on-both-sides negative case
+' (evaluateBracket()/evaluateHalfBracket()). Run 7's L POS printed exactly this: a POOR, pinned fit
+' with shift +5.4, shift_sig TRUE, from data lowest at the window edge with nothing above it
+' (SCAN-RUN-7-EVALUATION.md sec 2 item "L POS reports a shift that is not a measured minimum").
 '
 ' @param slotIdx - result slot
-' @returns bHasMin - TRUE when the status is FS_OK or FS_POOR
+' @returns bHasMin - TRUE when the status is FS_OK, not pinned, and the leg was bracketed
 
-    bHasMin := (resStatus[slotIdx] == FS_OK) or (resStatus[slotIdx] == FS_POOR)
+    bHasMin := (resStatus[slotIdx] == FS_OK) and (bResPinned[slotIdx] == FALSE) and (bResBracketed[slotIdx] <> FALSE)
 
-PRI emitResult(side, signIdx) | slotIdx, bHasMin, iminX10, savingX10
-' Emit BS-RESULT for one sign at 1/4 speed. Scan v4 CHANGE 2: i_min_mV_x10 (from resIminF, the
-' fit's vertex) and i_def_mV_x10 (resIdefX10, the averaged REF_START/REF_END) are both NET means
-' now, so saving_pct_x10 compares like with like -- same field names, same position.
+PRI emitResult(side, signIdx) | slotIdx, bHasMin, bFloorOk, iminX10, savingX10
+' Emit BS-RESULT for one sign at 1/4 speed. Task 3540 D3: i_min_mV_x10 and saving_pct_x10 are now
+' judged on the leg's measured floor (resFloorX10, from legMeasuredFloor()), not the fitted vertex
+' -- run 7's fits read 11.3/9.8/13.2/13.5 mV against measured floors of 13.0/11.4/12.0/15.9 mV
+' (SCAN-RUN-7-EVALUATION.md sec 3). i_def_mV_x10 (resIdefX10, the averaged REF_START/REF_END) is
+' still a net mean, so saving_pct_x10 compares like with like. i_min_fit_mV_x10, a new field at the
+' end, keeps the old fitted vertex for comparison.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signIdx - SIGN_NEG or SIGN_POS
 '
 ' @local slotIdx - 1/4-speed result slot
 ' @local bHasMin - a usable minimum exists
-' @local iminX10 - fitted minimum current x10, net
+' @local bFloorOk - the leg measured at least one valid point
+' @local iminX10 - minimum current x10, net, measured floor
 ' @local savingX10 - saving at the minimum vs default, percent x10
 
     slotIdx := resultSlot(side, signIdx, SPEED_QTR)
     bHasMin := hasMinimum(slotIdx)
-    iminX10 := floatToBoundedInt(resIminF[slotIdx] *. 10.0, LIM_SMALL)
+    bFloorOk := bHasMin and (bResFloorValid[slotIdx] <> FALSE)
+    iminX10 := resFloorX10[slotIdx]
     savingX10 := 0
-    if bHasMin and bResIdefValid[slotIdx] and (resIdefX10[slotIdx] > 0)
+    if bFloorOk and bResIdefValid[slotIdx] and (resIdefX10[slotIdx] > 0)
         savingX10 := ((resIdefX10[slotIdx] - iminX10) * X1000) / resIdefX10[slotIdx]
     lineReset()
     lineAddText(@"BS-RESULT")
@@ -4379,15 +4565,21 @@ PRI emitResult(side, signIdx) | slotIdx, bHasMin, iminX10, savingX10
     naOrBoundedField(@"min_deg_x10", floatToBoundedInt(resMinF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)
     naOrBoundedField(@"applied_deg", normDegrees(floatToBoundedInt(resMinF[slotIdx], LIM_TINY)), LIM_TINY, bHasMin)
     naOrBoundedField(@"min_se_deg_x10", floatToBoundedInt(resSeF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin and bResSeValid[slotIdx])
-    naOrBoundedField(@"i_min_mV_x10", iminX10, LIM_SMALL, bHasMin)
+    naOrBoundedField(@"i_min_mV_x10", iminX10, LIM_SMALL, bFloorOk)
     naOrBoundedField(@"i_def_mV_x10", resIdefX10[slotIdx], LIM_SMALL, bResIdefValid[slotIdx])
-    naOrBoundedField(@"saving_pct_x10", savingX10, LIM_SMALL, bHasMin and bResIdefValid[slotIdx])
+    naOrBoundedField(@"saving_pct_x10", savingX10, LIM_SMALL, bFloorOk and bResIdefValid[slotIdx])
     naOrBoundedField(@"fit_rms_mV_x10", floatToBoundedInt(resRmsF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)
     boolField(@"drift_flag", bResDrift[slotIdx])
+    naOrBoundedField(@"i_min_fit_mV_x10", floatToBoundedInt(resIminF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)  ' task 3540 D3, new field at the end
     lineEmit()
 
-PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bShift, bShiftSe, shiftDegF, shiftSeF, bSig
-' Emit BS-RESULT-HALF for one sign: the 1/2-speed minimum and its shift from 1/4 speed.
+PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bHalfFloorOk, bShift, bShiftSe, shiftDegF, shiftSeF, bSig
+' Emit BS-RESULT-HALF for one sign: the 1/2-speed minimum and its shift from 1/4 speed. Task 3540
+' D2: hasMinimum() now rejects a POOR or pinned fit and a leg that failed the rise-on-both-sides
+' negative case, so a leg like run 7's L POS -- POOR, pinned, shift +5.4, shift_sig TRUE, printed
+' from data lowest at the window edge (SCAN-RUN-7-EVALUATION.md sec 2) -- emits no shift or
+' shift_sig at all: bHalfMin is FALSE, so bShift is FALSE. D3: i_min_mV_x10 is now the leg's
+' measured floor, with the old fitted vertex kept at i_min_fit_mV_x10, a new field at the end.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signIdx - SIGN_NEG or SIGN_POS
@@ -4395,6 +4587,7 @@ PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bShift, bShiftS
 ' @local halfSlot - 1/2-speed result slot
 ' @local qtrSlot - 1/4-speed result slot
 ' @local bHalfMin - a usable 1/2-speed minimum exists
+' @local bHalfFloorOk - bHalfMin AND this leg measured at least one valid point
 ' @local bShift - both minima exist
 ' @local bShiftSe - both minima carry a standard error
 ' @local shiftDegF - shift, degrees
@@ -4404,6 +4597,7 @@ PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bShift, bShiftS
     halfSlot := resultSlot(side, signIdx, SPEED_HALF)
     qtrSlot := resultSlot(side, signIdx, SPEED_QTR)
     bHalfMin := hasMinimum(halfSlot)
+    bHalfFloorOk := bHalfMin and (bResFloorValid[halfSlot] <> FALSE)
     bShift := bHalfMin and hasMinimum(qtrSlot)
     bShiftSe := bShift and bResSeValid[halfSlot] and bResSeValid[qtrSlot]
     shiftDegF := resMinF[halfSlot] -. resMinF[qtrSlot]
@@ -4416,11 +4610,12 @@ PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bShift, bShiftS
     tokenField(@"status", fitToken(resStatus[halfSlot]), TOKMAX_FIT)
     naOrBoundedField(@"min_deg_x10", floatToBoundedInt(resMinF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)
     naOrBoundedField(@"min_se_deg_x10", floatToBoundedInt(resSeF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin and bResSeValid[halfSlot])
-    naOrBoundedField(@"i_min_mV_x10", floatToBoundedInt(resIminF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)
+    naOrBoundedField(@"i_min_mV_x10", resFloorX10[halfSlot], LIM_SMALL, bHalfFloorOk)
     naOrBoundedField(@"i_def_mV_x10", resIdefX10[halfSlot], LIM_SMALL, bResIdefValid[halfSlot])
     naOrBoundedField(@"shift_deg_x10", floatToBoundedInt(shiftDegF *. 10.0, LIM_SMALL), LIM_SMALL, bShift)
     naOrBoundedField(@"shift_se_deg_x10", floatToBoundedInt(shiftSeF *. 10.0, LIM_SMALL), LIM_SMALL, bShiftSe)
     boolField(@"shift_sig", bSig)
+    naOrBoundedField(@"i_min_fit_mV_x10", floatToBoundedInt(resIminF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)  ' task 3540 D3, new field at the end
     lineEmit()
 
 PRI emitPair(side, firstSign) | negSlot, posSlot, bComplete, bPairSe, midF, midSeF, leadF
@@ -4456,43 +4651,41 @@ PRI emitPair(side, firstSign) | negSlot, posSlot, bComplete, bPairSe, midF, midS
     tokenField(@"sign_order", (firstSign == SIGN_NEG) ? @sOrderNegFirst : @sOrderPosFirst, TOKMAX_ORDER)
     lineEmit()
 
-PRI emitPair2(side) | negSlot, posSlot, bComplete, negF, posF, ratioX1000, bRatio, pairSlot
-' Emit BS-PAIR2: currents at the two minima, the measured zero, and their ratio. Scan v4 CHANGE 3:
-' resIminF (negF/posF) is now the fit's NET-of-its-own-zero minimum (scan v4 CHANGE 2 -- fitLeg()
-' fits legNetX10, netted point-by-point against the zero measured immediately before each point,
-' which is finer-grained than "one zero per leg" but satisfies the same requirement). The old
-' ratio_net_x1000 re-subtracted zeroMeanX10 (ZERO_INIT, the motor-block's FIRST zero) from both
-' minima -- that was the bug (PL-32 / SCAN-RUN-5-EVALUATION.md section 6): after a restart
-' ZERO_INIT is the WRONG lifetime's zero for a later leg, which is exactly how run 5 got
-' ratio_net 0.440 on a pair whose correctly-netted ratio is 1.16.
-' REVIEW FIX (fmt 6): with negF/posF already net, a literal negF/posF is the SAME number the old
-' ratio_raw_x1000 printed -- one value under two names, and "raw" no longer describes anything
-' actually computed (the raw, un-netted minima are gone; CHANGE 2 replaced them at the fit
-' itself, not just at this record). So ratio_raw_x1000 now prints the token NA unconditionally
-' (see the fmt 6 CON note near FMT_VERSION); ratio_net_x1000 carries the one (net) ratio that
-' exists, and imbalance is computed from it, same as before. Field position/name unchanged for
-' both -- only ratio_raw_x1000's value (now always NA) changed.
+PRI emitPair2(side) | negSlot, posSlot, bComplete, negX10, posX10, ratioX1000, bRatio, pairSlot
+' Emit BS-PAIR2: currents at the two minima, the measured zero, and their ratio. Task 3540 D3:
+' negX10/posX10 (and so ratio_net_x1000/imbalance) now read each leg's measured floor
+' (resFloorX10), not the fitted vertex -- run 7's right motor's imbalance FALSE rested on fits
+' reading 1.026; its measured floors ratio 1.29 (SCAN-RUN-7-EVALUATION.md sec 3). The fitted
+' minima move to i_neg_min_fit_mV_x10/i_pos_min_fit_mV_x10, new fields at the end.
+' Scan v4 CHANGE 3 (superseded by D3 above, kept for the ratio_raw_x1000 history): resIminF was
+' the fit's NET-of-its-own-zero minimum (scan v4 CHANGE 2 -- fitLeg() fits legNetX10, netted
+' point-by-point against the zero measured immediately before each point). The old ratio_net_x1000
+' re-subtracted zeroMeanX10 (ZERO_INIT, the motor-block's FIRST zero) from both minima -- that was
+' the bug (PL-32 / SCAN-RUN-5-EVALUATION.md section 6). ratio_raw_x1000 still prints NA
+' unconditionally (fmt 6): neither the fit nor the measured floor computes a separate "raw"
+' minimum, so printing the same number under two names would misrepresent it as an independent
+' check.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 '
 ' @local negSlot - NEG 1/4-speed slot
 ' @local posSlot - POS 1/4-speed slot
-' @local bComplete - both minima exist
-' @local negF - NEG minimum current, mV, net
-' @local posF - POS minimum current, mV, net
-' @local ratioX1000 - negF/posF x1000, the net ratio (ratio_net_x1000)
+' @local bComplete - both minima exist, each with a valid measured floor
+' @local negX10 - NEG minimum current x10, net, measured floor
+' @local posX10 - POS minimum current x10, net, measured floor
+' @local ratioX1000 - negX10/posX10 x1000, the net ratio (ratio_net_x1000)
 ' @local bRatio - the denominator is positive
 ' @local pairSlot - sideSlot(side), the sign-off accumulator index (task 3537)
 
     negSlot := resultSlot(side, SIGN_NEG, SPEED_QTR)
     posSlot := resultSlot(side, SIGN_POS, SPEED_QTR)
-    bComplete := hasMinimum(negSlot) and hasMinimum(posSlot)
-    negF := resIminF[negSlot]
-    posF := resIminF[posSlot]
+    bComplete := hasMinimum(negSlot) and hasMinimum(posSlot) and (bResFloorValid[negSlot] <> FALSE) and (bResFloorValid[posSlot] <> FALSE)
+    negX10 := resFloorX10[negSlot]
+    posX10 := resFloorX10[posSlot]
     ratioX1000 := 0
     bRatio := FALSE
-    if bComplete and (posF >. 0.0)
-        ratioX1000 := floatToBoundedInt((negF /. posF) *. 1000.0, LIM_SMALL)
+    if bComplete and (posX10 > 0)
+        ratioX1000 := (negX10 * X1000) / posX10
         bRatio := TRUE
     ' task 3537 R9-SCAN-PAIR2: the very bComplete/bRatio this record prints below, not a re-derivation
     pairSlot := sideSlot(side)
@@ -4501,12 +4694,14 @@ PRI emitPair2(side) | negSlot, posSlot, bComplete, negF, posF, ratioX1000, bRati
     lineReset()
     lineAddText(@"BS-PAIR2")
     tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    naOrBoundedField(@"i_neg_min_mV_x10", floatToBoundedInt(negF *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(negSlot))
-    naOrBoundedField(@"i_pos_min_mV_x10", floatToBoundedInt(posF *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(posSlot))
+    naOrBoundedField(@"i_neg_min_mV_x10", negX10, LIM_SMALL, bComplete)
+    naOrBoundedField(@"i_pos_min_mV_x10", posX10, LIM_SMALL, bComplete)
     boundedField(@"zero_mV_x10", zeroMeanX10[sideSlot(side)], LIM_SMALL)
     naOrBoundedField(@"ratio_raw_x1000", ratioX1000, LIM_SMALL, FALSE)   ' fmt 6: raw minima no longer computed -- always NA
     naOrBoundedField(@"ratio_net_x1000", ratioX1000, LIM_SMALL, bRatio)
     boolField(@"imbalance", bRatio and (abs(ratioX1000 - X1000) > IMBALANCE_PCT * X10))
+    naOrBoundedField(@"i_neg_min_fit_mV_x10", floatToBoundedInt(resIminF[negSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(negSlot))  ' task 3540 D3, new field at the end
+    naOrBoundedField(@"i_pos_min_fit_mV_x10", floatToBoundedInt(resIminF[posSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(posSlot))
     lineEmit()
 
 PRI emitAbort(scope, reason, side, motorIncre, detailValue)
@@ -4545,6 +4740,7 @@ PRI emitEnd()
     boolField(@"left_done", bLeftDone)
     boolField(@"right_done", bRightDone)
     boolField(@"lib_abort", (abortReason == AR_LIB_ABORT))
+    boundedField(@"trap_value", runTrapCode, LIM_MID)       ' task 3540 TOP-LEVEL TRAP: every run, not only an abort
     lineEmit()
 
 PRI emitBuild()
@@ -4713,23 +4909,28 @@ PRI zxsCritToken(chIdx) : pTok
         other:
             pTok := @sSfCritZxsW
 
-PRI emitHalfLegSignoffs(side) | signIdx, resIdx
-' Emit R9-SCAN-HALFLEG for one motor: one BOOL SIGNOFF per half-speed result slot (task 3537).
-' measured TRUE when no half-speed confirm fault with a probeable gap went without a measured probe
-' point (halfProbeMissed 0). NOMEAS when the leg had no such fault (halfProbeEvents 0): no confirm
-' point faulted, the gap was too narrow to probe, the fault cap or a run abort came first, or the leg
-' never ran. Worst case: emitSignoffBool(), 173 bytes (CLIFF_PROBED is as long as FIT_OR_CLIFF was).
+PRI emitHalfLegSignoffs(side) | signIdx, resIdx, pCrit
+' Emit R9-SCAN-HALFLEG for one motor: one BOOL SIGNOFF per half-speed result slot (task 3537,
+' criterion redesigned task 3540 PL-46). measured TRUE when evaluateHalfBracket() found the leg's
+' low bracketed by a rise on both sides (bResBracketed); FAILs exactly when the low sits at a
+' fault-bounded window edge with nothing measured beyond it toward the fault -- run 7's failure
+' mode (SCAN-RUN-7-EVALUATION.md sec 2, sec 5 item 1). NOMEAS when the leg never ran (bResLegRan
+' FALSE). Task 3540 D7: each sign's instance carries its own crit token (MIN_BRACKETED_NEG /
+' MIN_BRACKETED_POS), so the two per-motor instances no longer read as duplicates. Worst case:
+' emitSignoffBool(), 173 bytes.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 '
 ' @local signIdx - SIGN_NEG then SIGN_POS
 ' @local resIdx - that sign's half-speed result slot
+' @local pCrit - this sign's crit token
 
     repeat signIdx from SIGN_NEG to SIGN_POS
         beat(CP_EMIT)
         resIdx := resultSlot(side, signIdx, SPEED_HALF)
-        emitSignoffBool(@sSfCellHalfLeg, @sSfTaskScanV4, side, @sSfCritCliffPrb, halfProbeEvents[resIdx] > 0, ...
-            halfProbeMissed[resIdx] == 0, SIGNOFF_ONE_INSTANCE)
+        pCrit := (signIdx == SIGN_NEG) ? @sSfCritMinBrNeg : @sSfCritMinBrPos
+        emitSignoffBool(@sSfCellHalfLeg, @sSfTaskScanV4, side, pCrit, bResLegRan[resIdx] <> FALSE, ...
+            bResBracketed[resIdx] <> FALSE, SIGNOFF_ONE_INSTANCE)
 
 PRI emitOwnZeroSignoffs(side) | signIdx, speedIdx, resIdx, nInst
 ' Emit R9-SCAN-OWNZERO for one motor (task 3537): one COUNT SIGNOFF per result slot whose leg ran and

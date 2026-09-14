@@ -2549,6 +2549,31 @@ def _st_w_gutter_no_recovery():
                 f"{listed}")
 
 
+def _st_x_r9_halfleg_collation():
+    """task 3540, PL-46: R9-SCAN-HALFLEG's redesigned crit (MIN_BRACKETED_NEG/POS) collates
+    correctly -- a printed measured FALSE scores FAIL, a printed measured TRUE scores PASS. This
+    proves only the collation logic, from synthetic SIGNOFF records; it does NOT prove the scan
+    binary prints FALSE on run 7's data. That claim rests on the scan-side logic
+    (evaluateHalfBracket()) and the hand-trace against run 7's log
+    (SCAN-RUN-7-EVALUATION.md sec 2), not on this script."""
+    all_false_body = [_fx_decl("R9-SCAN-HALFLEG", 3530, "SCAN")]
+    for motor in ("LEFT", "RIGHT"):
+        for crit in ("MIN_BRACKETED_NEG", "MIN_BRACKETED_POS"):
+            all_false_body.append(_fx_signoff("R9-SCAN-HALFLEG", 3530, motor, crit, "FALSE", "TRUE", "TRUE",
+                                               "BOOL", 1, "FAIL", bin_token="SCAN"))
+    all_true_body = [_fx_decl("R9-SCAN-HALFLEG", 3530, "SCAN")]
+    for motor in ("LEFT", "RIGHT"):
+        for crit in ("MIN_BRACKETED_NEG", "MIN_BRACKETED_POS"):
+            all_true_body.append(_fx_signoff("R9-SCAN-HALFLEG", 3530, motor, crit, "TRUE", "TRUE", "TRUE",
+                                              "BOOL", 1, "PASS", bin_token="SCAN"))
+    all_false_verdict = _verdict(_fx_collate([_fx_log("x-halfleg-all-false", all_false_body)]), "R9-SCAN-HALFLEG")
+    all_true_verdict = _verdict(_fx_collate([_fx_log("x-halfleg-all-true", all_true_body)]), "R9-SCAN-HALFLEG")
+    ok = all_false_verdict[0] == "FAIL" and all_true_verdict[0] == "PASS"
+    return ok, (f"synthetic record, measured FALSE on all four instances (the shape run 7's evaluation "
+                f"says a fmt 10 binary would print, unverified by this script) -> {all_false_verdict}; "
+                f"measured TRUE on all four -> {all_true_verdict}")
+
+
 def selftest():
     checks = [
         ("(a)", "run-5 negative case", _st_a_negative_case),
@@ -2576,6 +2601,9 @@ def selftest():
         ("(u)", "PL-40: a SIGNOFF cut short across a dump is MALFORMED and not counted", _st_u_truncated_in_dump),
         ("(v)", "PL-40: line-start records parse exactly as before", _st_v_line_start_regression),
         ("(w)", "PL-40: SIGNOFF text inside a dump's ASCII gutter is never a record", _st_w_gutter_no_recovery),
+        ("(x)", "task 3540 (PL-46): R9-SCAN-HALFLEG's MIN_BRACKETED_NEG/POS crit collates a measured "
+         "FALSE to FAIL and a measured TRUE to PASS (collation only -- not a claim about what the "
+         "scan binary prints)", _st_x_r9_halfleg_collation),
     ]
     failures = 0
     for label, title, function in checks:

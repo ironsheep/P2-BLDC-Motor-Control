@@ -26,16 +26,36 @@ lands on a board's gate input, §C.3). No open owner questions remain.
   - `R1-SCAN-COGOK` also counts a start whose return is not `testGetMotorCog() − 1`, so 5.0.2's
     cog id + 1 success return fails it [D, `DRIVER-AUDIT-2026-09-09.md` finding C]. *(Corrected
     2026-09-14: this said "PL-22's always-0 return"; that 0 was a trapped capture — PL-44.)*
-- **Row 9 (530961a):**
-  - `R9-SCAN-HALFLEG` is crit `CLIFF_PROBED`, not `FIT_OR_CLIFF`: TRUE when every half-speed
-    confirm fault that left a gap wider than `CLIFF_HALF_STEP_DEG` was followed by a measured probe
-    point. It is NOMEAS when no leg had such a fault, and `min_inst` is 2.
-    - Why: `FIT_OR_CLIFF` would have passed on run 5, because `computeLegCliff()` finds a good/fault
-      pair without any probe.
-    - The facts are counted in `runFinePoints()` (`halfProbeEvents`, `halfProbeMissed`), not from
-      §F.2's `bResCliff`/`hasMinimum`.
-  - `R9-SCAN-OWNZERO` and `R9-SCAN-PAIR2` are COVERAGE. Scan v3 already re-measured a zero before
-    every point.
+- **Row 9 (530961a; criterion redesigned task 3540, PL-46, from run 7):**
+  - `R9-SCAN-HALFLEG` is crit `MIN_BRACKETED_NEG` / `MIN_BRACKETED_POS` (superseding `CLIFF_PROBED`,
+    which itself superseded `FIT_OR_CLIFF`): one instance per sign (`min_inst` 4, `count_filter`
+    `LEFT:MIN_BRACKETED_NEG,LEFT:MIN_BRACKETED_POS,RIGHT:MIN_BRACKETED_NEG,RIGHT:MIN_BRACKETED_POS`),
+    each a plain BOOL of `evaluateHalfBracket()`'s verdict: TRUE when a point rises `RISE_PCT` (or
+    `FAULT_RISE_PCT` on a fault-bounded side) above the leg's low on BOTH sides, among the
+    confirm/cliff-probe points `fitLeg()` itself fits. NOMEAS when the leg never ran
+    (`bResLegRan` FALSE).
+    - Why superseded again: `CLIFF_PROBED` ("a probe ran after a fault") is met by the exact
+      defect it exists to catch -- `refineCliffEdge()`/`probeConfirmCliff()` stopped at the first
+      clean probe, one step narrower than the fault, so all four of run 7's half-speed legs PASSed
+      it while none could show a bracketed minimum (SCAN-RUN-7-EVALUATION.md sec 5 item 1; sec 2
+      table). `FIT_OR_CLIFF` failed the same way one generation
+      earlier, because `computeLegCliff()` finds a good/fault pair without any probe.
+    - Task 3540 D1 makes the probe itself keep stepping 2 deg toward the fault after a clean probe
+      (both speeds), instead of stopping at the first one, so the window this criterion judges can
+      actually reach a real bracket.
+    - Task 3540 D7 gives each sign its own crit token: the two per-motor instances were previously
+      byte-identical, reading as duplicates ("4 of 2").
+    - `hasMinimum()` (§F.2) also changed alongside (D2): it no longer accepts `FS_POOR`, and it
+      rejects a fit `fitPinnedNearLimit()` finds pinned against a fault-derived window edge, and a
+      leg that failed the rise-on-both-sides test -- `bResBracketed` from `evaluateBracket()` at
+      1/4 speed or `evaluateHalfBracket()` at 1/2 speed, no longer marked bracketed by assignment.
+  - `R9-SCAN-OWNZERO` and `R9-SCAN-PAIR2` are COVERAGE, not proof: they show that the fmt 6/8 code
+    paths ran (a point carries its own zero; `emitPair2()`'s net-ratio path produced a valid
+    ratio), not that the numbers they pass through are right. Scan v3 already re-measured a zero
+    before every point, so the unfixed code counts 0 too on OWNZERO. `BS-PAIR2` now reports the
+    ratio on measured floors (task 3540 D3) for the evaluation to read and judge by hand -- no
+    sign-off cell exists that checks the pair ratio's own correctness; `R9-SCAN-PAIR2` proves only
+    that `emitPair2()`'s net-ratio path produced a value at all.
 - **§A.5-e incidental lifetimes:** these print as a plain `BS-ZXSALL` record, not `ZXSALL_*`
   SIGNOFFs. A SIGNOFF with an unmanifested crit would read host-side as `CRIT_MISMATCH`.
 - **Row 10:** `R10-SCAN-RSTALONE` is BOOL: stopped and not faulted after `testResetFault()` alone.
@@ -243,16 +263,16 @@ orphaned cog.**
 
 | cell | bin · test | crit | lo | hi | units | inst | prov · basis |
 |---|---|---|---|---|---|---|---|
-| `R8-SCAN-ZXS` | SCAN · 5 deliberate starts per motor, each with a zero | `ZXS_I` `ZXS_U` `ZXS_V` `ZXS_W` | 0 | 50 | MV_X10 | 5 | D from M — §A.5-e; the unfixed run-5 spread was 62 mV on `i` and 85 mV on `u` [M]; `inst` counts only the falsifiable channel instances (§A.5-e) |
+| `R8-SCAN-ZXS` | SCAN · 5 deliberate starts per motor, each with a zero | `ZXS_I` `ZXS_U` `ZXS_V` `ZXS_W` | 0 | 50 | MV_X10 | 5 | D from M — §A.5-e; the unfixed run-5 spread was 62 mV on `i` and 85 mV on `u` [M]; `inst` counts only the falsifiable channel instances (§A.5-e). **Honest basis (task 3540 D8):** those unfixed spreads came from restarts after current aborts, not the back-to-back starts this cell actually judges -- under back-to-back starts (run 7) this criterion has not been shown to fail. The decisive evidence for the fix is the right motor's zero level falling from 72-76 mV (runs 3-5) to 0.2-1.8 mV across all 8 of run 7's driver lifetimes (SCAN-RUN-7-EVALUATION.md sec 1), not an R8-SCAN-ZXS FAIL. |
 | `R8-T0-ZXS` | T0 · T0-11 (RIGHT, P16) | same four | 0 | 50 | MV_X10 | 3 | same basis |
 
 **Row 9 — «#3530»: scan v4 logic ran.**
 
 | cell | bin · test | crit | lo | hi | units | inst | prov · basis |
 |---|---|---|---|---|---|---|---|
-| `R9-SCAN-HALFLEG` | SCAN · each half-speed leg | `FIT_OR_CLIFF` | 1 | 1 | BOOL | 4 | M — in run 5 both left half legs were `TOO_FEW` with no probe between the last good point and the fault (evaluation §3). v4 CHANGE 4 must end each leg at `OK`/`POOR` or with a `BS-CLIFF found TRUE`. A leg skipped because its quarter-speed prerequisite failed is `NOMEAS`, never `PASS`. |
-| `R9-SCAN-OWNZERO` | SCAN · each fitted leg | `PTS_NO_OWN_ZERO` | 0 | 0 | COUNT | 4 | D — v4 CHANGE 2 invariant: every point that feeds a fit carries its own lifetime zero (`bPtZeroValid`); run 5's ratio 0.440 vs 1.16 came from violating it [M §6] |
-| `R9-SCAN-PAIR2` | SCAN · each motor's `BS-PAIR2` | `NET_RATIO_ONLY` | 1 | 1 | BOOL | 2 | D — fmt 6 contract `:3704-3710`: `ratio_raw` is NA and `ratio_net` is present whenever `complete`; an incomplete pair is `NOMEAS` |
+| `R9-SCAN-HALFLEG` | SCAN · each half-speed leg | `MIN_BRACKETED_NEG` `MIN_BRACKETED_POS` | TRUE | TRUE | BOOL | 4 | M — task 3540 (PL-46, run 7): `evaluateHalfBracket()`'s rise-on-both-sides verdict, one crit token per sign so the two per-motor instances are distinguishable (D7); FAILs when the leg's low sits at a fault-bounded window edge with nothing measured beyond it (run 7's four half legs, all EDGE/POOR-pinned with the low at the last clean point before a fault: SCAN-RUN-7-EVALUATION.md sec 2). A leg skipped because its quarter-speed prerequisite failed, or that never ran, is `NOMEAS`, never `PASS`. Superseded criteria: `CLIFF_PROBED` (task 3530) and `FIT_OR_CLIFF` (original design), both COVERAGE — met by the very defect each existed to catch. |
+| `R9-SCAN-OWNZERO` | SCAN · each fitted leg | `PTS_NO_OWN_ZERO` | 0 | 0 | COUNT | 4 | COVERAGE, not proof (task 3540 D6) — v4 CHANGE 2 invariant: every point that feeds a fit carries its own lifetime zero (`bPtZeroValid`); scan v3 already re-measured a zero before every point, so the unfixed code counts 0 too; run 5's ratio 0.440 vs 1.16 came from `BS-PAIR2` netting against the wrong lifetime's zero, not from a missing per-point zero [M §6] |
+| `R9-SCAN-PAIR2` | SCAN · each motor's `BS-PAIR2` | `NET_RATIO_ONLY` | 1 | 1 | BOOL | 2 | COVERAGE, not proof (task 3540 D6) — fmt 6 contract `:3704-3710`: `ratio_raw` is NA and `ratio_net` is present whenever `complete`; proves the net-ratio code path ran to a valid ratio, not that the ratio itself is right. Task 3540 D3 moved `BS-PAIR2`'s ratio onto measured floors, for the evaluation to read by hand -- **no sign-off cell judges the pair ratio's correctness**; an incomplete pair is `NOMEAS` |
 
 **Row 10 — «#3533»: PL-28, PL-22 and PL-9.**
 
@@ -933,7 +953,7 @@ About 150 longs, all `VAR`, all cog-0-owned. The watchdog reads none of them.
 | R5-SCAN-SELF, R12-SCAN-RATE | per motor | `bSelfIOk` / `bSelfRateOk` as 1/0 | `bSelfRan = FALSE` |
 | R8-SCAN-ZXS | per motor × channel, `crit ZXS_<ch>` | `(zxsMax − zxsMin)` in mV×10 / `zxsN` | `zxsN < ZXS_STARTS` |
 | (info) `ZXSALL_<ch>` | per motor × channel | `(zxsAllMax − zxsAllMin)` / `zxsAllN` | always, with `lo`/`hi` `NA` (§A.5-e) |
-| R9-SCAN-HALFLEG | per half slot | `hasMinimum(slot) or bResCliff[slot]` | `bResLegRan[slot] = FALSE` |
+| R9-SCAN-HALFLEG | per half slot × sign | `evaluateHalfBracket()`'s verdict, stored as `bResBracketed[slot]` (task 3540 D2/D7) | `bResLegRan[slot] = FALSE` |
 | R9-SCAN-OWNZERO | per slot with `bResLegRan` and `resStatus <> FS_NOT_BRACKETED` | `resZeroMissing[slot]` | no such slot on that motor |
 | R9-SCAN-PAIR2 | per motor | 1 when `bComplete` and the `ratio_net` value is valid; the `ratio_raw` NA is structural in `emitPair2` | `bComplete = FALSE` |
 | R10-SCAN-RSTALONE | per motor (J.1 variant) | ms to cleared, or NA with FAIL | no natural fault on that motor |

@@ -75,6 +75,51 @@ minutes, at most about 30, ending on its own.
   those probe points count toward the half-speed fit. `BS-CLIFF` at half speed reports its margin
   from the fit whenever the fit solved, exactly as it already does at quarter speed.
 
+**Scan v5 (task 3540, PL-46, from run 7 -- `SRC_REV`/`fmt` 10).** Run 7 could not demonstrate a
+half-speed minimum: all four half-speed lows sat at the last clean point before a fault, and
+`R9-SCAN-HALFLEG` passed anyway because its old criterion (`CLIFF_PROBED`, "a probe ran") was met
+by the very defect it existed to catch (SCAN-RUN-7-EVALUATION.md sec 5).
+- **Deeper cliff probing (D1):** `refineCliffEdge()`/`probeConfirmCliff()` no longer stop at the
+  first clean probe. After a clean probe they keep stepping `CLIFF_HALF_STEP_DEG` (2°) closer to
+  the fault, at both speeds, never commanding a point at or beyond one that already faulted in
+  that leg.
+- **The half-speed negative case is real (D2):** a half-speed leg is bracketed only when
+  `evaluateHalfBracket()` finds a rise on both sides of the low, among the confirm/cliff-probe
+  points the fit itself uses -- it is no longer marked bracketed by assignment. `hasMinimum()` no
+  longer accepts a `POOR` fit, and rejects one `fitPinnedNearLimit()` finds pinned against a
+  fault-derived window edge. A leg like run 7's LEFT positive (POOR, pinned, printing a shift with
+  `shift_sig TRUE` from data lowest at the window edge) now emits **no** shift or `shift_sig` at
+  all in `BS-RESULT-HALF`.
+- **Measured floors, not fitted vertices (D3):** `BS-RESULT`'s `i_min_mV_x10`/`saving_pct_x10` and
+  `BS-PAIR2`'s `i_neg_min_mV_x10`/`i_pos_min_mV_x10`/`ratio_net_x1000`/`imbalance` are now judged
+  on each leg's lowest actually-measured net point (`legMeasuredFloor()`), not the fitted
+  quadratic's vertex -- run 7's fits read 11.3/9.8/13.2/13.5 mV against measured floors of
+  13.0/11.4/12.0/15.9 mV. The old fitted numbers survive as new fields at the end of each record:
+  `i_min_fit_mV_x10` (`BS-RESULT`/`BS-RESULT-HALF`), `i_neg_min_fit_mV_x10`/`i_pos_min_fit_mV_x10`
+  (`BS-PAIR2`).
+- **Cliff-edge resolution, reported (D4):** `BS-CLIFF` gains `edge_res_deg_x10`, the edge
+  estimate's own ± resolution (half the good/fault gap it was resolved from) -- a quarter-speed
+  `EDGE` verdict in run 7 turned on 0.05° that was never otherwise visible.
+- **Net figures beside the raw ones (D5):** `BS-WALK`/`BS-BRACKET` gain `low_net_mV_x10` beside the
+  existing (raw) `low_mV_x10`; `BS-LEG` gains `ref_start_net_mV_x10`/`ref_end_net_mV_x10` beside its
+  existing raw `ref_start_mV_x10`/`ref_end_mV_x10`. No existing field was renamed.
+- **`R9-SCAN-HALFLEG`'s criterion (D2/D7):** now `MIN_BRACKETED_NEG`/`MIN_BRACKETED_POS`, one crit
+  token per sign so the two per-motor instances no longer print as duplicates ("4 of 2"). It FAILs
+  exactly when the leg's low sits at a fault-bounded window edge with nothing measured beyond it
+  toward the fault -- run 7's failure mode.
+- **The top-level trap value prints every run,** in `BS-END`'s new `trap_value` field, not only on
+  an abort.
+- **Run time (unmeasured; owed to scan run 8 at Visit 2):** each new half-speed `PH_CLIFF` probe
+  costs about `WIN_TICKS_HALF` (540) ticks at the half-speed self-check rate (~198 ticks/s) ≈ 2.7 s
+  for the window alone, plus the settle wait before the window starts, the ~1 s per-point zero
+  (`ZERO_SAMPLES` × `SAMPLE_MS`), and any `REST_MS`/fault-recovery time a probe that itself faults
+  triggers -- none of those three are folded into the 2.7 s figure. At quarter speed, a coarse-walk
+  fault edge can now take up to 5 new `PH_CLIFF` probes (the `2,4,6,8,9`-degree pattern from a
+  10-degree gap) instead of at most 2 before, each `WIN_TICKS_COARSE` (180) ticks at the
+  quarter-speed self-check rate (~98 ticks/s) ≈ 1.8 s for the window alone -- up to ~9 s added per
+  coarse fault edge, window time only, same three omissions. Both figures are derived from the
+  compiled constants, not measured against a real run.
+
 **Per-point zero and net (scan v4, PL-32; record split fixed at review):** the driver's sense zero
 is re-drawn at every driver start, so a zero is valid only within its own driver lifetime, never
 across a restart. A new record, **`BS-POINT3`**, is now emitted immediately after every
