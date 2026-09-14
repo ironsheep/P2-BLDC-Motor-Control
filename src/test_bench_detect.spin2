@@ -8,7 +8,7 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... 11 Sep 2026
-''   Updated.... 11 Sep 2026
+''   Updated.... 14 Sep 2026
 ''
 '' =================================================================================================
 
@@ -47,10 +47,27 @@
     -D BENCH_CFG        selects isp_bldc_motor_userconfig_bench.spin2. Required. A log
                         whose BD-CFG does not read cfg_id,BENCH is VOID.
     -D DETECT_PHASE2    adds phase 2 -- the poisoning probe. Links isp_bldc_motor and
-                        starts a REAL DRIVER COG at commanded zero. MOTORS MUST BE
-                        PHYSICALLY UNPLUGGED.
-    -D DETECT_NO_TAIL   sweeps only the four electrically-safe groups, dropping the two
-                        gate-adjacent tail groups. Use for a rail-ON run.
+                        starts a REAL DRIVER COG at commanded zero, in float mode, the
+                        same condition as every scan start. MOTORS MAY STAY CONNECTED:
+                        the gate-input guard below protects the boards.
+    -D DETECT_NO_TAIL   sweeps only the first four groups of the sweep order, dropping
+                        P8_P23 and NO_USE_P24_P39. It is NOT a safety build: it does not
+                        map to the gate-overlap groups, and the guard runs in every build.
+
+  THE GATE-INPUT GUARD (arbiter ruling J.2, 2026-09-13; task 3537)
+
+  Sweeping a group drives its sense pin (base+4) high for about 1 ms. With the boards
+  where they are, two groups' sense pins land on a board's W low-side gate input:
+  NO_USE_P24_P39 -> P28 (RIGHT base 16 + 12) and P40_P55 -> P44 (LEFT base 32 + 12).
+  So, computed at runtime from user.LEFT_MOTOR_BASE and user.RIGHT_MOTOR_BASE in every
+  sweep of every build:
+    - a group whose sense pin lands on a configured board's pin other than that board's
+      own sense pin is never measured and never probed through the library; each of its
+      planned cells emits one BD-SKIPPED record, reason GATE_OVERLAP, and no BD-REP;
+    - a phase-2 driver cog whose 16 pins overlap another configured board is never
+      started; its three sweeps emit every planned cell as BD-SKIPPED, reason COG_OVERLAP.
+  BD-MAP guard names the gate-overlap groups, and each BD-SWEEP end counts cells,
+  skipped cells and BD-REP records, so cells + skipped always equals the plan.
     -D DETECT_RAIL_ON   optional. States in the log that the motor rail was powered.
     -D DETECT_RAIL_OFF  optional. States in the log that the motor rail was not powered.
 
@@ -88,8 +105,14 @@ CON { timing }
 CON { build identity }
 
 ' Hand-bumped whenever this file changes, so a stale binary is visible in the log.
-    SRC_REV     = 2
-    FMT_VERSION = 1                                         ' BD-BANNER record-format version
+'
+' 14 Sep 2026, task 3537 P2d -- SRC_REV 3, FMT_VERSION 2: the gate-input guard (arbiter
+'   ruling J.2). New record BD-SKIPPED; BD-MAP gains guard; BD-SWEEP gains cells, skipped
+'   and reps; the overlap tokens name LEFT/RIGHT rather than P0_P15/P16_P31; phase 2
+'   refuses a driver cog that overlaps another board (BD-PH2 step refused). BD-CELL,
+'   BD-ENUM and BD-PLAN are unchanged, so the 2026-09-11 baseline diff still applies.
+    SRC_REV     = 3
+    FMT_VERSION = 2                                         ' BD-BANNER record-format version
 
 ' DETECT_PHASE2 implies DETECT_LIB: if phase 2 is compiled, the library must be linked
 #ifdef DETECT_PHASE2
@@ -105,12 +128,14 @@ CON { local pin-group base table }
 ' sweep must still name all six groups. The copy is not trusted: BD-ENUM cross-checks
 ' every one of these against the library's own value whenever the library IS linked, and
 ' a single mismatch voids the run.
-'  GRP_P0_P15   - left board on the bench; base pin 0
-'  GRP_P8_P23   - overlaps both boards; base pin 8; tail group
-'  GRP_P16_P31  - right board on the bench; base pin 16
-'  GRP_P24_P39  - PINS_NO_USE_P24_P39; not a legal base; base pin 24; tail group
-'  GRP_P32_P47  - unpopulated on the bench; base pin 32
-'  GRP_P40_P55  - unpopulated on the bench; base pin 40
+' Bench roles below are the bench config's (LEFT_MOTOR_BASE 32, RIGHT_MOTOR_BASE 16,
+' measured 2026-09-11); the code derives every overlap from the configured bases.
+'  GRP_P0_P15   - base pin 0; no board on the bench
+'  GRP_P8_P23   - base pin 8; no board on the bench; sense pin P12 on no board; tail group
+'  GRP_P16_P31  - base pin 16; the RIGHT board on the bench
+'  GRP_P24_P39  - PINS_NO_USE_P24_P39; not a legal base; base pin 24; sense pin P28 is the RIGHT board's pin_pwm_w_l, so skipped (GATE_OVERLAP); tail group
+'  GRP_P32_P47  - base pin 32; the LEFT board on the bench
+'  GRP_P40_P55  - base pin 40; sense pin P44 is the LEFT board's pin_pwm_w_l, so skipped (GATE_OVERLAP)
     GRP_P0_P15  = 0
     GRP_P8_P23  = 8
     GRP_P16_P31 = 16
@@ -155,9 +180,6 @@ CON { measurement parameters }
     USEC_PER_SEC     = 1_000_000                            ' converts CLKFREQ to ticks per microsecond
     SETTLE_MS        = 200                                  ' let a started driver cog reach steady state
 
-' The calibration pin is held DRIVEN HIGH so the poll loop can never exit early. P44 is
-' PINS_P40_P55's sense pin, inside the commented-out LA header range -- nothing is
-' connected there, and every sweep already drives it high for a millisecond anyway.
     ' The calibration pin is DRIVEN HIGH for CAL_ITER iterations, so it must be a pin that is
     ' electrically dead on this rig. It was GRP_P40_P55 + SENSE_PIN_OFFSET = P44 -- which, with
     ' the boards where they actually are (RIGHT P16_P31, LEFT P32_P47, measured 2026-09-11), is
@@ -174,6 +196,10 @@ CON { measurement parameters }
 
 CON { record assembly buffer }
 
+' Worst-case record bytes, against the 280-byte sign-off bound (task 3537 P2d): BD-REP 229
+' (gnm 14, ovl 16, sumtix and fltix 13 each, vrd 7); BD-CELL 225; BD-SKIPPED 130 (gnm 14,
+' ovl 16, cog 7, cogst 7, reason 12); BD-MAP 79 (ovl 16, guard 12); BD-SWEEP 64 (three
+' NOMEAS counts on begin).
     LINE_BUF_SIZE   = 640                                   ' widest record is well under this
     MAX_DEC_DIGITS  = 11                                    ' a 32-bit value needs at most 10
     DEC_RADIX       = 10
@@ -229,6 +255,12 @@ CON { cell axis codes }
 '  OVL_OTHER      - overlaps a configured board at some other offset (non-bench config)
     #0, OVL_SELF, OVL_NONE, OVL_LEFT_PWM, OVL_RIGHT_PWM, OVL_OTHER
 
+' Gate-input guard skip reason for a planned cell (arbiter ruling J.2):
+'  SKIP_NONE          - the cell is measured
+'  SKIP_GATE_OVERLAP  - the group's sense pin lands on a configured board's pin other than that board's own sense pin
+'  SKIP_COG_OVERLAP   - the sweep's phase-2 driver cog was refused because its pins overlap another configured board
+    #0, SKIP_NONE, SKIP_GATE_OVERLAP, SKIP_COG_OVERLAP
+
 CON { build-variant flags }
 
 #ifdef DETECT_NO_TAIL
@@ -282,8 +314,9 @@ OBJ { objects under test }
 
 DAT { sweep and enumeration order }
 
-' Sweep order: the four electrically-safe groups first, the two gate-adjacent groups as a
-' clearly-marked tail, so an aborted run still has the valuable data in the log.
+' Sweep order: the four legal board bases first, then P8_P23 and NO_USE_P24_P39 as the tail
+' (dropped by -D DETECT_NO_TAIL). The order says nothing about safety: the gate-input guard
+' decides per group, from the configured bases, which groups are never pulsed.
 grpSweepOrder   LONG    GRP_P0_P15, GRP_P16_P31, GRP_P32_P47, GRP_P40_P55, GRP_P8_P23, GRP_P24_P39
 
 ' Enumeration order: ascending base pin, used by the BD-ENUM and BD-MAP static tables.
@@ -321,9 +354,13 @@ sClrYes         BYTE    "CLR", 0
 
 sOvlSelf        BYTE    "SELF", 0
 sOvlNone        BYTE    "NONE", 0
-sOvlLeftPwm     BYTE    "P0_P15+12_PWM_W_L", 0
-sOvlRightPwm    BYTE    "P16_P31+12_PWM_W_L", 0
+sOvlLeftPwm     BYTE    "LEFT+12_PWM_W_L", 0
+sOvlRightPwm    BYTE    "RIGHT+12_PWM_W_L", 0
 sOvlOther       BYTE    "OVL_OTHER", 0
+
+sRsnGateOverlap BYTE    "GATE_OVERLAP", 0
+sRsnCogOverlap  BYTE    "COG_OVERLAP", 0
+sGuardNone      BYTE    "NONE", 0
 
 sRailOn         BYTE    "ON", 0
 sRailOff        BYTE    "OFF", 0
@@ -360,6 +397,7 @@ sPh2Running     BYTE    "running", 0
 sPh2Stopping    BYTE    "stopping", 0
 sPh2Stopped     BYTE    "stopped", 0
 sPh2Started     BYTE    "started", 0
+sPh2Refused     BYTE    "refused", 0
 
 VAR { per-cell measurement capture }
 
@@ -377,6 +415,9 @@ VAR { per-cell measurement capture }
 VAR { run-wide counters }
 
     LONG    emittedRepCount                                 ' BD-REP records emitted in the current phase
+    LONG    sweepCellCount                                  ' cells measured in the current sweep
+    LONG    sweepSkipCount                                  ' cells skipped by the gate-input guard in the current sweep
+    LONG    sweepRepCount                                   ' BD-REP records emitted in the current sweep
 
 PUB main() | phase1Recs, phase2Recs
 '' Run the whole board-detection characterisation sweep and tag every data point on the
@@ -393,10 +434,10 @@ PUB main() | phase1Recs, phase2Recs
 
     emittedRepCount := 0
     emitPhaseMark(1, @sMarkBegin, FALSE, 0, @sTokNA)
-    runSweep(SW_COLD_NOCLR, NO_GROUP, N_REP, NO_GROUP, CST_NONE, CLR_NO)
+    runSweep(SW_COLD_NOCLR, NO_GROUP, N_REP, NO_GROUP, CST_NONE, CLR_NO, SKIP_NONE)
     emitNote(@"sweep 2 follows a pinclear of every swept group -- two 8-pin calls per group per ruling R1")
     clearSweptGroups()
-    runSweep(SW_COLD_CLR, NO_GROUP, N_REP, NO_GROUP, CST_NONE, CLR_YES)
+    runSweep(SW_COLD_CLR, NO_GROUP, N_REP, NO_GROUP, CST_NONE, CLR_YES, SKIP_NONE)
     phase1Recs := emittedRepCount
     emitCalibration(CAL_IDX_POST_PHASE1)
     emitPhaseMark(1, @sMarkEnd, TRUE, phase1Recs, @sTokNA)
@@ -524,21 +565,27 @@ PRI emitEnumRecords() | grpIdx, grpBase, libBase
             lineTextField(@"match", flagToken(grpBase == libBase))
         lineEmit()
 
-PRI emitMapRecords() | grpIdx, grpBase
-' Emit the sense-pin map: which physical pin each group's detection probe touches, and
-' whose pin that actually is.
+PRI emitMapRecords() | grpIdx, grpBase, pGuardTok
+' Emit the sense-pin map: which physical pin each group's detection probe touches, whose
+' pin that actually is, and whether the gate-input guard skips the group (guard
+' GATE_OVERLAP) or not (guard NONE). Every sweep applies exactly this classification.
 '
 ' @local grpIdx - index into grpEnumOrder
 ' @local grpBase - base pin of the group being reported
+' @local pGuardTok - pointer to GATE_OVERLAP or NONE
 
     repeat grpIdx from 0 to GROUP_COUNT - 1
         grpBase := LONG[@grpEnumOrder][grpIdx]
+        pGuardTok := @sGuardNone
+        if isGateOverlap(grpBase)
+            pGuardTok := @sRsnGateOverlap
         lineReset()
         lineAddText(@"BD-MAP")
         lineField(@"grp", grpBase)
         lineTextField(@"gnm", groupName(grpBase))
         lineField(@"pin", grpBase + SENSE_PIN_OFFSET)
         lineTextField(@"ovl", overlapToken(grpBase))
+        lineTextField(@"guard", pGuardTok)
         lineEmit()
 
 PRI emitPlanRecords()
@@ -587,7 +634,7 @@ PRI emitNoteRecords()
 
 #ifdef DETECT_PHASE2
     emitNote(@"*** THIS BUILD STARTS A REAL DRIVER COG *** -- phase 2 is compiled in")
-    emitNote(@"THE MOTORS MUST BE PHYSICALLY UNPLUGGED -- with no motor connected there is no current path whatever the output stage does")
+    emitNote(@"MOTORS MAY STAY CONNECTED -- the gate-input guard never pulses a board's gate input (GATE_OVERLAP) and refuses a driver cog that overlaps another board (COG_OVERLAP)")
     emitNote(@"PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4) and is NOT a panic button")
     emitNote(@"phase 2 starts a driver cog at commanded zero on P0_P15 then on P16_P31 and stops it; nothing is ever commanded to turn")
 #elseifdef DETECT_LIB
@@ -601,10 +648,10 @@ PRI emitNoteRecords()
 #endif
     emitNote(@"the gate on phase 2 is compile-time only -- there is no keypress and no runtime branch anywhere in this binary")
     emitNote(@"BD-GATE answer and BD-BUILD phase2_compiled carry the same fact from two places and MUST agree; a disagreement voids the run")
-    emitNote(@"sweeping a group briefly drives its base+4; with the boards at RIGHT P16_P31 and LEFT P32_P47 the gate-adjacent sense pins are P28 (right board base+12) and P44 (left board base+12)")
-    emitNote(@"all six groups may be swept RAIL-OFF: P2 pins are inputs at reset so all six gate inputs already sit floating whenever no driver cog runs")
-    emitNote(@"and rail-off means no bus voltage and therefore no shoot-through path whatever the gate driver does with a floating complementary input")
-    emitNote(@"a RAIL-ON run should use -D DETECT_NO_TAIL which drops the two gate-adjacent tail groups")
+    emitNote(@"sweeping a group briefly drives its base+4 -- GUARD: a group whose base+4 lands on a declared board's pin other than that board's own base+4 is never swept")
+    emitNote(@"GUARD: it is computed from the declared LEFT_MOTOR_BASE and RIGHT_MOTOR_BASE in every sweep; on the bench bases that skips NO_USE_P24_P39 (P28 = RIGHT base+12) and P40_P55 (P44 = LEFT base+12)")
+    emitNote(@"GUARD: a skipped cell emits one BD-SKIPPED record with its reason and no BD-REP; BD-SWEEP end counts cells and skipped and reps so cells plus skipped equals the plan")
+    emitNote(@"-D DETECT_NO_TAIL drops P8_P23 and NO_USE_P24_P39 only; it is not a safety build because the guard runs in every build")
     emitNote(@"P44 is PINS_P40_P55's sense pin and IS the LEFT board's W low-side gate input -- it is NOT unconnected; the calibration pin is P15, which is outside both board ranges")
     emitNote(@"VOID RULE: a log with no BD-BANNER or with cfg_id not equal to BENCH or with BD-CLK match 0 is VOID -- not suspect but void")
     emitNote(@"VOID RULE: any BD-ENUM match 0 voids the run -- the local pin-group table has drifted from the library's")
@@ -629,8 +676,10 @@ PRI emitNoteRecords()
     emitNote(@"sweeps 3 and 6 deliberately charge and float a pin the running driver cog owns as an ADC smart pin -- that is exactly the T0-10 condition")
     emitNote(@"sweeps 3 and 6 are bounded at n_live rather than n_rep to minimise interference with that running cog")
 
-PRI runSweep(swNum, groupSel, nRep, cogGrp, cogState, clrState) | orderIdx
+PRI runSweep(swNum, groupSel, nRep, cogGrp, cogState, clrState, sweepSkip) | orderIdx, repsAtBegin
 ' Run one sweep: either every swept group in the fixed tail-last order or a single group.
+' Every planned cell is either measured or skipped by the gate-input guard, and the end
+' mark counts both, so a skipped cell never reads as a truncated sweep.
 '
 ' @param swNum - SW_* identifier of this sweep
 ' @param groupSel - base pin of the only group to sweep or NO_GROUP for all swept groups
@@ -638,16 +687,77 @@ PRI runSweep(swNum, groupSel, nRep, cogGrp, cogState, clrState) | orderIdx
 ' @param cogGrp - base pin of the group a driver cog is or was running on or NO_GROUP
 ' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
 ' @param clrState - CLR_NO / CLR_YES
+' @param sweepSkip - SKIP_NONE, or SKIP_COG_OVERLAP when this sweep's driver cog was refused
 '
 ' @local orderIdx - index into grpSweepOrder
+' @local repsAtBegin - emittedRepCount when this sweep began
 
-    emitSweepMark(swNum, @sMarkBegin)
+    sweepCellCount := 0
+    sweepSkipCount := 0
+    sweepRepCount := 0
+    repsAtBegin := emittedRepCount
+    emitSweepMark(swNum, @sMarkBegin, FALSE)
     if groupSel == NO_GROUP
         repeat orderIdx from 0 to SWEPT_GROUP_COUNT - 1
-            runCell(swNum, LONG[@grpSweepOrder][orderIdx], nRep, cogGrp, cogState, clrState)
+            runOrSkipCell(swNum, LONG[@grpSweepOrder][orderIdx], nRep, cogGrp, cogState, clrState, sweepSkip)
     else
-        runCell(swNum, groupSel, nRep, cogGrp, cogState, clrState)
-    emitSweepMark(swNum, @sMarkEnd)
+        runOrSkipCell(swNum, groupSel, nRep, cogGrp, cogState, clrState, sweepSkip)
+    sweepRepCount := emittedRepCount - repsAtBegin
+    emitSweepMark(swNum, @sMarkEnd, TRUE)
+
+PRI runOrSkipCell(swNum, grpBase, nRep, cogGrp, cogState, clrState, sweepSkip) | skipReason
+' The gate-input guard, applied to one planned cell (arbiter ruling J.2). A cell is skipped
+' when its sweep's driver cog was refused, or when its group's sense pin lands on a declared
+' board's pin other than that board's own sense pin. A skipped cell is never measured and
+' never probed through the library -- getBoardType() drives the same sense pin high -- so
+' it emits no BD-REP and no BD-LIB bracket, only one fixed-field BD-SKIPPED record.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param grpBase - base pin of the group this cell would measure
+' @param nRep - repeats per cell
+' @param cogGrp - base pin of the group a driver cog is or was running on or NO_GROUP
+' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
+' @param clrState - CLR_NO / CLR_YES
+' @param sweepSkip - SKIP_NONE, or SKIP_COG_OVERLAP when this sweep's driver cog was refused
+'
+' @local skipReason - SKIP_* reason this cell is skipped, or SKIP_NONE when it is measured
+
+    skipReason := sweepSkip
+    if (skipReason == SKIP_NONE) and isGateOverlap(grpBase)
+        skipReason := SKIP_GATE_OVERLAP
+
+    if skipReason == SKIP_NONE
+        runCell(swNum, grpBase, nRep, cogGrp, cogState, clrState)
+        sweepCellCount += 1
+    else
+        emitSkippedRecord(swNum, grpBase, nRep, cogGrp, cogState, clrState, skipReason)
+        sweepSkipCount += 1
+
+PRI emitSkippedRecord(swNum, grpBase, nRep, cogGrp, cogState, clrState, skipReason)
+' Emit one BD-SKIPPED line for a planned cell the gate-input guard did not measure. Fixed
+' field order; n is the repeat count the plan declared for the cell.
+'
+' @param swNum - SW_* identifier of this sweep
+' @param grpBase - base pin of the skipped group
+' @param nRep - repeats the plan declared for this cell
+' @param cogGrp - base pin of the group a driver cog is or was running on or NO_GROUP
+' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
+' @param clrState - CLR_NO / CLR_YES
+' @param skipReason - SKIP_GATE_OVERLAP / SKIP_COG_OVERLAP
+
+    lineReset()
+    lineAddText(@"BD-SKIPPED")
+    lineField(@"sw", swNum)
+    lineField(@"grp", grpBase)
+    lineTextField(@"gnm", groupName(grpBase))
+    lineField(@"pin", grpBase + SENSE_PIN_OFFSET)
+    lineTextField(@"ovl", overlapToken(grpBase))
+    lineTextField(@"cog", cogGroupToken(cogGrp))
+    lineTextField(@"cogst", cogStateToken(cogState))
+    lineTextField(@"clr", clearToken(clrState))
+    lineField(@"n", nRep)
+    lineTextField(@"reason", skipReasonToken(skipReason))
+    lineEmit()
 
 PRI runCell(swNum, grpBase, nRep, cogGrp, cogState, clrState) | repIdx, libVerdict
 ' Measure one cell of the matrix -- nRep repeats on one group -- then emit every repeat,
@@ -948,16 +1058,27 @@ PRI emitPhaseMark(phaseNum, pMarkName, bHasRecs, recCount, pReason)
     lineTextField(@"reason", pReason)
     lineEmit()
 
-PRI emitSweepMark(swNum, pMarkName)
-' Emit one BD-SWEEP line.
+PRI emitSweepMark(swNum, pMarkName, bHasCounts)
+' Emit one BD-SWEEP line. On the end mark cells, skipped and reps are this sweep's counts
+' of measured cells, guard-skipped cells and BD-REP records; on the begin mark they are
+' the token NOMEAS.
 '
 ' @param swNum - SW_* identifier of this sweep
 ' @param pMarkName - pointer to begin or end
+' @param bHasCounts - TRUE when the sweep counters are complete
 
     lineReset()
     lineAddText(@"BD-SWEEP")
     lineField(@"sw", swNum)
     lineTextField(@"mark", pMarkName)
+    if bHasCounts == TRUE
+        lineField(@"cells", sweepCellCount)
+        lineField(@"skipped", sweepSkipCount)
+        lineField(@"reps", sweepRepCount)
+    else
+        lineTextField(@"cells", @sTokNoMeas)
+        lineTextField(@"skipped", @sTokNoMeas)
+        lineTextField(@"reps", @sTokNoMeas)
     lineEmit()
 
 PRI emitNote(pNoteText)
@@ -971,8 +1092,10 @@ PRI emitNote(pNoteText)
     lineEmit()
 
 PRI clearSweptGroups() | orderIdx
-' pinclear every group this build sweeps. The four electrically-safe groups already span
-' P0-P55 between them so the tail groups add no pins here.
+' pinclear every group this build sweeps. The first four groups of the sweep order already
+' span P0-P55 between them so the tail groups add no pins here. pinclear floats a pin (the
+' state it has at reset) and drives nothing, so it is not a pulse and the gate-input guard
+' does not apply to it.
 '
 ' @local orderIdx - index into grpSweepOrder
 
@@ -1113,30 +1236,41 @@ PRI runPhase2ForGroup(cogGrp, swLive, swStopped, swStoppedClr)
 ' its early-out and the cog start performs no charge/float of its own, isolating the cog's
 ' pin-configuration effect from the detection measurement.
 '
+' GATE-INPUT GUARD: a driver cog whose 16 pins overlap another declared board is never
+' started. Its three sweeps then emit every planned cell as BD-SKIPPED, reason COG_OVERLAP,
+' so the plan's record counts still hold. On the bench bases (LEFT 32, RIGHT 16) neither
+' phase-2 group overlaps: P0_P15 sits on no board, and P16_P31 is the RIGHT board itself.
+'
 ' @param cogGrp - base pin of the group to run a driver cog on
 ' @param swLive - SW_* identifier of the cog-running sweep
 ' @param swStopped - SW_* identifier of the post-stop sweep
 ' @param swStoppedClr - SW_* identifier of the post-stop pinclear'd sweep
 
     emitPhase2Step(cogGrp, @sPh2Pre)
-    emitPhase2Step(cogGrp, @sPh2Starting)
-    startDriverCog(cogGrp)
-    waitms(SETTLE_MS)
-    emitPhase2Step(cogGrp, @sPh2Running)
+    if cogOverlapsOtherBoard(cogGrp)
+        emitPhase2Step(cogGrp, @sPh2Refused)
+        runSweep(swLive, cogGrp, N_LIVE, cogGrp, CST_RUNNING, CLR_NO, SKIP_COG_OVERLAP)
+        runSweep(swStopped, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_NO, SKIP_COG_OVERLAP)
+        runSweep(swStoppedClr, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_YES, SKIP_COG_OVERLAP)
+    else
+        emitPhase2Step(cogGrp, @sPh2Starting)
+        startDriverCog(cogGrp)
+        waitms(SETTLE_MS)
+        emitPhase2Step(cogGrp, @sPh2Running)
 
-    runSweep(swLive, cogGrp, N_LIVE, cogGrp, CST_RUNNING, CLR_NO)
+        runSweep(swLive, cogGrp, N_LIVE, cogGrp, CST_RUNNING, CLR_NO, SKIP_NONE)
 
-    emitPhase2Step(cogGrp, @sPh2Stopping)
-    motor.stop()
-    ' The pins field of the record below is the within-a-millisecond-of-stop() snapshot of
-    ' the driver's own group. The sweep that follows walks the groups in the fixed
-    ' tail-last order, so for the right-hand group its own cell is not the first one taken
-    ' after stop() -- this record is where that immediate observation lives.
-    emitPhase2Step(cogGrp, @sPh2Stopped)
+        emitPhase2Step(cogGrp, @sPh2Stopping)
+        motor.stop()
+        ' The pins field of the record below is the within-a-millisecond-of-stop() snapshot of
+        ' the driver's own group. The sweep that follows walks the groups in the fixed
+        ' tail-last order, so for the right-hand group its own cell is not the first one taken
+        ' after stop() -- this record is where that immediate observation lives.
+        emitPhase2Step(cogGrp, @sPh2Stopped)
 
-    runSweep(swStopped, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_NO)
-    clearSweptGroups()
-    runSweep(swStoppedClr, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_YES)
+        runSweep(swStopped, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_NO, SKIP_NONE)
+        clearSweptGroups()
+        runSweep(swStoppedClr, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_YES, SKIP_NONE)
 
 PRI startDriverCog(cogGrp) | startRet, rawMotorCog
 ' Start the driver cog on {cogGrp} at commanded zero and report both start()'s raw return
@@ -1237,9 +1371,10 @@ PRI groupName(grpBase) : pGrpName
 
 PRI overlapClass(grpBase) : ovlCode | sensePin
 ' Classify whose pin a group's sense pin actually is, at RUNTIME from the active config's
-' LEFT_MOTOR_BASE and RIGHT_MOTOR_BASE -- never hardcoded. On the bench config this makes
-' P8_P23's sense pin P12 the LEFT board's W low-side gate input and NO_USE_P24_P39's sense
-' pin P28 the RIGHT board's, which is exactly why those two groups are swept last.
+' LEFT_MOTOR_BASE and RIGHT_MOTOR_BASE -- never hardcoded. On the bench config (LEFT 32,
+' RIGHT 16) this makes NO_USE_P24_P39's sense pin P28 the RIGHT board's W low-side gate
+' input and P40_P55's sense pin P44 the LEFT board's, and P8_P23's P12 lands on no board.
+' This labels the pin for the record; isGateOverlap() decides the skip.
 '
 ' @param grpBase - base pin of the group being classified
 ' @returns ovlCode - OVL_SELF / OVL_NONE / OVL_LEFT_PWM / OVL_RIGHT_PWM / OVL_OTHER
@@ -1255,6 +1390,61 @@ PRI overlapClass(grpBase) : ovlCode | sensePin
         ovlCode := (sensePin - user.RIGHT_MOTOR_BASE == PWM_W_L_OFFSET) ? OVL_RIGHT_PWM : OVL_OTHER
     else
         ovlCode := OVL_NONE
+
+PRI isGateOverlap(grpBase) : bOverlap | sensePin
+' The gate-input guard's group test (arbiter ruling J.2): TRUE when the group's sense pin
+' (base+4, the pin every sweep and getBoardType() drive high) lands on a declared board's
+' pin other than that board's own sense pin. Computed from the declared bases on every
+' call, never from a table, so a changed config moves the skip with it.
+'
+' @param grpBase - base pin of the group to test
+' @returns bOverlap - TRUE when sweeping this group would drive another board's pin
+'
+' @local sensePin - grpBase + SENSE_PIN_OFFSET
+
+    sensePin := grpBase + SENSE_PIN_OFFSET
+    bOverlap := landsOnBoardNonSensePin(sensePin, user.LEFT_MOTOR_BASE) or landsOnBoardNonSensePin(sensePin, user.RIGHT_MOTOR_BASE)
+
+PRI landsOnBoardNonSensePin(pinNum, boardBase) : bLands
+' Test whether a pin is one of a board's sixteen pins other than that board's sense pin.
+'
+' @param pinNum - the pin to test
+' @param boardBase - base pin of the declared board
+' @returns bLands - TRUE when pinNum lies in boardBase..boardBase+15 and is not boardBase+4
+
+    bLands := pinIsInsideGroup(pinNum, boardBase) and (pinNum <> boardBase + SENSE_PIN_OFFSET)
+
+PRI cogOverlapsOtherBoard(cogGrp) : bOverlap
+' The gate-input guard's phase-2 test: TRUE when a driver cog started on {cogGrp} would own
+' pins of a declared board other than the one based at {cogGrp}. The whole 16-pin span is
+' used, which is conservative: it refuses on any shared pin, driven or not.
+'
+' @param cogGrp - base pin of the group a driver cog would run on
+' @returns bOverlap - TRUE when that cog's pins overlap another declared board
+
+    bOverlap := groupOverlapsOtherBoard(cogGrp, user.LEFT_MOTOR_BASE) or groupOverlapsOtherBoard(cogGrp, user.RIGHT_MOTOR_BASE)
+
+PRI groupOverlapsOtherBoard(cogGrp, boardBase) : bOverlap
+' Test whether a sixteen-pin group shares any pin with a different declared board.
+'
+' @param cogGrp - base pin of the group to test
+' @param boardBase - base pin of the declared board
+' @returns bOverlap - TRUE when the board is not the group itself and the two spans share a pin
+
+    bOverlap := (cogGrp <> boardBase) and (cogGrp - boardBase < GROUP_SPAN) and (boardBase - cogGrp < GROUP_SPAN)
+
+PRI skipReasonToken(skipReason) : pRsnTok
+' Return the printable form of a SKIP_* gate-input guard reason.
+'
+' @param skipReason - SKIP_GATE_OVERLAP / SKIP_COG_OVERLAP
+' @returns pRsnTok - pointer to the reason token string
+
+    pRsnTok := @sTokNA
+    case skipReason
+        SKIP_GATE_OVERLAP:
+            pRsnTok := @sRsnGateOverlap
+        SKIP_COG_OVERLAP:
+            pRsnTok := @sRsnCogOverlap
 
 PRI pinIsInsideGroup(pinNum, grpBase) : bInside
 ' Test whether a pin falls inside a sixteen-pin motor group.

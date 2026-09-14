@@ -1,7 +1,7 @@
 # Visit Sign-off Mechanism — Design («#3537», phase 1)
 
 **Written:** 2026-09-13 · **Status:** DESIGN, ARBITER-REVIEWED 2026-09-13. **Built 2026-09-14**
-except §C.3's detection guard and the §C.2 host diff. Where the build differs from the tables
+(`--check-ready 1` exits 0). Where the build differs from the tables
 below, the *As built* list after this header wins, and `DOCs/analyses/bench/SIGNOFF-MANIFEST.tsv`
 is the authority for every cell.
 
@@ -52,6 +52,24 @@ lands on a board's gate input, §C.3). No open owner questions remain.
     `main()` has stopped the watchdog. `FIRES` measures the elapsed stall (≥ 12 000 ms) and `FAIL`s
     with that number; the other three are NOMEAS.
   - `CKPT`, `STOPPED` and `STACK` are COVERAGE.
+- **Row 2, detection (§C.2, §C.3; `test_bench_detect.spin2` SRC_REV 3, FMT 2):**
+  - **Detect binary:**
+    - A skipped cell emits `BD-SKIPPED` with reason `GATE_OVERLAP` or `COG_OVERLAP`.
+    - A skipped cell also skips the library probe, because `getBoardType()` drives the same sense
+      pin.
+    - `BD-MAP` gains `guard`, and `BD-SWEEP` end gains `cells`, `skipped` and `reps`. `BD-CELL`,
+      `BD-ENUM` and `BD-PLAN` are unchanged, so the baseline diff still applies.
+    - `clearSweptGroups()` still pinclears the gate-overlap groups. That is not a pulse: `PINCLEAR`
+      sets DIR to 0 and the mode to 0 (`p2kbSpin2Pinclear`), so the pin is only released.
+  - **Predictions:** they live in `DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv`, one line per
+    field change, each with a status of `COMPARED`, `EXCLUDED_VOID` or `NOT_COMPARED_GATE_OVERLAP`.
+    Sweep 7's predicted sum is the measured Rev B band 93..104.
+  - **`R2-HOST-DETDIFF`:**
+    - The baseline run against itself counts all 56 non-void predictions as not occurred, so it
+      `FAIL`s: that is its unfixed value.
+    - A skip that the log's own `BD-CFG` bases do not imply makes it NOMEAS `UNEXPECTED_SKIP`.
+  - **`R2-DETECT-GUARD`:** it computes its skip set from the log's `BD-CFG` and needs no
+    predictions file. Today's SRC_REV 2 binary emits `BD-REP` for P40_P55, which `FAIL`s it.
 
 > **STEPHEN, 2026-09-13:** *"on the bench run have you added automated testing of the new
 > features arriving so we can sign them off as present and working as desired?"*

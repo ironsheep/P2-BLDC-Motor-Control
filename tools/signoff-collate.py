@@ -30,9 +30,11 @@ INPUTS
     - the visit's curated debug logs, named explicitly on the command line
       (never globbed by this script);
     - the manifest, DOCs/analyses/bench/SIGNOFF-MANIFEST.tsv (--manifest);
-    - for the detection host cells: a detect-phase2 log among the inputs, the
-      prediction list DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv
-      (--predictions) and the 2026-09-11 baseline log (--baseline-detect);
+    - for R2-HOST-DETDIFF: a detect-phase2 log among the inputs, the prediction
+      list DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv (--predictions) and
+      the 2026-09-11 baseline log (--baseline-detect);
+    - for R2-DETECT-GUARD: a detect-phase2 log among the inputs only -- the skip
+      set it checks is computed from that log's BD-CFG bases and BD-PLAN;
     - for R10-HOST-PL9: --static-tree (reads src/isp_bldc_motor.spin2).
 
 OUTPUTS
@@ -488,6 +490,7 @@ class LogInfo:
         self.header_pairs = {}
         self.header_lines = {}
         lines = text.splitlines()
+        self.lines = lines                  # kept for the detection host cells' BD- record reader
         self.line_count = len(lines)
         for lineno, line in enumerate(lines, start=1):
             self._scan_line(lineno, line)
@@ -751,6 +754,7 @@ class CellResult:
         self.proving = proving or []
         self.refs = refs or []
         self.superseded = superseded or []
+        self.extra = {}                     # R2-HOST-DETDIFF: {"logs": [(LogInfo, per-log diff dict)]}
 
 
 def evaluate_signoff_cell(cell, logs):
@@ -900,13 +904,13 @@ def _same_file(first, second):
         return False
 
 
-def _detect_inputs(logs, ctx, need_baseline):
+def _detect_inputs(logs, ctx, need_baseline, need_predictions):
     missing = []
     detect_logs = [log for log in logs if is_detect_phase2_log(log) and not _same_file(log.path, ctx["baseline"])]
     if not detect_logs:
         missing.append("no detect-phase2 log among the inputs (BD-BANNER tool test_bench_detect, "
                        "BD-BUILD phase2_compiled 1, BD-CFG cfg_id BENCH)")
-    if not Path(ctx["predictions"]).is_file():
+    if need_predictions and not Path(ctx["predictions"]).is_file():
         missing.append(f"prediction list absent: {display_path(ctx['predictions'])}")
     if need_baseline and not Path(ctx["baseline"]).is_file():
         missing.append(f"baseline log absent: {display_path(ctx['baseline'])}")
@@ -914,64 +918,594 @@ def _detect_inputs(logs, ctx, need_baseline):
 
 
 def host_detdiff(logs, ctx):
-    detect_logs, missing = _detect_inputs(logs, ctx, need_baseline=True)
+    """R2-HOST-DETDIFF (design C.2): needs a detect-phase2 log, the baseline and the prediction list."""
+    detect_logs, missing = _detect_inputs(logs, ctx, need_baseline=True, need_predictions=True)
     if missing:
         return CellResult("NOT_BUILT", "INPUT_ABSENT", missing)
     return detdiff_compare(detect_logs, read_log_file(ctx["baseline"]), Path(ctx["predictions"]))
 
 
 def host_detect_guard(logs, ctx):
-    detect_logs, missing = _detect_inputs(logs, ctx, need_baseline=False)
+    """R2-DETECT-GUARD (design C.3 item 5): needs only a detect-phase2 log; its skip set comes from that log."""
+    detect_logs, missing = _detect_inputs(logs, ctx, need_baseline=False, need_predictions=False)
     if missing:
         return CellResult("NOT_BUILT", "INPUT_ABSENT", missing)
-    return detect_guard_check(detect_logs, Path(ctx["predictions"]))
+    return detect_guard_check(detect_logs)
+
+
+# ---- the detection binary's BD- records (test_bench_detect.spin2, SRC_REV 3 / FMT 2) -----------
+
+DETECT_GROUPS = {"P0_P15": 0, "P8_P23": 8, "P16_P31": 16, "NO_USE_P24_P39": 24, "P32_P47": 32, "P40_P55": 40}
+DETECT_SWEEP_ORDER = ("P0_P15", "P16_P31", "P32_P47", "P40_P55", "P8_P23", "NO_USE_P24_P39")   # grpSweepOrder
+DETECT_TAIL_GROUPS = 2                      # TAIL_GROUP_COUNT, dropped by -D DETECT_NO_TAIL
+DETECT_GROUP_SPAN = 16                      # GROUP_SPAN
+DETECT_SENSE_OFFSET = 4                     # SENSE_PIN_OFFSET
+DETECT_VOID_SWEEPS = (3, 6)                 # running-driver cells, void by design (design C.2)
+DETECT_POSTSTOP_SWEEPS = (4, 5, 7, 8)
+DETECT_POSTSTOP_GROUPS = ("P0_P15", "P16_P31")
+DETDIFF_EXACT_FIELDS = ("modal", "libvrd", "agree", "va", "vb", "vn")
+DETDIFF_SUM_FIELDS = ("sum_min", "sum_max", "sum_mean")
+DETDIFF_SUM_EXACT_BASELINES = (0, 500)
+DETDIFF_SUM_TOLERANCE = 11                  # measured Rev B band 93-104, isp_bldc_motor.spin2:851-853
+DETDIFF_ENUM_FIELDS = ("local", "lib", "match")
+DETDIFF_VARIANT_FIELDS = ("lib_linked", "phase2_compiled", "tail_groups")
+PREDICTION_COLUMNS = ("sw", "grp", "field", "baseline_value", "predicted_value", "status", "prov", "note")
+PREDICTION_STATUSES = ("COMPARED", "EXCLUDED_VOID", "NOT_COMPARED_GATE_OVERLAP")
+PREDICTION_PROVS = ("DERIVED_3505", "DERIVED_P2D")
+RANGE_RE = re.compile(r"^(-?[0-9_]+)\.\.(-?[0-9_]+)$")
+FLAG_TRUE_TOKENS = ("1", "TRUE")
+FLAG_FALSE_TOKENS = ("0", "FALSE")
+
+
+class DetectLog:
+    """The semantic BD- records of one test_bench_detect log (design C.2).
+
+    Everything between a BD-LIB mark begin and its mark end is excluded, as the
+    binary's own DIFF rule says, and BD-NOTE prose is not parsed. Records are
+    keyed the way design C.2 compares them; a repeated key keeps its first record
+    and is listed in duplicates.
+    """
+
+    def __init__(self, log):
+        self.log = log
+        self.headers = {}                   # tag -> (pairs, lineno): BD-BANNER, BD-CFG, BD-CLK, BD-BUILD
+        self.enums = {}                     # gnm -> (pairs, lineno)
+        self.maps = {}                      # gnm -> (pairs, lineno)
+        self.plans = {}                     # sw -> (pairs, lineno)
+        self.cells = {}                     # (sw, gnm) -> (pairs, lineno)
+        self.skipped = {}                   # (sw, gnm) -> (pairs, lineno)
+        self.reps = []                      # (sw, gnm, lineno)
+        self.sweep_ends = {}                # sw -> (pairs, lineno)
+        self.duplicates = []
+        in_lib = False
+        for lineno, line in enumerate(log.lines, start=1):
+            match = LOG_LINE_RE.match(line)
+            if not match or not match.group(3).startswith("BD-"):
+                continue
+            payload = match.group(3)
+            tag = payload.split(",", 1)[0]
+            if tag == "BD-NOTE":
+                continue
+            pairs = pairs_of(payload)
+            if tag == "BD-LIB":
+                in_lib = pairs.get("mark") == "begin"
+                continue
+            if in_lib:
+                continue
+            sw = parse_int_token(pairs.get("sw", ""))
+            if tag in ("BD-BANNER", "BD-CFG", "BD-CLK", "BD-BUILD"):
+                self._put(self.headers, tag, pairs, lineno, tag)
+            elif tag == "BD-ENUM":
+                self._put(self.enums, pairs.get("gnm"), pairs, lineno, tag)
+            elif tag == "BD-MAP":
+                self._put(self.maps, pairs.get("gnm"), pairs, lineno, tag)
+            elif tag == "BD-PLAN":
+                self._put(self.plans, sw, pairs, lineno, tag)
+            elif tag == "BD-CELL":
+                self._put(self.cells, (sw, pairs.get("gnm")), pairs, lineno, tag)
+            elif tag == "BD-SKIPPED":
+                self._put(self.skipped, (sw, pairs.get("gnm")), pairs, lineno, tag)
+            elif tag == "BD-REP":
+                self.reps.append((sw, pairs.get("gnm"), lineno))
+            elif tag == "BD-SWEEP" and pairs.get("mark") == "end":
+                self._put(self.sweep_ends, sw, pairs, lineno, tag)
+
+    def _put(self, table, key, pairs, lineno, tag):
+        if key in table:
+            self.duplicates.append(f"{self.ref(lineno)}: duplicate {tag} {key} (first at line {table[key][1]})")
+            return
+        table[key] = (pairs, lineno)
+
+    def header(self, tag):
+        return self.headers.get(tag, ({}, None))[0]
+
+    def ref(self, lineno):
+        return f"{self.log.display}:{lineno}"
+
+
+def _sort_sw(key):
+    return (key is None, key or 0)
+
+
+def detect_guard_plan(dlog):
+    """What the gate-input guard must skip, computed host-side (design C.3 items 1-2).
+
+    Returns (skips, plan_groups, gate_groups, problems). skips maps (sw, gnm) to
+    GATE_OVERLAP or COG_OVERLAP; plan_groups maps each BD-PLAN sweep to the groups
+    it plans; gate_groups is the set of gate-overlap groups. The inputs are the
+    log's BD-CFG bases, BD-BUILD tail_groups and BD-PLAN only -- never the binary's
+    own BD-MAP guard or BD-SKIPPED claim -- so a binary cannot certify its own guard.
+      GATE_OVERLAP: the group's sense pin (base+4) lies on a declared board's pin
+                    other than that board's own sense pin.
+      COG_OVERLAP:  a phase-2 sweep whose driver-cog group shares a pin with a
+                    declared board based elsewhere; every cell of that sweep.
+    """
+    problems = []
+    cfg, build = dlog.header("BD-CFG"), dlog.header("BD-BUILD")
+    left, right = parse_int_token(cfg.get("left_base", "")), parse_int_token(cfg.get("right_base", ""))
+    if left is None or right is None:
+        return {}, {}, set(), ["BD-CFG carries no numeric left_base/right_base"]
+    tail = build.get("tail_groups")
+    if tail not in ("0", "1"):
+        return {}, {}, set(), [f"BD-BUILD tail_groups {tail!r} is not 0 or 1"]
+    boards = (left, right)
+    swept = DETECT_SWEEP_ORDER if tail == "1" else DETECT_SWEEP_ORDER[:len(DETECT_SWEEP_ORDER) - DETECT_TAIL_GROUPS]
+
+    def gate_overlap(gnm):
+        sense = DETECT_GROUPS[gnm] + DETECT_SENSE_OFFSET
+        return any(base <= sense < base + DETECT_GROUP_SPAN and sense != base + DETECT_SENSE_OFFSET for base in boards)
+
+    def cog_overlap(cog_base):
+        return any(base != cog_base and abs(base - cog_base) < DETECT_GROUP_SPAN for base in boards)
+
+    gate_groups = {gnm for gnm in DETECT_GROUPS if gate_overlap(gnm)}
+    skips, plan_groups = {}, {}
+    if not dlog.plans:
+        problems.append("no BD-PLAN record")
+    for sw, (plan, lineno) in sorted(dlog.plans.items(), key=lambda item: _sort_sw(item[0])):
+        groups = list(swept) if plan.get("groups") == "ALL" else [plan.get("groups")]
+        if sw is None or any(gnm not in DETECT_GROUPS for gnm in groups):
+            problems.append(f"{dlog.ref(lineno)}: BD-PLAN names an unknown sweep or group")
+            continue
+        plan_groups[sw] = groups
+        cog = plan.get("cog")
+        refused = plan.get("phase") == "2" and cog in DETECT_GROUPS and cog_overlap(DETECT_GROUPS[cog])
+        for gnm in groups:
+            if refused:
+                skips[(sw, gnm)] = "COG_OVERLAP"
+            elif gnm in gate_groups:
+                skips[(sw, gnm)] = "GATE_OVERLAP"
+    return skips, plan_groups, gate_groups, problems
+
+
+def _latest_build(logs):
+    """The logs of the latest build, oldest first, and a detail line (design D.4: a rerun cannot hide a FAIL)."""
+    builds = {}
+    for log in logs:
+        builds.setdefault(log.build_key, []).append(log)
+    ordered = sorted(builds.items(), key=lambda item: max(log.order_key for log in item[1]))
+    latest_key, members = ordered[-1]
+    detail = [f"speaking build: {build_key_text(latest_key)} ({len(members)} log(s))"]
+    superseded = [log.display for _, group in ordered[:-1] for log in group]
+    if superseded:
+        detail.append("superseded earlier-build log(s), not judged: " + ", ".join(superseded))
+    return sorted(members, key=lambda log: log.order_key), detail
+
+
+def _aggregate(results):
+    """Worst of [(verdict, reason)]: FAIL > NOMEAS > PASS; every log of the speaking build speaks."""
+    for wanted in ("FAIL", "NOMEAS"):
+        for verdict, reason in results:
+            if verdict == wanted:
+                return verdict, reason
+    return ("PASS", "") if results else ("NOT_BUILT", "NO_LOG")
+
+
+def load_predictions(path):
+    """Read SIGNOFF-DETECT-PREDICTIONS.tsv. Returns (rows, problems); '#' lines are comments."""
+    rows, problems, seen = [], [], {}
+    where_file = display_path(path)
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    if not lines or tuple(lines[0].split("\t")) != PREDICTION_COLUMNS:
+        return [], [f"{where_file}:1: header must be the tab-separated columns {', '.join(PREDICTION_COLUMNS)}"]
+    for lineno, line in enumerate(lines[1:], start=2):
+        if not line.strip() or line.startswith("#"):
+            continue
+        where = f"{where_file}:{lineno}"
+        parts = line.split("\t")
+        if len(parts) != len(PREDICTION_COLUMNS):
+            problems.append(f"{where}: {len(parts)} tab-separated fields, expected {len(PREDICTION_COLUMNS)}")
+            continue
+        row = dict(zip(PREDICTION_COLUMNS, (part.strip() for part in parts)))
+        row["lineno"] = lineno
+        row["sw_n"] = parse_int_token(row["sw"])
+        if row["sw_n"] is None:
+            problems.append(f"{where}: sw {row['sw']!r} is not a sweep number")
+        elif row["grp"] not in DETECT_GROUPS:
+            problems.append(f"{where}: grp {row['grp']!r} is not a group name")
+        elif row["field"] not in DETDIFF_EXACT_FIELDS + DETDIFF_SUM_FIELDS:
+            problems.append(f"{where}: field {row['field']!r} is not a compared BD-CELL field (design C.2)")
+        elif row["status"] not in PREDICTION_STATUSES:
+            problems.append(f"{where}: status {row['status']!r} is not one of {', '.join(PREDICTION_STATUSES)}")
+        elif row["prov"] not in PREDICTION_PROVS:
+            problems.append(f"{where}: prov {row['prov']!r} is not one of {', '.join(PREDICTION_PROVS)}")
+        elif (row["status"] == "EXCLUDED_VOID") != (row["sw_n"] in DETECT_VOID_SWEEPS):
+            problems.append(f"{where}: EXCLUDED_VOID must be used for sweeps 3 and 6, and only there")
+        elif not row["note"]:
+            problems.append(f"{where}: note is empty")
+        elif (row["sw_n"], row["grp"], row["field"]) in seen:
+            problems.append(f"{where}: duplicate prediction (first at line {seen[(row['sw_n'], row['grp'], row['field'])]})")
+        else:
+            seen[(row["sw_n"], row["grp"], row["field"])] = lineno
+            rows.append(row)
+    return rows, problems
+
+
+def _same_token(first, second):
+    """Equal as integers when both are ('_' grouping stripped), else as strings."""
+    first_n, second_n = parse_int_token(first or ""), parse_int_token(second or "")
+    if first_n is not None and second_n is not None:
+        return first_n == second_n
+    return first == second
+
+
+def prediction_matches(predicted, value):
+    """A predicted token, or an inclusive range lo..hi that the visit value must lie inside."""
+    match = RANGE_RE.match(predicted)
+    if match:
+        number = parse_int_token(value or "")
+        return number is not None and parse_int_token(match.group(1)) <= number <= parse_int_token(match.group(2))
+    return _same_token(predicted, value)
+
+
+def field_unchanged(field, baseline, visit):
+    """Design C.2's "unchanged": sums exact when the baseline is 0 or 500, else within +-11; others exact."""
+    if field in DETDIFF_SUM_FIELDS:
+        baseline_n, visit_n = parse_int_token(baseline or ""), parse_int_token(visit or "")
+        if baseline_n is not None and visit_n is not None:
+            if baseline_n in DETDIFF_SUM_EXACT_BASELINES:
+                return visit_n == baseline_n
+            return abs(visit_n - baseline_n) <= DETDIFF_SUM_TOLERANCE
+    return _same_token(baseline, visit)
+
+
+def _unchanged_rule(field, baseline):
+    if field not in DETDIFF_SUM_FIELDS:
+        return "exact"
+    return "exact, baseline 0 or 500" if parse_int_token(baseline or "") in DETDIFF_SUM_EXACT_BASELINES else "+-11"
+
+
+def detect_void_reasons(dlog, role):
+    """The binary's own VOID rules (baseline log :56-57): no banner, BD-CLK match 0, BD-ENUM match 0, cfg not BENCH."""
+    reasons = []
+    name = f"{role} {dlog.log.display}"
+    if "BD-BANNER" not in dlog.headers:
+        reasons.append(f"VOID: {name} has no BD-BANNER")
+    clk = dlog.headers.get("BD-CLK")
+    if clk is None or clk[0].get("match") not in FLAG_TRUE_TOKENS:
+        reasons.append(f"VOID: {name} BD-CLK match {clk[0].get('match') if clk else 'ABSENT'}"
+                       + (f" ({dlog.ref(clk[1])})" if clk else ""))
+    for gnm, (pairs, lineno) in sorted(dlog.enums.items(), key=lambda item: item[1][1]):
+        if pairs.get("match") in FLAG_FALSE_TOKENS:
+            reasons.append(f"VOID: {name} BD-ENUM {gnm} match {pairs.get('match')} ({dlog.ref(lineno)})")
+    if dlog.header("BD-CFG").get("cfg_id") != "BENCH":
+        reasons.append(f"VOID: {name} BD-CFG cfg_id {dlog.header('BD-CFG').get('cfg_id', 'ABSENT')}, not BENCH")
+    return reasons
+
+
+def _change(text, visit_line, field_level):
+    """One diff entry. field_level is True when both logs carry the record being compared."""
+    return {"text": text, "visit_line": visit_line, "field_level": field_level}
+
+
+def detdiff_log(visit_log, base, rows):
+    """R2-HOST-DETDIFF for one qualifying visit log against the baseline (design C.2).
+
+    Compared: BD-CELL (sw, gnm) modal/libvrd/agree/va/vb/vn exactly and
+    sum_min/sum_max/sum_mean exactly when the baseline is 0 or 500, else within
+    +-11; BD-ENUM (gnm) local/lib/match exactly; BD-PLAN (sw) every field exactly.
+    Excluded and listed: sweeps 3 and 6; BD-CFG and BD-MAP as INFO; BD-LIB
+    brackets and every timing record (BD-REP, BD-RUN, BD-CAL).
+    measured = unpredicted changes + predicted changes that did not occur. A cell
+    the visit log marks BD-SKIPPED is NOT_COMPARED and listed, whatever the
+    prediction status; a NOT_COMPARED_GATE_OVERLAP prediction whose cell the visit
+    log does carry is compared (design C.2: NOT_COMPARED needs the SKIPPED mark).
+    PASS iff measured 0, no COMPARED predicted cell was skipped, every skip is one
+    the declared bases imply, and a post-stop cell was compared on each of P0_P15
+    and P16_P31; otherwise NOMEAS. VOID is NOMEAS; a TRUNCATED log is never PASS.
+    """
+    visit = DetectLog(visit_log)
+    out = {"verdict": None, "reason": "", "measured": None, "unpredicted": [], "not_occurred": [], "occurred": [],
+           "not_compared": [], "excluded": [], "info": [], "blockers": [], "void": [], "refs": []}
+    void = detect_void_reasons(visit, "visit") + detect_void_reasons(base, "baseline")
+    visit_build, base_build = visit.header("BD-BUILD"), base.header("BD-BUILD")
+    for name in DETDIFF_VARIANT_FIELDS:
+        if visit_build.get(name) != base_build.get(name):
+            void.append(f"VOID: build variant mismatch, BD-BUILD {name} visit {visit_build.get(name)} vs baseline "
+                        f"{base_build.get(name)} (the binary's DIFF rule: different build variants are not comparable)")
+    if void:
+        out.update(verdict="NOMEAS", reason="VOID", void=void)
+        return out
+
+    def both(base_line, visit_line):
+        return f"baseline {base.ref(base_line)}, visit {visit.ref(visit_line)}"
+
+    for sw in sorted(set(base.plans) | set(visit.plans), key=_sort_sw):
+        base_rec, visit_rec = base.plans.get(sw), visit.plans.get(sw)
+        if base_rec is None or visit_rec is None:
+            where = f"visit {visit.ref(visit_rec[1])}" if base_rec is None else f"baseline {base.ref(base_rec[1])}"
+            out["unpredicted"].append(_change(f"BD-PLAN sw {sw}: present in one log only ({where})",
+                                              visit_rec[1] if visit_rec else None, False))
+            continue
+        for name in sorted(set(base_rec[0]) | set(visit_rec[0])):
+            if base_rec[0].get(name) != visit_rec[0].get(name):
+                out["unpredicted"].append(_change(
+                    f"BD-PLAN sw {sw} {name}: {base_rec[0].get(name, 'ABSENT')} -> {visit_rec[0].get(name, 'ABSENT')} "
+                    f"(exact) -- {both(base_rec[1], visit_rec[1])}", visit_rec[1], True))
+    for gnm in sorted(set(base.enums) | set(visit.enums), key=str):
+        base_rec, visit_rec = base.enums.get(gnm), visit.enums.get(gnm)
+        if base_rec is None or visit_rec is None:
+            where = f"visit {visit.ref(visit_rec[1])}" if base_rec is None else f"baseline {base.ref(base_rec[1])}"
+            out["unpredicted"].append(_change(f"BD-ENUM {gnm}: present in one log only ({where})",
+                                              visit_rec[1] if visit_rec else None, False))
+            continue
+        for name in DETDIFF_ENUM_FIELDS:
+            if not _same_token(base_rec[0].get(name), visit_rec[0].get(name)):
+                out["unpredicted"].append(_change(
+                    f"BD-ENUM {gnm} {name}: {base_rec[0].get(name)} -> {visit_rec[0].get(name)} (exact) -- "
+                    f"{both(base_rec[1], visit_rec[1])}", visit_rec[1], True))
+    base_cfg, visit_cfg = base.headers.get("BD-CFG"), visit.headers.get("BD-CFG")
+    for name in sorted(set(base_cfg[0]) | set(visit_cfg[0])):
+        if base_cfg[0].get(name) != visit_cfg[0].get(name):
+            out["info"].append(f"BD-CFG {name}: {base_cfg[0].get(name, 'ABSENT')} -> {visit_cfg[0].get(name, 'ABSENT')} "
+                               f"-- {both(base_cfg[1], visit_cfg[1])}")
+    for gnm in sorted(set(base.maps) | set(visit.maps), key=str):
+        base_rec, visit_rec = base.maps.get(gnm), visit.maps.get(gnm)
+        if base_rec is None or visit_rec is None:
+            out["info"].append(f"BD-MAP {gnm}: present in one log only")
+            continue
+        for name in sorted(set(base_rec[0]) | set(visit_rec[0])):
+            if base_rec[0].get(name) != visit_rec[0].get(name):
+                out["info"].append(f"BD-MAP {gnm} {name}: {base_rec[0].get(name, 'ABSENT')} -> "
+                                   f"{visit_rec[0].get(name, 'ABSENT')} -- {both(base_rec[1], visit_rec[1])}")
+
+    predictions = {}
+    for row in rows:
+        predictions.setdefault((row["sw_n"], row["grp"]), {})[row["field"]] = row
+    expected_skips, _, _, plan_problems = detect_guard_plan(visit)
+    for problem in plan_problems:
+        out["blockers"].append(f"GUARD_PLAN_UNREADABLE: {problem}")
+    poststop = {gnm: 0 for gnm in DETECT_POSTSTOP_GROUPS}
+    keys = set(base.cells) | set(visit.cells) | set(visit.skipped) | set(predictions)
+    for key in sorted(keys, key=lambda item: (_sort_sw(item[0]), str(item[1]))):
+        sw, gnm = key
+        where = f"sw {sw} {gnm}"
+        cell_preds = predictions.get(key, {})
+        base_rec, visit_rec, skip_rec = base.cells.get(key), visit.cells.get(key), visit.skipped.get(key)
+        if sw in DETECT_VOID_SWEEPS:
+            text = f"{where}: excluded -- running-driver cell, void by design (design C.2)"
+            if cell_preds:
+                text += f"; {len(cell_preds)} EXCLUDED_VOID prediction line(s)"
+            out["excluded"].append(text)
+            continue
+        if skip_rec is not None:
+            reason = skip_rec[0].get("reason")
+            text = f"{where}: NOT_COMPARED -- the visit log marks it SKIPPED {reason} ({visit.ref(skip_rec[1])})"
+            if cell_preds:
+                text += "; prediction line(s) not compared: " + ", ".join(
+                    f"{field} {row['baseline_value']} -> {row['predicted_value']} ({row['status']})"
+                    for field, row in sorted(cell_preds.items()))
+            out["not_compared"].append(text)
+            if expected_skips.get(key) != reason:
+                out["blockers"].append(f"UNEXPECTED_SKIP: {where} is SKIPPED {reason} at {visit.ref(skip_rec[1])}, but "
+                                       f"the declared bases imply {expected_skips.get(key, 'no skip')} "
+                                       "(see R2-DETECT-GUARD)")
+            if any(row["status"] == "COMPARED" for row in cell_preds.values()):
+                out["blockers"].append(f"PREDICTED_CELL_SKIPPED: {where} carries COMPARED predictions but the visit "
+                                       "log skipped it, so not every COMPARED predicted cell is present in both logs")
+            if visit_rec is not None:
+                out["unpredicted"].append(_change(f"{where}: the visit log carries both a BD-CELL "
+                                                  f"({visit.ref(visit_rec[1])}) and a BD-SKIPPED record",
+                                                  visit_rec[1], False))
+            continue
+        if base_rec is None or visit_rec is None:
+            if base_rec is None and visit_rec is None:
+                where_text = "neither log carries the cell"
+            elif base_rec is None:
+                where_text = f"the BD-CELL is in the visit log only ({visit.ref(visit_rec[1])})"
+            else:
+                where_text = f"the BD-CELL is in the baseline only ({base.ref(base_rec[1])})"
+            visit_line = visit_rec[1] if visit_rec else None
+            if cell_preds:
+                for field, row in sorted(cell_preds.items()):
+                    out["not_occurred"].append(_change(
+                        f"{where} {field}: predicted {row['baseline_value']} -> {row['predicted_value']} "
+                        f"(predictions line {row['lineno']}), but {where_text}", visit_line, False))
+            else:
+                out["unpredicted"].append(_change(f"{where}: {where_text}", visit_line, False))
+            continue
+        if sw in DETECT_POSTSTOP_SWEEPS and gnm in poststop:
+            poststop[gnm] += 1
+        for field in DETDIFF_SUM_FIELDS + DETDIFF_EXACT_FIELDS:
+            base_value, visit_value = base_rec[0].get(field), visit_rec[0].get(field)
+            row = cell_preds.get(field)
+            lines = both(base_rec[1], visit_rec[1])
+            if row is None:
+                if not field_unchanged(field, base_value, visit_value):
+                    out["unpredicted"].append(_change(
+                        f"{where} {field}: {base_value} -> {visit_value}, not predicted "
+                        f"({_unchanged_rule(field, base_value)}) -- {lines}", visit_rec[1], True))
+            elif not _same_token(row["baseline_value"], base_value):
+                out["not_occurred"].append(_change(
+                    f"{where} {field}: predictions line {row['lineno']} expects baseline {row['baseline_value']}, "
+                    f"the baseline reads {base_value} -- {lines}", visit_rec[1], True))
+            elif prediction_matches(row["predicted_value"], visit_value):
+                out["occurred"].append(f"{where} {field}: {base_value} -> {visit_value} as predicted "
+                                       f"({row['predicted_value']}, {row['status']}, {row['prov']}) -- {lines}")
+            else:
+                out["not_occurred"].append(_change(
+                    f"{where} {field}: predicted {base_value} -> {row['predicted_value']} ({row['status']}, "
+                    f"{row['prov']}), the visit reads {visit_value} -- {lines}", visit_rec[1], True))
+    for gnm, count in poststop.items():
+        if count == 0:
+            out["blockers"].append(f"NO_POSTSTOP_COMPARED: no post-stop cell (sweeps 4, 5, 7, 8) was compared on "
+                                   f"{gnm}; an all-skipped diff is never PASS")
+
+    changes = out["unpredicted"] + out["not_occurred"]
+    out["measured"] = len(changes)
+    banner_line = visit.headers.get("BD-BANNER", ({}, None))[1]
+    if not visit_log.complete:
+        field_level = [change for change in changes if change["field_level"]]
+        if field_level:
+            out.update(verdict="FAIL", reason="CHANGES_BEFORE_TRUNCATION")
+            out["refs"] = [visit.ref(change["visit_line"]) for change in field_level]
+        else:
+            out.update(verdict="NOMEAS", reason="LOG_TRUNCATED")
+    elif changes:
+        out.update(verdict="FAIL", reason="UNPREDICTED_OR_NOT_OCCURRED")
+        out["refs"] = [visit.ref(change["visit_line"]) for change in changes if change["visit_line"]] or \
+            [visit.ref(banner_line)]
+    elif out["blockers"]:
+        out.update(verdict="NOMEAS", reason=out["blockers"][0].split(":", 1)[0])
+    else:
+        out.update(verdict="PASS")
+        out["refs"] = [visit.ref(banner_line)]
+    return out
 
 
 def detdiff_compare(visit_logs, baseline_log, predictions_path):
-    """PHASE 2d STUB -- NOT IMPLEMENTED. Never returns PASS.
+    """R2-HOST-DETDIFF across the qualifying visit logs of the latest build (design C.2, D.4)."""
+    rows, problems = load_predictions(predictions_path)
+    if problems:
+        return CellResult("NOMEAS", "PREDICTIONS_MALFORMED", problems)
+    base = DetectLog(baseline_log)
+    members, detail = _latest_build(visit_logs)
+    detail.append(f"baseline {baseline_log.display}; predictions {display_path(predictions_path)} "
+                  f"({len(rows)} prediction line(s))")
+    results, per_log, refs_by_verdict = [], [], {"PASS": [], "FAIL": [], "NOMEAS": []}
+    for log in members:
+        out = detdiff_log(log, base, rows)
+        results.append((out["verdict"], out["reason"]))
+        per_log.append((log, out))
+        measured = "NA" if out["measured"] is None else out["measured"]
+        detail.append(f"{log.display}: {out['verdict']}" + (f" ({out['reason']})" if out["reason"] else "")
+                      + f"; measured {measured} = {len(out['unpredicted'])} unpredicted change(s) + "
+                      f"{len(out['not_occurred'])} predicted change(s) that did not occur, lo 0, hi 0, COUNT; "
+                      f"{len(out['occurred'])} predicted change(s) occurred; {len(out['not_compared'])} cell(s) "
+                      "NOT_COMPARED; itemised in the DETDIFF change list")
+        detail.extend(out["void"] + out["blockers"])
+        refs_by_verdict[out["verdict"]].extend(out["refs"])
+    verdict, reason = _aggregate(results)
+    result = CellResult(verdict, reason, detail, [], refs_by_verdict.get(verdict, []))
+    result.extra["logs"] = per_log
+    return result
 
-    Contract (design C.2), for phase 2d to implement:
-      Inputs: the visit's detect-phase2 log(s) (already qualified by
-      is_detect_phase2_log), the baseline 2026-09-11/debug_260911-210229.log,
-      and SIGNOFF-DETECT-PREDICTIONS.tsv with columns
-      sw, grp, field, baseline_value, predicted_value, note (3505's list verbatim).
-      VOID -> NOMEAS (VOID): BD-CLK match 0, any BD-ENUM match 0, missing banner,
-      or a build-variant mismatch (the binary's BD-NOTE DIFF rule).
-      Compare semantic records only, excluding BD-LIB brackets:
-        BD-CELL (sw,grp): modal, libvrd, agree, va, vb, vn exactly equal;
-        BD-CELL (sw,grp): sum_min, sum_max, sum_mean exactly equal when the
-          baseline is 0 or 500, else within +-11 (Rev B band 93-104);
-        BD-ENUM (grp): local, lib, match exactly; BD-PLAN (sw): all fields exactly.
-      Excluded and printed as excluded: sweeps 3 and 6; BD-CFG and BD-MAP
-      (INFO unless a prediction names them).
-      measured = unpredicted changes + predicted changes that did not occur.
-      A prediction whose cell the visit log marks SKIPPED by the gate guard is
-      NOT_COMPARED (listed, counts neither way).
-      PASS iff measured 0, every predicted cell present in both logs, and at
-      least one post-stop cell compared on each of P0_P15 and P16_P31;
-      an all-skipped diff is NOMEAS. The sheet lists every unpredicted change
-      with both log line numbers.
+
+def detect_guard_log(log):
+    """R2-DETECT-GUARD on one qualifying detect-phase2 log (design C.3 item 5).
+
+    Returns (verdict, reason, detail lines, refs). TRUE (PASS) needs all of:
+      - no BD-REP and no BD-CELL for a cell the guard must skip;
+      - one BD-SKIPPED per such cell with its reason, and none anywhere else;
+      - BD-MAP guard GATE_OVERLAP on exactly the gate-overlap groups;
+      - every BD-SWEEP end's cells, skipped and reps equal to the BD-PLAN less the
+        skipped cells, and equal to the records the log actually carries.
+    The skip set comes from detect_guard_plan(), never from the binary's own claim.
+    NOMEAS when the declared bases imply no skip: the guard was not exercised.
     """
-    return CellResult("NOT_BUILT", "DETDIFF_NOT_IMPLEMENTED",
-                      ["inputs present, but the detection-sweep diff is a phase 2d stub; it never yields PASS",
-                       f"visit detect log(s): {', '.join(log.display for log in visit_logs)}",
-                       f"baseline: {baseline_log.display}; predictions: {display_path(predictions_path)}"])
+    dlog = DetectLog(log)
+    skips, plan_groups, gate_groups, problems = detect_guard_plan(dlog)
+    if problems:
+        return "NOMEAS", "GUARD_INPUT_MALFORMED", [f"{log.display}: {problem}" for problem in problems], []
+    if not skips:
+        return ("NOMEAS", "NOTHING_TO_GUARD",
+                [f"{log.display}: the declared bases imply no skipped cell, so the guard was not exercised"], [])
+    failures = []
+
+    def fail(lineno, text):
+        failures.append((dlog.ref(lineno) if lineno else log.display, text))
+
+    for sw, gnm, lineno in dlog.reps:
+        if (sw, gnm) in skips:
+            fail(lineno, f"BD-REP for sw {sw} {gnm}, a cell the guard must skip ({skips[(sw, gnm)]})")
+    for key, (_, lineno) in sorted(dlog.cells.items(), key=lambda item: item[1][1]):
+        if key in skips:
+            fail(lineno, f"BD-CELL for sw {key[0]} {key[1]}, a cell the guard must skip ({skips[key]})")
+    for gnm in DETECT_GROUPS:
+        want = "GATE_OVERLAP" if gnm in gate_groups else "NONE"
+        entry = dlog.maps.get(gnm)
+        if entry is None:
+            fail(None, f"no BD-MAP record for {gnm}")
+        elif entry[0].get("guard") != want:
+            fail(entry[1], f"BD-MAP {gnm} guard {entry[0].get('guard', 'ABSENT')} (ovl {entry[0].get('ovl', 'ABSENT')}); "
+                           f"the declared bases give {want}")
+    for key, (pairs, lineno) in sorted(dlog.skipped.items(), key=lambda item: item[1][1]):
+        want = skips.get(key)
+        if want is None:
+            fail(lineno, f"BD-SKIPPED sw {key[0]} {key[1]} reason {pairs.get('reason')}, but the declared bases "
+                         "imply no skip")
+        elif pairs.get("reason") != want:
+            fail(lineno, f"BD-SKIPPED sw {key[0]} {key[1]} reason {pairs.get('reason')}; the declared bases give {want}")
+    for key, want in sorted(skips.items()):
+        if key not in dlog.skipped:
+            fail(None, f"no BD-SKIPPED record for sw {key[0]} {key[1]} (expected reason {want})")
+    count_lines = []
+    for sw, groups in sorted(plan_groups.items()):
+        plan_n = parse_int_token(dlog.plans[sw][0].get("n", ""))
+        n_skipped = sum(1 for gnm in groups if (sw, gnm) in skips)
+        n_cells = len(groups) - n_skipped
+        want = {"cells": n_cells, "skipped": n_skipped, "reps": None if plan_n is None else n_cells * plan_n}
+        counted = {"cells": sum(1 for key in dlog.cells if key[0] == sw),
+                   "skipped": sum(1 for key in dlog.skipped if key[0] == sw),
+                   "reps": sum(1 for rep in dlog.reps if rep[0] == sw)}
+        end = dlog.sweep_ends.get(sw)
+        if end is None:
+            fail(None, f"no BD-SWEEP end mark for sw {sw}")
+            continue
+        for name in ("cells", "skipped", "reps"):
+            printed = parse_int_token(end[0].get(name, ""))
+            if want[name] is None or printed != want[name]:
+                fail(end[1], f"BD-SWEEP sw {sw} {name} {end[0].get(name, 'ABSENT')}; the plan less its skipped cells "
+                             f"gives {want[name]}")
+            if counted[name] != want[name]:
+                fail(end[1], f"sw {sw} carries {counted[name]} {name} record(s); the plan less its skipped cells "
+                             f"gives {want[name]}")
+        count_lines.append(end[1])
+    cfg = dlog.header("BD-CFG")
+    cog_sweeps = sorted({sw for (sw, _), reason in skips.items() if reason == "COG_OVERLAP"})
+    summary = (f"{log.display}: skip set from BD-CFG left_base {cfg.get('left_base')} right_base {cfg.get('right_base')}"
+               f" -- GATE_OVERLAP groups {', '.join(sorted(gate_groups)) or 'none'}; COG_OVERLAP sweeps "
+               f"{', '.join(map(str, cog_sweeps)) or 'none'}; {len(skips)} skipped cell(s) across {len(plan_groups)} "
+               "planned sweep(s)")
+    if failures:
+        return ("FAIL", "GUARD_NOT_HELD",
+                [summary, f"{log.display}: FALSE -- {len(failures)} condition failure(s)"]
+                + [f"{ref}: {text}" for ref, text in failures],
+                [ref for ref, _ in failures])
+    refs = [dlog.ref(dlog.maps[gnm][1]) for gnm in sorted(gate_groups)] + [dlog.ref(line) for line in count_lines]
+    return ("PASS", "",
+            [summary, f"{log.display}: TRUE -- no BD-REP or BD-CELL for a skipped cell, one BD-SKIPPED per skipped "
+                      f"cell, BD-MAP guard matches, {len(count_lines)} BD-SWEEP end count(s) equal the plan less "
+                      "the skipped cells"],
+            refs)
 
 
-def detect_guard_check(visit_logs, predictions_path):
-    """PHASE 2d STUB -- NOT IMPLEMENTED. Never returns PASS.
-
-    Contract (design C.3 item 5, cell R2-DETECT-GUARD, units BOOL):
-      measured TRUE iff, in the visit's detect-phase2 log,
-        - no BD-REP record exists for a group skipped by the gate-input guard
-          (cells emitted SKIPPED with reason GATE_OVERLAP or COG_OVERLAP);
-        - BD-MAP classifies those groups as gate overlaps;
-        - every BD-SWEEP count equals its BD-PLAN count less the skipped cells.
-      It can FAIL: a run of the pre-guard binary shows BD-REP records for P40_P55.
-    """
-    return CellResult("NOT_BUILT", "GUARD_CHECK_NOT_IMPLEMENTED",
-                      ["inputs present, but the gate-input guard check is a phase 2d stub; it never yields PASS",
-                       f"visit detect log(s): {', '.join(log.display for log in visit_logs)}"])
+def detect_guard_check(visit_logs):
+    """R2-DETECT-GUARD across the qualifying logs of the latest build (a rerun cannot hide a FAIL)."""
+    members, detail = _latest_build(visit_logs)
+    results, refs_by_verdict = [], {"PASS": [], "FAIL": [], "NOMEAS": []}
+    for log in members:
+        verdict, reason, lines, refs = detect_guard_log(log)
+        if verdict == "PASS" and not log.complete:
+            verdict, reason = "NOMEAS", "LOG_TRUNCATED"
+            lines.append(f"{log.display}: TRUNCATED, so its TRUE cannot yield PASS (design D.3.2)")
+        results.append((verdict, reason))
+        detail.extend(lines)
+        refs_by_verdict[verdict].extend(refs)
+    verdict, reason = _aggregate(results)
+    detail.append(f"measured {dict(PASS='TRUE', FAIL='FALSE').get(verdict, 'NA')}, lo TRUE, hi TRUE, BOOL")
+    refs = refs_by_verdict.get(verdict, [])
+    return CellResult(verdict, reason, detail, [f"{ref} (proving line)" for ref in refs], refs)
 
 
 def evaluate_host_cell(cell, logs, ctx):
@@ -1149,8 +1683,34 @@ def render_sheet(col, visit, date, manifest_path, static_tree, update, predictio
     out.append("")
     out.append("## DETDIFF change list")
     out.append("")
-    out.append("- not computed: the detection-sweep diff is a phase 2d stub, so R2-HOST-DETDIFF cannot leave "
-               "NOT_BUILT")
+    detdiff = col.results.get("R2-HOST-DETDIFF")
+    per_log = detdiff.extra.get("logs", []) if detdiff is not None else []
+    if detdiff is None:
+        out.append("- not computed: R2-HOST-DETDIFF is not in this visit's scope")
+    elif not per_log:
+        out.append(f"- not computed: R2-HOST-DETDIFF is {detdiff.verdict}"
+                   + (f" ({detdiff.reason})" if detdiff.reason else "")
+                   + (f": {'; '.join(detdiff.detail)}" if detdiff.detail else ""))
+    for log, diff in per_log:
+        out.append(f"### `{log.display}` -- {diff['verdict']}" + (f" ({diff['reason']})" if diff["reason"] else "")
+                   + f", measured {'NA' if diff['measured'] is None else diff['measured']}")
+        out.append("")
+        out.append("- Never compared (design C.2): BD-LIB brackets, BD-REP/BD-RUN/BD-CAL timing, BD-NOTE text, "
+                   "BD-PH2; BD-CFG and BD-MAP appear under INFO only.")
+        sections = (
+            ("VOID", diff["void"]),
+            ("Unpredicted changes", [change["text"] for change in diff["unpredicted"]]),
+            ("Predicted changes that did not occur", [change["text"] for change in diff["not_occurred"]]),
+            ("Blocking PASS", diff["blockers"]),
+            ("NOT_COMPARED (the visit log marks the cell SKIPPED)", diff["not_compared"]),
+            ("Excluded by design (sweeps 3 and 6)", diff["excluded"]),
+            ("Predicted changes that occurred", diff["occurred"]),
+            ("INFO (BD-CFG, BD-MAP; not in the verdict)", diff["info"]),
+        )
+        for title, entries in sections:
+            out.append(f"- **{title}** ({len(entries)})")
+            out.extend(f"  - {entry}" for entry in entries)
+        out.append("")
     return "\n".join(out) + "\n"
 
 
@@ -1541,6 +2101,106 @@ def _st_l_wdtend():
                 f"wd_selftest FALSE -> {noflag}")
 
 
+DETDIFF_PASS_FIXTURE = "m-detdiff-visit-pass.log"
+GUARD_PASS_FIXTURE = "n-guard-guarded.log"
+GUARD_FAIL_FIXTURE = "n-guard-unguarded.log"
+DETDIFF_MUTATED_CELL = "BD-CELL,sw,5,grp,32,gnm,P32_P47,cog,P0_P15,cogst,STOPPED,clr,CLR,n,32,sum_min,94,sum_max,99,"
+
+
+def _detdiff_on_text(name, text):
+    """Run R2-HOST-DETDIFF on an in-memory visit log against the real baseline and prediction list."""
+    result = detdiff_compare([LogInfo(name, text)], read_log_file(DEFAULT_BASELINE), DEFAULT_PREDICTIONS)
+    diff = result.extra["logs"][0][1] if result.extra.get("logs") else None
+    return result, diff
+
+
+def _detdiff_summary(result, diff):
+    if diff is None:
+        return f"{result.verdict} ({result.reason}): {'; '.join(result.detail[:3])}"
+    first = [change["text"] for change in diff["unpredicted"] + diff["not_occurred"]][:2] + diff["blockers"][:2]
+    return (f"{result.verdict} ({result.reason or '-'}), measured {diff['measured']} = {len(diff['unpredicted'])} "
+            f"unpredicted + {len(diff['not_occurred'])} not occurred; {len(diff['occurred'])} occurred; "
+            f"{len(diff['not_compared'])} NOT_COMPARED" + (f"; first: {first}" if first else ""))
+
+
+def _st_m_detdiff_pass():
+    text = (FIXTURE_DIR / DETDIFF_PASS_FIXTURE).read_text(encoding="utf-8")
+    result, diff = _detdiff_on_text(DETDIFF_PASS_FIXTURE, text)
+    rows, _ = load_predictions(DEFAULT_PREDICTIONS)
+    compared = sum(1 for row in rows if row["status"] == "COMPARED")
+    ok = (result.verdict == "PASS" and diff is not None and diff["measured"] == 0
+          and len(diff["occurred"]) == compared and not diff["blockers"])
+    return ok, f"visit applying exactly the {compared} COMPARED predictions -> {_detdiff_summary(result, diff)}"
+
+
+def _st_n_detdiff_unpredicted():
+    text = (FIXTURE_DIR / DETDIFF_PASS_FIXTURE).read_text(encoding="utf-8")
+    mutated = text.replace(DETDIFF_MUTATED_CELL, DETDIFF_MUTATED_CELL.replace("sum_max,99,", "sum_max,120,"))
+    visit_line = next((index for index, line in enumerate(mutated.splitlines(), start=1)
+                       if "BD-CELL,sw,5,grp,32," in line), None)
+    result, diff = _detdiff_on_text("n-unpredicted", mutated)
+    listed = diff["unpredicted"][0]["text"] if diff and diff["unpredicted"] else ""
+    ok = (mutated != text and result.verdict == "FAIL" and diff["measured"] == 1 and len(diff["unpredicted"]) == 1
+          and "sw 5 P32_P47 sum_max: 99 -> 120" in listed
+          and f"{display_path(DEFAULT_BASELINE)}:1072" in listed and f"n-unpredicted:{visit_line}" in listed
+          and result.refs == [f"n-unpredicted:{visit_line}"])
+    return ok, f"sw 5 P32_P47 sum_max 99 -> 120 (+21, outside +-11) -> {_detdiff_summary(result, diff)}; listed: {listed}"
+
+
+def _st_o_detdiff_baseline_self():
+    baseline = read_log_file(DEFAULT_BASELINE)
+    result = detdiff_compare([baseline], baseline, DEFAULT_PREDICTIONS)
+    diff = result.extra["logs"][0][1] if result.extra.get("logs") else None
+    rows, _ = load_predictions(DEFAULT_PREDICTIONS)
+    judged = sum(1 for row in rows if row["status"] != "EXCLUDED_VOID")
+    ok = (result.verdict == "FAIL" and diff is not None and not diff["unpredicted"]
+          and len(diff["not_occurred"]) == judged)
+    return ok, (f"baseline against itself: {judged} non-void predicted changes cannot occur -> "
+                f"{_detdiff_summary(result, diff)}")
+
+
+def _st_p_detdiff_void():
+    text = (FIXTURE_DIR / DETDIFF_PASS_FIXTURE).read_text(encoding="utf-8")
+    mutated = text.replace("clkfreq_runtime,270_000_000,match,1", "clkfreq_runtime,270_000_000,match,0")
+    result, diff = _detdiff_on_text("p-void", mutated)
+    ok = mutated != text and result.verdict == "NOMEAS" and result.reason == "VOID"
+    return ok, f"visit BD-CLK match 0 -> {result.verdict} ({result.reason}); {diff['void'] if diff else result.detail}"
+
+
+def _st_q_detdiff_all_skipped():
+    lines = (FIXTURE_DIR / DETDIFF_PASS_FIXTURE).read_text(encoding="utf-8").splitlines()
+    replaced = 0
+    for index, line in enumerate(lines):
+        for sw in DETECT_POSTSTOP_SWEEPS:
+            marker = f"Cog0  BD-CELL,sw,{sw},grp,0,"
+            if marker in line:
+                cog = "P0_P15" if sw in (4, 5) else "P16_P31"
+                clr = "NOCLR" if sw in (4, 7) else "CLR"
+                lines[index] = (line.split("Cog0  ")[0] + f"Cog0  BD-SKIPPED,sw,{sw},grp,0,gnm,P0_P15,pin,4,ovl,NONE,"
+                                f"cog,{cog},cogst,STOPPED,clr,{clr},n,32,reason,GATE_OVERLAP")
+                replaced += 1
+    result, diff = _detdiff_on_text("q-all-skipped", "\n".join(lines) + "\n")
+    ok = (replaced == 4 and result.verdict == "NOMEAS" and diff["measured"] == 0
+          and any(blocker.startswith("NO_POSTSTOP_COMPARED") and "P0_P15" in blocker for blocker in diff["blockers"]))
+    return ok, f"every post-stop P0_P15 cell ({replaced}) SKIPPED -> {_detdiff_summary(result, diff)}"
+
+
+def _st_r_guard_unguarded():
+    result = detect_guard_check([read_log_file(FIXTURE_DIR / GUARD_FAIL_FIXTURE)])
+    rep_lines = [line for line in result.detail if "BD-REP for sw" in line and "P40_P55" in line]
+    ok = result.verdict == "FAIL" and len(rep_lines) == 6
+    return ok, (f"SRC_REV 2 binary on the bench bases (BD-REP for P40_P55) -> {result.verdict} ({result.reason}); "
+                f"{len(rep_lines)} P40_P55 BD-REP failure(s), e.g. {rep_lines[:1]}")
+
+
+def _st_s_guard_guarded():
+    result = detect_guard_check([read_log_file(FIXTURE_DIR / GUARD_PASS_FIXTURE)])
+    skip_line = next((line for line in result.detail if "skip set from BD-CFG" in line), "")
+    ok = (result.verdict == "PASS" and "GATE_OVERLAP groups NO_USE_P24_P39, P40_P55;" in skip_line
+          and "COG_OVERLAP sweeps none" in skip_line)
+    return ok, f"guarded log -> {result.verdict} ({result.reason or '-'}); {skip_line}"
+
+
 def selftest():
     checks = [
         ("(a)", "run-5 negative case", _st_a_negative_case),
@@ -1555,6 +2215,14 @@ def selftest():
         ("(j)", "no subprocess use outside run()", _st_j_no_subprocess),
         ("(k)", "--check-ready declaration detector", _st_k_check_ready_detector),
         ("(l)", "R11-HOST-WDTEND conditions", _st_l_wdtend),
+        ("(m)", "R2-HOST-DETDIFF: visit applying exactly the COMPARED predictions is PASS", _st_m_detdiff_pass),
+        ("(n)", "R2-HOST-DETDIFF: one unpredicted change is FAIL, listed with both line numbers",
+         _st_n_detdiff_unpredicted),
+        ("(o)", "R2-HOST-DETDIFF: the baseline against itself is FAIL (unfixed value)", _st_o_detdiff_baseline_self),
+        ("(p)", "R2-HOST-DETDIFF: BD-CLK match 0 is NOMEAS VOID", _st_p_detdiff_void),
+        ("(q)", "R2-HOST-DETDIFF: no post-stop P0_P15 cell compared is NOMEAS", _st_q_detdiff_all_skipped),
+        ("(r)", "R2-DETECT-GUARD: BD-REP for P40_P55 (SRC_REV 2 binary) is FAIL", _st_r_guard_unguarded),
+        ("(s)", "R2-DETECT-GUARD: a guarded log is PASS", _st_s_guard_guarded),
     ]
     failures = 0
     for label, title, function in checks:

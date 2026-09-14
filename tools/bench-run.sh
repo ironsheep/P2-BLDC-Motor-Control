@@ -73,7 +73,7 @@ Usage:  tools/bench-run.sh <tier> [clkfreq]
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    detect         board-detection sweep, PASSIVE (no driver code in the image)
                    detect-lib     as above + the library cross-check (still no driver cog)
-                   detect-phase2  adds the driver-cog poisoning probe  [MOTORS UNPLUGGED]
+                   detect-phase2  adds the driver-cog poisoning probe  [MOTORS MAY STAY CONNECTED, GATE-OVERLAP GROUPS SKIPPED]
                    char           automated motor characterisation, nine holds  [MOTORS CONNECTED, UNATTENDED]
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
                    scan-wdtest    watchdog self-test: preflight, deliberate stall, watchdog ends the run  [MOTORS CONNECTED]
@@ -125,7 +125,7 @@ case "$TIER" in
                     ;;
     detect-phase2)  BENCH_FILE="test_bench_detect.spin2"
                     EXTRA_DEFS=(-D DETECT_PHASE2)
-                    PRECONDITION="THE MOTORS MUST BE PHYSICALLY UNPLUGGED -- this build starts a real driver cog"
+                    PRECONDITION="MOTORS MAY STAY CONNECTED -- this build starts a real driver cog at commanded zero; groups whose sense pin lands on a board's gate input are skipped (GATE_OVERLAP) and a driver cog that overlaps another board is refused (COG_OVERLAP)"
                     ;;
     char)           BENCH_FILE="test_bench_char.spin2"
                     PRECONDITION="MOTORS CONNECTED, BOTH WHEELS FREE TO TURN -- UNATTENDED characterisation run"

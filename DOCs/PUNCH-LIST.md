@@ -928,6 +928,10 @@ self-check uses `bZeroOk` directly. Run 5's evaluation did not rely on it.
 **Fix:** scheduled in «#3537» phase 2 (`DOCs/plans/VISIT-SIGNOFF-DESIGN.md` §F.6). `health_ok`
 prints `NA` for every phase except `ZERO_INIT`, at FMT 7.
 
+**Fixed in tree 2026-09-14 (commit `b300660`, scan FMT 7):** `health_ok` prints `NA` for every
+phase except `ZERO_INIT`. It is a record-label fix with no sign-off cell; the Visit 1 scan log
+shows it.
+
 ### PL-35 -- the detection binary's safety notes describe the pin map from before the boards were measured
 
 **Found 2026-09-13** while answering whether Visit 1's detection re-run needs the motors
@@ -962,6 +966,25 @@ the effect depends on the gate driver's undriven-input behaviour, which is not i
 - Phase 2 refuses a driver cog whose pins overlap another board.
 - The notes and tokens are corrected.
 - The detect-phase2 precondition in `tools/bench-run.sh` changes in the same commit.
+
+**Fixed in tree 2026-09-14 («#3537» P2d; `test_bench_detect.spin2` SRC_REV 3, FMT 2):**
+- **Skipped groups.** `isGateOverlap()` computes, from `user.LEFT_MOTOR_BASE` / `RIGHT_MOTOR_BASE`
+  in every sweep of every build, whether a group's sense pin lands on a board's pin other than
+  that board's own sense pin.
+  - On the bench bases it skips NO_USE_P24_P39 (P28) and P40_P55 (P44).
+  - A skipped cell emits `BD-SKIPPED GATE_OVERLAP`, no `BD-REP`, and no library probe.
+- **Refused driver cogs.** Phase 2 refuses a driver cog that overlaps another board
+  (`COG_OVERLAP`). Neither phase-2 group does today.
+- **Stale text corrected:**
+  - the notes;
+  - the overlap tokens (now `LEFT+12_PWM_W_L` / `RIGHT+12_PWM_W_L`);
+  - the `DETECT_NO_TAIL` description, which now says it is not a safety build;
+  - the group comments;
+  - the header precondition, together with `tools/bench-run.sh`'s detect-phase2 precondition.
+- **Not a pulse.** `clearSweptGroups()` still pinclears those groups. `PINCLEAR` sets DIR and the
+  mode to 0 (`p2kbSpin2Pinclear`), so the pin is only released.
+- **Proof owed to Visit 1:** cells `R2-DETECT-GUARD` and `R2-HOST-DETDIFF`. The overlap cells
+  themselves are deferred to `R2-DETECT-OVERLAP`, owed to the first motors-unplugged session.
 
 ### PL-36 -- a failed `start()` kept its pin-range claim with no cog behind it
 

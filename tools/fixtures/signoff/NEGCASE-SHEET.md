@@ -4,7 +4,7 @@
 - Manifest: `DOCs/analyses/bench/SIGNOFF-MANIFEST.tsv` -- statuses updated by this run (--update)
 - Design: `DOCs/plans/VISIT-SIGNOFF-DESIGN.md`
 - Flags: --static-tree no; --update yes
-- Detect prediction list: `DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv` (absent); detect baseline: `DOCs/analyses/bench/2026-09-11/debug_260911-210229.log` (present)
+- Detect prediction list: `DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv` (present); detect baseline: `DOCs/analyses/bench/2026-09-11/debug_260911-210229.log` (present)
 - Rules: a verdict exists only where a binary printed one; a cell reaches PASS only by positive evidence; a declared cell without a verdict is NOMEAS (design section 0)
 
 ## Input logs
@@ -52,12 +52,10 @@
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R2-HOST-DETDIFF** (row 2, bin HOST) -- **NOT_BUILT** (INPUT_ABSENT) -- crit ONLY_PREDICTED, lo 0, hi 0, units COUNT, min_inst 1; manifest status OWED
   - no detect-phase2 log among the inputs (BD-BANNER tool test_bench_detect, BD-BUILD phase2_compiled 1, BD-CFG cfg_id BENCH)
-  - prediction list absent: DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv
 - **R2-CHAR-ISCALE** (row 2, bin CHAR) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit RSENSE_IMPLIED, lo 135, hi 165, units COUNT, min_inst 8; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R2-DETECT-GUARD** (row 2, bin HOST) -- **NOT_BUILT** (INPUT_ABSENT) -- crit GUARD_SKIPS_OK, lo TRUE, hi TRUE, units BOOL, min_inst 1; manifest status OWED
   - no detect-phase2 log among the inputs (BD-BANNER tool test_bench_detect, BD-BUILD phase2_compiled 1, BD-CFG cfg_id BENCH)
-  - prediction list absent: DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv
 - **R3-SCAN-INTEG** (row 3, bin SCAN) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit MISSED_ILLEGAL_SUM, lo 0, hi 0, units COUNT, min_inst 2; manifest status OWED
   - no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - **R3-CHAR-INTEG** (row 3, bin CHAR) -- **NOT_BUILT** (NO_DECLARING_LOG) -- crit MISSED_ILLEGAL_SUM, lo 0, hi 0, units COUNT, min_inst 2; manifest status OWED
@@ -127,9 +125,9 @@
 - R2-T0-REPEAT -- NO_DECLARING_LOG: no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - R2-T0-DIRTY -- NO_DECLARING_LOG: no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - R2-T0-EMPTY -- NO_DECLARING_LOG: no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
-- R2-HOST-DETDIFF -- INPUT_ABSENT: no detect-phase2 log among the inputs (BD-BANNER tool test_bench_detect, BD-BUILD phase2_compiled 1, BD-CFG cfg_id BENCH); prediction list absent: DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv
+- R2-HOST-DETDIFF -- INPUT_ABSENT: no detect-phase2 log among the inputs (BD-BANNER tool test_bench_detect, BD-BUILD phase2_compiled 1, BD-CFG cfg_id BENCH)
 - R2-CHAR-ISCALE -- NO_DECLARING_LOG: no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
-- R2-DETECT-GUARD -- INPUT_ABSENT: no detect-phase2 log among the inputs (BD-BANNER tool test_bench_detect, BD-BUILD phase2_compiled 1, BD-CFG cfg_id BENCH); prediction list absent: DOCs/analyses/bench/SIGNOFF-DETECT-PREDICTIONS.tsv
+- R2-DETECT-GUARD -- INPUT_ABSENT: no detect-phase2 log among the inputs (BD-BANNER tool test_bench_detect, BD-BUILD phase2_compiled 1, BD-CFG cfg_id BENCH)
 - R3-SCAN-INTEG -- NO_DECLARING_LOG: no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - R3-CHAR-INTEG -- NO_DECLARING_LOG: no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
 - R3-T0-STOPPED -- NO_DECLARING_LOG: no input log declares this cell (SIGNOFF-DECL) or prints a verdict for it
@@ -178,4 +176,4 @@
 
 ## DETDIFF change list
 
-- not computed: the detection-sweep diff is a phase 2d stub, so R2-HOST-DETDIFF cannot leave NOT_BUILT
+- not computed: R2-HOST-DETDIFF is NOT_BUILT (INPUT_ABSENT): no detect-phase2 log among the inputs (BD-BANNER tool test_bench_detect, BD-BUILD phase2_compiled 1, BD-CFG cfg_id BENCH)
