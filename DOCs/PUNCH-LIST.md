@@ -1296,6 +1296,31 @@ pnut_ts's own guide, says a trap returns the method's normal return value when n
   is the exceptional path used as a routine capture. Under PL-47 the harness calls normally, checks
   `getError()`, and keeps a single top-level trap to secure the hardware.
 
+**Root-cause study (2026-09-14, [`analyses/PL-44-ROOT-CAUSE-STUDY.md`](analyses/PL-44-ROOT-CAUSE-STUDY.md)):**
+- **No defect in our code explains the zeros.** Refuted, with evidence:
+  - a wrong print path (the wrong value is in memory);
+  - multi-result loss;
+  - a real abort;
+  - a shared variable name;
+  - stack exhaustion.
+- **Two hypotheses survive, confounded:**
+  - **H1:** a `debug()` inside the trapped callee;
+  - **H7:** a trap inside another trap's frame.
+
+  Every failing capture had both.
+- **The logs cannot tell "assigns 0" from "assigns nothing":** every receiver was already 0.
+- **A no-motion probe separates H1, H7 and a toolchain explanation in one run.** It uses 29 cells,
+  with K = 1000 + cell, a pre-loaded sentinel and a callee echo, top-level against nested, plus
+  library bisection. It is specified in §3 of the study and built in «#3539».
+- **No conclusion about the toolchain is drawn before that run.**
+- **Other harness defects the study found:**
+  - the char PL-36 claims check was masked;
+  - T0 guards accept a stuck 0;
+  - `aborted,DRIVE` reports a wrong value as an abort;
+  - top-level trap values are printed only on abort.
+
+  These are listed in §4 of the study and are in «#3539»'s scope.
+
 **What it cost this visit:**
 - R1-T0-START and R1-T0-EXHAUST FAILed.
 - R10-CHAR-STEERFAIL FAILed.
