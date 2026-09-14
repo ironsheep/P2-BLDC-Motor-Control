@@ -354,8 +354,21 @@ orphaned cog.**
 - Measured = count of starts failing either test.
 
 **h · Brake-mode start** (R13).
-- The defect was that a start in `SM_BRAKE` read an uninitialised `prior_angle`
-  (`:2908-2910`).
+- ~~The defect was that a start in `SM_BRAKE` read an uninitialised `prior_angle`.~~
+  **Corrected 2026-09-14 («#3521» phase D review; verified by reading the source).**
+  - At driver start `checkstop` runs `cmp stop_mode_, #SM_FLOAT wz` / `modz _nz wz` /
+    `if_z call #initAngleFmHall`. MODZ sets Z to the selected combination of the current flags
+    (`p2kbPasm2Modz`), so `_nz` inverts Z.
+  - `initAngleFmHall` therefore runs only in **SM_BRAKE**, and it ends with
+    `mov prior_angle, angle_`.
+  - Before `b34e109` it was the default **SM_FLOAT** start that read an uninitialised
+    `prior_angle`. b34e109's fix line covers that case; its in-source comment had the modes
+    reversed and is corrected.
+  - **So `R13-CHAR-BRAKESTART` cannot fail on the prior_angle defect.** It is kept as coverage
+    of the brake-mode start path (no fault, correct direction), which no bench run had
+    exercised.
+  - The SM_FLOAT start is exercised at every hold and every scan start. An uninitialised
+    register has no reliable negative limb to test.
 - `startEx()` runs `init()`, which forces `stop_mode := SM_FLOAT` (`:336`) before `coginit`. So
   calling `holdAtStop(TRUE)` before `start()` does not produce a brake start.
 - **Deterministic ordering** [D from `:2881-2919`]:
@@ -1303,8 +1316,10 @@ cog is still running at zero command, and the watchdog's `stop()` of it is what 
    - `p2kbSpin2Cogatn`: a strobe with no queue.
    - So a `cogatn` that lands while the driver is still calibrating is not lost, and the brake
      `stop_mode` is read either way.
-2. `checkstop`'s `modz _nz` flow in `SM_BRAKE`. The in-source claim that only `SM_FLOAT` reaches
-   `initAngleFmHall` (`:2908-2910`) is taken as written.
+2. **RESOLVED, and the in-source claim was wrong (2026-09-14).** `checkstop`'s `modz _nz` inverts
+   the SM_FLOAT test, so `initAngleFmHall` (which sets `prior_angle`) runs at start only in
+   **SM_BRAKE** (§A.5-h). `R13-CHAR-BRAKESTART` is start-path coverage, not a falsifier of
+   b34e109.
 3. A `res` long's cog-RAM content at `COGINIT` is undefined, so the pre-`b34e109` defect may not
    reproduce (§A.5-h).
 4. The calibration's 8-frame hardware sum reduces frame noise by √8, and a telemetry value is one

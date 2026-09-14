@@ -963,6 +963,29 @@ the effect depends on the gate driver's undriven-input behaviour, which is not i
 - The notes and tokens are corrected.
 - The detect-phase2 precondition in `tools/bench-run.sh` changes in the same commit.
 
+### PL-36 -- a failed `start()` kept its pin-range claim with no cog behind it
+
+**Found 2026-09-14** by the «#3521» phase D agent. Confirmed by reading the source.
+
+**The leak:**
+- `startEx()` calls `init()`, which takes the instance's pin-range claim.
+- On a failed `coginit` (`src/isp_bldc_motor.spin2` `startEx()` failure branch), it set
+  `motorCog := 0` and returned -1 without releasing that claim.
+- The two-wheel `start()` stops only a motor whose start succeeded
+  (`src/isp_steering_2wheel.spin2` ~:124-133). Its failed wheel therefore kept the claim.
+
+**Consequence:**
+- Every OTHER instance was refused that pin group until the failed instance was `stop()`ped.
+- The failed instance itself recovers on its next `startEx()`, which calls `stop()` first when it
+  holds a claim.
+- It is an invalid state: a claim with no running cog.
+
+**Fixed in tree 2026-09-14.** The failure branch now calls `stop()`, which releases the claim and
+clears the pins; with `motorCog` already 0 it stops no cog.
+
+**Run-time proof owed to Visit 1:** `R10-CHAR-STEERFAIL` requires this file's own wheels to start
+on the bench bases right after the failed two-wheel start.
+
 ---
 
 ## Recently closed

@@ -111,6 +111,11 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | legalBase
         motorCog := 0    ' keep the "not started" sentinel
         ok := -1
         debug("!! ERROR filed to start Motor Control task")
+        ' PL-36: init() above took this instance's pin-range claim. A failed start must not keep it,
+        '  or no other instance can claim the group until this one is stop()ped -- a claim with no
+        '  cog behind it. stop() releases the claim and clears the pins; with motorCog already 0 it
+        '  stops no cog.
+        stop()
     else
         motorCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
         ok := motorCog - 1    ' public contract: the started cog's id (0-7), per @returns
@@ -2939,9 +2944,11 @@ lutCodeStart
                 mov     sv_tgt_incr, #0                 ' just in case
                 mov     fwdrev, #0                      ' just in case
                 mov     angle_, #0                      ' just in case
-                mov     prior_angle, angle_             ' .ctlMotor's first cmpm reads prior_angle; only .initAngleFmHall
-                                                        '  set it, and only in SM_FLOAT -- so a start in SM_BRAKE read a
-                                                        '  register COGINIT never initialised (task 3535 review)
+                mov     prior_angle, angle_             ' .ctlMotor's first cmpm reads prior_angle; only initAngleFmHall
+                                                        '  sets it, and at start checkstop calls it only in SM_BRAKE (its
+                                                        '  modz _nz inverts the SM_FLOAT test) -- so a start in SM_FLOAT,
+                                                        '  the default, read a register COGINIT never initialised (task
+                                                        '  3535 review; direction corrected 2026-09-14)
 
                 ' do initial read of parms so control loop can use them
                 setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
