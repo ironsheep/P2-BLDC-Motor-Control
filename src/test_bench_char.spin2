@@ -13,6 +13,8 @@
 ''               proof accumulators (PL-20), quiescent hold from a started driver (PL-21), booleans
 ''               as TRUE/FALSE (PL-23), motor frame named on every hold (PL-19), no method-calling
 ''               ternaries (PL-29)
+''   Updated.... 13 Sep 2026 -- task 3521 phase B (SRC_REV 3, fmt 3): a watchdog cog names where
+''               a cog-0 stall happened, stops both wheels and ends the session on its own
 ''
 '' =================================================================================================
 
@@ -58,6 +60,14 @@
   PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY. emergencyCutoff() self-cancels in about
   250 ms (finding S-4) and is NOT a panic button; this file does not call it.
 
+  WATCHDOG (task 3521 phase B). Unattended bench binaries carry a watchdog: scan run 5's cog 0
+  stopped emitting debug mid-run while the P2 kept running. A second cog watches cog 0's
+  heartbeat (beat(), on every loop pass and around every library call and record). If it does
+  not advance for WD_STALL_MS, the watchdog snapshots where cog 0 was and both wheels' state,
+  stops both wheels, emits BC-WATCHDOG, BC-WATCHDOG2 and BC-END exit WATCHDOG, prints the end
+  marker and idles. It touches no motor before it declares a stall. BC-WDSTART, the first record,
+  says whether it started; if it did not, the run proceeds unwatched and says so.
+
   HOW IT IS RUN
 
       tools/bench-run.sh char
@@ -78,14 +88,23 @@
 
 CON { build identity }
 
-    SRC_REV     = 2                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 2                                         ' BC- record-format version (2: task 3521 phase A)
+    SRC_REV     = 3                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 3                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG)
 
 CON { timing }
 
     CLK_FREQ = 270_000_000                                  ' every top in this tree runs at 270 MHz
     _clkfreq = CLK_FREQ
     MS_PER_SEC = 1000
+
+' waitms() must not be asked for more than $8000_0000 clocks (p2kbSpin2Waitms, as cited by
+' test_bench_scan.spin2 -- not re-read in this session, no p2kb available: UNVERIFIED here), so
+' milliseconds <= $8000_0000 / (CLK_FREQ / MS_PER_SEC) = 7_953 ms at 270 MHz. +/ is the UNSIGNED
+' divide: $8000_0000 is -2_147_483_648 as a signed long, so / would give -7_953. Every waitms()
+' argument in this file is a compile-time constant at or under this ceiling: SAMPLE_MS 5,
+' STEADY_SAMPLE_MS 250, PREFLIGHT_MS 700, WD_POLL_MS 250, WD_IDLE_MS 1_000. A wait longer than
+' the ceiling must be a repeat of a shorter one (the watchdog's idle-forever loop is).
+    WAITMS_MAX_MS = $8000_0000 +/ (CLK_FREQ / MS_PER_SEC)   ' 7_953 ms at 270 MHz
 
 CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
 
@@ -214,6 +233,123 @@ CON { record assembly buffer }
     DEC_RADIX        = 10
     DIGITS_PER_GROUP = 3
 
+CON ' ---- Cog-0 Progress Checkpoints ----
+  ' The watchdog heartbeat contract, task 3521 phase B. beat(CP_*) records the smallest statement
+  ' group cog 0 is inside, so a stall's last checkpoint (BC-WATCHDOG) pins it there. A CP_LIB_* id
+  ' is set immediately before AND immediately after its library call, so a stall parked on it is
+  ' inside that call or in the few statements of its wrapper's return path:
+  '  CP_MAIN_INIT       - main(): watchdog start, BC-WDSTART, initRun()
+  '  CP_MAIN_BANNER     - main(): emitBanner()
+  '  CP_MAIN_PLAN       - main(): emitPlan()
+  '  CP_MAIN_RUN        - main(): entering runSession()
+  '  CP_MAIN_SHUTDOWN   - main(): runSession() returned or aborted; watchdog stop, both stop()s
+  '  CP_MAIN_END        - main(): BC-END and the end marker
+  '  CP_PREFLIGHT_LEFT  - preflightWheels(), LEFT wheel pass, including its PREFLIGHT_MS nudge
+  '  CP_PREFLIGHT_RIGHT - preflightWheels(), RIGHT wheel pass, including its PREFLIGHT_MS nudge
+  '  CP_HOLD            - runAllHolds()/measureHold(): one hold's sequencing between its steps
+  '  CP_START_SIDE      - startSide(): stop both, then start the named wheel
+  '  CP_LIB_START       - brackets start()
+  '  CP_LOOP_WAITREADY  - one pass of waitUntilReady()
+  '  CP_LIB_STARTSENSE  - brackets startSenseCog()
+  '  CP_LOOP_ZERO       - one pass of measureZero()
+  '  CP_LIB_COMMAND     - brackets testDriveAtMotorIncrement()
+  '  CP_LOOP_ATSPEED    - one pass of waitAtSpeed()
+  '  CP_LOOP_STEADY     - one pass of waitForSteady()
+  '  CP_LOOP_SETTLE     - one pass of settleHold()
+  '  CP_LOOP_WINDOW     - one pass of sampleWindow()
+  '  CP_LOOP_WAITSTOP   - one pass of waitStoppedFor()
+  '  CP_LIB_STOP_LEFT   - brackets wheelL.stop()
+  '  CP_LIB_STOP_RIGHT  - brackets wheelR.stop()
+  '  CP_LIB_INTEGRITY   - brackets getHallIntegrityCounts()
+  '  CP_LIB_DRVSTATE    - brackets getDriverState()
+  '  CP_LIB_COGUP       - brackets testGetMotorCog()
+  '  CP_LIB_ISREADY     - brackets isReady()
+  '  CP_LIB_ISSTOPPED   - brackets isStopped()
+  '  CP_LIB_TELEMETRY   - brackets testGetTelemetry()
+  '  CP_LIB_CURRENT     - brackets getCurrent()
+  '  CP_LIB_TICKS       - brackets getRawHallTicks()
+  '  CP_LIB_OFFSETS     - brackets testGetFwdRevIndep()
+  '  CP_LIB_RPM         - brackets testGetRpm()
+  '  CP_LIB_BOARDTYPE   - brackets getBoardType()
+  '  CP_LIB_CONSTANTS   - brackets testGetDriveConstants()
+  '  CP_EMIT            - brackets lineEmit(), so every BC- record from cog 0
+  '  CP_NOTE            - brackets a plain debug() note line that is not a BC- record
+    #0, CP_MAIN_INIT, CP_MAIN_BANNER, CP_MAIN_PLAN, CP_MAIN_RUN, CP_MAIN_SHUTDOWN, CP_MAIN_END, ...
+        CP_PREFLIGHT_LEFT, CP_PREFLIGHT_RIGHT, CP_HOLD, CP_START_SIDE, CP_LIB_START, ...
+        CP_LOOP_WAITREADY, CP_LIB_STARTSENSE, CP_LOOP_ZERO, CP_LIB_COMMAND, CP_LOOP_ATSPEED, ...
+        CP_LOOP_STEADY, CP_LOOP_SETTLE, CP_LOOP_WINDOW, CP_LOOP_WAITSTOP, CP_LIB_STOP_LEFT, ...
+        CP_LIB_STOP_RIGHT, CP_LIB_INTEGRITY, CP_LIB_DRVSTATE, CP_LIB_COGUP, CP_LIB_ISREADY, ...
+        CP_LIB_ISSTOPPED, CP_LIB_TELEMETRY, CP_LIB_CURRENT, CP_LIB_TICKS, CP_LIB_OFFSETS, ...
+        CP_LIB_RPM, CP_LIB_BOARDTYPE, CP_LIB_CONSTANTS, CP_EMIT, CP_NOTE
+
+    TOKMAX_CP = 10                                          ' longest checkpoint token, e.g. STOP_RIGHT
+
+CON ' ---- Watchdog Cog ----
+  ' WD_STALL_MS must exceed the longest legitimate gap cog 0 can leave between two beats, on every
+  ' path. Desk trace, task 3521 phase B -- every wait and every library call cog 0 makes, with its
+  ' worst case read from source (isp_bldc_motor.spin2 unless named):
+  '   waitms(SAMPLE_MS = 5)          one per pass of waitUntilReady, measureZero, waitAtSpeed,
+  '                                  settleHold, sampleWindow, waitStoppedFor; beat on every pass
+  '   waitms(STEADY_SAMPLE_MS = 250) one per pass of waitForSteady; beat on every pass
+  '   waitms(PREFLIGHT_MS = 700)     the preflight nudge, beat before and after: THE LONGEST GAP
+  '   start()           startEx(): stop() when this instance holds a claim, init(), coginit().
+  '                     init() calls getBoardType() on a not-running instance: waitms(1) plus
+  '                     DETECT_READ_COUNT = 500 pinread()s (its own measured Rev B figure, ~100
+  '                     reads in ~70 us, puts all 500 under 1 ms), float arithmetic including
+  '                     isp_dist_utils (no waits), and about 12 debug() lines (~1.2 KB). Under
+  '                     150 ms even at 115_200 baud.
+  '   stop()            two cogstop()s and two pinclear()s; no wait, no debug()
+  '   startSenseCog()   cogspin() only; the new sense task's resetTracking() waitms(200) runs in
+  '                     that cog, not cog 0
+  '   getBoardType()    with this wheel's driver running (startHoldWheel only calls it then):
+  '                     returns the start-time revision plus one debug() line; no wait
+  '   testDriveAtMotorIncrement() -> setTargetAccel(): one debug() line; no wait
+  '   testGetDriveConstants(), testGetMotorCog(), isReady(), isStopped(), getDriverState(),
+  '   testGetTelemetry(), getCurrent(), getRawHallTicks(), getHallIntegrityCounts(),
+  '   testGetFwdRevIndep(), testGetRpm() -- hub reads (getCurrent() adds a float multiply); no wait
+  '   lineEmit()        one debug(zstr_()) of at most 280 bytes: under 25 ms even at 115_200 baud
+  ' This file never calls testResetFault() (~2_030 ms worst case, the scan's longest gap),
+  ' resetTracking() or testResetMaxValues() (200 ms each), or SyncStatus() (unbounded).
+  ' The debug baud is the pnut-ts default -- this file does not set one -- so every debug figure
+  ' above is bounded at a deliberately slow 115_200 baud (the real rate is UNVERIFIED here).
+  ' Longest legitimate gap: 700 ms. WD_STALL_MS = 4_000 ms clears it by 3_300 ms (5.7x) and is
+  ' 16x WD_POLL_MS. The watchdog times a gap from the poll at which it SAW the last change, up to
+  ' WD_POLL_MS after the real beat, so a legitimate gap always measures shorter than it was and
+  ' cannot cross the bound; a real stall's since_ms reads low by up to WD_POLL_MS.
+    WD_POLL_MS  = 250                                       ' watchdog sample cadence
+    WD_STALL_MS = 4_000                                     ' declare a stall at or above this many ms
+    WD_IDLE_MS  = 1_000                                     ' idle-forever chunk, far under WAITMS_MAX_MS
+
+  ' Stack, counted per p2kbAppNoteP2an006SizingCogTaskStacks the way test_bench_scan.spin2 counts
+  ' it (params + returns + locals of every frame on the stack at once). The stall path cannot be
+  ' exercised off the bench, so it is counted, not measured. Deepest chain, any BC-WATCHDOG
+  ' numeric field:
+  '   watchdog()        0 params + 0 returns + 3 locals                        =  3
+  '   declareStall()    1 param  + 0 returns + 0 locals                        =  1
+  '   emitWatchdog()    1 param  + 0 returns + 1 local                         =  2
+  '   wdBoundedField()  3 params + 0 returns + 0 locals                        =  3
+  '   wdLineField()     2 params + 0 returns + 0 locals                        =  2
+  '   wdLineAddNum()    1 param  + 0 returns + 14 locals (digitStack[11] + 3)  = 15
+  '   wdLineAddChar()   1 param  + 0 returns + 0 locals                        =  1
+  '                                                                     total  = 27 longs
+  ' Every other chain is shallower: BC-WATCHDOG2 and BC-END numeric fields 25 (emitWatchdog2()
+  ' and wdEmitEnd() have no locals: the stall values live in the wdSnap* DAT longs, not on the
+  ' stack), wdSnapshot() -> testGetTelemetry() 3+1+1+8 = 13, wheelL.stop() under 10.
+  ' The count leaves out the interpreter's per-call bookkeeping and expression scratch, which is
+  ' not visible in this repo (UNVERIFIED); even at a generous 8 longs for each of the chain's 7
+  ' calls, 27 + 56 = 83 < 128. WD_STACK_LONGS = 128 is the app note's own starting point, used
+  ' unshrunk because nothing here was measured. wdStackSentinel abuts the stack; BC-WATCHDOG's
+  ' last field reports it, read after that record's own deepest chain has already run.
+    WD_STACK_LONGS    = 128
+    WD_STACK_SENTINEL = $5A5A_5A5A                          ' set before cogspin, checked in BC-WATCHDOG
+    WD_NO_HOLD        = -1                                  ' wdHoldIdx outside any hold: banner, preflight, end
+
+  ' Snapshot slots for the two wheels:
+  '  WD_SLOT_LEFT  - wheelL
+  '  WD_SLOT_RIGHT - wheelR
+    #0, WD_SLOT_LEFT, WD_SLOT_RIGHT
+    WD_SLOTS = WD_SLOT_RIGHT + 1
+
 OBJ { objects under test }
 
 #ifdef BENCH_CFG
@@ -228,6 +364,34 @@ DAT { record assembly state }
 
 lineBuf         BYTE    0[LINE_BUF_SIZE]
 lineLen         LONG    0
+
+DAT { watchdog heartbeat contract, task 3521 phase B -- cog 0 writes these, the watchdog cog reads them }
+
+wdHeartbeat     LONG    0                                   ' beat() adds 1 on every call
+wdCheckpoint    LONG    CP_MAIN_INIT                        ' beat()'s last CP_* id
+wdDeclaring     LONG    FALSE                               ' the watchdog sets TRUE as declareStall()'s first act
+wdHoldIdx       LONG    WD_NO_HOLD                          ' HOLD_* measureHold() is in; WD_NO_HOLD outside a hold
+wdSide          LONG    SIDE_NONE                           ' SIDE_* cog 0 is driving (preflight pass or hold)
+
+DAT { watchdog stall snapshot -- written only by the watchdog cog, only after it declares a stall }
+
+wdSnapCheckpoint LONG   CP_MAIN_INIT
+wdSnapHoldIdx   LONG    WD_NO_HOLD
+wdSnapSide      LONG    SIDE_NONE
+wdSnapResult    LONG    RES_NOT_RUN
+wdSnapHoldsRun  LONG    0
+wdSnapMotorCog  LONG    0[WD_SLOTS]                         ' testGetMotorCog(): cog id + 1, 0 when not running
+wdSnapDrvState  LONG    0[WD_SLOTS]                         ' getDriverState(): DCS_*
+wdSnapFault     LONG    0[WD_SLOTS]                         ' isFaultSignal(): TRUE/FALSE
+wdSnapDuty      LONG    0[WD_SLOTS]                         ' testGetTelemetry() duty
+wdSnapErr       LONG    0[WD_SLOTS]                         ' testGetTelemetry() err
+wdSnapSenseI    LONG    0[WD_SLOTS]                         ' testGetTelemetry() sense_i_mV
+wdSnapTicks     LONG    0[WD_SLOTS]                         ' getRawHallTicks()
+
+DAT { watchdog record assembly state -- cog 0 may be stalled mid-record, so the watchdog never touches lineBuf/lineLen }
+
+wdLineBuf       BYTE    0[LINE_BUF_SIZE]
+wdLineLen       LONG    0
 
 DAT { token strings }
 
@@ -270,6 +434,47 @@ sBoardUnknown   BYTE    "UNKNOWN", 0
 
 sExitComplete   BYTE    "COMPLETE", 0
 sExitAborted    BYTE    "ABORTED", 0
+sExitWatchdog   BYTE    "WATCHDOG", 0
+
+DAT { checkpoint tokens, task 3521 phase B -- one per CP_* in checkpointToken(), each at most TOKMAX_CP }
+
+sCpMainInit     BYTE    "MAIN_INIT", 0
+sCpMainBanner   BYTE    "MAIN_BANR", 0
+sCpMainPlan     BYTE    "MAIN_PLAN", 0
+sCpMainRun      BYTE    "MAIN_RUN", 0
+sCpMainShutdown BYTE    "MAIN_SHTDN", 0
+sCpMainEnd      BYTE    "MAIN_END", 0
+sCpPreLeft      BYTE    "PRE_LEFT", 0
+sCpPreRight     BYTE    "PRE_RIGHT", 0
+sCpHold         BYTE    "HOLD", 0
+sCpStartSide    BYTE    "STARTSIDE", 0
+sCpLibStart     BYTE    "LIB_START", 0
+sCpWaitReady    BYTE    "WAITREADY", 0
+sCpLibSense     BYTE    "LIB_SENSE", 0
+sCpZero         BYTE    "ZERO", 0
+sCpLibCommand   BYTE    "LIB_CMD", 0
+sCpAtSpeed      BYTE    "ATSPEED", 0
+sCpSteady       BYTE    "STEADY", 0
+sCpSettle       BYTE    "SETTLE", 0
+sCpWindow       BYTE    "WINDOW", 0
+sCpWaitStop     BYTE    "WAITSTOP", 0
+sCpStopLeft     BYTE    "STOP_LEFT", 0
+sCpStopRight    BYTE    "STOP_RIGHT", 0
+sCpLibInteg     BYTE    "LIB_INTEG", 0
+sCpLibDrvState  BYTE    "LIB_DRVST", 0
+sCpLibCogUp     BYTE    "LIB_COGUP", 0
+sCpLibIsReady   BYTE    "LIB_ISRDY", 0
+sCpLibIsStopped BYTE    "LIB_ISSTOP", 0
+sCpLibTelemetry BYTE    "LIB_TELEM", 0
+sCpLibCurrent   BYTE    "LIB_CURR", 0
+sCpLibTicks     BYTE    "LIB_TICKS", 0
+sCpLibOffsets   BYTE    "LIB_GETOFS", 0
+sCpLibRpm       BYTE    "LIB_RPM", 0
+sCpLibBoardType BYTE    "LIB_BRDTYP", 0
+sCpLibConstants BYTE    "LIB_CONST", 0
+sCpEmit         BYTE    "EMIT", 0
+sCpNote         BYTE    "NOTE", 0
+sCpUnknown      BYTE    "UNKNOWN", 0
 
 DAT { hold caption strings -- every caption names its frame (PL-19) }
 
@@ -339,24 +544,66 @@ VAR { per-hold results, index HOLD_* -- the seam a later sign-off emitter reads 
     LONG    holdIllegal[HOLD_COUNT]                         ' illegal hall codes since this hold's start
     LONG    holdDrvState[HOLD_COUNT]                        ' DCS_* after the stop wait
 
-PUB main() | trapCode
-'' Run the unattended characterisation: banner, preflight, every hold, then stop both wheels and
-'' end the session. This is the one exit path.
+VAR { watchdog cog, task 3521 phase B }
+
+    LONG    wdStack[WD_STACK_LONGS]
+    LONG    wdStackSentinel                                 ' MUST abut wdStack in this same block: set to
+                                                            ' WD_STACK_SENTINEL before cogspin, reported by
+                                                            ' BC-WATCHDOG -- cogspin does not detect an overrun
+    LONG    wdCogId                                         ' cogspin()'s return; negative when it failed
+
+PUB main() | trapCode, bWdStarted
+'' Run the unattended characterisation under a watchdog: watchdog start, banner, preflight, every
+'' hold, then stop both wheels and end the session. This is the one exit path, unless the watchdog
+'' declares a stall -- then the watchdog cog ends the session and this cog does nothing further.
 ''
 
 ' Local Variables:
 ' @local trapCode - value delivered by the abort trap around runSession()
+' @local bWdStarted - TRUE when cogspin() gave the watchdog a cog id 0..MAX_COG_ID
 
+    wdStackSentinel := WD_STACK_SENTINEL                    ' in place BEFORE the cog that could overrun it starts
+    wdCogId := cogspin(NEWCOG, watchdog(), @wdStack)        ' task 3521 phase B: watch cog 0 from here on
+    bWdStarted := (wdCogId >= 0) and (wdCogId <= MAX_COG_ID)
+    beat(CP_MAIN_INIT)
+    emitWatchdogStart(bWdStarted, wdCogId)
+    if bWdStarted == FALSE
+        beat(CP_NOTE)
+        debug("! WATCHDOG DID NOT START -- this run proceeds UNWATCHED: a stall will be neither named nor stopped")
+        beat(CP_NOTE)
     initRun()
+    beat(CP_MAIN_BANNER)
     emitBanner()
+    beat(CP_MAIN_PLAN)
     emitPlan()
+    beat(CP_MAIN_RUN)
     bRunReturned := FALSE
     trapCode := \runSession()                               ' a library abort lands here, not past the stop()s
-    shutdownMotors()                                        ' EVERY path: both wheels stop()
-    emitEnd(trapCode)
-    debug("* BENCH CHAR RUN COMPLETE -- safe to disconnect")
-    ' QUOTED, not backticked -- a backtick makes it a display command and the marker is missed.
-    debug("DEBUG_END_SESSION")
+    beat(CP_MAIN_SHUTDOWN)
+    ' The watchdog is stopped BEFORE the stop()s and BC-END: once main() is past its last record
+    ' cog 0 goes silent, and a still-running watchdog would count that silence toward WD_STALL_MS
+    ' and emit a bogus second BC-END and marker. wdDeclaring guards the other order: if it is
+    ' already TRUE the watchdog owns the session's end, so this cog must neither stop that cog
+    ' mid-record nor emit a second BC-END of its own. The beat just above makes the watchdog's
+    ' last-seen change fresh, so it cannot newly reach WD_STALL_MS between the test and cogstop()
+    ' -- except when cog 0 had itself just come back from a gap of about WD_STALL_MS that the
+    ' watchdog was already declaring; that residual race is not closed here (it would need a
+    ' lock), and it is the same one test_bench_scan.spin2 carries.
+    if wdDeclaring == FALSE
+        if bWdStarted
+            cogstop(wdCogId)
+        shutdownMotors()                                    ' EVERY non-watchdog path: both wheels stop()
+        beat(CP_MAIN_END)
+        emitEnd(trapCode)
+        beat(CP_NOTE)
+        debug("* BENCH CHAR RUN COMPLETE -- safe to disconnect")
+        ' QUOTED, not backticked -- a backtick makes it a display command and the marker is missed.
+        debug("DEBUG_END_SESSION")
+        beat(CP_NOTE)
+    else
+        ' A repeat of WD_IDLE_MS, never one long waitms(): see WAITMS_MAX_MS.
+        repeat
+            waitms(WD_IDLE_MS)
 
 PRI initRun() | holdIdx
 ' Reset run-wide state and mark every hold not run.
@@ -367,6 +614,7 @@ PRI initRun() | holdIdx
     bPreflightOk := FALSE
     holdsRun := 0
     repeat holdIdx from HOLD_ZERO to HOLD_COUNT - 1
+        beat(CP_MAIN_INIT)
         clearHold(holdIdx)
         holdResultCode[holdIdx] := RES_NOT_RUN
 
@@ -381,11 +629,13 @@ PRI runSession() : bCompleted
         runAllHolds()
         bCompleted := TRUE
     else
+        beat(CP_NOTE)
         debug("! SKIPPING HOLDS -- see BC-PREFLIGHT above. Fix the wiring or the declared pin group,")
         debug("!   then re-run. Running nine holds against a wheel that cannot turn wastes the session.")
+        beat(CP_NOTE)
     bRunReturned := TRUE
 
-PRI preflightWheels() : bOk | side, startedCog, bReady, ticksBefore, ticksAfter, ticksMoved, bStopped
+PRI preflightWheels() : bOk | side, startedCog, bReady, ticksBefore, ticksAfter, ticksMoved, bStopped, cpPreflight
 ' Prove each declared wheel can actually turn before committing the session to nine holds.
 ' Motion, not getBoardType(), is the check: detection is under investigation this sprint. On
 ' 2026-09-11 the bench config named a pin group with no board on it, and nine holds ran on it.
@@ -399,16 +649,23 @@ PRI preflightWheels() : bOk | side, startedCog, bReady, ticksBefore, ticksAfter,
 ' @local ticksAfter - hall ticks after the nudge
 ' @local ticksMoved - signed tick delta across the nudge
 ' @local bStopped - TRUE when STOPPED was seen after the nudge
+' @local cpPreflight - CP_PREFLIGHT_LEFT or CP_PREFLIGHT_RIGHT for this pass
 
     bOk := TRUE
     repeat side from SIDE_LEFT to SIDE_RIGHT
+        cpPreflight := (side == SIDE_RIGHT) ? CP_PREFLIGHT_RIGHT : CP_PREFLIGHT_LEFT
+        wdHoldIdx := WD_NO_HOLD
+        wdSide := side
+        beat(cpPreflight)
         ticksMoved := 0
         bStopped := FALSE
         startedCog, bReady := startSide(side)
         if bReady
             ticksBefore := wheelTicks(side)
             commandMotor(side, PREFLIGHT_INCRE)
-            waitms(PREFLIGHT_MS)
+            beat(cpPreflight)
+            waitms(PREFLIGHT_MS)                            ' the longest legitimate gap without a beat: see WD_STALL_MS
+            beat(cpPreflight)
             ticksAfter := wheelTicks(side)
             commandMotor(side, 0)
             bStopped := waitStoppedFor(side)
@@ -417,7 +674,9 @@ PRI preflightWheels() : bOk | side, startedCog, bReady, ticksBefore, ticksAfter,
         emitPreflight(side, startedCog, ticksMoved, bStopped)
         if ticksMoved == 0
             bOk := FALSE
+            beat(CP_NOTE)
             debug("!  wheel on that pin group did NOT turn -- wrong pin group, or wiring, or a dead board")
+            beat(CP_NOTE)
 
 PRI runAllHolds() | holdIdx
 ' Run every configured hold in sequence, quiescent zero through HOLD_LAST, printing each after
@@ -426,8 +685,10 @@ PRI runAllHolds() | holdIdx
 ' @local holdIdx - HOLD_* identifier of the hold currently running
 
     repeat holdIdx from HOLD_ZERO to HOLD_LAST
+        beat(CP_HOLD)
         measureHold(holdIdx)
         holdsRun += 1
+        beat(CP_HOLD)
         emitHoldRecords(holdIdx)
 
 PRI holdInfo(holdIdx) : side, sign, speedIncre, pCaption, pRobotTok, pRungTok
@@ -524,6 +785,9 @@ PRI measureHold(holdIdx) | side, sign, speedIncre, motorIncre, bWindowGo, steady
 ' @local steadyRate - waitForSteady()'s hall rate at its declaration
 
     side, sign, speedIncre, _, _, _ := holdInfo(holdIdx)
+    wdHoldIdx := holdIdx                                    ' for the watchdog: which hold, which wheel
+    wdSide := side
+    beat(CP_HOLD)
     clearHold(holdIdx)
     motorIncre := sign * speedIncre
     holdIncre[holdIdx] := motorIncre
@@ -647,13 +911,16 @@ PRI startSide(side) : startedCog, bReady
 ' @returns startedCog - start()'s return: cog id 0..7, or -1
 ' @returns bReady - TRUE when the started driver reported ready within READY_TIMEOUT_MS
 
+    beat(CP_START_SIDE)
     shutdownMotors()
     startedCog := -1
     bReady := FALSE
+    beat(CP_LIB_START)
     if side == SIDE_RIGHT
         startedCog := wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
     else
         startedCog := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+    beat(CP_LIB_START)
     if startedCog >= 0
         bReady := waitUntilReady(side)
 
@@ -668,6 +935,7 @@ PRI waitUntilReady(side) : bReady | startMs
     bReady := FALSE
     startMs := getms()
     repeat
+        beat(CP_LOOP_WAITREADY)
         if wheelIsReady(side)
             bReady := TRUE
             quit
@@ -691,6 +959,7 @@ PRI measureZero(holdIdx, side) | sampleIdx, nDuty, nErr, nSenseI, eDrvrState, bD
 
     accReset(ACC_ZERO)
     repeat sampleIdx from 1 to ZERO_SAMPLES
+        beat(CP_LOOP_ZERO)                                  ' a call and two hub writes, no wait, no debug(): see beat()
         waitms(SAMPLE_MS)
         if wheelCogUp(side) == FALSE
             setHoldResult(holdIdx, RES_NO_COG)
@@ -720,6 +989,7 @@ PRI waitAtSpeed(holdIdx, side) : bAtSpeed | startMs, eDrvrState, bDidFault, nDut
     bAtSpeed := FALSE
     startMs := getms()
     repeat
+        beat(CP_LOOP_ATSPEED)
         waitms(SAMPLE_MS)
         if wheelCogUp(side) == FALSE
             setHoldResult(holdIdx, RES_NO_COG)
@@ -754,6 +1024,7 @@ PRI settleHold(holdIdx, side) : bSettled | startMs, eDrvrState, bDidFault, nDuty
     bSettled := TRUE
     startMs := getms()
     repeat
+        beat(CP_LOOP_SETTLE)
         waitms(SAMPLE_MS)
         if wheelCogUp(side) == FALSE
             setHoldResult(holdIdx, RES_NO_COG)
@@ -797,6 +1068,7 @@ PRI sampleWindow(holdIdx, side) | startMs, startTicks, endTicks, nDuty, nErr, nS
     startTicks := wheelTicks(side)
     startMs := getms()
     repeat
+        beat(CP_LOOP_WINDOW)                                ' a call and two hub writes, no wait, no debug(): see beat()
         waitms(SAMPLE_MS)
         if wheelCogUp(side) == FALSE
             setHoldResult(holdIdx, RES_NO_COG)
@@ -846,6 +1118,7 @@ PRI waitStoppedFor(side) : bStopped | startMs
     bStopped := FALSE
     startMs := getms()
     repeat
+        beat(CP_LOOP_WAITSTOP)
         if wheelCogUp(side) == FALSE
             quit
         if wheelIsStopped(side)
@@ -886,6 +1159,7 @@ PRI waitForSteady(side, cmdIncre) : steadySrcTok, elapsedMs, tickRate | prevPos,
         elapsedMs := 0
         bTimedOut := FALSE
         repeat
+            beat(CP_LOOP_STEADY)
             waitms(STEADY_SAMPLE_MS)
             elapsedMs += STEADY_SAMPLE_MS
             curPos := wheelTicks(side)
@@ -977,16 +1251,23 @@ PRI commandMotor(side, motorIncre) | safeIncre
     safeIncre := motorIncre
     if abs(motorIncre) > DRIVE_CEILING_INCRE
         safeIncre := 0
+    beat(CP_LIB_COMMAND)
     if side == SIDE_RIGHT
         wheelR.testDriveAtMotorIncrement(safeIncre)
     elseif side == SIDE_LEFT
         wheelL.testDriveAtMotorIncrement(safeIncre)
+    beat(CP_LIB_COMMAND)
 
 PRI shutdownMotors()
-' Stop both wheels unconditionally. stop() on a never-started instance touches no pin.
+' Stop both wheels unconditionally. stop() on a never-started instance touches no pin. Cog 0
+' only: it beats. The watchdog calls wheelL.stop()/wheelR.stop() directly instead.
 
+    beat(CP_LIB_STOP_LEFT)
     wheelL.stop()
+    beat(CP_LIB_STOP_LEFT)
+    beat(CP_LIB_STOP_RIGHT)
     wheelR.stop()
+    beat(CP_LIB_STOP_RIGHT)
 
 PRI wheelCogUp(side) : bRunning
 ' Report whether the named wheel has a running driver cog (stop() zeroes motorCog).
@@ -994,10 +1275,12 @@ PRI wheelCogUp(side) : bRunning
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bRunning - TRUE when the driver cog is running
 
+    beat(CP_LIB_COGUP)
     if side == SIDE_RIGHT
         bRunning := (wheelR.testGetMotorCog() <> 0)
     else
         bRunning := (wheelL.testGetMotorCog() <> 0)
+    beat(CP_LIB_COGUP)
 
 PRI wheelIsReady(side) : bReady
 ' Report whether the named wheel's running driver reports ready.
@@ -1007,10 +1290,12 @@ PRI wheelIsReady(side) : bReady
 
     bReady := FALSE
     if wheelCogUp(side)
+        beat(CP_LIB_ISREADY)
         if side == SIDE_RIGHT
             bReady := wheelR.isReady()
         else
             bReady := wheelL.isReady()
+        beat(CP_LIB_ISREADY)
 
 PRI wheelIsStopped(side) : bStopped
 ' Report whether the named wheel's running driver reports STOPPED.
@@ -1020,10 +1305,12 @@ PRI wheelIsStopped(side) : bStopped
 
     bStopped := FALSE
     if wheelCogUp(side)
+        beat(CP_LIB_ISSTOPPED)
         if side == SIDE_RIGHT
             bStopped := wheelR.isStopped()
         else
             bStopped := wheelL.isStopped()
+        beat(CP_LIB_ISSTOPPED)
 
 PRI wheelDrvState(side) : eDrvrState
 ' Driver state of the named wheel, DCS_Unknown when no cog is running.
@@ -1033,10 +1320,12 @@ PRI wheelDrvState(side) : eDrvrState
 
     eDrvrState := wheelL.DCS_Unknown
     if wheelCogUp(side)
+        beat(CP_LIB_DRVSTATE)
         if side == SIDE_RIGHT
             eDrvrState := wheelR.getDriverState()
         else
             eDrvrState := wheelL.getDriverState()
+        beat(CP_LIB_DRVSTATE)
 
 PRI wheelTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault
 ' Snapshot the named wheel's per-cycle driver status. Callers check wheelCogUp() first (PL-21).
@@ -1048,10 +1337,12 @@ PRI wheelTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault
 ' @returns eDrvrState - DCS_* driver state
 ' @returns bDidFault - TRUE when the driver has faulted
 
+    beat(CP_LIB_TELEMETRY)
     if side == SIDE_RIGHT
         nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelR.testGetTelemetry()
     else
         nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelL.testGetTelemetry()
+    beat(CP_LIB_TELEMETRY)
 
 PRI wheelCurrent(side) : nAmps, nWatts
 ' getCurrent() of the named wheel: amps x 10_000 (0.1 mA units) and mW, per its doc comment.
@@ -1061,10 +1352,12 @@ PRI wheelCurrent(side) : nAmps, nWatts
 ' @returns nAmps - current, 0.1 mA units
 ' @returns nWatts - power, mW
 
+    beat(CP_LIB_CURRENT)
     if side == SIDE_RIGHT
         nAmps, nWatts := wheelR.getCurrent()
     else
         nAmps, nWatts := wheelL.getCurrent()
+    beat(CP_LIB_CURRENT)
 
 PRI wheelTicks(side) : nTicks
 ' Raw hall ticks of the named wheel.
@@ -1072,10 +1365,12 @@ PRI wheelTicks(side) : nTicks
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns nTicks - hall-tick position
 
+    beat(CP_LIB_TICKS)
     if side == SIDE_RIGHT
         nTicks := wheelR.getRawHallTicks()
     else
         nTicks := wheelL.getRawHallTicks()
+    beat(CP_LIB_TICKS)
 
 PRI wheelIntegrity(side) : nMissed, nIllegal
 ' Hall integrity counts of the named wheel since its last start.
@@ -1084,10 +1379,12 @@ PRI wheelIntegrity(side) : nMissed, nIllegal
 ' @returns nMissed - missed transitions
 ' @returns nIllegal - illegal hall codes
 
+    beat(CP_LIB_INTEGRITY)
     if side == SIDE_RIGHT
         nMissed, nIllegal := wheelR.getHallIntegrityCounts()
     else
         nMissed, nIllegal := wheelL.getHallIntegrityCounts()
+    beat(CP_LIB_INTEGRITY)
 
 PRI wheelOffsets(side) : negDeg, posDeg
 ' Applied commutation offsets of the named wheel.
@@ -1096,10 +1393,12 @@ PRI wheelOffsets(side) : negDeg, posDeg
 ' @returns negDeg - offset_fwd degrees (negative increments)
 ' @returns posDeg - offset_rev degrees (positive increments)
 
+    beat(CP_LIB_OFFSETS)
     if side == SIDE_RIGHT
         negDeg, posDeg := wheelR.testGetFwdRevIndep()
     else
         negDeg, posDeg := wheelL.testGetFwdRevIndep()
+    beat(CP_LIB_OFFSETS)
 
 PRI wheelRpm(side) : nRpm
 ' testGetRpm() of the named wheel (maintained only by its sense task).
@@ -1107,10 +1406,12 @@ PRI wheelRpm(side) : nRpm
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns nRpm - rpm over the sense task's ~1 s window
 
+    beat(CP_LIB_RPM)
     if side == SIDE_RIGHT
         nRpm := wheelR.testGetRpm()
     else
         nRpm := wheelL.testGetRpm()
+    beat(CP_LIB_RPM)
 
 PRI wheelStartSense(side) : senseCog
 ' startSenseCog() for the named wheel.
@@ -1118,10 +1419,12 @@ PRI wheelStartSense(side) : senseCog
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns senseCog - the sense task's cog id 0..7, or -1
 
+    beat(CP_LIB_STARTSENSE)
     if side == SIDE_RIGHT
         senseCog := wheelR.startSenseCog()
     else
         senseCog := wheelL.startSenseCog()
+    beat(CP_LIB_STARTSENSE)
 
 PRI wheelBoardRev(side) : eBoardRev
 ' Board revision of the named wheel; with its driver running this is the revision recorded at start.
@@ -1129,10 +1432,12 @@ PRI wheelBoardRev(side) : eBoardRev
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns eBoardRev - REV_* value
 
+    beat(CP_LIB_BOARDTYPE)
     if side == SIDE_RIGHT
         eBoardRev := wheelR.getBoardType()
     else
         eBoardRev := wheelL.getBoardType()
+    beat(CP_LIB_BOARDTYPE)
 
 PRI wheelDriveConstants(side) : deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt
 ' testGetDriveConstants() of the named wheel.
@@ -1145,10 +1450,12 @@ PRI wheelDriveConstants(side) : deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, f
 ' @returns adcFrame - ADC sample period
 ' @returns frameCnt - PWM frame length, system ticks
 
+    beat(CP_LIB_CONSTANTS)
     if side == SIDE_RIGHT
         deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt := wheelR.testGetDriveConstants()
     else
         deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt := wheelL.testGetDriveConstants()
+    beat(CP_LIB_CONSTANTS)
 
 PRI emitBanner()
 ' Emit BC-BANNER once. cfg_id is sourced from its own #ifdef, never a runtime test -- pnut-ts
@@ -1179,7 +1486,9 @@ PRI emitBanner()
     boundedField(@"half_incre", HALF_SPEED_INCRE, LIM_BIG)
     lineEmit()
 
+    beat(CP_NOTE)
     debug("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+    beat(CP_NOTE)
 
 PRI emitPlan()
 ' Emit BC-PLAN once: every timing and wait bound the holds run under.
@@ -1198,6 +1507,19 @@ PRI emitPlan()
     boundedField(@"steady_timeout_ms", STEADY_TIMEOUT_MS, LIM_SMALL)
     boundedField(@"stop_timeout_ms", STOP_TIMEOUT_MS, LIM_SMALL)
     tokenField(@"hold0_motor", motorToken(HOLD_ZERO_SIDE), TOKMAX_MOTOR)
+    lineEmit()
+
+PRI emitWatchdogStart(bStarted, wdCog)
+' Emit BC-WDSTART, the run's first record: whether the watchdog cog started, and its cog id.
+' Worst case: tag(10) + started(14) + cog(9) = 33 bytes.
+'
+' @param bStarted - TRUE when cogspin() returned a cog id 0..MAX_COG_ID
+' @param wdCog - cogspin()'s return for the watchdog
+
+    lineReset()
+    lineAddText(@"BC-WDSTART")
+    boolField(@"started", bStarted)
+    boundedField(@"cog", wdCog, LIM_TINY)
     lineEmit()
 
 PRI emitPreflight(side, startedCog, ticksMoved, bStopped)
@@ -1591,9 +1913,388 @@ PRI lineTextField(pFieldName, pFieldValue)
 PRI lineEmit()
 ' Emit the assembled record as exactly one debug line. One debug() statement carries at most
 ' 255 bytes of debug data; the whole record travels as a single zero-terminated string
-' instead so wider records are never silently truncated by that limit.
+' instead so wider records are never silently truncated by that limit. Brackets every cog-0
+' BC- record with CP_EMIT, once, here. Cog 0 only: the watchdog uses wdLineEmit().
 
+    beat(CP_EMIT)
     debug(zstr_(@lineBuf))
+    beat(CP_EMIT)
+
+PRI beat(checkpointId)
+' Advance cog 0's heartbeat and record where it is (task 3521 phase B). Called on every pass of
+' every wait and measurement loop, and immediately before AND after every library call and every
+' lineEmit(), so a watchdog-declared stall's last checkpoint pins it to one statement group.
+' COG 0 ONLY: the watchdog cog must never call this, nor anything that calls it (the wheelXxx()
+' wrappers, commandMotor(), shutdownMotors(), lineEmit()), or it would feed the very heartbeat it
+' is watching.
+' PARK: once wdDeclaring is TRUE, beat() never returns. A cog 0 that was slow rather than dead
+' (blocked past WD_STALL_MS, then resuming) would otherwise carry on after the watchdog stopped
+' the wheels and ended the session, and its next hold could restart a wheel unwatched. Every
+' motor command path passes through beat(), so a parked cog 0 cannot reach one.
+' Cost inside the 5 ms timed loops: one method call, one hub-long write and one hub-long
+' read-add-write -- no wait and no debug(). Each pass is waitms(SAMPLE_MS) followed by the pass
+' body, and the window, settle and AT_SPEED loops bound their span by getms(), not by a count,
+' so beats cannot shift when a sample is taken within the pass or change any sample's value.
+' They lengthen a pass only by their own interpreter time: up to 7 beats in a sampleWindow()
+' pass, 5 in a measureZero() pass -- expected to be a small fraction of a millisecond
+' (UNVERIFIED: interpreter call timing is not visible in this repo). The visible effect, if
+' any, is a slightly lower BC-SENSE samples count over the same WINDOW_MS, and a slightly longer
+' span for measureZero()'s fixed ZERO_SAMPLES count.
+'
+' @param checkpointId - CP_* naming the statement group cog 0 is now inside
+
+    if wdDeclaring
+        ' The watchdog has declared a stall, stopped both wheels and ended the session. If cog 0
+        '  was only slow rather than dead, it must never command a motor again: park here forever.
+        '  A repeat of WD_IDLE_MS, never one long waitms(): see WAITMS_MAX_MS.
+        repeat
+            waitms(WD_IDLE_MS)
+    wdCheckpoint := checkpointId
+    wdHeartbeat += 1
+
+PRI checkpointToken(checkpointId) : pTok
+' Checkpoint token for BC-WATCHDOG. Safe from either cog: it only returns a DAT address.
+'
+' @param checkpointId - CP_* naming the statement group cog 0 is now inside
+' @returns pTok - checkpoint token; UNKNOWN for a value that is not a CP_* id
+
+    case checkpointId
+        CP_MAIN_INIT:
+            pTok := @sCpMainInit
+        CP_MAIN_BANNER:
+            pTok := @sCpMainBanner
+        CP_MAIN_PLAN:
+            pTok := @sCpMainPlan
+        CP_MAIN_RUN:
+            pTok := @sCpMainRun
+        CP_MAIN_SHUTDOWN:
+            pTok := @sCpMainShutdown
+        CP_MAIN_END:
+            pTok := @sCpMainEnd
+        CP_PREFLIGHT_LEFT:
+            pTok := @sCpPreLeft
+        CP_PREFLIGHT_RIGHT:
+            pTok := @sCpPreRight
+        CP_HOLD:
+            pTok := @sCpHold
+        CP_START_SIDE:
+            pTok := @sCpStartSide
+        CP_LIB_START:
+            pTok := @sCpLibStart
+        CP_LOOP_WAITREADY:
+            pTok := @sCpWaitReady
+        CP_LIB_STARTSENSE:
+            pTok := @sCpLibSense
+        CP_LOOP_ZERO:
+            pTok := @sCpZero
+        CP_LIB_COMMAND:
+            pTok := @sCpLibCommand
+        CP_LOOP_ATSPEED:
+            pTok := @sCpAtSpeed
+        CP_LOOP_STEADY:
+            pTok := @sCpSteady
+        CP_LOOP_SETTLE:
+            pTok := @sCpSettle
+        CP_LOOP_WINDOW:
+            pTok := @sCpWindow
+        CP_LOOP_WAITSTOP:
+            pTok := @sCpWaitStop
+        CP_LIB_STOP_LEFT:
+            pTok := @sCpStopLeft
+        CP_LIB_STOP_RIGHT:
+            pTok := @sCpStopRight
+        CP_LIB_INTEGRITY:
+            pTok := @sCpLibInteg
+        CP_LIB_DRVSTATE:
+            pTok := @sCpLibDrvState
+        CP_LIB_COGUP:
+            pTok := @sCpLibCogUp
+        CP_LIB_ISREADY:
+            pTok := @sCpLibIsReady
+        CP_LIB_ISSTOPPED:
+            pTok := @sCpLibIsStopped
+        CP_LIB_TELEMETRY:
+            pTok := @sCpLibTelemetry
+        CP_LIB_CURRENT:
+            pTok := @sCpLibCurrent
+        CP_LIB_TICKS:
+            pTok := @sCpLibTicks
+        CP_LIB_OFFSETS:
+            pTok := @sCpLibOffsets
+        CP_LIB_RPM:
+            pTok := @sCpLibRpm
+        CP_LIB_BOARDTYPE:
+            pTok := @sCpLibBoardType
+        CP_LIB_CONSTANTS:
+            pTok := @sCpLibConstants
+        CP_EMIT:
+            pTok := @sCpEmit
+        CP_NOTE:
+            pTok := @sCpNote
+        other:
+            pTok := @sCpUnknown
+
+PRI watchdog() | lastSeenBeat, lastChangeMs, msSinceBeat
+' Watch cog 0's heartbeat from a second cog (task 3521 phase B). Samples every WD_POLL_MS and
+' declares a stall once wdHeartbeat has not advanced for WD_STALL_MS (desk trace at WD_STALL_MS).
+' Runs forever; declareStall() never returns. Touches no motor unless it declares a stall.
+'
+' @local lastSeenBeat - wdHeartbeat at the previous sample
+' @local lastChangeMs - getms() at the sample that saw wdHeartbeat change
+' @local msSinceBeat - ms since that sample
+
+    lastSeenBeat := wdHeartbeat
+    lastChangeMs := getms()
+    repeat
+        waitms(WD_POLL_MS)
+        if wdHeartbeat <> lastSeenBeat
+            lastSeenBeat := wdHeartbeat
+            lastChangeMs := getms()
+        else
+            msSinceBeat := getms() - lastChangeMs
+            if msSinceBeat >= WD_STALL_MS
+                declareStall(msSinceBeat)                   ' never returns
+
+PRI declareStall(msSinceBeat)
+' Cog 0 has not advanced for at least WD_STALL_MS: record where it was and both wheels' state,
+' stop both wheels, report, end the session, then idle forever. Runs in the watchdog cog.
+' ORDER: snapshot, then stop, then emit. The snapshot is taken before the stop, so BC-WATCHDOG2
+' reports the wheels as the stall left them; the stop comes before this cog's first debug(), so
+' no debug() it makes can hold a wheel running (cog 0 may have stalled inside a debug() of its
+' own). wdDeclaring is set first, before anything else, so main() -- which tests it immediately
+' before it would cogstop this cog -- never stops a declaration in progress. Calls
+' wheelL.stop()/wheelR.stop() directly, never shutdownMotors(), which beats.
+'
+' @param msSinceBeat - ms since the sample that last saw wdHeartbeat change
+
+    wdDeclaring := TRUE
+    wdSnapshot()
+    wheelL.stop()
+    wheelR.stop()
+    emitWatchdog(msSinceBeat)
+    emitWatchdog2()
+    wdEmitEnd()
+    ' QUOTED, not backticked -- matches main()'s own marker exactly.
+    debug("DEBUG_END_SESSION")
+    ' A repeat of WD_IDLE_MS, never one long waitms(): see WAITMS_MAX_MS.
+    repeat
+        waitms(WD_IDLE_MS)
+
+PRI wdSnapshot() | holdIdx
+' Copy, in the watchdog cog, everything BC-WATCHDOG and BC-WATCHDOG2 report into the wdSnap* DAT
+' longs: cog 0's checkpoint, hold, side, that hold's result and holdsRun, then each wheel's
+' driver telemetry. Every wheel value is read directly through a single-read getter -- never
+' through a wheelXxx() wrapper, which would beat.
+'
+' @local holdIdx - wdHoldIdx, read once
+
+    wdSnapCheckpoint := wdCheckpoint
+    holdIdx := wdHoldIdx
+    wdSnapHoldIdx := holdIdx
+    wdSnapSide := wdSide
+    wdSnapResult := RES_NOT_RUN
+    if (holdIdx >= HOLD_ZERO) and (holdIdx <= HOLD_COUNT - 1)
+        wdSnapResult := holdResultCode[holdIdx]
+    wdSnapHoldsRun := holdsRun
+    wdSnapDuty[WD_SLOT_LEFT], wdSnapErr[WD_SLOT_LEFT], wdSnapSenseI[WD_SLOT_LEFT], _, _, _, _, _ := wheelL.testGetTelemetry()
+    wdSnapMotorCog[WD_SLOT_LEFT] := wheelL.testGetMotorCog()
+    wdSnapDrvState[WD_SLOT_LEFT] := wheelL.getDriverState()
+    wdSnapFault[WD_SLOT_LEFT] := wheelL.isFaultSignal()
+    wdSnapTicks[WD_SLOT_LEFT] := wheelL.getRawHallTicks()
+    wdSnapDuty[WD_SLOT_RIGHT], wdSnapErr[WD_SLOT_RIGHT], wdSnapSenseI[WD_SLOT_RIGHT], _, _, _, _, _ := wheelR.testGetTelemetry()
+    wdSnapMotorCog[WD_SLOT_RIGHT] := wheelR.testGetMotorCog()
+    wdSnapDrvState[WD_SLOT_RIGHT] := wheelR.getDriverState()
+    wdSnapFault[WD_SLOT_RIGHT] := wheelR.isFaultSignal()
+    wdSnapTicks[WD_SLOT_RIGHT] := wheelR.getRawHallTicks()
+
+PRI emitWatchdog(msSinceBeat) | bHoldValid
+' Emit BC-WATCHDOG from the watchdog cog: cog 0's last checkpoint, how long it has been silent,
+' the hold and wheel it was on, that hold's result, holds run, and whether the watchdog stack's
+' sentinel is intact. hold and result print NA outside a hold (banner, preflight, end).
+' Worst case: tag(11) + checkpoint(16) + checkpoint_tok(26) + since_ms(20) + hold(10) +
+' motor(12) + result(22) + holds_run(15) + stack_ok(15) = 147 bytes.
+'
+' @param msSinceBeat - ms since the sample that last saw wdHeartbeat change
+'
+' @local bHoldValid - TRUE when the snapshot hold index names a hold
+
+    bHoldValid := (wdSnapHoldIdx >= HOLD_ZERO) and (wdSnapHoldIdx <= HOLD_COUNT - 1)
+    wdLineReset()
+    wdLineAddText(@"BC-WATCHDOG")
+    wdBoundedField(@"checkpoint", wdSnapCheckpoint, LIM_TINY)
+    wdTokenField(@"checkpoint_tok", checkpointToken(wdSnapCheckpoint), TOKMAX_CP)
+    wdBoundedField(@"since_ms", msSinceBeat, LIM_MID)
+    if bHoldValid
+        wdBoundedField(@"hold", wdSnapHoldIdx, LIM_TINY)
+    else
+        wdLineTextField(@"hold", @sNa)
+    wdTokenField(@"motor", motorToken(wdSnapSide), TOKMAX_MOTOR)
+    if bHoldValid
+        wdTokenField(@"result", resultToken(wdSnapResult), TOKMAX_RESULT)
+    else
+        wdLineTextField(@"result", @sNa)
+    wdBoundedField(@"holds_run", wdSnapHoldsRun, LIM_TINY)
+    wdBoolField(@"stack_ok", (wdStackSentinel == WD_STACK_SENTINEL))
+    wdLineEmit()
+
+PRI emitWatchdog2()
+' Emit BC-WATCHDOG2 from the watchdog cog: both wheels' driver state as the snapshot caught it,
+' before the watchdog stopped them. cog is testGetMotorCog()'s raw value (cog id + 1, 0 when not
+' running); state is getDriverState(); fault is isFaultSignal().
+' Worst case: tag(12) + per wheel [cog(11) + state(13) + fault(14) + duty(18) + err(17) +
+' sense_mV(19) + ticks(21) = 113] x 2 = 238 bytes.
+
+    wdLineReset()
+    wdLineAddText(@"BC-WATCHDOG2")
+    wdBoundedField(@"l_cog", wdSnapMotorCog[WD_SLOT_LEFT], LIM_TINY)
+    wdBoundedField(@"l_state", wdSnapDrvState[WD_SLOT_LEFT], LIM_TINY)
+    wdBoolField(@"l_fault", wdSnapFault[WD_SLOT_LEFT])
+    wdBoundedField(@"l_duty", wdSnapDuty[WD_SLOT_LEFT], LIM_MID)
+    wdBoundedField(@"l_err", wdSnapErr[WD_SLOT_LEFT], LIM_MID)
+    wdBoundedField(@"l_sense_mV", wdSnapSenseI[WD_SLOT_LEFT], LIM_SMALL)
+    wdBoundedField(@"l_ticks", wdSnapTicks[WD_SLOT_LEFT], LIM_BIG)
+    wdBoundedField(@"r_cog", wdSnapMotorCog[WD_SLOT_RIGHT], LIM_TINY)
+    wdBoundedField(@"r_state", wdSnapDrvState[WD_SLOT_RIGHT], LIM_TINY)
+    wdBoolField(@"r_fault", wdSnapFault[WD_SLOT_RIGHT])
+    wdBoundedField(@"r_duty", wdSnapDuty[WD_SLOT_RIGHT], LIM_MID)
+    wdBoundedField(@"r_err", wdSnapErr[WD_SLOT_RIGHT], LIM_MID)
+    wdBoundedField(@"r_sense_mV", wdSnapSenseI[WD_SLOT_RIGHT], LIM_SMALL)
+    wdBoundedField(@"r_ticks", wdSnapTicks[WD_SLOT_RIGHT], LIM_BIG)
+    wdLineEmit()
+
+PRI wdEmitEnd()
+' Emit BC-END from the watchdog cog with exit WATCHDOG. Same fields in the same order as
+' emitEnd(); lib_abort is FALSE and trap is NA because no abort trap delivered this end.
+' Worst case: tag(6) + exit(14) + preflight_ok(19) + holds_run(15) + lib_abort(16) + trap(16) =
+' 86 bytes.
+
+    wdLineReset()
+    wdLineAddText(@"BC-END")
+    wdTokenField(@"exit", @sExitWatchdog, TOKMAX_EXIT)
+    wdBoolField(@"preflight_ok", bPreflightOk)
+    wdBoundedField(@"holds_run", holdsRun, LIM_TINY)
+    wdBoolField(@"lib_abort", FALSE)
+    wdLineTextField(@"trap", @sNa)
+    wdLineEmit()
+
+PRI wdLineReset()
+' Begin a new watchdog record in wdLineBuf/wdLineLen. Mirrors lineReset() against the watchdog's
+' own buffer, which cog 0 never touches.
+
+    wdLineLen := 0
+    BYTE[@wdLineBuf][0] := 0
+
+PRI wdLineAddChar(charByte)
+' Append one character to the watchdog record under assembly. Mirrors lineAddChar() against
+' wdLineBuf/wdLineLen.
+'
+' @param charByte - the character to append
+
+    if wdLineLen < LINE_BUF_SIZE - 1
+        BYTE[@wdLineBuf][wdLineLen] := charByte
+        wdLineLen += 1
+        BYTE[@wdLineBuf][wdLineLen] := 0
+
+PRI wdLineAddText(pText) | srcIdx
+' Append a zero-terminated string to the watchdog record under assembly. Mirrors lineAddText().
+'
+' @param pText - pointer to the text to append
+'
+' @local srcIdx - index into the source text
+
+    repeat srcIdx from 0 to LINE_BUF_SIZE - 1
+        if BYTE[pText][srcIdx] == 0
+            quit
+        wdLineAddChar(BYTE[pText][srcIdx])
+
+PRI wdLineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absMagnitude, digitIdx
+' Append a signed decimal number with an underscore every three digits. Mirrors lineAddNum()
+' statement for statement against wdLineAddChar(), so both builders print identical text.
+'
+' @param numValue - the value to append
+'
+' @local digitStack - decimal digits of numValue, least significant first
+' @local digitCount - how many entries of digitStack are in use
+' @local absMagnitude - magnitude of numValue, consumed by the extraction loop
+' @local digitIdx - index into digitStack while emitting
+
+    absMagnitude := numValue
+    if numValue < 0
+        wdLineAddChar("-")
+        absMagnitude := -numValue
+
+    digitCount := 0
+    repeat
+        digitStack[digitCount] := absMagnitude // DEC_RADIX
+        absMagnitude /= DEC_RADIX
+        digitCount += 1
+    until (absMagnitude == 0) or (digitCount == MAX_DEC_DIGITS)
+
+    repeat digitIdx from digitCount - 1 to 0
+        wdLineAddChar("0" + digitStack[digitIdx])
+        if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
+            wdLineAddChar("_")
+
+PRI wdLineField(pFieldName, numValue)
+' Append one ",name,<number>" field to the watchdog record. Mirrors lineField().
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+
+    wdLineAddChar(",")
+    wdLineAddText(pFieldName)
+    wdLineAddChar(",")
+    wdLineAddNum(numValue)
+
+PRI wdLineTextField(pFieldName, pFieldValue)
+' Append one ",name,<token>" field to the watchdog record. Mirrors lineTextField().
+'
+' @param pFieldName - pointer to the field name
+' @param pFieldValue - pointer to the field's token text
+
+    wdLineAddChar(",")
+    wdLineAddText(pFieldName)
+    wdLineAddChar(",")
+    wdLineAddText(pFieldValue)
+
+PRI wdBoundedField(pFieldName, numValue, limitAbs)
+' Append a numeric field clamped to +/- limitAbs. Mirrors boundedField().
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+' @param limitAbs - clamp magnitude (one of the LIM_* widths)
+
+    wdLineField(pFieldName, (numValue #> (0 - limitAbs)) <# limitAbs)
+
+PRI wdBoolField(pFieldName, bFlag)
+' Append a boolean field as the token TRUE or FALSE. Mirrors boolField().
+'
+' @param pFieldName - pointer to the field name
+' @param bFlag - the field's value; any non-zero prints TRUE
+
+    if bFlag <> FALSE
+        wdLineTextField(pFieldName, @sTrue)
+    else
+        wdLineTextField(pFieldName, @sFalse)
+
+PRI wdTokenField(pFieldName, pToken, maxLen)
+' Append a token field; a token longer than maxLen prints as "?". Mirrors tokenField(), reusing
+' tokenFits(), which only reads through pToken and touches neither record buffer.
+'
+' @param pFieldName - pointer to the field name
+' @param pToken - pointer to the token text
+' @param maxLen - the longest token this field may print
+
+    if tokenFits(pToken, maxLen)
+        wdLineTextField(pFieldName, pToken)
+    else
+        wdLineTextField(pFieldName, @sBadTok)
+
+PRI wdLineEmit()
+' Emit the assembled watchdog record as one debug line. Mirrors lineEmit() against wdLineBuf,
+' without the beats.
+
+    debug(zstr_(@wdLineBuf))
 
 CON { license }
 
