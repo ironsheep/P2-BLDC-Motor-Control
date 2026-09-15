@@ -48,8 +48,8 @@ CON { Public Interface Constants }
     ' Driver Time-Unit Enum:
     #0, DTU_Unknown, DTU_MILLISEC, DTU_SEC
 
-    ' Driver Status Enum:
-    #10, DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF
+    ' Driver Status Enum: (serial hosts receive these as numbers -- append new values, never renumber)
+    #10, DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF, DS_FAULTED, DS_ESTOP
 
     ' Driver Control Stop-State Enum:
     #0, SM_Unknown, SM_FLOAT, SM_BRAKE
@@ -777,11 +777,16 @@ PUB getMaxSpeedForDistance() : nSpeed4dist
     nSpeed4dist := maxSpeed4dist  ' return last specified user value
 
 PUB getStatus() : eStatus
-'' Returns status of motor drive state for this motor: enumerated constant: DS_Unknown, DS_MOVING, DS_HOLDING, or DS_OFF
+'' Returns status of motor drive state for this motor: enumerated constant: DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF, DS_FAULTED, or DS_ESTOP
 ''
+'' @returns eStatus - DS_FAULTED while the driver is faulted (until a stop or a different power is commanded), DS_ESTOP while emergency-stopped, DS_HOLDING or DS_OFF when stopped (per holdAtStop()), DS_MOVING while otherwise running, DS_Unknown when the driver is not running
 
     eStatus := DS_Unknown                               ' if not one of the following status
-    if isStopped()
+    if isFaulted()                                      ' M: a faulted motor is not moving, so this is tested first
+        eStatus := DS_FAULTED
+    elseif isEmergency()                                ' M: nor is an emergency-stopped one
+        eStatus := DS_ESTOP
+    elseif isStopped()
         if stop_mode == SM_BRAKE
             eStatus := DS_HOLDING
         elseif stop_mode == SM_FLOAT
@@ -937,8 +942,9 @@ PUB isStopped() : bState
     bState := (drv_state == DCS_STOPPED) ? true : false
 
 PUB isFaulted() : bState
-'' Return T/F where T means the motor has faulted
+'' Return T/F where T means the motor is faulted now
 ''
+'' @returns bState - T/F where T means the driver is faulted; it clears when a stop or a different power is commanded (isFaultSignal() keeps the record that it happened)
 
     bState := (drv_state == DCS_FAULTED) ? true : false
 
@@ -964,16 +970,17 @@ PUB isEmergency() : bState
     bState := (drv_state == DCS_ESTOP) ? true : false
 
 PUB isFaultSignal() : bState
-'' Return T/F where T means the motor has faulted
+'' Return T/F where T means the motor has faulted since it was started or since clearFaultSignal() was last called
 ''
+'' @returns bState - T/F where T means the driver recorded a fault; unlike isFaulted() it stays set after the fault state clears
 
     bState := (fault <> false) ? true : false
 
 PUB clearFaultSignal()
-'' Reset top-level fault indicator
+'' Reset the recorded fault indicator read by isFaultSignal()
 ''
 
-' used by two-wheel steering
+' S-5: nothing clears the indicator automatically -- only this method (also called by testResetFault()) and a restart
     if fault
         debug[user.DBGCH_FAULT]("MTR: did reset fault ind.")
         fault := false

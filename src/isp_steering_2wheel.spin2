@@ -60,6 +60,8 @@ CON { forward our interface constants }
     DS_MOVING       = ltWheel.DS_MOVING
     DS_HOLDING      = ltWheel.DS_HOLDING
     DS_OFF          = ltWheel.DS_OFF
+    DS_FAULTED      = ltWheel.DS_FAULTED
+    DS_ESTOP        = ltWheel.DS_ESTOP
 
   ' Driver State Enum
     DCS_Unknown     = ltWheel.DCS_Unknown
@@ -511,41 +513,12 @@ PRI getDriverState() : eLeftState, eRightState
     eLeftState := ltWheel.getDriverState()
     eRightState := rtWheel.getDriverState()
 
-DAT { fault tracking }
-
-ltFaultSeenMS    long  0
-rtFaultSeenMS    long  0
-
-PRI getFaultStatus() : bLeftStatus, bRightStatus | bLeftSignal, bRightSignal
+PRI getFaultStatus() : bLeftStatus, bRightStatus
 ' Returns status of motor-driver fault-state for each motor: T/F
+'  S-5: a read only. Each wheel's fault latch (isFaultSignal()) is the sticky record that a fault
+'  happened, so nothing here clears it; only the motor object's clearFaultSignal() or a restart does.
     bLeftStatus := ltWheel.isFaulted()
     bRightStatus := rtWheel.isFaulted()
-
-    bLeftSignal := ltWheel.isFaultSignal()
-    bRightSignal := rtWheel.isFaultSignal()
-
-    ' if fault appears then let it stay for 3*1000 mSec
-    ' . after that, clear it
-
-    if bLeftSignal == TRUE and ltFaultSeenMS == 0
-        ltFaultSeenMS := getms() + 3000
-        if ltFaultSeenMS == 0                                                   ' just in case happens to add to 0
-          ltFaultSeenMS := 1
-        debug[user.DBGCH_FAULT](" -------------- LtMotr See FAULT! --------------")
-    elseif bLeftSignal == TRUE and ltFaultSeenMS <> 0 and getms() > ltFaultSeenMS
-        debug[user.DBGCH_FAULT](" -------------- LtMotr Cleared FAULT --------------")
-        ltWheel.clearFaultSignal()
-        ltFaultSeenMS := 0
-
-    if bRightSignal == TRUE and rtFaultSeenMS == 0
-        rtFaultSeenMS := getms() + 3000
-        if rtFaultSeenMS == 0                                                   ' just in case happens to add to 0
-          rtFaultSeenMS := 1
-        debug[user.DBGCH_FAULT](" -------------- RtMotr See FAULT! --------------")
-    elseif bRightSignal == TRUE and rtFaultSeenMS <> 0 and getms() > rtFaultSeenMS
-        debug[user.DBGCH_FAULT](" -------------- RtMotr Cleared FAULT --------------")
-        rtWheel.clearFaultSignal()
-        rtFaultSeenMS := 0
 
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
@@ -638,10 +611,9 @@ PUB testGetFaultStatus() : bLtFaulted, bLtSignal, bRtFaulted, bRtSignal
 '' @returns bRtFaulted - T/F where T means the right motor has faulted
 '' @returns bRtSignal - T/F where T means the right motor's fault signal is latched
 
-    ' NOTE: this deliberately does NOT call getFaultStatus(). That method clears the fault
-    '  latch 3 seconds after the fault appears, so calling it from a test would destroy the
-    '  very thing the test is watching. This read has no side effects - which also lets a
-    '  test observe that 3-second clear happening underneath it.
+    ' NOTE: a read with no side effects. The fault latch (bLtSignal/bRtSignal) stays set after the
+    '  fault state (bLtFaulted/bRtFaulted) clears, until clearFaultSignal() or a restart, so a test
+    '  can see that a fault happened after the motor has recovered.
     bLtFaulted := ltWheel.isFaulted()
     bLtSignal := ltWheel.isFaultSignal()
     bRtFaulted := rtWheel.isFaulted()
@@ -882,6 +854,20 @@ PUB isTurning() : bState
 
     bState := ltWheel.isTurning() or rtWheel.isTurning()
 
+PUB isFaulted() : bState
+'' Return T/F where T means either motor is faulted now (a motor's fault clears when a stop or a different power is commanded)
+''
+'' @returns bState - T/F where T means the left or the right motor driver is faulted
+
+    bState := ltWheel.isFaulted() or rtWheel.isFaulted()
+
+PUB isEmergency() : bState
+'' Return T/F where T means either motor is emergency-stopped
+''
+'' @returns bState - T/F where T means the left or the right motor driver is emergency-stopped
+
+    bState := ltWheel.isEmergency() or rtWheel.isEmergency()
+
 CON { -- TASK position tracking -- }
 
     STACK_SIZE_LONGS = 64 ' WARNING! we exceed stack at 48!
@@ -1000,6 +986,7 @@ PRI taskPostionSense() | senseStartTicks, eStopState
         '  user will request it again if needed
         ' NOTE: we leave e_stop set for at least 1/4 second before clearing!
         if isEmergency()
+            debug[user.DBGCH_FAULT]("--------WHEEL in EMERGENCY!!--------")
             if eStopState == true
                 clearEmergency()
             !!= eStopState                                                      ' toggle stop flag
@@ -1010,14 +997,6 @@ PRI taskPostionSense() | senseStartTicks, eStopState
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
         '   wait remainder of 125 mSec before next sample
         waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
-
-PRI isEmergency() : bEmergencyState
-' return T/F where T means one or both wheels are in emergency cutoff state
-    bEmergencyState := ltWheel.isEmergency()
-    if not bEmergencyState
-        bEmergencyState := rtWheel.isEmergency()
-    if bEmergencyState
-        debug[user.DBGCH_FAULT]("--------WHEEL in EMERGENCY!!--------")
 
 PUB showDriveStates()
 '' for TESTING dump curr drive states
@@ -1083,6 +1062,8 @@ DAT { debug strings }
     dsMOVING        BYTE    "dsMov",0
     dsHOLDING       BYTE    "dsHld",0
     dsOFF           BYTE    "dsOff",0
+    dsFAULTED       BYTE    "dsFlt",0
+    dsESTOP         BYTE    "dsEStp",0
     dsOther         BYTE    "?ds0x"
     dsOtherVal      BYTE    "00-[CODE]?",0
 
@@ -1139,6 +1120,10 @@ PRI showStatus(eStatus, pMsg)
             pStatVal := @dsHOLDING
         DS_OFF:
             pStatVal := @dsOFF
+        DS_FAULTED:
+            pStatVal := @dsFAULTED
+        DS_ESTOP:
+            pStatVal := @dsESTOP
         other:
             placeAsciiDigits(@dsOtherVal, eStatus)
             pStatVal := @dsOther

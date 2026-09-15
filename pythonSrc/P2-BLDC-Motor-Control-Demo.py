@@ -63,7 +63,7 @@ parm_sep    = '^|^'
     #0, DTU_Unknown, DTU_MILLISEC, DTU_SEC
 
     ' Driver Status Enum:
-    #10, DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF
+    #10, DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF, DS_FAULTED, DS_ESTOP
 
     ' Driver Control Stop-State Enum:
     #0, SM_Unknown, SM_FLOAT, SM_BRAKE
@@ -96,7 +96,9 @@ DrvStatus = Enum('DrvStatus', [
      'DS_Unknown',
      'DS_MOVING',
      'DS_HOLDING',
-     'DS_OFF'], start=10)
+     'DS_OFF',
+     'DS_FAULTED',
+     'DS_ESTOP'], start=10)
 
 DrvStopState = Enum('DrvStopState', [
      'SM_Unknown',

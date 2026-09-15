@@ -2126,6 +2126,35 @@ the tests before we run them again."*
 
 **Fix direction:** correct the two labels in `src/test_bench_dual.spin2` at its next revision.
 
+### PL-66 -- a faulted motor stays faulted when the caller sends the same power again
+
+**Found 2026-09-15** while stating the fault-clearing rule for «#3547». DERIVED from source, not observed on
+hardware.
+
+**The mechanism (`src/isp_bldc_motor.spin2`, PASM driver):**
+- The driver leaves `DCS_FAULTED` only through `.resetFault`, inside `.newRqst`.
+- A stop always gets there: a zero request while not STOPPED jumps to `.newRqst`.
+- A nonzero request gets there only if it differs from the last one. `.notRqStop` compares it with the saved
+  request and, when they are equal, continues the current request (`.currRqst`).
+- In `DCS_FAULTED`, `.currRqst` matches no state and falls through to `.justIncr`, which advances `angle_` with
+  the drive off. The motor stays faulted.
+
+**Who is affected:** a caller that retries after a fault by sending the power it was already running at, such as
+`driveAtPower(50)` again, or a loop that re-sends its current command. The retry does nothing. Since «#3547»
+`getStatus()` reports `DS_FAULTED`, so the state is visible, but nothing says the retry was ignored. The two-wheel
+object and the serial protocol inherit it.
+
+**Related:** PL-28 item 1 is the same mechanism on the test path. `testResetFault()` works around it by sending
+zero first.
+
+**Fix direction:** decide what a repeated command does while faulted.
+- Treat it as a new request, so a retry restarts the motor. Correct by construction for a retry, but a fault at
+  speed may mean a blocked wheel (PL-47 rule 5), and a retry would drive into it again.
+- Or keep requiring a stop or a changed power first, and state that in `DRIVE-OBJECTS.md` and the method docs.
+
+That is an API and safety decision for Stephen, taken when the fault path is next scheduled. «#3547» documents
+today's rule: *the fault clears when a stop or a different power is commanded*.
+
 ---
 
 ## Recently closed

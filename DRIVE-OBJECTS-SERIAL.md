@@ -70,7 +70,7 @@ The object **isp\_steering_2wheel.spin2** provides the following methods:
 | PUB getDistance(distanceUnits) : leftDistanceInUnits, rightDistanceInUnits<BR><PRE>SER getdist {d-u}<br>SER Returns: dist {ltDistInUnits} {rtDistInUnits} \| ERROR {errormsg}</PRE> | Returns the distance in {distanceUnits} [DDU\_IN, DDU\_CM, DDU\_FT or DDU\_M] travelled by each motor since last reset
 | PUB getRotationCount(rotationUnits) : leftRotationCount, rightRotationCount <BR><PRE>SER getrot {r-u}<br>SER Returns: rot {ltRotCountInUnits} {rtRotCountInUnits} \| ERROR {errormsg}</PRE>| Returns accumulated {*RotationCount} in {rotationUnits} [DRU\_DEGREES, DRU\_ROTATIONS, or DRU\_HALL_TICKS], since last reset, for each of the motors.  
 | PUB getPower() : leftPower, rightPower <BR><PRE>SER getpwr<br>SER Returns: pwr {ltPwr} {rtPwr}</PRE>| Returns the last specified power value for each of the motors (will be zero if the motor is stopped).
-| PUB getStatus() : eLeftStatus, eRightStatus<BR><PRE>SER getstatus<br>SER Returns: stat {ltStatus} {rtStatus}</PRE> | Returns status of motor drive state for each motor: enumerated constant: DS\_MOVING, DS\_HOLDING, DS\_OFF, or DS_Unknown
+| PUB getStatus() : eLeftStatus, eRightStatus<BR><PRE>SER getstatus<br>SER Returns: stat {ltStatus} {rtStatus}</PRE> | Returns status of motor drive state for each motor: enumerated constant: DS\_MOVING, DS\_HOLDING, DS\_OFF, DS\_FAULTED, DS\_ESTOP, or DS_Unknown
 | PUB getMaxSpeed() : maxSpeed <BR><PRE>SER getmaxspd<br>SER Returns: speedmax {maxSpeed}</PRE>| Returns the last specified {maxSpeed}
 | PUB getMaxSpeedForDistance() : maxSpeed4dist <BR><PRE>SER getmaxspdfordist<br>SER Returns: speeddistmax {maxSpeed}</PRE>| Returns the last specified {maxSpeedForDistance}
 
