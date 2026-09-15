@@ -1010,6 +1010,11 @@ non-negative.
     (MEASURED, `git log -S Spin2_v50`).
   - The T0-12 panel («#3542») was built without it. Adding it there is the one correct remedy for a step
     that Visit 2 runs.
+- *(Corrected 2026-09-15: this ruling was wrong for the mouse. The SRC_REV 6 `dual-ui` run registered no click
+  on any button (MEASURED, `debug_260915-134659.log`), while three S keypresses did arrive. p2kb's default, origin
+  bottom-left with y up, holds for the mouse, and the guide's own interactive examples declare `cartesian 1`
+  before working in y-down coordinates. The panel now declares `cartesian 1` (SRC_REV 7). The original ruling
+  follows as history.)*
 - **The default PLOT mouse y-axis runs top-down,** taken from Stephen's guide.
   - `DISPLAY-PATTERNS-builders-guide.md:86-90`: default mode is top-left origin, y down; `cartesian` is
     bottom-left, y up. The harness uses default mode, and its hit-test and CROP destinations are top-down.

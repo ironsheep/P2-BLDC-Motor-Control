@@ -78,7 +78,7 @@ FLOOR_DIRECTION = 50
 # board (the LEFT board is at P32, MEASURED 2026-09-11), the operator is told before the harness drives the
 # wheels again, and the UICHECK walkthrough has its own prompts.
 (PROMPT_BRAKE_START, PROMPT_BRAKE_NOW, PROMPT_BRAKE_RELEASE, PROMPT_FLOOR_START, PROMPT_FLOOR_ASK,
- PROMPT_BRAKE_RUNNING, PROMPT_UI_CLICK, PROMPT_UI_KEY, PROMPT_UI_PREVIEW, PROMPT_UI_END) = range(10)
+ PROMPT_BRAKE_RUNNING, PROMPT_UI_CONTROL, PROMPT_UI_PREVIEW, PROMPT_UI_END) = range(9)
 PROMPTS = [
     "HANDS CLEAR. CLICK START: BOTH WHEELS RUN AT HALF POWER, THEN THE PANEL TELLS YOU TO BRAKE THE LEFT "
     "WHEEL (P32 BOARD).",
@@ -89,17 +89,17 @@ PROMPTS = [
     "CLICK STOP OR PRESS SPACE ANY TIME." % (FLOOR_RUN_S, FLOOR_POWER, FLOOR_DIRECTION),
     "WHICH WAY DID IT TURN?",
     "HANDS CLEAR -- THE HARNESS IS DRIVING BOTH WHEELS AGAIN BY ITSELF. WAIT FOR DONE.",
-    "UI CHECK -- NO MOTOR RUNS. CLICK THE ONE BUTTON SHOWN, WITH THE MOUSE.",
-    "UI CHECK -- NO MOTOR RUNS. PRESS THE KEY NAMED ON THE ONE BUTTON SHOWN.",
+    "UI CHECK -- NO MOTOR RUNS. FOR THE ONE BUTTON SHOWN: CLICK IT, AND PRESS THE KEY NAMED ON IT, IN "
+    "EITHER ORDER.",
     "UI CHECK -- NO MOTOR RUNS. EACH ATTENDED SCREEN COMES NEXT: CLICK START IF IT READS RIGHT, SKIP IF "
     "ANYTHING IS WRONG. CLICK START TO BEGIN.",
     "UI CHECK FINISHED -- NO MOTOR RAN. THE RESULT IS BELOW. CLICK START TO CLOSE.",
 ]
 
-# State words, in BM_STATE_* order (design sec 8.2; the last four added 2026-09-15 with the prompts above).
+# State words, in BM_STATE_* order (design sec 8.2; the last six added 2026-09-15 with the prompts above).
 (STATE_WAITING, STATE_STARTING, STATE_BRAKE_NOW, STATE_RELEASE, STATE_OBSERVING, STATE_ASK,
  STATE_DONE, STATE_SKIPPED, STATE_TIMED_OUT, STATE_WHEELS_AGAIN, STATE_UI_CHECK, STATE_UI_PASSED,
- STATE_UI_FAILED) = range(13)
+ STATE_UI_FAILED, STATE_UI_NOW_CLICK, STATE_UI_NOW_KEY) = range(15)
 STATE_LABELS = [
     "WAITING FOR START",
     "STARTING",
@@ -114,6 +114,8 @@ STATE_LABELS = [
     "UI CHECK - NOTHING MOVES",
     "UI CHECK PASSED",
     "UI CHECK FAILED",
+    "GOT THE KEY - NOW CLICK IT",
+    "GOT THE CLICK - NOW THE KEY",
 ]
 
 # Buttons, in BM_BTN_* order: (label, key hint). The keys are test_bench_dual.spin2's keyButton() map.
@@ -229,7 +231,7 @@ def slot(btn_idx):
 def check_layout():
     """Refuse to write assets whose tables or geometry disagree with the constants."""
     assert len(PROMPTS) == PROMPT_UI_END + 1, "PROMPTS does not match the BM_PROMPT_* indices"
-    assert len(STATE_LABELS) == STATE_UI_FAILED + 1, "STATE_LABELS does not match the BM_STATE_* indices"
+    assert len(STATE_LABELS) == STATE_UI_NOW_KEY + 1, "STATE_LABELS does not match the BM_STATE_* indices"
     assert len(BUTTONS) == BTN_NOMOVE + 1, "BUTTONS does not match the BM_BTN_* indices"
     for text in PROMPTS + STATE_LABELS + [HEADER_TEXT, CD_LABEL_TEXT, FOOTER_TEXT]:
         assert all(ord(ch) < 128 for ch in text), "non-ASCII panel text: %r" % text
@@ -348,8 +350,7 @@ CON_GROUPS = [
         ("BM_PROMPT_FLOOR_START", PROMPT_FLOOR_START),
         ("BM_PROMPT_FLOOR_ASK", PROMPT_FLOOR_ASK),
         ("BM_PROMPT_BRAKE_RUNNING", PROMPT_BRAKE_RUNNING),
-        ("BM_PROMPT_UI_CLICK", PROMPT_UI_CLICK),
-        ("BM_PROMPT_UI_KEY", PROMPT_UI_KEY),
+        ("BM_PROMPT_UI_CONTROL", PROMPT_UI_CONTROL),
         ("BM_PROMPT_UI_PREVIEW", PROMPT_UI_PREVIEW),
         ("BM_PROMPT_UI_END", PROMPT_UI_END),
     ],
@@ -371,6 +372,8 @@ CON_GROUPS = [
         ("BM_STATE_UI_CHECK", STATE_UI_CHECK),
         ("BM_STATE_UI_PASSED", STATE_UI_PASSED),
         ("BM_STATE_UI_FAILED", STATE_UI_FAILED),
+        ("BM_STATE_UI_NOW_CLICK", STATE_UI_NOW_CLICK),
+        ("BM_STATE_UI_NOW_KEY", STATE_UI_NOW_KEY),
     ],
     [
         ("BM_BTN_W", BTN_W),
