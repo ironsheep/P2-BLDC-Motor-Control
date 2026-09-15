@@ -74,7 +74,7 @@ DAT { misc time constants }
     ' time constants based on CPU freq
     ticks1ms    LONG    0
     ticks1us    LONG    0
-    ticks500us  long    0                       ' 2 kHz
+    ticks500us  long    0                       ' the drive-pass deadline; the pass itself runs every 23 ADC frames, ~1913 Hz (see drvMotor)
     ticks125ms  long    0                       ' 8 Hz
 
 PUB null()
@@ -342,7 +342,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
                                                         ' Chip's new code adjusted this, why?
                                                         '    duty_up     := 8   ' this drops our top-end power by 45%
                                                         '    duty_dn     := 2
-    cfg_ctcks   := ticks500us                           ' drive control loop period
+    cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
     e_stop      := FALSE
     ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
@@ -351,10 +351,10 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' 50_000 for 12v & 18_5v
     '   ramp_min - start ramping at this value
     '   ramp_max - max ramping at this value, once reach this value, keep incrementing with this value
-    '   ramp_inc - ramping increment, added to ramp_min every 500us. Effectively defines the acceleration
+    '   ramp_inc - ramping increment, added to ramp_min every drive pass (~522.7 us, PL-50). Effectively defines the acceleration
     ramp_max := 200_000                                 ' 200k angle max increment/decrement
-    ramp_min := 1_500                                   ' 1k5 angle min increment: start add this every 500 uSec to ramp up from zero
-    ramp_inc := 22                                      ' increment to ramping speed, add to ramp_min every 500us until ramp_max reached
+    ramp_min := 1_500                                   ' 1k5 angle min increment: start add this every drive pass to ramp up from zero
+    ramp_inc := 22                                      ' increment to ramping speed, add to ramp_min every drive pass until ramp_max reached
     ramp_down := 50_000                                 ' fixed ramp down speed
 
     motorIsReversed := FALSE    ' by default our motor direction is not reversed
@@ -1414,6 +1414,11 @@ PRI confgurePowerLimits(userVoltage) | selectedPower, index
     else
         ' is this more readable than the case statement?
         if (index := lookdown(selectedPower:PWR_6p0V..PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V..PWR_24p0V)) <> 0
+            ' PL-50: the RPM and cts/Sec figures below have no log behind them and sit within 1.5% of a 2000-passes/s
+            '  model. The driver applies drv_incr about 1913 times a second (one drive pass per 23 ADC frames, see
+            '  drvMotor), and Visit 2's ladder MEASURED 0.946-0.965 of that model, so 147_000_000 runs about 393
+            '  ticks/s, not 408 (DERIVED). The increments are the fault ceilings and are unchanged. (The DOCO figures
+            '  above do match the real rate: 282_000_000 -> 754 cts/Sec recorded, 753.7 DERIVED.)
             ' 90_000_000  anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
             ' 97_000_000  anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
             ' 120_000_000 anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
@@ -2063,12 +2068,12 @@ VAR  {  Motor Parameters  }
     LONG    duty_dn
     LONG    dead_gap        ' delay between driving h/l side of driver (never drive both at once)
     LONG    ramp_down       ' angle decrement when slowing down
-    LONG    cfg_ctcks       ' # clock ticks needed to create 2 kHz motor drive loop
+    LONG    cfg_ctcks       ' # clock ticks of the 500 uSec drive-pass deadline (the pass runs every 23 ADC frames, PL-50)
     LONG    stop_mode       ' control / user setting, enum: [SM_FLOAT, SM_BRAKE]
     LONG    e_stop          ' T/F where T means stop all motor function
-    LONG    ramp_max        ' angle increment: max rap up every 500 uSec
-    LONG    ramp_min        ' angle increment: start of ramp up every 500 uSec
-    LONG    ramp_inc        ' angle increment: inc every 500uSec from min to max
+    LONG    ramp_max        ' angle increment: max ramp up every drive pass
+    LONG    ramp_min        ' angle increment: start of ramp up every drive pass
+    LONG    ramp_inc        ' angle increment: inc every drive pass from min to max
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -2128,7 +2133,10 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                                                         ' cog RAM calls them.
 
     ' =========================================================================
-    '  MOTOR DRIVE LOOP - runs at 2.0 kHz (500.0 uSec period)
+    '  MOTOR DRIVE LOOP - one pass every 23 ADC frames: about 1913 passes/s (522.7 uSec) at 200, 270 or 300 MHz.
+    '       cfg_ctcks_ is a 500 uSec deadline, but CT1 is tested (jnct1) only at the end of each frame-aligned
+    '       .ctlMotor pass, and 22 truncated frames fall just short of it, so the pass runs on the 23rd (PL-50).
+    '       Every per-pass rate (drv_incr, the ramps) is therefore per 522.7 uSec, not per 500.
     '       time to adjust angle...
     ' -------------------------------------------------------------------------
 drvMotor                                                ' global (task 3535): entered via cross-boundary jmp from the LUT-resident loader
@@ -2776,9 +2784,9 @@ ramp_down_  res 1           ' angle decrement when slowing down
 cfg_ctcks_  res 1           ' clocks for drv loop
 stop_mode_  res 1           ' float or brake mode
 e_stop_     res 1           ' T/F where T means stopal motor function
-ramp_max_   res 1           ' angle increment: max rap up every 500 uSec
-ramp_min_   res 1           ' angle increment: start of ramp up every 500 uSec
-ramp_inc_   res 1           ' angle increment: inc every 500uSec from min to max
+ramp_max_   res 1           ' angle increment: max ramp up every drive pass
+ramp_min_   res 1           ' angle increment: start of ramp up every drive pass
+ramp_inc_   res 1           ' angle increment: inc every drive pass from min to max
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -2808,7 +2816,7 @@ hall_illegal_ res 1         ' entries into an illegal hall code (%000 or %111), 
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the one-time start sequence only (task 3535).
-'  drvMotor (2 kHz), .ctlMotor (43.9 kHz) and everything .ctlMotor calls
+'  drvMotor (~1913 Hz, PL-50), .ctlMotor (43.9 kHz) and everything .ctlMotor calls
 '  (wait4adc, .driveoff, the fault path) stay resident in cog RAM, above.
 '
 '  MUST stay textually after the `fit 496` line above: this block's hub bytes

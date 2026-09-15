@@ -592,6 +592,28 @@ beside it reads *"anything above yields RPM 272.0"*. The formula gives:
   147e6 × 2000 × 60 / (4.295e9 × 15) = 273.8 RPM
 ```
 
+> **Revised 2026-09-15 (PL-50, «#3548»): the model is about 4.4 % fast, and "exact" below does not survive.**
+>
+> - **MEASURED, Visits 1 and 2:** the tick rate is a constant 0.946–0.965 of this model (mean about 0.957)
+>   from 10M to 165M, on both motors and both signs (`analyses/bench/2026-09-15/VISIT-2-RESULTS.md` §9.1).
+> - **DERIVED from source:** `drv_incr` is applied once per drive pass, and a drive pass runs every **23** ADC
+>   frames, not every 500 µs.
+>   - `init()` sets `cfg_ctcks` to 500 µs and `frame_cnt` to one 44 kHz frame, both truncated to whole ticks.
+>   - `drvMotor` re-arms CT1 from its own start (`addct1`), and `.ctlMotor` tests CT1 (`jnct1`) only at the
+>     end of each pass. Each pass waits for one ADC period (`wait4adc`).
+>   - At every swept clock 22 frames fall just short of the deadline: 99_990 < 100_000 ticks at 200 MHz,
+>     134_992 < 135_000 at 270 MHz, 149_996 < 150_000 at 300 MHz. So the pass runs on the 23rd frame, about
+>     1913.2 passes/s, which is 0.9566 of 2000.
+>   - Authority: `p2kbPasm2Addct1`, `p2kbPasm2Pollct1` (the CT1 flag is set once CT passes the target and
+>     cleared by `JNCT1`), `p2kbArchSmartPin01111CountHighsOptionalDec` (IN rises at the end of each X period).
+> - **The corrected law:** `mechanical RPM = drv_incr × 1913.2 × 60 / (2³² × electricalCyclesPerRev)`. At
+>   147_000_000 it gives 261.9 rpm, 392.9 ticks/s.
+> - **The comment this section checked against is not a measurement of this driver.** Its "RPM 272.0" has no
+>   log and sits on the 2000-pass figure. The DocoEng rows in the same function do match the corrected law
+>   (282_000_000 → 754 cts/s recorded, 753.7 DERIVED).
+> - **What stands:** the tables are back-EMF fault ceilings, and the power → speed map is linear. Only the
+>   scale factor changes.
+
 The model is exact. Which means the entire per-voltage lookup table — eight
 magic numbers per motor per board revision, the thing `ADDING_MOTOR.md` exists
 to explain how to produce — is **not a calibration**. Each number is one fact:

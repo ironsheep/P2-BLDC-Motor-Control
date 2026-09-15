@@ -30,6 +30,9 @@
 ''               the hit-test uses (the SRC_REV 6 dual-ui run, debug_260915-134659.log, registered no click);
 ''               each UICHECK control step takes its button by key AND by click and says which it still
 ''               needs (that run discarded three S keypresses silently); BM-UISTEP logs the last press x/y
+''               15 Sep 2026 -- SRC_REV=8: pred_x10 follows the driver's real drive-pass rate, one pass per 23
+''               ADC frames (PL-50), not 2000 passes/s; BM-OUT's status token names DS_FAULTED and DS_ESTOP,
+''               which getStatus() reports since task 3547 (they printed UNKNOWN)
 ''
 '' =================================================================================================
 
@@ -89,7 +92,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 7                                         ' hand-bumped whenever this file changes
+    SRC_REV     = 8                                         ' hand-bumped whenever this file changes
     FMT_VERSION = 1                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -238,10 +241,13 @@ CON { drive increments and powers }
     RAMP_DEF_INC  = 22
     RAMP_DEF_DOWN = 50_000
 
-    ' C-1 prediction pred_x10 = incre x 12_000 x 10 / 2^32, in two steps inside a long (design sec 3.2)
+    ' C-1 prediction pred_x10 = incre x 6 ticks per electrical cycle x 1913.2 drive passes/s x 10 / 2^32, in two
+    '  steps inside a long (design sec 3.2). PL-50: the driver runs one drive pass per 23 ADC frames, so the
+    '  2000-pass law (x 120 / 4_295) is scaled by 22/23: 120 x 22 = 2_640, 4_295 x 23 = 98_785. The largest
+    '  intermediate, 165_000 x 2_640, is 435_600_000.
     PRED_INCRE_DIV = 1_000
-    PRED_MUL       = 120
-    PRED_DIV       = 4_295
+    PRED_MUL       = 2_640
+    PRED_DIV       = 98_785
 
     ' C-6 wiring-drop bound constants, printed in BM-BUILD (design sec 5.3)
     RWIRE_MOHM = 20
@@ -562,8 +568,8 @@ CON { record enums -- each value has a token in the DAT token tables }
     EXIT_COUNT = 3
 
   ' BM-OUT status (from DS_*):
-    #0, STAT_MOVING, STAT_HOLDING, STAT_OFF, STAT_UNKNOWN
-    STAT_COUNT = 4
+    #0, STAT_MOVING, STAT_HOLDING, STAT_OFF, STAT_UNKNOWN, STAT_FAULTED, STAT_ESTOP
+    STAT_COUNT = 6
 
   ' BM-OUT buffer, one row per poll: OUT_LONGS longs in this order
     #0, OUT_T_MS, OUT_L_STAT, OUT_R_STAT, OUT_L_ST, OUT_R_ST, OUT_L_FLT, OUT_L_SIG, OUT_R_FLT, ...
@@ -810,7 +816,7 @@ tokButton       BYTE    "START", 0, "SKIP", 0, "STOP", 0, "LEFT", 0, "RIGHT", 0,
 tokOpEv         BYTE    "SHOWN", 0, "START", 0, "SKIP", 0, "TIMEOUT", 0, "ANSWER", 0, "DONE", 0, "STOP", 0
 tokSegEv        BYTE    "BEGIN", 0, "END", 0, "SKIP", 0
 tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG", 0
-tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0
+tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAULTED", 0, "ESTOP", 0
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "FLOOR", 0, "UI", 0
 ' driver state DCS_* 0..7; SLOW_TO_CHG shortened to fit the 10-byte st field
 tokDcs          BYTE    "UNKNOWN", 0, "STOPPED", 0, "SPIN_UP", 0, "AT_SPEED", 0, "SPIN_DN", 0
@@ -4236,7 +4242,7 @@ PRI predictX10(motorIncre) : predX10
 ' C-1's predicted hall ticks per second x10 for an increment (design sec 3.2), signed like the increment.
 '
 ' @param motorIncre - signed increment
-' @returns predX10 - (|incre| / 1_000) x 120 / 4_295, with the increment's sign
+' @returns predX10 - (|incre| / PRED_INCRE_DIV) x PRED_MUL / PRED_DIV, with the increment's sign
 
     predX10 := ((abs(motorIncre) / PRED_INCRE_DIV) * PRED_MUL) / PRED_DIV
     if motorIncre < 0
@@ -5299,7 +5305,7 @@ PRI statusToken(eStatus) : pTok
 ' getStatus() token for BM-OUT.
 '
 ' @param eStatus - DS_* value
-' @returns pTok - MOVING, HOLDING, OFF or UNKNOWN
+' @returns pTok - MOVING, HOLDING, OFF, FAULTED, ESTOP or UNKNOWN
 
     if eStatus == wheelL.DS_MOVING
         pTok := tokenAt(@tokStat, STAT_COUNT, STAT_MOVING)
@@ -5307,6 +5313,10 @@ PRI statusToken(eStatus) : pTok
         pTok := tokenAt(@tokStat, STAT_COUNT, STAT_HOLDING)
     elseif eStatus == wheelL.DS_OFF
         pTok := tokenAt(@tokStat, STAT_COUNT, STAT_OFF)
+    elseif eStatus == wheelL.DS_FAULTED
+        pTok := tokenAt(@tokStat, STAT_COUNT, STAT_FAULTED)
+    elseif eStatus == wheelL.DS_ESTOP
+        pTok := tokenAt(@tokStat, STAT_COUNT, STAT_ESTOP)
     else
         pTok := tokenAt(@tokStat, STAT_COUNT, STAT_UNKNOWN)
 

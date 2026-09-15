@@ -1739,7 +1739,35 @@ constant across the whole range, not just at two speeds.
 - `rate_x10 / pred_x10` is 0.946–0.965 from 10M to 165M on both motors and both signs, and 0.953–0.965
   from 40M up. The mean is about 0.957, 4.3 % below.
 - The 5M rung reads 1.000 only because 14 ticks quantise to ±7 %.
-- The model's derivation from source is still owed.
+
+**Fixed in tree 2026-09-15 («#3548»): a model error, derived from source. Certification is owed to the next visit.**
+- **Mechanism (DERIVED, `src/isp_bldc_motor.spin2`):** `drv_incr` is applied once per drive pass, and a pass runs
+  every **23** ADC frames.
+  - `init()` sets `cfg_ctcks` to 500 µs and `frame_cnt` to one 44 kHz frame, both truncated to whole ticks.
+  - `drvMotor` re-arms CT1 from its own start. `.ctlMotor` waits one ADC period per pass (`wait4adc`) and tests
+    CT1 (`jnct1`) only at the end of each pass.
+  - 22 frames fall just short of the deadline at every swept clock: 99_990 < 100_000 ticks at 200 MHz,
+    134_992 < 135_000 at 270, 149_996 < 150_000 at 300. The pass runs on the 23rd frame: 522.7 µs, about
+    1913.2 passes/s, **0.9566** of the model, against the MEASURED 0.957.
+  - Authority: `p2kbPasm2Addct1`, `p2kbPasm2Pollct1`, `p2kbArchSmartPin01111CountHighsOptionalDec`.
+- **Also consistent:** the DocoEng rows in `confgurePowerLimits()` match the corrected law
+  (282_000_000 → 754 cts/s recorded, 753.7 DERIVED). The 6.5″ rows match the 2000-pass figure instead, so they
+  were computed, not measured.
+- **Not a driver defect (DERIVED).** This scheduling cannot meet "2 kHz" at any clock, because the deadline is
+  re-armed from each pass's start and tested only at frame-aligned pass ends. Every speed, ramp and fault ceiling
+  was characterised on the real period. Scheduling the pass in whole frames would make the period exact by
+  construction, but it would raise every speed and ramp rate by 4.5 % and move every ceiling. That is a product
+  change and is not taken here.
+- **Corrected:**
+  - the library's timing comments, and a note on the 6.5″ ceiling block (recorded lines and increments untouched);
+  - `test_bench_scan.spin2` expected rates 98 / 196 (SRC_REV 11);
+  - `test_bench_dual.spin2` `pred_x10` scaled by 22/23 (SRC_REV 8);
+  - the study's C-1, by a dated revision block.
+- **Still carrying the 2000-pass figures:** `MOTOR_CHOICE.md`'s attainable-RPM table, which is «#3515»'s.
+- **Not swept:** the other bench binaries were not searched for further 2 kHz predictions (no search tool this
+  session).
+- **Certifies with:** the next ladder. `rate_x10 / pred_x10` should read about 0.99–1.01; today's spread,
+  0.946–0.965, maps to 0.989–1.009.
 
 ### PL-51 -- the steering object's `getMaxSpeedForDistance()` returns the max speed, not the max speed for distance
 
