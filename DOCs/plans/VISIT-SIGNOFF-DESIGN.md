@@ -1,5 +1,14 @@
 # Visit Sign-off Mechanism — Design («#3537», phase 1)
 
+> **Partly retired 2026-09-15.** STEPHEN: *"all we need to do is analyze the logs and write an
+> analysis report every time we get a set of logs back. Nothing else."*
+> - **Deleted:** the host collation (`tools/signoff-collate.py`), the manifest
+>   (`SIGNOFF-MANIFEST.tsv`/`.md`), the detection prediction list, and the per-visit sign-off sheet.
+> - **Stays:** the `SIGNOFF` records the bench binaries print, and the cell criteria below that
+>   they compile in. Each visit's analysis report reads them from the logs.
+> - The manifest (§A), host cell (§C) and collation (§D) text describes retired machinery and is
+>   kept only as history.
+
 **Written:** 2026-09-13 · **Status:** DESIGN, ARBITER-REVIEWED 2026-09-13. **Built 2026-09-14**
 (`--check-ready 1` exits 0). Where the build differs from the tables
 below, the *As built* list after this header wins, and `DOCs/analyses/bench/SIGNOFF-MANIFEST.tsv`

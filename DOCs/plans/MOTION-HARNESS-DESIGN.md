@@ -551,6 +551,10 @@ certification, which this design does not take on (Q12).
 
 ### 5.3 Analyser verdicts («#3509») -- data, rule, threshold source
 
+*(2026-09-15: «#3509» is withdrawn, and the sign-off collation is deleted. There is no analyser: Claude
+applies the rules below by reading the logs for each visit's analysis report. STEPHEN: "all we need to do
+is analyze the logs and write an analysis report every time we get a set of logs back. Nothing else.")*
+
 Every verdict is refused, naming the last good `seq`, when the log fails I8: a `seq` gap other than the
 one allowed before `BM-WATCHDOG`, a trace without a consistent `BM-TRACE-END` (`emitted` and `ksum`
 recomputed), a child record without its parent header, or no `BM-END`. The collation's
