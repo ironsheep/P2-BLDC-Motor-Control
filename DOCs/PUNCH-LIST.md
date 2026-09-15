@@ -310,6 +310,19 @@ solve quieting another way.
 
 Found 2026-09-10 while adding the TEST-USE ONLY pass-throughs.
 
+**Fixed in tree 2026-09-14 («#3507»); certification is owed to Visit 2.** Design:
+`plans/DEBUG-CHANNELS-DESIGN.md`.
+- **The decision was taken the plan's way (§2):** compile-time DEBUG channels, not a runtime flag.
+- **Every call is on a channel.** All 75 `debug()` statements in `isp_bldc_motor.spin2` and all 38
+  in `isp_steering_2wheel.spin2` name one of ten channels (ERROR … HDMI_DUMP).
+- **Where the masks live.** `MOTOR_DBG_MASK` and `STEER_DBG_MASK` are in the user config, outside the
+  six config blocks, and the bench config mirrors them.
+- **`useDebug` is deleted,** together with the equally dead `showHDMIDebug`.
+- **Defaults reproduce today's output.** HDMI_DUMP is off; its lines never printed.
+- **MEASURED:** with both masks at 0 the steering object's build shrinks from 24,477 to 20,262 bytes,
+  and `debug[32]` fails with the documented error.
+- **Still open:** a bench binary that needs quiet timed sections sets its own masks («#3508»).
+
 ### PL-15 -- no way for a bench binary to ask the operator a question
 
 **Found 2026-09-11 during «#3496» (the A/B detection sweep binary). Raised by

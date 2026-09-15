@@ -94,6 +94,10 @@ OBJ { our Motors }
 #endif
     distConv    :   "isp_dist_utils"                    ' distance conversion utils
 
+CON { DEBUG channels -- the mask and the channel names come from the user config }
+
+    DEBUG_MASK = user.STEER_DBG_MASK            ' DEBUG[user.DBGCH_*] compiles only when its bit is set
+
 PUB null()
 '' This is not a top-level object
 ''
@@ -130,12 +134,12 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         if rtcog >= 0
             rtWheel.stop()
         ok := -1
-        debug("!! ERROR filed to start left/right drive cog(s)")
+        debug[user.DBGCH_ERROR]("!! ERROR filed to start left/right drive cog(s)")
     else
         rtWheel.forwardIsReverse()
         cogmask := (1<<ltcog)|(1<<rtcog)
         waitms(100)
-        debug(" sendatn: ", sdec(ltcog), " ", sdec(rtcog))
+        debug[user.DBGCH_LIFECYCLE](" sendatn: ", sdec(ltcog), " ", sdec(rtcog))
         cogatn(cogmask)                                     ' sync the 2 motor cogs
 
         _, ticsPerRotation := ltWheel.hallTicInfoForMotor()
@@ -164,7 +168,7 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
             ltWheel.stop()   ' a failed start leaves nothing running: release both motor cogs and their pins
             rtWheel.stop()
             ok := -1
-            debug("!! ERROR filed to start Position Sense task")
+            debug[user.DBGCH_ERROR]("!! ERROR filed to start Position Sense task")
         else
             senseCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
             ok := senseCog - 1    ' public contract: the sense cog's id (0-7), docstring is silent on B so this is the chosen return
@@ -271,7 +275,7 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) | degreesPerTic, ticsPerRo
 ''
 
     if nRotationCount < 1
-        debug("! ERROR: invalid RotationCount Value:", udec_long(nRotationCount), " - must be > 0!")
+        debug[user.DBGCH_ERROR]("! ERROR: invalid RotationCount Value:", udec_long(nRotationCount), " - must be > 0!")
         ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
         abort
 
@@ -289,9 +293,9 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) | degreesPerTic, ticsPerRo
             ' ticks = rotations * 90
             motorStopHallTicks := nRotationCount * ticsPerRotation
         other:
-            debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
+            debug[user.DBGCH_ERROR]("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
             abort
-    debug(" stopAfterRotation: ", udec(nRotationCount), " ", udec(degreesPerTic), " ", udec(ticsPerRotation), " ", udec(motorStopHallTicks))
+    debug[user.DBGCH_COMMAND](" stopAfterRotation: ", udec(nRotationCount), " ", udec(degreesPerTic), " ", udec(ticsPerRotation), " ", udec(motorStopHallTicks))
 
 
 '' Stops both motors, after either of the motors reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
@@ -303,14 +307,14 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
 ''
 
     if nDistance < 1
-        debug("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
+        debug[user.DBGCH_ERROR]("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
         ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
         abort
 
     ' if user configured wheel-diameter is 0.0 then tickInMM_x100 is 0
     ' if so, abort this method as we can't do this!
     if tickInMM_x100 == 0
-        debug("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
+        debug[user.DBGCH_ERROR]("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
         abort
 
     resetTracking()  ' clear tracking values to start counting again
@@ -342,7 +346,7 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
             '  physical distance.
             motorStopHallTicks := (nDistance * 1000 * 100) / tickInMM_x100
         other:
-            debug("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
+            debug[user.DBGCH_ERROR]("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
             abort
 
 
@@ -355,7 +359,7 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
 ''
 
     if nTime < 1
-        debug("! ERROR: invalid nTime Value:", udec_long(nTime), " - must be > 0!")
+        debug[user.DBGCH_ERROR]("! ERROR: invalid nTime Value:", udec_long(nTime), " - must be > 0!")
         ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
         abort
 
@@ -363,7 +367,7 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
         DTU_MILLISEC:
         DTU_SEC:
         other:
-            debug("! ERROR: invalid timeUnits Value:", udec_long(eTimeUnits))
+            debug[user.DBGCH_ERROR]("! ERROR: invalid timeUnits Value:", udec_long(eTimeUnits))
             abort
 
     if eTimeUnits == DTU_SEC
@@ -378,7 +382,7 @@ PUB stopAfterTime(nTime, eTimeUnits) | timeNow
           motorStopMSecs := 1
 
     if motorStopMSecs > 0
-        debug("* stop motor at ", udec_long(motorStopMSecs), ", now: ", udec_long(timeNow))
+        debug[user.DBGCH_COMMAND]("* stop motor at ", udec_long(motorStopMSecs), ", now: ", udec_long(timeNow))
 
 PUB stopMotors()
 '' Stops both motors, killing any motion that was still in progress
@@ -406,7 +410,7 @@ PUB clearEmergency()
     userCutoff := FALSE
     ltWheel.clearEmergency()
     rtWheel.clearEmergency()
-    debug("--------clear EMERGENCY--------")
+    debug[user.DBGCH_FAULT]("--------clear EMERGENCY--------")
 
 CON { --- Subsystem Status --- }
 
@@ -414,7 +418,7 @@ PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by each motor since last reset
 ''
 
-    debug("- gdi ", sdec_long(ltWheel.getposTrkHallTicks()), sdec_long(rtWheel.getposTrkHallTicks()))
+    debug[user.DBGCH_SENSE]("- gdi ", sdec_long(ltWheel.getposTrkHallTicks()), sdec_long(rtWheel.getposTrkHallTicks()))
     leftDistanceInUnits := convertDistance(ltWheel.getposTrkHallTicks(), eDistanceUnits)
     rightDistanceInUnits := convertDistance(rtWheel.getposTrkHallTicks(), eDistanceUnits)
 
@@ -444,13 +448,13 @@ PRI convertDistance(nValue, eDistanceUnits) : nDistanceInUnits | fValue
             DDU_MI:
                 nDistanceInUnits := round(distConv.fMm2inFloat(fValue) /. 12.0 /. 5280.0)               ' in MI
     else
-        debug("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
+        debug[user.DBGCH_ERROR]("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
 
 PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
 '' Returns accumulated {*RotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for each of the motors.
 ''
 
-    debug("- grc ", sdec_long(ltWheel.getposTrkHallTicks()), sdec_long(rtWheel.getposTrkHallTicks()))
+    debug[user.DBGCH_SENSE]("- grc ", sdec_long(ltWheel.getposTrkHallTicks()), sdec_long(rtWheel.getposTrkHallTicks()))
     leftRotationCount := convertRotationCount(ltWheel.getposTrkHallTicks(), eRotationUnits)
     rightRotationCount := convertRotationCount(rtWheel.getposTrkHallTicks(), eRotationUnits)
 
@@ -527,9 +531,9 @@ PRI getFaultStatus() : bLeftStatus, bRightStatus | bLeftSignal, bRightSignal
         ltFaultSeenMS := getms() + 3000
         if ltFaultSeenMS == 0                                                   ' just in case happens to add to 0
           ltFaultSeenMS := 1
-        debug(" -------------- LtMotr See FAULT! --------------")
+        debug[user.DBGCH_FAULT](" -------------- LtMotr See FAULT! --------------")
     elseif bLeftSignal == TRUE and ltFaultSeenMS <> 0 and getms() > ltFaultSeenMS
-        debug(" -------------- LtMotr Cleared FAULT --------------")
+        debug[user.DBGCH_FAULT](" -------------- LtMotr Cleared FAULT --------------")
         ltWheel.clearFaultSignal()
         ltFaultSeenMS := 0
 
@@ -537,9 +541,9 @@ PRI getFaultStatus() : bLeftStatus, bRightStatus | bLeftSignal, bRightSignal
         rtFaultSeenMS := getms() + 3000
         if rtFaultSeenMS == 0                                                   ' just in case happens to add to 0
           rtFaultSeenMS := 1
-        debug(" -------------- RtMotr See FAULT! --------------")
+        debug[user.DBGCH_FAULT](" -------------- RtMotr See FAULT! --------------")
     elseif bRightSignal == TRUE and rtFaultSeenMS <> 0 and getms() > rtFaultSeenMS
-        debug(" -------------- RtMotr Cleared FAULT --------------")
+        debug[user.DBGCH_FAULT](" -------------- RtMotr Cleared FAULT --------------")
         rtWheel.clearFaultSignal()
         rtFaultSeenMS := 0
 
@@ -843,7 +847,7 @@ PRI calcPowerForDirection(power, direction) : ltPower, rtPower | limitPwr, limit
     }
     ltPower := ((limitDir <= 0)) ? limitPwr : reducedPower                      ' which side if either should be reducedpower
     rtPower := ((limitDir >= 0)) ? limitPwr : reducedPower
-    debug("* calcPowerForDirection(", sdec_long(power), ", ", sdec_long(direction), ") -> ", sdec_long(ltPower), sdec_long(rtPower))
+    debug[user.DBGCH_COMMAND]("* calcPowerForDirection(", sdec_long(power), ", ", sdec_long(direction), ") -> ", sdec_long(ltPower), sdec_long(rtPower))
 
 PUB isReady() : bState
 '' Return T/F where T means the both motor cogs are running
@@ -1004,7 +1008,7 @@ PRI isEmergency() : bEmergencyState
     if not bEmergencyState
         bEmergencyState := rtWheel.isEmergency()
     if bEmergencyState
-        debug("--------WHEEL in EMERGENCY!!--------")
+        debug[user.DBGCH_FAULT]("--------WHEEL in EMERGENCY!!--------")
 
 PUB showDriveStates()
 '' for TESTING dump curr drive states
@@ -1114,7 +1118,7 @@ PRI showDriverState(eState, pMsg)
         other:
             placeAsciiDigits(@dcsOtherVal, eState)
             pStatVal := @dcsOther
-    debug("- STATE ", zstr_(pMsg), ": ", zstr_(pStatVal))
+    debug[user.DBGCH_SENSE]("- STATE ", zstr_(pMsg), ": ", zstr_(pStatVal))
 
 PRI showStatus(eStatus, pMsg)
     case eStatus
@@ -1129,13 +1133,13 @@ PRI showStatus(eStatus, pMsg)
         other:
             placeAsciiDigits(@dsOtherVal, eStatus)
             pStatVal := @dsOther
-    debug("- STATUS ", zstr_(pMsg), ": ", zstr_(pStatVal))
+    debug[user.DBGCH_SENSE]("- STATUS ", zstr_(pMsg), ": ", zstr_(pStatVal))
 
 PRI showFaultStatus(bStatus, pMsg, bForceOutput)
     if bStatus == true
-        debug("- FAULT! ", zstr_(pMsg))
+        debug[user.DBGCH_FAULT]("- FAULT! ", zstr_(pMsg))
     elseif bStatus == false and bForceOutput == true
-        debug("- no FAULT ", zstr_(pMsg))
+        debug[user.DBGCH_FAULT]("- no FAULT ", zstr_(pMsg))
 
 PRI placeAsciiDigits(pStrBytes, byt) | hiNyb, lowNyb
         hiNyb := byt & $f0 >> 4 + $30
@@ -1167,8 +1171,6 @@ VAR { Data Structure for HDMI Debug }
     LONG    pValsAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
 
 DAT { Literals for HDMI Debug }
-
-showHDMIDebug   LONG    FALSE
 
 ' user stearing data
 '---+-----------+---+---+---+-------------------+---+---+---+---+---+-----------+
@@ -1220,19 +1222,19 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
     pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
     pGroupVars := @pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-    if showHDMIDebug
-        debug("* -------------")
-        debug("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
-        debug("* -------------")
-        debug("* Steer DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
-        debug("* Steer DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
-        debug("* Steer DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
-        debug("* Steer DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
-        debug("* -------------")
-        debug("* Steer PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
-        debug("* -------------")
-        debug("* Steer Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
-        debug("* =============")
+    ' DBGCH_HDMI_DUMP (off by default) replaces the runtime showHDMIDebug flag, which nothing ever set TRUE
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* Steer PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* Steer Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+    debug[user.DBGCH_HDMI_DUMP]("* =============")
 
 
 
