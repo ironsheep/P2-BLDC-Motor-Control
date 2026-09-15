@@ -114,11 +114,19 @@ board logic alone are enough.
 
 The same platform, lowered. One 30-second observation, then done.
 
+> **Corrected 2026-09-14:** the "30-second observation" was this plan's effort estimate for the
+> rig step, not a drive duration; the harness drives about 2 s (`FLOOR_RUN_MS`), with STOP live.
+> See `DOCs/plans/MOTION-HARNESS-DESIGN.md` section 12.1 Q10.
+
 **What the dual rig buys that a single-motor fixture would not:** a matched pair
 of channels, which turns several tests into controlled A/B comparisons —
 **T1-11** (are the two wheels running equivalent commutation?) and **T1-12** (the
 channel-swap discriminator for the user's field fault). Both are new, both are
 high value, and neither was plannable before the rig was known.
+
+> **Corrected 2026-09-14:** there is no ability to swap motor cables on this rig, and Visit 1
+> measurements show the two motors performing the same (hold for hold); T1-12 and its channel-swap
+> discriminator are withdrawn. See `DOCs/plans/MOTION-HARNESS-DESIGN.md` section 12.1 Q1.
 
 ### Instruments
 
@@ -281,6 +289,9 @@ resolution.
 
 **Manual acts in the whole suite drop from six to three:** one hand-brake
 (**T1-9**), one cable swap (**T1-12**), one observation (**T2-1**).
+
+> **Corrected 2026-09-14:** the cable swap is not possible on this rig, and T1-12 is withdrawn;
+> see `DOCs/plans/MOTION-HARNESS-DESIGN.md` section 12.1 Q1.
 
 ### One assumption this front end tests rather than trusts
 
@@ -1177,6 +1188,12 @@ assumption. Three routes to one number is a good position to be in.
 
 ### T1-12 — Channel-swap discriminator *(the user's open field question)*
 
+> **Corrected 2026-09-14:** there is no ability to swap motor cables on this rig, and this whole
+> test is withdrawn. Visit 1 measured the two motors performing the same (hold for hold), so the
+> field question is settled without it -- the one asymmetry follows the increment sign on both
+> motors, the offset path task «#3523» addresses. See `DOCs/plans/MOTION-HARNESS-DESIGN.md`
+> section 12.1 Q1.
+
 **Carried over from 2026-09-09 as unresolved.** A five-minute test was
 recommended to the user in the field and never run. The dual rig lets us run it
 here, instrumented, instead of asking him to do it by eye.
@@ -1215,6 +1232,10 @@ whichever of the three sources is wrong.
 **Automatable:** no, and it does not need to be. **Thirty seconds, and it settles
 a documentation contradiction that has outlived several releases** — the highest
 value-per-second in this entire plan.
+
+> **Corrected 2026-09-14:** "Thirty seconds" above is this plan's effort estimate, not a drive
+> duration; the harness drives about 2 s (`FLOOR_RUN_MS`), with STOP live. See
+> `DOCs/plans/MOTION-HARNESS-DESIGN.md` section 12.1 Q10.
 
 *If the two-wheel platform is assembled anyway, also re-run **T1-9** on it to
 catch the 3 s fault-latch erasure (**S-5**) and the steering-level e-stop
@@ -1439,6 +1460,8 @@ TIER 1  (~2 h, wheels up, Rev B, 18.5 V)
   T1-10  reverse offset sweep  <-- existing util_char_motor.spin2
   T1-11  left vs right, both offsets  <-- dual rig only; feeds the field report
   T1-12  channel swap discriminator   <-- dual rig only; answers the user
+                                       -- Corrected 2026-09-14: withdrawn, no cable swap on this
+                                          rig; see MOTION-HARNESS-DESIGN.md section 12.1 Q1
   T1-13  4th-channel direct Vbus read <-- only if T0-10 says the channel is alive
   T1-1d  coast-down after a fault + after e-stop (needs T1-7 first)
 
@@ -1471,6 +1494,10 @@ By the end of one evening we should be able to state, with numbers:
 - **AI**'s reverse offset, measured rather than derived — and whether it is the
   field fault's cause
 - for the user: whether his fault follows the cable or the channel
+
+  > **Corrected 2026-09-14:** withdrawn with T1-12 -- no cable swap is possible on this rig, and
+  > Visit 1 measured the two motors performing the same. See
+  > `DOCs/plans/MOTION-HARNESS-DESIGN.md` section 12.1 Q1.
 - **A1**, **A2**, **A3**, **F**, **O**, **G**, **I/T**, **K**, **AE**, **AD**,
   **W**, **M** — all confirmed or withdrawn, most of them before the motor ever
   turns

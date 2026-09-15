@@ -1,0 +1,232 @@
+'' =================================================================================================
+''
+''   File....... isp_bench_log.spin2
+''   Purpose.... Shared bench tagged-record line builder (PL-17): assembles one comma-separated,
+''               zero-terminated debug() line per call. A constants-free object with all state in
+''               VAR, so every caller owns its buffer through a separate instance.
+''   Authors.... Stephen M Moraco
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Sep 2026
+''   Updated.... 14 Sep 2026
+''
+'' =================================================================================================
+
+CON { record field-width clamps }
+
+    LIM_TINY  = 999                                         ' prints at most 4 bytes: -999
+    LIM_SMALL = 99_999                                      ' prints at most 7 bytes: -99_999
+    LIM_MID   = 9_999_999                                   ' prints at most 10 bytes: -9_999_999
+    LIM_BIG   = 999_999_999                                 ' prints at most 12 bytes: -999_999_999
+
+CON { line-buffer sizing }
+
+    LINE_BUF_SIZE    = 640
+    MAX_DEC_DIGITS   = 11
+    DEC_RADIX        = 10
+    DIGITS_PER_GROUP = 3
+
+VAR { one buffer per instance }
+
+    BYTE lineBuf[LINE_BUF_SIZE]
+    LONG lineLen
+
+PUB null()
+'' This is not a top-level object
+''
+
+PUB begin(pTag)
+'' Start a new record, placing its leading tag as the first, unlabelled token.
+''
+'' @param pTag - pointer to the record's tag text (for example "BM-RUNG")
+
+    lineReset()
+    lineAddText(pTag)
+
+PUB numField(pName, numValue, limitAbs)
+'' Append one ",name,<number>" field, clamped to +/- limitAbs so its printed width stays bounded.
+''
+'' @param pName - pointer to the field name
+'' @param numValue - the field's value
+'' @param limitAbs - clamp magnitude (one of LIM_TINY, LIM_SMALL, LIM_MID, LIM_BIG)
+
+    lineField(pName, (numValue #> (0 - limitAbs)) <# limitAbs)
+
+PUB naNumField(pName, numValue, limitAbs, bValid)
+'' Append a clamped numeric field, or the token NA when the value was not measured.
+''
+'' @param pName - pointer to the field name
+'' @param numValue - the field's value
+'' @param limitAbs - clamp magnitude (one of LIM_TINY, LIM_SMALL, LIM_MID, LIM_BIG)
+'' @param bValid - TRUE when numValue is a measurement
+
+    if bValid
+        numField(pName, numValue, limitAbs)
+    else
+        textField(pName, @sNa)
+
+PUB boolField(pName, bFlag)
+'' Append a boolean field as the token TRUE or FALSE, never a number (decision 13).
+''
+'' @param pName - pointer to the field name
+'' @param bFlag - the field's value; any non-zero prints TRUE
+
+    textField(pName, (bFlag <> FALSE) ? @sTrue : @sFalse)
+
+PUB tokenField(pName, pToken, maxLen)
+'' Append a token field; a token longer than maxLen prints as "?" so the width stays bounded.
+''
+'' @param pName - pointer to the field name
+'' @param pToken - pointer to the token text
+'' @param maxLen - the longest token this field may print
+
+    if tokenFits(pToken, maxLen)
+        textField(pName, pToken)
+    else
+        textField(pName, @sBadTok)
+
+PUB textField(pName, pText)
+'' Append one ",name,<text>" field to the record under assembly.
+''
+'' @param pName - pointer to the field name
+'' @param pText - pointer to the field's token or text value
+
+    lineAddChar(",")
+    lineAddText(pName)
+    lineAddChar(",")
+    lineAddText(pText)
+
+PUB pLine() : pText
+'' Return a pointer to the assembled, zero-terminated record.
+''
+'' @returns pText - pointer to the record buffer
+
+    pText := @lineBuf
+
+PUB lineLength() : nBytes
+'' Return the number of bytes assembled into the current record, excluding the terminator.
+''
+'' @returns nBytes - the record's length in bytes
+
+    nBytes := lineLen
+
+CON { --- Internal Methods --- }
+
+PRI lineReset()
+' Begin a new record.
+
+    lineLen := 0
+    BYTE[@lineBuf][0] := 0
+
+PRI lineAddChar(charByte)
+' Append one character to the record under assembly, silently dropping anything past the
+' buffer. Every record built through this object is well under LINE_BUF_SIZE; truncation would
+' show as a short line in the log rather than as memory corruption.
+'
+' @param charByte - the character to append
+
+    if lineLen < LINE_BUF_SIZE - 1
+        BYTE[@lineBuf][lineLen] := charByte
+        lineLen += 1
+        BYTE[@lineBuf][lineLen] := 0
+
+PRI lineAddText(pText) | srcIdx
+' Append a zero-terminated string to the record under assembly. The loop is bounded as well as
+' terminated, so an unterminated source string cannot hang the run.
+'
+' @param pText - pointer to the text to append
+'
+' @local srcIdx - index into the source text
+
+    repeat srcIdx from 0 to LINE_BUF_SIZE - 1
+        if BYTE[pText][srcIdx] == 0
+            quit
+        lineAddChar(BYTE[pText][srcIdx])
+
+PRI lineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absMagnitude, digitIdx
+' Append a signed decimal number with an underscore every three digits, matching udec_() and
+' sdec_() elsewhere in this tree's bench logs.
+'
+' @param numValue - the value to append
+'
+' @local digitStack - decimal digits of numValue, least significant first
+' @local digitCount - how many entries of digitStack are in use
+' @local absMagnitude - magnitude of numValue, consumed by the extraction loop
+' @local digitIdx - index into digitStack while emitting
+
+    absMagnitude := numValue
+    if numValue < 0
+        lineAddChar("-")
+        absMagnitude := -numValue
+
+    digitCount := 0
+    repeat
+        digitStack[digitCount] := absMagnitude // DEC_RADIX
+        absMagnitude /= DEC_RADIX
+        digitCount += 1
+    until (absMagnitude == 0) or (digitCount == MAX_DEC_DIGITS)
+
+    repeat digitIdx from digitCount - 1 to 0
+        lineAddChar("0" + digitStack[digitIdx])
+        if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
+            lineAddChar("_")
+
+PRI lineField(pFieldName, numValue)
+' Append one ",name,<number>" field to the record under assembly.
+'
+' @param pFieldName - pointer to the field name
+' @param numValue - the field's value
+
+    lineAddChar(",")
+    lineAddText(pFieldName)
+    lineAddChar(",")
+    lineAddNum(numValue)
+
+PRI tokenFits(pToken, maxLen) : bFits | charIdx
+' Report whether a zero-terminated token is at most maxLen bytes, reading no more than maxLen + 1.
+'
+' @param pToken - pointer to the token text
+' @param maxLen - the longest acceptable token
+' @returns bFits - TRUE when the terminator is found within maxLen bytes
+'
+' @local charIdx - index into the token
+
+    bFits := FALSE
+    repeat charIdx from 0 to maxLen
+        if BYTE[pToken][charIdx] == 0
+            bFits := TRUE
+            quit
+
+DAT { token strings }
+
+sNa             BYTE    "NA", 0
+sTrue           BYTE    "TRUE", 0
+sFalse          BYTE    "FALSE", 0
+sBadTok         BYTE    "?", 0
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

@@ -30,7 +30,7 @@
 # prints its DEBUG_END_SESSION marker, so this produces one binary and one
 # log with no keypress and no interrupt needed. Every tier's binary emits
 # that marker: test_bench_t0, test_bench_spin, test_bench_detect,
-# test_bench_char and test_bench_scan.
+# test_bench_char, test_bench_scan and test_bench_dual.
 #
 # Usage:  tools/bench-run.sh <tier> [clkfreq]
 #   <tier>      -- tier name, see usage() below
@@ -39,9 +39,10 @@
 #                  (the tier binary's "CLK_FREQ = ..." line) -- omit it and the
 #                  script is read-only with respect to the tree. Restored on
 #                  exit, including on interrupt. test_bench_t0, test_bench_detect,
-#                  test_bench_char and test_bench_scan carry that line;
-#                  test_bench_spin does not, so for the spin tier the patch
-#                  changes nothing.
+#                  test_bench_char, test_bench_scan and test_bench_dual carry
+#                  that line; test_bench_spin does not, so for the spin tier
+#                  the patch changes nothing. The dual-clock tier REQUIRES it:
+#                  its three runs differ only by clock.
 
 set -u
 
@@ -77,12 +78,19 @@ Usage:  tools/bench-run.sh <tier> [clkfreq]
                    char           automated motor characterisation, nine holds  [MOTORS CONNECTED, UNATTENDED]
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
                    scan-wdtest    watchdog self-test: preflight, deliberate stall, watchdog ends the run  [MOTORS CONNECTED]
-  [clkfreq]   -- optional clock frequency in Hz (default: 270000000)
+                   dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-clock     motion harness clock load: PREFLT, CLOCK -- clkfreq REQUIRED, run at 200000000, 270000000, 300000000  [WHEELS UP, UNATTENDED]
+                   dual-b         motion harness part B: PREFLT, FAULTB, OVERSHT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
+                   dual-c         motion harness part C: PREFLT, BASELINE, POSTFLT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-floor     motion harness part FLOOR -- WHEELS DOWN, OPERATOR OBSERVES ABOUT 2 S OF DRIVING  [ATTENDED]
+  [clkfreq]   -- optional clock frequency in Hz (default: 270000000); required by dual-clock
 
 Examples:
   tools/bench-run.sh detect
   tools/bench-run.sh detect-lib
   tools/bench-run.sh char
+  tools/bench-run.sh dual-clock 200000000
 EOF
     exit 2
 }
@@ -136,6 +144,36 @@ case "$TIER" in
     scan-wdtest)    BENCH_FILE="test_bench_scan.spin2"
                     EXTRA_DEFS=(-D WD_SELFTEST)
                     PRECONDITION="MOTORS CONNECTED, BOTH WHEELS FREE TO TURN -- WATCHDOG SELF-TEST: a brief preflight nudge per wheel, then the scan stalls ON PURPOSE; the watchdog must stop both drivers and end the session within about 15 s"
+                    ;;
+    # The motion harness (task 3508; DOCs/plans/MOTION-HARNESS-DESIGN.md sec 4.1). One source, one part
+    # per build: every part adds -D BENCH_QUIET (the quiet debug masks) and exactly one DUAL_PART_* flag.
+    dual-a)         BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_A)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part A (PREFLT, STOPMODE, LIVE, LADDER; the two ladder probe rungs above the speed ceiling may fault on purpose), run cap 25 minutes"
+                    ;;
+    dual-clock)     BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_CLOCK)
+                    if [ -z "$CLK_OVERRIDE" ]; then
+                        echo "ERROR: tier 'dual-clock' needs a clkfreq argument -- its three runs differ only by clock: 200000000, 270000000, 300000000" >&2
+                        usage
+                    fi
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness clock load (PREFLT, CLOCK) at clkfreq $CLK_OVERRIDE, about 1 minute; one of three runs: 200000000, 270000000, 300000000"
+                    ;;
+    dual-b)         BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_B)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part B (PREFLT, FAULTB ramp trials that fault on purpose, OVERSHT distance moves through the steering object), run cap 20 minutes"
+                    ;;
+    dual-brake)     BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_BRAKE)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP -- ATTENDED motion harness part BRAKE (OUTSIDE): STEPHEN AT THE RIG FOR ONE HAND-BRAKE OF THE LEFT WHEEL; click the bmpanel window first; nothing moves until START; brake only when the panel says BRAKE, release when it says RELEASE"
+                    ;;
+    dual-c)         BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_C)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part C (PREFLT, BASELINE, POSTFLT: provoked faults and e-stops at half speed), run cap 15 minutes"
+                    ;;
+    dual-floor)     BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_FLOOR)
+                    PRECONDITION="PLATFORM ON THE FLOOR, WHEELS DOWN, SPACE CLEAR -- ATTENDED motion harness part FLOOR: STEPHEN OBSERVES A BRIEF (ABOUT 2 SECOND) WHEELS-DOWN DRIVE at power 50, direction +50; click the bmpanel window first; nothing moves until START; STOP (click or space) is live throughout"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage

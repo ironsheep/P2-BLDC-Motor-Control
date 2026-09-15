@@ -35,7 +35,13 @@ INPUTS
       the 2026-09-11 baseline log (--baseline-detect);
     - for R2-DETECT-GUARD: a detect-phase2 log among the inputs only -- the skip
       set it checks is computed from that log's BD-CFG bases and BD-PLAN;
-    - for R10-HOST-PL9: --static-tree (reads src/isp_bldc_motor.spin2).
+    - for R10-HOST-PL9: --static-tree (reads src/isp_bldc_motor.spin2);
+    - for R15-HOST-QUIETLOG: every DUAL log (banner BM-BANNER) among the inputs, NOT_BUILT when none;
+      and src/test_bench_dual.spin2, the source its own texts are derived from (NOMEAS when absent);
+    - for R15-HOST-CHANLIVE: a CHAR log (banner BC-BANNER) among the inputs, NOT_BUILT when none;
+      and src/test_bench_char.spin2, the source its own texts are derived from (NOMEAS when absent);
+    - for R15-HOST-QUIETLOG's ERROR/WARNING exemption: src/isp_bldc_motor.spin2 and
+      src/isp_steering_2wheel.spin2, read on every run (MOTION-HARNESS-DESIGN.md sec 12.10).
 
 OUTPUTS
     - the sign-off sheet (--out, default
@@ -45,7 +51,9 @@ OUTPUTS
       unmanifested cells, parse errors, deferred cells and the DETDIFF list;
     - with --update only: the manifest .tsv statuses are rewritten and
       SIGNOFF-MANIFEST.md (a GENERATED view) is regenerated beside it. Without
-      --update the manifest is read-only.
+      --update the manifest is read-only;
+    - with --render-manifest only: SIGNOFF-MANIFEST.md is regenerated from the .tsv and
+      nothing else is read or written (no logs, no sheet, no status change).
 
 CORRUPTED LINES (PL-40)
     pnut-term-ts can print a cog message on the tail of another line: after a
@@ -70,10 +78,12 @@ USAGE
         [--manifest PATH] [--predictions PATH] [--baseline-detect PATH]
         [--out PATH] <log> [<log> ...]
     tools/signoff-collate.py --check-ready N
+    tools/signoff-collate.py --render-manifest [--manifest PATH]
     tools/signoff-collate.py --selftest
 
 EXIT CODES
-    0  sheet written (collate), no gaps (--check-ready), all checks passed (--selftest)
+    0  sheet written (collate), no gaps (--check-ready), view written (--render-manifest),
+       all checks passed (--selftest)
     1  --selftest: at least one check failed
     2  usage, input or manifest error; nothing written
     3  --check-ready: at least one OWED cell for that visit has no test
@@ -93,6 +103,7 @@ import argparse
 import ast
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -102,6 +113,8 @@ DEFAULT_MANIFEST = REPO_ROOT / "DOCs" / "analyses" / "bench" / "SIGNOFF-MANIFEST
 DEFAULT_PREDICTIONS = REPO_ROOT / "DOCs" / "analyses" / "bench" / "SIGNOFF-DETECT-PREDICTIONS.tsv"
 DEFAULT_BASELINE = REPO_ROOT / "DOCs" / "analyses" / "bench" / "2026-09-11" / "debug_260911-210229.log"
 PL9_SOURCE = REPO_ROOT / "src" / "isp_bldc_motor.spin2"
+STEER_SOURCE = REPO_ROOT / "src" / "isp_steering_2wheel.spin2"
+CHANNEL_SOURCES = (PL9_SOURCE, STEER_SOURCE)    # R15-HOST-QUIETLOG derives the ERROR/WARNING prefixes from these
 FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "signoff"
 NEGCASE_LOG = REPO_ROOT / "DOCs" / "analyses" / "bench" / "2026-09-13" / "debug_260913-120844.log"
 
@@ -115,13 +128,14 @@ MANIFEST_COLUMNS = (
     "min_inst", "prov", "basis", "visit_owed", "status", "status_ref", "count_filter",
 )
 UNITS = {"COUNT", "MV_X10", "RPM", "TICKS", "MS", "PCT_X10", "BOOL", "COGID"}
-BINS = {"SCAN", "SCANWD", "T0", "CHAR", "HOST"}
+BINS = {"SCAN", "SCANWD", "T0", "CHAR", "DUAL", "HOST"}
 STATUSES = {"OWED", "SIGNED_OFF", "FAILED"}
 BIN_SOURCES = {
     "SCAN": "src/test_bench_scan.spin2",
     "SCANWD": "src/test_bench_scan.spin2",
     "T0": "src/test_bench_t0.spin2",
     "CHAR": "src/test_bench_char.spin2",
+    "DUAL": "src/test_bench_dual.spin2",
 }
 VERDICT_TOKENS = ("PASS", "FAIL", "NOT_BUILT", "NOMEAS")
 MOTOR_TOKENS = ("LEFT", "RIGHT", "NONE")
@@ -141,9 +155,9 @@ LOG_LINE_RE = re.compile(r"^\[([^\]]+)\] Cog([0-7])\s+(.*?)\s*$")
 DOWNLOAD_RE = re.compile(
     r"^\[[^\]]+\] \[SYSTEM\] \[DOWNLOAD TO RAM\] File: (.+?) \| Size: ([0-9]+) bytes \| Modified: (\S+)\s*$")
 SESSION_RE = re.compile(r"^=== Debug Logger Session Started at (\S+) ===")
-BANNER_TAGS = ("BS-BANNER", "BC-BANNER", "BD-BANNER")
+BANNER_TAGS = ("BS-BANNER", "BC-BANNER", "BD-BANNER", "BM-BANNER")
 T0_BANNER_PREFIX = "* test_bench_t0"
-HEADER_TAGS = ("BS-BUILD", "BC-BUILD", "BD-BUILD", "BD-CFG")
+HEADER_TAGS = ("BS-BUILD", "BC-BUILD", "BD-BUILD", "BD-CFG", "BM-BUILD")
 PL9_RE = re.compile(r"(?<![A-Za-z0-9_])gapinms(?![A-Za-z0-9_])", re.IGNORECASE)
 WDT_CELLS = ("R11-WDT-FIRES", "R11-WDT-CKPT", "R11-WDT-STOPPED", "R11-WDT-STACK")
 DECL_CALL_RE = re.compile(r"\b\w*signoffdecl\w*\s*\(", re.IGNORECASE)
@@ -380,6 +394,24 @@ def write_manifest(path, cells):
             fields.pop()
         out.append("\t".join(fields))
     Path(path).write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def render_manifest_file(manifest_path):
+    """--render-manifest: regenerate SIGNOFF-MANIFEST.md beside the .tsv from the .tsv alone (design A.1).
+
+    The .tsv is read and validated, never written; no log is read and no sheet is written. Returns an exit code.
+    """
+    manifest_path = Path(manifest_path)
+    try:
+        cells = load_manifest(manifest_path)
+    except ManifestError as exc:
+        print(f"signoff-collate: manifest error: {exc}", file=sys.stderr)
+        return EXIT_INPUT
+    md_path = manifest_path.with_suffix(".md")
+    md_path.write_text(render_manifest_md(cells), encoding="utf-8")
+    print(f"manifest view regenerated: {display_path(md_path)} from {display_path(manifest_path)} "
+          f"({len(cells)} cell(s)); the .tsv was not written")
+    return EXIT_OK
 
 
 def _md_cell(text):
@@ -724,7 +756,7 @@ class LogInfo:
     def src_rev(self):
         value = self.banner_pairs.get("src_rev")
         if value is None:
-            for tag in ("BS-BUILD", "BC-BUILD", "BD-BUILD"):
+            for tag in ("BS-BUILD", "BC-BUILD", "BD-BUILD", "BM-BUILD"):
                 if "src_rev" in self.header_pairs.get(tag, {}):
                     value = self.header_pairs[tag]["src_rev"]
                     break
@@ -1694,6 +1726,375 @@ def detect_guard_check(visit_logs):
     return CellResult(verdict, reason, detail, [f"{ref} (proving line)" for ref in refs], refs)
 
 
+# ---- R15: DEBUG channels at run time (task 3507's cells, built by task 3508) ----------------------------------
+#
+# MOTION-HARNESS-DESIGN.md sec 12.3. Both cells count the P2 debug lines a binary did not emit itself. What a P2
+# debug line is, read from real logs:
+#   - a CogN message: "CogN  text" at the start of a line's text, after a hex-dump row's ASCII gutter, or mid-line
+#     after other text (PL-40), in any family;
+#   - a display statement: pnut-term-ts logs a debug() display command as text that starts with a backtick and
+#     carries no CogN prefix, several statements joined by a literal <CR><LF>, and a CogN message may follow on the
+#     same line (DOCs/analyses/bench/2026-09-12/debug_260912-153807.log:19, :54-59);
+#   - the debugger's own cog-start notice, "CogN  INIT $xxxx_xxxx $xxxx_xxxx load|jump", which neither the binary
+#     nor a library object emits, so it is never counted.
+# A binary's own lines are its record families (the record contract, *_OWN_PREFIXES) plus the texts derived from
+# its own source on every run (derive_own_texts()), and the library's ERROR/WARNING prefixes are derived from the
+# library sources (derive_enabled_prefixes()). No binary or library text is ever copied into this script (sec 12.10).
+
+# a CogN message: any whitespace after the tag at the start of a line's text (as LOG_LINE_RE); mid-line the
+# terminal's own two-space separator is required, so no prose is split into a false message
+P2_MESSAGE_RE = re.compile(r"^Cog([0-7])\s+|Cog([0-7])\s{2,}")
+DISPLAY_PREFIX = "`"
+DISPLAY_SEPARATOR = "<CR><LF>"
+DISPLAY_CREATE_WORD = "PLOT"
+DEBUGGER_INIT_RE = re.compile(r"^INIT \$[0-9A-Fa-f_]+ \$[0-9A-Fa-f_]+ (?:load|jump)$")
+DUAL_BANNER_TAG = "BM-BANNER"
+CHAR_BANNER_TAG = "BC-BANNER"
+# record families (the record contract). src/test_bench_dual.spin2's emitRecord() and wdEmitRecord() print every BM-
+# record, SIGNOFF-DECL and SIGNOFF, and its bmpanel window's display statements are its own
+DUAL_OWN_PREFIXES = ("BM-", "SIGNOFF-DECL,", "SIGNOFF,")
+DUAL_PANEL_WINDOW = "bmpanel"
+# src/test_bench_char.spin2's lineEmit() and wdLineEmit() print the BC- records, SIGNOFF-DECL and SIGNOFF; it draws no
+# panel, and no display statement is ever counted for it
+CHAR_OWN_PREFIXES = ("BC-", "SIGNOFF-DECL,", "SIGNOFF,")
+OWN_TEXT_MIN = 8                            # a derived own text shorter than this is refused: too short to trust
+HOST_LINE_REFS_MAX = 10                     # lines listed (proving lines and refs) per R15 cell; counts stay whole
+
+
+def display_statements(text):
+    """The display statements in a span of logged text: each <CR><LF>-separated piece starting with a backtick."""
+    return [piece.strip() for piece in text.split(DISPLAY_SEPARATOR) if piece.strip().startswith(DISPLAY_PREFIX)]
+
+
+def display_window(statement):
+    """The window a display statement addresses: the first word after the backtick, or the word after PLOT."""
+    words = statement[len(DISPLAY_PREFIX):].split()
+    if len(words) > 1 and words[0].upper() == DISPLAY_CREATE_WORD:
+        return words[1]
+    return words[0] if words else ""
+
+
+def p2_debug_lines(log):
+    """Every P2 debug line in one log, for the R15 host cells: [(lineno, kind, cog, text)].
+
+    kind COG is a CogN message of any family, found where scan_line() looks (the start of a line's text, after
+    a hex-dump row's ASCII gutter, or mid-line) and ending at the next CogN message or corruption marker on its
+    line; kind INIT is the debugger's cog-start notice; kind DISPLAY is one display statement (cog None when it
+    was logged without a CogN prefix). Gutter bytes, [SYSTEM] lines, session headers and corruption-marker text
+    are never P2 debug lines.
+    """
+    found = []
+    for lineno, line in enumerate(log.lines, start=1):
+        row = HEX_ROW_RE.match(line)
+        if row:
+            region = row.group(3)
+        elif HEX_ROW_PREFIX_RE.match(line):
+            continue
+        else:
+            stamp = LINE_TS_RE.match(line)
+            region = line[stamp.end():] if stamp else line
+        starts = list(P2_MESSAGE_RE.finditer(region))
+        lead = region[:starts[0].start()] if starts else region
+        found += [(lineno, "DISPLAY", None, statement) for statement in display_statements(lead)]
+        for index, match in enumerate(starts):
+            end = starts[index + 1].start() if index + 1 < len(starts) else len(region)
+            for marker in CORRUPTION_MARKERS:
+                at = region.find(marker, match.end())
+                if at != -1 and at < end:
+                    end = at
+            text = region[match.end():end].strip()
+            cog = int(match.group(1) or match.group(2))
+            if text.startswith(DISPLAY_PREFIX):
+                found += [(lineno, "DISPLAY", cog, statement) for statement in display_statements(text)]
+            elif DEBUGGER_INIT_RE.match(text):
+                found.append((lineno, "INIT", cog, text))
+            else:
+                found.append((lineno, "COG", cog, text))
+    return found
+
+
+# A channel-selected library debug statement and its leading string literal, in the call form both library
+# objects use, debug[user.DBGCH_*]("text", ...) (DEBUG-CHANNELS-DESIGN.md sec 3). Spin2 names are case-insensitive.
+CHANNEL_DEBUG_RE = re.compile(r'debug\s*\[\s*user\s*\.\s*DBGCH_(\w+)\s*\]\s*\(\s*("([^"]*)")?', re.IGNORECASE)
+ENABLED_CHANNELS = ("ERROR", "WARNING")     # enabled by design under the quiet masks (sec 6.1, sec 12.10)
+
+
+def derive_enabled_prefixes(named_texts):
+    """R15-HOST-QUIETLOG's exemption list, derived from library source and never hand-maintained (sec 12.10).
+
+    named_texts is [(name, source text)]. Every debug[user.DBGCH_ERROR]( and debug[user.DBGCH_WARNING]( statement
+    outside comments contributes its leading string literal, stripped, as a message prefix. A prefix is refused
+    when its statement has no non-blank leading literal, and when it also begins the leading literal of a
+    statement on any other channel, since it would then exempt a masked-channel line. A refusal only makes the
+    cell stricter. Returns (prefixes, notes): prefixes sorted, notes the per-source counts and every refusal.
+    """
+    enabled, others, notes = set(), [], []
+    for name, text in named_texts:
+        code = strip_spin2_comments(text)
+        found = 0
+        for match in CHANNEL_DEBUG_RE.finditer(code):
+            channel, literal = match.group(1).upper(), match.group(3)
+            if channel in ENABLED_CHANNELS:
+                found += 1
+                if literal is None or not literal.strip():
+                    notes.append(f"{name}:{code.count(chr(10), 0, match.start()) + 1}: a DBGCH_{channel} statement "
+                                 "has no leading literal, so its lines are counted")
+                else:
+                    enabled.add(literal.strip())
+            elif literal is not None and literal.strip():
+                others.append(literal.strip())
+        notes.append(f"{name}: {found} ERROR/WARNING statement(s)")
+    refused = sorted(prefix for prefix in enabled if any(other.startswith(prefix) for other in others))
+    notes += [f"prefix {prefix!r} also begins a masked-channel message, so it exempts nothing" for prefix in refused]
+    return sorted(enabled - set(refused)), notes
+
+
+def _read_sources(paths):
+    """Read source files for a derivation. Returns ([(display name, text)], [missing display names])."""
+    named, missing = [], []
+    for path in paths:
+        path = Path(path)
+        if path.is_file():
+            named.append((display_path(path), path.read_text(encoding="utf-8", errors="replace")))
+        else:
+            missing.append(display_path(path))
+    return named, missing
+
+
+def load_enabled_prefixes(paths):
+    """Read the library sources and derive the ERROR/WARNING prefixes. Returns (prefixes, notes, missing sources)."""
+    named, missing = _read_sources(paths)
+    prefixes, notes = derive_enabled_prefixes(named)
+    return prefixes, notes, missing
+
+
+def channel_literals(named_texts):
+    """Every library message start: the leading string literal, stripped and non-blank, of every
+    debug[user.DBGCH_*]( statement on any channel, outside comments."""
+    return sorted({match.group(3).strip() for _, text in named_texts
+                   for match in CHANNEL_DEBUG_RE.finditer(strip_spin2_comments(text))
+                   if match.group(3) is not None and match.group(3).strip()})
+
+
+# A bench binary's plain text lines: debug("text", ...) -- not debug[...] and not a backtick display statement --
+# and debug(zstr_(@label)) / debug(zstr(@label)) naming a DAT line `label BYTE "text", 0` in the same source.
+PLAIN_DEBUG_RE = re.compile(r'(?<!\w)debug\s*\(\s*"([^"]*)"', re.IGNORECASE)
+ZSTR_DEBUG_RE = re.compile(r"(?<!\w)debug\s*\(\s*zstr_?\s*\(\s*@\s*(\w+)\s*\)", re.IGNORECASE)
+DAT_STRING_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s+BYTE\s+"([^"]*)"', re.IGNORECASE | re.MULTILINE)
+
+
+def derive_own_texts(named_texts, library_literals, min_length=OWN_TEXT_MIN):
+    """A bench binary's own plain text lines, derived from its source and never hand-maintained (sec 12.10).
+
+    named_texts is [(name, source text)]. Outside comments: the leading string literal of every plain
+    debug("text", ...) statement, and, for every debug(zstr_(@label)) or debug(zstr(@label)), the literal of the
+    DAT line `label BYTE "text", 0` in the same source (Spin2 labels are case-insensitive). Each is stripped.
+    Refused, each with a note: a text shorter than min_length, an @label with no DAT string literal, and a text
+    that begins any of library_literals (it would exempt a library line). Returns (texts, notes): texts sorted.
+    """
+    texts, notes = set(), []
+    for name, text in named_texts:
+        code = strip_spin2_comments(text)
+        labels = {label.lower(): literal for label, literal in DAT_STRING_RE.findall(code)}
+        found = [(code.count("\n", 0, match.start()) + 1, match.group(1)) for match in PLAIN_DEBUG_RE.finditer(code)]
+        for match in ZSTR_DEBUG_RE.finditer(code):
+            lineno = code.count("\n", 0, match.start()) + 1
+            literal = labels.get(match.group(1).lower())
+            if literal is None:
+                notes.append(f"{name}:{lineno}: @{match.group(1)} has no DAT string literal, so no own text is "
+                             "derived from it")
+            else:
+                found.append((lineno, literal))
+        kept = 0
+        for lineno, literal in found:
+            candidate = literal.strip()
+            if len(candidate) < min_length:
+                notes.append(f"{name}:{lineno}: own text {candidate!r} is shorter than {min_length} characters, refused")
+            elif any(library.startswith(candidate) for library in library_literals):
+                notes.append(f"{name}:{lineno}: own text {candidate!r} begins a library message, refused")
+            else:
+                texts.add(candidate)
+                kept += 1
+        notes.append(f"{name}: {kept} own text statement(s) kept of {len(found)} derived")
+    return sorted(texts), notes
+
+
+def load_own_texts(bin_source_path, channel_sources, min_length=OWN_TEXT_MIN):
+    """Read a bench binary's source and the library sources, and derive the binary's own texts against every
+    library message start. Returns (texts, notes, missing sources)."""
+    named_bin, missing = _read_sources([bin_source_path])
+    named_lib, missing_lib = _read_sources(channel_sources)
+    texts, notes = derive_own_texts(named_bin, channel_literals(named_lib), min_length)
+    return texts, notes, missing + missing_lib
+
+
+def classify_debug_lines(log, own_prefixes, own_window, enabled_prefixes=()):
+    """Split one log's P2 debug lines into the binary's own, the held (enabled) lines, and the rest (R15).
+
+    own_prefixes is the binary's record families plus its derived own texts, matched by startswith. Returns
+    (foreign, own_count, uncounted, enabled). foreign is [(lineno, text)]: every CogN message starting with none
+    of own_prefixes and none of enabled_prefixes, and, when own_window names the binary's panel window, every
+    display statement addressed to another window. enabled is [(lineno, text)], the messages starting with one of
+    enabled_prefixes: listed by the caller, never counted. uncounted is the debugger INIT notices plus, when
+    own_window is None, every display statement: no library object emits one, so a display statement can never
+    stand in for a library line.
+    """
+    foreign, own_count, uncounted, enabled = [], 0, 0, []
+    for lineno, kind, cog, text in p2_debug_lines(log):
+        if kind == "INIT":
+            uncounted += 1
+        elif kind == "DISPLAY":
+            if own_window is None:
+                uncounted += 1
+            elif display_window(text).lower() == own_window.lower():
+                own_count += 1
+            else:
+                foreign.append((lineno, text))
+        elif text.startswith(own_prefixes):
+            own_count += 1
+        elif text.startswith(tuple(enabled_prefixes)):
+            enabled.append((lineno, f"Cog{cog}  {text}"))
+        else:
+            foreign.append((lineno, f"Cog{cog}  {text}"))
+    return foreign, own_count, uncounted, enabled
+
+
+def host_quietlog(logs, channel_sources=CHANNEL_SOURCES, bin_source=REPO_ROOT / BIN_SOURCES["DUAL"]):
+    """R15-HOST-QUIETLOG (MOTION-HARNESS-DESIGN.md sec 12.3, sec 12.10): lines a quiet motion-harness load did not emit.
+
+    Input: every DUAL log (banner BM-BANNER); the harness source its own texts are derived from (derive_own_texts());
+    the library sources the ERROR/WARNING prefixes are derived from (derive_enabled_prefixes()). Every DUAL log
+    speaks: each part is its own build, and a library line in any quiet load fails the cell, so no log supersedes
+    another. measured = the P2 debug lines outside the harness's own set (record families plus derived texts),
+    summed over those logs, less the lines of the library's ERROR and WARNING channels, which the quiet masks keep
+    enabled by design: those are listed in the proving lines and never counted. lo 0, hi 0, COUNT.
+      NOT_BUILT  no DUAL log (NO_DUAL_LOG);
+      NOMEAS     the harness source absent (BIN_SOURCE_ABSENT) or no own text derived (NO_OWN_TEXTS), a library
+                 source absent (CHANNEL_SOURCE_ABSENT) or no prefix derived (NO_ENABLED_PREFIXES): a verdict never
+                 stands on a missing own set or exemption list; measured 0 while a DUAL log is TRUNCATED;
+      FAIL       measured > 0 -- a TRUNCATED log's lines count too;
+      PASS       measured 0 and every DUAL log COMPLETE.
+    """
+    dual_logs = sorted((log for log in logs if log.banner_tag == DUAL_BANNER_TAG), key=lambda entry: entry.order_key)
+    if not dual_logs:
+        return CellResult("NOT_BUILT", "NO_DUAL_LOG", ["no input log carries a BM-BANNER banner (a motion harness load)"])
+    own_texts, own_notes, own_missing = load_own_texts(bin_source, channel_sources)
+    if display_path(bin_source) in own_missing:
+        return CellResult("NOMEAS", "BIN_SOURCE_ABSENT",
+                          [f"harness source absent, so its own texts cannot be derived: {display_path(bin_source)}"])
+    if not own_texts:
+        return CellResult("NOMEAS", "NO_OWN_TEXTS",
+                          [f"no own text could be derived from {display_path(bin_source)}"] + own_notes)
+    sources_text = ", ".join(display_path(path) for path in channel_sources)
+    prefixes, notes, missing = load_enabled_prefixes(channel_sources)
+    if missing:
+        return CellResult("NOMEAS", "CHANNEL_SOURCE_ABSENT",
+                          [f"library source absent, so the ERROR/WARNING prefixes cannot be derived: {', '.join(missing)}"]
+                          + notes)
+    if not prefixes:
+        return CellResult("NOMEAS", "NO_ENABLED_PREFIXES",
+                          [f"no ERROR/WARNING message prefix could be derived from {sources_text}"] + notes)
+    detail = ([f"{len(own_texts)} own text(s) derived from {display_path(bin_source)}"] + own_notes
+              + [f"{len(prefixes)} ERROR/WARNING message prefix(es) derived from {sources_text}"] + notes)
+    own_prefixes = DUAL_OWN_PREFIXES + tuple(own_texts)
+    listed, enabled_listed, truncated, measured, enabled_total = [], [], [], 0, 0
+    for log in dual_logs:
+        foreign, own_count, uncounted, enabled = classify_debug_lines(log, own_prefixes, DUAL_PANEL_WINDOW,
+                                                                      tuple(prefixes))
+        measured += len(foreign)
+        enabled_total += len(enabled)
+        listed += [(log, lineno, text) for lineno, text in foreign][:max(0, HOST_LINE_REFS_MAX - len(listed))]
+        enabled_listed += [(log, lineno, text) for lineno, text in enabled][
+            :max(0, HOST_LINE_REFS_MAX - len(enabled_listed))]
+        if not log.complete:
+            truncated.append(log.display)
+        detail.append(f"{log.display}: part {log.banner_pairs.get('part', 'NA')}, "
+                      f"{'COMPLETE' if log.complete else 'TRUNCATED'}; {len(foreign)} line(s) the harness did not "
+                      f"emit, {len(enabled)} enabled-channel (ERROR/WARNING) line(s) listed and not counted, "
+                      f"{own_count} harness line(s), {uncounted} debugger INIT line(s) not counted")
+    detail.append(f"measured {measured}, lo 0, hi 0, COUNT, over {len(dual_logs)} DUAL log(s)")
+    if enabled_total > len(enabled_listed):
+        detail.append(f"the first {len(enabled_listed)} of {enabled_total} enabled-channel lines are listed")
+    enabled_proving = [f"{log.display}:{lineno} {text[:96]} -- enabled channel (ERROR/WARNING), not counted"
+                       for log, lineno, text in enabled_listed]
+    if measured:
+        if measured > len(listed):
+            detail.append(f"the first {len(listed)} of {measured} counted lines are listed")
+        return CellResult("FAIL", "LIB_LINES_PRINTED", detail,
+                          [f"{log.display}:{lineno} {text[:96]} -- not a harness line" for log, lineno, text in listed]
+                          + enabled_proving,
+                          [f"{log.display}:{lineno}" for log, lineno, _ in listed])
+    if truncated:
+        detail.append("TRUNCATED, so measured 0 cannot yield PASS (design D.3.2): " + ", ".join(truncated))
+        return CellResult("NOMEAS", "LOG_TRUNCATED", detail, enabled_proving)
+    refs = [f"{log.display}:{log.banner_lineno}" for log in dual_logs]
+    return CellResult("PASS", "", detail,
+                      [f"{ref} BM-BANNER: no line in this load outside the harness's own set" for ref in refs]
+                      + enabled_proving, refs)
+
+
+def host_chanlive(logs, channel_sources=CHANNEL_SOURCES, bin_source=REPO_ROOT / BIN_SOURCES["CHAR"]):
+    """R15-HOST-CHANLIVE (MOTION-HARNESS-DESIGN.md sec 12.3): library channels still print in the char log.
+
+    The positive limb of R15-HOST-QUIETLOG. Input: the visit's CHAR logs (banner BC-BANNER, built with the
+    default bench masks), the latest build only (design D.4); the char source its own texts are derived from;
+    the library sources, whose message starts no own text may begin. measured = the CogN lines outside the char
+    binary's own set (record families plus derived texts); lo 1, hi NA, COUNT. Display statements and debugger
+    INIT notices are never counted, so neither the binary's own output nor a cog start can stand in for a
+    library line. A line starting with an own text the derivation refused is held: listed, never counted,
+    because it may be the binary's own. Per log:
+      PASS    measured >= 1 and the log COMPLETE;
+      FAIL    measured 0 and the log COMPLETE: every library channel was silenced;
+      NOMEAS  the log TRUNCATED (LOG_TRUNCATED).
+    No CHAR log is NOT_BUILT (NO_CHAR_LOG), as every HOST cell whose input is absent (rule 1, sec 12.10). The char
+    source absent (BIN_SOURCE_ABSENT), a library source absent (CHANNEL_SOURCE_ABSENT) or no own text derived
+    (NO_OWN_TEXTS) is NOMEAS: a verdict never stands on a missing own set.
+    """
+    char_logs = [log for log in logs if log.banner_tag == CHAR_BANNER_TAG]
+    if not char_logs:
+        return CellResult("NOT_BUILT", "NO_CHAR_LOG", ["no input log carries a BC-BANNER banner (a characterisation load)"])
+    own_texts, own_notes, missing = load_own_texts(bin_source, channel_sources)
+    if display_path(bin_source) in missing:
+        return CellResult("NOMEAS", "BIN_SOURCE_ABSENT",
+                          [f"char source absent, so its own texts cannot be derived: {display_path(bin_source)}"])
+    if missing:
+        return CellResult("NOMEAS", "CHANNEL_SOURCE_ABSENT",
+                          [f"library source absent, so own texts cannot be checked against it: {', '.join(missing)}"])
+    if not own_texts:
+        return CellResult("NOMEAS", "NO_OWN_TEXTS",
+                          [f"no own text could be derived from {display_path(bin_source)}"] + own_notes)
+    loose_texts, _, _ = load_own_texts(bin_source, (), min_length=1)
+    held_prefixes = tuple(text for text in loose_texts if text not in own_texts)
+    members, detail = _latest_build(char_logs)
+    detail += [f"{len(own_texts)} own text(s) derived from {display_path(bin_source)}, {len(held_prefixes)} refused "
+               "own text(s) held (listed, never counted)"] + own_notes
+    own_prefixes = CHAR_OWN_PREFIXES + tuple(own_texts)
+    results, proving, refs_by_verdict = [], [], {"PASS": [], "FAIL": [], "NOMEAS": []}
+    for log in members:
+        foreign, own_count, uncounted, held = classify_debug_lines(log, own_prefixes, None, held_prefixes)
+        measured = len(foreign)
+        if not log.complete:
+            verdict, reason = "NOMEAS", "LOG_TRUNCATED"
+        elif measured:
+            verdict, reason = "PASS", ""
+        else:
+            verdict, reason = "FAIL", "NO_LIB_LINES"
+        results.append((verdict, reason))
+        detail.append(f"{log.display}: {verdict}" + (f" ({reason})" if reason else "")
+                      + f"; measured {measured} library line(s), lo 1, hi NA, COUNT; {own_count} char-binary "
+                      f"line(s), {len(held)} held line(s), {uncounted} display or debugger INIT line(s) not counted")
+        proving += [f"{log.display}:{lineno} {text[:96]} -- held: begins a refused own text, not counted"
+                    for lineno, text in held[:HOST_LINE_REFS_MAX]]
+        if verdict == "PASS":
+            shown = foreign[:HOST_LINE_REFS_MAX]
+            proving += [f"{log.display}:{lineno} {text[:96]} -- a library line" for lineno, text in shown]
+            refs_by_verdict["PASS"] += [f"{log.display}:{lineno}" for lineno, _ in shown]
+        elif verdict == "FAIL":
+            refs_by_verdict["FAIL"].append(f"{log.display}:{log.banner_lineno}")
+    verdict, reason = _aggregate(results)
+    return CellResult(verdict, reason, detail, proving if verdict == "PASS" else [], refs_by_verdict.get(verdict, []))
+
+
 def evaluate_host_cell(cell, logs, ctx):
     if cell.cell == "R10-HOST-PL9":
         return host_pl9(ctx["static_tree"], ctx["pl9_source"])
@@ -1703,6 +2104,10 @@ def evaluate_host_cell(cell, logs, ctx):
         return host_detdiff(logs, ctx)
     if cell.cell == "R2-DETECT-GUARD":
         return host_detect_guard(logs, ctx)
+    if cell.cell == "R15-HOST-QUIETLOG":
+        return host_quietlog(logs, ctx["channel_sources"])
+    if cell.cell == "R15-HOST-CHANLIVE":
+        return host_chanlive(logs, ctx["channel_sources"])
     return CellResult("NOT_BUILT", "NO_HOST_EVALUATOR", ["this script has no evaluator for this HOST cell"])
 
 
@@ -1729,7 +2134,8 @@ class Collation:
         self.notes = []
 
 
-def collate(cells, logs, visit, static_tree, predictions_path, baseline_path, pl9_source=PL9_SOURCE):
+def collate(cells, logs, visit, static_tree, predictions_path, baseline_path, pl9_source=PL9_SOURCE,
+            channel_sources=CHANNEL_SOURCES):
     col = Collation()
     col.logs = logs
     by_id = {cell.cell: cell for cell in cells}
@@ -1750,7 +2156,7 @@ def collate(cells, logs, visit, static_tree, predictions_path, baseline_path, pl
                 col.notes.append(f"{rec.ref}: {rec.kind_tag} names HOST cell {rec.cell}; "
                                  "host cells take no binary verdict, record ignored")
     ctx = {"static_tree": static_tree, "predictions": Path(predictions_path), "baseline": Path(baseline_path),
-           "pl9_source": Path(pl9_source)}
+           "pl9_source": Path(pl9_source), "channel_sources": [Path(path) for path in channel_sources]}
     for cell in col.scope:
         if cell.bin == "HOST":
             col.results[cell.cell] = evaluate_host_cell(cell, logs, ctx)
@@ -2103,14 +2509,21 @@ def _fx_decl(cell, task, bin_token="T0"):
     return f"SIGNOFF-DECL,sf,1,bin,{bin_token},cell,{cell},task,{task}"
 
 
+FX_RAW = "RAW"
+
+
 def _fx_log(name, body, complete=True, bin_file="test_bench_t0.bin", size=21000,
             mtime="2026-09-13T18:00:00.000Z", banner="* test_bench_t0 -- Tier 0 (in-memory fixture)",
             session="2026-09-13T12:00:00.000"):
-    """Build an in-memory log in the pnut-term-ts line format. body items: payload or (cog, payload)."""
+    """Build an in-memory log in the pnut-term-ts line format. body items: payload, (cog, payload), or
+    (FX_RAW, text) for a line with no CogN prefix, as the terminal logs a display statement."""
     lines = [f"=== Debug Logger Session Started at {session} ===",
              f"[{session}] [SYSTEM] [DOWNLOAD TO RAM] File: {bin_file} | Size: {size} bytes | Modified: {mtime}",
              f"[{session}] Cog0  {banner}"]
     for item in body:
+        if isinstance(item, tuple) and item[0] == FX_RAW:
+            lines.append(f"[{session}] {item[1]}")
+            continue
         cog, payload = item if isinstance(item, tuple) else (0, item)
         lines.append(f"[{session}] Cog{cog}  {payload}")
     if complete:
@@ -2602,6 +3015,269 @@ def _st_y_check_ready_scope():
                 f"{len(visit2)}, missing {missing or 'none'}; scope equals collate's at visits 1 and 2")
 
 
+# task 3508 phase 2(c): synthetic motion-harness and char logs for checks (z), (aa) and (ab). Record order follows
+# src/test_bench_dual.spin2 main() and src/test_bench_char.spin2 main(); field values are synthetic.
+VISIT1_CHAR_LOG = REPO_ROOT / "DOCs" / "analyses" / "bench" / "2026-09-14" / "debug_260914-115953.log"
+DUAL_FX_WDSTART = "BM-WDSTART,seq,1,started,TRUE,cog,1"
+DUAL_FX_BANNER = ("BM-BANNER,seq,2,src_rev,4,fmt,1,part,A,cfg_id,BENCH,frame,MOTOR,clkfreq,270_000_000,left_base,32,"
+                  "right_base,16,voltage_enum,6,det_mode,30,motor_type,1,quiet,TRUE,mdbg,3,sdbg,3")
+DUAL_FX_BUILD = ("BM-BUILD,seq,3,sf,1,inst_hz,500,inst_ticks,540_000,ring,4_096,slongs,9,waitms_max,7_953,"
+                 "wd_stall_ms,4_000,abs_abort_mV,1_500,ladder_max,165_000_000,rwire_mohm,20,pack_mV,18_500,"
+                 "fault_cool_ms,5_000")
+DUAL_FX_INST = ("BM-INST,seq,4,event,START,cog,2,state,IDLE,ack_ms,2,samples,0,late,0,skipped,0,max_late_us,0,"
+                "clamps,0,why,NONE")
+# the panel's first frame, logged the way debug_260912-153807.log:19 logs a panel: statements joined by <CR><LF>,
+# then a cog message on the same line
+DUAL_FX_PANEL = ("`PLOT bmpanel TITLE 'Motion harness operator panel' SIZE 480 260 POS 60 80 HIDEXY UPDATE<CR><LF>"
+                 "`bmpanel LAYER 1 'bm_bg.bmp'<CR><LF>`bmpanel crop 1<CR><LF>`bmpanel update<CR><LF>"
+                 "Cog0  BM-OPER,seq,5,prompt,BRAKE_L,event,SHOWN,answer,NONE,input,NONE,wait_ms,0,why,NONE")
+DUAL_FX_INPUT = "`bmpanel PC_KEY<CR><LF>`bmpanel PC_MOUSE<CR><LF>"
+LIB_FX_LINE = "* Motor COG #2"              # the motor object's start line, debug_260914-115953.log:42
+# fixture text only: the line both bench binaries print (src/test_bench_dual.spin2 DAT sPanicLine, printed by
+# debug(zstr_(@sPanicLine)); src/test_bench_char.spin2 emitBanner()). It must equal their text, so the real-source
+# derivation (load_own_texts()) recognises it; check (ae) fails if it does not
+FX_PANIC_LINE = ("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about "
+                 "250 ms (finding S-4)")
+FX_CHAR_NOTES = (
+    "* BENCH CHAR RUN COMPLETE -- safe to disconnect",
+    "! WATCHDOG DID NOT START -- this run proceeds UNWATCHED: a stall will be neither named nor stopped",
+    "! SKIPPING HOLDS -- see BC-PREFLIGHT above. Fix the wiring or the declared pin group,",
+    "!   then re-run. Running nine holds against a wheel that cannot turn wastes the session.",
+    "!  wheel on that pin group did NOT turn -- wrong pin group, or wiring, or a dead board",
+)                                           # fixture expectations for check (ae): src/test_bench_char.spin2's notes
+CHAR_FX_BANNER = ("BC-BANNER,src_rev,6,fmt,6,cfg_id,BENCH,frame,MOTOR,clkfreq,270_000_000,left_base,32,right_base,16,"
+                  "voltage_enum,6,det_mode,30,hold_last,8,qtr_incre,36_750_000,half_incre,73_500_000")
+
+
+def _fx_dual_signoff(cell, motor, crit, measured, verdict):
+    return _fx_signoff(cell, 3508, motor, crit, measured, "TRUE", "TRUE", "BOOL", 1, verdict, bin_token="DUAL")
+
+
+def _fx_dual_log(name, extra=(), nostall=("TRUE", "PASS"), complete=True, session="2026-09-14T12:00:00.000"):
+    """A synthetic quiet part A load: header, declarations, panic line, cog starts, the bmpanel panel's display
+    statements (one line joined to a BM- record), the extra lines, verdicts, BM-TRAP and BM-END."""
+    body = [(0, DUAL_FX_BANNER), DUAL_FX_BUILD,
+            _fx_decl("R14-DUAL-NOSTALL-A", 3508, "DUAL"), _fx_decl("R14-DUAL-DBGMASK-A", 3508, "DUAL"),
+            _fx_decl("R14-DUAL-INSTLIVE-A", 3508, "DUAL"), FX_PANIC_LINE,
+            (2, "INIT $0000_0FA8 $0000_8730 jump"), DUAL_FX_INST, (3, "INIT $0000_642E $0000_906F load"),
+            (FX_RAW, DUAL_FX_PANEL), (FX_RAW, DUAL_FX_INPUT)]
+    body += list(extra)
+    body += [_fx_dual_signoff("R14-DUAL-NOSTALL-A", "NONE", "ENDED_BY_COG0", nostall[0], nostall[1]),
+             _fx_dual_signoff("R14-DUAL-DBGMASK-A", "NONE", "QUIET_MASKS", "TRUE", "PASS"),
+             _fx_dual_signoff("R14-DUAL-INSTLIVE-A", "LEFT", "INST_LIVE", "TRUE", "PASS"),
+             _fx_dual_signoff("R14-DUAL-INSTLIVE-A", "RIGHT", "INST_LIVE", "TRUE", "PASS"),
+             "BM-TRAP,seq,6,code,0,returned,TRUE",
+             "BM-END,seq,7,exit,COMPLETE,part,A,segs,0,last_seg,NONE,records,7,trap_code,0,unrecov,0,why,NONE"]
+    return _fx_log(name, body, complete=complete, bin_file="test_bench_dual.bin", size=160000,
+                   mtime="2026-09-14T18:00:00.000Z", banner=DUAL_FX_WDSTART, session=session)
+
+
+def _fx_char_log(name, extra=()):
+    """A synthetic char load: header, a declaration, the panic line, a cog start, one of its note lines and a
+    display statement (neither may count as a library line), the extra lines, BC-END and the closing note."""
+    body = [(0, CHAR_FX_BANNER), FX_PANIC_LINE, _fx_decl("R3-CHAR-INTEG", 3501, "CHAR"),
+            (2, "INIT $0000_642E $0000_906F load"),
+            "!  wheel on that pin group did NOT turn -- wrong pin group, or wiring, or a dead board",
+            (FX_RAW, "`bench PC_KEY<CR><LF>`bench PC_MOUSE<CR><LF>")]
+    body += list(extra)
+    body += ["BC-END,exit,COMPLETE,preflight_ok,TRUE,holds_run,9,lib_abort,FALSE,trap,0",
+             "* BENCH CHAR RUN COMPLETE -- safe to disconnect"]
+    return _fx_log(name, body, bin_file="test_bench_char.bin", size=41233, mtime="2026-09-14T17:59:52.303Z",
+                   banner="BC-WDSTART,started,TRUE,cog,1", session="2026-09-14T11:59:53.301")
+
+
+def _st_z_dual_records():
+    """task 3508: a DUAL log parses (BM-BANNER banner, BM-BUILD header, bin DUAL declarations and verdicts) and
+    collates against the real manifest's row 14 at visit 2; a watchdog NOSTALL FAIL stays FAIL."""
+    log = _fx_dual_log("z-dual")
+    stalled_log = _fx_dual_log("z-dual-stalled", nostall=("FALSE", "FAIL"))
+    cells = load_manifest(DEFAULT_MANIFEST)
+
+    def visit2(entry):
+        return collate(cells, [entry], visit=2, static_tree=False,
+                       predictions_path=FIXTURE_DIR / "absent-predictions.tsv",
+                       baseline_path=FIXTURE_DIR / "absent-baseline.log")
+
+    col = visit2(log)
+    got = {cell_id: _verdict(col, cell_id)[0] for cell_id in
+           ("R14-DUAL-NOSTALL-A", "R14-DUAL-DBGMASK-A", "R14-DUAL-INSTLIVE-A", "R14-DUAL-TRACES-A")}
+    stalled = _verdict(visit2(stalled_log), "R14-DUAL-NOSTALL-A")
+    declared = sorted(rec.cell for rec in log.records if rec.kind == "DECL" and not rec.error)
+    verdicts = [rec for rec in log.records if rec.kind == "SIGNOFF" and not rec.error]
+    want = {"R14-DUAL-NOSTALL-A": "PASS", "R14-DUAL-DBGMASK-A": "PASS", "R14-DUAL-INSTLIVE-A": "PASS",
+            "R14-DUAL-TRACES-A": "NOT_BUILT"}
+    build = log.header_pairs.get("BM-BUILD", {})
+    ok = (log.banner_tag == "BM-BANNER" and log.src_rev == "4" and log.fmt == "1"
+          and log.banner_pairs.get("part") == "A" and build.get("sf") == "1" and log.complete
+          and declared == ["R14-DUAL-DBGMASK-A", "R14-DUAL-INSTLIVE-A", "R14-DUAL-NOSTALL-A"]
+          and len(verdicts) == 4 and not col.parse_errors and got == want and stalled[0] == "FAIL")
+    return ok, (f"banner {log.banner_tag} src_rev {log.src_rev} fmt {log.fmt} part {log.banner_pairs.get('part')}; "
+                f"BM-BUILD sf {build.get('sf')}; {len(declared)} declaration(s), {len(verdicts)} verdict(s); "
+                f"visit 2 -> {got}; watchdog NOSTALL measured FALSE -> {stalled}")
+
+
+ERROR_FX_LINE = "!! ERROR filed to start Motor Control task"   # isp_bldc_motor.spin2 startEx(); debug_260914-115953.log:280
+
+
+def _st_aa_quietlog():
+    """R15-HOST-QUIETLOG: a clean quiet DUAL log PASSes; a masked-channel library line (LIFECYCLE), alone or joined
+    to a display statement, FAILs; a line matching a derived ERROR prefix still PASSes and is listed; an earlier
+    noisy log is not hidden by a later clean one; a TRUNCATED log or a missing library source is NOMEAS; no DUAL
+    log is NOT_BUILT."""
+    clean_log = _fx_dual_log("aa-clean")
+    lib_log = _fx_dual_log("aa-lib-line", extra=[(0, LIB_FX_LINE)])
+    joined_log = _fx_dual_log("aa-joined", extra=[(FX_RAW, "`bmpanel update<CR><LF>Cog0  " + LIB_FX_LINE)])
+    error_log = _fx_dual_log("aa-error-line", extra=[(0, ERROR_FX_LINE)])
+    lib_lineno = next((lineno for lineno, line in enumerate(lib_log.lines, start=1) if line.endswith(LIB_FX_LINE)),
+                      None)
+    prefixes, _, missing = load_enabled_prefixes(CHANNEL_SOURCES)
+    dual_texts, _, _ = load_own_texts(REPO_ROOT / BIN_SOURCES["DUAL"], CHANNEL_SOURCES)
+    foreign, own_count, uncounted, enabled = classify_debug_lines(clean_log, DUAL_OWN_PREFIXES + tuple(dual_texts),
+                                                                  DUAL_PANEL_WINDOW, tuple(prefixes))
+    no_bin = host_quietlog([clean_log], bin_source=FIXTURE_DIR / "absent-test_bench_dual.spin2")
+    clean = host_quietlog([clean_log])
+    lib = host_quietlog([lib_log])
+    joined = host_quietlog([joined_log])
+    error = host_quietlog([error_log])
+    earlier = host_quietlog([_fx_dual_log("aa-earlier", extra=[(0, LIB_FX_LINE)], session="2026-09-14T10:00:00.000"),
+                             clean_log])
+    truncated = host_quietlog([_fx_dual_log("aa-truncated", complete=False)])
+    absent = host_quietlog([_fx_log("aa-t0-only", [])])
+    no_source = host_quietlog([clean_log], channel_sources=[PL9_SOURCE, FIXTURE_DIR / "absent-isp_steering_2wheel.spin2"])
+    error_listed = any("enabled channel (ERROR/WARNING)" in line for line in error.proving)
+    ok = (not missing and ERROR_FX_LINE in prefixes and not foreign and not enabled and own_count > 0
+          and uncounted == 2 and clean.verdict == "PASS"
+          and lib.verdict == "FAIL" and lib.refs == [f"aa-lib-line:{lib_lineno}"]
+          and joined.verdict == "FAIL" and error.verdict == "PASS" and error_listed and earlier.verdict == "FAIL"
+          and (truncated.verdict, truncated.reason) == ("NOMEAS", "LOG_TRUNCATED")
+          and (absent.verdict, absent.reason) == ("NOT_BUILT", "NO_DUAL_LOG")
+          and (no_source.verdict, no_source.reason) == ("NOMEAS", "CHANNEL_SOURCE_ABSENT")
+          and (no_bin.verdict, no_bin.reason) == ("NOMEAS", "BIN_SOURCE_ABSENT"))
+    return ok, (f"harness source absent -> {no_bin.verdict} ({no_bin.reason}); "
+                f"{len(prefixes)} derived prefix(es), '{ERROR_FX_LINE}' among them {ERROR_FX_LINE in prefixes}; "
+                f"clean log: {len(foreign)} foreign, {own_count} harness, {uncounted} INIT -> {clean.verdict}; "
+                f"'{LIB_FX_LINE}' added -> {lib.verdict} {lib.refs}; joined after a display statement -> "
+                f"{joined.verdict}; ERROR line added -> {error.verdict}, listed {error_listed}; earlier noisy + later "
+                f"clean -> {earlier.verdict}; truncated -> {truncated.verdict} ({truncated.reason}); no DUAL log -> "
+                f"{absent.verdict} ({absent.reason}); a library source absent -> {no_source.verdict} ({no_source.reason})")
+
+
+def _st_ab_chanlive():
+    """R15-HOST-CHANLIVE: one library line PASSes, none FAILs (the char binary's own notes, a display statement and
+    INIT lines never count), no CHAR log is NOT_BUILT; Visit 1's real char log PASSes on its library lines."""
+    one = host_chanlive([_fx_char_log("ab-one-lib-line", extra=[(0, "* Motor COG #7")])])
+    silenced = host_chanlive([_fx_char_log("ab-silenced")])
+    absent = host_chanlive([_fx_dual_log("ab-dual-only")])
+    real_log = read_log_file(VISIT1_CHAR_LOG) if VISIT1_CHAR_LOG.is_file() else None
+    real = host_chanlive([real_log]) if real_log is not None else None
+    char_texts, _, _ = load_own_texts(REPO_ROOT / BIN_SOURCES["CHAR"], CHANNEL_SOURCES)
+    real_foreign = (classify_debug_lines(real_log, CHAR_OWN_PREFIXES + tuple(char_texts), None)[0]
+                    if real_log is not None else [])
+    own_leak = [text for _, text in real_foreign if text.startswith(("Cog0  BC-", "Cog0  SIGNOFF"))
+                or any(text.endswith(note) for note in FX_CHAR_NOTES + (FX_PANIC_LINE,))]
+    no_bin = host_chanlive([_fx_char_log("ab-no-source", extra=[(0, "* Motor COG #7")])],
+                           bin_source=FIXTURE_DIR / "absent-test_bench_char.spin2")
+    ok = ((no_bin.verdict, no_bin.reason) == ("NOMEAS", "BIN_SOURCE_ABSENT")
+          and one.verdict == "PASS" and len(one.refs) == 1
+          and (silenced.verdict, silenced.reason) == ("FAIL", "NO_LIB_LINES")
+          and (absent.verdict, absent.reason) == ("NOT_BUILT", "NO_CHAR_LOG")
+          and real is not None and real.verdict == "PASS" and (268, "Cog0  * Motor COG #7") in real_foreign
+          and not own_leak)
+    return ok, (f"one library line -> {one.verdict} {one.refs}; none -> {silenced.verdict} ({silenced.reason}); "
+                f"no CHAR log -> {absent.verdict} ({absent.reason}); {display_path(VISIT1_CHAR_LOG)} -> "
+                f"{real.verdict if real else 'ABSENT'}, {len(real_foreign)} library line(s), line 268 counted "
+                f"{(268, 'Cog0  * Motor COG #7') in real_foreign}, own records counted as library {len(own_leak)}")
+
+
+def _st_ae_own_texts():
+    """sec 12.10 (quality pass): a bench binary's own texts are derived from its source, never hand-kept -- a plain
+    literal and a zstr_(@label) DAT literal are derived; commented, short, unresolved and library-colliding texts
+    are not; the real harness and char sources yield their panic line, end marker and notes."""
+    synthetic = (
+        "PUB main()\n"
+        '    debug("* FAKE RUN COMPLETE -- safe to disconnect")\n'
+        "    debug(zstr_(@sFakePanic))\n"
+        "    debug(ZSTR(@sNoSuchLabel))\n"
+        "    debug(zstr_(@lineBuf))\n"
+        '    debug("OK")\n'
+        '    debug("* Motor COG")\n'
+        '    debug[user.DBGCH_ERROR]("! ERROR: a channel statement, never an own text")\n'
+        "    debug(`bmpanel update)\n"
+        "    ' debug(\"* IN A LINE COMMENT, never derived\")\n"
+        '{   debug("* IN A BLOCK COMMENT, never derived") }\n'
+        "DAT\n"
+        'sFakePanic      BYTE    "* FAKE PANIC LINE -- physical disconnect only", 0\n'
+        "lineBuf         BYTE    0[64]\n")
+    texts, notes = derive_own_texts([("synthetic.spin2", synthetic)], ["* Motor COG #"])
+    want = ["* FAKE PANIC LINE -- physical disconnect only", "* FAKE RUN COMPLETE -- safe to disconnect"]
+    short_refused = any("'OK'" in note and "shorter than" in note for note in notes)
+    unresolved = [label for label in ("@sNoSuchLabel", "@lineBuf")
+                  if any(label in note and "no DAT string literal" in note for note in notes)]
+    library_refused = any("'* Motor COG'" in note and "begins a library message" in note for note in notes)
+    dual_texts, _, dual_missing = load_own_texts(REPO_ROOT / BIN_SOURCES["DUAL"], CHANNEL_SOURCES)
+    char_texts, _, char_missing = load_own_texts(REPO_ROOT / BIN_SOURCES["CHAR"], CHANNEL_SOURCES)
+    motor = LIB_FX_LINE[:-1]                # "* Motor COG #", the motor object's LIFECYCLE message start
+    collides = [text for text in dual_texts + char_texts if motor.startswith(text) or text.startswith(motor)]
+    real_ok = (not dual_missing and not char_missing
+               and FX_PANIC_LINE in dual_texts and "DEBUG_END_SESSION" in dual_texts
+               and FX_PANIC_LINE in char_texts and "DEBUG_END_SESSION" in char_texts
+               and all(note in char_texts for note in FX_CHAR_NOTES) and not collides)
+    ok = (texts == want and short_refused and len(unresolved) == 2 and library_refused and real_ok)
+    return ok, (f"synthetic -> {texts}; short refused {short_refused}; unresolved noted {unresolved}; "
+                f"library-colliding refused {library_refused}; real harness {len(dual_texts)} text(s), char "
+                f"{len(char_texts)} text(s), missing {dual_missing + char_missing or 'none'}; panic line, end marker "
+                f"and every char note present, none collides with '{motor}': {real_ok}")
+
+
+def _st_ad_render_manifest():
+    """--render-manifest on a copy of the real manifest in a scratch directory: the stale .md beside it becomes exactly
+    render_manifest_md() of that .tsv, the .tsv is byte-identical afterwards, and no other file appears."""
+    with tempfile.TemporaryDirectory() as scratch:
+        tsv_path = Path(scratch) / DEFAULT_MANIFEST.name
+        md_path = tsv_path.with_suffix(".md")
+        original = DEFAULT_MANIFEST.read_text(encoding="utf-8")
+        tsv_path.write_text(original, encoding="utf-8")
+        md_path.write_text("stale view\n", encoding="utf-8")
+        code = main(["--render-manifest", "--manifest", str(tsv_path)])
+        files = sorted(entry.name for entry in Path(scratch).iterdir())
+        rendered = md_path.read_text(encoding="utf-8")
+        expected = render_manifest_md(load_manifest(tsv_path))
+        tsv_unchanged = tsv_path.read_text(encoding="utf-8") == original
+    ok = (code == EXIT_OK and rendered == expected and rendered != "stale view\n" and tsv_unchanged
+          and files == sorted([tsv_path.name, md_path.name]))
+    return ok, (f"exit {code}; view equals the render {rendered == expected}; .tsv unchanged {tsv_unchanged}; "
+                f"files afterwards {files}")
+
+
+def _st_ac_enabled_prefixes():
+    """sec 12.10: the ERROR/WARNING prefix derivation reads channel-selected statements outside comments, refuses a
+    literal-less statement and a prefix that begins a masked-channel message, and finds the real libraries' prefixes."""
+    synthetic = (
+        "CON { DEBUG channels }\n"
+        "    DEBUG_MASK = user.MOTOR_DBG_MASK\n"
+        "PUB go() | x\n"
+        '    debug[user.DBGCH_ERROR]("!! ERROR filed to start the fake task")\n'
+        '    DEBUG [ User.dbgch_warning ] ( "! WARNING: fake power out of range:", udec_long(x))\n'
+        '    debug[user.DBGCH_ERROR]("* ")\n'
+        '    debug[user.DBGCH_LIFECYCLE]("* Motor COG #", sdec_(x))\n'
+        "    debug[user.DBGCH_ERROR](udec_long(x))\n"
+        "    ' debug[user.DBGCH_ERROR](\"! ERROR: in a line comment\")\n"
+        '{   debug[user.DBGCH_WARNING]("! WARNING: in a block comment") }\n')
+    prefixes, notes = derive_enabled_prefixes([("synthetic.spin2", synthetic)])
+    real, _, missing = load_enabled_prefixes(CHANNEL_SOURCES)
+    want = ["! WARNING: fake power out of range:", "!! ERROR filed to start the fake task"]
+    refused_star = any("'*'" in note for note in notes)
+    no_literal = any("no leading literal" in note for note in notes)
+    real_ok = (not missing and ERROR_FX_LINE in real
+               and "! WARNING: driveAtPowerEx() power out of range (corrected):" in real
+               and "!! ERROR filed to start left/right drive cog(s)" in real
+               and not any(LIB_FX_LINE.startswith(prefix) for prefix in real))
+    ok = prefixes == want and refused_star and no_literal and real_ok
+    return ok, (f"synthetic -> {prefixes}; '*' refused {refused_star}; literal-less statement noted {no_literal}; "
+                f"real libraries -> {len(real)} prefix(es), missing {missing or 'none'}, expected ones present and "
+                f"none exempts '{LIB_FX_LINE}' {real_ok}")
+
+
 def selftest():
     checks = [
         ("(a)", "run-5 negative case", _st_a_negative_case),
@@ -2634,6 +3310,19 @@ def selftest():
          "scan binary prints)", _st_x_r9_halfleg_collation),
         ("(y)", "task 3539: --check-ready judges collate's scope, carrying earlier-visit OWED/FAILED cells",
          _st_y_check_ready_scope),
+        ("(z)", "task 3508: a DUAL log's BM-BANNER, BM-BUILD, SIGNOFF-DECL and SIGNOFF records parse and collate "
+         "against manifest row 14 (a watchdog NOSTALL FAIL stays FAIL)", _st_z_dual_records),
+        ("(aa)", "R15-HOST-QUIETLOG: a clean quiet DUAL log is PASS; a masked-channel library line, alone or joined "
+         "to a display statement, is FAIL; a derived ERROR-prefix line is PASS and listed; truncated log or absent "
+         "source is NOMEAS; no DUAL log is NOT_BUILT", _st_aa_quietlog),
+        ("(ab)", "R15-HOST-CHANLIVE: one library line is PASS, none is FAIL, no CHAR log is NOT_BUILT; Visit 1's "
+         "char log is PASS", _st_ab_chanlive),
+        ("(ac)", "R15-HOST-QUIETLOG: the ERROR/WARNING prefix derivation from library source can fail",
+         _st_ac_enabled_prefixes),
+        ("(ad)", "--render-manifest rewrites only the .md view beside the .tsv, equal to the rendered .tsv",
+         _st_ad_render_manifest),
+        ("(ae)", "R15 own sets: a bench binary's own texts are derived from its source and the derivation can fail",
+         _st_ae_own_texts),
     ]
     failures = 0
     for label, title, function in checks:
@@ -2665,6 +3354,8 @@ def main(argv=None):
     parser.add_argument("--selftest", action="store_true", help="run the built-in checks and exit")
     parser.add_argument("--check-ready", type=int, metavar="N",
                         help="scheduling gate: every OWED cell for visit N must have its test")
+    parser.add_argument("--render-manifest", action="store_true",
+                        help="regenerate only SIGNOFF-MANIFEST.md from the manifest .tsv (no logs, no status change)")
     parser.add_argument("--visit", type=int, metavar="N", help="visit number the sheet is for")
     parser.add_argument("--date", metavar="D", help="visit date (names the default --out directory)")
     parser.add_argument("--update", action="store_true",
@@ -2684,9 +3375,13 @@ def main(argv=None):
     collate_args = args.visit is not None or args.date is not None or args.logs or args.update or args.static_tree \
         or args.out is not None
     if args.selftest:
-        if args.check_ready is not None or collate_args:
+        if args.check_ready is not None or args.render_manifest or collate_args:
             parser.error("--selftest takes no other options")
         return selftest()
+    if args.render_manifest:
+        if args.check_ready is not None or collate_args:
+            parser.error("--render-manifest takes only --manifest")
+        return render_manifest_file(Path(args.manifest))
     if args.check_ready is not None:
         if collate_args:
             parser.error("--check-ready takes only --manifest")

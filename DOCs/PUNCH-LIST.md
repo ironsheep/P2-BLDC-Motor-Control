@@ -454,6 +454,8 @@ sprint's standing rule exists to prevent. Do it as part of «#3508», not before
 ⚠ Until then the two copies must not drift: the grouping behaviour is what makes
 `sum`/`dwell_s` and every other numeric field parseable by the same analyser.
 
+**Progress 2026-09-14 («#3508»):** the builder is extracted as `src/isp_bench_log.spin2`, with `src/test_bench_dual.spin2` its only consumer; adopting it in the scan, char and detection binaries is PL-53.
+
 ### PL-18 -- two motor instances share one DAT region, so `init()` writes one driver image
 
 **Found 2026-09-11 while checking why two wheels reported identical tick counts.**
@@ -1641,6 +1643,122 @@ contract's construction in «#3538» phase 2. Evidence and line numbers are in
   stale: the status run is now 16 longs.
 - **F-13:** an abort from the right wheel inside the steering `start()` strands the left wheel's
   driver cog, parked on `waitatn`.
+
+### PL-50 -- measured tick rates sit 4.4 % below the C-1 speed model at both measured speeds
+
+**Found 2026-09-14** in «#3508»'s design review (`plans/MOTION-HARNESS-DESIGN.md` Q9, §12.1).
+
+**Evidence:**
+- The model: `DRIVER-SAFETY-AND-CAPABILITY-STUDY-2026-09-09.md:574-593`. `drv_incr` is applied every
+  500 µs (2000 passes per second), so an increment of 36_750_000 predicts 102.7 ticks/s and
+  73_500_000 predicts 205.4 (DERIVED).
+- MEASURED on both motors at Visit 1: 98.2 and 196.4 ticks/s (`analyses/bench/2026-09-14/VISIT-1-RESULTS.md:90`).
+  That is 4.4 % below at both speeds, so the ratio is constant, not speed-dependent.
+- The same ratio implies about 1,912 passes per second rather than 2,000 (DERIVED).
+- The study's own confirmation, `147_000_000` giving "RPM 272.0" against 273.8 (0.7 %), comes from a
+  source comment with no log behind it.
+- The scan's self-check band 90-106 around an "expected 99" (`src/test_bench_scan.spin2:283-284`,
+  `:396`) is labelled DERIVED but carries no derivation.
+
+**Why it matters:**
+- Every speed, distance-time or rpm figure computed from the model is about 4 % high. That includes
+  the study's C-1 table and any published speed data.
+- A C-1 verdict judged against the model would report a departure at the first rung, so «#3509»
+  judges linearity instead (§12.1 Q9).
+
+**Fix direction:** derive the driver's real pass period from source (the PASM control loop and how its
+period is set at the compiled `CLK_FREQ`), restate the model from it, and correct the scan's
+"expected 99" derivation. The C-1 ladder at Visit 2 then confirms linearity against the corrected
+model. Do not design a bench run to find the period.
+
+### PL-51 -- the steering object's `getMaxSpeedForDistance()` returns the max speed, not the max speed for distance
+
+**Found 2026-09-14** by «#3508» phase 2(b1), and confirmed by the arbiter reading source. DERIVED, not
+observed on hardware.
+
+- `src/isp_steering_2wheel.spin2:558-564`: the method's doc says *"Returns the last specified
+  {maxSpeedForDistance}"*, but its body returns `rtWheel.getMaxSpeed()`. The commented-out line above it
+  makes the same call on the left wheel.
+- It sits directly below `getMaxSpeed()` (`:550-556`), whose body is identical, so this reads as a
+  copy-paste defect.
+- **Who is affected:** any caller that reads back the speed limit it set for distance moves. That
+  includes a host driving the serial protocol, if it exposes this getter.
+- **Not affected:** `driveForDistance()` itself, which reads the wheels directly (`:252`).
+
+- **The correct getter exists:** `PUB getMaxSpeedForDistance() : nSpeed4dist` at
+  `src/isp_bldc_motor.spin2:773-777`, returning `maxSpeed4dist`. The steering object's own
+  `driveForDistance()` calls it on both wheels (`:252-253`).
+- **The documentation describes the intended behaviour, which the code does not deliver:**
+  `DRIVE-OBJECTS.md:71` (steering) and `:117` (motor).
+- **Bench consequence:** «#3508»'s harness does not read this getter. It sets the distance speed
+  itself and prints the value it set (`plans/MOTION-HARNESS-DESIGN.md` §12.8).
+
+**Fix direction:** `nSpeed4dist := rtWheel.getMaxSpeedForDistance()`, a one-line change. Also check
+whether the serial object exposes this getter.
+
+### PL-52 -- `getPower()` keeps reporting the last power after the motor is stopped, against its own doc
+
+**Found 2026-09-14** by «#3508» phase 2(b3), and confirmed by the arbiter reading source. DERIVED, not
+observed on hardware.
+
+- **The doc:** `src/isp_bldc_motor.spin2:744-748` says `getPower()` returns the last specified power
+  *"(will be zero if the motor is stopped)"*. `DRIVE-OBJECTS.md:68` says the same for the steering
+  object.
+- **The code returns `motorPower` unchanged.** The stop paths never write it:
+  - `stopMotor()` (`:664-669`) and `emergencyCutoff()` (`:671-677`) only call
+    `setTargetAccel(0, false)`;
+  - `setTargetAccel()` (`:1434-1440`) writes `targetIncre`, not `motorPower`;
+  - the sense task's distance and time stops use the same `setTargetAccel(0)` path.
+- **Who is affected:** any caller that reads `getPower()` to decide whether the motor is still
+  commanded. After a stop or a completed distance move, it still sees the old power.
+- **Not yet checked:** every writer of `motorPower` was not searched. A writer elsewhere, such as
+  `driveAtPower(0)`, could make some stop paths read zero.
+- **Bench consequence:** «#3508»'s BM-OUT `l_pwr`/`r_pwr` and BM-FLOOR print `getPower()` as the last
+  specified power, which is what it returns. No harness change is needed
+  (`plans/MOTION-HARNESS-DESIGN.md` §12.9).
+
+**Fix direction:** first find every writer of `motorPower`. Then either clear it on every stop path, or
+correct the doc to "last specified power", whichever the API intends.
+
+### PL-53 -- the scan, char and detection binaries still carry their own copies of the record builder
+
+**Filed 2026-09-14** by «#3508» phase 2 (`plans/MOTION-HARNESS-DESIGN.md` §7.2; §12.1 Q5 ruled it a
+punch-list item after Visit 2).
+
+- **The class:** one tagged-record line builder kept as separate copies in several top-level programs.
+  PL-17's hazard stands: the copies must stay byte-identical, because every analyser parses the same
+  digit grouping.
+- **Evidence (read 2026-09-14):**
+  - `src/isp_bench_log.spin2` is the extracted builder. `src/test_bench_dual.spin2:680-681` declares it
+    twice (`benchLog` for cog 0, `wdLog` for the watchdog) and is its only consumer.
+  - `src/test_bench_char.spin2:3114-3203` still carries its own `lineReset` … `lineEmit`, plus a watchdog
+    mirror at `:3492-3609`.
+  - `src/test_bench_scan.spin2` and `src/test_bench_detect.spin2` carry theirs (the design cites the scan's
+    at `:5460-5539`; not re-read for this entry).
+- **Why not now:** all three are certified binaries that Visit 2 runs again: scan run 8, the char
+  certification, and the detection re-run diffed against its baseline. Converting them now changes three
+  binaries the visit certifies, for no change in what they measure.
+- **Fix direction:** after Visit 2, replace each copy with `OBJ` instances of `isp_bench_log` (a second
+  instance for a watchdog cog), bump each binary's `SRC_REV`, and prove with a before/after log diff that
+  every record prints byte-identical. For the detection binary, `R2-HOST-DETDIFF` is that diff.
+
+### PL-54 -- `src/test_dual_motor.spin2` names itself `demo_dual_motor.spin2`, and most of its body can never run
+
+**Found 2026-09-14** by «#3508» (`plans/MOTION-HARNESS-DESIGN.md` §7.3), and confirmed by reading the
+source in phase 2. DERIVED, not observed on hardware.
+
+- **The wrong name:** `src/test_dual_motor.spin2:3` reads `File....... demo_dual_motor.spin2`, the name of
+  the certified release demo, not this file's.
+- **The unreachable code:** `:77` prints `* TEST complete, holding`, then `:78` is a bare `repeat` with no
+  body and no exit. Nothing after it in the valid-configuration branch can run: the 1 ft distance drive,
+  the two `driveDirection()` holds, the left and right wheel holds (`:80-106`) and `wheels.stop()`
+  (`:109`). `debug("* DONE")` (`:113`) is reached only on the invalid-configuration path.
+- **The class:** a program whose visible intent (its header, its later steps) differs from what
+  executes, so a reader, or an agent trusting either, is misled. It is not a bench binary (no records,
+  watchdog or sign-off), so no visit depends on it.
+- **Fix direction:** correct the header's file name. Then either delete the unreachable steps or remove the
+  holding `repeat` so they run, whichever this test is meant to do. That is Stephen's call: it is his test
+  program.
 
 ---
 
