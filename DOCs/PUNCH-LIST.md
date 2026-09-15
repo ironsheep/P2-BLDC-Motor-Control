@@ -1142,6 +1142,14 @@ files and update PL-19's mention.
 - Check whether `ADDING_MOTOR.md`'s procedure for building a deltas table reads these labels.
   That was not checked here.
 
+**Direction settled for the 6.5″ motor at Visit 2 (2026-09-15, `analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` §2):**
+- MEASURED: T0-12 told the operator to turn the RIGHT wheel (P16) clockwise seen from the hub. It counted
+  270 transitions, 0 illegal, ending at `pos` −270 (`debug_260915-142347.log:394`, `:531`). T0 does not call
+  `forwardIsReverse()`, so this is the motor frame.
+- DERIVED: clockwise from the hub is 1-3-2-6-4-5, which counts negative. `MOTOR_CHOICE.md:18`'s "CW" is right
+  seen from the hub; its "FWD" is the library's negative direction.
+- Still open: relabel the doc in the library's frame (with «#3515»), the Doco row, and the `ADDING_MOTOR.md` check.
+
 ### PL-40 -- the sign-off collation missed a verdict printed inside a corrupted log line
 
 **Found 2026-09-14 evaluating Visit 1** (`analyses/bench/2026-09-14/VISIT-1-RESULTS.md`).
@@ -1296,6 +1304,10 @@ ground truth (PL-39).
 - The direction is fixed, because the artwork bakes it in.
 - DERIVED: compiles under the t0-hand tier's flags. UNVERIFIED: that the panel renders on the rig.
 
+**Certified at Visit 2 (2026-09-15, `analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` §2):** the panel
+drew and took the S key, and T0-12 measured 270 transitions for 3 turns, 0 illegal
+(`debug_260915-142347.log:394`, `:531`). **90 ticks per revolution: MEASURED.** Ready to sweep at closeout.
+
 ### PL-43 -- scan run 6 went silent under a load step, and the watchdog did not speak
 
 **Found 2026-09-14 in Visit 1** (`analyses/bench/2026-09-14/VISIT-1-RESULTS.md` §8). This is
@@ -1347,6 +1359,22 @@ characterisation run.
 
 Run 5's silence on 2026-09-13 predates the repair. That it had the same cause is consistent with the
 evidence (DERIVED), but not certified.
+
+**Recurred at Visit 2 (2026-09-15), after the repair, under a hand-brake. Open again as a live finding.**
+The repair's certification stands for the runs it covered; this occurrence is not explained by it.
+- MEASURED (`analyses/bench/2026-09-15/debug_260915-142454.log`): `dual-brake` started both wheels at half
+  power (`:121`). At 14:25:08.612 the panel told the operator to brake the LEFT wheel (`:122`). Line `:122`
+  carries countdown frames 30, 29 and 28, then stops mid-poll, about 3–4 s into the brake. Nothing more came
+  from the P2; the host closed the session at 14:26:02 (`:124`).
+- Absent: `BM-ABORT` (the 10 A trip), `BM-WATCHDOG`, `BM-OPER TIMEOUT`, `BM-END`.
+- DERIVED: the same signature as run 6 — silent under the heaviest load step the harness makes, with the
+  watchdog silent too, so not a cog-0-only stall. The log cannot separate a brown-out or reset from a
+  host or link loss.
+- **Nobody was asked to watch for it**, so there is no observation to draw on (STEPHEN: *"i don't know that
+  dual-brake went silent"*). Designing that out is mine (doctrine overlay P1): the next attended brake step
+  must make a silence visible and record what separates the explanations.
+- Safety (DERIVED): if a brake load can drop the P2, the protective code cannot act while it is down. The
+  physical battery disconnect stays the only panic procedure.
 
 ### PL-44 -- every value captured through an abort trap in the bench binaries reads 0
 
@@ -1438,6 +1466,11 @@ works.
 - `R13-CHAR-BRAKESTART` ×4: start return 2 (`:369-414`).
 
 All PASS. The remaining scope items above stay open.
+
+**Still present in the detection binary (Visit 2, 2026-09-15):** `BD-PH2 ... step,started,start_ret,0,motorcog,2`
+(`analyses/bench/2026-09-15/debug_260915-143237.log:465`, `:873`) while the library printed `* Motor COG #1`.
+`test_bench_detect.spin2` still captures its phase-2 start through a trap. It feeds no verdict and does not
+affect detection. Fix it when PL-53 converts that binary.
 
 **What it cost this visit:**
 - R1-T0-START and R1-T0-EXHAUST FAILed.
@@ -1866,6 +1899,21 @@ driver state (`src/isp_bldc_motor.spin2:2485-2495`). The e-stop only skips the r
 2. Then decide what FLOAT, e-stop and fault should each do to the bridge. That is an API and safety
    decision for Stephen.
 
+**Polarity settled from source, 2026-09-15 (DERIVED, resting on MEASURED operation):** a high on the
+low-side input turns the low FET on.
+- In normal drive the control loop writes each low-side pin the high side's duty plus `dead_gap`, on an
+  inverted output (`src/isp_bldc_motor.spin2:2470-2483`). Its comment: *"make sure low side turns off
+  (inverted) earlier than high side turns on"*. The low-side pin is therefore low across the whole
+  high-side on-window plus the gap, and high otherwise.
+- That is complementary drive with deadtime only if a high turns the low FET on. With the opposite
+  polarity the low FET would be on exactly while the high FET is on: shoot-through on every PWM period.
+  The driver has run for hours on this rig without it.
+- The comment at `:2471` agrees: the board's safety interlock acts *"if both low and high side are high"*,
+  the state that would command both FETs on.
+
+So the premise holds: `driveoff` holds all three low FETs on and brakes. Step 1 is done. Step 2 stands, and
+now rests on a derived fact rather than an unverified one.
+
 ### PL-57 -- after `emergencyCutoff()` then `clearEmergency()`, the driver keeps its old increment, and a restart at the same speed faults at once
 
 **Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §5.3). A library defect.
@@ -2010,6 +2058,50 @@ confirmed rest.
 
 **Fix direction:** read those two traces' last samples for the value that kept changing (`pos`, `hw`
 or both), then decide whether the stillness rule or the reading is at fault.
+
+### PL-64 -- the attended-test UI is out of step with what each test needs, and `dual-ui` failed itself
+
+**Found 2026-09-15 in Visit 2** (`analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` §3).
+
+**MEASURED (`debug_260915-142103.log`):**
+- All seven controls passed by key and by click (`:141-455`). The input fix `6aed714` works.
+- The walkthrough scored a SKIP input as "something is wrong" on four of the seven previews: step 8 (brake
+  start, WAITING FOR START, `:597`), step 9 (brake now, `:626`), step 10 (release, `:690`) and step 12 (floor
+  start, WAITING FOR START, `:748`). Steps 11, 13 and 14 scored START.
+- STEPHEN, 2026-09-15: *"on the UI test nothing was wrong that i could see. the test itself ruled it a
+  fail."* No screen was judged wrong.
+- `R14-DUAL-UICHECK-U` FAIL (`:888`), so `dual-brake` and `dual-floor` were owed to the next visit. They were run
+  anyway.
+
+**DERIVED, from the crop commands in the log:**
+- Every preview, accepted or rejected, drew a live 30 s countdown and the same START/SKIP verdict pair in
+  the first two button slots. Nothing drawn separates the rejected screens from the accepted ones.
+- **The defect:** a preview puts the verdict buttons in the slots where the real screen's own controls
+  belong. It cannot show the real screen, and an input that operates the previewed screen scores as a
+  verdict. The walkthrough failed on its own construction, not on anything the operator saw.
+
+**The wider need, STEPHEN 2026-09-15:** *"regarding the use of the UI for the tests... it seems to be out of
+sync with some of the test intent (controls offered/enabled) vs. what is needed for the test. please audit
+the tests before we run them again."*
+
+**Fix direction:**
+- Before the next run, audit every attended step (`t0-hand`, `dual-ui`, `dual-brake`, `dual-floor`) screen
+  by screen: the controls offered and enabled against what that step of the test needs, and what each
+  input does.
+- Rebuild the walkthrough so a verdict can never share a control with the screen it judges.
+- Build on the proven panel technique (doctrine overlay P7). Re-run `dual-ui` before any attended motion
+  step.
+
+### PL-65 -- `BM-PLAN` names the wrong findings for the UICHECK and FLOOR parts
+
+**Found 2026-09-15 in Visit 2** (`analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` §3). Minor.
+
+**MEASURED:** UICHECK's plan record says `finds AC` (`debug_260915-142103.log:26`); FLOOR's says `finds S-9a`
+(`debug_260915-142650.log:26`).
+
+**DERIVED:** FLOOR is the part that finds AC, and UICHECK finds none; S-9a belongs to part C.
+
+**Fix direction:** correct the two labels in `src/test_bench_dual.spin2` at its next revision.
 
 ---
 

@@ -646,3 +646,13 @@ Visit 2 notes were also added to PL-26, PL-36, PL-41, PL-44, PL-46 and PL-50.
    The tier should refuse any value other than the three run-sheet values, and say so on the console.
 9. **RIGHT NEG quarter-speed float stop never confirmed rest** in either rep, although it stopped in 19
    ticks (§4).
+
+---
+
+## Revision history
+
+- **2026-09-15, later:** §5.2's UNVERIFIED low-side polarity is settled from source (DERIVED, PL-56). The
+  driver's normal drive writes each low-side pin the high side's duty plus the dead gap on an inverted
+  output (`isp_bldc_motor.spin2:2470-2483`). That avoids shoot-through only if a high turns the low FET
+  on, and the driver has run for hours without shoot-through. So `driveoff` does hold all three low FETs
+  on. Float at rest, the e-stop and every fault are that brake. Finding 2's "if true" now holds.
