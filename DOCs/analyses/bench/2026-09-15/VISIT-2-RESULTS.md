@@ -651,8 +651,11 @@ Visit 2 notes were also added to PL-26, PL-36, PL-41, PL-44, PL-46 and PL-50.
 
 ## Revision history
 
-- **2026-09-15, later:** §5.2's UNVERIFIED low-side polarity is settled from source (DERIVED, PL-56). The
-  driver's normal drive writes each low-side pin the high side's duty plus the dead gap on an inverted
-  output (`isp_bldc_motor.spin2:2470-2483`). That avoids shoot-through only if a high turns the low FET
-  on, and the driver has run for hours without shoot-through. So `driveoff` does hold all three low FETs
-  on. Float at rest, the e-stop and every fault are that brake. Finding 2's "if true" now holds.
+- **2026-09-15, later:** §5.2's float consequences are withdrawn.
+  - Float freewheels on this rig. That is Stephen's bench fact, recorded before this sprint
+    (`DRIVER-SAFETY-AND-CAPABILITY-STUDY-2026-09-09.md:388-393`); STEPHEN: *"we came into this work with float
+    working as desired"*.
+  - The 1-tick stop (MEASURED) is a fact about `emergencyCutoff()` only.
+  - Finding 2's "float is also that brake, and so is every fault" does not hold, and the polarity derivation is the
+    suspect (PL-56).
+  - Earlier versions of this note called the polarity settled, then a question for Stephen; both were wrong.

@@ -2142,11 +2142,13 @@ drvMotor                                                ' global (task 3535): en
                 cmp     drv_state_, #DCS_ESTOP      wz  ' Q: Are we already Emergency Stopped?
     if_z        jmp     #.endRqst                       ' YES, motor is at ESTOP, just exit (w/o increment)
                 call    #.driveoff                      ' set drive pwm off, regardless of stop mode
+                call    #.clearRun                      ' PL-57: no running increment survives an e-stop
                 mov     drv_state_, #DCS_ESTOP          ' mark that we are stopped
                 jmp     #.endRqst                       ' motor now at ESTOP, just exit (w/o increment)
 .noEStop
                 cmp     drv_state_, #DCS_ESTOP      wz  ' Q: were we emergency stopped?
     if_z        mov     drv_state_, #DCS_STOPPED        ' YES, reset to simply stopped so we start out pins correctly
+    if_z        call    #checkstop                      ' PL-57: and set drive pwm per stop mode, as .resetFault does
                 mov     sv_tgt_incr, tgt_incr
 
                 call    #gettgtincr                     ' get rate of increment ( +/- drive power, or 0 stop)
@@ -2193,10 +2195,7 @@ drvMotor                                                ' global (task 3535): en
     if_nz       jmp     #.chkStopCmd                    ' NO, go to next check
             ' MOTOR faulted, clear fault so we can run again
 .resetFault
-                mov     drv_incr, #0                    ' reset incr to stopped
-                mov     prior_incr, #0                  ' reset prior
-                mov     fwdrev, #0                      ' just in case
-                mov     angle_, #0                      ' just in case
+                call    #.clearRun                      ' zero the running state (shared with the e-stop entry, PL-57)
                 mov     drv_state_, #DCS_STOPPED        ' reset fault -> to stopped
                                                         ' drive_pins were floated when detect fault
                 call    #checkstop                   ' set drive pwm according to stop mode
@@ -2571,6 +2570,12 @@ drvMotor                                                ' global (task 3535): en
 
 .driveoff                                               ' disable pwm always
     _ret_       mov     driveoff, #1                    ' drive pwm output disabled
+
+.clearRun                                               ' zero the running state, so the next start ramps up from zero
+                mov     drv_incr, #0                    '  called by .resetFault and by the e-stop entry: before PL-57 the
+                mov     prior_incr, #0                  '  e-stop kept drv_incr, and a restart at the same speed declared
+                mov     fwdrev, #0                      '  AT_SPEED against a stopped wheel and faulted
+    _ret_       mov     angle_, #0                      ' .rampUp's drv_incr == 0 path re-seeds the angle from the halls
 
 .checkstopfloaton                                       ' set drive enabled according to stop mode
                 skip    #%1000101                       ' same as inverted floatoff without drive disable

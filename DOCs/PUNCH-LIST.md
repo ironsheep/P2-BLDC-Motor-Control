@@ -1899,8 +1899,9 @@ driver state (`src/isp_bldc_motor.spin2:2485-2495`). The e-stop only skips the r
 2. Then decide what FLOAT, e-stop and fault should each do to the bridge. That is an API and safety
    decision for Stephen.
 
-**Polarity settled from source, 2026-09-15 (DERIVED, resting on MEASURED operation):** a high on the
-low-side input turns the low FET on.
+**Polarity read from source, 2026-09-15 (DERIVED, resting on MEASURED operation) -- and it conflicts
+with a recorded bench observation, so it is NOT settled:** the code implies a high on the low-side input
+turns the low FET on.
 - In normal drive the control loop writes each low-side pin the high side's duty plus `dead_gap`, on an
   inverted output (`src/isp_bldc_motor.spin2:2470-2483`). Its comment: *"make sure low side turns off
   (inverted) earlier than high side turns on"*. The low-side pin is therefore low across the whole
@@ -1911,8 +1912,17 @@ low-side input turns the low FET on.
 - The comment at `:2471` agrees: the board's safety interlock acts *"if both low and high side are high"*,
   the state that would command both FETs on.
 
-So the premise holds: `driveoff` holds all three low FETs on and brakes. Step 1 is done. Step 2 stands, and
-now rests on a derived fact rather than an unverified one.
+**Float freewheels. That is Stephen's bench fact, and it settles this.**
+- It was recorded before this sprint: `analyses/DRIVER-SAFETY-AND-CAPABILITY-STUDY-2026-09-09.md:388-393`, *"Stephen's
+  prior bench testing shows freewheel/float works and full braking works"*.
+- STEPHEN 2026-09-15: *"we came into this work with float working as desired"*.
+- **The derivation above is the suspect, not the hardware.** Either the reading "duty 0 on the inverted low-side pins
+  holds the low FETs on" is wrong, or the float-at-rest and e-stop paths differ in a way not yet read.
+- **Withdrawn:** "float does not freewheel" and "every fault brakes hard". The MEASURED 1-tick stop is a fact about
+  `emergencyCutoff()` only.
+- No question goes to Stephen. Whether the e-stop or fault path should behave differently is looked at only when a
+  driver change needs it (doctrine overlay P10).
+- This entry first read "settled" and then "a conflict for Stephen" on 2026-09-15; both were wrong.
 
 ### PL-57 -- after `emergencyCutoff()` then `clearEmergency()`, the driver keeps its old increment, and a restart at the same speed faults at once
 
@@ -1943,6 +1953,19 @@ not from zero.
 **Fix direction:** the e-stop entry (or the clear) resets the running state the same way `.resetFault`
 does — `drv_incr`, `prior_incr`, `angle_` from the halls — so a start after an e-stop is an ordinary
 start. Proof: an e-stop, clear, then a restart at the same speed reaches AT_SPEED through SPIN_UP.
+
+**Fixed in tree 2026-09-15 («#3546»); certification is owed to the next visit.**
+- `src/isp_bldc_motor.spin2` has one dot-local `.clearRun`, which zeroes `drv_incr`, `prior_incr`, `fwdrev` and
+  `angle_`.
+  - `.resetFault` now calls it, instead of carrying its own copy.
+  - The e-stop entry calls it right after `.driveoff`, so no running increment survives an e-stop.
+- Leaving ESTOP now also calls `checkstop`, as `.resetFault` does, so the drive state follows the stop mode.
+- The next start takes `.rampUp`'s `drv_incr == 0` path: the ramp starts at `ramp_min`, drive is enabled, and the
+  angle is taken from the halls.
+- Gates: `tools/build-check.sh` 47/47 with both release demos certified; `tools/check_style.sh` PASS.
+- The PASM-addressed VAR runs are untouched (`git diff`).
+- **Certifies with:** `dual-c` POSTFLT's e-stop BRAKE traces, which reach AT_SPEED through SPIN_UP with no fault.
+  They faulted 4 of 4 at Visit 2.
 
 ### PL-58 -- `holdAtStop()` does not change a stop from speed, although `stopMotor()` is documented as affected by it
 
