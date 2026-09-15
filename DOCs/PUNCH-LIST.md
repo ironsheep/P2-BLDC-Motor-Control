@@ -675,6 +675,10 @@ negative-increment direction faults at a lower speed than the positive one; no p
 ceiling has ever been measured. Bench Pass 3's C-1 speed ladder (T1-3) should run in **both**
 directions, before and after the scanned offsets are applied.
 
+**Visit 2 ladder (2026-09-15):** it ran in both directions on the default offsets. No rung up to 165M
+faulted on either motor in either direction, so the predicted lower NEG ceiling did not appear
+unloaded. Above 100M the duty pins and current collapses while speed tracks — see PL-61.
+
 ### PL-27 -- the Doco motor's offset and speed-ceiling tables were characterised while board detection was broken
 
 **Found 2026-09-12** (DERIVED from `src/isp_bldc_motor.spin2` `offsetsForMotor()` and
@@ -1039,6 +1043,10 @@ clears the pins; with `motorCog` already 0 it stops no cog.
 **Run-time proof owed to Visit 1:** `R10-CHAR-STEERFAIL` requires this file's own wheels to start
 on the bench bases right after the failed two-wheel start.
 
+**Certified at Visit 2 (2026-09-15):** `R10-CHAR-STEERFAIL` PASS. The failed steering start returned
+−1 with 6 free cogs before and after, and the file's own wheels then started and moved 13 ticks
+(`analyses/bench/2026-09-15/debug_260915-140100.log:354`).
+
 ### PL-37 -- the meter-panel assets outlived the panel they drew
 
 **Found 2026-09-14 in «#3521».** The meter-free rework removed `test_bench_char.spin2`'s PLOT panel
@@ -1248,6 +1256,10 @@ then let's work on what we should be"*. «#3543» is moved to the backlog. Until
 garbled line in a phase that stops cogs is a known cost. The collation already recovers a verdict
 printed after a corruption (PL-40), and a verdict cut inside one stays MALFORMED.
 
+**Recurred at Visit 2 (2026-09-15), same phases:** Tier 0 `debug_260915-140038.log:978,989-994,1004-1011,1050,1068`;
+char `debug_260915-140100.log:250-254,282-287,309-313`. No verdict was lost; `R1-T0-RESTART` again printed on
+the tail of a corrupted line (`140038:1011`).
+
 ### PL-42 -- T0-12's hand-rotation panel draws nothing, so the operator cannot see the prompt
 
 **Found 2026-09-14 in Visit 1.** STEPHEN: *"the t0-hand test was aborted because the UI didn't draw
@@ -1417,6 +1429,16 @@ pnut_ts's own guide, says a trap returns the method's normal return value when n
   `--check-ready` now checks that same scope, locked by selftest (y).
 - Not done, and still in this entry's scope: NA reason tokens on every emit, and sentinel pre-loads.
 
+**Certified at Visit 2 (2026-09-15, `analyses/bench/2026-09-15/VISIT-2-RESULTS.md` §2):** the capture fix
+works.
+- `R1-T0-START`: return 1, raw cog 2 (`debug_260915-140038.log:975-976`).
+- `R1-T0-RESTART` (`:1011`).
+- `R1-T0-EXHAUST`: return −1, no leak (`:1068-1069`).
+- `R10-CHAR-STEERFAIL` (`debug_260915-140100.log:354`).
+- `R13-CHAR-BRAKESTART` ×4: start return 2 (`:369-414`).
+
+All PASS. The remaining scope items above stay open.
+
 **What it cost this visit:**
 - R1-T0-START and R1-T0-EXHAUST FAILed.
 - R10-CHAR-STEERFAIL FAILed.
@@ -1514,6 +1536,14 @@ works.
 - Make R9-SCAN-HALFLEG fail when the lowest point sits at the window edge.
 - Give each SIGNOFF instance a slot token.
 - Report edge resolution beside every margin.
+
+**Scan run 8 (Visit 2, 2026-09-15, `analyses/bench/2026-09-15/VISIT-2-RESULTS.md` §11):** D1's cell
+now tells the truth.
+- `R9-SCAN-HALFLEG` FAILs on LEFT POS, RIGHT NEG and RIGHT POS, and is NOMEAS on LEFT NEG.
+- All three half-speed fits are POOR and pinned. Current is still falling at the last clean point
+  (margins 4.0–4.4° from the fit).
+- The half-speed minimum is still not demonstrated, so «#3523» stays blocked.
+- Quarter-speed minima reproduce run 7 within 0.1–1.6°.
 
 ### PL-47 -- the library has no abort and error contract
 
@@ -1671,6 +1701,13 @@ period is set at the compiled `CLK_FREQ`), restate the model from it, and correc
 "expected 99" derivation. The C-1 ladder at Visit 2 then confirms linearity against the corrected
 model. Do not design a bench run to find the period.
 
+**Visit 2 ladder (2026-09-15, `analyses/bench/2026-09-15/VISIT-2-RESULTS.md` §9.1):** the ratio is
+constant across the whole range, not just at two speeds.
+- `rate_x10 / pred_x10` is 0.946–0.965 from 10M to 165M on both motors and both signs, and 0.953–0.965
+  from 40M up. The mean is about 0.957, 4.3 % below.
+- The 5M rung reads 1.000 only because 14 ticks quantise to ±7 %.
+- The model's derivation from source is still owed.
+
 ### PL-51 -- the steering object's `getMaxSpeedForDistance()` returns the max speed, not the max speed for distance
 
 **Found 2026-09-14** by «#3508» phase 2(b1), and confirmed by the arbiter reading source. DERIVED, not
@@ -1759,6 +1796,220 @@ source in phase 2. DERIVED, not observed on hardware.
 - **Fix direction:** correct the header's file name. Then either delete the unreachable steps or remove the
   holding `repeat` so they run, whichever this test is meant to do. That is Stephen's call: it is his test
   program.
+
+### PL-55 -- stopping from 75 % speed or above draws more than 10 A
+
+**Found 2026-09-15 in Visit 2** (`analyses/bench/2026-09-15/VISIT-2-RESULTS.md` §3).
+
+**What was measured (MEASURED):**
+- The harness's 10 A abort (1,500 mV on 4 consecutive reads) fired 8 times, every time on a stop:
+  - FAULTB, stopping from 110.25M: LEFT NEG 1,506, RIGHT NEG 1,552 and RIGHT POS 1,519 mV
+    (`debug_260915-135528.log:443,1831,2245`);
+  - LIVE, stopping from 110.25M: RIGHT POS 1,586 (`debug_260915-134805.log:15079`);
+  - LADDER, stopping from 165M: LEFT NEG 1,642, RIGHT NEG 1,513 and RIGHT POS 1,557
+    (`…134805.log:15120,15197,15236`);
+  - OVERSHT 10 ft, steering at 75 %: 1,646 mV, with the right wheel's current rising through SPIN_DN
+    (`…135528.log:2973,3241`).
+- LEFT POS never tripped.
+- At half speed every stop's current rises 20–50 % above the running current: NEG from about 950 to
+  1,150–1,220 mV, POS from about 500 to 640–720 mV (STOPMODE and BASELINE traces).
+
+**Mechanism (DERIVED from source):**
+- A zero request enters `.rampDn`. `drv_incr` steps down by `ramp_down` every 500 µs while the wheel
+  is still driven (`src/isp_bldc_motor.spin2:2206-2211`, `:2303-2320`).
+- Drive is released only at zero (`:2327-2333`).
+- The wheel is therefore driven down its ramp. Running current at 75 % is 969–1,034 mV
+  (`…134805.log:15072,15078`), so the rise puts a stop at the abort threshold.
+
+**What it cost:** FAULTB trials 2–5 on three of the four motor/sign combinations, C-3 at 10 ft, and
+`R14-DUAL-RSTPROV-B` RIGHT.
+
+**Disposition, STEPHEN 2026-09-15:** *"put this as an item we need to research after our driver is back
+in shape. That sounds like a new feature request to me, and yes, we want to address it at this release,
+but not right now."*
+- A research item for 6.0.0, scheduled after the driver repairs.
+- Until then the bench harness keeps its 10 A abort unchanged. Trials that stop from 75 % stay NOMEAS.
+
+### PL-56 -- `emergencyCutoff()` stops a half-speed wheel within one tick; the drive-off state may be a dynamic brake
+
+**Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §5.2).
+
+**What was measured (MEASURED, `debug_260915-135838.log`):**
+- In the four e-stop FLOAT traces, `i` falls to 8–12 mV one sample after the mark (`:3296-3297`).
+- `pos` and `hw` stop within one tick, and rest is confirmed 10–12 ms after the mark
+  (`:3489,3713,4563,4787`).
+- Baselines, same rig and speed:
+  - `stopMotor()` takes 74–76 ticks;
+  - `stop()`, which releases the pins, coasts 38–48 ticks (`debug_260915-134805.log` STOPMODE).
+
+**Why the count is real (DERIVED):** the hall count runs in the control loop on every pass, whatever the
+driver state (`src/isp_bldc_motor.spin2:2485-2495`). The e-stop only skips the request logic
+(`:2141-2146`). So the wheel stopped, at an average deceleration of at least 19,000 ticks/s².
+
+**Likely mechanism (DERIVED, one fact UNVERIFIED):**
+- The e-stop calls `.driveoff`, which sets `driveoff := 1` (`:2144`, `:2572-2573`).
+- The control loop then writes duty 0 to all six PWM pins (`:2468-2469`).
+- The low-side pins use inverted output (`pwmn`, `P_INVERT_OUTPUT`, `:2615`; `:2465`), so duty 0 is a
+  constant high on them.
+- **UNVERIFIED:** that a high on the Rev B board's low-side input turns that FET on. If it does, all
+  three phases are held low, which brakes the motor.
+
+**If the premise holds (DERIVED):**
+- The same `driveoff` state is the driver's FLOAT at rest (`checkstop`, `:2580-2585`) and its fault
+  state (`:2539`). "Float" does not freewheel, and a fault at speed brakes hard.
+- On the floor with the robot's mass, that braking current may not pass the sense resistor.
+- PL-30's "no bridge current can flow during the reading" still holds at rest, where the wheel does not
+  turn.
+
+**Fix direction:**
+1. Confirm the low-side input polarity from the board documentation or the schematic.
+2. Then decide what FLOAT, e-stop and fault should each do to the bridge. That is an API and safety
+   decision for Stephen.
+
+### PL-57 -- after `emergencyCutoff()` then `clearEmergency()`, the driver keeps its old increment, and a restart at the same speed faults at once
+
+**Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §5.3). A library defect.
+
+**What was measured (MEASURED, four of four instances, `debug_260915-135838.log:3490-3502`,
+`3714-3729`, `4564-4576`, `4788-4803`):** each follows an e-stop trial, then `clearEmergency()`, then a
+zero command and STOPPED.
+- The next start at the same speed shows k 0–1 STOPPED, then **k 2 AT_SPEED with `pos` 0** (`:3460`).
+- Current stays at 12–21 mV while `e` runs from −19 to −111.
+- **k 8 FAULTED** (`:3466`).
+- Reset alone cleared it in 30 ms (`:3502`).
+
+**Cause (DERIVED from source):**
+- The e-stop path jumps to `.endRqst` without clearing `drv_incr` (`src/isp_bldc_motor.spin2:2141-2146`).
+- The clear path only sets `DCS_STOPPED` (`:2148-2149`).
+- A zero request while STOPPED exits without touching it (`:2156-2161`).
+- On the next start, `.rampUp` sees `drv_incr` non-zero and skips the ramp start and
+  `.checkstopfloaton` (`:2270-2272`). It finds `drv_incr` equal to the target and declares AT_SPEED
+  (`:2274-2275`).
+- `angle_` then advances at full speed against a stationary wheel, and the position-error check faults
+  (`:2536-2541`).
+- `.resetFault` does zero `drv_incr` (`:2195-2200`), which is why the start after each fault was clean.
+
+**Also (DERIVED, not measured):** a restart at a different speed would ramp from the stale increment,
+not from zero.
+
+**Fix direction:** the e-stop entry (or the clear) resets the running state the same way `.resetFault`
+does — `drv_incr`, `prior_incr`, `angle_` from the halls — so a start after an e-stop is an ordinary
+start. Proof: an e-stop, clear, then a restart at the same speed reaches AT_SPEED through SPIN_UP.
+
+### PL-58 -- `holdAtStop()` does not change a stop from speed, although `stopMotor()` is documented as affected by it
+
+**Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §4).
+
+**MEASURED:** with `holdAtStop(FALSE)` and `holdAtStop(TRUE)`, `stopMotor()` takes the same distance in
+every rep: 19–20 ticks from quarter speed and 74–76 from half, on both motors and both signs
+(`debug_260915-134805.log` STOPMODE). The deceleration is about 254 ticks/s² at both speeds.
+
+**DERIVED:**
+- `.rampDn` never reads `stop_mode`. It is used only once the motor is STOPPED
+  (`src/isp_bldc_motor.spin2:2156-2160`, `:2327-2333`).
+- So the stop mode governs only what the bridge does at rest.
+- `stopMotor()`'s doc line "AFFECTED BY: holdAtStop()" (`:666`) is true only at rest.
+
+**Fix direction:** say in the doc (and `DRIVE-OBJECTS.md`) that `holdAtStop()` selects hold or release
+**at rest**, and that every stop from speed follows the driver's ramp. Publish the C-4 data with it
+(«#3514» / «#3515»). Decide together with PL-55 and PL-56.
+
+### PL-59 -- POSTFLT's 3° offset does not provoke a fault at half speed, so the post-fault stop is unmeasured
+
+**Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §5.1).
+
+**MEASURED:**
+- All four fault traces end `why,NO_FAULT` (`debug_260915-135838.log:2659,2969,3733,4043`).
+- With the NEG offset written to 3° at half speed, current fell from about 945 mV to 21–32 mV
+  (`:2916-2922`), speed held, and no fault came in 2 s on either motor.
+- In the same visit, scan run 8's RIGHT NEG half-speed leg faulted at 4°, with 5° its last clean point
+  (`debug_260915-140255.log`).
+
+**DERIVED:**
+- `FAULT_PROVOKE_NEG_DEG` = 3 was measured to fault at quarter speed (`plans/MOTION-HARNESS-DESIGN.md:487-493`).
+- At half speed the fault edge depends on how it is approached: the scan steps and settles, while
+  POSTFLT writes once at speed.
+- S-9a's post-fault stop therefore has no data.
+
+**Fix direction:** POSTFLT needs a provocation that faults on every instance, confirmed by its own
+record, before S-9a can be judged. Decide the method at the harness's next revision; do not tune an
+angle at the bench.
+
+### PL-60 -- the left board's `ph_x10` reading sags with load and the right board's does not
+
+**Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §9.4).
+
+**MEASURED (`debug_260915-134805.log` BM-RUNG2, rungs 20M–165M):**
+
+| | `ph_x10` max / min | Drift | Largest current |
+|---|---|---|---|
+| LEFT NEG | 24,332 / 23,653 | 2.82 % | 7.9 A |
+| LEFT POS | 24,335 / 23,754 | 2.40 % | 6.8 A |
+| RIGHT NEG | 23,988 / 23,921 | 0.28 % | 8.4 A |
+| RIGHT POS | 23,987 / 23,945 | 0.18 % | 7.2 A |
+
+The left minima sit at the highest-current rung.
+
+**DERIVED:** one pack cannot sag 2.4–2.8 % on one board and 0.2–0.3 % on the other at similar currents.
+The two boards' readings respond differently to load. C-6 is CONSISTENT on the left and INCONCLUSIVE
+on the right.
+
+**Fix direction:** one DMM reading across each board's own supply terminals at a high rung — the
+measurement C-6 names — on **both** boards. It can go alongside PL-45, which is also a left-board
+reading offset.
+
+### PL-61 -- above 100M the duty pins at maximum and current falls twentyfold while speed still tracks
+
+**Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §9.1–9.3). Input to PL-26 and PL-50.
+
+**MEASURED (`debug_260915-134805.log:15084-15233`):**
+- All 48 ladder rungs are OK on both motors and both signs, including the 155M and 165M probes. The
+  unloaded ceiling is above 165M, at least 12 % above the 147M limit.
+- Duty reaches `duty_max` 24,264 by 120M.
+- `inet_x10` peaks at 100M (10,186–12,612), then falls: 5,461–5,721 at 120M, about 1,500 at 140M, and
+  435–653 at 155–165M.
+- Speed still tracks the command at the same ratio, 0.956–0.958, while peak error grows from 64–77 to
+  101–107.
+- `rate_x10 / pred_x10` is 0.946–0.965 from 10M to 165M: a constant gain, not a speed-dependent
+  departure (PL-50).
+
+**Mechanism: not established.**
+
+**Fix direction:** explain it from source before any change to the ceilings. It bears directly on
+PL-26's commutation-angle question (lead angle at speed) and on the published speed limits.
+
+### PL-62 -- the `dual-clock` tier accepts any number as the clock, so a ten-digit value reached the compiler
+
+**Found 2026-09-15 in Visit 2.** STEPHEN: *"dual-clock2m.out three tests couldnt be run - this is the
+console out from 1 of them"*.
+
+**MEASURED (`analyses/bench/2026-09-15/dual-clock2m.out`):**
+- The banner and the patch line both read `2000000000`, which is ten digits. The run sheet says
+  `200000000` (`analyses/bench/VISIT-2-RUNSHEET.md:18`).
+- Output stops at `Compiling with DEBUG`, with no error line and no log.
+
+**DERIVED:**
+- `tools/bench-run.sh:221` checks only that the value is digits, so any number passes.
+- The script's own error lines go to stderr (`:254`), and this console capture does not show them.
+- The other two clock loads left no output to read.
+
+**Fix direction:**
+- For `dual-clock`, refuse any value other than `200000000`, `270000000` and `300000000`, naming the
+  three. That makes the typo impossible rather than detectable.
+- Make sure the failure reason reaches the console the operator captures.
+
+### PL-63 -- the right motor's quarter-speed NEG float stop never confirmed rest, in either rep
+
+**Found 2026-09-15 in Visit 2.** Minor.
+
+**MEASURED:** traces 25 and 28 end `why,NOT_REACHED` (`debug_260915-134805.log:7888,8787`), although
+both reached STOPPED after 19 ticks, like every other quarter-speed stop. Every other STOPMODE trace
+confirmed rest.
+
+**Consequence:** the C-4 table has no time to rest for that one cell. Its tick count is complete.
+
+**Fix direction:** read those two traces' last samples for the value that kept changing (`pos`, `hw`
+or both), then decide whether the stillness rule or the reading is at fault.
 
 ---
 
