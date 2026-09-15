@@ -9,7 +9,7 @@ then one UPDATE. The layout constants below are the SINGLE SOURCE OF TRUTH -- th
 the BMPs from them and prints a ready-to-paste Spin2 CON block of the same numbers, so the
 artwork and the code cannot drift. The T0H_* block already pasted into test_bench_t0.spin2 was
 computed by hand from these same numbers (task 3542) -- if this script's constants ever change,
-re-run it and re-paste, exactly as gen_bench_char_assets.py's own header instructs.
+re-run it and re-paste.
 
     python3 tools/gen_t0hand_assets.py            # write src/t0h_*.bmp, print the CON block
     python3 tools/gen_t0hand_assets.py --preview  # also write PNGs for visual check
@@ -20,9 +20,8 @@ Pillow writes for an "RGB" image saved as .bmp.
 Sprite cells are OPAQUE -- there is no alpha -- so every cell carries the same background colour
 as the region it lands on, or the blit leaves a seam.
 
-NOT RUN as part of task 3542: that task's tool rules permitted no shell invocation of any kind,
-so this script is authored but its .bmp outputs do not exist in the tree yet. Run it (and then
-compile with the t0-hand tier) before relying on T0-12's panel actually rendering.
+The .bmp outputs are committed beside test_bench_t0.spin2. Whether the panel draws on the rig is
+shown only by the t0-hand run itself, which starts no driver cog.
 """
 
 import os
@@ -57,8 +56,15 @@ STATE_WAITING, STATE_COUNTING, STATE_DONE = 0, 1, 2
 # Domain text baked into the static background -- MUST match test_bench_t0.spin2's
 # T0_12_REVOLUTIONS / T0_12_TOLD_CCW (task 3542). Regenerate this asset if either changes.
 REVOLUTIONS = 3
+TICKS_PER_REV = 90                         # 6.5in hub motor hall transitions per revolution
+TARGET_TRANSITIONS = REVOLUTIONS * TICKS_PER_REV
 TOLD_DIRECTION = "CW (viewed from hub)"    # fixed: the panel bakes it in, and one known direction plus the
                                            # signed tick change answers PL-39, so there is no CCW build to mismatch
+# MUST match test_bench_t0.spin2's T0_MOTOR_BASE (PINS_P16_P31): the right board is at P16 (STEPHEN 2026-09-11).
+WHEEL_TEXT = "RIGHT WHEEL (P16 BOARD)"
+PROMPT_LINE_PITCH = 18
+TRANS_TGT_X = TRANS_X + TRANS_PITCH * TRANS_COUNT + 8
+ILL_EXP_X = ILL_X + ILL_PITCH * ILL_COUNT + 8
 
 # ---------------------------------------------------------------- colours ---
 C_BG      = (18, 20, 24)
@@ -119,21 +125,25 @@ def build_background():
     hdr = "T0-12 HAND-ROTATION ANCHOR"
     centre(d, (HDR_X, HDR_Y, HDR_W, HDR_H), hdr, fit(d, hdr, 20, HDR_W - 16), C_TEXT)
 
-    l1 = "TURN THE TEST WHEEL BY HAND, %s," % TOLD_DIRECTION.upper()
-    l2 = "EXACTLY %d FULL REVOLUTION%s." % (REVOLUTIONS, "" if REVOLUTIONS == 1 else "S")
-    d.text((PROMPT_X, PROMPT_Y), l1, font=fit(d, l1, 16, PROMPT_W), fill=C_TEXT)
-    d.text((PROMPT_X, PROMPT_Y + 26), l2, font=fit(d, l2, 16, PROMPT_W), fill=C_TEXT)
+    l1 = "TURN THE %s BY HAND," % WHEEL_TEXT
+    l2 = "%s, EXACTLY %d FULL REVOLUTION%s." % (TOLD_DIRECTION.upper(), REVOLUTIONS, "" if REVOLUTIONS == 1 else "S")
+    l3 = "PRESS S, TURN THE WHEEL, THEN PRESS SPACE."
+    for line_idx, text in enumerate((l1, l2, l3)):
+        d.text((PROMPT_X, PROMPT_Y + line_idx * PROMPT_LINE_PITCH), text, font=fit(d, text, 15, PROMPT_W), fill=C_TEXT)
 
     # well the state word blits into, so an un-blitted frame still looks deliberate
     d.rectangle([STATE_X, STATE_Y, STATE_X + STATE_W - 1, STATE_Y + STATE_H - 1], fill=C_WELL)
 
     left(d, (TRANS_LBL_X, TRANS_LBL_Y, 120, 32), "TRANSITIONS", fit(d, "TRANSITIONS", 16, 120), C_DIM)
     d.rectangle([TRANS_X, TRANS_Y, TRANS_X + TRANS_PITCH * TRANS_COUNT - 1, TRANS_Y + DGT_H - 1], fill=C_WELL)
+    target = "OF %d" % TARGET_TRANSITIONS
+    left(d, (TRANS_TGT_X, TRANS_LBL_Y, PANEL_W - TRANS_TGT_X - 8, 32), target, fit(d, target, 16, PANEL_W - TRANS_TGT_X - 8), C_DIM)
 
     left(d, (ILL_LBL_X, ILL_LBL_Y, 120, 32), "ILLEGAL", fit(d, "ILLEGAL", 16, 120), C_DIM)
     d.rectangle([ILL_X, ILL_Y, ILL_X + ILL_PITCH * ILL_COUNT - 1, ILL_Y + DGT_H - 1], fill=C_WELL)
+    left(d, (ILL_EXP_X, ILL_LBL_Y, PANEL_W - ILL_EXP_X - 8, 32), "EXPECT 0", fit(d, "EXPECT 0", 16, PANEL_W - ILL_EXP_X - 8), C_DIM)
 
-    foot = "PRESS ANY KEY TO START, THEN AGAIN TO STOP (WINDOW NEEDS FOCUS)"
+    foot = "S STARTS THE COUNT, SPACE STOPS IT -- CLICK THIS WINDOW FIRST"
     d.text((FOOT_X, FOOT_Y), foot, font=fit(d, foot, 13, FOOT_W), fill=C_DIM)
     return img
 

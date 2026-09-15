@@ -84,6 +84,7 @@ Usage:  tools/bench-run.sh <tier> [clkfreq]
                    dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
                    dual-c         motion harness part C: PREFLT, BASELINE, POSTFLT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-floor     motion harness part FLOOR -- WHEELS DOWN, OPERATOR OBSERVES ABOUT 2 S OF DRIVING  [ATTENDED]
+                   dual-ui        motion harness part UICHECK -- NO MOTOR CONTROL: walks the operator through every panel control and attended screen  [ATTENDED]
   [clkfreq]   -- optional clock frequency in Hz (default: 270000000); required by dual-clock
 
 Examples:
@@ -174,6 +175,10 @@ case "$TIER" in
     dual-floor)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_FLOOR)
                     PRECONDITION="PLATFORM ON THE FLOOR, WHEELS DOWN, SPACE CLEAR -- ATTENDED motion harness part FLOOR: STEPHEN OBSERVES A BRIEF (ABOUT 2 SECOND) WHEELS-DOWN DRIVE at power 50, direction +50; click the bmpanel window first; nothing moves until START; STOP (click or space) is live throughout"
+                    ;;
+    dual-ui)        BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_UICHECK)
+                    PRECONDITION="NO MOTOR CONTROL -- UI walkthrough: no wheel or steering object is ever started, nothing moves; click the bmpanel window first; click each button it shows, then press each key it names, then read each attended screen (START = reads right, SKIP = something is wrong); PASSED -> run dual-brake and dual-floor; FAILED -> they wait for the next bench run"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage

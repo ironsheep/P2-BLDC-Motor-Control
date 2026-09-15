@@ -10,6 +10,9 @@
 > [*Execution model — revised 2026-09-11*](#execution-model--revised-2026-09-11);
 > the dated findings are in [*Sprint Revision — 2026-09-11*](#sprint-revision--2026-09-11).
 > Everything between them is preserved as written and is dated, not current.
+>
+> **Newest:** [*Sprint Revision — 2026-09-15*](#sprint-revision--2026-09-15-before-visit-2) amends the
+> 2026-09-13 revision's order (no log tooling; Visit 2 unattended first, attended behind a walkthrough).
 
 **Scope as written 2026-09-10 — SUPERSEDED:** *"get the bench suite built, run it, and
 record what it decides. The driver fixes are a separate sprint. Nothing in this plan changes
@@ -487,7 +490,7 @@ Batch 2, per the cadence rule.
   that for now"*. Every current reading comes from the driver's own calibrated sense channel.
 - «#3507» — DEBUG channels.
 - «#3508» — the motion harness.
-- «#3509» — the analyser.
+- ~~«#3509» — the analyser.~~ **Withdrawn 2026-09-15.** No log-analysis tooling; see *Sprint Revision — 2026-09-15*.
 - «#3532»'s instrument, once its scope is set.
 
 **Visit 2 — Bench Pass 3 («#3511»).**
@@ -537,7 +540,8 @@ This supersedes the 2026-09-12 table at the end of this plan. The table order is
 | — | «#3506» | deferred | 6 | §2A front end: deferred, no external measurement for now (STEPHEN 2026-09-14) | — |
 | 11 | «#3507» | 2 | 6 | DEBUG channels (PL-8), done in tree | Visit 2 |
 | 12 | «#3508» | 2 | 5 | Motion harness | Visit 2 |
-| 13 | «#3509» | 2 | 6 | Analyser | Visit 2 |
+| 13 | ~~«#3509»~~ | 2 | 6 | ~~Analyser~~ — withdrawn 2026-09-15 (STEPHEN: no log-analysis tooling) | — |
+| 13a | «#3544» | 2 | 5 | Visit 2 prep: attended UI, `dual-ui` walkthrough gate, retired log tooling, run sheet | Visit 2 (`dual-ui`, `t0-hand`) |
 | 14 | «#3532» | 2 | — | Vibration study (scope: Stephen, ~2026-09-15) | first visit after scoping |
 | 15 | «#3511» | — | — | **VISIT 2 — Bench Pass 3** | — |
 | 16 | «#3512» | 3 | 4 | C-3 stop latency, fixed from visit 2's overshoot | Visit 3 (rate sweep) |
@@ -550,6 +554,93 @@ This supersedes the 2026-09-12 table at the end of this plan. The table order is
 
 **Dispatch:** `arbiter-serial`, unchanged. «#3529», «#3502» and «#3533» all write
 `src/isp_bldc_motor.spin2`, and no two tasks share the board.
+
+---
+
+## Sprint Revision — 2026-09-15 (before Visit 2)
+
+Stephen narrowed the work between the bench and the driver fixes. This section amends the 2026-09-13
+revision above; that revision's order stays the live order, with the changes below.
+
+> **STEPHEN:** *"Why are you building any tooling to analyze logs? I would think that's extra work we
+> don't need. I want to keep our work between here in the bench and then the driver fixes to the absolute
+> minimum possible to get the work done. As far as tracking bench results, all we need to do is analyze the
+> logs and write an analysis report every time we get a set of logs back. Nothing else."*
+
+> **STEPHEN:** *"Let's minimize work on tooling, maximize work on investigations that are essential to
+> building the driver that we're trying to build, and get the repairs in the driver as rapidly as possible
+> through this effort."*
+
+> **STEPHEN:** *"I want this next bench run to lead with everything that can run unattended, and then I want
+> a very careful working user interface this time that can lead me through the attended."* and *"at the bench
+> have a no-motor-control test form of run that takes me thru the series of UI controls to make sure they
+> work. If they do work then i run the attended test. if they don't that series doesnt run and we do it next
+> bench run."*
+
+> **STEPHEN:** *"I run each test through your single script, and I give it the parameter that says which tests
+> we're running. That's what we do. That'll be for attended and unattended tests."* and *"what creates movement
+> every time we go to the bench is that we carry something new with us every time. Every time we leave the
+> bench, we end up certifying some of those new pieces. This still has to stay in place"*.
+
+### What changed
+
+- **No log-analysis tooling.**
+  - «#3509», the analyser, is withdrawn and closed.
+  - The sign-off collation (`tools/signoff-collate.py`), its fixtures, the manifest and the detection
+    prediction list are deleted.
+  - Every set of bench logs gets an analysis report written by reading the logs. The verdict lines the
+    bench binaries print stay, and are read there.
+- **Every visit still carries new plan mechanisms and certifies them.** Only the machinery around the verdicts
+  is gone.
+- **Stephen runs every tier** with `tools/bench-run.sh <tier>`, attended and unattended.
+- **Visit 2 leads with every unattended load.** The attended loads follow, gated by a no-motor walkthrough of the
+  operator panel («#3544»).
+
+### Visit 2 order
+
+The bench card is [`VISIT-2-RUNSHEET.md`](../analyses/bench/VISIT-2-RUNSHEET.md).
+
+| # | Tier | Rig | Hands | Gate |
+|---|---|---|---|---|
+| 1 | `dual-a` | Rev B, wheels up | none | first, so stop-mode traces precede the other motion loads |
+| 2–4 | `dual-clock` 200 / 270 / 300 MHz | Rev B, wheels up | none | — |
+| 5 | `dual-b` | Rev B, wheels up | none | — |
+| 6 | `dual-c` | Rev B, wheels up | none | — |
+| 7 | `t0` | Rev B | none | — |
+| 8 | `char` | Rev B, wheels up | none | — |
+| 9 | `scan` (run 8) | Rev B, wheels up | none | — |
+| 10 | `t0-hand` | Rev B | turns the right wheel by hand | none: it starts no driver cog |
+| 11 | `dual-ui` | Rev B | clicks and keys only; nothing moves | PASSED → 12 and 13 run; FAILED → they move to the next visit |
+| 12 | `dual-brake` | Rev B, wheels up | one hand-brake | 11 |
+| 13 | `dual-floor` | Rev B, wheels down | watches a 2 s drive | 11 |
+| 14 | `detect-phase2` | Rev A, motors unplugged | the platform swap | none: no motion, no panel |
+
+The design put the hand-brake load between parts B and C. It moves to the attended block. Part C records its
+own float and brake baselines in its own load (`MOTION-HARNESS-DESIGN.md` I7), so nothing it measures depends
+on the brake load (DERIVED).
+
+### The attended interface («#3544»)
+
+- **The motion panel:**
+  - it names the braked wheel, LEFT (the P32 board);
+  - the RELEASE screen counts down the untouched window;
+  - a HANDS CLEAR screen is drawn before the harness drives the wheels again.
+- **The walkthrough, `dual-ui`:**
+  - it never starts a wheel or the steering object;
+  - it takes every button once by mouse and once by key, then shows every attended screen for Stephen to
+    read, START when it reads right and SKIP when it does not;
+  - it prints one verdict line, R14-DUAL-UICHECK-U, and holds the result screen until START.
+- **The T0-12 panel:** it names the RIGHT wheel (the P16 board) and shows the 270-transition target. Only S
+  starts the count and only SPACE stops it.
+
+### Consequences for the order above
+
+- **«#3509»:** withdrawn 2026-09-15 (row 13).
+- **«#3544»:** the Visit 2 prep work. It is certified at Visit 2 by the `dual-ui` and `t0-hand` runs.
+- **«#3507»:** was to be certified through two collation host cells, which are retired. Visit 2's analysis
+  report reads the DUAL logs for library debug lines instead.
+- **The applied offsets:** Visit 2 cannot certify them. «#3523» stays blocked until scan run 8 and Stephen's
+  margin decision, so that certification moves to the first visit after «#3523» lands (DERIVED).
 
 ---
 

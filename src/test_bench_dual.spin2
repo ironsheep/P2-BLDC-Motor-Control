@@ -22,6 +22,10 @@
 ''               14 Sep 2026 -- SRC_REV=5: each clock build owns its sign-off cells, ids ending -K200 / -K270
 ''               / -K300 selected from CLK_FREQ; a CLOCK build at any other clock judges no cell (design
 ''               sec 12.10)
+''               15 Sep 2026 -- SRC_REV=6: the attended panel names the braked wheel (LEFT, the P32 board),
+''               counts down before the harness drives the wheels again and then shows HANDS CLEAR; part
+''               UICHECK (-D DUAL_PART_UICHECK, tier dual-ui) walks the operator through every panel control
+''               and every attended screen with no wheel or steering object ever started (STEPHEN 2026-09-15)
 ''
 '' =================================================================================================
 
@@ -33,8 +37,8 @@
   block, its calibrated sense channel and the hall inputs.
 
   ONE SOURCE, ONE PART PER BUILD. tools/bench-run.sh chooses the part with -D DUAL_PART_A,
-  DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C or DUAL_PART_FLOOR. PART_ID comes from one
-  #ifdef chain; with no part flag the build prints part NONE, runs no segment, and ends cleanly.
+  DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C, DUAL_PART_FLOOR or DUAL_PART_UICHECK.
+  PART_ID comes from one #ifdef chain; with no part flag the build prints part NONE, runs no segment, and ends cleanly.
 
   COG MODEL
    - cog 0: runs every command and every emitter; never calls a library getter inside a timed wait.
@@ -50,7 +54,7 @@
 
   HOW IT IS RUN (from the repo root; each load adds -D BENCH_CFG -D BENCH_QUIET and its part flag)
 
-      tools/bench-run.sh dual-a | dual-clock <clkfreq> | dual-b | dual-brake | dual-c | dual-floor
+      tools/bench-run.sh dual-a | dual-clock <clkfreq> | dual-b | dual-brake | dual-c | dual-floor | dual-ui
 
   DEBUG RECORD BUDGET (design sec 6.2). Ceiling: 255 debug records per compiled program.
 
@@ -81,7 +85,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 5                                         ' hand-bumped whenever this file changes
+    SRC_REV     = 6                                         ' hand-bumped whenever this file changes
     FMT_VERSION = 1                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -115,7 +119,9 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_BRAKE - OUTSIDE (attended: one hand-brake)
   '  PART_C     - PREFLT, BASELINE, POSTFLT
   '  PART_FLOOR - FLOOR (attended: wheels down, brief observation)
-    #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_FLOOR
+  '  PART_UICHECK - UICHECK (attended: every panel control and attended screen, no motor control at all)
+    #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_FLOOR, PART_UICHECK
+    PART_COUNT = PART_UICHECK + 1
 
   ' RUN_TIME_CAP_S per load (design sec 4.2 item 6)
 #ifdef DUAL_PART_A
@@ -142,8 +148,13 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     PART_ID        = PART_FLOOR
     RUN_TIME_CAP_S = 600
 #else
+#ifdef DUAL_PART_UICHECK
+    PART_ID        = PART_UICHECK
+    RUN_TIME_CAP_S = 1_500
+#else
     PART_ID        = PART_NONE
     RUN_TIME_CAP_S = 60
+#endif
 #endif
 #endif
 #endif
@@ -273,6 +284,9 @@ CON { segment timing }
     Z_STEP_MS             = 2_000
     OUT_POLL_MS           = 100
     FLOOR_RUN_MS          = 2_000                           ' brief wheels-down observation of which way the platform turns, finding AC; design sec 12.1 Q10
+    UI_STEP_TIMEOUT_MS    = 30_000                          ' UICHECK: the longest wait for one control or one screen
+    UI_HILITE_MS          = 500                             ' UICHECK: a received control stays highlighted this long
+    UI_PREVIEWS           = 7                               ' UICHECK: attended screens shown for the operator to read
     RATE_X10_SCALE        = 10_000                          ' ticks * this / ms = ticks per second x10
     X10                   = 10
 
@@ -426,6 +440,9 @@ CON { record widths and token lengths }
     TOKMAX_CRIT      = 18
     TOKMAX_UNITS     = 8
     TOKMAX_SFVERDICT = 9
+    TOKMAX_UIKIND    = 7
+    TOKMAX_UIRES     = 7
+    TOKMAX_BUTTON    = 8
 
 CON { record enums -- each value has a token in the DAT token tables }
 
@@ -440,8 +457,8 @@ CON { record enums -- each value has a token in the DAT token tables }
 
   ' Segment (token = the name after SEG_):
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
-        SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR
-    SEG_COUNT = 12
+        SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK
+    SEG_COUNT = 13
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -505,8 +522,22 @@ CON { record enums -- each value has a token in the DAT token tables }
     STOPBY_COUNT = 3
 
   ' BM-OPER prompt:
-    #0, PROMPT_BRAKE_L, PROMPT_FLOOR
-    PROMPT_COUNT = 2
+    #0, PROMPT_BRAKE_L, PROMPT_FLOOR, PROMPT_UICHECK
+    PROMPT_COUNT = 3
+
+  ' BM-UISTEP kind (UICHECK):
+  '  UIK_CLICK   - one live button, taken only as a mouse click
+  '  UIK_KEY     - one live button, taken only as its key
+  '  UIK_PREVIEW - one attended screen; START when it reads right, SKIP when it does not
+    #0, UIK_CLICK, UIK_KEY, UIK_PREVIEW
+    UIK_COUNT = 3
+
+  ' BM-UISTEP result:
+  '  UIR_OK      - the control arrived, or the screen read right
+  '  UIR_WRONG   - the operator said the screen is wrong (SKIP)
+  '  UIR_TIMEOUT - nothing usable arrived within UI_STEP_TIMEOUT_MS
+    #0, UIR_OK, UIR_WRONG, UIR_TIMEOUT
+    UIR_COUNT = 3
 
   ' BM-OPER event:
   '  OPEV_SHOWN   - a prompt the operator now sees
@@ -609,6 +640,11 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_PROMPT_BRAKE_RELEASE = 2
     BM_PROMPT_FLOOR_START   = 3
     BM_PROMPT_FLOOR_ASK     = 4
+    BM_PROMPT_BRAKE_RUNNING = 5
+    BM_PROMPT_UI_CLICK      = 6
+    BM_PROMPT_UI_KEY        = 7
+    BM_PROMPT_UI_PREVIEW    = 8
+    BM_PROMPT_UI_END        = 9
 
     BM_STATE_X              = 12
     BM_STATE_Y              = 116
@@ -623,6 +659,10 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_STATE_DONE           = 6
     BM_STATE_SKIPPED        = 7
     BM_STATE_TIMED_OUT      = 8
+    BM_STATE_WHEELS_AGAIN   = 9
+    BM_STATE_UI_CHECK       = 10
+    BM_STATE_UI_PASSED      = 11
+    BM_STATE_UI_FAILED      = 12
 
     BM_BTN_W                = 108
     BM_BTN_H                = 36
@@ -734,7 +774,7 @@ DAT { packed token tables -- zero-separated, indexed by tokenAt(); order follows
 tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
 tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
-                BYTE    "FLOOR", 0
+                BYTE    "FLOOR", 0, "UICHECK", 0
 tokWhy          BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
@@ -758,12 +798,16 @@ tokAns          BYTE    "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0, "NONE
 tokInput        BYTE    "KEY", 0, "MOUSE", 0, "NONE", 0
 tokSlower       BYTE    "LEFT", 0, "RIGHT", 0, "EQUAL", 0
 tokStopBy       BYTE    "TIMER", 0, "OPERATOR", 0, "ABORT", 0
-tokPrompt       BYTE    "BRAKE_L", 0, "FLOOR", 0
+tokPrompt       BYTE    "BRAKE_L", 0, "FLOOR", 0, "UICHECK", 0
+tokUiKind       BYTE    "CLICK", 0, "KEY", 0, "PREVIEW", 0
+tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0
+' operator panel buttons, in BM_BTN_* order
+tokButton       BYTE    "START", 0, "SKIP", 0, "STOP", 0, "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0
 tokOpEv         BYTE    "SHOWN", 0, "START", 0, "SKIP", 0, "TIMEOUT", 0, "ANSWER", 0, "DONE", 0, "STOP", 0
 tokSegEv        BYTE    "BEGIN", 0, "END", 0, "SKIP", 0
 tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG", 0
 tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0
-tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "FLOOR", 0
+tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "FLOOR", 0, "UI", 0
 ' driver state DCS_* 0..7; SLOW_TO_CHG shortened to fit the 10-byte st field
 tokDcs          BYTE    "UNKNOWN", 0, "STOPPED", 0, "SPIN_UP", 0, "AT_SPEED", 0, "SPIN_DN", 0
                 BYTE    "SLOW_CHG", 0, "FAULTED", 0, "ESTOP", 0
@@ -776,7 +820,7 @@ tokCp           BYTE    "INIT", 0, "INST_ACK", 0, "READY", 0, "ZERO", 0, "ATSPEE
 ' BM-PLAN finds, per segment (finding ids joined by "_"), indexed by SEG_*
 tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-3_C-6", 0, "S-3", 0
                 BYTE    "C-5_Z_S-1", 0, "C-3", 0, "M_AF_S-5_Z", 0, "FIELD_Q", 0, "S-9a", 0, "S-9a", 0
-                BYTE    "AC", 0
+                BYTE    "AC", 0, "UI", 0
 
 DAT { fixed tokens }
 
@@ -790,7 +834,7 @@ sBoardUnknown   BYTE    "UNKNOWN", 0
 sActionRetired  BYTE    "MOTOR_RETIRED", 0
 sPanicLine      BYTE    "* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)", 0
 
-DAT { sign-off tokens -- one DAT string per cell, passed by @label to emitSignoffDecl() (check-ready) }
+DAT { sign-off tokens -- one DAT string per cell, passed by @label to emitSignoffDecl() }
 
 sSfBin          BYTE    "DUAL", 0
 sSfTask         BYTE    "3508", 0
@@ -826,6 +870,9 @@ sSfCellRampRest BYTE    "R14-DUAL-RAMPREST-B", 0
 sSfCellOffRest  BYTE    "R14-DUAL-OFFREST-C", 0
 sSfCellBrakeFlt BYTE    "R14-DUAL-BRAKEFLT-H", 0
 sSfCellFloorAns BYTE    "R14-DUAL-FLOORANS-F", 0
+sSfCellNoStallU BYTE    "R14-DUAL-NOSTALL-U", 0
+sSfCellDbgMaskU BYTE    "R14-DUAL-DBGMASK-U", 0
+sSfCellUiCheck  BYTE    "R14-DUAL-UICHECK-U", 0
 sSfCritCog0End  BYTE    "ENDED_BY_COG0", 0
 sSfCritQuiet    BYTE    "QUIET_MASKS", 0
 sSfCritInstLive BYTE    "INST_LIVE", 0
@@ -839,6 +886,7 @@ sSfCritRampRest BYTE    "RAMP_RESTORED", 0
 sSfCritOffRest  BYTE    "OFFSETS_RESTORED", 0
 sSfCritBrakeFlt BYTE    "BRAKE_FAULT_SEEN", 0
 sSfCritFloorAns BYTE    "OPERATOR_ANSWERED", 0
+sSfCritUiCheck  BYTE    "UI_CONTROLS_OK", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfPass         BYTE    "PASS", 0
@@ -1130,6 +1178,9 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    bSfBrakeSeen
     LONG    bSfFloorRan                                     ' FLOORANS
     LONG    bSfFloorAnswered
+    LONG    bSfUiRan                                        ' UICHECK
+    LONG    bSfUiOk                                         ' every UICHECK step was OK
+    LONG    uiStepCount                                     ' BM-UISTEP records emitted
 
 VAR { operator panel and attended-segment staging -- cog 0 only }
 
@@ -1248,6 +1299,9 @@ PRI initRunState() | slotIdx
     bSfBrakeSeen := FALSE
     bSfFloorRan := FALSE
     bSfFloorAnswered := FALSE
+    bSfUiRan := FALSE
+    bSfUiOk := FALSE
+    uiStepCount := 0
     outCount := 0
     operQueueCount := 0
     pnlPressed := PNL_BTN_NONE
@@ -1308,6 +1362,8 @@ PRI runPart()
             runSegment(SEG_POSTFLT)
         PART_FLOOR:
             runSegment(SEG_FLOOR)
+        PART_UICHECK:
+            runSegment(SEG_UICHECK)
     bRunReturned := TRUE                                    ' before the return, or main() reads a library abort
 
 PRI runSegment(seg)
@@ -1340,6 +1396,8 @@ PRI runSegment(seg)
                 segPostFault()
             SEG_FLOOR:
                 segFloor()
+            SEG_UICHECK:
+                segUiCheck()
     else
         emitSeg(seg, SEGEV_SKIP, segAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
 
@@ -1363,12 +1421,12 @@ PRI runContinue(seg) : bContinue | elapsedS
     bContinue := (bRunAborted == FALSE)
 
 PRI segAttended(seg) : bAttended
-' Report whether a segment needs a person at the rig (OUTSIDE and FLOOR).
+' Report whether a segment needs a person at the rig (OUTSIDE, FLOOR and UICHECK).
 '
 ' @param seg - SEG_* value
 ' @returns bAttended - TRUE for an attended segment
 
-    bAttended := (seg == SEG_OUTSIDE) or (seg == SEG_FLOOR)
+    bAttended := (seg == SEG_OUTSIDE) or (seg == SEG_FLOOR) or (seg == SEG_UICHECK)
 
 PRI segBegin(seg)
 ' Open a segment: reset its counters and emit BM-SEG BEGIN.
@@ -1592,6 +1650,101 @@ PRI segFloor() | whyCode
         whyCode := floorRun()
     operFlush()
     segEnd((whyCode <> WHY_NONE) ? whyCode : segWhy())
+
+PRI segUiCheck() | stepIdx
+' UICHECK (tier dual-ui; STEPHEN 2026-09-15: "a no-motor-control test form of run that takes me thru the
+' series of UI controls to make sure they work"): no wheel or steering object is ever started. Every panel
+' button is taken once as a mouse click and once as its key, one live button at a time; then every attended
+' screen is drawn as the attended parts draw it, START when it reads right and SKIP when it does not.
+' Each step is a BM-UISTEP; R14-DUAL-UICHECK-U is TRUE only when every step was OK. The result screen
+' waits for START so the operator reads it before the session ends.
+'
+' @local stepIdx - button or screen index
+
+    segBegin(SEG_UICHECK)
+    panelSetup()
+    bSfUiRan := TRUE
+    bSfUiOk := TRUE
+    repeat stepIdx from 0 to BM_BTN_COUNT - 1
+        uiCheckButton(BM_PROMPT_UI_CLICK, UIK_CLICK, INPUT_MOUSE, stepIdx)
+    repeat stepIdx from 0 to BM_BTN_COUNT - 1
+        uiCheckButton(BM_PROMPT_UI_KEY, UIK_KEY, INPUT_KEY, stepIdx)
+    panelShow(BM_PROMPT_UI_PREVIEW, BM_STATE_UI_CHECK, PNL_LIVE_START, PNL_BTN_NONE)
+    operWait(PNL_LIVE_START, UI_STEP_TIMEOUT_MS, SIDE_NONE, FALSE)
+    repeat stepIdx from 0 to UI_PREVIEWS - 1
+        uiCheckScreen(stepIdx)
+    panelShow(BM_PROMPT_UI_END, bSfUiOk ? BM_STATE_UI_PASSED : BM_STATE_UI_FAILED, PNL_LIVE_START, PNL_BTN_NONE)
+    operWait(PNL_LIVE_START, UI_STEP_TIMEOUT_MS, SIDE_NONE, FALSE)
+    segEnd(segWhy())
+
+PRI uiCheckButton(promptIdx, kindCode, inputWanted, btnIdx) | startMs, remainMs, buttonIdx, inputCode, resultCode
+' One UICHECK control step: only btnIdx is live, and the step is OK only when that button arrives through
+' the one input this step checks, so a working key cannot pass a broken mouse. A received button is drawn
+' highlighted for UI_HILITE_MS.
+'
+' @param promptIdx - BM_PROMPT_UI_CLICK or BM_PROMPT_UI_KEY
+' @param kindCode - UIK_CLICK or UIK_KEY
+' @param inputWanted - INPUT_MOUSE or INPUT_KEY
+' @param btnIdx - BM_BTN_* under test
+'
+' @local startMs - getms() when the step was shown
+' @local remainMs - ms left in the step
+' @local buttonIdx - BM_BTN_* received, PNL_BTN_NONE on timeout
+' @local inputCode - INPUT_* of the button received
+' @local resultCode - UIR_OK or UIR_TIMEOUT
+
+    panelShow(promptIdx, BM_STATE_UI_CHECK, DECOD btnIdx, PNL_BTN_NONE)
+    startMs := getms()
+    resultCode := UIR_TIMEOUT
+    inputCode := INPUT_NONE
+    repeat
+        remainMs := UI_STEP_TIMEOUT_MS - (getms() - startMs)
+        if remainMs <= 0
+            quit
+        buttonIdx, inputCode, _ := operWait(DECOD btnIdx, remainMs, SIDE_NONE, FALSE)
+        if buttonIdx == PNL_BTN_NONE
+            quit
+        if inputCode == inputWanted
+            resultCode := UIR_OK
+            quit
+    if resultCode == UIR_OK
+        panelShow(promptIdx, BM_STATE_UI_CHECK, PNL_LIVE_NONE, btnIdx)
+        waitBeat(UI_HILITE_MS, CP_LOOP_OPER)
+        emitUiStep(kindCode, btnIdx, btnIdx, promptIdx, resultCode, inputCode, getms() - startMs)
+    else
+        bSfUiOk := FALSE
+        emitUiStep(kindCode, btnIdx, PNL_BTN_NONE, promptIdx, resultCode, INPUT_NONE, getms() - startMs)
+
+PRI uiCheckScreen(screenIdx) | promptIdx, stateIdx, startMs, buttonIdx, inputCode, resultCode
+' One UICHECK screen: an attended screen's prompt and state word exactly as the attended parts draw them,
+' with START and SKIP live. START means it reads right; SKIP means something is wrong.
+'
+' @param screenIdx - 0..UI_PREVIEWS-1, in the order the attended parts show their screens
+'
+' @local promptIdx - BM_PROMPT_* drawn
+' @local stateIdx - BM_STATE_* drawn
+' @local startMs - getms() when the screen was shown
+' @local buttonIdx - BM_BTN_START, BM_BTN_SKIP, or PNL_BTN_NONE on timeout
+' @local inputCode - INPUT_* of the button received
+' @local resultCode - UIR_* of the step
+
+    promptIdx := lookupz(screenIdx: BM_PROMPT_BRAKE_START, BM_PROMPT_BRAKE_NOW, BM_PROMPT_BRAKE_RELEASE, BM_PROMPT_BRAKE_RUNNING, BM_PROMPT_FLOOR_START, BM_PROMPT_FLOOR_START, BM_PROMPT_FLOOR_ASK)
+    stateIdx := lookupz(screenIdx: BM_STATE_WAITING, BM_STATE_BRAKE_NOW, BM_STATE_RELEASE, BM_STATE_WHEELS_AGAIN, BM_STATE_WAITING, BM_STATE_OBSERVING, BM_STATE_ASK)
+    panelShow(promptIdx, stateIdx, PNL_LIVE_START | PNL_LIVE_SKIP, PNL_BTN_NONE)
+    startMs := getms()
+    buttonIdx, inputCode, _ := operWait(PNL_LIVE_START | PNL_LIVE_SKIP, UI_STEP_TIMEOUT_MS, SIDE_NONE, FALSE)
+    if buttonIdx == BM_BTN_START
+        resultCode := UIR_OK
+    elseif buttonIdx == BM_BTN_SKIP
+        resultCode := UIR_WRONG
+        bSfUiOk := FALSE
+    else
+        resultCode := UIR_TIMEOUT
+        bSfUiOk := FALSE
+    if buttonIdx <> PNL_BTN_NONE
+        panelShow(promptIdx, stateIdx, PNL_LIVE_NONE, buttonIdx)
+        waitBeat(UI_HILITE_MS, CP_LOOP_OPER)
+    emitUiStep(UIK_PREVIEW, PNL_BTN_NONE, buttonIdx, promptIdx, resultCode, inputCode, getms() - startMs)
 
 PRI segPreflight() : bAllMoved | side, bMoved
 ' PREFLT (every motion load, design sec 4.4): prove each wheel turns before anything is measured. A
@@ -2409,7 +2562,7 @@ PRI outsideRun() : whyCode | tid, sid, safeEvent, bReached, rowIdx
                 outsideBrake(tid)
             if bSteerUp
                 steerStopMotors()
-                steerPollPhase(0, getms(), STOP_TIMEOUT_MS, TRUE, FALSE)
+                steerPollPhase(0, getms(), STOP_TIMEOUT_MS, TRUE, FALSE, FALSE)
     bCpFrozen := instFreeze(0)
     if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
         cpWhy := WHY_INST_NOACK
@@ -2478,7 +2631,8 @@ PRI outsideZSteps(tid, markMs) : whyCode | phaseStartMs
 ' driveAtPower(50, 50) again (a request equal to the last is not a new request, sec 12.8), Z_STEP_MS; Z
 ' step 2, stopMotors(), both STOPPED (<= STOP_TIMEOUT_MS), driveAtPower(50, 50), Z_STEP_MS. The public API
 ' is polled into outBuf every OUT_POLL_MS throughout, and every drive call is preceded by the SYNC_PRECOND
-' check (steerDriveBoth()).
+' check (steerDriveBoth()). The operator is told before the harness drives the wheels again: the RELEASE
+' screen counts the untouched window down, and the HANDS CLEAR screen is drawn before the first re-command.
 '
 ' @param tid - trace id
 ' @param markMs - getms() at the fault mark: the t_ms origin
@@ -2486,37 +2640,41 @@ PRI outsideZSteps(tid, markMs) : whyCode | phaseStartMs
 '
 ' @local phaseStartMs - getms() at a step's command
 
-    whyCode := safeWhy(steerPollPhase(markMs, markMs, S5_UNTOUCHED_MS, FALSE, TRUE))
+    whyCode := safeWhy(steerPollPhase(markMs, markMs, S5_UNTOUCHED_MS, FALSE, TRUE, TRUE))
     if whyCode == WHY_NONE
+        panelShow(BM_PROMPT_BRAKE_RUNNING, BM_STATE_WHEELS_AGAIN, PNL_LIVE_NONE, PNL_BTN_NONE)
         phaseStartMs := getms()
         if steerDriveBoth(SEG_OUTSIDE, tid, STEER_POWER_HALF)
-            whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE))
+            whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE, FALSE))
         else
             whyCode := WHY_SYNC_PRECOND
     if whyCode == WHY_NONE
         steerStopMotors()
-        whyCode := safeWhy(steerPollPhase(markMs, getms(), STOP_TIMEOUT_MS, TRUE, TRUE))
+        whyCode := safeWhy(steerPollPhase(markMs, getms(), STOP_TIMEOUT_MS, TRUE, TRUE, FALSE))
     if whyCode == WHY_NONE
         phaseStartMs := getms()
         if steerDriveBoth(SEG_OUTSIDE, tid, STEER_POWER_HALF)
-            whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE))
+            whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE, FALSE))
         else
             whyCode := WHY_SYNC_PRECOND
 
-PRI steerPollPhase(markMs, phaseStartMs, durationMs, bUntilStopped, bPoll) : safeEvent | safeNow
+PRI steerPollPhase(markMs, phaseStartMs, durationMs, bUntilStopped, bPoll, bCountdown) : safeEvent | safeNow, secondsLeft
 ' One beat-polled steering step: every SAMPLE_MS a safety read of the instrument mirror (sec 2.8) that
 ' acts on the absolute-current abort and a stalled instrument, but not on a fault flag (a braked or
 ' faulted wheel's flag is what the step observes); when asked, one public-API row every OUT_POLL_MS since
-' the mark. Ends durationMs after phaseStartMs, or once both wheels read DCS_STOPPED when asked.
+' the mark, and the step's whole seconds left on the panel countdown. Ends durationMs after phaseStartMs,
+' or once both wheels read DCS_STOPPED when asked.
 '
 ' @param markMs - getms() at the fault mark: the t_ms origin (read only when bPoll is TRUE)
 ' @param phaseStartMs - getms() the step's duration is measured from
 ' @param durationMs - the step's bound
 ' @param bUntilStopped - TRUE to end early once both wheels read DCS_STOPPED
 ' @param bPoll - TRUE to poll the public API into outBuf
+' @param bCountdown - TRUE to show the seconds left in this step on the panel
 ' @returns safeEvent - SAFE_ABS_ABORT or SAFE_INST_STALL when one ended the step, else SAFE_NONE
 '
 ' @local safeNow - this pass's safety read
+' @local secondsLeft - whole seconds left in this step, rounded up
 
     safetyReset()
     safeEvent := SAFE_NONE
@@ -2524,6 +2682,11 @@ PRI steerPollPhase(markMs, phaseStartMs, durationMs, bUntilStopped, bPoll) : saf
         beat(CP_LOOP_POLL)
         if bPoll and (outCount < OUT_POLLS) and ((getms() - markMs) >= (outCount * OUT_POLL_MS))
             outPoll(getms() - markMs)
+        if bCountdown
+            secondsLeft := (((durationMs - (getms() - phaseStartMs)) + (MS_PER_SEC - 1)) / MS_PER_SEC) #> 0
+            if secondsLeft <> pnlSeconds
+                pnlSeconds := secondsLeft
+                panelRender()
         waitms(SAMPLE_MS)
         safeNow := safetyPoll(SIDE_BOTH)
         if (safeNow == SAFE_ABS_ABORT) or (safeNow == SAFE_INST_STALL)
@@ -2624,7 +2787,7 @@ PRI floorRun() : whyCode | tid, sid, buttonIdx, inputCode, safeEvent, driveStart
             else
                 flStopBy := STOPBY_TIMER
             if bSteerUp
-                steerPollPhase(0, getms(), STOP_TIMEOUT_MS, TRUE, FALSE)
+                steerPollPhase(0, getms(), STOP_TIMEOUT_MS, TRUE, FALSE, FALSE)
     bCpFrozen := instFreeze(0)
     if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
         cpWhy := WHY_INST_NOACK
@@ -5147,6 +5310,8 @@ PRI emitHeaderRecords() | orderIdx
             emitPlan(SEG_POSTFLT, 3)
         PART_FLOOR:
             emitPlan(SEG_FLOOR, 1)
+        PART_UICHECK:
+            emitPlan(SEG_UICHECK, 1)
     if PART_ID == PART_A
         repeat orderIdx from 0 to LADDER_RUNGS - 1
             emitLadder(orderIdx)
@@ -5172,7 +5337,7 @@ PRI emitBanner()
     recBegin(@"BM-BANNER")
     benchLog.numField(@"src_rev", SRC_REV, LIM_SMALL)
     benchLog.numField(@"fmt", FMT_VERSION, LIM_SMALL)
-    benchLog.tokenField(@"part", tokenAt(@tokPart, PART_FLOOR + 1, PART_ID), TOKMAX_PART)
+    benchLog.tokenField(@"part", tokenAt(@tokPart, PART_COUNT, PART_ID), TOKMAX_PART)
 #ifdef BENCH_CFG
     benchLog.tokenField(@"cfg_id", @sCfgBench, TOKMAX_CFG)
 #else
@@ -5241,13 +5406,13 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
 ' @local estKb - worst-case log KB: traces x (TRACE_EMIT_MAX x 241 B + headers) plus records
 
     bAttended := segAttended(seg)
-    estS := lookupz(seg: 0, 5, 540, 60, 240, 60, 420, 120, 120, 120, 120, 180, 120)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 45, 8, 1_960, 400, 130, 16, 790, 1_180, 100)
+    estS := lookupz(seg: 0, 5, 540, 60, 240, 60, 420, 120, 120, 120, 120, 180, 120, 600)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 45, 8, 1_960, 400, 130, 16, 790, 1_180, 100, 10)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
     benchLog.boolField(@"attended", bAttended)
-    benchLog.tokenField(@"part", tokenAt(@tokPart, PART_FLOOR + 1, PART_ID), TOKMAX_PART)
+    benchLog.tokenField(@"part", tokenAt(@tokPart, PART_COUNT, PART_ID), TOKMAX_PART)
     benchLog.tokenField(@"finds", tokenAt(@tokFinds, SEG_COUNT, seg), TOKMAX_FINDS)
     benchLog.numField(@"est_s", estS, LIM_SMALL)
     benchLog.numField(@"est_kb", estKb, LIM_SMALL)
@@ -5871,6 +6036,44 @@ PRI emitFloor(tid, sid, runMs, answerCode, inputCode, leftRateX10, rightRateX10,
     whyField(whyCode)
     emitRecord()
 
+PRI emitUiStep(kindCode, testedIdx, gotIdx, promptIdx, resultCode, inputCode, waitedMs)
+' BM-UISTEP: one UICHECK step, what was shown and what arrived. tested is the one live button a control step
+' checks (NA on a screen step); got is the button that arrived (NA when none did). Worst case: tag(9) +
+' seq(15) + step(10) + kind(13) + tested(16) + got(13) + prompt(12) + result(15) + input(12) + wait_ms(19)
+' + why(23) = 157 bytes.
+'
+' @param kindCode - UIK_* value
+' @param testedIdx - BM_BTN_* under test, PNL_BTN_NONE on a screen step
+' @param gotIdx - BM_BTN_* that arrived, PNL_BTN_NONE when none did
+' @param promptIdx - BM_PROMPT_* on screen
+' @param resultCode - UIR_* value
+' @param inputCode - INPUT_* of the button that arrived
+' @param waitedMs - ms the step took
+
+    uiStepCount := (uiStepCount + 1) <# LIM_SMALL
+    recBegin(@"BM-UISTEP")
+    benchLog.numField(@"step", uiStepCount, LIM_TINY)
+    benchLog.tokenField(@"kind", tokenAt(@tokUiKind, UIK_COUNT, kindCode), TOKMAX_UIKIND)
+    uiButtonField(@"tested", testedIdx)
+    uiButtonField(@"got", gotIdx)
+    benchLog.numField(@"prompt", promptIdx, LIM_TINY)
+    benchLog.tokenField(@"result", tokenAt(@tokUiRes, UIR_COUNT, resultCode), TOKMAX_UIRES)
+    benchLog.tokenField(@"input", tokenAt(@tokInput, INPUT_COUNT, inputCode), TOKMAX_INPUT)
+    benchLog.numField(@"wait_ms", waitedMs, LIM_MID)
+    whyField(lookupz(resultCode: WHY_NONE, WHY_OPERATOR_SKIP, WHY_OPERATOR_TIMEOUT))
+    emitRecord()
+
+PRI uiButtonField(pName, btnIdx)
+' Append a button field: its token, or NA when no button applies.
+'
+' @param pName - pointer to the field name
+' @param btnIdx - BM_BTN_* value, PNL_BTN_NONE for none
+
+    if (btnIdx >= 0) and (btnIdx < BM_BTN_COUNT)
+        benchLog.tokenField(pName, tokenAt(@tokButton, BM_BTN_COUNT, btnIdx), TOKMAX_BUTTON)
+    else
+        benchLog.textField(pName, @sSfNa)
+
 PRI emitOper(promptCode, eventCode, answerCode, inputCode, waitedMs, whyCode)
 ' BM-OPER: what the operator was shown and did. Worst case 125 bytes.
 '
@@ -5951,7 +6154,7 @@ PRI emitEnd(exitCode)
 
     recBegin(@"BM-END")
     benchLog.tokenField(@"exit", tokenAt(@tokExit, EXIT_COUNT, exitCode), TOKMAX_EXIT)
-    benchLog.tokenField(@"part", tokenAt(@tokPart, PART_FLOOR + 1, PART_ID), TOKMAX_PART)
+    benchLog.tokenField(@"part", tokenAt(@tokPart, PART_COUNT, PART_ID), TOKMAX_PART)
     benchLog.numField(@"segs", segsRun, LIM_TINY)
     benchLog.tokenField(@"last_seg", segToken(lastSeg), TOKMAX_SEG)
     benchLog.numField(@"records", logSeq, LIM_MID)
@@ -5981,6 +6184,8 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallC
         PART_FLOOR:
             pCell := @sSfCellNoStallF
+        PART_UICHECK:
+            pCell := @sSfCellNoStallU
         other:
             pCell := @sUnknownTok
 
@@ -6002,6 +6207,8 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskC
         PART_FLOOR:
             pCell := @sSfCellDbgMaskF
+        PART_UICHECK:
+            pCell := @sSfCellDbgMaskU
         other:
             pCell := @sUnknownTok
 
@@ -6027,8 +6234,7 @@ PRI clockCell(pCell200, pCell270, pCell300) : pCell
 PRI emitSignoffDecls()
 ' One SIGNOFF-DECL per cell this build judges, before anything moves. A build that judges no cell (PART_NONE,
 ' or a CLOCK build at an unswept clock: SF_JUDGES_CELLS) declares nothing. Each cell id is a DAT string passed
-' by @label on the emitter's own line (signoff-collate.py check-ready), so the CLOCK part names each clock's
-' labels under its SF_CLOCK_SLOT.
+' by @label on the emitter's own line, so the CLOCK part names each clock's labels under its SF_CLOCK_SLOT.
 
     if SF_JUDGES_CELLS
         case PART_ID
@@ -6074,6 +6280,10 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellNoStallF)
                 emitSignoffDecl(@sSfCellDbgMaskF)
                 emitSignoffDecl(@sSfCellFloorAns)
+            PART_UICHECK:
+                emitSignoffDecl(@sSfCellNoStallU)
+                emitSignoffDecl(@sSfCellDbgMaskU)
+                emitSignoffDecl(@sSfCellUiCheck)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
@@ -6099,6 +6309,7 @@ PRI emitSignoffs() | slotIdx, side
 '  BRAKE  NOSTALL BOOL; DBGMASK BOOL; BRAKEFLT BOOL (LEFT)
 '  C      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; OFFREST BOOL per motor
 '  FLOOR  NOSTALL BOOL; DBGMASK BOOL; FLOORANS BOOL
+'  UI     NOSTALL BOOL; DBGMASK BOOL; UICHECK BOOL (every BM-UISTEP OK)
 '
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
@@ -6135,6 +6346,8 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoffBool(@sSfCellOffRest, side, @sSfCritOffRest, bSfOffRan[slotIdx], bSfOffOk[slotIdx], SIGNOFF_ONE_INSTANCE)
             PART_FLOOR:
                 emitSignoffBool(@sSfCellFloorAns, SIDE_NONE, @sSfCritFloorAns, bSfFloorRan, bSfFloorAnswered, SIGNOFF_ONE_INSTANCE)
+            PART_UICHECK:
+                emitSignoffBool(@sSfCellUiCheck, SIDE_NONE, @sSfCritUiCheck, bSfUiRan, bSfUiOk, uiStepCount)
 
 PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, instCount) | boundedVal, pVerdict
 ' One COUNT SIGNOFF verdict (test_bench_scan.spin2 emitSignoff(), units fixed to COUNT). Judged on the
@@ -6353,7 +6566,7 @@ PRI wdEmitEnd()
 
     wdRecBegin(@"BM-END")
     wdLog.tokenField(@"exit", tokenAt(@tokExit, EXIT_COUNT, EXIT_WATCHDOG), TOKMAX_EXIT)
-    wdLog.tokenField(@"part", tokenAt(@tokPart, PART_FLOOR + 1, PART_ID), TOKMAX_PART)
+    wdLog.tokenField(@"part", tokenAt(@tokPart, PART_COUNT, PART_ID), TOKMAX_PART)
     wdLog.numField(@"segs", segsRun, LIM_TINY)
     wdLog.tokenField(@"last_seg", segToken(lastSeg), TOKMAX_SEG)
     wdLog.numField(@"records", wdSeq, LIM_MID)
