@@ -482,7 +482,9 @@ Batch 2, per the cadence rule.
 
 **Batch 2** — the motion capabilities:
 - «#3523» — apply the offsets, per that decision.
-- «#3506» — the §2A front end (parts first).
+- ~~«#3506» — the §2A front end (parts first).~~ **Deferred 2026-09-14.** STEPHEN: *"we are not doing
+  any external measurement that was a plan left behind for the moment we are not going forward with
+  that for now"*. Every current reading comes from the driver's own calibrated sense channel.
 - «#3507» — DEBUG channels.
 - «#3508» — the motion harness.
 - «#3509» — the analyser.
@@ -491,8 +493,10 @@ Batch 2, per the cadence rule.
 **Visit 2 — Bench Pass 3 («#3511»).**
 - *Measures:* the speed law in both directions, C-4 deceleration, the fault boundary, C-3
   overshoot, and the vibration study.
-- *Certifies:* the applied offsets (the characterisation run repeated on them), the front end,
-  and the harness.
+- *Certifies:* the applied offsets (the characterisation run repeated on them) and the harness. The
+  front end is deferred, so there is no external measurement (STEPHEN 2026-09-14).
+- *Also carries:* Visit 1's owed items, including T0-12 on the rebuilt panel. There is no desk run
+  before the visit. STEPHEN 2026-09-14: *"no i just want to run the test at the bench"*.
 
 **Batch 3** — the release-shaping changes:
 - «#3512» — C-3 stop latency, fixed from visit 2's overshoot.
@@ -530,8 +534,8 @@ This supersedes the 2026-09-12 table at the end of this plan. The table order is
 | — | «#3538» | deferred | 1 | Library abort/error contract (PL-47): design on file, implementation deferred to the punch list (STEPHEN 2026-09-14) | — |
 | — | «#3543» | deferred | — | Cog-lifecycle and lock patterns (PL-41): deferred to the punch list (STEPHEN 2026-09-14) | — |
 | 9 | «#3523» | 2 | 5 | Apply offsets, per Stephen's decision after visit 1 | Visit 2 |
-| 10 | «#3506» | 2 | 6 | §2A front end (parts first) | Visit 2 |
-| 11 | «#3507» | 2 | 6 | DEBUG channels (PL-8) | Visit 2 |
+| — | «#3506» | deferred | 6 | §2A front end: deferred, no external measurement for now (STEPHEN 2026-09-14) | — |
+| 11 | «#3507» | 2 | 6 | DEBUG channels (PL-8), done in tree | Visit 2 |
 | 12 | «#3508» | 2 | 5 | Motion harness | Visit 2 |
 | 13 | «#3509» | 2 | 6 | Analyser | Visit 2 |
 | 14 | «#3532» | 2 | — | Vibration study (scope: Stephen, ~2026-09-15) | first visit after scoping |
