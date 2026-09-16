@@ -529,7 +529,7 @@ This supersedes the 2026-09-12 table at the end of this plan. The table order is
 | 5 | «#3533» | 1 | 1 | PL-28 / PL-9 (PL-22 start result already in tree, 2026-09-13) | Visit 1 |
 | 6 | «#3504» | 1 | 2 | Tier 0 extension, T0-11…T0-15 | Visit 1 |
 | 7 | «#3521» | 1 | 3 | Automated characterisation + steering liveness | Visit 1 |
-| 8 | «#3522» + «#3505» | — | — | **VISIT 1 — Bench Pass 2a scan run 6 + Bench Pass 2b** (ran 2026-09-14; «#3522» closed; «#3505» owes T0-12, Rev A, re-measures) | — |
+| 8 | «#3522» + «#3505» | — | — | **VISIT 1 — Bench Pass 2a scan run 6 + Bench Pass 2b** (ran 2026-09-14; «#3522» closed; «#3505» closed: T0-12 and the Rev A re-run completed at Visit 2's attended steps, 2026-09-15) | — |
 | 8a | «#3540» | 1b | 5 | Scan v5: measurable half-speed confirmation (PL-46) | Visit 2 (scan run 8) |
 | 8b | «#3539» | 1b | — | Harness stops hiding the owed cells: no trap captures, one printed top-level trap, masking checks fixed, PL-22 comments corrected (PL-44) | Visit 2 (the re-measured start-return, steer-fail and brake-start cells) |
 | 8c | «#3542» | 1b | 2 | T0-12 panel on the proven technique, with turn direction (PL-42, PL-39) | Visit 2 (Stephen's hands) |

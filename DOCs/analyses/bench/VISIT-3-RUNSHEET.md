@@ -63,6 +63,12 @@ nothing; they run at 50 % now.
 **Swap to the Rev A platform. Unplug the A motors.** Then `tools/bench-run.sh detect-phase2`.
 Nothing should turn.
 
+> **Withdrawn 2026-09-16: this step certifies nothing.** It already ran at Visit 2, and «#3505» step 4 was
+> recorded complete (`2026-09-15/VISIT-2-ATTENDED-RESULTS.md` §6, log `143237`). The sheet copied it from a
+> stale owed list. A Rev A run cannot tell a working detection fix from a broken one either: a stale read gives
+> 0, which is also Rev A's correct answer (`2026-09-12/DETECT-A-EVALUATION.md` §2). If it was run, its log is
+> read only for anomalies.
+
 ---
 
 ## Dropped, and why — so nothing is re-run for its own sake

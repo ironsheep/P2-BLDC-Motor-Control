@@ -69,9 +69,9 @@ from 1 of them"*.
   - The half-speed minimum is still not demonstrated.
   - `R9-SCAN-HALFLEG` now FAILs honestly: run 7's defect D1 is fixed.
 - **Char matches Visit 1** within −1.0…+1.8 % net current and −0.1…+1.2 % duty at all eight holds (§12).
-- **Not run:**
-  - the three `dual-clock` loads — the one console shows a ten-digit clock value;
-  - `t0-hand`, the `dual-ui` re-run, `dual-brake`, `dual-floor` and `detect-phase2` (§15).
+- **Not run in the unattended suite:** the three `dual-clock` loads — the one console shows a ten-digit
+  clock value. The attended steps `t0-hand`, `dual-ui`, `dual-brake`, `dual-floor` and `detect-phase2` ran
+  later the same day; see [`VISIT-2-ATTENDED-RESULTS.md`](VISIT-2-ATTENDED-RESULTS.md) (§15).
 
 ---
 
@@ -110,7 +110,9 @@ Verdicts are read from the SIGNOFF lines. The collation tool is withdrawn.
 | 15 | «#3507» | `R15-HOST-CHANLIVE` | Positive limb present | The char log carries library debug lines (`MOT:`, init values) outside its own `BC-` records. |
 | 2–8 | — | Visit 1 rows, re-measured | Still PASS | Rev B at every start in all logs; missed/illegal 0 everywhere; rpm error 0 and implied scale 149–150 at all eight char holds (`140100:415-448`); scan ZXS and ZXSALL spread ≤ 1.9 mV (`140255:1410,1431`). |
 
-**Still owed from «#3505»:** the Rev A detection re-run (step 4), `R2-DETECT-OVERLAP`, and T0-12 (§15).
+**«#3505» owes nothing further.** The Rev A detection re-run (step 4) and T0-12 ran at the attended steps
+([`VISIT-2-ATTENDED-RESULTS.md`](VISIT-2-ATTENDED-RESULTS.md) §2, §6). `R2-DETECT-OVERLAP` cannot be produced by
+any build (PL-67).
 
 ---
 
@@ -601,16 +603,14 @@ No verdict was lost this time. `R1-T0-RESTART` again printed on the tail of a co
 | Owed item | Why | What it holds up |
 |---|---|---|
 | `dual-clock` ×3 (run sheet steps 2–4) | Builds did not run (§1) | S-3 clock route, `CLKFRAME` |
-| `t0-hand` (step 10) | Not run | T0-12. **90 ticks per revolution is still unmeasured.** |
-| `dual-ui` re-run on SRC_REV 7 (step 11) | Not run | It gates steps 12 and 13 |
-| `dual-brake` (step 12) | Not run | M, Z, S-5, AF context, `BRAKEFLT` |
-| `dual-floor` (step 13) | Not run | AC, `FLOORANS` |
-| `detect-phase2` on Rev A (step 14) | Not run | «#3505» step 4; `R2-DETECT-OVERLAP` needs the motors unplugged |
 | FAULTB trials 2–5 on L NEG, R NEG, R POS; C-3 at 10 ft; `RSTPROV-B` RIGHT | Blocked by §3 | — |
 | S-9a fault stop | Blocked by §5.1 | — |
 | S-9a e-stop brake | Blocked by §5.3 | — |
 
-There are no logs for steps 10–14, and I have no note of why they did not run.
+Steps 10–14 are not owed from this report: they ran after the unattended suite, and their results are in
+[`VISIT-2-ATTENDED-RESULTS.md`](VISIT-2-ATTENDED-RESULTS.md). What that visit left owed is `dual-ui` (PL-64) and
+`dual-brake` (the P2 went silent, PL-43). `t0-hand` measured 90 ticks per revolution, `dual-floor` confirmed AC,
+and `detect-phase2` on Rev A completed.
 
 ---
 
@@ -659,3 +659,6 @@ Visit 2 notes were also added to PL-26, PL-36, PL-41, PL-44, PL-46 and PL-50.
   - Finding 2's "float is also that brake, and so is every fault" does not hold, and the polarity derivation is the
     suspect (PL-56).
   - Earlier versions of this note called the polarity settled, then a question for Stephen; both were wrong.
+- **2026-09-16:** §0, §2 and §15 no longer list the attended steps 10–14 as not run or owed. They ran the same
+  afternoon and are reported in `VISIT-2-ATTENDED-RESULTS.md`. The stale owed list here put a repeat of
+  `detect-phase2` on Rev A onto the Visit 3 run sheet.
