@@ -72,7 +72,14 @@ Nothing should turn.
 
 ---
 
-## Attended pair (added 2026-09-16, after the PL-64 rebuild)
+## Attended pair — dropped 2026-09-16, not run
+
+> STEPHEN 2026-09-16, taking the recommendation to drop it. The fault reporting it was planned to certify was
+> certified unattended (`2026-09-16/VISIT-3-RESULTS.md` §2.3). What remained was Z, which PL-66 already derives
+> and whose fix is an API ruling, and a hand-brake fault, a shipped mechanism. The rebuilt panel (`1937fe6`) is
+> built and gated but has not run on the rig. The steps are kept below for a later visit.
+
+### Attended pair (as written, after the PL-64 rebuild)
 
 **Before either:**
 - Pull.
