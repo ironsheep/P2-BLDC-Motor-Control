@@ -111,7 +111,7 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
 
     ticks1ms   := (clkfreq / 1_000)
     ticks1us   := (clkfreq / 1_000_000)
-    ticks125ms := ticks1ms * 125
+    ticksSenseLp := clkfreq / SENSE_LOOP_HZ ' derived from the rate, so the two can never disagree
 
     ' iff HDMI is needed, then we need this!
     'if clkfreq <> 270_000_000
@@ -872,14 +872,22 @@ CON { -- TASK position tracking -- }
 
     STACK_SIZE_LONGS = 64 ' WARNING! we exceed stack at 48!
 
-    ' at 125 ms
-    SENSE_LOOP_HZ = 8
+' C-3 (task 3512): this loop owns the distance and time stop checks for both wheels, so a stop cannot be
+'  commanded sooner than one pass after its limit is crossed. At the old 8 Hz that was up to 125 ms
+'  -- MEASURED at Visit 2 as 22 ticks (127 mm) on one 2 ft run (VISIT-2-RESULTS.md sec 7). At 128 Hz the
+'  bound is 7.8 ms, about 3 ticks (18 mm) at top speed. The DECELERATION distance is unchanged and now
+'  dominates every distance stop (C-4: 76 ticks from half speed). Kept equal to the motor object's rate.
+    ' at 7.813 ms
+    SENSE_LOOP_HZ = 128
+
+' The e-stop hold below is counted in PASSES, so it stays 1/8 second at any SENSE_LOOP_HZ (task 3512).
+    ESTOP_HOLD_PASSES = SENSE_LOOP_HZ / 8
 
 VAR { time values & arrays }
 
     long    ticks1ms
     long    ticks1us
-    long    ticks125ms
+    long    ticksSenseLp                ' one sense-loop period, CLKFREQ / SENSE_LOOP_HZ
 
     long    senseCog
 
@@ -943,11 +951,11 @@ PRI updateWindowAccumulators()
     ltWheel.updateWindowAccumulators()
     rtWheel.updateWindowAccumulators()
 
-PRI taskPostionSense() | senseStartTicks, eStopState
-' TASK: every 1/8 Sec (8Hz) read motor pos and calculate RPM and countOf90ths/Sec
+PRI taskPostionSense() | senseStartTicks, eStopPasses
+' TASK: every 1/SENSE_LOOP_HZ second read motor pos and calculate RPM and countOf90ths/Sec
     LAINIT()
 
-    eStopState := false
+    eStopPasses := 0
     ltWheel.resetWindowAccumulators()
     rtWheel.resetWindowAccumulators()
 
@@ -984,19 +992,28 @@ PRI taskPostionSense() | senseStartTicks, eStopState
         ' ------------------------------------------
         ' iff driver reports e-stop then clear the emergency stop request
         '  user will request it again if needed
-        ' NOTE: we leave e_stop set for at least 1/4 second before clearing!
+        ' NOTE: we leave e_stop set for at least 1/8 second before clearing! (it always was 1/8,
+        '  one loop period at 8 Hz; the 1/4 in this note was never what the code did)
+        ' task 3512: both the hold and the debug line are counted in PASSES. The hold used to toggle a
+        '  flag, clearing one loop period after the e-stop was first seen (125 ms at 8 Hz, 7.8 ms at
+        '  128 Hz), and the debug line printed on EVERY pass while e-stopped -- 128 lines a second at
+        '  the new rate. Now the hold is 1/8 second at any rate and the line prints once per e-stop.
         if isEmergency()
-            debug[user.DBGCH_FAULT]("--------WHEEL in EMERGENCY!!--------")
-            if eStopState == true
+            eStopPasses++
+            if eStopPasses == 1
+                debug[user.DBGCH_FAULT]("--------WHEEL in EMERGENCY!!--------")
+            if eStopPasses > ESTOP_HOLD_PASSES
                 clearEmergency()
-            !!= eStopState                                                      ' toggle stop flag
+                eStopPasses := 0
+        else
+            eStopPasses := 0
 
         ' keep track of runtime for this sensor loop (for debug, HDMI, etc.)
         deltaTicks := getct() - senseStartTicks
 
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
-        '   wait remainder of 125 mSec before next sample
-        waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
+        '   wait out the rest of the sense-loop period before the next sample
+        waitct(senseStartTicks + ticksSenseLp)  ' wait to create "sense" time-base
 
 PUB showDriveStates()
 '' for TESTING dump curr drive states

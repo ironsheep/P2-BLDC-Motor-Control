@@ -75,7 +75,7 @@ DAT { misc time constants }
     ticks1ms    LONG    0
     ticks1us    LONG    0
     ticks500us  long    0                       ' the drive-pass deadline; the pass itself runs every 23 ADC frames, ~1913 Hz (see drvMotor)
-    ticks125ms  long    0                       ' 8 Hz
+    ticksSenseLp long   0                       ' one sense-loop period, CLKFREQ / SENSE_LOOP_HZ
 
 PUB null()
 '' This is not a top-level object
@@ -268,7 +268,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
     ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
-    ticks125ms := ticks1ms * 125
+    ticksSenseLp := CLKFREQ / SENSE_LOOP_HZ ' derived from the rate, so the two can never disagree
 
     pinbase := validatePinBase(eMotorBasePin)           ' record base pin number
 
@@ -519,7 +519,7 @@ PUB resetTracking()
 ''
 
     posTrkHallTicks := 0    ' reset all of our trackers (they are incremented in sensor loop)
-    waitms(200) ' values will clear in 125ms
+    waitms(200) ' values clear within one sense-loop pass
 
 PUB moveShaftToAngle(desiredAngle)
 '' TESTING USE: force motor to specific angle
@@ -1228,11 +1228,12 @@ PUB testGetStopHallTicks() : stopTicks
 PUB testGetRpm() : nRpm
 '' TESTING USE: return the motor's current RPM, averaged over the hall-tick window
 ''
-'' The window is HALL_WINDOW_SIZE (SENSE_LOOP_HZ, 8) samples of 1/8 sec each, i.e. about
-'' 1 second of motion. Valid only while the sense task (taskPostionSense(), started by
-'' startSenseCog() for a single motor or automatically by isp_steering_2wheel's start())
-'' is running, and only from at least one full window (~1 sec) after motion starts --
-'' before that the window has not filled and the average understates the true rate.
+'' The window is HALL_WINDOW_SIZE (SENSE_LOOP_HZ) samples of 1/SENSE_LOOP_HZ sec each, i.e. about
+'' 1 second of motion at any loop rate, since the two constants are the same value. Valid only
+'' while the sense task (taskPostionSense(), started by startSenseCog() for a single motor or
+'' automatically by isp_steering_2wheel's start()) is running, and only from at least one full
+'' window (~1 sec) after motion starts -- before that the window has not filled and the average
+'' understates the true rate.
 ''
 '' @returns nRpm - current RPM, averaged over the ~1 sec hall-tick window
 
@@ -1624,14 +1625,24 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
 CON ' -- TASK: position tracking --
 
 ' Sense Constants
+' C-3 (task 3512): this loop owns the distance and time stop checks, so a stop cannot be commanded
+'  sooner than one pass after its limit is crossed. At the old 8 Hz that was up to 125 ms -- MEASURED
+'  at Visit 2 as 22 ticks (127 mm) of pure latency on one 2 ft run (VISIT-2-RESULTS.md sec 7). At 128 Hz
+'  the bound is 7.8 ms, about 3 ticks (18 mm) at the 18.5 V top speed. The loop body costs about 9 us,
+'  so 128 Hz uses about 0.12% of this cog. The DECELERATION distance is unchanged and now dominates
+'  every distance stop (C-4: 76 ticks from half speed).
+    ' at 7.813 ms
+    SENSE_LOOP_HZ = 128
     ' at 125 ms
-    SENSE_LOOP_HZ = 8
+    'SENSE_LOOP_HZ = 8
     ' at 31.25 ms
     'SENSE_LOOP_HZ = 32
     ' at 15.625 ms
     'SENSE_LOOP_HZ = 64
-    ' at 7.813 ms
-    'SENSE_LOOP_HZ = 128
+
+' The e-stop hold below is counted in PASSES, so it is 1/8 second at any SENSE_LOOP_HZ (task 3512).
+'  SENSE_LOOP_HZ is always a multiple of 8.
+    ESTOP_HOLD_PASSES = SENSE_LOOP_HZ / 8
 
   STACK_SIZE_LONGS = 48
   R360_WINDOW_SIZE = 5
@@ -1771,10 +1782,10 @@ PUB updateWindowAccumulators() | nHallCntsIn8thSec
 
     updateHdmiData()
 
-PRI taskPostionSense() | senseStartTicks, eStopState
-' TASK: every 1/8 Sec (8Hz) read motor posn and calculate RPM and countOf90ths/Sec
+PRI taskPostionSense() | senseStartTicks, eStopPasses
+' TASK: every 1/SENSE_LOOP_HZ second read motor posn and calculate RPM and countOf90ths/Sec
 
-    eStopState := false
+    eStopPasses := 0
     resetWindowAccumulators()                                                   ' used internally and by 2-wheel-steering
 
     LAINIT()                                                                    ' init LA
@@ -1811,18 +1822,24 @@ PRI taskPostionSense() | senseStartTicks, eStopState
         ' iff driver reports e-stop then clear the emergency stop request
         '  user will request it again if needed
         ' NOTE: we leave e_stop set for at least 1/8 second before clearing!
+        ' task 3512: counted in PASSES, not in loop iterations. This used to toggle a flag, so it
+        '  cleared one loop period after the e-stop was first seen -- 125 ms at 8 Hz, but only 7.8 ms
+        '  once the loop runs at 128 Hz. Counting passes keeps the hold at 1/8 second at any rate.
         if isEmergency()
-            if eStopState == true
+            eStopPasses++
+            if eStopPasses > ESTOP_HOLD_PASSES
                 clearEmergency()
-            !!= eStopState                                                      ' toggle stop flag
+                eStopPasses := 0
+        else
+            eStopPasses := 0
 
         LALOOPEND()                                                             ' let LA know end of loop
 
         deltaTicks := getct() - senseStartTicks
 
         ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
-        '   wait remainder of 125 mSec before next sample
-        waitct(senseStartTicks + ticks125ms)    ' wait to create "sense" time-base
+        '   wait out the rest of the sense-loop period before the next sample
+        waitct(senseStartTicks + ticksSenseLp)  ' wait to create "sense" time-base
 
 PUB getposTrkHallTicks() : retv
 '' INTERNAL USE: return our position tracking hall-ticks
