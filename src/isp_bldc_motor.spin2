@@ -78,6 +78,9 @@ CON { Public Interface Constants }
     '   ERR_FAULT_NOT_CLEARED  - TEST-USE: testResetFault() found the driver not stopped after its wait
     '   ERR_EMERGENCY_STOPPED  - a drive refused, and nothing written, while the motor is emergency-stopped
     '   ERR_NO_RESPONSE        - the front cog did not answer within its bound (at start, or for a request)
+    '   ERR_BOARD_NOT_DETECTED - getCurrent(): no board was detected, so there is no current scale
+    '   ERR_PROTECTIVE_STOP    - a protective stop is latched for a cause outside the named ones
+    '   ERR_PLATFORM_BLOCKED   - a protective stop is latched: a commanded motor held at its current limit did not move
     NO_ERROR                = 0
     ERR_BAD_PIN_GROUP       = -1_001
     ERR_PIN_GROUP_IN_USE    = -1_002
@@ -97,6 +100,8 @@ CON { Public Interface Constants }
     ERR_EMERGENCY_STOPPED   = -1_016
     ERR_NO_RESPONSE         = -1_017
     ERR_BOARD_NOT_DETECTED  = -1_018
+    ERR_PROTECTIVE_STOP     = -2_000
+    ERR_PLATFORM_BLOCKED    = -2_001
 
 OBJ { objects / constants included by this object }
 
@@ -559,6 +564,17 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     elseif eDetectedBoard == REV_B
         rSenseForBoard := F_REV_B_RSENSE
 
+    ' S-2: the current limits start at the MOSFET values; nothing is latched or derated at start
+    limitPeakA := I_PEAK_A
+    limitContA := I_CONT_A
+    duty_floor := muldiv64(frame_cnt, 4 * DUTY_FLOOR_PCT, 100)              ' m = duty / (4 * frame_cnt)
+    i_limit_k := currentLimitK(limitPeakA)
+    protectiveCode := NO_ERROR
+    phaseAvgMa := 0
+    bDerated := FALSE
+    blockedPasses := 0
+    blockedPos := 0
+
 
 PUB startSenseCog() : ok
 '' Return the id of the sense (front) cog that start() launched; starts nothing
@@ -919,7 +935,7 @@ PUB emergencyCutoff() : eError
 PUB clearEmergency() : eError
 '' Clear EMERGENCY-Stop: the motor stays stopped and may be driven again
 ''
-'' @returns eError - NO_ERROR once the driver has left its emergency stop, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
+'' @returns eError - NO_ERROR once the driver has left its emergency stop; the protective code while a protective stop is latched (clearProtectiveStop() releases that); or ERR_NOT_STARTED / ERR_NO_RESPONSE; also recorded for getError()
 
     ' the front cog writes a zero command before releasing the latch, so nothing moves on the clear
     eError := recordError(postRequest(REQ_CLEAR_ESTOP, 0, 0, 0))
@@ -943,10 +959,42 @@ PUB getError() : eError
 ''
 '' @returns eError - this cog's first ERR_* code since the last call, NO_ERROR when none; cleared by this call
 
+    ' A latched protective stop is reported first, and is not cleared here: only clearProtectiveStop() releases it.
     ' A slot is read and cleared only by its own cog, and written only by that cog's recordError(),
     '  so another cog's calls can neither erase nor steal this cog's error.
-    eError := lastError[COGID()]
-    lastError[COGID()] := NO_ERROR
+    eError := protectiveCode
+    if eError == NO_ERROR
+        eError := lastError[COGID()]
+        lastError[COGID()] := NO_ERROR
+
+PUB getProtectiveStop() : eProtectiveCode
+'' Return the latched protective stop's cause, without clearing it
+''
+'' @returns eProtectiveCode - ERR_PLATFORM_BLOCKED or another -2_0xx cause while a protective stop is latched, NO_ERROR when none
+
+    eProtectiveCode := protectiveCode
+
+PUB clearProtectiveStop() : eError
+'' Acknowledge a protective stop: the motor stays stopped and may be driven again
+''
+'' While a protective stop is latched every drive is refused with its code, and clearEmergency() does not release it.
+''
+'' @returns eError - NO_ERROR once released, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
+
+    ' the front cog writes a zero command before releasing, so nothing moves on the clear
+    eError := recordError(postRequest(REQ_CLEAR_PROTECT, 0, 0, 0))
+
+PUB testSetCurrentLimits(peakAmps, contAmps) : eError
+'' TEST USE: replace the peak and continuous phase-current limits (so a wheels-lifted rig can reach them)
+''
+'' @param peakAmps - the peak limit the driver folds back at, amps [1..I_PEAK_A]
+'' @param contAmps - the continuous limit the front cog derates to, amps [1..peakAmps]
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a limit out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
+
+    if (peakAmps < 1) or (peakAmps > I_PEAK_A) or (contAmps < 1) or (contAmps > peakAmps)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        eError := recordError(postRequest(REQ_SET_LIMITS, peakAmps, contAmps, 0))
 
 PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue, ticsPerRotation
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
@@ -2001,7 +2049,7 @@ PRI abiLayoutIsValid() : bValid
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
     ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd
-    bValid &= (@ramp_inc - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    bValid &= (@duty_floor - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= outsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -2018,10 +2066,11 @@ PRI abiLayoutIsValid() : bValid
     bValid &= outsideDriverRuns(@frontMaxPassTicks, @frontMaxPassTicks)
     bValid &= outsideDriverRuns(@trackBasePos, @trackBasePos)
     bValid &= outsideDriverRuns(@bStopUnconfirmed, @bStopUnconfirmed)
+    bValid &= outsideDriverRuns(@protectiveCode, @blockedPos)
     bValid &= outsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= outsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@ramp_inc - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@duty_floor - @offset_fwd))
 
 PRI outsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -2030,8 +2079,8 @@ PRI outsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@ramp_inc
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @ramp_inc))
+    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@duty_floor
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @duty_floor))
 
 CON ' --- HDMI Debug Support ---
 
@@ -2252,8 +2301,10 @@ CON { front cog requests }
     '  REQ_RESET_TRACKING - zero the position tracking
     '  REQ_RESET_MAX      - reset the rpm window, the HDMI maxima and the position tracking (TEST-USE)
     '  REQ_TEST_INCREMENT - arg1 raw driver increment: refused while emergency-stopped, else written (TEST-USE)
+    '  REQ_CLEAR_PROTECT  - release a protective stop: clear the cause, then as REQ_CLEAR_ESTOP
+    '  REQ_SET_LIMITS     - arg1 peak amps, arg2 continuous amps: replace the current limits (TEST-USE)
     '  REQ_EXIT           - answer every open request, acknowledge, and park (stop())
-    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_EXIT
+    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_EXIT
 
     ' The order a pass applies requests in, by class:
     '  REQ_CLASS_ESTOP - REQ_ESTOP, first, so an e-stop posted with a drive in the same pass refuses the drive
@@ -2430,6 +2481,8 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         frontTrack(passCount)
         if frontLimitsDue(getms()) == TRUE
             frontZeroPower()                                                    ' PL-52: a distance/time stop clears getPower() too
+        if frontProtect() == TRUE                                               ' S-2: current derate; a blocked motor latches a protective stop
+            frontProtectiveStop(ERR_PLATFORM_BLOCKED)
         LALOOPEND()                                                             ' let LA know end of loop
 
         ' 4. accounting, then the absolute schedule
@@ -2580,9 +2633,9 @@ PRI requestWaits(eCmd, nArg3) : bWaits
 '
 ' @param eCmd - a REQ_* code
 ' @param nArg3 - the request's third argument (bSync for REQ_DRIVE)
-' @returns bWaits - T/F where T means a REQ_CLEAR_ESTOP, a synchronized REQ_DRIVE, or any REQ_DRIVE while FAULTED (PL-66's fault-clear wait)
+' @returns bWaits - T/F where T means a REQ_CLEAR_ESTOP or REQ_CLEAR_PROTECT, a synchronized REQ_DRIVE, or any REQ_DRIVE while FAULTED (PL-66's fault-clear wait)
 
-    bWaits := (eCmd == REQ_CLEAR_ESTOP) or ((eCmd == REQ_DRIVE) and ((nArg3 <> FALSE) or (drv_state == DCS_FAULTED)))
+    bWaits := (eCmd == REQ_CLEAR_ESTOP) or (eCmd == REQ_CLEAR_PROTECT) or ((eCmd == REQ_DRIVE) and ((nArg3 <> FALSE) or (drv_state == DCS_FAULTED)))
 
 PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
 ' FRONT COG: apply one taken request to this motor; records nothing, the status travels back as data.
@@ -2591,7 +2644,7 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
 ' @param nArg1 - first argument, meaning per REQ_*
 ' @param nArg2 - second argument, meaning per REQ_*
 ' @param nArg3 - third argument, meaning per REQ_*
-' @returns eStatus - NO_ERROR, ERR_EMERGENCY_STOPPED, ERR_SYNC_TIMEOUT or ERR_NO_RESPONSE
+' @returns eStatus - NO_ERROR, a protective code, ERR_EMERGENCY_STOPPED, ERR_SYNC_TIMEOUT or ERR_NO_RESPONSE
 ' @returns bDidWait - T/F where T means this request spent a bounded wait on the driver
 
     eStatus := NO_ERROR
@@ -2602,14 +2655,21 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
         REQ_STOP:
             frontZeroPower()                                                    ' PL-52: a commanded stop clears getPower() too
         REQ_CLEAR_ESTOP:
-            eStatus, bDidWait := frontClearEStopAndWait()
+            eStatus := protectiveCode                                           ' a protective stop is released only by its own clear
+            if eStatus == NO_ERROR
+                eStatus, bDidWait := frontClearEStopAndWait()
+        REQ_CLEAR_PROTECT:
+            if protectiveCode <> NO_ERROR                                       ' with nothing latched, a user's e-stop is not released here
+                frontClearProtective()
+                eStatus, bDidWait := frontClearEStopAndWait()                       ' zero command first, then the latch released
+        REQ_SET_LIMITS:
+            frontSetCurrentLimits(nArg1, nArg2)
         REQ_DRIVE:
             eStatus, bDidWait := frontDriveAndSync(nArg1, nArg3 <> FALSE)
         REQ_DRIVE_DISTANCE:
             ' atomic: the limit is armed and the motor driven, or neither (I1 item 2)
-            if frontIsEStopped() == TRUE
-                eStatus := ERR_EMERGENCY_STOPPED
-            else
+            eStatus := frontRefusal()
+            if eStatus == NO_ERROR
                 frontSetLimits(nArg1, motorStopMSecs)                           ' the time limit is kept, as before
                 eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
         REQ_LIMIT_TICKS:
@@ -2621,9 +2681,8 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
         REQ_RESET_MAX:
             frontResetMax()
         REQ_TEST_INCREMENT:
-            if frontIsEStopped() == TRUE
-                eStatus := ERR_EMERGENCY_STOPPED
-            else
+            eStatus := frontRefusal()
+            if eStatus == NO_ERROR
                 frontWriteIncrement(nArg1, FALSE)
 
 PRI frontDriveAndSync(power, bSync) : eStatus, bDidWait
@@ -2762,22 +2821,21 @@ PUB frontClearFault() : eStatus, bDidWait
             eStatus := ERR_NO_RESPONSE                                      ' did not clear in the bound; the zero command stays written
 
 PUB frontDrive(power, bSync) : eStatus, bDidWait | limitPwr, correctedPower
-'' FRONT COG ONLY: write this motor's command for {power}, unless it is emergency-stopped; a FAULTED motor is
-'' cleared first (frontClearFault(), PL-66), bounded, before the requested command is written; the owner sends any ATN
+'' FRONT COG ONLY: write this motor's command for {power}, unless it is protectively or emergency-stopped; a FAULTED
+'' motor is cleared first (frontClearFault(), PL-66), bounded, before the requested command is written; the owner sends any ATN
 ''
 '' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
 '' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
-'' @returns eStatus - NO_ERROR; ERR_EMERGENCY_STOPPED with nothing written; or ERR_NO_RESPONSE when a FAULTED motor did not clear in the bound (a zero command is left written and the requested command is never sent); never recorded
+'' @returns eStatus - NO_ERROR; the protective code or ERR_EMERGENCY_STOPPED with nothing written; or ERR_NO_RESPONSE when a FAULTED motor did not clear in the bound (a zero command is left written and the requested command is never sent); never recorded
 '' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
 
 ' Local Variables:
 ' @local limitPwr - {power} saturated to [(-100) to 100] and then to the max speed
 ' @local correctedPower - saturated power with this motor's reversal applied
 
-    if frontIsEStopped() == TRUE
-        eStatus := ERR_EMERGENCY_STOPPED    ' refused: a command written now would sit stale and drive on the clear
-        bDidWait := FALSE
-    else
+    bDidWait := FALSE
+    eStatus := frontRefusal()               ' refused: a command written now would sit stale and drive on the clear
+    if eStatus == NO_ERROR
         eStatus, bDidWait := frontClearFault()
         if eStatus == NO_ERROR
             limitPwr :=  -100 #> power <# 100
@@ -2805,6 +2863,98 @@ PUB frontZeroPower()
 
     motorPower := 0
     frontCommand(0, FALSE)
+
+PUB frontRefusal() : eStatus
+'' FRONT COG ONLY: return why a drive must be refused now, or NO_ERROR
+''
+'' @returns eStatus - the latched protective code first, then ERR_EMERGENCY_STOPPED, else NO_ERROR
+
+    eStatus := protectiveCode
+    if (eStatus == NO_ERROR) and (frontIsEStopped() == TRUE)
+        eStatus := ERR_EMERGENCY_STOPPED
+
+PUB frontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
+'' FRONT COG ONLY: once per pass -- the thermal derate of the current limit, and the blocked-motor test
+''
+'' The phase current is estimated as a lower bound from the DC-link reading and the modulation depth,
+'' I_phase >= I_dc / (0.75 x m) with m = duty / (4 x frame_cnt) (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.4).
+'' Its ~1 s average above the continuous limit lowers the driver's fold-back to that limit, and the peak
+'' limit returns below I_RESTORE_PCT of it. A motor commanded to move that stays at the lag limit with
+'' no hall tick for BLOCKED_PASSES is blocked; the caller latches the protective stop. Records nothing.
+''
+'' @returns bBlocked - T/F where T means this motor has been blocked for BLOCKED_PASSES
+
+' Local Variables:
+' @local dutyEff - the driver's duty, floored at duty_floor
+' @local dcMa - the DC-link current net of the rest zero, mA, never negative
+' @local phaseMa - this pass's phase-current lower bound, mA
+' @local nowPos - the driver's hall position this pass
+
+    if rSenseForBoard <> VALUE_NOT_SET
+        dutyEff := duty #> duty_floor
+        dcMa := muldiv64(sense_i_mV - restZeroSenseMv, 1_000, rSenseForBoard) #> 0
+        phaseMa := muldiv64(dcMa, 16 * frame_cnt, 3 * dutyEff) <# PHASE_MA_MAX
+        phaseAvgMa += ((phaseMa << CURRENT_AVG_SHIFT) - phaseAvgMa) SAR CURRENT_AVG_SHIFT
+        if (bDerated == FALSE) and (phaseAvgMa >= (limitContA * 1_000) << CURRENT_AVG_SHIFT)
+            bDerated := TRUE
+            i_limit_k := currentLimitK(limitContA)
+        elseif (bDerated == TRUE) and (phaseAvgMa < (limitContA * 10 * I_RESTORE_PCT) << CURRENT_AVG_SHIFT)
+            bDerated := FALSE
+            i_limit_k := currentLimitK(limitPeakA)
+
+    nowPos := pos
+    if ((targetIncre & !SYNC_BIT) <> 0) and (abs(err) >= LAG_SOFT) and (nowPos == blockedPos) and ((drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED) or (drv_state == DCS_SPIN_DN))
+        blockedPasses++
+    else
+        blockedPasses := 0
+    blockedPos := nowPos
+    bBlocked := (blockedPasses >= BLOCKED_PASSES)
+
+PUB frontProtectiveStop(eProtectiveCode)
+'' FRONT COG ONLY: secure this motor now and latch a protective stop until clearProtectiveStop()
+''
+'' @param eProtectiveCode - ERR_PLATFORM_BLOCKED or another -2_0xx cause; any other value latches ERR_PROTECTIVE_STOP
+
+    frontEStop(TRUE)                                                            ' 1. secure: the driver floats the drive, getPower() reads 0
+    if (eProtectiveCode > ERR_PROTECTIVE_STOP) or (eProtectiveCode < ERR_PROTECTIVE_STOP - 99)
+        eProtectiveCode := ERR_PROTECTIVE_STOP
+    if protectiveCode == NO_ERROR
+        protectiveCode := eProtectiveCode                                       ' 2. latch last; the first cause sticks
+    blockedPasses := 0
+
+PUB frontClearProtective()
+'' FRONT COG ONLY: forget the latched protective cause; the caller then releases the emergency stop that secured the motor
+''
+
+    protectiveCode := NO_ERROR
+    blockedPasses := 0
+
+PUB frontSetCurrentLimits(peakAmps, contAmps)
+'' FRONT COG ONLY: replace both current limits (TEST-USE), and restart the average at the peak limit
+''
+'' @param peakAmps - the peak phase-current limit, amps
+'' @param contAmps - the continuous phase-current limit, amps
+
+    limitPeakA := peakAmps
+    limitContA := contAmps
+    phaseAvgMa := 0
+    bDerated := FALSE
+    i_limit_k := currentLimitK(limitPeakA)
+
+PRI currentLimitK(amps) : nK
+' Return the driver's fold-back factor for a phase-current limit: threshold mV = duty x nK >> 16.
+'
+' The driver compares the DC-link reading against 0.75 x m x amps x rSense, m = duty / (4 x frame_cnt),
+' so nK = 3 x amps x rSense x 65536 / (16 x frame_cnt). With no board detected there is no scale, and
+' nK is set so the threshold is above the ADC's range: no fold-back (PL-73).
+'
+' @param amps - the phase-current limit, amps
+' @returns nK - the factor, 1..$FFFF
+
+    if rSenseForBoard == VALUE_NOT_SET
+        nK := $FFFF
+    else
+        nK := 1 #> muldiv64(3 * amps * rSenseForBoard, $1_0000, 16 * frame_cnt) <# $FFFF
 
 PUB frontEStop(bEStop)
 '' FRONT COG ONLY: latch (T) or release (F) this motor's emergency stop; a zero command is written either way
@@ -3137,7 +3287,21 @@ CON { driver internal Constants }
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 16
-    DRVR_PARAMS_LONGS_COUNT     = 14
+    DRVR_PARAMS_LONGS_COUNT     = 16
+
+    ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
+    LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts
+    LAG_HOLD                    = 100       ' 140.6 deg: the field stops advancing (the fault test is at 125)
+
+    ' S-2 (same design, section 3.4): phase-current limits from the MOSFET both board revisions use, MCAC85N06Y
+    '  (DOCs/analyses/BOARD-REVISION-FACTS.md section 1.4). Protection for the board, not a user setting.
+    I_PEAK_A                    = 40        ' 0.75 x the package-limited 54 A at Tc 100 C: the driver loop folds back here
+    I_CONT_A                    = 27        ' junction <= 125 C at 50 C ambient, 55 C/W: the front cog derates to this
+    I_RESTORE_PCT               = 80        ' the peak limit returns once the average falls below this % of I_CONT_A
+    CURRENT_AVG_SHIFT           = 10        ' the average's time constant: 2^10 front passes, about 1 s
+    PHASE_MA_MAX                = 1_000_000 ' clamp on one pass's phase estimate, so the scaled average cannot overflow
+    DUTY_FLOOR_PCT              = 10        ' the phase estimate's modulation floor, m = 0.1
+    BLOCKED_PASSES              = 1_000     ' ~1 s of front passes held at the lag limit without a hall tick
 
     SYNC_TIMEOUT_MS             = 50        ' SyncStatus() bound: about 100 drive passes, each polling for ATN
 
@@ -3223,7 +3387,7 @@ VAR  {  Motor Parameters  }
 ' -----------------------------------
 ' VALUES copied to driver each cycle
 ' -----------------------------------
-' TABLE of  14 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
+' TABLE of  16 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -3238,6 +3402,8 @@ VAR  {  Motor Parameters  }
     LONG    ramp_max        ' angle increment: max ramp up every drive pass
     LONG    ramp_min        ' angle increment: start of ramp up every drive pass
     LONG    ramp_inc        ' angle increment: inc every drive pass from min to max
+    LONG    i_limit_k       ' S-2: current-limit threshold factor (currentLimitK()); init() before start, then the front cog only
+    LONG    duty_floor      ' S-2: duty floor for the phase-current estimate (m = 0.1)
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -3271,6 +3437,13 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    frontMaxPassTicks           ' front-written: longest pass body, in ticks
     LONG    trackBasePos                ' front-written: pos at the previous tracking pass
     LONG    bStopUnconfirmed            ' front-written: T/F where T means a stop was written and not yet read back as zero
+    LONG    protectiveCode              ' front-written (init() before start): NO_ERROR, or the latched protective cause
+    LONG    limitPeakA                  ' front-written (init() before start): the peak phase-current limit in effect, amps
+    LONG    limitContA                  ' front-written (init() before start): the continuous phase-current limit, amps
+    LONG    phaseAvgMa                  ' front-written: average phase-current estimate, mA << CURRENT_AVG_SHIFT
+    LONG    bDerated                    ' front-written: T/F where T means i_limit_k holds the continuous limit
+    LONG    blockedPasses               ' front-written: consecutive passes held at the lag limit without a hall tick
+    LONG    blockedPos                  ' front-written: pos at the previous pass, for the blocked test
 
 DAT  {  Motor DRIVER  }
 '
@@ -3331,6 +3504,9 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
     ' -------------------------------------------------------------------------
 drvMotor                                                ' global (task 3535): entered via cross-boundary jmp from the LUT-resident loader
                 getct   ctrlSrtTix                      ' remember when we started this loop
+                mov     lag_s, err_                     ' C-5: signed lag, + when the rotor trails the field in the
+                testb   drv_incr, #31               wc  '  direction of motion (err_ is angle_ - rotor angle), - when
+    if_c        neg     lag_s                           '  the rotor leads; read by the holds and the duty ceiling below
 {
                 ' Logic Analyzer Instrumentation Code
                 drvh    drvrTmrPnFld                    ' HIGH while doing drive determination
@@ -3412,6 +3588,7 @@ drvMotor                                                ' global (task 3535): en
                 ' NOTE: (earlier code ensures we are NOT stopped or FAULTed when we get here)
                 or      tgt_incr, tgt_incr          wz  ' Q: is stop request?
     if_z        mov     drv_state_, #DCS_SPIN_DN        ' YES, mark spin-down
+    if_z        call    #.capStart                      ' PL-55: record where the ramp-down starts, for the duty ceiling
     if_z        jmp     #.rampDn                        ' YES, go do it!
 .chkStopped
                 ' not stop, have start or speed adjustment?
@@ -3450,11 +3627,13 @@ drvMotor                                                ' global (task 3535): en
     if_nc       mov     drv_state_, #DCS_SPIN_UP        ' CY=0: speed up
     if_nc       jmp     #.rampUp
     if_c        mov     drv_state_, #DCS_SPIN_DN        ' CY=1: slow down
+    if_c        call    #.capStart                      ' PL-55: record where the ramp-down starts
     if_c        jmp     #.rampDn
     ' ------------------------------------
 .notSame    ' we have prior and new but NOT the same sign, let's slowdown then change direction
                 ' let's change direction
                 mov     drv_state_, #DCS_SLOW_TO_CHG
+                call    #.capStart                      ' PL-55: record where the ramp-down starts
                 jmp     #.slow2Chg
 
     ' ====================================
@@ -3477,6 +3656,8 @@ drvMotor                                                ' global (task 3535): en
                 ' if we are at target, stop the ramp effort
                 cmps    drv_incr, tgt_incr          wz  ' Q: Did we match target?
     if_z        jmp     #.endRUpAtSpeed                 ' YES, (Matched) go mark done
+                cmps    lag_s, #LAG_SOFT            wc  ' C-5: Q: rotor trailing the field by LAG_SOFT or more?
+    if_nc       jmp     #.justIncr                      ' YES, the ramp waits for the rotor this pass
                 ' do next UP adjustment or set at-speed
                 mov     curr_ramp, ramp_curr            ' current ramp
                 add     ramp_curr, ramp_inc_            ' increase ramp for next time
@@ -3511,6 +3692,10 @@ drvMotor                                                ' global (task 3535): en
                 '  from the current driver target to ZERO!
                 cmps    drv_incr, tgt_incr          wz  ' Q: Did we match target?
     if_z        jmp     #.endRDnAtTgt                   ' YES, (Matched) go mark done
+                mov     tmpY, lag_s                     ' C-5: Q: rotor leading the field by LAG_SOFT or more?
+                neg     tmpY
+                cmps    tmpY, #LAG_SOFT             wc
+    if_nc       jmp     #.justIncr                      ' YES, the ramp-down waits for the rotor this pass
                 ' calculate how far we are from desired
                 mov     final_ramp, tgt_incr            ' compute our delta from curr to target
                 subs    final_ramp, drv_incr
@@ -3550,6 +3735,10 @@ drvMotor                                                ' global (task 3535): en
 .moreSlow
                 or      drv_incr, drv_incr          wz  ' Q: stopped?
     if_z        jmp     #.dospinup                      ' yes, go start rampUp
+                mov     tmpY, lag_s                     ' C-5: Q: rotor leading the field by LAG_SOFT or more?
+                neg     tmpY
+                cmps    tmpY, #LAG_SOFT             wc
+    if_nc       jmp     #.justIncr                      ' YES, the ramp-down waits for the rotor this pass
                                                         ' calculate how far we are from desired
                 mov     final_ramp, drv_incr            ' compute our delta from curr to 0
                                                         ' now are we moving FWD or REV?
@@ -3558,10 +3747,31 @@ drvMotor                                                ' global (task 3535): en
 
     ' -------------------------------------------------------------------------
 .justIncr   ' just do our increment of angle and we're done!
-                add     angle_, drv_incr
+                cmps    lag_s, #LAG_HOLD            wc  ' C-5: the field advances only while the rotor trails it by
+    if_c        add     angle_, drv_incr                '  less than LAG_HOLD, so |err_| stays under the 125 fault test
 '                debug("DRV: ", uhex_(drive_pins), " A:(", sdec_(angle_), ") += DI:(", sdec_(drv_incr), ")")
 
 .endRqst
+                ' PL-55: duty ceiling -- during a ramp-down, duty scales with the field's speed (duty0 * |drv_incr|
+                '  / incr0) so drive voltage falls with back-EMF; lifted whenever the rotor trails by LAG_SOFT
+                mov     duty_cap_, duty_max_
+                cmp     drv_state_, #DCS_SPIN_DN     wz  ' Q: ramping down?
+    if_nz       cmp     drv_state_, #DCS_SLOW_TO_CHG wz
+    if_nz       jmp     #.capDone                       ' NO: no ceiling beyond duty_max_
+                cmps    lag_s, #LAG_SOFT             wc  ' Q: rotor trailing by LAG_SOFT or more? (NC)
+    if_nc       jmp     #.capDone                       ' YES: the motor needs the torque, no ceiling
+                or      incr0, incr0                 wz  ' Q: no recorded start speed? (never divide by 0)
+    if_z        jmp     #.capDone
+                abs     tmpY, drv_incr
+                qmul    duty0, tmpY                     ' 64-bit duty0 * |drv_incr|
+                getqx   tmpY
+                getqy   tmpX
+                setq    tmpX
+                qdiv    tmpY, incr0                     ' / incr0
+                getqx   duty_cap_
+                fles    duty_cap_, duty_max_            ' the ceiling never rises above duty_max_
+                fges    duty_cap_, duty_min_            '  nor below duty_min_
+.capDone
                 getct   loop_ctcks_                     ' how long was this pass? send to host
                 sub     loop_ctcks_, ctrlSrtTix
                 ' reset timer (schedule next control loop run)
@@ -3744,12 +3954,21 @@ drvMotor                                                ' global (task 3535): en
     if_nc       mov     drv_state_, #DCS_FAULTED        '  also on FAULT: mark our motor as FAULTED
     if_nc       wrlong  maxNeg, ptra[DRVR_STATUS_LONGS_COUNT] '  also on FAULT: report fault
 
-.noFault        sub     tmpY, #256/6                wc  ' modulate duty (256 frac 6 - where 6 is # of hall cycles)
+.noFault        mov     tmpX, duty_                     ' S-2: the MOSFET current limit, on a lower bound of phase current:
+                fges    tmpX, duty_floor_               '  I_dc >= 0.75 * m * I_peak, m = duty_ / (4 * frame_cnt), floored
+                sca     tmpX, i_limit_k_                '  threshold (mV) = max(duty_, duty_floor_) * i_limit_k_ >> 16
+                cmps    sense_i_, tmpX              wc  ' Q: at or over the limit? (NC)
+    if_nc       mov     tmpY, duty_                     ' YES: fold back ~1.6 % per frame, and skip the servo this frame
+    if_nc       shr     tmpY, #6
+    if_nc       sub     duty_, tmpY
+    if_nc       jmp     #.dutyLimits
+                sub     tmpY, #256/6                wc  ' modulate duty (256 frac 6 - where 6 is # of hall cycles)
     if_nc       muls    tmpY, duty_up_
     if_c        muls    tmpY, duty_dn_
                 sar     tmpY, #8                        ' 8-bits is multiplying agressiveness of correction
                 add     duty_, tmpY
-                fles    duty_, duty_max_                ' keep duty within limits
+.dutyLimits
+                fles    duty_, duty_cap_                ' keep duty within limits (duty_cap_ is duty_max_ except while ramping down, PL-55)
                 fges    duty_, duty_min_
 
                 getct   loop_dtcks_                     ' how long was this iteration? send to host
@@ -3775,6 +3994,10 @@ drvMotor                                                ' global (task 3535): en
 
 .driveoff                                               ' disable pwm always
     _ret_       mov     driveoff, #1                    ' drive pwm output disabled
+
+.capStart                                               ' PL-55: remember duty and speed where a ramp-down starts (no flags changed)
+                mov     duty0, duty_
+    _ret_       abs     incr0, drv_incr
 
 .clearRun                                               ' zero the running state, so the next start ramps up from zero
                 mov     drv_incr, #0                    '  called by .resetFault and by the e-stop entry: before PL-57 the
@@ -3927,6 +4150,10 @@ prior_angle     res 1       ' prior driver angle
 fwdrev          res 1       ' driver current direction used for indexing into hall angle table
 driveoff        res 1       ' pwm enabled (0) or disabled (1)
 curr_stop       res 1       ' current stop mode
+lag_s           res 1       ' C-5: signed lag this pass, + when the rotor trails the field in the direction of motion
+duty_cap_       res 1       ' PL-55: duty ceiling, duty_max_ except while ramping down
+duty0           res 1       ' PL-55: duty_ where the current ramp-down started
+incr0           res 1       ' PL-55: |drv_incr| where the current ramp-down started
 ' debug variables
 {
 tmp_angle_      res 1       ' TEST: holding area while validating angle
@@ -3963,7 +4190,7 @@ scl_levels      res 4
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
 params_ptr_ res 1           ' params_ptr must be followed by:
-offset_fwd_ res 1           '  14 (DRVR_PARAMS_LONGS_COUNT) parameters
+offset_fwd_ res 1           '  16 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
 duty_min_   res 1           ' minimum duty cycle for pwm
 duty_max_   res 1           ' maximum duty cycle for pwm
@@ -3977,6 +4204,8 @@ e_stop_     res 1           ' T/F where T means stopal motor function
 ramp_max_   res 1           ' angle increment: max ramp up every drive pass
 ramp_min_   res 1           ' angle increment: start of ramp up every drive pass
 ramp_inc_   res 1           ' angle increment: inc every drive pass from min to max
+i_limit_k_  res 1           ' S-2: current-limit threshold factor, mV per duty count << 16 (see currentLimitK())
+duty_floor_ res 1           ' S-2: the duty below which the phase-current estimate is floored (m = 0.1)
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -4164,6 +4393,8 @@ lutCodeStart
 
                 mov     ramp_curr, ramp_min_            ' set initial inc ramp
                 mov     duty_, duty_min_                ' reset duty
+                mov     duty_cap_, duty_max_            ' PL-55: no ceiling before the first drive pass sets it
+                mov     incr0, #0                       ' PL-55: no ramp-down recorded yet
                 mov     curr_stop, stop_mode_           ' save current stop mode
                 call    #checkstop                     ' set drive on or off according to stop mode
 

@@ -150,6 +150,15 @@ pure telemetry.** There is no current limit anywhere in this codebase.
 That is the single largest protection gap. A BLDC driver without a current limit
 is protected only by whatever the FETs and the battery can survive.
 
+> **REVISED 2026-09-16 — S-2 built in the tree («#3558»; run-time proof owed to Visit 4).** The limit protects the
+> MOSFET both revisions use, the MCAC85N06Y (`BOARD-REVISION-FACTS.md` §1.4). The design is
+> `DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md` §3.4.
+> - **Why duty enters the limit:** the board senses DC-link current, but the MOSFETs carry phase current. The limit
+>   therefore works on a lower bound of phase current, `I_dc / (0.75 × m)`.
+> - **Peak, 40 A:** folded back in the 44 kHz loop.
+> - **Continuous, 27 A:** a ~1 s average in the front cog lowers the fold-back to it.
+> - **Blocked motor:** held at the lag limit without motion for ~1 s, it latches `ERR_PLATFORM_BLOCKED`. Nothing aborts.
+
 ## I.3 The current reading is wrong, and wrong by a clock-dependent factor
 
 **S-3.** This one is provable from the reference implementation.
@@ -811,6 +820,17 @@ parameters in the 14-long params block, which means bumping
 `DRVR_PARAMS_LONGS_COUNT` and the matching `DAT` in lockstep, per `CLAUDE.md`.
 
 This is the highest-value change identified in either study.
+
+> **REVISED 2026-09-16 — C-5 built in the tree («#3558»), with its trigger changed; run-time proof owed to Visit 4.**
+> MEASURED at Visit 2 (`bench/2026-09-15/VISIT-2-RESULTS.md` §6): the ramp faults arrive with duty *not* saturated.
+> So the trigger above (`|err_| > lag_soft AND duty_ >= duty_max_`) would never fire, and the built trigger is the
+> signed lag alone:
+> - rotor trailing by 80 units (112.5°): the ramp-up waits
+> - rotor trailing by 100 units (140.6°): the field stops advancing
+> - rotor leading by 80 units: the ramp-down waits
+>
+> The thresholds are PASM constants, not params. The params block grew to 16 longs for the current limit instead
+> (`DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md` §3.2, §4).
 
 ## II.6 Voltage: told, not sensed — and it does not have to be
 

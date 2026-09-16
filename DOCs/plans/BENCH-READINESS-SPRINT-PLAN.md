@@ -2052,6 +2052,30 @@ Owned by «#3515», whose artifact list gains:
   - the fixed cog count;
   - the lower 6.0 V / 7.4 V placeholders;
   - PL-48.
+- **Repo-root reference docs for the hardware** (STEPHEN 2026-09-16: *"we need detail docs at the repo root we have
+  one for motors, needs updating. we need somthing for the boards too which are just facts for each some of which
+  you just captured. This is not to facilitate choice but to inform a user about the boards they have and when to
+  be careful with each"*):
+  - **A new board document, `DRIVER_BOARDS.md`,** at the repo root, one section per revision (Rev A, Rev B). It holds the facts a user
+    needs about the board they have:
+    - how to tell which revision they have, and what `getBoardType()` reports
+    - gate supply (10 V / 12 V)
+    - gate driver
+    - MOSFET and its ratings
+    - current-sense scale and resolution
+    - the deadtime requirement
+    - what the driver protects against, and what it does not
+    - **when to be careful with each board:**
+      - Rev A's damage history with large hub motors and its lack of the Rev B driver's negative-spike
+        protection
+      - Rev A's coarse 5 mV/A current sense
+      - regeneration not visible to the current sense
+
+    Source: `DOCs/analyses/BOARD-REVISION-FACTS.md`, distilled for users; no analysis history and no
+    recommendation to buy one board over the other. Linked from README and from the doc table in `CLAUDE.md`
+    (raised with Stephen, his file).
+  - **The existing motor document, `MOTOR_CHOICE.md`, brought current**, alongside item (e) of «#3515»: the speed model at the real
+    drive-pass rate, the placeholders, and the current limits the motors now run under.
 - **The three "two objects / two cogs" copies** (README, `DRIVE-OBJECTS.md`, `DRIVE-OBJECTS-SERIAL.md`), and
   `images/objects-cogs.png`. The image is generated and is Stephen's to regenerate.
 - **`CLAUDE.md`:** its stale ABI and deadtime paragraphs. Stephen's file: raised with him, not edited.

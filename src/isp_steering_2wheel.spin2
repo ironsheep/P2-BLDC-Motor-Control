@@ -104,6 +104,9 @@ CON { forward our interface constants }
     ERR_FAULT_NOT_CLEARED   = ltWheel.ERR_FAULT_NOT_CLEARED
     ERR_EMERGENCY_STOPPED   = ltWheel.ERR_EMERGENCY_STOPPED
     ERR_NO_RESPONSE         = ltWheel.ERR_NO_RESPONSE
+    ERR_BOARD_NOT_DETECTED  = ltWheel.ERR_BOARD_NOT_DETECTED
+    ERR_PROTECTIVE_STOP     = ltWheel.ERR_PROTECTIVE_STOP
+    ERR_PLATFORM_BLOCKED    = ltWheel.ERR_PLATFORM_BLOCKED
 
 OBJ { our Motors }
 
@@ -590,7 +593,7 @@ PUB emergencyCutoff() : eError
 PUB clearEmergency() : eError | eStatus, eLeftStatus, eRightStatus
 '' Remove emergency override allowing motors to be driven again; both motors stay stopped until commanded
 ''
-'' @returns eError - NO_ERROR once both drivers have left their emergency stop, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError() (a wheel's ERR_NO_RESPONSE in that wheel's slot)
+'' @returns eError - NO_ERROR once both drivers have left their emergency stop; a wheel's protective code while a protective stop is latched (clearProtectiveStop() releases that); or ERR_NOT_STARTED / ERR_NO_RESPONSE; also recorded for getError() (a wheel's code in that wheel's slot)
 
 ' Local Variables:
 ' @local eStatus - the front cog's platform status
@@ -605,6 +608,53 @@ PUB clearEmergency() : eError | eStatus, eLeftStatus, eRightStatus
         debug[user.DBGCH_FAULT]("--------clear EMERGENCY--------")
     else
         debug[user.DBGCH_ERROR]("! ERROR: clearEmergency() not cleared ", sdec_long(eError))
+
+PUB getProtectiveStop() : eLeftCode, eRightCode
+'' Return each wheel's latched protective stop cause, without clearing it
+''
+'' A cause on either wheel secures both, so both normally report the same code.
+''
+'' @returns eLeftCode - the left wheel's protective code (ERR_PLATFORM_BLOCKED or another -2_0xx cause), NO_ERROR when none
+'' @returns eRightCode - the right wheel's protective code, NO_ERROR when none
+
+    eLeftCode := ltWheel.getProtectiveStop()
+    eRightCode := rtWheel.getProtectiveStop()
+
+PUB clearProtectiveStop() : eError | eStatus, eLeftStatus, eRightStatus
+'' Acknowledge a protective stop on both wheels: both stay stopped and may be driven again
+''
+'' While a protective stop is latched every drive is refused with its code, and clearEmergency() does not release it.
+''
+'' @returns eError - NO_ERROR once released, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError() (a wheel's code in that wheel's slot)
+
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    ' the front cog writes zero commands before releasing, so nothing moves on the clear
+    eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_CLEAR_PROTECT, BOTH_MOTORS, 0, 0, 0)
+    eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
+    if eError == NO_ERROR
+        userCutoff := FALSE
+
+PUB testSetCurrentLimits(peakAmps, contAmps) : eError | eStatus, eLeftStatus, eRightStatus
+'' TEST USE: replace both wheels' peak and continuous phase-current limits (so a wheels-lifted rig can reach them)
+''
+'' @param peakAmps - the peak limit the drivers fold back at, amps [1..I_PEAK_A]
+'' @param contAmps - the continuous limit the front cog derates to, amps [1..peakAmps]
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a limit out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
+
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    if (peakAmps < 1) or (peakAmps > ltWheel.I_PEAK_A) or (contAmps < 1) or (contAmps > peakAmps)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_LIMITS, BOTH_MOTORS, peakAmps, contAmps, 0)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
 PRI secureWheels(motorMask, bEStop) | eStatus
 ' SECURING: stop (or emergency-stop) the selected wheels; never records, never refuses.
@@ -1399,8 +1449,8 @@ PRI LALOOPEND()
   Nothing reachable from frontLoop() calls recordError() or recordCallerError().
 }
 
-PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount
-' FRONT COG: the platform's loop -- apply posted requests, track both wheels, enforce the platform stop limits, once per ms.
+PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, bLeftBlocked, bRightBlocked
+' FRONT COG: the platform's loop -- apply posted requests, track both wheels, enforce the platform stop limits and the current protection, once per ms.
 '
 
 ' Local Variables:
@@ -1410,6 +1460,8 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
 ' @local passStartTicks - getct() when this pass began
 ' @local passBodyTicks - ticks this pass's body took
 ' @local passCount - passes run so far, the wheels' rpm window cadence counter
+' @local bLeftBlocked - T/F where T means the left wheel has been blocked long enough to latch a protective stop
+' @local bRightBlocked - T/F where T means the right wheel has been blocked long enough to latch a protective stop
 
     ' The entry writes no wheel command, e-stop or limit: it adopts them, so a stop written directly
     '  inside start()'s window survives the launch. The drivers were released before this cog existed.
@@ -1441,6 +1493,12 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         if frontPlatformLimitsDue(getms()) == TRUE
             ltWheel.frontZeroPower()                                            ' PL-52: a distance/time stop clears getPower() too
             rtWheel.frontZeroPower()
+        ' S-2: each wheel's current derate runs every pass; a blocked wheel secures BOTH (a platform never drives one wheel)
+        bLeftBlocked := ltWheel.frontProtect()
+        bRightBlocked := rtWheel.frontProtect()
+        if (bLeftBlocked == TRUE) or (bRightBlocked == TRUE)
+            ltWheel.frontProtectiveStop(ERR_PLATFORM_BLOCKED)
+            rtWheel.frontProtectiveStop(ERR_PLATFORM_BLOCKED)
         showDriveStatesOnChange()
         LALOOPEND()
 
@@ -1621,9 +1679,9 @@ PRI requestWaits(eCmd, nArg3) : bWaits
 ' @param eCmd - a REQ_* code
 ' @param nArg3 - the request's third argument (bSync for REQ_DRIVE)
 ' @returns bWaits - T/F where T means a synchronized REQ_DRIVE, a REQ_DRIVE_DISTANCE (always synchronized here), a
-'  REQ_CLEAR_ESTOP, or any REQ_DRIVE while either wheel is FAULTED (PL-66's fault-clear wait)
+'  REQ_CLEAR_ESTOP or REQ_CLEAR_PROTECT, or any REQ_DRIVE while either wheel is FAULTED (PL-66's fault-clear wait)
 
-    bWaits := (eCmd == ltWheel.REQ_CLEAR_ESTOP) or (eCmd == ltWheel.REQ_DRIVE_DISTANCE) or ((eCmd == ltWheel.REQ_DRIVE) and ((nArg3 <> FALSE) or (ltWheel.getDriverState() == ltWheel.DCS_FAULTED) or (rtWheel.getDriverState() == ltWheel.DCS_FAULTED)))
+    bWaits := (eCmd == ltWheel.REQ_CLEAR_ESTOP) or (eCmd == ltWheel.REQ_CLEAR_PROTECT) or (eCmd == ltWheel.REQ_DRIVE_DISTANCE) or ((eCmd == ltWheel.REQ_DRIVE) and ((nArg3 <> FALSE) or (ltWheel.getDriverState() == ltWheel.DCS_FAULTED) or (rtWheel.getDriverState() == ltWheel.DCS_FAULTED)))
 
 PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRightStatus, bDidWait | bLeft, bRight
 ' FRONT COG: apply one taken request to the selected wheels; records nothing, the statuses travel back as data.
@@ -1666,7 +1724,27 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
             if bRight == TRUE
                 rtWheel.frontZeroPower()
         ltWheel.REQ_CLEAR_ESTOP:
+            ' a protective stop is released only by its own clear
+            if bLeft == TRUE
+                eLeftStatus := ltWheel.getProtectiveStop()
+            if bRight == TRUE
+                eRightStatus := rtWheel.getProtectiveStop()
+            if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
+                eLeftStatus, eRightStatus, bDidWait := frontClearEStops(bLeft, bRight)
+        ltWheel.REQ_CLEAR_PROTECT:
+            ' only a wheel with a latched protective stop is released: a user's e-stop is not released here
+            bLeft &= (ltWheel.getProtectiveStop() <> NO_ERROR)
+            bRight &= (rtWheel.getProtectiveStop() <> NO_ERROR)
+            if bLeft == TRUE
+                ltWheel.frontClearProtective()
+            if bRight == TRUE
+                rtWheel.frontClearProtective()
             eLeftStatus, eRightStatus, bDidWait := frontClearEStops(bLeft, bRight)
+        ltWheel.REQ_SET_LIMITS:
+            if bLeft == TRUE
+                ltWheel.frontSetCurrentLimits(nArg1, nArg2)
+            if bRight == TRUE
+                rtWheel.frontSetCurrentLimits(nArg1, nArg2)
         ltWheel.REQ_DRIVE:
             eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, nArg1, nArg2, nArg3 <> FALSE)
         ltWheel.REQ_DRIVE_DISTANCE:
@@ -1698,19 +1776,19 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                     rtWheel.frontWriteIncrement(nArg1, FALSE)
 
 PRI frontRefusals(bLeft, bRight) : eLeftStatus, eRightStatus
-' FRONT COG: return ERR_EMERGENCY_STOPPED for each selected wheel that must refuse a drive.
+' FRONT COG: return the refusal (protective code, else ERR_EMERGENCY_STOPPED) for each selected wheel that must refuse a drive.
 '
 ' @param bLeft - T/F where T means the left wheel is selected
 ' @param bRight - T/F where T means the right wheel is selected
-' @returns eLeftStatus - ERR_EMERGENCY_STOPPED when the left wheel is selected and emergency-stopped, else NO_ERROR
-' @returns eRightStatus - ERR_EMERGENCY_STOPPED when the right wheel is selected and emergency-stopped, else NO_ERROR
+' @returns eLeftStatus - the left wheel's refusal when it is selected, else NO_ERROR
+' @returns eRightStatus - the right wheel's refusal when it is selected, else NO_ERROR
 
     eLeftStatus := NO_ERROR
     eRightStatus := NO_ERROR
-    if (bLeft == TRUE) and (ltWheel.frontIsEStopped() == TRUE)
-        eLeftStatus := ERR_EMERGENCY_STOPPED
-    if (bRight == TRUE) and (rtWheel.frontIsEStopped() == TRUE)
-        eRightStatus := ERR_EMERGENCY_STOPPED
+    if bLeft == TRUE
+        eLeftStatus := ltWheel.frontRefusal()
+    if bRight == TRUE
+        eRightStatus := rtWheel.frontRefusal()
 
 PRI frontZeroSelected(bLeft, bRight)
 ' FRONT COG: zero each selected wheel's commanded power (PL-52) -- the platform-level "do not drive

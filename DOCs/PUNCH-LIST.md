@@ -1986,6 +1986,18 @@ but not right now."*
   - STEPHEN's condition for this research, *"after our driver is back in shape"*, is now met: the four repairs are
     certified (`analyses/bench/2026-09-16/VISIT-3-RESULTS.md` §0).
 
+**Fixed in tree 2026-09-16 («#3558»); run-time proof owed to Visit 4.** The design is
+`DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md`.
+- **Mechanism, from the Visit 2 trace** (`src/logs/_OLD/debug_260915-135838.log:97-199`): the rotor keeps its motoring
+  lag through SPIN_DN, and the duty servo regulates that lag angle only. Duty therefore stays up while back-EMF falls, and
+  the current rises.
+- **Fix, the cause removed:** while ramping down, the driver caps duty in proportion to the field's speed
+  (`duty0 × |drv_incr| / incr0`). The cap lifts whenever the rotor trails by `LAG_SOFT`.
+- **Backstops:**
+  - the fold-back current limit (40 A peak, 27 A continuous phase current, from the MOSFET ratings)
+  - the lag-limited ramp: a rotor that leads holds the ramp-down
+- **Unloaded deceleration** stays the 254 ticks/s² ramp. A loaded platform may stop later, within the limit.
+
 ### PL-56 -- `emergencyCutoff()` stops a half-speed wheel within one tick; the drive-off state may be a dynamic brake
 
 **Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §5.2).
