@@ -3,6 +3,24 @@
 Status: **shape agreed by Stephen 2026-09-15; the product shapes are his ruling below. Nothing is
 implemented.** Two items are flagged for him in §7, neither blocking.
 
+> **AMENDED 2026-09-16 by Stephen's rulings. Where the body below disagrees, this block governs.**
+> - **In this sprint (6.0.0): the front cog (§3) for today's two forms.** Those are `isp_bldc_motor`
+>   standalone and `isp_steering_2wheel`. STEPHEN chose the cog shape for this sprint, *"I would like A"*.
+> - **After 6.0.0, with the Doco effort:** the roster owner and N-motor API (§4), `demo_n_motor` (§7), the
+>   `nmotor` config blocks and the gate's block classifier. STEPHEN: *"yes, after 6.0.0"*.
+>   - The front cog is still built so a roster plugs in later without rework.
+>   - The §6 roster rows are not certified in this sprint.
+> - **§1's "Driving shape: 6.5″ hub only" is corrected.** STEPHEN's words were that the N-motor shape never uses
+>   6.5″ motors. A dual Doco config block exists and is certified, so the driving shape stays open to both motor
+>   types.
+> - **§3.2 and §8, "S-4 unchanged", are superseded.** The e-stop latches until `clearEmergency()`, with no
+>   auto-clear (API rule, STEPHEN 2026-09-16).
+> - **§8, "PL-47 out of scope", is superseded.** The error contract lands first. Requests posted to the front
+>   cog carry their status back to the caller, and the protective-stop detector runs in the front cog.
+>   (`ABORT-ERROR-CONTRACT-DESIGN.md`, amended 2026-09-16.)
+> - **§3.3, "refused and reported on `DBGCH_ERROR` until PL-47 lands":** a drive refused while e-stopped
+>   returns an `ERR_*` status.
+
 ## 0. The decisions on record
 
 **STEPHEN 2026-09-15**, on ownership, verbatim: *"the sense cog is the owner, cog for the motors, this extends

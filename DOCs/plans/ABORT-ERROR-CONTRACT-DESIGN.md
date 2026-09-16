@@ -2,6 +2,27 @@
 
 **Date:** 2026-09-14
 **Status:** DESIGN FOR REVIEW. No source was changed in this phase.
+
+> **AMENDED 2026-09-16 by Stephen's rulings. Where the body below disagrees, this block governs.**
+> - **§5 Q1: yes.** Command methods return a status (0, or a negative `ERR_*`), and callers may ignore it.
+>   STEPHEN: *"We can actually change the contract to say an error code is returned. The success and error code
+>   is returned, and that will not affect any users today until they decide to use it."*
+> - **Getters and conditions found after the call returns** use a documented neutral value plus `getError()`.
+>   STEPHEN: *"yes, option 1"*.
+> - **§5 Q3 and §3.7: no abort anywhere.** While a protective stop is latched, energising calls refuse and
+>   return its code; they do not abort. STEPHEN: *"yes your A"*.
+>   - Names as proposed: `clearProtectiveStop()`, `getProtectiveStop()`, `ERR_PLATFORM_BLOCKED`.
+>   - `getError()` returns an active protective code first and does not clear it.
+>   - `abortIfProtectiveStop()` becomes a refuse-and-return check, and I2's "one abort per file" becomes "no
+>     abort".
+> - **§3.7's detector is in this sprint**, designed with the current-limit work (S-2, C-5). STEPHEN: *"i want
+>   intelligent behavior to limit current vs. aborting where this is the right thing to do for the dirving
+>   system"*.
+> - **Sense tasks:**
+>   - The e-stop auto-clear (S-4) is deleted, not gated: the e-stop latches until `clearEmergency()`.
+>   - The sense loop is the front cog of `FIXED-COG-SHAPE-DESIGN.md`, at 1 ms, not 8 Hz.
+> - **Protective stop as a whole:** motors secured where detected, refuse-and-return, acknowledgement by
+>   `clearProtectiveStop()`.
 **Governs:** PL-47 (`DOCs/PUNCH-LIST.md:1475-1528`). Feeds «#3539» (bench-harness trap removal).
 
 **Provenance tags** follow the project convention (`DOCs/analyses/PL-44-ROOT-CAUSE-STUDY.md:20-21`):
