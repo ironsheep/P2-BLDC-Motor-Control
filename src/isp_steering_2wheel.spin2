@@ -102,6 +102,8 @@ CON { forward our interface constants }
     ERR_SYNC_TIMEOUT        = ltWheel.ERR_SYNC_TIMEOUT
     ERR_BUSY                = ltWheel.ERR_BUSY
     ERR_FAULT_NOT_CLEARED   = ltWheel.ERR_FAULT_NOT_CLEARED
+    ERR_EMERGENCY_STOPPED   = ltWheel.ERR_EMERGENCY_STOPPED
+    ERR_NO_RESPONSE         = ltWheel.ERR_NO_RESPONSE
 
 OBJ { our Motors }
 
@@ -122,36 +124,38 @@ PUB null()
 '' This is not a top-level object
 ''
 
-PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog
-'' Start our drive cogs connected to our left and right motor control pin-sets
+PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog, frontCogId, startMs
+'' Start our drive cogs connected to our left and right motor control pin-sets, and the front cog that owns them (3 cogs)
 ''
 '' @param leftBasePin - The base pin ENUM (PINS_*) for the left motor's adapter board
 '' @param rightBasePin - The base pin ENUM (PINS_*) for the right motor's adapter board
 '' @param driveVoltage - The voltage ENUM (PWR_*) for both motors
 '' @param leftDetectMode - The detection mode ENUM (BRD_*) for the left motor
 '' @param rightDetectMode - The detection mode ENUM (BRD_*) for the right motor
-'' @returns ok - The COG ID of the sense task (0-7) on success, or (-1) if either motor or the sense task failed to start; getError() names the cause and the wheel
+'' @returns ok - The COG ID of the front (sense) cog (0-7) on success, or (-1) if either motor or the front cog failed to start; getError() names the cause and the wheel
 
 ' Local Variables:
 ' @local ltcog - the left driver's cog id, or -1
 ' @local rtcog - the right driver's cog id, or -1
+' @local frontCogId - the value cogspin() returned
+' @local startMs - getms() when the front cog handshake wait began
 
     ticks1ms   := (clkfreq / 1_000)
     ticks1us   := (clkfreq / 1_000_000)
-    ticksSenseLp := clkfreq / SENSE_LOOP_HZ ' derived from the rate, so the two can never disagree
 
     ' iff HDMI is needed, then we need this!
     'if clkfreq <> 270_000_000
     '    debug("!! ERROR bad CLOCK value")
     '    repeat ' halt here
 
-    if senseCog    ' D2: free this instance's own sense cog before starting a fresh pair
-        cogstop(senseCog - 1)
-        senseCog := 0
+    ok := -1
+    if senseCog    ' D2: free this instance's own front cog (EXIT, then cogstop) before starting a fresh pair
+        stopFrontCog()
 
-    ltcog := ltWheel.startEx(leftBasePin, driveVoltage, leftDetectMode, true)
+    ' both drivers start parked for this object's ATN, and neither starts a front cog of its own
+    ltcog := ltWheel.startOwned(leftBasePin, driveVoltage, leftDetectMode)
     ltWheel.testSetMotorId(@"ltMot")
-    rtcog := rtWheel.startEx(rightBasePin, driveVoltage, rightDetectMode, true)
+    rtcog := rtWheel.startOwned(rightBasePin, driveVoltage, rightDetectMode)
     rtWheel.testSetMotorId(@"rtMot")
 
     if (ltcog < 0) or (rtcog < 0)
@@ -162,15 +166,17 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
             ltWheel.stop()
         if rtcog >= 0
             rtWheel.stop()
-        ok := -1
         debug[user.DBGCH_ERROR]("!! ERROR filed to start left/right drive cog(s)")
     else
         rtWheel.forwardIsReverse()
         cogmask := (1<<ltcog)|(1<<rtcog)
         waitms(100)
         debug[user.DBGCH_LIFECYCLE](" sendatn: ", sdec(ltcog), " ", sdec(rtcog))
-        cogatn(cogmask)                                     ' sync the 2 motor cogs
+        ' lockstep: one ATN releases both parked drivers together. It is sent here, on the caller's
+        '  cog, before the front cog exists, so no second caller of COGATN can exist yet.
+        cogatn(cogmask)
 
+        ' pre-launch: no front cog of this instance exists, so these writes have no second writer
         ' one formula for the wheel, owned by the motor object (0 when the configured diameter is 0)
         _, tickInMM_x100 := ltWheel.wheelGeometry()
 
@@ -183,31 +189,56 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         rqstDirection := 0
         userCutoff := FALSE
         notUsed := 0
+        frontPasses := 0
+        frontLatePasses := 0
+        frontMaxPassTicks := 0
+        longfill(@taskStack, ltWheel.STACK_SENTINEL, ltWheel.STACK_SIZE_LONGS)   ' testGetFrontStats() finds the high-water mark from this
 
-        senseCog := cogspin(NEWCOG, taskPostionSense(), @taskStack)
-        if senseCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
-            senseCog := 0    ' keep the "not started" sentinel
+        frontCogId := cogspin(NEWCOG, frontLoop(), @taskStack)
+        if frontCogId < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
             ltWheel.stop()   ' a failed start leaves nothing running: release both motor cogs and their pins
             rtWheel.stop()
-            ok := -1
             recordError(ERR_NO_FREE_COG)
-            debug[user.DBGCH_ERROR]("!! ERROR filed to start Position Sense task")
+            debug[user.DBGCH_ERROR]("!! ERROR filed to start front cog")
         else
-            senseCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
-            ok := senseCog - 1    ' public contract: the sense cog's id (0-7), docstring is silent on B so this is the chosen return
+            senseCog := frontCogId + 1    ' internal representation: cogid + 1 (0 reserved as "not started"), one write
+            startMs := getms()
+            repeat while frontPasses == 0
+                if getms() - startMs > ltWheel.FRONT_START_TIMEOUT_MS
+                    quit
+                waitms(ltWheel.REQ_POLL_MS)
+            if frontPasses == 0
+                recordError(ERR_NO_RESPONSE)
+                debug[user.DBGCH_ERROR]("!! ERROR front cog did not start its loop")
+                stop()
+            else
+                ok := frontCogId    ' public contract: the front (sense) cog's id (0-7)
 
 PUB stop() : eError
-'' Stop our left/right drive and Sense cogs and release allocated pins
+'' Stop our front cog first, then the left/right drive cogs, and release allocated pins
 ''
 '' @returns eError - NO_ERROR; stopping always succeeds, on a started or an unstarted instance
 
-    if senseCog     ' stop motor reads
-        cogstop(senseCog - 1)
-        senseCog := 0
-
+    if senseCog
+        stopFrontCog()
     ltWheel.stop()
     rtWheel.stop()
     eError := NO_ERROR
+
+PRI stopFrontCog() | eStatus
+' Ask the front cog to EXIT, wait bounded for its acknowledgement, then cogstop it; never refuses.
+'
+
+' Local Variables:
+' @local eStatus - the EXIT request's result: NO_ERROR when acknowledged
+
+    ' PL-41: the front cog answers every open request, acknowledges, and parks with no output, so the
+    '  cogstop cannot cut a debug line. Without an answer in the bound it is stopped anyway.
+    eStatus, _, _ := postRequest(ltWheel.REQ_EXIT, BOTH_MOTORS, 0, 0, 0)
+    if eStatus <> NO_ERROR
+        debug[user.DBGCH_ERROR]("! ERROR: steering front cog did not acknowledge EXIT; stopping anyway")
+    cogstop(senseCog - 1)
+    senseCog := 0
 
 PUB setAcceleration(rate) : eError
 '' Updates the ramping speed of the motors
@@ -249,15 +280,19 @@ PUB holdAtStop(bEnable) : eError
 
     eError := firstError(ltWheel.holdAtStop(bEnable), rtWheel.holdAtStop(bEnable))
 
-PUB resetTracking() : eError
+PUB resetTracking() : eError | eStatus, eLeftStatus, eRightStatus
 '' Resets the position tracking values returned by getDistance() and getRotations()
 ''  Effectively: use current position as home from now on
 ''
-'' @returns eError - NO_ERROR
+'' @returns eError - NO_ERROR once the front cog has applied the reset, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
 
-    ltWheel.resetWindowAccumulators()
-    rtWheel.resetWindowAccumulators()
-    eError := NO_ERROR
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_RESET_TRACKING, BOTH_MOTORS, 0, 0, 0)
+    eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
 CON { --- Subsystem Control --- }
 
@@ -273,7 +308,7 @@ PUB driveDirection(power, direction) : eError
     rqstPower, rqstDirection := power, direction        ' calculate effective power based on direction
     eError := driveAtPower(calcPowerForDirection(power, direction))
 
-PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits) : eError | shorterDistance, maxLtSpeed, maxRtSpeed
+PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits) : eError | shorterDistance, nStopTicks, maxLtSpeed, maxRtSpeed, eStatus, eLeftStatus, eRightStatus
 '' Control the forward direction or rate of turn of your robot using the {leftDistance} and {rightDistance} inputs.
 '' Turn both motors on then turn them off again when either reaches the specified distance {leftDistance} or
 ''  {rightDistance}, where {*distance} is in {distanceUnits} [DDU_IN, DDU_FT, DDU_CM, or DDU_M].
@@ -282,54 +317,60 @@ PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits) : eError | sho
 '' @param leftDistance - distance for the left wheel, at least 1
 '' @param rightDistance - distance for the right wheel, at least 1
 '' @param eDistanceUnits - units of both distances: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
-'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); the motors are not started when the limit is rejected
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError() (ERR_EMERGENCY_STOPPED while a wheel is emergency-stopped); on any error neither the limit is armed nor the motors started
 
 ' Local Variables:
 ' @local shorterDistance - the smaller of the two distances, where both wheels stop
+' @local nStopTicks - the shorter distance in hall ticks
 ' @local maxLtSpeed - the left wheel's max speed for distance
 ' @local maxRtSpeed - the right wheel's max speed for distance
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
 
+    ' validate on this cog, then one request: the front cog resets tracking, arms the limit and drives
+    '  both wheels together, or refuses all of it (I1 item 2)
     shorterDistance := leftDistance < rightDistance ? leftDistance : rightDistance
-    eError := stopAfterDistance(shorterDistance, eDistanceUnits)
-    if eError == NO_ERROR
+    eError, nStopTicks := ticksForDistance(shorterDistance, eDistanceUnits)
+    if eError <> NO_ERROR
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: driveForDistance() rejected ", sdec_long(eError), sdec_long(shorterDistance), sdec_long(eDistanceUnits))
+    else
         maxLtSpeed := ltWheel.getMaxSpeedForDistance()
         maxRtSpeed := rtWheel.getMaxSpeedForDistance()
-        eError := driveAtPower(maxLtSpeed, maxRtSpeed)
+        rqstLtPower, rqstRtPower := maxLtSpeed, maxRtSpeed
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_DRIVE_DISTANCE, BOTH_MOTORS, nStopTicks, maxLtSpeed, maxRtSpeed)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
-PUB driveAtPower(leftPower, rightPower) : eError | eLeftError, eRightError
+PUB driveAtPower(leftPower, rightPower) : eError | eStatus, eLeftStatus, eRightStatus
 '' Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
 '' Turns left motor on at {leftPower} and right at {rightPower}. Where {*Power} are in the range [(-100) to 100].
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
 ''
 '' @param leftPower - left motor power [(-100) to 100], saturated to that range; 0 stops
 '' @param rightPower - right motor power [(-100) to 100], saturated to that range; 0 stops
-'' @returns eError - NO_ERROR, ERR_NOT_STARTED, or a wheel's ERR_* code (all recorded for getError()); on ERR_SYNC_TIMEOUT both motors are stopped
+'' @returns eError - NO_ERROR, ERR_NOT_STARTED, ERR_NO_RESPONSE, or a wheel's ERR_EMERGENCY_STOPPED / ERR_SYNC_TIMEOUT (all recorded for getError()); on an emergency stop nothing is written, on ERR_SYNC_TIMEOUT both motors are stopped
 
 ' Local Variables:
-' @local eLeftError - the left wheel's result for this command
-' @local eRightError - the right wheel's result for this command
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
 
     eError := NO_ERROR
     if senseCog == 0
-        ' started means both drivers run and cogmask is built
+        ' started means both drivers and the front cog run
         eError := recordError(ERR_NOT_STARTED)
         debug[user.DBGCH_ERROR]("! ERROR: driveAtPower() motors not started")
     else
         rqstLtPower, rqstRtPower := leftPower, rightPower
+        if (leftPower <> (-100 #> leftPower <# 100)) or (rightPower <> (-100 #> rightPower <# 100))
+            debug[user.DBGCH_WARNING]("! WARNING: driveAtPower() power out of range (corrected):", sdec_long(leftPower), sdec_long(rightPower), " - must be [-100 to +100]")
+        ' the front cog writes both commands with the sync bit, releases both drivers with one ATN and
+        '  waits, bounded; if either does not take its command both are stopped (audit M)
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_DRIVE, BOTH_MOTORS, leftPower, rightPower, TRUE)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
-        eLeftError := ltWheel.driveAtPowerEx(rqstLtPower, true)
-        eRightError := rtWheel.driveAtPowerEx(rqstRtPower, true)
-        cogatn(cogmask)                                     ' sync the 2 motor cogs
-        if eLeftError == NO_ERROR
-            eLeftError := ltWheel.SyncStatus()              ' make sure both motors have taken value
-        if eRightError == NO_ERROR
-            eRightError := rtWheel.SyncStatus()
-        if (eLeftError == ERR_SYNC_TIMEOUT) or (eRightError == ERR_SYNC_TIMEOUT)
-            ' audit M: a platform with one wheel driving pivots, so neither wheel may keep a command the other did not take
-            stopMotors()
-        eError := firstError(eLeftError, eRightError)
-
-PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, degreesPerTic, ticsPerRotation
+PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, degreesPerTic, ticsPerRotation, eStatus, eLeftStatus, eRightStatus
 '' Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
 '' USE WITH: driveDirection(), driveAtPower()
 ''
@@ -341,6 +382,9 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, deg
 ' @local nStopTicks - the requested rotation in hall ticks
 ' @local degreesPerTic - degrees of rotation per hall tick for this motor
 ' @local ticsPerRotation - hall ticks per rotation for this motor
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
 
     ' validate everything, then commit: nothing is changed until every check has passed
     ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
@@ -369,13 +413,15 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, deg
             eError := ERR_NOT_STARTED
 
     if eError == NO_ERROR
-        motorStopHallTicks := nStopTicks
-        debug[user.DBGCH_COMMAND](" stopAfterRotation: ", udec(nRotationCount), " ", udec(degreesPerTic), " ", udec(ticsPerRotation), " ", udec(motorStopHallTicks))
+        debug[user.DBGCH_COMMAND](" stopAfterRotation: ", udec(nRotationCount), " ", udec(degreesPerTic), " ", udec(ticsPerRotation), " ", udec(nStopTicks))
+        ' the front cog arms it, keeping the tracking as it is
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_LIMIT_TICKS, BOTH_MOTORS, nStopTicks, FALSE, 0)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
     else
         eError := recordError(eError)
         debug[user.DBGCH_ERROR]("! ERROR: stopAfterRotation() rejected ", sdec_long(eError), sdec_long(nRotationCount), sdec_long(eRotationUnits))
 
-PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, fValue
+PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, eStatus, eLeftStatus, eRightStatus
 '' Stops the motors after one of them reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
 '' USE WITH: driveDirection(), driveAtPower()
 ''
@@ -385,9 +431,32 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, fValue
 
 ' Local Variables:
 ' @local nStopTicks - the requested distance in hall ticks
-' @local fValue - the requested distance in mm (float), for the inch and foot units
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
 
     ' validate everything, then commit: nothing is changed until every check has passed
+    eError, nStopTicks := ticksForDistance(nDistance, eDistanceUnits)
+    if eError == NO_ERROR
+        ' F-4: tracking restarts only for an accepted limit, which counts from here; the front cog
+        '  resets the tracking and arms the limit as one action
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_LIMIT_TICKS, BOTH_MOTORS, nStopTicks, TRUE, 0)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
+    else
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: stopAfterDistance() rejected ", sdec_long(eError), sdec_long(nDistance), sdec_long(eDistanceUnits))
+
+PRI ticksForDistance(nDistance, eDistanceUnits) : eError, nStopTicks | fValue
+' Validate a platform distance request and convert it to hall ticks, with no side effects and nothing recorded.
+'
+' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
+' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
+' @returns eError - NO_ERROR, ERR_BAD_COUNT, ERR_NOT_STARTED, ERR_NO_WHEEL_DIA, ERR_BAD_UNITS or ERR_LIMIT_UNRESOLVABLE
+' @returns nStopTicks - the requested distance in hall ticks; meaningful only when {eError} is NO_ERROR
+
+' Local Variables:
+' @local fValue - the requested distance in mm (float), for the inch and foot units
+
     ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
     eError := NO_ERROR
     nStopTicks := 0
@@ -428,15 +497,7 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, fValue
         if (eError == NO_ERROR) and (nStopTicks < 1)
             eError := ERR_LIMIT_UNRESOLVABLE
 
-    if eError == NO_ERROR
-        ' F-4: tracking restarts only for an accepted limit, which counts from here
-        resetTracking()
-        motorStopHallTicks := nStopTicks
-    else
-        eError := recordError(eError)
-        debug[user.DBGCH_ERROR]("! ERROR: stopAfterDistance() rejected ", sdec_long(eError), sdec_long(nDistance), sdec_long(eDistanceUnits))
-
-PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
+PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs, eStatus, eLeftStatus, eRightStatus
 '' Stops the motors after {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
 '' USE WITH: driveDirection(), driveAtPower()
 ''
@@ -447,6 +508,9 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
 ' Local Variables:
 ' @local timeNow - getms() when the limit was computed
 ' @local nStopMSecs - the getms() value at which the motors stop, never 0 (0 means no limit)
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
 
     ' validate everything, then commit: nothing is changed until every check has passed
     ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
@@ -470,8 +534,9 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
     if eError == NO_ERROR
         if nStopMSecs == 0
             nStopMSecs := 1
-        motorStopMSecs := nStopMSecs
-        debug[user.DBGCH_COMMAND]("* stop motor at ", udec_long(motorStopMSecs), ", now: ", udec_long(timeNow))
+        debug[user.DBGCH_COMMAND]("* stop motor at ", udec_long(nStopMSecs), ", now: ", udec_long(timeNow))
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_LIMIT_TIME, BOTH_MOTORS, nStopMSecs, 0, 0)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
     else
         eError := recordError(eError)
         debug[user.DBGCH_ERROR]("! ERROR: stopAfterTime() rejected ", sdec_long(eError), sdec_long(nTime), sdec_long(eTimeUnits))
@@ -483,32 +548,64 @@ PUB stopMotors() : eError
 '' @returns eError - NO_ERROR; stopping always succeeds
 
     rqstPower := rqstLtPower := rqstRtPower := 0
-    ltWheel.stopMotor()
-    rtWheel.stopMotor()
+    secureWheels(BOTH_MOTORS, FALSE)
     eError := NO_ERROR
 
 PUB emergencyCutoff() : eError
 '' EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress
 ''
+'' The emergency stop latches: drives are refused with ERR_EMERGENCY_STOPPED until clearEmergency().
+''
 '' @returns eError - NO_ERROR; stopping always succeeds
 
     rqstPower := rqstLtPower := rqstRtPower := 0
     userCutoff := TRUE
-    ltWheel.emergencyCutoff()
-    rtWheel.emergencyCutoff()
+    debug[user.DBGCH_FAULT]("--------WHEELS EMERGENCY STOP--------")
+    secureWheels(BOTH_MOTORS, TRUE)
     eError := NO_ERROR
 
-PUB clearEmergency() : eError
-'' Remove emergency override allowing motors to be driven again
+PUB clearEmergency() : eError | eStatus, eLeftStatus, eRightStatus
+'' Remove emergency override allowing motors to be driven again; both motors stay stopped until commanded
 ''
-'' @returns eError - NO_ERROR
+'' @returns eError - NO_ERROR once both drivers have left their emergency stop, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError() (a wheel's ERR_NO_RESPONSE in that wheel's slot)
 
-' used by wheels*.spin2 methods
-    userCutoff := FALSE
-    ltWheel.clearEmergency()
-    rtWheel.clearEmergency()
-    debug[user.DBGCH_FAULT]("--------clear EMERGENCY--------")
-    eError := NO_ERROR
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    ' the front cog writes zero commands before releasing the latches, so nothing moves on the clear
+    eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_CLEAR_ESTOP, BOTH_MOTORS, 0, 0, 0)
+    eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
+    if eError == NO_ERROR
+        userCutoff := FALSE
+        debug[user.DBGCH_FAULT]("--------clear EMERGENCY--------")
+    else
+        debug[user.DBGCH_ERROR]("! ERROR: clearEmergency() not cleared ", sdec_long(eError))
+
+PRI secureWheels(motorMask, bEStop) | eStatus
+' SECURING: stop (or emergency-stop) the selected wheels; never records, never refuses.
+'
+' @param motorMask - the wheels to secure: LEFT_MOTOR_BIT, RIGHT_MOTOR_BIT or BOTH_MOTORS
+' @param bEStop - T/F where T also latches each selected wheel's emergency stop
+
+' Local Variables:
+' @local eStatus - the posted request's platform status
+
+    ' I6. With the front cog running, it applies the request first in its next pass. With no front cog
+    '  (not started, inside start(), after stop()) no second writer exists, so each wheel is secured
+    '  directly; the same happens, reported, if a running front cog did not answer in time.
+    if bEStop == TRUE
+        eStatus, _, _ := postRequest(ltWheel.REQ_ESTOP, motorMask, 0, 0, 0)
+    else
+        eStatus, _, _ := postRequest(ltWheel.REQ_STOP, motorMask, 0, 0, 0)
+    if eStatus <> NO_ERROR
+        if eStatus == ERR_NO_RESPONSE
+            debug[user.DBGCH_ERROR]("! ERROR: steering front cog did not answer; securing directly")
+        if (motorMask & LEFT_MOTOR_BIT) <> 0
+            ltWheel.frontSecure(bEStop)
+        if (motorMask & RIGHT_MOTOR_BIT) <> 0
+            rtWheel.frontSecure(bEStop)
 
 CON { --- Subsystem Status --- }
 
@@ -833,24 +930,36 @@ PUB testRightGetRpm() : nRpm
 
     nRpm := rtWheel.testGetRpm()
 
-PUB testLeftDriveAtMotorIncrement(motorIncre) : eError
+PUB testLeftDriveAtMotorIncrement(motorIncre) : eError | eStatus, eLeftStatus, eRightStatus
 '' TESTING USE: drive the LEFT motor at a raw increment
 ''
 '' @param motorIncre - signed raw driver increment; sign selects the commutation offset
-'' @returns eError - NO_ERROR, or the wheel's ERR_* code (also recorded for getError())
+'' @returns eError - NO_ERROR, ERR_NOT_STARTED / ERR_NO_RESPONSE, or the wheel's ERR_EMERGENCY_STOPPED (also recorded for getError())
+
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
 
     ' NOTE: this path bypasses incrementForPower() and the reversed-motor flag, so the sign
     '  passed here is the sign the driver sees.
-    eError := ltWheel.testDriveAtMotorIncrement(motorIncre)
+    eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_TEST_INCREMENT, LEFT_MOTOR_BIT, motorIncre, 0, 0)
+    eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
-PUB testRightDriveAtMotorIncrement(motorIncre) : eError
+PUB testRightDriveAtMotorIncrement(motorIncre) : eError | eStatus, eLeftStatus, eRightStatus
 '' TESTING USE: drive the RIGHT motor at a raw increment
 ''
 '' @param motorIncre - signed raw driver increment; sign selects the commutation offset
-'' @returns eError - NO_ERROR, or the wheel's ERR_* code (also recorded for getError())
+'' @returns eError - NO_ERROR, ERR_NOT_STARTED / ERR_NO_RESPONSE, or the wheel's ERR_EMERGENCY_STOPPED (also recorded for getError())
+
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
 
     ' NOTE: see testLeftDriveAtMotorIncrement() - the reversed-motor flag is bypassed here.
-    eError := rtWheel.testDriveAtMotorIncrement(motorIncre)
+    eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_TEST_INCREMENT, RIGHT_MOTOR_BIT, motorIncre, 0, 0)
+    eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
 PUB testLeftSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) : eError
 '' TESTING USE: set the LEFT motor's commutation offsets so we can characterize current draw
@@ -938,33 +1047,104 @@ PUB testRightSetMotorReversed(bEnable) : eError
     '  test measures both wheels on the same commutation offset.
     eError := rtWheel.testSetMotorReversed(bEnable)
 
-PUB testLeftResetFault() : eError
+PUB testLeftResetFault() : eError | pollIdx
 '' TESTING USE: reset the LEFT motor's fault indicator tripped during test
 ''
-'' @returns eError - NO_ERROR, or the wheel's ERR_* code (also recorded for getError())
+'' @returns eError - NO_ERROR, or ERR_FAULT_NOT_CLEARED (recorded in the left wheel's slot for getError()) when the driver had not stopped by the end of the wait
 
-    eError := ltWheel.testResetFault()
+' Local Variables:
+' @local pollIdx - polls of the driver state taken so far
 
-PUB testRightResetFault() : eError
+    ' PL-28(a): the driver leaves DCS_FAULTED only through a stop request. The stop is the securing
+    '  path (posted to the front cog, never written here while it runs); the fault latch and the wait
+    '  are on this cog, as the motor object's testResetFault() does them.
+    eError := NO_ERROR
+    if ltWheel.isFaultSignal() == TRUE
+        debug[user.DBGCH_TEST]("STEER: reset left fault...")
+        secureWheels(LEFT_MOTOR_BIT, FALSE)
+        ltWheel.clearFaultSignal()
+        waitms(FAULT_CLEAR_SETTLE_MS)
+        repeat pollIdx from 1 to FAULT_CLEAR_POLLS
+            if ltWheel.isStopped() == TRUE
+                quit
+            waitms(FAULT_CLEAR_POLL_MS)
+        if ltWheel.isStopped() == FALSE
+            eError := ltWheel.recordCallerError(ERR_FAULT_NOT_CLEARED)
+            debug[user.DBGCH_TEST]("STEER: left fault reset wait ended still not stopped")
+    else
+        debug[user.DBGCH_TEST]("STEER: testLeftResetFault() NOT faulted!?")
+
+PUB testRightResetFault() : eError | pollIdx
 '' TESTING USE: reset the RIGHT motor's fault indicator tripped during test
 ''
-'' @returns eError - NO_ERROR, or the wheel's ERR_* code (also recorded for getError())
+'' @returns eError - NO_ERROR, or ERR_FAULT_NOT_CLEARED (recorded in the right wheel's slot for getError()) when the driver had not stopped by the end of the wait
 
-    eError := rtWheel.testResetFault()
+' Local Variables:
+' @local pollIdx - polls of the driver state taken so far
 
-PUB testLeftResetMaxValues() : eError
+    ' see testLeftResetFault()
+    eError := NO_ERROR
+    if rtWheel.isFaultSignal() == TRUE
+        debug[user.DBGCH_TEST]("STEER: reset right fault...")
+        secureWheels(RIGHT_MOTOR_BIT, FALSE)
+        rtWheel.clearFaultSignal()
+        waitms(FAULT_CLEAR_SETTLE_MS)
+        repeat pollIdx from 1 to FAULT_CLEAR_POLLS
+            if rtWheel.isStopped() == TRUE
+                quit
+            waitms(FAULT_CLEAR_POLL_MS)
+        if rtWheel.isStopped() == FALSE
+            eError := rtWheel.recordCallerError(ERR_FAULT_NOT_CLEARED)
+            debug[user.DBGCH_TEST]("STEER: right fault reset wait ended still not stopped")
+    else
+        debug[user.DBGCH_TEST]("STEER: testRightResetFault() NOT faulted!?")
+
+PUB testLeftResetMaxValues() : eError | eStatus, eLeftStatus, eRightStatus
 '' TESTING USE: reset the LEFT motor's accumulated maximum sense values
 ''
-'' @returns eError - NO_ERROR
+'' @returns eError - NO_ERROR once the front cog has applied the reset, or ERR_NOT_STARTED / ERR_NO_RESPONSE (also recorded for getError())
 
-    eError := ltWheel.testResetMaxValues()
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
 
-PUB testRightResetMaxValues() : eError
+    eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_RESET_MAX, LEFT_MOTOR_BIT, 0, 0, 0)
+    eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
+
+PUB testRightResetMaxValues() : eError | eStatus, eLeftStatus, eRightStatus
 '' TESTING USE: reset the RIGHT motor's accumulated maximum sense values
 ''
-'' @returns eError - NO_ERROR
+'' @returns eError - NO_ERROR once the front cog has applied the reset, or ERR_NOT_STARTED / ERR_NO_RESPONSE (also recorded for getError())
 
-    eError := rtWheel.testResetMaxValues()
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_RESET_MAX, RIGHT_MOTOR_BIT, 0, 0, 0)
+    eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
+
+PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater | longIdx
+'' TESTING USE: return the steering front cog's loop health counters and its stack high-water mark
+''
+'' @returns nPasses - passes the front cog has started since it was launched
+'' @returns nLatePasses - passes that overran their slot and were re-anchored, never caught up
+'' @returns nMaxPassTicks - the longest pass body seen, in system ticks
+'' @returns nStackHighWater - stack longs ever used, of the motor object's STACK_SIZE_LONGS; STACK_SIZE_LONGS itself means an overflow is possible
+
+' Local Variables:
+' @local longIdx - index of the stack long being inspected, from the top down
+
+    nPasses := frontPasses
+    nLatePasses := frontLatePasses
+    nMaxPassTicks := frontMaxPassTicks
+    ' the stack was filled with STACK_SENTINEL before launch and grows upward from its base
+    nStackHighWater := 0
+    repeat longIdx from ltWheel.STACK_SIZE_LONGS - 1 to 0
+        if taskStack[longIdx] <> ltWheel.STACK_SENTINEL
+            nStackHighWater := longIdx + 1
+            quit
 
 PUB testLeftGetRampingValues() : minRamp, maxRamp, incRamp, decrRamp
 '' TESTING USE: return the LEFT motor's ramping parameters
@@ -993,6 +1173,53 @@ CON { --- PRIVATE Utility Methods --- }
 
 VAR { error record }
     LONG    lastError[ltWheel.COG_SLOT_COUNT]   ' per calling cog: the steering object's first error not yet collected, NO_ERROR when none
+
+CON { front cog requests -- the protocol and REQ_* codes are the motor object's (isp_bldc_motor.spin2) }
+
+    ' Owned motors, as indexes into ackMotorStatus[] and as bits in a request's motor mask:
+    '  LEFT_MOTOR_IDX / LEFT_MOTOR_BIT   - the left wheel (ltWheel)
+    '  RIGHT_MOTOR_IDX / RIGHT_MOTOR_BIT - the right wheel (rtWheel)
+    '  BOTH_MOTORS                       - both wheels
+    OWNED_MOTOR_MAX = 2
+    #0, LEFT_MOTOR_IDX, RIGHT_MOTOR_IDX
+    LEFT_MOTOR_BIT  = 1 << LEFT_MOTOR_IDX
+    RIGHT_MOTOR_BIT = 1 << RIGHT_MOTOR_IDX
+    BOTH_MOTORS     = LEFT_MOTOR_BIT | RIGHT_MOTOR_BIT
+
+    ' testLeft/RightResetFault(): the wait for a faulted driver to reach DCS_STOPPED after its stop
+    FAULT_CLEAR_SETTLE_MS = 30          ' values clear in 20 ms; extra time before the first check
+    FAULT_CLEAR_POLL_MS   = 2           ' between checks
+    FAULT_CLEAR_POLLS     = 1_000       ' checks before giving up (about 2 s)
+
+VAR { front cog request slots -- one per calling cog, indexed by COGID(); every long has exactly one writer }
+    LONG    reqCmd[ltWheel.COG_SLOT_COUNT]      ' caller-written: REQ_* code
+    LONG    reqMask[ltWheel.COG_SLOT_COUNT]     ' caller-written: owned-motor selector, bit i = motor i
+    LONG    reqArg1[ltWheel.COG_SLOT_COUNT]     ' caller-written: arguments, meaning per REQ_*
+    LONG    reqArg2[ltWheel.COG_SLOT_COUNT]
+    LONG    reqArg3[ltWheel.COG_SLOT_COUNT]
+    LONG    reqNextSeq[ltWheel.COG_SLOT_COUNT]  ' caller-written: this cog's own sequence counter
+    LONG    reqSeq[ltWheel.COG_SLOT_COUNT]      ' caller-written LAST: SEQ_IDLE, or the published sequence
+    LONG    ackStatus[ltWheel.COG_SLOT_COUNT]   ' front-written: the platform status (NO_ERROR, or ERR_NOT_STARTED on EXIT)
+    LONG    ackMotorStatus[ltWheel.COG_SLOT_COUNT * OWNED_MOTOR_MAX]  ' front-written FIRST: per owned motor, [slot * OWNED_MOTOR_MAX + motor]
+    LONG    ackSeq[ltWheel.COG_SLOT_COUNT]      ' front-written LAST: the sequence it answered
+    LONG    frontPasses                         ' front-written heartbeat (zeroed by start before the launch)
+    LONG    frontLatePasses                     ' front-written: passes that overran their slot
+    LONG    frontMaxPassTicks                   ' front-written: longest pass body, in ticks
+
+PRI recordRequestResult(eStatus, eLeftStatus, eRightStatus) : eError
+' Record a posted request's result on this cog: the platform status in this object's slot, each wheel's status in that wheel's slot.
+'
+' @param eStatus - the platform status (NO_ERROR, ERR_NOT_STARTED or ERR_NO_RESPONSE)
+' @param eLeftStatus - the left wheel's status
+' @param eRightStatus - the right wheel's status
+' @returns eError - {eStatus} when it is an error, else the left wheel's code when it failed, else the right's
+
+    recordError(eStatus)
+    ltWheel.recordCallerError(eLeftStatus)
+    rtWheel.recordCallerError(eRightStatus)
+    eError := eStatus
+    if eError == NO_ERROR
+        eError := firstError(eLeftStatus, eRightStatus)
 
 PRI recordError(eCode) : eSameCode
 ' Record the calling cog's first steering error: the ONLY writer of lastError[]; returns the code unchanged.
@@ -1070,30 +1297,22 @@ PUB isEmergency() : bState
 
     bState := ltWheel.isEmergency() or rtWheel.isEmergency()
 
-CON { -- TASK position tracking -- }
+CON { -- TASK: the steering front cog -- }
 
-    STACK_SIZE_LONGS = 64 ' WARNING! we exceed stack at 48!
-
-' C-3 (task 3512): this loop owns the distance and time stop checks for both wheels, so a stop cannot be
-'  commanded sooner than one pass after its limit is crossed. At the old 8 Hz that was up to 125 ms
-'  -- MEASURED at Visit 2 as 22 ticks (127 mm) on one 2 ft run (VISIT-2-RESULTS.md sec 7). At 128 Hz the
-'  bound is 7.8 ms, about 3 ticks (18 mm) at top speed. The DECELERATION distance is unchanged and now
-'  dominates every distance stop (C-4: 76 ticks from half speed). Kept equal to the motor object's rate.
-    ' at 7.813 ms
-    SENSE_LOOP_HZ = 128
-
-' The e-stop hold below is counted in PASSES, so it stays 1/8 second at any SENSE_LOOP_HZ (task 3512).
-    ESTOP_HOLD_PASSES = SENSE_LOOP_HZ / 8
+' The front cog is the owner of both wheels: the only cog that commands their drivers, tracks their
+'  position and enforces the platform's distance and time stops, once per ms on the motor object's
+'  schedule constants (FRONT_LOOP_HZ). C-3 (task 3512): a stop is commanded in the pass its limit is
+'  seen and taken within one drive pass, about 1.5 ms. The DECELERATION distance is unchanged and
+'  dominates every distance stop (C-4: 76 ticks from half speed).
 
 VAR { time values & arrays }
 
     long    ticks1ms
     long    ticks1us
-    long    ticksSenseLp                ' one sense-loop period, CLKFREQ / SENSE_LOOP_HZ
 
-    long    senseCog
+    long    senseCog                    ' the front cog: cogid + 1, 0 when not running
 
-    long    taskStack[STACK_SIZE_LONGS]
+    long    taskStack[ltWheel.STACK_SIZE_LONGS]
 
 VAR { Data for Motor Position Tracking }
     long    deltaTicks
@@ -1148,73 +1367,495 @@ PRI LALOOPEND()
     pintoggle(TEST_PIN_SNS_LP_ACTV)                                             ' end of active side
 '}
 
-PRI updateWindowAccumulators()
-    ltWheel.updateWindowAccumulators()
-    rtWheel.updateWindowAccumulators()
+{ Steering front cog. The request protocol is the motor object's (see isp_bldc_motor.spin2 above
+  its frontLoop()), with a motor mask per request and a status per owned motor:
 
-PRI taskPostionSense() | senseStartTicks, eStopPasses
-' TASK: every 1/SENSE_LOOP_HZ second read motor pos and calculate RPM and countOf90ths/Sec
+  answer order: ackMotorStatus[slot * OWNED_MOTOR_MAX + motor] FIRST, then ackStatus[slot], then ackSeq[slot]
+
+  The per-wheel work is the motor object's front*() routines, called only from this cog's call graph.
+  Nothing reachable from frontLoop() calls recordError() or recordCallerError().
+}
+
+PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount
+' FRONT COG: the platform's loop -- apply posted requests, track both wheels, enforce the platform stop limits, once per ms.
+'
+
+' Local Variables:
+' @local ticksPerPass - system ticks in one FRONT_LOOP_HZ pass
+' @local lateMarginTicks - LATE_MARGIN_US in system ticks
+' @local nextDue - getct() value at which the next pass is due
+' @local passStartTicks - getct() when this pass began
+' @local passBodyTicks - ticks this pass's body took
+' @local passCount - passes run so far, the wheels' rpm window cadence counter
+
+    ' The entry writes no wheel command, e-stop or limit: it adopts them, so a stop written directly
+    '  inside start()'s window survives the launch. The drivers were released before this cog existed.
+    ticksPerPass := CLKFREQ / ltWheel.FRONT_LOOP_HZ
+    lateMarginTicks := (CLKFREQ / ltWheel.US_PER_SEC) * ltWheel.LATE_MARGIN_US
+    passCount := 0
+    ltWheel.frontResetTracking(TRUE)
+    rtWheel.frontResetTracking(TRUE)
     LAINIT()
-
-    eStopPasses := 0
-    ltWheel.resetWindowAccumulators()
-    rtWheel.resetWindowAccumulators()
+    nextDue := getct() + ticksPerPass
 
     repeat
-        senseStartTicks := getct()
+        passStartTicks := getct()
+        frontPasses++                                                           ' heartbeat: start() waits for the first one
+        passCount++
 
-        ' Q: Do we want to reset both accum on a fault?
-        ' if MOTOR FAULT or estop, reset our tracker
-        if ltWheel.getDriverState() == DCS_FAULTED or  ltWheel.getDriverState() == DCS_ESTOP
-            ltWheel.resetWindowAccumulators()
+        ' 0. a stop written in an earlier pass is confirmed, or written again
+        ltWheel.frontConfirmStop()
+        rtWheel.frontConfirmStop()
 
-        if rtWheel.getDriverState() == DCS_FAULTED or  rtWheel.getDriverState() == DCS_ESTOP
-            rtWheel.resetWindowAccumulators()
-
-        showDriveStatesOnChange()
+        ' 1. requests: securing first, then the rest in slot order, then EXIT
+        if frontServiceRequests() == TRUE
+            quit                                                                ' EXIT acknowledged: park below
 
         LALOOPSTART()
-
-        ' PROCESS left/right motor
-        updateWindowAccumulators()
-
-        ' if user set time/distance to stop then stop if we are past the time or distance
-        ' if both time and distance is used, first check until time is passed and then check distance
-        if motorStopMSecs > 0 and (getms() > motorStopMSecs)
-            stopMotors()
-            motorStopMSecs := 0 ' and clear user request
-        elseif motorStopHallTicks > 0
-            'debug(" taskPostionSense: ", udec(motorStopHallTicks), " ", udec(ltWheel.getposTrkHallTicks()), " ", udec(rtWheel.getposTrkHallTicks()))
-            if (ltWheel.getposTrkHallTicks() > motorStopHallTicks or rtWheel.getposTrkHallTicks() > motorStopHallTicks)
-                stopMotors()
-                motorStopHallTicks := 0 ' and clear user request
-
+        ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
+        ltWheel.frontTrack(passCount)
+        rtWheel.frontTrack(passCount)
+        if frontPlatformLimitsDue(getms()) == TRUE
+            ltWheel.frontWriteIncrement(0, FALSE)
+            rtWheel.frontWriteIncrement(0, FALSE)
+        showDriveStatesOnChange()
         LALOOPEND()
-        ' ------------------------------------------
-        ' iff driver reports e-stop then clear the emergency stop request
-        '  user will request it again if needed
-        ' NOTE: we leave e_stop set for at least 1/8 second before clearing! (it always was 1/8,
-        '  one loop period at 8 Hz; the 1/4 in this note was never what the code did)
-        ' task 3512: both the hold and the debug line are counted in PASSES. The hold used to toggle a
-        '  flag, clearing one loop period after the e-stop was first seen (125 ms at 8 Hz, 7.8 ms at
-        '  128 Hz), and the debug line printed on EVERY pass while e-stopped -- 128 lines a second at
-        '  the new rate. Now the hold is 1/8 second at any rate and the line prints once per e-stop.
-        if isEmergency()
-            eStopPasses++
-            if eStopPasses == 1
-                debug[user.DBGCH_FAULT]("--------WHEEL in EMERGENCY!!--------")
-            if eStopPasses > ESTOP_HOLD_PASSES
-                clearEmergency()
-                eStopPasses := 0
+
+        ' 4. accounting, then the absolute schedule
+        passBodyTicks := getct() - passStartTicks
+        deltaTicks := passBodyTicks
+        frontMaxPassTicks := frontMaxPassTicks #> passBodyTicks
+        if (nextDue - getct()) < lateMarginTicks
+            ' Late. WAITCT waits until the counter MATCHES its target, so a target already past would
+            '  wait for the 32-bit counter to wrap. The wait is skipped and the schedule re-anchored:
+            '  missed slots are counted, never replayed.
+            frontLatePasses++
+            nextDue := getct() + ticksPerPass
         else
-            eStopPasses := 0
+            waitct(nextDue)
+            nextDue += ticksPerPass
 
-        ' keep track of runtime for this sensor loop (for debug, HDMI, etc.)
-        deltaTicks := getct() - senseStartTicks
+    ' EXIT: parked with no output until stop() cogstops this cog; it never returns, so its cog id
+    '  cannot be released and reused before that cogstop
+    repeat
+        waitms(ltWheel.FRONT_PARK_MS)
 
-        ' code uses about 1_880 ticks. This is little over 9 uS  @200MHz clock
-        '   wait out the rest of the sense-loop period before the next sample
-        waitct(senseStartTicks + ticksSenseLp)  ' wait to create "sense" time-base
+PRI frontPlatformLimitsDue(nowMs) : bFired
+' FRONT COG: return TRUE, and disarm the limit, when the platform's time limit has passed or either wheel has passed the distance limit.
+'
+' @param nowMs - getms() for this pass
+' @returns bFired - T/F where T means a limit fired and both wheels must be stopped now
+
+    ' if both time and distance are armed, the time is checked until it passes, then the distance
+    bFired := FALSE
+    if (motorStopMSecs > 0) and (nowMs > motorStopMSecs)
+        debug[user.DBGCH_SENSE]("-STEER- time limit reached")
+        motorStopMSecs := 0                                                     ' and clear user request
+        bFired := TRUE
+    elseif motorStopHallTicks > 0
+        if (ltWheel.getposTrkHallTicks() > motorStopHallTicks) or (rtWheel.getposTrkHallTicks() > motorStopHallTicks)
+            debug[user.DBGCH_SENSE]("-STEER- distance limit reached")
+            motorStopHallTicks := 0                                             ' and clear user request
+            bFired := TRUE
+
+PRI frontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken, seqTaken, eCmd, motorMask, nArg1, nArg2, nArg3, bWaited, bDidWait, eStatus, eLeftStatus, eRightStatus
+' FRONT COG: take, apply and answer the open request slots once: REQ_ESTOP, then REQ_STOP, then the rest, then EXIT.
+'
+' @returns bExit - T/F where T means an EXIT was taken: every open slot has been answered and the loop must park
+
+' Local Variables:
+' @local openMask - bit per slot: open at the first sweep and not yet handled in this pass
+' @local eClass - the request class being applied (REQ_CLASS_*)
+' @local slotIdx - the slot, which is the calling cog's id
+' @local slotBit - {slotIdx}'s bit in openMask
+' @local bTaken - T/F where T means the slot's copy is one whole, unanswered request
+' @local seqTaken - the sequence of the copied request
+' @local eCmd - the copied REQ_* code
+' @local motorMask - the copied owned-motor selector
+' @local nArg1 - the copied first argument
+' @local nArg2 - the copied second argument
+' @local nArg3 - the copied third argument
+' @local bWaited - T/F where T means a request has already spent this pass's one bounded wait
+' @local bDidWait - T/F where T means the request just applied waited
+' @local eStatus - the applied request's platform status
+' @local eLeftStatus - the applied request's left wheel status
+' @local eRightStatus - the applied request's right wheel status
+
+    bExit := FALSE
+    openMask := 0
+    repeat slotIdx from 0 to ltWheel.COG_SLOT_COUNT - 1
+        seqTaken := reqSeq[slotIdx]
+        if (seqTaken <> ltWheel.SEQ_IDLE) and (seqTaken <> ackSeq[slotIdx])
+            openMask |= 1 << slotIdx
+
+    if openMask <> 0
+        bWaited := FALSE
+        repeat eClass from ltWheel.REQ_CLASS_ESTOP to ltWheel.REQ_CLASS_EXIT
+            repeat slotIdx from 0 to ltWheel.COG_SLOT_COUNT - 1
+                slotBit := 1 << slotIdx
+                if (openMask & slotBit) <> 0
+                    bTaken, seqTaken, eCmd, motorMask, nArg1, nArg2, nArg3 := frontTakeSlot(slotIdx)
+                    if bTaken == FALSE
+                        openMask &= !slotBit                                    ' withdrawn by its caller, or already answered
+                    elseif requestClass(eCmd) == eClass
+                        openMask &= !slotBit
+                        ' At most one bounded wait per pass: a second waiting request is left posted, and
+                        '  taken in the next pass. Non-waiting requests are applied regardless.
+                        if eClass == ltWheel.REQ_CLASS_EXIT
+                            bExit := TRUE                                       ' answered by frontAnswerForExit(), after every other slot
+                        elseif (bWaited == FALSE) or (requestWaits(eCmd, nArg3) == FALSE)
+                            eStatus, eLeftStatus, eRightStatus, bDidWait := frontApply(eCmd, motorMask, nArg1, nArg2, nArg3)
+                            if bDidWait == TRUE
+                                bWaited := TRUE
+                            answerSlot(slotIdx, seqTaken, eStatus, eLeftStatus, eRightStatus)
+        if bExit == TRUE
+            frontAnswerForExit()
+
+PRI frontAnswerForExit() | slotIdx, bTaken, seqTaken, eCmd, motorMask, nArg1, nArg2, nArg3, eStatus
+' FRONT COG, on EXIT: answer every other open request, then acknowledge each EXIT, so stop() cogstops a cog with nothing left to say.
+'
+
+' Local Variables:
+' @local slotIdx - the slot, which is the calling cog's id
+' @local bTaken - T/F where T means the slot's copy is one whole, unanswered request
+' @local seqTaken - the sequence of the copied request
+' @local eCmd - the copied REQ_* code
+' @local motorMask - the copied owned-motor selector
+' @local nArg1 - the copied first argument
+' @local nArg2 - the copied second argument
+' @local nArg3 - the copied third argument
+' @local eStatus - the platform status answered for a non-EXIT request
+
+    ' securing requests are still applied (neither waits) and answered NO_ERROR; the rest ERR_NOT_STARTED
+    repeat slotIdx from 0 to ltWheel.COG_SLOT_COUNT - 1
+        bTaken, seqTaken, eCmd, motorMask, nArg1, nArg2, nArg3 := frontTakeSlot(slotIdx)
+        if (bTaken == TRUE) and (eCmd <> ltWheel.REQ_EXIT)
+            eStatus := ERR_NOT_STARTED
+            if requestClass(eCmd) <> ltWheel.REQ_CLASS_OTHER
+                eStatus, _, _, _ := frontApply(eCmd, motorMask, nArg1, nArg2, nArg3)
+            answerSlot(slotIdx, seqTaken, eStatus, NO_ERROR, NO_ERROR)
+    ' acknowledged last: the stop() waiting on this may cogstop this cog at once
+    repeat slotIdx from 0 to ltWheel.COG_SLOT_COUNT - 1
+        bTaken, seqTaken, eCmd, motorMask, nArg1, nArg2, nArg3 := frontTakeSlot(slotIdx)
+        if (bTaken == TRUE) and (eCmd == ltWheel.REQ_EXIT)
+            answerSlot(slotIdx, seqTaken, NO_ERROR, NO_ERROR, NO_ERROR)
+
+PRI frontTakeSlot(slotIdx) : bTaken, seqTaken, eCmd, motorMask, nArg1, nArg2, nArg3
+' FRONT COG: copy one request slot and prove the copy is one whole, unanswered request.
+'
+' @param slotIdx - the slot, which is the calling cog's id
+' @returns bTaken - T/F where T means the copy below is one whole request that has not been answered
+' @returns seqTaken - the sequence the copy belongs to
+' @returns eCmd - the copied REQ_* code
+' @returns motorMask - the copied owned-motor selector
+' @returns nArg1 - the copied first argument
+' @returns nArg2 - the copied second argument
+' @returns nArg3 - the copied third argument
+
+    seqTaken := reqSeq[slotIdx]
+    eCmd := reqCmd[slotIdx]
+    motorMask := reqMask[slotIdx]
+    nArg1 := reqArg1[slotIdx]
+    nArg2 := reqArg2[slotIdx]
+    nArg3 := reqArg3[slotIdx]
+    ' re-read LAST: a caller writes its arguments only after withdrawing, and never reuses a sequence,
+    '  so an unchanged sequence proves every copy above was taken from one published request
+    bTaken := (seqTaken <> ltWheel.SEQ_IDLE) and (seqTaken <> ackSeq[slotIdx]) and (reqSeq[slotIdx] == seqTaken)
+
+PRI answerSlot(slotIdx, seqTaken, eStatus, eLeftStatus, eRightStatus)
+' FRONT COG: answer one request: the per-wheel statuses first, then the platform status, the acknowledgement last.
+'
+' @param slotIdx - the slot, which is the calling cog's id
+' @param seqTaken - the sequence being answered
+' @param eStatus - the platform status, NO_ERROR or an ERR_* code
+' @param eLeftStatus - the left wheel's status
+' @param eRightStatus - the right wheel's status
+
+    ackMotorStatus[slotIdx * OWNED_MOTOR_MAX + LEFT_MOTOR_IDX] := eLeftStatus
+    ackMotorStatus[slotIdx * OWNED_MOTOR_MAX + RIGHT_MOTOR_IDX] := eRightStatus
+    ackStatus[slotIdx] := eStatus
+    ackSeq[slotIdx] := seqTaken
+
+PRI requestClass(eCmd) : eClass
+' Return the class that orders a request within a pass.
+'
+' @param eCmd - a REQ_* code
+' @returns eClass - REQ_CLASS_ESTOP, REQ_CLASS_STOP, REQ_CLASS_EXIT, or REQ_CLASS_OTHER for every other code
+
+    case eCmd
+        ltWheel.REQ_ESTOP:
+            eClass := ltWheel.REQ_CLASS_ESTOP
+        ltWheel.REQ_STOP:
+            eClass := ltWheel.REQ_CLASS_STOP
+        ltWheel.REQ_EXIT:
+            eClass := ltWheel.REQ_CLASS_EXIT
+        other:
+            eClass := ltWheel.REQ_CLASS_OTHER
+
+PRI requestWaits(eCmd, nArg3) : bWaits
+' Return TRUE for a request whose apply may spend a bounded in-pass wait on the drivers.
+'
+' @param eCmd - a REQ_* code
+' @param nArg3 - the request's third argument (bSync for REQ_DRIVE)
+' @returns bWaits - T/F where T means a synchronized REQ_DRIVE, a REQ_DRIVE_DISTANCE (always synchronized here) or a REQ_CLEAR_ESTOP
+
+    bWaits := (eCmd == ltWheel.REQ_CLEAR_ESTOP) or (eCmd == ltWheel.REQ_DRIVE_DISTANCE) or ((eCmd == ltWheel.REQ_DRIVE) and (nArg3 <> FALSE))
+
+PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRightStatus, bDidWait | bLeft, bRight
+' FRONT COG: apply one taken request to the selected wheels; records nothing, the statuses travel back as data.
+'
+' @param eCmd - the REQ_* code
+' @param motorMask - the owned-motor selector: LEFT_MOTOR_BIT, RIGHT_MOTOR_BIT or BOTH_MOTORS
+' @param nArg1 - first argument, meaning per REQ_*
+' @param nArg2 - second argument, meaning per REQ_*
+' @param nArg3 - third argument, meaning per REQ_*
+' @returns eStatus - the platform status: NO_ERROR
+' @returns eLeftStatus - the left wheel's status: NO_ERROR, ERR_EMERGENCY_STOPPED, ERR_SYNC_TIMEOUT or ERR_NO_RESPONSE
+' @returns eRightStatus - the right wheel's status: NO_ERROR, ERR_EMERGENCY_STOPPED, ERR_SYNC_TIMEOUT or ERR_NO_RESPONSE
+' @returns bDidWait - T/F where T means this request spent a bounded wait on the drivers
+
+' Local Variables:
+' @local bLeft - T/F where T means the left wheel is selected
+' @local bRight - T/F where T means the right wheel is selected
+
+    ' Request arguments here:
+    '  REQ_DRIVE          - arg1 left power, arg2 right power, arg3 bSync
+    '  REQ_DRIVE_DISTANCE - arg1 stop ticks, arg2 left power, arg3 right power (always synchronized; tracking reset)
+    '  REQ_LIMIT_TICKS    - arg1 stop ticks, arg2 bResetTracking
+    '  REQ_LIMIT_TIME     - arg1 getms() deadline
+    '  REQ_TEST_INCREMENT - arg1 raw increment, for the one selected wheel
+    eStatus := NO_ERROR
+    eLeftStatus := NO_ERROR
+    eRightStatus := NO_ERROR
+    bDidWait := FALSE
+    bLeft := (motorMask & LEFT_MOTOR_BIT) <> 0
+    bRight := (motorMask & RIGHT_MOTOR_BIT) <> 0
+    case eCmd
+        ltWheel.REQ_ESTOP:
+            if bLeft == TRUE
+                ltWheel.frontEStop(TRUE)
+            if bRight == TRUE
+                rtWheel.frontEStop(TRUE)
+        ltWheel.REQ_STOP:
+            if bLeft == TRUE
+                ltWheel.frontWriteIncrement(0, FALSE)
+            if bRight == TRUE
+                rtWheel.frontWriteIncrement(0, FALSE)
+        ltWheel.REQ_CLEAR_ESTOP:
+            eLeftStatus, eRightStatus, bDidWait := frontClearEStops(bLeft, bRight)
+        ltWheel.REQ_DRIVE:
+            eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, nArg1, nArg2, nArg3 <> FALSE)
+        ltWheel.REQ_DRIVE_DISTANCE:
+            ' atomic: tracking reset, limit armed and wheels driven, or none of it (I1 item 2)
+            eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
+            if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
+                frontResetPlatformTracking()
+                motorStopHallTicks := nArg1                                     ' the time limit is kept, as before
+                eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, nArg2, nArg3, TRUE)
+        ltWheel.REQ_LIMIT_TICKS:
+            if nArg2 <> FALSE
+                frontResetPlatformTracking()                                    ' F-4: the limit counts from here
+            motorStopHallTicks := nArg1
+        ltWheel.REQ_LIMIT_TIME:
+            motorStopMSecs := nArg1
+        ltWheel.REQ_RESET_TRACKING:
+            frontResetPlatformTracking()
+        ltWheel.REQ_RESET_MAX:
+            if bLeft == TRUE
+                ltWheel.frontResetMax()
+            if bRight == TRUE
+                rtWheel.frontResetMax()
+        ltWheel.REQ_TEST_INCREMENT:
+            eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
+            if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
+                if bLeft == TRUE
+                    ltWheel.frontWriteIncrement(nArg1, FALSE)
+                if bRight == TRUE
+                    rtWheel.frontWriteIncrement(nArg1, FALSE)
+
+PRI frontRefusals(bLeft, bRight) : eLeftStatus, eRightStatus
+' FRONT COG: return ERR_EMERGENCY_STOPPED for each selected wheel that must refuse a drive.
+'
+' @param bLeft - T/F where T means the left wheel is selected
+' @param bRight - T/F where T means the right wheel is selected
+' @returns eLeftStatus - ERR_EMERGENCY_STOPPED when the left wheel is selected and emergency-stopped, else NO_ERROR
+' @returns eRightStatus - ERR_EMERGENCY_STOPPED when the right wheel is selected and emergency-stopped, else NO_ERROR
+
+    eLeftStatus := NO_ERROR
+    eRightStatus := NO_ERROR
+    if (bLeft == TRUE) and (ltWheel.frontIsEStopped() == TRUE)
+        eLeftStatus := ERR_EMERGENCY_STOPPED
+    if (bRight == TRUE) and (rtWheel.frontIsEStopped() == TRUE)
+        eRightStatus := ERR_EMERGENCY_STOPPED
+
+PRI frontDriveWheels(bLeft, bRight, leftPower, rightPower, bSync) : eLeftStatus, eRightStatus, bDidWait | atnMask, bLeftTaken, bRightTaken
+' FRONT COG: drive the selected wheels, or refuse them all while any is emergency-stopped; with {bSync}, one ATN and one bounded wait.
+'
+' @param bLeft - T/F where T means the left wheel is selected
+' @param bRight - T/F where T means the right wheel is selected
+' @param leftPower - left motor power [(-100) to 100], saturated to that range; 0 stops
+' @param rightPower - right motor power [(-100) to 100], saturated to that range; 0 stops
+' @param bSync - T/F where T means both commands are released together by one ATN
+' @returns eLeftStatus - NO_ERROR, ERR_EMERGENCY_STOPPED or ERR_SYNC_TIMEOUT for the left wheel
+' @returns eRightStatus - NO_ERROR, ERR_EMERGENCY_STOPPED or ERR_SYNC_TIMEOUT for the right wheel
+' @returns bDidWait - T/F where T means the bounded sync wait was spent
+
+' Local Variables:
+' @local atnMask - the selected drivers' cog bits
+' @local bLeftTaken - T/F where T means the left driver took its command in the bound
+' @local bRightTaken - T/F where T means the right driver took its command in the bound
+
+    bDidWait := FALSE
+    ' a platform never drives one wheel: while any selected wheel is emergency-stopped nothing is written
+    eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
+    if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
+        atnMask := 0
+        if bLeft == TRUE
+            ltWheel.frontDrive(leftPower, bSync)                                ' cannot refuse: checked above, in this pass
+            atnMask |= ltWheel.frontDriverCogBit()
+        if bRight == TRUE
+            rtWheel.frontDrive(rightPower, bSync)
+            atnMask |= rtWheel.frontDriverCogBit()
+        if bSync == TRUE
+            bDidWait := TRUE
+            cogatn(atnMask)                                                     ' lockstep: both drivers take their commands together
+            bLeftTaken, bRightTaken := frontWaitForDrivers(ltWheel.WAIT_SYNC_TAKEN, bLeft, bRight)
+            if bLeftTaken == FALSE
+                eLeftStatus := ERR_SYNC_TIMEOUT
+            if bRightTaken == FALSE
+                eRightStatus := ERR_SYNC_TIMEOUT
+            if (bLeftTaken == FALSE) or (bRightTaken == FALSE)
+                ' audit M: a platform with one wheel driving pivots, so neither wheel keeps a command the
+                '  other did not take (each stop is confirmed on the next pass)
+                if bLeft == TRUE
+                    ltWheel.frontWriteIncrement(0, FALSE)
+                if bRight == TRUE
+                    rtWheel.frontWriteIncrement(0, FALSE)
+
+PRI frontClearEStops(bLeft, bRight) : eLeftStatus, eRightStatus, bDidWait | bLeftLeft, bRightLeft
+' FRONT COG: release the selected wheels' emergency stops and wait, bounded, until each driver has left DCS_ESTOP.
+'
+' @param bLeft - T/F where T means the left wheel is selected
+' @param bRight - T/F where T means the right wheel is selected
+' @returns eLeftStatus - NO_ERROR, or ERR_NO_RESPONSE when the left driver still reports DCS_ESTOP after the bound
+' @returns eRightStatus - NO_ERROR, or ERR_NO_RESPONSE when the right driver still reports DCS_ESTOP after the bound
+' @returns bDidWait - T/F where T means the bounded wait was spent
+
+' Local Variables:
+' @local bLeftLeft - T/F where T means the left driver has left DCS_ESTOP (or is not selected)
+' @local bRightLeft - T/F where T means the right driver has left DCS_ESTOP (or is not selected)
+
+    eLeftStatus := NO_ERROR
+    eRightStatus := NO_ERROR
+    bDidWait := FALSE
+    ' each: zero command first, then the latch released, so nothing moves on the clear
+    if bLeft == TRUE
+        ltWheel.frontEStop(FALSE)
+    if bRight == TRUE
+        rtWheel.frontEStop(FALSE)
+    ' answered only once the drivers have left the state, so a drive posted right after is not refused
+    if ((bLeft == TRUE) and (ltWheel.isEmergency() == TRUE)) or ((bRight == TRUE) and (rtWheel.isEmergency() == TRUE))
+        bDidWait := TRUE
+        bLeftLeft, bRightLeft := frontWaitForDrivers(ltWheel.WAIT_ESTOP_LEFT, bLeft, bRight)
+        if bLeftLeft == FALSE
+            eLeftStatus := ERR_NO_RESPONSE
+        if bRightLeft == FALSE
+            eRightStatus := ERR_NO_RESPONSE
+
+PRI frontWaitForDrivers(eWaitFor, bLeft, bRight) : bLeftDone, bRightDone | waitStartTicks, waitBoundTicks
+' FRONT COG: busy-wait, bounded to FRONT_SYNC_WAIT_PASSES drive passes, for each selected driver to reach a condition.
+'
+' @param eWaitFor - WAIT_SYNC_TAKEN or WAIT_ESTOP_LEFT (the motor object's enum)
+' @param bLeft - T/F where T means the left driver is waited for
+' @param bRight - T/F where T means the right driver is waited for
+' @returns bLeftDone - T/F where F means the left driver is selected and did not reach the condition in the bound
+' @returns bRightDone - T/F where F means the right driver is selected and did not reach the condition in the bound
+
+' Local Variables:
+' @local waitStartTicks - getct() when the wait began
+' @local waitBoundTicks - the bound, in system ticks
+
+    ' a live driver answers within one drive pass (gettgtincr polls ATN every pass), so the bound is a 4x margin
+    waitBoundTicks := ltWheel.FRONT_SYNC_WAIT_PASSES * ltWheel.DRIVE_PASS_US * (CLKFREQ / ltWheel.US_PER_SEC)
+    waitStartTicks := getct()
+    repeat
+        bLeftDone := TRUE
+        bRightDone := TRUE
+        if eWaitFor == ltWheel.WAIT_SYNC_TAKEN
+            if bLeft == TRUE
+                bLeftDone := ltWheel.frontTakenSync()
+            if bRight == TRUE
+                bRightDone := rtWheel.frontTakenSync()
+        else
+            if bLeft == TRUE
+                bLeftDone := (ltWheel.isEmergency() == FALSE)
+            if bRight == TRUE
+                bRightDone := (rtWheel.isEmergency() == FALSE)
+        if ((bLeftDone == TRUE) and (bRightDone == TRUE)) or ((getct() - waitStartTicks) > waitBoundTicks)
+            quit
+
+PRI frontResetPlatformTracking()
+' FRONT COG: restart both wheels' tracking, rpm windows and HDMI maxima from their current positions.
+'
+
+    ltWheel.frontResetTracking(TRUE)
+    rtWheel.frontResetTracking(TRUE)
+
+PRI postRequest(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRightStatus | slotIdx, mySeq, startMs, bAnswered
+' Post a request to the steering front cog from the calling cog, and wait, bounded, for its answer; records nothing.
+'
+' @param eCmd - the REQ_* code
+' @param motorMask - the owned-motor selector: LEFT_MOTOR_BIT, RIGHT_MOTOR_BIT or BOTH_MOTORS
+' @param nArg1 - first argument, meaning per REQ_*
+' @param nArg2 - second argument, meaning per REQ_*
+' @param nArg3 - third argument, meaning per REQ_*
+' @returns eStatus - the front cog's platform status; ERR_NOT_STARTED when no front cog runs (nothing posted) or it was stopped during the wait; ERR_NO_RESPONSE when a running front cog did not answer in time (the outcome is unknown)
+' @returns eLeftStatus - the front cog's status for the left wheel; NO_ERROR when unanswered
+' @returns eRightStatus - the front cog's status for the right wheel; NO_ERROR when unanswered
+
+' Local Variables:
+' @local slotIdx - this cog's slot, its COGID()
+' @local mySeq - the sequence this request is published under
+' @local startMs - getms() when the wait began
+' @local bAnswered - T/F where T means the front cog acknowledged mySeq
+
+    slotIdx := COGID()
+    eStatus := ERR_NOT_STARTED
+    eLeftStatus := NO_ERROR
+    eRightStatus := NO_ERROR
+    if senseCog <> 0
+        reqSeq[slotIdx] := ltWheel.SEQ_IDLE                                     ' 1. withdraw: nothing earlier from this slot can be taken now
+        reqCmd[slotIdx] := eCmd                                                 ' 2. the request
+        reqMask[slotIdx] := motorMask
+        reqArg1[slotIdx] := nArg1
+        reqArg2[slotIdx] := nArg2
+        reqArg3[slotIdx] := nArg3
+        mySeq := reqNextSeq[slotIdx] + 1                                        ' 3. a fresh, monotonic sequence, never SEQ_IDLE
+        if mySeq == ltWheel.SEQ_IDLE
+            mySeq++
+        reqNextSeq[slotIdx] := mySeq
+        reqSeq[slotIdx] := mySeq                                                ' 4. publish, LAST
+
+        bAnswered := FALSE                                                      ' 5. wait, bounded
+        startMs := getms()
+        repeat
+            waitms(ltWheel.REQ_POLL_MS)
+            if ackSeq[slotIdx] == mySeq
+                bAnswered := TRUE
+                quit
+            if getms() - startMs > ltWheel.REQ_ACK_TIMEOUT_MS
+                quit
+        if bAnswered == FALSE
+            reqSeq[slotIdx] := ltWheel.SEQ_IDLE                                 ' withdraw: the front cog can no longer take it
+            bAnswered := (ackSeq[slotIdx] == mySeq)                             ' answered in the instant before the withdraw
+        if bAnswered == TRUE
+            ' all written before ackSeq, so they are this answer's
+            eLeftStatus := ackMotorStatus[slotIdx * OWNED_MOTOR_MAX + LEFT_MOTOR_IDX]
+            eRightStatus := ackMotorStatus[slotIdx * OWNED_MOTOR_MAX + RIGHT_MOTOR_IDX]
+            eStatus := ackStatus[slotIdx]
+        elseif senseCog <> 0
+            eStatus := ERR_NO_RESPONSE
+        ' else: the front cog was stopped while this cog waited, ERR_NOT_STARTED
 
 PUB showDriveStates()
 '' for TESTING dump curr drive states

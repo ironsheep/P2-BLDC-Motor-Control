@@ -2292,6 +2292,23 @@ the DocoEng motor therefore starts from an increment of 1, where the reverse dir
 max table) and set the minimum from the named no-rotation threshold. The DocoEng tables are also the subject of
 PL-27. Which sprint takes it is Stephen's call.
 
+### PL-72 -- the sense tasks wait 200 ms per pass while a driver is faulted or e-stopped, then wait on a past deadline
+
+**Found 2026-09-16 in «#3513»'s phase-1 plan** (`DOCs/plans/FRONT-COG-IMPLEMENTATION-PLAN.md` §3.4).
+
+**DERIVED:** while a driver reads `DCS_FAULTED` or `DCS_ESTOP`, both sense tasks call `resetWindowAccumulators()`
+on every pass. That calls `resetTracking()`, which does `waitms(200)` (steering: twice, one per wheel). The pass then
+calls `waitct(senseStartTicks + ticksSenseLp)`, whose target is already about 200-400 ms in the past. p2kb
+(`p2kbSpin2Waitct`) says `WAITCT` "blocks execution until system counter matches Tick", which implies a wait for the
+32-bit counter to wrap: about 15.9 s at 270 MHz.
+
+**Contradiction, so this is not asserted:** «#3556» records the unfixed e-stop auto-clear at about 125 ms, which could
+not happen with a 16 s stall on every e-stopped pass. The recorded measurement outranks this derivation (doctrine
+overlay P8). What is certain from the source is a 200-400 ms pass while faulted or e-stopped, against a 7.8 ms period.
+
+**Fix direction:** «#3513» (the front cog) removes the construct: no wait inside the loop body, and a late test before
+every `waitct`. No bench run is proposed to characterise it (overlay P10).
+
 ---
 
 ## Recently closed
