@@ -33,6 +33,10 @@
 ''               15 Sep 2026 -- SRC_REV=8: pred_x10 follows the driver's real drive-pass rate, one pass per 23
 ''               ADC frames (PL-50), not 2000 passes/s; BM-OUT's status token names DS_FAULTED and DS_ESTOP,
 ''               which getStatus() reports since task 3547 (they printed UNKNOWN)
+''               15 Sep 2026 -- SRC_REV=9, FMT 2: BM-OUT gains faulted and estop, the steering object's own
+''               isFaulted() and isEmergency() (task 3547). Task 3547's certification names that query, and
+''               no other column carried it. Both are APPENDED to the row, so every existing field keeps its
+''               position and a fmt-1 reader still parses every field it knows.
 ''
 '' =================================================================================================
 
@@ -92,8 +96,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 8                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 1                                         ' BM- record-format version
+    SRC_REV     = 9                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 2                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -366,7 +370,9 @@ CON { instrument cog (design sec 2) }
     OUT_POLL_SPAN_MS    = S5_UNTOUCHED_MS + Z_STEP_MS + STOP_TIMEOUT_MS + Z_STEP_MS
     OUT_POLL_MARGIN     = 10
     OUT_POLLS           = (OUT_POLL_SPAN_MS / OUT_POLL_MS) + OUT_POLL_MARGIN      ' 130
-    OUT_LONGS           = 12
+    ' task 3547's certification reads the steering object's own isFaulted()/isEmergency() beside the
+    '  per-wheel flags, so the row carries 14 longs: 130 rows x 14 x 4 = 7,280 bytes of outBuf.
+    OUT_LONGS           = 14
 
   ' Instrument commands (cog 0 writes):
   '  INST_CMD_NONE   - nothing commanded yet
@@ -571,9 +577,12 @@ CON { record enums -- each value has a token in the DAT token tables }
     #0, STAT_MOVING, STAT_HOLDING, STAT_OFF, STAT_UNKNOWN, STAT_FAULTED, STAT_ESTOP
     STAT_COUNT = 6
 
-  ' BM-OUT buffer, one row per poll: OUT_LONGS longs in this order
+  ' BM-OUT buffer, one row per poll: OUT_LONGS longs in this order.
+  '  OUT_FAULTED and OUT_ESTOP are APPENDED (task 3547): the steering object's aggregate isFaulted() and
+  '  isEmergency(), which no other column carries -- l_flt/r_flt are the per-wheel state from
+  '  testGetFaultStatus(), and l_sig/r_sig its latch. Appending leaves every existing index unchanged.
     #0, OUT_T_MS, OUT_L_STAT, OUT_R_STAT, OUT_L_ST, OUT_R_ST, OUT_L_FLT, OUT_L_SIG, OUT_R_FLT, ...
-        OUT_R_SIG, OUT_TURNING, OUT_L_PWR, OUT_R_PWR
+        OUT_R_SIG, OUT_TURNING, OUT_L_PWR, OUT_R_PWR, OUT_FAULTED, OUT_ESTOP
 
 CON { cog-0 progress checkpoints -- watchdog heartbeat contract (design sec 4.3) }
 
@@ -2739,6 +2748,10 @@ PRI outPoll(tMs) | rowBase
     outBuf[rowBase + OUT_L_FLT], outBuf[rowBase + OUT_L_SIG], outBuf[rowBase + OUT_R_FLT], outBuf[rowBase + OUT_R_SIG] := steering.testGetFaultStatus()
     outBuf[rowBase + OUT_TURNING] := steering.isTurning()
     outBuf[rowBase + OUT_L_PWR], outBuf[rowBase + OUT_R_PWR] := steering.getPower()
+    ' task 3547: the public fault queries a user would call, read inside the same bracket as the rest
+    '  of the row so one poll is one instant of the API
+    outBuf[rowBase + OUT_FAULTED] := steering.isFaulted()
+    outBuf[rowBase + OUT_ESTOP] := steering.isEmergency()
     beat(CP_LIB_STEER_QUERY)
     outCount += 1
 
@@ -6014,7 +6027,8 @@ PRI emitOvershoot(tid, sid, powerValue, distFt, tgtTicks) | bValid
     emitRecord()
 
 PRI emitOut(tid, sid, rowIdx) | rowBase
-' BM-OUT: one 100 ms poll of the public API from outBuf. Worst case 239 bytes.
+' BM-OUT: one 100 ms poll of the public API from outBuf. Worst case 239 + faulted(2+7+5=14) +
+' estop(2+5+5=12) = 265 bytes.
 '
 ' @param tid - trace id
 ' @param sid - the steering start's life
@@ -6039,6 +6053,8 @@ PRI emitOut(tid, sid, rowIdx) | rowBase
     benchLog.boolField(@"turning", outBuf[rowBase + OUT_TURNING])
     benchLog.numField(@"l_pwr", outBuf[rowBase + OUT_L_PWR], LIM_TINY)
     benchLog.numField(@"r_pwr", outBuf[rowBase + OUT_R_PWR], LIM_TINY)
+    benchLog.boolField(@"faulted", outBuf[rowBase + OUT_FAULTED])
+    benchLog.boolField(@"estop", outBuf[rowBase + OUT_ESTOP])
     whyField(WHY_NONE)
     emitRecord()
 
