@@ -54,10 +54,14 @@ connected, board powered from the pack. **Offsets:** unchanged, 43° / 317°.
 - Visit 2's part C ran `src_rev 6` (`_OLD/debug_260915-135838.log`), so this is a later tree than Visit 2's
   unattended runs. It is consistent with the Visit 2 attended tree (`src_rev 7`).
 
-**What cannot be told from the logs:** whether the PL-57 and fault-reporting commits (`17122f2`, `4c6122a`),
-which fall inside the `SRC_REV 7` window, were in the build. §5.2 shows the e-stop restart behaving
-byte-for-byte as it did before the fix, which fits an older tree, but a log cannot name its commit. **So §5.2
-is not read as the PL-57 fix failing.** Nothing in any log names the commit it was built from (PL-68).
+**Which commit, settled by git (MEASURED):** `git reflog show origin/main` shows the remote at `6aed714` from
+2026-09-15 14:17 until the push at 2026-09-16 12:18. STEPHEN, 2026-09-16: *"i just pushed, i'll pull before
+running. I always do"*. So the bench pulled `6aed714`. The Visit 3 commits, `17122f2` through `24866c2`, had not
+yet been pushed. That commit is harness `SRC_REV 7` and contains none of the four repairs, which matches every
+banner above. §5.2 is therefore the unfixed driver, not a failed fix.
+
+The logs alone could not name the commit, because the `SRC_REV 7` window also covers `17122f2`. Git answered it
+(PL-68).
 
 ---
 
@@ -133,9 +137,8 @@ harness no longer depends on this provocation: its fault trial uses `ramp_inc` 1
 - **The trace ends match Visit 2 exactly:** stored 10 with ksum 45 (tid 12, 18), and stored 13 with ksum 78
   (tid 14, 20). Visit 2 printed the same four lines (`_OLD/debug_260915-135838.log`).
 
-DERIVED: this is PL-57's defect, reproduced a second time. Whether the build contained `17122f2` is not
-established (§1), so this does not show the fix failing. **PL-57 stays uncertified**, and its negative limb
-is now measured twice with an identical signature. When the current tree runs, any change in these four
+DERIVED: this is PL-57's defect, reproduced a second time on a tree without `17122f2` (§1). It says nothing about
+the fix. **PL-57 stays uncertified**, and its negative limb is now measured twice with an identical signature. When the current tree runs, any change in these four
 trace ends is the fix showing.
 
 ---
@@ -143,8 +146,8 @@ trace ends is the fix showing.
 ## 6 · Char (`120843`)
 
 - **Result:** COMPLETE, holds 9, `lib_abort` FALSE, trap 0 (`:441`). All 34 SIGNOFF lines PASS (`:407-440`).
-- **Binary:** `src_rev 6`, the char harness's own revision, unchanged since Visit 2 (`:13`). It does not show
-  which library tree it linked, so like §1 it is not evidence for «#3512»'s 128 Hz sense loop.
+- **Binary:** `src_rev 6`, built from `6aed714` (§1), so the sense loop was still 8 Hz. This is not evidence for
+  «#3512»'s 128 Hz loop.
 
 | Hold | Motor | Incre | Net today (mV) | Visit 2 | Change | Duty today | Visit 2 | Change |
 |---|---|---|---|---|---|---|---|---|
@@ -188,5 +191,5 @@ Plus the attended pair after «#3553»: `dual-ui` and `dual-brake`.
 Filed in `DOCs/PUNCH-LIST.md` on 2026-09-16:
 - **PL-55:** LEFT POS now trips too, so all four combinations abort on a stop from 75 %. OVERSHT 2 ft rep 1
   aborted at 1,571 mV, where Visit 2's completed at a 1,570 mV peak.
-- **PL-68:** no bench log or console names the commit it was built from, so a stale bench checkout ran a whole
-  visit and was found only by reading banners.
+- **PL-68:** no bench log or console names the commit it was built from. The Visit 3 commits had not reached the
+  remote when the bench pulled, and that was found only by reading banners and git's record.

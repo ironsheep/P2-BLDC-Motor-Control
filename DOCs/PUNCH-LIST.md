@@ -2210,7 +2210,7 @@ zero first.
 That is an API and safety decision for Stephen, taken when the fault path is next scheduled. «#3547» documents
 today's rule: *the fault clears when a stop or a different power is commanded*.
 
-### PL-68 -- no bench log names the commit it was built from, so a stale checkout ran a whole visit unnoticed
+### PL-68 -- no bench log names the commit it was built from, so a visit ran on an older commit unnoticed
 
 **Found 2026-09-16 in Visit 3** (`analyses/bench/2026-09-16/VISIT-3-RESULTS.md` §1).
 
@@ -2219,6 +2219,9 @@ today's rule: *the fault clears when a stop or a different power is commanded*.
 - Both motion logs print `src_rev 7, fmt 1` (`debug_260916-120132.log:21`, `debug_260916-120254.log:21`).
 - OVERSHT ran at 75 % with no `BM-FLTAPI`, and the runner was the one from before `13d5c46`.
 - The four repairs the visit existed to certify did not run. It was found only by reading the banners.
+- The cause, from `git reflog show origin/main`: the remote stood at `6aed714` until 2026-09-16 12:18, so the
+  bench's pull (STEPHEN: *"i'll pull before running. I always do"*) got `6aed714`. The Visit 3 commits were not
+  yet on the remote.
 
 **The gap (DERIVED):**
 - `SRC_REV` is hand-bumped per harness file, so it identifies the harness, not the tree.
