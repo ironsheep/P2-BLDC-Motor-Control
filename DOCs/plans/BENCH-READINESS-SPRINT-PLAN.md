@@ -1900,9 +1900,10 @@ The governing design is `DOCs/plans/ABORT-ERROR-CONTRACT-DESIGN.md`, **as amende
 - **`getError()`** reads and clears the calling cog's first error.
 - **Validate, acquire, commit** in `startEx()` (§3.5). This removes PL-48 (the validator's pin claim and
   `stop()` clearing P0–P15), F-2, F-3, F-8 and F-9.
-- **The protective-stop API (§3.7) is NOT built in this release.** DERIVED plan decision: no detector exists
-  (S-2/C-5 is not in this plan), and an API with no mechanism behind it would itself break the contract rule.
-  `abort` is removed from ordinary paths and not yet used. §5 Q3 therefore never needs an answer this release.
+- **The protective-stop API (§3.7): PENDING STEPHEN.** Whether it is in this sprint depends on whether the
+  current-limit work (S-2, C-5) is, and that is his decision (correction 2026-09-16: an earlier version of this
+  section excluded both on my reasoning). Until he decides, `abort` is removed from ordinary paths and not
+  otherwise used.
 - **The sense-task period** in the design (8 Hz) is now 128 Hz («#3512»).
 
 ### R16.2 · The error contract in the steering and serial objects, and the demos
@@ -1927,7 +1928,7 @@ Each is a fix with one correct remedy under the API rule:
 - **PL-38:** the 6.0 V and 7.4 V ceilings err low, scaled from the measured slope.
 - **PL-13:** the serial objects' two method names are aligned.
 - **PL-58:** the `holdAtStop()` / `stopMotor()` doc says hold is chosen at rest.
-- **Retired:** PL-18. The motor type is the compile-time `user.MOTOR_TYPE`, so two instances cannot differ,
+- **Closed, not a defect:** PL-18. The motor type is the compile-time `user.MOTOR_TYPE`, so two instances cannot differ,
   and the hazard is unreachable through the API (DERIVED, `isp_bldc_motor.spin2:289`, `:299`).
 
 ### R16.4 · Stopping from speed: the ramp-down study (PL-55), two-phase
@@ -1984,9 +1985,9 @@ Owned by «#3515», whose artifact list gains:
 - `CLAUDE.md`'s stale 14-long ABI paragraph (F-9) and its deadtime paragraph. These are Stephen's file:
   raised with him, not edited.
 
-**Withdrawn from «#3515»'s list, because they no longer ship in 6.0.0:**
-- the fixed cog count («#3513», a later sprint);
-- the scan-measured offsets («#3523», backlog).
+**Withdrawn from «#3515»'s list:** the scan-measured offsets (STEPHEN 2026-09-15:
+`sprint_release_notes_offsets_ruling`). **The fixed cog count («#3513»): PENDING STEPHEN**, and it stays in
+«#3515»'s list until he decides.
 
 ### Dispatch and ordering
 
@@ -2012,5 +2013,6 @@ Owned by «#3515», whose artifact list gains:
 | Blast radius | Documentation (amended 2026-09-16) | «#3515» | 10 |
 | — | Ship 6.0.0 (amended 2026-09-16) | «#3516» | 11 |
 
-Superseded: «#3538» (its design is `ABORT-ERROR-CONTRACT-DESIGN.md`, carried by «#3554»/«#3555»). Moved to a later
-sprint: «#3513» (backlog). Waiting on hardware: «#3532».
+Superseded: «#3538» (its design is `ABORT-ERROR-CONTRACT-DESIGN.md`, carried by «#3554»/«#3555»). Pending Stephen's
+scope decision: «#3513» (fixed cog shape) and the current-limit work (S-2, C-5, the protective stop). Waiting on
+hardware: «#3532». Closed as not a defect: PL-18.
