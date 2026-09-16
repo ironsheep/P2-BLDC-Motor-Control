@@ -3,193 +3,232 @@
 **Rig:** Rev B dual 6.5″ platform. Left board on P32, right board on P16. Wheels up, no load, both motors
 connected, board powered from the pack. **Offsets:** unchanged, 43° / 317°.
 
-**Logs:** still in `src/logs/`, not yet copied into this folder. Files are named by their time: `120132` =
-`debug_260916-120132.log`.
+**Tree:** `53c1f2b`, the remote from 12:18. The runs started at 12:35 (`git reflog show origin/main`). Harness
+banners read `src_rev 11, fmt 3`, which is what the Visit 3 sheet was written for.
 
-**Provenance tags:**
-- **MEASURED** — a log line, cited `file:line`.
-- **DERIVED** — a calculation, or a reading of source or git history.
-- **STEPHEN** — his words.
+**Logs:** still in `src/logs/`. Files are named by their time: `123801` = `debug_260916-123801.log`.
+
+| Log | Load | Result |
+|---|---|---|
+| `123557` | `dual-clock` 200 MHz | COMPLETE, trap 0 (`:71`) |
+| `123637` | `dual-clock` 270 MHz | COMPLETE, trap 0 |
+| `123717` | `dual-clock` 300 MHz | COMPLETE, trap 0 |
+| `123801` | `dual-b` | COMPLETE, 3,050 records, trap 0 (`:3094`) |
+| `123957` | `dual-c` | COMPLETE, 5,569 records, trap 0 (`:5610`) |
+| `124157` | `char` | COMPLETE, holds 9, `lib_abort` FALSE, trap 0 |
+
+Not run: the attended pair (the rebuilt panel, `1937fe6`, was not on the remote), and `detect-phase2` (withdrawn).
+
+**Provenance tags:** **MEASURED**, a log line cited `file:line`; **DERIVED**, a calculation or a reading of
+source; **STEPHEN**, his words.
 
 ---
 
 ## 0 · The verdict
 
-- **Visit 3 certified nothing: these binaries were not built from the Visit 3 tree.** The run sheet was
-  written for tree `9bdb9ea`, harness `SRC_REV 11 / FMT 3`. Both motion-harness logs print
-  `src_rev 7, fmt 1` (`120132:21`, `120254:21`). §1 has the evidence.
-- **So the four repairs are still uncertified:** PL-57 e-stop reset (`17122f2`), fault reporting M / AF / S-5
-  (`4c6122a`), the PL-50 speed model (`65bda4b`), and C-3 stop latency (`021ad06`). So are the clock guard
-  and every harness change made for this visit.
-- **What ran is a re-run of Visit 2's parts B and C, plus char, on an older tree.** It repeats Visit 2
-  closely (§3–§5). One reading is new: **all four motor/direction combinations now trip the 10 A abort
-  when stopping from 75 %**, including LEFT POS, which never tripped at Visit 2 (§3; added to PL-55).
-- **The `dual-clock` loads were lost again, for a new reason:** the clock was given as `200` and `270`, not
-  `200000000` and `270000000` (§2). The Visit 3 runner refuses such a value with a message; the runner that
-  ran accepted it.
-- **Not run:** `dual-clock 300000000`, and `detect-phase2` on Rev A (withdrawn 2026-09-16; it certified
-  nothing).
+**All four repairs this visit carried are certified on the bench.** They were the reason for the visit.
+
+| Repair | Task | Verdict | Evidence |
+|---|---|---|---|
+| E-stop leaves no running increment behind (PL-57) | «#3546» | **CERTIFIED** | 4 of 4 brake-mode restarts after `clearEmergency()` reached AT_SPEED and rested after the e-stop; Visit 2 and the first attempt today faulted 4 of 4 (§4) |
+| Faults visible through the public API (M, AF, S-5) | «#3547», «#3550», «#3552» | **CERTIFIED** | `R14-DUAL-FLTAPI-B` PASS: both wheels faulted at 101 ms; `getStatus()` FAULTED, steering `isFaulted()` TRUE, and the latch still set 5.8 s later (§3) |
+| C-3: distance stops fire within one sense pass | «#3512» | **CERTIFIED** | The stop is issued 2 ticks past the target on all four reps, against 22 at Visit 2 (§2) |
+| The speed model (PL-50) | «#3548» | **CERTIFIED by measurement** | 12 clock rungs read 0.998–1.003 of the prediction at 200, 270 and 300 MHz (§1). This replaces Visit 2's arithmetic certification. |
+
+**Also certified:** `CLKFRAME` at all three clocks, so a user may run the driver at 200, 270 or 300 MHz (§1).
+`RSTPROV-B` passes on both wheels for the first time, and rpm reads true through the 128 Hz sense loop (§5).
+
+**New, and open:**
+- **Illegal hall codes on the right motor at 200 MHz only:** 3 and 5 in two 1-second windows, and 0 at 270
+  and 300 (§1). Filed as PL-69.
+- **PL-55 is unchanged:** every stop from 75 % still trips the 10 A abort on all four combinations (§2).
+
+**Not measured:** the e-stop hold counted in passes («#3512»). No load runs the motor object's sense task
+through an e-stop (§4.3).
 
 ---
 
-## 1 · Which tree ran
+## 1 · The clock sweep — CLKFRAME, and the driver is clock-independent
 
-**MEASURED:**
-- Part B banner: `BM-BANNER … src_rev,7,fmt,1,part,B` (`120132:21`). Part C: `src_rev,7,fmt,1,part,C`
-  (`120254:21`).
-- OVERSHT ran at **75 %** power (`120132:1715`, `l_pwr,75,r_pwr,75`) and its plan record reads
-  `est_s,120,est_kb,400` (`120132:30`).
-- There is no `BM-FLTAPI` record and no `R14-DUAL-FLTAPI-B` cell in the part B log.
-- The `dual-clock` console banner lists the clocks as `200000000, 270000000, 300000000`, comma-separated,
-  and the runner patched `CLK_FREQ to 200` without complaint (`dual-clock200.out:3,10`).
-- The runner's `cd` shows the bench checkout at `…/IronSheepProductionsLLC/Projects P2/P2-BLDC-Motor-Control/
-  P2-BLDC-Motor-Control` (`dual-clock200.out:8`).
+MEASURED, per clock (both motors, both signs, 75M):
 
-**DERIVED, from `src/test_bench_dual.spin2`'s revision notes and git history:**
-- `SRC_REV 7` is the panel fix `6aed714`. `SRC_REV 8` arrived with `65bda4b` (PL-50), and `SRC_REV 10`
-  moved OVERSHT to 50 %.
-- So the harness was built from a tree between `6aed714` and `4c6122a`. The Visit 3 harness (`SRC_REV 11`,
-  `f218eab`…`7bf4aff`) was not in it.
-- The comma-separated banner with no clock check is the runner as it stood before `13d5c46`.
-- Visit 2's part C ran `src_rev 6` (`_OLD/debug_260915-135838.log`), so this is a later tree than Visit 2's
-  unattended runs. It is consistent with the Visit 2 attended tree (`src_rev 7`).
+| Clock | `adc_fram` = `frame_cnt` = expected | `dead_gap` | rate / prediction | net current NEG / POS (mV) | `rs_impl` | illegal hall codes |
+|---|---|---|---|---|---|---|
+| 200 MHz | 4,545 | 52 | 0.998–1.000 | 981–992 / 494–525 | 149–150 | **L 0, 0; R 3, 5** |
+| 270 MHz | 6,136 | 70 | 0.999–1.002 | 976–984 / 496–526 | 149–151 | 0 |
+| 300 MHz | 6,818 | 78 | 1.000–1.003 | 969–976 / 489–524 | 150 | 0 |
 
-**Which commit, settled by git (MEASURED):** `git reflog show origin/main` shows the remote at `6aed714` from
-2026-09-15 14:17 until the push at 2026-09-16 12:18. STEPHEN, 2026-09-16: *"i just pushed, i'll pull before
-running. I always do"*. So the bench pulled `6aed714`. The Visit 3 commits, `17122f2` through `24866c2`, had not
-yet been pushed. That commit is harness `SRC_REV 7` and contains none of the four repairs, which matches every
-banner above. §5.2 is therefore the unfixed driver, not a failed fix.
+Sources: `123557:42-63`, `123637` BM-CLOCK / BM-RUNG records, `123717` BM-CLOCK / BM-RUNG records. `CLKFRM`,
+`NOSTLL` and `DBGMSK` are PASS at every clock.
 
-The logs alone could not name the commit, because the `SRC_REV 7` window also covers `17122f2`. Git answered it
-(PL-68).
+**DERIVED:**
+- **Dead time is 260 ns at every clock:** 52 / 200 MHz, 70 / 270 MHz and 78 / 300 MHz all come to 259–260 ns.
+  That meets the 250 ns minimum of both boards' manuals (A1, PL-9).
+- **Speed, current scaling and the frame are clock-independent.** Duty scales with the frame (duty /
+  `duty_max` is 0.776–0.778 at every clock for the NEG rung), so the fraction of the bus applied is the same.
+- **PL-50's model now has a measured certification.** Rate over prediction is 0.998–1.003 at three clocks. Visit
+  2's ladder gave 0.953–0.965 against the old prediction, and today's harness divides that prediction by 23/22.
+- **S-3's clock route is closed.** The implied sense scale is 149–151 at every clock, so the current reading
+  does not depend on the clock.
 
----
-
-## 2 · `dual-clock` — lost again
-
-MEASURED:
-- `dual-clock200.out` and `dual-clock270.out` both stop at `pnut-ts: Compiling with DEBUG`, with no error
-  line and no log (`:15`).
-- Each shows `patching CLK_FREQ to 200` (and `270`) in `test_bench_dual.spin2` (`:10`).
-
-DERIVED:
-- A 200 Hz `CLK_FREQ` is not a buildable P2 clock. The compile stopped, and its error went to stderr, which
-  the console capture does not keep.
-- At Visit 2 the value had one digit too many (`2000000000`); here it has six too few.
-- The Visit 3 runner (`13d5c46`) accepts only `200000000`, `270000000` or `300000000`, and prints the reason
-  on the console when it refuses. Built from the current tree, both of these would have stopped with that
-  message before compiling.
-- **CLKFRAME is still never measured.**
+**The illegal hall codes (MEASURED `123557:57,63`):** `illegal_d 3` on RIGHT NEG and `5` on RIGHT POS, each in a
+1-second, 201-tick window. `missed_d` stays 0, and the instrument's own hall count agrees (`hw_ticks` ±201,
+`hw_skip` 0). LEFT reads 0 at 200 MHz, and both motors read 0 at 270 and 300 MHz and at every Visit 1 and
+Visit 2 hold at 270 MHz.
+- An illegal code is %000 or %111, entered from the driver's own hall read.
+- **What this does not establish:** that the cause is the clock. It is one run, one motor, 8 events. The same
+  motor at 270 MHz ten seconds later read 0. The condition may be transient (doctrine D2): a connector, or the
+  hall read landing on an edge.
+- **The owner is the driver's hall sampling, not the instrument:** the instrument's independent count lost
+  nothing.
 
 ---
 
-## 3 · Part B — FAULTB and OVERSHT (`120132`)
+## 2 · Part B — FAULTB, OVERSHT (C-3), and the fault-API trial
 
-**Result:** COMPLETE, 1,996 records, trap 0 (`:2037-2038`). NOSTALL, DBGMASK, TRACES and RAMPREST PASS on both
-wheels. `RSTPROV-B` is NOMEAS on both (`:2030-2036`).
+### 2.1 FAULTB: PL-55 unchanged
 
-**FAULTB trial 1** (`ramp_inc` 22, 110.25M from standstill), OK on all four combinations:
+Trial 1 (`ramp_inc` 22, 110.25M) was OK on all four combinations, with `i_pk` 1,040–1,075 mV and `dsat` FALSE
+(`123801:448,862,1278,1695`). **The stop after it tripped the 10 A abort on all four** (`:447,861,1277,1694`), so
+trials 2–5 are SKIPPED `NO_COG`. This matches the first attempt today and Visit 2's three of four. Z and C-5
+get no new data from this segment.
 
-| Combination | i_pk today (mV) | Visit 2 | Stop abort today (mV) | Line |
-|---|---|---|---|---|
-| LEFT NEG | 1,081 | 1,005 | 1,569 | `:445-446` |
-| LEFT POS | 1,088 | 971 | **1,536** | `:861-862` |
-| RIGHT NEG | 1,112 | 1,023 | 1,534 | `:1275-1276` |
-| RIGHT POS | 1,099 | 1,032 | 1,638 | `:1694-1695` |
+### 2.2 OVERSHT at 50 %: C-3 measured
 
-- **All four combinations aborted on the stop from 75 %.** At Visit 2, LEFT POS never tripped.
-- So trials 2–5 are SKIPPED `NO_COG` everywhere. Z and C-5 got no data today.
-- Trial-1 peak current ran 6.5–12 % above Visit 2 on every combination. While the wheels were driven, the char
-  holds ran 1.5–2.0 % lower duty than Visit 2 at the same speed and current (§6). A fuller pack would do both.
-  That is DERIVED and unverified: no pack voltage is logged in these runs.
+MEASURED (`123801:2021,2329,2673,3017`); the steering start returned 5, both boards Rev B (`:1713`):
 
-**OVERSHT at 75 %** (the pre-`f218eab` harness):
-- The steering start returned 5, both boards Rev B (`:1713`).
-- 2 ft rep 1: the stop was issued at tick 127, as at Visit 2, then the **10 A abort fired at 1,571 mV**
-  (`:1714`, `:2018`). No rest position was recorded.
-- At Visit 2 the same rep completed with a peak of 1,570 mV, just below the threshold.
-- The other three reps were `NO_COG` (`:2019-2027`).
-- **C-3: NOMEAS**, as at Visit 2. The 50 % trial built for exactly this did not run.
+| Run | Target (ticks) | Stop issued at | Rest | Latency | Decel after the stop | Past the target |
+|---|---|---|---|---|---|---|
+| 2 ft, rep 1 | 105 | 107 | 182 | 2 | 75 | 77 (444 mm) |
+| 2 ft, rep 2 | 105 | 107 | 182 / 181 | 2 | 74–75 | 76–77 |
+| 10 ft, rep 1 | 529 | 531 | 606 | 2 | 75 | 77 (444 mm) |
+| 10 ft, rep 2 | 529 | 531 | 606 / 605 | 2 | 74–75 | 76–77 |
 
----
+No rep tripped the abort. Left and right agree within one tick.
 
-## 4 · Part C — BASELINE (`120254`)
+**DERIVED:**
+- **The stop latency is fixed.** It is 2 ticks, about 10 ms at 196 ticks/s, which is one pass of the 128 Hz
+  sense loop. At Visit 2 on the 8 Hz loop it was 22 ticks on one rep and 3 on the other, and 2 ft was all that
+  measured anything.
+- **The deceleration is all of what remains.** From 196 ticks/s at the 254 ticks/s² `stopMotor()` ramp (Visit 2
+  §4), v² / 2a = 75.6 ticks. That is the 75 measured. So the stop overshoots its target by the ramp distance plus
+  one sense pass, and repeats to a tick.
+- **A 2 ft move reaches half speed**, since its decel matches the 10 ft one.
 
-- COMPLETE, 4,769 records, trap 0 (`:4809-4810`). Every part C cell PASS (`:4802-4808`).
-- All eight `stopMotor()` traces reached REST, at `rest_k` 402–462 (`:369-2656`).
+### 2.3 The fault-API trial — certified
 
----
+MEASURED (`123801:3020-3082`):
+- `BM-FLTAPI … want_inc 10_000, l_inc 10_000, r_inc 10_000, rows 60, flt_ms 101, held_ms 5_799, need_ms 3_000,
+  latched TRUE`.
+- **Row at 1 ms:** both MOVING, SPIN_UP, no fault, turning TRUE.
+- **Row at 101 ms and every row to 5,900 ms:** `l_stat` / `r_stat` FAULTED, `l_st` / `r_st` FAULTED, per-wheel
+  fault and latch TRUE, `turning` FALSE, `faulted` (steering `isFaulted()`) TRUE, `estop` FALSE.
+- Both ramp read-backs restored (`BM-RAMPREST`, `:3018-3019`). Reset alone cleared each wheel in 30 ms
+  (`BM-RECOVER`, `:3020-3021`). `R14-DUAL-FLTAPI-B` PASS (`:3092`).
 
-## 5 · Part C — POSTFLT
+**Certified by this:**
+- **M:** `getStatus()` reports DS_FAULTED.
+- **AF:** the steering object's `isFaulted()` reports it.
+- **S-5:** the latch is not cleared after 3 s; it held 5.8 s.
 
-### 5.1 The 3° fault provocation still does not fault at half speed
-
-All four FAULT traces are `why,NO_FAULT` (`:2662`, `:2971`, `:3732`, `:4042`), as at Visit 2 §5.1. The Visit 3
-harness no longer depends on this provocation: its fault trial uses `ramp_inc` 10,000 from standstill
-(«#3552»). Nothing new here.
-
-### 5.2 E-stop, FLOAT then BRAKE — identical to Visit 2
-
-- **FLOAT:** every trace rests at `rest_k` 54–55 (`:3488`, `:3712`, `:4562`, `:4783`). At Visit 2 it was
-  55–56.
-- **BRAKE, the restart after `clearEmergency()`:** it **faulted 4 of 4** before moving, `end FAULT`,
-  `NOT_REACHED`. Reset alone cleared each fault in 30 ms (`:3500-3501`, `:3727-3728`, `:4574-4575`, `:4798-4799`).
-- **The trace ends match Visit 2 exactly:** stored 10 with ksum 45 (tid 12, 18), and stored 13 with ksum 78
-  (tid 14, 20). Visit 2 printed the same four lines (`_OLD/debug_260915-135838.log`).
-
-DERIVED: this is PL-57's defect, reproduced a second time on a tree without `17122f2` (§1). It says nothing about
-the fix. **PL-57 stays uncertified**, and its negative limb is now measured twice with an identical signature. When the current tree runs, any change in these four
-trace ends is the fix showing.
+**One observation, not a defect:** `getPower()` keeps reporting 50 / 50 throughout the fault. It returns the
+last commanded power, as its contract says. With PL-66 (a repeated power does not clear a fault), a caller
+reading `getPower()` alone would not see that the motor is not driving. `DRIVE-OBJECTS.md` should say so
+(«#3515»).
 
 ---
 
-## 6 · Char (`120843`)
+## 3 · Part C — BASELINE and POSTFLT
 
-- **Result:** COMPLETE, holds 9, `lib_abort` FALSE, trap 0 (`:441`). All 34 SIGNOFF lines PASS (`:407-440`).
-- **Binary:** `src_rev 6`, built from `6aed714` (§1), so the sense loop was still 8 Hz. This is not evidence for
-  «#3512»'s 128 Hz loop.
-
-| Hold | Motor | Incre | Net today (mV) | Visit 2 | Change | Duty today | Visit 2 | Change |
-|---|---|---|---|---|---|---|---|---|
-| 1 | L | +¼ | 83.2 | 84.0 | −1.0 % | 7,211 | 7,343 | −1.8 % |
-| 2 | L | −¼ | 166.1 | 165.2 | +0.5 % | 8,178 | 8,319 | −1.7 % |
-| 3 | R | +¼ | 91.0 | 90.1 | +1.0 % | 7,306 | 7,426 | −1.6 % |
-| 4 | R | −¼ | 169.5 | 169.6 | −0.1 % | 8,179 | 8,324 | −1.7 % |
-| 5 | L | +½ | 470.4 | 469.2 | +0.3 % | 15,838 | 16,130 | −1.8 % |
-| 6 | L | −½ | 914.9 | 915.0 | 0.0 % | 18,397 | 18,780 | −2.0 % |
-| 7 | R | +½ | 503.7 | 499.0 | +0.9 % | 15,981 | 16,230 | −1.5 % |
-| 8 | R | −½ | 923.2 | 917.2 | +0.7 % | 18,293 | 18,576 | −1.5 % |
-
-Source: `:93-241`.
-
-- rpm 65 / 131 with error 0 and implied scale 149–150 at all eight holds. Missed and illegal hall counts are 0.
-- Steering start returned 4. Steer-fail returned −1 and leaked no cog. The brake start passed ×4
-  (`:346`, `:361-406`).
-- The left zero still reads 7.1–8.5 mV: `getCurrent()` at rest is 494 `amps_x10k` (PL-45, `:72`).
-- The debug stream corrupted again around the fast cog starts (`:242-246`, `:274-279`, `:301-305`). No verdict
-  was lost (PL-41).
+- BASELINE: all eight `stopMotor()` traces REST, at `rest_k` 404–446 (`123957:369-2661`).
+- POSTFLT's 3° fault provocation: NO_FAULT on all four, as at Visit 2 (`:2667,2976,4130,4440`). RIGHT BRAKE
+  (tid 16) did not confirm rest by the stillness rule (`:4748`), as happened once at Visit 2 §4.
+- `RSTPROV-C` is NOMEAS on both wheels, because no fault happened in part C. The reset path it guards is exercised
+  and passes in part B, `RSTPROV-B` (§2.3).
 
 ---
 
-## 7 · Owed after this visit
+## 4 · The e-stop — PL-57 certified
 
-Everything the Visit 3 sheet was for is still owed, unchanged:
+### 4.1 Before, from the same harness revision's predecessor
 
-| Load | Certifies |
-|---|---|
-| `dual-clock` 200000000 / 270000000 / 300000000 | «#3549» clock guard, CLKFRAME |
-| `dual-b` | «#3512» C-3 at 50 %; «#3547» / «#3550» / «#3552» fault reporting |
-| `dual-c` | «#3546» PL-57 e-stop reset; the e-stop hold in passes |
-| `char` | rpm through the 128 Hz sense loop («#3512») |
+At Visit 2 and at today's first attempt on `6aed714`, every brake-mode trial after an e-stop reached AT_SPEED
+at `pos` 0 and FAULTED at k 8. Its trace ends were stored 10 / ksum 45 and stored 13 / ksum 78.
 
-Plus the attended pair after «#3553»: `dual-ui` and `dual-brake`.
+### 4.2 Today
+
+| tid | Motor | Sign | Mode | End | `rest_k` | Line |
+|---|---|---|---|---|---|---|
+| 11 | LEFT | NEG | FLOAT | REST | 54 | `:3492` |
+| 12 | LEFT | NEG | BRAKE | **REST** | 64 | `:3710` |
+| 13 | LEFT | POS | FLOAT | REST | 54 | `:3918` |
+| 14 | LEFT | POS | BRAKE | **REST** | 54 | `:4126` |
+| 17 | RIGHT | NEG | FLOAT | REST | 54 | `:4956` |
+| 18 | RIGHT | NEG | BRAKE | **REST** | 65 | `:5177` |
+| 19 | RIGHT | POS | FLOAT | REST | 55 | `:5388` |
+| 20 | RIGHT | POS | BRAKE | **REST** | 55 | `:5599` |
+
+MEASURED, tid 12 in full (`:3494-3572`): through k 0–49 the wheel is AT_SPEED at half speed. Current is
+870–987 mV, `pos` advances 19 ticks in 98 ms (194 ticks/s), and the fault flag is FALSE. At the e-stop, k 50,
+current falls to 8 mV in one sample, and `pos` moves −19 → −21 → −20 and holds. No fault at any point.
+
+**DERIVED:** the restart after `clearEmergency()` now starts from zero and ramps to speed. That is the path
+`17122f2` built (`.clearRun` on the e-stop entry). The 1–2 tick rock after the e-stop is the wheel settling
+against a brake.
+
+**PL-57: CERTIFIED**, 4 of 4, both motors, both signs.
+
+### 4.3 The e-stop hold in passes — not measured
+
+The motor object's sense task, which releases an e-stop after `ESTOP_HOLD_PASSES`, is started only by part A's
+LIVE segment (`src/test_bench_dual.spin2:1649`). In part C the e-stop stays in ESTOP for the whole 310 ms trace
+(`123957`, tid 11, k 50–205). So no load exercised the hold.
+- DERIVED: 16 passes at 128 Hz is 125 ms, the same as the one 125 ms pass it replaced. The construction is
+  equivalent by arithmetic, not by measurement.
 
 ---
 
-## 8 · Findings filed
+## 5 · Char (`124157`)
 
-Filed in `DOCs/PUNCH-LIST.md` on 2026-09-16:
-- **PL-55:** LEFT POS now trips too, so all four combinations abort on a stop from 75 %. OVERSHT 2 ft rep 1
-  aborted at 1,571 mV, where Visit 2's completed at a 1,570 mV peak.
-- **PL-68:** no bench log or console names the commit it was built from. The Visit 3 commits had not reached the
-  remote when the bench pulled, and that was found only by reading banners and git's record.
+- All 34 SIGNOFF lines PASS.
+- rpm error 0 at seven holds and −1 at one (64 against 65, LEFT +¼). Rates 982 / 1,964, implied scale 149–150,
+  missed and illegal 0.
+- Steering start 4; steer-fail −1 with no leaked cog; brake start ×4 moved 13 ticks.
+- Net current is within 1 % of Visit 2 at every hold.
+
+DERIVED: rpm is read through a 128-sample window (`HALL_WINDOW_SIZE = SENSE_LOOP_HZ`), and a ±1 rpm step is one
+tick in that window. **«#3512»'s rpm limb: CERTIFIED.**
+
+---
+
+## 6 · What this means for the driver
+
+1. **The repairs are done and proven.** Every driver change this sprint made since Visit 2 behaves as designed on
+   hardware. Nothing measured here asks for a change to any of them.
+2. **Distance stops:** latency is now one sense pass. The remaining overshoot, 75 ticks (about 430 mm) at half
+   speed, is the `stopMotor()` ramp itself, repeatable to a tick. Any further gain in stop accuracy is a design
+   choice, not a defect: begin the ramp early by its known distance, or ramp faster. That choice meets PL-55,
+   which is the same ramp drawing more than 10 A from 75 %.
+3. **PL-55 is now the driver's largest open behaviour**, and STEPHEN scheduled it for this release after the
+   repairs: *"we want to address it at this release, but not right now."* The repairs are now certified.
+4. **Clock choice is free:** 200, 270 and 300 MHz all give the same speed, current scale and 260 ns dead time. One
+   open question at 200 MHz (PL-69).
+5. **Documentation (`DRIVE-OBJECTS.md`, «#3515»):** `getPower()` reports the commanded power while faulted. The
+   fault clears only on a stop or a different power (PL-66).
+
+---
+
+## 7 · Findings filed
+
+In `DOCs/PUNCH-LIST.md`, 2026-09-16:
+- **PL-69:** illegal hall codes on the right motor at 200 MHz, 8 in two 1-second windows, none at 270 or 300.
+- **PL-55:** the Visit 3 note now includes today's second run: the same four aborts on the current tree.
+
+---
+
+## Revision history
+
+- **2026-09-16, first attempt:** the first set of Visit 3 logs came from `6aed714`, the remote before that day's
+  push. It certified nothing, and this report originally recorded that (git history, `e9c012d`). Its readings
+  were a repeat of Visit 2 and are not carried here, except the PL-55 aborts and the PL-57 "before" signature
+  in §4.1.

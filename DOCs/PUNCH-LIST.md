@@ -1917,6 +1917,11 @@ but not right now."*
   peak.
 - Trial-1 running peaks were 6.5–12 % above Visit 2. The "LEFT POS never tripped" line above describes Visit 2
   only; the stop sits at the threshold on every combination.
+- **The same day on the current tree (`53c1f2b`, `debug_260916-123801.log:447,861,1277,1694`), all four aborted
+  again.** The repairs did not touch the stop ramp, so this is the unchanged mechanism. At 50 % the OVERSHT stops
+  complete and decelerate 75 ticks from 196 ticks/s, exactly the 254 ticks/s² ramp.
+  - STEPHEN's condition for this research, *"after our driver is back in shape"*, is now met: the four repairs are
+    certified (`analyses/bench/2026-09-16/VISIT-3-RESULTS.md` §0).
 
 ### PL-56 -- `emergencyCutoff()` stops a half-speed wheel within one tick; the drive-off state may be a dynamic brake
 
@@ -2233,6 +2238,31 @@ today's rule: *the fault clears when a stop or a different power is commanded*.
 runner echoes the checkout's commit, and whether the tree is clean, before it compiles. Every console then
 records what was built, visibly and replayably. Carrying the commit into the log banner too, via a `-D`
 value, would make each log self-describing.
+
+*Note, 2026-09-16:* the cause was commits not yet on the remote; the next run on `53c1f2b` had the right banners.
+The finding stands: a log still cannot name its commit.
+
+### PL-69 -- illegal hall codes on the right motor at 200 MHz, none at 270 or 300
+
+**Found 2026-09-16 in Visit 3** (`analyses/bench/2026-09-16/VISIT-3-RESULTS.md` §1).
+
+**MEASURED (`debug_260916-123557.log:57,63`):**
+- `BM-RUNG3 … motor RIGHT … illegal_d 3` (NEG 75M) and `illegal_d 5` (POS 75M), each in one 1-second, 201-tick
+  window.
+- `missed_d` 0 in both. The instrument's independent hall count agrees with `pos` (`hw_ticks` ±201, `hw_skip` 0).
+- LEFT at 200 MHz: 0 and 0. Both motors at 270 MHz (`…123637.log`) and 300 MHz (`…123717.log`), ten and thirty
+  seconds later: 0. Every Visit 1 and Visit 2 hold at 270 MHz: 0.
+
+**What it does and does not establish (DERIVED):**
+- The driver's hall read entered %000 or %111 eight times on one motor at one clock; the position count was not
+  harmed.
+- It does not establish that the clock is the cause. It is one run, and the same motor read clean at the next
+  clock. The condition may be transient: a connector, or a read landing on a hall edge (doctrine D2).
+- 200 MHz is not the library's default clock (270 MHz).
+
+**Fix direction:** none yet. Before any code change, name what would distinguish a clock-dependent sampling
+edge from a transient: the illegal count is already in every rung record, so the next clock load answers it
+for free.
 
 ---
 
