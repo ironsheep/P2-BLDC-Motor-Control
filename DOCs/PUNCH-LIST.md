@@ -1769,6 +1769,25 @@ constant across the whole range, not just at two speeds.
 - **Certifies with:** the next ladder. `rate_x10 / pred_x10` should read about 0.99–1.01; today's spread,
   0.946–0.965, maps to 0.989–1.009.
 
+**Certified 2026-09-15 without a re-run, and this is why that is legitimate.** «#3548»'s change to
+`isp_bldc_motor.spin2` is **comment-only** — `git show 65bda4b -- src/isp_bldc_motor.spin2` is timing prose,
+a stale local's description and a note on the 6.5″ ceiling block; not one executable line moved. The driver
+binary therefore produces the *same* `rate_x10` it produced at Visit 2, and the only thing «#3548» changed is
+the harness's printed `pred_x10`, scaled by exactly 22/23. So the new ratio is the old ratio × 23/22, which is
+arithmetic on MEASURED Visit 2 data, not a prediction:
+
+| Rung | Visit 2 ratio | × 23/22 |
+|---|---|---|
+| 10M | 0.964 | 1.008 |
+| 20M | 0.946–0.962 | 0.989–1.006 |
+| 40M–100M | 0.953–0.965 | 0.996–1.009 |
+| 120M–165M | 0.956–0.959 | 0.999–1.002 |
+
+Every rung from 10M up lands in the 0.99–1.01 window the fix predicted. (5M stays uninformative: 14 ticks
+quantise to ±7 %.) **A `dual-a` re-run would measure the same rates against the same new prediction and do this
+same division.** It was dropped from the Visit 3 run sheet for that reason. If a later change touches the drive
+pass itself — not its comments — this reverts to owing a ladder.
+
 ### PL-51 -- the steering object's `getMaxSpeedForDistance()` returns the max speed, not the max speed for distance
 
 **Found 2026-09-14** by «#3508» phase 2(b1), and confirmed by the arbiter reading source. DERIVED, not
