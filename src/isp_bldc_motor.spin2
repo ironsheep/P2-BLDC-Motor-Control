@@ -532,6 +532,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     fault := FALSE
     hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
     hall_illegal := 0
+    drv_incr_now := 0           ' no stale field speed across stop()/start(): the stop timing reads it
 
     ' init status variables
     loop_ticks := 0
@@ -796,8 +797,11 @@ PUB driveAtPowerEx(power, sync) : eError | limitPwr
         eError := recordError(postRequest(REQ_DRIVE, limitPwr, 0, (sync <> FALSE)))
 
 PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, degreesPerTic, ticsPerRotation
-'' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
+'' Stops the motor so it is at rest at {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
 '' USE WITH:  driveAtPower(); the front cog start() launched enforces the limit
+''
+'' The stop begins early, by the distance the ramp-down needs at the motor's current speed, so the motor comes
+'' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
 ''
 '' @param nRotationCount - rotation to travel, at least 1, resolving to at least one hall tick
 '' @param eRotationUnits - units of {nRotationCount}: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
@@ -809,7 +813,6 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, deg
 ' @local ticsPerRotation - hall ticks per rotation for this motor
 
     ' validate everything, then commit: nothing is changed until every check has passed
-    ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
     eError := NO_ERROR
     nStopTicks := 0
     degreesPerTic, ticsPerRotation := hallTicInfoForMotor()
@@ -840,8 +843,11 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, deg
         debug[user.DBGCH_ERROR]("! ERROR: stopAfterRotation() rejected ", sdec_long(eError), sdec_long(nRotationCount), sdec_long(eRotationUnits))
 
 PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks
-'' Stops the motor after it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
+'' Stops the motor so it is at rest at {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
 '' USE WITH:  driveAtPower(); the front cog start() launched enforces the limit
+''
+'' The stop begins early, by the distance the ramp-down needs at the motor's current speed, so the motor comes
+'' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
 ''
 '' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
 '' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
@@ -862,8 +868,11 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks
         debug[user.DBGCH_ERROR]("! ERROR: stopAfterDistance() rejected ", sdec_long(eError), sdec_long(nDistance), sdec_long(eDistanceUnits))
 
 PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
-'' Stops the motor, after {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
+'' Stops the motor so it is at rest when {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
 '' USE WITH:  driveAtPower(); the front cog start() launched enforces the limit
+''
+'' The stop begins early, by the time the ramp-down needs at the motor's current speed, so the motor is at
+'' rest by the limit (within a few milliseconds). A limit shorter than that time stops at once.
 ''
 '' @param nTime - time to run, at least 1
 '' @param eTimeUnits - units of {nTime}: DTU_MILLISEC or DTU_SEC
@@ -874,7 +883,6 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
 ' @local nStopMSecs - the getms() value at which the motor stops, never 0 (0 means no limit)
 
     ' validate everything, then commit: nothing is changed until every check has passed
-    ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
     eError := NO_ERROR
     timeNow := getms()
     nStopMSecs := 0
@@ -3035,6 +3043,32 @@ PUB frontTrack(passCount) | eDrvState, nowPos
         if (passCount +// WINDOW_PASSES) == 0
             updateWindowAccumulators()
 
+PUB frontStopTicks() : nTicks | incr, passes
+'' FRONT COG ONLY: return the hall ticks the field still travels if a stop is written now
+''
+'' The driver ramps the increment down by ramp_down every drive pass (.rampDn), so the field travels
+'' incr x (passes + 1) / 2 angle units, with passes = incr / ramp_down, and one hall cycle (2^32) is 6 ticks.
+'' Visit 3 check: 196 ticks/s, an increment of about 73.3M, gives 75 ticks, as measured.
+''
+'' @returns nTicks - the stopping distance in hall ticks; 0 at rest
+
+' Local Variables:
+' @local incr - the field's current increment per drive pass, unsigned
+' @local passes - drive passes the ramp-down takes, plus one
+
+    incr := abs drv_incr_now
+    passes := incr / ramp_down + 1
+    nTicks := muldiv64(incr >> 9, 3 * passes, 1 << 23)                          ' incr x passes / 2 x 6 / 2^32
+
+PUB frontStopMs() : nMs
+'' FRONT COG ONLY: return the milliseconds until the field is at rest if a stop is written now
+''
+'' @returns nMs - the stopping time, rounded up; 0 at rest
+
+    nMs := 0
+    if drv_incr_now <> 0
+        nMs := ((abs drv_incr_now) / ramp_down + 1) * DRIVE_PASS_US / 1_000 + 1
+
 PUB frontSetLimits(nTicks, nMsDeadline)
 '' FRONT COG ONLY: arm this motor's stop limits (0 disarms either)
 ''
@@ -3045,21 +3079,24 @@ PUB frontSetLimits(nTicks, nMsDeadline)
     motorStopMSecs := nMsDeadline
 
 PUB frontLimitsDue(nowMs) : bFired
-'' FRONT COG ONLY: return TRUE, and disarm the limit, when this motor's time or distance limit has been passed
+'' FRONT COG ONLY: return TRUE, and disarm the limit, when a stop written now leaves the motor at rest at its time or distance limit
 ''
-'' The time limit is checked first; the distance limit only while no time limit is armed. The owner writes the stop.
+'' The stop begins early by the field's own stopping time or distance at its current speed (frontStopMs(),
+'' frontStopTicks()), so the motor is at rest at the limit, not a ramp past it. A limit already inside the
+'' stopping distance or time fires at once. The time limit is checked first; the distance limit only while no
+'' time limit is armed. The owner writes the stop.
 ''
 '' @param nowMs - getms() for this pass
 '' @returns bFired - T/F where T means a limit fired in this call and the owner must stop the motor now
 
     bFired := FALSE
     if motorStopMSecs > 0
-        if nowMs > motorStopMSecs
+        if nowMs + frontStopMs() >= motorStopMSecs
             debug[user.DBGCH_SENSE]("-MOT- time limit reached")
             motorStopMSecs := 0                                                 ' and clear user request
             bFired := TRUE
     elseif motorStopHallTicks > 0
-        if posTrkHallTicks > motorStopHallTicks
+        if posTrkHallTicks + frontStopTicks() >= motorStopHallTicks
             debug[user.DBGCH_SENSE]("-MOT- distance limit reached")
             motorStopHallTicks := 0                                             ' and clear user request
             bFired := TRUE
@@ -3286,7 +3323,7 @@ CON { driver internal Constants }
     PWM_RATE_IN_HZ   = 44_000
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
-    DRVR_STATUS_LONGS_COUNT     = 16
+    DRVR_STATUS_LONGS_COUNT     = 17
     DRVR_PARAMS_LONGS_COUNT     = 16
 
     ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
@@ -3338,7 +3375,7 @@ VAR { * Data Structure for PASM Driver * }
 
     ' -------------------------------------
     ' VALUES copied from driver each cycle
-    ' 16 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 17th, "fault" also from driver but only when happens
+    ' 17 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 18th, "fault" also from driver but only when happens
     '
     ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
@@ -3349,6 +3386,7 @@ VAR { * Data Structure for PASM Driver * }
     LONG    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
     LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP]
     LONG    hall_missed, hall_illegal           ' 2 sequential longs    hall integrity counts since driver start (see getHallIntegrityCounts())
+    LONG    drv_incr_now                        ' 1 sequential long     the field's angle increment per drive pass, for stop timing
     ' \ ----------------------------
     LONG    fault                               ' 1 sequential long     written to 1 on fault (pins are floated when this happens)
 
@@ -3752,6 +3790,7 @@ drvMotor                                                ' global (task 3535): en
 '                debug("DRV: ", uhex_(drive_pins), " A:(", sdec_(angle_), ") += DI:(", sdec_(drv_incr), ")")
 
 .endRqst
+                mov     drv_incr_s_, drv_incr           ' publish the field's increment (block-copied with the status run)
                 ' PL-55: duty ceiling -- during a ramp-down, duty scales with the field's speed (duty0 * |drv_incr|
                 '  / incr0) so drive voltage falls with back-EMF; lifted whenever the rotor trails by LAG_SOFT
                 mov     duty_cap_, duty_max_
@@ -3974,7 +4013,7 @@ drvMotor                                                ' global (task 3535): en
                 getct   loop_dtcks_                     ' how long was this iteration? send to host
                 sub     loop_dtcks_, drvrSrtTix
 
-                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal to hub
+                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal/drv_incr to hub
                 wrlong  drive_u_, ptra
 .loop           jnct1   #.ctlMotor                      ' if not time for drv loop just go to ctl loop
                 jmp     #drvMotor
@@ -4210,7 +4249,7 @@ duty_floor_ res 1           ' S-2: the duty below which the phase-current estima
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied out-of driver each loop iteration
-drive_u_    res 1           ' 16 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
+drive_u_    res 1           ' 17 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -4226,6 +4265,7 @@ loop_ctcks_ res 1
 drv_state_  res 1           ' enum: DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, etc
 hall_missed_  res 1         ' hall code changed with no countable single step (missed transition), zeroed at driver start
 hall_illegal_ res 1         ' entries into an illegal hall code (%000 or %111), zeroed at driver start
+drv_incr_s_ res 1           ' copy of drv_incr, the field's increment per drive pass, for the front cog's stop timing
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs

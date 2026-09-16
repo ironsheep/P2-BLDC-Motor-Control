@@ -397,8 +397,11 @@ PUB driveAtPower(leftPower, rightPower) : eError | eStatus, eLeftStatus, eRightS
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
 PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, degreesPerTic, ticsPerRotation, eStatus, eLeftStatus, eRightStatus
-'' Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
+'' Stops both motors so they are at rest when either motor reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
 '' USE WITH: driveDirection(), driveAtPower()
+''
+'' The stop begins early, by the distance each wheel's ramp-down needs at its current speed, so the platform comes
+'' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
 ''
 '' @param nRotationCount - rotation to travel, at least 1, resolving to at least one hall tick
 '' @param eRotationUnits - units of {nRotationCount}: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
@@ -413,7 +416,6 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, deg
 ' @local eRightStatus - the front cog's status for the right wheel
 
     ' validate everything, then commit: nothing is changed until every check has passed
-    ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
     eError := NO_ERROR
     nStopTicks := 0
     degreesPerTic, ticsPerRotation := ltWheel.hallTicInfoForMotor()
@@ -448,8 +450,11 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, deg
         debug[user.DBGCH_ERROR]("! ERROR: stopAfterRotation() rejected ", sdec_long(eError), sdec_long(nRotationCount), sdec_long(eRotationUnits))
 
 PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, eStatus, eLeftStatus, eRightStatus
-'' Stops the motors after one of them reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
+'' Stops the motors so they are at rest when one of them reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
 '' USE WITH: driveDirection(), driveAtPower()
+''
+'' The stop begins early, by the distance each wheel's ramp-down needs at its current speed, so the platform comes
+'' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
 ''
 '' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
 '' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
@@ -483,7 +488,6 @@ PRI ticksForDistance(nDistance, eDistanceUnits) : eError, nStopTicks | fValue
 ' Local Variables:
 ' @local fValue - the requested distance in mm (float), for the inch and foot units
 
-    ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
     eError := NO_ERROR
     nStopTicks := 0
     if nDistance < 1
@@ -524,8 +528,11 @@ PRI ticksForDistance(nDistance, eDistanceUnits) : eError, nStopTicks | fValue
             eError := ERR_LIMIT_UNRESOLVABLE
 
 PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs, eStatus, eLeftStatus, eRightStatus
-'' Stops the motors after {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
+'' Stops the motors so they are at rest when {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
 '' USE WITH: driveDirection(), driveAtPower()
+''
+'' The stop begins early, by the time the slower wheel's ramp-down needs at its current speed, so the platform is at
+'' rest by the limit (within a few milliseconds). A limit shorter than that time stops at once.
 ''
 '' @param nTime - time to run, at least 1
 '' @param eTimeUnits - units of {nTime}: DTU_MILLISEC or DTU_SEC
@@ -539,7 +546,6 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs, eStatus, eL
 ' @local eRightStatus - the front cog's status for the right wheel
 
     ' validate everything, then commit: nothing is changed until every check has passed
-    ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
     eError := NO_ERROR
     timeNow := getms()
     nStopMSecs := 0
@@ -1522,19 +1528,21 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         waitms(ltWheel.FRONT_PARK_MS)
 
 PRI frontPlatformLimitsDue(nowMs) : bFired
-' FRONT COG: return TRUE, and disarm the limit, when the platform's time limit has passed or either wheel has passed the distance limit.
+' FRONT COG: return TRUE, and disarm the limit, when a stop written now leaves the platform at rest at its time limit or either wheel at rest at the distance limit.
+'
+' Each wheel's stop begins early by its own stopping distance, and the time stop by the longer of the two stopping times.
 '
 ' @param nowMs - getms() for this pass
 ' @returns bFired - T/F where T means a limit fired and both wheels must be stopped now
 
     ' if both time and distance are armed, the time is checked until it passes, then the distance
     bFired := FALSE
-    if (motorStopMSecs > 0) and (nowMs > motorStopMSecs)
+    if (motorStopMSecs > 0) and (nowMs + (ltWheel.frontStopMs() #> rtWheel.frontStopMs()) >= motorStopMSecs)
         debug[user.DBGCH_SENSE]("-STEER- time limit reached")
         motorStopMSecs := 0                                                     ' and clear user request
         bFired := TRUE
     elseif motorStopHallTicks > 0
-        if (ltWheel.getposTrkHallTicks() > motorStopHallTicks) or (rtWheel.getposTrkHallTicks() > motorStopHallTicks)
+        if (ltWheel.getposTrkHallTicks() + ltWheel.frontStopTicks() >= motorStopHallTicks) or (rtWheel.getposTrkHallTicks() + rtWheel.frontStopTicks() >= motorStopHallTicks)
             debug[user.DBGCH_SENSE]("-STEER- distance limit reached")
             motorStopHallTicks := 0                                             ' and clear user request
             bFired := TRUE
