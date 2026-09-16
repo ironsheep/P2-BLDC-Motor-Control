@@ -2234,3 +2234,29 @@ five must not be run — `src/get` and `scripts/get*` copy *into* `src/` and wou
 overwrite the tree from a stale external source. They are vestiges of sharing
 source between a Mac and a Windows machine, which the cross-platform
 `pnut-ts` / `pnut-term-ts` toolset made unnecessary.
+
+### PL-67 -- `R2-DETECT-OVERLAP` is owed to a motors-unplugged session, but no build can produce it
+
+**Found 2026-09-15** while writing the Visit 3 run sheet. DERIVED from source. It is a **gap in the harness**,
+not a driver defect.
+
+**The claim that fails.** Every record since Visit 1 says the deferred cell `R2-DETECT-OVERLAP` is "owed to the
+first session where the motors are unplugged" (`plans/VISIT-SIGNOFF-DESIGN.md` §J.2), and the Visit 3 scope
+carried it as a no-code rider on the Rev A swap load.
+
+**MEASURED, in `src/test_bench_detect.spin2`:** the gate-input guard is computed at runtime from
+`user.LEFT_MOTOR_BASE` and `user.RIGHT_MOTOR_BASE` "in every sweep of every build" (its header, and the
+`-D DETECT_NO_TAIL` note states plainly that the guard is not disabled by any flag). The two cells the deferred
+sign-off names -- `P40_P55` (sense pin P44 = the LEFT board's `pin_pwm_w_l`) and `NO_USE_P24_P39` (P28 = the
+RIGHT board's) -- are therefore skipped as `GATE_OVERLAP` whatever is physically plugged in. **Unplugging the
+motors is the safety precondition for relaxing the guard; the relaxation itself was never built.**
+
+**What it costs.** `«#3500»`'s behaviour that an overlapping pin group reports *not detected* rather than Rev B
+has no bench evidence, so the 6.0.0 release line for it stays DERIVED (`«#3515»` already treats it that way).
+Nothing else waits on it.
+
+**Fix direction, for its own scoping -- not a run-sheet rider.** A compile-time flag on the passive build
+(`detect` / `detect-lib`, no driver cog at all) that suppresses `GATE_OVERLAP` only, leaving `COG_OVERLAP`
+refused, plus a tier that states the motors-unplugged precondition in the log the way the other preconditions
+are stated. It deliberately drives a board's gate input, so it is a change to a hardware safety guard and wants
+a review before its first run, not a slot before a bench session.
