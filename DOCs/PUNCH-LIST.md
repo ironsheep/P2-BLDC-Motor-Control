@@ -1910,6 +1910,14 @@ but not right now."*
 - A research item for 6.0.0, scheduled after the driver repairs.
 - Until then the bench harness keeps its 10 A abort unchanged. Trials that stop from 75 % stay NOMEAS.
 
+**Visit 3, 2026-09-16** (`analyses/bench/2026-09-16/VISIT-3-RESULTS.md` §3; an older tree, same stop path):
+- **All four combinations now trip on the FAULTB stop from 110.25M**, LEFT POS included: LEFT NEG 1,569, LEFT
+  POS 1,536, RIGHT NEG 1,534 and RIGHT POS 1,638 mV (`debug_260916-120132.log:445,861,1275,1694`).
+- OVERSHT 2 ft rep 1 at 75 % aborted at 1,571 mV (`:1714`), where Visit 2's same rep completed with a 1,570 mV
+  peak.
+- Trial-1 running peaks were 6.5–12 % above Visit 2. The "LEFT POS never tripped" line above describes Visit 2
+  only; the stop sits at the threshold on every combination.
+
 ### PL-56 -- `emergencyCutoff()` stops a half-speed wheel within one tick; the drive-off state may be a dynamic brake
 
 **Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §5.2).
@@ -2201,6 +2209,27 @@ zero first.
 
 That is an API and safety decision for Stephen, taken when the fault path is next scheduled. «#3547» documents
 today's rule: *the fault clears when a stop or a different power is commanded*.
+
+### PL-68 -- no bench log names the commit it was built from, so a stale checkout ran a whole visit unnoticed
+
+**Found 2026-09-16 in Visit 3** (`analyses/bench/2026-09-16/VISIT-3-RESULTS.md` §1).
+
+**MEASURED:**
+- The Visit 3 sheet was written for tree `9bdb9ea`, harness `SRC_REV 11 / FMT 3`.
+- Both motion logs print `src_rev 7, fmt 1` (`debug_260916-120132.log:21`, `debug_260916-120254.log:21`).
+- OVERSHT ran at 75 % with no `BM-FLTAPI`, and the runner was the one from before `13d5c46`.
+- The four repairs the visit existed to certify did not run. It was found only by reading the banners.
+
+**The gap (DERIVED):**
+- `SRC_REV` is hand-bumped per harness file, so it identifies the harness, not the tree.
+- A library-only commit such as `17122f2` leaves every banner unchanged. So even a careful read cannot say
+  whether a given driver fix was in the binary.
+- Nothing on the console or in any log names the commit.
+
+**Fix direction (for Stephen: the runner is a tool that fronts his toolchain, doctrine P2):** the bench
+runner echoes the checkout's commit, and whether the tree is clean, before it compiles. Every console then
+records what was built, visibly and replayably. Carrying the commit into the log banner too, via a `-D`
+value, would make each log self-describing.
 
 ---
 
