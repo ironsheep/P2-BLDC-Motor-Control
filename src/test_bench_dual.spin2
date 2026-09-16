@@ -41,6 +41,13 @@
 ''               10 A abort and both 10 ft reps measured nothing (PL-55); at half speed it completes. The
 ''               10 ft leg is where C-3 is measured -- 2 ft cannot reach speed at any power. No record
 ''               changes shape, so FMT stays 2.
+''               15 Sep 2026 -- SRC_REV=11, FMT 3: OVERSHT ends with the fault-API trial (task 3552), so
+''               task 3547's fault reporting can be certified unattended -- BM-OUT runs only in the
+''               ATTENDED OUTSIDE segment today, and the steering object's isFaulted() / isEmergency() can
+''               only be read while that object runs. It is LAST in the segment because a provoked fault
+''               resets tracking and would contaminate C-3. New record BM-FLTAPI and new cell
+''               R14-DUAL-FLTAPI-B; no existing record changes shape, but the record set gains one, so
+''               FMT goes to 3 the way appended fields took it to 2
 ''
 '' =================================================================================================
 
@@ -100,8 +107,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 10                                        ' hand-bumped whenever this file changes
-    FMT_VERSION = 2                                         ' BM- record-format version
+    SRC_REV     = 11                                        ' hand-bumped whenever this file changes
+    FMT_VERSION = 3                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -253,6 +260,19 @@ CON { drive increments and powers }
     '  tick. These are DISTANCE targets, so the power above does not enter them and they stand.
     OVERSHT_TGT_SHORT   = 105                               ' 60_960 / 576
     OVERSHT_TGT_LONG    = 529                               ' 304_800 / 576
+
+    ' OVERSHT's fault-API trial (task 3552), LAST in the segment. The provocation is the CHEAPEST ONE
+    '  ALREADY PROVEN: a high ramp_inc from standstill, which faulted 3 of 3 at Visit 2 -- trials 3, 4 and
+    '  5 at ramp_inc 500, 2_000 and 10_000 faulted on LEFT POS in 96-186 ms with dsat FALSE, each cleared
+    '  by testResetFault() alone in 31-32 ms (VISIT-2-RESULTS.md sec 6). The fault arrives during SPIN-UP,
+    '  so no stop from speed is in the path and the 10 A abort (PL-55) is not either.
+    FLTAPI_RAMP_INC     = 10_000                            ' commanded on both wheels from standstill
+    FLTAPI_POWER        = 50                                ' driveAtPower(50, 50), the segment's own power
+    ' The poll must outlast the 3 s auto-clear task 3547 removed, so the latch's SURVIVAL is what is
+    '  recorded. 6 s from the command is about 60 of the 130 OUT_POLLS rows, and the rows are the only
+    '  source the verdict reads.
+    FLTAPI_POLL_MS      = 6_000
+    FLTAPI_LATCH_MS     = 3_000                             ' held this long past the fault to pass
 
     ' ramp defaults (isp_bldc_motor.spin2 init()), restored and read back after every FAULTB trial (I11)
     RAMP_DEF_MIN  = 1_500
@@ -901,6 +921,7 @@ sSfCellClkFrameK300 BYTE "R14-DUAL-CLKFRM-K300", 0
 sSfCellRstProvB BYTE    "R14-DUAL-RSTPROV-B", 0
 sSfCellRstProvC BYTE    "R14-DUAL-RSTPROV-C", 0
 sSfCellRampRest BYTE    "R14-DUAL-RAMPREST-B", 0
+sSfCellFltApi   BYTE    "R14-DUAL-FLTAPI-B", 0
 sSfCellOffRest  BYTE    "R14-DUAL-OFFREST-C", 0
 sSfCellBrakeFlt BYTE    "R14-DUAL-BRAKEFLT-H", 0
 sSfCellFloorAns BYTE    "R14-DUAL-FLOORANS-F", 0
@@ -917,6 +938,7 @@ sSfCritTraces   BYTE    "TRACE_DATA_LOST", 0
 sSfCritClkFrame BYTE    "FRAME_AT_CLOCK", 0
 sSfCritRstProv  BYTE    "RESET_UNCLEARED", 0
 sSfCritRampRest BYTE    "RAMP_RESTORED", 0
+sSfCritFltApi   BYTE    "FAULT_API_LATCHED", 0
 sSfCritOffRest  BYTE    "OFFSETS_RESTORED", 0
 sSfCritBrakeFlt BYTE    "BRAKE_FAULT_SEEN", 0
 sSfCritFloorAns BYTE    "OPERATOR_ANSWERED", 0
@@ -1157,6 +1179,10 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    ovWhy
     LONG    outCount                                        ' BM-OUT rows filled
     LONG    outBuf[OUT_POLLS * OUT_LONGS]
+    LONG    fltLeftInc                                      ' BM-FLTAPI: ramp_inc read back per wheel
+    LONG    fltRightInc
+    LONG    fltFaultMs                                      ' ms from the command to the first faulted row
+    LONG    fltLatchMs                                      ' ms the latch was still observed after that row
 
 VAR { rung staging -- filled by rungMeasure(), read by the rung emitters and the folds }
 
@@ -1208,6 +1234,8 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    bSfRampOk[INST_MOTORS]
     LONG    bSfOffRan[INST_MOTORS]                          ' OFFREST: every restore's read-back, ANDed
     LONG    bSfOffOk[INST_MOTORS]
+    LONG    bSfFltApiRan                                    ' FLTAPI: the provocation faulted, so the API could be judged
+    LONG    bSfFltApiOk
     LONG    bSfBrakeRan                                     ' BRAKEFLT
     LONG    bSfBrakeSeen
     LONG    bSfFloorRan                                     ' FLOORANS
@@ -1332,6 +1360,12 @@ PRI initRunState() | slotIdx
     instDecimate := 1
     sfTraces := 0
     sfTraceLost := 0
+    bSfFltApiRan := FALSE
+    bSfFltApiOk := FALSE
+    fltLeftInc := 0
+    fltRightInc := 0
+    fltFaultMs := 0
+    fltLatchMs := 0
     bSfBrakeRan := FALSE
     bSfBrakeSeen := FALSE
     bSfFloorRan := FALSE
@@ -1588,7 +1622,13 @@ PRI segOvershoot() | distIdx, whyCode, sid
 ' OVERSHT (part B, T1-8): C-3 distance overshoot through the steering object. Both wheel objects are
 ' stopped first (shared pin claims, PL-18); steerStart() sets holdAtStop(FALSE); the distance power is
 ' set once to OVERSHT_POWER, the value every trial prints (sec 12.8: never read back through the
-' steering getter, PL-51); 2 ft and 10 ft x OVERSHT_REPS; steering.stop() at the end.
+' steering getter, PL-51); 2 ft and 10 ft x OVERSHT_REPS; then the fault-API trial (task 3552);
+' steering.stop() at the end.
+'
+' THE FAULT-API TRIAL RUNS LAST, and the order is the construction, not a preference: a provoked fault
+' resets the driver's tracking, so running it first or between reps would contaminate C-3, this
+' segment's primary job. It is here at all because it is the only UNATTENDED segment that runs the
+' steering object, and the steering object's isFaulted() / isEmergency() cannot be read without it.
 '
 ' @local distIdx - 0 short, 1 long
 ' @local whyCode - why the remaining trials are skipped, WHY_NONE while they run
@@ -1612,6 +1652,7 @@ PRI segOvershoot() | distIdx, whyCode, sid
         repeat OVERSHT_REPS
             beat(CP_LOOP_POLL)
             whyCode := overshootTrial(sid, lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), lookupz(distIdx: OVERSHT_TGT_SHORT, OVERSHT_TGT_LONG), whyCode)
+    faultApiTrial(sid, whyCode)
     instIdle()
     steerStop()
     segEnd(segWhy())
@@ -2563,6 +2604,107 @@ PRI overshootStats() | sampleIdx, leftStopJ, rightStopJ
             ovRightRest := smpPos(drEndJ, SLOT_RIGHT) - smpPos(drMarkJ, SLOT_RIGHT)
             ovTStopMs := ((leftStopJ - drMarkJ) * INST_PERIOD_US * instDecimate) / US_PER_MS
             ovWhy := WHY_NONE
+
+PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
+' The OVERSHT fault-API trial (task 3552): certify that a user of the STEERING object sees a fault
+' through its public API, and that the fault latch task 3547 stopped auto-clearing is still set more
+' than FLTAPI_LATCH_MS later. Arm on the steering source (the instrument is the safety mirror here, not
+' a measurement); FLTAPI_RAMP_INC on both wheels; driveAtPower() from standstill behind the SYNC_PRECOND
+' check; poll the public API into outBuf for FLTAPI_POLL_MS; freeze; stopMotors(); restore the ramp
+' defaults with a read-back BEFORE any check (I11); read the verdict; recover; BM-FLTAPI and the BM-OUT
+' rows. Folds R14-DUAL-FLTAPI-B.
+'
+' NO CAPTURE IS DRAINED. The rows already show the post-fault coast at API resolution; the coast at
+' instrument resolution is S-9a, motor characterisation, which this trial does not measure.
+'
+' @param sid - the steering start's life, 0 when it did not start
+' @param skipWhy - WHY_NONE to run, else why the segment's trials are being skipped
+'
+' @local tid - trace id
+' @local whyCode - why the verdict was not reached, WHY_NONE when it was
+' @local markMs - getms() at the command: the t_ms origin of every row
+' @local rowIdx - 0-based poll row
+' @local recoverWhy - steerRecoverFault()'s result
+
+    tid := nextTraceId()
+    cpReset()
+    outCount := 0
+    whyCode := skipWhy
+    if (whyCode == WHY_NONE) and (runContinue(SEG_OVERSHT) == FALSE)
+        whyCode := WHY_ABORTED
+    ' one guard around the whole body: a skipped trial commands nothing, so it has no ramp to restore
+    '  and no fault to recover, and it still prints its record below
+    if whyCode == WHY_NONE
+        if bSteerUp == FALSE
+            whyCode := WHY_NO_COG
+        elseif instArm(INST_SRC_STEER, OVERSHT_DECIM) == FALSE
+            whyCode := WHY_INST_NOACK
+        else
+            fltLeftInc, fltRightInc := steerSetRamp(FLTAPI_RAMP_INC)
+            markMs := getms()
+            if steerDriveBoth(SEG_OVERSHT, tid, FLTAPI_POWER) == FALSE
+                whyCode := WHY_SYNC_PRECOND
+            else
+                whyCode := safeWhy(steerPollPhase(markMs, markMs, FLTAPI_POLL_MS, FALSE, TRUE, FALSE))
+            bCpFrozen := instFreeze(0)
+            steerStopMotors()
+            steerRestoreRamp()                              ' I11: before any check, on every path that set the ramp
+            if (bCpFrozen == FALSE) and (whyCode == WHY_NONE)
+                whyCode := WHY_INST_NOACK
+            if whyCode == WHY_NONE
+                whyCode := fltApiVerdict()
+            recoverWhy := steerRecoverFault(tid)
+            if (recoverWhy <> WHY_NONE) and (whyCode == WHY_NONE)
+                whyCode := recoverWhy
+    emitFltApi(tid, sid, whyCode)
+    if outCount > 0
+        repeat rowIdx from 0 to outCount - 1
+            beat(CP_LOOP_DRAIN)
+            emitOut(tid, sid, rowIdx)
+    segItems := (segItems + 1) <# LIM_SMALL
+
+PRI fltApiVerdict() : whyCode | rowIdx, faultIdx, lastIdx, bStatFaulted, bSigHeld
+' Read the trial's verdict out of the rows the poll already stored, so BM-FLTAPI, the BM-OUT rows and
+' the sign-off cell all have ONE source. The cell is MEASURED once the provocation faulted; it is TRUE
+' when the rows carry all three of task 3547's claims: steering.isFaulted() read TRUE, getStatus()
+' reported DS_FAULTED, and the last row -- at least FLTAPI_LATCH_MS after the first faulted row -- still
+' carried the sticky fault signal. A trial that never faulted is WHY_NO_FAULT and the cell stays NOT
+' MEASURED, which prints NOMEAS: the visibility that caught Visit 2's missing cells.
+'
+' GETSTATUS IS LOOKED FOR FROM THE FAULTED ROW ONWARD, NOT ON THAT ROW ALONE. outPoll() reads
+' getStatus() at the top of its bracket and isFaulted() at the bottom, so the status can legitimately
+' be one row behind the flag; judging the one row would fail a driver that is behaving.
+'
+' @returns whyCode - WHY_NONE when a fault was seen in the rows, else WHY_NO_FAULT
+'
+' @local rowIdx - 0-based poll row
+' @local faultIdx - first row reading faulted, -1 when none
+' @local lastIdx - last row stored
+' @local bStatFaulted - getStatus() read DS_FAULTED on that row or a later one
+' @local bSigHeld - the sticky fault signal was still set on the last row
+
+    whyCode := WHY_NO_FAULT
+    faultIdx := -1
+    bStatFaulted := FALSE
+    if outCount > 0
+        repeat rowIdx from 0 to outCount - 1
+            beat(CP_LOOP_DRAIN)
+            if outBuf[(rowIdx * OUT_LONGS) + OUT_FAULTED] <> FALSE
+                faultIdx := rowIdx
+                quit
+    if faultIdx >= 0
+        lastIdx := outCount - 1
+        repeat rowIdx from faultIdx to lastIdx
+            beat(CP_LOOP_DRAIN)
+            if (outBuf[(rowIdx * OUT_LONGS) + OUT_L_STAT] == wheelL.DS_FAULTED) or (outBuf[(rowIdx * OUT_LONGS) + OUT_R_STAT] == wheelL.DS_FAULTED)
+                bStatFaulted := TRUE
+                quit
+        fltFaultMs := outBuf[(faultIdx * OUT_LONGS) + OUT_T_MS]
+        fltLatchMs := outBuf[(lastIdx * OUT_LONGS) + OUT_T_MS] - fltFaultMs
+        bSigHeld := (outBuf[(lastIdx * OUT_LONGS) + OUT_L_SIG] <> FALSE) or (outBuf[(lastIdx * OUT_LONGS) + OUT_R_SIG] <> FALSE)
+        bSfFltApiRan := TRUE
+        bSfFltApiOk := bStatFaulted and bSigHeld and (fltLatchMs >= FLTAPI_LATCH_MS)
+        whyCode := WHY_NONE
 
 CON { --- attended segments: OUTSIDE and FLOOR (design sec 4.4) and the operator panel (sec 8) --- }
 
@@ -5198,6 +5340,51 @@ PRI restoreRamp(side) : bOk | minRamp, maxRamp, incRamp, downRamp
     bSfRampOk[side - SIDE_LEFT] := bOk
     emitRampRest(side, minRamp, maxRamp, incRamp, downRamp, bOk)
 
+PRI steerSetRamp(incWant) : leftInc, rightInc
+' Set both wheels' ramp_inc THROUGH THE STEERING OBJECT and read it back per wheel. setAcceleration() is
+' the only ramp write that object offers; it forwards to each wheel's setRampingValues() and replaces
+' ramp_inc alone. The harness's own wheelL / wheelR are separate instances from the two this object
+' owns (PL-18), so wheelSetRamp() cannot reach these motors. steerRestoreRamp() restores the defaults on
+' every path that called this (I11).
+'
+' @param incWant - ramp_inc to command on both wheels
+' @returns leftInc - LEFT ramp_inc read back
+' @returns rightInc - RIGHT ramp_inc read back
+
+    beat(CP_LIB_RAMP)
+    steering.setAcceleration(incWant)
+    _, _, leftInc, _ := steering.testLeftGetRampingValues()
+    _, _, rightInc, _ := steering.testRightGetRampingValues()
+    beat(CP_LIB_RAMP)
+
+PRI steerRestoreRamp() | slotIdx, minRamp, maxRamp, incRamp, downRamp, bOk
+' Restore the ramp defaults through the steering object, read all four back per wheel and emit
+' BM-RAMPREST (I11). setAcceleration() replaces ramp_inc alone, so checking all four is what shows a
+' wheel that lost one of the others. As with restoreRamp(), the last read-back of each motor is
+' R14-DUAL-RAMPREST-B's measurement.
+'
+' @local slotIdx - motor slot
+' @local minRamp - ramp_min read back
+' @local maxRamp - ramp_max read back
+' @local incRamp - ramp_inc read back
+' @local downRamp - ramp_down read back
+' @local bOk - TRUE when the defaults read back on this wheel
+
+    beat(CP_LIB_RAMP)
+    steering.setAcceleration(RAMP_DEF_INC)
+    beat(CP_LIB_RAMP)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        beat(CP_LIB_RAMP)
+        if slotIdx == SLOT_RIGHT
+            minRamp, maxRamp, incRamp, downRamp := steering.testRightGetRampingValues()
+        else
+            minRamp, maxRamp, incRamp, downRamp := steering.testLeftGetRampingValues()
+        beat(CP_LIB_RAMP)
+        bOk := (minRamp == RAMP_DEF_MIN) and (maxRamp == RAMP_DEF_MAX) and (incRamp == RAMP_DEF_INC) and (downRamp == RAMP_DEF_DOWN)
+        bSfRampRan[slotIdx] := TRUE
+        bSfRampOk[slotIdx] := bOk
+        emitRampRest(SIDE_LEFT + slotIdx, minRamp, maxRamp, incRamp, downRamp, bOk)
+
 PRI restoreOffsets(side, wantNeg, wantPos) : bOk | offNeg, offPos
 ' Restore the offsets read at the trial's start, read them back and emit BM-OFFREST (I11). Every
 ' read-back of a motor is ANDed into R14-DUAL-OFFREST-C.
@@ -5474,8 +5661,10 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
 ' @local estKb - worst-case log KB: traces x (TRACE_EMIT_MAX x 241 B + headers) plus records
 
     bAttended := segAttended(seg)
-    estS := lookupz(seg: 0, 5, 540, 60, 240, 60, 420, 120, 120, 120, 120, 180, 120, 600)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 45, 8, 1_960, 400, 130, 16, 790, 1_180, 100, 10)
+    ' OVERSHT: the four distance trials plus the fault-API trial (task 3552) -- about 6 s of poll, the
+    '  stop, and up to two FAULT_COOL_MS cool-downs. Its rows are BM-OUT, already counted in est_kb.
+    estS := lookupz(seg: 0, 5, 540, 60, 240, 60, 420, 150, 120, 120, 120, 180, 120, 600)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 45, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 10)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -6073,6 +6262,31 @@ PRI emitOut(tid, sid, rowIdx) | rowBase
     whyField(WHY_NONE)
     emitRecord()
 
+PRI emitFltApi(tid, sid, whyCode)
+' BM-FLTAPI: the OVERSHT fault-API trial's own verdict (task 3552). The trial PRINTS WHETHER IT FAULTED,
+' so a run that provoked nothing says so in one line instead of being inferred from the absence of rows.
+' flt_ms and held_ms print NA when no fault arrived. Worst case 224 bytes.
+'
+' @param tid - trace id, the one the BM-OUT rows below carry
+' @param sid - the steering start's life
+' @param whyCode - WHY_NONE when the fault arrived and the verdict was read, else the cause
+
+    recBegin(@"BM-FLTAPI")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.numField(@"sid", sid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(SIDE_BOTH), TOKMAX_MOTOR)
+    benchLog.numField(@"want_inc", FLTAPI_RAMP_INC, LIM_MID)
+    benchLog.numField(@"l_inc", fltLeftInc, LIM_MID)
+    benchLog.numField(@"r_inc", fltRightInc, LIM_MID)
+    benchLog.numField(@"power", FLTAPI_POWER, LIM_TINY)
+    benchLog.numField(@"rows", outCount, LIM_SMALL)
+    benchLog.naNumField(@"flt_ms", fltFaultMs, LIM_SMALL, bSfFltApiRan)
+    benchLog.naNumField(@"held_ms", fltLatchMs, LIM_SMALL, bSfFltApiRan)
+    benchLog.numField(@"need_ms", FLTAPI_LATCH_MS, LIM_SMALL)
+    benchLog.boolField(@"latched", bSfFltApiOk)
+    whyField(whyCode)
+    emitRecord()
+
 PRI emitFloor(tid, sid, runMs, answerCode, inputCode, leftRateX10, rightRateX10, bRatesValid, slowerCode, stopByCode, whyCode)
 ' BM-FLOOR. The rates and slower print NA together when the rates were not measured. Worst case 219 bytes.
 '
@@ -6343,6 +6557,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellTracesB)
                 emitSignoffDecl(@sSfCellRstProvB)
                 emitSignoffDecl(@sSfCellRampRest)
+                emitSignoffDecl(@sSfCellFltApi)
             PART_BRAKE:
                 emitSignoffDecl(@sSfCellNoStallH)
                 emitSignoffDecl(@sSfCellDbgMaskH)
@@ -6382,7 +6597,8 @@ PRI emitSignoffs() | slotIdx, side
 '  A      NOSTALL BOOL; DBGMASK BOOL; INSTLIVE BOOL per motor; IDLEFLT / REVB / INTEG COUNT per motor;
 '         TRACES COUNT
 '  CLOCK  this clock's NOSTALL BOOL, DBGMASK BOOL and CLKFRAME BOOL per motor (-K200 / -K270 / -K300)
-'  B      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; RAMPREST BOOL per motor
+'  B      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; RAMPREST BOOL per motor;
+'         FLTAPI BOOL (the steering object, BOTH)
 '  BRAKE  NOSTALL BOOL; DBGMASK BOOL; BRAKEFLT BOOL (LEFT)
 '  C      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; OFFREST BOOL per motor
 '  FLOOR  NOSTALL BOOL; DBGMASK BOOL; FLOORANS BOOL
@@ -6413,6 +6629,7 @@ PRI emitSignoffs() | slotIdx, side
                     side := SIDE_LEFT + slotIdx
                     emitSignoff(@sSfCellRstProvB, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx])
                     emitSignoffBool(@sSfCellRampRest, side, @sSfCritRampRest, bSfRampRan[slotIdx], bSfRampOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                emitSignoffBool(@sSfCellFltApi, SIDE_BOTH, @sSfCritFltApi, bSfFltApiRan, bSfFltApiOk, SIGNOFF_ONE_INSTANCE)
             PART_BRAKE:
                 emitSignoffBool(@sSfCellBrakeFlt, SIDE_LEFT, @sSfCritBrakeFlt, bSfBrakeRan, bSfBrakeSeen, SIGNOFF_ONE_INSTANCE)
             PART_C:
