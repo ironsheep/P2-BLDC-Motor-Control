@@ -1865,3 +1865,152 @@ nothing that changes **what the first bench results measure** is taken on before
 them. Tooling that does not change what gets measured is outside it (doctrine
 overlay P2).
 
+
+---
+
+## Sprint Revision -- 2026-09-16: the API contract, stop behaviour, and Visit 4
+
+**Why this revision exists.** Visit 3 certified every repair this plan carried
+(`DOCs/analyses/bench/2026-09-16/VISIT-3-RESULTS.md` §0). Stephen then set the rules for the remaining
+driver work, and every question they raised is answered:
+
+- **STEPHEN 2026-09-16, the API rule:** *"The API is the contract with the user. I want the API to make as
+  much sense as possible, and so the actions requested through the API should be what we'd expect the
+  actions to do in a clean way. If you find that we're not meeting the contract of the API with any of these
+  API members, we need to fix it."*
+- **PL-48:** *"yes, fix it now"*.
+- **The error contract:** *"We can actually change the contract to say an error code is returned. The success
+  and error code is returned, and that will not affect any users today until they decide to use it."* Then,
+  for getters and conditions found after a call returns: *"yes, option 1"*. That is a documented neutral value
+  plus a read-and-clear `getError()`.
+- **The attended pair:** dropped from Visit 3 (*"yes, your recommendation"*).
+- **PL-55:** *"we want to address it at this release, but not right now"* (2026-09-15). Its condition, the
+  repairs being certified, is met.
+
+**Open questions: none.** Every item below is either a fix with one correct remedy under the API rule
+(doctrine overlay P3), or one of Stephen's answers above.
+
+### R16.1 · The error contract in the motor object (PL-47, PL-48, PL-49)
+
+The governing design is `DOCs/plans/ABORT-ERROR-CONTRACT-DESIGN.md`, **as amended here**:
+
+- **Commands return a status** (§5 Q1, now STEPHEN): 0 on success, a negative `ERR_*` on failure.
+- **`start()`/`startEx()`/`startSenseCog()`** keep cog id 0–7 or −1, with the cause in `getError()`.
+- **Getters that cannot measure** return a documented neutral value and record the code (STEPHEN option 1).
+- **`getError()`** reads and clears the calling cog's first error.
+- **Validate, acquire, commit** in `startEx()` (§3.5). This removes PL-48 (the validator's pin claim and
+  `stop()` clearing P0–P15), F-2, F-3, F-8 and F-9.
+- **The protective-stop API (§3.7) is NOT built in this release.** DERIVED plan decision: no detector exists
+  (S-2/C-5 is not in this plan), and an API with no mechanism behind it would itself break the contract rule.
+  `abort` is removed from ordinary paths and not yet used. §5 Q3 therefore never needs an answer this release.
+- **The sense-task period** in the design (8 Hz) is now 128 Hz («#3512»).
+
+### R16.2 · The error contract in the steering and serial objects, and the demos
+
+- **Steering:** three-result `getError()` (design §3.5), F-5c, F-13.
+- **Serial:** call first, then reply with the error name (F-7), and counts must be at least 1.
+- **Demos:** the five release and HDMI demos adopt the contract (design §4).
+
+### R16.3 · API members that break their contract
+
+Each is a fix with one correct remedy under the API rule:
+
+- **PL-52:** `getPower()` reads 0 after every stop path, in both objects.
+- **PL-66:** a command after a fault restarts the motor, even at the same power. This is the PASM request
+  comparison.
+- **E-stop latches until `clearEmergency()`.** Delete both sense tasks' auto-clear
+  (`isp_bldc_motor.spin2:1828-1831`, `isp_steering_2wheel.spin2:1024-1029`). This retires study finding S-4,
+  and the F-6 hang it masked is fixed in R16.1.
+- **PL-51:** the steering object's `getMaxSpeedForDistance()`.
+- **PL-45:** `getCurrent()` subtracts the rest zero.
+- **PL-25:** a board not detected gives current 0 and records the error.
+- **PL-38:** the 6.0 V and 7.4 V ceilings err low, scaled from the measured slope.
+- **PL-13:** the serial objects' two method names are aligned.
+- **PL-58:** the `holdAtStop()` / `stopMotor()` doc says hold is chosen at rest.
+- **Retired:** PL-18. The motor type is the compile-time `user.MOTOR_TYPE`, so two instances cannot differ,
+  and the hazard is unreachable through the API (DERIVED, `isp_bldc_motor.spin2:289`, `:299`).
+
+### R16.4 · Stopping from speed: the ramp-down study (PL-55), two-phase
+
+**MEASURED (Visit 2, `VISIT-2-RESULTS.md` §3–§4; Visit 3 §2):**
+- `stopMotor()` decelerates at 242–256 ticks/s² from every speed.
+- Current rises 20–50 % above running current during the stop.
+- Every stop from 75 % trips 10 A on all four motor/sign combinations.
+- The unloaded coast with the pins released is faster, 370–510 ticks/s².
+
+**DERIVED:** `ramp_down` 50_000 per drive pass at about 1913 passes/s is 255 ticks/s².
+
+**Phase 1** reads the stop-mode and BASELINE traces already on disk (duty `d`, error `e`, current `i`, every
+2 ms) and names the mechanism. The candidates are duty lagging the ramp, and the field angle during the
+ramp. It returns a correct-by-construction change, plus a spin-down current ceiling as the backstop, for the
+arbiter's review. No bench run.
+
+### R16.5 · Stopping from speed: the change
+
+Implements the approved R16.4 design in the driver. **Certifies with:** Visit 4.
+- The stop-mode and fault-trial stops from 75 % no longer trip the 10 A abort.
+- The stop current does not exceed running current by the design's bound.
+
+### R16.6 · Distance and time stops land on their limit
+
+STEPHEN's API rule applied to `stopAfterDistance(n)`: stop at n, not at n plus the ramp.
+- Both sense tasks begin the stop when the remaining ticks reach the ramp distance, computed from the running
+  increment and `ramp_down`.
+- After R16.5, because the ramp may change.
+- **Certifies with:** the Visit 4 overshoot runs landing within a few ticks of the target, where Visit 3
+  measured 77 ticks past.
+
+### R16.7 · Visit 4 harness and run sheet
+
+- Every change in R16.1–R16.6 arrives with a cell that prints its verdict (overlay P1).
+- **Also covers** what Visit 3 left unqualified, where a changed mechanism now underlies it:
+  - the steering object's `getDistance()` and metre path;
+  - DS_ESTOP and `isEmergency()`, through the e-stop latch cell;
+  - the PL-36 pin-claim release, through the start path.
+- **Runner:** tier names only, no typed data (overlay P2).
+- **The run sheet** is written from the load rule (overlay P10).
+
+### R16.8 · Visit 4: run, and the analysis report
+
+Stephen runs the sheet. The logs are read and the report written into `DOCs/analyses/bench/<date>/`.
+
+### Documentation Blast Radius
+
+Owned by «#3515», whose artifact list gains:
+- the `DRIVE-OBJECTS.md` "Errors" section, and every changed signature (design §3.9);
+- `DRIVE-OBJECTS-SERIAL.md` / `SERIAL-CONTROL.md` error replies;
+- the e-stop latch, `getPower()` after a stop, a retry after a fault, and distance stops landing on target:
+  README Latest Changes, as behaviour changes;
+- `CLAUDE.md`'s stale 14-long ABI paragraph (F-9) and its deadtime paragraph. These are Stephen's file:
+  raised with him, not edited.
+
+**Withdrawn from «#3515»'s list, because they no longer ship in 6.0.0:**
+- the fixed cog count («#3513», a later sprint);
+- the scan-measured offsets («#3523», backlog).
+
+### Dispatch and ordering
+
+- **Dispatch:** `arbiter-serial`, the project default. Every code task touches `src/isp_bldc_motor.spin2`, an
+  exclusive resource.
+- **Two-phase:** R16.4, whose design every later stop task builds on.
+- **Order:** error contract first (it restructures the start and stop-limit paths the other tasks touch), then
+  the contract fixes, then the ramp study and change, then distance landing, then the harness, then the visit.
+
+### Cross-reference (2026-09-16)
+
+| Plan § | Deliverable | Task | Order |
+|---|---|---|---|
+| R16.1 | Error contract, motor object (PL-47, PL-48, PL-49) | «#3554» | 1 |
+| R16.2 | Error contract, steering, serial, demos | «#3555» | 2 |
+| R16.3 | API members keep their contract | «#3556» | 3 |
+| R16.4 | PL-55 mechanism and design (two-phase) | «#3557» | 4 |
+| R16.5 | PL-55 change | «#3558» | 5 |
+| R16.6 | Stops land on their limit | «#3559» | 6 |
+| R16.7 | Visit 4 cells and run sheet | «#3560» | 7 |
+| R16.8 | Visit 4 run and report | «#3561» | 8 |
+| — | Write-back to the findings documents | «#3514» | 9 |
+| Blast radius | Documentation (amended 2026-09-16) | «#3515» | 10 |
+| — | Ship 6.0.0 (amended 2026-09-16) | «#3516» | 11 |
+
+Superseded: «#3538» (its design is `ABORT-ERROR-CONTRACT-DESIGN.md`, carried by «#3554»/«#3555»). Moved to a later
+sprint: «#3513» (backlog). Waiting on hardware: «#3532».
