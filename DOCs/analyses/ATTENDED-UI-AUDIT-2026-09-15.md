@@ -203,3 +203,29 @@ panels that drew at Visit 2 did (doctrine overlay P7).
 - The assets are regenerated from their generators.
 - This audit is re-walked against the rebuilt source, leaving no open mismatch.
 - **Run-time proof at Visit 3:** `dual-ui`, then `dual-brake` and `dual-floor`.
+
+---
+
+## 7 · Re-walk against the rebuilt source (`SRC_REV 12`, 2026-09-16)
+
+Rebuilt in «#3553», STEPHEN 2026-09-16: *"fix the code now for the attended side"*. Scope: what `dual-ui` and
+`dual-brake` need. `dual-floor` is no longer run, because AC was confirmed at Visit 2 and every run is
+wheels-lifted. Its screens share every mechanism below, but it is not previewed and F-3 is not built.
+
+| Mismatch | Now | Where |
+|---|---|---|
+| B-1 no STOP while driven | **Fixed.** STOP is live on the spin-up, brake, release, Z-step and stopping screens. The spin-up and settle waits (`waitWatched()`) and the Z steps (`steerPollPhase()`) end on it; the brake wait takes it as its own button. SKIP and STOP are separate controls. | `bmScreens` rows 1–5; `panelStopPressed()` |
+| B-2 stale "CLICK START" during spin-up | **Fixed.** START moves at once to the spin-up screen. | `operStartPrompt()` |
+| B-3 end screen stale and unread | **Fixed.** A LOGGING screen while records are written, then an END screen with the outcome that waits for START. | `panelEnd()`, `panelFinish()`, `outcomeState()` |
+| B-4 one countdown, many meanings | **Fixed.** Each row names its countdown kind, drawn as a label beside the digits, or no countdown at all. | `bmScreens` column 3; layer 6 |
+| B-5 a silent P2 looks like a waiting one | **Fixed.** A heartbeat dot changes every 500 ms in every panel wait. The screen list and run sheet say a stopped dot means the harness stopped. | `panelTick()`; layer 8 |
+| B-6 run sheet differs from the screens | **Fixed.** The screen list is generated from the same table. | `DOCs/analyses/bench/ATTENDED-PANEL-SCREENS.md` |
+| F-1 prompt promises STOP before it is live | **Fixed.** The start prompt no longer mentions STOP; the next screen offers it. | row 8 |
+| F-2 STOP dead between drive and panel, and while stopping | **Fixed** for the stop wait (STOPPING screen). Between START and the drive call the STARTING screen has STOP live; it is first polled in the drive wait, milliseconds later. | rows 9, 10, 5 |
+| F-3 answer final on first input | **Open.** Not built: `dual-floor` is not owed. | — |
+| F-4 | **Fixed** with B-3 and B-4. | — |
+| U-1 verdict shares the screen's controls | **Fixed.** The verdict is LOOKS RIGHT (key Y) / SOMETHING WRONG (key W) in a strip no attended screen draws; the generator refuses a screen that lists either. The judge instruction stays in the strip. | `uiCheckScreen()`; `check_layout()` |
+| U-2 a preview is not the real screen | **Fixed.** A preview draws the row's own prompt, state, countdown label and start, and its own buttons, drawn but not live. | `panelCompose(..., bPreview TRUE)` |
+| U-3 some screens never previewed | **Fixed for `dual-brake`:** rows 0–7, including STOPPING, LOGGING and END. Outcome variants of END are not previewed. | `BM_SCR_PREVIEW_FIRST..LAST` |
+| U-4 the gate does not exercise the run's masks | **Fixed.** The run and the preview read the same `bmScreens` row, and `operWait()` accepts only what the screen on display has live. One exception, by design: the UI control step's single live button is set at run time. | `panelShow()`, `operWait()` |
+| X-6 / PL-65 `BM-PLAN` finds | **Fixed.** `tokFinds` carried one extra `S-9a`, which shifted FLOOR and UICHECK by one. | `tokFinds` |

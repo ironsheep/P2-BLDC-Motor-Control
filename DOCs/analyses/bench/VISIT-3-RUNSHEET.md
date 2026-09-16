@@ -4,10 +4,11 @@ Run each command from the project root, in order. Do the physical steps in bold.
 
 **Panic: PHYSICAL BATTERY DISCONNECT.** `emergencyCutoff()` is not a panic button.
 
-Tree: `9bdb9ea`, both gates green. Harness `SRC_REV 11`, `FMT 3`.
+**Pull first. Every motion-harness banner must read `src_rev 12`, `fmt 3`** (updated 2026-09-16). The first
+Visit 3 attempt ran `src_rev 7`: the Visit 3 commits had not yet reached the remote, so it certified
+nothing (`2026-09-16/VISIT-3-RESULTS.md`).
 
-**Tonight is unattended only.** The attended pair (`dual-ui`, `dual-brake`) is tomorrow, after the
-walkthrough rebuild (PL-64).
+Run steps 1–6 first (unattended), then the attended pair, steps 8–9, below. Step 7 is withdrawn.
 
 ---
 
@@ -19,9 +20,9 @@ not the worst-case caps.
 
 | # | Command | Time | Certifies |
 |---|---|---|---|
-| 1 | `tools/bench-run.sh dual-clock 200000000` | ~1 min | «#3549» the clock guard, and `CLKFRAME` — never measured |
-| 2 | `tools/bench-run.sh dual-clock 270000000` | ~1 min | same, at 270 |
-| 3 | `tools/bench-run.sh dual-clock 300000000` | ~1 min | same, at 300 |
+| 1 | `tools/bench-run.sh dual-clock-200` | ~1 min | `CLKFRAME` at 200 MHz — never measured |
+| 2 | `tools/bench-run.sh dual-clock-270` | ~1 min | same, at 270 |
+| 3 | `tools/bench-run.sh dual-clock-300` | ~1 min | same, at 300 |
 | 4 | `tools/bench-run.sh dual-b` | ~5 min | «#3512» C-3, and «#3547»/«#3550»/«#3552» fault reporting |
 | 5 | `tools/bench-run.sh dual-c` | ~2 min | «#3546» the e-stop reset (PL-57), and the e-stop hold at the new loop rate |
 | 6 | `tools/bench-run.sh char` | ~2 min | rpm still reads true with the sense loop at 128 Hz («#3512») |
@@ -37,9 +38,9 @@ About 13 minutes of running, plus the Rev A swap.
 
 ### Steps 1–3 · the three clock loads
 
-All three were lost at Visit 2 — one took a ten-digit clock value, the other two left nothing to read.
-A clock the tier cannot sweep is now refused before anything compiles, so a mistyped frequency stops
-with a message instead of reaching the compiler.
+All three were lost at Visit 2 and again at the first Visit 3 attempt, both times to a typed clock value.
+**Nothing numeric is typed any more (2026-09-16):** each clock is its own tier name. A tier name with a
+typo is refused on screen before anything compiles.
 
 ### Step 4 · `dual-b` — **faults on purpose twice**
 
@@ -68,6 +69,29 @@ Nothing should turn.
 > stale owed list. A Rev A run cannot tell a working detection fix from a broken one either: a stale read gives
 > 0, which is also Rev A's correct answer (`2026-09-12/DETECT-A-EVALUATION.md` §2). If it was run, its log is
 > read only for anomalies.
+
+---
+
+## Attended pair (added 2026-09-16, after the PL-64 rebuild)
+
+**Before either:**
+- Pull.
+- Both banners must read `src_rev 12`.
+- Rig: Rev B platform, on blocks, wheels up, both motors connected.
+
+Every screen, with its buttons and keys, is in
+[`ATTENDED-PANEL-SCREENS.md`](ATTENDED-PANEL-SCREENS.md), generated from the same table the panel draws.
+
+**The dot at the top right of the panel blinks while the harness runs.** If it stops while a wheel can move,
+the harness has stopped. Note the time, and use the battery disconnect if a wheel is driven. It may pause on
+the WRITING THE LOG screen; the wheels are released there.
+
+| # | Command | Nothing moves? | What you do |
+|---|---|---|---|
+| 8 | `tools/bench-run.sh dual-ui` | Nothing moves | Click each button shown and press its key. Then judge each `dual-brake` screen with LOOKS RIGHT (Y) or SOMETHING WRONG (W) at the bottom; the screen's own buttons do nothing there. Close with START. |
+| 9 | `tools/bench-run.sh dual-brake` | Both wheels spin | Only if step 8 PASSED. START, then brake the LEFT wheel when told, release when told, hands clear while it drives again. STOP (space bar) stops both wheels on any screen where they can move. Close with START. |
+
+`t0-hand`, `dual-floor` and `detect-phase2` are not owed (VISIT-2-ATTENDED-RESULTS.md §2, §5, §6).
 
 ---
 

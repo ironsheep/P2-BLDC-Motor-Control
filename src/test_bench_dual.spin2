@@ -48,6 +48,13 @@
 ''               resets tracking and would contaminate C-3. New record BM-FLTAPI and new cell
 ''               R14-DUAL-FLTAPI-B; no existing record changes shape, but the record set gains one, so
 ''               FMT goes to 3 the way appended fields took it to 2
+''               16 Sep 2026 -- SRC_REV=12: the attended panel rebuilt per the PL-64 audit
+''               (DOCs/analyses/ATTENDED-UI-AUDIT-2026-09-15.md sec 6). Every attended screen is a row of the
+''               generated bmScreens table (state, buttons, countdown meaning), drawn by id, and dual-ui previews
+''               the same rows; the dual-ui verdict is two buttons in their own strip (keys Y and W) that no
+''               attended screen uses; STOP is live whenever a wheel can move; the countdown carries a label;
+''               a heartbeat dot blinks while cog 0 runs; end screens wait for START. BM-PLAN's finds for FLOOR
+''               and UICHECK corrected (PL-65). No record changes shape; WHY gains OPERATOR_STOP, so FMT stays 3
 ''
 '' =================================================================================================
 
@@ -85,17 +92,18 @@
                                                             emitRecord(), the panic line in
                                                             emitHeaderRecords(), declareStall()
                                                             DEBUG_END_SESSION, wdEmitRecord()
-    test_bench_dual.spin2, operator panel               17  read: panelSetup() 9 (PLOT, CARTESIAN, 5 x
-                                                            LAYER, CROP 1, UPDATE); panelRender() 6 (prompt
+    test_bench_dual.spin2, operator panel               23  read: panelSetup() 12 (PLOT, CARTESIAN, 8 x
+                                                            LAYER, CROP 1, UPDATE); panelRender() 9 (prompt
                                                             CROP, state CROP, button CROP, button
-                                                            restore CROP, digit CROP, UPDATE);
+                                                            restore CROP, digit CROP, countdown-label
+                                                            CROP, strip CROP, heartbeat CROP, UPDATE);
                                                             panelReadInput() 2 (PC_KEY, PC_MOUSE)
     isp_bench_log.spin2                                  0  read: no debug statement
     isp_bldc_motor.spin2 under the quiet masks          20  DEBUG-CHANNELS-DESIGN.md: ERROR 17 +
                                                             WARNING 3
     isp_steering_2wheel.spin2 under the quiet masks     10  DEBUG-CHANNELS-DESIGN.md: ERROR 10
-    TOTAL, each object image counted once               52  of 255
-    TOTAL, each of the four motor instances counted    112  of 255 (wheelL, wheelR and the steering
+    TOTAL, each object image counted once               58  of 255
+    TOTAL, each of the four motor instances counted    118  of 255 (wheelL, wheelR and the steering
                                                             object's two, design sec 11 fact 9)
 
   The library rows hold only under -D BENCH_CFG -D BENCH_QUIET. The builds tools/build-check.sh makes
@@ -107,7 +115,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 11                                        ' hand-bumped whenever this file changes
+    SRC_REV     = 12                                        ' hand-bumped whenever this file changes
     FMT_VERSION = 3                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -333,9 +341,9 @@ CON { segment timing }
     Z_STEP_MS             = 2_000
     OUT_POLL_MS           = 100
     FLOOR_RUN_MS          = 2_000                           ' brief wheels-down observation of which way the platform turns, finding AC; design sec 12.1 Q10
+    OPER_END_TIMEOUT_MS   = 120_000                         ' an end screen waits this long for START before closing
     UI_STEP_TIMEOUT_MS    = 30_000                          ' UICHECK: the longest wait for one control or one screen
     UI_HILITE_MS          = 500                             ' UICHECK: a received control stays highlighted this long
-    UI_PREVIEWS           = 7                               ' UICHECK: attended screens shown for the operator to read
     RATE_X10_SCALE        = 10_000                          ' ticks * this / ms = ticks per second x10
     X10                   = 10
 
@@ -437,7 +445,8 @@ CON { instrument cog (design sec 2) }
   '  SAFE_FAULT      - a watched motor's fault flag is set
   '  SAFE_ABS_ABORT  - ABS_ABORT_SAMPLES consecutive reads at or above ABS_ABORT_MV; the wheel was stopped
   '  SAFE_INST_STALL - the instrument heartbeat did not advance for INST_STALL_MS
-    #0, SAFE_NONE, SAFE_FAULT, SAFE_ABS_ABORT, SAFE_INST_STALL
+  '  SAFE_OPER_STOP  - the operator chose STOP on the panel (attended parts only; the caller stops the wheels)
+    #0, SAFE_NONE, SAFE_FAULT, SAFE_ABS_ABORT, SAFE_INST_STALL, SAFE_OPER_STOP
 
 CON { safety thresholds }
 
@@ -516,8 +525,8 @@ CON { record enums -- each value has a token in the DAT token tables }
         WHY_STOP_TIMEOUT, WHY_NO_SAMPLES, WHY_NO_FAULT, WHY_ABORTED, WHY_INST_NOACK, WHY_INST_STALLED, ...
         WHY_INST_BUSY, WHY_RING_LOST_HEAD, WHY_MOTOR_RETIRED, WHY_OPERATOR_SKIP, WHY_OPERATOR_TIMEOUT, ...
         WHY_NO_PASSTHROUGH, WHY_UNSWEPT_CLOCK, WHY_LADDER_STOPPED, WHY_SYNC_PRECOND, WHY_NO_EXTERNAL_V, ...
-        WHY_NO_EXTERNAL_I, WHY_NO_TEMP_SENSOR, WHY_PART_NOT_BUILT
-    WHY_COUNT = 25
+        WHY_NO_EXTERNAL_I, WHY_NO_TEMP_SENSOR, WHY_PART_NOT_BUILT, WHY_OPERATOR_STOP
+    WHY_COUNT = 26
 
   ' BM-INST event:
     #0, INST_EV_START, INST_EV_STOP, INST_EV_NOSTART, INST_EV_NOACK
@@ -578,13 +587,13 @@ CON { record enums -- each value has a token in the DAT token tables }
 
   ' BM-UISTEP kind (UICHECK):
   '  UIK_CONTROL - one live button, which must arrive both as its key and as a mouse click
-  '  UIK_PREVIEW - one attended screen; START when it reads right, SKIP when it does not
+  '  UIK_PREVIEW - one attended screen; LOOKS RIGHT when it reads right, SOMETHING WRONG when it does not
     #0, UIK_CONTROL, UIK_PREVIEW
     UIK_COUNT = 2
 
   ' BM-UISTEP result:
   '  UIR_OK      - the control arrived, or the screen read right
-  '  UIR_WRONG   - the operator said the screen is wrong (SKIP)
+  '  UIR_WRONG   - the operator said the screen is wrong (SOMETHING WRONG)
   '  UIR_TIMEOUT - nothing usable arrived within UI_STEP_TIMEOUT_MS
     #0, UIR_OK, UIR_WRONG, UIR_TIMEOUT
     UIR_COUNT = 3
@@ -596,7 +605,7 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  OPEV_TIMEOUT - the prompt's wait ran out
   '  OPEV_ANSWER  - a FLOOR answer chosen
   '  OPEV_DONE    - the attended sequence ended; why names a short end
-  '  OPEV_STOP    - STOP chosen during the FLOOR run
+  '  OPEV_STOP    - STOP chosen while a wheel could move
     #0, OPEV_SHOWN, OPEV_START, OPEV_SKIP, OPEV_TIMEOUT, OPEV_ANSWER, OPEV_DONE, OPEV_STOP
     OPEV_COUNT = 7
 
@@ -674,7 +683,7 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
 CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not hand-edit }
 
     BM_PANEL_W              = 480
-    BM_PANEL_H              = 260
+    BM_PANEL_H              = 306
     BM_PANEL_POS_X          = 60
     BM_PANEL_POS_Y          = 80
 
@@ -683,24 +692,38 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_LYR_STATE            = 3
     BM_LYR_BUTTONS          = 4
     BM_LYR_DIGITS           = 5
+    BM_LYR_CDLABEL          = 6
+    BM_LYR_STRIP            = 7
+    BM_LYR_HEART            = 8
 
     BM_PROMPT_X             = 12
     BM_PROMPT_Y             = 34
     BM_PROMPT_W             = 456
     BM_PROMPT_H             = 76
-    BM_PROMPT_BRAKE_START   = 0
-    BM_PROMPT_BRAKE_NOW     = 1
-    BM_PROMPT_BRAKE_RELEASE = 2
-    BM_PROMPT_FLOOR_START   = 3
-    BM_PROMPT_FLOOR_ASK     = 4
-    BM_PROMPT_BRAKE_RUNNING = 5
-    BM_PROMPT_UI_CONTROL    = 6
-    BM_PROMPT_UI_PREVIEW    = 7
-    BM_PROMPT_UI_END        = 8
+
+    BM_SCR_BRAKE_START      = 0
+    BM_SCR_BRAKE_SPINUP     = 1
+    BM_SCR_BRAKE_NOW        = 2
+    BM_SCR_BRAKE_RELEASE    = 3
+    BM_SCR_BRAKE_ZSTEPS     = 4
+    BM_SCR_STOPPING         = 5
+    BM_SCR_LOGGING          = 6
+    BM_SCR_END              = 7
+    BM_SCR_FLOOR_START      = 8
+    BM_SCR_FLOOR_STARTING   = 9
+    BM_SCR_FLOOR_DRIVE      = 10
+    BM_SCR_FLOOR_ASK        = 11
+    BM_SCR_UI_CONTROL       = 12
+    BM_SCR_UI_INTRO         = 13
+    BM_SCR_UI_END           = 14
+    BM_SCR_COUNT            = 15
+    BM_SCR_LONGS            = 4
+    BM_SCR_PREVIEW_FIRST    = 0
+    BM_SCR_PREVIEW_LAST     = 7
 
     BM_STATE_X              = 12
     BM_STATE_Y              = 116
-    BM_STATE_W              = 300
+    BM_STATE_W              = 236
     BM_STATE_H              = 32
     BM_STATE_WAITING        = 0
     BM_STATE_STARTING       = 1
@@ -717,6 +740,10 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_STATE_UI_FAILED      = 12
     BM_STATE_UI_NOW_CLICK   = 13
     BM_STATE_UI_NOW_KEY     = 14
+    BM_STATE_STOPPING       = 15
+    BM_STATE_LOGGING        = 16
+    BM_STATE_STOPPED_BY_YOU = 17
+    BM_STATE_ENDED_EARLY    = 18
 
     BM_BTN_W                = 108
     BM_BTN_H                = 36
@@ -725,6 +752,7 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_BTN_ROW1_Y           = 156
     BM_BTN_ROW2_Y           = 198
     BM_BTN_ROW2_FIRST       = 3
+    BM_BTN_STRIP_FIRST      = 7
     BM_BTN_NORMAL           = 0
     BM_BTN_HILITE           = 1
     BM_BTN_START            = 0
@@ -734,7 +762,17 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_BTN_RIGHT            = 4
     BM_BTN_STRAIGHT         = 5
     BM_BTN_NOMOVE           = 6
-    BM_BTN_COUNT            = 7
+    BM_BTN_LOOKS_RIGHT      = 7
+    BM_BTN_WRONG            = 8
+    BM_BTN_COUNT            = 9
+
+    BM_STRIP_X              = 12
+    BM_STRIP_Y              = 242
+    BM_STRIP_W              = 224
+    BM_STRIP_H              = 36
+    BM_STRIP_BTN_X0         = 244
+    BM_STRIP_BLANK          = 0
+    BM_STRIP_JUDGE          = 1
 
     BM_DGT_W                = 20
     BM_DGT_H                = 32
@@ -743,18 +781,59 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_CD_Y                 = 116
     BM_CD_COUNT             = 3
     BM_CD_TOP_DIV           = 100
+    BM_CD_LBL_X             = 256
+    BM_CD_LBL_Y             = 116
+    BM_CD_LBL_W             = 144
+    BM_CD_LBL_H             = 32
+    BM_CD_NONE              = 0
+    BM_CD_GIVES_UP          = 1
+    BM_CD_DRIVES_AGAIN      = 2
+    BM_CD_DRIVING_FOR       = 3
+    BM_CD_CLOSES_IN         = 4
+
+    BM_HEART_X              = 448
+    BM_HEART_Y              = 4
+    BM_HEART_W              = 24
+    BM_HEART_H              = 20
+
+DAT { attended screen table -- GENERATED by tools/gen_dual_assets.py, do not hand-edit }
+
+' one row per BM_SCR_*, BM_SCR_LONGS longs: default state, buttons drawn and live, countdown kind,
+'  countdown start (ms)
+bmScreens       LONG    BM_STATE_WAITING, DECOD BM_BTN_START, BM_CD_GIVES_UP, OPER_START_TIMEOUT_MS                          ' BM_SCR_BRAKE_START
+                LONG    BM_STATE_STARTING, DECOD BM_BTN_STOP, BM_CD_NONE, 0                                                  ' BM_SCR_BRAKE_SPINUP
+                LONG    BM_STATE_BRAKE_NOW, DECOD BM_BTN_SKIP | DECOD BM_BTN_STOP, BM_CD_GIVES_UP, BRAKE_WAIT_MS             ' BM_SCR_BRAKE_NOW
+                LONG    BM_STATE_RELEASE, DECOD BM_BTN_STOP, BM_CD_DRIVES_AGAIN, S5_UNTOUCHED_MS                             ' BM_SCR_BRAKE_RELEASE
+                LONG    BM_STATE_WHEELS_AGAIN, DECOD BM_BTN_STOP, BM_CD_NONE, 0                                              ' BM_SCR_BRAKE_ZSTEPS
+                LONG    BM_STATE_STOPPING, DECOD BM_BTN_STOP, BM_CD_NONE, 0                                                  ' BM_SCR_STOPPING
+                LONG    BM_STATE_LOGGING, 0, BM_CD_NONE, 0                                                                   ' BM_SCR_LOGGING
+                LONG    BM_STATE_DONE, DECOD BM_BTN_START, BM_CD_CLOSES_IN, OPER_END_TIMEOUT_MS                              ' BM_SCR_END
+                LONG    BM_STATE_WAITING, DECOD BM_BTN_START, BM_CD_GIVES_UP, OPER_START_TIMEOUT_MS                          ' BM_SCR_FLOOR_START
+                LONG    BM_STATE_STARTING, DECOD BM_BTN_STOP, BM_CD_NONE, 0                                                  ' BM_SCR_FLOOR_STARTING
+                LONG    BM_STATE_OBSERVING, DECOD BM_BTN_STOP, BM_CD_DRIVING_FOR, FLOOR_RUN_MS                               ' BM_SCR_FLOOR_DRIVE
+                LONG    BM_STATE_ASK, DECOD BM_BTN_LEFT | DECOD BM_BTN_RIGHT | DECOD BM_BTN_STRAIGHT | DECOD BM_BTN_NOMOVE, BM_CD_GIVES_UP, OPER_ANSWER_TIMEOUT_MS ' BM_SCR_FLOOR_ASK
+                LONG    BM_STATE_UI_CHECK, 0, BM_CD_GIVES_UP, UI_STEP_TIMEOUT_MS                                             ' BM_SCR_UI_CONTROL
+                LONG    BM_STATE_UI_CHECK, DECOD BM_BTN_START, BM_CD_GIVES_UP, UI_STEP_TIMEOUT_MS                            ' BM_SCR_UI_INTRO
+                LONG    BM_STATE_UI_PASSED, DECOD BM_BTN_START, BM_CD_CLOSES_IN, OPER_END_TIMEOUT_MS                         ' BM_SCR_UI_END
 
 CON { operator panel -- hand-written companions to the generated geometry (design sec 8) }
 
     PNL_BTN_NONE     = -1                                   ' no button chosen, or none drawn highlighted
     PNL_NO_COUNTDOWN = -1                                   ' the countdown digits are blank
     PNL_DEC_RADIX    = 10
-    ' live-button masks: bit BM_BTN_* set when that button may be chosen
+    PNL_BEAT_MS      = 500                                  ' the heartbeat dot changes this often while cog 0 runs
+    PNL_HEART_CELLS  = 2                                    ' bm_heart.bmp: 0 off, 1 on
+    ' button masks: bit BM_BTN_* set when that button is drawn, or may be chosen
     PNL_LIVE_NONE    = 0
-    PNL_LIVE_START   = DECOD BM_BTN_START
-    PNL_LIVE_SKIP    = DECOD BM_BTN_SKIP
     PNL_LIVE_STOP    = DECOD BM_BTN_STOP
-    PNL_LIVE_ANSWERS = DECOD BM_BTN_LEFT | DECOD BM_BTN_RIGHT | DECOD BM_BTN_STRAIGHT | DECOD BM_BTN_NOMOVE
+    PNL_LIVE_VERDICT = DECOD BM_BTN_LOOKS_RIGHT | DECOD BM_BTN_WRONG    ' dual-ui's verdict: no attended screen draws these
+
+  ' bmScreens columns, BM_SCR_LONGS per row (the generated table's order):
+  '  SCR_COL_STATE  - BM_STATE_* drawn by default
+  '  SCR_COL_LIVE   - mask of the buttons drawn and live
+  '  SCR_COL_CDKIND - BM_CD_*: what the countdown means, BM_CD_NONE for none
+  '  SCR_COL_CDMS   - the countdown's start, ms (0 with BM_CD_NONE)
+    #0, SCR_COL_STATE, SCR_COL_LIVE, SCR_COL_CDKIND, SCR_COL_CDMS
 
   ' PC_MOUSE fills seven consecutive longs, in this order (p2kbSpin2DbgPcMouse):
   '  MOUSE_XPOS  - pointer x in window pixels (DOTSIZE 1), < 0 outside the window
@@ -834,7 +913,7 @@ tokWhy          BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, 
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
                 BYTE    "MOTOR_RETIRED", 0, "OPERATOR_SKIP", 0, "OPERATOR_TIMEOUT", 0, "NO_PASSTHROUGH", 0
                 BYTE    "UNSWEPT_CLOCK", 0, "LADDER_STOPPED", 0, "SYNC_PRECOND", 0, "NO_EXTERNAL_V", 0
-                BYTE    "NO_EXTERNAL_I", 0, "NO_TEMP_SENSOR", 0, "PART_NOT_BUILT", 0
+                BYTE    "NO_EXTERNAL_I", 0, "NO_TEMP_SENSOR", 0, "PART_NOT_BUILT", 0, "OPERATOR_STOP", 0
 tokInstEv       BYTE    "START", 0, "STOP", 0, "NOSTART", 0, "NOACK", 0
 tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED", 0
 tokRes          BYTE    "OK", 0, "FAULT", 0, "STEADY_TIMEOUT", 0, "WINDOW_TIMEOUT", 0, "NO_COG", 0
@@ -857,6 +936,7 @@ tokUiKind       BYTE    "CONTROL", 0, "PREVIEW", 0
 tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0
 ' operator panel buttons, in BM_BTN_* order
 tokButton       BYTE    "START", 0, "SKIP", 0, "STOP", 0, "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0
+                BYTE    "LOOKSOK", 0, "WRONG", 0
 tokOpEv         BYTE    "SHOWN", 0, "START", 0, "SKIP", 0, "TIMEOUT", 0, "ANSWER", 0, "DONE", 0, "STOP", 0
 tokSegEv        BYTE    "BEGIN", 0, "END", 0, "SKIP", 0
 tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG", 0
@@ -873,8 +953,8 @@ tokCp           BYTE    "INIT", 0, "INST_ACK", 0, "READY", 0, "ZERO", 0, "ATSPEE
                 BYTE    "PANEL", 0
 ' BM-PLAN finds, per segment (finding ids joined by "_"), indexed by SEG_*
 tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-3_C-6", 0, "S-3", 0
-                BYTE    "C-5_Z_S-1", 0, "C-3", 0, "M_AF_S-5_Z", 0, "FIELD_Q", 0, "S-9a", 0, "S-9a", 0
-                BYTE    "AC", 0, "UI", 0
+                BYTE    "C-5_Z_S-1", 0, "C-3", 0, "M_AF_S-5_Z", 0, "FIELD_Q", 0, "S-9a", 0, "AC", 0
+                BYTE    "UI", 0
 
 DAT { fixed tokens }
 
@@ -1253,11 +1333,19 @@ VAR { operator panel and attended-segment staging -- cog 0 only }
     LONG    uiPressX                                        ' x of the last left-button press, as PC_MOUSE reported it
     LONG    uiPressY                                        ' y of the last left-button press, as PC_MOUSE reported it
     LONG    bUiPressSeen                                    ' a press was seen since uiPressReset()
-    LONG    pnlPrompt                                       ' BM_PROMPT_* on screen
+    LONG    bPanelUp                                        ' panelSetup() ran: the panel is drawn, polled and beating
+    LONG    pnlScreen                                       ' BM_SCR_* on screen; its prompt cell has the same index
     LONG    pnlState                                        ' BM_STATE_* on screen
-    LONG    pnlLive                                         ' PNL_LIVE_* mask of the live buttons
+    LONG    pnlDrawn                                        ' mask of the buttons drawn (a preview draws a screen's own buttons dead)
+    LONG    pnlLive                                         ' mask of the buttons that may be chosen
     LONG    pnlPressed                                      ' BM_BTN_* drawn highlighted, PNL_BTN_NONE when none
+    LONG    pnlStrip                                        ' BM_STRIP_* row drawn in the verdict strip
     LONG    pnlSeconds                                      ' countdown on screen, PNL_NO_COUNTDOWN when blank
+    LONG    bPnlCountdownLive                               ' the countdown runs (FALSE on a preview, which shows its start)
+    LONG    pnlHeart                                        ' heartbeat cell on screen, 0 or 1
+    LONG    pnlBeatMs                                       ' getms() of the last heartbeat change
+    LONG    pnlInputMs                                      ' getms() of the last STOP poll during motion
+    LONG    operPromptCode                                  ' PROMPT_* of the sequence on screen, for a BM-OPER STOP note
     LONG    operShownMs                                     ' getms() when the prompt now on screen was shown
     LONG    operQueue[OPER_QUEUE_MAX * OQ_LONGS]            ' BM-OPER records noted and not yet emitted
     LONG    operQueueCount
@@ -1376,8 +1464,10 @@ PRI initRunState() | slotIdx
     uiPressReset()
     outCount := 0
     operQueueCount := 0
+    bPanelUp := FALSE
     pnlPressed := PNL_BTN_NONE
     pnlSeconds := PNL_NO_COUNTDOWN
+    operPromptCode := PROMPT_BRAKE_L
     bOutMarked := FALSE
     bFlDrove := FALSE
     bQuietMasks := (user.MOTOR_DBG_MASK == QUIET_DBG_MASK) and (user.STEER_DBG_MASK == QUIET_DBG_MASK)
@@ -1661,16 +1751,18 @@ PRI segOutside() | whyCode
 ' OUTSIDE (attended load 6, T1-9): M, AF, S-5, Z. The panel asks for START and nothing moves before it
 ' (sec 8.3); a START timeout ends the segment with no motion. outsideRun() then drives both wheels at
 ' STEER_POWER_HALF, asks for the LEFT hand-brake and polls the public API through the fault and both Z
-' steps.
+' steps. The end screen shows the outcome and waits for START, so the operator reads it before the session
+' ends.
 '
 ' @local whyCode - why the segment ended short, WHY_NONE when it ran through
 
     segBegin(SEG_OUTSIDE)
     panelSetup()
-    whyCode := operStartPrompt(PROMPT_BRAKE_L, BM_PROMPT_BRAKE_START)
+    whyCode := operStartPrompt(PROMPT_BRAKE_L, BM_SCR_BRAKE_START, BM_SCR_BRAKE_SPINUP)
     if whyCode == WHY_NONE
         whyCode := outsideRun()
     operFlush()
+    panelFinish(BM_SCR_END, outcomeState(whyCode))
     segEnd((whyCode <> WHY_NONE) ? whyCode : segWhy())
 
 PRI segBaseline() | side, signMul
@@ -1724,19 +1816,21 @@ PRI segFloor() | whyCode
 
     segBegin(SEG_FLOOR)
     panelSetup()
-    whyCode := operStartPrompt(PROMPT_FLOOR, BM_PROMPT_FLOOR_START)
+    whyCode := operStartPrompt(PROMPT_FLOOR, BM_SCR_FLOOR_START, BM_SCR_FLOOR_STARTING)
     if whyCode == WHY_NONE
         whyCode := floorRun()
     operFlush()
+    panelFinish(BM_SCR_END, outcomeState(whyCode))
     segEnd((whyCode <> WHY_NONE) ? whyCode : segWhy())
 
 PRI segUiCheck() | stepIdx
 ' UICHECK (tier dual-ui; STEPHEN 2026-09-15: "a no-motor-control test form of run that takes me thru the
 ' series of UI controls to make sure they work"): no wheel or steering object is ever started. Every panel
-' button, one live at a time, must arrive both as its key and as a mouse click; then every attended screen
-' is drawn as the attended parts draw it, START when it reads right and SKIP when it does not.
-' Each step is a BM-UISTEP; R14-DUAL-UICHECK-U is TRUE only when every step was OK. The result screen
-' waits for START so the operator reads it before the session ends.
+' button, one live at a time, must arrive both as its key and as a mouse click; then every screen dual-brake
+' draws (BM_SCR_PREVIEW_FIRST..LAST) is drawn from the same bmScreens row the run uses, its own buttons drawn
+' but dead, and judged with the two verdict buttons in their own strip (PL-64: no input both operates a
+' screen and judges it). Each step is a BM-UISTEP; R14-DUAL-UICHECK-U is TRUE only when every step was OK.
+' The result screen waits for START so the operator reads it before the session ends.
 '
 ' @local stepIdx - button or screen index
 
@@ -1746,12 +1840,11 @@ PRI segUiCheck() | stepIdx
     bSfUiOk := TRUE
     repeat stepIdx from 0 to BM_BTN_COUNT - 1
         uiCheckButton(stepIdx)
-    panelShow(BM_PROMPT_UI_PREVIEW, BM_STATE_UI_CHECK, PNL_LIVE_START, PNL_BTN_NONE)
-    operWait(PNL_LIVE_START, UI_STEP_TIMEOUT_MS, SIDE_NONE, FALSE)
-    repeat stepIdx from 0 to UI_PREVIEWS - 1
+    panelShow(BM_SCR_UI_INTRO, BM_STATE_UI_CHECK, PNL_BTN_NONE)
+    operWait(scrCdMs(BM_SCR_UI_INTRO), SIDE_NONE, FALSE)
+    repeat stepIdx from BM_SCR_PREVIEW_FIRST to BM_SCR_PREVIEW_LAST
         uiCheckScreen(stepIdx)
-    panelShow(BM_PROMPT_UI_END, bSfUiOk ? BM_STATE_UI_PASSED : BM_STATE_UI_FAILED, PNL_LIVE_START, PNL_BTN_NONE)
-    operWait(PNL_LIVE_START, UI_STEP_TIMEOUT_MS, SIDE_NONE, FALSE)
+    panelFinish(BM_SCR_UI_END, bSfUiOk ? BM_STATE_UI_PASSED : BM_STATE_UI_FAILED)
     segEnd(segWhy())
 
 PRI uiCheckButton(btnIdx) | startMs, remainMs, buttonIdx, inputCode, bKeyGot, bClickGot, resultCode
@@ -1773,13 +1866,13 @@ PRI uiCheckButton(btnIdx) | startMs, remainMs, buttonIdx, inputCode, bKeyGot, bC
     uiPressReset()
     bKeyGot := FALSE
     bClickGot := FALSE
-    panelShow(BM_PROMPT_UI_CONTROL, BM_STATE_UI_CHECK, DECOD btnIdx, PNL_BTN_NONE)
+    panelCompose(BM_SCR_UI_CONTROL, BM_STATE_UI_CHECK, DECOD btnIdx, DECOD btnIdx, PNL_BTN_NONE, BM_STRIP_BLANK, FALSE)
     startMs := getms()
     repeat
         remainMs := UI_STEP_TIMEOUT_MS - (getms() - startMs)
         if remainMs <= 0
             quit
-        buttonIdx, inputCode, _ := operWait(DECOD btnIdx, remainMs, SIDE_NONE, FALSE)
+        buttonIdx, inputCode, _ := operWait(remainMs, SIDE_NONE, FALSE)
         if buttonIdx == PNL_BTN_NONE
             quit
         if inputCode == INPUT_KEY
@@ -1788,14 +1881,14 @@ PRI uiCheckButton(btnIdx) | startMs, remainMs, buttonIdx, inputCode, bKeyGot, bC
             bClickGot := TRUE
         if bKeyGot and bClickGot
             quit
-        panelShow(BM_PROMPT_UI_CONTROL, bKeyGot ? BM_STATE_UI_NOW_CLICK : BM_STATE_UI_NOW_KEY, DECOD btnIdx, PNL_BTN_NONE)
+        panelCompose(BM_SCR_UI_CONTROL, bKeyGot ? BM_STATE_UI_NOW_CLICK : BM_STATE_UI_NOW_KEY, DECOD btnIdx, DECOD btnIdx, PNL_BTN_NONE, BM_STRIP_BLANK, FALSE)
     resultCode := (bKeyGot and bClickGot) ? UIR_OK : UIR_TIMEOUT
     if resultCode == UIR_OK
-        panelShow(BM_PROMPT_UI_CONTROL, BM_STATE_UI_CHECK, PNL_LIVE_NONE, btnIdx)
+        panelCompose(BM_SCR_UI_CONTROL, BM_STATE_UI_CHECK, PNL_LIVE_NONE, PNL_LIVE_NONE, btnIdx, BM_STRIP_BLANK, FALSE)
         waitBeat(UI_HILITE_MS, CP_LOOP_OPER)
     else
         bSfUiOk := FALSE
-    emitUiStep(UIK_CONTROL, btnIdx, PNL_BTN_NONE, bKeyGot, bClickGot, BM_PROMPT_UI_CONTROL, resultCode, getms() - startMs)
+    emitUiStep(UIK_CONTROL, btnIdx, PNL_BTN_NONE, bKeyGot, bClickGot, BM_SCR_UI_CONTROL, resultCode, getms() - startMs)
 
 PRI uiPressReset()
 ' Forget the last left-button press, so a BM-UISTEP reports only presses made during its own step.
@@ -1804,37 +1897,35 @@ PRI uiPressReset()
     uiPressY := 0
     bUiPressSeen := FALSE
 
-PRI uiCheckScreen(screenIdx) | promptIdx, stateIdx, startMs, buttonIdx, inputCode, resultCode
-' One UICHECK screen: an attended screen's prompt and state word exactly as the attended parts draw them,
-' with START and SKIP live. START means it reads right; SKIP means something is wrong.
+PRI uiCheckScreen(scr) | startMs, buttonIdx, inputCode, resultCode
+' One UICHECK screen: an attended screen drawn from its own bmScreens row exactly as the run draws it --
+' prompt, state, countdown label and start, and its own buttons, drawn but dead -- with the judge
+' instruction and the two verdict buttons live in the strip below. LOOKS RIGHT means it reads right;
+' SOMETHING WRONG means it does not. No input the screen itself offers is accepted here.
 '
-' @param screenIdx - 0..UI_PREVIEWS-1, in the order the attended parts show their screens
+' @param scr - BM_SCR_* previewed
 '
-' @local promptIdx - BM_PROMPT_* drawn
-' @local stateIdx - BM_STATE_* drawn
 ' @local startMs - getms() when the screen was shown
-' @local buttonIdx - BM_BTN_START, BM_BTN_SKIP, or PNL_BTN_NONE on timeout
+' @local buttonIdx - BM_BTN_LOOKS_RIGHT, BM_BTN_WRONG, or PNL_BTN_NONE on timeout
 ' @local inputCode - INPUT_* of the button received
 ' @local resultCode - UIR_* of the step
 
-    promptIdx := lookupz(screenIdx: BM_PROMPT_BRAKE_START, BM_PROMPT_BRAKE_NOW, BM_PROMPT_BRAKE_RELEASE, BM_PROMPT_BRAKE_RUNNING, BM_PROMPT_FLOOR_START, BM_PROMPT_FLOOR_START, BM_PROMPT_FLOOR_ASK)
-    stateIdx := lookupz(screenIdx: BM_STATE_WAITING, BM_STATE_BRAKE_NOW, BM_STATE_RELEASE, BM_STATE_WHEELS_AGAIN, BM_STATE_WAITING, BM_STATE_OBSERVING, BM_STATE_ASK)
     uiPressReset()
-    panelShow(promptIdx, stateIdx, PNL_LIVE_START | PNL_LIVE_SKIP, PNL_BTN_NONE)
+    panelCompose(scr, scrState(scr), scrLive(scr), PNL_LIVE_VERDICT, PNL_BTN_NONE, BM_STRIP_JUDGE, TRUE)
     startMs := getms()
-    buttonIdx, inputCode, _ := operWait(PNL_LIVE_START | PNL_LIVE_SKIP, UI_STEP_TIMEOUT_MS, SIDE_NONE, FALSE)
-    if buttonIdx == BM_BTN_START
+    buttonIdx, inputCode, _ := operWait(UI_STEP_TIMEOUT_MS, SIDE_NONE, FALSE)
+    if buttonIdx == BM_BTN_LOOKS_RIGHT
         resultCode := UIR_OK
-    elseif buttonIdx == BM_BTN_SKIP
+    elseif buttonIdx == BM_BTN_WRONG
         resultCode := UIR_WRONG
         bSfUiOk := FALSE
     else
         resultCode := UIR_TIMEOUT
         bSfUiOk := FALSE
     if buttonIdx <> PNL_BTN_NONE
-        panelShow(promptIdx, stateIdx, PNL_LIVE_NONE, buttonIdx)
+        panelCompose(scr, scrState(scr), scrLive(scr), PNL_LIVE_NONE, buttonIdx, BM_STRIP_JUDGE, TRUE)
         waitBeat(UI_HILITE_MS, CP_LOOP_OPER)
-    emitUiStep(UIK_PREVIEW, PNL_BTN_NONE, buttonIdx, inputCode == INPUT_KEY, inputCode == INPUT_MOUSE, promptIdx, resultCode, getms() - startMs)
+    emitUiStep(UIK_PREVIEW, PNL_BTN_NONE, buttonIdx, inputCode == INPUT_KEY, inputCode == INPUT_MOUSE, scr, resultCode, getms() - startMs)
 
 PRI segPreflight() : bAllMoved | side, bMoved
 ' PREFLT (every motion load, design sec 4.4): prove each wheel turns before anything is measured. A
@@ -2645,7 +2736,7 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
             if steerDriveBoth(SEG_OVERSHT, tid, FLTAPI_POWER) == FALSE
                 whyCode := WHY_SYNC_PRECOND
             else
-                whyCode := safeWhy(steerPollPhase(markMs, markMs, FLTAPI_POLL_MS, FALSE, TRUE, FALSE))
+                whyCode := safeWhy(steerPollPhase(markMs, markMs, FLTAPI_POLL_MS, FALSE, TRUE))
             bCpFrozen := instFreeze(0)
             steerStopMotors()
             steerRestoreRamp()                              ' I11: before any check, on every path that set the ramp
@@ -2713,7 +2804,8 @@ PRI outsideRun() : whyCode | tid, sid, safeEvent, bReached, rowIdx
 ' arm on the steering source at FLOOR_DECIM; SYNC_PRECOND then driveAtPower(50, 50); both AT_SPEED (<=
 ' LADDER_STEADY_MS); settle SETTLE_MS; outsideBrake(); stopMotors(); both stopped; freeze; steering.stop().
 ' Then BM-OPER, BM-STRACE cause BRAKEHAND, BM-TS / BM-TRACE-END (drained only when the fault mark exists)
-' and the BM-OUT rows.
+' and the BM-OUT rows. STOP is live on every screen from the spin-up on (PL-64): the spin-up and settle
+' waits end on it (SAFE_OPER_STOP, why OPERATOR_STOP) and the wheels are stopped on the STOPPING screen.
 '
 ' @returns whyCode - WHY_NONE when the brake, the untouched window and both Z steps ran, else the cause
 '
@@ -2752,8 +2844,9 @@ PRI outsideRun() : whyCode | tid, sid, safeEvent, bReached, rowIdx
             else
                 outsideBrake(tid)
             if bSteerUp
+                panelShow(BM_SCR_STOPPING, BM_STATE_STOPPING, PNL_BTN_NONE)
                 steerStopMotors()
-                steerPollPhase(0, getms(), STOP_TIMEOUT_MS, TRUE, FALSE, FALSE)
+                steerPollPhase(0, getms(), STOP_TIMEOUT_MS, TRUE, FALSE)
     bCpFrozen := instFreeze(0)
     if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
         cpWhy := WHY_INST_NOACK
@@ -2774,22 +2867,23 @@ PRI outsideRun() : whyCode | tid, sid, safeEvent, bReached, rowIdx
     whyCode := cpWhy
 
 PRI outsideBrake(tid) | buttonIdx, inputCode, safeEvent, markMs
-' Ask for the LEFT hand-brake and wait for the instrument to see a fault (<= BRAKE_WAIT_MS, SKIP live, the
-' absolute-current abort live). Folds R14-DUAL-BRAKEFLT-H: it ran when a fault or the absolute-current
-' abort ended the wait, and the fault was seen when the LEFT fault flag is set. On a fault: mark, panel
-' RELEASE, then outsideZSteps(). An absolute-current abort also shows RELEASE, since the operator is still
-' holding the wheel. Fills cpWhy and cpEnd.
+' Ask for the LEFT hand-brake and wait for the instrument to see a fault (<= BRAKE_WAIT_MS, SKIP and STOP
+' live, the absolute-current abort live). Folds R14-DUAL-BRAKEFLT-H: it ran when a fault or the
+' absolute-current abort ended the wait, and the fault was seen when the LEFT fault flag is set. On a fault:
+' mark, panel RELEASE, then outsideZSteps(). SKIP ends the step; STOP ends it too and says the operator
+' stopped the wheels. An absolute-current abort shows STOPPING, since the operator is still holding the
+' wheel and the harness has already stopped it. Fills cpWhy and cpEnd.
 '
 ' @param tid - trace id
 '
-' @local buttonIdx - BM_BTN_SKIP when the operator skipped, else PNL_BTN_NONE
-' @local inputCode - INPUT_* of the skip
+' @local buttonIdx - BM_BTN_SKIP or BM_BTN_STOP when the operator chose one, else PNL_BTN_NONE
+' @local inputCode - INPUT_* of that choice
 ' @local safeEvent - SAFE_* that ended the wait
 ' @local markMs - getms() at the fault mark
 
-    panelShow(BM_PROMPT_BRAKE_NOW, BM_STATE_BRAKE_NOW, PNL_LIVE_SKIP, PNL_BTN_NONE)
+    panelShow(BM_SCR_BRAKE_NOW, BM_STATE_BRAKE_NOW, PNL_BTN_NONE)
     operShown(PROMPT_BRAKE_L)
-    buttonIdx, inputCode, safeEvent := operWait(PNL_LIVE_SKIP, BRAKE_WAIT_MS, SIDE_BOTH, TRUE)
+    buttonIdx, inputCode, safeEvent := operWait(BRAKE_WAIT_MS, SIDE_BOTH, TRUE)
     if (safeEvent == SAFE_FAULT) or (safeEvent == SAFE_ABS_ABORT)
         bSfBrakeRan := TRUE
         bSfBrakeSeen := (instLastFault[SLOT_LEFT] <> FALSE)
@@ -2797,18 +2891,21 @@ PRI outsideBrake(tid) | buttonIdx, inputCode, safeEvent, markMs
         instMark()
         markMs := getms()
         bOutMarked := TRUE
-        panelShow(BM_PROMPT_BRAKE_RELEASE, BM_STATE_RELEASE, PNL_LIVE_NONE, PNL_BTN_NONE)
+        panelShow(BM_SCR_BRAKE_RELEASE, BM_STATE_RELEASE, PNL_BTN_NONE)
         operShown(PROMPT_BRAKE_L)
         cpWhy := outsideZSteps(tid, markMs)
         cpEnd := (cpWhy == WHY_NONE) ? TEND_FROZEN : TEND_ABORT
     elseif buttonIdx == BM_BTN_SKIP
-        pnlPressed := BM_BTN_SKIP
         operNote(PROMPT_BRAKE_L, OPEV_SKIP, ANS_NONE, inputCode, getms() - operShownMs, WHY_OPERATOR_SKIP)
         cpWhy := WHY_OPERATOR_SKIP
         cpEnd := TEND_ABORT
+    elseif buttonIdx == BM_BTN_STOP
+        operNote(PROMPT_BRAKE_L, OPEV_STOP, ANS_NONE, inputCode, getms() - operShownMs, WHY_OPERATOR_STOP)
+        cpWhy := WHY_OPERATOR_STOP
+        cpEnd := TEND_ABORT
     elseif safeEvent <> SAFE_NONE
         if safeEvent == SAFE_ABS_ABORT
-            panelShow(BM_PROMPT_BRAKE_RELEASE, BM_STATE_RELEASE, PNL_LIVE_NONE, PNL_BTN_NONE)
+            panelShow(BM_SCR_STOPPING, BM_STATE_STOPPING, PNL_BTN_NONE)
             operShown(PROMPT_BRAKE_L)
         cpWhy := safeWhy(safeEvent)
         cpEnd := safeEnd(safeEvent)
@@ -2823,70 +2920,77 @@ PRI outsideZSteps(tid, markMs) : whyCode | phaseStartMs
 ' step 2, stopMotors(), both STOPPED (<= STOP_TIMEOUT_MS), driveAtPower(50, 50), Z_STEP_MS. The public API
 ' is polled into outBuf every OUT_POLL_MS throughout, and every drive call is preceded by the SYNC_PRECOND
 ' check (steerDriveBoth()). The operator is told before the harness drives the wheels again: the RELEASE
-' screen counts the untouched window down, and the HANDS CLEAR screen is drawn before the first re-command.
+' screen counts the untouched window down under its own label, and the HANDS CLEAR screen is drawn before the
+' first re-command. STOP stays live throughout; a STOP ends the sequence before the next drive command, even
+' one chosen during a stop wait.
 '
 ' @param tid - trace id
 ' @param markMs - getms() at the fault mark: the t_ms origin
-' @returns whyCode - WHY_NONE when every step ran, else WHY_SYNC_PRECOND, WHY_ABORTED or WHY_INST_STALLED
+' @returns whyCode - WHY_NONE when every step ran, else WHY_SYNC_PRECOND, WHY_ABORTED, WHY_INST_STALLED or
+'   WHY_OPERATOR_STOP
 '
 ' @local phaseStartMs - getms() at a step's command
 
-    whyCode := safeWhy(steerPollPhase(markMs, markMs, S5_UNTOUCHED_MS, FALSE, TRUE, TRUE))
+    whyCode := safeWhy(steerPollPhase(markMs, markMs, S5_UNTOUCHED_MS, FALSE, TRUE))
     if whyCode == WHY_NONE
-        panelShow(BM_PROMPT_BRAKE_RUNNING, BM_STATE_WHEELS_AGAIN, PNL_LIVE_NONE, PNL_BTN_NONE)
+        panelShow(BM_SCR_BRAKE_ZSTEPS, BM_STATE_WHEELS_AGAIN, PNL_BTN_NONE)
         phaseStartMs := getms()
         if steerDriveBoth(SEG_OUTSIDE, tid, STEER_POWER_HALF)
-            whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE, FALSE))
+            whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE))
         else
             whyCode := WHY_SYNC_PRECOND
     if whyCode == WHY_NONE
         steerStopMotors()
-        whyCode := safeWhy(steerPollPhase(markMs, getms(), STOP_TIMEOUT_MS, TRUE, TRUE, FALSE))
+        whyCode := safeWhy(steerPollPhase(markMs, getms(), STOP_TIMEOUT_MS, TRUE, TRUE))
     if whyCode == WHY_NONE
         phaseStartMs := getms()
         if steerDriveBoth(SEG_OUTSIDE, tid, STEER_POWER_HALF)
-            whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE, FALSE))
+            whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE))
         else
             whyCode := WHY_SYNC_PRECOND
 
-PRI steerPollPhase(markMs, phaseStartMs, durationMs, bUntilStopped, bPoll, bCountdown) : safeEvent | safeNow, secondsLeft
+PRI steerPollPhase(markMs, phaseStartMs, durationMs, bUntilStopped, bPoll) : safeEvent | safeNow, bStopAsked
 ' One beat-polled steering step: every SAMPLE_MS a safety read of the instrument mirror (sec 2.8) that
 ' acts on the absolute-current abort and a stalled instrument, but not on a fault flag (a braked or
 ' faulted wheel's flag is what the step observes); when asked, one public-API row every OUT_POLL_MS since
-' the mark, and the step's whole seconds left on the panel countdown. Ends durationMs after phaseStartMs,
-' or once both wheels read DCS_STOPPED when asked.
+' the mark. With the panel up, the screen's countdown and heartbeat run and a STOP is taken (PL-64). Ends
+' durationMs after phaseStartMs, on a STOP, or once both wheels read DCS_STOPPED when asked. A stop wait
+' does not end on a STOP -- the wheels are already stopping -- but reports it when it ends.
 '
 ' @param markMs - getms() at the fault mark: the t_ms origin (read only when bPoll is TRUE)
 ' @param phaseStartMs - getms() the step's duration is measured from
 ' @param durationMs - the step's bound
 ' @param bUntilStopped - TRUE to end early once both wheels read DCS_STOPPED
 ' @param bPoll - TRUE to poll the public API into outBuf
-' @param bCountdown - TRUE to show the seconds left in this step on the panel
-' @returns safeEvent - SAFE_ABS_ABORT or SAFE_INST_STALL when one ended the step, else SAFE_NONE
+' @returns safeEvent - SAFE_ABS_ABORT, SAFE_INST_STALL or SAFE_OPER_STOP when one ended or came during the
+'   step, else SAFE_NONE
 '
 ' @local safeNow - this pass's safety read
-' @local secondsLeft - whole seconds left in this step, rounded up
+' @local bStopAsked - the operator chose STOP during the step
 
     safetyReset()
     safeEvent := SAFE_NONE
+    bStopAsked := FALSE
     repeat
         beat(CP_LOOP_POLL)
         if bPoll and (outCount < OUT_POLLS) and ((getms() - markMs) >= (outCount * OUT_POLL_MS))
             outPoll(getms() - markMs)
-        if bCountdown
-            secondsLeft := (((durationMs - (getms() - phaseStartMs)) + (MS_PER_SEC - 1)) / MS_PER_SEC) #> 0
-            if secondsLeft <> pnlSeconds
-                pnlSeconds := secondsLeft
-                panelRender()
+        panelTick(phaseStartMs, durationMs)
         waitms(SAMPLE_MS)
         safeNow := safetyPoll(SIDE_BOTH)
         if (safeNow == SAFE_ABS_ABORT) or (safeNow == SAFE_INST_STALL)
             safeEvent := safeNow
             quit
+        if panelStopPressed()
+            bStopAsked := TRUE
+            if bUntilStopped == FALSE
+                quit
         if bUntilStopped and mirrorAllInState(SIDE_BOTH, DCS_STOPPED)
             quit
         if (getms() - phaseStartMs) >= durationMs
             quit
+    if bStopAsked and (safeEvent == SAFE_NONE)
+        safeEvent := SAFE_OPER_STOP
 
 PRI outPoll(tMs) | rowBase
 ' One BM-OUT row: the public API as a user sees it -- getStatus(), testGetDriverState(),
@@ -2965,16 +3069,16 @@ PRI floorRun() : whyCode | tid, sid, buttonIdx, inputCode, safeEvent, driveStart
             beat(CP_LIB_STEER_QUERY)
             flLeftPwr, flRightPwr := steering.getPower()
             beat(CP_LIB_STEER_QUERY)
-            panelShow(BM_PROMPT_FLOOR_START, BM_STATE_OBSERVING, PNL_LIVE_STOP, PNL_BTN_NONE)
-            buttonIdx, inputCode, safeEvent := operWait(PNL_LIVE_STOP, FLOOR_RUN_MS, SIDE_BOTH, TRUE)
+            panelShow(BM_SCR_FLOOR_DRIVE, BM_STATE_OBSERVING, PNL_BTN_NONE)
+            buttonIdx, inputCode, safeEvent := operWait(FLOOR_RUN_MS, SIDE_BOTH, TRUE)
             endTotal := instTotal                           ' an index, never a time (sec 12.7): the instrument's own count
             flRunMs := getms() - driveStartMs
             if bSteerUp
+                panelShow(BM_SCR_STOPPING, BM_STATE_STOPPING, PNL_BTN_NONE)
                 steerStopMotors()
             cpEnd := TEND_FROZEN
             if buttonIdx == BM_BTN_STOP
                 flStopBy := STOPBY_OPERATOR
-                pnlPressed := BM_BTN_STOP
                 operNote(PROMPT_FLOOR, OPEV_STOP, ANS_NONE, inputCode, flRunMs, WHY_NONE)
             elseif safeEvent <> SAFE_NONE
                 cpWhy := safeWhy(safeEvent)
@@ -2982,7 +3086,7 @@ PRI floorRun() : whyCode | tid, sid, buttonIdx, inputCode, safeEvent, driveStart
             else
                 flStopBy := STOPBY_TIMER
             if bSteerUp
-                steerPollPhase(0, getms(), STOP_TIMEOUT_MS, TRUE, FALSE, FALSE)
+                steerPollPhase(0, getms(), STOP_TIMEOUT_MS, TRUE, FALSE)
     bCpFrozen := instFreeze(0)
     if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
         cpWhy := WHY_INST_NOACK
@@ -3013,13 +3117,12 @@ PRI floorAsk() | buttonIdx, inputCode
 ' @local inputCode - INPUT_* of the answer
 
     operFlush()                                             ' the instrument no longer stores: the run's notes go out now
-    panelShow(BM_PROMPT_FLOOR_ASK, BM_STATE_ASK, PNL_LIVE_ANSWERS, PNL_BTN_NONE)
+    panelShow(BM_SCR_FLOOR_ASK, BM_STATE_ASK, PNL_BTN_NONE)
     operShown(PROMPT_FLOOR)
-    buttonIdx, inputCode, _ := operWait(PNL_LIVE_ANSWERS, OPER_ANSWER_TIMEOUT_MS, SIDE_BOTH, FALSE)
+    buttonIdx, inputCode, _ := operWait(OPER_ANSWER_TIMEOUT_MS, SIDE_BOTH, FALSE)
     if buttonIdx <> PNL_BTN_NONE
         flAnswer := buttonAnswer(buttonIdx)
         flInput := inputCode
-        pnlPressed := buttonIdx
         bSfFloorRan := TRUE
         bSfFloorAnswered := TRUE
         operNote(PROMPT_FLOOR, OPEV_ANSWER, flAnswer, inputCode, getms() - operShownMs, WHY_NONE)
@@ -3089,38 +3192,41 @@ PRI buttonAnswer(buttonIdx) : answerCode
         other:
             answerCode := ANS_NONE
 
-PRI operStartPrompt(promptCode, promptIdx) : whyCode | buttonIdx, inputCode
-' Draw an attended segment's first prompt with START live and wait for START (<= OPER_START_TIMEOUT_MS)
-' before anything moves (sec 8.3: no motion before START). No motor runs, so no safety read is owed.
+PRI operStartPrompt(promptCode, scrStart, scrNext) : whyCode | buttonIdx, inputCode
+' Draw an attended segment's first screen and wait for START (<= its countdown start) before anything moves
+' (sec 8.3: no motion before START). No motor runs, so no safety read is owed. On START the next screen is
+' drawn at once -- the spin-up screen, with STOP live -- so no instruction to click START stays on screen
+' while wheels move (PL-64).
 '
 ' @param promptCode - PROMPT_* value
-' @param promptIdx - BM_PROMPT_* cell to draw
+' @param scrStart - BM_SCR_* asking for START
+' @param scrNext - BM_SCR_* drawn once START is chosen
 ' @returns whyCode - WHY_NONE on START, WHY_OPERATOR_TIMEOUT otherwise
 '
 ' @local buttonIdx - BM_BTN_START, or PNL_BTN_NONE on timeout
 ' @local inputCode - INPUT_* of the START
 
-    panelShow(promptIdx, BM_STATE_WAITING, PNL_LIVE_START, PNL_BTN_NONE)
+    panelShow(scrStart, scrState(scrStart), PNL_BTN_NONE)
     operShown(promptCode)
-    buttonIdx, inputCode, _ := operWait(PNL_LIVE_START, OPER_START_TIMEOUT_MS, SIDE_NONE, FALSE)
+    buttonIdx, inputCode, _ := operWait(scrCdMs(scrStart), SIDE_NONE, FALSE)
     if buttonIdx == BM_BTN_START
-        panelShow(promptIdx, BM_STATE_STARTING, PNL_LIVE_NONE, BM_BTN_START)
+        panelShow(scrNext, scrState(scrNext), PNL_BTN_NONE)
         operNote(promptCode, OPEV_START, ANS_NONE, inputCode, getms() - operShownMs, WHY_NONE)
         whyCode := WHY_NONE
     else
-        panelShow(promptIdx, BM_STATE_TIMED_OUT, PNL_LIVE_NONE, PNL_BTN_NONE)
         operNote(promptCode, OPEV_TIMEOUT, ANS_NONE, INPUT_NONE, getms() - operShownMs, WHY_OPERATOR_TIMEOUT)
         whyCode := WHY_OPERATOR_TIMEOUT
     operFlush()
 
-PRI operWait(liveMask, timeoutMs, watchSide, bEndOnSafety) : buttonIdx, inputCode, safeEvent | startMs, lastInputMs, elapsedMs, secondsLeft, safeNow
+PRI operWait(timeoutMs, watchSide, bEndOnSafety) : buttonIdx, inputCode, safeEvent | startMs, lastInputMs, elapsedMs, safeNow
 ' The operator wait every attended step shares: a beat-polled loop that polls the panel input every
-' OPER_POLL_MS (under PC_KEY's ~100 ms latch), redraws only when the countdown second changes (the dirty
-' rule, DISPLAY-PATTERNS-builders-guide.md sec 7), and ends on a live button, the timeout or, when asked,
-' a safety event. With a watched side the loop runs every SAMPLE_MS and reads only the instrument mirror
-' (sec 2.8), so the absolute-current abort stays live whether or not the wait ends on it.
+' OPER_POLL_MS (under PC_KEY's ~100 ms latch), keeps the screen's countdown and heartbeat running (redrawn
+' only when one changes, the dirty rule, DISPLAY-PATTERNS-builders-guide.md sec 7), and ends on a live
+' button, the timeout or, when asked, a safety event. The buttons it accepts are exactly the ones the screen
+' on display has live (pnlLive), so a wait cannot take an input the screen does not offer. With a watched
+' side the loop runs every SAMPLE_MS and reads only the instrument mirror (sec 2.8), so the
+' absolute-current abort stays live whether or not the wait ends on it.
 '
-' @param liveMask - PNL_LIVE_* mask of the buttons that may be chosen
 ' @param timeoutMs - the wait's bound
 ' @param watchSide - SIDE_BOTH to read the safety mirror, SIDE_NONE when no motor can run
 ' @param bEndOnSafety - TRUE to end the wait on any safety event, a fault flag included
@@ -3131,14 +3237,11 @@ PRI operWait(liveMask, timeoutMs, watchSide, bEndOnSafety) : buttonIdx, inputCod
 ' @local startMs - getms() when the wait began
 ' @local lastInputMs - getms() of the last input poll
 ' @local elapsedMs - ms since the wait began
-' @local secondsLeft - whole seconds left, rounded up
 ' @local safeNow - this pass's safety read
 
     buttonIdx := PNL_BTN_NONE
     inputCode := INPUT_NONE
     safeEvent := SAFE_NONE
-    bPanelKeyArmed := FALSE                                 ' a key or click still latched from the last step is never taken
-    bPanelMouseArmed := FALSE
     if watchSide <> SIDE_NONE
         safetyReset()
     startMs := getms()
@@ -3146,10 +3249,7 @@ PRI operWait(liveMask, timeoutMs, watchSide, bEndOnSafety) : buttonIdx, inputCod
     repeat
         beat(CP_LOOP_OPER)
         elapsedMs := getms() - startMs
-        secondsLeft := (((timeoutMs - elapsedMs) + (MS_PER_SEC - 1)) / MS_PER_SEC) #> 0
-        if secondsLeft <> pnlSeconds
-            pnlSeconds := secondsLeft
-            panelRender()
+        panelTick(startMs, timeoutMs)
         if watchSide <> SIDE_NONE
             safeNow := safetyPoll(watchSide)
             if bEndOnSafety and (safeNow <> SAFE_NONE)
@@ -3157,8 +3257,10 @@ PRI operWait(liveMask, timeoutMs, watchSide, bEndOnSafety) : buttonIdx, inputCod
                 quit
         if (getms() - lastInputMs) >= OPER_POLL_MS
             lastInputMs := getms()
-            buttonIdx, inputCode := panelReadInput(liveMask)
+            buttonIdx, inputCode := panelReadInput(pnlLive)
             if buttonIdx <> PNL_BTN_NONE
+                pnlPressed := buttonIdx
+                panelRender()
                 quit
         if elapsedMs >= timeoutMs
             quit
@@ -3173,6 +3275,7 @@ PRI operShown(promptCode)
 ' @param promptCode - PROMPT_* value
 
     operShownMs := getms()
+    operPromptCode := promptCode
     operNote(promptCode, OPEV_SHOWN, ANS_NONE, INPUT_NONE, 0, WHY_NONE)
 
 PRI operNote(promptCode, eventCode, answerCode, inputCode, waitedMs, whyCode) | rowBase
@@ -3212,29 +3315,127 @@ PRI operFlush() | rowIdx, rowBase
             emitOper(operQueue[rowBase + OQ_PROMPT], operQueue[rowBase + OQ_EVENT], operQueue[rowBase + OQ_ANSWER], operQueue[rowBase + OQ_INPUT], operQueue[rowBase + OQ_WAIT], operQueue[rowBase + OQ_WHY])
     operQueueCount := 0
 
-PRI panelEnd(promptCode, answerCode, whyCode) | stateIdx
-' Draw an attended sequence's closing state and note BM-OPER DONE: DONE when it ran through, TIMED OUT
-' after an operator timeout, SKIPPED for a skip or any harness-side cause (named by why).
+PRI panelEnd(promptCode, answerCode, whyCode)
+' Note BM-OPER DONE for an attended sequence whose wheels are stopped and released, and draw the LOGGING
+' screen while its records are written: the heartbeat may pause there, and the screen says so. The outcome
+' is drawn later, by panelFinish() on the end screen.
 '
 ' @param promptCode - PROMPT_* value
 ' @param answerCode - ANS_* value
 ' @param whyCode - WHY_* naming why the sequence ended short, WHY_NONE when it ran through
-'
-' @local stateIdx - BM_STATE_* drawn
 
-    if whyCode == WHY_NONE
-        stateIdx := BM_STATE_DONE
-    elseif whyCode == WHY_OPERATOR_TIMEOUT
-        stateIdx := BM_STATE_TIMED_OUT
-    else
-        stateIdx := BM_STATE_SKIPPED
-    panelShow(pnlPrompt, stateIdx, PNL_LIVE_NONE, pnlPressed)
+    panelShow(BM_SCR_LOGGING, BM_STATE_LOGGING, PNL_BTN_NONE)
     operNote(promptCode, OPEV_DONE, answerCode, INPUT_NONE, getms() - operShownMs, whyCode)
 
+PRI panelFinish(scr, stateIdx)
+' Draw an end screen with its outcome and wait for START (<= its countdown start), so the operator reads the
+' result before the session ends (PL-64 audit B-3). Nothing moves: every wheel is stopped and released.
+'
+' @param scr - BM_SCR_END or BM_SCR_UI_END
+' @param stateIdx - BM_STATE_* outcome drawn
+
+    panelShow(scr, stateIdx, PNL_BTN_NONE)
+    operWait(scrCdMs(scr), SIDE_NONE, FALSE)
+
+PRI outcomeState(whyCode) : stateIdx
+' The end screen's outcome word for an attended sequence's why.
+'
+' @param whyCode - WHY_* naming why the sequence ended short, WHY_NONE when it ran through
+' @returns stateIdx - BM_STATE_DONE, TIMED_OUT, SKIPPED, STOPPED_BY_YOU, or ENDED_EARLY for any harness-side cause
+
+    case whyCode
+        WHY_NONE:
+            stateIdx := BM_STATE_DONE
+        WHY_OPERATOR_TIMEOUT:
+            stateIdx := BM_STATE_TIMED_OUT
+        WHY_OPERATOR_SKIP:
+            stateIdx := BM_STATE_SKIPPED
+        WHY_OPERATOR_STOP:
+            stateIdx := BM_STATE_STOPPED_BY_YOU
+        other:
+            stateIdx := BM_STATE_ENDED_EARLY
+
+PRI scrState(scr) : stateIdx
+' A screen's default state word, from its bmScreens row.
+'
+' @param scr - BM_SCR_* value
+' @returns stateIdx - BM_STATE_* value
+
+    stateIdx := long[@bmScreens][(scr * BM_SCR_LONGS) + SCR_COL_STATE]
+
+PRI scrLive(scr) : liveMask
+' A screen's buttons, drawn and live, from its bmScreens row.
+'
+' @param scr - BM_SCR_* value
+' @returns liveMask - mask with bit BM_BTN_* set per button
+
+    liveMask := long[@bmScreens][(scr * BM_SCR_LONGS) + SCR_COL_LIVE]
+
+PRI scrCdKind(scr) : cdKind
+' What a screen's countdown means, from its bmScreens row.
+'
+' @param scr - BM_SCR_* value
+' @returns cdKind - BM_CD_* value, BM_CD_NONE when the screen has no countdown
+
+    cdKind := long[@bmScreens][(scr * BM_SCR_LONGS) + SCR_COL_CDKIND]
+
+PRI scrCdMs(scr) : cdMs
+' A screen's countdown start, from its bmScreens row: the bound of the wait it is drawn for.
+'
+' @param scr - BM_SCR_* value
+' @returns cdMs - ms, 0 when the screen has no countdown
+
+    cdMs := long[@bmScreens][(scr * BM_SCR_LONGS) + SCR_COL_CDMS]
+
+PRI panelTick(phaseStartMs, durationMs) | secondsLeft, bDirty
+' Keep the panel alive during any wait: the countdown's whole seconds left in the wait (when the screen's
+' countdown runs), and the heartbeat dot every PNL_BEAT_MS. One redraw when either changed; nothing at all
+' when no panel is up, so the unattended parts pay nothing (PL-64 audit sec 6 items 4 and 6).
+'
+' @param phaseStartMs - getms() the wait began
+' @param durationMs - the wait's bound
+'
+' @local secondsLeft - whole seconds left, rounded up
+' @local bDirty - the frame changed
+
+    if bPanelUp
+        bDirty := FALSE
+        if bPnlCountdownLive
+            secondsLeft := (((durationMs - (getms() - phaseStartMs)) + (MS_PER_SEC - 1)) / MS_PER_SEC) #> 0
+            if secondsLeft <> pnlSeconds
+                pnlSeconds := secondsLeft
+                bDirty := TRUE
+        if (getms() - pnlBeatMs) >= PNL_BEAT_MS
+            pnlBeatMs := getms()
+            pnlHeart := (pnlHeart + 1) // PNL_HEART_CELLS
+            bDirty := TRUE
+        if bDirty
+            panelRender()
+
+PRI panelStopPressed() : bStop | buttonIdx, inputCode
+' During motion, take a STOP from the panel: polled every OPER_POLL_MS, only while the screen has STOP live
+' and only with a panel up. A STOP is drawn highlighted and noted as BM-OPER STOP; the caller stops the
+' wheels.
+'
+' @returns bStop - TRUE when the operator chose STOP on this poll
+'
+' @local buttonIdx - BM_BTN_STOP, or PNL_BTN_NONE
+' @local inputCode - INPUT_* of the STOP
+
+    bStop := FALSE
+    if bPanelUp and ((pnlLive & PNL_LIVE_STOP) <> 0) and ((getms() - pnlInputMs) >= OPER_POLL_MS)
+        pnlInputMs := getms()
+        buttonIdx, inputCode := panelReadInput(PNL_LIVE_STOP)
+        if buttonIdx == BM_BTN_STOP
+            bStop := TRUE
+            pnlPressed := BM_BTN_STOP
+            panelRender()
+            operNote(operPromptCode, OPEV_STOP, ANS_NONE, inputCode, getms() - operShownMs, WHY_OPERATOR_STOP)
+
 PRI panelSetup()
-' Create the bmpanel window and load its five layers, in src/test_bench_t0.spin2 t0hSetupPanel()'s form
+' Create the bmpanel window and load its eight layers, in src/test_bench_t0.spin2 t0hSetupPanel()'s form
 ' (crop-and-overlay, DISPLAY-PATTERNS-builders-guide.md sec 2 and 6): PLOT with HIDEXY UPDATE, one LAYER
-' per BMP, CROP 1, UPDATE. SIZE 480 260 and POS 60 80 are BM_PANEL_W / BM_PANEL_H / BM_PANEL_POS_X /
+' per BMP, CROP 1, UPDATE. SIZE 480 306 and POS 60 80 are BM_PANEL_W / BM_PANEL_H / BM_PANEL_POS_X /
 ' BM_PANEL_POS_Y, and the layer numbers are BM_LYR_*, written as text as t0hSetupPanel() writes its own.
 ' Display text arguments use single quotes. A panel that fails to draw costs a START timeout, never motion.
 '
@@ -3245,45 +3446,79 @@ PRI panelSetup()
 ' The interactive switches example and the analog meter in DISPLAY-PATTERNS-builders-guide.md declare the
 ' same directive and then work in y-down coordinates (DERIVED from their hit-tests and needle pivot).
 
-    pnlPrompt := BM_PROMPT_BRAKE_START
+    pnlScreen := BM_SCR_BRAKE_START
     pnlState := BM_STATE_WAITING
+    pnlDrawn := PNL_LIVE_NONE
     pnlLive := PNL_LIVE_NONE
     pnlPressed := PNL_BTN_NONE
+    pnlStrip := BM_STRIP_BLANK
     pnlSeconds := PNL_NO_COUNTDOWN
+    bPnlCountdownLive := FALSE
+    pnlHeart := 0
+    pnlBeatMs := getms()
+    pnlInputMs := getms()
     bPanelKeyArmed := FALSE
     bPanelMouseArmed := FALSE
     beat(CP_PANEL)
-    debug(`PLOT bmpanel TITLE 'Motion harness operator panel' SIZE 480 260 POS 60 80 HIDEXY UPDATE)
+    debug(`PLOT bmpanel TITLE 'Motion harness operator panel' SIZE 480 306 POS 60 80 HIDEXY UPDATE)
     debug(`bmpanel cartesian 1)
     debug(`bmpanel LAYER 1 'bm_bg.bmp')
     debug(`bmpanel LAYER 2 'bm_prompt.bmp')
     debug(`bmpanel LAYER 3 'bm_state.bmp')
     debug(`bmpanel LAYER 4 'bm_buttons.bmp')
     debug(`bmpanel LAYER 5 'bm_digits.bmp')
+    debug(`bmpanel LAYER 6 'bm_cdlabel.bmp')
+    debug(`bmpanel LAYER 7 'bm_strip.bmp')
+    debug(`bmpanel LAYER 8 'bm_heart.bmp')
     debug(`bmpanel crop 1)
     debug(`bmpanel update)
+    bPanelUp := TRUE
     beat(CP_PANEL)
 
-PRI panelShow(promptIdx, stateIdx, liveMask, pressedIdx)
-' Set the panel's prompt, state, live buttons and highlighted button, blank the countdown, and draw.
+PRI panelShow(scr, stateIdx, pressedIdx)
+' Draw an attended screen as its bmScreens row defines it: its prompt, the given state word, its buttons
+' drawn and live, its countdown label, a running countdown when it has one, and a blank strip. Every
+' attended screen is drawn through here, so a screen cannot offer a control its row does not name.
 '
-' @param promptIdx - BM_PROMPT_* cell
-' @param stateIdx - BM_STATE_* cell
-' @param liveMask - PNL_LIVE_* mask of the buttons that may be chosen
+' @param scr - BM_SCR_* value
+' @param stateIdx - BM_STATE_* cell (scrState(scr), or an outcome or progress word)
 ' @param pressedIdx - BM_BTN_* drawn highlighted, PNL_BTN_NONE when none
 
-    pnlPrompt := promptIdx
+    panelCompose(scr, stateIdx, scrLive(scr), scrLive(scr), pressedIdx, BM_STRIP_BLANK, FALSE)
+
+PRI panelCompose(scr, stateIdx, drawnMask, liveMask, pressedIdx, stripRow, bPreview)
+' Set every pnl* field of one frame and draw it. Any key or click still latched from the last screen is
+' dropped, so an input is only ever taken for the screen it was made on. A preview shows the countdown's
+' start and does not run it; any other screen with a countdown blanks it until its wait's first tick.
+'
+' @param scr - BM_SCR_* value: its prompt cell and countdown label
+' @param stateIdx - BM_STATE_* cell
+' @param drawnMask - mask of the buttons drawn
+' @param liveMask - mask of the buttons that may be chosen (drawn too)
+' @param pressedIdx - BM_BTN_* drawn highlighted, PNL_BTN_NONE when none
+' @param stripRow - BM_STRIP_* row
+' @param bPreview - TRUE when dual-ui previews scr: its countdown is shown static
+
+    pnlScreen := scr
     pnlState := stateIdx
+    pnlDrawn := drawnMask
     pnlLive := liveMask
     pnlPressed := pressedIdx
-    pnlSeconds := PNL_NO_COUNTDOWN
+    pnlStrip := stripRow
+    bPanelKeyArmed := FALSE
+    bPanelMouseArmed := FALSE
+    bPnlCountdownLive := (scrCdKind(scr) <> BM_CD_NONE) and (bPreview == FALSE)
+    if (scrCdKind(scr) <> BM_CD_NONE) and bPreview
+        pnlSeconds := scrCdMs(scr) / MS_PER_SEC
+    else
+        pnlSeconds := PNL_NO_COUNTDOWN
     panelRender()
 
 PRI panelRender() | btnIdx, slotX, slotY, cellCol, divisor, colIdx, digitCell
 ' Compose one frame from the pnl* state -- the prompt cell, the state cell, every button slot (normal when
-' live, highlighted when pressed, otherwise restored from the background), the countdown digits (blank
-' when there is none, leading zeros blank) -- then one UPDATE (DISPLAY-PATTERNS-builders-guide.md sec 2).
-' In src/test_bench_t0.spin2 t0hDrawPanel()'s form.
+' drawn or live, highlighted when pressed, otherwise restored from the background), the countdown label and
+' digits (blank when there is none, leading zeros blank), the verdict strip and the heartbeat -- then one
+' UPDATE (DISPLAY-PATTERNS-builders-guide.md sec 2). In src/test_bench_t0.spin2 t0hDrawPanel()'s form.
 '
 ' @local btnIdx - BM_BTN_* slot
 ' @local slotX - the slot's left edge
@@ -3294,11 +3529,14 @@ PRI panelRender() | btnIdx, slotX, slotY, cellCol, divisor, colIdx, digitCell
 ' @local digitCell - bm_digits.bmp cell: 0..9, or BM_DGT_BLANK
 
     beat(CP_PANEL)
-    debug(`bmpanel crop 2 `(0, pnlPrompt * BM_PROMPT_H, BM_PROMPT_W, BM_PROMPT_H, BM_PROMPT_X, BM_PROMPT_Y))
+    debug(`bmpanel crop 2 `(0, pnlScreen * BM_PROMPT_H, BM_PROMPT_W, BM_PROMPT_H, BM_PROMPT_X, BM_PROMPT_Y))
     debug(`bmpanel crop 3 `(0, pnlState * BM_STATE_H, BM_STATE_W, BM_STATE_H, BM_STATE_X, BM_STATE_Y))
+    debug(`bmpanel crop 6 `(0, scrCdKind(pnlScreen) * BM_CD_LBL_H, BM_CD_LBL_W, BM_CD_LBL_H, BM_CD_LBL_X, BM_CD_LBL_Y))
+    debug(`bmpanel crop 7 `(0, pnlStrip * BM_STRIP_H, BM_STRIP_W, BM_STRIP_H, BM_STRIP_X, BM_STRIP_Y))
+    debug(`bmpanel crop 8 `(pnlHeart * BM_HEART_W, 0, BM_HEART_W, BM_HEART_H, BM_HEART_X, BM_HEART_Y))
     repeat btnIdx from 0 to BM_BTN_COUNT - 1
         slotX, slotY := buttonSlot(btnIdx)
-        if (btnIdx == pnlPressed) or ((pnlLive & (DECOD btnIdx)) <> 0)
+        if (btnIdx == pnlPressed) or (((pnlDrawn | pnlLive) & (DECOD btnIdx)) <> 0)
             cellCol := (btnIdx == pnlPressed) ? BM_BTN_HILITE : BM_BTN_NORMAL
             debug(`bmpanel crop 4 `(cellCol * BM_BTN_W, btnIdx * BM_BTN_H, BM_BTN_W, BM_BTN_H, slotX, slotY))
         else
@@ -3315,14 +3553,18 @@ PRI panelRender() | btnIdx, slotX, slotY, cellCol, divisor, colIdx, digitCell
     beat(CP_PANEL)
 
 PRI buttonSlot(btnIdx) : slotX, slotY
-' Top-left of a button's slot: buttons 0..BM_BTN_ROW2_FIRST-1 on row 1, the rest on row 2, at a fixed
-' pitch (tools/gen_dual_assets.py slot() draws the frames at the same place).
+' Top-left of a button's slot: buttons 0..BM_BTN_ROW2_FIRST-1 on row 1, then row 2, and from
+' BM_BTN_STRIP_FIRST the verdict strip, at a fixed pitch (tools/gen_dual_assets.py slot() draws the frames at
+' the same place).
 '
 ' @param btnIdx - BM_BTN_* value
 ' @returns slotX - the slot's left edge
 ' @returns slotY - the slot's top edge
 
-    if btnIdx >= BM_BTN_ROW2_FIRST
+    if btnIdx >= BM_BTN_STRIP_FIRST
+        slotX := BM_STRIP_BTN_X0 + ((btnIdx - BM_BTN_STRIP_FIRST) * BM_BTN_PITCH)
+        slotY := BM_STRIP_Y
+    elseif btnIdx >= BM_BTN_ROW2_FIRST
         slotX := BM_BTN_COL0_X + ((btnIdx - BM_BTN_ROW2_FIRST) * BM_BTN_PITCH)
         slotY := BM_BTN_ROW2_Y
     else
@@ -3368,7 +3610,7 @@ PRI panelReadInput(liveMask) : buttonIdx, inputCode
 
 PRI keyButton(keyValue, liveMask) : buttonIdx
 ' The live button a key names (either letter case): S START, K SKIP, space STOP, L LEFT, R RIGHT,
-' T STRAIGHT, N DID NOT MOVE.
+' T STRAIGHT, N DID NOT MOVE, Y LOOKS RIGHT, W SOMETHING WRONG.
 '
 ' @param keyValue - PC_KEY's reading
 ' @param liveMask - PNL_LIVE_* mask of the buttons that may be chosen
@@ -3389,6 +3631,10 @@ PRI keyButton(keyValue, liveMask) : buttonIdx
             buttonIdx := BM_BTN_STRAIGHT
         "N", "n":
             buttonIdx := BM_BTN_NOMOVE
+        "Y", "y":
+            buttonIdx := BM_BTN_LOOKS_RIGHT
+        "W", "w":
+            buttonIdx := BM_BTN_WRONG
         other:
             buttonIdx := PNL_BTN_NONE
     if buttonIdx <> PNL_BTN_NONE
@@ -3911,7 +4157,9 @@ PRI abortStopMotor(side, slotIdx)
 
 PRI waitWatched(side, durationMs, cpId, untilKind) : safeEvent, bReached | startMs
 ' A beat-polled wait of at most durationMs that reads only the instrument mirror every SAMPLE_MS, and
-' ends early on a safety event or when every watched motor reaches the requested state.
+' ends early on a safety event or when every watched motor reaches the requested state. With the operator
+' panel up (the attended parts only) it also keeps the heartbeat running and ends on a STOP
+' (SAFE_OPER_STOP); in every unattended part both are no-ops.
 '
 ' @param side - SIDE_LEFT, SIDE_RIGHT or SIDE_BOTH
 ' @param durationMs - the wait's bound
@@ -3928,8 +4176,11 @@ PRI waitWatched(side, durationMs, cpId, untilKind) : safeEvent, bReached | start
     startMs := getms()
     repeat
         beat(cpId)
+        panelTick(startMs, durationMs)
         waitms(SAMPLE_MS)
         safeEvent := safetyPoll(side)
+        if (safeEvent == SAFE_NONE) and panelStopPressed()
+            safeEvent := SAFE_OPER_STOP
         if untilKind == UNTIL_STOPPED
             bReached := mirrorAllInState(side, DCS_STOPPED)
         elseif untilKind == UNTIL_AT_SPEED
@@ -4467,7 +4718,7 @@ PRI safeWhy(safeEvent) : whyCode
 ' The why token of a safety event that ended a trial before its event.
 '
 ' @param safeEvent - SAFE_* value
-' @returns whyCode - FAULTED, ABORTED, INST_STALLED, or NONE for SAFE_NONE
+' @returns whyCode - FAULTED, ABORTED, INST_STALLED, OPERATOR_STOP, or NONE for SAFE_NONE
 
     case safeEvent
         SAFE_FAULT:
@@ -4476,6 +4727,8 @@ PRI safeWhy(safeEvent) : whyCode
             whyCode := WHY_ABORTED
         SAFE_INST_STALL:
             whyCode := WHY_INST_STALLED
+        SAFE_OPER_STOP:
+            whyCode := WHY_OPERATOR_STOP
         other:
             whyCode := WHY_NONE
 
@@ -6334,7 +6587,7 @@ PRI emitUiStep(kindCode, testedIdx, gotIdx, bKeyGot, bClickGot, promptIdx, resul
 ' @param gotIdx - BM_BTN_* a screen step received, PNL_BTN_NONE otherwise
 ' @param bKeyGot - the step's button arrived as a key
 ' @param bClickGot - the step's button arrived as a mouse click
-' @param promptIdx - BM_PROMPT_* on screen
+' @param promptIdx - BM_SCR_* on screen, whose prompt cell has the same index
 ' @param resultCode - UIR_* value
 ' @param waitedMs - ms the step took
 

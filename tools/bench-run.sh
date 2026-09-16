@@ -32,17 +32,16 @@
 # that marker: test_bench_t0, test_bench_spin, test_bench_detect,
 # test_bench_char, test_bench_scan and test_bench_dual.
 #
-# Usage:  tools/bench-run.sh <tier> [clkfreq]
-#   <tier>      -- tier name, see usage() below
-#   [clkfreq]   -- optional clock frequency in Hz (e.g., 270000000). The ONLY
-#                  thing that may cause this script to write to a source file
-#                  (the tier binary's "CLK_FREQ = ..." line) -- omit it and the
-#                  script is read-only with respect to the tree. Restored on
-#                  exit, including on interrupt. test_bench_t0, test_bench_detect,
-#                  test_bench_char, test_bench_scan and test_bench_dual carry
-#                  that line; test_bench_spin does not, so for the spin tier
-#                  the patch changes nothing. The dual-clock tier REQUIRES it:
-#                  its three runs differ only by clock.
+# Usage:  tools/bench-run.sh <tier>
+#   <tier>      -- tier name, see usage() below. It is the ONLY argument: nothing
+#                  numeric is ever typed at the bench (STEPHEN 2026-09-16: "please
+#                  don't create commands where the data entry due to length causes
+#                  risk to me typeing it correctly (e.g., Hz values that's silly)").
+#
+# The clock sweep is three tiers, dual-clock-200 / -270 / -300, each naming its
+# clock. Those tiers are the ONLY thing that may cause this script to write to a
+# source file (test_bench_dual.spin2's "CLK_FREQ = ..." line); every other tier is
+# read-only with respect to the tree. Restored on exit, including on interrupt.
 
 set -u
 
@@ -57,10 +56,12 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PNUT="${PNUT_TS:-pnut-ts}"
 PNUT_TERM="${PNUT_TERM_TS:-pnut-term-ts}"
 
-# The three clocks the dual-clock tier sweeps, named once. test_bench_dual.spin2
-# judges its CLKFRAME sign-off cell only at these (its SF_CLOCK_* constants), so a
-# run at any other clock judges nothing -- see PL-62.
-SWEPT_CLOCKS="200000000 270000000 300000000"
+# The three clocks the dual-clock-* tiers sweep, in Hz, each named once by its tier
+# below. test_bench_dual.spin2 judges its CLKFRAME sign-off cell only at these (its
+# SF_CLOCK_* constants), so a run at any other clock judges nothing -- see PL-62.
+CLOCK_200_HZ="200000000"
+CLOCK_270_HZ="270000000"
+CLOCK_300_HZ="300000000"
 
 # echo a command verbatim, then run it. "$@" is the real argv -- nothing
 # paraphrased, nothing elided.
@@ -72,7 +73,9 @@ run() {
 # Refuse, and say why where it will be seen. The message goes to BOTH stdout and
 # stderr because the operator's console capture holds stdout only: at Visit 2 a
 # ten-digit clock reached the compiler, the run stopped with no error line in the
-# capture and no log, and all three dual-clock loads were lost (PL-62).
+# capture and no log, and all three dual-clock loads were lost (PL-62). At Visit 3
+# the same loads were lost again to a clock typed as 200 -- which is why no clock
+# is typed any more.
 die() {
     echo "ERROR: $*"
     echo "ERROR: $*" >&2
@@ -84,11 +87,8 @@ usage() {
     # stdout, not stderr (PL-62): the operator's console capture holds stdout, so a
     #  refusal that only reaches stderr leaves them with a run that stopped for no
     #  visible reason.
-    # Unquoted heredoc so the clock list below comes from SWEPT_CLOCKS: naming those
-    #  three values twice is the same drift PL-62 is about. The usage text has no
-    #  other $ or backtick, so nothing else expands.
-    cat <<EOF
-Usage:  tools/bench-run.sh <tier> [clkfreq]
+    cat <<'EOF'
+Usage:  tools/bench-run.sh <tier>
   <tier>      -- one of:
                    t0             Tier 0 -- no motor, no motion, no risk
                    t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
@@ -100,29 +100,32 @@ Usage:  tools/bench-run.sh <tier> [clkfreq]
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
                    scan-wdtest    watchdog self-test: preflight, deliberate stall, watchdog ends the run  [MOTORS CONNECTED]
                    dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   dual-clock     motion harness clock load: PREFLT, CLOCK -- clkfreq REQUIRED, one of: $SWEPT_CLOCKS  [WHEELS UP, UNATTENDED]
+                   dual-clock-200 motion harness clock load at 200 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
+                   dual-clock-270 motion harness clock load at 270 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
+                   dual-clock-300 motion harness clock load at 300 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-b         motion harness part B: PREFLT, FAULTB, OVERSHT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
                    dual-c         motion harness part C: PREFLT, BASELINE, POSTFLT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-floor     motion harness part FLOOR -- WHEELS DOWN, OPERATOR OBSERVES ABOUT 2 S OF DRIVING  [ATTENDED]
                    dual-ui        motion harness part UICHECK -- NO MOTOR CONTROL: walks the operator through every panel control and attended screen  [ATTENDED]
-  [clkfreq]   -- optional clock frequency in Hz (default: 270000000); required by dual-clock
 
 Examples:
   tools/bench-run.sh detect
-  tools/bench-run.sh detect-lib
   tools/bench-run.sh char
-  tools/bench-run.sh dual-clock 200000000
+  tools/bench-run.sh dual-clock-200
 EOF
     exit 2
 }
 
-if [ $# -lt 1 ]; then
+if [ $# -ne 1 ]; then
+    if [ $# -gt 1 ]; then
+        echo "ERROR: one argument only, the tier name -- a clock is chosen by the tier (dual-clock-200, dual-clock-270, dual-clock-300)"
+    fi
     usage
 fi
 
 TIER="$1"
-CLK_OVERRIDE="${2:-}"
+CLK_OVERRIDE=""
 
 # Validate tier name, and map it to a top file plus its -D options.
 #
@@ -173,22 +176,19 @@ case "$TIER" in
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_A)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part A (PREFLT, STOPMODE, LIVE, LADDER; the two ladder probe rungs above the speed ceiling may fault on purpose), run cap 25 minutes"
                     ;;
-    dual-clock)     BENCH_FILE="test_bench_dual.spin2"
+    # PL-62: the clock is part of the tier name, so a mistyped clock is impossible rather than merely
+    #  detectable -- a wrong name is an unknown tier and is refused.
+    dual-clock-200|dual-clock-270|dual-clock-300)
+                    BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_CLOCK)
-                    if [ -z "$CLK_OVERRIDE" ]; then
-                        echo "ERROR: tier 'dual-clock' needs a clkfreq argument -- its three runs differ only by clock: $SWEPT_CLOCKS"
-                        echo "ERROR: tier 'dual-clock' needs a clkfreq argument" >&2
-                        usage
-                    fi
-                    # PL-62: only the three swept clocks are legal here, so a mistyped value is
-                    #  impossible rather than merely detectable. The padded-string match is exact --
-                    #  a substring like 20000000 cannot satisfy it.
-                    case " $SWEPT_CLOCKS " in
-                        *" $CLK_OVERRIDE "*) ;;
-                        *) die "clkfreq '$CLK_OVERRIDE' is not one of the three swept clocks: $SWEPT_CLOCKS" ;;
+                    case "$TIER" in
+                        dual-clock-200) CLK_OVERRIDE="$CLOCK_200_HZ" ;;
+                        dual-clock-270) CLK_OVERRIDE="$CLOCK_270_HZ" ;;
+                        dual-clock-300) CLK_OVERRIDE="$CLOCK_300_HZ" ;;
                     esac
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness clock load (PREFLT, CLOCK) at clkfreq $CLK_OVERRIDE, about 1 minute; one of three runs: $SWEPT_CLOCKS"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness clock load (PREFLT, CLOCK) at clkfreq $CLK_OVERRIDE, about 1 minute; one of three runs: dual-clock-200, dual-clock-270, dual-clock-300"
                     ;;
+    dual-clock)     die "tier 'dual-clock' is now three tiers that name their clock: dual-clock-200, dual-clock-270, dual-clock-300" ;;
     dual-b)         BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_B)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part B (PREFLT, FAULTB ramp trials that fault on purpose, OVERSHT distance moves through the steering object), run cap 20 minutes"
@@ -207,7 +207,7 @@ case "$TIER" in
                     ;;
     dual-ui)        BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_UICHECK)
-                    PRECONDITION="NO MOTOR CONTROL -- UI walkthrough: no wheel or steering object is ever started, nothing moves; click the bmpanel window first; click each button it shows, then press each key it names, then read each attended screen (START = reads right, SKIP = something is wrong); PASSED -> run dual-brake and dual-floor; FAILED -> they wait for the next bench run"
+                    PRECONDITION="NO MOTOR CONTROL -- UI walkthrough: no wheel or steering object is ever started, nothing moves; click the bmpanel window first; click each button it shows and press the key named on it; then judge each dual-brake screen with the two buttons in the strip at the bottom (LOOKS RIGHT = key Y, SOMETHING WRONG = key W) -- the screen's own buttons do nothing there; PASSED -> run dual-brake; FAILED -> it waits for the next bench run"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage
