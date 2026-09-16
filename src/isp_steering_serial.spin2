@@ -108,7 +108,7 @@ DAT { command table }
     msgWork             BYTE    0[256]     ' 256 bytes in which to format the outgoing message
 
 
-PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt
+PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt, senseCog, eError, eLeftError, eRightError
 '' DEMO Driving a two wheeled platform
 ''
 
@@ -149,23 +149,27 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
         ' start our dual motor driver
 
         ' start our motor drivers (left and right)
-        wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
+        senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
+        if senseCog < 0
+            ' never offer the host a command interface to motors that are not running
+            eError, eLeftError, eRightError := wheels.getError()
+            debug("* ERROR motors did not start: ", sdec_long(eError), sdec_long(eLeftError), sdec_long(eRightError))
+        else
+            '' start our serial host communications
+            hostIF.startx(GW_RX2, GW_TX2, GW_BAUDRATE, hostIF.PU_15K)    ' tell singleton our pins and rate
 
-        '' start our serial host communications
-        hostIF.startx(GW_RX2, GW_TX2, GW_BAUDRATE, hostIF.PU_15K)    ' tell singleton our pins and rate
+            ' (one time) tell the RPi about how to identify this hardware
+            hostIF.identify(@p2HardwareID)
 
-        ' (one time) tell the RPi about how to identify this hardware
-        hostIF.identify(@p2HardwareID)
+            debug("* command loop *")
 
-        debug("* command loop *")
-
-        repeat
-            if serialQueue.haveCommand(@cmdsFirst, cmdEntryCt)
-                opStatus, pValues := serialQueue.getCommandParms()
-                if opStatus == serialQueue.OP_SUCCESS
-                    processCommand(pValues)
-            else
-                waitms(1000)    ' for 1 sec
+            repeat
+                if serialQueue.haveCommand(@cmdsFirst, cmdEntryCt)
+                    opStatus, pValues := serialQueue.getCommandParms()
+                    if opStatus == serialQueue.OP_SUCCESS
+                        processCommand(pValues)
+                else
+                    waitms(1000)    ' for 1 sec
     else
         debug("* ERROR user configuration NOT valid!")
 
@@ -190,7 +194,9 @@ DAT { parse work variables }
     nSpeed          LONG    0
     bHoldEnable     LONG    0
 
-PRI processCommand(pValues)
+PRI processCommand(pValues) | eError
+' F-7: every command calls the library first and replies from its status, so a request the library
+'  refuses gets an ERROR reply naming the code instead of an OK for work that never happened
     debug("* HANDLE ", zstr_(long [pValues][serialQueue.ENT_CMDSTR_IDX]))
 '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
 '              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
@@ -217,9 +223,9 @@ PRI processCommand(pValues)
                 strFmt.sFormatStr1(@msgWork, @"Direction (%d) out of range [-100, 100]", drvDir)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.driveDirection(drvPwr1, drvDir)
+                ' all good, act on request, then report its outcome
+                eError := wheels.driveDirection(drvPwr1, drvDir)
+                replyWithStatus(pValues, eError)
 
         CMD_DRV_DIST:
             ' get incoming parm values
@@ -239,9 +245,9 @@ PRI processCommand(pValues)
                 ' invalid, report so...
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.driveForDistance(ltValue, rtValue, nDistUnits)
+                ' all good, act on request, then report its outcome
+                eError := wheels.driveForDistance(ltValue, rtValue, nDistUnits)
+                replyWithStatus(pValues, eError)
 
         CMD_DRV_PWR:
             ' get incoming parm values
@@ -257,9 +263,9 @@ PRI processCommand(pValues)
                 strFmt.sFormatStr1(@msgWork, @"RT-Power (%d) out of range [-100, 100]", drvPwr2)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.driveAtPower(drvPwr1, drvPwr2)
+                ' all good, act on request, then report its outcome
+                eError := wheels.driveAtPower(drvPwr1, drvPwr2)
+                replyWithStatus(pValues, eError)
 
         CMD_STP_ROT:
             ' get incoming parm values
@@ -274,9 +280,9 @@ PRI processCommand(pValues)
                strFmt.sFormatStr1(@msgWork, @"Rotation Count (%d) must be positive value", nRot)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.stopAfterRotation(nRot, nRotUnits)
+                ' all good, act on request, then report its outcome
+                eError := wheels.stopAfterRotation(nRot, nRotUnits)
+                replyWithStatus(pValues, eError)
 
         CMD_STP_DIST:
             ' get incoming parm values
@@ -291,9 +297,9 @@ PRI processCommand(pValues)
                 strFmt.sFormatStr1(@msgWork, @"Distance Value (%d) must be positive", nDist)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.stopAfterDistance(nDist, nDistUnits)
+                ' all good, act on request, then report its outcome
+                eError := wheels.stopAfterDistance(nDist, nDistUnits)
+                replyWithStatus(pValues, eError)
 
         CMD_STP_TIME:
             ' get incoming parm values
@@ -308,25 +314,24 @@ PRI processCommand(pValues)
                 strFmt.sFormatStr1(@msgWork, @"Time Value (%d) must be positive", nTime)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.stopAfterTime(nTime, nTimeUnits)
+                ' all good, act on request, then report its outcome
+                eError := wheels.stopAfterTime(nTime, nTimeUnits)
+                replyWithStatus(pValues, eError)
 
         CMD_STP_MOT:
-            ' all good, say so, then act on request
-            serialQueue.sendOK()
-            wheels.stopMotors()
+            ' act on request, then report its outcome
+            eError := wheels.stopMotors()
+            replyWithStatus(pValues, eError)
 
         CMD_EMER_CUT:
-            ' all good, say so, then act on request
-            ' NOTE: in this case we act first then send response! (best we can do <shrug>)
-            wheels.emergencyCutoff()
-            serialQueue.sendOK()
+            ' act on request, then report its outcome
+            eError := wheels.emergencyCutoff()
+            replyWithStatus(pValues, eError)
 
         CMD_EMER_CLR:
-            ' all good, say so, then act on request
-            serialQueue.sendOK()
-            wheels.clearEmergency()
+            ' act on request, then report its outcome
+            eError := wheels.clearEmergency()
+            replyWithStatus(pValues, eError)
 
         CMD_SET_ACCEL:
             ' NOTE: this is not yet functional, say so
@@ -355,9 +360,9 @@ PRI processCommand(pValues)
                 strFmt.sFormatStr1(@msgWork, @"MaxSpeed (%d) out of range [1, 100]", nSpeed)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.setMaxSpeed(nSpeed)
+                ' all good, act on request, then report its outcome
+                eError := wheels.setMaxSpeed(nSpeed)
+                replyWithStatus(pValues, eError)
 
         CMD_SET_DIST_SPD:
             ' get incoming parm values
@@ -368,9 +373,9 @@ PRI processCommand(pValues)
                 strFmt.sFormatStr1(@msgWork, @"MaxSpeedForDistance (%d) out of range [1, 100]", nSpeed)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.setMaxSpeedForDistance(nSpeed)
+                ' all good, act on request, then report its outcome
+                eError := wheels.setMaxSpeedForDistance(nSpeed)
+                replyWithStatus(pValues, eError)
 
         CMD_HOLD:
             ' get incoming parm values
@@ -381,14 +386,14 @@ PRI processCommand(pValues)
                 strFmt.sFormatStr1(@msgWork, @"HoldAtStop (%d) out of range [-1, 0] (T/F)", bHoldEnable)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.holdAtStop(bHoldEnable)
+                ' all good, act on request, then report its outcome
+                eError := wheels.holdAtStop(bHoldEnable)
+                replyWithStatus(pValues, eError)
 
         CMD_RST_TRKG:
-            ' all good, say so, then act on request
-            serialQueue.sendOK()
-            wheels.resetTracking()
+            ' act on request, then report its outcome
+            eError := wheels.resetTracking()
+            replyWithStatus(pValues, eError)
 
         CMD_GET_DIST:
              ' get incoming parm values
@@ -460,9 +465,70 @@ PRI inRange(nCheckVal, min, max) : bInRangeStatus
     if nCheckVal < min or nCheckVal > max
         bInRangeStatus := FALSE
 
+PRI replyWithStatus(pValues, eError) | eSteerError, eLeftError, eRightError
+' Reply OK for a command the library accepted, else an ERROR reply naming the code.
+'
+' @param pValues - the parsed command entry, for the command's name
+' @param eError - the library's result for the command
+
+' Local Variables:
+' @local eSteerError - this cog's collected steering error (drained, so the next failure records its own cause)
+' @local eLeftError - this cog's collected left-wheel error
+' @local eRightError - this cog's collected right-wheel error
+
+    if eError == wheels.NO_ERROR
+        serialQueue.sendOK()
+    else
+        ' drain this cog's error slots: they are sticky-first, and the next command's cause must be recordable
+        eSteerError, eLeftError, eRightError := wheels.getError()
+        debug("* command failed ", sdec_long(eError), sdec_long(eSteerError), sdec_long(eLeftError), sdec_long(eRightError))
+        strFmt.sFormatStr3(@msgWork, @"%s failed: %s (%d)", long[pValues][serialQueue.ENT_CMDSTR_IDX], errorName(eError), eError)
+        serialQueue.sendError(@msgWork)
+
+PRI errorName(eError) : pName
+' Return the name of a library error code, for a host reply.
+'
+' @param eError - an ERR_* code
+' @returns pName - pointer to the code's name, or to "ERR_UNKNOWN" for a value that is not one
+
+    case eError
+        wheels.ERR_BAD_PIN_GROUP:
+            pName := @"ERR_BAD_PIN_GROUP"
+        wheels.ERR_PIN_GROUP_IN_USE:
+            pName := @"ERR_PIN_GROUP_IN_USE"
+        wheels.ERR_BAD_VOLTAGE:
+            pName := @"ERR_BAD_VOLTAGE"
+        wheels.ERR_BAD_DETECT_MODE:
+            pName := @"ERR_BAD_DETECT_MODE"
+        wheels.ERR_NO_FREE_COG:
+            pName := @"ERR_NO_FREE_COG"
+        wheels.ERR_ABI_MISMATCH:
+            pName := @"ERR_ABI_MISMATCH"
+        wheels.ERR_NOT_STARTED:
+            pName := @"ERR_NOT_STARTED"
+        wheels.ERR_NO_SENSE_TASK:
+            pName := @"ERR_NO_SENSE_TASK"
+        wheels.ERR_BAD_UNITS:
+            pName := @"ERR_BAD_UNITS"
+        wheels.ERR_BAD_COUNT:
+            pName := @"ERR_BAD_COUNT"
+        wheels.ERR_NO_WHEEL_DIA:
+            pName := @"ERR_NO_WHEEL_DIA"
+        wheels.ERR_LIMIT_UNRESOLVABLE:
+            pName := @"ERR_LIMIT_UNRESOLVABLE"
+        wheels.ERR_SYNC_TIMEOUT:
+            pName := @"ERR_SYNC_TIMEOUT"
+        wheels.ERR_BUSY:
+            pName := @"ERR_BUSY"
+        wheels.ERR_FAULT_NOT_CLEARED:
+            pName := @"ERR_FAULT_NOT_CLEARED"
+        other:
+            pName := @"ERR_UNKNOWN"
+
 PRI isPostiveValue(nCheckVal) : bPositiveStatus
+' Return TRUE when a host-supplied distance, rotation or time count is at least 1 (the library's lower bound).
     bPositiveStatus := TRUE
-    if nCheckVal < 0
+    if nCheckVal < 1
         bPositiveStatus := FALSE
 
 PRI isValidTimeUnit(timeUnits, pMsgBffr) : bValidStatus

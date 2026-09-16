@@ -1242,6 +1242,28 @@ PUB hallTicInfoForMotor() : degreesPerTic, ticsPerRotation
         ' rotations = ticks / 90
         ticsPerRotation := 90
 
+PUB wheelGeometry() : nCircInMM_x10, nTickInMM_x100 | ticsPerRotation
+'' Return the configured wheel's circumference and travel per hall tick (for use by two-wheel-steering object!)
+''
+'' @returns nCircInMM_x10 - wheel circumference, in tenths of a mm; 0 when the configured wheel diameter is 0
+'' @returns nTickInMM_x100 - wheel travel per hall tick, in hundredths of a mm; 0 when the configured wheel diameter is 0
+
+' Local Variables:
+' @local ticsPerRotation - hall ticks per rotation for this motor
+
+    nCircInMM_x10 := 0
+    nTickInMM_x100 := 0
+    if user.WHEEL_DIA_IN_INCH <> 0.0
+        _, ticsPerRotation := hallTicInfoForMotor()
+        ' task 3502: keep tenths of a mm -- circInMMforDiaInInchFloat() truncates to whole mm
+        '  (518 for a 6.5in wheel against 518.68) before the x10, losing 0.13% of every distance
+        nCircInMM_x10 := round(distConv.floatCircInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) *. 10.0)
+        ' task 3502: mm-per-tick carried at x100 (not x10), rounded to nearest, so it keeps two
+        '  fractional digits instead of one -- at x10 scale, 6.5in-wheel/90-tick motors truncate
+        '  5.7 mm/tick against a true 5.763, a systematic -1.1% in every DDU_* conversion. Signed
+        '  '/' is safe here: both operands are always non-negative (a wheel circumference and a tick count).
+        nTickInMM_x100 := ((nCircInMM_x10 * 10) + (ticsPerRotation / 2)) / ticsPerRotation
+
 CON ' --- TEST-USE ONLY Methods ---
 
     DEGREES_PER_TURN      = 360     ' one turn of a commutation offset, in degrees
@@ -1739,28 +1761,6 @@ PRI abiLayoutIsValid() : bValid
     bValid &= (@lastError[COG_SLOT_COUNT - 1] < @offset_fwd) or (@lastError[0] > @ramp_inc)
     if bValid == FALSE
         debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@ramp_inc - @offset_fwd))
-
-PRI wheelGeometry() : nCircInMM_x10, nTickInMM_x100 | ticsPerRotation
-' Return the configured wheel's circumference and travel per hall tick; both 0 when the wheel diameter is 0.
-'
-' @returns nCircInMM_x10 - wheel circumference, in tenths of a mm
-' @returns nTickInMM_x100 - wheel travel per hall tick, in hundredths of a mm
-
-' Local Variables:
-' @local ticsPerRotation - hall ticks per rotation for this motor
-
-    nCircInMM_x10 := 0
-    nTickInMM_x100 := 0
-    if user.WHEEL_DIA_IN_INCH <> 0.0
-        _, ticsPerRotation := hallTicInfoForMotor()
-        ' task 3502: keep tenths of a mm -- circInMMforDiaInInchFloat() truncates to whole mm
-        '  (518 for a 6.5in wheel against 518.68) before the x10, losing 0.13% of every distance
-        nCircInMM_x10 := round(distConv.floatCircInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) *. 10.0)
-        ' task 3502: mm-per-tick carried at x100 (not x10), rounded to nearest, so it keeps two
-        '  fractional digits instead of one -- at x10 scale, 6.5in-wheel/90-tick motors truncate
-        '  5.7 mm/tick against a true 5.763, a systematic -1.1% in every DDU_* conversion. Signed
-        '  '/' is safe here: both operands are always non-negative (a wheel circumference and a tick count).
-        nTickInMM_x100 := ((nCircInMM_x10 * 10) + (ticsPerRotation / 2)) / ticsPerRotation
 
 CON ' --- HDMI Debug Support ---
 

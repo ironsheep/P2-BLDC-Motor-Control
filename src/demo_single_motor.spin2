@@ -46,7 +46,7 @@ DAT { run-time condition vars }
     bUseHDMI    LONG   TRUE       ' set to TRUE to enable HDMI use/output
 
 
-PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motorCog, senseCog, basePin, voltage, motor, detectMode
+PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motorCog, senseCog, basePin, voltage, motor, detectMode, eError
 '' DEMO Driving a single wheeled platform
 ''
 
@@ -68,40 +68,49 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
         motorCog := wheel.start(basePin, voltage, detectMode)
         'tvDebug.reportMotorCog(motorCog)
 
-        ' for single motor let's start the single motor sense task
-        senseCog := wheel.startSenseCog()
+        ' for single motor let's start the single motor sense task (it enforces the stop limits)
+        senseCog := -1
+        if motorCog >= 0
+            senseCog := wheel.startSenseCog()
 
-        if bUseHDMI
-            nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheel.getDebugData()
-            debug("* Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+        if senseCog < 0
+            ' start() or startSenseCog() refused: the cause is waiting in getError()
+            eError := wheel.getError()
+            debug("* ERROR motor did not start: ", sdec_long(eError))
+        else
+            if bUseHDMI
+                nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheel.getDebugData()
+                debug("* Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
 
-            tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+                tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
 
-        ' - testing NEW Control Method -
-        ' ensure motor is ready be commanded
-        waitUntilMotorReady()
-        wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
-        'wheel.setMaxSpeed(90)  ' override 75% with 90% for these tests
-        'wheel.setMaxSpeed(50)  ' override 75% with 50% for these tests (offset checks)
-        'wheel.setMaxSpeed(15)  ' override 75% with 15% for these tests
-        ' now drive!
+            ' - testing NEW Control Method -
+            ' ensure motor is ready be commanded
+            waitUntilMotorReady()
+            wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
+            'wheel.setMaxSpeed(90)  ' override 75% with 90% for these tests
+            'wheel.setMaxSpeed(50)  ' override 75% with 50% for these tests (offset checks)
+            'wheel.setMaxSpeed(15)  ' override 75% with 15% for these tests
+            ' now drive! -- always arm the limit BEFORE driving, so the motor never runs without one
 
-        wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
-        wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
+            eError := wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+            if eError == wheel.NO_ERROR
+                eError := wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
+            if commandSucceeded(eError, @"FWD run")
+                waitUntilMotorDone()
 
-        waitUntilMotorDone()
+            eError := wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' hold at speed for 15 Sec
+            if eError == wheel.NO_ERROR
+                eError := wheel.driveAtPower(-100)                     ' REV at 100% pwr
+            if commandSucceeded(eError, @"REV run")
+                waitUntilMotorDone()
 
-        wheel.driveAtPower(-100)                     ' REV at 100% pwr
-        wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' hold at speed for 15 Sec
+            debug("* holding for 20 secs...")
+            waitms(20000)   ' 20 seconds, then stop
 
-        waitUntilMotorDone()
+            ' TBA  let's add a drive loop
 
-        debug("* holding for 20 secs...")
-        waitms(20000)   ' 20 seconds, then stop
-
-        ' TBA  let's add a drive loop
-
-        ' turn off our motor drivers
+        ' turn off our motor drivers (safe whether or not they started)
         wheel.stop()
 
 VAR
@@ -111,6 +120,21 @@ VAR
     LONG    maxX
     LONG    maxY
 
+
+PRI commandSucceeded(eError, pWhat) : bSucceeded | eFirstError
+' Report a refused command, and collect its error so the next failure records its own cause.
+'
+' @param eError - the result a command returned
+' @param pWhat - pointer to a short name of what was attempted, for the report
+' @returns bSucceeded - T/F where T means the command was accepted and its motion can be waited on
+
+' Local Variables:
+' @local eFirstError - this cog's first recorded error, collected (outside debug(), which a non-debug build removes)
+
+    bSucceeded := (eError == wheel.NO_ERROR)
+    if bSucceeded == FALSE
+        eFirstError := wheel.getError()
+        debug("* ERROR ", zstr_(pWhat), " refused: ", sdec_long(eError), sdec_long(eFirstError))
 
 PRI waitUntilMotorReady()
     if wheel.isReady() == false

@@ -38,7 +38,7 @@ DAT { run-time condition vars }
 
     bUseHDMI    LONG   TRUE       ' set to TRUE to enable HDMI use/output
 
-PUB main() | basePinLt, basePinRt, voltage, motor, basePin, detectModeLt, detectModeRt
+PUB main() | basePinLt, basePinRt, voltage, motor, basePin, detectModeLt, detectModeRt, senseCog, eError
 '' DEMO Driving a two wheeled platform
 ''
 
@@ -65,46 +65,53 @@ PUB main() | basePinLt, basePinRt, voltage, motor, basePin, detectModeLt, detect
         ' start our dual motor driver
 
         ' start our motor drivers (left and right)
-        wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
+        senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
+        if senseCog < 0
+            ' start() returned -1: getError() says why, and which wheel
+            commandSucceeded(senseCog, @"start")
+        else
+            ' just don't draw current at stop
+            wheels.holdAtStop(false)
+            'wheels.setMaxSpeed(100)  ' override 75% with 100%
 
-        ' just don't draw current at stop
-        wheels.holdAtStop(false)
-        'wheels.setMaxSpeed(100)  ' override 75% with 100%
 
+            if bUseHDMI
+                connectMotorToHDMI()
 
-        if bUseHDMI
-            connectMotorToHDMI()
-
-        ' now drive!
-        'waitUntilMotorReady()
+            ' now drive! -- always arm the limit BEFORE driving, so the motors never run without one
+            'waitUntilMotorReady()
 
 {
-        debug("* BOTH Wheels")
-        wheels.driveDirection(80, -25)
-        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            debug("* BOTH Wheels")
+            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            if eError == wheels.NO_ERROR
+                eError := wheels.driveDirection(80, -25)
+            if commandSucceeded(eError, @"turn one way")
+                waitUntilMotorDone()
 
-        waitUntilMotorDone()
-
-        wheels.driveDirection(80, 25)
-        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-
-        waitUntilMotorDone()
+            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            if eError == wheels.NO_ERROR
+                eError := wheels.driveDirection(80, 25)
+            if commandSucceeded(eError, @"turn the other way")
+                waitUntilMotorDone()
 '}
 '{
-        debug("* LT Wheel")
-        wheels.driveAtPower(40, 50)
-        wheels.stopAfterTime(10, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-
-        waitUntilMotorDone()
+            debug("* LT Wheel")
+            eError := wheels.stopAfterTime(10, wheels.DTU_SEC)      ' hold at speed for 10 Sec
+            if eError == wheels.NO_ERROR
+                eError := wheels.driveAtPower(40, 50)
+            if commandSucceeded(eError, @"both wheels")
+                waitUntilMotorDone()
 '}
 {
-        debug("* RT Wheel")
-        wheels.driveAtPower(0, 100)
-        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-
-        waitUntilMotorDone()
+            debug("* RT Wheel")
+            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            if eError == wheels.NO_ERROR
+                eError := wheels.driveAtPower(0, 100)
+            if commandSucceeded(eError, @"right wheel")
+                waitUntilMotorDone()
 '}
-        ' turn off our motor drivers
+        ' turn off our motor drivers (safe whether or not they started)
         wheels.stop()
     else
         debug("* ERROR user configuration NOT valid!")
@@ -131,6 +138,23 @@ PRI connectMotorToHDMI() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGr
         tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
 '}
 
+
+PRI commandSucceeded(eError, pWhat) : bSucceeded | eSteerError, eLeftError, eRightError
+' Report a refused command with the cause and the wheel, and collect this cog's errors so the next failure records its own.
+'
+' @param eError - the result a command returned (a start()'s -1 is reported the same way)
+' @param pWhat - pointer to a short name of what was attempted, for the report
+' @returns bSucceeded - T/F where T means the command was accepted and its motion can be waited on
+
+' Local Variables:
+' @local eSteerError - this cog's first steering-object error (collected outside debug(), which a non-debug build removes)
+' @local eLeftError - this cog's first left-wheel error
+' @local eRightError - this cog's first right-wheel error
+
+    bSucceeded := (eError == wheels.NO_ERROR)
+    if bSucceeded == FALSE
+        eSteerError, eLeftError, eRightError := wheels.getError()
+        debug("* ERROR ", zstr_(pWhat), " refused: ", sdec_long(eError), sdec_long(eSteerError), sdec_long(eLeftError), sdec_long(eRightError))
 
 PRI waitUntilMotorReady()
     if wheels.isReady() == false

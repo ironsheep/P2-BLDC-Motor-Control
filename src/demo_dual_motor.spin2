@@ -31,7 +31,7 @@ OBJ { our Drive Subsystem }
     user    :   "isp_bldc_motor_userconfig"     ' driver configuration
     wheels  :   "isp_steering_2wheel"                  ' the dual-drive BLDC motors
 
-PUB main() | basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt
+PUB main() | basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt, senseCog, eError
 '' DEMO Driving a two wheeled platform
 ''
 
@@ -50,49 +50,73 @@ PUB main() | basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt
         ' start our dual motor driver
 
         ' start our motor drivers (left and right)
-        wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
+        senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
+        if senseCog < 0
+            ' start() returned -1: getError() says why, and which wheel
+            commandSucceeded(senseCog, @"start")
+        else
+            ' just don't draw current at stop
+            wheels.holdAtStop(false)
+            'wheels.setMaxSpeed(100)  ' override 75% with 100%
 
-        ' just don't draw current at stop
-        wheels.holdAtStop(false)
-        'wheels.setMaxSpeed(100)  ' override 75% with 100%
+            ' now drive! -- always arm the limit BEFORE driving, so the motors never run without one
+            waitUntilMotorReady()
 
-        ' now drive!
-        waitUntilMotorReady()
+            debug("* BOTH Wheels for distance")
+            if commandSucceeded(wheels.driveForDistance(1, 1, wheels.DDU_FT), @"driveForDistance")
+                waitUntilMotorDone()
 
-        debug("* BOTH Wheels for distance")
-        wheels.driveForDistance(1, 1, wheels.DDU_FT)
-        waitUntilMotorDone()
+            debug("* BOTH Wheels")
+            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            if eError == wheels.NO_ERROR
+                eError := wheels.driveDirection(80, -25)
+            if commandSucceeded(eError, @"turn one way")
+                waitUntilMotorDone()
 
-        debug("* BOTH Wheels")
-        wheels.driveDirection(80, -25)
-        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-
-        waitUntilMotorDone()
-
-        wheels.driveDirection(80, 25)
-        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-
-        waitUntilMotorDone()
+            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            if eError == wheels.NO_ERROR
+                eError := wheels.driveDirection(80, 25)
+            if commandSucceeded(eError, @"turn the other way")
+                waitUntilMotorDone()
 
 '{
-        debug("* LT Wheel")
-        wheels.driveAtPower(100, 0)
-        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            debug("* LT Wheel")
+            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            if eError == wheels.NO_ERROR
+                eError := wheels.driveAtPower(100, 0)
+            if commandSucceeded(eError, @"left wheel")
+                waitUntilMotorDone()
 
-        waitUntilMotorDone()
-
-        debug("* RT Wheel")
-        wheels.driveAtPower(0, 100)
-        wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-
-        waitUntilMotorDone()
+            debug("* RT Wheel")
+            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
+            if eError == wheels.NO_ERROR
+                eError := wheels.driveAtPower(0, 100)
+            if commandSucceeded(eError, @"right wheel")
+                waitUntilMotorDone()
 '}
-        ' turn off our motor drivers
+        ' turn off our motor drivers (safe whether or not they started)
         wheels.stop()
     else
         debug("* ERROR user configuration NOT valid!")
 
     debug("* DONE")
+
+PRI commandSucceeded(eError, pWhat) : bSucceeded | eSteerError, eLeftError, eRightError
+' Report a refused command with the cause and the wheel, and collect this cog's errors so the next failure records its own.
+'
+' @param eError - the result a command returned (a start()'s -1 is reported the same way)
+' @param pWhat - pointer to a short name of what was attempted, for the report
+' @returns bSucceeded - T/F where T means the command was accepted and its motion can be waited on
+
+' Local Variables:
+' @local eSteerError - this cog's first steering-object error (collected outside debug(), which a non-debug build removes)
+' @local eLeftError - this cog's first left-wheel error
+' @local eRightError - this cog's first right-wheel error
+
+    bSucceeded := (eError == wheels.NO_ERROR)
+    if bSucceeded == FALSE
+        eSteerError, eLeftError, eRightError := wheels.getError()
+        debug("* ERROR ", zstr_(pWhat), " refused: ", sdec_long(eError), sdec_long(eSteerError), sdec_long(eLeftError), sdec_long(eRightError))
 
 PRI waitUntilMotorReady()
 ' if wheels are NOT ready, then wait until they are ready

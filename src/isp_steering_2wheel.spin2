@@ -122,10 +122,19 @@ PUB null()
 '' This is not a top-level object
 ''
 
-PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog, ticsPerRotation
+PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog
 '' Start our drive cogs connected to our left and right motor control pin-sets
 ''
-'' @returns ok - The COG ID of the sense task (0-7) on success, or (-1) if either motor or the sense task failed to start
+'' @param leftBasePin - The base pin ENUM (PINS_*) for the left motor's adapter board
+'' @param rightBasePin - The base pin ENUM (PINS_*) for the right motor's adapter board
+'' @param driveVoltage - The voltage ENUM (PWR_*) for both motors
+'' @param leftDetectMode - The detection mode ENUM (BRD_*) for the left motor
+'' @param rightDetectMode - The detection mode ENUM (BRD_*) for the right motor
+'' @returns ok - The COG ID of the sense task (0-7) on success, or (-1) if either motor or the sense task failed to start; getError() names the cause and the wheel
+
+' Local Variables:
+' @local ltcog - the left driver's cog id, or -1
+' @local rtcog - the right driver's cog id, or -1
 
     ticks1ms   := (clkfreq / 1_000)
     ticks1us   := (clkfreq / 1_000_000)
@@ -162,15 +171,8 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         debug[user.DBGCH_LIFECYCLE](" sendatn: ", sdec(ltcog), " ", sdec(rtcog))
         cogatn(cogmask)                                     ' sync the 2 motor cogs
 
-        _, ticsPerRotation := ltWheel.hallTicInfoForMotor()
-        if user.WHEEL_DIA_IN_INCH <> 0                      ' use wheel diameter independent of motor type
-            ' task 3502: keep tenths of a mm -- circInMMforDiaInInchFloat() truncates to whole mm
-            '  (518 for a 6.5in wheel against 518.68) before the x10, losing 0.13% of every distance
-            circInMM_x10 := round(distConv.floatCircInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) *. 10.0)
-            ' task 3502: round-to-nearest at x100 scale instead of truncating at x10 --
-            '  matches isp_bldc_motor.spin2's init(). Signed '/' is safe: both operands are
-            '  always non-negative.
-            tickInMM_x100 := ((circInMM_x10 * 10) + (ticsPerRotation / 2)) / ticsPerRotation
+        ' one formula for the wheel, owned by the motor object (0 when the configured diameter is 0)
+        _, tickInMM_x100 := ltWheel.wheelGeometry()
 
         ' init user tracking vars
         motorStopHallTicks := 0
@@ -188,14 +190,16 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
             ltWheel.stop()   ' a failed start leaves nothing running: release both motor cogs and their pins
             rtWheel.stop()
             ok := -1
+            recordError(ERR_NO_FREE_COG)
             debug[user.DBGCH_ERROR]("!! ERROR filed to start Position Sense task")
         else
             senseCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
             ok := senseCog - 1    ' public contract: the sense cog's id (0-7), docstring is silent on B so this is the chosen return
 
-PUB stop()
+PUB stop() : eError
 '' Stop our left/right drive and Sense cogs and release allocated pins
 ''
+'' @returns eError - NO_ERROR; stopping always succeeds, on a started or an unstarted instance
 
     if senseCog     ' stop motor reads
         cogstop(senseCog - 1)
@@ -203,240 +207,331 @@ PUB stop()
 
     ltWheel.stop()
     rtWheel.stop()
+    eError := NO_ERROR
 
-PUB setAcceleration(rate)
+PUB setAcceleration(rate) : eError
 '' Updates the ramping speed of the motors
 ''
 '' @param rate - the desired acceleration rate in ticks per second
+'' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
 
-    ltWheel.setAcceleration(rate)
-    rtWheel.setAcceleration(rate)
+    eError := firstError(ltWheel.setAcceleration(rate), rtWheel.setAcceleration(rate))
 
-PUB setMaxSpeed(speed)
+PUB setMaxSpeed(speed) : eError
 '' Limit top-speed to {speed}
 ''
+'' @param speed - top speed [1 to 100]; a value outside the range is saturated to it
+'' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
 
-    ltWheel.setMaxSpeed(speed)
-    rtWheel.setMaxSpeed(speed)
+    eError := firstError(ltWheel.setMaxSpeed(speed), rtWheel.setMaxSpeed(speed))
 
-PUB setMaxSpeedForDistance(speed)
+PUB setMaxSpeedForDistance(speed) : eError
 '' Limit top-speed of driveDistance() operations to {speed}
 ''
+'' @param speed - top speed [1 to 100]; a value outside the range is saturated to it
+'' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
 
-    ltWheel.setMaxSpeedForDistance(speed)
-    rtWheel.setMaxSpeedForDistance(speed)
+    eError := firstError(ltWheel.setMaxSpeedForDistance(speed), rtWheel.setMaxSpeedForDistance(speed))
 
-PUB calibrate()
+PUB calibrate() : eError
 '' NOT WORKING: (we may need this?)
 '' have motor drivers determine fixed-offset constants
 ''
+'' @returns eError - NO_ERROR
 
-    ltWheel.calibrate()
-    rtWheel.calibrate()
+    eError := firstError(ltWheel.calibrate(), rtWheel.calibrate())
 
-PUB holdAtStop(bEnable)
+PUB holdAtStop(bEnable) : eError
 '' Informs the motor drivers to actively hold position (bEnable=true) or coast (bEnable=false) at end of motion
 ''
+'' @param bEnable - T/F where T means hold position at rest and F means coast
+'' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
 
-    ltWheel.holdAtStop(bEnable)
-    rtWheel.holdAtStop(bEnable)
+    eError := firstError(ltWheel.holdAtStop(bEnable), rtWheel.holdAtStop(bEnable))
 
-PUB resetTracking()
+PUB resetTracking() : eError
 '' Resets the position tracking values returned by getDistance() and getRotations()
 ''  Effectively: use current position as home from now on
 ''
+'' @returns eError - NO_ERROR
 
     ltWheel.resetWindowAccumulators()
     rtWheel.resetWindowAccumulators()
+    eError := NO_ERROR
 
 CON { --- Subsystem Control --- }
 
-PUB driveDirection(power, direction)
+PUB driveDirection(power, direction) : eError
 '' Control the speed and direction of your robot using the {power} and {direction} inputs.
 '' Turns both motors on at {power, [(-100) to 100]} but adjusted by {direction, [(-100) to 100]}.
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
 ''
+'' @param power - power [(-100) to 100], saturated to that range; 0 stops
+'' @param direction - direction [(-100) to 100], saturated to that range; 0 is straight ahead
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); see driveAtPower()
 
     rqstPower, rqstDirection := power, direction        ' calculate effective power based on direction
-    driveAtPower(calcPowerForDirection(power, direction))
+    eError := driveAtPower(calcPowerForDirection(power, direction))
 
-PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits) | shorterDistance, maxLtSpeed, maxRtSpeed
+PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits) : eError | shorterDistance, maxLtSpeed, maxRtSpeed
 '' Control the forward direction or rate of turn of your robot using the {leftDistance} and {rightDistance} inputs.
 '' Turn both motors on then turn them off again when either reaches the specified distance {leftDistance} or
 ''  {rightDistance}, where {*distance} is in {distanceUnits} [DDU_IN, DDU_FT, DDU_CM, or DDU_M].
 '' AFFECTED BY: setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
 ''
+'' @param leftDistance - distance for the left wheel, at least 1
+'' @param rightDistance - distance for the right wheel, at least 1
+'' @param eDistanceUnits - units of both distances: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); the motors are not started when the limit is rejected
+
+' Local Variables:
+' @local shorterDistance - the smaller of the two distances, where both wheels stop
+' @local maxLtSpeed - the left wheel's max speed for distance
+' @local maxRtSpeed - the right wheel's max speed for distance
 
     shorterDistance := leftDistance < rightDistance ? leftDistance : rightDistance
-    stopAfterDistance(shorterDistance, eDistanceUnits)
-    maxLtSpeed := ltWheel.getMaxSpeedForDistance()
-    maxRtSpeed := rtWheel.getMaxSpeedForDistance()
-    driveAtPower(maxLtSpeed, maxRtSpeed)
+    eError := stopAfterDistance(shorterDistance, eDistanceUnits)
+    if eError == NO_ERROR
+        maxLtSpeed := ltWheel.getMaxSpeedForDistance()
+        maxRtSpeed := rtWheel.getMaxSpeedForDistance()
+        eError := driveAtPower(maxLtSpeed, maxRtSpeed)
 
-PUB driveAtPower(leftPower, rightPower)
+PUB driveAtPower(leftPower, rightPower) : eError | eLeftError, eRightError
 '' Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
 '' Turns left motor on at {leftPower} and right at {rightPower}. Where {*Power} are in the range [(-100) to 100].
 '' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
 ''
+'' @param leftPower - left motor power [(-100) to 100], saturated to that range; 0 stops
+'' @param rightPower - right motor power [(-100) to 100], saturated to that range; 0 stops
+'' @returns eError - NO_ERROR, ERR_NOT_STARTED, or a wheel's ERR_* code (all recorded for getError()); on ERR_SYNC_TIMEOUT both motors are stopped
 
-    rqstLtPower, rqstRtPower := leftPower, rightPower
+' Local Variables:
+' @local eLeftError - the left wheel's result for this command
+' @local eRightError - the right wheel's result for this command
 
-    ltWheel.driveAtPowerEx(rqstLtPower, true)
-    rtWheel.driveAtPowerEx(rqstRtPower, true)
-    cogatn(cogmask)                                     ' sync the 2 motor cogs
-    ltWheel.SyncStatus()                                ' make sure both motors have taken value
-    rtWheel.SyncStatus()
+    eError := NO_ERROR
+    if senseCog == 0
+        ' started means both drivers run and cogmask is built
+        eError := recordError(ERR_NOT_STARTED)
+        debug[user.DBGCH_ERROR]("! ERROR: driveAtPower() motors not started")
+    else
+        rqstLtPower, rqstRtPower := leftPower, rightPower
 
-PUB stopAfterRotation(nRotationCount, eRotationUnits) | degreesPerTic, ticsPerRotation
+        eLeftError := ltWheel.driveAtPowerEx(rqstLtPower, true)
+        eRightError := rtWheel.driveAtPowerEx(rqstRtPower, true)
+        cogatn(cogmask)                                     ' sync the 2 motor cogs
+        if eLeftError == NO_ERROR
+            eLeftError := ltWheel.SyncStatus()              ' make sure both motors have taken value
+        if eRightError == NO_ERROR
+            eRightError := rtWheel.SyncStatus()
+        if (eLeftError == ERR_SYNC_TIMEOUT) or (eRightError == ERR_SYNC_TIMEOUT)
+            ' audit M: a platform with one wheel driving pivots, so neither wheel may keep a command the other did not take
+            stopMotors()
+        eError := firstError(eLeftError, eRightError)
+
+PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, degreesPerTic, ticsPerRotation
 '' Stops both motors, after either of the motors reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
-'' USE WITH: driveDirection(), drive()
-'' USE WITH:  driveAtPower()
-'' Will ABORT if {rotationCount} < 1
+'' USE WITH: driveDirection(), driveAtPower()
 ''
+'' @param nRotationCount - rotation to travel, at least 1, resolving to at least one hall tick
+'' @param eRotationUnits - units of {nRotationCount}: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit in place
 
-    if nRotationCount < 1
-        debug[user.DBGCH_ERROR]("! ERROR: invalid RotationCount Value:", udec_long(nRotationCount), " - must be > 0!")
-        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
-        abort
+' Local Variables:
+' @local nStopTicks - the requested rotation in hall ticks
+' @local degreesPerTic - degrees of rotation per hall tick for this motor
+' @local ticsPerRotation - hall ticks per rotation for this motor
 
+    ' validate everything, then commit: nothing is changed until every check has passed
+    ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+    eError := NO_ERROR
+    nStopTicks := 0
     degreesPerTic, ticsPerRotation := ltWheel.hallTicInfoForMotor()
-
-    ' convert rotation info to ticks (will stop at ticks limit)
-    motorStopHallTicks := 0
     case eRotationUnits
         DRU_HALL_TICKS:
-            motorStopHallTicks := nRotationCount
+            nStopTicks := nRotationCount
         DRU_DEGREES:
             ' ticks = degrees / 4
-            motorStopHallTicks := nRotationCount / degreesPerTic
+            nStopTicks := nRotationCount / degreesPerTic
         DRU_ROTATIONS:
             ' ticks = rotations * 90
-            motorStopHallTicks := nRotationCount * ticsPerRotation
+            nStopTicks := nRotationCount * ticsPerRotation
         other:
-            debug[user.DBGCH_ERROR]("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
-            abort
-    debug[user.DBGCH_COMMAND](" stopAfterRotation: ", udec(nRotationCount), " ", udec(degreesPerTic), " ", udec(ticsPerRotation), " ", udec(motorStopHallTicks))
+            eError := ERR_BAD_UNITS
 
+    if nRotationCount < 1
+        eError := ERR_BAD_COUNT
+    elseif eError == NO_ERROR
+        if nStopTicks < 1
+            eError := ERR_LIMIT_UNRESOLVABLE
+        elseif senseCog == 0
+            ' F-5c: start() would erase it, so a limit set before start() is refused, not silently lost
+            eError := ERR_NOT_STARTED
 
-'' Stops both motors, after either of the motors reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
-'' USE WITH: driveDirection(), drive()
-PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue
-'' Stops the motors after one of them reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
-'' USE WITH:  driveAtPower()
-'' Will ABORT if {distance} < 1
-''
-
-    if nDistance < 1
-        debug[user.DBGCH_ERROR]("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
-        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
-        abort
-
-    ' if user configured wheel-diameter is 0.0 then tickInMM_x100 is 0
-    ' if so, abort this method as we can't do this!
-    if tickInMM_x100 == 0
-        debug[user.DBGCH_ERROR]("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
-        abort
-
-    resetTracking()  ' clear tracking values to start counting again
-
-    ' convert distance to ticks (will stop at ticks limit)
-    ' Distance is translated to Hall ticks and compared with left and right motor hall ticks
-    ' The motor ticks are from start but reset on fault or estop.
-    ' So, need to getDistance and add required distance to it, to stop after a distance
-    ' So, call getDistance, then driveAtPower to start moving and then stopAfterDistance with total distance to stop.
-    ' If a fault occurs, will stop immedetely and hall ticks are reset on the faulting motor.
-    ' getDistance returns each motor separately. So use largest return distance to calculate stopAfterDistance
-    ' task 3502: numerators carry an extra x10 to match tickInMM_x100's x100 scale (was x10).
-    '  Largest assumed input is 1000 m: DDU_M's intermediate is then 1000 * 1000 * 100 =
-    '  100_000_000, safely inside a signed LONG (max 2_147_483_647).
-    case eDistanceUnits
-        DDU_MM:
-            motorStopHallTicks := (nDistance * 100) / tickInMM_x100
-        DDU_CM:
-            motorStopHallTicks := (nDistance * 10 * 100) / tickInMM_x100
-        DDU_IN:
-            fValue := distConv.fIn2mm(nDistance)
-            motorStopHallTicks := round(fValue *. 100.0) / tickInMM_x100
-        DDU_FT:
-            fValue := distConv.fIn2mm(nDistance * 12)
-            motorStopHallTicks := round(fValue *. 100.0) / tickInMM_x100
-        DDU_M:
-            ' F, mirrored from isp_bldc_motor.spin2 (task 3502): 1 m = 1000 mm, not 100 -- the prior
-            '  "* 100" stopped DDU_M at one tenth of the distance DDU_CM/DDU_MM give for the same
-            '  physical distance.
-            motorStopHallTicks := (nDistance * 1000 * 100) / tickInMM_x100
-        other:
-            debug[user.DBGCH_ERROR]("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
-            abort
-
-
-'' Stops both motors, after either of the motors reaches {distance} specified in {distanceUnits} [DDU_IN or DDU_MM].
-'' USE WITH: driveDirection(), drive()
-PUB stopAfterTime(nTime, eTimeUnits) | timeNow
-'' Stops the motors after {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
-'' USE WITH:  driveAtPower()
-'' Will ABORT if {time} < 1
-''
-
-    if nTime < 1
-        debug[user.DBGCH_ERROR]("! ERROR: invalid nTime Value:", udec_long(nTime), " - must be > 0!")
-        ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
-        abort
-
-    case eTimeUnits
-        DTU_MILLISEC:
-        DTU_SEC:
-        other:
-            debug[user.DBGCH_ERROR]("! ERROR: invalid timeUnits Value:", udec_long(eTimeUnits))
-            abort
-
-    if eTimeUnits == DTU_SEC
-        timeNow := getms()
-        motorStopMSecs := timeNow + (nTime * 1_000)
-        if motorStopMSecs == 0
-          motorStopMSecs := 1
+    if eError == NO_ERROR
+        motorStopHallTicks := nStopTicks
+        debug[user.DBGCH_COMMAND](" stopAfterRotation: ", udec(nRotationCount), " ", udec(degreesPerTic), " ", udec(ticsPerRotation), " ", udec(motorStopHallTicks))
     else
-        timeNow := getms()
-        motorStopMSecs := timeNow + nTime
-        if motorStopMSecs == 0
-          motorStopMSecs := 1
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: stopAfterRotation() rejected ", sdec_long(eError), sdec_long(nRotationCount), sdec_long(eRotationUnits))
 
-    if motorStopMSecs > 0
+PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, fValue
+'' Stops the motors after one of them reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
+'' USE WITH: driveDirection(), driveAtPower()
+''
+'' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
+'' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit and the tracking in place
+
+' Local Variables:
+' @local nStopTicks - the requested distance in hall ticks
+' @local fValue - the requested distance in mm (float), for the inch and foot units
+
+    ' validate everything, then commit: nothing is changed until every check has passed
+    ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+    eError := NO_ERROR
+    nStopTicks := 0
+    if nDistance < 1
+        eError := ERR_BAD_COUNT
+    elseif senseCog == 0
+        ' F-5c: start() would erase it, so a limit set before start() is refused, not silently lost
+        eError := ERR_NOT_STARTED
+    elseif tickInMM_x100 == 0
+        ' start() ran, so a zero travel-per-tick means the configured wheel diameter is 0
+        eError := ERR_NO_WHEEL_DIA
+    else
+        ' convert distance to ticks (will stop at ticks limit)
+        ' Distance is translated to Hall ticks and compared with left and right motor hall ticks
+        ' The motor ticks are from start but reset on fault or estop.
+        ' If a fault occurs, will stop immedetely and hall ticks are reset on the faulting motor.
+        ' task 3502: numerators carry an extra x10 to match tickInMM_x100's x100 scale (was x10).
+        '  Largest assumed input is 1000 m: DDU_M's intermediate is then 1000 * 1000 * 100 =
+        '  100_000_000, safely inside a signed LONG (max 2_147_483_647).
+        case eDistanceUnits
+            DDU_MM:
+                nStopTicks := (nDistance * 100) / tickInMM_x100
+            DDU_CM:
+                nStopTicks := (nDistance * 10 * 100) / tickInMM_x100
+            DDU_IN:
+                fValue := distConv.fIn2mm(nDistance)
+                nStopTicks := round(fValue *. 100.0) / tickInMM_x100
+            DDU_FT:
+                fValue := distConv.fIn2mm(nDistance * 12)
+                nStopTicks := round(fValue *. 100.0) / tickInMM_x100
+            DDU_M:
+                ' F, mirrored from isp_bldc_motor.spin2 (task 3502): 1 m = 1000 mm, not 100 -- the prior
+                '  "* 100" stopped DDU_M at one tenth of the distance DDU_CM/DDU_MM give for the same
+                '  physical distance.
+                nStopTicks := (nDistance * 1000 * 100) / tickInMM_x100
+            other:
+                eError := ERR_BAD_UNITS
+        if (eError == NO_ERROR) and (nStopTicks < 1)
+            eError := ERR_LIMIT_UNRESOLVABLE
+
+    if eError == NO_ERROR
+        ' F-4: tracking restarts only for an accepted limit, which counts from here
+        resetTracking()
+        motorStopHallTicks := nStopTicks
+    else
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: stopAfterDistance() rejected ", sdec_long(eError), sdec_long(nDistance), sdec_long(eDistanceUnits))
+
+PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
+'' Stops the motors after {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
+'' USE WITH: driveDirection(), driveAtPower()
+''
+'' @param nTime - time to run, at least 1
+'' @param eTimeUnits - units of {nTime}: DTU_MILLISEC or DTU_SEC
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit in place
+
+' Local Variables:
+' @local timeNow - getms() when the limit was computed
+' @local nStopMSecs - the getms() value at which the motors stop, never 0 (0 means no limit)
+
+    ' validate everything, then commit: nothing is changed until every check has passed
+    ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
+    eError := NO_ERROR
+    timeNow := getms()
+    nStopMSecs := 0
+    if nTime < 1
+        eError := ERR_BAD_COUNT
+    elseif senseCog == 0
+        ' F-5c: start() would erase it, so a limit set before start() is refused, not silently lost
+        eError := ERR_NOT_STARTED
+    else
+        case eTimeUnits
+            DTU_MILLISEC:
+                nStopMSecs := timeNow + nTime
+            DTU_SEC:
+                nStopMSecs := timeNow + (nTime * 1_000)
+            other:
+                eError := ERR_BAD_UNITS
+
+    if eError == NO_ERROR
+        if nStopMSecs == 0
+            nStopMSecs := 1
+        motorStopMSecs := nStopMSecs
         debug[user.DBGCH_COMMAND]("* stop motor at ", udec_long(motorStopMSecs), ", now: ", udec_long(timeNow))
+    else
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: stopAfterTime() rejected ", sdec_long(eError), sdec_long(nTime), sdec_long(eTimeUnits))
 
-PUB stopMotors()
+PUB stopMotors() : eError
 '' Stops both motors, killing any motion that was still in progress
 '' AFFECTED BY:holdAtStop()
 ''
+'' @returns eError - NO_ERROR; stopping always succeeds
 
     rqstPower := rqstLtPower := rqstRtPower := 0
     ltWheel.stopMotor()
     rtWheel.stopMotor()
+    eError := NO_ERROR
 
-PUB emergencyCutoff()
+PUB emergencyCutoff() : eError
 '' EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress
 ''
+'' @returns eError - NO_ERROR; stopping always succeeds
 
     rqstPower := rqstLtPower := rqstRtPower := 0
     userCutoff := TRUE
     ltWheel.emergencyCutoff()
     rtWheel.emergencyCutoff()
+    eError := NO_ERROR
 
-PUB clearEmergency()
+PUB clearEmergency() : eError
 '' Remove emergency override allowing motors to be driven again
 ''
+'' @returns eError - NO_ERROR
 
 ' used by wheels*.spin2 methods
     userCutoff := FALSE
     ltWheel.clearEmergency()
     rtWheel.clearEmergency()
     debug[user.DBGCH_FAULT]("--------clear EMERGENCY--------")
+    eError := NO_ERROR
 
 CON { --- Subsystem Status --- }
+
+PUB getError() : eError, eLeftError, eRightError
+'' Return and clear this cog's first recorded errors: the steering object's own, and each wheel's
+''
+'' @returns eError - this cog's first ERR_* code raised by the steering object itself, NO_ERROR when none; cleared by this call
+'' @returns eLeftError - this cog's first ERR_* code raised by the left wheel, NO_ERROR when none; cleared by this call
+'' @returns eRightError - this cog's first ERR_* code raised by the right wheel, NO_ERROR when none; cleared by this call
+
+    ' Three results, because the wheels can fail differently and one combined code would lose one of them.
+    '  Each wheel's slot for this cog is private to this object, so this is the only call that drains it.
+    eLeftError := ltWheel.getError()
+    eRightError := rtWheel.getError()
+    eError := lastError[COGID()]
+    lastError[COGID()] := NO_ERROR
 
 PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by each motor since last reset
 ''
+'' @param eDistanceUnits - units of the returned distances: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
+'' @returns leftDistanceInUnits - left wheel distance; 0, with ERR_BAD_UNITS or ERR_NO_WHEEL_DIA recorded for getError(), when it cannot be measured
+'' @returns rightDistanceInUnits - right wheel distance; 0, with ERR_BAD_UNITS or ERR_NO_WHEEL_DIA recorded for getError(), when it cannot be measured
 
     debug[user.DBGCH_SENSE]("- gdi ", sdec_long(ltWheel.getposTrkHallTicks()), sdec_long(rtWheel.getposTrkHallTicks()))
     leftDistanceInUnits := convertDistance(ltWheel.getposTrkHallTicks(), eDistanceUnits)
@@ -444,8 +539,20 @@ PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
 
 PRI convertDistance(nValue, eDistanceUnits) : nDistanceInUnits | fValue
 ' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
+'
+' @param nValue - the wheel's tracked hall ticks
+' @param eDistanceUnits - units of the returned distance
+' @returns nDistanceInUnits - the distance; 0, with the ERR_* code recorded, when it cannot be measured
+
+' Local Variables:
+' @local fValue - the distance in mm (float), before the final unit conversion
+
     nDistanceInUnits := 0
-    if tickInMM_x100 <> 0
+    if user.WHEEL_DIA_IN_INCH == 0.0
+        recordError(ERR_NO_WHEEL_DIA)
+        debug[user.DBGCH_ERROR]("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
+    else
+        ' before start() travel-per-tick is 0, but so is every tracked tick count, so 0 is the true distance
         ' task 3502: fValue is millimetres -- ticks x (mm per tick x100) / 100. Before 6.0.0 this
         '  multiplied by the x10 constant and never divided the x10 back out, so every arm below
         '  reported ten times the distance travelled (isp_bldc_motor.spin2 getDistance() divides
@@ -467,12 +574,16 @@ PRI convertDistance(nValue, eDistanceUnits) : nDistanceInUnits | fValue
                 nDistanceInUnits := round(distConv.fMm2inFloat(fValue) /. 12.0)                         ' in FT
             DDU_MI:
                 nDistanceInUnits := round(distConv.fMm2inFloat(fValue) /. 12.0 /. 5280.0)               ' in MI
-    else
-        debug[user.DBGCH_ERROR]("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
+            other:
+                recordError(ERR_BAD_UNITS)
+                debug[user.DBGCH_ERROR]("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
 
 PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
 '' Returns accumulated {*RotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for each of the motors.
 ''
+'' @param eRotationUnits - units of the returned rotations: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
+'' @returns leftRotationCount - left wheel rotation; 0, with ERR_BAD_UNITS recorded for getError(), when the units are not DRU_*
+'' @returns rightRotationCount - right wheel rotation; 0, with ERR_BAD_UNITS recorded for getError(), when the units are not DRU_*
 
     debug[user.DBGCH_SENSE]("- grc ", sdec_long(ltWheel.getposTrkHallTicks()), sdec_long(rtWheel.getposTrkHallTicks()))
     leftRotationCount := convertRotationCount(ltWheel.getposTrkHallTicks(), eRotationUnits)
@@ -480,7 +591,16 @@ PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
 
 PRI convertRotationCount(nValue, eRotationUnits) : rotationCount | degreesPerTic, ticsPerRotation
 ' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
-    rotationCount := -1
+'
+' @param nValue - the wheel's tracked hall ticks
+' @param eRotationUnits - units of the returned rotation
+' @returns rotationCount - the rotation; 0, with ERR_BAD_UNITS recorded, when the units are not DRU_*
+
+' Local Variables:
+' @local degreesPerTic - degrees of rotation per hall tick for this motor
+' @local ticsPerRotation - hall ticks per rotation for this motor
+
+    rotationCount := 0
 
     degreesPerTic, ticsPerRotation := ltWheel.hallTicInfoForMotor()
 
@@ -493,6 +613,9 @@ PRI convertRotationCount(nValue, eRotationUnits) : rotationCount | degreesPerTic
         DRU_ROTATIONS:
             ' rotations = ticks / 24, 90
             rotationCount := nValue / ticsPerRotation
+        other:
+            recordError(ERR_BAD_UNITS)
+            debug[user.DBGCH_ERROR]("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
 
 PUB getPower() : leftPower, rightPower
 '' Returns the last specified power value [-100 thru +100] for each of the motors (will be zero if the motor is stopped).
@@ -710,54 +833,60 @@ PUB testRightGetRpm() : nRpm
 
     nRpm := rtWheel.testGetRpm()
 
-PUB testLeftDriveAtMotorIncrement(motorIncre)
+PUB testLeftDriveAtMotorIncrement(motorIncre) : eError
 '' TESTING USE: drive the LEFT motor at a raw increment
 ''
 '' @param motorIncre - signed raw driver increment; sign selects the commutation offset
+'' @returns eError - NO_ERROR, or the wheel's ERR_* code (also recorded for getError())
 
     ' NOTE: this path bypasses incrementForPower() and the reversed-motor flag, so the sign
     '  passed here is the sign the driver sees.
-    ltWheel.testDriveAtMotorIncrement(motorIncre)
+    eError := ltWheel.testDriveAtMotorIncrement(motorIncre)
 
-PUB testRightDriveAtMotorIncrement(motorIncre)
+PUB testRightDriveAtMotorIncrement(motorIncre) : eError
 '' TESTING USE: drive the RIGHT motor at a raw increment
 ''
 '' @param motorIncre - signed raw driver increment; sign selects the commutation offset
+'' @returns eError - NO_ERROR, or the wheel's ERR_* code (also recorded for getError())
 
     ' NOTE: see testLeftDriveAtMotorIncrement() - the reversed-motor flag is bypassed here.
-    rtWheel.testDriveAtMotorIncrement(motorIncre)
+    eError := rtWheel.testDriveAtMotorIncrement(motorIncre)
 
-PUB testLeftSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
+PUB testLeftSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) : eError
 '' TESTING USE: set the LEFT motor's commutation offsets so we can characterize current draw
 ''
 '' @param newOfsDegr - commutation offset, in degrees
 '' @param bFwdIsInverse - T/F where T means forward is the inverse of reverse
+'' @returns eError - NO_ERROR
 
-    ltWheel.testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
+    eError := ltWheel.testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
 
-PUB testRightSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
+PUB testRightSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) : eError
 '' TESTING USE: set the RIGHT motor's commutation offsets so we can characterize current draw
 ''
 '' @param newOfsDegr - commutation offset, in degrees
 '' @param bFwdIsInverse - T/F where T means forward is the inverse of reverse
+'' @returns eError - NO_ERROR
 
-    rtWheel.testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
+    eError := rtWheel.testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse)
 
-PUB testLeftSetFwdRevIndep(fwdDegrees, revDegrees)
+PUB testLeftSetFwdRevIndep(fwdDegrees, revDegrees) : eError
 '' TESTING USE: set the LEFT motor's forward and reverse commutation offsets independently
 ''
 '' @param fwdDegrees - commutation offset for negative increments, in degrees
 '' @param revDegrees - commutation offset for positive increments, in degrees
+'' @returns eError - NO_ERROR
 
-    ltWheel.testSetFwdRevIndep(fwdDegrees, revDegrees)
+    eError := ltWheel.testSetFwdRevIndep(fwdDegrees, revDegrees)
 
-PUB testRightSetFwdRevIndep(fwdDegrees, revDegrees)
+PUB testRightSetFwdRevIndep(fwdDegrees, revDegrees) : eError
 '' TESTING USE: set the RIGHT motor's forward and reverse commutation offsets independently
 ''
 '' @param fwdDegrees - commutation offset for negative increments, in degrees
 '' @param revDegrees - commutation offset for positive increments, in degrees
+'' @returns eError - NO_ERROR
 
-    rtWheel.testSetFwdRevIndep(fwdDegrees, revDegrees)
+    eError := rtWheel.testSetFwdRevIndep(fwdDegrees, revDegrees)
 
 PUB testLeftGetFwdRevIndep() : fwdDegrees, revDegrees
 '' TESTING USE: return the LEFT motor's currently-applied forward and reverse offsets
@@ -775,59 +904,67 @@ PUB testRightGetFwdRevIndep() : fwdDegrees, revDegrees
 
     fwdDegrees, revDegrees := rtWheel.testGetFwdRevIndep()
 
-PUB testLeftSetLimit(newMaxLimit)
+PUB testLeftSetLimit(newMaxLimit) : eError
 '' TESTING USE: set the LEFT motor's override increment limit
 ''
 '' @param newMaxLimit - maximum raw driver increment allowed at full power
+'' @returns eError - NO_ERROR
 
-    ltWheel.testSetLimit(newMaxLimit)
+    eError := ltWheel.testSetLimit(newMaxLimit)
 
-PUB testRightSetLimit(newMaxLimit)
+PUB testRightSetLimit(newMaxLimit) : eError
 '' TESTING USE: set the RIGHT motor's override increment limit
 ''
 '' @param newMaxLimit - maximum raw driver increment allowed at full power
+'' @returns eError - NO_ERROR
 
-    rtWheel.testSetLimit(newMaxLimit)
+    eError := rtWheel.testSetLimit(newMaxLimit)
 
-PUB testLeftSetMotorReversed(bEnable)
+PUB testLeftSetMotorReversed(bEnable) : eError
 '' TESTING USE: set -or clear- the LEFT motor's reversed-motor flag
 ''
 '' @param bEnable - T/F where T means forward and reverse are swapped for this motor
+'' @returns eError - NO_ERROR
 
-    ltWheel.testSetMotorReversed(bEnable)
+    eError := ltWheel.testSetMotorReversed(bEnable)
 
-PUB testRightSetMotorReversed(bEnable)
+PUB testRightSetMotorReversed(bEnable) : eError
 '' TESTING USE: set -or clear- the RIGHT motor's reversed-motor flag
 ''
 '' @param bEnable - T/F where T means forward and reverse are swapped for this motor
+'' @returns eError - NO_ERROR
 
     ' NOTE: start() calls forwardIsReverse() on the right wheel. Clearing it here is how a
     '  test measures both wheels on the same commutation offset.
-    rtWheel.testSetMotorReversed(bEnable)
+    eError := rtWheel.testSetMotorReversed(bEnable)
 
-PUB testLeftResetFault()
+PUB testLeftResetFault() : eError
 '' TESTING USE: reset the LEFT motor's fault indicator tripped during test
 ''
+'' @returns eError - NO_ERROR, or the wheel's ERR_* code (also recorded for getError())
 
-    ltWheel.testResetFault()
+    eError := ltWheel.testResetFault()
 
-PUB testRightResetFault()
+PUB testRightResetFault() : eError
 '' TESTING USE: reset the RIGHT motor's fault indicator tripped during test
 ''
+'' @returns eError - NO_ERROR, or the wheel's ERR_* code (also recorded for getError())
 
-    rtWheel.testResetFault()
+    eError := rtWheel.testResetFault()
 
-PUB testLeftResetMaxValues()
+PUB testLeftResetMaxValues() : eError
 '' TESTING USE: reset the LEFT motor's accumulated maximum sense values
 ''
+'' @returns eError - NO_ERROR
 
-    ltWheel.testResetMaxValues()
+    eError := ltWheel.testResetMaxValues()
 
-PUB testRightResetMaxValues()
+PUB testRightResetMaxValues() : eError
 '' TESTING USE: reset the RIGHT motor's accumulated maximum sense values
 ''
+'' @returns eError - NO_ERROR
 
-    rtWheel.testResetMaxValues()
+    eError := rtWheel.testResetMaxValues()
 
 PUB testLeftGetRampingValues() : minRamp, maxRamp, incRamp, decrRamp
 '' TESTING USE: return the LEFT motor's ramping parameters
@@ -853,6 +990,30 @@ PUB testRightGetRampingValues() : minRamp, maxRamp, incRamp, decrRamp
     minRamp, maxRamp, incRamp, decrRamp := rtWheel.getRampingValues()
 
 CON { --- PRIVATE Utility Methods --- }
+
+VAR { error record }
+    LONG    lastError[ltWheel.COG_SLOT_COUNT]   ' per calling cog: the steering object's first error not yet collected, NO_ERROR when none
+
+PRI recordError(eCode) : eSameCode
+' Record the calling cog's first steering error: the ONLY writer of lastError[]; returns the code unchanged.
+'
+' @param eCode - NO_ERROR or an ERR_* code
+' @returns eSameCode - {eCode}, so a failing path can record and return in one expression
+
+    ' Sticky first, and success never writes: only getError() clears a slot. Errors a wheel raises
+    '  are recorded in that wheel's own slot, so this slot holds only what this object detected.
+    if (eCode <> NO_ERROR) and (lastError[COGID()] == NO_ERROR)
+        lastError[COGID()] := eCode
+    eSameCode := eCode
+
+PRI firstError(eLeftError, eRightError) : eError
+' Combine the two wheels' results for one command: the left wheel's code when it failed, else the right's.
+'
+' @param eLeftError - the left wheel's result
+' @param eRightError - the right wheel's result
+' @returns eError - NO_ERROR when both succeeded; each wheel's code is already recorded in its own slot
+
+    eError := (eLeftError <> NO_ERROR) ? eLeftError : eRightError
 
 PRI calcPowerForDirection(power, direction) : ltPower, rtPower | limitPwr, limitDir, reducedPower
 ' determine porportional power based on direction
@@ -936,9 +1097,8 @@ VAR { time values & arrays }
 
 VAR { Data for Motor Position Tracking }
     long    deltaTicks
-    long    circInMM_x10
     ' task 3502: mm-per-tick carried at x100 (not x10) -- see isp_bldc_motor.spin2's
-    '  matching declaration comment for why.
+    '  wheelGeometry() for why. 0 until start() sets it.
     long    tickInMM_x100
     '  --------------------------
 
