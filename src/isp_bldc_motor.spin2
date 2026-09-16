@@ -56,6 +56,43 @@ CON { Public Interface Constants }
 
     MOTOR_ID_STRLEN = 10
 
+    ' Error codes: every command method returns NO_ERROR or one of these, and records it for getError().
+    '  Getters that cannot measure return a documented neutral value and record the code instead.
+    '  Every code is below -1_000, so none can be mistaken for a pin group, voltage, cog id, power or
+    '  any other value this object returns. -2_000..-2_099 is RESERVED for protective-stop causes.
+    '   NO_ERROR               - the call did what it was asked
+    '   ERR_BAD_PIN_GROUP      - start: base pin is not a legal PINS_* group
+    '   ERR_PIN_GROUP_IN_USE   - start: the pin group overlaps one another motor instance holds
+    '   ERR_BAD_VOLTAGE        - start: the voltage is not in this motor's power table
+    '   ERR_BAD_DETECT_MODE    - start: the detection mode is not a BRD_* value
+    '   ERR_NO_FREE_COG        - start: no cog was free for the driver or the sense task
+    '   ERR_ABI_MISMATCH       - start: the driver's shared-memory layout is wrong; no driver launched
+    '   ERR_NOT_STARTED        - a drive command on a motor whose driver is not running
+    '   ERR_NO_SENSE_TASK      - a stop limit with no sense task running to enforce it
+    '   ERR_BAD_UNITS          - a units value outside its DDU_*, DRU_* or DTU_* enum
+    '   ERR_BAD_COUNT          - a distance, rotation or time value less than 1
+    '   ERR_NO_WHEEL_DIA       - a distance request when the configured wheel diameter is 0
+    '   ERR_LIMIT_UNRESOLVABLE - a stop limit that rounds to less than one hall tick
+    '   ERR_SYNC_TIMEOUT       - a synchronized command the driver did not take in time
+    '   ERR_BUSY               - TEST-USE: moveShaftToAngle() while a move is still pending
+    '   ERR_FAULT_NOT_CLEARED  - TEST-USE: testResetFault() found the driver not stopped after its wait
+    NO_ERROR                = 0
+    ERR_BAD_PIN_GROUP       = -1_001
+    ERR_PIN_GROUP_IN_USE    = -1_002
+    ERR_BAD_VOLTAGE         = -1_003
+    ERR_BAD_DETECT_MODE     = -1_004
+    ERR_NO_FREE_COG         = -1_005
+    ERR_ABI_MISMATCH        = -1_006
+    ERR_NOT_STARTED         = -1_007
+    ERR_NO_SENSE_TASK       = -1_008
+    ERR_BAD_UNITS           = -1_009
+    ERR_BAD_COUNT           = -1_010
+    ERR_NO_WHEEL_DIA        = -1_011
+    ERR_LIMIT_UNRESOLVABLE  = -1_012
+    ERR_SYNC_TIMEOUT        = -1_013
+    ERR_BUSY                = -1_014
+    ERR_FAULT_NOT_CLEARED   = -1_015
+
 OBJ { objects / constants included by this object }
 
 #ifdef BENCH_CFG
@@ -87,47 +124,50 @@ PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
 '' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
-'' @returns ok - The COG ID of the motor driver task or (-1) if failed to start
+'' @returns ok - The COG ID of the motor driver task or (-1) if failed to start; the cause of a -1 is in getError()
 
     ok := startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, false)
 
-PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | legalBase
+PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError
 '' Specify motor control board connect location for this motor and start the driver, specify sync setting
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
 '' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
 '' @param sync - non zero if motor loop should wait to start
-'' @returns ok - The COG ID of the motor driver task or (-1) if failed to start
+'' @returns ok - The COG ID of the motor driver task or (-1) if failed to start; the cause of a -1 is in getError()
 
 ' Local Variables:
-' @local legalBase -
+' @local eError - NO_ERROR, or the first step's failure code
 
-    sync_required := sync
-    if motorCog or senseCog or holdsPinBaseClaim()
-        stop()    ' D2: free this instance's own driver/sense cog and pin claim before starting fresh -- stop() is safe to call unconditionally too, but only actually needed here
-    init(eMotorBasePin, eMotorVoltage, eDetectionMode)  ' setup runtime constants
-    params_ptr := @offset_fwd   ' point to driver variables
-    setTargetAccel(0, false)                            ' do NOT move at startup
+    ' Validate, then acquire, then commit: a rejected call changes nothing -- a running motor keeps
+    '  running -- and after the claim nothing but coginit can fail, so no half-started instance exists.
+    ok := -1
+    eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    if eError == NO_ERROR
+        sync_required := sync
+        params_ptr := @offset_fwd   ' point to driver variables
+        setTargetAccel(0, false)                            ' do NOT move at startup
 
-    motorCog := coginit(NEWCOG, @driver, @pinbase)
-    if motorCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
-        motorCog := 0    ' keep the "not started" sentinel
-        ok := -1
-        debug[user.DBGCH_ERROR]("!! ERROR filed to start Motor Control task")
-        ' PL-36: init() above took this instance's pin-range claim. A failed start must not keep it,
-        '  or no other instance can claim the group until this one is stop()ped -- a claim with no
-        '  cog behind it. stop() releases the claim and clears the pins; with motorCog already 0 it
-        '  stops no cog.
-        stop()
-    else
-        motorCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
-        ok := motorCog - 1    ' public contract: the started cog's id (0-7), per @returns
-        debug[user.DBGCH_LIFECYCLE]("* Motor COG #", sdec_(motorCog - 1))
+        motorCog := coginit(NEWCOG, @driver, @pinbase)
+        if motorCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+            motorCog := 0    ' keep the "not started" sentinel
+            eError := recordError(ERR_NO_FREE_COG)
+            debug[user.DBGCH_ERROR]("!! ERROR filed to start Motor Control task")
+            ' PL-36: setupForStart() took this instance's pin-range claim. A failed start must not keep
+            '  it, or no other instance can claim the group until this one is stop()ped -- a claim with
+            '  no cog behind it. stop() releases the claim and clears the pins; with motorCog already 0
+            '  it stops no cog.
+            stop()
+        else
+            motorCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
+            ok := motorCog - 1    ' public contract: the started cog's id (0-7), per @returns
+            debug[user.DBGCH_LIFECYCLE]("* Motor COG #", sdec_(motorCog - 1))
 
-PUB stop()
+PUB stop() : eError
 '' Stop cogs and release pins assigned to this motor
 ''
+'' @returns eError - NO_ERROR; stopping always succeeds, on a started or an unstarted instance
 
     if motorCog     ' stop motor drive
         cogstop(motorCog - 1)
@@ -152,26 +192,27 @@ PUB stop()
     ' calls rather than one 16-pin call.
     ' Only when THIS instance initialised the group: pinbase is 0 (not VALUE_NOT_SET) in an
     ' instance that was never started, so pinbase alone would clear P0..P15 out from under
-    ' another motor. The AE claim is taken only by a successful init() and is keyed by this
-    ' instance's own @pinbase, so no other instance's state can satisfy it.
+    ' another motor. The AE claim is taken only by setupForStart(), after every argument has
+    ' been validated and immediately before its init(), which cannot fail -- so holding the claim
+    ' means this instance's init() completed. It is keyed by this instance's own @pinbase, so no
+    ' other instance's state can satisfy it.
     if (pinbase <> VALUE_NOT_SET) and (holdsPinBaseClaim() == TRUE)
         pinclear(pinbase addpins HALF_GROUP_SPAN)
         pinclear(pinbase + GROUP_HI_OFFSET addpins HALF_GROUP_SPAN)
     pinbase := VALUE_NOT_SET
 
     releasePinBaseClaim()    ' AE: free this instance's pin-range claim, if any
+    eError := NO_ERROR
 
-PUB testSetup(eMotorBasePin, eMotorVoltage, eDetectionMode) | legalBase
+PUB testSetup(eMotorBasePin, eMotorVoltage, eDetectionMode) : eError
 '' TESTING USE: Specify motor control board connect location for this motor BUT DON'T start the driver
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
 '' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call changes nothing
 
-' Local Variables:
-' @local legalBase -
-
-    init(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
 
 DAT { pin-range allocation tracking (AE) }
 
@@ -216,7 +257,7 @@ PRI claimPinBase(eMotorBasePin) : bClaimed
 ' this same instance previously held. Fails (does not claim) if the requested range overlaps a
 ' range another instance already owns. The only overlapping legal-base pairs are the adjacent
 ' ones 8 pins apart: (P0_P15, P8_P23), (P8_P23, P16_P31) and (P32_P47, P40_P55); PINS_NO_USE_P24_P39
-' is not a legal base (see validatePinBase()) and never enters this check.
+' is not a legal base (see validBasePinForChoice()) and never enters this check.
 
     ' Release first, so a re-init or a restart on the same base never conflicts with
     ' this instance's own previous claim. Each case below must therefore also test its
@@ -251,26 +292,59 @@ PRI claimPinBase(eMotorBasePin) : bClaimed
             else
                 gOwnerP40P55 := @pinbase
 
-PRI validatePinBase(eMotorBasePin) : legalBase
-' AE: an overlapping pin-group choice is a wiring conflict -- two driver cogs would be
-' commanding the shared pins -- so this ABORTS rather than warns; see the AE finding for why
-' this decision is deliberate and what it changes for existing configs.
+PRI setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode) : eError
+' Validate every start argument, then free this instance's previous driver, claim the pin group and init().
+'
+' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
+' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
+' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
+' @returns eError - NO_ERROR when this instance now holds the claim and is initialised, else the recorded ERR_* code
 
-  legalBase := VALUE_NOT_SET
-  if lookdown(eMotorBasePin: PINS_P0_P15, PINS_P8_P23, PINS_P16_P31, PINS_P32_P47, PINS_P40_P55) <> 0
-    if not claimPinBase(eMotorBasePin)
-        debug[user.DBGCH_ERROR]("! ERROR: validatePinBase() pin base ", udec_long(eMotorBasePin), " overlaps a pin range already in use by another motor instance")
-        abort
-    legalBase := eMotorBasePin
+    ' 1. validate, with no side effects: a rejected call leaves a running motor running, unchanged
+    eError := NO_ERROR
+    if validBasePinForChoice(eMotorBasePin) == INVALID_PIN_BASE
+        eError := ERR_BAD_PIN_GROUP
+    elseif validVoltageForChoice(eMotorVoltage) == INVALID_VOLTAGE
+        eError := ERR_BAD_VOLTAGE
+    elseif validDetectModeForChoice(eDetectionMode) == INVALID_DET_MODE
+        eError := ERR_BAD_DETECT_MODE
+    elseif abiLayoutIsValid() == FALSE
+        eError := ERR_ABI_MISMATCH
+
+    if eError == NO_ERROR
+        ' 2. D2: free this instance's own driver/sense cog and pin claim before starting fresh
+        if motorCog or senseCog or holdsPinBaseClaim()
+            stop()
+        ' 3. AE: an overlapping pin group is a wiring conflict -- two driver cogs would command the shared pins
+        if claimPinBase(eMotorBasePin) == FALSE
+            eError := ERR_PIN_GROUP_IN_USE
+            debug[user.DBGCH_ERROR]("! ERROR: pin base ", udec_long(eMotorBasePin), " overlaps a pin range already in use by another motor instance")
+        else
+            ' 4. every argument is valid and the pins are ours, so init() cannot fail
+            init(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    else
+        debug[user.DBGCH_ERROR]("! ERROR: start rejected ", sdec_long(eError), sdec_long(eMotorBasePin), sdec_long(eMotorVoltage), sdec_long(eDetectionMode))
+
+    eError := recordError(eError)
 
 PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs
-' Specify motor control board connect location for this motor BUT DON'T start the driver
+' Initialise this instance's driver image and state for a validated, claimed start; cannot fail.
+'
+' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor, already validated and claimed
+' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor, already validated
+' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor, already validated
+
+' Local Variables:
+' @local fwdDegrees - forward commutation offset for this motor, in degrees
+' @local revDegrees - reverse commutation offset for this motor, in degrees
+' @local gapInNs - PWM dead-gap, in nanoseconds
+
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
     ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
     ticksSenseLp := CLKFREQ / SENSE_LOOP_HZ ' derived from the rate, so the two can never disagree
 
-    pinbase := validatePinBase(eMotorBasePin)           ' record base pin number
+    pinbase := eMotorBasePin                            ' record base pin number (validated and claimed by setupForStart())
 
     eUserDetectionMode, bUserForced := getInternalDetectMode(eDetectionMode)
 
@@ -362,11 +436,6 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
     hall_illegal := 0
 
-    ' ABI guard: the driver block-copies DRVR_STATUS_LONGS_COUNT longs starting at drive_u and writes
-    '  fault at the long right after them, so fault must sit exactly that many longs past drive_u
-    if (@fault - @drive_u) <> DRVR_STATUS_LONGS_COUNT * 4
-        debug[user.DBGCH_ERROR]("! ERROR: driver status block ABI mismatch: fault is ", udec_long_(@fault - @drive_u), " bytes past drive_u, expected ", udec_long_(DRVR_STATUS_LONGS_COUNT * 4))
-
     ' init status variables
     loop_ticks := 0
     minDrvTics := 65535
@@ -383,14 +452,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     debug[user.DBGCH_LIFECYCLE]("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(adc_fram), udec_long(duty_min), udec_long(duty_max))
     debug[user.DBGCH_LIFECYCLE]("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks))
 
-    if user.WHEEL_DIA_IN_INCH <> 0
-        ' task 3502: keep tenths of a mm -- circInMMforDiaInInchFloat() truncates to whole mm
-        '  (518 for a 6.5in wheel against 518.68) before the x10, losing 0.13% of every distance
-        circInMM_x10 := round(distConv.floatCircInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) *. 10.0)
-        ' task 3502: round-to-nearest at x100 scale instead of truncating at x10 -- see
-        '  tickInMM_x100's declaration comment. Signed '/' is safe here: both operands are
-        '  always non-negative (a wheel circumference and a tick count).
-        tickInMM_x100 := ((circInMM_x10 * 10) + (hallTicsPerRotation / 2)) / hallTicsPerRotation
+    circInMM_x10, _ := wheelGeometry()
 
     ' PL-14: honour the caller's eMotorVoltage parameter instead of silently re-reading the
     ' compile-time user.DRIVE_VOLTAGE. Behaviour-neutral today (every shipped caller already
@@ -409,7 +471,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 PUB startSenseCog() : ok
 '' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
 ''
-'' @returns ok - The COG ID of the sense task or (-1) if failed to start
+'' @returns ok - The COG ID of the sense task or (-1) if failed to start; the cause of a -1 is in getError()
 
     if senseCog    ' D2: free this instance's own sense cog before starting a fresh one
         cogstop(senseCog - 1)
@@ -419,6 +481,7 @@ PUB startSenseCog() : ok
     if senseCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
         senseCog := 0    ' keep the "not started" sentinel
         ok := -1
+        recordError(ERR_NO_FREE_COG)
         debug[user.DBGCH_ERROR]("!! ERROR filed to start Position Sense task")
     else
         senseCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
@@ -452,27 +515,38 @@ VAR { * user request values * }
 
     BYTE    motorId[MOTOR_ID_STRLEN+1]
 
-PUB testSetMotorId(pIDStr)
+PUB testSetMotorId(pIDStr) : eError
 '' TESTING USE: save name used in debug messages
 ''
+'' @param pIDStr - pointer to a zero-terminated name, at most MOTOR_ID_STRLEN characters are kept
+'' @returns eError - NO_ERROR
 
     strcopy(@motorId, pIdStr, MOTOR_ID_STRLEN)
+    eError := NO_ERROR
 
-PUB setAcceleration(rate)
+PUB setAcceleration(rate) : eError
 '' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
 ''
+'' @param rate - the ramp increment added every drive pass while speeding up
+'' @returns eError - NO_ERROR
 
   ' need to convert from units to ramp increment
-    setRampingValues(ramp_min, ramp_max, rate, ramp_down)
+    eError := setRampingValues(ramp_min, ramp_max, rate, ramp_down)
 
-PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp)
+PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp) : eError
 '' Change the ramping parameters
 ''
+'' @param minRamp - angle increment at the start of a ramp up
+'' @param maxRamp - largest angle increment a ramp up reaches
+'' @param incRamp - increment added to the ramp every drive pass until maxRamp is reached
+'' @param decrRamp - fixed angle decrement per drive pass when slowing down
+'' @returns eError - NO_ERROR
 
     ramp_min := minRamp
     ramp_max := maxRamp
     ramp_inc := incRamp
     ramp_down := decrRamp
+    eError := NO_ERROR
 
 PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
 '' Return the ramping parameters
@@ -483,222 +557,338 @@ PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
     incRamp := ramp_inc
     decrRamp := ramp_down
 
-PUB setMaxSpeed(speed) | limitSpeed
+PUB setMaxSpeed(speed) : eError | limitSpeed
 '' Limit top-speed to {speed} where {speed} is [1 to 100]  (default is 75)
 ''
+'' @param speed - top speed [1 to 100]; a value outside the range is saturated to it
+'' @returns eError - NO_ERROR
+
+' Local Variables:
+' @local limitSpeed - {speed} saturated to [1 to 100]
 
     limitSpeed :=  1 #> speed <# 100
     if limitSpeed <> speed
         debug[user.DBGCH_WARNING]("! WARNING: setMaxSpeed() speed out of range (corrected):", udec_long(speed), " - must be [1 to 100]")
     debug[user.DBGCH_COMMAND]("setMaxSpeed() ", udec_long(limitSpeed))
     maxSpeed := limitSpeed      ' remember user value
+    eError := NO_ERROR
 
-PUB setMaxSpeedForDistance(speed) | limitSpeed4dist
+PUB setMaxSpeedForDistance(speed) : eError | limitSpeed4dist
 '' Limit top-speed of driveDistance() operations to {speed} where {speed} is [1 to 100]  (default is 75)
 ''
+'' @param speed - top speed [1 to 100]; a value outside the range is saturated to it
+'' @returns eError - NO_ERROR
+
+' Local Variables:
+' @local limitSpeed4dist - {speed} saturated to [1 to 100]
 
     limitSpeed4dist :=  1 #> speed <# 100
     if limitSpeed4dist <> speed
         debug[user.DBGCH_WARNING]("! WARNING: setMaxSpeedForDistance() speed out of range (corrected):", udec_long(speed), " - must be [1 to 100]")
     debug[user.DBGCH_COMMAND]("setMaxSpeedForDistance() ", udec_long(limitSpeed4dist))
     maxSpeed4dist := limitSpeed4dist      ' remember user value
+    eError := NO_ERROR
 
-PUB calibrate()
+PUB calibrate() : eError
 '' NOT WORKING: (we may or may not need this?)
 ''  have motor drivers determine fixed-offset constants
 ''
+'' @returns eError - NO_ERROR
 
-PUB holdAtStop(bEnable)
+    eError := NO_ERROR
+
+PUB holdAtStop(bEnable) : eError
 '' Informs the motor control cog to actively hold position (bEnable=true) or coast (bEnable=false) at end of motion
 ''
+'' @param bEnable - T/F where T means hold position at rest and F means coast
+'' @returns eError - NO_ERROR
 
     stop_mode := (bEnable) ? SM_BRAKE : SM_FLOAT
+    eError := NO_ERROR
 
-PUB resetTracking()
+PUB resetTracking() : eError
 '' Resets the position tracking values returned by getDistance() and getRotations()
 ''
+'' @returns eError - NO_ERROR
 
     posTrkHallTicks := 0    ' reset all of our trackers (they are incremented in sensor loop)
     waitms(200) ' values clear within one sense-loop pass
+    eError := NO_ERROR
 
-PUB moveShaftToAngle(desiredAngle)
+PUB moveShaftToAngle(desiredAngle) : eError
 '' TESTING USE: force motor to specific angle
 ''
+'' @param desiredAngle - the shaft angle to move to
+'' @returns eError - NO_ERROR, or ERR_BUSY (also recorded for getError()) while a previous move is still pending
 
+    eError := NO_ERROR
     if targetAngle == $ffffffff
         targetAngle := desiredAngle
         debug[user.DBGCH_TEST]("MOT: move to ", sdec(targetAngle))
     else
+        eError := recordError(ERR_BUSY)
         debug[user.DBGCH_TEST]("MOT: busy!!")
 
 CON { --- Subsystem Control --- }
 
-PUB driveForDistance(distance, distanceUnits)
+PUB driveForDistance(distance, distanceUnits) : eError
 '' Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
 '' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN, DDU_CM, DDU_FT or DDU_M].
 '' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
 ''
+'' @param distance - distance to travel, at least 1
+'' @param distanceUnits - units of {distance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); the motor is not started when the limit is rejected
 
-    stopAfterDistance(distance, distanceUnits)
-    driveAtPower(maxSpeed4dist)
+    eError := stopAfterDistance(distance, distanceUnits)
+    if eError == NO_ERROR
+        eError := driveAtPower(maxSpeed4dist)
 
-PUB driveAtPower(power)
+PUB driveAtPower(power) : eError
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
 '' Turns the motor on at {power}.
 '' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
 ''
+'' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
+'' @returns eError - NO_ERROR, or ERR_NOT_STARTED (also recorded for getError()) when the driver is not running
 
-  driveAtPowerEx(power, false)
+    eError := driveAtPowerEx(power, false)
 
-PUB driveAtPowerEx(power, sync) | limitPwr, motorIncre, correctedPower
+PUB driveAtPowerEx(power, sync) : eError | limitPwr, motorIncre, correctedPower
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input. (allow sync setting)
 '' Turns the motor on at {power}.
 '' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
 ''
+'' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
+'' @param sync - non zero if the driver should wait for the steering object's ATN before taking the command
+'' @returns eError - NO_ERROR, or ERR_NOT_STARTED (also recorded for getError()) when the driver is not running
 
-    limitPwr :=  -100 #> power <# 100
-    if limitPwr <> power
-        debug[user.DBGCH_WARNING]("! WARNING: driveAtPowerEx() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
-    debug[user.DBGCH_COMMAND]("-MOT- driveAtPowerEx(", zstr_(@motorId), ") ", sdec_long(limitPwr), udec_long(ramp_max), udec_long(ramp_min))
-    motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
-    correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
-    motorIncre := incrementForPower(correctedPower)
-    setTargetAccel(motorIncre, sync)
-    'debug("-MOT- driveAtPowerEx() EXIT ")
+' Local Variables:
+' @local limitPwr - {power} saturated to [(-100) to 100] and then to the max speed
+' @local motorIncre - driver angle increment for the saturated power
+' @local correctedPower - saturated power with this motor's reversal applied
 
-PUB stopAfterRotation(nRotationCount, eRotationUnits)
+    eError := NO_ERROR
+    if motorCog == 0
+        ' started means init() completed, so the power limits the increment is mapped from are set
+        eError := recordError(ERR_NOT_STARTED)
+        debug[user.DBGCH_ERROR]("! ERROR: driveAtPowerEx(", zstr_(@motorId), ") motor driver not started")
+    else
+        limitPwr :=  -100 #> power <# 100
+        if limitPwr <> power
+            debug[user.DBGCH_WARNING]("! WARNING: driveAtPowerEx() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
+        debug[user.DBGCH_COMMAND]("-MOT- driveAtPowerEx(", zstr_(@motorId), ") ", sdec_long(limitPwr), udec_long(ramp_max), udec_long(ramp_min))
+        motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
+        correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
+        motorIncre := incrementForPower(correctedPower)
+        setTargetAccel(motorIncre, sync)
+
+PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, degreesPerTic, ticsPerRotation
 '' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
-'' USE WITH:  driveAtPower()
-'' Will ABORT if {rotationCount} < 1
+'' USE WITH:  driveAtPower() and startSenseCog(), whose task enforces the limit
 ''
+'' @param nRotationCount - rotation to travel, at least 1, resolving to at least one hall tick
+'' @param eRotationUnits - units of {nRotationCount}: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit in place
 
-    if nRotationCount < 1
-        debug[user.DBGCH_ERROR]("! ERROR: invalid RotationCount Value:", udec_long(nRotationCount), " - must be > 0!")
-        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
-        abort
+' Local Variables:
+' @local nStopTicks - the requested rotation in hall ticks
+' @local degreesPerTic - degrees of rotation per hall tick for this motor
+' @local ticsPerRotation - hall ticks per rotation for this motor
 
-    ' convert rotation info to ticks (will stop at ticks limit)
-    motorStopHallTicks := 0
+    ' validate everything, then commit: nothing is changed until every check has passed
+    ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+    eError := NO_ERROR
+    nStopTicks := 0
+    degreesPerTic, ticsPerRotation := hallTicInfoForMotor()
     case eRotationUnits
         DRU_HALL_TICKS:
-            motorStopHallTicks := nRotationCount
+            nStopTicks := nRotationCount
         DRU_DEGREES:
             ' ticks = degrees / 4 (6.5")
-            motorStopHallTicks := nRotationCount / degrPerTic
+            nStopTicks := nRotationCount / degreesPerTic
         DRU_ROTATIONS:
             ' ticks = rotations * 90 (6.5")
-            motorStopHallTicks := nRotationCount * hallTicsPerRotation
+            nStopTicks := nRotationCount * ticsPerRotation
         other:
-            debug[user.DBGCH_ERROR]("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
-            abort
+            eError := ERR_BAD_UNITS
 
-PUB stopAfterDistance(nDistance, eDistanceUnits)
-'' Stops the motor after it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
-'' USE WITH:  driveAtPower()
-'' Will ABORT if {distance} < 1
-''
+    if nRotationCount < 1
+        eError := ERR_BAD_COUNT
+    elseif eError == NO_ERROR
+        if nStopTicks < 1
+            eError := ERR_LIMIT_UNRESOLVABLE
+        elseif senseCog == 0
+            eError := ERR_NO_SENSE_TASK
 
-    if nDistance < 1
-        debug[user.DBGCH_ERROR]("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
-        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
-        abort
-
-    if user.WHEEL_DIA_IN_INCH == 0.0
-        debug[user.DBGCH_ERROR]("! ERROR: stopAfterDistance() not supported when wheel dia. is unknown!")
-        abort
-
-    ' convert distance to ticks (will stop at ticks limit)
-    ' task 3502: numerators carry an extra x10 to match tickInMM_x100's x100 scale
-    '  (was x10). Largest assumed input is 1000 m: DDU_M's intermediate is then
-    '  1000 * 1000 * 100 = 100_000_000, safely inside a signed LONG (max 2_147_483_647).
-    case eDistanceUnits
-        DDU_MM:
-            motorStopHallTicks := (nDistance * 100) / tickInMM_x100
-        DDU_CM:
-            motorStopHallTicks := (nDistance * 10 * 100) / tickInMM_x100
-        DDU_IN:
-            motorStopHallTicks := round(distConv.fIn2mm(nDistance) *. 100.0) / tickInMM_x100
-        DDU_FT:
-            motorStopHallTicks := round(distConv.fIn2mm(nDistance * 12) *. 100.0) / tickInMM_x100
-        DDU_M:
-            ' F: 1 m = 1000 mm, not 100 -- the prior "* 100" scaled DDU_M ten times short of
-            ' DDU_CM/DDU_MM for the same physical distance (measured: DDU_M -> 17 ticks vs.
-            ' the equivalent DDU_CM/DDU_MM -> 175 ticks each).
-            motorStopHallTicks := (nDistance * 1000 * 100) / tickInMM_x100
-        other:
-            debug[user.DBGCH_ERROR]("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
-            abort
-
-PUB stopAfterTime(nTime, eTimeUnits) | timeNow
-'' Stops the motor, after {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
-'' USE WITH:  driveAtPower()
-'' Will ABORT if {time} < 1
-''
-
-    if nTime < 1
-        debug[user.DBGCH_ERROR]("! ERROR: invalid nTime Value:", udec_long(nTime), " - must be > 0!")
-        ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
-        abort
-
-    case eTimeUnits
-        DTU_MILLISEC:
-        DTU_SEC:
-        other:
-            debug[user.DBGCH_ERROR]("! ERROR: invalid timeUnits Value:", udec_long(eTimeUnits))
-            abort
-
-    if eTimeUnits == DTU_SEC
-        timeNow := getms()
-        motorStopMSecs := timeNow + (nTime * 1_000)
-        if motorStopMSecs == 0
-            motorStopMSecs := 1
+    if eError == NO_ERROR
+        motorStopHallTicks := nStopTicks
     else
-        timeNow := getms()
-        motorStopMSecs := timeNow + nTime
-        if motorStopMSecs == 0
-            motorStopMSecs := 1
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: stopAfterRotation() rejected ", sdec_long(eError), sdec_long(nRotationCount), sdec_long(eRotationUnits))
 
-    if motorStopMSecs > 0
+PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, nTickInMM_x100
+'' Stops the motor after it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
+'' USE WITH:  driveAtPower() and startSenseCog(), whose task enforces the limit
+''
+'' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
+'' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit in place
+
+' Local Variables:
+' @local nStopTicks - the requested distance in hall ticks
+' @local nTickInMM_x100 - wheel travel per hall tick in hundredths of a mm, 0 when the wheel diameter is 0
+
+    ' validate everything, then commit: nothing is changed until every check has passed
+    ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+    eError := NO_ERROR
+    nStopTicks := 0
+    _, nTickInMM_x100 := wheelGeometry()
+    if nDistance < 1
+        eError := ERR_BAD_COUNT
+    elseif nTickInMM_x100 == 0
+        eError := ERR_NO_WHEEL_DIA
+    else
+        ' convert distance to ticks (will stop at ticks limit)
+        ' task 3502: numerators carry an extra x10 to match nTickInMM_x100's x100 scale
+        '  (was x10). Largest assumed input is 1000 m: DDU_M's intermediate is then
+        '  1000 * 1000 * 100 = 100_000_000, safely inside a signed LONG (max 2_147_483_647).
+        case eDistanceUnits
+            DDU_MM:
+                nStopTicks := (nDistance * 100) / nTickInMM_x100
+            DDU_CM:
+                nStopTicks := (nDistance * 10 * 100) / nTickInMM_x100
+            DDU_IN:
+                nStopTicks := round(distConv.fIn2mm(nDistance) *. 100.0) / nTickInMM_x100
+            DDU_FT:
+                nStopTicks := round(distConv.fIn2mm(nDistance * 12) *. 100.0) / nTickInMM_x100
+            DDU_M:
+                ' F: 1 m = 1000 mm, not 100 -- the prior "* 100" scaled DDU_M ten times short of
+                ' DDU_CM/DDU_MM for the same physical distance (measured: DDU_M -> 17 ticks vs.
+                ' the equivalent DDU_CM/DDU_MM -> 175 ticks each).
+                nStopTicks := (nDistance * 1000 * 100) / nTickInMM_x100
+            other:
+                eError := ERR_BAD_UNITS
+        if eError == NO_ERROR
+            if nStopTicks < 1
+                eError := ERR_LIMIT_UNRESOLVABLE
+            elseif senseCog == 0
+                eError := ERR_NO_SENSE_TASK
+
+    if eError == NO_ERROR
+        motorStopHallTicks := nStopTicks
+    else
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: stopAfterDistance() rejected ", sdec_long(eError), sdec_long(nDistance), sdec_long(eDistanceUnits))
+
+PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
+'' Stops the motor, after {time} specified in {timeUnits} [DTU_MILLISEC or DTU_SEC] has elapsed.
+'' USE WITH:  driveAtPower() and startSenseCog(), whose task enforces the limit
+''
+'' @param nTime - time to run, at least 1
+'' @param eTimeUnits - units of {nTime}: DTU_MILLISEC or DTU_SEC
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit in place
+
+' Local Variables:
+' @local timeNow - getms() when the limit was computed
+' @local nStopMSecs - the getms() value at which the motor stops, never 0 (0 means no limit)
+
+    ' validate everything, then commit: nothing is changed until every check has passed
+    ' FIXME: UNDONE should be more than time needed for spin-up/down ramps!!!
+    eError := NO_ERROR
+    timeNow := getms()
+    nStopMSecs := 0
+    if nTime < 1
+        eError := ERR_BAD_COUNT
+    elseif senseCog == 0
+        eError := ERR_NO_SENSE_TASK
+    else
+        case eTimeUnits
+            DTU_MILLISEC:
+                nStopMSecs := timeNow + nTime
+            DTU_SEC:
+                nStopMSecs := timeNow + (nTime * 1_000)
+            other:
+                eError := ERR_BAD_UNITS
+
+    if eError == NO_ERROR
+        if nStopMSecs == 0
+            nStopMSecs := 1
+        motorStopMSecs := nStopMSecs
         debug[user.DBGCH_COMMAND]("* stop motor at ", udec_long(motorStopMSecs), ", now: ", udec_long(timeNow))
+    else
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: stopAfterTime() rejected ", sdec_long(eError), sdec_long(nTime), sdec_long(eTimeUnits))
 
-PUB stopMotor()
+PUB stopMotor() : eError
 '' Stops the motor, killing any motion that was still in progress
 ''  AFFECTED BY:holdAtStop()
 ''
+'' @returns eError - NO_ERROR; stopping always succeeds
 
     setTargetAccel(0, false)
+    eError := NO_ERROR
 
-PUB emergencyCutoff()
+PUB emergencyCutoff() : eError
 '' EMERGENCY-Stop - Immediately stop motor, killing any motion that was still in progress
 ''
+'' @returns eError - NO_ERROR; stopping always succeeds
 
     e_stop := TRUE
     setTargetAccel(0, false)
     debug[user.DBGCH_FAULT]("-- EMERGENCY STOP --")
+    eError := NO_ERROR
 
-PUB clearEmergency()
+PUB clearEmergency() : eError
 '' Clear EMERGENCY-Stop - remove the need to stop!
 ''
+'' @returns eError - NO_ERROR
 
     e_stop := FALSE
     debug[user.DBGCH_FAULT]("-- EMERGENCY -- CLEARED --")
+    eError := NO_ERROR
 
-PUB forwardIsReverse()
+PUB forwardIsReverse() : eError
 '' Call when we have two motors and one of them needs to be reversed
 ''
+'' @returns eError - NO_ERROR
 
     motorIsReversed := TRUE
+    eError := NO_ERROR
 
 CON { --- Subsystem Status --- }
 
-PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
+PUB getError() : eError
+'' Return and clear this cog's first recorded error
+''
+'' @returns eError - this cog's first ERR_* code since the last call, NO_ERROR when none; cleared by this call
+
+    ' A slot is read and cleared only by its own cog, and written only by that cog's recordError(),
+    '  so another cog's calls can neither erase nor steal this cog's error.
+    eError := lastError[COGID()]
+    lastError[COGID()] := NO_ERROR
+
+PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue, ticsPerRotation
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
 ''
+'' @param eDistanceUnits - units of the returned distance: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
+'' @returns nDistanceInUnits - distance travelled; 0, with ERR_BAD_UNITS or ERR_NO_WHEEL_DIA recorded for getError(), when it cannot be measured
+
+' Local Variables:
+' @local fMMpTick - wheel travel per hall tick, in mm (float)
+' @local fValue - distance travelled in mm or inches (float), before the final unit conversion
+' @local ticsPerRotation - hall ticks per rotation for this motor
 
     nDistanceInUnits := 0
+    ' the divisor comes from the compile-time configuration, not from init(), so a call before start()
+    '  divides by no zero (circInMM_x10 is 0 until then, which only makes the distance 0)
+    _, ticsPerRotation := hallTicInfoForMotor()
     ' if we know the wheel diameter, then calculate value and return it
-    if user.WHEEL_DIA_IN_INCH <> 0.0
-        fMMpTick := float(circInMM_x10) /. float(hallTicsPerRotation) /. 10.0
+    if user.WHEEL_DIA_IN_INCH == 0.0
+        recordError(ERR_NO_WHEEL_DIA)
+        debug[user.DBGCH_ERROR]("! ERROR: getDistance() not supported when wheel dia. is unknown!")
+    else
+        fMMpTick := float(circInMM_x10) /. float(ticsPerRotation) /. 10.0
         case eDistanceUnits
             DDU_MM:
                 nDistanceInUnits := round(float(posTrkHallTicks) *. fMMpTick)
@@ -720,26 +910,34 @@ PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue
                 fValue := float(posTrkHallTicks) *. fMMpTick
                 nDistanceInUnits := round(fValue /. 1000.0 /. 1000.0)           ' in kM
             other:
+                recordError(ERR_BAD_UNITS)
                 debug[user.DBGCH_ERROR]("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
-                abort
 
-PUB getRotationCount(eRotationUnits) : rotationCount
+PUB getRotationCount(eRotationUnits) : rotationCount | degreesPerTic, ticsPerRotation
 '' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
 ''
+'' @param eRotationUnits - units of the returned rotation: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
+'' @returns rotationCount - rotation accumulated; 0, with ERR_BAD_UNITS recorded for getError(), when the units are not DRU_*
 
-    rotationCount := -1
+' Local Variables:
+' @local degreesPerTic - degrees of rotation per hall tick for this motor
+' @local ticsPerRotation - hall ticks per rotation for this motor
+
+    rotationCount := 0
+    ' geometry from the compile-time configuration, not from init(), so a call before start() divides by no zero
+    degreesPerTic, ticsPerRotation := hallTicInfoForMotor()
     case eRotationUnits
         DRU_HALL_TICKS:
             rotationCount := posTrkHallTicks
         DRU_DEGREES:
             ' degrees = ticks * 4 (6.5" wheel)
-            rotationCount := posTrkHallTicks * degrPerTic
+            rotationCount := posTrkHallTicks * degreesPerTic
         DRU_ROTATIONS:
             ' rotations = ticks / 90 (6.5" wheel)
-            rotationCount := posTrkHallTicks / hallTicsPerRotation
+            rotationCount := posTrkHallTicks / ticsPerRotation
         other:
+            recordError(ERR_BAD_UNITS)
             debug[user.DBGCH_ERROR]("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
-            abort
 
 PUB getPower() : nPower
 '' Returns the last specified power value [-100 thru +100] for motor (will be zero if the motor is stopped).
@@ -976,35 +1174,39 @@ PUB isFaultSignal() : bState
 
     bState := (fault <> false) ? true : false
 
-PUB clearFaultSignal()
+PUB clearFaultSignal() : eError
 '' Reset the recorded fault indicator read by isFaultSignal()
 ''
+'' @returns eError - NO_ERROR
 
 ' S-5: nothing clears the indicator automatically -- only this method (also called by testResetFault()) and a restart
     if fault
         debug[user.DBGCH_FAULT]("MTR: did reset fault ind.")
         fault := false
+    eError := NO_ERROR
 
 CON { --- PUBLIC Utility Methods --- }
 
 PUB validBasePinForChoice(userBasePin) : legalBasePin
 '' VALIDATE users' base-pin choice returns legalBasePin or INVALID_PIN_BASE
 ''
+'' @param userBasePin - the base pin ENUM (PINS_*) to check
+'' @returns legalBasePin - {userBasePin} when it is a legal group, else INVALID_PIN_BASE; no side effects (start() reports a group already in use)
 
-    legalBasePin := validatePinBase(userBasePin)
+    legalBasePin := INVALID_PIN_BASE
+    if lookdown(userBasePin: PINS_P0_P15, PINS_P8_P23, PINS_P16_P31, PINS_P32_P47, PINS_P40_P55) <> 0
+        legalBasePin := userBasePin
     debug[user.DBGCH_VALIDATE]("*VAL* ", sdec_long(legalBasePin))
 
 PUB validVoltageForChoice(userVoltage) : legalVoltage
 '' VALIDATE users' voltage choice returns legalVoltage or INVALID_VOLTAGE
 ''
+'' @param userVoltage - the voltage ENUM (PWR_*) to check
+'' @returns legalVoltage - {userVoltage} when this motor's power table holds it, else INVALID_VOLTAGE
 
     legalVoltage := userVoltage
-    if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
-        if lookdown(userVoltage: PWR_7p4V..PWR_24p0V) == 0 ' 6.0V & 25.9V are not legal for this motor
-            legalVoltage := INVALID_VOLTAGE
-    else
-        if lookdown(userVoltage: PWR_6p0V..PWR_25p9V) == 0
-            legalVoltage := INVALID_VOLTAGE
+    if powerTableIndex(userVoltage) == 0
+        legalVoltage := INVALID_VOLTAGE
     debug[user.DBGCH_VALIDATE]("*VAL* ", sdec_long(legalVoltage))
 
 PUB validMotorForChoice(userMotor) : legalMotor
@@ -1045,19 +1247,29 @@ CON ' --- TEST-USE ONLY Methods ---
     DEGREES_PER_TURN      = 360     ' one turn of a commutation offset, in degrees
     DEGREE_NORM_MAX_STEPS = 16      ' bounded add/subtract-360 steps: inputs within +/-5_760 degrees normalise exactly
 
-PUB testSetLimit(newMaxLimit)
+PUB testSetLimit(newMaxLimit) : eError
 '' TESTING USE: set override limit so we can characterize motor
 ''
+'' @param newMaxLimit - the driver angle increment that 100% power maps to, in both directions
+'' @returns eError - NO_ERROR
 
     maxFwdIncreAtPwr := newMaxLimit
     maxRevIncreAtPwr := 0 - newMaxLimit
     minFwdIncreAtPwr := 0
     minRevIncreAtPwr := 0
     debug[user.DBGCH_TEST]("MOT: new limits: ", sdec(maxFwdIncreAtPwr), sdec(maxRevIncreAtPwr))
+    eError := NO_ERROR
 
-PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) | fwdDegrees, revDegrees
+PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) : eError | fwdDegrees, revDegrees
 '' TESTING USE: set offsets so we can characterize motor current draw
 ''
+'' @param newOfsDegr - the commutation offset to apply, in degrees
+'' @param bFwdIsInverse - T/F where T means forward is the inverse of reverse (DocoEng motor), F the reverse (6.5in motor)
+'' @returns eError - NO_ERROR
+
+' Local Variables:
+' @local fwdDegrees - forward commutation offset, in degrees
+' @local revDegrees - reverse commutation offset, in degrees
 
     if bFwdIsInverse
         ' forward is the inverse of reverse (ex. docoEng.com motor)
@@ -1074,8 +1286,9 @@ PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) | fwdDegrees, revDegrees
     offset_rev_degrees := revDegrees
     debug[user.DBGCH_TEST]("MOT:  ", sdec(fwdDegrees), uhex_long(offset_fwd))
     debug[user.DBGCH_TEST](" (tst)", sdec(revDegrees), uhex_long(offset_rev))
+    eError := NO_ERROR
 
-PUB testSetFwdRevIndep(fwdDegrees, revDegrees)
+PUB testSetFwdRevIndep(fwdDegrees, revDegrees) : eError
 '' TESTING USE: set forward and reverse commutation offsets independently
 ''
 '' This method allows separate control of the two offsets to characterize
@@ -1094,6 +1307,7 @@ PUB testSetFwdRevIndep(fwdDegrees, revDegrees)
 ''
 '' @param fwdDegrees - commutation offset for negative increments, in degrees (normalised into 0..359)
 '' @param revDegrees - commutation offset for positive increments, in degrees (normalised into 0..359)
+'' @returns eError - NO_ERROR
 
     ' FRAC's behaviour for a negative or >= 360 operand is not established, so the operand is
     '  always brought into 0..359 first
@@ -1103,6 +1317,7 @@ PUB testSetFwdRevIndep(fwdDegrees, revDegrees)
     offset_rev  := offset_rev_degrees frac DEGREES_PER_TURN
     debug[user.DBGCH_TEST]("MOT:  ", sdec(offset_fwd_degrees), uhex_long(offset_fwd))
     debug[user.DBGCH_TEST](" (ind)", sdec(offset_rev_degrees), uhex_long(offset_rev))
+    eError := NO_ERROR
 
 PUB testGetFwdRevIndep() : fwdDegrees, revDegrees
 '' TESTING USE: return the currently-applied forward and reverse commutation offsets
@@ -1117,11 +1332,18 @@ PUB testGetFwdRevIndep() : fwdDegrees, revDegrees
     fwdDegrees := offset_fwd_degrees
     revDegrees := offset_rev_degrees
 
-PUB testDriveAtMotorIncrement(motorIncre)
+PUB testDriveAtMotorIncrement(motorIncre) : eError
 '' TESTING USE: set target accelleration to fix value
 ''
+'' @param motorIncre - the driver angle increment to run at; 0 stops
+'' @returns eError - NO_ERROR, or ERR_NOT_STARTED (also recorded for getError()) when the driver is not running
 
-    setTargetAccel(motorIncre, false)
+    eError := NO_ERROR
+    if motorCog == 0
+        eError := recordError(ERR_NOT_STARTED)
+        debug[user.DBGCH_ERROR]("! ERROR: testDriveAtMotorIncrement(", zstr_(@motorId), ") motor driver not started")
+    else
+        setTargetAccel(motorIncre, false)
 
 PUB testGetResults() : nMaxRPM, maxTics, bDidFault, max_mV
 '' TESTING USE: return results of test pass
@@ -1133,10 +1355,12 @@ PUB testGetResults() : nMaxRPM, maxTics, bDidFault, max_mV
     max_mV := tvMaxSenseI
     'debug("MOT: result: ", udec(nMaxRPM), udec(maxTics), sdec(bDidFault))
 
-PUB testResetFault() | bDidFault
+PUB testResetFault() : eError
 '' TESTING USE: reset our fault indicator that we tripped during test
 ''
+'' @returns eError - NO_ERROR, or ERR_FAULT_NOT_CLEARED (also recorded for getError()) when the driver had not stopped by the end of the wait
 
+    eError := NO_ERROR
     if fault
         debug[user.DBGCH_TEST]("MOT: reset fault...")
         ' PL-28(a): the driver only leaves DCS_FAULTED via its .newRqst path. A STOP request
@@ -1156,17 +1380,20 @@ PUB testResetFault() | bDidFault
                     quit
                 else
                     waitms(2)
-            if fault
+            if isStopped() == FALSE
+                eError := recordError(ERR_FAULT_NOT_CLEARED)
                 debug[user.DBGCH_TEST]("MOT: WAIT-fault-reset ended still-FAULT!")
     else
         debug[user.DBGCH_TEST]("MOT: testResetFault() NOT faulted!?")
 
-PUB testResetMaxValues()
+PUB testResetMaxValues() : eError
 '' TESTING USE: reset our fault indicator that we tripped during test
 ''
+'' @returns eError - NO_ERROR
 
     bResetSenseData := TRUE
     waitms(200) ' values should clear in 125ms
+    eError := NO_ERROR
 
 PUB testGetTelemetry() : nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrState, bDidFault
 '' TESTING USE: snapshot the per-cycle driver status values in a single call
@@ -1192,14 +1419,16 @@ PUB testGetTelemetry() : nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrS
     eDrvrState := drv_state
     bDidFault := (fault <> false) ? true : false
 
-PUB testSetMotorReversed(bEnable)
+PUB testSetMotorReversed(bEnable) : eError
 '' TESTING USE: set -or clear- the reversed-motor flag for this motor
 ''
 '' @param bEnable - T/F where T means forward and reverse are swapped for this motor
+'' @returns eError - NO_ERROR
 
     ' NOTE: forwardIsReverse() is deliberately one-way. A test that measures this motor both
     '  with and without the reversal needs to be able to put it back.
     motorIsReversed := bEnable
+    eError := NO_ERROR
 
 PUB testGetDriveConstants() : deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt
 '' TESTING USE: snapshot the drive constants init() derived for the detected board/config
@@ -1276,10 +1505,13 @@ PRI map(inValue, inMin, inMax, outMin, outMax) : nResult | slope
     'debug("- map() ", sdec_long(inValue) , " --> ", sdec_long(nResult))
 
 PRI incrementForPower(nUserPower) : nMotorIncre
-' translate -100 to +100 value to Incre value needed by motor
-    if eUserSelectedVolts == VALUE_NOT_SET
-        abort
+' Translate a -100 to +100 power to the driver angle increment for this motor's voltage.
+'
+' @param nUserPower - power [(-100) to 100], already saturated and reversed as needed
+' @returns nMotorIncre - driver angle increment; 0 for a stop
 
+    ' Reached only from a started motor: setupForStart() validated the voltage and init() set the
+    '  power limits before the driver cog existed, so the limits mapped below are always set.
     if nUserPower < 0
         ' map REV request
         nMotorIncre := map(nUserPower, -1, -100, minRevIncreAtPwr, maxRevIncreAtPwr)
@@ -1353,95 +1585,94 @@ PRI normalisedDegrees(inDegrees) : outDegrees | stepCount
         stepCount += 1
     outDegrees := (outDegrees #> 0) <# (DEGREES_PER_TURN - 1)
 
-PRI getInternalDetectMode(eDetectMode) : eValidMode, bUserOverride | legalMode
-' ensure suer specifies a good value
+PRI getInternalDetectMode(eDetectMode) : eValidMode, bUserOverride
+' Translate a validated user detection mode to this object's internal mode.
+'
+' @param eDetectMode - the detection mode ENUM (BRD_*), already validated by setupForStart()
+' @returns eValidMode - BRD_AUTO_DET, BRD_REV_A or BRD_REV_B
+' @returns bUserOverride - T/F where T means the user forced a board revision instead of auto-detect
+
     eValidMode := BRD_AUTO_DET
     bUserOverride := FALSE
-    legalMode := VALUE_NOT_SET
     CASE eDetectMode
-        user.BRD_AUTO_DET:
-            legalMode := BRD_AUTO_DET    ' xlate to our internal value
         user.BRD_REV_A:
-            legalMode := BRD_REV_A
+            eValidMode := BRD_REV_A
             bUserOverride := TRUE
         user.BRD_REV_B:
-            legalMode := BRD_REV_B
+            eValidMode := BRD_REV_B
             bUserOverride := TRUE
-        OTHER :
-            legalMode := VALUE_NOT_SET
 
-    ' if legal base-pin then start cog
-    if legalMode <> VALUE_NOT_SET
-        eValidMode := legalMode        ' record base pin number
+PRI powerTableIndex(eVoltage) : tableIdx
+' Return this motor's power-table row for a voltage: the one list both the validator and the limits read.
+'
+' @param eVoltage - the voltage ENUM (PWR_*) to look up
+' @returns tableIdx - the 1-based row in confgurePowerLimits()' tables, 0 when this motor has no row for {eVoltage}
 
-PRI confgurePowerLimits(userVoltage) | selectedPower, index
-' set up our motor drive limits based upon the user configured Voltage selection
-    selectedPower := validVoltageForChoice(userVoltage)
-    debug[user.DBGCH_LIFECYCLE]("* ENTRY CFG ", sdec_long(selectedPower))
-    if selectedPower == INVALID_VOLTAGE
-        abort
+    ' One list per motor, so "validated but not in the table" cannot be written. 6.0V and 25.9V have
+    '  no DocoEng row; 25.9V has no 6.5in row.
+    if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
+        tableIdx := lookdown(eVoltage: PWR_7p4V..PWR_24p0V)
+    else
+        tableIdx := lookdown(eVoltage: PWR_6p0V..PWR_24p0V)
 
-    eUserSelectedVolts := VALUE_NOT_SET  ' preset
-    minFwdIncreAtPwr := VALUE_NOT_SET
-    maxFwdIncreAtPwr := VALUE_NOT_SET
+PRI confgurePowerLimits(userVoltage) | index
+' Set this motor's drive limits for a validated voltage.
+'
+' @param userVoltage - the voltage ENUM (PWR_*), already validated by setupForStart()
+
+' Local Variables:
+' @local index - the voltage's row in this motor's power table (never 0: the voltage was validated)
+
+    index := powerTableIndex(userVoltage)
+    debug[user.DBGCH_LIFECYCLE]("* ENTRY CFG ", sdec_long(userVoltage), sdec_long(index))
+
+    minFwdIncreAtPwr := VALUE_NOT_SET   ' preset: the DocoEng branch below derives its minimum from this value
     minRevIncreAtPwr := VALUE_NOT_SET
-    maxRevIncreAtPwr := VALUE_NOT_SET
 
     if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
-        if (index := lookdown(selectedPower:PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V)) <> 0
-            if eDetectedBoard == REV_B
-                maxFwdIncreAtPwr := lookup(index: -385_000_000, -287_500_000, -485_000_000, -388_000_000, -449_500_000, -420_000_000, -460_000_000)
-                maxRevIncreAtPwr := lookup(index:  385_000_000,  287_500_000,  485_000_000,  388_000_000,  449_500_000,  420_000_000,  460_000_000)
-            else
-                    ' 282_000_000 100% anything above yields RPM 1885.0, cts/Sec 754, @0.11A
-                    ' 545_000_000 100% anything above yields RPM 3645.0, cts/Sec 1458, @0.50A
-                    ' 335_000_000 100% anything above yields RPM 2242.0, cts/Sec 897, @0.14A
-                    ' 376_000_000 100% anything above yields RPM 2517.0, cts/Sec 1007, @0.88A
-                    ' 376_000_000 100% anything above yields RPM 2_745, cts/sec 1_098
-                    ' 100% anything above yields RPM 2_810, cts/sec 1_124
-                    ' 100% anything above yields RPM 2_877, cts/sec 1_151
-                    ' 100% anything above yields RPM 2_940, cts/sec 1_178
-                    ' 100% anything above yields RPM 3_010, cts/sec 1_204
-                    ' 100% anything above yields RPM 3_077, cts/sec 1_231
-                    ' 100% anything above yields RPM 3_145, cts/sec 1_258
-                    ' 470_000_000 100% anything above yields RPM 2662.0, cts/Sec 1065, @0.89A
-                    ' 100% anything above yields RPM 3145.0, cts/Sec 1258, @0.78A
-                    ' 391_000_000 100% anything above yields RPM 2615.0, cts/Sec 1046, @0.620A
-                maxFwdIncreAtPwr := lookup(index: -282_000_000, -545_000_000, -335_000_000, -376_000_000, -398_000_000, -470_000_000, -391_000_000)
-                maxRevIncreAtPwr := lookup(index:  282_000_000,  545_000_000,  335_000_000,  376_000_000,  398_000_000,  470_000_000,  391_000_000)
+        ' rows: PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
+        if eDetectedBoard == REV_B
+            maxFwdIncreAtPwr := lookup(index: -385_000_000, -287_500_000, -485_000_000, -388_000_000, -449_500_000, -420_000_000, -460_000_000)
+            maxRevIncreAtPwr := lookup(index:  385_000_000,  287_500_000,  485_000_000,  388_000_000,  449_500_000,  420_000_000,  460_000_000)
         else
-            debug[user.DBGCH_ERROR]("*???* Unknown: ", sdec_long(selectedPower))
-            abort   ' SHOULD NEVER get here!
+            ' 282_000_000 100% anything above yields RPM 1885.0, cts/Sec 754, @0.11A
+            ' 545_000_000 100% anything above yields RPM 3645.0, cts/Sec 1458, @0.50A
+            ' 335_000_000 100% anything above yields RPM 2242.0, cts/Sec 897, @0.14A
+            ' 376_000_000 100% anything above yields RPM 2517.0, cts/Sec 1007, @0.88A
+            ' 376_000_000 100% anything above yields RPM 2_745, cts/sec 1_098
+            ' 100% anything above yields RPM 2_810, cts/sec 1_124
+            ' 100% anything above yields RPM 2_877, cts/sec 1_151
+            ' 100% anything above yields RPM 2_940, cts/sec 1_178
+            ' 100% anything above yields RPM 3_010, cts/sec 1_204
+            ' 100% anything above yields RPM 3_077, cts/sec 1_231
+            ' 100% anything above yields RPM 3_145, cts/sec 1_258
+            ' 470_000_000 100% anything above yields RPM 2662.0, cts/Sec 1065, @0.89A
+            ' 100% anything above yields RPM 3145.0, cts/Sec 1258, @0.78A
+            ' 391_000_000 100% anything above yields RPM 2615.0, cts/Sec 1046, @0.620A
+            maxFwdIncreAtPwr := lookup(index: -282_000_000, -545_000_000, -335_000_000, -376_000_000, -398_000_000, -470_000_000, -391_000_000)
+            maxRevIncreAtPwr := lookup(index:  282_000_000,  545_000_000,  335_000_000,  376_000_000,  398_000_000,  470_000_000,  391_000_000)
+        minFwdIncreAtPwr := 0 - minFwdIncreAtPwr
+        minRevIncreAtPwr := 544_628                 ' anything below yields NO rotation
     else
-        ' is this more readable than the case statement?
-        if (index := lookdown(selectedPower:PWR_6p0V..PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V..PWR_24p0V)) <> 0
-            ' PL-50: the RPM and cts/Sec figures below have no log behind them and sit within 1.5% of a 2000-passes/s
-            '  model. The driver applies drv_incr about 1913 times a second (one drive pass per 23 ADC frames, see
-            '  drvMotor), and Visit 2's ladder MEASURED 0.946-0.965 of that model, so 147_000_000 runs about 393
-            '  ticks/s, not 408 (DERIVED). The increments are the fault ceilings and are unchanged. (The DOCO figures
-            '  above do match the real rate: 282_000_000 -> 754 cts/Sec recorded, 753.7 DERIVED.)
-            ' 90_000_000  anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
-            ' 97_000_000  anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
-            ' 120_000_000 anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
-            ' 147_000_000 anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
-            ' 172_000_000 anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
-            ' 172_000_000     FAKE above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
-            maxFwdIncreAtPwr := lookup(index:  90_000_000,  90_000_000,  90_000_000,  97_000_000,  120_000_000,  147_000_000,  172_000_000,  172_000_000)
-            maxRevIncreAtPwr := lookup(index: -90_000_000, -90_000_000, -90_000_000, -97_000_000, -120_000_000, -147_000_000, -172_000_000, -172_000_000)
-        else
-            debug[user.DBGCH_ERROR]("*???* Unknown: ", sdec_long(selectedPower))
-            abort   ' SHOULD NEVER get here!
+        ' rows: PWR_6p0V, PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
+        ' PL-50: the RPM and cts/Sec figures below have no log behind them and sit within 1.5% of a 2000-passes/s
+        '  model. The driver applies drv_incr about 1913 times a second (one drive pass per 23 ADC frames, see
+        '  drvMotor), and Visit 2's ladder MEASURED 0.946-0.965 of that model, so 147_000_000 runs about 393
+        '  ticks/s, not 408 (DERIVED). The increments are the fault ceilings and are unchanged. (The DOCO figures
+        '  above do match the real rate: 282_000_000 -> 754 cts/Sec recorded, 753.7 DERIVED.)
+        ' 90_000_000  anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
+        ' 97_000_000  anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
+        ' 120_000_000 anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
+        ' 147_000_000 anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
+        ' 172_000_000 anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
+        ' 172_000_000     FAKE above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
+        maxFwdIncreAtPwr := lookup(index:  90_000_000,  90_000_000,  90_000_000,  97_000_000,  120_000_000,  147_000_000,  172_000_000,  172_000_000)
+        maxRevIncreAtPwr := lookup(index: -90_000_000, -90_000_000, -90_000_000, -97_000_000, -120_000_000, -147_000_000, -172_000_000, -172_000_000)
+        minFwdIncreAtPwr := 544_628           ' anything below yields NO rotation
+        minRevIncreAtPwr := 0 - minFwdIncreAtPwr
 
-    fMotorVolts := 0.0  ' default
-    if maxFwdIncreAtPwr <> VALUE_NOT_SET                ' if we have good motor then set rest of values
-        eUserSelectedVolts := selectedPower
-        fMotorVolts := motorVoltage(selectedPower)
-        if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
-            minFwdIncreAtPwr := 0 - minFwdIncreAtPwr
-            minRevIncreAtPwr := 544_628                 ' anything below yields NO rotation
-        else
-            minFwdIncreAtPwr := 544_628           ' anything below yields NO rotation
-            minRevIncreAtPwr := 0 - minFwdIncreAtPwr
+    eUserSelectedVolts := userVoltage
+    fMotorVolts := motorVoltage(userVoltage)
     debug[user.DBGCH_LIFECYCLE]("* EXIT 2 CFG ", sdec_long(eUserSelectedVolts), " ", sdec(maxFwdIncreAtPwr), " ", sdec(minFwdIncreAtPwr))
 
 PRI setTargetAccel(nTgtIncr, sync) | inincr
@@ -1452,18 +1683,84 @@ PRI setTargetAccel(nTgtIncr, sync) | inincr
     debug[user.DBGCH_COMMAND]("-MOT- ", sdec_long(inincr), " ", uhex_long(nTgtIncr), " ", sdec_(nTgtIncr>>31), " ", sdec_long(sync))
     tvTargetIncreInM := inincr / 10_000
 
-PUB SyncStatus()
-'' Wait until both motors are in sync (when configured for synchronization)
+PUB SyncStatus() : eError | startMs
+'' Wait until the driver has taken a synchronized command (when configured for synchronization)
 ''
+'' @returns eError - NO_ERROR once the command is taken, or ERR_SYNC_TIMEOUT (also recorded for getError()) after SYNC_TIMEOUT_MS
 
+' Local Variables:
+' @local startMs - getms() when the wait began
+
+    ' F-6: bounded. The driver clears the sync bit when it takes the command after ATN, polling once
+    '  per drive pass; it never takes one while e-stopped, stopped or not started, so an unbounded
+    '  wait here hung the caller's cog.
+    eError := NO_ERROR
+    startMs := getms()
     repeat while targetIncre & $8000_0000
+        if getms() - startMs > SYNC_TIMEOUT_MS
+            eError := recordError(ERR_SYNC_TIMEOUT)
+            debug[user.DBGCH_ERROR]("! ERROR: SyncStatus(", zstr_(@motorId), ") driver did not take the synchronized command")
+            quit
 
-PRI motorVoltage(eSelectedPower) : fVolts | index
-    if (index := lookdown(eSelectedPower:PWR_6p0V..PWR_25p9V)) <> 0
-        fVolts := lookup(index: 6.0, 7.4, 11.1, 12.0, 14.8, 18.5, 22.2, 24.0, 25.9)
-    else
-        debug[user.DBGCH_ERROR]("*???* Unknown: ", sdec_long(eSelectedPower))
-        abort   ' SHOULD NEVER get here!
+PRI motorVoltage(eSelectedPower) : fVolts
+' Return the supply voltage for a validated voltage enum.
+'
+' @param eSelectedPower - the voltage ENUM (PWR_*), already validated
+' @returns fVolts - the supply voltage (float)
+
+    ' PWR_6p0V is 1, so the enum is itself the 1-based lookup index
+    fVolts := lookup(eSelectedPower: 6.0, 7.4, 11.1, 12.0, 14.8, 18.5, 22.2, 24.0, 25.9)
+
+PRI recordError(eCode) : eSameCode
+' Record the calling cog's first error: the ONLY writer of lastError[]; returns the code unchanged.
+'
+' @param eCode - NO_ERROR or an ERR_* code
+' @returns eSameCode - {eCode}, so a failing path can record and return in one expression
+
+    ' Sticky first, and success never writes: only getError() clears a slot, so no later call on
+    '  this cog -- successful or not -- can replace the cause that is waiting to be collected.
+    if (eCode <> NO_ERROR) and (lastError[COGID()] == NO_ERROR)
+        lastError[COGID()] := eCode
+    eSameCode := eCode
+
+PRI abiLayoutIsValid() : bValid
+' Return TRUE when the Spin2 VAR layout matches every hub offset the PASM driver walks.
+'
+' @returns bValid - T/F where F means a driver launched on this layout would read or write the wrong longs
+
+    ' the launch block (pinbase, params_ptr, targetAngle, targetIncre) sits right before the status run
+    bValid := (@drive_u - @pinbase) == DRVR_LAUNCH_LONGS_COUNT * 4
+    ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
+    bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
+    ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd
+    bValid &= (@ramp_inc - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    ' the error record lies outside both runs, so the driver can never touch it
+    bValid &= (@lastError[COG_SLOT_COUNT - 1] < @pinbase) or (@lastError[0] > @fault)
+    bValid &= (@lastError[COG_SLOT_COUNT - 1] < @offset_fwd) or (@lastError[0] > @ramp_inc)
+    if bValid == FALSE
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@ramp_inc - @offset_fwd))
+
+PRI wheelGeometry() : nCircInMM_x10, nTickInMM_x100 | ticsPerRotation
+' Return the configured wheel's circumference and travel per hall tick; both 0 when the wheel diameter is 0.
+'
+' @returns nCircInMM_x10 - wheel circumference, in tenths of a mm
+' @returns nTickInMM_x100 - wheel travel per hall tick, in hundredths of a mm
+
+' Local Variables:
+' @local ticsPerRotation - hall ticks per rotation for this motor
+
+    nCircInMM_x10 := 0
+    nTickInMM_x100 := 0
+    if user.WHEEL_DIA_IN_INCH <> 0.0
+        _, ticsPerRotation := hallTicInfoForMotor()
+        ' task 3502: keep tenths of a mm -- circInMMforDiaInInchFloat() truncates to whole mm
+        '  (518 for a 6.5in wheel against 518.68) before the x10, losing 0.13% of every distance
+        nCircInMM_x10 := round(distConv.floatCircInMMforDiaInInchFloat(user.WHEEL_DIA_IN_INCH) *. 10.0)
+        ' task 3502: mm-per-tick carried at x100 (not x10), rounded to nearest, so it keeps two
+        '  fractional digits instead of one -- at x10 scale, 6.5in-wheel/90-tick motors truncate
+        '  5.7 mm/tick against a true 5.763, a systematic -1.1% in every DDU_* conversion. Signed
+        '  '/' is safe here: both operands are always non-negative (a wheel circumference and a tick count).
+        nTickInMM_x100 := ((nCircInMM_x10 * 10) + (ticsPerRotation / 2)) / ticsPerRotation
 
 CON ' --- HDMI Debug Support ---
 
@@ -1987,8 +2284,11 @@ CON { driver internal Constants }
 '    FRAME   = 12_273            ' 22.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
     PWM_RATE_IN_HZ   = 44_000
 
+    DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 16
     DRVR_PARAMS_LONGS_COUNT     = 14
+
+    SYNC_TIMEOUT_MS             = 50        ' SyncStatus() bound: about 100 drive passes, each polling for ATN
 
     ' PL-32: GIO/VIO calibration averaging (see the DAT driver's start sequence, around the
     ' calibPeriod comment block). adc_modes uses P_ADC_GIO/P_ADC_VIO with P_COUNT_HIGHS -- a
@@ -2041,10 +2341,6 @@ VAR { * Data for Motor Position Tracking * }
     LONG    posTrkHallTicks
 
     LONG    circInMM_x10
-    ' task 3502: mm-per-tick carried at x100 (not x10) so the stored constant keeps two
-    '  fractional digits instead of one -- at x10 scale, 6.5in-wheel/90-tick motors truncate
-    '  5.7 mm/tick against a true 5.763, a systematic -1.1% in every DDU_* conversion.
-    LONG    tickInMM_x100
 
     LONG    prioro8thSecPos
 
@@ -2098,6 +2394,15 @@ VAR  {  Motor Parameters  }
 VAR { Offset tracking for independent setter/getter }
     LONG    offset_fwd_degrees   ' last-applied forward offset, in degrees
     LONG    offset_rev_degrees   ' last-applied reverse offset, in degrees
+
+CON { error record }
+
+    COG_SLOT_COUNT = 8          ' one error slot per P2 cog, indexed by COGID()
+
+VAR { error record -- Spin2 only, never addressed by the PASM driver }
+    ' Placed after every PASM-addressed run so it cannot shift one; abiLayoutIsValid() refuses a
+    '  start if it ever lands inside one. Written only by recordError(), cleared only by getError().
+    LONG    lastError[COG_SLOT_COUNT]   ' per calling cog: first error not yet collected, NO_ERROR when none
 
 DAT  {  Motor DRIVER  }
 '

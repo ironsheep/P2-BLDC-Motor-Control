@@ -2264,6 +2264,34 @@ The finding stands: a log still cannot name its commit.
 edge from a transient: the illegal count is already in every rung record, so the next clock load answers it
 for free.
 
+### PL-70 -- the single-motor sense task divides by a tick count that is 0 until `start()` runs
+
+**Found 2026-09-16 in «#3554»**, while removing the same construction from `getDistance()` and `getRotationCount()`.
+
+**DERIVED (`src/isp_bldc_motor.spin2`, `updateHdmiData()`):** `tvRpm_x10 := ... / hallTicsPerRotation`. That VAR is
+set only by `init()`. `startSenseCog()` does not require `start()`, so a sense task started first divides by 0 on
+every pass until the motor is started. What a Spin2 integer or float division by zero yields is UNVERIFIED (the
+P2 knowledge base does not state it).
+
+**Fix direction:** read the geometry from `hallTicInfoForMotor()` (compile-time configuration), as «#3554» did for
+the getters. It is not fixed there because that task leaves the sense task alone; the front cog («#3513») replaces
+this loop and should be built on the compile-time geometry.
+
+### PL-71 -- the DocoEng motor's minimum forward increment is `0 - VALUE_NOT_SET`, which is 1
+
+**Found 2026-09-16 in «#3554»**, while folding `confgurePowerLimits()` onto one power-table lookup. The behaviour was
+kept byte for byte.
+
+**DERIVED (`src/isp_bldc_motor.spin2`, `confgurePowerLimits()`):** `minFwdIncreAtPwr` is preset to `VALUE_NOT_SET`
+(-1), and the DocoEng branch then sets `minFwdIncreAtPwr := 0 - minFwdIncreAtPwr`, which is `1`. The 6.5″ branch
+sets `minFwdIncreAtPwr := 544_628` and derives the reverse minimum from it, so the DocoEng line reads as the mirror
+of that with the operand swapped: `0 - minRevIncreAtPwr` would give -544_628. `map()` for a +1 % forward request on
+the DocoEng motor therefore starts from an increment of 1, where the reverse direction starts from 544_628.
+
+**Fix direction:** confirm against the DocoEng motor's forward sign (its forward increments are negative in the
+max table) and set the minimum from the named no-rotation threshold. The DocoEng tables are also the subject of
+PL-27. Which sprint takes it is Stephen's call.
+
 ---
 
 ## Recently closed
