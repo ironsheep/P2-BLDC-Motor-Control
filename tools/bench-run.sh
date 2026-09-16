@@ -57,6 +57,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PNUT="${PNUT_TS:-pnut-ts}"
 PNUT_TERM="${PNUT_TERM_TS:-pnut-term-ts}"
 
+# The three clocks the dual-clock tier sweeps, named once. test_bench_dual.spin2
+# judges its CLKFRAME sign-off cell only at these (its SF_CLOCK_* constants), so a
+# run at any other clock judges nothing -- see PL-62.
+SWEPT_CLOCKS="200000000 270000000 300000000"
+
 # echo a command verbatim, then run it. "$@" is the real argv -- nothing
 # paraphrased, nothing elided.
 run() {
@@ -64,9 +69,25 @@ run() {
     "$@"
 }
 
+# Refuse, and say why where it will be seen. The message goes to BOTH stdout and
+# stderr because the operator's console capture holds stdout only: at Visit 2 a
+# ten-digit clock reached the compiler, the run stopped with no error line in the
+# capture and no log, and all three dual-clock loads were lost (PL-62).
+die() {
+    echo "ERROR: $*"
+    echo "ERROR: $*" >&2
+    exit 2
+}
+
 # ---- usage and argument validation ----------------------------------------------
 usage() {
-    cat >&2 <<'EOF'
+    # stdout, not stderr (PL-62): the operator's console capture holds stdout, so a
+    #  refusal that only reaches stderr leaves them with a run that stopped for no
+    #  visible reason.
+    # Unquoted heredoc so the clock list below comes from SWEPT_CLOCKS: naming those
+    #  three values twice is the same drift PL-62 is about. The usage text has no
+    #  other $ or backtick, so nothing else expands.
+    cat <<EOF
 Usage:  tools/bench-run.sh <tier> [clkfreq]
   <tier>      -- one of:
                    t0             Tier 0 -- no motor, no motion, no risk
@@ -79,7 +100,7 @@ Usage:  tools/bench-run.sh <tier> [clkfreq]
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
                    scan-wdtest    watchdog self-test: preflight, deliberate stall, watchdog ends the run  [MOTORS CONNECTED]
                    dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   dual-clock     motion harness clock load: PREFLT, CLOCK -- clkfreq REQUIRED, run at 200000000, 270000000, 300000000  [WHEELS UP, UNATTENDED]
+                   dual-clock     motion harness clock load: PREFLT, CLOCK -- clkfreq REQUIRED, one of: $SWEPT_CLOCKS  [WHEELS UP, UNATTENDED]
                    dual-b         motion harness part B: PREFLT, FAULTB, OVERSHT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
                    dual-c         motion harness part C: PREFLT, BASELINE, POSTFLT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
@@ -155,10 +176,18 @@ case "$TIER" in
     dual-clock)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_CLOCK)
                     if [ -z "$CLK_OVERRIDE" ]; then
-                        echo "ERROR: tier 'dual-clock' needs a clkfreq argument -- its three runs differ only by clock: 200000000, 270000000, 300000000" >&2
+                        echo "ERROR: tier 'dual-clock' needs a clkfreq argument -- its three runs differ only by clock: $SWEPT_CLOCKS"
+                        echo "ERROR: tier 'dual-clock' needs a clkfreq argument" >&2
                         usage
                     fi
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness clock load (PREFLT, CLOCK) at clkfreq $CLK_OVERRIDE, about 1 minute; one of three runs: 200000000, 270000000, 300000000"
+                    # PL-62: only the three swept clocks are legal here, so a mistyped value is
+                    #  impossible rather than merely detectable. The padded-string match is exact --
+                    #  a substring like 20000000 cannot satisfy it.
+                    case " $SWEPT_CLOCKS " in
+                        *" $CLK_OVERRIDE "*) ;;
+                        *) die "clkfreq '$CLK_OVERRIDE' is not one of the three swept clocks: $SWEPT_CLOCKS" ;;
+                    esac
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness clock load (PREFLT, CLOCK) at clkfreq $CLK_OVERRIDE, about 1 minute; one of three runs: $SWEPT_CLOCKS"
                     ;;
     dual-b)         BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_B)
@@ -219,8 +248,7 @@ echo "bench-run.sh: pwd is now $(pwd)"
 BACKUP_BENCH=""
 if [ -n "$CLK_OVERRIDE" ]; then
     if ! [[ "$CLK_OVERRIDE" =~ ^[0-9]+$ ]]; then
-        echo "ERROR: CLK_FREQ must be a number (got '$CLK_OVERRIDE')" >&2
-        exit 2
+        die "CLK_FREQ must be a number (got '$CLK_OVERRIDE')"
     fi
 
     BACKUP_BENCH="$(mktemp -t bench-clkfreq)"
