@@ -183,6 +183,11 @@ two to match (consistent, but breaks any existing caller) or to add aliases.
 Found while verifying the #3472 conformance renames, which touched both
 files' parameter lists and so put the two families side by side.
 
+**Fixed in tree 2026-09-16 («#3556»), Stephen's ruling taken: rename to match, consistent with
+every other sibling.** `src/isp_serial_singleton.spin2:529` and `:552` are now `PUB fwoct(nNumber,
+digits)` and `PUB fwqrt(nNumber, digits)`. Searched first: no caller anywhere in `src/` named
+`foct(` or `fqrt(`, so the rename has no existing call site to break.
+
 ### PL-14 -- `eMotorVoltage` is a documented public parameter that does nothing
 
 **Found 2026-09-10 while building the Tier 0 harness («#3474»). Not in the
@@ -500,6 +505,13 @@ corruption into a refusal.
 Recorded because the mechanism is invisible at the `OBJ` line and the failure would look
 like flaky hardware.
 
+**Closed 2026-09-16 («#3556»), not a defect.** Confirmed by reading `init()`: the motor type is
+`user.MOTOR_TYPE` (`src/isp_bldc_motor.spin2:449`, `:459`), a compile-time constant from the user
+config, identical for every instance in one build -- there is no runtime path by which two
+`isp_bldc_motor` instances in the same top-level program can hold different motor types. The
+mixed-type hazard this entry describes cannot occur; it stays as a record of why, per Stephen's
+`ADDING_MOTOR.md` scope, not as an open defect.
+
 ### PL-19 -- `test_bench_char.spin2` drives the right wheel in motor frame, but captions it in robot frame
 
 **Found 2026-09-12 in Bench Pass 1 step 4, by Stephen at the bench** -- the right wheel turned
@@ -650,6 +662,12 @@ restart names an illegal group.
 pin group; since «#3500» the overlapping-group case reports `REV_Unknown` too. **Fix
 direction:** a not-detected board yields a stated "no measurement" value, not a sign-flipped
 reading; decide alongside «#3503», which changes the same scale path.
+
+**Fixed in tree 2026-09-16 («#3556»); run-time proof owed to Visit 4.** `getCurrent()` and the HDMI
+telemetry (`updateHdmiData()`, which had the same divide) share one `PRI scaledCurrent()`: when the
+board was never detected it returns `0, 0` instead of dividing by -1. `getCurrent()` alone also
+records `ERR_BOARD_NOT_DETECTED` (`-1_018`); telemetry records nothing, since it is not a caller's
+command.
 
 ### PL-26 -- the commutation scheme departs from the board designer's principles
 
@@ -1107,6 +1125,15 @@ files and update PL-19's mention.
   than reuse a higher voltage's ceiling.
 - `MOTOR_CHOICE.md` then states what the code does.
 
+**Partly fixed in tree 2026-09-16 («#3556»).** `confgurePowerLimits()`'s `MOTR_6_5_INCH` branch
+(`src/isp_bldc_motor.spin2:1798-1815`) now gives 6.0 V and 7.4 V their own placeholder ceilings,
+`48_400_000` (~89 RPM) and `59_800_000` (~110 RPM), scaled from the 11.1 V row (`90_000_000` ->
+165.3 RPM, the nearest measured point) at the table's own ~14.8 RPM/V slope and rounded DOWN so a
+placeholder never promises a speed unmeasured at that voltage. Both rows are labelled PLACEHOLDER
+/ not measured in the comment. Not fixed here (out of this task's scope): the 24.0 V FAKE row, and
+`MOTOR_CHOICE.md` itself, which stays owed to «#3515» per the task text. No bench observation of
+these two rows exists yet -- run-time proof is Stephen's rig, per the task's own note.
+
 ### PL-39 -- `MOTOR_CHOICE.md` labels the 6.5″ hall sequences opposite to the library's forward
 
 **Found 2026-09-14** while checking `MOTOR_CHOICE.md` against the bench runs.
@@ -1526,6 +1553,24 @@ inherit it.
 The scan and char binaries already measure that zero this way. Decide it together with PL-25,
 which touches the same scale path.
 
+**Fixed in tree 2026-09-16 («#3556»); run-time proof owed to Visit 4.** `getCurrent()` and the HDMI
+telemetry net `sense_i_mV - restZeroSenseMv` (shared `scaledCurrent()`, PL-25). The rest zero is
+sampled at start, once the driver is released and before any drive is posted. At that moment
+`stop_mode` is still `init()`'s `SM_FLOAT` with a zero command, so the bridge is off.
+- **Construction:** 200 samples, 5 ms apart, the scan and char binaries' own zero. DERIVED:
+  `sense_i_mV` is one PWM frame's ADC read with no averaging in the driver, so no shorter window is
+  equivalent.
+- **Start point:** sampling begins only once hub `drv_state` leaves `init()`'s `DCS_Unknown`. The
+  driver's status block-copy writes `drv_state` and `sense_i_mV` together, so that change proves a
+  real reading. `init()` resets `drv_state` before every launch, so a restart cannot pass on the old
+  instance's state.
+- **Bound:** `REST_ZERO_READY_TIMEOUT_MS`, 10 ms, is its own constant. DERIVED from the driver's start
+  path: calibration plus the first frame comes to under 1 ms. On expiry `restZeroSenseMv` stays 0 (no
+  correction), never a stale value.
+- **Cost:** `start()`/`startEx()` take about 1 s longer. The steering `start()` samples both wheels in
+  the same ~1 s window, using the motor object's `restZeroBegin()` / `restZeroAddSample()` /
+  `restZeroFinish()` steps.
+
 ### PL-46 -- scan v4 cannot demonstrate a half-speed minimum, and its half-speed cell passes anyway
 
 **Found 2026-09-14 in scan run 7** (`analyses/bench/2026-09-14/SCAN-RUN-7-EVALUATION.md` §5). Read
@@ -1813,6 +1858,10 @@ observed on hardware.
 **Fix direction:** `nSpeed4dist := rtWheel.getMaxSpeedForDistance()`, a one-line change. Also check
 whether the serial object exposes this getter.
 
+**Fixed in tree 2026-09-16 («#3556»).** `getMaxSpeedForDistance()` (`src/isp_steering_2wheel.spin2:769-775`)
+now calls `rtWheel.getMaxSpeedForDistance()`, matching `driveForDistance()`'s own call. The serial
+object was not checked for the same getter -- out of this task's scope.
+
 ### PL-52 -- `getPower()` keeps reporting the last power after the motor is stopped, against its own doc
 
 **Found 2026-09-14** by «#3508» phase 2(b3), and confirmed by the arbiter reading source. DERIVED, not
@@ -1836,6 +1885,20 @@ observed on hardware.
 
 **Fix direction:** first find every writer of `motorPower`. Then either clear it on every stop path, or
 correct the doc to "last specified power", whichever the API intends.
+
+**Fixed in tree 2026-09-16 («#3556»); run-time proof owed to Visit 4.** The rule: `getPower()`
+reads 0 whenever the front cog has left the motor commanded to stop. The line numbers above predate
+the front cog («#3513»).
+- **Writers:** `motorPower` is written by `frontDrive()` (a commanded power) and by the stop paths:
+  `frontZeroPower()`, `frontEStop(TRUE)`, `frontSecure()` and `stop()`.
+- **Stops that zero it, in both objects:**
+  - `REQ_STOP`
+  - the distance/rotation/time limits
+  - the e-stop
+  - a synced command the driver did not take (`ERR_SYNC_TIMEOUT`)
+- **While FAULTED** it keeps the last commanded power: nothing commanded a stop.
+- **Exception:** `REQ_TEST_INCREMENT` writes a raw increment, not a power, and leaves it unchanged; its
+  doc says so.
 
 ### PL-53 -- the scan, char and detection binaries still carry their own copies of the record builder
 
@@ -2045,6 +2108,12 @@ every rep: 19–20 ticks from quarter speed and 74–76 from half, on both motor
 **at rest**, and that every stop from speed follows the driver's ramp. Publish the C-4 data with it
 («#3514» / «#3515»). Decide together with PL-55 and PL-56.
 
+**Doc corrected in tree 2026-09-16 («#3556»).** `holdAtStop()` and `stopMotor()`/`stopMotors()`
+doc comments (`src/isp_bldc_motor.spin2:681-686`, `:879-882`; `src/isp_steering_2wheel.spin2:279-284`,
+`:551-554`) now say hold-or-release is chosen once AT REST, and every stop from speed follows the
+driver's own ramp regardless of the setting, citing the Visit 2 measurement. `DRIVE-OBJECTS.md`
+stays owed to «#3514»/«#3515» -- out of this task's DOCs scope.
+
 ### PL-59 -- POSTFLT's 3° offset does not provoke a fault at half speed, so the post-fault stop is unmeasured
 
 **Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §5.1).
@@ -2214,6 +2283,25 @@ zero first.
 
 That is an API and safety decision for Stephen, taken when the fault path is next scheduled. «#3547» documents
 today's rule: *the fault clears when a stop or a different power is commanded*.
+
+**Fixed in tree 2026-09-16 («#3556»); run-time proof owed to Visit 4.** Decided by Stephen's
+2026-09-16 API rule: a retry restarts the motor.
+
+**Where the fix lives, and why.** The fault-clear edge is made in the front cog, not the driver.
+`drvMotor` copies `tgt_incr` into `sv_tgt_incr` every pass, so its "same request" compare means "the
+command is still standing". An edge taken there would clear a fault on the very next pass, and the
+fault would never latch. The PASM is unchanged.
+
+**What happens on a drive while FAULTED.** `frontClearFault()`, called from `frontDrive()`, runs
+first. It writes a zero command, and waits a bounded `FRONT_SYNC_WAIT_PASSES` drive passes for
+`drv_state` to leave `DCS_FAULTED`. A zero request reaches `.newRqst` -> `.resetFault` in one pass.
+- On success, the requested command is written.
+- On expiry, it returns `ERR_NO_RESPONSE` and the zero stays written.
+- The wait is counted in `bDidWait` and in `requestWaits()`.
+
+**Two wheels.** `frontDriveWheels()` clears both selected wheels before writing either. If either
+fails, both are zeroed. Invariant: *a platform never drives one selected wheel while refusing the
+other.*
 
 ### PL-68 -- no bench log names the commit it was built from, so a visit ran on an older commit unnoticed
 

@@ -96,6 +96,7 @@ CON { Public Interface Constants }
     ERR_FAULT_NOT_CLEARED   = -1_015
     ERR_EMERGENCY_STOPPED   = -1_016
     ERR_NO_RESPONSE         = -1_017
+    ERR_BOARD_NOT_DETECTED  = -1_018
 
 OBJ { objects / constants included by this object }
 
@@ -124,6 +125,9 @@ PUB null()
 PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
 '' Specify motor control board connect location for this motor and start the driver and its front cog (2 cogs)
 ''
+'' PL-45: on success, this blocks for about 1 s while it samples the current-sense rest zero
+'' getCurrent() nets out; a failure returns well before that (captureRestZero() runs last)
+''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
 '' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
@@ -135,6 +139,9 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError, b
 '' Specify motor control board connect location for this motor and start the driver and its front cog (2 cogs), specify sync setting
 ''
 '' The front cog tracks position, enforces the stop limits and is the only cog that commands the driver.
+''
+'' PL-45: on success, this blocks for about 1 s while it samples the current-sense rest zero
+'' getCurrent() nets out; a failure returns well before that (captureRestZero() runs last)
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
@@ -155,6 +162,7 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError, b
     if eError == NO_ERROR
         eError := launchFront(bParked)
         if eError == NO_ERROR
+            captureRestZero()    ' PL-45: the driver is confirmed running and released; nothing has driven it yet
             ok := motorCog - 1    ' public contract: the driver cog's id (0-7), per @returns
 
 PUB startOwned(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
@@ -189,6 +197,9 @@ PUB stop() : eError
     if motorCog     ' stop motor drive
         cogstop(motorCog - 1)
         motorCog := 0
+        ' PL-52: no front cog remains to own motorPower (this instance's, or the owner's, is already
+        ' stopped above / by the owner before calling here), so this write cannot race a second writer.
+        motorPower := 0
         ' PL-28(b): no driver cog remains to keep drv_state current, so mark it not-running
         ' the same way init() marks a not-yet-started instance (DCS_Unknown), AFTER the cog
         ' is stopped so this write cannot race the driver's own block-copy of the status run.
@@ -674,7 +685,10 @@ PUB calibrate() : eError
     eError := NO_ERROR
 
 PUB holdAtStop(bEnable) : eError
-'' Informs the motor control cog to actively hold position (bEnable=true) or coast (bEnable=false) at end of motion
+'' Informs the motor control cog to actively hold position (bEnable=true) or coast (bEnable=false) once AT REST
+''
+'' PL-58: chooses hold or release only at rest. Every stop commanded from speed follows the driver's own ramp
+'' regardless of this setting; MEASURED (Visit 2) both settings take the same distance to stop from a given speed.
 ''
 '' @param bEnable - T/F where T means hold position at rest and F means coast
 '' @returns eError - NO_ERROR
@@ -730,22 +744,24 @@ PUB driveForDistance(distance, distanceUnits) : eError | nStopTicks
 
 PUB driveAtPower(power) : eError
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
-'' Turns the motor on at {power}.
+'' Turns the motor on at {power}. PL-66: a FAULTED motor is cleared first, automatically, every time --
+'' a repeated power is no different from a new one.
 '' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
 ''
 '' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
-'' @returns eError - NO_ERROR, or ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED or ERR_NO_RESPONSE (also recorded for getError()); on an error nothing is written
+'' @returns eError - NO_ERROR, or ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED or ERR_NO_RESPONSE (a FAULTED motor did not clear in the bound, or the front cog did not answer; also recorded for getError()); on an error nothing new is written (a FAULTED motor's failed clear leaves a zero command)
 
     eError := driveAtPowerEx(power, false)
 
 PUB driveAtPowerEx(power, sync) : eError | limitPwr
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input. (allow sync setting)
-'' Turns the motor on at {power}.
+'' Turns the motor on at {power}. PL-66: a FAULTED motor is cleared first, automatically, every time --
+'' a repeated power is no different from a new one.
 '' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
 ''
 '' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
 '' @param sync - non zero if the front cog should release the command to the driver with ATN and wait, bounded, for the driver to take it
-'' @returns eError - NO_ERROR, or ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED, ERR_SYNC_TIMEOUT (sync only; the motor is then stopped) or ERR_NO_RESPONSE, also recorded for getError()
+'' @returns eError - NO_ERROR, or ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED, ERR_SYNC_TIMEOUT (sync only; the motor is then stopped), or ERR_NO_RESPONSE (a FAULTED motor did not clear in the bound, or the front cog did not answer), also recorded for getError()
 
 ' Local Variables:
 ' @local limitPwr - {power} saturated to [(-100) to 100], for the range warning
@@ -870,7 +886,7 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
 
 PUB stopMotor() : eError
 '' Stops the motor, killing any motion that was still in progress
-''  AFFECTED BY:holdAtStop()
+'' PL-58: the stop itself always follows the driver's ramp; holdAtStop() only selects hold vs. coast once AT REST
 ''
 '' @returns eError - NO_ERROR; stopping always succeeds
 
@@ -1009,11 +1025,94 @@ PUB getPower() : nPower
 
     nPower := motorPower
 
-PUB getCurrent() : fAmps, fWatts
-'' Returns the latest current sense values
+PUB restZeroBegin() : eStatus | startMs
+'' INTERNAL USE: PL-45 step 1 of 3 -- wait, bounded, for a real sense_i_mV to exist, then reset the rest-zero accumulator
 ''
-'' @returns fAmps - motor current in units of 0.1 mA (amps x 10_000)
-'' @returns fWatts - motor power in mW
+'' Waits, bounded (REST_ZERO_READY_TIMEOUT_MS), for hub drv_state to leave init()'s DCS_Unknown. The
+'' driver's status block-copy writes drv_state and sense_i_mV together, so the first changed drv_state
+'' proves sense_i_mV carries a real ADC reading; before it, sense_i_mV is whatever init() or a prior
+'' instance left. init() sets DCS_Unknown before every new driver cog is launched, so a restart
+'' cannot pass this wait on the previous instance's state.
+''
+'' On a bound expiry (the driver never reached its first pass), restZeroSenseMv is left at 0: no
+'' correction, rather than a stale hub value mistaken for a measurement.
+''
+'' @returns eStatus - NO_ERROR once a real sense_i_mV is confirmed, or ERR_NO_RESPONSE if the bound expired (restZeroSenseMv is left/reset to 0)
+
+' Local Variables:
+' @local startMs - getms() when the readiness wait began
+
+    restZeroSampleSum := 0
+    restZeroSampleCount := 0
+    eStatus := NO_ERROR
+    startMs := getms()
+    repeat while drv_state == DCS_Unknown
+        if getms() - startMs > REST_ZERO_READY_TIMEOUT_MS
+            eStatus := ERR_NO_RESPONSE
+            quit
+        waitms(REQ_POLL_MS)
+    if eStatus <> NO_ERROR
+        restZeroSenseMv := 0                                                       ' no correction, not a stale value
+
+PUB restZeroAddSample()
+'' INTERNAL USE: PL-45 step 2 of 3 -- accumulate one sense_i_mV sample into the rest-zero total
+''
+'' Call REST_ZERO_SAMPLE_COUNT times, REST_ZERO_SAMPLE_MS apart, after a successful restZeroBegin();
+'' skip it after a failed restZeroBegin(), as isp_steering_2wheel's start() does per wheel.
+
+    restZeroSampleSum += sense_i_mV
+    restZeroSampleCount++
+
+PUB restZeroFinish()
+'' INTERNAL USE: PL-45 step 3 of 3 -- average the accumulated samples into restZeroSenseMv
+''
+'' A no-op (restZeroSenseMv stays at whatever restZeroBegin() left it, 0 on a failed begin) if
+'' restZeroAddSample() was never called since restZeroBegin().
+
+    if restZeroSampleCount > 0
+        restZeroSenseMv := restZeroSampleSum / restZeroSampleCount
+
+PUB captureRestZero() | idx
+'' INTERNAL USE: sample the current-sense rest zero, with the drive floated (PL-45); ~1 s
+''
+'' Call once, after the driver is confirmed running and released, and before any drive request is
+'' ever posted to it: start()/startEx() call this themselves. stop_mode is still init()'s SM_FLOAT at
+'' that moment and nothing has commanded a nonzero power yet, so the driver's own .checkstop keeps
+'' the bridge off for every sample.
+''
+'' Composed from restZeroBegin()/restZeroAddSample()/restZeroFinish(), so isp_steering_2wheel's
+'' start() can sample both wheels in one ~1 s window. The sample count and spacing are explained at
+'' REST_ZERO_SAMPLE_COUNT.
+
+' Local Variables:
+' @local idx - the sample loop counter
+
+    if restZeroBegin() == NO_ERROR
+        repeat idx from 1 to REST_ZERO_SAMPLE_COUNT
+            waitms(REST_ZERO_SAMPLE_MS)
+            restZeroAddSample()
+        restZeroFinish()
+
+PUB getCurrent() : fAmps, fWatts
+'' Returns the latest current sense values, net of the rest zero taken at start (PL-45)
+''
+'' @returns fAmps - motor current in units of 0.1 mA (amps x 10_000); 0, with ERR_BOARD_NOT_DETECTED recorded for getError(), when the board was never detected
+'' @returns fWatts - motor power in mW; 0 under the same condition
+
+    fAmps, fWatts := scaledCurrent()
+    if rSenseForBoard == VALUE_NOT_SET
+        ' PL-25: a never-detected board has no scale to divide by; a signed divide by -1 would
+        '  otherwise flip every reading negative instead of reporting "no measurement". Recorded only
+        '  here: this is a caller's command, not telemetry.
+        recordError(ERR_BOARD_NOT_DETECTED)
+
+PRI scaledCurrent() : fAmps, fWatts
+' Compute the current-sense reading, net of the rest zero (PL-45), shared by getCurrent() and the
+' HDMI telemetry (PL-25); records nothing -- the caller decides whether a board-not-detected reading
+' is an error (getCurrent()) or just "no measurement" (telemetry).
+'
+' @returns fAmps - motor current in units of 0.1 mA (amps x 10_000); 0 when the board was never detected
+' @returns fWatts - motor power in mW; 0 under the same condition
 
     ' for REVA gain is 1, R is 0.005
     ' for REVB gain is 50, R is 0.003
@@ -1023,8 +1122,12 @@ PUB getCurrent() : fAmps, fWatts
     ' the driver's sense_i_mV is true millivolts (numerator 3300 << 11, restored by sar #11 in the
     '  control loop), and rSenseForBoard is millivolts per amp, so scale up before dividing -- a plain
     '  sense_i_mV / rSenseForBoard would truncate to whole amps
-    fAmps := sense_i_mV * CURRENT_UNITS_PER_AMP / rSenseForBoard                ' in multiples of 0.1mA
-    fWatts := round((float(fAmps) *. fMotorVolts)/. F_SCALE_WATTS)              ' in mW
+    if rSenseForBoard == VALUE_NOT_SET
+        fAmps := 0
+        fWatts := 0
+    else
+        fAmps := (sense_i_mV - restZeroSenseMv) * CURRENT_UNITS_PER_AMP / rSenseForBoard  ' in multiples of 0.1mA
+        fWatts := round((float(fAmps) *. fMotorVolts)/. F_SCALE_WATTS)              ' in mW
 
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
@@ -1806,14 +1909,22 @@ PRI confgurePowerLimits(userVoltage) | index
         '  drvMotor), and Visit 2's ladder MEASURED 0.946-0.965 of that model, so 147_000_000 runs about 393
         '  ticks/s, not 408 (DERIVED). The increments are the fault ceilings and are unchanged. (The DOCO figures
         '  above do match the real rate: 282_000_000 -> 754 cts/Sec recorded, 753.7 DERIVED.)
+        ' PL-38: 6.0V and 7.4V are PLACEHOLDERs, not measured. The 11.1V row is the nearest measured
+        '  point (90_000_000 -> 165.3 RPM); the ~14.8 RPM/V slope across the five measured rows
+        '  (11.1V..22.2V) predicts ~89 RPM at 6.0V and ~110 RPM at 7.4V. Scaled at 90_000_000/165.3
+        '  RPM and rounded DOWN (erring low, so a placeholder never promises a speed this motor may
+        '  not reach at that voltage): 48_400_000 (~89 RPM) and 59_800_000 (~110 RPM). Measure and
+        '  replace at the next bench session with a supply at each voltage (MOTOR_CHOICE.md, task #3515).
+        ' 48_400_000  PLACEHOLDER anything above yields RPM ~89  (not measured)
+        ' 59_800_000  PLACEHOLDER anything above yields RPM ~110 (not measured)
         ' 90_000_000  anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
         ' 97_000_000  anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
         ' 120_000_000 anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
         ' 147_000_000 anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
         ' 172_000_000 anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
         ' 172_000_000     FAKE above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
-        maxFwdIncreAtPwr := lookup(index:  90_000_000,  90_000_000,  90_000_000,  97_000_000,  120_000_000,  147_000_000,  172_000_000,  172_000_000)
-        maxRevIncreAtPwr := lookup(index: -90_000_000, -90_000_000, -90_000_000, -97_000_000, -120_000_000, -147_000_000, -172_000_000, -172_000_000)
+        maxFwdIncreAtPwr := lookup(index:  48_400_000,  59_800_000,  90_000_000,  97_000_000,  120_000_000,  147_000_000,  172_000_000,  172_000_000)
+        maxRevIncreAtPwr := lookup(index: -48_400_000, -59_800_000, -90_000_000, -97_000_000, -120_000_000, -147_000_000, -172_000_000, -172_000_000)
         minFwdIncreAtPwr := 544_628           ' anything below yields NO rotation
         minRevIncreAtPwr := 0 - minFwdIncreAtPwr
 
@@ -2112,6 +2223,19 @@ CON ' -- TASK: the front cog --
   F_REV_A_RSENSE = 5        ' .005 Ohms
   F_REV_B_RSENSE = 3*50     ' .003 Ohms * gain 50 from INA180B2
 
+  ' PL-45: the rest zero uses the construction the scan and char bench binaries use for their own zero
+  '  (200 samples, 5 ms apart). sense_i_mV is a single-PWM-frame ADC read with no averaging in the
+  '  driver, so no shorter window is equivalent.
+  REST_ZERO_SAMPLE_COUNT = 200
+  REST_ZERO_SAMPLE_MS    = 5
+
+  ' PL-45: bound on restZeroBegin()'s wait for the driver's first status block-copy. DERIVED from the
+  '  driver's start path: the GIO and VIO calibrations (two widened ADC waits each, 8 frames of ~22.7 us)
+  '  plus one frame before the first pass come to under 1 ms at any supported clock; a parked driver's
+  '  ATN wait is already released by its owner before this wait begins. 10 ms is a >10x margin for
+  '  Spin2 overhead. Not REQ_ACK_TIMEOUT_MS: that bounds a request round trip, a different wait.
+  REST_ZERO_READY_TIMEOUT_MS = 10
+
 CON { front cog requests }
 
     SEQ_IDLE        = 0                 ' reqSeq value meaning "no request outstanding"
@@ -2141,7 +2265,8 @@ CON { front cog requests }
     ' What frontWaitForDriver() waits for:
     '  WAIT_SYNC_TAKEN  - the driver cleared SYNC_BIT, having taken the synchronized command
     '  WAIT_ESTOP_LEFT  - the driver no longer reports DCS_ESTOP
-    #0, WAIT_SYNC_TAKEN, WAIT_ESTOP_LEFT
+    '  WAIT_FAULT_LEFT  - the driver no longer reports DCS_FAULTED (PL-66)
+    #0, WAIT_SYNC_TAKEN, WAIT_ESTOP_LEFT, WAIT_FAULT_LEFT
 
 VAR { * sense buffer and stack arrays * }
     LONG    taskStack[STACK_SIZE_LONGS]
@@ -2154,6 +2279,9 @@ VAR { * sense buffer and stack arrays * }
     LONG    hallWindowSum
 
     LONG    rSenseForBoard
+    LONG    restZeroSenseMv     ' PL-45: sense_i_mV's rest offset, taken floated at start; subtracted by getCurrent()
+    LONG    restZeroSampleSum   ' S3: rest-zero accumulator, between restZeroBegin() and restZeroFinish()
+    LONG    restZeroSampleCount ' S3: samples restZeroAddSample() has added since restZeroBegin()
 
 CON { test pins for LA measurement }
 ' Logic Analyzer Instrumentation Code
@@ -2301,7 +2429,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
         frontTrack(passCount)
         if frontLimitsDue(getms()) == TRUE
-            frontWriteIncrement(0, FALSE)
+            frontZeroPower()                                                    ' PL-52: a distance/time stop clears getPower() too
         LALOOPEND()                                                             ' let LA know end of loop
 
         ' 4. accounting, then the absolute schedule
@@ -2452,9 +2580,9 @@ PRI requestWaits(eCmd, nArg3) : bWaits
 '
 ' @param eCmd - a REQ_* code
 ' @param nArg3 - the request's third argument (bSync for REQ_DRIVE)
-' @returns bWaits - T/F where T means a synchronized REQ_DRIVE or a REQ_CLEAR_ESTOP
+' @returns bWaits - T/F where T means a REQ_CLEAR_ESTOP, a synchronized REQ_DRIVE, or any REQ_DRIVE while FAULTED (PL-66's fault-clear wait)
 
-    bWaits := (eCmd == REQ_CLEAR_ESTOP) or ((eCmd == REQ_DRIVE) and (nArg3 <> FALSE))
+    bWaits := (eCmd == REQ_CLEAR_ESTOP) or ((eCmd == REQ_DRIVE) and ((nArg3 <> FALSE) or (drv_state == DCS_FAULTED)))
 
 PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
 ' FRONT COG: apply one taken request to this motor; records nothing, the status travels back as data.
@@ -2472,7 +2600,7 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
         REQ_ESTOP:
             frontEStop(TRUE)
         REQ_STOP:
-            frontWriteIncrement(0, FALSE)
+            frontZeroPower()                                                    ' PL-52: a commanded stop clears getPower() too
         REQ_CLEAR_ESTOP:
             eStatus, bDidWait := frontClearEStopAndWait()
         REQ_DRIVE:
@@ -2503,17 +2631,16 @@ PRI frontDriveAndSync(power, bSync) : eStatus, bDidWait
 '
 ' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
 ' @param bSync - T/F where T means the command is synchronized with this front cog's ATN
-' @returns eStatus - NO_ERROR, ERR_EMERGENCY_STOPPED (nothing written), or ERR_SYNC_TIMEOUT (the motor is then stopped)
-' @returns bDidWait - T/F where T means the bounded sync wait was spent
+' @returns eStatus - NO_ERROR, ERR_EMERGENCY_STOPPED (nothing written), ERR_NO_RESPONSE (a FAULTED motor did not clear), or ERR_SYNC_TIMEOUT (the motor is then stopped)
+' @returns bDidWait - T/F where T means a bounded wait (a fault clear, the sync take, or both) was spent
 
-    bDidWait := FALSE
-    eStatus := frontDrive(power, bSync)
+    eStatus, bDidWait := frontDrive(power, bSync)                              ' PL-66: bDidWait already reflects a fault-clear wait
     if (eStatus == NO_ERROR) and (bSync == TRUE)
         bDidWait := TRUE
         cogatn(frontDriverCogBit())
         if frontWaitForDriver(WAIT_SYNC_TAKEN) == FALSE
             ' audit M: a command the driver did not take must not be left to be taken later
-            frontWriteIncrement(0, FALSE)
+            frontZeroPower()                                                   ' PL-52: a failed take stops the motor too
             eStatus := ERR_SYNC_TIMEOUT
 
 PRI frontClearEStopAndWait() : eStatus, bDidWait
@@ -2534,21 +2661,27 @@ PRI frontClearEStopAndWait() : eStatus, bDidWait
 PRI frontWaitForDriver(eWaitFor) : bDone | waitStartTicks, waitBoundTicks
 ' FRONT COG: busy-wait, bounded to FRONT_SYNC_WAIT_PASSES drive passes, for the driver to reach a condition.
 '
-' @param eWaitFor - WAIT_SYNC_TAKEN or WAIT_ESTOP_LEFT
+' @param eWaitFor - WAIT_SYNC_TAKEN, WAIT_ESTOP_LEFT or WAIT_FAULT_LEFT
 ' @returns bDone - T/F where F means the bound expired first
 
 ' Local Variables:
 ' @local waitStartTicks - getct() when the wait began
 ' @local waitBoundTicks - the bound, in system ticks
 
-    ' a live driver answers within one drive pass (gettgtincr polls ATN every pass), so the bound is a 4x margin
+    ' a live driver answers within one drive pass (gettgtincr polls ATN every pass; a zero command
+    '  written while FAULTED reaches .newRqst -> .resetFault -> DCS_STOPPED in that same pass, since
+    '  the driver's stop-request check runs before its standing-command compare -- read against
+    '  .noEStop/.notRqStop/.newRqst/.resetFault), so the bound is a 4x margin, same as the other waits.
     waitBoundTicks := FRONT_SYNC_WAIT_PASSES * DRIVE_PASS_US * (CLKFREQ / US_PER_SEC)
     waitStartTicks := getct()
     repeat
-        if eWaitFor == WAIT_SYNC_TAKEN
-            bDone := frontTakenSync()
-        else
-            bDone := (isEmergency() == FALSE)
+        case eWaitFor
+            WAIT_SYNC_TAKEN:
+                bDone := frontTakenSync()
+            WAIT_FAULT_LEFT:
+                bDone := (drv_state <> DCS_FAULTED)
+            other:
+                bDone := (isEmergency() == FALSE)
         if (bDone == TRUE) or ((getct() - waitStartTicks) > waitBoundTicks)
             quit
 
@@ -2601,33 +2734,77 @@ PRI postRequest(eCmd, nArg1, nArg2, nArg3) : eStatus | slotIdx, mySeq, startMs, 
 
 CON { --- FRONT COG service surface: called only from a front cog (this object's, or its owner's) --- }
 
-PUB frontDrive(power, bSync) : eStatus | limitPwr, correctedPower
-'' FRONT COG ONLY: write this motor's command for {power}, unless it is emergency-stopped; the owner sends any ATN
+PUB frontClearFault() : eStatus, bDidWait
+'' FRONT COG ONLY: clear a FAULTED motor (PL-66), bounded; a no-op (NO_ERROR, no wait) when not FAULTED
+''
+'' Shared by frontDrive() (single-motor and per-wheel use) and an owner that must clear several
+'' motors' faults together before writing any of their commands (isp_steering_2wheel) -- one
+'' fault-clear path either way.
+''
+'' @returns eStatus - NO_ERROR (nothing to clear, or cleared), or ERR_NO_RESPONSE when FAULTED and it did not clear in the bound (a zero command is left written)
+'' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
+
+    eStatus := NO_ERROR
+    bDidWait := FALSE
+    if drv_state == DCS_FAULTED
+        ' PL-66: only the front cog can tell a request that just arrived from one still standing --
+        '  the driver's own sv_tgt_incr==tgt_incr compare (.notRqStop) tests "still standing", not
+        '  "just arrived", because drvMotor saves sv_tgt_incr from tgt_incr every pass before
+        '  re-reading it. So the fault-clear edge is made here, not in the driver: a zero command
+        '  always reaches the driver's stop-request check before that compare (drv_state <>
+        '  DCS_STOPPED jumps straight to .newRqst -> .resetFault -> DCS_STOPPED, in one pass -- read
+        '  against .noEStop/.newRqst/.resetFault), so a bounded wait for drv_state leaving
+        '  DCS_FAULTED clears it, for every drive while FAULTED, not only an equal-power retry (a
+        '  differing command already reached .resetFault on its own, unconditionally).
+        frontZeroPower()                                                    ' PL-52: also clears getPower() while we try
+        bDidWait := TRUE
+        if frontWaitForDriver(WAIT_FAULT_LEFT) == FALSE
+            eStatus := ERR_NO_RESPONSE                                      ' did not clear in the bound; the zero command stays written
+
+PUB frontDrive(power, bSync) : eStatus, bDidWait | limitPwr, correctedPower
+'' FRONT COG ONLY: write this motor's command for {power}, unless it is emergency-stopped; a FAULTED motor is
+'' cleared first (frontClearFault(), PL-66), bounded, before the requested command is written; the owner sends any ATN
 ''
 '' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
 '' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
-'' @returns eStatus - NO_ERROR, or ERR_EMERGENCY_STOPPED with nothing written; never recorded
+'' @returns eStatus - NO_ERROR; ERR_EMERGENCY_STOPPED with nothing written; or ERR_NO_RESPONSE when a FAULTED motor did not clear in the bound (a zero command is left written and the requested command is never sent); never recorded
+'' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
 
 ' Local Variables:
 ' @local limitPwr - {power} saturated to [(-100) to 100] and then to the max speed
 ' @local correctedPower - saturated power with this motor's reversal applied
 
-    eStatus := NO_ERROR
     if frontIsEStopped() == TRUE
         eStatus := ERR_EMERGENCY_STOPPED    ' refused: a command written now would sit stale and drive on the clear
+        bDidWait := FALSE
     else
-        limitPwr :=  -100 #> power <# 100
-        motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
-        correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
-        frontCommand(incrementForPower(correctedPower), bSync)
+        eStatus, bDidWait := frontClearFault()
+        if eStatus == NO_ERROR
+            limitPwr :=  -100 #> power <# 100
+            motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
+            correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
+            frontCommand(incrementForPower(correctedPower), bSync)
 
 PUB frontWriteIncrement(nIncre, bSync)
 '' FRONT COG ONLY: write a raw driver increment (stops, and the TEST-USE path) with no emergency-stop check
+''
+'' PL-52: does not update getPower() -- REQ_TEST_INCREMENT writes a raw driver increment, not a commanded
+'' power, so motorPower is left exactly as it was
 ''
 '' @param nIncre - the driver angle increment; 0 stops
 '' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
 
     frontCommand(nIncre, bSync)
+
+PUB frontZeroPower()
+'' FRONT COG ONLY: write a zero driver command and clear the last commanded power (PL-52)
+''
+'' Used for a genuine stop (REQ_STOP, and the distance/rotation/time limits), never for a fault: a
+'' faulted motor keeps reporting its last commanded power (getPower()'s own doc), since nothing was
+'' ever commanded to stop it.
+
+    motorPower := 0
+    frontCommand(0, FALSE)
 
 PUB frontEStop(bEStop)
 '' FRONT COG ONLY: latch (T) or release (F) this motor's emergency stop; a zero command is written either way
@@ -2635,6 +2812,7 @@ PUB frontEStop(bEStop)
 '' @param bEStop - T/F where T latches the emergency stop and F releases it
 
     if bEStop <> FALSE
+        motorPower := 0                                                         ' PL-52: an e-stop is a genuine stop, not a fault
         e_stop := TRUE
         frontCommand(0, FALSE)
     else
@@ -2766,6 +2944,7 @@ PUB frontSecure(bEStop)
 
     if bEStop <> FALSE
         e_stop := TRUE
+    motorPower := 0                                                             ' PL-52: this is a genuine stop
     setTargetAccel(0, false)
 
 PRI resetWindowAccumulators(nowPos)
@@ -2831,9 +3010,9 @@ PRI updateHdmiData() | degreesPerTic, ticsPerRotation, nCircInMM_x10
     tvMaxCntsInSec := max(cntsInSec, tvMaxCntsInSec)
 
     tvMaxSenseI := max(sense_i_mV, tvMaxSenseI)
-    ' power calcs
-    tv_mA := sense_i_mV * CURRENT_UNITS_PER_AMP / rSenseForBoard                ' in multiples of 0.1mA
-    tv_mW := round((float(tv_mA) *. fMotorVolts)/. F_SCALE_WATTS)               ' in mW
+    ' power calcs -- PL-25/PL-45: same scaled, net-of-rest-zero, board-not-detected-safe reading
+    '  getCurrent() uses; telemetry records no error, a caller's command does (in getCurrent() alone)
+    tv_mA, tv_mW := scaledCurrent()
 
     if user.WHEEL_DIA_IN_INCH <> 0
         ' pos is in hall-steps of 4Degr each (4deg for 6.5motor, 15deg for doco4k).

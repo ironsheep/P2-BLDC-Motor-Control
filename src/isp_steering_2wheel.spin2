@@ -124,8 +124,11 @@ PUB null()
 '' This is not a top-level object
 ''
 
-PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog, frontCogId, startMs
+PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog, frontCogId, startMs, idx, bLeftReady, bRightReady
 '' Start our drive cogs connected to our left and right motor control pin-sets, and the front cog that owns them (3 cogs)
+''
+'' PL-45: once both drivers start, this blocks for about 1 s while it samples both wheels' current-sense
+'' rest zero together (getCurrent() nets it out); a driver that fails to start returns before that
 ''
 '' @param leftBasePin - The base pin ENUM (PINS_*) for the left motor's adapter board
 '' @param rightBasePin - The base pin ENUM (PINS_*) for the right motor's adapter board
@@ -139,6 +142,9 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
 ' @local rtcog - the right driver's cog id, or -1
 ' @local frontCogId - the value cogspin() returned
 ' @local startMs - getms() when the front cog handshake wait began
+' @local idx - the rest-zero sample loop counter
+' @local bLeftReady - T/F where T means the left wheel's restZeroBegin() confirmed a real reading
+' @local bRightReady - T/F where T means the right wheel's restZeroBegin() confirmed a real reading
 
     ticks1ms   := (clkfreq / 1_000)
     ticks1us   := (clkfreq / 1_000_000)
@@ -175,6 +181,20 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         ' lockstep: one ATN releases both parked drivers together. It is sent here, on the caller's
         '  cog, before the front cog exists, so no second caller of COGATN can exist yet.
         cogatn(cogmask)
+
+        ' PL-45: both drivers are now released and floated, and neither has been driven yet. One
+        '  bounded readiness wait per wheel (REST_ZERO_READY_TIMEOUT_MS), then one shared ~1 s loop
+        '  sampling both wheels every tick.
+        bLeftReady := (ltWheel.restZeroBegin() == NO_ERROR)
+        bRightReady := (rtWheel.restZeroBegin() == NO_ERROR)
+        repeat idx from 1 to ltWheel.REST_ZERO_SAMPLE_COUNT
+            waitms(ltWheel.REST_ZERO_SAMPLE_MS)
+            if bLeftReady == TRUE
+                ltWheel.restZeroAddSample()
+            if bRightReady == TRUE
+                rtWheel.restZeroAddSample()
+        ltWheel.restZeroFinish()
+        rtWheel.restZeroFinish()
 
         ' pre-launch: no front cog of this instance exists, so these writes have no second writer
         ' one formula for the wheel, owned by the motor object (0 when the configured diameter is 0)
@@ -273,7 +293,10 @@ PUB calibrate() : eError
     eError := firstError(ltWheel.calibrate(), rtWheel.calibrate())
 
 PUB holdAtStop(bEnable) : eError
-'' Informs the motor drivers to actively hold position (bEnable=true) or coast (bEnable=false) at end of motion
+'' Informs the motor drivers to actively hold position (bEnable=true) or coast (bEnable=false) once AT REST
+''
+'' PL-58: chooses hold or release only at rest. Every stop commanded from speed follows each driver's own ramp
+'' regardless of this setting; MEASURED (Visit 2) both settings take the same distance to stop from a given speed.
 ''
 '' @param bEnable - T/F where T means hold position at rest and F means coast
 '' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
@@ -543,7 +566,7 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs, eStatus, eL
 
 PUB stopMotors() : eError
 '' Stops both motors, killing any motion that was still in progress
-'' AFFECTED BY:holdAtStop()
+'' PL-58: the stop itself always follows each driver's ramp; holdAtStop() only selects hold vs. coast once AT REST
 ''
 '' @returns eError - NO_ERROR; stopping always succeeds
 
@@ -771,8 +794,8 @@ PUB getMaxSpeedForDistance() : nSpeed4dist
 ''
 
     ' NOTE: they both contain same value so return only right-wheel value
-    'nSpeed4dist := ltWheel.getMaxSpeed()  ' return last specified user value
-    nSpeed4dist := rtWheel.getMaxSpeed()  ' return last specified user value
+    'nSpeed4dist := ltWheel.getMaxSpeedForDistance()  ' return last specified user value
+    nSpeed4dist := rtWheel.getMaxSpeedForDistance()  ' return last specified user value
 
 PUB getLeftDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
 '' Return pointers to HDMI-debug data structures for LEFT motor-object instance
@@ -1416,8 +1439,8 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         ltWheel.frontTrack(passCount)
         rtWheel.frontTrack(passCount)
         if frontPlatformLimitsDue(getms()) == TRUE
-            ltWheel.frontWriteIncrement(0, FALSE)
-            rtWheel.frontWriteIncrement(0, FALSE)
+            ltWheel.frontZeroPower()                                            ' PL-52: a distance/time stop clears getPower() too
+            rtWheel.frontZeroPower()
         showDriveStatesOnChange()
         LALOOPEND()
 
@@ -1597,9 +1620,10 @@ PRI requestWaits(eCmd, nArg3) : bWaits
 '
 ' @param eCmd - a REQ_* code
 ' @param nArg3 - the request's third argument (bSync for REQ_DRIVE)
-' @returns bWaits - T/F where T means a synchronized REQ_DRIVE, a REQ_DRIVE_DISTANCE (always synchronized here) or a REQ_CLEAR_ESTOP
+' @returns bWaits - T/F where T means a synchronized REQ_DRIVE, a REQ_DRIVE_DISTANCE (always synchronized here), a
+'  REQ_CLEAR_ESTOP, or any REQ_DRIVE while either wheel is FAULTED (PL-66's fault-clear wait)
 
-    bWaits := (eCmd == ltWheel.REQ_CLEAR_ESTOP) or (eCmd == ltWheel.REQ_DRIVE_DISTANCE) or ((eCmd == ltWheel.REQ_DRIVE) and (nArg3 <> FALSE))
+    bWaits := (eCmd == ltWheel.REQ_CLEAR_ESTOP) or (eCmd == ltWheel.REQ_DRIVE_DISTANCE) or ((eCmd == ltWheel.REQ_DRIVE) and ((nArg3 <> FALSE) or (ltWheel.getDriverState() == ltWheel.DCS_FAULTED) or (rtWheel.getDriverState() == ltWheel.DCS_FAULTED)))
 
 PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRightStatus, bDidWait | bLeft, bRight
 ' FRONT COG: apply one taken request to the selected wheels; records nothing, the statuses travel back as data.
@@ -1638,9 +1662,9 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                 rtWheel.frontEStop(TRUE)
         ltWheel.REQ_STOP:
             if bLeft == TRUE
-                ltWheel.frontWriteIncrement(0, FALSE)
+                ltWheel.frontZeroPower()                                       ' PL-52: a commanded stop clears getPower() too
             if bRight == TRUE
-                rtWheel.frontWriteIncrement(0, FALSE)
+                rtWheel.frontZeroPower()
         ltWheel.REQ_CLEAR_ESTOP:
             eLeftStatus, eRightStatus, bDidWait := frontClearEStops(bLeft, bRight)
         ltWheel.REQ_DRIVE:
@@ -1688,49 +1712,114 @@ PRI frontRefusals(bLeft, bRight) : eLeftStatus, eRightStatus
     if (bRight == TRUE) and (rtWheel.frontIsEStopped() == TRUE)
         eRightStatus := ERR_EMERGENCY_STOPPED
 
-PRI frontDriveWheels(bLeft, bRight, leftPower, rightPower, bSync) : eLeftStatus, eRightStatus, bDidWait | atnMask, bLeftTaken, bRightTaken
-' FRONT COG: drive the selected wheels, or refuse them all while any is emergency-stopped; with {bSync}, one ATN and one bounded wait.
+PRI frontZeroSelected(bLeft, bRight)
+' FRONT COG: zero each selected wheel's commanded power (PL-52) -- the platform-level "do not drive
+' one wheel" fallback shared by frontDriveWheels()'s failure paths.
+'
+' @param bLeft - T/F where T means the left wheel is zeroed
+' @param bRight - T/F where T means the right wheel is zeroed
+
+    if bLeft == TRUE
+        ltWheel.frontZeroPower()
+    if bRight == TRUE
+        rtWheel.frontZeroPower()
+
+PRI frontClearFaults(bLeft, bRight) : eLeftStatus, eRightStatus, bDidWait | bLeftDidWait, bRightDidWait
+' FRONT COG: clear a FAULTED state on each selected wheel, bounded (PL-66); a no-op per wheel if not FAULTED.
+' Both selected wheels are cleared before frontDriveWheels() writes either one's command: a
+' platform must not decide, on one wheel's fault-clear result, whether to drive the other.
+'
+' @param bLeft - T/F where T means the left wheel is selected
+' @param bRight - T/F where T means the right wheel is selected
+' @returns eLeftStatus - NO_ERROR, or ERR_NO_RESPONSE when the left wheel was FAULTED and did not clear in the bound
+' @returns eRightStatus - NO_ERROR, or ERR_NO_RESPONSE when the right wheel was FAULTED and did not clear in the bound
+' @returns bDidWait - T/F where T means either wheel spent a bounded fault-clear wait
+
+' Local Variables:
+' @local bLeftDidWait - T/F where T means the left wheel spent a fault-clear wait
+' @local bRightDidWait - T/F where T means the right wheel spent a fault-clear wait
+
+    eLeftStatus := NO_ERROR
+    eRightStatus := NO_ERROR
+    bDidWait := FALSE
+    if bLeft == TRUE
+        eLeftStatus, bLeftDidWait := ltWheel.frontClearFault()
+        if bLeftDidWait == TRUE
+            bDidWait := TRUE
+    if bRight == TRUE
+        eRightStatus, bRightDidWait := rtWheel.frontClearFault()
+        if bRightDidWait == TRUE
+            bDidWait := TRUE
+
+PRI frontDriveWheels(bLeft, bRight, leftPower, rightPower, bSync) : eLeftStatus, eRightStatus, bDidWait | atnMask, bLeftTaken, bRightTaken, bLeftDidWait, bRightDidWait
+' FRONT COG: drive the selected wheels, or refuse them all while any is emergency-stopped or fails to
+' clear a fault; with {bSync}, one ATN and one bounded wait.
+' INVARIANT: a platform never drives one selected wheel while refusing the other -- every path
+'  below either writes and releases both selected wheels' commands together, or zeroes both and
+'  writes neither. PL-66: both selected wheels' faults are cleared together, before either's command
+'  is written, so one wheel's failed clear can never leave the other driving alone.
 '
 ' @param bLeft - T/F where T means the left wheel is selected
 ' @param bRight - T/F where T means the right wheel is selected
 ' @param leftPower - left motor power [(-100) to 100], saturated to that range; 0 stops
 ' @param rightPower - right motor power [(-100) to 100], saturated to that range; 0 stops
 ' @param bSync - T/F where T means both commands are released together by one ATN
-' @returns eLeftStatus - NO_ERROR, ERR_EMERGENCY_STOPPED or ERR_SYNC_TIMEOUT for the left wheel
-' @returns eRightStatus - NO_ERROR, ERR_EMERGENCY_STOPPED or ERR_SYNC_TIMEOUT for the right wheel
-' @returns bDidWait - T/F where T means the bounded sync wait was spent
+' @returns eLeftStatus - NO_ERROR (see INVARIANT: not driven does not always mean an error of its own), ERR_EMERGENCY_STOPPED, ERR_NO_RESPONSE (a FAULTED left wheel did not clear) or ERR_SYNC_TIMEOUT
+' @returns eRightStatus - NO_ERROR (see INVARIANT), ERR_EMERGENCY_STOPPED, ERR_NO_RESPONSE (a FAULTED right wheel did not clear) or ERR_SYNC_TIMEOUT
+' @returns bDidWait - T/F where T means a bounded wait (a fault clear on either wheel, the sync take, or both) was spent
 
 ' Local Variables:
 ' @local atnMask - the selected drivers' cog bits
 ' @local bLeftTaken - T/F where T means the left driver took its command in the bound
 ' @local bRightTaken - T/F where T means the right driver took its command in the bound
+' @local bLeftDidWait - T/F where T means the left wheel's write spent a (residual) fault-clear wait
+' @local bRightDidWait - T/F where T means the right wheel's write spent a (residual) fault-clear wait
 
     bDidWait := FALSE
     ' a platform never drives one wheel: while any selected wheel is emergency-stopped nothing is written
     eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
     if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
-        atnMask := 0
-        if bLeft == TRUE
-            ltWheel.frontDrive(leftPower, bSync)                                ' cannot refuse: checked above, in this pass
-            atnMask |= ltWheel.frontDriverCogBit()
-        if bRight == TRUE
-            rtWheel.frontDrive(rightPower, bSync)
-            atnMask |= rtWheel.frontDriverCogBit()
-        if bSync == TRUE
-            bDidWait := TRUE
-            cogatn(atnMask)                                                     ' lockstep: both drivers take their commands together
-            bLeftTaken, bRightTaken := frontWaitForDrivers(ltWheel.WAIT_SYNC_TAKEN, bLeft, bRight)
-            if bLeftTaken == FALSE
-                eLeftStatus := ERR_SYNC_TIMEOUT
-            if bRightTaken == FALSE
-                eRightStatus := ERR_SYNC_TIMEOUT
-            if (bLeftTaken == FALSE) or (bRightTaken == FALSE)
-                ' audit M: a platform with one wheel driving pivots, so neither wheel keeps a command the
-                '  other did not take (each stop is confirmed on the next pass)
+        eLeftStatus, eRightStatus, bDidWait := frontClearFaults(bLeft, bRight)     ' PL-66: clear BOTH selected wheels first
+        if (eLeftStatus <> NO_ERROR) or (eRightStatus <> NO_ERROR)
+            ' one selected wheel's fault did not clear -- the invariant forbids driving the other
+            '  alone, so neither is written; the failing wheel carries ERR_NO_RESPONSE, the other
+            '  keeps NO_ERROR (nothing wrong with it) but is not driven either
+            frontZeroSelected(bLeft, bRight)
+        else
+            atnMask := 0
+            if bLeft == TRUE
+                ' frontDrive() re-checks FAULTED itself: harmless here (already cleared above), and
+                '  it re-clears (its own bounded wait) in the narrow case a fault reappeared at rest
+                '  between frontClearFaults() and this write
+                eLeftStatus, bLeftDidWait := ltWheel.frontDrive(leftPower, bSync)
+                if bLeftDidWait == TRUE
+                    bDidWait := TRUE
+            if bRight == TRUE
+                eRightStatus, bRightDidWait := rtWheel.frontDrive(rightPower, bSync)
+                if bRightDidWait == TRUE
+                    bDidWait := TRUE
+            if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
                 if bLeft == TRUE
-                    ltWheel.frontWriteIncrement(0, FALSE)
+                    atnMask |= ltWheel.frontDriverCogBit()
                 if bRight == TRUE
-                    rtWheel.frontWriteIncrement(0, FALSE)
+                    atnMask |= rtWheel.frontDriverCogBit()
+                if bSync == TRUE
+                    bDidWait := TRUE
+                    cogatn(atnMask)                                                ' lockstep: both drivers take their commands together
+                    bLeftTaken, bRightTaken := frontWaitForDrivers(ltWheel.WAIT_SYNC_TAKEN, bLeft, bRight)
+                    if (eLeftStatus == NO_ERROR) and (bLeftTaken == FALSE)
+                        eLeftStatus := ERR_SYNC_TIMEOUT
+                    if (eRightStatus == NO_ERROR) and (bRightTaken == FALSE)
+                        eRightStatus := ERR_SYNC_TIMEOUT
+                    if (bLeftTaken == FALSE) or (bRightTaken == FALSE)
+                        ' audit M: a platform with one wheel driving pivots, so neither wheel keeps a
+                        '  command the other did not take (each stop is confirmed on the next pass)
+                        frontZeroSelected(bLeft, bRight)
+            else
+                ' one wheel's write itself failed (the narrow re-fault-at-rest race noted above) --
+                '  the invariant still holds: zero both selected wheels rather than leave the platform
+                '  driving the one that did succeed
+                frontZeroSelected(bLeft, bRight)
 
 PRI frontClearEStops(bLeft, bRight) : eLeftStatus, eRightStatus, bDidWait | bLeftLeft, bRightLeft
 ' FRONT COG: release the selected wheels' emergency stops and wait, bounded, until each driver has left DCS_ESTOP.
