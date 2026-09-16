@@ -2397,6 +2397,19 @@ overlay P8). What is certain from the source is a 200-400 ms pass while faulted 
 **Fix direction:** «#3513» (the front cog) removes the construct: no wait inside the loop body, and a late test before
 every `waitct`. No bench run is proposed to characterise it (overlay P10).
 
+### PL-73 -- a board that fails detection drives with no current limit
+
+**Found 2026-09-16 in «#3557»'s design** (`DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md` §3.6). DERIVED from source.
+
+The fold-back and derate limits are converted to millivolts through `rSenseForBoard`. When board detection
+fails, `rSenseForBoard` is `VALUE_NOT_SET` (`src/isp_bldc_motor.spin2`, `init()`), so no scale exists to convert
+them, and the design sets `i_limit_k` so the test is never met: the motor drives unprotected. `start()` does not refuse
+an undetected board today, and changing that is an API contract change.
+
+**Fix direction:** decide whether `start()` refuses a board it cannot detect (a new `ERR_*`), or drives with a
+conservative limit computed at the less sensitive Rev A scale (5 mV/A), which errs toward folding back early on
+Rev B.
+
 ---
 
 ## Recently closed

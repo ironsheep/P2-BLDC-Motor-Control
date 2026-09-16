@@ -109,6 +109,109 @@ Reproduced exactly. Emphasis and section numbers are the vendor's.
 > highest efficiency and lowest power losses, including lower current-surge requirements from
 > the power source and overall cooler operation of the motor controller PCB.
 
+## 1.4 MOSFET drivers and MOSFETs — the parts
+
+Supplied by Stephen 2026-09-16, pasted from the manual.
+
+### Rev A §2 — *10 V Power Supply*
+
+Supplied by Stephen 2026-09-16, pasted from the manual.
+
+> The 10 V power supply is based on a switching boost regulator and is capable of delivering up
+> to 50 mA to the MOSFET driver circuits. Power to the boost circuit comes from the VIO3V3 pin
+> on the upper P2 Accessory Header.
+
+### Rev B §2 — *12 V Power Supply*
+
+Supplied by Stephen 2026-09-16, pasted from the manual.
+
+> The 12 V power supply is based on a switching boost regulator and is capable of delivering up
+> to 50 mA to the MOSFET driver circuits. Power to the boost circuit comes from the VIO3V3 pin
+> on the upper P2 Accessory Header.
+
+So the gate drive is 10 V on Rev A and 12 V on Rev B. On both, the datasheet's V<sub>GS</sub> = 10 V on-resistance
+applies (3 mΩ max at 25 °C).
+
+### Rev A §4 — *MOSFET Drivers* (Universal Motor Driver P2 Add-on Board (#64010) v1.1 3/23/2022, p. 6)
+
+> This board has four Half-Bridge MOSFET drivers, part number Microchip MIC4604. One driver
+> controls each of the 4 output channels labeled: U, V, W, X.
+> The drivers allow independent control of the high and low channels, and there is an added logic
+> buffer before each MOSFET driver to ensure that the high side MOSFET can only be turned on
+> when the low side MOSFET is turned off. The independent control ensures compatibility with a
+> wide range of loads, including brushed and brushless motors.
+> To further protect the MOSFET Drivers against negative voltage spikes there is a fast-acting
+> reversed-biased diode between each common switching node and ground.
+
+(The TIP paragraph that follows is §1.3 above, word for word.)
+
+### Rev A §5 — *MOSFETs*
+
+> Each of the four channels have two high-power N-Channel MOSFETs in a common Half-Bridge
+> arrangement. The MOSFETs have large internal body diodes to provide maximum protection
+> from back EMF. Refer to the manufacturer datasheet for full details, Micro Commercial
+> MCAC85N06Y-TP.
+> The MOSFETs are controlled by the MOSFET Drivers, typically with a PWM signal driving the
+> high and low sides on/off alternately for a brushless motor, or asserting the MOSFETs either on
+> or off when driving a brushed DC motor.
+
+### Rev B §4 — *MOSFET Drivers* (Universal Motor Driver P2 Add-on Board (#64010) v2.0 5/5/2022, p. 6)
+
+> This board has four Half-Bridge MOSFET drivers, part number Texas Instruments UCC27211D.
+> One driver controls each of the 4 output channels labeled: U, V, W, X.
+> The drivers allow independent control of the high and low channels, and there is an added logic
+> buffer before each MOSFET driver to ensure that the high side MOSFET can only be turned on
+> when the low side MOSFET is turned off. The independent control ensures compatibility with a
+> wide range of loads, including brushed and brushless motors.
+> The UCC27211D MOSFET driver has internal protection against large negative spikes, at least
+> down to -10V on the HS pin (high-side feedback). To further protect the MOSFET Drivers
+> against negative voltage spikes there is a fast-acting reversed-biased diode between each
+> common switching node and ground. The protection against large negative spikes makes this
+> motor controller particularly suitable for driving large BLDC type hub motors.
+
+(The TIP paragraph that follows is §1.3 above, word for word.)
+
+### Rev B §5 — *MOSFETs*
+
+Word for word identical to Rev A §5: **Micro Commercial MCAC85N06Y-TP**.
+
+### What this settles (analysis, not vendor text)
+
+- **Both revisions use the same MOSFET.** So the MOSFET ratings, and the current limits drawn from them, are the
+  same for Rev A and Rev B. Only the sense scale differs (5 vs 150 mV/A, §2.1).
+- **What Rev B changed at the power stage is the gate driver.**
+  - The UCC27211D carries internal protection against negative spikes on the HS pin down to at least -10 V.
+    The Rev A text claims nothing like it for the MIC4604.
+  - The vendor ties that protection to *"driving large BLDC type hub motors"*.
+  - Rev B also added the INA180B2 sense amplifier.
+- **INFERENCE, not verified:** Rev A's damage (STEPHEN, above) more likely came from negative switching spikes at
+  the high-side driver with large hub motors than from MOSFET overcurrent. A current limit still helps Rev A
+  indirectly: less current at switch-off means less inductive energy behind each spike. It does not replace the
+  driver protection Rev B added.
+
+### MCAC85N06Y datasheet — the values the current limit uses
+
+Source: `DOCs/REF-NO-COMMIT/MCAC85N06Y(DFN5060).pdf`, Rev.3-4-04092022, supplied by Stephen 2026-09-16
+(not committed).
+
+| Rating | Value | Condition, as printed |
+|---|---|---|
+| Drain-source voltage V<sub>DS</sub> | 60 V | |
+| Gate-source voltage V<sub>GS</sub> | ±20 V | |
+| Continuous drain current I<sub>D</sub> | 85 A / **54 A** | T<sub>C</sub> = 25 °C / 100 °C; *"The Maximum Current Rating is Package Limited"* |
+| Pulsed drain current I<sub>DM</sub> | 390 A | *"Pulse Width Limited by Max. Junction Temperature"* |
+| Total power dissipation P<sub>D</sub> | 105 W | from junction-to-case resistance, i.e. with an ideal case sink |
+| Thermal resistance R<sub>θJA</sub> | **55 °C/W** | *"Mounted on 1 in² FR-4 Board with 2oz. Copper, in a Still Air Environment with TA=25°C"* |
+| Thermal resistance R<sub>θJC</sub> | 1.2 °C/W | |
+| Junction temperature | −55 to +150 °C | |
+| R<sub>DS(on)</sub> max | 3 mΩ / **4.5 mΩ** | V<sub>GS</sub> = 10 V, I<sub>D</sub> = 20 A / V<sub>GS</sub> = 4.5 V, I<sub>D</sub> = 10 A, at 25 °C |
+| R<sub>DS(on)</sub> vs temperature | typ. 2.5 mΩ at 25 °C, ~4.8 mΩ at 125 °C (×1.9) | Fig. 5, V<sub>GS</sub> = 10 V |
+| Rise / fall time | 6.7 / 26.9 ns typ. | V<sub>DD</sub> = 30 V, I<sub>D</sub> = 25 A |
+| Body diode continuous current I<sub>S</sub> | 85 A | |
+
+**Not known from any source here:** the board's copper area under each MOSFET. The gate drive is known: 10 V on
+Rev A, 12 V on Rev B (§2 above). Where they matter, the design takes the conservative side and says so.
+
 ---
 
 # Part 2 — What this settles, and what it moves
@@ -130,6 +233,11 @@ Reproduced exactly. Emphasis and section numbers are the vendor's.
 | Driver propagation | 39 ns | ~20 ns | yes |
 | Driver rise / fall | ~20 ns / ~20 ns | 7.2 ns / 5.5 ns | yes |
 | **Minimum deadtime** | **250 ns** | **250 ns** | **no** |
+
+**Why Rev B exists.** STEPHEN 2026-09-16: *"know too that revB exists because we could damage rev A
+boards"*. Rev A boards were damaged in use. So a current limit is protection that Rev A lacked, not
+tuning. The MOSFET parts are recorded in §1.4: both revisions use Micro Commercial MCAC85N06Y-TP, and Rev B
+changed the gate driver.
 
 ## 2.2 CONFIRMED — our `rSenseForBoard` constants are exactly right
 
