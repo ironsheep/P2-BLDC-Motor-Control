@@ -1035,7 +1035,21 @@ This is the highest-value change identified in either study.
 > ```
 >
 > On a change from a *running* speed `drv_incr` is non-zero, so `ramp_curr` is inherited from the
-> previous ramp — where the growth loop (`:3715-3718`) has already driven it to `ramp_max_`.
+> previous ramp and keeps accumulating, instead of restarting at `ramp_min_` = 1 500.
+>
+> ⚠ **Corrected 2026-09-17, same day.** A first draft said the inherited value is `ramp_max_`. It is
+> not — **C-2b above already established that `ramp_max_` is unreachable in every shipped
+> configuration**: `ramp_curr` grows by `ramp_inc` = 22 per pass from 1 500 toward 200 000, and
+> growth stops the moment the ramp completes (`.endRUpAtSpeed`), so it accumulates only over the
+> *ramping* part of each rung — 107 to 618 passes at the measured `steady_ms` of 56–323. Verified in
+> source, `:526-528`. **The defect and the fix are unchanged; the magnitude claim is withdrawn.**
+> C-2b turned out to be the load-bearing fact here, which is an argument for reading one's own
+> companion finding before writing the block.
+>
+> **What actually limits the jolt, and it is the cleaner account.** The ramp is gated by
+> `LAG_SOFT` = 80 (`:3345`), tested at `:3712` — *the ramp waits for the rotor this pass*. A
+> transition starting with a large inherited `ramp_curr` drives the lag straight into that gate and
+> is throttled there. The measurement lands exactly where that predicts.
 >
 > **MEASURED**, `debug_260917-131445.log:15170-15205`, `BM-RUNG2` LEFT forward — steady `err`
 > against peak `err_pk` at each of the twelve rungs:
@@ -1047,9 +1061,16 @@ This is the highest-value change identified in either study.
 > gap     22   27   23   23   23   24   25   25   25   26   26   25
 > ```
 >
-> ⭐ **The data carries its own control.** Rung 0 is the only transition that starts from rest — and
-> it has the **smallest** excursion in the table (22). Rung 1, the first to inherit `ramp_max_`, has
-> the **largest** (27). The one rung that gets the soft start is the one that does not jolt.
+> ⭐ **Rung 0 is the control the data supplies for free**, and `LAG_SOFT` is the line it sits under:
+>
+> | | `err_pk` | vs `LAG_SOFT` = 80 |
+> |---|---|---|
+> | **rung 0** — the only transition from rest, `ramp_curr` = 1 500 | **56** | **below** — never throttled |
+> | rungs 1–11 — every transition inheriting an accumulated `ramp_curr` | **71–98** | **at or above** — hits the gate every time |
+>
+> The one rung that gets the soft start is the one that stays under the limiter, and it is the one
+> that does not jolt. Rungs 1–11 each drive the rotor into the lag gate and are held there; that
+> repeated hit is what is felt through the platform.
 >
 > **STEPHEN, 2026-09-17**, watching the part-A ladder run: *"On your dual A run, you're making a
 > bunch of speed changes. One of the things I noticed in the speed changes is that we are physically

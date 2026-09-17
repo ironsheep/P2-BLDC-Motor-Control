@@ -2547,17 +2547,32 @@ and `:3715-3718`, the growth:
 
 **`ramp_curr` is reset to `ramp_min_` only when `drv_incr` is zero -- i.e. only when starting from rest.** On a
 speed change from a *running* speed, `drv_incr` is non-zero, so `ramp_curr` is **inherited from the previous
-ramp**, where lines 3716-3718 have already driven it to `ramp_max_`. Every rung-to-rung transition therefore
-begins at **full ramp rate on its very first pass**, with no soft start at all, while a start from rest begins
-gently at `ramp_min_` and grows.
+ramp** and keeps accumulating, while a start from rest begins gently at `ramp_min_` (1 500) and grows.
 
-That is a step in commanded *acceleration* at every speed change, and a step in acceleration is a jolt. It also
-explains the shape of the measurement better than any load effect: the ~25-count gap is nearly constant across
-rungs **because the ramp rate is the same `ramp_max_` every time**, independent of how large the speed step is.
+> **CORRECTED 2026-09-17, same day, before this entry was acted on.** A first draft of this entry said the
+> inherited value is `ramp_max_`. **It is not, and finding C-2b in the companion study already established
+> why:** `ramp_curr` grows by `ramp_inc` = 22 per drive pass from 1 500, and `ramp_max_` = 200 000 is
+> unreachable in every shipped configuration. Growth also stops the moment the ramp completes
+> (`.endRUpAtSpeed`), so it accumulates only across the *ramping* portion of each rung -- roughly 107 to 618
+> passes at Visit 4's measured `steady_ms` of 56-323. Verified in source: `ramp_min := 1_500`,
+> `ramp_max := 200_000`, `ramp_inc := 22` (`src/isp_bldc_motor.spin2:526-528`). **The defect and the fix are
+> unchanged; the magnitude claim was wrong and is withdrawn.**
 
-⭐ **The data carries its own control.** Rung 0 is the only transition that starts from rest, and it has the
-**smallest** gap in the table (22). Rung 1 -- the first transition to inherit `ramp_max_` -- has the **largest**
-(27). The one rung that takes the soft start is the one that does not slam.
+**What actually limits the jolt, and it is the cleaner explanation.** The ramp is gated by `LAG_SOFT` = 80
+(`:3345`), tested at `:3712`: `cmps lag_s, #LAG_SOFT wc` / `if_nc jmp #.justIncr` -- *the ramp waits for the
+rotor this pass*. So on a transition that starts with a large inherited `ramp_curr`, the ramp drives the lag
+straight into the `LAG_SOFT` gate and is throttled there.
+
+⭐ **The measurement lands exactly where that predicts, and rung 0 is the control.**
+
+| | `err_pk` | vs `LAG_SOFT` = 80 |
+| --- | --- | --- |
+| **rung 0** -- the only transition starting from rest, `ramp_curr` = `ramp_min_` = 1 500 | **56** | **below** -- the limiter is never reached, the ramp is never throttled |
+| rungs 1-11 -- every transition inheriting an accumulated `ramp_curr` | **71-98** | **at or above** -- the ramp hits the lag gate on every one |
+
+The one rung that gets the soft start is the one that stays under the limiter, and it is the one that does not
+slam. Rungs 1-11 each drive the rotor into the lag gate and are held there -- that repeated hit is what is felt
+through the platform.
 
 **Fix direction -- correct by construction (P10):** reset `ramp_curr` to `ramp_min_` at the start of **every**
 new ramp, not only when `drv_incr` is zero. The soft start then applies to every speed change, acceleration is
