@@ -2404,6 +2404,63 @@ missed its slot. The stack is the defect; the occupancy is a number to watch, no
 `stack_of` -- sizing from a measured high-water mark plus margin is the construction that makes the overrun
 impossible (P10). Do not relax the criterion.
 
+> ## ROOT CAUSE FOUND IN SOURCE 2026-09-17 -- one constant sizes two different workloads
+>
+> **`src/isp_steering_2wheel.spin2:218` and `:1416`:**
+>
+> ```spin2
+>     long    taskStack[ltWheel.STACK_SIZE_LONGS]                                  ' :1416
+>     longfill(@taskStack, ltWheel.STACK_SENTINEL, ltWheel.STACK_SIZE_LONGS)       ' :218
+> ```
+>
+> **The steering object sizes its own front-cog stack with the MOTOR object's constant.** But the two
+> cogs do different amounts of work: the motor's front cog services **one** wheel and peaks at
+> **114 of 128**; the steering's services **two** through the `front*()` routines and reaches
+> **128 of 128**. One number cannot express both needs, and the heavier consumer has run out.
+>
+> **Hypothesis raised and REFUTED, recorded so it is not raised again:** that the `longfill` itself
+> overruns. It does not -- the array at `:1416` is declared with the same constant the fill uses, so
+> the fill is exactly in bounds.
+>
+> ⛔ **The real danger is that 128 of 128 is indistinguishable from an overrun.** The high-water mark
+> is found by looking for surviving sentinel longs. When every sentinel has been overwritten, the
+> measurement saturates: **we cannot tell "used exactly all of it" from "used more than all of it".**
+> The true requirement is unknown and may already exceed 128.
+>
+> ### ⚠ WHAT AN OVERRUN WOULD CORRUPT -- and a possible link to PL-77
+>
+> `taskStack` is the last declaration in its VAR block (`:1416`). The **next** VAR block begins
+> (`:1419-1422`):
+>
+> ```spin2
+>     long    deltaTicks
+>     long    tickInMM_x100
+> ```
+>
+> **DERIVED, NOT ESTABLISHED -- stated as a hypothesis with its discriminator, not as a finding.**
+> Spin2 lays VAR out in declaration order, so a stack overrun past `taskStack` writes into
+> `deltaTicks` and then `tickInMM_x100`. **`tickInMM_x100` is the exact variable behind PL-77's
+> unexplained ~1000x magnitude:** `convertDistance()` computes
+> `fValue := float(nValue) *. float(tickInMM_x100) /. 100.0` (`:737`), and a corrupted
+> `tickInMM_x100` scales every distance the steering object reports.
+>
+> **Why PL-77 could not see it.** `BM-DISTM` prints `mm_x100,576`, but the harness reads that from
+> **`wheelL.wheelGeometry()`** (`test_bench_dual.spin2:3239`) -- the *motor* object's value -- and
+> **never reads back the steering object's own `tickInMM_x100`.** So the record shows a healthy 576
+> while the steering may have been using something else entirely, and the cell cannot tell. That is
+> the same "undiagnosable by construction" PL-77 already names, now with a named suspect.
+>
+> ⛔ **Do not treat this as the explanation.** Two things are unaccounted for: the sign, and whether
+> any overrun occurred at all. **The discriminators, in order of cost:**
+> 1. Have the harness read back `steering`'s own `tickInMM_x100` and print it in `BM-DISTM`
+>    alongside the motor's. Costs one field; settles whether the two ever disagree.
+> 2. Enlarge the steering stack (the PL-75 fix), re-run, and see whether the DISTM magnitude
+>    normalises. If it does, the two findings share one root cause.
+>
+> **Fix, correct by construction (P10):** give the steering object its own stack constant sized from
+> its own measured high-water mark plus margin, so the two cogs stop sharing a number that cannot
+> describe them both -- and so a saturated reading can never again be mistaken for a healthy one.
+
 ### PL-76 -- `driveAtPowerEx()` reports "motor not started" immediately after a `start()` that succeeded
 
 **Found 2026-09-17 in «#3561»**, Visit 4 part D. **MEASURED**,
