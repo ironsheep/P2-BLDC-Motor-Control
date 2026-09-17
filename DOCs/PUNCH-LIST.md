@@ -625,6 +625,45 @@ directions, before and after the scanned offsets are applied.
 faulted on either motor in either direction, so the predicted lower NEG ceiling did not appear
 unloaded. Above 100M the duty pins and current collapses while speed tracks — see PL-61.
 
+> ## ⭐ ACCEPTANCE CRITERION WRITTEN 2026-09-17, at Stephen's request
+>
+> **STEPHEN:** *"i think we need a test for PL-26 - how would we know if noticibly better?"*
+>
+> **Full design:** [`analyses/BLDC-COMMUTATION-PRINCIPLES.md`](analyses/BLDC-COMMUTATION-PRINCIPLES.md),
+> section *"How we would know it is noticeably better"*. In short:
+>
+> **THE BEFORE-MEASUREMENT ALREADY EXISTS.** Visit 4 ran the ladder in BOTH directions on BOTH
+> motors, so no new baseline run is needed. **MEASURED**, LEFT motor, `amps_x10k` reverse over
+> forward at the same commanded speed: **2.16x** (rung 2), **2.00x** (3), **2.02x** (4), **1.97x**
+> (5). RIGHT motor 1.88x and 1.86x at rungs 4 and 5. **One direction costs about twice the current
+> of the other**, and this independently reproduces the 1.76-1.97x measured on 2026-09-12 from a
+> completely different run.
+>
+> **THE METRIC:** reverse-over-forward current at rungs 3-5 -- today ~2.0, predicted 1.0 if the
+> principle holds. The window is rungs 3-5 because below it the current is 0.04-0.12 A and noise
+> dominates, and above it the duty saturates so the asymmetry cannot show.
+>
+> **THE TEST RUNS BEFORE ANY CODE CHANGES, AND IT MEASURES THE PRIZE.** The offset scan («#3520»)
+> is already designed and its predictions are already written. Its three outcomes each decide:
+> minima symmetric about one hall zero with about equal current at each -> the model holds and the
+> depth below today's default IS the gain, so build it; a residual imbalance at the minima -> the
+> simple model is falsified, name the remaining cause before redesigning; shallow minima -> we are
+> already near optimum and the ~2x is elsewhere, so do not build it.
+>
+> ⚠ **The principles document's own prediction warns the prize may be small:** the minimum is
+> BROAD, and +/-15 degrees from optimum costs only a few percent. If we are already within that, the
+> ~2x is not the offsets' doing, and the alternatives already named there -- unequal hall sectors,
+> sensor placement, the one-sector shift between the two tables -- are where it lives.
+>
+> ⭐ **A second independent route, new 2026-09-17:** the Doco's 360 P/R shaft encoder (1_440
+> counts/rev, 0.25 deg) measures the hall zero DIRECTLY rather than inferring it from a current
+> sweep, so it can confirm or refute the scan by a different physical path. It cannot reach the
+> 6.5in -- the motor is the wheel and there is no shaft.
+>
+> ⛔ **One axis this rig cannot show:** higher top speed under load. Every run is wheels-lifted and
+> Visit 4 found no rung up to 165M faulted in either direction, so the ceiling stays unmeasured by
+> ruling rather than by a failed run.
+
 ### PL-27 -- the Doco motor's offset and speed-ceiling tables were characterised while board detection was broken
 
 **Found 2026-09-12** (DERIVED from `src/isp_bldc_motor.spin2` `offsetsForMotor()` and

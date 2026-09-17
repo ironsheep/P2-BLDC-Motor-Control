@@ -204,6 +204,80 @@ Their *"I think … like 23"* is explicitly hedged and is most likely a recollec
 hub motors as a family rather than about this unit. **30 poles / 15 pole pairs is the common 6.5″
 configuration, and it is what this wheel measures.** Nothing further is owed.
 
+## How we would know it is noticeably better — the acceptance criterion for PL-26
+
+**STEPHEN, 2026-09-17:** *"i think we need a test for PL-26 - how would we know if noticibly
+better?"* Written 2026-09-17. **The before-measurement already exists** — Visit 4 ran the speed
+ladder in *both* directions on *both* motors, so the comparison needs no new baseline run.
+
+### The metric: reverse-over-forward current at the same rung
+
+**MEASURED**, Visit 4 part A, `bench/2026-09-17/debug_260917-131445.log`, `BM-RUNG3 amps_x10k`,
+LEFT motor, same commanded speed each way:
+
+| Rung | reverse | forward | ratio |
+|---|---|---|---|
+| 2 | 2 586 | 1 199 | **2.16×** |
+| 3 | 13 391 | 6 690 | **2.00×** |
+| 4 | 36 639 | 18 138 | **2.02×** |
+| 5 | 73 974 | 37 483 | **1.97×** |
+| 6 | 81 499 | 66 175 | 1.23× — forward is at duty saturation, the window has closed |
+
+RIGHT motor, same shape: **1.88×** at rung 4, **1.86×** at rung 5.
+
+⭐ **One direction costs about twice the current of the other for the same speed**, on both motors —
+and this independently reproduces the 1.76–1.97× measured on 2026-09-12 from a completely different
+run. **Two independent readings agree** (doctrine D2).
+
+**The measurement window is rungs 3–5.** Below it the current is 0.04–0.12 A and noise dominates;
+above it the duty saturates and the asymmetry cannot show.
+
+**The target the principle predicts is 1.0.** That is the criterion: *does the reverse-over-forward
+ratio at rungs 3–5 move from ~2.0 toward 1.0?*
+
+### Why this is a real prize and not a rounding error
+
+**2× current for the same work is heat and runtime**, not a few percent. If the principle holds, one
+wheel of every two-wheel platform stops costing double. That is worth a commutation change.
+
+⚠ **But this document's own prediction warns the prize may be smaller than it looks:** *"The minimum
+is broad. Torque per amp falls roughly as the sine of the lead angle, so ±15° from the optimum costs
+only a few percent."* If we are already within ~15° of optimum, correcting the offsets recovers
+almost nothing — **and then the ~2× is not the offsets' doing at all**, and the alternatives this
+document already names (unequal hall sectors, sensor placement, the one-sector shift between the two
+tables) are where it lives.
+
+### So the test that comes FIRST measures the prize, before anything is built
+
+**The offset scan («#3520») is already designed, and its predictions are already written above.** It
+sweeps the offset per direction and finds each direction's current minimum. Three outcomes, and each
+one decides:
+
+| Scan result | What it means | Decision |
+|---|---|---|
+| Minima symmetric about one hall zero, **and** each direction draws about the same current at its own minimum | the model holds; the depth below today's default **is** the prize | **build it** — and the expected gain is already quantified |
+| Minima found, but a **residual imbalance remains** at them | offsets are not the whole story; the simple model is falsified | **do not redesign yet** — name the remaining cause first |
+| Minima are **shallow** — within a few percent of the default | we are already near optimum | **do not build it**; the ~2× is elsewhere |
+
+⛔ **This is the fact-driven order: the scan is a measurement that decides a code change, and it runs
+before the code change.** Nothing about the driver is altered to find out whether altering it would
+help.
+
+### A second, independent route — new on 2026-09-17
+
+The Doco's **360 P/R shaft encoder** (1 440 counts/rev, 0.25°) measures the hall zero **directly**,
+rather than inferring it from a current sweep. That cross-check does not depend on the current
+channel at all, so it can confirm or refute the scan's estimate of Z by a different physical path.
+It does not reach the 6.5″ — the motor is the wheel and there is no shaft.
+
+### What "noticeably better" means to a user — and what our rig can actually show
+
+| Candidate outcome | Measurable on this rig? |
+|---|---|
+| **Forward and reverse behave the same** — Stephen's own stated goal | ✅ yes, and it is the ~2× above |
+| **Less current for the same speed** → cooler board, longer runtime | ✅ yes, at rungs 3–5 |
+| **Higher top speed under load** | ⛔ **no** — every run is wheels-lifted, and Visit 4 found no rung up to 165M faulted in either direction. The ceiling needs load, so this axis stays unmeasured by ruling, not by a failed run. |
+
 ## The two motors are not the same problem
 
 Facts from `src/isp_bldc_motor.spin2` (`hallTicInfoForMotor()`, `offsetsForMotor()`,
