@@ -90,11 +90,48 @@ factual conflict about our own motor that none of our measurements can resolve.*
 and `MOD $FFF` is the free wrap the designer points out: with 4,096 positions, the multiply
 overflows into exactly the wrap you want.
 
-⛔ **But it starts from a 12-bit MECHANICAL angle, and we never have one.** Their motor evidently
-carries an absolute position sensor reading 0–4,095 over one mechanical revolution. **We have three
-hall sensors.** Those give **6 states per electrical cycle** and nothing in between, and we only
-ever recover mechanical position by *accumulating* hall ticks — the opposite direction of travel
-from their formula.
+⛔ **But it starts from a 12-bit MECHANICAL angle, and the shipped driver never has one.** Their
+motor evidently carries an absolute position sensor reading 0–4,095 over one mechanical revolution.
+**The driver has three hall sensors.** Those give **6 states per electrical cycle** and nothing in
+between, and it only ever recovers mechanical position by *accumulating* hall ticks — the opposite
+direction of travel from their formula.
+
+> ### ⭐ Corrected 2026-09-17 — the BENCH has a fine mechanical angle, for one of the two motors
+>
+> **STEPHEN, 2026-09-17:** *"the doco was certified with external position encoder on-shaft."*
+>
+> A first draft of this section said *"we never have one."* **That is true of the shipped driver and
+> false of the characterisation rig.** The instrument is in the tree:
+> `src/isp_bldc_motor.spin2:2386-2390` declares an **Optical Rotary Encoder, 360 P/R**, on P48/P49,
+> read through a smart pin in quadrature (`pinstart(..., P_QUADRATURE | P_PLUS1_B, 0, 0)`), and
+> `LALOOPSTART()` divides the count by 4 to yield degrees.
+>
+> **360 P/R in quadrature is 1,440 counts per mechanical revolution — 0.25° mechanical.** Against
+> the Doco's 24 hall ticks per revolution that is **60 encoder counts inside every hall tick.**
+>
+> | | Mechanical positions per revolution | vs the designer's 4,096 |
+> |---|---|---|
+> | The shipped driver, either motor | 90 (6.5″) / 24 (Doco) — accumulated hall ticks | far coarser |
+> | **The bench encoder, Doco only** | **1,440** | same order — within a factor of 3 |
+>
+> ⭐ **So the designer's method is not unreachable for characterisation on the Doco.** With 1,440
+> counts we can measure where the hall zero truly sits, how uniform the six sectors actually are,
+> and what lead angle each direction wants — **without having to build sub-sector interpolation
+> first.** That reverses the dependency I had assumed: PL-26's measurement can precede PL-26's
+> driver work rather than waiting on it.
+>
+> ⛔ **It does not extend to the 6.5″ hub.** `DOCs/plans/BENCH-READINESS-SPRINT-PLAN.md:190` records
+> the encoder as *"Unavailable — incompatible with 6.5″ wheels. Hand-rotation ground truth replaces
+> it."* The hub motor is the wheel; there is no free shaft to mount to. That is why T0-12 exists,
+> and it is why the hub's ground truth is 3 hand revolutions at ±1 tick while the Doco's is a
+> continuous 0.25° reference.
+>
+> ⚠ **The encoder certification itself is not recorded in this repo.** Its result reaches us only as
+> Stephen's word above, and the instrument's presence in source. There is no log, no analysis and no
+> dated report under `analyses/bench/` for it — a search for `r360` / `360 P/R` finds only the two
+> plan documents that name the instrument as available. **So the Doco's geometry is well-founded but
+> its evidence is out of tree**, which is exactly the thing this document set exists to prevent.
+> Recording that gap is not a criticism of the measurement; it is the measurement's missing receipt.
 
 So the formula cannot be ported. **The principle underneath it still holds**, and it sharpens what
 this document's §"How the principles apply" item 3 already proposed: to drive at ±90° we need
