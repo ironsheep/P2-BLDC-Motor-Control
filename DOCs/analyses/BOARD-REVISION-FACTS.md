@@ -301,6 +301,35 @@ the sub-system the two revisions actually differ in: Rev A exposes the bare shun
 pulldown; Rev B exposes the INA180B2 output with its filter capacitor. The heuristic is sound
 and the vendor data explains *why*, which the code only asserted.
 
+> ## CORRECTED 2026-09-17 — "the heuristic is sound" does not survive the bench evidence, as written
+>
+> ⚠ **The conclusion above is too strong, and the distinction it misses is the whole of the
+> 2026-09-11 finding.** Two different claims are being run together:
+>
+> | Claim | Status |
+> |---|---|
+> | **The CIRCUIT is sound** — the two revisions really do differ at `pin_adc_cur_i`, and a discharge count really does separate them | ✅ **stands.** The vendor data in §1 explains it, and nothing has contradicted it. |
+> | **The READ is sound** — `getBoardType()` therefore returns the right answer whenever it is called | ❌ **refuted 2026-09-11.** |
+>
+> **MEASURED 2026-09-11:** the detection was poisoned by prior driver state — a Rev B board read
+> back as Rev A after a motor had been stopped and restarted, which silently scaled current
+> readings by ~30×. The physics of the pin was never the problem; **the state the pin was left in
+> was.** Repaired under «#3500».
+>
+> **This section's own sentence is the trap.** A sound sensing principle invites the inference that
+> the measurement built on it is trustworthy, and that inference is what cost a visit. The circuit
+> being diagnostic is a *necessary* condition for the read being correct, never a sufficient one.
+>
+> ⭐ **CONFIRMED FIXED on hardware 2026-09-17 (Visit 4):** `R14-DUAL-REVB-A`, criterion
+> `STARTS_NOT_REVB`, measured **0 out of n=12** on each motor —
+> [`bench/2026-09-17/debug_260917-131445.log:15292, :15297`](bench/2026-09-17/debug_260917-131445.log).
+> Twelve start/stop cycles per motor on a Rev B board, and not one misdetection. Every `BM-START`
+> and `BM-SSTART` record in all four dual parts reports `board,REV_B`.
+>
+> **So the read is now as sound as the circuit — but it was made so by a repair, not by the
+> circuit.** The sentence above should be read as *"the sensing principle is sound"*, and the
+> correctness of `getBoardType()` rests on «#3500» plus this measurement, not on §1's vendor data.
+
 ## 2.7 NEW QUESTION — the hall front end is identical, so why is the DocoEng offset per-revision?
 
 `offsetsForMotor()` gives `MOTR_DOCO_4KRPM` two different offset tables:

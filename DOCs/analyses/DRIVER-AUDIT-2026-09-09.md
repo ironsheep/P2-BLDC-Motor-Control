@@ -4,9 +4,19 @@
 (Stephen, 2026-09-09). Charter: [`DRIVER-AUDIT-CHARTER.md`](DRIVER-AUDIT-CHARTER.md).
 Companion reference: [`DRIVER-THEORY-OF-OPERATIONS.md`](../../DRIVER-THEORY-OF-OPERATIONS.md).
 
-**Scope read in full:** `isp_bldc_motor.spin2` (2392 lines today; 2359 when this audit was written -- the TEST-USE ONLY pass-throughs were added 2026-09-10 — Spin2 API, `taskPostionSense`,
-the PASM2 driver), `isp_steering_2wheel.spin2` (909), `isp_bldc_motor_userconfig.spin2`,
-`isp_dist_utils.spin2`, `isp_steering_serial.spin2`.
+**Scope read in full:** `isp_bldc_motor.spin2` (**4517 lines today, 2026-09-17**; 2392 on
+2026-09-10 when the TEST-USE ONLY pass-throughs were added; **2359 when this audit was written** —
+Spin2 API, the sense path, the PASM2 driver), `isp_steering_2wheel.spin2` (909 when written),
+`isp_bldc_motor_userconfig.spin2`, `isp_dist_utils.spin2`, `isp_steering_serial.spin2`.
+
+> ⚠ **The file has nearly doubled since this audit was written**, through the Bench Readiness
+> sprint: the error contract, the front cog, current limiting with the lag-limited ramp, and the
+> bounded stop. **Every line number cited in this document refers to the tree as it was on
+> 2026-09-09 unless a dated revision block says otherwise** — the dated blocks carry current line
+> numbers and name the file explicitly. Treat a bare `:NNNN` in the original text as historical.
+>
+> *Kept current because `tools/doc-audit.sh` recomputes this figure and flags it when it drifts;
+> the count is verified by the instrument, not remembered.*
 
 **Method note:** every claim about PASM2 or Spin2 semantics was verified against `p2kb-mcp`
 before being written, per the project's `DOMAIN_AUTHORITY`. That discipline killed one
@@ -56,6 +66,31 @@ both release demos certified. No code was modified by this audit.
 **Two long-standing README known-issues are now diagnosed**, not merely restated:
 *"drive status reporting is not working in the base objects"* is [M](#m)+[AF](#af), and
 *"motor can fault at higher load conditions"* is [Z](#z).
+
+> ### Bench write-back status — updated 2026-09-17 after Visit 4
+>
+> Findings carrying a dated revision block below. **A confirmation and a non-result are recorded
+> with equal prominence**; `NOMEAS` and `NOT_BUILT` are never written up as passes.
+>
+> | Finding | Status after Visit 4 | Evidence |
+> |---|---|---|
+> | [A1](#a1) | ⭐ **CLOSED** — `dead_gap` 259 ns on hardware, in spec for both boards | Visit 3 + Visit 4, two independent readings |
+> | [W](#w) | ⭐ **CLOSED** — rpm live and accurate to ±1 rpm | `R4-CHAR-RPM`, 8 readings, both motors |
+> | [Z](#z) | ⭐ **CLOSED on its feature-gap limb** — the driver droops instead of faulting; **open on recovery** | `R16-DUAL-RMPDROOP-B` PASS both motors |
+> | [AD](#ad) | **PARTIAL** — success path measured over 24 lifecycles; **failure path has no evidence** | negative limb lost with the dead `t0` tier (PL-74) |
+> | [F](#f) | ⚠ **MEASURED, UNDETERMINED** — metres read as mm and sign-inverted; driver-vs-harness not discriminated | `R16-DUAL-DISTM-B` FAIL (PL-77) |
+> | [M](#m) / [AF](#af) | **UNTESTED** — the fault was never provoked; the abort fired first | `R14-DUAL-FLTAPI-B` NOMEAS, n=0 |
+>
+> ⚠ **The largest correction Visit 4 produced was to the instruments, not the driver.** Seven of the
+> thirteen bench failures were defects in the acceptance criteria — a band narrower than its own
+> measurement resolution, a cell judging current magnitude instead of the property it was named for,
+> and a lag bound that under-counted one pass of field advance. Doctrine D2 (*when the measurement
+> and the system disagree, suspect the measurement first*) is what caught them, and they are filed
+> as PL-79, PL-80 and PL-78 rather than charged to the driver. **This is recorded here as
+> prominently as the confirmations, because a findings document whose value is that it says when it
+> was wrong has to say it where the reader will see it.**
+>
+> Full roster and per-cell verdicts: [`bench/2026-09-17/VISIT-4-RESULTS.md`](bench/2026-09-17/VISIT-4-RESULTS.md).
 
 **Three root causes account for nine of the findings**, which is good news for the fix
 sprint — they are cheaper to fix together than the count suggests:
@@ -123,6 +158,51 @@ end. The only indirect signal an application has is `isTurning()` returning fals
 **Highest-value fix target in this audit.** Fixing M without also widening the `DS_*` enum
 and exposing a steering-level fault query leaves the serial consumer no better off.
 
+> ## INCONCLUSIVE 2026-09-17 (Visit 4) — the fault was never provoked, so neither M nor AF was tested
+>
+> **Both cells that would have settled this returned NOMEAS, and NOMEAS is reported as itself, never
+> as a pass** (`task-execution` overlay §8).
+>
+> | Cell | Motor | Criterion | Result | Log |
+> |---|---|---|---|---|
+> | `R14-DUAL-FLTAPI-B` | BOTH | `FAULT_API_LATCHED` | **NOMEAS**, n=0 | `debug_260917-130012.log:7570` |
+> | `R16-DUAL-FLTRETRY-B` | BOTH | `SAME_POWER_AGAIN` | **NOMEAS**, n=0 | `:7571` |
+>
+> **Why there is no data — MEASURED**, same log, `:7546-7551`. The overshoot trial that precedes the
+> fault provocation did not reach its distance target and then tripped the absolute-current abort:
+>
+> ```
+> BM-OVERSHOOT ... tgt,529 l_trk,2_688 r_trk,2_688 ... why,NOT_REACHED
+> BM-ABORT seg,OVERSHT tid,25 motor,BOTH incre,0 reason,ABS_CURRENT value,2_217 scope,TRIAL
+> BM-FLTAPI ... want_off,180 l_off,223 r_off,223 power,50 rows,3 flt_ms,NA held_ms,NA latched,FALSE retry_err,NA retry_ms,NA retry_ok,FALSE why,ABORTED
+> ```
+>
+> The 180° offset provocation never ran, so **no motor was ever in `DCS_FAULTED` while the harness
+> was reading `getStatus()`.** The abort itself is the instrument working correctly — it is a guard
+> doing its job, not a failure — but it means the negative limb was never entered.
+>
+> ⛔ **What this visit's passing records do NOT show.** Every `BM-OUT` record in part B reads a
+> healthy motor, e.g. `:7552`:
+>
+> ```
+> BM-OUT ... l_stat,MOVING r_stat,MOVING l_st,SPIN_UP r_st,SPIN_UP l_flt,FALSE r_flt,FALSE ... faulted,FALSE estop,FALSE
+> ```
+>
+> `l_stat,MOVING` alongside `l_flt,FALSE` is the **agreeing** case. M is precisely the claim that
+> these two disagree when `l_flt` is TRUE, and **an instrument shown only healthy input has not been
+> verified** (doctrine D2). Reading this record as evidence for M would be reading a positive limb
+> as though it were the negative one.
+>
+> **Status: M and AF are UNTESTED as of Visit 4, not confirmed and not refuted.** What is owed is a
+> fault-provocation stimulus that does not trip the absolute-current abort at `value 2_217` —
+> designing that is harness work, and it is ours.
+>
+> **One adjacent fact that IS measured, and is not a substitute:** the e-stop path — a different
+> mechanism from the fault path — was fully certified. `R16-DUAL-ESTOP-D` `ESTOP_LATCHED` TRUE
+> (`debug_260917-125859.log:106`), with the latch, the refusal while latched, and the explicit
+> clear each measured separately (`:61-63`). The e-stop half of the *"status vocabulary that cannot
+> express failure"* root cause is exercised; the fault half is not.
+
 <a id="w"></a>
 ### W — the rate window adds a variable that is always zero
 `isp_bldc_motor.spin2:1297-1310` · **Defect**
@@ -154,6 +234,35 @@ and `getRotationCount()` are sound. The defect is confined to rate reporting.
 
 This plausibly explains why `util_char_motor.spin2` and `test_motor_char*.spin2` exist as
 separate programs computing their own rate numbers.
+
+> ## CONFIRMED FIXED ON HARDWARE 2026-09-17 (Visit 4) — rpm is live and accurate to ±1
+>
+> **MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-125254.log:495-502`, the `char` tier's
+> `R4-CHAR-RPM` cell — eight readings, both motors, criterion `RPM_ERR`, band −2..2 rpm:
+>
+> | Motor | `RPM_ERR` readings | n per reading | Verdict |
+> |---|---|---|---|
+> | LEFT | −1, 0, −1, 0 | 295, 296, 589, 589 | **PASS** |
+> | RIGHT | −1, −1, 0, −1 | 295, 295, 590, 590 | **PASS** |
+>
+> The wrong-variable line is repaired and the rate channel now reports real numbers, within
+> **±1 rpm** of the independently computed reference over samples of roughly 300 and 600.
+>
+> **What this changes for users, and it is a behaviour change worth stating plainly:** every
+> speed/RPM getter previously returned zero-or-negative. Any application that coded *around* a
+> constant zero — treating it as "telemetry unavailable", or short-circuiting a branch that could
+> never be taken — now receives live values and will take that branch. This belongs in the 6.0.0
+> release notes as a user-visible change, not as a silent repair. It is already on «#3515»'s list.
+>
+> **The audit's `Not affected` note stands and is now also measured.** `getDistance()` and
+> `getRotationCount()` were sound, and Visit 4's ladder exercised the same tick path across 48
+> rungs with `hw_ticks` tracking `ticks` exactly (`debug_260917-131445.log:15131-15205`).
+>
+> **Corroborating the diagnosis rather than just the fix:** the audit guessed that this defect is
+> *why* `util_char_motor.spin2` and `test_motor_char*.spin2` compute their own rate numbers. With
+> the driver's own channel now accurate to ±1 rpm, that duplication has lost its reason to exist —
+> a cleanup candidate, filed as an observation here rather than acted on, since it is outside this
+> sprint's scope (P10: the need goes to the punch list, the work goes back to the plan's goal).
 
 <a id="ab"></a>
 ### AB — `driveForDistance()` cannot turn
@@ -324,6 +433,38 @@ type… REV_B needs shorter to reduce jerk"* — a **v5.0.2 feature that does no
 > **Related:** the same 250 ns minimum is the number the **T1-13** harness must implement if
 > it PWMs the fourth channel itself — see the shoot-through hazard in the bench plan.
 
+> ## CONFIRMED ON HARDWARE 2026-09-17 (Visit 4) — the conditional is gone and the value is in spec
+>
+> **The fix landed and two independent bench sessions now measure it.** The conditional was
+> deleted rather than repaired, exactly as the 2026-09-10 revision concluded.
+>
+> **MEASURED, Visit 4**, `DOCs/analyses/bench/2026-09-17/debug_260917-125254.log:475`, the `char`
+> tier's init dump at 270 MHz:
+>
+> ```
+> * init values dead_gap = 70, pwm_limit = 3_033, adc_fram = 6_136, duty_min = 1_600, duty_max = 24_264
+> ```
+>
+> **70 clocks at 270 MHz = 259.3 ns** — which is the number this revision predicted from the
+> `(ticks1us * gapInNs) / 1_000` arithmetic, read back off the running driver rather than computed.
+> It clears the 250 ns vendor minimum, and the same log line shows `pwm_limit` and `duty_min`
+> derived from it without incident. **MEASURED, Visit 3** (`VISIT-3-RESULTS.md` §1) had already put
+> the value at 260 ns across all three suite clocks, 200 / 270 / 300 MHz.
+>
+> ⭐ **Two independent readings agree** — a bench dump at one clock and a three-clock sweep at the
+> previous visit — and they agree with the arithmetic derived from the vendor documentation. Per
+> doctrine D2, the agreement of independent readings is itself the evidence; the question worth
+> asking is what would make them agree if all three were wrong, and the answer here is nothing:
+> the vendor minimum, the integer arithmetic and the running driver are three different sources.
+>
+> **Status: the hazard is closed.** No board runs at 52 ns, no branch exists to reintroduce it, and
+> the surviving constant carries margin for the truncation at every clock the suite uses.
+>
+> **Still outstanding, and it is not this document's to fix:** `CLAUDE.md`'s *Board revision
+> handling* paragraph still describes the deleted per-revision conditional as live. That is
+> **finding F-9**, owed to «#3515» item (9). `CLAUDE.md` is Stephen's file — it is raised with him,
+> never edited here.
+
 <a id="a2"></a>
 ### A2 — the user's board-revision override is silently ignored
 `isp_bldc_motor.spin2:606-611` · **Defect** · *root cause A*
@@ -399,6 +540,42 @@ mapping jumps from `+1` to `-3_888_887` between power 1 and 2.
 Independently corroborated by finding [S](#s): `getDistance()` computes `DDU_M` correctly
 (`/. 1000.0`), so the two APIs disagree by exactly 10× on the same unit.
 
+> ## MEASURED 2026-09-17 (Visit 4) — and the result does NOT confirm the fix. **UNDETERMINED.**
+>
+> ⚠ **This entry is deliberately not closed.** The `DDU_M` repair was believed done, and a 6.0.0
+> release line drafted under «#3515» already says so: *"stopAfterDistance with DDU_M stops ten
+> times further, i.e. correctly, so anyone using it was stopping short."* **Visit 4's metres
+> reading does not support that claim**, and a written record is a claim, not reality (doctrine
+> overlay P8) — so the release line is now blocked on this entry rather than the reverse.
+>
+> **MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-130012.log:7547`:
+>
+> ```
+> BM-DISTM l_ticks,2_688 r_ticks,2_688 l_m,-14_640 r_m,-14_640 l_pred_m,15 r_pred_m,15 mm_x100,576 agree,FALSE
+> ```
+>
+> `R16-DUAL-DISTM-B` therefore reads `METRES_AGREE FALSE` (`:7573`), both motors.
+>
+> **DERIVED — the magnitude is right and the label is wrong.** `mm_x100 576` is 5.76 mm per tick,
+> so 2 688 ticks is **15 483 mm = 15.48 m**, against a prediction of 15 m. The number `-14 640` is
+> therefore **millimetres carried in a field that the record and the criterion both read as
+> metres**, and it is **additionally sign-inverted**. Two independent faults in one reading.
+>
+> ⛔ **What is NOT established, and why this stays open.** Whether the fault lies in the driver's
+> `DDU_M` conversion or only in the harness record that reports it. **Both motors read identically,
+> which does not discriminate** — a shared driver path and a shared harness path produce the same
+> symmetry. Writing this back as a driver defect would assert something the measurement does not
+> carry.
+>
+> **The discriminator, for whoever takes it:** read `getDistance()`'s `DDU_M` arm and the harness's
+> `BM-DISTM` emitter against each other, in source. If the driver arm is correct, the fault is the
+> record's and finding **F** is genuinely closed; if not, **F** is still open in the shipping API
+> and the release line must be withdrawn. This is a source question, not a bench question — no
+> further run is proposed for it (doctrine overlay P10: the bench certifies, it never engineers).
+>
+> **Filed as PL-77.** Until it is settled, finding F's status is **measured, not closed**, and
+> finding [S](#s)'s disagreement-by-10× remains the open cross-check it always was.
+
 <a id="o"></a>
 ### O — `PWR_25p9V` passes validation, then aborts at init
 `isp_bldc_motor.spin2:685` vs `:925` · **Defect**
@@ -426,6 +603,42 @@ mask garbage. Both wheels were started with `sync = true`, so each is parked in 
 a wrong mask means the surviving motor is **never released** and the drive system hangs
 with no diagnostic. `start()` returns only the *sense* cog id, so the caller cannot detect
 it either.
+
+> ## PARTIALLY CONFIRMED 2026-09-17 (Visit 4) — the success path is measured; the failure path is NOT
+>
+> **The success limb, MEASURED.** Every `BM-START` record across all four dual parts carries a real
+> cog id with an explicit success flag, and every `BM-SSTART` (steering) does the same — e.g.
+> `DOCs/analyses/bench/2026-09-17/debug_260917-131445.log:15130`:
+>
+> ```
+> BM-START seg,LADDER motor,LEFT life,21 cog_ret,3 cog_ok,TRUE board,REV_B ready,TRUE ... why,NONE
+> ```
+>
+> and `debug_260917-125859.log:58`:
+>
+> ```
+> BM-SSTART seg,STEERSEG life,3 motor,BOTH ret,5 ret_ok,TRUE l_st,STOPPED r_st,STOPPED ... l_board,REV_B r_board,REV_B why,NONE
+> ```
+>
+> `R14-DUAL-REVB-A` PASSed with **0 bad starts out of n=12** on each motor
+> (`debug_260917-131445.log:15292, :15297`), and part A alone performed 24 start/stop lifecycles
+> without a hung release. So the caller *can* now detect the outcome, and the lockstep release the
+> audit worried about was independently certified by `R16-DUAL-LOCKSTEP-D`
+> (`debug_260917-125859.log:104`).
+>
+> ⛔ **The failure limb has NO evidence from this visit, and that is the half this finding is
+> about.** `R16-T0-FRONTFAIL` — one free cog, expect −1 and `ERR_NO_FREE_COG` with no leak — was
+> one of the ten cells lost when the `t0` binary shipped without a debug kernel and emitted nothing
+> (**PL-74**). Per doctrine D2, **a claim is not verified until its negative case is measured**: a
+> start that succeeds 24 times says nothing about what the code does when `coginit` has no cog to
+> give, which is precisely the condition AD describes.
+>
+> **Status: the success path is certified; AD stays open on its failure path**, owed to the next
+> visit once the `t0` tier emits. The one negative-limb reading that *did* survive is
+> `R10-CHAR-STEERFAIL` (`RET_NEG_NOLEAK` TRUE, `debug_260917-125254.log:513`) and
+> `R16-CHAR-STEERERR` (`WHEEL_NAMED` TRUE, `:514`) — the steering object returns a negative and
+> names the failing wheel without leaking a cog. That is AD's shape at the steering layer, and it
+> is the reason the finding is *partially* rather than wholly unproven.
 
 <a id="ae"></a>
 ### AE — no validation that the two pin groups don't overlap
@@ -505,6 +718,63 @@ algorithm so the motor doesn't 'give up' under load)"*.
 reports `DS_MOVING`. On a drive platform that is a silent failure with physical
 consequences. Fixing M does not fix Z, but it converts Z from *silent* to *reported* — which
 is why M is the higher-value fix.
+
+> ## CONFIRMED FIXED ON HARDWARE 2026-09-17 (Visit 4) — the fallback exists and it is measured
+>
+> ⭐ **This closes the README known issue** *"motor can fault at higher load conditions (we need to
+> add a fallback algorithm so the motor doesn't 'give up' under load)"* — diagnosed here in 2026-09,
+> designed as **C-5** / **S-2** in the companion study, built under «#3558», and now measured.
+>
+> **MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-130012.log:7565` and `:7569`:
+>
+> ```
+> SIGNOFF cell,R16-DUAL-RMPDROOP-B motor,LEFT  crit,DROOPED_NOT_FAULT measured,TRUE lo,TRUE hi,TRUE units,BOOL n,1 verdict,PASS
+> SIGNOFF cell,R16-DUAL-RMPDROOP-B motor,RIGHT crit,DROOPED_NOT_FAULT measured,TRUE lo,TRUE hi,TRUE units,BOOL n,1 verdict,PASS
+> ```
+>
+> **Under a load it cannot follow, the driver now droops instead of faulting** — both motors, and
+> this is the headline behavioural claim of the whole current-limit design.
+>
+> **Two further mechanisms behind it, also measured.** Current fold-back holds
+> (`R16-DUAL-FOLDBACK-D` PASS both motors, `value 5_186` LEFT / `4_801` RIGHT against a 0..8 800
+> band, `debug_260917-125859.log:111-112`), and the limits themselves are the MOSFET-derived
+> `peak_a 40 / cont_a 27` of **S-2**, visible in the same log's `BM-LIMST` records.
+>
+> ### Why the fault now fires far less often — a construction, not a tuning
+>
+> This audit's I.1 line records the trip at **125/256 of a turn (~176° electrical)**. The lag-limited
+> ramp added by «#3558» stops the commanded field advancing at **`LAG_HOLD = 100`**
+> (`src/isp_bldc_motor.spin2:3346`, = 140.6°), which is *below* the trip:
+>
+> ```spin2
+> .justIncr   ' just do our increment of angle and we're done!
+>                 cmps    lag_s, #LAG_HOLD            wc  ' the field advances only while the rotor trails it by
+>     if_c        add     angle_, drv_incr                '  less than LAG_HOLD, so |err_| stays under the 125 fault test
+> ```
+>
+> **MEASURED across all four dual parts**, `BM-LAG` records: max observed lag was **115–116**, and
+> the stored error field's saturation value of 127 was never reached
+> (`debug_260917-131445.log:15286-15287`, `-130012.log:7557-7558`, `-131237.log:5610-5611`,
+> `-125859.log:100-101`). **The 125 trip was not reached once in 213 024 samples across two motors**
+> (A 63 947 + 63 998, B 19 761 + 19 862, C 19 933 + 19 922, D 3 293 + 2 308).
+>
+> That is Z's fallback working by construction: the field stops advancing before the rotor can fall
+> far enough behind to trip the last-resort detector. The detector is still there and unchanged — it
+> is simply no longer the *first* thing that happens under load.
+>
+> ### What is NOT yet closed
+>
+> ⛔ **The fault path's own behaviour remains untested** — `R14-DUAL-FLTAPI-B` and
+> `R16-DUAL-FLTRETRY-B` are both NOMEAS because the provocation never ran (see [M](#m)'s 2026-09-17
+> block). So *"the motor no longer gives up"* is measured; *"and when it does fault, recovery behaves
+> as specified"* is not. **Z is closed on its feature-gap limb and open on its recovery limb.**
+>
+> ⚠ **One related defect Visit 4 did surface**, and it is not Z's: every speed change begins at the
+> maximum ramp rate, because `ramp_curr` is reset to `ramp_min_` only when starting from rest
+> (`src/isp_bldc_motor.spin2:3706-3707`). That is **PL-78**, and it is the mechanism behind the
+> platform jolt Stephen reported on 2026-09-17. It sits adjacent to finding [G](#g), which notes that
+> `setAcceleration()` writes `ramp_inc` — the same ramp machinery — while being documented as
+> non-functional.
 
 <a id="g"></a>
 ### G — `setAcceleration()` silently corrupts ramping

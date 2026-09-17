@@ -282,6 +282,52 @@ Worth stating plainly: `userCutoff` (`isp_steering_2wheel.spin2:735`) is written
 in three places and read in exactly one — as a value pushed to the HDMI debug
 display (`isp_steering_2wheel.spin2:1034`). It gates nothing.
 
+> ## ⭐ CONFIRMED FIXED ON HARDWARE 2026-09-17 (Visit 4) — the e-stop latches, and the latch was measured holding
+>
+> **The auto-clear is gone** («#3556»). Visit 4 tested the latch as three separate properties rather
+> than one, because *"it latches"* and *"it refuses while latched"* and *"it clears only when told"*
+> are three different claims. **MEASURED**, `bench/2026-09-17/debug_260917-125859.log:61-63`, the
+> steering (two-wheel) path:
+>
+> ```
+> BM-DSTEP step,ESTOP_REFUSE motor,BOTH seg,STEERSEG measured,1     lo,0     hi,50    result,PASS
+> BM-DSTEP step,ESTOP_LATCH  motor,BOTH seg,STEERSEG measured,1_500 lo,1_500 hi,1_500 result,PASS
+> BM-DSTEP step,ESTOP_CLEAR  motor,BOTH seg,STEERSEG measured,0     lo,0     hi,0     result,PASS
+> ```
+>
+> and the same three on the single-motor path at `:89-92`. Rolled up as
+> `R16-DUAL-ESTOP-D` `ESTOP_LATCHED` TRUE (`:106`) and `R16-DUAL-WESTOP-D` for the individual wheel
+> (`:116`).
+>
+> ⭐ **`ESTOP_LATCH measured 1_500` against a band of exactly 1 500 is the direct refutation of this
+> finding.** The e-stop was asserted and still held **1.5 seconds later** — where this section
+> records the library unilaterally releasing it *"within 250 ms"*, on the second 125 ms supervisor
+> pass. The toggling `eStopState` pattern is gone, and the latch now survives an interval **six to
+> twelve times longer than the window in which it used to cancel itself.**
+>
+> **`ESTOP_REFUSE measured 1`** (band 0..50) is the second property: while latched, a drive command
+> is refused rather than obeyed. This section's warning — *"the very next `driveAtPower()` from any
+> source will be obeyed as though nothing happened"* — no longer holds. The supporting error path is
+> visible in the same log, `:87-88`, where `driveAtPowerEx()` returns an error rather than driving.
+>
+> **`ESTOP_CLEAR measured 0`** is the third: the latch clears when, and only when, explicitly told
+> to.
+>
+> ### What this changes for users, and it belongs in the release notes
+>
+> **Applications that relied on the auto-clear will now hang at rest.** Any code that called
+> `emergencyCutoff()` and then simply issued the next drive command — trusting the quarter-second
+> release this finding documents — must now call `clearEmergency()` explicitly. That is a breaking
+> behavioural change and exactly what a major version boundary is for. It is on «#3515»'s list.
+>
+> **The RC demos' interlock is now belt-and-braces rather than the only protection.** This section
+> notes the interlock *"lives in the demo, not in the library"*; it now lives in both. The demo code
+> needs no change.
+>
+> ⛔ **`userCutoff` is NOT addressed by this.** The paragraph above — written in three places, read
+> in exactly one, gating nothing — was not touched by «#3556» and was not exercised by Visit 4.
+> **That half of S-4 remains open.**
+
 ## I.5 The fault latch is erased on a timer by a debug routine
 
 **S-5.** `fault` is written by the driver at the moment of the trip
@@ -316,6 +362,30 @@ This compounds audit findings **M** (a faulted motor reports `DS_MOVING`) and
 **AF** (no public fault query on the steering object) into something worse than
 either: the two-wheel layer does not merely fail to expose the fault, it
 actively erases the evidence on a timer.
+
+> ## UNTESTED 2026-09-17 (Visit 4) — no fault was provoked, so the erasure path was never entered
+>
+> **S-5 cannot be settled by a run in which nothing faulted.** Both cells that would have exercised
+> the fault API returned **NOMEAS, n=0**: `R14-DUAL-FLTAPI-B` (`FAULT_API_LATCHED`) and
+> `R16-DUAL-FLTRETRY-B` (`SAME_POWER_AGAIN`), `bench/2026-09-17/debug_260917-130012.log:7570-7571`.
+>
+> **Why — MEASURED**, same log `:7548`: the overshoot trial that precedes the 180° fault
+> provocation tripped the absolute-current abort first —
+> `BM-ABORT seg,OVERSHT reason,ABS_CURRENT value,2_217 scope,TRIAL` — and
+> `BM-FLTAPI` then recorded `flt_ms,NA held_ms,NA latched,FALSE why,ABORTED` (`:7551`).
+>
+> So the three-second erasure this section describes was **never given a fault to erase**. Its
+> status is unchanged: **not confirmed, not refuted.**
+>
+> ⚠ **Do not read Z's confirmation as covering this.** The companion audit's finding **Z** *is*
+> confirmed — the driver now droops instead of faulting (`R16-DUAL-RMPDROOP-B` PASS, both motors) —
+> and that makes faults **rarer**, which reduces how often S-5 can bite. **It does not change what
+> happens when a fault does occur.** Rarity is not a fix for evidence destruction, and treating the
+> droop result as though it closed S-5 would be exactly the substitution doctrine D2 warns about:
+> a positive limb standing in for a negative one that was never measured.
+>
+> **What is owed:** a fault-provocation stimulus that does not trip the absolute-current abort at
+> `value 2_217`. Designing it is harness work and it is ours.
 
 ## I.6 The serial host is told the robot is fine
 
@@ -623,6 +693,44 @@ beside it reads *"anything above yields RPM 272.0"*. The formula gives:
 > - **What stands:** the tables are back-EMF fault ceilings, and the power → speed map is linear. Only the
 >   scale factor changes.
 
+> ## ⭐ CERTIFIED 2026-09-17 (Visit 4) — the corrected law holds to better than 0.5 % over a 33:1 range
+>
+> **The 2026-09-15 revision above is confirmed on hardware, and this closes C-1.**
+>
+> Visit 4's ladder predicts each rung from the **corrected** law (1913.2 passes/s) and measures the
+> achieved tick rate against it. **48 rungs — twelve increments × two motors × two directions.**
+>
+> **The decisive check, because it is the exact number the revision computed.** The revision states:
+> *"At 147_000_000 it gives 261.9 rpm, 392.9 ticks/s."*
+>
+> | Rung 9, `incre 147_000_000` | `pred_x10` | `rate_x10` | error | Line |
+> |---|---|---|---|---|
+> | LEFT reverse | −3 928 | −3 932 | 0.10 % | `debug_260917-131445.log:15158` |
+> | LEFT forward | 3 928 | 3 936 | 0.20 % | `:15197` |
+> | RIGHT reverse | −3 928 | −3 928 | **0.00 %** | `:15236` |
+> | RIGHT forward | 3 928 | 3 932 | 0.10 % | `:15275` |
+>
+> **`pred_x10 3_928` is 392.8 ticks/s — the revision's derived 392.9, arrived at from source and the
+> P2 authority, and the motor delivers it.**
+>
+> Across the whole ladder, from `incre 5_000_000` to `165_000_000`, every rung tracks prediction to
+> **better than 0.5 %** — e.g. rung 11 LEFT forward, `rate_x10 4_415` vs `pred_x10 4_409`, 100.1 %
+> (`:15203`). The single exception is rung 0, where the measurement is 13–14 ticks in a one-second
+> window and ±1 tick is ~7.5 %; that is quantisation, and the acceptance band that failed there was
+> **the instrument's defect, not the driver's** (filed **PL-79**).
+>
+> ⛔ **What this does NOT certify.** The tables remain **back-EMF fault ceilings**, exactly as the
+> section below says — Visit 4 measured the *speed law*, not the ceilings. Every run was
+> **wheels-lifted**, so no rung was ever asked for torque it could not produce; the ceiling question
+> needs load, and no bench run is proposed for it here.
+>
+> ⚠ **The sentence immediately below — "The model is exact" — is SUPERSEDED.** It is preserved as
+> written, per this document's convention of keeping original text and dating what overturned it.
+> The model is not exact: it is about 4.4 % fast unless the 1913.2-pass figure is used, and with
+> that figure it is accurate to better than 0.5 %. **The reframing the sentence goes on to make —
+> that the lookup table is a set of back-EMF ceilings rather than a calibration — is unaffected and
+> stands.**
+
 The model is exact. Which means the entire per-voltage lookup table — eight
 magic numbers per motor per board revision, the thing `ADDING_MOTOR.md` exists
 to explain how to produce — is **not a calibration**. Each number is one fact:
@@ -771,6 +879,51 @@ spins up the other way. That is the correct structure — but the ramp-down rate
 is the same fixed 50,000 whether the platform is a 2 kg bench rig or a 30 kg
 robot, and nothing checks whether the motor actually followed.
 
+> ## ⭐ MEASURED 2026-09-17 (Visit 4) — the deceleration number, and two rows of the table above have changed
+>
+> ### The number
+>
+> **MEASURED**, `R16-DUAL-STPDECEL-C`, criterion `STOP_TICKS_IN_BAND`, band 60..95 hall ticks:
+>
+> | Motor | Ticks to rest | Verdict | Line |
+> |---|---|---|---|
+> | LEFT | **75** | PASS | `bench/2026-09-17/debug_260917-131237.log:5617` |
+> | RIGHT | **75** | PASS | `:5620` |
+>
+> ⭐ **Visit 3 independently measured 74–77 ticks.** Two visits, two motors, agreeing to within one
+> to two ticks. Per doctrine D2 the agreement of independent readings is itself the evidence.
+>
+> **DERIVED**, using the same run's measured `mm_x100 576` (5.76 mm per hall tick,
+> `debug_260917-130012.log:7547`): **75 ticks ≈ 432 mm of travel during the stop**, on the shipped
+> 6.5″ configuration, wheels lifted.
+>
+> ⚠ **Read that number for what it is.** It is the *deceleration distance*, measured on a **lifted
+> wheel** — i.e. against rotor and wheel inertia only, with no rolling resistance and no payload.
+> A loaded platform on the floor will stop **shorter**. This is a floor for the figure, not a
+> prediction of on-floor behaviour, and it must be published as such.
+>
+> ⭐ **This is the C-4 deceleration data `DRIVE-OBJECTS.md` currently lacks**, and producing it was
+> the stop-mode test's second purpose. It is carried into the public interface documentation by the
+> same task that writes this block back.
+>
+> ### Two rows of the table above are now out of date
+>
+> | Want | Said above (2026-09-09) | Status 2026-09-17 |
+> |---|---|---|
+> | brake now, hard, and stay stopped | *not available — `emergencyCutoff()` self-clears (S-4)* | ⭐ **the e-stop now latches and stays latched until explicitly cleared** — `R16-DUAL-ESTOP-D` `ESTOP_LATCHED` TRUE, with the latch, the refusal while latched and the explicit clear each measured separately (`debug_260917-125859.log:61-63, :106`). Fixed under «#3556». |
+> | coast to a stop (no braking) | *works; but a fault silently downgrades brake to coast — see S-9a* | the coast path itself is unchanged; **the S-9a downgrade was not exercised**, because no fault was provoked this visit (`R14-DUAL-FLTAPI-B` NOMEAS). Still open. |
+>
+> ⛔ **What is still NOT available, and Visit 4 does not change it:** *stop as fast as the motor can
+> without faulting*, per-platform ramp-down rates, and reverse-plug braking. The fixed `ramp_down`
+> of 50 000 is still the same number for a 2 kg bench rig and a 30 kg robot.
+>
+> ⚠ **And one cell that would have measured where a stop actually lands returned no data.**
+> `R16-DUAL-STOPLIM-B` (`REST_FROM_TARGET`) is **NOMEAS, n=0**
+> (`debug_260917-130012.log:7572`) — the overshoot trial tripped the absolute-current abort before
+> it reached its target. So *"stops land at rest at their limit"* («#3559») is **not certified by
+> this visit**; only the deceleration *rate* is. That distinction matters for the release notes and
+> is recorded rather than smoothed over.
+
 ## II.5 The one change that fixes the most: lag-limited ramping
 
 **C-5.** This is the recommendation the rest of Part II is building toward, and
@@ -831,6 +984,88 @@ This is the highest-value change identified in either study.
 >
 > The thresholds are PASM constants, not params. The params block grew to 16 longs for the current limit instead
 > (`DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md` §3.2, §4).
+
+> ## ⭐ CERTIFIED 2026-09-17 (Visit 4) — the limiter works. One consequence of four did not arrive.
+>
+> **The run-time proof the 2026-09-16 revision said was owed to Visit 4 is here.** The verdict is
+> split, and both halves are recorded with equal weight.
+>
+> ### What is certified
+>
+> **The limiter holds, and the 176° trip is no longer what stops the motor.** `BM-LAG` across all
+> four dual parts, both motors:
+>
+> | Part | LEFT | RIGHT | samples (L / R) | Log |
+> |---|---|---|---|---|
+> | A | 115 | 115 | 63 947 / 63 998 | `bench/2026-09-17/debug_260917-131445.log:15286-15287` |
+> | B | 115 | 115 | 19 761 / 19 862 | `debug_260917-130012.log:7557-7558` |
+> | C | 116 | 116 | 19 933 / 19 922 | `debug_260917-131237.log:5610-5611` |
+> | D | 115 | 87 | 3 293 / 2 308 | `debug_260917-125859.log:100-101` |
+>
+> **213 024 samples across two motors, and the 125-unit fault trip was never reached once.** The
+> stored error field's saturation value of 127 was never reached either — an unfixed driver pegs it
+> there. The built trigger described above is doing exactly what it was built to do: the field stops
+> advancing at `LAG_HOLD = 100` (`src/isp_bldc_motor.spin2:3346`, confirmed in source), which is
+> below the 176° trip, so the rotor can never fall far enough behind to trip it during ordinary
+> motion.
+>
+> ⭐ **Consequence 1 — "faults become rare" — is DELIVERED and separately measured.** The driver
+> droops under a load it cannot follow instead of faulting: `R16-DUAL-RMPDROOP-B`
+> `DROOPED_NOT_FAULT` TRUE, both motors (`debug_260917-130012.log:7565, :7569`). That closes
+> `README.md`'s oldest known issue — see the companion audit's finding **Z**.
+>
+> ⚠ **The `R16-DUAL-LAGBND` cell FAILED on every part, and that failure was MINE, not the
+> driver's.** The acceptance bound was written as 110 — `LAG_HOLD + 10` — but the test reads `lag_s`
+> sampled at the *top* of the drive pass (`:3560`) and the field then advances one whole `drv_incr`
+> before the next test. So the largest error any sampler can observe is `LAG_HOLD` **plus one pass's
+> field advance**, roughly 15–16 units at the ladder's top rung. 115–116 *is* the designed
+> behaviour, and the bound under-counted the quantum. Filed **PL-78**. Doctrine D2 — *when the
+> measurement and the system disagree, suspect the measurement first* — is what caught it.
+>
+> ### What did NOT arrive: consequence 4
+>
+> ⛔ **"It makes the ramp shape almost irrelevant" is not delivered, and the reason is a defect this
+> visit found.** The naturally-tapering approach only applies *within* a ramp. **Every speed change
+> begins at the maximum ramp rate**, because `ramp_curr` is reset to `ramp_min_` only when starting
+> from rest (`src/isp_bldc_motor.spin2:3706-3707`):
+>
+> ```spin2
+>                 or      drv_incr, drv_incr          wz  ' -and- are we stopped, just about to spin up?
+>     if_z        mov     ramp_curr, ramp_min_            ' set initial ramp if starting from 0
+> ```
+>
+> On a change from a *running* speed `drv_incr` is non-zero, so `ramp_curr` is inherited from the
+> previous ramp — where the growth loop (`:3715-3718`) has already driven it to `ramp_max_`.
+>
+> **MEASURED**, `debug_260917-131445.log:15170-15205`, `BM-RUNG2` LEFT forward — steady `err`
+> against peak `err_pk` at each of the twelve rungs:
+>
+> ```
+> rung     0    1    2    3    4    5    6    7    8    9   10   11
+> err     34   48   48   48   49   48   48   55   63   65   68   73
+> err_pk  56   75   71   71   72   72   73   80   88   91   94   98
+> gap     22   27   23   23   23   24   25   25   25   26   26   25
+> ```
+>
+> ⭐ **The data carries its own control.** Rung 0 is the only transition that starts from rest — and
+> it has the **smallest** excursion in the table (22). Rung 1, the first to inherit `ramp_max_`, has
+> the **largest** (27). The one rung that gets the soft start is the one that does not jolt.
+>
+> **STEPHEN, 2026-09-17**, watching the part-A ladder run: *"On your dual A run, you're making a
+> bunch of speed changes. One of the things I noticed in the speed changes is that we are physically
+> slamming the platform… I would think speed changes should be really smooth, but they're not, so we
+> need to understand what this effect is."*
+>
+> **The fix is one line and it is correct-by-construction** (doctrine overlay P10): reset
+> `ramp_curr` to `ramp_min_` at the start of **every** new ramp, not only when `drv_incr` is zero.
+> Then C-5's consequence 4 arrives as designed — the taper applies to every speed change, not only
+> to starts from rest. **Prediction for the next visit, with a built-in control:** `err_pk` falls
+> toward `err` at rungs 1–11 while **rung 0 is unchanged**. Filed **PL-78**.
+>
+> **Note what this is not.** It is not a missing ramp — `.doSpdChange` (`:3655`) routes every speed
+> change through `.rampUp` / `.rampDn` / `.slow2Chg`. An earlier reading of the logs alone concluded
+> that nothing rate-limited the commanded velocity; reading the source refuted that, and the
+> refutation is recorded here rather than quietly replaced.
 
 ## II.6 Voltage: told, not sensed — and it does not have to be
 
@@ -1127,6 +1362,46 @@ Stephen.** The question as originally posed: are the 64010's fourth-channel
 FETs populated? It decided whether **C-6b** — the direct bus-voltage read — is
 available. **It is available.** What remains is not a schematic question but a
 switching one: see the shoot-through hazard in the bench plan's **T1-13**.
+
+## Visit 4 coverage — every finding's status, 2026-09-17
+
+Added after the Visit 4 write-back. **Every finding in this study gets a row, including the ones no
+bench run touched** — a finding with no result is a deliverable, not a gap, and saying so is how the
+next run sheet is scoped. `NOMEAS` and `NOT_BUILT` appear as themselves and are never written up as
+passes.
+
+| # | Status after Visit 4 | Evidence, or what is missing |
+|---|---|---|
+| **S-1** | **Structurally changed, not "closed"** | The premise — *one automatic protection, a last-resort detector* — no longer holds: current fold-back (**S-2**) and the lag limiter (**C-5**) are both live and measured. The 176° trip is now the third line, not the first. |
+| **S-2** | ⭐ **MEASURED** | `R16-DUAL-FOLDBACK-D` PASS both motors, `value 5_186` L / `4_801` R against a 0..8 800 band (`bench/2026-09-17/debug_260917-125859.log:111-112`), at the MOSFET-derived `peak_a 40 / cont_a 27`. |
+| **S-3** | ⭐ **MEASURED** | `R2-CHAR-ISCALE` PASS ×8, implied R-sense **149–162** against a 135–165 band, both motors (`debug_260917-125254.log:503-510`). The current channel is also shown load-responsive: amps peak ≈6.6 A at rung 6 then fall with back-EMF (`debug_260917-131445.log:15170-15205`). |
+| **S-4** | ⭐ **CONFIRMED FIXED** — see §I.4 | Latch held 1 500 ms; refuse and clear measured separately. ⚠ `userCutoff` untouched — that half stays open. |
+| **S-5** | **UNTESTED** — see §I.5 | No fault was provoked; `R14-DUAL-FLTAPI-B` NOMEAS n=0. Rarity from **Z** is not a fix for evidence destruction. |
+| **S-6** | **NOT OBSERVABLE BY ANY BENCH BINARY** | The serial object is not in any Visit 4 load. Its replies — and PL-13's two renamed methods — cannot be certified by this suite at all. Stated as a property of the harness, not a result. |
+| **S-7** | **UNTESTED** | Same cause as S-5: the fault path was never entered. |
+| **S-8** | **NOT BUILT** | No command watchdog or link-health publication exists to test. |
+| **S-9a** | **UNTESTED** | *"A faulted robot freewheels even when configured to brake"* needs a fault. None occurred (see S-5). The brake path itself was exercised — `R13-CHAR-BRAKESTART` PASS ×4 (`debug_260917-125254.log:518-521`) — but that is the **positive** limb; S-9a is a claim about the fault limb. |
+| **C-1** | ⭐ **CERTIFIED** — see §II.1 | 48 rungs, <0.5 %. The corrected law's derived 392.9 ticks/s met by measurement. ⛔ The back-EMF **ceilings** were not certified — every run was wheels-lifted. |
+| **C-2** | **NOT BUILT** | S-curve shaping was deliberately ranked last; **C-5** delivers most of it. |
+| **C-3** | ⛔ **INCONCLUSIVE** | The trial never reached its target: `BM-OVERSHOOT ... tgt,529 l_trk,2_688 ... why,NOT_REACHED`, then `BM-ABORT reason,ABS_CURRENT value,2_217` (`debug_260917-130012.log:7546, :7548`). `R16-DUAL-STOPLIM-B` (`REST_FROM_TARGET`) is **NOMEAS, n=0** (`:7572`). **So the ~294 mm overshoot prediction is neither confirmed nor refuted, and «#3559»'s "stops land at rest at their limit" is NOT certified.** Only the deceleration *rate* is — see C-4. |
+| **C-4** | ⭐ **MEASURED** — see §II.4 | 75 ticks to rest, both motors, band 60..95; Visit 3 measured 74–77. ≈432 mm **as a lifted-wheel floor**. Two table rows updated. |
+| **C-5** | ⭐ **CERTIFIED, split verdict** — see §II.5 | Limiter holds over 213 024 samples; the 125 trip never reached. Consequence 1 delivered. **Consequence 4 not delivered — PL-78.** The failing `LAGBND` cell was the instrument's bound, not the driver. |
+| **C-6 / C-6b / C-6c** | **NO CELL ON THIS VISIT'S SHEET** | Visit 4 carried no bus-voltage measurement. The `pack_mV 18_500` and `abs_abort_mV 1_500` in `BM-BUILD` are **harness constants supplied to the run, not readings** — citing them as a voltage result would be reporting a declaration as a measurement (doctrine D2). **AK** therefore stays open. |
+
+### What the next run sheet owes, derived from the rows above
+
+Three items account for most of the missing coverage, and two of them share one cause:
+
+1. **A fault-provocation stimulus that does not trip the absolute-current abort at `value 2_217`.**
+   This one change unblocks **S-5**, **S-7**, **S-9a**, audit **M/AF**, and the fault-recovery limb
+   of **Z** — five findings behind a single missing stimulus. Designing it is harness work, ours.
+2. **A distance-stop trial that reaches its target**, for **C-3** and for «#3559»'s certification.
+3. **A working `t0` tier** (PL-74) — ten error-contract cells, including the negative limb that
+   audit **AD** turns on.
+
+⛔ **And one item that no bench run can ever close: S-6.** The serial object is not in any load. If
+its replies are to be certified, that needs a load that does not exist, and building one is a scope
+decision — Stephen's, not this document's.
 
 ## Relationship to the first study
 

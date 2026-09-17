@@ -743,6 +743,24 @@ second of motion) -- it goes NEGATIVE and keeps going. Read the confirmation
 as: unfixed, `hallWindowSum`/`rpm` are zero for the first second of motion,
 then increasingly negative; fixed, they track ticks/s.
 
+**CLOSED 2026-09-17 (Visit 4) — the "fixed" limb is measured.** `R4-CHAR-RPM`
+PASSed eight times, both motors, with `RPM_ERR` in `{-1, 0}` against a −2..2 rpm
+band at n ≈ 295 and n ≈ 590
+([`bench/2026-09-17/debug_260917-125254.log:495-502`](bench/2026-09-17/debug_260917-125254.log)).
+So `rpm` tracks ticks/s to within **±1 rpm** — the fixed limb exactly as this
+correction predicts it. **Finding W is closed**; see the audit's dated block at
+finding W.
+
+⭐ **Worth keeping as a method note, because the correction is the point.** The
+criterion as first written — *"`hallWindowSum == 0` → W CONFIRMED"* — would have
+**failed to confirm a defect that was present**, because the quantity it watched
+does not sit at zero once the window wraps. The check could not have detected
+the thing it was written to detect after the first second of motion. That is
+doctrine D2's *a claim is not verified until its negative case is measured*,
+turned on an acceptance criterion rather than on code, and it is the same class
+of error Visit 4 found three more times (PL-78, PL-79, PL-80). **Criteria are
+instruments and they need their own negative case.**
+
 ---
 
 ### T1-3 — The speed law and the real ceiling *(**C-1**, feeds **C-5**, **S-3**, **C-6**)*

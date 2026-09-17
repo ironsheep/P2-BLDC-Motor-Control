@@ -134,6 +134,34 @@ The object **isp\_bldc_motor.spin2** provides the following methods:
 
 **NOTE5** {eMotorVoltage} is one of: PWR\_7p4V, PWR\_11p1V, PWR\_12V, PWR\_14p8V, PWR\_18p5V, or PWR\_22p2V
 
+### How far the motor travels while stopping
+
+**Measured on the bench, 2026-09-17.** A stop is not instant — the motor ramps down, and it keeps
+moving while it does. This is the figure you need when you decide where to issue a stop.
+
+| | Measured |
+| --- | --- |
+| Hall ticks to come to rest | **75 ticks** |
+| Approximate travel | **≈ 432 mm** (17 in) |
+| Both motors agree | yes — 75 and 75 |
+
+**Conditions this was measured under, which matter as much as the number:**
+
+- 6.5" motors, 18.5 V, the shipped dual-motor configuration
+- **Wheels lifted off the ground** — no rolling resistance, no payload, no slope
+- Default ramping values (this scales with `setRampingValues()`'s ramp-down rate)
+
+⚠ **Treat 432 mm as a floor, not a prediction.** With the platform on the floor, carrying weight,
+the motor has friction helping it stop and will come to rest **sooner**. What the figure gives you
+reliably is *the most* travel to expect from a stop at this speed and voltage.
+
+⚠ **This distance scales with speed and with your battery voltage.** The ramp-down rate is a fixed
+step, not a fixed time, so the same call stops in a shorter distance at 6 V and a longer one at
+24 V. If you change `DRIVE_VOLTAGE`, re-check any clearance this number was sizing.
+
+A second, independent bench session measured 74–77 ticks, so the figure is repeatable to within one
+or two ticks.
+
 ### ...
 
 ---
