@@ -3328,6 +3328,48 @@ reference, or narrower than their own resolution.
 the limit instead of finishing by it, which task 3559 changed -- lands hundreds of ms late and still
 fails.
 
+### PL-84 -- the OVERSHT distance stop still trips the 10 A abort, while the FAULTB stop from a HIGHER speed does not
+
+**Found 2026-09-17 in «#3564»**, reading VISIT-4-RESULTS.md section 4d before cutting the Visit 5 sheet.
+**Open. Not fixed, not diagnosed, and NOT part of «#3563»'s repair cycle** -- it is recorded here so the
+next visit is not spent re-discovering it.
+
+**MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-130012.log` L7546-7551:
+
+```
+BM-OVERSHOOT ... why,NOT_REACHED    (target 529 ticks, tracked 2_688)
+BM-ABORT seg,OVERSHT reason,ABS_CURRENT value,2_217 scope,TRIAL
+BM-FLTAPI ... why,ABORTED, retry_err,NA, retry_ms,NA, retry_ok,FALSE
+```
+
+**What it costs:** `R16-DUAL-STOPLIM-B`, `R14-DUAL-FLTAPI-B` and `R16-DUAL-FLTRETRY-B` all NOMEAS with
+`n,0`. The Visit 4 report already says they are *"owed to Visit 5 with a stimulus that does not trip
+it"* -- **and no such stimulus has been built.** A `dual-b` re-run as the source stands today loses the
+same three cells again.
+
+⭐ **THE DISCRIMINATING PAIR, and it is why this may not be a harness problem at all.** Two stops, the
+same driver, the same run, the same instrument and the same scale:
+
+| Stop | Speed | Peak `sense_i` | Against the 1_500 mV abort |
+| --- | --- | --- | --- |
+| FAULTB's `stopMotor()` from speed, 20 trials | `incre` +/-110_250_000 (**75 %**) | **971 - 1_055 mV**, flat to +/-4 % | about two thirds of it, never approached (PL-82) |
+| OVERSHT's distance stop | `OVERSHT_POWER` **50 %** | **2_217 mV** | **tripped it** |
+
+**The stop from the HIGHER speed is the bounded one.** «#3558»'s feed-forward duty ceiling acts on
+`.rampDn`, and PL-82's 455x `ramp_inc` sweep independently confirms `.rampDn` takes the fixed
+`ramp_down_`. So whatever the distance stop does, it is not the ramp-down FAULTB measures.
+
+⛔ **NO MECHANISM IS OFFERED** (doctrine overlay P8). The candidates are not yet separated and naming one
+before the read is exactly what cost time on 2026-09-17: the distance stop's own early-stop arithmetic
+(«#3559»), the steering object's path to it, a direction change at the limit, or the trial's state at the
+moment of the stop. `BM-OVERSHOOT why,NOT_REACHED` with 2_688 ticks tracked against a 529-tick target is
+itself unexplained and belongs to the same read.
+
+**Next step, and it is a READ, not a run:** the Visit 4 capture for that trial is already in the log at
+instrument resolution. Work out from it what the current did and when, relative to the stop command,
+before proposing either a driver change or a different stimulus. **If it turns out to be a driver
+defect, it is the first one to survive Visit 4.**
+
 ---
 
 ## Archived
