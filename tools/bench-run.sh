@@ -154,10 +154,19 @@ CLK_OVERRIDE=""
 EXTRA_DEFS=()
 PRECONDITION=""
 case "$TIER" in
+    # PL-74: t0 is built QUIET. It carries SIX isp_bldc_motor instances plus a steering
+    #  object (motor, motorA, motorB, motorP, steer's two) -- more than any other tier --
+    #  and it was the only tier compiled with the library's nine debug channels live in
+    #  every one of them. MEASURED: -D BENCH_QUIET removes 2_866 bytes of library debug
+    #  data from this build. t0 judges RETURN CODES, not library chatter, and its own ten
+    #  cells print through plain debug() in test_bench_t0.spin2, which no channel mask
+    #  touches -- so nothing it measures is lost. See PL-74 for what is and is not
+    #  established about why the tier emitted nothing.
     t0)             BENCH_FILE="test_bench_t0.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET)
                     ;;
     t0-hand)        BENCH_FILE="test_bench_t0.spin2"
-                    EXTRA_DEFS=(-D T0_HAND)
+                    EXTRA_DEFS=(-D BENCH_QUIET -D T0_HAND)
                     PRECONDITION="OPERATOR TURNS ONE WHEEL BY HAND, EXACTLY N REVOLUTIONS -- T0-12 waits on a keypress, never a timer"
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"

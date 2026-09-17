@@ -9,7 +9,7 @@ certifies nothing, and Visit 3's first attempt was lost exactly that way (PL-68)
 
 | Load | Banner must read |
 |---|---|
-| `t0` | `src_rev 2` |
+| `t0` | `src_rev 3` |
 | every `dual-*` | `src_rev 14`, `fmt 5` |
 
 ⭐ **The runner now checks this for you as well, in a way it could not at Visit 4.** After each load it
@@ -57,10 +57,27 @@ Ten cells have been NOT_BUILT since Visit 4, and **they gate the 6.0.0 tag** («
 `PINSKEEP`, `LIMKEEP`, `NOABORT`, `STRNOTSTART`, `STEERCOGS`, `RESTZERO`, `NOBOARD`, `FRONTFAIL` and
 `R1-T0-RESTART`. Nothing else in the tree carries them.
 
-**The binary is unchanged and that is deliberate.** Visit 4's image was a debug build — measured: 43 784
-bytes with `-d`, 25 764 without, against the 43 780 that downloaded — so the compile was right and the
-kernel that was in it never spoke. Why it did not is undetermined, and no mechanism is offered for it
-(PL-74). What changed is that a repeat now costs seconds instead of the tier.
+⚠ **THE 17:18 RE-RUN FAILED THE SAME WAY, so this is reproducible, not a one-off.** Same signature:
+`Compiling with DEBUG`, 43 792 bytes written, `DOWNLOAD SUCCESS`, and not one `Cog0 INIT`. It happened on
+a different clone with a different compiler (`pnut-ts 1.55.5` against 1.55.7 here), so neither the tree
+nor the toolchain version is the variable. **The runner refused it in seconds**, which is the guard
+working.
+
+**What changed for this attempt: the tier is now built with `-D BENCH_QUIET`, and `src_rev` is 3.**
+
+- **Nothing this binary measures is lost.** The masks quiet the *library*; t0 judges **return codes**,
+  and its ten cells print through plain `debug()` that no channel mask touches.
+- **Why it is worth trying:** `SRC_REV 2` — the revision that has never emitted — is also what added
+  `motorP` and `steer`, taking t0 to **six `isp_bldc_motor` instances plus a steering object**. It is the
+  only tier with that instance count, and was the only one compiled with the library's nine channels live
+  in every one of them. MEASURED: `-D BENCH_QUIET` removes **2 866 bytes** of library debug data.
+- ⛔ **This is a hypothesis with a test, not a diagnosis.** Say which way it went and I will take it from
+  there:
+  - **It emits** → the ten cells are collected, the 6.0.0 tag is unblocked, and the cause is localised to
+    debug volume in this binary.
+  - **It still emits nothing** → the hypothesis is dead, the instance count is not it, and the next step
+    is a bisect build rather than another guess. **Do not re-run it a third time** — move to `dual-d` and
+    leave t0 with me.
 
 **No motion at all.** Every start commands zero speed.
 

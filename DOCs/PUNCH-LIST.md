@@ -2504,6 +2504,53 @@ one thing every tier emits within milliseconds of start.
 >
 > **The ten `t0` cells are still NOT_BUILT** and are owed to the next visit; that is a run-sheet item, not
 > an open defect here.
+>
+> ### ⛔ IT REPRODUCED 2026-09-17 17:18. Not a one-off load anomaly. The guard caught it in seconds.
+>
+> **MEASURED**, `src/logs/t0-run.out` and `src/logs/debug_260917-171822.log`: `pnut-ts: Compiling with
+> DEBUG`, `Wrote test_bench_t0.bin (43792 bytes)`, `[DOWNLOAD SUCCESS]` -- and **not one `Cog0 INIT`**,
+> session ended 5.4 s later. Identical signature to Visit 4.
+>
+> **Two variables are eliminated by this run**, because it happened on a different machine:
+>
+> | | Visit 4 | 17:18 re-run |
+> | --- | --- | --- |
+> | Tree | this clone | a different clone (`.../Projects P2/P2-BLDC-Motor-Control/...`) |
+> | Compiler | `pnut-ts 1.55.7` here | **`pnut-ts 1.55.5`**, build 8/30/2026 |
+> | Image | 43_780 bytes, debug build | 43_792 bytes, debug build |
+> | Result | nothing emitted | **nothing emitted** |
+>
+> **So it is neither the clone nor the toolchain version.** And the runner's PL-74 guard refused the load
+> and said so on the console, which is the one thing that went right: the failure cost seconds instead of
+> the tier.
+>
+> ⭐ **THE NARROWING THAT MATTERS, and it is a record search I should have done before the sheet was
+> cut.** `t0` **has never emitted at `SRC_REV 2`.** It ran at Visit 2 under the earlier revision, and has
+> failed both times since. `SRC_REV 2` (16 Sep, task 3560) is what added T0-16..T0-22 and with them
+> `motorP` and `steer` -- taking this binary to **six `isp_bldc_motor` instances plus a steering object**,
+> more than any other tier. It was also the only tier compiled WITHOUT `-D BENCH_QUIET`, so the library's
+> nine debug channels were live in every one of those instances.
+>
+> **MEASURED:** `-D BENCH_QUIET` removes **2_866 bytes** of library debug data from this build
+> (43_784 -> 40_918 with `-d`).
+>
+> ### CHANGED IN TREE 2026-09-17: the `t0` and `t0-hand` tiers are built quiet; `SRC_REV` is 3
+>
+> **Nothing this binary measures is lost.** The masks quiet the LIBRARY; t0 judges return codes, and all
+> ten cells print through plain `debug()` in `test_bench_t0.spin2`, which no channel mask touches.
+>
+> ⛔ **THIS IS A HYPOTHESIS WITH A TEST, NOT AN ESTABLISHED CAUSE** (doctrine overlay P8). The 255-record
+> ceiling that `test_bench_dual.spin2`'s header budgets against is **our own design document's figure,
+> not p2kb's** -- p2kb's `DEBUG` entry records no such limit, so it is not quoted here as an authority.
+> What is asserted is only the correlation above and the measured byte delta.
+>
+> **The next run discriminates, either way:**
+> - **emits** -> the ten cells land, the 6.0.0 tag is unblocked, and the cause is localised to debug
+>   volume in this binary. The residue is then *why* it fails silently rather than at compile time, which
+>   is a question for Stephen's compiler and belongs to him (P7).
+> - **still silent** -> the instance/channel-volume hypothesis is dead. **Do not run it a third time.**
+>   The next step is a bisect build -- t0 with `steer` removed, then with `motorP` removed -- which costs
+>   no bench time to prepare and one load to settle.
 
 ### PL-75 -- the steering front cog's stack is exactly full: `stack_hi == stack_of == 128`
 
