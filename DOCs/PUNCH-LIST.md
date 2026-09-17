@@ -2641,6 +2641,51 @@ threshold, the honest result is **NOMEAS with a why**, exactly as `R16-DUAL-BLOC
 (`why,NOT_BLOCKED`, L81) and as the LEFT motor's own DERATE cell does (`n,0`, L113). A designed NOMEAS is a
 result; a FAIL on an unrelated magnitude is noise.
 
+### PL-82 -- `R16-DUAL-STOPCUR`'s reference drifts 25 % with motor temperature, so the cell fails on the reference, not the stop
+
+**Found 2026-09-17 in «#3514»'s follow-up**, reading the per-sample `BM-STOPCUR` records that the
+Visit 4 report had recorded as unread. **Instrument defect, mine** (doctrine overlay P3) -- **not a
+driver defect.**
+
+**THE TEST.** `bench/2026-09-17/debug_260917-130012.log`, segment `FAULTB`: 20 trials --
+5 values of `ramp_inc` (22, 100, 500, 2_000, 10_000) x 2 directions x 2 motors -- at a constant
+`incre` of ±110_250_000 (`BM-TRACE` at `:56, :334, :679, :1000, :1313, :1627, ...`).
+
+**MEASURED, all 20 `BM-STOPCUR` records:**
+
+| Quantity | Range | Behaviour |
+| --- | --- | --- |
+| `stop_pk_mV` | **971 - 1_055** | **flat, ±4 %**, across both motors, both directions and all five ramp rates |
+| `hold_mV_x10` | 9_424 -> 6_995 | **declines ~25 % within each motor's ~2 min run, then RESETS when the other motor starts** |
+| `abort_mV` | 1_500 | never approached -- the stop peak sits at about two thirds of it |
+
+**DERIVED -- the decline is thermal, and the reset is what proves it.** LEFT runs `tid` 1-10 from
+13:00:25 to 13:02:32 and falls 9_302 -> 6_995. RIGHT then runs `tid` 11-20 and **starts high again
+at 9_424** before falling to 7_174. A sagging battery pack would keep sagging across both motors;
+**a per-motor reset is each motor starting cool and warming.**
+
+**So the criterion compares a rock-stable measurement against a reference that moves 25 % for
+reasons that have nothing to do with stopping.** Cold it nearly passes (`stop_pk` 985 vs hold
+930.2, over by 6 %); warm it fails badly (1_031 vs 699.5, over by 47 %). **The stop barely moved --
+985 to 1_031 across the whole run.** `STOP_UNDER_HOLD_I` is therefore FALSE for a reason that is an
+artefact of its own reference.
+
+**Fix direction:** judge the stop against a **fixed design bound** -- the current limit the design
+actually specifies -- not against a hold current measured moments earlier on a warming motor. If a
+relative comparison is genuinely wanted, capture the hold reference at the same temperature as the
+stop it is compared with, and say in the cell how that is guaranteed. Record the arithmetic in the
+cell (compare PL-78's first half and PL-79: **a criterion is an instrument and needs its own
+negative case**).
+
+⭐ **ONE REAL PHYSICAL RESULT COMES FREE, and it confirms a source reading rather than resting on
+it.** `stop_pk_mV` is **flat across a 455x sweep of `ramp_inc`** (22 to 10_000). That is exactly
+what the source predicts: `.rampDn` loads `curr_ramp` from **`ramp_down_`** (a fixed 50_000,
+`src/isp_bldc_motor.spin2:529, :3761`) and never reads `ramp_curr`, so **`ramp_inc` governs ramp-UP
+only.** The slam analysis in PL-78 rests on that same reading, and this is an independent
+measurement agreeing with it (doctrine D2: record the agreement of independent readings as
+evidence). It also means **PL-78's fix cannot change stopping behaviour**, which is a useful
+control for the next visit.
+
 ### PL-81 -- WITHDRAWN SAME DAY: `ticsPerRotation` = 90 was already anchored at Visit 2
 
 > ## ⛔ WITHDRAWN 2026-09-17, hours after being raised. The premise was false.

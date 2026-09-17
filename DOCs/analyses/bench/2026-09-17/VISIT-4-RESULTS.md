@@ -214,11 +214,35 @@ not judging whether derating happened. The band is mine to fix (P3).
 `DROOPED_NOT_FAULT` TRUE on both motors. **The driver droops under a load it cannot follow instead
 of faulting.** That is the headline behaviour of the current-limiting design, and it is measured.
 
-### 4b. STOPCUR-B FAIL — stops from speed are not staying under the hold-current bound
+### 4b. STOPCUR-B FAIL — resolved 2026-09-17: the reference drifts, the stop does not
 
-`STOP_UNDER_HOLD_I` FALSE, both motors. The bounded stop from «#3558» did not hold its current
-bound. **Not yet determined:** the per-sample `BM-STOPCUR` records need reading to say by how much
-and at which point in the stop. That is the first thing to read in this log next session.
+`STOP_UNDER_HOLD_I` FALSE, both motors. **This block first recorded the per-sample records as
+unread. They have since been read, and the FAIL is a fourth instrument defect — not a driver
+defect.** Filed as **PL-82**.
+
+**MEASURED**, all 20 `BM-STOPCUR` records in `debug_260917-130012.log` — 5 values of `ramp_inc`
+(22 … 10 000) × 2 directions × 2 motors, at a constant `incre` of ±110 250 000:
+
+| Quantity | Range | Behaviour |
+|---|---|---|
+| `stop_pk_mV` | **971 – 1 055** | **flat, ±4 %** across every motor, direction and ramp rate |
+| `hold_mV_x10` | 9 424 → 6 995 | falls ~25 % within each motor's ~2 min run, **then resets when the other motor starts** |
+| `abort_mV` | 1 500 | never approached — the stop peak sits at about two thirds of it |
+
+**DERIVED — the reset is what proves it is thermal.** LEFT falls 9 302 → 6 995 over `tid` 1–10;
+RIGHT then **starts high again at 9 424**. A sagging pack would keep sagging across both motors. A
+per-motor reset is each motor starting cool and warming.
+
+So the cell compares a stable quantity against a reference that moves 25 % for reasons unrelated to
+stopping: cold it nearly passes (985 vs 930.2), warm it fails badly (1 031 vs 699.5) — while **the
+stop itself moved only 985 → 1 031.**
+
+⭐ **One real result comes free, and it confirms a source reading rather than resting on it.**
+`stop_pk_mV` is flat across a **455× sweep of `ramp_inc`** — exactly what the source predicts, since
+`.rampDn` loads `curr_ramp` from the fixed `ramp_down_` and never reads `ramp_curr`
+(`src/isp_bldc_motor.spin2:529, :3761`). **`ramp_inc` governs ramp-up only.** §6c-ii's slam analysis
+rests on that same reading, and this is an independent measurement agreeing with it. It also means
+**PL-78's fix cannot change stopping behaviour** — a useful control for the next visit.
 
 ### 4c. DISTM-B FAIL — metres are off by ~1 000× and inverted (PL-72)
 
