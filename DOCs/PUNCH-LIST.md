@@ -752,6 +752,31 @@ selection that calls methods uses `if`/`else`; a ternary selects values only.
 > three places now, and prose does not catch the twelfth site. A `? :` with a method call in either branch
 > is exactly a mechanically-checkable rule for `tools/check_style.sh` -- **assigned to «#3517»**, which
 > owns the T1 checker coverage. Until then the entry stays open on that ground alone.
+>
+> ### ⭐ WHOLE-TREE SWEEP 2026-09-17, and the instrument was validated before it was believed
+>
+> The first pass was scoped to `test_bench_dual.spin2`, the file where Visit 4 showed the symptom --
+> **the site tripped over, not the class** (doctrine D5: treat a shaping observation in its entirety).
+> Swept `src/*.spin2` for a ternary with a call in either branch. The first regex returned NOTHING,
+> which would have read as a clean tree; it was WRONG, and it was caught by asking for the known
+> positive -- the six sites this entry says were deliberately LEFT in `test_bench_scan.spin2`. A search
+> that cannot find what is known to be there has not searched (doctrine D2).
+>
+> | File | Sites | Disposition |
+> | --- | --- | --- |
+> | **`isp_bldc_motor.spin2`, `isp_steering_2wheel.spin2`** | **NONE** | ⭐ **The SHIPPING objects carry none of this class.** This is the release-relevant result: there is no user-facing defect here. |
+> | `test_bench_t0.spin2` | none of this class | Every ternary is `bPass ? @"TRUE" : @"FALSE"` -- addresses of DAT strings, not calls. The tier that gates the 6.0.0 tag is clean. |
+> | `test_bench_dual.spin2` | 2 residual | `? whyCode : segWhy()` in two segment ends. `segWhy()` is a pure read, so the cost was a wasted call; **fixed anyway**, because a counter-example inside the file that states the rule is how the rule stops being followed. |
+> | `test_bench_char.spin2` | 1 | Values only, already annotated. |
+> | `test_bench_scan.spin2` | 6 | Status getters. **Still deliberately left:** the scan's logs are diffed against earlier runs and it is not on the Visit 5 sheet. |
+> | `test_bench_detect.spin2` | 1 | **NEW, see below.** |
+>
+> ⚠ **`test_bench_detect.spin2:1513` -- `(cogGrp == NO_GROUP) ? @sCstNone : groupName(cogGrp)`.** The
+> false branch is a CALL, so `groupName(NO_GROUP)` runs even when the guard selected the other limb --
+> and the guard exists precisely because `NO_GROUP` is not a valid group. Whether that call indexes out
+> of bounds is **not established and is not asserted**; the site is recorded, not fixed. `detect` is not
+> on the Visit 5 sheet, and editing it would decertify logs that are diffed against the 2026-09-11 run
+> for exactly the reason this entry already gives for the scan. **Fix it when that binary is next built.**
 
 ### PL-30 -- the right board's current sense reads +73 mV at zero command, and Pass 1 did not
 
