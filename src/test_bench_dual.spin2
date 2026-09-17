@@ -79,8 +79,12 @@
 ''               window is deleted. PL-82: STOPCUR judges a FIXED bound, not a hold reference that drifts
 ''               with motor temperature, and BM-STOPCUR gains hold_pk_mV and bound_mV. PL-78: LAGBOUND's
 ''               bound is the driver's own fault test, and BM-LAG gains hold and fault. PL-77: BM-DISTM's
-''               ticks are a live read beside the metres and the conversion is signed. Two records gain
-''               fields and the cell set gains one, so FMT goes to 5
+''               ticks are a live read beside the metres and the conversion is signed. PL-84: BM-DISTM
+''               also gains str_mm_x100, the STEERING object's own travel-per-tick read back through the
+''               new testGetTickInMM() -- at Visit 4 that copy held about -544_643, which refused every
+''               driveForDistance() in the segment with ERR_LIMIT_UNRESOLVABLE while the record printed
+''               the MOTOR object's healthy 576; the DISTM cell now fails when the two copies differ.
+''               Three records gain fields and the cell set gains one, so FMT goes to 5
 ''
 '' =================================================================================================
 
@@ -1538,6 +1542,7 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    dmRightM
     LONG    dmLeftPredM                                     ' the same ticks converted here, for the comparison
     LONG    dmRightPredM
+    LONG    dmSteerMmX100                                   ' PL-84: the STEERING object's own travel-per-tick, read back
     LONG    dsStep                                          ' BM-DSTEP (part D)
     LONG    dsResult
     LONG    dsMeasured                                      ' the step's own number, meaning per step
@@ -3355,9 +3360,21 @@ PRI overshootFoldCells(tid, sid, tgtTicks) | leadRest, tickMmX100
         '  nothing).
         dmLeftTicks, dmRightTicks := steerTrackTicks()
         dmLeftM, dmRightM := steerDistanceM()
+        ' PL-84: read back the STEERING object's OWN travel-per-tick, the one every distance it reports
+        '  or accepts is scaled by, beside the MOTOR object's. They are two copies and only the motor's
+        '  was ever in the record, so a corrupted steering copy printed a healthy 576 and the cell could
+        '  not see it. At Visit 4 the steering copy was about -544_643: getDistance(DDU_M) returned
+        '  -14_640 for 2_688 ticks and driveForDistance() refused every trial with ERR_LIMIT_UNRESOLVABLE,
+        '  and both are exactly what that value produces. One field tells the two apart.
+        dmSteerMmX100 := steerTickInMM()
         dmLeftPredM := ticksToMetres(dmLeftTicks, tickMmX100)
         dmRightPredM := ticksToMetres(dmRightTicks, tickMmX100)
         ' ANDed over every trial that ran (initRunState() starts it TRUE; it is NOMEAS until one does)
+        ' PL-84: the two travel-per-tick copies must agree. start() sets the steering object's from
+        '  ltWheel.wheelGeometry(), so they are equal by construction and a difference is a corrupted
+        '  copy -- the cell now FAILS ON THE THING IT CAN SEE rather than only on the distance the
+        '  corruption produced.
+        bSfDistMOk := bSfDistMOk and (dmSteerMmX100 == tickMmX100)
         bSfDistMOk := bSfDistMOk and (abs(dmLeftM - dmLeftPredM) <= DISTM_TOL_M) and (abs(dmRightM - dmRightPredM) <= DISTM_TOL_M)
         bSfDistMRan := TRUE
         emitDistM(tid, sid, tickMmX100)
@@ -3380,6 +3397,15 @@ PRI ticksToMetres(nTicks, tickMmX100) : nMetres
         nMetres := 0 - (((0 - nTicks) * tickMmX100 + (MM_PER_M_X100 / 2)) / MM_PER_M_X100)
     else
         nMetres := (nTicks * tickMmX100 + (MM_PER_M_X100 / 2)) / MM_PER_M_X100
+
+PRI steerTickInMM() : nMmX100
+' The STEERING object's own travel-per-tick, through its TEST-USE pass-through (PL-84).
+'
+' @returns nMmX100 - the steering object's tickInMM_x100, hundredths of a mm per hall tick
+
+    beat(CP_LIB_STEER_QUERY)
+    nMmX100 := steering.testGetTickInMM()
+    beat(CP_LIB_STEER_QUERY)
 
 PRI steerDistanceM() : leftM, rightM
 ' Both wheels' travelled distance in metres, through the public getter.
@@ -8479,8 +8505,13 @@ PRI emitDistM(tid, sid, tickMmX100)
 ' Visit 3 left DDU_M unqualified: task 3502 corrected the metre conversion, and no bench reading has
 ' compared the two since. l_ticks / r_ticks are THE TICK COUNTS THE GETTER SAW, read in the same place
 ' and at the same moment as l_m / r_m (PL-77) -- so the comparison really is of the conversion alone,
-' and a disagreement names a conversion fault instead of two reads taken moments apart. Worst case 196
-' bytes.
+' and a disagreement names a conversion fault instead of two reads taken moments apart.
+'
+' PL-84: mm_x100 is the MOTOR object's travel-per-tick and str_mm_x100 is the STEERING object's own
+' copy, which every distance it reports or accepts is scaled by. They are equal by construction --
+' start() sets the second from the first -- so a difference is a corrupted copy, and until this field
+' existed the record showed the healthy one while the steering used something else entirely. Worst case
+' 215 bytes.
 '
 ' @param tid - trace id of the trial
 ' @param sid - the steering start's life
@@ -8497,6 +8528,7 @@ PRI emitDistM(tid, sid, tickMmX100)
     benchLog.numField(@"l_pred_m", dmLeftPredM, LIM_SMALL)
     benchLog.numField(@"r_pred_m", dmRightPredM, LIM_SMALL)
     benchLog.numField(@"mm_x100", tickMmX100, LIM_SMALL)
+    benchLog.numField(@"str_mm_x100", dmSteerMmX100, LIM_BIG)
     benchLog.boolField(@"agree", bSfDistMOk)
     whyField(bSfDistMRan ? WHY_NONE : WHY_NO_SAMPLES)
     emitRecord()

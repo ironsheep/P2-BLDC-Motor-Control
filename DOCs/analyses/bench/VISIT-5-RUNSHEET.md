@@ -31,7 +31,7 @@ Seven attributes, per *Shared vocabulary — the bench visit* (`~/.claude/skills
 | **Hardware risk** | Lower than Visit 4, and the same in kind: half speed, stopped dead, an e-stop latched and held, and the current limits lowered until the motor cannot turn. All of it wheels-up, and **no step needs your hands on the platform at any moment.** Panic: physical battery disconnect. |
 | **Who can observe** | **Nobody.** Every load is unattended and every verdict is printed in the log. You are present for safety only — no cell asks you to read, judge or type anything. |
 | **Runs that carry state** | **None across loads.** Within `dual-d` the current limits are lowered and restored with a read-back; within `dual-b` the commutation offsets are written 180° out and restored with a read-back. A load that ends early leaves its restore undone, so **if one stops short, say so and leave the next one until I have read that log.** |
-| **Run length** | **~13 minutes of running.** Measured at Visit 4: `dual-a` 5 min 39 s, `dual-b` 5 min 18 s, `dual-d` 54 s. `t0` has never completed since its cells were added; ~2 min, derived from its own holds. |
+| **Run length** | **~14 minutes of running.** Measured at Visit 4: `dual-a` 5 min 39 s, `dual-b` 5 min 18 s, `dual-d` 54 s. **`dual-b` should run LONGER this time, not the same** — its four distance trials moved nothing at Visit 4 and its fault trial aborted after 200 ms, so if the segment works it gains roughly half a minute of actual driving. `t0` has never completed since its cells were added; ~2 min, derived from its own holds. |
 | **Repeatability** | Every tier is repeatable and idempotent — a re-run costs only time. Faults are provoked and recovered inside the run; nothing needs a power cycle between loads. |
 | **Variant matrix** | Four tiers × one clock (270 MHz, the file's own default) × one rig (Rev B, paired 6.5in, 18.5 V). |
 
@@ -46,7 +46,7 @@ arithmetic on Visit 4's numbers is not on this sheet.
 |---|---|---|---|
 | 1 | `tools/bench-run.sh t0` | ~2 min | **Ten cells that are NOT_BUILT.** Nothing about this binary changed; the runner around it did. |
 | 2 | `tools/bench-run.sh dual-d` | ~1 min | **The repair cycle's own proof.** The stray errors, the time stop, and the derate criterion. |
-| 3 | `tools/bench-run.sh dual-b` | ~5½ min | The stop-current bound, and the metres cell that could certify nothing at Visit 4. |
+| 3 | `tools/bench-run.sh dual-b` | ~6 min | **Whether the OVERSHT segment runs at all** — at Visit 4 every distance trial was refused and nothing moved — plus the stop-current bound. |
 | 4 | `tools/bench-run.sh dual-a` | ~5½ min | The split rate/fold verdict, and the lag bound on a full ladder. |
 
 ---
@@ -104,14 +104,29 @@ not a fault.
   against a live distance read while claiming both came from one instant, and its prediction took
   `abs()` while the library's getter is signed — so it could not tell a conversion fault from two reads
   taken moments apart. Both are fixed and the record now prints the tick count the getter saw (PL-77).
-  **It either agrees or names a real conversion fault, with both of its inputs in the record.**
 
-⚠ **THREE CELLS WILL BE NOMEAS AGAIN, and I am saying so before the run rather than explaining it after.**
-`R16-DUAL-STOPLIM-B`, `R14-DUAL-FLTAPI-B` and `R16-DUAL-FLTRETRY-B` were lost at Visit 4 because the
-overshoot trial tripped the 10 A absolute-current abort at 2 217 mV, so the fault provocation behind them
-never ran. **Nothing in this repair cycle changed that stimulus.** It is filed as **PL-84**, and the next
-step on it is a read of Visit 4's own capture, not a run. The load still earns its slot on `STOPCUR`,
-`DISTM` and `LAGBND`; these three ride along and are expected to print NOMEAS.
+### ⭐ The one field that matters most on this sheet: `str_mm_x100`
+
+**At Visit 4 the whole OVERSHT segment did nothing, and nobody knew.** Every distance trial was refused
+— `driveForDistance() rejected eError = -1_012` (`ERR_LIMIT_UNRESOLVABLE`) — and every captured sample
+reads `pos,0 st,STOPPED`. The cause is one value: **the steering object's own `tickInMM_x100` held about
+−544,643 instead of 576.** That single number produces both the refusals and `getDistance(DDU_M)`
+returning −14,640, and the record could not show it because the harness was printing the *motor*
+object's copy (PL-84).
+
+`BM-DISTM` now prints **both** copies. They are equal by construction, so:
+
+- **`str_mm_x100` reads 576** → the corruption is gone, the OVERSHT segment runs for real, and
+  `R16-DUAL-STOPLIM-B`, `R14-DUAL-FLTAPI-B` and `R16-DUAL-FLTRETRY-B` come back with it. **Finding C-3,
+  the distance overshoot, is unmeasured at Visit 4 and is this segment's primary job** — this is the run
+  that gets it.
+- **`str_mm_x100` reads anything else** → the cell FAILs and names the cause, instead of the segment
+  quietly measuring nothing for a second visit.
+
+⚠ **Either answer is worth the load, and neither needs anything extra from you.** The leading suspect is
+the steering front cog's stack, which read *saturated* in the same visit and sits two longs before this
+variable — that is why `dual-d`'s `FRONTST` reading (step 2) and this field are worth reading together.
+**It is a suspect, not a conclusion.**
 
 ---
 

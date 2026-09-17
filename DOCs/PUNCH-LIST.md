@@ -2562,6 +2562,22 @@ impossible (P10). Do not relax the criterion.
 > **Fix, correct by construction (P10):** give the steering object its own stack constant sized from
 > its own measured high-water mark plus margin, so the two cogs stop sharing a number that cannot
 > describe them both -- and so a saturated reading can never again be mistaken for a healthy one.
+>
+> ### ⭐ DISCRIMINATOR 1 IS BUILT, 2026-09-17, AND THE HYPOTHESIS HAS A MEASURED VALUE NOW
+>
+> **The hypothesis above is no longer free-floating: `tickInMM_x100` WAS wrong in the same visit, and it
+> is measured.** Two independent readings in the part-B log put it at about **-544_643** --
+> `getDistance(DDU_M)` returning -14_640 from 2_688 ticks, and `driveForDistance()` refusing every trial
+> with `ERR_LIMIT_UNRESOLVABLE` because `304_800 / -544_643` truncates to 0. **It took out the entire
+> OVERSHT segment.** Full arithmetic and the log lines: **PL-84**.
+>
+> **Discriminator 1 -- read back the steering object's own `tickInMM_x100` and print it in `BM-DISTM`
+> -- is now in tree** (`testGetTickInMM()`, the `str_mm_x100` field, and the `DISTM` cell fails when the
+> two copies differ). Discriminator 2 is the stack fix itself, already in tree.
+>
+> ⛔ **The link is still NOT established.** A corrupted value and a saturated stack in the same visit,
+> with the variable two longs past the stack, is a strong conjunction and not a proof. Visit 5 answers
+> it for free: `str_mm_x100` reads 576 with the 256-long stack, or it does not.
 
 ### PL-76 -- `driveAtPowerEx()` reports "motor not started" immediately after a `start()` that succeeded
 
@@ -2857,6 +2873,18 @@ claim, and the measurement outranks it).
 > separate a conversion fault from two reads taken moments apart, so nothing could be concluded from
 > Visit 4's reading. It can now, and the next visit's `BM-DISTM` either agrees or names a real fault with
 > both of its inputs in the record.
+>
+> ### ⭐ AND THE MAGNITUDE IS NOW EXPLAINED, hours later, by PL-84 -- it was neither of those
+>
+> **It was not the conversion and it was not two reads: the steering object's own `tickInMM_x100` held
+> about -544_643.** `convertDistance()` multiplies by it, so -14_640 from 2_688 ticks is exactly that
+> value, and the SAME number makes `driveForDistance()` refuse every trial in the segment. **One value,
+> both the magnitude and the sign.** Arithmetic and log lines: **PL-84**.
+>
+> ⚠ **The two harness defects this entry fixed were real and the fixes stand** -- the `abs()` and the
+> snapshot-versus-live read were both there, and either alone would have kept the cell from certifying.
+> They were simply not the whole of what Visit 4 measured. What was missing was the field that could
+> show the third thing, and PL-84 adds it.
 
 ### PL-78 -- the lag error clamps at 115-116 against a 110 bound, and commanded velocity is not rate-limited (the slam)
 
@@ -3328,47 +3356,89 @@ reference, or narrower than their own resolution.
 the limit instead of finishing by it, which task 3559 changed -- lands hundreds of ms late and still
 fails.
 
-### PL-84 -- the OVERSHT distance stop still trips the 10 A abort, while the FAULTB stop from a HIGHER speed does not
+### PL-84 -- the steering object's own `tickInMM_x100` held about -544_643, and it took out the whole OVERSHT segment
 
-**Found 2026-09-17 in «#3564»**, reading VISIT-4-RESULTS.md section 4d before cutting the Visit 5 sheet.
-**Open. Not fixed, not diagnosed, and NOT part of «#3563»'s repair cycle** -- it is recorded here so the
-next visit is not spent re-discovering it.
+**Found 2026-09-17 in «#3564»**, by reading the Visit 4 part-B log. **This is the discriminator PL-75
+proposed and nobody built.** The instrument change is in tree; **the CAUSE is not established and no
+driver change is made on it.**
 
-**MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-130012.log` L7546-7551:
+> ⛔ **THIS ENTRY WAS FIRST FILED WRONG, AND BOTH HALVES OF THAT ARE WITHDRAWN.** It said "the OVERSHT
+> distance stop still trips the 10 A abort", built on VISIT-4-RESULTS.md section 4d rather than on the
+> log. The log says otherwise: **the abort is `tid,25`** -- the fault-API trial's deliberate 180-degree
+> offset provocation, which is that stimulus doing its job -- and **not a distance stop at all**. The
+> contrast I drew between a "bounded" FAULTB stop and an "unbounded" distance stop compared two things
+> that never happened. Stephen caught the deferral that hid it: *"huh? you pended a read of a log?"* The
+> original text is not preserved: it asserted a mechanism, and keeping a refuted mechanism where it can
+> be quoted is the failure mode this list exists to avoid (compare PL-81, kept because its SUBJECT
+> survived; nothing here does).
+
+**MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-130012.log`:
 
 ```
-BM-OVERSHOOT ... why,NOT_REACHED    (target 529 ticks, tracked 2_688)
-BM-ABORT seg,OVERSHT reason,ABS_CURRENT value,2_217 scope,TRIAL
-BM-FLTAPI ... why,ABORTED, retry_err,NA, retry_ms,NA, retry_ok,FALSE
+L7281  ! ERROR: driveForDistance() rejected eError = -1_012, shorterDistance = 10, eDistanceUnits = 4
+L7279  BM-OVERSHOOT tid,23 ... dist_ft,10 tgt,529 l_stop,NA r_stop,NA l_rest,NA r_rest,NA
+                              l_trk,2_688 r_trk,2_688 t_stop,NA why,NOT_REACHED
+L7280  BM-DISTM     tid,23 ... l_ticks,2_688 l_m,-14_640 l_pred_m,15 mm_x100,576 agree,FALSE
 ```
 
-**What it costs:** `R16-DUAL-STOPLIM-B`, `R14-DUAL-FLTAPI-B` and `R16-DUAL-FLTRETRY-B` all NOMEAS with
-`n,0`. The Visit 4 report already says they are *"owed to Visit 5 with a stimulus that does not trip
-it"* -- **and no such stimulus has been built.** A `dual-b` re-run as the source stands today loses the
-same three cells again.
+- **`-1_012` is `ERR_LIMIT_UNRESOLVABLE`** (`isp_bldc_motor.spin2`, the error enum). `eDistanceUnits 4`
+  is `DDU_FT`, so the harness called it correctly.
+- **NOTHING MOVED, in any trial.** Every `BM-TS` row of trials 23 and 24 reads `pos,0 hw,0 st,STOPPED
+  d,1_600 i,~10` from k 0 to k 501, and `BM-TRACE-END ... end,TIMEOUT`. `R16-DUAL-STOPLIM-B` is NOMEAS
+  with `n,0`, which says **no trial in the segment ever produced a stop to measure.**
 
-⭐ **THE DISCRIMINATING PAIR, and it is why this may not be a harness problem at all.** Two stops, the
-same driver, the same run, the same instrument and the same scale:
+⭐ **ONE CORRUPTED VALUE PRODUCES BOTH SYMPTOMS, and the arithmetic closes to the digit.**
 
-| Stop | Speed | Peak `sense_i` | Against the 1_500 mV abort |
-| --- | --- | --- | --- |
-| FAULTB's `stopMotor()` from speed, 20 trials | `incre` +/-110_250_000 (**75 %**) | **971 - 1_055 mV**, flat to +/-4 % | about two thirds of it, never approached (PL-82) |
-| OVERSHT's distance stop | `OVERSHT_POWER` **50 %** | **2_217 mV** | **tripped it** |
+`ticksForDistance()` (`isp_steering_2wheel.spin2`, the `DDU_FT` arm) computes
+`round(3048.0 *. 100.0) / tickInMM_x100` = `304_800 / tickInMM_x100`, and refuses with
+`ERR_LIMIT_UNRESOLVABLE` when the result is `< 1`. `convertDistance()` multiplies by the same variable:
+`float(nValue) *. float(tickInMM_x100) /. 100.0`.
 
-**The stop from the HIGHER speed is the bounded one.** «#3558»'s feed-forward duty ceiling acts on
-`.rampDn`, and PL-82's 455x `ramp_inc` sweep independently confirms `.rampDn` takes the fixed
-`ramp_down_`. So whatever the distance stop does, it is not the ramp-down FAULTB measures.
+| Reading | What it needs `tickInMM_x100` to be |
+| --- | --- |
+| `getDistance(DDU_M)` returned **-14_640** from **2_688** ticks | `-14_640_000 * 100 / 2_688` = **about -544_643** |
+| `driveForDistance(10, 10, DDU_FT)` returned **ERR_LIMIT_UNRESOLVABLE** | `304_800 / -544_643` truncates to **0**, and `0 < 1` ✅ |
 
-⛔ **NO MECHANISM IS OFFERED** (doctrine overlay P8). The candidates are not yet separated and naming one
-before the read is exactly what cost time on 2026-09-17: the distance stop's own early-stop arithmetic
-(«#3559»), the steering object's path to it, a direction change at the limit, or the trial's state at the
-moment of the stop. `BM-OVERSHOOT why,NOT_REACHED` with 2_688 ticks tracked against a 529-tick target is
-itself unexplained and belongs to the same read.
+**Two independent readings, one value, and the second is predicted by the first.** It also disposes of
+PL-77's remaining "~1000x and sign-inverted" puzzle: **both the magnitude and the sign are that one
+number**, not a conversion defect.
 
-**Next step, and it is a READ, not a run:** the Visit 4 capture for that trial is already in the log at
-instrument resolution. Work out from it what the current did and when, relative to the stop command,
-before proposing either a driver change or a different stimulus. **If it turns out to be a driver
-defect, it is the first one to survive Visit 4.**
+⛔ **WHY THE RECORD COULD NOT SEE IT, which is the instrument finding.** `BM-DISTM` printed
+`mm_x100,576` -- a healthy value -- because the harness read it from **`wheelL.wheelGeometry()`, the
+MOTOR object**. The steering object keeps its **own copy**, captured from that same call during
+`start()`, and nothing outside could read it back. The record showed one copy while the object used the
+other (PL-75 named exactly this and called it "undiagnosable by construction").
+
+### FIXED IN TREE 2026-09-17 -- the discriminator, one field, built at last
+
+- **`isp_steering_2wheel.spin2` gains `testGetTickInMM()`**, a TEST-USE read of its own copy.
+- **`BM-DISTM` gains `str_mm_x100`** beside `mm_x100`. The two are equal by construction, so a
+  difference IS a corrupted copy.
+- **The `DISTM` cell now fails on the thing it can see:** `bSfDistMOk` requires the two copies to agree,
+  not just the distances. Visit 4's data would have failed it and named the cause.
+
+⛔ **WHAT IS NOT ESTABLISHED, and no change is made on it: HOW the value got corrupted.**
+
+**The leading candidate is PL-75's**, and the conjunction is strong: `tickInMM_x100` is the **second long
+past `taskStack`** in the steering object's VAR declaration order, and **the steering front cog's stack
+read SATURATED in this very run** (`stack_hi 128 == stack_of 128`, `BM-FRONTST` L67 of the part-D log) --
+a mark that cannot be told from an overrun. A stack overrun past `taskStack` writes `deltaTicks` and then
+`tickInMM_x100`.
+
+**It is not proof.** It does not show that an overrun wrote **that** value, -544_643 has no established
+relation to anything a Spin2 frame holds, and part B and part D are different loads. Naming it as the
+cause is the mistake this entry already made once.
+
+⭐ **NOTHING MORE IS OWED BEFORE THE NEXT RUN, and that is the point of building the field now.** PL-75's
+fix (the steering object's own 256-long stack) is already in tree. At Visit 5, `str_mm_x100` either reads
+576 -- in which case the enlarged stack removed it and the two findings share one root cause -- or it does
+not, and the cause is somewhere else with the evidence printed beside it. **Either answer costs one field
+and no extra load.**
+
+⭐ **AND THE WHOLE OVERSHT SEGMENT COMES BACK IF IT READS 576.** `R16-DUAL-STOPLIM-B`,
+`R14-DUAL-FLTAPI-B` and `R16-DUAL-FLTRETRY-B` were NOMEAS because nothing ever drove, not because their
+stimulus was wrong -- so **finding C-3, the distance overshoot, is unmeasured at Visit 4 and is the
+segment's primary job.**
 
 ---
 
