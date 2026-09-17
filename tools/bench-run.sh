@@ -18,8 +18,10 @@
 #   2. RUN      -- pnut-term-ts, batch mode, also with src/ as the working
 #                  directory (so its logs land in src/logs/ as a natural
 #                  consequence, not because this script moves them there).
-# It does NOT touch the logs. pnut-term-ts names them by timestamp and puts
-# them in src/logs/; that is already right and this script leaves it alone.
+# It does NOT write, move or rename the logs. pnut-term-ts names them by
+# timestamp and puts them in src/logs/; that is already right and this script
+# leaves it alone. Since PL-74 it does READ the log the run just wrote, once,
+# to refuse a load that emitted nothing -- see the check after step 2.
 #
 # Every external command this script runs is echoed verbatim, immediately
 # before it runs, prefixed "+ " -- so the transcript is something you can
@@ -80,6 +82,15 @@ die() {
     echo "ERROR: $*"
     echo "ERROR: $*" >&2
     exit 2
+}
+
+# Where pnut-term-ts puts its logs, relative to SRC_DIR (this script never writes there).
+LOG_DIR="logs"
+
+# The newest run log, or nothing when none exists yet. Used only to tell the log this run
+# wrote from the one before it -- see the PL-74 check after the run.
+newest_log() {
+    ls -1t "${LOG_DIR}"/debug_*.log 2>/dev/null | head -1
 }
 
 # ---- usage and argument validation ----------------------------------------------
@@ -303,11 +314,45 @@ fi
 # pnut-term-ts closes itself once the tier's binary prints its
 # DEBUG_END_SESSION marker (the tool's own documented default end-marker
 # phrase), instead of waiting on a keypress or a fixed timeout.
+LOG_BEFORE="$(newest_log)"
+
 run "$PNUT_TERM" -r "$BINARY" --console-mode --exit-on-end-session
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
     echo "ERROR: command failed (exit $STATUS): $PNUT_TERM -r $BINARY --console-mode --exit-on-end-session" >&2
     exit 2
+fi
+
+# ---- refuse a load that emitted nothing (PL-74) --------------------------------
+# WHY THIS EXISTS. At Visit 4 the t0 tier downloaded successfully and then emitted
+# NOTHING -- not one program line, and not even the debug kernel's own "CogN INIT"
+# lines. All ten t0 cells were lost and nobody knew until the logs were read hours
+# later. The compile was not at fault: this script passes -d to every tier, and the
+# sizes settle it (MEASURED 2026-09-17, test_bench_t0 with -D BENCH_CFG: 43,784
+# bytes with -d, 25,764 without, against the 43,780 bytes that was downloaded). So
+# the image carried the debug kernel and the kernel never spoke -- a load failure,
+# not a build failure, and one that is visible in milliseconds. It must not cost a
+# bench slot again.
+#
+# THE CHECK IS TIER-INDEPENDENT ON PURPOSE. It looks for the debug kernel's own
+# "CogN INIT" line, which EVERY -d image emits at load whatever the tier does next,
+# rather than for a per-tier banner string this script would have to keep in step
+# with six binaries. The second check is for any program line at all, which
+# separates "the image never started" from "it started and stayed silent".
+#
+# It READS the newest log and never writes, moves or renames it: log curation is
+# still the operator's, and pnut-term-ts still owns the name and the location.
+LOG_AFTER="$(newest_log)"
+if [ -z "$LOG_AFTER" ] || [ "$LOG_AFTER" = "$LOG_BEFORE" ]; then
+    die "the run wrote no new log under $SRC_DIR/$LOG_DIR -- nothing was captured, so this load certified nothing. Re-run tier '$TIER'."
+fi
+
+if ! grep -qE 'Cog[0-7][[:space:]]+INIT' "$LOG_AFTER"; then
+    die "$SRC_DIR/$LOG_AFTER has no 'CogN INIT' line: the downloaded image never emitted, so EVERY cell in tier '$TIER' is NOT_BUILT. This is the PL-74 failure. Power-cycle the P2 and re-run tier '$TIER' before spending more bench time."
+fi
+
+if ! grep -E 'Cog[0-7][[:space:]]+' "$LOG_AFTER" | grep -qvE 'INIT[[:space:]]+\$'; then
+    die "$SRC_DIR/$LOG_AFTER carries the load's 'CogN INIT' lines and NOT ONE program line: the image started and said nothing, so tier '$TIER' judged no cell. Re-run it before spending more bench time."
 fi
 
 # ---- done ---------------------------------------------------------------------

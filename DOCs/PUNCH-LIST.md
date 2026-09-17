@@ -735,6 +735,24 @@ motor command in the scan goes through `if`/`else`. **The hazard is the class:**
 branches have side effects acts on both, e.g. commanding both wheels. **Fix direction:** side
 selection that calls methods uses `if`/`else`; a ternary selects values only.
 
+> ## ⭐ MEASURED A SECOND TIME 2026-09-17, in a different binary, and this time it DID cost cells.
+>
+> **"No harm today" expired.** `test_bench_dual.spin2`'s part-D dispatch helpers commanded through the
+> same construct, and at Visit 4 the never-started `wheelR` executed and printed on five calls addressed
+> to `wheelL` -- see **PL-76** for the log lines, the timestamps and the call-for-line correspondence,
+> including the steering half as the negative limb. It is the same mechanism this entry recorded on
+> 2026-09-12 from a completely different run, so the behaviour is now MEASURED twice, independently
+> (doctrine D2: record the agreement of independent readings as evidence).
+>
+> **Fixed in `test_bench_dual.spin2` 2026-09-17** (eleven sites, PL-76). `test_bench_scan.spin2`'s
+> status-only ternaries are **not** changed: they are harmless today and the scan's logs are diffed
+> against earlier runs, which an edit would decertify.
+>
+> ⛔ **STILL OPEN, and it is what makes this recur: nothing CHECKS for it.** The rule lives in prose in
+> three places now, and prose does not catch the twelfth site. A `? :` with a method call in either branch
+> is exactly a mechanically-checkable rule for `tools/check_style.sh` -- **assigned to «#3517»**, which
+> owns the T1 checker coverage. Until then the entry stays open on that ground alone.
+
 ### PL-30 -- the right board's current sense reads +73 mV at zero command, and Pass 1 did not
 
 > **CAUSE FOUND 2026-09-13 in scan run 5 — see PL-32.** The 72–75 mV is not a board offset.
@@ -2417,6 +2435,51 @@ Then give the harness a construction that makes the failure impossible rather th
 produces no banner should be refused by the runner before Stephen's time is spent on it, since a banner is the
 one thing every tier emits within milliseconds of start.
 
+> ## ROOT-CAUSED 2026-09-17: ⛔ THE MECHANISM ABOVE IS REFUTED. The image DID carry a debug kernel.
+>
+> **`-d` reaches every tier.** `tools/bench-run.sh` has exactly one compile line and it is
+> `"$PNUT" -l -d -D BENCH_CFG ${EXTRA_DEFS[@]} "$BENCH_FILE"` -- there is no per-tier compile and no path
+> that omits `-d`. So "it was built without `-d`" was an inference from the missing INIT lines, not a
+> reading of the runner.
+>
+> **MEASURED 2026-09-17, and the sizes settle it.** Compiling `test_bench_t0.spin2` on today's tree:
+>
+> | Command | Binary |
+> | --- | --- |
+> | `pnut-ts -l -d -D BENCH_CFG test_bench_t0.spin2` | **43_784 bytes** |
+> | `pnut-ts -D BENCH_CFG test_bench_t0.spin2` (no `-d`) | **25_764 bytes** |
+> | Visit 4's downloaded image (`debug_260917-125221.log:14`) | **43_780 bytes** |
+>
+> 43_780 is unambiguously a **debug** build -- it is 18_016 bytes above the non-debug build and four bytes
+> below today's, and those four bytes are exactly the one PASM long PL-78's fix added afterwards in
+> `be61a7f`. **The compile was right and the image carried the debug kernel.**
+>
+> ⛔ **So the absence of `Cog0 INIT` does not mean "no debug kernel"; it means the kernel that was there
+> never emitted.** That is a download or start anomaly on that one load, and **it is UNDETERMINED** -- the
+> whole log is 19 lines, the P2 is not here, and nothing in the tree records what the board did between
+> `DOWNLOAD SUCCESS` at 12:52:22.774 and `Session Ended` 13.3 s later. Per doctrine overlay P8, no
+> mechanism is offered for it. It has not recurred: the five other Visit 4 loads all show `Cog0 INIT`
+> within 20 ms of download.
+>
+> ### FIXED IN TREE 2026-09-17 -- the runner refuses a load that emitted nothing
+>
+> The half of the fix direction that survives is the one that does not depend on knowing the cause, and it
+> is now in `tools/bench-run.sh`, immediately after the `pnut-term-ts` call:
+>
+> 1. **no new log** under `src/logs/` -> refuse, naming the tier;
+> 2. **no `CogN INIT` line** in it -> refuse, saying every cell in the tier is NOT_BUILT and to power-cycle
+>    and re-run. This is the Visit 4 failure, and it is now caught in the seconds after the load instead of
+>    in the analysis hours later;
+> 3. **INIT lines but not one program line** -> refuse, saying the image started and judged nothing.
+>
+> **The check is tier-independent on purpose.** It looks for the debug kernel's own `CogN INIT` line, which
+> every `-d` image emits at load whatever the tier does next, rather than for a per-tier banner string the
+> runner would have to keep in step with six binaries. It **reads** the newest log once and never writes,
+> moves or renames it (doctrine overlay P2); the header comment says so.
+>
+> **The ten `t0` cells are still NOT_BUILT** and are owed to the next visit; that is a run-sheet item, not
+> an open defect here.
+
 ### PL-75 -- the steering front cog's stack is exactly full: `stack_hi == stack_of == 128`
 
 **Found 2026-09-17 in «#3561»**, Visit 4 part D. **MEASURED**,
@@ -2628,6 +2691,59 @@ path through the front cog. No bench cell is proposed for it -- the bench certif
 > ⛔ **Do not reconstruct a story for it.** Two attempts today built plausible mechanisms that the
 > next read refuted. The next step is to identify the emitting call, not to infer it.
 >
+> ### ⭐ EMITTING CALL IDENTIFIED 2026-09-17, BY READING. It is PL-29's ternary, measured a second time.
+>
+> **The three commanding dispatch helpers selected their object with `? :`:**
+>
+> ```spin2
+> eError := (side == SIDE_RIGHT) ? wheelR.driveAtPower(powerValue) : wheelL.driveAtPower(powerValue)   ' dDrive()
+> eError := (side == SIDE_RIGHT) ? wheelR.clearEmergency() : wheelL.clearEmergency()                   ' dClearEstop()
+> eError := (side == SIDE_RIGHT) ? wheelR.stopAfterTime(...) : wheelL.stopAfterTime(...)               ' dStopAfterTime()
+> ```
+>
+> **PL-29 MEASURED that a `? :` whose two branches each call a method RUNS BOTH CALLS for one
+> evaluation.** With `side` SIDE_LEFT, every one of these also commanded `wheelR` -- which the LIMIT
+> segment's single-wheel half never started -- so `wheelR` refused, **printed**, and the expression
+> nonetheless returned `wheelL`'s value. The cell got the right answer; the log got a stray error line.
+>
+> **THE CORRESPONDENCE IS EXACT, and that is the evidence.** Five error lines, five commanding-ternary
+> calls in the wheel half, in order (`debug_260917-125859.log`, with its timestamps):
+>
+> | Line | t | The call | wheelL returned |
+> | --- | --- | --- | --- |
+> | L87 | 12:59:43.914, the same ms as BM-START | `dToSpeed()`'s drive, in `dStepEstopSet` | NO_ERROR -- it reached AT_SPEED 2.3 s later |
+> | L88 | 12:59:46.227, 16 ms before the cell | the refused drive, `dStepEstopSet` step 1 | ERR_EMERGENCY_STOPPED -- ESTOP_REFUSE PASS |
+> | L91 | 12:59:48.053, between LATCH and CLEAR | `dClearEstop()`, `dStepEstopSet` step 3 | NO_ERROR -- ESTOP_CLEAR PASS |
+> | L93 | 12:59:48.860 | `dToSpeed()`'s drive, in `dStepTimeStop` | NO_ERROR |
+> | L94 | 12:59:51.186 | `dStopAfterTime()` | NO_ERROR |
+>
+> **And the negative limb is in the same log.** The steering half (`SIDE_BOTH`) takes the `if` limb and
+> evaluates no ternary: it makes far more library calls than the wheel half and prints **no** error at all
+> (L58-L69). Parts A, B and C command through the `wheel*()` wrappers, which are `if`/`else` throughout,
+> and print none either. The getter ternaries (`dRawTicks`, `dPowerSum`, `dIsEstopped`, `wheelIsReady`,
+> `wheelIsUp`, `wheelRpm`) behave the same way; they merely say nothing about it.
+>
+> ⭐ **This also explains the `-1_007` beside a PASSing `ESTOP_CLEAR`** -- the entry's own open question
+> above. Nothing was aggregated away: two different objects answered, and only one of them was printed.
+>
+> ### FIXED IN TREE 2026-09-17 -- eleven sites, and the rule is stated where the next one would be written
+>
+> Every `? :` in `test_bench_dual.spin2` that selected between two METHOD CALLS is now `if`/`else`:
+> `dDrive`, `dClearEstop`, `dStopAfterTime`, `dResetTracking`, `dIsEstopped` (two), `dPowerSum`,
+> `dRawTicks`, `dTrackTicks`, `wheelIsReady`, `wheelIsUp`, `wheelRpm`. A `? :` that selects a **value** is
+> untouched and correct. The rule, its evidence and the correspondence table above are written into the
+> part-D dispatch header so the next helper is written the right way round (P10: the construction, not a
+> reminder).
+>
+> **The sweep covered the two dispatch families** -- the `d*()` part-D helpers and the `wheel*()` wrappers
+> -- which is where every library call on a side-selected object goes. A residual elsewhere in the file is
+> possible and is **not** claimed to be absent; the durable answer is a checker rule, and that belongs to
+> «#3517» (see PL-29).
+>
+> ⚠ **This does NOT explain the lost TIMESTOP cells.** `R16-DUAL-TIMESTOP-D` (BOTH) read
+> NOMEAS/STOP_TIMEOUT in the STEERING half too, which evaluates no ternary. That is a separate criterion
+> defect and it is filed as **PL-83**.
+>
 > *(The original claim is preserved below as written, per this list's convention of keeping what was
 > said and dating what overturned it.)*
 >
@@ -2724,6 +2840,23 @@ claim, and the measurement outranks it).
 > ⭐ **CONSEQUENCE FOR THE RELEASE.** The «#3515» line above is **no longer blocked by this entry** --
 > both `DDU_M` arms are verified correct in source. It is still **not bench-certified**, because
 > this cell could certify nothing. Say that plainly rather than citing Visit 4 as support.
+>
+> ### FIXED IN TREE 2026-09-17 -- both harness defects, in the three lines that carried them
+>
+> - **One read, and the record carries the measurement's own input.** `overshootFoldCells()` no longer
+>   takes the ticks from `ovLeftTrk` / `ovRightTrk`, the snapshot the overshoot trial saved earlier. It
+>   calls `steerTrackTicks()` immediately before `steerDistanceM()`, and `dmLeftTicks` / `dmRightTicks`
+>   -- the `l_ticks` / `r_ticks` the record prints -- are now the counts the getter saw. The emitter's
+>   comment, which claimed that and was false, now says it and is true.
+> - **The conversion is signed.** `ticksToMetres()` no longer takes `abs(nTicks)`; it carries the sign,
+>   with the rounding term applied away from zero on both limbs so a reverse trial is not biased by a
+>   metre. Every reverse trial used to disagree with its own prediction by construction, whatever the
+>   conversion did.
+>
+> **The ~1000x magnitude remains undiagnosed and that is the point of the fix:** the cell could not
+> separate a conversion fault from two reads taken moments apart, so nothing could be concluded from
+> Visit 4's reading. It can now, and the next visit's `BM-DISTM` either agrees or names a real fault with
+> both of its inputs in the record.
 
 ### PL-78 -- the lag error clamps at 115-116 against a 110 bound, and commanded velocity is not rate-limited (the slam)
 
@@ -2779,6 +2912,38 @@ cell really guards. **This is the one case where raising the bound is correct** 
 green, but because the old bound described a state the design never promised. Record the arithmetic in the cell
 so the next reader can check it (doctrine D2: a criterion that cannot be met by a correct system has not passed,
 it has misreported).
+
+> ## ⛔ CORRECTED 2026-09-17, BEFORE THE FIX WAS BUILT: "LAG_HOLD + one pass ~= 15-16" DOES NOT COMPUTE.
+>
+> **The arithmetic is checkable and it fails.** `err_` is `(hall angle + offset) - angle_` shifted right
+> by 24 bits (`src/isp_bldc_motor.spin2`, the `.noFault` block), so **256 units make one electrical
+> cycle**, and the design document states the same conversion and works it out:
+> *"At the 6.5in ceiling of 172,000,000 it advances `angle_` by 10.25 units per drive pass. At 75 %
+> (110,250,000) it advances 6.57 units"* (`plans/CURRENT-LIMIT-AND-STOP-DESIGN.md`, Units). At the
+> ladder's own top rung, 165,000,000, the advance is **9.8 units**, not 15-16.
+>
+> ⛔ **And the measurement refutes the model outright: part A (a ladder to 165,000,000) and part D (a
+> steady power 50, where the advance is a fraction of that) BOTH read 115.** A bound generated from the
+> per-pass advance would differ by several units between those two parts. It does not. **So the gap
+> between `LAG_HOLD` 100 and the observed 115-116 is UNDETERMINED** -- that is a deliverable, not a gap
+> (doctrine overlay P8), and it is recorded here rather than filled with a mechanism.
+>
+> The design's own invariant is written the same way and is equally not what is observed:
+> *"`|err_|` cannot exceed `LAG_HOLD` plus one pass's increment (100 + 10.25 < 125)"* (section 3.2). The
+> **conclusion** of that sentence holds -- `|err_|` stays under the 125 fault test, in every part, on both
+> motors -- and its arithmetic does not generate the 115. Only the conclusion is used.
+>
+> ### FIXED IN TREE 2026-09-17 -- the bound is the driver's own fault test
+>
+> `LAG_MAX_HI` is now `LAG_FAULT_TEST - 1` = **124**, with `LAG_FAULT_TEST = 125` named and sourced to the
+> driver's `cmp tmpY, #125 wc`. That is the only number here the design actually promises, it is what the
+> lag limiter exists to guarantee, and **it has a real negative case**: a driver with no limiter pegs the
+> stored field at its 127 saturation and fails it. `LAG_HOLD_REF = 100` is carried alongside, and
+> `BM-LAG` now prints `hold` and `fault` beside `max_err` and `hi`, so the whole band is in the record and
+> a reading between the gate and the criterion reads as the normal state rather than as a near-miss.
+>
+> **What is NOT claimed:** that 115 is now explained. It is bounded, and the bound is sourced. If a future
+> visit reads a `max_err` that walks toward 124, the record now carries every number needed to see it.
 
 **STEPHEN 2026-09-17, the physical effect:** *"On your dual A run, you're making a bunch of speed changes. One of
 the things I noticed in the speed changes is that we are physically slamming the platform... I would think speed
@@ -2883,6 +3048,28 @@ fold-back at any rung, because one compound verdict covers all of them.
 above the quantisation limit, and report the fold-back half separately from the rate half. **Do not touch the
 driver for this.**
 
+> ## FIXED IN TREE 2026-09-17 -- two cells, and the band now carries the rung's own resolution
+>
+> **The compound verdict is gone. `ladderNoFold()` folds two cells:**
+>
+> | Cell | Criterion | What it can now say |
+> | --- | --- | --- |
+> | `R16-DUAL-NOFOLD-A` | `NO_FOLD_AT_BASE` -- the front cog never derated at a base rung | the claim the cell is named for, judged alone |
+> | `R16-DUAL-RATELAW-A` (new) | `RATE_MATCHES_LAW` -- the rate against the speed law | a real fold-back at any rung, because rung 0 no longer fails unconditionally |
+>
+> **The band is the criterion PLUS the resolution.** `rateBandPct()` returns what one tick is worth in
+> percent at that rung's own measured count, rounded up: about 8 % at rung 0's 13-14 ticks and 1 % at rung
+> 11's 441. So the +/-3 % band becomes 89-111 % where the count is 14 and 96-104 % where it is 441. Every
+> Visit 4 reading passes it -- 104.5, 97.0, 100.1 -- and an 80 % fold-back at rung 11 still fails it.
+>
+> **The fold half is measured on any base rung whose wheel answered**, window or no window: reading
+> `testGetCurrentLimitState()` needs no capture. The rate half is measured only where there is a valid
+> window, a non-zero tick count and a prediction, so a lost window prints NOMEAS instead of passing by
+> silence.
+>
+> ⭐ **The C-1 certification this data also carries is unaffected** and belongs in the «#3514» write-back,
+> as this entry already says.
+
 ⭐ **What the same data certifies:** finding **C-1**'s speed law -- 48 rungs, two motors, two directions, under
 0.5 % across a 33:1 speed range. That belongs in the «#3514» write-back.
 
@@ -2909,6 +3096,39 @@ happened** -- so its name (`DERATED_IN_WINDOW`) and its test do not agree.
 threshold, the honest result is **NOMEAS with a why**, exactly as `R16-DUAL-BLOCKED-D` already does
 (`why,NOT_BLOCKED`, L81) and as the LEFT motor's own DERATE cell does (`n,0`, L113). A designed NOMEAS is a
 result; a FAIL on an unrelated magnitude is noise.
+
+> ## ⛔ THE DIAGNOSIS ABOVE IS WRONG, corrected 2026-09-17 by reading the step. The FIX DIRECTION survives.
+>
+> **`measured,2_602` is MILLISECONDS, not milliamps.** `dStepDerate()` hands `dStepDone()` `worstMs`, the
+> later of the two wheels' derate times, against `D_DERATE_LO_MS` 500 and `D_DERATE_HI_MS` 2_500. The cell
+> is judging **when** the derate arrived, which is the right quantity; it is the **band** that is wrong.
+> `phase_ma 2_632` on the same line is a coincidence of magnitude and it is what I read it as.
+>
+> **What the run actually says**, and every row is consistent with it: RIGHT derated at **2_602 ms**, 102
+> ms past the window, so its cell FAILed (L114, `n,1`); LEFT never derated inside `D_DERATE_WAIT_MS`
+> 3_500, so `derateMs` stayed 0 and its cell is NOMEAS (L113, `n,0`), exactly as the fix direction asks
+> for. `derated,FALSE` in both `BM-LIMST` rows is the state at EMIT time, after the restore -- not
+> evidence that neither derated.
+>
+> ⭐ **The window could never have been generated from the design, and that is the finding.** The front
+> cog derates when its ~1 s average of the phase-current lower bound CROSSES the continuous limit. How
+> long that takes depends on how far above the limit the wheel sits -- and on a lifted 6.5in wheel it only
+> just gets there, so the crossing time is unbounded in principle. Two wheels landed on opposite sides of
+> the same window from one drive. A band nobody can derive is a guess wearing a criterion's clothes.
+>
+> ### FIXED IN TREE 2026-09-17
+>
+> - `D_DERATE_LO_MS` / `D_DERATE_HI_MS` are **deleted**, and the reasoning above is written where they
+>   were (doctrine D5: delete the superseded mechanism in the same change).
+> - The criterion is now the claim the cell is named for: **it derated, and the peak limit came back**
+>   (`bSfDerateOk := bSfDerateRan and bRestored`). The arrival time is still measured and printed, judged
+>   only against `1 .. D_DERATE_WAIT_MS` -- the bound on it arriving at all.
+> - **A wheel that never derated no longer fails the BOTH step.** It is NOMEAS in its own cell and is
+>   skipped in the step's conjunction, so a rig that can only provoke one wheel reports one measurement
+>   and one NOMEAS instead of one FAIL.
+>
+> **The negative case is intact:** a derate that fires and never restores fails, and a step where neither
+> wheel derates is NOMEAS `why,NOT_DERATED` rather than a silent pass.
 
 ### PL-82 -- `R16-DUAL-STOPCUR`'s reference drifts 25 % with motor temperature, so the cell fails on the reference, not the stop
 
@@ -2954,6 +3174,28 @@ only.** The slam analysis in PL-78 rests on that same reading, and this is an in
 measurement agreeing with it (doctrine D2: record the agreement of independent readings as
 evidence). It also means **PL-78's fix cannot change stopping behaviour**, which is a useful
 control for the next visit.
+
+> ## FIXED IN TREE 2026-09-17 -- a fixed bound, and a THIRD defect found while fixing it
+>
+> ⭐ **THE THIRD DEFECT: it compared a PEAK against a MEAN.** `scStopPk` is the largest `sense_i` over the
+> spin-down; `scHoldIX10` is the **mean** over the AT_SPEED hold. The AT_SPEED ripple alone can make a
+> correct stop look worse than the hold, before any thermal drift is involved. Found by reading the fold,
+> not by a run, and it is the same class as the drift: the reference was not the thing the claim is about.
+>
+> **The criterion is now a fixed bound.** `STOPCUR_BOUND_MV = ABS_ABORT_MV` (1_500 mV, 10 A at 150 mV/A),
+> and the cell is `scStopPk <= STOPCUR_BOUND_MV` and no absolute-current abort. The criterion token
+> changes from `STOP_UNDER_HOLD_I` to `STOP_UNDER_BOUND`, because the name was part of the defect.
+>
+> **Why THAT number, and what it does and does not do.** It is the bound the UNBOUNDED stop actually
+> crossed: *"From 75 %, the same 20-50 % rise crosses the harness's 10 A abort"*
+> (`plans/CURRENT-LIMIT-AND-STOP-DESIGN.md` section 1), and two Visit 2 trials aborted outright (PL-55).
+> So the negative case is measured, not imagined. **It is a ceiling, not a tight bound, and the entry says
+> so rather than implying more:** a stop that crept from 1_000 to 1_400 mV would still pass it.
+>
+> **What carries the design's own section 3.3 invariant** -- that current FALLS along the ramp instead of
+> rising -- is now in the record rather than in the verdict: `BM-STOPCUR` gains `hold_pk_mV` (the hold's
+> peak, so a peak is compared with a peak) and `bound_mV`, beside the `hold_mV_x10` this entry showed the
+> thermal drift in. A reader sees the whole comparison and the arithmetic behind the verdict.
 
 ### PL-81 -- WITHDRAWN SAME DAY: `ticsPerRotation` = 90 was already anchored at Visit 2
 
@@ -3046,6 +3288,45 @@ a different motor from either of ours (ours are 15 and 4 pole pairs), and their
 `electrical = mechanical_12bit x pole_pairs MOD $FFF` method presumes an absolute 12-bit mechanical
 sensor. **We have three halls and 6 states per electrical cycle**, so the method does not port even
 though the ±90° principle it serves still holds -- see PL-26.
+
+### PL-83 -- `R16-DUAL-TIMESTOP` could not pass in either form: the rest wait was as long as the limit it waited past
+
+**Found 2026-09-17 in «#3563»**, while fixing PL-76. **Instrument defect, mine** (doctrine overlay P3) --
+**not a driver defect.**
+
+**MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-125859.log`: `R16-DUAL-TIMESTOP-D` reads
+`measured,NA ... result,NOMEAS why,STOP_TIMEOUT` for `BOTH` (L66) **and** for `LEFT` (L95), and both
+sign-off cells are NOMEAS (L108, L117).
+
+⛔ **PL-76 attributed these to its own defect. That attribution is withdrawn:** the `BOTH` half is the
+steering object, which evaluates no dispatch ternary at all, and it read STOP_TIMEOUT just the same. Two
+reasons in the step itself account for both, and neither can be met by any driver:
+
+1. **The wait was the same length as the limit it was waiting past.** `dStepTimeStop()` armed
+   `stopAfterTime(D_TIMESTOP_MS)` -- 2_000 ms -- and then called `dRest()`, whose bound is `D_REST_MS`,
+   also 2_000 ms. **The wait expired at the moment the stop was due to begin.** `bRest` was therefore
+   FALSE on every run, which is what prints `NOMEAS why,STOP_TIMEOUT`.
+2. **The criterion ignored its own confirmation dwell.** `waitRest()` returns when `pos` and `hwPos` have
+   been unchanged for `REST_CONFIRM_MS` (300 ms), so `restMs` is at least 300 ms past the instant the
+   platform actually came to rest -- against a criterion of `lateMs <= D_TIMESTOP_SLACK_MS` (20 ms). Even
+   with the wait fixed, a perfect stop would have read about +300 and FAILed.
+
+**THE THEME AGAIN** (compare PL-78's first half, PL-79, PL-80, PL-82): a criterion is an instrument and
+needs its own negative case. Four of the five were bounds nobody could derive, compared against the wrong
+reference, or narrower than their own resolution.
+
+### FIXED IN TREE 2026-09-17
+
+- The rest wait is `D_TIMESTOP_MS + D_REST_MS` -- the limit, and then the same bound every other step
+  gives a stop -- through a new `dRestWithin(side, boundMs)`; `dRest()` is now a one-line caller of it, so
+  no other step's bound moved.
+- `D_TIMESTOP_LATE_HI = D_TIMESTOP_SLACK_MS + REST_CONFIRM_MS`, **computed from both constants rather
+  than restated as a number**, is the criterion and the printed `hi`.
+- The reasoning is written into the step, where the next person to set a bound there will read it.
+
+**The negative case is intact:** the unfixed behaviour this cell exists to catch -- the stop BEGINNING at
+the limit instead of finishing by it, which task 3559 changed -- lands hundreds of ms late and still
+fails.
 
 ---
 

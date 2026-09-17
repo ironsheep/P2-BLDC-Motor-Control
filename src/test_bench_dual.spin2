@@ -395,6 +395,10 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_ORDERED_STACK_LONGS = wheelL.STACK_SIZE_LONGS
     D_TIMESTOP_MS         = 2_000                           ' stopAfterTime() limit, DTU_MILLISEC
     D_TIMESTOP_SLACK_MS   = 20                              ' at rest by the deadline within this
+    ' PL-83: what the step can actually observe is not the instant of rest but the instant waitRest()
+    '  CONFIRMS it, which is REST_CONFIRM_MS of unchanged pos and hwPos later. The bound is the slack the
+    '  stop is allowed PLUS the dwell the confirmation costs, computed from both rather than restated.
+    D_TIMESTOP_LATE_HI    = D_TIMESTOP_SLACK_MS + REST_CONFIRM_MS
     D_COOPSHUT_MS         = 20                              ' steering.stop() returns within this (front cog EXIT bound)
     D_TRACKRESET_MS       = 20                              ' resetTracking() returns within this (unfixed: >= 400 ms)
     D_TRACKRESET_TOL      = 2                               ' ticks the reset tracking may differ from the raw delta
@@ -415,8 +419,16 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_FOLD_TOL_PCT        = 110                             ' the judged average may exceed the limit by this much
     D_DERATE_PEAK_A       = 20                              ' DERATE: the average crosses cont with peak well above it
     D_DERATE_CONT_A       = 8
-    D_DERATE_LO_MS        = 500                             ' the derate arrives in this window (the average is ~1 s)
-    D_DERATE_HI_MS        = 2_500
+    ' PL-80: THERE IS NO ARRIVAL-TIME WINDOW ANY MORE, because the design cannot generate one on this rig.
+    '  The front cog derates when its ~1 s average of the phase-current lower bound CROSSES the continuous
+    '  limit, and on a lifted wheel the current only just gets there -- so how long the crossing takes is
+    '  set by how far above the limit the wheel happens to sit, which nothing bounds. Visit 4 measured the
+    '  two wheels on opposite sides of the old 500-2_500 ms window from the same drive: RIGHT derated at
+    '  2_602 ms (FAIL, 4 % over) and LEFT never derated at all inside the wait (correctly NOMEAS). Judging
+    '  the arrival TIME therefore failed the cell on a number the design never promised, while the claim
+    '  it is named for -- derating happens and the peak limit comes back -- went unjudged.
+    '  The arrival time is still measured and printed; it is judged only against the wait below, which is
+    '  the bound on it arriving AT ALL.
     D_DERATE_REST_MS      = 3_000                           ' bound on the peak limit returning after the stop
     D_BLOCK_PEAK_A        = 1                               ' BLOCKED: the fold-back crushes duty, the rotor cannot follow
     D_BLOCK_CONT_A        = 1
@@ -769,11 +781,26 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     RESET_UNCLEAR_LO  = 0
     RESET_UNCLEAR_HI  = 0
     ' LAGBOUND (task 3558's lag limiter): the instrument's own running max |err| over stored samples with
-    '  the driver up and not faulted. The driver holds the field at LAG_HOLD (100 err units) and its own
-    '  fault test is at 125; the stored field saturates at 127, which is what an unfixed driver prints.
-    '  The bound sits above LAG_HOLD and below the fault test, so it separates the two.
+    '  the driver up and not faulted.
+    '
+    ' THE BOUND IS THE DRIVER'S OWN FAULT TEST, NOT A ROUND NUMBER ABOVE LAG_HOLD (PL-78). It used to be
+    '  110, written as "LAG_HOLD + 10", and Visit 4 measured 115-116 in every part on a driver that was
+    '  behaving -- so the cell FAILed a correct system, which is a misreport, not a pass (doctrine D2).
+    ' WHAT THE DESIGN ACTUALLY PROMISES, and it is the only number here with a source: the driver faults
+    '  when |err_| reaches 125 (`cmp tmpY, #125 wc`, isp_bldc_motor.spin2, the .noFault test), and the
+    '  stored field saturates at 127, which is what a driver with no lag limiter prints. The limiter
+    '  exists to keep |err| under that test. So the criterion is |err| <= 124: strictly below the fault
+    '  test, with a real negative case -- an unfixed driver pegs at 127 and fails it.
+    ' LAG_HOLD (100) IS A GATE, NOT AN OBSERVABLE MAXIMUM. It is tested once per drive pass on a value
+    '  sampled at the top of that pass, and the field then advances before the next test, so the observed
+    '  maximum is necessarily above it. HOW FAR above is UNDETERMINED: the per-pass field advance is
+    '  165_000_000 * 256 / 2^32 = 9.8 err units at the ladder's top rung and far less at part D's power
+    '  50, yet BOTH parts read 115 -- so "LAG_HOLD plus one pass" does not generate the measurement and is
+    '  not used as the bound. LAG_HOLD is printed beside the maximum in BM-LAG so the band stays visible.
+    LAG_HOLD_REF      = 100                                 ' isp_bldc_motor.spin2 LAG_HOLD, printed for the reader
+    LAG_FAULT_TEST    = 125                                 ' isp_bldc_motor.spin2 .noFault: |err_| >= this faults
     LAG_MAX_LO        = 0
-    LAG_MAX_HI        = 110
+    LAG_MAX_HI        = LAG_FAULT_TEST - 1
     ' STOPLIMIT (task 3559): each wheel comes to rest within this many ticks of its distance target
     STOP_LIMIT_LO     = 0
     STOP_LIMIT_HI     = 2
@@ -783,11 +810,33 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     '  catch a stop that has become much longer or much shorter, not to re-measure C-4.
     DECEL_TICKS_LO    = 60
     DECEL_TICKS_HI    = 95
-    ' NOFOLD: a base rung's measured rate as a percentage of the speed law's prediction. Visit 2 measured
+    ' RATELAW: a base rung's measured rate as a percentage of the speed law's prediction. Visit 2 measured
     '  0.946-0.965 of the 2000-pass model and PL-50 rescaled the prediction by 22/23, so a driver that is
     '  not folding back sits within a few percent of 100.
-    NOFOLD_PCT_LO     = 97
-    NOFOLD_PCT_HI     = 103
+    '
+    ' PL-79: THE BAND IS WIDENED BY THE RUNG'S OWN TICK QUANTISATION, not applied flat. At rung 0
+    '  (incre 5_000_000) the whole measurement is 13-14 ticks in a ~1 s window, so ONE tick is ~7.5 % and
+    '  the +/-3 % band below cannot be met by any driver, however perfect: Visit 4 measured 104.5 % on a
+    '  driver tracking the law to 0.1 % at the rungs where the count is large. A criterion narrower than
+    '  its own resolution has not failed, it has misreported (doctrine D2). rateBandPct() adds one tick's
+    '  worth of the measured count to each side, so the band is the criterion PLUS the resolution.
+    RATELAW_PCT_LO    = 97
+    RATELAW_PCT_HI    = 103
+    RATELAW_QUANT_TICKS = 1                                 ' the band grows by this many ticks of the rung's own count
+
+    ' STOPCUR (PL-82): the stop's peak sense_i is judged against a FIXED bound, never against the hold it
+    '  was drawing moments earlier. The hold reference drifts about 25 % as a motor warms through a 2 min
+    '  run and RESETS when the other motor starts (MEASURED, Visit 4 FAULTB: hold_mV_x10 9_302 -> 6_995 on
+    '  LEFT, then 9_424 -> 7_174 on RIGHT), while the stop peak is flat to +/-4 % across both motors, both
+    '  directions and a 455x sweep of ramp_inc. So the cell was failing on its reference, not on the stop.
+    '  It also compared a PEAK against a MEAN, which the AT_SPEED ripple alone can lose.
+    ' THE BOUND IS THE HARNESS'S OWN ABSOLUTE-CURRENT ABORT, which is the number the UNBOUNDED stop
+    '  actually crossed: CURRENT-LIMIT-AND-STOP-DESIGN.md section 1, "From 75 %, the same 20-50 % rise
+    '  crosses the harness's 10 A abort", and two Visit 2 trials aborted outright (PL-55). It is a ceiling
+    '  rather than a tight bound, and it is stated as one -- what shows the design's section 3.3 invariant
+    '  (current FALLS along the ramp instead of rising) is the hold peak printed beside the stop peak in
+    '  BM-STOPCUR, which a reader compares directly.
+    STOPCUR_BOUND_MV  = ABS_ABORT_MV
     ' DISTM: getDistance(DDU_M) is whole metres, so agreement is judged to the metre. That still separates
     '  the defect task 3502 fixed, which was a factor of ten, from correct rounding on a 3 m run.
     DISTM_TOL_M       = 1
@@ -1153,6 +1202,7 @@ sSfCellLagB     BYTE    "R16-DUAL-LAGBND-B", 0
 sSfCellLagC     BYTE    "R16-DUAL-LAGBND-C", 0
 sSfCellLagD     BYTE    "R16-DUAL-LAGBND-D", 0
 sSfCellNoFold   BYTE    "R16-DUAL-NOFOLD-A", 0
+sSfCellRateLaw  BYTE    "R16-DUAL-RATELAW-A", 0
 sSfCellStopCur  BYTE    "R16-DUAL-STOPCUR-B", 0
 sSfCellRmpDroop BYTE    "R16-DUAL-RMPDROOP-B", 0
 sSfCellStopLim  BYTE    "R16-DUAL-STOPLIM-B", 0
@@ -1188,8 +1238,9 @@ sSfCritFloorAns BYTE    "OPERATOR_ANSWERED", 0
 sSfCritUiCheck  BYTE    "UI_CONTROLS_OK", 0
 ' task 3560 criteria (each at most TOKMAX_CRIT bytes)
 sSfCritLag      BYTE    "MAX_ABS_ERR", 0
-sSfCritNoFold   BYTE    "RATE_HELD_NO_FOLD", 0
-sSfCritStopCur  BYTE    "STOP_UNDER_HOLD_I", 0
+sSfCritNoFold   BYTE    "NO_FOLD_AT_BASE", 0
+sSfCritRateLaw  BYTE    "RATE_MATCHES_LAW", 0
+sSfCritStopCur  BYTE    "STOP_UNDER_BOUND", 0
 sSfCritRmpDroop BYTE    "DROOPED_NOT_FAULT", 0
 sSfCritStopLim  BYTE    "REST_FROM_TARGET", 0
 sSfCritDistM    BYTE    "METRES_AGREE", 0
@@ -1460,6 +1511,7 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    fltRetryMs                                      ' ms from that retry to AT_SPEED, 0 when it never came
     LONG    bFltRetryOk                                     ' both wheels reached AT_SPEED on the retry
     LONG    scHoldIX10[INST_MOTORS]                         ' BM-STOPCUR: mean sense_i over the AT_SPEED hold, x10
+    LONG    scHoldPk[INST_MOTORS]                           ' largest sense_i over that hold (PL-82: a peak needs a peak)
     LONG    scStopPk[INST_MOTORS]                           ' largest sense_i seen while stopping
     LONG    scSamples[INST_MOTORS]
     LONG    bScValid[INST_MOTORS]
@@ -1540,8 +1592,10 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
 
     ' task 3560 accumulators. Each pair is (ran, ok): a cell whose step never ran prints NOMEAS, which is
     '  how a criterion this rig cannot provoke stays visible instead of passing by silence.
-    LONG    bSfNoFoldRan[INST_MOTORS]                       ' NOFOLD: the ladder's base rungs
+    LONG    bSfNoFoldRan[INST_MOTORS]                       ' NOFOLD: no derate at any of the ladder's base rungs
     LONG    bSfNoFoldOk[INST_MOTORS]
+    LONG    bSfRateLawRan[INST_MOTORS]                      ' RATELAW (PL-79): the same rungs' rate against the law
+    LONG    bSfRateLawOk[INST_MOTORS]
     LONG    bSfStopCurRan[INST_MOTORS]                      ' STOPCUR: a FAULTB trial that reached AT_SPEED
     LONG    bSfStopCurOk[INST_MOTORS]
     LONG    bSfDroopRan[INST_MOTORS]                        ' RMPDROOP: the three steep-ramp trials
@@ -1774,6 +1828,8 @@ PRI initRunState() | slotIdx
         instLagN[slotIdx] := 0
         bSfNoFoldRan[slotIdx] := FALSE
         bSfNoFoldOk[slotIdx] := TRUE                        ' ANDed over the base rungs
+        bSfRateLawRan[slotIdx] := FALSE
+        bSfRateLawOk[slotIdx] := TRUE                       ' ANDed over the base rungs with a valid window
         bSfStopCurRan[slotIdx] := FALSE
         bSfStopCurOk[slotIdx] := TRUE                       ' ANDed over the trials that reached speed
         bSfDroopRan[slotIdx] := FALSE
@@ -1787,6 +1843,7 @@ PRI initRunState() | slotIdx
         bSfFrontRan[slotIdx] := FALSE
         bSfFrontOk[slotIdx] := FALSE
         scHoldIX10[slotIdx] := 0
+        scHoldPk[slotIdx] := 0
         scStopPk[slotIdx] := 0
         scSamples[slotIdx] := 0
         bScValid[slotIdx] := FALSE
@@ -2793,13 +2850,21 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
     instIdle()
     wheelStop(side)
 
-PRI ladderNoFold(side, rungIdx, motorIncre) | slotIdx, predX10, ratioPct, bDeratedNow
-' NOFOLD: below the MOSFET limits the new current limiting must not act at all -- every base rung still
-' turns at the rate the speed law predicts, and the front cog never derates.
+PRI ladderNoFold(side, rungIdx, motorIncre) | slotIdx, predX10, ratioPct, bandPct, bDeratedNow
+' Below the MOSFET limits the new current limiting must not act at all. That is TWO claims, and PL-79
+' SPLIT THEM INTO TWO CELLS because one compound verdict could report neither:
 '
-' THE NEGATIVE LIMB IS THE POINT. Current limiting that quietly folded back at ordinary powers would show
-' up here as a rate below prediction with the derate flag set, and nowhere else: C-1's own cell judges the
-' law, not whether a limiter moved it. Read after the rung's window, from the rung's own statistics.
+'  NOFOLD  - the front cog never derated at a base rung. This is the claim the cell is named for, and it
+'            is judged alone, so it can now say so.
+'  RATELAW - every base rung still turns at the rate the speed law predicts, within a band that includes
+'            the rung's OWN tick quantisation (rateBandPct()). C-1's cell judges the law; this one judges
+'            whether a limiter moved it.
+'
+' WHY THEY HAD TO SEPARATE. One ANDed boolean covered both claims over every base rung, and rung 0 failed
+' it unconditionally -- +/-3 % is narrower than the ~7.5 % that one tick is worth in a 13-tick count -- so
+' the cell read FALSE on a driver tracking the law to 0.1 %, and a REAL fold-back at any rung would have
+' been indistinguishable from that (doctrine D2: a gate that cannot fail on the thing it names has not
+' passed). Read after the rung's window, from the rung's own statistics.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param rungIdx - index into ladderIncre
@@ -2808,19 +2873,33 @@ PRI ladderNoFold(side, rungIdx, motorIncre) | slotIdx, predX10, ratioPct, bDerat
 ' @local slotIdx - motor slot
 ' @local predX10 - the rung's predicted rate x10
 ' @local ratioPct - measured rate as a percentage of the prediction
+' @local bandPct - percent one tick of quantisation is worth at this rung's tick count
 ' @local bDeratedNow - the fold-back holds the continuous limit right now
 
     if rungIdx < LADDER_BASE_RUNGS
         slotIdx := side - SIDE_LEFT
         bDeratedNow := wheelDerated(side)
         predX10 := predictX10(abs(motorIncre))
-        if bRgWindowValid and (predX10 > 0)
+        ' the fold half: measurable on any base rung whose wheel answered, window or no window
+        bSfNoFoldRan[slotIdx] := TRUE
+        bSfNoFoldOk[slotIdx] := bSfNoFoldOk[slotIdx] and (bDeratedNow == FALSE)
+        ' the rate half: only a valid window with a non-zero count and a prediction can be judged
+        if bRgWindowValid and (predX10 > 0) and (rsTicks <> 0)
             ratioPct := (abs(rsRateX10) * 100) / predX10
-            bSfNoFoldRan[slotIdx] := TRUE
-            bSfNoFoldOk[slotIdx] := bSfNoFoldOk[slotIdx] and (ratioPct >= NOFOLD_PCT_LO) and (ratioPct <= NOFOLD_PCT_HI) and (bDeratedNow == FALSE)
-        elseif bDeratedNow
-            bSfNoFoldRan[slotIdx] := TRUE                    ' a derate at a base rung is a finding on its own
-            bSfNoFoldOk[slotIdx] := FALSE
+            bandPct := rateBandPct(rsTicks)
+            bSfRateLawRan[slotIdx] := TRUE
+            bSfRateLawOk[slotIdx] := bSfRateLawOk[slotIdx] and (ratioPct >= (RATELAW_PCT_LO - bandPct)) and (ratioPct <= (RATELAW_PCT_HI + bandPct))
+
+PRI rateBandPct(nTicks) : nExtraPct
+' What one tick of quantisation is worth, in percent, at this rung's own tick count (PL-79). RATELAW's
+' band is the criterion PLUS this, so the criterion is never narrower than the resolution the rung had:
+' at 14 ticks one tick is about 7 %, at 441 it is under 1 %. Rounded up by one, so the band is never
+' short by the division's remainder.
+'
+' @param nTicks - the rung's measured tick count over the window, signed and non-zero
+' @returns nExtraPct - percent to widen each side of the band by
+
+    nExtraPct := ((RATELAW_QUANT_TICKS * 100) / abs(nTicks)) + 1
 
 PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeEvent, rpmRead
 ' One LIVE rung (design sec 4.4, T1-2): AT_SPEED, settle LIVE_SETTLE_MS so the rpm window fills, a
@@ -3018,12 +3097,18 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
     segItems := (segItems + 1) <# LIM_SMALL
 
 PRI traceStopCurrent(slotIdx) | sampleIdx, iSum, holdCount, eDrvrState, bSawStop
-' STOPCUR's two numbers, from the frozen FAULTB capture: the mean sense_i over the AT_SPEED hold and the
-' largest sense_i seen while the driver was spinning down.
+' STOPCUR's numbers, from the frozen FAULTB capture: over the AT_SPEED hold, the mean AND THE PEAK
+' sense_i; over the spin-down, the largest sense_i.
+'
+' PL-82: THE HOLD PEAK IS TAKEN BECAUSE A PEAK MUST BE COMPARED WITH A PEAK. The cell used to compare the
+' spin-down peak against the hold MEAN, which the AT_SPEED ripple alone can lose -- the design's own
+' unloaded trace swings sense_i over a visible range while the mean sits well under it. The mean is kept
+' because it is what the thermal drift is visible in; neither is the criterion any more (see
+' STOPCUR_BOUND_MV).
 '
 ' The two windows are told apart by the DRIVER'S OWN STATE, not by a time this cog recorded: a trial
 ' reaches AT_SPEED once and leaves it once, so the states partition the capture without any index
-' bookkeeping, and both readings come from the same scale. Legal only while FROZEN (I10).
+' bookkeeping, and every reading comes from the same scale. Legal only while FROZEN (I10).
 '
 ' @param slotIdx - motor slot under test
 '
@@ -3034,6 +3119,7 @@ PRI traceStopCurrent(slotIdx) | sampleIdx, iSum, holdCount, eDrvrState, bSawStop
 ' @local bSawStop - a spin-down sample was seen
 
     scHoldIX10[slotIdx] := 0
+    scHoldPk[slotIdx] := 0
     scStopPk[slotIdx] := 0
     scSamples[slotIdx] := 0
     bScValid[slotIdx] := FALSE
@@ -3047,6 +3133,7 @@ PRI traceStopCurrent(slotIdx) | sampleIdx, iSum, holdCount, eDrvrState, bSawStop
                 eDrvrState := smpState(sampleIdx, slotIdx)
                 if eDrvrState == DCS_AT_SPEED
                     iSum += smpI(sampleIdx, slotIdx)
+                    scHoldPk[slotIdx] #>= smpI(sampleIdx, slotIdx)
                     holdCount += 1
                 elseif eDrvrState == DCS_SPIN_DN
                     scStopPk[slotIdx] #>= smpI(sampleIdx, slotIdx)
@@ -3059,9 +3146,12 @@ PRI traceStopCurrent(slotIdx) | sampleIdx, iSum, holdCount, eDrvrState, bSawStop
 PRI fbFoldCells(slotIdx, safeEvent, bReached)
 ' The two FAULTB cells, folded from the trial that has just been emitted.
 '
-'  STOPCUR   - the stop's peak current stayed inside the mean the hold was already drawing, and the
-'              harness's 10 A abort never fired. MEASURED at Visit 2 on the unbounded stop: 20-50 % above
-'              the hold, and two trials aborted outright (PL-55).
+'  STOPCUR   - the stop's peak current stayed under STOPCUR_BOUND_MV, a FIXED bound, and the harness's
+'              10 A abort never fired. MEASURED at Visit 2 on the unbounded stop: 20-50 % above the hold,
+'              and two trials aborted outright (PL-55). PL-82: it used to be judged against the hold
+'              current measured moments earlier, which drifts about 25 % as the motor warms -- so the cell
+'              failed on its reference rather than on the stop. The hold's mean and peak are still
+'              recorded in BM-STOPCUR; they are evidence for the reader, not the criterion.
 '  RMPDROOP  - a ramp the motor cannot follow now DROOPS instead of faulting. The three steep trials
 '              (ramp_inc 500, 2_000 and 10_000) faulted 3 of 3 at Visit 2, in 96-186 ms; with the lag
 '              limiter the field waits for the rotor and the trial reaches speed instead.
@@ -3072,7 +3162,7 @@ PRI fbFoldCells(slotIdx, safeEvent, bReached)
 
     if bScValid[slotIdx]
         bSfStopCurRan[slotIdx] := TRUE
-        bSfStopCurOk[slotIdx] := bSfStopCurOk[slotIdx] and ((scStopPk[slotIdx] * X10) <= scHoldIX10[slotIdx]) and (safeEvent <> SAFE_ABS_ABORT)
+        bSfStopCurOk[slotIdx] := bSfStopCurOk[slotIdx] and (scStopPk[slotIdx] <= STOPCUR_BOUND_MV) and (safeEvent <> SAFE_ABS_ABORT)
     if fbRampInc >= FB_DROOP_MIN_INC
         bSfDroopRan[slotIdx] := TRUE
         bSfDroopOk[slotIdx] := bSfDroopOk[slotIdx] and bReached and (fbResult <> RES_FAULT) and (bCpFaultSeen == FALSE)
@@ -3238,8 +3328,15 @@ PRI overshootFoldCells(tid, sid, tgtTicks) | leadRest, tickMmX100
         sfStopLimN := (sfStopLimN + 1) <# LIM_SMALL
     if bSteerUp
         _, tickMmX100 := wheelL.wheelGeometry()
-        dmLeftTicks := ovLeftTrk
-        dmRightTicks := ovRightTrk
+        ' PL-77: ONE READ, and the record carries the tick count the getter actually saw. This used to
+        '  take the ticks from ovLeftTrk/ovRightTrk -- a SNAPSHOT the overshoot trial saved earlier --
+        '  and compare them against a LIVE getDistance(), while the emitter's comment claimed both sides
+        '  came from the same instant. They did not, so the cell could not tell a conversion fault from
+        '  two reads taken moments apart, and it printed the prediction's input rather than the
+        '  measurement's. Reading the ticks here, adjacent to the metres, is what makes the comparison
+        '  be of the conversion alone (doctrine D2: an instrument that cannot show the difference proves
+        '  nothing).
+        dmLeftTicks, dmRightTicks := steerTrackTicks()
         dmLeftM, dmRightM := steerDistanceM()
         dmLeftPredM := ticksToMetres(dmLeftTicks, tickMmX100)
         dmRightPredM := ticksToMetres(dmRightTicks, tickMmX100)
@@ -3252,11 +3349,20 @@ PRI ticksToMetres(nTicks, tickMmX100) : nMetres
 ' Convert hall ticks to whole metres the way the library does: travel per tick in hundredths of a mm,
 ' rounded to nearest rather than truncated.
 '
-' @param nTicks - tracked hall ticks
+' PL-77: THE CONVERSION IS SIGNED, because the library's getter is. This took abs(nTicks), so the
+' prediction was always positive while getDistance() returned the sign of travel -- and every trial that
+' ran in reverse disagreed with its own prediction by construction, whatever the conversion did. The
+' rounding term carries the sign with the value so a negative distance rounds away from zero, matching
+' the positive case rather than biasing it by one metre.
+'
+' @param nTicks - tracked hall ticks, signed
 ' @param tickMmX100 - wheel travel per hall tick, hundredths of a mm
-' @returns nMetres - the distance in whole metres
+' @returns nMetres - the distance in whole metres, signed
 
-    nMetres := (abs(nTicks) * tickMmX100 + (MM_PER_M_X100 / 2)) / MM_PER_M_X100
+    if nTicks < 0
+        nMetres := 0 - (((0 - nTicks) * tickMmX100 + (MM_PER_M_X100 / 2)) / MM_PER_M_X100)
+    else
+        nMetres := (nTicks * tickMmX100 + (MM_PER_M_X100 / 2)) / MM_PER_M_X100
 
 PRI steerDistanceM() : leftM, rightM
 ' Both wheels' travelled distance in metres, through the public getter.
@@ -3473,6 +3579,16 @@ CON { --- part D steps: one claim each, measured once, printed as BM-DSTEP (task
 ' SIDE selects the form under test and nothing else: SIDE_BOTH is the steering object (one front cog,
 ' two drivers) and SIDE_LEFT is one wheel (its own front cog). The dispatch helpers below are the only
 ' place the two differ, so each step is written once.
+'
+' NO DISPATCH HELPER MAY SELECT BETWEEN TWO METHOD CALLS WITH `? :` (PL-29, PL-76). PL-29 MEASURED a
+' `? :` whose two branches each call a method running BOTH calls for one evaluation, and Visit 4 measured
+' it again here: with side SIDE_LEFT, `(side == SIDE_RIGHT) ? wheelR.driveAtPower(p) : wheelL.driveAtPower(p)`
+' also commanded the never-started wheelR, which printed "driveAtPowerEx() motor not started" while the
+' expression returned wheelL's NO_ERROR. Five such lines in debug_260917-125859.log (L87, L88, L91, L93,
+' L94) match, one for one, the five commanding ternaries the single-wheel half reached -- and the
+' steering half, which takes the `if` limb and evaluates no ternary, printed none.
+' The construction that makes it impossible is if/else, so every helper below uses if/else for a call
+' and keeps `? :` for selecting a VALUE. A getter behaves the same way; it merely says nothing about it.
 
 PRI dStepDone(stepCode, side, bMeasured, bCriterionMet, measuredVal, loLimit, hiLimit, whyCode)
 ' Record one part-D step: fill the BM-DSTEP staging, fold the cell, emit.
@@ -3542,9 +3658,13 @@ PRI dDrive(side, powerValue) : eError
         beat(CP_LIB_STEER_DRIVE)
         eError := steering.driveAtPower(powerValue, powerValue)
         beat(CP_LIB_STEER_DRIVE)
+    elseif side == SIDE_RIGHT
+        beat(CP_LIB_COMMAND)
+        eError := wheelR.driveAtPower(powerValue)
+        beat(CP_LIB_COMMAND)
     else
         beat(CP_LIB_COMMAND)
-        eError := (side == SIDE_RIGHT) ? wheelR.driveAtPower(powerValue) : wheelL.driveAtPower(powerValue)
+        eError := wheelL.driveAtPower(powerValue)
         beat(CP_LIB_COMMAND)
 
 PRI dEstop(side)
@@ -3569,8 +3689,10 @@ PRI dClearEstop(side) : eError
     beat(CP_LIB_ESTOP)
     if side == SIDE_BOTH
         eError := steering.clearEmergency()
+    elseif side == SIDE_RIGHT
+        eError := wheelR.clearEmergency()
     else
-        eError := (side == SIDE_RIGHT) ? wheelR.clearEmergency() : wheelL.clearEmergency()
+        eError := wheelL.clearEmergency()
     beat(CP_LIB_ESTOP)
 
 PRI dStopMotion(side)
@@ -3593,8 +3715,10 @@ PRI dStopAfterTime(side, timeMs) : eError
     beat(CP_LIB_COMMAND)
     if side == SIDE_BOTH
         eError := steering.stopAfterTime(timeMs, steering.DTU_MILLISEC)
+    elseif side == SIDE_RIGHT
+        eError := wheelR.stopAfterTime(timeMs, wheelL.DTU_MILLISEC)
     else
-        eError := (side == SIDE_RIGHT) ? wheelR.stopAfterTime(timeMs, wheelL.DTU_MILLISEC) : wheelL.stopAfterTime(timeMs, wheelL.DTU_MILLISEC)
+        eError := wheelL.stopAfterTime(timeMs, wheelL.DTU_MILLISEC)
     beat(CP_LIB_COMMAND)
 
 PRI dIsEstopped(side) : bEstopped | eLeftStatus, eRightStatus
@@ -3610,9 +3734,12 @@ PRI dIsEstopped(side) : bEstopped | eLeftStatus, eRightStatus
     if side == SIDE_BOTH
         eLeftStatus, eRightStatus := steering.getStatus()
         bEstopped := (eLeftStatus == wheelL.DS_ESTOP) and (eRightStatus == wheelL.DS_ESTOP) and (steering.isEmergency() <> FALSE)
+    elseif side == SIDE_RIGHT
+        eLeftStatus := wheelR.getStatus()
+        bEstopped := (eLeftStatus == wheelL.DS_ESTOP) and (wheelR.isEmergency() <> FALSE)
     else
-        eLeftStatus := (side == SIDE_RIGHT) ? wheelR.getStatus() : wheelL.getStatus()
-        bEstopped := (eLeftStatus == wheelL.DS_ESTOP) and (((side == SIDE_RIGHT) ? wheelR.isEmergency() : wheelL.isEmergency()) <> FALSE)
+        eLeftStatus := wheelL.getStatus()
+        bEstopped := (eLeftStatus == wheelL.DS_ESTOP) and (wheelL.isEmergency() <> FALSE)
     beat(CP_LIB_STEER_QUERY)
 
 PRI dPowerSum(side) : nSum | leftPower, rightPower
@@ -3628,8 +3755,10 @@ PRI dPowerSum(side) : nSum | leftPower, rightPower
     if side == SIDE_BOTH
         leftPower, rightPower := steering.getPower()
         nSum := abs(leftPower) + abs(rightPower)
+    elseif side == SIDE_RIGHT
+        nSum := abs(wheelR.getPower())
     else
-        nSum := abs((side == SIDE_RIGHT) ? wheelR.getPower() : wheelL.getPower())
+        nSum := abs(wheelL.getPower())
     beat(CP_LIB_STEER_QUERY)
 
 PRI dRawTicks(side) : leftTicks, rightTicks
@@ -3643,7 +3772,10 @@ PRI dRawTicks(side) : leftTicks, rightTicks
     if side == SIDE_BOTH
         leftTicks, rightTicks := steering.testGetRawHallTicks()
     else
-        leftTicks := (side == SIDE_RIGHT) ? wheelR.getRawHallTicks() : wheelL.getRawHallTicks()
+        if side == SIDE_RIGHT
+            leftTicks := wheelR.getRawHallTicks()
+        else
+            leftTicks := wheelL.getRawHallTicks()
         rightTicks := leftTicks
     beat(CP_LIB_STEER_QUERY)
 
@@ -3658,7 +3790,10 @@ PRI dTrackTicks(side) : leftTicks, rightTicks
     if side == SIDE_BOTH
         leftTicks, rightTicks := steering.getRotationCount(steering.DRU_HALL_TICKS)
     else
-        leftTicks := (side == SIDE_RIGHT) ? wheelR.getRotationCount(wheelL.DRU_HALL_TICKS) : wheelL.getRotationCount(wheelL.DRU_HALL_TICKS)
+        if side == SIDE_RIGHT
+            leftTicks := wheelR.getRotationCount(wheelL.DRU_HALL_TICKS)
+        else
+            leftTicks := wheelL.getRotationCount(wheelL.DRU_HALL_TICKS)
         rightTicks := leftTicks
     beat(CP_LIB_STEER_QUERY)
 
@@ -3671,8 +3806,10 @@ PRI dResetTracking(side) : eError
     beat(CP_LIB_COMMAND)
     if side == SIDE_BOTH
         eError := steering.resetTracking()
+    elseif side == SIDE_RIGHT
+        eError := wheelR.resetTracking()
     else
-        eError := (side == SIDE_RIGHT) ? wheelR.resetTracking() : wheelL.resetTracking()
+        eError := wheelL.resetTracking()
     beat(CP_LIB_COMMAND)
 
 PRI dFrontStats(side) : nPasses, nLate, nMaxTicks, nStackHi, nStackOf
@@ -3732,15 +3869,28 @@ PRI dToSpeed(side) : bAtSpeed | safeEvent
         if safeEvent <> SAFE_NONE
             bAtSpeed := FALSE
 
-PRI dRest(side) : bRest | safeEvent
-' Wait, bounded, for this form to be at rest (pos and hwPos still, per waitRest()).
+PRI dRest(side) : bRest
+' Wait, bounded by D_REST_MS, for this form to be at rest (pos and hwPos still, per waitRest()).
 '
 ' @param side - SIDE_BOTH or SIDE_LEFT
 ' @returns bRest - TRUE when rest was confirmed inside D_REST_MS
+
+    bRest := dRestWithin(side, D_REST_MS)
+
+PRI dRestWithin(side, boundMs) : bRest | safeEvent
+' Wait, bounded by the caller's own number, for this form to be at rest.
+'
+' A STEP THAT HAS ARMED A DELAYED STOP MUST PASS ITS OWN BOUND. D_REST_MS bounds the time from a stop
+' COMMAND to rest; a step that arms stopAfterTime() is waiting for the limit to arrive first, and giving
+' it D_REST_MS means the wait expires at the moment the stop begins (PL-83).
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @param boundMs - the caller's bound, in ms
+' @returns bRest - TRUE when rest was confirmed inside boundMs
 '
 ' @local safeEvent - SAFE_* from the wait
 
-    safeEvent, bRest := waitRest(side, D_REST_MS, FALSE)
+    safeEvent, bRest := waitRest(side, boundMs, FALSE)
 
 PRI dStepLockstep() | bArmed, safeEvent, bMoving, leftJ, rightJ, sampleIdx, gapSamples
 ' LOCKSTEP: both drivers leave DCS_STOPPED in the same instrument sample.
@@ -3975,6 +4125,19 @@ PRI dStepTimeStop(side) | bArmed, bAtSpeed, deadlineMs, eError, restMs, lateMs, 
 ' it, so the platform was still ramping down when the deadline passed. The number below is signed: how
 ' far past its deadline rest actually arrived.
 '
+' PL-83 -- TWO REASONS THIS COULD NOT PASS, both fixed here, and neither was the driver. Visit 4 read
+' NOMEAS why STOP_TIMEOUT in BOTH forms, the steering object's and the single wheel's.
+'  1. THE WAIT WAS THE SAME LENGTH AS THE LIMIT IT WAS WAITING PAST. It called dRest(), bounded by
+'     D_REST_MS, for a stop that is only DUE D_TIMESTOP_MS after the call -- and the two numbers are both
+'     2_000 ms, so the wait expired exactly as the stop began. It now waits D_TIMESTOP_MS + D_REST_MS:
+'     the limit, then the same bound every other step gives a stop.
+'  2. THE CRITERION IGNORED ITS OWN CONFIRMATION DWELL. waitRest() returns when pos and hwPos have been
+'     unchanged for REST_CONFIRM_MS, so restMs is at least that far past the instant the platform
+'     actually stopped -- against a criterion of lateMs <= D_TIMESTOP_SLACK_MS (20 ms). No stop of any
+'     quality could meet it. The bound is now the slack PLUS the dwell, and it is computed from the two
+'     constants rather than written as a number (doctrine D2: a criterion a correct system cannot meet
+'     has not failed, it has misreported).
+'
 ' @param side - SIDE_BOTH or SIDE_LEFT
 '
 ' @local bArmed - the instrument acknowledged the ARM
@@ -3991,12 +4154,12 @@ PRI dStepTimeStop(side) | bArmed, bAtSpeed, deadlineMs, eError, restMs, lateMs, 
     if bAtSpeed
         eError := dStopAfterTime(side, D_TIMESTOP_MS)
         deadlineMs := getms() + D_TIMESTOP_MS
-        bRest := dRest(side)
+        bRest := dRestWithin(side, D_TIMESTOP_MS + D_REST_MS)
         restMs := getms()
         lateMs := restMs - deadlineMs
-        dStepDone(DST_TIMESTOP, side, bRest, (eError == NO_ERROR) and (lateMs <= D_TIMESTOP_SLACK_MS) and (dPowerSum(side) == 0), lateMs, 0 - D_TIMESTOP_MS, D_TIMESTOP_SLACK_MS, bRest ? WHY_NONE : WHY_STOP_TIMEOUT)
+        dStepDone(DST_TIMESTOP, side, bRest, (eError == NO_ERROR) and (lateMs <= D_TIMESTOP_LATE_HI) and (dPowerSum(side) == 0), lateMs, 0 - D_TIMESTOP_MS, D_TIMESTOP_LATE_HI, bRest ? WHY_NONE : WHY_STOP_TIMEOUT)
     else
-        dStepDone(DST_TIMESTOP, side, FALSE, FALSE, 0, 0, D_TIMESTOP_SLACK_MS, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+        dStepDone(DST_TIMESTOP, side, FALSE, FALSE, 0, 0, D_TIMESTOP_LATE_HI, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
     dStopMotion(side)
     dRest(side)
     instIdle()
@@ -4172,8 +4335,13 @@ PRI dStepDerate() | bArmed, eError, slotIdx, startMs, derateMs[INST_MOTORS], bRe
 ' the phase current crosses it, and returns the peak limit once the average falls away again.
 '
 ' The peak limit is set well above the continuous one, so the two are distinguishable: a derate here is
-' the front cog's decision, not the driver's fold-back. The window the derate must arrive in comes from
-' the average's own time constant (2^10 front passes, about 1 s).
+' the front cog's decision, not the driver's fold-back.
+'
+' THE CLAIM IS "IT DERATED AND THE PEAK LIMIT CAME BACK", NOT "IT DERATED WITHIN N MILLISECONDS" (PL-80).
+' The arrival time is recorded and judged only against D_DERATE_WAIT_MS, the bound on it arriving at all;
+' a wheel that does not reach the limit inside that wait is NOMEAS with why NOT_DERATED, which is a
+' RESULT about this rig rather than a failure of the driver (doctrine overlay P1: every run is
+' wheels-lifted, and a lifted 6.5in wheel only just reaches the continuous limit).
 '
 ' @local bArmed - the instrument acknowledged the ARM
 ' @local eError - the limit write's return
@@ -4217,13 +4385,17 @@ PRI dStepDerate() | bArmed, eError, slotIdx, startMs, derateMs[INST_MOTORS], bRe
         bOk := bAnyDerated
         repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
             worstMs #>= derateMs[slotIdx]
+            ' PL-80: a wheel that never derated is NOT MEASURED, so its own cell prints NOMEAS and it does
+            '  not fail the step. A wheel that DID derate is judged on the claim the cell is named for --
+            '  the peak limit came back once the average decayed.
             bSfDerateRan[slotIdx] := (derateMs[slotIdx] <> 0)
-            bSfDerateOk[slotIdx] := (derateMs[slotIdx] >= D_DERATE_LO_MS) and (derateMs[slotIdx] <= D_DERATE_HI_MS) and bRestored[slotIdx]
-            bOk := bOk and bSfDerateOk[slotIdx]
+            bSfDerateOk[slotIdx] := bSfDerateRan[slotIdx] and bRestored[slotIdx]
+            if bSfDerateRan[slotIdx]
+                bOk := bOk and bSfDerateOk[slotIdx]
             emitLimSt(SIDE_LEFT + slotIdx, slotIdx, DST_DERATE, derateMs[slotIdx])
-        dStepDone(DST_DERATE, SIDE_BOTH, bAnyDerated, bOk, worstMs, D_DERATE_LO_MS, D_DERATE_HI_MS, bAnyDerated ? WHY_NONE : WHY_NOT_DERATED)
+        dStepDone(DST_DERATE, SIDE_BOTH, bAnyDerated, bOk, worstMs, 1, D_DERATE_WAIT_MS, bAnyDerated ? WHY_NONE : WHY_NOT_DERATED)
     else
-        dStepDone(DST_DERATE, SIDE_BOTH, FALSE, FALSE, 0, D_DERATE_LO_MS, D_DERATE_HI_MS, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+        dStepDone(DST_DERATE, SIDE_BOTH, FALSE, FALSE, 0, 1, D_DERATE_WAIT_MS, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
     dStopMotion(SIDE_BOTH)
     dRest(SIDE_BOTH)
     instIdle()
@@ -6661,7 +6833,10 @@ PRI wheelIsReady(side) : bReady
 ' @returns bReady - TRUE when its driver reports a state
 
     beat(CP_LIB_QUERY)
-    bReady := (side == SIDE_RIGHT) ? wheelR.isReady() : wheelL.isReady()
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        bReady := wheelR.isReady()
+    else
+        bReady := wheelL.isReady()
     beat(CP_LIB_QUERY)
 
 PRI wheelGetOffsets(side) : offNeg, offPos
@@ -6719,7 +6894,10 @@ PRI wheelIsUp(side) : bUp
 ' @returns bUp - TRUE when the driver cog runs
 
     beat(CP_LIB_QUERY)
-    bUp := ((side == SIDE_RIGHT) ? wheelR.testGetMotorCog() : wheelL.testGetMotorCog()) <> 0
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        bUp := wheelR.testGetMotorCog() <> 0
+    else
+        bUp := wheelL.testGetMotorCog() <> 0
     beat(CP_LIB_QUERY)
 
 PRI wheelStopMotor(side)
@@ -6855,7 +7033,10 @@ PRI wheelRpm(side) : rpmRead
 ' @returns rpmRead - rpm averaged over the ~1 s window
 
     beat(CP_LIB_QUERY)
-    rpmRead := (side == SIDE_RIGHT) ? wheelR.testGetRpm() : wheelL.testGetRpm()
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        rpmRead := wheelR.testGetRpm()
+    else
+        rpmRead := wheelL.testGetRpm()
     beat(CP_LIB_QUERY)
 
 PRI zeroAndWaitStopped(side) : bStopped | bArmedHere
@@ -8216,7 +8397,12 @@ PRI emitLag(side, slotIdx)
 '
 ' THE FIELD SATURATES AT 127, which is what a driver with no lag limiter prints: the stored err is a
 ' signed byte and the driver's own fault test sits at 125. So a printed 127 says "the limiter did not
-' hold", and the bound below says how far under the fault test it did hold. Worst case 152 bytes.
+' hold", and the bound below says how far under the fault test it did hold.
+'
+' PL-78: hold and fault are printed beside max_err so the whole band is in the record and the reader
+' does not have to look up either number. hold is the gate the driver applies once per drive pass
+' (LAG_HOLD); fault is the test it trips (125); hi is the criterion, one below fault. A max_err between
+' hold and hi is the normal state, not a near-miss. Worst case 174 bytes.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param slotIdx - motor slot
@@ -8228,6 +8414,8 @@ PRI emitLag(side, slotIdx)
     benchLog.numField(@"samples", instLagN[slotIdx], LIM_BIG)
     benchLog.numField(@"lo", LAG_MAX_LO, LIM_SMALL)
     benchLog.numField(@"hi", LAG_MAX_HI, LIM_SMALL)
+    benchLog.numField(@"hold", LAG_HOLD_REF, LIM_SMALL)
+    benchLog.numField(@"fault", LAG_FAULT_TEST, LIM_SMALL)
     benchLog.numField(@"sat", FIELD_ERR_MAX, LIM_SMALL)
     whyField((instLagN[slotIdx] > 0) ? WHY_NONE : WHY_NO_SAMPLES)
     emitRecord()
@@ -8243,9 +8431,14 @@ PRI emitLagAll() | slotIdx
 PRI emitStopCur(tid, side, slotIdx)
 ' BM-STOPCUR: what a stop FROM SPEED costs in current, against what holding that speed cost.
 '
-' The claim (task 3558) is that a commanded stop stays inside the current the hold already drew, rather
-' than the surge that tripped the harness's own 10 A abort at Visit 2 (PL-55). Both numbers come from the
-' same frozen capture, so they are the same instrument and the same scale. Worst case 178 bytes.
+' The claim (task 3558) is that a commanded stop does not surge -- the surge tripped the harness's own
+' 10 A abort at Visit 2 (PL-55). Every number comes from the same frozen capture, so they are the same
+' instrument and the same scale.
+'
+' PL-82: bound_mV IS THE CRITERION and hold_pk_mV is the comparison a reader makes. The old criterion was
+' stop_pk against hold_mV_x10, which is a peak against a mean AND against a reference that drifts about
+' 25 % as the motor warms -- so it failed on the reference. hold_mV_x10 is kept precisely because the
+' drift is visible in it. Worst case 210 bytes.
 '
 ' @param tid - trace id of the trial
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -8255,8 +8448,10 @@ PRI emitStopCur(tid, side, slotIdx)
     benchLog.numField(@"tid", tid, LIM_SMALL)
     benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
     benchLog.naNumField(@"hold_mV_x10", scHoldIX10[slotIdx], LIM_BIG, bScValid[slotIdx])
+    benchLog.naNumField(@"hold_pk_mV", scHoldPk[slotIdx], LIM_MID, bScValid[slotIdx])
     benchLog.naNumField(@"stop_pk_mV", scStopPk[slotIdx], LIM_MID, bScValid[slotIdx])
     benchLog.numField(@"samples", scSamples[slotIdx], LIM_SMALL)
+    benchLog.numField(@"bound_mV", STOPCUR_BOUND_MV, LIM_SMALL)
     benchLog.numField(@"abort_mV", ABS_ABORT_MV, LIM_SMALL)
     whyField(bScValid[slotIdx] ? WHY_NONE : WHY_NO_SAMPLES)
     emitRecord()
@@ -8265,8 +8460,10 @@ PRI emitDistM(tid, sid, tickMmX100)
 ' BM-DISTM: the steering object's getDistance(DDU_M) against the ticks it is derived from.
 '
 ' Visit 3 left DDU_M unqualified: task 3502 corrected the metre conversion, and no bench reading has
-' compared the two since. Both sides come from the same instant, so the comparison is of the conversion
-' alone. Worst case 196 bytes.
+' compared the two since. l_ticks / r_ticks are THE TICK COUNTS THE GETTER SAW, read in the same place
+' and at the same moment as l_m / r_m (PL-77) -- so the comparison really is of the conversion alone,
+' and a disagreement names a conversion fault instead of two reads taken moments apart. Worst case 196
+' bytes.
 '
 ' @param tid - trace id of the trial
 ' @param sid - the steering start's life
@@ -8543,6 +8740,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellTracesA)
                 emitSignoffDecl(@sSfCellLagA)
                 emitSignoffDecl(@sSfCellNoFold)
+                emitSignoffDecl(@sSfCellRateLaw)
             PART_CLOCK:
                 case SF_CLOCK_SLOT
                     SF_CLOCK_200:
@@ -8650,6 +8848,7 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoff(@sSfCellRevB, side, @sSfCritNotRevB, sfStarts[slotIdx] > 0, sfNotRevb[slotIdx], NOT_REVB_LO, NOT_REVB_HI, sfStarts[slotIdx])
                     emitSignoff(@sSfCellInteg, side, @sSfCritInteg, sfStarts[slotIdx] > 0, sfIntegSum[slotIdx], INTEG_SUM_LO, INTEG_SUM_HI, sfStarts[slotIdx] + sfIntegN[slotIdx])
                     emitSignoffBool(@sSfCellNoFold, side, @sSfCritNoFold, bSfNoFoldRan[slotIdx], bSfNoFoldOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitSignoffBool(@sSfCellRateLaw, side, @sSfCritRateLaw, bSfRateLawRan[slotIdx], bSfRateLawOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                 emitSignoff(@sSfCellTracesA, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
                 emitLagCells(@sSfCellLagA)
             PART_CLOCK:
