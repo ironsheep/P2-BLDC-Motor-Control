@@ -2422,6 +2422,282 @@ an undetected board today, and changing that is an API contract change.
 conservative limit computed at the less sensitive Rev A scale (5 mV/A), which errs toward folding back early on
 Rev B.
 
+### PL-74 -- the Visit 4 `t0` binary carried no debug kernel, so the whole tier emitted nothing
+
+**Found 2026-09-17 in «#3561»**, reading the Visit 4 logs. **It is a harness defect, and it is mine** (doctrine
+overlay P2) -- not a driver defect and not a compiler defect (P7: presume the compiler is correct).
+
+**MEASURED, `DOCs/analyses/bench/2026-09-17/debug_260917-125221.log`:** the whole log is 19 lines. Line 16 is
+`[DOWNLOAD SUCCESS] test_bench_t0.bin | Size: 43780 bytes`; line 18 is `Session Ended`, 14 s later. Not one
+program line, and **no `BC-BANNER`**, so the tier could not even be banner-checked.
+
+**The tell is what is absent.** The `t0` log has **no `Cog0 INIT $0000_0FA8 ... jump` lines**. Every other Visit 4
+log has them (`char` L18; each `dual` L17-19). Those INIT lines are emitted by the *debug kernel* at load, so
+their total absence says the downloaded image carried **no debug kernel** -- i.e. it was built without `-d` --
+rather than the program running and staying silent. A silent program would still have produced the INIT lines.
+
+**STEPHEN 2026-09-17:** *"The T0 run didn't emit any debug output. I don't know why. It looks like it compiled
+correctly from what I could see with the -d flag, but nothing happened, so that log is pretty sparse."*
+
+**What it costs.** All ten `t0` cells are **NOT_BUILT**, reported as themselves and never as passes
+(`task-execution` overlay §8): `R16-T0-BADGROUP`, `PINSKEEP`, `LIMKEEP`, `NOABORT`, `STRNOTSTART`, `STEERCOGS`,
+`RESTZERO`, `NOBOARD`, `FRONTFAIL`, `R1-T0-RESTART`. **The error contract («#3554», «#3555») therefore has no
+run-time evidence from Visit 4** except the single steering cell that rode the `char` tier
+(`R16-CHAR-STEERERR`, PASS). This blocks the 6.0.0 tag.
+
+**Fix direction:** root-cause the `t0` tier in `tools/bench-run.sh` -- whether `-d` reaches that one compile.
+Then give the harness a construction that makes the failure impossible rather than detectable (P10): a load that
+produces no banner should be refused by the runner before Stephen's time is spent on it, since a banner is the
+one thing every tier emits within milliseconds of start.
+
+### PL-75 -- the steering front cog's stack is exactly full: `stack_hi == stack_of == 128`
+
+**Found 2026-09-17 in «#3561»**, Visit 4 part D. **MEASURED**,
+`DOCs/analyses/bench/2026-09-17/debug_260917-125859.log`. The two `BM-FRONTST` records differ in one field:
+
+```
+L67  BM-FRONTST motor,BOTH  passes,18_052 late,0 max_ticks,215_784 max_us,799 slot_us,1_000 stack_hi,128 stack_of,128
+L96  BM-FRONTST motor,LEFT  passes,11_653 late,0 max_ticks,169_936 max_us,629 slot_us,1_000 stack_hi,114 stack_of,128
+```
+
+The steering object's front cog -- the one servicing *both* wheels in the 3-cog two-wheel form «#3513» ships --
+has driven its stack high-water mark to **the full allocation**. The single-motor front cog peaks at 114 of 128
+and passes. This is why `R16-DUAL-FRONTST-D` reads `FRONT_LOOP_HEALTH FALSE` for `BOTH` (L110) and `TRUE` for
+`LEFT` (L118).
+
+**DERIVED:** zero stack margin. One more nested call, or one deeper path than part D exercised, overruns it.
+A high-water mark that has reached its allocation cannot be distinguished from one that has *exceeded* it, so
+the true requirement is unknown and may already be above 128.
+
+`max_us 799` against a `slot_us 1_000` budget is 80 % occupancy on the same cog, though `late,0` says it never
+missed its slot. The stack is the defect; the occupancy is a number to watch, not a finding.
+
+**Fix direction:** raise the steering front cog's stack allocation, then re-measure `stack_hi` against the new
+`stack_of` -- sizing from a measured high-water mark plus margin is the construction that makes the overrun
+impossible (P10). Do not relax the criterion.
+
+### PL-76 -- `driveAtPowerEx()` reports "motor not started" immediately after a `start()` that succeeded
+
+**Found 2026-09-17 in «#3561»**, Visit 4 part D. **MEASURED**,
+`DOCs/analyses/bench/2026-09-17/debug_260917-125859.log` L86-95, in order:
+
+```
+L86  BM-START seg,LIMIT motor,LEFT life,5 cog_ret,3 cog_ok,TRUE board,REV_B ready,TRUE ... why,NONE
+L87  ! ERROR: driveAtPowerEx() motor not started
+L88  ! ERROR: driveAtPowerEx() motor not started
+L91  ! ERROR: clearEmergency() not cleared eError = -1_007
+L93  ! ERROR: driveAtPowerEx() motor not started
+L94  ! ERROR: stopAfterTime() rejected eError = -1_007, nTime = 2_000, eTimeUnits = 1
+L95  BM-DSTEP step,TIMESTOP motor,LEFT ... result,NOMEAS why,STOP_TIMEOUT
+```
+
+`start()` returned cog 3 with `cog_ok,TRUE`, `ready,TRUE` and `why,NONE`, and the very next `driveAtPowerEx()`
+call says the motor is not started.
+
+**This is an API-contract defect of the class doctrine overlay P3 names:** a member that does not keep the
+promise its name and its documentation make. Under P3 it is fixed, not parked as a question -- what stays with
+Stephen is only a choice between two clean readings, and there is no second clean reading of "started, but not
+started".
+
+**What it costs.** Three cells lost to it, all reported as NOMEAS rather than as passes:
+`R16-DUAL-TIMESTOP-D` (BOTH, L108), `R16-DUAL-WTIMSTOP-D` (LEFT, L117), and the `STOP_TIMEOUT` behind both.
+
+**Not yet determined:** whether the `-1007` from `clearEmergency()` shares this root cause or is a second
+defect. **Fix direction:** read the started-state predicate in `src/isp_bldc_motor.spin2` and the single-motor
+path through the front cog. No bench cell is proposed for it -- the bench certifies, it never engineers (P10).
+
+### PL-77 -- `BM-DISTM` metres read ~1000x low and sign-inverted
+
+**Found 2026-09-17 in «#3561»**, Visit 4 part B. **MEASURED**,
+`DOCs/analyses/bench/2026-09-17/debug_260917-130012.log` L7547:
+
+```
+BM-DISTM l_ticks,2_688 r_ticks,2_688 l_m,-14_640 r_m,-14_640 l_pred_m,15 r_pred_m,15 mm_x100,576 agree,FALSE
+```
+
+**DERIVED:** `mm_x100 576` is 5.76 mm per tick, so 2 688 ticks is **15 483 mm = 15.48 m**, against
+`l_pred_m 15`. The magnitude is therefore *correct* -- `l_m` is carrying **millimetres in a field the record
+and the criterion both read as metres** -- and the **sign is additionally inverted**. Two independent faults in
+one reading, which is why `R16-DUAL-DISTM-B` reads `METRES_AGREE FALSE` (L7573).
+
+**Undetermined, and it matters which:** whether the fault is in the driver's `DDU_M` conversion or only in the
+harness record that reports it. Both motors read identically, which does not discriminate.
+
+**What it costs beyond the cell.** «#3515» already carries a 6.0.0 release line saying `stopAfterDistance` with
+`DDU_M` "stops ten times further, i.e. correctly". **That promise does not survive this measurement** and must
+be re-checked against the source before it ships in the README (doctrine overlay P8: a written record is a
+claim, and the measurement outranks it).
+
+### PL-78 -- the lag error clamps at 115-116 against a 110 bound, and commanded velocity is not rate-limited (the slam)
+
+**Found 2026-09-17 in «#3561»**, Visit 4, all four dual parts. This entry carries both the failing cell and the
+physical effect Stephen reported, because the open question is whether they are one finding or two.
+
+**MEASURED -- `R16-DUAL-LAGBND` `MAX_ABS_ERR`, bound `lo 0 hi 110`, `sat 127` in every record:**
+
+| Part | LEFT | RIGHT | samples (L / R) | Log |
+| --- | --- | --- | --- | --- |
+| A | **115** | **115** | 63 947 / 63 998 | `debug_260917-131445.log` L15301-15302 |
+| B | **115** | **115** | 19 761 / 19 862 | `debug_260917-130012.log` L7574-7575 |
+| C | **116** | **116** | 19 933 / 19 922 | `debug_260917-131237.log` L5621-5622 |
+| D | **115** | 87 | 3 293 / 2 308 | `debug_260917-125859.log` L119-120 |
+
+**«#3558»'s lag limiter is working:** the measurement never reaches `sat 127`, which is where the unfixed driver
+pegs the stored `err` field.
+
+**DERIVED -- the number is too repeatable to be a transient.** 115 / 115 / 115 / 115 / 116 / 116 / 115
+across four parts with completely different motion profiles, sample counts from 2 308 to 63 998, and both
+motors. A peak driven by motion would scatter. Part D's RIGHT reaching only 87 fits: it is the shortest run and
+never demanded enough.
+
+**SETTLED FROM THE SOURCE 2026-09-17, and it makes this an INSTRUMENT defect, not a driver defect.**
+`src/isp_bldc_motor.spin2:3344-3346`:
+
+```spin2
+    ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
+    LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts
+    LAG_HOLD                    = 100       ' 140.6 deg: the field stops advancing (the fault test is at 125)
+```
+
+and `src/isp_bldc_motor.spin2:3803-3804`:
+
+```spin2
+.justIncr   ' just do our increment of angle and we're done!
+                cmps    lag_s, #LAG_HOLD            wc  ' C-5: the field advances only while the rotor trails it by
+    if_c        add     angle_, drv_incr                '  less than LAG_HOLD, so |err_| stays under the 125 fault test
+```
+
+**The clamp is at 100, not at 115.** The test is taken on `lag_s` sampled at the *top* of the pass
+(`:3560`), and the field then advances by one whole `drv_incr` before the next test. So the largest `err_` any
+sampler can observe is **`LAG_HOLD` plus one pass's field advance**, and at the ladder's top rung that quantum is
+roughly 15-16 err units -- which is exactly the 115-116 measured, and exactly why it barely moves between parts.
+
+⛔ **The 110 bound was therefore wrong, not the driver.** It was written as `LAG_HOLD + 10`, under-estimating
+the one-pass quantum at `ladder_max 165_000_000`. The driver is doing precisely what C-5 designed it to do, and
+the fault test at 125 is still never reached -- which is the property that actually matters.
+
+**Fix direction:** set the bound from the design, not from a round number: `LAG_HOLD` plus the maximum per-pass
+field advance at `ladder_max`, computed rather than guessed, with the 125 fault threshold as the hard ceiling the
+cell really guards. **This is the one case where raising the bound is correct** -- not because it turns the cell
+green, but because the old bound described a state the design never promised. Record the arithmetic in the cell
+so the next reader can check it (doctrine D2: a criterion that cannot be met by a correct system has not passed,
+it has misreported).
+
+**STEPHEN 2026-09-17, the physical effect:** *"On your dual A run, you're making a bunch of speed changes. One of
+the things I noticed in the speed changes is that we are physically slamming the platform... I would think speed
+changes should be really smooth, but they're not, so we need to understand what this effect is."*
+
+**MEASURED -- the slam's signature**, `debug_260917-131445.log` L15170-15205, `BM-RUNG2` LEFT forward:
+
+```
+rung     0    1    2    3    4    5    6    7    8    9   10   11
+err     34   48   48   48   49   48   48   55   63   65   68   73
+err_pk  56   75   71   71   72   72   73   80   88   91   94   98
+gap     22   27   23   23   23   24   25   25   25   26   26   25
+```
+
+**`err_pk` sits ~25 counts above the steady `err` at every rung change, independent of step size.**
+
+**THE MECHANISM, SETTLED FROM THE SOURCE 2026-09-17. It is NOT a missing ramp.** The ramp is applied to every
+change of target -- `.doSpdChange` (`src/isp_bldc_motor.spin2:3655`) routes a speed change to `.rampUp`,
+`.rampDn` or `.slow2Chg` exactly as a start from rest does. **The defect is the ramp's starting RATE.**
+`:3706-3707`, in `.rampUp`:
+
+```spin2
+                or      drv_incr, drv_incr          wz  ' -and- are we stopped, just about to spin up?
+    if_z        mov     ramp_curr, ramp_min_            ' set initial ramp if starting from 0
+```
+
+and `:3715-3718`, the growth:
+
+```spin2
+                mov     curr_ramp, ramp_curr            ' current ramp
+                add     ramp_curr, ramp_inc_            ' increase ramp for next time
+                cmps    ramp_curr, ramp_max_        wc  ' too high?
+    if_nc       mov     ramp_curr, ramp_max_            ' Y set to ramp_max
+```
+
+**`ramp_curr` is reset to `ramp_min_` only when `drv_incr` is zero -- i.e. only when starting from rest.** On a
+speed change from a *running* speed, `drv_incr` is non-zero, so `ramp_curr` is **inherited from the previous
+ramp**, where lines 3716-3718 have already driven it to `ramp_max_`. Every rung-to-rung transition therefore
+begins at **full ramp rate on its very first pass**, with no soft start at all, while a start from rest begins
+gently at `ramp_min_` and grows.
+
+That is a step in commanded *acceleration* at every speed change, and a step in acceleration is a jolt. It also
+explains the shape of the measurement better than any load effect: the ~25-count gap is nearly constant across
+rungs **because the ramp rate is the same `ramp_max_` every time**, independent of how large the speed step is.
+
+⭐ **The data carries its own control.** Rung 0 is the only transition that starts from rest, and it has the
+**smallest** gap in the table (22). Rung 1 -- the first transition to inherit `ramp_max_` -- has the **largest**
+(27). The one rung that takes the soft start is the one that does not slam.
+
+**Fix direction -- correct by construction (P10):** reset `ramp_curr` to `ramp_min_` at the start of **every**
+new ramp, not only when `drv_incr` is zero. The soft start then applies to every speed change, acceleration is
+continuous at each transition, and `err_pk` should fall toward `err` at rungs 1-11 while rung 0 is unchanged --
+a directly measurable prediction for the next visit, with rung 0 as the built-in control.
+
+**Note what this is NOT.** It is not a missing slew-rate limit (the ramp exists), and it is not the lag clamp
+(see above -- that half is an instrument bound, and `LAG_HOLD` is doing its job). The two halves of this entry
+are two different findings that happened to be found together; **only this half is a driver defect.**
+
+### PL-79 -- `R16-DUAL-NOFOLD`'s band is narrower than its own tick quantisation at rung 0
+
+**Found 2026-09-17 in «#3561»**, Visit 4 part A. **This is an instrument defect and it is mine** (doctrine
+overlay P3: how my instrument judges a measurement is instrument design). **It is not a driver finding.**
+
+**MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-131445.log`. `rate_x10` tracks `pred_x10` at every one
+of 48 rungs, both motors, both directions, to better than 0.5 % -- except rung 0:
+
+| Rung 0 | ticks | `rate_x10` | `pred_x10` | ratio | Line |
+| --- | --- | --- | --- | --- | --- |
+| L reverse | -14 | -139 | -133 | **104.5 %** | L15131 |
+| L forward | 14 | 139 | 133 | **104.5 %** | L15170 |
+| R reverse | -14 | -139 | -133 | **104.5 %** | L15209 |
+| R forward | 13 | 129 | 133 | **97.0 %** | L15248 |
+
+Representative of every other rung -- L forward rung 11: `rate_x10 4_415` vs `pred_x10 4_409` = **100.1 %**
+(L15203).
+
+**DERIVED:** at rung 0 (`incre 5_000_000`) the entire measurement is 13-14 ticks in a ~1 s window, so one tick
+of quantisation is ~7.5 %. **A 97-103 % band cannot be met at rung 0 by construction** -- ±1 tick spans
+97-105 %. The criterion is narrower than its own resolution, so `R16-DUAL-NOFOLD-A` reads
+`RATE_HELD_NO_FOLD FALSE` (L15294, L15299) on a driver that is in fact tracking perfectly.
+
+**What it hides, and this is the reason to fix rather than waive it** (doctrine D2: a gate that cannot fail on
+the thing it names has not passed): while rung 0 fails unconditionally, the cell can never report a *real*
+fold-back at any rung, because one compound verdict covers all of them.
+
+**Fix direction:** widen the band at rung 0 to the tick-quantisation floor, or start the band-checked rungs
+above the quantisation limit, and report the fold-back half separately from the rate half. **Do not touch the
+driver for this.**
+
+⭐ **What the same data certifies:** finding **C-1**'s speed law -- 48 rungs, two motors, two directions, under
+0.5 % across a 33:1 speed range. That belongs in the «#3514» write-back.
+
+### PL-80 -- `R16-DUAL-DERATE`'s band top sits below the measured lifted-wheel current
+
+**Found 2026-09-17 in «#3561»**, Visit 4 part D. **Instrument defect, mine** (P3), not a driver finding.
+
+**MEASURED**, `DOCs/analyses/bench/2026-09-17/debug_260917-125859.log` L78-80:
+
+```
+L78  BM-LIMST motor,LEFT  step,DERATE peak_a,20 cont_a,8 derated,FALSE phase_ma,2_357 limit_k,6_007 value,0
+L79  BM-LIMST motor,RIGHT step,DERATE peak_a,20 cont_a,8 derated,FALSE phase_ma,2_632 limit_k,6_007 value,2_602
+L80  BM-DSTEP step,DERATE motor,BOTH seg,LIMIT measured,2_602 lo,500 hi,2_500 result,FAIL
+```
+
+The measured 2 602 is **4 % over the band top of 2 500**, which is the whole of the FAIL.
+
+**DERIVED:** with `peak_a 20` and `cont_a 8`, a lifted wheel never approaches the 8 A continuous limit, so
+derating correctly never fired (`derated,FALSE` on both motors). The cell is judging **phase-current magnitude**
+against a band the real lifted-wheel current slightly exceeds, rather than judging **whether derating
+happened** -- so its name (`DERATED_IN_WINDOW`) and its test do not agree.
+
+**Fix direction:** judge the property the cell is named for. If a lifted wheel cannot reach the derate
+threshold, the honest result is **NOMEAS with a why**, exactly as `R16-DUAL-BLOCKED-D` already does
+(`why,NOT_BLOCKED`, L81) and as the LEFT motor's own DERATE cell does (`n,0`, L113). A designed NOMEAS is a
+result; a FAIL on an unrelated magnitude is noise.
+
 ---
 
 ## Recently closed
