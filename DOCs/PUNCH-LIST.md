@@ -9,6 +9,28 @@ Opened 2026-09-09 by the `bootstrap-conventions` / `baseline-health` bootstrap.
 
 ## Open
 
+> ## ⭐ CERTIFIED AT VISIT 5, 2026-09-17 — read `analyses/bench/2026-09-17/VISIT-5-RESULTS.md`
+>
+> **Zero failed cells and zero NOT_BUILT cells across four loads and 66 cell instances**, against
+> Visit 4's 13 FAILs and 10 NOT_BUILT. These entries are closed by measurement:
+>
+> | Entry | What the run showed |
+> | --- | --- |
+> | **PL-74** | t0 emits at `src_rev 3` (quiet build); **all 19 cells PASS**, so the 6.0.0 error contract has run-time evidence and **the tag is no longer gated**. Why `SRC_REV 2` was silent is still undetermined. |
+> | **PL-75** | `FRONTST-D BOTH` PASS on the steering object's own 256-long stack (was `stack_hi 128 == stack_of 128`, FAIL). |
+> | **PL-76** | Closed **by absence**: not one `driveAtPowerEx() motor not started` line in the whole part-D log, where Visit 4 had five. |
+> | **PL-77** | `DISTM-B` PASS -- and see PL-84 for what the magnitude actually was. |
+> | **PL-79** | `NOFOLD-A` and the new `RATELAW-A` both PASS on both motors (was one compound FAIL). |
+> | **PL-80** | `DERATE-D RIGHT` PASS on the derated-and-restored criterion (was FAIL on an underivable window). |
+> | **PL-82** | `STOPCUR-B` PASS both motors against the fixed bound (was FAIL on a warming reference). |
+> | **PL-83** | `TIMESTOP-D` and `WTIMSTOP-D` both PASS (were NOMEAS `STOP_TIMEOUT` in both forms). |
+> | **PL-84** | `str_mm_x100,576` -- the two travel-per-tick copies agree, the OVERSHT segment drives, and **C-3 is measured at last: a 10 ft stop lands 1 tick from a 529-tick target, worst of 4 trials.** |
+> | **PL-78 (first half)** | `LAGBND` PASS on every part against the driver's own fault test (115-116 vs 124). |
+>
+> ⛔ **PL-78's SECOND half -- the slam -- is NOT certified and its evidence is withdrawn: see PL-87.**
+> New at Visit 5: **PL-85** (t0's shape truncates DEBUG on the wire), **PL-86** (the fault-API
+> provocation trips the abort watching it), **PL-87** (the ladder cannot see a transition kick).
+
 ### PL-1 — `src/hng034rm.spin2`: superseded, unused, uncompilable — **kept on purpose**
 
 **Disposition decided 2026-09-10 (Stephen): KEEP the file. Do not delete.** This entry now
@@ -3511,6 +3533,140 @@ and no extra load.**
 `R14-DUAL-FLTAPI-B` and `R16-DUAL-FLTRETRY-B` were NOMEAS because nothing ever drove, not because their
 stimulus was wrong -- so **finding C-3, the distance overshoot, is unmeasured at Visit 4 and is the
 segment's primary job.**
+
+### PL-85 -- t0's cog bursts truncate DEBUG records ON THE WIRE; a verdict was lost and only a USB capture recovered it
+
+**Found 2026-09-17 at Visit 5**, raised by Stephen from the log before I read it. **Harness defect, and
+it is a TEST SHAPE defect, not a terminal or driver one.**
+
+**STEPHEN 2026-09-17:** *"t0 is constructed so that debug messages from cogs are overlapping causing
+logging problems. So at the end of the runs i ran t0 again this time emitting a USB log so that you can
+reconstruct the data that was omitted from the log. this is a test shape problem!"*
+
+**MEASURED**, `analyses/bench/2026-09-17/debug_260917-172913.log`:
+
+```
+L147  Cog1Cog1  INIT ...
+L149  CogCog1   INIT ...
+L151  CogCog1Cog0  T0-15c,baseline,7,...
+L168  [BINARY DATA: 80 bytes - displaying as hex]      <- the terminal gave up and dumped hex
+L169    0000: 43 6F FF 43 6F 67 31 43 6F 67 30  |Co.Cog1Cog0|
+L221  SIGNOFF,...,R1-T0-EXHAUST,...,measured,TRUE,     <- the record ends here
+```
+
+⭐ **IT IS NOT THE TERMINAL. MEASURED on the raw USB stream**, `usb-traffic_260917-174323.log` L1266:
+
+```
+0020: $2C $6D $65 $61 $73 $75 $72 $65  $64 $2C $54 $52 $55 $45 $2C $0D   ,measured,TRUE,.
+0030: $0A $43 $6F $67 $30 $20 $20 $54  $30 $2D $54 $52 $41 $50           .Cog0  T0-TRAP
+```
+
+**The P2 emitted `,measured,TRUE,` then CR LF and moved to the next record.** The rest --
+`lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,PASS` -- was never transmitted. The run-together prefixes are on
+the wire too (USB L1217-1218, L1248-1249).
+
+**DERIVED -- this is PL-41's mechanism seen at wire level for the first time.** DEBUG output is
+serialised by LOCK[15]; a cog stopped mid-message leaves it unterminated and the next cog's prefix
+follows behind it. **Every damaged line is adjacent to a `CogN INIT` burst**, and the bursts come from
+T0-8, T0-15b and T0-22, each of which starts and stops **seven spacer cogs**, plus T0-15's restart and
+T0-19's three-cog steering start.
+
+**What it cost:** `R1-T0-EXHAUST`'s verdict. It was recovered **by construction** -- `emitSignoffBool()`
+prints `measured` as the criterion result and computes PASS exactly when measured and met, so
+`measured,TRUE` IS PASS -- and its substance survived in the record before it (`T0-15b,cogs_occupied,7,
+start_return,-1,raw_motor_cog,0,baseline,7,free_after,7`). **The next loss in a record whose `measured`
+field is not the verdict is unrecoverable.**
+
+⛔ **A RECOVERY THAT DEPENDS ON AN OPERATOR HAVING CAPTURED USB IS NOT A PROPERTY OF THE HARNESS.** The
+verdict survived because Stephen happened to run it again with a USB log. That must not be the design.
+
+**Fix direction -- design the shape out, do not widen a tolerance (P10).** This is «#3543» (Batch 1b)
+arriving with a measurement behind it at last: a cog that may be emitting DEBUG is never stopped; the
+spacers used for cog-exhaustion and restart cells never print and hold no lock; and cog 0 does not print
+across a start/stop burst. **«#3543» should now be scheduled on this evidence** -- it has been deferred
+since 2026-09-14 on a garbled-log observation, and this is the same mechanism with a lost verdict
+attached.
+
+### PL-86 -- the fault-API provocation is stronger than the abort watching it, and has cost two cells at two visits
+
+**Found 2026-09-17 at Visit 5.** **Harness stimulus defect, mine (P3). NOT a driver defect.**
+
+**MEASURED**, `analyses/bench/2026-09-17/debug_260917-173141.log` L7653-7656:
+
+```
+BM-ABORT  seg,OVERSHT tid,25 reason,ABS_CURRENT value,2_445 scope,TRIAL
+BM-FLTAPI tid,25 want_off,180 l_off,223 r_off,223 power,50 rows,2 ... why,ABORTED
+```
+
+The fault-API trial provokes a fault by writing a commutation offset **180 degrees from the running pair
+on both wheels**, holding the field where the rotor cannot follow. Current reaches **2_445 mV, about
+16 A**, within roughly 100 ms -- past the harness's own `ABS_ABORT_MV` of 1_500 (10 A). The abort stops
+the trial before the driver's own fault test is reached.
+
+**Visit 4 measured the same thing at 2_217 mV.** So `R14-DUAL-FLTAPI-B` and `R16-DUAL-FLTRETRY-B` are
+NOMEAS for the second visit running, and task 3547's fault-API reporting and PL-66's same-power retry
+are **still uncertified**.
+
+**DERIVED: the driver is doing exactly what a 180-degree offset demands**, and the abort is the
+instrument working. The defect is that the provocation and the guard were chosen independently.
+
+**Fix direction, and there are two clean options -- this is instrument design and mine (P3):**
+1. **A gentler provocation.** The offset only has to exceed the driver's fault test (125 err units,
+   about 176 degrees of the 256-unit cycle); 180 degrees is the maximum possible, chosen when the old
+   ramp-based provocation stopped faulting. A smaller offset should fault without a 16 A surge.
+2. **Exempt the trial from the absolute-current abort**, the way `bInstLagExempt` already exempts
+   deliberately-provoked lag -- but only with a stated ceiling, because the abort exists to protect the
+   hardware.
+
+⭐ **Option 1 is preferred and is testable without the bench:** the fault test's threshold is a known
+constant, so the offset needed to cross it is arithmetic, not a sweep.
+
+### PL-87 -- the ladder's err_pk is a STEADY-WINDOW statistic, so no cell can see a transition kick
+
+**Found 2026-09-17 at Visit 5**, checking Stephen's observation against the data. **Instrument defect,
+mine (P3).** ⛔ **It invalidates the evidence PL-78's second half was built on.**
+
+**STEPHEN 2026-09-17:** *"the ramps from dual-a some are not kicking but many still are... so your
+remove kicking on ramp up is only partially working."*
+
+**The driver fix IS in the binary** -- verified in source, `src/isp_bldc_motor.spin2:3668`,
+`mov ramp_curr, ramp_min_` at `.doSpdChange`, reached once per request from `.newRqst`.
+
+**MEASURED**, LEFT forward, Visit 5 (`debug_260917-173713.log` L15161-15196) against Visit 4's same
+block:
+
+| rung | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `err` V5 | 33 | 48 | 48 | 48 | 48 | 48 | 48 | 55 | 63 | 66 | 69 | 74 |
+| `err_pk` V5 | 57 | 77 | 71 | 72 | 72 | 72 | 72 | 81 | 88 | 91 | 94 | 100 |
+| `err_pk` V4 | 56 | 75 | 71 | 71 | 72 | 72 | 73 | 80 | 88 | 91 | 94 | 98 |
+| gap V5 | 24 | 29 | 23 | 24 | 24 | 24 | 24 | 26 | 25 | 25 | 25 | 26 |
+
+**Unchanged within 1-2 counts at every rung. PL-78's prediction did not happen.**
+
+⭐ **AND THE REASON IS THAT THIS TABLE WAS NEVER A MEASUREMENT OF THE SLAM.**
+
+- `err` and `err_pk` come from `windowStats()`, over the window `rungWindow()` opens **after** AT_SPEED
+  and after the settle. **The transition is over before the window opens.**
+- **Rung 0 is the proof.** It is the only rung that starts from rest, so it always had the soft start and
+  never had the defect -- and its gap is **24**, the same as every other rung's, at **both** visits. A
+  statistic that reads the same on the control and on the suspects is not measuring the difference
+  between them (doctrine D2).
+- **DERIVED:** the ~25-count gap is the AT_SPEED duty-servo ripple. `CURRENT-LIMIT-AND-STOP-DESIGN.md`
+  section 3.2 records the unloaded trace swinging -22 to -70 about a set point of 42 -- a peak about 25
+  above the mean, which is exactly what `err_pk - err` reports.
+
+⛔ **So PL-78's second half rests on window statistics read as transition statistics.** Whether the
+driver change is right, wrong or partial, **this instrument cannot say, and could not have said at
+Visit 4 either.** What Stephen felt with his hands is currently the only evidence about the slam, and it
+says the fix helped some transitions and not others.
+
+**Fix direction -- the measurement already exists and costs NO bench time.** `rungMeasure()` arms the
+instrument at the command, so the ring **already holds every sample of the transition**; `windowStats()`
+simply never reads them. Add a second statistics pass over [arm .. window start] -- the transition --
+giving the peak |err| during the ramp, per rung, and print it in `BM-RUNG2` beside the steady pair.
+**Rung 0 is the built-in control**, and the next ladder load then measures the slam directly instead of
+inferring it.
 
 ---
 
