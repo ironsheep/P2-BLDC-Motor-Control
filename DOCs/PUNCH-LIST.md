@@ -2456,6 +2456,49 @@ harness record that reports it. Both motors read identically, which does not dis
 be re-checked against the source before it ships in the README (doctrine overlay P8: a written record is a
 claim, and the measurement outranks it).
 
+> ## RESOLVED TO THE HARNESS 2026-09-17 -- the driver is correct. Two harness defects confirmed; the magnitude is undiagnosable BY CONSTRUCTION.
+>
+> **The source read this entry named as its discriminator has been done. THE DRIVER IS NOT AT FAULT.**
+>
+> **Eliminated, each verified in source:**
+>
+> | Candidate | Finding |
+> | --- | --- |
+> | The motor object's `DDU_M` arm | **correct** -- `round(fValue /. 1000.0)`, `src/isp_bldc_motor.spin2:1041-1043` |
+> | The steering object's `DDU_M` arm | **correct** -- `round(fValue /. 1000.0)`, `src/isp_steering_2wheel.spin2:743-744` |
+> | The `DDU_M` enum alias | **correct** -- `DDU_M = ltWheel.DDU_M`, `isp_steering_2wheel.spin2:43` |
+> | Which object the harness calls | **correct** -- `steering : "isp_steering_2wheel"` (`test_bench_dual.spin2:1002`); the call is `steering.getDistance(steering.DDU_M)` (`:3268`) |
+> | `tickInMM_x100`'s scale | **correct** -- `wheelGeometry()` yields 576 for the 6.5", and the steering captures that same value at `isp_steering_2wheel.spin2:204` |
+>
+> **CONFIRMED HARNESS DEFECT 1 -- the sign belongs to the harness, not the driver.**
+> `ticksToMetres()` (`test_bench_dual.spin2:3260`) computes
+> `(abs(nTicks) * tickMmX100 + ...) / MM_PER_M_X100`. It takes **`abs()`**, so the prediction is
+> always positive, while the library's getter is **signed** and these trials ran negative. The two
+> sides disagree in sign by construction, on every trial.
+>
+> **CONFIRMED HARNESS DEFECT 2 -- the two sides are NOT from the same instant, and the code claims
+> they are.** At `:3241-3244` the harness sets `dmLeftTicks := ovLeftTrk`, a **snapshot** saved by
+> the overshoot trial, then calls `steerDistanceM()`, a **live** read of
+> `ltWheel.getposTrkHallTicks()`. The emitter's comment at `:8242-8244` states: *"Both sides come
+> from the same instant, so the comparison is of the conversion alone."* **That comment is false**,
+> and it is why the cell cannot do what it claims.
+>
+> ⛔ **Why the ~1000x magnitude cannot be settled from this log, and why that IS the finding.**
+> `l_m` is consistent with the millimetre figure for roughly 2 541 ticks, against `l_ticks 2_688`
+> from the snapshot -- but **the cell never records the tick count the getter actually read.** There
+> is therefore no way to separate a conversion fault from two reads taken moments apart. **The cell
+> is undiagnosable by construction: it prints its prediction's input and not its measurement's
+> input.** Further inference from the arithmetic would be speculation, so it stops here.
+>
+> **Fix direction (harness, ours, correct-by-construction -- P10):** take both sides from a single
+> read of the tick counter, as the comment already promises; **record that tick count in the
+> record**; drop the `abs()` so predicted and measured carry the same sign. The cell then either
+> agrees or names a real conversion fault, and its own record says which.
+>
+> ⭐ **CONSEQUENCE FOR THE RELEASE.** The «#3515» line above is **no longer blocked by this entry** --
+> both `DDU_M` arms are verified correct in source. It is still **not bench-certified**, because
+> this cell could certify nothing. Say that plainly rather than citing Visit 4 as support.
+
 ### PL-78 -- the lag error clamps at 115-116 against a 110 bound, and commanded velocity is not rate-limited (the slam)
 
 **Found 2026-09-17 in «#3561»**, Visit 4, all four dual parts. This entry carries both the failing cell and the
