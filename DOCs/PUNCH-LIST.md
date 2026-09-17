@@ -2641,7 +2641,52 @@ threshold, the honest result is **NOMEAS with a why**, exactly as `R16-DUAL-BLOC
 (`why,NOT_BLOCKED`, L81) and as the LEFT motor's own DERATE cell does (`n,0`, L113). A designed NOMEAS is a
 result; a FAIL on an unrelated magnitude is noise.
 
-### PL-81 -- `ticsPerRotation` = 90 has never been anchored, and the board designer says it should be 138
+### PL-81 -- WITHDRAWN SAME DAY: `ticsPerRotation` = 90 was already anchored at Visit 2
+
+> ## ⛔ WITHDRAWN 2026-09-17, hours after being raised. The premise was false.
+>
+> **I filed this saying "no bench visit has ever anchored it." That was wrong, and Stephen caught
+> it:** *"wait, check our logs - we did a manual 3 rev pass... have it?"* We did.
+>
+> **MEASURED at Visit 2, 2026-09-15**, cell **T0-12**, the hand-rotation anchor
+> (`bench/2026-09-15/debug_260915-142347.log`;
+> [`VISIT-2-ATTENDED-RESULTS.md`](analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md) §2, whose
+> heading reads *"T0-12 — hand rotation, 90 ticks per revolution"*):
+>
+> ```
+> :22   T0-12,begin,told_direction,CW_FROM_HUB,revolutions,3,wheel,RIGHT_P16
+> :394  T0-12,started,hall_pin,21,hall_code,6,told_direction,CW_FROM_HUB
+> :531  T0-12,end,transitions,270,illegal,0,pos,-270,final_hall_code,6
+> ```
+>
+> **270 ÷ 3 = exactly 90 ticks per revolution = 15 electrical cycles.** The designer's 23 would
+> need 414. `final_hall_code` returns to the starting 6 as a whole number of cycles requires, and
+> `illegal,0` throughout. **It is a direct count with no library constant anywhere in it** -- the
+> one thing the circular checks I listed could not provide.
+>
+> **So the library is right and nothing is owed.** `getDistance()`, `getRotationCount()`,
+> `stopAfterDistance()` and the mm-per-tick constant are all correctly based. The designer's
+> *"I think ... like 23"* was hedged and reads as a recollection about hoverboard motors as a family.
+>
+> **THE PROCESS FAILURE IS THE PART WORTH KEEPING** (doctrine D3, overlay P8). I asserted an
+> absence without searching the record that would have shown it. Two stale markers made the absence
+> look real: the «#3514» task body still listed *"the hand-rotation anchor for
+> hallTicsPerRotation"* among results owed from the certification pass, and I confirmed Visit 4's
+> `char` tier carried no such cell -- true, and irrelevant, because Visit 2 had already run it.
+> **A run-sheet "owed" marker is a claim like any other, and it is not retired automatically when
+> the measurement lands.** Check the bench record before concluding a measurement was never made;
+> a search costs seconds and this one would have prevented a filed finding built on nothing.
+>
+> **What survives from the original entry** is the half that was never in doubt: the designer's
+> `electrical = mechanical_12bit x pole_pairs MOD $FFF` method presumes an absolute 12-bit
+> mechanical sensor, and **we have three halls giving 6 states per electrical cycle**, so the method
+> does not port even though the ±90° principle it serves still holds. That stays live under
+> **PL-26** and in
+> [`analyses/BLDC-COMMUTATION-PRINCIPLES.md`](analyses/BLDC-COMMUTATION-PRINCIPLES.md).
+
+*Original entry, preserved below as filed.*
+
+### PL-81 (as originally filed) -- `ticsPerRotation` = 90 has never been anchored, and the board designer says it should be 138
 
 **Raised 2026-09-17** from the board designer's note relayed by Stephen, who confirms *"the 6.5" is
 the hoverboard motor he refers to"*. Recorded in

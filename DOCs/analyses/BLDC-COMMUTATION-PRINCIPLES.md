@@ -116,40 +116,56 @@ knowing before anyone proposes "just do what the designer does."
 `getDistance()`, `getRotationCount()`, `stopAfterDistance()`, `stopAfterRotation()` and the mm/tick
 constant all divide by `ticsPerRotation`.
 
-**We cannot settle it from anything we hold. Every apparent confirmation is circular** (DERIVED,
-checked 2026-09-17):
+⭐ **SETTLED — and it was already measured. The library is right: 90 ticks per revolution,
+15 electrical cycles. The designer's "23" does not hold for this motor.**
 
-- **The distance math confirms nothing.** `mm_x100 576` = 5.76 mm/tick matches a 518.6 mm
-  circumference ÷ 90 — but the 90 is the input to that arithmetic, not an independent check.
-- **The Visit 4 speed ladder confirms nothing here.** It measures **hall ticks per second**, and
-  ticks/s = electrical-revs/s × 6. That product is **independent of how many electrical cycles fit
-  in a mechanical revolution**, so a ladder that tracked prediction to <0.5 % across 48 rungs would
-  have done so identically under either number.
-- **`R4-CHAR-RPM` confirms nothing here.** The driver's rpm and the harness's reference both derive
-  from the same `ticsPerRotation`, so agreement to ±1 rpm is agreement with itself.
+**MEASURED at Visit 2, 2026-09-15**, cell **T0-12**, the hand-rotation anchor
+([`bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md`](bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md) §2;
+log `bench/2026-09-15/debug_260915-142347.log`). Stephen turned the **right wheel (P16) three full
+revolutions by hand**, motor unpowered, clockwise seen from the hub:
 
-**The tell this document's own §"How the principles apply" warns about applies to us:** a finding
-that exists only if the paperwork is right. `ticsPerRotation := 90` is a **library constant — a
-claim** (doctrine overlay P8), and no bench visit has ever anchored it.
+```
+:22   T0-12,begin,told_direction,CW_FROM_HUB,revolutions,3,wheel,RIGHT_P16
+:394  T0-12,started,hall_pin,21,hall_code,6,told_direction,CW_FROM_HUB
+:531  T0-12,end,transitions,270,illegal,0,pos,-270,final_hall_code,6
+```
 
-### The discriminator, and it is nearly free
+**270 transitions ÷ 3 revolutions = exactly 90 per revolution**, which is 90 ÷ 6 hall states =
+**15 electrical cycles per mechanical revolution**. The designer's 23 would require
+3 × 138 = **414** transitions.
 
-⭐ **Rotate one wheel through exactly one mechanical revolution by hand, motor unpowered, and count
-hall ticks.**
+Three independent things make this hard to argue with:
 
-| Ticks counted | Verdict |
-|---|---|
-| **90** | the library is right; 15 electrical cycles; the designer's "23" was a hedged recollection about a motor family, not this unit |
-| **138** | the designer is right; **the library's distance and rotation math is off by 53 %** and that is a release-blocking defect |
-| anything else | neither — and the sector geometry needs measuring before anything else is trusted |
+1. **It is a direct count, not a derivation.** The tick counter counts hall transitions; the human
+   supplied the ground truth of three revolutions. **No library constant appears anywhere in the
+   measurement** — which is exactly what the circular checks below could not offer.
+2. **`final_hall_code` equals the starting `hall_code` (6),** as it must after a whole number of
+   electrical cycles. A turn short or over would have landed on a different code.
+3. **`illegal,0`** across the whole rotation — no mis-decoded hall states to corrupt the count.
 
-This is the **hand-rotation anchor for `hallTicsPerRotation`** already listed as owed from the
-certification pass, and **Visit 4 did not measure it** — the `char` tier carries no such cell.
+**What could NOT have settled it, recorded because each looked like a confirmation** (DERIVED):
 
-It needs no rail power, no motion under command and no instrument beyond the driver's own tick
-counter, so it does not carry the risks that usually make a run expensive. **It is the one
-measurement where the bench can settle something the source cannot**, because the source only
-restates the constant under question.
+- **The distance math.** `mm_x100 576` = 5.76 mm/tick matches a 518.6 mm circumference ÷ 90 — but
+  the 90 is the *input* to that arithmetic.
+- **The Visit 4 speed ladder.** It measures **hall ticks per second**, and ticks/s =
+  electrical-revs/s × 6 — a product **independent of how many electrical cycles fit in a mechanical
+  revolution.** Its <0.5 % agreement across 48 rungs would have looked identical under either
+  number.
+- **`R4-CHAR-RPM`.** The driver's rpm and the harness's reference both divide by the same
+  `ticsPerRotation`; ±1 rpm agreement is agreement with itself.
+
+**The lesson is about where to look, not about the motor.** `ticsPerRotation := 90` *was* only a
+library claim until T0-12 ran — and T0-12 exists precisely because that gap was identified. It was
+lost at Visit 1 to a panel that drew nothing (PL-42), rebuilt, and run at Visit 2. **The record had
+the answer; a run-sheet note listing the anchor as "owed" had simply never been retired.** A stale
+"owed" marker is a claim like any other (doctrine overlay P8) — check the bench record before
+concluding a measurement was never made.
+
+### For the designer's number
+
+Their *"I think … like 23"* is explicitly hedged and is most likely a recollection about hoverboard
+hub motors as a family rather than about this unit. **30 poles / 15 pole pairs is the common 6.5″
+configuration, and it is what this wheel measures.** Nothing further is owed.
 
 ## The two motors are not the same problem
 
