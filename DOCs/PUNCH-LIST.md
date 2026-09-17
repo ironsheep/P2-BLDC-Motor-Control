@@ -2434,6 +2434,65 @@ started".
 defect. **Fix direction:** read the started-state predicate in `src/isp_bldc_motor.spin2` and the single-motor
 path through the front cog. No bench cell is proposed for it -- the bench certifies, it never engineers (P10).
 
+> ## SOURCE READ 2026-09-17 -- the refusal is BY DESIGN, so the defect is upstream of it. And three cells passed anyway.
+>
+> **The predicate, verified in source.** `driveAtPowerEx()` (`src/isp_bldc_motor.spin2:787-790`):
+>
+> ```spin2
+>     if senseCog == 0
+>         ' started means the driver and the front cog both run, and only the front cog commands the driver
+>         eError := recordError(ERR_NOT_STARTED)
+> ```
+>
+> `ERR_NOT_STARTED` is **-1_007** (`:92`), which is exactly the code `clearEmergency()` and
+> `stopAfterTime()` also returned -- **one cause, not three.**
+>
+> **`senseCog` is written in exactly one place:** `launchFront()` at `:417`. `launchDriver()`
+> (`:359-392`) sets only `motorCog`. **So a start path that launches the driver WITHOUT a front cog
+> leaves every drive call correctly refusing** -- which is the documented contract, not a defect:
+> only the front cog commands the driver.
+>
+> ⛔ **So the defect is not in the refusal. It is in whatever started that instance.** The remaining
+> question is which start the part-D LIMIT segment used on `wheelL` -- the full `start()`, or the
+> parked `startOwned()` the steering object uses. That is one read in
+> `src/test_bench_dual.spin2`'s LIMIT segment and it has not been done yet.
+> **Working conclusion: this is looking like a HARNESS defect, not a driver defect** -- consistent
+> with PREFLT driving the same wheel successfully earlier in the same run (`BM-PREFLT ... moved,TRUE`).
+>
+> **Hypothesis raised and REFUTED, recorded so it is not raised again:** the error line renders as
+> `driveAtPowerEx() motor not started` with an **empty** motorId, which looked like an
+> uninitialised instance. It is not -- `init()` sets `byte[@motorId] := 0` deliberately, *"terminate
+> an empty string"* (`:454`). An empty id is the normal state for an instance nobody named.
+>
+> ### ⛔ THE WORSE FINDING: three cells PASSED in a segment where the motor was never started
+>
+> **MEASURED**, `bench/2026-09-17/debug_260917-125859.log:89-92`, interleaved with the errors:
+>
+> ```
+> :89  BM-DSTEP step,ESTOP_REFUSE motor,LEFT seg,LIMIT measured,1     lo,0     hi,50    result,PASS
+> :90  BM-DSTEP step,ESTOP_LATCH  motor,LEFT seg,LIMIT measured,1_500 lo,1_500 hi,1_500 result,PASS
+> :91  ! ERROR: clearEmergency() not cleared eError = -1_007
+> :92  BM-DSTEP step,ESTOP_CLEAR  motor,LEFT seg,LIMIT measured,0     lo,0     hi,0     result,PASS
+> ```
+>
+> **`ESTOP_CLEAR` reports PASS on the line immediately after the clear it is testing returned an
+> error.** All three e-stop cells pass on a motor that was never started and could not move.
+>
+> **That is a gate that cannot fail** (doctrine D2: a control that cannot exhibit the difference
+> proves nothing; a check must be able to fail on the thing it names). A motor that is refusing
+> every command trivially satisfies "did not move when e-stopped" and "is at rest after the clear".
+> **These cells measure absence of motion without establishing that motion was ever possible.**
+>
+> ⚠ **This casts doubt on the LEFT-motor e-stop rows of the Visit 4 report**, which recorded
+> `R16-DUAL-WESTOP-D` PASS. The BOTH-motor e-stop evidence from STEERSEG (`:61-63`) is unaffected --
+> that segment drove successfully. **The single-motor e-stop limb is not certified**, and the
+> report's §3 table should say so.
+>
+> **Fix direction:** every e-stop cell first establishes the motor is moving -- a positive limb --
+> and only then asserts the stop. A cell whose criterion is satisfied by a dead motor is measuring
+> the wrong thing (compare PL-79, PL-80, PL-82: **a criterion is an instrument and needs its own
+> negative case**).
+
 ### PL-77 -- `BM-DISTM` metres read ~1000x low and sign-inverted
 
 **Found 2026-09-17 in «#3561»**, Visit 4 part B. **MEASURED**,
