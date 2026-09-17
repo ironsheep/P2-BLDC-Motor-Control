@@ -16,6 +16,20 @@ certifies nothing, and Visit 3's first attempt was lost exactly that way (PL-68)
 **Every run is wheels-lifted.** Rev B platform, on blocks, both wheels up and free, both motors connected,
 pack charged. Nothing on this sheet needs the platform to move across a surface.
 
+## The visit, declared
+
+Seven attributes, per *Shared vocabulary — the bench visit* (`~/.claude/skills-docs/SKILLS-AUTHORING.md`).
+
+| | |
+|---|---|
+| **Purpose** | **Certification**, not diagnosis. Six committed code tasks, none yet on the bench. |
+| **Hardware risk** | The platform is driven at half speed, stopped dead, jerked to a stop by a provoked fault, and **held under power against a lowered current limit until the driver latches a protective stop**. All of it wheels-up. **No step needs your hands on the platform at any moment.** Panic: physical battery disconnect. |
+| **Who can observe** | **Nobody.** Every load is unattended and every verdict is printed in the log. You are present for safety only — no cell asks you to read, judge or type anything. |
+| **Runs that carry state** | **None across loads** — each tier is a fresh load on a fresh start. Within `dual-d` the current limits are lowered and restored with a read-back before the load ends; within `dual-b` the commutation offsets are written 180° out and restored with a read-back before the retry. A load that ends early leaves its restore undone, so **if one stops short, say so and leave the next one until I have read that log.** |
+| **Run length** | ~20 min of running; longest single load `dual-b` at ~6 min. No load can exceed its own 15–20 min run cap. |
+| **Repeatability** | Every tier is repeatable and idempotent — a re-run costs only time. Faults are provoked and recovered inside the run; nothing needs a power cycle between loads. |
+| **Variant matrix** | Six tiers × one clock (270 MHz, the file's own default) × one rig (Rev B, paired 6.5in, 18.5 V). The 200/300 MHz clock sweep is **not** in this visit — `CLKFRAME` was certified at all three at Visit 3 and nothing since has touched the frame count. |
+
 ---
 
 ## What this visit is for
