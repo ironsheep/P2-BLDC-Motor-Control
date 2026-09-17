@@ -2452,12 +2452,45 @@ path through the front cog. No bench cell is proposed for it -- the bench certif
 > leaves every drive call correctly refusing** -- which is the documented contract, not a defect:
 > only the front cog commands the driver.
 >
-> ⛔ **So the defect is not in the refusal. It is in whatever started that instance.** The remaining
-> question is which start the part-D LIMIT segment used on `wheelL` -- the full `start()`, or the
-> parked `startOwned()` the steering object uses. That is one read in
-> `src/test_bench_dual.spin2`'s LIMIT segment and it has not been done yet.
-> **Working conclusion: this is looking like a HARNESS defect, not a driver defect** -- consistent
-> with PREFLT driving the same wheel successfully earlier in the same run (`BM-PREFLT ... moved,TRUE`).
+> ⛔ **So the defect is not in the refusal. It is in whatever started that instance.**
+>
+> ### RESOLVED 2026-09-17 -- HARNESS DEFECT. The single-wheel half commands a stopped steering object.
+>
+> **The chain, every link verified in source:**
+>
+> 1. **The harness used the full `start()`.** `test_bench_dual.spin2:6501`:
+>    `stCogRet := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)`.
+> 2. **That start fully succeeded.** `startEx()` sets `ok := motorCog - 1` **only** after
+>    `launchFront()` returns `NO_ERROR` (`isp_bldc_motor.spin2:166-171`), and `launchFront()` calls
+>    `stop()` on any failure (`:415, :426`). So `cog_ret,3` **proves the front cog launched and
+>    `senseCog` was set.** `wheelL` was properly started and could be driven.
+> 3. **`wheelStart()` stops the steering object first.** `test_bench_dual.spin2:6491-6493`:
+>    `steerStop()`, then `wheelStopRaw(SIDE_LEFT)`, then `wheelStopRaw(SIDE_RIGHT)`.
+> 4. **But the LIMIT segment's step helpers command through `steering.`, not through the wheel.**
+>    `dProtectiveStop()` calls `steering.getProtectiveStop()` (`:4288`), `dClearProtective()` calls
+>    `steering.clearProtectiveStop()` (`:4297`), and the `dDrive()` / `dClearEstop()` family are the
+>    same shape. `dLimitRestore()`'s own comment (`:4300-4302`) confirms the segment has a steering
+>    half **"before the single-wheel half runs"**.
+> 5. **The steering object's wheels return `ERR_NOT_STARTED` by contract.** `startOwned()`'s
+>    doc-comment states it outright: *"Commands on this instance itself return ERR_NOT_STARTED"*
+>    (`isp_bldc_motor.spin2:177`).
+>
+> ⭐ **The error count confirms it.** A `steering.` drive fans out to **both** internal wheels, so
+> each refused call prints **two** error lines -- which is exactly what the log shows at `:87-88`.
+> A defect in `wheelL` itself would print one.
+>
+> **So no driver defect exists here.** `wheelL` was started, had a front cog, and would have driven.
+> **The single-wheel half of part D's LIMIT segment simply never commanded it** -- it kept calling
+> through the steering object that `wheelStart()` had just stopped.
+>
+> **Fix direction (harness, ours):** the single-wheel half takes wheel-scoped helpers that command
+> `wheelL` / `wheelR` directly, or `wheelStart()` does not run for a segment whose steps are
+> steering-scoped. **Correct by construction (P10):** a step helper should not be able to address an
+> object the segment has stopped -- pass the target in rather than letting the helper choose.
+>
+> *Consistent with everything else in the run:* PREFLT started each wheel and then drove it through
+> wheel-scoped calls, and moved (`BM-PREFLT ... moved,TRUE`); part A's ladder did the same across 24
+> lifecycles. Only this half of this segment mixes the two scopes.
 >
 > **Hypothesis raised and REFUTED, recorded so it is not raised again:** the error line renders as
 > `driveAtPowerEx() motor not started` with an **empty** motorId, which looked like an

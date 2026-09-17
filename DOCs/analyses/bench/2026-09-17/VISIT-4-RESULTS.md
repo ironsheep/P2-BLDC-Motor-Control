@@ -167,9 +167,37 @@ says the motor is not started. **This is an API-contract defect of exactly the c
 member that does not keep the promise its name and its documentation make. It is also the direct
 cause of three of part D's four NOMEAS results (TIMESTOP both forms, WTIMSTOP).
 
-**Not yet determined:** whether the `-1007` from `clearEmergency()` is the same root cause or a
-second one. Reading `isp_bldc_motor.spin2`'s started-state predicate is the next step; do not
-design a bench cell for it (P10 — the bench certifies, it never engineers).
+> ### ⛔ RESOLVED 2026-09-17 — HARNESS DEFECT, and it invalidates three PASSes in this segment
+>
+> **The source read is done and there is no driver defect here.** `ERR_NOT_STARTED` is −1007, so the
+> three errors above are **one cause, not three**. `driveAtPowerEx()` refuses when `senseCog == 0`
+> **by design** — *"started means the driver and the front cog both run, and only the front cog
+> commands the driver"* (`isp_bldc_motor.spin2:787-790`).
+>
+> **`wheelL` was properly started.** `startEx()` sets its return **only** after `launchFront()`
+> succeeds, and `launchFront()` calls `stop()` on failure (`:166-171, :415, :426`) — so `cog_ret,3`
+> proves the front cog launched and `senseCog` was set.
+>
+> **The harness never commanded it.** `wheelStart()` calls `steerStop()` first
+> (`test_bench_dual.spin2:6491`), but the LIMIT segment's step helpers command through `steering.`
+> — `dProtectiveStop()` → `steering.getProtectiveStop()` (`:4288`), `dClearProtective()` →
+> `steering.clearProtectiveStop()` (`:4297`). The steering's own wheels are started with
+> `startOwned()`, which documents *"Commands on this instance itself return ERR_NOT_STARTED"*
+> (`isp_bldc_motor.spin2:177`).
+>
+> ⭐ **The error count proves the fan-out:** a `steering.` drive reaches **both** internal wheels, so
+> each refused call prints **two** error lines — exactly what `:87-88` shows. A `wheelL` defect would
+> print one.
+>
+> ⛔ **THREE CELLS IN THIS SEGMENT PASSED ON A MOTOR THAT COULD NOT MOVE.** `ESTOP_REFUSE`,
+> `ESTOP_LATCH` and `ESTOP_CLEAR` all report PASS at `:89-92` — and `ESTOP_CLEAR` PASSes on the line
+> *immediately after* the clear it tests returned −1007. A motor refusing every command trivially
+> satisfies "did not move" and "is at rest". **These criteria cannot fail on what they name**
+> (doctrine D2).
+>
+> **Therefore `R16-DUAL-WESTOP-D` (LEFT) and `R16-DUAL-FRONTST-D` (LEFT) in §3's table are NOT
+> certified**, and neither is the LEFT `COOPSHUT`. The **BOTH**-motor e-stop evidence from STEERSEG
+> (`:61-63`, `:106`) is unaffected — that segment drove successfully. Filed under **PL-76**.
 
 ### 3c. DERATE-D FAIL is the criterion's band, not the driver
 
