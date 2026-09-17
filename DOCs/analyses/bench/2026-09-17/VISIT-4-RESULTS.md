@@ -32,7 +32,11 @@ cleanly (`BM-END exit,COMPLETE`, `trap_code 0`, `unrecov 0`); char ended `BC-END
 
 ---
 
-## 1. NEW FINDING — the t0 load emitted nothing (PL-69)
+## 1. NEW FINDING — the t0 load emitted nothing (PL-74)
+
+> **Two corrections, 2026-09-17.** (a) The punch-list numbers in this report were provisional and each
+> is five low: the four findings below and in §3a, §3b and §4c are **PL-74, PL-75, PL-76 and PL-77**.
+> (b) **The mechanism this section infers is REFUTED** — see the block at the end of it.
 
 **MEASURED.** `debug_260917-125221.log` is 19 lines: `[DOWNLOAD SUCCESS] test_bench_t0.bin |
 Size: 43780 bytes` (L16), then `Session Ended` 14 s later (L18). Not one program line.
@@ -60,6 +64,21 @@ cells are NOT_BUILT.**
 
 ⛔ **The error contract («#3554», «#3555») is therefore NOT certified by Visit 4**, except for the
 one steering cell that rode the char tier (§2). This gates the 6.0.0 tag.
+
+> ## ⛔ "BUILT WITHOUT `-d`" IS REFUTED. Corrected 2026-09-17; see **PL-74**.
+>
+> **MEASURED**, compiling `test_bench_t0.spin2` with `-D BENCH_CFG`: **43 784 bytes with `-d`, 25 764
+> bytes without**, against the **43 780** that downloaded. 43 780 is unambiguously a *debug* build — the
+> four-byte difference from today's is the one PASM long PL-78's fix added afterwards. `tools/bench-run.sh`
+> has exactly one compile line and it passes `-d` to every tier.
+>
+> **So the image carried the debug kernel and the kernel never emitted.** Why is **undetermined**, and no
+> mechanism is offered for it (doctrine overlay P8). It has not recurred: the five other loads all show
+> `Cog0 INIT` within 20 ms of download.
+>
+> **What was built instead** is the half that does not depend on knowing the cause: the runner now reads
+> the log the run just wrote and refuses a load with no `CogN INIT` line, or with INIT lines and not one
+> program line. The ten cells remain NOT_BUILT and are on the Visit 5 sheet.
 
 ---
 
@@ -279,7 +298,12 @@ stop itself moved only 985 → 1 031.**
 rests on that same reading, and this is an independent measurement agreeing with it. It also means
 **PL-78's fix cannot change stopping behaviour** — a useful control for the next visit.
 
-### 4c. DISTM-B FAIL — metres are off by ~1 000× and inverted (PL-72)
+### 4c. DISTM-B FAIL — metres are off by ~1 000× and inverted (PL-77)
+
+> **SUPERSEDED in part, 2026-09-17: the magnitude AND the sign are one corrupted value**, the steering
+> object's own `tickInMM_x100` at about −544 643 — not a conversion defect. See §4d's correction and
+> **PL-84**. The two harness defects PL-77 records (the `abs()` and the snapshot-vs-live read) were real
+> and are fixed; they were simply not the whole of it.
 
 **MEASURED**, L7547:
 
@@ -295,13 +319,34 @@ does not survive this measurement and must be re-checked before it ships in the 
 
 ### 4d. Why FLTAPI / FLTRETRY / STOPLIM are NOMEAS
 
-**MEASURED**, L7546–7551: `BM-OVERSHOOT … why,NOT_REACHED` (target 529, tracked 2 688), then
-`BM-ABORT seg,OVERSHT reason,ABS_CURRENT value,2_217 scope,TRIAL`, then
-`BM-FLTAPI … why,ABORTED, retry_err,NA, retry_ms,NA, retry_ok,FALSE`.
-
-The overshoot trial tripped the absolute-current abort, so the 180° fault provocation never ran and
-the three cells behind it have no data. **Reported as NOMEAS, not as passes.** The abort itself is
-the instrument working; the cells are owed to Visit 5 with a stimulus that does not trip it.
+> ## ⛔ THIS SECTION WAS WRONG. Corrected 2026-09-17 from the log; see **PL-84**.
+>
+> **What it said:** the overshoot trial tripped the absolute-current abort, so the 180° provocation
+> never ran, and the three cells are *"owed to Visit 5 with a stimulus that does not trip it."*
+>
+> **What the log says.** The abort is **`tid,25`** — the fault-API trial's own deliberate 180° offset
+> provocation, which is that stimulus doing its job. It is **not** an overshoot trial and **not** a
+> distance stop. The stimulus was never the problem.
+>
+> **The real cause, and it is far worse.** *Every* OVERSHT distance trial was **refused**:
+> `L7281 ! ERROR: driveForDistance() rejected eError = -1_012` (`ERR_LIMIT_UNRESOLVABLE`). **Nothing
+> moved in the entire segment** — every `BM-TS` row of trials 23 and 24 reads `pos,0 hw,0 st,STOPPED
+> d,1_600`, and `BM-TRACE-END … end,TIMEOUT`. `STOPLIM` is NOMEAS with `n,0` because no trial ever
+> produced a stop to measure.
+>
+> **One value explains it, and the arithmetic closes to the digit.** The steering object's own
+> `tickInMM_x100` held about **−544 643**: `getDistance(DDU_M)` returning −14 640 from 2 688 ticks
+> needs exactly that, and `304 800 / −544 643` truncates to 0, which is `< 1`, which **is**
+> `ERR_LIMIT_UNRESOLVABLE`. It also supersedes §4c below.
+>
+> ⛔ **So finding C-3, the distance overshoot — this segment's primary job — is UNMEASURED at Visit 4**,
+> and the three NOMEAS cells come back as soon as the segment drives. Full write-up, the cause candidate
+> and what is *not* established: **PL-84**.
+>
+> **Why this section got it wrong:** it was written from the records around the abort rather than from
+> the captured samples a few hundred lines above them. Doctrine overlay P8 now carries the rule —
+> *my own analysis document is a record, not the evidence.* This block is that rule's own first
+> customer.
 
 ---
 
