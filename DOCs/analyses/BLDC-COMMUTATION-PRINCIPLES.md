@@ -16,6 +16,15 @@ with `p2kb-mcp`; what the driver code actually does stays with the source.
 > around, of course. That gives us 4,096 positions, from which we can determine what plus and
 > minus 90° of electrical angle would be."*
 
+**Added 2026-09-17**, relayed by Stephen, and **he confirms the "hoverboard wheels" are our 6.5″
+hub motor**:
+
+> *"In the little motor we are using, there are several electrical revolutions per mechanical
+> revolution. We take the 12-bit reading of the angle and multiply it by 7 to get the phase angle,
+> modulus FFF. We multiply by 7 because there are seven electrical revolutions per mechanical
+> Revolution. I think those hoverboard wheels are like 23 electrical revolutions per mechanical
+> Revolution."*
+
 ## What they state, as principles
 
 1. **Drive at ±90° electrical from the rotor's present electrical position.** +90° for one
@@ -69,6 +78,78 @@ locate by the quoted instruction).
    - Resolve rotor angle better than 60°: interpolate within a sector from the time since the
      last hall edge and the current speed, or estimate it from the phase voltages the driver
      already samples every cycle (`sense_u/v/w`).
+
+## The 2026-09-17 note: the method ports, the number conflicts, and we cannot settle it
+
+Two separate things arrived in that note. **One is a technique we can use. The other is a
+factual conflict about our own motor that none of our measurements can resolve.**
+
+### 1. The method — sound, standard, and it needs something we do not have
+
+`electrical_angle = (mechanical_angle_12bit × pole_pairs) MOD 4096` is the textbook conversion,
+and `MOD $FFF` is the free wrap the designer points out: with 4,096 positions, the multiply
+overflows into exactly the wrap you want.
+
+⛔ **But it starts from a 12-bit MECHANICAL angle, and we never have one.** Their motor evidently
+carries an absolute position sensor reading 0–4,095 over one mechanical revolution. **We have three
+hall sensors.** Those give **6 states per electrical cycle** and nothing in between, and we only
+ever recover mechanical position by *accumulating* hall ticks — the opposite direction of travel
+from their formula.
+
+So the formula cannot be ported. **The principle underneath it still holds**, and it sharpens what
+this document's §"How the principles apply" item 3 already proposed: to drive at ±90° we need
+electrical angle far finer than 60°, and our route to it is sub-sector interpolation (edge time ×
+speed) or an estimate from the phase voltages we already sample — not a multiply.
+
+⭐ **It also explains the gap in kind, not just degree.** Their 4,096 positions per electrical cycle
+against our 6 is not a tuning difference; it is a different sensing architecture. That is worth
+knowing before anyone proposes "just do what the designer does."
+
+### 2. The number — the designer says 23, our library says 15
+
+| Source | Electrical cycles per mechanical revolution | Hall ticks per revolution | Mechanical degrees per tick |
+|---|---|---|---|
+| **The library** (`hallTicInfoForMotor()`, `src/isp_bldc_motor.spin2:1464-1466`) | **15** (30 poles) | **90** | **4°** |
+| **The board designer**, 2026-09-17, hedged — *"I think … like 23"* | **23** (46 poles) | 138 | 2.61° |
+
+⛔ **If 23 is right, every distance and rotation reading in the library is wrong by 53 %** —
+`getDistance()`, `getRotationCount()`, `stopAfterDistance()`, `stopAfterRotation()` and the mm/tick
+constant all divide by `ticsPerRotation`.
+
+**We cannot settle it from anything we hold. Every apparent confirmation is circular** (DERIVED,
+checked 2026-09-17):
+
+- **The distance math confirms nothing.** `mm_x100 576` = 5.76 mm/tick matches a 518.6 mm
+  circumference ÷ 90 — but the 90 is the input to that arithmetic, not an independent check.
+- **The Visit 4 speed ladder confirms nothing here.** It measures **hall ticks per second**, and
+  ticks/s = electrical-revs/s × 6. That product is **independent of how many electrical cycles fit
+  in a mechanical revolution**, so a ladder that tracked prediction to <0.5 % across 48 rungs would
+  have done so identically under either number.
+- **`R4-CHAR-RPM` confirms nothing here.** The driver's rpm and the harness's reference both derive
+  from the same `ticsPerRotation`, so agreement to ±1 rpm is agreement with itself.
+
+**The tell this document's own §"How the principles apply" warns about applies to us:** a finding
+that exists only if the paperwork is right. `ticsPerRotation := 90` is a **library constant — a
+claim** (doctrine overlay P8), and no bench visit has ever anchored it.
+
+### The discriminator, and it is nearly free
+
+⭐ **Rotate one wheel through exactly one mechanical revolution by hand, motor unpowered, and count
+hall ticks.**
+
+| Ticks counted | Verdict |
+|---|---|
+| **90** | the library is right; 15 electrical cycles; the designer's "23" was a hedged recollection about a motor family, not this unit |
+| **138** | the designer is right; **the library's distance and rotation math is off by 53 %** and that is a release-blocking defect |
+| anything else | neither — and the sector geometry needs measuring before anything else is trusted |
+
+This is the **hand-rotation anchor for `hallTicsPerRotation`** already listed as owed from the
+certification pass, and **Visit 4 did not measure it** — the `char` tier carries no such cell.
+
+It needs no rail power, no motion under command and no instrument beyond the driver's own tick
+counter, so it does not carry the risks that usually make a run expensive. **It is the one
+measurement where the bench can settle something the source cannot**, because the source only
+restates the constant under question.
 
 ## The two motors are not the same problem
 

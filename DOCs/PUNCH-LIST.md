@@ -2641,6 +2641,53 @@ threshold, the honest result is **NOMEAS with a why**, exactly as `R16-DUAL-BLOC
 (`why,NOT_BLOCKED`, L81) and as the LEFT motor's own DERATE cell does (`n,0`, L113). A designed NOMEAS is a
 result; a FAIL on an unrelated magnitude is noise.
 
+### PL-81 -- `ticsPerRotation` = 90 has never been anchored, and the board designer says it should be 138
+
+**Raised 2026-09-17** from the board designer's note relayed by Stephen, who confirms *"the 6.5" is
+the hoverboard motor he refers to"*. Recorded in
+[`analyses/BLDC-COMMUTATION-PRINCIPLES.md`](analyses/BLDC-COMMUTATION-PRINCIPLES.md).
+
+**THE CONFLICT.**
+
+| Source | Electrical cycles / mech rev | `ticsPerRotation` | `degreesPerTic` |
+| --- | --- | --- | --- |
+| The library, `src/isp_bldc_motor.spin2:1464-1466` | **15** | **90** | **4** |
+| The board designer, hedged -- *"I think those hoverboard wheels are like 23"* | **23** | 138 | 2.61 |
+
+⛔ **If the designer is right, `getDistance()`, `getRotationCount()`, `stopAfterDistance()`,
+`stopAfterRotation()` and the mm-per-tick constant are all wrong by 53 %.** That is
+release-blocking for 6.0.0.
+
+**NOTHING WE HOLD DISCRIMINATES THEM, and I checked each candidate** (DERIVED 2026-09-17):
+
+- The distance arithmetic (`mm_x100 576` = 5.76 mm/tick against a 518.6 mm circumference) **divides
+  by the 90 under question** -- circular.
+- The Visit 4 speed ladder measures **ticks per second**, and ticks/s = electrical-revs/s x 6.
+  **That product does not depend on electrical-cycles-per-mechanical-revolution at all**, so the
+  <0.5 % agreement across 48 rungs would have looked identical under either number.
+- `R4-CHAR-RPM`'s ±1 rpm agreement uses the same `ticsPerRotation` on both sides of the comparison
+  -- agreement with itself.
+
+`ticsPerRotation := 90` is a **library constant, i.e. a claim** (doctrine overlay P8), and **no
+bench visit has ever anchored it.** The hand-rotation anchor was listed as owed from the
+certification pass and Visit 4 did not carry a cell for it.
+
+**THE DISCRIMINATOR, and it is nearly free.** Rotate one wheel through exactly one mechanical
+revolution by hand, motor unpowered, and count hall ticks: **90** confirms the library, **138**
+confirms the designer and makes this release-blocking, anything else means the sector geometry
+itself needs measuring first. No rail power, no commanded motion, no instrument beyond the driver's
+own tick counter.
+
+**This is the one open question where the bench can settle something the source cannot**, because
+the source only restates the constant under question. It is the named cell owed against the
+standing rule that a run must decide something no reading can.
+
+*Note the designer's other number is not in conflict:* their *"little motor ... multiply by 7"* is
+a different motor from either of ours (ours are 15 and 4 pole pairs), and their
+`electrical = mechanical_12bit x pole_pairs MOD $FFF` method presumes an absolute 12-bit mechanical
+sensor. **We have three halls and 6 states per electrical cycle**, so the method does not port even
+though the ±90° principle it serves still holds -- see PL-26.
+
 ---
 
 ## Archived
