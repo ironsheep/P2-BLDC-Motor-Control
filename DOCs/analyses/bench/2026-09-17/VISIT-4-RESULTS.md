@@ -189,15 +189,22 @@ cause of three of part D's four NOMEAS results (TIMESTOP both forms, WTIMSTOP).
 > each refused call prints **two** error lines — exactly what `:87-88` shows. A `wheelL` defect would
 > print one.
 >
-> ⛔ **THREE CELLS IN THIS SEGMENT PASSED ON A MOTOR THAT COULD NOT MOVE.** `ESTOP_REFUSE`,
-> `ESTOP_LATCH` and `ESTOP_CLEAR` all report PASS at `:89-92` — and `ESTOP_CLEAR` PASSes on the line
-> *immediately after* the clear it tests returned −1007. A motor refusing every command trivially
-> satisfies "did not move" and "is at rest". **These criteria cannot fail on what they name**
-> (doctrine D2).
+> ⚠ **A claim made here earlier is WITHDRAWN.** This block first said three cells passed on a motor
+> that could not move, and that the LEFT e-stop rows were therefore uncertified. **That is refuted
+> by the harness source.** `dStepEstopSet()` (`test_bench_dual.spin2:3862-3866`) gates on
+> `dToSpeed(side)` and **SKIPS all three cells as NOMEAS** unless the platform actually reached
+> speed. They cannot pass on a motor that never moved — the positive limb I said was missing is
+> there.
 >
-> **Therefore `R16-DUAL-WESTOP-D` (LEFT) and `R16-DUAL-FRONTST-D` (LEFT) in §3's table are NOT
-> certified**, and neither is the LEFT `COOPSHUT`. The **BOTH**-motor e-stop evidence from STEERSEG
-> (`:61-63`, `:106`) is unaffected — that segment drove successfully. Filed under **PL-76**.
+> **So the PASSes mean the motor did reach speed, and `R16-DUAL-WESTOP-D` (LEFT),
+> `R16-DUAL-FRONTST-D` (LEFT) and the LEFT `COOPSHUT` stand as certified.** §3's table is unchanged.
+>
+> ⚠ **What remains genuinely open**, as a question rather than a finding: two
+> `driveAtPowerEx() motor not started` lines and one `clearEmergency() … −1_007` appear between the
+> start and those passing cells, so they came from calls the cells do not depend on — **and which
+> calls is not yet identified.** `ESTOP_CLEAR` also recorded `measured,0` (`NO_ERROR`) on the line
+> after a `clearEmergency()` printed −1_007, so either a different object printed it or an error was
+> aggregated away. An error nothing catches is still worth chasing. Tracked under **PL-76**.
 
 ### 3c. DERATE-D FAIL is the criterion's band, not the driver
 

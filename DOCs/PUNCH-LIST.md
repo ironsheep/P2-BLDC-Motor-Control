@@ -2554,7 +2554,45 @@ path through the front cog. No bench cell is proposed for it -- the bench certif
 > uninitialised instance. It is not -- `init()` sets `byte[@motorId] := 0` deliberately, *"terminate
 > an empty string"* (`:454`). An empty id is the normal state for an instance nobody named.
 >
-> ### ⛔ THE WORSE FINDING: three cells PASSED in a segment where the motor was never started
+> ### ⛔ WITHDRAWN 2026-09-17, same day: "three cells PASSED on a dead motor" is REFUTED
+>
+> **I was wrong, and the source says so plainly.** `dStepEstopSet()`
+> (`test_bench_dual.spin2:3862-3866`) opens with:
+>
+> ```spin2
+>     bAtSpeed := bArmed and dToSpeed(side)
+>     if bAtSpeed == FALSE
+>         dStepSkip(DST_ESTOP_REFUSE, side, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+>         dStepSkip(DST_ESTOP_LATCH,  side, ...)
+>         dStepSkip(DST_ESTOP_CLEAR,  side, ...)
+>     else
+> ```
+>
+> **The positive limb IS established first.** All three cells are SKIPPED, as NOMEAS with a why,
+> unless the platform actually reached speed. They cannot pass on a motor that never moved, which is
+> exactly the property I claimed was missing.
+>
+> **So the PASSes mean the motor DID reach speed** -- `dToSpeed()` drives and waits for
+> `DCS_AT_SPEED`, and returns FALSE if the drive returns anything but `NO_ERROR`
+> (`:3718-3724`). **The single-motor e-stop limb is therefore certified after all**, and the
+> withdrawal I recorded in the Visit 4 report is itself withdrawn.
+>
+> ⚠ **What genuinely remains unexplained, stated as an open question rather than a finding.** Two
+> `driveAtPowerEx() motor not started` lines and one `clearEmergency() ... -1_007` appear in that
+> segment, between the start and the cells that passed. Since the cells passed, those errors came
+> from calls the cells do not depend on -- **and I have not identified which.** Worse,
+> `ESTOP_CLEAR` recorded `measured,0` (`NO_ERROR`) on the line after a `clearEmergency()` printed
+> −1_007, so either a different object printed it or an error was aggregated away between the inner
+> call and the outer return. **An error nothing catches is still a finding**; I simply do not yet
+> know whose.
+>
+> ⛔ **Do not reconstruct a story for it.** Two attempts today built plausible mechanisms that the
+> next read refuted. The next step is to identify the emitting call, not to infer it.
+>
+> *(The original claim is preserved below as written, per this list's convention of keeping what was
+> said and dating what overturned it.)*
+>
+> ### THE CLAIM AS ORIGINALLY FILED -- three cells PASSED in a segment where the motor was never started
 >
 > **MEASURED**, `bench/2026-09-17/debug_260917-125859.log:89-92`, interleaved with the errors:
 >

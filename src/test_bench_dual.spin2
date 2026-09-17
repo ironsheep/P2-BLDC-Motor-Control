@@ -3675,22 +3675,31 @@ PRI dResetTracking(side) : eError
         eError := (side == SIDE_RIGHT) ? wheelR.resetTracking() : wheelL.resetTracking()
     beat(CP_LIB_COMMAND)
 
-PRI dFrontStats(side) : nPasses, nLate, nMaxTicks, nStackHi
-' This form's front-cog loop health.
+PRI dFrontStats(side) : nPasses, nLate, nMaxTicks, nStackHi, nStackOf
+' This form's front-cog loop health, and the stack allocation its high-water mark is measured against.
+'
+' PL-75: THE SIZE COMES FROM THE OBJECT THAT OWNS THE STACK, never from a constant kept here. The
+' steering front cog services two wheels and is sized separately from a wheel's own front cog, so
+' one number cannot describe both -- and a record that pairs a mark with the wrong size can report a
+' saturated stack as a healthy one.
 '
 ' @param side - SIDE_BOTH or SIDE_LEFT
 ' @returns nPasses - passes since the cog was launched
 ' @returns nLate - passes that overran their slot
 ' @returns nMaxTicks - longest pass body, in system ticks
 ' @returns nStackHi - stack longs ever used
+' @returns nStackOf - the allocation that mark is against, from the same object
 
     beat(CP_LIB_STEER_QUERY)
     if side == SIDE_BOTH
         nPasses, nLate, nMaxTicks, nStackHi := steering.testGetFrontStats()
+        nStackOf := steering.STACK_SIZE_LONGS
     elseif side == SIDE_RIGHT
         nPasses, nLate, nMaxTicks, nStackHi := wheelR.testGetFrontStats()
+        nStackOf := wheelR.STACK_SIZE_LONGS
     else
         nPasses, nLate, nMaxTicks, nStackHi := wheelL.testGetFrontStats()
+        nStackOf := wheelL.STACK_SIZE_LONGS
     beat(CP_LIB_STEER_QUERY)
 
 PRI dShutdown(side)
@@ -3992,12 +4001,20 @@ PRI dStepTimeStop(side) | bArmed, bAtSpeed, deadlineMs, eError, restMs, lateMs, 
     dRest(side)
     instIdle()
 
-PRI dStepFrontStats(side) | nPasses, nLate, nMaxTicks, nStackHi, slotIdx, bHealthy
+PRI dStepFrontStats(side) | nPasses, nLate, nMaxTicks, nStackHi, nStackOf, slotIdx, bHealthy
 ' FRONTST: the front cog kept its 1 kHz slot, never overran its stack, and never fell behind.
 '
 ' Read with the object still running and the platform at rest, so the numbers cover every step this part
 ' has just put the cog through. A late pass is counted and never replayed, so ZERO late passes is the
 ' criterion, not a small number of them.
+'
+' PL-75: THE STACK CRITERION IS AGAINST THE OWNING OBJECT'S OWN SIZE, not a constant kept in this
+' file. It used to judge every cog against D_FRONT_STACK_HI, which no object ever sees; the two
+' front cogs are sized differently (the steering's services two wheels), so one number judged both
+' wrongly the moment they diverged.
+' The comparison stays STRICTLY LESS on purpose: a mark EQUAL to the size is SATURATED -- every
+' sentinel long is gone, so "used all of it" and "used more than all of it" are indistinguishable,
+' and that must not read as healthy (doctrine D2: a discovery failure must never render as a value).
 '
 ' @param side - SIDE_BOTH (the steering front cog) or SIDE_LEFT (the wheel's own)
 '
@@ -4005,15 +4022,16 @@ PRI dStepFrontStats(side) | nPasses, nLate, nMaxTicks, nStackHi, slotIdx, bHealt
 ' @local nLate - passes that overran their slot
 ' @local nMaxTicks - longest pass body, in system ticks
 ' @local nStackHi - stack longs ever used
+' @local nStackOf - the allocation that mark is against, from the owning object
 ' @local slotIdx - accumulator slot: 0 the steering cog, 1 the wheel's
 ' @local bHealthy - every criterion held
 
-    nPasses, nLate, nMaxTicks, nStackHi := dFrontStats(side)
+    nPasses, nLate, nMaxTicks, nStackHi, nStackOf := dFrontStats(side)
     slotIdx := (side == SIDE_BOTH) ? SLOT_LEFT : SLOT_RIGHT
-    bHealthy := (nPasses > 0) and (nLate <= D_FRONT_LATE_HI) and (nMaxTicks < D_FRONT_PASS_TICKS_HI) and (nStackHi < D_FRONT_STACK_HI)
+    bHealthy := (nPasses > 0) and (nLate <= D_FRONT_LATE_HI) and (nMaxTicks < D_FRONT_PASS_TICKS_HI) and (nStackHi < nStackOf)
     bSfFrontRan[slotIdx] := (nPasses > 0)
     bSfFrontOk[slotIdx] := bHealthy
-    emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi)
+    emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi, nStackOf)
 
 PRI dStepCoopShut(side) | startMs, elapsedMs
 ' COOPSHUT: stop() returns inside D_COOPSHUT_MS.
@@ -8135,15 +8153,22 @@ PRI emitDStep(side)
     whyField(dsWhy)
     emitRecord()
 
-PRI emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi)
+PRI emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi, nStackOf)
 ' BM-FRONTST: one front cog's loop health, with the pass time in microseconds beside the raw ticks so the
 ' reading does not have to be divided by a clock the reader has to look up. Worst case 174 bytes.
+'
+' PL-75: stack_of is now the size the OBJECT reports alongside its own mark, not a harness constant.
+' It used to print D_FRONT_STACK_HI, which is a number this file holds and the object never sees, so
+' the record would have kept saying 128 however much the object actually allocated -- and the two
+' front cogs do not have the same allocation. A record that carries both numbers from one source
+' cannot misreport a saturated mark as a healthy one.
 '
 ' @param side - SIDE_BOTH (the steering front cog) or SIDE_LEFT (the wheel's own)
 ' @param nPasses - passes since launch
 ' @param nLate - passes that overran their slot
 ' @param nMaxTicks - longest pass body, in system ticks
 ' @param nStackHi - stack longs ever used
+' @param nStackOf - the allocation that mark is measured against, from the same object
 
     recBegin(@"BM-FRONTST")
     benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
@@ -8153,7 +8178,7 @@ PRI emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi)
     benchLog.numField(@"max_us", nMaxTicks / TICKS_PER_US, LIM_MID)
     benchLog.numField(@"slot_us", US_PER_SEC / wheelL.FRONT_LOOP_HZ, LIM_SMALL)
     benchLog.numField(@"stack_hi", nStackHi, LIM_SMALL)
-    benchLog.numField(@"stack_of", D_FRONT_STACK_HI, LIM_SMALL)
+    benchLog.numField(@"stack_of", nStackOf, LIM_SMALL)
     whyField(WHY_NONE)
     emitRecord()
 

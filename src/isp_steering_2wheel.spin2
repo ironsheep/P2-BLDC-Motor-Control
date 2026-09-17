@@ -215,7 +215,7 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         frontPasses := 0
         frontLatePasses := 0
         frontMaxPassTicks := 0
-        longfill(@taskStack, ltWheel.STACK_SENTINEL, ltWheel.STACK_SIZE_LONGS)   ' testGetFrontStats() finds the high-water mark from this
+        longfill(@taskStack, STACK_SENTINEL, STACK_SIZE_LONGS)   ' PL-75: this object's own size; testGetFrontStats() finds the high-water mark from this
 
         frontCogId := cogspin(NEWCOG, frontLoop(), @taskStack)
         if frontCogId < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
@@ -1207,10 +1207,15 @@ PUB testRightResetMaxValues() : eError | eStatus, eLeftStatus, eRightStatus
 PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater | longIdx
 '' TESTING USE: return the steering front cog's loop health counters and its stack high-water mark
 ''
+'' PL-75: the mark is measured against THIS object's STACK_SIZE_LONGS, which a caller reads as
+'' steering.STACK_SIZE_LONGS -- it is NOT the motor object's. This cog services TWO wheels and is
+'' sized separately. A mark equal to that size means the reading is SATURATED: the sentinel is gone
+'' everywhere, so "used all of it" and "used more than all of it" cannot be told apart.
+''
 '' @returns nPasses - passes the front cog has started since it was launched
 '' @returns nLatePasses - passes that overran their slot and were re-anchored, never caught up
 '' @returns nMaxPassTicks - the longest pass body seen, in system ticks
-'' @returns nStackHighWater - stack longs ever used, of the motor object's STACK_SIZE_LONGS; STACK_SIZE_LONGS itself means an overflow is possible
+'' @returns nStackHighWater - stack longs ever used, of this object's STACK_SIZE_LONGS
 
 ' Local Variables:
 ' @local longIdx - index of the stack long being inspected, from the top down
@@ -1219,9 +1224,12 @@ PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater |
     nLatePasses := frontLatePasses
     nMaxPassTicks := frontMaxPassTicks
     ' the stack was filled with STACK_SENTINEL before launch and grows upward from its base
+    ' PL-75: scanned against THIS object's size -- scanning a 256-long stack to 128 would cap the
+    '  mark at 128 and make the instrument blind to the overflow it exists to detect (doctrine D2:
+    '  a discovery failure must never render as a value)
     nStackHighWater := 0
-    repeat longIdx from ltWheel.STACK_SIZE_LONGS - 1 to 0
-        if taskStack[longIdx] <> ltWheel.STACK_SENTINEL
+    repeat longIdx from STACK_SIZE_LONGS - 1 to 0
+        if taskStack[longIdx] <> STACK_SENTINEL
             nStackHighWater := longIdx + 1
             quit
 
@@ -1406,6 +1414,22 @@ CON { -- TASK: the steering front cog -- }
 '  seen and taken within one drive pass, about 1.5 ms. The DECELERATION distance is unchanged and
 '  dominates every distance stop (C-4: 76 ticks from half speed).
 
+' PL-75: THIS COG NEEDS ITS OWN STACK SIZE, and until now it borrowed the motor object's.
+'  isp_bldc_motor's STACK_SIZE_LONGS sizes a front cog that services ONE wheel. This one services
+'  TWO through the front*() routines, so one constant cannot describe both call depths.
+'  MEASURED at Visit 4: the single-motor front cog peaked at 114 of 128 and passed; THIS cog
+'  reported 128 of 128 -- its high-water mark had reached its whole allocation.
+'  A SATURATED READING IS THE DANGER, not the number. The mark is found by looking for surviving
+'  STACK_SENTINEL longs, so once every sentinel is gone, "used exactly all of it" and "used MORE
+'  than all of it" are indistinguishable -- and what lies immediately past taskStack is this
+'  object's own tracking state (deltaTicks, tickInMM_x100), which every reported distance depends on.
+'  So this is sized with real headroom, for the same reason and by the same reasoning that took the
+'  motor object's constant from 48 to 128: the per-frame need is still not established, so make it
+'  generous AND observable. testGetFrontStats() reports the mark; the NEXT reading is the one that
+'  finally measures the true requirement, because it will not be saturated.
+  STACK_SIZE_LONGS = 256                ' PL-75: was ltWheel.STACK_SIZE_LONGS (128), measured saturated
+  STACK_SENTINEL   = ltWheel.STACK_SENTINEL   ' the fill pattern stays shared: it is a protocol value, not a size
+
 VAR { time values & arrays }
 
     long    ticks1ms
@@ -1413,7 +1437,7 @@ VAR { time values & arrays }
 
     long    senseCog                    ' the front cog: cogid + 1, 0 when not running
 
-    long    taskStack[ltWheel.STACK_SIZE_LONGS]
+    long    taskStack[STACK_SIZE_LONGS]     ' PL-75: this object's own size, not the motor object's
 
 VAR { Data for Motor Position Tracking }
     long    deltaTicks
