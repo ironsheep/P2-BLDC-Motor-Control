@@ -233,65 +233,6 @@ documents this inline.
 Write this back into `DRIVER-AUDIT-2026-09-09.md` as a new finding when
 «#3481» runs.
 
-### PL-9 -- HAZARD GUARD: do not "fix" A1's enum comparison on its own
-
-> **DONE IN THE TREE — sweep at closeout.** MEASURED 2026-09-12 against source `d4f9d39`: the
-> conditional is already deleted and `gapInMS := 260` is unconditional
-> (`isp_bldc_motor.spin2:278-286`, with an A1/PL-9 comment). Bench Pass 1 printed
-> `dead_gap = 70` under both Rev A and Rev B detection (`2026-09-12/debug_260912-153807.log:467`).
-> The rename of `gapInMS` (it holds nanoseconds) is still owed.
-
-> **Fixed in tree 2026-09-13 («#3533»):** `gapInMS` renamed to `gapInNs` throughout
-> `src/isp_bldc_motor.spin2` (it is a PRI-local variable, never PASM-addressed, so the rename is
-> pure text substitution -- confirmed by reading `init()`'s parameter list and both use sites
-> before renaming). This is a static/compile-only property; the build and style gates cover it.
-> No other `src/*.spin2` file names it.
-
-**This is a booby trap, and it looks like a one-word fix.**
-
-`isp_bldc_motor.spin2:198` compares `eDetectedBoard` (which holds `REV_*`, 21/22)
-against `BRD_REV_B` (32). It can never match, so **every board gets
-`gapInMS := 260`** instead of Rev B's intended 52.
-
-Parallax's **Rev B** board documentation states the **recommended minimum
-deadtime is 250 ns**, because although the MOSFET drivers are fast (~20 ns
-propagation, 7.2 ns rise, 5.5 ns fall) the **MOSFETs** need time to respond;
-below that, both FETs are partially on and the channel draws momentary
-overcurrent.
-
-| | value | vs. 250 ns minimum |
-| --- | --- | --- |
-| what the code does today | **260 ns** | compliant |
-| what the code intends for Rev B | **52 ns** | **~5x below** |
-
-**So the defect is currently protecting the hardware.** Repairing the comparison
-alone drops every Rev B board to ~52 ns and produces exactly the overcurrent the
-vendor warns about.
-
-**Both manuals carry the same 250 ns minimum**, despite Rev A using a MIC4604
-(39 ns propagation, ~20 ns rise/fall) and Rev B a UCC27211D (~20 ns propagation,
-7.2/5.5 ns rise/fall). Rev B's drivers are ~2x faster and the requirement is
-identical -- because the limit is set by **MOSFET response, not driver speed**.
-
-**So the per-revision distinction does not exist, and the fix is to DELETE the
-conditional**, not to repair the comparison. A single `gapInNs := 260` for both
-boards is exactly what the hardware already receives, so it changes nothing on
-the bench, and it removes one of root-cause-A's three enum sites outright.
-
-**Keep 260, do not tighten to 250:** `(ticks1us * gap) / 1_000` truncates, and a
-literal 250 gives 67 clocks = **248.1 ns at 270 MHz, under spec**. 260 clears
-250 ns at 200/270/300 MHz.
-
-**And the prize for chasing a shorter gap is 0.9 % of duty range** (1.14 % at
-260 ns vs 0.23 % at 52 ns). Too small to justify any deviation, and too small to
-explain jerk -- so **commit `2269894`'s premise does not survive** on measurement
-grounds as well as documentary ones. Jerk needs a different mechanism (most
-likely C-5's ramp work). Rename `gapInMS` while there; it holds nanoseconds.
-
-Full analysis: **A1** in `DOCs/analyses/DRIVER-AUDIT-2026-09-09.md`. Bench
-criterion for T0-1 was inverted to match. Raised 2026-09-10 from vendor
-documentation Stephen supplied.
-
 ### PL-8 -- `useDebug` is declared, cleared, and never read
 
 `isp_bldc_motor.spin2` declares `LONG useDebug` in its VAR block and assigns it
@@ -640,19 +581,6 @@ Sites found by search, 2026-09-12, with the task that owns each:
 | `test_bench_detect.spin2` `agree` and similar 0/1 fields | `? 1 : 0` | **deliberately left** until Bench Pass 2b's re-run is diffed against the 2026-09-11 log, whose format it must match |
 
 The rule now travels with every dispatch (sprint established decisions, item 13).
-
-### PL-24 -- a second `start()` on a running motor orphans the first driver cog
-
-**Found 2026-09-12 by the «#3500» agent** (DERIVED from source, not observed on hardware).
-`startEx()` in `src/isp_bldc_motor.spin2` launches a new driver cog without stopping one this
-instance already runs. The first cog keeps driving the same pins with no handle left to stop
-it, and since «#3500» `getBoardType()` then returns the revision recorded at the first start --
-possibly for a different pin group. **Being fixed in «#3499»:** `startEx()` calls `stop()`
-first whenever this instance already runs a driver or holds a pin claim, so the cog is freed,
-the pins and claim are released, and the new start begins clean -- an orphaned cog can never
-exist. STEPHEN 2026-09-12: *"why wouldn't a second start do a driver stop to free the cog then
-start?"* The same stop-first removes the stale claim `validatePinBase()` could leave when a
-restart names an illegal group.
 
 ### PL-25 -- a board reported as not detected makes every current reading negative
 
@@ -2700,55 +2628,26 @@ result; a FAIL on an unrelated magnitude is noise.
 
 ---
 
-## Recently closed
+## Archived
 
-### PL-3 — Doc-drift instrument built — closed 2026-09-09
+Confirmed-done items are swept out of this file, not kept here. **This list carries outstanding
+work only** — that is the one question it answers.
 
-`tools/doc-audit.sh` written and wired to `DOC_AUDIT_COMMAND`, discharging central
-adoption action v6(a). Detects ORPHAN (docs naming methods absent from `src/`, with a
-Spin2 built-in allowlist so it does not cry wolf), DUPLICATE (the same prose maintained
-in 2+ documents — the drift *mechanism*, not just a finding), and COUNT (asserted numbers
-recomputed from their real source). Advisory only, always exits 0. File set discovered
-mechanically.
+| Archive | Swept |
+| --- | --- |
+| [`plans/archive/PUNCH-LIST-ARCHIVE-2026-09-17.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-17.md) | PL-3, PL-4, PL-5, **PL-9**, **PL-24** |
 
-Verified by negative test: perturbing `VERSION` produces a MISMATCH, restoring it returns
-to clean — the checks demonstrably detect rather than merely passing.
-
-**It found six real DUPLICATE pairs on first run**, listed in PL-7.
-
-### PL-4 — README changelog brought current — closed 2026-09-09
-
-README's *Current status → Latest Changes* block stopped at **11 August 2023 /
-v3.0.0** while git tags reached **v5.0.2** — two major releases of user-facing
-history unrecorded, with *Known Issues* still describing v4.1.0 as current.
-
-Reconstructed from commit substance across six tag ranges and added entries for
-**v4.0.0, v4.1.0, v4.2.0, v5.0.0, v5.0.1 and v5.0.2**. *Known Issues* gained a
-v5.0.2 block carrying forward the two long-standing items, and now records that
-the current/power calculation issue — listed since v3.0.0 — was fixed in v5.0.0
-by commit `4c9e4ed`.
-
-### PL-5 — Duplicate `angleTest.spin2` removed — closed 2026-09-09
-
-The repo root held `angleTest.spin2`, byte-identical (1917 bytes) to
-`src/test_angle.spin2`. Verified identical by `diff`, then deleted the root
-copy. It was gitignored and untracked, so the removal touches no commit. The
-`src/` copy is intact and remains covered by the build gate.
+An archive file is never re-edited. If an archived item must be reopened, it comes back here as a
+**new** item that references the archive.
 
 ---
 
-## Removed from this list
+## Open (continued)
 
-**Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
-`scripts/diffSrc`). Tracked here briefly on 2026-09-09, then removed at
-Stephen's direction — **their removal is his to do, not this list's**.
-
-The operating rule stands and is recorded in `CLAUDE.md` and
-`.claude/skill-conventions.md`: all work happens in this work tree, and these
-five must not be run — `src/get` and `scripts/get*` copy *into* `src/` and would
-overwrite the tree from a stale external source. They are vestiges of sharing
-source between a Mac and a Windows machine, which the cross-platform
-`pnut-ts` / `pnut-term-ts` toolset made unnecessary.
+> **Filing correction, 2026-09-17.** PL-67 was sitting below *"Removed from this list"*, which
+> reads as though it had been withdrawn. **It has not** — it is an open harness gap. It is restored
+> to an open section here, and the *Removed* note has moved to the end of the file where it cannot
+> capture a later entry the same way. No wording of PL-67 was changed.
 
 ### PL-67 -- `R2-DETECT-OVERLAP` is owed to a motors-unplugged session, but no build can produce it
 
@@ -2775,3 +2674,21 @@ Nothing else waits on it.
 refused, plus a tier that states the motors-unplugged precondition in the log the way the other preconditions
 are stated. It deliberately drives a board's gate input, so it is a change to a hardware safety guard and wants
 a review before its first run, not a slot before a bench session.
+
+---
+
+## Removed from this list
+
+**Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
+`scripts/diffSrc`). Tracked here briefly on 2026-09-09, then removed at
+Stephen's direction — **their removal is his to do, not this list's**.
+
+The operating rule stands and is recorded in `CLAUDE.md` and
+`.claude/skill-conventions.md`: all work happens in this work tree, and these
+five must not be run — `src/get` and `scripts/get*` copy *into* `src/` and would
+overwrite the tree from a stale external source. They are vestiges of sharing
+source between a Mac and a Windows machine, which the cross-platform
+`pnut-ts` / `pnut-term-ts` toolset made unnecessary.
+
+*This section is last on purpose: anything appended to the file lands after it, in a section of its
+own, rather than reading as though it had been removed (see the 2026-09-17 filing correction above).*
