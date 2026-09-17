@@ -55,6 +55,18 @@
 ''               attended screen uses; STOP is live whenever a wheel can move; the countdown carries a label;
 ''               a heartbeat dot blinks while cog 0 runs; end screens wait for START. BM-PLAN's finds for FLOOR
 ''               and UICHECK corrected (PL-65). No record changes shape; WHY gains OPERATOR_STOP, so FMT stays 3
+''               17 Sep 2026 -- SRC_REV=13, FMT 4: the Visit 4 cells for the 6.0.0 driver work (task 3560).
+''               New part D (-D DUAL_PART_D, tier dual-d): the STEERSEG and LIMIT segments, which certify the
+''               front cog's contract (e-stop latch, ordered stop, cooperative shutdown, tracking reset, time
+''               stop, lockstep, loop health) and current limiting (fold-back, derate, the protective stop),
+''               through the steering object and one wheel. Every motion part now measures LAGBOUND, the
+''               instrument's own running max |err| (the lag limiter's invariant: the unfixed driver saturates
+''               the field at 127). Part B gains STOPCUR and RAMPDROOP on the FAULTB trials, the OVERSHT
+''               stop-limit band and the DDU_M cross-check, and a fault-API trial provoked by a 180-degree
+''               offset with the PL-66 same-power retry after it. Part C gains the STOPDECEL no-regression
+''               reading; part A gains NOFOLD. New records BM-STOPCUR, BM-DISTM, BM-LAG, BM-FRONTST,
+''               BM-LIMST and BM-DSTEP; BM-FLTAPI gains the retry fields. The record set grows, so FMT goes
+''               to 4 the way it went to 3
 ''
 '' =================================================================================================
 
@@ -66,7 +78,7 @@
   block, its calibrated sense channel and the hall inputs.
 
   ONE SOURCE, ONE PART PER BUILD. tools/bench-run.sh chooses the part with -D DUAL_PART_A,
-  DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C, DUAL_PART_FLOOR or DUAL_PART_UICHECK.
+  DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C, DUAL_PART_D, DUAL_PART_FLOOR or DUAL_PART_UICHECK.
   PART_ID comes from one #ifdef chain; with no part flag the build prints part NONE, runs no segment, and ends cleanly.
 
   COG MODEL
@@ -83,7 +95,7 @@
 
   HOW IT IS RUN (from the repo root; each load adds -D BENCH_CFG -D BENCH_QUIET and its part flag)
 
-      tools/bench-run.sh dual-a | dual-clock <clkfreq> | dual-b | dual-brake | dual-c | dual-floor | dual-ui
+      tools/bench-run.sh dual-a | dual-clock <clkfreq> | dual-b | dual-brake | dual-c | dual-d | dual-floor | dual-ui
 
   DEBUG RECORD BUDGET (design sec 6.2). Ceiling: 255 debug records per compiled program.
 
@@ -115,8 +127,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 12                                        ' hand-bumped whenever this file changes
-    FMT_VERSION = 3                                         ' BM- record-format version
+    SRC_REV     = 13                                        ' hand-bumped whenever this file changes
+    FMT_VERSION = 4                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -148,9 +160,10 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_B     - PREFLT, FAULTB, OVERSHT
   '  PART_BRAKE - OUTSIDE (attended: one hand-brake)
   '  PART_C     - PREFLT, BASELINE, POSTFLT
+  '  PART_D     - PREFLT, STEERSEG, LIMIT (task 3560: the front cog's contract and current limiting)
   '  PART_FLOOR - FLOOR (attended: wheels down, brief observation)
   '  PART_UICHECK - UICHECK (attended: every panel control and attended screen, no motor control at all)
-    #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_FLOOR, PART_UICHECK
+    #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK
     PART_COUNT = PART_UICHECK + 1
 
   ' RUN_TIME_CAP_S per load (design sec 4.2 item 6)
@@ -174,6 +187,10 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     PART_ID        = PART_C
     RUN_TIME_CAP_S = 900
 #else
+#ifdef DUAL_PART_D
+    PART_ID        = PART_D
+    RUN_TIME_CAP_S = 900
+#else
 #ifdef DUAL_PART_FLOOR
     PART_ID        = PART_FLOOR
     RUN_TIME_CAP_S = 600
@@ -184,6 +201,7 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 #else
     PART_ID        = PART_NONE
     RUN_TIME_CAP_S = 60
+#endif
 #endif
 #endif
 #endif
@@ -212,6 +230,11 @@ CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
     DCS_ESTOP    = wheelL.DCS_ESTOP
     DCS_MAX      = wheelL.DCS_ESTOP                         ' highest DCS_* value, 0..7
 
+    ' error codes this harness compares against (names, not copies, of the motor object's own)
+    NO_ERROR              = wheelL.NO_ERROR
+    ERR_EMERGENCY_STOPPED = wheelL.ERR_EMERGENCY_STOPPED
+    ERR_PLATFORM_BLOCKED  = wheelL.ERR_PLATFORM_BLOCKED
+
     ' hall inputs: plain inputs at base+5..base+7, read with pinread() (never a smart pin)
     HALL_PIN_OFFSET = 5
     HALL_PIN_SPAN   = 2                                     ' addpins operand: 3 pins
@@ -237,6 +260,9 @@ CON { drive increments and powers }
     LADDER_RUNGS        = LADDER_BASE_RUNGS + LADDER_PROBES
     LADDER_FAULT_STOP   = 2                                 ' consecutive faulted rungs end a sign's ladder
     FB_TRIALS           = 5                                 ' ramp_inc 22, 100, 500, 2_000, 10_000
+    ' RMPDROOP judges the trials whose ramp the motor cannot follow: the three that faulted 3 of 3 at
+    '  Visit 2 (VISIT-2-RESULTS.md sec 6). The two gentle ones are not a test of the limiter.
+    FB_DROOP_MIN_INC    = 500
     STOPMODE_REPS       = 2
     STOPMODE_SPEEDS     = 2                                 ' QTR, HALF
     LIVE_RUNGS          = 3                                 ' QTR, HALF, LIVE_TOP_INCRE
@@ -269,12 +295,13 @@ CON { drive increments and powers }
     OVERSHT_TGT_SHORT   = 105                               ' 60_960 / 576
     OVERSHT_TGT_LONG    = 529                               ' 304_800 / 576
 
-    ' OVERSHT's fault-API trial (task 3552), LAST in the segment. The provocation is the CHEAPEST ONE
-    '  ALREADY PROVEN: a high ramp_inc from standstill, which faulted 3 of 3 at Visit 2 -- trials 3, 4 and
-    '  5 at ramp_inc 500, 2_000 and 10_000 faulted on LEFT POS in 96-186 ms with dsat FALSE, each cleared
-    '  by testResetFault() alone in 31-32 ms (VISIT-2-RESULTS.md sec 6). The fault arrives during SPIN-UP,
-    '  so no stop from speed is in the path and the 10 A abort (PL-55) is not either.
-    FLTAPI_RAMP_INC     = 10_000                            ' commanded on both wheels from standstill
+    ' OVERSHT's fault-API trial (task 3552), LAST in the segment. The Visit 2 provocation -- a high
+    '  ramp_inc from standstill, which faulted 3 of 3 -- is exactly what task 3558's lag limiter now
+    '  prevents, so it would provoke nothing here. The provocation is a commutation offset written this
+    '  far from the pair in force, on both wheels: the field is held where the rotor cannot follow it, the
+    '  position error settles near the offset itself, and the driver's own fault test (at 125 err units,
+    '  above the limiter's LAG_HOLD) trips. DERIVED; the trial prints NO_FAULT if it does not.
+    FLTAPI_OFFSET_DEG   = 180                               ' written on both wheels, both directions
     FLTAPI_POWER        = 50                                ' driveAtPower(50, 50), the segment's own power
     ' The poll must outlast the 3 s auto-clear task 3547 removed, so the latch's SURVIVAL is what is
     '  recorded. 6 s from the command is about 60 of the 130 OUT_POLLS rows, and the rows are the only
@@ -346,6 +373,59 @@ CON { segment timing }
     UI_HILITE_MS          = 500                             ' UICHECK: a received control stays highlighted this long
     RATE_X10_SCALE        = 10_000                          ' ticks * this / ms = ticks per second x10
     X10                   = 10
+
+CON { part D -- the front cog's contract and current limiting (task 3560) }
+
+' Every part-D step drives at D_POWER with the wheels lifted, so nothing here needs the platform to move
+'  across a surface (doctrine overlay P1: every run is wheels-lifted).
+    D_POWER               = 50                              ' half speed, both wheels and the single wheel
+    D_AT_SPEED_MS         = 6_000                           ' bound on reaching AT_SPEED, as LADDER_STEADY_MS
+    D_SETTLE_MS           = 1_000                           ' at speed before the step acts
+    ' The e-stop latch: S-4 recorded emergencyCutoff() self-cancelling in about 125-250 ms, so a hold an
+    '  order of magnitude longer is what separates the fixed latch from the unfixed one.
+    D_ESTOP_HOLD_MS       = 1_500
+    D_ESTOP_REFUSE_MS     = 50                              ' a drive while e-stopped returns its code within this
+    D_POS_TOL_TICKS       = 2                               ' ticks the platform may drift once the coast has ended
+    D_CLEAR_STILL_MS      = 500                             ' after clearEmergency() nothing moves for this long
+    D_ORDERED_DRIVES      = 20                              ' drive calls issued from the helper cog during ORDERED
+    D_ORDERED_PERIOD_MS   = 25
+    ' the ordered-stop helper cog's stack. The library's own front cog carries STACK_SIZE_LONGS for a call
+    '  graph of about this depth, and the helper's need is not established, so it gets the same rather than
+    '  a smaller number nothing has measured.
+    D_ORDERED_STACK_LONGS = wheelL.STACK_SIZE_LONGS
+    D_TIMESTOP_MS         = 2_000                           ' stopAfterTime() limit, DTU_MILLISEC
+    D_TIMESTOP_SLACK_MS   = 20                              ' at rest by the deadline within this
+    D_COOPSHUT_MS         = 20                              ' steering.stop() returns within this (front cog EXIT bound)
+    D_TRACKRESET_MS       = 20                              ' resetTracking() returns within this (unfixed: >= 400 ms)
+    D_TRACKRESET_TOL      = 2                               ' ticks the reset tracking may differ from the raw delta
+    D_LOCKSTEP_SAMPLES    = 1                               ' instrument samples between the two wheels leaving STOPPED
+    D_STEP_POLL_MS        = 5                               ' cog-0 poll cadence inside a part-D step
+    D_REST_MS             = 2_000                           ' bound on the platform reaching rest after a stop
+    ' front-cog loop health (FRONT-COG-IMPLEMENTATION-PLAN.md sec 7.4): a 1 kHz pass must stay inside its
+    '  slot, and the stack high-water must stay under the library's STACK_SIZE_LONGS (128 means overflow
+    '  is possible, so the criterion is strictly below it)
+    D_FRONT_LATE_HI       = 0
+    D_FRONT_PASS_TICKS_HI = TICKS_PER_MS                    ' one pass, in system ticks at this clock
+    D_FRONT_STACK_HI      = wheelL.STACK_SIZE_LONGS         ' high-water must be below this
+
+  ' LIMIT segment: testSetCurrentLimits() lowers the limits so a lifted wheel can reach them, then the
+  '  MOSFET values are restored and read back (I11). The library's own constants are the restore values.
+    D_FOLD_PEAK_A         = 8                               ' FOLDBACK: peak == cont, so only the fold-back acts
+    D_FOLD_CONT_A         = 8
+    D_FOLD_TOL_PCT        = 110                             ' the judged average may exceed the limit by this much
+    D_DERATE_PEAK_A       = 20                              ' DERATE: the average crosses cont with peak well above it
+    D_DERATE_CONT_A       = 8
+    D_DERATE_LO_MS        = 500                             ' the derate arrives in this window (the average is ~1 s)
+    D_DERATE_HI_MS        = 2_500
+    D_DERATE_REST_MS      = 3_000                           ' bound on the peak limit returning after the stop
+    D_BLOCK_PEAK_A        = 1                               ' BLOCKED: the fold-back crushes duty, the rotor cannot follow
+    D_BLOCK_CONT_A        = 1
+    D_BLOCK_WAIT_MS       = 4_000                           ' BLOCKED_PASSES is ~1 s of front passes, plus the spin-up
+    D_FOLD_HOLD_MS        = 3_000                           ' FOLDBACK: the drive is held this long under the low limit
+    D_LIMIT_POLL_MS       = 50                              ' cadence of the limit-state reads inside a limit step
+    D_DERATE_WAIT_MS      = 3_500                           ' bound on the derate arriving, past its window
+    D_LIMIT_PEAK_DEF      = wheelL.I_PEAK_A                 ' the restore values, from the library
+    D_LIMIT_CONT_DEF      = wheelL.I_CONT_A
 
 CON { instrument cog (design sec 2) }
 
@@ -503,6 +583,8 @@ CON { record widths and token lengths }
     TOKMAX_UIKIND    = 7
     TOKMAX_UIRES     = 7
     TOKMAX_BUTTON    = 8
+    TOKMAX_DSTEP     = 12
+    TOKMAX_DRES      = 6
 
 CON { record enums -- each value has a token in the DAT token tables }
 
@@ -517,16 +599,17 @@ CON { record enums -- each value has a token in the DAT token tables }
 
   ' Segment (token = the name after SEG_):
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
-        SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK
-    SEG_COUNT = 13
+        SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT
+    SEG_COUNT = 15
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
         WHY_STOP_TIMEOUT, WHY_NO_SAMPLES, WHY_NO_FAULT, WHY_ABORTED, WHY_INST_NOACK, WHY_INST_STALLED, ...
         WHY_INST_BUSY, WHY_RING_LOST_HEAD, WHY_MOTOR_RETIRED, WHY_OPERATOR_SKIP, WHY_OPERATOR_TIMEOUT, ...
         WHY_NO_PASSTHROUGH, WHY_UNSWEPT_CLOCK, WHY_LADDER_STOPPED, WHY_SYNC_PRECOND, WHY_NO_EXTERNAL_V, ...
-        WHY_NO_EXTERNAL_I, WHY_NO_TEMP_SENSOR, WHY_PART_NOT_BUILT, WHY_OPERATOR_STOP
-    WHY_COUNT = 26
+        WHY_NO_EXTERNAL_I, WHY_NO_TEMP_SENSOR, WHY_PART_NOT_BUILT, WHY_OPERATOR_STOP, ...
+        WHY_NOT_DERATED, WHY_NOT_BLOCKED
+    WHY_COUNT = 28
 
   ' BM-INST event:
     #0, INST_EV_START, INST_EV_STOP, INST_EV_NOSTART, INST_EV_NOACK
@@ -617,6 +700,31 @@ CON { record enums -- each value has a token in the DAT token tables }
     #0, EXIT_COMPLETE, EXIT_ABORTED, EXIT_WATCHDOG
     EXIT_COUNT = 3
 
+  ' BM-DSTEP step (part D; token = the name after DST_). Each is one claim of the front cog's contract
+  '  or of current limiting, measured once and printed with its own numbers:
+  '  DST_ESTOP_LATCH - the e-stop is still latched D_ESTOP_HOLD_MS after emergencyCutoff()
+  '  DST_ESTOP_REFUSE - a drive while e-stopped returns ERR_EMERGENCY_STOPPED, quickly, and nothing moves
+  '  DST_ESTOP_CLEAR - clearEmergency() releases the latch and the platform stays at rest
+  '  DST_ORDERED     - a stop ordered while another cog drives repeatedly leaves both wheels in one state
+  '  DST_COOPSHUT    - stop() returns inside D_COOPSHUT_MS
+  '  DST_TRACKRESET  - resetTracking() at speed returns inside D_TRACKRESET_MS and agrees with the raw delta
+  '  DST_TIMESTOP    - stopAfterTime() leaves the platform at rest by its deadline, with getPower() 0
+  '  DST_LOCKSTEP    - both wheels leave DCS_STOPPED in the same instrument sample
+  '  DST_FOLDBACK    - the judged phase average holds the lowered peak limit, with no fault and still turning
+  '  DST_DERATE      - the derate arrives in its window and the peak limit returns after the stop
+  '  DST_BLOCKED     - the protective stop latches, refuses with its code, and only clearProtectiveStop() releases it
+  '  DST_RETRY       - PL-66: the same power after a fault reaches AT_SPEED again
+    #0, DST_ESTOP_LATCH, DST_ESTOP_REFUSE, DST_ESTOP_CLEAR, DST_ORDERED, DST_COOPSHUT, DST_TRACKRESET, ...
+        DST_TIMESTOP, DST_LOCKSTEP, DST_FOLDBACK, DST_DERATE, DST_BLOCKED, DST_RETRY
+    DST_COUNT = 12
+
+  ' BM-DSTEP result:
+  '  DRES_PASS   - the step's own criterion held
+  '  DRES_FAIL   - it was measured and did not hold
+  '  DRES_NOMEAS - the step could not be provoked on this rig; why names what was missing
+    #0, DRES_PASS, DRES_FAIL, DRES_NOMEAS
+    DRES_COUNT = 3
+
   ' BM-OUT status (from DS_*):
     #0, STAT_MOVING, STAT_HOLDING, STAT_OFF, STAT_UNKNOWN, STAT_FAULTED, STAT_ESTOP
     STAT_COUNT = 6
@@ -660,6 +768,30 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     TRACE_LOST_HI     = 0
     RESET_UNCLEAR_LO  = 0
     RESET_UNCLEAR_HI  = 0
+    ' LAGBOUND (task 3558's lag limiter): the instrument's own running max |err| over stored samples with
+    '  the driver up and not faulted. The driver holds the field at LAG_HOLD (100 err units) and its own
+    '  fault test is at 125; the stored field saturates at 127, which is what an unfixed driver prints.
+    '  The bound sits above LAG_HOLD and below the fault test, so it separates the two.
+    LAG_MAX_LO        = 0
+    LAG_MAX_HI        = 110
+    ' STOPLIMIT (task 3559): each wheel comes to rest within this many ticks of its distance target
+    STOP_LIMIT_LO     = 0
+    STOP_LIMIT_HI     = 2
+    ' STPDECEL: a commanded stop from half speed still takes about as long as it did. MEASURED at Visit 3:
+    '  74-77 ticks from the stop command to rest. This is a NO-REGRESSION guard on the current limiting and
+    '  the lag limiter, which act on the ramp the stop uses, so the band is wide on purpose -- it is here to
+    '  catch a stop that has become much longer or much shorter, not to re-measure C-4.
+    DECEL_TICKS_LO    = 60
+    DECEL_TICKS_HI    = 95
+    ' NOFOLD: a base rung's measured rate as a percentage of the speed law's prediction. Visit 2 measured
+    '  0.946-0.965 of the 2000-pass model and PL-50 rescaled the prediction by 22/23, so a driver that is
+    '  not folding back sits within a few percent of 100.
+    NOFOLD_PCT_LO     = 97
+    NOFOLD_PCT_HI     = 103
+    ' DISTM: getDistance(DDU_M) is whole metres, so agreement is judged to the metre. That still separates
+    '  the defect task 3502 fixed, which was a factor of ten, from correct rounding on a 3 m run.
+    DISTM_TOL_M       = 1
+    MM_PER_M_X100     = 100_000                             ' hundredths of a mm in one metre
     SIGNOFF_ONE_INSTANCE = 1
 
   ' Clock slot of this build (design sec 12.10). The collation lets only the latest build declaring a cell
@@ -907,13 +1039,14 @@ DAT { packed token tables -- zero-separated, indexed by tokenAt(); order follows
 tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
 tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
-                BYTE    "FLOOR", 0, "UICHECK", 0
+                BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0
 tokWhy          BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
                 BYTE    "MOTOR_RETIRED", 0, "OPERATOR_SKIP", 0, "OPERATOR_TIMEOUT", 0, "NO_PASSTHROUGH", 0
                 BYTE    "UNSWEPT_CLOCK", 0, "LADDER_STOPPED", 0, "SYNC_PRECOND", 0, "NO_EXTERNAL_V", 0
                 BYTE    "NO_EXTERNAL_I", 0, "NO_TEMP_SENSOR", 0, "PART_NOT_BUILT", 0, "OPERATOR_STOP", 0
+                BYTE    "NOT_DERATED", 0, "NOT_BLOCKED", 0
 tokInstEv       BYTE    "START", 0, "STOP", 0, "NOSTART", 0, "NOACK", 0
 tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED", 0
 tokRes          BYTE    "OK", 0, "FAULT", 0, "STEADY_TIMEOUT", 0, "WINDOW_TIMEOUT", 0, "NO_COG", 0
@@ -934,6 +1067,10 @@ tokStopBy       BYTE    "TIMER", 0, "OPERATOR", 0, "ABORT", 0
 tokPrompt       BYTE    "BRAKE_L", 0, "FLOOR", 0, "UICHECK", 0
 tokUiKind       BYTE    "CONTROL", 0, "PREVIEW", 0
 tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0
+tokDStep        BYTE    "ESTOP_LATCH", 0, "ESTOP_REFUSE", 0, "ESTOP_CLEAR", 0, "ORDERED", 0
+                BYTE    "COOPSHUT", 0, "TRACKRESET", 0, "TIMESTOP", 0, "LOCKSTEP", 0, "FOLDBACK", 0
+                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0
+tokDRes         BYTE    "PASS", 0, "FAIL", 0, "NOMEAS", 0
 ' operator panel buttons, in BM_BTN_* order
 tokButton       BYTE    "START", 0, "SKIP", 0, "STOP", 0, "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0
                 BYTE    "LOOKSOK", 0, "WRONG", 0
@@ -941,7 +1078,7 @@ tokOpEv         BYTE    "SHOWN", 0, "START", 0, "SKIP", 0, "TIMEOUT", 0, "ANSWER
 tokSegEv        BYTE    "BEGIN", 0, "END", 0, "SKIP", 0
 tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG", 0
 tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAULTED", 0, "ESTOP", 0
-tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "FLOOR", 0, "UI", 0
+tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
 ' driver state DCS_* 0..7; SLOW_TO_CHG shortened to fit the 10-byte st field
 tokDcs          BYTE    "UNKNOWN", 0, "STOPPED", 0, "SPIN_UP", 0, "AT_SPEED", 0, "SPIN_DN", 0
                 BYTE    "SLOW_CHG", 0, "FAULTED", 0, "ESTOP", 0
@@ -954,7 +1091,7 @@ tokCp           BYTE    "INIT", 0, "INST_ACK", 0, "READY", 0, "ZERO", 0, "ATSPEE
 ' BM-PLAN finds, per segment (finding ids joined by "_"), indexed by SEG_*
 tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-3_C-6", 0, "S-3", 0
                 BYTE    "C-5_Z_S-1", 0, "C-3", 0, "M_AF_S-5_Z", 0, "FIELD_Q", 0, "S-9a", 0, "AC", 0
-                BYTE    "UI", 0
+                BYTE    "UI", 0, "S-4_FRONTCOG", 0, "S-2_C-5", 0
 
 DAT { fixed tokens }
 
@@ -966,7 +1103,7 @@ sBoardRevA      BYTE    "REV_A", 0
 sBoardRevB      BYTE    "REV_B", 0
 sBoardUnknown   BYTE    "UNKNOWN", 0
 sActionRetired  BYTE    "MOTOR_RETIRED", 0
-sPanicLine      BYTE    "* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)", 0
+sPanicLine      BYTE    "* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- no operator control can stop a runaway (finding S-4: the e-stop now latches, task 3556)", 0
 
 DAT { sign-off tokens -- one DAT string per cell, passed by @label to emitSignoffDecl() }
 
@@ -1008,6 +1145,32 @@ sSfCellFloorAns BYTE    "R14-DUAL-FLOORANS-F", 0
 sSfCellNoStallU BYTE    "R14-DUAL-NOSTALL-U", 0
 sSfCellDbgMaskU BYTE    "R14-DUAL-DBGMASK-U", 0
 sSfCellUiCheck  BYTE    "R14-DUAL-UICHECK-U", 0
+' task 3560, the Visit 4 cells. Part D's own NOSTALL and DBGMASK, then one cell per claim.
+sSfCellNoStallD BYTE    "R16-DUAL-NOSTALL-D", 0
+sSfCellDbgMaskD BYTE    "R16-DUAL-DBGMASK-D", 0
+sSfCellLagA     BYTE    "R16-DUAL-LAGBND-A", 0
+sSfCellLagB     BYTE    "R16-DUAL-LAGBND-B", 0
+sSfCellLagC     BYTE    "R16-DUAL-LAGBND-C", 0
+sSfCellLagD     BYTE    "R16-DUAL-LAGBND-D", 0
+sSfCellNoFold   BYTE    "R16-DUAL-NOFOLD-A", 0
+sSfCellStopCur  BYTE    "R16-DUAL-STOPCUR-B", 0
+sSfCellRmpDroop BYTE    "R16-DUAL-RMPDROOP-B", 0
+sSfCellStopLim  BYTE    "R16-DUAL-STOPLIM-B", 0
+sSfCellDistM    BYTE    "R16-DUAL-DISTM-B", 0
+sSfCellFltRetry BYTE    "R16-DUAL-FLTRETRY-B", 0
+sSfCellStpDecel BYTE    "R16-DUAL-STPDECEL-C", 0
+sSfCellEstopD   BYTE    "R16-DUAL-ESTOP-D", 0
+sSfCellOrdered  BYTE    "R16-DUAL-ORDERED-D", 0
+sSfCellCoopShut BYTE    "R16-DUAL-COOPSHUT-D", 0
+sSfCellTrackRst BYTE    "R16-DUAL-TRACKRST-D", 0
+sSfCellTimeStop BYTE    "R16-DUAL-TIMESTOP-D", 0
+sSfCellLockStep BYTE    "R16-DUAL-LOCKSTEP-D", 0
+sSfCellFrontSt  BYTE    "R16-DUAL-FRONTST-D", 0
+sSfCellFoldBack BYTE    "R16-DUAL-FOLDBACK-D", 0
+sSfCellDerate   BYTE    "R16-DUAL-DERATE-D", 0
+sSfCellBlocked  BYTE    "R16-DUAL-BLOCKED-D", 0
+sSfCellWEstop   BYTE    "R16-DUAL-WESTOP-D", 0
+sSfCellWTimStop BYTE    "R16-DUAL-WTIMSTOP-D", 0
 sSfCritCog0End  BYTE    "ENDED_BY_COG0", 0
 sSfCritQuiet    BYTE    "QUIET_MASKS", 0
 sSfCritInstLive BYTE    "INST_LIVE", 0
@@ -1023,6 +1186,25 @@ sSfCritOffRest  BYTE    "OFFSETS_RESTORED", 0
 sSfCritBrakeFlt BYTE    "BRAKE_FAULT_SEEN", 0
 sSfCritFloorAns BYTE    "OPERATOR_ANSWERED", 0
 sSfCritUiCheck  BYTE    "UI_CONTROLS_OK", 0
+' task 3560 criteria (each at most TOKMAX_CRIT bytes)
+sSfCritLag      BYTE    "MAX_ABS_ERR", 0
+sSfCritNoFold   BYTE    "RATE_HELD_NO_FOLD", 0
+sSfCritStopCur  BYTE    "STOP_UNDER_HOLD_I", 0
+sSfCritRmpDroop BYTE    "DROOPED_NOT_FAULT", 0
+sSfCritStopLim  BYTE    "REST_FROM_TARGET", 0
+sSfCritDistM    BYTE    "METRES_AGREE", 0
+sSfCritFltRetry BYTE    "SAME_POWER_AGAIN", 0
+sSfCritStpDecel BYTE    "STOP_TICKS_IN_BAND", 0
+sSfCritEstopD   BYTE    "ESTOP_LATCHED", 0
+sSfCritOrdered  BYTE    "ORDERED_STOP", 0
+sSfCritCoopShut BYTE    "SHUTDOWN_BOUNDED", 0
+sSfCritTrackRst BYTE    "RESET_AT_SPEED", 0
+sSfCritTimeStop BYTE    "AT_REST_BY_LIMIT", 0
+sSfCritLockStep BYTE    "WHEELS_TOGETHER", 0
+sSfCritFrontSt  BYTE    "FRONT_LOOP_HEALTH", 0
+sSfCritFoldBack BYTE    "FOLDBACK_HELD", 0
+sSfCritDerate   BYTE    "DERATED_IN_WINDOW", 0
+sSfCritBlocked  BYTE    "PROTECTIVE_STOP", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfPass         BYTE    "PASS", 0
@@ -1099,6 +1281,10 @@ VAR { instrument shared memory -- ownership table, design sec 2.4 }
     LONG    instDecimate
     LONG    instMarkCt                                      ' getct() written immediately before the event's library call
     LONG    instMarkSeq
+    ' LAGBOUND (task 3558): cog 0 raises this while a step provokes the lag on purpose -- a commutation
+    '  offset written 180 degrees from the default, or a limit lowered until the rotor cannot follow --
+    '  so a deliberate provocation is never folded into the run's maximum
+    LONG    bInstLagExempt
     ' written by the instrument, read by cog 0 (and the watchdog: instHeartbeat, instState only)
     LONG    instAckSeq
     LONG    instState
@@ -1119,6 +1305,11 @@ VAR { instrument shared memory -- ownership table, design sec 2.4 }
     LONG    instLastUp[INST_MOTORS]
     LONG    instLastPos[INST_MOTORS]
     LONG    instLastHw[INST_MOTORS]
+    ' LAGBOUND: the run's largest |err| per motor over stored samples with the driver up, not faulted and
+    '  not exempt, and how many samples were folded. Run-wide: never cleared by ARM, so one reading covers
+    '  every capture the part took.
+    LONG    instLagMax[INST_MOTORS]
+    LONG    instLagN[INST_MOTORS]
     LONG    instRunSamples                                  ' run-wide, never cleared, saturate at LIM_BIG
     LONG    instRunLate
     LONG    instRunSkipped
@@ -1263,6 +1454,27 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    fltRightInc
     LONG    fltFaultMs                                      ' ms from the command to the first faulted row
     LONG    fltLatchMs                                      ' ms the latch was still observed after that row
+    LONG    fltOffNeg[INST_MOTORS]                          ' BM-FLTAPI: each wheel's offsets before the provocation
+    LONG    fltOffPos[INST_MOTORS]
+    LONG    fltRetryErr                                     ' BM-FLTAPI (task 3560): the same-power retry's return
+    LONG    fltRetryMs                                      ' ms from that retry to AT_SPEED, 0 when it never came
+    LONG    bFltRetryOk                                     ' both wheels reached AT_SPEED on the retry
+    LONG    scHoldIX10[INST_MOTORS]                         ' BM-STOPCUR: mean sense_i over the AT_SPEED hold, x10
+    LONG    scStopPk[INST_MOTORS]                           ' largest sense_i seen while stopping
+    LONG    scSamples[INST_MOTORS]
+    LONG    bScValid[INST_MOTORS]
+    LONG    dmLeftTicks                                     ' BM-DISTM: the steering object's tracked ticks
+    LONG    dmRightTicks
+    LONG    dmLeftM                                         ' getDistance(DDU_M) per wheel
+    LONG    dmRightM
+    LONG    dmLeftPredM                                     ' the same ticks converted here, for the comparison
+    LONG    dmRightPredM
+    LONG    dsStep                                          ' BM-DSTEP (part D)
+    LONG    dsResult
+    LONG    dsMeasured                                      ' the step's own number, meaning per step
+    LONG    dsLo
+    LONG    dsHi
+    LONG    dsWhy
 
 VAR { rung staging -- filled by rungMeasure(), read by the rung emitters and the folds }
 
@@ -1293,6 +1505,8 @@ VAR { trace capture staging -- filled by eventCapture() / the FAULTB and OVERSHT
     LONG    bCpOffWritten                                   ' the trial wrote offsets (restore owed, I11)
     LONG    bCpOffRestored
     LONG    bCpEstopSet                                     ' the trial issued emergencyCutoff() (clear owed, I11)
+    LONG    trStopTicks                                     ' STPDECEL: |pos(rest) - pos(mark)| of the primary motor
+    LONG    bTrStopValid                                    ' the trace found both a mark and a rest
 
 VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
 
@@ -1323,6 +1537,33 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    bSfUiRan                                        ' UICHECK
     LONG    bSfUiOk                                         ' every UICHECK step was OK
     LONG    uiStepCount                                     ' BM-UISTEP records emitted
+
+    ' task 3560 accumulators. Each pair is (ran, ok): a cell whose step never ran prints NOMEAS, which is
+    '  how a criterion this rig cannot provoke stays visible instead of passing by silence.
+    LONG    bSfNoFoldRan[INST_MOTORS]                       ' NOFOLD: the ladder's base rungs
+    LONG    bSfNoFoldOk[INST_MOTORS]
+    LONG    bSfStopCurRan[INST_MOTORS]                      ' STOPCUR: a FAULTB trial that reached AT_SPEED
+    LONG    bSfStopCurOk[INST_MOTORS]
+    LONG    bSfDroopRan[INST_MOTORS]                        ' RMPDROOP: the three steep-ramp trials
+    LONG    bSfDroopOk[INST_MOTORS]
+    LONG    sfStopLimMax                                    ' STOPLIM: largest |rest - target| over every trial
+    LONG    sfStopLimN
+    LONG    bSfDistMRan                                     ' DISTM: getDistance(DDU_M) against the ticks
+    LONG    bSfDistMOk
+    LONG    bSfRetryRan                                     ' FLTRETRY: PL-66's same-power retry
+    LONG    bSfRetryOk
+    LONG    sfDecelTicks[INST_MOTORS]                       ' STPDECEL: half-speed stop, mark to rest
+    LONG    bSfDecelRan[INST_MOTORS]
+    LONG    bSfDStepRan[DST_COUNT]                          ' part D: one (ran, ok) per BM-DSTEP step
+    LONG    bSfDStepOk[DST_COUNT]
+    LONG    bSfWDStepRan[DST_COUNT]                         ' the same steps repeated on the single wheel
+    LONG    bSfWDStepOk[DST_COUNT]
+    LONG    bSfLimRan[INST_MOTORS]                          ' FOLDBACK and DERATE, per motor
+    LONG    bSfLimOk[INST_MOTORS]
+    LONG    bSfDerateRan[INST_MOTORS]
+    LONG    bSfDerateOk[INST_MOTORS]
+    LONG    bSfFrontRan[INST_MOTORS]                        ' FRONTST: slot 0 the steering front cog, slot 1 the wheel's
+    LONG    bSfFrontOk[INST_MOTORS]
 
 VAR { operator panel and attended-segment staging -- cog 0 only }
 
@@ -1361,6 +1602,19 @@ VAR { operator panel and attended-segment staging -- cog 0 only }
     LONG    flLeftPwr                                       ' BM-STRACE: getPower() read back after driveDirection()
     LONG    flRightPwr
     LONG    bFlDrove                                        ' driveDirection() was called
+
+VAR { part D: the ordered-stop helper cog (task 3560) }
+
+' The ORDERED step needs a SECOND cog commanding the platform while cog 0 stops it, because the property
+'  under test -- that a stop ordered during another cog's drive leaves both wheels in one state -- cannot
+'  arise from a single cog's calls. The helper only drives; every stop, every reading and every record
+'  stays on cog 0.
+    LONG    odStack[D_ORDERED_STACK_LONGS]
+    LONG    odCogId                                         ' cogspin()'s return; < 0 when it failed
+    LONG    bOdRun                                          ' cog 0 raises this to start driving, lowers it to end
+    LONG    odDrives                                        ' drive calls the helper has made
+    LONG    odLastErr                                       ' the last drive call's return, read after the step
+    LONG    bOdDone                                         ' the helper has left its loop
 
 VAR { watchdog cog }
 
@@ -1404,6 +1658,7 @@ PUB main() | trapCode
     if wdDeclaring == FALSE
         if wdCogId >= 0
             cogstop(wdCogId)
+        emitLagAll()                                        ' one BM-LAG per motor, covering every capture this part took
         emitSignoffs()
         emitTrap(trapCode, bRunReturned)
         emitEnd(bRunAborted ? EXIT_ABORTED : EXIT_COMPLETE)
@@ -1461,6 +1716,26 @@ PRI initRunState() | slotIdx
     bSfUiRan := FALSE
     bSfUiOk := FALSE
     uiStepCount := 0
+    sfStopLimMax := 0
+    sfStopLimN := 0
+    bSfDistMRan := FALSE
+    bSfDistMOk := TRUE                                      ' ANDed over the trials that run; NOMEAS until one does
+    bSfRetryRan := FALSE
+    bSfRetryOk := FALSE
+    fltRetryErr := 0
+    fltRetryMs := 0
+    bFltRetryOk := FALSE
+    bInstLagExempt := FALSE
+    odCogId := -1
+    bOdRun := FALSE
+    bOdDone := FALSE
+    odDrives := 0
+    odLastErr := 0
+    repeat slotIdx from 0 to DST_COUNT - 1
+        bSfDStepRan[slotIdx] := FALSE
+        bSfDStepOk[slotIdx] := FALSE
+        bSfWDStepRan[slotIdx] := FALSE
+        bSfWDStepOk[slotIdx] := FALSE
     uiPressReset()
     outCount := 0
     operQueueCount := 0
@@ -1495,6 +1770,26 @@ PRI initRunState() | slotIdx
         bSfRampOk[slotIdx] := FALSE
         bSfOffRan[slotIdx] := FALSE
         bSfOffOk[slotIdx] := TRUE                           ' ANDed over every restore; NOMEAS until one ran
+        instLagMax[slotIdx] := 0
+        instLagN[slotIdx] := 0
+        bSfNoFoldRan[slotIdx] := FALSE
+        bSfNoFoldOk[slotIdx] := TRUE                        ' ANDed over the base rungs
+        bSfStopCurRan[slotIdx] := FALSE
+        bSfStopCurOk[slotIdx] := TRUE                       ' ANDed over the trials that reached speed
+        bSfDroopRan[slotIdx] := FALSE
+        bSfDroopOk[slotIdx] := TRUE                         ' ANDed over the steep-ramp trials
+        sfDecelTicks[slotIdx] := 0
+        bSfDecelRan[slotIdx] := FALSE
+        bSfLimRan[slotIdx] := FALSE
+        bSfLimOk[slotIdx] := FALSE
+        bSfDerateRan[slotIdx] := FALSE
+        bSfDerateOk[slotIdx] := FALSE
+        bSfFrontRan[slotIdx] := FALSE
+        bSfFrontOk[slotIdx] := FALSE
+        scHoldIX10[slotIdx] := 0
+        scStopPk[slotIdx] := 0
+        scSamples[slotIdx] := 0
+        bScValid[slotIdx] := FALSE
 
 PRI runPart()
 ' Run this build's segments in the design's sec 4.1 order. Every segment after a run abort is emitted
@@ -1522,6 +1817,10 @@ PRI runPart()
             runSegment(SEG_PREFLT)
             runSegment(SEG_BASELINE)
             runSegment(SEG_POSTFLT)
+        PART_D:
+            runSegment(SEG_PREFLT)
+            runSegment(SEG_STEERSEG)
+            runSegment(SEG_LIMIT)
         PART_FLOOR:
             runSegment(SEG_FLOOR)
         PART_UICHECK:
@@ -1556,6 +1855,10 @@ PRI runSegment(seg)
                 segBaseline()
             SEG_POSTFLT:
                 segPostFault()
+            SEG_STEERSEG:
+                segSteerContract()
+            SEG_LIMIT:
+                segCurrentLimits()
             SEG_FLOOR:
                 segFloor()
             SEG_UICHECK:
@@ -1806,6 +2109,109 @@ PRI segPostFault() | side, signMul, reqMode, whyCode
         instIdle()
         wheelStop(side)
     segEnd(segWhy())
+
+CON { --- part D: the front cog's contract (STEERSEG) and current limiting (LIMIT), task 3560 --- }
+
+PRI segSteerContract() | whyCode
+' STEERSEG (part D, plan sec R16.8 b): the front cog's contract, measured first through the steering
+' object -- the three-cog form, where one front cog owns both drivers -- and then through one wheel, the
+' two-cog form. Both forms are what 6.0.0 ships, so both are certified here (FIXED-COG-SHAPE-DESIGN.md
+' sec 6).
+'
+' THE ORDER IS THE CONSTRUCTION. LOCKSTEP must run first: it watches the platform's very first departure
+' from rest, which only exists once per start. COOPSHUT must run last on each object: it is the shutdown.
+' Everything between leaves the object running and at rest.
+'
+' @local whyCode - why the steering half did not run, WHY_NONE when it did
+
+    segBegin(SEG_STEERSEG)
+    wheelStop(SIDE_LEFT)                                    ' shared pin claims (PL-18), as OVERSHT does
+    wheelStop(SIDE_RIGHT)
+    whyCode := WHY_NONE
+    if runContinue(SEG_STEERSEG) == FALSE
+        whyCode := WHY_ABORTED
+    elseif steerStart(SEG_STEERSEG) == FALSE
+        whyCode := WHY_NO_COG
+    if whyCode == WHY_NONE
+        dStepLockstep()
+        dStepTrackReset(SIDE_BOTH)
+        dStepEstopSet(SIDE_BOTH)
+        dStepOrdered()
+        dStepTimeStop(SIDE_BOTH)
+        dStepFrontStats(SIDE_BOTH)
+        dStepCoopShut(SIDE_BOTH)                            ' stops the steering object
+    else
+        dStepSkip(DST_LOCKSTEP, SIDE_BOTH, whyCode)
+        dStepSkip(DST_TRACKRESET, SIDE_BOTH, whyCode)
+        dStepSkip(DST_ESTOP_REFUSE, SIDE_BOTH, whyCode)
+        dStepSkip(DST_ESTOP_LATCH, SIDE_BOTH, whyCode)
+        dStepSkip(DST_ESTOP_CLEAR, SIDE_BOTH, whyCode)
+        dStepSkip(DST_ORDERED, SIDE_BOTH, whyCode)
+        dStepSkip(DST_TIMESTOP, SIDE_BOTH, whyCode)
+        dStepSkip(DST_COOPSHUT, SIDE_BOTH, whyCode)
+        steerStop()
+    segEnd(segWhy())
+
+PRI segCurrentLimits() | whyCode
+' LIMIT (part D, plan sec R16.8 d): current limiting as a user meets it, through the steering object.
+' testSetCurrentLimits() lowers the limits so a wheels-lifted rig can reach them -- at the MOSFET values
+' (40 A peak, 27 A continuous) a lifted 6.5in wheel never comes close, so without this the design's own
+' mechanisms could not be provoked at all on this rig (doctrine overlay P1: every run is wheels-lifted).
+' The MOSFET values are restored and read back before the segment ends (I11).
+'
+' THE SINGLE-WHEEL half of part D runs here, after the limits are restored, so a wheel-frame e-stop and
+' time stop are measured on a platform whose limits are back at their shipping values.
+'
+' @local whyCode - why the segment did not run, WHY_NONE when it did
+
+    segBegin(SEG_LIMIT)
+    whyCode := WHY_NONE
+    if runContinue(SEG_LIMIT) == FALSE
+        whyCode := WHY_ABORTED
+    elseif steerStart(SEG_LIMIT) == FALSE
+        whyCode := WHY_NO_COG
+    if whyCode == WHY_NONE
+        dStepFoldBack()
+        dStepDerate()
+        dStepBlocked()
+        dLimitRestore()                                     ' I11: the MOSFET values back, read back, before anything else
+        steerStop()
+    else
+        dStepSkip(DST_FOLDBACK, SIDE_BOTH, whyCode)
+        dStepSkip(DST_DERATE, SIDE_BOTH, whyCode)
+        dStepSkip(DST_BLOCKED, SIDE_BOTH, whyCode)
+        steerStop()
+    dWheelHalf(whyCode)
+    segEnd(segWhy())
+
+PRI dWheelHalf(segWhyCode) | whyCode
+' The two-cog form: one wheel started on its own (start() runs its own front cog), carrying the same
+' e-stop, time-stop and loop-health claims the steering object was just measured against. LEFT is the
+' wheel under test throughout, as every other wheel-frame segment uses it.
+'
+' @param segWhyCode - WHY_NONE when the segment ran, else why nothing ran
+'
+' @local whyCode - why the wheel half did not run, WHY_NONE when it did
+
+    whyCode := segWhyCode
+    if whyCode == WHY_NONE
+        if runContinue(SEG_LIMIT) == FALSE
+            whyCode := WHY_ABORTED
+        elseif wheelStart(SEG_LIMIT, SIDE_LEFT) == FALSE
+            whyCode := stWhy
+    if whyCode == WHY_NONE
+        dStepEstopSet(SIDE_LEFT)
+        dStepTimeStop(SIDE_LEFT)
+        dStepFrontStats(SIDE_LEFT)
+        dStepCoopShut(SIDE_LEFT)                            ' stops the wheel
+    else
+        dStepSkip(DST_ESTOP_REFUSE, SIDE_LEFT, whyCode)
+        dStepSkip(DST_ESTOP_LATCH, SIDE_LEFT, whyCode)
+        dStepSkip(DST_ESTOP_CLEAR, SIDE_LEFT, whyCode)
+        dStepSkip(DST_TIMESTOP, SIDE_LEFT, whyCode)
+        dStepSkip(DST_COOPSHUT, SIDE_LEFT, whyCode)
+        instIdle()
+        wheelStop(SIDE_LEFT)
 
 PRI segFloor() | whyCode
 ' FLOOR (attended load 9, T2-1; AC). The panel asks for START and nothing moves before it (sec 8.3); a
@@ -2062,6 +2468,11 @@ PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | 
             wheelHold(side, TRUE)
         eventCapture(side, motorIncre, eventCode)
         traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, rampInc)
+        ' STPDECEL rides BASELINE's floated stop from half speed -- the one condition Visit 3 measured
+        '  74-77 ticks on -- so the no-regression reading costs no trial of its own
+        if (seg == SEG_BASELINE) and (causeCode == CAUSE_STOPCMD) and (reqMode == MODE_FLOAT) and bTrStopValid
+            sfDecelTicks[side - SIDE_LEFT] := trStopTicks
+            bSfDecelRan[side - SIDE_LEFT] := TRUE
         traceRecover(seg, side, tid, motorIncre, FAULT_COOL_MS)
     segItems := (segItems + 1) <# LIM_SMALL
 
@@ -2369,6 +2780,7 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
         else
             safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, TRUE)
             rungEmitAll(seg, rid, rungIdx, side, motorIncre)
+            ladderNoFold(side, rungIdx, motorIncre)
             if rungFaultRecover(seg, side, motorIncre, safeEvent)
                 consecFaults += 1
                 if consecFaults >= LADDER_FAULT_STOP
@@ -2380,6 +2792,35 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
     zeroAndWaitStopped(side)
     instIdle()
     wheelStop(side)
+
+PRI ladderNoFold(side, rungIdx, motorIncre) | slotIdx, predX10, ratioPct, bDeratedNow
+' NOFOLD: below the MOSFET limits the new current limiting must not act at all -- every base rung still
+' turns at the rate the speed law predicts, and the front cog never derates.
+'
+' THE NEGATIVE LIMB IS THE POINT. Current limiting that quietly folded back at ordinary powers would show
+' up here as a rate below prediction with the derate flag set, and nowhere else: C-1's own cell judges the
+' law, not whether a limiter moved it. Read after the rung's window, from the rung's own statistics.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param rungIdx - index into ladderIncre
+' @param motorIncre - the rung's signed increment
+'
+' @local slotIdx - motor slot
+' @local predX10 - the rung's predicted rate x10
+' @local ratioPct - measured rate as a percentage of the prediction
+' @local bDeratedNow - the fold-back holds the continuous limit right now
+
+    if rungIdx < LADDER_BASE_RUNGS
+        slotIdx := side - SIDE_LEFT
+        bDeratedNow := wheelDerated(side)
+        predX10 := predictX10(abs(motorIncre))
+        if bRgWindowValid and (predX10 > 0)
+            ratioPct := (abs(rsRateX10) * 100) / predX10
+            bSfNoFoldRan[slotIdx] := TRUE
+            bSfNoFoldOk[slotIdx] := bSfNoFoldOk[slotIdx] and (ratioPct >= NOFOLD_PCT_LO) and (ratioPct <= NOFOLD_PCT_HI) and (bDeratedNow == FALSE)
+        elseif bDeratedNow
+            bSfNoFoldRan[slotIdx] := TRUE                    ' a derate at a base rung is a finding on its own
+            bSfNoFoldOk[slotIdx] := FALSE
 
 PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeEvent, rpmRead
 ' One LIVE rung (design sec 4.4, T1-2): AT_SPEED, settle LIVE_SETTLE_MS so the rpm window fills, a
@@ -2463,7 +2904,7 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
     instIdle()
     wheelStop(side)
 
-PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, rampInc, safeEvent, bReached, startMs
+PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, rampInc, safeEvent, bReached, startMs, bStopped
 ' One FAULTB trial (design sec 4.4, T1-7): wheel stopped; setRampingValues(1_500, 200_000, inc, 50_000)
 ' read back; arm; mark; FB_INCRE from standstill; capture until AT_SPEED + FB_AT_SPEED_HOLD_MS, a fault,
 ' or FB_TIMEOUT_MS; freeze; restore the ramp defaults and read them back (BM-RAMPREST, I11) BEFORE any
@@ -2482,9 +2923,11 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
 ' @local safeEvent - SAFE_* from the watched waits
 ' @local bReached - AT_SPEED was reached
 ' @local startMs - getms() at the command
+' @local bStopped - the trial's own stop from speed reached rest inside the capture
 
     slotIdx := side - SIDE_LEFT
     tid := nextTraceId()
+    bStopped := FALSE
     motorIncre := FB_INCRE * signMul
     cpReset()
     fbTrial := trialIdx + 1
@@ -2524,9 +2967,19 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
                 bFbTValid := bReached or (safeEvent == SAFE_FAULT)
                 if (safeEvent == SAFE_NONE) and bReached
                     safeEvent, _ := waitWatched(side, FB_AT_SPEED_HOLD_MS, CP_LOOP_CAPTURE, UNTIL_TIME)
+                    ' task 3558: THE STOP IS NOW PART OF THE TRIAL, inside the same capture. The design
+                    '  bounds the current a stop from speed draws, and Visit 2 measured the unbounded one
+                    '  tripping this harness's own 10 A abort (PL-55) -- so the stop has to be measured on
+                    '  the same instrument, on the same scale, as the hold it is compared against. A trial
+                    '  that faulted or aborted on the way up never reaches here and stops nothing.
+                    if safeEvent == SAFE_NONE
+                        wheelStopMotor(side)
+                        safeEvent, bStopped := waitRest(side, STOP_TIMEOUT_MS, TRUE)
             bCpFaultSeen := (safeEvent == SAFE_FAULT)
             if safeEvent <> SAFE_NONE
                 cpEnd := safeEnd(safeEvent)
+            elseif bStopped
+                cpEnd := TEND_REST
             else
                 cpEnd := bReached ? TEND_FROZEN : TEND_TIMEOUT
             bCpFrozen := instFreeze(0)
@@ -2553,6 +3006,9 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
         traceEmitCapture(SEG_FAULTB, side, tid, CAUSE_RAMP, motorIncre, MODE_FLOAT, rampInc)
         if bCpFrozen
             traceFaultStats(slotIdx)
+            traceStopCurrent(slotIdx)
+            emitStopCur(tid, side, slotIdx)
+            fbFoldCells(slotIdx, safeEvent, bReached)
         fbRst, fbRstMs := traceRecover(SEG_FAULTB, side, tid, motorIncre, FAULT_TRIAL_COOL_MS)
         if bFbTValid == FALSE
             fbWhy := (cpWhy <> WHY_NONE) ? cpWhy : WHY_NOT_REACHED
@@ -2560,6 +3016,66 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
             waitBeat(FAULT_TRIAL_COOL_MS, CP_LOOP_COOL)
     emitFbTrial(tid, side)
     segItems := (segItems + 1) <# LIM_SMALL
+
+PRI traceStopCurrent(slotIdx) | sampleIdx, iSum, holdCount, eDrvrState, bSawStop
+' STOPCUR's two numbers, from the frozen FAULTB capture: the mean sense_i over the AT_SPEED hold and the
+' largest sense_i seen while the driver was spinning down.
+'
+' The two windows are told apart by the DRIVER'S OWN STATE, not by a time this cog recorded: a trial
+' reaches AT_SPEED once and leaves it once, so the states partition the capture without any index
+' bookkeeping, and both readings come from the same scale. Legal only while FROZEN (I10).
+'
+' @param slotIdx - motor slot under test
+'
+' @local sampleIdx - logical index
+' @local iSum - sum of sense_i over the hold
+' @local holdCount - hold samples
+' @local eDrvrState - the sample's driver state
+' @local bSawStop - a spin-down sample was seen
+
+    scHoldIX10[slotIdx] := 0
+    scStopPk[slotIdx] := 0
+    scSamples[slotIdx] := 0
+    bScValid[slotIdx] := FALSE
+    iSum := 0
+    holdCount := 0
+    bSawStop := FALSE
+    if (drStored > 0) and (drEndJ >= drStartJ)
+        repeat sampleIdx from drStartJ to drEndJ
+            beat(CP_LOOP_DRAIN)
+            if smpUp(sampleIdx, slotIdx)
+                eDrvrState := smpState(sampleIdx, slotIdx)
+                if eDrvrState == DCS_AT_SPEED
+                    iSum += smpI(sampleIdx, slotIdx)
+                    holdCount += 1
+                elseif eDrvrState == DCS_SPIN_DN
+                    scStopPk[slotIdx] #>= smpI(sampleIdx, slotIdx)
+                    bSawStop := TRUE
+    if (holdCount > 0) and bSawStop
+        scHoldIX10[slotIdx] := (iSum * X10) / holdCount
+        scSamples[slotIdx] := holdCount
+        bScValid[slotIdx] := TRUE
+
+PRI fbFoldCells(slotIdx, safeEvent, bReached)
+' The two FAULTB cells, folded from the trial that has just been emitted.
+'
+'  STOPCUR   - the stop's peak current stayed inside the mean the hold was already drawing, and the
+'              harness's 10 A abort never fired. MEASURED at Visit 2 on the unbounded stop: 20-50 % above
+'              the hold, and two trials aborted outright (PL-55).
+'  RMPDROOP  - a ramp the motor cannot follow now DROOPS instead of faulting. The three steep trials
+'              (ramp_inc 500, 2_000 and 10_000) faulted 3 of 3 at Visit 2, in 96-186 ms; with the lag
+'              limiter the field waits for the rotor and the trial reaches speed instead.
+'
+' @param slotIdx - motor slot
+' @param safeEvent - SAFE_* that ended the trial
+' @param bReached - AT_SPEED was reached
+
+    if bScValid[slotIdx]
+        bSfStopCurRan[slotIdx] := TRUE
+        bSfStopCurOk[slotIdx] := bSfStopCurOk[slotIdx] and ((scStopPk[slotIdx] * X10) <= scHoldIX10[slotIdx]) and (safeEvent <> SAFE_ABS_ABORT)
+    if fbRampInc >= FB_DROOP_MIN_INC
+        bSfDroopRan[slotIdx] := TRUE
+        bSfDroopOk[slotIdx] := bSfDroopOk[slotIdx] and bReached and (fbResult <> RES_FAULT) and (bCpFaultSeen == FALSE)
 
 PRI traceFaultStats(slotIdx) | sampleIdx, bFirstFlt
 ' BM-FBTRIAL's peaks from the drained trace: the largest i and duty over up samples, and dsat, whether
@@ -2654,6 +3170,7 @@ PRI overshootTrial(sid, distFt, tgtTicks, skipWhy) : whyNext | tid, safeEvent, b
         traceEmptyEnd(tid, TEND_ABORT, cpWhy)
         ovWhy := cpWhy
     emitOvershoot(tid, sid, OVERSHT_POWER, distFt, tgtTicks)
+    overshootFoldCells(tid, sid, tgtTicks)
     if bSteerUp
         steerStopMotors()
         recoverWhy := steerRecoverFault(tid)
@@ -2696,14 +3213,82 @@ PRI overshootStats() | sampleIdx, leftStopJ, rightStopJ
             ovTStopMs := ((leftStopJ - drMarkJ) * INST_PERIOD_US * instDecimate) / US_PER_MS
             ovWhy := WHY_NONE
 
+PRI overshootFoldCells(tid, sid, tgtTicks) | leadRest, tickMmX100
+' The two OVERSHT cells, from the trial's own measurements.
+'
+'  STOPLIMIT - the wheel that REACHED the limit comes to rest AT it. The leading wheel is the one judged:
+'              the platform stops when either wheel reaches the distance, so a slower wheel resting short
+'              is wheel-to-wheel variation, not the stop overshooting. MEASURED before task 3559: about 77
+'              ticks past, which is the whole deceleration.
+'  DISTM     - getDistance(DDU_M) agrees with the ticks it is derived from. Task 3502 corrected the metre
+'              conversion by a factor of ten and no bench reading has compared the two since; Visit 3 left
+'              it unqualified. The comparison uses the library's own travel-per-tick, read from the motor
+'              object's geometry, so the harness is not carrying a copy of a number that lives there.
+'
+' @param tid - trace id of the trial
+' @param sid - the steering start's life
+' @param tgtTicks - the trial's DERIVED target ticks
+'
+' @local leadRest - the leading wheel's rest position relative to the mark
+' @local tickMmX100 - wheel travel per hall tick, hundredths of a mm
+
+    if ovWhy == WHY_NONE
+        leadRest := ovLeftRest #> ovRightRest
+        sfStopLimMax #>= abs(leadRest - tgtTicks)
+        sfStopLimN := (sfStopLimN + 1) <# LIM_SMALL
+    if bSteerUp
+        _, tickMmX100 := wheelL.wheelGeometry()
+        dmLeftTicks := ovLeftTrk
+        dmRightTicks := ovRightTrk
+        dmLeftM, dmRightM := steerDistanceM()
+        dmLeftPredM := ticksToMetres(dmLeftTicks, tickMmX100)
+        dmRightPredM := ticksToMetres(dmRightTicks, tickMmX100)
+        ' ANDed over every trial that ran (initRunState() starts it TRUE; it is NOMEAS until one does)
+        bSfDistMOk := bSfDistMOk and (abs(dmLeftM - dmLeftPredM) <= DISTM_TOL_M) and (abs(dmRightM - dmRightPredM) <= DISTM_TOL_M)
+        bSfDistMRan := TRUE
+        emitDistM(tid, sid, tickMmX100)
+
+PRI ticksToMetres(nTicks, tickMmX100) : nMetres
+' Convert hall ticks to whole metres the way the library does: travel per tick in hundredths of a mm,
+' rounded to nearest rather than truncated.
+'
+' @param nTicks - tracked hall ticks
+' @param tickMmX100 - wheel travel per hall tick, hundredths of a mm
+' @returns nMetres - the distance in whole metres
+
+    nMetres := (abs(nTicks) * tickMmX100 + (MM_PER_M_X100 / 2)) / MM_PER_M_X100
+
+PRI steerDistanceM() : leftM, rightM
+' Both wheels' travelled distance in metres, through the public getter.
+'
+' @returns leftM - the left wheel's distance, metres
+' @returns rightM - the right wheel's distance, metres
+
+    beat(CP_LIB_STEER_QUERY)
+    leftM, rightM := steering.getDistance(steering.DDU_M)
+    beat(CP_LIB_STEER_QUERY)
+
 PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
-' The OVERSHT fault-API trial (task 3552): certify that a user of the STEERING object sees a fault
-' through its public API, and that the fault latch task 3547 stopped auto-clearing is still set more
-' than FLTAPI_LATCH_MS later. Arm on the steering source (the instrument is the safety mirror here, not
-' a measurement); FLTAPI_RAMP_INC on both wheels; driveAtPower() from standstill behind the SYNC_PRECOND
-' check; poll the public API into outBuf for FLTAPI_POLL_MS; freeze; stopMotors(); restore the ramp
-' defaults with a read-back BEFORE any check (I11); read the verdict; recover; BM-FLTAPI and the BM-OUT
-' rows. Folds R14-DUAL-FLTAPI-B.
+' The OVERSHT fault-API trial (task 3552, extended by task 3560): certify that a user of the STEERING
+' object sees a fault through its public API, that the latch task 3547 stopped auto-clearing is still set
+' more than FLTAPI_LATCH_MS later, and that the SAME POWER commanded afterwards runs the motor again
+' (PL-66).
+'
+' THE PROVOCATION HAD TO CHANGE, and that is itself a result. Until task 3558 this trial faulted the
+' wheels with a ramp far steeper than the rotor could follow (ramp_inc 10_000 from standstill, which
+' faulted 3 of 3 at Visit 2). The lag limiter now makes the field WAIT for the rotor instead of faulting,
+' so that stimulus no longer produces a fault -- RMPDROOP in FAULTB is the cell that says so. The
+' provocation here is therefore a commutation offset written 180 degrees from the default on both wheels,
+' which holds the field in the one place the rotor can never reach: the position error settles near the
+' offset itself, past the driver's fault test, with no ramp involved. DERIVED, not measured: if it does
+' not fault, the trial prints NO_FAULT and every cell below it is NOMEAS rather than passing by silence.
+'
+' LAGBOUND IS EXEMPT for the provocation window: this step drives the lag to the limit on purpose, and
+' folding it into the run's maximum would make the lag limiter look broken in the one part that breaks it
+' deliberately.
+'
+' The offsets are restored and read back BEFORE the retry (I11) -- a retry under a 180-degree offset would
+' fault again and measure nothing.
 '
 ' NO CAPTURE IS DRAINED. The rows already show the post-fault coast at API resolution; the coast at
 ' instrument resolution is S-9a, motor characterisation, which this trial does not measure.
@@ -2723,7 +3308,7 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
     whyCode := skipWhy
     if (whyCode == WHY_NONE) and (runContinue(SEG_OVERSHT) == FALSE)
         whyCode := WHY_ABORTED
-    ' one guard around the whole body: a skipped trial commands nothing, so it has no ramp to restore
+    ' one guard around the whole body: a skipped trial commands nothing, so it has no offset to restore
     '  and no fault to recover, and it still prints its record below
     if whyCode == WHY_NONE
         if bSteerUp == FALSE
@@ -2731,7 +3316,8 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
         elseif instArm(INST_SRC_STEER, OVERSHT_DECIM) == FALSE
             whyCode := WHY_INST_NOACK
         else
-            fltLeftInc, fltRightInc := steerSetRamp(FLTAPI_RAMP_INC)
+            bInstLagExempt := TRUE                          ' the lag below is provoked on purpose
+            fltLeftInc, fltRightInc := steerOffsetProvoke()
             markMs := getms()
             if steerDriveBoth(SEG_OVERSHT, tid, FLTAPI_POWER) == FALSE
                 whyCode := WHY_SYNC_PRECOND
@@ -2739,11 +3325,13 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
                 whyCode := safeWhy(steerPollPhase(markMs, markMs, FLTAPI_POLL_MS, FALSE, TRUE))
             bCpFrozen := instFreeze(0)
             steerStopMotors()
-            steerRestoreRamp()                              ' I11: before any check, on every path that set the ramp
+            steerOffsetRestore()                            ' I11: before any check, on every path that wrote them
+            bInstLagExempt := FALSE
             if (bCpFrozen == FALSE) and (whyCode == WHY_NONE)
                 whyCode := WHY_INST_NOACK
             if whyCode == WHY_NONE
                 whyCode := fltApiVerdict()
+            fltApiRetry(tid)                                ' PL-66, on the restored offsets
             recoverWhy := steerRecoverFault(tid)
             if (recoverWhy <> WHY_NONE) and (whyCode == WHY_NONE)
                 whyCode := recoverWhy
@@ -2753,6 +3341,85 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
             beat(CP_LOOP_DRAIN)
             emitOut(tid, sid, rowIdx)
     segItems := (segItems + 1) <# LIM_SMALL
+
+PRI steerOffsetProvoke() : leftNeg, rightNeg | leftPos, rightPos
+' Write both wheels' commutation offsets FLTAPI_OFFSET_DEG from the pair they are running, and return the
+' negative-increment offset each wheel read back. The pair in force is read first and kept in the cp*
+' staging, so the restore puts back what was actually there rather than what this file believes is there.
+'
+' @returns leftNeg - the left wheel's offset_fwd after the write, degrees
+' @returns rightNeg - the right wheel's offset_fwd after the write, degrees
+'
+' @local leftPos - the left wheel's offset_rev after the write
+' @local rightPos - the right wheel's offset_rev after the write
+
+    beat(CP_LIB_OFFSETS)
+    fltOffNeg[SLOT_LEFT], fltOffPos[SLOT_LEFT] := steering.testLeftGetFwdRevIndep()
+    fltOffNeg[SLOT_RIGHT], fltOffPos[SLOT_RIGHT] := steering.testRightGetFwdRevIndep()
+    steering.testLeftSetFwdRevIndep(fltOffNeg[SLOT_LEFT] + FLTAPI_OFFSET_DEG, fltOffPos[SLOT_LEFT] + FLTAPI_OFFSET_DEG)
+    steering.testRightSetFwdRevIndep(fltOffNeg[SLOT_RIGHT] + FLTAPI_OFFSET_DEG, fltOffPos[SLOT_RIGHT] + FLTAPI_OFFSET_DEG)
+    leftNeg, leftPos := steering.testLeftGetFwdRevIndep()
+    rightNeg, rightPos := steering.testRightGetFwdRevIndep()
+    beat(CP_LIB_OFFSETS)
+    bCpOffWritten := TRUE
+
+PRI steerOffsetRestore() | leftNeg, leftPos, rightNeg, rightPos
+' I11: put both wheels' commutation offsets back and read them back, folding the result into
+' R14-DUAL-OFFREST-C's accumulators so a restore that did not take is visible rather than assumed.
+'
+' @local leftNeg - the left wheel's offset_fwd read back
+' @local leftPos - the left wheel's offset_rev read back
+' @local rightNeg - the right wheel's offset_fwd read back
+' @local rightPos - the right wheel's offset_rev read back
+
+    if bCpOffWritten
+        beat(CP_LIB_OFFSETS)
+        steering.testLeftSetFwdRevIndep(fltOffNeg[SLOT_LEFT], fltOffPos[SLOT_LEFT])
+        steering.testRightSetFwdRevIndep(fltOffNeg[SLOT_RIGHT], fltOffPos[SLOT_RIGHT])
+        leftNeg, leftPos := steering.testLeftGetFwdRevIndep()
+        rightNeg, rightPos := steering.testRightGetFwdRevIndep()
+        beat(CP_LIB_OFFSETS)
+        bCpOffRestored := TRUE
+        bSfOffRan[SLOT_LEFT] := TRUE
+        bSfOffRan[SLOT_RIGHT] := TRUE
+        bSfOffOk[SLOT_LEFT] := bSfOffOk[SLOT_LEFT] and (leftNeg == fltOffNeg[SLOT_LEFT]) and (leftPos == fltOffPos[SLOT_LEFT])
+        bSfOffOk[SLOT_RIGHT] := bSfOffOk[SLOT_RIGHT] and (rightNeg == fltOffNeg[SLOT_RIGHT]) and (rightPos == fltOffPos[SLOT_RIGHT])
+        emitOffRest(SIDE_LEFT, fltOffNeg[SLOT_LEFT], fltOffPos[SLOT_LEFT], leftNeg, leftPos, (leftNeg == fltOffNeg[SLOT_LEFT]) and (leftPos == fltOffPos[SLOT_LEFT]))
+        emitOffRest(SIDE_RIGHT, fltOffNeg[SLOT_RIGHT], fltOffPos[SLOT_RIGHT], rightNeg, rightPos, (rightNeg == fltOffNeg[SLOT_RIGHT]) and (rightPos == fltOffPos[SLOT_RIGHT]))
+
+PRI fltApiRetry(tid) | startMs, safeEvent, bReached
+' PL-66: THE SAME POWER, COMMANDED AGAIN after the fault, runs the motor again.
+'
+' The unfixed library left a faulted driver faulted unless the new command DIFFERED from the standing one,
+' because the driver's own compare tests "still standing", not "just arrived" -- so a user who retried at
+' the power they were already using stayed stopped with no way to tell why. The front cog now makes that
+' edge itself (frontClearFault()), so this retry is the certification: same power, same call, and the
+' platform reaches speed.
+'
+' Runs only when the provocation actually faulted; otherwise there is nothing to retry from and the cell
+' stays NOMEAS.
+'
+' @param tid - trace id of the trial
+'
+' @local startMs - getms() at the retry command
+' @local safeEvent - SAFE_* from the watched wait
+' @local bReached - both wheels reached AT_SPEED
+
+    fltRetryErr := NO_ERROR
+    fltRetryMs := 0
+    bFltRetryOk := FALSE
+    if bSfFltApiRan and bSteerUp
+        bSfRetryRan := TRUE
+        startMs := getms()
+        fltRetryErr := dDrive(SIDE_BOTH, FLTAPI_POWER)      ' the same power the provocation was driven at
+        if fltRetryErr == NO_ERROR
+            safeEvent, bReached := waitWatched(SIDE_BOTH, D_AT_SPEED_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+            if (safeEvent == SAFE_NONE) and bReached
+                fltRetryMs := getms() - startMs
+                bFltRetryOk := TRUE
+        bSfRetryOk := bFltRetryOk
+        steerStopMotors()
+        waitWatched(SIDE_BOTH, STOP_TIMEOUT_MS, CP_LOOP_STOPPED, UNTIL_STOPPED)
 
 PRI fltApiVerdict() : whyCode | rowIdx, faultIdx, lastIdx, bStatFaulted, bSigHeld
 ' Read the trial's verdict out of the rows the poll already stored, so BM-FLTAPI, the BM-OUT rows and
@@ -2796,6 +3463,852 @@ PRI fltApiVerdict() : whyCode | rowIdx, faultIdx, lastIdx, bStatFaulted, bSigHel
         bSfFltApiRan := TRUE
         bSfFltApiOk := bStatFaulted and bSigHeld and (fltLatchMs >= FLTAPI_LATCH_MS)
         whyCode := WHY_NONE
+
+CON { --- part D steps: one claim each, measured once, printed as BM-DSTEP (task 3560) --- }
+
+' EVERY STEP HAS THE SAME SHAPE. It provokes the condition, reads one number, judges it against a stated
+' bound, and hands dStepDone() a measured/criterion pair. A condition this rig cannot provoke is NOMEAS
+' with a why, never a pass by silence (doctrine overlay P1).
+'
+' SIDE selects the form under test and nothing else: SIDE_BOTH is the steering object (one front cog,
+' two drivers) and SIDE_LEFT is one wheel (its own front cog). The dispatch helpers below are the only
+' place the two differ, so each step is written once.
+
+PRI dStepDone(stepCode, side, bMeasured, bCriterionMet, measuredVal, loLimit, hiLimit, whyCode)
+' Record one part-D step: fill the BM-DSTEP staging, fold the cell, emit.
+'
+' @param stepCode - DST_* value
+' @param side - SIDE_BOTH (the steering object) or SIDE_LEFT (the single wheel)
+' @param bMeasured - TRUE when the step's condition arose and its number is a measurement
+' @param bCriterionMet - TRUE when the step's own criterion held
+' @param measuredVal - the step's number, meaning per step
+' @param loLimit - lowest passing value
+' @param hiLimit - highest passing value
+' @param whyCode - WHY_* naming what was missing, WHY_NONE when nothing was
+
+    dsStep := stepCode
+    dsMeasured := measuredVal
+    dsLo := loLimit
+    dsHi := hiLimit
+    dsWhy := whyCode
+    if bMeasured == FALSE
+        dsResult := DRES_NOMEAS
+    elseif bCriterionMet <> FALSE
+        dsResult := DRES_PASS
+    else
+        dsResult := DRES_FAIL
+    if side == SIDE_LEFT
+        bSfWDStepRan[stepCode] := (bMeasured <> FALSE)
+        bSfWDStepOk[stepCode] := (bMeasured <> FALSE) and (bCriterionMet <> FALSE)
+    else
+        bSfDStepRan[stepCode] := (bMeasured <> FALSE)
+        bSfDStepOk[stepCode] := (bMeasured <> FALSE) and (bCriterionMet <> FALSE)
+    emitDStep(side)
+    segItems := (segItems + 1) <# LIM_SMALL
+
+PRI dStepSkip(stepCode, side, whyCode)
+' Record a part-D step that could not run at all, so every declared cell still prints a row.
+'
+' @param stepCode - DST_* value
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @param whyCode - WHY_* naming why nothing ran
+
+    dStepDone(stepCode, side, FALSE, FALSE, 0, 0, 0, whyCode)
+
+PRI dArm(side) : bArmed
+' Arm the instrument on the source this form reads, at the operator-segment decimation.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns bArmed - TRUE when the instrument acknowledged
+
+    bArmed := instArm((side == SIDE_BOTH) ? INST_SRC_STEER : INST_SRC_WHEELS, FLOOR_DECIM)
+
+PRI dDrive(side, powerValue) : eError
+' Drive this form at a power through the PUBLIC method a user would call, and return what it returned.
+'
+' THE SYNC_PRECOND GUARD IS DELIBERATELY NOT USED HERE. That guard (design sec 4.3) exists because the
+' pre-6.0.0 steering driveAtPower() ended in an unbounded SyncStatus() wait that never returned while a
+' driver sat in DCS_ESTOP. Task 3513 moved the ATN and the wait into the front cog, and a caller now waits
+' only the bounded request round trip (REQ_ACK_TIMEOUT_MS), so the call returns a refusal instead of
+' hanging -- and THAT REFUSAL IS WHAT DST_ESTOP_REFUSE MEASURES. Calling through the guard would refuse
+' on this cog and measure the harness instead of the driver.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @param powerValue - power [-100..100] for every wheel of this form
+' @returns eError - NO_ERROR or the ERR_* code the library returned
+
+    curIncre := 0
+    if side == SIDE_BOTH
+        beat(CP_LIB_STEER_DRIVE)
+        eError := steering.driveAtPower(powerValue, powerValue)
+        beat(CP_LIB_STEER_DRIVE)
+    else
+        beat(CP_LIB_COMMAND)
+        eError := (side == SIDE_RIGHT) ? wheelR.driveAtPower(powerValue) : wheelL.driveAtPower(powerValue)
+        beat(CP_LIB_COMMAND)
+
+PRI dEstop(side)
+' Emergency-stop this form.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+
+    curIncre := 0
+    if side == SIDE_BOTH
+        beat(CP_LIB_ESTOP)
+        steering.emergencyCutoff()
+        beat(CP_LIB_ESTOP)
+    else
+        wheelEstop(side)
+
+PRI dClearEstop(side) : eError
+' Release this form's emergency stop.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns eError - NO_ERROR, or the code the library returned
+
+    beat(CP_LIB_ESTOP)
+    if side == SIDE_BOTH
+        eError := steering.clearEmergency()
+    else
+        eError := (side == SIDE_RIGHT) ? wheelR.clearEmergency() : wheelL.clearEmergency()
+    beat(CP_LIB_ESTOP)
+
+PRI dStopMotion(side)
+' Stop this form's motion without stopping any cog.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+
+    if side == SIDE_BOTH
+        steerStopMotors()
+    else
+        wheelStopMotor(side)
+
+PRI dStopAfterTime(side, timeMs) : eError
+' Arm this form's time stop in milliseconds.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @param timeMs - the limit, in ms
+' @returns eError - NO_ERROR, or the code the library returned
+
+    beat(CP_LIB_COMMAND)
+    if side == SIDE_BOTH
+        eError := steering.stopAfterTime(timeMs, steering.DTU_MILLISEC)
+    else
+        eError := (side == SIDE_RIGHT) ? wheelR.stopAfterTime(timeMs, wheelL.DTU_MILLISEC) : wheelL.stopAfterTime(timeMs, wheelL.DTU_MILLISEC)
+    beat(CP_LIB_COMMAND)
+
+PRI dIsEstopped(side) : bEstopped | eLeftStatus, eRightStatus
+' Report whether every wheel of this form reads emergency-stopped through the PUBLIC status API.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns bEstopped - TRUE when getStatus() reads DS_ESTOP for every wheel and isEmergency() is TRUE
+'
+' @local eLeftStatus - left getStatus()
+' @local eRightStatus - right getStatus()
+
+    beat(CP_LIB_STEER_QUERY)
+    if side == SIDE_BOTH
+        eLeftStatus, eRightStatus := steering.getStatus()
+        bEstopped := (eLeftStatus == wheelL.DS_ESTOP) and (eRightStatus == wheelL.DS_ESTOP) and (steering.isEmergency() <> FALSE)
+    else
+        eLeftStatus := (side == SIDE_RIGHT) ? wheelR.getStatus() : wheelL.getStatus()
+        bEstopped := (eLeftStatus == wheelL.DS_ESTOP) and (((side == SIDE_RIGHT) ? wheelR.isEmergency() : wheelL.isEmergency()) <> FALSE)
+    beat(CP_LIB_STEER_QUERY)
+
+PRI dPowerSum(side) : nSum | leftPower, rightPower
+' Sum of |power| this form reports through getPower(); 0 means every wheel reads stopped (PL-52).
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns nSum - |left power| + |right power|, or |power| for one wheel
+'
+' @local leftPower - left getPower()
+' @local rightPower - right getPower()
+
+    beat(CP_LIB_STEER_QUERY)
+    if side == SIDE_BOTH
+        leftPower, rightPower := steering.getPower()
+        nSum := abs(leftPower) + abs(rightPower)
+    else
+        nSum := abs((side == SIDE_RIGHT) ? wheelR.getPower() : wheelL.getPower())
+    beat(CP_LIB_STEER_QUERY)
+
+PRI dRawTicks(side) : leftTicks, rightTicks
+' Raw driver-maintained tick counts of this form (the reading no tracking reset moves).
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns leftTicks - the left wheel's raw ticks, or this wheel's
+' @returns rightTicks - the right wheel's raw ticks, or the same value again for one wheel
+
+    beat(CP_LIB_STEER_QUERY)
+    if side == SIDE_BOTH
+        leftTicks, rightTicks := steering.testGetRawHallTicks()
+    else
+        leftTicks := (side == SIDE_RIGHT) ? wheelR.getRawHallTicks() : wheelL.getRawHallTicks()
+        rightTicks := leftTicks
+    beat(CP_LIB_STEER_QUERY)
+
+PRI dTrackTicks(side) : leftTicks, rightTicks
+' Tracked (resettable) tick counts of this form.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns leftTicks - the left wheel's tracked ticks, or this wheel's
+' @returns rightTicks - the right wheel's tracked ticks, or the same value again for one wheel
+
+    beat(CP_LIB_STEER_QUERY)
+    if side == SIDE_BOTH
+        leftTicks, rightTicks := steering.getRotationCount(steering.DRU_HALL_TICKS)
+    else
+        leftTicks := (side == SIDE_RIGHT) ? wheelR.getRotationCount(wheelL.DRU_HALL_TICKS) : wheelL.getRotationCount(wheelL.DRU_HALL_TICKS)
+        rightTicks := leftTicks
+    beat(CP_LIB_STEER_QUERY)
+
+PRI dResetTracking(side) : eError
+' Reset this form's position tracking.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns eError - NO_ERROR, or the code the library returned
+
+    beat(CP_LIB_COMMAND)
+    if side == SIDE_BOTH
+        eError := steering.resetTracking()
+    else
+        eError := (side == SIDE_RIGHT) ? wheelR.resetTracking() : wheelL.resetTracking()
+    beat(CP_LIB_COMMAND)
+
+PRI dFrontStats(side) : nPasses, nLate, nMaxTicks, nStackHi
+' This form's front-cog loop health.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns nPasses - passes since the cog was launched
+' @returns nLate - passes that overran their slot
+' @returns nMaxTicks - longest pass body, in system ticks
+' @returns nStackHi - stack longs ever used
+
+    beat(CP_LIB_STEER_QUERY)
+    if side == SIDE_BOTH
+        nPasses, nLate, nMaxTicks, nStackHi := steering.testGetFrontStats()
+    elseif side == SIDE_RIGHT
+        nPasses, nLate, nMaxTicks, nStackHi := wheelR.testGetFrontStats()
+    else
+        nPasses, nLate, nMaxTicks, nStackHi := wheelL.testGetFrontStats()
+    beat(CP_LIB_STEER_QUERY)
+
+PRI dShutdown(side)
+' Stop this form's cogs through the PUBLIC stop(), with the instrument returned to IDLE first (I10).
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+
+    instIdle()
+    if side == SIDE_BOTH
+        beat(CP_LIB_STEER_STOP)
+        steering.stop()
+        beat(CP_LIB_STEER_STOP)
+        bSteerUp := FALSE
+    else
+        wheelStopRaw(side)
+
+PRI dToSpeed(side) : bAtSpeed | safeEvent
+' Bring this form to D_POWER and hold it at speed, so a step acts on a moving platform.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns bAtSpeed - TRUE when every wheel reached DCS_AT_SPEED and the settle passed cleanly
+'
+' @local safeEvent - SAFE_* from the watched waits
+
+    bAtSpeed := FALSE
+    if dDrive(side, D_POWER) == NO_ERROR
+        safeEvent, bAtSpeed := waitWatched(side, D_AT_SPEED_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+        if (safeEvent == SAFE_NONE) and bAtSpeed
+            safeEvent, _ := waitWatched(side, D_SETTLE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
+        if safeEvent <> SAFE_NONE
+            bAtSpeed := FALSE
+
+PRI dRest(side) : bRest | safeEvent
+' Wait, bounded, for this form to be at rest (pos and hwPos still, per waitRest()).
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns bRest - TRUE when rest was confirmed inside D_REST_MS
+'
+' @local safeEvent - SAFE_* from the wait
+
+    safeEvent, bRest := waitRest(side, D_REST_MS, FALSE)
+
+PRI dStepLockstep() | bArmed, safeEvent, bMoving, leftJ, rightJ, sampleIdx, gapSamples
+' LOCKSTEP: both drivers leave DCS_STOPPED in the same instrument sample.
+'
+' A REGRESSION GUARD, AND IT IS STATED AS ONE: the steering object has always released its two parked
+' drivers with one COGATN, and Visit 2 and Visit 3 showed no drift. What changed underneath is WHO
+' writes the commands -- one front cog now writes both and sends the ATN (task 3513) -- so the guard is
+' here to show that the new writer did not cost the lockstep, not because a defect is suspected.
+'
+' Measured at decimation 1 (2 ms per sample), the finest the instrument offers.
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local safeEvent - SAFE_* from the watched waits
+' @local bMoving - both wheels left rest inside the bound
+' @local leftJ - logical index of the left wheel's first sample not DCS_STOPPED, -1 when none
+' @local rightJ - the same for the right wheel
+' @local sampleIdx - logical index
+' @local gapSamples - |leftJ - rightJ|
+
+    leftJ := -1
+    rightJ := -1
+    gapSamples := 0
+    bMoving := FALSE
+    bArmed := instArm(INST_SRC_STEER, 1)
+    if bArmed
+        instMark()
+        if dDrive(SIDE_BOTH, D_POWER) == NO_ERROR
+            safeEvent, bMoving := waitWatched(SIDE_BOTH, OVERSHT_MOVE_MS, CP_LOOP_CAPTURE, UNTIL_MOVING)
+            if safeEvent <> SAFE_NONE
+                bMoving := FALSE
+        instFreeze(0)
+        drainBegin()
+        drainFindMark()
+        if bMoving and bDrMarkFound and (drStored > 0)
+            repeat sampleIdx from drMarkJ to drStored - 1
+                beat(CP_LOOP_DRAIN)
+                if (leftJ < 0) and smpUp(sampleIdx, SLOT_LEFT) and (smpState(sampleIdx, SLOT_LEFT) <> DCS_STOPPED)
+                    leftJ := sampleIdx
+                if (rightJ < 0) and smpUp(sampleIdx, SLOT_RIGHT) and (smpState(sampleIdx, SLOT_RIGHT) <> DCS_STOPPED)
+                    rightJ := sampleIdx
+                if (leftJ >= 0) and (rightJ >= 0)
+                    quit
+    if (leftJ >= 0) and (rightJ >= 0)
+        gapSamples := abs(leftJ - rightJ)
+        dStepDone(DST_LOCKSTEP, SIDE_BOTH, TRUE, gapSamples <= D_LOCKSTEP_SAMPLES, gapSamples, 0, D_LOCKSTEP_SAMPLES, WHY_NONE)
+    else
+        dStepDone(DST_LOCKSTEP, SIDE_BOTH, FALSE, FALSE, 0, 0, D_LOCKSTEP_SAMPLES, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    dStopMotion(SIDE_BOTH)
+    dRest(SIDE_BOTH)
+    instIdle()
+
+PRI dStepTrackReset(side) | bArmed, bAtSpeed, startMs, elapsedMs, rawLeft1, rawRight1, trkLeft1, trkRight1, rawLeft2, rawRight2, trkLeft2, trkRight2, bAgrees, eError
+' TRACKRESET: resetTracking() at speed returns inside D_TRACKRESET_MS, and the tracking it restarts
+' agrees with the driver's own raw ticks from that moment on.
+'
+' THE UNFIXED VALUE: before task 3513 this call waited on the sense task and took 400 ms or more, during
+' which the platform kept moving and the caller could not know from where the new count ran. The bound
+' below is the front cog's own request round trip.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local bAtSpeed - the platform reached speed
+' @local startMs - getms() before the reset call
+' @local elapsedMs - how long the reset call took
+' @local rawLeft1 - raw ticks just after the reset
+' @local rawRight1 - the same, right wheel
+' @local trkLeft1 - tracked ticks just after the reset
+' @local trkRight1 - the same, right wheel
+' @local rawLeft2 - raw ticks after the agreement window
+' @local rawRight2 - the same, right wheel
+' @local trkLeft2 - tracked ticks after the agreement window
+' @local trkRight2 - the same, right wheel
+' @local bAgrees - both wheels' tracked travel matched their raw travel
+' @local eError - the reset call's return
+
+    elapsedMs := 0
+    bAgrees := FALSE
+    bArmed := dArm(side)
+    bAtSpeed := bArmed and dToSpeed(side)
+    if bAtSpeed
+        startMs := getms()
+        eError := dResetTracking(side)
+        elapsedMs := getms() - startMs
+        rawLeft1, rawRight1 := dRawTicks(side)
+        trkLeft1, trkRight1 := dTrackTicks(side)
+        waitBeat(D_SETTLE_MS, CP_LOOP_SETTLE)
+        rawLeft2, rawRight2 := dRawTicks(side)
+        trkLeft2, trkRight2 := dTrackTicks(side)
+        bAgrees := (eError == NO_ERROR) and (abs((trkLeft2 - trkLeft1) - abs(rawLeft2 - rawLeft1)) <= D_TRACKRESET_TOL)
+        bAgrees := bAgrees and (abs((trkRight2 - trkRight1) - abs(rawRight2 - rawRight1)) <= D_TRACKRESET_TOL)
+        dStepDone(DST_TRACKRESET, side, TRUE, bAgrees and (elapsedMs <= D_TRACKRESET_MS), elapsedMs, 0, D_TRACKRESET_MS, WHY_NONE)
+    else
+        dStepDone(DST_TRACKRESET, side, FALSE, FALSE, 0, 0, D_TRACKRESET_MS, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    dStopMotion(side)
+    dRest(side)
+    instIdle()
+
+PRI dStepEstopSet(side) | bArmed, bAtSpeed, startMs, refuseMs, eRefusal, rawLeft1, rawRight1, rawLeft2, rawRight2, bLatched, bMoved, eClear, bStill
+' The three e-stop claims, from one provocation (they cannot be separated: each is a different instant of
+' the same latch).
+'
+'  REFUSE - a drive issued while emergency-stopped returns ERR_EMERGENCY_STOPPED, and returns it QUICKLY.
+'           The unfixed library hung the caller's cog here (an unbounded SyncStatus() wait), so the
+'           measured number is the call's own latency.
+'  LATCH  - D_ESTOP_HOLD_MS later the stop is still in force and nothing has moved. S-4 recorded the old
+'           e-stop self-cancelling in about 125-250 ms, so this hold is the discriminator.
+'  CLEAR  - clearEmergency() releases it, the platform stays where it is, and getPower() reads 0 (PL-52).
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local bAtSpeed - the platform reached speed
+' @local startMs - getms() before a timed call
+' @local refuseMs - how long the refused drive took to return
+' @local eRefusal - what that drive returned
+' @local rawLeft1 - raw ticks once the coast ended
+' @local rawRight1 - the same, right wheel
+' @local rawLeft2 - raw ticks after the hold
+' @local rawRight2 - the same, right wheel
+' @local bLatched - the stop was still in force after the hold
+' @local bMoved - the platform moved during the hold, beyond D_POS_TOL_TICKS
+' @local eClear - clearEmergency()'s return
+' @local bStill - nothing moved after the clear
+
+    refuseMs := 0
+    bArmed := dArm(side)
+    bAtSpeed := bArmed and dToSpeed(side)
+    if bAtSpeed == FALSE
+        dStepSkip(DST_ESTOP_REFUSE, side, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+        dStepSkip(DST_ESTOP_LATCH, side, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+        dStepSkip(DST_ESTOP_CLEAR, side, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    else
+        dEstop(side)
+        ' 1. REFUSE, measured at once: the strongest moment, while the platform is still coasting down
+        startMs := getms()
+        eRefusal := dDrive(side, D_POWER)
+        refuseMs := getms() - startMs
+        dStepDone(DST_ESTOP_REFUSE, side, TRUE, (eRefusal == wheelL.ERR_EMERGENCY_STOPPED) and (refuseMs <= D_ESTOP_REFUSE_MS), refuseMs, 0, D_ESTOP_REFUSE_MS, WHY_NONE)
+        ' 2. LATCH, after the coast has ended so a moving platform cannot be read as a released latch
+        dRest(side)
+        rawLeft1, rawRight1 := dRawTicks(side)
+        waitBeat(D_ESTOP_HOLD_MS, CP_LOOP_POLL)
+        bLatched := dIsEstopped(side)
+        rawLeft2, rawRight2 := dRawTicks(side)
+        bMoved := (abs(rawLeft2 - rawLeft1) > D_POS_TOL_TICKS) or (abs(rawRight2 - rawRight1) > D_POS_TOL_TICKS)
+        dStepDone(DST_ESTOP_LATCH, side, TRUE, bLatched and (bMoved == FALSE), D_ESTOP_HOLD_MS, D_ESTOP_HOLD_MS, D_ESTOP_HOLD_MS, WHY_NONE)
+        ' 3. CLEAR: released, still at rest, and no power left standing
+        eClear := dClearEstop(side)
+        rawLeft1, rawRight1 := dRawTicks(side)
+        waitBeat(D_CLEAR_STILL_MS, CP_LOOP_POLL)
+        rawLeft2, rawRight2 := dRawTicks(side)
+        bStill := (abs(rawLeft2 - rawLeft1) <= D_POS_TOL_TICKS) and (abs(rawRight2 - rawRight1) <= D_POS_TOL_TICKS)
+        dStepDone(DST_ESTOP_CLEAR, side, TRUE, (eClear == NO_ERROR) and bStill and (dIsEstopped(side) == FALSE) and (dPowerSum(side) == 0), eClear, NO_ERROR, NO_ERROR, WHY_NONE)
+    dStopMotion(side)
+    dRest(side)
+    instIdle()
+
+PRI dStepOrdered() | bArmed, bAtSpeed, eLeftState, eRightState, bSameState, bStopped, startMs
+' ORDERED: a stop ordered from cog 0 while ANOTHER cog drives the platform repeatedly leaves both wheels
+' in one state, not one stopped and one still driving.
+'
+' THE SECOND COG IS THE POINT. The property cannot arise from one cog's calls, so a helper cog drives at
+' D_POWER every D_ORDERED_PERIOD_MS while cog 0 stops the platform; the helper's drives keep arriving
+' during and after the stop. Both wheels' requests go through the same front cog, which applies stops
+' before drives within a pass, so the platform ends in one state whichever order the calls interleave.
+'
+' A REGRESSION GUARD, STATED: nothing in Visit 1-3 showed the two wheels diverging. It rides this visit
+' because the front cog is new code on the path every one of those calls now takes.
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local bAtSpeed - the platform reached speed
+' @local eLeftState - the left driver's state after everything settled
+' @local eRightState - the right driver's state
+' @local bSameState - both wheels ended in the same state
+' @local bStopped - that state is DCS_STOPPED
+' @local startMs - getms() when the wait for the helper to finish began
+
+    bArmed := dArm(SIDE_BOTH)
+    bAtSpeed := bArmed and dToSpeed(SIDE_BOTH)
+    if bAtSpeed
+        odDrives := 0
+        odLastErr := NO_ERROR
+        bOdDone := FALSE
+        bOdRun := TRUE
+        odCogId := cogspin(NEWCOG, orderedHelper(), @odStack)
+        if odCogId < 0
+            bOdRun := FALSE
+            dStepDone(DST_ORDERED, SIDE_BOTH, FALSE, FALSE, 0, 0, 0, WHY_NO_COG)
+        else
+            waitBeat(D_ORDERED_PERIOD_MS * 4, CP_LOOP_POLL)  ' let the helper's drives be in flight
+            dStopMotion(SIDE_BOTH)                           ' the ordered stop, from cog 0
+            waitBeat(D_ORDERED_PERIOD_MS * 4, CP_LOOP_POLL)  ' more drives arrive after it
+            bOdRun := FALSE
+            ' bounded: a helper that never answers is stopped anyway, and the state check below still runs
+            startMs := getms()
+            repeat while (bOdDone == FALSE) and ((getms() - startMs) < STOP_TIMEOUT_MS)
+                beat(CP_LOOP_POLL)
+                waitms(D_STEP_POLL_MS)
+            cogstop(odCogId)
+            odCogId := -1
+            dStopMotion(SIDE_BOTH)                           ' the helper's last drive is superseded here
+            dRest(SIDE_BOTH)
+            beat(CP_LIB_STEER_QUERY)
+            eLeftState, eRightState := steering.testGetDriverState()
+            beat(CP_LIB_STEER_QUERY)
+            bSameState := (eLeftState == eRightState)
+            bStopped := (eLeftState == DCS_STOPPED)
+            dStepDone(DST_ORDERED, SIDE_BOTH, TRUE, bSameState and bStopped, odDrives, 1, LIM_SMALL, WHY_NONE)
+    else
+        dStepDone(DST_ORDERED, SIDE_BOTH, FALSE, FALSE, 0, 0, 0, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    dStopMotion(SIDE_BOTH)
+    dRest(SIDE_BOTH)
+    instIdle()
+
+PRI orderedHelper()
+' THE ORDERED-STOP HELPER COG: drive the platform at D_POWER until cog 0 lowers bOdRun, then say so.
+'
+' It commands and counts, nothing else: no record, no reading, no stop. Every drive goes through the
+' public method, from a cog that is not cog 0, which is the whole point of the step.
+
+    repeat while bOdRun
+        odLastErr := steering.driveAtPower(D_POWER, D_POWER)
+        odDrives := (odDrives + 1) <# LIM_SMALL
+        waitms(D_ORDERED_PERIOD_MS)
+    bOdDone := TRUE
+
+PRI dStepTimeStop(side) | bArmed, bAtSpeed, deadlineMs, eError, restMs, lateMs, bRest
+' TIMESTOP: stopAfterTime() leaves the platform AT REST BY its deadline, with no power left standing.
+'
+' THE UNFIXED VALUE: before task 3559 the stop began AT the limit rather than early enough to finish by
+' it, so the platform was still ramping down when the deadline passed. The number below is signed: how
+' far past its deadline rest actually arrived.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local bAtSpeed - the platform reached speed
+' @local deadlineMs - getms() the limit is due at
+' @local eError - stopAfterTime()'s return
+' @local restMs - getms() when rest was confirmed
+' @local lateMs - restMs - deadlineMs, signed
+' @local bRest - rest was confirmed inside the bound
+
+    lateMs := 0
+    bArmed := dArm(side)
+    bAtSpeed := bArmed and dToSpeed(side)
+    if bAtSpeed
+        eError := dStopAfterTime(side, D_TIMESTOP_MS)
+        deadlineMs := getms() + D_TIMESTOP_MS
+        bRest := dRest(side)
+        restMs := getms()
+        lateMs := restMs - deadlineMs
+        dStepDone(DST_TIMESTOP, side, bRest, (eError == NO_ERROR) and (lateMs <= D_TIMESTOP_SLACK_MS) and (dPowerSum(side) == 0), lateMs, 0 - D_TIMESTOP_MS, D_TIMESTOP_SLACK_MS, bRest ? WHY_NONE : WHY_STOP_TIMEOUT)
+    else
+        dStepDone(DST_TIMESTOP, side, FALSE, FALSE, 0, 0, D_TIMESTOP_SLACK_MS, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    dStopMotion(side)
+    dRest(side)
+    instIdle()
+
+PRI dStepFrontStats(side) | nPasses, nLate, nMaxTicks, nStackHi, slotIdx, bHealthy
+' FRONTST: the front cog kept its 1 kHz slot, never overran its stack, and never fell behind.
+'
+' Read with the object still running and the platform at rest, so the numbers cover every step this part
+' has just put the cog through. A late pass is counted and never replayed, so ZERO late passes is the
+' criterion, not a small number of them.
+'
+' @param side - SIDE_BOTH (the steering front cog) or SIDE_LEFT (the wheel's own)
+'
+' @local nPasses - passes since launch
+' @local nLate - passes that overran their slot
+' @local nMaxTicks - longest pass body, in system ticks
+' @local nStackHi - stack longs ever used
+' @local slotIdx - accumulator slot: 0 the steering cog, 1 the wheel's
+' @local bHealthy - every criterion held
+
+    nPasses, nLate, nMaxTicks, nStackHi := dFrontStats(side)
+    slotIdx := (side == SIDE_BOTH) ? SLOT_LEFT : SLOT_RIGHT
+    bHealthy := (nPasses > 0) and (nLate <= D_FRONT_LATE_HI) and (nMaxTicks < D_FRONT_PASS_TICKS_HI) and (nStackHi < D_FRONT_STACK_HI)
+    bSfFrontRan[slotIdx] := (nPasses > 0)
+    bSfFrontOk[slotIdx] := bHealthy
+    emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi)
+
+PRI dStepCoopShut(side) | startMs, elapsedMs
+' COOPSHUT: stop() returns inside D_COOPSHUT_MS.
+'
+' The front cog is asked to EXIT, answers every open request and parks before it is cogstopped (PL-41),
+' so the shutdown is cooperative rather than a cut line -- and it is BOUNDED, which is what this measures.
+' The bound is the library's own request round trip; anything longer means the EXIT was not answered.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+'
+' @local startMs - getms() before stop()
+' @local elapsedMs - how long stop() took
+
+    startMs := getms()
+    dShutdown(side)
+    elapsedMs := getms() - startMs
+    dStepDone(DST_COOPSHUT, side, TRUE, elapsedMs < D_COOPSHUT_MS, elapsedMs, 0, D_COOPSHUT_MS - 1, WHY_NONE)
+
+PRI dLimitState(slotIdx) : nPeakA, nContA, bDeratedNow, nPhaseMa, nLimitK
+' One wheel's current-limit state, read through the steering object's pass-through.
+'
+' @param slotIdx - motor slot
+' @returns nPeakA - the peak phase-current limit in force, amps
+' @returns nContA - the continuous limit, amps
+' @returns bDeratedNow - T/F where T means the fold-back holds the continuous limit
+' @returns nPhaseMa - the front cog's ~1 s average of the phase-current lower bound, mA
+' @returns nLimitK - the fold-back factor the driver reads
+
+    beat(CP_LIB_STEER_QUERY)
+    if slotIdx == SLOT_RIGHT
+        nPeakA, nContA, bDeratedNow, nPhaseMa, nLimitK := steering.testRightGetCurrentLimitState()
+    else
+        nPeakA, nContA, bDeratedNow, nPhaseMa, nLimitK := steering.testLeftGetCurrentLimitState()
+    beat(CP_LIB_STEER_QUERY)
+
+PRI dSetLimits(peakAmps, contAmps) : eError
+' Replace both wheels' current limits (TEST-USE; the step that sets them restores them).
+'
+' @param peakAmps - the peak limit, amps
+' @param contAmps - the continuous limit, amps
+' @returns eError - NO_ERROR, or the code the library returned
+
+    beat(CP_LIB_COMMAND)
+    eError := steering.testSetCurrentLimits(peakAmps, contAmps)
+    beat(CP_LIB_COMMAND)
+
+PRI dStepFoldBack() | bArmed, eError, slotIdx, startMs, peakMa[INST_MOTORS], startPos[INST_MOTORS], bFaulted, bTurned, bOk, worstMa
+' FOLDBACK: with the peak limit lowered to one a lifted wheel can reach, the driver holds the phase
+' current at that limit and KEEPS TURNING instead of faulting.
+'
+' The peak and continuous limits are set to the same value, so only the driver's own fold-back acts --
+' the front cog's derate has nothing left to lower. The judged quantity is the front cog's own phase
+' estimate (testGetCurrentLimitState()'s average), the same number the derate decision reads, so the
+' cell and the driver judge one source.
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local eError - the limit write's return
+' @local slotIdx - motor slot
+' @local startMs - getms() at the start of the hold
+' @local peakMa - largest phase average seen, per motor
+' @local startPos - each wheel's raw ticks at the start of the hold
+' @local bFaulted - either wheel's fault flag was seen during the hold
+' @local bTurned - both wheels moved during the hold
+' @local bOk - both wheels met the criterion
+' @local worstMa - the larger of the two peak averages, the step's printed number
+
+    bFaulted := FALSE
+    worstMa := 0
+    bArmed := dArm(SIDE_BOTH)
+    eError := dSetLimits(D_FOLD_PEAK_A, D_FOLD_CONT_A)
+    if bArmed and (eError == NO_ERROR) and (dDrive(SIDE_BOTH, D_POWER) == NO_ERROR)
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            peakMa[slotIdx] := 0
+        startPos[SLOT_LEFT], startPos[SLOT_RIGHT] := dRawTicks(SIDE_BOTH)
+        startMs := getms()
+        repeat
+            beat(CP_LOOP_POLL)
+            repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                peakMa[slotIdx] #>= dLimitPhaseMa(slotIdx)
+                if instLastFault[slotIdx] <> FALSE
+                    bFaulted := TRUE
+            waitms(D_LIMIT_POLL_MS)
+            if (getms() - startMs) >= D_FOLD_HOLD_MS
+                quit
+        bTurned := dBothMoved(startPos[SLOT_LEFT], startPos[SLOT_RIGHT])
+        bOk := (bFaulted == FALSE) and bTurned
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            worstMa #>= peakMa[slotIdx]
+            bSfLimRan[slotIdx] := TRUE
+            bSfLimOk[slotIdx] := (peakMa[slotIdx] <= dFoldBoundMa()) and (bFaulted == FALSE) and bTurned
+            bOk := bOk and (peakMa[slotIdx] <= dFoldBoundMa())
+            emitLimSt(SIDE_LEFT + slotIdx, slotIdx, DST_FOLDBACK, peakMa[slotIdx])
+        dStepDone(DST_FOLDBACK, SIDE_BOTH, TRUE, bOk, worstMa, 0, dFoldBoundMa(), WHY_NONE)
+    else
+        dStepDone(DST_FOLDBACK, SIDE_BOTH, FALSE, FALSE, 0, 0, dFoldBoundMa(), bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    dStopMotion(SIDE_BOTH)
+    dRest(SIDE_BOTH)
+    instIdle()
+
+PRI dFoldBoundMa() : nBoundMa
+' The phase-current average the FOLDBACK hold may reach: the lowered peak limit plus its stated tolerance.
+'
+' @returns nBoundMa - the bound, in mA
+
+    nBoundMa := (D_FOLD_PEAK_A * 1_000 * D_FOLD_TOL_PCT) / 100
+
+PRI dLimitPhaseMa(slotIdx) : nPhaseMa
+' One wheel's judged phase-current average.
+'
+' @param slotIdx - motor slot
+' @returns nPhaseMa - the front cog's ~1 s average, mA
+
+    _, _, _, nPhaseMa, _ := dLimitState(slotIdx)
+
+PRI dLimitDerated(slotIdx) : bDeratedNow
+' Whether one wheel's fold-back currently holds the continuous limit.
+'
+' @param slotIdx - motor slot
+' @returns bDeratedNow - T/F where T means the limit is derated
+
+    _, _, bDeratedNow, _, _ := dLimitState(slotIdx)
+
+PRI dBothMoved(startLeft, startRight) : bMoved | nowLeft, nowRight
+' Report whether both wheels' raw tick counts have moved since a pair of readings.
+'
+' @param startLeft - the left wheel's raw ticks at the start
+' @param startRight - the right wheel's raw ticks at the start
+' @returns bMoved - TRUE when both counts changed
+'
+' @local nowLeft - the left wheel's raw ticks now
+' @local nowRight - the right wheel's raw ticks now
+
+    nowLeft, nowRight := dRawTicks(SIDE_BOTH)
+    bMoved := (nowLeft <> startLeft) and (nowRight <> startRight)
+
+PRI dStepDerate() | bArmed, eError, slotIdx, startMs, derateMs[INST_MOTORS], bRestored[INST_MOTORS], bAnyDerated, bOk, worstMs
+' DERATE: the front cog lowers the driver's fold-back to the CONTINUOUS limit once its ~1 s average of
+' the phase current crosses it, and returns the peak limit once the average falls away again.
+'
+' The peak limit is set well above the continuous one, so the two are distinguishable: a derate here is
+' the front cog's decision, not the driver's fold-back. The window the derate must arrive in comes from
+' the average's own time constant (2^10 front passes, about 1 s).
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local eError - the limit write's return
+' @local slotIdx - motor slot
+' @local startMs - getms() at the drive
+' @local derateMs - ms from the drive to the derate, per motor; 0 when it never came
+' @local bRestored - the peak limit came back after the stop, per motor
+' @local bAnyDerated - at least one wheel derated, so the step was measurable
+' @local bOk - both wheels derated inside the window and restored
+' @local worstMs - the later of the two derate times, the step's printed number
+
+    bAnyDerated := FALSE
+    worstMs := 0
+    bArmed := dArm(SIDE_BOTH)
+    eError := dSetLimits(D_DERATE_PEAK_A, D_DERATE_CONT_A)
+    if bArmed and (eError == NO_ERROR) and (dDrive(SIDE_BOTH, D_POWER) == NO_ERROR)
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            derateMs[slotIdx] := 0
+            bRestored[slotIdx] := FALSE
+        startMs := getms()
+        repeat
+            beat(CP_LOOP_POLL)
+            repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                if (derateMs[slotIdx] == 0) and (dLimitDerated(slotIdx) <> FALSE)
+                    derateMs[slotIdx] := (getms() - startMs) #> 1
+                    bAnyDerated := TRUE
+            waitms(D_LIMIT_POLL_MS)
+            if ((derateMs[SLOT_LEFT] <> 0) and (derateMs[SLOT_RIGHT] <> 0)) or ((getms() - startMs) >= D_DERATE_WAIT_MS)
+                quit
+        dStopMotion(SIDE_BOTH)
+        dRest(SIDE_BOTH)
+        startMs := getms()
+        repeat                                              ' the peak limit returns once the average decays
+            beat(CP_LOOP_POLL)
+            repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                if dLimitDerated(slotIdx) == FALSE
+                    bRestored[slotIdx] := TRUE
+            waitms(D_LIMIT_POLL_MS)
+            if (bRestored[SLOT_LEFT] and bRestored[SLOT_RIGHT]) or ((getms() - startMs) >= D_DERATE_REST_MS)
+                quit
+        bOk := bAnyDerated
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            worstMs #>= derateMs[slotIdx]
+            bSfDerateRan[slotIdx] := (derateMs[slotIdx] <> 0)
+            bSfDerateOk[slotIdx] := (derateMs[slotIdx] >= D_DERATE_LO_MS) and (derateMs[slotIdx] <= D_DERATE_HI_MS) and bRestored[slotIdx]
+            bOk := bOk and bSfDerateOk[slotIdx]
+            emitLimSt(SIDE_LEFT + slotIdx, slotIdx, DST_DERATE, derateMs[slotIdx])
+        dStepDone(DST_DERATE, SIDE_BOTH, bAnyDerated, bOk, worstMs, D_DERATE_LO_MS, D_DERATE_HI_MS, bAnyDerated ? WHY_NONE : WHY_NOT_DERATED)
+    else
+        dStepDone(DST_DERATE, SIDE_BOTH, FALSE, FALSE, 0, D_DERATE_LO_MS, D_DERATE_HI_MS, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    dStopMotion(SIDE_BOTH)
+    dRest(SIDE_BOTH)
+    instIdle()
+
+PRI dStepBlocked() | bArmed, eError, startMs, blockMs, eLeftCode, eRightCode, eRefusal, eAfterEstopClear, eRelease, rawLeft1, rawRight1, bStill, bDroveAgain, bOk
+' BLOCKED: a commanded motor that cannot move latches a PROTECTIVE STOP, refuses every drive with its own
+' code, is NOT released by clearEmergency(), and is released by clearProtectiveStop().
+'
+' THE PROVOCATION IS THE CONSTRUCTION, not a jammed wheel: the current limits are set to 1 A, which the
+' driver's fold-back cannot serve, so the rotor never follows the field and the front cog sees a motor
+' commanded to move and standing still -- exactly the blocked-platform condition, reached with nothing
+' touching the rig (doctrine overlay P1: every run is wheels-lifted). LAGBOUND is exempt for the whole
+' step: the lag here is deliberate.
+'
+' NOMEAS, not FAIL, when the wheels keep turning at 1 A: that means the condition never arose on this rig,
+' which is a fact about the rig, not about the driver.
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local eError - the limit write's return
+' @local startMs - getms() at the drive
+' @local blockMs - ms from the drive to the latch
+' @local eLeftCode - the left wheel's protective code
+' @local eRightCode - the right wheel's protective code
+' @local eRefusal - what a drive returned while the stop was latched
+' @local eAfterEstopClear - what clearEmergency() returned while it was latched
+' @local eRelease - what clearProtectiveStop() returned
+' @local rawLeft1 - raw ticks after the release
+' @local rawRight1 - the same, right wheel
+' @local bStill - the platform stayed at rest through the release
+' @local bDroveAgain - the platform reached speed once the limits were restored
+' @local bOk - every claim of the step held
+
+    blockMs := 0
+    bInstLagExempt := TRUE                                  ' the lag below is provoked on purpose
+    bArmed := dArm(SIDE_BOTH)
+    eError := dSetLimits(D_BLOCK_PEAK_A, D_BLOCK_CONT_A)
+    if bArmed and (eError == NO_ERROR) and (dDrive(SIDE_BOTH, D_POWER) == NO_ERROR)
+        startMs := getms()
+        repeat
+            beat(CP_LOOP_POLL)
+            eLeftCode, eRightCode := dProtectiveStop()
+            if (eLeftCode <> NO_ERROR) and (eRightCode <> NO_ERROR)
+                blockMs := (getms() - startMs) #> 1
+                quit
+            waitms(D_LIMIT_POLL_MS)
+            if (getms() - startMs) >= D_BLOCK_WAIT_MS
+                quit
+    if blockMs > 0
+        bOk := (eLeftCode == wheelL.ERR_PLATFORM_BLOCKED) and (eRightCode == wheelL.ERR_PLATFORM_BLOCKED)
+        eRefusal := dDrive(SIDE_BOTH, D_POWER)              ' refused with the protective code, and nothing moves
+        bOk := bOk and (eRefusal == wheelL.ERR_PLATFORM_BLOCKED)
+        eAfterEstopClear := dClearEstop(SIDE_BOTH)          ' the e-stop clear does NOT release a protective stop
+        eLeftCode, eRightCode := dProtectiveStop()
+        bOk := bOk and (eAfterEstopClear <> NO_ERROR) and (eLeftCode <> NO_ERROR) and (eRightCode <> NO_ERROR)
+        eRelease := dClearProtective()
+        eLeftCode, eRightCode := dProtectiveStop()
+        bOk := bOk and (eRelease == NO_ERROR) and (eLeftCode == NO_ERROR) and (eRightCode == NO_ERROR)
+        rawLeft1, rawRight1 := dRawTicks(SIDE_BOTH)         ' released, and still stopped until commanded
+        waitBeat(D_CLEAR_STILL_MS, CP_LOOP_POLL)
+        bStill := (dBothMoved(rawLeft1, rawRight1) == FALSE)
+        bOk := bOk and bStill
+        dSetLimits(D_LIMIT_PEAK_DEF, D_LIMIT_CONT_DEF)      ' and the platform drives again once the limits allow it
+        bDroveAgain := dToSpeed(SIDE_BOTH)
+        bOk := bOk and bDroveAgain
+        dStepDone(DST_BLOCKED, SIDE_BOTH, TRUE, bOk, blockMs, 1, D_BLOCK_WAIT_MS, WHY_NONE)
+    else
+        dStepDone(DST_BLOCKED, SIDE_BOTH, FALSE, FALSE, 0, 1, D_BLOCK_WAIT_MS, bArmed ? WHY_NOT_BLOCKED : WHY_INST_NOACK)
+    dStopMotion(SIDE_BOTH)
+    dRest(SIDE_BOTH)
+    instIdle()
+    bInstLagExempt := FALSE
+
+PRI dProtectiveStop() : eLeftCode, eRightCode
+' Both wheels' latched protective-stop causes, without clearing them.
+'
+' @returns eLeftCode - the left wheel's cause, NO_ERROR when none
+' @returns eRightCode - the right wheel's cause, NO_ERROR when none
+
+    beat(CP_LIB_STEER_QUERY)
+    eLeftCode, eRightCode := steering.getProtectiveStop()
+    beat(CP_LIB_STEER_QUERY)
+
+PRI dClearProtective() : eError
+' Acknowledge a latched protective stop on both wheels.
+'
+' @returns eError - NO_ERROR once released, or the code the library returned
+
+    beat(CP_LIB_COMMAND)
+    eError := steering.clearProtectiveStop()
+    beat(CP_LIB_COMMAND)
+
+PRI dLimitRestore() | slotIdx, nPeakA, nContA
+' I11: put the MOSFET current limits back and READ THEM BACK, before the segment ends and before the
+' single-wheel half runs, so no later measurement is taken under a limit this segment lowered.
+'
+' @local slotIdx - motor slot
+' @local nPeakA - the peak limit read back
+' @local nContA - the continuous limit read back
+
+    dSetLimits(D_LIMIT_PEAK_DEF, D_LIMIT_CONT_DEF)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        nPeakA, nContA, _, _, _ := dLimitState(slotIdx)
+        emitLimSt(SIDE_LEFT + slotIdx, slotIdx, DST_BLOCKED, (nPeakA * X10) + nContA)
 
 CON { --- attended segments: OUTSIDE and FLOOR (design sec 4.4) and the operator panel (sec 8) --- }
 
@@ -3928,6 +5441,13 @@ PRI instPackFlags(motorIdx) : flagsLong | dutyVal, errVal, igNow, igDelta
                 igDelta := INTEG_DELTA_MAX
                 instIntegSat := (instIntegSat + 1) <# LIM_BIG
         isIgPrev[motorIdx] := igNow
+        ' LAGBOUND (task 3558): the lag limiter's invariant, folded here because this is the one place a
+        '  stored sample's err is already in hand. A faulted sample is left out -- the fault is what the
+        '  limiter exists to prevent, and its err is the state after the driver gave up, not under control
+        '  -- and so is a sample inside a deliberate provocation window.
+        if (isFault[motorIdx] == FALSE) and (bInstLagExempt == FALSE)
+            instLagMax[motorIdx] #>= abs(errVal)
+            instLagN[motorIdx] := (instLagN[motorIdx] + 1) <# LIM_BIG
         flagsLong := (dutyVal << FLAG_DUTY_SHIFT) | ((errVal & FIELD_BYTE_MASK) << FLAG_ERR_SHIFT)
         flagsLong |= ((isState[motorIdx] & FLAG_STATE_MASK) << FLAG_STATE_SHIFT)
         flagsLong |= ((isFault[motorIdx] <> FALSE) ? (1 << FLAG_FAULT_BIT) : 0)
@@ -4222,12 +5742,16 @@ PRI mirrorNoneInState(side, eState) : bNone | slotIdx
             if (instLastUp[slotIdx] == FALSE) or (instLastState[slotIdx] == eState)
                 bNone := FALSE
 
-PRI waitRest(side, durationMs, bEndOnFault) : safeEvent, bRest | slotIdx, startMs, stillStartMs, lastPos, lastHw
+PRI waitRest(side, durationMs, bEndOnFault) : safeEvent, bRest | slotIdx, startMs, stillStartMs, lastPos[INST_MOTORS], lastHw[INST_MOTORS], bMoved
 ' A beat-polled capture wait after an event that reads only the instrument mirror (sec 2.8): ends when
-' the watched motor's pos and hwPos have both been unchanged for REST_CONFIRM_MS, on a safety event, or
+' EVERY watched motor's pos and hwPos have been unchanged for REST_CONFIRM_MS, on a safety event, or
 ' after durationMs. After stop() pos is frozen, so hwPos alone decides.
 '
-' @param side - SIDE_LEFT or SIDE_RIGHT
+' SIDE_BOTH WAITS FOR THE PLATFORM, not for a wheel. The slots are walked through sideWatches(), as every
+' other watched wait does: indexing a per-slot array with side - SIDE_LEFT would read past the array for
+' SIDE_BOTH, which is why the walk is here rather than one computed slot.
+'
+' @param side - SIDE_LEFT, SIDE_RIGHT or SIDE_BOTH
 ' @param durationMs - the capture bound
 ' @param bEndOnFault - FALSE when the fault is the event under capture, so its flag does not end the wait
 ' @returns safeEvent - SAFE_* that ended the wait, SAFE_NONE otherwise
@@ -4235,27 +5759,33 @@ PRI waitRest(side, durationMs, bEndOnFault) : safeEvent, bRest | slotIdx, startM
 '
 ' @local slotIdx - motor slot
 ' @local startMs - getms() when the wait began
-' @local stillStartMs - getms() when pos or hwPos last changed
-' @local lastPos - mirrored pos at the last change
-' @local lastHw - mirrored hwPos at the last change
+' @local stillStartMs - getms() when any watched pos or hwPos last changed
+' @local lastPos - mirrored pos of each slot at the previous pass
+' @local lastHw - mirrored hwPos of each slot at the previous pass
+' @local bMoved - a watched slot moved during this pass
 
     safetyReset()
-    slotIdx := side - SIDE_LEFT
     safeEvent := SAFE_NONE
     bRest := FALSE
     startMs := getms()
     stillStartMs := startMs
-    lastPos := instLastPos[slotIdx]
-    lastHw := instLastHw[slotIdx]
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        lastPos[slotIdx] := instLastPos[slotIdx]
+        lastHw[slotIdx] := instLastHw[slotIdx]
     repeat
         beat(CP_LOOP_CAPTURE)
         waitms(SAMPLE_MS)
         safeEvent := safetyPoll(side)
         if (safeEvent == SAFE_FAULT) and (bEndOnFault == FALSE)
             safeEvent := SAFE_NONE
-        if (instLastPos[slotIdx] <> lastPos) or (instLastHw[slotIdx] <> lastHw)
-            lastPos := instLastPos[slotIdx]
-            lastHw := instLastHw[slotIdx]
+        bMoved := FALSE
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            if sideWatches(side, slotIdx)
+                if (instLastPos[slotIdx] <> lastPos[slotIdx]) or (instLastHw[slotIdx] <> lastHw[slotIdx])
+                    bMoved := TRUE
+                lastPos[slotIdx] := instLastPos[slotIdx]
+                lastHw[slotIdx] := instLastHw[slotIdx]
+        if bMoved
             stillStartMs := getms()
         elseif (getms() - stillStartMs) >= REST_CONFIRM_MS
             bRest := TRUE
@@ -4449,6 +5979,7 @@ PRI traceDrain(tid, slotPri, slotOth, endCode) : bLost
         drDropped := (drEndJ - drStartJ + 1) - TRACE_MAX_SAMPLES
         drEndJ := drStartJ + TRACE_MAX_SAMPLES - 1
     traceFindRest()
+    traceStopTicks()
     traceIntegritySums()
     trTid := tid
     trDense := TRACE_DENSE_SAMPLES
@@ -4494,6 +6025,21 @@ PRI traceFindRest() | restSamples, stillCount, runStartJ, sampleIdx
             else
                 stillCount := 0
                 runStartJ := sampleIdx
+
+PRI traceStopTicks() | restJ
+' STPDECEL: how far the primary motor travelled between the event and rest, from the trace the drain has
+' just located. One subtraction on samples the trace already found, so no extra reading and no extra run:
+' the deceleration number rides the capture C-4 already takes.
+'
+' @local restJ - logical index of the sample where the still run began
+
+    trStopTicks := 0
+    bTrStopValid := FALSE
+    if bDrMarkFound and bDrRestFound
+        restJ := drStartJ + drRestK
+        if (restJ >= drMarkJ) and (restJ <= drEndJ)
+            trStopTicks := abs(smpPos(restJ, drPri) - smpPos(drMarkJ, drPri))
+            bTrStopValid := TRUE
 
 PRI traceIntegritySums() | sampleIdx
 ' Integrity events over the trace for both motors, and the primary motor's unresolved hall transitions.
@@ -5242,6 +6788,19 @@ PRI wheelCurrent(side) : ampsX10k
         ampsX10k, _ := wheelL.getCurrent()
     beat(CP_LIB_QUERY)
 
+PRI wheelDerated(side) : bDeratedNow
+' Whether one wheel's fold-back currently holds the continuous limit rather than the peak one.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bDeratedNow - T/F where T means the front cog has derated this motor's limit
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        _, _, bDeratedNow, _, _ := wheelR.testGetCurrentLimitState()
+    else
+        _, _, bDeratedNow, _, _ := wheelL.testGetCurrentLimitState()
+    beat(CP_LIB_QUERY)
+
 PRI wheelDriveConstants(side) : deadGap, dutyMax, adcFrame, frameCnt
 ' The drive constants init() derived for one wheel (testGetDriveConstants()).
 '
@@ -5483,10 +7042,16 @@ PRI steerRecoverFault(tid) : whyCode | slotIdx, side, startMs, bLtFlt, bLtSig, b
             waitBeat(FAULT_COOL_MS, CP_LOOP_COOL)
 
 PRI steerDrivePrecondition(seg, tid) : bOk | eLeftState, eRightState
-' The SYNC_PRECOND construction (design sec 4.3): steering.driveAtPower() ends in an unbounded
-' SyncStatus() wait that never returns while a driver sits in DCS_ESTOP, so every steering drive call
-' is preceded by this check. Both drivers up and neither in DCS_ESTOP, else BM-ABORT SYNC_PRECOND and
-' the caller does not call.
+' The SYNC_PRECOND construction (design sec 4.3): both drivers up and neither in DCS_ESTOP, else BM-ABORT
+' SYNC_PRECOND and the caller does not call.
+'
+' WHY IT IS STILL HERE, NOW THAT THE HANG IT GUARDED IS GONE. Before task 3513, steering.driveAtPower()
+' ended in an unbounded SyncStatus() wait that never returned while a driver sat in DCS_ESTOP -- one
+' e-stopped wheel could hang cog 0 for the rest of the run. The front cog now owns the ATN and the wait,
+' and a caller waits only the bounded request round trip, so the hang cannot recur. The check is kept
+' because a measuring trial that begins with an e-stopped driver is measuring the wrong thing, and it
+' says so in a record instead of quietly producing a trial with no motion. The one place it is
+' deliberately NOT used is dDrive(), where the refusal is the measurement (DST_ESTOP_REFUSE).
 '
 ' @param seg - SEG_* in progress
 ' @param tid - trace id in progress, 0 when none
@@ -5816,6 +7381,10 @@ PRI emitHeaderRecords() | orderIdx
             emitPlan(SEG_PREFLT, 1)
             emitPlan(SEG_BASELINE, 2)
             emitPlan(SEG_POSTFLT, 3)
+        PART_D:
+            emitPlan(SEG_PREFLT, 1)
+            emitPlan(SEG_STEERSEG, 2)
+            emitPlan(SEG_LIMIT, 3)
         PART_FLOOR:
             emitPlan(SEG_FLOOR, 1)
         PART_UICHECK:
@@ -5916,8 +7485,9 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     bAttended := segAttended(seg)
     ' OVERSHT: the four distance trials plus the fault-API trial (task 3552) -- about 6 s of poll, the
     '  stop, and up to two FAULT_COOL_MS cool-downs. Its rows are BM-OUT, already counted in est_kb.
-    estS := lookupz(seg: 0, 5, 540, 60, 240, 60, 420, 150, 120, 120, 120, 180, 120, 600)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 45, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 10)
+    ' STEERSEG and LIMIT (task 3560) print few records and no traces: their time is the steps' own holds
+    estS := lookupz(seg: 0, 5, 540, 60, 240, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 45, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -6528,16 +8098,168 @@ PRI emitFltApi(tid, sid, whyCode)
     benchLog.numField(@"tid", tid, LIM_SMALL)
     benchLog.numField(@"sid", sid, LIM_SMALL)
     benchLog.tokenField(@"motor", sideToken(SIDE_BOTH), TOKMAX_MOTOR)
-    benchLog.numField(@"want_inc", FLTAPI_RAMP_INC, LIM_MID)
-    benchLog.numField(@"l_inc", fltLeftInc, LIM_MID)
-    benchLog.numField(@"r_inc", fltRightInc, LIM_MID)
+    ' task 3560: the provocation is now an offset, not a ramp, so these three fields name the offset it
+    '  wrote and what each wheel read back (the offsets in force are in the BM-OFFREST pair beside this)
+    benchLog.numField(@"want_off", FLTAPI_OFFSET_DEG, LIM_SMALL)
+    benchLog.numField(@"l_off", fltLeftInc, LIM_SMALL)
+    benchLog.numField(@"r_off", fltRightInc, LIM_SMALL)
     benchLog.numField(@"power", FLTAPI_POWER, LIM_TINY)
     benchLog.numField(@"rows", outCount, LIM_SMALL)
     benchLog.naNumField(@"flt_ms", fltFaultMs, LIM_SMALL, bSfFltApiRan)
     benchLog.naNumField(@"held_ms", fltLatchMs, LIM_SMALL, bSfFltApiRan)
     benchLog.numField(@"need_ms", FLTAPI_LATCH_MS, LIM_SMALL)
     benchLog.boolField(@"latched", bSfFltApiOk)
+    ' task 3560 / PL-66: the SAME power commanded again after the fault. Appended, so a fmt-3 reader
+    '  still parses every field it knows.
+    benchLog.naNumField(@"retry_err", fltRetryErr, LIM_MID, bSfRetryRan)
+    benchLog.naNumField(@"retry_ms", fltRetryMs, LIM_SMALL, bSfRetryRan and bFltRetryOk)
+    benchLog.boolField(@"retry_ok", bFltRetryOk)
     whyField(whyCode)
+    emitRecord()
+
+PRI emitDStep(side)
+' BM-DSTEP: one part-D claim, from the ds* staging. One record shape for every step, so the log reads as
+' one table and a step that could not be provoked prints its NOMEAS row beside the ones that did.
+' Worst case 187 bytes.
+'
+' @param side - SIDE_BOTH (the steering object) or SIDE_LEFT (the single wheel)
+
+    recBegin(@"BM-DSTEP")
+    benchLog.tokenField(@"step", tokenAt(@tokDStep, DST_COUNT, dsStep), TOKMAX_DSTEP)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"seg", segToken(curSeg), TOKMAX_SEG)
+    benchLog.naNumField(@"measured", dsMeasured, LIM_MID, dsResult <> DRES_NOMEAS)
+    benchLog.numField(@"lo", dsLo, LIM_MID)
+    benchLog.numField(@"hi", dsHi, LIM_MID)
+    benchLog.tokenField(@"result", tokenAt(@tokDRes, DRES_COUNT, dsResult), TOKMAX_DRES)
+    whyField(dsWhy)
+    emitRecord()
+
+PRI emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi)
+' BM-FRONTST: one front cog's loop health, with the pass time in microseconds beside the raw ticks so the
+' reading does not have to be divided by a clock the reader has to look up. Worst case 174 bytes.
+'
+' @param side - SIDE_BOTH (the steering front cog) or SIDE_LEFT (the wheel's own)
+' @param nPasses - passes since launch
+' @param nLate - passes that overran their slot
+' @param nMaxTicks - longest pass body, in system ticks
+' @param nStackHi - stack longs ever used
+
+    recBegin(@"BM-FRONTST")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"passes", nPasses, LIM_BIG)
+    benchLog.numField(@"late", nLate, LIM_BIG)
+    benchLog.numField(@"max_ticks", nMaxTicks, LIM_BIG)
+    benchLog.numField(@"max_us", nMaxTicks / TICKS_PER_US, LIM_MID)
+    benchLog.numField(@"slot_us", US_PER_SEC / wheelL.FRONT_LOOP_HZ, LIM_SMALL)
+    benchLog.numField(@"stack_hi", nStackHi, LIM_SMALL)
+    benchLog.numField(@"stack_of", D_FRONT_STACK_HI, LIM_SMALL)
+    whyField(WHY_NONE)
+    emitRecord()
+
+PRI emitLimSt(side, slotIdx, stepCode, stepValue) | nPeakA, nContA, bDeratedNow, nPhaseMa, nLimitK
+' BM-LIMST: one wheel's current-limit state as the step that printed it left it, plus that step's own
+' number. The RESTORE rows are the ones whose peak_a and cont_a read the MOSFET values back (I11).
+' Worst case 190 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+' @param stepCode - DST_* the row belongs to
+' @param stepValue - the printing step's number (a phase average, a derate time, or peak x10 + cont)
+'
+' @local nPeakA - the peak limit in force
+' @local nContA - the continuous limit in force
+' @local bDeratedNow - the fold-back holds the continuous limit
+' @local nPhaseMa - the judged phase average, mA
+' @local nLimitK - the fold-back factor
+
+    nPeakA, nContA, bDeratedNow, nPhaseMa, nLimitK := dLimitState(slotIdx)
+    recBegin(@"BM-LIMST")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"step", tokenAt(@tokDStep, DST_COUNT, stepCode), TOKMAX_DSTEP)
+    benchLog.numField(@"peak_a", nPeakA, LIM_SMALL)
+    benchLog.numField(@"cont_a", nContA, LIM_SMALL)
+    benchLog.boolField(@"derated", bDeratedNow)
+    benchLog.numField(@"phase_ma", nPhaseMa, LIM_BIG)
+    benchLog.numField(@"limit_k", nLimitK, LIM_MID)
+    benchLog.numField(@"value", stepValue, LIM_BIG)
+    whyField(WHY_NONE)
+    emitRecord()
+
+PRI emitLag(side, slotIdx)
+' BM-LAG: the run's largest |err| the instrument saw for one motor, with the samples behind it.
+'
+' THE FIELD SATURATES AT 127, which is what a driver with no lag limiter prints: the stored err is a
+' signed byte and the driver's own fault test sits at 125. So a printed 127 says "the limiter did not
+' hold", and the bound below says how far under the fault test it did hold. Worst case 152 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+
+    recBegin(@"BM-LAG")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"part", tokenAt(@tokPart, PART_COUNT, PART_ID), TOKMAX_PART)
+    benchLog.naNumField(@"max_err", instLagMax[slotIdx], LIM_SMALL, instLagN[slotIdx] > 0)
+    benchLog.numField(@"samples", instLagN[slotIdx], LIM_BIG)
+    benchLog.numField(@"lo", LAG_MAX_LO, LIM_SMALL)
+    benchLog.numField(@"hi", LAG_MAX_HI, LIM_SMALL)
+    benchLog.numField(@"sat", FIELD_ERR_MAX, LIM_SMALL)
+    whyField((instLagN[slotIdx] > 0) ? WHY_NONE : WHY_NO_SAMPLES)
+    emitRecord()
+
+PRI emitLagAll() | slotIdx
+' One BM-LAG per motor, on cog 0's end path, after every capture this part took.
+'
+' @local slotIdx - motor slot
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        emitLag(SIDE_LEFT + slotIdx, slotIdx)
+
+PRI emitStopCur(tid, side, slotIdx)
+' BM-STOPCUR: what a stop FROM SPEED costs in current, against what holding that speed cost.
+'
+' The claim (task 3558) is that a commanded stop stays inside the current the hold already drew, rather
+' than the surge that tripped the harness's own 10 A abort at Visit 2 (PL-55). Both numbers come from the
+' same frozen capture, so they are the same instrument and the same scale. Worst case 178 bytes.
+'
+' @param tid - trace id of the trial
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+
+    recBegin(@"BM-STOPCUR")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.naNumField(@"hold_mV_x10", scHoldIX10[slotIdx], LIM_BIG, bScValid[slotIdx])
+    benchLog.naNumField(@"stop_pk_mV", scStopPk[slotIdx], LIM_MID, bScValid[slotIdx])
+    benchLog.numField(@"samples", scSamples[slotIdx], LIM_SMALL)
+    benchLog.numField(@"abort_mV", ABS_ABORT_MV, LIM_SMALL)
+    whyField(bScValid[slotIdx] ? WHY_NONE : WHY_NO_SAMPLES)
+    emitRecord()
+
+PRI emitDistM(tid, sid, tickMmX100)
+' BM-DISTM: the steering object's getDistance(DDU_M) against the ticks it is derived from.
+'
+' Visit 3 left DDU_M unqualified: task 3502 corrected the metre conversion, and no bench reading has
+' compared the two since. Both sides come from the same instant, so the comparison is of the conversion
+' alone. Worst case 196 bytes.
+'
+' @param tid - trace id of the trial
+' @param sid - the steering start's life
+' @param tickMmX100 - wheel travel per hall tick in hundredths of a mm, from the library's own geometry
+
+    recBegin(@"BM-DISTM")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.numField(@"sid", sid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(SIDE_BOTH), TOKMAX_MOTOR)
+    benchLog.numField(@"l_ticks", dmLeftTicks, LIM_MID)
+    benchLog.numField(@"r_ticks", dmRightTicks, LIM_MID)
+    benchLog.numField(@"l_m", dmLeftM, LIM_SMALL)
+    benchLog.numField(@"r_m", dmRightM, LIM_SMALL)
+    benchLog.numField(@"l_pred_m", dmLeftPredM, LIM_SMALL)
+    benchLog.numField(@"r_pred_m", dmRightPredM, LIM_SMALL)
+    benchLog.numField(@"mm_x100", tickMmX100, LIM_SMALL)
+    benchLog.boolField(@"agree", bSfDistMOk)
+    whyField(bSfDistMRan ? WHY_NONE : WHY_NO_SAMPLES)
     emitRecord()
 
 PRI emitFloor(tid, sid, runMs, answerCode, inputCode, leftRateX10, rightRateX10, bRatesValid, slowerCode, stopByCode, whyCode)
@@ -6726,6 +8448,8 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallH
         PART_C:
             pCell := @sSfCellNoStallC
+        PART_D:
+            pCell := @sSfCellNoStallD
         PART_FLOOR:
             pCell := @sSfCellNoStallF
         PART_UICHECK:
@@ -6749,6 +8473,8 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskH
         PART_C:
             pCell := @sSfCellDbgMaskC
+        PART_D:
+            pCell := @sSfCellDbgMaskD
         PART_FLOOR:
             pCell := @sSfCellDbgMaskF
         PART_UICHECK:
@@ -6790,6 +8516,8 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellRevB)
                 emitSignoffDecl(@sSfCellInteg)
                 emitSignoffDecl(@sSfCellTracesA)
+                emitSignoffDecl(@sSfCellLagA)
+                emitSignoffDecl(@sSfCellNoFold)
             PART_CLOCK:
                 case SF_CLOCK_SLOT
                     SF_CLOCK_200:
@@ -6811,6 +8539,12 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellRstProvB)
                 emitSignoffDecl(@sSfCellRampRest)
                 emitSignoffDecl(@sSfCellFltApi)
+                emitSignoffDecl(@sSfCellLagB)
+                emitSignoffDecl(@sSfCellStopCur)
+                emitSignoffDecl(@sSfCellRmpDroop)
+                emitSignoffDecl(@sSfCellStopLim)
+                emitSignoffDecl(@sSfCellDistM)
+                emitSignoffDecl(@sSfCellFltRetry)
             PART_BRAKE:
                 emitSignoffDecl(@sSfCellNoStallH)
                 emitSignoffDecl(@sSfCellDbgMaskH)
@@ -6821,6 +8555,24 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellTracesC)
                 emitSignoffDecl(@sSfCellRstProvC)
                 emitSignoffDecl(@sSfCellOffRest)
+                emitSignoffDecl(@sSfCellLagC)
+                emitSignoffDecl(@sSfCellStpDecel)
+            PART_D:
+                emitSignoffDecl(@sSfCellNoStallD)
+                emitSignoffDecl(@sSfCellDbgMaskD)
+                emitSignoffDecl(@sSfCellLagD)
+                emitSignoffDecl(@sSfCellEstopD)
+                emitSignoffDecl(@sSfCellOrdered)
+                emitSignoffDecl(@sSfCellCoopShut)
+                emitSignoffDecl(@sSfCellTrackRst)
+                emitSignoffDecl(@sSfCellTimeStop)
+                emitSignoffDecl(@sSfCellLockStep)
+                emitSignoffDecl(@sSfCellFrontSt)
+                emitSignoffDecl(@sSfCellFoldBack)
+                emitSignoffDecl(@sSfCellDerate)
+                emitSignoffDecl(@sSfCellBlocked)
+                emitSignoffDecl(@sSfCellWEstop)
+                emitSignoffDecl(@sSfCellWTimStop)
             PART_FLOOR:
                 emitSignoffDecl(@sSfCellNoStallF)
                 emitSignoffDecl(@sSfCellDbgMaskF)
@@ -6872,7 +8624,9 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoff(@sSfCellIdleFlt, side, @sSfCritIdleUp, sfFrameCaps[slotIdx] > 0, sfIdleUp[slotIdx], IDLE_UP_LO, IDLE_UP_HI, sfFrameCaps[slotIdx])
                     emitSignoff(@sSfCellRevB, side, @sSfCritNotRevB, sfStarts[slotIdx] > 0, sfNotRevb[slotIdx], NOT_REVB_LO, NOT_REVB_HI, sfStarts[slotIdx])
                     emitSignoff(@sSfCellInteg, side, @sSfCritInteg, sfStarts[slotIdx] > 0, sfIntegSum[slotIdx], INTEG_SUM_LO, INTEG_SUM_HI, sfStarts[slotIdx] + sfIntegN[slotIdx])
+                    emitSignoffBool(@sSfCellNoFold, side, @sSfCritNoFold, bSfNoFoldRan[slotIdx], bSfNoFoldOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                 emitSignoff(@sSfCellTracesA, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
+                emitLagCells(@sSfCellLagA)
             PART_CLOCK:
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     emitSignoffBool(clockCell(@sSfCellClkFrameK200, @sSfCellClkFrameK270, @sSfCellClkFrameK300), SIDE_LEFT + slotIdx, @sSfCritClkFrame, bSfClkRan[slotIdx], bSfClkOk[slotIdx], SIGNOFF_ONE_INSTANCE)
@@ -6882,7 +8636,13 @@ PRI emitSignoffs() | slotIdx, side
                     side := SIDE_LEFT + slotIdx
                     emitSignoff(@sSfCellRstProvB, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx])
                     emitSignoffBool(@sSfCellRampRest, side, @sSfCritRampRest, bSfRampRan[slotIdx], bSfRampOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitSignoffBool(@sSfCellStopCur, side, @sSfCritStopCur, bSfStopCurRan[slotIdx], bSfStopCurOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitSignoffBool(@sSfCellRmpDroop, side, @sSfCritRmpDroop, bSfDroopRan[slotIdx], bSfDroopOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                 emitSignoffBool(@sSfCellFltApi, SIDE_BOTH, @sSfCritFltApi, bSfFltApiRan, bSfFltApiOk, SIGNOFF_ONE_INSTANCE)
+                emitSignoffBool(@sSfCellFltRetry, SIDE_BOTH, @sSfCritFltRetry, bSfRetryRan, bSfRetryOk, SIGNOFF_ONE_INSTANCE)
+                emitSignoff(@sSfCellStopLim, SIDE_BOTH, @sSfCritStopLim, sfStopLimN > 0, sfStopLimMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfStopLimN)
+                emitSignoffBool(@sSfCellDistM, SIDE_BOTH, @sSfCritDistM, bSfDistMRan, bSfDistMOk, SIGNOFF_ONE_INSTANCE)
+                emitLagCells(@sSfCellLagB)
             PART_BRAKE:
                 emitSignoffBool(@sSfCellBrakeFlt, SIDE_LEFT, @sSfCritBrakeFlt, bSfBrakeRan, bSfBrakeSeen, SIGNOFF_ONE_INSTANCE)
             PART_C:
@@ -6891,10 +8651,71 @@ PRI emitSignoffs() | slotIdx, side
                     side := SIDE_LEFT + slotIdx
                     emitSignoff(@sSfCellRstProvC, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx])
                     emitSignoffBool(@sSfCellOffRest, side, @sSfCritOffRest, bSfOffRan[slotIdx], bSfOffOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitSignoff(@sSfCellStpDecel, side, @sSfCritStpDecel, bSfDecelRan[slotIdx], sfDecelTicks[slotIdx], DECEL_TICKS_LO, DECEL_TICKS_HI, SIGNOFF_ONE_INSTANCE)
+                emitLagCells(@sSfCellLagC)
+            PART_D:
+                emitDStepCells()
+                emitLagCells(@sSfCellLagD)
             PART_FLOOR:
                 emitSignoffBool(@sSfCellFloorAns, SIDE_NONE, @sSfCritFloorAns, bSfFloorRan, bSfFloorAnswered, SIGNOFF_ONE_INSTANCE)
             PART_UICHECK:
                 emitSignoffBool(@sSfCellUiCheck, SIDE_NONE, @sSfCritUiCheck, bSfUiRan, bSfUiOk, uiStepCount)
+
+PRI emitLagCells(pCell) | slotIdx
+' LAGBOUND's two instances, one per motor: the part's own cell id, judged on the instrument's running
+' maximum. A part whose instrument stored no sample for a motor prints NOMEAS for it.
+'
+' @param pCell - pointer to this part's LAGBND cell id
+'
+' @local slotIdx - motor slot
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        emitSignoff(pCell, SIDE_LEFT + slotIdx, @sSfCritLag, instLagN[slotIdx] > 0, instLagMax[slotIdx], LAG_MAX_LO, LAG_MAX_HI, instLagN[slotIdx])
+
+PRI emitDStepCells()
+' Part D's cells. The steering object's instances carry SIDE_BOTH, the single wheel's SIDE_LEFT, and the
+' two forms are judged separately because they are two different shapes of the same contract.
+
+    emitSignoffBool(@sSfCellLockStep, SIDE_BOTH, @sSfCritLockStep, bSfDStepRan[DST_LOCKSTEP], bSfDStepOk[DST_LOCKSTEP], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellTrackRst, SIDE_BOTH, @sSfCritTrackRst, bSfDStepRan[DST_TRACKRESET], bSfDStepOk[DST_TRACKRESET], SIGNOFF_ONE_INSTANCE)
+    ' the e-stop cell is the three claims together: a latch that refuses, holds and releases is one property
+    emitSignoffBool(@sSfCellEstopD, SIDE_BOTH, @sSfCritEstopD, dEstopRan(FALSE), dEstopOk(FALSE), SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellOrdered, SIDE_BOTH, @sSfCritOrdered, bSfDStepRan[DST_ORDERED], bSfDStepOk[DST_ORDERED], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellTimeStop, SIDE_BOTH, @sSfCritTimeStop, bSfDStepRan[DST_TIMESTOP], bSfDStepOk[DST_TIMESTOP], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellCoopShut, SIDE_BOTH, @sSfCritCoopShut, bSfDStepRan[DST_COOPSHUT], bSfDStepOk[DST_COOPSHUT], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellFrontSt, SIDE_BOTH, @sSfCritFrontSt, bSfFrontRan[SLOT_LEFT], bSfFrontOk[SLOT_LEFT], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellFoldBack, SIDE_LEFT, @sSfCritFoldBack, bSfLimRan[SLOT_LEFT], bSfLimOk[SLOT_LEFT], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellFoldBack, SIDE_RIGHT, @sSfCritFoldBack, bSfLimRan[SLOT_RIGHT], bSfLimOk[SLOT_RIGHT], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellDerate, SIDE_LEFT, @sSfCritDerate, bSfDerateRan[SLOT_LEFT], bSfDerateOk[SLOT_LEFT], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellDerate, SIDE_RIGHT, @sSfCritDerate, bSfDerateRan[SLOT_RIGHT], bSfDerateOk[SLOT_RIGHT], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellBlocked, SIDE_BOTH, @sSfCritBlocked, bSfDStepRan[DST_BLOCKED], bSfDStepOk[DST_BLOCKED], SIGNOFF_ONE_INSTANCE)
+    ' the single-wheel form: the same latch and the same time stop, with its own front cog
+    emitSignoffBool(@sSfCellWEstop, SIDE_LEFT, @sSfCritEstopD, dEstopRan(TRUE), dEstopOk(TRUE), SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellWTimStop, SIDE_LEFT, @sSfCritTimeStop, bSfWDStepRan[DST_TIMESTOP], bSfWDStepOk[DST_TIMESTOP], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellFrontSt, SIDE_LEFT, @sSfCritFrontSt, bSfFrontRan[SLOT_RIGHT], bSfFrontOk[SLOT_RIGHT], SIGNOFF_ONE_INSTANCE)
+
+PRI dEstopRan(bWheelForm) : bRan
+' Whether all three e-stop steps of one form were measured.
+'
+' @param bWheelForm - TRUE for the single-wheel form, FALSE for the steering object
+' @returns bRan - TRUE when refuse, latch and clear were all measured
+
+    if bWheelForm
+        bRan := bSfWDStepRan[DST_ESTOP_REFUSE] and bSfWDStepRan[DST_ESTOP_LATCH] and bSfWDStepRan[DST_ESTOP_CLEAR]
+    else
+        bRan := bSfDStepRan[DST_ESTOP_REFUSE] and bSfDStepRan[DST_ESTOP_LATCH] and bSfDStepRan[DST_ESTOP_CLEAR]
+
+PRI dEstopOk(bWheelForm) : bOk
+' Whether all three e-stop steps of one form held. A latch that refuses but never releases, or releases
+' but never held, is not an emergency stop -- so the cell is their conjunction, not three near-misses.
+'
+' @param bWheelForm - TRUE for the single-wheel form, FALSE for the steering object
+' @returns bOk - TRUE when refuse, latch and clear all held
+
+    if bWheelForm
+        bOk := bSfWDStepOk[DST_ESTOP_REFUSE] and bSfWDStepOk[DST_ESTOP_LATCH] and bSfWDStepOk[DST_ESTOP_CLEAR]
+    else
+        bOk := bSfDStepOk[DST_ESTOP_REFUSE] and bSfDStepOk[DST_ESTOP_LATCH] and bSfDStepOk[DST_ESTOP_CLEAR]
 
 PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, instCount) | boundedVal, pVerdict
 ' One COUNT SIGNOFF verdict (test_bench_scan.spin2 emitSignoff(), units fixed to COUNT). Judged on the

@@ -74,6 +74,10 @@
 ''               instead of refusing to probe at all, so a good/fault gap of exactly
 ''               CLIFF_HALF_STEP_DEG (2 deg) -- run 7's LEFT POS, good -11 fault -9 -- now gets one
 ''               probe, at fault -/+ 1 deg, where the plain 2-deg-only version got none
+''   Updated.... 16 Sep 2026 -- task 3560 (SRC_REV 12): the panic line no longer claims
+''               emergencyCutoff() self-cancels (task 3556 latches it), and the watchdog's gap table
+''               names start()'s front-cog handshake and rest-zero capture (tasks 3513, 3556). No record
+''               changes shape; the fmt is unchanged
 ''
 '' =================================================================================================
 
@@ -167,7 +171,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 11                                        ' hand-bumped whenever this file changes
+    SRC_REV     = 12                                        ' hand-bumped whenever this file changes
     FMT_VERSION = 10                                        ' BS- record-format version
 
 ' fmt 10 changes (task 3540, scan v5, PL-46; no existing record's field names, order or content change):
@@ -696,9 +700,11 @@ CON { watchdog cog, task 3534 }
 ' can leave between two beats. Every loop in this file now beats every SAMPLE_MS (5 ms) pass, and
 ' REST_MS/FAULT_COOL_MS are beat-polled loops rather than one long waitms() (see the checkpoint
 ' CON block above), so the only remaining un-instrumented gaps are inside the library methods
-' this file calls directly (grep of isp_bldc_motor.spin2 confirms none loop unbounded --
-' SyncStatus() is the one exception and it has no caller here, per SCAN-RUN-5-EVALUATION.md section 7):
-'   - start()/stop()/testDriveAtMotorIncrement()/every getter -- no waitms() in any of them.
+' this file calls directly (grep of isp_bldc_motor.spin2 confirms none loop unbounded):
+'   - start() -- task 3513's front-cog handshake (<= 100 ms) and task 3556's rest-zero capture
+'     (1_000 ms): <= ~1_250 ms.
+'   - stop()/testDriveAtMotorIncrement() -- a posted request answered within REQ_ACK_TIMEOUT_MS (20 ms).
+'   - every getter -- no waitms().
 '   - getBoardType() (sideBoardType, start-of-run only) -- waitms(1) + 500 tight pin reads, low
 '     single-digit ms.
 '   - testResetFault() (sideResetFault, recovery only) -- worst case 30 ms + 1000 x waitms(2),
@@ -3827,7 +3833,7 @@ PRI emitHeaderRecords()
     emitPlanT()
     emitPlanS()
     emitBands()
-    debug("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+    debug("* PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() is a software stop and is NOT a panic button")
 
 PRI emitBanner()
 ' Emit BS-BANNER. cfg_id is sourced from its own #ifdef, never a runtime test: pnut-ts silently

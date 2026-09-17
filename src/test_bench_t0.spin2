@@ -54,6 +54,14 @@
 ''               270-transition target; only S starts the count and only SPACE stops it, so a stray key
 ''               cannot end it (STEPHEN 2026-09-15: "a very careful working user interface"). Rendering
 ''               is shown only by the t0-hand run on the rig.
+''               16 Sep 2026 -- task 3560 (Visit 4), SRC_REV 2: the 6.0.0 error contract, front cog and API
+''               fixes arrive with cells. Nothing in the library aborts any more (tasks 3554/3555), so
+''               T0-6 and T0-7 judge returned codes and the abort-probe traps and their completion flag
+''               are deleted. T0-3 starts the motor first: a stop limit on an unstarted motor is now
+''               refused with ERR_NOT_STARTED (F-5). R1-T0-RESTART expects 2 cogs per start (task 3513).
+''               New cells T0-16..T0-22: R16-T0-BADGROUP, R16-T0-PINSKEEP (PL-48), R16-T0-LIMKEEP (F-4),
+''               R16-T0-STRNOTSTART (F-5c), R16-T0-STEERCOGS, R16-T0-RESTZERO (PL-45),
+''               R16-T0-NOBOARD (PL-25), R16-T0-FRONTFAIL. The banner prints src_rev.
 ''
 '' =================================================================================================
 
@@ -79,9 +87,11 @@
   commands zero speed, so nothing turns), T0-11 (five real start()/stop()
   cycles reading live telemetry at zero command), T0-13 (a real start() held
   at zero command for 1000 ms), T0-14b (a real start()/stop() cycle to prove
-  the post-stop board-type read stays clean) and T0-15 (start()/stop() cycles
-  probing cog accounting). Keep the motor rail on for all of these; none of
-  them ever commands nonzero speed.
+  the post-stop board-type read stays clean), T0-15 (start()/stop() cycles
+  probing cog accounting), T0-3 (a stop limit is accepted only by a started
+  motor), and T0-17, T0-19, T0-20 and T0-22 (the 6.0.0 start, steering-start,
+  rest-zero and front-cog-failure cells). Keep the motor rail on for all of
+  these; none of them ever commands nonzero speed.
 
   Output: one tagged line per data point, "T0-n,field,value,...", on the plain
   debug stream. Sign-off records ("SIGNOFF-DECL,..." / "SIGNOFF,...") are a
@@ -90,37 +100,27 @@
 
   TRAPS (task 3539, PL-44/PL-47): a `\`-trap is an exceptional-return-path
   device, not a routine way to capture a normal result (STEPHEN: "traps are
-  an exeptional return path - not normal use"). Every call below that is
-  expected to return normally -- including every testSetup()/start() call --
-  is now made UNTRAPPED, and its returned value is judged directly:
-  start()/startEx() return the cog id 0..7 on success or -1 on failure
-  (isp_bldc_motor.spin2:86, :109-122); testSetup() and stopAfterDistance()
-  return nothing meaningful. A `\`-trap remains ONLY where a test deliberately
-  provokes a library abort on purpose -- T0-6's getRotationCount(99) and
-  stopAfterDistance(0, DDU_IN), and T0-7's motorB.testSetup() on a pin group
-  that overlaps motorA's claim -- and there "abort happened" is judged by a
-  completion flag set after the call (see VAR { abort-trap completion flag }),
-  never by the trapped value, since a trap's value cannot tell "aborted" from
-  "returned 0" apart.
+  an exeptional return path - not normal use"). Since the 6.0.0 error contract
+  (tasks 3554/3555) the library aborts nowhere: every command returns a status
+  (0 or a negative ERR_*) and records it for getError(), and start()/startEx()
+  return the cog id 0..7 or -1 with the cause in getError(). So every call below
+  is UNTRAPPED and judged by its returned value and getError().
 
   ONE top-level trap covers the whole suite: main() calls `\runTier0Tests()`
-  and prints its trapped value on EVERY run, not only when something aborted,
-  so an abort this file's own per-test traps did not anticipate still shows up
-  instead of silently ending the session. Nothing inside runTier0Tests() traps
-  its own testT0_n() calls any more -- a trap nested inside another trap's
-  frame is exactly PL-44's second surviving suspect (H7), and design rule 3
-  (SS 0) is honoured by the single outer trap instead: a testT0_n() that goes
-  silent under a genuine abort skips its own SIGNOFF lines, and any declared
-  cell with no verdict is NOMEAS by the host's convention (reason NOT_REACHED).
+  and prints its trapped value on EVERY run, so an abort nothing anticipated
+  still shows up instead of silently ending the session. A testT0_n() that goes
+  silent under such an abort skips its own SIGNOFF lines, and any declared cell
+  with no verdict is NOMEAS by the host's convention (reason NOT_REACHED).
 
   T0-1's six derived constants (dead_gap, pwm_limit, duty_min, duty_max,
   adc_fram, frame_cnt) and T0-3 (finding F) both read via two new TEST-USE
   ONLY getters on isp_bldc_motor.spin2: testGetDriveConstants() and
   testGetStopHallTicks(). Both are pure read-only snapshots.
 
-  If anything behaves unexpectedly during T0-10/T0-11/T0-13/T0-14b/T0-15 (the
-  tests with the rail on): physical battery disconnect, not
-  emergencyCutoff() -- it self-cancels in about 250 ms (finding S-4).
+  Every start() here, the steering start included, commands zero speed, so
+  nothing turns. If anything behaves unexpectedly: physical battery
+  disconnect. emergencyCutoff() latches until clearEmergency() since task
+  3556 (S-4 retired), but it is a software stop, not a panic button.
 
   T0-12 (hand-rotation anchor) is deliberately NOT part of this unattended
   run. It is compiled in only under -D T0_HAND, has its own bench-run.sh tier
@@ -150,10 +150,30 @@ CON { bench target }
 ' compile hazard T0_MOTOR_BASE's comment above describes.
     T0_SECOND_BASE = motor.PINS_P32_P47
 
+CON { build identity }
+
+    SRC_REV = 2                                                 ' hand-bumped whenever this file changes; printed in the banner
+
 CON { timing }
 
     CLK_FREQ = 270_000_000                                      ' matches the audit's worked dead_gap example
     _clkfreq = CLK_FREQ
+    READY_WAIT_MS  = 2_000                                      ' bound on a started driver reporting ready
+    READY_POLL_MS  = 10
+
+CON { 6.0.0 cells (task 3560) }
+
+    BAD_PIN_BASE     = 99                                       ' not a PINS_* value: start() must reject it before any cog or pin is touched
+    PL48_MARK_BASE   = 8                                        ' P8..P15: the release demo's HDMI group (PL-48)
+    PL48_MARK_SPAN   = 7                                        ' addpins operand: 8 pins
+    PL48_MARK_MASK   = $FF                                      ' DIRA bits 8..15, shifted down
+    PL48_MARK_SHIFT  = 8
+    SF_START_COGS    = 2                                        ' DERIVED -- task 3513: a single-motor start() is the driver plus its front cog
+    SF_STEER_COGS    = 3                                        ' DERIVED -- task 3513: two owned drivers plus the steering front cog
+    REST_SAMPLES     = 50                                       ' R16-T0-RESTZERO: getCurrent() reads averaged per board
+    REST_SAMPLE_MS   = 20
+    SF_REST_LO       = -100                                     ' DERIVED -- +/-10 mA (0.1 mA units); unfixed LEFT read ~535 (PL-45, Visit 1)
+    SF_REST_HI       = 100
 
 CON { cog-exhaustion probe (T0-8, T0-15) }
 
@@ -257,7 +277,7 @@ CON { sign-off limits (task 3504) -- compiled-in CON limits per cell, each with 
     SF_COG_LO     = 0
     SF_COG_HI     = 7            ' DERIVED -- start() returns a cog id 0..7 on success (isp_bldc_motor.spin2:86)
 
-    SF_RESTART_LO = 0            ' DERIVED -- PL-24 fix: a second start() must orphan no cog
+    SF_RESTART_LO = 0            ' DERIVED -- PL-24 fix: a second start() must orphan no cog; each start() now costs SF_START_COGS
 
     SF_EXHAUST_LO = -1           ' DERIVED -- start()'s own -1-on-failure contract (isp_bldc_motor.spin2:86, :121); coginit()'s
                                  ' own observed exhaustion form is $8000_xxxx (:110-112), not -1 -- corrected per PL-44 finding 7
@@ -270,34 +290,20 @@ OBJ { objects under test }
     user    : "isp_bldc_motor_userconfig"                       ' active compile-time hardware config
 #endif
     motor   : "isp_bldc_motor"                                  ' primary instance, T0-1/2/3/4/5/6/8/10/11/13/14/15
-    motorA  : "isp_bldc_motor"                                  ' second instance, T0-7 overlap probe and T0-14b scratch
+    motorA  : "isp_bldc_motor"                                  ' second instance, T0-7 overlap probe, T0-14b scratch, T0-16/T0-21/T0-22
     motorB  : "isp_bldc_motor"                                  ' second instance, T0-7 overlap probe only
+    motorP  : "isp_bldc_motor"                                  ' T0-17 (PL-48) only: an instance nothing else has touched
+    steer   : "isp_steering_2wheel"                             ' T0-18 (never started first) and T0-19 (cog count)
 
-VAR { cog-exhaustion probe stacks (T0-8, T0-15) }
+VAR { cog-exhaustion probe stacks (T0-8, T0-15, T0-22) }
 
     LONG    spacerStacks[MAX_SPACER_COGS * SPACER_STACK_LONGS]
+    LONG    heldSpacerId[MAX_SPACER_COGS]                       ' occupySpacers() / releaseSpacers(): the spacers held across a start
 
-VAR { abort-trap completion flag (T0-6, T0-7 ONLY -- task 3539, PL-44/PL-47) }
+VAR { run state }
 
-' Every OTHER test in this file calls its library method UNTRAPPED and judges the returned value
-' directly: start()/startEx() return the cog id 0..7 on success or -1 on failure
-' (isp_bldc_motor.spin2:86, :109-122), and neither of those is an abort. A trap remains only
-' where a test deliberately PROVOKES a library abort on purpose: T0-6's getRotationCount(99) and
-' stopAfterDistance(0, DDU_IN), and T0-7's motorB.testSetup() on a pin group that overlaps
-' motorA's claim. Ground truth that an abort really happened is a completion flag, never the
-' trapped value -- a bare `abort` "returns 0 to the trapping caller" (p2kbSpin2Abort), so 0 alone
-' cannot tell "aborted" from "returned 0" apart.
-'
-' CHOSEN: a completion flag, the pattern test_bench_char.spin2 uses for its own declared
-' abort-path tests. xxxTrapped() sets bTrapPending TRUE, then calls \xxxCall(); xxxCall() makes
-' the library call and clears bTrapPending on the very next line. When an ABORT executes, "stack
-' frames are unwound (popped) until a trap is found", and the statement after it is "Never
-' executed" (p2kbSpin2Abort), so that line runs only when the library call returned.
-' bTrapPending still TRUE after the trap is therefore reachable ONLY by an abort. Cog 0 only; the
-' spacer cogs never touch it. These abort-path helpers capture NO other value -- their only
-' output is bAborted.
-
-    LONG    bTrapPending
+' R16-T0-NOABORT: T0-6's two returned codes, judged together with T0-7's in one cell
+    LONG    bUnitsCodesOk
 
 ' R10-T0-STOPREADY (T0-15d) judges the state T0-15c's own stop() left behind, so it is valid
 ' only when T0-15c ran to that stop() with both start()s returning a real cog id (0..7). A
@@ -324,7 +330,7 @@ PUB main() | trapCode
 ' @local trapCode - the top-level trap's value: 0 on a normal return from runTier0Tests()
 '                    (it returns nothing meaningful), or the abort value if something aborted
 
-    debug("* test_bench_t0 -- Tier 0: no motor, no motion, no risk (T0-10/11/13/14b/15 excepted)")
+    debug("* test_bench_t0 -- Tier 0: no motion -- src_rev ", udec_(SRC_REV))
     debug("* active config: motor_type_enum=", udec_(user.MOTOR_TYPE), " base=", udec_(T0_MOTOR_BASE), " voltage_enum=", udec_(user.DRIVE_VOLTAGE), " wheel_dia_x10=", udec_(round(user.WHEEL_DIA_IN_INCH *. 10.0)))
     debug("* bench expects MOTOR_TYPE=MOTR_6_5_INCH (0) and wheel_dia_x10=65; with wheel_dia_x10=0 the T0-3/T0-6 distance conversions report unavailable rather than a tick count")
 
@@ -360,6 +366,15 @@ PRI runTier0Tests()
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R1-T0-RESTART,task,3499")
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R10-T0-STOPREADY,task,3533")
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R1-T0-EXHAUST,task,3499")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-LIMKEEP,task,3554")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-NOABORT,task,3554")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-BADGROUP,task,3554")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-PINSKEEP,task,3554")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-STRNOTSTART,task,3555")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-STEERCOGS,task,3513")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-RESTZERO,task,3556")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-NOBOARD,task,3556")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-FRONTFAIL,task,3513")
 
     testT0_1()
     testT0_2()
@@ -368,6 +383,9 @@ PRI runTier0Tests()
     testT0_5()
     testT0_6()
     testT0_7()
+
+    ' T0-18 before anything starts the steering object: it judges a never-started instance
+    testT0_18()
 
     ' T0-11 and T0-13 run BEFORE T0-10 (design SS H.1 order rule): both are real start()/stop()
     ' cycles on `motor`, and running them before T0-10's own start()/stop() (and well before
@@ -386,6 +404,15 @@ PRI runTier0Tests()
     testT0_15a()
     testT0_15c()
     testT0_15d()
+
+    ' T0-16..T0-22 (task 3560): the 6.0.0 start, pin, steering, current-sense and front-cog cells. Each
+    ' releases every claim and cog it takes. T0-22 holds all but one cog across a start, then frees them.
+    testT0_16()
+    testT0_17()
+    testT0_19()
+    testT0_20()
+    testT0_21()
+    testT0_22()
 
     ' T0-10 runs BEFORE T0-8 deliberately. Both drive the same motor object,
     ' and T0-8 is the destructive one: it occupies every spare cog so that
@@ -448,50 +475,101 @@ PRI testT0_2() | eBoardRev, pBoardStr
     pBoardStr := motor.boardIdString()
     debug("T0-2,end,detected_board,", udec_(eBoardRev), ",expect_forced,TRUE,boardstring,", zstr_(pBoardStr))
 
-PRI testT0_3() | ticksM, ticksCm, ticksMm, bAgree, bTicksInBand, bPass
+PRI testT0_3() | startResult, bReady, eM, eCm, eMm, ticksM, ticksCm, ticksMm, bAgree, bTicksInBand, bPass, eRot, keptRot, eDist, keptDist, eTime, keptTime, bKeep
 ' F: stopAfterDistance() computes its tick target in three equivalent ways --
 ' 1 DDU_M, 100 DDU_CM, 1000 DDU_MM -- and stores it in the private VAR
-' motorStopHallTicks, read back here via the new testGetStopHallTicks()
-' getter. All three should agree; DDU_M coming out a factor of ten short of
-' the other two CONFIRMS finding F. stopAfterDistance() also aborts outright
-' when user.WHEEL_DIA_IN_INCH is 0.0 (unknown wheel diameter) -- the exact
-' failure that killed the whole T0 suite on the 2026-09-10 bench run. The
-' bench's own active config carries a real wheel diameter, so these three
-' calls are made UNTRAPPED (task 3539); a genuine abort is caught by main()'s
-' single top-level trap instead of a per-call one.
+' motorStopHallTicks, read back here via the testGetStopHallTicks() getter.
+' All three should agree; DDU_M coming out a factor of ten short of the other
+' two CONFIRMS finding F. Since the error contract (task 3554, F-5) a stop
+' limit is accepted only by a started motor -- an unstarted one returns
+' ERR_NOT_STARTED and arms nothing -- so the motor is started at zero command
+' first. The limit is armed at rest and never crossed, so nothing turns.
 '
 ' task 3504 / R4-T0-1M-TICKS: a BOOL cell (task 3537). measured is TRUE only when
-' the DDU_M reading (ticksM) is in SF_TICKS_LO..SF_TICKS_HI (SS A.5-b) AND the
-' three units agree, since agreement is required for any of them to be trusted.
-' The three raw tick targets are printed on the T0-3 ddu_* lines above it.
+' every call returned NO_ERROR, the DDU_M reading (ticksM) is in SF_TICKS_LO..
+' SF_TICKS_HI (SS A.5-b) AND the three units agree.
 '
+' task 3554 / R16-T0-LIMKEEP (F-4): with the 1000 mm limit armed, three rejected
+' calls -- stopAfterRotation(1, 99), stopAfterDistance(1, 99), stopAfterTime(0,
+' DTU_SEC) -- must each return their code (ERR_BAD_UNITS, ERR_BAD_UNITS,
+' ERR_BAD_COUNT) and leave the armed limit as it was. UNFIXED: stopAfterRotation()
+' zeroed the armed limit before validating, and an illegal unit aborted.
+' Both cells are NOMEAS when the start did not reach ready.
+'
+' @local startResult - start()'s return
+' @local bReady - TRUE when the driver reported ready within READY_WAIT_MS
+' @local eM - stopAfterDistance(1, DDU_M)'s status
+' @local eCm - stopAfterDistance(100, DDU_CM)'s status
+' @local eMm - stopAfterDistance(1000, DDU_MM)'s status
 ' @local ticksM - motorStopHallTicks after stopAfterDistance(1, DDU_M)
 ' @local ticksCm - motorStopHallTicks after stopAfterDistance(100, DDU_CM)
 ' @local ticksMm - motorStopHallTicks after stopAfterDistance(1000, DDU_MM)
 ' @local bAgree - TRUE when all three tick readings match (PL-23: printed as TRUE/FALSE)
 ' @local bTicksInBand - TRUE when ticksM falls in SF_TICKS_LO..SF_TICKS_HI
-' @local bPass - bAgree and bTicksInBand, this cell's measured value and verdict
+' @local bPass - R4-T0-1M-TICKS's measured value and verdict
+' @local eRot - stopAfterRotation(1, 99)'s status
+' @local keptRot - the armed limit after it
+' @local eDist - stopAfterDistance(1, 99)'s status
+' @local keptDist - the armed limit after it
+' @local eTime - stopAfterTime(0, DTU_SEC)'s status
+' @local keptTime - the armed limit after it
+' @local bKeep - R16-T0-LIMKEEP's measured value and verdict
 
     debug("T0-3,begin")
+    startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    bReady := waitReady(startResult)
+    debug("T0-3,start_return,", sdec_(startResult), ",ready,", zstr_(bReady ? @"TRUE" : @"FALSE"))
 
-    motor.stopAfterDistance(1, motor.DDU_M)
-    ticksM := motor.testGetStopHallTicks()
-    debug("T0-3,ddu_m,1,ticks,", udec_(ticksM))
+    if bReady
+        eM := motor.stopAfterDistance(1, motor.DDU_M)
+        ticksM := motor.testGetStopHallTicks()
+        debug("T0-3,ddu_m,1,status,", sdec_(eM), ",ticks,", udec_(ticksM))
 
-    motor.stopAfterDistance(100, motor.DDU_CM)
-    ticksCm := motor.testGetStopHallTicks()
-    debug("T0-3,ddu_cm,100,ticks,", udec_(ticksCm))
+        eCm := motor.stopAfterDistance(100, motor.DDU_CM)
+        ticksCm := motor.testGetStopHallTicks()
+        debug("T0-3,ddu_cm,100,status,", sdec_(eCm), ",ticks,", udec_(ticksCm))
 
-    motor.stopAfterDistance(1000, motor.DDU_MM)
-    ticksMm := motor.testGetStopHallTicks()
-    debug("T0-3,ddu_mm,1000,ticks,", udec_(ticksMm))
+        eMm := motor.stopAfterDistance(1000, motor.DDU_MM)
+        ticksMm := motor.testGetStopHallTicks()
+        debug("T0-3,ddu_mm,1000,status,", sdec_(eMm), ",ticks,", udec_(ticksMm))
 
-    bAgree := (ticksM == ticksCm) and (ticksCm == ticksMm)
-    debug("T0-3,end,agree,", zstr_(bAgree ? @"TRUE" : @"FALSE"))
+        bAgree := (ticksM == ticksCm) and (ticksCm == ticksMm)
+        debug("T0-3,end,agree,", zstr_(bAgree ? @"TRUE" : @"FALSE"))
 
-    bTicksInBand := (ticksM >= SF_TICKS_LO) and (ticksM <= SF_TICKS_HI)
-    bPass := bAgree and bTicksInBand
-    debug("SIGNOFF,sf,1,bin,T0,cell,R4-T0-1M-TICKS,task,3502,motor,NONE,crit,DDU_M_TICKS,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+        bTicksInBand := (ticksM >= SF_TICKS_LO) and (ticksM <= SF_TICKS_HI)
+        bPass := bAgree and bTicksInBand and (eM == motor.NO_ERROR) and (eCm == motor.NO_ERROR) and (eMm == motor.NO_ERROR)
+        debug("SIGNOFF,sf,1,bin,T0,cell,R4-T0-1M-TICKS,task,3502,motor,NONE,crit,DDU_M_TICKS,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+
+        eRot := motor.stopAfterRotation(1, 99)
+        keptRot := motor.testGetStopHallTicks()
+        eDist := motor.stopAfterDistance(1, 99)
+        keptDist := motor.testGetStopHallTicks()
+        eTime := motor.stopAfterTime(0, motor.DTU_SEC)
+        keptTime := motor.testGetStopHallTicks()
+        bKeep := (eRot == motor.ERR_BAD_UNITS) and (eDist == motor.ERR_BAD_UNITS) and (eTime == motor.ERR_BAD_COUNT)
+        bKeep := bKeep and (ticksMm <> 0) and (keptRot == ticksMm) and (keptDist == ticksMm) and (keptTime == ticksMm)
+        debug("T0-3,limkeep,armed,", udec_(ticksMm), ",rot_status,", sdec_(eRot), ",kept,", udec_(keptRot), ",dist_status,", sdec_(eDist), ",kept,", udec_(keptDist), ",time_status,", sdec_(eTime), ",kept,", udec_(keptTime))
+        debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-LIMKEEP,task,3554,motor,RIGHT,crit,REJECT_KEEPS_LIMIT,measured,", zstr_(bKeep ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,3,verdict,", zstr_(bKeep ? @"PASS" : @"FAIL"))
+    else
+        debug("SIGNOFF,sf,1,bin,T0,cell,R4-T0-1M-TICKS,task,3502,motor,NONE,crit,DDU_M_TICKS,measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
+        debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-LIMKEEP,task,3554,motor,RIGHT,crit,REJECT_KEEPS_LIMIT,measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
+    motor.stop()
+    motor.getError()                                        ' drain this cog's first recorded code, so a later cell reads only its own
+
+PRI waitReady(startResult) : bReady | readyMs
+' Wait, bounded by READY_WAIT_MS, for `motor` to report ready after a start() that returned a cog id.
+'
+' @param startResult - the start()'s return; a failed start (< 0) is never ready
+' @returns bReady - TRUE when start() returned a cog id and the driver reported ready in the bound
+' @local readyMs - ready-wait accumulator
+
+    bReady := FALSE
+    if startResult >= 0
+        readyMs := 0
+        repeat while (motor.isReady() == FALSE) and (readyMs < READY_WAIT_MS)
+            waitms(READY_POLL_MS)
+            readyMs += READY_POLL_MS
+        bReady := motor.isReady()
 
 PRI testT0_4() | pwrEnum, legalVolt
 ' O: validVoltageForChoice() never aborts, so the full PWR_* sweep is safe.
@@ -540,127 +618,82 @@ PRI testT0_5() | minRamp, maxRamp, incRamp, decrRamp
     minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
     debug("T0-5,accel,10000000,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
 
-PRI testT0_6() | resultKm, resultMi, bAbortRotation, bAbortStopDist
-' I/T, K: getDistance(DDU_KM)/(DDU_MI) are valid units and are not expected to
-' abort, so both are called UNTRAPPED (task 3539) and judged straight off the
-' returned value. getRotationCount(99) and stopAfterDistance(0, DDU_IN) are
-' this test's DELIBERATE abort probes -- 99 is not a legal DDU_* unit and 0 in
-' DDU_IN is a zero-distance stop, both invalid/out-of-range and both DO abort
-' in the current code -- so ONLY these two stay \-trapped, and "aborted" is
-' judged by the completion flag (see VAR { abort-trap completion flag }),
-' never by the trapped value, since a bare abort also "returns" 0.
+PRI testT0_6() | resultKm, resultMi, rotResult, eRotCode, eStopDist, eStopCode
+' I/T, K: getDistance(DDU_KM)/(DDU_MI) are valid units and return a value.
+' getRotationCount(99) (99 is not a DRU_* unit) and stopAfterDistance(0,
+' DDU_IN) (a zero distance) used to abort; under the error contract (task 3554)
+' the getter returns its neutral 0 and records ERR_BAD_UNITS, and the command
+' returns and records ERR_BAD_COUNT. The two codes feed R16-T0-NOABORT, judged
+' in T0-7. UNFIXED: both calls aborted, which ended the run at main()'s trap
+' and left the cell with no verdict.
 '
-' @local resultKm - getDistance(DDU_KM)'s untrapped return
-' @local resultMi - getDistance(DDU_MI)'s untrapped return
-' @local bAbortRotation - TRUE only when getRotationCount(99) aborted (expected TRUE)
-' @local bAbortStopDist - TRUE only when stopAfterDistance(0, DDU_IN) aborted (expected TRUE)
+' @local resultKm - getDistance(DDU_KM)'s return
+' @local resultMi - getDistance(DDU_MI)'s return
+' @local rotResult - getRotationCount(99)'s return (expected 0)
+' @local eRotCode - getError() after it (expected ERR_BAD_UNITS)
+' @local eStopDist - stopAfterDistance(0, DDU_IN)'s return (expected ERR_BAD_COUNT)
+' @local eStopCode - getError() after it (expected ERR_BAD_COUNT)
 
+    motor.getError()                                        ' start from a clear slot
     resultKm := motor.getDistance(motor.DDU_KM)
     debug("T0-6,call,getDistance_KM,result,", sdec_(resultKm))
 
     resultMi := motor.getDistance(motor.DDU_MI)
     debug("T0-6,call,getDistance_MI,result,", sdec_(resultMi))
 
-    bAbortRotation := rotationCount99Trapped()
-    debug("T0-6,call,getRotationCount_99,aborted,", zstr_(bAbortRotation ? @"TRUE" : @"FALSE"))
+    motor.getError()                                        ' the distance calls' own codes are not judged here
+    rotResult := motor.getRotationCount(99)
+    eRotCode := motor.getError()
+    debug("T0-6,call,getRotationCount_99,result,", sdec_(rotResult), ",error,", sdec_(eRotCode))
 
-    bAbortStopDist := stopDist0InTrapped()
-    debug("T0-6,call,stopAfterDistance_0in,aborted,", zstr_(bAbortStopDist ? @"TRUE" : @"FALSE"))
+    eStopDist := motor.stopAfterDistance(0, motor.DDU_IN)
+    eStopCode := motor.getError()
+    debug("T0-6,call,stopAfterDistance_0in,status,", sdec_(eStopDist), ",error,", sdec_(eStopCode))
 
-PRI rotationCount99Trapped() : bAborted
-' T0-6's deliberate abort probe: motor.getRotationCount(99) under an abort trap, judged only by
-' the completion flag (see VAR { abort-trap completion flag }). Captures no other value.
-'
-' @returns bAborted - TRUE only when getRotationCount(99) aborted
+    bUnitsCodesOk := (rotResult == 0) and (eRotCode == motor.ERR_BAD_UNITS) and (eStopDist == motor.ERR_BAD_COUNT) and (eStopCode == motor.ERR_BAD_COUNT)
 
-    bTrapPending := TRUE
-    \rotationCount99Call()
-    bAborted := bTrapPending
-    bTrapPending := FALSE
-
-PRI rotationCount99Call()
-' motor.getRotationCount(99) itself; clears bTrapPending only when it returns normally.
-' Call only as \rotationCount99Call() from rotationCount99Trapped().
-
-    motor.getRotationCount(99)
-    bTrapPending := FALSE
-
-PRI stopDist0InTrapped() : bAborted
-' T0-6's deliberate abort probe: motor.stopAfterDistance(0, DDU_IN) under an abort trap, judged
-' only by the completion flag (see VAR { abort-trap completion flag }). Captures no other value.
-'
-' @returns bAborted - TRUE only when stopAfterDistance(0, DDU_IN) aborted
-
-    bTrapPending := TRUE
-    \stopDist0InCall()
-    bAborted := bTrapPending
-    bTrapPending := FALSE
-
-PRI stopDist0InCall()
-' motor.stopAfterDistance(0, DDU_IN) itself; clears bTrapPending only when it returns normally.
-' Call only as \stopDist0InCall() from stopDist0InTrapped().
-
-    motor.stopAfterDistance(0, motor.DDU_IN)
-    bTrapPending := FALSE
-
-PRI testT0_7() | bAbortOverlap
+PRI testT0_7() | eSetupA, eOverlap, eOverlapCode, eNonOverlap, bPass
 ' AE: two separate isp_bldc_motor instances, testSetup() on deliberately
 ' overlapping pin groups -- PINS_P0_P15 and PINS_P8_P23 overlap on P8-P15, the
-' audit's own example. AE is now FIXED (task #3484): validatePinBase() claims a
-' shared DAT-level registry of in-use pin ranges and ABORTS on overlap (a
-' deliberate choice -- two driver cogs sharing pins is a wiring hazard, not
-' something to merely warn about). So motorA's testSetup() is expected to
-' succeed and claim P0-P15, and motorB's is expected to ABORT (its own
-' "! ERROR: validatePinBase() ..." line appears right after this test's
-' "begin" tag) because P8-P23 overlaps what motorA already holds. No real
-' board is wired to either base, so this only ever toggles unused pins briefly
-' while probing for a board that is not there. Only motorB's overlapping
-' testSetup() is THIS TEST's deliberate abort probe (task 3539) and stays
-' \-trapped, judged only by the completion flag (see VAR { abort-trap
-' completion flag }); motorA's testSetup() (expected to succeed) and the
-' later non-overlapping retry are both called UNTRAPPED.
+' audit's own example. motorA claims P0-P15; motorB's overlapping testSetup()
+' is refused: since the error contract (task 3554) it RETURNS
+' ERR_PIN_GROUP_IN_USE and records it, where it used to abort. No real board is
+' wired to either base, so this only ever toggles unused pins briefly while
+' probing for a board that is not there.
+'
+' AE's other half, the one that matters to shipped code: two motors on
+' NON-overlapping ranges must still both initialise (motorB on P32_P47).
+'
+' R16-T0-NOABORT (task 3554): TRUE when T0-6's two codes were right AND
+' motorA's claim returned NO_ERROR AND the overlap returned and recorded
+' ERR_PIN_GROUP_IN_USE AND the non-overlapping claim returned NO_ERROR. That this
+' line prints at all is the "nothing aborted" half.
 '
 ' T0-14a/T0-14b release motorA/motorB's claims made here (P0_P15, P32_P47)
 ' before they run, so this test's claims never leak into theirs.
 '
-' @local bAbortOverlap - TRUE only when motorB's overlapping testSetup() aborted (expected TRUE)
+' @local eSetupA - motorA.testSetup(P0_P15)'s status
+' @local eOverlap - motorB.testSetup(P8_P23)'s status (expected ERR_PIN_GROUP_IN_USE)
+' @local eOverlapCode - motorB.getError() after it
+' @local eNonOverlap - motorB.testSetup(P32_P47)'s status
+' @local bPass - R16-T0-NOABORT's measured value and verdict
 
     debug("T0-7,begin,left_base,P0_P15,right_base,P8_P23")
-    motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
-    bAbortOverlap := overlapSetupTrapped(motorB.PINS_P8_P23)
-    debug("T0-7,end,harness_survived,TRUE,aborted,", zstr_(bAbortOverlap ? @"TRUE" : @"FALSE"))
+    motorA.getError()
+    motorB.getError()
+    eSetupA := motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    eOverlap := motorB.testSetup(motorB.PINS_P8_P23, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
+    eOverlapCode := motorB.getError()
+    debug("T0-7,end,claim_status,", sdec_(eSetupA), ",overlap_status,", sdec_(eOverlap), ",overlap_error,", sdec_(eOverlapCode))
 
-    ' AE's other half, and the one that matters to shipped code: two motors on
-    ' NON-overlapping ranges must STILL BOTH INITIALISE. AE is the only fix in
-    ' this batch able to break a working setup, and every two-wheel platform is
-    ' exactly this case -- without this check nothing in Tier 0 would notice if
-    ' the overlap test started rejecting legitimate configurations. motorA still
-    ' holds P0_P15 from above; P32_P47 neither overlaps it nor is held by the
-    ' main `motor` instance (which holds T0_MOTOR_BASE from T0-1 onward).
     debug("T0-7,nonoverlap,begin,held_base,P0_P15,new_base,P32_P47")
-    motorB.testSetup(motorB.PINS_P32_P47, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
-    debug("T0-7,nonoverlap,end,note,no_ERROR_line_above_means_both_motors_coexist")
+    eNonOverlap := motorB.testSetup(motorB.PINS_P32_P47, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
+    debug("T0-7,nonoverlap,end,status,", sdec_(eNonOverlap))
+    motorA.getError()
+    motorB.getError()
 
-PRI overlapSetupTrapped(pinBase) : bAborted
-' T0-7's deliberate abort probe: motorB.testSetup({pinBase}) under an abort trap, judged only by
-' the completion flag (see VAR { abort-trap completion flag }). Captures no other value.
-'
-' @param pinBase - PINS_* base passed straight to motorB.testSetup(), expected to overlap motorA
-' @returns bAborted - TRUE only when motorB.testSetup() aborted
-
-    bTrapPending := TRUE
-    \overlapSetupCall(pinBase)
-    bAborted := bTrapPending
-    bTrapPending := FALSE
-
-PRI overlapSetupCall(pinBase)
-' motorB.testSetup({pinBase}) itself; clears bTrapPending only when it returns normally.
-' Call only as \overlapSetupCall() from overlapSetupTrapped().
-'
-' @param pinBase - PINS_* base passed straight to motorB.testSetup()
-
-    motorB.testSetup(pinBase, user.DRIVE_VOLTAGE, motorB.BRD_AUTO_DET)
-    bTrapPending := FALSE
+    bPass := bUnitsCodesOk and (eSetupA == motorA.NO_ERROR) and (eOverlap == motorB.ERR_PIN_GROUP_IN_USE) and (eOverlapCode == motorB.ERR_PIN_GROUP_IN_USE) and (eNonOverlap == motorB.NO_ERROR)
+    debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-NOABORT,task,3554,motor,NONE,crit,CODE_NOT_ABORT,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,4,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
 PRI spread5(pArr) : spreadVal | idx, mx, mn
 ' Helper for R8-T0-ZXS (T0-11): max - min of 5 LONGs at {pArr}.
@@ -1006,8 +1039,11 @@ PRI testT0_15c() | baseline, startResult1, free1, startResult2, rawMotorCog2, fr
 ' R1-T0-RESTART (task 3499): count free cogs (baseline) -> start() -> free1 ->
 ' start() again with NO stop() -> free2 -> stop() -> free3. A BOOL cell (task
 ' 3537): measured is TRUE only when |free2 - free1| + |free3 - baseline| == 0
-' AND free1 == baseline - 1 (PL-24: a second start() must not orphan the
-' first cog); the four free-cog counts are on the T0-15c line. T0-15d reads
+' AND free1 == baseline - SF_START_COGS (PL-24: a second start() must not orphan
+' the first start's cogs; task 3513: a start() is the driver plus its front cog,
+' so this is also the single-motor fixed-cog-count cell -- UNFIXED, start()
+' alone took 1 cog and this term FAILs); the four free-cog counts are on the
+' T0-15c line. T0-15d reads
 ' state immediately after this test's own stop(), so it must be called right
 ' after this one from runTier0Tests().
 ' Both start()s are called UNTRAPPED (task 3539); a genuine abort is caught
@@ -1037,7 +1073,7 @@ PRI testT0_15c() | baseline, startResult1, free1, startResult2, rawMotorCog2, fr
     bRestartStopValid := (startResult1 >= 0) and (startResult2 >= 0) and (rawMotorCog2 == startResult2 + 1)
     free3 := countFreeCogs()
     diffFree := abs(free2 - free1) + abs(free3 - baseline)
-    bPass := (diffFree == SF_RESTART_LO) and (free1 == baseline - 1)
+    bPass := (diffFree == SF_RESTART_LO) and (free1 == baseline - SF_START_COGS)
     debug("T0-15c,baseline,", udec_(baseline), ",free1,", udec_(free1), ",start1,", sdec_(startResult1), ",free2,", udec_(free2), ",start2,", sdec_(startResult2), ",raw_motor_cog2,", sdec_(rawMotorCog2), ",free3,", udec_(free3))
     debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-RESTART,task,3499,motor,NONE,crit,NO_ORPHAN,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
@@ -1120,6 +1156,243 @@ PRI spacerLoop()
 
     repeat
         waitms(1000)
+
+PRI occupySpacers(maxCount) : heldCount | spareCogId
+' Start up to maxCount spacer cogs and hold them in heldSpacerId[] until releaseSpacers() (T0-22).
+'
+' @param maxCount - the most spacers to start
+' @returns heldCount - spacers now running
+' @local spareCogId - cogspin()'s return for the current attempt
+
+    heldCount := 0
+    repeat while heldCount < (maxCount <# MAX_SPACER_COGS)
+        spareCogId := cogspin(NEWCOG, spacerLoop(), @spacerStacks[heldCount * SPACER_STACK_LONGS])
+        if spareCogId < 0
+            quit
+        heldSpacerId[heldCount] := spareCogId
+        heldCount += 1
+
+PRI releaseSpacers(heldCount) | spacerIdx
+' Stop the first heldCount spacers occupySpacers() started.
+'
+' @param heldCount - spacers to stop
+' @local spacerIdx - index into heldSpacerId[]
+
+    if heldCount > 0                                        ' repeat 0 to -1 would count down, not skip
+        repeat spacerIdx from 0 to heldCount - 1
+            cogstop(heldSpacerId[spacerIdx])
+
+PRI testT0_16() | baseline, startResult, eCode, rawMotorCog, freeAfter, bPass
+' R16-T0-BADGROUP (task 3554, F-3): start() with a value that is not a PINS_* group. The error contract
+' validates every argument before anything is acquired, so the call must return -1, record
+' ERR_BAD_PIN_GROUP, launch no cog (testGetMotorCog() 0) and leave the free-cog count unchanged.
+' UNFIXED: an illegal group launched a driver cog on pins derived from -1 (F-3).
+'
+' @local baseline - free cogs before the call
+' @local startResult - start()'s return (expected -1)
+' @local eCode - getError() after it (expected ERR_BAD_PIN_GROUP)
+' @local rawMotorCog - testGetMotorCog() after it (expected 0)
+' @local freeAfter - free cogs after the call
+' @local bPass - the cell's measured value and verdict
+
+    debug("T0-16,begin,bad_group")
+    motorA.stop()
+    motorA.getError()
+    baseline := countFreeCogs()
+    startResult := motorA.start(BAD_PIN_BASE, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    eCode := motorA.getError()
+    rawMotorCog := motorA.testGetMotorCog()
+    freeAfter := countFreeCogs()
+    bPass := (startResult == -1) and (eCode == motorA.ERR_BAD_PIN_GROUP) and (rawMotorCog == 0) and (freeAfter == baseline)
+    debug("T0-16,end,start_return,", sdec_(startResult), ",error,", sdec_(eCode), ",raw_motor_cog,", sdec_(rawMotorCog), ",baseline,", udec_(baseline), ",free_after,", udec_(freeAfter))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-BADGROUP,task,3554,motor,NONE,crit,REJECT_NO_COG,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+
+PRI testT0_17() | markPins, legalBase, dirBefore, startResult, dirAfter, bPass
+' R16-T0-PINSKEEP (task 3554, PL-48): the release demo's order -- validBasePinForChoice() then start() on a
+' fresh instance -- must not touch P8..P15, where demo_single_motor runs HDMI. The marker is this cog's own
+' DIR bits for P8..P15, set through a 15 k pull-down (WRPIN P_LOW_15K, then PINLOW), so the marker drives
+' nothing harder than a pull resistor. PINCLEAR clears DIR (p2kbSpin2Pinclear), and the unfixed chain ran
+' pinclear(0 addpins 7) and pinclear(8 addpins 7) on THIS cog inside start()'s stop-first, so a cleared
+' bit is the defect. motorP is an instance nothing else in this file has touched.
+' UNFIXED: validBasePinForChoice() took the claim, start() then stop()ped first with pinbase still 0, and
+' DIR bits 8..15 read 0 afterwards.
+'
+' @local markPins - the P8..P15 pin field
+' @local legalBase - validBasePinForChoice()'s return
+' @local dirBefore - DIR bits 8..15 after the marker is set (expected all set)
+' @local startResult - motorP.start()'s return
+' @local dirAfter - DIR bits 8..15 after start() and stop()
+' @local bPass - the cell's measured value and verdict
+
+    debug("T0-17,begin,pins_keep")
+    motor.stop()
+    markPins := PL48_MARK_BASE addpins PL48_MARK_SPAN
+    wrpin(markPins, P_LOW_15K)
+    pinlow(markPins)
+    dirBefore := (DIRA >> PL48_MARK_SHIFT) & PL48_MARK_MASK
+    legalBase := motorP.validBasePinForChoice(T0_MOTOR_BASE)
+    startResult := motorP.start(legalBase, user.DRIVE_VOLTAGE, motorP.BRD_AUTO_DET)
+    motorP.stop()
+    dirAfter := (DIRA >> PL48_MARK_SHIFT) & PL48_MARK_MASK
+    pinclear(markPins)
+    bPass := (dirBefore == PL48_MARK_MASK) and (dirAfter == PL48_MARK_MASK) and (startResult >= SF_COG_LO) and (startResult <= SF_COG_HI)
+    debug("T0-17,end,legal_base,", sdec_(legalBase), ",start_return,", sdec_(startResult), ",dir_before,", uhex_(dirBefore), ",dir_after,", uhex_(dirAfter))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-PINSKEEP,task,3554,motor,RIGHT,crit,P8_P15_UNTOUCHED,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+
+PRI testT0_18() | eDist, eTime, eOwn, eLeft, eRight, bPass
+' R16-T0-STRNOTSTART (task 3555, F-5c): stop limits on a steering object that was never started. start()
+' would erase them, so each is refused: stopAfterDistance() and stopAfterTime() must return
+' ERR_NOT_STARTED, and getError()'s first (steering) result must name it. Nothing moves: no cog exists.
+' UNFIXED: both calls returned nothing and silently armed a limit start() then erased (F-5c).
+'
+' @local eDist - stopAfterDistance(1, DDU_M)'s return
+' @local eTime - stopAfterTime(1, DTU_SEC)'s return
+' @local eOwn - getError()'s steering result
+' @local eLeft - getError()'s left-wheel result (not judged; printed)
+' @local eRight - getError()'s right-wheel result (not judged; printed)
+' @local bPass - the cell's measured value and verdict
+
+    debug("T0-18,begin,steer_not_started")
+    steer.getError()
+    eDist := steer.stopAfterDistance(1, steer.DDU_M)
+    eTime := steer.stopAfterTime(1, steer.DTU_SEC)
+    eOwn, eLeft, eRight := steer.getError()
+    bPass := (eDist == motor.ERR_NOT_STARTED) and (eTime == motor.ERR_NOT_STARTED) and (eOwn == motor.ERR_NOT_STARTED)
+    debug("T0-18,end,dist_status,", sdec_(eDist), ",time_status,", sdec_(eTime), ",error,", sdec_(eOwn), ",left_error,", sdec_(eLeft), ",right_error,", sdec_(eRight))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-STRNOTSTART,task,3555,motor,BOTH,crit,LIMIT_REFUSED,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,2,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+
+PRI testT0_19() | baseline, startResult, freeRunning, freeStopped, bPass
+' R16-T0-STEERCOGS (task 3513): the two-wheel form costs 3 cogs -- two owned drivers and one steering front
+' cog -- and stop() returns all of them. The start commands zero speed on both wheels, so nothing turns.
+' NOT A DISCRIMINATOR, and stated as such: the unfixed two-wheel shape was also 3 cogs (two drivers plus
+' the sense task). The single-motor form, which did change (1 -> 2), is judged by R1-T0-RESTART.
+'
+' @local baseline - free cogs before start()
+' @local startResult - steer.start()'s return (the front cog id, 0..7)
+' @local freeRunning - free cogs while started
+' @local freeStopped - free cogs after stop()
+' @local bPass - the cell's measured value and verdict
+
+    debug("T0-19,begin,steer_cogs")
+    motor.stop()
+    motorA.stop()
+    motorB.stop()
+    motorP.stop()
+    baseline := countFreeCogs()
+    startResult := steer.start(T0_SECOND_BASE, T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET, motor.BRD_AUTO_DET)
+    freeRunning := countFreeCogs()
+    steer.stop()
+    freeStopped := countFreeCogs()
+    steer.getError()
+    bPass := (startResult >= SF_COG_LO) and (startResult <= SF_COG_HI) and (freeRunning == baseline - SF_STEER_COGS) and (freeStopped == baseline)
+    debug("T0-19,end,start_return,", sdec_(startResult), ",baseline,", udec_(baseline), ",free_running,", udec_(freeRunning), ",free_stopped,", udec_(freeStopped))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-STEERCOGS,task,3513,motor,BOTH,crit,THREE_COGS_RETURNED,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+
+PRI testT0_20() | baseIdx, pinBase, pMotorTok, startResult, sampleIdx, ampsSum, amps, meanAmps, pVerdict
+' R16-T0-RESTZERO (task 3556, PL-45): getCurrent() at rest reads near 0 on each board. start() samples the
+' floated rest zero (~1 s) and getCurrent() nets it out; this averages REST_SAMPLES readings at zero command
+' and judges the mean against SF_REST_LO..SF_REST_HI (0.1 mA units). UNFIXED: the LEFT board read about 535
+' (0.05 A, Visit 1). The RIGHT board's unfixed offset (~27) already sits inside the band, so only the LEFT
+' instance discriminates; that is stated here and in the run sheet.
+'
+' @local baseIdx - 0 RIGHT (T0_MOTOR_BASE), 1 LEFT (T0_SECOND_BASE)
+' @local pinBase - the base under test
+' @local pMotorTok - the record's motor field
+' @local startResult - start()'s return
+' @local sampleIdx - sample loop counter
+' @local ampsSum - sum of the readings
+' @local amps - one getCurrent() reading, 0.1 mA units
+' @local meanAmps - the instance's measured value
+' @local pVerdict - PASS, FAIL or NOMEAS
+
+    repeat baseIdx from 0 to 1
+        if baseIdx == 0
+            pinBase := T0_MOTOR_BASE
+            pMotorTok := @"RIGHT"
+        else
+            pinBase := T0_SECOND_BASE
+            pMotorTok := @"LEFT"
+        startResult := motor.start(pinBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+        if waitReady(startResult)
+            ampsSum := 0
+            repeat sampleIdx from 1 to REST_SAMPLES
+                waitms(REST_SAMPLE_MS)
+                amps, _ := motor.getCurrent()
+                ampsSum += amps
+            meanAmps := ampsSum / REST_SAMPLES
+            pVerdict := ((meanAmps >= SF_REST_LO) and (meanAmps <= SF_REST_HI)) ? @"PASS" : @"FAIL"
+            debug("T0-20,base,", udec_(pinBase), ",mean_amps_x10k,", sdec_(meanAmps))
+            debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-RESTZERO,task,3556,motor,", zstr_(pMotorTok), ",crit,REST_AMPS_X10K,measured,", sdec_(meanAmps), ",lo,", sdec_(SF_REST_LO), ",hi,", sdec_(SF_REST_HI), ",units,AMPS_X10K,n,", udec_(REST_SAMPLES), ",verdict,", zstr_(pVerdict))
+        else
+            debug("T0-20,base,", udec_(pinBase), ",not_ready,start_return,", sdec_(startResult))
+            debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-RESTZERO,task,3556,motor,", zstr_(pMotorTok), ",crit,REST_AMPS_X10K,measured,NA,lo,", sdec_(SF_REST_LO), ",hi,", sdec_(SF_REST_HI), ",units,AMPS_X10K,n,0,verdict,NOMEAS")
+        motor.stop()
+    motor.getError()
+
+PRI testT0_21() | eSetup, amps, watts, eCode, bPass
+' R16-T0-NOBOARD (task 3556, PL-25): getCurrent() on a group with no board (P0_P15, the empty group R2-T0-EMPTY
+' already probes) returns its documented neutral 0 A / 0 mW and records ERR_BOARD_NOT_DETECTED.
+' UNFIXED: nothing was recorded, and a nonzero sense reading divided by -1 read negative. The recorded code
+' is the discriminating half: with no driver running the hub sense long is 0 either way.
+'
+' @local eSetup - motorA.testSetup(P0_P15)'s status
+' @local amps - getCurrent()'s current
+' @local watts - getCurrent()'s power
+' @local eCode - getError() after it (expected ERR_BOARD_NOT_DETECTED)
+' @local bPass - the cell's measured value and verdict
+
+    debug("T0-21,begin,no_board")
+    motorA.stop()
+    eSetup := motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    motorA.getError()
+    amps, watts := motorA.getCurrent()
+    eCode := motorA.getError()
+    motorA.stop()
+    bPass := (eSetup == motorA.NO_ERROR) and (amps == 0) and (watts == 0) and (eCode == motorA.ERR_BOARD_NOT_DETECTED)
+    debug("T0-21,end,setup_status,", sdec_(eSetup), ",amps,", sdec_(amps), ",watts,", sdec_(watts), ",error,", sdec_(eCode))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-NOBOARD,task,3556,motor,NONE,crit,ZERO_AND_CODE,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+
+PRI testT0_22() | baseline, heldCount, startResult, eCode, rawMotorCog, freeAfter, eClaim, bMeasured, bPass
+' R16-T0-FRONTFAIL (task 3513): a start() with exactly one free cog. The driver takes it, the front cog
+' cannot launch, and the start must undo itself: return -1, record ERR_NO_FREE_COG, leave no driver
+' (testGetMotorCog() 0), give every cog back, and release the pin claim so another instance can take the
+' group (motorA.testSetup() on the same group returns NO_ERROR -- PL-36's release, on the new failure
+' path). NOMEAS when the spacers could not leave exactly one cog free. Nothing turns: the driver that
+' briefly runs commands zero.
+' UNFIXED: one cog was enough for start(), which returned a cog id, so the cell FAILs on the return.
+'
+' @local baseline - free cogs before the spacers
+' @local heldCount - spacers held across the start
+' @local startResult - start()'s return (expected -1)
+' @local eCode - getError() after it (expected ERR_NO_FREE_COG)
+' @local rawMotorCog - testGetMotorCog() after it (expected 0)
+' @local freeAfter - free cogs after the spacers are released
+' @local eClaim - motorA.testSetup() on the same group (expected NO_ERROR)
+' @local bMeasured - the spacers left exactly one cog free
+' @local bPass - the cell's measured value and verdict
+
+    debug("T0-22,begin,front_fail")
+    motor.stop()
+    motorA.stop()
+    motor.getError()
+    baseline := countFreeCogs()
+    heldCount := occupySpacers(baseline - 1)
+    startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    eCode := motor.getError()
+    rawMotorCog := motor.testGetMotorCog()
+    releaseSpacers(heldCount)
+    freeAfter := countFreeCogs()
+    eClaim := motorA.testSetup(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    motorA.stop()
+    motorA.getError()
+    motor.stop()
+    bMeasured := (heldCount == baseline - 1)
+    bPass := (startResult == -1) and (eCode == motor.ERR_NO_FREE_COG) and (rawMotorCog == 0) and (freeAfter == baseline) and (eClaim == motorA.NO_ERROR)
+    debug("T0-22,end,baseline,", udec_(baseline), ",held,", udec_(heldCount), ",start_return,", sdec_(startResult), ",error,", sdec_(eCode), ",raw_motor_cog,", sdec_(rawMotorCog), ",free_after,", udec_(freeAfter), ",claim_status,", sdec_(eClaim))
+    if bMeasured
+        debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-FRONTFAIL,task,3513,motor,RIGHT,crit,UNDO_NO_LEAK,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+    else
+        debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-FRONTFAIL,task,3513,motor,RIGHT,crit,UNDO_NO_LEAK,measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
 
 PRI testT0_10() | startResult, rawMotorCog, pinAdcX, xNodeCounts
 ' C-6b: pin_adc_x_i (base+3) falls inside adc_pins, so the driver already

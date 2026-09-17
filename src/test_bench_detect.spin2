@@ -9,6 +9,10 @@
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... 11 Sep 2026
 ''   Updated.... 14 Sep 2026
+''               16 Sep 2026 -- task 3560, SRC_REV 4: the S-4 panic note no longer claims emergencyCutoff()
+''               self-cancels (task 3556 latches it); phase 2's start() is untrapped (nothing in the
+''               library aborts, task 3554) and also launches the motor's front cog (task 3513). The
+''               preamble text changed, so a diff against a SRC_REV 3 log shows those note lines.
 ''
 '' =================================================================================================
 
@@ -111,7 +115,7 @@ CON { build identity }
 '   and reps; the overlap tokens name LEFT/RIGHT rather than P0_P15/P16_P31; phase 2
 '   refuses a driver cog that overlaps another board (BD-PH2 step refused). BD-CELL,
 '   BD-ENUM and BD-PLAN are unchanged, so the 2026-09-11 baseline diff still applies.
-    SRC_REV     = 3
+    SRC_REV     = 4
     FMT_VERSION = 2                                         ' BD-BANNER record-format version
 
 ' DETECT_PHASE2 implies DETECT_LIB: if phase 2 is compiled, the library must be linked
@@ -635,16 +639,16 @@ PRI emitNoteRecords()
 #ifdef DETECT_PHASE2
     emitNote(@"*** THIS BUILD STARTS A REAL DRIVER COG *** -- phase 2 is compiled in")
     emitNote(@"MOTORS MAY STAY CONNECTED -- the gate-input guard never pulses a board's gate input (GATE_OVERLAP) and refuses a driver cog that overlaps another board (COG_OVERLAP)")
-    emitNote(@"PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4) and is NOT a panic button")
-    emitNote(@"phase 2 starts a driver cog at commanded zero on P0_P15 then on P16_P31 and stops it; nothing is ever commanded to turn")
+    emitNote(@"PANIC PROCEDURE IS PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() is a software stop and is NOT a panic button")
+    emitNote(@"phase 2 starts a driver cog and its front cog at commanded zero on P0_P15 then on P16_P31 and stops them; nothing is ever commanded to turn")
 #elseifdef DETECT_LIB
     emitNote(@"the library isp_bldc_motor IS linked and is probed passively using testSetup() and getBoardType() -- no driver cog is started")
     emitNote(@"this binary contains no phase 2 motion code -- rebuild with -D DETECT_PHASE2 to add the cog-running sweeps")
-    emitNote(@"the panic procedure at this bench is PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+    emitNote(@"the panic procedure at this bench is PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() is a software stop and is NOT a panic button")
 #else
     emitNote(@"phase 2 is NOT compiled into this build -- there is no OBJ reference to isp_bldc_motor and no driver PASM2 anywhere in this image")
     emitNote(@"this binary is therefore physically incapable of starting a driver cog; rebuild with -D DETECT_PHASE2 to add phase 2")
-    emitNote(@"even so the panic procedure at this bench is PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() self-cancels in about 250 ms (finding S-4)")
+    emitNote(@"even so the panic procedure at this bench is PHYSICAL BATTERY DISCONNECT ONLY -- emergencyCutoff() is a software stop and is NOT a panic button")
 #endif
     emitNote(@"the gate on phase 2 is compile-time only -- there is no keypress and no runtime branch anywhere in this binary")
     emitNote(@"BD-GATE answer and BD-BUILD phase2_compiled carry the same fact from two places and MUST agree; a disagreement voids the run")
@@ -1279,10 +1283,13 @@ PRI startDriverCog(cogGrp) | startRet, rawMotorCog
 '
 ' @param cogGrp - base pin of the group to run a driver cog on
 '
-' @local startRet - start()'s trapped raw return value
+' start() also launches the motor's front cog (task 3513) and samples the rest zero (~1 s), and it
+' is untrapped: nothing in the library aborts (task 3554).
+'
+' @local startRet - start()'s raw return value
 ' @local rawMotorCog - testGetMotorCog()'s snapshot of the object's own motorCog
 
-    startRet := \motor.start(cogGrp, user.DRIVE_VOLTAGE, motor.BRD_REV_B)
+    startRet := motor.start(cogGrp, user.DRIVE_VOLTAGE, motor.BRD_REV_B)
     rawMotorCog := motor.testGetMotorCog()
 
     lineReset()
