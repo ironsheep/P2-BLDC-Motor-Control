@@ -3919,6 +3919,47 @@ hysteresis they produce**, so nothing is claimed for it here.
 every part. Visit 3's evidence was 8 events in two 1-second windows; part A at 200 MHz gives 48 rungs
 across both motors, before and after the change.
 
+### ⭐ THREE OPEN QUESTIONS FROM STEPHEN, 2026-09-17 -- answer these before designing the change
+
+**STEPHEN:** *"do we need a pull-up/down effect on the hall pins? we can add this in code... and is
+there any smart pin mode that can make reading the hall sensor more accurate? where do the hall pins
+sit? are they close enough that we can sample all at the same time?"*
+
+**Q3 -- ANSWERED, and it is the one this entry already rests on.** The halls are `base+5`, `base+6`,
+`base+7`: three CONSECUTIVE pins. For every legal base (0, 8, 16, 24, 32, 40) the triple is 5-7, 13-15,
+21-23, 29-31, 37-39 or 45-47, and **none straddles the pin-31 boundary**, so one `INA`/`INB` read always
+captures all three at the same instant. **Yes -- they can be sampled simultaneously, in software, today.**
+
+**Q1 -- PULL-UP / PULL-DOWN: OPEN, and it may be the missing half of PL-69.** Hall-effect sensors are
+commonly open-drain or open-collector and need a pull-up to produce a clean high. The driver sets **no
+`WRPIN` at all** on these pins, so whatever the pin's reset drive configuration is, is what they have.
+**If the board relies on the P2's internal pull-up and the driver never enables it, the hall lines are
+weakly driven** -- slow edges, poor noise margin -- **which is exactly the "marginal signal" PL-90's tear
+window needs in order to catch anything, and it would differ between two motors' harnesses.**
+- ⛔ **NOT ESTABLISHED. It needs the board schematic** -- whether the 64010 fits its own pull-ups --
+  read from `analyses/BOARD-REVISION-FACTS.md` and Parallax's documentation, NOT inferred.
+- The P2 can supply one in code: the drive-mode field of `WRPIN` selects 1.5 k / 15 k / 150 k pull-ups
+  and pull-downs (`p2kbArchIoPinTiming` cites the datasheet's eight drive modes;
+  `architecture/pin-drive-configuration.yaml` is the authority for the encodings).
+- **If the board DOES fit pull-ups, adding an internal one in parallel is still a change to a working
+  electrical design and is Stephen's to approve, not mine.**
+
+**Q2 -- A BETTER PIN MODE: OPEN.** Two candidates, neither yet checked against p2kb:
+- **Schmitt-trigger input** (`P_SCHMITT_A` and variants). p2kb records that the P2 HAS these modes but
+  that **no Parallax source states the hysteresis they produce**, so the benefit cannot be quantified
+  from the documentation we hold.
+- **The global input filters**, selected per pin through `WRPIN`'s input-selector field and configured by
+  `HUBSET`. A filter that rejects transients shorter than a chosen window would attack the same noise the
+  tear catches, and would do it in hardware rather than by timing.
+- ⚠ Either is a `WRPIN` on a pin the driver currently leaves alone, so it changes the pin's reset state.
+  **Read the authority before proposing one**, and note that a filter adds latency to a signal the
+  commutation depends on -- the trade is noise rejection against hall-edge timing, and the driver's
+  position estimate rests on that timing.
+
+**ORDER OF WORK, DERIVED:** the atomic read (Q3) is free, cheaper than the current code, and independent
+of the other two -- it should not wait on them. Q1 and Q2 are electrical changes to a working design and
+want the schematic and p2kb read first.
+
 ---
 
 ## Archived
