@@ -105,6 +105,9 @@
 ''               err_pk is the steady window's servo ripple and no longer read as a kick. New cell
 ''               R17-DUAL-TRKICK-A: a change of speed from a running speed kicks when its tr_over exceeds the
 ''               start from rest's by more than TRKICK_MARGIN.
+''               18 Sep 2026 -- SRC_REV=17: task 3517, style-guide conformance, no record changes.
+''               fltApiRetry() drops its unused trace id; US_PER_SEC and HALL_PIN_SPAN are the library's
+''               own; FRONTST reads the steering object's stack size as steering.STEER_STACK_LONGS.
 ''
 '' =================================================================================================
 
@@ -168,7 +171,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 16                                        ' hand-bumped whenever this file changes
+    SRC_REV     = 17                                        ' hand-bumped whenever this file changes
     FMT_VERSION = 7                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -177,7 +180,7 @@ CON { timing }
     CLK_FREQ = 270_000_000                                  ' the one clock line bench-run.sh patches
     _clkfreq = CLK_FREQ
     MS_PER_SEC = 1_000
-    US_PER_SEC = 1_000_000
+    US_PER_SEC = wheelL.US_PER_SEC
     TICKS_PER_MS = CLK_FREQ / MS_PER_SEC
     TICKS_PER_US = CLK_FREQ / US_PER_SEC
 
@@ -278,7 +281,7 @@ CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
 
     ' hall inputs: plain inputs at base+5..base+7, read with pinread() (never a smart pin)
     HALL_PIN_OFFSET = 5
-    HALL_PIN_SPAN   = 2                                     ' addpins operand: 3 pins
+    HALL_PIN_SPAN   = wheelL.HALL_PIN_SPAN                  ' addpins operand: 3 pins (the library's own)
     HALL_CODE_BITS  = 3
     HALL_CODE_ILLEGAL_LO = %000
     HALL_CODE_ILLEGAL_HI = %111
@@ -3775,7 +3778,7 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy, safe
             beat(CP_LIB_STEER_QUERY)
             fltLeftCause, fltRightCause := steering.getFaultCause()
             beat(CP_LIB_STEER_QUERY)
-            fltApiRetry(tid)                                ' PL-66, on the restored offsets
+            fltApiRetry()                                   ' PL-66, on the restored offsets
             recoverWhy := steerRecoverFault(tid)
             if (recoverWhy <> WHY_NONE) and (whyCode == WHY_NONE)
                 whyCode := recoverWhy
@@ -3882,7 +3885,7 @@ PRI steerOffsetRestore() | leftNeg, leftPos, rightNeg, rightPos
         emitOffRest(SIDE_LEFT, fltOffNeg[SLOT_LEFT], fltOffPos[SLOT_LEFT], leftNeg, leftPos, (leftNeg == fltOffNeg[SLOT_LEFT]) and (leftPos == fltOffPos[SLOT_LEFT]))
         emitOffRest(SIDE_RIGHT, fltOffNeg[SLOT_RIGHT], fltOffPos[SLOT_RIGHT], rightNeg, rightPos, (rightNeg == fltOffNeg[SLOT_RIGHT]) and (rightPos == fltOffPos[SLOT_RIGHT]))
 
-PRI fltApiRetry(tid) | startMs, safeEvent, bReached
+PRI fltApiRetry() | startMs, safeEvent, bReached
 ' PL-66: THE SAME POWER, COMMANDED AGAIN after the fault, runs the motor again.
 '
 ' The unfixed library left a faulted driver faulted unless the new command DIFFERED from the standing one,
@@ -3893,8 +3896,6 @@ PRI fltApiRetry(tid) | startMs, safeEvent, bReached
 '
 ' Runs only when the provocation actually faulted; otherwise there is nothing to retry from and the cell
 ' stays NOMEAS.
-'
-' @param tid - trace id of the trial
 '
 ' @local startMs - getms() at the retry command
 ' @local safeEvent - SAFE_* from the watched wait
@@ -4219,7 +4220,7 @@ PRI dFrontStats(side) : nPasses, nLate, nMaxTicks, nStackHi, nStackOf
     beat(CP_LIB_STEER_QUERY)
     if side == SIDE_BOTH
         nPasses, nLate, nMaxTicks, nStackHi := steering.testGetFrontStats()
-        nStackOf := steering.STACK_SIZE_LONGS
+        nStackOf := steering.STEER_STACK_LONGS
     elseif side == SIDE_RIGHT
         nPasses, nLate, nMaxTicks, nStackHi := wheelR.testGetFrontStats()
         nStackOf := wheelR.STACK_SIZE_LONGS

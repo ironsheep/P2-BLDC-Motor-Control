@@ -237,7 +237,7 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         bCmdWatched := FALSE
         cmdTimeoutEvents := 0
         longfill(@cmdTimeoutSeen, 0, ltWheel.COG_SLOT_COUNT)        ' every cog starts even with the (zeroed) count
-        longfill(@taskStack, STACK_SENTINEL, STACK_SIZE_LONGS)   ' PL-75: this object's own size; testGetFrontStats() finds the high-water mark from this
+        longfill(@taskStack, STACK_SENTINEL, STEER_STACK_LONGS)  ' PL-75: this object's own size; testGetFrontStats() finds the high-water mark from this
 
         frontCogId := cogspin(NEWCOG, frontLoop(), @taskStack)
         if frontCogId < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
@@ -1254,15 +1254,15 @@ PUB testRightResetMaxValues() : eError | eStatus, eLeftStatus, eRightStatus
 PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater | longIdx
 '' TESTING USE: return the steering front cog's loop health counters and its stack high-water mark
 ''
-'' PL-75: the mark is measured against THIS object's STACK_SIZE_LONGS, which a caller reads as
-'' steering.STACK_SIZE_LONGS -- it is NOT the motor object's. This cog services TWO wheels and is
+'' PL-75: the mark is measured against THIS object's STEER_STACK_LONGS, which a caller reads as
+'' steering.STEER_STACK_LONGS -- it is NOT the motor object's. This cog services TWO wheels and is
 '' sized separately. A mark equal to that size means the reading is SATURATED: the sentinel is gone
 '' everywhere, so "used all of it" and "used more than all of it" cannot be told apart.
 ''
 '' @returns nPasses - passes the front cog has started since it was launched
 '' @returns nLatePasses - passes that overran their slot and were re-anchored, never caught up
 '' @returns nMaxPassTicks - the longest pass body seen, in system ticks
-'' @returns nStackHighWater - stack longs ever used, of this object's STACK_SIZE_LONGS
+'' @returns nStackHighWater - stack longs ever used, of this object's STEER_STACK_LONGS
 
 ' Local Variables:
 ' @local longIdx - index of the stack long being inspected, from the top down
@@ -1275,7 +1275,7 @@ PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater |
     '  mark at 128 and make the instrument blind to the overflow it exists to detect (doctrine D2:
     '  a discovery failure must never render as a value)
     nStackHighWater := 0
-    repeat longIdx from STACK_SIZE_LONGS - 1 to 0
+    repeat longIdx from STEER_STACK_LONGS - 1 to 0
         if taskStack[longIdx] <> STACK_SENTINEL
             nStackHighWater := longIdx + 1
             quit
@@ -1507,7 +1507,8 @@ CON { -- TASK: the steering front cog -- }
 '  motor object's constant from 48 to 128: the per-frame need is still not established, so make it
 '  generous AND observable. testGetFrontStats() reports the mark; the NEXT reading is the one that
 '  finally measures the true requirement, because it will not be saturated.
-  STACK_SIZE_LONGS = 256                ' PL-75: was ltWheel.STACK_SIZE_LONGS (128), measured saturated
+  STEER_STACK_LONGS = 256               ' PL-75: was ltWheel.STACK_SIZE_LONGS (128), measured saturated; its own name,
+                                        '  since it is not the motor object's constant (style guide 2.4)
   STACK_SENTINEL   = ltWheel.STACK_SENTINEL   ' the fill pattern stays shared: it is a protocol value, not a size
 
 VAR { time values & arrays }
@@ -1517,7 +1518,7 @@ VAR { time values & arrays }
 
     long    senseCog                    ' the front cog: cogid + 1, 0 when not running
 
-    long    taskStack[STACK_SIZE_LONGS]     ' PL-75: this object's own size, not the motor object's
+    long    taskStack[STEER_STACK_LONGS]    ' PL-75: this object's own size, not the motor object's
 
 VAR { Data for Motor Position Tracking }
     long    deltaTicks
@@ -2403,15 +2404,15 @@ CON { --- HDMI Debug Support --- }
 
 CON { Constants for HDMI Debug }
 
-    DBG_GROUPS_CT = 1
-    DBG_MAX_VARS_IN_GROUP = 7
+    STEER_DBG_GROUPS_CT = 1                ' this object's own display list (the motor object carries 3 groups)
+    STEER_DBG_MAX_VARS = 7
 
 VAR { Data Structure for HDMI Debug }
 
-    LONG    pTitlesAr[DBG_GROUPS_CT + 1]    ' first value is max vars
-    LONG    pVarCtAr[DBG_GROUPS_CT]
-    LONG    pNamesAr[DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP]
-    LONG    pValsAr[DBG_GROUPS_CT*DBG_MAX_VARS_IN_GROUP]
+    LONG    pTitlesAr[STEER_DBG_GROUPS_CT + 1]    ' first value is max vars
+    LONG    pVarCtAr[STEER_DBG_GROUPS_CT]
+    LONG    pNamesAr[STEER_DBG_GROUPS_CT * STEER_DBG_MAX_VARS]
+    LONG    pValsAr[STEER_DBG_GROUPS_CT * STEER_DBG_MAX_VARS]
 
 DAT { Literals for HDMI Debug }
 
@@ -2435,7 +2436,7 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     LONG[@pTitlesAr][nGrpOffset] := @nameTitle1
     LONG[@pVarCtAr][nGrpOffset] := nVarsInGroup
     ' populate the empty name/value ptr tables
-    nValsGrpOffset := nGrpOffset * DBG_MAX_VARS_IN_GROUP
+    nValsGrpOffset := nGrpOffset * STEER_DBG_MAX_VARS
     LONG[@pNamesAr][nValsGrpOffset + 0] := @name10
     LONG[@pNamesAr][nValsGrpOffset + 1] := @name11
     LONG[@pNamesAr][nValsGrpOffset + 2] := @name12
@@ -2453,14 +2454,14 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
 
     ' tell our table size to reader
     nGrpOffset := 1
-    LONG[@pTitlesAr][nGrpOffset] := DBG_MAX_VARS_IN_GROUP
+    LONG[@pTitlesAr][nGrpOffset] := STEER_DBG_MAX_VARS
 
-PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars | tmpAbsPtr
+PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
 '' Return pointers to HDMI-debug data structures for this motor-object instance
 ''
 
     loadDisplayList()
-    nGroups := DBG_GROUPS_CT
+    nGroups := STEER_DBG_GROUPS_CT
     pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
     pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
     pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
@@ -2469,10 +2470,10 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     debug[user.DBGCH_HDMI_DUMP]("* -------------")
     debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
     debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* Steer DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
-    debug[user.DBGCH_HDMI_DUMP]("* Steer DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
-    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
-    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, STEER_DBG_GROUPS_CT + 1))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, STEER_DBG_GROUPS_CT))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, STEER_DBG_GROUPS_CT * STEER_DBG_MAX_VARS))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, STEER_DBG_GROUPS_CT * STEER_DBG_MAX_VARS))
     debug[user.DBGCH_HDMI_DUMP]("* -------------")
     debug[user.DBGCH_HDMI_DUMP]("* Steer PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
     debug[user.DBGCH_HDMI_DUMP]("* -------------")

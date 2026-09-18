@@ -28,12 +28,30 @@
 #   4.4  PRI method docs use ' , never ''
 #   4.5  CON/DAT/VAR/OBJ/PUB/PRI declaration-line comments use ' , never ''
 #   4.9  no horizontal separator lines inside CON blocks
+# and, added by task 3517 to cover the guide's T1 assignment:
+#   1.5  no parameter, return or local named after a method in the file
+#   1.9  no OBJ override of a constant the file also defines
+#   2.4  a child object's constant is referenced through the object, never
+#        copied into a local CON (NAME = alias.NAME re-exports are references)
+#   3.1  the file opens with CON, and no OBJ block follows a method
+#   3.2  every PUB precedes every PRI (PUNCH-LIST PL-11)
+#   4.3  element->tag: every parameter, return and local has its @param /
+#        @returns / @local tag, PUB and PRI alike (C3f, PUNCH-LIST PL-10)
+#   4.5  a block declaration label is text, never a bare border (C6b)
+#   5.0  no parameter or local the body never names
+#   5.1  every return value is assigned
+#   5.2  one exit, at the method's end; 5.3 no return inside a repeat
+#   5.4  a method returning one boolean is named is/has/b; 5.4.1 no boolean
+#        set to 1 or compared to 0/1
+#   PL-29 (project rule): a ? : with a method call in either branch (T29)
 #
-# Deliberately NOT checked, because they need judgement and would produce
-# noise rather than signal: generic-name-by-semantics (2.2's judgement
-# half), single-exit-point (5.2), magic numbers (5.7), PUB-before-PRI
-# reordering (3.2 -- see PUNCH-LIST PL-11), and the element->tag half of
-# 4.3's doc-completeness rule (see PUNCH-LIST PL-10).
+# What the gate does NOT check prints on every run (COVERAGE_LINES): the T2
+# rules (an agent audit), the T3 rules (Stephen's read), the T1+T2 detection
+# halves, and 3.1.1. A check joins ENFORCED in the commit that brings the tree
+# clean for it; until then its count prints under PENDING.
+#
+# Usage additions: tools/check_style.sh --pending   (the gate, listing every
+#                                                    PENDING site as well)
 #
 # A5 reconciles guide section 4.5 (which requires '---- Label ----' on block
 # declaration lines with label text) and 4.9 (which forbids bare separator
@@ -68,7 +86,9 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 MODE="gate"
+GATE_MODE="gate"
 [ "${1:-}" = "--self-test" ] && MODE="self-test"
+[ "${1:-}" = "--pending" ] && GATE_MODE="gate-pending"
 
 # ---------------------------------------------------------------------------
 # D1 project convention (recorded next to CONFORMANCE_GUIDES in
@@ -654,8 +674,437 @@ def check_con_dashes(lines):
     return out
 
 
+# ---------------------------------------------------------------------------
+# T1 coverage (task 3517). Every check below reads the lexed code view --
+# string contents blanked, comments stripped -- so nothing inside a string
+# literal or a comment can fire one.
+# ---------------------------------------------------------------------------
+RETURN_RE = re.compile(r'(?<![\w.])return\b', re.IGNORECASE)
+RETURN_EXPR_RE = re.compile(r'(?<![\w.])return\b\s*\S', re.IGNORECASE)
+REPEAT_RE = re.compile(r'^repeat\b', re.IGNORECASE)
+PASM_START_RE = re.compile(r'^org(h)?\b', re.IGNORECASE)
+PASM_END_RE = re.compile(r'^end\b', re.IGNORECASE)
+ASSIGN_OPS = r'(?::=|\+=|-=|\*=|//=|/=|\+//=|\+/=|&=|\|=|\^=|<<=|>>=|#>=|<#=|\+\+|--)'
+BOOL_NAME = r'(?<![\w.])b[A-Z]\w*'
+BOOL_CMP_RE = re.compile(BOOL_NAME + r'\s*(?:==|<>)\s*[01](?![\w.])')
+BOOL_SET_RE = re.compile(BOOL_NAME + r'\s*:=\s*1(?![\w.])')
+BOOL_METHOD_RE = re.compile(r'^(is|has|b[A-Z])')
+CALL_RE = re.compile(r'(?<![\w@])[A-Za-z_][\w.]*\s*\(')
+TAG_ANY_RE = re.compile(r'@(param|returns|local)\s+([A-Za-z_]\w*)', re.IGNORECASE)
+
+
+def body_lines(lines, meth):
+    """(lineno, code, indent, bPasm) for each non-blank code line of a method body.
+    bPasm marks inline PASM (org .. end), which has no Spin2 return and its own
+    operand syntax."""
+    out = []
+    in_pasm = False
+    for j in range(meth['sig_end'] + 1, meth['body_end']):
+        code = lines[j]['code']
+        stripped = code.strip()
+        if not stripped:
+            continue
+        indent = len(code) - len(code.lstrip(' \t'))
+        if PASM_START_RE.match(stripped):
+            in_pasm = True
+            out.append((j + 1, code, indent, True))
+            continue
+        if in_pasm and PASM_END_RE.match(stripped):
+            in_pasm = False
+            out.append((j + 1, code, indent, True))
+            continue
+        out.append((j + 1, code, indent, in_pasm))
+    return out
+
+
+def check_pub_before_pri(methods):
+    """S3.2 (guide 3.2): every PUB precedes every PRI."""
+    out = []
+    first_pri = None
+    for meth in methods:
+        if meth['kind'] == 'PRI' and first_pri is None:
+            first_pri = meth
+        elif meth['kind'] == 'PUB' and first_pri is not None:
+            out.append(('S3.2', '3.2', meth['decl_line'] + 1,
+                         "%s() - PUB after PRI %s() (all PUB methods precede all PRI)"
+                         % (meth['name'], first_pri['name'])))
+    return out
+
+
+def check_layout(lines):
+    """S3.1 (guide 3.1): the file opens with CON, and no OBJ block follows a
+    method. Later CON / DAT / VAR blocks are permitted by 3.4; OBJ is not."""
+    out = []
+    blocks = [(i + 1, rec['block']) for i, rec in enumerate(lines) if rec['block_starts']]
+    if not blocks:
+        return out
+    first_method = next((ln for ln, blk in blocks if blk in ('PUB', 'PRI')), None)
+    if first_method is not None:
+        for ln, blk in blocks:
+            if blk == 'OBJ' and ln > first_method:
+                out.append(('S3.1', '3.1', ln, "OBJ block after the first method (OBJ precedes every PUB/PRI)"))
+    if any(blk == 'CON' for _, blk in blocks) and blocks[0][1] != 'CON':
+        out.append(('S3.1', '3.1', blocks[0][0],
+                     "the file's first block is %s -- the layout opens with CON" % blocks[0][1]))
+    return out
+
+
+def check_exits(lines, methods):
+    """S5.2 (guide 5.2) an early return; S5.3 (guide 5.3) a return inside a
+    repeat. A return on the method's last code line, outside any loop, is its
+    single exit and is permitted."""
+    out = []
+    for meth in methods:
+        body = body_lines(lines, meth)
+        if not body:
+            continue
+        last_ln = body[-1][0]
+        repeat_stack = []
+        for ln, code, indent, b_pasm in body:
+            if b_pasm:
+                continue
+            while repeat_stack and repeat_stack[-1] >= indent:
+                repeat_stack.pop()
+            if RETURN_RE.search(code):
+                if repeat_stack:
+                    out.append(('S5.3', '5.3', ln,
+                                 "%s() - return inside a repeat (set the result and quit)" % meth['name']))
+                elif ln != last_ln:
+                    out.append(('S5.2', '5.2', ln,
+                                 "%s() - early return (one exit, at the method's end)" % meth['name']))
+            if REPEAT_RE.match(code.strip()):
+                repeat_stack.append(indent)
+    return out
+
+
+def check_unused(lines, methods):
+    """S5.0 (guide 5.0): a parameter or local the body never names. Return
+    values are 5.1's: a 'return expr' assigns them without naming them.
+    Parameters are consecutive longs on the stack, so a method that takes a
+    parameter's address (a format helper passing @arg1) reads the parameters
+    after it through that address: those count as used."""
+    out = []
+    for meth in methods:
+        text = '\n'.join(code for _, code, _, _ in body_lines(lines, meth))
+        addr_taken = [idx for idx, nm in enumerate(meth['params'])
+                      if re.search(r'@' + re.escape(nm) + r'\b', text, re.IGNORECASE)]
+        reached = set(meth['params'][addr_taken[0]:]) if addr_taken else set()
+        for kind, names in (('parameter', meth['params']), ('local', meth['locals'])):
+            for nm in names:
+                if kind == 'parameter' and nm in reached:
+                    continue
+                if not re.search(r'(?<![\w.])' + re.escape(nm) + r'\b', text, re.IGNORECASE):
+                    out.append(('S5.0', '5.0', meth['decl_line'] + 1,
+                                 "%s %s() - %s '%s' is never used" % (meth['kind'], meth['name'], kind, nm)))
+    return out
+
+
+def is_assigned(name, body):
+    esc = re.escape(name)
+    pat_op = re.compile(r'(?<![\w.@])' + esc + r'\b\s*(?:\[[^\]]*\])?\s*' + ASSIGN_OPS, re.IGNORECASE)
+    pat_pre = re.compile(r'(?:\+\+|--)\s*' + esc + r'\b', re.IGNORECASE)
+    pat_addr = re.compile(r'@' + esc + r'\b', re.IGNORECASE)
+    pat_pasm = re.compile(r'^\s*(?:if_\w+\s+|_ret_\s+)?[A-Za-z]\w*\s+' + esc + r'\b', re.IGNORECASE)
+    for _, code, _, b_pasm in body:
+        if b_pasm:
+            if pat_pasm.search(code):
+                return True
+            continue
+        if pat_op.search(code) or pat_pre.search(code) or pat_addr.search(code):
+            return True
+        if ':=' in code:
+            lhs = code.split(':=')[0]
+            if ',' in lhs:
+                for part in lhs.split(','):
+                    part = re.sub(r'\[[^\]]*\]', '', part).strip()
+                    if part.lower() == name.lower():
+                        return True
+    return False
+
+
+def check_returns_assigned(lines, methods):
+    """S5.1 (guide 5.1): every return value is explicitly assigned. A method
+    that ends in 'return expr' assigns its results there."""
+    out = []
+    for meth in methods:
+        body = body_lines(lines, meth)
+        if any(RETURN_EXPR_RE.search(code) for _, code, _, b_pasm in body if not b_pasm):
+            continue
+        for nm in meth['returns']:
+            if not is_assigned(nm, body):
+                out.append(('S5.1', '5.1', meth['decl_line'] + 1,
+                             "%s() - return value '%s' is never assigned" % (meth['name'], nm)))
+    return out
+
+
+def check_boolean(lines, methods):
+    """S5.4 (guide 5.4 / 5.4.1): a method returning one boolean (b-prefixed)
+    is named is/has/b; S5.41: a boolean is never set to 1 or compared to 0/1."""
+    out = []
+    for meth in methods:
+        rets = meth['returns']
+        if len(rets) == 1 and re.match(r'^b[A-Z]', rets[0]) and not BOOL_METHOD_RE.match(meth['name']):
+            out.append(('S5.4', '5.4', meth['decl_line'] + 1,
+                         "%s %s() - returns boolean '%s' but is not named is/has/b (a query) "
+                         "-- or it is an operation, which returns a status" % (meth['kind'], meth['name'], rets[0])))
+        for ln, code, _, b_pasm in body_lines(lines, meth):
+            if b_pasm:
+                continue
+            if BOOL_CMP_RE.search(code) or BOOL_SET_RE.search(code):
+                out.append(('S5.41', '5.4.1', ln,
+                             "%s() - boolean set to 1 or compared to 0/1 (use TRUE / FALSE)" % meth['name']))
+    return out
+
+
+def check_shadow(methods):
+    """S1.5 (guide 1.5): no parameter, return or local shares a method's name."""
+    out = []
+    method_names = {m['name'].lower() for m in methods}
+    for meth in methods:
+        for nm in meth['params'] + meth['returns'] + meth['locals']:
+            if nm.lower() in method_names:
+                out.append(('S1.5', '1.5', meth['decl_line'] + 1,
+                             "%s() - '%s' shadows the method of that name" % (meth['name'], nm)))
+    return out
+
+
+def con_names(lines):
+    """name_lower -> (lineno, value expression, or None for an enum member)."""
+    names = {}
+    b_enum_cont = False
+    for i, rec in enumerate(lines, 1):
+        if rec['block'] != 'CON' or rec['in_brace']:
+            b_enum_cont = False
+            continue
+        code = rec['code'].strip()
+        if rec['block_starts']:
+            code = re.sub(r'^CON\b', '', code, flags=re.IGNORECASE).strip()
+        if not code:
+            continue
+        cont = code.endswith('...')
+        if cont:
+            code = code[:-3].rstrip()
+        if re.match(r'^#[A-Za-z]', code) or re.match(r'^STRUCT\b', code, re.IGNORECASE):
+            b_enum_cont = False
+            continue
+        if code.startswith('#') or b_enum_cont:
+            parts = code.split(',')
+            if code.startswith('#'):
+                parts = parts[1:]
+            for part in parts:
+                m = re.match(r'^\s*([A-Za-z_]\w*)', part)
+                if m:
+                    names.setdefault(m.group(1).lower(), (i, None))
+            b_enum_cont = cont
+            continue
+        for part in re.split(r',(?![^(]*\))', code):
+            m = re.match(r'^\s*([A-Za-z_]\w*)\s*=\s*(.*)$', part)
+            if m:
+                names.setdefault(m.group(1).lower(), (i, m.group(2).strip()))
+        b_enum_cont = False
+    return names
+
+
+OBJ_LINE_RE = re.compile(r'^([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*:\s*"([^"]*)"\s*(?:\|\s*(.*))?$')
+
+
+def obj_refs(lines, raw_lines):
+    """(lineno, alias, file, override text) for each OBJ declaration. The file
+    name is read from the raw line, because the code view blanks strings."""
+    refs = []
+    for i, rec in enumerate(lines, 1):
+        if rec['block'] != 'OBJ' or rec['in_brace']:
+            continue
+        raw = raw_lines[i - 1]
+        raw_code = raw.split("'")[0].strip()
+        if rec['block_starts']:
+            raw_code = re.sub(r'^OBJ\b', '', raw_code, flags=re.IGNORECASE).strip()
+        m = OBJ_LINE_RE.match(raw_code)
+        if m:
+            refs.append((i, m.group(1), m.group(2), m.group(3) or ''))
+    return refs
+
+
+def check_obj_constants(path, lines, raw_lines):
+    """S1.9 (guide 1.9): an OBJ override of a CON this file also defines;
+    S2.4 (guide 2.4): a child object's constant copied into a local CON
+    instead of referenced through the object (NAME = alias.NAME re-exports
+    are references, and pass)."""
+    out = []
+    parent = con_names(lines)
+    src_dir = os.path.dirname(path)
+    child_names = {}
+    for ln, alias, fname, override in obj_refs(lines, raw_lines):
+        for part in override.split(','):
+            m = re.match(r'^\s*([A-Za-z_]\w*)\s*=', part)
+            if m and m.group(1).lower() in parent:
+                out.append(('S1.9', '1.9', ln,
+                             "OBJ %s overrides %s, which this file's CON also defines (the parent's value wins)"
+                             % (alias, m.group(1))))
+        child_path = os.path.join(src_dir, fname if fname.lower().endswith('.spin2') else fname + '.spin2')
+        if not os.path.isfile(child_path):
+            continue
+        if child_path not in child_names:
+            ctext = open(child_path, 'r', encoding='utf-8', errors='replace').read()
+            clines, cdepth = lex_file(child_path, ctext)
+            child_names[child_path] = (con_names(clines) if cdepth == 0 else {}, [])
+        child_names[child_path][1].append(alias)
+    all_aliases = [a for _, (_, aliases) in child_names.items() for a in aliases]
+    for name_l, (ln, value) in sorted(parent.items(), key=lambda kv: kv[1][0]):
+        # a value read through any object is a reference to that object's constant, not a copy
+        if value is not None and any(re.search(r'(?<![\w.])' + re.escape(a) + r'\s*(\[[^\]]*\])?\s*\.', value, re.IGNORECASE)
+                                     for a in all_aliases):
+            continue
+        for cpath, (cnames, aliases) in child_names.items():
+            if name_l not in cnames:
+                continue
+            out.append(('S2.4', '2.4', ln,
+                         "constant %s duplicates %s's -- reference it as %s.%s"
+                         % (name_l.upper(), os.path.basename(cpath), aliases[0], name_l.upper())))
+            break
+    return out
+
+
+def ternary_branches(rest):
+    """Split the text after a '?' into its two branches: the true branch ends
+    at the ':' at nesting depth 0; the false branch ends at the first ')' or
+    ',' that closes the enclosing expression, or at the end of the line.
+    (None, None) when no ':' follows at depth 0."""
+    depth = 0
+    colon = None
+    for idx, ch in enumerate(rest):
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            depth -= 1
+            if depth < 0:
+                return None, None
+        elif ch == ':' and depth == 0 and not rest.startswith(':=', idx):
+            colon = idx
+            break
+    if colon is None:
+        return None, None
+    depth = 0
+    end = len(rest)
+    for idx in range(colon + 1, len(rest)):
+        ch = rest[idx]
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            if depth == 0:
+                end = idx
+                break
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            end = idx
+            break
+    return rest[:colon], rest[colon + 1:end]
+
+
+def check_ternary_call(lines):
+    """T29 (PUNCH-LIST PL-29, project rule): a ? : whose branch calls a method
+    evaluated both branches' calls, twice measured on this rig. Select values
+    with ? :, and choose between calls with if / else."""
+    out = []
+    for i, rec in enumerate(lines, 1):
+        code = rec['code']
+        for qpos in [m.start() for m in re.finditer(r'(?<!\?)\?(?!\?)', code)]:
+            branch_a, branch_b = ternary_branches(code[qpos + 1:])
+            if branch_a is None:
+                continue
+            if CALL_RE.search(branch_a) or CALL_RE.search(branch_b):
+                out.append(('T29', 'PL-29', i,
+                             "? : with a method call in a branch -- both calls run; use if / else"))
+                break
+    return out
+
+
+def check_doc_completeness(lines, methods):
+    """C3f (guide 4.3 / 4.4, PUNCH-LIST PL-10): every parameter, return value
+    and local has its @param / @returns / @local tag."""
+    out = []
+    for meth in methods:
+        tags = {'param': set(), 'returns': set(), 'local': set()}
+        j = meth['sig_end'] + 1
+        while j < meth['body_end'] and lines[j]['code'].strip() == '':
+            rec = lines[j]
+            if rec['comment_kind'] in ("'", "''"):
+                m = TAG_ANY_RE.search(rec['comment_text'])
+                if m:
+                    tags[m.group(1).lower()].add(m.group(2).lower())
+            j += 1
+        for kind, word, names in (('param', 'parameter', meth['params']),
+                                  ('returns', 'return value', meth['returns']),
+                                  ('local', 'local', meth['locals'])):
+            for nm in names:
+                if nm.lower() not in tags[kind]:
+                    out.append(('C3f', '4.3', meth['decl_line'] + 1,
+                                 "%s() - %s '%s' has no @%s tag" % (meth['name'], word, nm, kind)))
+    return out
+
+
+def check_decl_border(lines):
+    """C6b (guide 4.5): a block declaration's label is text, never a bare
+    decorative border."""
+    out = []
+    for i, rec in enumerate(lines, 1):
+        if rec['block_starts'] and rec['comment_kind'] == "'":
+            text = rec['comment_text'].strip()
+            if text and not re.search(r'[A-Za-z0-9]', text):
+                out.append(('C6b', '4.5', i, "%s declaration label is a bare border, not text" % rec['block']))
+    return out
+
+
+def check_storage_names(lines):
+    """C9 (guide 2.1) for storage: a single-letter VAR name or DAT data label."""
+    out = []
+    for i, rec in enumerate(lines, 1):
+        if rec['in_brace']:
+            continue
+        code = rec['code']
+        if rec['block'] == 'VAR':
+            body = re.sub(r'^VAR\b', '', code.strip(), flags=re.IGNORECASE) if rec['block_starts'] else code
+            m = re.match(r'^\s*(BYTE|WORD|LONG)\s+(.*)$', body, re.IGNORECASE)
+            if m:
+                for nm in split_names(m.group(2)):
+                    if re.match(r'^[A-Za-z]$', nm):
+                        out.append(('C9', '2.1', i, "VAR single-letter name '%s'" % nm))
+        elif rec['block'] == 'DAT' and not rec['block_starts']:
+            m = re.match(r'^([A-Za-z])\s+(BYTE|WORD|LONG)\b', code, re.IGNORECASE)
+            if m:
+                out.append(('C9', '2.1', i, "DAT single-letter label '%s'" % m.group(1)))
+    return out
+
+
 ALL_CHECK_IDS = ["S1.1", "S1.2", "A7", "A8", "C9", "A6", "C3a", "C3b", "C3c",
-                  "C3d", "C3e", "C4", "C6", "C7", "A3", "A4", "A5"]
+                  "C3d", "C3e", "C4", "C6", "C7", "A3", "A4", "A5",
+                  "S1.5", "S1.9", "S2.4", "S3.1", "S3.2", "S5.0", "S5.1", "S5.2",
+                  "S5.3", "S5.4", "S5.41", "C3f", "C6b", "T29"]
+
+# The checks that FAIL the gate. A check joins this set in the same commit that
+# brings the tree clean for it; until then its count prints under PENDING on
+# every run. When every ID above is here, the set is the whole list.
+ENFORCED = {"S1.1", "S1.2", "A7", "A8", "C9", "A6", "C3a", "C3b", "C3c",
+            "C3d", "C3e", "C4", "C6", "C7", "A3", "A4", "A5",
+            "S1.5", "S1.9", "S2.4", "S3.1", "S5.0", "S5.1", "S5.2", "S5.3", "S5.41", "C6b", "T29"}
+
+# What this gate covers, against the guide's own tier assignment (the guide's
+# "Enforcement tiers"): printed on every run, so a rule nobody wrote is never
+# mistaken for a rule that passed.
+COVERAGE_LINES = [
+    "T1 checked here (20 of 26): 1.1 1.3 1.5 1.8 1.9 2.1 2.4 3.1 3.2 4.1 4.2 4.2.1 4.5 4.9 "
+    "5.0 5.1 5.2 5.3 5.4 5.4.1 -- partial: 1.3 (the guide's hazard table), 4.2.1 (footer present, "
+    "license text not compared)",
+    "T1 enforced elsewhere: 1.4 (a duplicate method name does not compile -- tools/build-check.sh)",
+    "T1 not applicable: 3.4 (permits placement, forbids nothing); 6.2 6.4 6.7 (Part 6 is conditional "
+    "and this project has no Spin2 regression harness)",
+    "T1 NOT YET IMPLEMENTED (1): 3.1.1 (needs P2KB's feature-to-version answer at check time; the guide "
+    "forbids a local table)",
+    "T1+T2 detection halves not implemented (5): 2.1.4 2.5 4.6 5.7 6.1 -- judged in the T2 audit",
+    "T2 NOT CHECKED by this gate (20): an agent audit, DOCs/procedures/STYLE-T2-AUDIT.md; T3 (2): 5.8 5.9, "
+    "Stephen's read",
+    "Project checks: C3f (4.3/4.4 element->tag, PL-10), T29 (? : with a call, PL-29)",
+]
 
 
 def run_all_checks(path):
@@ -664,7 +1113,20 @@ def run_all_checks(path):
     if depth != 0:
         return None, depth  # signals instrument failure for this file
     methods = parse_methods(lines)
+    raw_lines = text.split('\n')
     findings = []
+    findings += check_pub_before_pri(methods)
+    findings += check_layout(lines)
+    findings += check_exits(lines, methods)
+    findings += check_unused(lines, methods)
+    findings += check_returns_assigned(lines, methods)
+    findings += check_boolean(lines, methods)
+    findings += check_shadow(methods)
+    findings += check_obj_constants(path, lines, raw_lines)
+    findings += check_ternary_call(lines)
+    findings += check_doc_completeness(lines, methods)
+    findings += check_decl_border(lines)
+    findings += check_storage_names(lines)
     findings += check_ascii(text)
     findings += check_arrow(lines)
     findings += check_emptystr(lines)
@@ -686,7 +1148,7 @@ def fmt(path, cid, section, lineno, msg):
     return "  FAIL  %-6s %-46s %s" % (section, loc, msg)
 
 
-def gate(paths):
+def gate(paths, show_pending):
     all_findings = {}
     by_check = {}
     instrument_fail = False
@@ -706,21 +1168,43 @@ def gate(paths):
     if instrument_fail:
         return 2
 
-    total = sum(len(v) for v in all_findings.values())
+    print("Coverage (the guide's tier assignment):")
+    for line in COVERAGE_LINES:
+        print("  " + line)
+    print()
+
+    # a check being brought in prints its count on every run until the tree is clean for it
+    pending = {cid: hits for cid, hits in by_check.items() if cid not in ENFORCED}
+    if pending:
+        print("PENDING -- checked, not yet enforced (the tree is being brought clean for them; "
+              "--pending lists every site):")
+        for cid in sorted(pending):
+            print("  %-6s %d" % (cid, len(pending[cid])))
+        print()
+        if show_pending:
+            for cid in sorted(pending):
+                for path, f in pending[cid]:
+                    print(fmt(os.path.relpath(path), *f))
+            print()
+
+    enforced = {path: [f for f in fs if f[0] in ENFORCED] for path, fs in all_findings.items()}
+    enforced = {path: fs for path, fs in enforced.items() if fs}
+    total = sum(len(v) for v in enforced.values())
     if total == 0:
-        print("PASS: no style findings across %d file(s)." % len(paths))
+        print("PASS: no enforced style findings across %d file(s)." % len(paths))
         return 0
 
-    for path in sorted(all_findings):
-        for f in all_findings[path]:
+    for path in sorted(enforced):
+        for f in enforced[path]:
             print(fmt(os.path.relpath(path), *f))
 
     print()
     print("Findings by rule:")
     for cid in sorted(by_check):
-        print("  %-6s %d" % (cid, len(by_check[cid])))
+        if cid in ENFORCED:
+            print("  %-6s %d" % (cid, len(by_check[cid])))
     print()
-    print("FAIL: %d finding(s) across %d file(s)." % (total, len(all_findings)))
+    print("FAIL: %d finding(s) across %d file(s)." % (total, len(enforced)))
     return 1
 
 
@@ -770,7 +1254,9 @@ def main():
     mode = sys.argv[1]
     paths = sys.argv[2:]
     if mode == 'gate':
-        return gate(paths)
+        return gate(paths, False)
+    elif mode == 'gate-pending':
+        return gate(paths, True)
     elif mode == 'self-test':
         return self_test(paths)
     else:
@@ -794,7 +1280,7 @@ if [ "$MODE" = "gate" ]; then
     for x in $EXCLUDED; do echo "    $x.spin2"; done
     echo
 
-    python3 "$PYFILE" gate $FILES
+    python3 "$PYFILE" $GATE_MODE $FILES
     exit $?
 fi
 

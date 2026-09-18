@@ -115,7 +115,10 @@ CON { build identity }
 '   and reps; the overlap tokens name LEFT/RIGHT rather than P0_P15/P16_P31; phase 2
 '   refuses a driver cog that overlaps another board (BD-PH2 step refused). BD-CELL,
 '   BD-ENUM and BD-PLAN are unchanged, so the 2026-09-11 baseline diff still applies.
-    SRC_REV     = 4
+' 18 Sep 2026, task 3517 -- SRC_REV 5: style-guide conformance, no record changes. cogGroupToken() uses
+'   if/else, so groupName() no longer runs when the guard chose NONE (PL-29); emitCalibration() has one
+'   exit; the pin-group spans are the library's own where the library is linked (DETECT_LIB).
+    SRC_REV     = 5
     FMT_VERSION = 2                                         ' BD-BANNER record-format version
 
 ' DETECT_PHASE2 implies DETECT_LIB: if phase 2 is compiled, the library must be linked
@@ -159,8 +162,14 @@ CON { pin-field geometry }
 ' LEFT board's P0-P7, its ADC and hall pins. Every 16-pin operation in this file is
 ' therefore split into two 8-pin operations, uniformly, for all six groups, with no
 ' special-casing. 24..31 and 32..39 each sit within their own group of 32.
+' the library's own values where the library is linked (DETECT_LIB); the phase-1 build links no library
+#ifdef DETECT_LIB
+    HALF_GROUP_SPAN  = motor.HALF_GROUP_SPAN                ' addpins operand: 8 pins
+    GROUP_HI_OFFSET  = motor.GROUP_HI_OFFSET                ' second half of a 16-pin group
+#else
     HALF_GROUP_SPAN  = 7                                    ' addpins operand: 8 pins
     GROUP_HI_OFFSET  = 8                                    ' second half of a 16-pin group
+#endif
     HIGH_HALF_SHIFT  = 8                                    ' pre/post: high half into bits 8-15
     SENSE_PIN_OFFSET = 4                                    ' pinbase + 4, exactly as getBoardType()
     PWM_W_L_OFFSET   = 12                                   ' pin_pwm_w_l is pinbase + 12
@@ -1020,26 +1029,25 @@ PRI emitCalibration(calIdx) | ctBefore, ctAfter, iterCount, lastLevel, elapsedTi
         lineTextField(@"tix_per_iter", @sTokNoMeas)
         lineEmit()
         emitNote(@"CAL SKIPPED -- CAL_PIN falls inside a declared board's pin range and would drive a gate input")
-        return
+    else
+        pinhigh(CAL_PIN)
+        ctBefore := getct()
+        iterCount := 0
+        repeat
+            lastLevel := pinread(CAL_PIN)
+            iterCount += 1
+        until (lastLevel == 0) or (iterCount == CAL_ITER)
+        ctAfter := getct()
+        pinfloat(CAL_PIN)
 
-    pinhigh(CAL_PIN)
-    ctBefore := getct()
-    iterCount := 0
-    repeat
-        lastLevel := pinread(CAL_PIN)
-        iterCount += 1
-    until (lastLevel == 0) or (iterCount == CAL_ITER)
-    ctAfter := getct()
-    pinfloat(CAL_PIN)
-
-    elapsedTix := ctAfter - ctBefore
-    lineReset()
-    lineAddText(@"BD-CAL")
-    lineField(@"idx", calIdx)
-    lineField(@"iter", iterCount)
-    lineField(@"tix", elapsedTix)
-    lineField(@"tix_per_iter", elapsedTix / iterCount)
-    lineEmit()
+        elapsedTix := ctAfter - ctBefore
+        lineReset()
+        lineAddText(@"BD-CAL")
+        lineField(@"idx", calIdx)
+        lineField(@"iter", iterCount)
+        lineField(@"tix", elapsedTix)
+        lineField(@"tix_per_iter", elapsedTix / iterCount)
+        lineEmit()
 
 PRI emitPhaseMark(phaseNum, pMarkName, bHasRecs, recCount, pReason)
 ' Emit one BD-PHASE line. recs is a number only on a mark that has actually counted
@@ -1510,7 +1518,11 @@ PRI cogGroupToken(cogGrp) : pCogTok
 ' @param cogGrp - base pin of that group or NO_GROUP
 ' @returns pCogTok - pointer to the token string
 
-    pCogTok := (cogGrp == NO_GROUP) ? @sCstNone : groupName(cogGrp)
+    ' if/else, never `? :`: a ternary ran groupName(NO_GROUP) even when the guard chose @sCstNone (PL-29)
+    if cogGrp == NO_GROUP
+        pCogTok := @sCstNone
+    else
+        pCogTok := groupName(cogGrp)
 
 PRI cogStateToken(cogState) : pStateTok
 ' Return the printable form of a CST_* cog-state code.

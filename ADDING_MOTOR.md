@@ -82,35 +82,34 @@ Let's explore each of these further. But wait, if your are really adding a new m
 
 ### Step 0 - Name your Motor
 
-We have two identical enum's which contain our motor identifiers.
-This should be thought of as the single source for motor identifiers used in this driver code. When you add a new motor you will come up with a name that is not generic that will describe your motor and that others will recognize as the type of motor you are adding. You will then make the identical changes to both of these lists.
-
-Here's what the lists look like as of V3.0.0:
+The motor identifiers are defined in one place: the list of supported motors in `isp_bldc_motor_userconfig.spin2`. When you add a new motor you will come up with a name that is not generic that will describe your motor and that others will recognize as the type of motor you are adding.
 
 At the top of file: `isp_bldc_motor_userconfig.spin2`:
 
 ```spin2
-    ' Names of supported Motors
-    #0, MOTR_6_5_INCH, MOTR_DOCO_4KRPM
+' Names of supported Motors
+#0, MOTR_6_5_INCH, MOTR_DOCO_4KRPM
 ```
 
-And at the top of file: `isp_bldc_motor.spin2`:
+You will change this to look like:
+
+```spin2
+' Names of supported Motors
+#0, MOTR_6_5_INCH, MOTR_DOCO_4KRPM, {YOUR_NEW_MOTOR_IDENTIFER}
+```
+
+(replacing `{YOUR_NEW_MOTOR_IDENTIFER}` with your name).
+
+The motor object, `isp_bldc_motor.spin2`, does not keep its own copy of this list. It re-exports each name from the configuration file, so a program that uses only the motor object can still name the motors. Add one line for your motor beside the existing ones at the top of `isp_bldc_motor.spin2`:
 
 ```spin2
     ' Names of supported Motors
-    #0, MOTR_6_5_INCH, MOTR_DOCO_4KRPM
+    MOTR_6_5_INCH       = user.MOTR_6_5_INCH
+    MOTR_DOCO_4KRPM     = user.MOTR_DOCO_4KRPM
+    {YOUR_NEW_MOTOR_IDENTIFER} = user.{YOUR_NEW_MOTOR_IDENTIFER}
 ```
 
-You will change these to look like:
-
-```spin2
-    ' Names of supported Motors
-    #0, MOTR_6_5_INCH, MOTR_DOCO_4KRPM, {YOUR_NEW_MOTOR_IDENTIFER}
-```
-
-(replacing `YOUR_NEW_MOTOR_IDENTIFER}` with your name and remembering to do this in both places.
-
-**NOTE:** _I'll be adding runtime checks to validate that these two lists are in the same order and contain the same set of values in an upcoming release. For now, please be careful to make sure both lists are identical._
+Because the value comes from the configuration file, the two can never disagree.
 
 ### Low-Level: Hall Order
 

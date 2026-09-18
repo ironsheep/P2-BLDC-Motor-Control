@@ -815,6 +815,14 @@ TEST-USE paths; whether they earn a cell goes with the bench-emission cleanup, n
 
 ### PL-29 -- a `? :` whose branches call methods ran both calls
 
+> **CLOSED BY CONSTRUCTION 2026-09-18 («#3517»).** `tools/check_style.sh` check **T29** now fails any `? :` with a
+> call in either branch, enforced on every authored file. It was validated against the known positives before it
+> was believed: it found exactly the six `test_bench_scan.spin2` sites and the `test_bench_detect.spin2`
+> `groupName(NO_GROUP)` site below, and none of `test_bench_t0.spin2`'s value-only `bPass ? @"TRUE" : @"FALSE"`
+> ternaries (its first draft did flag those, by reading the false branch to the end of the line -- fixed to end
+> the branch at its enclosing `)` or `,`). All seven sites are rewritten as `if`/`else`; the scan's "deliberately
+> left" disposition below is superseded by Stephen's ruling that every authored file meets the guide.
+
 **Found 2026-09-12 in the first Bench Pass 2a scan runs.** MEASURED:
 `analyses/bench/2026-09-12/debug_260912-205538.log:39-40` and `-205612.log:39-40` each print
 `getBoardType() pinbase: ** NOT SET **` then `getBoardType() driver running ... 22`. The scan has

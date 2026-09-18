@@ -78,6 +78,11 @@
 ''               emergencyCutoff() self-cancels (task 3556 latches it), and the watchdog's gap table
 ''               names start()'s front-cog handshake and rest-zero capture (tasks 3513, 3556). No record
 ''               changes shape; the fmt is unchanged
+''   Updated.... 18 Sep 2026 -- task 3517 (SRC_REV 13): style-guide conformance, no behaviour change.
+''               The six side helpers that chose between wheelR/wheelL calls with ? : now use if/else
+''               (PL-29: a ternary ran both calls); runScan() and runWatchdogSelfTest() have one exit
+''               each; evaluateHalfBracket() drops its two unused parameters; DEGREES_PER_TURN is the
+''               library's. No record changes shape; the fmt is unchanged
 ''
 '' =================================================================================================
 
@@ -171,7 +176,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 12                                        ' hand-bumped whenever this file changes
+    SRC_REV     = 13                                        ' hand-bumped whenever this file changes
     FMT_VERSION = 10                                        ' BS- record-format version
 
 ' fmt 10 changes (task 3540, scan v5, PL-46; no existing record's field names, order or content change):
@@ -440,7 +445,7 @@ CON { sweep geometry -- offsets in electrical degrees }
 
     DEF_NEG_DEG        = 43                                 ' offset_fwd default, negative increments
     DEF_POS_DEG        = 317                                ' offset_rev default, positive increments
-    DEGREES_PER_TURN   = 360
+    DEGREES_PER_TURN   = wheelL.DEGREES_PER_TURN
     NORM_MAX_STEPS     = 4                                  ' scan offsets stay within +/-360 of range
     COARSE_STEP_DEG    = 10
     HARD_LIMIT_DEG     = 90                                 ' never beyond default +/- this
@@ -1348,7 +1353,7 @@ PRI initRunState() | slotIdx
 PRI runScan() : bCompleted
 ' Preflight, then the LEFT and RIGHT motor blocks. Every stage is skipped once the run aborts.
 ' Under -D WD_SELFTEST (task 3537 phase 2c, design sec G.3) preflight is followed by the watchdog
-' self-test and the method returns: no motor block is ever on that path.
+' self-test instead: no motor block is ever on that path.
 '
 ' @returns bCompleted - TRUE when no run abort occurred
 
@@ -1357,10 +1362,7 @@ PRI runScan() : bCompleted
         setRunAbort(AR_PREFLIGHT, 0)                        ' kept only if no earlier cause was recorded
 #ifdef WD_SELFTEST
     runWatchdogSelfTest()                                   ' parks forever once the watchdog declares
-    bCompleted := (abortReason == AR_NONE)
-    bRunReturned := TRUE                                    ' before the return, or main() reads it as a library abort
-    return
-#endif
+#else
     if abortReason == AR_NONE
         runMotorBlock(SIDE_LEFT, SIGN_NEG)
     if abortReason == AR_NONE
@@ -1368,8 +1370,9 @@ PRI runScan() : bCompleted
         runMotorBlock(SIDE_RIGHT, SIGN_POS)
     if abortReason == AR_NONE
         bRightDone := TRUE
+#endif
     bCompleted := (abortReason == AR_NONE)
-    bRunReturned := TRUE
+    bRunReturned := TRUE                                    ' set on the way out, or main() reads it as a library abort
 
 PRI runWatchdogSelfTest() | stallStartMs
 ' The watchdog self-test (task 3537 phase 2c, design sec G.3; called only by the WD_SELFTEST build). With
@@ -1385,20 +1388,19 @@ PRI runWatchdogSelfTest() | stallStartMs
 '
 ' @local stallStartMs - getms() when the deliberate stall began
 
-    if (abortReason <> AR_NONE) or (wdCogId < 0)
-        return
-    emitWdTestArm()
-    beat(CP_SELFTEST)                                       ' the LAST beat: the watchdog must declare at this checkpoint
-    stallStartMs := getms()
-    repeat                                                  ' deliberate stall: NO beat() from here
-        waitms(WD_POLL_MS)
-        if wdDeclaring
-            repeat                                          ' park, never emit, never beat (see beat()'s PARK)
-                waitms(WD_IDLE_MS)
-        if (getms() - stallStartMs) >= WD_SELFTEST_BACKSTOP_MS
-            quit
-    wdtBackstopMs := getms() - stallStartMs
-    bWdtBackstopHit := TRUE
+    if (abortReason == AR_NONE) and (wdCogId >= 0)
+        emitWdTestArm()
+        beat(CP_SELFTEST)                                   ' the LAST beat: the watchdog must declare at this checkpoint
+        stallStartMs := getms()
+        repeat                                              ' deliberate stall: NO beat() from here
+            waitms(WD_POLL_MS)
+            if wdDeclaring
+                repeat                                      ' park, never emit, never beat (see beat()'s PARK)
+                    waitms(WD_IDLE_MS)
+            if (getms() - stallStartMs) >= WD_SELFTEST_BACKSTOP_MS
+                quit
+        wdtBackstopMs := getms() - stallStartMs
+        bWdtBackstopHit := TRUE
 
 PRI emitWdTestArm()
 ' Emit BS-WDTEST-ARM (task 3537 phase 2c, fmt 9, WD_SELFTEST build): the state the deliberate stall starts
@@ -2547,7 +2549,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
                 if speedIdx == SPEED_HALF
                     ' task 3540 D2: the real rise-on-both-sides test, now that the confirm/cliff
                     ' points exist to judge it against -- overwrites the provisional TRUE above.
-                    bBracketed := evaluateHalfBracket(side, signIdx)
+                    bBracketed := evaluateHalfBracket()
             if abortReason == AR_NONE
                 refEndIdx := legMeasure(side, speedIdx, signIdx, PH_REF_END, defSwept, refWinTicks, pointLimitMv)
     if (abortReason <> AR_NONE) and (legExit == LX_DONE)
@@ -2764,7 +2766,7 @@ PRI updateLegLowHalf() | ptIdx
                 elseif legNetX10[ptIdx] < legNetX10[legLowIdx]
                     legLowIdx := ptIdx
 
-PRI evaluateHalfBracket(side, signIdx) : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctUp, risePctDown
+PRI evaluateHalfBracket() : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctUp, risePctDown
 ' Task 3540 D2: half-speed counterpart to evaluateBracket() -- the rise-on-both-sides negative
 ' case, applied for real to the confirm/cliff-probe points fitLeg() itself fits, instead of the
 ' half-speed leg being marked bracketed by assignment. A side whose window is fault-bounded
@@ -2774,8 +2776,9 @@ PRI evaluateHalfBracket(side, signIdx) : bBracketed | ptIdx, bBelowOk, bAboveOk,
 ' edge with nothing measured beyond it -- the failure mode scan run 7 could not get past
 ' (SCAN-RUN-7-EVALUATION.md sec 2 table, sec 5 item 1).
 '
-' @param side - SIDE_LEFT or SIDE_RIGHT (unused directly; kept for symmetry with evaluateBracket())
-' @param signIdx - SIGN_NEG or SIGN_POS (unused directly; kept for symmetry with evaluateBracket())
+' It reads the current leg's staging (legNetX10, legLowIdx, bLegLimit*Fault), which names its motor and
+' sign, so it takes no parameters (style guide 5.0).
+'
 ' @returns bBracketed - TRUE when a high point exists on both sides of the low
 '
 ' @local ptIdx - leg index
@@ -3648,7 +3651,10 @@ PRI sideIsReady(side) : bReady
     bReady := FALSE
     beat(CP_LIB_ISREADY)
     if sideCogRunning(side)
-        bReady := (side == SIDE_RIGHT) ? wheelR.isReady() : wheelL.isReady()
+        if side == SIDE_RIGHT                               ' if/else, never `? :` -- PL-29
+            bReady := wheelR.isReady()
+        else
+            bReady := wheelL.isReady()
     beat(CP_LIB_ISREADY)
 
 PRI sideIsStopped(side) : bStopped
@@ -3663,7 +3669,10 @@ PRI sideIsStopped(side) : bStopped
     bStopped := FALSE
     beat(CP_LIB_ISSTOPPED)
     if sideCogRunning(side)
-        bStopped := (side == SIDE_RIGHT) ? wheelR.isStopped() : wheelL.isStopped()
+        if side == SIDE_RIGHT                               ' if/else, never `? :` -- PL-29
+            bStopped := wheelR.isStopped()
+        else
+            bStopped := wheelL.isStopped()
     beat(CP_LIB_ISSTOPPED)
 
 PRI sideIsFault(side) : bFaulted
@@ -3673,7 +3682,10 @@ PRI sideIsFault(side) : bFaulted
 ' @returns bFaulted - TRUE when the fault flag is set
 
     beat(CP_LIB_ISFAULT)
-    bFaulted := (side == SIDE_RIGHT) ? wheelR.isFaultSignal() : wheelL.isFaultSignal()
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29
+        bFaulted := wheelR.isFaultSignal()
+    else
+        bFaulted := wheelL.isFaultSignal()
     beat(CP_LIB_ISFAULT)
 
 PRI sideResetFault(side)
@@ -3698,7 +3710,10 @@ PRI sideDriverState(side) : eDrvrState
     eDrvrState := wheelL.DCS_Unknown
     beat(CP_LIB_DRVSTATE)
     if sideCogRunning(side)
-        eDrvrState := (side == SIDE_RIGHT) ? wheelR.getDriverState() : wheelL.getDriverState()
+        if side == SIDE_RIGHT                               ' if/else, never `? :` -- PL-29
+            eDrvrState := wheelR.getDriverState()
+        else
+            eDrvrState := wheelL.getDriverState()
     beat(CP_LIB_DRVSTATE)
 
 PRI sideTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault, bCogUp
@@ -3752,7 +3767,10 @@ PRI sideTicks(side) : nTicks
 ' @returns nTicks - hall-tick position
 
     beat(CP_LIB_TICKS)
-    nTicks := (side == SIDE_RIGHT) ? wheelR.getRawHallTicks() : wheelL.getRawHallTicks()
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29
+        nTicks := wheelR.getRawHallTicks()
+    else
+        nTicks := wheelL.getRawHallTicks()
     beat(CP_LIB_TICKS)
 
 PRI sideIntegrity(side) : nMissed, nIllegal
@@ -3804,7 +3822,10 @@ PRI sideBoardType(side) : eBoardRev
 ' @returns eBoardRev - REV_* value
 
     beat(CP_LIB_BOARDTYPE)
-    eBoardRev := (side == SIDE_RIGHT) ? wheelR.getBoardType() : wheelL.getBoardType()
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29
+        eBoardRev := wheelR.getBoardType()
+    else
+        eBoardRev := wheelL.getBoardType()
     beat(CP_LIB_BOARDTYPE)
 
 PRI emitWatchdogStart(bStarted, cogIdRead)
