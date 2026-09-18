@@ -126,6 +126,14 @@ board's added logic buffer; or whether the state he tested differs from the at-r
 fault and e-stop brakes (Visit 2 measured `emergencyCutoff()` stopping a half-speed wheel within one
 tick), which is exactly what a user's platform does on a fault.
 
+> **Disposition, STEPHEN 2026-09-17 (later the same night):** *"isn't there a set*() which specifies motor stop
+> condition? so user would select it for their application"*. `holdAtStop()` is the user's selection, so this is
+> not a behaviour question: **every stop path must deliver the selection** — at rest, on a fault, and on an
+> e-stop as its documentation promises. An API-contract fix, in this release; the hand test certifies it.
+> A supporting reading surfaced by §6: the char tier's quiescent hold under `SM_FLOAT` shows `duty_` wound to
+> `duty_max` with near-zero current, so FLOAT at rest **is** the `driveoff` path (whether that path shorts the
+> windings, a still wheel cannot show).
+
 **Correction owed:** PL-89's table, its headline, and its predictions. The subject line of commit
 `578f3ef` ("Float is a powered hold") is wrong and stays wrong in history; the entry carries the
 correction.
@@ -179,7 +187,16 @@ agree.
 
 ### 2.3 The fault limb: one stimulus unblocks six findings
 
-Nothing has ever made the driver fault on purpose and survived to read the result. **Six findings wait on
+> ⛔ **CORRECTED the same night: the next sentence was wrong.** Visit 3 DID fault the driver on purpose and read
+> the result: `R14-DUAL-FLTAPI-B` PASS, both wheels FAULTED at 101 ms, `getStatus()` FAULTED, steering
+> `isFaulted()` TRUE, the latch held 5.8 s — certifying **M**, **AF** and **S-5**, and `RSTPROV-B` passed
+> (`bench/2026-09-16/VISIT-3-RESULTS.md` §2.3). That stimulus (a `ramp_inc` of 10 000 from standstill) predates
+> the lag limiter, which now makes such a ramp droop instead of fault. **What is genuinely missing is a fault
+> provocation on today's lag-limited driver**, and the six findings below are the ones it gates. The audit
+> read the Visit 4/5 NOMEAS rows and did not reach back to Visit 3 — the asserted-absence failure (overlay P8)
+> inside the audit that exists to catch it.
+
+~~Nothing has ever made the driver fault on purpose and survived to read the result.~~ **Six findings wait on
 that one stimulus:**
 
 | Finding | What it needs |
@@ -196,8 +213,9 @@ the running pair. Current reaches 2 445 mV (≈ 16 A) within about 100 ms and tr
 abort before the driver's fault test is reached. **The fix is arithmetic, not a run:** the fault test
 fires at |err| ≥ 125 (≈ 176°), so the provocation only has to exceed that, not jump to 180° at speed.
 
-**What it buys:** certification of the whole fault path. M and AF (fault status) are **fixed in source**
-(§4), so this is the last missing piece of it.
+**What it buys:** certification of the fault path on today's driver. M, AF and S-5 are fixed in source
+(§4) and were certified at Visit 3, so what remains is the retry, the fault's bridge state, the hall-fault
+reason and the recovery on the current driver.
 
 ### 2.4 The slam has no instrument (PL-87), and the fix costs no bench time
 
@@ -300,8 +318,13 @@ and Visit 1 showed the two motors equivalent hold for hold.
 ## 3 · Records that are now wrong — the correction batch
 
 **Shape B, 16 entries.** Each still says a proof is owed, or that something is open, when a later visit
-settled it. **Correcting a status line is filing, and filing is mine (P5).** These are applied as one batch
-after this audit is committed, each citing its settling measurement:
+settled it. **Correcting a status line is filing, and filing is mine (P5).**
+
+> ✅ **APPLIED 2026-09-17 night («#3567», the aged-state sweep)** — and widened: every PL entry was re-read, not
+> only these, and roughly 40 status lines were corrected, including PL-8, PL-10, PL-11, PL-33, PL-35, PL-41,
+> PL-48, PL-49, PL-57, PL-59, PL-62, PL-73, PL-75, PL-78, PL-85, PL-86, PL-87, PL-88, PL-90. The two 2026-09-09
+> studies, the user-report analysis and Visit 3's §6 gained dated status blocks. The table below is kept as
+> the record of what was found:
 
 | Record | Says | Settled by |
 |---|---|---|
@@ -367,6 +390,82 @@ hall `illegal 1` at start («#3524»). The attended UI rebuild (B-1 … U-4).
 
 ---
 
+## 6 · What the tests measure that nothing needs, and what they taught beyond the question
+
+Asked by STEPHEN, 2026-09-17: *"are there any tests that provide values which are not attributable to findings
+we need? have we learned more than we asked and is any of it useful?"*
+
+**Method.** Five read-only agents inventoried every record each bench binary emits (`test_bench_t0`, `_spin`,
+`_detect`, `_char`, `_scan`, `_dual`) and mapped each field to the sign-off cell or finding that consumes it,
+then read the newest real log for its tier. Logs read: t0 (Visit 5) in full; char (Visit 4), dual-a and dual-b
+(Visit 5), detect-phase2 (Visit 2) in part. **Not read:** spin, dual-c, dual-clock, dual-d, and the scan's run-8
+log (its numbers come from the Visit 2 report). The scan's own emission table was not completed; its
+self-checks were read against the current driver instead (§6.3).
+
+### 6.1 Values that feed nothing
+
+| Where | What | Disposition |
+|---|---|---|
+| t0 T0-1, T0-2, T0-4, T0-10 (`start_return`) | print values for findings now fixed in source (A1, A2/A3, O, AD+); **no sign-off cell** | retire, or convert to regression cells |
+| t0 T0-8 | cog count under exhaustion, printed, never judged | setup for `R1-T0-EXHAUST`; its cog churn is what «#3543» removes |
+| detect `BD-RUN.run_ts` | always the literal token `HOSTLOG` | drop -- it measures nothing |
+| detect `bnc` / `bnc_max` | bounce counts, never compared to anything | attribute or drop |
+| char `BC-SENSE` min/max/watts | ripple bounds and derived power | cheap; drop or attribute |
+| dual `BM-RUNG2` `err` / `err_pk` | **unjudged, and misread as the slam** | replace with the transition statistic (PL-87) |
+| dual `BM-CLOCK` `dead_gap` | A1 is closed | keep as a free regression print |
+
+Most other unattributed fields are cheap context on lines that must print anyway.
+
+### 6.2 The opposite gap — recorded but never judged
+
+- **The idle wheel during another wheel's fault or overshoot trial** (`BM-TS o_pos/o_hw/o_i/o_up`): nothing fails
+  if it moves or faults.
+- **Part B's offset restore after the 180° fault-API trial** (`BM-OFFREST`): its cell is part C's, so a failed
+  restore in part B lets the run continue on a wrong offset.
+- **char `BC-HOLD steady_src`**: a hold that reached "steady" by TIMEOUT silently weakens that hold's window.
+
+### 6.3 Learned beyond the question — and useful
+
+1. **FLOAT at rest takes the `driveoff` path** (char quiescent hold: `duty_` wound to `duty_max` 24_264, current
+   near zero, `debug_260917-125254.log:91-93`). Bears on PL-89; the duty telemetry at rest reports a duty that
+   is not applied.
+2. **The scan's geometry is invalid on today's driver.** It finds each window edge by walking until the motor
+   FAULTS; the lag limiter makes it droop instead. The stop condition must become a droop detector — its own
+   `R12-SCAN-RATE` tick-rate check is ready — and the fold-back limit must be checked against the worst swept
+   current. Scan defects D1-D5 and D7 are fixed; D6 and D8 are unconfirmed.
+3. **PL-61 is explained, and unloaded top speed is set by bus voltage:** current peaks ~6.7 A at rung 6 and
+   collapses once duty saturates while back-EMF keeps rising.
+4. **detect's raw `IN` snapshots carry the hall bits** — a free instrument for the hall lines at rest, and they
+   caught motors plugged in when the run sheet said unplugged.
+5. **Smaller:**
+   - lag rises monotonically with commanded speed (`err_pk` 107 at rung 11);
+   - the implied sense scale holds at 148-152 across the whole ladder, both motors;
+   - rest current is 3.5 mA and 6.5 mA on the two boards (PL-45's closure, quantified);
+   - `BM-FBTRIAL` already records peak current and duty at a fault — data for the fault-handling design;
+   - the fourth ADC channel reads live (1_134 counts) — the route to battery voltage.
+
+---
+
+## 7 · Rulings taken the same night (STEPHEN, 2026-09-17)
+
+- *"clean up all state that is aged. it always misguides to keep it clean is priority!"* — done first («#3567»);
+  doctrine overlay P11 now says aged state is priority work.
+- **Order of work:** API promises → hall fix and characterisation → fault handling → code/comment sync always →
+  the style gate → every outstanding task → the commutation scan and offset confirmation.
+- *"yes the spin2 style guide is a gate for this project - we deliver code, it MUST match our style guide (all
+  .spin2 files in repo that we produced in project - not those copied from other developers)"* — PL-2, PL-10,
+  PL-11 in this release.
+- *"your outstanding tasks must be completed before this release"*, and *"no those three are not in"* — the
+  measurement front end, the vibration study and the N-motor roster stay out.
+- *"we need confirmation of motor phase offsets before release - finish the commutation scan"*; then *"yes spin in
+  place but max revolutions limit so we don't stress cable"* — lifted scan, then an attended spin-in-place floor run.
+- Stop behaviour is the user's `holdAtStop()` selection; every path honours it (§2.1).
+- *"yes to all"*: PL-73 in (refuse an undetected board unless a revision is forced); S-8 in (opt-in link-loss
+  timeout); S-6 out (document the status values); AK measured feedback out (Known Issue) — and *"we should be able
+  to report battery size/voltage compiled in"*: a getter for the compiled-in voltage is in.
+
+---
+
 ## Revision history
 
 - **2026-09-17, afternoon** — opened. Partial: 8 of 22 documents read. It surfaced the scan stall, PL-69,
@@ -383,3 +482,6 @@ hall `illegal 1` at start («#3524»). The attended UI rebuild (B-1 … U-4).
   - 16 stale records (§3);
   - 11 study findings fixed in source, and 7 still present (§4).
   - Shape D is added to §1.
+- **2026-09-17, night** — §2.1 gains Stephen's disposition (honour `holdAtStop()`); §2.3 corrected: Visit 3
+  had certified M, AF and S-5 with a fault provoked on purpose, which this audit missed; §3 marked applied;
+  §6 (the emission inventory) and §7 (the night's rulings) added.

@@ -12,6 +12,20 @@ highest-value finding.
 Their hardware is almost certainly fine. Their diagnosis that "the boards are operating
 properly" is supported by the code.
 
+> **Where each observation stands, 2026-09-17 (aged-state sweep).** This analysis is as written on
+> 2026-09-09; its "would fixing the audited findings resolve it" verdicts are overtaken:
+> - **Obs 4 (demo drives on with a dead wheel): FIXED.** `getStatus()` reports `DS_FAULTED`, and the steering
+>   object has `isFaulted()`; certified at Visit 3 (`R14-DUAL-FLTAPI-B`).
+> - **Obs 1 (dual faults, single does not): ADDRESSED.** The lag-limited ramp makes the driver droop instead of
+>   faulting, and the current limit and bounded stop are certified (Visits 4-5). This analysis's "NO" for it is
+>   out of date.
+> - **Obs 2 (right motor faults more): IN THIS RELEASE.** The per-direction offsets are to be confirmed before
+>   release (STEPHEN 2026-09-17).
+> - **Obs 3 (later runs fault): measured battery feedback OUT of this release (Known Issue); a getter for the
+>   compiled-in voltage IN.** The lag limiter already turns the old failure into a slowdown.
+> - The cable-swap discriminator proposed at the end cannot run on this rig (`BENCH-TEST-PLAN-2026-09-10.md` T1-12,
+>   withdrawn 2026-09-14); Visit 1 showed the two motors equivalent hold for hold.
+
 ---
 
 ## Observation → finding map

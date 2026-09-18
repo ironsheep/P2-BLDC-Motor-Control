@@ -1424,6 +1424,25 @@ Three items account for most of the missing coverage, and two of them share one 
 its replies are to be certified, that needs a load that does not exist, and building one is a scope
 decision — Stephen's, not this document's.
 
+## Status after Visit 5, and corrections to the table above — 2026-09-17 (aged-state sweep)
+
+**The Visit 4 table is overtaken in five rows, and one of them was already wrong when written:**
+
+| # | Now | Evidence |
+|---|---|---|
+| **S-5** | ⭐ **CERTIFIED at Visit 3** — the table's "UNTESTED" was wrong | `R14-DUAL-FLTAPI-B` PASS: both wheels faulted at 101 ms and the latch still held 5.8 s later (`bench/2026-09-16/VISIT-3-RESULTS.md` §2.3). The same trial certified audit **M** and **AF**. Source confirms no timed auto-clear remains (`clearFaultSignal()` is the only writer). |
+| **S-6** | **CHANGED; the rest is OUT of this release** | `getstatus` now carries `DS_FAULTED`/`DS_ESTOP` through M and AF. STEPHEN 2026-09-17: no separate health command; the serial doc documents the two status values. |
+| **S-7** | **STILL PRESENT in source; IN THIS RELEASE** | An illegal hall code is counted (`hall_illegal_`) but never reported as a distinct fault reason; the fault test is the angle error alone. Fault handling (STEPHEN 2026-09-17). |
+| **S-8** | **NOT BUILT; IN THIS RELEASE** | STEPHEN 2026-09-17: an opt-in command / link-loss timeout, off by default. |
+| **S-9a** | **SUPERSEDED by PL-89; IN THIS RELEASE** | The disposition is now that every stop path — at rest, on a fault and on an e-stop per its doc — delivers the user's `holdAtStop()` selection (STEPHEN 2026-09-17). |
+| **C-2c** | **IN THIS RELEASE** (audit **G**) | C-1's law is certified to <0.5 %, so real acceleration units are now derivable; `setAcceleration()`'s doc still reads `[??? - ???]`. |
+| **C-3** | ⭐ **CERTIFIED at Visit 5** | `R16-DUAL-STOPLIM-B` PASS: a 10 ft stop rests 1 tick past a 529-tick target, worst of 4 (`bench/2026-09-17/VISIT-5-RESULTS.md` §4b). «#3559» is certified. |
+| **C-5** | **Consequence 4: fix in the binary, effect unmeasured** | The table's PL-78 one-liner was applied before Visit 5 (`src/isp_bldc_motor.spin2:3668`). Visit 5's statistic cannot see a transition (PL-87); Stephen felt a partial improvement. |
+| **C-6 / C-6b / C-6c / AK** | **Measured feedback OUT of this release (Known Issue); a getter IN** | STEPHEN 2026-09-17: report the compiled-in battery size / drive voltage through a public getter. |
+
+**Of "what the next run sheet owes":** item 2 (C-3) and item 3 (the `t0` tier) are done at Visit 5. Item 1 — a
+fault stimulus under the 10 A abort on today's lag-limited driver — is PL-86, and is part of fault handling.
+
 ## Relationship to the first study
 
 The audit found 24 things wrong. This study asks *why* the same class of thing

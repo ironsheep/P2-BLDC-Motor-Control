@@ -32,6 +32,35 @@ both release demos certified. No code was modified by this audit.
 
 ---
 
+## Status of every finding, 2026-09-17 (aged-state sweep) — read this before the summary
+
+The summary below is the audit as written on 2026-09-09. **This table is where each finding stands now**,
+verified against current source (`src/isp_bldc_motor.spin2`, `src/isp_steering_2wheel.spin2`) and the bench
+reports. "IN THIS RELEASE" follows STEPHEN's 2026-09-17 rulings (*"fix api promises ... fix fault handling"*).
+
+| Finding | Now | Evidence |
+|---|---|---|
+| **M, AF** | ⭐ **FIXED, certified** | `getStatus()` returns `DS_FAULTED`/`DS_ESTOP` (`isp_bldc_motor.spin2:1200-1216`); steering forwards both wheels (`isp_steering_2wheel.spin2:821-826`); `R14-DUAL-FLTAPI-B` PASS at Visit 3 |
+| **W** | ⭐ FIXED, certified | Visit 4 `RPM_ERR` within ±2 |
+| **A1** | ⭐ FIXED, certified | conditional deleted; 259-260 ns measured at 200/270/300 MHz (Visit 3) |
+| **A2 / A3** | FIXED in source | `getBoardType()` switches on the `BRD_*` override (`:1305-1314`) |
+| **F, S** | ⭐ FIXED, certified | `R16-DUAL-DISTM-B` PASS, Visit 5 |
+| **O** | FIXED in source | `PWR_25p9V` lies outside both power-table ranges, so it is rejected up front (`:1925-1936`) |
+| **AD, C** | ⭐ FIXED, certified | `R16-T0-FRONTFAIL` and `R1-T0-START` PASS, Visit 5 |
+| **AE** | FIXED in source | `claimPinBase()` refuses an overlapping group, `ERR_PIN_GROUP_IN_USE` (`:284-322`) |
+| **Z** | Feature-gap CLOSED (lag limiter droops, Visits 4-5); recovery limb **IN THIS RELEASE** (fault handling, PL-66/PL-86) | |
+| **H, Q, I/T** | FIXED in source | bounded `resetTracking()` (20 ms) and `SyncStatus()`; zero `abort` uses remain in either object |
+| **AB** | ⛔ **STILL PRESENT — IN THIS RELEASE** | `driveForDistance(left, right)` drives both wheels to the shorter distance (`isp_steering_2wheel.spin2:337, 359-369`) |
+| **G** | ⛔ **STILL PRESENT — IN THIS RELEASE** | `setRampingValues()` writes unvalidated; doc reads `[??? - ???] mm/s squared` (`:631-653`) |
+| **K** | ⛔ **STILL PRESENT — IN THIS RELEASE** | `DDU_KM`/`DDU_MI` readable, not commandable: `ticksForDistance()` lacks them in both objects |
+| **AC** | ⛔ **Comment wrong — IN THIS RELEASE** | code reduces the LEFT wheel for `limitDir > 0` (turns left; Visit 2 video agrees); the comment says right (`isp_steering_2wheel.spin2:1370-1385`) |
+| **N** | STILL PRESENT; Doco-only, OUT of this release | `0 - VALUE_NOT_SET` = 1 (PL-71) |
+| **AI, AJ** | **IN THIS RELEASE for the 6.5″** | offsets confirmed by the redesigned scan plus a spin-in-place floor run (STEPHEN 2026-09-17); AJ's Doco half stays out |
+| **AK** | measured feedback OUT (Known Issue); **compiled-in voltage getter IN** | STEPHEN 2026-09-17 |
+| **Y, J, P, D, E, L, U, V, AA, AG, AH** | unchanged | naming, latent and style notes; the style gate (PL-2) covers what is style |
+
+---
+
 ## Summary
 
 **24 findings.** Six are defects a user can hit today without doing anything unusual. Three (AI, AJ, AK) were raised by a field report received after the audit was written.

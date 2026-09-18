@@ -203,6 +203,18 @@ tick in that window. **«#3512»'s rpm limb: CERTIFIED.**
 
 ## 6 · What this means for the driver
 
+> **Overtaken since (aged-state sweep 2026-09-17).** Items 2, 3 and 5 below describe the driver as it
+> stood on 2026-09-16 and are no longer true:
+> - **Item 2:** distance stops now begin the ramp early and land at their limit -- 1 tick past a 529-tick
+>   target, worst of 4 trials (`R16-DUAL-STOPLIM-B` PASS, Visit 5, `VISIT-5-RESULTS.md` §4b).
+> - **Item 3:** PL-55 is closed -- Visit 4 stop peaks 971-1_055 mV against the 1_500 mV abort, and
+>   `R16-DUAL-STOPCUR-B` PASS at Visit 5.
+> - **Item 5:** PL-66 is fixed in the tree: a repeated power clears a fault and restarts the motor
+>   («#3556», front cog). Its run-time proof (`R16-DUAL-FLTRETRY-B`) has not yet happened; see PL-86.
+> - Section 2.3's fault provocation (`ramp_inc` 10_000 from standstill) was replaced at Visit 4 by a 180°
+>   offset write (PL-86). DERIVED, not re-read from the design: a ramp the rotor cannot follow now makes
+>   the lag-limited driver droop rather than fault, so the old stimulus cannot provoke a fault.
+
 1. **The repairs are done and proven.** Every driver change this sprint made since Visit 2 behaves as designed on
    hardware. Nothing measured here asks for a change to any of them.
 2. **Distance stops:** latency is now one sense pass. The remaining overshoot, 75 ticks (about 430 mm) at half

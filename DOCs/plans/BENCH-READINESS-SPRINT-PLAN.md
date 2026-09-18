@@ -11,8 +11,9 @@
 > the dated findings are in [*Sprint Revision — 2026-09-11*](#sprint-revision--2026-09-11).
 > Everything between them is preserved as written and is dated, not current.
 >
-> **Newest:** [*Sprint Revision — 2026-09-15*](#sprint-revision--2026-09-15-before-visit-2) amends the
-> 2026-09-13 revision's order (no log tooling; Visit 2 unattended first, attended behind a walkthrough).
+> **Newest, and it governs:** [*Sprint Revision — 2026-09-17 (night)*](#sprint-revision--2026-09-17-night-not-shippable-and-the-release-widened)
+> — 6.0.0 ruled not shippable; the release widened (API promises, hall, faults, style gate, confirmed offsets);
+> the R17 work set and its order. Earlier revisions (2026-09-11, -13, -15, -16) are dated history.
 
 **Scope as written 2026-09-10 — SUPERSEDED:** *"get the bench suite built, run it, and
 record what it decides. The driver fixes are a separate sprint. Nothing in this plan changes
@@ -2119,3 +2120,61 @@ Owned by «#3515», whose artifact list gains:
   - motor characterisation of both motors (its own sprint; «#3523» is its offsets task);
   - the vibration study «#3532», when the hardware arrives.
 - **Closed, not a defect:** PL-18.
+
+---
+
+## Sprint Revision — 2026-09-17 (night): not shippable, and the release widened
+
+**Why.** Visit 5 ran clean (0 FAIL, 0 NOT_BUILT across 66 cell instances), and STEPHEN ruled: *"v6.0.0 is not
+shippable as is. we need better behavior"*. A findings audit followed
+([`../analyses/FINDINGS-AUDIT-2026-09-17.md`](../analyses/FINDINGS-AUDIT-2026-09-17.md)); its §7 carries every
+ruling below verbatim.
+
+**Rulings (STEPHEN, 2026-09-17), which override this plan's earlier text where they conflict:**
+- **Aged state is cleaned first** — *"it always misguides to keep it clean is priority!"* Done under «#3567».
+- **Order of work:** API promises → hall fix and characterisation → fault handling → code/comment sync (always,
+  on every line touched) → the style gate → every outstanding task → the commutation scan and offset confirmation.
+- **The style guide is a GATE** over every `.spin2` this project authored; imported files are excluded. This
+  brings PL-10 (`@param`/`@returns` completeness) and PL-11 (PUB-before-PRI) into the release.
+- **Every outstanding task is in the release**, except three: the measurement front end «#3506», the vibration
+  study «#3532» and the N-motor roster «#3562» (*"no those three are not in"*).
+- **The commutation offsets are confirmed before release** — this reverses the 2026-09-15 exclusion. Confirmation
+  is the redesigned scan (wheels lifted) and then an attended **spin-in-place** floor run, tethered, with a hard
+  travel limit (*"yes spin in place but max revolutions limit so we don't stress cable"*).
+- **Stop behaviour is the user's `holdAtStop()` selection**; every stop path must deliver it.
+- **Safety scope (*"yes to all"*):** PL-73 in (refuse an undetected board unless a revision is forced); S-8 in
+  (opt-in link-loss timeout); S-6 out (document the status values); AK measured feedback out as a Known Issue,
+  with a getter for the compiled-in battery size / voltage in.
+
+**Plan-state corrections found by the audit** (the plan is expanded to cover what is actually being done):
+- The scan's own geometry assumes the motor FAULTS at each window edge; the lag limiter now makes it droop. The
+  scan is redesigned, not merely re-run (R17.8).
+- Visit 3 had already certified M, AF and S-5 with a provoked fault; what is missing is a provocation on today's
+  lag-limited driver under the harness's 10 A abort (R17.5).
+- PL-78's slam fix is in the binary with its effect unmeasured, because the ladder statistic cannot see a
+  transition (R17.6).
+
+### The work set (R17)
+
+| Plan § | Deliverable | Task | Order |
+|---|---|---|---|
+| R17.0 | Clean all aged state | «#3567» | 0 (in progress) |
+| R17.1 | Every stop path delivers `holdAtStop()` (PL-89) | «#3568» | 1 |
+| R17.2 | API members keep their promises (AB, G, K, AC, AK getter) | «#3569» | 2 |
+| R17.3 | Refuse an undetected board (PL-73); opt-in link-loss timeout (S-8) | «#3570» | 3 |
+| R17.4 | Fix and characterise the hall read (PL-90, PL-69) | «#3571» | 4 |
+| R17.5 | Fault handling on today's driver (PL-86, PL-59, PL-66, S-7, harness gaps) | «#3572» | 5 |
+| — | The style gate, earned (PL-2, PL-10, PL-11, PL-29 rule) | «#3517» | 6 |
+| — | Cog lifecycle and locks (PL-41, PL-85) | «#3543» | 7 |
+| R17.6 | Measure the transition, settle the slam (PL-87, PL-78) | «#3573» | 8 |
+| R17.7 | Bench cleanup: retire what feeds nothing, one builder (PL-53) | «#3574» | 9 |
+| R17.8 | Scan redesign + spin-in-place floor tier | «#3575» | 10 |
+| R17.9 | Visit 6: certify R17.1-R17.8, confirm the offsets | «#3576» | 11 |
+| — | Apply the confirmed offsets | «#3523» | 12 |
+| Blast radius | Documentation | «#3515» | 13 |
+| — | Ship 6.0.0 | «#3516» | 14 (last) |
+
+- **Dispatch:** `arbiter-serial` for anything touching `src/isp_bldc_motor.spin2` (an exclusive resource: R17.1,
+  R17.2, R17.3, R17.4, R17.5, and the style pass). Bench-only work (R17.6, R17.7, R17.8) may overlap it.
+- **Two-phase:** R17.1, R17.3, R17.4, R17.5, R17.8 and «#3543» return a design for review before code.
+- **Out of this release:** «#3506», «#3532», «#3562» (backlog, marked in their task bodies).
