@@ -159,6 +159,12 @@ has since run five visits. STEPHEN 2026-09-17: *"we deliver code, it MUST match 
 
 ### PL-11 -- deferred: PUB-before-PRI ordering (guide 3.2)
 
+> **FIXED 2026-09-18 («#3517»), and enforced (`check_style.sh` S3.2).** 235 PUB methods in nine files moved above
+> their file's first PRI by whole top-level segment, nothing edited: each PUB carried the comment lines directly
+> above it and any empty section-marker `CON` heading it. VAR, DAT, OBJ and constant-bearing CON blocks never
+> moved, so the Spin2<->PASM2 hub layout is unchanged by construction; the move verified, per file, an identical
+> line multiset, an identical VAR/DAT/OBJ/CON sequence and identical method segments, and all 47 tops compile.
+
 `central:spin2-authoring-guide` 3.2 requires all `PUB` methods to precede all
 `PRI` methods in a file. `tools/check_style.sh` does not check this --
 detection is trivial, but the *fix* is bulk method reordering, and one of the

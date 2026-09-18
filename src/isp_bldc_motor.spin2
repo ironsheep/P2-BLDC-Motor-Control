@@ -300,340 +300,6 @@ DAT { pin-range allocation tracking (AE) }
     gOwnerP32P47    LONG    0
     gOwnerP40P55    LONG    0
 
-PRI releasePinBaseClaim()
-' AE: free whichever slot this instance currently owns (matched by @pinbase, a stable
-' per-instance identity), so re-init or stop()/restart on the same or a different base never
-' self-conflicts and never leaks a stale claim.
-
-    if gOwnerP0P15 == @pinbase
-        gOwnerP0P15 := 0
-    if gOwnerP8P23 == @pinbase
-        gOwnerP8P23 := 0
-    if gOwnerP16P31 == @pinbase
-        gOwnerP16P31 := 0
-    if gOwnerP32P47 == @pinbase
-        gOwnerP32P47 := 0
-    if gOwnerP40P55 == @pinbase
-        gOwnerP40P55 := 0
-
-PRI bHoldsPinBaseClaim() : bHeld
-' Return TRUE when this instance currently owns a pin-range claim, i.e. a successful init()
-' (start()/startEx()/testSetup()) claimed a legal group and stop() has not yet released it.
-' A slot only ever holds @pinbase of the instance that claimed it, so an instance that was
-' never initialised -- or whose claim was refused -- cannot match.
-'
-' @returns bHeld - TRUE when one of the gOwner* slots holds this instance's @pinbase
-
-    bHeld := (gOwnerP0P15 == @pinbase) or (gOwnerP8P23 == @pinbase) or (gOwnerP16P31 == @pinbase) or (gOwnerP32P47 == @pinbase) or (gOwnerP40P55 == @pinbase)
-
-PRI bClaimPinBase(eMotorBasePin) : bClaimed
-' AE: claim {eMotorBasePin}'s 16-pin range for this instance, first releasing whatever range
-' this same instance previously held. Fails (does not claim) if the requested range overlaps a
-' range another instance already owns. The only overlapping legal-base pairs are the adjacent
-' ones 8 pins apart: (P0_P15, P8_P23), (P8_P23, P16_P31) and (P32_P47, P40_P55); PINS_NO_USE_P24_P39
-' is not a legal base (see validBasePinForChoice()) and never enters this check.
-
-    ' Release first, so a re-init or a restart on the same base never conflicts with
-    ' this instance's own previous claim. Each case below must therefore also test its
-    ' OWN slot: after the release, a non-zero own-slot can only mean ANOTHER instance
-    ' holds it -- which is the identical-base collision, the most obvious one of all.
-    releasePinBaseClaim()
-    bClaimed := TRUE
-    case eMotorBasePin
-        PINS_P0_P15:
-            if gOwnerP0P15 <> 0 or gOwnerP8P23 <> 0
-                bClaimed := FALSE
-            else
-                gOwnerP0P15 := @pinbase
-        PINS_P8_P23:
-            if gOwnerP8P23 <> 0 or gOwnerP0P15 <> 0 or gOwnerP16P31 <> 0
-                bClaimed := FALSE
-            else
-                gOwnerP8P23 := @pinbase
-        PINS_P16_P31:
-            if gOwnerP16P31 <> 0 or gOwnerP8P23 <> 0
-                bClaimed := FALSE
-            else
-                gOwnerP16P31 := @pinbase
-        PINS_P32_P47:
-            if gOwnerP32P47 <> 0 or gOwnerP40P55 <> 0
-                bClaimed := FALSE
-            else
-                gOwnerP32P47 := @pinbase
-        PINS_P40_P55:
-            if gOwnerP40P55 <> 0 or gOwnerP32P47 <> 0
-                bClaimed := FALSE
-            else
-                gOwnerP40P55 := @pinbase
-
-PRI setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode) : eError
-' Validate every start argument, then free this instance's previous driver, claim the pin group and init().
-'
-' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
-' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
-' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
-' @returns eError - NO_ERROR when this instance now holds the claim and is initialised, else the recorded ERR_* code
-
-    ' 1. validate, with no side effects: a rejected call leaves a running motor running, unchanged
-    eError := NO_ERROR
-    if validBasePinForChoice(eMotorBasePin) == INVALID_PIN_BASE
-        eError := ERR_BAD_PIN_GROUP
-    elseif validVoltageForChoice(eMotorVoltage) == INVALID_VOLTAGE
-        eError := ERR_BAD_VOLTAGE
-    elseif validDetectModeForChoice(eDetectionMode) == INVALID_DET_MODE
-        eError := ERR_BAD_DETECT_MODE
-    elseif isAbiLayoutValid() == FALSE
-        eError := ERR_ABI_MISMATCH
-
-    if eError == NO_ERROR
-        ' 2. D2: free this instance's own driver/sense cog and pin claim before starting fresh
-        if motorCog or senseCog or bHoldsPinBaseClaim()
-            stop()
-        ' 3. AE: an overlapping pin group is a wiring conflict -- two driver cogs would command the shared pins
-        if bClaimPinBase(eMotorBasePin) == FALSE
-            eError := ERR_PIN_GROUP_IN_USE
-            debug[user.DBGCH_ERROR]("! ERROR: pin base ", udec_long(eMotorBasePin), " overlaps a pin range already in use by another motor instance")
-        else
-            ' 4. every argument is valid and the pins are ours, so init() cannot fail
-            init(eMotorBasePin, eMotorVoltage, eDetectionMode)
-    else
-        debug[user.DBGCH_ERROR]("! ERROR: start rejected ", sdec_long(eError), sdec_long(eMotorBasePin), sdec_long(eMotorVoltage), sdec_long(eDetectionMode))
-
-    eError := recordError(eError)
-
-PRI launchDriver(eMotorBasePin, eMotorVoltage, eDetectionMode, bParked) : eError | driverCogId
-' Validate and initialise this instance, then launch its PASM driver cog; a failure leaves nothing running.
-'
-' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
-' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
-' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
-' @param bParked - T/F where T means the driver waits for an ATN before it starts driving
-' @returns eError - NO_ERROR when the driver cog runs, else the ERR_* code also recorded for getError() (ERR_BOARD_NOT_DETECTED when auto-detection found no board)
-
-' Local Variables:
-' @local driverCogId - the value coginit() returned
-
-    eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
-    if (eError == NO_ERROR) and (eDetectedBoard == REV_Unknown)
-        ' PL-73: with no board detected there is no current-sense scale, so the driver would run with no
-        '  current limit at all. A board is driven only when detected, or when the user forced a revision
-        '  (which setupForStart() reports as that revision). stop() releases the claim and the pins.
-        stop()
-        eError := recordError(ERR_BOARD_NOT_DETECTED)
-        debug[user.DBGCH_ERROR]("! ERROR: start refused, no board detected at pin group ", udec_long(eMotorBasePin), " (force BRD_REV_A / BRD_REV_B to drive anyway)")
-    if eError == NO_ERROR
-        ' pre-launch: setupForStart() stopped any previous driver and front cog, so no other writer exists
-        sync_required := bParked
-        params_ptr := @offset_fwd   ' point to driver variables
-        setTargetAccel(0, false)                            ' do NOT move at startup
-        motorStopHallTicks := 0                             ' no stop limit survives a restart
-        motorStopMSecs := 0
-        bStopUnconfirmed := FALSE                           ' front-owned from launch on; no stop is pending yet
-
-        driverCogId := coginit(NEWCOG, @driver, @pinbase)
-        if driverCogId < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
-            eError := recordError(ERR_NO_FREE_COG)
-            debug[user.DBGCH_ERROR]("!! ERROR filed to start Motor Control task")
-            ' PL-36: setupForStart() took this instance's pin-range claim. A failed start must not keep
-            '  it, or no other instance can claim the group until this one is stop()ped -- a claim with
-            '  no cog behind it. stop() releases the claim and clears the pins; with motorCog still 0
-            '  it stops no cog.
-            stop()
-        else
-            motorCog := driverCogId + 1    ' internal representation: cogid + 1 (0 reserved as "not started"), one write
-            debug[user.DBGCH_LIFECYCLE]("* Motor COG #", sdec_(driverCogId))
-
-PRI launchFront(bReleaseDriver) : eError | frontCogId, startMs
-' Launch this motor's front cog and wait, bounded, for its first pass; a failure stops the driver too.
-'
-' @param bReleaseDriver - T/F where T means the driver was launched parked and the front cog releases it with one ATN
-' @returns eError - NO_ERROR when the front cog runs, else ERR_NO_FREE_COG or ERR_NO_RESPONSE, also recorded for getError()
-
-' Local Variables:
-' @local frontCogId - the value cogspin() returned
-' @local startMs - getms() when the handshake wait began
-
-    ' pre-launch: no front cog of this instance exists, so these writes have no second writer
-    eError := NO_ERROR
-    frontPasses := 0
-    frontLatePasses := 0
-    frontMaxPassTicks := 0
-    cmdTimeoutMs := CMD_TIMEOUT_OFF                         ' S-8: off until the user turns it on
-    bCmdWatched := FALSE
-    cmdTimeoutEvents := 0
-    longfill(@cmdTimeoutSeen, 0, COG_SLOT_COUNT)           ' every cog starts even with the (zeroed) count
-    longfill(@taskStack, STACK_SENTINEL, STACK_SIZE_LONGS)  ' testGetFrontStats() finds the high-water mark from this
-
-    frontCogId := cogspin(NEWCOG, frontLoop(bReleaseDriver), @taskStack)
-    if frontCogId < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
-        eError := recordError(ERR_NO_FREE_COG)
-        debug[user.DBGCH_ERROR]("!! ERROR filed to start front cog")
-        stop()    ' senseCog is still 0: stops the driver and releases the pins
-    else
-        senseCog := frontCogId + 1    ' internal representation: cogid + 1 (0 reserved as "not started"), one write
-        startMs := getms()
-        repeat while frontPasses == 0
-            if getms() - startMs > FRONT_START_TIMEOUT_MS
-                quit
-            waitms(REQ_POLL_MS)
-        if frontPasses == 0
-            eError := recordError(ERR_NO_RESPONSE)
-            debug[user.DBGCH_ERROR]("!! ERROR front cog did not start its loop")
-            stop()
-        else
-            debug[user.DBGCH_LIFECYCLE]("* Front COG #", sdec_(frontCogId))
-
-PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs
-' Initialise this instance's driver image and state for a validated, claimed start; cannot fail.
-'
-' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor, already validated and claimed
-' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor, already validated
-' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor, already validated
-
-' Local Variables:
-' @local fwdDegrees - forward commutation offset for this motor, in degrees
-' @local revDegrees - reverse commutation offset for this motor, in degrees
-' @local gapInNs - PWM dead-gap, in nanoseconds
-
-    ticks1ms   := (CLKFREQ / 1_000)
-    ticks1us   := (CLKFREQ / 1_000_000)
-    ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
-
-    pinbase := eMotorBasePin                            ' record base pin number (validated and claimed by setupForStart())
-
-    eUserDetectionMode, bUserForced := getInternalDetectMode(eDetectionMode)
-
-    ' set the mode now used by the driver to condition things (current-sense scaling, etc.)
-
-    eDetectedBoard := getBoardType()
-
-    byte[@motorId] := 0 ' terminate an empty string
-
-    targetAngle := $FFFFFFFF    ' set to not used! (other values only used during testing)
-
-    degrPerTic, hallTicsPerRotation := hallTicInfoForMotor()
-
-    fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE)
-    offset_fwd  := fwdDegrees frac 360
-    offset_rev  := revDegrees frac 360
-    offset_fwd_degrees := fwdDegrees
-    offset_rev_degrees := revDegrees
-
-    debug[user.DBGCH_LIFECYCLE]("MOT: ", udec(fwdDegrees), uhex_long(offset_fwd))
-    debug[user.DBGCH_LIFECYCLE]("     ", udec(revDegrees), uhex_long(offset_rev))
-
-    ' new build up our hall angle and position increment table for specific motor
-    if user.MOTOR_TYPE == MOTR_6_5_INCH
-        longmove(@hall_angles, @hltbAngles, 16)
-        bytemove(@deltas, @deltas65, 64)
-    else
-        longmove(@hall_angles, @hltbAngl4k, 16)
-        bytemove(@deltas, @deltas4k, 64)
-
-' average is middle plus deflection for forward or reverse
-'  responsiveness of motor to desire
-'  middle value is angular diff and motor postion relative to hall position
-'  deflection is direction and speed dependent
-    frame_cnt := (ticks1us * (1_000_000_000 / PWM_RATE_IN_HZ)) / 1_000
-    debug[user.DBGCH_LIFECYCLE](" - Calc FRAME: ", udec(frame_cnt))
-
-    ' preload driver values before driver start
-    adc_fram    :=    frame_cnt                         ' set ADC to full PWM frame counts
-    fram        :=    (frame_cnt / 2) << 16 + 1         ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
-    bias        :=    frame_cnt / 4                     ' PWM center-frame bias
-    lutCodePtr  :=    @lutCodeStart                     ' task 3535: hub addr of LUT-resident start sequence, block-loaded by the driver at coginit
-
-    ' setup driver parameters based on clock rate
-    ' A1 / PL-9: both 64010 manuals specify a 250 ns minimum dead-gap regardless of board
-    ' revision (MOSFET response time sets the floor, not driver speed), so there is no
-    ' per-revision value to select here. The removed conditional intended 52 ns for Rev B,
-    ' which would have been ~5x under spec; it never actually took that branch (see A2 --
-    ' eDetectedBoard's REV_A/REV_B values can't match a BRD_REV_A/BRD_REV_B comparison), so
-    ' every board has always gotten the compliant 260 ns. Deleted, not repaired.
-    gapInNs := 260
-    dead_gap    := (ticks1us * gapInNs) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
-    pwm_limit   := (frame_cnt / 2) - (dead_gap  / 2)    'PWM duty hard limit 1/2 freq of PWM
-
-    ' .. and set up rest
-    ' orig higher power code used this
-    duty_min    := 100 << 4 #> (dead_gap / 2) << 4
-                                                        '    duty_min    := dead_gap << 4 #> dead_gap << 4
-                                                        ' Chip's new code adjusted this, why?
-                                                        '    duty_min    := 200 << 4 #> dead_gap << 4
-    duty_max    := (pwm_limit  << 4) / 2 <# pwm_limit << 4      ' ok
-                                                        'duty_max    := ((pwm_limit  << 4) / 4) * 3 <# pwm_limit << 4    ' BAD
-                                                        'duty_max    := ((pwm_limit  << 4) / 8) * 5 <# pwm_limit << 4    ' BAD
-    ' orig higher power code used this
-    duty_up     := 18
-    duty_dn     := 4
-                                                        ' Chip's new code adjusted this, why?
-                                                        '    duty_up     := 8   ' this drops our top-end power by 45%
-                                                        '    duty_dn     := 2
-    cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
-    stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
-    e_stop      := FALSE
-    ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
-    ' NOTES: 220410 -  at 14.8V 40_000 seems to fault a lot on gravel surface (i'm switching) to 10_000 and PWR_14p8V to see if motors stay operational (5_000 dog slow)
-    ' NOTES: 220413 -  at 14.8V 10_000 better on gravel surface  but too slow a ramp to 15_000 and PWR_14p8V to see if motors stay operational
-    ' 50_000 for 12v & 18_5v
-    '   ramp_min - start ramping at this value
-    '   ramp_max - max ramping at this value, once reach this value, keep incrementing with this value
-    '   ramp_inc - ramping increment, added to ramp_min every drive pass (~522.7 us, PL-50). Effectively defines the acceleration
-    ramp_max := 200_000                                 ' 200k angle max increment/decrement
-    ramp_min := 1_500                                   ' 1k5 angle min increment: start add this every drive pass to ramp up from zero
-    ramp_inc := 22                                      ' increment to ramping speed, add to ramp_min every drive pass until ramp_max reached
-    ramp_down := 50_000                                 ' fixed ramp down speed
-
-    motorIsReversed := FALSE    ' by default our motor direction is not reversed
-    fault := FALSE
-    hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
-    hall_illegal := 0
-    drv_incr_now := 0           ' no stale field speed across stop()/start(): the stop timing reads it
-
-    ' init status variables
-    loop_ticks := 0
-    minDrvTics := 65535
-    drv_state := DCS_Unknown
-
-    maxSpeed := 75            ' [1-100] default 75
-    maxSpeed4dist := 75      ' [1-100] default 75
-
-    ' preset HDMI Monitor values
-    resetHdmiData()
-
-    debug[user.DBGCH_LIFECYCLE]("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(adc_fram), udec_long(duty_min), udec_long(duty_max))
-    debug[user.DBGCH_LIFECYCLE]("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks))
-
-    circInMM_x10, _ := wheelGeometry()
-
-    ' PL-14: honour the caller's eMotorVoltage parameter instead of silently re-reading the
-    ' compile-time user.DRIVE_VOLTAGE. Behaviour-neutral today (every shipped caller already
-    ' passes user.DRIVE_VOLTAGE here), but it makes the parameter -- and the caller's own
-    ' validVoltageForChoice() check on it -- meaningful, and lets two motors run at different
-    ' voltages.
-    confgurePowerLimits(eMotorVoltage)
-
-    rSenseForBoard := VALUE_NOT_SET
-    if eDetectedBoard == REV_A
-        rSenseForBoard := F_REV_A_RSENSE
-    elseif eDetectedBoard == REV_B
-        rSenseForBoard := F_REV_B_RSENSE
-
-    ' S-2: the current limits start at the MOSFET values; nothing is latched or derated at start
-    limitPeakA := I_PEAK_A
-    limitContA := I_CONT_A
-    duty_floor := muldiv64(frame_cnt, 4 * DUTY_FLOOR_PCT, 100)              ' m = duty / (4 * frame_cnt)
-    i_limit_k := currentLimitK(limitPeakA)
-    protectiveCode := NO_ERROR
-    faultCause := FC_NONE                                                   ' S-7: no fault since this start
-    bWasFaulted := FALSE
-    faultIllegalPrev := 0                                                   ' the driver zeroes its counts at start too
-    phaseAvgMa := 0
-    bDerated := FALSE
-    blockedPasses := 0
-    blockedPos := 0
-
-
 PUB startSenseCog() : ok
 '' Return the id of the sense (front) cog that start() launched; starts nothing
 ''
@@ -647,34 +313,6 @@ PUB startSenseCog() : ok
     else
         recordError(ERR_NOT_STARTED)
         debug[user.DBGCH_ERROR]("! ERROR: startSenseCog(", zstr_(@motorId), ") motor not started; start() runs the front cog")
-
-VAR { * user request values * }
-
-    LONG    eUserSelectedVolts  ' remember the value specified by the user
-    LONG    fMotorVolts         ' float representation of user selected volts (used internally)
-    LONG    eUserDetectionMode  ' remember the value specified by the user
-    LONG    eDetectedBoard      ' remember the board type detected (or overridden)
-    LONG    bUserForced         ' T/F: where T means user is NOT using autodetect
-    ' limits based on user voltage
-    LONG    minFwdIncreAtPwr
-    LONG    maxFwdIncreAtPwr
-    LONG    minRevIncreAtPwr
-    LONG    maxRevIncreAtPwr
-    ' user max speeds
-    LONG    maxSpeed            ' [1-100] default 75
-    LONG    maxSpeed4dist       ' [1-100] default 75
-    ' stop point in time based on passing mSec or tick counts
-    LONG    motorStopMSecs      ' stop motor when we've passed this time in milliseconds
-    LONG    motorStopHallTicks  ' stop motor when we've passed this tick count
-    LONG    motorPower          ' remember last power requested
-    LONG    motorIsReversed     ' T/F where T means we need to flip direction: FWD <-> REV
-
-    ' values specific to user selected motor
-    LONG    degrPerTic
-    LONG    hallTicsPerRotation
-    LONG    pwm_limit                                   ' max freq of our pwm
-
-    BYTE    motorId[MOTOR_ID_STRLEN+1]
 
 PUB testSetMotorId(pIDStr) : eError
 '' TESTING USE: save name used in debug messages
@@ -1268,29 +906,6 @@ PUB getCurrent() : fAmps, fWatts
         '  here: this is a caller's command, not telemetry.
         recordError(ERR_BOARD_NOT_DETECTED)
 
-PRI scaledCurrent() : fAmps, fWatts
-' Compute the current-sense reading, net of the rest zero (PL-45), shared by getCurrent() and the
-' HDMI telemetry (PL-25); records nothing -- the caller decides whether a board-not-detected reading
-' is an error (getCurrent()) or just "no measurement" (telemetry).
-'
-' @returns fAmps - motor current in units of 0.1 mA (amps x 10_000); 0 when the board was never detected
-' @returns fWatts - motor power in mW; 0 under the same condition
-
-    ' for REVA gain is 1, R is 0.005
-    ' for REVB gain is 50, R is 0.003
-    ' gain and R is combined into rSenseForBoard -> RevA rSenseForBoard 5, RevB rSenseForBoard 150
-    ' RevB. 10A, through 0,003R -> 0.03mV -> (50gain) -> 1.5V. 20A -> 3V, 10A -> 1.5V, 1A -> 0.15V
-    ' RevA. 10A, through 0.005R -> 0.05mV -> (1gain) -> 50mW, 20A -> 0.1V, 10A -> 50mV, 1A -> 5mV
-    ' the driver's sense_i_mV is true millivolts (numerator 3300 << 11, restored by sar #11 in the
-    '  control loop), and rSenseForBoard is millivolts per amp, so scale up before dividing -- a plain
-    '  sense_i_mV / rSenseForBoard would truncate to whole amps
-    if rSenseForBoard == VALUE_NOT_SET
-        fAmps := 0
-        fWatts := 0
-    else
-        fAmps := (sense_i_mV - restZeroSenseMv) * CURRENT_UNITS_PER_AMP / rSenseForBoard  ' in multiples of 0.1mA
-        fWatts := round((float(fAmps) *. fMotorVolts)/. F_SCALE_WATTS)              ' in mW
-
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
 ''
@@ -1391,18 +1006,6 @@ PUB boardIdString() : pZStr
         other:
             debug[user.DBGCH_ERROR]("* [CODE] bad return value from getBoardType()")
             pZStr := @"????"
-
-CON { board detection and pin-group geometry }
-
-    DETECT_SENSE_OFFSET  = 4                        ' detection pin is pinbase + 4, which is also the driver's pin_adc_cur_i
-    DETECT_CHARGE_MS     = 1                        ' pinhigh() time that charges the Rev B board's 0.1uF capacitor
-    DETECT_READ_COUNT    = 500                      ' pinread() samples taken after the pin is released
-    DETECT_NODET_MIN_SUM = DETECT_READ_COUNT / 2    ' more highs than this: nothing discharged the pin, no board
-    DETECT_REVB_MIN_US   = 20                       ' a pin high for less than this is not a Rev B sense node
-
-    ' ADDPINS cannot cross a 32-pin port boundary, so every 16-pin group operation is two 8-pin calls
-    HALF_GROUP_SPAN      = 7                        ' addpins operand: 8 pins
-    GROUP_HI_OFFSET      = 8                        ' second half of a 16-pin group
 
 PUB getBoardType() : eBoardRev | pSenseCommon, pinSum, readStartTicks, sumTicks, highTimeUs
 '' ID Revision of attached BLDC driver board
@@ -1669,11 +1272,6 @@ PUB ticksForDistance(nDistance, eDistanceUnits) : eError, nStopTicks | nTickInMM
         if nStopTicks < 1
             eError := ERR_LIMIT_UNRESOLVABLE
 
-CON ' --- TEST-USE ONLY Methods ---
-
-    DEGREES_PER_TURN      = 360     ' one turn of a commutation offset, in degrees
-    DEGREE_NORM_MAX_STEPS = 16      ' bounded add/subtract-360 steps: inputs within +/-5_760 degrees normalise exactly
-
 PUB testSetLimit(newMaxLimit) : eError
 '' TESTING USE: set override limit so we can characterize motor
 ''
@@ -1937,6 +1535,782 @@ PUB testGetMotorCog() : cogValue
 
     cogValue := motorCog
 
+
+PUB SyncStatus() : eError | startMs
+'' Wait until the driver has taken a synchronized command (when configured for synchronization)
+''
+'' @returns eError - NO_ERROR once the command is taken, or ERR_SYNC_TIMEOUT (also recorded for getError()) after SYNC_TIMEOUT_MS
+
+' Local Variables:
+' @local startMs - getms() when the wait began
+
+    ' F-6: bounded. The driver clears the sync bit when it takes the command after ATN, polling once
+    '  per drive pass; it never takes one while e-stopped, stopped or not started, so an unbounded
+    '  wait here hung the caller's cog.
+    eError := NO_ERROR
+    startMs := getms()
+    repeat while targetIncre & $8000_0000
+        if getms() - startMs > SYNC_TIMEOUT_MS
+            eError := recordError(ERR_SYNC_TIMEOUT)
+            debug[user.DBGCH_ERROR]("! ERROR: SyncStatus(", zstr_(@motorId), ") driver did not take the synchronized command")
+            quit
+
+PUB recordCallerError(eCode) : eSameCode
+'' INTERNAL USE: record a status an owner received for this motor in this motor's error slot for the calling cog
+''
+'' For isp_steering_2wheel: its caller records each wheel's front-cog status here, so getError() reports it per wheel.
+'' Never called from a front cog.
+''
+'' @param eCode - NO_ERROR or an ERR_* code
+'' @returns eSameCode - {eCode}, so a failing path can record and return in one expression
+
+    eSameCode := recordError(eCode)
+
+PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
+'' TESTING USE: Return pointers to HDMI-debug data structures for this motor-object instance
+''
+
+    loadDisplayList()
+    nGroups := DBG_GROUPS_CT
+    pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
+    pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
+    pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+    pGroupVars := @pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+    ' DBGCH_HDMI_DUMP (off by default) replaces the runtime showHDMIDebug flag, which nothing ever set TRUE
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* MOTR DAT values: ", uhex_long(@hall), uhex_long_array(@hall, 4))
+    debug[user.DBGCH_HDMI_DUMP]("* MOTR VAR values: ", uhex_long(@tvRpm_x10), uhex_long_array(@tvRpm_x10, 4))
+    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
+    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE2: ", uhex_long(@nameTitle2), uhex_byte_array(@nameTitle2, dataLen2))
+    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE3: ", uhex_long(@nameTitle3), uhex_byte_array(@nameTitle3, dataLen3))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* MOTR DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
+    debug[user.DBGCH_HDMI_DUMP]("* MOTR DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
+    debug[user.DBGCH_HDMI_DUMP]("* MOTR DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+    debug[user.DBGCH_HDMI_DUMP]("* MOTR DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* MOTR PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+    debug[user.DBGCH_HDMI_DUMP]("* =============")
+
+PUB frontClearFault() : eStatus, bDidWait
+'' FRONT COG ONLY: clear a FAULTED motor (PL-66), bounded; a no-op (NO_ERROR, no wait) when not FAULTED
+''
+'' Shared by frontDrive() (single-motor and per-wheel use) and an owner that must clear several
+'' motors' faults together before writing any of their commands (isp_steering_2wheel) -- one
+'' fault-clear path either way.
+''
+'' @returns eStatus - NO_ERROR (nothing to clear, or cleared), or ERR_NO_RESPONSE when FAULTED and it did not clear in the bound (a zero command is left written)
+'' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
+
+    eStatus := NO_ERROR
+    bDidWait := FALSE
+    if drv_state == DCS_FAULTED
+        ' PL-66: only the front cog can tell a request that just arrived from one still standing --
+        '  the driver's own sv_tgt_incr==tgt_incr compare (.notRqStop) tests "still standing", not
+        '  "just arrived", because drvMotor saves sv_tgt_incr from tgt_incr every pass before
+        '  re-reading it. So the fault-clear edge is made here, not in the driver: a zero command
+        '  always reaches the driver's stop-request check before that compare (drv_state <>
+        '  DCS_STOPPED jumps straight to .newRqst -> .resetFault -> DCS_STOPPED, in one pass -- read
+        '  against .noEStop/.newRqst/.resetFault), so a bounded wait for drv_state leaving
+        '  DCS_FAULTED clears it, for every drive while FAULTED, not only an equal-power retry (a
+        '  differing command already reached .resetFault on its own, unconditionally).
+        frontZeroPower()                                                    ' PL-52: also clears getPower() while we try
+        bDidWait := TRUE
+        if bFrontWaitForDriver(WAIT_FAULT_LEFT) == FALSE
+            eStatus := ERR_NO_RESPONSE                                      ' did not clear in the bound; the zero command stays written
+
+PUB frontDrive(power, bSync) : eStatus, bDidWait | limitPwr, correctedPower
+'' FRONT COG ONLY: write this motor's command for {power}, unless it is protectively or emergency-stopped; a FAULTED
+'' motor is cleared first (frontClearFault(), PL-66), bounded, before the requested command is written; the owner sends any ATN
+''
+'' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
+'' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
+'' @returns eStatus - NO_ERROR; the protective code or ERR_EMERGENCY_STOPPED with nothing written; or ERR_NO_RESPONSE when a FAULTED motor did not clear in the bound (a zero command is left written and the requested command is never sent); never recorded
+'' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
+
+' Local Variables:
+' @local limitPwr - {power} saturated to [(-100) to 100] and then to the max speed
+' @local correctedPower - saturated power with this motor's reversal applied
+
+    bDidWait := FALSE
+    eStatus := frontRefusal()               ' refused: a command written now would sit stale and drive on the clear
+    if eStatus == NO_ERROR
+        eStatus, bDidWait := frontClearFault()
+        if eStatus == NO_ERROR
+            limitPwr :=  -100 #> power <# 100
+            motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
+            correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
+            frontCommand(incrementForPower(correctedPower), bSync)
+
+PUB frontWriteIncrement(nIncre, bSync)
+'' FRONT COG ONLY: write a raw driver increment (stops, and the TEST-USE path) with no emergency-stop check
+''
+'' PL-52: does not update getPower() -- REQ_TEST_INCREMENT writes a raw driver increment, not a commanded
+'' power, so motorPower is left exactly as it was
+''
+'' @param nIncre - the driver angle increment; 0 stops
+'' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
+
+    frontCommand(nIncre, bSync)
+
+PUB frontZeroPower()
+'' FRONT COG ONLY: write a zero driver command and clear the last commanded power (PL-52)
+''
+'' Used for a genuine stop (REQ_STOP, and the distance/rotation/time limits), never for a fault: a
+'' faulted motor keeps reporting its last commanded power (getPower()'s own doc), since nothing was
+'' ever commanded to stop it.
+
+    motorPower := 0
+    frontCommand(0, FALSE)
+
+PUB frontRefusal() : eStatus
+'' FRONT COG ONLY: return why a drive must be refused now, or NO_ERROR
+''
+'' @returns eStatus - the latched protective code first, then ERR_EMERGENCY_STOPPED, else NO_ERROR
+
+    eStatus := protectiveCode
+    if (eStatus == NO_ERROR) and (isFrontEStopped() == TRUE)
+        eStatus := ERR_EMERGENCY_STOPPED
+
+PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
+'' FRONT COG ONLY: once per pass -- the thermal derate of the current limit, and the blocked-motor test
+''
+'' The phase current is estimated as a lower bound from the DC-link reading and the modulation depth,
+'' I_phase >= I_dc / (0.75 x m) with m = duty / (4 x frame_cnt) (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.4).
+'' Its ~1 s average above the continuous limit lowers the driver's fold-back to that limit, and the peak
+'' limit returns below I_RESTORE_PCT of it. A motor commanded to move that stays at the lag limit with
+'' no hall tick for BLOCKED_PASSES is blocked; the caller latches the protective stop. Records nothing.
+''
+'' @returns bBlocked - T/F where T means this motor has been blocked for BLOCKED_PASSES
+
+' Local Variables:
+' @local dutyEff - the driver's duty, floored at duty_floor
+' @local dcMa - the DC-link current net of the rest zero, mA, never negative
+' @local phaseMa - this pass's phase-current lower bound, mA
+' @local nowPos - the driver's hall position this pass
+
+    if rSenseForBoard <> VALUE_NOT_SET
+        dutyEff := duty #> duty_floor
+        dcMa := muldiv64(sense_i_mV - restZeroSenseMv, 1_000, rSenseForBoard) #> 0
+        phaseMa := muldiv64(dcMa, 16 * frame_cnt, 3 * dutyEff) <# PHASE_MA_MAX
+        phaseAvgMa += ((phaseMa << CURRENT_AVG_SHIFT) - phaseAvgMa) SAR CURRENT_AVG_SHIFT
+        if (bDerated == FALSE) and (phaseAvgMa >= (limitContA * 1_000) << CURRENT_AVG_SHIFT)
+            bDerated := TRUE
+            i_limit_k := currentLimitK(limitContA)
+        elseif (bDerated == TRUE) and (phaseAvgMa < (limitContA * 10 * I_RESTORE_PCT) << CURRENT_AVG_SHIFT)
+            bDerated := FALSE
+            i_limit_k := currentLimitK(limitPeakA)
+
+    nowPos := pos
+    if ((targetIncre & !SYNC_BIT) <> 0) and (abs(err) >= LAG_SOFT) and (nowPos == blockedPos) and ((drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED) or (drv_state == DCS_SPIN_DN))
+        blockedPasses++
+    else
+        blockedPasses := 0
+    blockedPos := nowPos
+    bBlocked := (blockedPasses >= BLOCKED_PASSES)
+
+PUB frontProtectiveStop(eProtectiveCode)
+'' FRONT COG ONLY: secure this motor now and latch a protective stop until clearProtectiveStop()
+''
+'' @param eProtectiveCode - ERR_PLATFORM_BLOCKED or another -2_0xx cause; any other value latches ERR_PROTECTIVE_STOP
+
+    frontEStop(TRUE)                                                            ' 1. secure: the driver floats the drive, getPower() reads 0
+    if (eProtectiveCode > ERR_PROTECTIVE_STOP) or (eProtectiveCode < ERR_PROTECTIVE_STOP - 99)
+        eProtectiveCode := ERR_PROTECTIVE_STOP
+    if protectiveCode == NO_ERROR
+        protectiveCode := eProtectiveCode                                       ' 2. latch last; the first cause sticks
+    blockedPasses := 0
+
+PUB frontClearProtective()
+'' FRONT COG ONLY: forget the latched protective cause; the caller then releases the emergency stop that secured the motor
+''
+
+    protectiveCode := NO_ERROR
+    blockedPasses := 0
+
+PUB frontSetCurrentLimits(peakAmps, contAmps)
+'' FRONT COG ONLY: replace both current limits (TEST-USE), and restart the average at the peak limit
+''
+'' @param peakAmps - the peak phase-current limit, amps
+'' @param contAmps - the continuous phase-current limit, amps
+
+    limitPeakA := peakAmps
+    limitContA := contAmps
+    phaseAvgMa := 0
+    bDerated := FALSE
+    i_limit_k := currentLimitK(limitPeakA)
+
+PUB frontEStop(bEStop)
+'' FRONT COG ONLY: latch (T) or release (F) this motor's emergency stop; a zero command is written either way
+''
+'' @param bEStop - T/F where T latches the emergency stop and F releases it
+
+    if bEStop <> FALSE
+        motorPower := 0                                                         ' PL-52: an e-stop is a genuine stop, not a fault
+        e_stop := TRUE
+        frontCommand(0, FALSE)
+    else
+        frontCommand(0, FALSE)                                                  ' zero first: nothing moves when the latch releases
+        e_stop := FALSE
+
+PUB frontConfirmStop()
+'' FRONT COG ONLY: once per pass, before requests: write a stop again until the driver's command reads zero
+''
+'' A stop written while the driver is taking an earlier synchronized command can be overwritten by the
+'' driver's own write-back of that command (gettgtincr: rdlong, then wrlong with the sync bit cleared).
+'' That write-back clears the sync bit, so one re-write on a later pass cannot be overwritten again.
+
+    if bStopUnconfirmed == TRUE
+        if (targetIncre & !SYNC_BIT) == 0
+            bStopUnconfirmed := FALSE                                           ' the stop is what the driver holds
+        else
+            setTargetAccel(0, false)                                            ' overwritten: stop again, confirmed next pass
+
+PUB isFrontEStopped() : bEStopped
+'' FRONT COG ONLY: return the drive-refusal predicate: the latch is set, or the driver reports DCS_ESTOP
+''
+'' @returns bEStopped - T/F where T means a drive must be refused; the latch term closes the pass before the driver reports the state
+
+    bEStopped := (e_stop <> FALSE) or (drv_state == DCS_ESTOP)
+
+PUB bFrontTakenSync() : bTaken
+'' FRONT COG ONLY: return TRUE once the driver has taken the last synchronized command (its sync bit is clear)
+''
+'' @returns bTaken - T/F where T means no synchronized command is waiting for this driver
+
+    bTaken := (targetIncre & SYNC_BIT) == 0
+
+PUB frontDriverCogBit() : cogBit
+'' FRONT COG ONLY: return this motor's driver cog as a COGATN mask bit
+''
+'' @returns cogBit - 1 << the driver's cog id, or 0 when no driver runs (never 1 << -1, D1)
+
+    cogBit := 0
+    if motorCog <> 0
+        cogBit := 1 << (motorCog - 1)
+
+PUB frontTrack(passCount) | eDrvState, nowPos
+'' FRONT COG ONLY: once per pass, latch a new fault's cause and accumulate position tracking; every WINDOW_PASSES passes advance the rpm window
+''
+'' @param passCount - the owner's pass counter, advanced by one every pass
+
+' Local Variables:
+' @local eDrvState - the driver state read once for this pass
+' @local nowPos - the driver's position read once for this pass
+
+    eDrvState := drv_state
+    frontNoteFault(eDrvState)
+    if (eDrvState == DCS_FAULTED) or (eDrvState == DCS_ESTOP)
+        ' a faulted or emergency-stopped motor restarts its tracking and window every pass
+        frontResetTracking(TRUE)
+        LARESET()                                                               ' reset LA tracking
+    else
+        nowPos := pos
+        posTrkHallTicks += absDistanceInTics(nowPos, trackBasePos)
+        trackBasePos := nowPos
+        if (passCount +// WINDOW_PASSES) == 0
+            updateWindowAccumulators()
+
+PUB frontStopTicks() : nTicks | incr, passes
+'' FRONT COG ONLY: return the hall ticks the field still travels if a stop is written now
+''
+'' The driver ramps the increment down by ramp_down every drive pass (.rampDn), so the field travels
+'' incr x (passes + 1) / 2 angle units, with passes = incr / ramp_down, and one hall cycle (2^32) is 6 ticks.
+'' Visit 3 check: 196 ticks/s, an increment of about 73.3M, gives 75 ticks, as measured.
+''
+'' @returns nTicks - the stopping distance in hall ticks; 0 at rest
+
+' Local Variables:
+' @local incr - the field's current increment per drive pass, unsigned
+' @local passes - drive passes the ramp-down takes, plus one
+
+    incr := abs drv_incr_now
+    passes := incr / ramp_down + 1
+    nTicks := muldiv64(incr >> 9, 3 * passes, 1 << 23)                          ' incr x passes / 2 x 6 / 2^32
+
+PUB frontStopMs() : nMs
+'' FRONT COG ONLY: return the milliseconds until the field is at rest if a stop is written now
+''
+'' @returns nMs - the stopping time, rounded up; 0 at rest
+
+    nMs := 0
+    if drv_incr_now <> 0
+        nMs := ((abs drv_incr_now) / ramp_down + 1) * DRIVE_PASS_US / 1_000 + 1
+
+PUB frontSetLimits(nTicks, nMsDeadline)
+'' FRONT COG ONLY: arm this motor's stop limits (0 disarms either)
+''
+'' @param nTicks - stop once the tracked hall ticks pass this count; 0 for none
+'' @param nMsDeadline - stop once getms() passes this value; 0 for none
+
+    motorStopHallTicks := nTicks
+    motorStopMSecs := nMsDeadline
+
+PUB bFrontLimitsDue(nowMs) : bFired
+'' FRONT COG ONLY: return TRUE, and disarm the limit, when a stop written now leaves the motor at rest at its time or distance limit
+''
+'' The stop begins early by the field's own stopping time or distance at its current speed (frontStopMs(),
+'' frontStopTicks()), so the motor is at rest at the limit, not a ramp past it. A limit already inside the
+'' stopping distance or time fires at once. The time limit is checked first; the distance limit only while no
+'' time limit is armed. The owner writes the stop.
+''
+'' @param nowMs - getms() for this pass
+'' @returns bFired - T/F where T means a limit fired in this call and the owner must stop the motor now
+
+    bFired := FALSE
+    if motorStopMSecs > 0
+        if nowMs + frontStopMs() >= motorStopMSecs
+            debug[user.DBGCH_SENSE]("-MOT- time limit reached")
+            motorStopMSecs := 0                                                 ' and clear user request
+            bFired := TRUE
+    elseif motorStopHallTicks > 0
+        if posTrkHallTicks + frontStopTicks() >= motorStopHallTicks
+            debug[user.DBGCH_SENSE]("-MOT- distance limit reached")
+            motorStopHallTicks := 0                                             ' and clear user request
+            bFired := TRUE
+
+PUB frontResetTracking(bWholeWindow) | nowPos
+'' FRONT COG ONLY: zero this motor's position tracking from its current position, and optionally the rpm window and HDMI maxima
+''
+'' @param bWholeWindow - T/F where T also resets the rpm window and the HDMI maxima
+
+' Local Variables:
+' @local nowPos - the driver's position, adopted as the new base
+
+    nowPos := pos
+    if bWholeWindow <> FALSE
+        resetWindowAccumulators(nowPos)
+    trackBasePos := nowPos
+    posTrkHallTicks := 0
+
+PUB frontResetMax()
+'' FRONT COG ONLY: reset the rpm window, the HDMI maxima and the position tracking (TEST-USE testResetMaxValues())
+''
+
+    frontResetTracking(TRUE)
+    LARESET()                                                                   ' reset LA tracking
+
+PUB frontSecure(bEStop)
+'' INTERNAL USE: secure this motor by writing directly -- ONLY when no front cog serves it (the caller checks that)
+''
+'' Used by stopMotor()/emergencyCutoff() with no front cog running, and by an owner whose own front cog is not running.
+''
+'' @param bEStop - T/F where T also latches the emergency stop
+
+    if bEStop <> FALSE
+        e_stop := TRUE
+    motorPower := 0                                                             ' PL-52: this is a genuine stop
+    setTargetAccel(0, false)
+
+PUB getposTrkHallTicks() : retv
+'' INTERNAL USE: return our position tracking hall-ticks
+''
+
+    retv := posTrkHallTicks
+
+PRI releasePinBaseClaim()
+' AE: free whichever slot this instance currently owns (matched by @pinbase, a stable
+' per-instance identity), so re-init or stop()/restart on the same or a different base never
+' self-conflicts and never leaks a stale claim.
+
+    if gOwnerP0P15 == @pinbase
+        gOwnerP0P15 := 0
+    if gOwnerP8P23 == @pinbase
+        gOwnerP8P23 := 0
+    if gOwnerP16P31 == @pinbase
+        gOwnerP16P31 := 0
+    if gOwnerP32P47 == @pinbase
+        gOwnerP32P47 := 0
+    if gOwnerP40P55 == @pinbase
+        gOwnerP40P55 := 0
+
+PRI bHoldsPinBaseClaim() : bHeld
+' Return TRUE when this instance currently owns a pin-range claim, i.e. a successful init()
+' (start()/startEx()/testSetup()) claimed a legal group and stop() has not yet released it.
+' A slot only ever holds @pinbase of the instance that claimed it, so an instance that was
+' never initialised -- or whose claim was refused -- cannot match.
+'
+' @returns bHeld - TRUE when one of the gOwner* slots holds this instance's @pinbase
+
+    bHeld := (gOwnerP0P15 == @pinbase) or (gOwnerP8P23 == @pinbase) or (gOwnerP16P31 == @pinbase) or (gOwnerP32P47 == @pinbase) or (gOwnerP40P55 == @pinbase)
+
+PRI bClaimPinBase(eMotorBasePin) : bClaimed
+' AE: claim {eMotorBasePin}'s 16-pin range for this instance, first releasing whatever range
+' this same instance previously held. Fails (does not claim) if the requested range overlaps a
+' range another instance already owns. The only overlapping legal-base pairs are the adjacent
+' ones 8 pins apart: (P0_P15, P8_P23), (P8_P23, P16_P31) and (P32_P47, P40_P55); PINS_NO_USE_P24_P39
+' is not a legal base (see validBasePinForChoice()) and never enters this check.
+
+    ' Release first, so a re-init or a restart on the same base never conflicts with
+    ' this instance's own previous claim. Each case below must therefore also test its
+    ' OWN slot: after the release, a non-zero own-slot can only mean ANOTHER instance
+    ' holds it -- which is the identical-base collision, the most obvious one of all.
+    releasePinBaseClaim()
+    bClaimed := TRUE
+    case eMotorBasePin
+        PINS_P0_P15:
+            if gOwnerP0P15 <> 0 or gOwnerP8P23 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP0P15 := @pinbase
+        PINS_P8_P23:
+            if gOwnerP8P23 <> 0 or gOwnerP0P15 <> 0 or gOwnerP16P31 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP8P23 := @pinbase
+        PINS_P16_P31:
+            if gOwnerP16P31 <> 0 or gOwnerP8P23 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP16P31 := @pinbase
+        PINS_P32_P47:
+            if gOwnerP32P47 <> 0 or gOwnerP40P55 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP32P47 := @pinbase
+        PINS_P40_P55:
+            if gOwnerP40P55 <> 0 or gOwnerP32P47 <> 0
+                bClaimed := FALSE
+            else
+                gOwnerP40P55 := @pinbase
+
+PRI setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode) : eError
+' Validate every start argument, then free this instance's previous driver, claim the pin group and init().
+'
+' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
+' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
+' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
+' @returns eError - NO_ERROR when this instance now holds the claim and is initialised, else the recorded ERR_* code
+
+    ' 1. validate, with no side effects: a rejected call leaves a running motor running, unchanged
+    eError := NO_ERROR
+    if validBasePinForChoice(eMotorBasePin) == INVALID_PIN_BASE
+        eError := ERR_BAD_PIN_GROUP
+    elseif validVoltageForChoice(eMotorVoltage) == INVALID_VOLTAGE
+        eError := ERR_BAD_VOLTAGE
+    elseif validDetectModeForChoice(eDetectionMode) == INVALID_DET_MODE
+        eError := ERR_BAD_DETECT_MODE
+    elseif isAbiLayoutValid() == FALSE
+        eError := ERR_ABI_MISMATCH
+
+    if eError == NO_ERROR
+        ' 2. D2: free this instance's own driver/sense cog and pin claim before starting fresh
+        if motorCog or senseCog or bHoldsPinBaseClaim()
+            stop()
+        ' 3. AE: an overlapping pin group is a wiring conflict -- two driver cogs would command the shared pins
+        if bClaimPinBase(eMotorBasePin) == FALSE
+            eError := ERR_PIN_GROUP_IN_USE
+            debug[user.DBGCH_ERROR]("! ERROR: pin base ", udec_long(eMotorBasePin), " overlaps a pin range already in use by another motor instance")
+        else
+            ' 4. every argument is valid and the pins are ours, so init() cannot fail
+            init(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    else
+        debug[user.DBGCH_ERROR]("! ERROR: start rejected ", sdec_long(eError), sdec_long(eMotorBasePin), sdec_long(eMotorVoltage), sdec_long(eDetectionMode))
+
+    eError := recordError(eError)
+
+PRI launchDriver(eMotorBasePin, eMotorVoltage, eDetectionMode, bParked) : eError | driverCogId
+' Validate and initialise this instance, then launch its PASM driver cog; a failure leaves nothing running.
+'
+' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
+' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
+' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
+' @param bParked - T/F where T means the driver waits for an ATN before it starts driving
+' @returns eError - NO_ERROR when the driver cog runs, else the ERR_* code also recorded for getError() (ERR_BOARD_NOT_DETECTED when auto-detection found no board)
+
+' Local Variables:
+' @local driverCogId - the value coginit() returned
+
+    eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    if (eError == NO_ERROR) and (eDetectedBoard == REV_Unknown)
+        ' PL-73: with no board detected there is no current-sense scale, so the driver would run with no
+        '  current limit at all. A board is driven only when detected, or when the user forced a revision
+        '  (which setupForStart() reports as that revision). stop() releases the claim and the pins.
+        stop()
+        eError := recordError(ERR_BOARD_NOT_DETECTED)
+        debug[user.DBGCH_ERROR]("! ERROR: start refused, no board detected at pin group ", udec_long(eMotorBasePin), " (force BRD_REV_A / BRD_REV_B to drive anyway)")
+    if eError == NO_ERROR
+        ' pre-launch: setupForStart() stopped any previous driver and front cog, so no other writer exists
+        sync_required := bParked
+        params_ptr := @offset_fwd   ' point to driver variables
+        setTargetAccel(0, false)                            ' do NOT move at startup
+        motorStopHallTicks := 0                             ' no stop limit survives a restart
+        motorStopMSecs := 0
+        bStopUnconfirmed := FALSE                           ' front-owned from launch on; no stop is pending yet
+
+        driverCogId := coginit(NEWCOG, @driver, @pinbase)
+        if driverCogId < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+            eError := recordError(ERR_NO_FREE_COG)
+            debug[user.DBGCH_ERROR]("!! ERROR filed to start Motor Control task")
+            ' PL-36: setupForStart() took this instance's pin-range claim. A failed start must not keep
+            '  it, or no other instance can claim the group until this one is stop()ped -- a claim with
+            '  no cog behind it. stop() releases the claim and clears the pins; with motorCog still 0
+            '  it stops no cog.
+            stop()
+        else
+            motorCog := driverCogId + 1    ' internal representation: cogid + 1 (0 reserved as "not started"), one write
+            debug[user.DBGCH_LIFECYCLE]("* Motor COG #", sdec_(driverCogId))
+
+PRI launchFront(bReleaseDriver) : eError | frontCogId, startMs
+' Launch this motor's front cog and wait, bounded, for its first pass; a failure stops the driver too.
+'
+' @param bReleaseDriver - T/F where T means the driver was launched parked and the front cog releases it with one ATN
+' @returns eError - NO_ERROR when the front cog runs, else ERR_NO_FREE_COG or ERR_NO_RESPONSE, also recorded for getError()
+
+' Local Variables:
+' @local frontCogId - the value cogspin() returned
+' @local startMs - getms() when the handshake wait began
+
+    ' pre-launch: no front cog of this instance exists, so these writes have no second writer
+    eError := NO_ERROR
+    frontPasses := 0
+    frontLatePasses := 0
+    frontMaxPassTicks := 0
+    cmdTimeoutMs := CMD_TIMEOUT_OFF                         ' S-8: off until the user turns it on
+    bCmdWatched := FALSE
+    cmdTimeoutEvents := 0
+    longfill(@cmdTimeoutSeen, 0, COG_SLOT_COUNT)           ' every cog starts even with the (zeroed) count
+    longfill(@taskStack, STACK_SENTINEL, STACK_SIZE_LONGS)  ' testGetFrontStats() finds the high-water mark from this
+
+    frontCogId := cogspin(NEWCOG, frontLoop(bReleaseDriver), @taskStack)
+    if frontCogId < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+        eError := recordError(ERR_NO_FREE_COG)
+        debug[user.DBGCH_ERROR]("!! ERROR filed to start front cog")
+        stop()    ' senseCog is still 0: stops the driver and releases the pins
+    else
+        senseCog := frontCogId + 1    ' internal representation: cogid + 1 (0 reserved as "not started"), one write
+        startMs := getms()
+        repeat while frontPasses == 0
+            if getms() - startMs > FRONT_START_TIMEOUT_MS
+                quit
+            waitms(REQ_POLL_MS)
+        if frontPasses == 0
+            eError := recordError(ERR_NO_RESPONSE)
+            debug[user.DBGCH_ERROR]("!! ERROR front cog did not start its loop")
+            stop()
+        else
+            debug[user.DBGCH_LIFECYCLE]("* Front COG #", sdec_(frontCogId))
+
+PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs
+' Initialise this instance's driver image and state for a validated, claimed start; cannot fail.
+'
+' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor, already validated and claimed
+' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor, already validated
+' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor, already validated
+
+' Local Variables:
+' @local fwdDegrees - forward commutation offset for this motor, in degrees
+' @local revDegrees - reverse commutation offset for this motor, in degrees
+' @local gapInNs - PWM dead-gap, in nanoseconds
+
+    ticks1ms   := (CLKFREQ / 1_000)
+    ticks1us   := (CLKFREQ / 1_000_000)
+    ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
+
+    pinbase := eMotorBasePin                            ' record base pin number (validated and claimed by setupForStart())
+
+    eUserDetectionMode, bUserForced := getInternalDetectMode(eDetectionMode)
+
+    ' set the mode now used by the driver to condition things (current-sense scaling, etc.)
+
+    eDetectedBoard := getBoardType()
+
+    byte[@motorId] := 0 ' terminate an empty string
+
+    targetAngle := $FFFFFFFF    ' set to not used! (other values only used during testing)
+
+    degrPerTic, hallTicsPerRotation := hallTicInfoForMotor()
+
+    fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE)
+    offset_fwd  := fwdDegrees frac 360
+    offset_rev  := revDegrees frac 360
+    offset_fwd_degrees := fwdDegrees
+    offset_rev_degrees := revDegrees
+
+    debug[user.DBGCH_LIFECYCLE]("MOT: ", udec(fwdDegrees), uhex_long(offset_fwd))
+    debug[user.DBGCH_LIFECYCLE]("     ", udec(revDegrees), uhex_long(offset_rev))
+
+    ' new build up our hall angle and position increment table for specific motor
+    if user.MOTOR_TYPE == MOTR_6_5_INCH
+        longmove(@hall_angles, @hltbAngles, 16)
+        bytemove(@deltas, @deltas65, 64)
+    else
+        longmove(@hall_angles, @hltbAngl4k, 16)
+        bytemove(@deltas, @deltas4k, 64)
+
+' average is middle plus deflection for forward or reverse
+'  responsiveness of motor to desire
+'  middle value is angular diff and motor postion relative to hall position
+'  deflection is direction and speed dependent
+    frame_cnt := (ticks1us * (1_000_000_000 / PWM_RATE_IN_HZ)) / 1_000
+    debug[user.DBGCH_LIFECYCLE](" - Calc FRAME: ", udec(frame_cnt))
+
+    ' preload driver values before driver start
+    adc_fram    :=    frame_cnt                         ' set ADC to full PWM frame counts
+    fram        :=    (frame_cnt / 2) << 16 + 1         ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
+    bias        :=    frame_cnt / 4                     ' PWM center-frame bias
+    lutCodePtr  :=    @lutCodeStart                     ' task 3535: hub addr of LUT-resident start sequence, block-loaded by the driver at coginit
+
+    ' setup driver parameters based on clock rate
+    ' A1 / PL-9: both 64010 manuals specify a 250 ns minimum dead-gap regardless of board
+    ' revision (MOSFET response time sets the floor, not driver speed), so there is no
+    ' per-revision value to select here. The removed conditional intended 52 ns for Rev B,
+    ' which would have been ~5x under spec; it never actually took that branch (see A2 --
+    ' eDetectedBoard's REV_A/REV_B values can't match a BRD_REV_A/BRD_REV_B comparison), so
+    ' every board has always gotten the compliant 260 ns. Deleted, not repaired.
+    gapInNs := 260
+    dead_gap    := (ticks1us * gapInNs) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
+    pwm_limit   := (frame_cnt / 2) - (dead_gap  / 2)    'PWM duty hard limit 1/2 freq of PWM
+
+    ' .. and set up rest
+    ' orig higher power code used this
+    duty_min    := 100 << 4 #> (dead_gap / 2) << 4
+                                                        '    duty_min    := dead_gap << 4 #> dead_gap << 4
+                                                        ' Chip's new code adjusted this, why?
+                                                        '    duty_min    := 200 << 4 #> dead_gap << 4
+    duty_max    := (pwm_limit  << 4) / 2 <# pwm_limit << 4      ' ok
+                                                        'duty_max    := ((pwm_limit  << 4) / 4) * 3 <# pwm_limit << 4    ' BAD
+                                                        'duty_max    := ((pwm_limit  << 4) / 8) * 5 <# pwm_limit << 4    ' BAD
+    ' orig higher power code used this
+    duty_up     := 18
+    duty_dn     := 4
+                                                        ' Chip's new code adjusted this, why?
+                                                        '    duty_up     := 8   ' this drops our top-end power by 45%
+                                                        '    duty_dn     := 2
+    cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
+    stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
+    e_stop      := FALSE
+    ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
+    ' NOTES: 220410 -  at 14.8V 40_000 seems to fault a lot on gravel surface (i'm switching) to 10_000 and PWR_14p8V to see if motors stay operational (5_000 dog slow)
+    ' NOTES: 220413 -  at 14.8V 10_000 better on gravel surface  but too slow a ramp to 15_000 and PWR_14p8V to see if motors stay operational
+    ' 50_000 for 12v & 18_5v
+    '   ramp_min - start ramping at this value
+    '   ramp_max - max ramping at this value, once reach this value, keep incrementing with this value
+    '   ramp_inc - ramping increment, added to ramp_min every drive pass (~522.7 us, PL-50). Effectively defines the acceleration
+    ramp_max := 200_000                                 ' 200k angle max increment/decrement
+    ramp_min := 1_500                                   ' 1k5 angle min increment: start add this every drive pass to ramp up from zero
+    ramp_inc := 22                                      ' increment to ramping speed, add to ramp_min every drive pass until ramp_max reached
+    ramp_down := 50_000                                 ' fixed ramp down speed
+
+    motorIsReversed := FALSE    ' by default our motor direction is not reversed
+    fault := FALSE
+    hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
+    hall_illegal := 0
+    drv_incr_now := 0           ' no stale field speed across stop()/start(): the stop timing reads it
+
+    ' init status variables
+    loop_ticks := 0
+    minDrvTics := 65535
+    drv_state := DCS_Unknown
+
+    maxSpeed := 75            ' [1-100] default 75
+    maxSpeed4dist := 75      ' [1-100] default 75
+
+    ' preset HDMI Monitor values
+    resetHdmiData()
+
+    debug[user.DBGCH_LIFECYCLE]("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(adc_fram), udec_long(duty_min), udec_long(duty_max))
+    debug[user.DBGCH_LIFECYCLE]("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks))
+
+    circInMM_x10, _ := wheelGeometry()
+
+    ' PL-14: honour the caller's eMotorVoltage parameter instead of silently re-reading the
+    ' compile-time user.DRIVE_VOLTAGE. Behaviour-neutral today (every shipped caller already
+    ' passes user.DRIVE_VOLTAGE here), but it makes the parameter -- and the caller's own
+    ' validVoltageForChoice() check on it -- meaningful, and lets two motors run at different
+    ' voltages.
+    confgurePowerLimits(eMotorVoltage)
+
+    rSenseForBoard := VALUE_NOT_SET
+    if eDetectedBoard == REV_A
+        rSenseForBoard := F_REV_A_RSENSE
+    elseif eDetectedBoard == REV_B
+        rSenseForBoard := F_REV_B_RSENSE
+
+    ' S-2: the current limits start at the MOSFET values; nothing is latched or derated at start
+    limitPeakA := I_PEAK_A
+    limitContA := I_CONT_A
+    duty_floor := muldiv64(frame_cnt, 4 * DUTY_FLOOR_PCT, 100)              ' m = duty / (4 * frame_cnt)
+    i_limit_k := currentLimitK(limitPeakA)
+    protectiveCode := NO_ERROR
+    faultCause := FC_NONE                                                   ' S-7: no fault since this start
+    bWasFaulted := FALSE
+    faultIllegalPrev := 0                                                   ' the driver zeroes its counts at start too
+    phaseAvgMa := 0
+    bDerated := FALSE
+    blockedPasses := 0
+    blockedPos := 0
+
+
+VAR { * user request values * }
+
+    LONG    eUserSelectedVolts  ' remember the value specified by the user
+    LONG    fMotorVolts         ' float representation of user selected volts (used internally)
+    LONG    eUserDetectionMode  ' remember the value specified by the user
+    LONG    eDetectedBoard      ' remember the board type detected (or overridden)
+    LONG    bUserForced         ' T/F: where T means user is NOT using autodetect
+    ' limits based on user voltage
+    LONG    minFwdIncreAtPwr
+    LONG    maxFwdIncreAtPwr
+    LONG    minRevIncreAtPwr
+    LONG    maxRevIncreAtPwr
+    ' user max speeds
+    LONG    maxSpeed            ' [1-100] default 75
+    LONG    maxSpeed4dist       ' [1-100] default 75
+    ' stop point in time based on passing mSec or tick counts
+    LONG    motorStopMSecs      ' stop motor when we've passed this time in milliseconds
+    LONG    motorStopHallTicks  ' stop motor when we've passed this tick count
+    LONG    motorPower          ' remember last power requested
+    LONG    motorIsReversed     ' T/F where T means we need to flip direction: FWD <-> REV
+
+    ' values specific to user selected motor
+    LONG    degrPerTic
+    LONG    hallTicsPerRotation
+    LONG    pwm_limit                                   ' max freq of our pwm
+
+    BYTE    motorId[MOTOR_ID_STRLEN+1]
+
+PRI scaledCurrent() : fAmps, fWatts
+' Compute the current-sense reading, net of the rest zero (PL-45), shared by getCurrent() and the
+' HDMI telemetry (PL-25); records nothing -- the caller decides whether a board-not-detected reading
+' is an error (getCurrent()) or just "no measurement" (telemetry).
+'
+' @returns fAmps - motor current in units of 0.1 mA (amps x 10_000); 0 when the board was never detected
+' @returns fWatts - motor power in mW; 0 under the same condition
+
+    ' for REVA gain is 1, R is 0.005
+    ' for REVB gain is 50, R is 0.003
+    ' gain and R is combined into rSenseForBoard -> RevA rSenseForBoard 5, RevB rSenseForBoard 150
+    ' RevB. 10A, through 0,003R -> 0.03mV -> (50gain) -> 1.5V. 20A -> 3V, 10A -> 1.5V, 1A -> 0.15V
+    ' RevA. 10A, through 0.005R -> 0.05mV -> (1gain) -> 50mW, 20A -> 0.1V, 10A -> 50mV, 1A -> 5mV
+    ' the driver's sense_i_mV is true millivolts (numerator 3300 << 11, restored by sar #11 in the
+    '  control loop), and rSenseForBoard is millivolts per amp, so scale up before dividing -- a plain
+    '  sense_i_mV / rSenseForBoard would truncate to whole amps
+    if rSenseForBoard == VALUE_NOT_SET
+        fAmps := 0
+        fWatts := 0
+    else
+        fAmps := (sense_i_mV - restZeroSenseMv) * CURRENT_UNITS_PER_AMP / rSenseForBoard  ' in multiples of 0.1mA
+        fWatts := round((float(fAmps) *. fMotorVolts)/. F_SCALE_WATTS)              ' in mW
+
+CON { board detection and pin-group geometry }
+
+    DETECT_SENSE_OFFSET  = 4                        ' detection pin is pinbase + 4, which is also the driver's pin_adc_cur_i
+    DETECT_CHARGE_MS     = 1                        ' pinhigh() time that charges the Rev B board's 0.1uF capacitor
+    DETECT_READ_COUNT    = 500                      ' pinread() samples taken after the pin is released
+    DETECT_NODET_MIN_SUM = DETECT_READ_COUNT / 2    ' more highs than this: nothing discharged the pin, no board
+    DETECT_REVB_MIN_US   = 20                       ' a pin high for less than this is not a Rev B sense node
+
+    ' ADDPINS cannot cross a 32-pin port boundary, so every 16-pin group operation is two 8-pin calls
+    HALF_GROUP_SPAN      = 7                        ' addpins operand: 8 pins
+    GROUP_HI_OFFSET      = 8                        ' second half of a 16-pin group
+
+CON ' --- TEST-USE ONLY Methods ---
+
+    DEGREES_PER_TURN      = 360     ' one turn of a commutation offset, in degrees
+    DEGREE_NORM_MAX_STEPS = 16      ' bounded add/subtract-360 steps: inputs within +/-5_760 degrees normalise exactly
 
 CON ' --- PRIVATE (Utility) Methods ---
 
@@ -2228,25 +2602,6 @@ PRI setTargetAccel(nTgtIncr, sync) | inincr
     debug[user.DBGCH_COMMAND]("-MOT- ", sdec_long(inincr), " ", uhex_long(nTgtIncr), " ", sdec_(nTgtIncr>>31), " ", sdec_long(sync))
     tvTargetIncreInM := inincr / 10_000
 
-PUB SyncStatus() : eError | startMs
-'' Wait until the driver has taken a synchronized command (when configured for synchronization)
-''
-'' @returns eError - NO_ERROR once the command is taken, or ERR_SYNC_TIMEOUT (also recorded for getError()) after SYNC_TIMEOUT_MS
-
-' Local Variables:
-' @local startMs - getms() when the wait began
-
-    ' F-6: bounded. The driver clears the sync bit when it takes the command after ATN, polling once
-    '  per drive pass; it never takes one while e-stopped, stopped or not started, so an unbounded
-    '  wait here hung the caller's cog.
-    eError := NO_ERROR
-    startMs := getms()
-    repeat while targetIncre & $8000_0000
-        if getms() - startMs > SYNC_TIMEOUT_MS
-            eError := recordError(ERR_SYNC_TIMEOUT)
-            debug[user.DBGCH_ERROR]("! ERROR: SyncStatus(", zstr_(@motorId), ") driver did not take the synchronized command")
-            quit
-
 PRI nominalMilliVolts(eVoltage) : nMilliVolts
 ' Return the nominal supply voltage of a voltage enum, in mV: the one table getDriveVoltage() and the power figures read.
 '
@@ -2267,17 +2622,6 @@ PRI recordError(eCode) : eSameCode
     if (eCode <> NO_ERROR) and (lastError[COGID()] == NO_ERROR)
         lastError[COGID()] := eCode
     eSameCode := eCode
-
-PUB recordCallerError(eCode) : eSameCode
-'' INTERNAL USE: record a status an owner received for this motor in this motor's error slot for the calling cog
-''
-'' For isp_steering_2wheel: its caller records each wheel's front-cog status here, so getError() reports it per wheel.
-'' Never called from a front cog.
-''
-'' @param eCode - NO_ERROR or an ERR_* code
-'' @returns eSameCode - {eCode}, so a failing path can record and return in one expression
-
-    eSameCode := recordError(eCode)
 
 PRI isAbiLayoutValid() : bValid
 ' Return TRUE when the Spin2 VAR layout matches every hub offset the PASM driver walks.
@@ -2450,34 +2794,6 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     ' tell our table size to reader
     nGrpOffset := 3
     LONG[@pTitlesAr][nGrpOffset] := DBG_MAX_VARS_IN_GROUP
-
-PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
-'' TESTING USE: Return pointers to HDMI-debug data structures for this motor-object instance
-''
-
-    loadDisplayList()
-    nGroups := DBG_GROUPS_CT
-    pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
-    pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
-    pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-    pGroupVars := @pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-    ' DBGCH_HDMI_DUMP (off by default) replaces the runtime showHDMIDebug flag, which nothing ever set TRUE
-    debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* MOTR DAT values: ", uhex_long(@hall), uhex_long_array(@hall, 4))
-    debug[user.DBGCH_HDMI_DUMP]("* MOTR VAR values: ", uhex_long(@tvRpm_x10), uhex_long_array(@tvRpm_x10, 4))
-    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
-    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE2: ", uhex_long(@nameTitle2), uhex_byte_array(@nameTitle2, dataLen2))
-    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE3: ", uhex_long(@nameTitle3), uhex_byte_array(@nameTitle3, dataLen3))
-    debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* MOTR DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, DBG_GROUPS_CT + 1))
-    debug[user.DBGCH_HDMI_DUMP]("* MOTR DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, DBG_GROUPS_CT))
-    debug[user.DBGCH_HDMI_DUMP]("* MOTR DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
-    debug[user.DBGCH_HDMI_DUMP]("* MOTR DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, DBG_GROUPS_CT * DBG_MAX_VARS_IN_GROUP))
-    debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* MOTR PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
-    debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
-    debug[user.DBGCH_HDMI_DUMP]("* =============")
 
 CON ' -- TASK: the front cog --
 
@@ -3070,154 +3386,6 @@ PRI postRequest(eCmd, nArg1, nArg2, nArg3) : eStatus | slotIdx, mySeq, startMs, 
 
 CON { --- FRONT COG service surface: called only from a front cog (this object's, or its owner's) --- }
 
-PUB frontClearFault() : eStatus, bDidWait
-'' FRONT COG ONLY: clear a FAULTED motor (PL-66), bounded; a no-op (NO_ERROR, no wait) when not FAULTED
-''
-'' Shared by frontDrive() (single-motor and per-wheel use) and an owner that must clear several
-'' motors' faults together before writing any of their commands (isp_steering_2wheel) -- one
-'' fault-clear path either way.
-''
-'' @returns eStatus - NO_ERROR (nothing to clear, or cleared), or ERR_NO_RESPONSE when FAULTED and it did not clear in the bound (a zero command is left written)
-'' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
-
-    eStatus := NO_ERROR
-    bDidWait := FALSE
-    if drv_state == DCS_FAULTED
-        ' PL-66: only the front cog can tell a request that just arrived from one still standing --
-        '  the driver's own sv_tgt_incr==tgt_incr compare (.notRqStop) tests "still standing", not
-        '  "just arrived", because drvMotor saves sv_tgt_incr from tgt_incr every pass before
-        '  re-reading it. So the fault-clear edge is made here, not in the driver: a zero command
-        '  always reaches the driver's stop-request check before that compare (drv_state <>
-        '  DCS_STOPPED jumps straight to .newRqst -> .resetFault -> DCS_STOPPED, in one pass -- read
-        '  against .noEStop/.newRqst/.resetFault), so a bounded wait for drv_state leaving
-        '  DCS_FAULTED clears it, for every drive while FAULTED, not only an equal-power retry (a
-        '  differing command already reached .resetFault on its own, unconditionally).
-        frontZeroPower()                                                    ' PL-52: also clears getPower() while we try
-        bDidWait := TRUE
-        if bFrontWaitForDriver(WAIT_FAULT_LEFT) == FALSE
-            eStatus := ERR_NO_RESPONSE                                      ' did not clear in the bound; the zero command stays written
-
-PUB frontDrive(power, bSync) : eStatus, bDidWait | limitPwr, correctedPower
-'' FRONT COG ONLY: write this motor's command for {power}, unless it is protectively or emergency-stopped; a FAULTED
-'' motor is cleared first (frontClearFault(), PL-66), bounded, before the requested command is written; the owner sends any ATN
-''
-'' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
-'' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
-'' @returns eStatus - NO_ERROR; the protective code or ERR_EMERGENCY_STOPPED with nothing written; or ERR_NO_RESPONSE when a FAULTED motor did not clear in the bound (a zero command is left written and the requested command is never sent); never recorded
-'' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
-
-' Local Variables:
-' @local limitPwr - {power} saturated to [(-100) to 100] and then to the max speed
-' @local correctedPower - saturated power with this motor's reversal applied
-
-    bDidWait := FALSE
-    eStatus := frontRefusal()               ' refused: a command written now would sit stale and drive on the clear
-    if eStatus == NO_ERROR
-        eStatus, bDidWait := frontClearFault()
-        if eStatus == NO_ERROR
-            limitPwr :=  -100 #> power <# 100
-            motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
-            correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
-            frontCommand(incrementForPower(correctedPower), bSync)
-
-PUB frontWriteIncrement(nIncre, bSync)
-'' FRONT COG ONLY: write a raw driver increment (stops, and the TEST-USE path) with no emergency-stop check
-''
-'' PL-52: does not update getPower() -- REQ_TEST_INCREMENT writes a raw driver increment, not a commanded
-'' power, so motorPower is left exactly as it was
-''
-'' @param nIncre - the driver angle increment; 0 stops
-'' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
-
-    frontCommand(nIncre, bSync)
-
-PUB frontZeroPower()
-'' FRONT COG ONLY: write a zero driver command and clear the last commanded power (PL-52)
-''
-'' Used for a genuine stop (REQ_STOP, and the distance/rotation/time limits), never for a fault: a
-'' faulted motor keeps reporting its last commanded power (getPower()'s own doc), since nothing was
-'' ever commanded to stop it.
-
-    motorPower := 0
-    frontCommand(0, FALSE)
-
-PUB frontRefusal() : eStatus
-'' FRONT COG ONLY: return why a drive must be refused now, or NO_ERROR
-''
-'' @returns eStatus - the latched protective code first, then ERR_EMERGENCY_STOPPED, else NO_ERROR
-
-    eStatus := protectiveCode
-    if (eStatus == NO_ERROR) and (isFrontEStopped() == TRUE)
-        eStatus := ERR_EMERGENCY_STOPPED
-
-PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
-'' FRONT COG ONLY: once per pass -- the thermal derate of the current limit, and the blocked-motor test
-''
-'' The phase current is estimated as a lower bound from the DC-link reading and the modulation depth,
-'' I_phase >= I_dc / (0.75 x m) with m = duty / (4 x frame_cnt) (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.4).
-'' Its ~1 s average above the continuous limit lowers the driver's fold-back to that limit, and the peak
-'' limit returns below I_RESTORE_PCT of it. A motor commanded to move that stays at the lag limit with
-'' no hall tick for BLOCKED_PASSES is blocked; the caller latches the protective stop. Records nothing.
-''
-'' @returns bBlocked - T/F where T means this motor has been blocked for BLOCKED_PASSES
-
-' Local Variables:
-' @local dutyEff - the driver's duty, floored at duty_floor
-' @local dcMa - the DC-link current net of the rest zero, mA, never negative
-' @local phaseMa - this pass's phase-current lower bound, mA
-' @local nowPos - the driver's hall position this pass
-
-    if rSenseForBoard <> VALUE_NOT_SET
-        dutyEff := duty #> duty_floor
-        dcMa := muldiv64(sense_i_mV - restZeroSenseMv, 1_000, rSenseForBoard) #> 0
-        phaseMa := muldiv64(dcMa, 16 * frame_cnt, 3 * dutyEff) <# PHASE_MA_MAX
-        phaseAvgMa += ((phaseMa << CURRENT_AVG_SHIFT) - phaseAvgMa) SAR CURRENT_AVG_SHIFT
-        if (bDerated == FALSE) and (phaseAvgMa >= (limitContA * 1_000) << CURRENT_AVG_SHIFT)
-            bDerated := TRUE
-            i_limit_k := currentLimitK(limitContA)
-        elseif (bDerated == TRUE) and (phaseAvgMa < (limitContA * 10 * I_RESTORE_PCT) << CURRENT_AVG_SHIFT)
-            bDerated := FALSE
-            i_limit_k := currentLimitK(limitPeakA)
-
-    nowPos := pos
-    if ((targetIncre & !SYNC_BIT) <> 0) and (abs(err) >= LAG_SOFT) and (nowPos == blockedPos) and ((drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED) or (drv_state == DCS_SPIN_DN))
-        blockedPasses++
-    else
-        blockedPasses := 0
-    blockedPos := nowPos
-    bBlocked := (blockedPasses >= BLOCKED_PASSES)
-
-PUB frontProtectiveStop(eProtectiveCode)
-'' FRONT COG ONLY: secure this motor now and latch a protective stop until clearProtectiveStop()
-''
-'' @param eProtectiveCode - ERR_PLATFORM_BLOCKED or another -2_0xx cause; any other value latches ERR_PROTECTIVE_STOP
-
-    frontEStop(TRUE)                                                            ' 1. secure: the driver floats the drive, getPower() reads 0
-    if (eProtectiveCode > ERR_PROTECTIVE_STOP) or (eProtectiveCode < ERR_PROTECTIVE_STOP - 99)
-        eProtectiveCode := ERR_PROTECTIVE_STOP
-    if protectiveCode == NO_ERROR
-        protectiveCode := eProtectiveCode                                       ' 2. latch last; the first cause sticks
-    blockedPasses := 0
-
-PUB frontClearProtective()
-'' FRONT COG ONLY: forget the latched protective cause; the caller then releases the emergency stop that secured the motor
-''
-
-    protectiveCode := NO_ERROR
-    blockedPasses := 0
-
-PUB frontSetCurrentLimits(peakAmps, contAmps)
-'' FRONT COG ONLY: replace both current limits (TEST-USE), and restart the average at the peak limit
-''
-'' @param peakAmps - the peak phase-current limit, amps
-'' @param contAmps - the continuous phase-current limit, amps
-
-    limitPeakA := peakAmps
-    limitContA := contAmps
-    phaseAvgMa := 0
-    bDerated := FALSE
-    i_limit_k := currentLimitK(limitPeakA)
-
 PRI currentLimitK(amps) : nK
 ' Return the driver's fold-back factor for a phase-current limit: threshold mV = duty x nK >> 16.
 '
@@ -3234,32 +3402,6 @@ PRI currentLimitK(amps) : nK
     else
         nK := 1 #> muldiv64(3 * amps * rSenseForBoard, $1_0000, 16 * frame_cnt) <# $FFFF
 
-PUB frontEStop(bEStop)
-'' FRONT COG ONLY: latch (T) or release (F) this motor's emergency stop; a zero command is written either way
-''
-'' @param bEStop - T/F where T latches the emergency stop and F releases it
-
-    if bEStop <> FALSE
-        motorPower := 0                                                         ' PL-52: an e-stop is a genuine stop, not a fault
-        e_stop := TRUE
-        frontCommand(0, FALSE)
-    else
-        frontCommand(0, FALSE)                                                  ' zero first: nothing moves when the latch releases
-        e_stop := FALSE
-
-PUB frontConfirmStop()
-'' FRONT COG ONLY: once per pass, before requests: write a stop again until the driver's command reads zero
-''
-'' A stop written while the driver is taking an earlier synchronized command can be overwritten by the
-'' driver's own write-back of that command (gettgtincr: rdlong, then wrlong with the sync bit cleared).
-'' That write-back clears the sync bit, so one re-write on a later pass cannot be overwritten again.
-
-    if bStopUnconfirmed == TRUE
-        if (targetIncre & !SYNC_BIT) == 0
-            bStopUnconfirmed := FALSE                                           ' the stop is what the driver holds
-        else
-            setTargetAccel(0, false)                                            ' overwritten: stop again, confirmed next pass
-
 PRI frontCommand(nIncre, bSync)
 ' FRONT COG: write this motor's driver command, and mark a stop as needing confirmation on the next pass.
 '
@@ -3268,51 +3410,6 @@ PRI frontCommand(nIncre, bSync)
 
     setTargetAccel(nIncre, bSync)
     bStopUnconfirmed := ((nIncre ZEROX 30) == 0)                               ' any other command supersedes a pending confirmation
-
-PUB isFrontEStopped() : bEStopped
-'' FRONT COG ONLY: return the drive-refusal predicate: the latch is set, or the driver reports DCS_ESTOP
-''
-'' @returns bEStopped - T/F where T means a drive must be refused; the latch term closes the pass before the driver reports the state
-
-    bEStopped := (e_stop <> FALSE) or (drv_state == DCS_ESTOP)
-
-PUB bFrontTakenSync() : bTaken
-'' FRONT COG ONLY: return TRUE once the driver has taken the last synchronized command (its sync bit is clear)
-''
-'' @returns bTaken - T/F where T means no synchronized command is waiting for this driver
-
-    bTaken := (targetIncre & SYNC_BIT) == 0
-
-PUB frontDriverCogBit() : cogBit
-'' FRONT COG ONLY: return this motor's driver cog as a COGATN mask bit
-''
-'' @returns cogBit - 1 << the driver's cog id, or 0 when no driver runs (never 1 << -1, D1)
-
-    cogBit := 0
-    if motorCog <> 0
-        cogBit := 1 << (motorCog - 1)
-
-PUB frontTrack(passCount) | eDrvState, nowPos
-'' FRONT COG ONLY: once per pass, latch a new fault's cause and accumulate position tracking; every WINDOW_PASSES passes advance the rpm window
-''
-'' @param passCount - the owner's pass counter, advanced by one every pass
-
-' Local Variables:
-' @local eDrvState - the driver state read once for this pass
-' @local nowPos - the driver's position read once for this pass
-
-    eDrvState := drv_state
-    frontNoteFault(eDrvState)
-    if (eDrvState == DCS_FAULTED) or (eDrvState == DCS_ESTOP)
-        ' a faulted or emergency-stopped motor restarts its tracking and window every pass
-        frontResetTracking(TRUE)
-        LARESET()                                                               ' reset LA tracking
-    else
-        nowPos := pos
-        posTrkHallTicks += absDistanceInTics(nowPos, trackBasePos)
-        trackBasePos := nowPos
-        if (passCount +// WINDOW_PASSES) == 0
-            updateWindowAccumulators()
 
 PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode
 ' FRONT COG: on the pass the driver first reads DCS_FAULTED, latch why (S-7): FC_HALL when a hall sensor is reading
@@ -3335,97 +3432,6 @@ PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode
             faultCause := FC_LAG
     bWasFaulted := (eDrvState == DCS_FAULTED)
     faultIllegalPrev := nIllegalNow
-
-PUB frontStopTicks() : nTicks | incr, passes
-'' FRONT COG ONLY: return the hall ticks the field still travels if a stop is written now
-''
-'' The driver ramps the increment down by ramp_down every drive pass (.rampDn), so the field travels
-'' incr x (passes + 1) / 2 angle units, with passes = incr / ramp_down, and one hall cycle (2^32) is 6 ticks.
-'' Visit 3 check: 196 ticks/s, an increment of about 73.3M, gives 75 ticks, as measured.
-''
-'' @returns nTicks - the stopping distance in hall ticks; 0 at rest
-
-' Local Variables:
-' @local incr - the field's current increment per drive pass, unsigned
-' @local passes - drive passes the ramp-down takes, plus one
-
-    incr := abs drv_incr_now
-    passes := incr / ramp_down + 1
-    nTicks := muldiv64(incr >> 9, 3 * passes, 1 << 23)                          ' incr x passes / 2 x 6 / 2^32
-
-PUB frontStopMs() : nMs
-'' FRONT COG ONLY: return the milliseconds until the field is at rest if a stop is written now
-''
-'' @returns nMs - the stopping time, rounded up; 0 at rest
-
-    nMs := 0
-    if drv_incr_now <> 0
-        nMs := ((abs drv_incr_now) / ramp_down + 1) * DRIVE_PASS_US / 1_000 + 1
-
-PUB frontSetLimits(nTicks, nMsDeadline)
-'' FRONT COG ONLY: arm this motor's stop limits (0 disarms either)
-''
-'' @param nTicks - stop once the tracked hall ticks pass this count; 0 for none
-'' @param nMsDeadline - stop once getms() passes this value; 0 for none
-
-    motorStopHallTicks := nTicks
-    motorStopMSecs := nMsDeadline
-
-PUB bFrontLimitsDue(nowMs) : bFired
-'' FRONT COG ONLY: return TRUE, and disarm the limit, when a stop written now leaves the motor at rest at its time or distance limit
-''
-'' The stop begins early by the field's own stopping time or distance at its current speed (frontStopMs(),
-'' frontStopTicks()), so the motor is at rest at the limit, not a ramp past it. A limit already inside the
-'' stopping distance or time fires at once. The time limit is checked first; the distance limit only while no
-'' time limit is armed. The owner writes the stop.
-''
-'' @param nowMs - getms() for this pass
-'' @returns bFired - T/F where T means a limit fired in this call and the owner must stop the motor now
-
-    bFired := FALSE
-    if motorStopMSecs > 0
-        if nowMs + frontStopMs() >= motorStopMSecs
-            debug[user.DBGCH_SENSE]("-MOT- time limit reached")
-            motorStopMSecs := 0                                                 ' and clear user request
-            bFired := TRUE
-    elseif motorStopHallTicks > 0
-        if posTrkHallTicks + frontStopTicks() >= motorStopHallTicks
-            debug[user.DBGCH_SENSE]("-MOT- distance limit reached")
-            motorStopHallTicks := 0                                             ' and clear user request
-            bFired := TRUE
-
-PUB frontResetTracking(bWholeWindow) | nowPos
-'' FRONT COG ONLY: zero this motor's position tracking from its current position, and optionally the rpm window and HDMI maxima
-''
-'' @param bWholeWindow - T/F where T also resets the rpm window and the HDMI maxima
-
-' Local Variables:
-' @local nowPos - the driver's position, adopted as the new base
-
-    nowPos := pos
-    if bWholeWindow <> FALSE
-        resetWindowAccumulators(nowPos)
-    trackBasePos := nowPos
-    posTrkHallTicks := 0
-
-PUB frontResetMax()
-'' FRONT COG ONLY: reset the rpm window, the HDMI maxima and the position tracking (TEST-USE testResetMaxValues())
-''
-
-    frontResetTracking(TRUE)
-    LARESET()                                                                   ' reset LA tracking
-
-PUB frontSecure(bEStop)
-'' INTERNAL USE: secure this motor by writing directly -- ONLY when no front cog serves it (the caller checks that)
-''
-'' Used by stopMotor()/emergencyCutoff() with no front cog running, and by an owner whose own front cog is not running.
-''
-'' @param bEStop - T/F where T also latches the emergency stop
-
-    if bEStop <> FALSE
-        e_stop := TRUE
-    motorPower := 0                                                             ' PL-52: this is a genuine stop
-    setTargetAccel(0, false)
 
 PRI resetWindowAccumulators(nowPos)
 ' Reset the rpm window and the HDMI maxima, adopting {nowPos} as the window's prior position.
@@ -3457,12 +3463,6 @@ PRI updateWindowAccumulators() | nowPos, nHallCntsInSlot
         hallWinEntryCt++
 
     updateHdmiData()
-
-PUB getposTrkHallTicks() : retv
-'' INTERNAL USE: return our position tracking hall-ticks
-''
-
-    retv := posTrkHallTicks
 
 PRI resetHdmiData()
     tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0

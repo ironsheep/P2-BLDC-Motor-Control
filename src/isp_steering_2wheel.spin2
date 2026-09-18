@@ -270,21 +270,6 @@ PUB stop() : eError
     rtWheel.stop()
     eError := NO_ERROR
 
-PRI stopFrontCog() | eStatus
-' Ask the front cog to EXIT, wait bounded for its acknowledgement, then cogstop it; never refuses.
-'
-
-' Local Variables:
-' @local eStatus - the EXIT request's result: NO_ERROR when acknowledged
-
-    ' PL-41: the front cog answers every open request, acknowledges, and parks with no output, so the
-    '  cogstop cannot cut a debug line. Without an answer in the bound it is stopped anyway.
-    eStatus, _, _ := postRequest(ltWheel.REQ_EXIT, BOTH_MOTORS, 0, 0, 0)
-    if eStatus <> NO_ERROR
-        debug[user.DBGCH_ERROR]("! ERROR: steering front cog did not acknowledge EXIT; stopping anyway")
-    cogstop(senseCog - 1)
-    senseCog := 0
-
 PUB setAcceleration(rate) : eError
 '' Set how fast both wheels speed up: every speed-up from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
 ''
@@ -666,30 +651,6 @@ PUB testSetCurrentLimits(peakAmps, contAmps) : eError | eStatus, eLeftStatus, eR
         eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_LIMITS, BOTH_MOTORS, peakAmps, contAmps, 0)
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
-PRI secureWheels(motorMask, bEStop) | eStatus
-' SECURING: stop (or emergency-stop) the selected wheels; never records, never refuses.
-'
-' @param motorMask - the wheels to secure: LEFT_MOTOR_BIT, RIGHT_MOTOR_BIT or BOTH_MOTORS
-' @param bEStop - T/F where T also latches each selected wheel's emergency stop
-
-' Local Variables:
-' @local eStatus - the posted request's platform status
-
-    ' I6. With the front cog running, it applies the request first in its next pass. With no front cog
-    '  (not started, inside start(), after stop()) no second writer exists, so each wheel is secured
-    '  directly; the same happens, reported, if a running front cog did not answer in time.
-    if bEStop == TRUE
-        eStatus, _, _ := postRequest(ltWheel.REQ_ESTOP, motorMask, 0, 0, 0)
-    else
-        eStatus, _, _ := postRequest(ltWheel.REQ_STOP, motorMask, 0, 0, 0)
-    if eStatus <> NO_ERROR
-        if eStatus == ERR_NO_RESPONSE
-            debug[user.DBGCH_ERROR]("! ERROR: steering front cog did not answer; securing directly")
-        if (motorMask & LEFT_MOTOR_BIT) <> 0
-            ltWheel.frontSecure(bEStop)
-        if (motorMask & RIGHT_MOTOR_BIT) <> 0
-            rtWheel.frontSecure(bEStop)
-
 CON { --- Subsystem Status --- }
 
 PUB getError() : eError, eLeftError, eRightError | nEvents
@@ -726,47 +687,6 @@ PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
     leftDistanceInUnits := convertDistance(ltWheel.getposTrkHallTicks(), eDistanceUnits)
     rightDistanceInUnits := convertDistance(rtWheel.getposTrkHallTicks(), eDistanceUnits)
 
-PRI convertDistance(nValue, eDistanceUnits) : nDistanceInUnits | fValue
-' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
-'
-' @param nValue - the wheel's tracked hall ticks
-' @param eDistanceUnits - units of the returned distance
-' @returns nDistanceInUnits - the distance; 0, with the ERR_* code recorded, when it cannot be measured
-
-' Local Variables:
-' @local fValue - the distance in mm (float), before the final unit conversion
-
-    nDistanceInUnits := 0
-    if user.WHEEL_DIA_IN_INCH == 0.0
-        recordError(ERR_NO_WHEEL_DIA)
-        debug[user.DBGCH_ERROR]("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
-    else
-        ' before start() travel-per-tick is 0, but so is every tracked tick count, so 0 is the true distance
-        ' task 3502: fValue is millimetres -- ticks x (mm per tick x100) / 100. Before 6.0.0 this
-        '  multiplied by the x10 constant and never divided the x10 back out, so every arm below
-        '  reported ten times the distance travelled (isp_bldc_motor.spin2 getDistance() divides
-        '  correctly). It uses the same tickInMM_x100 as stopAfterDistance(), so the two stay
-        '  inverses of each other.
-        fValue := float(nValue) *. float(tickInMM_x100) /. 100.0
-        case eDistanceUnits
-            DDU_MM:
-                nDistanceInUnits := round(fValue)
-            DDU_CM:
-                nDistanceInUnits := round(fValue /. 10.0)
-            DDU_M:
-                nDistanceInUnits := round(fValue /. 1000.0)                                             ' in M
-            DDU_KM:
-                nDistanceInUnits := round(fValue /. 1000.0 /. 1000.0)                                   ' in kM
-            DDU_IN:
-                nDistanceInUnits := round(distConv.fMm2inFloat(fValue))            '
-            DDU_FT:
-                nDistanceInUnits := round(distConv.fMm2inFloat(fValue) /. 12.0)                         ' in FT
-            DDU_MI:
-                nDistanceInUnits := round(distConv.fMm2inFloat(fValue) /. 12.0 /. 5280.0)               ' in MI
-            other:
-                recordError(ERR_BAD_UNITS)
-                debug[user.DBGCH_ERROR]("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
-
 PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
 '' Returns accumulated {*RotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for each of the motors.
 ''
@@ -777,34 +697,6 @@ PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
     debug[user.DBGCH_SENSE]("- grc ", sdec_long(ltWheel.getposTrkHallTicks()), sdec_long(rtWheel.getposTrkHallTicks()))
     leftRotationCount := convertRotationCount(ltWheel.getposTrkHallTicks(), eRotationUnits)
     rightRotationCount := convertRotationCount(rtWheel.getposTrkHallTicks(), eRotationUnits)
-
-PRI convertRotationCount(nValue, eRotationUnits) : rotationCount | degreesPerTic, ticsPerRotation
-' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
-'
-' @param nValue - the wheel's tracked hall ticks
-' @param eRotationUnits - units of the returned rotation
-' @returns rotationCount - the rotation; 0, with ERR_BAD_UNITS recorded, when the units are not DRU_*
-
-' Local Variables:
-' @local degreesPerTic - degrees of rotation per hall tick for this motor
-' @local ticsPerRotation - hall ticks per rotation for this motor
-
-    rotationCount := 0
-
-    degreesPerTic, ticsPerRotation := ltWheel.hallTicInfoForMotor()
-
-    case eRotationUnits
-        DRU_HALL_TICKS:
-            rotationCount := nValue
-        DRU_DEGREES:
-            ' degrees = ticks * 15, 4
-            rotationCount := nValue * degreesPerTic
-        DRU_ROTATIONS:
-            ' rotations = ticks / 24, 90
-            rotationCount := nValue / ticsPerRotation
-        other:
-            recordError(ERR_BAD_UNITS)
-            debug[user.DBGCH_ERROR]("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
 
 PUB getPower() : leftPower, rightPower
 '' Returns the last specified power value [-100 thru +100] for each of the motors (will be zero if the motor is stopped).
@@ -859,18 +751,6 @@ PUB getStatus() : eLeftStatus, eRightStatus
 
     eLeftStatus := ltWheel.getStatus()
     eRightStatus := rtWheel.getStatus()
-
-PRI getDriverState() : eLeftState, eRightState
-' Returns status of motor-driver state for each motor: enumerated constants: DCS_*
-    eLeftState := ltWheel.getDriverState()
-    eRightState := rtWheel.getDriverState()
-
-PRI getFaultStatus() : bLeftStatus, bRightStatus
-' Returns status of motor-driver fault-state for each motor: T/F
-'  S-5: a read only. Each wheel's fault latch (isFaultSignal()) is the sticky record that a fault
-'  happened, so nothing here clears it; only the motor object's clearFaultSignal() or a restart does.
-    bLeftStatus := ltWheel.isFaulted()
-    bRightStatus := rtWheel.isFaulted()
 
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
@@ -937,17 +817,6 @@ PUB validDetectModeForChoice(userDetMode) : legalMode
 ''
 
     legalMode := ltWheel.validDetectModeForChoice(userDetMode)
-
-CON ' --- TEST-USE ONLY Methods ---
-
-{
-    Bench-harness pass-throughs. These are NOT product API and are deliberately absent from
-    DRIVE-OBJECTS.md. They exist so a test top-level can reach each wheel's driver state,
-    fault latch and raw telemetry: a test cannot simply declare its own isp_bldc_motor,
-    because that second instance would fight this object's two for the same pins.
-
-    Mirrors the TEST-USE ONLY convention already used in isp_bldc_motor.spin2.
-}
 
 PUB testGetDriverState() : eLeftState, eRightState
 '' TESTING USE: return motor-driver state for each motor
@@ -1341,6 +1210,209 @@ PUB testRightGetCurrentLimitState() : nPeakA, nContA, bDeratedNow, nPhaseAvgMa, 
 
     nPeakA, nContA, bDeratedNow, nPhaseAvgMa, nLimitK := rtWheel.testGetCurrentLimitState()
 
+PUB isReady() : bState
+'' Return T/F where T means the both motor cogs are running
+''
+
+    bState := ltWheel.isReady() and rtWheel.isReady()
+
+PUB isStopped() : bState
+'' Return T/F where T means the both motors are stopped
+''
+
+    bState := ltWheel.isStopped() and rtWheel.isStopped()
+
+PUB isStarting() : bState
+'' Return T/F where T means the either motor is spinning up
+''
+
+    bState := ltWheel.isStarting() or rtWheel.isStarting()
+
+PUB isTurning() : bState
+'' Return T/F where T means the either motor is rotating
+''
+
+    bState := ltWheel.isTurning() or rtWheel.isTurning()
+
+PUB isFaulted() : bState
+'' Return T/F where T means either motor is faulted now (a motor's fault clears when a stop or a different power is commanded)
+''
+'' @returns bState - T/F where T means the left or the right motor driver is faulted
+
+    bState := ltWheel.isFaulted() or rtWheel.isFaulted()
+
+PUB isEmergency() : bState
+'' Return T/F where T means either motor is emergency-stopped
+''
+'' @returns bState - T/F where T means the left or the right motor driver is emergency-stopped
+
+    bState := ltWheel.isEmergency() or rtWheel.isEmergency()
+
+PUB showDriveStates()
+'' for TESTING dump curr drive states
+''
+
+    reportMotorStatus()
+    reportDrvStatus()
+    reportFaultStatus()
+
+PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
+'' Return pointers to HDMI-debug data structures for this motor-object instance
+''
+
+    loadDisplayList()
+    nGroups := STEER_DBG_GROUPS_CT
+    pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
+    pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
+    pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+    pGroupVars := @pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
+    ' DBGCH_HDMI_DUMP (off by default) replaces the runtime showHDMIDebug flag, which nothing ever set TRUE
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, STEER_DBG_GROUPS_CT + 1))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, STEER_DBG_GROUPS_CT))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, STEER_DBG_GROUPS_CT * STEER_DBG_MAX_VARS))
+    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, STEER_DBG_GROUPS_CT * STEER_DBG_MAX_VARS))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* Steer PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
+    debug[user.DBGCH_HDMI_DUMP]("* -------------")
+    debug[user.DBGCH_HDMI_DUMP]("* Steer Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+    debug[user.DBGCH_HDMI_DUMP]("* =============")
+
+
+
+PRI stopFrontCog() | eStatus
+' Ask the front cog to EXIT, wait bounded for its acknowledgement, then cogstop it; never refuses.
+'
+
+' Local Variables:
+' @local eStatus - the EXIT request's result: NO_ERROR when acknowledged
+
+    ' PL-41: the front cog answers every open request, acknowledges, and parks with no output, so the
+    '  cogstop cannot cut a debug line. Without an answer in the bound it is stopped anyway.
+    eStatus, _, _ := postRequest(ltWheel.REQ_EXIT, BOTH_MOTORS, 0, 0, 0)
+    if eStatus <> NO_ERROR
+        debug[user.DBGCH_ERROR]("! ERROR: steering front cog did not acknowledge EXIT; stopping anyway")
+    cogstop(senseCog - 1)
+    senseCog := 0
+
+PRI secureWheels(motorMask, bEStop) | eStatus
+' SECURING: stop (or emergency-stop) the selected wheels; never records, never refuses.
+'
+' @param motorMask - the wheels to secure: LEFT_MOTOR_BIT, RIGHT_MOTOR_BIT or BOTH_MOTORS
+' @param bEStop - T/F where T also latches each selected wheel's emergency stop
+
+' Local Variables:
+' @local eStatus - the posted request's platform status
+
+    ' I6. With the front cog running, it applies the request first in its next pass. With no front cog
+    '  (not started, inside start(), after stop()) no second writer exists, so each wheel is secured
+    '  directly; the same happens, reported, if a running front cog did not answer in time.
+    if bEStop == TRUE
+        eStatus, _, _ := postRequest(ltWheel.REQ_ESTOP, motorMask, 0, 0, 0)
+    else
+        eStatus, _, _ := postRequest(ltWheel.REQ_STOP, motorMask, 0, 0, 0)
+    if eStatus <> NO_ERROR
+        if eStatus == ERR_NO_RESPONSE
+            debug[user.DBGCH_ERROR]("! ERROR: steering front cog did not answer; securing directly")
+        if (motorMask & LEFT_MOTOR_BIT) <> 0
+            ltWheel.frontSecure(bEStop)
+        if (motorMask & RIGHT_MOTOR_BIT) <> 0
+            rtWheel.frontSecure(bEStop)
+
+PRI convertDistance(nValue, eDistanceUnits) : nDistanceInUnits | fValue
+' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
+'
+' @param nValue - the wheel's tracked hall ticks
+' @param eDistanceUnits - units of the returned distance
+' @returns nDistanceInUnits - the distance; 0, with the ERR_* code recorded, when it cannot be measured
+
+' Local Variables:
+' @local fValue - the distance in mm (float), before the final unit conversion
+
+    nDistanceInUnits := 0
+    if user.WHEEL_DIA_IN_INCH == 0.0
+        recordError(ERR_NO_WHEEL_DIA)
+        debug[user.DBGCH_ERROR]("! ERROR: distance calcs not supported as wheel dia. is ZERO!!")
+    else
+        ' before start() travel-per-tick is 0, but so is every tracked tick count, so 0 is the true distance
+        ' task 3502: fValue is millimetres -- ticks x (mm per tick x100) / 100. Before 6.0.0 this
+        '  multiplied by the x10 constant and never divided the x10 back out, so every arm below
+        '  reported ten times the distance travelled (isp_bldc_motor.spin2 getDistance() divides
+        '  correctly). It uses the same tickInMM_x100 as stopAfterDistance(), so the two stay
+        '  inverses of each other.
+        fValue := float(nValue) *. float(tickInMM_x100) /. 100.0
+        case eDistanceUnits
+            DDU_MM:
+                nDistanceInUnits := round(fValue)
+            DDU_CM:
+                nDistanceInUnits := round(fValue /. 10.0)
+            DDU_M:
+                nDistanceInUnits := round(fValue /. 1000.0)                                             ' in M
+            DDU_KM:
+                nDistanceInUnits := round(fValue /. 1000.0 /. 1000.0)                                   ' in kM
+            DDU_IN:
+                nDistanceInUnits := round(distConv.fMm2inFloat(fValue))            '
+            DDU_FT:
+                nDistanceInUnits := round(distConv.fMm2inFloat(fValue) /. 12.0)                         ' in FT
+            DDU_MI:
+                nDistanceInUnits := round(distConv.fMm2inFloat(fValue) /. 12.0 /. 5280.0)               ' in MI
+            other:
+                recordError(ERR_BAD_UNITS)
+                debug[user.DBGCH_ERROR]("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
+
+PRI convertRotationCount(nValue, eRotationUnits) : rotationCount | degreesPerTic, ticsPerRotation
+' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
+'
+' @param nValue - the wheel's tracked hall ticks
+' @param eRotationUnits - units of the returned rotation
+' @returns rotationCount - the rotation; 0, with ERR_BAD_UNITS recorded, when the units are not DRU_*
+
+' Local Variables:
+' @local degreesPerTic - degrees of rotation per hall tick for this motor
+' @local ticsPerRotation - hall ticks per rotation for this motor
+
+    rotationCount := 0
+
+    degreesPerTic, ticsPerRotation := ltWheel.hallTicInfoForMotor()
+
+    case eRotationUnits
+        DRU_HALL_TICKS:
+            rotationCount := nValue
+        DRU_DEGREES:
+            ' degrees = ticks * 15, 4
+            rotationCount := nValue * degreesPerTic
+        DRU_ROTATIONS:
+            ' rotations = ticks / 24, 90
+            rotationCount := nValue / ticsPerRotation
+        other:
+            recordError(ERR_BAD_UNITS)
+            debug[user.DBGCH_ERROR]("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
+
+PRI getDriverState() : eLeftState, eRightState
+' Returns status of motor-driver state for each motor: enumerated constants: DCS_*
+    eLeftState := ltWheel.getDriverState()
+    eRightState := rtWheel.getDriverState()
+
+PRI getFaultStatus() : bLeftStatus, bRightStatus
+' Returns status of motor-driver fault-state for each motor: T/F
+'  S-5: a read only. Each wheel's fault latch (isFaultSignal()) is the sticky record that a fault
+'  happened, so nothing here clears it; only the motor object's clearFaultSignal() or a restart does.
+    bLeftStatus := ltWheel.isFaulted()
+    bRightStatus := rtWheel.isFaulted()
+
+CON ' --- TEST-USE ONLY Methods ---
+
+{
+    Bench-harness pass-throughs. These are NOT product API and are deliberately absent from
+    DRIVE-OBJECTS.md. They exist so a test top-level can reach each wheel's driver state,
+    fault latch and raw telemetry: a test cannot simply declare its own isp_bldc_motor,
+    because that second instance would fight this object's two for the same pins.
+
+    Mirrors the TEST-USE ONLY convention already used in isp_bldc_motor.spin2.
+}
+
 CON { --- PRIVATE Utility Methods --- }
 
 VAR { error record }
@@ -1447,44 +1519,6 @@ PRI calcPowerForDirection(power, direction) : ltPower, rtPower | limitPwr, limit
     ltPower := (limitDir >= 0) ? limitPwr : reducedPower                        ' a left turn slows the left wheel
     rtPower := (limitDir <= 0) ? limitPwr : reducedPower                        ' a right turn slows the right wheel
     debug[user.DBGCH_COMMAND]("* calcPowerForDirection(", sdec_long(power), ", ", sdec_long(direction), ") -> ", sdec_long(ltPower), sdec_long(rtPower))
-
-PUB isReady() : bState
-'' Return T/F where T means the both motor cogs are running
-''
-
-    bState := ltWheel.isReady() and rtWheel.isReady()
-
-PUB isStopped() : bState
-'' Return T/F where T means the both motors are stopped
-''
-
-    bState := ltWheel.isStopped() and rtWheel.isStopped()
-
-PUB isStarting() : bState
-'' Return T/F where T means the either motor is spinning up
-''
-
-    bState := ltWheel.isStarting() or rtWheel.isStarting()
-
-PUB isTurning() : bState
-'' Return T/F where T means the either motor is rotating
-''
-
-    bState := ltWheel.isTurning() or rtWheel.isTurning()
-
-PUB isFaulted() : bState
-'' Return T/F where T means either motor is faulted now (a motor's fault clears when a stop or a different power is commanded)
-''
-'' @returns bState - T/F where T means the left or the right motor driver is faulted
-
-    bState := ltWheel.isFaulted() or rtWheel.isFaulted()
-
-PUB isEmergency() : bState
-'' Return T/F where T means either motor is emergency-stopped
-''
-'' @returns bState - T/F where T means the left or the right motor driver is emergency-stopped
-
-    bState := ltWheel.isEmergency() or rtWheel.isEmergency()
 
 CON { -- TASK: the steering front cog -- }
 
@@ -2248,14 +2282,6 @@ PRI postRequest(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eR
             eStatus := ERR_NO_RESPONSE
         ' else: the front cog was stopped while this cog waited, ERR_NOT_STARTED
 
-PUB showDriveStates()
-'' for TESTING dump curr drive states
-''
-
-    reportMotorStatus()
-    reportDrvStatus()
-    reportFaultStatus()
-
 PRI reportDrvStatus() | ltState, rtState
     ltState, rtState := getDriverState()
     showDriverState(ltState, @"ltMot")
@@ -2455,32 +2481,6 @@ PRI loadDisplayList() | nGrpOffset, nValsGrpOffset, nVarsInGroup
     ' tell our table size to reader
     nGrpOffset := 1
     LONG[@pTitlesAr][nGrpOffset] := STEER_DBG_MAX_VARS
-
-PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
-'' Return pointers to HDMI-debug data structures for this motor-object instance
-''
-
-    loadDisplayList()
-    nGroups := STEER_DBG_GROUPS_CT
-    pGroupTitles := @pTitlesAr         ' pStr = long[pTitlesAr][grpIdx]
-    pGroupVarCts := @pVarCtAr          ' nNbrGrpVars = long[pVarCtAr][grpIdx]
-    pGroupNames := @pNamesAr           ' pGrpNameAr = long[pNamesAr][grpIdx], pVarName = long[pNameAr][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-    pGroupVars := @pValsAr             ' pGrpLongVar = long[pValsAr][grpIdx][varIdx]  where varIdx is from 0 to nNbrGrpVars - 1
-    ' DBGCH_HDMI_DUMP (off by default) replaces the runtime showHDMIDebug flag, which nothing ever set TRUE
-    debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* NAMEs SOURCE1: ", uhex_long(@nameTitle1), uhex_byte_array(@nameTitle1, dataLen1))
-    debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* Steer DL title: ", uhex_long(@pTitlesAr), uhex_long_array(@pTitlesAr, STEER_DBG_GROUPS_CT + 1))
-    debug[user.DBGCH_HDMI_DUMP]("* Steer DL VarCt: ", uhex_long(@pVarCtAr), uhex_long_array(@pVarCtAr, STEER_DBG_GROUPS_CT))
-    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Names: ", uhex_long(@pNamesAr), uhex_long_array(@pNamesAr, STEER_DBG_GROUPS_CT * STEER_DBG_MAX_VARS))
-    debug[user.DBGCH_HDMI_DUMP]("* Steer DL Values: ", uhex_long(@pValsAr), uhex_long_array(@pValsAr, STEER_DBG_GROUPS_CT * STEER_DBG_MAX_VARS))
-    debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* Steer PARM values: ", uhex_long(@nGroups), uhex_long_array(@nGroups, 5))
-    debug[user.DBGCH_HDMI_DUMP]("* -------------")
-    debug[user.DBGCH_HDMI_DUMP]("* Steer Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
-    debug[user.DBGCH_HDMI_DUMP]("* =============")
-
-
 
 CON { license }
 {{

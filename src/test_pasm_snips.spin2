@@ -323,6 +323,102 @@ PUB main()
     debug("* DONE")
     repeat      ' HALT here
 
+PUB getDistance(eDistanceUnits, posTrkHallTicks) : nDistanceInUnits | fMMpTick, fValue
+'' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
+''
+
+    fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
+    case eDistanceUnits
+        DDU_MM:
+            nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick)
+        DDU_CM:
+            nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick /. 10.0)
+        DDU_IN:
+            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
+        DDU_FT:
+            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
+        DDU_M:
+            fValue := float(posTrkHallTicks) *. fMMpTick
+            nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
+        DDU_MI:
+            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
+            nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
+        DDU_KM:
+            fValue := float(posTrkHallTicks) *. fMMpTick
+            nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
+        other:
+            debug("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
+            abort
+    debug("- getDistance(", sdec_long(eDistanceUnits), sdec_long(posTrkHallTicks), ") ->", sdec_long(nDistanceInUnits))
+
+PUB stopAfterRotation(nRotationCount, eRotationUnits) | motorStopHallTicks
+'' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
+'' USE WITH:  driveAtPower()
+'' Will ABORT if {rotationCount} < 1
+''
+
+    if nRotationCount < 1
+        debug("! ERROR: invalid RotationCount Value:", udec_long(nRotationCount), " - must be > 0!")
+        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+        abort
+
+    ' FIXME: UNDONE convert this to use runtime values based on user specified wheel size ( we assume wheel is 90 tics! )
+
+    ' FIXME: UNDONE remove # ticks for spin-up/down ramps!!!
+
+    ' convert rotation info to ticks (will stop at ticks limit)
+    motorStopHallTicks := 0
+    case eRotationUnits
+        DRU_HALL_TICKS:
+            motorStopHallTicks := nRotationCount
+        DRU_DEGREES:
+            ' ticks = degrees / 4
+            motorStopHallTicks := nRotationCount / 4
+        DRU_ROTATIONS:
+            ' ticks = rotations * 90
+            motorStopHallTicks := nRotationCount * 90
+        other:
+            debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
+            abort
+    debug("- stopAfterRotation(", sdec_long(nRotationCount), sdec_long(eRotationUnits), ") ->", sdec_long(motorStopHallTicks))
+
+PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue, motorStopHallTicks
+'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
+'' USE WITH:  driveAtPower()
+'' Will ABORT if {distance} < 1
+''
+
+    if nDistance < 1
+        debug("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
+        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
+        abort
+
+    ' FIXME: UNDONE remove time needed for spin-up/down ramps!!!
+
+
+    tickInMM_x10 := circInMM_x10 / 90
+    ' convert distance to ticks (will stop at ticks limit)
+    case eDistanceUnits
+        DDU_MM:
+            motorStopHallTicks := (nDistance * 10) / tickInMM_x10
+        DDU_CM:
+            motorStopHallTicks := (nDistance * 10 * 10) / tickInMM_x10
+        DDU_IN:
+            fValue := distConv.fIn2mm(nDistance)
+            motorStopHallTicks := trunc(fValue *. 10.0) / tickInMM_x10
+        DDU_FT:
+            fValue := distConv.fIn2mm(nDistance * 12)
+            motorStopHallTicks := trunc(fValue *. 10.0) / tickInMM_x10
+        DDU_M:
+            motorStopHallTicks := (nDistance * 100 * 10) / tickInMM_x10
+        other:
+            debug("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
+            abort
+
+    debug("- stopAfterDistance(", sdec_long(nDistance), sdec_long(eDistanceUnits), ") ->", sdec_long(motorStopHallTicks))
+
 PRI checkem(nLHS, nRHS)
     debug("min (", sdec_(nLHS), ", ", sdec_(nRHS), ") = ", sdec(min(nLHS, nRHS)))
     debug("max (", sdec_(nLHS), ", ", sdec_(nRHS), ") = ", sdec(max(nLHS, nRHS)))
@@ -496,36 +592,6 @@ ramp_slo_   long    25_000
     end
 
 
-PUB getDistance(eDistanceUnits, posTrkHallTicks) : nDistanceInUnits | fMMpTick, fValue
-'' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
-''
-
-    fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
-    case eDistanceUnits
-        DDU_MM:
-            nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick)
-        DDU_CM:
-            nDistanceInUnits := trunc(float(posTrkHallTicks) *. fMMpTick /. 10.0)
-        DDU_IN:
-            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue +. 0.5)    ' rounded
-        DDU_FT:
-            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue /. 12.0 +. 0.5)    ' in FT, rounded
-        DDU_M:
-            fValue := float(posTrkHallTicks) *. fMMpTick
-            nDistanceInUnits := trunc(fValue /. 1000.0)    ' in M
-        DDU_MI:
-            fValue := distConv.fMm2inFloat(float(posTrkHallTicks) *. fMMpTick)
-            nDistanceInUnits := trunc(fValue /. 5280.0 /. 12.0)    ' in MI
-        DDU_KM:
-            fValue := float(posTrkHallTicks) *. fMMpTick
-            nDistanceInUnits := trunc(fValue /. 1000.0 /. 1000.0)    ' in kM
-        other:
-            debug("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
-            abort
-    debug("- getDistance(", sdec_long(eDistanceUnits), sdec_long(posTrkHallTicks), ") ->", sdec_long(nDistanceInUnits))
-
 CON
 
     ' Driver Distance-Units Enum: (Millimeters, Centimeters, Inches, Feet, Meters, Kilometers, Miles)
@@ -533,72 +599,6 @@ CON
 
     ' Driver Rotation-Units Enum:
     #0, DRU_Unknown, DRU_HALL_TICKS, DRU_DEGREES, DRU_ROTATIONS
-
-PUB stopAfterRotation(nRotationCount, eRotationUnits) | motorStopHallTicks
-'' Stops the motor after it reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
-'' USE WITH:  driveAtPower()
-'' Will ABORT if {rotationCount} < 1
-''
-
-    if nRotationCount < 1
-        debug("! ERROR: invalid RotationCount Value:", udec_long(nRotationCount), " - must be > 0!")
-        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
-        abort
-
-    ' FIXME: UNDONE convert this to use runtime values based on user specified wheel size ( we assume wheel is 90 tics! )
-
-    ' FIXME: UNDONE remove # ticks for spin-up/down ramps!!!
-
-    ' convert rotation info to ticks (will stop at ticks limit)
-    motorStopHallTicks := 0
-    case eRotationUnits
-        DRU_HALL_TICKS:
-            motorStopHallTicks := nRotationCount
-        DRU_DEGREES:
-            ' ticks = degrees / 4
-            motorStopHallTicks := nRotationCount / 4
-        DRU_ROTATIONS:
-            ' ticks = rotations * 90
-            motorStopHallTicks := nRotationCount * 90
-        other:
-            debug("! ERROR: invalid rotationUnits Value:", udec_long(eRotationUnits))
-            abort
-    debug("- stopAfterRotation(", sdec_long(nRotationCount), sdec_long(eRotationUnits), ") ->", sdec_long(motorStopHallTicks))
-
-PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue, motorStopHallTicks
-'' Stops the motor after either it reaches {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
-'' USE WITH:  driveAtPower()
-'' Will ABORT if {distance} < 1
-''
-
-    if nDistance < 1
-        debug("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
-        ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
-        abort
-
-    ' FIXME: UNDONE remove time needed for spin-up/down ramps!!!
-
-
-    tickInMM_x10 := circInMM_x10 / 90
-    ' convert distance to ticks (will stop at ticks limit)
-    case eDistanceUnits
-        DDU_MM:
-            motorStopHallTicks := (nDistance * 10) / tickInMM_x10
-        DDU_CM:
-            motorStopHallTicks := (nDistance * 10 * 10) / tickInMM_x10
-        DDU_IN:
-            fValue := distConv.fIn2mm(nDistance)
-            motorStopHallTicks := trunc(fValue *. 10.0) / tickInMM_x10
-        DDU_FT:
-            fValue := distConv.fIn2mm(nDistance * 12)
-            motorStopHallTicks := trunc(fValue *. 10.0) / tickInMM_x10
-        DDU_M:
-            motorStopHallTicks := (nDistance * 100 * 10) / tickInMM_x10
-        other:
-            debug("! ERROR: invalid distanceUnits Stop Value:", udec_long(eDistanceUnits))
-            abort
-
-    debug("- stopAfterDistance(", sdec_long(nDistance), sdec_long(eDistanceUnits), ") ->", sdec_long(motorStopHallTicks))
 
 PRI showResult(bMatchResult, lhs, rhs) | pStr
     pStr := (bMatchResult) ? @tStr : @fStr
