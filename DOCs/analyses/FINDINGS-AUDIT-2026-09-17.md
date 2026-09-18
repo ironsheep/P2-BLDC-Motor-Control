@@ -168,8 +168,23 @@ tick**, while `stop()` (which releases the pins) lets it coast 38–48 ticks.
 coast. The user-visible behaviour, the release notes and `DRIVE-OBJECTS.md` all rest on FLOAT and BRAKE
 being different things.
 
-**It has not been verified, and it is cheap to settle**: it is a question about the driver's drive-off
-state, answerable by reading the PASM and the board schematic, with no bench time.
+> ## ⭐ SETTLED FROM SOURCE, 2026-09-17, same day. The hypothesis was right, and it is worse.
+>
+> `pwmn` carries `P_INVERT_OUTPUT` and is written to the three LOW-side pins; `pwmt` without it goes to
+> the high side. So the drive-off action `wypin #0, drive_pins` leaves the high side low (FETs off) and
+> the **low side HIGH — all three low-side FETs on, phases shorted, a dynamic brake.** The code comment
+> "all drive pins low" describes the register value, not the pin state, and is wrong.
+>
+> **Three behaviours, not two:** `holdAtStop(FALSE)` leaves the PWM ENABLED at `duty_min` — a powered
+> hold, not a coast; `holdAtStop(TRUE)` shorts the phases; only `stop()` truly floats. **And every fault
+> and e-stop takes the brake path regardless of `holdAtStop()`.** That is exactly Visit 2's 1-tick
+> e-stop against a 38-48 tick `stop()` coast.
+>
+> **Filed as PL-89**, with the one unestablished link (whether the board's gate driver adds another
+> inversion) and Stephen's hand test, with predictions written so the test can fail.
+>
+> ⚠ **This is the audit paying for itself on its first day**: a finding parked on "one unverified
+> hardware fact" for two days, where the verification was a source read.
 
 ### 3.4 The e-stop hold in passes — never measured
 

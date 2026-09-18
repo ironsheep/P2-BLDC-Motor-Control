@@ -3770,6 +3770,82 @@ outcomes each decide something different, and they are already written up in
 The motion harness already drives straight through the steering object and already records per-wheel
 current; nothing new has to be provoked.
 
+### PL-89 -- "float" is a powered hold, not a coast, and every fault and e-stop hard-brakes regardless of holdAtStop()
+
+**Found 2026-09-17** by the findings audit, chasing the unverified hardware fact recorded in
+`analyses/bench/2026-09-15/VISIT-2-RESULTS.md` section 0. **DERIVED from source, and it confirms that
+hypothesis.** Raised by Stephen, who proposed the hand test that closes the one remaining link.
+
+**THE SOURCE, `src/isp_bldc_motor.spin2`:**
+
+```spin2
+pwmt   LONG %000_000000_01_01000_0  ' PWM true (P_BITDAC | P_PWM_TRIANGLE | P_OE)
+pwmn   LONG %001_000000_01_01000_0  ' PWM not  (P_INVERT_OUTPUT | ...)
+       wrpin pwmn, pin_pwm_u_l      ' set up PWM pins, LOW SIDE IS INVERTED
+       wrpin pwmt, pin_pwm_u_h      ' high side is not inverted
+```
+
+and the drive-off action in the control loop:
+
+```spin2
+       testb driveoff, #0       wc
+if_c   wypin #0, drive_pins         ' "make sure pwm is off and all drive pins low"
+```
+
+**DERIVED:** `wypin #0` on all six pins gives a high side (non-inverted) that stays LOW -- high FETs
+off -- and a low side (P_INVERT_OUTPUT) that stays **HIGH** -- **all three low-side FETs ON**. The three
+motor phases are shorted together. **That is a dead short across the windings: dynamic braking.**
+
+⛔ **THE COMMENT ON THAT LINE IS WRONG** and is probably why this stood so long: it says "all drive pins
+low", which describes the register value written, not the resulting pin state on the inverted half.
+
+### THERE ARE THREE STOP BEHAVIOURS, NOT TWO
+
+| Caller does | `driveoff` | Bridge | Actual behaviour |
+| --- | --- | --- | --- |
+| `stopMotor()` + `holdAtStop(FALSE)` | 0 | PWM **still enabled**, `duty_` reset to `duty_min` | **powered hold at ~6.6 % modulation -- NOT a coast** |
+| `stopMotor()` + `holdAtStop(TRUE)` | 1 | `wypin #0`, low sides on | **dead short, dynamic brake** |
+| `stop()` | n/a | Spin2 `pinclear` releases the pins | **true float, coasts** |
+| **any FAULT** (`.driveoff` on the fault path) | 1 | low sides on | **brake, whatever holdAtStop() says** |
+| **any E-STOP** (`.driveoff`, commented *"regardless of stop mode"*) | 1 | low sides on | **brake, whatever holdAtStop() says** |
+
+⭐ **This explains Visit 2's measurement exactly** (MEASURED there): `emergencyCutoff()` stops a
+half-speed wheel **within one tick**, while `stop()` lets it coast **38-48 ticks**. One is a short, the
+other is an open circuit.
+
+### WHY IT MATTERS TO A USER -- this is an API-contract defect (doctrine overlay P3)
+
+1. **`holdAtStop(FALSE)` is documented as coast/freewheel and does not coast.** It leaves the bridge
+   driving at minimum duty at a fixed angle, which holds position weakly AND draws current and makes
+   heat at standstill. The only true freewheel is `stop()`, which ends the driver cog.
+2. **A user who selects FLOAT still gets a dead short on every fault and every e-stop.** Nothing in the
+   documented contract says so.
+3. **The internal naming is inverted against the effect:** `driveoff = 1` is commented "drive pwm output
+   disabled" and is the state that actively brakes; `driveoff = 0` is "enabled" and is the state
+   selected by SM_FLOAT.
+
+### ⛔ ONE LINK IS NOT ESTABLISHED, AND IT IS A HARDWARE FACT (P8)
+
+Whether the board's gate driver adds a further inversion between the P2 pin and the FET gate. Rev A uses
+a MIC4604 and Rev B a UCC27211D; `BOARD-REVISION-FACTS.md` has not been read for this. **If either
+inverts the low-side input, the conclusion flips.**
+
+**THE TEST, proposed by STEPHEN 2026-09-17:** *"you drive motor tell me is floating or brake and i try
+to spin it. I'll be able to confirm with one hand test."* An attended tier that announces the state and
+waits on a keypress between each, in the shape of the existing `t0-hand` rotation cell.
+
+**THE PREDICTIONS, so the test can fail** (doctrine D2 -- name what the negative case looks like before
+the run):
+1. `holdAtStop(FALSE)` then `stopMotor()` -- lightly held, cogging, moderate steady effort to turn.
+2. `holdAtStop(TRUE)` then `stopMotor()` -- strongly resistant, and **harder the faster it is turned**;
+   speed-dependent resistance is the short-circuited-generator signature and is what distinguishes it
+   from detent torque.
+3. `stop()` -- spins freely and coasts.
+
+**If 1 and 2 feel the same, or 1 spins free, the polarity is opposite to this reading and this entry is
+withdrawn.** The driver's own hall counter records how far the wheel turned in each state, so the log
+carries a number beside his judgement.
+
 ---
 
 ## Archived
