@@ -3668,6 +3668,62 @@ giving the peak |err| during the ramp, per rung, and print it in `BM-RUNG2` besi
 **Rung 0 is the built-in control**, and the next ladder load then measures the slam directly instead of
 inferring it.
 
+### PL-88 -- driving the platform STRAIGHT runs one wheel in its expensive direction, so the two wheels do not cost the same
+
+**Found 2026-09-17** while checking the direction-asymmetry measurement against how the platform is
+actually driven. **DERIVED from measurements, with a supporting trace; not yet measured directly at
+steady state.**
+
+**The two facts, each MEASURED, that combine into this:**
+
+1. **Negative increments cost about twice positive ones, on BOTH motors.** Visit 5 ladder,
+   `analyses/bench/2026-09-17/debug_260917-173713.log`, `amps_x10k` at the same commanded speed:
+
+   | rung | LEFT rev/fwd | RIGHT rev/fwd |
+   | --- | --- | --- |
+   | 3 | 13_547 / 6_692 = **2.02** | 13_821 / 7_269 = **1.90** |
+   | 4 | 37_162 / 18_302 = **2.03** | 37_355 / 19_819 = **1.88** |
+   | 5 | 75_274 / 38_051 = **1.98** | 76_316 / 41_075 = **1.86** |
+
+   Third independent measurement of the same effect (Visit 4, and a different run on 2026-09-12).
+
+2. **The platform drives its two wheels in OPPOSITE increment signs.** The motors are mounted
+   mirror-image, so `start()` calls `rtWheel.forwardIsReverse()` (`src/isp_steering_2wheel.spin2`,
+   and CLAUDE.md's Cog model section). Platform-forward is therefore LEFT positive, RIGHT negative.
+
+⛔ **So going straight forward, the RIGHT wheel runs in the 2x direction and the LEFT wheel does not.
+Going straight backward, they swap.** The asymmetry does not cancel on the platform -- it lands
+entirely on one wheel at a time.
+
+**Supporting trace, MEASURED**, `debug_260917-173141.log` L7625-7629, an OVERSHT straight-line distance
+drive: primary LEFT `pos` runs positive and `o_pos` (RIGHT) negative, confirming the sign split; at the
+same samples `i` (LEFT) reads 27, 21, 14 while `o_i` (RIGHT) reads 91, 74, 47.
+
+⚠ **Those are SPIN_DN samples, so the ratio there is not a steady-state figure and is not quoted as
+one.** What they establish is the SIGN of the effect and that it appears in ordinary straight-line
+driving, not only in the ladder's raw-increment test.
+
+**What a user would feel, DERIVED:**
+- **One motor and one board run hotter than the other**, and which one depends on travel direction.
+- **Battery life is worse than the wheels' average would predict**, because one wheel is always paying
+  the penalty.
+- **The two wheels' thermal derate points differ**, so under sustained load the current limiting will
+  engage on one wheel first -- and that wheel's speed droops first, which on a two-wheel platform is a
+  veer.
+
+**This is the same root cause as PL-26** (the commutation scheme departs from the board designer's
+principles) and it is the reason that entry matters to a *user* rather than only to efficiency: the
+offsets in force are symmetric (`off_neg 43, off_pos 317`, and 317 = 360 - 43) while the currents are
+2:1, which says the hall zero is not where that symmetric pair assumes.
+
+**No fix is proposed here and none should be until the offset scan («#3520») has run** -- its three
+outcomes each decide something different, and they are already written up in
+`analyses/BLDC-COMMUTATION-PRINCIPLES.md`.
+
+**Owed, and cheap:** a steady-state per-wheel current reading during a straight-line steering drive.
+The motion harness already drives straight through the steering object and already records per-wheel
+current; nothing new has to be provoked.
+
 ---
 
 ## Archived
