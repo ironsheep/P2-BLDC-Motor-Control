@@ -118,7 +118,9 @@ CON { build identity }
 ' 18 Sep 2026, task 3517 -- SRC_REV 5: style-guide conformance, no record changes. cogGroupToken() uses
 '   if/else, so groupName() no longer runs when the guard chose NONE (PL-29); emitCalibration() has one
 '   exit; the pin-group spans are the library's own where the library is linked (DETECT_LIB).
-    SRC_REV     = 5
+' 18 Sep 2026, task 3517 -- SRC_REV 6: style guide 5.4.1 -- every method returning one boolean is named
+'   is/has/b (isPinInsideGroup(), bGroupOverlapsOtherBoard(), ...). No record changes.
+    SRC_REV     = 6
     FMT_VERSION = 2                                         ' BD-BANNER record-format version
 
 ' DETECT_PHASE2 implies DETECT_LIB: if phase 2 is compiled, the library must be linked
@@ -1002,7 +1004,7 @@ PRI isCalPinSafe() : bSafe
 '
 ' @returns bSafe - TRUE when the calibration pin is electrically dead on this configuration
 
-    bSafe := not (pinIsInsideGroup(CAL_PIN, user.LEFT_MOTOR_BASE) or pinIsInsideGroup(CAL_PIN, user.RIGHT_MOTOR_BASE))
+    bSafe := not (isPinInsideGroup(CAL_PIN, user.LEFT_MOTOR_BASE) or isPinInsideGroup(CAL_PIN, user.RIGHT_MOTOR_BASE))
 
 PRI emitCalibration(calIdx) | ctBefore, ctAfter, iterCount, lastLevel, elapsedTix
 ' Run the first-low poll loop's exact shape against a pin held DRIVEN HIGH so it can never
@@ -1201,7 +1203,7 @@ PRI runLibraryProbe(swNum, grpBase) : libVerdict | trappedLib, eBoardRev
     trappedLib := 0
     eBoardRev := 0
 #ifdef DETECT_LIB
-    ' One shared instance is used for every probe and for phase 2. claimPinBase() releases
+    ' One shared instance is used for every probe and for phase 2. bClaimPinBase() releases
     ' this instance's own claim before re-claiming, so walking every group on one instance
     ' never self-conflicts -- and a second instance could not be used, because it would
     ' collide with this one's claim on exactly the groups that matter most.
@@ -1259,7 +1261,7 @@ PRI runPhase2ForGroup(cogGrp, swLive, swStopped, swStoppedClr)
 ' @param swStoppedClr - SW_* identifier of the post-stop pinclear'd sweep
 
     emitPhase2Step(cogGrp, @sPh2Pre)
-    if cogOverlapsOtherBoard(cogGrp)
+    if bCogOverlapsOtherBoard(cogGrp)
         emitPhase2Step(cogGrp, @sPh2Refused)
         runSweep(swLive, cogGrp, N_LIVE, cogGrp, CST_RUNNING, CLR_NO, SKIP_COG_OVERLAP)
         runSweep(swStopped, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_NO, SKIP_COG_OVERLAP)
@@ -1399,9 +1401,9 @@ PRI overlapClass(grpBase) : ovlCode | sensePin
     sensePin := grpBase + SENSE_PIN_OFFSET
     if (grpBase == user.LEFT_MOTOR_BASE) or (grpBase == user.RIGHT_MOTOR_BASE)
         ovlCode := OVL_SELF
-    elseif pinIsInsideGroup(sensePin, user.LEFT_MOTOR_BASE)
+    elseif isPinInsideGroup(sensePin, user.LEFT_MOTOR_BASE)
         ovlCode := (sensePin - user.LEFT_MOTOR_BASE == PWM_W_L_OFFSET) ? OVL_LEFT_PWM : OVL_OTHER
-    elseif pinIsInsideGroup(sensePin, user.RIGHT_MOTOR_BASE)
+    elseif isPinInsideGroup(sensePin, user.RIGHT_MOTOR_BASE)
         ovlCode := (sensePin - user.RIGHT_MOTOR_BASE == PWM_W_L_OFFSET) ? OVL_RIGHT_PWM : OVL_OTHER
     else
         ovlCode := OVL_NONE
@@ -1418,18 +1420,18 @@ PRI isGateOverlap(grpBase) : bOverlap | sensePin
 ' @local sensePin - grpBase + SENSE_PIN_OFFSET
 
     sensePin := grpBase + SENSE_PIN_OFFSET
-    bOverlap := landsOnBoardNonSensePin(sensePin, user.LEFT_MOTOR_BASE) or landsOnBoardNonSensePin(sensePin, user.RIGHT_MOTOR_BASE)
+    bOverlap := bLandsOnBoardNonSensePin(sensePin, user.LEFT_MOTOR_BASE) or bLandsOnBoardNonSensePin(sensePin, user.RIGHT_MOTOR_BASE)
 
-PRI landsOnBoardNonSensePin(pinNum, boardBase) : bLands
+PRI bLandsOnBoardNonSensePin(pinNum, boardBase) : bLands
 ' Test whether a pin is one of a board's sixteen pins other than that board's sense pin.
 '
 ' @param pinNum - the pin to test
 ' @param boardBase - base pin of the declared board
 ' @returns bLands - TRUE when pinNum lies in boardBase..boardBase+15 and is not boardBase+4
 
-    bLands := pinIsInsideGroup(pinNum, boardBase) and (pinNum <> boardBase + SENSE_PIN_OFFSET)
+    bLands := isPinInsideGroup(pinNum, boardBase) and (pinNum <> boardBase + SENSE_PIN_OFFSET)
 
-PRI cogOverlapsOtherBoard(cogGrp) : bOverlap
+PRI bCogOverlapsOtherBoard(cogGrp) : bOverlap
 ' The gate-input guard's phase-2 test: TRUE when a driver cog started on {cogGrp} would own
 ' pins of a declared board other than the one based at {cogGrp}. The whole 16-pin span is
 ' used, which is conservative: it refuses on any shared pin, driven or not.
@@ -1437,9 +1439,9 @@ PRI cogOverlapsOtherBoard(cogGrp) : bOverlap
 ' @param cogGrp - base pin of the group a driver cog would run on
 ' @returns bOverlap - TRUE when that cog's pins overlap another declared board
 
-    bOverlap := groupOverlapsOtherBoard(cogGrp, user.LEFT_MOTOR_BASE) or groupOverlapsOtherBoard(cogGrp, user.RIGHT_MOTOR_BASE)
+    bOverlap := bGroupOverlapsOtherBoard(cogGrp, user.LEFT_MOTOR_BASE) or bGroupOverlapsOtherBoard(cogGrp, user.RIGHT_MOTOR_BASE)
 
-PRI groupOverlapsOtherBoard(cogGrp, boardBase) : bOverlap
+PRI bGroupOverlapsOtherBoard(cogGrp, boardBase) : bOverlap
 ' Test whether a sixteen-pin group shares any pin with a different declared board.
 '
 ' @param cogGrp - base pin of the group to test
@@ -1461,7 +1463,7 @@ PRI skipReasonToken(skipReason) : pRsnTok
         SKIP_COG_OVERLAP:
             pRsnTok := @sRsnCogOverlap
 
-PRI pinIsInsideGroup(pinNum, grpBase) : bInside
+PRI isPinInsideGroup(pinNum, grpBase) : bInside
 ' Test whether a pin falls inside a sixteen-pin motor group.
 '
 ' @param pinNum - the pin to test

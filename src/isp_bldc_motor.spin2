@@ -270,7 +270,7 @@ PUB stop() : eError
     ' been validated and immediately before its init(), which cannot fail -- so holding the claim
     ' means this instance's init() completed. It is keyed by this instance's own @pinbase, so no
     ' other instance's state can satisfy it.
-    if (pinbase <> VALUE_NOT_SET) and (holdsPinBaseClaim() == TRUE)
+    if (pinbase <> VALUE_NOT_SET) and (bHoldsPinBaseClaim() == TRUE)
         pinclear(pinbase addpins HALF_GROUP_SPAN)
         pinclear(pinbase + GROUP_HI_OFFSET addpins HALF_GROUP_SPAN)
     pinbase := VALUE_NOT_SET
@@ -316,7 +316,7 @@ PRI releasePinBaseClaim()
     if gOwnerP40P55 == @pinbase
         gOwnerP40P55 := 0
 
-PRI holdsPinBaseClaim() : bHeld
+PRI bHoldsPinBaseClaim() : bHeld
 ' Return TRUE when this instance currently owns a pin-range claim, i.e. a successful init()
 ' (start()/startEx()/testSetup()) claimed a legal group and stop() has not yet released it.
 ' A slot only ever holds @pinbase of the instance that claimed it, so an instance that was
@@ -326,7 +326,7 @@ PRI holdsPinBaseClaim() : bHeld
 
     bHeld := (gOwnerP0P15 == @pinbase) or (gOwnerP8P23 == @pinbase) or (gOwnerP16P31 == @pinbase) or (gOwnerP32P47 == @pinbase) or (gOwnerP40P55 == @pinbase)
 
-PRI claimPinBase(eMotorBasePin) : bClaimed
+PRI bClaimPinBase(eMotorBasePin) : bClaimed
 ' AE: claim {eMotorBasePin}'s 16-pin range for this instance, first releasing whatever range
 ' this same instance previously held. Fails (does not claim) if the requested range overlaps a
 ' range another instance already owns. The only overlapping legal-base pairs are the adjacent
@@ -382,15 +382,15 @@ PRI setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode) : eError
         eError := ERR_BAD_VOLTAGE
     elseif validDetectModeForChoice(eDetectionMode) == INVALID_DET_MODE
         eError := ERR_BAD_DETECT_MODE
-    elseif abiLayoutIsValid() == FALSE
+    elseif isAbiLayoutValid() == FALSE
         eError := ERR_ABI_MISMATCH
 
     if eError == NO_ERROR
         ' 2. D2: free this instance's own driver/sense cog and pin claim before starting fresh
-        if motorCog or senseCog or holdsPinBaseClaim()
+        if motorCog or senseCog or bHoldsPinBaseClaim()
             stop()
         ' 3. AE: an overlapping pin group is a wiring conflict -- two driver cogs would command the shared pins
-        if claimPinBase(eMotorBasePin) == FALSE
+        if bClaimPinBase(eMotorBasePin) == FALSE
             eError := ERR_PIN_GROUP_IN_USE
             debug[user.DBGCH_ERROR]("! ERROR: pin base ", udec_long(eMotorBasePin), " overlaps a pin range already in use by another motor instance")
         else
@@ -1455,7 +1455,7 @@ PUB getBoardType() : eBoardRev | pSenseCommon, pinSum, readStartTicks, sumTicks,
             eBoardRev := REV_B
         other:
             ' do we know the base pin of the board...??
-            if (pinbase == VALUE_NOT_SET) or (holdsPinBaseClaim() == FALSE)
+            if (pinbase == VALUE_NOT_SET) or (bHoldsPinBaseClaim() == FALSE)
                 ' never initialised (or released by stop()): touch no pin -- pinbase may still read 0
                 debug[user.DBGCH_DETECT]("BLDC: getBoardType() pinbase: ** NOT SET **")
             elseif motorCog <> 0
@@ -2279,7 +2279,7 @@ PUB recordCallerError(eCode) : eSameCode
 
     eSameCode := recordError(eCode)
 
-PRI abiLayoutIsValid() : bValid
+PRI isAbiLayoutValid() : bValid
 ' Return TRUE when the Spin2 VAR layout matches every hub offset the PASM driver walks.
 '
 ' @returns bValid - T/F where F means a driver launched on this layout would read or write the wrong longs
@@ -2292,27 +2292,27 @@ PRI abiLayoutIsValid() : bValid
     bValid &= (@duty_floor - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
-    bValid &= outsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@reqCmd[0], @reqCmd[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@reqArg1[0], @reqArg1[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@reqArg2[0], @reqArg2[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@reqArg3[0], @reqArg3[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@reqNextSeq[0], @reqNextSeq[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@reqSeq[0], @reqSeq[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@ackStatus[0], @ackStatus[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@ackSeq[0], @ackSeq[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@frontPasses, @frontPasses)
-    bValid &= outsideDriverRuns(@frontLatePasses, @frontLatePasses)
-    bValid &= outsideDriverRuns(@frontMaxPassTicks, @frontMaxPassTicks)
-    bValid &= outsideDriverRuns(@trackBasePos, @trackBasePos)
-    bValid &= outsideDriverRuns(@bStopUnconfirmed, @bStopUnconfirmed)
-    bValid &= outsideDriverRuns(@protectiveCode, @cmdTimeoutSeen[COG_SLOT_COUNT - 1])
-    bValid &= outsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
-    bValid &= outsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
+    bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@reqCmd[0], @reqCmd[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@reqArg1[0], @reqArg1[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@reqArg2[0], @reqArg2[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@reqArg3[0], @reqArg3[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@reqNextSeq[0], @reqNextSeq[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@reqSeq[0], @reqSeq[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@ackStatus[0], @ackStatus[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@ackSeq[0], @ackSeq[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@frontPasses, @frontPasses)
+    bValid &= bOutsideDriverRuns(@frontLatePasses, @frontLatePasses)
+    bValid &= bOutsideDriverRuns(@frontMaxPassTicks, @frontMaxPassTicks)
+    bValid &= bOutsideDriverRuns(@trackBasePos, @trackBasePos)
+    bValid &= bOutsideDriverRuns(@bStopUnconfirmed, @bStopUnconfirmed)
+    bValid &= bOutsideDriverRuns(@protectiveCode, @cmdTimeoutSeen[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
+    bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     if bValid == FALSE
         debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@duty_floor - @offset_fwd))
 
-PRI outsideDriverRuns(pFirst, pLast) : bOutside
+PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
 '
 ' @param pFirst - hub address of the first long of the Spin2-only array
@@ -2555,7 +2555,7 @@ CON { front cog requests }
     '  REQ_CLASS_EXIT  - REQ_EXIT, last
     #0, REQ_CLASS_ESTOP, REQ_CLASS_STOP, REQ_CLASS_OTHER, REQ_CLASS_EXIT
 
-    ' What frontWaitForDriver() waits for:
+    ' What bFrontWaitForDriver() waits for:
     '  WAIT_SYNC_TAKEN  - the driver cleared SYNC_BIT, having taken the synchronized command
     '  WAIT_ESTOP_LEFT  - the driver no longer reports DCS_ESTOP
     '  WAIT_FAULT_LEFT  - the driver no longer reports DCS_FAULTED (PL-66)
@@ -2672,7 +2672,7 @@ PRI LALOOPEND()
     4. publish, LAST   reqSeq[c] := that sequence
     5. wait, bounded   until ackSeq[c] == its sequence, then read ackStatus[c]; on timeout withdraw
 
-  Front cog (frontServiceRequests(), once per pass, per open slot):
+  Front cog (bFrontServiceRequests(), once per pass, per open slot):
     1. seqTaken := reqSeq[c]; empty when SEQ_IDLE or already equal to ackSeq[c]
     2. copy reqCmd/reqArg1..3[c]
     3. re-read reqSeq[c]: changed means the caller withdrew during the copy, so the copy is discarded
@@ -2716,18 +2716,18 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         frontConfirmStop()
 
         ' 1. requests: securing first, then the rest in slot order, then EXIT
-        if frontServiceRequests() == TRUE
+        if bFrontServiceRequests() == TRUE
             quit                                                                ' EXIT acknowledged: park below
 
         LALOOPSTART()                                                           ' main LA tracking code
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
         frontTrack(passCount)
         nowMs := getms()
-        if frontLimitsDue(nowMs) == TRUE
+        if bFrontLimitsDue(nowMs) == TRUE
             frontZeroPower()                                                    ' PL-52: a distance/time stop clears getPower() too
-        if frontCommandTimedOut(nowMs) == TRUE
+        if bFrontCommandTimedOut(nowMs) == TRUE
             frontZeroPower()                                                    ' S-8: stopped as stopMotor() stops, so holdAtStop() applies
-        if frontProtect() == TRUE                                               ' S-2: current derate; a blocked motor latches a protective stop
+        if bFrontProtect() == TRUE                                               ' S-2: current derate; a blocked motor latches a protective stop
             frontProtectiveStop(ERR_PLATFORM_BLOCKED)
         LALOOPEND()                                                             ' let LA know end of loop
 
@@ -2750,7 +2750,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
     repeat
         waitms(FRONT_PARK_MS)
 
-PRI frontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken, seqTaken, eCmd, nArg1, nArg2, nArg3, bWaited, bDidWait, eStatus
+PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken, seqTaken, eCmd, nArg1, nArg2, nArg3, bWaited, bDidWait, eStatus
 ' FRONT COG: take, apply and answer the open request slots once: REQ_ESTOP, then REQ_STOP, then the rest, then EXIT.
 '
 ' @returns bExit - T/F where T means an EXIT was taken: every open slot has been answered and the loop must park
@@ -2792,7 +2792,7 @@ PRI frontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken,
                         '  taken in the next pass. Non-waiting requests are applied regardless.
                         if eClass == REQ_CLASS_EXIT
                             bExit := TRUE                                       ' answered by frontAnswerForExit(), after every other slot
-                        elseif (bWaited == FALSE) or (requestWaits(eCmd, nArg3) == FALSE)
+                        elseif (bWaited == FALSE) or (bRequestWaits(eCmd, nArg3) == FALSE)
                             eStatus, bDidWait := frontApply(eCmd, nArg1, nArg2, nArg3)
                             if bDidWait == TRUE
                                 bWaited := TRUE
@@ -2874,7 +2874,7 @@ PRI requestClass(eCmd) : eClass
         other:
             eClass := REQ_CLASS_OTHER
 
-PRI requestWaits(eCmd, nArg3) : bWaits
+PRI bRequestWaits(eCmd, nArg3) : bWaits
 ' Return TRUE for a request whose apply may spend a bounded in-pass wait on the driver.
 '
 ' @param eCmd - a REQ_* code
@@ -2947,7 +2947,7 @@ PRI frontWatchCommand(bOpenEnded)
     bCmdWatched := bOpenEnded
     lastDriveMs := getms()
 
-PRI frontCommandTimedOut(nowMs) : bFired
+PRI bFrontCommandTimedOut(nowMs) : bFired
 ' FRONT COG: return TRUE, and stop watching, when the command timeout is on and an open-ended drive has had no command within it (S-8).
 '
 ' @param nowMs - getms() for this pass
@@ -2974,7 +2974,7 @@ PRI frontDriveAndSync(power, bSync) : eStatus, bDidWait
     if (eStatus == NO_ERROR) and (bSync == TRUE)
         bDidWait := TRUE
         cogatn(frontDriverCogBit())
-        if frontWaitForDriver(WAIT_SYNC_TAKEN) == FALSE
+        if bFrontWaitForDriver(WAIT_SYNC_TAKEN) == FALSE
             ' audit M: a command the driver did not take must not be left to be taken later
             frontZeroPower()                                                   ' PL-52: a failed take stops the motor too
             eStatus := ERR_SYNC_TIMEOUT
@@ -2991,10 +2991,10 @@ PRI frontClearEStopAndWait() : eStatus, bDidWait
     ' answered only once the driver has left the state, so a drive posted right after is not refused
     if isEmergency() == TRUE
         bDidWait := TRUE
-        if frontWaitForDriver(WAIT_ESTOP_LEFT) == FALSE
+        if bFrontWaitForDriver(WAIT_ESTOP_LEFT) == FALSE
             eStatus := ERR_NO_RESPONSE
 
-PRI frontWaitForDriver(eWaitFor) : bDone | waitStartTicks, waitBoundTicks
+PRI bFrontWaitForDriver(eWaitFor) : bDone | waitStartTicks, waitBoundTicks
 ' FRONT COG: busy-wait, bounded to FRONT_SYNC_WAIT_PASSES drive passes, for the driver to reach a condition.
 '
 ' @param eWaitFor - WAIT_SYNC_TAKEN, WAIT_ESTOP_LEFT or WAIT_FAULT_LEFT
@@ -3013,7 +3013,7 @@ PRI frontWaitForDriver(eWaitFor) : bDone | waitStartTicks, waitBoundTicks
     repeat
         case eWaitFor
             WAIT_SYNC_TAKEN:
-                bDone := frontTakenSync()
+                bDone := bFrontTakenSync()
             WAIT_FAULT_LEFT:
                 bDone := (drv_state <> DCS_FAULTED)
             other:
@@ -3094,7 +3094,7 @@ PUB frontClearFault() : eStatus, bDidWait
         '  differing command already reached .resetFault on its own, unconditionally).
         frontZeroPower()                                                    ' PL-52: also clears getPower() while we try
         bDidWait := TRUE
-        if frontWaitForDriver(WAIT_FAULT_LEFT) == FALSE
+        if bFrontWaitForDriver(WAIT_FAULT_LEFT) == FALSE
             eStatus := ERR_NO_RESPONSE                                      ' did not clear in the bound; the zero command stays written
 
 PUB frontDrive(power, bSync) : eStatus, bDidWait | limitPwr, correctedPower
@@ -3147,10 +3147,10 @@ PUB frontRefusal() : eStatus
 '' @returns eStatus - the latched protective code first, then ERR_EMERGENCY_STOPPED, else NO_ERROR
 
     eStatus := protectiveCode
-    if (eStatus == NO_ERROR) and (frontIsEStopped() == TRUE)
+    if (eStatus == NO_ERROR) and (isFrontEStopped() == TRUE)
         eStatus := ERR_EMERGENCY_STOPPED
 
-PUB frontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
+PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
 '' FRONT COG ONLY: once per pass -- the thermal derate of the current limit, and the blocked-motor test
 ''
 '' The phase current is estimated as a lower bound from the DC-link reading and the modulation depth,
@@ -3269,14 +3269,14 @@ PRI frontCommand(nIncre, bSync)
     setTargetAccel(nIncre, bSync)
     bStopUnconfirmed := ((nIncre ZEROX 30) == 0)                               ' any other command supersedes a pending confirmation
 
-PUB frontIsEStopped() : bEStopped
+PUB isFrontEStopped() : bEStopped
 '' FRONT COG ONLY: return the drive-refusal predicate: the latch is set, or the driver reports DCS_ESTOP
 ''
 '' @returns bEStopped - T/F where T means a drive must be refused; the latch term closes the pass before the driver reports the state
 
     bEStopped := (e_stop <> FALSE) or (drv_state == DCS_ESTOP)
 
-PUB frontTakenSync() : bTaken
+PUB bFrontTakenSync() : bTaken
 '' FRONT COG ONLY: return TRUE once the driver has taken the last synchronized command (its sync bit is clear)
 ''
 '' @returns bTaken - T/F where T means no synchronized command is waiting for this driver
@@ -3371,7 +3371,7 @@ PUB frontSetLimits(nTicks, nMsDeadline)
     motorStopHallTicks := nTicks
     motorStopMSecs := nMsDeadline
 
-PUB frontLimitsDue(nowMs) : bFired
+PUB bFrontLimitsDue(nowMs) : bFired
 '' FRONT COG ONLY: return TRUE, and disarm the limit, when a stop written now leaves the motor at rest at its time or distance limit
 ''
 '' The stop begins early by the field's own stopping time or distance at its current speed (frontStopMs(),
@@ -3778,12 +3778,12 @@ CON { error record }
     COG_SLOT_COUNT = 8          ' one error slot per P2 cog, indexed by COGID()
 
 VAR { error record -- Spin2 only, never addressed by the PASM driver }
-    ' Placed after every PASM-addressed run so it cannot shift one; abiLayoutIsValid() refuses a
+    ' Placed after every PASM-addressed run so it cannot shift one; isAbiLayoutValid() refuses a
     '  start if it ever lands inside one. Written only by recordError(), cleared only by getError().
     LONG    lastError[COG_SLOT_COUNT]   ' per calling cog: first error not yet collected, NO_ERROR when none
 
 VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver }
-    ' Placed after every PASM-addressed run, like the error record; abiLayoutIsValid() checks each array.
+    ' Placed after every PASM-addressed run, like the error record; isAbiLayoutValid() checks each array.
     '  One slot per calling cog, indexed by COGID(). Every long has exactly one writer (see postRequest()).
     LONG    reqCmd[COG_SLOT_COUNT]      ' caller-written: REQ_* code
     LONG    reqArg1[COG_SLOT_COUNT]     ' caller-written: arguments, meaning per REQ_*

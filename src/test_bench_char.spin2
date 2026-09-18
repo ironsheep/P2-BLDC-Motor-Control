@@ -24,14 +24,14 @@
 ''               to capture a normal return -- steerStartTrapped/steerStartCall,
 ''               steerDriveTrapped/steerDriveCall and brakeStartTrapped/brakeStartCall are gone;
 ''               steering.start()/driveAtPower()/startEx() are called UNTRAPPED and judged by
-''               their returned value. main()'s \runSession() is the top-level trap, and its
+''               their returned value. main()'s \bRunSession() is the top-level trap, and its
 ''               value is now printed on every run, not only on abort (BC-END trap field). The
-''               one other trap is claimsFreeCheck()'s declared abort-path probe: a leaked PL-36
+''               one other trap is bClaimsFreeCheck()'s declared abort-path probe: a leaked PL-36
 ''               claim is a library abort, so it must print FALSE rather than end the run. P5:
 ''               BC-STEER's "aborted" field is replaced by "drive_done", reporting
 ''               driveAtPower()'s own value directly instead of folding a wrong value into an
 ''               abort flag. P6: R10-CHAR-STEERFAIL no longer runs a premature steerStop()
-''               before claimsFreeCheck() when the STEERFAIL start's real return happens to
+''               before bClaimsFreeCheck() when the STEERFAIL start's real return happens to
 ''               differ from -1 -- that steerStop() was masking the PL-36 leak check it exists
 ''               to catch. R13-CHAR-BRAKESTART's cog-id guard (measureBrakeStart()) now compares
 ''               against a real, untrapped return instead of a stuck trapped 0, so the cell can
@@ -41,9 +41,11 @@
 ''               startEx(), so this file no longer calls cogatn(): R13-CHAR-BRAKESTART starts the
 ''               wheel with start(), then holdAtStop(TRUE) at rest, which the driver applies through
 ''               the same checkstop -> initAngleFmHall path the brake-mode start took. Nothing aborts
-''               any more (task 3554), so claimsFreeCheck() starts untrapped and its trap and
+''               any more (task 3554), so bClaimsFreeCheck() starts untrapped and its trap and
 ''               completion flag are deleted. New cell R16-CHAR-STEERERR and record BC-STEERERR: the
 ''               failed steering start's getError() names the wheel that failed (task 3555).
+''   Updated.... 18 Sep 2026 -- task 3517 (SRC_REV 8): style guide 5.4.1 -- every method returning one
+''               boolean is named is/has/b (e.g. bRunSession(), isWheelReady()). No record changes.
 ''
 '' =================================================================================================
 
@@ -144,7 +146,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 7                                         ' hand-bumped whenever this file changes
+    SRC_REV     = 8                                         ' hand-bumped whenever this file changes
     FMT_VERSION = 7                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG; 4: phase C adds SIGNOFF-DECL and SIGNOFF sf 1; 5: phase D adds BC-STEER, BC-BRAKE and four sign-off cells; 6: task 3539 -- removed BC-STEER's "aborted" field (replaced by "drive_done") and BC-BRAKE's "abort" field: every trap used to capture a normal return is gone, so there is nothing left to name as aborted; 7: task 3560 -- adds BC-STEERERR and cell R16-CHAR-STEERERR, no existing record changes shape)
 
 CON { timing }
@@ -436,23 +438,23 @@ CON ' ---- Cog-0 Progress Checkpoints ----
   '  CP_MAIN_INIT       - main(): watchdog start, BC-WDSTART, initRun()
   '  CP_MAIN_BANNER     - main(): emitBanner()
   '  CP_MAIN_PLAN       - main(): emitPlan() and emitSignoffDecls()
-  '  CP_MAIN_RUN        - main(): entering runSession()
-  '  CP_MAIN_SHUTDOWN   - main(): runSession() returned or aborted; watchdog stop, both stop()s
+  '  CP_MAIN_RUN        - main(): entering bRunSession()
+  '  CP_MAIN_SHUTDOWN   - main(): bRunSession() returned or aborted; watchdog stop, both stop()s
   '  CP_MAIN_END        - main(): SIGNOFF verdicts, BC-END and the end marker
-  '  CP_PREFLIGHT_LEFT  - preflightWheels(), LEFT wheel pass, including its PREFLIGHT_MS nudge
-  '  CP_PREFLIGHT_RIGHT - preflightWheels(), RIGHT wheel pass, including its PREFLIGHT_MS nudge
+  '  CP_PREFLIGHT_LEFT  - bPreflightWheels(), LEFT wheel pass, including its PREFLIGHT_MS nudge
+  '  CP_PREFLIGHT_RIGHT - bPreflightWheels(), RIGHT wheel pass, including its PREFLIGHT_MS nudge
   '  CP_HOLD            - runAllHolds()/measureHold(): one hold's sequencing between its steps
   '  CP_START_SIDE      - startSide(): stop both, then start the named wheel
   '  CP_LIB_START       - brackets start()
-  '  CP_LOOP_WAITREADY  - one pass of waitUntilReady()
+  '  CP_LOOP_WAITREADY  - one pass of bWaitUntilReady()
   '  CP_LIB_STARTSENSE  - brackets startSenseCog()
   '  CP_LOOP_ZERO       - one pass of measureZero()
   '  CP_LIB_COMMAND     - brackets testDriveAtMotorIncrement()
-  '  CP_LOOP_ATSPEED    - one pass of waitAtSpeed()
+  '  CP_LOOP_ATSPEED    - one pass of bWaitAtSpeed()
   '  CP_LOOP_STEADY     - one pass of waitForSteady()
-  '  CP_LOOP_SETTLE     - one pass of settleHold()
+  '  CP_LOOP_SETTLE     - one pass of bSettleHold()
   '  CP_LOOP_WINDOW     - one pass of sampleWindow()
-  '  CP_LOOP_WAITSTOP   - one pass of waitStoppedFor()
+  '  CP_LOOP_WAITSTOP   - one pass of bWaitStoppedFor()
   '  CP_LIB_STOP_LEFT   - brackets wheelL.stop()
   '  CP_LIB_STOP_RIGHT  - brackets wheelR.stop()
   '  CP_LIB_INTEGRITY   - brackets getHallIntegrityCounts()
@@ -473,10 +475,10 @@ CON ' ---- Cog-0 Progress Checkpoints ----
   '  CP_STEER           - runSteeringPhase(): sequencing between its steps
   '  CP_SPACER_LOOP     - one pass of occupySpacers() or releaseSpacers()
   '  CP_LIB_STEER_START - brackets steering.start()
-  '  CP_LOOP_STEER_RDY  - one pass of waitSteerReady()
+  '  CP_LOOP_STEER_RDY  - one pass of bWaitSteerReady()
   '  CP_STEER_DRIVE     - brackets steering.driveAtPower(), and the PREFLIGHT_MS steering window
   '  CP_LIB_STEER_STOP  - brackets steering.stopMotors() and steering.stop()
-  '  CP_LOOP_STEER_STOP - one pass of waitSteerStopped()
+  '  CP_LOOP_STEER_STOP - one pass of bWaitSteerStopped()
   '  CP_LIB_STEER_READ  - brackets steering.testGetDriverState(), testGetRawHallTicks(), isStopped()
   '  CP_BRAKE           - runBrakeStartPhase()/measureBrakeStart(): sequencing between steps
   '  CP_LIB_BRAKE_START - brackets the brake phase's wheel start()
@@ -501,8 +503,8 @@ CON ' ---- Watchdog Cog ----
   ' WD_STALL_MS must exceed the longest legitimate gap cog 0 can leave between two beats, on every
   ' path. Desk trace, task 3521 phase B -- every wait and every library call cog 0 makes, with its
   ' worst case read from source (isp_bldc_motor.spin2 unless named):
-  '   waitms(SAMPLE_MS = 5)          one per pass of waitUntilReady, measureZero, waitAtSpeed,
-  '                                  settleHold, sampleWindow, waitStoppedFor; beat on every pass
+  '   waitms(SAMPLE_MS = 5)          one per pass of bWaitUntilReady, measureZero, bWaitAtSpeed,
+  '                                  bSettleHold, sampleWindow, bWaitStoppedFor; beat on every pass
   '   waitms(STEADY_SAMPLE_MS = 250) one per pass of waitForSteady; beat on every pass
   '   waitms(PREFLIGHT_MS = 700)     the preflight nudge, beat before and after: THE LONGEST GAP
   '   start()           startEx(): stop() when this instance holds a claim, init(), coginit().
@@ -566,7 +568,7 @@ CON ' ---- Watchdog Cog ----
   ' and wdEmitEnd() have no locals: the stall values live in the wdSnap* DAT longs, not on the
   ' stack), wdSnapshot() -> testGetTelemetry() 3+1+1+8 = 13, wheelL.stop() under 10.
   ' Task 3521 phase D: declareStall() -> steering.stop() (0) -> rtWheel.stop() (0) ->
-  ' holdsPinBaseClaim() (1 return) = 3+1+0+0+1 = 5. The deepest chain is unchanged at 27.
+  ' bHoldsPinBaseClaim() (1 return) = 3+1+0+0+1 = 5. The deepest chain is unchanged at 27.
   ' The count leaves out the interpreter's per-call bookkeeping and expression scratch, which is
   ' not visible in this repo (UNVERIFIED); even at a generous 8 longs for each of the chain's 7
   ' calls, 27 + 56 = 83 < 128. WD_STACK_LONGS = 128 is the app note's own starting point, used
@@ -796,7 +798,7 @@ sHold8Caption   BYTE    "HOLD 9 of 9 - RIGHT MOTOR - INCREMENT 1/2 SPEED (motor 
 
 VAR { run-wide state }
 
-    LONG    bRunReturned                                    ' TRUE once runSession() reached its end
+    LONG    bRunReturned                                    ' TRUE once bRunSession() reached its end
     LONG    bPreflightOk                                    ' TRUE when both wheels turned in preflight
     LONG    holdsRun                                        ' holds measured so far
 
@@ -865,7 +867,7 @@ VAR { steering and brake-start phase state, task 3521 phase D -- the seam emitPh
 
 ' Every library call in this phase is UNTRAPPED: since the error contract (tasks 3554/3555) nothing
 ' in the library aborts, and a refused pin claim returns -1 with ERR_PIN_GROUP_IN_USE. A genuine
-' abort is still caught by main()'s single top-level trap around \runSession(), whose value is
+' abort is still caught by main()'s single top-level trap around \bRunSession(), whose value is
 ' printed on every run (P3).
 
     LONG    bSteerFailCounted                               ' TRUE once the baseline free-cog count was taken
@@ -907,7 +909,7 @@ PUB main() | trapCode, bWdStarted
 ''
 
 ' Local Variables:
-' @local trapCode - value delivered by the abort trap around runSession()
+' @local trapCode - value delivered by the abort trap around bRunSession()
 ' @local bWdStarted - TRUE when cogspin() gave the watchdog a cog id 0..MAX_COG_ID
 
     wdStackSentinel := WD_STACK_SENTINEL                    ' in place BEFORE the cog that could overrun it starts
@@ -927,7 +929,7 @@ PUB main() | trapCode, bWdStarted
     emitSignoffDecls()                                      ' task 3521 phase C: declare every judged cell before anything moves
     beat(CP_MAIN_RUN)
     bRunReturned := FALSE
-    trapCode := \runSession()                               ' a library abort lands here, not past the stop()s
+    trapCode := \bRunSession()                               ' a library abort lands here, not past the stop()s
     beat(CP_MAIN_SHUTDOWN)
     ' The watchdog is stopped BEFORE the stop()s and BC-END: once main() is past its last record
     ' cog 0 goes silent, and a still-running watchdog would count that silence toward WD_STALL_MS
@@ -970,14 +972,14 @@ PRI initRun() | holdIdx
         holdResultCode[holdIdx] := RES_NOT_RUN
     initPhaseD()
 
-PRI runSession() : bCompleted
+PRI bRunSession() : bCompleted
 ' Preflight, then every configured hold, then the steering and brake-start phases (task 3521
 ' phase D). A preflight miss skips all three.
 '
 ' @returns bCompleted - TRUE when every configured hold ran
 
     bCompleted := FALSE
-    bPreflightOk := preflightWheels()
+    bPreflightOk := bPreflightWheels()
     if bPreflightOk
         runAllHolds()
         bCompleted := TRUE
@@ -990,7 +992,7 @@ PRI runSession() : bCompleted
         beat(CP_NOTE)
     bRunReturned := TRUE
 
-PRI preflightWheels() : bOk | side, startedCog, bReady, ticksBefore, ticksAfter, ticksMoved, bStopped, cpPreflight
+PRI bPreflightWheels() : bOk | side, startedCog, bReady, ticksBefore, ticksAfter, ticksMoved, bStopped, cpPreflight
 ' Prove each declared wheel can actually turn before committing the session to nine holds.
 ' Motion, not getBoardType(), is the check: detection is under investigation this sprint. On
 ' 2026-09-11 the bench config named a pin group with no board on it, and nine holds ran on it.
@@ -1023,7 +1025,7 @@ PRI preflightWheels() : bOk | side, startedCog, bReady, ticksBefore, ticksAfter,
             beat(cpPreflight)
             ticksAfter := wheelTicks(side)
             commandMotor(side, 0)
-            bStopped := waitStoppedFor(side)
+            bStopped := bWaitStoppedFor(side)
             ticksMoved := ticksAfter - ticksBefore
         shutdownMotors()
         emitPreflight(side, startedCog, ticksMoved, bStopped)
@@ -1157,7 +1159,7 @@ PRI measureHold(holdIdx) | side, sign, speedIncre, motorIncre, bWindowGo, steady
             bWindowGo := (holdResultCode[holdIdx] == RES_OK)
         elseif holdResultCode[holdIdx] == RES_OK
             commandMotor(side, motorIncre)
-            if waitAtSpeed(holdIdx, side)
+            if bWaitAtSpeed(holdIdx, side)
                 steadyTok, steadyMs, steadyRate := waitForSteady(side, motorIncre)
                 holdSteadySrc[holdIdx] := steadyTok
                 holdSteadyRate[holdIdx] := steadyRate
@@ -1165,15 +1167,15 @@ PRI measureHold(holdIdx) | side, sign, speedIncre, motorIncre, bWindowGo, steady
                 '  AT_SPEED (the driver's own ramp-complete state) has already been seen, and at
                 '  quarter speed one STEADY_SAMPLE_MS sample is ~25 ticks, so +/-1 tick of
                 '  quantisation is already 4% against STEADY_TOL_PCT 5 -- the hold is measured either way
-                bWindowGo := settleHold(holdIdx, side)
+                bWindowGo := bSettleHold(holdIdx, side)
         if bWindowGo
             sampleWindow(holdIdx, side)
-        if wheelCogUp(side)
+        if bWheelCogUp(side)
             commandMotor(side, 0)
-            bHoldStopped[holdIdx] := waitStoppedFor(side)
+            bHoldStopped[holdIdx] := bWaitStoppedFor(side)
             if bHoldStopped[holdIdx] == FALSE
                 setHoldResult(holdIdx, RES_STOP_TIMEOUT)
-        if wheelCogUp(side)
+        if bWheelCogUp(side)
             holdMissed[holdIdx], holdIllegal[holdIdx] := wheelIntegrity(side)
             bHoldIntegValid[holdIdx] := TRUE
             holdDrvState[holdIdx] := wheelDrvState(side)
@@ -1277,9 +1279,9 @@ PRI startSide(side) : startedCog, bReady
         startedCog := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
     beat(CP_LIB_START)
     if startedCog >= 0
-        bReady := waitUntilReady(side)
+        bReady := bWaitUntilReady(side)
 
-PRI waitUntilReady(side) : bReady | startMs
+PRI bWaitUntilReady(side) : bReady | startMs
 ' Wait, bounded by READY_TIMEOUT_MS, for the just-started driver cog to report ready.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -1291,7 +1293,7 @@ PRI waitUntilReady(side) : bReady | startMs
     startMs := getms()
     repeat
         beat(CP_LOOP_WAITREADY)
-        if wheelIsReady(side)
+        if isWheelReady(side)
             bReady := TRUE
             quit
         if (getms() - startMs) >= READY_TIMEOUT_MS
@@ -1316,7 +1318,7 @@ PRI measureZero(holdIdx, side) | sampleIdx, nDuty, nErr, nSenseI, eDrvrState, bD
     repeat sampleIdx from 1 to ZERO_SAMPLES
         beat(CP_LOOP_ZERO)                                  ' a call and two hub writes, no wait, no debug(): see beat()
         waitms(SAMPLE_MS)
-        if wheelCogUp(side) == FALSE
+        if bWheelCogUp(side) == FALSE
             setHoldResult(holdIdx, RES_NO_COG)
             quit
         nDuty, nErr, nSenseI, eDrvrState, bDidFault := wheelTelemetry(side)
@@ -1327,7 +1329,7 @@ PRI measureZero(holdIdx, side) | sampleIdx, nDuty, nErr, nSenseI, eDrvrState, bD
     holdZeroSamples[holdIdx] := accCount[ACC_ZERO]
     holdZeroX10[holdIdx] := accMeanX10(ACC_ZERO)
 
-PRI waitAtSpeed(holdIdx, side) : bAtSpeed | startMs, eDrvrState, bDidFault, nDuty, nErr, nSenseI
+PRI bWaitAtSpeed(holdIdx, side) : bAtSpeed | startMs, eDrvrState, bDidFault, nDuty, nErr, nSenseI
 ' Wait, bounded by ATSPEED_TIMEOUT_MS, for DCS_AT_SPEED after a motion command.
 '
 ' @param holdIdx - HOLD_* index
@@ -1346,7 +1348,7 @@ PRI waitAtSpeed(holdIdx, side) : bAtSpeed | startMs, eDrvrState, bDidFault, nDut
     repeat
         beat(CP_LOOP_ATSPEED)
         waitms(SAMPLE_MS)
-        if wheelCogUp(side) == FALSE
+        if bWheelCogUp(side) == FALSE
             setHoldResult(holdIdx, RES_NO_COG)
             quit
         nDuty, nErr, nSenseI, eDrvrState, bDidFault := wheelTelemetry(side)
@@ -1362,7 +1364,7 @@ PRI waitAtSpeed(holdIdx, side) : bAtSpeed | startMs, eDrvrState, bDidFault, nDut
     holdSteadyMs[holdIdx] := getms() - startMs
     bHoldAtSpeed[holdIdx] := bAtSpeed
 
-PRI settleHold(holdIdx, side) : bSettled | startMs, eDrvrState, bDidFault, nDuty, nErr, nSenseI
+PRI bSettleHold(holdIdx, side) : bSettled | startMs, eDrvrState, bDidFault, nDuty, nErr, nSenseI
 ' Hold SETTLE_MS at the commanded increment, polling for a fault or a lost cog.
 '
 ' @param holdIdx - HOLD_* index
@@ -1381,7 +1383,7 @@ PRI settleHold(holdIdx, side) : bSettled | startMs, eDrvrState, bDidFault, nDuty
     repeat
         beat(CP_LOOP_SETTLE)
         waitms(SAMPLE_MS)
-        if wheelCogUp(side) == FALSE
+        if bWheelCogUp(side) == FALSE
             setHoldResult(holdIdx, RES_NO_COG)
             bSettled := FALSE
             quit
@@ -1425,7 +1427,7 @@ PRI sampleWindow(holdIdx, side) | startMs, startTicks, endTicks, nDuty, nErr, nS
     repeat
         beat(CP_LOOP_WINDOW)                                ' a call and two hub writes, no wait, no debug(): see beat()
         waitms(SAMPLE_MS)
-        if wheelCogUp(side) == FALSE
+        if bWheelCogUp(side) == FALSE
             setHoldResult(holdIdx, RES_NO_COG)
             quit
         nDuty, nErr, nSenseI, eDrvrState, bDidFault := wheelTelemetry(side)
@@ -1452,7 +1454,7 @@ PRI sampleWindow(holdIdx, side) | startMs, startTicks, endTicks, nDuty, nErr, nS
         holdErrMean[holdIdx] := accMean[ACC_ERR]
         ' both operands are clamped to LIM_BIG first, so the difference is within +/-2e9 < POSX
         holdNetX10[holdIdx] := ((holdRawX10[holdIdx] #> -LIM_BIG) <# LIM_BIG) - ((holdZeroX10[holdIdx] #> -LIM_BIG) <# LIM_BIG)
-        if wheelCogUp(side)
+        if bWheelCogUp(side)
             endTicks := wheelTicks(side)
             holdTicks[holdIdx] := abs(endTicks - startTicks)
             rateTicks := holdTicks[holdIdx] <# RATE_TICKS_CAP
@@ -1462,7 +1464,7 @@ PRI sampleWindow(holdIdx, side) | startMs, startTicks, endTicks, nDuty, nErr, nS
             holdNegDeg[holdIdx], holdPosDeg[holdIdx] := wheelOffsets(side)
             bHoldMotionValid[holdIdx] := TRUE
 
-PRI waitStoppedFor(side) : bStopped | startMs
+PRI bWaitStoppedFor(side) : bStopped | startMs
 ' Wait, bounded by STOP_TIMEOUT_MS, for the named wheel's running driver to report STOPPED.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -1474,9 +1476,9 @@ PRI waitStoppedFor(side) : bStopped | startMs
     startMs := getms()
     repeat
         beat(CP_LOOP_WAITSTOP)
-        if wheelCogUp(side) == FALSE
+        if bWheelCogUp(side) == FALSE
             quit
-        if wheelIsStopped(side)
+        if isWheelStopped(side)
             bStopped := TRUE
             quit
         if (getms() - startMs) >= STOP_TIMEOUT_MS
@@ -1624,7 +1626,7 @@ PRI shutdownMotors()
     wheelR.stop()
     beat(CP_LIB_STOP_RIGHT)
 
-PRI wheelCogUp(side) : bRunning
+PRI bWheelCogUp(side) : bRunning
 ' Report whether the named wheel has a running driver cog (stop() zeroes motorCog).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -1637,14 +1639,14 @@ PRI wheelCogUp(side) : bRunning
         bRunning := (wheelL.testGetMotorCog() <> 0)
     beat(CP_LIB_COGUP)
 
-PRI wheelIsReady(side) : bReady
+PRI isWheelReady(side) : bReady
 ' Report whether the named wheel's running driver reports ready.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bReady - TRUE when running and ready
 
     bReady := FALSE
-    if wheelCogUp(side)
+    if bWheelCogUp(side)
         beat(CP_LIB_ISREADY)
         if side == SIDE_RIGHT
             bReady := wheelR.isReady()
@@ -1652,14 +1654,14 @@ PRI wheelIsReady(side) : bReady
             bReady := wheelL.isReady()
         beat(CP_LIB_ISREADY)
 
-PRI wheelIsStopped(side) : bStopped
+PRI isWheelStopped(side) : bStopped
 ' Report whether the named wheel's running driver reports STOPPED.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bStopped - TRUE when running and STOPPED
 
     bStopped := FALSE
-    if wheelCogUp(side)
+    if bWheelCogUp(side)
         beat(CP_LIB_ISSTOPPED)
         if side == SIDE_RIGHT
             bStopped := wheelR.isStopped()
@@ -1674,7 +1676,7 @@ PRI wheelDrvState(side) : eDrvrState
 ' @returns eDrvrState - DCS_* state
 
     eDrvrState := wheelL.DCS_Unknown
-    if wheelCogUp(side)
+    if bWheelCogUp(side)
         beat(CP_LIB_DRVSTATE)
         if side == SIDE_RIGHT
             eDrvrState := wheelR.getDriverState()
@@ -1683,7 +1685,7 @@ PRI wheelDrvState(side) : eDrvrState
         beat(CP_LIB_DRVSTATE)
 
 PRI wheelTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault
-' Snapshot the named wheel's per-cycle driver status. Callers check wheelCogUp() first (PL-21).
+' Snapshot the named wheel's per-cycle driver status. Callers check bWheelCogUp() first (PL-21).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns nDuty - latest duty value
@@ -1867,7 +1869,7 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
 ' STEERFAIL: all but one free cog is occupied, so ltWheel.startOwned() takes the last cog and
 ' rtWheel.startOwned() fails; start() must stop the left driver and return -1. PASS needs the return
 ' -1 AND the free-cog count after == baseline (a leaked driver cog reads one short) AND this file's
-' own wheelL and wheelR then start on the bench bases (claimsFreeCheck(): a failed rtWheel start
+' own wheelL and wheelR then start on the bench bases (bClaimsFreeCheck(): a failed rtWheel start
 ' that kept its pin claim, PL-36, refuses wheelR's claim). No cleanup stop() runs between the
 ' failed start and that check (P6: check before you clean up), so nothing can mask a leaked claim.
 ' UNFIXED library (before the :124-133 failure path): the failed right start was ignored, the
@@ -1897,7 +1899,7 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
 ' STEERSTART already FAILs that.
 '
 ' Every call here is UNTRAPPED: nothing in the library aborts (tasks 3554/3555). A genuine abort is
-' caught by main()'s single top-level trap around \runSession() instead.
+' caught by main()'s single top-level trap around \bRunSession() instead.
 '
 ' @local baseline - free cogs before STEERFAIL
 ' @local spacersStarted - spacers occupying cogs during STEERFAIL
@@ -1933,7 +1935,7 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
         bSteerFailMeasured := (spacersStarted == baseline - 1)
         ' P6 / PL-36: check FIRST, clean up AFTER -- no steerStop() runs before this check, or it
         ' would release a leaked claim and mask exactly the leak this cell exists to catch
-        bSteerFailClaimsFree := claimsFreeCheck()
+        bSteerFailClaimsFree := bClaimsFreeCheck()
         ' only now release whatever the library still holds, so STEERSTART measures its own start
         steerStop()
 
@@ -1945,7 +1947,7 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
     steerStartReturn := startRet
     bSteerStartRan := TRUE
     if (startRet >= 0) and (startRet <= MAX_COG_ID)
-        bSteerBothReady := waitSteerReady()
+        bSteerBothReady := bWaitSteerReady()
 
         ' (c) R10-CHAR-STEERLIVE
         ltTicksBefore, rtTicksBefore := steerTicks()
@@ -1961,7 +1963,7 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
         steerLtState, steerRtState := steerStates()
         if bSteerBothReady
             steerStopMotors()
-            bSteerStopped := waitSteerStopped()
+            bSteerStopped := bWaitSteerStopped()
         steerLtTicksDelta := absValue(((ltTicksAfter - ltTicksBefore) #> (0 - LIM_SMALL)) <# LIM_SMALL)
         steerRtTicksDelta := absValue(((rtTicksAfter - rtTicksBefore) #> (0 - LIM_SMALL)) <# LIM_SMALL)
         bSteerLiveRan := TRUE
@@ -1969,7 +1971,7 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
     beat(CP_STEER)
     emitSteer()
 
-PRI claimsFreeCheck() : bFree | startRet
+PRI bClaimsFreeCheck() : bFree | startRet
 ' R10-CHAR-STEERFAIL's PL-36 limb: start this file's own wheelL and then wheelR on the bench bases
 ' and require a driver cog id from each, then stop both. A pin group still claimed by another
 ' instance (a failed steering rtWheel start that kept its claim) makes that wheel's start() return
@@ -1991,7 +1993,7 @@ PRI claimsFreeCheck() : bFree | startRet
         bFree := FALSE
     shutdownMotors()
 
-PRI waitSteerReady() : bReady | startMs, eLeftState, eRightState
+PRI bWaitSteerReady() : bReady | startMs, eLeftState, eRightState
 ' Wait, bounded by READY_TIMEOUT_MS, for both steering wheels to leave DCS_Unknown.
 '
 ' @returns bReady - TRUE when both did
@@ -2012,7 +2014,7 @@ PRI waitSteerReady() : bReady | startMs, eLeftState, eRightState
             quit
         waitms(SAMPLE_MS)
 
-PRI waitSteerStopped() : bStopped | startMs
+PRI bWaitSteerStopped() : bStopped | startMs
 ' Wait, bounded by STOP_TIMEOUT_MS, for both steering wheels to report STOPPED.
 '
 ' @returns bStopped - TRUE when both did
@@ -2023,7 +2025,7 @@ PRI waitSteerStopped() : bStopped | startMs
     startMs := getms()
     repeat
         beat(CP_LOOP_STEER_STOP)
-        if steerIsStopped()
+        if isSteerStopped()
             bStopped := TRUE
             quit
         if (getms() - startMs) >= STOP_TIMEOUT_MS
@@ -2050,7 +2052,7 @@ PRI steerTicks() : nLeftPos, nRightPos
     nLeftPos, nRightPos := steering.testGetRawHallTicks()
     beat(CP_LIB_STEER_READ)
 
-PRI steerIsStopped() : bStopped
+PRI isSteerStopped() : bStopped
 ' steering.isStopped(): TRUE when both wheels report STOPPED.
 '
 ' @returns bStopped - TRUE when both are stopped
@@ -2207,7 +2209,7 @@ PRI measureBrakeStart(brakeIdx) | side, sign, startRet, ticksBefore, ticksAfter,
     if (startRet >= 0) and (startRet <= MAX_COG_ID)
         bBrakeStarted[brakeIdx] := (wheelMotorCog(side) == startRet + 1)
     if bBrakeStarted[brakeIdx]
-        bBrakeReady[brakeIdx] := waitUntilReady(side)
+        bBrakeReady[brakeIdx] := bWaitUntilReady(side)
         if bBrakeReady[brakeIdx]
             brakeHoldAtStop(side, TRUE)
             beat(CP_BRAKE_SETTLE)
@@ -2220,9 +2222,9 @@ PRI measureBrakeStart(brakeIdx) | side, sign, startRet, ticksBefore, ticksAfter,
             beat(CP_BRAKE_DRIVE)
             ticksAfter := wheelTicks(side)
             commandMotor(side, 0)
-            bBrakeStopped[brakeIdx] := waitStoppedFor(side)
+            bBrakeStopped[brakeIdx] := bWaitStoppedFor(side)
             brakeTicksDelta[brakeIdx] := ((ticksAfter - ticksBefore) #> (0 - LIM_SMALL)) <# LIM_SMALL
-            if wheelCogUp(side)
+            if bWheelCogUp(side)
                 ' the fault long is a latch (only clearFaultSignal() resets it), so this one read
                 '  after the stop covers the whole window even though the zero command has
                 '  already taken the driver out of DCS_FAULTED
@@ -2234,7 +2236,7 @@ PRI measureBrakeStart(brakeIdx) | side, sign, startRet, ticksBefore, ticksAfter,
 
 PRI brakeStart(side) : startRet
 ' The named wheel's start(), bracketed by CP_LIB_BRAKE_START, for measureBrakeStart() and
-' claimsFreeCheck(); start() returns a cog id 0..7 on success or -1 with the cause in getError().
+' bClaimsFreeCheck(); start() returns a cog id 0..7 on success or -1 with the cause in getError().
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns startRet - start()'s return
@@ -2526,7 +2528,7 @@ PRI emitEnd(trapCode)
 ' Worst case: tag(6) + exit(14) + preflight_ok(19) + holds_run(15) + lib_abort(16) + trap(16) =
 ' 86 bytes.
 '
-' @param trapCode - value the top-level trap around \runSession() delivered, printed unconditionally
+' @param trapCode - value the top-level trap around \bRunSession() delivered, printed unconditionally
 
     lineReset()
     lineAddText(@"BC-END")
@@ -2786,7 +2788,7 @@ PRI emitPhaseDSignoffs() | side, sign, brakeIdx, measuredVal, bCriterionMet
 ' R10-CHAR-STEERSTART, R10-CHAR-STEERLIVE per wheel, R13-CHAR-BRAKESTART per motor x sign. An
 ' instance never reached keeps initPhaseD()'s not-run state and prints NOMEAS with n 0.
 '  STEERFAIL  measured = TRUE/FALSE, units BOOL: TRUE when start() returned -1 AND free-after ==
-'             baseline AND claimsFreeCheck() passed (PL-36) AND no abort; the numbers are in
+'             baseline AND bClaimsFreeCheck() passed (PL-36) AND no abort; the numbers are in
 '             BC-STEER. NOMEAS when the baseline was below STEERFAIL_MIN_BASELINE, or the spacers did
 '             not leave exactly one cog free.
 '  STEERERR   measured = TRUE/FALSE, units BOOL, motor RIGHT (task 3560): TRUE when the failed start's
@@ -3054,12 +3056,12 @@ PRI tokenField(pFieldName, pToken, maxLen)
 ' @param pToken - pointer to the token text
 ' @param maxLen - the longest token this field may print
 
-    if tokenFits(pToken, maxLen)
+    if bTokenFits(pToken, maxLen)
         lineTextField(pFieldName, pToken)
     else
         lineTextField(pFieldName, @sBadTok)
 
-PRI tokenFits(pToken, maxLen) : bFits | charIdx
+PRI bTokenFits(pToken, maxLen) : bFits | charIdx
 ' Report whether a zero-terminated token is at most maxLen bytes, reading no more than maxLen + 1.
 '
 ' @param pToken - pointer to the token text
@@ -3606,13 +3608,13 @@ PRI wdBoolField(pFieldName, bFlag)
 
 PRI wdTokenField(pFieldName, pToken, maxLen)
 ' Append a token field; a token longer than maxLen prints as "?". Mirrors tokenField(), reusing
-' tokenFits(), which only reads through pToken and touches neither record buffer.
+' bTokenFits(), which only reads through pToken and touches neither record buffer.
 '
 ' @param pFieldName - pointer to the field name
 ' @param pToken - pointer to the token text
 ' @param maxLen - the longest token this field may print
 
-    if tokenFits(pToken, maxLen)
+    if bTokenFits(pToken, maxLen)
         wdLineTextField(pFieldName, pToken)
     else
         wdLineTextField(pFieldName, @sBadTok)

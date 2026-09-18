@@ -55,8 +55,8 @@
 ''               SCAN-RUN-7-EVALUATION.md sec 5): D1 -- refineCliffEdge()/probeConfirmCliff() keep
 ''               probing 2 degrees closer to the fault, at both speeds, after a clean probe, instead
 ''               of stopping at the first one; D2 -- half-speed legs now run the rise-on-both-sides
-''               negative case for real (evaluateHalfBracket()), and hasMinimum() rejects a POOR fit
-''               or one fitPinnedNearLimit() finds pinned against a fault edge, so BS-RESULT-HALF
+''               negative case for real (bEvaluateHalfBracket()), and hasMinimum() rejects a POOR fit
+''               or one bFitPinnedNearLimit() finds pinned against a fault edge, so BS-RESULT-HALF
 ''               emits no shift/shift_sig from either; D3 -- BS-RESULT's i_min/saving and BS-PAIR2's
 ''               ratio/imbalance are now judged on each leg's measured floor (legMeasuredFloor()),
 ''               with the old fitted minimum kept as a new field at the end of each record; D4 --
@@ -65,7 +65,7 @@
 ''               ref_end_net_mV_x10, the net figure beside each raw one under an unchanged name; D7
 ''               -- R9-SCAN-HALFLEG's two per-motor instances carry crit MIN_BRACKETED_NEG/POS
 ''               instead of one shared CLIFF_PROBED, so they no longer read as duplicates; R9-SCAN-
-''               HALFLEG's criterion is now MIN_BRACKETED itself (evaluateHalfBracket()'s verdict:
+''               HALFLEG's criterion is now MIN_BRACKETED itself (bEvaluateHalfBracket()'s verdict:
 ''               FAILs when the leg's low sits at a fault-bounded window edge with nothing measured
 ''               beyond it toward the fault); main()'s trap value now prints on every run
 ''               (BS-END trap_value), not only on an abort
@@ -80,9 +80,11 @@
 ''               changes shape; the fmt is unchanged
 ''   Updated.... 18 Sep 2026 -- task 3517 (SRC_REV 13): style-guide conformance, no behaviour change.
 ''               The six side helpers that chose between wheelR/wheelL calls with ? : now use if/else
-''               (PL-29: a ternary ran both calls); runScan() and runWatchdogSelfTest() have one exit
-''               each; evaluateHalfBracket() drops its two unused parameters; DEGREES_PER_TURN is the
+''               (PL-29: a ternary ran both calls); bRunScan() and runWatchdogSelfTest() have one exit
+''               each; bEvaluateHalfBracket() drops its two unused parameters; DEGREES_PER_TURN is the
 ''               library's. No record changes shape; the fmt is unchanged
+''   Updated.... 18 Sep 2026 -- task 3517 (SRC_REV 14): style guide 5.4.1 -- every method returning one
+''               boolean is named is/has/b (bRunScan(), isSideReady(), ...). No record changes
 ''
 '' =================================================================================================
 
@@ -146,7 +148,7 @@
 
   SIGN-OFF VERDICTS (task 3537; DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B, F). Right after BS-BANNER
   come BS-BUILD and one SIGNOFF-DECL per cell this build judges. The scan accumulates per-motor
-  facts where it already has them (startSide, measureZero, measurePoint, runSelfCheck,
+  facts where it already has them (bStartSide, measureZero, measurePoint, bRunSelfCheck,
   applyOffsets) and emits every declared cell's SIGNOFF instances once, from emitSignoffs(), on
   cog 0's normal end path: after the watchdog is stopped and both wheels are shut down, before
   BS-END. A cell with nothing measured is NOMEAS with n 0, never PASS. On the watchdog path of the
@@ -176,7 +178,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 13                                        ' hand-bumped whenever this file changes
+    SRC_REV     = 14                                        ' hand-bumped whenever this file changes
     FMT_VERSION = 10                                        ' BS- record-format version
 
 ' fmt 10 changes (task 3540, scan v5, PL-46; no existing record's field names, order or content change):
@@ -189,9 +191,9 @@ CON { build identity }
 '     i_pos_min now read each leg's measured floor (D3); the fitted value that used to be there
 '     moves to a new field (i_min_fit_mV_x10 / i_neg_min_fit_mV_x10 / i_pos_min_fit_mV_x10) at the
 '     end of each record.
-'   - hasMinimum() no longer accepts FS_POOR, and rejects a fit fitPinnedNearLimit() finds pinned
+'   - hasMinimum() no longer accepts FS_POOR, and rejects a fit bFitPinnedNearLimit() finds pinned
 '     against a fault-derived window edge (D2); half-speed legs are judged by the real rise-on-
-'     both-sides test (evaluateHalfBracket()), not marked bracketed by assignment.
+'     both-sides test (bEvaluateHalfBracket()), not marked bracketed by assignment.
 '   - R9-SCAN-HALFLEG's criterion is MIN_BRACKETED (D1/D2), and its two per-motor instances carry
 '     crit MIN_BRACKETED_NEG / MIN_BRACKETED_POS (D7), replacing the shared CLIFF_PROBED.
 
@@ -633,7 +635,7 @@ CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-D
 ' 0.440 vs 1.16 came from BS-PAIR2 netting both minima against ZERO_INIT, not from a point without its
 ' own zero (SCAN-RUN-5-EVALUATION.md sec 6 item 1).
 ' R9-SCAN-HALFLEG (task 3530, criterion redesigned task 3540 PL-46), crit MIN_BRACKETED_NEG /
-' MIN_BRACKETED_POS (one instance per sign, D7), units BOOL: TRUE when evaluateHalfBracket() finds a
+' MIN_BRACKETED_POS (one instance per sign, D7), units BOOL: TRUE when bEvaluateHalfBracket() finds a
 ' point that rises RISE_PCT (or FAULT_RISE_PCT on a fault-bounded side) above the leg's low on BOTH
 ' sides, among the confirm/cliff-probe points fitLeg() itself fits; NOMEAS when the leg never ran
 ' (bResLegRan FALSE). FAILs exactly when the low sits at a fault-bounded window edge with nothing
@@ -670,11 +672,11 @@ CON { cog-0 progress checkpoints -- watchdog heartbeat contract, task 3534 }
 
 ' A checkpoint id names the smallest statement group cog 0 is currently inside, so a stall's
 ' last checkpoint (reported in BS-WATCHDOG) pins it there and no wider. CP_LOOP_* fire once on
-' every pass of the named loop (measurePoint's steady wait, settlePoint, windowPoint,
-' waitStopped, measureZero, driveForMs, waitReady, plus CP_LOOP_REST/CP_LOOP_COOL for the two
+' every pass of the named loop (measurePoint's steady wait, bSettlePoint, bWindowPoint,
+' bWaitStopped, measureZero, bDriveForMs, bWaitReady, plus CP_LOOP_REST/CP_LOOP_COOL for the two
 ' waitms()-only waits -- REST_MS and FAULT_COOL_MS -- that scan run 5's evaluation named as long
 ' gaps: both are now beat-polled loops instead of one blind waitms(), so they no longer widen
-' WD_STALL_MS). CP_RECOVERY_* name recoverFromFault()'s four named steps. CP_LIB_* bracket every
+' WD_STALL_MS). CP_RECOVERY_* name bRecoverFromFault()'s four named steps. CP_LIB_* bracket every
 ' place this file calls into wheelL/wheelR directly (the sideXxx()/commandMotor()/
 ' shutdownMotors() bodies): the SAME id is set immediately before and immediately after the
 ' call(s), so a stall parked on a CP_LIB_* id pins it to that one wrapper's body -- it cannot
@@ -749,9 +751,9 @@ CON { watchdog cog, task 3534 }
 ' other chains, for comparison:
 '   normal build, wdEmitSignoffBool() (7 + 1 = 8) n field:  3 + 3 + 8 + 3 + 2 + 15 + 1 = 35 longs
 '   emitWatchdog() (1 + 0 = 1) numeric field:               3 + 3 + 1 + 3 + 2 + 15 + 1 = 28 longs
-'   wdEmitSignoff() token field -> wdTokenField() 3 -> tokenFits() (2 + 1 + 1 = 4): 3 + 3 + 12 + 3 + 4 = 25
+'   wdEmitSignoff() token field -> wdTokenField() 3 -> bTokenFits() (2 + 1 + 1 = 4): 3 + 3 + 12 + 3 + 4 = 25
 '   wdSnapshotStall() (0) -> isp_bldc_motor testGetTelemetry() (0 + 8 returns + 0 = 8):  3 + 3 + 0 + 8 = 14
-'   wheelL.stop() (0) -> holdsPinBaseClaim() (0 + 1 return + 0 = 1):                   3 + 3 + 0 + 1 = 7
+'   wheelL.stop() (0) -> bHoldsPinBaseClaim() (0 + 1 return + 0 = 1):                  3 + 3 + 0 + 1 = 7
 ' -- comfortably under half of 128, so WD_STACK_LONGS = 128 (the app note's own "can't overflow
 ' while measuring" starting point) is used directly rather than shrunk to ~1.5x an unmeasured
 ' number. The frame count does not add the interpreter's own per-call bookkeeping, which the app
@@ -1036,8 +1038,8 @@ VAR { run-wide state }
     LONG    currentSide                                     ' SIDE_* with a running driver cog
     LONG    runStartMs                                      ' getms() at run start
     LONG    abortReason                                     ' AR_* first run-abort cause, AR_NONE while running
-    LONG    bRunReturned                                    ' TRUE once runScan() reached its end
-    LONG    runTrapCode                                     ' task 3540 TOP-LEVEL TRAP: \runScan()'s value, every run
+    LONG    bRunReturned                                    ' TRUE once bRunScan() reached its end
+    LONG    runTrapCode                                     ' task 3540 TOP-LEVEL TRAP: \bRunScan()'s value, every run
     LONG    pointSeq                                        ' points measured so far, run-wide
     LONG    runFaults                                       ' faulted/timed-out points, run-wide
     LONG    runAbortsI                                      ' per-point current aborts, run-wide
@@ -1152,7 +1154,7 @@ VAR { results, index = resultSlot(side, sign, speed) }
     LONG    resIdefX10[RESULT_SLOTS]
     LONG    bResIdefValid[RESULT_SLOTS]
     LONG    bResDrift[RESULT_SLOTS]
-    LONG    bResPinned[RESULT_SLOTS]                          ' task 3540 D2: fitPinnedNearLimit() at this slot's fit
+    LONG    bResPinned[RESULT_SLOTS]                          ' task 3540 D2: bFitPinnedNearLimit() at this slot's fit
     LONG    bResBracketed[RESULT_SLOTS]                       ' task 3540 D2: rise-on-both-sides held (real test, both speeds)
     LONG    resFloorX10[RESULT_SLOTS]                          ' task 3540 D3: legMeasuredFloor()'s lowest measured net point
     LONG    resFloorDeg[RESULT_SLOTS]                          ' that point's swept offset, degrees
@@ -1163,7 +1165,7 @@ VAR { results, index = resultSlot(side, sign, speed) }
 
 VAR { sign-off accumulators, task 3537 -- index sideSlot(side); cog 0 only, the watchdog reads none }
 
-    LONG    sfStarts[SIDE_SLOTS]                            ' startSide() calls
+    LONG    sfStarts[SIDE_SLOTS]                            ' bStartSide() calls
     LONG    sfCogBad[SIDE_SLOTS]                            ' starts whose start() return was outside 0..MAX_COG_ID or not testGetMotorCog() - 1
     LONG    sfRevbBad[SIDE_SLOTS]                           ' starts not detected as Rev B
     LONG    sfReadbacks[SIDE_SLOTS]                         ' offset read-backs checked: every start + every applyOffsets()
@@ -1193,8 +1195,8 @@ VAR { sign-off accumulators, task 3537 -- index sideSlot(side); cog 0 only, the 
     ' task 3537 phase 2b3 -- R10-SCAN-RSTALONE, one testResetFault()-alone attempt per motor
     LONG    bSfRstAloneDone[SIDE_SLOTS]                     ' TRUE once this motor's one attempt was taken
     LONG    rstAloneMs[SIDE_SLOTS]                          ' ms testResetFault() took, via sideResetFault()
-    LONG    bRstAloneStopped[SIDE_SLOTS]                    ' sideIsStopped() right after it
-    LONG    bRstAloneFault[SIDE_SLOTS]                      ' sideIsFault() right after it
+    LONG    bRstAloneStopped[SIDE_SLOTS]                    ' isSideStopped() right after it
+    LONG    bRstAloneFault[SIDE_SLOTS]                      ' isSideFault() right after it
     LONG    bRstAloneCleared[SIDE_SLOTS]                    ' stopped and not faulted: the R10 measured value
     LONG    rstAloneIncre[SIDE_SLOTS]                       ' the faulted point's increment, still commanded
     LONG    rstAloneSwept[SIDE_SLOTS]                       ' the faulted point's swept offset, degrees
@@ -1237,7 +1239,7 @@ PUB main() | trapCode
 ''
 
 ' Local Variables:
-' @local trapCode - value delivered by the abort trap around runScan()
+' @local trapCode - value delivered by the abort trap around bRunScan()
 
     wdStackSentinel := WD_STACK_SENTINEL                    ' fill BEFORE cogspin (p2kb: sentinel
                                                              ' must be in place before the cog that
@@ -1247,7 +1249,7 @@ PUB main() | trapCode
     initRunState()
     emitHeaderRecords()
     bRunReturned := FALSE
-    trapCode := \runScan()                                  ' a library abort lands here, not past the stop()s
+    trapCode := \bRunScan()                                  ' a library abort lands here, not past the stop()s
     runTrapCode := trapCode                                 ' task 3540 TOP-LEVEL TRAP: printed by emitEnd() every run
     if bRunReturned == FALSE
         setRunAbort(AR_LIB_ABORT, trapCode)
@@ -1350,7 +1352,7 @@ PRI initRunState() | slotIdx
         rstAloneIncre[slotIdx] := 0
         rstAloneSwept[slotIdx] := 0
 
-PRI runScan() : bCompleted
+PRI bRunScan() : bCompleted
 ' Preflight, then the LEFT and RIGHT motor blocks. Every stage is skipped once the run aborts.
 ' Under -D WD_SELFTEST (task 3537 phase 2c, design sec G.3) preflight is followed by the watchdog
 ' self-test instead: no motor block is ever on that path.
@@ -1358,7 +1360,7 @@ PRI runScan() : bCompleted
 ' @returns bCompleted - TRUE when no run abort occurred
 
     bCompleted := FALSE
-    if preflightWheels() == FALSE
+    if bPreflightWheels() == FALSE
         setRunAbort(AR_PREFLIGHT, 0)                        ' kept only if no earlier cause was recorded
 #ifdef WD_SELFTEST
     runWatchdogSelfTest()                                   ' parks forever once the watchdog declares
@@ -1456,7 +1458,7 @@ PRI shutdownMotors()
     currentSide := SIDE_NONE
     beat(CP_LIB_SHUTDOWN)
 
-PRI preflightWheels() : bAllMoved | side, ticksBefore, ticksAfter, ticksMoved, bNudgeFault
+PRI bPreflightWheels() : bAllMoved | side, ticksBefore, ticksAfter, ticksMoved, bNudgeFault
 ' Prove each declared wheel turns before committing the session to the scan.
 '
 ' @returns bAllMoved - TRUE when both wheels moved and the run has not aborted
@@ -1470,31 +1472,31 @@ PRI preflightWheels() : bAllMoved | side, ticksBefore, ticksAfter, ticksMoved, b
     bAllMoved := TRUE
     repeat side from SIDE_LEFT to SIDE_RIGHT
         if abortReason == AR_NONE
-            restartSide(side)
+            bRestartSide(side)
         if abortReason == AR_NONE
             ticksBefore := sideTicks(side)
-            bNudgeFault := driveForMs(side, PREFLIGHT_INCRE, PREFLIGHT_MS)
+            bNudgeFault := bDriveForMs(side, PREFLIGHT_INCRE, PREFLIGHT_MS)
             ticksAfter := sideTicks(side)
-            if sideCogRunning(side)
+            if bSideCogRunning(side)
                 commandMotor(side, 0)
-                waitStopped(side)
+                bWaitStopped(side)
             ticksMoved := ticksAfter - ticksBefore
             emitPreflight(side, ticksMoved)
             if ticksMoved == 0
                 bAllMoved := FALSE
             if bNudgeFault and (abortReason == AR_NONE)
                 runFaults += 1
-                recoverFromFault(side, PREFLIGHT_INCRE, DEF_NEG_DEG)
+                bRecoverFromFault(side, PREFLIGHT_INCRE, DEF_NEG_DEG)
     bAllMoved := bAllMoved and (abortReason == AR_NONE)
 
 PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
 ' Run one motor's deliberate cross-start zeros, start checks, zero reading, self-check, both
 ' quarter-speed legs, both half-speed legs, and its RESULT records.
-' Task 3537 phase 2b2 (design sec F.3): first, ZXS_STARTS cycles of restartSide() -> a PH_XSTART zero
+' Task 3537 phase 2b2 (design sec F.3): first, ZXS_STARTS cycles of bRestartSide() -> a PH_XSTART zero
 ' -> a REST_MS rest, each skipped once the run has aborted. The wheel is floated throughout (init()
-' sets SM_FLOAT, nothing is commanded). restartSide()'s start checks still apply: a failed check
-' aborts the run inside startSide(), the loop quits on its next pass, and -- new guard -- the block's
-' own restartSide() below is then skipped too, so no wheel is started after an abort.
+' sets SM_FLOAT, nothing is commanded). bRestartSide()'s start checks still apply: a failed check
+' aborts the run inside bStartSide(), the loop quits on its next pass, and -- new guard -- the block's
+' own bRestartSide() below is then skipped too, so no wheel is started after an abort.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param firstSign - SIGN_NEG or SIGN_POS, the sign whose legs run first
@@ -1508,17 +1510,17 @@ PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
         beat(CP_LOOP_XSTART)
         if abortReason <> AR_NONE
             quit
-        restartSide(side)
+        bRestartSide(side)
         if abortReason == AR_NONE
             measureZero(side, PH_XSTART)
         if abortReason == AR_NONE
             restLoop()
     if abortReason == AR_NONE
-        restartSide(side)
+        bRestartSide(side)
     if abortReason == AR_NONE
         measureZero(side, PH_ZERO_INIT)
     if abortReason == AR_NONE
-        bSelfPassed := runSelfCheck(side)
+        bSelfPassed := bRunSelfCheck(side)
     if abortReason == AR_NONE
         runLeg(side, SPEED_QTR, firstSign)
     if abortReason == AR_NONE
@@ -1530,7 +1532,7 @@ PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
     if bSelfPassed
         emitResults(side, firstSign)
 
-PRI restartSide(side) : bStartOk
+PRI bRestartSide(side) : bStartOk
 ' Stop whichever wheel is running and this wheel, then start this wheel with start checks.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -1540,9 +1542,9 @@ PRI restartSide(side) : bStartOk
         sideStop(currentSide)
     sideStop(side)
     currentSide := SIDE_NONE
-    bStartOk := startSide(side)
+    bStartOk := bStartSide(side)
 
-PRI startSide(side) : bStartOk | startedCog, initNeg, initPos, eBoardRev, nMissed, nIllegal, ...
+PRI bStartSide(side) : bStartOk | startedCog, initNeg, initPos, eBoardRev, nMissed, nIllegal, ...
     readNeg, readPos, bCogOk, bRevB, bOffsetsOk, bIntegOk, bReady, startSlot, bCogMatch
 ' Start one wheel and run the start checks: cog id, Rev B, integrity counts, and the offsets
 ' read back AFTER 43/317 are set explicitly. init()'s own offsets are logged, not required.
@@ -1553,7 +1555,7 @@ PRI startSide(side) : bStartOk | startedCog, initNeg, initPos, eBoardRev, nMisse
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bStartOk - TRUE when every start check passed
 '
-' @local bReady - TRUE when waitReady() saw the driver report ready within READY_TIMEOUT_MS
+' @local bReady - TRUE when bWaitReady() saw the driver report ready within READY_TIMEOUT_MS
 ' @local startSlot - sideSlot(side), the sign-off accumulator index
 ' @local startedCog - start()'s return
 ' @local initNeg - offset_fwd degrees init() applied
@@ -1572,7 +1574,7 @@ PRI startSide(side) : bStartOk | startedCog, initNeg, initPos, eBoardRev, nMisse
 
     startedCog := sideStart(side)
     currentSide := side
-    bReady := waitReady(side)
+    bReady := bWaitReady(side)
     initNeg, initPos := sideGetOffsets(side)
     eBoardRev := sideBoardType(side)
     nMissed, nIllegal := sideIntegrity(side)
@@ -1676,7 +1678,7 @@ PRI zxsSpreadX10(arrIdx, bControlled) : spreadX10
         if zxsAllMax[arrIdx] >= zxsAllMin[arrIdx]
             spreadX10 := zxsAllMax[arrIdx] - zxsAllMin[arrIdx]
 
-PRI waitReady(side) : bReady | startMs
+PRI bWaitReady(side) : bReady | startMs
 ' Wait, bounded, for the just-started driver cog to report ready. Same poll as before task 3537;
 ' it now returns the readiness its own bound test last saw, so the caller need not re-read it.
 '
@@ -1688,7 +1690,7 @@ PRI waitReady(side) : bReady | startMs
     bReady := FALSE
     startMs := getms()
     repeat
-        bReady := sideIsReady(side)
+        bReady := isSideReady(side)
         if bReady or ((getms() - startMs) >= READY_TIMEOUT_MS)
             quit
         beat(CP_LOOP_WAITREADY)
@@ -1814,7 +1816,7 @@ PRI measureZero(side, phaseTag) : zeroOutX10, bZeroOutValid | sampleIdx, senseMv
     zeroOutX10 := meanX10
     bZeroOutValid := bValid
 
-PRI runSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, negMeanX10, bPosIOk, ...
+PRI bRunSelfCheck(side) : bPassed | orderPos, signIdx, loMv, hiMv, posMeanX10, negMeanX10, bPosIOk, ...
     bNegIOk, bRateOk, bIntegOk, bFaultOk, bThisFaultOk, bThisIOk, bThisRateOk, bThisIntegOk, ...
     ratioX1000, bRatioOk, bStartOk, bZeroPass, missCode, zeroBase, posNetMeanX10, negNetMeanX10, ...
     netLoMv, netHiMv, netThisIOk, nSelfPts, bAnyIMiss, bAnyRateMiss, checkSlot
@@ -2000,7 +2002,7 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
             beat(CP_LOOP_STEADY)
             waitms(SAMPLE_MS)
             pollSample(side)
-            if pointInterrupted()
+            if bPointInterrupted()
                 quit
             if sampState == wheelL.DCS_AT_SPEED
                 bAtSpeed := TRUE
@@ -2009,12 +2011,12 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
                 quit
         ptSteadyMs := getms() - cmdMs
         if bAtSpeed
-            bSettleOk := settlePoint(side, speedIdx)
-            if pointInterrupted() == FALSE
+            bSettleOk := bSettlePoint(side, speedIdx)
+            if bPointInterrupted() == FALSE
                 bPtWinRan := TRUE
-                bWinDone := windowPoint(side, speedIdx, winTicks)
-                bPtRateOk := bSettleOk and rateInBand(speedIdx, ptRateX10)
-        if sideCogRunning(side)
+                bWinDone := bWindowPoint(side, speedIdx, winTicks)
+                bPtRateOk := bSettleOk and bRateInBand(speedIdx, ptRateX10)
+        if bSideCogRunning(side)
             ' R10-SCAN-RSTALONE (task 3537 phase 2b3, design sec J.1 ruled b): at this motor's FIRST
             ' eligible fault, testResetFault() ALONE, BEFORE the zero command below -- that zero command
             ' is exactly what hides the PL-28 defect. Eligible: a fault was seen, no per-point current
@@ -2022,22 +2024,22 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
             ' this motor has not had its attempt; only an eligible fault consumes it. The wait sits in
             ' sideResetFault()'s CP_LIB_RESETFAULT bracket, <= 2_030 ms, inside WD_STALL_MS (sec F.4).
             ' Safe with the command still non-zero: the driver's fault branch runs .driveoff before it
-            ' marks DCS_FAULTED. The zero command, waitStopped() and recoverFromFault() run unchanged.
+            ' marks DCS_FAULTED. The zero command, bWaitStopped() and bRecoverFromFault() run unchanged.
             rstSlot := sideSlot(side)
             if bSampFaultSeen and (bSampPointAbort == FALSE) and (abortReason == AR_NONE) and (bSfRstAloneDone[rstSlot] == FALSE)
-                if sideIsFault(side)
+                if isSideFault(side)
                     bSfRstAloneDone[rstSlot] := TRUE
                     bRstAloneNow := TRUE
                     rstStartMs := getms()
                     sideResetFault(side)
                     rstAloneMs[rstSlot] := getms() - rstStartMs
-                    bRstAloneStopped[rstSlot] := sideIsStopped(side)
-                    bRstAloneFault[rstSlot] := sideIsFault(side)
+                    bRstAloneStopped[rstSlot] := isSideStopped(side)
+                    bRstAloneFault[rstSlot] := isSideFault(side)
                     bRstAloneCleared[rstSlot] := bRstAloneStopped[rstSlot] and (bRstAloneFault[rstSlot] == FALSE)
                     rstAloneIncre[rstSlot] := motorIncre
                     rstAloneSwept[rstSlot] := sweptDeg
             commandMotor(side, 0)
-            waitStopped(side)
+            bWaitStopped(side)
 
     if bSampPointAbort
         ptRes := PR_ABORT_I
@@ -2053,7 +2055,7 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
         ptRes := PR_OK
     ptResult := ptRes
 
-    if sideCogRunning(side) and (bSampPointAbort == FALSE)
+    if bSideCogRunning(side) and (bSampPointAbort == FALSE)
         missedAfter, illegalAfter := sideIntegrity(side)
         ptMissedD := missedAfter - missedBefore
         ptIllegalD := illegalAfter - illegalBefore
@@ -2073,10 +2075,10 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
         runAbortsI += 1
         emitAbort(SCOPE_POINT, AR_ABORT_I, side, motorIncre, sampSense)
         if abortReason == AR_NONE
-            restartSide(side)
+            bRestartSide(side)
     elseif (ptRes <> PR_OK) and (abortReason == AR_NONE)
         runFaults += 1
-        recoverFromFault(side, motorIncre, sweptDeg)
+        bRecoverFromFault(side, motorIncre, sweptDeg)
     if abortReason == AR_NONE
         restLoop()
     runGuard()
@@ -2126,7 +2128,7 @@ PRI clearPointRecord()
     bPtZeroValid := FALSE
     ptNetX10 := 0
 
-PRI settlePoint(side, speedIdx) : bSettleOk | startMs, startTicks, spanMs, spanTicks, settleRateX10
+PRI bSettlePoint(side, speedIdx) : bSettleOk | startMs, startTicks, spanMs, spanTicks, settleRateX10
 ' Hold SETTLE_MS after AT_SPEED, polling the abort checks, and test the settle rate.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -2145,7 +2147,7 @@ PRI settlePoint(side, speedIdx) : bSettleOk | startMs, startTicks, spanMs, spanT
         beat(CP_LOOP_SETTLE)
         waitms(SAMPLE_MS)
         pollSample(side)
-        if pointInterrupted()
+        if bPointInterrupted()
             quit
         if (getms() - startMs) >= SETTLE_MS
             quit
@@ -2154,9 +2156,9 @@ PRI settlePoint(side, speedIdx) : bSettleOk | startMs, startTicks, spanMs, spanT
     settleRateX10 := 0
     if spanMs > 0
         settleRateX10 := (spanTicks * RATE_X10_SCALE) / spanMs
-    bSettleOk := rateInBand(speedIdx, settleRateX10)
+    bSettleOk := bRateInBand(speedIdx, settleRateX10)
 
-PRI windowPoint(side, speedIdx, winTicks) : bWinDone | startMs, startTicks, ticksNow, senseMv, senseSum, ...
+PRI bWindowPoint(side, speedIdx, winTicks) : bWinDone | startMs, startTicks, ticksNow, senseMv, senseSum, ...
     sampleCnt, minMv, maxMv, dutySum, errSum, halfTicks, halfASum, halfACnt, halfBSum, halfBCnt, ...
     batchSum, batchCnt, nBatches, timeoutMs, expectedRate, thresholdX10
 ' Sample every SAMPLE_MS until winTicks hall ticks have passed, then fill the point record.
@@ -2213,7 +2215,7 @@ PRI windowPoint(side, speedIdx, winTicks) : bWinDone | startMs, startTicks, tick
         beat(CP_LOOP_WINDOW)
         waitms(SAMPLE_MS)
         pollSample(side)
-        if pointInterrupted()
+        if bPointInterrupted()
             quit
         ticksNow := abs(sideTicks(side) - startTicks)
         senseMv := clampSense(sampSense)
@@ -2358,14 +2360,14 @@ PRI pollSample(side) | nowMs, stepMs, senseMv, bCogUp, bFaultNow
         else
             sampOverCount := 0
 
-PRI pointInterrupted() : bInterrupted
+PRI bPointInterrupted() : bInterrupted
 ' Report whether the sampling span must end now.
 '
 ' @returns bInterrupted - TRUE on a fault, a point abort, a stopped cog or a run abort
 
     bInterrupted := bSampFaultSeen or bSampPointAbort or bSampNoCog or (abortReason <> AR_NONE)
 
-PRI waitStopped(side) : bStopped | startMs
+PRI bWaitStopped(side) : bStopped | startMs
 ' Wait, bounded, for the wheel to report STOPPED, polling the abort checks.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -2377,9 +2379,9 @@ PRI waitStopped(side) : bStopped | startMs
     startMs := getms()
     repeat
         beat(CP_LOOP_WAITSTOPPED)
-        if sideCogRunning(side) == FALSE
+        if bSideCogRunning(side) == FALSE
             quit
-        if sideIsStopped(side)
+        if isSideStopped(side)
             bStopped := TRUE
             quit
         if (getms() - startMs) >= STOP_TIMEOUT_MS
@@ -2387,7 +2389,7 @@ PRI waitStopped(side) : bStopped | startMs
         waitms(SAMPLE_MS)
         pollSample(side)
 
-PRI driveForMs(side, motorIncre, durationMs) : bFaulted | startMs
+PRI bDriveForMs(side, motorIncre, durationMs) : bFaulted | startMs
 ' Command an increment and hold it for durationMs, polling the abort checks. The caller stops it.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -2411,7 +2413,7 @@ PRI driveForMs(side, motorIncre, durationMs) : bFaulted | startMs
     bFaulted := bSampFaultSeen
     flushCharge()
 
-PRI recoverFromFault(side, motorIncre, sweptDeg) : bCleared | jogIncre, coolStartMs
+PRI bRecoverFromFault(side, motorIncre, sweptDeg) : bCleared | jogIncre, coolStartMs
 ' Clear a fault the util_char_motor way, zero command first: ZERO_CMD, RESET, JOG, RESTART.
 ' A fault that survives all four ends the run (P11). Cools FAULT_COOL_MS afterwards.
 '
@@ -2425,30 +2427,30 @@ PRI recoverFromFault(side, motorIncre, sweptDeg) : bCleared | jogIncre, coolStar
 
     bCleared := FALSE
     beat(CP_RECOVERY_ZERO)
-    if sideCogRunning(side)
+    if bSideCogRunning(side)
         commandMotor(side, 0)                               ' a CHANGED command: the driver leaves DCS_FAULTED
-        waitStopped(side)
-        bCleared := sideIsStopped(side) and (sideIsFault(side) == FALSE)
+        bWaitStopped(side)
+        bCleared := isSideStopped(side) and (isSideFault(side) == FALSE)
     emitFault(side, motorIncre, sweptDeg, FX_ZERO_CMD, bCleared)
-    if (bCleared == FALSE) and sideCogRunning(side) and (abortReason == AR_NONE)
+    if (bCleared == FALSE) and bSideCogRunning(side) and (abortReason == AR_NONE)
         beat(CP_RECOVERY_RESET)
         sideResetFault(side)
-        bCleared := sideIsStopped(side) and (sideIsFault(side) == FALSE)
+        bCleared := isSideStopped(side) and (isSideFault(side) == FALSE)
         emitFault(side, motorIncre, sweptDeg, FX_RESET, bCleared)
-    if (bCleared == FALSE) and sideCogRunning(side) and (abortReason == AR_NONE)
+    if (bCleared == FALSE) and bSideCogRunning(side) and (abortReason == AR_NONE)
         beat(CP_RECOVERY_JOG)
         jogIncre := (motorIncre < 0) ? (0 - JOG_INCRE) : JOG_INCRE
         sideSetOffsets(side, DEF_NEG_DEG, DEF_POS_DEG)
-        driveForMs(side, jogIncre, JOG_MS)
-        if sideCogRunning(side)
+        bDriveForMs(side, jogIncre, JOG_MS)
+        if bSideCogRunning(side)
             commandMotor(side, 0)
-            waitStopped(side)
+            bWaitStopped(side)
             sideResetFault(side)
-        bCleared := sideIsStopped(side) and (sideIsFault(side) == FALSE)
+        bCleared := isSideStopped(side) and (isSideFault(side) == FALSE)
         emitFault(side, motorIncre, sweptDeg, FX_JOG, bCleared)
     if (bCleared == FALSE) and (abortReason == AR_NONE)
         beat(CP_RECOVERY_RESTART)
-        bCleared := restartSide(side)
+        bCleared := bRestartSide(side)
         emitFault(side, motorIncre, sweptDeg, FX_RESTART, bCleared)
     if (bCleared == FALSE) and (abortReason == AR_NONE)
         setRunAbort(AR_RECOVERY_FAIL, sweptDeg)
@@ -2469,7 +2471,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
 ' REF_END. 1/2 speed: REF_START, confirm points around the 1/4-speed minimum, fit, REF_END.
 ' CHANGE 1 (scan v3): legLimitUpDeg/legLimitDownDeg bound the sweep window at whichever side's
 ' last good point precedes a fault edge (refreshLegLimits(), fed by every legMeasure() in this
-' leg); runFinePoints()/runExtension() never command an offset past that limit, and evaluateBracket()
+' leg); runFinePoints()/runExtension() never command an offset past that limit, and bEvaluateBracket()
 ' accepts a smaller rise (FAULT_RISE_PCT) from a point inside a fault-bounded window.
 ' CHANGE 2 (scan v3): every legMeasure()/measurePoint() now re-measures the zero for itself
 ' (tagged with its own phase), so no separate REF_START/REF_END zero call is needed here.
@@ -2490,8 +2492,8 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
 ' @local legExit - LX_* exit
 ' @local stopUp - walk stop of the up side
 ' @local stopDown - walk stop of the down side
-' @local bBracketed - TRUE when the minimum is bracketed: evaluateBracket() at 1/4 speed, and
-'   (task 3540 D2) evaluateHalfBracket() at 1/2 speed, run for real once runFinePoints() has
+' @local bBracketed - TRUE when the minimum is bracketed: bEvaluateBracket() at 1/4 speed, and
+'   (task 3540 D2) bEvaluateHalfBracket() at 1/2 speed, run for real once runFinePoints() has
 '   measured the confirm/cliff-probe points it judges -- no longer marked bracketed by assignment
 ' @local driftPctX10 - REF_END vs REF_START drift, percent x10, net means (scan v4 CHANGE 2)
 ' @local bDriftValid - TRUE when both references were valid
@@ -2532,7 +2534,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
                 stopUp := walkSide(side, signIdx, 1, defSwept, pointLimitMv)
                 stopDown := walkSide(side, signIdx, -1, defSwept, pointLimitMv)
                 refreshLegLimits(defSwept)                  ' CHANGE 1: bound the window at the fault edge
-                bBracketed := evaluateBracket(side, signIdx, stopUp, stopDown)
+                bBracketed := bEvaluateBracket(side, signIdx, stopUp, stopDown)
                 if bBracketed
                     centreDeg := legDeg[legLowIdx]
                 else
@@ -2549,7 +2551,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
                 if speedIdx == SPEED_HALF
                     ' task 3540 D2: the real rise-on-both-sides test, now that the confirm/cliff
                     ' points exist to judge it against -- overwrites the provisional TRUE above.
-                    bBracketed := evaluateHalfBracket()
+                    bBracketed := bEvaluateHalfBracket()
             if abortReason == AR_NONE
                 refEndIdx := legMeasure(side, speedIdx, signIdx, PH_REF_END, defSwept, refWinTicks, pointLimitMv)
     if (abortReason <> AR_NONE) and (legExit == LX_DONE)
@@ -2563,7 +2565,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
     bResSeValid[slotIdx] := bFitSeValid
     resIminF[slotIdx] := fitMinMvF
     resRmsF[slotIdx] := fitRmsF
-    bResPinned[slotIdx] := fitPinnedNearLimit()             ' task 3540 D2: read while legLimitUp/DownDeg
+    bResPinned[slotIdx] := bFitPinnedNearLimit()             ' task 3540 D2: read while legLimitUp/DownDeg
                                                              ' still describe THIS leg's window
     bResBracketed[slotIdx] := bBracketed                    ' task 3540 D2: real test, both speeds
     resFloorX10[slotIdx], resFloorDeg[slotIdx], bResFloorValid[slotIdx] := legMeasuredFloor()
@@ -2716,7 +2718,7 @@ PRI isHighIdx(ptIdx) : bHigh
 
 PRI isHighIdxFor(ptIdx, risePct) : bHigh
 ' Report whether a point is risePct above the current low (a current abort always is). CHANGE 1
-' (scan v3): lets evaluateBracket() use a smaller threshold (FAULT_RISE_PCT) inside a
+' (scan v3): lets bEvaluateBracket() use a smaller threshold (FAULT_RISE_PCT) inside a
 ' fault-bounded window without touching the coarse walk's own RISE_PCT stop test, which still
 ' calls isHighIdx(). CHANGE 2 (scan v4): the rise test compares net means (legNetX10). Run 5's
 ' RIGHT positive leg failed to bracket on this exact test: -18deg read raw 91.7 vs a raw low of
@@ -2766,12 +2768,12 @@ PRI updateLegLowHalf() | ptIdx
                 elseif legNetX10[ptIdx] < legNetX10[legLowIdx]
                     legLowIdx := ptIdx
 
-PRI evaluateHalfBracket() : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctUp, risePctDown
-' Task 3540 D2: half-speed counterpart to evaluateBracket() -- the rise-on-both-sides negative
+PRI bEvaluateHalfBracket() : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctUp, risePctDown
+' Task 3540 D2: half-speed counterpart to bEvaluateBracket() -- the rise-on-both-sides negative
 ' case, applied for real to the confirm/cliff-probe points fitLeg() itself fits, instead of the
 ' half-speed leg being marked bracketed by assignment. A side whose window is fault-bounded
 ' (bLegLimitUpFault/Down, kept current by refreshLegLimits() as runFinePoints()/probeConfirmCliff()
-' measured) is judged at the relaxed FAULT_RISE_PCT, exactly mirroring evaluateBracket()'s
+' measured) is judged at the relaxed FAULT_RISE_PCT, exactly mirroring bEvaluateBracket()'s
 ' quarter-speed test. FAILs (bBracketed FALSE) precisely when the low sits at that fault-bounded
 ' edge with nothing measured beyond it -- the failure mode scan run 7 could not get past
 ' (SCAN-RUN-7-EVALUATION.md sec 2 table, sec 5 item 1).
@@ -3000,7 +3002,7 @@ PRI computeLegCliff(defSwept, signIdx) | dir, ptIdx, dist, goodDist, faultDist
         legCliffGoodDeg := defSwept + (dir * goodDist)
         legCliffFaultDeg := defSwept + (dir * faultDist)
 
-PRI evaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelowOk, bAboveOk, reason, ...
+PRI bEvaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelowOk, bAboveOk, reason, ...
     missingStop, risePctUp, risePctDown
 ' Decide whether a high point exists on both sides of the low; emit BS-BRACKET. CHANGE 1: a side
 ' whose walk stopped WS_FAULTS is judged inside its fault-bounded window (legLimitUpDeg/Down,
@@ -3051,7 +3053,7 @@ PRI evaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelo
             reason := BR_EDGE_HARD_LIMIT
     emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
 
-PRI withinHardLimit(sweptDeg, defSwept) : bWithin
+PRI bWithinHardLimit(sweptDeg, defSwept) : bWithin
 ' Report whether an offset lies within default +/- HARD_LIMIT_DEG.
 '
 ' @param sweptDeg - candidate swept offset
@@ -3060,9 +3062,9 @@ PRI withinHardLimit(sweptDeg, defSwept) : bWithin
 
     bWithin := (abs(sweptDeg - defSwept) <= HARD_LIMIT_DEG)
 
-PRI withinWindowLimit(sweptDeg) : bWithin
+PRI bWithinWindowLimit(sweptDeg) : bWithin
 ' CHANGE 1: report whether an offset lies within this leg's current fault-bounded window (both
-' sides). Unrestricted (defSwept +/- HARD_LIMIT_DEG, already checked by withinHardLimit()) until
+' sides). Unrestricted (defSwept +/- HARD_LIMIT_DEG, already checked by bWithinHardLimit()) until
 ' refreshLegLimits() tightens one side toward a fault edge.
 '
 ' @param sweptDeg - candidate swept offset
@@ -3115,7 +3117,7 @@ PRI refreshLegLimits(defSwept)
     legLimitUpDeg, bLegLimitUpFault := legLimitForDir(defSwept, 1)
     legLimitDownDeg, bLegLimitDownFault := legLimitForDir(defSwept, -1)
 
-PRI fitPinnedNearLimit() : bPinned
+PRI bFitPinnedNearLimit() : bPinned
 ' CHANGE 1: report whether the just-solved fit's vertex lies within one FINE_STEP_DEG of a
 ' fault-derived window limit -- a minimum pinned against a fault edge must never read as a free
 ' minimum. Only a fault-derived limit counts; the unrestricted default (+/- HARD_LIMIT_DEG) never
@@ -3140,7 +3142,7 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
 ' would otherwise leave unmeasured (run 5's LEFT half-speed legs, both TOO_FEW: SCAN-RUN-5-
 ' EVALUATION.md section 3; run 7's evaluation section 5, the same gap one step narrower) is filled
 ' before refreshLegLimits() locks the window down to it. Whether the negative case actually held is
-' judged afterward, over the whole leg, by evaluateHalfBracket() (D2) -- not accounted point-by-
+' judged afterward, over the whole leg, by bEvaluateHalfBracket() (D2) -- not accounted point-by-
 ' point here.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -3158,7 +3160,7 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
 ' @local winTicks - window ticks for this speed
 ' @local ptIdx - leg index of the just-measured confirm/fine point
 '
-' CHANGE 1 (scan v3): a candidate outside the current fault-bounded window (withinWindowLimit())
+' CHANGE 1 (scan v3): a candidate outside the current fault-bounded window (bWithinWindowLimit())
 ' is skipped -- never measured -- and refreshLegLimits() re-runs after every point measured, so a
 ' fault at this speed (e.g. a half-speed confirm point) tightens the window for the rest of this
 ' leg, quarter or half speed alike.
@@ -3179,7 +3181,7 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
         if legConsecFaults >= LEG_FAULT_CAP
             quit
         sweptDeg := centreDeg + (LONG[pOrder][orderIdx] * FINE_STEP_DEG)
-        if withinHardLimit(sweptDeg, defSwept) and withinWindowLimit(sweptDeg)
+        if bWithinHardLimit(sweptDeg, defSwept) and bWithinWindowLimit(sweptDeg)
             ptIdx := legMeasure(side, speedIdx, signIdx, PH_FINE, sweptDeg, winTicks, pointLimitMv)
             if (speedIdx == SPEED_HALF) and isFaultLikeIdx(ptIdx) and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
                 probeConfirmCliff(side, speedIdx, signIdx, defSwept, sweptDeg, pointLimitMv)
@@ -3258,7 +3260,7 @@ PRI runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv) : legExit | ex
         if legConsecFaults >= LEG_FAULT_CAP
             quit
         sweptDeg := edgeDeg + (extDir * extIdx * FINE_STEP_DEG)
-        if withinHardLimit(sweptDeg, defSwept) and withinWindowLimit(sweptDeg)
+        if bWithinHardLimit(sweptDeg, defSwept) and bWithinWindowLimit(sweptDeg)
             legMeasure(side, speedIdx, signIdx, PH_EXTEND, sweptDeg, winTicks, pointLimitMv)
             refreshLegLimits(defSwept)
     if legConsecFaults >= LEG_FAULT_CAP
@@ -3545,7 +3547,7 @@ PRI resultSlot(side, signIdx, speedIdx) : slotIdx
 
     slotIdx := (((sideSlot(side) * SIGN_SLOTS) + signIdx) * SPEED_SLOTS) + speedIdx
 
-PRI rateInBand(speedIdx, rateX10) : bInBand
+PRI bRateInBand(speedIdx, rateX10) : bInBand
 ' Report whether a tick rate is inside the band for its speed.
 '
 ' @param speedIdx - SPEED_QTR or SPEED_HALF
@@ -3612,7 +3614,7 @@ PRI sideStop(side)
         wheelL.stop()
     beat(CP_LIB_STOP)
 
-PRI sideCogRunning(side) : bRunning
+PRI bSideCogRunning(side) : bRunning
 ' Report whether the named wheel has a running driver cog (stop() zeroes motorCog).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -3640,8 +3642,8 @@ PRI sideMotorCog(side) : cogValue
         cogValue := wheelL.testGetMotorCog()
     beat(CP_LIB_COGRUN)
 
-PRI sideIsReady(side) : bReady
-' Report whether the named wheel's running driver cog reports ready. The sideCogRunning() guard is
+PRI isSideReady(side) : bReady
+' Report whether the named wheel's running driver cog reports ready. The bSideCogRunning() guard is
 ' redundant but harmless since commit 67d11f6 (task 3533, PL-28): stop() now leaves drv_state at
 ' DCS_Unknown, so isReady() already answers FALSE on a stopped instance. It is kept.
 '
@@ -3650,16 +3652,16 @@ PRI sideIsReady(side) : bReady
 
     bReady := FALSE
     beat(CP_LIB_ISREADY)
-    if sideCogRunning(side)
+    if bSideCogRunning(side)
         if side == SIDE_RIGHT                               ' if/else, never `? :` -- PL-29
             bReady := wheelR.isReady()
         else
             bReady := wheelL.isReady()
     beat(CP_LIB_ISREADY)
 
-PRI sideIsStopped(side) : bStopped
+PRI isSideStopped(side) : bStopped
 ' Report whether the named wheel's running driver reports STOPPED (never a stale stopped cog). The
-' sideCogRunning() guard is redundant but harmless since commit 67d11f6 (task 3533, PL-28): stop()
+' bSideCogRunning() guard is redundant but harmless since commit 67d11f6 (task 3533, PL-28): stop()
 ' now leaves drv_state at DCS_Unknown, so isStopped() already answers FALSE on a stopped instance.
 ' It is kept.
 '
@@ -3668,14 +3670,14 @@ PRI sideIsStopped(side) : bStopped
 
     bStopped := FALSE
     beat(CP_LIB_ISSTOPPED)
-    if sideCogRunning(side)
+    if bSideCogRunning(side)
         if side == SIDE_RIGHT                               ' if/else, never `? :` -- PL-29
             bStopped := wheelR.isStopped()
         else
             bStopped := wheelL.isStopped()
     beat(CP_LIB_ISSTOPPED)
 
-PRI sideIsFault(side) : bFaulted
+PRI isSideFault(side) : bFaulted
 ' Report the named wheel's hub fault flag.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -3694,7 +3696,7 @@ PRI sideResetFault(side)
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 
     beat(CP_LIB_RESETFAULT)
-    if sideIsFault(side)
+    if isSideFault(side)
         if side == SIDE_RIGHT
             wheelR.testResetFault()
         else
@@ -3709,7 +3711,7 @@ PRI sideDriverState(side) : eDrvrState
 
     eDrvrState := wheelL.DCS_Unknown
     beat(CP_LIB_DRVSTATE)
-    if sideCogRunning(side)
+    if bSideCogRunning(side)
         if side == SIDE_RIGHT                               ' if/else, never `? :` -- PL-29
             eDrvrState := wheelR.getDriverState()
         else
@@ -3732,7 +3734,7 @@ PRI sideTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault, bCogUp
     nSenseI := 0
     eDrvrState := wheelL.DCS_Unknown
     bDidFault := FALSE
-    bCogUp := sideCogRunning(side)
+    bCogUp := bSideCogRunning(side)
     beat(CP_LIB_TELEMETRY)
     if bCogUp
         if side == SIDE_RIGHT
@@ -3753,7 +3755,7 @@ PRI sidePhaseVoltages(side) : nSenseU, nSenseV, nSenseW
     nSenseV := 0
     nSenseW := 0
     beat(CP_LIB_PHASEV)
-    if sideCogRunning(side)
+    if bSideCogRunning(side)
         if side == SIDE_RIGHT
             _, _, _, nSenseU, nSenseV, nSenseW, _, _ := wheelR.testGetTelemetry()
         else
@@ -4323,7 +4325,7 @@ PRI lowNetOrZero() : lowNetX10
 PRI emitFit(side, speedIdx, signIdx)
 ' Emit BS-FIT: status and span of the fit record. CHANGE 1 (scan v3): pinned, appended at the end,
 ' is TRUE when the vertex sits within one FINE_STEP_DEG of a fault-derived window limit -- a
-' minimum pinned against a fault edge, which fitPinnedNearLimit() must never report as free.
+' minimum pinned against a fault edge, which bFitPinnedNearLimit() must never report as free.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param speedIdx - SPEED_QTR or SPEED_HALF
@@ -4340,7 +4342,7 @@ PRI emitFit(side, speedIdx, signIdx)
     naOrBoundedField(@"span_lo_deg", fitSpanLo, LIM_TINY, fitN > 0)
     naOrBoundedField(@"span_hi_deg", fitSpanHi, LIM_TINY, fitN > 0)
     boolField(@"extended", bFitExtended)
-    boolField(@"pinned", fitPinnedNearLimit())
+    boolField(@"pinned", bFitPinnedNearLimit())
     lineEmit()
 
 PRI emitFit2(side, speedIdx, signIdx) | bSolved
@@ -4550,9 +4552,9 @@ PRI emitResults(side, firstSign) | orderPos, signIdx
 PRI hasMinimum(slotIdx) : bHasMin
 ' Report whether a result slot carries a usable fitted minimum. Task 3540 D2: FS_POOR is no
 ' longer usable (a fit whose residual already exceeds the POOR threshold must not be counted as a
-' free minimum), and neither is a fit fitPinnedNearLimit() found pinned against a fault-derived
+' free minimum), and neither is a fit bFitPinnedNearLimit() found pinned against a fault-derived
 ' window edge, nor one whose leg failed the rise-on-both-sides negative case
-' (evaluateBracket()/evaluateHalfBracket()). Run 7's L POS printed exactly this: a POOR, pinned fit
+' (bEvaluateBracket()/bEvaluateHalfBracket()). Run 7's L POS printed exactly this: a POOR, pinned fit
 ' with shift +5.4, shift_sig TRUE, from data lowest at the window edge with nothing above it
 ' (SCAN-RUN-7-EVALUATION.md sec 2 item "L POS reports a shift that is not a measured minimum").
 '
@@ -4941,7 +4943,7 @@ PRI zxsCritToken(chIdx) : pTok
 
 PRI emitHalfLegSignoffs(side) | signIdx, resIdx, pCrit
 ' Emit R9-SCAN-HALFLEG for one motor: one BOOL SIGNOFF per half-speed result slot (task 3537,
-' criterion redesigned task 3540 PL-46). measured TRUE when evaluateHalfBracket() found the leg's
+' criterion redesigned task 3540 PL-46). measured TRUE when bEvaluateHalfBracket() found the leg's
 ' low bracketed by a rise on both sides (bResBracketed); FAILs exactly when the low sits at a
 ' fault-bounded window edge with nothing measured beyond it toward the fault -- run 7's failure
 ' mode (SCAN-RUN-7-EVALUATION.md sec 2, sec 5 item 1). NOMEAS when the leg never ran (bResLegRan
@@ -5198,12 +5200,12 @@ PRI tokenField(pFieldName, pToken, maxLen)
 ' @param pToken - pointer to the token text
 ' @param maxLen - the longest token this field may print
 
-    if tokenFits(pToken, maxLen)
+    if bTokenFits(pToken, maxLen)
         lineTextField(pFieldName, pToken)
     else
         lineTextField(pFieldName, @sBadTok)
 
-PRI tokenFits(pToken, maxLen) : bFits | charIdx
+PRI bTokenFits(pToken, maxLen) : bFits | charIdx
 ' Report whether a zero-terminated token is at most maxLen bytes, reading no more than maxLen + 1.
 '
 ' @param pToken - pointer to the token text
@@ -5841,7 +5843,7 @@ PRI wdEmitEnd()
 PRI wdEmitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instCount) | pVerdict
 ' Emit one boolean SIGNOFF verdict from the watchdog cog (task 3537). Mirrors emitSignoffBool()
 ' field for field against the watchdog's own wd* builder, never lineBuf/lineLen (cog 0 may be
-' stalled mid-record). Calls nothing that beats: motorToken() and tokenFits() only return or read
+' stalled mid-record). Calls nothing that beats: motorToken() and bTokenFits() only return or read
 ' DAT text. Worst case: identical to emitSignoffBool(), 173 bytes.
 '
 ' @param pCell - pointer to the cell id token
@@ -5885,7 +5887,7 @@ PRI wdEmitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instC
 PRI wdEmitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, pUnits, instCount) | boundedVal, pVerdict
 ' Emit one numeric SIGNOFF verdict from the watchdog cog (task 3537 phase 2c, design sec B.3). Mirrors
 ' emitSignoff() field for field against the watchdog's own wd* builder, never lineBuf/lineLen (cog 0 may
-' be stalled mid-record). Calls nothing that beats: motorToken() and tokenFits() only return or read DAT
+' be stalled mid-record). Calls nothing that beats: motorToken() and bTokenFits() only return or read DAT
 ' text. Worst case: identical to emitSignoff(), 196 bytes.
 '
 ' @param pCell - pointer to the cell id token
@@ -6045,14 +6047,14 @@ PRI wdBoolField(pFieldName, bFlag)
 
 PRI wdTokenField(pFieldName, pToken, maxLen)
 ' Append a token field; a token longer than maxLen prints as "?". Mirrors tokenField(), reusing
-' the shared, buffer-free tokenFits() helper (it only reads through pToken, never touches
+' the shared, buffer-free bTokenFits() helper (it only reads through pToken, never touches
 ' lineBuf/lineLen or wdLineBuf/wdLineLen, so it is safe from either cog).
 '
 ' @param pFieldName - pointer to the field name
 ' @param pToken - pointer to the token text
 ' @param maxLen - the longest token this field may print
 
-    if tokenFits(pToken, maxLen)
+    if bTokenFits(pToken, maxLen)
         wdLineTextField(pFieldName, pToken)
     else
         wdLineTextField(pFieldName, @sBadTok)

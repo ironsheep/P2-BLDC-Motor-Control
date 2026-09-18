@@ -188,11 +188,11 @@ CON { ----- Control Changes Interface ----- }
     ' offsets for incoming table entries
     #0, TBLIDX_POSSCMD, TBLIDX_ECMD, TBLIDX_PARAMCT
 
-PUB haveCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nIdx, nParamCt, pCmd, eCmd, bGoodCmd
+PUB hasCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nIdx, nParamCt, pCmd, eCmd, bGoodCmd
 '' Return T/F where T means a control value change has been received and needs to be handled
 ''
 
-    bHaveCmdStatus := haveRxString()
+    bHaveCmdStatus := hasRxString()
     if nQStrCount <> 0
         debug("- hvcmd: ", uhex_long(pEntries), udec_long(nEntryCount), udec_long(nQStrCount))
     'repeat  ' lock here
@@ -233,7 +233,7 @@ PUB haveCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nId
                 nParamCt := LONG [pEntries][(nIdx * 3) + TBLIDX_PARAMCT]
                 'debug("- hvcmd: tblent #", udec_(nIdx), " [", zstr_(pCmd), "] eCmd=", sdec_(eCmd))
                 ' is this our cmd?
-                if strIgnoreCaseMatch(pCmd, LONG[pValues][ENT_CMDSTR_IDX])
+                if bStrIgnoreCaseMatch(pCmd, LONG[pValues][ENT_CMDSTR_IDX])
                     bGoodCmd := TRUE
                     quit
             '  if not found ERROR unknown command, return NO command
@@ -314,12 +314,12 @@ PUB getCommandParms() : opStatus, pValues
 
 CON { ----- General Strings Interface ----- }
 
-PUB haveRxString() : bPresentStatus
+PUB hasRxString() : bPresentStatus
 '' Return T/F where T means a control value change has been received and needs to be handled
 ''
 
     bPresentStatus := (nQStrCount > 0) ? TRUE : FALSE
-    'debug("?? haveRxString[T/F]: ", ubin_byte(presentStatus))
+    'debug("?? hasRxString[T/F]: ", ubin_byte(presentStatus))
 
 PUB rxStringsCount() : nCount
 '' Return count of strings received
@@ -336,9 +336,9 @@ PUB getLine(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedSt
     pStr := 0
     if bShouldWait == TRUE
         bStringArrived := TRUE
-        repeat until haveRxString() == TRUE
+        repeat until hasRxString() == TRUE
     else
-        bStringArrived := haveRxString()
+        bStringArrived := hasRxString()
 
     if bStringArrived == TRUE
         pStr := pUserDest
@@ -401,7 +401,7 @@ PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitVal
 
     nOffset := 0
     'debug("CONV: [", zstr_(pHexStr), "]")
-    if(strHasLowCasePrefix(pHexStr, string("0x"))) ' handle both 0xFEA94 and FEA94
+    if(bStrHasLowCasePrefix(pHexStr, string("0x"))) ' handle both 0xFEA94 and FEA94
         ' skip over prefix
         nOffset := 2
     valueOfHex := 0
@@ -455,18 +455,18 @@ PRI TaskSerialRx(pRxBffr, lenRxBffr)
         repeat
             nTaskChr := serialChan.rxtime(1000)
             if (nTaskChr <> -1)
-                tskEnqueueChar(nTaskChr)
+                bTskEnqueueChar(nTaskChr)
 
 PRI tskFakeRxStr(pStr) | nIdx, nStatusValue
 ' place string into buffer as if it was received
     debug("TASK[Rx] str=[", zstr_(pStr), "]")
     repeat nIdx from 0 to strsize(pStr) - 1
-       nStatusValue := tskEnqueueChar(byte[pStr][nIdx])
+       nStatusValue := bTskEnqueueChar(byte[pStr][nIdx])
        if nStatusValue
             debug("EEE Abort string write EEE")
             quit
 
-PRI tskEnqueueChar(nChr) : bFailedStatus
+PRI bTskEnqueueChar(nChr) : bFailedStatus
 ' place byte into rx queue, if EOL then place term instead and engueue string ptr!
     bFailedStatus := FALSE
     if (nRxByteCount < nRxByteMax)
@@ -653,9 +653,9 @@ PRI commandParse(pRxLine) : nStatus, pValues | nLenRemaining, nSepIdx, pSrchBffr
                 bytemove(@tmpValueStr, pRemainingBffr, nCmdLen)
                 debug("- cp: valStr=[", zstr_(@tmpValueStr), "]")
                 ' convert string into value
-                if strHasLowCasePrefix(@tmpValueStr, @"true")
+                if bStrHasLowCasePrefix(@tmpValueStr, @"true")
                     LONG [@currParsedCommand][nParmIdx] := TRUE
-                elseif strHasLowCasePrefix(@tmpValueStr, @"false")
+                elseif bStrHasLowCasePrefix(@tmpValueStr, @"false")
                     LONG [@currParsedCommand][nParmIdx] := FALSE
                 else
                     LONG [@currParsedCommand][nParmIdx] := decimalForString(@tmpValueStr)
@@ -717,7 +717,7 @@ PRI skipWhiteSpace(pBffr, lenRemaining) : pStart, nLenRemaining | nIdx, nChr
             quit
     'debug("- sws: str=[",  zstr_(pBffr), "] ", uhex_long(pBffr), udec_long(lenRemaining), " -> ", uhex_long(pStart), udec_long(nLenRemaining))
 
-PRI strHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
+PRI bStrHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
     bHasStatus := TRUE
     repeat nIdx from 0 to strsize(pPrefix) - 1
         if (BYTE[pTargetStr][nIdx] | $20) <> BYTE[pPrefix][nIdx]
@@ -725,7 +725,7 @@ PRI strHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
             quit    ' outta here, we have our answer!
 
 
-PRI strIgnoreCaseMatch(pLtStr, pRtStr) : bMatchStatus | nIdx
+PRI bStrIgnoreCaseMatch(pLtStr, pRtStr) : bMatchStatus | nIdx
     bMatchStatus := FALSE
     'debug("- sicm: lt(", udec_(strsize(pLtStr)), ")=[", zstr_(pLtStr), "], rt(", udec_(strsize(pRtStr)), ")=[", zstr_(pRtStr), "]")
     if strsize(pLtStr) == strsize(pRtStr)
