@@ -3772,6 +3772,40 @@ current; nothing new has to be provoked.
 
 ### PL-89 -- "float" is a powered hold, not a coast, and every fault and e-stop hard-brakes regardless of holdAtStop()
 
+> ## ⛔ CORRECTED 2026-09-17, evening, by the completed findings audit (`analyses/FINDINGS-AUDIT-2026-09-17.md` §2.1). The table below is BACKWARDS, and the entry contradicts a settled bench fact.
+>
+> **The source, read end to end:** `holdAtStop(bEnable)` sets `stop_mode := (bEnable) ? SM_BRAKE : SM_FLOAT`
+> (`src/isp_bldc_motor.spin2:713`). `checkstop` (`:4078-4085`) runs `cmp stop_mode_, #SM_FLOAT wz` then
+> `modz _nz wz`, so Z is set when the mode is **not** FLOAT:
+> - **SM_BRAKE** (`holdAtStop(TRUE)`): `driveoff := 0`, PWM on at `duty_min` at a hall-derived angle -- a
+>   **powered position hold**, as its doc promises;
+> - **SM_FLOAT** (`holdAtStop(FALSE)`): `driveoff := 1`, so the loop runs `wypin #0, drive_pins`.
+>
+> **So if `wypin #0` shorts the phases, the short is FLOAT's, not BRAKE's.** The table's first two rows are
+> swapped, and the headline "float is a powered hold" is wrong. (The subject of commit `578f3ef` says the
+> same wrong thing; this entry carries the correction.)
+>
+> **The "one link not established" below was established on 2026-09-15, in PL-56**, which this entry did
+> not cite: the low side is written the high side's duty plus `dead_gap` on an inverted output, which is
+> complementary drive with deadtime only if a high turns the low FET on; the opposite polarity would be
+> shoot-through every PWM period, never seen on this rig.
+>
+> ⛔ **THAT MAKES THE CONFLICT SHARPER, NOT SETTLED.** The derivation now says FLOAT at rest shorts the
+> windings. **PL-56 records Stephen's bench fact that float freewheels** -- the safety study's pre-sprint
+> record, and STEPHEN 2026-09-15: *"we came into this work with float working as desired"*. Doctrine
+> overlay P8: **the derivation is the suspect.** Something between `driveoff = 1` and the FET gates is not
+> what this reading says -- candidates, none checked: what an inverted triangle-PWM smart pin actually
+> outputs at Y = 0; the board's added logic buffer; or the state he tested differing from the at-rest
+> FLOAT path.
+>
+> **His hand test decides, with the predictions corrected:**
+> 1. `holdAtStop(TRUE)` then `stopMotor()` -- held at a fixed angle: moderate, cogging resistance.
+> 2. `holdAtStop(FALSE)` then `stopMotor()` -- **freewheels if his bench fact holds; resists harder the
+>    faster it is turned if this derivation holds.** This is the discriminating state.
+> 3. `stop()` -- freewheels in either case.
+>
+> Everything below this box is the original entry, kept as written.
+
 **Found 2026-09-17** by the findings audit, chasing the unverified hardware fact recorded in
 `analyses/bench/2026-09-15/VISIT-2-RESULTS.md` section 0. **DERIVED from source, and it confirms that
 hypothesis.** Raised by Stephen, who proposed the hand test that closes the one remaining link.

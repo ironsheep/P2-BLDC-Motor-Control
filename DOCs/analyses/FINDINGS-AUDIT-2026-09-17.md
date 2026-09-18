@@ -1,222 +1,385 @@
 # Findings audit — what was recorded and not acted on
 
 **Opened 2026-09-17** at Stephen's direction, after the commutation discussion showed that a week-old
-evaluation already answered the question being asked.
+evaluation already answered the question being asked. **Completed the same evening.**
 
 **STEPHEN 2026-09-17:** *"It seems like you've got enough test results, and now you've demonstrated that
 you've ignored some of the findings. Maybe we should treat this as a class issue and audit all of your
 test result findings, and see which ones we haven't paid attention to and which ones are beneficial."*
 
-**The question this asks of every finding is TWO questions, and the second was never asked before:**
+**Every finding gets two questions, and the second one had never been asked before:**
 
 1. Was it acted on?
 2. ⭐ **Does what has landed since make it actionable, or make its data worth more than when it was
    written?** A disposition of *do not apply* or *deferred* carries the conditions it was written under,
    and later work removes those conditions.
 
-Doctrine overlay **P11** was written from this and states the rule: *a finding's value changes when the
-system changes; the sweep is owed before a criterion, a run or a recommendation.*
+Doctrine overlay **P11** was written from this: *a finding's value changes when the system changes; the
+sweep is owed before a criterion, a run or a recommendation.*
+
+**This audit schedules nothing** (doctrine overlay P5). §2 ranks by what an item would buy; what goes into
+the release is Stephen's decision.
 
 ---
 
-## 0 · COVERAGE — read this first
+## 0 · Coverage
 
-⛔ **THIS AUDIT IS PARTIAL AND SAYS SO.** Recording coverage honestly is the point: a partial audit
-presented as complete would repeat the failure it exists to correct.
+**All 22 documents and the whole punch list were read.** Each row says who read it. A reader agent's
+report is a report, not a verification (doctrine D2), so every item in §2 that changes a recommendation
+was checked against a primary: the source, `VISIT-5-RESULTS.md`, or the punch-list entry itself.
 
-| Document | Read | Represented below |
+| Document | Read by | Represented |
 |---|---|---|
-| `bench/2026-09-13/SCAN-RUN-4-EVALUATION.md` | full | yes |
-| `bench/2026-09-14/SCAN-RUN-7-EVALUATION.md` | full | yes |
-| `bench/2026-09-16/VISIT-3-RESULTS.md` | full | yes |
-| `bench/2026-09-17/VISIT-4-RESULTS.md` | substantial | yes |
-| `bench/2026-09-17/VISIT-5-RESULTS.md` | authored today | yes |
-| `bench/2026-09-15/VISIT-2-RESULTS.md` | **sections 0-2 only** | partially |
-| `DOCs/PUNCH-LIST.md` | substantial, not end to end | partially |
-| `bench/2026-09-12/CHAR-RUN-EVALUATION.md` | **NOT READ** | no |
-| `bench/2026-09-12/DETECT-A-EVALUATION.md` | **NOT READ** | no |
-| `bench/2026-09-12/SCAN-ABORT-EVALUATION.md` | **NOT READ** | no |
-| `bench/2026-09-12/SCAN-RUN-3-EVALUATION.md` | **NOT READ** | no |
-| `bench/2026-09-13/SCAN-RUN-5-EVALUATION.md` | **NOT READ** | no |
-| `bench/2026-09-14/VISIT-1-RESULTS.md` | **NOT READ** | no |
-| `bench/2026-09-14/VISIT-1-SIGNOFF.md` | **NOT READ** | no |
-| `bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` | **NOT READ** | no |
-| `DRIVER-AUDIT-2026-09-09.md` | **NOT READ** this session | no |
-| `DRIVER-SAFETY-AND-CAPABILITY-STUDY-2026-09-09.md` | **NOT READ** this session | no |
-| `BLDC-COMMUTATION-PRINCIPLES.md` | **NOT READ** this session | no |
-| `BOARD-REVISION-FACTS.md` | **NOT READ** this session | no |
-| `PL-44-ROOT-CAUSE-STUDY.md` | **NOT READ** | no |
-| `user-report-2026-09-09-ANALYSIS.md` | **NOT READ** this session | no |
-| `ATTENDED-UI-AUDIT-2026-09-15.md` | **NOT READ** | no |
-| `BENCH-TEST-PLAN-2026-09-10.md` | **NOT READ** this session | no |
+| `bench/2026-09-12/CHAR-RUN-EVALUATION.md` | reader agent, full | §2, §5 |
+| `bench/2026-09-12/DETECT-A-EVALUATION.md` | reader agent, full | §5 |
+| `bench/2026-09-12/SCAN-ABORT-EVALUATION.md` | reader agent, full | §2.6, §5 |
+| `bench/2026-09-12/SCAN-RUN-3-EVALUATION.md` | reader agent, full | §2.2 |
+| `bench/2026-09-13/SCAN-RUN-4-EVALUATION.md` | arbiter, full (earlier today) | §2.2 |
+| `bench/2026-09-13/SCAN-RUN-5-EVALUATION.md` | reader agent, full | §2.2 |
+| `bench/2026-09-14/SCAN-RUN-7-EVALUATION.md` | arbiter, full (earlier today) | §2.2 |
+| `bench/2026-09-14/VISIT-1-RESULTS.md` | reader agent, full | §2, §5 |
+| `bench/2026-09-14/VISIT-1-SIGNOFF.md` | reader agent, full | §5 |
+| `bench/2026-09-15/VISIT-2-RESULTS.md` | arbiter §0–2, reader agent §3–16 | §2, §3 |
+| `bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` | reader agent, full | §2.9, §5 |
+| `bench/2026-09-16/VISIT-3-RESULTS.md` | arbiter, full (earlier today) | §2, §3 |
+| `bench/2026-09-17/VISIT-4-RESULTS.md` | arbiter, substantial (earlier today) | §2 |
+| `bench/2026-09-17/VISIT-5-RESULTS.md` | **arbiter, full, this session** | throughout |
+| `DRIVER-AUDIT-2026-09-09.md` | reader agent, full | §2, §4 |
+| `DRIVER-SAFETY-AND-CAPABILITY-STUDY-2026-09-09.md` | reader agent, full | §2, §4 |
+| `BLDC-COMMUTATION-PRINCIPLES.md` | reader agent, full | §2.2 |
+| `BOARD-REVISION-FACTS.md` | **arbiter, full, this session** | §2.1, §2.5 |
+| `PL-44-ROOT-CAUSE-STUDY.md` | reader agent, full | §2.10 |
+| `user-report-2026-09-09-ANALYSIS.md` | reader agent, full | §2.11, §3 |
+| `ATTENDED-UI-AUDIT-2026-09-15.md` | reader agent, full | §5 |
+| `BENCH-TEST-PLAN-2026-09-10.md` | reader agent, full | §2, §4 |
+| `DOCs/PUNCH-LIST.md` PL-1 … PL-90 | two reader agents (split at line 2100); PL-56, PL-69, PL-89, PL-90 by the arbiter | §2, §3 |
+| **Current source**, for 17 findings from the 2026-09-09 studies | reader agent; `holdAtStop()` / `checkstop` / the hall read by the arbiter | §4 |
 
-**14 of 22 documents are unread.** Everything below comes from the 8 that were read, so the list of
-ignored findings is a LOWER BOUND.
+⚠ **Tool note for Stephen:** the source-verification agent made one accidental shell call (`true`, a
+no-op) before it re-read its no-shell brief. It changed nothing. Every other reader used the Read tool
+only.
 
 ---
 
-## 1 · The class defect, stated
+## 1 · The class defect
 
-**Findings are filed and then never re-read.** The punch list and the evaluations are a filing system;
-nothing sweeps them when something changes. Three distinct failure shapes, all observed today:
+**Findings are filed and then never re-read.** The punch list and the evaluations are a filing system,
+and nothing sweeps them when something changes. **Four failure shapes**, all present in quantity:
 
-| Shape | What it looks like | Instance |
+| Shape | What it looks like | Count found | Worst instance |
+|---|---|---|---|
+| **A. The blocker is removed and nobody returns** | A finding parked on a condition; later work removes the condition; the finding stays parked | 5 | The commutation scan (§2.2) |
+| **B. The finding is fixed and the record never says so** | "Run-time proof owed to Visit N", with Visit N long past | **16** | PL-55, still described as the largest open behaviour (§3) |
+| **C. The data outlives the question and nobody asks the new question** | Measurements taken for one cell answer a later question | 3 | Scan runs 7 and 8 already answer the commutation question |
+| **D. A new finding contradicts a settled one without citing it** | A later entry reasserts what an earlier entry withdrew | 2 | PL-89 against PL-56 (§2.1); PL-90 against the hall network already recorded (§2.5) |
+
+**Shape D is new, and it is the most dangerous of the four.** Shape B leaves a stale record. Shape D
+builds on one: PL-89 was written today without reading PL-56, which had already settled one of its two
+premises, and its conclusion contradicts a bench fact of Stephen's that PL-56 records.
+
+---
+
+## 2 · Ranked by what each item would buy
+
+### 2.1 ⭐ Is "float" a short? PL-89 had its table backwards, and it collides with Stephen's bench fact
+
+**What PL-89 claims** (filed today): `holdAtStop(FALSE)` gives a powered hold, `holdAtStop(TRUE)`
+shorts the phases, and every fault and e-stop shorts them.
+
+**What the source actually says**, read this session:
+
+- `holdAtStop(bEnable)` sets `stop_mode := (bEnable) ? SM_BRAKE : SM_FLOAT`
+  (`src/isp_bldc_motor.spin2:713`).
+- `checkstop` (`:4078-4085`) runs `cmp stop_mode_, #SM_FLOAT wz` and then `modz _nz wz`, so Z is set when
+  the mode is **not** FLOAT. The result is:
+  - **SM_BRAKE**: `driveoff := 0`. PWM stays on at `duty_min`, at an angle taken from the halls. That is a
+    **powered position hold**, which is what `holdAtStop(TRUE)`'s doc promises.
+  - **SM_FLOAT**: `driveoff := 1`. The control loop then runs `wypin #0, drive_pins` (`:3949`).
+
+**So PL-89's first two table rows are swapped.** If `wypin #0` shorts the phases, **the short belongs to
+FLOAT**, the setting documented as coast, and not to BRAKE.
+
+**The polarity link PL-89 calls "not established" was established on 2026-09-15, in PL-56.** Normal
+drive writes each low-side pin the high side's duty plus `dead_gap`, on an inverted output. That gives
+complementary drive with deadtime **only if a high on the low-side input turns the low FET on**. With the
+opposite polarity, both FETs of a phase would be on together every PWM period, and hours of running on
+this rig have never shown that. So `wypin #0` on the inverted low sides holds all three low FETs on.
+
+**That derivation now says FLOAT at rest shorts the windings. Stephen's recorded bench fact says float
+freewheels.** PL-56 records it: *"Stephen's prior bench testing shows freewheel/float works and full
+braking works"* (the safety study, pre-sprint), and STEPHEN 2026-09-15: *"we came into this work with
+float working as desired"*.
+
+⛔ **Doctrine overlay P8: his recorded bench fact outranks my derivation, so the derivation is the
+suspect.** Something in the chain from `driveoff = 1` to the FET gates is not what the source reading
+says. Candidates, none checked: what an inverted triangle-PWM smart pin actually outputs with Y = 0; the
+board's added logic buffer; or whether the state he tested differs from the at-rest FLOAT path.
+
+**His hand test decides it**, and the predictions in PL-89 must be swapped before it runs:
+
+- `holdAtStop(TRUE)`: held, with cogging.
+- `holdAtStop(FALSE)`: freewheels if his fact holds; resists harder the faster it turns if the derivation
+  holds.
+- `stop()`: freewheels in either case.
+
+**What it buys:** whether a documented public contract, coast, is true. It also settles whether every
+fault and e-stop brakes (Visit 2 measured `emergencyCutoff()` stopping a half-speed wheel within one
+tick), which is exactly what a user's platform does on a fault.
+
+**Correction owed:** PL-89's table, its headline, and its predictions. The subject line of commit
+`578f3ef` ("Float is a powered hold") is wrong and stays wrong in history; the entry carries the
+correction.
+
+### 2.2 ⭐ The commutation scan: three of its four blockers are gone
+
+**The data** (`SCAN-RUN-5`, `SCAN-RUN-7`, `VISIT-2-RESULTS.md` §11 run 8), both motors, reproduced:
+
+| | LEFT | RIGHT |
 |---|---|---|
-| **A. The blocker is removed and nobody returns** | A finding parked on a condition; later work removes the condition; the finding stays parked | The scan's half-speed legs failed **on faults**; the lag limiter now makes the driver **droop instead of faulting** |
-| **B. The finding is fixed and the record never says so** | Later measurements close it; no one updates the entry | PL-55, the stop-current abort (§3.2) |
-| **C. The data outlives the question and nobody asks the new question** | Measurements taken for one cell answer a later question completely | Scan runs 7 and 8 already answer the commutation question |
+| negative-increment minimum, ¼ speed | +13.4° ± 0.5 | +13.7° ± 0.7 |
+| positive-increment minimum, ¼ speed | −20.9° ± 0.7 | −22.3° ± 0.4 |
+| hall electrical zero | −3.8° ± 0.4 | −4.3° ± 0.4 |
+| current saved at the minimum, ¼ speed, no load | 86.7 % (pos) | 86.2 % (pos), 90.7 % (neg) |
+| **margin to the fault edge, ½ speed** | **4.4°** (pos) | **4.3°** (pos), **4.0°** (neg) |
 
-⛔ **And a fourth, demonstrated while writing this audit:** I asserted that scan v5 "was never built and
-never ran". It ran at Visit 2 as **run 8**. **The record is now larger than I can hold, so any claim
-about it must come from a read, not from memory.**
+At the minima the 2:1 direction asymmetry collapses to 1.16 (left) and 1.08 (right). The candidate pair
+is 14° / 338°.
+
+**Its "do not apply" rested on four conditions** (`SCAN-RUN-3` §7, restated in `SCAN-RUN-5` §9):
+
+| Condition | Status now |
+|---|---|
+| (a) the negative minimum was not bracketed | **gone.** Bracketed on the right motor in run 8; left still NOT_BRACKETED at a flat floor of 14.0–15.1 mV |
+| (b) the right motor produced no data | **gone.** Runs 5, 7 and 8 have it |
+| (c) the half-speed legs ended on **faults** before a minimum | **gone.** The lag limiter («#3558», the ramp that waits for the rotor) makes the driver droop instead of faulting; `RMPDROOP` passed on both motors at Visits 4 and 5 |
+| (d) every minimum sits within ~10° of a fault edge **at no load**, and nobody has measured the margin **under load** | **stands.** Nothing since touches it |
+
+**Two more things stand between the data and a re-run**, and neither is in the landed list:
+
+- **The scan's own instrument defects.** `VISIT-1-RESULTS.md` records that scan v4's cells "prove less
+  than their names": `R9-SCAN-HALFLEG` passed on the very defect it exists to catch. Run 8 fixed D1 and
+  failed three legs honestly. The rest of D1–D8 must be read against the scan binary before it runs
+  again.
+- **The cog-0 lockup of run 5** («#3534»), later traced to an unsound power connection (PL-43, repaired by
+  Stephen). PL-43 was reopened by a silent P2 at Visit 2 (§2.9).
+
+⛔ **A scope question that is Stephen's, not mine (P5).** On 2026-09-15 he ruled that the scan offsets are
+not in 6.0.0 and that the default 43° / 317° pair ships. On 2026-09-17 he ruled 6.0.0 *"not shippable as
+is. we need better behavior"*. **The earlier exclusion was written before the later ruling, and before the
+lag limiter removed condition (c).** Whether it still stands is his call; this audit does not reopen it.
+
+**What it buys:** 86–97 % of the no-load current, the 2:1 direction asymmetry that PL-88 shows is not
+cancelled on the platform, and every downstream effect of wasted current (heat, battery, loaded top
+speed).
+
+**The acceptance criterion already exists** (`BLDC-COMMUTATION-PRINCIPLES.md`): Visit 4's reverse/forward
+current ratio at rungs 2–5 is LEFT 2.16 / 2.00 / 2.02 / 1.97 and RIGHT 1.88 / 1.86; the target is 1.0.
+Visit 4 reproduced the 2026-09-12 Bench Pass 1 asymmetry (1.76–1.97), so two independent measurements
+agree.
+
+### 2.3 The fault limb: one stimulus unblocks six findings
+
+Nothing has ever made the driver fault on purpose and survived to read the result. **Six findings wait on
+that one stimulus:**
+
+| Finding | What it needs |
+|---|---|
+| **S-7** | A hall `%000`/`%111` is counted (`hall_illegal_`) but never reported as a distinct fault reason; the fault test is the angle error alone (`:4016-4021`). **Still present in source** |
+| **S-9a / PL-89** | What a fault actually does to the bridge |
+| **Z, recovery half** | Recovery after a fault |
+| **PL-66** | A same-power retry after a fault restarts the motor. Fixed in the tree; **run-time proof has never happened**, because `R16-DUAL-FLTRETRY-B` was NOMEAS at Visits 4 and 5 |
+| **«#3547», the fault API** | `R14-DUAL-FLTAPI-B`, NOMEAS twice |
+| **PL-59** | A 3° offset at half speed does not fault in 2 s |
+
+**Why it keeps failing** (PL-86, `VISIT-5-RESULTS.md` §4c): the provocation writes an offset 180° from
+the running pair. Current reaches 2 445 mV (≈ 16 A) within about 100 ms and trips the harness's own 10 A
+abort before the driver's fault test is reached. **The fix is arithmetic, not a run:** the fault test
+fires at |err| ≥ 125 (≈ 176°), so the provocation only has to exceed that, not jump to 180° at speed.
+
+**What it buys:** certification of the whole fault path. M and AF (fault status) are **fixed in source**
+(§4), so this is the last missing piece of it.
+
+### 2.4 The slam has no instrument (PL-87), and the fix costs no bench time
+
+`err` and `err_pk` are statistics over the **steady** window; `rungMeasure()` opens the window after
+AT_SPEED and settle. **Rung 0, the only transition from rest, shows the same ~25-count gap as every other
+rung at both visits**, so the statistic cannot see a transition. PL-78's driver fix **is** in the binary
+(`src/isp_bldc_motor.spin2:3668`, verified in source this session), and **its effect is unmeasured**.
+Stephen's observation — *"some are not kicking but many still are"* — is the only evidence.
+
+The ring already holds every transition sample; `windowStats()` never reads them. A second pass over
+[arm … window start] gives the transition peak per rung, with rung 0 as the built-in control.
+
+⚠ **The safety study's own text is stale here:** it says the PL-78 one-liner is "identified but not yet
+applied". It was applied before Visit 5.
+
+### 2.5 The hall read: PL-69, PL-90, and the hall network already on file
+
+- **PL-69** (MEASURED, Visit 3): `illegal_d` 3 and 5 on the RIGHT motor at 200 MHz only; zero at 270 and
+  300 MHz, zero on the LEFT motor, zero at every other hold.
+- **PL-90** (filed today) proposed a torn three-`TESTP` read as the candidate cause, and asked in its Q1
+  whether the hall lines need a pull-up. **The answer to Q1 had been in `BOARD-REVISION-FACTS.md` §1.1 since
+  2026-09-10:** each of U, V and W has a 3.9 kΩ pull-up to 3.3 V and a 3.9 kΩ series resistor to the P2,
+  word for word identical on Rev A and Rev B. STEPHEN confirmed it tonight (*"REV A/B hall signals are
+  conditioned identically"*). **This is shape D:** a question filed while its answer sat in our own file.
+- **SCAN-ABORT** (2026-09-12) is earlier hall history: an `illegal 1` at every start, caused by the start
+  sequence raising DIR on the hall pins. Fixed by «#3524» and confirmed at run 3.
+
+**The hall read's mechanism is the next discussion with Stephen and is not settled here.** The audit
+records two things that bear on it:
+
+- **The driver's own `deltas` table changes exactly one hall line per legal step.** That bears directly on
+  whether a torn read can produce `%000` / `%111` at all.
+- **The P2's "pull-up" is a weak drive**, live only with DIR high (p2kb `p2kbArchPinDriveConfiguration`).
+  On these pins it would push against the board's 3.9 kΩ series network.
+
+### 2.6 Straight-line driving puts one wheel in the 2× direction (PL-88)
+
+The motors are mirror-mounted, so platform-forward is a positive increment on one wheel and a negative
+increment on the other. The asymmetry is **not** cancelled on the platform, which means uneven heat and
+battery drain, and different derate points: a veer under load. **§2.2 is its fix**; no separate work is
+owed.
+
+### 2.7 API-contract defects still present in source (doctrine overlay P3: mine to fix, not his to decide)
+
+Verified in the current tree this session (§4):
+
+| id | Defect | Where |
+|---|---|---|
+| **AB** | `driveForDistance(left, right)` drives both wheels to the **shorter** of the two, so it cannot turn, although the API takes two distances | `src/isp_steering_2wheel.spin2:337, 359-369` |
+| **G** | `setAcceleration()` / `setRampingValues()` write all four ramp values with no validation, and the doc still reads `[??? - ???] mm/s squared`. **C-1's speed law is now certified to <0.5 %**, so real units can be derived | `src/isp_bldc_motor.spin2:631-653` |
+| **K** | `DDU_KM` and `DDU_MI` can be read by `getDistance()` but not commanded: `ticksForDistance()` has no case for them in either object | `isp_bldc_motor.spin2:1826-1841`; `isp_steering_2wheel.spin2:509-526` |
+| **AC** | The comment beside the turn code says a turn to the right reduces the right wheel; the code reduces the **left** for `limitDir > 0`, so the platform turns left. Visit 2's attended video confirmed a left turn; the comment is wrong and the DRIVE-OBJECTS / README cross-check is still owed | `isp_steering_2wheel.spin2:1370-1385` |
+
+**They are recorded here because the audit found them; fixing them is scope for the plan that follows.**
+
+### 2.8 Safety and capability gaps that are Stephen's scope
+
+| id | Gap | Why it is his |
+|---|---|---|
+| **PL-73** | A board that fails detection drives **with no current limit** | Refuse to start, or run under a conservative limit: an API and safety decision |
+| **S-8** | No command watchdog or link-loss failsafe on the serial or RC path. Turn the transmitter off and the platform keeps driving | A new public mechanism |
+| **S-6** | The serial `getstatus` now carries `DS_FAULTED` and `DS_ESTOP` (fixed through M and AF), but there is no health or fault command | A protocol addition |
+| **AK / C-6 / C-6b** | No bus-voltage feedback. The power table is fixed at the declared voltage. This is the user report's symptom 3 (*first run fine, later runs fault*). C-6b's route, the unused fourth half-bridge's ADC, costs no hardware but has a documented shoot-through hazard if that channel is ever driven | New capability |
+
+### 2.9 PL-43: the silent P2 at Visit 2 has no root cause
+
+`dual-brake` went silent about 3 s after its prompt (`debug_260915-142454.log:122`), which is PL-43's
+signature a second time. The attended rebuild added a heartbeat, so a silence is now *visible*, but
+nothing explains it. It is safety-relevant: a platform whose controller stops mid-command.
+
+### 2.10 Smaller open items with a named fix
+
+- **PL-44 study §4**: the char harness's PL-36 claims check is masked (char:1887-1892), the t0 guards accept
+  a stuck 0 (t0:942, :621, :685), and `steerDriveTrapped` reports a wrong value as an abort. All were
+  recorded for «#3539» (design the trap-capture pattern out); **whether «#3539» carried them was not
+  verified.**
+- **PL-53**: its deferral reason, "Visit 2 runs these binaries again", has expired.
+- **PL-68**: a bench log still cannot name the commit it was built from.
+- **PL-41 / PL-85**: cog bursts truncate DEBUG on the wire; «#3543» (design the cog-lifecycle antipatterns
+  out) is the named fix.
+- **PL-60**: the left board's phase-sense sag of 2.4–2.8 % against the right board's 0.2–0.3 %.
+- **PL-62, PL-63, PL-67, PL-71 / N** (the Doco floor, still present in source): minor, or outside 6.0.0.
+
+### 2.11 The field user's report, 2026-09-09 — where each symptom stands
+
+| Symptom | Then | Now |
+|---|---|---|
+| 1. Two motors fault where one does not | NO fix (Z: hard latch, no back-off) | **Addressed**: the lag limiter droops instead of faulting, the current limit and the bounded stop are certified |
+| 2. The right motor faults more | NO (AI: reverse offset never characterised) | **Open**: the scan (§2.2) is the fix, and it is outside 6.0.0 by ruling |
+| 3. First run fine, later runs fault | NO (AK: no voltage feedback) | **Open** (§2.8) |
+| 4. The demo keeps driving after a fault and reports MOVING | YES by code fix (M, AF) | **Fixed in source** (§4); the run-time fault limb waits on §2.3 |
+| 5. Hello World and single-motor pass | — | — |
+
+The report's alternative, a connector or harness fault that would survive every code fix, proposed a
+cable-swap test. That test is **not possible on this rig** (BENCH-TEST-PLAN T1-12, withdrawn 2026-09-14),
+and Visit 1 showed the two motors equivalent hold for hold.
 
 ---
 
-## 2 · ⭐ THE BIGGEST ITEM — the commutation scan is 80% done and stalled
+## 3 · Records that are now wrong — the correction batch
 
-**Where it lives:** `SCAN-RUN-7-EVALUATION.md` (2026-09-14, complete, 41 of 41 sign-off cells PASS) and
-`VISIT-2-RESULTS.md` section 11 (run 8, 2026-09-15).
+**Shape B, 16 entries.** Each still says a proof is owed, or that something is open, when a later visit
+settled it. **Correcting a status line is filing, and filing is mine (P5).** These are applied as one batch
+after this audit is committed, each citing its settling measurement:
 
-**What is already MEASURED, on both motors, and reproduced across two runs:**
+| Record | Says | Settled by |
+|---|---|---|
+| PL-25 | proof owed to Visit 4 | `R16-T0-NOBOARD` PASS, Visit 5 L184 |
+| PL-28 | proof owed to Visit 1 | Visits 1–5 ran; verify the cell |
+| PL-30 | "still open: right board +64 mV" | the sense-zero calibration: 71–76 mV → 0.1–1.8 mV |
+| PL-32 | proof owed to Visits 1 and 2 | per-start zero certified (Visit 5 t0: 0.0–1.6 mV across five starts) |
+| PL-45 | proof owed to Visit 4 | `R16-T0-RESTZERO` PASS L177/181, Visit 5 |
+| PL-46 | scan "stays blocked" | condition (c) removed, §2.2 |
+| PL-47 | "deferred, not in the driver path" | the error contract, certified at Visit 5; **zero `abort` uses remain in either library object** |
+| PL-52 | proof owed to Visit 4 | Visit 5 t0, error contract certified |
+| PL-53 | deferred until Visit 2 re-runs the binaries | Visits 2–5 ran |
+| **PL-55** | proof owed to Visit 4; **`VISIT-3-RESULTS.md` §6 calls it the largest open behaviour** | stop peaks 971–1 055 mV against a 1 500 mV abort (Visit 4); `STOPCUR` PASS (Visit 5) |
+| PL-61 | "mechanism not established" | duty saturates at `duty_max` from rung 7 while back-EMF rises against a fixed applied voltage (`VISIT-5-RESULTS.md` §5b). DERIVED; worth one line in the entry |
+| PL-64, PL-65 | open | fixed in the attended rebuild, SRC_REV 12 (`ATTENDED-UI-AUDIT` §7) |
+| PL-70, PL-72 | open / construct to be removed | the front cog («#3513») replaced the loop; verify PL-70's divide is gone |
+| PL-74 | "the next run discriminates" | Visit 5 t0 emitted: closed (`VISIT-5-RESULTS.md` §2a) |
+| PL-84 | "Visit 5 settles it" | `str_mm_x100` 576, `agree TRUE` (Visit 5 L7652) |
+| **PL-89** | the swapped table, and the premise PL-56 had settled | §2.1 |
 
-| | LEFT | RIGHT | agreement |
-|---|---|---|---|
-| negative-increment minimum | +13.4° ± 0.5 | +13.7° ± 0.7 | **0.3°** |
-| positive-increment minimum | −20.9° ± 0.7 | −22.3° ± 0.4 | **1.4°** |
-| hall electrical zero | −3.8° ± 0.4 | −4.3° ± 0.4 | **0.5°** |
+**The two 2026-09-09 studies self-audit only to Visit 4.** Visit 5 closed three items they still list as
+open:
 
-Run 8 reproduced the quarter-speed minima within 0.1–1.6°. The sweep step is 5°, so **the two motors
-agree to better than the instrument's resolution.**
+- **F**: `stopAfterDistance(DDU_M)` — `R16-DUAL-DISTM-B` PASS.
+- **C-3**: the distance overshoot — `STOPLIM` PASS, worst case 1 tick.
+- **AD**: the start-failure path — `R16-T0-FRONTFAIL` PASS.
 
-**What it says about the driver:** the defaults 43 / 317 are symmetric about 0°, but the hall zero is at
-about −4°. That asymmetry IS the 2:1 current split measured at the defaults, three separate times. **At
-the minima the ratio collapses to 0.93–1.29.**
-
-**The candidate pair, already written down:** `offset_fwd ≈ 14°`, `offset_rev ≈ 338°`.
-
-**What it would buy, at no load (DERIVED in that evaluation):** 86–92% less current at quarter speed,
-92–97% at half speed. The left motor at half speed falls from 6.26 A to about 0.20 A.
-
-**Why it says DO NOT APPLY, and this is the only thing standing in the way:** the half-speed
-confirmation has never been demonstrated. In every half-speed leg the lowest current sat at the last
-clean point **before a fault**, with nothing measured between it and the fault. The candidate sits
-6.5–8.5° from a fault edge at quarter speed and an extrapolated 2.4–4.7° at half speed.
-
-### ⭐ What changed since, and nobody went back
-
-**Every half-speed leg failed on FAULTS.** Since run 8:
-
-- **The lag limiter («#3558») makes the driver droop instead of faulting** — certified `RMPDROOP` PASS on
-  both motors at Visit 4 **and** Visit 5.
-- **The sense-zero calibration is fixed** — the right motor's zero fell from 71–76 mV to 0.2–1.8 mV, and
-  Visit 5 measured 0.1–0.6 mV across four starts and 0.0–1.6 mV across five in the t0 tier.
-- **The current scale is certified** — implied R-sense 149–162 against a 135–165 band.
-
-**So the exact condition that prevented the half-speed measurement has been removed, and the scan has
-not run since 15 September.** Visits 3, 4 and 5 did not carry it.
-
-**This is the single highest-value unactioned item in the project.** It is one ~12-minute unattended
-load, on an instrument that already works, against a question whose answer is 80% written.
-
-⚠ **Not a proposal to apply the offsets.** The evaluation's disposition stands until the half-speed
-minimum is measured with margin, and what margin is enough under load is Stephen's decision.
+`user-report-2026-09-09-ANALYSIS.md`'s resolution table still reads NO for symptom 1.
 
 ---
 
-## 3 · Other findings that are unactioned or whose status is now wrong
+## 4 · The 2026-09-09 study findings against today's source
 
-### 3.1 PL-69 — illegal hall codes on the right motor at 200 MHz — OPEN, UNTOUCHED
+Verified by reading the current tree; the line numbers are current.
 
-`VISIT-3-RESULTS.md` section 1, filed 2026-09-16. MEASURED: `illegal_d 3` and `5` in two 1-second
-windows on the RIGHT motor at **200 MHz only**; 0 at 270 and 300 MHz, 0 on the LEFT at all clocks, and
-0 at every Visit 1 and Visit 2 hold.
-
-- **The owner is the driver's hall sampling, not the instrument** — the instrument's independent hall
-  count lost nothing.
-- **It has had no attention since it was filed**, across three visits.
-- ⛔ **It is shipping-relevant.** Visit 3 certifies clock independence and the documentation will tell a
-  user they may run at 200, 270 or 300 MHz. At one of those three, one motor logged hall integrity
-  errors. **A user running at 200 MHz is the case we have the least evidence for.**
-- Visit 3 states plainly what it does NOT establish: one run, one motor, 8 events, possibly transient.
-  **That is a reason to re-measure, not a reason to leave it.**
-
-### 3.2 PL-55 — the stop-current abort — LOOKS FIXED, AND THE RECORD DOES NOT SAY SO
-
-`VISIT-3-RESULTS.md` section 6 calls it *"the driver's largest open behaviour"*, scheduled by Stephen
-for this release.
-
-- **Visit 3, MEASURED:** every stop from 75% tripped the harness's 10 A abort, all four motor/sign
-  combinations.
-- **Visit 4, MEASURED:** 20 stop trials at the same ±110_250_000 (75%), `stop_pk_mV` **971–1 055**
-  against a 1 500 mV abort — flat to ±4%, and the abort never approached.
-- **Visit 5, MEASURED:** `STOPCUR` PASS on both motors.
-
-**DERIVED: «#3558»'s feed-forward duty ceiling closed it.** Nothing in the punch list or the visit
-reports says so, and PL-55 is still described as the largest open behaviour. **Status to be corrected
-after a direct read of the PL-55 entry** — this audit has not read it end to end.
-
-### 3.3 "Float may be a brake" — an unverified hardware fact under a documented API
-
-`VISIT-2-RESULTS.md` section 0. MEASURED: `emergencyCutoff()` stops a half-speed wheel **within one
-tick**, while `stop()` (which releases the pins) lets it coast 38–48 ticks.
-
-> *"The source suggests the driver's 'drive off' state holds all three low-side FETs on, which brakes
-> the motor. That rests on one unverified hardware fact. **If it holds, 'float' is also that brake, and
-> so is every fault.**"*
-
-⛔ **If true, this contradicts a documented public contract.** `holdAtStop(FALSE)` is documented as
-coast. The user-visible behaviour, the release notes and `DRIVE-OBJECTS.md` all rest on FLOAT and BRAKE
-being different things.
-
-> ## ⭐ SETTLED FROM SOURCE, 2026-09-17, same day. The hypothesis was right, and it is worse.
->
-> `pwmn` carries `P_INVERT_OUTPUT` and is written to the three LOW-side pins; `pwmt` without it goes to
-> the high side. So the drive-off action `wypin #0, drive_pins` leaves the high side low (FETs off) and
-> the **low side HIGH — all three low-side FETs on, phases shorted, a dynamic brake.** The code comment
-> "all drive pins low" describes the register value, not the pin state, and is wrong.
->
-> **Three behaviours, not two:** `holdAtStop(FALSE)` leaves the PWM ENABLED at `duty_min` — a powered
-> hold, not a coast; `holdAtStop(TRUE)` shorts the phases; only `stop()` truly floats. **And every fault
-> and e-stop takes the brake path regardless of `holdAtStop()`.** That is exactly Visit 2's 1-tick
-> e-stop against a 38-48 tick `stop()` coast.
->
-> **Filed as PL-89**, with the one unestablished link (whether the board's gate driver adds another
-> inversion) and Stephen's hand test, with predictions written so the test can fail.
->
-> ⚠ **This is the audit paying for itself on its first day**: a finding parked on "one unverified
-> hardware fact" for two days, where the verification was a source read.
-
-### 3.4 The e-stop hold in passes — never measured
-
-`VISIT-3-RESULTS.md` section 4.3. The motor object's sense task releases an e-stop after
-`ESTOP_HOLD_PASSES`, and that path is only reached by part A's LIVE segment — so no load has ever
-exercised it. The report is explicit: *"equivalent by arithmetic, not by measurement."*
-
-### 3.5 Board-to-board phase-sense difference
-
-`VISIT-2-RESULTS.md` section 0: the LEFT board's `ph_x10` reading sags 2.4–2.8% under load; the RIGHT
-board's moves 0.2–0.3% at the same currents. Recorded, never followed up. Relevance unknown — it may
-matter to any future use of the phase channels.
+| id | Verdict | Evidence |
+|---|---|---|
+| M | **FIXED** | `getStatus()` returns `DS_FAULTED` / `DS_ESTOP` before the ready test, `isp_bldc_motor.spin2:1200-1216` |
+| AF | **FIXED** | the steering object's `getStatus()` forwards both wheels, `isp_steering_2wheel.spin2:821-826` |
+| S-5 | **FIXED** | no timed auto-clear; `clearFaultSignal()` is the only writer (`:1400-1409`) |
+| A2 / A3 | **FIXED** | `getBoardType()` switches on the BRD_* override (`:1305-1314`) |
+| AE | **FIXED** | `claimPinBase()` rejects an overlapping group with `ERR_PIN_GROUP_IN_USE` (`:284-322`) |
+| O | **FIXED** | `PWR_25p9V` is outside both lookdown ranges, so it is rejected up front (`:1925-1936`) |
+| I / T | **FIXED** | zero `abort` uses in either library object |
+| H | **FIXED** | `resetTracking()` goes through the bounded request (20 ms) |
+| Q | **FIXED** | `SyncStatus()` is bounded by `SYNC_TIMEOUT_MS` (`:2014-2031`) |
+| W | **FIXED** | Visit 4 `RPM_ERR` within ±2 |
+| A1 | **FIXED** | the conditional was deleted; 259–260 ns measured at all three clocks |
+| F, C-3, AD | **FIXED** | Visit 5 (§3) |
+| AB, G, K, AC | **STILL PRESENT** | §2.7 |
+| S-7, S-8, N | **STILL PRESENT** | §2.3, §2.8, §2.10 |
+| S-6 | **CHANGED** | status now correct; no health command |
 
 ---
 
-## 4 · What to do with this
+## 5 · Closed, and correctly recorded as closed
 
-**Nothing here is scheduled by this audit** (doctrine overlay P5: what is in a release or a sprint is
-Stephen's decision). Ranked by what it would buy:
-
-| # | Item | Cost | What it buys |
-|---|---|---|---|
-| 1 | **Re-run the commutation scan** | one ~12 min unattended load, plus a read-through of the scan binary against the 6.0.0 driver | The half-speed confirmation that is the only thing between us and a candidate offset pair worth 86–97% of the no-load current |
-| 2 | **Settle "is float actually a brake"** | a source and schematic read, no bench time | Whether a documented public contract is true |
-| 3 | **Re-measure PL-69's hall codes at 200 MHz** | rides any load at that clock | Whether we can honestly tell a user 200 MHz is supported |
-| 4 | **Correct PL-55's status** | a read | The record stops describing a closed behaviour as the largest open one |
-| 5 | **Finish this audit** | reading 14 documents | The lower bound above becomes a real number |
+Detection: pinclear-before-read («#3500»), 0/12 misdetections at Visits 4 and 5, `R2-HOST-DETDIFF` 14/0/0.
+The start-return contract (PL-22, PL-24, PL-44 via PL-53). S-2 (the current limit), S-3 (the scale,
+6138 against the predicted 6136), S-4 (the e-stop latch). C-1 (the speed law, <0.5 % over 48 rungs). C-5
+(the lag limiter). PL-36, PL-40, PL-42 (90 ticks/rev, 270 transitions over 3 revolutions), PL-50. The
+hall `illegal 1` at start («#3524»). The attended UI rebuild (B-1 … U-4).
 
 ---
 
 ## Revision history
 
-- **2026-09-17** — opened. Partial: 8 of 22 documents read. The scan stall, PL-69, PL-55's status, the
-  float/brake question, the e-stop hold and the board phase-sense difference are the findings surfaced
-  so far.
+- **2026-09-17, afternoon** — opened. Partial: 8 of 22 documents read. It surfaced the scan stall, PL-69,
+  PL-55's status, the float/brake question, the e-stop hold and the board phase-sense difference.
+- **2026-09-17, evening** — completed. The remaining 14 documents and the whole punch list were read by
+  nine read-only agents, and a tenth checked 17 of the 2026-09-09 findings against current source. The
+  arbiter read Visit 5, `BOARD-REVISION-FACTS`, PL-56, PL-69, PL-89, PL-90, `holdAtStop()`, `checkstop`
+  and the hall read directly. New this pass:
+  - PL-89's table is backwards against `checkstop`, and it contradicts Stephen's recorded bench fact
+    (§2.1);
+  - the hall-network answer had been on file since 2026-09-10 (§2.5);
+  - three of the scan's four blockers are gone (§2.2);
+  - six findings wait on one fault stimulus (§2.3);
+  - 16 stale records (§3);
+  - 11 study findings fixed in source, and 7 still present (§4).
+  - Shape D is added to §1.
