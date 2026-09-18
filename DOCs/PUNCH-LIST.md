@@ -3846,6 +3846,79 @@ the run):
 withdrawn.** The driver's own hall counter records how far the wheel turned in each state, so the log
 carries a number beside his judgement.
 
+### PL-90 -- the hall triple is read by three separate TESTP instructions, so the three bits are not from one instant
+
+**Found 2026-09-17**, chasing PL-69 (illegal hall codes on the right motor at 200 MHz only). Raised by
+Stephen: *"is the hall sampling edge driven or clocked? are we setting clock correctly?"* **DERIVED from
+source and from the domain authority. Not yet confirmed as PL-69's cause.**
+
+**HOW IT IS READ, `src/isp_bldc_motor.spin2` (the `.ctlMotor` loop, and again in `wait4adc` and at
+driver start):**
+
+```spin2
+                testp   pin_hall_w                  wc  ' read hall effect sensor
+                rcl     hall_, #1
+                testp   pin_hall_v                  wc
+                rcl     hall_, #1
+                testp   pin_hall_u                  wc
+                rcl     hall_, #1
+```
+
+- **CLOCKED, not edge-driven.** `TESTP` returns the pin state **registered two clocks before the
+  instruction** (p2kb `p2kbArchIoPinTiming`, Silicon Doc :2005). No edge capture, no smart pin.
+- **NO INPUT CONDITIONING.** The hall pins get no `WRPIN`, so no Schmitt mode and no filter -- the
+  driver's own comment says *"hall pins are inputs: nothing ever raises their DIR"*.
+
+⭐ **THE THREE BITS COME FROM THREE DIFFERENT INSTANTS.** `TESTP` and `RCL` are 2 clocks each, so the
+three samples are 4 clocks apart and the read spans 8 clocks end to end:
+
+| clock | step | W->U span |
+| --- | --- | --- |
+| 200 MHz | 20 ns | **40 ns** |
+| 270 MHz | 14.8 ns | 29.6 ns |
+| 300 MHz | 13.3 ns | 26.7 ns |
+
+**A transient shorter than that span can be caught by one read and missed by the others, producing a
+triple that never physically existed -- which is exactly `%000` or `%111`.** The span is **35 % wider at
+200 MHz**, which is the direction PL-69 observed.
+
+⛔ **THIS IS A CANDIDATE FOR PL-69, NOT ITS ESTABLISHED CAUSE** (doctrine overlay P8). What it does
+explain that a clock-rate argument cannot: the sample RATE is 44 kHz at every clock by design (MEASURED
+at Visit 3: 44_004 / 44_003 / 44_001 Hz), so rate cannot be the variable, while **skew scales with the
+clock period and therefore is**. What it does NOT explain on its own is why only the RIGHT motor showed
+it -- that still needs a marginal signal on that motor for the tear to have anything to catch.
+
+**And the clock IS set correctly.** MEASURED at Visit 3: frame rate within 4 Hz of 44 kHz at all three
+clocks, dead time 259-260 ns at all three, and the drive pass lands on the 23rd frame at all three.
+Nothing is mis-scaled; the tear window is an artefact of the read, not of the clock setup.
+
+### FIX DIRECTION -- one atomic read, and it is CHEAPER than what is there
+
+The hall pins are always three consecutive pins inside a single 32-pin half. For every legal base
+(0, 8, 16, 24, 32, 40) the triple is 5-7, 13-15, 21-23, 29-31, 37-39 or 45-47 -- **none straddles the
+pin-31 boundary** -- so one port register always holds all three:
+
+```spin2
+                mov     hall_, ina          ' or inb, selected once at driver start
+                shr     hall_, #hallShift
+                and     hall_, #%111
+```
+
+**Three instructions instead of six, no tear window, and no clock dependence.** The INA/INB choice and
+the shift are computed at init from `pinbase`, where the other pin constants already are. `INA` is read
+3 clocks old rather than `TESTP`'s 2, which is immaterial against a 22.7 us frame.
+
+⭐ **Correct by construction (P10):** it removes the mechanism rather than characterising it, and it is
+smaller and faster than the code it replaces.
+
+**A second, independent candidate, recorded not proposed:** the hall inputs could use a Schmitt or
+filtered pin mode. p2kb notes the P2 has Schmitt input modes but that **no Parallax source states the
+hysteresis they produce**, so nothing is claimed for it here.
+
+**Verification, and it needs no new stimulus:** the driver already counts illegal codes on every rung of
+every part. Visit 3's evidence was 8 events in two 1-second windows; part A at 200 MHz gives 48 rungs
+across both motors, before and after the change.
+
 ---
 
 ## Archived
