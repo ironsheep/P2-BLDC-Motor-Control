@@ -85,6 +85,20 @@
 ''               driveForDistance() in the segment with ERR_LIMIT_UNRESOLVABLE while the record printed
 ''               the MOTOR object's healthy 576; the DISTM cell now fails when the two copies differ.
 ''               Three records gain fields and the cell set gains one, so FMT goes to 5
+''               17 Sep 2026 -- SRC_REV=15, FMT 6: task 3570. Part D gains the CMDTIMEOUT step on both forms
+''               (S-8's opt-in command timeout: a refreshed drive keeps running, an unrefreshed one stops and
+''               is reported) and cells R17-DUAL-CMDTMO-D / R17-DUAL-WCMDTMO-D. STOPLIM now judges BOTH
+''               wheels at their own limit, since driveForDistance() stops each wheel at its own distance
+''               (finding AB). BM-DSTEP gains a step token and the cell set grows, so FMT goes to 6.
+''               Task 3571 (PL-90/PL-69), same revision: each CLOCK lifetime prints BM-HALLINT (entries into
+''               %000 and %111, and missed transitions) and folds R17-DUAL-HALL-K200 / -K270 / -K300.
+''               Task 3572 (fault handling), same revision: the fault provocation is COMPUTED at speed per
+''               wheel (faultShiftDeg(): the offset shift that lands the error on +-128, past the fault test at
+''               125) in OVERSHT's fault-API trial and in POSTFLT, replacing the fixed 180 / 3 degree writes that
+''               missed the test (PL-86, PL-59). BM-FLTAPI replaces want_off with l_shift / r_shift and appends
+''               l_cause / r_cause (S-7). New cells R17-DUAL-FLTCAUSE-B, R17-DUAL-OFFREST-B, R17-DUAL-FLTSTOP-C
+''               (a fault delivers holdAtStop(): FLOAT coasts further than BRAKE) and R17-DUAL-IDLEMOVE-A/-B/-C
+''               (the uncommanded wheel stays put during the other wheel's trial)
 ''
 '' =================================================================================================
 
@@ -148,8 +162,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 14                                        ' hand-bumped whenever this file changes
-    FMT_VERSION = 5                                         ' BM- record-format version
+    SRC_REV     = 15                                        ' hand-bumped whenever this file changes
+    FMT_VERSION = 6                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -293,7 +307,6 @@ CON { drive increments and powers }
     SIGN_NEG            = -1                                ' every signed loop runs NEG then POS
     SIGN_POS            = 1
     SIGN_STEP           = 2
-    FAULT_PROVOKE_NEG_DEG = 3                               ' POSTFLT's fault-provoking offset_fwd
     STEER_POWER_HALF    = 50                                ' OUTSIDE driveAtPower(50, 50)
     FLOOR_POWER         = 50                                ' FLOOR driveDirection(50, +50)
     FLOOR_DIRECTION     = 50
@@ -316,13 +329,16 @@ CON { drive increments and powers }
     OVERSHT_TGT_SHORT   = 105                               ' 60_960 / 576
     OVERSHT_TGT_LONG    = 529                               ' 304_800 / 576
 
-    ' OVERSHT's fault-API trial (task 3552), LAST in the segment. The Visit 2 provocation -- a high
-    '  ramp_inc from standstill, which faulted 3 of 3 -- is exactly what task 3558's lag limiter now
-    '  prevents, so it would provoke nothing here. The provocation is a commutation offset written this
-    '  far from the pair in force, on both wheels: the field is held where the rotor cannot follow it, the
-    '  position error settles near the offset itself, and the driver's own fault test (at 125 err units,
-    '  above the limiter's LAG_HOLD) trips. DERIVED; the trial prints NO_FAULT if it does not.
-    FLTAPI_OFFSET_DEG   = 180                               ' written on both wheels, both directions
+    ' OVERSHT's fault-API trial (task 3552), LAST in the segment, and POSTFLT's provoked faults. Task 3572
+    '  (PL-86, PL-59): the provocation is COMPUTED per wheel at speed -- faultShiftDeg() shifts the offsets by
+    '  exactly what puts the wheel's position error on +-128, past the driver's fault test at 125, so the
+    '  fault comes in the next control frame, before the current can build. The fixed 180-degree write it
+    '  replaces missed the test by the wheel's own error and ran into the 10 A abort instead.
+    ERR_UNITS_PER_TURN  = 256                               ' the driver's err: one electrical cycle, signed 8-bit
+    ERR_UNITS_MASK      = ERR_UNITS_PER_TURN - 1
+    ERR_FAULT_TARGET    = 128                               ' = -128: the wrap point, 3 units past the fault test
+    DEG_PER_TURN        = 360
+    FAULT_ERR_SAMPLES   = 16                                ' err reads averaged at speed before the shift, SAMPLE_MS apart
     FLTAPI_POWER        = 50                                ' driveAtPower(50, 50), the segment's own power
     ' The poll must outlast the 3 s auto-clear task 3547 removed, so the latch's SURVIVAL is what is
     '  recorded. 6 s from the command is about 60 of the 130 OUT_POLLS rows, and the rows are the only
@@ -426,6 +442,11 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_LOCKSTEP_SAMPLES    = 1                               ' instrument samples between the two wheels leaving STOPPED
     D_STEP_POLL_MS        = 5                               ' cog-0 poll cadence inside a part-D step
     D_REST_MS             = 2_000                           ' bound on the platform reaching rest after a stop
+    ' CMDTIMEOUT (task 3570, S-8): the command timeout under test, how long the step keeps the link alive
+    '  with repeated drives (the negative limb: it must NOT stop), and how often it repeats them
+    D_CMDTMO_MS           = 500
+    D_CMDTMO_REFRESH_MS   = 1_500                           ' three timeouts' worth of refreshed driving
+    D_CMDTMO_EVERY_MS     = 200                             ' well inside D_CMDTMO_MS, so a working refresh never lapses
     ' front-cog loop health (FRONT-COG-IMPLEMENTATION-PLAN.md sec 7.4): a 1 kHz pass must stay inside its
     '  slot, and the stack high-water must stay under the library's STACK_SIZE_LONGS (128 means overflow
     '  is possible, so the criterion is strictly below it)
@@ -618,6 +639,7 @@ CON { record widths and token lengths }
     TOKMAX_BUTTON    = 8
     TOKMAX_DSTEP     = 12
     TOKMAX_DRES      = 6
+    TOKMAX_FCAUSE    = 4
 
 CON { record enums -- each value has a token in the DAT token tables }
 
@@ -747,9 +769,10 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  DST_DERATE      - the derate arrives in its window and the peak limit returns after the stop
   '  DST_BLOCKED     - the protective stop latches, refuses with its code, and only clearProtectiveStop() releases it
   '  DST_RETRY       - PL-66: the same power after a fault reaches AT_SPEED again
+  '  DST_CMDTIMEOUT  - S-8: a refreshed drive keeps running, and one left unrefreshed stops and reports it
     #0, DST_ESTOP_LATCH, DST_ESTOP_REFUSE, DST_ESTOP_CLEAR, DST_ORDERED, DST_COOPSHUT, DST_TRACKRESET, ...
-        DST_TIMESTOP, DST_LOCKSTEP, DST_FOLDBACK, DST_DERATE, DST_BLOCKED, DST_RETRY
-    DST_COUNT = 12
+        DST_TIMESTOP, DST_LOCKSTEP, DST_FOLDBACK, DST_DERATE, DST_BLOCKED, DST_RETRY, DST_CMDTIMEOUT
+    DST_COUNT = 13
 
   ' BM-DSTEP result:
   '  DRES_PASS   - the step's own criterion held
@@ -757,6 +780,9 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  DRES_NOMEAS - the step could not be provoked on this rig; why names what was missing
     #0, DRES_PASS, DRES_FAIL, DRES_NOMEAS
     DRES_COUNT = 3
+
+  ' The library's fault causes (names, not copies): tokFltCause is indexed by them
+    FC_COUNT = wheelL.FC_HALL + 1
 
   ' BM-OUT status (from DS_*):
     #0, STAT_MOVING, STAT_HOLDING, STAT_OFF, STAT_UNKNOWN, STAT_FAULTED, STAT_ESTOP
@@ -801,6 +827,20 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     TRACE_LOST_HI     = 0
     RESET_UNCLEAR_LO  = 0
     RESET_UNCLEAR_HI  = 0
+    ' HALL (task 3571): no illegal hall code over a clock's lifetimes. The negative case is on file: Visit 3's
+    '  200 MHz load read 3 and 5 on the RIGHT motor (PL-69), which fails this.
+    HALL_ILLEGAL_LO   = 0
+    HALL_ILLEGAL_HI   = 0
+    ' FLTSTOP (task 3572): a fault under FLOAT (COAST) travels further to rest than one under BRAKE (SHORT) by
+    '  at least this many ticks. MEASURED at Visit 2 from half speed: a short stops within one tick, an open
+    '  bridge coasts 38-48 ticks. The old driver shorted on every fault, so FLOAT and BRAKE read the same and
+    '  this fails -- the cell's negative case.
+    FLTSTOP_GAP_TICKS = 10
+    ' IDLEMOVE (task 3572): the stopped, uncommanded wheel may drift this little during the other wheel's
+    '  trial (a lifted wheel nudged by the platform's reaction). A command reaching it would drive it tens
+    '  of ticks, which is what PL-76's wrong-wheel ternary did.
+    IDLE_MOVE_LO      = 0
+    IDLE_MOVE_HI      = 2
     ' LAGBOUND (task 3558's lag limiter): the instrument's own running max |err| over stored samples with
     '  the driver up and not faulted.
     '
@@ -1139,8 +1179,10 @@ tokUiKind       BYTE    "CONTROL", 0, "PREVIEW", 0
 tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0
 tokDStep        BYTE    "ESTOP_LATCH", 0, "ESTOP_REFUSE", 0, "ESTOP_CLEAR", 0, "ORDERED", 0
                 BYTE    "COOPSHUT", 0, "TRACKRESET", 0, "TIMESTOP", 0, "LOCKSTEP", 0, "FOLDBACK", 0
-                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0
+                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0, "CMDTIMEOUT", 0
 tokDRes         BYTE    "PASS", 0, "FAIL", 0, "NOMEAS", 0
+' the library's FC_* fault causes (task 3572, S-7), in enum order
+tokFltCause     BYTE    "NONE", 0, "LAG", 0, "HALL", 0
 ' operator panel buttons, in BM_BTN_* order
 tokButton       BYTE    "START", 0, "SKIP", 0, "STOP", 0, "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0
                 BYTE    "LOOKSOK", 0, "WRONG", 0
@@ -1160,8 +1202,8 @@ tokCp           BYTE    "INIT", 0, "INST_ACK", 0, "READY", 0, "ZERO", 0, "ATSPEE
                 BYTE    "PANEL", 0
 ' BM-PLAN finds, per segment (finding ids joined by "_"), indexed by SEG_*
 tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-3_C-6", 0, "S-3", 0
-                BYTE    "C-5_Z_S-1", 0, "C-3", 0, "M_AF_S-5_Z", 0, "FIELD_Q", 0, "S-9a", 0, "AC", 0
-                BYTE    "UI", 0, "S-4_FRONTCOG", 0, "S-2_C-5", 0
+                BYTE    "C-5_Z_S-1", 0, "C-3_AB", 0, "M_AF_S-5_Z", 0, "FIELD_Q", 0, "S-9a", 0, "AC", 0
+                BYTE    "UI", 0, "S-4_FRONTCOG_S-8", 0, "S-2_C-5", 0
 
 DAT { fixed tokens }
 
@@ -1242,6 +1284,21 @@ sSfCellDerate   BYTE    "R16-DUAL-DERATE-D", 0
 sSfCellBlocked  BYTE    "R16-DUAL-BLOCKED-D", 0
 sSfCellWEstop   BYTE    "R16-DUAL-WESTOP-D", 0
 sSfCellWTimStop BYTE    "R16-DUAL-WTIMSTOP-D", 0
+' task 3570: the S-8 command timeout, the steering object's form and the single wheel's
+sSfCellCmdTmo   BYTE    "R17-DUAL-CMDTMO-D", 0
+sSfCellWCmdTmo  BYTE    "R17-DUAL-WCMDTMO-D", 0
+' task 3572: fault handling -- the cause of the provoked fault (S-7), the offset restore after it in part B
+'  (only part C had one), and a fault delivering the user's stop mode (R17.1) in part C
+sSfCellFltCause BYTE    "R17-DUAL-FLTCAUSE-B", 0
+sSfCellOffRestB BYTE    "R17-DUAL-OFFREST-B", 0
+sSfCellFltStop  BYTE    "R17-DUAL-FLTSTOP-C", 0
+sSfCellIdleMvA  BYTE    "R17-DUAL-IDLEMOVE-A", 0
+sSfCellIdleMvB  BYTE    "R17-DUAL-IDLEMOVE-B", 0
+sSfCellIdleMvC  BYTE    "R17-DUAL-IDLEMOVE-C", 0
+' task 3571: the hall read (PL-90) at each swept clock
+sSfCellHallK200 BYTE    "R17-DUAL-HALL-K200", 0
+sSfCellHallK270 BYTE    "R17-DUAL-HALL-K270", 0
+sSfCellHallK300 BYTE    "R17-DUAL-HALL-K300", 0
 sSfCritCog0End  BYTE    "ENDED_BY_COG0", 0
 sSfCritQuiet    BYTE    "QUIET_MASKS", 0
 sSfCritInstLive BYTE    "INST_LIVE", 0
@@ -1277,6 +1334,11 @@ sSfCritFrontSt  BYTE    "FRONT_LOOP_HEALTH", 0
 sSfCritFoldBack BYTE    "FOLDBACK_HELD", 0
 sSfCritDerate   BYTE    "DERATED_IN_WINDOW", 0
 sSfCritBlocked  BYTE    "PROTECTIVE_STOP", 0
+sSfCritCmdTmo   BYTE    "TIMEOUT_STOPPED", 0
+sSfCritHall     BYTE    "ILLEGAL_HALL_CODES", 0
+sSfCritFltCause BYTE    "CAUSE_IS_LAG", 0
+sSfCritFltStop  BYTE    "FLOAT_COASTS_MORE", 0
+sSfCritIdleMove BYTE    "IDLE_WHEEL_TICKS", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfPass         BYTE    "PASS", 0
@@ -1300,7 +1362,7 @@ CON { token-table geometry and wait kinds }
   '  EVT_STOPMOTOR - stopMotor(): cause STOPCMD
   '  EVT_STOPCOG   - stop(): cause STOPCOG; the driver cog ends and only hwPos sees the coast
   '  EVT_ESTOP     - emergencyCutoff(): cause ESTOP
-  '  EVT_OFFSET    - testSetFwdRevIndep(FAULT_PROVOKE_NEG_DEG, want_pos): cause FAULT
+  '  EVT_OFFSET    - testSetFwdRevIndep() shifted by faultShiftDeg() at speed: cause FAULT (task 3572, PL-59)
     #0, EVT_STOPMOTOR, EVT_STOPCOG, EVT_ESTOP, EVT_OFFSET
 
 VAR { run-wide state -- cog 0 only }
@@ -1522,8 +1584,12 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    ovWhy
     LONG    outCount                                        ' BM-OUT rows filled
     LONG    outBuf[OUT_POLLS * OUT_LONGS]
-    LONG    fltLeftInc                                      ' BM-FLTAPI: ramp_inc read back per wheel
+    LONG    fltLeftInc                                      ' BM-FLTAPI: each wheel's offset_fwd read back after the provocation
     LONG    fltRightInc
+    LONG    fltLeftShift                                    ' task 3572: the computed offset shift per wheel, degrees
+    LONG    fltRightShift
+    LONG    fltLeftCause                                    ' task 3572 (S-7): getFaultCause() per wheel after the trial
+    LONG    fltRightCause
     LONG    fltFaultMs                                      ' ms from the command to the first faulted row
     LONG    fltLatchMs                                      ' ms the latch was still observed after that row
     LONG    fltOffNeg[INST_MOTORS]                          ' BM-FLTAPI: each wheel's offsets before the provocation
@@ -1579,6 +1645,7 @@ VAR { trace capture staging -- filled by eventCapture() / the FAULTB and OVERSHT
     LONG    bCpOffWritten                                   ' the trial wrote offsets (restore owed, I11)
     LONG    bCpOffRestored
     LONG    bCpEstopSet                                     ' the trial issued emergencyCutoff() (clear owed, I11)
+    LONG    trIdleMove                                      ' IDLEMOVE: largest hwPos travel of the other motor over the trace
     LONG    trStopTicks                                     ' STPDECEL: |pos(rest) - pos(mark)| of the primary motor
     LONG    bTrStopValid                                    ' the trace found both a mark and a rest
 
@@ -1640,6 +1707,12 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    bSfDerateOk[INST_MOTORS]
     LONG    bSfFrontRan[INST_MOTORS]                        ' FRONTST: slot 0 the steering front cog, slot 1 the wheel's
     LONG    bSfFrontOk[INST_MOTORS]
+    LONG    sfIdleMoveMax[INST_MOTORS]                      ' IDLEMOVE (task 3572): the other wheel's largest travel, per primary motor
+    LONG    sfIdleMoveN[INST_MOTORS]                        ' motor-frame traces folded
+    LONG    sfFltStopTicks[INST_MOTORS * MODE_COUNT]        ' FLTSTOP (task 3572): [slot * MODE_COUNT + mode] provocation-to-rest ticks
+    LONG    bSfFltStopRan[INST_MOTORS * MODE_COUNT]
+    LONG    sfHallIllegal[INST_MOTORS]                      ' HALL (task 3571): %000 + %111 entries over this clock's lifetimes
+    LONG    sfHallLives[INST_MOTORS]                        ' lifetimes folded into sfHallIllegal
 
 VAR { operator panel and attended-segment staging -- cog 0 only }
 
@@ -2224,6 +2297,7 @@ PRI segSteerContract() | whyCode
         dStepEstopSet(SIDE_BOTH)
         dStepOrdered()
         dStepTimeStop(SIDE_BOTH)
+        dStepCmdTimeout(SIDE_BOTH)
         dStepFrontStats(SIDE_BOTH)
         dStepCoopShut(SIDE_BOTH)                            ' stops the steering object
     else
@@ -2234,6 +2308,7 @@ PRI segSteerContract() | whyCode
         dStepSkip(DST_ESTOP_CLEAR, SIDE_BOTH, whyCode)
         dStepSkip(DST_ORDERED, SIDE_BOTH, whyCode)
         dStepSkip(DST_TIMESTOP, SIDE_BOTH, whyCode)
+        dStepSkip(DST_CMDTIMEOUT, SIDE_BOTH, whyCode)
         dStepSkip(DST_COOPSHUT, SIDE_BOTH, whyCode)
         steerStop()
     segEnd(segWhy())
@@ -2288,6 +2363,7 @@ PRI dWheelHalf(segWhyCode) | whyCode
     if whyCode == WHY_NONE
         dStepEstopSet(SIDE_LEFT)
         dStepTimeStop(SIDE_LEFT)
+        dStepCmdTimeout(SIDE_LEFT)
         dStepFrontStats(SIDE_LEFT)
         dStepCoopShut(SIDE_LEFT)                            ' stops the wheel
     else
@@ -2295,6 +2371,7 @@ PRI dWheelHalf(segWhyCode) | whyCode
         dStepSkip(DST_ESTOP_LATCH, SIDE_LEFT, whyCode)
         dStepSkip(DST_ESTOP_CLEAR, SIDE_LEFT, whyCode)
         dStepSkip(DST_TIMESTOP, SIDE_LEFT, whyCode)
+        dStepSkip(DST_CMDTIMEOUT, SIDE_LEFT, whyCode)
         dStepSkip(DST_COOPSHUT, SIDE_LEFT, whyCode)
         instIdle()
         wheelStop(SIDE_LEFT)
@@ -2566,10 +2643,16 @@ PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | 
         if (seg == SEG_BASELINE) and (causeCode == CAUSE_STOPCMD) and (reqMode == MODE_FLOAT) and bTrStopValid
             sfDecelTicks[side - SIDE_LEFT] := trStopTicks
             bSfDecelRan[side - SIDE_LEFT] := TRUE
+        ' FLTSTOP (task 3572, R17.1): POSTFLT's provoked faults, FLOAT then BRAKE -- the travel from the provocation
+        '  to rest under each stop mode. The computed provocation faults within a control frame, so this is the
+        '  post-fault coast (COAST) or brake (SHORT) the user's holdAtStop() selected
+        if (seg == SEG_POSTFLT) and (causeCode == CAUSE_FAULT) and bCpFaultSeen and bTrStopValid
+            sfFltStopTicks[((side - SIDE_LEFT) * MODE_COUNT) + reqMode] := trStopTicks
+            bSfFltStopRan[((side - SIDE_LEFT) * MODE_COUNT) + reqMode] := TRUE
         traceRecover(seg, side, tid, motorIncre, FAULT_COOL_MS)
     segItems := (segItems + 1) <# LIM_SMALL
 
-PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, markMs, captureLeftMs
+PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, markMs, captureLeftMs, shiftDeg
 ' Run one wheel trace's motion and capture (design sec 4.4): arm; command; AT_SPEED (<=
 ' STEADY_TIMEOUT_MS); settle SETTLE_MS; read the offsets; mark; the event; capture until rest or
 ' traceCaptureMs(1); freeze. EVT_OFFSET first waits POSTFLT_NO_FAULT_MS for the provoked fault and, when
@@ -2587,6 +2670,7 @@ PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, mark
 ' @local bRest - rest was confirmed
 ' @local markMs - getms() at the mark
 ' @local captureLeftMs - capture bound still owed after the no-fault wait
+' @local shiftDeg - EVT_OFFSET: the computed offset shift that provokes the fault (faultShiftDeg())
 
     safeEvent := SAFE_NONE
     bReached := FALSE
@@ -2617,7 +2701,12 @@ PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, mark
                     wheelEstop(side)
                     bCpEstopSet := TRUE
                 EVT_OFFSET:
-                    wheelSetOffsets(side, FAULT_PROVOKE_NEG_DEG, cpWantPos)
+                    ' task 3572 (PL-59): the computed shift that lands this wheel's error on the fault test, both
+                    '  offsets moved by it, so the fault arrives in the next control frame under either sign
+                    shiftDeg := faultShiftDeg(side, FALSE)
+                    instMark()                              ' re-mark: the shift's error reads took SAMPLE_MS each
+                    markMs := getms()
+                    wheelSetOffsets(side, cpWantNeg + shiftDeg, cpWantPos + shiftDeg)
                     bCpOffWritten := TRUE
             if eventCode == EVT_OFFSET
                 safeEvent, _ := waitWatched(side, POSTFLT_NO_FAULT_MS, CP_LOOP_CAPTURE, UNTIL_TIME)
@@ -2973,6 +3062,52 @@ PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeE
             whyNext := safeWhy(safeEvent)
     segItems := (segItems + 1) <# LIM_SMALL
 
+PRI clockHallIntegrity(side) | slotIdx, nMissed, nAllLow, nAllHigh
+' PL-90 / PL-69 (task 3571): this wheel's hall integrity over its CLOCK lifetime -- entries into %000, into %111,
+' and missed transitions -- printed as BM-HALLINT and folded into this clock's R17-DUAL-HALL-K* cell. The counts
+' restart with every driver start, so the lifetime is the window: start, zero window, one rung, settle.
+'
+' THE BEFORE IS ALREADY ON FILE: Visit 3's 200 MHz load read 3 and 5 illegal codes on the RIGHT motor and none
+' at 270 or 300 (PL-69), with the three-TESTP read and no input filter. This load carries the atomic read and
+' the filt1 input filter, so the same load at the same clock is the comparison, and the %000/%111 split says
+' which way a line was pulled when one still appears.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local slotIdx - motor slot
+' @local nMissed - missed transitions since this lifetime's start
+' @local nAllLow - entries into %000
+' @local nAllHigh - entries into %111
+
+    slotIdx := side - SIDE_LEFT
+    nMissed, _ := wheelIntegrity(side)
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        nAllLow, nAllHigh := wheelR.getHallIllegalCodes()
+    else
+        nAllLow, nAllHigh := wheelL.getHallIllegalCodes()
+    beat(CP_LIB_QUERY)
+    sfHallIllegal[slotIdx] := (sfHallIllegal[slotIdx] + nAllLow + nAllHigh) <# LIM_BIG
+    sfHallLives[slotIdx] := (sfHallLives[slotIdx] + 1) <# LIM_SMALL
+    emitHallInt(side, nAllLow, nAllHigh, nMissed)
+
+PRI emitHallInt(side, nAllLow, nAllHigh, nMissed)
+' BM-HALLINT (task 3571): one wheel's hall integrity over its CLOCK lifetime. Worst case 104 bytes:
+' tag(10) + seq(12) + motor(12) + clk_mhz(12) + all_low(20) + all_high(21) + missed(17).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param nAllLow - entries into %000
+' @param nAllHigh - entries into %111
+' @param nMissed - missed transitions
+
+    recBegin(@"BM-HALLINT")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"clk_mhz", CLK_FREQ / US_PER_SEC, LIM_TINY)
+    benchLog.numField(@"all_low", nAllLow, LIM_BIG)
+    benchLog.numField(@"all_high", nAllHigh, LIM_BIG)
+    benchLog.numField(@"missed", nMissed, LIM_BIG)
+    emitRecord()
+
 PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt, bFrameOk, rid, motorIncre, safeEvent
 ' One CLOCK lifetime (design sec 4.4, T1-4): start; testGetDriveConstants() -> BM-CLOCK, folded into
 ' this clock's R14-DUAL-CLKFRM-K200 / -K270 / -K300 cell (ANDed over the motor's lifetimes; judged only at a
@@ -3013,6 +3148,7 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
         rungSkip(SEG_CLOCK, rid, CLOCK_RUNG_IDX, side, motorIncre, whyCode)
     else
         safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, TRUE)
+        clockHallIntegrity(side)
         rungEmitAll(SEG_CLOCK, rid, CLOCK_RUNG_IDX, side, motorIncre)
         rungFaultRecover(SEG_CLOCK, side, motorIncre, safeEvent)
     zeroAndWaitStopped(side)
@@ -3339,13 +3475,13 @@ PRI overshootStats() | sampleIdx, leftStopJ, rightStopJ
             ovTStopMs := ((leftStopJ - drMarkJ) * INST_PERIOD_US * instDecimate) / US_PER_MS
             ovWhy := WHY_NONE
 
-PRI overshootFoldCells(tid, sid, tgtTicks) | leadRest, tickMmX100
+PRI overshootFoldCells(tid, sid, tgtTicks) | tickMmX100
 ' The two OVERSHT cells, from the trial's own measurements.
 '
-'  STOPLIMIT - the wheel that REACHED the limit comes to rest AT it. The leading wheel is the one judged:
-'              the platform stops when either wheel reaches the distance, so a slower wheel resting short
-'              is wheel-to-wheel variation, not the stop overshooting. MEASURED before task 3559: about 77
-'              ticks past, which is the whole deceleration.
+'  STOPLIMIT - EACH wheel comes to rest AT its own limit. Since task 3570 (finding AB) driveForDistance()
+'              stops each wheel at its own distance rather than both at the first wheel's, so both are
+'              judged: the old shared stop left the slower wheel short, which this now fails. MEASURED
+'              before task 3559: about 77 ticks past, which is the whole deceleration.
 '  DISTM     - getDistance(DDU_M) agrees with the ticks it is derived from. Task 3502 corrected the metre
 '              conversion by a factor of ten and no bench reading has compared the two since; Visit 3 left
 '              it unqualified. The comparison uses the library's own travel-per-tick, read from the motor
@@ -3355,12 +3491,11 @@ PRI overshootFoldCells(tid, sid, tgtTicks) | leadRest, tickMmX100
 ' @param sid - the steering start's life
 ' @param tgtTicks - the trial's DERIVED target ticks
 '
-' @local leadRest - the leading wheel's rest position relative to the mark
 ' @local tickMmX100 - wheel travel per hall tick, hundredths of a mm
 
     if ovWhy == WHY_NONE
-        leadRest := ovLeftRest #> ovRightRest
-        sfStopLimMax #>= abs(leadRest - tgtTicks)
+        sfStopLimMax #>= abs(ovLeftRest - tgtTicks)
+        sfStopLimMax #>= abs(ovRightRest - tgtTicks)
         sfStopLimN := (sfStopLimN + 1) <# LIM_SMALL
     if bSteerUp
         _, tickMmX100 := wheelL.wheelGeometry()
@@ -3431,20 +3566,21 @@ PRI steerDistanceM() : leftM, rightM
     leftM, rightM := steering.getDistance(steering.DDU_M)
     beat(CP_LIB_STEER_QUERY)
 
-PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
+PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy, safeEvent, bReached
 ' The OVERSHT fault-API trial (task 3552, extended by task 3560): certify that a user of the STEERING
 ' object sees a fault through its public API, that the latch task 3547 stopped auto-clearing is still set
 ' more than FLTAPI_LATCH_MS later, and that the SAME POWER commanded afterwards runs the motor again
 ' (PL-66).
 '
-' THE PROVOCATION HAD TO CHANGE, and that is itself a result. Until task 3558 this trial faulted the
-' wheels with a ramp far steeper than the rotor could follow (ramp_inc 10_000 from standstill, which
-' faulted 3 of 3 at Visit 2). The lag limiter now makes the field WAIT for the rotor instead of faulting,
-' so that stimulus no longer produces a fault -- RMPDROOP in FAULTB is the cell that says so. The
-' provocation here is therefore a commutation offset written 180 degrees from the default on both wheels,
-' which holds the field in the one place the rotor can never reach: the position error settles near the
-' offset itself, past the driver's fault test, with no ramp involved. DERIVED, not measured: if it does
-' not fault, the trial prints NO_FAULT and every cell below it is NOMEAS rather than passing by silence.
+' THE PROVOCATION IS COMPUTED, NOT CHOSEN (task 3572, PL-86). The ramp that faulted 3 of 3 at Visit 2 now
+' droops instead (the lag limiter; RMPDROOP says so). A 180-degree offset written AT REST then replaced it,
+' and at Visits 4 and 5 it never faulted: the start re-seeds the field from the halls plus the new offset,
+' the limiter holds the field, and the wheel drew ~16 A until this harness's own 10 A abort ended it. The
+' construction now: drive to speed, read each wheel's own position error, and shift that wheel's offsets by
+' exactly what moves its error to +-128 (faultShiftDeg()). The fault test is |err| >= 125, so the error lands
+' with 3 units of margin on either side, in the very next control frame -- before the current can build.
+' DERIVED, not measured: if it does not fault, the trial prints NO_FAULT and every cell below it is NOMEAS
+' rather than passing by silence.
 '
 ' LAGBOUND IS EXEMPT for the provocation window: this step drives the lag to the limit on purpose, and
 ' folding it into the run's maximum would make the lag limiter look broken in the one part that breaks it
@@ -3464,10 +3600,16 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
 ' @local markMs - getms() at the command: the t_ms origin of every row
 ' @local rowIdx - 0-based poll row
 ' @local recoverWhy - steerRecoverFault()'s result
+' @local safeEvent - SAFE_* from the wait for speed
+' @local bReached - both wheels reached AT_SPEED before the provocation
 
     tid := nextTraceId()
     cpReset()
     outCount := 0
+    fltLeftShift := 0
+    fltRightShift := 0
+    fltLeftCause := wheelL.FC_NONE
+    fltRightCause := wheelL.FC_NONE
     whyCode := skipWhy
     if (whyCode == WHY_NONE) and (runContinue(SEG_OVERSHT) == FALSE)
         whyCode := WHY_ABORTED
@@ -3480,11 +3622,22 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
             whyCode := WHY_INST_NOACK
         else
             bInstLagExempt := TRUE                          ' the lag below is provoked on purpose
-            fltLeftInc, fltRightInc := steerOffsetProvoke()
-            markMs := getms()
+            ' PL-86: drive FIRST and provoke at speed. An offset written at rest is absorbed: the start re-seeds
+            '  the field from the halls PLUS the new offset, the lag limiter then holds the field, and the wheel
+            '  draws ~16 A without ever faulting (Visits 4 and 5)
             if steerDriveBoth(SEG_OVERSHT, tid, FLTAPI_POWER) == FALSE
                 whyCode := WHY_SYNC_PRECOND
             else
+                safeEvent, bReached := waitWatched(SIDE_BOTH, D_AT_SPEED_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+                if safeEvent <> SAFE_NONE
+                    whyCode := safeWhy(safeEvent)
+                elseif bReached == FALSE
+                    whyCode := WHY_STEADY_TIMEOUT
+            if whyCode == WHY_NONE
+                fltLeftShift := faultShiftDeg(SIDE_LEFT, TRUE)
+                fltRightShift := faultShiftDeg(SIDE_RIGHT, TRUE)
+                fltLeftInc, fltRightInc := steerOffsetProvoke(fltLeftShift, fltRightShift)
+                markMs := getms()
                 whyCode := safeWhy(steerPollPhase(markMs, markMs, FLTAPI_POLL_MS, FALSE, TRUE))
             bCpFrozen := instFreeze(0)
             steerStopMotors()
@@ -3494,6 +3647,10 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
                 whyCode := WHY_INST_NOACK
             if whyCode == WHY_NONE
                 whyCode := fltApiVerdict()
+            ' S-7: the cause each wheel latched -- read before the retry, which could fault again and replace it
+            beat(CP_LIB_STEER_QUERY)
+            fltLeftCause, fltRightCause := steering.getFaultCause()
+            beat(CP_LIB_STEER_QUERY)
             fltApiRetry(tid)                                ' PL-66, on the restored offsets
             recoverWhy := steerRecoverFault(tid)
             if (recoverWhy <> WHY_NONE) and (whyCode == WHY_NONE)
@@ -3505,11 +3662,62 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy
             emitOut(tid, sid, rowIdx)
     segItems := (segItems + 1) <# LIM_SMALL
 
-PRI steerOffsetProvoke() : leftNeg, rightNeg | leftPos, rightPos
-' Write both wheels' commutation offsets FLTAPI_OFFSET_DEG from the pair they are running, and return the
-' negative-increment offset each wheel read back. The pair in force is read first and kept in the cp*
-' staging, so the restore puts back what was actually there rather than what this file believes is there.
+PRI faultShiftDeg(side, bSteerForm) : shiftDeg | sampleIdx, errSum, errMean, shiftUnits
+' The commutation-offset shift that puts this wheel's position error on the driver's fault test (PL-86, PL-59).
 '
+' The driver's err is one electrical cycle in ERR_UNITS_PER_TURN signed units, so it wraps at +-128, and it
+' faults at |err| >= 125. The driver computes err = field angle - (hall angle + offset), and init() maps
+' offset degrees positively (degrees frac 360), so raising the offset by D units LOWERS err by D in the next
+' control frame, the field angle itself not moving. So D = err + ERR_FAULT_TARGET lands the error on -128, the
+' wrap: any landing from 125 to 131 away faults, which is +-3 units (+-4 degrees) of margin against the
+' 1-degree offset resolution. The hall angle steps once per hall code, so err sweeps across each step and
+' passes the landing point within one hall step. The error is averaged over FAULT_ERR_SAMPLES reads at speed.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param bSteerForm - TRUE to read the wheel through the steering object, FALSE through the wheel object
+' @returns shiftDeg - the shift to add to both of the wheel's offsets, degrees [0..359]
+'
+' @local sampleIdx - read counter
+' @local errSum - sum of the reads
+' @local errMean - the wheel's mean position error at speed, err units
+' @local shiftUnits - the shift, err units [0..255]
+
+    errSum := 0
+    repeat sampleIdx from 1 to FAULT_ERR_SAMPLES
+        beat(CP_LOOP_POLL)
+        errSum += wheelErr(side, bSteerForm)
+        waitms(SAMPLE_MS)
+    errMean := errSum / FAULT_ERR_SAMPLES
+    shiftUnits := (errMean + ERR_FAULT_TARGET) & ERR_UNITS_MASK
+    shiftDeg := ((shiftUnits * DEG_PER_TURN) + (ERR_UNITS_PER_TURN / 2)) / ERR_UNITS_PER_TURN
+
+PRI wheelErr(side, bSteerForm) : nErr
+' One wheel's latest position error from the driver's status block.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param bSteerForm - TRUE to read it through the steering object's pass-through, FALSE through the wheel object
+' @returns nErr - the error, signed err units (ERR_UNITS_PER_TURN per electrical cycle)
+
+    beat(CP_LIB_QUERY)
+    if bSteerForm                                           ' if/else, never `? :` -- PL-29, PL-76
+        if side == SIDE_RIGHT
+            _, nErr, _, _, _, _, _, _ := steering.testRightGetTelemetry()
+        else
+            _, nErr, _, _, _, _, _, _ := steering.testLeftGetTelemetry()
+    elseif side == SIDE_RIGHT
+        _, nErr, _, _, _, _, _, _ := wheelR.testGetTelemetry()
+    else
+        _, nErr, _, _, _, _, _, _ := wheelL.testGetTelemetry()
+    beat(CP_LIB_QUERY)
+
+PRI steerOffsetProvoke(leftShiftDeg, rightShiftDeg) : leftNeg, rightNeg | leftPos, rightPos
+' Shift each wheel's commutation offsets by its own computed amount (faultShiftDeg()) from the pair it is
+' running, and return the negative-increment offset each wheel read back. The pair in force is read first and
+' kept in the flt* staging, so the restore puts back what was actually there rather than what this file
+' believes is there.
+'
+' @param leftShiftDeg - the left wheel's shift, degrees
+' @param rightShiftDeg - the right wheel's shift, degrees
 ' @returns leftNeg - the left wheel's offset_fwd after the write, degrees
 ' @returns rightNeg - the right wheel's offset_fwd after the write, degrees
 '
@@ -3519,8 +3727,8 @@ PRI steerOffsetProvoke() : leftNeg, rightNeg | leftPos, rightPos
     beat(CP_LIB_OFFSETS)
     fltOffNeg[SLOT_LEFT], fltOffPos[SLOT_LEFT] := steering.testLeftGetFwdRevIndep()
     fltOffNeg[SLOT_RIGHT], fltOffPos[SLOT_RIGHT] := steering.testRightGetFwdRevIndep()
-    steering.testLeftSetFwdRevIndep(fltOffNeg[SLOT_LEFT] + FLTAPI_OFFSET_DEG, fltOffPos[SLOT_LEFT] + FLTAPI_OFFSET_DEG)
-    steering.testRightSetFwdRevIndep(fltOffNeg[SLOT_RIGHT] + FLTAPI_OFFSET_DEG, fltOffPos[SLOT_RIGHT] + FLTAPI_OFFSET_DEG)
+    steering.testLeftSetFwdRevIndep(fltOffNeg[SLOT_LEFT] + leftShiftDeg, fltOffPos[SLOT_LEFT] + leftShiftDeg)
+    steering.testRightSetFwdRevIndep(fltOffNeg[SLOT_RIGHT] + rightShiftDeg, fltOffPos[SLOT_RIGHT] + rightShiftDeg)
     leftNeg, leftPos := steering.testLeftGetFwdRevIndep()
     rightNeg, rightPos := steering.testRightGetFwdRevIndep()
     beat(CP_LIB_OFFSETS)
@@ -4220,6 +4428,87 @@ PRI dStepTimeStop(side) | bArmed, bAtSpeed, deadlineMs, eError, restMs, lateMs, 
     dStopMotion(side)
     dRest(side)
     instIdle()
+
+PRI dStepCmdTimeout(side) | bArmed, bAtSpeed, startMs, lastDriveMs, bHeld, eError, bRest, stopMs, bOk
+' CMDTIMEOUT (task 3570, S-8): with setCommandTimeout() on, a drive that keeps being refreshed keeps running,
+' and one left unrefreshed stops by itself, is at rest inside its bound, and is reported by getError().
+'
+' BOTH LIMBS ARE THE CELL. The refreshed limb is the negative case: a timeout that fired on a live link would
+' stop the platform there and fail it. The silent limb is the positive case: the unfixed library has no
+' timeout, so the platform drives on through the rest bound and fails it. Rest is judged no EARLIER than the
+' timeout itself, so a stop that came from something else cannot pass as the timeout's.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local bAtSpeed - the platform reached speed
+' @local startMs - getms() when the refreshed limb began
+' @local lastDriveMs - getms() of the last drive command, the silent limb's origin
+' @local bHeld - the refreshed limb kept driving (power still standing, every refresh accepted)
+' @local eError - a refresh's return, then getError()'s report after the stop
+' @local bRest - rest was confirmed inside the silent limb's bound
+' @local stopMs - ms from the last drive command to confirmed rest, the step's printed number
+' @local bOk - every claim of the step held
+
+    stopMs := 0
+    bOk := FALSE
+    bArmed := dArm(side)
+    bAtSpeed := bArmed and dToSpeed(side)
+    if bAtSpeed
+        dCollectError(side)                                     ' drain: the report judged below must be this step's
+        bHeld := (dSetTimeout(side, D_CMDTMO_MS) == NO_ERROR)
+        ' 1. REFRESHED: the same drive every D_CMDTMO_EVERY_MS for D_CMDTMO_REFRESH_MS -- must keep running
+        startMs := getms()
+        repeat while bHeld and ((getms() - startMs) < D_CMDTMO_REFRESH_MS)
+            waitBeat(D_CMDTMO_EVERY_MS, CP_LOOP_POLL)
+            eError := dDrive(side, D_POWER)
+            lastDriveMs := getms()
+            bHeld := (eError == NO_ERROR) and (dPowerSum(side) <> 0)
+        ' 2. SILENT: no command at all -- must stop, no sooner than the timeout and inside the rest bound
+        if bHeld
+            bRest := dRestWithin(side, D_CMDTMO_MS + D_REST_MS)
+            stopMs := getms() - lastDriveMs
+            eError := dCollectError(side)
+            bOk := bRest and (stopMs >= D_CMDTMO_MS) and (eError == wheelL.ERR_COMMAND_TIMEOUT) and (dPowerSum(side) == 0)
+        dSetTimeout(side, wheelL.CMD_TIMEOUT_OFF)               ' I11: off again before anything else drives
+        dStepDone(DST_CMDTIMEOUT, side, TRUE, bHeld and bOk, stopMs, D_CMDTMO_MS, D_CMDTMO_MS + D_REST_MS, WHY_NONE)
+    else
+        dStepDone(DST_CMDTIMEOUT, side, FALSE, FALSE, 0, D_CMDTMO_MS, D_CMDTMO_MS + D_REST_MS, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    dStopMotion(side)
+    dRest(side)
+    instIdle()
+
+PRI dSetTimeout(side, timeoutMs) : eError
+' Set this form's command timeout (S-8).
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @param timeoutMs - the timeout in ms, or CMD_TIMEOUT_OFF
+' @returns eError - NO_ERROR, or the code the library returned
+
+    beat(CP_LIB_COMMAND)
+    if side == SIDE_BOTH
+        eError := steering.setCommandTimeout(timeoutMs)
+    elseif side == SIDE_RIGHT
+        eError := wheelR.setCommandTimeout(timeoutMs)
+    else
+        eError := wheelL.setCommandTimeout(timeoutMs)
+    beat(CP_LIB_COMMAND)
+
+PRI dCollectError(side) : eError
+' Read and clear this cog's first recorded error for this form: the steering object's own (its first result)
+' or the wheel's.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns eError - the code getError() reported, NO_ERROR when none
+
+    beat(CP_LIB_STEER_QUERY)
+    if side == SIDE_BOTH
+        eError, _, _ := steering.getError()
+    elseif side == SIDE_RIGHT
+        eError := wheelR.getError()
+    else
+        eError := wheelL.getError()
+    beat(CP_LIB_STEER_QUERY)
 
 PRI dStepFrontStats(side) | nPasses, nLate, nMaxTicks, nStackHi, nStackOf, slotIdx, bHealthy
 ' FRONTST: the front cog kept its 1 kHz slot, never overran its stack, and never fell behind.
@@ -6228,6 +6517,7 @@ PRI traceDrain(tid, slotPri, slotOth, endCode) : bLost
     traceFindRest()
     traceStopTicks()
     traceIntegritySums()
+    traceIdleMove()
     trTid := tid
     trDense := TRACE_DENSE_SAMPLES
     trStride := 1
@@ -6287,6 +6577,20 @@ PRI traceStopTicks() | restJ
         if (restJ >= drMarkJ) and (restJ <= drEndJ)
             trStopTicks := abs(smpPos(restJ, drPri) - smpPos(drMarkJ, drPri))
             bTrStopValid := TRUE
+
+PRI traceIdleMove() | sampleIdx
+' IDLEMOVE (task 3572): the largest distance the OTHER wheel's halls moved during the trace, from its own
+' hwPos (the instrument decodes the hall pins itself, so this sees the wheel whether or not its driver runs).
+' In a motor-frame trial the other wheel is stopped and nobody commands it; a wheel that moves anyway is a
+' command reaching the wrong wheel (PL-76's class) or a mechanical coupling, and either invalidates the trial.
+'
+' @local sampleIdx - logical index
+
+    trIdleMove := 0
+    if drStored > 0
+        repeat sampleIdx from drStartJ to drEndJ
+            beat(CP_LOOP_DRAIN)
+            trIdleMove #>= abs(smpHw(sampleIdx, drOth) - smpHw(drStartJ, drOth))
 
 PRI traceIntegritySums() | sampleIdx
 ' Integrity events over the trace for both motors, and the primary motor's unresolved hall transitions.
@@ -6664,6 +6968,8 @@ PRI traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, rampInc) | 
     if bCpFrozen
         traceDrain(tid, slotIdx, otherIdx, cpEnd)
         foldIdleWheel(slotIdx, captureIdleUp(otherIdx))
+        sfIdleMoveMax[slotIdx] #>= trIdleMove               ' IDLEMOVE (task 3572): traceDrain() measured it
+        sfIdleMoveN[slotIdx] := (sfIdleMoveN[slotIdx] + 1) <# LIM_SMALL
     else
         traceEmptyEnd(tid, cpEnd, (cpWhy == WHY_NONE) ? WHY_INST_NOACK : cpWhy)
 
@@ -8344,7 +8650,8 @@ PRI emitOut(tid, sid, rowIdx) | rowBase
 PRI emitFltApi(tid, sid, whyCode)
 ' BM-FLTAPI: the OVERSHT fault-API trial's own verdict (task 3552). The trial PRINTS WHETHER IT FAULTED,
 ' so a run that provoked nothing says so in one line instead of being inferred from the absence of rows.
-' flt_ms and held_ms print NA when no fault arrived. Worst case 224 bytes.
+' flt_ms and held_ms print NA when no fault arrived. Worst case 224 - want_off(13) + l_shift(12) + r_shift(12)
+' + l_cause(13) + r_cause(13) = 261 bytes.
 '
 ' @param tid - trace id, the one the BM-OUT rows below carry
 ' @param sid - the steering start's life
@@ -8354,9 +8661,10 @@ PRI emitFltApi(tid, sid, whyCode)
     benchLog.numField(@"tid", tid, LIM_SMALL)
     benchLog.numField(@"sid", sid, LIM_SMALL)
     benchLog.tokenField(@"motor", sideToken(SIDE_BOTH), TOKMAX_MOTOR)
-    ' task 3560: the provocation is now an offset, not a ramp, so these three fields name the offset it
-    '  wrote and what each wheel read back (the offsets in force are in the BM-OFFREST pair beside this)
-    benchLog.numField(@"want_off", FLTAPI_OFFSET_DEG, LIM_SMALL)
+    ' task 3572: the provocation is a COMPUTED shift per wheel (faultShiftDeg()), so the record names each
+    '  wheel's shift and the offset it read back (the offsets in force are in the BM-OFFREST pair beside this)
+    benchLog.numField(@"l_shift", fltLeftShift, LIM_SMALL)
+    benchLog.numField(@"r_shift", fltRightShift, LIM_SMALL)
     benchLog.numField(@"l_off", fltLeftInc, LIM_SMALL)
     benchLog.numField(@"r_off", fltRightInc, LIM_SMALL)
     benchLog.numField(@"power", FLTAPI_POWER, LIM_TINY)
@@ -8370,6 +8678,9 @@ PRI emitFltApi(tid, sid, whyCode)
     benchLog.naNumField(@"retry_err", fltRetryErr, LIM_MID, bSfRetryRan)
     benchLog.naNumField(@"retry_ms", fltRetryMs, LIM_SMALL, bSfRetryRan and bFltRetryOk)
     benchLog.boolField(@"retry_ok", bFltRetryOk)
+    ' task 3572 (S-7): the cause each wheel reports for the provoked fault. Appended.
+    benchLog.tokenField(@"l_cause", tokenAt(@tokFltCause, FC_COUNT, fltLeftCause), TOKMAX_FCAUSE)
+    benchLog.tokenField(@"r_cause", tokenAt(@tokFltCause, FC_COUNT, fltRightCause), TOKMAX_FCAUSE)
     whyField(whyCode)
     emitRecord()
 
@@ -8804,20 +9115,24 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellLagA)
                 emitSignoffDecl(@sSfCellNoFold)
                 emitSignoffDecl(@sSfCellRateLaw)
+                emitSignoffDecl(@sSfCellIdleMvA)
             PART_CLOCK:
                 case SF_CLOCK_SLOT
                     SF_CLOCK_200:
                         emitSignoffDecl(@sSfCellNoStallK200)
                         emitSignoffDecl(@sSfCellDbgMaskK200)
                         emitSignoffDecl(@sSfCellClkFrameK200)
+                        emitSignoffDecl(@sSfCellHallK200)
                     SF_CLOCK_270:
                         emitSignoffDecl(@sSfCellNoStallK270)
                         emitSignoffDecl(@sSfCellDbgMaskK270)
                         emitSignoffDecl(@sSfCellClkFrameK270)
+                        emitSignoffDecl(@sSfCellHallK270)
                     SF_CLOCK_300:
                         emitSignoffDecl(@sSfCellNoStallK300)
                         emitSignoffDecl(@sSfCellDbgMaskK300)
                         emitSignoffDecl(@sSfCellClkFrameK300)
+                        emitSignoffDecl(@sSfCellHallK300)
             PART_B:
                 emitSignoffDecl(@sSfCellNoStallB)
                 emitSignoffDecl(@sSfCellDbgMaskB)
@@ -8831,6 +9146,9 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellStopLim)
                 emitSignoffDecl(@sSfCellDistM)
                 emitSignoffDecl(@sSfCellFltRetry)
+                emitSignoffDecl(@sSfCellFltCause)
+                emitSignoffDecl(@sSfCellOffRestB)
+                emitSignoffDecl(@sSfCellIdleMvB)
             PART_BRAKE:
                 emitSignoffDecl(@sSfCellNoStallH)
                 emitSignoffDecl(@sSfCellDbgMaskH)
@@ -8843,6 +9161,8 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellOffRest)
                 emitSignoffDecl(@sSfCellLagC)
                 emitSignoffDecl(@sSfCellStpDecel)
+                emitSignoffDecl(@sSfCellFltStop)
+                emitSignoffDecl(@sSfCellIdleMvC)
             PART_D:
                 emitSignoffDecl(@sSfCellNoStallD)
                 emitSignoffDecl(@sSfCellDbgMaskD)
@@ -8859,6 +9179,8 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellBlocked)
                 emitSignoffDecl(@sSfCellWEstop)
                 emitSignoffDecl(@sSfCellWTimStop)
+                emitSignoffDecl(@sSfCellCmdTmo)
+                emitSignoffDecl(@sSfCellWCmdTmo)
             PART_FLOOR:
                 emitSignoffDecl(@sSfCellNoStallF)
                 emitSignoffDecl(@sSfCellDbgMaskF)
@@ -8889,9 +9211,11 @@ PRI emitSignoffs() | slotIdx, side
 '         TRACES COUNT
 '  CLOCK  this clock's NOSTALL BOOL, DBGMASK BOOL and CLKFRAME BOOL per motor (-K200 / -K270 / -K300)
 '  B      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; RAMPREST BOOL per motor;
-'         FLTAPI BOOL (the steering object, BOTH)
+'         FLTAPI BOOL (the steering object, BOTH); FLTCAUSE BOOL (BOTH); OFFREST-B BOOL and IDLEMOVE-B COUNT
+'         per motor
 '  BRAKE  NOSTALL BOOL; DBGMASK BOOL; BRAKEFLT BOOL (LEFT)
-'  C      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; OFFREST BOOL per motor
+'  C      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; OFFREST BOOL per motor;
+'         IDLEMOVE-C COUNT and FLTSTOP BOOL per motor
 '  FLOOR  NOSTALL BOOL; DBGMASK BOOL; FLOORANS BOOL
 '  UI     NOSTALL BOOL; DBGMASK BOOL; UICHECK BOOL (every BM-UISTEP OK)
 '
@@ -8912,11 +9236,13 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoff(@sSfCellInteg, side, @sSfCritInteg, sfStarts[slotIdx] > 0, sfIntegSum[slotIdx], INTEG_SUM_LO, INTEG_SUM_HI, sfStarts[slotIdx] + sfIntegN[slotIdx])
                     emitSignoffBool(@sSfCellNoFold, side, @sSfCritNoFold, bSfNoFoldRan[slotIdx], bSfNoFoldOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitSignoffBool(@sSfCellRateLaw, side, @sSfCritRateLaw, bSfRateLawRan[slotIdx], bSfRateLawOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitIdleMoveCell(@sSfCellIdleMvA, slotIdx)
                 emitSignoff(@sSfCellTracesA, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
                 emitLagCells(@sSfCellLagA)
             PART_CLOCK:
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     emitSignoffBool(clockCell(@sSfCellClkFrameK200, @sSfCellClkFrameK270, @sSfCellClkFrameK300), SIDE_LEFT + slotIdx, @sSfCritClkFrame, bSfClkRan[slotIdx], bSfClkOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitSignoff(clockCell(@sSfCellHallK200, @sSfCellHallK270, @sSfCellHallK300), SIDE_LEFT + slotIdx, @sSfCritHall, sfHallLives[slotIdx] > 0, sfHallIllegal[slotIdx], HALL_ILLEGAL_LO, HALL_ILLEGAL_HI, sfHallLives[slotIdx])
             PART_B:
                 emitSignoff(@sSfCellTracesB, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
@@ -8927,6 +9253,11 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoffBool(@sSfCellRmpDroop, side, @sSfCritRmpDroop, bSfDroopRan[slotIdx], bSfDroopOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                 emitSignoffBool(@sSfCellFltApi, SIDE_BOTH, @sSfCritFltApi, bSfFltApiRan, bSfFltApiOk, SIGNOFF_ONE_INSTANCE)
                 emitSignoffBool(@sSfCellFltRetry, SIDE_BOTH, @sSfCritFltRetry, bSfRetryRan, bSfRetryOk, SIGNOFF_ONE_INSTANCE)
+                ' task 3572: a lag fault reports FC_LAG on both wheels (S-7); measured only once the provocation faulted
+                emitSignoffBool(@sSfCellFltCause, SIDE_BOTH, @sSfCritFltCause, bSfFltApiRan, (fltLeftCause == wheelL.FC_LAG) and (fltRightCause == wheelL.FC_LAG), SIGNOFF_ONE_INSTANCE)
+                repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                    emitSignoffBool(@sSfCellOffRestB, SIDE_LEFT + slotIdx, @sSfCritOffRest, bSfOffRan[slotIdx], bSfOffOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitIdleMoveCell(@sSfCellIdleMvB, slotIdx)
                 emitSignoff(@sSfCellStopLim, SIDE_BOTH, @sSfCritStopLim, sfStopLimN > 0, sfStopLimMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfStopLimN)
                 emitSignoffBool(@sSfCellDistM, SIDE_BOTH, @sSfCritDistM, bSfDistMRan, bSfDistMOk, SIGNOFF_ONE_INSTANCE)
                 emitLagCells(@sSfCellLagB)
@@ -8939,6 +9270,9 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoff(@sSfCellRstProvC, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx])
                     emitSignoffBool(@sSfCellOffRest, side, @sSfCritOffRest, bSfOffRan[slotIdx], bSfOffOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitSignoff(@sSfCellStpDecel, side, @sSfCritStpDecel, bSfDecelRan[slotIdx], sfDecelTicks[slotIdx], DECEL_TICKS_LO, DECEL_TICKS_HI, SIGNOFF_ONE_INSTANCE)
+                    ' task 3572 (R17.1): measured only when both of this motor's provoked faults were captured
+                    emitIdleMoveCell(@sSfCellIdleMvC, slotIdx)
+                    emitSignoffBool(@sSfCellFltStop, side, @sSfCritFltStop, bSfFltStopRan[(slotIdx * MODE_COUNT) + MODE_FLOAT] and bSfFltStopRan[(slotIdx * MODE_COUNT) + MODE_BRAKE], sfFltStopTicks[(slotIdx * MODE_COUNT) + MODE_FLOAT] >= sfFltStopTicks[(slotIdx * MODE_COUNT) + MODE_BRAKE] + FLTSTOP_GAP_TICKS, SIGNOFF_ONE_INSTANCE)
                 emitLagCells(@sSfCellLagC)
             PART_D:
                 emitDStepCells()
@@ -8947,6 +9281,15 @@ PRI emitSignoffs() | slotIdx, side
                 emitSignoffBool(@sSfCellFloorAns, SIDE_NONE, @sSfCritFloorAns, bSfFloorRan, bSfFloorAnswered, SIGNOFF_ONE_INSTANCE)
             PART_UICHECK:
                 emitSignoffBool(@sSfCellUiCheck, SIDE_NONE, @sSfCritUiCheck, bSfUiRan, bSfUiOk, uiStepCount)
+
+PRI emitIdleMoveCell(pCell, slotIdx)
+' IDLEMOVE (task 3572): the other wheel's largest travel over every motor-frame trace this motor was primary in.
+' NOMEAS when no such trace was frozen.
+'
+' @param pCell - pointer to this part's IDLEMOVE cell id
+' @param slotIdx - the primary motor's slot
+
+    emitSignoff(pCell, SIDE_LEFT + slotIdx, @sSfCritIdleMove, sfIdleMoveN[slotIdx] > 0, sfIdleMoveMax[slotIdx], IDLE_MOVE_LO, IDLE_MOVE_HI, sfIdleMoveN[slotIdx])
 
 PRI emitLagCells(pCell) | slotIdx
 ' LAGBOUND's two instances, one per motor: the part's own cell id, judged on the instrument's running
@@ -8980,6 +9323,9 @@ PRI emitDStepCells()
     emitSignoffBool(@sSfCellWEstop, SIDE_LEFT, @sSfCritEstopD, dEstopRan(TRUE), dEstopOk(TRUE), SIGNOFF_ONE_INSTANCE)
     emitSignoffBool(@sSfCellWTimStop, SIDE_LEFT, @sSfCritTimeStop, bSfWDStepRan[DST_TIMESTOP], bSfWDStepOk[DST_TIMESTOP], SIGNOFF_ONE_INSTANCE)
     emitSignoffBool(@sSfCellFrontSt, SIDE_LEFT, @sSfCritFrontSt, bSfFrontRan[SLOT_RIGHT], bSfFrontOk[SLOT_RIGHT], SIGNOFF_ONE_INSTANCE)
+    ' task 3570 (S-8): the command timeout, both forms
+    emitSignoffBool(@sSfCellCmdTmo, SIDE_BOTH, @sSfCritCmdTmo, bSfDStepRan[DST_CMDTIMEOUT], bSfDStepOk[DST_CMDTIMEOUT], SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellWCmdTmo, SIDE_LEFT, @sSfCritCmdTmo, bSfWDStepRan[DST_CMDTIMEOUT], bSfWDStepOk[DST_CMDTIMEOUT], SIGNOFF_ONE_INSTANCE)
 
 PRI dEstopRan(bWheelForm) : bRan
 ' Whether all three e-stop steps of one form were measured.

@@ -64,6 +64,11 @@ CON { forward our interface constants }
     DS_FAULTED      = ltWheel.DS_FAULTED
     DS_ESTOP        = ltWheel.DS_ESTOP
 
+  ' Fault Cause Enum (getFaultCause())
+    FC_NONE         = ltWheel.FC_NONE
+    FC_LAG          = ltWheel.FC_LAG
+    FC_HALL         = ltWheel.FC_HALL
+
   ' Driver State Enum
     DCS_Unknown     = ltWheel.DCS_Unknown
     DCS_STOPPED     = ltWheel.DCS_STOPPED
@@ -106,12 +111,18 @@ CON { forward our interface constants }
     ERR_EMERGENCY_STOPPED   = ltWheel.ERR_EMERGENCY_STOPPED
     ERR_NO_RESPONSE         = ltWheel.ERR_NO_RESPONSE
     ERR_BOARD_NOT_DETECTED  = ltWheel.ERR_BOARD_NOT_DETECTED
+    ERR_COMMAND_TIMEOUT     = ltWheel.ERR_COMMAND_TIMEOUT
     ERR_PROTECTIVE_STOP     = ltWheel.ERR_PROTECTIVE_STOP
     ERR_PLATFORM_BLOCKED    = ltWheel.ERR_PLATFORM_BLOCKED
 
   ' setAcceleration(): the accepted rate, mm/s squared at the wheel rim
     ACCEL_MIN_MM_S2         = ltWheel.ACCEL_MIN_MM_S2
     ACCEL_MAX_MM_S2         = ltWheel.ACCEL_MAX_MM_S2
+
+  ' setCommandTimeout(): 0 turns it off (the default); otherwise the accepted range, in ms
+    CMD_TIMEOUT_OFF         = ltWheel.CMD_TIMEOUT_OFF
+    CMD_TIMEOUT_MIN_MS      = ltWheel.CMD_TIMEOUT_MIN_MS
+    CMD_TIMEOUT_MAX_MS      = ltWheel.CMD_TIMEOUT_MAX_MS
 
 OBJ { our Motors }
 
@@ -137,6 +148,8 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
 ''
 '' PL-45: once both drivers start, this blocks for about 1 s while it samples both wheels' current-sense
 '' rest zero together (getCurrent() nets it out); a driver that fails to start returns before that
+'' A wheel whose board is not detected is refused (ERR_BOARD_NOT_DETECTED in that wheel's getError() result)
+'' unless its detect mode forces BRD_REV_A or BRD_REV_B: without its board revision it would have no current limit.
 ''
 '' @param leftBasePin - The base pin ENUM (PINS_*) for the left motor's adapter board
 '' @param rightBasePin - The base pin ENUM (PINS_*) for the right motor's adapter board
@@ -220,6 +233,10 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         frontPasses := 0
         frontLatePasses := 0
         frontMaxPassTicks := 0
+        cmdTimeoutMs := ltWheel.CMD_TIMEOUT_OFF                     ' S-8: off until the user turns it on
+        bCmdWatched := FALSE
+        cmdTimeoutEvents := 0
+        longfill(@cmdTimeoutSeen, 0, ltWheel.COG_SLOT_COUNT)        ' every cog starts even with the (zeroed) count
         longfill(@taskStack, STACK_SENTINEL, STACK_SIZE_LONGS)   ' PL-75: this object's own size; testGetFrontStats() finds the high-water mark from this
 
         frontCogId := cogspin(NEWCOG, frontLoop(), @taskStack)
@@ -313,6 +330,31 @@ PUB holdAtStop(bEnable) : eError
 '' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
 
     eError := firstError(ltWheel.holdAtStop(bEnable), rtWheel.holdAtStop(bEnable))
+
+PUB setCommandTimeout(nMs) : eError | eStatus, eLeftStatus, eRightStatus
+'' Stop both motors if no drive command arrives within {nMs} while they are driven open-ended: a link-loss guard, off by default
+''
+'' While it is on, a platform driven by driveDirection() or driveAtPower() must be sent a drive command (repeating
+'' the same one is enough) at least every {nMs}. When one does not arrive in time both motors stop, as stopMotors()
+'' stops them (holdAtStop() chooses hold or coast at rest), and ERR_COMMAND_TIMEOUT is reported once by getError()
+'' (its first result) on every cog that calls it. A driveForDistance() is a bounded move and is not watched.
+'' Setting it restarts the clock. start() turns it off.
+''
+'' @param nMs - the timeout in ms [CMD_TIMEOUT_MIN_MS to CMD_TIMEOUT_MAX_MS], or CMD_TIMEOUT_OFF (0) to turn it off
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value outside the range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError(); a rejected call changes nothing
+
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    if (nMs <> CMD_TIMEOUT_OFF) and ((nMs < CMD_TIMEOUT_MIN_MS) or (nMs > CMD_TIMEOUT_MAX_MS))
+        eError := recordError(ERR_BAD_COUNT)
+        debug[user.DBGCH_ERROR]("! ERROR: setCommandTimeout() rejected ", sdec_long(nMs))
+    else
+        ' the front cog owns the clock
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_TIMEOUT, BOTH_MOTORS, nMs, 0, 0)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
 PUB resetTracking() : eError | eStatus, eLeftStatus, eRightStatus
 '' Resets the position tracking values returned by getDistance() and getRotations()
@@ -650,12 +692,15 @@ PRI secureWheels(motorMask, bEStop) | eStatus
 
 CON { --- Subsystem Status --- }
 
-PUB getError() : eError, eLeftError, eRightError
+PUB getError() : eError, eLeftError, eRightError | nEvents
 '' Return and clear this cog's first recorded errors: the steering object's own, and each wheel's
 ''
-'' @returns eError - this cog's first ERR_* code raised by the steering object itself, NO_ERROR when none; cleared by this call
+'' @returns eError - this cog's first ERR_* code raised by the steering object itself, then a command timeout this cog has not yet been told of (ERR_COMMAND_TIMEOUT), NO_ERROR when none; cleared by this call
 '' @returns eLeftError - this cog's first ERR_* code raised by the left wheel, NO_ERROR when none; cleared by this call
 '' @returns eRightError - this cog's first ERR_* code raised by the right wheel, NO_ERROR when none; cleared by this call
+
+' Local Variables:
+' @local nEvents - the front cog's command-timeout count, read once
 
     ' Three results, because the wheels can fail differently and one combined code would lose one of them.
     '  Each wheel's slot for this cog is private to this object, so this is the only call that drains it.
@@ -663,6 +708,12 @@ PUB getError() : eError, eLeftError, eRightError
     eRightError := rtWheel.getError()
     eError := lastError[COGID()]
     lastError[COGID()] := NO_ERROR
+    ' S-8: the front cog counts the timeouts it took (its long alone); each cog records how many it has been
+    '  told of (its own long alone), so every cog hears of every timeout once and no long has two writers
+    nEvents := cmdTimeoutEvents
+    if (eError == NO_ERROR) and (cmdTimeoutSeen[COGID()] <> nEvents)
+        eError := ERR_COMMAND_TIMEOUT
+        cmdTimeoutSeen[COGID()] := nEvents
 
 PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by each motor since last reset
@@ -779,6 +830,28 @@ PUB getHallIntegrityCounts() : nLtMissed, nLtIllegal, nRtMissed, nRtIllegal
 
     nLtMissed, nLtIllegal := ltWheel.getHallIntegrityCounts()
     nRtMissed, nRtIllegal := rtWheel.getHallIntegrityCounts()
+
+PUB getFaultCause() : eLeftCause, eRightCause
+'' Return why each wheel's most recent fault since start() happened
+''
+'' The cause stays readable after the fault itself clears; only a later fault replaces it, and start() resets it.
+''
+'' @returns eLeftCause - the left wheel's FC_LAG (the rotor could not follow the field), FC_HALL (a hall sensor read %000 or %111), or FC_NONE when it has not faulted
+'' @returns eRightCause - the right wheel's cause, the same way
+
+    eLeftCause := ltWheel.getFaultCause()
+    eRightCause := rtWheel.getFaultCause()
+
+PUB getHallIllegalCodes() : nLtAllLow, nLtAllHigh, nRtAllLow, nRtAllHigh
+'' Return each motor's illegal hall codes split by kind since the motors were last started: all three lines low, and all three high
+''
+'' @returns nLtAllLow - left motor: times the hall sensors entered %000 (a sensor without power, or a line pulled low)
+'' @returns nLtAllHigh - left motor: times the hall sensors entered %111 (a line stuck or floating high)
+'' @returns nRtAllLow - right motor: times the hall sensors entered %000
+'' @returns nRtAllHigh - right motor: times the hall sensors entered %111
+
+    nLtAllLow, nLtAllHigh := ltWheel.getHallIllegalCodes()
+    nRtAllLow, nRtAllHigh := rtWheel.getHallIllegalCodes()
 
 PUB getStatus() : eLeftStatus, eRightStatus
 '' Returns status of motor drive state for each motor: enumerated constant: DS_MOVING, DS_HOLDING or DS_OFF
@@ -1304,6 +1377,11 @@ VAR { front cog request slots -- one per calling cog, indexed by COGID(); every 
     LONG    frontPasses                         ' front-written heartbeat (zeroed by start before the launch)
     LONG    frontLatePasses                     ' front-written: passes that overran their slot
     LONG    frontMaxPassTicks                   ' front-written: longest pass body, in ticks
+    LONG    cmdTimeoutMs                        ' front-written (start() before launch): S-8 command timeout, ms; CMD_TIMEOUT_OFF when off
+    LONG    lastDriveMs                         ' front-written: getms() when the last drive command was applied, or the timeout set
+    LONG    bCmdWatched                         ' front-written: T/F where T means an open-ended platform drive is being watched
+    LONG    cmdTimeoutEvents                    ' front-written: command timeouts taken since start()
+    LONG    cmdTimeoutSeen[ltWheel.COG_SLOT_COUNT]  ' per calling cog, written only by that cog's getError(): timeouts it has been told of
 
 PRI recordRequestResult(eStatus, eLeftStatus, eRightStatus) : eError
 ' Record a posted request's result on this cog: the platform status in this object's slot, each wheel's status in that wheel's slot.
@@ -1503,7 +1581,7 @@ PRI LALOOPEND()
   Nothing reachable from frontLoop() calls recordError() or recordCallerError().
 }
 
-PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, bLeftBlocked, bRightBlocked
+PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, bLeftBlocked, bRightBlocked, nowMs
 ' FRONT COG: the platform's loop -- apply posted requests, track both wheels, enforce the platform stop limits and the current protection, once per ms.
 '
 
@@ -1516,6 +1594,7 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
 ' @local passCount - passes run so far, the wheels' rpm window cadence counter
 ' @local bLeftBlocked - T/F where T means the left wheel has been blocked long enough to latch a protective stop
 ' @local bRightBlocked - T/F where T means the right wheel has been blocked long enough to latch a protective stop
+' @local nowMs - getms() once for this pass's limit and timeout checks
 
     ' The entry writes no wheel command, e-stop or limit: it adopts them, so a stop written directly
     '  inside start()'s window survives the launch. The drivers were released before this cog existed.
@@ -1544,14 +1623,18 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
         ltWheel.frontTrack(passCount)
         rtWheel.frontTrack(passCount)
-        if frontPlatformLimitsDue(getms()) == TRUE
+        nowMs := getms()
+        if frontPlatformLimitsDue(nowMs) == TRUE
             ltWheel.frontZeroPower()                                            ' PL-52: a distance/time stop clears getPower() too
             rtWheel.frontZeroPower()
             frontDisarmWheelLimits(TRUE, TRUE)                                  ' AB: a platform stop ends a driveForDistance() too
         ' AB: a driveForDistance() stops each wheel at rest at its own distance
-        if ltWheel.frontLimitsDue(getms()) == TRUE
+        if ltWheel.frontLimitsDue(nowMs) == TRUE
             ltWheel.frontZeroPower()
-        if rtWheel.frontLimitsDue(getms()) == TRUE
+        if rtWheel.frontLimitsDue(nowMs) == TRUE
+            rtWheel.frontZeroPower()
+        if frontCommandTimedOut(nowMs) == TRUE
+            ltWheel.frontZeroPower()                                            ' S-8: stopped as stopMotors() stops them, so holdAtStop() applies
             rtWheel.frontZeroPower()
         ' S-2: each wheel's current derate runs every pass; a blocked wheel secures BOTH (a platform never drives one wheel)
         bLeftBlocked := ltWheel.frontProtect()
@@ -1782,12 +1865,14 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
     case eCmd
         ltWheel.REQ_ESTOP:
             frontDisarmWheelLimits(bLeft, bRight)
+            bCmdWatched := FALSE                                                ' S-8: no open-ended drive to watch
             if bLeft == TRUE
                 ltWheel.frontEStop(TRUE)
             if bRight == TRUE
                 rtWheel.frontEStop(TRUE)
         ltWheel.REQ_STOP:
             frontDisarmWheelLimits(bLeft, bRight)
+            bCmdWatched := FALSE
             if bLeft == TRUE
                 ltWheel.frontZeroPower()                                       ' PL-52: a commanded stop clears getPower() too
             if bRight == TRUE
@@ -1814,11 +1899,16 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                 ltWheel.frontSetCurrentLimits(nArg1, nArg2)
             if bRight == TRUE
                 rtWheel.frontSetCurrentLimits(nArg1, nArg2)
+        ltWheel.REQ_SET_TIMEOUT:
+            cmdTimeoutMs := nArg1
+            lastDriveMs := getms()                                              ' the clock starts now, never from a stale command
         ltWheel.REQ_DRIVE:
             frontDisarmWheelLimits(bLeft, bRight)
             eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, nArg1, nArg2, nArg3 <> FALSE)
+            frontWatchCommand((eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR) and ((nArg1 <> 0) or (nArg2 <> 0)))
         ltWheel.REQ_DRIVE_DISTANCE:
             ' atomic: tracking reset, each wheel's limit armed and both driven, or none of it (I1 item 2)
+            bCmdWatched := FALSE                                                ' S-8: a bounded move is not watched
             eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
             if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
                 frontResetPlatformTracking()
@@ -1851,6 +1941,32 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                     ltWheel.frontWriteIncrement(nArg1, FALSE)
                 if bRight == TRUE
                     rtWheel.frontWriteIncrement(nArg1, FALSE)
+            frontWatchCommand((eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR) and (nArg1 <> 0))
+
+PRI frontWatchCommand(bOpenEnded)
+' FRONT COG: record an applied drive command for the command timeout (S-8): watched while it is open-ended motion.
+'
+' @param bOpenEnded - T/F where T means the command just applied drives the platform with no bound of its own
+
+    bCmdWatched := bOpenEnded
+    lastDriveMs := getms()
+
+PRI frontCommandTimedOut(nowMs) : bFired
+' FRONT COG: return TRUE, and stop watching, when the command timeout is on and an open-ended drive has had no command within it (S-8).
+'
+' @param nowMs - getms() for this pass
+' @returns bFired - T/F where T means both motors must be stopped now; the timeout has been counted for getError()
+
+    bFired := FALSE
+    ' the difference is wrap-safe: getms() wraps after ~49 days, and the timeout is at most a minute. A platform
+    '  already at rest (a stop limit fired on both wheels) has nothing left to stop. The two wheel calls are
+    '  nested under the cheap tests, so a pass with the timeout off (the default) makes neither.
+    if (cmdTimeoutMs <> ltWheel.CMD_TIMEOUT_OFF) and (bCmdWatched == TRUE) and ((nowMs - lastDriveMs) >= cmdTimeoutMs)
+        if (ltWheel.getPower() <> 0) or (rtWheel.getPower() <> 0)
+            debug[user.DBGCH_FAULT]("-STEER- command timeout: no drive command in ", udec_long(cmdTimeoutMs), " ms, stopping")
+            bCmdWatched := FALSE
+            cmdTimeoutEvents++                                                  ' the front cog is this long's only writer
+            bFired := TRUE
 
 PRI frontRefusals(bLeft, bRight) : eLeftStatus, eRightStatus
 ' FRONT COG: return the refusal (protective code, else ERR_EMERGENCY_STOPPED) for each selected wheel that must refuse a drive.

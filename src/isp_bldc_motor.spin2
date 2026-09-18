@@ -54,6 +54,12 @@ CON { Public Interface Constants }
     ' Driver Control Stop-State Enum:
     #0, SM_Unknown, SM_FLOAT, SM_BRAKE
 
+    ' Fault Cause Enum (getFaultCause()): why the most recent fault since start() happened
+    '  FC_NONE - no fault since start()
+    '  FC_LAG  - the rotor could not follow the field: an overload, a stall, or a wrong commutation offset
+    '  FC_HALL - a hall sensor read an illegal code (%000 or %111) at the fault: dead, unpowered or disconnected
+    #0, FC_NONE, FC_LAG, FC_HALL
+
     MOTOR_ID_STRLEN = 10
 
     ' Error codes: every command method returns NO_ERROR or one of these, and records it for getError().
@@ -78,7 +84,8 @@ CON { Public Interface Constants }
     '   ERR_FAULT_NOT_CLEARED  - TEST-USE: testResetFault() found the driver not stopped after its wait
     '   ERR_EMERGENCY_STOPPED  - a drive refused, and nothing written, while the motor is emergency-stopped
     '   ERR_NO_RESPONSE        - the front cog did not answer within its bound (at start, or for a request)
-    '   ERR_BOARD_NOT_DETECTED - getCurrent(): no board was detected, so there is no current scale
+    '   ERR_BOARD_NOT_DETECTED - start: no board was detected at the pin group and no revision was forced; getCurrent(): no current scale
+    '   ERR_COMMAND_TIMEOUT    - setCommandTimeout() is on and no drive command arrived within it: the motor was stopped
     '   ERR_PROTECTIVE_STOP    - a protective stop is latched for a cause outside the named ones
     '   ERR_PLATFORM_BLOCKED   - a protective stop is latched: a commanded motor held at its current limit did not move
     NO_ERROR                = 0
@@ -100,6 +107,7 @@ CON { Public Interface Constants }
     ERR_EMERGENCY_STOPPED   = -1_016
     ERR_NO_RESPONSE         = -1_017
     ERR_BOARD_NOT_DETECTED  = -1_018
+    ERR_COMMAND_TIMEOUT     = -1_019
     ERR_PROTECTIVE_STOP     = -2_000
     ERR_PLATFORM_BLOCKED    = -2_001
 
@@ -109,6 +117,11 @@ CON { Public Interface Constants }
 
     ' setRampingValues(): the largest ramp step, which keeps the driver's ramp sum inside a signed long
     RAMP_STEP_MAX           = $4000_0000
+
+    ' setCommandTimeout(): 0 turns it off (the default); otherwise the accepted range, in ms
+    CMD_TIMEOUT_OFF         = 0
+    CMD_TIMEOUT_MIN_MS      = 10
+    CMD_TIMEOUT_MAX_MS      = 60_000
 
 OBJ { objects / constants included by this object }
 
@@ -139,6 +152,8 @@ PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
 ''
 '' PL-45: on success, this blocks for about 1 s while it samples the current-sense rest zero
 '' getCurrent() nets out; a failure returns well before that (captureRestZero() runs last)
+'' With BRD_AUTO_DET a pin group where no board is detected is refused (ERR_BOARD_NOT_DETECTED): without its
+'' board revision the motor would have no current limit. Force BRD_REV_A or BRD_REV_B to drive it anyway.
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
@@ -154,6 +169,7 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError, b
 ''
 '' PL-45: on success, this blocks for about 1 s while it samples the current-sense rest zero
 '' getCurrent() nets out; a failure returns well before that (captureRestZero() runs last)
+'' With BRD_AUTO_DET a pin group where no board is detected is refused (ERR_BOARD_NOT_DETECTED), as by start().
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
@@ -182,6 +198,7 @@ PUB startOwned(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
 ''
 '' The owner releases the driver with COGATN and then services this motor from its own front cog
 '' through the front*() routines. Commands on this instance itself return ERR_NOT_STARTED.
+'' An undetected board is refused (ERR_BOARD_NOT_DETECTED) unless a revision is forced, as by start().
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
@@ -370,12 +387,19 @@ PRI launchDriver(eMotorBasePin, eMotorVoltage, eDetectionMode, bParked) : eError
 ' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
 ' @param eDetectionMode - The detection mode ENUM (BRD_*) for this motor
 ' @param bParked - T/F where T means the driver waits for an ATN before it starts driving
-' @returns eError - NO_ERROR when the driver cog runs, else the ERR_* code also recorded for getError()
+' @returns eError - NO_ERROR when the driver cog runs, else the ERR_* code also recorded for getError() (ERR_BOARD_NOT_DETECTED when auto-detection found no board)
 
 ' Local Variables:
 ' @local driverCogId - the value coginit() returned
 
     eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    if (eError == NO_ERROR) and (eDetectedBoard == REV_Unknown)
+        ' PL-73: with no board detected there is no current-sense scale, so the driver would run with no
+        '  current limit at all. A board is driven only when detected, or when the user forced a revision
+        '  (which setupForStart() reports as that revision). stop() releases the claim and the pins.
+        stop()
+        eError := recordError(ERR_BOARD_NOT_DETECTED)
+        debug[user.DBGCH_ERROR]("! ERROR: start refused, no board detected at pin group ", udec_long(eMotorBasePin), " (force BRD_REV_A / BRD_REV_B to drive anyway)")
     if eError == NO_ERROR
         ' pre-launch: setupForStart() stopped any previous driver and front cog, so no other writer exists
         sync_required := bParked
@@ -413,6 +437,10 @@ PRI launchFront(bReleaseDriver) : eError | frontCogId, startMs
     frontPasses := 0
     frontLatePasses := 0
     frontMaxPassTicks := 0
+    cmdTimeoutMs := CMD_TIMEOUT_OFF                         ' S-8: off until the user turns it on
+    bCmdWatched := FALSE
+    cmdTimeoutEvents := 0
+    longfill(@cmdTimeoutSeen, 0, COG_SLOT_COUNT)           ' every cog starts even with the (zeroed) count
     longfill(@taskStack, STACK_SENTINEL, STACK_SIZE_LONGS)  ' testGetFrontStats() finds the high-water mark from this
 
     frontCogId := cogspin(NEWCOG, frontLoop(bReleaseDriver), @taskStack)
@@ -576,6 +604,9 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     duty_floor := muldiv64(frame_cnt, 4 * DUTY_FLOOR_PCT, 100)              ' m = duty / (4 * frame_cnt)
     i_limit_k := currentLimitK(limitPeakA)
     protectiveCode := NO_ERROR
+    faultCause := FC_NONE                                                   ' S-7: no fault since this start
+    bWasFaulted := FALSE
+    faultIllegalPrev := 0                                                   ' the driver zeroes its counts at start too
     phaseAvgMa := 0
     bDerated := FALSE
     blockedPasses := 0
@@ -738,6 +769,24 @@ PUB holdAtStop(bEnable) : eError
 
     stop_mode := (bEnable) ? SM_BRAKE : SM_FLOAT
     eError := NO_ERROR
+
+PUB setCommandTimeout(nMs) : eError
+'' Stop the motor if no drive command arrives within {nMs} while it is driven open-ended: a link-loss guard, off by default
+''
+'' While it is on, a motor driven by driveAtPower() must be sent a drive command (repeating the same power is
+'' enough) at least every {nMs}. When one does not arrive in time the motor stops, as stopMotor() stops it
+'' (holdAtStop() chooses hold or coast at rest), and ERR_COMMAND_TIMEOUT is reported once by getError() on
+'' every cog that calls it. A driveForDistance() is a bounded move and is not watched. Setting it restarts
+'' the clock. start() turns it off.
+''
+'' @param nMs - the timeout in ms [CMD_TIMEOUT_MIN_MS to CMD_TIMEOUT_MAX_MS], or CMD_TIMEOUT_OFF (0) to turn it off
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value outside the range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError(); a rejected call changes nothing
+
+    if (nMs <> CMD_TIMEOUT_OFF) and ((nMs < CMD_TIMEOUT_MIN_MS) or (nMs > CMD_TIMEOUT_MAX_MS))
+        eError := recordError(ERR_BAD_COUNT)
+        debug[user.DBGCH_ERROR]("! ERROR: setCommandTimeout() rejected ", sdec_long(nMs))
+    else
+        eError := recordError(postRequest(REQ_SET_TIMEOUT, nMs, 0, 0))    ' the front cog owns the clock
 
 PUB resetTracking() : eError
 '' Resets the position tracking values returned by getDistance() and getRotations()
@@ -989,10 +1038,13 @@ PUB forwardIsReverse() : eError
 
 CON { --- Subsystem Status --- }
 
-PUB getError() : eError
+PUB getError() : eError | nEvents
 '' Return and clear this cog's first recorded error
 ''
-'' @returns eError - this cog's first ERR_* code since the last call, NO_ERROR when none; cleared by this call
+'' @returns eError - this cog's first ERR_* code since the last call, then a command timeout this cog has not yet been told of (ERR_COMMAND_TIMEOUT), NO_ERROR when none; cleared by this call
+
+' Local Variables:
+' @local nEvents - the front cog's command-timeout count, read once
 
     ' A latched protective stop is reported first, and is not cleared here: only clearProtectiveStop() releases it.
     ' A slot is read and cleared only by its own cog, and written only by that cog's recordError(),
@@ -1001,6 +1053,12 @@ PUB getError() : eError
     if eError == NO_ERROR
         eError := lastError[COGID()]
         lastError[COGID()] := NO_ERROR
+    ' S-8: the front cog counts the timeouts it took (its long alone); each cog records how many it has been
+    '  told of (its own long alone), so every cog hears of every timeout once and no long has two writers
+    nEvents := cmdTimeoutEvents
+    if (eError == NO_ERROR) and (cmdTimeoutSeen[COGID()] <> nEvents)
+        eError := ERR_COMMAND_TIMEOUT
+        cmdTimeoutSeen[COGID()] := nEvents
 
 PUB getProtectiveStop() : eProtectiveCode
 '' Return the latched protective stop's cause, without clearing it
@@ -1268,14 +1326,35 @@ PUB getRawHallTicks() : nPos
 
     nPos := pos
 
-PUB getHallIntegrityCounts() : nMissedTransitions, nIllegalCodes
+PUB getHallIntegrityCounts() : nMissedTransitions, nIllegalCodes | nAllLowCodes, nAllHighCodes
 '' Return the hall-sensor integrity counts the driver has accumulated since this motor was last started
 ''
 '' @returns nMissedTransitions - times the hall code changed without a countable single step (a skipped transition), each leaving pos at least one tick short
-'' @returns nIllegalCodes - times the hall sensors entered an illegal code (%000 or %111), meaning a dead or disconnected sensor; 0 before start
+'' @returns nIllegalCodes - times the hall sensors entered an illegal code (%000 or %111), meaning a dead or disconnected sensor; 0 before start (getHallIllegalCodes() splits it)
+
+' Local Variables:
+' @local nAllLowCodes - entries into %000, from getHallIllegalCodes()
+' @local nAllHighCodes - entries into %111, from getHallIllegalCodes()
 
     nMissedTransitions := hall_missed
-    nIllegalCodes := hall_illegal
+    nAllLowCodes, nAllHighCodes := getHallIllegalCodes()
+    nIllegalCodes := nAllLowCodes + nAllHighCodes
+
+PUB getHallIllegalCodes() : nAllLowCodes, nAllHighCodes | nIllegalWords
+'' Return the illegal hall codes split by kind, since this motor was last started: all three lines low, and all three high
+''
+'' %000 is what a sensor that has lost power, or a line pulled low, reads; %111 is a line stuck or floating high.
+'' Each count stops at 65_535.
+''
+'' @returns nAllLowCodes - times the hall sensors entered %000; 0 before start
+'' @returns nAllHighCodes - times the hall sensors entered %111; 0 before start
+
+' Local Variables:
+' @local nIllegalWords - the driver's illegal-code long, read once: %000 entries in the low word, %111 in the high
+
+    nIllegalWords := hall_illegal
+    nAllLowCodes := nIllegalWords & HALL_ILL_WORD_MAX
+    nAllHighCodes := nIllegalWords >> 16
 
 PUB boardIdString() : pZStr
 '' Return board ID string for this board revision
@@ -1437,6 +1516,16 @@ PUB isFaultSignal() : bState
 '' @returns bState - T/F where T means the driver recorded a fault; unlike isFaulted() it stays set after the fault state clears
 
     bState := (fault <> false) ? true : false
+
+PUB getFaultCause() : eCause
+'' Return why the most recent fault since start() happened
+''
+'' The cause stays readable after the fault itself clears (a stop or a new power clears it); only a later fault
+'' replaces it, and start() resets it to FC_NONE.
+''
+'' @returns eCause - FC_LAG (the rotor could not follow the field: an overload, a stall, or a wrong commutation offset), FC_HALL (a hall sensor read %000 or %111 at the fault: dead, unpowered or disconnected), or FC_NONE when there has been no fault
+
+    eCause := faultCause
 
 PUB clearFaultSignal() : eError
 '' Reset the recorded fault indicator read by isFaultSignal()
@@ -2196,7 +2285,7 @@ PRI abiLayoutIsValid() : bValid
     bValid &= outsideDriverRuns(@frontMaxPassTicks, @frontMaxPassTicks)
     bValid &= outsideDriverRuns(@trackBasePos, @trackBasePos)
     bValid &= outsideDriverRuns(@bStopUnconfirmed, @bStopUnconfirmed)
-    bValid &= outsideDriverRuns(@protectiveCode, @blockedPos)
+    bValid &= outsideDriverRuns(@protectiveCode, @cmdTimeoutSeen[COG_SLOT_COUNT - 1])
     bValid &= outsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= outsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     if bValid == FALSE
@@ -2434,8 +2523,9 @@ CON { front cog requests }
     '  REQ_TEST_INCREMENT - arg1 raw driver increment: refused while emergency-stopped, else written (TEST-USE)
     '  REQ_CLEAR_PROTECT  - release a protective stop: clear the cause, then as REQ_CLEAR_ESTOP
     '  REQ_SET_LIMITS     - arg1 peak amps, arg2 continuous amps: replace the current limits (TEST-USE)
+    '  REQ_SET_TIMEOUT    - arg1 ms, or CMD_TIMEOUT_OFF: set the command timeout and restart its clock (S-8)
     '  REQ_EXIT           - answer every open request, acknowledge, and park (stop())
-    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_EXIT
+    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_EXIT
 
     ' The order a pass applies requests in, by class:
     '  REQ_CLASS_ESTOP - REQ_ESTOP, first, so an e-stop posted with a drive in the same pass refuses the drive
@@ -2571,7 +2661,7 @@ PRI LALOOPEND()
   Nothing reachable from frontLoop() calls recordError() or recordCallerError().
 }
 
-PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount
+PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, nowMs
 ' FRONT COG: this motor's loop -- apply posted requests, track position, enforce the stop limits, once per ms.
 '
 ' @param bReleaseDriver - T/F where T means the driver was launched parked and is released here with one ATN
@@ -2583,6 +2673,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
 ' @local passStartTicks - getct() when this pass began
 ' @local passBodyTicks - ticks this pass's body took
 ' @local passCount - passes run so far, the rpm window's cadence counter
+' @local nowMs - getms() once for this pass's limit and timeout checks
 
     ' The entry writes none of targetIncre, e_stop or the stop limits: it adopts them, so a stop
     '  written directly inside start()'s window (no front cog yet) survives the launch.
@@ -2610,8 +2701,11 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         LALOOPSTART()                                                           ' main LA tracking code
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
         frontTrack(passCount)
-        if frontLimitsDue(getms()) == TRUE
+        nowMs := getms()
+        if frontLimitsDue(nowMs) == TRUE
             frontZeroPower()                                                    ' PL-52: a distance/time stop clears getPower() too
+        if frontCommandTimedOut(nowMs) == TRUE
+            frontZeroPower()                                                    ' S-8: stopped as stopMotor() stops, so holdAtStop() applies
         if frontProtect() == TRUE                                               ' S-2: current derate; a blocked motor latches a protective stop
             frontProtectiveStop(ERR_PLATFORM_BLOCKED)
         LALOOPEND()                                                             ' let LA know end of loop
@@ -2782,8 +2876,10 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
     bDidWait := FALSE
     case eCmd
         REQ_ESTOP:
+            bCmdWatched := FALSE                                                ' S-8: no open-ended drive to watch
             frontEStop(TRUE)
         REQ_STOP:
+            bCmdWatched := FALSE
             frontZeroPower()                                                    ' PL-52: a commanded stop clears getPower() too
         REQ_CLEAR_ESTOP:
             eStatus := protectiveCode                                           ' a protective stop is released only by its own clear
@@ -2795,10 +2891,15 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
                 eStatus, bDidWait := frontClearEStopAndWait()                       ' zero command first, then the latch released
         REQ_SET_LIMITS:
             frontSetCurrentLimits(nArg1, nArg2)
+        REQ_SET_TIMEOUT:
+            cmdTimeoutMs := nArg1
+            lastDriveMs := getms()                                              ' the clock starts now, never from a stale command
         REQ_DRIVE:
             eStatus, bDidWait := frontDriveAndSync(nArg1, nArg3 <> FALSE)
+            frontWatchCommand((eStatus == NO_ERROR) and (nArg1 <> 0))
         REQ_DRIVE_DISTANCE:
             ' atomic: the limit is armed and the motor driven, or neither (I1 item 2)
+            bCmdWatched := FALSE                                                ' S-8: a bounded move is not watched
             eStatus := frontRefusal()
             if eStatus == NO_ERROR
                 frontSetLimits(nArg1, motorStopMSecs)                           ' the time limit is kept, as before
@@ -2815,6 +2916,30 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             eStatus := frontRefusal()
             if eStatus == NO_ERROR
                 frontWriteIncrement(nArg1, FALSE)
+            frontWatchCommand((eStatus == NO_ERROR) and (nArg1 <> 0))
+
+PRI frontWatchCommand(bOpenEnded)
+' FRONT COG: record an applied drive command for the command timeout (S-8): watched while it is open-ended motion.
+'
+' @param bOpenEnded - T/F where T means the command just applied drives the motor with no bound of its own
+
+    bCmdWatched := bOpenEnded
+    lastDriveMs := getms()
+
+PRI frontCommandTimedOut(nowMs) : bFired
+' FRONT COG: return TRUE, and stop watching, when the command timeout is on and an open-ended drive has had no command within it (S-8).
+'
+' @param nowMs - getms() for this pass
+' @returns bFired - T/F where T means the motor must be stopped now; the timeout has been counted for getError()
+
+    bFired := FALSE
+    ' the difference is wrap-safe: getms() wraps after ~49 days, and the timeout is at most a minute. A motor
+    '  already stopped (a stop limit fired, or it faulted and was cleared) has nothing left to stop.
+    if (cmdTimeoutMs <> CMD_TIMEOUT_OFF) and (bCmdWatched == TRUE) and ((targetIncre & !SYNC_BIT) <> 0) and ((nowMs - lastDriveMs) >= cmdTimeoutMs)
+        debug[user.DBGCH_FAULT]("-MOT- command timeout: no drive command in ", udec_long(cmdTimeoutMs), " ms, stopping")
+        bCmdWatched := FALSE
+        cmdTimeoutEvents++                                                      ' the front cog is this long's only writer
+        bFired := TRUE
 
 PRI frontDriveAndSync(power, bSync) : eStatus, bDidWait
 ' FRONT COG: drive this motor at {power}; with {bSync}, release the command with one ATN and wait, bounded, for the driver to take it.
@@ -3077,7 +3202,8 @@ PRI currentLimitK(amps) : nK
 '
 ' The driver compares the DC-link reading against 0.75 x m x amps x rSense, m = duty / (4 x frame_cnt),
 ' so nK = 3 x amps x rSense x 65536 / (16 x frame_cnt). With no board detected there is no scale, and
-' nK is set so the threshold is above the ADC's range: no fold-back (PL-73).
+' nK is set so the threshold is above the ADC's range: no fold-back. PL-73: a driver never starts in that
+' state (launchDriver() refuses an undetected board); only an instance set up by testSetup() reaches it.
 '
 ' @param amps - the phase-current limit, amps
 ' @returns nK - the factor, 1..$FFFF
@@ -3146,7 +3272,7 @@ PUB frontDriverCogBit() : cogBit
         cogBit := 1 << (motorCog - 1)
 
 PUB frontTrack(passCount) | eDrvState, nowPos
-'' FRONT COG ONLY: once per pass, accumulate position tracking; every WINDOW_PASSES passes advance the rpm window
+'' FRONT COG ONLY: once per pass, latch a new fault's cause and accumulate position tracking; every WINDOW_PASSES passes advance the rpm window
 ''
 '' @param passCount - the owner's pass counter, advanced by one every pass
 
@@ -3155,6 +3281,7 @@ PUB frontTrack(passCount) | eDrvState, nowPos
 ' @local nowPos - the driver's position read once for this pass
 
     eDrvState := drv_state
+    frontNoteFault(eDrvState)
     if (eDrvState == DCS_FAULTED) or (eDrvState == DCS_ESTOP)
         ' a faulted or emergency-stopped motor restarts its tracking and window every pass
         frontResetTracking(TRUE)
@@ -3165,6 +3292,28 @@ PUB frontTrack(passCount) | eDrvState, nowPos
         trackBasePos := nowPos
         if (passCount +// WINDOW_PASSES) == 0
             updateWindowAccumulators()
+
+PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode
+' FRONT COG: on the pass the driver first reads DCS_FAULTED, latch why (S-7): FC_HALL when a hall sensor is reading
+' %000 or %111, or entered one since the previous pass, else FC_LAG. The front cog is the cause's only writer.
+'
+' @param eDrvState - the driver state read once for this pass
+
+' Local Variables:
+' @local nIllegalNow - the driver's hall_illegal long this pass (any change means a new illegal entry)
+' @local nHallCode - the hall code the driver last read, from its status copy of hall_ (direction bit dropped)
+
+    nIllegalNow := hall_illegal
+    if (eDrvState == DCS_FAULTED) and (bWasFaulted == FALSE)
+        ' an illegal code makes the driver's hall angle meaningless, so the lag test trips on it: that fault is
+        '  the SENSOR's, and naming it LAG would send the user after a load problem that is not there
+        nHallCode := hall & %111
+        if (nHallCode == %000) or (nHallCode == %111) or (nIllegalNow <> faultIllegalPrev)
+            faultCause := FC_HALL
+        else
+            faultCause := FC_LAG
+    bWasFaulted := (eDrvState == DCS_FAULTED)
+    faultIllegalPrev := nIllegalNow
 
 PUB frontStopTicks() : nTicks | incr, passes
 '' FRONT COG ONLY: return the hall ticks the field still travels if a stop is written now
@@ -3449,6 +3598,24 @@ CON { driver internal Constants }
     '  SM_FLOAT -> BR_COAST, SM_BRAKE -> BR_SHORT; an e-stop -> BR_SHORT whatever the stop mode.
     #0, BR_DRIVE, BR_SHORT, BR_COAST
 
+    ' PL-90: the hall read. The three hall inputs (base+5..7) never straddle the pin-31 port boundary for any legal
+    '  base, so ONE read of INA or INB samples all three at the same instant (was three TESTPs, 4 clocks apart).
+    REG_INA          = $1FE     ' cog register addresses of the two input ports (p2kb: INA $1FE, INB $1FF), for ALTS
+    REG_INB          = $1FF
+    PORT_PIN_MASK    = 31       ' a pin's bit within its 32-pin port
+    PORT_B_BIT       = 5        ' pin bit 5 set: the pin is in port B (32..63)
+    HALL_PIN_SPAN    = 2        ' addpins operand: the three hall inputs
+    ' WRPIN %FFF (bits 23:21) = %101: the pin's input is low-pass filtered by the global filt1 before it reaches IN
+    '  (p2kbArchSmartPins, input_logic_and_filtering). filt1's reset default is 3 flip-flops clocked every 32nd clock:
+    '  a level must hold ~96 clocks (0.48 us at 200 MHz, 0.32 us at 300) to be seen, against >= 2 ms between hall
+    '  edges at top speed. Smart-pin mode stays %00000 and DIR stays low: the pins are still plain inputs.
+    HALL_IN_FILT1    = %101 << 21
+    ' hall_illegal_ holds two saturating 16-bit counts (ALTGW/ALTSW word index): entries into %000 in the low word,
+    '  into %111 in the high word, so a dead line (%000) is told from a stuck-high one (%111) with the ABI unchanged
+    HALL_ILL_LO_WORD = 0
+    HALL_ILL_HI_WORD = 1
+    HALL_ILL_WORD_MAX = $FFFF
+
 '44KHz seems to be sweetspot for DocoEng Motor
 '    FRAME   = 6_136             ' 44.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
 '22KHz EXPERIMENT
@@ -3520,7 +3687,7 @@ VAR { * Data Structure for PASM Driver * }
     LONG    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
     LONG    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
     LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP]
-    LONG    hall_missed, hall_illegal           ' 2 sequential longs    hall integrity counts since driver start (see getHallIntegrityCounts())
+    LONG    hall_missed, hall_illegal           ' 2 sequential longs    hall integrity counts since driver start; hall_illegal is %000 << 0 | %111 << 16 (see getHallIllegalCodes())
     LONG    drv_incr_now                        ' 1 sequential long     the field's angle increment per drive pass, for stop timing
     ' \ ----------------------------
     LONG    fault                               ' 1 sequential long     written TRUE ($FFFF_FFFF) on fault; the bridge then takes the stop mode's fault state (BR_COAST or BR_SHORT)
@@ -3617,6 +3784,14 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    bDerated                    ' front-written: T/F where T means i_limit_k holds the continuous limit
     LONG    blockedPasses               ' front-written: consecutive passes held at the lag limit without a hall tick
     LONG    blockedPos                  ' front-written: pos at the previous pass, for the blocked test
+    LONG    cmdTimeoutMs                ' front-written (start() before launch): S-8 command timeout, ms; CMD_TIMEOUT_OFF when off
+    LONG    lastDriveMs                 ' front-written: getms() when the last drive command was applied, or the timeout set
+    LONG    bCmdWatched                 ' front-written: T/F where T means an open-ended drive is being watched by the timeout
+    LONG    cmdTimeoutEvents            ' front-written: command timeouts taken since start()
+    LONG    faultCause                  ' front-written (init() before start): FC_* of the most recent fault since start
+    LONG    bWasFaulted                 ' front-written: T/F where T means the driver read DCS_FAULTED on the previous pass
+    LONG    faultIllegalPrev            ' front-written: the driver's hall_illegal long on the previous pass
+    LONG    cmdTimeoutSeen[COG_SLOT_COUNT]  ' per calling cog, written only by that cog's getError(): timeouts it has been told of
 
 DAT  {  Motor DRIVER  }
 '
@@ -4086,12 +4261,12 @@ drvMotor                                                ' global (task 3535): en
                 sub     drive_w_, dead_gap_             ' dead-gap was OFFSET
     if_z        wypin   drive_w_, pin_pwm_w_h
 
-                testp   pin_hall_w                  wc  ' read hall effect sensor
-                rcl     hall_, #1
-                testp   pin_hall_v                  wc
-                rcl     hall_, #1
-                testp   pin_hall_u                  wc
-                rcl     hall_, #1
+                alts    hall_port                       ' PL-90: the next S is INA or INB, chosen once at driver start
+                mov     tmpX, 0-0                       ' ONE read: all three (filtered) hall lines from the same instant
+                shr     tmpX, hall_shift                ' U to bit 0, V to bit 1, W to bit 2: the old W,V,U TESTP/RCL order
+                and     tmpX, #%111
+                shl     hall_, #3                       ' last pass's code becomes "old"
+                or      hall_, tmpX
                 and     hall_, #%111_111                ' (old << 3 | new) [_x_:ooo:nnn]
                 altgb   hall_, #deltas                  ' load byte deltas[hall_] -> [-1, 0, 1]
                 getbyte tmpY
@@ -4110,9 +4285,7 @@ drvMotor                                                ' global (task 3535): en
     if_nz       jmp     #.hallCounted                   ' YES: legal adjacent transition, already in pos_
                 mov     tmpY, hall_                     ' tmpY := old<<3 | new (delta no longer needed)
                 and     tmpY, #%111                     ' tmpY := new
-                cmp     tmpY, #%000                 wz  ' Q: changed INTO illegal 000?
-    if_nz       cmp     tmpY, #%111                 wz  ' Q: ...or illegal 111?
-    if_z        add     hall_illegal_, #1               ' YES: one illegal-code entry
+                call    #countIllegal                   ' Z: changed INTO %000 or %111, counted in that code's own word
     if_z        jmp     #.hallCounted                   ' ...never also a missed transition
                 mov     tmpY, hall_
                 shr     tmpY, #3                        ' tmpY := old
@@ -4221,17 +4394,28 @@ wait4adc
     if_nc       jmp     #.wait4adcAgn
 .noWait4adc     ret
 
+countIllegal                                            ' PL-90: count an entry into illegal code tmpY (0..7) in its own word
+                mov     tmpX, #HALL_ILL_HI_WORD         '  of hall_illegal_ -- %000 low, %111 high -- saturating, so one
+                cmp     tmpY, #%000                 wz  '  word never carries into the other. Returns Z set when counted,
+    if_z        mov     tmpX, #HALL_ILL_LO_WORD         '  Z clear for a legal code. Global: the LUT start sequence calls it.
+    if_nz       cmp     tmpY, #%111                 wz
+    if_nz       ret                                     ' a legal code: nothing counted, Z clear
+                altgw   tmpX, #hall_illegal_            ' this code's 16-bit count
+                getword tmpY
+                cmp     tmpY, ##HALL_ILL_WORD_MAX   wz  ' Q: saturated?
+    if_nz       add     tmpY, #1
+                altsw   tmpX, #hall_illegal_
+                setword tmpY
+    _ret_       modz    _set                        wz  ' Z: counted, whatever the saturation test left in Z
+
 initAngleFmHall
                 ' init angle & prior from current motor position
-                testp   pin_hall_w                  wc  ' read hall effect sensor
-                rcl     hall_, #1
-                testp   pin_hall_v                  wc
-                rcl     hall_, #1
-                testp   pin_hall_u                  wc
-                rcl     hall_, #1
+                alts    hall_port                       ' PL-90: one read of INA or INB, all three hall lines at one instant
+                mov     hall_, 0-0
+                shr     hall_, hall_shift               ' U to bit 0, V to bit 1, W to bit 2 (the old TESTP/RCL order)
                 testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (bCY=REV)
                 bitc    hall_, #3                       ' point to correct FWD/REV half of table
-                and     hall_, #%1111                   ' make sure rest of hall_ is cleared
+                and     hall_, #%1111                   ' keep the code and the direction bit, drop the port's other pins
                 alts    hall_, #hall_angles
                 mov     angle_, 0-0
     if_c        add     angle_, offset_fwd_             ' adjust phase offset for hall sensor
@@ -4380,6 +4564,8 @@ pin_pwm_v_l     res 1       ' basepin + 10
 pin_pwm_v_h     res 1       ' basepin + 11
 pin_pwm_w_l     res 1       ' basepin + 12
 pin_pwm_w_h     res 1       ' basepin + 13
+hall_port       res 1       ' PL-90: REG_INA or REG_INB, the port holding the three hall inputs (set once at start)
+hall_shift      res 1       ' PL-90: pin_hall_u's bit within that port (set once at start)
 
 '  ADC variables
 gio_levels      res 4
@@ -4424,14 +4610,15 @@ loop_dtcks_ res 1
 loop_ctcks_ res 1
 drv_state_  res 1           ' enum: DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, etc
 hall_missed_  res 1         ' hall code changed with no countable single step (missed transition), zeroed at driver start
-hall_illegal_ res 1         ' entries into an illegal hall code (%000 or %111), zeroed at driver start
+hall_illegal_ res 1         ' entries into an illegal hall code, %000 in the low word, %111 in the high (PL-90), zeroed at driver start
 drv_incr_s_ res 1           ' copy of drv_incr, the field's increment per drive pass, for the front cog's stop timing
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 390 currently used (492 before task 3535 moved the one-time start sequence,
-                 ' plus gettgtincr and driveinit, into the LUT-resident block below at $200-$3FF;
-                 ' see lutCodeStart..lutCodeEnd -- 108 of the LUT's 512-long capacity used)
+    fit     496  ' ~400 used, counted from source: 390 before PL-90, which added countIllegal (13) and
+                 ' hall_port/hall_shift (2) and saved 5 at the hall read sites (492 before task 3535 moved
+                 ' the one-time start sequence, plus gettgtincr and driveinit, into the LUT-resident block
+                 ' below at $200-$3FF; see lutCodeStart..lutCodeEnd -- ~113 of the LUT's 512 longs used)
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the one-time start sequence only (task 3535).
@@ -4457,6 +4644,19 @@ lutCodeStart
                 add     tmpX, #1
                 incmod  tmpY, #13                   wc
     if_nc       jmp     #.pin
+
+                ' PL-90: the three hall inputs sit in one 32-pin port for every legal base, so choose that port and
+                '  the shift once, here; every hall read is then one INA/INB read (see REG_INA)
+                mov     hall_shift, pin_hall_u
+                and     hall_shift, #PORT_PIN_MASK      ' pin_hall_u's bit within its port
+                mov     hall_port, #REG_INA
+                testb   pin_hall_u, #PORT_B_BIT     wc  ' Q: pins 32..63, port B?
+    if_c        mov     hall_port, #REG_INB
+                ' PL-90: filter each hall input through global filt1 (HALL_IN_FILT1). DIR is low, as it always is on
+                '  these pins, which is the state WRPIN requires; the smart-pin mode stays %00000 (a plain input)
+                mov     tmpY, pin_hall_u
+                or      tmpY, #(HALL_PIN_SPAN << 6)     ' pin_hall_u addpins 2: all three hall inputs
+                wrpin   ##HALL_IN_FILT1, tmpY
 
                 rdlong  params_ptr_, ptra++             ' get parameters pointer
                 add     ptra, #2*4                      '  point to return data, targetIncre is at long index [-1]
@@ -4568,16 +4768,12 @@ lutCodeStart
                 mov     pos_, #0                        ' reset pos
                 mov     hall_missed_, #0                ' integrity counts restart with every driver start
                 mov     hall_illegal_, #0
-                mov     hall_, #0                       ' prime hall_ from a real read: first control pass then sees old == new
-                testp   pin_hall_w                  wc  '  (hall pins are inputs: nothing ever raises their DIR)
-                rcl     hall_, #1
-                testp   pin_hall_v                  wc
-                rcl     hall_, #1
-                testp   pin_hall_u                  wc
-                rcl     hall_, #1
-                cmp     hall_, #%000                wz  ' Q: sensor already reading an illegal code at start?
-    if_nz       cmp     hall_, #%111                wz  ' Q: ...or the other illegal code?
-    if_z        add     hall_illegal_, #1               ' YES: count it now -- old == new on the first pass cannot
+                alts    hall_port                       ' prime hall_ from a real read: first control pass then sees old == new
+                mov     hall_, 0-0                      '  (PL-90: one INA/INB read; hall pins are inputs, nothing ever raises their DIR)
+                shr     hall_, hall_shift
+                and     hall_, #%111
+                mov     tmpY, hall_                     ' a sensor already reading an illegal code at start is counted
+                call    #countIllegal                   '  now, in its own word -- old == new on the first pass cannot
                 mov     loop_dtcks_, #0                 ' just in case
                 mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped

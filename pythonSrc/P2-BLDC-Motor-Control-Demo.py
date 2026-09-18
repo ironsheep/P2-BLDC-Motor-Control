@@ -401,6 +401,13 @@ class BLDCMotorControl:
         commandStr = 'hold {}\n'.format(bEnable)
         self.sendCommand(commandStr)
 
+    # PUB setCommandTimeout(nMs)
+    #  link-loss guard, off (0) by default: once on, resend a drive command at least every nMs
+    #  or the P2 stops both motors and reports ERR_COMMAND_TIMEOUT
+    def setCommandTimeout(self, nMs):
+        commandStr = 'settimeout {}\n'.format(nMs)
+        self.sendCommand(commandStr)
+
     # PUB resetTracking()
     def resetTracking(self):
         commandStr = 'resettracking\n'

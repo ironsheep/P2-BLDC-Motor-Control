@@ -54,7 +54,7 @@ CON { command-names enum }
 #13, CMD_HOLD, CMD_RST_TRKG
 #15, CMD_GET_DIST, CMD_GET_ROT, CMD_GET_PWR
 #18, CMD_GET_STAT, CMD_GET_MAX_SPD, CMD_GET_MAX_DIST_SPD
-#21, CMD_GET_VOLT
+#21, CMD_GET_VOLT, CMD_SET_TIMEOUT
 
 DAT { command table }
 
@@ -80,6 +80,7 @@ DAT { command table }
     cmdGetMaxSpd        BYTE    "getmaxspd",0
     cmdGetMaxDistSpd    BYTE    "getmaxspdfordist",0
     cmdGetVolt          BYTE    "getvoltage",0
+    cmdSetTimeout       BYTE    "settimeout",0
 
     ' now describe cmd enum and # parms for each string
     cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
@@ -103,6 +104,7 @@ DAT { command table }
                 long  @cmdGetMaxSpd, CMD_GET_MAX_SPD, 0
                 long  @cmdGetMaxDistSpd, CMD_GET_MAX_DIST_SPD, 0
                 long  @cmdGetVolt, CMD_GET_VOLT, 0
+                long  @cmdSetTimeout, CMD_SET_TIMEOUT, 1
     cmdLast
     ' calculate the number of entries in table
     cmdEntryCt long ((@cmdLast - @cmdsFirst) / 4) / 3
@@ -139,6 +141,7 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
     long[@cmdsFirst][18 * 3] := @cmdGetMaxSpd
     long[@cmdsFirst][19 * 3] := @cmdGetMaxDistSpd
     long[@cmdsFirst][20 * 3] := @cmdGetVolt
+    long[@cmdsFirst][21 * 3] := @cmdSetTimeout
 
     ' validate user settings/choicess
     '  do NOT start motor unless all are legit!
@@ -197,6 +200,7 @@ DAT { parse work variables }
     nDistUnits      LONG    0
     nSpeed          LONG    0
     bHoldEnable     LONG    0
+    nTimeout        LONG    0
 
 PRI processCommand(pValues) | eError
 ' F-7: every command calls the library first and replies from its status, so a request the library
@@ -456,6 +460,19 @@ PRI processCommand(pValues) | eError
             ' send to host
             serialQueue.sendResponse(@msgWork)
 
+        CMD_SET_TIMEOUT:
+            ' get incoming parm values: the link-loss guard is the host's choice, off until it asks (S-8)
+            nTimeout := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values
+            if (nTimeout <> wheels.CMD_TIMEOUT_OFF) and not inRange(nTimeout, wheels.CMD_TIMEOUT_MIN_MS, wheels.CMD_TIMEOUT_MAX_MS)
+                ' invalid, report so...
+                strFmt.sFormatStr3(@msgWork, @"Timeout (%d) not 0 (off) or in range [%d, %d] ms", nTimeout, wheels.CMD_TIMEOUT_MIN_MS, wheels.CMD_TIMEOUT_MAX_MS)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, act on request, then report its outcome
+                eError := wheels.setCommandTimeout(nTimeout)
+                replyWithStatus(pValues, eError)
+
         CMD_GET_VOLT:
             ' get requested value(s): the configured drive voltage (PWR_* value) and its nominal mV
             ltValue, rtValue := wheels.getDriveVoltage()
@@ -535,6 +552,8 @@ PRI errorName(eError) : pName
             pName := @"ERR_NO_RESPONSE"
         wheels.ERR_BOARD_NOT_DETECTED:
             pName := @"ERR_BOARD_NOT_DETECTED"
+        wheels.ERR_COMMAND_TIMEOUT:
+            pName := @"ERR_COMMAND_TIMEOUT"
         wheels.ERR_PROTECTIVE_STOP:
             pName := @"ERR_PROTECTIVE_STOP"
         wheels.ERR_PLATFORM_BLOCKED:

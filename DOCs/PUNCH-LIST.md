@@ -2307,6 +2307,12 @@ stays owed to «#3514»/«#3515» -- out of this task's DOCs scope.
 
 ### PL-59 -- POSTFLT's 3° offset does not provoke a fault at half speed, so the post-fault stop is unmeasured
 
+> **FIXED IN THE HARNESS 2026-09-17, night («#3572»); build gate green 2026-09-18; run-time proof owed to Visit 6.**
+> POSTFLT's `EVT_OFFSET` now shifts both of the wheel's offsets by the computed `faultShiftDeg()` at speed -- the
+> construction in PL-86's box, direction-independent because it reads the wheel's own error. `FAULT_PROVOKE_NEG_DEG`
+> is deleted. The post-fault stop is judged by the new `R17-DUAL-FLTSTOP-C` (a FLOAT fault coasts at least 10 ticks
+> further to rest than a BRAKE fault; the old driver shorted on every fault, so it fails there).
+
 **Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §5.1).
 
 **MEASURED:**
@@ -2647,6 +2653,14 @@ Rev B.
 **DECIDED, STEPHEN 2026-09-17 ("yes to all"), IN THIS RELEASE:** `start()` refuses a board it cannot detect with
 the existing `ERR_BOARD_NOT_DETECTED`, unless the user has forced a revision (`BRD_REV_A` / `BRD_REV_B`), in
 which case the forced revision's scale sets the limit.
+
+**FIXED IN SOURCE 2026-09-17 («#3570»), run-time proof owed to Visit 6.** The refusal is in `launchDriver()`, the
+path every start takes (`start()`, `startEx()`, and `startOwned()` under the steering object), after
+`setupForStart()` and before any cog is launched: an auto-detect that found no board `stop()`s (releasing the
+claim and the pins) and records `ERR_BOARD_NOT_DETECTED`. It is deliberately NOT in `setupForStart()`, so
+`testSetup()` still initialises an empty group for the detection cells (`R2-T0-EMPTY`, `R16-T0-NOBOARD`). The
+certifying cell is `R17-T0-NOBOARDSTART` (t0 `T0-23`, SRC_REV 4): a start on the empty P0 group must return -1
+with the code, take no cog and release the claim; on the unfixed library the start succeeds, so the cell FAILs.
 
 ### PL-74 -- the Visit 4 `t0` binary carried no debug kernel, so the whole tier emitted nothing
 
@@ -3854,6 +3868,25 @@ constant, so the offset needed to cross it is arithmetic, not a sweep.
 - **IN THIS RELEASE** as fault handling (STEPHEN 2026-09-17, *"fix fault handling"*), with PL-59, PL-66 and the
   fault half of PL-89.
 
+> ## FIXED IN THE HARNESS 2026-09-17, night («#3572») -- option 1, computed; run-time proof owed to Visit 6
+>
+> **Why the 180-degree write never faulted, DERIVED from source:** it was written AT REST, before the drive. The start
+> re-seeds the field from the halls plus the new offset (`initAngleFmHall`), so the error starts at zero, and the lag
+> limiter then holds the field at `LAG_HOLD` while the rotor fights a reversed torque -- the error never reaches the
+> fault test at 125, and the current climbs to the 10 A abort. And even written at speed, a fixed 180 degrees lands
+> the 8-bit error at `128 - |err_before|`, which misses 125 whenever the running error exceeds 3 units.
+>
+> **The construction (`test_bench_dual.spin2` `faultShiftDeg()`):** drive to speed, average the wheel's own error over
+> 16 reads, and shift its offsets by exactly `(err + 128) mod 256` units, converted to degrees. The driver computes
+> `err = field angle - (hall angle + offset)` and maps offset degrees positively, so a larger offset LOWERS the error:
+> the shift lands it on -128, the wrap, in the next control frame, 3 units past the fault test on either side --
+> before the current can build.
+> OVERSHT's fault-API trial (both wheels, through the steering object) and POSTFLT (PL-59, each wheel) both use it;
+> `FLTAPI_OFFSET_DEG` and `FAULT_PROVOKE_NEG_DEG` are deleted. `BM-FLTAPI` prints each wheel's computed shift.
+> With the provocation faulting, `R14-DUAL-FLTAPI-B`, `R16-DUAL-FLTRETRY-B` (PL-66) and the new
+> `R17-DUAL-FLTCAUSE-B` (S-7), `R17-DUAL-OFFREST-B` and `R17-DUAL-FLTSTOP-C` (a fault delivers `holdAtStop()`, PL-89's
+> fault half) all become measurable.
+
 ### PL-87 -- the ladder's err_pk is a STEADY-WINDOW statistic, so no cell can see a transition kick
 
 **Found 2026-09-17 at Visit 5**, checking Stephen's observation against the data. **Instrument defect,
@@ -4109,6 +4142,23 @@ withdrawn.** The driver's own hall counter records how far the wheel turned in e
 carries a number beside his judgement.
 
 ### PL-90 -- the hall triple is read by three separate TESTP instructions, so the three bits are not from one instant
+
+> ## FIXED IN SOURCE 2026-09-17, night («#3571») -- build gate green 2026-09-18 (47/47); run-time proof owed to Visit 6
+>
+> - **One read.** Every hall read site (the `.ctlMotor` loop, `initAngleFmHall`, and the start priming) is now one
+>   `INA`/`INB` read through `ALTS`, with the port and shift chosen once at driver start.
+> - **An input filter, decided (Q2):** each hall pin's `WRPIN %FFF = %101` routes it through the global `filt1`, whose
+>   reset default is 3 flip-flops every 32nd clock (~96 clocks: 0.48 us at 200 MHz). Latency against >= 2 ms between
+>   hall edges at top speed is negligible. Smart-pin mode stays off and DIR stays low; the driver does not rewrite the
+>   global filter (`HUBSET`), it relies on the chip default.
+> - **The counter is split** without changing the status ABI: `hall_illegal` carries `%000` entries in its low word and
+>   `%111` in its high word, each saturating. `getHallIntegrityCounts()` still returns the total; new
+>   `getHallIllegalCodes()` (motor and steering objects) returns the split.
+> - **Timing (DO item 3):** `analyses/HALL-READ-TIMING-2026-09-17.md`. The read sits ~190 clocks into the frame; at high
+>   modulation a switching edge can land on it at every clock, and at 200 MHz two edges can, reached at lower duty -- a
+>   clock-dependent candidate for PL-69 that the tear hypothesis could not supply. DERIVED, not established.
+> - **Certification:** `R17-DUAL-HALL-K200/-K270/-K300` on the three clock loads, with `BM-HALLINT` printing
+>   `%000` / `%111` / missed per lifetime. Visit 3's 200 MHz RIGHT reading (3 and 5 illegal codes) is the before.
 
 > ## ⛔ CORRECTED 2026-09-17, night -- the torn read cannot by itself make `%000`/`%111`, and Q1 was already answered on file
 >

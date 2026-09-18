@@ -73,6 +73,8 @@
 ''               library's nine channels live in all of them. MEASURED: -D BENCH_QUIET removes 2_866
 ''               bytes of library debug data from this build. THAT IS A HYPOTHESIS WITH A TEST, NOT AN
 ''               ESTABLISHED CAUSE; PL-74 records what the next run discriminates either way.
+''               17 Sep 2026 -- task 3570, SRC_REV 4: T0-23 / R17-T0-NOBOARDSTART (PL-73): a start() on
+''               the empty group is refused with ERR_BOARD_NOT_DETECTED and leaks nothing.
 ''
 '' =================================================================================================
 
@@ -163,7 +165,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 3                                                 ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 4                                                 ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -386,6 +388,7 @@ PRI runTier0Tests()
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-RESTZERO,task,3556")
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-NOBOARD,task,3556")
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-FRONTFAIL,task,3513")
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R17-T0-NOBOARDSTART,task,3570")
 
     testT0_1()
     testT0_2()
@@ -424,6 +427,7 @@ PRI runTier0Tests()
     testT0_20()
     testT0_21()
     testT0_22()
+    testT0_23()
 
     ' T0-10 runs BEFORE T0-8 deliberately. Both drive the same motor object,
     ' and T0-8 is the destructive one: it occupies every spare cog so that
@@ -1404,6 +1408,39 @@ PRI testT0_22() | baseline, heldCount, startResult, eCode, rawMotorCog, freeAfte
         debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-FRONTFAIL,task,3513,motor,RIGHT,crit,UNDO_NO_LEAK,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
     else
         debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-FRONTFAIL,task,3513,motor,RIGHT,crit,UNDO_NO_LEAK,measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
+
+PRI testT0_23() | baseline, startResult, eCode, rawMotorCog, freeAfter, eClaim, bPass
+' R17-T0-NOBOARDSTART (task 3570, PL-73): start() on a group with no board (P0_P15, the empty group R2-T0-EMPTY
+' already probes), auto-detecting, must be refused: return -1, record ERR_BOARD_NOT_DETECTED, leave no driver
+' (testGetMotorCog() 0), take no cog, and release the pin claim (motorA.testSetup() on the same group returns
+' NO_ERROR). A board is driven only when detected or forced, because without its revision there is no current
+' limit. Nothing is ever driven: the refusal comes before any cog is launched.
+' UNFIXED: the start succeeded -- a driver ran on the empty group with no current limit -- so the cell FAILs on
+' the return, the recorded code and the cog count.
+'
+' @local baseline - free cogs before the start
+' @local startResult - motorA.start()'s return (expected -1)
+' @local eCode - getError() after it (expected ERR_BOARD_NOT_DETECTED)
+' @local rawMotorCog - testGetMotorCog() after it (expected 0)
+' @local freeAfter - free cogs after it (expected baseline)
+' @local eClaim - motorA.testSetup() on the same group afterwards (expected NO_ERROR: the claim was released)
+' @local bPass - the cell's measured value and verdict
+
+    debug("T0-23,begin,no_board_start")
+    motorA.stop()
+    motorA.getError()
+    baseline := countFreeCogs()
+    startResult := motorA.start(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    eCode := motorA.getError()
+    rawMotorCog := motorA.testGetMotorCog()
+    freeAfter := countFreeCogs()
+    motorA.stop()
+    eClaim := motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    motorA.stop()
+    motorA.getError()
+    bPass := (startResult == -1) and (eCode == motorA.ERR_BOARD_NOT_DETECTED) and (rawMotorCog == 0) and (freeAfter == baseline) and (eClaim == motorA.NO_ERROR)
+    debug("T0-23,end,start_return,", sdec_(startResult), ",error,", sdec_(eCode), ",raw_motor_cog,", sdec_(rawMotorCog), ",baseline,", udec_(baseline), ",free_after,", udec_(freeAfter), ",claim_status,", sdec_(eClaim))
+    debug("SIGNOFF,sf,1,bin,T0,cell,R17-T0-NOBOARDSTART,task,3570,motor,NONE,crit,REFUSED_NO_LEAK,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
 PRI testT0_10() | startResult, rawMotorCog, pinAdcX, xNodeCounts
 ' C-6b: pin_adc_x_i (base+3) falls inside adc_pins, so the driver already
