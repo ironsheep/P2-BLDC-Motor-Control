@@ -50,13 +50,13 @@ reports. "IN THIS RELEASE" follows STEPHEN's 2026-09-17 rulings (*"fix api promi
 | **AE** | FIXED in source | `claimPinBase()` refuses an overlapping group, `ERR_PIN_GROUP_IN_USE` (`:284-322`) |
 | **Z** | Feature-gap CLOSED (lag limiter droops, Visits 4-5); recovery limb **IN THIS RELEASE** (fault handling, PL-66/PL-86) | |
 | **H, Q, I/T** | FIXED in source | bounded `resetTracking()` (20 ms) and `SyncStatus()`; zero `abort` uses remain in either object |
-| **AB** | ⛔ **STILL PRESENT — IN THIS RELEASE** | `driveForDistance(left, right)` drives both wheels to the shorter distance (`isp_steering_2wheel.spin2:337, 359-369`) |
-| **G** | ⛔ **STILL PRESENT — IN THIS RELEASE** | `setRampingValues()` writes unvalidated; doc reads `[??? - ???] mm/s squared` (`:631-653`) |
-| **K** | ⛔ **STILL PRESENT — IN THIS RELEASE** | `DDU_KM`/`DDU_MI` readable, not commandable: `ticksForDistance()` lacks them in both objects |
-| **AC** | ⛔ **Comment wrong — IN THIS RELEASE** | code reduces the LEFT wheel for `limitDir > 0` (turns left; Visit 2 video agrees); the comment says right (`isp_steering_2wheel.spin2:1370-1385`) |
+| **AB** | **FIXED in source 2026-09-17 («#3569»)**; run-time proof owed to the bench | each wheel gets its own tick limit and a power in proportion to its distance, and stops at rest at its own limit (steering `driveForDistance()`, `powersForDistance()`, the `REQ_DRIVE_DISTANCE` arm of `frontApply()`) |
+| **G** | **FIXED in source 2026-09-17 («#3569»)**; run-time proof owed | `setAcceleration(rate)` takes mm/s² `[1..10_000]` and sets a constant-acceleration ramp derived from the certified 1913 passes/s (`rampStepForAccel()`); `setRampingValues()` validates every value (`ERR_BAD_COUNT`) |
+| **K** | **FIXED in source 2026-09-17 («#3569»)** | one integer unit table in the motor object (`ticksForDistance()`, now shared by the steering object); `DDU_KM` is 173,611 ticks for the 6.5″ wheel, so it resolves well; 64-bit conversion with an overflow bound |
+| **AC** | **CODE FIXED 2026-09-17 («#3569») — the code was wrong, not the comment** | `DRIVE-OBJECTS.md` NOTE2, `DRIVE-OBJECTS-SERIAL.md` NOTE2 and the Python demo (`dirHardRightTurn = 100`) all promise positive = right; overlay P3 (the API is the contract) makes the member keep that promise. Both RC demos inverted the joystick to compensate; the inversion is removed. Run-time proof owed (floor tier) |
 | **N** | STILL PRESENT; Doco-only, OUT of this release | `0 - VALUE_NOT_SET` = 1 (PL-71) |
 | **AI, AJ** | **IN THIS RELEASE for the 6.5″** | offsets confirmed by the redesigned scan plus a spin-in-place floor run (STEPHEN 2026-09-17); AJ's Doco half stays out |
-| **AK** | measured feedback OUT (Known Issue); **compiled-in voltage getter IN** | STEPHEN 2026-09-17 |
+| **AK** | measured feedback OUT (Known Issue); **compiled-in voltage getter FIXED in source 2026-09-17 («#3569»)** | `getDriveVoltage()` on both objects returns the PWR_* value and nominal mV; serial `getvoltage` → `volt {enum} {mV}` |
 | **Y, J, P, D, E, L, U, V, AA, AG, AH** | unchanged | naming, latent and style notes; the style gate (PL-2) covers what is style |
 
 ---

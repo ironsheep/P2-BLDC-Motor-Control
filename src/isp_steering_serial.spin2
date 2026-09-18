@@ -54,6 +54,7 @@ CON { command-names enum }
 #13, CMD_HOLD, CMD_RST_TRKG
 #15, CMD_GET_DIST, CMD_GET_ROT, CMD_GET_PWR
 #18, CMD_GET_STAT, CMD_GET_MAX_SPD, CMD_GET_MAX_DIST_SPD
+#21, CMD_GET_VOLT
 
 DAT { command table }
 
@@ -78,6 +79,7 @@ DAT { command table }
     cmdGetStat          BYTE    "getstatus",0
     cmdGetMaxSpd        BYTE    "getmaxspd",0
     cmdGetMaxDistSpd    BYTE    "getmaxspdfordist",0
+    cmdGetVolt          BYTE    "getvoltage",0
 
     ' now describe cmd enum and # parms for each string
     cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
@@ -100,6 +102,7 @@ DAT { command table }
                 long  @cmdGetStat, CMD_GET_STAT, 0
                 long  @cmdGetMaxSpd, CMD_GET_MAX_SPD, 0
                 long  @cmdGetMaxDistSpd, CMD_GET_MAX_DIST_SPD, 0
+                long  @cmdGetVolt, CMD_GET_VOLT, 0
     cmdLast
     ' calculate the number of entries in table
     cmdEntryCt long ((@cmdLast - @cmdsFirst) / 4) / 3
@@ -135,6 +138,7 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
     long[@cmdsFirst][17 * 3] := @cmdGetStat
     long[@cmdsFirst][18 * 3] := @cmdGetMaxSpd
     long[@cmdsFirst][19 * 3] := @cmdGetMaxDistSpd
+    long[@cmdsFirst][20 * 3] := @cmdGetVolt
 
     ' validate user settings/choicess
     '  do NOT start motor unless all are legit!
@@ -334,22 +338,17 @@ PRI processCommand(pValues) | eError
             replyWithStatus(pValues, eError)
 
         CMD_SET_ACCEL:
-            ' NOTE: this is not yet functional, say so
-            strFmt.sFormatStr0(@msgWork, @"setAcceleration(rate) is NOT yet supported")
-            serialQueue.sendError(@msgWork)
-            {
             ' get incoming parm values
             nRate := LONG[pValues][serialQueue.ENT_PARM1_IDX]
             ' validate values
-            if not inRange(nRate, ??, ??)
+            if not inRange(nRate, wheels.ACCEL_MIN_MM_S2, wheels.ACCEL_MAX_MM_S2)
                 ' invalid, report so...
-                strFmt.sFormatStr1(@msgWork, @"Accel Rate (%d) out of range [??, ??]", nRate)
+                strFmt.sFormatStr3(@msgWork, @"Accel Rate (%d) out of range [%d, %d] mm/s^2", nRate, wheels.ACCEL_MIN_MM_S2, wheels.ACCEL_MAX_MM_S2)
                 serialQueue.sendError(@msgWork)
             else
-                ' all good, say so, then act on request
-                serialQueue.sendOK()
-                wheels.setAcceleration(nRate)
-            '}
+                ' all good, act on request, then report its outcome
+                eError := wheels.setAcceleration(nRate)
+                replyWithStatus(pValues, eError)
 
         CMD_SET_SPD:
             ' get incoming parm values
@@ -454,6 +453,14 @@ PRI processCommand(pValues) | eError
             onlyValue := wheels.getMaxSpeedForDistance()
             ' format response
             strFmt.sFormatStr1(@msgWork, @"speeddistmax %d\n", onlyValue)
+            ' send to host
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_VOLT:
+            ' get requested value(s): the configured drive voltage (PWR_* value) and its nominal mV
+            ltValue, rtValue := wheels.getDriveVoltage()
+            ' format response
+            strFmt.sFormatStr2(@msgWork, @"volt %d %d\n", ltValue, rtValue)
             ' send to host
             serialQueue.sendResponse(@msgWork)
 

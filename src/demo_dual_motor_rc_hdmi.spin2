@@ -197,6 +197,10 @@ CON
 
    VALUE_NOT_SET = -2
 
+   ' the VRA knob's travel maps onto this acceleration range, mm/s squared (setAcceleration())
+   RC_ACCEL_MIN_MM_S2 = 200
+   RC_ACCEL_MAX_MM_S2 = 3_000
+
 VAR
 
     long    priorSpeed
@@ -215,7 +219,7 @@ VAR
     long    nAccelerationRate
     long    nDoingOneRotation
 
-PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, bShowDebugStatus, bEmerCutoff, bShowDriveStates, accrate, bOneRotation
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, bShowDebugStatus, bEmerCutoff, bShowDriveStates, accrate, bOneRotation, accRngMin, accRngMax
 '' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
 ''
 
@@ -261,7 +265,9 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
 
         bOneRotation := remoteCtl.swIsOn(remoteCtl.CH_11)
 
-        accrate := remoteCtl.readchannel(remoteCtl.CTL_VRA)/10
+        ' setAcceleration() takes mm/s squared, so the knob's travel is mapped onto a range in those units
+        accRngMin, accRngMax := remoteCtl.chanMinMax(remoteCtl.CTL_VRA)
+        accrate := map(remoteCtl.readchannel(remoteCtl.CTL_VRA), accRngMin, accRngMax, RC_ACCEL_MIN_MM_S2, RC_ACCEL_MAX_MM_S2)
 
         if bLastShowDriveStates <> bShowDriveStates
             debug("- sho ", sdec_long_(bShowDriveStates))
@@ -304,7 +310,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
         if not bEmerCutoff
             rcSpeed, rcDirection := updPosnBothJoy()
             if not bIgnoreJoySticks
-                rcDirection := 0 - rcDirection  ' invert this to apply to our motors
                 if priorDirection <> rcDirection or priorSpeed <> rcSpeed
                     debug("- JOY ", sdec_long(rcSpeed), sdec_long(rcDirection))
                     commandSucceeded(wheels.driveDirection(rcSpeed, rcDirection), @"joystick drive")

@@ -451,6 +451,14 @@ class BLDCMotorControl:
         onlyValue = self.getValues('speeddistmax', responseStr, 1)
         return onlyValue
 
+    # PUB getDriveVoltage() : eVoltage, nMilliVolts
+    #  the configured drive (battery) voltage, as the P2's PWR_* value and its nominal mV; not a measurement
+    def getDriveVoltage(self):
+        commandStr = 'getvoltage\n'
+        responseStr = self.sendCommand(commandStr)
+        eVoltage, nMilliVolts = self.getValues('volt', responseStr, 2)
+        return int(eVoltage), int(nMilliVolts)
+
     # ------- PRIVATE (Support) Methods --------
     # common send method
     def sendCommand(self, cmdStr):

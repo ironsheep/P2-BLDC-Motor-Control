@@ -70,7 +70,7 @@ CON { Public Interface Constants }
     '   ERR_NOT_STARTED        - a command on a motor whose driver and front cog are not running
     '   ERR_NO_SENSE_TASK      - no longer raised (start() always runs the front cog); kept so callers still compile
     '   ERR_BAD_UNITS          - a units value outside its DDU_*, DRU_* or DTU_* enum
-    '   ERR_BAD_COUNT          - a distance, rotation or time value less than 1
+    '   ERR_BAD_COUNT          - a distance, rotation, time, rate or ramp value outside its range (e.g. less than 1)
     '   ERR_NO_WHEEL_DIA       - a distance request when the configured wheel diameter is 0
     '   ERR_LIMIT_UNRESOLVABLE - a stop limit that rounds to less than one hall tick
     '   ERR_SYNC_TIMEOUT       - a synchronized command the driver did not take in time
@@ -102,6 +102,13 @@ CON { Public Interface Constants }
     ERR_BOARD_NOT_DETECTED  = -1_018
     ERR_PROTECTIVE_STOP     = -2_000
     ERR_PLATFORM_BLOCKED    = -2_001
+
+    ' setAcceleration(): the accepted rate, mm/s squared at the wheel rim (10_000 is about 1 g)
+    ACCEL_MIN_MM_S2         = 1
+    ACCEL_MAX_MM_S2         = 10_000
+
+    ' setRampingValues(): the largest ramp step, which keeps the driver's ramp sum inside a signed long
+    RAMP_STEP_MAX           = $4000_0000
 
 OBJ { objects / constants included by this object }
 
@@ -545,8 +552,6 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' preset HDMI Monitor values
     resetHdmiData()
 
-    eUserSelectedVolts := VALUE_NOT_SET    ' ensure we don't drive motor unles we know the users' voltage!
-
     debug[user.DBGCH_LIFECYCLE]("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(adc_fram), udec_long(duty_min), udec_long(duty_max))
     debug[user.DBGCH_LIFECYCLE]("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks))
 
@@ -628,29 +633,48 @@ PUB testSetMotorId(pIDStr) : eError
     strcopy(@motorId, pIdStr, MOTOR_ID_STRLEN)
     eError := NO_ERROR
 
-PUB setAcceleration(rate) : eError
-'' Limit Acceleration to {rate} where {rate} is [??? - ???] mm/s squared (default is ??? mm/s squared)
+PUB setAcceleration(rate) : eError | rampStep
+'' Set how fast the motor speeds up: every speed-up from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
 ''
-'' @param rate - the ramp increment added every drive pass while speeding up
-'' @returns eError - NO_ERROR
+'' Until this is called the motor uses a gentle built-in ramp that starts near 44 mm/s squared and grows by about
+'' 1_240 mm/s squared every second (6.5in wheel). Slowing down and stopping keep their own fixed rate, so the
+'' stopping distances do not change. The motor can still accelerate more slowly than asked: the drive never lets
+'' the field run further ahead of the rotor than the motor can follow.
+''
+'' @param rate - acceleration while speeding up, mm/s squared [ACCEL_MIN_MM_S2 to ACCEL_MAX_MM_S2]
+'' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range (also recorded for getError()); a rejected call changes nothing
 
-  ' need to convert from units to ramp increment
-    eError := setRampingValues(ramp_min, ramp_max, rate, ramp_down)
+' Local Variables:
+' @local rampStep - the constant driver increment step per drive pass that gives {rate}
+
+    eError, rampStep := rampStepForAccel(rate)
+    if eError == NO_ERROR
+        ' G: the ramp starts, continues and ends at one step, so the field accelerates at a constant rate
+        eError := setRampingValues(rampStep, rampStep, 0, ramp_down)
+    else
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: setAcceleration() rejected ", sdec_long(eError), sdec_long(rate))
 
 PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp) : eError
-'' Change the ramping parameters
+'' Change the ramping parameters, in the driver's own units (angle increment per drive pass)
 ''
-'' @param minRamp - angle increment at the start of a ramp up
-'' @param maxRamp - largest angle increment a ramp up reaches
-'' @param incRamp - increment added to the ramp every drive pass until maxRamp is reached
-'' @param decrRamp - fixed angle decrement per drive pass when slowing down
-'' @returns eError - NO_ERROR
+'' @param minRamp - angle increment at the start of a ramp up [1 to maxRamp]
+'' @param maxRamp - largest angle increment a ramp up reaches [minRamp to RAMP_STEP_MAX]
+'' @param incRamp - increment added to the ramp every drive pass until maxRamp is reached [0 to RAMP_STEP_MAX]; 0 ramps at a constant minRamp
+'' @param decrRamp - fixed angle decrement per drive pass when slowing down [1 to RAMP_STEP_MAX]
+'' @returns eError - NO_ERROR, or ERR_BAD_COUNT (also recorded for getError()) for a value outside its range; a rejected call changes nothing
 
-    ramp_min := minRamp
-    ramp_max := maxRamp
-    ramp_inc := incRamp
-    ramp_down := decrRamp
-    eError := NO_ERROR
+    ' G: a zero decrRamp would never stop the motor and divides frontStopTicks() by zero, and a negative
+    '  step would ramp the wrong way; RAMP_STEP_MAX keeps the driver's ramp sum inside a signed long
+    if (minRamp < 1) or (maxRamp < minRamp) or (maxRamp > RAMP_STEP_MAX) or (incRamp < 0) or (incRamp > RAMP_STEP_MAX) or (decrRamp < 1) or (decrRamp > RAMP_STEP_MAX)
+        eError := recordError(ERR_BAD_COUNT)
+        debug[user.DBGCH_ERROR]("! ERROR: setRampingValues() rejected ", sdec_long(minRamp), sdec_long(maxRamp), sdec_long(incRamp), sdec_long(decrRamp))
+    else
+        ramp_min := minRamp
+        ramp_max := maxRamp
+        ramp_inc := incRamp
+        ramp_down := decrRamp
+        eError := NO_ERROR
 
 PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
 '' Return the ramping parameters
@@ -740,11 +764,11 @@ CON { --- Subsystem Control --- }
 
 PUB driveForDistance(distance, distanceUnits) : eError | nStopTicks
 '' Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
-'' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_IN, DDU_CM, DDU_FT or DDU_M].
+'' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI].
 '' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
 ''
 '' @param distance - distance to travel, at least 1
-'' @param distanceUnits - units of {distance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
+'' @param distanceUnits - units of {distance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
 '' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError() (ERR_EMERGENCY_STOPPED while emergency-stopped); on any error neither the limit is armed nor the motor started
 
 ' Local Variables:
@@ -845,14 +869,14 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, deg
         debug[user.DBGCH_ERROR]("! ERROR: stopAfterRotation() rejected ", sdec_long(eError), sdec_long(nRotationCount), sdec_long(eRotationUnits))
 
 PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks
-'' Stops the motor so it is at rest at {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M].
+'' Stops the motor so it is at rest at {distance} specified in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI].
 '' USE WITH:  driveAtPower(); the front cog start() launched enforces the limit
 ''
 '' The stop begins early, by the distance the ramp-down needs at the motor's current speed, so the motor comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
 ''
 '' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
-'' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
+'' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
 '' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError() (ERR_NOT_STARTED when the motor is not started); a rejected call leaves any armed limit in place
 
 ' Local Variables:
@@ -1200,6 +1224,20 @@ PUB getMaxSpeedForDistance() : nSpeed4dist
 
     nSpeed4dist := maxSpeed4dist  ' return last specified user value
 
+PUB getDriveVoltage() : eVoltage, nMilliVolts
+'' Return the drive (battery) voltage this motor was started for, and its nominal value
+''
+'' This is the PWR_* value given to start() -- the demos pass the user configuration's DRIVE_VOLTAGE -- not a
+'' measurement: this object does not measure the supply.
+''
+'' @returns eVoltage - the PWR_* value in effect; PWR_Unknown, with ERR_NOT_STARTED recorded for getError(), before the first start()
+'' @returns nMilliVolts - the nominal voltage of {eVoltage} in mV (e.g. 18_500 for PWR_18p5V); 0 before the first start()
+
+    eVoltage := eUserSelectedVolts
+    nMilliVolts := nominalMilliVolts(eVoltage)
+    if eVoltage == PWR_Unknown
+        recordError(ERR_NOT_STARTED)
+
 PUB getStatus() : eStatus
 '' Returns status of motor drive state for this motor: enumerated constant: DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF, DS_FAULTED, or DS_ESTOP
 ''
@@ -1489,6 +1527,37 @@ PUB wheelGeometry() : nCircInMM_x10, nTickInMM_x100 | ticsPerRotation
         '  5.7 mm/tick against a true 5.763, a systematic -1.1% in every DDU_* conversion. Signed
         '  '/' is safe here: both operands are always non-negative (a wheel circumference and a tick count).
         nTickInMM_x100 := ((nCircInMM_x10 * 10) + (ticsPerRotation / 2)) / ticsPerRotation
+
+PUB ticksForDistance(nDistance, eDistanceUnits) : eError, nStopTicks | nTickInMM_x100, nUnitInMM_x100
+'' INTERNAL USE: validate a distance and convert it to hall ticks, with no side effects and nothing recorded (for isp_steering_2wheel)
+''
+'' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
+'' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT (less than 1, or more hall ticks than a long holds), ERR_NO_WHEEL_DIA, ERR_BAD_UNITS or ERR_LIMIT_UNRESOLVABLE
+'' @returns nStopTicks - the distance in hall ticks; meaningful only when {eError} is NO_ERROR
+
+' Local Variables:
+' @local nTickInMM_x100 - wheel travel per hall tick in hundredths of a mm, 0 when the wheel diameter is 0
+' @local nUnitInMM_x100 - one {eDistanceUnits} in hundredths of a mm, 0 when it is not a DDU_* unit
+
+    ' K: one integer conversion for every unit, exact for the imperial ones (1 in = 25.4 mm), 64-bit in
+    '  the middle so a long distance in a large unit cannot overflow (was DDU_M's x100_000 at 21 km)
+    eError := NO_ERROR
+    nStopTicks := 0
+    _, nTickInMM_x100 := wheelGeometry()
+    nUnitInMM_x100 := unitInMM_x100(eDistanceUnits)
+    if nDistance < 1
+        eError := ERR_BAD_COUNT
+    elseif nTickInMM_x100 == 0
+        eError := ERR_NO_WHEEL_DIA
+    elseif nUnitInMM_x100 == 0
+        eError := ERR_BAD_UNITS
+    elseif nDistance > maxDistanceInUnits(nUnitInMM_x100, nTickInMM_x100)
+        eError := ERR_BAD_COUNT
+    else
+        nStopTicks := muldiv64(nDistance, nUnitInMM_x100, nTickInMM_x100)
+        if nStopTicks < 1
+            eError := ERR_LIMIT_UNRESOLVABLE
 
 CON ' --- TEST-USE ONLY Methods ---
 
@@ -1802,48 +1871,83 @@ PRI incrementForPower(nUserPower) : nMotorIncre
         ' this is a STOP request
         nMotorIncre := 0    ' stop!
 
-PRI ticksForDistance(nDistance, eDistanceUnits) : eError, nStopTicks | nTickInMM_x100
-' Validate a distance request and convert it to hall ticks, with no side effects and nothing recorded.
+CON { distance units, in hundredths of a mm (unitInMM_x100()), and the float scales rampStepForAccel() uses }
+
+    MM_X100_PER_MM          = 100
+    MM_X100_PER_CM          = 1_000
+    MM_X100_PER_M           = 100_000
+    MM_X100_PER_KM          = 100_000_000
+    MM_X100_PER_IN          = 2_540             ' 1 in = 25.4 mm exactly
+    MM_X100_PER_FT          = 30_480
+    MM_X100_PER_MI          = 160_934_400       ' 1 mi = 1_609.344 m exactly
+
+    F_MM_X100_PER_MM        = 100.0
+    F_ANGLE_UNITS_PER_CYCLE = 4_294_967_296.0   ' 2^32: the driver's field angle for one hall (electrical) cycle
+
+PRI unitInMM_x100(eDistanceUnits) : nUnitInMM_x100
+' Return one distance unit in hundredths of a mm: the one table every distance a caller commands is converted with.
 '
-' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
-' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT or DDU_M
-' @returns eError - NO_ERROR, ERR_BAD_COUNT, ERR_NO_WHEEL_DIA, ERR_BAD_UNITS or ERR_LIMIT_UNRESOLVABLE
-' @returns nStopTicks - the requested distance in hall ticks; meaningful only when {eError} is NO_ERROR
+' @param eDistanceUnits - a DDU_* distance unit
+' @returns nUnitInMM_x100 - one {eDistanceUnits} in hundredths of a mm; 0 when it is not a DDU_* distance unit
+
+    case eDistanceUnits
+        DDU_MM:
+            nUnitInMM_x100 := MM_X100_PER_MM
+        DDU_CM:
+            nUnitInMM_x100 := MM_X100_PER_CM
+        DDU_M:
+            nUnitInMM_x100 := MM_X100_PER_M
+        DDU_KM:
+            nUnitInMM_x100 := MM_X100_PER_KM
+        DDU_IN:
+            nUnitInMM_x100 := MM_X100_PER_IN
+        DDU_FT:
+            nUnitInMM_x100 := MM_X100_PER_FT
+        DDU_MI:
+            nUnitInMM_x100 := MM_X100_PER_MI
+        other:
+            nUnitInMM_x100 := 0
+
+PRI maxDistanceInUnits(nUnitInMM_x100, nTickInMM_x100) : nMaxDistance
+' Return the largest distance, in a unit, whose hall-tick count still fits a signed long.
+'
+' @param nUnitInMM_x100 - one unit in hundredths of a mm, at least 1
+' @param nTickInMM_x100 - wheel travel per hall tick in hundredths of a mm, at least 1
+' @returns nMaxDistance - the largest accepted distance in that unit
+
+    ' A unit no longer than a tick can never produce more ticks than its own count, so any long fits. The
+    '  bound is computed only when it is below POSX, where MULDIV64's quotient is sure to fit a long.
+    nMaxDistance := POSX
+    if nUnitInMM_x100 > nTickInMM_x100
+        nMaxDistance := muldiv64(POSX, nTickInMM_x100, nUnitInMM_x100)
+
+PRI rampStepForAccel(rate) : eError, rampStep | nTickInMM_x100, fPassesPerSec, fMmPerSec2PerStep
+' Convert an acceleration at the wheel rim to the driver ramp step that gives it; records nothing.
+'
+' The driver adds the step to the field's increment every drive pass, and one hall cycle (2^32 angle units) is
+' HALL_TICKS_PER_CYCLE ticks, so one step accelerates the rim by passes/s^2 x HALL_TICKS_PER_CYCLE x mm/tick / 2^32.
+'
+' @param rate - acceleration while speeding up, mm/s squared [ACCEL_MIN_MM_S2 to ACCEL_MAX_MM_S2]
+' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range
+' @returns rampStep - the driver ramp step per drive pass; meaningful only when {eError} is NO_ERROR
 
 ' Local Variables:
 ' @local nTickInMM_x100 - wheel travel per hall tick in hundredths of a mm, 0 when the wheel diameter is 0
+' @local fPassesPerSec - drive passes per second (float)
+' @local fMmPerSec2PerStep - the rim acceleration one ramp step gives, mm/s squared (float)
 
-    ' FIXME: UNDONE should be more than ticks needed for spin-up/down ramps!!!
     eError := NO_ERROR
-    nStopTicks := 0
+    rampStep := 0
     _, nTickInMM_x100 := wheelGeometry()
-    if nDistance < 1
-        eError := ERR_BAD_COUNT
-    elseif nTickInMM_x100 == 0
+    if nTickInMM_x100 == 0
         eError := ERR_NO_WHEEL_DIA
+    elseif (rate < ACCEL_MIN_MM_S2) or (rate > ACCEL_MAX_MM_S2)
+        eError := ERR_BAD_COUNT
     else
-        ' convert distance to ticks (will stop at ticks limit)
-        ' task 3502: numerators carry an extra x10 to match nTickInMM_x100's x100 scale
-        '  (was x10). Largest assumed input is 1000 m: DDU_M's intermediate is then
-        '  1000 * 1000 * 100 = 100_000_000, safely inside a signed LONG (max 2_147_483_647).
-        case eDistanceUnits
-            DDU_MM:
-                nStopTicks := (nDistance * 100) / nTickInMM_x100
-            DDU_CM:
-                nStopTicks := (nDistance * 10 * 100) / nTickInMM_x100
-            DDU_IN:
-                nStopTicks := round(distConv.fIn2mm(nDistance) *. 100.0) / nTickInMM_x100
-            DDU_FT:
-                nStopTicks := round(distConv.fIn2mm(nDistance * 12) *. 100.0) / nTickInMM_x100
-            DDU_M:
-                ' F: 1 m = 1000 mm, not 100 -- the prior "* 100" scaled DDU_M ten times short of
-                ' DDU_CM/DDU_MM for the same physical distance (measured: DDU_M -> 17 ticks vs.
-                ' the equivalent DDU_CM/DDU_MM -> 175 ticks each).
-                nStopTicks := (nDistance * 1000 * 100) / nTickInMM_x100
-            other:
-                eError := ERR_BAD_UNITS
-        if (eError == NO_ERROR) and (nStopTicks < 1)
-            eError := ERR_LIMIT_UNRESOLVABLE
+        ' C-1 (certified): one drive pass every DRIVE_PASS_FRAMES PWM frames
+        fPassesPerSec := float(PWM_RATE_IN_HZ) /. float(DRIVE_PASS_FRAMES)
+        fMmPerSec2PerStep := fPassesPerSec *. fPassesPerSec *. float(HALL_TICKS_PER_CYCLE) *. (float(nTickInMM_x100) /. F_MM_X100_PER_MM) /. F_ANGLE_UNITS_PER_CYCLE
+        rampStep := 1 #> round(float(rate) /. fMmPerSec2PerStep)
 
 PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr, index
     case eMotorType
@@ -2003,7 +2107,7 @@ PRI confgurePowerLimits(userVoltage) | index
         minRevIncreAtPwr := 0 - minFwdIncreAtPwr
 
     eUserSelectedVolts := userVoltage
-    fMotorVolts := motorVoltage(userVoltage)
+    fMotorVolts := float(nominalMilliVolts(userVoltage)) /. F_MV_PER_VOLT
     debug[user.DBGCH_LIFECYCLE]("* EXIT 2 CFG ", sdec_long(eUserSelectedVolts), " ", sdec(maxFwdIncreAtPwr), " ", sdec(minFwdIncreAtPwr))
 
 PRI setTargetAccel(nTgtIncr, sync) | inincr
@@ -2033,14 +2137,14 @@ PUB SyncStatus() : eError | startMs
             debug[user.DBGCH_ERROR]("! ERROR: SyncStatus(", zstr_(@motorId), ") driver did not take the synchronized command")
             quit
 
-PRI motorVoltage(eSelectedPower) : fVolts
-' Return the supply voltage for a validated voltage enum.
+PRI nominalMilliVolts(eVoltage) : nMilliVolts
+' Return the nominal supply voltage of a voltage enum, in mV: the one table getDriveVoltage() and the power figures read.
 '
-' @param eSelectedPower - the voltage ENUM (PWR_*), already validated
-' @returns fVolts - the supply voltage (float)
+' @param eVoltage - the voltage ENUM (PWR_*)
+' @returns nMilliVolts - the nominal voltage in mV; 0 for PWR_Unknown or any value that is not a PWR_* voltage
 
-    ' PWR_6p0V is 1, so the enum is itself the 1-based lookup index
-    fVolts := lookup(eSelectedPower: 6.0, 7.4, 11.1, 12.0, 14.8, 18.5, 22.2, 24.0, 25.9)
+    ' PWR_6p0V is 1, so the enum is itself the 1-based lookup index; LOOKUP returns 0 out of range
+    nMilliVolts := lookup(eVoltage: 6_000, 7_400, 11_100, 12_000, 14_800, 18_500, 22_200, 24_000, 25_900)
 
 PRI recordError(eCode) : eSameCode
 ' Record the calling cog's first error: the ONLY writer of lastError[]; returns the code unchanged.
@@ -2293,6 +2397,7 @@ CON ' -- TASK: the front cog --
   R360_WINDOW_SIZE = 5
 
   F_SCALE_WATTS = 10.0
+  F_MV_PER_VOLT = 1_000.0           ' nominalMilliVolts() -> the float volts the power figures use
   CURRENT_UNITS_PER_AMP = 10_000    ' getCurrent() reports current in 0.1 mA units (amps x 10_000)
 
   F_REV_A_RSENSE = 5        ' .005 Ohms
@@ -3349,6 +3454,8 @@ CON { driver internal Constants }
 '22KHz EXPERIMENT
 '    FRAME   = 12_273            ' 22.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
     PWM_RATE_IN_HZ   = 44_000
+    DRIVE_PASS_FRAMES   = 23        ' PL-50/C-1: one drive pass every 23 PWM (ADC) frames, about 1913 passes/s
+    HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 17
