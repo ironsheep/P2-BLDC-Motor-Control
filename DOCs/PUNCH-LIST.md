@@ -3203,6 +3203,13 @@ claim, and the measurement outranks it).
 
 ### PL-78 -- the lag error clamps at 115-116 against a 110 bound, and commanded velocity is not rate-limited (the slam)
 
+> **STATUS 2026-09-18 («#3573»):** the first half (`LAGBND`) is certified at Visit 5. The second half -- the slam --
+> is judged at Visit 6 by `R17-DUAL-TRKICK-A` on the new `BM-RUNGTR` transition record (PL-87's box). A source
+> re-read of the speed-change entry found no further construction defect for a same-sign speed-up: the
+> `.doSpdChange` ramp reset is the only inherited state, and it is in the binary. If TRKICK fails, the failing
+> transitions' `incre` pairs name which path to read next (speed-up, ramp-down, or direction change via
+> `.slow2Chg`); the driver comment no longer cites the withdrawn Visit 4 `err_pk` table as evidence.
+
 **Found 2026-09-17 in «#3561»**, Visit 4, all four dual parts. This entry carries both the failing cell and the
 physical effect Stephen reported, because the open question is whether they are one finding or two.
 
@@ -3888,6 +3895,23 @@ constant, so the offset needed to cross it is arithmetic, not a sweep.
 > fault half) all become measurable.
 
 ### PL-87 -- the ladder's err_pk is a STEADY-WINDOW statistic, so no cell can see a transition kick
+
+> ## FIXED IN THE HARNESS 2026-09-18 («#3573», dual SRC_REV 16 / FMT 7); run-time proof owed to Visit 6
+>
+> - `rungMeasure()` now marks the ring at the drive command, and `transitionStats()` walks [command mark ..
+>   window start] -- the ramp and the settle -- for peak |err| and peak |i|. Every LADDER and CLOCK rung prints
+>   them in a new record, `BM-RUNGTR` (177 bytes worst case; `BM-RUNG2` had no room at 269), with `tr_over`: the
+>   transition peak less the rung's own steady `err_pk`, so the servo ripple common to both cancels.
+> - **The control is by state, not index:** `from_rest` is TRUE for the first rung of each motor and sign and for
+>   the first rung after a recovered fault. A command whose ring sample was overwritten prints NA
+>   (`WHY_RING_LOST_HEAD`), never a partial peak.
+> - **New cell `R17-DUAL-TRKICK-A`** (per motor): counts the running-speed changes whose `tr_over` exceeds the
+>   control's by more than `TRKICK_MARGIN` (10 err units, ~14 degrees electrical); PASS at 0. The margin is
+>   DERIVED; the negative case is Stephen's Visit 5 observation that many transitions still kicked, which this
+>   cell must then fail.
+> - `BM-RUNG2`'s `err_pk` stays in the record as the steady statistic it is; its comment now says so.
+> - **Limit, stated:** the instrument samples at 500 Hz, so a kick shorter than ~2 ms can fall between samples.
+>   If the cell passes while a kick is still felt, that is the instrument's limit, not the driver's.
 
 **Found 2026-09-17 at Visit 5**, checking Stephen's observation against the data. **Instrument defect,
 mine (P3).** ⛔ **It invalidates the evidence PL-78's second half was built on.**

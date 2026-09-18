@@ -99,6 +99,12 @@
 ''               l_cause / r_cause (S-7). New cells R17-DUAL-FLTCAUSE-B, R17-DUAL-OFFREST-B, R17-DUAL-FLTSTOP-C
 ''               (a fault delivers holdAtStop(): FLOAT coasts further than BRAKE) and R17-DUAL-IDLEMOVE-A/-B/-C
 ''               (the uncommanded wheel stays put during the other wheel's trial)
+''               18 Sep 2026 -- SRC_REV=16, FMT 7: task 3573 (PL-87, PL-78). Every LADDER and CLOCK rung
+''               prints BM-RUNGTR, its TRANSITION from a mark at the command to the window start: peak |err|,
+''               peak |i|, and tr_over (the transition peak above the rung's own steady err_pk). BM-RUNG2's
+''               err_pk is the steady window's servo ripple and no longer read as a kick. New cell
+''               R17-DUAL-TRKICK-A: a change of speed from a running speed kicks when its tr_over exceeds the
+''               start from rest's by more than TRKICK_MARGIN.
 ''
 '' =================================================================================================
 
@@ -162,8 +168,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 15                                        ' hand-bumped whenever this file changes
-    FMT_VERSION = 6                                         ' BM- record-format version
+    SRC_REV     = 16                                        ' hand-bumped whenever this file changes
+    FMT_VERSION = 7                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -841,6 +847,15 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     '  of ticks, which is what PL-76's wrong-wheel ternary did.
     IDLE_MOVE_LO      = 0
     IDLE_MOVE_HI      = 2
+    ' TRKICK (task 3573, PL-87 / PL-78): a change of speed from a running speed kicks when its transition
+    '  overshoot (tr_over: transition peak |err| less the rung's own steady err_pk) exceeds the start from
+    '  rest's by more than this many err units (~14 degrees electrical). DERIVED, not yet measured: the
+    '  steady ripple alone is ~25 units, and PL-78's source reading has an inherited ramp step driving the
+    '  rotor into the LAG_SOFT gate (80) at once. The first ladder load reads the control's own spread; the
+    '  negative case is what Stephen felt at Visit 5 ("many still are" kicking), which this must then fail.
+    TRKICK_MARGIN     = 10
+    TRKICK_LO         = 0
+    TRKICK_HI         = 0
     ' LAGBOUND (task 3558's lag limiter): the instrument's own running max |err| over stored samples with
     '  the driver up and not faulted.
     '
@@ -1299,6 +1314,8 @@ sSfCellIdleMvC  BYTE    "R17-DUAL-IDLEMOVE-C", 0
 sSfCellHallK200 BYTE    "R17-DUAL-HALL-K200", 0
 sSfCellHallK270 BYTE    "R17-DUAL-HALL-K270", 0
 sSfCellHallK300 BYTE    "R17-DUAL-HALL-K300", 0
+' task 3573: a change of speed's transition kick against the start from rest (PL-87, PL-78)
+sSfCellTrKickA  BYTE    "R17-DUAL-TRKICK-A", 0
 sSfCritCog0End  BYTE    "ENDED_BY_COG0", 0
 sSfCritQuiet    BYTE    "QUIET_MASKS", 0
 sSfCritInstLive BYTE    "INST_LIVE", 0
@@ -1339,6 +1356,7 @@ sSfCritHall     BYTE    "ILLEGAL_HALL_CODES", 0
 sSfCritFltCause BYTE    "CAUSE_IS_LAG", 0
 sSfCritFltStop  BYTE    "FLOAT_COASTS_MORE", 0
 sSfCritIdleMove BYTE    "IDLE_WHEEL_TICKS", 0
+sSfCritTrKick   BYTE    "TRANSITION_KICKS", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfPass         BYTE    "PASS", 0
@@ -2732,9 +2750,10 @@ PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, mark
 
 PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeEvent | slotIdx, otherIdx, startMs, bReached, missedStart, illegalStart, missedEnd, illegalEnd
 ' One measured rung, the routine LADDER, LIVE and CLOCK share (design sec 4.4): read the offsets,
-' duty_max and integrity counts; arm; command; AT_SPEED (<= steadyBoundMs); settle; a WINDOW_MS window
-' delimited by two ring totals (rungWindow(), sec 12.7); freeze; window statistics and the capture's
-' idle-wheel check; integrity deltas. Fills the rg* staging and the rs* statistics; emits nothing.
+' duty_max and integrity counts; arm; mark; command; AT_SPEED (<= steadyBoundMs); settle; a WINDOW_MS
+' window delimited by two ring totals (rungWindow(), sec 12.7); freeze; window statistics, the
+' transition statistics from the command mark to the window start (PL-87), and the capture's idle-wheel
+' check; integrity deltas. Fills the rg* staging and the rs* and tr* statistics; emits nothing.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param motorIncre - signed increment
@@ -2766,6 +2785,7 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeE
     bRgIdleUp := FALSE
     rgWinStart := -1
     rgWinEnd := -1
+    rgCmdStart := -1
     safeEvent := SAFE_NONE
     bReached := FALSE
     rsOffNeg, rsOffPos := wheelGetOffsets(side)
@@ -2773,9 +2793,11 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeE
     missedStart, illegalStart := wheelIntegrity(side)
     if instArm(INST_SRC_WHEELS, 1) == FALSE
         windowStats(slotIdx, otherIdx, -1, -1)              ' resets the rs* staging; reads no ring long
+        transitionStats(slotIdx, -1, -1)                    ' and the tr* staging, likewise
         rgResult := RES_SKIPPED
         rgWhy := WHY_INST_NOACK
     else
+        rgCmdStart := instMarkIndex()                       ' PL-87: the transition's first sample, marked before the command
         startMs := getms()
         wheelCommand(side, motorIncre)
         ' from a previous rung the mirror still reads AT_SPEED until the driver takes the new command
@@ -2792,8 +2814,10 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeE
         if bRgCaptured
             bRgIdleUp := captureIdleUp(otherIdx)
             windowStats(slotIdx, otherIdx, rgWinStart, rgWinEnd)
+            transitionStats(slotIdx, rgCmdStart, rgWinStart)
         else
             windowStats(slotIdx, otherIdx, -1, -1)          ' I10: an unfrozen ring is never read
+            transitionStats(slotIdx, -1, -1)
         case safeEvent
             SAFE_FAULT:
                 rgResult := RES_FAULT
@@ -2819,6 +2843,98 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeE
     missedEnd, illegalEnd := wheelIntegrity(side)
     rgMissedD := (missedEnd - missedStart) #> 0
     rgIllegalD := (illegalEnd - illegalStart) #> 0
+
+PRI transitionStats(slotIdx, cmdTotal, endTotal) | sampleIdx, startJ, endJ, firstJ, lastJ
+' PL-87: the rung's TRANSITION statistics -- peak |err| and peak |i| from the command mark to the window
+' start, which is the ramp to the new speed and the settle after it. windowStats() reads only the steady
+' window, which opens after both, so its err_pk is the duty servo's ripple and cannot see a kick. The ring
+' holds these samples already (the instrument is armed before the command); this pass reads them. A
+' command sample the ring has overwritten makes the peak partial, so it is NA (WHY_RING_LOST_HEAD) rather
+' than a smaller number. Samples whose driver was not up are left out, as in windowStats() (I3). Separate
+' tr* staging, so the rs* statistics BM-RUNG2 prints are untouched.
+'
+' @param slotIdx - motor slot under test
+' @param cmdTotal - total index of the first sample at or after the command mark, -1 when not recorded
+' @param endTotal - total index at the window start, -1 when the window never opened
+'
+' @local sampleIdx - logical index
+' @local startJ - logical index of the command's sample
+' @local endJ - logical index of the last sample before the window
+' @local firstJ - first sample walked, -1 when none
+' @local lastJ - last sample walked
+
+    drainBegin()
+    trN := 0
+    trErrPk := 0
+    trIPk := 0
+    trMs := 0
+    firstJ := -1
+    lastJ := -1
+    if (cmdTotal < 0) or (endTotal <= cmdTotal) or (drStored == 0)
+        trWhy := WHY_NO_SAMPLES
+    elseif cmdTotal < drLostHead
+        trWhy := WHY_RING_LOST_HEAD
+    else
+        trWhy := WHY_NONE
+        startJ := cmdTotal - drLostHead
+        endJ := (endTotal - 1 - drLostHead) <# (drStored - 1)
+        if endJ >= startJ                                   ' a descending repeat would walk backwards
+            repeat sampleIdx from startJ to endJ
+                beat(CP_LOOP_DRAIN)
+                if firstJ < 0
+                    firstJ := sampleIdx
+                lastJ := sampleIdx
+                if smpUp(sampleIdx, slotIdx)
+                    trN += 1
+                    trErrPk #>= abs(smpErr(sampleIdx, slotIdx))
+                    trIPk #>= abs(smpI(sampleIdx, slotIdx))
+        if (firstJ >= 0) and (lastJ > firstJ)
+            trMs := (smpT(lastJ) - smpT(firstJ)) / TICKS_PER_MS
+        if trN == 0
+            trWhy := WHY_NO_SAMPLES
+
+PRI foldTransitionKick(side, motorIncre, bFromRest) | slotIdx, ctrlIdx, overPk
+' TRKICK (PL-87, PL-78): a LADDER rung's transition kick against its own control. A rung's transition
+' overshoot is its transition peak |err| less its own steady peak (tr_over): what the change of speed
+' added above steady running. A start FROM REST has always had the soft start, so it is the control for
+' the rungs of the same motor and sign that follow it; a change of speed from a running speed is a kick
+' when its overshoot exceeds the control's by more than TRKICK_MARGIN. Only rungs with both a valid
+' window and a valid transition are judged.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - the rung's signed increment (its sign picks the control)
+' @param bFromRest - TRUE when this rung started from rest (the first of its sign, or after a recovered fault)
+'
+' @local slotIdx - motor slot
+' @local ctrlIdx - the control's slot x sign index
+' @local overPk - this rung's transition overshoot
+
+    slotIdx := side - SIDE_LEFT
+    ctrlIdx := slotIdx * 2
+    if motorIncre > 0
+        ctrlIdx += 1
+    if (trWhy == WHY_NONE) and bRgWindowValid
+        overPk := trErrPk - rsErrPk
+        if bFromRest
+            sfTrCtrlOver[ctrlIdx] := overPk                 ' the latest start from rest controls what follows it
+            bSfTrCtrl[ctrlIdx] := TRUE
+        elseif bSfTrCtrl[ctrlIdx]
+            sfTrN[slotIdx] := (sfTrN[slotIdx] + 1) <# LIM_SMALL
+            if overPk > sfTrCtrlOver[ctrlIdx] + TRKICK_MARGIN
+                sfTrKicks[slotIdx] := (sfTrKicks[slotIdx] + 1) <# LIM_SMALL
+
+VAR { transition statistics (PL-87) -- cog 0 only }
+
+    LONG    rgCmdStart                                      ' total index of the first sample at or after the command mark
+    LONG    trN                                             ' up samples in the transition
+    LONG    trErrPk                                         ' peak |err| over the transition, err units
+    LONG    trIPk                                           ' peak |i| over the transition, as BM-RUNG2's i_min / i_max
+    LONG    trMs                                            ' the transition's span, command sample to last sample before the window
+    LONG    trWhy                                           ' WHY_NONE when the tr* values are a measurement
+    LONG    sfTrCtrlOver[INST_MOTORS * 2]                   ' TRKICK: [slot * 2 + (POS ? 1 : 0)] the control's tr_over
+    LONG    bSfTrCtrl[INST_MOTORS * 2]
+    LONG    sfTrN[INST_MOTORS]                              ' TRKICK: running-speed transitions judged, per motor
+    LONG    sfTrKicks[INST_MOTORS]                          ' TRKICK: of those, the ones that kicked
 
 PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, ampsCount, hbStart, bComplete
 ' The rung's measurement window: a start mark (ring total), WINDOW_MS of beat-polled safety reads with
@@ -2865,15 +2981,17 @@ PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, a
         rgAmpsX10k := ampsSum / ampsCount
         bRgAmpsValid := bComplete
 
-PRI rungEmitAll(seg, rid, rungIdx, side, motorIncre) | slotIdx, rung2Why
-' Emit a measured rung's BM-RUNG, BM-RUNG2 and BM-RUNG3 from the rg* / rs* staging, and fold it into
-' R14-DUAL-INTEG-A (its integrity deltas) and R14-DUAL-IDLEFLT-A (one motor-frame capture).
+PRI rungEmitAll(seg, rid, rungIdx, side, motorIncre, bFromRest) | slotIdx, rung2Why
+' Emit a measured rung's BM-RUNG, BM-RUNG2, BM-RUNGTR and BM-RUNG3 from the rg* / rs* / tr* staging, and
+' fold it into R14-DUAL-INTEG-A (its integrity deltas), R14-DUAL-IDLEFLT-A (one motor-frame capture) and,
+' for a LADDER rung, R17-DUAL-TRKICK-A (its transition against the start from rest, PL-87).
 '
 ' @param seg - SEG_* in progress
 ' @param rid - rung id
 ' @param rungIdx - index into ladderIncre (or the segment's rung number)
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param motorIncre - signed increment
+' @param bFromRest - TRUE when the rung started from rest (the transition control)
 '
 ' @local slotIdx - motor slot
 ' @local rung2Why - BM-RUNG2's why: the rung's, or NO_SAMPLES when only this lifetime's zero is missing
@@ -2884,7 +3002,10 @@ PRI rungEmitAll(seg, rid, rungIdx, side, motorIncre) | slotIdx, rung2Why
     if (rung2Why == WHY_NONE) and (bLifeZeroValid[slotIdx] == FALSE)
         rung2Why := WHY_NO_SAMPLES
     emitRung2(rid, side, motorIncre, rgDutyMax, bRgWindowValid, rung2Why)
+    emitRungTr(rid, side, motorIncre, bFromRest)
     emitRung3(rid, side, motorIncre, rgMissedD, rgIllegalD, rgAmpsX10k, bRgAmpsValid, bRgWindowValid, rgWhy)
+    if seg == SEG_LADDER
+        foldTransitionKick(side, motorIncre, bFromRest)
     foldIntegrity(slotIdx, rgMissedD, rgIllegalD)
     sfIntegN[slotIdx] := (sfIntegN[slotIdx] + 1) <# LIM_BIG
     if bRgCaptured
@@ -2924,10 +3045,10 @@ PRI rungFaultRecover(seg, side, motorIncre, safeEvent) : bFaulted | bFaultSig
     if bFaulted
         recoverFault(seg, 0, side, motorIncre, FAULT_COOL_MS)
 
-PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, motorIncre, rid, whyCode, consecFaults, safeEvent
+PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, motorIncre, rid, whyCode, consecFaults, safeEvent, bFromRest
 ' One motor x sign of the ladder, driven by an index table into ladderIncre (LADDER passes
 ' ladderAllIdx): one lifetime (zero read inside wheelStart()), then the rungs in table order, each
-' BM-RUNG / BM-RUNG2 / BM-RUNG3, faults recovered per sec 4.2. LADDER_FAULT_STOP consecutive faulted
+' BM-RUNG / BM-RUNG2 / BM-RUNGTR / BM-RUNG3, faults recovered per sec 4.2. LADDER_FAULT_STOP consecutive faulted
 ' rungs, an absolute-current abort or a stalled instrument end the sign: the rest print SKIPPED why
 ' LADDER_STOPPED.
 '
@@ -2944,8 +3065,10 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
 ' @local whyCode - why the remaining rungs are skipped, WHY_NONE while they run
 ' @local consecFaults - consecutive faulted rungs
 ' @local safeEvent - SAFE_* that ended the last rung
+' @local bFromRest - the next rung starts from rest: the first of the sign, or the first after a recovered fault
 
     consecFaults := 0
+    bFromRest := TRUE
     whyCode := WHY_NONE
     if runContinue(seg) == FALSE
         whyCode := WHY_ABORTED
@@ -2961,9 +3084,10 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
             rungSkip(seg, rid, rungIdx, side, motorIncre, whyCode)
         else
             safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, TRUE)
-            rungEmitAll(seg, rid, rungIdx, side, motorIncre)
+            rungEmitAll(seg, rid, rungIdx, side, motorIncre, bFromRest)
             ladderNoFold(side, rungIdx, motorIncre)
-            if rungFaultRecover(seg, side, motorIncre, safeEvent)
+            bFromRest := rungFaultRecover(seg, side, motorIncre, safeEvent)     ' a recovered fault leaves the wheel at rest
+            if bFromRest
                 consecFaults += 1
                 if consecFaults >= LADDER_FAULT_STOP
                     whyCode := WHY_LADDER_STOPPED
@@ -3092,8 +3216,8 @@ PRI clockHallIntegrity(side) | slotIdx, nMissed, nAllLow, nAllHigh
     emitHallInt(side, nAllLow, nAllHigh, nMissed)
 
 PRI emitHallInt(side, nAllLow, nAllHigh, nMissed)
-' BM-HALLINT (task 3571): one wheel's hall integrity over its CLOCK lifetime. Worst case 104 bytes:
-' tag(10) + seq(12) + motor(12) + clk_mhz(12) + all_low(20) + all_high(21) + missed(17).
+' BM-HALLINT (task 3571): one wheel's hall integrity over its CLOCK lifetime. Worst case 113 bytes:
+' tag(10) + seq(15) + motor(12) + clk_mhz(13) + all_low(21) + all_high(22) + missed(20).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param nAllLow - entries into %000
@@ -3149,7 +3273,7 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
     else
         safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, TRUE)
         clockHallIntegrity(side)
-        rungEmitAll(SEG_CLOCK, rid, CLOCK_RUNG_IDX, side, motorIncre)
+        rungEmitAll(SEG_CLOCK, rid, CLOCK_RUNG_IDX, side, motorIncre, TRUE)    ' the lifetime's one rung starts from rest
         rungFaultRecover(SEG_CLOCK, side, motorIncre, safeEvent)
     zeroAndWaitStopped(side)
     instIdle()
@@ -8167,7 +8291,8 @@ PRI emitRung(seg, rid, rungIdx, side, motorIncre, resultCode, steadyMs, bSteadyV
 
 PRI emitRung2(rid, side, motorIncre, dutyMax, bWindowValid, whyCode) | slotIdx, bZero
 ' BM-RUNG2: currents, phase sum and duty over the window; inet uses this lifetime's zero (PL-32).
-' Worst case 269 bytes.
+' err / err_pk are the STEADY window's, opened after AT_SPEED and the settle: err_pk - err is the duty
+' servo's ripple, never a transition kick (PL-87) -- BM-RUNGTR carries the transition. Worst case 269 bytes.
 '
 ' @param rid - rung id
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -8197,6 +8322,36 @@ PRI emitRung2(rid, side, motorIncre, dutyMax, bWindowValid, whyCode) | slotIdx, 
     benchLog.naNumField(@"err", rsErrMean, LIM_TINY, bWindowValid)
     benchLog.naNumField(@"err_pk", rsErrPk, LIM_TINY, bWindowValid)
     benchLog.numField(@"n", rsN, LIM_SMALL)
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitRungTr(rid, side, motorIncre, bFromRest) | whyCode
+' BM-RUNGTR (PL-87): the rung's TRANSITION, from the command mark to the window start -- peak |err| and peak
+' |i| over the ramp and settle, and tr_over (the transition peak |err| above this rung's own steady err_pk)
+' that R17-DUAL-TRKICK-A judges. from_rest marks the control. Worst case 177 bytes: tag(9) + seq(15) +
+' rid(12) + motor(12) + incre(19) + from_rest(16) + tr_ms(14) + tr_err_pk(15) + tr_i_pk(16) + tr_over(13) +
+' tr_n(13) + why(23).
+'
+' @param rid - rung id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+' @param bFromRest - TRUE when the rung started from rest
+'
+' @local whyCode - the rung's why when it did not run clean, else the transition's own
+
+    whyCode := rgWhy
+    if whyCode == WHY_NONE
+        whyCode := trWhy
+    recBegin(@"BM-RUNGTR")
+    benchLog.numField(@"rid", rid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.boolField(@"from_rest", bFromRest)
+    benchLog.naNumField(@"tr_ms", trMs, LIM_SMALL, trWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_err_pk", trErrPk, LIM_TINY, trWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_i_pk", trIPk, LIM_SMALL, trWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_over", trErrPk - rsErrPk, LIM_TINY, (trWhy == WHY_NONE) and bRgWindowValid)
+    benchLog.numField(@"tr_n", trN, LIM_SMALL)
     whyField(whyCode)
     emitRecord()
 
@@ -8650,8 +8805,8 @@ PRI emitOut(tid, sid, rowIdx) | rowBase
 PRI emitFltApi(tid, sid, whyCode)
 ' BM-FLTAPI: the OVERSHT fault-API trial's own verdict (task 3552). The trial PRINTS WHETHER IT FAULTED,
 ' so a run that provoked nothing says so in one line instead of being inferred from the absence of rows.
-' flt_ms and held_ms print NA when no fault arrived. Worst case 224 - want_off(13) + l_shift(12) + r_shift(12)
-' + l_cause(13) + r_cause(13) = 261 bytes.
+' flt_ms and held_ms print NA when no fault arrived. Worst case 224 - want_off(17) + l_shift(16) + r_shift(16)
+' + l_cause(13) + r_cause(13) = 265 bytes.
 '
 ' @param tid - trace id, the one the BM-OUT rows below carry
 ' @param sid - the steering start's life
@@ -9116,6 +9271,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellNoFold)
                 emitSignoffDecl(@sSfCellRateLaw)
                 emitSignoffDecl(@sSfCellIdleMvA)
+                emitSignoffDecl(@sSfCellTrKickA)
             PART_CLOCK:
                 case SF_CLOCK_SLOT
                     SF_CLOCK_200:
@@ -9208,8 +9364,10 @@ PRI emitSignoffs() | slotIdx, side
 ' object and the instrument are stopped. A build that judges no cell (SF_JUDGES_CELLS FALSE) emits none.
 ' A cell whose segment did not run prints NOMEAS, measured NA, n 0. Per part:
 '  A      NOSTALL BOOL; DBGMASK BOOL; INSTLIVE BOOL per motor; IDLEFLT / REVB / INTEG COUNT per motor;
-'         TRACES COUNT
-'  CLOCK  this clock's NOSTALL BOOL, DBGMASK BOOL and CLKFRAME BOOL per motor (-K200 / -K270 / -K300)
+'         NOFOLD / RATELAW BOOL per motor; IDLEMOVE-A and TRKICK COUNT per motor; TRACES COUNT; LAGBOUND
+'         COUNT per motor
+'  CLOCK  this clock's NOSTALL BOOL, DBGMASK BOOL, and CLKFRAME BOOL and HALL COUNT per motor (-K200 /
+'         -K270 / -K300)
 '  B      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; RAMPREST BOOL per motor;
 '         FLTAPI BOOL (the steering object, BOTH); FLTCAUSE BOOL (BOTH); OFFREST-B BOOL and IDLEMOVE-B COUNT
 '         per motor
@@ -9237,6 +9395,8 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoffBool(@sSfCellNoFold, side, @sSfCritNoFold, bSfNoFoldRan[slotIdx], bSfNoFoldOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitSignoffBool(@sSfCellRateLaw, side, @sSfCritRateLaw, bSfRateLawRan[slotIdx], bSfRateLawOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitIdleMoveCell(@sSfCellIdleMvA, slotIdx)
+                    ' task 3573: NOMEAS when no start from rest gave a control, or no running-speed change was judged
+                    emitSignoff(@sSfCellTrKickA, side, @sSfCritTrKick, sfTrN[slotIdx] > 0, sfTrKicks[slotIdx], TRKICK_LO, TRKICK_HI, sfTrN[slotIdx])
                 emitSignoff(@sSfCellTracesA, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
                 emitLagCells(@sSfCellLagA)
             PART_CLOCK:
