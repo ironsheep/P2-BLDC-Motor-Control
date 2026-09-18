@@ -665,6 +665,52 @@ unloaded. Above 100M the duty pins and current collapses while speed tracks — 
 > principle holds. The window is rungs 3-5 because below it the current is 0.04-0.12 A and noise
 > dominates, and above it the duty saturates so the asymmetry cannot show.
 >
+> > ## ⛔ THE RATIO ALONE IS NOT A SUFFICIENT CRITERION. Corrected 2026-09-17, same day, by STEPHEN.
+> >
+> > **STEPHEN 2026-09-17:** *"If our phase is off, one direction is always going to take more power...
+> > If we fix the drive phasing, wouldn't that say the forward or reverse are going to be more
+> > consistent and not 2:1, like you're seeing?"* -- and that framing is right, and it is sharper than
+> > the one this entry was written with.
+> >
+> > **THE ARITHMETIC, and it is what makes the ratio insufficient.** The driver places the field at
+> > `hall_estimate + offset`. With a fixed hall-zero error **E** per motor, the ACTUAL lead is
+> > `offset + E` one way and `-offset + E` the other. The offsets in force are symmetric by
+> > construction (`off_neg 43, off_pos 317`, and 317 = 360 - 43), so:
+> >
+> > - **E = 0 would give equal currents in both directions.** They are 2:1, so **E is not 0, and the
+> >   asymmetry IS the evidence of the phase error** -- MEASURED three times now (2026-09-12, Visit 4,
+> >   Visit 5), on both motors, with LEFT 2.02/2.03/1.98 and RIGHT 1.90/1.88/1.86 at rungs 3-5.
+> > - **Both motors show nearly the same error.** DERIVED: that points at the model (the offset pair
+> >   and the hall tables) rather than per-unit sensor placement scatter, which would differ more.
+> >
+> > ⛔ **AND THIS IS WHY RATIO -> 1.0 CANNOT BE THE CRITERION: correcting the hall zero ALONE
+> > equalises the two directions at roughly their average.** Today forward sits near `43 + E` and
+> > reverse near `43 - E`; zero out E and both go to 43. Reverse improves, **forward gets slightly
+> > worse**, and the ratio reads a perfect 1.0. **A criterion that a regression can satisfy is not a
+> > criterion** -- the same defect class as PL-79, PL-80, PL-82, PL-83 and PL-87, written into this
+> > entry hours before those were repaired.
+> >
+> > ### THE CRITERION, RESTATED -- BOTH CONDITIONS, NOT ONE
+> >
+> > 1. **Symmetry:** reverse-over-forward current at rungs 3-5 falls from ~2.0 toward 1.0.
+> > 2. **NO REGRESSION IN ABSOLUTE COST:** the current in the CHEAPER of today's two directions must
+> >    not rise. Visit 5's forward figures are the baseline and they are already recorded --
+> >    `amps_x10k` LEFT 6_692 / 18_302 / 38_051 and RIGHT 7_269 / 19_819 / 41_075 at rungs 3/4/5.
+> >
+> > **Both, or the change has not earned its place.** Meeting only (1) means the alignment was
+> > corrected and the LEAD was left wrong, which is exactly the half-fix the designer's "separate
+> > alignment from lead" warns against: one number cannot carry both the hall-zero correction and the
+> > lead angle, and ours does.
+> >
+> > ⭐ **What this also says about the prize.** The full gain is not "one direction gets better". It is
+> > both directions landing at the optimum lead, which is BELOW today's cheaper direction. The scan
+> > («#3520») measures the two per-direction minima; their midpoint estimates E and their depth
+> > estimates what the lead correction is worth.
+> >
+> > ⭐ **And the user-facing consequence of NOT fixing it is now recorded separately: PL-88** -- the
+> > platform drives its two wheels in opposite increment signs, so straight-line driving puts one
+> > wheel in the expensive direction and the asymmetry never averages out.
+>
 > **THE TEST RUNS BEFORE ANY CODE CHANGES, AND IT MEASURES THE PRIZE.** The offset scan («#3520»)
 > is already designed and its predictions are already written. Its three outcomes each decide:
 > minima symmetric about one hall zero with about equal current at each -> the model holds and the
