@@ -706,6 +706,8 @@ PUB holdAtStop(bEnable) : eError
 ''
 '' PL-58: chooses hold or release only at rest. Every stop commanded from speed follows the driver's own ramp
 '' regardless of this setting; MEASURED (Visit 2) both settings take the same distance to stop from a given speed.
+'' Coast turns all six bridge FETs off. On a fault the motor coasts (bEnable=false) or brakes (bEnable=true):
+'' a faulted driver has lost the rotor, so it cannot hold a position. emergencyCutoff() always brakes.
 ''
 '' @param bEnable - T/F where T means hold position at rest and F means coast
 '' @returns eError - NO_ERROR
@@ -928,6 +930,7 @@ PUB emergencyCutoff() : eError
 '' EMERGENCY-Stop - Immediately stop motor, killing any motion that was still in progress
 ''
 '' The emergency stop latches: drives are refused with ERR_EMERGENCY_STOPPED until clearEmergency().
+'' It brakes by shorting the motor phases, whatever holdAtStop() selects, and stays braked while latched.
 ''
 '' @returns eError - NO_ERROR; stopping always succeeds
 
@@ -3331,6 +3334,16 @@ CON { driver interface Constants }
 
 CON { driver internal Constants }
 
+    ' R17.1 / PL-89 (DOCs/plans/STOP-STATE-DESIGN.md): the PASM driver's bridge register holds exactly one of these,
+    '  and each state is written so its meaning does not depend on a pin's inversion. The low-side PWM pins are
+    '  inverted (pwmn) and a HIGH on a low-side input turns that FET ON (PL-56), so Y = 0 on every pin is SHORT, not off.
+    '  BR_DRIVE - PWM switching: the motor is driven, or held at duty_min once at rest in SM_BRAKE
+    '  BR_SHORT - high sides Y = 0 (off), low sides Y = 0 (inverted: ON): the phases shorted, a dynamic brake
+    '  BR_COAST - high sides Y = 0 (off), low sides Y = frame (inverted: off): all six FETs off, a freewheel
+    '  Which state each stop path takes: at rest SM_FLOAT -> BR_COAST, SM_BRAKE -> BR_DRIVE (hold); a fault
+    '  SM_FLOAT -> BR_COAST, SM_BRAKE -> BR_SHORT; an e-stop -> BR_SHORT whatever the stop mode.
+    #0, BR_DRIVE, BR_SHORT, BR_COAST
+
 '44KHz seems to be sweetspot for DocoEng Motor
 '    FRAME   = 6_136             ' 44.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
 '22KHz EXPERIMENT
@@ -3403,7 +3416,7 @@ VAR { * Data Structure for PASM Driver * }
     LONG    hall_missed, hall_illegal           ' 2 sequential longs    hall integrity counts since driver start (see getHallIntegrityCounts())
     LONG    drv_incr_now                        ' 1 sequential long     the field's angle increment per drive pass, for stop timing
     ' \ ----------------------------
-    LONG    fault                               ' 1 sequential long     written to 1 on fault (pins are floated when this happens)
+    LONG    fault                               ' 1 sequential long     written TRUE ($FFFF_FFFF) on fault; the bridge then takes the stop mode's fault state (BR_COAST or BR_SHORT)
 
 VAR { * Data for Motor Position Tracking * }
     LONG    posTrkHallTicks
@@ -3544,9 +3557,9 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                                                         ' labels are scoped to the nearest preceding global label,
                                                         ' and these are all referenced from both the LUT-resident
                                                         ' block and the cog-resident block, so they must be
-                                                        ' globally visible (task 3535). .driveoff, .checkstopfloaton
-                                                        ' and .checkstopfloatoff stayed dot-local: nothing outside
-                                                        ' cog RAM calls them.
+                                                        ' globally visible (task 3535). .shortBridge, .faultBridge,
+                                                        ' .checkstopfloaton and .checkstopfloatoff stay dot-local:
+                                                        ' nothing outside cog RAM calls them.
 
     ' =========================================================================
     '  MOTOR DRIVE LOOP - one pass every 23 ADC frames: about 1913 passes/s (522.7 uSec) at 200, 270 or 300 MHz.
@@ -3575,7 +3588,7 @@ drvMotor                                                ' global (task 3535): en
 .eStop
                 cmp     drv_state_, #DCS_ESTOP      wz  ' Q: Are we already Emergency Stopped?
     if_z        jmp     #.endRqst                       ' YES, motor is at ESTOP, just exit (w/o increment)
-                call    #.driveoff                      ' set drive pwm off, regardless of stop mode
+                call    #.shortBridge                   ' brake: "immediately stop" (emergencyCutoff()), whatever the stop mode
                 call    #.clearRun                      ' PL-57: no running increment survives an e-stop
                 mov     drv_state_, #DCS_ESTOP          ' mark that we are stopped
                 jmp     #.endRqst                       ' motor now at ESTOP, just exit (w/o increment)
@@ -3940,27 +3953,31 @@ drvMotor                                                ' global (task 3535): en
 
                 add     drive_u_, bias                  ' add center-bias and dead-time offsets to update PWMs
                 add     drive_v_, bias                  ' center around the triangle counter
-                add     drive_w_, bias                  ' counter counts down to 0 and then up during fram period
-                                                        ' when counting down and counter == y value, out turns on and off when counting up and counter == value
-                                                        ' pwm config of output inverted or not-inverted. low side is inverted, high side is not
-                                                        ' if drive_pins are floating then pwm isn't output
+                add     drive_w_, bias                  ' the counter runs from the frame period down to 1 and back up, each PWM period
+                                                        ' the output is high while the counter is at or below Y, so Y = 0 is constant LOW and
+                                                        ' Y = frame is constant HIGH (p2kbArchSmartPin01000PwmTriangle); the low-side pins are
+                                                        ' inverted (pwmn), and a HIGH on a low-side input turns that FET ON (PL-56)
 
-                testb   driveoff, #0                wc  ' if driveoff is 0 then drive is enabled, else drive should be disabled
-    if_c        wypin   #0, drive_pins                  ' make sure pwm is off and all drive pins low
+                cmp     bridge, #BR_DRIVE           wz  ' Z: the bridge is driven this frame (R17.1: see the BR_* constants)
+    if_nz       wypin   #0, drive_pins                  ' SHORT or COAST: Y = 0 on all six -- high sides LOW (off), low sides HIGH (on)
+    if_nz       testb   bridge, #1                  wc  ' C: COAST (BR_COAST is the only state with bit 1 set)
+    if_nz_and_c wypin   coast_y, pin_pwm_u_l            ' COAST: low sides Y = frame -> constant HIGH, inverted to LOW: all six FETs off
+    if_nz_and_c wypin   coast_y, pin_pwm_v_l
+    if_nz_and_c wypin   coast_y, pin_pwm_w_l
                 add     drive_u_, dead_gap_             ' make sure low side turns off (inverted) earlier than high side turns on (non-inverted)
-    if_nc       wypin   drive_u_, pin_pwm_u_l           ' safety on driver board make sure high side off if both low and high side are high, in case of an error
+    if_z        wypin   drive_u_, pin_pwm_u_l           ' safety on driver board make sure high side off if both low and high side are high, in case of an error
                 sub     drive_u_, dead_gap_             ' shouldn't happen with dead-gap
-    if_nc       wypin   drive_u_, pin_pwm_u_h
+    if_z        wypin   drive_u_, pin_pwm_u_h
 
                 add     drive_v_, dead_gap_             ' dead-gap was OFFSET
-    if_nc       wypin   drive_v_, pin_pwm_v_l
+    if_z        wypin   drive_v_, pin_pwm_v_l
                 sub     drive_v_, dead_gap_             ' dead-gap was OFFSET
-    if_nc       wypin   drive_v_, pin_pwm_v_h
+    if_z        wypin   drive_v_, pin_pwm_v_h
 
                 add     drive_w_, dead_gap_             ' dead-gap was OFFSET
-    if_nc       wypin   drive_w_, pin_pwm_w_l
+    if_z        wypin   drive_w_, pin_pwm_w_l
                 sub     drive_w_, dead_gap_             ' dead-gap was OFFSET
-    if_nc       wypin   drive_w_, pin_pwm_w_h
+    if_z        wypin   drive_w_, pin_pwm_w_h
 
                 testp   pin_hall_w                  wc  ' read hall effect sensor
                 rcl     hall_, #1
@@ -4015,8 +4032,8 @@ drvMotor                                                ' global (task 3535): en
 
                 abs     tmpY, err_                      ' fault? tmpY is absolute difference from hall angle to requested angle
                 cmp     tmpY, #125                  wc  ' less than ~176deg differ from requested? is ok
-                testb   driveoff, #0                orc ' if driveoff is 1 then ignore fault, i.e., manually moving wheel
-    if_nc       call    #.driveoff                      ' at FAULT: disable pwm output
+                tjnz    bridge, #.noFault               ' the bridge is not driven: no fault (e.g. a wheel turned by hand)
+    if_nc       call    #.faultBridge                   ' at FAULT: the bridge takes the user's stop mode (COAST or SHORT)
     if_nc       mov     drv_state_, #DCS_FAULTED        '  also on FAULT: mark our motor as FAULTED
     if_nc       wrlong  maxNeg, ptra[DRVR_STATUS_LONGS_COUNT] '  also on FAULT: report fault
 
@@ -4034,6 +4051,8 @@ drvMotor                                                ' global (task 3535): en
                 sar     tmpY, #8                        ' 8-bits is multiplying agressiveness of correction
                 add     duty_, tmpY
 .dutyLimits
+                cmp     bridge, #BR_DRIVE           wz  ' R17.1: an undriven bridge applies no duty, so the servo must not wind duty_
+    if_nz       mov     duty_, duty_min_                '  up to duty_max_ against an error it cannot correct -- telemetry reads what is applied
                 fles    duty_, duty_cap_                ' keep duty within limits (duty_cap_ is duty_max_ except while ramping down, PL-55)
                 fges    duty_, duty_min_
 
@@ -4053,13 +4072,19 @@ drvMotor                                                ' global (task 3535): en
     ' boundary); driveinit is called only from the LUT-resident start sequence
     ' itself. See lutCodeStart..lutCodeEnd, below the `fit 496` line.
     '
-    ' .driveoff, .checkstopfloaton and .checkstopfloatoff stay dot-local
-    ' (task 3535): nothing outside cog RAM calls them, so they don't need to
-    ' be globally visible the way checkstop/wait4adc/initAngleFmHall/
-    ' gettgtincr/driveinit/drvMotor/lutCodeStart/lutCodeEnd do.
+    ' .shortBridge, .faultBridge, .checkstopfloaton and .checkstopfloatoff
+    ' stay dot-local (task 3535): nothing outside cog RAM calls them, so they
+    ' don't need to be globally visible the way checkstop/wait4adc/
+    ' initAngleFmHall/gettgtincr/driveinit/drvMotor/lutCodeStart/lutCodeEnd do.
 
-.driveoff                                               ' disable pwm always
-    _ret_       mov     driveoff, #1                    ' drive pwm output disabled
+.shortBridge                                            ' e-stop: short the phases, whatever the stop mode (no flags changed)
+    _ret_       mov     bridge, #BR_SHORT
+
+.faultBridge                                            ' fault: the user's stop mode decides -- SM_FLOAT coasts, SM_BRAKE
+                mov     bridge, #BR_SHORT               '  brakes (a faulted driver has lost the rotor, so it cannot hold a
+                cmp     stop_mode_, #SM_FLOAT       wz  '  position); writes Z only, so the caller's C survives
+    if_z        mov     bridge, #BR_COAST
+                ret
 
 .capStart                                               ' PL-55: remember duty and speed where a ramp-down starts (no flags changed)
                 mov     duty0, duty_
@@ -4071,17 +4096,17 @@ drvMotor                                                ' global (task 3535): en
                 mov     fwdrev, #0                      '  AT_SPEED against a stopped wheel and faulted
     _ret_       mov     angle_, #0                      ' .rampUp's drv_incr == 0 path re-seeds the angle from the halls
 
-.checkstopfloaton                                       ' set drive enabled according to stop mode
-                skip    #%1000101                       ' same as inverted floatoff without drive disable
-.checkstopfloatoff                                      ' set drive disabled according to stop mode
+.checkstopfloaton                                       ' about to drive: a coasting bridge (SM_FLOAT) is re-aligned and driven
+                skip    #%1000101                       ' same as inverted floatoff without the coast write
+.checkstopfloatoff                                      ' now at rest: the bridge takes the user's stop mode
                 skip    #%001100                        ' same as checkstop without initAngleFmHall and duty reset
-checkstop                                               ' set drive disabled to correct state
+checkstop                                               ' the bridge takes the user's stop mode (holdAtStop())
                 cmp     stop_mode_, #SM_FLOAT       wz  ' Q: what is new stop mode, should motor be freewheeling?
                 modz    _nz                         wz  ' invert Z, allows skipping invert by floaton
     if_z        call    #initAngleFmHall                ' make sure angle set correctly, so motor doesn't jerk when enters ctlMotor
     if_z        mov     duty_, duty_min_                ' reset duty, reduces jerk if not fully aligned
-    if_z        mov     driveoff, #0                    ' drive pwm output enabled
-    if_nz       mov     driveoff, #1                    ' drive pwm output disabled
+    if_z        mov     bridge, #BR_DRIVE               ' SM_BRAKE: driven -- held at duty_min at rest
+    if_nz       mov     bridge, #BR_COAST               ' SM_FLOAT: all six FETs off, a freewheel (was Y = 0 on all six: a short, PL-89)
                 ret
 
 wait4adc
@@ -4214,7 +4239,8 @@ ramp_curr       res 1       ' current ramping up value, ramps up from ramp_min_ 
 angle_          res 1       ' current driver angle
 prior_angle     res 1       ' prior driver angle
 fwdrev          res 1       ' driver current direction used for indexing into hall angle table
-driveoff        res 1       ' pwm enabled (0) or disabled (1)
+bridge          res 1       ' R17.1: the bridge state this frame, one of BR_DRIVE / BR_SHORT / BR_COAST (see their CON)
+coast_y         res 1       ' R17.1: the PWM frame value; Y = frame holds a pin constantly HIGH (set once at start)
 curr_stop       res 1       ' current stop mode
 lag_s           res 1       ' C-5: signed lag this pass, + when the rotor trails the field in the direction of motion
 duty_cap_       res 1       ' PL-55: duty ceiling, duty_max_ except while ramping down
@@ -4303,7 +4329,7 @@ drv_incr_s_ res 1           ' copy of drv_incr, the field's increment per drive 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the one-time start sequence only (task 3535).
 '  drvMotor (~1913 Hz, PL-50), .ctlMotor (43.9 kHz) and everything .ctlMotor calls
-'  (wait4adc, .driveoff, the fault path) stay resident in cog RAM, above.
+'  (wait4adc, .shortBridge, .faultBridge, the fault path) stay resident in cog RAM, above.
 '
 '  MUST stay textually after the `fit 496` line above: this block's hub bytes
 '  must not sit between two org-0 items (see the note at the loader's `jmp
@@ -4339,7 +4365,12 @@ lutCodeStart
                 wrpin   pwmt, pin_pwm_w_h
 
                 wxpin   fram, drive_pins                '  and set PWM frame width, too, matches adc period
-                wypin   #0, drive_pins                  ' make sure pwm is off
+                wypin   #0, drive_pins                  ' high sides Y = 0 (off); DIR is low, so nothing is output until driveinit raises it
+                mov     coast_y, fram                   ' R17.1: the frame period is X[31:16]; Y = frame holds a triangle-PWM
+                shr     coast_y, #16                    '  pin constantly HIGH (p2kbArchSmartPin01000PwmTriangle), BR_COAST's low-side value
+                wypin   coast_y, pin_pwm_u_l            ' R17.1: so the bridge comes up COASTING when driveinit raises DIR -- with
+                wypin   coast_y, pin_pwm_v_l            '  Y = 0 on the inverted low sides it came up SHORTED for the frame before
+                wypin   coast_y, pin_pwm_w_l            '  the control loop first wrote the stop mode's state
 
                 ' ADC setup - GIO level
                 wrpin   adc_modes+0, adc_pins           ' switch ADC to GIO calibration
@@ -4494,7 +4525,7 @@ driveinit                                               ' init drive pwm
                                                         ' before the 3.9k pull-up recovers. ADC enabled two instructions ahead of PWM is
                                                         ' harmless: each ADC count spans exactly one PWM frame (adc_fram = frame_cnt), and
                                                         ' a whole period of a periodic signal integrates the same at any start phase.
-    _ret_       mov     driveoff, #0                    ' drive pwm output enabled, though checkstop is called before ctlMotor loop and may change this
+    _ret_       mov     bridge, #BR_DRIVE               ' driven; checkstop, called before the control loop, sets the stop mode's state
 
 lutCodeEnd                                               ' LUT-resident code ends here (task 3535)
 

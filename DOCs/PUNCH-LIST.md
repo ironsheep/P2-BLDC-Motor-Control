@@ -270,6 +270,13 @@ documents this inline.
 Write this back into `DRIVER-AUDIT-2026-09-09.md` as a new finding when
 «#3481» runs.
 
+**FIXED IN SOURCE (aged-state sweep 2026-09-17, found reading `init()` for «#3568»):** `init()` now honours the
+caller's `eMotorVoltage` rather than re-reading `user.DRIVE_VOLTAGE` (`src/isp_bldc_motor.spin2`, the block
+commented *"PL-14: honour the caller's eMotorVoltage parameter"*, just before `confgurePowerLimits()`), which makes
+the parameter and `validVoltageForChoice()` meaningful and lets two motors run at different voltages. This entry
+had gone on saying "an API decision"; the decision was taken the parameter-honouring way. No isolating cell exists:
+every shipped caller passes the configured voltage, so the change is behaviour-neutral for them.
+
 ### PL-8 -- `useDebug` is declared, cleared, and never read
 
 `isp_bldc_motor.spin2` declares `LONG useDebug` in its VAR block and assigns it
@@ -4007,6 +4014,23 @@ without travel. The straight-line figure is then derived from the two directions
 > large current. So FLOAT at rest **is** the `driveoff` path. It says nothing about whether that path shorts the
 > windings: with the wheel still, a short carries no current either. Leaving float resets `duty_` to `duty_min`
 > (`.checkstopfloaton`), so the wound-up register is telemetry only, not a start-up defect.
+>
+> ### FIXED IN TREE 2026-09-17 («#3568», design `plans/STOP-STATE-DESIGN.md`)
+>
+> - **p2kb closed the one open link:** a triangle-PWM pin with `Y = 0` is constant LOW, and `Y = frame` is
+>   constant HIGH (`p2kbArchSmartPin01000PwmTriangle`). With the low side inverted and PL-56's polarity, the old
+>   `wypin #0, drive_pins` was SHORT.
+> - **The driver now has one `bridge` register holding `BR_DRIVE`, `BR_SHORT` or `BR_COAST`**, each written so its
+>   meaning does not depend on a pin's inversion: COAST writes `Y = 0` to the high sides and `Y = frame` to the
+>   inverted low sides, so all six FETs are off.
+> - **Every path now delivers the user's selection:** at rest `SM_FLOAT` → COAST (was SHORT), `SM_BRAKE` → the
+>   powered hold (unchanged); a fault → COAST under `SM_FLOAT`, SHORT under `SM_BRAKE`; an e-stop → SHORT always,
+>   per its doc's *"Immediately stop"*. The bridge also comes up COASTING at driver start (it came up shorted for a
+>   frame), and the duty servo no longer winds `duty_` up while the bridge is not driven.
+> - Gates: `tools/build-check.sh` 47/47 with both release demos certified; `tools/check_style.sh` PASS. The
+>   PASM-addressed VAR runs are unchanged (the `fault` line's comment only).
+> - **Run-time proof is owed to the bench**: the hand test above, which also says whether the OLD build braked
+>   (so the release note can say whether coast was broken).
 >
 > Everything below this box is the original entry, kept as written.
 
