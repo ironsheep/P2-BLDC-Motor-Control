@@ -2169,7 +2169,7 @@ ruling below verbatim.
 | R17.6 | Measure the transition, settle the slam (PL-87, PL-78) | «#3573» | 8 |
 | R17.7 | Bench cleanup: retire what feeds nothing, one builder (PL-53) | «#3574» | 9 |
 | R17.8 | Scan redesign + spin-in-place floor tier | «#3575» | 10 |
-| R17.9 | Visit 6: certify R17.1-R17.8, confirm the offsets | «#3576» | 11 |
+| R17.9 | Visit 6: certify R17.1-R17.8, confirm the offsets — **split into 6a/6b 2026-09-19, see the revision below** | «#3576» | 11 |
 | — | Apply the confirmed offsets | «#3523» | 12 |
 | Blast radius | Documentation | «#3515» | 13 |
 | — | Ship 6.0.0 | «#3516» | 14 (last) |
@@ -2178,3 +2178,37 @@ ruling below verbatim.
   R17.2, R17.3, R17.4, R17.5, and the style pass). Bench-only work (R17.6, R17.7, R17.8) may overlap it.
 - **Two-phase:** R17.1, R17.3, R17.4, R17.5, R17.8 and «#3543» return a design for review before code.
 - **Out of this release:** «#3506», «#3532», «#3562» (backlog, marked in their task bodies).
+
+## Sprint Revision — 2026-09-19: Visit 6 splits in two, and R17.2 gets its bench cells
+
+**Why.** The path-to-Visit-6 study ([`../analyses/PATH-TO-VISIT-6-STUDY-2026-09-19.md`](../analyses/PATH-TO-VISIT-6-STUDY-2026-09-19.md))
+found that the driver changed after Visit 5 (stop states, the hall read, board refusal, command timeout, fault
+cause), so Visit 5 no longer certifies today's binary; that none of R17.2's five promises has a bench cell
+(study F1, F2); and that the attended stop-mode hand test is not built (F3).
+
+**Ruling (STEPHEN, 2026-09-19): *"yes, let's split"*.** Visit 6 becomes two visits, so the driver changes are
+certified before the commutation scan is redesigned on top of them:
+
+- **Visit 6a** — unattended `t0`, `dual-d`, `dual-b`, `dual-c`, `dual-a`, `dual-clock-200/-270/-300`; attended:
+  the stop-mode hand test. Certifies R17.1-R17.6 and «#3543».
+- **Visit 6b** — the redesigned `scan`, `dual-ui`, and the tethered spin-in-place floor run. Confirms the offsets.
+
+**Rig fact recorded for R17.8:** track width 15.25 in (387 mm), tyre centre to centre (STEPHEN 2026-09-19).
+
+### The work set (R17, revised 2026-09-19)
+
+| Plan § | Deliverable | Task | Order |
+|---|---|---|---|
+| R17.10 | R17.2's promises get bench cells: G, K, AK in `t0`; AB (unequal distances) and AC (direction sign, lifted) in an unattended dual part; the dead `steerSetRamp()`/`steerRestoreRamp()` deleted | «#3577» | 1 |
+| R17.7 | Bench cleanup: retire what feeds nothing, one builder (PL-53) | «#3574» | 2 |
+| R17.11 | The attended stop-mode hand test (R17.1's at-rest and e-stop proof), on the `t0-hand` panel technique | «#3578» | 3 |
+| R17.9a | Visit 6a: run sheet, run, report | «#3579» | 4 |
+| R17.8 | Scan redesign + spin-in-place floor tier | «#3575» | 5 |
+| R17.9b | Visit 6b: run sheet, run, report — confirm the offsets | «#3576» | 6 |
+| — | Apply the confirmed offsets | «#3523» | 7 |
+| — | «#3573»'s driver half, only if Visit 6a's `R17-DUAL-TRKICK-A` says the kick survives | «#3573» follow-up | with R17.8 |
+| Blast radius | Documentation | «#3515» | 8 |
+| — | Ship 6.0.0 | «#3516» | 9 (last) |
+
+R17.10 and R17.11 are bench-only source (no library change). Visit 6a's sheet reviews that every new cell can
+FAIL (D2) before the visit is offered.
