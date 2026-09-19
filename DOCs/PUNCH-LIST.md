@@ -827,6 +827,18 @@ stopped instance. Items 1 and 3 have **no isolating run-time proof**: every faul
 whether or not `testResetFault()`'s own fix works, and `util_char_motor.spin2` has not run. Both are
 TEST-USE paths; whether they earn a cell goes with the bench-emission cleanup, not a visit.
 
+**Status 2026-09-19 («#3574») -- CLOSED. Item 1 was proven all along; the 09-17 note above was an asserted absence.**
+- **Item 1 is CERTIFIED, twice.** `R10-SCAN-RSTALONE` is exactly the isolating proof that note said did not exist:
+  at each motor's first natural fault the scan calls `testResetFault()` ALONE, with the faulted point's non-zero
+  command still set, before any zero command. MEASURED: PASS on both motors at Visit 1
+  (`analyses/bench/2026-09-14/debug_260914-114703.log`, `BS-RSTALONE ... ms,31 ... cleared,TRUE` / `ms,30`) and at
+  Visit 2 (`analyses/bench/2026-09-15/debug_260915-140255.log`, `ms,31` both). Before the fix a reset alone waited
+  out its 2 s timeout.
+- **Item 3 is fixed in source and gets no run-time proof, deliberately.** `util_char_motor.spin2`
+  `clearFaultByMotMove()` re-applies the popped offset with `testSetFwdRevOffsets()` (read 2026-09-19). The utility is
+  not a bench tier and nothing in this release runs it; proving it would take a jog-recovered characterisation sweep,
+  which is characterisation work, its own plan (doctrine overlay P10). Its next run is the proof.
+
 ### PL-29 -- a `? :` whose branches call methods ran both calls
 
 > **CLOSED BY CONSTRUCTION 2026-09-18 («#3517»).** `tools/check_style.sh` check **T29** now fails any `? :` with a
@@ -2115,6 +2127,18 @@ punch-list item after Visit 2).
 - **Fix direction:** after Visit 2, replace each copy with `OBJ` instances of `isp_bench_log` (a second
   instance for a watchdog cog), bump each binary's `SRC_REV`, and prove with a before/after log diff that
   every record prints byte-identical. For the detection binary, `R2-HOST-DETDIFF` is that diff.
+
+**FIXED IN TREE 2026-09-19 («#3574»).** `test_bench_scan`, `test_bench_char` and `test_bench_detect` now assemble every
+record through `isp_bench_log` (`benchLog` on cog 0; `wdLog`, a second instance, on the scan's and char's watchdog
+cogs). `isp_bench_log` gains `unclampedNumField()`, `hexField()` and `bareField()` for the detection binary's needs.
+- **Byte identity, by construction rather than by run.** Every private builder method was compared with
+  `isp_bench_log`'s, comments stripped and names normalised: all 46 are the same algorithm (the two `boolField`s
+  choose the same tokens by if/else instead of a ternary). The call sites were translated one for one by script,
+  with every count checked before writing (char 194 field calls and 20 record opens, scan 435 and 42, detect 146
+  and 22). So a record prints the same bytes as before.
+- **What the next load of each binary confirms:** the log's records against the previous run's. `scan` runs at
+  Visit 6b. `char` and `detect` are not on a sheet; their next run is the check. `detect`'s diff will also show
+  the fields «#3574» removed on purpose: `run_ts`, `bnc`, `bnc_max`, and `trapped` → `setup`.
 
 ### PL-54 -- `src/test_dual_motor.spin2` names itself `demo_dual_motor.spin2`, and most of its body can never run
 
@@ -4398,6 +4422,7 @@ the `.lst` lines `DEBUG records` and `DEBUG data`), pnut-ts 1.55.8:
 | SRC_REV 3, quiet (Visit 5) | 40_918 B | 151 | 10_490 B (66.1%) | emitted, 24 PASS |
 | SRC_REV 7, quiet (before «#3577») | 43_564 B | 161 | 11_252 B (70.9%) | never run |
 | SRC_REV 8, quiet («#3577») | 44_685 B | 166 | 11_595 B (73.1%) | owed to Visit 6a |
+| SRC_REV 9, quiet («#3574», prints retired) | 44_337 B | 158 | 11_143 B (70.2%) | owed to Visit 6a |
 
 **What is and is not established.** Both silent runs were INSIDE the limits the compiler reports, so whatever
 silenced them is not one of those two limits -- the mechanism is **undetermined** (PL-74's residue). What is

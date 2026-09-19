@@ -85,6 +85,9 @@
 ''               library's. No record changes shape; the fmt is unchanged
 ''   Updated.... 18 Sep 2026 -- task 3517 (SRC_REV 14): style guide 5.4.1 -- every method returning one
 ''               boolean is named is/has/b (bRunScan(), isSideReady(), ...). No record changes
+''   Updated.... 19 Sep 2026 -- task 3574 (SRC_REV 17): records are assembled by isp_bench_log (benchLog on
+''               cog 0, wdLog on the watchdog cog) instead of this file's two private copies (PL-53) -- the
+''               same algorithm, so every record is byte-identical. No record changes.
 ''
 '' =================================================================================================
 
@@ -164,8 +167,8 @@
   numeric field is clamped to a stated width and every token field to a stated length, so no
   record can exceed 280 bytes -- the longest record measured intact through debug(zstr_()).
 
-  The line builder (lineReset through lineEmit) is transcribed byte-identical from
-  test_bench_char.spin2; extraction into a shared object is planned at task 3508.
+  Records are assembled by isp_bench_log -- benchLog on cog 0, wdLog on the watchdog cog -- the
+  one builder every bench binary shares (PL-53, PL-17), so the digit grouping cannot drift.
 
   NO timed window contains a debug() statement: every record is emitted after the motor has
   been commanded to zero and has stopped.
@@ -178,7 +181,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 16                                      ' hand-bumped whenever this file changes
+    SRC_REV     = 17                                      ' hand-bumped whenever this file changes
     FMT_VERSION = 10                                        ' BS- record-format version
 
 ' fmt 10 changes (task 3540, scan v5, PL-46; no existing record's field names, order or content change):
@@ -538,13 +541,6 @@ CON { record widths -- every numeric field is clamped to one of these }
     TOKMAX_EXIT      = 8
     TOKMAX_OKFAIL    = 4
 
-CON { record assembly buffer }
-
-    LINE_BUF_SIZE    = benchLog.LINE_BUF_SIZE
-    MAX_DEC_DIGITS   = benchLog.MAX_DEC_DIGITS
-    DEC_RADIX        = benchLog.DEC_RADIX
-    DIGITS_PER_GROUP = benchLog.DIGITS_PER_GROUP
-
 CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1 }
 
 ' Sign-off format version, independent of FMT_VERSION. Every limit below is compiled in and printed
@@ -552,7 +548,7 @@ CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-D
     SF_VERSION = 1
 
 ' Token field length limits (design sec B.3); a longer token prints "?" and cannot match a cell.
-' The owning todo-mcp task prints as a plain DAT text token (sSfTask*), never through boundedField(),
+' The owning todo-mcp task prints as a plain DAT text token (sSfTask*), never through benchLog.numField(),
 ' whose digit grouping would print 3_499.
     TOKMAX_TASK      = 5
     TOKMAX_BIN       = 6
@@ -742,16 +738,17 @@ CON { watchdog cog, task 3534 }
 '   declareStall()         1 param  + 0 returns + 2 locals                       =  3
 ' deepest, WD_SELFTEST build -- R11-WDT-FIRES's measured field:
 '   wdEmitSignoff()       10 params + 0 returns + 2 locals                       = 12
-'   wdNaOrBoundedField()   4 params + 0 returns + 0 locals                       =  4
-'   wdBoundedField()       3 params + 0 returns + 0 locals                       =  3
-'   wdLineField()          2 params + 0 returns + 0 locals                       =  2
-'   wdLineAddNum()         1 param  + 0 returns + 14 locals (digitStack[11] + 3) = 15
-'   wdLineAddChar()        1 param  + 0 returns + 0 locals                       =  1
+'   wdLog.naNumField()     4 params + 0 returns + 0 locals                       =  4
+'   (isp_bench_log's own, PL-53 -- the same frames the retired wd* copies had:)
+'   numField()             3 params + 0 returns + 0 locals                       =  3
+'   lineField()            2 params + 0 returns + 0 locals                       =  2
+'   lineAddNum()           1 param  + 0 returns + 14 locals (digitStack[11] + 3) = 15
+'   lineAddChar()          1 param  + 0 returns + 0 locals                       =  1
 '                                                                         total  = 43 longs
 ' other chains, for comparison:
 '   normal build, wdEmitSignoffBool() (7 + 1 = 8) n field:  3 + 3 + 8 + 3 + 2 + 15 + 1 = 35 longs
 '   emitWatchdog() (1 + 0 = 1) numeric field:               3 + 3 + 1 + 3 + 2 + 15 + 1 = 28 longs
-'   wdEmitSignoff() token field -> wdTokenField() 3 -> bTokenFits() (2 + 1 + 1 = 4): 3 + 3 + 12 + 3 + 4 = 25
+'   wdEmitSignoff() token field -> wdLog.tokenField() 3 -> bTokenFits() (2 + 1 + 1 = 4): 3 + 3 + 12 + 3 + 4 = 25
 '   wdSnapshotStall() (0) -> isp_bldc_motor testGetTelemetry() (0 + 8 returns + 0 = 8):  3 + 3 + 0 + 8 = 14
 '   wheelL.stop() (0) -> bHoldsPinBaseClaim() (0 + 1 return + 0 = 1):                  3 + 3 + 0 + 1 = 7
 ' -- comfortably under half of 128, so WD_STACK_LONGS = 128 (the app note's own "can't overflow
@@ -772,16 +769,12 @@ OBJ { objects under test }
 #endif
     wheelL : "isp_bldc_motor"                                ' left wheel instance
     wheelR : "isp_bldc_motor"                                ' right wheel instance
-    benchLog : "isp_bench_log"                              ' the cog-event quiet window (PL-41, PL-85)
-
-DAT { record assembly state }
-
-lineBuf         BYTE    0[LINE_BUF_SIZE]
-lineLen         LONG    0
+    benchLog : "isp_bench_log"                              ' the record builder (PL-53) and the cog-event quiet window (PL-41, PL-85)
+    wdLog    : "isp_bench_log"                              ' the watchdog cog's own record builder: cog 0 may be stalled mid-record in benchLog
 
 DAT { watchdog heartbeat contract, task 3534 -- DAT, not VAR: this is cog-0-owned instrumentation
       state the watchdog cog reads across cog boundaries, grouped with the other cog-0-owned
-      mutable instrumentation state above (lineBuf/lineLen) rather than the run-wide VAR blocks
+      mutable instrumentation state (the record builder benchLog) rather than the run-wide VAR blocks
       that carry the scan's own results }
 
 wdHeartbeat     LONG    0                                  ' beat() increments this every call
@@ -793,12 +786,6 @@ wdDeclaring     LONG    FALSE                                ' set TRUE as decla
                                                              ' so it never interrupts a
                                                              ' stall-declaration in progress
 
-DAT { watchdog record assembly state -- separate from lineBuf/lineLen: cog 0 may be stalled
-      mid-record when the watchdog fires, so the watchdog must never touch that buffer }
-
-wdLineBuf       BYTE    0[LINE_BUF_SIZE]
-wdLineLen       LONG    0
-
 DAT { point orders -- in FINE_STEP_DEG units, interleaved so drift does not tilt the fit }
 
 fineOrder       LONG    0, 2, -2, 4, -4, 1, -1, 3, -3
@@ -808,8 +795,6 @@ DAT { token strings }
 
 sNa             BYTE    "NA", 0
 sTrue           BYTE    "TRUE", 0
-sFalse          BYTE    "FALSE", 0
-sBadTok         BYTE    "?", 0
 
 sMotNone        BYTE    "NONE", 0
 sMotLeft        BYTE    "LEFT", 0
@@ -1416,15 +1401,14 @@ PRI emitWdTestArm()
 ' checkpoint_tok(1+14+1+10=26) + stall_ms(1+8+1+7=17) + poll_ms(1+7+1+7=16) + backstop_ms(1+11+1+7=20)
 ' = 130 bytes.
 
-    lineReset()
-    lineAddText(@"BS-WDTEST-ARM")
-    boundedField(@"l_cog", sideMotorCog(SIDE_LEFT), LIM_TINY)
-    boundedField(@"r_cog", sideMotorCog(SIDE_RIGHT), LIM_TINY)
-    boundedField(@"checkpoint", CP_SELFTEST, LIM_TINY)
-    tokenField(@"checkpoint_tok", checkpointToken(CP_SELFTEST), TOKMAX_CP)
-    boundedField(@"stall_ms", WD_STALL_MS, LIM_SMALL)
-    boundedField(@"poll_ms", WD_POLL_MS, LIM_SMALL)
-    boundedField(@"backstop_ms", WD_SELFTEST_BACKSTOP_MS, LIM_SMALL)
+    benchLog.begin(@"BS-WDTEST-ARM")
+    benchLog.numField(@"l_cog", sideMotorCog(SIDE_LEFT), LIM_TINY)
+    benchLog.numField(@"r_cog", sideMotorCog(SIDE_RIGHT), LIM_TINY)
+    benchLog.numField(@"checkpoint", CP_SELFTEST, LIM_TINY)
+    benchLog.tokenField(@"checkpoint_tok", checkpointToken(CP_SELFTEST), TOKMAX_CP)
+    benchLog.numField(@"stall_ms", WD_STALL_MS, LIM_SMALL)
+    benchLog.numField(@"poll_ms", WD_POLL_MS, LIM_SMALL)
+    benchLog.numField(@"backstop_ms", WD_SELFTEST_BACKSTOP_MS, LIM_SMALL)
     lineEmit()
 
 PRI setRunAbort(reason, detailValue)
@@ -3855,10 +3839,9 @@ PRI emitWatchdogStart(bStarted, cogIdRead)
 ' @param bStarted - TRUE when cogspin() returned a valid cog id
 ' @param cogIdRead - cogspin()'s raw return value
 
-    lineReset()
-    lineAddText(@"BS-WDSTART")
-    boolField(@"started", bStarted)
-    boundedField(@"cog", cogIdRead, LIM_TINY)
+    benchLog.begin(@"BS-WDSTART")
+    benchLog.boolField(@"started", bStarted)
+    benchLog.numField(@"cog", cogIdRead, LIM_TINY)
     lineEmit()
 
 PRI emitHeaderRecords()
@@ -3879,127 +3862,120 @@ PRI emitBanner()
 ' Emit BS-BANNER. cfg_id is sourced from its own #ifdef, never a runtime test: pnut-ts silently
 ' ignores an unknown -D, so a mistyped flag must land on the honest #else token.
 
-    lineReset()
-    lineAddText(@"BS-BANNER")
-    boundedField(@"src_rev", SRC_REV, LIM_SMALL)
-    boundedField(@"fmt", FMT_VERSION, LIM_SMALL)
+    benchLog.begin(@"BS-BANNER")
+    benchLog.numField(@"src_rev", SRC_REV, LIM_SMALL)
+    benchLog.numField(@"fmt", FMT_VERSION, LIM_SMALL)
 #ifdef BENCH_CFG
-    tokenField(@"cfg_id", @sCfgBench, TOKMAX_CFG)
+    benchLog.tokenField(@"cfg_id", @sCfgBench, TOKMAX_CFG)
 #else
-    tokenField(@"cfg_id", @sCfgUser, TOKMAX_CFG)
+    benchLog.tokenField(@"cfg_id", @sCfgUser, TOKMAX_CFG)
 #endif
-    tokenField(@"frame", @sFrameMotor, TOKMAX_FRAME)
-    boundedField(@"clkfreq", CLKFREQ, LIM_BIG)
-    boundedField(@"left_base", LEFT_TEST_BASE, LIM_SMALL)
-    boundedField(@"right_base", RIGHT_TEST_BASE, LIM_SMALL)
-    boundedField(@"voltage_enum", TEST_VOLTAGE, LIM_SMALL)
-    boundedField(@"det_mode", TEST_DET_MODE, LIM_SMALL)
-    boundedField(@"motor_type", user.MOTOR_TYPE, LIM_SMALL)
-    boundedField(@"def_neg_deg", DEF_NEG_DEG, LIM_SMALL)
-    boundedField(@"def_pos_deg", DEF_POS_DEG, LIM_SMALL)
+    benchLog.tokenField(@"frame", @sFrameMotor, TOKMAX_FRAME)
+    benchLog.numField(@"clkfreq", CLKFREQ, LIM_BIG)
+    benchLog.numField(@"left_base", LEFT_TEST_BASE, LIM_SMALL)
+    benchLog.numField(@"right_base", RIGHT_TEST_BASE, LIM_SMALL)
+    benchLog.numField(@"voltage_enum", TEST_VOLTAGE, LIM_SMALL)
+    benchLog.numField(@"det_mode", TEST_DET_MODE, LIM_SMALL)
+    benchLog.numField(@"motor_type", user.MOTOR_TYPE, LIM_SMALL)
+    benchLog.numField(@"def_neg_deg", DEF_NEG_DEG, LIM_SMALL)
+    benchLog.numField(@"def_pos_deg", DEF_POS_DEG, LIM_SMALL)
     lineEmit()
 
 PRI emitDrive()
 ' Emit BS-DRIVE: every increment this binary can command.
 
-    lineReset()
-    lineAddText(@"BS-DRIVE")
-    boundedField(@"ceiling_incre", DRIVE_CEILING_INCRE, LIM_BIG)
-    boundedField(@"qtr_incre", QTR_SPEED_INCRE, LIM_BIG)
-    boundedField(@"half_incre", HALF_SPEED_INCRE, LIM_BIG)
-    boundedField(@"preflight_incre", PREFLIGHT_INCRE, LIM_BIG)
-    boundedField(@"jog_incre", JOG_INCRE, LIM_BIG)
+    benchLog.begin(@"BS-DRIVE")
+    benchLog.numField(@"ceiling_incre", DRIVE_CEILING_INCRE, LIM_BIG)
+    benchLog.numField(@"qtr_incre", QTR_SPEED_INCRE, LIM_BIG)
+    benchLog.numField(@"half_incre", HALF_SPEED_INCRE, LIM_BIG)
+    benchLog.numField(@"preflight_incre", PREFLIGHT_INCRE, LIM_BIG)
+    benchLog.numField(@"jog_incre", JOG_INCRE, LIM_BIG)
     lineEmit()
 
 PRI emitLimits()
 ' Emit BS-LIMITS: current and run caps.
 
-    lineReset()
-    lineAddText(@"BS-LIMITS")
-    boundedField(@"abs_abort_mV", ABS_ABORT_MV, LIM_SMALL)
-    boundedField(@"abs_abort_samples", ABS_ABORT_SAMPLES, LIM_SMALL)
-    boundedField(@"point_abort_x100", POINT_ABORT_X100, LIM_SMALL)
-    boundedField(@"point_abort_samples", POINT_ABORT_SAMPLES, LIM_SMALL)
-    boundedField(@"run_time_cap_s", RUN_TIME_CAP_S, LIM_SMALL)
-    boundedField(@"run_charge_cap_mVs", RUN_CHARGE_CAP_MVS, LIM_MID)
-    boundedField(@"run_fault_cap", RUN_FAULT_CAP, LIM_SMALL)
-    boundedField(@"run_abort_i_cap", RUN_ABORT_I_CAP, LIM_SMALL)
+    benchLog.begin(@"BS-LIMITS")
+    benchLog.numField(@"abs_abort_mV", ABS_ABORT_MV, LIM_SMALL)
+    benchLog.numField(@"abs_abort_samples", ABS_ABORT_SAMPLES, LIM_SMALL)
+    benchLog.numField(@"point_abort_x100", POINT_ABORT_X100, LIM_SMALL)
+    benchLog.numField(@"point_abort_samples", POINT_ABORT_SAMPLES, LIM_SMALL)
+    benchLog.numField(@"run_time_cap_s", RUN_TIME_CAP_S, LIM_SMALL)
+    benchLog.numField(@"run_charge_cap_mVs", RUN_CHARGE_CAP_MVS, LIM_MID)
+    benchLog.numField(@"run_fault_cap", RUN_FAULT_CAP, LIM_SMALL)
+    benchLog.numField(@"run_abort_i_cap", RUN_ABORT_I_CAP, LIM_SMALL)
     lineEmit()
 
 PRI emitLimits2()
 ' Emit BS-LIMITS2: leg caps, hard limit, flag thresholds, and zero health checks.
 
-    lineReset()
-    lineAddText(@"BS-LIMITS2")
-    boundedField(@"leg_fault_cap", LEG_FAULT_CAP, LIM_SMALL)
-    boundedField(@"side_fault_stop", SIDE_FAULT_STOP, LIM_SMALL)
-    boundedField(@"hard_limit_deg", HARD_LIMIT_DEG, LIM_SMALL)
-    boundedField(@"drift_flag_pct", DRIFT_FLAG_PCT, LIM_SMALL)
-    boundedField(@"imbalance_pct", IMBALANCE_PCT, LIM_SMALL)
-    boundedField(@"fault_rise_pct", FAULT_RISE_PCT, LIM_SMALL)
-    boundedField(@"zero_spread_max_mV", ZERO_SPREAD_MAX_MV, LIM_SMALL)
-    boundedField(@"zero_abs_max_mV", ZERO_ABS_MAX_MV, LIM_SMALL)
+    benchLog.begin(@"BS-LIMITS2")
+    benchLog.numField(@"leg_fault_cap", LEG_FAULT_CAP, LIM_SMALL)
+    benchLog.numField(@"side_fault_stop", SIDE_FAULT_STOP, LIM_SMALL)
+    benchLog.numField(@"hard_limit_deg", HARD_LIMIT_DEG, LIM_SMALL)
+    benchLog.numField(@"drift_flag_pct", DRIFT_FLAG_PCT, LIM_SMALL)
+    benchLog.numField(@"imbalance_pct", IMBALANCE_PCT, LIM_SMALL)
+    benchLog.numField(@"fault_rise_pct", FAULT_RISE_PCT, LIM_SMALL)
+    benchLog.numField(@"zero_spread_max_mV", ZERO_SPREAD_MAX_MV, LIM_SMALL)
+    benchLog.numField(@"zero_abs_max_mV", ZERO_ABS_MAX_MV, LIM_SMALL)
     lineEmit()
 
 PRI emitPlanT()
 ' Emit BS-PLAN-T: timing and window sizes.
 
-    lineReset()
-    lineAddText(@"BS-PLAN-T")
-    boundedField(@"sample_ms", SAMPLE_MS, LIM_SMALL)
-    boundedField(@"settle_ms", SETTLE_MS, LIM_SMALL)
-    boundedField(@"steady_timeout_ms", STEADY_TIMEOUT_MS, LIM_SMALL)
-    boundedField(@"stop_timeout_ms", STOP_TIMEOUT_MS, LIM_SMALL)
-    boundedField(@"rest_ms", REST_MS, LIM_SMALL)
-    boundedField(@"fault_cool_ms", FAULT_COOL_MS, LIM_SMALL)
-    boundedField(@"jog_ms", JOG_MS, LIM_SMALL)
-    boundedField(@"batch_ticks", BATCH_TICKS, LIM_SMALL)
-    boundedField(@"win_ticks_coarse", WIN_TICKS_COARSE, LIM_SMALL)
-    boundedField(@"win_ticks_fine", WIN_TICKS_FINE, LIM_SMALL)
-    boundedField(@"win_ticks_self", WIN_TICKS_SELF, LIM_SMALL)
-    boundedField(@"win_ticks_half", WIN_TICKS_HALF, LIM_SMALL)
+    benchLog.begin(@"BS-PLAN-T")
+    benchLog.numField(@"sample_ms", SAMPLE_MS, LIM_SMALL)
+    benchLog.numField(@"settle_ms", SETTLE_MS, LIM_SMALL)
+    benchLog.numField(@"steady_timeout_ms", STEADY_TIMEOUT_MS, LIM_SMALL)
+    benchLog.numField(@"stop_timeout_ms", STOP_TIMEOUT_MS, LIM_SMALL)
+    benchLog.numField(@"rest_ms", REST_MS, LIM_SMALL)
+    benchLog.numField(@"fault_cool_ms", FAULT_COOL_MS, LIM_SMALL)
+    benchLog.numField(@"jog_ms", JOG_MS, LIM_SMALL)
+    benchLog.numField(@"batch_ticks", BATCH_TICKS, LIM_SMALL)
+    benchLog.numField(@"win_ticks_coarse", WIN_TICKS_COARSE, LIM_SMALL)
+    benchLog.numField(@"win_ticks_fine", WIN_TICKS_FINE, LIM_SMALL)
+    benchLog.numField(@"win_ticks_self", WIN_TICKS_SELF, LIM_SMALL)
+    benchLog.numField(@"win_ticks_half", WIN_TICKS_HALF, LIM_SMALL)
     lineEmit()
 
 PRI emitPlanS()
 ' Emit BS-PLAN-S: sweep geometry.
 
-    lineReset()
-    lineAddText(@"BS-PLAN-S")
-    boundedField(@"coarse_step_deg", COARSE_STEP_DEG, LIM_SMALL)
-    boundedField(@"fine_step_deg", FINE_STEP_DEG, LIM_SMALL)
-    boundedField(@"cliff_half_step_deg", CLIFF_HALF_STEP_DEG, LIM_SMALL)
-    boundedField(@"fine_half_deg", FINE_HALF_DEG, LIM_SMALL)
-    boundedField(@"extend_pts", EXTEND_PTS, LIM_SMALL)
-    boundedField(@"confirm_half_deg", CONFIRM_HALF_DEG, LIM_SMALL)
-    boundedField(@"confirm_extend_pts", CONFIRM_EXTEND_PTS, LIM_SMALL)
-    boundedField(@"rise_pct", RISE_PCT, LIM_SMALL)
-    boundedField(@"min_past", MIN_PAST, LIM_SMALL)
-    boundedField(@"fit_min_pts", FIT_MIN_PTS, LIM_SMALL)
-    boundedField(@"confirm_min_pts", CONFIRM_MIN_PTS, LIM_SMALL)
+    benchLog.begin(@"BS-PLAN-S")
+    benchLog.numField(@"coarse_step_deg", COARSE_STEP_DEG, LIM_SMALL)
+    benchLog.numField(@"fine_step_deg", FINE_STEP_DEG, LIM_SMALL)
+    benchLog.numField(@"cliff_half_step_deg", CLIFF_HALF_STEP_DEG, LIM_SMALL)
+    benchLog.numField(@"fine_half_deg", FINE_HALF_DEG, LIM_SMALL)
+    benchLog.numField(@"extend_pts", EXTEND_PTS, LIM_SMALL)
+    benchLog.numField(@"confirm_half_deg", CONFIRM_HALF_DEG, LIM_SMALL)
+    benchLog.numField(@"confirm_extend_pts", CONFIRM_EXTEND_PTS, LIM_SMALL)
+    benchLog.numField(@"rise_pct", RISE_PCT, LIM_SMALL)
+    benchLog.numField(@"min_past", MIN_PAST, LIM_SMALL)
+    benchLog.numField(@"fit_min_pts", FIT_MIN_PTS, LIM_SMALL)
+    benchLog.numField(@"confirm_min_pts", CONFIRM_MIN_PTS, LIM_SMALL)
     lineEmit()
 
 PRI emitBands()
 ' Emit BS-BANDS: the self-check tolerance bands (raw and net-of-zero).
 
-    lineReset()
-    lineAddText(@"BS-BANDS")
-    boundedField(@"pos_qtr_lo_mV", POS_QTR_LO_MV, LIM_SMALL)
-    boundedField(@"pos_qtr_hi_mV", POS_QTR_HI_MV, LIM_SMALL)
-    boundedField(@"neg_qtr_lo_mV", NEG_QTR_LO_MV, LIM_SMALL)
-    boundedField(@"neg_qtr_hi_mV", NEG_QTR_HI_MV, LIM_SMALL)
-    boundedField(@"ratio_lo_x1000", RATIO_LO_X1000, LIM_SMALL)
-    boundedField(@"ratio_hi_x1000", RATIO_HI_X1000, LIM_SMALL)
-    boundedField(@"zero_lo_mV", ZERO_LO_MV, LIM_SMALL)
-    boundedField(@"zero_hi_mV", ZERO_HI_MV, LIM_SMALL)
-    boundedField(@"rate_qtr_lo", RATE_QTR_LO, LIM_SMALL)
-    boundedField(@"rate_qtr_hi", RATE_QTR_HI, LIM_SMALL)
-    boundedField(@"rate_half_lo", RATE_HALF_LO, LIM_SMALL)
-    boundedField(@"rate_half_hi", RATE_HALF_HI, LIM_SMALL)
+    benchLog.begin(@"BS-BANDS")
+    benchLog.numField(@"pos_qtr_lo_mV", POS_QTR_LO_MV, LIM_SMALL)
+    benchLog.numField(@"pos_qtr_hi_mV", POS_QTR_HI_MV, LIM_SMALL)
+    benchLog.numField(@"neg_qtr_lo_mV", NEG_QTR_LO_MV, LIM_SMALL)
+    benchLog.numField(@"neg_qtr_hi_mV", NEG_QTR_HI_MV, LIM_SMALL)
+    benchLog.numField(@"ratio_lo_x1000", RATIO_LO_X1000, LIM_SMALL)
+    benchLog.numField(@"ratio_hi_x1000", RATIO_HI_X1000, LIM_SMALL)
+    benchLog.numField(@"zero_lo_mV", ZERO_LO_MV, LIM_SMALL)
+    benchLog.numField(@"zero_hi_mV", ZERO_HI_MV, LIM_SMALL)
+    benchLog.numField(@"rate_qtr_lo", RATE_QTR_LO, LIM_SMALL)
+    benchLog.numField(@"rate_qtr_hi", RATE_QTR_HI, LIM_SMALL)
+    benchLog.numField(@"rate_half_lo", RATE_HALF_LO, LIM_SMALL)
+    benchLog.numField(@"rate_half_hi", RATE_HALF_HI, LIM_SMALL)
     ' Net-of-zero bands for self-check (scan v3.1): raw bands minus Pass 1's 9 mV intercept
-    boundedField(@"pos_qtr_net_lo_mV", POS_QTR_NET_LO_MV, LIM_SMALL)
-    boundedField(@"pos_qtr_net_hi_mV", POS_QTR_NET_HI_MV, LIM_SMALL)
-    boundedField(@"neg_qtr_net_lo_mV", NEG_QTR_NET_LO_MV, LIM_SMALL)
-    boundedField(@"neg_qtr_net_hi_mV", NEG_QTR_NET_HI_MV, LIM_SMALL)
+    benchLog.numField(@"pos_qtr_net_lo_mV", POS_QTR_NET_LO_MV, LIM_SMALL)
+    benchLog.numField(@"pos_qtr_net_hi_mV", POS_QTR_NET_HI_MV, LIM_SMALL)
+    benchLog.numField(@"neg_qtr_net_lo_mV", NEG_QTR_NET_LO_MV, LIM_SMALL)
+    benchLog.numField(@"neg_qtr_net_hi_mV", NEG_QTR_NET_HI_MV, LIM_SMALL)
     lineEmit()
 
 PRI emitPreflight(side, ticksMoved)
@@ -4008,12 +3984,11 @@ PRI emitPreflight(side, ticksMoved)
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param ticksMoved - signed tick delta across the nudge
 
-    lineReset()
-    lineAddText(@"BS-PREFLIGHT")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boundedField(@"base", (side == SIDE_RIGHT) ? RIGHT_TEST_BASE : LEFT_TEST_BASE, LIM_SMALL)
-    boundedField(@"ticks", ticksMoved, LIM_SMALL)
-    boolField(@"moved", (ticksMoved <> 0))
+    benchLog.begin(@"BS-PREFLIGHT")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"base", (side == SIDE_RIGHT) ? RIGHT_TEST_BASE : LEFT_TEST_BASE, LIM_SMALL)
+    benchLog.numField(@"ticks", ticksMoved, LIM_SMALL)
+    benchLog.boolField(@"moved", (ticksMoved <> 0))
     lineEmit()
 
 PRI emitStart(side, startedCog, bCogOk, eBoardRev, bRevB, initNeg, initPos, readNeg, readPos, ...
@@ -4035,24 +4010,23 @@ PRI emitStart(side, startedCog, bCogOk, eBoardRev, bRevB, initNeg, initPos, read
 ' @param bIntegOk - no illegal code at start
 ' @param bStartOk - every start check passed
 
-    lineReset()
-    lineAddText(@"BS-START")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boundedField(@"base", (side == SIDE_RIGHT) ? RIGHT_TEST_BASE : LEFT_TEST_BASE, LIM_TINY)
-    boundedField(@"cog", startedCog, LIM_TINY)
-    boolField(@"cog_ok", bCogOk)
-    boundedField(@"board_rev", eBoardRev, LIM_TINY)
-    boolField(@"rev_b", bRevB)
-    tokenField(@"board_id", boardToken(eBoardRev), TOKMAX_BOARD)
-    boundedField(@"init_neg_deg", initNeg, LIM_TINY)
-    boundedField(@"init_pos_deg", initPos, LIM_TINY)
-    boundedField(@"neg_deg", readNeg, LIM_TINY)
-    boundedField(@"pos_deg", readPos, LIM_TINY)
-    boolField(@"offsets_ok", bOffsetsOk)
-    boundedField(@"missed", nMissed, LIM_SMALL)
-    boundedField(@"illegal", nIllegal, LIM_SMALL)
-    boolField(@"integ_ok", bIntegOk)
-    tokenField(@"result", bStartOk ? @sOk : @sFail, TOKMAX_OKFAIL)
+    benchLog.begin(@"BS-START")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"base", (side == SIDE_RIGHT) ? RIGHT_TEST_BASE : LEFT_TEST_BASE, LIM_TINY)
+    benchLog.numField(@"cog", startedCog, LIM_TINY)
+    benchLog.boolField(@"cog_ok", bCogOk)
+    benchLog.numField(@"board_rev", eBoardRev, LIM_TINY)
+    benchLog.boolField(@"rev_b", bRevB)
+    benchLog.tokenField(@"board_id", boardToken(eBoardRev), TOKMAX_BOARD)
+    benchLog.numField(@"init_neg_deg", initNeg, LIM_TINY)
+    benchLog.numField(@"init_pos_deg", initPos, LIM_TINY)
+    benchLog.numField(@"neg_deg", readNeg, LIM_TINY)
+    benchLog.numField(@"pos_deg", readPos, LIM_TINY)
+    benchLog.boolField(@"offsets_ok", bOffsetsOk)
+    benchLog.numField(@"missed", nMissed, LIM_SMALL)
+    benchLog.numField(@"illegal", nIllegal, LIM_SMALL)
+    benchLog.boolField(@"integ_ok", bIntegOk)
+    benchLog.tokenField(@"result", bStartOk ? @sOk : @sFail, TOKMAX_OKFAIL)
     lineEmit()
 
 PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand, bValid, bHealthOk, ...
@@ -4076,24 +4050,23 @@ PRI emitZero(side, phaseTag, sampleCnt, meanX10, minMv, maxMv, bFrozen, bInBand,
 ' @param senseVmeanX10 - mean phase-V voltage x10, mV
 ' @param senseWmeanX10 - mean phase-W voltage x10, mV
 
-    lineReset()
-    lineAddText(@"BS-ZERO")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"phase", phaseToken(phaseTag), TOKMAX_PHASE)
-    boundedField(@"samples", sampleCnt, LIM_SMALL)
-    naOrBoundedField(@"i_mean_mV_x10", meanX10, LIM_SMALL, bValid)
-    naOrBoundedField(@"i_min_mV", minMv, LIM_SMALL, bValid)
-    naOrBoundedField(@"i_max_mV", maxMv, LIM_SMALL, bValid)
-    boolField(@"frozen", bFrozen and bValid)
-    boolField(@"in_band", bInBand)
+    benchLog.begin(@"BS-ZERO")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"phase", phaseToken(phaseTag), TOKMAX_PHASE)
+    benchLog.numField(@"samples", sampleCnt, LIM_SMALL)
+    benchLog.naNumField(@"i_mean_mV_x10", meanX10, LIM_SMALL, bValid)
+    benchLog.naNumField(@"i_min_mV", minMv, LIM_SMALL, bValid)
+    benchLog.naNumField(@"i_max_mV", maxMv, LIM_SMALL, bValid)
+    benchLog.boolField(@"frozen", bFrozen and bValid)
+    benchLog.boolField(@"in_band", bInBand)
     if phaseTag == PH_ZERO_INIT
-        boolField(@"health_ok", bHealthOk)
+        benchLog.boolField(@"health_ok", bHealthOk)
     else
-        lineTextField(@"health_ok", @sNa)
+        benchLog.textField(@"health_ok", @sNa)
     ' Phase voltages to help locate the offset source (PL-30)
-    naOrBoundedField(@"u_mV_x10", senseUmeanX10, LIM_SMALL, bValid)
-    naOrBoundedField(@"v_mV_x10", senseVmeanX10, LIM_SMALL, bValid)
-    naOrBoundedField(@"w_mV_x10", senseWmeanX10, LIM_SMALL, bValid)
+    benchLog.naNumField(@"u_mV_x10", senseUmeanX10, LIM_SMALL, bValid)
+    benchLog.naNumField(@"v_mV_x10", senseVmeanX10, LIM_SMALL, bValid)
+    benchLog.naNumField(@"w_mV_x10", senseWmeanX10, LIM_SMALL, bValid)
     lineEmit()
 
 PRI emitPoint(side, speedIdx, motorIncre, ptPhase, sweptDeg)
@@ -4105,25 +4078,24 @@ PRI emitPoint(side, speedIdx, motorIncre, ptPhase, sweptDeg)
 ' @param ptPhase - PH_* of the point
 ' @param sweptDeg - signed swept offset
 
-    lineReset()
-    lineAddText(@"BS-POINT")
-    boundedField(@"seq", pointSeq, LIM_TINY)
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
-    boundedField(@"incre", motorIncre, LIM_BIG)
-    tokenField(@"phase", phaseToken(ptPhase), TOKMAX_PHASE)
-    boundedField(@"neg_deg", ptNegDeg, LIM_TINY)
-    boundedField(@"pos_deg", ptPosDeg, LIM_TINY)
-    boundedField(@"swept_deg", sweptDeg, LIM_TINY)
-    tokenField(@"result", resultToken(ptResult), TOKMAX_RESULT)
-    naOrBoundedField(@"steady_ms", ptSteadyMs, LIM_SMALL, bPtCommanded)
-    naOrBoundedField(@"ticks", ptTicks, LIM_SMALL, bPtWinRan)
-    naOrBoundedField(@"win_ms", ptWinMs, LIM_SMALL, bPtWinRan)
-    naOrBoundedField(@"rate_x10", ptRateX10, LIM_SMALL, bPtWinRan)
-    boolField(@"rate_ok", bPtRateOk)
-    naOrBoundedField(@"samples", ptSamples, LIM_SMALL, bPtWinRan)
-    naOrBoundedField(@"i_mean_mV_x10", ptMeanX10, LIM_SMALL, bPtWinRan and (ptSamples > 0))
-    naOrBoundedField(@"i_se_mV_x10", ptSeX10, LIM_SMALL, bPtSeValid)
+    benchLog.begin(@"BS-POINT")
+    benchLog.numField(@"seq", pointSeq, LIM_TINY)
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.tokenField(@"phase", phaseToken(ptPhase), TOKMAX_PHASE)
+    benchLog.numField(@"neg_deg", ptNegDeg, LIM_TINY)
+    benchLog.numField(@"pos_deg", ptPosDeg, LIM_TINY)
+    benchLog.numField(@"swept_deg", sweptDeg, LIM_TINY)
+    benchLog.tokenField(@"result", resultToken(ptResult), TOKMAX_RESULT)
+    benchLog.naNumField(@"steady_ms", ptSteadyMs, LIM_SMALL, bPtCommanded)
+    benchLog.naNumField(@"ticks", ptTicks, LIM_SMALL, bPtWinRan)
+    benchLog.naNumField(@"win_ms", ptWinMs, LIM_SMALL, bPtWinRan)
+    benchLog.naNumField(@"rate_x10", ptRateX10, LIM_SMALL, bPtWinRan)
+    benchLog.boolField(@"rate_ok", bPtRateOk)
+    benchLog.naNumField(@"samples", ptSamples, LIM_SMALL, bPtWinRan)
+    benchLog.naNumField(@"i_mean_mV_x10", ptMeanX10, LIM_SMALL, bPtWinRan and (ptSamples > 0))
+    benchLog.naNumField(@"i_se_mV_x10", ptSeX10, LIM_SMALL, bPtSeValid)
     lineEmit()
 
 PRI emitPoint2(side, motorIncre)
@@ -4137,24 +4109,23 @@ PRI emitPoint2(side, motorIncre)
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param motorIncre - signed increment
 
-    lineReset()
-    lineAddText(@"BS-POINT2")
-    boundedField(@"seq", pointSeq, LIM_TINY)
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boundedField(@"incre", motorIncre, LIM_BIG)
-    naOrBoundedField(@"i_halfA_mV_x10", ptHalfAX10, LIM_SMALL, bPtHalvesValid)
-    naOrBoundedField(@"i_halfB_mV_x10", ptHalfBX10, LIM_SMALL, bPtHalvesValid)
-    boolField(@"unsettled", bPtUnsettled)
-    naOrBoundedField(@"i_min_mV", ptMinMv, LIM_SMALL, ptSamples > 0)
-    naOrBoundedField(@"i_max_mV", ptMaxMv, LIM_SMALL, ptSamples > 0)
-    naOrBoundedField(@"duty_mean", ptDutyMean, LIM_SMALL, ptSamples > 0)
-    naOrBoundedField(@"err_mean", ptErrMean, LIM_TINY, ptSamples > 0)
-    naOrBoundedField(@"missed_d", ptMissedD, LIM_SMALL, bPtIntegValid)
-    naOrBoundedField(@"illegal_d", ptIllegalD, LIM_SMALL, bPtIntegValid)
-    boolField(@"fault", bSampFaultSeen)
-    boolField(@"abort_i", bSampPointAbort)
-    boundedField(@"charge_mVs", ptChargeMvS, LIM_MID)
-    boundedField(@"drv_state", sampState, LIM_TINY)
+    benchLog.begin(@"BS-POINT2")
+    benchLog.numField(@"seq", pointSeq, LIM_TINY)
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.naNumField(@"i_halfA_mV_x10", ptHalfAX10, LIM_SMALL, bPtHalvesValid)
+    benchLog.naNumField(@"i_halfB_mV_x10", ptHalfBX10, LIM_SMALL, bPtHalvesValid)
+    benchLog.boolField(@"unsettled", bPtUnsettled)
+    benchLog.naNumField(@"i_min_mV", ptMinMv, LIM_SMALL, ptSamples > 0)
+    benchLog.naNumField(@"i_max_mV", ptMaxMv, LIM_SMALL, ptSamples > 0)
+    benchLog.naNumField(@"duty_mean", ptDutyMean, LIM_SMALL, ptSamples > 0)
+    benchLog.naNumField(@"err_mean", ptErrMean, LIM_TINY, ptSamples > 0)
+    benchLog.naNumField(@"missed_d", ptMissedD, LIM_SMALL, bPtIntegValid)
+    benchLog.naNumField(@"illegal_d", ptIllegalD, LIM_SMALL, bPtIntegValid)
+    benchLog.boolField(@"fault", bSampFaultSeen)
+    benchLog.boolField(@"abort_i", bSampPointAbort)
+    benchLog.numField(@"charge_mVs", ptChargeMvS, LIM_MID)
+    benchLog.numField(@"drv_state", sampState, LIM_TINY)
     lineEmit()
 
 PRI emitPoint3(side)
@@ -4167,12 +4138,11 @@ PRI emitPoint3(side)
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 
-    lineReset()
-    lineAddText(@"BS-POINT3")
-    boundedField(@"seq", pointSeq, LIM_TINY)
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    naOrBoundedField(@"zero_mV_x10", ptZeroX10, LIM_SMALL, bPtZeroValid)
-    naOrBoundedField(@"net_mV_x10", ptNetX10, LIM_SMALL, (ptSamples > 0) and bPtZeroValid)   ' no zero, no net: never print a raw mean under a net label
+    benchLog.begin(@"BS-POINT3")
+    benchLog.numField(@"seq", pointSeq, LIM_TINY)
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.naNumField(@"zero_mV_x10", ptZeroX10, LIM_SMALL, bPtZeroValid)
+    benchLog.naNumField(@"net_mV_x10", ptNetX10, LIM_SMALL, (ptSamples > 0) and bPtZeroValid)   ' no zero, no net: never print a raw mean under a net label
     lineEmit()
 
 PRI emitRstAlone(side) | slotIdx
@@ -4187,15 +4157,14 @@ PRI emitRstAlone(side) | slotIdx
 ' @local slotIdx - sideSlot(side)
 
     slotIdx := sideSlot(side)
-    lineReset()
-    lineAddText(@"BS-RSTALONE")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boundedField(@"swept_deg", rstAloneSwept[slotIdx], LIM_TINY)
-    boundedField(@"incre", rstAloneIncre[slotIdx], LIM_BIG)
-    boundedField(@"ms", rstAloneMs[slotIdx], LIM_SMALL)
-    boolField(@"stopped", bRstAloneStopped[slotIdx])
-    boolField(@"fault", bRstAloneFault[slotIdx])
-    boolField(@"cleared", bRstAloneCleared[slotIdx])
+    benchLog.begin(@"BS-RSTALONE")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"swept_deg", rstAloneSwept[slotIdx], LIM_TINY)
+    benchLog.numField(@"incre", rstAloneIncre[slotIdx], LIM_BIG)
+    benchLog.numField(@"ms", rstAloneMs[slotIdx], LIM_SMALL)
+    benchLog.boolField(@"stopped", bRstAloneStopped[slotIdx])
+    benchLog.boolField(@"fault", bRstAloneFault[slotIdx])
+    benchLog.boolField(@"cleared", bRstAloneCleared[slotIdx])
     lineEmit()
 
 PRI emitCheck(side, motorIncre, loMv, hiMv, bIOk, bRateOk, bIntegOk, bFaultOk, ...
@@ -4214,20 +4183,19 @@ PRI emitCheck(side, motorIncre, loMv, hiMv, bIOk, bRateOk, bIntegOk, bFaultOk, .
 ' @param netHiMv - net band high
 ' @param netMeanX10 - net mean x10, mV (raw mean minus ZERO_INIT)
 
-    lineReset()
-    lineAddText(@"BS-CHECK")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boundedField(@"incre", motorIncre, LIM_BIG)
-    boundedField(@"lo_mV", loMv, LIM_SMALL)
-    boundedField(@"hi_mV", hiMv, LIM_SMALL)
-    boolField(@"i_ok", bIOk)
-    boolField(@"rate_ok", bRateOk)
-    boolField(@"integ_ok", bIntegOk)
-    boolField(@"fault_ok", bFaultOk)
+    benchLog.begin(@"BS-CHECK")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.numField(@"lo_mV", loMv, LIM_SMALL)
+    benchLog.numField(@"hi_mV", hiMv, LIM_SMALL)
+    benchLog.boolField(@"i_ok", bIOk)
+    benchLog.boolField(@"rate_ok", bRateOk)
+    benchLog.boolField(@"integ_ok", bIntegOk)
+    benchLog.boolField(@"fault_ok", bFaultOk)
     ' Net-of-zero bands and mean (scan v3.1)
-    boundedField(@"net_lo_mV", netLoMv, LIM_SMALL)
-    boundedField(@"net_hi_mV", netHiMv, LIM_SMALL)
-    boundedField(@"net_mean_mV_x10", netMeanX10, LIM_SMALL)
+    benchLog.numField(@"net_lo_mV", netLoMv, LIM_SMALL)
+    benchLog.numField(@"net_hi_mV", netHiMv, LIM_SMALL)
+    benchLog.numField(@"net_mean_mV_x10", netMeanX10, LIM_SMALL)
     lineEmit()
 
 PRI emitChecksum(side, bStartOk, bZeroPass, bPosIOk, bNegIOk, ratioX1000, bRatioOk, bRateOk, bIntegOk, ...
@@ -4247,20 +4215,19 @@ PRI emitChecksum(side, bStartOk, bZeroPass, bPosIOk, bNegIOk, ratioX1000, bRatio
 ' @param bPassed - every check passed
 ' @param missCode - MISS_* first miss
 
-    lineReset()
-    lineAddText(@"BS-CHECKSUM")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boolField(@"start_ok", bStartOk)
-    boolField(@"zero_ok", bZeroPass)
-    boolField(@"pos_i_ok", bPosIOk)
-    boolField(@"neg_i_ok", bNegIOk)
-    boundedField(@"ratio_x1000", ratioX1000, LIM_SMALL)
-    boolField(@"ratio_ok", bRatioOk)
-    boolField(@"rate_ok", bRateOk)
-    boolField(@"integ_ok", bIntegOk)
-    boolField(@"fault_ok", bFaultOk)
-    tokenField(@"verdict", bPassed ? @sVerdictPass : @sVerdictFail, TOKMAX_VERDICT)
-    tokenField(@"first_miss", missToken(missCode), TOKMAX_MISS)
+    benchLog.begin(@"BS-CHECKSUM")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.boolField(@"start_ok", bStartOk)
+    benchLog.boolField(@"zero_ok", bZeroPass)
+    benchLog.boolField(@"pos_i_ok", bPosIOk)
+    benchLog.boolField(@"neg_i_ok", bNegIOk)
+    benchLog.numField(@"ratio_x1000", ratioX1000, LIM_SMALL)
+    benchLog.boolField(@"ratio_ok", bRatioOk)
+    benchLog.boolField(@"rate_ok", bRateOk)
+    benchLog.boolField(@"integ_ok", bIntegOk)
+    benchLog.boolField(@"fault_ok", bFaultOk)
+    benchLog.tokenField(@"verdict", bPassed ? @sVerdictPass : @sVerdictFail, TOKMAX_VERDICT)
+    benchLog.tokenField(@"first_miss", missToken(missCode), TOKMAX_MISS)
     lineEmit()
 
 PRI emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
@@ -4273,18 +4240,17 @@ PRI emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
 ' @param lastSwept - last swept offset measured
 ' @param walkStop - WS_* stop reason
 
-    lineReset()
-    lineAddText(@"BS-WALK")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"speed", @sSpeedQtr, TOKMAX_SPEED)
-    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
-    tokenField(@"side", (walkDir > 0) ? @sSideUp : @sSideDown, TOKMAX_WALK_SIDE)
-    boundedField(@"pts", nPts, LIM_TINY)
-    boundedField(@"last_swept_deg", lastSwept, LIM_TINY)
-    tokenField(@"stop", walkStopToken(walkStop), TOKMAX_WALK_STOP)
-    naOrBoundedField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
-    naOrBoundedField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
-    naOrBoundedField(@"low_net_mV_x10", lowNetOrZero(), LIM_SMALL, legLowIdx >= 0)  ' task 3540 D5
+    benchLog.begin(@"BS-WALK")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", @sSpeedQtr, TOKMAX_SPEED)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.tokenField(@"side", (walkDir > 0) ? @sSideUp : @sSideDown, TOKMAX_WALK_SIDE)
+    benchLog.numField(@"pts", nPts, LIM_TINY)
+    benchLog.numField(@"last_swept_deg", lastSwept, LIM_TINY)
+    benchLog.tokenField(@"stop", walkStopToken(walkStop), TOKMAX_WALK_STOP)
+    benchLog.naNumField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
+    benchLog.naNumField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
+    benchLog.naNumField(@"low_net_mV_x10", lowNetOrZero(), LIM_SMALL, legLowIdx >= 0)  ' task 3540 D5
     lineEmit()
 
 PRI emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
@@ -4297,18 +4263,17 @@ PRI emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
 ' @param bBracketed - both exist
 ' @param reason - BR_* verdict
 
-    lineReset()
-    lineAddText(@"BS-BRACKET")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"speed", @sSpeedQtr, TOKMAX_SPEED)
-    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
-    naOrBoundedField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
-    naOrBoundedField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
-    boolField(@"below_ok", bBelowOk)
-    boolField(@"above_ok", bAboveOk)
-    boolField(@"bracketed", bBracketed)
-    tokenField(@"reason", bracketToken(reason), TOKMAX_BRACKET)
-    naOrBoundedField(@"low_net_mV_x10", lowNetOrZero(), LIM_SMALL, legLowIdx >= 0)  ' task 3540 D5
+    benchLog.begin(@"BS-BRACKET")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", @sSpeedQtr, TOKMAX_SPEED)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.naNumField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
+    benchLog.naNumField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
+    benchLog.boolField(@"below_ok", bBelowOk)
+    benchLog.boolField(@"above_ok", bAboveOk)
+    benchLog.boolField(@"bracketed", bBracketed)
+    benchLog.tokenField(@"reason", bracketToken(reason), TOKMAX_BRACKET)
+    benchLog.naNumField(@"low_net_mV_x10", lowNetOrZero(), LIM_SMALL, legLowIdx >= 0)  ' task 3540 D5
     lineEmit()
 
 PRI lowDegOrZero() : lowDeg
@@ -4348,18 +4313,17 @@ PRI emitFit(side, speedIdx, signIdx)
 ' @param speedIdx - SPEED_QTR or SPEED_HALF
 ' @param signIdx - SIGN_NEG or SIGN_POS
 
-    lineReset()
-    lineAddText(@"BS-FIT")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
-    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
-    tokenField(@"status", fitToken(fitStatus), TOKMAX_FIT)
-    boundedField(@"n", fitN, LIM_TINY)
-    naOrBoundedField(@"centre_deg", fitCentre, LIM_TINY, fitStatus <> FS_SKIPPED and fitStatus <> FS_NOT_BRACKETED)
-    naOrBoundedField(@"span_lo_deg", fitSpanLo, LIM_TINY, fitN > 0)
-    naOrBoundedField(@"span_hi_deg", fitSpanHi, LIM_TINY, fitN > 0)
-    boolField(@"extended", bFitExtended)
-    boolField(@"pinned", bFitPinnedNearLimit())
+    benchLog.begin(@"BS-FIT")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.tokenField(@"status", fitToken(fitStatus), TOKMAX_FIT)
+    benchLog.numField(@"n", fitN, LIM_TINY)
+    benchLog.naNumField(@"centre_deg", fitCentre, LIM_TINY, fitStatus <> FS_SKIPPED and fitStatus <> FS_NOT_BRACKETED)
+    benchLog.naNumField(@"span_lo_deg", fitSpanLo, LIM_TINY, fitN > 0)
+    benchLog.naNumField(@"span_hi_deg", fitSpanHi, LIM_TINY, fitN > 0)
+    benchLog.boolField(@"extended", bFitExtended)
+    benchLog.boolField(@"pinned", bFitPinnedNearLimit())
     lineEmit()
 
 PRI emitFit2(side, speedIdx, signIdx) | bSolved
@@ -4374,19 +4338,18 @@ PRI emitFit2(side, speedIdx, signIdx) | bSolved
 ' @local bSolved - TRUE when a convex vertex was solved
 
     bSolved := bFitSolved
-    lineReset()
-    lineAddText(@"BS-FIT2")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
-    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
-    naOrBoundedField(@"min_deg_x10", floatToBoundedInt(fitMinF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
-    naOrBoundedField(@"min_se_deg_x10", floatToBoundedInt(fitSeF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved and bFitSeValid)
-    naOrBoundedField(@"min_mV_x10", floatToBoundedInt(fitMinMvF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
-    naOrBoundedField(@"rms_mV_x10", floatToBoundedInt(fitRmsF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
-    naOrBoundedField(@"med_se_mV_x10", fitMedSeX10, LIM_SMALL, fitN > 0)
-    naOrBoundedField(@"curv_x100", floatToBoundedInt(fitCurvF *. 100.0, LIM_MID), LIM_MID, fitN > FIT_PARAMS)
-    naOrBoundedField(@"curv_model_pct", curvModelPct(), LIM_SMALL, bSolved and (fitMinMvF >. 0.0))
-    naOrBoundedField(@"flat2_deg_x10", flatHalfWidthX10(), LIM_SMALL, bSolved and (fitMinMvF >. 0.0))
+    benchLog.begin(@"BS-FIT2")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.naNumField(@"min_deg_x10", floatToBoundedInt(fitMinF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
+    benchLog.naNumField(@"min_se_deg_x10", floatToBoundedInt(fitSeF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved and bFitSeValid)
+    benchLog.naNumField(@"min_mV_x10", floatToBoundedInt(fitMinMvF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
+    benchLog.naNumField(@"rms_mV_x10", floatToBoundedInt(fitRmsF *. 10.0, LIM_SMALL), LIM_SMALL, bSolved)
+    benchLog.naNumField(@"med_se_mV_x10", fitMedSeX10, LIM_SMALL, fitN > 0)
+    benchLog.naNumField(@"curv_x100", floatToBoundedInt(fitCurvF *. 100.0, LIM_MID), LIM_MID, fitN > FIT_PARAMS)
+    benchLog.naNumField(@"curv_model_pct", curvModelPct(), LIM_SMALL, bSolved and (fitMinMvF >. 0.0))
+    benchLog.naNumField(@"flat2_deg_x10", flatHalfWidthX10(), LIM_SMALL, bSolved and (fitMinMvF >. 0.0))
     lineEmit()
 
 PRI curvModelPct() : modelPct
@@ -4445,18 +4408,17 @@ PRI emitCliff(side, speedIdx, signIdx) | bFromFit, edgeF, refF, marginF, edgeX10
     edgeResX10 := 0
     if legCliffFound
         edgeResX10 := floatToBoundedInt((float(legCliffFaultDeg - legCliffGoodDeg) /. 2.0) *. 10.0, LIM_SMALL)
-    lineReset()
-    lineAddText(@"BS-CLIFF")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
-    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
-    boolField(@"found", legCliffFound)
-    naOrBoundedField(@"last_good_deg", legCliffGoodDeg, LIM_TINY, legCliffFound)
-    naOrBoundedField(@"first_fault_deg", legCliffFaultDeg, LIM_TINY, legCliffFound)
-    naOrBoundedField(@"edge_deg_x10", edgeX10, LIM_SMALL, legCliffFound)
-    naOrBoundedField(@"margin_deg_x10", marginX10, LIM_SMALL, legCliffFound and bMarginValid)
-    boolField(@"margin_from_fit", bFromFit)
-    naOrBoundedField(@"edge_res_deg_x10", edgeResX10, LIM_SMALL, legCliffFound)  ' task 3540 D4, new field at the end
+    benchLog.begin(@"BS-CLIFF")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.boolField(@"found", legCliffFound)
+    benchLog.naNumField(@"last_good_deg", legCliffGoodDeg, LIM_TINY, legCliffFound)
+    benchLog.naNumField(@"first_fault_deg", legCliffFaultDeg, LIM_TINY, legCliffFound)
+    benchLog.naNumField(@"edge_deg_x10", edgeX10, LIM_SMALL, legCliffFound)
+    benchLog.naNumField(@"margin_deg_x10", marginX10, LIM_SMALL, legCliffFound and bMarginValid)
+    benchLog.boolField(@"margin_from_fit", bFromFit)
+    benchLog.naNumField(@"edge_res_deg_x10", edgeResX10, LIM_SMALL, legCliffFound)  ' task 3540 D4, new field at the end
     lineEmit()
 
 PRI emitFault(side, motorIncre, sweptDeg, fxStep, bCleared)
@@ -4468,17 +4430,16 @@ PRI emitFault(side, motorIncre, sweptDeg, fxStep, bCleared)
 ' @param fxStep - FX_* step
 ' @param bCleared - TRUE when the wheel is stopped with no fault after this step
 
-    lineReset()
-    lineAddText(@"BS-FAULT")
-    boundedField(@"seq", pointSeq, LIM_TINY)
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boundedField(@"incre", motorIncre, LIM_BIG)
-    boundedField(@"swept_deg", sweptDeg, LIM_TINY)
-    boundedField(@"drv_state", sideDriverState(side), LIM_TINY)
-    tokenField(@"step", stepToken(fxStep), TOKMAX_STEP)
-    boolField(@"cleared", bCleared)
-    boundedField(@"consec", legConsecFaults, LIM_TINY)
-    boundedField(@"run_faults", runFaults, LIM_TINY)
+    benchLog.begin(@"BS-FAULT")
+    benchLog.numField(@"seq", pointSeq, LIM_TINY)
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.numField(@"swept_deg", sweptDeg, LIM_TINY)
+    benchLog.numField(@"drv_state", sideDriverState(side), LIM_TINY)
+    benchLog.tokenField(@"step", stepToken(fxStep), TOKMAX_STEP)
+    benchLog.boolField(@"cleared", bCleared)
+    benchLog.numField(@"consec", legConsecFaults, LIM_TINY)
+    benchLog.numField(@"run_faults", runFaults, LIM_TINY)
     lineEmit()
 
 PRI emitLeg(side, speedIdx, signIdx, legExit, refEndIdx, driftPctX10, bDriftValid, bDrift)
@@ -4493,22 +4454,21 @@ PRI emitLeg(side, speedIdx, signIdx, legExit, refEndIdx, driftPctX10, bDriftVali
 ' @param bDriftValid - both references valid
 ' @param bDrift - drift beyond DRIFT_FLAG_PCT
 
-    lineReset()
-    lineAddText(@"BS-LEG")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
-    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
-    tokenField(@"served_by", servedToken(signIdx), TOKMAX_SERVED)
-    boundedField(@"pts", legCount, LIM_TINY)
-    boundedField(@"faults", legFaults, LIM_TINY)
-    boundedField(@"aborts_i", legAbortsI, LIM_TINY)
-    naOrBoundedField(@"ref_start_mV_x10", refStartMeanOrZero(), LIM_SMALL, isValidIdx(0) and (legPhase[0] == PH_REF_START))
-    naOrBoundedField(@"ref_end_mV_x10", refEndMeanOrZero(refEndIdx), LIM_SMALL, isValidIdx(refEndIdx))
-    naOrBoundedField(@"drift_pct_x10", driftPctX10, LIM_SMALL, bDriftValid)
-    boolField(@"drift_flag", bDrift)
-    tokenField(@"exit", legExitToken(legExit), TOKMAX_LEG_EXIT)
-    naOrBoundedField(@"ref_start_net_mV_x10", refStartNetOrZero(), LIM_SMALL, isValidIdx(0) and (legPhase[0] == PH_REF_START))  ' task 3540 D5
-    naOrBoundedField(@"ref_end_net_mV_x10", refEndNetOrZero(refEndIdx), LIM_SMALL, isValidIdx(refEndIdx))                       ' task 3540 D5
+    benchLog.begin(@"BS-LEG")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.tokenField(@"served_by", servedToken(signIdx), TOKMAX_SERVED)
+    benchLog.numField(@"pts", legCount, LIM_TINY)
+    benchLog.numField(@"faults", legFaults, LIM_TINY)
+    benchLog.numField(@"aborts_i", legAbortsI, LIM_TINY)
+    benchLog.naNumField(@"ref_start_mV_x10", refStartMeanOrZero(), LIM_SMALL, isValidIdx(0) and (legPhase[0] == PH_REF_START))
+    benchLog.naNumField(@"ref_end_mV_x10", refEndMeanOrZero(refEndIdx), LIM_SMALL, isValidIdx(refEndIdx))
+    benchLog.naNumField(@"drift_pct_x10", driftPctX10, LIM_SMALL, bDriftValid)
+    benchLog.boolField(@"drift_flag", bDrift)
+    benchLog.tokenField(@"exit", legExitToken(legExit), TOKMAX_LEG_EXIT)
+    benchLog.naNumField(@"ref_start_net_mV_x10", refStartNetOrZero(), LIM_SMALL, isValidIdx(0) and (legPhase[0] == PH_REF_START))  ' task 3540 D5
+    benchLog.naNumField(@"ref_end_net_mV_x10", refEndNetOrZero(refEndIdx), LIM_SMALL, isValidIdx(refEndIdx))                       ' task 3540 D5
     lineEmit()
 
 PRI refStartMeanOrZero() : meanX10
@@ -4604,22 +4564,21 @@ PRI emitResult(side, signIdx) | slotIdx, bHasMin, bFloorOk, iminX10, savingX10
     savingX10 := 0
     if bFloorOk and bResIdefValid[slotIdx] and (resIdefX10[slotIdx] > 0)
         savingX10 := ((resIdefX10[slotIdx] - iminX10) * X1000) / resIdefX10[slotIdx]
-    lineReset()
-    lineAddText(@"BS-RESULT")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
-    tokenField(@"served_by", servedToken(signIdx), TOKMAX_SERVED)
-    boundedField(@"def_deg", defaultSwept(signIdx), LIM_TINY)
-    tokenField(@"status", fitToken(resStatus[slotIdx]), TOKMAX_FIT)
-    naOrBoundedField(@"min_deg_x10", floatToBoundedInt(resMinF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)
-    naOrBoundedField(@"applied_deg", normDegrees(floatToBoundedInt(resMinF[slotIdx], LIM_TINY)), LIM_TINY, bHasMin)
-    naOrBoundedField(@"min_se_deg_x10", floatToBoundedInt(resSeF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin and bResSeValid[slotIdx])
-    naOrBoundedField(@"i_min_mV_x10", iminX10, LIM_SMALL, bFloorOk)
-    naOrBoundedField(@"i_def_mV_x10", resIdefX10[slotIdx], LIM_SMALL, bResIdefValid[slotIdx])
-    naOrBoundedField(@"saving_pct_x10", savingX10, LIM_SMALL, bFloorOk and bResIdefValid[slotIdx])
-    naOrBoundedField(@"fit_rms_mV_x10", floatToBoundedInt(resRmsF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)
-    boolField(@"drift_flag", bResDrift[slotIdx])
-    naOrBoundedField(@"i_min_fit_mV_x10", floatToBoundedInt(resIminF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)  ' task 3540 D3, new field at the end
+    benchLog.begin(@"BS-RESULT")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.tokenField(@"served_by", servedToken(signIdx), TOKMAX_SERVED)
+    benchLog.numField(@"def_deg", defaultSwept(signIdx), LIM_TINY)
+    benchLog.tokenField(@"status", fitToken(resStatus[slotIdx]), TOKMAX_FIT)
+    benchLog.naNumField(@"min_deg_x10", floatToBoundedInt(resMinF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)
+    benchLog.naNumField(@"applied_deg", normDegrees(floatToBoundedInt(resMinF[slotIdx], LIM_TINY)), LIM_TINY, bHasMin)
+    benchLog.naNumField(@"min_se_deg_x10", floatToBoundedInt(resSeF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin and bResSeValid[slotIdx])
+    benchLog.naNumField(@"i_min_mV_x10", iminX10, LIM_SMALL, bFloorOk)
+    benchLog.naNumField(@"i_def_mV_x10", resIdefX10[slotIdx], LIM_SMALL, bResIdefValid[slotIdx])
+    benchLog.naNumField(@"saving_pct_x10", savingX10, LIM_SMALL, bFloorOk and bResIdefValid[slotIdx])
+    benchLog.naNumField(@"fit_rms_mV_x10", floatToBoundedInt(resRmsF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)
+    benchLog.boolField(@"drift_flag", bResDrift[slotIdx])
+    benchLog.naNumField(@"i_min_fit_mV_x10", floatToBoundedInt(resIminF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)  ' task 3540 D3, new field at the end
     lineEmit()
 
 PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bHalfFloorOk, bShift, bShiftSe, shiftDegF, shiftSeF, bSig
@@ -4652,19 +4611,18 @@ PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bHalfFloorOk, b
     shiftDegF := resMinF[halfSlot] -. resMinF[qtrSlot]
     shiftSeF := fsqrt((resSeF[halfSlot] *. resSeF[halfSlot]) +. (resSeF[qtrSlot] *. resSeF[qtrSlot]))
     bSig := bShiftSe and (fabs(shiftDegF) >. (SHIFT_SIG_FACTOR *. shiftSeF))
-    lineReset()
-    lineAddText(@"BS-RESULT-HALF")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
-    tokenField(@"status", fitToken(resStatus[halfSlot]), TOKMAX_FIT)
-    naOrBoundedField(@"min_deg_x10", floatToBoundedInt(resMinF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)
-    naOrBoundedField(@"min_se_deg_x10", floatToBoundedInt(resSeF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin and bResSeValid[halfSlot])
-    naOrBoundedField(@"i_min_mV_x10", resFloorX10[halfSlot], LIM_SMALL, bHalfFloorOk)
-    naOrBoundedField(@"i_def_mV_x10", resIdefX10[halfSlot], LIM_SMALL, bResIdefValid[halfSlot])
-    naOrBoundedField(@"shift_deg_x10", floatToBoundedInt(shiftDegF *. 10.0, LIM_SMALL), LIM_SMALL, bShift)
-    naOrBoundedField(@"shift_se_deg_x10", floatToBoundedInt(shiftSeF *. 10.0, LIM_SMALL), LIM_SMALL, bShiftSe)
-    boolField(@"shift_sig", bSig)
-    naOrBoundedField(@"i_min_fit_mV_x10", floatToBoundedInt(resIminF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)  ' task 3540 D3, new field at the end
+    benchLog.begin(@"BS-RESULT-HALF")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.tokenField(@"status", fitToken(resStatus[halfSlot]), TOKMAX_FIT)
+    benchLog.naNumField(@"min_deg_x10", floatToBoundedInt(resMinF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)
+    benchLog.naNumField(@"min_se_deg_x10", floatToBoundedInt(resSeF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin and bResSeValid[halfSlot])
+    benchLog.naNumField(@"i_min_mV_x10", resFloorX10[halfSlot], LIM_SMALL, bHalfFloorOk)
+    benchLog.naNumField(@"i_def_mV_x10", resIdefX10[halfSlot], LIM_SMALL, bResIdefValid[halfSlot])
+    benchLog.naNumField(@"shift_deg_x10", floatToBoundedInt(shiftDegF *. 10.0, LIM_SMALL), LIM_SMALL, bShift)
+    benchLog.naNumField(@"shift_se_deg_x10", floatToBoundedInt(shiftSeF *. 10.0, LIM_SMALL), LIM_SMALL, bShiftSe)
+    benchLog.boolField(@"shift_sig", bSig)
+    benchLog.naNumField(@"i_min_fit_mV_x10", floatToBoundedInt(resIminF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)  ' task 3540 D3, new field at the end
     lineEmit()
 
 PRI emitPair(side, firstSign) | negSlot, posSlot, bComplete, bPairSe, midF, midSeF, leadF
@@ -4688,16 +4646,15 @@ PRI emitPair(side, firstSign) | negSlot, posSlot, bComplete, bPairSe, midF, midS
     midF := (resMinF[negSlot] +. resMinF[posSlot]) /. 2.0
     leadF := (resMinF[negSlot] -. resMinF[posSlot]) /. 2.0
     midSeF := 0.5 *. fsqrt((resSeF[negSlot] *. resSeF[negSlot]) +. (resSeF[posSlot] *. resSeF[posSlot]))
-    lineReset()
-    lineAddText(@"BS-PAIR")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boolField(@"complete", bComplete)
-    naOrBoundedField(@"neg_min_deg_x10", floatToBoundedInt(resMinF[negSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(negSlot))
-    naOrBoundedField(@"pos_min_deg_x10", floatToBoundedInt(resMinF[posSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(posSlot))
-    naOrBoundedField(@"mid_deg_x10", floatToBoundedInt(midF *. 10.0, LIM_SMALL), LIM_SMALL, bComplete)
-    naOrBoundedField(@"mid_se_deg_x10", floatToBoundedInt(midSeF *. 10.0, LIM_SMALL), LIM_SMALL, bPairSe)
-    naOrBoundedField(@"lead_deg_x10", floatToBoundedInt(leadF *. 10.0, LIM_SMALL), LIM_SMALL, bComplete)
-    tokenField(@"sign_order", (firstSign == SIGN_NEG) ? @sOrderNegFirst : @sOrderPosFirst, TOKMAX_ORDER)
+    benchLog.begin(@"BS-PAIR")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.boolField(@"complete", bComplete)
+    benchLog.naNumField(@"neg_min_deg_x10", floatToBoundedInt(resMinF[negSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(negSlot))
+    benchLog.naNumField(@"pos_min_deg_x10", floatToBoundedInt(resMinF[posSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(posSlot))
+    benchLog.naNumField(@"mid_deg_x10", floatToBoundedInt(midF *. 10.0, LIM_SMALL), LIM_SMALL, bComplete)
+    benchLog.naNumField(@"mid_se_deg_x10", floatToBoundedInt(midSeF *. 10.0, LIM_SMALL), LIM_SMALL, bPairSe)
+    benchLog.naNumField(@"lead_deg_x10", floatToBoundedInt(leadF *. 10.0, LIM_SMALL), LIM_SMALL, bComplete)
+    benchLog.tokenField(@"sign_order", (firstSign == SIGN_NEG) ? @sOrderNegFirst : @sOrderPosFirst, TOKMAX_ORDER)
     lineEmit()
 
 PRI emitPair2(side) | negSlot, posSlot, bComplete, negX10, posX10, ratioX1000, bRatio, pairSlot
@@ -4740,17 +4697,16 @@ PRI emitPair2(side) | negSlot, posSlot, bComplete, negX10, posX10, ratioX1000, b
     pairSlot := sideSlot(side)
     bSfPair2Complete[pairSlot] := bComplete
     bSfPair2NetOk[pairSlot] := bRatio
-    lineReset()
-    lineAddText(@"BS-PAIR2")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    naOrBoundedField(@"i_neg_min_mV_x10", negX10, LIM_SMALL, bComplete)
-    naOrBoundedField(@"i_pos_min_mV_x10", posX10, LIM_SMALL, bComplete)
-    boundedField(@"zero_mV_x10", zeroMeanX10[sideSlot(side)], LIM_SMALL)
-    naOrBoundedField(@"ratio_raw_x1000", ratioX1000, LIM_SMALL, FALSE)   ' fmt 6: raw minima no longer computed -- always NA
-    naOrBoundedField(@"ratio_net_x1000", ratioX1000, LIM_SMALL, bRatio)
-    boolField(@"imbalance", bRatio and (abs(ratioX1000 - X1000) > IMBALANCE_PCT * X10))
-    naOrBoundedField(@"i_neg_min_fit_mV_x10", floatToBoundedInt(resIminF[negSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(negSlot))  ' task 3540 D3, new field at the end
-    naOrBoundedField(@"i_pos_min_fit_mV_x10", floatToBoundedInt(resIminF[posSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(posSlot))
+    benchLog.begin(@"BS-PAIR2")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.naNumField(@"i_neg_min_mV_x10", negX10, LIM_SMALL, bComplete)
+    benchLog.naNumField(@"i_pos_min_mV_x10", posX10, LIM_SMALL, bComplete)
+    benchLog.numField(@"zero_mV_x10", zeroMeanX10[sideSlot(side)], LIM_SMALL)
+    benchLog.naNumField(@"ratio_raw_x1000", ratioX1000, LIM_SMALL, FALSE)   ' fmt 6: raw minima no longer computed -- always NA
+    benchLog.naNumField(@"ratio_net_x1000", ratioX1000, LIM_SMALL, bRatio)
+    benchLog.boolField(@"imbalance", bRatio and (abs(ratioX1000 - X1000) > IMBALANCE_PCT * X10))
+    benchLog.naNumField(@"i_neg_min_fit_mV_x10", floatToBoundedInt(resIminF[negSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(negSlot))  ' task 3540 D3, new field at the end
+    benchLog.naNumField(@"i_pos_min_fit_mV_x10", floatToBoundedInt(resIminF[posSlot] *. 10.0, LIM_SMALL), LIM_SMALL, hasMinimum(posSlot))
     lineEmit()
 
 PRI emitAbort(scope, reason, side, motorIncre, detailValue)
@@ -4762,34 +4718,32 @@ PRI emitAbort(scope, reason, side, motorIncre, detailValue)
 ' @param motorIncre - last increment
 ' @param detailValue - the reading or code that triggered it
 
-    lineReset()
-    lineAddText(@"BS-ABORT")
-    tokenField(@"scope", scopeToken(scope), TOKMAX_SCOPE)
-    tokenField(@"reason", reasonToken(reason), TOKMAX_REASON)
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boundedField(@"incre", motorIncre, LIM_BIG)
-    boundedField(@"seq", pointSeq, LIM_TINY)
-    boundedField(@"value", detailValue, LIM_MID)
-    boundedField(@"elapsed_s", (getms() - runStartMs) / MS_PER_SEC, LIM_SMALL)
+    benchLog.begin(@"BS-ABORT")
+    benchLog.tokenField(@"scope", scopeToken(scope), TOKMAX_SCOPE)
+    benchLog.tokenField(@"reason", reasonToken(reason), TOKMAX_REASON)
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.numField(@"seq", pointSeq, LIM_TINY)
+    benchLog.numField(@"value", detailValue, LIM_MID)
+    benchLog.numField(@"elapsed_s", (getms() - runStartMs) / MS_PER_SEC, LIM_SMALL)
     lineEmit()
 
 PRI emitEnd()
 ' Emit BS-END, the last record before the end marker.
 
     flushCharge()
-    lineReset()
-    lineAddText(@"BS-END")
-    tokenField(@"exit", (abortReason == AR_NONE) ? @sExitComplete : @sExitAborted, TOKMAX_EXIT)
-    tokenField(@"reason", reasonToken(abortReason), TOKMAX_REASON)
-    boundedField(@"elapsed_s", (getms() - runStartMs) / MS_PER_SEC, LIM_SMALL)
-    boundedField(@"points", pointSeq, LIM_TINY)
-    boundedField(@"faults", runFaults, LIM_TINY)
-    boundedField(@"aborts_i", runAbortsI, LIM_TINY)
-    boundedField(@"charge_mVs", runChargeMvS, LIM_MID)
-    boolField(@"left_done", bLeftDone)
-    boolField(@"right_done", bRightDone)
-    boolField(@"lib_abort", (abortReason == AR_LIB_ABORT))
-    boundedField(@"trap_value", runTrapCode, LIM_MID)       ' task 3540 TOP-LEVEL TRAP: every run, not only an abort
+    benchLog.begin(@"BS-END")
+    benchLog.tokenField(@"exit", (abortReason == AR_NONE) ? @sExitComplete : @sExitAborted, TOKMAX_EXIT)
+    benchLog.tokenField(@"reason", reasonToken(abortReason), TOKMAX_REASON)
+    benchLog.numField(@"elapsed_s", (getms() - runStartMs) / MS_PER_SEC, LIM_SMALL)
+    benchLog.numField(@"points", pointSeq, LIM_TINY)
+    benchLog.numField(@"faults", runFaults, LIM_TINY)
+    benchLog.numField(@"aborts_i", runAbortsI, LIM_TINY)
+    benchLog.numField(@"charge_mVs", runChargeMvS, LIM_MID)
+    benchLog.boolField(@"left_done", bLeftDone)
+    benchLog.boolField(@"right_done", bRightDone)
+    benchLog.boolField(@"lib_abort", (abortReason == AR_LIB_ABORT))
+    benchLog.numField(@"trap_value", runTrapCode, LIM_MID)       ' task 3540 TOP-LEVEL TRAP: every run, not only an abort
     lineEmit()
 
 PRI emitBuild()
@@ -4801,16 +4755,15 @@ PRI emitBuild()
 ' Worst case: tag(8) + wd_selftest(1+11+1+5=18) + sf(1+2+1+4=8) + zxs_starts(1+10+1+4=16) +
 ' zxs_max_mV_x10(1+14+1+4=20) = 70 bytes.
 
-    lineReset()
-    lineAddText(@"BS-BUILD")
+    benchLog.begin(@"BS-BUILD")
 #ifdef WD_SELFTEST
-    boolField(@"wd_selftest", TRUE)
+    benchLog.boolField(@"wd_selftest", TRUE)
 #else
-    boolField(@"wd_selftest", FALSE)
+    benchLog.boolField(@"wd_selftest", FALSE)
 #endif
-    boundedField(@"sf", SF_VERSION, LIM_TINY)
-    boundedField(@"zxs_starts", ZXS_STARTS, LIM_TINY)
-    boundedField(@"zxs_max_mV_x10", ZXS_MAX_MV_X10, LIM_TINY)
+    benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
+    benchLog.numField(@"zxs_starts", ZXS_STARTS, LIM_TINY)
+    benchLog.numField(@"zxs_max_mV_x10", ZXS_MAX_MV_X10, LIM_TINY)
     lineEmit()
 
 PRI emitSignoffDecls()
@@ -4847,12 +4800,11 @@ PRI emitSignoffDecl(pCell, pTask)
 ' @param pCell - pointer to the cell id token
 ' @param pTask - pointer to the owning todo-mcp task id, as plain text
 
-    lineReset()
-    lineAddText(@"SIGNOFF-DECL")
-    boundedField(@"sf", SF_VERSION, LIM_TINY)
-    tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
-    tokenField(@"cell", pCell, TOKMAX_CELL)
-    tokenField(@"task", pTask, TOKMAX_TASK)
+    benchLog.begin(@"SIGNOFF-DECL")
+    benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
+    benchLog.tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
+    benchLog.tokenField(@"task", pTask, TOKMAX_TASK)
     lineEmit()
 
 PRI emitSignoffs() | side, slotIdx, bStarted
@@ -5023,14 +4975,13 @@ PRI emitZxsAll(side, slotIdx) | baseIdx, bAny
 
     baseIdx := slotIdx * ZXS_CHANNELS
     bAny := (zxsAllN[slotIdx] > 0)
-    lineReset()
-    lineAddText(@"BS-ZXSALL")
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    boundedField(@"n", zxsAllN[slotIdx], LIM_SMALL)
-    naOrBoundedField(@"i_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_I, FALSE), LIM_MID, bAny)
-    naOrBoundedField(@"u_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_U, FALSE), LIM_MID, bAny)
-    naOrBoundedField(@"v_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_V, FALSE), LIM_MID, bAny)
-    naOrBoundedField(@"w_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_W, FALSE), LIM_MID, bAny)
+    benchLog.begin(@"BS-ZXSALL")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"n", zxsAllN[slotIdx], LIM_SMALL)
+    benchLog.naNumField(@"i_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_I, FALSE), LIM_MID, bAny)
+    benchLog.naNumField(@"u_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_U, FALSE), LIM_MID, bAny)
+    benchLog.naNumField(@"v_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_V, FALSE), LIM_MID, bAny)
+    benchLog.naNumField(@"w_spread_mV_x10", zxsSpreadX10(baseIdx + ZXS_CH_W, FALSE), LIM_MID, bAny)
     lineEmit()
 
 PRI emitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, pUnits, instCount) | boundedVal, pVerdict
@@ -5063,23 +5014,22 @@ PRI emitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLi
         pVerdict := @sSfPass
     else
         pVerdict := @sSfFail
-    lineReset()
-    lineAddText(@"SIGNOFF")
-    boundedField(@"sf", SF_VERSION, LIM_TINY)
-    tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
-    tokenField(@"cell", pCell, TOKMAX_CELL)
-    tokenField(@"task", pTask, TOKMAX_TASK)
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"crit", pCrit, TOKMAX_CRIT)
-    naOrBoundedField(@"measured", boundedVal, LIM_BIG, bMeasured)
-    boundedField(@"lo", loLimit, LIM_BIG)
-    boundedField(@"hi", hiLimit, LIM_BIG)
-    tokenField(@"units", pUnits, TOKMAX_UNITS)
+    benchLog.begin(@"SIGNOFF")
+    benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
+    benchLog.tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
+    benchLog.tokenField(@"task", pTask, TOKMAX_TASK)
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    benchLog.naNumField(@"measured", boundedVal, LIM_BIG, bMeasured)
+    benchLog.numField(@"lo", loLimit, LIM_BIG)
+    benchLog.numField(@"hi", hiLimit, LIM_BIG)
+    benchLog.tokenField(@"units", pUnits, TOKMAX_UNITS)
     if bMeasured
-        boundedField(@"n", instCount, LIM_SMALL)
+        benchLog.numField(@"n", instCount, LIM_SMALL)
     else
-        boundedField(@"n", 0, LIM_SMALL)
-    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+        benchLog.numField(@"n", 0, LIM_SMALL)
+    benchLog.tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     lineEmit()
 
 PRI emitSignoffEx(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, bHasLo, hiLimit, bHasHi, bConditionsOk, pUnits, instCount) | boundedVal, pVerdict
@@ -5116,23 +5066,22 @@ PRI emitSignoffEx(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, bH
         pVerdict := @sSfPass
     else
         pVerdict := @sSfFail
-    lineReset()
-    lineAddText(@"SIGNOFF")
-    boundedField(@"sf", SF_VERSION, LIM_TINY)
-    tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
-    tokenField(@"cell", pCell, TOKMAX_CELL)
-    tokenField(@"task", pTask, TOKMAX_TASK)
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"crit", pCrit, TOKMAX_CRIT)
-    naOrBoundedField(@"measured", boundedVal, LIM_BIG, bMeasured)
-    naOrBoundedField(@"lo", loLimit, LIM_BIG, bHasLo)
-    naOrBoundedField(@"hi", hiLimit, LIM_BIG, bHasHi)
-    tokenField(@"units", pUnits, TOKMAX_UNITS)
+    benchLog.begin(@"SIGNOFF")
+    benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
+    benchLog.tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
+    benchLog.tokenField(@"task", pTask, TOKMAX_TASK)
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    benchLog.naNumField(@"measured", boundedVal, LIM_BIG, bMeasured)
+    benchLog.naNumField(@"lo", loLimit, LIM_BIG, bHasLo)
+    benchLog.naNumField(@"hi", hiLimit, LIM_BIG, bHasHi)
+    benchLog.tokenField(@"units", pUnits, TOKMAX_UNITS)
     if bMeasured
-        boundedField(@"n", instCount, LIM_SMALL)
+        benchLog.numField(@"n", instCount, LIM_SMALL)
     else
-        boundedField(@"n", 0, LIM_SMALL)
-    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+        benchLog.numField(@"n", 0, LIM_SMALL)
+    benchLog.tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     lineEmit()
 
 PRI emitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instCount) | pVerdict
@@ -5158,84 +5107,26 @@ PRI emitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instCou
         pVerdict := @sSfPass
     else
         pVerdict := @sSfFail
-    lineReset()
-    lineAddText(@"SIGNOFF")
-    boundedField(@"sf", SF_VERSION, LIM_TINY)
-    tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
-    tokenField(@"cell", pCell, TOKMAX_CELL)
-    tokenField(@"task", pTask, TOKMAX_TASK)
-    tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    benchLog.begin(@"SIGNOFF")
+    benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
+    benchLog.tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
+    benchLog.tokenField(@"task", pTask, TOKMAX_TASK)
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"crit", pCrit, TOKMAX_CRIT)
     if bMeasured
-        boolField(@"measured", bCriterionMet)
+        benchLog.boolField(@"measured", bCriterionMet)
     else
-        lineTextField(@"measured", @sNa)
-    lineTextField(@"lo", @sTrue)
-    lineTextField(@"hi", @sTrue)
-    tokenField(@"units", @sSfUnitsBool, TOKMAX_UNITS)
+        benchLog.textField(@"measured", @sNa)
+    benchLog.textField(@"lo", @sTrue)
+    benchLog.textField(@"hi", @sTrue)
+    benchLog.tokenField(@"units", @sSfUnitsBool, TOKMAX_UNITS)
     if bMeasured
-        boundedField(@"n", instCount, LIM_SMALL)
+        benchLog.numField(@"n", instCount, LIM_SMALL)
     else
-        boundedField(@"n", 0, LIM_SMALL)
-    tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+        benchLog.numField(@"n", 0, LIM_SMALL)
+    benchLog.tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     lineEmit()
-
-PRI boundedField(pFieldName, numValue, limitAbs)
-' Append a numeric field clamped to +/- limitAbs, so its printed width is bounded.
-'
-' @param pFieldName - pointer to the field name
-' @param numValue - the field's value
-' @param limitAbs - clamp magnitude (one of the LIM_* widths)
-
-    lineField(pFieldName, (numValue #> (0 - limitAbs)) <# limitAbs)
-
-PRI naOrBoundedField(pFieldName, numValue, limitAbs, bValid)
-' Append a clamped numeric field, or the token NA when the value was not measured.
-'
-' @param pFieldName - pointer to the field name
-' @param numValue - the field's value
-' @param limitAbs - clamp magnitude (one of the LIM_* widths)
-' @param bValid - TRUE when numValue is a measurement
-
-    if bValid
-        boundedField(pFieldName, numValue, limitAbs)
-    else
-        lineTextField(pFieldName, @sNa)
-
-PRI boolField(pFieldName, bFlag)
-' Append a boolean field as the token TRUE or FALSE, never a number (PL-23).
-'
-' @param pFieldName - pointer to the field name
-' @param bFlag - the field's value; any non-zero prints TRUE
-
-    lineTextField(pFieldName, (bFlag <> FALSE) ? @sTrue : @sFalse)
-
-PRI tokenField(pFieldName, pToken, maxLen)
-' Append a token field; a token longer than maxLen prints as "?" so the width stays bounded.
-'
-' @param pFieldName - pointer to the field name
-' @param pToken - pointer to the token text
-' @param maxLen - the longest token this field may print
-
-    if bTokenFits(pToken, maxLen)
-        lineTextField(pFieldName, pToken)
-    else
-        lineTextField(pFieldName, @sBadTok)
-
-PRI bTokenFits(pToken, maxLen) : bFits | charIdx
-' Report whether a zero-terminated token is at most maxLen bytes, reading no more than maxLen + 1.
-'
-' @param pToken - pointer to the token text
-' @param maxLen - the longest acceptable token
-' @returns bFits - TRUE when the terminator is found within maxLen bytes
-'
-' @local charIdx - index into the token
-
-    bFits := FALSE
-    repeat charIdx from 0 to maxLen
-        if BYTE[pToken][charIdx] == 0
-            bFits := TRUE
-            quit
 
 PRI motorToken(side) : pTok
 ' Motor token for a side.
@@ -5506,87 +5397,6 @@ PRI boardToken(eBoardRev) : pTok
     else
         pTok := @sBoardUnknown
 
-PRI lineReset()
-' Begin a new record.
-
-    lineLen := 0
-    BYTE[@lineBuf][0] := 0
-
-PRI lineAddChar(charByte)
-' Append one character to the record under assembly, silently dropping anything past the
-' buffer. Every record in this file is well under LINE_BUF_SIZE; truncation would show as a
-' short line in the log rather than as memory corruption.
-'
-' @param charByte - the character to append
-
-    if lineLen < LINE_BUF_SIZE - 1
-        BYTE[@lineBuf][lineLen] := charByte
-        lineLen += 1
-        BYTE[@lineBuf][lineLen] := 0
-
-PRI lineAddText(pText) | srcIdx
-' Append a zero-terminated string to the record under assembly. The loop is bounded as well
-' as terminated, so an unterminated source string cannot hang the run.
-'
-' @param pText - pointer to the text to append
-'
-' @local srcIdx - index into the source text
-
-    repeat srcIdx from 0 to LINE_BUF_SIZE - 1
-        if BYTE[pText][srcIdx] == 0
-            quit
-        lineAddChar(BYTE[pText][srcIdx])
-
-PRI lineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absMagnitude, digitIdx
-' Append a signed decimal number with an underscore every three digits, matching udec_() and
-' sdec_() elsewhere in this tree's bench logs.
-'
-' @param numValue - the value to append
-'
-' @local digitStack - decimal digits of numValue, least significant first
-' @local digitCount - how many entries of digitStack are in use
-' @local absMagnitude - magnitude of numValue, consumed by the extraction loop
-' @local digitIdx - index into digitStack while emitting
-
-    absMagnitude := numValue
-    if numValue < 0
-        lineAddChar("-")
-        absMagnitude := -numValue
-
-    digitCount := 0
-    repeat
-        digitStack[digitCount] := absMagnitude // DEC_RADIX
-        absMagnitude /= DEC_RADIX
-        digitCount += 1
-    until (absMagnitude == 0) or (digitCount == MAX_DEC_DIGITS)
-
-    repeat digitIdx from digitCount - 1 to 0
-        lineAddChar("0" + digitStack[digitIdx])
-        if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
-            lineAddChar("_")
-
-PRI lineField(pFieldName, numValue)
-' Append one ",name,<number>" field to the record under assembly.
-'
-' @param pFieldName - pointer to the field name
-' @param numValue - the field's value
-
-    lineAddChar(",")
-    lineAddText(pFieldName)
-    lineAddChar(",")
-    lineAddNum(numValue)
-
-PRI lineTextField(pFieldName, pFieldValue)
-' Append one ",name,<token>" field to the record under assembly.
-'
-' @param pFieldName - pointer to the field name
-' @param pFieldValue - pointer to the field's token text
-
-    lineAddChar(",")
-    lineAddText(pFieldName)
-    lineAddChar(",")
-    lineAddText(pFieldValue)
-
 PRI lineEmit()
 ' Emit the assembled record as exactly one debug line. One debug() statement carries at most
 ' 255 bytes of debug data; the whole record travels as a single zero-terminated string
@@ -5594,7 +5404,7 @@ PRI lineEmit()
 ' record's debug() with CP_EMIT (once, here, covering every emitter's call site).
 
     beat(CP_EMIT)
-    debug(zstr_(@lineBuf))
+    debug(zstr_(benchLog.pLine()))
     beat(CP_EMIT)
 
 PRI beat(checkpointId)
@@ -5741,14 +5551,14 @@ PRI declareStall(msSinceBeat) | bRunningBefore, bStoppedAfter
     wdDeclaring := TRUE
     wdSnapshotStall()                                       ' checkpoint and both wheels' state, BEFORE the stops
     bRunningBefore := (wdSnapLeftCog <> 0) or (wdSnapRightCog <> 0)
-    benchLog.cogEventBegin()
+    wdLog.cogEventBegin()
     wheelL.stop()
     wheelR.stop()
     bStoppedAfter := (wheelL.testGetMotorCog() == 0) and (wheelR.testGetMotorCog() == 0)
     emitWatchdog(msSinceBeat)                               ' from the snapshot: pre-stop cog ids and telemetry
 #ifdef WD_SELFTEST
     ' Task 3537 phase 2c (design sec G.4): the self-test's four verdicts, from this non-zero cog, through
-    ' the wd* builder. STACK is last, so its sentinel read follows the deepest chain (43 longs, see
+    ' the watchdog's own builder, wdLog. STACK is last, so its sentinel read follows the deepest chain (43 longs, see
     ' WD_STACK_LONGS), which wdEmitSignoff()'s measured field has just run.
     wdEmitSignoff(@sSfCellWdtFires, @sSfTaskNoStall, SIDE_NONE, @sSfCritStallMs, TRUE, msSinceBeat, ...
         WDT_FIRES_LO_MS, WDT_FIRES_HI_MS, @sSfUnitsMs, SIGNOFF_ONE_INSTANCE)
@@ -5757,7 +5567,7 @@ PRI declareStall(msSinceBeat) | bRunningBefore, bStoppedAfter
     wdEmitSignoffBool(@sSfCellWdtStack, @sSfTaskNoStall, SIDE_NONE, @sSfCritStackOk, TRUE, (wdStackSentinel == WD_STACK_SENTINEL), SIGNOFF_ONE_INSTANCE)
 #else
     ' Task 3537 (design sec G.4, normal build): a real stall is a recorded failure of task 3534's
-    ' certification. Emitted from this cog through the wd* builder, never cog 0's lineBuf.
+    ' certification. Emitted from this cog through its own builder, wdLog, never cog 0's benchLog.
     wdEmitSignoffBool(@sSfCellNoStall, @sSfTaskNoStall, SIDE_NONE, @sSfCritCog0End, TRUE, FALSE, SIGNOFF_ONE_INSTANCE)
 #endif
     wdEmitEnd()
@@ -5794,7 +5604,7 @@ PRI emitWatchdog(msSinceBeat)
 ' field come from wdSnapshotStall()'s pre-stop snapshot (declareStall() now stops the wheels first), so
 ' the fields, order and meaning are unchanged. Never through the sideXxx()/commandMotor() wrappers,
 ' which call beat() and would corrupt the heartbeat being reported on. Uses the watchdog's own
-' wdLine* builder, never lineBuf/lineLen (cog 0 may be mid-record). Two records, not one: the
+' builder, wdLog, never benchLog (cog 0 may be mid-record). Two records, not one: the
 ' combined fields would exceed the 280-byte bound. BS-WATCHDOG2's LAST field, stack_ok, reports
 ' whether wdStackSentinel (filled before cogspin, WD_STACK_SENTINEL's CON comment) is still
 ' intact -- cogspin does not detect a stack overflow itself, and this stall path is the one call
@@ -5802,39 +5612,37 @@ PRI emitWatchdog(msSinceBeat)
 '
 ' @param msSinceBeat - ms since wdHeartbeat last changed
 
-    wdLineReset()
-    wdLineAddText(@"BS-WATCHDOG")
-    wdBoundedField(@"checkpoint", wdSnapCheckpoint, LIM_TINY)
-    wdTokenField(@"checkpoint_tok", checkpointToken(wdSnapCheckpoint), TOKMAX_CP)
-    wdBoundedField(@"since_ms", msSinceBeat, LIM_MID)
-    wdBoundedField(@"heartbeat", wdHeartbeat, LIM_MID)
-    wdBoundedField(@"seq", pointSeq, LIM_TINY)
-    wdTokenField(@"side", motorToken(currentSide), TOKMAX_MOTOR)
-    wdTokenField(@"pt_result", resultToken(ptResult), TOKMAX_RESULT)
-    wdBoundedField(@"samp_state", sampState, LIM_TINY)
-    wdBoolField(@"fault_seen", bSampFaultSeen)
-    wdBoolField(@"pt_abort", bSampPointAbort)
-    wdBoolField(@"no_cog", bSampNoCog)
-    wdTokenField(@"reason", reasonToken(abortReason), TOKMAX_REASON)
+    wdLog.begin(@"BS-WATCHDOG")
+    wdLog.numField(@"checkpoint", wdSnapCheckpoint, LIM_TINY)
+    wdLog.tokenField(@"checkpoint_tok", checkpointToken(wdSnapCheckpoint), TOKMAX_CP)
+    wdLog.numField(@"since_ms", msSinceBeat, LIM_MID)
+    wdLog.numField(@"heartbeat", wdHeartbeat, LIM_MID)
+    wdLog.numField(@"seq", pointSeq, LIM_TINY)
+    wdLog.tokenField(@"side", motorToken(currentSide), TOKMAX_MOTOR)
+    wdLog.tokenField(@"pt_result", resultToken(ptResult), TOKMAX_RESULT)
+    wdLog.numField(@"samp_state", sampState, LIM_TINY)
+    wdLog.boolField(@"fault_seen", bSampFaultSeen)
+    wdLog.boolField(@"pt_abort", bSampPointAbort)
+    wdLog.boolField(@"no_cog", bSampNoCog)
+    wdLog.tokenField(@"reason", reasonToken(abortReason), TOKMAX_REASON)
     wdLineEmit()
 
-    wdLineReset()
-    wdLineAddText(@"BS-WATCHDOG2")
-    wdBoundedField(@"l_cog", wdSnapLeftCog, LIM_TINY)
-    wdBoundedField(@"l_state", wdSnapLeftState, LIM_TINY)
-    wdBoolField(@"l_fault", wdSnapLeftFault)
-    wdBoundedField(@"l_duty", wdSnapLeftDuty, LIM_SMALL)
-    wdBoundedField(@"l_err", wdSnapLeftErr, LIM_TINY)
-    wdBoundedField(@"l_sense_mV", wdSnapLeftSense, LIM_SMALL)
-    wdBoundedField(@"l_ticks", wdSnapLeftTicks, LIM_MID)
-    wdBoundedField(@"r_cog", wdSnapRightCog, LIM_TINY)
-    wdBoundedField(@"r_state", wdSnapRightState, LIM_TINY)
-    wdBoolField(@"r_fault", wdSnapRightFault)
-    wdBoundedField(@"r_duty", wdSnapRightDuty, LIM_SMALL)
-    wdBoundedField(@"r_err", wdSnapRightErr, LIM_TINY)
-    wdBoundedField(@"r_sense_mV", wdSnapRightSense, LIM_SMALL)
-    wdBoundedField(@"r_ticks", wdSnapRightTicks, LIM_MID)
-    wdBoolField(@"stack_ok", (wdStackSentinel == WD_STACK_SENTINEL))
+    wdLog.begin(@"BS-WATCHDOG2")
+    wdLog.numField(@"l_cog", wdSnapLeftCog, LIM_TINY)
+    wdLog.numField(@"l_state", wdSnapLeftState, LIM_TINY)
+    wdLog.boolField(@"l_fault", wdSnapLeftFault)
+    wdLog.numField(@"l_duty", wdSnapLeftDuty, LIM_SMALL)
+    wdLog.numField(@"l_err", wdSnapLeftErr, LIM_TINY)
+    wdLog.numField(@"l_sense_mV", wdSnapLeftSense, LIM_SMALL)
+    wdLog.numField(@"l_ticks", wdSnapLeftTicks, LIM_MID)
+    wdLog.numField(@"r_cog", wdSnapRightCog, LIM_TINY)
+    wdLog.numField(@"r_state", wdSnapRightState, LIM_TINY)
+    wdLog.boolField(@"r_fault", wdSnapRightFault)
+    wdLog.numField(@"r_duty", wdSnapRightDuty, LIM_SMALL)
+    wdLog.numField(@"r_err", wdSnapRightErr, LIM_TINY)
+    wdLog.numField(@"r_sense_mV", wdSnapRightSense, LIM_SMALL)
+    wdLog.numField(@"r_ticks", wdSnapRightTicks, LIM_MID)
+    wdLog.boolField(@"stack_ok", (wdStackSentinel == WD_STACK_SENTINEL))
     wdLineEmit()
 
 PRI wdEmitEnd()
@@ -5844,24 +5652,23 @@ PRI wdEmitEnd()
 ' sampChargeMvMs, which is unsafe to touch from this cog. charge_mVs may therefore lag cog 0's
 ' own emitEnd() by at most one unflushed sample; immaterial on a fault record.
 
-    wdLineReset()
-    wdLineAddText(@"BS-END")
-    wdTokenField(@"exit", @sExitAborted, TOKMAX_EXIT)
-    wdTokenField(@"reason", @sArWatchdog, TOKMAX_REASON)
-    wdBoundedField(@"elapsed_s", (getms() - runStartMs) / MS_PER_SEC, LIM_SMALL)
-    wdBoundedField(@"points", pointSeq, LIM_TINY)
-    wdBoundedField(@"faults", runFaults, LIM_TINY)
-    wdBoundedField(@"aborts_i", runAbortsI, LIM_TINY)
-    wdBoundedField(@"charge_mVs", runChargeMvS, LIM_MID)
-    wdBoolField(@"left_done", bLeftDone)
-    wdBoolField(@"right_done", bRightDone)
-    wdBoolField(@"lib_abort", FALSE)
+    wdLog.begin(@"BS-END")
+    wdLog.tokenField(@"exit", @sExitAborted, TOKMAX_EXIT)
+    wdLog.tokenField(@"reason", @sArWatchdog, TOKMAX_REASON)
+    wdLog.numField(@"elapsed_s", (getms() - runStartMs) / MS_PER_SEC, LIM_SMALL)
+    wdLog.numField(@"points", pointSeq, LIM_TINY)
+    wdLog.numField(@"faults", runFaults, LIM_TINY)
+    wdLog.numField(@"aborts_i", runAbortsI, LIM_TINY)
+    wdLog.numField(@"charge_mVs", runChargeMvS, LIM_MID)
+    wdLog.boolField(@"left_done", bLeftDone)
+    wdLog.boolField(@"right_done", bRightDone)
+    wdLog.boolField(@"lib_abort", FALSE)
     wdLineEmit()
 
 PRI wdEmitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instCount) | pVerdict
 ' Emit one boolean SIGNOFF verdict from the watchdog cog (task 3537). Mirrors emitSignoffBool()
-' field for field against the watchdog's own wd* builder, never lineBuf/lineLen (cog 0 may be
-' stalled mid-record). Calls nothing that beats: motorToken() and bTokenFits() only return or read
+' field for field against the watchdog's own builder, wdLog, never benchLog (cog 0 may be
+' stalled mid-record). Calls nothing that beats: motorToken() and the builder only return or read
 ' DAT text. Worst case: identical to emitSignoffBool(), 173 bytes.
 '
 ' @param pCell - pointer to the cell id token
@@ -5880,32 +5687,31 @@ PRI wdEmitSignoffBool(pCell, pTask, side, pCrit, bMeasured, bCriterionMet, instC
         pVerdict := @sSfPass
     else
         pVerdict := @sSfFail
-    wdLineReset()
-    wdLineAddText(@"SIGNOFF")
-    wdBoundedField(@"sf", SF_VERSION, LIM_TINY)
-    wdTokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
-    wdTokenField(@"cell", pCell, TOKMAX_CELL)
-    wdTokenField(@"task", pTask, TOKMAX_TASK)
-    wdTokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    wdTokenField(@"crit", pCrit, TOKMAX_CRIT)
+    wdLog.begin(@"SIGNOFF")
+    wdLog.numField(@"sf", SF_VERSION, LIM_TINY)
+    wdLog.tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    wdLog.tokenField(@"cell", pCell, TOKMAX_CELL)
+    wdLog.tokenField(@"task", pTask, TOKMAX_TASK)
+    wdLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    wdLog.tokenField(@"crit", pCrit, TOKMAX_CRIT)
     if bMeasured
-        wdBoolField(@"measured", bCriterionMet)
+        wdLog.boolField(@"measured", bCriterionMet)
     else
-        wdLineTextField(@"measured", @sNa)
-    wdLineTextField(@"lo", @sTrue)
-    wdLineTextField(@"hi", @sTrue)
-    wdTokenField(@"units", @sSfUnitsBool, TOKMAX_UNITS)
+        wdLog.textField(@"measured", @sNa)
+    wdLog.textField(@"lo", @sTrue)
+    wdLog.textField(@"hi", @sTrue)
+    wdLog.tokenField(@"units", @sSfUnitsBool, TOKMAX_UNITS)
     if bMeasured
-        wdBoundedField(@"n", instCount, LIM_SMALL)
+        wdLog.numField(@"n", instCount, LIM_SMALL)
     else
-        wdBoundedField(@"n", 0, LIM_SMALL)
-    wdTokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+        wdLog.numField(@"n", 0, LIM_SMALL)
+    wdLog.tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     wdLineEmit()
 
 PRI wdEmitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, pUnits, instCount) | boundedVal, pVerdict
 ' Emit one numeric SIGNOFF verdict from the watchdog cog (task 3537 phase 2c, design sec B.3). Mirrors
-' emitSignoff() field for field against the watchdog's own wd* builder, never lineBuf/lineLen (cog 0 may
-' be stalled mid-record). Calls nothing that beats: motorToken() and bTokenFits() only return or read DAT
+' emitSignoff() field for field against the watchdog's own builder, wdLog, never benchLog (cog 0 may
+' be stalled mid-record). Calls nothing that beats: motorToken() and the builder only return or read DAT
 ' text. Worst case: identical to emitSignoff(), 196 bytes.
 '
 ' @param pCell - pointer to the cell id token
@@ -5929,158 +5735,28 @@ PRI wdEmitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hi
         pVerdict := @sSfPass
     else
         pVerdict := @sSfFail
-    wdLineReset()
-    wdLineAddText(@"SIGNOFF")
-    wdBoundedField(@"sf", SF_VERSION, LIM_TINY)
-    wdTokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
-    wdTokenField(@"cell", pCell, TOKMAX_CELL)
-    wdTokenField(@"task", pTask, TOKMAX_TASK)
-    wdTokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    wdTokenField(@"crit", pCrit, TOKMAX_CRIT)
-    wdNaOrBoundedField(@"measured", boundedVal, LIM_BIG, bMeasured)
-    wdBoundedField(@"lo", loLimit, LIM_BIG)
-    wdBoundedField(@"hi", hiLimit, LIM_BIG)
-    wdTokenField(@"units", pUnits, TOKMAX_UNITS)
+    wdLog.begin(@"SIGNOFF")
+    wdLog.numField(@"sf", SF_VERSION, LIM_TINY)
+    wdLog.tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
+    wdLog.tokenField(@"cell", pCell, TOKMAX_CELL)
+    wdLog.tokenField(@"task", pTask, TOKMAX_TASK)
+    wdLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    wdLog.tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    wdLog.naNumField(@"measured", boundedVal, LIM_BIG, bMeasured)
+    wdLog.numField(@"lo", loLimit, LIM_BIG)
+    wdLog.numField(@"hi", hiLimit, LIM_BIG)
+    wdLog.tokenField(@"units", pUnits, TOKMAX_UNITS)
     if bMeasured
-        wdBoundedField(@"n", instCount, LIM_SMALL)
+        wdLog.numField(@"n", instCount, LIM_SMALL)
     else
-        wdBoundedField(@"n", 0, LIM_SMALL)
-    wdTokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
+        wdLog.numField(@"n", 0, LIM_SMALL)
+    wdLog.tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     wdLineEmit()
 
-PRI wdNaOrBoundedField(pFieldName, numValue, limitAbs, bValid)
-' Append a clamped numeric field, or the token NA when the value was not measured. Mirrors
-' naOrBoundedField() against the watchdog's own builder (task 3537 phase 2c).
-'
-' @param pFieldName - pointer to the field name
-' @param numValue - the field's value
-' @param limitAbs - clamp magnitude (one of the LIM_* widths)
-' @param bValid - TRUE when numValue is a measurement
-
-    if bValid
-        wdBoundedField(pFieldName, numValue, limitAbs)
-    else
-        wdLineTextField(pFieldName, @sNa)
-
-PRI wdLineReset()
-' Begin a new watchdog record, in wdLineBuf/wdLineLen. Mirrors lineReset() byte-for-byte against
-' the watchdog's own buffer, which cog 0 never touches.
-
-    wdLineLen := 0
-    BYTE[@wdLineBuf][0] := 0
-
-PRI wdLineAddChar(charByte)
-' Append one character to the watchdog record under assembly. Mirrors lineAddChar()
-' byte-for-byte against wdLineBuf/wdLineLen.
-'
-' @param charByte - the character to append
-
-    if wdLineLen < LINE_BUF_SIZE - 1
-        BYTE[@wdLineBuf][wdLineLen] := charByte
-        wdLineLen += 1
-        BYTE[@wdLineBuf][wdLineLen] := 0
-
-PRI wdLineAddText(pText) | srcIdx
-' Append a zero-terminated string to the watchdog record under assembly. Mirrors lineAddText()
-' byte-for-byte.
-'
-' @param pText - pointer to the text to append
-'
-' @local srcIdx - index into the source text
-
-    repeat srcIdx from 0 to LINE_BUF_SIZE - 1
-        if BYTE[pText][srcIdx] == 0
-            quit
-        wdLineAddChar(BYTE[pText][srcIdx])
-
-PRI wdLineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absMagnitude, digitIdx
-' Append a signed decimal number with an underscore every three digits. Mirrors lineAddNum()
-' statement-for-statement against wdLineAddChar/wdLineBuf instead of lineAddChar/lineBuf, using
-' the same DEC_RADIX/MAX_DEC_DIGITS/DIGITS_PER_GROUP constants -- so for any given numValue the
-' two builders emit byte-identical text (PL-17's grouping included), proven by construction
-' rather than by running it.
-'
-' @param numValue - the value to append
-'
-' @local digitStack - decimal digits of numValue, least significant first
-' @local digitCount - how many entries of digitStack are in use
-' @local absMagnitude - magnitude of numValue, consumed by the extraction loop
-' @local digitIdx - index into digitStack while emitting
-
-    absMagnitude := numValue
-    if numValue < 0
-        wdLineAddChar("-")
-        absMagnitude := -numValue
-
-    digitCount := 0
-    repeat
-        digitStack[digitCount] := absMagnitude // DEC_RADIX
-        absMagnitude /= DEC_RADIX
-        digitCount += 1
-    until (absMagnitude == 0) or (digitCount == MAX_DEC_DIGITS)
-
-    repeat digitIdx from digitCount - 1 to 0
-        wdLineAddChar("0" + digitStack[digitIdx])
-        if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
-            wdLineAddChar("_")
-
-PRI wdLineField(pFieldName, numValue)
-' Append one ",name,<number>" field to the watchdog record. Mirrors lineField().
-'
-' @param pFieldName - pointer to the field name
-' @param numValue - the field's value
-
-    wdLineAddChar(",")
-    wdLineAddText(pFieldName)
-    wdLineAddChar(",")
-    wdLineAddNum(numValue)
-
-PRI wdLineTextField(pFieldName, pFieldValue)
-' Append one ",name,<token>" field to the watchdog record. Mirrors lineTextField().
-'
-' @param pFieldName - pointer to the field name
-' @param pFieldValue - pointer to the field's token text
-
-    wdLineAddChar(",")
-    wdLineAddText(pFieldName)
-    wdLineAddChar(",")
-    wdLineAddText(pFieldValue)
-
-PRI wdBoundedField(pFieldName, numValue, limitAbs)
-' Append a numeric field clamped to +/- limitAbs. Mirrors boundedField().
-'
-' @param pFieldName - pointer to the field name
-' @param numValue - the field's value
-' @param limitAbs - clamp magnitude (one of the LIM_* widths)
-
-    wdLineField(pFieldName, (numValue #> (0 - limitAbs)) <# limitAbs)
-
-PRI wdBoolField(pFieldName, bFlag)
-' Append a boolean field as the token TRUE or FALSE. Mirrors boolField().
-'
-' @param pFieldName - pointer to the field name
-' @param bFlag - the field's value; any non-zero prints TRUE
-
-    wdLineTextField(pFieldName, (bFlag <> FALSE) ? @sTrue : @sFalse)
-
-PRI wdTokenField(pFieldName, pToken, maxLen)
-' Append a token field; a token longer than maxLen prints as "?". Mirrors tokenField(), reusing
-' the shared, buffer-free bTokenFits() helper (it only reads through pToken, never touches
-' lineBuf/lineLen or wdLineBuf/wdLineLen, so it is safe from either cog).
-'
-' @param pFieldName - pointer to the field name
-' @param pToken - pointer to the token text
-' @param maxLen - the longest token this field may print
-
-    if bTokenFits(pToken, maxLen)
-        wdLineTextField(pFieldName, pToken)
-    else
-        wdLineTextField(pFieldName, @sBadTok)
-
 PRI wdLineEmit()
-' Emit the assembled watchdog record as one debug line. Mirrors lineEmit(), against wdLineBuf.
+' Emit the assembled watchdog record as one debug line. Mirrors lineEmit(), against the watchdog's own wdLog.
 
-    debug(zstr_(@wdLineBuf))
+    debug(zstr_(wdLog.pLine()))
 
 CON { license }
 

@@ -8,7 +8,8 @@
 ''   Authors.... Stephen M Moraco
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Sep 2026
-''   Updated.... 18 Sep 2026
+''   Updated.... 19 Sep 2026 (PL-53: unclampedNumField(), hexField() and bareField() for the scan, char and
+''               detection binaries, whose private copies of this builder are retired)
 ''
 '' =================================================================================================
 
@@ -25,6 +26,9 @@ CON { line-buffer sizing }
     MAX_DEC_DIGITS   = 11
     DEC_RADIX        = 10
     DIGITS_PER_GROUP = 3
+    HEX4_DIGITS      = 4                                    ' hexField(): four hex digits, the low 16 bits
+    BITS_PER_NIBBLE  = 4
+    NIBBLE_MASK      = $F
 
 CON { cog-event quiet window (PL-41, PL-85) }
 
@@ -64,6 +68,34 @@ PUB numField(pName, numValue, limitAbs)
 '' @param limitAbs - clamp magnitude (one of LIM_TINY, LIM_SMALL, LIM_MID, LIM_BIG)
 
     lineField(pName, (numValue #> (0 - limitAbs)) <# limitAbs)
+
+PUB unclampedNumField(pName, numValue)
+'' Append one ",name,<number>" field with no clamp, for a record whose values are bounded where they are
+'' produced (the detection sweep's pin states and counts). Prefer numField() everywhere else.
+''
+'' @param pName - pointer to the field name
+'' @param numValue - the field's value
+
+    lineField(pName, numValue)
+
+PUB hexField(pName, hexValue)
+'' Append one ",name,$HHHH" field: the low 16 bits as four upper-case hex digits.
+''
+'' @param pName - pointer to the field name
+'' @param hexValue - the field's value, low 16 bits used
+
+    lineAddChar(",")
+    lineAddText(pName)
+    lineAddChar(",")
+    lineAddHex4(hexValue)
+
+PUB bareField(pText)
+'' Append one unlabelled ",<text>" field: a record whose body is free text after its tag (BD-NOTE).
+''
+'' @param pText - pointer to the text
+
+    lineAddChar(",")
+    lineAddText(pText)
 
 PUB naNumField(pName, numValue, limitAbs, bValid)
 '' Append a clamped numeric field, or the token NA when the value was not measured.
@@ -211,6 +243,22 @@ PRI lineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absMagnitude,
         lineAddChar("0" + digitStack[digitIdx])
         if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
             lineAddChar("_")
+
+PRI lineAddHex4(hexValue) | nibIdx, nibble
+' Append "$" and the low 16 bits of hexValue as four upper-case hex digits.
+'
+' @param hexValue - the value to append, low 16 bits used
+'
+' @local nibIdx - nibble index, most significant first
+' @local nibble - the nibble's value, 0..15
+
+    lineAddChar("$")
+    repeat nibIdx from HEX4_DIGITS - 1 to 0
+        nibble := (hexValue >> (nibIdx * BITS_PER_NIBBLE)) & NIBBLE_MASK
+        if nibble < DEC_RADIX
+            lineAddChar("0" + nibble)
+        else
+            lineAddChar("A" + nibble - DEC_RADIX)
 
 PRI lineField(pFieldName, numValue)
 ' Append one ",name,<number>" field to the record under assembly.

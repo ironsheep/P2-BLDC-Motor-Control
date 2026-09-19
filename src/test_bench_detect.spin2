@@ -120,8 +120,13 @@ CON { build identity }
 '   exit; the pin-group spans are the library's own where the library is linked (DETECT_LIB).
 ' 18 Sep 2026, task 3517 -- SRC_REV 6: style guide 5.4.1 -- every method returning one boolean is named
 '   is/has/b (isPinInsideGroup(), bGroupOverlapsOtherBoard(), ...). No record changes.
-    SRC_REV     = 7
-    FMT_VERSION = 2                                         ' BD-BANNER record-format version
+' 19 Sep 2026, task 3574 -- SRC_REV 8, FMT_VERSION 3: records are assembled by isp_bench_log instead of this
+'   file's private copy (PL-53; the same algorithm, so unchanged fields print byte-identical). BD-RUN drops
+'   run_ts (always the literal HOSTLOG); BD-REP drops bnc and BD-CELL bnc_max, with the bounce sampling behind
+'   them; the library probe calls testSetup() untrapped (PL-44) and BD-LIB prints its status as setup, with
+'   verdict REFUSED replacing ABORT (the library aborts nowhere since task 3554).
+    SRC_REV     = 8
+    FMT_VERSION = 3                                         ' BD-BANNER record-format version
 
 ' DETECT_PHASE2 implies DETECT_LIB: if phase 2 is compiled, the library must be linked
 #ifdef DETECT_PHASE2
@@ -155,6 +160,7 @@ CON { local pin-group base table }
     GROUP_COUNT      = 6
     TAIL_GROUP_COUNT = 2                                    ' P8_P23 and NO_USE_P24_P39, swept last
     NO_GROUP         = -1                                   ' "no group" / "no cog" sentinel
+    NO_SETUP_STATUS  = 0                                    ' BD-LIB setup: no call was made (the library is not linked)
     LIB_ABSENT       = -1                                   ' library object not linked into this build
 
 CON { pin-field geometry }
@@ -187,7 +193,6 @@ CON { measurement parameters }
     N_LIVE           = 8                                    ' repeats per cell with a driver cog RUNNING
     SUM_ITER         = 500                                  ' the library's own pinread count
     PROBE_MAX_ITER   = 2_000                                ' first-low probe ceiling
-    BOUNCE_SAMPLES   = 64                                   ' samples taken after first-low
     CAL_ITER         = 500                                  ' poll-loop calibration iterations
     CHARGE_MS        = 1                                    ' the library's own waitms(1)
     REVB_SUM_LIMIT   = 250                                  ' pinSum > this reads as "not detected"
@@ -209,19 +214,13 @@ CON { measurement parameters }
     CAL_IDX_POST_PHASE1 = 2
     CAL_IDX_POST_PHASE2 = 3
 
-CON { record assembly buffer }
+CON { record byte budget -- records are assembled by benchLog (isp_bench_log, PL-53) }
 
-' Worst-case record bytes, against the 280-byte sign-off bound (task 3537 P2d): BD-REP 229
+' Worst-case record bytes, against the 280-byte sign-off bound (task 3537 P2d; upper bounds since task 3574
+' removed BD-REP's bnc and BD-CELL's bnc_max): BD-REP 229
 ' (gnm 14, ovl 16, sumtix and fltix 13 each, vrd 7); BD-CELL 225; BD-SKIPPED 130 (gnm 14,
 ' ovl 16, cog 7, cogst 7, reason 12); BD-MAP 79 (ovl 16, guard 12); BD-SWEEP 64 (three
 ' NOMEAS counts on begin).
-    LINE_BUF_SIZE   = benchLog.LINE_BUF_SIZE  ' widest record is well under this
-    MAX_DEC_DIGITS  = benchLog.MAX_DEC_DIGITS  ' a 32-bit value needs at most 10
-    DEC_RADIX       = benchLog.DEC_RADIX
-    DIGITS_PER_GROUP = benchLog.DIGITS_PER_GROUP  ' underscore every three digits
-    HEX4_DIGITS     = 4
-    BITS_PER_NIBBLE = 4
-    NIBBLE_MASK     = $F
 
 CON { sweep identifiers }
 
@@ -258,9 +257,9 @@ CON { cell axis codes }
 '  VRD_TIE      - per-cell modal only: no single verdict held a majority
 '  VRD_UNKNOWN  - library returned something outside REV_A/REV_B/REV_Unknown
 '  VRD_NOBASE   - group is not a legal base, so getBoardType() never measured
-'  VRD_ABORT    - the library call aborted with a value
+'  VRD_REFUSED  - the library's testSetup() refused a legal group with an ERR_* code (printed as setup)
 '  VRD_NOLIB    - the library object is not linked into this build
-    #0, VRD_REVA, VRD_REVB, VRD_NODET, VRD_TIE, VRD_UNKNOWN, VRD_NOBASE, VRD_ABORT, VRD_NOLIB
+    #0, VRD_REVA, VRD_REVB, VRD_NODET, VRD_TIE, VRD_UNKNOWN, VRD_NOBASE, VRD_REFUSED, VRD_NOLIB
 
 ' Pin-overlap classification for a group's sense pin:
 '  OVL_SELF       - the sense pin belongs to this group's own configured board
@@ -326,7 +325,7 @@ OBJ { objects under test }
 #ifdef DETECT_LIB
     motor   : "isp_bldc_motor"                              ' linked when DETECT_LIB is set; DETECT_PHASE2 implies DETECT_LIB
 #endif
-    benchLog : "isp_bench_log"                              ' the cog-event quiet window (PL-41, PL-85)
+    benchLog : "isp_bench_log"                              ' the record builder (PL-53) and the cog-event quiet window (PL-41, PL-85)
 
 DAT { sweep and enumeration order }
 
@@ -337,11 +336,6 @@ grpSweepOrder   LONG    GRP_P0_P15, GRP_P16_P31, GRP_P32_P47, GRP_P40_P55, GRP_P
 
 ' Enumeration order: ascending base pin, used by the BD-ENUM and BD-MAP static tables.
 grpEnumOrder    LONG    GRP_P0_P15, GRP_P8_P23, GRP_P16_P31, GRP_P24_P39, GRP_P32_P47, GRP_P40_P55
-
-DAT { record assembly state }
-
-lineBuf         BYTE    0[LINE_BUF_SIZE]
-lineLen         LONG    0
 
 DAT { record token strings }
 
@@ -358,7 +352,7 @@ sVrdNoDet       BYTE    "NODET", 0
 sVrdTie         BYTE    "TIE", 0
 sVrdUnknown     BYTE    "UNKNOWN", 0
 sVrdNoBase      BYTE    "NOBASE", 0
-sVrdAbort       BYTE    "ABORT", 0
+sVrdRefused     BYTE    "REFUSED", 0
 sVrdNoLib       BYTE    "NOLIB", 0
 
 sCstNone        BYTE    "NONE", 0
@@ -423,7 +417,6 @@ VAR { per-cell measurement capture }
     LONG    measured_sum_ticks[N_REP]                       ' getct() ticks spanning that sum loop
     LONG    measured_iter[N_REP]                            ' 1-based sample index of the first low read
     LONG    measured_flt_ticks[N_REP]                       ' getct() ticks from pinfloat() to first low
-    LONG    measured_bounce[N_REP]                          ' highs among BOUNCE_SAMPLES after first low
     LONG    measured_low_seen[N_REP]                        ' TRUE when the pin ever read low
     LONG    measured_pre[N_REP]                             ' 16-pin IN snapshot before the charge
     LONG    measured_post[N_REP]                            ' 16-pin IN snapshot after the probe pass
@@ -472,10 +465,9 @@ PUB main() | phase1Recs, phase2Recs
 
     emitCalibration(CAL_IDX_POST_PHASE2)
 
-    lineReset()
-    lineAddText(@"BD-DONE")
-    lineField(@"recs", phase1Recs + phase2Recs)
-    lineTextField(@"phase2", phase2Token())
+    benchLog.begin(@"BD-DONE")
+    benchLog.unclampedNumField(@"recs", phase1Recs + phase2Recs)
+    benchLog.textField(@"phase2", phase2Token())
     lineEmit()
 
     ' The literal text below is pnut-term-ts's end-of-session marker under
@@ -486,49 +478,43 @@ PUB main() | phase1Recs, phase2Recs
 PRI emitBannerBlock()
 ' Emit the whole banner block, once, before anything else touches a pin.
 
-    lineReset()
-    lineAddText(@"BD-BANNER")
-    lineField(@"fmt", FMT_VERSION)
-    lineTextField(@"tool", @"test_bench_detect")
-    lineTextField(@"purpose", @"getBoardType_characterization")
+    benchLog.begin(@"BD-BANNER")
+    benchLog.unclampedNumField(@"fmt", FMT_VERSION)
+    benchLog.textField(@"tool", @"test_bench_detect")
+    benchLog.textField(@"purpose", @"getBoardType_characterization")
     lineEmit()
 
     emitConfigRecord()
 
-    lineReset()
-    lineAddText(@"BD-CLK")
-    lineField(@"clkfreq_declared", CLK_FREQ)
-    lineField(@"clkfreq_runtime", CLKFREQ)
-    lineTextField(@"match", flagToken(CLKFREQ == CLK_FREQ))
+    benchLog.begin(@"BD-CLK")
+    benchLog.unclampedNumField(@"clkfreq_declared", CLK_FREQ)
+    benchLog.unclampedNumField(@"clkfreq_runtime", CLKFREQ)
+    benchLog.textField(@"match", flagToken(CLKFREQ == CLK_FREQ))
     lineEmit()
 
-    lineReset()
-    lineAddText(@"BD-BUILD")
-    lineField(@"src_rev", SRC_REV)
-    lineField(@"lib_linked", LIB_LINKED)
-    lineField(@"phase2_compiled", PHASE2_COMPILED)
-    lineTextField(@"rail_declared", railToken())
-    lineField(@"n_rep", N_REP)
-    lineField(@"n_live", N_LIVE)
-    lineField(@"probe_max", PROBE_MAX_ITER)
-    lineField(@"cal_iter", CAL_ITER)
-    lineField(@"tail_groups", TAIL_GROUPS_ON)
+    benchLog.begin(@"BD-BUILD")
+    benchLog.unclampedNumField(@"src_rev", SRC_REV)
+    benchLog.unclampedNumField(@"lib_linked", LIB_LINKED)
+    benchLog.unclampedNumField(@"phase2_compiled", PHASE2_COMPILED)
+    benchLog.textField(@"rail_declared", railToken())
+    benchLog.unclampedNumField(@"n_rep", N_REP)
+    benchLog.unclampedNumField(@"n_live", N_LIVE)
+    benchLog.unclampedNumField(@"probe_max", PROBE_MAX_ITER)
+    benchLog.unclampedNumField(@"cal_iter", CAL_ITER)
+    benchLog.unclampedNumField(@"tail_groups", TAIL_GROUPS_ON)
     lineEmit()
 
-    lineReset()
-    lineAddText(@"BD-RUN")
-    lineField(@"run_ct", getct())
-    lineTextField(@"run_ts", @"HOSTLOG")
+    benchLog.begin(@"BD-RUN")
+    benchLog.unclampedNumField(@"run_ct", getct())
     lineEmit()
 
     emitEnumRecords()
     emitMapRecords()
     emitPlanRecords()
 
-    lineReset()
-    lineAddText(@"BD-GATE")
-    lineTextField(@"mark", @sMarkBuild)
-    lineTextField(@"answer", gateToken())
+    benchLog.begin(@"BD-GATE")
+    benchLog.textField(@"mark", @sMarkBuild)
+    benchLog.textField(@"answer", gateToken())
     lineEmit()
 
     emitNoteRecords()
@@ -540,20 +526,19 @@ PRI emitConfigRecord()
 ' -D BENCH_CFJ takes the #else arm here exactly as it does in the OBJ block and the record
 ' reads cfg_id,USER.
 
-    lineReset()
-    lineAddText(@"BD-CFG")
+    benchLog.begin(@"BD-CFG")
 #ifdef BENCH_CFG
-    lineTextField(@"cfg_id", @sCfgBench)
-    lineTextField(@"cfg_file", @sCfgFileBench)
+    benchLog.textField(@"cfg_id", @sCfgBench)
+    benchLog.textField(@"cfg_file", @sCfgFileBench)
 #else
-    lineTextField(@"cfg_id", @sCfgUser)
-    lineTextField(@"cfg_file", @sCfgFileUser)
+    benchLog.textField(@"cfg_id", @sCfgUser)
+    benchLog.textField(@"cfg_file", @sCfgFileUser)
 #endif
-    lineField(@"motor_type", user.MOTOR_TYPE)
-    lineField(@"drive_voltage", user.DRIVE_VOLTAGE)
-    lineField(@"wheel_dia_x10", round(user.WHEEL_DIA_IN_INCH *. 10.0))
-    lineField(@"left_base", user.LEFT_MOTOR_BASE)
-    lineField(@"right_base", user.RIGHT_MOTOR_BASE)
+    benchLog.unclampedNumField(@"motor_type", user.MOTOR_TYPE)
+    benchLog.unclampedNumField(@"drive_voltage", user.DRIVE_VOLTAGE)
+    benchLog.unclampedNumField(@"wheel_dia_x10", round(user.WHEEL_DIA_IN_INCH *. 10.0))
+    benchLog.unclampedNumField(@"left_base", user.LEFT_MOTOR_BASE)
+    benchLog.unclampedNumField(@"right_base", user.RIGHT_MOTOR_BASE)
     lineEmit()
 
 PRI emitEnumRecords() | grpIdx, grpBase, libBase
@@ -568,17 +553,16 @@ PRI emitEnumRecords() | grpIdx, grpBase, libBase
     repeat grpIdx from 0 to GROUP_COUNT - 1
         grpBase := LONG[@grpEnumOrder][grpIdx]
         libBase := libraryGroupBase(grpBase)
-        lineReset()
-        lineAddText(@"BD-ENUM")
-        lineField(@"grp", grpBase)
-        lineTextField(@"gnm", groupName(grpBase))
-        lineField(@"local", grpBase)
+        benchLog.begin(@"BD-ENUM")
+        benchLog.unclampedNumField(@"grp", grpBase)
+        benchLog.textField(@"gnm", groupName(grpBase))
+        benchLog.unclampedNumField(@"local", grpBase)
         if libBase == LIB_ABSENT
-            lineTextField(@"lib", @sVrdNoLib)
-            lineTextField(@"match", @sTokNA)
+            benchLog.textField(@"lib", @sVrdNoLib)
+            benchLog.textField(@"match", @sTokNA)
         else
-            lineField(@"lib", libBase)
-            lineTextField(@"match", flagToken(grpBase == libBase))
+            benchLog.unclampedNumField(@"lib", libBase)
+            benchLog.textField(@"match", flagToken(grpBase == libBase))
         lineEmit()
 
 PRI emitMapRecords() | grpIdx, grpBase, pGuardTok
@@ -595,13 +579,12 @@ PRI emitMapRecords() | grpIdx, grpBase, pGuardTok
         pGuardTok := @sGuardNone
         if isGateOverlap(grpBase)
             pGuardTok := @sRsnGateOverlap
-        lineReset()
-        lineAddText(@"BD-MAP")
-        lineField(@"grp", grpBase)
-        lineTextField(@"gnm", groupName(grpBase))
-        lineField(@"pin", grpBase + SENSE_PIN_OFFSET)
-        lineTextField(@"ovl", overlapToken(grpBase))
-        lineTextField(@"guard", pGuardTok)
+        benchLog.begin(@"BD-MAP")
+        benchLog.unclampedNumField(@"grp", grpBase)
+        benchLog.textField(@"gnm", groupName(grpBase))
+        benchLog.unclampedNumField(@"pin", grpBase + SENSE_PIN_OFFSET)
+        benchLog.textField(@"ovl", overlapToken(grpBase))
+        benchLog.textField(@"guard", pGuardTok)
         lineEmit()
 
 PRI emitPlanRecords()
@@ -632,15 +615,14 @@ PRI emitPlanRecord(swNum, phaseNum, pGroupSpec, nRep, cogGrp, cogState, clrState
 ' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
 ' @param clrState - CLR_NO / CLR_YES
 
-    lineReset()
-    lineAddText(@"BD-PLAN")
-    lineField(@"sw", swNum)
-    lineField(@"phase", phaseNum)
-    lineTextField(@"groups", pGroupSpec)
-    lineField(@"n", nRep)
-    lineTextField(@"cog", cogGroupToken(cogGrp))
-    lineTextField(@"cogst", cogStateToken(cogState))
-    lineTextField(@"clr", clearToken(clrState))
+    benchLog.begin(@"BD-PLAN")
+    benchLog.unclampedNumField(@"sw", swNum)
+    benchLog.unclampedNumField(@"phase", phaseNum)
+    benchLog.textField(@"groups", pGroupSpec)
+    benchLog.unclampedNumField(@"n", nRep)
+    benchLog.textField(@"cog", cogGroupToken(cogGrp))
+    benchLog.textField(@"cogst", cogStateToken(cogState))
+    benchLog.textField(@"clr", clearToken(clrState))
     lineEmit()
 
 PRI emitNoteRecords()
@@ -761,18 +743,17 @@ PRI emitSkippedRecord(swNum, grpBase, nRep, cogGrp, cogState, clrState, skipReas
 ' @param clrState - CLR_NO / CLR_YES
 ' @param skipReason - SKIP_GATE_OVERLAP / SKIP_COG_OVERLAP
 
-    lineReset()
-    lineAddText(@"BD-SKIPPED")
-    lineField(@"sw", swNum)
-    lineField(@"grp", grpBase)
-    lineTextField(@"gnm", groupName(grpBase))
-    lineField(@"pin", grpBase + SENSE_PIN_OFFSET)
-    lineTextField(@"ovl", overlapToken(grpBase))
-    lineTextField(@"cog", cogGroupToken(cogGrp))
-    lineTextField(@"cogst", cogStateToken(cogState))
-    lineTextField(@"clr", clearToken(clrState))
-    lineField(@"n", nRep)
-    lineTextField(@"reason", skipReasonToken(skipReason))
+    benchLog.begin(@"BD-SKIPPED")
+    benchLog.unclampedNumField(@"sw", swNum)
+    benchLog.unclampedNumField(@"grp", grpBase)
+    benchLog.textField(@"gnm", groupName(grpBase))
+    benchLog.unclampedNumField(@"pin", grpBase + SENSE_PIN_OFFSET)
+    benchLog.textField(@"ovl", overlapToken(grpBase))
+    benchLog.textField(@"cog", cogGroupToken(cogGrp))
+    benchLog.textField(@"cogst", cogStateToken(cogState))
+    benchLog.textField(@"clr", clearToken(clrState))
+    benchLog.unclampedNumField(@"n", nRep)
+    benchLog.textField(@"reason", skipReasonToken(skipReason))
     lineEmit()
 
 PRI runCell(swNum, grpBase, nRep, cogGrp, cogState, clrState) | repIdx, libVerdict
@@ -799,7 +780,7 @@ PRI runCell(swNum, grpBase, nRep, cogGrp, cogState, clrState) | repIdx, libVerdi
     libVerdict := runLibraryProbe(swNum, grpBase)
     emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict)
 
-PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, ctBefore, ctAfter, iterCount, lastLevel, bounceCnt, sampleIdx, bLowSeen
+PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, ctBefore, ctAfter, iterCount, lastLevel, bLowSeen
 ' Take one repeat: the library's own 500-read sum pass and then, with its own fresh charge,
 ' the first-low probe pass. The two passes never share state. Results go into the VAR
 ' arrays; nothing is printed.
@@ -813,8 +794,6 @@ PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, ctBefore, ctAfter, ite
 ' @local ctAfter - getct() immediately after a measured loop
 ' @local iterCount - 1-based count of first-low probe samples taken
 ' @local lastLevel - the most recent pinread result in the probe loop
-' @local bounceCnt - highs seen among BOUNCE_SAMPLES after first-low
-' @local sampleIdx - index over the post-first-low bounce samples
 ' @local bLowSeen - TRUE when the probe loop exited because the pin read low
 
     sensePin := grpBase + SENSE_PIN_OFFSET
@@ -856,16 +835,9 @@ PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, ctBefore, ctAfter, ite
     measured_flt_ticks[repIdx] := ctAfter - ctBefore
     measured_low_seen[repIdx] := bLowSeen
 
-    ' Everything below is AFTER ctAfter and so cannot perturb the measured interval. A
-    ' clean RC discharge bounces zero times; a floating pin flapping at the input threshold
-    ' bounces well above zero, which is the expected discriminator for the false positive
-    ' seen on the empty P32_P47 group.
-    bounceCnt := 0
-    if bLowSeen == TRUE
-        repeat sampleIdx from 1 to BOUNCE_SAMPLES
-            if pinread(sensePin) <> 0
-                bounceCnt += 1
-    measured_bounce[repIdx] := bounceCnt
+    ' Everything below is AFTER ctAfter and so cannot perturb the measured interval. (The post-first-low
+    ' bounce count that stood here is retired, task 3574: it was to explain the empty P32_P47 group's false
+    ' positive, which the detection fix closed -- R2-T0-EMPTY -- and nothing has read it since.)
     measured_post[repIdx] := snapshotGroupPins(grpBase)
 
 PRI emitRepeatRecord(swNum, grpBase, repIdx, cogGrp, cogState, clrState)
@@ -880,37 +852,34 @@ PRI emitRepeatRecord(swNum, grpBase, repIdx, cogGrp, cogState, clrState)
 ' @param cogState - CST_NONE / CST_RUNNING / CST_STOPPED
 ' @param clrState - CLR_NO / CLR_YES
 
-    lineReset()
-    lineAddText(@"BD-REP")
-    lineField(@"sw", swNum)
-    lineField(@"grp", grpBase)
-    lineTextField(@"gnm", groupName(grpBase))
-    lineField(@"pin", grpBase + SENSE_PIN_OFFSET)
-    lineTextField(@"ovl", overlapToken(grpBase))
-    lineField(@"rep", repIdx + 1)
-    lineTextField(@"cog", cogGroupToken(cogGrp))
-    lineTextField(@"cogst", cogStateToken(cogState))
-    lineTextField(@"clr", clearToken(clrState))
-    lineField(@"sum", measured_sum[repIdx])
-    lineField(@"sumtix", measured_sum_ticks[repIdx])
-    lineTextField(@"vrd", verdictToken(verdictForSum(measured_sum[repIdx], measured_sum_ticks[repIdx])))
+    benchLog.begin(@"BD-REP")
+    benchLog.unclampedNumField(@"sw", swNum)
+    benchLog.unclampedNumField(@"grp", grpBase)
+    benchLog.textField(@"gnm", groupName(grpBase))
+    benchLog.unclampedNumField(@"pin", grpBase + SENSE_PIN_OFFSET)
+    benchLog.textField(@"ovl", overlapToken(grpBase))
+    benchLog.unclampedNumField(@"rep", repIdx + 1)
+    benchLog.textField(@"cog", cogGroupToken(cogGrp))
+    benchLog.textField(@"cogst", cogStateToken(cogState))
+    benchLog.textField(@"clr", clearToken(clrState))
+    benchLog.unclampedNumField(@"sum", measured_sum[repIdx])
+    benchLog.unclampedNumField(@"sumtix", measured_sum_ticks[repIdx])
+    benchLog.textField(@"vrd", verdictToken(verdictForSum(measured_sum[repIdx], measured_sum_ticks[repIdx])))
     if measured_low_seen[repIdx] == TRUE
-        lineField(@"iter", measured_iter[repIdx])
-        lineField(@"fltix", measured_flt_ticks[repIdx])
-        lineField(@"bnc", measured_bounce[repIdx])
-        lineTextField(@"exit", @sExitLow)
+        benchLog.unclampedNumField(@"iter", measured_iter[repIdx])
+        benchLog.unclampedNumField(@"fltix", measured_flt_ticks[repIdx])
+        benchLog.textField(@"exit", @sExitLow)
     else
-        lineTextField(@"iter", @sTokNever)
-        lineTextField(@"fltix", @sTokNever)
-        lineTextField(@"bnc", @sTokNoMeas)
-        lineTextField(@"exit", @sExitMaxed)
-    lineHexField(@"pre", measured_pre[repIdx])
-    lineHexField(@"post", measured_post[repIdx])
+        benchLog.textField(@"iter", @sTokNever)
+        benchLog.textField(@"fltix", @sTokNever)
+        benchLog.textField(@"exit", @sExitMaxed)
+    benchLog.hexField(@"pre", measured_pre[repIdx])
+    benchLog.hexField(@"post", measured_post[repIdx])
     lineEmit()
 
     emittedRepCount += 1
 
-PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict) | repIdx, sumMin, sumMax, sumTotal, cntA, cntB, cntN, modalVrd, flMin, flMax, flNever, bncMax
+PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict) | repIdx, sumMin, sumMax, sumTotal, cntA, cntB, cntN, modalVrd, flMin, flMax, flNever
 ' Summarise one cell. agree compares the library's verdict against this cell's modal
 ' replica verdict -- that is the honesty check on the replica, and a wrong replica renders
 ' as agree,0. It is a check that can genuinely fail.
@@ -934,7 +903,6 @@ PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict
 ' @local flMin - smallest first-low sample index among repeats that went low
 ' @local flMax - largest first-low sample index among repeats that went low
 ' @local flNever - repeats whose pin never read low
-' @local bncMax - largest bounce count among repeats that went low
 
     sumMin := POSX
     sumMax := NEGX
@@ -945,7 +913,6 @@ PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict
     flMin := POSX
     flMax := NEGX
     flNever := 0
-    bncMax := 0
 
     repeat repIdx from 0 to nRep - 1
         sumMin := sumMin <# measured_sum[repIdx]
@@ -961,40 +928,36 @@ PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict
         if measured_low_seen[repIdx] == TRUE
             flMin := flMin <# measured_iter[repIdx]
             flMax := flMax #> measured_iter[repIdx]
-            bncMax := bncMax #> measured_bounce[repIdx]
         else
             flNever += 1
 
     modalVrd := modalVerdict(cntA, cntB, cntN)
 
-    lineReset()
-    lineAddText(@"BD-CELL")
-    lineField(@"sw", swNum)
-    lineField(@"grp", grpBase)
-    lineTextField(@"gnm", groupName(grpBase))
-    lineTextField(@"cog", cogGroupToken(cogGrp))
-    lineTextField(@"cogst", cogStateToken(cogState))
-    lineTextField(@"clr", clearToken(clrState))
-    lineField(@"n", nRep)
-    lineField(@"sum_min", sumMin)
-    lineField(@"sum_max", sumMax)
-    lineField(@"sum_mean", sumTotal / nRep)
-    lineField(@"va", cntA)
-    lineField(@"vb", cntB)
-    lineField(@"vn", cntN)
-    lineTextField(@"modal", verdictToken(modalVrd))
+    benchLog.begin(@"BD-CELL")
+    benchLog.unclampedNumField(@"sw", swNum)
+    benchLog.unclampedNumField(@"grp", grpBase)
+    benchLog.textField(@"gnm", groupName(grpBase))
+    benchLog.textField(@"cog", cogGroupToken(cogGrp))
+    benchLog.textField(@"cogst", cogStateToken(cogState))
+    benchLog.textField(@"clr", clearToken(clrState))
+    benchLog.unclampedNumField(@"n", nRep)
+    benchLog.unclampedNumField(@"sum_min", sumMin)
+    benchLog.unclampedNumField(@"sum_max", sumMax)
+    benchLog.unclampedNumField(@"sum_mean", sumTotal / nRep)
+    benchLog.unclampedNumField(@"va", cntA)
+    benchLog.unclampedNumField(@"vb", cntB)
+    benchLog.unclampedNumField(@"vn", cntN)
+    benchLog.textField(@"modal", verdictToken(modalVrd))
     if flNever == nRep
-        lineTextField(@"fl_min", @sTokNever)
-        lineTextField(@"fl_max", @sTokNever)
-        lineField(@"fl_never", flNever)
-        lineTextField(@"bnc_max", @sTokNoMeas)
+        benchLog.textField(@"fl_min", @sTokNever)
+        benchLog.textField(@"fl_max", @sTokNever)
+        benchLog.unclampedNumField(@"fl_never", flNever)
     else
-        lineField(@"fl_min", flMin)
-        lineField(@"fl_max", flMax)
-        lineField(@"fl_never", flNever)
-        lineField(@"bnc_max", bncMax)
-    lineTextField(@"libvrd", verdictToken(libVerdict))
-    lineTextField(@"agree", agreeToken(libVerdict, modalVrd))
+        benchLog.unclampedNumField(@"fl_min", flMin)
+        benchLog.unclampedNumField(@"fl_max", flMax)
+        benchLog.unclampedNumField(@"fl_never", flNever)
+    benchLog.textField(@"libvrd", verdictToken(libVerdict))
+    benchLog.textField(@"agree", agreeToken(libVerdict, modalVrd))
     lineEmit()
 
 PRI isCalPinSafe() : bSafe
@@ -1024,12 +987,11 @@ PRI emitCalibration(calIdx) | ctBefore, ctAfter, iterCount, lastLevel, elapsedTi
 ' @local elapsedTix - ctAfter - ctBefore
 
     if not isCalPinSafe()
-        lineReset()
-        lineAddText(@"BD-CAL")
-        lineField(@"idx", calIdx)
-        lineField(@"iter", 0)
-        lineTextField(@"tix", @sTokNoMeas)
-        lineTextField(@"tix_per_iter", @sTokNoMeas)
+        benchLog.begin(@"BD-CAL")
+        benchLog.unclampedNumField(@"idx", calIdx)
+        benchLog.unclampedNumField(@"iter", 0)
+        benchLog.textField(@"tix", @sTokNoMeas)
+        benchLog.textField(@"tix_per_iter", @sTokNoMeas)
         lineEmit()
         emitNote(@"CAL SKIPPED -- CAL_PIN falls inside a declared board's pin range and would drive a gate input")
     else
@@ -1044,12 +1006,11 @@ PRI emitCalibration(calIdx) | ctBefore, ctAfter, iterCount, lastLevel, elapsedTi
         pinfloat(CAL_PIN)
 
         elapsedTix := ctAfter - ctBefore
-        lineReset()
-        lineAddText(@"BD-CAL")
-        lineField(@"idx", calIdx)
-        lineField(@"iter", iterCount)
-        lineField(@"tix", elapsedTix)
-        lineField(@"tix_per_iter", elapsedTix / iterCount)
+        benchLog.begin(@"BD-CAL")
+        benchLog.unclampedNumField(@"idx", calIdx)
+        benchLog.unclampedNumField(@"iter", iterCount)
+        benchLog.unclampedNumField(@"tix", elapsedTix)
+        benchLog.unclampedNumField(@"tix_per_iter", elapsedTix / iterCount)
         lineEmit()
 
 PRI emitPhaseMark(phaseNum, pMarkName, bHasRecs, recCount, pReason)
@@ -1062,15 +1023,14 @@ PRI emitPhaseMark(phaseNum, pMarkName, bHasRecs, recCount, pReason)
 ' @param recCount - BD-REP records emitted in this phase
 ' @param pReason - pointer to NA or to a reason token
 
-    lineReset()
-    lineAddText(@"BD-PHASE")
-    lineField(@"n", phaseNum)
-    lineTextField(@"mark", pMarkName)
+    benchLog.begin(@"BD-PHASE")
+    benchLog.unclampedNumField(@"n", phaseNum)
+    benchLog.textField(@"mark", pMarkName)
     if bHasRecs == TRUE
-        lineField(@"recs", recCount)
+        benchLog.unclampedNumField(@"recs", recCount)
     else
-        lineTextField(@"recs", @sTokNoMeas)
-    lineTextField(@"reason", pReason)
+        benchLog.textField(@"recs", @sTokNoMeas)
+    benchLog.textField(@"reason", pReason)
     lineEmit()
 
 PRI emitSweepMark(swNum, pMarkName, bHasCounts)
@@ -1082,18 +1042,17 @@ PRI emitSweepMark(swNum, pMarkName, bHasCounts)
 ' @param pMarkName - pointer to begin or end
 ' @param bHasCounts - TRUE when the sweep counters are complete
 
-    lineReset()
-    lineAddText(@"BD-SWEEP")
-    lineField(@"sw", swNum)
-    lineTextField(@"mark", pMarkName)
+    benchLog.begin(@"BD-SWEEP")
+    benchLog.unclampedNumField(@"sw", swNum)
+    benchLog.textField(@"mark", pMarkName)
     if bHasCounts == TRUE
-        lineField(@"cells", sweepCellCount)
-        lineField(@"skipped", sweepSkipCount)
-        lineField(@"reps", sweepRepCount)
+        benchLog.unclampedNumField(@"cells", sweepCellCount)
+        benchLog.unclampedNumField(@"skipped", sweepSkipCount)
+        benchLog.unclampedNumField(@"reps", sweepRepCount)
     else
-        lineTextField(@"cells", @sTokNoMeas)
-        lineTextField(@"skipped", @sTokNoMeas)
-        lineTextField(@"reps", @sTokNoMeas)
+        benchLog.textField(@"cells", @sTokNoMeas)
+        benchLog.textField(@"skipped", @sTokNoMeas)
+        benchLog.textField(@"reps", @sTokNoMeas)
     lineEmit()
 
 PRI emitNote(pNoteText)
@@ -1101,9 +1060,8 @@ PRI emitNote(pNoteText)
 '
 ' @param pNoteText - pointer to the note text
 
-    lineReset()
-    lineAddText(@"BD-NOTE,")
-    lineAddText(pNoteText)
+    benchLog.begin(@"BD-NOTE")
+    benchLog.bareField(pNoteText)
     lineEmit()
 
 PRI clearSweptGroups() | orderIdx
@@ -1179,7 +1137,7 @@ PRI modalVerdict(cntA, cntB, cntN) : verdictCode
     elseif (cntN > cntA) and (cntN > cntB)
         verdictCode := VRD_NODET
 
-PRI runLibraryProbe(swNum, grpBase) : libVerdict | trappedLib, eBoardRev
+PRI runLibraryProbe(swNum, grpBase) : libVerdict | eSetup, eBoardRev
 ' Bracket the library's own detection output and report the verdict IT returned. The
 ' library's "--- pinSum = N, 64010 Rev X" line lands between the markers; this method does
 ' not reprint it, and the A/B diff excludes everything between the markers because the
@@ -1189,34 +1147,32 @@ PRI runLibraryProbe(swNum, grpBase) : libVerdict | trappedLib, eBoardRev
 ' @param grpBase - base pin of the group to probe
 ' @returns libVerdict - VRD_* the library returned
 '
-' @local trappedLib - the trapped return of the library setup call; a bare abort returns 0
-'                      and is indistinguishable from a completed call
+' @local eSetup - testSetup()'s status: NO_ERROR, or the ERR_* code it refused with (the library aborts
+'                  nowhere since task 3554, so the call is untrapped -- PL-44)
 ' @local eBoardRev - the library's REV_* return value
 
-    lineReset()
-    lineAddText(@"BD-LIB")
-    lineField(@"sw", swNum)
-    lineField(@"grp", grpBase)
-    lineTextField(@"mark", @sMarkBegin)
+    benchLog.begin(@"BD-LIB")
+    benchLog.unclampedNumField(@"sw", swNum)
+    benchLog.unclampedNumField(@"grp", grpBase)
+    benchLog.textField(@"mark", @sMarkBegin)
     lineEmit()
 
     libVerdict := VRD_NOLIB
-    trappedLib := 0
+    eSetup := NO_SETUP_STATUS
     eBoardRev := 0
 #ifdef DETECT_LIB
     ' One shared instance is used for every probe and for phase 2. bClaimPinBase() releases
     ' this instance's own claim before re-claiming, so walking every group on one instance
     ' never self-conflicts -- and a second instance could not be used, because it would
     ' collide with this one's claim on exactly the groups that matter most.
-    trappedLib := \motor.testSetup(grpBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
-    if trappedLib <> 0
-        libVerdict := VRD_ABORT
-    elseif not isLegalLibraryBase(grpBase)
-        ' PINS_NO_USE_P24_P39 is rejected by validatePinBase()'s lookdown, so pinbase stays
-        ' unset and getBoardType() takes its "** NOT SET **" branch without ever measuring.
-        ' The illegal group is reachable only through the replica -- a documented property
-        ' of today's code, not a defect this binary is asked to fix.
+    eSetup := motor.testSetup(grpBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    if not isLegalLibraryBase(grpBase)
+        ' PINS_NO_USE_P24_P39 is rejected by the library's pin-group check, so nothing is claimed and
+        ' getBoardType() never measures. The illegal group is reachable only through the replica -- a
+        ' documented property of today's code, not a defect this binary is asked to fix.
         libVerdict := VRD_NOBASE
+    elseif eSetup <> motor.NO_ERROR
+        libVerdict := VRD_REFUSED
     else
         eBoardRev := motor.getBoardType()
         case eBoardRev
@@ -1230,13 +1186,12 @@ PRI runLibraryProbe(swNum, grpBase) : libVerdict | trappedLib, eBoardRev
                 libVerdict := VRD_UNKNOWN
 #endif
 
-    lineReset()
-    lineAddText(@"BD-LIB")
-    lineField(@"sw", swNum)
-    lineField(@"grp", grpBase)
-    lineTextField(@"mark", @sMarkEnd)
-    lineTextField(@"libvrd", verdictToken(libVerdict))
-    lineField(@"trapped", trappedLib)
+    benchLog.begin(@"BD-LIB")
+    benchLog.unclampedNumField(@"sw", swNum)
+    benchLog.unclampedNumField(@"grp", grpBase)
+    benchLog.textField(@"mark", @sMarkEnd)
+    benchLog.textField(@"libvrd", verdictToken(libVerdict))
+    benchLog.unclampedNumField(@"setup", eSetup)
     lineEmit()
 
 #ifdef DETECT_PHASE2
@@ -1289,9 +1244,9 @@ PRI runPhase2ForGroup(cogGrp, swLive, swStopped, swStoppedClr)
         runSweep(swStoppedClr, NO_GROUP, N_REP, cogGrp, CST_STOPPED, CLR_YES, SKIP_NONE)
 
 PRI startDriverCog(cogGrp) | startRet, rawMotorCog
-' Start the driver cog on {cogGrp} at commanded zero and report both start()'s raw return
-' and the object's own motorCog snapshot, because start()'s return alone has been observed
-' to read 0 on a call that genuinely started a cog.
+' Start the driver cog on {cogGrp} at commanded zero and report start()'s return beside the object's own
+' motorCog snapshot and the group's pins. (The return once read 0 on a start that ran a cog; that was a trap
+' capture, PL-44, removed with the traps -- start() is certified by t0's R1-T0-START.)
 '
 ' @param cogGrp - base pin of the group to run a driver cog on
 '
@@ -1306,14 +1261,13 @@ PRI startDriverCog(cogGrp) | startRet, rawMotorCog
     benchLog.cogEventEnd()
     rawMotorCog := motor.testGetMotorCog()
 
-    lineReset()
-    lineAddText(@"BD-PH2")
-    lineField(@"grp", cogGrp)
-    lineTextField(@"step", @sPh2Started)
-    lineTextField(@"detmode", @"BRD_REV_B")
-    lineField(@"start_ret", startRet)
-    lineField(@"motorcog", rawMotorCog)
-    lineHexField(@"pins", snapshotGroupPins(cogGrp))
+    benchLog.begin(@"BD-PH2")
+    benchLog.unclampedNumField(@"grp", cogGrp)
+    benchLog.textField(@"step", @sPh2Started)
+    benchLog.textField(@"detmode", @"BRD_REV_B")
+    benchLog.unclampedNumField(@"start_ret", startRet)
+    benchLog.unclampedNumField(@"motorcog", rawMotorCog)
+    benchLog.hexField(@"pins", snapshotGroupPins(cogGrp))
     lineEmit()
 
 PRI emitPhase2Step(cogGrp, pStepName)
@@ -1322,14 +1276,13 @@ PRI emitPhase2Step(cogGrp, pStepName)
 ' @param cogGrp - base pin of the group to run a driver cog on
 ' @param pStepName - pointer to the step-name token
 
-    lineReset()
-    lineAddText(@"BD-PH2")
-    lineField(@"grp", cogGrp)
-    lineTextField(@"step", pStepName)
-    lineTextField(@"detmode", @"BRD_REV_B")
-    lineTextField(@"start_ret", @sTokNoMeas)
-    lineTextField(@"motorcog", @sTokNoMeas)
-    lineHexField(@"pins", snapshotGroupPins(cogGrp))
+    benchLog.begin(@"BD-PH2")
+    benchLog.unclampedNumField(@"grp", cogGrp)
+    benchLog.textField(@"step", pStepName)
+    benchLog.textField(@"detmode", @"BRD_REV_B")
+    benchLog.textField(@"start_ret", @sTokNoMeas)
+    benchLog.textField(@"motorcog", @sTokNoMeas)
+    benchLog.hexField(@"pins", snapshotGroupPins(cogGrp))
     lineEmit()
 
 #endif
@@ -1513,8 +1466,8 @@ PRI verdictToken(verdictCode) : pVrdTok
             pVrdTok := @sVrdUnknown
         VRD_NOBASE:
             pVrdTok := @sVrdNoBase
-        VRD_ABORT:
-            pVrdTok := @sVrdAbort
+        VRD_REFUSED:
+            pVrdTok := @sVrdRefused
         VRD_NOLIB:
             pVrdTok := @sVrdNoLib
 
@@ -1600,122 +1553,12 @@ PRI phase2Token() : pPhaseTok
 
     pPhaseTok := (PHASE2_COMPILED == 1) ? @sPhase2Ran : @sGateNotComp
 
-PRI lineReset()
-' Begin a new record.
-
-    lineLen := 0
-    BYTE[@lineBuf][0] := 0
-
-PRI lineAddChar(charByte)
-' Append one character to the record under assembly, silently dropping anything past the
-' buffer. The widest record is well under LINE_BUF_SIZE; truncation would show as a short
-' line in the log rather than as memory corruption.
-'
-' @param charByte - the character to append
-
-    if lineLen < LINE_BUF_SIZE - 1
-        BYTE[@lineBuf][lineLen] := charByte
-        lineLen += 1
-        BYTE[@lineBuf][lineLen] := 0
-
-PRI lineAddText(pText) | srcIdx
-' Append a zero-terminated string to the record under assembly. The loop is bounded as
-' well as terminated: an unterminated source string would otherwise spin forever and hang
-' a bench run with no output at all, which is the one failure mode a one-shot rig cannot
-' afford. Every caller passes a DAT or literal string, so the bound should never bite.
-'
-' @param pText - pointer to the text to append
-'
-' @local srcIdx - index into the source text
-
-    repeat srcIdx from 0 to LINE_BUF_SIZE - 1
-        if BYTE[pText][srcIdx] == 0
-            quit
-        lineAddChar(BYTE[pText][srcIdx])
-
-PRI lineAddNum(numValue) | digitStack[MAX_DEC_DIGITS], digitCount, absValue, digitIdx
-' Append a signed decimal number with an underscore every three digits, matching the
-' grouping udec_() and sdec_() use everywhere else in this tree's bench logs.
-'
-' @param numValue - the value to append
-'
-' @local digitStack - decimal digits of numValue, least significant first
-' @local digitCount - how many entries of digitStack are in use
-' @local absValue - magnitude of numValue, consumed by the extraction loop
-' @local digitIdx - index into digitStack while emitting
-
-    absValue := numValue
-    if numValue < 0
-        lineAddChar("-")
-        absValue := -numValue
-
-    digitCount := 0
-    repeat
-        digitStack[digitCount] := absValue // DEC_RADIX
-        absValue /= DEC_RADIX
-        digitCount += 1
-    until (absValue == 0) or (digitCount == MAX_DEC_DIGITS)
-
-    repeat digitIdx from digitCount - 1 to 0
-        lineAddChar("0" + digitStack[digitIdx])
-        if (digitIdx > 0) and (digitIdx // DIGITS_PER_GROUP == 0)
-            lineAddChar("_")
-
-PRI lineAddHex4(hexValue) | nibIdx, nibble
-' Append a four-digit hex value with a leading dollar sign.
-'
-' @param hexValue - the value to append, low 16 bits used
-'
-' @local nibIdx - index of the nibble being emitted, most significant first
-' @local nibble - the nibble's value
-
-    lineAddChar("$")
-    repeat nibIdx from HEX4_DIGITS - 1 to 0
-        nibble := (hexValue >> (nibIdx * BITS_PER_NIBBLE)) & NIBBLE_MASK
-        if nibble < DEC_RADIX
-            lineAddChar("0" + nibble)
-        else
-            lineAddChar("A" + nibble - DEC_RADIX)
-
-PRI lineField(pFieldName, numValue)
-' Append one ",name,<number>" field to the record under assembly.
-'
-' @param pFieldName - pointer to the field name
-' @param numValue - the field's value
-
-    lineAddChar(",")
-    lineAddText(pFieldName)
-    lineAddChar(",")
-    lineAddNum(numValue)
-
-PRI lineTextField(pFieldName, pFieldValue)
-' Append one ",name,<token>" field to the record under assembly.
-'
-' @param pFieldName - pointer to the field name
-' @param pFieldValue - pointer to the field's token text
-
-    lineAddChar(",")
-    lineAddText(pFieldName)
-    lineAddChar(",")
-    lineAddText(pFieldValue)
-
-PRI lineHexField(pFieldName, hexValue)
-' Append one ",name,$HHHH" field to the record under assembly.
-'
-' @param pFieldName - pointer to the field name
-' @param hexValue - the field's value, low 16 bits used
-
-    lineAddChar(",")
-    lineAddText(pFieldName)
-    lineAddChar(",")
-    lineAddHex4(hexValue)
-
 PRI lineEmit()
 ' Emit the assembled record as exactly one debug line. One debug() statement carries at
 ' most 255 bytes of debug data, which the wider records overrun by a factor of three, so
 ' the whole record travels as a single zero-terminated string instead.
 
-    debug(zstr_(@lineBuf))
+    debug(zstr_(benchLog.pLine()))
 
 CON { license }
 
