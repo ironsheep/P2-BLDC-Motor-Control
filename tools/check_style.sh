@@ -1081,12 +1081,11 @@ ALL_CHECK_IDS = ["S1.1", "S1.2", "A7", "A8", "C9", "A6", "C3a", "C3b", "C3c",
                   "S1.5", "S1.9", "S2.4", "S3.1", "S3.2", "S5.0", "S5.1", "S5.2",
                   "S5.3", "S5.4", "S5.41", "C3f", "C6b", "T29"]
 
-# The checks that FAIL the gate. A check joins this set in the same commit that
-# brings the tree clean for it; until then its count prints under PENDING on
-# every run. When every ID above is here, the set is the whole list.
-ENFORCED = {"S1.1", "S1.2", "A7", "A8", "C9", "A6", "C3a", "C3b", "C3c",
-            "C3d", "C3e", "C4", "C6", "C7", "A3", "A4", "A5",
-            "S1.5", "S1.9", "S2.4", "S3.1", "S3.2", "S5.0", "S5.1", "S5.2", "S5.3", "S5.4", "S5.41", "C6b", "T29"}
+# The checks that FAIL the gate: every one. A new check is added to ALL_CHECK_IDS in the
+# same commit that brings the tree clean for it -- or, if the tree cannot be brought clean
+# in that commit, this line becomes an explicit set without it, and its count prints under
+# PENDING on every run until it is.
+ENFORCED = set(ALL_CHECK_IDS)
 
 # What this gate covers, against the guide's own tier assignment (the guide's
 # "Enforcement tiers"): printed on every run, so a rule nobody wrote is never

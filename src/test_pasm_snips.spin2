@@ -326,6 +326,13 @@ PUB main()
 PUB getDistance(eDistanceUnits, posTrkHallTicks) : nDistanceInUnits | fMMpTick, fValue
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
 ''
+'' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
+'' @param posTrkHallTicks - hall-tick position count since the last reset, to convert to distance
+'' @returns nDistanceInUnits - distance travelled since last reset, in the given eDistanceUnits; the method aborts instead of returning a value when eDistanceUnits is invalid
+
+' Local Variables:
+' @local fMMpTick - wheel travel per hall tick, in mm (float)
+' @local fValue - distance travelled in mm or inches (float), before the final unit conversion
 
     fMMpTick := float(circInMM_x10) /. 90.0 /. 10.0
     case eDistanceUnits
@@ -358,6 +365,11 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) | motorStopHallTicks
 '' USE WITH:  driveAtPower()
 '' Will ABORT if {rotationCount} < 1
 ''
+'' @param nRotationCount - rotation to travel, at least 1, resolving to at least one hall tick
+'' @param eRotationUnits - units of {nRotationCount}: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
+
+' Local Variables:
+' @local motorStopHallTicks - hall ticks the motor should run before stopping
 
     if nRotationCount < 1
         debug("! ERROR: invalid RotationCount Value:", udec_long(nRotationCount), " - must be > 0!")
@@ -389,6 +401,12 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue, motorStopHallTicks
 '' USE WITH:  driveAtPower()
 '' Will ABORT if {distance} < 1
 ''
+'' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
+'' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
+
+' Local Variables:
+' @local fValue - the requested distance converted to millimeters (float), before scaling into hall ticks
+' @local motorStopHallTicks - hall ticks the motor should run before stopping
 
     if nDistance < 1
         debug("! ERROR: invalid Distance Value:", udec_long(nDistance), " - must be > 0!")
@@ -420,10 +438,26 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) | fValue, motorStopHallTicks
     debug("- stopAfterDistance(", sdec_long(nDistance), sdec_long(eDistanceUnits), ") ->", sdec_long(motorStopHallTicks))
 
 PRI checkem(nLHS, nRHS)
+' Print the min and max of two test values via debug output.
+'
+' @param nLHS - test value fed to min()/max() for comparison
+' @param nRHS - test value fed to min()/max() for comparison
+
     debug("min (", sdec_(nLHS), ", ", sdec_(nRHS), ") = ", sdec(min(nLHS, nRHS)))
     debug("max (", sdec_(nLHS), ", ", sdec_(nRHS), ") = ", sdec(max(nLHS, nRHS)))
 
 PRI calcFromDutyAngle(duty, angle) : drive_u, drive_v, drive_w, raw_u, raw_v, raw_w
+' Compute three-phase PWM drive levels and raw CORDIC outputs from a duty and angle using CORDIC qrotate.
+'
+' @param duty - PWM duty magnitude fed to the CORDIC qrotate (right-shifted by 4)
+' @param angle - electrical angle (32-bit turn fraction) fed to CORDIC qrotate
+' @returns drive_u - centered, biased PWM drive level for phase U
+' @returns drive_v - centered, biased PWM drive level for phase V
+' @returns drive_w - centered, biased PWM drive level for phase W
+' @returns raw_u - raw CORDIC output for phase U, before centering and bias
+' @returns raw_v - raw CORDIC output for phase V, before centering and bias
+' @returns raw_w - raw CORDIC output for phase W, before centering and bias
+
     debug("- duty,angle [", sdec_(duty), ", ", sdec_(angle), "]")
 
                 org
@@ -489,6 +523,12 @@ dead_gap_       LONG    70
 
 
 PRI min(nLtVal,nRtVal) : minVal
+' Return the smaller of two values, computed in PASM.
+'
+' @param nLtVal - left-hand value being compared
+' @param nRtVal - right-hand value being compared
+' @returns minVal - the smaller of the two compared values
+
             org
             cmps    nLtVal,nRtVal     wc
     if_c    mov minVal, nLtVal
@@ -496,6 +536,12 @@ PRI min(nLtVal,nRtVal) : minVal
             end
 
 PRI max(nLtVal,nRtVal) : maxVal
+' Return the larger of two values, computed in PASM.
+'
+' @param nLtVal - left-hand value being compared
+' @param nRtVal - right-hand value being compared
+' @returns maxVal - the larger of the two compared values
+
             org
             cmps    nLtVal,nRtVal     wc
     if_c    mov maxVal, nRtVal
@@ -503,6 +549,14 @@ PRI max(nLtVal,nRtVal) : maxVal
             end
 
 pri rampUp(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
+' Advance the drive increment one ramp-up step toward the target, reporting AT_SPEED once reached.
+'
+' @param tgt_incr - target motor drive increment, signed for direction
+' @param inDrv_incr - drive increment on entry to this ramp step
+' @param inDrv_state - drive state on entry to this ramp step
+' @returns drv_incr - drive increment after this ramp step
+' @returns drv_state_ - drive state after this ramp step (target state, e.g. DCS_AT_SPEED or DCS_STOPPED, once reached)
+
     drv_incr := inDrv_incr
     drv_state_ := inDrv_state
     org
@@ -528,6 +582,13 @@ ramp_up_   long    25_000
 
 
 pri rampDown(inDrv_incr, inDrv_state) : drv_incr, drv_state_
+' Advance the drive increment one ramp-down step toward zero, reporting STOPPED once reached.
+'
+' @param inDrv_incr - drive increment on entry to this ramp step
+' @param inDrv_state - drive state on entry to this ramp step
+' @returns drv_incr - drive increment after this ramp step
+' @returns drv_state_ - drive state after this ramp step (target state, e.g. DCS_AT_SPEED or DCS_STOPPED, once reached)
+
     drv_incr := inDrv_incr
     drv_state_ := inDrv_state
     org
@@ -559,6 +620,14 @@ ramp_dn_   long    25_000
 
 
 pri rampSlow(tgt_incr, inDrv_incr, inDrv_state) : drv_incr, drv_state_
+' Advance the drive increment one step toward a nonzero target while slowing, reporting AT_SPEED once reached.
+'
+' @param tgt_incr - target motor drive increment, signed for direction
+' @param inDrv_incr - drive increment on entry to this ramp step
+' @param inDrv_state - drive state on entry to this ramp step
+' @returns drv_incr - drive increment after this ramp step
+' @returns drv_state_ - drive state after this ramp step (target state, e.g. DCS_AT_SPEED or DCS_STOPPED, once reached)
+
     drv_incr := inDrv_incr
     drv_state_ := inDrv_state
     org
@@ -601,11 +670,25 @@ CON
     #0, DRU_Unknown, DRU_HALL_TICKS, DRU_DEGREES, DRU_ROTATIONS
 
 PRI showResult(bMatchResult, lhs, rhs) | pStr
+' Print the compared values and whether the comparison matched.
+'
+' @param bMatchResult - T/F result of the comparison being reported
+' @param lhs - left-hand value being compared
+' @param rhs - right-hand value being compared
+
+' Local Variables:
+' @local pStr - pointer to the "TRUE"/"false" string selected by bMatchResult
+
     pStr := (bMatchResult) ? @tStr : @fStr
     debug("  - lt=", sdec_long_(lhs), ", rt=", sdec_long_(rhs), " => ", zstr_(pStr))
 
 PRI isSameSign(lhs, rhs) : bSameSign
 ' are LHS and RHS of same sign?
+'
+' @param lhs - left-hand value being compared
+' @param rhs - right-hand value being compared
+' @returns bSameSign - T/F where T means lhs and rhs have the same sign
+
     org
             mov     bSameSign, #0
             testb   lhs, #31  wc  ' find dual - signs
@@ -619,6 +702,11 @@ PRI isSameSign(lhs, rhs) : bSameSign
 
 PRI isLhsSlower(lhs, rhs) : bLhsSlower
 ' is LHS smaller then RHS?
+'
+' @param lhs - left-hand value being compared
+' @param rhs - right-hand value being compared
+' @returns bLhsSlower - T/F where T means lhs represents a slower (smaller-magnitude) speed than rhs
+
     org
             mov     bLhsSlower, #0
             testb   lhs, #31    wc
@@ -637,6 +725,17 @@ PRI isLhsSlower(lhs, rhs) : bLhsSlower
 
 
 PRI showRampResult(inDrvIncr, prevDrvIncr, inState, prevState) | pOld, pNew
+' Print the ramp's drive-increment and drive-state changes since the previous step.
+'
+' @param inDrvIncr - drive increment after the most recent ramp step, to compare against prevDrvIncr
+' @param prevDrvIncr - drive increment before the most recent ramp step
+' @param inState - drive state after the most recent ramp step, to compare against prevState
+' @param prevState - drive state before the most recent ramp step
+
+' Local Variables:
+' @local pOld - pointer to the display string naming prevState
+' @local pNew - pointer to the display string naming inState
+
     if inDrvIncr <> prevDrvIncr
         debug("  drvIncr (", sdec_long_(prevDrvIncr), ") -> (", sdec_long_(inDrvIncr), ")")
     if inState <> prevState
@@ -645,6 +744,15 @@ PRI showRampResult(inDrvIncr, prevDrvIncr, inState, prevState) | pOld, pNew
         debug("  drvState [", zstr_(pOld), "] -> [", zstr_(pNew), "]")
 
 PRI spinUp(tgtIncre, inDrvIncr, inState, nRampUp) : outState, outIncre
+' Advance the drive increment by a given step toward the target, reporting AT_SPEED once reached.
+'
+' @param tgtIncre - target motor drive increment, signed for direction
+' @param inDrvIncr - drive increment on entry to this ramp step
+' @param inState - drive state on entry to this ramp step
+' @param nRampUp - step size added to the drive increment each call while speeding up
+' @returns outState - drive state after this ramp step
+' @returns outIncre - drive increment after this ramp step
+
     outState := inState
     outIncre := inDrvIncr
     org
@@ -664,6 +772,17 @@ PRI spinUp(tgtIncre, inDrvIncr, inState, nRampUp) : outState, outIncre
     end
 
 PRI spinDn(inDrvIncr, inState, nRampDn) : outState, outIncre | nZero
+' Advance the drive increment down by a given step toward zero, reporting STOPPED once reached.
+'
+' @param inDrvIncr - drive increment on entry to this ramp step
+' @param inState - drive state on entry to this ramp step
+' @param nRampDn - step size subtracted from (or added toward zero for) the drive increment each call while slowing down
+' @returns outState - drive state after this ramp step
+' @returns outIncre - drive increment after this ramp step
+
+' Local Variables:
+' @local nZero - unused
+
     outState := inState
     outIncre := inDrvIncr
     nZero := 0
@@ -699,6 +818,11 @@ DAT
     strSlow2Chg byte    "SLOW_TO_CHG",0
 
 PRI stringForDriveState(nDrvState) :pInterpStr
+' Return a pointer to the display string naming the given drive state.
+'
+' @param nDrvState - drive state enum value to name
+' @returns pInterpStr - pointer to the display string naming the given drive state, or "??bad??" for an unrecognized value
+
     case nDrvState
         DCS_Unknown:
             pInterpStr := @strUnk

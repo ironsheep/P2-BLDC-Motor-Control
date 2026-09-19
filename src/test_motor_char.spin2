@@ -84,6 +84,19 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, limitValue, stepSize, 
 '' DEMO Driving a single wheeled platform
 ''
 
+' Local Variables:
+' @local motorCog - cog id of the started PASM driver cog, from wheel.start()
+' @local senseCog - cog id of the front/sense cog, from wheel.startSenseCog()
+' @local basePin - validated base pin of the motor's pin group
+' @local voltage - validated drive-voltage enum value
+' @local motor - validated motor-type enum value
+' @local limitValue - drive increment (speed) limit currently under test
+' @local stepSize - drive-increment step size used at the current search resolution
+' @local stopVal - upper bound of the current search range, in drive-increment units
+' @local bDidFault - T/F where T means the driver has faulted
+' @local failSpd - drive increment (speed) at which the motor failed, found by the search
+' @local detectMode - validated board-detection mode enum value
+
     startSec := getsec()    ' time we started this run
 
     ' start our HDMI debug output
@@ -171,6 +184,13 @@ PUB main() | motorCog, senseCog, basePin, voltage, motor, limitValue, stepSize, 
         wheel.stop()
 
 PRI showRunDuration() | durationSec, minutes, seconds
+' Print the elapsed run time as minutes and seconds.
+
+' Local Variables:
+' @local durationSec - elapsed run time, in seconds
+' @local minutes - whole minutes of the elapsed run duration
+' @local seconds - remaining seconds of the elapsed run duration, after whole minutes are removed
+
         durationSec := getsec() - startSec    ' duration of this run
         minutes := durationSec / 60
         seconds := durationSec - (minutes * 60)
@@ -178,6 +198,18 @@ PRI showRunDuration() | durationSec, minutes, seconds
 
 PRI searchSpeedValues(fromSpd, toSpd, stepSpd) : bDidFault, goodSpd | nbrSteps, midStep, midSpd
 ' search left or right half of this range
+'
+' @param fromSpd - lower bound of the drive-increment range being searched
+' @param toSpd - upper bound of the drive-increment range being searched
+' @param stepSpd - step size used while searching the drive-increment range
+' @returns bDidFault - T/F where T means the driver has faulted
+' @returns goodSpd - drive increment (speed) at which the motor failed, found within this half of the search range (misleadingly named: holds a failing value, not a good one)
+
+' Local Variables:
+' @local nbrSteps - number of steps spanning the range being bisected
+' @local midStep - step index at the midpoint of the range
+' @local midSpd - drive increment (speed) at the midpoint step
+
     nbrSteps := (toSpd - fromSpd) / stepSpd
     highestRPM := NOT_SET
     midStep := nbrSteps / 2
@@ -194,6 +226,14 @@ PRI searchSpeedValues(fromSpd, toSpd, stepSpd) : bDidFault, goodSpd | nbrSteps, 
 
 PRI bEvalSpeed(testSpd) : bDidFault | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
+'
+' @param testSpd - drive increment (speed) under test, in raw driver-increment units, signed for direction
+' @returns bDidFault - T/F where T means the driver has faulted
+
+' Local Variables:
+' @local endMaxRPM - highest RPM recorded by the driver during this pass, from wheel.testGetResults()
+' @local endMaxTics - highest hall-tick count seen in one second during this pass, from wheel.testGetResults()
+
     debug("* TEST pass(", udec_(passNbr++), ")", udec(testSpd))
     clearFault()
     wheel.testSetLimit(testSpd)
@@ -205,6 +245,19 @@ PRI bEvalSpeed(testSpd) : bDidFault | endMaxRPM, endMaxTics
 
 PRI evalRange(fromSpd, toSpd, stepSpd) : bDidFault, failSpd | limitValue, endMaxRPM, endMaxTics, bBadStart
 ' search range for failure
+'
+' @param fromSpd - lower bound of the drive-increment range being searched
+' @param toSpd - upper bound of the drive-increment range being searched
+' @param stepSpd - step size used while searching the drive-increment range
+' @returns bDidFault - T/F where T means the driver has faulted
+' @returns failSpd - drive increment (speed) at which the motor failed, found by the search
+
+' Local Variables:
+' @local limitValue - drive increment (speed) limit currently under test
+' @local endMaxRPM - highest RPM recorded by the driver during this pass, from wheel.testGetResults()
+' @local endMaxTics - highest hall-tick count seen in one second during this pass, from wheel.testGetResults()
+' @local bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
     clearFault()
     debug("* START pass(", udec_(passNbr), ") curr: ", udec_(fromSpd), ", stop: ", udec_(toSpd), ", step: ", udec_(stepSpd))
     repeat limitValue from fromSpd to toSpd step stepSpd
@@ -286,8 +339,12 @@ PRI clearFault()
                 wheel.clearFaultSignal()                        ' extra in case it didn't??
 
 PRI clearFaultByMotMove() | bDidFault, bBadStart
+' jog: just make motor move a bit
 
-    ' jog: just make motor move a bit
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+' @local bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
     wheel.stopAfterTime(DRIVE_FOR_JOG_SECS, wheel.DTU_SEC)      ' set to hold at speed for 2 Sec
     wheel.testDriveAtMotorIncrement(50_000_000)
     ' wait for timeout or fail
@@ -301,14 +358,26 @@ PRI clearFaultByMotMove() | bDidFault, bBadStart
             debug("S jog end w/BadStart !")
 
 PRI reportEndCondition() : bDidFault, endMaxRPM, endMaxTics
-    ' just finished pass which ended in NOT fault or fault
-    '  report max RPM and max Tics
-    '  report fault or not
+' just finished pass which ended in NOT fault or fault
+'  report max RPM and max Tics
+'  report fault or not
+'
+' @returns bDidFault - T/F where T means the driver has faulted
+' @returns endMaxRPM - highest RPM recorded by the driver during this pass, from wheel.testGetResults()
+' @returns endMaxTics - highest hall-tick count seen in one second during this pass, from wheel.testGetResults()
+
     endMaxRPM, endMaxTics, bDidFault, _ := wheel.testGetResults()
     debug("* RPT: ", udec(endMaxRPM), udec(endMaxTICs), sdec(bDidFault))
     debug("  ")
 
 PRI bDriveForwardToFail() : bBadStart | bDidFault
+' Drive the motor forward at 100% power until it stops, faults, or times out, waiting until it finishes.
+'
+' @returns bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+
     bBadStart := FALSE
     bDidFault := bWaitUntilMotorReady()
     if not bDidFault
@@ -323,6 +392,13 @@ PRI bDriveForwardToFail() : bBadStart | bDidFault
 
 
 PRI bDriveReverseToFail() : bBadStart | bDidFault
+' Drive the motor in reverse at 100% power until it stops, faults, or times out, waiting until it finishes.
+'
+' @returns bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+
     bBadStart := FALSE
     bDidFault := bWaitUntilMotorReady()
     if not bDidFault
@@ -337,6 +413,10 @@ PRI bDriveReverseToFail() : bBadStart | bDidFault
 
 
 PRI bWaitUntilMotorReady() : bDidFault
+' Block until the motor driver reports ready or a fault occurs.
+'
+' @returns bDidFault - T/F where T means the driver has faulted
+
     bDidFault := FALSE
     if wheel.isReady() == false
         'debug("* wait motor ready...")
@@ -355,6 +435,11 @@ PRI bWaitUntilMotorReady() : bDidFault
 
 
 PRI waitUntilMotorDone() : bDidFault, bBadStart
+' Block until the motor starts turning and then stops, or a fault/bad start occurs.
+'
+' @returns bDidFault - T/F where T means the driver has faulted
+' @returns bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
     bDidFault := FALSE
     bBadStart := FALSE
     if not wheel.isTurning()
@@ -386,6 +471,10 @@ PRI waitUntilMotorDone() : bDidFault, bBadStart
         debug("* Motor stopped!")
 
 PRI showPowerSetting(ePower)
+' Print the human-readable voltage name for the given power/voltage enum value.
+'
+' @param ePower - drive-voltage enum value to report as text
+
     CASE ePower
         wheel.PWR_6p0V:
             debug("* PWR - 6.0V")

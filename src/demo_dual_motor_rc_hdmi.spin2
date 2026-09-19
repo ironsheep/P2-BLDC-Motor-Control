@@ -62,6 +62,17 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, basePin, detectMode
 '' DEMO Driving a two wheeled platform
 ''
 
+' Local Variables:
+' @local statusOK - TRUE when the S.BUS receiver cog started
+' @local basePinLt - the validated left-motor base pin, or INVALID_PIN_BASE
+' @local basePinRt - the validated right-motor base pin, or INVALID_PIN_BASE
+' @local voltage - the validated drive voltage, or INVALID_VOLTAGE
+' @local motor - the validated motor type, or INVALID_MOTOR
+' @local basePin - the validated HDMI base pin, or INVALID_PIN_BASE
+' @local detectModeLt - the validated left board detection mode, or INVALID_DET_MODE
+' @local detectModeRt - the validated right board detection mode, or INVALID_DET_MODE
+' @local senseCog - the steering front cog's id (0-7), or -1 when the motors did not start
+
     debug("* demo dual motor control via R/C w/HDMI")
 
     if bUseHDMI
@@ -131,6 +142,19 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, basePin, detectMode
 PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, bShowDebugStatus, bEmerCutoff, bShowDriveStates, accrate, bOneRotation, accRngMin, accRngMax
 '' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
 ''
+
+' Local Variables:
+' @local bIgnoreJoySticks - TRUE while switch A is ON: joystick driving is disabled
+' @local bDoneTesting - TRUE when switch C is OFF: end the control loop
+' @local bShowState - TRUE while switch B is OFF: show the motor currents
+' @local loopCt - passes of the control loop
+' @local bShowDebugStatus - TRUE to turn on the receiver object's debug output for the switch-D read (fixed FALSE)
+' @local bEmerCutoff - TRUE while switch D is OFF: emergency cutoff
+' @local bShowDriveStates - TRUE while switch C is in its middle position: show the drive states
+' @local accrate - the acceleration the VRA knob selects, mm/s squared
+' @local bOneRotation - the channel-11 switch state: OFF asks for one rotation, ON re-arms it
+' @local accRngMin - the VRA knob's lowest recorded reading
+' @local accRngMax - the VRA knob's highest recorded reading
 
     waitms(500)    ' wait for 1/2 sec for backend to catch up
 
@@ -255,6 +279,14 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
 
 PRI connectMotorToHDMI() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
 ' connect our two motors to the HDMI display mech
+
+' Local Variables:
+' @local nGroups - number of display groups in the tables
+' @local pGroupTitles - pointer to the table of group-title string pointers
+' @local pGroupNames - pointer to the table of variable-name string pointers, by group
+' @local pGroupVarCts - pointer to the table of variable counts, one per group
+' @local pGroupVars - pointer to the table of variable-value pointers, by group
+
     if bUseHDMI
         nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheels.getLeftDebugData()
         debug("* Received Lt: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
@@ -345,6 +377,12 @@ VAR
     long    nDoingOneRotation
 
 PRI doOneRotation() | ltdegree, rtdegree, eError
+' Drive forward slowly until the left wheel turns one more full rotation, reporting the rotation counts.
+
+' Local Variables:
+' @local ltdegree - the left wheel's rotation count, degrees
+' @local rtdegree - the right wheel's rotation count, degrees
+' @local eError - the result of the rotation limit, then of the drive it guards
 
     ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' get current wheel rotation
     ' arm the limit first and drive only if it was accepted, so the wheels never run without one
@@ -360,6 +398,17 @@ PRI doOneRotation() | ltdegree, rtdegree, eError
         debug("  Onrotation Check:", sdec(ltdegree), " ", sdec(rtdegree))
 
 PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
+' Read both joysticks and scale them to a drive speed and direction.
+'
+' @returns speed - the right stick's vertical position as a speed [-100 to 100]
+' @returns direction - the left stick's horizontal position as a direction [-100 to 100]
+
+' Local Variables:
+' @local rawSpeed - the right stick's vertical channel reading
+' @local rawDirection - the left stick's horizontal channel reading
+' @local rngMin - the channel's lowest recorded reading
+' @local rngMax - the channel's highest recorded reading
+
     ' route Rt Joystick Vt (spring center) to FWD/REV (speed)
     'debug("-- JOY -- JOY --")
     rawSpeed := remoteCtl.readChannel(remoteCtl.CTL_RT_JOY_VT)
@@ -372,29 +421,19 @@ PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
     direction := map(rawDirection, rngMin, rngMax, -100, +100)
 
 PRI map(inValue,  inMin,  inMax,  outMin,  outMax) : outValue
-{
-    REF: https://www.arduino.cc/reference/en/language/functions/math/map
+' Re-map a value from one range onto another, after Arduino's map()
+'  (REF: https://www.arduino.cc/reference/en/language/functions/math/map), with two differences:
+'  - it clamps: an input at or beyond an end of [inMin, inMax] returns that end of the output range
+'  - so {inMin} must be below {inMax}; the output range may run either way (outMin > outMax reverses it)
+'  Integer math: fractions are truncated, not rounded.
+'
+' @param inValue - the value to re-map
+' @param inMin - the input range's low end
+' @param inMax - the input range's high end
+' @param outMin - the output value for {inMin}
+' @param outMax - the output value for {inMax}
+' @returns outValue - {inValue} re-mapped onto [outMin, outMax], clamped to its ends
 
-    Re-maps a number from one range to another. That is, a value of fromLow would get mapped to toLow,
-    a value of fromHigh to toHigh, values in-between to values in-between, etc.
-
-    Does not constrain values to within the range, because out-of-range values are sometimes intended and
-    useful. The constrain() function may be used either before or after this function, if limits to the ranges are desired.
-
-    Note that the "lower bounds" of either range may be larger or smaller than the "upper bounds" so the
-    map() function may be used to reverse a range of numbers, for example
-
-    y = map(x, 1, 50, 50, 1);
-
-    The function also handles negative numbers well, so that this example
-
-    y = map(x, 1, 50, 50, -100);
-
-    is also valid and works well.
-
-    The map() function uses integer math so will not generate fractions, when the math might indicate that
-    it should do so. Fractional remainders are truncated, and are not rounded or averaged.
-}
     if (inValue <= inMin)
         outValue := outMin
     elseif (inValue >= inMax)

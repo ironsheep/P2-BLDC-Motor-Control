@@ -57,6 +57,7 @@ DAT { debug display data }
 PUB start(hdmiBasePin) : ok
 '' Start the HDMI debug driver
 ''
+'' @param hdmiBasePin - the HDMI adapter's 8-pin base ENUM (PINS_P0_P7 ... PINS_P56_P63)
 '' @returns ok - the started cog's id (0-7), or (-1) if failed to start
 
     if hdmiCog or (pinHDMIbase <> INVALID_PIN_BASE)
@@ -96,6 +97,8 @@ PUB stop()
 PUB validBasePinForChoice(userBasePin) : legalBasePin
 '' VALIDATE users' base-pin choice returns legalBasePin or INVALID_PIN_BASE
 ''
+'' @param userBasePin - the HDMI base pin ENUM to check (PINS_P0_P7 ... PINS_P56_P63)
+'' @returns legalBasePin - {userBasePin} when it names an 8-pin group, else INVALID_PIN_BASE
 
     legalBasePin := userBasePin
     CASE userBasePin
@@ -171,6 +174,15 @@ DAT { TASK: DEBUG w/Vars }
 PUB registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars) | nDsplyOffset, pTitleStr
 '' Register a new display-list to be shown
 ''
+'' @param nGroups - number of display groups in the tables
+'' @param pGroupTitles - pointer to the table of group-title string pointers
+'' @param pGroupNames - pointer to the table of variable-name string pointers, by group
+'' @param pGroupVarCts - pointer to the table of variable counts, one per group
+'' @param pGroupVars - pointer to the table of variable-value pointers, by group
+
+' Local Variables:
+' @local nDsplyOffset - this display list's first long in the stored list table
+' @local pTitleStr - pointer to a group's title (for the debug dump)
 
     if showHDMIDebug
         debug("HDMI Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
@@ -223,6 +235,7 @@ PUB registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
 PUB writeMessageToLog(pMessage)
 '' NOT WORKING: Write message to scrolling log
 ''
+'' @param pMessage - pointer to the message text
 
     ' block until prior message accepted
     'repeat
@@ -235,6 +248,11 @@ PUB writeMessageToLog(pMessage)
     nDriverCmd := DC_LOG_MSG
 
 PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
+' The HDMI cog: start the video driver, draw the screen, then redraw the registered values until stopped.
+'
+' @param pDriverCmd - pointer to the driver-command long shared with the caller's cog
+' @param pDriverArg - pointer to the driver-argument long shared with the caller's cog
+' @param pDsplyList - pointer to the stored display-list table
 
     vidCog := vid.initDvi(-1, pinHDMIbase, 0, FLAGS, DVI_RES) + 1
 
@@ -416,6 +434,16 @@ PRI taskShowDebug(pDriverCmd, pDriverArg, pDsplyList)
         waitms(250) ' idle until group/command arrives
 
 PRI handleDriverCommand(pDriverCmd, pDriverArg) : endingCommand | dvrCmd, dvrArg
+' Act on a pending driver command: take a log message, then return to DC_RUN.
+'
+' @param pDriverCmd - pointer to the driver-command long shared with the caller's cog
+' @param pDriverArg - pointer to the driver-argument long shared with the caller's cog
+' @returns endingCommand - the driver command in force when this returns (DC_RUN after a log message is taken)
+
+' Local Variables:
+' @local dvrCmd - the driver command read from the shared long
+' @local dvrArg - the driver argument read from the shared long
+
     endingCommand := dvrCmd := LONG[pDriverCmd]
     ' if we are asked to log a message, do so then return to run
     if dvrCmd == DC_LOG_MSG
@@ -497,6 +525,13 @@ CON { Parallax Line Draw Chars }
 
 PRI logMsg(pMessage) | nRow, nCol
 ' write message to log area of screen (off: LOG_AREA_ON is FALSE, as the early return that stood here made it)
+'
+' @param pMessage - pointer to the message text
+
+' Local Variables:
+' @local nRow - the cursor row saved while the log line is written
+' @local nCol - the cursor column saved while the log line is written
+
     if LOG_AREA_ON
         nRow, nCol := vid.getTextPos()  ' preserve cursor locn
         setTextPos(logRow, 0)
@@ -507,12 +542,25 @@ PRI logMsg(pMessage) | nRow, nCol
 
 PRI placeWarningAtRC(nRow, nCol, pMsg)
 ' place label-colored string on screen
+'
+' @param nRow - the screen row
+' @param nCol - the screen column
+' @param pMsg - pointer to the warning text
+
     setTextPos(nRow, nCol)
     vid.setTextColours(vid.RED, vid.WHITE)
     vid.printStr(pMsg)
 
 PRI placeTitleAtRC(nRow, nCol, pLabel) | pValidLabel
 ' place title-colored string on screen
+'
+' @param nRow - the screen row
+' @param nCol - the screen column
+' @param pLabel - pointer to the label text
+
+' Local Variables:
+' @local pValidLabel - {pLabel}, or a placeholder when it is longer than 20 characters
+
     pValidLabel := verifyLabel(pLabel)
     setTextPos(nRow, nCol)
     vid.setTextColours(COLR_SUBTITLE, COLR_BG)
@@ -522,17 +570,41 @@ DAT
     badLabel    byte    "-?lbl?-",0
 
 PRI verifyLabel(pStr) : pOkLabel | nLen
+' Return a label, or a placeholder when it is too long to fit its screen field.
+'
+' @param pStr - pointer to the label text
+' @returns pOkLabel - {pStr}, or a pointer to a placeholder when it is longer than 20 characters
+
+' Local Variables:
+' @local nLen - the label's length
+
     nLen := strsize(pStr)
     pOkLabel := (nLen > 20) ? @badLabel : pStr
 
 PRI placeTextAtRC(nRow, nCol, pText)
 ' place text-colored string on screen
+'
+' @param nRow - the screen row
+' @param nCol - the screen column
+' @param pText - pointer to the text to place
+
     setTextPos(nRow, nCol)
     vid.setTextColours(COLR_TEXT, COLR_BG)
     vid.printStr(pText)
 
 PRI placeBoxAtRC(nRow, nCol, nWidth, nHeight) | bxRow ,bxCol, nChr
-' place text-colored string on screen
+' draw a box outline, in box colour, with line-drawing characters
+'
+' @param nRow - the box's top row
+' @param nCol - the box's left column
+' @param nWidth - the box width, in columns
+' @param nHeight - the box height, in rows
+
+' Local Variables:
+' @local bxRow - the row being drawn
+' @local bxCol - the column being drawn
+' @local nChr - the line-drawing character for this position, 0 for none
+
     vid.setTextColours(COLR_BOX, COLR_BG)
     repeat bxCol from nCol to nCol+nWidth-1
         repeat bxRow from nRow to nRow+nHeight-1
@@ -562,12 +634,23 @@ PRI placeBoxAtRC(nRow, nCol, nWidth, nHeight) | bxRow ,bxCol, nChr
 
 PRI placeLabelAtRC(nRow, nCol, pLabel)
 ' place label-colored string at R,C on screen
+'
+' @param nRow - the screen row
+' @param nCol - the screen column
+' @param pLabel - pointer to the label text
+
     setTextPos(nRow, nCol)
     vid.setTextColours(COLR_LABEL, COLR_BG)
     vid.printStr(pLabel)
 
 PRI placeValueOfWidthAtRC(nRow, nCol, nValue, nWidth) '| fg, bg
 ' place value-colored string at R,C on screen
+'
+' @param nRow - the screen row
+' @param nCol - the screen column
+' @param nValue - the value to display
+' @param nWidth - the field width, in characters
+
     'fg, bg := vid.getTextColours()  ' preserve colors
     clear(nRow, nCol, nWidth)
     setTextPos(nRow, nCol)
@@ -576,8 +659,17 @@ PRI placeValueOfWidthAtRC(nRow, nCol, nValue, nWidth) '| fg, bg
     'vid.setTextColours(fg, bg)  ' restore colors
 
 PRI showValueOfWidth(nValue, nWidth) | fg, bg, nRow, nCol
-' place value-colored string on screen
-    'nRow, nCol := vid.getTextPos()
+' place value-colored string on screen at the cursor, clearing its field first
+'
+' @param nValue - the value to display
+' @param nWidth - the field width, in characters
+
+' Local Variables:
+' @local fg - the foreground colour to restore
+' @local bg - the background colour to restore
+' @local nRow - the cursor row the value is written at
+' @local nCol - the cursor column the value is written at
+
     nRow, nCol := vid.getTextPos()
     clear(nRow, nCol, nWidth)
     fg, bg := vid.getTextColours()  ' preserve colors
@@ -587,6 +679,9 @@ PRI showValueOfWidth(nValue, nWidth) | fg, bg, nRow, nCol
 
 PRI showText(pStr) '| nRow, nCol
 ' place text-colored string on screen at the cursor (no field is cleared first, unlike showValueOfWidth())
+'
+' @param pStr - pointer to the text
+
     'nRow, nCol := vid.getTextPos()
     'setTextPos(nRow, nCol)
     vid.setTextColours(COLR_TEXT, COLR_BG)
@@ -594,21 +689,39 @@ PRI showText(pStr) '| nRow, nCol
 
 PRI setTextPos(nRow, nCol)
 ' do driver call to set then wait
+'
+' @param nRow - the screen row
+' @param nCol - the screen column
+
     vid.setTextPos(nRow, nCol)
     'waitus(POS_DELAY_IN_US)
 
 PRI clear(nRow, nCol, nWidth)
+' Blank a field of the screen with spaces.
+'
+' @param nRow - the screen row
+' @param nCol - the screen column
+' @param nWidth - the field width, in characters
+
     setTextPos(nRow, nCol)
     if nWidth > 0
         repeat nWidth
             vid.out($20)
 
 PRI rowForGroupRow(nGroupRow) : nBoxRow
-' row for group is every 11 rows
+' row for group is every 10 rows
+'
+' @param nGroupRow - the group's row in the grid, from 1
+' @returns nBoxRow - the screen row of the group's box
+
     nBoxRow := ((nGroupRow - 1) * 10) + 1
 
 PRI colForGroupIdx(nGroupIdx) : nColumn
 ' column for group is every 19 chars
+'
+' @param nGroupIdx - the group's column in the grid, from 0
+' @returns nColumn - the screen column of the group's box
+
     nColumn := (nGroupIdx * 19) + 1
 
 

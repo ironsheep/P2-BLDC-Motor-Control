@@ -100,6 +100,18 @@ PUB main() | testSpeed, bFwdIsInverse, ofstInDegr, bRuns, fwd_mV, rev_mV, spanId
 '' DEMO Driving a single wheeled platform
 ''
 
+' Local Variables:
+' @local testSpeed - drive increment (speed) under test, in raw driver-increment units, signed for direction
+' @local bFwdIsInverse - T/F where T means forward is the inverse of reverse
+' @local ofstInDegr - commutation offset under test, in degrees
+' @local bRuns - T/F where T means the motor spun successfully at this offset
+' @local fwd_mV - highest current-sense reading seen in the forward direction during the pass, in mV
+' @local rev_mV - highest current-sense reading seen in the reverse direction during the pass, in mV
+' @local spanIdx - index of the offset span being studied
+' @local srtOfst - start offset, in degrees, of the span being studied
+' @local endOffset - end offset, in degrees, of the span being studied
+' @local currOffset - offset currently under test within the span, in degrees
+
     startSec := getsec()    ' time we started this run
 
     ' start our HDMI debug output
@@ -232,12 +244,31 @@ PUB main() | testSpeed, bFwdIsInverse, ofstInDegr, bRuns, fwd_mV, rev_mV, spanId
         wheel.stop()
 
 PRI showRunDuration() | durationSec, minutes, seconds
+' Print the elapsed run time as minutes and seconds.
+
+' Local Variables:
+' @local durationSec - elapsed run time, in seconds
+' @local minutes - whole minutes of the elapsed run duration
+' @local seconds - remaining seconds of the elapsed run duration, after whole minutes are removed
+
         durationSec := getsec() - startSec    ' duration of this run
         minutes := durationSec / 60
         seconds := durationSec - (minutes * 60)
         debug("* END: after ", udec_(minutes), " minutes, ", udec_(seconds), " seconds")
 
 PRI evalOffsetAtSpeeds(newOffsetInDegr, bFwdIsInverse) | speedIdx, testSpeed, bRuns, fwd_mV, rev_mV
+' Evaluate a commutation offset at each speed in the fixed speed table, recording the current draw at each.
+'
+' @param newOffsetInDegr - commutation offset to apply, in degrees
+' @param bFwdIsInverse - T/F where T means forward is the inverse of reverse
+
+' Local Variables:
+' @local speedIdx - index into the fixed speed table (speedTable) being evaluated
+' @local testSpeed - drive increment (speed) under test, in raw driver-increment units, signed for direction
+' @local bRuns - T/F where T means the motor spun successfully at this offset
+' @local fwd_mV - highest current-sense reading seen in the forward direction during the pass, in mV
+' @local rev_mV - highest current-sense reading seen in the reverse direction during the pass, in mV
+
     repeat speedIdx from 0 to nbrSpeedEntries - 1
         testSpeed := LONG[@speedTable][speedIdx]
         bRuns, fwd_mV, rev_mV := evalOffset(newOffsetInDegr, bFwdIsInverse, testSpeed)
@@ -247,6 +278,18 @@ PRI evalOffsetAtSpeeds(newOffsetInDegr, bFwdIsInverse) | speedIdx, testSpeed, bR
 
 PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed): bDidSpin, fwd_mV, rev_mV | bDidFault, bDidMove
 ' test these offsets speed to see if current is best
+'
+' @param newOffsetInDegr - commutation offset to apply, in degrees
+' @param bFwdIsInverse - T/F where T means forward is the inverse of reverse
+' @param speed - the drive increment to run at, in raw driver units, signed for direction (not a [-100 to 100] power)
+' @returns bDidSpin - T/F where T means the motor spun successfully at this offset
+' @returns fwd_mV - highest current-sense reading seen in the forward direction during the pass, in mV
+' @returns rev_mV - highest current-sense reading seen in the reverse direction during the pass, in mV
+
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+' @local bDidMove - T/F where T means the motor turned during the test
+
     bDidSpin := FALSE
     wheel.testResetMaxValues()
     debug(" ======================= ")
@@ -272,6 +315,17 @@ PRI evalOffset(newOffsetInDegr, bFwdIsInverse, speed): bDidSpin, fwd_mV, rev_mV 
 
 PRI evalSpeed(testSpd): bDidFault, bDidMove, fwd_mV, rev_mV | endMaxRPM, endMaxTics
 ' test this speed to see if would fail
+'
+' @param testSpd - drive increment (speed) under test, in raw driver-increment units, signed for direction
+' @returns bDidFault - T/F where T means the driver has faulted
+' @returns bDidMove - T/F where T means the motor turned during the test
+' @returns fwd_mV - highest current-sense reading seen in the forward direction during the pass, in mV
+' @returns rev_mV - highest current-sense reading seen in the reverse direction during the pass, in mV
+
+' Local Variables:
+' @local endMaxRPM - highest RPM recorded by the driver during this pass, from wheel.testGetResults()
+' @local endMaxTics - highest hall-tick count seen in one second during this pass, from wheel.testGetResults()
+
     clearFault()
 
     debug("  ")
@@ -336,6 +390,12 @@ PRI clearFault()
                 wheel.clearFaultSignal()                        ' extra in case it didn't??
 
 PRI clearFaultByMotMove() | bDidFault, bBadStart
+' Jog the motor briefly to clear a latched fault.
+
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+' @local bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
     if firstWorkingOffset <> DEFAULT_OFFSET
         debug("S Jog at offset=(", udec_(firstWorkingOffset), ")")
         ' push offset
@@ -366,14 +426,28 @@ PRI clearFaultByMotMove() | bDidFault, bBadStart
         debug("S can't jog - no offset!")
 
 PRI reportEndCondition(): bDidFault, endMaxRPM, endMaxTics, max_mV
-    ' just finished pass which ended in NOT fault or fault
-    '  report max RPM and max Tics
-    '  report fault or not
+' just finished pass which ended in NOT fault or fault
+'  report max RPM and max Tics
+'  report fault or not
+'
+' @returns bDidFault - T/F where T means the driver has faulted
+' @returns endMaxRPM - highest RPM recorded by the driver during this pass, from wheel.testGetResults()
+' @returns endMaxTics - highest hall-tick count seen in one second during this pass, from wheel.testGetResults()
+' @returns max_mV - highest current-sense reading seen during the pass, in mV
+
     endMaxRPM, endMaxTics, bDidFault, max_mV := wheel.testGetResults()
     debug("* RPT: ", udec(endMaxRPM), udec(endMaxTICs), sdec(bDidFault), udec(max_mV))
     debug("  ")
 
 PRI bDriveForwardAtSpeed(speed): bBadStart | bDidFault
+' Drive the motor forward at the given drive increment until it stops, faults, or times out, waiting until it finishes.
+'
+' @param speed - the drive increment to run at, in raw driver units, signed for direction (not a [-100 to 100] power)
+' @returns bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+
     bBadStart := FALSE
     bDidFault := bWaitUntilMotorReady()
     if not bDidFault
@@ -387,6 +461,14 @@ PRI bDriveForwardAtSpeed(speed): bBadStart | bDidFault
         debug("*E motor not ready")
 
 PRI bDriveReverseAtSpeed(speed): bBadStart | bDidFault
+' Drive the motor in reverse at the given drive increment until it stops, faults, or times out, waiting until it finishes.
+'
+' @param speed - the drive increment to run at, in raw driver units, signed for direction (not a [-100 to 100] power)
+' @returns bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+
     bBadStart := FALSE
     bDidFault := bWaitUntilMotorReady()
     if not bDidFault
@@ -402,6 +484,13 @@ PRI bDriveReverseAtSpeed(speed): bBadStart | bDidFault
 
 
 PRI bDriveForwardToFail(): bBadStart | bDidFault
+' Drive the motor forward at 100% power until it stops, faults, or times out, waiting until it finishes.
+'
+' @returns bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+
     bBadStart := FALSE
     bDidFault := bWaitUntilMotorReady()
     if not bDidFault
@@ -417,6 +506,13 @@ PRI bDriveForwardToFail(): bBadStart | bDidFault
 
 
 PRI bDriveReverseToFail(): bBadStart | bDidFault
+' Drive the motor in reverse at 100% power until it stops, faults, or times out, waiting until it finishes.
+'
+' @returns bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
+' Local Variables:
+' @local bDidFault - T/F where T means the driver has faulted
+
     bBadStart := FALSE
     bDidFault := bWaitUntilMotorReady()
     if not bDidFault
@@ -432,6 +528,10 @@ PRI bDriveReverseToFail(): bBadStart | bDidFault
 
 
 PRI bWaitUntilMotorReady(): bDidFault
+' Block until the motor driver reports ready or a fault occurs.
+'
+' @returns bDidFault - T/F where T means the driver has faulted
+
     bDidFault := FALSE
     if wheel.isReady() == false
         'debug("* wait motor ready...")
@@ -450,6 +550,11 @@ PRI bWaitUntilMotorReady(): bDidFault
 
 
 PRI waitUntilMotorDone(): bDidFault, bBadStart
+' Block until the motor starts turning and then stops, or a fault/bad start occurs.
+'
+' @returns bDidFault - T/F where T means the driver has faulted
+' @returns bBadStart - T/F where T means the motor failed to start turning before the wait timed out
+
     bDidFault := FALSE
     bBadStart := FALSE
     if not wheel.isTurning()
@@ -481,6 +586,10 @@ PRI waitUntilMotorDone(): bDidFault, bBadStart
         debug("* Motor stopped!")
 
 PRI showPowerSetting(ePower)
+' Print the human-readable voltage name for the given power/voltage enum value.
+'
+' @param ePower - drive-voltage enum value to report as text
+
     CASE ePower
         wheel.PWR_6p0V:
             debug("* PWR - 6.0V")

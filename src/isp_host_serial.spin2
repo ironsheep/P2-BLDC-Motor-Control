@@ -49,6 +49,10 @@ PUB null()
 PUB startx(rxpin, txpin, baud, pullup)
 '' Start serial gateway serial coms on rxpin and txpin at baud
 ''
+'' @param rxpin - the receive pin
+'' @param txpin - the transmit pin
+'' @param baud - the serial bit rate, bits per second
+'' @param pullup - the transmit pin's pull-up: PU_NONE, PU_1K5, PU_3K3 or PU_15K
 
     pinRx := rxpin
     pinTx := txpin
@@ -68,6 +72,7 @@ PUB stop()
 PUB identify(pHardwareId)
 '' Report to the serial host the name of this device (and object version)
 ''
+'' @param pHardwareId - pointer to this device's name, sent to the host
 
     serialIF.fstr3(string("ident:hwName=%s%sobjVer=%s\n"), pHardwareId, @parmSep, @spin2ver)
     ' parse expected result display error (via debug) if occurred
@@ -75,11 +80,13 @@ PUB identify(pHardwareId)
 
 
 PUB getErrorCtrs() : nRPiCt, nP2Ct
-'' Return the test Tx and Rx error counters (cleared on sendTestMessage(reset=true))
+'' Return the test Tx and Rx error counters (the message test that counted them is not in this object: both are always 0)
 ''
+'' @returns nRPiCt - the Tx test-error count (always 0)
+'' @returns nP2Ct - the Rx test-error count (always 0)
 
-nRPiCt := testTxErrCt
-nP2Ct := testRxErrCt
+    nRPiCt := testTxErrCt
+    nP2Ct := testRxErrCt
 
 DAT { -----------  PRIVATE Serial Test support ----------- }
 
@@ -100,16 +107,35 @@ DAT { -----------  PRIVATE Serial Test support ----------- }
 
 PRI genRxTestMessage(nCountValue) : pStr
 ' fill-in expected Rx Message with count
+'
+' @param nCountValue - the message number
+' @returns pStr - pointer to the expected host message, numbered
+
     placeMessageCount(nCountValue, @testRxMsgCt)
     pStr := @testRxMsg
 
 PRI genTestMessage(nCountValue) : pStr
 ' fill-in next Tx Message with count
+'
+' @param nCountValue - the message number
+' @returns pStr - pointer to the next message to send, numbered
+
     placeMessageCount(nCountValue, @testTxMsgCt)
     pStr := @testTxMsg
 
 PRI placeMessageCount(nCountValue, pCountOffset) | nThous, nHun, nTens, nOnes, nRemainder
 ' place digits representing count into our message
+'
+' @param nCountValue - the message number
+' @param pCountOffset - pointer to the message's five count digits
+
+' Local Variables:
+' @local nThous - the thousands digit
+' @local nHun - the hundreds digit
+' @local nTens - the tens digit
+' @local nOnes - the ones digit
+' @local nRemainder - the part of the count not yet placed
+
     bytefill(pCountOffset, $30, 5)  ' preload w/ASCII ZEROs
     nThous := nCountValue / 1000
     nRemainder := nCountValue - (nThous * 1000)
@@ -130,6 +156,10 @@ DAT
     userMsgBuffer   BYTE    0[MAX_LEN_USERMSG+1]
 
 PRI handleResponseFor(pStr)
+' Read the host's next line and report (via debug) when it does not begin with the expected prefix.
+'
+' @param pStr - pointer to the prefix the host's reply must begin with
+
     serialQueue.getLine(@userMsgBuffer, MAX_LEN_USERMSG, serialQueue.WAIT_FOR_STRING)
     if not bStrHasPrefix(@userMsgBuffer, pStr)
         debug("hrf: unexpected response!")
@@ -138,6 +168,15 @@ PRI handleResponseFor(pStr)
         debug("hrf: RX str(", udec_(strsize(pStr)), ")=[", zstr_(pStr), "]")
 
 PRI bStrHasPrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
+' Return TRUE when a string begins with a prefix, case-sensitively.
+'
+' @param pTargetStr - pointer to the text to test
+' @param pPrefix - pointer to the prefix
+' @returns bHasStatus - TRUE when the text begins with the prefix (case matters)
+
+' Local Variables:
+' @local nIdx - index of the character being compared
+
     bHasStatus := TRUE
     repeat nIdx from 0 to strsize(pPrefix) - 1
         if BYTE[pTargetStr][nIdx] <> BYTE[pPrefix][nIdx]

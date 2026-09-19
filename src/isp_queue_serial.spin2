@@ -155,6 +155,10 @@ CON { - - - - - }
 PUB startx(rxpin, txpin, baud, pullup)
 '' Start serial gateway serial coms on rxpin and txpin at baud
 ''
+'' @param rxpin - the receive pin
+'' @param txpin - the transmit pin
+'' @param baud - the serial bit rate, bits per second
+'' @param pullup - the transmit pin's pull-up: PU_NONE, PU_1K5, PU_3K3 or PU_15K
 
     pinRx := rxpin
     pinTx := txpin
@@ -191,6 +195,18 @@ CON { ----- Control Changes Interface ----- }
 PUB hasCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nIdx, nParamCt, pCmd, eCmd, bGoodCmd
 '' Return T/F where T means a control value change has been received and needs to be handled
 ''
+'' @param pEntries - pointer to the command table: nEntryCount entries of [pCmdStr, eCmdValue, nParamCt]
+'' @param nEntryCount - entries in the command table
+'' @returns bHaveCmdStatus - TRUE when a received line names a known command with the right number of parameters (an error reply has been sent otherwise)
+
+' Local Variables:
+' @local opStatus - OP_SUCCESS or OP_FAILURE
+' @local pValues - pointer to the parsed command descriptor
+' @local nIdx - index of the command-table entry being compared
+' @local nParamCt - the table entry's parameter count
+' @local pCmd - pointer to the table entry's command name
+' @local eCmd - the table entry's command enum
+' @local bGoodCmd - TRUE once the received command name matches a table entry
 
     bHaveCmdStatus := hasRxString()
     if nQStrCount <> 0
@@ -254,6 +270,7 @@ PUB hasCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nIdx
 PUB sendError(pMsg)
 '' Reply to sender with validation error message
 ''
+'' @param pMsg - pointer to the text to send
 
     serialChan.str(@"ERROR ")
     serialChan.str(pMsg)
@@ -270,6 +287,7 @@ PUB sendOK()
 PUB sendResponse(pMsg)
 '' Send requested data back to sender
 ''
+'' @param pMsg - pointer to the text to send
 
     serialChan.str(pMsg)
     serialChan.str(@"\n")
@@ -278,6 +296,8 @@ PUB sendResponse(pMsg)
 PUB getCommandParms() : opStatus, pValues
 '' Return latest descriptor to caller
 ''
+'' @returns opStatus - OP_SUCCESS or OP_FAILURE
+'' @returns pValues - pointer to the parsed command descriptor (ENT_* indexes)
 
     debug("- getCommandParms()")
 ' where descriptor is:
@@ -300,6 +320,7 @@ CON { ----- General Strings Interface ----- }
 PUB hasRxString() : bPresentStatus
 '' Return T/F where T means a control value change has been received and needs to be handled
 ''
+'' @returns bPresentStatus - TRUE when at least one received line is waiting
 
     bPresentStatus := (nQStrCount > 0) ? TRUE : FALSE
     'debug("?? hasRxString[T/F]: ", ubin_byte(presentStatus))
@@ -307,6 +328,7 @@ PUB hasRxString() : bPresentStatus
 PUB rxStringsCount() : nCount
 '' Return count of strings received
 ''
+'' @returns nCount - received lines waiting in the queue
 
     nCount := nQStrCount
 
@@ -314,6 +336,15 @@ PUB getLine(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedSt
 '' Return {pStr} or 0 if none
 ''  if {bShouldWait} is TRUE wait until string arrives before returning
 ''
+'' @param pUserDest - pointer to the caller's buffer that receives the line
+'' @param lenDest - size of the caller's buffer, in bytes
+'' @param bShouldWait - TRUE to wait until a line arrives
+'' @returns pStr - {pUserDest} holding the line, or 0 when none was waiting
+
+' Local Variables:
+' @local bStringArrived - TRUE when a line is ready to copy
+' @local pWrappedStr - pointer to the line in the circular receive buffer (it may wrap)
+' @local nLen - the line's length, in bytes
 
     'debug("getLine: ENTRY")
     pStr := 0
@@ -364,6 +395,13 @@ PUB resetRxStatus()
 PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx, bHaveNeg
 '' Return long value for given decimal string
 ''
+'' @param pDecimalStr - pointer to the decimal text, optionally led by '-'
+'' @returns decimalValue - the value of the text
+
+' Local Variables:
+' @local nCharCt - digits left to convert
+' @local nIdx - loop index
+' @local bHaveNeg - TRUE when the text began with '-'
 
     decimalValue := 0
     nCharCt := strsize(pDecimalStr)
@@ -381,6 +419,14 @@ PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx, bHaveNeg
 PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitValue
 '' Return long value for given hexadecimal string
 ''
+'' @param pHexStr - pointer to the hexadecimal text, with or without a 0x prefix
+'' @returns valueOfHex - the value of the text
+
+' Local Variables:
+' @local nChar - the character being converted, upper-cased
+' @local nIdx - loop index
+' @local nOffset - index of the first digit (2 past a 0x prefix)
+' @local nDigitValue - the value of that digit, 0-15
 
     nOffset := 0
     'debug("CONV: [", zstr_(pHexStr), "]")
@@ -403,6 +449,13 @@ PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitVal
 
 PRI parseCommandAndValue() : opStatus, pValues | pStr
 ' Interpret command and return descriptor
+'
+' @returns opStatus - OP_SUCCESS or OP_FAILURE
+' @returns pValues - pointer to the parsed command descriptor (ENT_* indexes)
+
+' Local Variables:
+' @local pStr - pointer to the received line
+
     debug("- parseCommandAndValue()")
 ' where descriptor is:
 '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
@@ -423,6 +476,10 @@ CON { ----- TASK ----- }
 '
 PRI TaskSerialRx(pRxBffr, lenRxBffr)
 ' our serial receive to queue loop
+'
+' @param pRxBffr - pointer to the circular receive buffer
+' @param lenRxBffr - size of that buffer, in bytes
+
     ' preserve incoming values
     pRxByteStart := pRxBffr
     nRxByteMax := lenRxBffr
@@ -459,6 +516,13 @@ PRI TaskSerialRx(pRxBffr, lenRxBffr)
 
 PRI tskFakeRxStr(pStr) | nIdx, nStatusValue
 ' place string into buffer as if it was received
+'
+' @param pStr - pointer to the text to place in the queue as if received
+
+' Local Variables:
+' @local nIdx - index of the character being queued
+' @local nStatusValue - TRUE when the character queue was full
+
     debug("TASK[Rx] str=[", zstr_(pStr), "]")
     repeat nIdx from 0 to strsize(pStr) - 1
        nStatusValue := bTskEnqueueChar(byte[pStr][nIdx])
@@ -468,6 +532,10 @@ PRI tskFakeRxStr(pStr) | nIdx, nStatusValue
 
 PRI bTskEnqueueChar(nChr) : bFailedStatus
 ' place byte into rx queue, if EOL then place term instead and engueue string ptr!
+'
+' @param nChr - the received character
+' @returns bFailedStatus - TRUE when the character queue was full and the character was dropped
+
     bFailedStatus := FALSE
     if (nRxByteCount < nRxByteMax)
         if bInString == FALSE
@@ -497,6 +565,12 @@ PRI bTskEnqueueChar(nChr) : bFailedStatus
 
 PRI tskEnqueueStr(pStr) | strIdx
 ' report string arrival to listener (place string pointer in queue)
+'
+' @param pStr - pointer to the start of the received line in the circular buffer
+
+' Local Variables:
+' @local strIdx - the queue slot the line was placed in (for the debug line)
+
     checkGoodStringPtr(pStr)
     if nQStrCount < RX_STR_Q_MAX_LONGS
         strIdx := nQStrHeadIdx  ' save for debug
@@ -516,6 +590,9 @@ PRI tskEnqueueStr(pStr) | strIdx
 PRI checkGoodStringPtr(pStr)
 ' report and halt if string not valid (with circular queue range)
 ' NOTE: string can wrap in circ-que so we don't check end of string...
+'
+' @param pStr - pointer to check against the circular buffer's bounds
+
     if pStr < @serialRxBffr or pStr > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
         debug("EEE have BAD ptr to string! ", uhex_long(pStr), uhex_long(pRxByteStart), uhex_long(pRxByteStart + RX_CHR_Q_MAX_BYTES - 1))
         lockupForAnly()
@@ -529,6 +606,9 @@ CON { ----- Support ----- }
 
 PRI dequeueRxStr() : pRmStr
 ' remove string from queue, listener done with it
+'
+' @returns pRmStr - pointer to the line removed from the queue
+
     'dumpStrQ(string("B4 String Ptr Que"))
     if nQStrCount > 0
         pRmStr := LONG[@rxStrPtrSet][nQStrTailIdx++]
@@ -543,6 +623,9 @@ PRI dequeueRxStr() : pRmStr
 
 PRI dequeueResultRxStr() : pRsltStr
 ' remove string from queue, listener done with it
+'
+' @returns pRsltStr - pointer to the result line, or 0 when none
+
     'dumpStrQ(string("B4 String Ptr Que"))
     pRsltStr := 0
     if pRsltStrStart <> 0
@@ -550,7 +633,11 @@ PRI dequeueResultRxStr() : pRsltStr
         pRsltStrStart := 0  ' mark as empty
 
 PRI freeWrappedString(pRmStr, nLen)
-    ' zero our string memory
+' zero our string memory
+'
+' @param pRmStr - pointer to the line in the circular buffer
+' @param nLen - the line's length, in bytes
+
     if bDbgShoMem
         debug("-- fws:", uhex_long(pRmStr))
     zeroWrappedStr(pRmStr, nLen)
@@ -559,6 +646,14 @@ PRI zeroWrappedStr(pRmStr, nLen) | nIdx, pSrc
 ' fill space occuppied by string with zero's
 '  NOTE handle buffer wrap!
 '    string can start near and and wrap to front!
+'
+' @param pRmStr - pointer to the line in the circular buffer
+' @param nLen - the line's length, in bytes
+
+' Local Variables:
+' @local nIdx - index of the byte being cleared
+' @local pSrc - pointer to the next source byte (wraps at the buffer's end)
+
     pSrc := pRmStr
     repeat nIdx from 0 to nLen - 1
         ' if pointing beyond end, wrap to front!
@@ -573,6 +668,16 @@ PRI copyWrappedStr(pUserDest, pSrcStr, lenDest) | nIdx, pSrc, pDest
 ' copy possible wrapped string {pSrcStr} to {pUserDest} (use min(strlen,lenDest) as bytes to move)
 '  NOTE handle buffer wrap!
 '    string can start near and and wrap to front!
+'
+' @param pUserDest - pointer to the caller's buffer that receives the line
+' @param pSrcStr - pointer to the line in the circular buffer (it may wrap)
+' @param lenDest - size of the caller's buffer, in bytes
+
+' Local Variables:
+' @local nIdx - count of bytes copied
+' @local pSrc - pointer to the next source byte (wraps at the buffer's end)
+' @local pDest - pointer to the next destination byte
+
     pDest := pUserDest
     pSrc:= pSrcStr
     repeat nIdx from 0 to lenDest - 1
@@ -587,9 +692,22 @@ PRI copyWrappedStr(pUserDest, pSrcStr, lenDest) | nIdx, pSrc, pDest
         debug("-- cws: str(", udec_(strsize(pSrcStr)), ")=[", zstr_(pUserDest), "]")
 
 PRI commandParse(pRxLine) : nStatus, pValues | nLenRemaining, nSepIdx, pSrchBffr, pRemainingBffr, nCmdLen, nParmIdx
-    ' Examples: "drivedir {pwr} {dir}\n"
-    ' Examples: "drivedist {ltdist} {rtdist} {d-u}\n"
-    ' Examples: "emercutoff\n"
+' Split a received line into its command name and parameters, filling the parsed command descriptor.
+'  Examples: "drivedir {pwr} {dir}\n"
+'  Examples: "drivedist {ltdist} {rtdist} {d-u}\n"
+'  Examples: "emercutoff\n"
+'
+' @param pRxLine - pointer to the received line
+' @returns nStatus - OP_SUCCESS when the line held a command name, else OP_FAILURE
+' @returns pValues - pointer to the parsed command descriptor (ENT_* indexes)
+
+' Local Variables:
+' @local nLenRemaining - characters left to examine
+' @local nSepIdx - index of the separator after the value, -1 when none was found
+' @local pSrchBffr - pointer to the text still to parse
+' @local pRemainingBffr - pointer to the start of the next value
+' @local nCmdLen - length of the value to copy, capped at its buffer
+' @local nParmIdx - descriptor index the next parameter goes to
 
     ' BUILD THIS:
     '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
@@ -601,7 +719,6 @@ PRI commandParse(pRxLine) : nStatus, pValues | nLenRemaining, nSepIdx, pSrchBffr
     '              [6:nValue3]                                          ENT_PARM3_IDX
     '              [7:nValue4]                                          ENT_PARM4_IDX
     '              [etc] - up to 6 max values
-
     LONG [@currParsedCommand][ENT_RAWSTR_IDX] := @currSingleLineBffr ' record location of raw line
     LONG [@currParsedCommand][ENT_VALUE_CT_IDX] := 0                ' preset not recognized
     LONG [@currParsedCommand][ENT_CMDENUM_IDX] := 0                 ' preset not recognized
@@ -680,6 +797,13 @@ PRI dumpParsedCommand(pMsg) | nIdx, nParams
 '              [6:nValue3]                                          ENT_PARM3_IDX
 '              [7:nValue4]                                          ENT_PARM4_IDX
 '              [etc] - up to 6 max values
+'
+' @param pMsg - pointer to a label printed with the dump
+
+' Local Variables:
+' @local nIdx - descriptor index of the parameter being printed
+' @local nParams - parameters in the descriptor
+
     debug("* Command: - ", zstr_(pMsg))
     debug(" -- raw=[", zstr_(LONG [@currParsedCommand][ENT_RAWSTR_IDX]), "]")
     debug(" --  ct=(", udec_(LONG [@currParsedCommand][ENT_VALUE_CT_IDX]), ")")
@@ -692,6 +816,17 @@ PRI dumpParsedCommand(pMsg) | nIdx, nParams
 
 PRI locationNextNonWhiteValue(pBffr, lenRemaining) : pStart, nSepIdx | nLenRemaining, nIdx, nChr
 ' Return ptr and index of end char of next non-white value
+'
+' @param pBffr - pointer to the text
+' @param lenRemaining - characters in the text
+' @returns pStart - pointer to the first non-white character
+' @returns nSepIdx - index of the separator after the value, -1 when none was found
+
+' Local Variables:
+' @local nLenRemaining - characters from the first non-white character to the end
+' @local nIdx - index of the character being examined
+' @local nChr - the character being examined
+
     nSepIdx := -1           ' separator not found
     ' skip any starting white-space
     pStart, nLenRemaining := skipWhiteSpace(pBffr, lenRemaining)
@@ -706,6 +841,16 @@ PRI locationNextNonWhiteValue(pBffr, lenRemaining) : pStart, nSepIdx | nLenRemai
 
 PRI skipWhiteSpace(pBffr, lenRemaining) : pStart, nLenRemaining | nIdx, nChr
 ' Return ptr to first non-white char with adjusted len which is len of non-white to end of string
+'
+' @param pBffr - pointer to the text
+' @param lenRemaining - characters in the text
+' @returns pStart - pointer to the first non-white character
+' @returns nLenRemaining - characters from {pStart} to the end
+
+' Local Variables:
+' @local nIdx - index of the character being examined
+' @local nChr - the character being examined
+
     pStart := pBffr
     nLenRemaining := lenRemaining
     repeat nIdx from 0 to lenRemaining
@@ -718,6 +863,15 @@ PRI skipWhiteSpace(pBffr, lenRemaining) : pStart, nLenRemaining | nIdx, nChr
     'debug("- sws: str=[",  zstr_(pBffr), "] ", uhex_long(pBffr), udec_long(lenRemaining), " -> ", uhex_long(pStart), udec_long(nLenRemaining))
 
 PRI bStrHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
+' Return TRUE when a string begins with a lower-case prefix, ignoring the string's case.
+'
+' @param pTargetStr - pointer to the text to test
+' @param pPrefix - pointer to the lower-case prefix
+' @returns bHasStatus - TRUE when the text begins with the prefix, ignoring the text's case
+
+' Local Variables:
+' @local nIdx - index of the character being compared
+
     bHasStatus := TRUE
     repeat nIdx from 0 to strsize(pPrefix) - 1
         if (BYTE[pTargetStr][nIdx] | $20) <> BYTE[pPrefix][nIdx]
@@ -726,6 +880,15 @@ PRI bStrHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
 
 
 PRI bStrIgnoreCaseMatch(pLtStr, pRtStr) : bMatchStatus | nIdx
+' Return TRUE when two strings are equal, ignoring case.
+'
+' @param pLtStr - pointer to the first string
+' @param pRtStr - pointer to the second string
+' @returns bMatchStatus - TRUE when the strings are equal, ignoring case
+
+' Local Variables:
+' @local nIdx - index of the character being compared
+
     bMatchStatus := FALSE
     'debug("- sicm: lt(", udec_(strsize(pLtStr)), ")=[", zstr_(pLtStr), "], rt(", udec_(strsize(pRtStr)), ")=[", zstr_(pRtStr), "]")
     if strsize(pLtStr) == strsize(pRtStr)
@@ -738,6 +901,20 @@ PRI bStrIgnoreCaseMatch(pLtStr, pRtStr) : bMatchStatus | nIdx
     'debug(" -- ", sdec_(bMatchStatus))
 
 PRI indexOfStr(pSrchStr, pRxBffr) : nIdx, idxAfter | nLenRemaining, srchLen, srchIdx, srcIdx, bSrchMatch
+' Return where one string first appears in another.
+'
+' @param pSrchStr - pointer to the text to find
+' @param pRxBffr - pointer to the text to search
+' @returns nIdx - index where the text was found, or -1
+' @returns idxAfter - index just past the found text
+
+' Local Variables:
+' @local nLenRemaining - characters left to examine
+' @local srchLen - length of the text to find
+' @local srchIdx - index within the text to find
+' @local srcIdx - index into the searched text
+' @local bSrchMatch - TRUE while every character so far matches
+
   nIdx := -1   ' preset NOT found
   nLenRemaining := strsize(pRxBffr)                  ' get length of input
   srchLen := strsize(pSrchStr)
@@ -777,6 +954,14 @@ PRI reportStackUse()
     debug("^^^ STACK used ", udec(nStkChkUsed), " of ", udec(nStackDepth))
 
 PRI testReport(pTestId, bPassFail) | pResult
+' Print a self-test result and the stack use; halt on a failure.
+'
+' @param pTestId - pointer to the test's name
+' @param bPassFail - TST_PASS or TST_FAIL
+
+' Local Variables:
+' @local pResult - pointer to the pass or FAIL text
+
     pResult := (bPassFail == TST_PASS) ? @rsltPass : @rsltFail
     debug("+++ ---------")
     debug("+++ TEST [", zstr_(pTestId), "] - ", zstr_(pResult))
@@ -806,6 +991,13 @@ nStkChkIdx      LONG    0
 
 PRI genTestMsg() : pMsg | nDigit, nRemainder
 ' return pointer to a simple message
+'
+' @returns pMsg - pointer to the numbered test line
+
+' Local Variables:
+' @local nDigit - the digit being placed
+' @local nRemainder - the part of the count not yet placed
+
     pMsg := @testMsgStr
     nRemainder := testMsgCt++
     if nRemainder > 999
@@ -824,12 +1016,24 @@ PRI genTestMsg() : pMsg | nDigit, nRemainder
 
 PRI showTestState(ePrior, eNew) | pFrom, pTo
 ' display task state
+'
+' @param ePrior - the previous test-control state
+' @param eNew - the test-control state
+
+' Local Variables:
+' @local pFrom - pointer to the previous state's name
+' @local pTo - pointer to the new state's name
+
     pFrom := nameForState(ePrior)
     pTo := nameForState(eNew)
     debug("TEST state [", zstr_(pFrom), "] -> [", zstr_(pTo), "]")
 
 PRI nameForState(eNew) : pStr
 ' return string for state value
+'
+' @param eNew - the test-control state
+' @returns pStr - pointer to the state's name
+
     if eNew == CT_IDLE
       pStr := @ctStrIdle
     elseif  eNew == CT_STOP
@@ -843,10 +1047,23 @@ PRI nameForState(eNew) : pStr
 
 PRI dumpStrQ(pMsg)
 ' dump our full string-que so we can visually inspect
+'
+' @param pMsg - pointer to a title printed with the dump
+
     dbgMemDump(@nQStrHeadIdx, (4 + RX_STR_Q_MAX_LONGS) * 4, pMsg)
 
 PRI dbgMemDump(pBytes, lenBytes, pMessage) | rowCount, pCurrByte, lastRowByteCount, bytesSoFar
 ' Dump rows of hex values with address preceeding
+'
+' @param pBytes - pointer to the first byte to dump
+' @param lenBytes - how many bytes to dump
+' @param pMessage - pointer to a title string printed first, or 0 for none
+
+' Local Variables:
+' @local rowCount - full 16-byte rows to dump
+' @local pCurrByte - pointer to the next row's first byte
+' @local lastRowByteCount - bytes in the final partial row
+' @local bytesSoFar - bytes dumped so far
 
     if pMessage
         debug("** ", zstr_(pMessage), ":")
@@ -869,6 +1086,10 @@ PRI dbgMemDump(pBytes, lenBytes, pMessage) | rowCount, pCurrByte, lastRowByteCou
 
 PRI dbgMemDumpRow(pBytes, lenBytes) '| rowCount, rowLen, pCurrByte, bytIndex
 ' emit address followed by bytes
+'
+' @param pBytes - pointer to the first byte to dump
+' @param lenBytes - how many bytes to dump
+
     debug(" ", uhex_long_(pBytes), ": ", uhex_byte_array_(pBytes, lenBytes))
 
 

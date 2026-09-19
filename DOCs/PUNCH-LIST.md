@@ -139,6 +139,14 @@ out. That ruling also brings PL-10 and PL-11 into this release -- see their entr
 
 ### PL-10 -- deferred: `@param`/`@returns` completeness (element->tag direction)
 
+> **FIXED 2026-09-18 («#3517»), and enforced (`check_style.sh` C3f, which also requires every local's
+> `@local`, guide 4.4).** About 1,430 missing tags across every authored file, each description written
+> against its method's code rather than copied by name: the same name routinely means different things in
+> different methods, so each pre-filled guess was checked and many were replaced. Along the way, doc text that
+> contradicted the code was corrected (`map()` clamps; `getErrorCtrs()`'s counters are never incremented; a
+> reverse drive commented as forward; two file headers naming the wrong file), and descriptions that had been sitting under commented-out code were
+> moved back to the top of their methods. With C3f in, every check the gate implements now fails the build.
+
 `central:spin2-authoring-guide` 4.3 requires, in full, that every parameter
 has a matching `@param` tag and every return value has a matching `@returns`
 tag (the element->tag direction), in addition to the direction

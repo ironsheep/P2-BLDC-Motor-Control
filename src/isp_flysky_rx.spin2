@@ -75,6 +75,8 @@ PUB null()
 pub start(desiredRxPin) : cog
 '' Start the SBus receiver on {desiredRxPin} using default channel calibration
 ''
+'' @param desiredRxPin - the pin wired to the receiver's S.BUS output
+'' @returns cog - the S.BUS receiver cog's id + 1, or 0 when no cog started
 
   cog := starttx(desiredRxPin, @ctlMinValue, @ctlMaxValue, @validswitches, @valid3Ways, MAX_CTLS)
 
@@ -83,6 +85,13 @@ pub starttx(desiredRxPin, pctlMin, pctlMax, pvalidsw, pvalid3W, tmaxctrls) : cog
 '' config of min/max channel values
 '' config allowed switch and 3way switches
 ''
+'' @param desiredRxPin - the pin wired to the receiver's S.BUS output
+'' @param pctlMin - pointer to the table of per-control minimum readings (words)
+'' @param pctlMax - pointer to the table of per-control maximum readings (words)
+'' @param pvalidsw - pointer to the CTL_NADA-terminated list of switch channels
+'' @param pvalid3W - pointer to the CTL_NADA-terminated list of 3-position switch channels
+'' @param tmaxctrls - controls in the min/max tables
+'' @returns cog - the S.BUS receiver cog's id + 1, or 0 when no cog started
 
     longmove(@pctlMinValue, @pctlMin, 5)
     bShowDebug := FALSE ' default
@@ -101,6 +110,7 @@ pub stop()
 PUB showDebug(bEnable)
     '' TESTING: show, hide debug output
 ''
+'' @param bEnable - T/F where T turns this object's debug output on
 
     if bEnable <> FALSE ' force 0 or -1
         bEnable := TRUE
@@ -116,6 +126,11 @@ PUB showDebug(bEnable)
 PUB readChannel(chan) : retValue | validChan
     '' Return value of given FlySky Control
 ''
+'' @param chan - the receiver channel [1-18]
+'' @returns retValue - the channel's raw value [0-2047]
+
+' Local Variables:
+' @local validChan - {chan} clamped to a legal channel
 
     validChan := 1 #> chan <# MAX_CHANNELS                      ' legal SBUS Rcvr channel
     retValue := sbus.read(validChan)                        ' get value from receiver [0-2047]
@@ -126,18 +141,24 @@ PUB readChannel(chan) : retValue | validChan
 PUB isSwitchOn(swChan) : bOnState
     '' Return T/F where T = switch is ON [swA, swB, swC, swD]
 ''
+'' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+'' @returns bOnState - T/F where T means the switch is ON
 
     bOnState := readSwitch(swChan) == SST_ON
 
 PUB isSwitchOff(swChan) : bOffState
     '' Return T/F where T = switch is OFF [swA, swB, swC, swD]
 ''
+'' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+'' @returns bOffState - T/F where T means the switch is OFF
 
     bOffState := readSwitch(swChan) == SST_OFF
 
 PUB isSwitchMiddle(swChan) : bMiddleState
     '' Return T/F where T = switch is in Middle position (only useful for swC)
 ''
+'' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+'' @returns bMiddleState - T/F where T means the switch is in its middle position
 
     bMiddleState := readSwitch(swChan) == SST_MID
     'debug("- isSwitchMiddle() = ", sdec_Long_(bMiddleState))
@@ -145,6 +166,8 @@ PUB isSwitchMiddle(swChan) : bMiddleState
 PUB readSwitch(swChan) : eSwState
     '' Read switch value and decode into switch state (2-pos sw) [if 3-pos divert to other routine]
 ''
+'' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+'' @returns eSwState - SST_ON, SST_MID or SST_OFF; SST_OFF for a channel that is not a switch of that kind
 
     ifnot checkSwitch(swChan)                                                   ' legal SBUS Rxcvr channel
       eSwState := SST_OFF
@@ -159,6 +182,11 @@ PUB readSwitch(swChan) : eSwState
 PUB readSw3Way(swChan) : eSwState | rawValue
     '' Read 3-pos switch value and decode into switch state
 ''
+'' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+'' @returns eSwState - SST_ON, SST_MID or SST_OFF; SST_OFF for a channel that is not a switch of that kind
+
+' Local Variables:
+' @local rawValue - the channel's raw value [0-2047]
 
     ifnot check3Way(swChan)
       eSwState := SST_OFF                                                       ' not a 3-pos switch: OFF (the unset raw
@@ -254,12 +282,27 @@ PUB manualCalibrate()
 PUB chanMinMax(chan) : minVal, maxVal | validChan
     '' Return calculated min max for given channel
 ''
+'' @param chan - the control channel
+'' @returns minVal - the lowest reading recorded for the channel
+'' @returns maxVal - the highest reading recorded for the channel
+
+' Local Variables:
+' @local validChan - {chan} clamped to a tracked control
 
     validChan := 0 #> chan <# maxctrls - 1                                      ' legal SBUS Rxcvr channel
     minVal := WORD [pctlMinValue][validChan]
     maxVal := WORD [pctlMaxValue][validChan]
 
 PRI checkctl(swChan, pctllist) : validctl | index
+' Return TRUE when a channel appears in a CTL_NADA-terminated list of channels.
+'
+' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+' @param pctllist - pointer to a CTL_NADA-terminated list of channels
+' @returns validctl - TRUE when {swChan} is in the list
+
+' Local Variables:
+' @local index - index of the list entry being compared
+
     validctl := FALSE
     index := 0
     repeat until byte[pctllist][index] == CTL_NADA
@@ -268,20 +311,48 @@ PRI checkctl(swChan, pctllist) : validctl | index
             quit
 
 PRI checkSwitch(swChan) : validSwitch
+' Return TRUE when a channel is one of the configured switches.
+'
+' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+' @returns validSwitch - TRUE when {swChan} is a configured switch
+
     validSwitch := checkctl(swChan, pvalidswitches)
     'debug("- checkswitch(", udec_(swChan), ") - ", udec(validswitch))
 
 PRI check3Way(swChan) : valid3Way
+' Return TRUE when a channel is one of the configured 3-position switches.
+'
+' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+' @returns valid3Way - TRUE when {swChan} is a configured 3-position switch
+
     valid3Way := checkctl(swChan, pvalid3Ways)
     'debug("- check3Way(", udec_(swChan), ") - ", udec(valid3Way))
 
 PRI calJoyStick(hzJoyChan, vtJoyChan)
-    ' Calibrate horiz and vert joy stick controls
+' Calibrate horiz and vert joy stick controls
+'
+' @param hzJoyChan - the joystick's horizontal channel
+' @param vtJoyChan - the joystick's vertical channel
+
     calJoyStickHz(hzJoyChan)
     calJoyStickVt(vtJoyChan)
 
 PRI calJoyStickVt(vtJoyChan) | legalChan, priorPosn, currPosn, newPosn, deltaPosn, bHaveGoodValue, nSampleCt, chanMin, chanMax
-    ' Calibrate vert joy stick controls
+' Calibrate vert joy stick controls
+'
+' @param vtJoyChan - the joystick's vertical channel
+
+' Local Variables:
+' @local legalChan - the channel when it is one this calibration accepts, else 0
+' @local priorPosn - the previous reading, -1 before the first
+' @local currPosn - the reading being examined
+' @local newPosn - the latest reading
+' @local deltaPosn - the change between two readings
+' @local bHaveGoodValue - TRUE once the readings have settled
+' @local nSampleCt - consecutive settled readings
+' @local chanMin - the channel's recorded minimum
+' @local chanMax - the channel's recorded maximum
+
     legalChan := 0
     if vtJoyChan == CTL_RT_JOY_VT || vtJoyChan == CTL_LT_JOY_VT
         legalChan := vtJoyChan
@@ -340,7 +411,21 @@ PRI calJoyStickVt(vtJoyChan) | legalChan, priorPosn, currPosn, newPosn, deltaPos
 
 
 PRI calJoyStickHz(hzJoyChan) | legalChan, priorPosn, currPosn, newPosn, deltaPosn, bHaveGoodValue, nSampleCt, chanMin, chanMax
-    ' Calibrate horiz joy stick controls
+' Calibrate horiz joy stick controls
+'
+' @param hzJoyChan - the joystick's horizontal channel
+
+' Local Variables:
+' @local legalChan - the channel when it is one this calibration accepts, else 0
+' @local priorPosn - the previous reading, -1 before the first
+' @local currPosn - the reading being examined
+' @local newPosn - the latest reading
+' @local deltaPosn - the change between two readings
+' @local bHaveGoodValue - TRUE once the readings have settled
+' @local nSampleCt - consecutive settled readings
+' @local chanMin - the channel's recorded minimum
+' @local chanMax - the channel's recorded maximum
+
     legalChan := 0
     if hzJoyChan == CTL_RT_JOY_HZ || hzJoyChan == CTL_LT_JOY_HZ
         legalChan := hzJoyChan
@@ -398,6 +483,19 @@ PRI calJoyStickHz(hzJoyChan) | legalChan, priorPosn, currPosn, newPosn, deltaPos
         waitms(5000)
 
 PRI calSwitch(swChan) | legalChan, currPosn, newPosn, deltaPosn, loopNbr, chanMin, chanMax
+' Calibrate a switch channel: record its range over four operator flips.
+'
+' @param swChan - the switch channel (CTL_SW_A to CTL_SW_D)
+
+' Local Variables:
+' @local legalChan - the channel when it is one this calibration accepts, else 0
+' @local currPosn - the reading being examined
+' @local newPosn - the latest reading
+' @local deltaPosn - the change between two readings
+' @local loopNbr - which of the four flips this is
+' @local chanMin - the channel's recorded minimum
+' @local chanMax - the channel's recorded maximum
+
     legalChan := 0
     if swChan >= CTL_SW_A && swChan <= CTL_SW_D
         legalChan := swChan
@@ -428,6 +526,20 @@ PRI calSwitch(swChan) | legalChan, currPosn, newPosn, deltaPosn, loopNbr, chanMi
 
 
 PRI calVariable(varChan) | legalChan, priorPosn, currPosn, deltaPosn, bHaveGoodValue, nSampleCt, chanMin, chanMax
+' Calibrate a variable control: record its range as the operator turns it end to end.
+'
+' @param varChan - the variable-control channel (CTL_VRA or CTL_VRB)
+
+' Local Variables:
+' @local legalChan - the channel when it is one this calibration accepts, else 0
+' @local priorPosn - the previous reading, -1 before the first
+' @local currPosn - the reading being examined
+' @local deltaPosn - the change between two readings
+' @local bHaveGoodValue - TRUE once the readings have settled
+' @local nSampleCt - consecutive settled readings
+' @local chanMin - the channel's recorded minimum
+' @local chanMax - the channel's recorded maximum
+
     legalChan := 0
     if varChan >= CTL_VRA && varChan <= CTL_VRB
         legalChan := varChan
@@ -475,7 +587,19 @@ PRI calVariable(varChan) | legalChan, priorPosn, currPosn, deltaPosn, bHaveGoodV
         waitms(5000)
 
 PRI updMinMaxValueForChan(chanValue, chan) : minVal, maxVal | currMinValue, currMaxValue, newValue, validChan
-    ' upd min max for given channel
+' upd min max for given channel
+'
+' @param chanValue - the reading to fold into the channel's range
+' @param chan - the control channel
+' @returns minVal - the channel's minimum after the update
+' @returns maxVal - the channel's maximum after the update
+
+' Local Variables:
+' @local currMinValue - the channel's minimum before the update
+' @local currMaxValue - the channel's maximum before the update
+' @local newValue - the candidate new minimum or maximum
+' @local validChan - {chan} clamped to a tracked control
+
     validChan := 0 #> chan <# maxctrls - 1                                      ' legal SBUS Rxcvr channel
     'term.fstr2(string("- UPD Val: Chan%d Val = %d\r\n"), validChan, chanValue)
     if chan == validChan
@@ -496,9 +620,21 @@ PRI updMinMaxValueForChan(chanValue, chan) : minVal, maxVal | currMinValue, curr
             maxVal := newValue
 
 PRI MIN(ltVal, rtVal) : minValue
+' Return the smaller of two values.
+'
+' @param ltVal - the first value
+' @param rtVal - the second value
+' @returns minValue - the smaller of the two
+
     minValue := ltVal < rtVal ? ltVal : rtVal
 
 PRI MAX(ltVal, rtVal) : maxValue
+' Return the larger of two values.
+'
+' @param ltVal - the first value
+' @param rtVal - the second value
+' @returns maxValue - the larger of the two
+
     maxValue := ltVal < rtVal ? rtVal : ltVal
 
 {
