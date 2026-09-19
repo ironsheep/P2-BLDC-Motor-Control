@@ -103,7 +103,8 @@ Usage:  tools/bench-run.sh <tier>
   <tier>      -- one of:
                    t0             Tier 0 -- no motor, no motion, no risk
                    t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
-                   spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
+                   t0-stopmode    Tier 0's T0-24 stop-state hand test only -- OPERATOR TURNS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
+                   spin         wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    detect         board-detection sweep, PASSIVE (no driver code in the image)
                    detect-lib     as above + the library cross-check (still no driver cog)
                    detect-phase2  adds the driver-cog poisoning probe  [MOTORS MAY STAY CONNECTED, GATE-OVERLAP GROUPS SKIPPED]
@@ -168,6 +169,14 @@ case "$TIER" in
     t0-hand)        BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_HAND)
                     PRECONDITION="OPERATOR TURNS ONE WHEEL BY HAND, EXACTLY N REVOLUTIONS -- T0-12 waits on a keypress, never a timer"
+                    ;;
+    # T0-24 (task 3578): the one build of test_bench_t0.spin2 that drives a motor. Two of its six
+    #  rows provoke a fault at power 50 to reach the post-fault bridge state; the other four are
+    #  built at rest. It is BENCH_QUIET for the same reason t0 is -- it judges what the wheel does
+    #  under a hand, not library chatter.
+    t0-stopmode)    BENCH_FILE="test_bench_t0.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPMODE)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP -- ATTENDED stop-state hand test on the RIGHT wheel: click the t0stop window first; nothing happens until you press S. Each row names on the panel what to do BEFORE it runs -- turn or spin the wheel by hand, then SPACE. ROWS 4 AND 5 SPIN THE WHEEL UNDER POWER AND FAULT IT ON PURPOSE: hands off until the panel asks, SPACE aborts a powered row"
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"
                     PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"

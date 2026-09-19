@@ -4145,8 +4145,12 @@ without travel. The straight-line figure is then derived from the two directions
 >   frame), and the duty servo no longer winds `duty_` up while the bridge is not driven.
 > - Gates: `tools/build-check.sh` 47/47 with both release demos certified; `tools/check_style.sh` PASS. The
 >   PASM-addressed VAR runs are unchanged (the `fault` line's comment only).
-> - **Run-time proof is owed to the bench**: the hand test above, which also says whether the OLD build braked
->   (so the release note can say whether coast was broken).
+> - **Run-time proof is owed to the bench**: the hand test above. **Built 2026-09-19 («#3578») as bench tier
+>   `t0-stopmode`** (`test_bench_t0.spin2` T0-24, six rows, eight cells; `plans/STOP-STATE-DESIGN.md` §5).
+> - **"Did the OLD build brake in float?" is settled by construction, so no unfixed binary is run.** `BR_SHORT`
+>   writes `wypin #0, drive_pins` on all six pins, the identical instruction the old `driveoff = 1` path ran
+>   for FLOAT at rest -- so the hand test's **e-stop row measures the old build's float state** on the fixed
+>   binary. The release note is worded from that row's reading.
 >
 > Everything below this box is the original entry, kept as written.
 

@@ -142,6 +142,24 @@ servo is skipped, which is what `.checkstopfloaton` already assumes when it rese
   (or, if none is published, the sense current and hall counter under a gentle nudge) confirms COAST; the e-stop's
   1-tick stop is re-confirmed.
 
+### Built 2026-09-19 («#3578») as `t0-stopmode` — `src/test_bench_t0.spin2` T0-24, `-D T0_STOPMODE`
+
+Six rows on the right wheel, each building one bridge state and then measuring what it does to a hand:
+the powered hold, COAST at rest, the e-stop, a provoked fault under each stop mode, and `stop()` last as
+the free yardstick. The panel (`tools/gen_t0stop_assets.py`) names the action **before** each row runs, and
+**no cell reads a key**: Stephen's key press sequences the row and marks the moment he lets go, nothing more.
+
+**What each cell judges is the time the wheel takes to fall to HALF the rate it had at the release**, counted
+by the harness's own hall poll. How *far* it carries on scales with however hard he pushed; a shorted winding
+brakes with a torque proportional to speed, so the halving time is a property of the bridge state and not of
+his arm. Limits `SF_FREE_HALF_MS` 150 / `SF_BRAKE_HALF_MS` 60 are DERIVED from PL-56's Visit 2 reading (§2's
+one tick against 38–48), with a 90 ms dead band between them. The distance is printed beside it.
+
+Cells: `R17-T0-HOLDPWR` (turning the hold records a fault — which only a driven bridge can do),
+`R17-T0-RESTCOAST`, `R17-T0-RESTSHORT`, `R17-T0-STOPGAP`, `R17-T0-FLTCOAST`, `R17-T0-FLTSHORT`,
+`R17-T0-FLTGAP`, `R17-T0-FREEREF`. The fault rows use R17.5's computed provocation at the same power the
+dual harness provokes at, so their readings and `R17-DUAL-FLTSTOP-C`'s compare.
+
 ---
 
 ## 6 · Release note (for «#3515»)
@@ -153,6 +171,13 @@ answer.
 ---
 
 ## 7 · The conflict is settled by the test, not by a question
+
+> **SETTLED 2026-09-19 BY CONSTRUCTION, not by a second binary («#3578»).** `BR_SHORT` is written as
+> `wypin #0, drive_pins` on all six pins — the identical instruction the old `driveoff = 1` path ran for
+> FLOAT at rest. So the **e-stop row of the hand test measures, on the fixed binary, the very state the old
+> build put a floated wheel into**, and the release note is worded from that row. The paragraph below, which
+> asked for a run of the unfixed binary or a reading from the Visit 5 quiescent hold, is superseded: neither
+> is needed, and no bench time is spent on one.
 
 The source chain in §2 says today's FLOAT at rest shorts the windings; the pre-sprint record says float works.
 **The hand test in §5 decides it** — STEPHEN 2026-09-17: *"what can i confirm without being at hardware... that's
