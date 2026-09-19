@@ -1,0 +1,61 @@
+// See https://aka.ms/vscode-remote/devcontainer.json for format details.
+{
+  "name": "P2-BLDC-Motor-Control Development",
+  "dockerComposeFile": ["docker-compose.yml", "docker-compose.override.yml"],
+  "service": "dev",
+  "workspaceFolder": "/workspaces/P2-BLDC-Motor-Control",
+  "containerEnv": {
+    // Relocates git's GLOBAL config away from ~/.gitconfig, which the Dev Containers
+    // extension copies from the macOS host at EVERY container start and which therefore
+    // outranked (system < global) the identity baked into /etc/gitconfig. The copy also
+    // carries filter.lfs/filter.media at required=true with neither binary installed --
+    // a measured hard checkout failure. Set here, not in .bashrc, so it reaches every
+    // process rather than only login shells. Full reasoning: .devcontainer/Dockerfile.
+    "GIT_CONFIG_GLOBAL": "/home/node/.config/git/config",
+    "LANG": "en_US.UTF-8",
+    "LC_ALL": "en_US.UTF-8",
+    // Relocates Claude's .claude.json (account binding, folder-trust, per-project
+    // MCP approvals) INSIDE the mounted .claude directory, where atomic writes
+    // persist across rebuilds. Never bind-mount ~/.claude.json as a single file.
+    "CLAUDE_CONFIG_DIR": "/home/node/.claude",
+    // tools/build-check.sh defaults to the macOS install (/Applications/pnut_ts/pnut-ts)
+    // and honours PNUT_TS as its override; this points it at the baked compiler so the
+    // gate runs unmodified here. tools/bench-run.sh reads the same variable.
+    "PNUT_TS": "/usr/local/bin/pnut-ts"
+  },
+  "remoteUser": "node",
+  "initializeCommand": "test -f .devcontainer/docker-compose.override.yml || echo 'services: {}' > .devcontainer/docker-compose.override.yml",
+
+  // Only genuinely runtime work lives here. The container-tools symlink, Claude
+  // CLI, and shell aliases are baked into the image (see Dockerfile).
+  //   1. chown ~/.local  -- a fresh named volume mounts root-owned.
+  //   2. ssh copy        -- keys arrive read-only at /tmp/.ssh; copy so perms can be set.
+  //   3. ssh config sed  -- the copied macOS config is unusable on Linux: the host
+  //      IdentityFile path does not exist here, and `UseKeychain` is a macOS-only
+  //      option that makes Linux OpenSSH abort parsing the WHOLE file, silently
+  //      dropping every later directive. Rewrites the COPY only, never the host
+  //      original (mounted :ro). Idempotent: `#UseKeychain` no longer matches.
+  "postCreateCommand": "sudo chown -R node:node /home/node/.local 2>/dev/null || true; mkdir -p ~/.ssh && cp /tmp/.ssh/* ~/.ssh/ 2>/dev/null; chmod 700 ~/.ssh && chmod 600 ~/.ssh/id_* 2>/dev/null; chmod 644 ~/.ssh/*.pub 2>/dev/null; sed -i -e 's#/Users/stephen/\\.ssh/#/home/node/.ssh/#g' -e 's|^\\([[:space:]]*\\)UseKeychain|\\1#UseKeychain|' ~/.ssh/config 2>/dev/null || true; export PATH=\"$HOME/.local/bin:$PATH\"; claude --update || true;",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "ironsheepproductionsllc.spin2",
+        "eamodio.gitlens",
+        "yzhang.markdown-all-in-one",
+        "davidanson.vscode-markdownlint",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "files.eol": "\n",
+        "files.trimTrailingWhitespace": true,
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "files.watcherExclude": {
+          "**/.git/**": true,
+          "**/.history/**": true
+        }
+      }
+    }
+  }
+}
