@@ -82,6 +82,12 @@
 ''               T0-15b and T0-22 share one occupancy in runExhaustionPhase(), run last (T0-22 moves there,
 ''               a new T0-EXH line brackets the phase); every start()/stop() and spacer burst sits in a
 ''               benchLog cog-event quiet window. Every cell id, criterion and record format is unchanged.
+''               19 Sep 2026 -- task 3577, SRC_REV 8: three cells for task 3569's API promises, which no
+''               cell could certify. R17-T0-ACCEL (G): T0-5 becomes a cell -- setAcceleration() refuses a
+''               rate outside its range and changes nothing, and an accepted rate is a constant mm/s^2 ramp
+''               anchored on the library's own default. R17-T0-KMMI (K), in T0-3 on its running motor:
+''               kilometres and miles convert exactly and can be commanded. R17-T0-VOLTGET (AK), in T0-19:
+''               the drive voltage getter answers on both objects, and not before a start.
 ''
 '' =================================================================================================
 
@@ -172,7 +178,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 7                                               ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 8                                               ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -194,6 +200,27 @@ CON { 6.0.0 cells (task 3560) }
     REST_SAMPLE_MS   = 20
     SF_REST_LO       = -100                                     ' DERIVED -- +/-10 mA (0.1 mA units); unfixed LEFT read ~535 (PL-45, Visit 1)
     SF_REST_HI       = 100
+
+CON { API promise cells (task 3577) }
+
+' R17-T0-ACCEL: the library documents its built-in ramp as starting "near 44 mm/s squared", and that ramp's
+'  start is the default ramp_min it reads back before any call. DERIVED: 1_500 steps x 0.02945 mm/s^2 per
+'  step (1913 passes/s, 6 ticks per electrical cycle, 5.76 mm per tick, 2^32 per cycle) = 44.2 mm/s^2. So
+'  setAcceleration(ACCEL_ANCHOR_MM_S2) must land within 1% of the default ramp_min: a factor wrong anywhere
+'  in the conversion moves it far outside that.
+    ACCEL_ANCHOR_MM_S2 = 44
+    ACCEL_ANCHOR_TOL_DIV = 100                                  ' 1% of the default ramp_min
+    ACCEL_BELOW_RANGE  = -1                                     ' a negative rate, as well as the one just below range
+' R17-T0-KMMI: exact unit identities the conversion must reproduce tick for tick
+    M_PER_KM           = 1_000
+    FT_PER_MI          = 5_280
+' R17-T0-VOLTGET: the bench pack's nominal voltage (the bench config's PWR_18p5V, the 5S pack -- STEPHEN
+'  2026-09-17, "18.5 V nominal 5S"). The harness is built with -D BENCH_CFG, so that is the voltage start() gets.
+    SF_PACK_MV         = 18_500
+' each cell's n: the claims its one verdict covers
+    ACCEL_CALLS_JUDGED = 5                                      ' three refusals, the anchor, the top rate
+    KMMI_CLAIMS_JUDGED = 3                                      ' km conversion, mi conversion, the refusal
+    VOLT_READS_JUDGED  = 3                                      ' motor, steering running, steering not started
 
 CON { cog-exhaustion probe (T0-8, T0-15) }
 
@@ -313,7 +340,7 @@ OBJ { objects under test }
     motorA  : "isp_bldc_motor"                                  ' second instance, T0-7 overlap probe, T0-14b scratch, T0-16/T0-21/T0-22
     motorB  : "isp_bldc_motor"                                  ' second instance, T0-7 overlap probe only
     motorP  : "isp_bldc_motor"                                  ' T0-17 (PL-48) only: an instance nothing else has touched
-    steer   : "isp_steering_2wheel"                             ' T0-18 (never started first) and T0-19 (cog count)
+    steer   : "isp_steering_2wheel"                             ' T0-18 (never started first) and T0-19 (cog count, R17-T0-VOLTGET)
     benchLog : "isp_bench_log"                                  ' the cog-event quiet window (PL-41, PL-85)
 
 VAR { cog-exhaustion spacer stacks (runExhaustionPhase(): T0-8, T0-15b, T0-22) }
@@ -331,6 +358,12 @@ VAR { run state }
 ' start() that returns -1 also calls stop() (the PL-36 failure branch), which leaves DCS_Unknown
 ' with no driver ever run -- a PASS read from nothing. T0-15c clears this first and sets it last.
     LONG    bRestartStopValid
+
+' R17-T0-VOLTGET (judged in T0-19, beside the steering object's own reads) compares against the motor object's
+' getDriveVoltage(), read by T0-3 while its motor runs. T0-3 clears the flag first and sets it once the read is taken.
+    LONG    motorVolt
+    LONG    motorMilliVolts
+    LONG    bMotorVoltRead
 
 PUB main() | trapCode
 '' Run every Tier 0 test in sequence and tag its result on the debug stream. Exactly ONE
@@ -397,6 +430,9 @@ PRI runTier0Tests()
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-NOBOARD,task,3556")
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R16-T0-FRONTFAIL,task,3513")
     debug("SIGNOFF-DECL,sf,1,bin,T0,cell,R17-T0-NOBOARDSTART,task,3570")
+    emitCellDecl(@"R17-T0-ACCEL")
+    emitCellDecl(@"R17-T0-KMMI")
+    emitCellDecl(@"R17-T0-VOLTGET")
 
     testT0_1()
     testT0_2()
@@ -494,7 +530,7 @@ PRI testT0_2() | eBoardRev, pBoardStr
     pBoardStr := motor.boardIdString()
     debug("T0-2,end,detected_board,", udec_(eBoardRev), ",expect_forced,TRUE,boardstring,", zstr_(pBoardStr))
 
-PRI testT0_3() | startResult, bReady, eM, eCm, eMm, ticksM, ticksCm, ticksMm, bAgree, bTicksInBand, bPass, eRot, keptRot, eDist, keptDist, eTime, keptTime, bKeep
+PRI testT0_3() | startResult, bReady, eM, eCm, eMm, ticksM, ticksCm, ticksMm, bAgree, bTicksInBand, bPass, eRot, keptRot, eDist, keptDist, eTime, keptTime, bKeep, bKmMiOk
 ' F: stopAfterDistance() computes its tick target in three equivalent ways --
 ' 1 DDU_M, 100 DDU_CM, 1000 DDU_MM -- and stores it in the private VAR
 ' motorStopHallTicks, read back here via the testGetStopHallTicks() getter.
@@ -513,7 +549,10 @@ PRI testT0_3() | startResult, bReady, eM, eCm, eMm, ticksM, ticksCm, ticksMm, bA
 ' DTU_SEC) -- must each return their code (ERR_BAD_UNITS, ERR_BAD_UNITS,
 ' ERR_BAD_COUNT) and leave the armed limit as it was. UNFIXED: stopAfterRotation()
 ' zeroed the armed limit before validating, and an illegal unit aborted.
-' Both cells are NOMEAS when the start did not reach ready.
+'
+' task 3577 / R17-T0-KMMI (K), on the same running motor after LIMKEEP: see bUnitsKmMiOk().
+' The motor's getDriveVoltage() is read here too, for T0-19's R17-T0-VOLTGET.
+' All three cells are NOMEAS when the start did not reach ready.
 '
 ' @local startResult - start()'s return
 ' @local bReady - TRUE when the driver reported ready within READY_WAIT_MS
@@ -533,8 +572,10 @@ PRI testT0_3() | startResult, bReady, eM, eCm, eMm, ticksM, ticksCm, ticksMm, bA
 ' @local eTime - stopAfterTime(0, DTU_SEC)'s status
 ' @local keptTime - the armed limit after it
 ' @local bKeep - R16-T0-LIMKEEP's measured value and verdict
+' @local bKmMiOk - R17-T0-KMMI's measured value and verdict
 
     debug("T0-3,begin")
+    bMotorVoltRead := FALSE
     benchLog.cogEventBegin()
     startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     benchLog.cogEventEnd()
@@ -571,9 +612,15 @@ PRI testT0_3() | startResult, bReady, eM, eCm, eMm, ticksM, ticksCm, ticksMm, bA
         bKeep := bKeep and (ticksMm <> 0) and (keptRot == ticksMm) and (keptDist == ticksMm) and (keptTime == ticksMm)
         debug("T0-3,limkeep,armed,", udec_(ticksMm), ",rot_status,", sdec_(eRot), ",kept,", udec_(keptRot), ",dist_status,", sdec_(eDist), ",kept,", udec_(keptDist), ",time_status,", sdec_(eTime), ",kept,", udec_(keptTime))
         debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-LIMKEEP,task,3554,motor,RIGHT,crit,REJECT_KEEPS_LIMIT,measured,", zstr_(bKeep ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,3,verdict,", zstr_(bKeep ? @"PASS" : @"FAIL"))
+
+        bKmMiOk := bUnitsKmMiOk()
+        emitCellBool(@"R17-T0-KMMI", @"RIGHT", @"KM_MI_EXACT_CMD", TRUE, bKmMiOk, KMMI_CLAIMS_JUDGED)
+        motorVolt, motorMilliVolts := motor.getDriveVoltage()
+        bMotorVoltRead := TRUE
     else
         debug("SIGNOFF,sf,1,bin,T0,cell,R4-T0-1M-TICKS,task,3502,motor,NONE,crit,DDU_M_TICKS,measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
         debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-LIMKEEP,task,3554,motor,RIGHT,crit,REJECT_KEEPS_LIMIT,measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
+        emitCellBool(@"R17-T0-KMMI", @"RIGHT", @"KM_MI_EXACT_CMD", FALSE, FALSE, KMMI_CLAIMS_JUDGED)
     benchLog.cogEventBegin()
     motor.stop()
     motor.getError()                                        ' drain this cog's first recorded code, so a later cell reads only its own
@@ -615,30 +662,113 @@ PRI testT0_4() | pwrEnum, legalVolt
     motor.testSetup(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     debug("T0-4,testsetup,end")
 
-PRI testT0_5() | minRamp, maxRamp, incRamp, decrRamp
-' G: setAcceleration() writes {rate} straight into ramp_inc with no
-' validation. Sweep 0, -1, 1, 10_000_000 and read back via getRampingValues().
+PRI testT0_5() | minDef, maxDef, incDef, decrDef, eBelow, eNegative, eAbove, bRefuseOk, eAnchor, stepAnchor, bAnchorOk, eTop, stepTop, bTopOk, eRestore, bPass
+' G / R17-T0-ACCEL (task 3577): setAcceleration() takes a rate in mm/s^2 at the rim, refuses one outside
+' [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] with ERR_BAD_COUNT and changes nothing, and turns an accepted one into a
+' constant ramp -- ramp_min == ramp_max == the step for that rate, ramp_inc 0, ramp_down untouched. The step for
+' ACCEL_ANCHOR_MM_S2 must land within 1% of the default ramp_min (see the constant's derivation), and a larger
+' rate must give a larger step. Nothing starts: testSetup() (T0-4) has already set the wheel geometry.
+' UNFIXED: {rate} went straight into ramp_inc with no check, so every refused rate changed the ramp and an
+' accepted one left ramp_min and ramp_max at their defaults -- the cell FAILs on both halves.
+' NOMEAS when the active config has no wheel diameter (ERR_NO_WHEEL_DIA): there is no rim to convert at.
 '
-' @local minRamp - ramp_min read back after each setAcceleration() call
-' @local maxRamp - ramp_max read back after each setAcceleration() call
-' @local incRamp - ramp_inc read back after each setAcceleration() call
-' @local decrRamp - ramp_down read back after each setAcceleration() call
+' @local minDef - the default ramp_min, read back before any call
+' @local maxDef - the default ramp_max
+' @local incDef - the default ramp_inc
+' @local decrDef - the default ramp_down
+' @local eBelow - setAcceleration(ACCEL_MIN_MM_S2 - 1)'s return (expected ERR_BAD_COUNT)
+' @local eNegative - setAcceleration(ACCEL_BELOW_RANGE)'s return (expected ERR_BAD_COUNT)
+' @local eAbove - setAcceleration(ACCEL_MAX_MM_S2 + 1)'s return (expected ERR_BAD_COUNT)
+' @local bRefuseOk - every refusal returned its code and left the ramp as it was
+' @local eAnchor - setAcceleration(ACCEL_ANCHOR_MM_S2)'s return
+' @local stepAnchor - the step it produced
+' @local bAnchorOk - the anchor call produced a constant ramp within 1% of the default ramp_min
+' @local eTop - setAcceleration(ACCEL_MAX_MM_S2)'s return
+' @local stepTop - the step it produced
+' @local bTopOk - the top rate produced a constant ramp with a larger step than the anchor's
+' @local eRestore - setRampingValues()'s return restoring the defaults
+' @local bPass - the cell's measured value and verdict
 
-    motor.setAcceleration(0)
-    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
-    debug("T0-5,accel,0,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
+    debug("T0-5,begin")
+    motor.getError()                                        ' start from a clear slot
+    minDef, maxDef, incDef, decrDef := motor.getRampingValues()
 
-    motor.setAcceleration(-1)
-    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
-    debug("T0-5,accel,-1,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
+    eBelow := motor.setAcceleration(motor.ACCEL_MIN_MM_S2 - 1)
+    bRefuseOk := (eBelow == motor.ERR_BAD_COUNT) and bRampEquals(minDef, maxDef, incDef, decrDef)
+    eNegative := motor.setAcceleration(ACCEL_BELOW_RANGE)
+    bRefuseOk := bRefuseOk and (eNegative == motor.ERR_BAD_COUNT) and bRampEquals(minDef, maxDef, incDef, decrDef)
+    eAbove := motor.setAcceleration(motor.ACCEL_MAX_MM_S2 + 1)
+    bRefuseOk := bRefuseOk and (eAbove == motor.ERR_BAD_COUNT) and bRampEquals(minDef, maxDef, incDef, decrDef)
+    motor.getError()                                        ' drain the refusals' recorded code
+    debug("T0-5,refuse,below,", sdec_(eBelow), ",negative,", sdec_(eNegative), ",above,", sdec_(eAbove), ",unchanged,", zstr_(bRefuseOk ? @"TRUE" : @"FALSE"))
 
-    motor.setAcceleration(1)
-    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
-    debug("T0-5,accel,1,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
+    eAnchor := motor.setAcceleration(ACCEL_ANCHOR_MM_S2)
+    stepAnchor, bAnchorOk := constRampStep(@"anchor", ACCEL_ANCHOR_MM_S2, eAnchor, decrDef)
+    bAnchorOk := bAnchorOk and (abs(stepAnchor - minDef) <= minDef / ACCEL_ANCHOR_TOL_DIV)
+    eTop := motor.setAcceleration(motor.ACCEL_MAX_MM_S2)
+    stepTop, bTopOk := constRampStep(@"top", motor.ACCEL_MAX_MM_S2, eTop, decrDef)
+    bTopOk := bTopOk and (stepTop > stepAnchor)
 
-    motor.setAcceleration(10_000_000)
+    eRestore := motor.setRampingValues(minDef, maxDef, incDef, decrDef)      ' later tests start this motor
+    bPass := bRefuseOk and bAnchorOk and bTopOk and (eRestore == motor.NO_ERROR)
+    emitCellBool(@"R17-T0-ACCEL", @"NONE", @"MM_S2_CONST_RAMP", eAnchor <> motor.ERR_NO_WHEEL_DIA, bPass, ACCEL_CALLS_JUDGED)
+
+PRI constRampStep(pLabel, rateMmS2, eAccel, decrWant) : rampStep, bConst
+' Read back the ramp an accepted setAcceleration() left, judge that it is a constant ramp, and print it.
+' One debug() record serves every rate T0-5 accepts.
+'
+' @param pLabel - pointer to the rate's name, printed as the line's tag ("anchor" or "top")
+' @param rateMmS2 - the rate that was set, mm/s squared
+' @param eAccel - setAcceleration()'s return for it
+' @param decrWant - the ramp_down it must have left untouched
+' @returns rampStep - the step it produced: ramp_min read back
+' @returns bConst - TRUE when the call returned NO_ERROR and left ramp_min == ramp_max, ramp_inc 0, ramp_down untouched
+
+    rampStep, _, _, _ := motor.getRampingValues()
+    bConst := (eAccel == motor.NO_ERROR) and bRampEquals(rampStep, rampStep, 0, decrWant)
+    debug("T0-5,", zstr_(pLabel), ",mm_s2,", sdec_(rateMmS2), ",status,", sdec_(eAccel), ",step,", sdec_(rampStep), ",constant,", zstr_(bConst ? @"TRUE" : @"FALSE"))
+
+PRI emitCellDecl(pCell)
+' One SIGNOFF-DECL for a task 3577 cell, from a hub string (see emitCellBool() for why).
+'
+' @param pCell - pointer to the cell id
+
+    debug("SIGNOFF-DECL,sf,1,bin,T0,cell,", zstr_(pCell), ",task,3577")
+
+PRI emitCellBool(pCell, pMotor, pCrit, bMeasured, bPass, instCount)
+' One BOOL SIGNOFF for a task 3577 cell. The cell, motor and criterion names are hub strings rather than
+' literals inside the debug() call, so every cell shares these two DEBUG records and their data -- this
+' binary's DEBUG data is the budget PL-74's silent build ran close to (study F12), and each literal SIGNOFF
+' line spends about 150 bytes of it.
+'
+' @param pCell - pointer to the cell id
+' @param pMotor - pointer to the motor token (NONE, RIGHT, BOTH)
+' @param pCrit - pointer to the criterion token
+' @param bMeasured - TRUE when the condition arose and bPass is a measurement
+' @param bPass - the criterion held
+' @param instCount - the claims the verdict covers, printed as n when measured
+
+    if bMeasured
+        debug("SIGNOFF,sf,1,bin,T0,cell,", zstr_(pCell), ",task,3577,motor,", zstr_(pMotor), ",crit,", zstr_(pCrit), ",measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,", udec_(instCount), ",verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+    else
+        debug("SIGNOFF,sf,1,bin,T0,cell,", zstr_(pCell), ",task,3577,motor,", zstr_(pMotor), ",crit,", zstr_(pCrit), ",measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
+
+PRI bRampEquals(minWant, maxWant, incWant, decrWant) : bSame | minRamp, maxRamp, incRamp, decrRamp
+' Report whether `motor`'s four ramping values read back exactly as given.
+'
+' @param minWant - expected ramp_min
+' @param maxWant - expected ramp_max
+' @param incWant - expected ramp_inc
+' @param decrWant - expected ramp_down
+' @returns bSame - TRUE when all four read back equal
+'
+' @local minRamp - ramp_min read back
+' @local maxRamp - ramp_max read back
+' @local incRamp - ramp_inc read back
+' @local decrRamp - ramp_down read back
+
     minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
-    debug("T0-5,accel,10000000,ramp_min,", sdec_(minRamp), ",ramp_max,", sdec_(maxRamp), ",ramp_inc,", sdec_(incRamp), ",ramp_down,", sdec_(decrRamp))
+    bSame := (minRamp == minWant) and (maxRamp == maxWant) and (incRamp == incWant) and (decrRamp == decrWant)
 
 PRI testT0_6() | resultKm, resultMi, rotResult, eRotCode, eStopDist, eStopCode
 ' I/T, K: getDistance(DDU_KM)/(DDU_MI) are valid units and return a value.
@@ -1354,17 +1484,30 @@ PRI testT0_18() | eDist, eTime, eOwn, eLeft, eRight, bPass
     debug("T0-18,end,dist_status,", sdec_(eDist), ",time_status,", sdec_(eTime), ",error,", sdec_(eOwn), ",left_error,", sdec_(eLeft), ",right_error,", sdec_(eRight))
     debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-STRNOTSTART,task,3555,motor,BOTH,crit,LIMIT_REFUSED,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,2,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
-PRI testT0_19() | baseline, startResult, freeRunning, freeStopped, bPass
+PRI testT0_19() | baseline, startResult, freeRunning, freeStopped, bPass, voltBefore, milliVoltsBefore, voltRunning, milliVoltsRunning, bVoltOk
 ' R16-T0-STEERCOGS (task 3513): the two-wheel form costs 3 cogs -- two owned drivers and one steering front
 ' cog -- and stop() returns all of them. The start commands zero speed on both wheels, so nothing turns.
 ' NOT A DISCRIMINATOR, and stated as such: the unfixed two-wheel shape was also 3 cogs (two drivers plus
 ' the sense task). The single-motor form, which did change (1 -> 2), is judged by R1-T0-RESTART.
+'
+' AK / R17-T0-VOLTGET (task 3577): getDriveVoltage() returns the PWR_* value start() was given
+' (user.DRIVE_VOLTAGE) and its nominal mV (SF_PACK_MV). The motor object's answer is T0-3's read of its running
+' motor; the steering object's must agree while running, and be PWR_Unknown and 0 before its first start().
+' Those reads start and stop nothing, and the final getError() drains the not-started code the first records.
+' The unfixed library had no such getter, so this cell is COVERAGE of a new member rather than a before/after
+' discriminator: it FAILs on a wrong mapping, on a steering forward that disagrees with the wheel, or on a
+' not-started answer that claims a voltage. NOMEAS when T0-3's motor never reached ready.
 '
 ' @local baseline - free cogs before start()
 ' @local startResult - steer.start()'s return (the front cog id, 0..7)
 ' @local freeRunning - free cogs while started
 ' @local freeStopped - free cogs after stop()
 ' @local bPass - the cell's measured value and verdict
+' @local voltBefore - steer.getDriveVoltage() before start(): the PWR_* value (expected PWR_Unknown)
+' @local milliVoltsBefore - its mV (expected 0)
+' @local voltRunning - steer.getDriveVoltage() while running: the PWR_* value
+' @local milliVoltsRunning - its mV
+' @local bVoltOk - R17-T0-VOLTGET's measured value and verdict
 
     debug("T0-19,begin,steer_cogs")
     benchLog.cogEventBegin()
@@ -1373,10 +1516,12 @@ PRI testT0_19() | baseline, startResult, freeRunning, freeStopped, bPass
     motorB.stop()
     motorP.stop()
     baseline := benchLog.countFreeCogs()
+    voltBefore, milliVoltsBefore := steer.getDriveVoltage()
     benchLog.cogEventBegin()
     startResult := steer.start(T0_SECOND_BASE, T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET, motor.BRD_AUTO_DET)
     benchLog.cogEventEnd()
     freeRunning := benchLog.countFreeCogs()
+    voltRunning, milliVoltsRunning := steer.getDriveVoltage()
     benchLog.cogEventBegin()
     steer.stop()
     freeStopped := benchLog.countFreeCogs()
@@ -1384,6 +1529,12 @@ PRI testT0_19() | baseline, startResult, freeRunning, freeStopped, bPass
     bPass := (startResult >= SF_COG_LO) and (startResult <= SF_COG_HI) and (freeRunning == baseline - SF_STEER_COGS) and (freeStopped == baseline)
     debug("T0-19,end,start_return,", sdec_(startResult), ",baseline,", udec_(baseline), ",free_running,", udec_(freeRunning), ",free_stopped,", udec_(freeStopped))
     debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-STEERCOGS,task,3513,motor,BOTH,crit,THREE_COGS_RETURNED,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+
+    bVoltOk := (motorVolt == user.DRIVE_VOLTAGE) and (motorMilliVolts == SF_PACK_MV) and (startResult >= SF_COG_LO)
+    bVoltOk := bVoltOk and (voltBefore == motor.PWR_Unknown) and (milliVoltsBefore == 0)
+    bVoltOk := bVoltOk and (voltRunning == motorVolt) and (milliVoltsRunning == motorMilliVolts)
+    debug("T0-19,volt,motor,", sdec_(motorVolt), ",mv,", sdec_(motorMilliVolts), ",steer_before,", sdec_(voltBefore), ",mv,", sdec_(milliVoltsBefore), ",steer_running,", sdec_(voltRunning), ",mv,", sdec_(milliVoltsRunning))
+    emitCellBool(@"R17-T0-VOLTGET", @"BOTH", @"CONFIGURED_VOLTAGE", bMotorVoltRead, bVoltOk, VOLT_READS_JUDGED)
 
 PRI testT0_20() | baseIdx, pinBase, pMotorTok, startResult, sampleIdx, ampsSum, amps, meanAmps, pVerdict
 ' R16-T0-RESTZERO (task 3556, PL-45): getCurrent() at rest reads near 0 on each board. start() samples the
@@ -1541,6 +1692,65 @@ PRI testT0_23() | baseline, startResult, eCode, rawMotorCog, freeAfter, eClaim, 
     bPass := (startResult == -1) and (eCode == motorA.ERR_BOARD_NOT_DETECTED) and (rawMotorCog == 0) and (freeAfter == baseline) and (eClaim == motorA.NO_ERROR)
     debug("T0-23,end,start_return,", sdec_(startResult), ",error,", sdec_(eCode), ",raw_motor_cog,", sdec_(rawMotorCog), ",baseline,", udec_(baseline), ",free_after,", udec_(freeAfter), ",claim_status,", sdec_(eClaim))
     debug("SIGNOFF,sf,1,bin,T0,cell,R17-T0-NOBOARDSTART,task,3570,motor,NONE,crit,REFUSED_NO_LEAK,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+
+PRI bUnitsKmMiOk() : bKmMiOk | eKm, ticksKm, eM, ticksM, eMi, ticksMi, eFt, ticksFt, eCmdKm, armedKm, eCmdMi, armedMi, eHuge, eCmdHuge, keptHuge
+' K / R17-T0-KMMI (task 3577), on T0-3's running motor at zero command: kilometres and miles are distance units a
+' caller can COMMAND. ticksForDistance() gives 1 km exactly the ticks of M_PER_KM metres and 1 mi exactly those of
+' FT_PER_MI feet; stopAfterDistance() accepts both units and arms exactly those ticks; and a distance too large for
+' a long is refused with ERR_BAD_COUNT, leaving the armed limit in place. Nothing turns: the limit is armed at rest.
+' UNFIXED: the conversion had no KM or MI, so every such call returned ERR_BAD_UNITS and this FAILs at once.
+'
+' @returns bKmMiOk - TRUE when every conversion, command and refusal held
+'
+' @local eKm - ticksForDistance(1, DDU_KM)'s status
+' @local ticksKm - its ticks
+' @local eM - ticksForDistance(M_PER_KM, DDU_M)'s status
+' @local ticksM - its ticks
+' @local eMi - ticksForDistance(1, DDU_MI)'s status
+' @local ticksMi - its ticks
+' @local eFt - ticksForDistance(FT_PER_MI, DDU_FT)'s status
+' @local ticksFt - its ticks
+' @local eCmdKm - stopAfterDistance(1, DDU_KM)'s status
+' @local armedKm - the armed limit after it
+' @local eCmdMi - stopAfterDistance(1, DDU_MI)'s status
+' @local armedMi - the armed limit after it
+' @local eHuge - ticksForDistance(POSX, DDU_KM)'s status (expected ERR_BAD_COUNT)
+' @local eCmdHuge - stopAfterDistance(POSX, DDU_MI)'s status (expected ERR_BAD_COUNT)
+' @local keptHuge - the armed limit after it (expected armedMi)
+
+    eKm, ticksKm := motor.ticksForDistance(1, motor.DDU_KM)
+    eM, ticksM := motor.ticksForDistance(M_PER_KM, motor.DDU_M)
+    eCmdKm := motor.stopAfterDistance(1, motor.DDU_KM)
+    armedKm := motor.testGetStopHallTicks()
+    eMi, ticksMi := motor.ticksForDistance(1, motor.DDU_MI)
+    eFt, ticksFt := motor.ticksForDistance(FT_PER_MI, motor.DDU_FT)
+    eCmdMi := motor.stopAfterDistance(1, motor.DDU_MI)
+    armedMi := motor.testGetStopHallTicks()
+    eHuge, _ := motor.ticksForDistance(POSX, motor.DDU_KM)
+    eCmdHuge := motor.stopAfterDistance(POSX, motor.DDU_MI)
+    keptHuge := motor.testGetStopHallTicks()
+    motor.getError()                                        ' drain the refusal's recorded code
+    bKmMiOk := bUnitOk(@"km", eKm, ticksKm, eM, ticksM, eCmdKm, armedKm)
+    bKmMiOk := bUnitOk(@"mi", eMi, ticksMi, eFt, ticksFt, eCmdMi, armedMi) and bKmMiOk
+    bKmMiOk := bKmMiOk and (eHuge == motor.ERR_BAD_COUNT) and (eCmdHuge == motor.ERR_BAD_COUNT) and (keptHuge == armedMi)
+    debug("T0-3,huge,status,", sdec_(eHuge), ",cmd_status,", sdec_(eCmdHuge), ",kept,", sdec_(keptHuge))
+
+PRI bUnitOk(pUnit, eUnit, ticksUnit, eRef, ticksRef, eCmd, armedTicks) : bOk
+' Judge and print one large unit: its conversion equals its exact equivalent in a smaller unit, and commanding it
+' arms exactly those ticks. One debug() record serves both units.
+'
+' @param pUnit - pointer to the unit's name, printed as the line's tag ("km" or "mi")
+' @param eUnit - ticksForDistance(1, unit)'s status
+' @param ticksUnit - its ticks
+' @param eRef - ticksForDistance() of the same distance in the smaller unit: its status
+' @param ticksRef - its ticks
+' @param eCmd - stopAfterDistance(1, unit)'s status
+' @param armedTicks - the armed limit after it
+' @returns bOk - TRUE when every call returned NO_ERROR and all three tick counts agree
+
+    bOk := (eUnit == motor.NO_ERROR) and (eRef == motor.NO_ERROR) and (eCmd == motor.NO_ERROR)
+    bOk := bOk and (ticksUnit == ticksRef) and (armedTicks == ticksUnit)
+    debug("T0-3,", zstr_(pUnit), ",status,", sdec_(eUnit), ",ticks,", sdec_(ticksUnit), ",ref_status,", sdec_(eRef), ",ref_ticks,", sdec_(ticksRef), ",cmd_status,", sdec_(eCmd), ",armed,", sdec_(armedTicks))
 
 PRI testT0_10() | startResult, rawMotorCog, pinAdcX, xNodeCounts
 ' C-6b: pin_adc_x_i (base+3) falls inside adc_pins, so the driver already

@@ -90,6 +90,8 @@ not a dropped flag: dual-A and dual-B images differ in 14 bytes (the `PART_ID` c
 | F8 | housekeeping | `tools/bench-run.sh`'s clock-override path uses BSD-only `mktemp -t` and `sed -i ''`, the pattern `613d2bf` fixed in the two gates. Harmless on the bench Mac; the clock tiers would fail if a bench run ever started from Linux. | `tools/bench-run.sh` (clock override block, ~l.282-294) | MEASURED | — | yes |
 | F9 | housekeeping | `VISIT-5-RESULTS.md` under-counts instances (15/16/16 against 19/17/17 `SIGNOFF` lines for dual-d/b/a) and does not mention the second clean t0 run at 17:43. No verdict changes. | the tallies in §3 | MEASURED | — | yes |
 | F10 | spends bench time for no decision (if loaded) | **Loads with nothing new underneath:** `char` (its cells are sensing and steering start; dual covers the hall read), `detect` family (no detection change beyond the refusal t0 covers), `dual-brake` (no cell in it certifies an R17 item). | commit stats §3; tier roster `tools/bench-run.sh:165-233` | DERIVED | — | — |
+| F11 | blocks the visit (a false FAIL) | **Found during «#3577»:** STOPLIM would FAIL a correct stop at Visit 6a. «#3570»'s per-wheel check compares the right wheel's RAW rest (negative for forward travel -- the steering object reverses that wheel) against a positive target: Visit 5's own r_rest -529 against 529 reads 1_058 off, bound 2. At Visit 5 the cell judged `ovLeftRest #> ovRightRest` and never saw it. **Fixed in «#3577»** (judged in the platform frame). | `git show a4a5aa4:src/test_bench_dual.spin2` (`leadRest`); `6be991a` diff; `debug_260917-173141.log` L7651 | MEASURED | a harness judgement changed without its frame | done |
+| F12 | latent (could cost the t0 load) | **t0's DEBUG budget sits between the build that went silent and the one that emitted.** Compiler listing: SRC_REV 2 unquiet (silent twice) 210 records / 12_898 B data (81.3%); SRC_REV 3 quiet (emitted, Visit 5) 151 / 10_490 (66.1%); SRC_REV 7 (HEAD before «#3577») 161 / 11_252 (70.9%); SRC_REV 8 («#3577») 166 / 11_595 (73.1%). Both silent runs were inside the compiler's own limits, so the mechanism is not one it reports -- undetermined. Filed as PL-91. | `pnut-ts -l -d -D BENCH_CFG [-D BENCH_QUIET] test_bench_t0.spin2`, the `.lst` `DEBUG records`/`DEBUG data` lines | MEASURED (numbers) / undetermined (mechanism) | -- | no |
 
 ## 5. Root-cause groups
 
@@ -138,4 +140,4 @@ scan is redesigned on top of them. That is a question for Stephen, §8 Q1.
   redesign? **ANSWERED — STEPHEN 2026-09-19: *"yes, let's split"*.** Visit 6a: t0, dual-d/-b/-c/-a, the three
   clock loads and the stop-mode hand test, after steps 1-3. Visit 6b: the redesigned scan, `dual-ui` and the
   floor run, after step 4.
-- **Q2** (a rig fact only Stephen has) — the platform's track width (F5).
+- **Q2** (a rig fact only Stephen has) — the platform's track width (F5). **ANSWERED — STEPHEN 2026-09-19: *"15.25 inches tire center to center"*.**

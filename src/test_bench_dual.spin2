@@ -114,6 +114,16 @@
 ''               steering start()/stop(), the watchdog, instrument and ordered-stop helper cogs -- sits in a
 ''               benchLog cog-event quiet window: 2 ms before, and 10 ms after a start so the new cogs'
 ''               INIT lines finish before cog 0's next record. No record changes.
+''               19 Sep 2026 -- SRC_REV=20, FMT 8: task 3577, bench cells for task 3569's promises. Part B's
+''               OVERSHT gains two TURN trials, driveForDistance(10, 2) and (2, 10) ft, judged by the new cell
+''               R17-DUAL-TURNDIST-B (each wheel at rest at its OWN limit) and printed as the new BM-TURN; for a
+''               turn BM-OVERSHOOT's dist_ft and tgt print NA. STOPLIM is judged in the platform frame: the
+''               steering object reverses the right wheel, so its raw rest is negative for forward travel
+''               (Visit 5 read r_rest -529), and task 3570's per-wheel check compared that raw value against a
+''               positive target -- a correct stop read 1_058 ticks off. Part D gains the step DIRSIGN and cell
+''               R17-DUAL-DIRSIGN-D: a positive driveDirection() makes the RIGHT wheel the slower, a negative one
+''               the LEFT (finding AC, judged wheels-lifted from the tracked ticks). The dead steerSetRamp() and
+''               steerRestoreRamp() are deleted: since task 3569 setAcceleration() takes mm/s^2, not ramp_inc.
 ''
 '' =================================================================================================
 
@@ -177,8 +187,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 19                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 7                                         ' BM- record-format version
+    SRC_REV     = 20                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 8                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -343,6 +353,16 @@ CON { drive increments and powers }
     '  tick. These are DISTANCE targets, so the power above does not enter them and they stand.
     OVERSHT_TGT_SHORT   = 105                               ' 60_960 / 576
     OVERSHT_TGT_LONG    = 529                               ' 304_800 / 576
+    ' task 3577 (finding AB): driveForDistance(left, right) with unequal distances stops EACH wheel at its own.
+    '  One turn each way, the long leg on one wheel and the short on the other, so each wheel is judged once as
+    '  the long leg and once as the short. The unfixed library stopped both at the shorter distance.
+    OVERSHT_TURNS       = 2
+    ' The steering object calls forwardIsReverse() on the right wheel, so that wheel's RAW hall position runs
+    '  negative for forward platform travel. MEASURED Visit 5, debug_260917-173141.log L7651: a 529-tick forward
+    '  move rested at l_rest 530, r_rest -529. A stop is judged in the platform frame: raw x this sign.
+    '  It restates what steering.start() sets; nothing in this harness calls testRightSetMotorReversed(), and a
+    '  segment that did would have to restore it, or every right-wheel stop would be judged backwards.
+    STEER_RIGHT_RAW_SIGN = SIGN_NEG
 
     ' OVERSHT's fault-API trial (task 3552), LAST in the segment, and POSTFLT's provoked faults. Task 3572
     '  (PL-86, PL-59): the provocation is COMPUTED per wheel at speed -- faultShiftDeg() shifts the offsets by
@@ -462,6 +482,14 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_CMDTMO_MS           = 500
     D_CMDTMO_REFRESH_MS   = 1_500                           ' three timeouts' worth of refreshed driving
     D_CMDTMO_EVERY_MS     = 200                             ' well inside D_CMDTMO_MS, so a working refresh never lapses
+    ' DIRSIGN (task 3577, finding AC): driveDirection(D_POWER, +-D_DIRECTION) slows the wheel on the side turned
+    '  toward to (100 - D_DIRECTION)% of D_POWER, so at 50/50 one wheel runs at power 50 and the other at 25.
+    '  DERIVED from OVERSHT's measured leg (529 ticks in about 3.2 s at power 50): about 165 ticks/s against about
+    '  80, so over D_DIRSIGN_WINDOW_MS the faster wheel leads by about 80 ticks. The criterion asks a quarter of
+    '  that, well clear of the one or two ticks either count can be off by.
+    D_DIRECTION           = 50
+    D_DIRSIGN_WINDOW_MS   = 1_000                           ' tracked ticks counted over this, at speed
+    D_DIRSIGN_GAP_TICKS   = 20                              ' the faster wheel's lead the step requires
     ' front-cog loop health (FRONT-COG-IMPLEMENTATION-PLAN.md sec 7.4): a 1 kHz pass must stay inside its
     '  slot, and the stack high-water must stay under the library's STACK_SIZE_LONGS (128 means overflow
     '  is possible, so the criterion is strictly below it)
@@ -785,9 +813,11 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  DST_BLOCKED     - the protective stop latches, refuses with its code, and only clearProtectiveStop() releases it
   '  DST_RETRY       - PL-66: the same power after a fault reaches AT_SPEED again
   '  DST_CMDTIMEOUT  - S-8: a refreshed drive keeps running, and one left unrefreshed stops and reports it
+  '  DST_DIRSIGN     - AC: a positive driveDirection() makes the RIGHT wheel the slower, a negative one the LEFT
     #0, DST_ESTOP_LATCH, DST_ESTOP_REFUSE, DST_ESTOP_CLEAR, DST_ORDERED, DST_COOPSHUT, DST_TRACKRESET, ...
-        DST_TIMESTOP, DST_LOCKSTEP, DST_FOLDBACK, DST_DERATE, DST_BLOCKED, DST_RETRY, DST_CMDTIMEOUT
-    DST_COUNT = 13
+        DST_TIMESTOP, DST_LOCKSTEP, DST_FOLDBACK, DST_DERATE, DST_BLOCKED, DST_RETRY, DST_CMDTIMEOUT, ...
+        DST_DIRSIGN
+    DST_COUNT = 14
 
   ' BM-DSTEP result:
   '  DRES_PASS   - the step's own criterion held
@@ -1203,7 +1233,7 @@ tokUiKind       BYTE    "CONTROL", 0, "PREVIEW", 0
 tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0
 tokDStep        BYTE    "ESTOP_LATCH", 0, "ESTOP_REFUSE", 0, "ESTOP_CLEAR", 0, "ORDERED", 0
                 BYTE    "COOPSHUT", 0, "TRACKRESET", 0, "TIMESTOP", 0, "LOCKSTEP", 0, "FOLDBACK", 0
-                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0, "CMDTIMEOUT", 0
+                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0, "CMDTIMEOUT", 0, "DIRSIGN", 0
 tokDRes         BYTE    "PASS", 0, "FAIL", 0, "NOMEAS", 0
 ' the library's FC_* fault causes (task 3572, S-7), in enum order
 tokFltCause     BYTE    "NONE", 0, "LAG", 0, "HALL", 0
@@ -1325,6 +1355,12 @@ sSfCellHallK270 BYTE    "R17-DUAL-HALL-K270", 0
 sSfCellHallK300 BYTE    "R17-DUAL-HALL-K300", 0
 ' task 3573: a change of speed's transition kick against the start from rest (PL-87, PL-78)
 sSfCellTrKickA  BYTE    "R17-DUAL-TRKICK-A", 0
+' task 3577: task 3569's promises -- an unequal driveForDistance() stops each wheel at its own limit (AB), and
+'  a positive driveDirection() turns right (AC)
+sSfCellTurnDist BYTE    "R17-DUAL-TURNDIST-B", 0
+sSfCellDirSign  BYTE    "R17-DUAL-DIRSIGN-D", 0
+sSfCritTurnDist BYTE    "EACH_AT_OWN_LIMIT", 0
+sSfCritDirSign  BYTE    "TURN_SIDE_SLOWER", 0
 sSfCritCog0End  BYTE    "ENDED_BY_COG0", 0
 sSfCritQuiet    BYTE    "QUIET_MASKS", 0
 sSfCritInstLive BYTE    "INST_LIVE", 0
@@ -1603,6 +1639,7 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    ovRightStop
     LONG    ovLeftRest
     LONG    ovRightRest
+    LONG    ovRightRestPf                                   ' ovRightRest in the platform frame (x STEER_RIGHT_RAW_SIGN)
     LONG    ovLeftTrk
     LONG    ovRightTrk
     LONG    ovTStopMs
@@ -1718,6 +1755,8 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    bSfDroopOk[INST_MOTORS]
     LONG    sfStopLimMax                                    ' STOPLIM: largest |rest - target| over every trial
     LONG    sfStopLimN
+    LONG    sfTurnMax                                       ' TURNDIST: largest |rest - own target| over the turn trials
+    LONG    sfTurnN
     LONG    bSfDistMRan                                     ' DISTM: getDistance(DDU_M) against the ticks
     LONG    bSfDistMOk
     LONG    bSfRetryRan                                     ' FLTRETRY: PL-66's same-power retry
@@ -1897,6 +1936,8 @@ PRI initRunState() | slotIdx
     uiStepCount := 0
     sfStopLimMax := 0
     sfStopLimN := 0
+    sfTurnMax := 0
+    sfTurnN := 0
     bSfDistMRan := FALSE
     bSfDistMOk := TRUE                                      ' ANDed over the trials that run; NOMEAS until one does
     bSfRetryRan := FALSE
@@ -2197,15 +2238,15 @@ PRI segOvershoot() | distIdx, whyCode, sid
 ' OVERSHT (part B, T1-8): C-3 distance overshoot through the steering object. Both wheel objects are
 ' stopped first (shared pin claims, PL-18); bSteerStart() sets holdAtStop(FALSE); the distance power is
 ' set once to OVERSHT_POWER, the value every trial prints (sec 12.8: never read back through the
-' steering getter, PL-51); 2 ft and 10 ft x OVERSHT_REPS; then the fault-API trial (task 3552);
-' steering.stop() at the end.
+' steering getter, PL-51); 2 ft and 10 ft x OVERSHT_REPS; then the two turn trials (task 3577); then the
+' fault-API trial (task 3552); steering.stop() at the end.
 '
 ' THE FAULT-API TRIAL RUNS LAST, and the order is the construction, not a preference: a provoked fault
 ' resets the driver's tracking, so running it first or between reps would contaminate C-3, this
 ' segment's primary job. It is here at all because it is the only UNATTENDED segment that runs the
 ' steering object, and the steering object's isFaulted() / isEmergency() cannot be read without it.
 '
-' @local distIdx - 0 short, 1 long
+' @local distIdx - 0 short, 1 long; then the turn index, 0 the left wheel long, 1 the right wheel long
 ' @local whyCode - why the remaining trials are skipped, WHY_NONE while they run
 ' @local sid - the steering start's life, 0 when it did not start
 
@@ -2226,7 +2267,10 @@ PRI segOvershoot() | distIdx, whyCode, sid
     repeat distIdx from 0 to OVERSHT_DISTS - 1
         repeat OVERSHT_REPS
             beat(CP_LOOP_POLL)
-            whyCode := overshootTrial(sid, lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), lookupz(distIdx: OVERSHT_TGT_SHORT, OVERSHT_TGT_LONG), whyCode)
+            whyCode := overshootTrial(sid, lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), whyCode)
+    repeat distIdx from 0 to OVERSHT_TURNS - 1
+        beat(CP_LOOP_POLL)
+        whyCode := overshootTrial(sid, lookupz(distIdx: OVERSHT_FT_LONG, OVERSHT_FT_SHORT), lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), whyCode)
     faultApiTrial(sid, whyCode)
     bInstIdle()
     steerStop()
@@ -2328,6 +2372,7 @@ PRI segSteerContract() | whyCode
         dStepOrdered()
         dStepTimeStop(SIDE_BOTH)
         dStepCmdTimeout(SIDE_BOTH)
+        dStepDirSign()
         dStepFrontStats(SIDE_BOTH)
         dStepCoopShut(SIDE_BOTH)                            ' stops the steering object
     else
@@ -2339,6 +2384,7 @@ PRI segSteerContract() | whyCode
         dStepSkip(DST_ORDERED, SIDE_BOTH, whyCode)
         dStepSkip(DST_TIMESTOP, SIDE_BOTH, whyCode)
         dStepSkip(DST_CMDTIMEOUT, SIDE_BOTH, whyCode)
+        dStepSkip(DST_DIRSIGN, SIDE_BOTH, whyCode)
         dStepSkip(DST_COOPSHUT, SIDE_BOTH, whyCode)
         steerStop()
     segEnd(segWhy())
@@ -3498,16 +3544,16 @@ PRI traceFaultStats(slotIdx) | sampleIdx, bFirstFlt
                     bFirstFlt := TRUE
                     bFbDsat := (smpDuty(sampleIdx, slotIdx) >= fbDutyMax)
 
-PRI overshootTrial(sid, distFt, tgtTicks, skipWhy) : whyNext | tid, safeEvent, bReached, recoverWhy
+PRI overshootTrial(sid, leftFt, rightFt, skipWhy) : whyNext | tid, safeEvent, bReached, recoverWhy, bStraight
 ' One OVERSHT trial (design sec 4.4, T1-8): arm on the steering source (OVERSHT_DECIM); the SYNC_PRECOND
-' check before the drive call (sec 4.3); mark; driveForDistance(d, d, DDU_FT); wait both wheels moving,
-' then both STOPPED + OVERSHT_HOLD_MS (<= OVERSHT_WAIT_MS); freeze; BM-STRACE, BM-TS, BM-TRACE-END,
-' BM-OVERSHOOT; stopMotors(); a fault recovered through the pass-throughs. power prints OVERSHT_POWER,
-' the value segOvershoot() set (sec 12.8).
+' check before the drive call (sec 4.3); mark; driveForDistance(left, right, DDU_FT); wait both wheels
+' moving, then both STOPPED + OVERSHT_HOLD_MS (<= OVERSHT_WAIT_MS); freeze; BM-STRACE, BM-TS, BM-TRACE-END,
+' BM-OVERSHOOT, and BM-TURN when the two distances differ; stopMotors(); a fault recovered through the
+' pass-throughs. power prints OVERSHT_POWER, the value segOvershoot() set (sec 12.8).
 '
 ' @param sid - the steering start's life
-' @param distFt - commanded distance, feet
-' @param tgtTicks - DERIVED target ticks
+' @param leftFt - the left wheel's commanded distance, feet
+' @param rightFt - the right wheel's commanded distance, feet
 ' @param skipWhy - WHY_NONE to run, else why it is skipped
 ' @returns whyNext - skip cause for the next trial, WHY_NONE while trials may run
 '
@@ -3515,6 +3561,7 @@ PRI overshootTrial(sid, distFt, tgtTicks, skipWhy) : whyNext | tid, safeEvent, b
 ' @local safeEvent - SAFE_* from the watched waits
 ' @local bReached - the awaited state was reached
 ' @local recoverWhy - steerRecoverFault()'s result
+' @local bStraight - both wheels were given one distance (a turn otherwise)
 
     tid := nextTraceId()
     cpReset()
@@ -3525,6 +3572,7 @@ PRI overshootTrial(sid, distFt, tgtTicks, skipWhy) : whyNext | tid, safeEvent, b
     ovRightStop := 0
     ovLeftRest := 0
     ovRightRest := 0
+    ovRightRestPf := 0
     ovLeftTrk := 0
     ovRightTrk := 0
     ovTStopMs := 0
@@ -3542,7 +3590,7 @@ PRI overshootTrial(sid, distFt, tgtTicks, skipWhy) : whyNext | tid, safeEvent, b
     else
         instMark()
         beat(CP_LIB_STEER_DRIVE)
-        steering.driveForDistance(distFt, distFt, steering.DDU_FT)
+        steering.driveForDistance(leftFt, rightFt, steering.DDU_FT)
         beat(CP_LIB_STEER_DRIVE)
         ' both wheels still read STOPPED at the call's return, so the stop wait follows a moving wait
         safeEvent, bReached := waitWatched(SIDE_BOTH, OVERSHT_MOVE_MS, CP_LOOP_CAPTURE, UNTIL_MOVING)
@@ -3567,8 +3615,11 @@ PRI overshootTrial(sid, distFt, tgtTicks, skipWhy) : whyNext | tid, safeEvent, b
             cpWhy := WHY_INST_NOACK
         traceEmptyEnd(tid, TEND_ABORT, cpWhy)
         ovWhy := cpWhy
-    emitOvershoot(tid, sid, OVERSHT_POWER, distFt, tgtTicks)
-    overshootFoldCells(tid, sid, tgtTicks)
+    bStraight := (leftFt == rightFt)
+    emitOvershoot(tid, sid, OVERSHT_POWER, leftFt, bStraight)
+    if bStraight == FALSE
+        emitTurn(tid, leftFt, rightFt)
+    overshootFoldCells(tid, sid, overshootTarget(leftFt), overshootTarget(rightFt), bStraight)
     if bSteerUp
         steerStopMotors()
         recoverWhy := steerRecoverFault(tid)
@@ -3608,16 +3659,32 @@ PRI overshootStats() | sampleIdx, leftStopJ, rightStopJ
             ovRightStop := smpPos(rightStopJ, SLOT_RIGHT) - smpPos(drMarkJ, SLOT_RIGHT)
             ovLeftRest := smpPos(drEndJ, SLOT_LEFT) - smpPos(drMarkJ, SLOT_LEFT)
             ovRightRest := smpPos(drEndJ, SLOT_RIGHT) - smpPos(drMarkJ, SLOT_RIGHT)
+            ovRightRestPf := ovRightRest * STEER_RIGHT_RAW_SIGN
             ovTStopMs := ((leftStopJ - drMarkJ) * INST_PERIOD_US * instDecimate) / US_PER_MS
             ovWhy := WHY_NONE
 
-PRI overshootFoldCells(tid, sid, tgtTicks) | tickMmX100
-' The two OVERSHT cells, from the trial's own measurements.
+PRI overshootTarget(distFt) : tgtTicks
+' The DERIVED target ticks of one of OVERSHT's two commanded distances.
 '
-'  STOPLIMIT - EACH wheel comes to rest AT its own limit. Since task 3570 (finding AB) driveForDistance()
-'              stops each wheel at its own distance rather than both at the first wheel's, so both are
-'              judged: the old shared stop left the slower wheel short, which this now fails. MEASURED
-'              before task 3559: about 77 ticks past, which is the whole deceleration.
+' @param distFt - OVERSHT_FT_SHORT or OVERSHT_FT_LONG
+' @returns tgtTicks - OVERSHT_TGT_SHORT or OVERSHT_TGT_LONG
+
+    tgtTicks := (distFt == OVERSHT_FT_LONG) ? OVERSHT_TGT_LONG : OVERSHT_TGT_SHORT
+
+PRI overshootFoldCells(tid, sid, leftTgt, rightTgt, bStraight) | tickMmX100, worstOff
+' The OVERSHT cells, from the trial's own measurements.
+'
+'  STOPLIMIT - on a straight trial, EACH wheel comes to rest AT its own limit. Since task 3570 (finding AB)
+'              driveForDistance() stops each wheel at its own distance rather than both at the first
+'              wheel's, so both are judged: the old shared stop left the slower wheel short, which this now
+'              fails. MEASURED before task 3559: about 77 ticks past, which is the whole deceleration.
+'  TURNDIST  - task 3577: the same judgement on a TURN trial, where the two limits differ. The unfixed
+'              library stopped both wheels at the shorter distance, so the long wheel rested hundreds of
+'              ticks short and this fails.
+'  Both judge in the PLATFORM frame. The right wheel's raw rest runs negative for forward travel
+'  (STEER_RIGHT_RAW_SIGN, applied once in overshootStats() as ovRightRestPf); task 3570's per-wheel check
+'  compared it raw against a positive target, which read a correct stop as 2 x the target off (Visit 5's
+'  r_rest -529 against 529).
 '  DISTM     - getDistance(DDU_M) agrees with the ticks it is derived from. Task 3502 corrected the metre
 '              conversion by a factor of ten and no bench reading has compared the two since; Visit 3 left
 '              it unqualified. The comparison uses the library's own travel-per-tick, read from the motor
@@ -3625,14 +3692,21 @@ PRI overshootFoldCells(tid, sid, tgtTicks) | tickMmX100
 '
 ' @param tid - trace id of the trial
 ' @param sid - the steering start's life
-' @param tgtTicks - the trial's DERIVED target ticks
+' @param leftTgt - the left wheel's DERIVED target ticks
+' @param rightTgt - the right wheel's DERIVED target ticks
+' @param bStraight - TRUE for a straight trial (STOPLIMIT), FALSE for a turn (TURNDIST)
 '
 ' @local tickMmX100 - wheel travel per hall tick, hundredths of a mm
+' @local worstOff - the larger wheel's |rest - its own target|, platform frame
 
     if ovWhy == WHY_NONE
-        sfStopLimMax #>= abs(ovLeftRest - tgtTicks)
-        sfStopLimMax #>= abs(ovRightRest - tgtTicks)
-        sfStopLimN := (sfStopLimN + 1) <# LIM_SMALL
+        worstOff := abs(ovLeftRest - leftTgt) #> abs(ovRightRestPf - rightTgt)
+        if bStraight
+            sfStopLimMax #>= worstOff
+            sfStopLimN := (sfStopLimN + 1) <# LIM_SMALL
+        else
+            sfTurnMax #>= worstOff
+            sfTurnN := (sfTurnN + 1) <# LIM_SMALL
     if bSteerUp
         _, tickMmX100 := wheelL.wheelGeometry()
         ' PL-77: ONE READ, and the record carries the tick count the getter actually saw. This used to
@@ -4253,21 +4327,29 @@ PRI dShutdown(side)
     else
         wheelStopRaw(side)
 
-PRI bDToSpeed(side) : bAtSpeed | safeEvent
+PRI bDToSpeed(side) : bAtSpeed
 ' Bring this form to D_POWER and hold it at speed, so a step acts on a moving platform.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns bAtSpeed - TRUE when every wheel reached DCS_AT_SPEED and the settle passed cleanly
+
+    bAtSpeed := FALSE
+    if dDrive(side, D_POWER) == NO_ERROR
+        bAtSpeed := bDHoldSpeed(side)
+
+PRI bDHoldSpeed(side) : bAtSpeed | safeEvent
+' After a drive command, wait for every wheel of this form to reach DCS_AT_SPEED, then the D_SETTLE_MS settle.
 '
 ' @param side - SIDE_BOTH or SIDE_LEFT
 ' @returns bAtSpeed - TRUE when every wheel reached DCS_AT_SPEED and the settle passed cleanly
 '
 ' @local safeEvent - SAFE_* from the watched waits
 
-    bAtSpeed := FALSE
-    if dDrive(side, D_POWER) == NO_ERROR
-        safeEvent, bAtSpeed := waitWatched(side, D_AT_SPEED_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
-        if (safeEvent == SAFE_NONE) and bAtSpeed
-            safeEvent, _ := waitWatched(side, D_SETTLE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
-        if safeEvent <> SAFE_NONE
-            bAtSpeed := FALSE
+    safeEvent, bAtSpeed := waitWatched(side, D_AT_SPEED_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+    if (safeEvent == SAFE_NONE) and bAtSpeed
+        safeEvent, _ := waitWatched(side, D_SETTLE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
+    if safeEvent <> SAFE_NONE
+        bAtSpeed := FALSE
 
 PRI bDRest(side) : bRest
 ' Wait, bounded by D_REST_MS, for this form to be at rest (pos and hwPos still, per waitRest()).
@@ -4615,6 +4697,71 @@ PRI dStepCmdTimeout(side) | bArmed, bAtSpeed, startMs, lastDriveMs, bHeld, eErro
     dStopMotion(side)
     bDRest(side)
     bInstIdle()
+
+PRI dStepDirSign() | bArmed, bRanRight, rightTurnLead, bRanLeft, leftTurnLead, worstLead
+' DIRSIGN (task 3577, finding AC): driveDirection() turns toward the sign of its direction by slowing the wheel
+' on that side. Wheels lifted, the turn is read as which wheel covers fewer tracked ticks over a window at
+' speed: a positive direction must leave the LEFT wheel ahead by D_DIRSIGN_GAP_TICKS, a negative one the RIGHT.
+'
+' BOTH LIMBS ARE THE CELL, and each is the other's negative case: the unfixed library had the sign inverted,
+' so it fails both, and a harness that could not tell the wheels apart could not pass both. The platform
+' comes to rest between the limbs so the second starts from rest, not from the first's speed. The steering
+' object only: one wheel has no direction.
+'
+' @local bArmed - the instrument acknowledged the ARM
+' @local bRanRight - the right-turn limb reached speed and counted its window
+' @local rightTurnLead - the LEFT wheel's lead in the right turn, ticks over the window (expected positive)
+' @local bRanLeft - the left-turn limb reached speed and counted its window
+' @local leftTurnLead - the RIGHT wheel's lead in the left turn, ticks over the window (expected positive)
+' @local worstLead - the smaller of the two leads, the step's printed number
+
+    worstLead := 0
+    bRanRight := FALSE
+    bRanLeft := FALSE
+    bArmed := bDArm(SIDE_BOTH)
+    if bArmed
+        bRanRight, rightTurnLead := dDirectionLead(D_DIRECTION)
+    if bRanRight
+        dStopMotion(SIDE_BOTH)                              ' the second limb starts from rest
+        bDRest(SIDE_BOTH)
+        bRanLeft, leftTurnLead := dDirectionLead(0 - D_DIRECTION)
+        leftTurnLead := 0 - leftTurnLead                    ' left-minus-right, negated: the right wheel's lead
+        worstLead := rightTurnLead <# leftTurnLead
+    if bRanRight and bRanLeft
+        dStepDone(DST_DIRSIGN, SIDE_BOTH, TRUE, worstLead >= D_DIRSIGN_GAP_TICKS, worstLead, D_DIRSIGN_GAP_TICKS, LIM_MID, WHY_NONE)
+    else
+        dStepDone(DST_DIRSIGN, SIDE_BOTH, FALSE, FALSE, 0, D_DIRSIGN_GAP_TICKS, LIM_MID, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+    dStopMotion(SIDE_BOTH)
+    bDRest(SIDE_BOTH)
+    bInstIdle()
+
+PRI dDirectionLead(direction) : bRan, leftLead | eError, safeEvent, leftStart, rightStart, leftEnd, rightEnd
+' Drive the steering object at driveDirection(D_POWER, direction), wait for both wheels at speed and the
+' settle, then count each wheel's tracked ticks over D_DIRSIGN_WINDOW_MS. Legal only while armed.
+'
+' @param direction - driveDirection()'s direction, [-100..100]
+' @returns bRan - TRUE when the drive was accepted, both wheels reached speed and the window was counted
+' @returns leftLead - left tracked ticks minus right over the window: positive when the RIGHT wheel is slower
+'
+' @local eError - driveDirection()'s return
+' @local safeEvent - SAFE_* from the counting window's wait
+' @local leftStart - left tracked ticks at the window's start
+' @local rightStart - right tracked ticks at the window's start
+' @local leftEnd - left tracked ticks at the window's end
+' @local rightEnd - right tracked ticks at the window's end
+
+    bRan := FALSE
+    leftLead := 0
+    curIncre := 0
+    beat(CP_LIB_STEER_DRIVE)
+    eError := steering.driveDirection(D_POWER, direction)
+    beat(CP_LIB_STEER_DRIVE)
+    if (eError == NO_ERROR) and bDHoldSpeed(SIDE_BOTH)
+        leftStart, rightStart := dTrackTicks(SIDE_BOTH)
+        safeEvent, _ := waitWatched(SIDE_BOTH, D_DIRSIGN_WINDOW_MS, CP_LOOP_POLL, UNTIL_TIME)
+        leftEnd, rightEnd := dTrackTicks(SIDE_BOTH)
+        bRan := (safeEvent == SAFE_NONE)
+        leftLead := (leftEnd - leftStart) - (rightEnd - rightStart)
 
 PRI dSetTimeout(side, timeoutMs) : eError
 ' Set this form's command timeout (S-8).
@@ -7874,51 +8021,6 @@ PRI bRestoreRamp(side) : bOk | minRamp, maxRamp, incRamp, downRamp
     bSfRampOk[side - SIDE_LEFT] := bOk
     emitRampRest(side, minRamp, maxRamp, incRamp, downRamp, bOk)
 
-PRI steerSetRamp(incWant) : leftInc, rightInc
-' Set both wheels' ramp_inc THROUGH THE STEERING OBJECT and read it back per wheel. setAcceleration() is
-' the only ramp write that object offers; it forwards to each wheel's setRampingValues() and replaces
-' ramp_inc alone. The harness's own wheelL / wheelR are separate instances from the two this object
-' owns (PL-18), so wheelSetRamp() cannot reach these motors. steerRestoreRamp() restores the defaults on
-' every path that called this (I11).
-'
-' @param incWant - ramp_inc to command on both wheels
-' @returns leftInc - LEFT ramp_inc read back
-' @returns rightInc - RIGHT ramp_inc read back
-
-    beat(CP_LIB_RAMP)
-    steering.setAcceleration(incWant)
-    _, _, leftInc, _ := steering.testLeftGetRampingValues()
-    _, _, rightInc, _ := steering.testRightGetRampingValues()
-    beat(CP_LIB_RAMP)
-
-PRI steerRestoreRamp() | slotIdx, minRamp, maxRamp, incRamp, downRamp, bOk
-' Restore the ramp defaults through the steering object, read all four back per wheel and emit
-' BM-RAMPREST (I11). setAcceleration() replaces ramp_inc alone, so checking all four is what shows a
-' wheel that lost one of the others. As with bRestoreRamp(), the last read-back of each motor is
-' R14-DUAL-RAMPREST-B's measurement.
-'
-' @local slotIdx - motor slot
-' @local minRamp - ramp_min read back
-' @local maxRamp - ramp_max read back
-' @local incRamp - ramp_inc read back
-' @local downRamp - ramp_down read back
-' @local bOk - TRUE when the defaults read back on this wheel
-
-    beat(CP_LIB_RAMP)
-    steering.setAcceleration(RAMP_DEF_INC)
-    beat(CP_LIB_RAMP)
-    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
-        beat(CP_LIB_RAMP)
-        if slotIdx == SLOT_RIGHT
-            minRamp, maxRamp, incRamp, downRamp := steering.testRightGetRampingValues()
-        else
-            minRamp, maxRamp, incRamp, downRamp := steering.testLeftGetRampingValues()
-        beat(CP_LIB_RAMP)
-        bOk := (minRamp == RAMP_DEF_MIN) and (maxRamp == RAMP_DEF_MAX) and (incRamp == RAMP_DEF_INC) and (downRamp == RAMP_DEF_DOWN)
-        bSfRampRan[slotIdx] := TRUE
-        bSfRampOk[slotIdx] := bOk
-        emitRampRest(SIDE_LEFT + slotIdx, minRamp, maxRamp, incRamp, downRamp, bOk)
-
 PRI bRestoreOffsets(side, wantNeg, wantPos) : bOk | offNeg, offPos
 ' Restore the offsets read at the trial's start, read them back and emit BM-OFFREST (I11). Every
 ' read-back of a motor is ANDed into R14-DUAL-OFFREST-C.
@@ -8769,14 +8871,15 @@ PRI emitAbort(seg, tid, side, motorIncre, reasonCode, detailValue, scopeCode)
     whyField(WHY_NONE)
     emitRecord()
 
-PRI emitOvershoot(tid, sid, powerValue, distFt, tgtTicks) | bValid
-' BM-OVERSHOOT from the ov* staging. Worst case 271 bytes.
+PRI emitOvershoot(tid, sid, powerValue, distFt, bStraight) | bValid
+' BM-OVERSHOOT from the ov* staging. Worst case 271 bytes. On a TURN trial (two distances) dist_ft and tgt
+' print NA, since one number cannot describe both wheels; BM-TURN carries each wheel's (task 3577).
 '
 ' @param tid - trace id
 ' @param sid - the steering start's life
 ' @param powerValue - commanded power
-' @param distFt - commanded distance, feet
-' @param tgtTicks - DERIVED target ticks
+' @param distFt - commanded distance, feet (a straight trial's; printed NA on a turn)
+' @param bStraight - TRUE when both wheels were given distFt
 '
 ' @local bValid - the stop/rest fields are measurements (ovWhy is WHY_NONE)
 
@@ -8786,8 +8889,8 @@ PRI emitOvershoot(tid, sid, powerValue, distFt, tgtTicks) | bValid
     benchLog.numField(@"sid", sid, LIM_SMALL)
     benchLog.tokenField(@"motor", sideToken(SIDE_BOTH), TOKMAX_MOTOR)
     benchLog.numField(@"power", powerValue, LIM_TINY)
-    benchLog.numField(@"dist_ft", distFt, LIM_TINY)
-    benchLog.numField(@"tgt", tgtTicks, LIM_MID)
+    benchLog.naNumField(@"dist_ft", distFt, LIM_TINY, bStraight)
+    benchLog.naNumField(@"tgt", overshootTarget(distFt), LIM_MID, bStraight)
     benchLog.naNumField(@"l_stop", ovLeftStop, LIM_MID, bValid)
     benchLog.naNumField(@"r_stop", ovRightStop, LIM_MID, bValid)
     benchLog.naNumField(@"l_rest", ovLeftRest, LIM_MID, bValid)
@@ -8797,6 +8900,31 @@ PRI emitOvershoot(tid, sid, powerValue, distFt, tgtTicks) | bValid
     benchLog.naNumField(@"t_stop", ovTStopMs, LIM_SMALL, bValid)
     benchLog.numField(@"l_ig", ovLeftIg, LIM_SMALL)
     benchLog.numField(@"r_ig", ovRightIg, LIM_SMALL)
+    whyField(ovWhy)
+    emitRecord()
+
+PRI emitTurn(tid, leftFt, rightFt) | bValid
+' BM-TURN (task 3577): a turn trial's two distances, two targets and two rests, the rests in the PLATFORM
+' frame (ovRightRestPf, the right wheel's raw rest x STEER_RIGHT_RAW_SIGN), so each rest reads against its own target as
+' R17-DUAL-TURNDIST-B judges it. BM-OVERSHOOT beside it keeps the raw stop and rest fields. Worst case:
+' tag(7) + seq(15) + tid(12) + l_ft(10) + r_ft(10) + l_tgt(17) + r_tgt(17) + l_rest(18) + r_rest(18) +
+' why(23) = 147 bytes.
+'
+' @param tid - trace id
+' @param leftFt - the left wheel's commanded distance, feet
+' @param rightFt - the right wheel's commanded distance, feet
+'
+' @local bValid - the rest fields are measurements (ovWhy is WHY_NONE)
+
+    bValid := (ovWhy == WHY_NONE)
+    recBegin(@"BM-TURN")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.numField(@"l_ft", leftFt, LIM_TINY)
+    benchLog.numField(@"r_ft", rightFt, LIM_TINY)
+    benchLog.numField(@"l_tgt", overshootTarget(leftFt), LIM_MID)
+    benchLog.numField(@"r_tgt", overshootTarget(rightFt), LIM_MID)
+    benchLog.naNumField(@"l_rest", ovLeftRest, LIM_MID, bValid)
+    benchLog.naNumField(@"r_rest", ovRightRestPf, LIM_MID, bValid)
     whyField(ovWhy)
     emitRecord()
 
@@ -9330,6 +9458,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellStopCur)
                 emitSignoffDecl(@sSfCellRmpDroop)
                 emitSignoffDecl(@sSfCellStopLim)
+                emitSignoffDecl(@sSfCellTurnDist)
                 emitSignoffDecl(@sSfCellDistM)
                 emitSignoffDecl(@sSfCellFltRetry)
                 emitSignoffDecl(@sSfCellFltCause)
@@ -9367,6 +9496,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellWTimStop)
                 emitSignoffDecl(@sSfCellCmdTmo)
                 emitSignoffDecl(@sSfCellWCmdTmo)
+                emitSignoffDecl(@sSfCellDirSign)
             PART_FLOOR:
                 emitSignoffDecl(@sSfCellNoStallF)
                 emitSignoffDecl(@sSfCellDbgMaskF)
@@ -9400,7 +9530,9 @@ PRI emitSignoffs() | slotIdx, side
 '         -K270 / -K300)
 '  B      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; RAMPREST BOOL per motor;
 '         FLTAPI BOOL (the steering object, BOTH); FLTCAUSE BOOL (BOTH); OFFREST-B BOOL and IDLEMOVE-B COUNT
-'         per motor
+'         per motor; STOPLIM and TURNDIST COUNT (BOTH); DISTM BOOL (BOTH)
+'  D      NOSTALL BOOL; DBGMASK BOOL; LAGBOUND COUNT per motor; each part-D step's cell, DIRSIGN among them
+'         (emitDStepCells())
 '  BRAKE  NOSTALL BOOL; DBGMASK BOOL; BRAKEFLT BOOL (LEFT)
 '  C      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; OFFREST BOOL per motor;
 '         IDLEMOVE-C COUNT and FLTSTOP BOOL per motor
@@ -9449,6 +9581,8 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoffBool(@sSfCellOffRestB, SIDE_LEFT + slotIdx, @sSfCritOffRest, bSfOffRan[slotIdx], bSfOffOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitIdleMoveCell(@sSfCellIdleMvB, slotIdx)
                 emitSignoff(@sSfCellStopLim, SIDE_BOTH, @sSfCritStopLim, sfStopLimN > 0, sfStopLimMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfStopLimN)
+                ' task 3577 (AB): the turn trials, judged against the same band as a straight stop
+                emitSignoff(@sSfCellTurnDist, SIDE_BOTH, @sSfCritTurnDist, sfTurnN > 0, sfTurnMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfTurnN)
                 emitSignoffBool(@sSfCellDistM, SIDE_BOTH, @sSfCritDistM, bSfDistMRan, bSfDistMOk, SIGNOFF_ONE_INSTANCE)
                 emitLagCells(@sSfCellLagB)
             PART_BRAKE:
@@ -9516,6 +9650,8 @@ PRI emitDStepCells()
     ' task 3570 (S-8): the command timeout, both forms
     emitSignoffBool(@sSfCellCmdTmo, SIDE_BOTH, @sSfCritCmdTmo, bSfDStepRan[DST_CMDTIMEOUT], bSfDStepOk[DST_CMDTIMEOUT], SIGNOFF_ONE_INSTANCE)
     emitSignoffBool(@sSfCellWCmdTmo, SIDE_LEFT, @sSfCritCmdTmo, bSfWDStepRan[DST_CMDTIMEOUT], bSfWDStepOk[DST_CMDTIMEOUT], SIGNOFF_ONE_INSTANCE)
+    ' task 3577 (AC): the direction sign, the steering object only -- a single wheel has no direction
+    emitSignoffBool(@sSfCellDirSign, SIDE_BOTH, @sSfCritDirSign, bSfDStepRan[DST_DIRSIGN], bSfDStepOk[DST_DIRSIGN], SIGNOFF_ONE_INSTANCE)
 
 PRI bDEstopRan(bWheelForm) : bRan
 ' Whether all three e-stop steps of one form were measured.

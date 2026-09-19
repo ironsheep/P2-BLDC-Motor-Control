@@ -4384,6 +4384,32 @@ An archive file is never re-edited. If an archived item must be reopened, it com
 > to an open section here, and the *Removed* note has moved to the end of the file where it cannot
 > capture a later entry the same way. No wording of PL-67 was changed.
 
+### PL-91 -- t0's DEBUG budget sits between the build that went silent (PL-74) and the one that emitted
+
+**Found 2026-09-19 in «#3577»**, adding three cells to `src/test_bench_t0.spin2`. **Open; latent.** It could cost
+the whole `t0` load at Visit 6a, the way PL-74 cost it at Visit 4.
+
+**MEASURED** from the compiler's own listing (`pnut-ts -l -d -D BENCH_CFG [-D BENCH_QUIET] test_bench_t0.spin2`,
+the `.lst` lines `DEBUG records` and `DEBUG data`), pnut-ts 1.55.8:
+
+| Build | Image | DEBUG records | DEBUG data | On hardware |
+|---|---|---|---|---|
+| SRC_REV 2, not quiet | 43_792 B | 210 of 255 | 12_898 of 15_872 B (81.3%) | silent, twice (PL-74) |
+| SRC_REV 3, quiet (Visit 5) | 40_918 B | 151 | 10_490 B (66.1%) | emitted, 24 PASS |
+| SRC_REV 7, quiet (before «#3577») | 43_564 B | 161 | 11_252 B (70.9%) | never run |
+| SRC_REV 8, quiet («#3577») | 44_685 B | 166 | 11_595 B (73.1%) | owed to Visit 6a |
+
+**What is and is not established.** Both silent runs were INSIDE the limits the compiler reports, so whatever
+silenced them is not one of those two limits -- the mechanism is **undetermined** (PL-74's residue). What is
+measured is only where each build sits. «#3577» built its cells through one shared emitter so that three cells
+cost 343 bytes of DEBUG data rather than the 1_353 a literal line per verdict cost in its first draft.
+
+**Disposition.** (1) «#3574» retires t0 prints for findings already fixed in source (T0-1, T0-2, T0-4, T0-10's
+start_return), which recovers budget before Visit 6a -- measure the listing again when it lands. (2) The runner's
+PL-74 guard refuses a silent load in seconds, so the failure mode costs a re-run, not a visit. (3) Why an image
+inside the compiler's limits emits nothing is a question for Stephen's compiler (P7), raised with him at the
+«#3577» hand-back with these numbers.
+
 ### PL-67 -- `R2-DETECT-OVERLAP` is owed to a motors-unplugged session, but no build can produce it
 
 **Found 2026-09-15** while writing the Visit 3 run sheet. DERIVED from source. It is a **gap in the harness**,
