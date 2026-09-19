@@ -1023,6 +1023,54 @@ def check_ternary_call(lines):
     return out
 
 
+COG_EVENT_RE = re.compile(r'\b(?:\w+\.(?:start|startEx|startOwned|stop)|cogspin|cogstop)\s*\(', re.IGNORECASE)
+COG_START_RE = re.compile(r'\b(?:\w+\.(?:start|startEx|startOwned)|cogspin)\s*\(', re.IGNORECASE)
+QUIET_BEGIN_RE = re.compile(r'\.cogEventBegin\s*\(', re.IGNORECASE)
+QUIET_END_RE = re.compile(r'\.cogEventEnd\s*\(', re.IGNORECASE)
+DEBUG_CALL_RE = re.compile(r'\bdebug\s*(?:\[[^\]]*\])?\s*\(', re.IGNORECASE)
+BENCH_LOG_OBJ_RE = re.compile(r'^\s*\w+\s*(?:\[[^\]]*\])?\s*:\s*"isp_bench_log"', re.IGNORECASE)
+
+
+def check_cog_events(lines, methods, raw_lines):
+    """T41 (PUNCH-LIST PL-41 / PL-85, project rule): in a bench program -- a file that includes
+    isp_bench_log -- every cog start or stop (an object's start()/stop(), cogspin, cogstop) comes
+    after a cogEventBegin() with nothing printed in between, and a start reaches cogEventEnd()
+    before anything prints, so the new cogs' INIT lines cannot run into a record."""
+    out = []
+    if not any(BENCH_LOG_OBJ_RE.match(raw) for raw in raw_lines):
+        return out
+    for meth in methods:
+        first, last = meth['sig_end'] + 1, meth['body_end']
+        for idx in range(first, last):
+            code = lines[idx]['code']
+            if not COG_EVENT_RE.search(code):
+                continue
+            bOpened = False
+            for back in range(idx - 1, first - 1, -1):
+                prior = lines[back]['code']
+                if QUIET_BEGIN_RE.search(prior):
+                    bOpened = True
+                    break
+                if QUIET_END_RE.search(prior) or DEBUG_CALL_RE.search(prior):
+                    break
+            if not bOpened:
+                out.append(('T41', 'PL-41', idx + 1,
+                            "%s() - cog start/stop without a cogEventBegin() before it (or a print in between)" % meth['name']))
+            if COG_START_RE.search(code):
+                bClosed = False
+                for fwd in range(idx + 1, last):
+                    later = lines[fwd]['code']
+                    if QUIET_END_RE.search(later):
+                        bClosed = True
+                        break
+                    if DEBUG_CALL_RE.search(later):
+                        break
+                if not bClosed:
+                    out.append(('T41', 'PL-41', idx + 1,
+                                "%s() - cog start without a cogEventEnd() before the next print" % meth['name']))
+    return out
+
+
 def check_doc_completeness(lines, methods):
     """C3f (guide 4.3 / 4.4, PUNCH-LIST PL-10): every parameter, return value
     and local has its @param / @returns / @local tag."""
@@ -1083,7 +1131,7 @@ def check_storage_names(lines):
 ALL_CHECK_IDS = ["S1.1", "S1.2", "A7", "A8", "C9", "A6", "C3a", "C3b", "C3c",
                   "C3d", "C3e", "C4", "C6", "C7", "A3", "A4", "A5",
                   "S1.5", "S1.9", "S2.4", "S3.1", "S3.2", "S5.0", "S5.1", "S5.2",
-                  "S5.3", "S5.4", "S5.41", "C3f", "C6b", "T29"]
+                  "S5.3", "S5.4", "S5.41", "C3f", "C6b", "T29", "T41"]
 
 # The checks that FAIL the gate: every one. A new check is added to ALL_CHECK_IDS in the
 # same commit that brings the tree clean for it -- or, if the tree cannot be brought clean
@@ -1106,7 +1154,8 @@ COVERAGE_LINES = [
     "T1+T2 detection halves not implemented (5): 2.1.4 2.5 4.6 5.7 6.1 -- judged in the T2 audit",
     "T2 NOT CHECKED by this gate (20): an agent audit, DOCs/procedures/STYLE-T2-AUDIT.md; T3 (2): 5.8 5.9, "
     "Stephen's read",
-    "Project checks: C3f (4.3/4.4 element->tag, PL-10), T29 (? : with a call, PL-29)",
+    "Project checks: C3f (4.3/4.4 element->tag, PL-10), T29 (? : with a call, PL-29), "
+    "T41 (bench cog start/stop in a quiet window, PL-41/PL-85)",
 ]
 
 
@@ -1127,6 +1176,7 @@ def run_all_checks(path):
     findings += check_shadow(methods)
     findings += check_obj_constants(path, lines, raw_lines)
     findings += check_ternary_call(lines)
+    findings += check_cog_events(lines, methods, raw_lines)
     findings += check_doc_completeness(lines, methods)
     findings += check_decl_border(lines)
     findings += check_storage_names(lines)

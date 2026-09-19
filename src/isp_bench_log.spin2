@@ -3,11 +3,12 @@
 ''   File....... isp_bench_log.spin2
 ''   Purpose.... Shared bench tagged-record line builder (PL-17): assembles one comma-separated,
 ''               zero-terminated debug() line per call. A constants-free object with all state in
-''               VAR, so every caller owns its buffer through a separate instance.
+''               VAR, so every caller owns its buffer through a separate instance. Also the
+''               cog-event quiet window every bench program brackets its cog starts and stops with.
 ''   Authors.... Stephen M Moraco
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Sep 2026
-''   Updated.... 14 Sep 2026
+''   Updated.... 18 Sep 2026
 ''
 '' =================================================================================================
 
@@ -24,6 +25,19 @@ CON { line-buffer sizing }
     MAX_DEC_DIGITS   = 11
     DEC_RADIX        = 10
     DIGITS_PER_GROUP = 3
+
+CON { cog-event quiet window (PL-41, PL-85) }
+
+    ' Every cog start or stop is preceded by cogEventBegin(); a start (which launches cogs that emit
+    ' INIT lines) is followed by cogEventEnd(), with nothing printed in between. A stop launches
+    ' nothing and every stopped cog is quiet (it never prints, or it has parked), so a stop needs no
+    ' closing wait -- and a reading taken just after a stop stays prompt. At the default DEBUG_BAUD of 2 Mbaud a byte takes 5 us: a record of up to ~200 bytes has
+    ' left the pin 1 ms after its debug() returns, and a burst of seven new cogs' INIT lines (~50 bytes
+    ' each) takes ~1.75 ms to send.
+    QUIET_BEFORE_MS = 2
+    QUIET_AFTER_MS  = 10
+
+    LAST_COG_ID     = 7                                     ' the P2 has cogs 0..7
 
 VAR { one buffer per instance }
 
@@ -108,6 +122,34 @@ PUB lineLength() : nBytes
 '' @returns nBytes - the record's length in bytes
 
     nBytes := lineLen
+
+PUB cogEventBegin()
+'' Open a cog-event quiet window: wait until the last record has left the pin, before the caller
+'' starts or stops a cog (or a burst of them). Print nothing until cogEventEnd().
+''
+
+    waitms(QUIET_BEFORE_MS)
+
+PUB cogEventEnd()
+'' Close a cog-event quiet window after a start: wait until the new cogs' INIT lines have been sent,
+'' so the caller's next record cannot run into them. Not needed after a stop, which launches nothing.
+''
+
+    waitms(QUIET_AFTER_MS)
+
+PUB countFreeCogs() : freeCount | cogIdx
+'' Count the cogs not running, with COGCHK(), which starts and stops nothing. (Counting by starting
+'' spacers until one fails, then stopping them all, is a burst of cog events per count.)
+''
+'' @returns freeCount - number of cogs not running just now
+
+' Local Variables:
+' @local cogIdx - the cog being checked, 0..LAST_COG_ID
+
+    freeCount := 0
+    repeat cogIdx from 0 to LAST_COG_ID
+        if cogchk(cogIdx) == FALSE
+            freeCount += 1
 
 CON { --- Internal Methods --- }
 

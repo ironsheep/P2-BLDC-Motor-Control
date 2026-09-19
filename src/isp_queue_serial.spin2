@@ -42,6 +42,9 @@ CON { driver config values }
 
     MAX_COMMAND_PARTS = 10      ' count, raw string, cmdStr, eCmd, 6 paramValues
 
+    RX_POLL_MS = 100            ' the RX task's receive timeout: how often, with no input, it checks for EXIT
+    RX_EXIT_WAIT_MS = 250       ' bound on the RX task's EXIT acknowledgement (RX_POLL_MS plus margin)
+
 CON { test values }
 {
   CLK_FREQ = 270_000_000                                        ' system freq as a constant
@@ -72,6 +75,8 @@ nRxByteMax      long    0
 bTestMode       long    FALSE
 
 ' TASK use variables
+bRxExitReq      long    FALSE   ' stop() asks the RX task to exit (PL-41: a printing cog is never stopped outright)
+bRxParked       long    FALSE   ' the RX task has exited its loop and parked with no output
 taskStack       long    0[STACK_SIZE_LONGS]
 endStackMark    long    DO_NOT_WRITE_MARK
 
@@ -167,23 +172,38 @@ PUB startx(rxpin, txpin, baud, pullup)
     prepStackForCheck() ' for our internal test use
 
     ' start our rx task in own cog
+    bRxExitReq := FALSE
+    bRxParked := FALSE
     rxCogId := cogspin(newcog, TaskSerialRx(@serialRxBffr, RX_CHR_Q_MAX_BYTES), @taskStack)
-    if rxCogId == -1    ' did fail?
+    if rxCogId < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
+        rxCogId := 0    ' keep the "not started" sentinel
         debug("!! ERROR filed to start RX-QUE task")
+    else
+        rxCogId += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
 
-PUB stop()
+PUB stop() | startMs
 '' Release the serial pins and free up the rcvr cog
 ''
+
+' Local Variables:
+' @local startMs - getms() when the wait for the RX task's EXIT acknowledgement began
+
+    ' free the cog used: the RX task prints, so it is asked to exit and park first (PL-41), and is
+    '  stopped anyway, with a note, if it does not answer within RX_EXIT_WAIT_MS
+    if rxCogId
+        bRxExitReq := TRUE
+        startMs := getms()
+        repeat while (bRxParked == FALSE) and ((getms() - startMs) < RX_EXIT_WAIT_MS)
+            waitms(10)
+        if bRxParked == FALSE
+            debug("! ERROR: RX-QUE task did not acknowledge EXIT; stopping anyway")
+        cogstop(rxCogId - 1)
+        rxCogId := 0
 
     serialChan.rxflush()   ' git rid of any pending input
     ' free the pins used
     pinf(pinRx)    ' de-assert
     pinf(pinTx)    ' de-assert
-
-    ' free the cog used
-    if(rxCogId)
-        cogstop(rxCogId - 1)
-        rxCogId := 0
 
 CON { ----- Control Changes Interface ----- }
 
@@ -492,7 +512,7 @@ PRI TaskSerialRx(pRxBffr, lenRxBffr)
     if bTestMode
         ' run loop (test-version for now)
         debug("TASK[Rx] ** TEST LOOP Running **")
-        repeat
+        repeat until bRxExitReq
             checkStack()
             if (eTestCtrl == CT_PLACE_STR)
                 eTestCtrl := CT_IDLE
@@ -507,12 +527,17 @@ PRI TaskSerialRx(pRxBffr, lenRxBffr)
                 showTestState(eTestCtrlPrior, eTestCtrl)
                 eTestCtrlPrior := eTestCtrl
     else
-        ' read serial input forever placing chars in RX Circ Queue
+        ' read serial input until asked to exit, placing chars in RX Circ Queue
         debug("TASK[Rx] ** Live LOOP rcvg fm serial **")
-        repeat
-            nTaskChr := serialChan.rxtime(1000)
+        repeat until bRxExitReq
+            nTaskChr := serialChan.rxtime(RX_POLL_MS)
             if (nTaskChr <> -1)
                 bTskEnqueueChar(nTaskChr)
+
+    ' EXIT: acknowledge, then park with no output until stop() stops this cog
+    bRxParked := TRUE
+    repeat
+        waitms(1000)
 
 PRI tskFakeRxStr(pStr) | nIdx, nStatusValue
 ' place string into buffer as if it was received

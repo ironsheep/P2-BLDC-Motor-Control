@@ -1362,6 +1362,14 @@ Recovered records are flagged in their proving lines and listed in a new sheet s
 
 ### PL-41 -- the debug stream corrupts when bench binaries start and stop cogs in quick succession
 
+> **DESIGNED OUT 2026-09-18 («#3543»); run-time proof owed to Visit 6.** Design and as-built record:
+> `DOCs/plans/COG-LIFECYCLE-DESIGN.md`. A cog that may print is never stopped outright (the RX task of
+> `isp_queue_serial` gained the front cog's EXIT protocol; the joystick and button tasks no longer print);
+> every cog start and stop in the six bench programs sits in a `benchLog` quiet window; free cogs are
+> counted with `COGCHK()`, not by starting spacers; t0's three exhaustion cells share one occupancy. No
+> authored file allocates a lock. Proof: a t0 log (and each bench log) with no run-together `CogN` prefix
+> and no truncated record.
+
 **Found 2026-09-14 in Visit 1.** Every instance sits in a phase that starts or stops several cogs
 within milliseconds.
 
@@ -3799,6 +3807,11 @@ is measured -- a 10 ft stop rests 1 tick past its 529-tick target, worst of 4 (`
 `debug_260917-173141.log:7651-7652, :7676`). The fault-API pair stayed NOMEAS for a different reason: PL-86.
 
 ### PL-85 -- t0's cog bursts truncate DEBUG records ON THE WIRE; a verdict was lost and only a USB capture recovered it
+
+> **DESIGNED OUT 2026-09-18 («#3543»), with PL-41; run-time proof owed to Visit 6.** t0 no longer makes the
+> bursts this entry measured: `countFreeCogs()` uses `COGCHK()` and starts nothing, T0-8 / T0-15b / T0-22
+> share one occupy burst and one release burst (`runExhaustionPhase()`), and cog 0 prints nothing across any
+> cog start or stop (2 ms before; 10 ms after a start). Cell ids, criteria and record formats are unchanged.
 
 **Found 2026-09-17 at Visit 5**, raised by Stephen from the log before I read it. **Harness defect, and
 it is a TEST SHAPE defect, not a terminal or driver one.**

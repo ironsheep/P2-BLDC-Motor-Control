@@ -146,7 +146,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 9                                        ' hand-bumped whenever this file changes
+    SRC_REV     = 10                                       ' hand-bumped whenever this file changes
     FMT_VERSION = 7                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG; 4: phase C adds SIGNOFF-DECL and SIGNOFF sf 1; 5: phase D adds BC-STEER, BC-BRAKE and four sign-off cells; 6: task 3539 -- removed BC-STEER's "aborted" field (replaced by "drive_done") and BC-BRAKE's "abort" field: every trap used to capture a normal return is gone, so there is nothing left to name as aborted; 7: task 3560 -- adds BC-STEERERR and cell R16-CHAR-STEERERR, no existing record changes shape)
 
 CON { timing }
@@ -267,10 +267,10 @@ CON ' ---- Motor-Side / Result Enums ----
 
 CON { record widths -- every numeric field is clamped to one of these }
 
-    LIM_TINY  = 999                                         ' prints at most 4 bytes: -999
-    LIM_SMALL = 99_999                                      ' prints at most 7 bytes: -99_999
-    LIM_MID   = 9_999_999                                   ' prints at most 10 bytes: -9_999_999
-    LIM_BIG   = 999_999_999                                 ' prints at most 12 bytes: -999_999_999
+    LIM_TINY  = benchLog.LIM_TINY  ' prints at most 4 bytes: -999
+    LIM_SMALL = benchLog.LIM_SMALL  ' prints at most 7 bytes: -99_999
+    LIM_MID   = benchLog.LIM_MID  ' prints at most 10 bytes: -9_999_999
+    LIM_BIG   = benchLog.LIM_BIG  ' prints at most 12 bytes: -999_999_999
 
     ' token field length limits (a longer token prints as "?")
     TOKMAX_MOTOR   = 5
@@ -286,10 +286,10 @@ CON { record widths -- every numeric field is clamped to one of these }
 
 CON { record assembly buffer }
 
-    LINE_BUF_SIZE    = 640
-    MAX_DEC_DIGITS   = 11
-    DEC_RADIX        = 10
-    DIGITS_PER_GROUP = 3
+    LINE_BUF_SIZE    = benchLog.LINE_BUF_SIZE
+    MAX_DEC_DIGITS   = benchLog.MAX_DEC_DIGITS
+    DEC_RADIX        = benchLog.DEC_RADIX
+    DIGITS_PER_GROUP = benchLog.DIGITS_PER_GROUP
 
 CON ' ---- Sign-off Verdicts ----
   ' Task 3521 phase C. Record contract: DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1, sign-off format 1.
@@ -594,6 +594,7 @@ OBJ { objects under test }
     wheelL : "isp_bldc_motor"                                ' left wheel instance
     wheelR : "isp_bldc_motor"                                ' right wheel instance
     steering : "isp_steering_2wheel"                        ' task 3521 phase D: two-wheel object under test; never running while wheelL/wheelR are (PL-18)
+    benchLog : "isp_bench_log"                              ' the cog-event quiet window (PL-41, PL-85)
 
 DAT { record assembly state }
 
@@ -913,7 +914,9 @@ PUB main() | trapCode, bWdStarted
 ' @local bWdStarted - TRUE when cogspin() gave the watchdog a cog id 0..MAX_COG_ID
 
     wdStackSentinel := WD_STACK_SENTINEL                    ' in place BEFORE the cog that could overrun it starts
+    benchLog.cogEventBegin()
     wdCogId := cogspin(NEWCOG, watchdog(), @wdStack)        ' task 3521 phase B: watch cog 0 from here on
+    benchLog.cogEventEnd()
     bWdStarted := (wdCogId >= 0) and (wdCogId <= MAX_COG_ID)
     beat(CP_MAIN_INIT)
     emitWatchdogStart(bWdStarted, wdCogId)
@@ -942,6 +945,7 @@ PUB main() | trapCode, bWdStarted
     ' lock), and it is the same one test_bench_scan.spin2 carries.
     if wdDeclaring == FALSE
         if bWdStarted
+            benchLog.cogEventBegin()
             cogstop(wdCogId)
         shutdownMotors()                                    ' EVERY non-watchdog path: both wheels stop()
         steerStop()                                         ' task 3521 phase D: and the steering object's two, if an abort left them running
@@ -1274,9 +1278,13 @@ PRI startSide(side) : startedCog, bReady
     bReady := FALSE
     beat(CP_LIB_START)
     if side == SIDE_RIGHT
+        benchLog.cogEventBegin()
         startedCog := wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+        benchLog.cogEventEnd()
     else
+        benchLog.cogEventBegin()
         startedCog := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+        benchLog.cogEventEnd()
     beat(CP_LIB_START)
     if startedCog >= 0
         bReady := bWaitUntilReady(side)
@@ -1620,9 +1628,11 @@ PRI shutdownMotors()
 ' only: it beats. The watchdog calls wheelL.stop()/wheelR.stop() directly instead.
 
     beat(CP_LIB_STOP_LEFT)
+    benchLog.cogEventBegin()
     wheelL.stop()
     beat(CP_LIB_STOP_LEFT)
     beat(CP_LIB_STOP_RIGHT)
+    benchLog.cogEventBegin()
     wheelR.stop()
     beat(CP_LIB_STOP_RIGHT)
 
@@ -1915,7 +1925,7 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
     shutdownMotors()                                        ' PL-18: release wheelL/wheelR's pin claims before the steering object claims them
 
     ' (a) R10-CHAR-STEERFAIL
-    baseline := countFreeCogs()
+    baseline := benchLog.countFreeCogs()
     steerFailBaseline := baseline
     bSteerFailCounted := TRUE
     if baseline >= STEERFAIL_MIN_BASELINE
@@ -1923,7 +1933,9 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
         steerFailSpacers := spacersStarted
         bSteerFailAttempted := TRUE
         beat(CP_LIB_STEER_START)
+        benchLog.cogEventBegin()
         startRet := steering.start(LEFT_TEST_BASE, RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TEST_DET_MODE)
+        benchLog.cogEventEnd()
         beat(CP_LIB_STEER_START)
         steerFailReturn := startRet
         beat(CP_LIB_STEER_ERROR)
@@ -1931,7 +1943,7 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
         beat(CP_LIB_STEER_ERROR)
         releaseSpacers(spacersStarted)
         beat(CP_STEER)
-        steerFailFreeAfter := countFreeCogs()
+        steerFailFreeAfter := benchLog.countFreeCogs()
         bSteerFailMeasured := (spacersStarted == baseline - 1)
         ' P6 / PL-36: check FIRST, clean up AFTER -- no steerStop() runs before this check, or it
         ' would release a leaked claim and mask exactly the leak this cell exists to catch
@@ -1942,7 +1954,9 @@ PRI runSteeringPhase() | baseline, spacersStarted, startRet, ltTicksBefore, rtTi
     ' (b) R10-CHAR-STEERSTART
     beat(CP_STEER)
     beat(CP_LIB_STEER_START)
+    benchLog.cogEventBegin()
     startRet := steering.start(LEFT_TEST_BASE, RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TEST_DET_MODE)
+    benchLog.cogEventEnd()
     beat(CP_LIB_STEER_START)
     steerStartReturn := startRet
     bSteerStartRan := TRUE
@@ -2074,16 +2088,9 @@ PRI steerStop()
 ' steering.stop() directly instead.
 
     beat(CP_LIB_STEER_STOP)
+    benchLog.cogEventBegin()
     steering.stop()
     beat(CP_LIB_STEER_STOP)
-
-PRI countFreeCogs() : freeCount
-' Count free cogs by starting spacers until one fails, then stopping them (design sec A.5-a).
-'
-' @returns freeCount - how many spacers started
-
-    freeCount := occupySpacers(SPACER_MAX)
-    releaseSpacers(freeCount)
 
 PRI occupySpacers(maxSpacers) : startedCount | spawnedCog
 ' Start up to maxSpacers idle spacer cogs, stopping at the first cogspin() that returns < 0. The
@@ -2095,6 +2102,7 @@ PRI occupySpacers(maxSpacers) : startedCount | spawnedCog
 ' @local spawnedCog - cogspin()'s return (not newCog: names are case-insensitive, and NEWCOG is built in)
 
     startedCount := 0
+    benchLog.cogEventBegin()                                ' the whole burst is one cog event (PL-85)
     repeat
         beat(CP_SPACER_LOOP)
         if (startedCount >= maxSpacers) or (startedCount >= SPACER_MAX)
@@ -2104,6 +2112,7 @@ PRI occupySpacers(maxSpacers) : startedCount | spawnedCog
             quit
         spacerCog[startedCount] := spawnedCog
         startedCount += 1
+    benchLog.cogEventEnd()
 
 PRI releaseSpacers(spacerCount) | spacerIdx
 ' Stop the first spacerCount spacer cogs.
@@ -2113,9 +2122,11 @@ PRI releaseSpacers(spacerCount) | spacerIdx
 ' @local spacerIdx - index into spacerCog
 
     if spacerCount > 0                                      ' repeat 0 to -1 would count down, not skip
+        benchLog.cogEventBegin()                            ' the whole burst is one cog event (PL-85)
         repeat spacerIdx from 0 to spacerCount - 1
             beat(CP_SPACER_LOOP)
             cogstop(spacerCog[spacerIdx])
+        benchLog.cogEventEnd()
 
 PRI spacerIdle()
 ' A spacer cog's whole life: idle until cogstop(). Runs in the spacer cog; never beats.
@@ -2243,9 +2254,13 @@ PRI brakeStart(side) : startRet
 
     beat(CP_LIB_BRAKE_START)
     if side == SIDE_RIGHT
+        benchLog.cogEventBegin()
         startRet := wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+        benchLog.cogEventEnd()
     else
+        benchLog.cogEventBegin()
         startRet := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+        benchLog.cogEventEnd()
     beat(CP_LIB_BRAKE_START)
 
 PRI brakeHoldAtStop(side, bEnable)
@@ -3400,6 +3415,7 @@ PRI declareStall(msSinceBeat)
 
     wdDeclaring := TRUE
     wdSnapshot()
+    benchLog.cogEventBegin()
     wheelL.stop()
     wheelR.stop()
     steering.stop()

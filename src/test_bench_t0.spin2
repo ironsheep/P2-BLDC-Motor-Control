@@ -77,6 +77,11 @@
 ''               the empty group is refused with ERR_BOARD_NOT_DETECTED and leaks nothing.
 ''               18 Sep 2026 -- task 3517, SRC_REV 5: style guide 5.4.1 -- waitReady() is bWaitReady(). No
 ''               line changes.
+''               18 Sep 2026 -- task 3543, SRC_REV 7 (PL-41, PL-85): the cog bursts that cut records at
+''               Visit 5 are designed out. benchLog.countFreeCogs() counts with COGCHK() and starts nothing; T0-8,
+''               T0-15b and T0-22 share one occupancy in runExhaustionPhase(), run last (T0-22 moves there,
+''               a new T0-EXH line brackets the phase); every start()/stop() and spacer burst sits in a
+''               benchLog cog-event quiet window. Every cell id, criterion and record format is unchanged.
 ''
 '' =================================================================================================
 
@@ -167,7 +172,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 6                                                ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 7                                               ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -309,8 +314,9 @@ OBJ { objects under test }
     motorB  : "isp_bldc_motor"                                  ' second instance, T0-7 overlap probe only
     motorP  : "isp_bldc_motor"                                  ' T0-17 (PL-48) only: an instance nothing else has touched
     steer   : "isp_steering_2wheel"                             ' T0-18 (never started first) and T0-19 (cog count)
+    benchLog : "isp_bench_log"                                  ' the cog-event quiet window (PL-41, PL-85)
 
-VAR { cog-exhaustion probe stacks (T0-8, T0-15, T0-22) }
+VAR { cog-exhaustion spacer stacks (runExhaustionPhase(): T0-8, T0-15b, T0-22) }
 
     LONG    spacerStacks[MAX_SPACER_COGS * SPACER_STACK_LONGS]
     LONG    heldSpacerId[MAX_SPACER_COGS]                       ' occupySpacers() / releaseSpacers(): the spacers held across a start
@@ -421,29 +427,25 @@ PRI runTier0Tests()
     testT0_15c()
     testT0_15d()
 
-    ' T0-16..T0-22 (task 3560): the 6.0.0 start, pin, steering, current-sense and front-cog cells. Each
-    ' releases every claim and cog it takes. T0-22 holds all but one cog across a start, then frees them.
+    ' T0-16..T0-23 (task 3560): the 6.0.0 start, pin, steering, current-sense and no-board cells. Each
+    ' releases every claim and cog it takes. T0-22 (front-cog failure) runs in the exhaustion phase below.
     testT0_16()
     testT0_17()
     testT0_19()
     testT0_20()
     testT0_21()
-    testT0_22()
     testT0_23()
 
-    ' T0-10 runs BEFORE T0-8 deliberately. Both drive the same motor object,
-    ' and T0-8 is the destructive one: it occupies every spare cog so that
-    ' start() must fail, which leaves the object half-initialised. Run in the
-    ' other order, T0-10's own start() then returns 0 and its ADC reading is
-    ' never taken -- observed in the 2026-09-10 bench run. Destructive tests
-    ' go last.
+    ' T0-10 runs BEFORE the exhaustion phase deliberately. Both drive the same motor object,
+    ' and the phase is destructive: it occupies every spare cog so that start() must fail,
+    ' which leaves the object half-initialised. Run in the other order, T0-10's own start()
+    ' then returns 0 and its ADC reading is never taken -- observed in the 2026-09-10 bench
+    ' run. Destructive tests go last.
     testT0_10()
-    testT0_8()
 
-    ' R1-T0-EXHAUST (T0-15b) runs last of all, after T0-8's slot, per design SS H.1: it is its
-    ' own, harsher cog-exhaustion probe (a real start() under exhaustion, not T0-8's) and must
-    ' never leave fewer free cogs than it found, so nothing after it can rely on a spare cog.
-    testT0_15b()
+    ' The cog-exhaustion cells T0-8, R1-T0-EXHAUST (T0-15b, design SS H.1: never leaves fewer free
+    ' cogs than it found) and R16-T0-FRONTFAIL (T0-22) run last, sharing ONE occupancy (PL-85).
+    runExhaustionPhase()
 #endif
 
 PRI testT0_1() | eBoardRev, rSenseOhms, pBoardStr, deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt
@@ -533,7 +535,9 @@ PRI testT0_3() | startResult, bReady, eM, eCm, eMm, ticksM, ticksCm, ticksMm, bA
 ' @local bKeep - R16-T0-LIMKEEP's measured value and verdict
 
     debug("T0-3,begin")
+    benchLog.cogEventBegin()
     startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
     bReady := bWaitReady(startResult)
     debug("T0-3,start_return,", sdec_(startResult), ",ready,", zstr_(bReady ? @"TRUE" : @"FALSE"))
 
@@ -570,6 +574,7 @@ PRI testT0_3() | startResult, bReady, eM, eCm, eMm, ticksM, ticksCm, ticksMm, bA
     else
         debug("SIGNOFF,sf,1,bin,T0,cell,R4-T0-1M-TICKS,task,3502,motor,NONE,crit,DDU_M_TICKS,measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
         debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-LIMKEEP,task,3554,motor,RIGHT,crit,REJECT_KEEPS_LIMIT,measured,NA,lo,TRUE,hi,TRUE,units,BOOL,n,0,verdict,NOMEAS")
+    benchLog.cogEventBegin()
     motor.stop()
     motor.getError()                                        ' drain this cog's first recorded code, so a later cell reads only its own
 
@@ -805,7 +810,9 @@ PRI testT0_11() | cycleIdx, validCount, startResult, rawMotorCog, readyMs, sampl
     debug("T0-11,begin")
     validCount := 0
     repeat cycleIdx from 0 to 4
+        benchLog.cogEventBegin()
         startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+        benchLog.cogEventEnd()
         rawMotorCog := motor.testGetMotorCog()
         readyMs := 0
         repeat while (motor.isReady() == FALSE) and (readyMs < 2000)
@@ -832,6 +839,7 @@ PRI testT0_11() | cycleIdx, validCount, startResult, rawMotorCog, readyMs, sampl
             validCount += 1
         else
             debug("T0-11,cycle,", udec_(cycleIdx), ",skipped,not_ready,start_result,", sdec_(startResult), ",raw_motor_cog,", sdec_(rawMotorCog))
+        benchLog.cogEventBegin()
         motor.stop()
         waitms(500)
 
@@ -866,7 +874,9 @@ PRI testT0_13() | startResult, rawMotorCog, readyMs, missedCount, illegalCount, 
 ' @local bPass - this cell's verdict
 
     debug("T0-13,begin")
+    benchLog.cogEventBegin()
     startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
     rawMotorCog := motor.testGetMotorCog()
     readyMs := 0
     repeat while (motor.isReady() == FALSE) and (readyMs < 2000)
@@ -883,6 +893,7 @@ PRI testT0_13() | startResult, rawMotorCog, readyMs, missedCount, illegalCount, 
     else
         debug("T0-13,end,not_ready,start_result,", sdec_(startResult), ",raw_motor_cog,", sdec_(rawMotorCog))
         debug("SIGNOFF,sf,1,bin,T0,cell,R3-T0-STOPPED,task,3501,motor,NONE,crit,STOPPED_COUNTS,measured,NA,lo,", sdec_(SF_STOP_LO), ",hi,", sdec_(SF_STOP_HI), ",units,COUNT,n,0,verdict,NOMEAS")
+    benchLog.cogEventBegin()
     motor.stop()
 
 PRI testT0_14a() | baseIdx, pinBase, iter, eBoardRev, notRevBCount, pMotorTok
@@ -900,6 +911,7 @@ PRI testT0_14a() | baseIdx, pinBase, iter, eBoardRev, notRevBCount, pMotorTok
 ' @local pMotorTok - "RIGHT" for P16, "LEFT" for P32 (the bench boards), the record's motor field
 
     debug("T0-14,begin,repeat")
+    benchLog.cogEventBegin()
     motorA.stop()
     motorB.stop()
 
@@ -918,6 +930,7 @@ PRI testT0_14a() | baseIdx, pinBase, iter, eBoardRev, notRevBCount, pMotorTok
                 notRevBCount += 1
         debug("T0-14a,base,", udec_(pinBase), ",not_revb_count,", udec_(notRevBCount))
         debug("SIGNOFF,sf,1,bin,T0,cell,R2-T0-REPEAT,task,3500,motor,", zstr_(pMotorTok), ",crit,READS_NOT_REVB,measured,", sdec_(notRevBCount), ",lo,", sdec_(SF_REPEAT_LO), ",hi,", sdec_(SF_REPEAT_HI), ",units,COUNT,n,32,verdict,", zstr_((notRevBCount == 0) ? @"PASS" : @"FAIL"))
+    benchLog.cogEventBegin()
     motor.stop()
 
 PRI testT0_14b() | baseIdx, pinBase, otherBase, deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, frameCnt, pinAdcX, eBoardRev, startResult, readyMs, bDirtyIsRevB, pMotorTok
@@ -962,6 +975,7 @@ PRI testT0_14b() | baseIdx, pinBase, otherBase, deadGap, pwmLimit, dutyMin, duty
 ' @local pMotorTok - "RIGHT" for P16, "LEFT" for P32 (the bench boards), the record's motor field
 
     debug("T0-14,begin,dirty")
+    benchLog.cogEventBegin()
     motorA.stop()
     motorB.stop()
 
@@ -987,18 +1001,24 @@ PRI testT0_14b() | baseIdx, pinBase, otherBase, deadGap, pwmLimit, dutyMin, duty
         bDirtyIsRevB := (eBoardRev == motor.REV_B)
         debug("T0-14b,base,", udec_(pinBase), ",dirty_read,", udec_(eBoardRev))
 
+        benchLog.cogEventBegin()
         startResult := motor.start(pinBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+        benchLog.cogEventEnd()
         readyMs := 0
         repeat while (motor.isReady() == FALSE) and (readyMs < 2000)
             waitms(10)
             readyMs += 10
+        benchLog.cogEventBegin()
         motor.stop()
 
+        benchLog.cogEventBegin()
         motorA.start(otherBase, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+        benchLog.cogEventEnd()
         readyMs := 0
         repeat while (motorA.isReady() == FALSE) and (readyMs < 2000)
             waitms(10)
             readyMs += 10
+        benchLog.cogEventBegin()
         motorA.stop()
 
         motor.testSetup(pinBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
@@ -1006,6 +1026,7 @@ PRI testT0_14b() | baseIdx, pinBase, otherBase, deadGap, pwmLimit, dutyMin, duty
         debug("T0-14b,base,", udec_(pinBase), ",poststart_read,", udec_(eBoardRev))
 
         debug("SIGNOFF,sf,1,bin,T0,cell,R2-T0-DIRTY,task,3500,motor,", zstr_(pMotorTok), ",crit,POSTSTOP_REVB,measured,", zstr_(bDirtyIsRevB ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bDirtyIsRevB ? @"PASS" : @"FAIL"))
+    benchLog.cogEventBegin()
     motor.stop()
 
 PRI testT0_14c() | eBoardRev, bEmpty
@@ -1026,30 +1047,8 @@ PRI testT0_14c() | eBoardRev, bEmpty
     bEmpty := (eBoardRev == motor.REV_Unknown)
     debug("T0-14c,base,P0_P15,read,", udec_(eBoardRev))
     debug("SIGNOFF,sf,1,bin,T0,cell,R2-T0-EMPTY,task,3500,motor,NONE,crit,EMPTY_NODET,measured,", zstr_(bEmpty ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bEmpty ? @"PASS" : @"FAIL"))
+    benchLog.cogEventBegin()
     motor.stop()
-
-PRI countFreeCogs() : freeCount | idx, spareCogId, spareId[MAX_SPACER_COGS]
-' Shared helper for T0-15: count free cogs the SS A.5-a way -- start spacer
-' cogs with cogspin() until one returns < 0 (not == -1: the library documents
-' the $8000_xxxx exhaustion form), record the count, then stop them all.
-' Reuses the T0-8/T0-15 spacerStacks buffer; safe because every caller of
-' this helper (and T0-8 itself) runs strictly sequentially, never overlapping
-' in time with another cog-exhaustion probe.
-'
-' @returns freeCount - number of cogs that could be started just now
-' @local idx - loop index
-' @local spareCogId - cogspin()'s return for the current spacer attempt
-' @local spareId - cog ids of the spacers this call started, so they can be stopped
-
-    freeCount := 0
-    repeat idx from 0 to MAX_SPACER_COGS - 1
-        spareCogId := cogspin(NEWCOG, spacerLoop(), @spacerStacks[idx * SPACER_STACK_LONGS])
-        if spareCogId < 0
-            quit
-        spareId[freeCount] := spareCogId
-        freeCount += 1
-    repeat idx from 0 to freeCount - 1
-        cogstop(spareId[idx])
 
 PRI testT0_15a() | startResult, rawMotorCog, bPass
 ' R1-T0-START (task 3499): start() on P16, called UNTRAPPED (task 3539) --
@@ -1066,11 +1065,14 @@ PRI testT0_15a() | startResult, rawMotorCog, bPass
 ' @local bPass - this cell's measured value and verdict
 
     debug("T0-15,begin,start")
+    benchLog.cogEventBegin()
     startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
     rawMotorCog := motor.testGetMotorCog()
     bPass := (startResult >= SF_COG_LO) and (startResult <= SF_COG_HI) and (startResult == rawMotorCog - 1)
     debug("T0-15a,start_return,", sdec_(startResult), ",raw_motor_cog,", sdec_(rawMotorCog))
     debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-START,task,3499,motor,NONE,crit,RET_EQ_COG_M1,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
+    benchLog.cogEventBegin()
     motor.stop()
 
 PRI testT0_15c() | baseline, startResult1, free1, startResult2, rawMotorCog2, free2, free3, diffFree, bPass
@@ -1101,15 +1103,20 @@ PRI testT0_15c() | baseline, startResult1, free1, startResult2, rawMotorCog2, fr
 
     debug("T0-15,begin,restart")
     bRestartStopValid := FALSE
-    baseline := countFreeCogs()
+    baseline := benchLog.countFreeCogs()
+    benchLog.cogEventBegin()
     startResult1 := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
-    free1 := countFreeCogs()
+    benchLog.cogEventEnd()
+    free1 := benchLog.countFreeCogs()
+    benchLog.cogEventBegin()
     startResult2 := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
     rawMotorCog2 := motor.testGetMotorCog()
-    free2 := countFreeCogs()
+    free2 := benchLog.countFreeCogs()
+    benchLog.cogEventBegin()
     motor.stop()
     bRestartStopValid := (startResult1 >= 0) and (startResult2 >= 0) and (rawMotorCog2 == startResult2 + 1)
-    free3 := countFreeCogs()
+    free3 := benchLog.countFreeCogs()
     diffFree := abs(free2 - free1) + abs(free3 - baseline)
     bPass := (diffFree == SF_RESTART_LO) and (free1 == baseline - SF_START_COGS)
     debug("T0-15c,baseline,", udec_(baseline), ",free1,", udec_(free1), ",start1,", sdec_(startResult1), ",free2,", udec_(free2), ",start2,", sdec_(startResult2), ",raw_motor_cog2,", sdec_(rawMotorCog2), ",free3,", udec_(free3))
@@ -1141,83 +1148,124 @@ PRI testT0_15d() | bReady, bStopped, eState, bPass
     else
         debug("SIGNOFF,sf,1,bin,T0,cell,R10-T0-STOPREADY,task,3533,motor,NONE,crit,STOP_NOT_READY,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
-PRI testT0_8() | spacerIdx, spacerCogId, spacerCount, startResult, spacerId[MAX_SPACER_COGS]
-' C, AD: occupy every other cog, then call the real start() (not testSetup())
-' and print its raw return. coginit() returns the documented $8000_xxxx form
-' on failure (isp_bldc_motor.spin2:110-113), not a bare -1 -- the spacer-count
-' loop below tests cogspin()'s own return the same way (< 0, not == -1),
-' since a P2 cogspin() failure return uses the identical negative-value
-' convention. start() itself still returns -1 on failure specifically
-' (:116), which is what this test's SIGNOFF (R1-T0-EXHAUST, T0-15b) checks
-' -- this test (T0-8) exists to occupy every cog and print the raw value, not
-' to judge it; R1-T0-EXHAUST is the harsher, later probe that also confirms
-' no cog leaked.
+PRI runExhaustionPhase() | baseline, cogsOccupied, heldCount, startT15, rawCogT15, startT22, codeT22, rawCogT22, freeAfter
+' The three cog-exhaustion cells share ONE occupancy (PL-85: each used to start and stop seven spacers of
+' its own, and every damaged record sat beside such a burst). One occupy burst, then T0-8 and T0-15b with
+' every spare cog held; one spacer released so exactly one cog is free for T0-22's start; one release
+' burst; then one free-cog count that both T0-15b and T0-22 judge (free_after == baseline, as before).
+' Destructive: a start() that fails can leave the object half-initialised, so this runs last.
+
+' Local Variables:
+' @local baseline - free cogs before the occupancy
+' @local cogsOccupied - spacers the occupancy started (every spare cog)
+' @local heldCount - spacers held (every spare cog, then one fewer for T0-22)
+' @local startT15 - T0-15b's start() return under total exhaustion
+' @local rawCogT15 - testGetMotorCog() after T0-15b's start()
+' @local startT22 - T0-22's start() return with one cog free
+' @local codeT22 - getError() after T0-22's start()
+' @local rawCogT22 - testGetMotorCog() after T0-22's start()
+' @local freeAfter - free cogs after every spacer is released
+
+    debug("T0-EXH,begin,one_occupancy,cells,T0-8,T0-15b,T0-22")
+    benchLog.cogEventBegin()
+    motor.stop()
+    motorA.stop()
+    motor.getError()
+    baseline := benchLog.countFreeCogs()
+    cogsOccupied := occupySpacers(MAX_SPACER_COGS)
+    heldCount := cogsOccupied
+
+    testT0_8(heldCount)
+    startT15, rawCogT15 := testT0_15bStart()
+
+    heldCount := releaseOneSpacer(heldCount)
+    startT22, codeT22, rawCogT22 := testT0_22Start()
+
+    releaseSpacers(heldCount)
+    freeAfter := benchLog.countFreeCogs()
+    debug("T0-EXH,end,baseline,", udec_(baseline), ",held_for_t22,", udec_(heldCount), ",free_after,", udec_(freeAfter))
+
+    testT0_15bJudge(cogsOccupied, baseline, startT15, rawCogT15, freeAfter)
+    testT0_22Judge(baseline, heldCount, startT22, codeT22, rawCogT22, freeAfter)
+
+PRI testT0_8(heldCount) | startResult
+' C, AD: with every spare cog occupied (runExhaustionPhase()), call the real start() (not testSetup())
+' and print its raw return. coginit() returns the documented $8000_xxxx form on failure, not a bare -1;
+' start() itself returns -1 on failure specifically, which is what R1-T0-EXHAUST (T0-15b) checks. This
+' test exists to print the raw value, not to judge it; R1-T0-EXHAUST is the harsher probe that also
+' confirms no cog leaked.
 '
-' T0-8 stays after every non-destructive test (T0-1..T0-7, T0-10, T0-11,
-' T0-13, T0-14a/b/c, T0-15a/c/d): it occupies every spare cog so start()
-' must fail, which leaves the object half-initialised. R1-T0-EXHAUST
-' (T0-15b) is destructive in the same way and runs even later, after T0-8's
-' own spacers have been released again -- see main()'s ordering comment.
-'
-' @local spacerIdx - loop index over the spacer-cog array
-' @local spacerCogId - cogspin()'s return for the current spacer attempt
-' @local spacerCount - number of spacer cogs actually started
+' @param heldCount - spacers holding every spare cog
+
+' Local Variables:
 ' @local startResult - start()'s raw return value under cog exhaustion, called UNTRAPPED
 '                       (task 3539): cog exhaustion is a normal -1 return, not an abort, so
 '                       nothing here needs a trap; a genuine abort is caught by main()'s single
 '                       top-level trap instead
-' @local spacerId - cog ids of the spacers this test started
 
     debug("T0-8,begin")
-    spacerCount := 0
-    repeat spacerIdx from 0 to MAX_SPACER_COGS - 1
-        spacerCogId := cogspin(NEWCOG, spacerLoop(), @spacerStacks[spacerIdx * SPACER_STACK_LONGS])
-        if spacerCogId < 0
-            quit
-        spacerId[spacerIdx] := spacerCogId
-        spacerCount += 1
-
+    benchLog.cogEventBegin()
     startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
-    debug("T0-8,end,cogs_occupied,", udec_(spacerCount), ",start_return,", sdec_(startResult))
+    benchLog.cogEventEnd()
+    debug("T0-8,end,cogs_occupied,", udec_(heldCount), ",start_return,", sdec_(startResult))
 
     ' stop() unconditionally. A start() that returned -1 may STILL have gotten
     ' partway -- the 2026-09-10 run shows a driver cog reaching INIT on a call
     ' that reported failure -- so the object can be left half-initialised, and
     ' anything that starts it afterwards then fails too. Leave it clean.
+    benchLog.cogEventBegin()
     motor.stop()
 
-    repeat spacerIdx from 0 to spacerCount - 1
-        cogstop(spacerId[spacerIdx])
-
 PRI spacerLoop()
-' Idle forever -- exists only to occupy a cog so start() has none left (T0-8, T0-15b).
+' Idle forever -- exists only to occupy a cog so start() has none left (runExhaustionPhase()). It never
+' prints and holds no lock, so it may be stopped at any moment.
 '
 
     repeat
         waitms(1000)
 
 PRI occupySpacers(maxCount) : heldCount | spareCogId
-' Start up to maxCount spacer cogs and hold them in heldSpacerId[] until releaseSpacers() (T0-22).
+' Start up to maxCount spacer cogs and hold them in heldSpacerId[] until releaseSpacers(). The whole
+' burst is one cog event: nothing prints until it ends.
 '
 ' @param maxCount - the most spacers to start
 ' @returns heldCount - spacers now running
+
+' Local Variables:
 ' @local spareCogId - cogspin()'s return for the current attempt
 
     heldCount := 0
+    benchLog.cogEventBegin()
     repeat while heldCount < (maxCount <# MAX_SPACER_COGS)
         spareCogId := cogspin(NEWCOG, spacerLoop(), @spacerStacks[heldCount * SPACER_STACK_LONGS])
         if spareCogId < 0
             quit
         heldSpacerId[heldCount] := spareCogId
         heldCount += 1
+    benchLog.cogEventEnd()
+
+PRI releaseOneSpacer(heldCount) : stillHeld
+' Stop the last spacer occupySpacers() started, freeing exactly one cog.
+'
+' @param heldCount - spacers held now
+' @returns stillHeld - spacers held after this (heldCount - 1, or 0 when none was held)
+
+    stillHeld := heldCount
+    if stillHeld > 0
+        stillHeld -= 1
+        benchLog.cogEventBegin()
+        cogstop(heldSpacerId[stillHeld])
 
 PRI releaseSpacers(heldCount) | spacerIdx
-' Stop the first heldCount spacers occupySpacers() started.
+' Stop the first heldCount spacers occupySpacers() started, as one cog event.
 '
 ' @param heldCount - spacers to stop
+
+' Local Variables:
 ' @local spacerIdx - index into heldSpacerId[]
 
     if heldCount > 0                                        ' repeat 0 to -1 would count down, not skip
+        benchLog.cogEventBegin()
         repeat spacerIdx from 0 to heldCount - 1
             cogstop(heldSpacerId[spacerIdx])
 
@@ -1235,13 +1283,16 @@ PRI testT0_16() | baseline, startResult, eCode, rawMotorCog, freeAfter, bPass
 ' @local bPass - the cell's measured value and verdict
 
     debug("T0-16,begin,bad_group")
+    benchLog.cogEventBegin()
     motorA.stop()
     motorA.getError()
-    baseline := countFreeCogs()
+    baseline := benchLog.countFreeCogs()
+    benchLog.cogEventBegin()
     startResult := motorA.start(BAD_PIN_BASE, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
     eCode := motorA.getError()
     rawMotorCog := motorA.testGetMotorCog()
-    freeAfter := countFreeCogs()
+    freeAfter := benchLog.countFreeCogs()
     bPass := (startResult == -1) and (eCode == motorA.ERR_BAD_PIN_GROUP) and (rawMotorCog == 0) and (freeAfter == baseline)
     debug("T0-16,end,start_return,", sdec_(startResult), ",error,", sdec_(eCode), ",raw_motor_cog,", sdec_(rawMotorCog), ",baseline,", udec_(baseline), ",free_after,", udec_(freeAfter))
     debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-BADGROUP,task,3554,motor,NONE,crit,REJECT_NO_COG,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
@@ -1264,14 +1315,17 @@ PRI testT0_17() | markPins, legalBase, dirBefore, startResult, dirAfter, bPass
 ' @local bPass - the cell's measured value and verdict
 
     debug("T0-17,begin,pins_keep")
+    benchLog.cogEventBegin()
     motor.stop()
     markPins := PL48_MARK_BASE addpins PL48_MARK_SPAN
     wrpin(markPins, P_LOW_15K)
     pinlow(markPins)
     dirBefore := (DIRA >> PL48_MARK_SHIFT) & PL48_MARK_MASK
     legalBase := motorP.validBasePinForChoice(T0_MOTOR_BASE)
+    benchLog.cogEventBegin()
     startResult := motorP.start(legalBase, user.DRIVE_VOLTAGE, motorP.BRD_AUTO_DET)
     motorP.stop()
+    benchLog.cogEventEnd()
     dirAfter := (DIRA >> PL48_MARK_SHIFT) & PL48_MARK_MASK
     pinclear(markPins)
     bPass := (dirBefore == PL48_MARK_MASK) and (dirAfter == PL48_MARK_MASK) and (startResult >= SF_COG_LO) and (startResult <= SF_COG_HI)
@@ -1313,15 +1367,19 @@ PRI testT0_19() | baseline, startResult, freeRunning, freeStopped, bPass
 ' @local bPass - the cell's measured value and verdict
 
     debug("T0-19,begin,steer_cogs")
+    benchLog.cogEventBegin()
     motor.stop()
     motorA.stop()
     motorB.stop()
     motorP.stop()
-    baseline := countFreeCogs()
+    baseline := benchLog.countFreeCogs()
+    benchLog.cogEventBegin()
     startResult := steer.start(T0_SECOND_BASE, T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET, motor.BRD_AUTO_DET)
-    freeRunning := countFreeCogs()
+    benchLog.cogEventEnd()
+    freeRunning := benchLog.countFreeCogs()
+    benchLog.cogEventBegin()
     steer.stop()
-    freeStopped := countFreeCogs()
+    freeStopped := benchLog.countFreeCogs()
     steer.getError()
     bPass := (startResult >= SF_COG_LO) and (startResult <= SF_COG_HI) and (freeRunning == baseline - SF_STEER_COGS) and (freeStopped == baseline)
     debug("T0-19,end,start_return,", sdec_(startResult), ",baseline,", udec_(baseline), ",free_running,", udec_(freeRunning), ",free_stopped,", udec_(freeStopped))
@@ -1351,7 +1409,9 @@ PRI testT0_20() | baseIdx, pinBase, pMotorTok, startResult, sampleIdx, ampsSum, 
         else
             pinBase := T0_SECOND_BASE
             pMotorTok := @"LEFT"
+        benchLog.cogEventBegin()
         startResult := motor.start(pinBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+        benchLog.cogEventEnd()
         if bWaitReady(startResult)
             ampsSum := 0
             repeat sampleIdx from 1 to REST_SAMPLES
@@ -1365,6 +1425,7 @@ PRI testT0_20() | baseIdx, pinBase, pMotorTok, startResult, sampleIdx, ampsSum, 
         else
             debug("T0-20,base,", udec_(pinBase), ",not_ready,start_return,", sdec_(startResult))
             debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-RESTZERO,task,3556,motor,", zstr_(pMotorTok), ",crit,REST_AMPS_X10K,measured,NA,lo,", sdec_(SF_REST_LO), ",hi,", sdec_(SF_REST_HI), ",units,AMPS_X10K,n,0,verdict,NOMEAS")
+        benchLog.cogEventBegin()
         motor.stop()
     motor.getError()
 
@@ -1381,17 +1442,34 @@ PRI testT0_21() | eSetup, amps, watts, eCode, bPass
 ' @local bPass - the cell's measured value and verdict
 
     debug("T0-21,begin,no_board")
+    benchLog.cogEventBegin()
     motorA.stop()
     eSetup := motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
     motorA.getError()
     amps, watts := motorA.getCurrent()
     eCode := motorA.getError()
+    benchLog.cogEventBegin()
     motorA.stop()
     bPass := (eSetup == motorA.NO_ERROR) and (amps == 0) and (watts == 0) and (eCode == motorA.ERR_BOARD_NOT_DETECTED)
     debug("T0-21,end,setup_status,", sdec_(eSetup), ",amps,", sdec_(amps), ",watts,", sdec_(watts), ",error,", sdec_(eCode))
     debug("SIGNOFF,sf,1,bin,T0,cell,R16-T0-NOBOARD,task,3556,motor,NONE,crit,ZERO_AND_CODE,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
-PRI testT0_22() | baseline, heldCount, startResult, eCode, rawMotorCog, freeAfter, eClaim, bMeasured, bPass
+PRI testT0_22Start() : startResult, eCode, rawMotorCog
+' R16-T0-FRONTFAIL (task 3513), the start: runExhaustionPhase() holds all but one cog, so the driver takes
+' the last one and the front cog cannot launch. testT0_22Judge() judges it once the spacers are released.
+'
+' @returns startResult - start()'s return (expected -1)
+' @returns eCode - getError() after it (expected ERR_NO_FREE_COG)
+' @returns rawMotorCog - testGetMotorCog() after it (expected 0)
+
+    debug("T0-22,begin,front_fail")
+    benchLog.cogEventBegin()
+    startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
+    eCode := motor.getError()
+    rawMotorCog := motor.testGetMotorCog()
+
+PRI testT0_22Judge(baseline, heldCount, startResult, eCode, rawMotorCog, freeAfter) | eClaim, bMeasured, bPass
 ' R16-T0-FRONTFAIL (task 3513): a start() with exactly one free cog. The driver takes it, the front cog
 ' cannot launch, and the start must undo itself: return -1, record ERR_NO_FREE_COG, leave no driver
 ' (testGetMotorCog() 0), give every cog back, and release the pin claim so another instance can take the
@@ -1400,30 +1478,23 @@ PRI testT0_22() | baseline, heldCount, startResult, eCode, rawMotorCog, freeAfte
 ' briefly runs commands zero.
 ' UNFIXED: one cog was enough for start(), which returned a cog id, so the cell FAILs on the return.
 '
-' @local baseline - free cogs before the spacers
-' @local heldCount - spacers held across the start
-' @local startResult - start()'s return (expected -1)
-' @local eCode - getError() after it (expected ERR_NO_FREE_COG)
-' @local rawMotorCog - testGetMotorCog() after it (expected 0)
-' @local freeAfter - free cogs after the spacers are released
+' @param baseline - free cogs before the spacers
+' @param heldCount - spacers held across the start
+' @param startResult - start()'s return (expected -1)
+' @param eCode - getError() after it (expected ERR_NO_FREE_COG)
+' @param rawMotorCog - testGetMotorCog() after it (expected 0)
+' @param freeAfter - free cogs after the spacers are released
+
+' Local Variables:
 ' @local eClaim - motorA.testSetup() on the same group (expected NO_ERROR)
 ' @local bMeasured - the spacers left exactly one cog free
 ' @local bPass - the cell's measured value and verdict
 
-    debug("T0-22,begin,front_fail")
-    motor.stop()
-    motorA.stop()
-    motor.getError()
-    baseline := countFreeCogs()
-    heldCount := occupySpacers(baseline - 1)
-    startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
-    eCode := motor.getError()
-    rawMotorCog := motor.testGetMotorCog()
-    releaseSpacers(heldCount)
-    freeAfter := countFreeCogs()
     eClaim := motorA.testSetup(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    benchLog.cogEventBegin()
     motorA.stop()
     motorA.getError()
+    benchLog.cogEventBegin()
     motor.stop()
     bMeasured := (heldCount == baseline - 1)
     bPass := (startResult == -1) and (eCode == motor.ERR_NO_FREE_COG) and (rawMotorCog == 0) and (freeAfter == baseline) and (eClaim == motorA.NO_ERROR)
@@ -1451,15 +1522,20 @@ PRI testT0_23() | baseline, startResult, eCode, rawMotorCog, freeAfter, eClaim, 
 ' @local bPass - the cell's measured value and verdict
 
     debug("T0-23,begin,no_board_start")
+    benchLog.cogEventBegin()
     motorA.stop()
     motorA.getError()
-    baseline := countFreeCogs()
+    baseline := benchLog.countFreeCogs()
+    benchLog.cogEventBegin()
     startResult := motorA.start(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
     eCode := motorA.getError()
     rawMotorCog := motorA.testGetMotorCog()
-    freeAfter := countFreeCogs()
+    freeAfter := benchLog.countFreeCogs()
+    benchLog.cogEventBegin()
     motorA.stop()
     eClaim := motorA.testSetup(motorA.PINS_P0_P15, user.DRIVE_VOLTAGE, motorA.BRD_AUTO_DET)
+    benchLog.cogEventBegin()
     motorA.stop()
     motorA.getError()
     bPass := (startResult == -1) and (eCode == motorA.ERR_BOARD_NOT_DETECTED) and (rawMotorCog == 0) and (freeAfter == baseline) and (eClaim == motorA.NO_ERROR)
@@ -1485,7 +1561,9 @@ PRI testT0_10() | startResult, rawMotorCog, pinAdcX, xNodeCounts
 ' @local xNodeCounts - RQPIN()'s lower 31 bits (bit 31 is the pin's C flag)
 
     debug("T0-10,begin,rail_must_be_on,TRUE")
+    benchLog.cogEventBegin()
     startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
     rawMotorCog := motor.testGetMotorCog()
 
     ' Do NOT gate the reading on start()'s return. The 2026-09-10 bench run
@@ -1498,54 +1576,43 @@ PRI testT0_10() | startResult, rawMotorCog, pinAdcX, xNodeCounts
     pinAdcX := T0_MOTOR_BASE + 3
     xNodeCounts := RQPIN(pinAdcX) & $7FFF_FFFF
     debug("T0-10,end,pin,", udec_(pinAdcX), ",x_node_counts,", udec_(xNodeCounts))
+    benchLog.cogEventBegin()
     motor.stop()
 
-PRI testT0_15b() | spacerIdx, spacerCogId, spacerCount, spacerId[MAX_SPACER_COGS], baseline, startResult, rawMotorCog, freeAfter, bPass
-' R1-T0-EXHAUST (task 3499), design SS H.1: runs LAST, after T0-8's slot.
-' Count free cogs (baseline), occupy every free cog, call the real start(),
-' release the spacers, count free cogs again. A BOOL cell (task 3537):
-' measured is TRUE only when start() returns -1 AND testGetMotorCog() == 0 AND
-' free cogs after release == baseline, so this test itself can never leave the
-' suite short a cog; the raw numbers are on the T0-15b line.
-'
-' Deliberately its own spacer loop (not countFreeCogs(), which stops its
-' spacers again immediately) -- this test needs the cogs held OCCUPIED across
-' the start() attempt, then released afterward.
-'
-' start() below is called UNTRAPPED (task 3539): under total cog exhaustion it returns -1
+PRI testT0_15bStart() : startResult, rawMotorCog
+' R1-T0-EXHAUST (task 3499), the start: runExhaustionPhase() holds every free cog, so the real start()
+' must fail. start() is called UNTRAPPED (task 3539): under total cog exhaustion it returns -1
 ' gracefully, which is NOT an abort; a genuine abort is caught by main()'s single top-level trap.
 '
-' @local spacerIdx - loop index over the spacer-cog array
-' @local spacerCogId - cogspin()'s return for the current spacer attempt
-' @local spacerCount - number of spacer cogs actually started (occupies every free cog)
-' @local spacerId - cog ids of the spacers this test started
-' @local baseline - free cogs before this test occupies any
-' @local startResult - start()'s return under total cog exhaustion
-' @local rawMotorCog - testGetMotorCog()'s snapshot after the failed start()
-' @local freeAfter - free cogs after this test releases its spacers
-' @local bPass - this cell's measured value and verdict
+' @returns startResult - start()'s return under total cog exhaustion
+' @returns rawMotorCog - testGetMotorCog()'s snapshot after the failed start()
 
     debug("T0-15,begin,exhaust")
-    baseline := countFreeCogs()
-
-    spacerCount := 0
-    repeat spacerIdx from 0 to MAX_SPACER_COGS - 1
-        spacerCogId := cogspin(NEWCOG, spacerLoop(), @spacerStacks[spacerIdx * SPACER_STACK_LONGS])
-        if spacerCogId < 0
-            quit
-        spacerId[spacerCount] := spacerCogId
-        spacerCount += 1
-
+    benchLog.cogEventBegin()
     startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
     rawMotorCog := motor.testGetMotorCog()
+    benchLog.cogEventBegin()
     motor.stop()
 
-    repeat spacerIdx from 0 to spacerCount - 1
-        cogstop(spacerId[spacerIdx])
+PRI testT0_15bJudge(cogsOccupied, baseline, startResult, rawMotorCog, freeAfter) | bPass
+' R1-T0-EXHAUST (task 3499), design SS H.1: runs LAST (runExhaustionPhase()). Count free cogs
+' (baseline), occupy every free cog, call the real start(), release the spacers, count free cogs again.
+' A BOOL cell (task 3537): measured is TRUE only when start() returns -1 AND testGetMotorCog() == 0 AND
+' free cogs after release == baseline, so the suite is never left short a cog; the raw numbers are on
+' the T0-15b line.
+'
+' @param cogsOccupied - spacers that held every free cog across the start
+' @param baseline - free cogs before the occupancy
+' @param startResult - start()'s return under total cog exhaustion
+' @param rawMotorCog - testGetMotorCog()'s snapshot after the failed start()
+' @param freeAfter - free cogs after every spacer is released
 
-    freeAfter := countFreeCogs()
+' Local Variables:
+' @local bPass - this cell's measured value and verdict
+
     bPass := (startResult == SF_EXHAUST_LO) and (rawMotorCog == 0) and (freeAfter == baseline)
-    debug("T0-15b,cogs_occupied,", udec_(spacerCount), ",start_return,", sdec_(startResult), ",raw_motor_cog,", sdec_(rawMotorCog), ",baseline,", udec_(baseline), ",free_after,", udec_(freeAfter))
+    debug("T0-15b,cogs_occupied,", udec_(cogsOccupied), ",start_return,", sdec_(startResult), ",raw_motor_cog,", sdec_(rawMotorCog), ",baseline,", udec_(baseline), ",free_after,", udec_(freeAfter))
     debug("SIGNOFF,sf,1,bin,T0,cell,R1-T0-EXHAUST,task,3499,motor,NONE,crit,RET_NEG_NOLEAK,measured,", zstr_(bPass ? @"TRUE" : @"FALSE"), ",lo,TRUE,hi,TRUE,units,BOOL,n,1,verdict,", zstr_(bPass ? @"PASS" : @"FAIL"))
 
 #ifdef T0_HAND

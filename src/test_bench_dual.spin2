@@ -110,6 +110,10 @@
 ''               own; FRONTST reads the steering object's stack size as steering.STEER_STACK_LONGS.
 ''               18 Sep 2026 -- SRC_REV=18: task 3517, style guide 5.4.1 -- every method returning one
 ''               boolean is named is/has/b (bInstArm(), bWheelStart(), isWheelUp(), ...). No record changes.
+''               18 Sep 2026 -- SRC_REV=19: task 3543 (PL-41, PL-85). Every cog start or stop -- wheel and
+''               steering start()/stop(), the watchdog, instrument and ordered-stop helper cogs -- sits in a
+''               benchLog cog-event quiet window: 2 ms before, and 10 ms after a start so the new cogs'
+''               INIT lines finish before cog 0's next record. No record changes.
 ''
 '' =================================================================================================
 
@@ -173,7 +177,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 18                                        ' hand-bumped whenever this file changes
+    SRC_REV     = 19                                       ' hand-bumped whenever this file changes
     FMT_VERSION = 7                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -1815,7 +1819,9 @@ PUB main() | trapCode
 
     initRunState()
     wdStackSentinel := WD_STACK_SENTINEL                    ' in place before the cog that could overrun it
+    benchLog.cogEventBegin()
     wdCogId := cogspin(NEWCOG, watchdog(), @wdStack)
+    benchLog.cogEventEnd()
     emitWdStart(wdCogId >= 0, wdCogId)
     emitHeaderRecords()
     instStart()
@@ -1829,6 +1835,7 @@ PUB main() | trapCode
     '  its records are the session's end and cog 0 parks without emitting.
     if wdDeclaring == FALSE
         if wdCogId >= 0
+            benchLog.cogEventBegin()
             cogstop(wdCogId)
         emitLagAll()                                        ' one BM-LAG per motor, covering every capture this part took
         emitSignoffs()
@@ -4239,6 +4246,7 @@ PRI dShutdown(side)
     bInstIdle()
     if side == SIDE_BOTH
         beat(CP_LIB_STEER_STOP)
+        benchLog.cogEventBegin()
         steering.stop()
         beat(CP_LIB_STEER_STOP)
         bSteerUp := FALSE
@@ -4468,7 +4476,9 @@ PRI dStepOrdered() | bArmed, bAtSpeed, eLeftState, eRightState, bSameState, bSto
         odLastErr := NO_ERROR
         bOdDone := FALSE
         bOdRun := TRUE
+        benchLog.cogEventBegin()
         odCogId := cogspin(NEWCOG, orderedHelper(), @odStack)
+        benchLog.cogEventEnd()
         if odCogId < 0
             bOdRun := FALSE
             dStepDone(DST_ORDERED, SIDE_BOTH, FALSE, FALSE, 0, 0, 0, WHY_NO_COG)
@@ -4482,6 +4492,7 @@ PRI dStepOrdered() | bArmed, bAtSpeed, eLeftState, eRightState, bSameState, bSto
             repeat while (bOdDone == FALSE) and ((getms() - startMs) < STOP_TIMEOUT_MS)
                 beat(CP_LOOP_POLL)
                 waitms(D_STEP_POLL_MS)
+            benchLog.cogEventBegin()
             cogstop(odCogId)
             odCogId := -1
             dStopMotion(SIDE_BOTH)                           ' the helper's last drive is superseded here
@@ -6132,7 +6143,9 @@ PRI instStart() | startMs, bAcked
 ' @local startMs - getms() before the first command
 ' @local bAcked - the first IDLE command was acknowledged
 
+    benchLog.cogEventBegin()
     instCogId := cogspin(NEWCOG, instrument(), @instStack)
+    benchLog.cogEventEnd()
     if instCogId < 0
         emitInst(INST_EV_NOSTART, 0, FALSE, WHY_NO_COG)
     else
@@ -6153,6 +6166,7 @@ PRI instStop() | startMs, bAcked
     if instCogId >= 0
         startMs := getms()
         bAcked := bInstCommand(INST_CMD_EXIT, 0, 0, INST_ACK_TIMEOUT_MS)
+        benchLog.cogEventBegin()
         cogstop(instCogId)
         emitInst(INST_EV_STOP, getms() - startMs, bAcked, bAcked ? WHY_NONE : WHY_INST_NOACK)
         instCogId := -1
@@ -6330,11 +6344,14 @@ PRI abortStopMotor(side, slotIdx)
 
     beat(CP_LIB_STOP)
     if side == SIDE_BOTH
+        benchLog.cogEventBegin()
         steering.stop()
         bSteerUp := FALSE
     elseif slotIdx == SLOT_RIGHT
+        benchLog.cogEventBegin()
         wheelR.stop()
     else
+        benchLog.cogEventBegin()
         wheelL.stop()
     beat(CP_LIB_STOP)
 
@@ -7176,9 +7193,13 @@ PRI bWheelStart(seg, side) : bStarted | slotIdx, cogValue, startMs, restMs, nMis
             waitBeat(restMs, CP_LOOP_REST)
         beat(CP_LIB_START)
         if side == SIDE_RIGHT
+            benchLog.cogEventBegin()
             stCogRet := wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+            benchLog.cogEventEnd()
         else
+            benchLog.cogEventBegin()
             stCogRet := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+            benchLog.cogEventEnd()
         beat(CP_LIB_START)
         lastStartMs := getms()
         bAnyStart := TRUE
@@ -7276,8 +7297,10 @@ PRI wheelStopRaw(side)
 
     beat(CP_LIB_STOP)
     if side == SIDE_RIGHT
+        benchLog.cogEventBegin()
         wheelR.stop()
     else
+        benchLog.cogEventBegin()
         wheelL.stop()
     beat(CP_LIB_STOP)
     bBrakeRequested[side - SIDE_LEFT] := FALSE
@@ -7576,7 +7599,9 @@ PRI bSteerStart(seg) : bStarted | startMs, restMs, leftMissed, leftIllegal, righ
         if bAnyStart and (restMs > 0)
             waitBeat(restMs, CP_LOOP_REST)
         beat(CP_LIB_STEER_START)
+        benchLog.cogEventBegin()
         ssRet := steering.start(LEFT_TEST_BASE, RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TEST_DET_MODE)
+        benchLog.cogEventEnd()
         beat(CP_LIB_STEER_START)
         lastStartMs := getms()
         bAnyStart := TRUE
@@ -7617,6 +7642,7 @@ PRI steerStop()
         if bInstQuiet() == FALSE
             instRefused(curSeg)
     beat(CP_LIB_STEER_STOP)
+    benchLog.cogEventBegin()
     steering.stop()
     beat(CP_LIB_STEER_STOP)
     bSteerUp := FALSE
@@ -7761,6 +7787,7 @@ PRI shutdownAll()
 ' instance touches no pin.
 
     beat(CP_LIB_STOP)
+    benchLog.cogEventBegin()
     steering.stop()
     wheelL.stop()
     wheelR.stop()
@@ -9622,6 +9649,7 @@ PRI declareStall(msSinceBeat)
     wdDeclaring := TRUE
     wdSeq := logSeq
     wdSnapshotStall()
+    benchLog.cogEventBegin()
     wheelL.stop()
     wheelR.stop()
     steering.stop()

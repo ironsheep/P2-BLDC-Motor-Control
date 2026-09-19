@@ -178,7 +178,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 15                                       ' hand-bumped whenever this file changes
+    SRC_REV     = 16                                      ' hand-bumped whenever this file changes
     FMT_VERSION = 10                                        ' BS- record-format version
 
 ' fmt 10 changes (task 3540, scan v5, PL-46; no existing record's field names, order or content change):
@@ -508,10 +508,10 @@ CON { safety thresholds }
 
 CON { record widths -- every numeric field is clamped to one of these }
 
-    LIM_TINY  = 999                                         ' prints at most 4 bytes: -999
-    LIM_SMALL = 99_999                                      ' prints at most 7 bytes: -99_999
-    LIM_MID   = 9_999_999                                   ' prints at most 10 bytes: -9_999_999
-    LIM_BIG   = 999_999_999                                 ' prints at most 12 bytes: -999_999_999
+    LIM_TINY  = benchLog.LIM_TINY  ' prints at most 4 bytes: -999
+    LIM_SMALL = benchLog.LIM_SMALL  ' prints at most 7 bytes: -99_999
+    LIM_MID   = benchLog.LIM_MID  ' prints at most 10 bytes: -9_999_999
+    LIM_BIG   = benchLog.LIM_BIG  ' prints at most 12 bytes: -999_999_999
     BOOL_BYTES = 5                                          ' FALSE
 
     ' token field length limits (a longer token prints as "?")
@@ -540,10 +540,10 @@ CON { record widths -- every numeric field is clamped to one of these }
 
 CON { record assembly buffer }
 
-    LINE_BUF_SIZE    = 640
-    MAX_DEC_DIGITS   = 11
-    DEC_RADIX        = 10
-    DIGITS_PER_GROUP = 3
+    LINE_BUF_SIZE    = benchLog.LINE_BUF_SIZE
+    MAX_DEC_DIGITS   = benchLog.MAX_DEC_DIGITS
+    DEC_RADIX        = benchLog.DEC_RADIX
+    DIGITS_PER_GROUP = benchLog.DIGITS_PER_GROUP
 
 CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1 }
 
@@ -772,6 +772,7 @@ OBJ { objects under test }
 #endif
     wheelL : "isp_bldc_motor"                                ' left wheel instance
     wheelR : "isp_bldc_motor"                                ' right wheel instance
+    benchLog : "isp_bench_log"                              ' the cog-event quiet window (PL-41, PL-85)
 
 DAT { record assembly state }
 
@@ -1244,7 +1245,9 @@ PUB main() | trapCode
     wdStackSentinel := WD_STACK_SENTINEL                    ' fill BEFORE cogspin (p2kb: sentinel
                                                              ' must be in place before the cog that
                                                              ' can overrun it starts)
+    benchLog.cogEventBegin()
     wdCogId := cogspin(NEWCOG, watchdog(), @wdStack)        ' task 3534: watch cog 0 from the start
+    benchLog.cogEventEnd()
     emitWatchdogStart(wdCogId >= 0, wdCogId)                ' if it failed, say so and run unwatched
     initRunState()
     emitHeaderRecords()
@@ -1268,6 +1271,7 @@ PUB main() | trapCode
     ' that cog mid-record or also emit a second BS-END/marker of its own.
     if wdDeclaring == FALSE
         if wdCogId >= 0
+            benchLog.cogEventBegin()
             cogstop(wdCogId)
         emitSignoffs()                                      ' task 3537: every declared cell, watchdog stopped, wheels stopped
         emitEnd()
@@ -1453,6 +1457,7 @@ PRI shutdownMotors()
 ' Stop both wheels unconditionally. stop() on a never-started instance touches no pin.
 
     beat(CP_LIB_SHUTDOWN)
+    benchLog.cogEventBegin()
     wheelL.stop()
     wheelR.stop()
     currentSide := SIDE_NONE
@@ -3603,9 +3608,13 @@ PRI sideStart(side) : startedCog
     startedCog := -1
     beat(CP_LIB_START)
     if side == SIDE_RIGHT
+        benchLog.cogEventBegin()
         startedCog := wheelR.start(RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+        benchLog.cogEventEnd()
     elseif side == SIDE_LEFT
+        benchLog.cogEventBegin()
         startedCog := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
+        benchLog.cogEventEnd()
     beat(CP_LIB_START)
 
 PRI sideStop(side)
@@ -3615,8 +3624,10 @@ PRI sideStop(side)
 
     beat(CP_LIB_STOP)
     if side == SIDE_RIGHT
+        benchLog.cogEventBegin()
         wheelR.stop()
     elseif side == SIDE_LEFT
+        benchLog.cogEventBegin()
         wheelL.stop()
     beat(CP_LIB_STOP)
 
@@ -5730,6 +5741,7 @@ PRI declareStall(msSinceBeat) | bRunningBefore, bStoppedAfter
     wdDeclaring := TRUE
     wdSnapshotStall()                                       ' checkpoint and both wheels' state, BEFORE the stops
     bRunningBefore := (wdSnapLeftCog <> 0) or (wdSnapRightCog <> 0)
+    benchLog.cogEventBegin()
     wheelL.stop()
     wheelR.stop()
     bStoppedAfter := (wheelL.testGetMotorCog() == 0) and (wheelR.testGetMotorCog() == 0)

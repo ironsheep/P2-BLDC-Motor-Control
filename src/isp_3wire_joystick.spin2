@@ -73,9 +73,7 @@ pub stop()
 '' Stop cogs, release pins
 ''
 
-    if joyCog     ' stop motor reads
-        cogstop(joyCog - 1)
-        joyCog := 0
+    stopReaderCog()
 
 PUB isSwitchPressed() : bPressedState
 '' Return T/F for switch
@@ -194,11 +192,15 @@ PUB joystickTest() | xVal ,yVal, minX, maxX, minY, maxY
         waitms(125) ' 1/8 second
 
 PRI startJoyStickCog() : ok
-' Start the single motor sense task (tracks position of motor, distance traveled, etc.)
+' Start the joystick reader cog. The analog channels are set up here, on the caller's cog, because
+'  jm_ez_analog's start() prints; the reader cog then never prints, so stop() can end it at any moment
+'  without cutting a debug line (PL-41). Its start is reported here too.
 ' @returns ok - the started cog's id (0-7), or (-1) if failed to start
-    if joyCog    ' D2: free this instance's own cog before starting a fresh one
-        cogstop(joyCog - 1)
-        joyCog := 0
+    stopReaderCog()    ' D2: free this instance's own cog before starting a fresh one
+
+    ' start our two analog channels (any cog can read them: read() is an RDPIN)
+    analog[0].start(pinAnaJoyX, MIN_ANALOG_VALUE, MAX_ANALOG_VALUE)
+    analog[1].start(pinAnaJoyY, MIN_ANALOG_VALUE, MAX_ANALOG_VALUE)
 
     joyCog := cogspin(NEWCOG, taskJoyStickSense(), @taskStack)
     if joyCog < 0    ' did fail? (documented -1, or the $8000_xxxx form observed under cog exhaustion)
@@ -208,6 +210,17 @@ PRI startJoyStickCog() : ok
     else
         joyCog += 1    ' internal representation: cogid + 1 (0 reserved as "not started")
         ok := joyCog - 1    ' public contract: the started cog's id (0-7)
+        debug("TK joystick reader running on cog ", udec_(ok))
+
+PRI stopReaderCog()
+' Stop the reader cog, if one is running, and release both analog channels (the caller's cog set them
+'  up, so stopping the reader cog alone would leave them running).
+
+    if joyCog
+        cogstop(joyCog - 1)
+        joyCog := 0
+    analog[0].stop()
+    analog[1].stop()
 
 PRI MIN(nLtVal, nRtVal) : nMinVal
 ' return the whichever is lesser of nLtVal or nRtVal
@@ -228,17 +241,12 @@ PRI MAX(nLtVal, nRtVal) : nMaxVal
     nMaxVal := (nLtVal > nRtVal) ? nLtVal : nRtVal
 
 PRI taskJoyStickSense() | currValue, priorValue
-' The joystick cog: start both analog channels and latch each switch press (25 ms debounce).
+' The joystick cog: latch each switch press (25 ms debounce). The analog channels are started by
+' startJoyStickCog(). It never prints (PL-41): a cog that may be mid-DEBUG output must not be stopped.
 
 ' Local Variables:
 ' @local currValue - the switch pin's reading this pass
 ' @local priorValue - the switch pin's reading last pass
-
-    debug("TK joystick reader running...")
-
-    ' start our two analog channels
-    analog[0].start(pinAnaJoyX, MIN_ANALOG_VALUE, MAX_ANALOG_VALUE)
-    analog[1].start(pinAnaJoyY, MIN_ANALOG_VALUE, MAX_ANALOG_VALUE)
 
     ' add pullup on our switch pin
     pinstart(pinSW,P_HIGH_15K,0,0)
@@ -254,7 +262,6 @@ PRI taskJoyStickSense() | currValue, priorValue
             if priorValue <> currValue
                 if currValue == 0
                     swValue := true
-                    debug("tk: Switch pressed!")
             priorValue := currValue
             waitms(25)  ' 25ms for debounce
 
