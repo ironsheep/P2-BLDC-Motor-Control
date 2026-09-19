@@ -696,7 +696,10 @@ TAG_ANY_RE = re.compile(r'@(param|returns|local)\s+([A-Za-z_]\w*)', re.IGNORECAS
 def body_lines(lines, meth):
     """(lineno, code, indent, bPasm) for each non-blank code line of a method body.
     bPasm marks inline PASM (org .. end), which has no Spin2 return and its own
-    operand syntax."""
+    operand syntax. Built once per method and kept on the method record: four checks
+    walk every body."""
+    if 'body' in meth:
+        return meth['body']
     out = []
     in_pasm = False
     for j in range(meth['sig_end'] + 1, meth['body_end']):
@@ -714,6 +717,7 @@ def body_lines(lines, meth):
             out.append((j + 1, code, indent, True))
             continue
         out.append((j + 1, code, indent, in_pasm))
+    meth['body'] = out
     return out
 
 
