@@ -106,7 +106,8 @@ ORPHANS=$(grep -c . <<< "" ) # counted visually; advisory output only
 # Two copies of one paragraph will diverge; the only question is when.
 echo
 echo "-- DUPLICATE: substantial prose maintained in 2+ documents --"
-TMP=$(mktemp -t docaudit)
+# Explicit template: works with BSD (macOS) and GNU (Linux) mktemp alike.
+TMP=$(mktemp "${TMPDIR:-/tmp}/docaudit.XXXXXX")
 while IFS= read -r doc; do
     [ -z "$doc" ] && continue
     # substantial = a prose line of 60+ chars, not a heading/table/list/code

@@ -57,7 +57,14 @@ if [ -n "$STRAY" ]; then
 fi
 
 # ---- restore the user's config no matter how we leave -------------------
-BACKUP="$(mktemp -t bldc-userconfig)"
+# An explicit XXXXXX template works with both BSD (macOS) and GNU (Linux,
+# the dev container) mktemp; `mktemp -t prefix` is BSD-only and fails on
+# Linux. Without a backup the config cannot be restored, so stop here rather
+# than walk the blocks and leave the last one active.
+BACKUP="$(mktemp "${TMPDIR:-/tmp}/bldc-userconfig.XXXXXX")" || {
+    echo "ERROR: could not create a backup of $CONFIG" >&2
+    exit 2
+}
 cp -p "$CONFIG" "$BACKUP"
 cleanup() {
     cp -p "$BACKUP" "$CONFIG"
