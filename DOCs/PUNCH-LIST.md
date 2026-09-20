@@ -4511,14 +4511,73 @@ built at the bench"* (`VISIT-2-ATTENDED-RESULTS.md`), i.e. not through the runne
 log in the tree that ever carried a display command is dated 2026-09-11 to 2026-09-15 -- thirteen of
 them, none later.
 
-**DERIVED:** the P2 emits the same bytes whatever the host does, so the loss is on the host side -- a
-console-mode session opens no window and does not log display commands. With no window there is no
-`PC_KEY`, so an attended tier waits forever; the `s` he typed went out over the serial line as terminal
-input, which no harness reads.
+**DERIVED (the only part of the mechanism that is settled):** the P2 emits the same bytes whatever the
+host does, so the loss is on the host side. With no window there is no `PC_KEY`, so an attended tier
+waits forever; the `s` he typed went out over the serial line as terminal input, which no harness reads.
 
-**Blast radius:** `t0-hand`, `dual-brake`, `dual-floor`, `dual-ui` and `t0-stopmode`. None has been run
-through the runner since its panel was added, so none would have worked. **`dual-ui` and the floor tier
-are Visit 6b's first two loads.**
+> ## ⛔ MY FIRST CAUSE WAS WRONG, and STEPHEN caught it. `--console-mode` is NOT it.
+>
+> **STEPHEN 2026-09-20:** *"we have run plot windows before and i'm not sure the --console-mode prevents
+> them i'm suspecting a code problem"* -- and he was right on the first half.
+>
+> **The tool's own help settles it** (P7: a tool's behaviour is read from the tool, never inferred from a
+> flag's name -- which is exactly the rule I broke):
+> - `--console-mode` = *"Running with console output - adds delay before close"*. It does not suppress
+>   windows.
+> - `--headless` = *"Run without GUI windows (file logging only, for CI/AI agents)"* -- the flag that
+>   would have done it, and one this script has never passed.
+> - `--exit-on-end-session` = *"**Headed** batch mode: exit the app (draining in-flight saves/logs) on
+>   the end-session marker"*, with the help's own example headed *"Headed batch mode (render windows,
+>   then auto-exit)"*.
+>
+> **And the tree already carried the counter-example I never looked for.** `BENCH-PASS-1-RUNSHEET.md`
+> has the operator typing `tools/bench-run.sh char` (there was even a `char-nopanel` tier beside it),
+> and the 2026-09-12 `char` log carries a `PLOT` window and 18,738 display commands -- **a panel drawn
+> through this runner, with `--console-mode` already in it** (added 2026-09-10, `07f2509`).
+>
+> **What my argument actually rested on:** every log that ever carried a display command is dated
+> 2026-09-11 to 2026-09-15, and the one panel run I checked the provenance of was made by hand. That is
+> a correlation, and I reported it as a cause. The `--console-mode` removal below stands on his separate
+> ruling that the flag buys us nothing; **it is not the fix for this finding, and this finding has no
+> confirmed cause yet.**
+
+### The code audit he asked for -- and it comes back clean
+
+Every check that can be made without the rig, on the committed `t0-*` code:
+
+| Checked | Result |
+|---|---|
+| A `PLOT` window-create call exists | Yes -- `t0sSetupPanel()`, and it is the FIRST statement of `testT0_24()` |
+| It is reached | Yes -- the records emitted on either side of it are in the log |
+| `LAYER` calls | Four, one per asset, immediately after the create |
+| `UPDATE` calls | `crop 1` + `update` at setup; every frame ends `crop`s then one `update` (`t0sDrawPanel()`) |
+| Structure vs the proven panel | Identical to `t0hSetupPanel()`/`t0hDrawPanel()` line for line, differing only in name, size, layer count and asset names |
+| Compiled into the image | Yes -- and encoded **identically**: `06 60 'PLOT t0stop'` against `06 60 'PLOT bench'` |
+| Assets | 24-bit, uncompressed, 54-byte header -- the same `file` signature as `t0h_*.bmp` and `bc_*.bmp`; committed, beside the source |
+| DEBUG budget | 164 of 255 records, 11_470 of 15_872 bytes -- neither near a limit |
+| `BENCH_QUIET` | Not referenced anywhere in `test_bench_t0.spin2`; it masks the library's channels only |
+| Display name `t0stop` | A legal identifier (letter first, then letters/digits) -- p2kb's own valid examples include `cog0` and `pin56` |
+
+**So the defect is not visible from here**, and the one structural difference left between this panel and
+every panel that has ever drawn on this rig is the display name carrying a digit -- which the identifier
+rules permit and which I have no authority against. That is a suspicion, not a finding.
+
+**The next step is one A/B at the rig, and it costs about a minute.** Run `t0-hand` -- an existing tier
+whose panel is known to have drawn on this rig (2026-09-15) -- through `bench-run.sh`, then
+`t0-stopmode`:
+
+- **`t0-hand` draws, `t0-stopmode` does not** -> the defect is in the new tier, and the display name is
+  the first thing to change.
+- **Neither draws** -> the path is at fault, not the tier, and the 2026-09-12 `char` log says the path
+  used to work, so what changed under it is the question.
+
+This is the negative control the tier never had (doctrine D2: establish that the simple layer responds
+before analysing the sophisticated one).
+
+**Blast radius, and it is now a question rather than a claim:** `t0-hand`, `dual-brake`, `dual-floor`,
+`dual-ui` and `t0-stopmode` have all gone unrun through this path since their panels were added, so it
+is not known whether any of them draws. **`dual-ui` and the floor tier are Visit 6b's first two loads**,
+which is why the `t0-hand` A/B above is worth its minute before that visit rather than during it.
 
 **Why it got past review (the doctrine half).** Overlay P7 says a step a person uses at the bench is
 built on the proven technique and reviewed against it. I checked that the *panel technique* was proven
@@ -4527,13 +4586,16 @@ step. **The rule this earns: an attended tier's review covers the whole path -- 
 invocation that will run it -- and "has this path ever drawn a panel?" is a question with an answer in
 the logs.**
 
-### FIXED IN TREE 2026-09-19 -- and simpler than the fix that was proposed
+### `--console-mode` REMOVED 2026-09-19 on his ruling -- and it is NOT this finding's fix
 
 **STEPHEN 2026-09-19:** *"i don't think there is any benefit to our running with --console-mode"*.
 
-That answer removes the design as well as the defect. The proposed fix was to select a terminal mode
-from the tier's attendedness; with no benefit on either side of that switch there is nothing to select,
-so **`--console-mode` is simply gone and one invocation serves every tier**:
+⚠ **This removal is his ruling about a flag that buys us nothing. It does not fix the panel** -- see the
+correction box above; the flag's documented job is *"adds delay before close"*, and with
+`--exit-on-end-session` already draining in-flight saves that delay is redundant. The proposed
+attended/unattended mode switch is dropped for the same reason: with nothing on either side of the
+switch there is nothing to select, so **`--console-mode` is simply gone and one invocation serves every
+tier**:
 `pnut-term-ts -r <binary> --exit-on-end-session`. An unattended tier draws no window because it creates
 none, not because the terminal was told it may not -- which is the same shape as PL-62's fix, one
 value with one meaning, rather than a mode that can disagree with the tier it is running.

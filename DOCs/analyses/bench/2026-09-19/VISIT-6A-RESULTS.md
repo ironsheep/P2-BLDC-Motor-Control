@@ -36,7 +36,8 @@ exercised, and two of the three are confirmed.
 **And two things went wrong that were not on the sheet's list of risks:**
 
 - ⛔ **The attended tier never drew its panel, so none of its eight cells ran** (§2). **That one is
-  mine**, and the cause reaches every attended tier we have.
+  mine.** My first cause for it was wrong — Stephen caught it — and §2 now carries the correction, a
+  clean code audit, and the one A/B that will settle it.
 - ⛔ **PL-85 is NOT closed.** The dual harness is clean across 27,000 records, but `t0` still lost two
   verdicts and truncated a third record at a cog start (§3). My first reading of this said it *was*
   closed; that reading was wrong and is corrected below.
@@ -62,7 +63,7 @@ second later by `174430`. It certified nothing and cost nothing.
 
 ---
 
-## 2. ⛔ The attended tier never drew its panel — and the cause is not in the tier
+## 2. ⛔ The attended tier never drew its panel — and the cause is still open
 
 **STEPHEN 2026-09-19:** *"your t0-stopmode put up no ui so couldn't tell what to do."*
 
@@ -81,7 +82,19 @@ on this rig, carries **718 backtick commands and 487 `PC_KEY` reads**.
 same shape as `t0-hand`'s working set. The assets are committed and present. The code ran — the records
 either side of it printed.
 
-**Where the commands went (DERIVED, and the one link that needs his tool):**
+> ⛔ **CORRECTED 2026-09-20. The cause below is WRONG and the finding has no confirmed cause.** STEPHEN:
+> *"we have run plot windows before and i'm not sure the --console-mode prevents them i'm suspecting a
+> code problem."* `pnut-term-ts --help` says `--console-mode` *"adds delay before close"*, `--headless`
+> is the flag that suppresses windows (never passed here), and `--exit-on-end-session` is documented as
+> **headed** batch mode that renders windows. The tree also held the counter-example I never looked for:
+> `BENCH-PASS-1-RUNSHEET.md` has operators running `tools/bench-run.sh char`, and the 2026-09-12 `char`
+> log carries a PLOT window and 18,738 display commands -- a panel drawn **through this runner** with
+> `--console-mode` already in it. My argument rested on a correlation (every display-command log is
+> dated 11-15 September) reported as a cause. **The code audit he then asked for comes back clean**, and
+> the remaining step is one A/B at the rig: run `t0-hand`, whose panel is known to have drawn here, then
+> `t0-stopmode`. Both the audit and the A/B are in PL-92.
+
+**Where the commands went (this reading is SUPERSEDED -- kept because the measurements in it stand):**
 
 - MEASURED: `tools/bench-run.sh` has run the terminal as `pnut-term-ts -r <binary> --console-mode
   --exit-on-end-session` since 2026-09-10 (`07f2509`). The script's own comment chose `--console-mode`
@@ -95,17 +108,20 @@ either side of it printed.
   there is no `PC_KEY`, so the tier could wait forever; the `s` Stephen typed went out over the serial
   line as terminal input, which the harness never reads.
 
-⛔ **The blast radius is every attended tier we have** — `t0-hand`, `dual-brake`, `dual-floor`,
-`dual-ui` and `t0-stopmode`. None of them has been run through the runner since its panel was added, so
-none of them would have worked. **`dual-ui` and the floor tier are Visit 6b's first two loads.**
+**What is actually known about the blast radius:** `t0-hand`, `dual-brake`, `dual-floor`, `dual-ui`
+and `t0-stopmode` have all gone unrun through this path since their panels were added, so **it is not
+known whether any of them draws**. `dual-ui` and the floor tier are Visit 6b's first two loads, which is
+what makes the one-minute `t0-hand` A/B worth doing before that visit rather than during it.
 
 **What I got wrong, and it is a doctrine miss, not a coding slip.** The sheet said this tier's panel had
 never drawn on the rig and put it last for that reason — but I checked that the *panel technique* was
 proven and never checked that the *path that would run it* had ever carried a panel. Overlay P7 is about
 the whole step a person uses at the bench, and the runner is part of that step.
 
-**Filed as PL-92.** The fix needs one fact only his tool has — which invocation gives a GUI session —
-so it is the question at the end of this report.
+**Filed as PL-92**, which carries the full code audit (a `PLOT` create call present and first, four
+`LAYER`s, `crop`+`update` at setup and per frame, call sites reached, assets verified 24-bit and
+uncompressed, budgets at 164/255 records, and the compiled encoding identical to the proven panel) and
+the A/B that decides between "the tier" and "the path".
 
 ---
 
