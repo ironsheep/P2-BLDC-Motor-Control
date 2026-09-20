@@ -4591,8 +4591,48 @@ and use current as the signal for commutation quality rather than only as a fold
 droop detector, which this list previously proposed, is a guard around this defect and not a fix for
 it** (doctrine D1: fix the system, not the display).
 
-**Verification is already paid for:** the ladder prints `duty_pk`, steady current, `err_pk` and the
-transition current per rung, so the table above IS the acceptance test. A corrected drive flattens the
+### What the user can actually command -- the space the drive has to be good across
+
+**STEPHEN 2026-09-20:** *"if we also weigh-in what a user can command we are going to have to handle
+small delta speed-up/slow-down requests as well as large, near max throttle... our drive mech. has to
+handle this well"*. That is the acceptance space, and measuring against it exposes two gaps.
+
+⛔ **CORRECTION to an earlier reading of mine: the kick does NOT scale with the size of the speed
+change.** MEASURED, the SAME 20x10^6 step taken at six places in the range:
+
+| step | 20->40 | 40->60 | 60->80 | **80->100** | 100->120 | 120->140 |
+|---|---|---|---|---|---|---|
+| transition current | 234 | 583 | 1_197 | **1_439** | 1_264 | 599 |
+
+**Identical command, six-fold difference in what the motor does** -- peaking at the step that lands on
+the saturation knee (rung 7). So the same user action, a modest throttle bump, behaves completely
+differently depending on where in the range it is made. **Where the change happens dominates; how big it
+is does not.** That is a property of the drive, not of the request, and it is exactly what "handle this
+well" has to mean.
+
+⛔ **AND EVERY TRANSITION WE HAVE EVER MEASURED IS A SPEED-UP.** MEASURED across the whole load: **44
+speed-up steps recorded, ZERO speed-down steps.** The ladder only climbs, and the LIVE segment
+(QTR -> HALF -> TOP) climbs too and emits no transition record at all. **A user slowing from 80% to 60%
+is completely uncharacterised** -- and slowing is the direction where the field must fall BACK through
+the rotor, which is the opposite sign of error and a different failure if it is wrong.
+
+**The space, and what we hold for each cell:**
+
+| | small delta | medium delta | large delta | near-max |
+|---|---|---|---|---|
+| **speed UP, low in range** | not measured | MEASURED (rungs 3-5) | not measured | n/a |
+| **speed UP, at the knee** | not measured | **MEASURED, and it is the worst case** | not measured | n/a |
+| **speed UP, high in range** | not measured | MEASURED (rungs 9-12, already saturated) | not measured | MEASURED, saturated |
+| **speed DOWN, any** | **NOTHING** | **NOTHING** | **NOTHING** | **NOTHING** |
+
+**So the acceptance test for the corrected drive is a ladder that also descends, that includes a small
+delta and a large one at each of low / knee / high, and that records a transition for every step
+including the LIVE-style ones.** The instrument change is small -- `BM-RUNGTR` already carries the right
+fields and simply is not emitted for every segment -- and it must land with the drive fix, not after it,
+or the fix is verified only on the quarter of the space we happen to have.
+
+**Verification is already paid for on the part we do cover:** the ladder prints `duty_pk`, steady
+current, `err_pk` and the transition current per rung, so the table above IS the acceptance test. A corrected drive flattens the
 transition current, keeps duty off its ceiling until genuinely at the ceiling, and does not report
 AT_SPEED while the field is parked.
 
