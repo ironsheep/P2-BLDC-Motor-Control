@@ -3979,6 +3979,50 @@ constant, so the offset needed to cross it is arithmetic, not a sweep.
 
 ### PL-87 -- the ladder's err_pk is a STEADY-WINDOW statistic, so no cell can see a transition kick
 
+> ## ⛔ THE REPLACEMENT INSTRUMENT IS ALSO BLIND -- and Visit 6a's own log already holds the reading
+> that is not. Recorded 2026-09-20.
+>
+> **STEPHEN 2026-09-20, the observation the run sheet asked for in advance:** *"there we two fwd/rev
+> ramps short/long for each motor. in the short ramps they kicked between 2 and 3. in the long ramps
+> they kicked at each increment"*.
+>
+> **`R17-DUAL-TRKICK-A` PASSED with 0 kicks of 22 per wheel. It is a FALSE PASS.** His hand is the
+> control, and doctrine D2 puts the suspicion on the measurement.
+>
+> **MEASURED, `debug_260919-173751.log`, the LEFT reverse ladder, twelve rungs in order** (every ramp
+> in the load has the same shape):
+>
+> | rung | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+> |---|---|---|---|---|---|---|---|---|---|---|---|---|
+> | `tr_err_pk` | 98 | 76 | 73 | 75 | 75 | 75 | 78 | 85 | 95 | 97 | 102 | 105 |
+> | `tr_over` **(what TRKICK judged)** | 36 | 3 | 2 | 4 | 3 | 3 | 1 | 0 | 0 | -1 | 0 | -1 |
+> | `tr_i_pk` **(recorded, never judged)** | 19 | 25 | 55 | **234** | **583** | **1197** | **1439** | **1264** | 599 | 200 | 192 | 226 |
+>
+> ⭐ **The error says nothing and the current says everything.** Across the ramp `tr_err_pk` moves
+> within a 73-106 band -- about +-15% -- while `tr_i_pk` rises **seventy-five fold** and peaks at rung 7.
+> At the sense calibration the harness uses for its own abort (150 mV/A) rung 7 is **about 9.6 A**, and
+> the RIGHT reverse ladder's rung 7 reads 1_522, **above the 1_500 abort threshold** -- it does not
+> abort only because the abort wants four consecutive samples and this is a transient.
+>
+> **DERIVED, and it is the SAME root cause as PL-86, PL-46 and PL-93:** `tr_err_pk` sits in a narrow
+> band around 100 because **the lag limiter holds it there** (`LAG_HOLD` = 100). Position error is a
+> CLAMPED observable, so any instrument built on it is blind by construction -- which is why the Visit 5
+> instrument could not see the kick, and why its replacement cannot either. **Current is not clamped,
+> and it was being recorded beside the error the whole time.**
+>
+> **So the kick is MEASURED, on this visit's data, with no further bench time:** it is real, it is on
+> every speed change of the long ramps, it grows with the size of the increment, and it peaks near 10 A.
+> That matches his hand exactly, including "at each increment".
+>
+> **Two fixes, both free of a new run:**
+> 1. **Re-judge `TRKICK` on `tr_i_pk`**, not `tr_over`. The criterion becomes a transition current
+>    ceiling, or a rise over the from-rest rung, and its negative case is on file in this very table.
+> 2. **The short ramps emit no `BM-RUNGTR` at all** -- only LADDER and CLOCK rungs do, so the LIVE
+>    segment, where he felt a kick between rungs 2 and 3, has **no transition record**. Instrument it.
+>
+> ⭐ **AND «#3573»'S DRIVER HALF IS NEEDED.** The plan made it conditional on "if Visit 6a's TRKICK says
+> the kick survives". TRKICK said no; the current and his hand both say yes. **The kick survives.**
+
 > ## FIXED IN THE HARNESS 2026-09-18 («#3573», dual SRC_REV 16 / FMT 7); run-time proof owed to Visit 6
 >
 > - `rungMeasure()` now marks the ring at the drive command, and `transitionStats()` walks [command mark ..

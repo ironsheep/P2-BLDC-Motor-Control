@@ -29,8 +29,9 @@ exercised, and two of the three are confirmed.
 **The three things this visit came to settle:**
 
 1. ⭐ **PL-69 is closed** — zero illegal hall codes at 200, 270 and 300 MHz (§7).
-2. ⭐ **PL-87's instrument works, and reads zero kicks** (§6) — but Stephen's own reading was not
-   recorded this time, and it is the half that matters (§10).
+2. ⛔ **PL-87's replacement instrument is ALSO blind** (§6a). It read zero kicks; Stephen felt one at
+   every increment of the long ramps, and the peak *current* recorded beside the error — 75× the
+   from-rest rung — agrees with him. The error is clamped by the lag limiter.
 3. ⛔ **PL-86 failed a third time, and the cause is now identified** (§5). It is not the provocation.
 
 **And two things went wrong that were not on the sheet's list of risks:**
@@ -293,10 +294,31 @@ which is what `caa5e3c` set out to achieve, and the start from rest legitimately
 transition. Visit 5's table could not see any of this — rung 0, the control, read the same as every
 suspect.
 
-⚠ **This is exactly the case the sheet asked an observation for, and the observation was not recorded.**
-The instrument now says there is no kick. At Visit 5 Stephen said *"some are not kicking but many still
-are."* If he still felt one today, the instrument is wrong and this cell is a false pass; if he felt
-none, PL-87 and PL-78 are both closed. **One reading decides it, and only he has it** (§10).
+### ⛔ 6a. The observation came back, and TRKICK is a FALSE PASS
+
+**STEPHEN 2026-09-20:** *"in the short ramps they kicked between 2 and 3. in the long ramps they kicked
+at each increment"*.
+
+**The log already held the reading that agrees with his hand.** Beside `tr_over`, every transition
+record carries `tr_i_pk`, the transition's peak current, and nothing judged it:
+
+| rung | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `tr_err_pk` | 98 | 76 | 73 | 75 | 75 | 75 | 78 | 85 | 95 | 97 | 102 | 105 |
+| `tr_over` (judged) | 36 | 3 | 2 | 4 | 3 | 3 | 1 | 0 | 0 | -1 | 0 | -1 |
+| `tr_i_pk` (not judged) | 19 | 25 | 55 | **234** | **583** | **1197** | **1439** | **1264** | 599 | 200 | 192 | 226 |
+
+⭐ **The error moves +-15% while the current rises seventy-five fold**, peaking near **10 A** at rung 7 —
+and the RIGHT reverse ladder's rung 7 reads 1_522, above the harness's own 1_500 abort threshold.
+
+**DERIVED:** `tr_err_pk` is pinned near 100 because that is `LAG_HOLD` — **the lag limiter clamps the
+position error**, so every instrument built on error is blind by construction. This is the same root
+cause as §5's provocation failure and PL-93's max-duty state. **Current is not clamped, and we have been
+recording it all along.**
+
+**Consequences:** `TRKICK` is re-judged on `tr_i_pk` with no new bench time; the LIVE (short) ramps emit
+no transition record at all and must be instrumented; and **«#3573»'s driver half is needed** — the plan
+made it conditional on the kick surviving, and it does. Full reading: PL-87.
 
 ---
 
