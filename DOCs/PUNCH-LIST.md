@@ -4584,6 +4584,28 @@ lands in saturation is the worst. Stephen feels one at each increment because ea
   increment by a fixed step per drive pass regardless of whether the rotor is following, so every step
   is an open-loop lunge and the error absorbs the difference.
 
+### ⭐ THE OBSERVABLES THEMSELVES MUST BE RESPECIFIED -- a measure that tops out is not a measure
+
+**STEPHEN 2026-09-20:** *"if we have measures that are topping out we need to respecify them so they do
+not - as they are not useful once topped out"*. That is the general statement of why every instrument
+built on this driver has been blind, and it applies to the driver's own control as much as to the bench.
+
+| Observable | How it tops out | What it should be instead -- unbounded where it matters |
+|---|---|---|
+| `err` (position error) | **Twice over.** The lag limiter holds it near `LAG_HOLD` (100), and the stored field is bounded by its own +-127 representation -- the tree already notes a driver with no limiter simply prints 127. | **The limiting actually applied** -- the field advance the limiter withheld this pass. When the drive is keeping up it is zero; when it cannot, it grows without bound. That is the same information `err` was supposed to carry, in a form that does not stop. |
+| `duty` | Saturates at `duty_max` (24_264) and pins there for the whole top half of the range. | **Duty DEMAND before the cap**, or the **deficit** (demand less cap). Once duty pins, the deficit is what says how far past capability the command is; duty itself says only "still pinned". |
+| `tr_over` (the kick cell) | Derived from `err`, so it inherits both ceilings -- which is why it read 0 of 22 while the transition current rose seventy-five fold. | Transition **current**, already recorded as `tr_i_pk`. Not clamped. |
+| `AT_SPEED` | A boolean meaning "my own increment reached its target" -- true by construction even when the motor never got there. | **Measured rate against commanded rate**, a ratio that keeps informing on both sides of the limit. |
+
+⭐ **This is not only a telemetry fix. The respecified quantities are exactly what the drive needs as
+feedback**: "how much am I withholding" and "how much duty did I want beyond what I have" are the two
+numbers that say the command is unachievable, and a drive that has them does not need a separate droop
+detector bolted on -- it can hold at the achievable rate by construction. The instrument and the control
+want the same respecification, which is a sign it is the right one.
+
+**Cog space is a constraint to respect, not a gate** (STEPHEN 2026-09-20: *"you are fretting too much
+about cog space, the lut addition just doubled it. we have room we just have to be mindful"*).
+
 **Fix direction (this is the 6.0.0 driver work, and everything else is downstream of it):** close the
 loop the halls and the current are already giving us -- correct the field against hall edges rather than
 free-running between them, bound the ramp by measured acceleration rather than a fixed increment step,
