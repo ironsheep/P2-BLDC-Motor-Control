@@ -3979,6 +3979,43 @@ constant, so the offset needed to cross it is arithmetic, not a sweep.
 
 ### PL-87 -- the ladder's err_pk is a STEADY-WINDOW statistic, so no cell can see a transition kick
 
+> ## BOTH FIXES LANDED 2026-09-20 («#3580» R18.1, dual SRC_REV 21 / FMT 9); run-time proof owed to Visit 7
+>
+> The box below asked for exactly two things, and both are in the tree:
+>
+> 1. **`R17-DUAL-TRKICK-A` is re-judged on current.** The criterion is `tr_i_over` -- the transition
+>    current peak less the rung's **own** steady `i_max`, a new `BM-RUNGTR` field -- above
+>    `TRKICK_EXCESS_MV` (50 sense mV, about a third of an amp at the 150 mV/A the harness aborts on).
+>    The from-rest control machinery is **deleted** rather than repointed: an instrument built on a
+>    clamped observable is blind whatever control it is given.
+>    **The number and its negative case are MEASURED**, from all four ladders of
+>    `debug_260919-173751.log`, as `tr_i_pk - i_max` per rung:
+>
+>    | ladder | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+>    |---|---|---|---|---|---|---|---|---|---|---|---|---|
+>    | LEFT reverse | -2 | 0 | -2 | -10 | -38 | -66 | **+157** | **+646** | **+401** | **+81** | **+128** | **+128** |
+>    | LEFT forward | +1 | +1 | -3 | -7 | -21 | -34 | -76 | **+506** | **+397** | **+91** | **+112** | **+192** |
+>    | RIGHT reverse | 0 | 0 | -4 | -22 | -46 | -69 | **+186** | **+677** | **+403** | **+87** | **+110** | -52 |
+>    | RIGHT forward | +2 | +1 | -2 | -2 | -10 | -47 | -137 | **+580** | **+412** | **+82** | **+113** | **+214** |
+>
+>    ⭐ **Below the knee a change of speed costs NOTHING above steady running** -- every reading is at
+>    or below zero. At and above it the transition draws two to three times the steady peak. The two
+>    populations are separated by a gap running from **-137 to +81 with nothing in it**, so the
+>    criterion is not a judgement call. **Visit 6a would have FAILED this cell 11 times of 22 on the
+>    LEFT motor and 10 of 22 on the RIGHT** -- against the 0 of 22 that `tr_over` reported.
+> 2. **The short ramps are instrumented.** `LIVE` now emits `BM-RUNGTR` and the new `BM-RUNGHL` for
+>    every rung. It does **not** fold `TRKICK`: its settle is `LIVE_SETTLE_MS` against the ladder's
+>    `LADDER_SETTLE_MS`, so its transition window is a different length, and one verdict over two
+>    populations can fail on the mixture rather than on the drive (doctrine D2).
+>
+> **Also landed with them**, because the same instrument is what Visit 7 reads: `BM-RUNGTR` gains
+> `from_incre`, the speed the wheel was holding when the command arrived, so a transition's **delta and
+> its direction** come off the record; and the ladder walk gains a **descent** and six **delta cells**
+> (a small and a large change of speed at low, at the knee and at the ceiling, each taken up and down).
+>
+> **What is still owed:** a run. The criterion has never judged a live ladder, and the driver half of
+> the kick is **PL-95**'s, fixed in R18.4.
+
 > ## ⛔ THE REPLACEMENT INSTRUMENT IS ALSO BLIND -- and Visit 6a's own log already holds the reading
 > that is not. Recorded 2026-09-20.
 >
@@ -4534,6 +4571,28 @@ are stated. It deliberately drives a board's gate input, so it is a change to a 
 a review before its first run, not a slot before a bench session.
 
 ### PL-95 -- the drive does not integrate hall and current: above mid-range it runs saturated, field parked, and calls it AT_SPEED
+
+> ## THE INSTRUMENT HALF IS LANDED 2026-09-20 («#3580» R18.1); THE DRIVE IS UNCHANGED
+>
+> Everything this entry says about the drive still stands -- **no control-path statement has been
+> touched**, deliberately, so Visit 7 characterises today's drive and not a half-changed one. What has
+> changed is what the drive **publishes** and what the harness **asks of it**:
+>
+> - The driver counts the passes on which each limit ACTED -- `lag_held` (the limiter withheld the field
+>   advance) and `duty_capped` (the duty demand exceeded the cap), read through `testGetDriveHealth()`.
+>   A count has no ceiling, which is the whole point: `err` is held near `LAG_HOLD` and bounded by its
+>   own +-127, and `duty` pins at `duty_max`, so both stop reporting exactly where this entry's
+>   behaviour lives. `err` and `duty` stay beside them, unchanged, for continuity with Visits 5 and 6a.
+> - The harness differences both across the **transition** and across the **steady window** of every
+>   measured rung, as the new `BM-RUNGHL` record. **No cell judges them** -- the acceptance numbers are
+>   R18.3's to choose before R18.4 builds against them (doctrine D2).
+> - **The command space this entry says is unmeasured is now reachable.** The ladder walk gains a
+>   descent and six delta cells -- a small and a large change of speed at low, at the knee and at the
+>   ceiling, each taken up and down -- and `LIVE` emits a transition record at last. The "speed DOWN,
+>   any" row of the table below stops being empty at Visit 7.
+> - The kick's cell is re-judged on current rather than on the clamped error: see PL-87.
+>
+> **Still owed: the drive change itself (R18.4), and Visit 7 to characterise against.**
 
 **Found 2026-09-20, re-reading Visit 6a's ladder as a RAMP rather than as a set of rungs.** STEPHEN
 2026-09-20: *"you are too focused on the braking when the ramps and proper integration of hall and

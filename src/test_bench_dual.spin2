@@ -124,6 +124,25 @@
 ''               R17-DUAL-DIRSIGN-D: a positive driveDirection() makes the RIGHT wheel the slower, a negative one
 ''               the LEFT (finding AC, judged wheels-lifted from the tracked ticks). The dead steerSetRamp() and
 ''               steerRestoreRamp() are deleted: since task 3569 setAcceleration() takes mm/s^2, not ramp_inc.
+''               20 Sep 2026 -- SRC_REV=21, FMT 9: task 3580 (R18.1, PL-95, PL-87), the harness half. The
+''               observables this harness reads were topping out exactly where the drive stops keeping up,
+''               so above mid-range it was measuring a ceiling rather than the drive.
+''               New record BM-RUNGHL, per measured rung: the driver's two UNBOUNDED health counters
+''               (testGetDriveHealth()) differenced across the TRANSITION and across the STEADY window,
+''               beside the field increment they convert by. err and duty stay in BM-RUNG2 unchanged, for
+''               continuity with Visits 5 and 6a.
+''               BM-RUNGTR gains from_incre (the speed the wheel was holding, so a transition's DELTA and
+''               its DIRECTION are read off the record) and tr_i_over (the transition current peak above
+''               the rung's own steady peak). R17-DUAL-TRKICK-A is re-judged on tr_i_over: tr_over is
+''               err-derived and read 0 of 22 at Visit 6a while the transition current rose 75-fold
+''               (PL-87's table), so the cell passed a kick Stephen felt with his hands.
+''               LIVE now emits BM-RUNGTR and BM-RUNGHL for its rungs -- the short ramps, where he felt a
+''               kick between rungs 2 and 3, had no transition record at all.
+''               LADDER walks the ascent, then the DESCENT, then six delta cells: a small and a large
+''               change of speed at low, at the saturation knee and at the ceiling, each taken up and
+''               down. Visit 6a measured 44 speed-ups and zero speed-downs, and the same 20x10^6 step
+''               taken at six places in the range spread six-fold, so WHERE a change happens dominates
+''               HOW BIG it is.
 ''
 '' =================================================================================================
 
@@ -187,8 +206,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 20                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 8                                         ' BM- record-format version
+    SRC_REV     = 21                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 9                                         ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -317,7 +336,14 @@ CON { drive increments and powers }
     LADDER_MAX_INCRE    = 165_000_000                       ' the top probe rung
     LADDER_BASE_RUNGS   = 10                                ' 5 .. 147 x 10^6
     LADDER_PROBES       = 2                                 ' 155, 165 x 10^6 (Q2: kept)
-    LADDER_RUNGS        = LADDER_BASE_RUNGS + LADDER_PROBES
+    LADDER_RUNGS        = LADDER_BASE_RUNGS + LADDER_PROBES  ' ENTRIES IN ladderIncre -- the speeds, not the walk
+    ' R18.1: the WALK is a separate count from the table it indexes, because a speed is now visited more
+    '  than once (D7: one value, one meaning -- LADDER_RUNGS used to carry both, and the BM-LADDER header
+    '  table would have printed one row per step of the walk instead of one per speed).
+    LADDER_CLIMB_STEPS  = LADDER_RUNGS                      ' 0 .. 11 ascending
+    LADDER_DESCEND_STEPS = LADDER_RUNGS - 1                 ' 10 .. 0, entered from the top of the climb
+    LADDER_DELTA_STEPS  = 15                                ' the six delta cells, entered from rung 0
+    LADDER_WALK_STEPS   = LADDER_CLIMB_STEPS + LADDER_DESCEND_STEPS + LADDER_DELTA_STEPS
     LADDER_FAULT_STOP   = 2                                 ' consecutive faulted rungs end a sign's ladder
     FB_TRIALS           = 5                                 ' ramp_inc 22, 100, 500, 2_000, 10_000
     ' RMPDROOP judges the trials whose ramp the motor cannot follow: the three that faulted 3 of 3 at
@@ -886,13 +912,30 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     '  of ticks, which is what PL-76's wrong-wheel ternary did.
     IDLE_MOVE_LO      = 0
     IDLE_MOVE_HI      = 2
-    ' TRKICK (task 3573, PL-87 / PL-78): a change of speed from a running speed kicks when its transition
-    '  overshoot (tr_over: transition peak |err| less the rung's own steady err_pk) exceeds the start from
-    '  rest's by more than this many err units (~14 degrees electrical). DERIVED, not yet measured: the
-    '  steady ripple alone is ~25 units, and PL-78's source reading has an inherited ramp step driving the
-    '  rotor into the LAG_SOFT gate (80) at once. The first ladder load reads the control's own spread; the
-    '  negative case is what Stephen felt at Visit 5 ("many still are" kicking), which this must then fail.
-    TRKICK_MARGIN     = 10
+    ' TRKICK (R18.1, PL-87 / PL-95): a change of speed from a running speed kicks when its transition
+    '  current peak stands this many sense mV above what the motor draws holding that same speed
+    '  (tr_i_over = tr_i_pk - the rung's own steady i_max). At the 150 mV/A the harness calibrates its own
+    '  abort with, 50 mV is about a third of an amp.
+    '
+    ' THE NUMBER IS MEASURED, not derived, and so is its negative case -- both from Visit 6a's three
+    '  complete ladders (debug_260919-173751.log). Per rung, tr_i_pk less the steady i_max beside it:
+    '
+    '                   rung 0   1   2    3    4    5     6    7    8    9   10   11
+    '    LEFT  reverse       -2   0  -2  -10  -38  -66  +157 +646 +401  +81 +128 +128
+    '    LEFT  forward       +1  +1  -3   -7  -21  -34   -76 +506 +397  +91 +112 +192
+    '    RIGHT reverse        0   0  -4  -22  -46  -69  +186 +677 +403  +87 +110  -52
+    '    RIGHT forward       +2  +1  -2   -2  -10  -47  -137 +580 +412  +82 +113 +214
+    '
+    '  Below the saturation knee the transition costs NOTHING above steady running -- every reading is at
+    '  or below zero. At and above it the transition draws two to three times the steady peak. The two
+    '  populations are separated by a gap from -137 to +81 with nothing in it, and 50 sits inside that
+    '  gap: wide enough that no sub-knee rung can fail it by noise, and far below the smallest kick
+    '  actually recorded. Visit 6a would have FAILED this cell on 11 transitions of 22 on the LEFT motor
+    '  and 10 of 22 on the RIGHT, which is the negative case, named before the run and already on file.
+    '
+    ' PASS is still zero kicks, as it was: a drive that has to be told what it can do is the R18.4 work,
+    '  and this cell is what says whether it worked.
+    TRKICK_EXCESS_MV  = 50
     TRKICK_LO         = 0
     TRKICK_HI         = 0
     ' LAGBOUND (task 3558's lag limiter): the instrument's own running max |err| over stored samples with
@@ -1179,8 +1222,28 @@ DAT { segment tables (design sec 4.4) }
 ' LADDER rungs, ascending: ten base rungs, then the LADDER_PROBES probe rungs above the ceiling
 ladderIncre     LONG    5_000_000, 10_000_000, 20_000_000, 40_000_000, 60_000_000, 80_000_000
                 LONG    100_000_000, 120_000_000, 140_000_000, 147_000_000, 155_000_000, 165_000_000
-' LADDER: every index into ladderIncre, in order (ladderSign() walks an index table)
-ladderAllIdx    LONG    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+' LADDER: the walk, as indices into ladderIncre in the order they are commanded (ladderSign() walks an
+' index table). Each consecutive PAIR is a transition, and the transitions are what R18 is about --
+' BM-RUNGTR prints from_incre so the delta and its direction are read straight off the record.
+'
+' R18.1 (PL-95), three parts, in this order:
+'  CLIMB    - 0..11 unchanged, so every Visit 5 and Visit 6a comparison still lines up rung for rung.
+'  DESCEND  - 10..0. Visit 6a measured 44 speed-ups and ZERO speed-downs, and slowing is the direction
+'             where the field must fall back through the rotor: the opposite sign of error, and possibly
+'             a different failure. It is entered from rung 11, where the climb left the wheel.
+'  DELTA    - a SMALL and a LARGE change of speed at each of three places, each taken UP and DOWN, so
+'             size and position are separated. MEASURED at Visit 6a: the same 20x10^6 step taken at six
+'             places gave 234 / 583 / 1_197 / 1_439 / 1_264 / 599 mV of transition current -- a six-fold
+'             spread peaking at the saturation knee -- so WHERE a change happens dominates HOW BIG it is.
+'             low  = rung 2 (20x10^6), well below the knee:  small 2<->3 (20x10^6), large 2<->5 (60x10^6)
+'             knee = rung 5 (80x10^6), where duty_pk reaches duty_max: small 5<->6, large 5<->8
+'             ceil = rung 9 (147x10^6), the drive ceiling and the near-max throttle case Stephen named:
+'                    small 9<->8 (7x10^6, the smallest command change there is at the top), large 9<->6
+'             The two moves that only reposition the wheel (0->2 entering low, 5->9 entering the
+'             ceiling cell) are measured like any other rung; they are transitions too.
+ladderAllIdx    LONG    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11            ' CLIMB, LADDER_CLIMB_STEPS
+                LONG    10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0                ' DESCEND, LADDER_DESCEND_STEPS
+                LONG    2, 3, 2, 5, 2, 5, 6, 5, 8, 5, 9, 8, 9, 6, 9     ' DELTA, LADDER_DELTA_STEPS
 ' FAULTB: ramp_inc per trial, ascending (plan :917-918)
 fbRampIncs      LONG    22, 100, 500, 2_000, 10_000
 
@@ -1697,6 +1760,21 @@ VAR { rung staging -- filled by rungMeasure(), read by the rung emitters and the
     LONG    rgWinEnd
     LONG    bRgCaptured                                     ' the capture was frozen (drain legal, I10)
     LONG    bRgIdleUp                                       ' any captured sample showed the idle wheel up
+    ' R18.1: the speed the wheel was holding when this rung was commanded, so BM-RUNGTR carries the
+    '  transition's DELTA and its DIRECTION rather than only its destination. Zero means from rest, which
+    '  is what a lifetime start and a fault recovery both leave behind -- slotLastIncre is cleared there.
+    LONG    rgFromIncre
+    LONG    slotLastIncre[INST_MOTORS]                      ' last increment commanded to each motor, 0 at rest
+    ' R18.1: the driver's health counters, snapshotted at the command and differenced at each end of the
+    '  window. The TRANSITION difference covers the ramp and the settle; the WINDOW difference covers the
+    '  steady run. Each is valid only when both of its snapshots were taken.
+    LONG    hlCmdLag, hlCmdCap                              ' snapshot at the command
+    LONG    bRgHlCmd
+    LONG    rgHlTrLag, rgHlTrCap                            ' command -> window start
+    LONG    bRgHlTrValid
+    LONG    rgHlWinLag, rgHlWinCap                          ' window start -> window end
+    LONG    bRgHlWinValid
+    LONG    rgHlDrvIncr                                     ' drv_incr_now read at the window start
 
 VAR { trace capture staging -- filled by eventCapture() / the FAULTB and OVERSHT trials, read by their finish }
 
@@ -2013,6 +2091,9 @@ PRI initRunState() | slotIdx
         scStopPk[slotIdx] := 0
         scSamples[slotIdx] := 0
         bScValid[slotIdx] := FALSE
+        sfTrN[slotIdx] := 0                                 ' TRKICK's two accumulators and the from_incre state
+        sfTrKicks[slotIdx] := 0
+        slotLastIncre[slotIdx] := 0
 
 PRI runPart()
 ' Run this build's segments in the design's sec 4.1 order. Every segment after a run abort is emitted
@@ -2184,7 +2265,8 @@ PRI segLive() | side, rungNum, whyCode
 
 PRI segLadder() | side, signMul
 ' LADDER (part A, T1-3): C-1 speed law, C-5 duty question, S-3 linearity, C-6 data. Per motor x sign
-' (NEG then POS) one lifetime over every ladderIncre rung; the BM-LADDER table is in the header records.
+' (NEG then POS) one lifetime over the whole ladderAllIdx walk -- climb, descent, then the delta cells;
+' the BM-LADDER table of the twelve SPEEDS is in the header records.
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
 ' @local signMul - SIGN_NEG then SIGN_POS
@@ -2193,7 +2275,7 @@ PRI segLadder() | side, signMul
     repeat side from SIDE_LEFT to SIDE_RIGHT
         repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
             beat(CP_LOOP_POLL)
-            ladderSign(SEG_LADDER, side, signMul, @ladderAllIdx, LADDER_RUNGS)
+            ladderSign(SEG_LADDER, side, signMul, @ladderAllIdx, LADDER_WALK_STEPS)
     segEnd(segWhy())
 
 PRI segClock() | side, signMul
@@ -2844,6 +2926,15 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeE
     rgWinStart := -1
     rgWinEnd := -1
     rgCmdStart := -1
+    rgFromIncre := slotLastIncre[slotIdx]                   ' R18.1: 0 when the wheel is at rest
+    rgHlTrLag := 0
+    rgHlTrCap := 0
+    rgHlWinLag := 0
+    rgHlWinCap := 0
+    rgHlDrvIncr := 0
+    bRgHlCmd := FALSE
+    bRgHlTrValid := FALSE
+    bRgHlWinValid := FALSE
     safeEvent := SAFE_NONE
     bReached := FALSE
     rsOffNeg, rsOffPos := wheelGetOffsets(side)
@@ -2855,9 +2946,15 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeE
         rgResult := RES_SKIPPED
         rgWhy := WHY_INST_NOACK
     else
+        ' R18.1: the health snapshot is taken BEFORE the mark, so nothing stands between the mark and the
+        '  command that the transition's first sample has to account for (sec 12.7).
+        if isWheelUp(side)                                  ' I3: a stopped driver's status block is stale, never read
+            hlCmdLag, hlCmdCap, _ := wheelDriveHealth(side)
+            bRgHlCmd := TRUE
         rgCmdStart := instMarkIndex()                       ' PL-87: the transition's first sample, marked before the command
         startMs := getms()
         wheelCommand(side, motorIncre)
+        slotLastIncre[slotIdx] := curIncre                  ' what wheelCommand() actually SENT, which is the next rung's from_incre
         ' from a previous rung the mirror still reads AT_SPEED until the driver takes the new command
         safeEvent, _ := waitWatched(side, COMMAND_SEEN_MS, CP_LOOP_ATSPEED, UNTIL_TIME)
         if safeEvent == SAFE_NONE
@@ -2951,35 +3048,33 @@ PRI transitionStats(slotIdx, cmdTotal, endTotal) | sampleIdx, startJ, endJ, firs
         if trN == 0
             trWhy := WHY_NO_SAMPLES
 
-PRI foldTransitionKick(side, motorIncre, bFromRest) | slotIdx, ctrlIdx, overPk
-' TRKICK (PL-87, PL-78): a LADDER rung's transition kick against its own control. A rung's transition
-' overshoot is its transition peak |err| less its own steady peak (tr_over): what the change of speed
-' added above steady running. A start FROM REST has always had the soft start, so it is the control for
-' the rungs of the same motor and sign that follow it; a change of speed from a running speed is a kick
-' when its overshoot exceeds the control's by more than TRKICK_MARGIN. Only rungs with both a valid
-' window and a valid transition are judged.
+PRI foldTransitionKick(slotIdx, bFromRest)
+' TRKICK (PL-87, PL-95): a LADDER rung's transition kick, judged on CURRENT. A change of speed from a
+' running speed kicks when its transition current peak stands more than TRKICK_EXCESS_MV above what the
+' motor then draws holding that same speed -- tr_i_over, the record's own field. Only rungs whose
+' transition AND steady window both measured are judged, and a start from rest is not a change of speed
+' from a running speed, so it is not one of them.
 '
-' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param motorIncre - the rung's signed increment (its sign picks the control)
+' WHAT THIS REPLACES, AND WHY. The cell used to judge tr_over, the same comparison on err, against a
+' from-rest control. It PASSED 0 kicks of 22 per wheel at Visit 6a while Stephen felt a kick at every
+' increment of the long ramps -- a false pass, and his hand is the control (doctrine D2: when the
+' measurement and the system disagree, suspect the measurement). The cause is that err is CLAMPED: the
+' lag limiter holds it near LAG_HOLD, so tr_over stayed inside +-5 counts across a ramp on which the
+' transition current rose seventy-five-fold. An instrument built on a clamped observable is blind by
+' construction, whatever control it is given, which is why the control machinery goes with it.
+'
+' THE REFERENCE IS THE RUNG'S OWN STEADY PEAK, not a control rung's, because current scales with speed:
+' comparing a rung at the knee against a rung at 5x10^6 would measure the ladder, not the transition.
+' PL-82's lesson applies to the choice and is respected here -- the reference is a peak against a peak,
+' from the same rung, seconds apart, rather than a hold that drifts with motor temperature.
+'
+' @param slotIdx - motor slot
 ' @param bFromRest - TRUE when this rung started from rest (the first of its sign, or after a recovered fault)
-'
-' @local slotIdx - motor slot
-' @local ctrlIdx - the control's slot x sign index
-' @local overPk - this rung's transition overshoot
 
-    slotIdx := side - SIDE_LEFT
-    ctrlIdx := slotIdx * 2
-    if motorIncre > 0
-        ctrlIdx += 1
-    if (trWhy == WHY_NONE) and bRgWindowValid
-        overPk := trErrPk - rsErrPk
-        if bFromRest
-            sfTrCtrlOver[ctrlIdx] := overPk                 ' the latest start from rest controls what follows it
-            bSfTrCtrl[ctrlIdx] := TRUE
-        elseif bSfTrCtrl[ctrlIdx]
-            sfTrN[slotIdx] := (sfTrN[slotIdx] + 1) <# LIM_SMALL
-            if overPk > sfTrCtrlOver[ctrlIdx] + TRKICK_MARGIN
-                sfTrKicks[slotIdx] := (sfTrKicks[slotIdx] + 1) <# LIM_SMALL
+    if bTrIOverValid() and (bFromRest == FALSE)
+        sfTrN[slotIdx] := (sfTrN[slotIdx] + 1) <# LIM_SMALL
+        if (trIPk - rsIMax) > TRKICK_EXCESS_MV
+            sfTrKicks[slotIdx] := (sfTrKicks[slotIdx] + 1) <# LIM_SMALL
 
 VAR { transition statistics (PL-87) -- cog 0 only }
 
@@ -2989,15 +3084,16 @@ VAR { transition statistics (PL-87) -- cog 0 only }
     LONG    trIPk                                           ' peak |i| over the transition, as BM-RUNG2's i_min / i_max
     LONG    trMs                                            ' the transition's span, command sample to last sample before the window
     LONG    trWhy                                           ' WHY_NONE when the tr* values are a measurement
-    LONG    sfTrCtrlOver[INST_MOTORS * 2]                   ' TRKICK: [slot * 2 + (POS ? 1 : 0)] the control's tr_over
-    LONG    bSfTrCtrl[INST_MOTORS * 2]
     LONG    sfTrN[INST_MOTORS]                              ' TRKICK: running-speed transitions judged, per motor
     LONG    sfTrKicks[INST_MOTORS]                          ' TRKICK: of those, the ones that kicked
 
-PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, ampsCount, hbStart, bComplete
+PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, ampsCount, hbStart, bComplete, hlWinLag, hlWinCap, hlEndLag, hlEndCap
 ' The rung's measurement window: a start mark (ring total), WINDOW_MS of beat-polled safety reads with
 ' getCurrent() every CURRENT_POLL_MS when asked, and an end mark. The window is delimited by the two
 ' instrument-recorded totals, never by time (sec 12.7). An interrupted window records no end total.
+'
+' R18.1: the driver's health counters are read at each mark, which closes the TRANSITION's difference
+' and opens and closes the STEADY window's. Both reads are outside the measured interval.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param bPollCurrent - TRUE to read getCurrent()
@@ -3009,6 +3105,10 @@ PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, a
 ' @local ampsCount - readings taken
 ' @local hbStart - instrument heartbeat at the window start
 ' @local bComplete - the window ran its full WINDOW_MS
+' @local hlWinLag - lag_held at the window start
+' @local hlWinCap - duty_capped at the window start
+' @local hlEndLag - lag_held at the window end
+' @local hlEndCap - duty_capped at the window end
 
     safetyReset()
     safeEvent := SAFE_NONE
@@ -3016,6 +3116,13 @@ PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, a
     ampsCount := 0
     bComplete := FALSE
     hbStart := instHeartbeat
+    ' R18.1: close the TRANSITION's health difference and open the WINDOW's, both from one read. It sits
+    '  outside the measured interval, before the window's own mark and clock (doctrine D6).
+    if bRgHlCmd and isWheelUp(side)
+        hlWinLag, hlWinCap, rgHlDrvIncr := wheelDriveHealth(side)
+        rgHlTrLag := hlWinLag - hlCmdLag                    ' NOT floored at zero: only a driver restart can
+        rgHlTrCap := hlWinCap - hlCmdCap                    '  make it negative, and that must be visible
+        bRgHlTrValid := TRUE
     rgWinStart := instMarkIndex()
     startMs := getms()
     lastPollMs := startMs
@@ -3034,15 +3141,20 @@ PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, a
             quit
     if bComplete
         rgWinEnd := instMarkIndex()
+        if bRgHlTrValid and isWheelUp(side)                 ' R18.1: the steady window's health difference
+            hlEndLag, hlEndCap, _ := wheelDriveHealth(side)
+            rgHlWinLag := hlEndLag - hlWinLag
+            rgHlWinCap := hlEndCap - hlWinCap
+            bRgHlWinValid := TRUE
     bRgHbOk := (instHeartbeat <> hbStart)
     if ampsCount > 0
         rgAmpsX10k := ampsSum / ampsCount
         bRgAmpsValid := bComplete
 
 PRI rungEmitAll(seg, rid, rungIdx, side, motorIncre, bFromRest) | slotIdx, rung2Why
-' Emit a measured rung's BM-RUNG, BM-RUNG2, BM-RUNGTR and BM-RUNG3 from the rg* / rs* / tr* staging, and
-' fold it into R14-DUAL-INTEG-A (its integrity deltas), R14-DUAL-IDLEFLT-A (one motor-frame capture) and,
-' for a LADDER rung, R17-DUAL-TRKICK-A (its transition against the start from rest, PL-87).
+' Emit a measured rung's BM-RUNG, BM-RUNG2, BM-RUNGTR, BM-RUNGHL and BM-RUNG3 from the rg* / rs* / tr*
+' staging, and fold it into R14-DUAL-INTEG-A (its integrity deltas), R14-DUAL-IDLEFLT-A (one motor-frame
+' capture) and, for a LADDER rung, R17-DUAL-TRKICK-A (its transition current above its own steady peak).
 '
 ' @param seg - SEG_* in progress
 ' @param rid - rung id
@@ -3061,9 +3173,10 @@ PRI rungEmitAll(seg, rid, rungIdx, side, motorIncre, bFromRest) | slotIdx, rung2
         rung2Why := WHY_NO_SAMPLES
     emitRung2(rid, side, motorIncre, rgDutyMax, bRgWindowValid, rung2Why)
     emitRungTr(rid, side, motorIncre, bFromRest)
+    emitRungHl(rid, side, motorIncre)
     emitRung3(rid, side, motorIncre, rgMissedD, rgIllegalD, rgAmpsX10k, bRgAmpsValid, bRgWindowValid, rgWhy)
     if seg == SEG_LADDER
-        foldTransitionKick(side, motorIncre, bFromRest)
+        foldTransitionKick(slotIdx, bFromRest)
     foldIntegrity(slotIdx, rgMissedD, rgIllegalD)
     sfIntegN[slotIdx] := (sfIntegN[slotIdx] + 1) <# LIM_BIG
     if bRgCaptured
@@ -3210,8 +3323,14 @@ PRI rateBandPct(nTicks) : nExtraPct
 
 PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeEvent, rpmRead
 ' One LIVE rung (design sec 4.4, T1-2): AT_SPEED, settle LIVE_SETTLE_MS so the rpm window fills, a
-' WINDOW_MS instrument window, then testGetRpm(); BM-LIVE. The QTR rung folds R14-DUAL-INSTLIVE-A: every
-' sample up, |ticks| >= LIVE_MIN_TICKS, i_min <> i_max, heartbeat advanced, |ticks - hw_ticks| <= 2.
+' WINDOW_MS instrument window, then testGetRpm(); BM-LIVE, BM-RUNGTR and BM-RUNGHL. The QTR rung folds
+' R14-DUAL-INSTLIVE-A: every sample up, |ticks| >= LIVE_MIN_TICKS, i_min <> i_max, heartbeat advanced,
+' |ticks - hw_ticks| <= 2.
+'
+' R17-DUAL-TRKICK-A is NOT folded here, deliberately. These rungs settle LIVE_SETTLE_MS against the
+' ladder's LADDER_SETTLE_MS, so their transition window is a different length and their tr_i_pk is not
+' the same measurement; one verdict over two populations can fail on the mixture rather than on the
+' drive (doctrine D2). The records are emitted, and Visit 7 reads them beside the ladder's.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param rid - rung id
@@ -3235,6 +3354,12 @@ PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeE
         if bRgWindowValid
             rpmRead := wheelRpm(side)
         emitLive(rid, side, motorIncre, rpmRead, bRgHbOk, bRgWindowValid, rgWhy)
+        ' R18.1 (PL-87): the SHORT ramps are measured too. Stephen felt a kick between rungs 2 and 3 of
+        '  these three, and until now the segment emitted no transition record at all -- only LADDER and
+        '  CLOCK did. The rung is from rest exactly when nothing has been commanded since the lifetime
+        '  started or a fault recovered, which is what rgFromIncre being zero says.
+        emitRungTr(rid, side, motorIncre, rgFromIncre == 0)
+        emitRungHl(rid, side, motorIncre)
         if rungNum == LIVE_INSTLIVE_RUNG
             bSfLiveRan[slotIdx] := bRgSteadyValid
             bSfLiveOk[slotIdx] := bRgWindowValid and bRsAllUp and (abs(rsTicks) >= LIVE_MIN_TICKS) and (rsIMin <> rsIMax) and bRgHbOk and (abs(rsTicks - rsHwTicks) <= LIVE_HW_TOLERANCE)
@@ -7381,6 +7506,7 @@ PRI bWheelStart(seg, side) : bStarted | slotIdx, cogValue, startMs, restMs, nMis
             sfNotRevb[slotIdx] := (sfNotRevb[slotIdx] + 1) <# LIM_BIG
         foldIntegrity(slotIdx, nMissed, nIllegal)
         bLifeZeroValid[slotIdx] := FALSE
+        slotLastIncre[slotIdx] := 0                         ' R18.1: a new lifetime starts at rest
         if bStarted
             stWhy := lifetimeZero(side)
         else
@@ -7671,6 +7797,25 @@ PRI wheelDriveConstants(side) : deadGap, dutyMax, adcFrame, frameCnt
         deadGap, _, _, dutyMax, adcFrame, frameCnt := wheelR.testGetDriveConstants()
     else
         deadGap, _, _, dutyMax, adcFrame, frameCnt := wheelL.testGetDriveConstants()
+    beat(CP_LIB_QUERY)
+
+PRI wheelDriveHealth(side) : nLagHeld, nDutyCapped, nDrvIncr
+' The driver's two UNBOUNDED health counters for one wheel (testGetDriveHealth(), R18.1). Both count
+' control passes since the driver started, so a rung's reading is a DIFFERENCE across its window, the
+' way pos is; neither can top out, which is the whole point (PL-95: err is held near LAG_HOLD by the
+' limiter and bounded by its own +-127, and duty saturates at duty_max -- so above mid-range both stop
+' reporting exactly where the behaviour is).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nLagHeld - passes on which the limiter withheld the field advance
+' @returns nDutyCapped - passes on which the duty demand exceeded the cap
+' @returns nDrvIncr - the field's increment per drive pass, so a withheld count converts to an advance
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        nLagHeld, nDutyCapped, nDrvIncr, _ := wheelR.testGetDriveHealth()
+    else
+        nLagHeld, nDutyCapped, nDrvIncr, _ := wheelL.testGetDriveHealth()
     beat(CP_LIB_QUERY)
 
 PRI wheelStartSense(side)
@@ -7965,6 +8110,7 @@ PRI bRecoverFault(seg, tid, side, motorIncre, coolMs) : bCleared | slotIdx, star
 ' @local bUp - the restart's start succeeded
 
     slotIdx := side - SIDE_LEFT
+    slotLastIncre[slotIdx] := 0                             ' R18.1: recovery leaves the wheel at rest -- the next rung starts from there
     runFaults := (runFaults + 1) <# LIM_BIG
     segFaults := (segFaults + 1) <# LIM_SMALL
     sfFaults[slotIdx] := (sfFaults[slotIdx] + 1) <# LIM_BIG
@@ -8304,8 +8450,12 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     ' OVERSHT: the four distance trials plus the fault-API trial (task 3552) -- about 6 s of poll, the
     '  stop, and up to two FAULT_COOL_MS cool-downs. Its rows are BM-OUT, already counted in est_kb.
     ' STEERSEG and LIMIT (task 3560) print few records and no traces: their time is the steps' own holds
-    estS := lookupz(seg: 0, 5, 540, 60, 240, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 45, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6)
+    ' R18.1: LADDER's walk went from 12 steps to LADDER_WALK_STEPS per motor and sign -- 38 x 4 = 152
+    '  measured rungs against 48 -- and each rung now prints five records rather than four. Visit 6a
+    '  MEASURED 119_523 ms and about 960 B per rung for the 48, so the walk is about 375 s and 180 KB;
+    '  both figures are rounded up, as every other entry here is.
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -8458,11 +8608,21 @@ PRI emitRung2(rid, side, motorIncre, dutyMax, bWindowValid, whyCode) | slotIdx, 
     emitRecord()
 
 PRI emitRungTr(rid, side, motorIncre, bFromRest) | whyCode
-' BM-RUNGTR (PL-87): the rung's TRANSITION, from the command mark to the window start -- peak |err| and peak
-' |i| over the ramp and settle, and tr_over (the transition peak |err| above this rung's own steady err_pk)
-' that R17-DUAL-TRKICK-A judges. from_rest marks the control. Worst case 177 bytes: tag(9) + seq(15) +
-' rid(12) + motor(12) + incre(19) + from_rest(16) + tr_ms(14) + tr_err_pk(15) + tr_i_pk(16) + tr_over(13) +
-' tr_n(13) + why(23).
+' BM-RUNGTR (PL-87): the rung's TRANSITION, from the command mark to the window start -- peak |err| and
+' peak |i| over the ramp and settle, against the rung's own steady statistics.
+'
+' R18.1 (PL-95), two fields, and the second one is what the cell now judges:
+'  from_incre - the speed the wheel was HOLDING when the command arrived, so the transition's delta and
+'               its direction are read off the record. Zero is a start from rest, which is what
+'               from_rest already says; the two cannot disagree, because both come from the same state.
+'  tr_i_over  - the transition current peak above this rung's own steady peak. tr_over is the same
+'               comparison on err, and err is CLAMPED: the limiter holds it near LAG_HOLD, so tr_over
+'               read 0 of 22 at Visit 6a while tr_i_pk rose seventy-five-fold on the same rungs
+'               (PL-87's table). Current is not clamped, and it was being recorded the whole time.
+'
+' Worst case 219 bytes: tag(9) + seq(15) + rid(12) + motor(12) + incre(19) + from_incre(24) +
+' from_rest(16) + tr_ms(14) + tr_err_pk(15) + tr_i_pk(16) + tr_i_over(18) + tr_over(13) + tr_n(13) +
+' why(23).
 '
 ' @param rid - rung id
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -8478,13 +8638,59 @@ PRI emitRungTr(rid, side, motorIncre, bFromRest) | whyCode
     benchLog.numField(@"rid", rid, LIM_SMALL)
     benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
     benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.numField(@"from_incre", rgFromIncre, LIM_BIG)
     benchLog.boolField(@"from_rest", bFromRest)
     benchLog.naNumField(@"tr_ms", trMs, LIM_SMALL, trWhy == WHY_NONE)
     benchLog.naNumField(@"tr_err_pk", trErrPk, LIM_TINY, trWhy == WHY_NONE)
     benchLog.naNumField(@"tr_i_pk", trIPk, LIM_SMALL, trWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_i_over", trIPk - rsIMax, LIM_SMALL, bTrIOverValid())
     benchLog.naNumField(@"tr_over", trErrPk - rsErrPk, LIM_TINY, (trWhy == WHY_NONE) and bRgWindowValid)
     benchLog.numField(@"tr_n", trN, LIM_SMALL)
     whyField(whyCode)
+    emitRecord()
+
+PRI bTrIOverValid() : bValid
+' Whether tr_i_over is a measurement: both peaks it subtracts must be measurements of this rung (R18.1).
+' One test, used by the record and by the cell, so the printed value and the judged value cannot diverge.
+'
+' @returns bValid - TRUE when the transition and the steady window both measured
+
+    bValid := (trWhy == WHY_NONE) and (bRgWindowValid <> FALSE)
+
+PRI emitRungHl(rid, side, motorIncre)
+' BM-RUNGHL (R18.1, PL-95): the driver's two UNBOUNDED health counters over this rung, differenced --
+' tr_* across the TRANSITION (command to window start: the ramp and the settle), win_* across the STEADY
+' window. drv_incr is the field's increment per drive pass at the window start, so lag_held converts to
+' the field advance the limiter withheld: withheld angle = lag x drv_incr.
+'
+' WHY THIS RECORD EXISTS. err and duty, which BM-RUNG2 prints, both TOP OUT exactly where the drive stops
+' keeping up -- err is held near LAG_HOLD by the limiter and bounded by its own +-127, duty saturates at
+' duty_max and pins there for the whole top half of the range. Above the knee they report a ceiling, not
+' a drive. These counts have no ceiling: zero means the drive kept up for every pass of the window, and
+' they grow without bound when it cannot.
+'
+' NO CELL JUDGES THEM. They are characterisation readings for Visit 7, and the acceptance numbers that
+' will judge them are R18.3's to choose, before R18.4 builds against them (doctrine D2: a criterion
+' chosen after the fact cannot fail). On today's drive they are expected to be large above mid-range --
+' that is PL-95, already recorded, not a verdict this harness re-states.
+'
+' Worst case 174 bytes: tag(9) + seq(15) + rid(12) + motor(12) + incre(19) + tr_lag(15) + tr_cap(15) +
+' win_lag(16) + win_cap(16) + drv_incr(22) + why(23).
+'
+' @param rid - rung id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+
+    recBegin(@"BM-RUNGHL")
+    benchLog.numField(@"rid", rid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.naNumField(@"tr_lag", rgHlTrLag, LIM_SMALL, bRgHlTrValid)
+    benchLog.naNumField(@"tr_cap", rgHlTrCap, LIM_SMALL, bRgHlTrValid)
+    benchLog.naNumField(@"win_lag", rgHlWinLag, LIM_SMALL, bRgHlWinValid)
+    benchLog.naNumField(@"win_cap", rgHlWinCap, LIM_SMALL, bRgHlWinValid)
+    benchLog.naNumField(@"drv_incr", rgHlDrvIncr, LIM_BIG, bRgHlTrValid)
+    whyField(rgWhy)
     emitRecord()
 
 PRI emitRung3(rid, side, motorIncre, missedD, illegalD, ampsX10k, bAmpsValid, bWindowValid, whyCode) | rsImpl
