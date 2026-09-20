@@ -4670,6 +4670,37 @@ read is the driver's own state after `.resetFault` against what the harness comm
 **Cost this visit:** it is the reason every cell downstream of the first fault is NOMEAS, including
 `R17-DUAL-FLTSTOP-C`.
 
+### ⛔ THE MECHANISM, read from the samples 2026-09-20 -- and it is a DRIVER defect, not a harness one
+
+**MEASURED** (`debug_260919-173537.log`, tid 16, RIGHT wheel, eight consecutive samples k 64-71):
+
+| | reading |
+|---|---|
+| `i` | **3_742 -> 3_772 mV**, i.e. about **25 A** at the harness's own 150 mV/A calibration |
+| `d` | **23_891 -> 24_264**, and 24_264 **is `duty_max`** -- the servo wound to the ceiling and stayed |
+| `e` | **pinned at -101**, just under the driver's `\|err\| >= 125` fault test, and right at `LAG_HOLD` (100) |
+| `st` | **AT_SPEED** throughout |
+
+**DERIVED, and every step is visible in the numbers above:** the lag limiter holds the field so `err`
+sits at its hold threshold and **never reaches the fault test**; the duty servo, seeing an error it
+cannot clear, **winds `duty_` to `duty_max`**; S-2's current fold-back computes its threshold as
+`max(duty_, duty_floor_) * i_limit_k_ >> 16`, so **at `duty_max` that threshold is at its most
+permissive** and no fold-back occurred (duty rose into the ceiling rather than backing off); the
+protective stop did not fire either. The driver therefore sat at **maximum duty drawing ~25 A while
+reporting AT_SPEED**, and the only thing that stopped it was the harness's external 10 A abort.
+
+⛔ **A USER HAS NO SUCH ABORT.** This is the same shape as a stalled or blocked wheel -- "commanded rate
+cannot be reached" -- so it is reachable outside a provoked fault. It is filed here because a fault
+exposed it, but **the condition is general and it is the most consequential thing Visit 6a found.**
+
+**Fix direction (driver, and it subsumes PL-86 and PL-46's instrument problem):** a **droop detector** --
+compare commanded tick rate against measured tick rate, and when they diverge for N consecutive frames
+act on it (fault, or the protective stop that already exists). One mechanism then serves three needs:
+the driver gets the protection it is missing, the commutation scan gets the stop condition the limiter
+took away (PL-46), and the fault provocation gets a reachable edge (PL-86). The current-limit threshold
+scaling with duty should be re-read at the same time: it is most permissive exactly when duty is
+highest, which is backwards for this failure.
+
 ### PL-94 -- `t0` still loses records at cog-start bursts, despite the quiet windows (PL-85's remainder)
 
 **Found 2026-09-19 at Visit 6a.** Open. **PL-85 is reduced, not closed.**
