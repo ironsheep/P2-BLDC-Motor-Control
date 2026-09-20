@@ -2292,17 +2292,23 @@ A characterisation visit. Every measurement below feeds R18.3's design, and noth
    edges have not happened yet — so creep, startup and the last moments before rest are a distinct
    regime needing its own readings.
 
-### Open for Stephen — neither blocks R18.1
+### Two questions this section once carried — both are closed, neither was his
 
-- **Release scope.** R18 is larger than everything left on the 6.0.0 list. **Recommendation: 6.0.0
-  becomes the drive release** — it is what makes it "so much better" (STEPHEN 2026-09-11), and shipping
-  the stop-state and API work on a drive that saturates mid-range would ship the smaller half. The
-  alternative is 6.0.0 as it stands with R18 as 6.1.0, which ships sooner and asks users to re-learn the
-  speed range twice.
-- **The feedback fork:** aggregate current, or the three per-phase currents. MEASURED 2026-09-20: all
-  three phase currents are read and scaled every ADC frame and go **only to telemetry** — nothing in the
-  control loop uses them. That is the largest unused capability in the driver, and the choice shapes
-  R18.3 onward.
+⛔ **Release scope was never open.** STEPHEN 2026-09-20: *"Your role is to know that 6.0 release is
+coming up. It is not to prompt me, 'Is it time to close it yet?' I'll decide that. I will continue to
+tell you things we need to fix until I'm happy with the shape of the driver, so don't ask me about 6.0
+anymore."* The version is settled, the ship trigger is his judgement of the driver's content, and
+**everything in this plan lands in 6.0.0 by default.** R18's size is not a reason to reopen it; work
+growing is not new information. Doctrine overlay P5 and P8 carry the rule.
 
-**R18.1 depends on neither**, which is why it starts now: the unbounded observables are needed whatever
-the feedback turns out to be, and they are what makes Visit 7 worth running.
+**The feedback fork is mine, and Visit 7 settles it by measurement.** Aggregate current or the three
+per-phase currents: MEASURED 2026-09-20, all three phases are read and scaled every ADC frame
+(`isp_bldc_motor.spin2`, the ADC block at the top of the control pass) and reach nothing but telemetry —
+only the aggregate is used in control, for the S-2 fold-back threshold. That is the largest unused
+capability in the driver, and **which one becomes feedback is a design choice with a verifiable success
+criterion, so it is not a ruling to ask for** (overlay P3). R18.2 characterises **both**, and R18.3
+designs against the numbers rather than against a guess made before them.
+
+⚠ **Consequence for R18.2's harness, to design before the visit:** the bench instrument stores the three
+phase readings as their **sum**, not individually, so a per-phase characterisation needs a ring-format
+change. Ring depth is the cost to weigh; per-phase may only be needed on a subset of rungs.
