@@ -1465,6 +1465,32 @@ PUB testGetTelemetry() : nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrS
     eDrvrState := drv_state
     bDidFault := (fault <> false) ? true : false
 
+PUB testGetDriveHealth() : nLagHeld, nDutyCapped, nDrvIncr, nPos
+'' TESTING USE: the driver's two UNBOUNDED health counters, with the pair needed to interpret them
+''
+'' WHY THESE EXIST (R18.1, PL-95). The two quantities that say whether the drive is keeping up --
+'' the position error and the duty -- both TOP OUT exactly when it stops keeping up: err is held near
+'' LAG_HOLD by the lag limiter and is bounded by its own +-128 representation, and duty saturates at
+'' duty_max and pins there. A measure that tops out reports nothing past its ceiling, which is where
+'' the interesting behaviour is. These two count the control passes on which each limit ACTED, which
+'' has no ceiling.
+''
+'' HOW TO READ THEM: difference each across a window, as getRawHallTicks() is differenced. The
+'' fraction of passes counted is the fraction of the window the drive spent out of authority; zero
+'' means it kept up throughout. nLagHeld multiplied by nDrvIncr is the field advance withheld.
+''
+'' @returns nLagHeld - control passes on which the limiter withheld the field advance, since driver start
+'' @returns nDutyCapped - control passes on which the duty demand exceeded the cap, since driver start
+'' @returns nDrvIncr - the field's increment per drive pass, so a withheld count converts to an advance
+'' @returns nPos - the driver's hall-tick position, so the same read yields the measured travel
+
+    ' read as one group, for the reason testGetTelemetry() gives: tighter than separate calls, and
+    '  still not atomic against the driver's own block copy
+    nLagHeld := lag_held
+    nDutyCapped := duty_capped
+    nDrvIncr := drv_incr_now
+    nPos := pos
+
 PUB testSetMotorReversed(bEnable) : eError
 '' TESTING USE: set -or clear- the reversed-motor flag for this motor
 ''
@@ -3723,7 +3749,7 @@ CON { driver internal Constants }
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
-    DRVR_STATUS_LONGS_COUNT     = 17
+    DRVR_STATUS_LONGS_COUNT     = 19
     DRVR_PARAMS_LONGS_COUNT     = 16
 
     ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
@@ -3775,7 +3801,7 @@ VAR { * Data Structure for PASM Driver * }
 
     ' -------------------------------------
     ' VALUES copied from driver each cycle
-    ' 17 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 18th, "fault" also from driver but only when happens
+    ' 19 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 20th, "fault" also from driver but only when happens
     '
     ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
@@ -3787,6 +3813,14 @@ VAR { * Data Structure for PASM Driver * }
     LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP]
     LONG    hall_missed, hall_illegal           ' 2 sequential longs    hall integrity counts since driver start; hall_illegal is %000 << 0 | %111 << 16 (see getHallIllegalCodes())
     LONG    drv_incr_now                        ' 1 sequential long     the field's angle increment per drive pass, for stop timing
+    ' R18.1 (PL-95): two UNBOUNDED health counters. `err` and `duty` both top out -- err is held near
+    '  LAG_HOLD by the limiter and bounded by its own +-127 representation, duty saturates at duty_max --
+    '  so neither says anything once the drive stops keeping up, which is exactly when we need to know.
+    '  These count the passes on which each limit ACTED, which has no ceiling. Differenced over a window
+    '  (as `pos` is) they give the fraction of time the drive was out of authority; multiplied by
+    '  drv_incr_now, lag_held gives the field advance withheld.
+    LONG    lag_held                            ' 1 sequential long     passes where the limiter withheld the field advance
+    LONG    duty_capped                         ' 1 sequential long     passes where the duty demand exceeded the cap
     ' \ ----------------------------
     LONG    fault                               ' 1 sequential long     written TRUE ($FFFF_FFFF) on fault; the bridge then takes the stop mode's fault state (BR_COAST or BR_SHORT)
 
@@ -4207,6 +4241,8 @@ drvMotor                                                ' global (task 3535): en
 .justIncr   ' just do our increment of angle and we're done!
                 cmps    lag_s, #LAG_HOLD            wc  ' C-5: the field advances only while the rotor trails it by
     if_c        add     angle_, drv_incr                '  less than LAG_HOLD, so |err_| stays under the 125 fault test
+    if_nc       add     lag_held_, #1                   ' R18.1: and when it does NOT advance, that is the one thing err
+                                                        '  cannot report -- err is pinned at the hold. Count it instead.
 '                debug("DRV: ", uhex_(drive_pins), " A:(", sdec_(angle_), ") += DI:(", sdec_(drv_incr), ")")
 
 .endRqst
@@ -4431,6 +4467,9 @@ drvMotor                                                ' global (task 3535): en
 .dutyLimits
                 cmp     bridge, #BR_DRIVE           wz  ' R17.1: an undriven bridge applies no duty, so the servo must not wind duty_
     if_nz       mov     duty_, duty_min_                '  up to duty_max_ against an error it cannot correct -- telemetry reads what is applied
+                cmp     duty_, duty_cap_            wc  ' R18.1: is the SERVO'S DEMAND above the cap? (C set = below)
+    if_nc       add     duty_capped_, #1                '  count it before the clamp destroys the evidence: once duty_
+                                                        '  pins at the cap it reports only "still pinned" (PL-95)
                 fles    duty_, duty_cap_                ' keep duty within limits (duty_cap_ is duty_max_ except while ramping down, PL-55)
                 fges    duty_, duty_min_
 
@@ -4693,7 +4732,7 @@ duty_floor_ res 1           ' S-2: the duty below which the phase-current estima
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied out-of driver each loop iteration
-drive_u_    res 1           ' 17 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
+drive_u_    res 1           ' 19 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -4710,6 +4749,8 @@ drv_state_  res 1           ' enum: DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_
 hall_missed_  res 1         ' hall code changed with no countable single step (missed transition), zeroed at driver start
 hall_illegal_ res 1         ' entries into an illegal hall code, %000 in the low word, %111 in the high (PL-90), zeroed at driver start
 drv_incr_s_ res 1           ' copy of drv_incr, the field's increment per drive pass, for the front cog's stop timing
+lag_held_   res 1           ' R18.1: passes where the limiter withheld the field advance -- unbounded, zeroed at driver start
+duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the cap -- unbounded, zeroed at driver start
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
@@ -4866,6 +4907,8 @@ lutCodeStart
                 mov     pos_, #0                        ' reset pos
                 mov     hall_missed_, #0                ' integrity counts restart with every driver start
                 mov     hall_illegal_, #0
+                mov     lag_held_, #0                   ' R18.1: the health counters restart with them
+                mov     duty_capped_, #0
                 alts    hall_port                       ' prime hall_ from a real read: first control pass then sees old == new
                 mov     hall_, 0-0                      '  (PL-90: one INA/INB read; hall pins are inputs, nothing ever raises their DIR)
                 shr     hall_, hall_shift
