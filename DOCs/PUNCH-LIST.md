@@ -4533,6 +4533,69 @@ refused, plus a tier that states the motors-unplugged precondition in the log th
 are stated. It deliberately drives a board's gate input, so it is a change to a hardware safety guard and wants
 a review before its first run, not a slot before a bench session.
 
+### PL-95 -- the drive does not integrate hall and current: above mid-range it runs saturated, field parked, and calls it AT_SPEED
+
+**Found 2026-09-20, re-reading Visit 6a's ladder as a RAMP rather than as a set of rungs.** STEPHEN
+2026-09-20: *"you are too focused on the braking when the ramps and proper integration of hall and
+current into motor drive is much more important"*. He is right, and the data he already had says so
+louder than anything in the stop-state work.
+
+**MEASURED, `debug_260919-173751.log`, LEFT reverse ladder, twelve rungs:**
+
+| rung | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| commanded incre (x10^6) | 5 | 10 | 20 | 40 | 60 | 80 | **100** | 120 | 140 | 147 | 155 | 165 |
+| `duty_pk` | 2_066 | 2_792 | 4_686 | 9_460 | 14_955 | 21_081 | **24_264** | 24_264 | 24_264 | 24_264 | 24_264 | 24_264 |
+| steady current | 13 | 17 | 48 | 213 | 571 | 1_146 | **1_162** | 524 | 140 | 78 | 48 | 65 |
+| `err_pk` | 98 | 76 | 73 | 75 | 75 | 75 | 78 | 85 | 95 | 97 | **102** | **105** |
+
+**Three things happen at once at rung 7, and they are the whole finding:**
+
+1. **`duty_pk` reaches `duty_max` (24_264) and STAYS THERE for the top half of the range.** From rung 7
+   up the driver has no authority left -- it is commanding full duty and cannot command more.
+2. **The steady current PEAKS and then FALLS** -- 1_162 at rung 7 down to 48 at rung 11 -- while the
+   commanded speed keeps rising. Current falling as commanded speed rises, at saturated duty, is the
+   signature of a drive that has stopped delivering torque.
+3. **`err_pk` climbs from 75 toward 105**, i.e. toward `LAG_HOLD` (100). The field is running further
+   and further ahead of the rotor, and the limiter parks it there.
+
+⛔ **And the driver reports AT_SPEED throughout.** Rungs 8-12 are a motor that is not tracking its
+command, at full duty, with the field parked at a large angular error -- reported as healthy.
+
+⭐ **THIS IS THE SAME STATE AS PL-93**, which was reached through a provoked fault: `duty_max`, `err`
+pinned near the limiter hold, `AT_SPEED`, current set by the load rather than by control. **PL-93 is not
+an edge case -- it is the normal top half of this driver's speed range**, and a loaded wheel in that
+state is what drew 25 A.
+
+⭐ **And it explains the kick (PL-87).** The transition current peaks at **rung 7**, exactly where duty
+saturates: every ramp step throws the field further ahead before the rotor can follow, and the step that
+lands in saturation is the worst. Stephen feels one at each increment because each increment does it.
+
+**What is actually missing, stated as the design gap rather than as symptoms:**
+
+- **The halls are used coarsely and the field is advanced open-loop between them.** The rotor's position
+  is known six times per electrical cycle; between those edges the driver advances `angle_` at the
+  commanded rate and hopes. When the command exceeds what the rotor can do, nothing closes that loop --
+  the limiter only clamps the reported error.
+- **Current is not feedback.** It is read for the S-2 fold-back threshold and for telemetry, and
+  nowhere does it inform commutation. Yet the table above shows current is the only observable that
+  tracks what the drive is actually doing -- error is clamped, duty saturates, and current is neither.
+- **The ramp commands a rate, not an achievable acceleration.** `ramp_inc` advances the commanded
+  increment by a fixed step per drive pass regardless of whether the rotor is following, so every step
+  is an open-loop lunge and the error absorbs the difference.
+
+**Fix direction (this is the 6.0.0 driver work, and everything else is downstream of it):** close the
+loop the halls and the current are already giving us -- correct the field against hall edges rather than
+free-running between them, bound the ramp by measured acceleration rather than a fixed increment step,
+and use current as the signal for commutation quality rather than only as a fold-back trigger. **A
+droop detector, which this list previously proposed, is a guard around this defect and not a fix for
+it** (doctrine D1: fix the system, not the display).
+
+**Verification is already paid for:** the ladder prints `duty_pk`, steady current, `err_pk` and the
+transition current per rung, so the table above IS the acceptance test. A corrected drive flattens the
+transition current, keeps duty off its ceiling until genuinely at the ceiling, and does not report
+AT_SPEED while the field is parked.
+
 ### PL-92 -- the bench runner runs the terminal in console mode, so no attended tier can draw its panel
 
 **Found 2026-09-19 at Visit 6a**, when `t0-stopmode` put up no UI and Stephen could not tell what to do.
