@@ -4558,9 +4558,39 @@ Every check that can be made without the rig, on the committed `t0-*` code:
 | `BENCH_QUIET` | Not referenced anywhere in `test_bench_t0.spin2`; it masks the library's channels only |
 | Display name `t0stop` | A legal identifier (letter first, then letters/digits) -- p2kb's own valid examples include `cog0` and `pin56` |
 
-**So the defect is not visible from here**, and the one structural difference left between this panel and
-every panel that has ever drawn on this rig is the display name carrying a digit -- which the identifier
-rules permit and which I have no authority against. That is a suspicion, not a finding.
+### The sequence comparison he asked for next -- and the one hard fact it produced
+
+**STEPHEN 2026-09-20:** *"the display name is not the problem - look at the overall sequence of debug()
+statements routed to the plot window see if they differ in your latest and the working prior"*.
+
+⭐ **MEASURED, and it is the useful result: not one display statement of the WORKING T0-12 panel has
+changed since the run that drew it.** `git diff 6b727d1..HEAD -- src/test_bench_t0.spin2` restricted to
+`` debug(` `` lines is **all `+` and no `-`**: thirteen added lines, every one of them mine. The
+2026-09-15 run that drew was made after the `#ifdef T0_HAND` split (`6b727d1`, 13:24; the run, 14:23),
+so **the `t0-hand` tier as it stands today is the same panel that worked.** That is what makes the A/B
+below decisive rather than merely interesting.
+
+**The sequences themselves, normalised (name, asset names, constants and numbers replaced) and diffed:
+no structural difference.** Same create-directive order (`TITLE`, `SIZE`, `POS`, `HIDEXY`, `UPDATE`),
+`LAYER`s then `crop 1` then `update`, and per frame a run of crops ended by exactly one `update`. What
+differs is only:
+
+| Difference | Working T0-12 | T0-24 | Against it |
+|---|---|---|---|
+| Layers | 3 | **4** | `char`'s panel used **5** and drew (2026-09-12) |
+| Crops in the first frame | 7 | **13** | more of the same command, and they follow the create |
+| Digit blit | inline in `t0hDrawPanel()` | factored into `t0sBlitNum()` | a method boundary, not a stream difference -- execution order still ends on `update` |
+| Display name | `bench` | `t0stop` | his call, above; he says it is not the problem |
+
+**So the audit finds nothing wrong with the code, and I could not reproduce the failure from here.**
+
+⚠ **What the domain authority says about this exact symptom, recorded because it is the only documented
+cause that fits.** p2kb `p2kbSpin2Debug` `window_name_rules` gives the failure mode as **"SILENT AT BOTH
+LAYERS … no display is declared, the window never opens, and every later feed addressed to that name
+goes nowhere"** -- which is precisely what the log shows, PC_KEY included. It lists 103 reserved
+debug-display words and five rules; **`t0stop` violates none of them** (it leads with a letter and is not
+reserved). So either the symptom has a second cause not documented there, or the rules and the
+implementation differ for this name. Both are worth knowing, and only the rig can tell them apart.
 
 **The next step is one A/B at the rig, and it costs about a minute.** Run `t0-hand` -- an existing tier
 whose panel is known to have drawn on this rig (2026-09-15) -- through `bench-run.sh`, then
