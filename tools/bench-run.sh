@@ -27,12 +27,12 @@
 # before it runs, prefixed "+ " -- so the transcript is something you can
 # replay by hand line for line.
 #
-# --exit-on-end-session (batch mode, not --ide -- that flag is for VSCode/IDE
-# integration only) makes pnut-term-ts close itself once the tier's binary
+# --exit-on-end-session makes pnut-term-ts close itself once the tier's binary
 # prints its DEBUG_END_SESSION marker, so this produces one binary and one
-# log with no keypress and no interrupt needed. Every tier's binary emits
-# that marker: test_bench_t0, test_bench_spin, test_bench_detect,
-# test_bench_char, test_bench_scan and test_bench_dual.
+# log with no keypress and no interrupt needed, and it is the ONLY terminal
+# flag this script passes (PL-92). Every tier's binary emits that marker:
+# test_bench_t0, test_bench_spin, test_bench_detect, test_bench_char,
+# test_bench_scan and test_bench_dual.
 #
 # Usage:  tools/bench-run.sh <tier>
 #   <tier>      -- tier name, see usage() below. It is the ONLY argument: nothing
@@ -104,7 +104,7 @@ Usage:  tools/bench-run.sh <tier>
                    t0             Tier 0 -- no motor, no motion, no risk
                    t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
                    t0-stopmode    Tier 0's T0-24 stop-state hand test only -- OPERATOR TURNS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
-                   spin         wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
+                   spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    detect         board-detection sweep, PASSIVE (no driver code in the image)
                    detect-lib     as above + the library cross-check (still no driver cog)
                    detect-phase2  adds the driver-cog poisoning probe  [MOTORS MAY STAY CONNECTED, GATE-OVERLAP GROUPS SKIPPED]
@@ -327,17 +327,27 @@ if [ ! -f "$BINARY" ]; then
 fi
 
 # ---- run, with src/ as cwd, batch mode -----------------------------------------
-# Batch (not --ide -- that's VSCode/IDE integration, not a terminal session):
-# --console-mode for a console-friendly run, --exit-on-end-session so
-# pnut-term-ts closes itself once the tier's binary prints its
-# DEBUG_END_SESSION marker (the tool's own documented default end-marker
-# phrase), instead of waiting on a keypress or a fixed timeout.
+# --exit-on-end-session makes pnut-term-ts close itself once the tier's binary
+# prints its DEBUG_END_SESSION marker (the tool's own documented default
+# end-marker phrase), instead of waiting on a keypress or a fixed timeout.
+#
+# NO --console-mode (PL-92, removed 2026-09-19). It was here for "a
+# console-friendly run" and it silently cost every attended tier its panel: a
+# console session opens no window, so the DEBUG display commands a panel is
+# made of went nowhere and PC_KEY could never answer. At Visit 6a t0-stopmode
+# emitted its records, waited on a keypress that could not arrive, and lost all
+# eight of its cells; t0-hand, dual-brake, dual-floor and dual-ui had the same
+# defect and had simply not been run through this script since their panels
+# were added. STEPHEN 2026-09-19: "i don't think there is any benefit to our
+# running with --console-mode". One invocation serves every tier -- an
+# unattended tier draws no window because it creates none, not because the
+# terminal was told it may not.
 LOG_BEFORE="$(newest_log)"
 
-run "$PNUT_TERM" -r "$BINARY" --console-mode --exit-on-end-session
+run "$PNUT_TERM" -r "$BINARY" --exit-on-end-session
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
-    echo "ERROR: command failed (exit $STATUS): $PNUT_TERM -r $BINARY --console-mode --exit-on-end-session" >&2
+    echo "ERROR: command failed (exit $STATUS): $PNUT_TERM -r $BINARY --exit-on-end-session" >&2
     exit 2
 fi
 

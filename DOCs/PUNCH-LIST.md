@@ -4527,12 +4527,28 @@ step. **The rule this earns: an attended tier's review covers the whole path -- 
 invocation that will run it -- and "has this path ever drawn a panel?" is a question with an answer in
 the logs.**
 
-**Fix direction:** give `bench-run.sh` the invocation that yields a GUI session for attended tiers and
-keep console mode for unattended ones, so a tier's attendedness picks its own terminal mode and a
-mistyped mode is impossible rather than merely detectable (the same construction PL-62 used for the
-clock). **Which invocation that is needs his tool:** overlay P7 forbids inferring a flag's behaviour
-from its name, and `pnut-term-ts` is macOS-only, so it cannot be read here. **Asked of Stephen
-2026-09-19.**
+### FIXED IN TREE 2026-09-19 -- and simpler than the fix that was proposed
+
+**STEPHEN 2026-09-19:** *"i don't think there is any benefit to our running with --console-mode"*.
+
+That answer removes the design as well as the defect. The proposed fix was to select a terminal mode
+from the tier's attendedness; with no benefit on either side of that switch there is nothing to select,
+so **`--console-mode` is simply gone and one invocation serves every tier**:
+`pnut-term-ts -r <binary> --exit-on-end-session`. An unattended tier draws no window because it creates
+none, not because the terminal was told it may not -- which is the same shape as PL-62's fix, one
+value with one meaning, rather than a mode that can disagree with the tier it is running.
+
+- `tools/bench-run.sh`: the flag is removed from the invocation, from the error line that replays it,
+  and from both comments; the surviving comment records what it cost and why it went.
+- **Run-time proof is owed to the bench.** Nothing here can run `pnut-term-ts` (macOS-only, no board),
+  so the next load is the confirmation: an unattended tier must still close itself on
+  `DEBUG_END_SESSION`, and an attended tier must draw its panel.
+- **First loads that exercise it:** any unattended tier for the first half, then `t0-stopmode` or
+  `dual-ui` for the second.
+
+*Superseded fix direction, kept for the record: "give `bench-run.sh` the invocation that yields a GUI
+session for attended tiers and keep console mode for unattended ones." The premise that console mode
+bought anything was mine, and it did not survive his answer.*
 
 ### PL-93 -- after a real fault and a successful recovery, the next drive-up draws 3-4x current and aborts
 
