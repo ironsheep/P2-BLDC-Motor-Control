@@ -2212,3 +2212,97 @@ certified before the commutation scan is redesigned on top of them:
 
 R17.10 and R17.11 are bench-only source (no library change). Visit 6a's sheet reviews that every new cell can
 FAIL (D2) before the visit is offered.
+
+
+## Sprint Revision — 2026-09-20: the drive comes first, and the observables are respecified
+
+**Why.** Visit 6a's own data, re-read at Stephen's direction. Four rulings, all 2026-09-20:
+
+- *"you are too focused on the braking when the ramps and proper integration of hall and current into
+  motor drive is much more important"*
+- *"you should always be weighing effect measure/fix/verify correct against the most imortant aspects of
+  the driver changes first least important last"*
+- *"if we have measures that are topping out we need to respecify them so they do not - as they are not
+  useful once topped out"*
+- *"if we also weigh-in what a user can command we are going to have to handle small delta
+  speed-up/slow-down requests as well as large, near max throttle... our drive mech. has to handle this
+  well"*
+
+**What the data says** ([PL-95](../PUNCH-LIST.md)). Read as a ramp rather than as rungs, the Visit 6a
+ladder shows three things happening together at the middle rung: `duty_pk` reaches `duty_max` and pins
+there for the whole top half of the range; the steady current peaks and then *falls* while commanded
+speed keeps rising; and `err_pk` climbs toward `LAG_HOLD`. The driver reports `AT_SPEED` throughout.
+That is the same state PL-93 reached through a provoked fault, so **it is not an edge case — it is the
+normal top half of this driver's range.** The transition current peaks at the same rung, which is the
+kick Stephen feels at every increment; and the same 20×10⁶ step taken at six places in the range
+produces a six-fold spread, so **where** a change happens dominates **how big** it is. Of the user's
+command space we hold one cell of twelve: 44 speed-ups are measured and **zero speed-downs**.
+
+**The reprioritisation.** The driver's core — how a commanded speed becomes correct commutation, which
+is the halls, the current and the ramp — outranks stop behaviour, which outranks guards, instruments and
+bench plumbing (doctrine overlay P10, added 2026-09-20). The stop-state work (R17.1) is landed and owes
+only verification; it is not reopened. **The drive core becomes R18 and precedes everything else.**
+
+⛔ **A sequencing consequence that changes what happens next:** the commutation scan and the offsets
+(«#3575», «#3523») **must not run before the drive change.** They would confirm offsets for a drive we
+are about to replace, and a drive change invalidates the speed-ceiling table regardless. They move
+behind R18.
+
+### R18 — the work set
+
+| Plan § | Deliverable | Depends on | Order |
+|---|---|---|---|
+| **R18.1** | **Respecify the observables.** Driver publishes the unbounded quantities — the limiting actually applied, duty demand and its deficit, measured rate against commanded — **with no change to control behaviour**. Harness: emit a transition record for *every* segment (LIVE emits none today), and extend the ladder to descend as well as climb and to carry a small and a large delta at low / knee / high. | — | 1 |
+| **R18.2** | **Visit 7 — characterisation, not certification.** Measure today's drive across the user's command space with the new observables, and certify the sensors are read fast enough and fresh enough to build a loop on. | R18.1 | 2 |
+| **R18.3** | **The design.** Sensors and what each can actually tell us (measured, not assumed) → the observables → what the integration must provide as effects on the drive → the drive change → its acceptance numbers. | R18.2 | 3 |
+| **R18.4** | **Build the drive change.** | R18.3 | 4 |
+| **R18.5** | **Visit 8 — certify the change** against R18.3's numbers, across the whole command space. | R18.4 | 5 |
+
+Then the existing tail, unchanged in content but moved behind R18: the scan redesign and floor tier
+(«#3575»), Visit 6b («#3576»), the offsets («#3523»), documentation («#3515»), ship («#3516»).
+
+**«#3573»'s driver half is subsumed.** Visit 6a proved the kick survives (Stephen's own reading, and the
+transition current agrees), but the kick is a symptom of the drive integration, not a separate defect —
+it peaks exactly where duty saturates. It is folded into R18.4 rather than built separately.
+
+**Riding along, because they are cheap and block bench work:** PL-92's `t0-hand`/`t0-stopmode` A/B (one
+minute, settles why no panel drew), and PL-94 (`t0` loses verdicts at cog bursts, cost two cells).
+
+### Visit 7 — what it must gather, and why each reading is needed
+
+A characterisation visit. Every measurement below feeds R18.3's design, and nothing is run that does not.
+
+1. **The command space, both directions.** Speed-up *and* speed-down, at small / medium / large delta,
+   from low / knee / high starting speed, plus near-max throttle. Today's ladder covers one cell; the
+   gap that matters most is that **no slow-down has ever been measured**, and slowing is the direction
+   where the field must fall back through the rotor — the opposite sign of error.
+2. **Per transition, the respecified quantities:** limiting applied, duty demand and deficit, measured
+   rate against commanded, transition current — with the old `err`/`duty` kept alongside for continuity
+   with Visits 5 and 6a.
+3. **Sensor-rate certification, which is its own question and not a by-product.** Control passes per
+   hall edge across the whole speed range (if that approaches 1 at the top, no observer can work);
+   missed and illegal hall counts at the extremes rather than only at the tested middle; and for the
+   current, **how fresh the sample is when the loop acts on it and what it represents** — one
+   PWM-synchronous instant, or an average. Rate alone does not answer whether a loop can be closed on it.
+4. **The ceiling question, which the new observables answer directly.** At and above the saturation
+   knee: does the duty *deficit* grow (the drive is giving up before the motor's limit) or is demand met
+   at the cap (a real ceiling)? Current falling past rung 7 while duty is pinned reads like the former.
+   This decides whether R18.4 is recovering lost range or protecting a real limit.
+5. **Low speed and startup, which no test has ever covered.** As speed → 0 the halls stop informing —
+   edges have not happened yet — so creep, startup and the last moments before rest are a distinct
+   regime needing its own readings.
+
+### Open for Stephen — neither blocks R18.1
+
+- **Release scope.** R18 is larger than everything left on the 6.0.0 list. **Recommendation: 6.0.0
+  becomes the drive release** — it is what makes it "so much better" (STEPHEN 2026-09-11), and shipping
+  the stop-state and API work on a drive that saturates mid-range would ship the smaller half. The
+  alternative is 6.0.0 as it stands with R18 as 6.1.0, which ships sooner and asks users to re-learn the
+  speed range twice.
+- **The feedback fork:** aggregate current, or the three per-phase currents. MEASURED 2026-09-20: all
+  three phase currents are read and scaled every ADC frame and go **only to telemetry** — nothing in the
+  control loop uses them. That is the largest unused capability in the driver, and the choice shapes
+  R18.3 onward.
+
+**R18.1 depends on neither**, which is why it starts now: the unbounded observables are needed whatever
+the feedback turns out to be, and they are what makes Visit 7 worth running.
