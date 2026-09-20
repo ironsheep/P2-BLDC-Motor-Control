@@ -3893,6 +3893,30 @@ completed before this release"* -- «#3543» is one of them.
 
 ### PL-86 -- the fault-API provocation is stronger than the abort watching it, and has cost two cells at two visits
 
+> ## ⭐ CAUSE IDENTIFIED 2026-09-19 at Visit 6a, and it is NOT the provocation.
+>
+> **The computed provocation's arithmetic is correct.** DERIVED by inverting the shifts the run printed
+> (`BM-FLTAPI … l_shift,240, r_shift,108`): the LEFT wheel's mean `err` at speed was **+43** and the
+> RIGHT's **−51** (opposite signs are right -- the steering object reverses the right wheel), and
+> 43 − 171 = **−128**, −51 − 77 = **−128**. Both land exactly on the wrap, three units past the
+> `|err| >= 125` fault test, as designed.
+>
+> ⛔ **What stops the fault is the driver's LAG LIMITER.** It holds the field back as `err` grows, so
+> `err` never reaches the fault test; the motor sits badly commutated and draws current until the
+> harness's abort fires. MEASURED: `ABS_CURRENT` at 2_655 mV (`dual-b`), 3_435 and 3_771 mV (`dual-c`)
+> against a 1_500 mV threshold, where half-speed running current is about 900 mV.
+>
+> ⭐ **This is the same mechanism as PL-46**, already recorded against the commutation scan: *"its
+> window edge is found by walking until the motor FAULTS … the lag limiter now makes it DROOP
+> instead."* **The scan and the fault provocation are two instruments with one broken assumption**, and
+> «#3575» already owns the redesign of the first. Whatever replaces "walk until it faults" should serve
+> both.
+>
+> **It does fault once per wheel**, on the first trial, and then every later trial on that wheel aborts
+> -- that second behaviour is its own finding, **PL-93**.
+>
+> Full reading: `analyses/bench/2026-09-19/VISIT-6A-RESULTS.md` §5.
+
 **Found 2026-09-17 at Visit 5.** **Harness stimulus defect, mine (P3). NOT a driver defect.**
 
 **MEASURED**, `analyses/bench/2026-09-17/debug_260917-173141.log` L7653-7656:
@@ -4464,6 +4488,103 @@ Nothing else waits on it.
 refused, plus a tier that states the motors-unplugged precondition in the log the way the other preconditions
 are stated. It deliberately drives a board's gate input, so it is a change to a hardware safety guard and wants
 a review before its first run, not a slot before a bench session.
+
+### PL-92 -- the bench runner runs the terminal in console mode, so no attended tier can draw its panel
+
+**Found 2026-09-19 at Visit 6a**, when `t0-stopmode` put up no UI and Stephen could not tell what to do.
+**MINE, not the tier's.** Open; it blocks every attended tier we have.
+
+**MEASURED (`analyses/bench/2026-09-19/debug_260919-174735.log`):** the image ran -- banner, all eight
+`SIGNOFF-DECL` lines, `T0-24,begin`, and the driver's two cogs started. Row 0 announced itself, then
+nothing for 95 s until `[TX] s<cr>` (Stephen typing `s` at the terminal) ended the session. The log
+carries **zero backtick display commands and zero `PC_KEY`** across about 1,900 key-poll iterations.
+The 2026-09-15 `t0-hand` log, whose panel drew on this rig, carries **718 backticks and 487 `PC_KEY`**.
+
+**MEASURED, it is not the tier's code:** a byte scan of the compiled image finds `` `PLOT t0stop TITLE
+… SIZE 480 300 POS 60 80 HIDEXY UPDATE `` and its four `LAYER` commands present, in the same shape as
+`t0-hand`'s working set. The four `.bmp` assets are committed and present.
+
+**MEASURED:** `tools/bench-run.sh` has run `pnut-term-ts -r <binary> --console-mode
+--exit-on-end-session` since 2026-09-10 (`07f2509`), its own comment choosing `--console-mode` over
+`--ide` for a batch run. **RECORDED:** the 2026-09-15 run whose panel drew built and ran Tier 0 *"as
+built at the bench"* (`VISIT-2-ATTENDED-RESULTS.md`), i.e. not through the runner. **MEASURED:** every
+log in the tree that ever carried a display command is dated 2026-09-11 to 2026-09-15 -- thirteen of
+them, none later.
+
+**DERIVED:** the P2 emits the same bytes whatever the host does, so the loss is on the host side -- a
+console-mode session opens no window and does not log display commands. With no window there is no
+`PC_KEY`, so an attended tier waits forever; the `s` he typed went out over the serial line as terminal
+input, which no harness reads.
+
+**Blast radius:** `t0-hand`, `dual-brake`, `dual-floor`, `dual-ui` and `t0-stopmode`. None has been run
+through the runner since its panel was added, so none would have worked. **`dual-ui` and the floor tier
+are Visit 6b's first two loads.**
+
+**Why it got past review (the doctrine half).** Overlay P7 says a step a person uses at the bench is
+built on the proven technique and reviewed against it. I checked that the *panel technique* was proven
+and never checked that the *path that would run it* had ever carried a panel. The runner is part of the
+step. **The rule this earns: an attended tier's review covers the whole path -- binary, panel, and the
+invocation that will run it -- and "has this path ever drawn a panel?" is a question with an answer in
+the logs.**
+
+**Fix direction:** give `bench-run.sh` the invocation that yields a GUI session for attended tiers and
+keep console mode for unattended ones, so a tier's attendedness picks its own terminal mode and a
+mistyped mode is impossible rather than merely detectable (the same construction PL-62 used for the
+clock). **Which invocation that is needs his tool:** overlay P7 forbids inferring a flag's behaviour
+from its name, and `pnut-term-ts` is macOS-only, so it cannot be read here. **Asked of Stephen
+2026-09-19.**
+
+### PL-93 -- after a real fault and a successful recovery, the next drive-up draws 3-4x current and aborts
+
+**Found 2026-09-19 at Visit 6a.** A new defect class, and it was unreachable until this visit: the
+fault provocation had never actually faulted before (PL-86), so nothing downstream of a real fault had
+ever run.
+
+**MEASURED (`debug_260919-173537.log`, `dual-c` POSTFLT, all twelve traces):** the first trace on each
+wheel faults properly (`st,FAULTED, flt,TRUE, e,-101`) and coasts to rest -- LEFT tid 9 `rest_k 278`,
+RIGHT tid 15 `rest_k 257`. **Every trace after it aborts**: tid 10-14 and 16-20, on
+`reason,ABS_CURRENT`, `value,3_435` (LEFT) and `3_771` (RIGHT) mV against `ABS_ABORT_MV 1_500`
+(10 A at 150 mV/A). Half-speed running current is about **900 mV** (Visit 3,
+`debug_260916-123957.log` tid 11). The aborted traces carry **no samples at all** -- the abort fires
+during the next trial's drive-up, before the instrument arms -- and that includes the e-stop traces,
+which write no offsets. The offsets were correctly restored each time (`BM-OFFREST … ok,TRUE`), and the
+harness's recovery reports success (`BM-RECOVER … step,RESET, cleared,TRUE, ms,31, st,STOPPED,
+flt,FALSE`).
+
+**MEASURED, why it is new:** at Visit 3 the same segment ran **all twenty traces to `end,REST` with
+zero aborts**.
+
+**Not settled by these logs:** whether this belongs to the driver's post-fault state or to the
+harness's recovery sequence. **It is user-visible either way** -- fault, recover, drive again is an
+ordinary thing for an application to do -- so it is chased before the release, and the discriminating
+read is the driver's own state after `.resetFault` against what the harness commands next.
+
+**Cost this visit:** it is the reason every cell downstream of the first fault is NOMEAS, including
+`R17-DUAL-FLTSTOP-C`.
+
+### PL-94 -- `t0` still loses records at cog-start bursts, despite the quiet windows (PL-85's remainder)
+
+**Found 2026-09-19 at Visit 6a.** Open. **PL-85 is reduced, not closed.**
+
+**MEASURED (`debug_260919-172524.log`):** the `t0` log declares 24 cells and emits 22.
+**`R17-T0-NOBOARDSTART` and `R1-T0-EXHAUST` are declared and never report a verdict.** The source emits
+`T0-23,begin,no_board_start` (`test_bench_t0.spin2:1812`); the log carries `T0-23,begin,no_bo` (`:180`)
+-- **cut off mid-word**, immediately before the library's refusal line and a `Cog1`/`Cog2` start burst.
+`T0-23`'s `end` record and its SIGNOFF never appear. `R1-T0-EXHAUST`'s verdict goes missing inside the
+seven-cog exhaustion burst the same way.
+
+**MEASURED, where the fix DID work:** across all ten Visit 6a logs, **zero** log lines carry more than
+one `CogN` prefix and **no `BM-*` record is truncated** -- 27,000+ records in the dual harness, clean.
+So `cc491bd`'s quiet windows work where they were measured; they are not sufficient in `t0`, which
+starts and stops far more cogs than any other tier.
+
+⚠ **Method note, recorded because it nearly shipped as a wrong finding.** My first pass checked only
+the dual harness's `BM-*` record shape, found it clean, and concluded PL-85 was closed. The `t0` tier
+uses a different record dialect (`T0-nn,…`) and that is where the losses are. **A check that covers one
+record dialect has not checked the tier that uses the other** (doctrine D2: suspect the measurement).
+
+**Cost this visit:** PL-73's board-refusal certification is still owed -- the cell ran and the driver
+behaved (the refusal line is in the log), but the verdict did not survive the wire.
 
 ---
 
