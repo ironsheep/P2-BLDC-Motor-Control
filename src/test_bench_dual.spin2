@@ -6616,8 +6616,11 @@ VAR { ALIGN tier state -- cog 0 only }
     LONG    agClip                                          ' phase readings at a rail this leg
     LONG    agPeakI                                         ' worst |sense_i| this leg, mV -- the no-drive invariant
     LONG    agFirstEdgeMs                                   ' getms() of the leg's first edge -- a timestamp
-    LONG    bAgSpanValid                                    ' TRUE once a first edge has been seen
     LONG    agSpanMs                                        ' first edge to last, ms -- a duration, and never the timestamp
+    '  ...and bAgSectOpen is what says the span exists: both become true at the leg's first edge and
+    '  neither is cleared before the next leg, so a second flag beside it would be a second name for
+    '  one fact, which is the shape that drifts (D7: never let one value carry two meanings -- and
+    '  never let two values carry one).
     LONG    agOutcome                                       ' ALEG_*
 
 VAR { ALIGN sign-off accumulators -- cog 0 only }
@@ -6655,35 +6658,32 @@ PRI segAlign()
     alignSay(@"ALIGN done -- all eight legs attempted; stop turning")
     segEnd(segWhy())
 
-PRI alignWheel(side) | speedIdx, dirIdx
+PRI alignWheel(side) | speedIdx, dirIdx, bStarted
 ' Run one wheel's four legs: both directions at both hand speeds. The wheel is started once for the
 ' four, set to FLOAT at stop so it coasts, and stopped after them.
 '
-' A WHEEL THAT WOULD NOT START STILL PRINTS ITS FOUR LEGS, as NOSTART. Skipping them silently would
-' leave the matrix cell failing with nothing in the log naming which wheel, and would shift every later
-' leg's index -- an absence that reads as a different run (D2: a discovery failure must never render as
-' a zero).
+' A WHEEL THAT WOULD NOT START STILL PRINTS ITS FOUR LEGS, as NOSTART -- and they go through the SAME
+' loop and the same alignLeg(), which is why there is one leg sequence here and not two. Skipping them
+' would leave the matrix cell failing with nothing in the log naming which wheel, and would shift every
+' later leg's index: an absence that reads as a different run (D2, a discovery failure must never
+' render as a zero).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 '
 ' @local speedIdx - ASPD_SLOW then ASPD_BRISK
 ' @local dirIdx - 0 for the forward leg, 1 for the reverse leg
+' @local bStarted - TRUE when this wheel's driver came up
 
-    if bWheelStart(SEG_ALIGN, side)
+    bStarted := bWheelStart(SEG_ALIGN, side)
+    if bStarted
         wheelHold(side, FALSE)                              ' SM_FLOAT: at rest the bridge is BR_COAST, which is the whole tier
-        repeat speedIdx from ASPD_SLOW to ASPD_BRISK
-            repeat dirIdx from 0 to 1
-                alignLeg(side, 1 - (dirIdx << 1), speedIdx)
+    repeat speedIdx from ASPD_SLOW to ASPD_BRISK
+        repeat dirIdx from 0 to 1
+            alignLeg(side, 1 - (dirIdx << 1), speedIdx, bStarted)
+    if bStarted
         wheelStopRaw(side)
-    else
-        repeat speedIdx from ASPD_SLOW to ASPD_BRISK
-            repeat dirIdx from 0 to 1
-                alignEmitLeg()
-                alignResetLeg(side, 1 - (dirIdx << 1), speedIdx)
-                agOutcome := ALEG_NOSTART
-                alignEmitSummary()
 
-PRI alignLeg(side, askedDir, speedClass) | biasTry
+PRI alignLeg(side, askedDir, speedClass, bStarted) | biasTry
 ' One leg, in the order that makes the operator's screen readable and the bias trustworthy:
 '
 '  1. emit the leg that just finished -- its crossings and its summary, a burst he can watch scroll
@@ -6693,23 +6693,30 @@ PRI alignLeg(side, askedDir, speedClass) | biasTry
 '  3. the guide: wheel, direction, speed, turns. It is the LAST line before the tier goes quiet.
 '  4. quiet: sample until the ticks arrive, or until nothing has moved for ALIGN_STALL_MS.
 '
+' A leg whose wheel never started takes none of steps 2-4: it is reset, named NOSTART, and left for its
+' successor to emit like any other leg.
+'
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param askedDir - +1 for the forward leg, -1 for the reverse leg; the leg is LABELLED by what it measures
 ' @param speedClass - ASPD_SLOW or ASPD_BRISK
+' @param bStarted - TRUE when this wheel's driver came up
 '
 ' @local biasTry - bias attempts spent
 
     alignEmitLeg()
     alignResetLeg(side, askedDir, speedClass)
-    waitms(ALIGN_SETTLE_MS)
-    repeat biasTry from 1 to ALIGN_BIAS_TRIES
-        agBiasTries := biasTry
-        bAgBiasStill := bAlignBias(side)
-        if bAgBiasStill
-            quit
-    alignGuide()
-    alignRun(side)
-    alignScoreLeg()
+    if bStarted
+        waitms(ALIGN_SETTLE_MS)
+        repeat biasTry from 1 to ALIGN_BIAS_TRIES
+            agBiasTries := biasTry
+            bAgBiasStill := bAlignBias(side)
+            if bAgBiasStill
+                quit
+        alignGuide()
+        alignRun(side)
+        alignScoreLeg()
+    else
+        agOutcome := ALEG_NOSTART
 
 PRI alignResetLeg(side, askedDir, speedClass)
 ' Clear every per-leg accumulator before the bias read. One place, so no leg can inherit the previous
@@ -6738,7 +6745,6 @@ PRI alignResetLeg(side, askedDir, speedClass)
     agClip := 0
     agPeakI := 0
     agFirstEdgeMs := 0
-    bAgSpanValid := FALSE
     agSpanMs := 0
     agOutcome := ALEG_OK
     longfill(@agPrevSign, 0, ALIGN_PHASES)
@@ -6796,6 +6802,14 @@ PRI alignRun(side) | nowCt, uMv, vMv, wMv, iMv, absI
 ' the hall code is read LIVE from the pins, so a sector edge is placed to one poll; the phase readings
 ' come from the driver's status block, which the driver refreshes about every 0.52 ms, so a crossing is
 ' placed to that. samp_sect in BM-ALEG is what a reader uses to judge either.
+'
+' NOTE -- THE PER-PHASE CALLS BELOW ARE NOT WORTH BATCHING, and this note is here so the next reader does not
+' spend the effort finding that out. Folding the three alignClipTest() and three alignCross() calls
+' into one pass would remove about eight Spin2 method dispatches per sample -- real, but it buys
+' nothing HERE, because the crossing channel's resolution is set by the DRIVER's ~0.52 ms status
+' refresh and not by this loop, which already oversamples it several times over. The one thing a
+' faster loop would sharpen is the hall edge, and there it is worth a fraction of a degree spread
+' across roughly ninety crossings. Optimising the loop would make the instrument no better.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 '
@@ -6858,7 +6872,6 @@ PRI alignHallStep(side, nowCt) | hallCode, hallDelta
             else
                 bAgSectOpen := TRUE
                 agFirstEdgeMs := getms()                    ' the measured span starts at the FIRST edge, not at the guide
-                bAgSpanValid := TRUE
             agSectStartCt := nowCt
             agSectHall := hallCode
             agSectSamples := 0
@@ -6881,8 +6894,13 @@ PRI alignSectorClose(endCt) | sectCt, crossIdx
 
     sectCt := endCt - agSectStartCt
     if (sectCt > 0) and (sectCt <= ALIGN_SECT_MAX_CT)
-        repeat crossIdx from agCross - agPend to agCross - 1
-            agCrossDur[crossIdx] := sectCt / TICKS_PER_US
+        ' NOTE -- THE agPend > 0 GUARD IS LOAD-BEARING, not defensive. Spin2's `repeat x from a to b` takes
+        '  its DIRECTION from a and b (p2kbSpin2Repeat, step_direction), so with agPend 0 the range
+        '  `from agCross to agCross - 1` counts DOWN and runs twice, writing agCrossDur one past the
+        '  live data and again at index agCross - 1. An empty sector is the ordinary case, not a rare one.
+        if agPend > 0
+            repeat crossIdx from agCross - agPend to agCross - 1
+                agCrossDur[crossIdx] := sectCt / TICKS_PER_US
         agSectors += 1
         agSectSampMin <#= agSectSamples
     else
@@ -6979,7 +6997,7 @@ PRI alignScoreLeg() | comboIdx
 '
 ' @local comboIdx - wheel x measured direction slot this leg fills
 
-    if bAgSpanValid
+    if bAgSectOpen
         agSpanMs := getms() - agFirstEdgeMs
     if agOutcome == ALEG_OK
         if agClip > 0
@@ -7028,13 +7046,18 @@ PRI alignEmitLeg() | crossIdx
 ' Emit the leg that just finished: every kept crossing, then the leg's own summary. Nothing is emitted
 ' while the operator is turning, so this burst is what he sees between legs.
 '
-' A leg that never ran emits nothing, which is how the first call -- before leg 0 -- stays silent.
+' EVERY leg is emitted by its successor, run or not -- a NOSTART or STALLED leg is a result and prints
+' one. The only silent call is the first, before leg 0 exists, which agLegIdx < 0 selects.
 '
 ' @local crossIdx - index of each kept crossing
 
-    if agSamples > 0
-        repeat crossIdx from 0 to agCross - 1
-            alignEmitCross(crossIdx)
+    if agLegIdx >= 0
+        ' NOTE -- same load-bearing guard as alignSectorClose(): with agCross 0 the range `from 0 to -1`
+        '  counts DOWN and emits two records from outside the live data. A leg with no crossings is an
+        '  ordinary outcome here -- NOSTART has none by definition, and a stall can end one early.
+        if agCross > 0
+            repeat crossIdx from 0 to agCross - 1
+                alignEmitCross(crossIdx)
         alignEmitSummary()
 
 PRI alignEmitCross(crossIdx)
@@ -7068,7 +7091,7 @@ PRI alignEmitSummary() | rateX10
 ' @local rateX10 - measured hall edge rate, edges/s x10
 
     rateX10 := 0
-    if bAgSpanValid and (agSpanMs > 0)
+    if bAgSectOpen and (agSpanMs > 0)
         rateX10 := (abs(agTicks) * MS_PER_SEC * 10) / agSpanMs
     recBegin(@"BM-ALEG")
     benchLog.numField(@"leg", agLegIdx, LIM_TINY)
@@ -7077,7 +7100,7 @@ PRI alignEmitSummary() | rateX10
     benchLog.numField(@"ask_dir", agAskedDir, LIM_TINY)
     benchLog.numField(@"meas_dir", alignSignOf(agTicks), LIM_TINY)
     benchLog.numField(@"ticks", agTicks, LIM_SMALL)
-    benchLog.naNumField(@"span_ms", agSpanMs, LIM_BIG, bAgSpanValid)
+    benchLog.naNumField(@"span_ms", agSpanMs, LIM_BIG, bAgSectOpen)
     benchLog.naNumField(@"edge_s_x10", rateX10, LIM_BIG, rateX10 > 0)
     benchLog.numField(@"samples", agSamples, LIM_BIG)
     benchLog.numField(@"sectors", agSectors, LIM_SMALL)
