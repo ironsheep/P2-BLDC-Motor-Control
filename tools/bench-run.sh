@@ -271,7 +271,7 @@ case "$TIER" in
     #  on current or run away; the R18-DUAL-ALIGN-ND cell measures that the promise held.
     dual-align)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_ALIGN)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS ON THE WHEEL -- ATTENDED motion harness part ALIGN: NO MOTOR IS EVER DRIVEN. STEPHEN TURNS EACH WHEEL BY HAND, 8 legs (left then right, each forward and reverse, each slow then brisk, 3 turns per leg). Watch the plain text line under each BM-AGUIDE record: it names the wheel, the direction and slow or brisk, then the run goes SILENT while you turn. Turn at whatever pace 'slow' and 'brisk' mean to you -- the rate is measured, never commanded -- and a leg ends on its own when the turns are in. Output resuming is the next leg's guide. No panel and no keyboard, run cap 30 minutes"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS ON THE WHEEL -- ATTENDED motion harness part ALIGN: NO MOTOR IS EVER DRIVEN, so it cannot fault, current-abort or run away. 8 legs (left wheel then right, each forward and reverse, each slow and fast). JUST FOLLOW THE 'TURN ...' LINE: each leg prints one plain line naming the wheel, the direction and the pace -- e.g. 'TURN LEFT WHEEL FORWARD, SLOW' -- then the run goes SILENT. Turn that wheel that way until the output starts again; you never count turns and you never have to hit a speed, because the leg ends on its own tick total and the pace you actually used is measured. WHEN A LEG ENDS, HOLD THE WHEEL STILL: the next leg reads its zero level first and needs the wheel stopped. No panel and no keyboard, run cap 30 minutes"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage

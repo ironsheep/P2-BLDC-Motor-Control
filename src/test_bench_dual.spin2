@@ -497,7 +497,7 @@ CON { ALIGN tier (task 3590) -- the hall zero measured cold, and the ONE per-mot
     '  Z that differs between the two speeds FALSIFIES THE INSTRUMENT rather than the motor (D2).
     '
     ' THE OPERATOR IS NEVER ASKED TO HIT A SPEED, AND NEVER WATCHES A CLOCK. The guide names a wheel, a
-    '  direction and slow or brisk; the leg ends when the TICKS arrive, so he sets the pace. The guide is
+    '  direction and slow or fast, in plain words; the leg ends when the TICKS arrive, so he sets the pace. The guide is
     '  the LAST line emitted before the tier goes quiet, so it stays on screen while he turns. Achieved
     '  edge rate and samples-per-sector are reported, so a fast turn degrades into a stated number
     '  rather than into silently worse data.
@@ -512,7 +512,7 @@ CON { ALIGN tier (task 3590) -- the hall zero measured cold, and the ONE per-mot
     ' RE-TAKES ALLOWED WHEN THE WHEEL MOVED DURING THE BIAS READ. 40 of them is 10 s of budget, and the
     '  budget is the point: the bias is taken between legs, right after the operator has finished
     '  turning, and a lifted hub wheel on a COASTING bridge has no electrical braking to stop it --
-    '  only cogging and bearing drag. An earlier 8 tries gave 2 s, which a brisk leg's coast can
+    '  only cogging and bearing drag. An earlier 8 tries gave 2 s, which a fast leg's coast can
     '  outlast. A bias that never lands leaves the level at zero, so no phase reading ever crosses it,
     '  so the leg records no crossings at all and dies SHORT -- a whole leg of his time for nothing.
     '  Retrying costs only time we are already spending waiting for him to be ready.
@@ -546,9 +546,16 @@ CON { ALIGN tier (task 3590) -- the hall zero measured cold, and the ONE per-mot
     ALIGN_KEY_RISING      = $10
     ALIGN_KEY_HALL_MASK   = $07
 
-  ' ALIGN leg speed class -- what the guide ASKS for; the achieved rate is measured and reported
-    #0, ASPD_SLOW, ASPD_BRISK
+  ' ALIGN leg speed class -- what the guide ASKS for; the achieved rate is measured and reported.
+  '  SLOW and FAST are the operator's own words, and they are what the guide line says out loud.
+    #0, ASPD_SLOW, ASPD_FAST
     ASPD_COUNT = 2
+
+  ' ALIGN asked/measured direction, as a TOKEN. It used to print as +1 / -1, which made the operator
+  '  decode a sign mid-run to learn which way to turn -- and a record nobody can read at a glance is
+  '  a record that gets read wrong. FORWARD is the positive tick direction, REVERSE the negative.
+    #0, ADIR_REVERSE, ADIR_FORWARD
+    ADIR_COUNT = 2
 
   ' ALIGN leg outcome. NOSTART is its own outcome and not an absence: a wheel that would not start must
   '  print four legs saying so, or the matrix cell fails with nothing in the log to say which wheel.
@@ -834,6 +841,7 @@ CON { record widths and token lengths }
     TOKMAX_FCAUSE    = 4
     TOKMAX_ASPD      = 5
     TOKMAX_ALEG      = 7
+    TOKMAX_ADIR      = 7                                    ' FORWARD and REVERSE are both 7
 
 CON { record enums -- each value has a token in the DAT token tables }
 
@@ -1490,9 +1498,24 @@ tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAUL
 '  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
                 BYTE    "ALIGN", 0
-' ALIGN leg speed class (ASPD_*) and leg outcome (ALEG_*), task 3590
-tokASpd         BYTE    "SLOW", 0, "BRISK", 0
+' ALIGN leg speed class (ASPD_*), direction (ADIR_*) and leg outcome (ALEG_*), task 3590
+tokASpd         BYTE    "SLOW", 0, "FAST", 0
+tokADir         BYTE    "REVERSE", 0, "FORWARD", 0
 tokALeg         BYTE    "OK", 0, "STALLED", 0, "SHORT", 0, "CLIPPED", 0, "NOSTART", 0
+' THE OPERATOR'S OWN LINE, one per leg, written out in full rather than composed. Eight legs, eight
+'  strings: it is the thing a person reads while standing at the rig, so it says the wheel, the
+'  direction and the pace in plain words and needs nothing else on screen to be understood. Composing
+'  it from parts would save six lines here and cost the only line of this tier that has to be right
+'  at a glance. NOTE THE ABSENCE OF A TURN COUNT: the leg ends on its own tick total, so the operator
+'  never counts anything -- he turns until the output starts again, which is what each line says.
+sAgLeftFwdSlow  BYTE    "TURN LEFT WHEEL FORWARD, SLOW -- keep turning until output resumes", 0
+sAgLeftRevSlow  BYTE    "TURN LEFT WHEEL REVERSE, SLOW -- keep turning until output resumes", 0
+sAgLeftFwdFast  BYTE    "TURN LEFT WHEEL FORWARD, FAST -- keep turning until output resumes", 0
+sAgLeftRevFast  BYTE    "TURN LEFT WHEEL REVERSE, FAST -- keep turning until output resumes", 0
+sAgRightFwdSlow BYTE    "TURN RIGHT WHEEL FORWARD, SLOW -- keep turning until output resumes", 0
+sAgRightRevSlow BYTE    "TURN RIGHT WHEEL REVERSE, SLOW -- keep turning until output resumes", 0
+sAgRightFwdFast BYTE    "TURN RIGHT WHEEL FORWARD, FAST -- keep turning until output resumes", 0
+sAgRightRevFast BYTE    "TURN RIGHT WHEEL REVERSE, FAST -- keep turning until output resumes", 0
 ' driver state DCS_* 0..7; SLOW_TO_CHG shortened to fit the 10-byte st field
 tokDcs          BYTE    "UNKNOWN", 0, "STOPPED", 0, "SPIN_UP", 0, "AT_SPEED", 0, "SPIN_DN", 0
                 BYTE    "SLOW_CHG", 0, "FAULTED", 0, "ESTOP", 0
@@ -6603,7 +6626,7 @@ VAR { ALIGN tier state -- cog 0 only }
     LONG    agLegIdx                                        ' 0..ALIGN_LEGS-1, the leg being run
     LONG    agSide                                          ' SIDE_LEFT or SIDE_RIGHT
     LONG    agAskedDir                                      ' +1 or -1: what the guide ASKED for
-    LONG    agSpeed                                         ' ASPD_SLOW or ASPD_BRISK
+    LONG    agSpeed                                         ' ASPD_SLOW or ASPD_FAST
     LONG    agBiasTries                                     ' bias re-takes this leg cost
     LONG    bAgBiasStill                                    ' TRUE when a bias read completed with the wheel stationary
     LONG    agHallCode                                      ' hall code last seen
@@ -6677,14 +6700,14 @@ PRI alignWheel(side) | speedIdx, dirIdx, bStarted
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 '
-' @local speedIdx - ASPD_SLOW then ASPD_BRISK
+' @local speedIdx - ASPD_SLOW then ASPD_FAST
 ' @local dirIdx - 0 for the forward leg, 1 for the reverse leg
 ' @local bStarted - TRUE when this wheel's driver came up
 
     bStarted := bWheelStart(SEG_ALIGN, side)
     if bStarted
         wheelHold(side, FALSE)                              ' SM_FLOAT: at rest the bridge is BR_COAST, which is the whole tier
-    repeat speedIdx from ASPD_SLOW to ASPD_BRISK
+    repeat speedIdx from ASPD_SLOW to ASPD_FAST
         repeat dirIdx from 0 to 1
             alignLeg(side, 1 - (dirIdx << 1), speedIdx, bStarted)
     if bStarted
@@ -6705,7 +6728,7 @@ PRI alignLeg(side, askedDir, speedClass, bStarted) | biasTry
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param askedDir - +1 for the forward leg, -1 for the reverse leg; the leg is LABELLED by what it measures
-' @param speedClass - ASPD_SLOW or ASPD_BRISK
+' @param speedClass - ASPD_SLOW or ASPD_FAST
 ' @param bStarted - TRUE when this wheel's driver came up
 '
 ' @local biasTry - bias attempts spent
@@ -6730,10 +6753,10 @@ PRI alignResetLeg(side, askedDir, speedClass)
 ' leg's crossings, sector or counters.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param askedDir - +1 or -1, what the guide will ask for
-' @param speedClass - ASPD_SLOW or ASPD_BRISK
+' @param askedDir - +1 forward or -1 reverse, what the guide will ask for
+' @param speedClass - ASPD_SLOW or ASPD_FAST
 
-    agLegIdx += 1                                           ' advanced HERE, after the previous leg has been emitted under its own index
+    agLegIdx += 1                                          ' advanced HERE, after the previous leg has been emitted under its own index
     agSide := side
     agAskedDir := askedDir
     agSpeed := speedClass
@@ -7021,14 +7044,24 @@ PRI alignScoreLeg() | comboIdx
         bSfAgCombo[comboIdx] := TRUE
 
 PRI alignGuide()
-' The one line the operator acts on, and the last line before the tier goes quiet: which wheel, which
-' way, how fast, how many turns. He never has to hit a speed -- slow and brisk are his own pace, and
-' the rate he actually turned at is measured and printed in BM-ALEG afterwards.
+' The record, then THE ONE LINE THE OPERATOR ACTS ON -- and the operator's line comes LAST, because
+' it is the last thing on screen before the tier goes quiet and he starts turning.
+'
+' THAT LINE SAYS THE WHOLE INSTRUCTION IN PLAIN WORDS: which wheel, which way, how fast. It used to
+' say "see the leg, dir and speed on the BM-AGUIDE line above", which asked a person standing at the
+' rig to find a comma-delimited record and decode `ask_dir,1` into a direction. Stephen, 2026-09-21:
+' "too hard to figure out ... how about you say turn <wheel:left|right> <dir:forward|reverse>
+' <speed:slow|fast>". A line that needs another line to be understood is not an instruction.
+'
+' He never has to hit a speed and never has to count: slow and fast are his own pace, the rate he
+' actually turned at is measured and printed in BM-ALEG afterwards, and the leg ends on its own tick
+' total -- which is why the line tells him to turn until the output resumes rather than naming a
+' number he would have to track.
 
     recBegin(@"BM-AGUIDE")
     benchLog.numField(@"leg", agLegIdx, LIM_TINY)
     benchLog.tokenField(@"motor", sideToken(agSide), TOKMAX_MOTOR)
-    benchLog.numField(@"ask_dir", agAskedDir, LIM_TINY)
+    benchLog.tokenField(@"ask_dir", alignDirToken(agAskedDir), TOKMAX_ADIR)
     benchLog.tokenField(@"speed", tokenAt(@tokASpd, ASPD_COUNT, agSpeed), TOKMAX_ASPD)
     benchLog.numField(@"turns", ALIGN_TURNS, LIM_TINY)
     benchLog.numField(@"ticks", ALIGN_LEG_TICKS, LIM_SMALL)
@@ -7038,7 +7071,38 @@ PRI alignGuide()
     benchLog.numField(@"bias_w_mV", agBias[2], LIM_SMALL)
     benchLog.numField(@"bias_tries", agBiasTries, LIM_TINY)
     emitRecord()
-    alignSay(@"TURN THIS WHEEL NOW -- see the leg, dir and speed on the BM-AGUIDE line above")
+    alignSay(alignGuideLine())
+
+PRI alignGuideLine() : pText
+' The operator's line for this leg, picked whole from the eight written out in DAT.
+'
+' Picked rather than composed on purpose: this is the one line of the tier a person has to read
+' correctly while standing at a rig with his hands on a wheel, and a string assembled from parts is
+' a string that can be assembled wrong. Eight legs, eight lines, each one already complete.
+'
+' @returns pText - pointer to this leg's instruction
+
+    if agSide == SIDE_RIGHT
+        if agSpeed == ASPD_FAST
+            pText := (agAskedDir > 0) ? @sAgRightFwdFast : @sAgRightRevFast
+        else
+            pText := (agAskedDir > 0) ? @sAgRightFwdSlow : @sAgRightRevSlow
+    else
+        if agSpeed == ASPD_FAST
+            pText := (agAskedDir > 0) ? @sAgLeftFwdFast : @sAgLeftRevFast
+        else
+            pText := (agAskedDir > 0) ? @sAgLeftFwdSlow : @sAgLeftRevSlow
+
+PRI alignDirToken(nDir) : pTok
+' A direction as a word, for every ALIGN record that carries one.
+'
+' @param nDir - positive for forward, negative or zero for reverse
+' @returns pTok - FORWARD or REVERSE
+
+    if nDir > 0
+        pTok := tokenAt(@tokADir, ADIR_COUNT, ADIR_FORWARD)
+    else
+        pTok := tokenAt(@tokADir, ADIR_COUNT, ADIR_REVERSE)
 
 PRI alignSay(pText)
 ' One plain operator line. No panel: all PLOT/panel work is benched, and this tier needs none.
@@ -7104,8 +7168,8 @@ PRI alignEmitSummary() | rateX10
     benchLog.numField(@"leg", agLegIdx, LIM_TINY)
     benchLog.tokenField(@"motor", sideToken(agSide), TOKMAX_MOTOR)
     benchLog.tokenField(@"speed", tokenAt(@tokASpd, ASPD_COUNT, agSpeed), TOKMAX_ASPD)
-    benchLog.numField(@"ask_dir", agAskedDir, LIM_TINY)
-    benchLog.numField(@"meas_dir", alignSignOf(agTicks), LIM_TINY)
+    benchLog.tokenField(@"ask_dir", alignDirToken(agAskedDir), TOKMAX_ADIR)
+    benchLog.tokenField(@"meas_dir", alignDirToken(agTicks), TOKMAX_ADIR)
     benchLog.numField(@"ticks", agTicks, LIM_SMALL)
     benchLog.naNumField(@"span_ms", agSpanMs, LIM_BIG, bAgSectOpen)
     benchLog.naNumField(@"edge_s_x10", rateX10, LIM_BIG, rateX10 > 0)
