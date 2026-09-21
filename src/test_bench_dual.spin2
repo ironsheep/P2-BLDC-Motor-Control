@@ -226,8 +226,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 22                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 10                                        ' BM- record-format version
+    SRC_REV     = 23                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 11                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -597,9 +597,9 @@ CON { instrument cog (design sec 2) }
     INST_MIN_SLACK_US   = 200
     INST_DECIM_MAX      = 20
     FLOOR_DECIM         = 10                                ' OUTSIDE and FLOOR: 20 ms
-    INST_SAMPLE_LONGS   = 9
+    INST_SAMPLE_LONGS   = 11
     INST_RING_SAMPLES   = 4_096                             ' 8.19 s at 500 Hz
-    INST_RING_LONGS     = INST_SAMPLE_LONGS * INST_RING_SAMPLES   ' 147_456 bytes
+    INST_RING_LONGS     = INST_SAMPLE_LONGS * INST_RING_SAMPLES   ' 180_224 bytes
     INST_STACK_LONGS    = 128                               ' P2AN006 start value; scratch lives in VAR
     INST_ACK_TIMEOUT_MS = 100
     INST_STALL_MS       = 100
@@ -608,11 +608,12 @@ CON { instrument cog (design sec 2) }
     ' one sample: +0 t, then per motor (LEFT at +1, RIGHT at +5): pos, sense, flags, hwPos
     SMP_T           = 0
     SMP_MOTOR_BASE  = 1
-    SMP_MOTOR_LONGS = 4
+    SMP_MOTOR_LONGS = 5
     SMP_POS         = 0
-    SMP_SENSE       = 1
+    SMP_SENSE       = 1                                     ' sense_i (high 16) | phase U (low 16)
     SMP_FLAGS       = 2
     SMP_HW          = 3
+    SMP_PHVW        = 4                                     ' phase V (high 16) | phase W (low 16)
 
     ' sense long: i (i16) << 16 | phase sum (i16); flags long: duty << 16 | err << 8 | state << 5 |
     '  fault << 4 | up << 3 | integDelta
@@ -1679,6 +1680,9 @@ VAR { window statistics from drained samples (I2) -- filled by windowStats() }
     LONG    rsIMin
     LONG    rsIMax
     LONG    rsPhMeanX10
+    LONG    rsPhUMeanX10                                    ' per-phase window means x10; the sum above is their total
+    LONG    rsPhVMeanX10
+    LONG    rsPhWMeanX10
     LONG    rsDutyMean
     LONG    rsDutyPk
     LONG    rsErrMean
@@ -6535,7 +6539,7 @@ PRI instStore(sampleCt) | ringBase, motorIdx, motorOff
     repeat motorIdx from SLOT_LEFT to SLOT_RIGHT
         motorOff := ringBase + SMP_MOTOR_BASE + (motorIdx * SMP_MOTOR_LONGS)
         ring[motorOff + SMP_POS] := isUp[motorIdx] ? isPos[motorIdx] : 0
-        ring[motorOff + SMP_SENSE] := instPackSense(motorIdx)
+        ring[motorOff + SMP_SENSE], ring[motorOff + SMP_PHVW] := instPackSense(motorIdx)
         ring[motorOff + SMP_FLAGS] := instPackFlags(motorIdx)
         ring[motorOff + SMP_HW] := isHwPos[motorIdx]
     instTotal := (instTotal + 1) <# LIM_BIG
@@ -6554,20 +6558,31 @@ PRI instClamp(fieldValue, lowLimit, highLimit) : clampedValue
         instClamps := (instClamps + 1) <# LIM_BIG
         instRunClamps := (instRunClamps + 1) <# LIM_BIG
 
-PRI instPackSense(motorIdx) : senseLong | senseMv, phaseMv
-' Pack i (i16) and the phase sum u+v+w (i16) into one long (instrument cog).
+PRI instPackSense(motorIdx) : senseLong, phaseLong | senseMv, uMv, vMv, wMv
+' Pack i and the THREE phase voltages into two longs (instrument cog).
+'
+' The three are carried apart, not summed. Their sum is a bus-voltage estimator and it discards
+'  exactly the per-phase difference a rotor-angle estimate needs; smpPh() re-derives the sum, so
+'  every reading that wanted it still has it.
 '
 ' @param motorIdx - motor slot
-' @returns senseLong - i << 16 | phase sum & $FFFF; 0 when the driver is not up
+' @returns senseLong - i << 16 | phase U & $FFFF; 0 when the driver is not up
+' @returns phaseLong - phase V << 16 | phase W & $FFFF; 0 when the driver is not up
 '
 ' @local senseMv - clamped sense_i
-' @local phaseMv - clamped phase sum
+' @local uMv - clamped phase U
+' @local vMv - clamped phase V
+' @local wMv - clamped phase W
 
     senseLong := 0
+    phaseLong := 0
     if isUp[motorIdx]
         senseMv := instClamp(isSenseI[motorIdx], 0 - FIELD_I16_MAX, FIELD_I16_MAX)
-        phaseMv := instClamp(isSenseU[motorIdx] + isSenseV[motorIdx] + isSenseW[motorIdx], 0 - FIELD_I16_MAX, FIELD_I16_MAX)
-        senseLong := (senseMv << SENSE_I_SHIFT) | (phaseMv & SENSE_PH_MASK)
+        uMv := instClamp(isSenseU[motorIdx], 0 - FIELD_I16_MAX, FIELD_I16_MAX)
+        vMv := instClamp(isSenseV[motorIdx], 0 - FIELD_I16_MAX, FIELD_I16_MAX)
+        wMv := instClamp(isSenseW[motorIdx], 0 - FIELD_I16_MAX, FIELD_I16_MAX)
+        senseLong := (senseMv << SENSE_I_SHIFT) | (uMv & SENSE_PH_MASK)
+        phaseLong := (vMv << SENSE_I_SHIFT) | (wMv & SENSE_PH_MASK)
 
 PRI instPackFlags(motorIdx) : flagsLong | dutyVal, errVal, igNow, igDelta
 ' Pack duty, err, state, fault, up and the integrity delta since the previous stored sample into one
@@ -6991,7 +7006,7 @@ PRI smpMotorLong(sampleIdx, slotIdx, fieldOff) : fieldLong
 '
 ' @param sampleIdx - logical index
 ' @param slotIdx - motor slot
-' @param fieldOff - SMP_POS, SMP_SENSE, SMP_FLAGS or SMP_HW
+' @param fieldOff - SMP_POS, SMP_SENSE, SMP_FLAGS, SMP_HW or SMP_PHVW
 ' @returns fieldLong - the stored long
 
     fieldLong := ring[smpBase(sampleIdx) + SMP_MOTOR_BASE + (slotIdx * SMP_MOTOR_LONGS) + fieldOff]
@@ -7031,14 +7046,41 @@ PRI smpI(sampleIdx, slotIdx) : senseMv
 
     senseMv := smpMotorLong(sampleIdx, slotIdx, SMP_SENSE) SAR SENSE_I_SHIFT
 
-PRI smpPh(sampleIdx, slotIdx) : phaseMv
-' Phase sum u+v+w of a logical sample, sign-extended from 16 bits.
+PRI smpPhU(sampleIdx, slotIdx) : phaseMv
+' Phase U of a logical sample, sign-extended from 16 bits.
 '
 ' @param sampleIdx - logical index
 ' @param slotIdx - motor slot
 ' @returns phaseMv - mV
 
     phaseMv := (smpMotorLong(sampleIdx, slotIdx, SMP_SENSE) & SENSE_PH_MASK) SIGNX SENSE_PH_SIGNBIT
+
+PRI smpPhV(sampleIdx, slotIdx) : phaseMv
+' Phase V of a logical sample, sign-extended from 16 bits.
+'
+' @param sampleIdx - logical index
+' @param slotIdx - motor slot
+' @returns phaseMv - mV
+
+    phaseMv := smpMotorLong(sampleIdx, slotIdx, SMP_PHVW) SAR SENSE_I_SHIFT
+
+PRI smpPhW(sampleIdx, slotIdx) : phaseMv
+' Phase W of a logical sample, sign-extended from 16 bits.
+'
+' @param sampleIdx - logical index
+' @param slotIdx - motor slot
+' @returns phaseMv - mV
+
+    phaseMv := (smpMotorLong(sampleIdx, slotIdx, SMP_PHVW) & SENSE_PH_MASK) SIGNX SENSE_PH_SIGNBIT
+
+PRI smpPh(sampleIdx, slotIdx) : phaseMv
+' Phase sum u+v+w of a logical sample, re-derived from the three stored phases.
+'
+' @param sampleIdx - logical index
+' @param slotIdx - motor slot
+' @returns phaseMv - mV
+
+    phaseMv := smpPhU(sampleIdx, slotIdx) + smpPhV(sampleIdx, slotIdx) + smpPhW(sampleIdx, slotIdx)
 
 PRI smpDuty(sampleIdx, slotIdx) : dutyVal
 ' Duty of a logical sample.
@@ -7282,7 +7324,7 @@ PRI traceWalk(bEmit) | sampleIdx, kIdx, markK, posRel, hwRel, stNow, bFltNow, bU
                 if bEmit
                     emitTs(sampleIdx, kIdx, posRel, hwRel)
 
-PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, startJ, endJ, firstJ, lastJ, iSum, phSum, dutySum, errSum, sampleI
+PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, startJ, endJ, firstJ, lastJ, iSum, phSum, phUSum, phVSum, phWSum, dutySum, errSum, sampleI
 ' Compute a measurement window's statistics from drained samples (I2). The window is delimited by ring
 ' index, never by time (sec 12.7): only samples whose total index lies in winStartTotal..winEndTotal-1
 ' count (each bound is an instMarkIndex() total, the first sample at or after its mark). Sums run over
@@ -7301,6 +7343,9 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
 ' @local lastJ - last sample inside the window
 ' @local iSum - sum of i over up samples, |sum| <= 32_767 x 4_096
 ' @local phSum - sum of the phase sum over up samples, same bound
+' @local phUSum - sum of phase U over up samples, same bound
+' @local phVSum - sum of phase V over up samples, same bound
+' @local phWSum - sum of phase W over up samples, same bound
 ' @local dutySum - sum of duty over up samples, <= 65_535 x 4_096
 ' @local errSum - sum of err over up samples
 ' @local sampleI - this sample's i
@@ -7309,6 +7354,9 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
     rsN := 0
     iSum := 0
     phSum := 0
+    phUSum := 0
+    phVSum := 0
+    phWSum := 0
     dutySum := 0
     errSum := 0
     rsIMin := POSX
@@ -7318,6 +7366,9 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
     rsIgSum := 0
     rsIMeanX10 := 0
     rsPhMeanX10 := 0
+    rsPhUMeanX10 := 0
+    rsPhVMeanX10 := 0
+    rsPhWMeanX10 := 0
     rsDutyMean := 0
     rsErrMean := 0
     rsTicks := 0
@@ -7347,6 +7398,9 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
                 rsN += 1
                 iSum += sampleI
                 phSum += smpPh(sampleIdx, slotIdx)
+                phUSum += smpPhU(sampleIdx, slotIdx)
+                phVSum += smpPhV(sampleIdx, slotIdx)
+                phWSum += smpPhW(sampleIdx, slotIdx)
                 dutySum += smpDuty(sampleIdx, slotIdx)
                 errSum += smpErr(sampleIdx, slotIdx)
                 rsIMin <#= sampleI
@@ -7361,6 +7415,9 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
     if rsN > 0
         rsIMeanX10 := (iSum * X10) / rsN
         rsPhMeanX10 := (phSum * X10) / rsN
+        rsPhUMeanX10 := (phUSum * X10) / rsN
+        rsPhVMeanX10 := (phVSum * X10) / rsN
+        rsPhWMeanX10 := (phWSum * X10) / rsN
         rsDutyMean := dutySum / rsN
         rsErrMean := errSum / rsN
     else
@@ -8808,6 +8865,9 @@ PRI emitRung2(rid, side, motorIncre, dutyMax, bWindowValid, whyCode) | slotIdx, 
     benchLog.naNumField(@"i_min", rsIMin, LIM_SMALL, bWindowValid)
     benchLog.naNumField(@"i_max", rsIMax, LIM_SMALL, bWindowValid)
     benchLog.naNumField(@"ph_x10", rsPhMeanX10, LIM_MID, bWindowValid)
+    benchLog.naNumField(@"phu_x10", rsPhUMeanX10, LIM_MID, bWindowValid)
+    benchLog.naNumField(@"phv_x10", rsPhVMeanX10, LIM_MID, bWindowValid)
+    benchLog.naNumField(@"phw_x10", rsPhWMeanX10, LIM_MID, bWindowValid)
     benchLog.naNumField(@"duty", rsDutyMean, LIM_SMALL, bWindowValid)
     benchLog.naNumField(@"duty_pk", rsDutyPk, LIM_SMALL, bWindowValid)
     benchLog.numField(@"duty_max", dutyMax, LIM_SMALL)
