@@ -2598,11 +2598,53 @@ assumption to measurement before those 13 hours are spent.**
 | Plan § | Deliverable | Task | Order |
 |---|---|---|---|
 | **R18.2d** | **Land what Visit 7b proved, instrument what it exposed.** Adopt `Z=−4, L=18` as the shipped 6.5″ default (the old pair becomes the flagged build). Fix `R17-DUAL-TRKICK-A` to carry kick **magnitude** — its count was flat (105 vs 109 of 178) while peak `tr_i_over` fell **6×** (1_247 → 204), so as built it reports no improvement on the run's second-largest gain and would mis-certify the drive change. Fix `R18-DUAL-OFFSETS-A`'s `crit,?` (`APPLIED_EQ_COMPILED` is 19 bytes against `TOKMAX_CRIT` 18). Add a **START trigger** to the `BM-TS` trace machinery. ⛔ **No start-transient fix here** — its mechanism has no control, and building on it is the error D2 exists to prevent. | «#3593» | 1 |
-| **R18.2e** | **Sweep the full electrical cycle**, with a fit-for-purpose instrument. Settles whether the adopted basin is global. ⛔ Non-goals, so they are not re-added: no parameterisation by motor, no stop condition for a motor whose fault behaviour is unmeasured, no user documentation. **Do** keep the seams clean — per-motor quantities in one named block. Generalising to a real motor-adoption tool is «#3592», out of this release. | «#3590» | 2 |
-| **R18.2f** | **Visit 7c — one visit, three answers.** (1) the full-cycle sweep; (2) the **start trace**, whose falsifier is stated in advance: if the surge is the servo deadband, duty stays pinned at `duty_min_` while `|err|` climbs and current surges only as `|err|` crosses 60° — *if duty moves before that crossing, the story is wrong*; (3) a **servo setpoint A/B**, `256/6` against `256/4`, **each at its own compensating lead so total field placement is held constant**, isolating the *split* rather than re-testing placement. Without that compensation the 90° leg runs 30° off-optimum, looks catastrophic, and teaches nothing. | «#3594» | 3 |
+| **R18.2e** | **Measure the hall zero `Z` COLD, from back-EMF, with no drive current.** *(Rescoped and split — see "R18.2e, rescoped" below; it is no longer a driven sweep.)* Bridge floating, wheel turned **by hand**, 8 legs = 2 wheels × 2 directions × 2 hand speeds. Settles `Z` absolutely over the whole circle at zero current. ⛔ Non-goals, so they are not re-added: no parameterisation by motor, no user documentation. **Do** keep the seams clean — per-motor quantities in one named block. Generalising to a real motor-adoption tool is «#3592», out of this release. | «#3590» | 2 |
+| **R18.2e′** | **Rebuild the driven arc sweep for the LEAD `L`, stopping on droop.** The other half of the split: `Z` is geometry and is measured cold above; `L` is dynamics and can only be measured under drive. Rebuild the stop condition on R18.1's **unbounded** observables (measured rate against commanded, duty demand and its deficit), because the lag limiter now makes the motor **droop instead of fault** and the old fault walk cannot fire. Measure rate at **every** point including failing ones, and report the arc reached with each boundary's **type**. | «#3595» | 2b |
+| **R18.2f** | **Visit 7c — one visit, three answers.** (1) the **cold hall-zero tier** `dual-align` — **attended, and nothing is ever driven**: Stephen turns each wheel by hand for 8 legs *(this load changed shape at the rescope below; it used to be the unattended full-cycle sweep)*; (2) the **start trace**, whose falsifier is stated in advance: if the surge is the servo deadband, duty stays pinned at `duty_min_` while `|err|` climbs and current surges only as `|err|` crosses 60° — *if duty moves before that crossing, the story is wrong*; (3) a **servo setpoint A/B**, `256/6` against `256/4`, **each at its own compensating lead so total field placement is held constant**, isolating the *split* rather than re-testing placement. Without that compensation the 90° leg runs 30° off-optimum, looks catastrophic, and teaches nothing. | «#3594» | 3 |
 
 Then **R18.3 as before** — designed against the corrected baseline and Visit 7c's three answers, and
 owning what is genuinely left of correction 2 — followed by R18.4, R18.5 and the existing tail.
+
+### R18.2e, rescoped 2026-09-21 — a driven 360° sweep is physically impossible, so `Z` is measured cold
+
+**The finding, from re-reading the run-7 scan log directly rather than the report of it.** Only about
+**45 of 360 electrical degrees are reachable at a commanded speed**: `ABORT_I` at a swept ±63, lag
+`FAULT` from +7 down to −11. **Both walls are the motor's, not the instrument's** — too much lead
+explodes the current, too little cannot make the torque, and at 90° from optimum torque is zero at any
+speed. No instrument, however good, sweeps a cycle the motor cannot run.
+
+⚠ And the old instrument was worse than incomplete: **`rate_x10` reads `NA` at every one of the 19
+non-OK points**, so it recorded fault and abort as a **binary** and never measured how far the drive
+had already fallen behind. It could not characterise a boundary, only crash into one.
+
+**Why the question is nonetheless answered — by physics, not by coverage.** The unreachable region is
+unreachable *because* torque per amp is too low there, and a commutation optimum **is** a torque-per-amp
+maximum. So the region that cannot be swept cannot be hiding one. **Per direction: one reachable arc,
+one minimum.** The "is our basin global?" question does not need the sweep it originally asked for.
+
+**The split, and why the two constants finally get the instruments that suit them.**
+
+| | `Z` — the hall zero | `L` — the lead |
+|---|---|---|
+| What it is | **Geometry**: where the sensors sit in the wheel | **Dynamics**: how far the field leads the rotor |
+| Varies with speed? | **No** — and a `Z` that does falsifies the instrument | Yes — current lag grows with electrical frequency |
+| Measurable cold? | **Yes**: bridge floating, wheel turned by hand, back-EMF crossings against hall edges, full circle, **zero current** | **No** — only under drive |
+| Plan § / task | R18.2e / «#3590» | R18.2e′ / «#3595» |
+
+«#3586» had already separated these two constants in the driver. This is the measurement side catching
+up with that separation.
+
+**Why the cold measurement is a 2×2 and not a convenience.** Hall hysteresis and the P2 input filter's
+delay **both** make an edge late in the direction of travel, so averaging the two **directions**
+cancels both. The two **speeds** separate them, because hysteresis is a fixed **angle** and the filter
+delay is a fixed **time** whose angle error grows with speed. Since `Z` cannot vary with speed, **a `Z`
+that differs between the two speeds falsifies the instrument** — and the difference then solves for the
+latency and extrapolates `Z` to zero speed. That is the instrument's own negative case, built in.
+
+**Consequence for Visit 7c.** Its first load is no longer an unattended full-cycle sweep. It is an
+**attended hand-turn tier** (`dual-align`) in which nothing is ever driven, alongside the two unattended
+loads. That is a change in what the visit asks of Stephen and is stated here rather than discovered at
+the rig.
 
 ### Sequence, as re-ordered 2026-09-21 (evening)
 
@@ -2612,11 +2654,12 @@ other tasks. You know better what the priority should be."*
 | seq | Task | Plan § | Who | est |
 |---|---|---|---|---|
 | 4 | «#3593» Land what 7b proved, instrument what it exposed | R18.2d | desk | 3h |
-| 5 | «#3590» Sweep the full electrical cycle | R18.2e | desk | 4h |
-| 6 | **«#3594» Visit 7c** | **R18.2f** | **bench, ~40 min** | 3h |
-| 7 | «#3589» Design the sensor integration | R18.3 | desk | 5h |
-| 8 | «#3583» Build the drive change | R18.4 | desk | 8h |
-| 9 | «#3584» Visit 8 | R18.5 | bench | 4h |
+| 5 | «#3590» Measure the hall zero cold, from back-EMF | R18.2e | desk | 4h |
+| 6 | «#3595» Rebuild the driven arc sweep for the lead | R18.2e′ | desk | 4h |
+| 7 | **«#3594» Visit 7c** | **R18.2f** | **bench, ~40 min + an attended hand-turn tier** | 3h |
+| 8 | «#3589» Design the sensor integration | R18.3 | desk | 5h |
+| 9 | «#3583» Build the drive change | R18.4 | desk | 8h |
+| 10 | «#3584» Visit 8 | R18.5 | bench | 4h |
 
 The tail is unchanged: «#3585» (benched), «#3591», «#3576», «#3515», «#3516». Out of release:
 «#3506», «#3532», «#3562», and now «#3592».
