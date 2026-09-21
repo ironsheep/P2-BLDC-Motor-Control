@@ -4985,6 +4985,40 @@ first.
 
 ---
 
+### PL-97 -- a token table shorter than its enum walks off the end and prints adjacent DAT as text
+
+**Found 2026-09-21 while adding the ALIGN segment.** Instance fixed; **the class is the same one as
+PL-96 and is not fixed.**
+
+`tokenAt()` (`src/test_bench_dual.spin2:8699-8711`) bounds the index against **`tokenCount`, which the
+caller supplies** -- not against the table's actual length. Callers pass the *enum* count. So a token
+table with fewer entries than its enum does not return `"?"`; it walks past its own last entry into
+whatever `DAT` follows and returns that as the field's text.
+
+**MEASURED:** `tokFinds` carried **15** entries against `SEG_COUNT` **16**. `SEG_LOWSPD` is index 15,
+so `BM-PLAN`'s `finds` field for LOWSPD already indexed past the end.
+
+⚠ **It never showed, because a second defect hid it:** `BM-PLAN` never emitted a LOWSPD row at all --
+`PART_A` hard-codes four `emitPlan()` calls (the earlier study's F1, still open). **Two defects, each
+concealing the other.** Fixing F1 alone would have started printing garbage into a user-visible field
+with nothing reporting it.
+
+**FIXED at R18.2e («#3590»):** `tokFinds` extended to `SEG_COUNT`, and the `estS`/`estKb` `lookupz`
+tables extended with it -- those were also one entry short and would have returned 0 for a new segment
+rather than failing.
+
+⛔ **WHAT IS NOT FIXED.** Nothing prevents the next table from being short. **A table's length and its
+enum's count are asserted nowhere**, in either direction, and the failure is silent in both: short
+table prints adjacent memory, and PL-96's over-length token prints `?`. Both are the same underlying
+gap -- **the record vocabulary has no self-check.** The fix is one mechanism, not two: a start-up pass
+that walks every token table against its enum count and emits a verdict, which would have caught this,
+PL-96, and the short `lookupz` tables in one run.
+
+**Cost if left:** a `finds`, `crit` or `seg` field can misdescribe itself with no signal, and doctrine
+17 requires that a field never print a value under a label that misdescribes it.
+
+---
+
 ## Removed from this list
 
 **Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
