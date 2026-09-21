@@ -783,8 +783,8 @@ CON { record enums -- each value has a token in the DAT token tables }
 
   ' trace cause (what was DONE; never what the wheel did afterwards, I7):
     #0, CAUSE_STOPCMD, CAUSE_STOPCOG, CAUSE_FAULT, CAUSE_ESTOP, CAUSE_RAMP, CAUSE_DISTANCE, ...
-        CAUSE_BRAKEHAND, CAUSE_FLOOR
-    CAUSE_COUNT = 8
+        CAUSE_BRAKEHAND, CAUSE_FLOOR, CAUSE_START
+    CAUSE_COUNT = 9
 
   ' requested stop mode (what was REQUESTED, I7):
     #0, MODE_FLOAT, MODE_BRAKE
@@ -980,9 +980,19 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     '
     ' PASS is still zero kicks, as it was: a drive that has to be told what it can do is the R18.4 work,
     '  and this cell is what says whether it worked.
+    '
+    ' WHAT THE CELL REPORTS CHANGED AT R18.2d, AND THE PASS TEST DID NOT. It used to report the COUNT
+    '  of kicking transitions, and a count cannot see a kick getting smaller. Visit 7b measured exactly
+    '  that: across the two offset legs the count moved 38/37 to 19/17 of 74 while the PEAK excess fell
+    '  1_247 to 204 -- a 6x improvement the verdict reported as a 2x one, on the second-largest physical
+    '  gain in the run. So measured is now the PEAK excess in sense mV, clamped at 0 because a transition
+    '  peaking BELOW its own steady window is not a negative kick, it is no kick. PASS is peak <= the
+    '  kick threshold, which is the same condition as zero kicks -- the verdict is unchanged and only the
+    '  number carries more. The count stays derivable from BM-RUNGTR's tr_i_over, which every transition
+    '  already emits, so nothing is lost by not restating it here.
     TRKICK_EXCESS_MV  = 50
     TRKICK_LO         = 0
-    TRKICK_HI         = 0
+    TRKICK_HI         = TRKICK_EXCESS_MV
     ' LAGBOUND (task 3558's lag limiter): the instrument's own running max |err| over stored samples with
     '  the driver up and not faulted.
     '
@@ -1328,7 +1338,7 @@ tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED",
 tokRes          BYTE    "OK", 0, "FAULT", 0, "STEADY_TIMEOUT", 0, "WINDOW_TIMEOUT", 0, "NO_COG", 0
                 BYTE    "ABORT_I", 0, "SKIPPED", 0
 tokCause        BYTE    "STOPCMD", 0, "STOPCOG", 0, "FAULT", 0, "ESTOP", 0, "RAMP", 0, "DISTANCE", 0
-                BYTE    "BRAKEHAND", 0, "FLOOR", 0
+                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0
 tokMode         BYTE    "FLOAT", 0, "BRAKE", 0
 tokTend         BYTE    "REST", 0, "TIMEOUT", 0, "FAULT", 0, "ABORT", 0, "FROZEN", 0
 tokRst          BYTE    "NONE", 0, "RESET", 0, "RESTART", 0, "FAILED", 0
@@ -1483,7 +1493,7 @@ sSfCritIdleUp   BYTE    "IDLE_WHEEL_UP", 0
 sSfCritNotRevB  BYTE    "STARTS_NOT_REVB", 0
 sSfCritInteg    BYTE    "MISSED_ILLEGAL_SUM", 0
 sSfCritTraces   BYTE    "TRACE_DATA_LOST", 0
-sSfCritOffsets  BYTE    "APPLIED_EQ_COMPILED", 0
+sSfCritOffsets  BYTE    "OFFSETS_AS_BUILT", 0
 sSfCritInstWide BYTE    "NO_LOSS_AT_WIDTH", 0
 sSfCritPhSep    BYTE    "PHASES_DISTINCT", 0
 sSfCritClkFrame BYTE    "FRAME_AT_CLOCK", 0
@@ -1519,9 +1529,10 @@ sSfCritHall     BYTE    "ILLEGAL_HALL_CODES", 0
 sSfCritFltCause BYTE    "CAUSE_IS_LAG", 0
 sSfCritFltStop  BYTE    "FLOAT_COASTS_MORE", 0
 sSfCritIdleMove BYTE    "IDLE_WHEEL_TICKS", 0
-sSfCritTrKick   BYTE    "TRANSITION_KICKS", 0
+sSfCritTrKick   BYTE    "KICK_PEAK_EXCESS", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
+sSfUnitsMv      BYTE    "MV", 0
 sSfPass         BYTE    "PASS", 0
 sSfFail         BYTE    "FAIL", 0
 sSfNomeas       BYTE    "NOMEAS", 0
@@ -1544,7 +1555,9 @@ CON { token-table geometry and wait kinds }
   '  EVT_STOPCOG   - stop(): cause STOPCOG; the driver cog ends and only hwPos sees the coast
   '  EVT_ESTOP     - emergencyCutoff(): cause ESTOP
   '  EVT_OFFSET    - testSetFwdRevIndep() shifted by faultShiftDeg() at speed: cause FAULT (task 3572, PL-59)
-    #0, EVT_STOPMOTOR, EVT_STOPCOG, EVT_ESTOP, EVT_OFFSET
+  '  EVT_START     - the command FROM REST: cause START (task 3593, R18.2d). The only event whose mark
+  '                  precedes the motion instead of following it, so it has its own capture routine
+    #0, EVT_STOPMOTOR, EVT_STOPCOG, EVT_ESTOP, EVT_OFFSET, EVT_START
 
 VAR { run-wide state -- cog 0 only }
 
@@ -2154,7 +2167,7 @@ PRI initRunState() | slotIdx
         scSamples[slotIdx] := 0
         bScValid[slotIdx] := FALSE
         sfTrN[slotIdx] := 0                                 ' TRKICK's two accumulators and the from_incre state
-        sfTrKicks[slotIdx] := 0
+        sfTrKickPk[slotIdx] := 0
         slotLastIncre[slotIdx] := 0
 
 PRI runPart()
@@ -2285,21 +2298,29 @@ PRI segEnd(whyCode)
     curSeg := SEG_NONE
     curTid := 0
 
-PRI segStopMode() | side, speedIdx, signMul
+PRI segStopMode() | side, speedIdx, signMul, repIdx
 ' STOPMODE (part A, T1-1): C-4 deceleration data and the S-9a FLOAT / BRAKE / pins-cleared baselines.
-' Per motor x speed (QTR, HALF) x sign (NEG, POS) x STOPMODE_REPS: one driver lifetime, three traces.
+' Per motor x speed (QTR, HALF) x sign (NEG, POS) x STOPMODE_REPS: one driver lifetime, three traces,
+' and on the first repetition of each cell a fourth -- the START trace (task 3593, R18.2d).
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
 ' @local speedIdx - 0 QTR, 1 HALF
 ' @local signMul - SIGN_NEG then SIGN_POS
+' @local repIdx - 0..STOPMODE_REPS-1; the START trace rides repetition 0 only
 
     segBegin(SEG_STOPMODE)
     repeat side from SIDE_LEFT to SIDE_RIGHT
         repeat speedIdx from 0 to STOPMODE_SPEEDS - 1
             repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
-                repeat STOPMODE_REPS
+                repeat repIdx from 0 to STOPMODE_REPS - 1
                     beat(CP_LOOP_POLL)
-                    stopModeLifetime(SEG_STOPMODE, side, lookupz(speedIdx: QTR_SPEED_INCRE, HALF_SPEED_INCRE) * signMul, TRUE)
+                    ' task 3593 (R18.2d): the START trace rides the first rep of the QTR cells only --
+                    '  both motors, both directions, four traces. QTR is chosen and not HALF because
+                    '  QTR_SPEED_INCRE IS the speed Visit 7b's from-rest aggregates were taken at, so the
+                    '  trace is directly checkable against tr_i_pk 90 / 120 rather than merely plausible.
+                    '  Four and not eight because each start trace runs to AT_SPEED, about 1_225 samples,
+                    '  where a stop trace ends at rest in about 310 -- the log grows by a third at four.
+                    stopModeLifetime(SEG_STOPMODE, side, lookupz(speedIdx: QTR_SPEED_INCRE, HALF_SPEED_INCRE) * signMul, TRUE, (repIdx == 0) and (speedIdx == 0))
     segEnd(segWhy())
 
 PRI segLive() | side, rungNum, whyCode
@@ -2531,7 +2552,7 @@ PRI segBaseline() | side, signMul
     repeat side from SIDE_LEFT to SIDE_RIGHT
         repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
             beat(CP_LOOP_POLL)
-            stopModeLifetime(SEG_BASELINE, side, HALF_SPEED_INCRE * signMul, FALSE)
+            stopModeLifetime(SEG_BASELINE, side, HALF_SPEED_INCRE * signMul, FALSE, FALSE)
     segEnd(segWhy())
 
 PRI segPostFault() | side, signMul, reqMode, whyCode
@@ -2878,15 +2899,20 @@ PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bM
 
 CON { --- segment routines: traces (STOPMODE, BASELINE, POSTFLT, FAULTB), rungs (LADDER, LIVE, CLOCK), OVERSHT --- }
 
-PRI stopModeLifetime(seg, side, motorIncre, bWithStopCog) | whyCode
+PRI stopModeLifetime(seg, side, motorIncre, bWithStopCog, bWithStart) | whyCode
 ' One stop-mode driver lifetime, the routine STOPMODE and BASELINE share: start the wheel under test
-' alone (I6; the lifetime zero is read inside bWheelStart()), then condition (1) STOPCMD FLOAT, (2)
-' STOPCMD BRAKE and, when asked, (3) STOPCOG FLOAT, which ends the lifetime.
+' alone (I6; the lifetime zero is read inside bWheelStart()), then, when asked, condition (0) the START
+' from rest, then condition (1) STOPCMD FLOAT, (2) STOPCMD BRAKE and, when asked, (3) STOPCOG FLOAT,
+' which ends the lifetime.
+'
+' Condition (0) is traced FIRST because it is the only one whose subject is the spin-up the other three
+' each perform and discard: the wheel is at rest here and nowhere else in the lifetime (task 3593).
 '
 ' @param seg - SEG_STOPMODE or SEG_BASELINE
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param motorIncre - signed increment
 ' @param bWithStopCog - TRUE to trace condition (3)
+' @param bWithStart - TRUE to trace condition (0)
 '
 ' @local whyCode - why the lifetime did not start, WHY_NONE when it did
 
@@ -2895,6 +2921,8 @@ PRI stopModeLifetime(seg, side, motorIncre, bWithStopCog) | whyCode
         whyCode := WHY_ABORTED
     elseif bWheelStart(seg, side) == FALSE
         whyCode := stWhy
+    if bWithStart
+        eventTrace(seg, side, motorIncre, CAUSE_START, EVT_START, MODE_FLOAT, whyCode)
     eventTrace(seg, side, motorIncre, CAUSE_STOPCMD, EVT_STOPMOTOR, MODE_FLOAT, whyCode)
     eventTrace(seg, side, motorIncre, CAUSE_STOPCMD, EVT_STOPMOTOR, MODE_BRAKE, whyCode)
     if bWithStopCog
@@ -2931,7 +2959,10 @@ PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | 
     else
         if reqMode == MODE_BRAKE
             wheelHold(side, TRUE)
-        eventCapture(side, motorIncre, eventCode)
+        if eventCode == EVT_START
+            startCapture(side, motorIncre)
+        else
+            eventCapture(side, motorIncre, eventCode)
         traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, rampInc)
         ' STPDECEL rides BASELINE's floated stop from half speed -- the one condition Visit 3 measured
         '  74-77 ticks on -- so the no-regression reading costs no trial of its own
@@ -2946,6 +2977,59 @@ PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | 
             bSfFltStopRan[((side - SIDE_LEFT) * MODE_COUNT) + reqMode] := TRUE
         traceRecover(seg, side, tid, motorIncre, FAULT_COOL_MS)
     segItems := (segItems + 1) <# LIM_SMALL
+
+PRI startCapture(side, motorIncre) | safeEvent, bReached, markMs, captureLeftMs
+' Run one wheel trace's motion and capture for a START FROM REST (task 3593, R18.2d). The sibling of
+' eventCapture() for the one event whose mark must PRECEDE the motion: arm; read the offsets; mark; the
+' command; capture until AT_SPEED or the trace's own bound; freeze. Fills the same cp* staging, so
+' traceEmitCapture() emits it exactly as it emits a stop.
+'
+' WHY THIS EXISTS. Every trace this binary took before R18.2d triggered on a STOP -- all 48 of Visit
+' 7b's carry seg STOPMODE -- while the same run performed 48 spin-ups from rest and recorded none of
+' them beyond BM-RUNGTR's four aggregates. Visit 7b measured a startup current surge of 90-120 sense mV
+' that the commutation correction did not move (VISIT-7B-EVALUATION.md F13), and nothing in the log can
+' say what duty and err were doing while it happened. This is the instrument for that, and ONLY the
+' instrument: the mechanism it is meant to test is stated in the run sheet, not assumed here.
+'
+' WHAT THE WINDOW REACHES, and what it costs. traceCaptureMs(1) is 7_850 ms at INST_RATE_HZ 500, and a
+' from-rest spin-up to QTR_SPEED_INCRE took about 2_450 ms at Visit 7b, so the capture reaches AT_SPEED
+' with room to spare and ends there rather than at its bound: the WHOLE ramp is resolved at 2 ms, which
+' is what a deadband-then-catch-up reading needs. It is also why this trace is far longer than a stop
+' trace -- about 1_225 samples against about 310, a stop ending at rest inside a second -- and why it
+' rides four cells rather than every one.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment commanded from rest
+'
+' @local safeEvent - SAFE_* from the watched waits
+' @local bReached - AT_SPEED was reached inside the capture bound
+' @local markMs - getms() at the mark
+' @local captureLeftMs - capture bound still owed after the command
+
+    safeEvent := SAFE_NONE
+    bReached := FALSE
+    ' the pair read immediately before the event, and the one read serves both paths: unlike
+    '  eventCapture(), nothing runs between here and the mark that could change the offsets
+    cpWantNeg, cpWantPos := wheelGetOffsets(side)
+    if bInstArm(INST_SRC_WHEELS, 1) == FALSE
+        cpWhy := WHY_INST_NOACK
+    else
+        instMark()                                           ' the mark PRECEDES the command: that is the whole point
+        markMs := getms()
+        wheelCommand(side, motorIncre)
+        captureLeftMs := (traceCaptureMs(1) - (getms() - markMs)) #> 0
+        safeEvent, bReached := waitWatched(side, captureLeftMs, CP_LOOP_CAPTURE, UNTIL_AT_SPEED)
+        ' AT_SPEED inside the window is not required and is not a failure: the ramp is longer than the
+        '  window by design, so a capture that simply runs out is the expected end
+        cpEnd := bReached ? TEND_REST : TEND_TIMEOUT
+        if safeEvent <> SAFE_NONE
+            cpWhy := safeWhy(safeEvent)
+            cpEnd := safeEnd(safeEvent)
+            bCpFaultSeen := (safeEvent == SAFE_FAULT)
+        bCpFrozen := bInstFreeze(0)
+        if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
+            cpWhy := WHY_INST_NOACK
+        wheelStopMotor(side)                                 ' leave the wheel as every other trial leaves it
 
 PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, markMs, captureLeftMs, shiftDeg
 ' Run one wheel trace's motion and capture (design sec 4.4): arm; command; AT_SPEED (<=
@@ -3292,8 +3376,9 @@ PRI foldTransitionKick(slotIdx)
 
     if bTrIOverValid() and (rgFromIncre <> 0)               ' non-zero from_incre IS "from a running speed"
         sfTrN[slotIdx] := (sfTrN[slotIdx] + 1) <# LIM_SMALL
-        if trIOver() > TRKICK_EXCESS_MV
-            sfTrKicks[slotIdx] := (sfTrKicks[slotIdx] + 1) <# LIM_SMALL
+        ' the running PEAK excess, clamped at 0: a transition peaking below its own steady window is
+        '  no kick rather than a negative one, and 0 is what "never kicked" must read as
+        sfTrKickPk[slotIdx] := (sfTrKickPk[slotIdx] #> trIOver()) <# LIM_BIG
 
 VAR { transition statistics (PL-87) -- cog 0 only }
 
@@ -3304,7 +3389,7 @@ VAR { transition statistics (PL-87) -- cog 0 only }
     LONG    trMs                                            ' the transition's span, command sample to last sample before the window
     LONG    trWhy                                           ' WHY_NONE when the tr* values are a measurement
     LONG    sfTrN[INST_MOTORS]                              ' TRKICK: running-speed transitions judged, per motor
-    LONG    sfTrKicks[INST_MOTORS]                          ' TRKICK: of those, the ones that kicked
+    LONG    sfTrKickPk[INST_MOTORS]                         ' TRKICK: peak excess over those transitions, sense mV, 0 when none kicked
 
 VAR { low-speed statistics (R18.2 item 5) -- cog 0 only }
 
@@ -10136,28 +10221,28 @@ PRI emitSignoffs() | slotIdx, side
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     side := SIDE_LEFT + slotIdx
                     emitSignoffBool(@sSfCellInstLive, side, @sSfCritInstLive, bSfLiveRan[slotIdx], bSfLiveOk[slotIdx], SIGNOFF_ONE_INSTANCE)
-                    emitSignoff(@sSfCellIdleFlt, side, @sSfCritIdleUp, sfFrameCaps[slotIdx] > 0, sfIdleUp[slotIdx], IDLE_UP_LO, IDLE_UP_HI, sfFrameCaps[slotIdx])
-                    emitSignoff(@sSfCellRevB, side, @sSfCritNotRevB, sfStarts[slotIdx] > 0, sfNotRevb[slotIdx], NOT_REVB_LO, NOT_REVB_HI, sfStarts[slotIdx])
-                    emitSignoff(@sSfCellInteg, side, @sSfCritInteg, sfStarts[slotIdx] > 0, sfIntegSum[slotIdx], INTEG_SUM_LO, INTEG_SUM_HI, sfStarts[slotIdx] + sfIntegN[slotIdx])
+                    emitSignoff(@sSfCellIdleFlt, side, @sSfCritIdleUp, sfFrameCaps[slotIdx] > 0, sfIdleUp[slotIdx], IDLE_UP_LO, IDLE_UP_HI, sfFrameCaps[slotIdx], @sSfUnitsCount)
+                    emitSignoff(@sSfCellRevB, side, @sSfCritNotRevB, sfStarts[slotIdx] > 0, sfNotRevb[slotIdx], NOT_REVB_LO, NOT_REVB_HI, sfStarts[slotIdx], @sSfUnitsCount)
+                    emitSignoff(@sSfCellInteg, side, @sSfCritInteg, sfStarts[slotIdx] > 0, sfIntegSum[slotIdx], INTEG_SUM_LO, INTEG_SUM_HI, sfStarts[slotIdx] + sfIntegN[slotIdx], @sSfUnitsCount)
                     emitSignoffBool(@sSfCellNoFold, side, @sSfCritNoFold, bSfNoFoldRan[slotIdx], bSfNoFoldOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitSignoffBool(@sSfCellRateLaw, side, @sSfCritRateLaw, bSfRateLawRan[slotIdx], bSfRateLawOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitIdleMoveCell(@sSfCellIdleMvA, slotIdx)
                     ' task 3573: NOMEAS when no start from rest gave a control, or no running-speed change was judged
-                    emitSignoff(@sSfCellTrKickA, side, @sSfCritTrKick, sfTrN[slotIdx] > 0, sfTrKicks[slotIdx], TRKICK_LO, TRKICK_HI, sfTrN[slotIdx])
-                emitSignoff(@sSfCellTracesA, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
-                emitSignoff(@sSfCellOffsets, SIDE_NONE, @sSfCritOffsets, sfOffsetN > 0, sfOffsetBad, OFFSET_BAD_LO, OFFSET_BAD_HI, sfOffsetN)
-                emitSignoff(@sSfCellInstWide, SIDE_NONE, @sSfCritInstWide, instRunSamples > 0, instRunLate + instRunSkipped + instRunClamps, INSTWIDE_LO, INSTWIDE_HI, instRunSamples)
-                emitSignoff(@sSfCellPhSep, SIDE_NONE, @sSfCritPhSep, sfPhN > 0, sfPhSame, PHSAME_LO, PHSAME_HI, sfPhN)
+                    emitSignoff(@sSfCellTrKickA, side, @sSfCritTrKick, sfTrN[slotIdx] > 0, sfTrKickPk[slotIdx], TRKICK_LO, TRKICK_HI, sfTrN[slotIdx], @sSfUnitsMv)
+                emitSignoff(@sSfCellTracesA, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
+                emitSignoff(@sSfCellOffsets, SIDE_NONE, @sSfCritOffsets, sfOffsetN > 0, sfOffsetBad, OFFSET_BAD_LO, OFFSET_BAD_HI, sfOffsetN, @sSfUnitsCount)
+                emitSignoff(@sSfCellInstWide, SIDE_NONE, @sSfCritInstWide, instRunSamples > 0, instRunLate + instRunSkipped + instRunClamps, INSTWIDE_LO, INSTWIDE_HI, instRunSamples, @sSfUnitsCount)
+                emitSignoff(@sSfCellPhSep, SIDE_NONE, @sSfCritPhSep, sfPhN > 0, sfPhSame, PHSAME_LO, PHSAME_HI, sfPhN, @sSfUnitsCount)
                 emitLagCells(@sSfCellLagA)
             PART_CLOCK:
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     emitSignoffBool(clockCell(@sSfCellClkFrameK200, @sSfCellClkFrameK270, @sSfCellClkFrameK300), SIDE_LEFT + slotIdx, @sSfCritClkFrame, bSfClkRan[slotIdx], bSfClkOk[slotIdx], SIGNOFF_ONE_INSTANCE)
-                    emitSignoff(clockCell(@sSfCellHallK200, @sSfCellHallK270, @sSfCellHallK300), SIDE_LEFT + slotIdx, @sSfCritHall, sfHallLives[slotIdx] > 0, sfHallIllegal[slotIdx], HALL_ILLEGAL_LO, HALL_ILLEGAL_HI, sfHallLives[slotIdx])
+                    emitSignoff(clockCell(@sSfCellHallK200, @sSfCellHallK270, @sSfCellHallK300), SIDE_LEFT + slotIdx, @sSfCritHall, sfHallLives[slotIdx] > 0, sfHallIllegal[slotIdx], HALL_ILLEGAL_LO, HALL_ILLEGAL_HI, sfHallLives[slotIdx], @sSfUnitsCount)
             PART_B:
-                emitSignoff(@sSfCellTracesB, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
+                emitSignoff(@sSfCellTracesB, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     side := SIDE_LEFT + slotIdx
-                    emitSignoff(@sSfCellRstProvB, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx])
+                    emitSignoff(@sSfCellRstProvB, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx], @sSfUnitsCount)
                     emitSignoffBool(@sSfCellRampRest, side, @sSfCritRampRest, bSfRampRan[slotIdx], bSfRampOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitSignoffBool(@sSfCellStopCur, side, @sSfCritStopCur, bSfStopCurRan[slotIdx], bSfStopCurOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitSignoffBool(@sSfCellRmpDroop, side, @sSfCritRmpDroop, bSfDroopRan[slotIdx], bSfDroopOk[slotIdx], SIGNOFF_ONE_INSTANCE)
@@ -10168,20 +10253,20 @@ PRI emitSignoffs() | slotIdx, side
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     emitSignoffBool(@sSfCellOffRestB, SIDE_LEFT + slotIdx, @sSfCritOffRest, bSfOffRan[slotIdx], bSfOffOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitIdleMoveCell(@sSfCellIdleMvB, slotIdx)
-                emitSignoff(@sSfCellStopLim, SIDE_BOTH, @sSfCritStopLim, sfStopLimN > 0, sfStopLimMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfStopLimN)
+                emitSignoff(@sSfCellStopLim, SIDE_BOTH, @sSfCritStopLim, sfStopLimN > 0, sfStopLimMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfStopLimN, @sSfUnitsCount)
                 ' task 3577 (AB): the turn trials, judged against the same band as a straight stop
-                emitSignoff(@sSfCellTurnDist, SIDE_BOTH, @sSfCritTurnDist, sfTurnN > 0, sfTurnMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfTurnN)
+                emitSignoff(@sSfCellTurnDist, SIDE_BOTH, @sSfCritTurnDist, sfTurnN > 0, sfTurnMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfTurnN, @sSfUnitsCount)
                 emitSignoffBool(@sSfCellDistM, SIDE_BOTH, @sSfCritDistM, bSfDistMRan, bSfDistMOk, SIGNOFF_ONE_INSTANCE)
                 emitLagCells(@sSfCellLagB)
             PART_BRAKE:
                 emitSignoffBool(@sSfCellBrakeFlt, SIDE_LEFT, @sSfCritBrakeFlt, bSfBrakeRan, bSfBrakeSeen, SIGNOFF_ONE_INSTANCE)
             PART_C:
-                emitSignoff(@sSfCellTracesC, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
+                emitSignoff(@sSfCellTracesC, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     side := SIDE_LEFT + slotIdx
-                    emitSignoff(@sSfCellRstProvC, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx])
+                    emitSignoff(@sSfCellRstProvC, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx], @sSfUnitsCount)
                     emitSignoffBool(@sSfCellOffRest, side, @sSfCritOffRest, bSfOffRan[slotIdx], bSfOffOk[slotIdx], SIGNOFF_ONE_INSTANCE)
-                    emitSignoff(@sSfCellStpDecel, side, @sSfCritStpDecel, bSfDecelRan[slotIdx], sfDecelTicks[slotIdx], DECEL_TICKS_LO, DECEL_TICKS_HI, SIGNOFF_ONE_INSTANCE)
+                    emitSignoff(@sSfCellStpDecel, side, @sSfCritStpDecel, bSfDecelRan[slotIdx], sfDecelTicks[slotIdx], DECEL_TICKS_LO, DECEL_TICKS_HI, SIGNOFF_ONE_INSTANCE, @sSfUnitsCount)
                     ' task 3572 (R17.1): measured only when both of this motor's provoked faults were captured
                     emitIdleMoveCell(@sSfCellIdleMvC, slotIdx)
                     emitSignoffBool(@sSfCellFltStop, side, @sSfCritFltStop, bSfFltStopRan[(slotIdx * MODE_COUNT) + MODE_FLOAT] and bSfFltStopRan[(slotIdx * MODE_COUNT) + MODE_BRAKE], sfFltStopTicks[(slotIdx * MODE_COUNT) + MODE_FLOAT] >= sfFltStopTicks[(slotIdx * MODE_COUNT) + MODE_BRAKE] + FLTSTOP_GAP_TICKS, SIGNOFF_ONE_INSTANCE)
@@ -10201,7 +10286,7 @@ PRI emitIdleMoveCell(pCell, slotIdx)
 ' @param pCell - pointer to this part's IDLEMOVE cell id
 ' @param slotIdx - the primary motor's slot
 
-    emitSignoff(pCell, SIDE_LEFT + slotIdx, @sSfCritIdleMove, sfIdleMoveN[slotIdx] > 0, sfIdleMoveMax[slotIdx], IDLE_MOVE_LO, IDLE_MOVE_HI, sfIdleMoveN[slotIdx])
+    emitSignoff(pCell, SIDE_LEFT + slotIdx, @sSfCritIdleMove, sfIdleMoveN[slotIdx] > 0, sfIdleMoveMax[slotIdx], IDLE_MOVE_LO, IDLE_MOVE_HI, sfIdleMoveN[slotIdx], @sSfUnitsCount)
 
 PRI emitLagCells(pCell) | slotIdx
 ' LAGBOUND's two instances, one per motor: the part's own cell id, judged on the instrument's running
@@ -10212,7 +10297,7 @@ PRI emitLagCells(pCell) | slotIdx
 ' @local slotIdx - motor slot
 
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
-        emitSignoff(pCell, SIDE_LEFT + slotIdx, @sSfCritLag, instLagN[slotIdx] > 0, instLagMax[slotIdx], LAG_MAX_LO, LAG_MAX_HI, instLagN[slotIdx])
+        emitSignoff(pCell, SIDE_LEFT + slotIdx, @sSfCritLag, instLagN[slotIdx] > 0, instLagMax[slotIdx], LAG_MAX_LO, LAG_MAX_HI, instLagN[slotIdx], @sSfUnitsCount)
 
 PRI emitDStepCells()
 ' Part D's cells. The steering object's instances carry SIDE_BOTH, the single wheel's SIDE_LEFT, and the
@@ -10264,8 +10349,8 @@ PRI bDEstopOk(bWheelForm) : bOk
     else
         bOk := bSfDStepOk[DST_ESTOP_REFUSE] and bSfDStepOk[DST_ESTOP_LATCH] and bSfDStepOk[DST_ESTOP_CLEAR]
 
-PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, instCount) | boundedVal, pVerdict
-' One COUNT SIGNOFF verdict (test_bench_scan.spin2 emitSignoff(), units fixed to COUNT). Judged on the
+PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, instCount, pUnits) | boundedVal, pVerdict
+' One numeric SIGNOFF verdict (test_bench_scan.spin2 emitSignoff(), units named by the caller). Judged on the
 ' clamped printed value; PASS only when measured and in range; NOMEAS with measured NA and n 0 when not
 ' measured. Worst case 196 bytes.
 '
@@ -10277,6 +10362,7 @@ PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, in
 ' @param loLimit - lowest passing value
 ' @param hiLimit - highest passing value
 ' @param instCount - starts, captures, traces or faults behind measuredVal
+' @param pUnits - pointer to the units token measuredVal is in (@sSfUnitsCount, @sSfUnitsMv)
 '
 ' @local boundedVal - measuredVal clamped to +/-LIM_BIG
 ' @local pVerdict - PASS, FAIL or NOMEAS
@@ -10298,7 +10384,7 @@ PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, in
     benchLog.naNumField(@"measured", boundedVal, LIM_BIG, bMeasured)
     benchLog.numField(@"lo", loLimit, LIM_BIG)
     benchLog.numField(@"hi", hiLimit, LIM_BIG)
-    benchLog.tokenField(@"units", @sSfUnitsCount, TOKMAX_UNITS)
+    benchLog.tokenField(@"units", pUnits, TOKMAX_UNITS)
     benchLog.numField(@"n", bMeasured ? instCount : 0, LIM_SMALL)
     benchLog.tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
     emitRecord()

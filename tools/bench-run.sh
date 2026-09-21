@@ -113,7 +113,7 @@ Usage:  tools/bench-run.sh <tier>
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
                    scan-wdtest    watchdog self-test: preflight, deliberate stall, watchdog ends the run  [MOTORS CONNECTED]
                    dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER, LOWSPD  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   dual-a-cand    as dual-a, on the CANDIDATE commutation offsets 14/338 -- the other leg of Visit 7b's A/B  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-a-legacy  as dual-a, on the LEGACY commutation offsets 43/317 -- the control leg, draws far more current  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-clock-200 motion harness clock load at 200 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-270 motion harness clock load at 270 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-300 motion harness clock load at 300 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
@@ -216,14 +216,16 @@ case "$TIER" in
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_A)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part A (PREFLT, STOPMODE, LIVE, LADDER; the two ladder probe rungs above the speed ceiling may fault on purpose), run cap 25 minutes"
                     ;;
-    # dual-a-cand -- the CANDIDATE leg of Visit 7b's phasing A/B (R18.2c). Same binary and the same
-    #  loads as dual-a; the ONLY difference is that -D HUB_OFFSETS_CANDIDATE compiles the scanned
-    #  commutation pair (offset_fwd 14, offset_rev 338) instead of the shipped one (43 / 317). The
-    #  offsets are compiled in rather than written at run time, which is why the A/B is two builds
+    # dual-a-legacy -- the LEGACY-offset leg, and the control any later phasing comparison needs.
+    #  Same binary and the same loads as dual-a; the ONLY difference is that -D HUB_OFFSETS_LEGACY
+    #  compiles the pre-6.0.0 commutation pair (offset_fwd 43, offset_rev 317) instead of the shipped
+    #  scanned one (14 / 338). The polarity of this flag INVERTED after Visit 7b certified the scanned
+    #  pair: dual-a now carries the shipped offsets and the flag reaches back for the old ones. The
+    #  offsets are compiled in rather than written at run time, which is why such an A/B is two builds
     #  and not one run -- nothing is left modified on the board afterwards.
-    dual-a-cand)    BENCH_FILE="test_bench_dual.spin2"
-                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_A -D HUB_OFFSETS_CANDIDATE)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part A on the CANDIDATE commutation offsets (14 / 338), which this wheel has never run: its current draw is not predictable from earlier runs, which is the point of measuring it. The 10 A abort and the fold-back limiter are unchanged and both still apply. Run cap 25 minutes"
+    dual-a-legacy)  BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_A -D HUB_OFFSETS_LEGACY)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part A on the LEGACY commutation offsets (43 / 317). These draw 15x to 26x MORE current than the shipped pair at the same commanded speed (Visit 7b), so this leg runs hotter than any current dual-a: it is a control, not a normal run. The 10 A abort and the fold-back limiter are unchanged and both still apply. Run cap 25 minutes"
                     ;;
     # PL-62: the clock is part of the tier name, so a mistyped clock is impossible rather than merely
     #  detectable -- a wrong name is an unknown tier and is refused.

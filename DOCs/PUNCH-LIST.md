@@ -4955,6 +4955,36 @@ behaved (the refusal line is in the log), but the verdict did not survive the wi
 
 ---
 
+### PL-96 -- an over-length record token prints as `?` with no signal, so a label can be lost silently
+
+**Found 2026-09-21 while judging Visit 7b.** Open. **One instance is fixed; the class is not.**
+
+**MEASURED (`DOCs/analyses/bench/2026-09-21/debug_260921-124024.log`):** the visit's load-bearing cell
+emitted `SIGNOFF,...,cell,R18-DUAL-OFFSETS-A,...,crit,?,...` -- the criterion name replaced by a single
+question mark. **Cause proven by counting, not inferred:** `sSfCritOffsets` was
+`"APPLIED_EQ_COMPILED"`, **19 bytes against `TOKMAX_CRIT = 18`** (`src/test_bench_dual.spin2:740`), and
+`tokenField()` prints `@sBadTok` for any token longer than its declared max, by design and without
+complaint (`src/isp_bench_log.spin2:121-131`). One byte over.
+
+**FIXED at R18.2d («#3593»):** the token is now `"OFFSETS_AS_BUILT"` (16). An audit of every
+`sSfCrit*` token found this was the **only** one over the limit; the next longest sit at exactly 18, so
+`TOKMAX_CRIT` is correctly sized and this string was the outlier.
+
+⚠ **WHAT IS NOT FIXED, and why this entry exists.** Shortening the string dodges today's instance of a
+defect class that can recur on any future token edit with **no compile-time and no run-time signal**.
+The verdict and the count survived here, so the A/B was not compromised -- but the cell that certifies
+that the driver runs the offsets it was built with could not name its own criterion, and nothing
+reported that. **The deeper fix belongs in the mechanism:** either a compile-time length check so an
+over-length token fails the build loudly, or a start-up self-check over the token tables that emits a
+verdict like every other mechanism does. Neither is in R18.2d's scope.
+
+**Cost if left:** a silent `?` is indistinguishable from a criterion nobody named, and doctrine D2 is
+explicit that a check reporting something ABSENT routes to opposite owners -- the run failed to emit
+it, or the contract describes something never emitted. This defect makes the second case look like the
+first.
+
+---
+
 ## Removed from this list
 
 **Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
