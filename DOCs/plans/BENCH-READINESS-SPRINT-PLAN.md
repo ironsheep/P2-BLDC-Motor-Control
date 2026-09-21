@@ -2339,3 +2339,129 @@ current question left is how fresh it is when the loop acts.
 - The bench instrument stores the three phase readings as their **sum** (it packs `i` and `u+v+w` into
   one long), which is a *bus-voltage* estimator and discards exactly the per-phase difference an angle
   estimate needs. Carrying them apart costs hub or ring depth; instrument design is mine.
+
+## Sprint Revision — 2026-09-21: phasing is corrected BEFORE the drive is designed
+
+**Why.** Stephen, 2026-09-21, naming the two corrections the board designer's principles demand:
+
+> *"1. We need to correct the phase offset in both directions so that we are running at the lowest
+> peak current. 2. We need to inject power at the right timing."*
+
+and, on why this cannot wait for R18.3:
+
+> *"We know the angles that we're running at are out of phase, and we know that if we get in phase,
+> we draw a lot less power. Where are we on correcting these two things so our measurements are
+> measuring our corrected behavior versus our current state?"*
+
+**The answer was: nowhere — and Visit 7 measured the uncorrected drive.** Every number R18.2
+produced was taken at `off_neg,43 off_pos,317`, the uncorrected default, and the direction
+asymmetry is fully present in it (MEASURED, `src/logs/debug_260920-182503.log`, `BM-RUNG2`/`BM-RUNG3`,
+reverse-over-forward current at the same commanded speed):
+
+| motor | rung 2 | rung 3 | rung 4 | rung 5 | rung 6 |
+|---|---|---|---|---|---|
+| LEFT | 1.93× | 2.02× | 2.04× | 1.97× | 1.10× |
+| RIGHT | 1.88× | 1.91× | 1.93× | 1.87× | 1.06× |
+
+Rung 6 closes the window because forward reaches duty saturation there, exactly as
+[`../analyses/BLDC-COMMUTATION-PRINCIPLES.md`](../analyses/BLDC-COMMUTATION-PRINCIPLES.md) predicts.
+This is the **third independent reproduction** of the ~2×: 2026-09-12 (1.76–1.97×), Visit 4 on
+2026-09-17 (2.16/2.00/2.02/1.97), and Visit 7 on 2026-09-20.
+
+### ⛔ This reverses one half of the 2026-09-20 ordering call, and the reversal is the point
+
+The 2026-09-20 revision moved «#3575»/«#3523» behind R18 because *"they would confirm offsets for a
+drive we are about to replace."* **Half of that reasoning was backwards.**
+
+**The hall zero is physics, not algorithm.** Where the hall pattern's zero sits relative to true
+electrical angle is a property of *sensor placement in the wheel*. It does not change when the
+control loop is rewritten, and it is not invalidated by R18.4. Correcting it is not confirming
+offsets for a doomed drive — it is **removing a known, measured, physical error from the baseline
+that R18.3 designs against and R18.5 certifies to.**
+
+What *was* right in that call stands: the **speed-ceiling table** dies with the drive change
+regardless, and the **attended floor tier** (loaded, operator-observed) stays behind R18.
+
+### The two corrections are different in kind, and only the first comes forward
+
+| | **Correction 1 — the offset** | **Correction 2 — the timing** |
+|---|---|---|
+| What it is | Where the hall zero sits; a **constant**, plus a lead sign per direction | Placing *current* at ±90° of the rotor **at every speed and rotor position** |
+| Why it is wrong today | The pair is symmetric about 0 (±43) instead of about the true zero | The servo holds **60°** (`sub tmpY, #256/6`), not 90°; the field **free-runs** between hall edges; current lag grows with speed while the lead is fixed |
+| Its signature | **Asymmetry** — one direction costs ~2× the other | **A symmetric tax** — both directions pay |
+| Its metric | reverse/forward ratio → **1.0** | **absolute** current at a rung falls, once the ratio is already near 1.0 |
+| Where it belongs | **Here, before R18.3** | **Inside R18.3/R18.4** |
+
+**The order is forced by the measurement, not by preference.** Everything in correction 2 is measured
+*relative to* the zero. A speed-dependent lead built on a wrong reference silently absorbs the
+constant error, looks right at the speed it was tuned at, and is wrong everywhere else — and the two
+errors can no longer be told apart.
+
+**⭐ The decomposition also gives two independent acceptance numbers from one run:** after correction
+1 the ratio should collapse toward 1.0 while absolute current stays above ideal, and **what is left
+over is the size of correction 2's prize.** The offset run is therefore not only a fix — it is the
+measurement that *scopes* the driver work R18.3 designs.
+
+### ⛔ A structural finding: the driver cannot express the corrected pair
+
+`offsetsForMotor()` (`src/isp_bldc_motor.spin2:2507`, the `other:` branch) sets the 6.5″ hub's pair as:
+
+```spin2
+fwdDegrees := ofsDegr := 43
+revDegrees := 360 - fwdDegrees
+```
+
+**The reverse offset is forced to be the negation of the forward one.** The pair is symmetric about 0
+by construction. The scan's candidate minima are **+13.4 / −20.9** — symmetric about **−3.75**, which
+matches the independently estimated hall zero of **−3.8**, exactly as the principles predict. That
+pair *cannot be written* in today's code.
+
+So correction 1 is a small, well-defined driver change, and it is the one
+`BLDC-COMMUTATION-PRINCIPLES.md` §"How the principles apply" item 3 already named: **separate the two
+meanings the offsets carry** — one hall-alignment constant `Z`, and a lead `L` applied `+`/`−` per
+direction, giving `fwd = Z + L`, `rev = Z − L`. Setting `Z = 0` reproduces today's behaviour exactly,
+so the change is backward-compatible and its own control.
+
+### R18.2a–c — the work set
+
+| Plan § | Deliverable | Depends on | Order |
+|---|---|---|---|
+| **R18.2a** | **Separate the offset's two meanings** in `offsetsForMotor()` — hall zero `Z` plus per-direction lead `L`, so an asymmetric pair can be expressed at all. `Z = 0` reproduces today bit-for-bit and is the A/B's control leg. Offsets selectable at build time, since the A/B recompiles between legs. | — | 1 |
+| **R18.2b** | **Carry the three phase voltages apart** in the bench instrument. `instPackSense()` (`src/test_bench_dual.spin2:6557`) packs `i` and `u+v+w` into one long — a bus-voltage estimator that discards precisely the per-phase difference a rotor-angle estimate needs. Costs hub or ring depth (one sample is `INST_SAMPLE_LONGS` 9; the ring is 4_096 samples = 147_456 bytes = 8.19 s at 500 Hz). | — | 2 |
+| **R18.2c** | **Visit 7b — the phasing A/B.** Run sheet with its expectations and falsifiers written **first**, cells confirmed able to FAIL, then the run: ladder rungs 2–5 both directions both motors at `Z=0,L=43` and at the candidate pair, plus per-direction ceilings, plus the phase-voltage characterisation. | R18.2a, R18.2b | 3 |
+
+Then R18.3 as before — **designed against the corrected baseline**, and owning correction 2 — followed
+by R18.4, R18.5, and the existing tail.
+
+### What goes to this visit, and what is deliberately left off
+
+**The filter:** correcting phasing changes the interpretation of every phase-sensitive measurement —
+the duty knee moves, the current curve moves, the transition kick changes, the ceiling moves. So a
+load is carried **only** if it is insensitive to phasing, or is deliberately run at *both* offset
+settings as part of the A/B.
+
+**Carried:**
+- The **A/B itself** — rungs 2–5, both directions, both motors, both offset settings.
+- **Per-direction speed ceilings**, inside the A/B rather than as a separate load. The principles
+  document predicts the expensive direction faults lower, and records that the ceilings in source are
+  single numbers applied to both directions, **never measured per direction**. Its stop condition is
+  built on R18.1's unbounded observables (duty demand and deficit, measured vs commanded rate), not on
+  the fault-edge walk the lag limiter broke.
+- The **phase-voltage characterisation** (R18.2b). It is the sensor correction 2 depends on, it cannot
+  be answered at the desk, and it is *not* invalidated by the offset change — the question is whether
+  the signal carries angle at all, not what the angle is at a given offset.
+
+**Left off, and why:** the missing 2-rung and 4-rung speed-**down** delta cells, the rung-6 current
+collapse, and the low-speed duty floor. Each reads differently once phasing is corrected, so measuring
+them now buys a number we would have to discard.
+
+### The expectations, written before the run (D2)
+
+| Outcome | Reading | Decision |
+|---|---|---|
+| Ratio moves from ~1.95 toward **1.0**, and absolute current at rungs 3–5 falls | the offset model holds; the depth below today's default **is** the prize | apply the pair; R18.3 designs against the corrected baseline, and the residual absolute current scopes correction 2 |
+| Minima found but a **residual imbalance** remains at them | offsets are not the whole story | **do not redesign yet** — name the remaining cause first (unequal hall sectors, sensor placement, the one-sector table shift) |
+| Ratio barely moves — within a few percent of the default | we are already near optimum | the ~2× is **elsewhere**; correction 1 is closed and correction 2 carries the whole driver case |
+
+**Every cell must be able to fail**, and the run sheet declares the seven attributes, before the visit
+is offered.

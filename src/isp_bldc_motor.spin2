@@ -2504,6 +2504,27 @@ PRI rampStepForAccel(rate) : eError, rampStep | nTickInMM_x100, fPassesPerSec, f
         fMmPerSec2PerStep := fPassesPerSec *. fPassesPerSec *. float(HALL_TICKS_PER_CYCLE) *. (float(nTickInMM_x100) /. F_MM_X100_PER_MM) /. F_ANGLE_UNITS_PER_CYCLE
         rampStep := 1 #> round(float(rate) /. fMmPerSec2PerStep)
 
+CON { 6.5in hub commutation: hall zero and per-direction lead }
+
+    ' The driver runs a PAIR of commutation offsets, and this is where the 6.5in pair comes from:
+    '  offset_fwd = HUB_HALL_ZERO_DEGR + HUB_LEAD_DEGR, applied to NEGATIVE motor increments
+    '  offset_rev = HUB_HALL_ZERO_DEGR - HUB_LEAD_DEGR, applied to POSITIVE motor increments
+    ' They are kept apart because they mean different things and are found by different means:
+    '  HUB_HALL_ZERO_DEGR is where the hall pattern's zero sits relative to true electrical angle,
+    '   a property of sensor placement in the wheel and the same for both directions.
+    '  HUB_LEAD_DEGR is how far the field leads the rotor, equal in magnitude each way.
+    ' A pair forced symmetric about 0 can only be right when the hall zero IS 0; otherwise one
+    '  direction leads more than it needs and the other less, which costs torque per amp in one
+    '  direction. See DOCs/analyses/BLDC-COMMUTATION-PRINCIPLES.md. Characterised at 18.5V.
+    ' Build with -D HUB_OFFSETS_CANDIDATE to select the scanned candidate pair instead.
+#ifdef HUB_OFFSETS_CANDIDATE
+    HUB_HALL_ZERO_DEGR    = -4      ' scanned candidate pair: offset_fwd 14, offset_rev 338
+    HUB_LEAD_DEGR         = 18
+#else
+    HUB_HALL_ZERO_DEGR    = 0       ' shipped pair: offset_fwd 43, offset_rev 317
+    HUB_LEAD_DEGR         = 43
+#endif
+
 PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr, index
 ' Return the forward and reverse commutation offsets for a motor type (and, for the Doco motor, the board revision and drive voltage).
 '
@@ -2537,10 +2558,10 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr, index
         fwdDegrees := ofsDegr                           ' 0 is bad > 2A!
         revDegrees := 360 - ofsDegr                     ' vs. using 360?
       other:
-        ' 4 degrees per tic, offset was actually 5 tics! or 20 degrees (0.0556 of rotation)
-        ' from characterization at 18v5:
-        fwdDegrees := ofsDegr := 43
-        revDegrees := 360 - fwdDegrees
+        ' 4 degrees per tic. The pair is built from the hall zero and the lead rather than
+        '  from one number and its negation, so an asymmetric pair can be expressed at all.
+        fwdDegrees := normalisedDegrees(HUB_HALL_ZERO_DEGR + HUB_LEAD_DEGR)
+        revDegrees := normalisedDegrees(HUB_HALL_ZERO_DEGR - HUB_LEAD_DEGR)
 {
         Chips values (orig driver)
          offset_fwd long    280 frac 360
