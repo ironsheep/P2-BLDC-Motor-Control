@@ -275,16 +275,50 @@ CON { drive increments -- NONE may exceed DRIVE_CEILING_INCRE }
     QTR_SPEED_INCRE     = DRIVE_CEILING_INCRE / 4           ' 36_750_000, quarter speed
     HALF_SPEED_INCRE    = DRIVE_CEILING_INCRE / 2           ' 73_500_000, half speed
     PREFLIGHT_INCRE     = DRIVE_CEILING_INCRE / 8           ' 18_375_000, gentle nudge
-    ' Task 3595: the exploratory WALK's own speed, an eighth. The reachable arc is set by the motor,
-    '  and it WIDENS as the commanded speed falls -- MEASURED in run 7 (debug_260914-114703.log): at
-    '  quarter speed the torque wall sits at swept +7 down to -11, while at half speed the last clean
-    '  point on each of the four legs had already retreated to 8 / -11 / -17 / 9. Every one of those
-    '  four half-speed fits came back EDGE or POOR and pinned, because the minimum sat hard against
-    '  that wall with nothing measurable below it. Walking slower is what puts room under the minimum.
-    '  This increment is not a guess: it is PREFLIGHT_INCRE, which every run already uses to nudge both
-    '  wheels and which is therefore known to turn this motor.
-    LOW_SPEED_INCRE     = DRIVE_CEILING_INCRE / 8           ' 18_375_000, eighth speed -- the walking rung
     JOG_INCRE           = QTR_SPEED_INCRE                   ' recovery jog, at the self-checked rate
+
+CON { the walking rung -- THE ONE PER-MOTOR BLOCK task 3595 adds (the task-3592 seam) }
+
+' EVERYTHING HERE HAS TO BE RE-DERIVED FOR A DIFFERENT MOTOR, and it is gathered so that the person
+' doing it has one place to look rather than a hunt. That is the whole purpose of the block: task 3592
+' generalises this instrument to a motor it takes as a parameter, and what had to be edited HERE is
+' that task's specification. Record the edits when the Doco motor is first run.
+'
+' The older per-motor quantities -- DRIVE_CEILING_INCRE and its derived increments above, DEF_NEG_DEG
+' and DEF_POS_DEG in the sweep geometry, and the rate and self-check bands below -- are NOT moved into
+' this block. They predate it, they are referenced from many places, and relocating them would be
+' churn with a transcription risk and no functional gain in a release that is explicitly not doing the
+' generalisation. They are named here instead, which serves the same reader.
+
+    ' THE EXPLORATORY WALK'S OWN SPEED, an eighth. The reachable arc is set by the motor and WIDENS as
+    '  the commanded speed falls -- MEASURED in run 7 (debug_260914-114703.log): at quarter speed the
+    '  torque wall sits at swept +7 down to -11, while at half speed the last clean point on each of
+    '  the four legs had already retreated to 8 / -11 / -17 / 9. Every one of those four half-speed
+    '  fits came back EDGE or POOR and pinned, because the minimum sat hard against that wall with
+    '  nothing measurable below it. Walking slower is what puts room under the minimum.
+    '  This increment is not a guess: it is the same value as PREFLIGHT_INCRE, which every run already
+    '  uses to nudge both wheels and which is therefore known to turn this motor. It is written out
+    '  rather than aliased to PREFLIGHT_INCRE because the two are the same number for different
+    '  reasons, and a motor that needed a different walking speed must be able to change one without
+    '  silently changing the other.
+    LOW_SPEED_INCRE     = DRIVE_CEILING_INCRE / 8           ' 18_375_000, eighth speed -- the walking rung
+
+    ' THE WALKING RUNG'S EXPECTED TICK RATE, by the same law as the other rungs: 98.2 / 2 = 49.1. The
+    '  band is the quarter band's own fractional width (-8 % / +8 %) carried down, so no rung is judged
+    '  more loosely than another. A rung whose band was widened to make it pass would be measuring its
+    '  own tolerance instead of the motor. Per motor because the law runs through ticks per electrical
+    '  cycle and the drive-pass rate.
+    RATE_LOW_EXPECTED   = 49
+    RATE_LOW_LO         = 45
+    RATE_LOW_HI         = 53
+
+    ' THE WALKING RUNG'S MEASUREMENT WINDOWS, in hall TICKS. Half the ticks at half the rate is the
+    '  same wall-clock second per point, so adding this rung costs points and not longer points -- run
+    '  7 used 728 s of a 1_800 s cap. 90 ticks still yields 3 batch means at BATCH_TICKS 30, above
+    '  MIN_BATCHES_FOR_SE, so the standard error survives the shorter window. Per motor because a tick
+    '  is a hall transition and their count per revolution is the motor's.
+    WIN_TICKS_LOW        = 90                               ' 1 wheel revolution at 1/8 speed, fine/confirm points
+    WIN_TICKS_COARSE_LOW = 90                               ' and the coarse walk's own points
 
 CON { run sequencing enums }
 
@@ -429,15 +463,10 @@ CON { sampling and windows }
     MAX_BATCHES              = 20
     MIN_BATCHES_FOR_SE       = 2
     WIN_TICKS_COARSE         = 180                          ' 2 wheel revolutions
-    WIN_TICKS_COARSE_LOW     = 90                           ' task 3595: the coarse walk at an eighth -- same seconds per point
     WIN_TICKS_FINE           = 270                          ' 3 wheel revolutions (also REF at 1/4)
     WIN_TICKS_SELF           = 450                          ' 5 wheel revolutions
     WIN_TICKS_HALF           = 540                          ' 6 wheel revolutions at 1/2 speed
-    ' Task 3595: the walking rung's window. HALF the coarse tick count at HALF the rate is the SAME
-    '  wall-clock second per point, so adding a third rung costs points, not a longer point -- run 7
-    '  took 728 s of a 1_800 s cap, and this keeps the added rung inside it. 90 ticks still yields
-    '  3 batch means at BATCH_TICKS 30, above MIN_BATCHES_FOR_SE, so the standard error survives.
-    WIN_TICKS_LOW            = 90                           ' 1 wheel revolution at 1/8 speed
+    ' The walking rung's windows live in the per-motor block near the drive increments (task 3595).
     WINDOW_TIMEOUT_MARGIN_MS = 1_000
     ' The shortest drive span worth dividing (task 3595). A point stopped in its first few samples has
     '  no rate to report, and a tick count over a handful of ms is quantisation, not a measurement.
@@ -463,13 +492,7 @@ CON { expected rates and self-check bands }
     RATE_HALF_EXPECTED = 196
     RATE_HALF_LO       = 182
     RATE_HALF_HI       = 212
-    ' Task 3595, the walking rung: the same law at an eighth -- 98.2 / 2 = 49.1. The band is the
-    '  quarter band's own fractional width (-8 % / +8 %) carried down, so no rung is judged more
-    '  loosely than another. A rung whose band was widened to make it pass would be measuring its own
-    '  tolerance instead of the motor.
-    RATE_LOW_EXPECTED  = 49
-    RATE_LOW_LO        = 45
-    RATE_LOW_HI        = 53
+    ' The walking rung's rates live in the per-motor block above (task 3595).
 
     ' Pass 1 means /6136: +1/4 90.7/91.6 mV, -1/4 169.5/168.2 mV; bands +/-25%
     POS_QTR_LO_MV      = 68
@@ -4276,9 +4299,24 @@ PRI emitDrive()
 
 PRI emitLimits()
 ' Emit BS-LIMITS: current and run caps.
+'
+' TASK 3595 ADDS THE DRIVER'S OWN FOLD-BACK LIMIT BESIDE THE HARNESS'S ABORT, because a fit can be
+' ruined by a reading that was CAPPED rather than measured: if the driver folded current back on a
+' high-lead point, that point reads lower than the motor actually drew, which flattens the arm of the
+' parabola and drags the fitted minimum toward the cap.
+'
+' IT CANNOT HAPPEN HERE, AND THE FIELD IS WHAT SHOWS IT RATHER THAN ASSERTING IT. The driver folds
+' back at I_PEAK_A amps; the harness aborts the point at ABS_ABORT_MV, which at the 150 mV/A this rig
+' calibrates against is 10 A -- a quarter of the fold-back. The harness's own abort always fires
+' first, by a factor of four, so no swept point can reach the cap. The limit is printed rather than
+' converted here because the driver's own mV-to-amp scale is the board's sense resistor
+' (rSenseForBoard) and is revision-dependent, so a flat factor written into this file would be a
+' second, staler copy of a number that already has an owner. The reader compares the fold-back against
+' the run's own worst i_max_mV.
 
     benchLog.begin(@"BS-LIMITS")
     benchLog.numField(@"abs_abort_mV", ABS_ABORT_MV, LIM_SMALL)
+    benchLog.numField(@"fold_back_a", wheelL.I_PEAK_A, LIM_SMALL)
     benchLog.numField(@"abs_abort_samples", ABS_ABORT_SAMPLES, LIM_SMALL)
     benchLog.numField(@"point_abort_x100", POINT_ABORT_X100, LIM_SMALL)
     benchLog.numField(@"point_abort_samples", POINT_ABORT_SAMPLES, LIM_SMALL)
@@ -5436,7 +5474,13 @@ PRI emitOwnZeroSignoffs(side) | signIdx, speedIdx, resIdx, nInst
             beat(CP_EMIT)
             resIdx := resultSlot(side, signIdx, speedIdx)
             if (bResLegRan[resIdx] <> FALSE) and (resStatus[resIdx] <> FS_NOT_BRACKETED)
-                emitSignoff(@sSfCellOwnZero, @sSfTaskScanV4, side, @sSfCritOwnZero, TRUE, resZeroMissing[resIdx], ...
+                ' TASK 3595, run 7's D6: bMeasured was hardcoded TRUE, so a slot that checked NOTHING
+                '  printed PASS with measured 0 of n 0. That is a vacuous pass, and it is the exact
+                '  shape the evaluation named -- the cell could not distinguish "every point had its
+                '  own zero" from "no point was ever examined", which is what the unfixed path does.
+                '  A check that cannot fail on the path it polices has been disarmed, not satisfied.
+                '  Gating on the examined count makes an unexamined slot print NOMEAS instead.
+                emitSignoff(@sSfCellOwnZero, @sSfTaskScanV4, side, @sSfCritOwnZero, resZeroChecked[resIdx] > 0, resZeroMissing[resIdx], ...
                     OWN_ZERO_MISSING_LO, OWN_ZERO_MISSING_HI, @sSfUnitsCount, resZeroChecked[resIdx])
                 nInst += 1
     if nInst == 0

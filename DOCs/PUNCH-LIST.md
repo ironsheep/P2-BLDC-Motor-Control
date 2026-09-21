@@ -5029,6 +5029,38 @@ PL-96, and the short `lookupz` tables in one run.
 
 ---
 
+### PL-98 -- two scan sign-off cells cannot fail on the path they exist to police
+
+**Found 2026-09-21 at «#3595», discharging scan run 7's D6 and D8.** One of the three was fixed in
+that task; **the other two are recorded here because making them falsifiable needs a control run that
+does not exist, and inventing one inside a build task is the error D2 exists to prevent.**
+
+**FIXED at «#3595» — `R9-SCAN-OWNZERO`'s vacuous pass.** Its `bMeasured` argument was the literal
+`TRUE`, so a result slot that examined **no** points printed `PASS` with `measured 0` of `n 0`. It
+could not tell *"every point carried its own zero"* from *"no point was ever examined"* — and the
+second is exactly what the pre-«#3530» path does. Now gated on the examined count, so an unexamined
+slot prints `NOMEAS`.
+
+⛔ **NOT FIXED (1) — `R9-SCAN-PAIR2` cannot distinguish net from raw.** The cell judges the
+negative-over-positive minimum-current ratio against a band. Scan v4's fix was to compute that ratio
+from **net** means rather than **raw** ones. A raw-derived ratio can land inside the same band, so the
+cell passes either way and its `PASS` is not evidence that the fix is in force. **What it would take:**
+a leg deliberately run with a large sense zero, where raw and net ratios provably differ — i.e. a
+control, on hardware. Until then the cell is **coverage, not evidence**, and any sign-off reading must
+say so rather than counting it.
+
+⛔ **NOT FIXED (2) — `R8-SCAN-ZXS`'s falsifier is unverified under back-to-back starts.** The
+zero-spread limit it enforces was set from spreads measured *after restarts following aborts*. Whether
+the limit can fail under ordinary back-to-back starts has never been established, so a `PASS` may mean
+*the condition never arose* rather than *the defect is absent* — the negative-measured-once trap. The
+decisive evidence for the underlying «#3529» work was the right motor's zero level falling from 72 to
+1 mV, **not** this cell's `PASS`.
+
+**Cost if left:** two cells contribute a green line to every sign-off sheet while proving nothing, and
+a reader counting greens over-counts the run's evidence by two per motor.
+
+---
+
 ## Removed from this list
 
 **Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
