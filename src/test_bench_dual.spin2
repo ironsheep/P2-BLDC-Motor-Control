@@ -226,7 +226,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 23                                       ' hand-bumped whenever this file changes
+    SRC_REV     = 22                                       ' hand-bumped whenever this file changes
     FMT_VERSION = 10                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -1905,10 +1905,8 @@ VAR { operator panel and attended-segment staging -- cog 0 only }
     LONG    panelMouse[MOUSE_LONGS]                         ' PC_MOUSE's seven longs: one array, so adjacent by construction
     LONG    bPanelKeyArmed                                  ' a 0 key reading was seen since the last key taken
     LONG    bPanelMouseArmed                                ' a released left button was seen since the last click taken
-    LONG    uiPressX                                        ' x of the last left-button press, RAW as PC_MOUSE reported it
-    LONG    uiPressY                                        ' y likewise, so BOTTOM-LEFT origin, y UP -- deliberately NOT
-                                                            '  flipped: this pair is the diagnostic record of what the host
-                                                            '  actually said, and mouseButton() owns the flip (see there)
+    LONG    uiPressX                                        ' x of the last left-button press, as PC_MOUSE reported it
+    LONG    uiPressY                                        ' y of the last left-button press, as PC_MOUSE reported it
     LONG    bUiPressSeen                                    ' a press was seen since uiPressReset()
     LONG    bPanelUp                                        ' panelSetup() ran: the panel is drawn, polled and beating
     LONG    pnlScreen                                       ' BM_SCR_* on screen; its prompt cell has the same index
@@ -6106,23 +6104,12 @@ PRI panelSetup()
 ' BM_PANEL_POS_Y, and the layer numbers are BM_LYR_*, written as text as t0hSetupPanel() writes its own.
 ' Display text arguments use single quotes. A panel that fails to draw costs a START timeout, never motion.
 '
-' NO CARTESIAN DIRECTIVE IS ISSUED, AND THAT IS THE POINT. This panel used to send `cartesian 1` here,
-' on a reading of the basis that was exactly BACKWARDS, and it is what made the window come up BLACK.
-'
-' The authority is DOCs/REF-NO-COMMIT/dbg-display-theory/DISPLAY-PATTERNS-builders-guide.md sec 4, whose
-' table is drawn from four displays that work on this rig:
-'   default (issue nothing) -- origin TOP-LEFT, y DOWN   <- what our artwork and every CROP here use
-'   cartesian 1             -- origin BOTTOM-LEFT, y UP
-' `crop 1` is form (a): copy the ENTIRE layer to the canvas ORIGIN. With the origin moved to bottom-left
-' and y running up, a background exactly as tall as the canvas (bm_bg.bmp is 480x306, the window's own
-' SIZE) is painted off the top edge and NOTHING reaches the visible area -- an empty black window, which
-' is what the rig showed.
-'
-' CROP AND THE MOUSE DO NOT SHARE A BASIS, which is the trap the old comment fell into. Stephen's working
-' panel (DOCs/REF-NO-COMMIT/test_dog_panel.spin2) issues no CARTESIAN, authors its grid from the top
-' (GRID_Y 40 in a 510-tall window), and flips y ONCE, in its hit test alone, with the bench-confirmed
-' note that "the PLOT window reports the mouse with a BOTTOM-LEFT origin (Y up); the layout/BMP is
-' authored top-left (Y down)". mouseButton() does the same flip, for the same reason, in the same place.
+' CARTESIAN 1 (flipy) is issued right after the window opens so PC_MOUSE reports y DOWN from the top-left,
+' the basis mouseButton() hit-tests in and every CROP destination here is written in. PLOT's default basis
+' is origin bottom-left with y up, and the mouse coordinate honours it (p2kbSpin2Plot, hardware-verified
+' EF-020): the SRC_REV 6 dual-ui run registered no click on any button without this (debug_260915-134659.log).
+' The interactive switches example and the analog meter in DISPLAY-PATTERNS-builders-guide.md declare the
+' same directive and then work in y-down coordinates (DERIVED from their hit-tests and needle pivot).
 
     pnlScreen := BM_SCR_BRAKE_START
     pnlState := BM_STATE_WAITING
@@ -6139,6 +6126,7 @@ PRI panelSetup()
     bPanelMouseArmed := FALSE
     beat(CP_PANEL)
     debug(`PLOT bmpanel TITLE 'Motion harness operator panel' SIZE 480 306 POS 60 80 HIDEXY UPDATE)
+    debug(`bmpanel cartesian 1)
     debug(`bmpanel LAYER 1 'bm_bg.bmp')
     debug(`bmpanel LAYER 2 'bm_prompt.bmp')
     debug(`bmpanel LAYER 3 'bm_state.bmp')
@@ -6321,14 +6309,8 @@ PRI keyButton(keyValue, liveMask) : buttonIdx
 PRI mouseButton(xPos, yPos, liveMask) : buttonIdx | btnIdx, slotX, slotY
 ' The live button whose slot holds the pointer; a pointer outside the window reads negative and hits none.
 '
-' THE Y FLIP LIVES HERE AND NOWHERE ELSE. PLOT reports the mouse with a BOTTOM-LEFT origin, y UP, while
-' the artwork and every CROP destination are authored TOP-LEFT, y DOWN -- the two do not share a basis,
-' and the fix is one flip in the hit test, never a CARTESIAN directive on the window (which would move
-' the drawing basis too and paint the whole panel off-canvas; see panelSetup()). This is the form
-' Stephen's working panel uses and confirmed on the bench: `py := (PANEL_H - 1) - py`.
-'
-' @param xPos - PC_MOUSE x, window pixels, left to right (no flip needed)
-' @param yPos - PC_MOUSE y, window pixels, measured UP from the bottom as PLOT reports it
+' @param xPos - PC_MOUSE x, window pixels
+' @param yPos - PC_MOUSE y, window pixels
 ' @param liveMask - PNL_LIVE_* mask of the buttons that may be chosen
 ' @returns buttonIdx - BM_BTN_* under the pointer and live, PNL_BTN_NONE otherwise
 '
@@ -6337,7 +6319,6 @@ PRI mouseButton(xPos, yPos, liveMask) : buttonIdx | btnIdx, slotX, slotY
 ' @local slotY - the slot's top edge
 
     buttonIdx := PNL_BTN_NONE
-    yPos := (BM_PANEL_H - 1) - yPos                         ' into the top-left basis the slots are in
     repeat btnIdx from 0 to BM_BTN_COUNT - 1
         slotX, slotY := buttonSlot(btnIdx)
         if ((liveMask & (DECOD btnIdx)) <> 0) and (xPos >= slotX) and (xPos < slotX + BM_BTN_W) and (yPos >= slotY) and (yPos < slotY + BM_BTN_H)
