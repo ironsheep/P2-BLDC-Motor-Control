@@ -932,8 +932,15 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     NOT_REVB_HI       = 0
     INTEG_SUM_LO      = 0
     INTEG_SUM_HI      = 0
+    DEGREES_IN_TURN   = 360                                 ' one turn, for the offset expectation
     TRACE_LOST_LO     = 0
     TRACE_LOST_HI     = 0
+    OFFSET_BAD_LO     = 0                                   ' R18.2c: rungs whose applied offsets are not the compiled pair
+    OFFSET_BAD_HI     = 0
+    INSTWIDE_LO       = 0                                   ' R18.2c: late + skipped + clamps at the widened sample
+    INSTWIDE_HI       = 0
+    PHSAME_LO         = 0                                   ' R18.2c: windows where the three phase means were identical
+    PHSAME_HI         = 0
     RESET_UNCLEAR_LO  = 0
     RESET_UNCLEAR_HI  = 0
     ' HALL (task 3571): no illegal hall code over a clock's lifetimes. The negative case is on file: Visit 3's
@@ -1401,6 +1408,9 @@ sSfCellIdleFlt  BYTE    "R14-DUAL-IDLEFLT-A", 0
 sSfCellRevB     BYTE    "R14-DUAL-REVB-A", 0
 sSfCellInteg    BYTE    "R14-DUAL-INTEG-A", 0
 sSfCellTracesA  BYTE    "R14-DUAL-TRACES-A", 0
+sSfCellOffsets  BYTE    "R18-DUAL-OFFSETS-A", 0
+sSfCellInstWide BYTE    "R18-DUAL-INSTWIDE-A", 0
+sSfCellPhSep    BYTE    "R18-DUAL-PHSEP-A", 0
 sSfCellTracesB  BYTE    "R14-DUAL-TRACES-B", 0
 sSfCellTracesC  BYTE    "R14-DUAL-TRACES-C", 0
 sSfCellClkFrameK200 BYTE "R14-DUAL-CLKFRM-K200", 0
@@ -1473,6 +1483,9 @@ sSfCritIdleUp   BYTE    "IDLE_WHEEL_UP", 0
 sSfCritNotRevB  BYTE    "STARTS_NOT_REVB", 0
 sSfCritInteg    BYTE    "MISSED_ILLEGAL_SUM", 0
 sSfCritTraces   BYTE    "TRACE_DATA_LOST", 0
+sSfCritOffsets  BYTE    "APPLIED_EQ_COMPILED", 0
+sSfCritInstWide BYTE    "NO_LOSS_AT_WIDTH", 0
+sSfCritPhSep    BYTE    "PHASES_DISTINCT", 0
 sSfCritClkFrame BYTE    "FRAME_AT_CLOCK", 0
 sSfCritRstProv  BYTE    "RESET_UNCLEARED", 0
 sSfCritRampRest BYTE    "RAMP_RESTORED", 0
@@ -1680,6 +1693,10 @@ VAR { window statistics from drained samples (I2) -- filled by windowStats() }
     LONG    rsIMin
     LONG    rsIMax
     LONG    rsPhMeanX10
+    LONG    sfOffsetBad                                     ' R18.2c cells: see emitPartACells()
+    LONG    sfOffsetN
+    LONG    sfPhSame
+    LONG    sfPhN
     LONG    rsPhUMeanX10                                    ' per-phase window means x10; the sum above is their total
     LONG    rsPhVMeanX10
     LONG    rsPhWMeanX10
@@ -3060,6 +3077,7 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, windowMs, bPollCurren
     safeEvent := SAFE_NONE
     bReached := FALSE
     rsOffNeg, rsOffPos := wheelGetOffsets(side)
+    foldOffsetCheck(rsOffNeg, rsOffPos)
     _, rgDutyMax, _, _ := wheelDriveConstants(side)
     missedStart, illegalStart := wheelIntegrity(side)
     if bInstArm(INST_SRC_WHEELS, 1) == FALSE
@@ -3406,6 +3424,7 @@ PRI rungSkip(seg, rid, rungIdx, side, motorIncre, whyCode)
 ' @param whyCode - WHY_* naming why it did not run
 
     rsOffNeg, rsOffPos := wheelGetOffsets(side)
+    foldOffsetCheck(rsOffNeg, rsOffPos)
     emitRung(seg, rid, rungIdx, side, motorIncre, RES_SKIPPED, 0, FALSE, FALSE, whyCode)
     segItems := (segItems + 1) <# LIM_SMALL
 
@@ -7418,6 +7437,12 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
         rsPhUMeanX10 := (phUSum * X10) / rsN
         rsPhVMeanX10 := (phVSum * X10) / rsN
         rsPhWMeanX10 := (phWSum * X10) / rsN
+        ' R18-DUAL-PHSEP-A: three identical means over a turning wheel means one reading was written
+        '  into all three slots. smpPh() derives the sum from them, so a packing fault still yields a
+        '  plausible ph_x10 -- this is the only reading that catches it.
+        sfPhN := (sfPhN + 1) <# LIM_SMALL
+        if (rsPhUMeanX10 == rsPhVMeanX10) and (rsPhVMeanX10 == rsPhWMeanX10)
+            sfPhSame := (sfPhSame + 1) <# LIM_SMALL
         rsDutyMean := dutySum / rsN
         rsErrMean := errSum / rsN
     else
@@ -7887,6 +7912,37 @@ PRI isWheelReady(side) : bReady
     else
         bReady := wheelL.isReady()
     beat(CP_LIB_QUERY)
+
+PRI expectedOffsets() : offNeg, offPos
+' The commutation pair this BUILD compiled, derived from the motor object's own constants.
+'
+' Judged against what the driver actually applied, so a build-time selection that never reached
+'  offsetsForMotor() is caught rather than assumed. Both legs land in 0..359 after one wrap, so the
+'  single conditional add is the whole normalisation this needs.
+'
+' @returns offNeg - expected offset_fwd degrees (negative increments)
+' @returns offPos - expected offset_rev degrees (positive increments)
+
+    offNeg := wheelL.HUB_HALL_ZERO_DEGR + wheelL.HUB_LEAD_DEGR
+    offPos := wheelL.HUB_HALL_ZERO_DEGR - wheelL.HUB_LEAD_DEGR
+    if offNeg < 0
+        offNeg += DEGREES_IN_TURN
+    if offPos < 0
+        offPos += DEGREES_IN_TURN
+
+PRI foldOffsetCheck(offNeg, offPos) | expNeg, expPos
+' Count one reading of the applied offsets against the compiled pair (R18-DUAL-OFFSETS-A).
+'
+' @param offNeg - applied offset_fwd degrees
+' @param offPos - applied offset_rev degrees
+'
+' @local expNeg - the compiled offset_fwd degrees
+' @local expPos - the compiled offset_rev degrees
+
+    expNeg, expPos := expectedOffsets()
+    sfOffsetN := (sfOffsetN + 1) <# LIM_SMALL
+    if (offNeg <> expNeg) or (offPos <> expPos)
+        sfOffsetBad := (sfOffsetBad + 1) <# LIM_SMALL
 
 PRI wheelGetOffsets(side) : offNeg, offPos
 ' Read back the applied commutation offsets (logged beside every wheel measurement).
@@ -9951,6 +10007,9 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellRevB)
                 emitSignoffDecl(@sSfCellInteg)
                 emitSignoffDecl(@sSfCellTracesA)
+                emitSignoffDecl(@sSfCellOffsets)
+                emitSignoffDecl(@sSfCellInstWide)
+                emitSignoffDecl(@sSfCellPhSep)
                 emitSignoffDecl(@sSfCellLagA)
                 emitSignoffDecl(@sSfCellNoFold)
                 emitSignoffDecl(@sSfCellRateLaw)
@@ -10086,6 +10145,9 @@ PRI emitSignoffs() | slotIdx, side
                     ' task 3573: NOMEAS when no start from rest gave a control, or no running-speed change was judged
                     emitSignoff(@sSfCellTrKickA, side, @sSfCritTrKick, sfTrN[slotIdx] > 0, sfTrKicks[slotIdx], TRKICK_LO, TRKICK_HI, sfTrN[slotIdx])
                 emitSignoff(@sSfCellTracesA, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces)
+                emitSignoff(@sSfCellOffsets, SIDE_NONE, @sSfCritOffsets, sfOffsetN > 0, sfOffsetBad, OFFSET_BAD_LO, OFFSET_BAD_HI, sfOffsetN)
+                emitSignoff(@sSfCellInstWide, SIDE_NONE, @sSfCritInstWide, instRunSamples > 0, instRunLate + instRunSkipped + instRunClamps, INSTWIDE_LO, INSTWIDE_HI, instRunSamples)
+                emitSignoff(@sSfCellPhSep, SIDE_NONE, @sSfCritPhSep, sfPhN > 0, sfPhSame, PHSAME_LO, PHSAME_HI, sfPhN)
                 emitLagCells(@sSfCellLagA)
             PART_CLOCK:
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
