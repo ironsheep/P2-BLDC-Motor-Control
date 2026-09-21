@@ -102,6 +102,7 @@ usage() {
 Usage:  tools/bench-run.sh <tier>
   <tier>      -- one of:
                    t0             Tier 0 -- no motor, no motion, no risk
+                   panel          PLOT pipeline probe: two windows differing ONLY in name, no motors, reads out in the log  [NOTHING MOVES, ATTENDED]
                    t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
                    t0-stopmode    Tier 0's T0-24 stop-state hand test only -- OPERATOR TURNS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
@@ -163,6 +164,14 @@ case "$TIER" in
     #  cells print through plain debug() in test_bench_t0.spin2, which no channel mask
     #  touches -- so nothing it measures is lost. See PL-74 for what is and is not
     #  established about why the tier emitted nothing.
+    # panel -- the PLOT pipeline probe (2026-09-21). The control that was never built: two PLOT
+    #  windows identical but for their NAME, one layer each, no motor object and no pin driven.
+    #  It answers, FROM THE LOG, whether a window draws at all, whether host input arrives, what
+    #  coordinate basis PLOT reports by default, and whether the window name is what kills a
+    #  display. Run it before spending a bench slot on any attended tier.
+    panel)          BENCH_FILE="test_bench_panel.spin2"
+                    PRECONDITION="NO MOTORS NEEDED, nothing moves -- move the mouse over each window"
+                    ;;
     t0)             BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET)
                     ;;

@@ -1,0 +1,242 @@
+{Spin2_v50}
+'' =================================================================================================
+''
+''   File....... test_bench_panel.spin2
+''   Purpose.... PLOT pipeline probe -- the smallest binary that exercises window, BMP layer, blit
+''               and host input, and reports what it got in the LOG so the result is readable
+''               without seeing a screen. It is the increment-1 proof for every panel we build
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 21 Sep 2026
+''   Updated.... 21 Sep 2026
+''
+'' =================================================================================================
+
+'' -------------------------------------------------------------------------------------------
+''  WHY THIS EXISTS
+''
+''  Five attended tiers were built on the crop-and-overlay panel technique and repeatedly failed
+''  at the rig -- one showing no window at all, another an empty black one -- and each failure
+''  cost a bench slot because the first thing exercised was the WHOLE panel. This binary is the
+''  control that was never built: it does one thing per risky element and nothing else.
+''
+''  HOW IT IS READ WITHOUT A SCREEN, which is the point. PC_MOUSE returns the PIXEL COLOUR under
+''  the pointer. That single field distinguishes the two failures we have seen, from the log
+''  alone, with no operator judgement:
+''
+''    pixel = -1            the pointer is outside the window   -> move onto it and it changes
+''    pixel = $00_00_00_00  the window exists and is BLACK      -> it drew nothing
+''    pixel = anything else the window exists and the ARTWORK DREW, and the value says which
+''                          part of it the pointer is over
+''
+''  So the operator only has to move the mouse over where the window should be. Whether it drew,
+''  and whether input arrives at all, both come back in the log.
+''
+''  IT ALSO SETTLES THE COORDINATE BASIS EMPIRICALLY. No CARTESIAN directive is issued here, so
+''  the reported y is PLOT's default. The background is 306 tall; a pointer near the TOP of the
+''  artwork reporting y near 306 means the default basis is bottom-left with y up (and our
+''  panels' CARTESIAN 1 is what puts them in the top-left basis their slots are authored in).
+''  A pointer near the top reporting y near 0 means the opposite. The log answers it either way.
+''
+''  AND IT CARRIES ITS OWN NEGATIVE CONTROL, which is the whole reason there are TWO windows.
+''  Every panel of ours that has ever drawn was named `bench` -- the 2026-09-12 characterisation
+''  panel and the 2026-09-15 T0-12 panel both. The one that drew nothing at Visit 6a was named
+''  `t0stop`. p2kb's window_name_rules give exactly that symptom for an unusable name: "SILENT AT
+''  BOTH LAYERS ... no display is declared, the window never opens, and every later feed addressed
+''  to that name goes nowhere" -- no compile error and no host error.
+''
+''  That is a CORRELATION, not a cause, and naming it as a cause without testing it is the mistake
+''  that has already cost this investigation twice. So the probe opens two windows that are
+''  IDENTICAL IN EVERY RESPECT BUT THEIR NAME, side by side, and polls both:
+''
+''    both report a pointer      -> the name is NOT the problem, and this whole line is dead
+''    only `bench` reports one   -> the name IS the problem, proven, with its own control
+''    neither reports one        -> nothing about panels is at fault; the path is
+''
+''  A window that was never created cannot report a pointer inside it, so the log decides this
+''  without anyone having to judge what is on the screen.
+''
+''  NO MOTOR OBJECT IS STARTED AND NO PIN IS DRIVEN. Nothing here can move a wheel.
+'' -------------------------------------------------------------------------------------------
+
+CON { timing and identity }
+
+    CLK_FREQ = 270_000_000                                  ' the one clock line bench-run.sh patches
+    _clkfreq = CLK_FREQ
+
+    SRC_REV  = 1                                            ' hand-bumped whenever this file changes
+
+    POLL_MS      = 50                                       ' under PC_KEY's ~100 ms latch
+    RUN_S        = 90                                       ' the probe ends itself after this long
+    MS_PER_SEC   = 1_000
+    REPORT_MS    = 1_000                                    ' a heartbeat line even when nothing changes
+
+CON { the window and its one layer }
+
+    ' Deliberately ONE layer, and an asset that is already committed and already known good:
+    '  bm_bg.bmp is 480 x 306, 24-bit, uncompressed, and is the dual panel's own background.
+    ' Layer COUNT is one of the variables that differs between the panels that drew and the ones
+    '  that did not, so the control holds it at the minimum.
+    PANEL_W  = 480
+    PANEL_H  = 306
+    PANEL_X  = 60
+    PANEL_Y  = 80
+
+    ' p2kb window_name_rules: legal, short, and not one of the 103 reserved debug-display words.
+    '  Its own guidance suggests exactly this set of names.
+    ' The name is written as text in every message below, as the display protocol requires.
+
+CON { PC_MOUSE's seven longs (p2kbSpin2DbgPcMouse) }
+
+    MOUSE_LONGS = 7
+    MOUSE_XPOS  = 0
+    MOUSE_YPOS  = 1
+    MOUSE_WHEEL = 2
+    MOUSE_LBTN  = 3
+    MOUSE_MBTN  = 4
+    MOUSE_RBTN  = 5
+    MOUSE_PIXEL = 6
+
+VAR { probe state -- cog 0 only }
+
+    LONG    probeKey                                        ' PC_KEY's one long
+    LONG    ctlMouse[MOUSE_LONGS]                           ' the CONTROL window's seven; one array, so adjacent by construction
+    LONG    susMouse[MOUSE_LONGS]                           ' the SUSPECT window's seven
+    LONG    bCtlSeen                                        ' a pointer has been reported inside the control window
+    LONG    bSusSeen                                        ' ... and inside the suspect window
+    LONG    lastKey                                         ' previous reading, so a line is emitted on CHANGE
+    LONG    lastCtlPixel
+    LONG    lastSusPixel
+    LONG    nSeq                                            ' line counter, so a dropped line is visible
+
+PUB main() | startMs, lastReportMs, bChanged
+'' Draw the probe panel, then poll the host keyboard and mouse until RUN_S has passed, printing
+'' what came back. Every line is prefixed PP- so the log can be read with one grep.
+''
+
+' Local Variables:
+' @local startMs - getms() at the first poll
+' @local lastReportMs - getms() of the last heartbeat line
+' @local bChanged - this poll differs from the last one, so it is worth a line
+
+    waitms(100)
+    debug("PP-BANNER src_rev ", udec_(SRC_REV), " -- PLOT pipeline probe, no motor started")
+    setupPanel()
+    debug("PP-READY two windows created, identical but for their name")
+    debug("PP-READY  LEFT  at x=60  is the CONTROL, named bench")
+    debug("PP-READY  RIGHT at x=560 is the SUSPECT, named t0stop")
+    debug("PP-READY MOVE THE MOUSE OVER EACH IN TURN, then leave it; the log decides the rest")
+
+    nSeq := 0
+    lastKey := -1
+    lastCtlPixel := -2                                      ' neither a real colour nor the outside sentinel
+    lastSusPixel := -2
+    bCtlSeen := FALSE
+    bSusSeen := FALSE
+    startMs := getms()
+    lastReportMs := startMs
+    repeat while (getms() - startMs) < (RUN_S * MS_PER_SEC)
+        bChanged := bPollOnce()
+        if bChanged or ((getms() - lastReportMs) >= REPORT_MS)
+            lastReportMs := getms()
+            reportOnce()
+        waitms(POLL_MS)
+
+    reportVerdict()
+    debug("PP-END probe complete after ", udec_(RUN_S), " s")
+    ' the literal phrase, alone in its own debug() and last of all: bench-run.sh runs the terminal
+    '  with --exit-on-end-session and this is its end-of-session marker. Nothing else printed by
+    '  this file may contain it.
+    debug("DEBUG_END_SESSION")
+
+PRI setupPanel()
+' Create BOTH windows and paint each background, in the form DISPLAY-PATTERNS-builders-guide.md
+' sec 2 gives and Stephen's working panel uses: PLOT with HIDEXY UPDATE, the layer, CROP 1, UPDATE.
+'
+' THE TWO DIFFER ONLY IN NAME AND IN POS. Same size, same single layer, same asset, same directive
+' order, created back to back. `bench` is the name every panel of ours that ever drew used; `t0stop`
+' is the name of the one that drew nothing. POS is different only so both can be seen at once.
+'
+' NO CARTESIAN DIRECTIVE IS ISSUED. That is deliberate and it is the other half of the experiment:
+' the reported y basis below is therefore PLOT's default, which the file header explains how to read.
+
+    debug(`PLOT bench TITLE 'probe CONTROL - name bench' SIZE 480 306 POS 60 80 HIDEXY UPDATE)
+    debug(`bench LAYER 1 'bm_bg.bmp')
+    debug(`bench crop 1)
+    debug(`bench update)
+
+    debug(`PLOT t0stop TITLE 'probe SUSPECT - name t0stop' SIZE 480 306 POS 560 80 HIDEXY UPDATE)
+    debug(`t0stop LAYER 1 'bm_bg.bmp')
+    debug(`t0stop crop 1)
+    debug(`t0stop update)
+
+PRI bPollOnce() : bChanged
+' Read the host keyboard, then each window's mouse, once each. PC_KEY and PC_MOUSE each carry their
+' OWN backtick and each is LAST in its debug() statement -- p2kbSpin2DbgPcMouse records that an
+' un-backticked PC_MOUSE compiles clean and is transmitted as literal text, writing nothing and
+' failing silently, with no compile error.
+'
+' @returns bChanged - TRUE when this reading differs from the last one reported
+
+    probeKey := 0
+    debug(`bench `pc_key(@probeKey))
+    debug(`bench `pc_mouse(@ctlMouse))
+    debug(`t0stop `pc_mouse(@susMouse))
+    if ctlMouse[MOUSE_XPOS] >= 0
+        bCtlSeen := TRUE
+    if susMouse[MOUSE_XPOS] >= 0
+        bSusSeen := TRUE
+    bChanged := (probeKey <> lastKey) or (ctlMouse[MOUSE_PIXEL] <> lastCtlPixel) or (susMouse[MOUSE_PIXEL] <> lastSusPixel)
+
+PRI reportOnce()
+' Emit one PP-POLL line and remember what it said. Per window: the pointer position RAW, exactly as
+' the host reported it, so the default coordinate basis is read off the log rather than assumed; and
+' the pixel colour, which says whether that window's artwork drew or whether it is black.
+
+    nSeq := nSeq + 1
+    lastKey := probeKey
+    lastCtlPixel := ctlMouse[MOUSE_PIXEL]
+    lastSusPixel := susMouse[MOUSE_PIXEL]
+    debug("PP-POLL,seq,", udec_(nSeq), ",key,", sdec_(probeKey), ",ctl_x,", sdec_(ctlMouse[MOUSE_XPOS]), ",ctl_y,", sdec_(ctlMouse[MOUSE_YPOS]), ",ctl_lbtn,", sdec_(ctlMouse[MOUSE_LBTN]), ",ctl_pixel,", shex_(ctlMouse[MOUSE_PIXEL]), ",sus_x,", sdec_(susMouse[MOUSE_XPOS]), ",sus_y,", sdec_(susMouse[MOUSE_YPOS]), ",sus_lbtn,", sdec_(susMouse[MOUSE_LBTN]), ",sus_pixel,", shex_(susMouse[MOUSE_PIXEL]))
+
+PRI reportVerdict()
+' The one line that decides it, so nobody has to read a hundred poll lines to find the answer.
+
+    if bCtlSeen and bSusSeen
+        debug("PP-VERDICT both windows reported a pointer -- the NAME is NOT the cause")
+    elseif bCtlSeen
+        debug("PP-VERDICT only `bench` reported a pointer -- the NAME is the cause, with its control")
+    elseif bSusSeen
+        debug("PP-VERDICT only `t0stop` reported a pointer -- unexpected; re-read before concluding")
+    else
+        debug("PP-VERDICT neither window reported a pointer -- the PATH is at fault, not any panel")
+
+CON { license }
+
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  software and associated documentation files (the "Software"), to deal in the Software
+  without restriction, including without limitation the rights to use, copy, modify,
+  merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+  persons to whom the Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ -------------------------------------------------------------------------------------------------
+}}
