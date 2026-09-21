@@ -2301,14 +2301,41 @@ anymore."* The version is settled, the ship trigger is his judgement of the driv
 **everything in this plan lands in 6.0.0 by default.** R18's size is not a reason to reopen it; work
 growing is not new information. Doctrine overlay P5 and P8 carry the rule.
 
-**The feedback fork is mine, and Visit 7 settles it by measurement.** Aggregate current or the three
-per-phase currents: MEASURED 2026-09-20, all three phases are read and scaled every ADC frame
-(`isp_bldc_motor.spin2`, the ADC block at the top of the control pass) and reach nothing but telemetry —
-only the aggregate is used in control, for the S-2 fold-back threshold. That is the largest unused
-capability in the driver, and **which one becomes feedback is a design choice with a verifiable success
-criterion, so it is not a ruling to ask for** (overlay P3). R18.2 characterises **both**, and R18.3
-designs against the numbers rather than against a guess made before them.
+⛔ **The "feedback fork" was built on a FALSE PREMISE OF MINE, and there is no fork.** This section said
+until 2026-09-20 that the driver reads *three per-phase currents* and that choosing between them and the
+aggregate shaped R18.3. **`sense_u/v/w` are phase VOLTAGES, not currents.** VERIFIED 2026-09-20 against
+four sources that agree:
 
-⚠ **Consequence for R18.2's harness, to design before the visit:** the bench instrument stores the three
-phase readings as their **sum**, not individually, so a per-phase characterisation needs a ring-format
-change. Ring depth is the cost to weigh; per-phase may only be needed on a subset of rungs.
+- **The Parallax 64010 manual, quoted verbatim** in `../analyses/BOARD-REVISION-FACTS.md` §Rev A and
+  §Rev B 8: the board carries **one** low-side sense resistor, between common MOSFET GND and common
+  system GND, measuring *"Total MOSFET load current"*. **There is no per-phase current sensing on this
+  board at all** — 5 mΩ on Rev A, 3 mΩ plus an INA180B2 on Rev B, one shunt either way.
+- `CURRENT-LIMIT-AND-STOP-DESIGN.md`, in its own words: *"The quantity that matters is phase current,
+  and the board measures DC-link current."* The fold-back limiter therefore derives phase current as a
+  **lower-bound estimate** from the DC-link reading and the modulation depth, precisely because no
+  direct measurement exists.
+- `../analyses/DRIVER-SAFETY-AND-CAPABILITY-STUDY-2026-09-09.md`, the observables table:
+  `sense_u_/v_/w_` → *"phase voltages, 44 kHz."*
+- The driver's own interface documentation: `nSenseI` is the *"current-sense reading"*; `nSenseU/V/W`
+  are each a *"phase-U/V/W **sense** reading, in mV."* The getter never calls them current.
+
+**What is actually unused, and what it is for.** Three phase-voltage channels are read and scaled on
+every control pass and reach nothing but the status block. `../analyses/BLDC-COMMUTATION-PRINCIPLES.md`
+already names their use, and it is **rotor angle, not current**: *"Resolve rotor angle better than 60°:
+interpolate within a sector from the time since the last hall edge and the current speed, or estimate it
+from the phase voltages the driver already samples every cycle (`sense_u/v/w`)."*
+
+⭐ **This sharpens R18 rather than shrinking it.** PL-95's gap is that the field free-runs between hall
+edges — a **position** problem, and phase voltage is a position source. The design question R18.3 must
+answer is therefore *"can the phase voltages carry usable rotor angle between hall edges, and over what
+speed range"*, not *"which current do we close the loop on."* There is one current channel; the only
+current question left is how fresh it is when the loop acts.
+
+⚠ **Consequences for R18.2, to design before the visit:**
+
+- Characterise the phase voltages **as an angle source** — against the hall edges that bracket them,
+  across the speed range, including where back-EMF is too small to read. Their failure mode at low speed
+  is the same regime item 5 already calls out.
+- The bench instrument stores the three phase readings as their **sum** (it packs `i` and `u+v+w` into
+  one long), which is a *bus-voltage* estimator and discards exactly the per-phase difference an angle
+  estimate needs. Carrying them apart costs hub or ring depth; instrument design is mine.

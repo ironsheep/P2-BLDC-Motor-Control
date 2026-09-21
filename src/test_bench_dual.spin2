@@ -143,6 +143,26 @@
 ''               down. Visit 6a measured 44 speed-ups and zero speed-downs, and the same 20x10^6 step
 ''               taken at six places in the range spread six-fold, so WHERE a change happens dominates
 ''               HOW BIG it is.
+''               21 Sep 2026 -- SRC_REV=22, FMT 10: task 3581 (R18.2 item 5), the LOW-SPEED regime, which
+''               no test has ever covered and which is where BOTH position sources fail at once -- the
+''               halls stop producing edges often enough to inform, and back-EMF is too small for the
+''               phase voltages to carry angle.
+''               New segment LOWSPD (part A, after LADDER): per motor x sign, one lifetime over lowIncre
+''               (1..5 x 10^6). It is its own segment rather than four more ladder rungs because every
+''               timing constant differs, and mixing two populations under one segment token would put
+''               them in one verdict later.
+''               rungMeasure() and rungWindow() take the window length as a parameter. LOWSPD needs
+''               LOW_WINDOW_MS (4_000): at 1x10^6 the wheel turns 2.67 hall edges a second, so the
+''               1_000 ms window every other rung uses would hold 2-3 ticks and any rate read from it is
+''               quantisation rather than a measurement. Every existing caller passes WINDOW_MS, so no
+''               measured rung changes.
+''               New record BM-LOW: command-to-first-edge (does it start, and how long does starting
+''               take) and the shortest and longest interval between hall edges across the window. The
+''               sampling problem INVERTS down here -- at the top rung the instrument gets 1.1 samples
+''               per hall edge and is blind between edges, at 1x10^6 it gets about 187 -- so the SHAPE
+''               of the rotor's advance is visible here and nowhere else, and a spread between the two
+''               gaps is cogging. No cell judges it: it is characterisation for R18.3, which picks the
+''               acceptance numbers before R18.4 builds against them.
 ''
 '' =================================================================================================
 
@@ -206,8 +226,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 21                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 9                                         ' BM- record-format version
+    SRC_REV     = 22                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 10                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -345,6 +365,22 @@ CON { drive increments and powers }
     LADDER_DELTA_STEPS  = 15                                ' the six delta cells, entered from rung 0
     LADDER_WALK_STEPS   = LADDER_CLIMB_STEPS + LADDER_DESCEND_STEPS + LADDER_DELTA_STEPS
     LADDER_FAULT_STOP   = 2                                 ' consecutive faulted rungs end a sign's ladder
+    ' R18.2 (plan R18.2 item 5): the LOW-SPEED regime, BELOW the ladder's bottom rung. No test has ever
+    '  covered it, and it is where BOTH position sources fail at once -- the halls stop producing edges
+    '  often enough to inform, and back-EMF is too small for the phase voltages to carry angle. R18.3 has
+    '  to design for it explicitly rather than inherit it.
+    LOW_RUNGS           = 5                                 ' 1 .. 5 x 10^6, the five in lowIncre
+    ' WHY ITS OWN WINDOW, and the arithmetic is the same identity the sensor-rate work used: the field
+    '  advances 2^32 per electrical cycle and there are HALL_TICKS_PER_CYCLE (6) ticks in one, so a rung
+    '  turns incre x 6 / 2^32 electrical cycles per pass and the edge rate at 1_913.2 passes/s is
+    '  2.67 / 5.3 / 8.0 / 10.7 / 13.4 per second at these five rungs. WINDOW_MS (1_000) would hold 2-3
+    '  ticks at the bottom, and a rate read from 3 ticks is quantisation, not a measurement (PL-79's
+    '  lesson: a criterion narrower than its own resolution misreports rather than fails). 4_000 ms gives
+    '  10.7 / 21 / 32 / 43 / 53 ticks, so every low rung clears the 10 ticks that keep one tick's
+    '  quantisation under 10 %.
+    LOW_WINDOW_MS       = 4_000
+    LOW_SETTLE_MS       = 1_000                             ' longer than LADDER_SETTLE_MS: these rungs settle slowly
+    LOW_STEADY_MS       = 8_000                             ' AT_SPEED bound; the ramp to a low increment is not fast
     FB_TRIALS           = 5                                 ' ramp_inc 22, 100, 500, 2_000, 10_000
     ' RMPDROOP judges the trials whose ramp the motor cannot follow: the three that faulted 3 of 3 at
     '  Visit 2 (VISIT-2-RESULTS.md sec 6). The two gentle ones are not a test of the limiter.
@@ -723,8 +759,9 @@ CON { record enums -- each value has a token in the DAT token tables }
 
   ' Segment (token = the name after SEG_):
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
-        SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT
-    SEG_COUNT = 15
+        SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT, ...
+        SEG_LOWSPD
+    SEG_COUNT = 16
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -1244,6 +1281,10 @@ ladderIncre     LONG    5_000_000, 10_000_000, 20_000_000, 40_000_000, 60_000_00
 ladderAllIdx    LONG    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11            ' CLIMB, LADDER_CLIMB_STEPS
                 LONG    10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0                ' DESCEND, LADDER_DESCEND_STEPS
                 LONG    2, 3, 2, 5, 2, 5, 6, 5, 8, 5, 9, 8, 9, 6, 9     ' DELTA, LADDER_DELTA_STEPS
+' LOWSPD rungs, ascending: the regime below ladderIncre's bottom rung (R18.2 item 5). These are the
+' segment's OWN rung numbers 0..4, not indices into ladderIncre -- BM-RUNG's seg field says which table
+' a rung number belongs to, as it already does for LIVE and CLOCK.
+lowIncre        LONG    1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000
 ' FAULTB: ramp_inc per trial, ascending (plan :917-918)
 fbRampIncs      LONG    22, 100, 500, 2_000, 10_000
 
@@ -1266,7 +1307,7 @@ DAT { packed token tables -- zero-separated, indexed by tokenAt(); order follows
 tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
 tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
-                BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0
+                BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0
 tokWhy          BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
@@ -2108,6 +2149,7 @@ PRI runPart()
             runSegment(SEG_STOPMODE)
             runSegment(SEG_LIVE)
             runSegment(SEG_LADDER)
+            runSegment(SEG_LOWSPD)
         PART_CLOCK:
             runSegment(SEG_PREFLT)
             runSegment(SEG_CLOCK)
@@ -2147,6 +2189,8 @@ PRI runSegment(seg)
                 segLive()
             SEG_LADDER:
                 segLadder()
+            SEG_LOWSPD:
+                segLowSpeed()
             SEG_CLOCK:
                 segClock()
             SEG_FAULTB:
@@ -2277,6 +2321,78 @@ PRI segLadder() | side, signMul
             beat(CP_LOOP_POLL)
             ladderSign(SEG_LADDER, side, signMul, @ladderAllIdx, LADDER_WALK_STEPS)
     segEnd(segWhy())
+
+PRI segLowSpeed() | side, signMul, rungNum, rid, whyCode, safeEvent, consecFaults
+' LOWSPD (part A, R18.2 item 5): the regime BELOW the ladder's bottom rung, which no test has ever
+' covered. Per motor x sign, one lifetime over lowIncre, each rung measured with LOW_WINDOW_MS so its
+' tick count is a measurement rather than quantisation, and each printing BM-LOW beside the rung records
+' the other segments already emit.
+'
+' WHY IT IS ITS OWN SEGMENT rather than four more rungs on the ladder: every timing constant differs
+' (the window is 4x, the settle and the AT_SPEED bound are longer), and mixing two populations under one
+' segment token would put them in one verdict later.
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local signMul - SIGN_NEG then SIGN_POS
+' @local rungNum - 0..LOW_RUNGS-1, this segment's own rung number
+' @local rid - rung id
+' @local whyCode - why the remaining rungs are skipped, WHY_NONE while they run
+' @local safeEvent - SAFE_* that ended the rung
+' @local consecFaults - consecutive faulted rungs, as the ladder counts them
+
+    segBegin(SEG_LOWSPD)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
+            beat(CP_LOOP_POLL)
+            consecFaults := 0
+            whyCode := WHY_NONE
+            if bRunContinue(SEG_LOWSPD) == FALSE
+                whyCode := WHY_ABORTED
+            elseif bWheelStart(SEG_LOWSPD, side) == FALSE
+                whyCode := stWhy
+            repeat rungNum from 0 to LOW_RUNGS - 1
+                beat(CP_LOOP_POLL)
+                rid := nextRungId()
+                whyCode := trialSkipWhy(SEG_LOWSPD, side, whyCode)
+                if whyCode <> WHY_NONE
+                    rungSkip(SEG_LOWSPD, rid, rungNum, side, lowIncre[rungNum] * signMul, whyCode)
+                else
+                    safeEvent := lowRung(side, rid, rungNum, lowIncre[rungNum] * signMul)
+                    if bRungFaultRecover(SEG_LOWSPD, side, lowIncre[rungNum] * signMul, safeEvent)
+                        consecFaults += 1
+                        if consecFaults >= LADDER_FAULT_STOP
+                            whyCode := WHY_LADDER_STOPPED
+                    else
+                        consecFaults := 0
+                    if (safeEvent == SAFE_ABS_ABORT) or (safeEvent == SAFE_INST_STALL)
+                        whyCode := WHY_LADDER_STOPPED
+            bZeroAndWaitStopped(side)
+            bInstIdle()
+            wheelStop(side)
+    segEnd(segWhy())
+
+PRI lowRung(side, rid, rungNum, motorIncre) : safeEvent | slotIdx
+' One LOWSPD rung: the shared measured-rung routine with the low-speed timings, then the rung records
+' and BM-LOW. R17-DUAL-TRKICK-A is NOT folded here -- these transitions are a different population from
+' the ladder's, with a different window and settle, and one verdict over two populations fails on the
+' mixture rather than on the drive (D2), exactly as LIVE's rungs are left out.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param rid - rung id
+' @param rungNum - this segment's rung number, 0..LOW_RUNGS-1
+' @param motorIncre - signed increment
+' @returns safeEvent - SAFE_* that ended the rung, SAFE_NONE otherwise
+'
+' @local slotIdx - motor slot
+
+    slotIdx := side - SIDE_LEFT
+    safeEvent := rungMeasure(side, motorIncre, LOW_STEADY_MS, LOW_SETTLE_MS, LOW_WINDOW_MS, TRUE)
+    ' I10: an unfrozen ring is never read. rungMeasure() leaves rgCmdStart / rgWinStart / rgWinEnd at -1
+    '  when the capture did not freeze, and lowStats()'s guards turn that into reset staging and NA
+    '  fields without touching a ring long -- the same contract transitionStats() already keeps.
+    lowStats(slotIdx)
+    rungEmitAll(SEG_LOWSPD, rid, rungNum, side, motorIncre)
+    emitLow(rid, side, motorIncre, rgWhy)
 
 PRI segClock() | side, signMul
 ' CLOCK (the three clock loads, T1-4): frame count and net current at 75_000_000, per motor x sign.
@@ -2888,7 +3004,7 @@ PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, mark
         if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
             cpWhy := WHY_INST_NOACK
 
-PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeEvent | slotIdx, otherIdx, startMs, bReached, missedStart, illegalStart, missedEnd, illegalEnd
+PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, windowMs, bPollCurrent) : safeEvent | slotIdx, otherIdx, startMs, bReached, missedStart, illegalStart, missedEnd, illegalEnd
 ' One measured rung, the routine LADDER, LIVE and CLOCK share (design sec 4.4): read the offsets,
 ' duty_max and integrity counts; arm; mark; command; AT_SPEED (<= steadyBoundMs); settle; a WINDOW_MS
 ' window delimited by two ring totals (rungWindow(), sec 12.7); freeze; window statistics, the
@@ -2899,6 +3015,8 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeE
 ' @param motorIncre - signed increment
 ' @param steadyBoundMs - the AT_SPEED bound
 ' @param settleMs - settle after AT_SPEED
+' @param windowMs - how long the measurement window runs; WINDOW_MS everywhere but LOWSPD, whose edge
+'                   rate is too low for a 1 s window to hold a measurable tick count (R18.2)
 ' @param bPollCurrent - TRUE to read getCurrent() every CURRENT_POLL_MS in the window
 ' @returns safeEvent - SAFE_* that ended the rung early, SAFE_NONE otherwise
 '
@@ -2964,7 +3082,7 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, bPollCurrent) : safeE
             bRgSteadyValid := TRUE
             safeEvent, _ := waitWatched(side, settleMs, CP_LOOP_SETTLE, UNTIL_TIME)
             if safeEvent == SAFE_NONE
-                safeEvent := rungWindow(side, bPollCurrent)
+                safeEvent := rungWindow(side, windowMs, bPollCurrent)
         bRgCaptured := bInstFreeze(0)
         if bRgCaptured
             bRgIdleUp := bCaptureIdleUp(otherIdx)
@@ -3048,6 +3166,85 @@ PRI transitionStats(slotIdx, cmdTotal, endTotal) | sampleIdx, startJ, endJ, firs
         if trN == 0
             trWhy := WHY_NO_SAMPLES
 
+PRI lowStats(slotIdx) | sampleIdx, startJ, endJ, refPos, nowPos, lastEdgeT, gapMs
+' The LOWSPD rung's two readings, both of which exist only at this end of the range (R18.2 item 5).
+'
+'  lsFirstEdgeMs - command mark to the FIRST hall edge. It answers "does it start, and how long does
+'                  starting take", which no test has ever asked. No edge before the window opened
+'                  leaves it NA rather than zero -- a wheel that never moved is a finding, not a 0 ms
+'                  start (D2: a discovery failure must never render as a zero).
+'  lsGapMin/Max  - shortest and longest interval between consecutive edges across the window. THE
+'                  SAMPLING PROBLEM INVERTS DOWN HERE: at the top rung the instrument gets 1.1 samples
+'                  per hall edge and cannot see between edges at all, but at 1x10^6 it gets about 187,
+'                  so the SHAPE of the advance is visible. A rotor turning smoothly keeps the two
+'                  close; one that cogs -- advancing in steps as each commutation catches it -- spreads
+'                  them, and the spread is the reading R18.3 needs to know whether open-loop drive
+'                  survives to zero speed.
+'
+' Both halves read the ring the instrument has already frozen, so they cost no bench time.
+'
+' @param slotIdx - motor slot under test
+'
+' @local sampleIdx - logical index
+' @local startJ - first logical index of the half being walked
+' @local endJ - last logical index of that half
+' @local refPos - the position at the last reference point: the half's first up sample, then each edge
+' @local nowPos - this sample's position
+' @local lastEdgeT - getct() of that reference point, and zero until one has been found
+' @local gapMs - interval between the last two edges
+
+    drainBegin()
+    lsFirstEdgeMs := 0
+    bLsFirstValid := FALSE
+    lsEdges := 0
+    lsGapMin := POSX
+    lsGapMax := 0
+    bLsGapValid := FALSE
+    ' THE REFERENCE IS THE FIRST *UP* SAMPLE OF EACH HALF, never simply the first. instStore() writes
+    '  pos 0 for a motor that is not up, so taking the reference from a down sample would make the next
+    '  real reading look like an edge and report a first-edge time that never happened (I3, D2).
+    refPos := 0
+    lastEdgeT := 0
+    ' the transition half: command mark to the window, looking for the first edge
+    if (rgCmdStart >= drLostHead) and (rgWinStart > rgCmdStart) and (drStored > 0)
+        startJ := rgCmdStart - drLostHead
+        endJ := (rgWinStart - 1 - drLostHead) <# (drStored - 1)
+        repeat sampleIdx from startJ to endJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx)
+                nowPos := smpPos(sampleIdx, slotIdx)
+                if lastEdgeT == 0                           ' the reference sample: its time is the command's
+                    refPos := nowPos
+                    lastEdgeT := smpT(sampleIdx)
+                elseif nowPos <> refPos
+                    lsFirstEdgeMs := (smpT(sampleIdx) - lastEdgeT) / TICKS_PER_MS
+                    bLsFirstValid := TRUE
+                    quit
+    ' the window half: every edge, and the spread of the intervals between them
+    refPos := 0
+    lastEdgeT := 0
+    if (rgWinStart >= drLostHead) and (rgWinEnd > rgWinStart) and (drStored > 0)
+        startJ := rgWinStart - drLostHead
+        endJ := (rgWinEnd - 1 - drLostHead) <# (drStored - 1)
+        repeat sampleIdx from startJ to endJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx)
+                nowPos := smpPos(sampleIdx, slotIdx)
+                if lastEdgeT == 0
+                    refPos := nowPos
+                    lastEdgeT := smpT(sampleIdx)
+                elseif nowPos <> refPos
+                    gapMs := (smpT(sampleIdx) - lastEdgeT) / TICKS_PER_MS
+                    lsEdges := (lsEdges + 1) <# LIM_SMALL
+                    if lsEdges > 1                          ' the first edge dates from the window start, not from an edge
+                        lsGapMin <#= gapMs
+                        lsGapMax #>= gapMs
+                        bLsGapValid := TRUE
+                    lastEdgeT := smpT(sampleIdx)
+                    refPos := nowPos
+    if bLsGapValid == FALSE
+        lsGapMin := 0
+
 PRI foldTransitionKick(slotIdx)
 ' TRKICK (PL-87, PL-95): a LADDER rung's transition kick, judged on CURRENT. A change of speed from a
 ' running speed kicks when its transition current peak stands more than TRKICK_EXCESS_MV above what the
@@ -3087,8 +3284,20 @@ VAR { transition statistics (PL-87) -- cog 0 only }
     LONG    sfTrN[INST_MOTORS]                              ' TRKICK: running-speed transitions judged, per motor
     LONG    sfTrKicks[INST_MOTORS]                          ' TRKICK: of those, the ones that kicked
 
-PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, ampsCount, hbStart, bComplete, hlWinLag, hlWinCap, hlEndLag, hlEndCap
-' The rung's measurement window: a start mark (ring total), WINDOW_MS of beat-polled safety reads with
+VAR { low-speed statistics (R18.2 item 5) -- cog 0 only }
+
+    ' At these rungs the sampling problem INVERTS. High up, the instrument gets 1.1 samples per hall
+    '  edge and can see nothing between edges; at 1x10^6 it gets about 187, so the SHAPE of the rotor's
+    '  advance is visible here and nowhere else. That is what these record.
+    LONG    lsFirstEdgeMs                                   ' command -> first hall edge: does it start, and how long does it take
+    LONG    bLsFirstValid                                   ' FALSE when no edge came before the window opened
+    LONG    lsEdges                                         ' hall edges counted across the window
+    LONG    lsGapMin                                        ' shortest interval between consecutive edges, ms
+    LONG    lsGapMax                                        ' longest -- with lsGapMin this is the COGGING reading: smooth
+    LONG    bLsGapValid                                     '  advance keeps them close, a stepping rotor spreads them
+
+PRI rungWindow(side, windowMs, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, ampsCount, hbStart, bComplete, hlWinLag, hlWinCap, hlEndLag, hlEndCap
+' The rung's measurement window: a start mark (ring total), windowMs of beat-polled safety reads with
 ' getCurrent() every CURRENT_POLL_MS when asked, and an end mark. The window is delimited by the two
 ' instrument-recorded totals, never by time (sec 12.7). An interrupted window records no end total.
 '
@@ -3096,6 +3305,7 @@ PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, a
 ' and opens and closes the STEADY window's. Both reads are outside the measured interval.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param windowMs - how long the window runs
 ' @param bPollCurrent - TRUE to read getCurrent()
 ' @returns safeEvent - SAFE_* that ended the window early, SAFE_NONE otherwise
 '
@@ -3104,7 +3314,7 @@ PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, a
 ' @local ampsSum - sum of clamped readings, |sum| <= 51 x LIM_MID
 ' @local ampsCount - readings taken
 ' @local hbStart - instrument heartbeat at the window start
-' @local bComplete - the window ran its full WINDOW_MS
+' @local bComplete - the window ran its full windowMs
 ' @local hlWinLag - lag_held at the window start
 ' @local hlWinCap - duty_capped at the window start
 ' @local hlEndLag - lag_held at the window end
@@ -3136,7 +3346,7 @@ PRI rungWindow(side, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, a
         safeEvent := safetyPoll(side)
         if safeEvent <> SAFE_NONE
             quit
-        if (getms() - startMs) >= WINDOW_MS
+        if (getms() - startMs) >= windowMs
             bComplete := TRUE
             quit
     if bComplete
@@ -3252,7 +3462,7 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
         if whyCode <> WHY_NONE
             rungSkip(seg, rid, rungIdx, side, motorIncre, whyCode)
         else
-            safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, TRUE)
+            safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE)
             rungEmitAll(seg, rid, rungIdx, side, motorIncre)
             ladderNoFold(side, rungIdx, motorIncre)
             bFaulted := bRungFaultRecover(seg, side, motorIncre, safeEvent)      ' a recovered fault leaves the wheel at rest, which slotLastIncre records
@@ -3348,7 +3558,7 @@ PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeE
         windowStats(slotIdx, SLOT_RIGHT - slotIdx, -1, -1)  ' resets the rs* staging; reads no ring long
         emitLive(rid, side, motorIncre, rpmRead, FALSE, FALSE, skipWhy)
     else
-        safeEvent := rungMeasure(side, motorIncre, STEADY_TIMEOUT_MS, LIVE_SETTLE_MS, FALSE)
+        safeEvent := rungMeasure(side, motorIncre, STEADY_TIMEOUT_MS, LIVE_SETTLE_MS, WINDOW_MS, FALSE)
         if bRgWindowValid
             rpmRead := wheelRpm(side)
         emitLive(rid, side, motorIncre, rpmRead, bRgHbOk, bRgWindowValid, rgWhy)
@@ -3450,7 +3660,7 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
     if whyCode <> WHY_NONE
         rungSkip(SEG_CLOCK, rid, CLOCK_RUNG_IDX, side, motorIncre, whyCode)
     else
-        safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, TRUE)
+        safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE)
         clockHallIntegrity(side)
         rungEmitAll(SEG_CLOCK, rid, CLOCK_RUNG_IDX, side, motorIncre)
         bRungFaultRecover(SEG_CLOCK, side, motorIncre, safeEvent)
@@ -8450,8 +8660,12 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     '  measured rungs against 48 -- and each rung now prints five records rather than four. Visit 6a
     '  MEASURED 119_523 ms and about 960 B per rung for the 48, so the walk is about 375 s and 180 KB;
     '  both figures are rounded up, as every other entry here is.
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6)
+    ' LOWSPD (R18.2 item 5) is the last entry: 5 rungs x 2 signs x 2 motors, each about 8 s (a
+    '  LOW_WINDOW_MS window plus its settle and its AT_SPEED wait), so about 160 s and five records a
+    '  rung at the ladder's ~1.2 KB -- call it 30 KB. Part A's estimate becomes 1_185 s against
+    '  RUN_TIME_CAP_S 1_500, and its MEASURED cost should land near 780 s.
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -8708,6 +8922,35 @@ PRI emitRungHl(rid, side, motorIncre)
     benchLog.naNumField(@"win_cap", rgHlWinCap, LIM_SMALL, bRgHlWinValid)
     benchLog.naNumField(@"drv_incr", rgHlDrvIncr, LIM_BIG, bRgHlTrValid)
     whyField(rgWhy)
+    emitRecord()
+
+PRI emitLow(rid, side, motorIncre, whyCode)
+' BM-LOW (R18.2 item 5): the two readings that exist only below the ladder's bottom rung -- whether the
+' wheel starts and how long starting takes, and the spread of the intervals between hall edges, which is
+' the cogging reading. Everything else about the rung is already in BM-RUNG / BM-RUNG2 / BM-RUNGTR /
+' BM-RUNGHL / BM-RUNG3; this record adds only what the low-speed regime makes visible.
+'
+' NO CELL JUDGES IT. Like BM-RUNGHL it is characterisation for R18.3, which chooses the acceptance
+' numbers before R18.4 builds against them (D2). We do not yet know what a good first-edge time or a
+' tolerable gap spread is at 1x10^6 -- that is the point of measuring.
+'
+' Worst case 148 bytes: tag(6) + seq(15) + rid(12) + motor(12) + incre(19) + first_ms(17) + edges(13) +
+' gap_min(16) + gap_max(16) + why(23).
+'
+' @param rid - rung id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+' @param whyCode - WHY_* naming the cause of every NA
+
+    recBegin(@"BM-LOW")
+    benchLog.numField(@"rid", rid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.naNumField(@"first_ms", lsFirstEdgeMs, LIM_SMALL, bLsFirstValid)
+    benchLog.numField(@"edges", lsEdges, LIM_SMALL)
+    benchLog.naNumField(@"gap_min", lsGapMin, LIM_SMALL, bLsGapValid)
+    benchLog.naNumField(@"gap_max", lsGapMax, LIM_SMALL, bLsGapValid)
+    whyField(whyCode)
     emitRecord()
 
 PRI emitRung3(rid, side, motorIncre, missedD, illegalD, ampsX10k, bAmpsValid, bWindowValid, whyCode) | rsImpl
