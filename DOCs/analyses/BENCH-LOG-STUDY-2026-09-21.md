@@ -109,7 +109,7 @@ Provenance marks: *traced* = read directly from log or cited source · *inferred
 | F4 | wrong but contained | **R17-DUAL-TRKICK-A FAILS both motors** — LEFT 37/74, RIGHT 36/74 transitions exceed the 50 mV excess bound (pass window is exactly 0). **This was predicted, and it is the R18.1 fix working**, not a regression. | `debug_260920-182503.log` SIGNOFF lines; criterion at `test_bench_dual.spin2:10027`, bound `TRKICK_EXCESS_MV = 50` at `:975`, population at `:3271-3272`. | traced | The cell was re-judged on current by «#3580»; it now measures what it always claimed to. | No — it is a true negative about the drive |
 | F5 | latent | **The delta-cell matrix is asymmetric.** Speed-*down* exists only at 1-rung and 3-rung deltas; there is **no 2-rung and no 4-rung speed-down cell**. The largest delta (4 rungs) is exercised upward only. | 148 running-to-running transitions, binned: d1 DOWN 56 / d1 UP 56 / d2 UP 4 / d3 DOWN 12 / d3 UP 16 / d4 UP 4. Zero at d2-DOWN and d4-DOWN. | traced | The ladder's cell design (rids 30–44, 68–82) pairs each up-probe with a *return*, and the return is not always the mirror delta. | No — a design question for R18.3 |
 | F6 | — (characterisation) | **The duty cap is the binding constraint, and the lag limiter is not.** From rung 6 upward the drive is voltage-saturated; at the top rung essentially **every PWM frame** is duty-capped. The lag limiter holds on at most **0.01%** of frames anywhere on the ladder. | Per-rung table §6.1. `win_cap` max 44,209 in a 1.001 s window ≈ 100% of frames at 43.9 kHz. `win_lag` max 9; `tr_lag` max 9. | traced | — | n/a |
-| F7 | — (characterisation) | **Net current peaks at rung 6 and then collapses ~24×** (10,839 → 451, `inet_x10`) while duty stays pinned at 100% and the commanded rate is still met to 0.1%. | §6.1 table; `BM-RUNG2.inet_x10` by rung, both motors, both directions, climb and descent. | traced measurement, **undetermined cause** | Not established. Candidate: back-EMF approaching the rail leaves no net driving voltage on a free-spinning wheel. **This is the single most important open question for R18.3.** | No |
+| F7 | — (characterisation) | **Net current peaks at rung 6 and then collapses ~24x** (10,839 -> 451, `inet_x10`) while duty stays pinned at 100% and the commanded rate is still met to 0.1%. | §6.1 table; `BM-RUNG2.inet_x10` by rung, both motors, both directions, climb and descent. | **RESOLVED 2026-09-21 — traced measurement, cause now *inferred* with its rival refuted** | **A real voltage limit, not a defect.** Above the knee the applied voltage is fixed at the cap while back-EMF keeps rising with speed, so the net driving voltage — and with it the current — collapses. See §6.1a. | No — it is a limit to design to, not a fault to fix |
 | F8 | latent | **The two boards' current-sense zero offsets differ by ~85 counts** (LEFT `zero_x10` 78–94, RIGHT −2–10), present from the first PREFLT reading. Raw `i_x10` comparisons between motors are invalid; netted (`inet_x10`) the two agree within 7% across the whole ladder. | `BM-START` PREFLT: LEFT `zero_x10,81`, RIGHT `zero_x10,0`. Per-rung sets: LEFT {78,86,90,94}, RIGHT {−2,0,5,10}. Netted L/R ratio 0.93–1.11 for rungs 0–9. | traced | A per-board offset the harness already corrects for. It matters because **S-2's fold-back estimates phase current from this channel**, and any absolute threshold inherits the offset. | No |
 | F9 | latent | `rs_impl` (implied sense resistance) spans **150–375 on LEFT** but only **145–154 on RIGHT**. The LEFT spread is entirely at rungs 0–2, where net current is 64–300 counts. | §6.1 note; `BM-RUNG3.rs_impl` by rung, LEFT: rung 0 311–375, rung 5 151–152, rung 6 150–151. | traced, cause *inferred* | Consistent with a low-signal artefact of F8's offset, not a board difference — but it means any diagnostic keyed on `rs_impl` is unreliable below ~rung 3. | No |
 | F10 | latent | **The rung-6 duty-saturation knee is an *unloaded* knee, and R18.3's acceptance numbers will inherit that.** Every rung here ran wheels up; rate tracks command to 0.1% *because the load is near zero*. Under load the same commanded speed needs more current, so the knee moves **down** the ladder. An acceptance number of the form "no duty saturation below Z% of achievable speed", chosen from this data, is therefore optimistic by an unknown margin. | Tier `dual-a` precondition, `tools/bench-run.sh:115` — `[MOTORS CONNECTED, WHEELS UP, UNATTENDED]`. Rate/pred 1.000–1.003 at every rung 1–11; knee at rung 6 (§6.1). | traced; the size of the shift is *undetermined* | The R18 sequence is deliberately unloaded-to-unloaded (Visit 7 → Visit 8) so the drive change is isolated from load variability. **The loaded run already exists and is scheduled** — «#3575»'s tethered spin-in-place floor tier, run at «#3576» Visit 6b, immediately after R18.5. | No — R18.3 states its numbers as unloaded **and** states what it expects loaded, so Visit 6b can falsify rather than merely observe (D2) |
@@ -221,6 +221,65 @@ a disturbance with — which is invisible here only because nothing disturbs it 
 
 The current collapse past rung 6 (F7) is the part that is measured and not explained, and it
 is the question I would put first to R18.3.
+
+### 6.1a The current collapse — RESOLVED 2026-09-21
+
+F7 asked whether the 24x current collapse above the knee is back-EMF approaching the rail (a real
+limit to design to) or commutation losing effectiveness past the knee (a defect to fix). It is the
+first, and the second is refuted rather than merely unsupported.
+
+**The decisive evidence is what the ROTOR did, not what the current did.** Commutation losing
+effectiveness means the field stops dragging the rotor with it, which shows up as the rotor falling
+behind the commanded rate. Measured rate against commanded, every rung above the knee:
+
+| rung | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---|---|---|---|---|---|
+| rate / pred | 1.002 | 1.001 | 1.001 | 1.001 | 1.001 | 1.000 |
+
+**The rotor tracks the command to within 0.2% everywhere, including the top rung.** A drive whose
+commutation was failing could not do that. The rival hypothesis predicts a signature that is simply
+absent.
+
+**The surviving explanation also fits quantitatively.** Above the knee the duty is pinned, so the
+applied voltage is fixed while back-EMF keeps rising with speed, and the net driving voltage --
+hence the current -- falls. Fitting `I = (V - k*w) / R` from the rung-6 peak:
+
+| rung | speed vs rung 6 | current vs rung 6 | implied back-EMF as a fraction of applied |
+|---|---:|---:|---:|
+| 7 | 1.200x | 0.443 | 0.88 |
+| 8 | 1.400x | 0.103 | 0.97 |
+| 9 | 1.470x | 0.054 | 0.98 |
+| 10 | 1.550x | 0.042 | 0.99 |
+| 11 | 1.650x | 0.072 | 0.97 |
+
+⚠ **Stated honestly: this is a fit, not a proof.** Back-solving the rung-6 back-EMF fraction from
+each later rung gives 0.59 to 0.74 rather than one constant, so the simple linear model is
+approximate. Two known reasons, both already in this register: winding resistance is not constant,
+and rungs 9-11 sit in the low-signal regime where F9 found `rs_impl` unreliable. The rung-11 uptick
+(0.072 against rung 10's 0.042) is inside that same noise. The model is *directionally* right and
+its rival is *refuted*; the exact coefficient is not claimed.
+
+**What this settles for R18.3.** Rungs 6-11 are a **real voltage limit**, not range the drive is
+throwing away. What is lost up there is **torque margin, not speed** -- back-EMF is within a few
+percent of the rail, so there is almost no voltage left to answer a disturbance with, and the speed
+survives only because the wheel is unloaded. So:
+
+- An acceptance number of the form *"no duty saturation below Z% of achievable speed"* must not
+  treat the knee as a defect to design away. The knee is where the motor's own back-EMF meets the
+  supply.
+- The honest target above the knee is **knowing there is no margin** -- which is exactly correction
+  2's "hold at the achievable rate rather than winding the field ahead."
+- ⭐ **A falsifiable prediction for Visit 7b:** correcting the phase lowers the current needed for
+  the same torque, which lowers the `I*R` drop, which means duty should pin at the same rung or
+  slightly *higher* on the candidate leg. If the knee instead moves **down**, this section is wrong
+  and should be reopened.
+
+**Authority note:** this was settled against
+[`BLDC-COMMUTATION-PRINCIPLES.md`](BLDC-COMMUTATION-PRINCIPLES.md) -- *"the rotor keeps up only
+while the motor can produce enough torque from the voltage headroom left above its back-EMF, and
+that headroom shrinks as speed rises"* -- plus this run's own data. p2kb was **not** consulted,
+because this is motor physics on the driver board, not something the P2 silicon defines; the
+domain authority for how this hardware is meant to be driven is the designer's document.
 
 ### 6.2 Transition behaviour, both directions (MUST-GATHER items 1 and 2) — gathered
 
@@ -336,13 +395,10 @@ variability; Visit 6b is where load enters. **What remains is F10's narrower poi
 R18.3's to carry:** state the acceptance numbers as unloaded, and state alongside them what is
 expected loaded, so Visit 6b can falsify them rather than merely observe (D2).
 
-**Q2 — the current collapse (F7). Mine to answer, from the authority.** Net current peaks at
-rung 6 and falls 24× by rung 10 while duty is pinned and rate is still met. Whether that is
-back-EMF approaching the rail on a free-spinning wheel (a "no reserve left" signature R18.3
-designs to) or commutation losing effectiveness past the knee (a defect) is settled by
-`DOCs/analyses/BLDC-COMMUTATION-PRINCIPLES.md` and p2kb, not by Stephen — P8: *the confirm
-question is for his hardware, never for what code does.* I did not consult them during the
-study because that would move the ground mid-read (§4). **This is the first task of R18.3 §1.**
+**Q2 — the current collapse (F7). ANSWERED 2026-09-21; see §6.1a.** It is a real voltage limit, not
+a commutation defect. The rival hypothesis is refuted by the rotor's own behaviour, and the
+consequence for R18.3 is that rungs 6–11 are a region to design *to*, not range to recover.
+
 
 **Q3 — the missing d2-DOWN and d4-DOWN cells (F5). Mine, inside R18.3/R18.5.** «#3584» already
 scopes Visit 8 to "both directions, small/medium/large delta, low/knee/high, near-max". These
