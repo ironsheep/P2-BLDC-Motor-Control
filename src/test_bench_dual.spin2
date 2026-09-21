@@ -518,15 +518,35 @@ CON { ALIGN tier (task 3590) -- the hall zero measured cold, and the ONE per-mot
     ALIGN_CLIP_LO_MV    = 20                                ' ...and at or below this
     ALIGN_LEGS          = 8                                 ' 2 wheels x 2 directions x 2 speeds
     ALIGN_PHASES        = 3
-    ALIGN_MAX_CROSS     = 160                               ' per-leg crossing records kept; 3 turns gives about 45 per phase
+    ' A FULL LEG'S CROSSINGS FIT BY CONSTRUCTION, so nothing is ever discarded. 3 turns x 15 electrical
+    '  cycles per turn x 3 phases x 2 crossings per cycle = 270; 288 leaves margin for a leg the operator
+    '  overshoots. The earlier 160 would have dropped the leg's TAIL -- and the tail is the fastest part,
+    '  because a hand accelerates, so the drop would have been a SPEED BIAS in the one measurement whose
+    '  negative case is a speed difference (D2). The overflow counter stays, and stays a falsifier.
+    ALIGN_MAX_CROSS     = 288
+
+    ' Crossing timing. A sector is timed in raw getct() ticks and converted to us with the file's own
+    '  TICKS_PER_US. ALIGN_SECT_MAX_CT is the outer bound on a sector that is still a TURN: past it the
+    '  hand has paused, the back-EMF has collapsed and the "crossings" inside it are noise about the
+    '  bias. It doubles as what keeps every span inside one unwrapped 32-bit getct() difference, which
+    '  at this clock is 7.9 s -- so the bound is the measurement's, not the counter's.
+    ALIGN_SECT_MAX_S    = 2
+    ALIGN_SECT_MAX_CT   = CLK_FREQ * ALIGN_SECT_MAX_S
+
+    ' One crossing's identity, packed into a long: phase, which way it crossed, and the hall code of the
+    '  sector it landed in -- the three that place it. Time is carried apart, in its own longs.
+    ALIGN_KEY_PHASE_SHIFT = 8
+    ALIGN_KEY_RISING      = $10
+    ALIGN_KEY_HALL_MASK   = $07
 
   ' ALIGN leg speed class -- what the guide ASKS for; the achieved rate is measured and reported
     #0, ASPD_SLOW, ASPD_BRISK
     ASPD_COUNT = 2
 
-  ' ALIGN leg outcome
-    #0, ALEG_OK, ALEG_STALLED, ALEG_SHORT, ALEG_CLIPPED
-    ALEG_COUNT = 4
+  ' ALIGN leg outcome. NOSTART is its own outcome and not an absence: a wheel that would not start must
+  '  print four legs saying so, or the matrix cell fails with nothing in the log to say which wheel.
+    #0, ALEG_OK, ALEG_STALLED, ALEG_SHORT, ALEG_CLIPPED, ALEG_NOSTART
+    ALEG_COUNT = 5
 
 CON { segment timing }
 
@@ -805,6 +825,8 @@ CON { record widths and token lengths }
     TOKMAX_DSTEP     = 12
     TOKMAX_DRES      = 6
     TOKMAX_FCAUSE    = 4
+    TOKMAX_ASPD      = 5
+    TOKMAX_ALEG      = 7
 
 CON { record enums -- each value has a token in the DAT token tables }
 
@@ -1111,6 +1133,37 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     STOPCUR_BOUND_MV  = ABS_ABORT_MV
     ' DISTM: getDistance(DDU_M) is whole metres, so agreement is judged to the metre. That still separates
     '  the defect task 3502 fixed, which was a factor of ten, from correct rounding on a 3 m run.
+    ' ALIGN (task 3590): the five cells the cold hall-zero tier judges. Four of them say whether a Z
+    '  reported from this run is a MEASUREMENT; the first says whether the tier kept its safety promise.
+    '
+    ' ALIGN_NODRIVE_MV -- the tier's whole safety claim is that the bridge is never driven, and it is
+    '  guaranteed by construction (SM_FLOAT at rest puts all six FETs off; only a DRIVEN bridge can
+    '  fault). This cell is what MEASURES that the construction held: the worst |sense_i| anywhere in
+    '  the tier. 150 mV is 1 A at the 150 mV/A the harness calibrates its own abort with.
+    ' BOTH SIDES OF THAT NUMBER ARE MEASURED, so the band is placed rather than asserted. BELOW it: the
+    '  floated zero-command sense mean every lifetime already captures read -0.5 to +8.7 mV across 200
+    '  starts (src/logs/debug_260921-125233.log, zero_x10), which is what a coasting bridge reads, so
+    '  the band sits about 17x above the observed noise floor and cannot fail on offset. ABOVE it: the
+    '  gentlest DRIVEN state in the harness is the SM_BRAKE hold at duty_min, which reads 700-940 mV
+    '  (Visit 4 FAULTB, hold_mV_x10), and a driven rung runs from there to the 1_500 mV abort -- so the
+    '  band sits about 5x below anything that drives. THE NEGATIVE CASE IS ON FILE AND IS NOT
+    '  HYPOTHETICAL: a tier that started driving fails this cell at once, on data we already have.
+    ALIGN_NODRIVE_MV  = 150
+    ALIGN_NODRIVE_LO  = 0
+    ALIGN_NODRIVE_HI  = ALIGN_NODRIVE_MV
+    ' ALIGN_CLIP: phase readings at a rail across the tier. A flattened crossing has no zero to find, so
+    '  one railed sample disqualifies the leg it is in -- the count is judged at zero (D2: a clipped
+    '  channel must not be able to pass as a measurement).
+    ALIGN_CLIP_LO     = 0
+    ALIGN_CLIP_HI     = 0
+    ' ALIGN_COVER / ALIGN_RES: the two ways a leg can run to completion and still measure nothing --
+    '  too few crossings to average, or too few samples inside a hall sector to place one. Both are
+    '  reported as the WORST leg, so one bad leg cannot hide behind seven good ones.
+    ALIGN_COVER_LO    = ALIGN_MIN_CROSS
+    ALIGN_COVER_HI    = LIM_BIG
+    ALIGN_RES_LO      = ALIGN_MIN_SAMP_SECT
+    ALIGN_RES_HI      = LIM_BIG
+    ALIGN_COMBOS      = 4                                   ' wheel x measured direction; the 2x2 that cancels hysteresis
     DISTM_TOL_M       = 1
     MM_PER_M_X100     = 100_000                             ' hundredths of a mm in one metre
     SIGNOFF_ONE_INSTANCE = 1
@@ -1425,7 +1478,14 @@ tokOpEv         BYTE    "SHOWN", 0, "START", 0, "SKIP", 0, "TIMEOUT", 0, "ANSWER
 tokSegEv        BYTE    "BEGIN", 0, "END", 0, "SKIP", 0
 tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG", 0
 tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAULTED", 0, "ESTOP", 0
+' PL-97, second instance: this table was SHORT of PART_COUNT the moment PART_ALIGN joined the enum, so
+'  an ALIGN build printed adjacent DAT in the part field of BM-BANNER, BM-PLAN, BM-EXIT, every SIGNOFF
+'  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
+                BYTE    "ALIGN", 0
+' ALIGN leg speed class (ASPD_*) and leg outcome (ALEG_*), task 3590
+tokASpd         BYTE    "SLOW", 0, "BRISK", 0
+tokALeg         BYTE    "OK", 0, "STALLED", 0, "SHORT", 0, "CLIPPED", 0, "NOSTART", 0
 ' driver state DCS_* 0..7; SLOW_TO_CHG shortened to fit the 10-byte st field
 tokDcs          BYTE    "UNKNOWN", 0, "STOPPED", 0, "SPIN_UP", 0, "AT_SPEED", 0, "SPIN_DN", 0
                 BYTE    "SLOW_CHG", 0, "FAULTED", 0, "ESTOP", 0
@@ -1594,6 +1654,20 @@ sSfCritFltCause BYTE    "CAUSE_IS_LAG", 0
 sSfCritFltStop  BYTE    "FLOAT_COASTS_MORE", 0
 sSfCritIdleMove BYTE    "IDLE_WHEEL_TICKS", 0
 sSfCritTrKick   BYTE    "KICK_PEAK_EXCESS", 0
+' task 3590: the ALIGN tier's five cells -- the safety invariant, the two that can disqualify a reading,
+'  and the two that say the matrix was actually covered (each criterion at most TOKMAX_CRIT bytes)
+sSfCellNoStallZ BYTE    "R18-DUAL-NOSTALL-Z", 0
+sSfCellDbgMaskZ BYTE    "R18-DUAL-DBGMASK-Z", 0
+sSfCellAgNoDrv  BYTE    "R18-DUAL-ALIGN-ND", 0
+sSfCellAgClip   BYTE    "R18-DUAL-ALIGN-CLIP", 0
+sSfCellAgCover  BYTE    "R18-DUAL-ALIGN-COVER", 0
+sSfCellAgRes    BYTE    "R18-DUAL-ALIGN-RES", 0
+sSfCellAgMatrix BYTE    "R18-DUAL-ALIGN-MTRX", 0
+sSfCritAgNoDrv  BYTE    "PEAK_I_AT_REST", 0
+sSfCritAgClip   BYTE    "PHASE_NOT_RAILED", 0
+sSfCritAgCover  BYTE    "LEAST_CROSSINGS", 0
+sSfCritAgRes    BYTE    "LEAST_PER_SECTOR", 0
+sSfCritAgMatrix BYTE    "ALL_FOUR_MEASURED", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfUnitsMv      BYTE    "MV", 0
@@ -2269,6 +2343,8 @@ PRI runPart()
             runSegment(SEG_FLOOR)
         PART_UICHECK:
             runSegment(SEG_UICHECK)
+        PART_ALIGN:
+            runSegment(SEG_ALIGN)
     bRunReturned := TRUE                                    ' before the return, or main() reads a library abort
 
 PRI runSegment(seg)
@@ -2309,6 +2385,8 @@ PRI runSegment(seg)
                 segFloor()
             SEG_UICHECK:
                 segUiCheck()
+            SEG_ALIGN:
+                segAlign()
     else
         emitSeg(seg, SEGEV_SKIP, bSegAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
 
@@ -2332,12 +2410,15 @@ PRI bRunContinue(seg) : bContinue | elapsedS
     bContinue := (bRunAborted == FALSE)
 
 PRI bSegAttended(seg) : bAttended
-' Report whether a segment needs a person at the rig (OUTSIDE, FLOOR and UICHECK).
+' Report whether a segment needs a person at the rig (OUTSIDE, FLOOR, UICHECK and ALIGN).
+'
+' ALIGN is attended in a way none of the others are: the person is not watching the run, he IS the
+' actuator -- every leg advances only because he turns the wheel by hand.
 '
 ' @param seg - SEG_* value
 ' @returns bAttended - TRUE for an attended segment
 
-    bAttended := (seg == SEG_OUTSIDE) or (seg == SEG_FLOOR) or (seg == SEG_UICHECK)
+    bAttended := (seg == SEG_OUTSIDE) or (seg == SEG_FLOOR) or (seg == SEG_UICHECK) or (seg == SEG_ALIGN)
 
 PRI segBegin(seg)
 ' Open a segment: reset its counters and emit BM-SEG BEGIN.
@@ -6497,6 +6578,545 @@ PRI mouseButton(xPos, yPos, liveMask) : buttonIdx | btnIdx, slotX, slotY
             buttonIdx := btnIdx
             quit
 
+CON { --- ALIGN: the hall zero measured cold, cog 0, the bridge never driven (task 3590) --- }
+
+VAR { ALIGN tier state -- cog 0 only }
+
+    ' THE LEG'S CROSSINGS ARE HELD, NOT EMITTED, UNTIL THE LEG ENDS. Stephen sets the pace by hand, so
+    '  the tier must be SILENT while he turns: the guide has to stay the last line on his screen. That
+    '  is why crossings are detected on the fly and raw samples are never stored -- a ring deep enough
+    '  for an operator-paced leg does not exist, and one that wrapped would lose the leg's start.
+    LONG    agCrossKey[ALIGN_MAX_CROSS]                     ' phase << 8 | rising << 4 | the sector's hall code
+    LONG    agCrossIn[ALIGN_MAX_CROSS]                      ' sector's opening edge -> the crossing, us
+    LONG    agCrossDur[ALIGN_MAX_CROSS]                     ' that sector's full duration, us; 0 while the sector is open
+    LONG    agCrossTick[ALIGN_MAX_CROSS]                    ' signed tick index of the sector, so a leg's crossings order
+    LONG    agBias[ALIGN_PHASES]                            ' each phase's stationary level, mV -- the level a crossing crosses
+    LONG    agPrevSign[ALIGN_PHASES]                        ' sign of (mV - bias) last sample; 0 until the phase is armed
+
+    LONG    agLegIdx                                        ' 0..ALIGN_LEGS-1, the leg being run
+    LONG    agSide                                          ' SIDE_LEFT or SIDE_RIGHT
+    LONG    agAskedDir                                      ' +1 or -1: what the guide ASKED for
+    LONG    agSpeed                                         ' ASPD_SLOW or ASPD_BRISK
+    LONG    agBiasTries                                     ' bias re-takes this leg cost
+    LONG    bAgBiasStill                                    ' TRUE when a bias read completed with the wheel stationary
+    LONG    agHallCode                                      ' hall code last seen
+    LONG    agTicks                                         ' signed ticks since the leg's first edge
+    LONG    agLastMoveMs                                    ' getms() of the last tick -- the stall test's only input
+    LONG    bAgSectOpen                                     ' TRUE once the first edge has opened a sector
+    LONG    agSectStartCt                                   ' getct() at the open sector's edge
+    LONG    agSectHall                                      ' hall code of the open sector
+    LONG    agSectSamples                                   ' samples taken inside the open sector
+    LONG    agSectSampMin                                   ' fewest samples any closed sector got -- the leg's resolution
+    LONG    agSectors                                       ' sectors closed and kept
+    LONG    agSamples                                       ' samples taken in the leg
+    LONG    agCross                                         ' crossings held, pending ones included
+    LONG    agPend                                          ' crossings held for the OPEN sector, resolved when it closes
+    LONG    agDropped                                       ' crossings a full buffer could not keep -- must stay 0 (D2)
+    LONG    agUnusable                                      ' crossings discarded with a sector too long to be a turn
+    LONG    agClip                                          ' phase readings at a rail this leg
+    LONG    agPeakI                                         ' worst |sense_i| this leg, mV -- the no-drive invariant
+    LONG    agFirstEdgeMs                                   ' getms() of the leg's first edge -- a timestamp
+    LONG    bAgSpanValid                                    ' TRUE once a first edge has been seen
+    LONG    agSpanMs                                        ' first edge to last, ms -- a duration, and never the timestamp
+    LONG    agOutcome                                       ' ALEG_*
+
+VAR { ALIGN sign-off accumulators -- cog 0 only }
+
+    LONG    sfAgLegs                                        ' legs that ran
+    LONG    sfAgPeakI                                       ' worst |sense_i| anywhere in the tier, mV
+    LONG    sfAgClip                                        ' railed phase readings across the tier
+    LONG    sfAgCoverMin                                    ' fewest crossings any leg kept
+    LONG    sfAgResMin                                      ' fewest samples per sector anywhere
+    LONG    bSfAgCombo[ALIGN_COMBOS]                        ' wheel x MEASURED direction that returned a leg
+
+PRI segAlign()
+' ALIGN (tier dual-align, attended, task 3590): measure the hall zero Z cold. Both wheels are lifted and
+' NEITHER IS EVER DRIVEN -- each is started so its driver reads the ADC, set to FLOAT at stop so the
+' bridge coasts (all six FETs off), and then turned BY HAND. The phase pins carry the motor's own
+' back-EMF, whose zero crossings are fixed to the rotor's magnetic frame; the angle between those
+' crossings and the hall edges IS Z, over the whole circle, at zero current.
+'
+' No panel and no operator input: all panel work is benched, and this tier needs none -- the guide is
+' plain text and the leg ends on TICKS, so the operator sets the pace and never watches a clock.
+'
+' Eight legs, 2 wheels x 2 directions x 2 hand speeds, run a wheel at a time so nobody walks between
+' them mid-tier.
+
+    segBegin(SEG_ALIGN)
+    agLegIdx := -1                                          ' alignResetLeg() advances it, so a leg is emitted under its OWN index
+    agSamples := 0                                          ' ...and leg 0 has no predecessor to emit
+    sfAgPeakI := 0
+    sfAgClip := 0
+    sfAgCoverMin := LIM_BIG
+    sfAgResMin := LIM_BIG
+    alignWheel(SIDE_LEFT)
+    alignWheel(SIDE_RIGHT)
+    alignEmitLeg()                                          ' the LAST leg has no successor to emit it, so the tier does
+    alignSay(@"ALIGN done -- all eight legs attempted; stop turning")
+    segEnd(segWhy())
+
+PRI alignWheel(side) | speedIdx, dirIdx
+' Run one wheel's four legs: both directions at both hand speeds. The wheel is started once for the
+' four, set to FLOAT at stop so it coasts, and stopped after them.
+'
+' A WHEEL THAT WOULD NOT START STILL PRINTS ITS FOUR LEGS, as NOSTART. Skipping them silently would
+' leave the matrix cell failing with nothing in the log naming which wheel, and would shift every later
+' leg's index -- an absence that reads as a different run (D2: a discovery failure must never render as
+' a zero).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local speedIdx - ASPD_SLOW then ASPD_BRISK
+' @local dirIdx - 0 for the forward leg, 1 for the reverse leg
+
+    if bWheelStart(SEG_ALIGN, side)
+        wheelHold(side, FALSE)                              ' SM_FLOAT: at rest the bridge is BR_COAST, which is the whole tier
+        repeat speedIdx from ASPD_SLOW to ASPD_BRISK
+            repeat dirIdx from 0 to 1
+                alignLeg(side, 1 - (dirIdx << 1), speedIdx)
+        wheelStopRaw(side)
+    else
+        repeat speedIdx from ASPD_SLOW to ASPD_BRISK
+            repeat dirIdx from 0 to 1
+                alignEmitLeg()
+                alignResetLeg(side, 1 - (dirIdx << 1), speedIdx)
+                agOutcome := ALEG_NOSTART
+                alignEmitSummary()
+
+PRI alignLeg(side, askedDir, speedClass) | biasTry
+' One leg, in the order that makes the operator's screen readable and the bias trustworthy:
+'
+'  1. emit the leg that just finished -- its crossings and its summary, a burst he can watch scroll
+'  2. settle, then read each phase's BIAS with the wheel stationary; a read during which a tick moved
+'     is thrown away and re-taken. The bias is taken BEFORE the guide, not after it, so the wheel is
+'     stationary BY CONSTRUCTION rather than by asking him to wait -- there is no race to lose (P10).
+'  3. the guide: wheel, direction, speed, turns. It is the LAST line before the tier goes quiet.
+'  4. quiet: sample until the ticks arrive, or until nothing has moved for ALIGN_STALL_MS.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param askedDir - +1 for the forward leg, -1 for the reverse leg; the leg is LABELLED by what it measures
+' @param speedClass - ASPD_SLOW or ASPD_BRISK
+'
+' @local biasTry - bias attempts spent
+
+    alignEmitLeg()
+    alignResetLeg(side, askedDir, speedClass)
+    waitms(ALIGN_SETTLE_MS)
+    repeat biasTry from 1 to ALIGN_BIAS_TRIES
+        agBiasTries := biasTry
+        bAgBiasStill := bAlignBias(side)
+        if bAgBiasStill
+            quit
+    alignGuide()
+    alignRun(side)
+    alignScoreLeg()
+
+PRI alignResetLeg(side, askedDir, speedClass)
+' Clear every per-leg accumulator before the bias read. One place, so no leg can inherit the previous
+' leg's crossings, sector or counters.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param askedDir - +1 or -1, what the guide will ask for
+' @param speedClass - ASPD_SLOW or ASPD_BRISK
+
+    agLegIdx += 1                                           ' advanced HERE, after the previous leg has been emitted under its own index
+    agSide := side
+    agAskedDir := askedDir
+    agSpeed := speedClass
+    agBiasTries := 0
+    bAgBiasStill := FALSE
+    agTicks := 0
+    bAgSectOpen := FALSE
+    agSectSamples := 0
+    agSectSampMin := LIM_BIG
+    agSectors := 0
+    agSamples := 0
+    agCross := 0
+    agPend := 0
+    agDropped := 0
+    agUnusable := 0
+    agClip := 0
+    agPeakI := 0
+    agFirstEdgeMs := 0
+    bAgSpanValid := FALSE
+    agSpanMs := 0
+    agOutcome := ALEG_OK
+    longfill(@agPrevSign, 0, ALIGN_PHASES)
+    longfill(@agBias, 0, ALIGN_PHASES)
+
+PRI bAlignBias(side) : bStill | startMs, sumU, sumV, sumW, sampleCount, startHall, uMv, vMv, wMv
+' Read each phase's stationary level for ALIGN_BIAS_MS. The level a back-EMF crossing crosses is the
+' phase's own reading with the rotor still -- not zero, and not assumed: a coasting phase pin sits
+' wherever the sense chain puts it, and that is measured here rather than written down.
+'
+' A read during which the hall code moved is NOT a bias, so it is discarded and the caller re-takes it.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bStill - TRUE when the whole read completed with no hall movement
+'
+' @local startMs - getms() the read began
+' @local sumU - phase U total over the read
+' @local sumV - phase V total
+' @local sumW - phase W total
+' @local sampleCount - samples in the read
+' @local startHall - hall code when the read began
+' @local uMv - this sample's phase U reading
+' @local vMv - this sample's phase V reading
+' @local wMv - this sample's phase W reading
+
+    bStill := TRUE
+    sumU := 0
+    sumV := 0
+    sumW := 0
+    sampleCount := 0
+    startHall := alignHallRead(side)
+    startMs := getms()
+    repeat
+        beat(CP_LOOP_POLL)
+        uMv, vMv, wMv, _ := alignTelemetry(side)
+        sumU += uMv
+        sumV += vMv
+        sumW += wMv
+        sampleCount += 1
+        if alignHallRead(side) <> startHall
+            bStill := FALSE
+            quit
+        if (getms() - startMs) >= ALIGN_BIAS_MS
+            quit
+    if bStill and (sampleCount > 0)
+        agBias[0] := sumU / sampleCount
+        agBias[1] := sumV / sampleCount
+        agBias[2] := sumW / sampleCount
+
+PRI alignRun(side) | nowCt, uMv, vMv, wMv, iMv, absI
+' The quiet part of a leg: poll as fast as cog 0 can, and end on the ticks or on a stall. Nothing is
+' emitted here -- the next leg emits this one.
+'
+' The two channels do NOT share a resolution, and the record says so rather than averaging them away:
+' the hall code is read LIVE from the pins, so a sector edge is placed to one poll; the phase readings
+' come from the driver's status block, which the driver refreshes about every 0.52 ms, so a crossing is
+' placed to that. samp_sect in BM-ALEG is what a reader uses to judge either.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local nowCt - getct() of this sample, the one timestamp the sample's edge and crossings both use
+' @local uMv - phase U reading
+' @local vMv - phase V reading
+' @local wMv - phase W reading
+' @local iMv - sense current reading
+' @local absI - its magnitude, against the no-drive invariant
+
+    ' Take the reference code HERE, not from the bias read: a bias that failed all its tries never set
+    '  one, and a stale code from the previous leg would read as an edge on the first sample and put a
+    '  tick on the board that the wheel never turned.
+    agHallCode := alignHallRead(side)
+    agLastMoveMs := getms()
+    repeat
+        beat(CP_LOOP_POLL)
+        nowCt := getct()
+        alignHallStep(side, nowCt)
+        uMv, vMv, wMv, iMv := alignTelemetry(side)
+        absI := abs(iMv)
+        agPeakI #>= absI
+        agSamples += 1
+        alignClipTest(uMv)
+        alignClipTest(vMv)
+        alignClipTest(wMv)
+        if bAgSectOpen
+            agSectSamples += 1
+            alignCross(0, uMv, nowCt)
+            alignCross(1, vMv, nowCt)
+            alignCross(2, wMv, nowCt)
+        if abs(agTicks) >= ALIGN_LEG_TICKS
+            quit
+        if (getms() - agLastMoveMs) >= ALIGN_STALL_MS
+            agOutcome := ALEG_STALLED
+            quit
+    alignDropPending()
+
+PRI alignHallStep(side, nowCt) | hallCode, hallDelta
+' Read the hall pins and, on a code change that carries a tick, close the open sector and open the next
+' one at this sample's timestamp. PINREAD reads the IN register and changes no pin configuration, so
+' the running driver is not disturbed.
+'
+' A code change whose delta is zero is a transition the poll could not resolve; it does not move the
+' sector, so its crossings stay attributed to the sector actually open.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param nowCt - this sample's getct()
+'
+' @local hallCode - the 3-bit code just read
+' @local hallDelta - signed tick delta for the transition
+
+    hallCode := alignHallRead(side)
+    if hallCode <> agHallCode
+        hallDelta := hallDeltas65[(agHallCode << HALL_CODE_BITS) | hallCode] SIGNX FIELD_ERR_SIGNBIT
+        agHallCode := hallCode
+        if hallDelta <> 0
+            if bAgSectOpen
+                alignSectorClose(nowCt)
+            else
+                bAgSectOpen := TRUE
+                agFirstEdgeMs := getms()                    ' the measured span starts at the FIRST edge, not at the guide
+                bAgSpanValid := TRUE
+            agSectStartCt := nowCt
+            agSectHall := hallCode
+            agSectSamples := 0
+            agTicks += hallDelta
+            agLastMoveMs := getms()
+
+PRI alignSectorClose(endCt) | sectCt, crossIdx
+' Close the open sector: give every crossing held inside it the sector's full duration, or discard them
+' all when the sector is not a turn.
+'
+' A SECTOR LONGER THAN ALIGN_SECT_MAX_CT IS NOT A MEASUREMENT AND MUST NOT BECOME ONE. If the hand
+' pauses mid-sector the back-EMF collapses to nothing and the "crossings" inside it are noise about the
+' bias; interpolating an angle across such a sector would invent one. So they are dropped and counted,
+' which is also what keeps the getct() span inside one unwrapped 32-bit difference.
+'
+' @param endCt - getct() of the edge that closes the sector
+'
+' @local sectCt - the sector's duration in clock ticks
+' @local crossIdx - index of each crossing held in this sector
+
+    sectCt := endCt - agSectStartCt
+    if (sectCt > 0) and (sectCt <= ALIGN_SECT_MAX_CT)
+        repeat crossIdx from agCross - agPend to agCross - 1
+            agCrossDur[crossIdx] := sectCt / TICKS_PER_US
+        agSectors += 1
+        agSectSampMin <#= agSectSamples
+    else
+        agUnusable += agPend
+        agCross -= agPend
+    agPend := 0
+
+PRI alignDropPending()
+' Discard the crossings of the sector still open when the leg ended: no closing edge ever arrived, so
+' they have no duration and cannot be interpolated. A crossing with no sector is not a short record, it
+' is a wrong one.
+
+    agUnusable += agPend
+    agCross -= agPend
+    agPend := 0
+
+PRI alignCross(phaseIdx, phaseMv, nowCt) | nowSign, sectCt
+' Test one phase for a crossing of its own bias and, on one, hold the record until the sector closes.
+'
+' @param phaseIdx - 0 for U, 1 for V, 2 for W
+' @param phaseMv - this sample's reading for that phase
+' @param nowCt - this sample's getct()
+'
+' @local nowSign - sign of (reading - bias) this sample
+' @local sectCt - ticks from the sector's opening edge to this sample
+
+    nowSign := alignSignOf(phaseMv - agBias[phaseIdx])
+    if (nowSign <> 0) and (agPrevSign[phaseIdx] <> 0) and (nowSign <> agPrevSign[phaseIdx])
+        sectCt := nowCt - agSectStartCt
+        if agCross < ALIGN_MAX_CROSS
+            agCrossKey[agCross] := (phaseIdx << ALIGN_KEY_PHASE_SHIFT) | ((nowSign > 0) ? ALIGN_KEY_RISING : 0) | agSectHall
+            agCrossIn[agCross] := sectCt / TICKS_PER_US
+            agCrossDur[agCross] := 0
+            agCrossTick[agCross] := agTicks
+            agCross += 1
+            agPend += 1
+        else
+            agDropped += 1
+    if nowSign <> 0
+        agPrevSign[phaseIdx] := nowSign
+
+PRI alignClipTest(phaseMv)
+' Count a phase reading sitting at a rail. A flattened crossing has no zero to find, so this is what
+' stops a railed channel passing as a measurement.
+'
+' @param phaseMv - one phase reading, mV
+
+    if (phaseMv >= ALIGN_CLIP_HI_MV) or (phaseMv <= ALIGN_CLIP_LO_MV)
+        agClip := (agClip + 1) <# LIM_BIG
+
+PRI alignSignOf(nDiff) : nSign
+' The sign of a difference, as the crossing test needs it: zero is its own answer, never folded into
+' either side, so a reading exactly at the bias cannot invent a crossing.
+'
+' @param nDiff - the difference to take the sign of
+' @returns nSign - +1, -1 or 0
+
+    nSign := 0
+    if nDiff > 0
+        nSign := 1
+    elseif nDiff < 0
+        nSign := -1
+
+PRI alignHallRead(side) : hallCode
+' This wheel's 3-bit hall code, read straight from the pins.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns hallCode - the 3-bit code
+
+    hallCode := pinread(instMotorBase(side - SIDE_LEFT) + HALL_PIN_OFFSET addpins HALL_PIN_SPAN)
+
+PRI alignTelemetry(side) : uMv, vMv, wMv, iMv
+' One wheel's three phase readings and its sense current, in a single library call.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns uMv - phase U, mV
+' @returns vMv - phase V, mV
+' @returns wMv - phase W, mV
+' @returns iMv - sense current, mV
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        _, _, iMv, uMv, vMv, wMv, _, _ := wheelR.testGetTelemetry()
+    else
+        _, _, iMv, uMv, vMv, wMv, _, _ := wheelL.testGetTelemetry()
+    beat(CP_LIB_QUERY)
+
+PRI alignScoreLeg() | comboIdx
+' Judge the finished leg and fold it into the tier's accumulators. The leg is scored by what it
+' MEASURED, never by what was asked of it: a leg turned the wrong way is good data filed correctly.
+'
+' A stall already named itself. Otherwise a railed channel disqualifies the leg outright, and too few
+' crossings makes it SHORT -- both are outcomes the leg reports about itself, not verdicts.
+'
+' @local comboIdx - wheel x measured direction slot this leg fills
+
+    if bAgSpanValid
+        agSpanMs := getms() - agFirstEdgeMs
+    if agOutcome == ALEG_OK
+        if agClip > 0
+            agOutcome := ALEG_CLIPPED
+        elseif agCross < ALIGN_MIN_CROSS
+            agOutcome := ALEG_SHORT
+    sfAgLegs += 1
+    sfAgPeakI #>= agPeakI
+    sfAgClip := (sfAgClip + agClip) <# LIM_BIG
+    if agOutcome == ALEG_OK
+        sfAgCoverMin <#= agCross
+        sfAgResMin <#= agSectSampMin
+        comboIdx := ((agSide - SIDE_LEFT) << 1) + ((agTicks < 0) ? 1 : 0)
+        bSfAgCombo[comboIdx] := TRUE
+
+PRI alignGuide()
+' The one line the operator acts on, and the last line before the tier goes quiet: which wheel, which
+' way, how fast, how many turns. He never has to hit a speed -- slow and brisk are his own pace, and
+' the rate he actually turned at is measured and printed in BM-ALEG afterwards.
+
+    recBegin(@"BM-AGUIDE")
+    benchLog.numField(@"leg", agLegIdx, LIM_TINY)
+    benchLog.tokenField(@"motor", sideToken(agSide), TOKMAX_MOTOR)
+    benchLog.numField(@"ask_dir", agAskedDir, LIM_TINY)
+    benchLog.tokenField(@"speed", tokenAt(@tokASpd, ASPD_COUNT, agSpeed), TOKMAX_ASPD)
+    benchLog.numField(@"turns", ALIGN_TURNS, LIM_TINY)
+    benchLog.numField(@"ticks", ALIGN_LEG_TICKS, LIM_SMALL)
+    benchLog.boolField(@"bias_still", bAgBiasStill)
+    benchLog.numField(@"bias_u_mV", agBias[0], LIM_SMALL)
+    benchLog.numField(@"bias_v_mV", agBias[1], LIM_SMALL)
+    benchLog.numField(@"bias_w_mV", agBias[2], LIM_SMALL)
+    benchLog.numField(@"bias_tries", agBiasTries, LIM_TINY)
+    emitRecord()
+    alignSay(@"TURN THIS WHEEL NOW -- see the leg, dir and speed on the BM-AGUIDE line above")
+
+PRI alignSay(pText)
+' One plain operator line. No panel: all PLOT/panel work is benched, and this tier needs none.
+'
+' @param pText - pointer to the text to show
+
+    beat(CP_EMIT)
+    debug(zstr_(pText))
+    beat(CP_EMIT)
+
+PRI alignEmitLeg() | crossIdx
+' Emit the leg that just finished: every kept crossing, then the leg's own summary. Nothing is emitted
+' while the operator is turning, so this burst is what he sees between legs.
+'
+' A leg that never ran emits nothing, which is how the first call -- before leg 0 -- stays silent.
+'
+' @local crossIdx - index of each kept crossing
+
+    if agSamples > 0
+        repeat crossIdx from 0 to agCross - 1
+            alignEmitCross(crossIdx)
+        alignEmitSummary()
+
+PRI alignEmitCross(crossIdx)
+' One resolved back-EMF crossing. Z IS COMPUTED OFF-BOARD FROM t_us AND dur_us: the crossing's place
+' inside its hall sector is t_us/dur_us of 60 electrical degrees, which is sound because 60 electrical
+' degrees is only 4 degrees of wheel on a 15-pole-pair hub. No fit runs here -- a board that fitted its
+' own data would be reporting a conclusion the log could not be re-read to check (D9).
+'
+' @param crossIdx - index of the crossing to emit
+
+    recBegin(@"BM-ACROSS")
+    benchLog.numField(@"leg", agLegIdx, LIM_TINY)
+    benchLog.tokenField(@"motor", sideToken(agSide), TOKMAX_MOTOR)
+    benchLog.numField(@"phase", agCrossKey[crossIdx] >> ALIGN_KEY_PHASE_SHIFT, LIM_TINY)
+    benchLog.boolField(@"rising", agCrossKey[crossIdx] & ALIGN_KEY_RISING)
+    benchLog.numField(@"hall", agCrossKey[crossIdx] & ALIGN_KEY_HALL_MASK, LIM_TINY)
+    benchLog.numField(@"tick", agCrossTick[crossIdx], LIM_SMALL)
+    benchLog.numField(@"t_us", agCrossIn[crossIdx], LIM_BIG)
+    benchLog.numField(@"dur_us", agCrossDur[crossIdx], LIM_BIG)
+    emitRecord()
+
+PRI alignEmitSummary() | rateX10
+' The finished leg in one record: what it was asked for, what it MEASURED, and every count a reader
+' needs to decide whether its crossings are a measurement.
+'
+' edge_s_x10 is the rate the operator actually turned at, in hall edges per second x10. It is reported
+' rather than commanded, and it is the number that separates the 2x2's two speeds -- hall hysteresis is
+' a fixed ANGLE and the input filter's delay a fixed TIME, so only a real speed difference between the
+' slow and brisk legs can tell them apart.
+'
+' @local rateX10 - measured hall edge rate, edges/s x10
+
+    rateX10 := 0
+    if bAgSpanValid and (agSpanMs > 0)
+        rateX10 := (abs(agTicks) * MS_PER_SEC * 10) / agSpanMs
+    recBegin(@"BM-ALEG")
+    benchLog.numField(@"leg", agLegIdx, LIM_TINY)
+    benchLog.tokenField(@"motor", sideToken(agSide), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", tokenAt(@tokASpd, ASPD_COUNT, agSpeed), TOKMAX_ASPD)
+    benchLog.numField(@"ask_dir", agAskedDir, LIM_TINY)
+    benchLog.numField(@"meas_dir", alignSignOf(agTicks), LIM_TINY)
+    benchLog.numField(@"ticks", agTicks, LIM_SMALL)
+    benchLog.naNumField(@"span_ms", agSpanMs, LIM_BIG, bAgSpanValid)
+    benchLog.naNumField(@"edge_s_x10", rateX10, LIM_BIG, rateX10 > 0)
+    benchLog.numField(@"samples", agSamples, LIM_BIG)
+    benchLog.numField(@"sectors", agSectors, LIM_SMALL)
+    benchLog.naNumField(@"samp_sect", agSectSampMin, LIM_SMALL, agSectors > 0)
+    benchLog.numField(@"cross", agCross, LIM_SMALL)
+    benchLog.numField(@"unusable", agUnusable, LIM_SMALL)
+    benchLog.numField(@"dropped", agDropped, LIM_SMALL)
+    benchLog.numField(@"clip", agClip, LIM_SMALL)
+    benchLog.numField(@"peak_i_mV", agPeakI, LIM_SMALL)
+    benchLog.boolField(@"bias_still", bAgBiasStill)
+    benchLog.tokenField(@"outcome", tokenAt(@tokALeg, ALEG_COUNT, agOutcome), TOKMAX_ALEG)
+    emitRecord()
+
+PRI bAlignMatrix() : bAllFour | comboIdx
+' Whether all four wheel x measured-direction combinations returned a leg. The 2x2 is the instrument's
+' design, not its coverage: averaging the two DIRECTIONS is what cancels hall hysteresis and filter
+' delay, both of which make an edge late in the direction of travel. Three of four legs is not
+' three-quarters of the measurement -- it is a Z with an uncancelled bias in it.
+'
+' @returns bAllFour - TRUE when every combination has a leg
+'
+' @local comboIdx - each wheel x direction slot
+
+    bAllFour := TRUE
+    repeat comboIdx from 0 to ALIGN_COMBOS - 1
+        if bSfAgCombo[comboIdx] == FALSE
+            bAllFour := FALSE
+
+PRI emitAlignCells()
+' The ALIGN tier's five SIGNOFF verdicts. The first is the safety invariant; the next two can
+' disqualify a reading; the last two say whether the matrix the instrument needs was actually covered.
+' Each is NOMEAS when no leg ran, so a tier that never started cannot print a clean sheet.
+
+    emitSignoff(@sSfCellAgNoDrv, SIDE_NONE, @sSfCritAgNoDrv, sfAgLegs > 0, sfAgPeakI, ALIGN_NODRIVE_LO, ALIGN_NODRIVE_HI, sfAgLegs, @sSfUnitsMv)
+    emitSignoff(@sSfCellAgClip, SIDE_NONE, @sSfCritAgClip, sfAgLegs > 0, sfAgClip, ALIGN_CLIP_LO, ALIGN_CLIP_HI, sfAgLegs, @sSfUnitsCount)
+    emitSignoff(@sSfCellAgCover, SIDE_NONE, @sSfCritAgCover, sfAgCoverMin < LIM_BIG, sfAgCoverMin, ALIGN_COVER_LO, ALIGN_COVER_HI, sfAgLegs, @sSfUnitsCount)
+    emitSignoff(@sSfCellAgRes, SIDE_NONE, @sSfCritAgRes, sfAgResMin < LIM_BIG, sfAgResMin, ALIGN_RES_LO, ALIGN_RES_HI, sfAgLegs, @sSfUnitsCount)
+    emitSignoffBool(@sSfCellAgMatrix, SIDE_NONE, @sSfCritAgMatrix, sfAgLegs > 0, bAlignMatrix(), ALIGN_COMBOS)
+
 CON { --- instrument cog: runs in its own cog; no debug() anywhere below it (I1) --- }
 
 PRI instrument() | dueCt, slackTicks, seenSeq
@@ -10099,6 +10719,8 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallF
         PART_UICHECK:
             pCell := @sSfCellNoStallU
+        PART_ALIGN:
+            pCell := @sSfCellNoStallZ
         other:
             pCell := @sUnknownTok
 
@@ -10124,6 +10746,8 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskF
         PART_UICHECK:
             pCell := @sSfCellDbgMaskU
+        PART_ALIGN:
+            pCell := @sSfCellDbgMaskZ
         other:
             pCell := @sUnknownTok
 
@@ -10244,6 +10868,14 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellNoStallU)
                 emitSignoffDecl(@sSfCellDbgMaskU)
                 emitSignoffDecl(@sSfCellUiCheck)
+            PART_ALIGN:
+                emitSignoffDecl(@sSfCellNoStallZ)
+                emitSignoffDecl(@sSfCellDbgMaskZ)
+                emitSignoffDecl(@sSfCellAgNoDrv)
+                emitSignoffDecl(@sSfCellAgClip)
+                emitSignoffDecl(@sSfCellAgCover)
+                emitSignoffDecl(@sSfCellAgRes)
+                emitSignoffDecl(@sSfCellAgMatrix)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
@@ -10277,6 +10909,8 @@ PRI emitSignoffs() | slotIdx, side
 '         IDLEMOVE-C COUNT and FLTSTOP BOOL per motor
 '  FLOOR  NOSTALL BOOL; DBGMASK BOOL; FLOORANS BOOL
 '  UI     NOSTALL BOOL; DBGMASK BOOL; UICHECK BOOL (every BM-UISTEP OK)
+'  ALIGN  NOSTALL BOOL; DBGMASK BOOL; ALIGN-ND MV (the no-drive invariant), ALIGN-CLIP / -COVER / -RES
+'         COUNT (the three that can disqualify a reading), ALIGN-MTRX BOOL (all four wheel x direction)
 '
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
@@ -10347,6 +10981,8 @@ PRI emitSignoffs() | slotIdx, side
                 emitSignoffBool(@sSfCellFloorAns, SIDE_NONE, @sSfCritFloorAns, bSfFloorRan, bSfFloorAnswered, SIGNOFF_ONE_INSTANCE)
             PART_UICHECK:
                 emitSignoffBool(@sSfCellUiCheck, SIDE_NONE, @sSfCritUiCheck, bSfUiRan, bSfUiOk, uiStepCount)
+            PART_ALIGN:
+                emitAlignCells()
 
 PRI emitIdleMoveCell(pCell, slotIdx)
 ' IDLEMOVE (task 3572): the other wheel's largest travel over every motor-frame trace this motor was primary in.

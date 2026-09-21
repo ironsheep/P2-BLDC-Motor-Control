@@ -123,6 +123,7 @@ Usage:  tools/bench-run.sh <tier>
                    dual-d         motion harness part D: PREFLT, STEERSEG, LIMIT -- the front cog's contract and current limiting  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-floor     motion harness part FLOOR -- WHEELS DOWN, OPERATOR OBSERVES ABOUT 2 S OF DRIVING  [ATTENDED]
                    dual-ui        motion harness part UICHECK -- NO MOTOR CONTROL: walks the operator through every panel control and attended screen  [ATTENDED]
+                   dual-align     motion harness part ALIGN -- NO MOTOR IS DRIVEN: the operator turns each wheel BY HAND, 8 legs, to measure the hall zero cold  [ATTENDED]
 
 Examples:
   tools/bench-run.sh detect
@@ -263,6 +264,14 @@ case "$TIER" in
     dual-ui)        BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_UICHECK)
                     PRECONDITION="NO MOTOR CONTROL -- UI walkthrough: no wheel or steering object is ever started, nothing moves; click the bmpanel window first; click each button it shows and press the key named on it; then judge each dual-brake screen with the two buttons in the strip at the bottom (LOOKS RIGHT = key Y, SOMETHING WRONG = key W) -- the screen's own buttons do nothing there; PASSED -> run dual-brake; FAILED -> it waits for the next bench run"
+                    ;;
+    # dual-align (task 3590) -- the ONE tier that never drives a motor. Both drivers are started so
+    #  their ADCs read, both are set to FLOAT at stop so the bridge coasts (all six FETs off), and the
+    #  wheels are then turned BY HAND. Only a DRIVEN bridge can fault, so this tier cannot fault, abort
+    #  on current or run away; the R18-DUAL-ALIGN-ND cell measures that the promise held.
+    dual-align)     BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_ALIGN)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS ON THE WHEEL -- ATTENDED motion harness part ALIGN: NO MOTOR IS EVER DRIVEN. STEPHEN TURNS EACH WHEEL BY HAND, 8 legs (left then right, each forward and reverse, each slow then brisk, 3 turns per leg). Watch the plain text line under each BM-AGUIDE record: it names the wheel, the direction and slow or brisk, then the run goes SILENT while you turn. Turn at whatever pace 'slow' and 'brisk' mean to you -- the rate is measured, never commanded -- and a leg ends on its own when the turns are in. Output resuming is the next leg's guide. No panel and no keyboard, run cap 30 minutes"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage

@@ -4995,8 +4995,17 @@ caller supplies** -- not against the table's actual length. Callers pass the *en
 table with fewer entries than its enum does not return `"?"`; it walks past its own last entry into
 whatever `DAT` follows and returns that as the field's text.
 
-**MEASURED:** `tokFinds` carried **15** entries against `SEG_COUNT` **16**. `SEG_LOWSPD` is index 15,
-so `BM-PLAN`'s `finds` field for LOWSPD already indexed past the end.
+**MEASURED, first instance:** `tokFinds` carried **15** entries against `SEG_COUNT` **16**.
+`SEG_LOWSPD` is index 15, so `BM-PLAN`'s `finds` field for LOWSPD already indexed past the end.
+
+**MEASURED, second instance — and it is the one that proves the class.** `tokPart` carried **9**
+entries against `PART_COUNT` **10** from the moment `PART_ALIGN` joined the part enum. `PART_ID` is the
+index, so an ALIGN build printed adjacent `DAT` in the `part` field of **`BM-BANNER`, `BM-PLAN`,
+`BM-EXIT`, every `SIGNOFF` and the watchdog record** — five record types, the run's own identity among
+them. ⚠ **It was introduced by the very commit that fixed the first instance** (`5a8969b`): the same
+enum addition broke two tables, one was found and one was not, and nothing in between could tell.
+That is the argument for the mechanism below rather than for another careful edit — a class this easy
+to re-open while fixing it cannot be closed by attention.
 
 ⚠ **It never showed, because a second defect hid it:** `BM-PLAN` never emitted a LOWSPD row at all --
 `PART_A` hard-codes four `emitPlan()` calls (the earlier study's F1, still open). **Two defects, each
@@ -5005,7 +5014,8 @@ with nothing reporting it.
 
 **FIXED at R18.2e («#3590»):** `tokFinds` extended to `SEG_COUNT`, and the `estS`/`estKb` `lookupz`
 tables extended with it -- those were also one entry short and would have returned 0 for a new segment
-rather than failing.
+rather than failing. `tokPart` extended to `PART_COUNT` in the follow-on commit that built the ALIGN
+measurement core.
 
 ⛔ **WHAT IS NOT FIXED.** Nothing prevents the next table from being short. **A table's length and its
 enum's count are asserted nowhere**, in either direction, and the failure is silent in both: short
