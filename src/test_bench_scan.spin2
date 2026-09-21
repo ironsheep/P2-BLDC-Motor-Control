@@ -195,10 +195,10 @@ CON { build identity }
 '     moves to a new field (i_min_fit_mV_x10 / i_neg_min_fit_mV_x10 / i_pos_min_fit_mV_x10) at the
 '     end of each record.
 '   - hasMinimum() no longer accepts FS_POOR, and rejects a fit bFitPinnedNearLimit() finds pinned
-'     against a fault-derived window edge (D2); half-speed legs are judged by the real rise-on-
-'     both-sides test (bEvaluateHalfBracket()), not marked bracketed by assignment.
-'   - R9-SCAN-HALFLEG's criterion is MIN_BRACKETED (D1/D2), and its two per-motor instances carry
-'     crit MIN_BRACKETED_NEG / MIN_BRACKETED_POS (D7), replacing the shared CLIFF_PROBED.
+'     against a fault-derived window edge (D2); confirm legs are judged by the real rise-on-
+'     both-sides test (bEvaluateConfirmBracket()), not marked bracketed by assignment.
+'   - R18-SCAN-LEGBRACKET's criterion is MIN_BRACKETED (D1/D2), and its six per-motor instances each
+'     carry a crit naming their sign and rung (D7), replacing the shared CLIFF_PROBED.
 
 ' fmt 9 changes (task 3537 phases 2b3 and 2c; no existing record's field names, order or content change):
 '   - new BS-RSTALONE record, immediately after BS-POINT3 of the point whose fault took that motor's
@@ -385,7 +385,6 @@ CON { run sequencing enums }
   '  WS_DROOP      - task 3595: SIDE_DROOP_STOP consecutive points where the drive stopped FOLLOWING.
   '                  Appended at the end so no existing WS_* value renumbers.
     #0, WS_RISE, WS_FAULTS, WS_HARD_LIMIT, WS_RUN_ABORT, WS_DROOP
-    WS_COUNT = WS_DROOP + 1
 
   ' Boundary type at one end of the reachable arc (task 3595). The arc is bounded by the MOTOR, not by
   '  the instrument, and the two ends are bounded by DIFFERENT physics -- which is a result, so the
@@ -395,8 +394,10 @@ CON { run sequencing enums }
   '  BT_TORQUE  - torque-limited: too little lead, the motor cannot make the torque (FAULT or DROOP)
   '  BT_RISE    - not a boundary at all: the current rose past its minimum, which is the GOOD stop
   '  BT_LIMIT   - the instrument's own hard limit, reached before the motor's
+    ' No BT_COUNT, and none is owed: this file's token helpers are `case` statements with their own
+    '  default, not tokenAt() lookups bounded by an enum count. A count here would be a constant with
+    '  no consumer, and a reader would go looking for one.
     #0, BT_NONE, BT_CURRENT, BT_TORQUE, BT_RISE, BT_LIMIT
-    BT_COUNT = BT_LIMIT + 1
 
   ' Bracket verdict:
   '  BR_OK              - a high point exists on both sides of the low
@@ -720,10 +721,12 @@ CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-D
 ' v3 already re-measured a zero before every point, so the unfixed code counts 0 too. Run 5's ratio
 ' 0.440 vs 1.16 came from BS-PAIR2 netting both minima against ZERO_INIT, not from a point without its
 ' own zero (SCAN-RUN-5-EVALUATION.md sec 6 item 1).
-' R9-SCAN-HALFLEG (task 3530, criterion redesigned task 3540 PL-46), crit MIN_BRACKETED_NEG /
-' MIN_BRACKETED_POS (one instance per sign, D7), units BOOL: TRUE when bEvaluateHalfBracket() finds a
+' R18-SCAN-LEGBRACKET (task 3530, criterion redesigned task 3540 PL-46, widened to EVERY leg at task
+' 3595 -- it replaces R9-SCAN-HALFLEG, which named the one rung it used to judge), crit
+' MIN_BR_<SIGN>_<RUNG> (one instance per sign per rung, six per motor, D7), units BOOL: TRUE when the
+' bracket test finds a
 ' point that rises RISE_PCT (or FAULT_RISE_PCT on a fault-bounded side) above the leg's low on BOTH
-' sides, among the confirm/cliff-probe points fitLeg() itself fits; NOMEAS when the leg never ran
+' sides, among the points fitLeg() itself fits; NOMEAS when the leg never ran
 ' (bResLegRan FALSE). FAILs exactly when the low sits at a fault-bounded window edge with nothing
 ' measured beyond it toward the fault -- the failure mode scan run 7 could not get past even after
 ' D1's deeper probing resolved three of its four EDGE/POOR fits (SCAN-RUN-7-EVALUATION.md sec 5 item
@@ -2701,8 +2704,8 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, 
 ' @local legExit - LX_* exit
 ' @local stopUp - walk stop of the up side
 ' @local stopDown - walk stop of the down side
-' @local bBracketed - TRUE when the minimum is bracketed: bEvaluateBracket() at 1/4 speed, and
-'   (task 3540 D2) bEvaluateHalfBracket() at 1/2 speed, run for real once runFinePoints() has
+' @local bBracketed - TRUE when the minimum is bracketed: bEvaluateBracket() on the walking rung, and
+'   (task 3540 D2) bEvaluateConfirmBracket() on a confirm rung, run for real once runFinePoints() has
 '   measured the confirm/cliff-probe points it judges -- no longer marked bracketed by assignment
 ' @local driftPctX10 - REF_END vs REF_START drift, percent x10, net means (scan v4 CHANGE 2)
 ' @local bDriftValid - TRUE when both references were valid
@@ -2765,7 +2768,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, 
                 if bWalkRung(speedIdx) == FALSE
                     ' task 3540 D2: the real rise-on-both-sides test, now that the confirm/cliff
                     ' points exist to judge it against -- overwrites the provisional TRUE above.
-                    bBracketed := bEvaluateHalfBracket()
+                    bBracketed := bEvaluateConfirmBracket()
             if abortReason == AR_NONE
                 refEndIdx := legMeasure(side, speedIdx, signIdx, PH_REF_END, defSwept, refWinTicks, pointLimitMv)
     if (abortReason <> AR_NONE) and (legExit == LX_DONE)
@@ -3009,10 +3012,14 @@ PRI updateLegLow() | ptIdx
                 elseif legNetX10[ptIdx] < legNetX10[legLowIdx]
                     legLowIdx := ptIdx
 
-PRI updateLegLowHalf() | ptIdx
-' Task 3540 D2: like updateLegLow(), but over the half-speed leg's own admitted phases
-' (PH_FINE/PH_CLIFF/PH_EXTEND -- the same set fitLeg() fits at SPEED_HALF), not
-' PH_REF_START/PH_COARSE which a half-speed leg never measures.
+PRI updateLegLowConfirm() | ptIdx
+' Task 3540 D2: like updateLegLow(), but over a CONFIRM leg's own admitted phases
+' (PH_FINE/PH_CLIFF/PH_EXTEND -- the same set fitLeg() admits on a confirm rung), not
+' PH_REF_START/PH_COARSE, which only the WALKING rung measures.
+'
+' Task 3595 renamed this from updateLegLowHalf(). It was named for half speed when half speed was the
+' only confirm rung; there are now two, and a name that promises one rung while serving both is the
+' kind of drift a reader trusts and should not.
 '
 ' @local ptIdx - leg index
 
@@ -3025,15 +3032,18 @@ PRI updateLegLowHalf() | ptIdx
                 elseif legNetX10[ptIdx] < legNetX10[legLowIdx]
                     legLowIdx := ptIdx
 
-PRI bEvaluateHalfBracket() : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctUp, risePctDown
-' Task 3540 D2: half-speed counterpart to bEvaluateBracket() -- the rise-on-both-sides negative
-' case, applied for real to the confirm/cliff-probe points fitLeg() itself fits, instead of the
-' half-speed leg being marked bracketed by assignment. A side whose window is fault-bounded
+PRI bEvaluateConfirmBracket() : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctUp, risePctDown
+' Task 3540 D2: the CONFIRM-rung counterpart to bEvaluateBracket() -- the rise-on-both-sides negative
+' case, applied for real to the confirm/cliff-probe points fitLeg() itself fits, instead of a confirm
+' leg being marked bracketed by assignment. A side whose window is fault-bounded
 ' (bLegLimitUpFault/Down, kept current by refreshLegLimits() as runFinePoints()/probeConfirmCliff()
-' measured) is judged at the relaxed FAULT_RISE_PCT, exactly mirroring bEvaluateBracket()'s
-' quarter-speed test. FAILs (bBracketed FALSE) precisely when the low sits at that fault-bounded
+' measured) is judged at the relaxed FAULT_RISE_PCT, exactly mirroring bEvaluateBracket()'s own
+' test on the walking rung. FAILs (bBracketed FALSE) precisely when the low sits at that fault-bounded
 ' edge with nothing measured beyond it -- the failure mode scan run 7 could not get past
 ' (SCAN-RUN-7-EVALUATION.md sec 2 table, sec 5 item 1).
+'
+' Task 3595 renamed this from bEvaluateHalfBracket(), for the reason updateLegLowConfirm() gives: it
+' runs for BOTH confirm rungs now, and a name promising half speed would misdescribe half its work.
 '
 ' It reads the current leg's staging (legNetX10, legLowIdx, bLegLimit*Fault), which names its motor and
 ' sign, so it takes no parameters (style guide 5.0).
@@ -3046,7 +3056,7 @@ PRI bEvaluateHalfBracket() : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctUp, 
 ' @local risePctUp - rise threshold for the up side: FAULT_RISE_PCT when it is fault-bounded
 ' @local risePctDown - rise threshold for the down side: FAULT_RISE_PCT when it is fault-bounded
 
-    updateLegLowHalf()
+    updateLegLowConfirm()
     bBelowOk := FALSE
     bAboveOk := FALSE
     risePctUp := bLegLimitUpFault ? FAULT_RISE_PCT : RISE_PCT
@@ -3467,7 +3477,7 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
 ' would otherwise leave unmeasured (run 5's LEFT half-speed legs, both TOO_FEW: SCAN-RUN-5-
 ' EVALUATION.md section 3; run 7's evaluation section 5, the same gap one step narrower) is filled
 ' before refreshLegLimits() locks the window down to it. Whether the negative case actually held is
-' judged afterward, over the whole leg, by bEvaluateHalfBracket() (D2) -- not accounted point-by-
+' judged afterward, over the whole leg, by bEvaluateConfirmBracket() (D2) -- not accounted point-by-
 ' point here.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -3517,7 +3527,7 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
         emitAbort(SCOPE_LEG, AR_FAULT_CAP, side, signedIncre(speedIdx, signIdx), legConsecFaults)
 
 PRI probeConfirmCliff(side, speedIdx, signIdx, defSwept, faultDeg, pointLimitMv) | dir, goodDeg, bFromFault
-' CHANGE 4 (scan v4); rewritten task 3540 D1 onto the shared probeTowardFault() loop. Half-speed
+' CHANGE 4 (scan v4); rewritten task 3540 D1 onto the shared probeTowardFault() loop. The CONFIRM-rung
 ' counterpart to refineCliffEdge(). A confirm point that just faulted leaves a gap between the
 ' leg's last good point and this fault -- run 5's evaluation section 3 found exactly this gap (9deg
 ' and -16deg never measured), and run 7's evaluation section 5 found the SAME gap surviving one
@@ -3530,12 +3540,15 @@ PRI probeConfirmCliff(side, speedIdx, signIdx, defSwept, faultDeg, pointLimitMv)
 ' at -10 instead of none (coordinator review) -- until it hits a fault, runs out of room, or the
 ' fault cap trips. runFinePoints() calls
 ' refreshLegLimits() again right after this returns, so these probes are counted before the window
-' limit is (re)applied to any later confirm point. fitLeg() admits PH_CLIFF points into the confirm
-' fit only at SPEED_HALF (its speedIdx parameter), so quarter-speed's own PH_CLIFF probes (from the
-' coarse walk) are unaffected.
+' limit is (re)applied to any later confirm point. fitLeg() admits PH_CLIFF points into the fit only
+' on a CONFIRM rung (bFitAdmitsCliff()), so the WALKING rung's own PH_CLIFF probes -- which come from
+' the coarse walk's fault edge, far from the minimum being fitted -- are unaffected.
+'
+' TASK 3595: this runs for EVERY confirm rung, a quarter as well as a half. The doc used to say half
+' speed was the only caller, which was true when half speed was the only confirm rung and is not now.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param speedIdx - SPEED_HALF (this file's only caller)
+' @param speedIdx - the CONFIRM rung this probe belongs to, SPEED_QTR or SPEED_HALF
 ' @param signIdx - SIGN_NEG or SIGN_POS
 ' @param defSwept - default offset, swept degrees (this leg's window-limit anchor)
 ' @param faultDeg - the confirm point that just faulted, swept degrees
@@ -5004,7 +5017,7 @@ PRI hasMinimum(slotIdx) : bHasMin
 ' longer usable (a fit whose residual already exceeds the POOR threshold must not be counted as a
 ' free minimum), and neither is a fit bFitPinnedNearLimit() found pinned against a fault-derived
 ' window edge, nor one whose leg failed the rise-on-both-sides negative case
-' (bEvaluateBracket()/bEvaluateHalfBracket()). Run 7's L POS printed exactly this: a POOR, pinned fit
+' (bEvaluateBracket()/bEvaluateConfirmBracket()). Run 7's L POS printed exactly this: a POOR, pinned fit
 ' with shift +5.4, shift_sig TRUE, from data lowest at the window edge with nothing above it
 ' (SCAN-RUN-7-EVALUATION.md sec 2 item "L POS reports a shift that is not a measured minimum").
 '
@@ -5341,7 +5354,7 @@ PRI emitSignoffs() | side, slotIdx, bStarted
         emitSignoff(@sSfCellAlive, @sSfTaskLut, side, @sSfCritNotAlive, sfAliveJudged[slotIdx] > 0, sfNotAlive[slotIdx], NOT_ALIVE_LO, NOT_ALIVE_HI, @sSfUnitsCount, sfAliveJudged[slotIdx])
         emitSignoffBool(@sSfCellRate, @sSfTaskLut, side, @sSfCritRate, bSfSelfRateRan[slotIdx], bSfSelfRateOk[slotIdx], SIGNOFF_ONE_INSTANCE)
         emitZxsSignoffs(side, slotIdx)
-        emitHalfLegSignoffs(side)
+        emitLegBracketSignoffs(side)
         emitOwnZeroSignoffs(side)
         ' R9-SCAN-PAIR2 is COVERAGE: it proves the fmt 6 net-ratio path of emitPair2() ran to a valid
         ' ratio, not that the number is correct. bRatio implies bComplete, so it is the criterion.
@@ -5404,7 +5417,7 @@ PRI zxsCritToken(chIdx) : pTok
         other:
             pTok := @sSfCritZxsW
 
-PRI emitHalfLegSignoffs(side) | signIdx, resIdx, pCrit, speedIdx
+PRI emitLegBracketSignoffs(side) | signIdx, resIdx, pCrit, speedIdx
 ' Emit R18-SCAN-LEGBRACKET for one motor: one BOOL SIGNOFF per result slot -- EVERY sign at EVERY
 ' rung, six per motor. measured TRUE when the leg's low was bracketed by a rise on both sides
 ' (bResBracketed); FAILs exactly when the low sits at a fault-bounded window edge with nothing
