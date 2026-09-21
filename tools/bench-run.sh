@@ -111,7 +111,7 @@ Usage:  tools/bench-run.sh <tier>
                    char           automated motor characterisation, nine holds  [MOTORS CONNECTED, UNATTENDED]
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
                    scan-wdtest    watchdog self-test: preflight, deliberate stall, watchdog ends the run  [MOTORS CONNECTED]
-                   dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER, LOWSPD  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-clock-200 motion harness clock load at 200 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-270 motion harness clock load at 270 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-300 motion harness clock load at 300 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
