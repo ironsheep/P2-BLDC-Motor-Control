@@ -326,7 +326,21 @@ CON { run sequencing enums }
   '  WS_FAULTS     - SIDE_FAULT_STOP consecutive faulted points
   '  WS_HARD_LIMIT - reached default +/- HARD_LIMIT_DEG
   '  WS_RUN_ABORT  - the run aborted
-    #0, WS_RISE, WS_FAULTS, WS_HARD_LIMIT, WS_RUN_ABORT
+  '  WS_DROOP      - task 3595: SIDE_DROOP_STOP consecutive points where the drive stopped FOLLOWING.
+  '                  Appended at the end so no existing WS_* value renumbers.
+    #0, WS_RISE, WS_FAULTS, WS_HARD_LIMIT, WS_RUN_ABORT, WS_DROOP
+    WS_COUNT = WS_DROOP + 1
+
+  ' Boundary type at one end of the reachable arc (task 3595). The arc is bounded by the MOTOR, not by
+  '  the instrument, and the two ends are bounded by DIFFERENT physics -- which is a result, so the
+  '  report names it rather than printing a bare pass:
+  '  BT_NONE    - this side did not stop on a boundary (still walking, or the run ended)
+  '  BT_CURRENT - current-limited: too much lead, the current explodes (ABORT_I)
+  '  BT_TORQUE  - torque-limited: too little lead, the motor cannot make the torque (FAULT or DROOP)
+  '  BT_RISE    - not a boundary at all: the current rose past its minimum, which is the GOOD stop
+  '  BT_LIMIT   - the instrument's own hard limit, reached before the motor's
+    #0, BT_NONE, BT_CURRENT, BT_TORQUE, BT_RISE, BT_LIMIT
+    BT_COUNT = BT_LIMIT + 1
 
   ' Bracket verdict:
   '  BR_OK              - a high point exists on both sides of the low
@@ -397,6 +411,11 @@ CON { sampling and windows }
     WIN_TICKS_SELF           = 450                          ' 5 wheel revolutions
     WIN_TICKS_HALF           = 540                          ' 6 wheel revolutions at 1/2 speed
     WINDOW_TIMEOUT_MARGIN_MS = 1_000
+    ' The shortest drive span worth dividing (task 3595). A point stopped in its first few samples has
+    '  no rate to report, and a tick count over a handful of ms is quantisation, not a measurement.
+    '  200 ms is about 20 ticks at the quarter-speed rate, well inside the ramp but long enough that
+    '  one tick is 5 % rather than all of it.
+    SPAN_MIN_MS              = 200
     SAMPLE_CAP               = 8_000                        ' with the clamp below, |sum| <= 5.3e7
     SAMPLE_CLAMP_LO_MV       = -3_300
     SAMPLE_CLAMP_HI_MV       = 6_600
@@ -477,6 +496,18 @@ CON { sweep geometry -- offsets in electrical degrees }
     FAULT_RISE_PCT     = 4
     MIN_PAST           = 2
     SIDE_FAULT_STOP    = 2
+    ' Task 3595, the droop stop. FOLLOW_DROOP_PCT is where "the drive is not following" begins, as a
+    '  percent of the commanded rate. It is set OUTSIDE the existing rate band, not inside it: the
+    '  band a point must sit in to be VALID data is 90-106 % at quarter speed (RATE_QTR_LO/HI), so a
+    '  point between 80 and 90 % is already excluded from the fit while not yet being called a droop.
+    '  That gap is deliberate -- the sweep should keep walking through mild raggedness and stop only
+    '  when the drive has genuinely given up, and 80 % of commanded is a fifth of the speed missing,
+    '  which no healthy point reaches.
+    ' NOTE -- ITS NEGATIVE CASE IS THE WHOLE POINT OF THE REBUILD: run 7's 19 non-OK points carry
+    '  rate_x10,NA, so NONE of them could have been judged on this at all. A rebuilt run that still
+    '  reports NA on a failing point has not fixed anything, and the ARC cell is what says so.
+    FOLLOW_DROOP_PCT   = 80
+    SIDE_DROOP_STOP    = 2                                  ' consecutive non-following points that end a side
     LEG_FAULT_CAP      = 3
     FIT_MIN_PTS        = 6
     CONFIRM_MIN_PTS    = 5
@@ -526,6 +557,7 @@ CON { record widths -- every numeric field is clamped to one of these }
     TOKMAX_SERVED    = 10
     TOKMAX_WALK_SIDE = 4
     TOKMAX_WALK_STOP = 10
+    TOKMAX_BOUND     = 7                                    ' task 3595: CURRENT is the longest BT_* token
     TOKMAX_BRACKET   = 15
     TOKMAX_FIT       = 13
     TOKMAX_LEG_EXIT  = 9
@@ -833,6 +865,13 @@ sSideDown       BYTE    "DOWN", 0
 sWsRise         BYTE    "RISE", 0
 sWsFaults       BYTE    "FAULTS", 0
 sWsHardLimit    BYTE    "HARD_LIMIT", 0
+' task 3595: the droop stop, and the boundary type at each end of the reachable arc
+sWsDroop        BYTE    "DROOP", 0
+sBtNone         BYTE    "NONE", 0
+sBtCurrent      BYTE    "CURRENT", 0
+sBtTorque       BYTE    "TORQUE", 0
+sBtRise         BYTE    "RISE", 0
+sBtLimit        BYTE    "LIMIT", 0
 sWsRunAbort     BYTE    "RUN_ABORT", 0
 
 sBrOk           BYTE    "OK", 0
@@ -1050,6 +1089,23 @@ VAR { sampling state }
     LONG    sampErr
     LONG    sampState
 
+    ' THE DRIVE SPAN (task 3595) -- the commanded interval, which ALWAYS runs. Every quantitative
+    '  observable this harness had was collected inside bWindowPoint(), and that window only runs once
+    '  the point has already reached AT_SPEED; a point that failed before then carried its result token
+    '  and nothing else. Those are exactly the boundary points, so the instrument recorded fault and
+    '  abort as a BINARY and never measured how far the drive had fallen behind (D2: a discovery
+    '  failure must never render as a zero). pollSample() already runs on every path from the command
+    '  onward and already reads duty, err, sense, state, fault and cog -- it simply accumulated none of
+    '  it. These are that accumulation, opened at the command and closed before the zero command.
+    LONG    bSpanOpen                                       ' TRUE between the drive command and the zero command
+    LONG    spanStartMs                                     ' getms() at the drive command
+    LONG    spanStartTicks                                  ' hall ticks at the drive command
+    LONG    spanDriveMs                                     ' the closed span's duration
+    LONG    spanDriveTicks                                  ' hall ticks travelled over it, absolute
+    LONG    spanDutySum                                     ' duty accumulated over the span
+    LONG    spanDutyMax                                     ' the largest duty the servo demanded in it
+    LONG    spanSamples                                     ' samples taken in the span
+
 VAR { the point just measured }
 
     LONG    ptResult
@@ -1086,6 +1142,14 @@ VAR { the point just measured }
                                                              ' call took at least one sample
     LONG    ptNetX10                                         ' scan v4 CHANGE 1: ptMeanX10 - ptZeroX10
 
+    ' The drive span's readings, kept per point (task 3595). THESE ARE PRESENT ON EVERY COMMANDED
+    '  POINT, whatever its result -- that is their whole reason for existing.
+    LONG    bPtSpanValid                                    ' TRUE when the span ran long enough to divide by
+    LONG    ptSpanRateX10                                   ' ticks/s x10 over the whole commanded span
+    LONG    ptSpanDutyMean                                  ' mean duty the servo demanded over it
+    LONG    ptSpanDutyMax                                   ' the largest duty it demanded
+    LONG    ptFollowPct                                     ' achieved rate as a percent of commanded: 100 = following
+
 VAR { the leg in progress }
 
     LONG    legCount
@@ -1099,6 +1163,13 @@ VAR { the leg in progress }
     LONG    legResult[MAX_LEG_POINTS]
     LONG    legPhase[MAX_LEG_POINTS]
     LONG    bLegRateOk[MAX_LEG_POINTS]
+    LONG    bLegSpanValid[MAX_LEG_POINTS]                    ' task 3595: this point's drive span was long enough to judge
+    LONG    legFollowPct[MAX_LEG_POINTS]                     ' task 3595: achieved rate as a percent of commanded
+    LONG    legBoundUp                                       ' task 3595: BT_* that stopped the up side of this leg's arc
+    LONG    legBoundDown                                     ' task 3595: BT_* that stopped the down side
+    LONG    legArcLoDeg                                      ' task 3595: lowest swept offset this leg reached cleanly
+    LONG    legArcHiDeg                                      ' task 3595: highest, so the report names the ARC, not a pass
+    LONG    bLegArcValid                                     ' TRUE once at least one valid point set the arc
     LONG    legLowIdx
     LONG    legConsecFaults
     LONG    legFaults
@@ -1992,6 +2063,7 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
     if abortReason == AR_NONE
         bPtCommanded := TRUE
         commandMotor(side, motorIncre)
+        openDriveSpan(side)                                 ' task 3595: the following observables start HERE, not at AT_SPEED
         cmdMs := getms()
         repeat
             beat(CP_LOOP_STEADY)
@@ -2011,6 +2083,10 @@ PRI measurePoint(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) 
                 bPtWinRan := TRUE
                 bWinDone := bWindowPoint(side, speedIdx, winTicks)
                 bPtRateOk := bSettleOk and bRateInBand(speedIdx, ptRateX10)
+        ' task 3595: close the span BEFORE anything below can command zero or reset the driver, so the
+        '  rate it reports is the rate under the DRIVE command and nothing else. Every exit path from
+        '  the block above reaches here -- AT_SPEED or not, faulted or not -- which is the point.
+        closeDriveSpan(side, speedIdx)
         if bSideCogRunning(side)
             ' R10-SCAN-RSTALONE (task 3537 phase 2b3, design sec J.1 ruled b): at this motor's FIRST
             ' eligible fault, testResetFault() ALONE, BEFORE the zero command below -- that zero command
@@ -2122,6 +2198,11 @@ PRI clearPointRecord()
     ptZeroX10 := 0
     bPtZeroValid := FALSE
     ptNetX10 := 0
+    bPtSpanValid := FALSE
+    ptSpanRateX10 := 0
+    ptSpanDutyMean := 0
+    ptSpanDutyMax := 0
+    ptFollowPct := 0
 
 PRI bSettlePoint(side, speedIdx) : bSettleOk | startMs, startTicks, spanMs, spanTicks, settleRateX10
 ' Hold SETTLE_MS after AT_SPEED, polling the abort checks, and test the settle rate.
@@ -2306,6 +2387,57 @@ PRI beginSampling(limitMv)
     bSampFaultSeen := FALSE
     bSampNoCog := FALSE
     sampPrevMs := getms()
+    bSpanOpen := FALSE                                      ' task 3595: openDriveSpan() opens it at the command
+    spanDriveMs := 0
+    spanDriveTicks := 0
+    spanDutySum := 0
+    spanDutyMax := 0
+    spanSamples := 0
+
+PRI openDriveSpan(side)
+' Open the drive span at the moment the drive command is given (task 3595).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    spanStartMs := getms()
+    spanStartTicks := sideTicks(side)
+    bSpanOpen := TRUE
+
+PRI closeDriveSpan(side, speedIdx)
+' Close the drive span before the zero command and reduce it to this point's following readings
+' (task 3595). Called on EVERY commanded point, whatever its result -- a point that faulted during
+' spin-up still says how fast it was turning and how much duty the servo was demanding to get there.
+'
+' ptFollowPct IS THE UNBOUNDED OBSERVABLE THE STOP CONDITION NEEDS. err cannot serve: the lag
+' limiter holds it near LAG_HOLD and its stored field saturates at +/-127, so a drive falling
+' further behind reports the same number as one just barely behind. Rate has no such ceiling --
+' a motor at half the commanded rate reads 50, one that stalled reads 0, one driven backwards
+' reads negative -- so "is the drive following?" is answered by a number that keeps moving.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF, naming the commanded rate this is judged against
+
+    if bSpanOpen
+        spanDriveMs := getms() - spanStartMs
+        spanDriveTicks := abs(sideTicks(side) - spanStartTicks)
+        bSpanOpen := FALSE
+    bPtSpanValid := (spanDriveMs >= SPAN_MIN_MS) and (spanSamples > 0)
+    if bPtSpanValid
+        ptSpanRateX10 := (spanDriveTicks * RATE_X10_SCALE) / spanDriveMs
+        ptSpanDutyMean := spanDutySum / spanSamples
+        ptSpanDutyMax := spanDutyMax
+        ptFollowPct := (ptSpanRateX10 * X100) / (expectedRateX10(speedIdx))
+
+PRI expectedRateX10(speedIdx) : rateX10
+' The commanded tick rate for a speed rung, x10 -- the denominator ptFollowPct is measured against.
+'
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @returns rateX10 - expected ticks per second x10
+
+    if speedIdx == SPEED_HALF
+        rateX10 := RATE_HALF_EXPECTED * X10
+    else
+        rateX10 := RATE_QTR_EXPECTED * X10
 
 PRI flushCharge() : chargeMvS
 ' Move whole mV-seconds of integrated sense into the run total.
@@ -2332,6 +2464,10 @@ PRI pollSample(side) | nowMs, stepMs, senseMv, bCogUp, bFaultNow
     nowMs := getms()
     stepMs := (nowMs - sampPrevMs) <# SAMPLE_DT_MAX_MS
     sampPrevMs := nowMs
+    if bSpanOpen and bCogUp                                 ' task 3595: the following observables, on EVERY path
+        spanDutySum += sampDuty
+        spanDutyMax #>= sampDuty
+        spanSamples += 1
     if bCogUp == FALSE
         bSampNoCog := TRUE
     else
@@ -2629,6 +2765,11 @@ PRI legReset()
     legLimitDownDeg := 0
     bLegLimitUpFault := FALSE
     bLegLimitDownFault := FALSE
+    legBoundUp := BT_NONE                                   ' task 3595: the arc and its two boundary types
+    legBoundDown := BT_NONE
+    legArcLoDeg := 0
+    legArcHiDeg := 0
+    bLegArcValid := FALSE
 
 PRI clearFit()
 ' Reset the fit record to not attempted.
@@ -2674,7 +2815,17 @@ PRI legMeasure(side, speedIdx, signIdx, ptPhase, sweptDeg, winTicks, limitMv) : 
         legResult[ptIdx] := ptResult
         legPhase[ptIdx] := ptPhase
         bLegRateOk[ptIdx] := bPtRateOk
+        bLegSpanValid[ptIdx] := bPtSpanValid                  ' task 3595: the drive span, present on every commanded point
+        legFollowPct[ptIdx] := ptFollowPct
         legCount += 1
+        if isValidIdx(ptIdx)                                  ' task 3595: the arc is what was reached CLEANLY, nothing else
+            if bLegArcValid
+                legArcLoDeg <#= sweptDeg
+                legArcHiDeg #>= sweptDeg
+            else
+                legArcLoDeg := sweptDeg
+                legArcHiDeg := sweptDeg
+                bLegArcValid := TRUE
         if ptResult == PR_OK
             legConsecFaults := 0
         elseif ptResult == PR_ABORT_I
@@ -2702,6 +2853,34 @@ PRI isFaultLikeIdx(ptIdx) : bFaultLike
     bFaultLike := TRUE
     if (ptIdx >= 0) and (ptIdx < legCount)
         bFaultLike := (legResult[ptIdx] <> PR_OK) and (legResult[ptIdx] <> PR_ABORT_I)
+
+PRI isDroopIdx(ptIdx) : bDrooped
+' Task 3595: report whether a leg point DROVE BUT DID NOT FOLLOW -- the motor turned, but slower than
+' commanded by more than FOLLOW_DROOP_PCT.
+'
+' NOTE -- THIS PREDICATE EXISTS BECAUSE A DROOPING POINT FELL INTO A HOLE BETWEEN THE OTHER THREE, and the
+' hole is why the sweep could walk past a motor that had already given up:
+'   isValidIdx()    = PR_OK and rate in band -> a drooping point is NOT valid, so it is correctly kept
+'                     out of the fit and out of the low. That half always worked.
+'   isFaultLikeIdx() = result <> PR_OK and <> PR_ABORT_I -> a drooping point that still reached
+'                     AT_SPEED and completed its window returns PR_OK, so it is NOT fault-like.
+'                     WS_FAULTS could never fire on it.
+'   isHighIdxFor()  = requires isValidIdx() -> a drooping point is NOT high either. WS_RISE could
+'                     never fire on it.
+' So walkSide() saw nothing at all and walked on to the hard limit, burning points and current on a
+' motor that was no longer tracking its command. The lag limiter made droop the COMMON failure where
+' a fault used to be, and the walk had no name for it.
+'
+' It is judged on ptFollowPct, which comes from the drive span and therefore exists on EVERY commanded
+' point -- including one that never reached AT_SPEED, where the old window-based rate did not.
+'
+' @param ptIdx - leg index, may be -1
+' @returns bDrooped - TRUE when the point drove, its span is valid, and it fell short of following
+
+    bDrooped := FALSE
+    if (ptIdx >= 0) and (ptIdx < legCount)
+        if bLegSpanValid[ptIdx]
+            bDrooped := (legFollowPct[ptIdx] < FOLLOW_DROOP_PCT)
 
 PRI isHighIdx(ptIdx) : bHigh
 ' Report whether a coarse point is RISE_PCT above the current low (a current abort always is).
@@ -2842,7 +3021,7 @@ PRI beyondLowCount(walkDir, defSwept) : nBeyond | ptIdx
                         nBeyond += 1
 
 PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepIdx, sweptDeg, ptIdx, ...
-    sideConsec, nPts, lastSwept
+    sideConsec, nPts, lastSwept, droopConsec
 ' Walk coarse points out from the default until RISE, FAULTS, HARD_LIMIT or a run abort.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -2858,9 +3037,11 @@ PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepId
 ' @local sideConsec - consecutive fault-like points on this side
 ' @local nPts - points measured on this side
 ' @local lastSwept - last swept offset measured
+' @local droopConsec - task 3595: consecutive points where the drive stopped following
 
     walkStop := WS_HARD_LIMIT
     sideConsec := 0
+    droopConsec := 0
     nPts := 0
     lastSwept := defSwept
     legConsecFaults := 0
@@ -2878,18 +3059,84 @@ PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepId
             sideConsec += 1
         else
             sideConsec := 0
+        ' task 3595: a point that drove but did not FOLLOW. Counted separately from a fault, because
+        '  the lag limiter turned what used to be a fault into a droop, and a droop is invisible to
+        '  every other test here (isDroopIdx() carries the argument). A fault-like point does not also
+        '  count as a droop -- it has already stopped this side by its own route.
+        if isFaultLikeIdx(ptIdx) == FALSE and isDroopIdx(ptIdx)
+            droopConsec += 1
+        else
+            droopConsec := 0
         if abortReason <> AR_NONE
             walkStop := WS_RUN_ABORT
             quit
         if sideConsec >= SIDE_FAULT_STOP
             walkStop := WS_FAULTS
             quit
+        if droopConsec >= SIDE_DROOP_STOP
+            walkStop := WS_DROOP
+            quit
         if isHighIdx(ptIdx) and (beyondLowCount(walkDir, defSwept) >= MIN_PAST)
             walkStop := WS_RISE
             quit
     if walkStop == WS_FAULTS
         refineCliffEdge(side, signIdx, walkDir, defSwept, stepIdx, sideConsec, pointLimitMv)
+    noteBoundary(walkDir, walkStop, ptIdx)
     emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
+
+PRI noteBoundary(walkDir, walkStop, lastIdx)
+' Task 3595: record WHAT stopped this side of the arc, so the leg reports a boundary TYPE at each end
+' rather than a bare pass. The two ends are bounded by different physics and the difference is the
+' result: too much lead explodes the current, too little cannot make the torque.
+'
+' Run 7 measured both walls on every leg (debug_260914-114703.log): ABORT_I at swept +/-63 on every
+' leg of both motors -- the CURRENT wall -- and FAULT from +7 down to -11 on the LEFT positive leg --
+' the TORQUE wall. Between them the LEFT negative leg ran cleanly from +8 to +53: 45 electrical
+' degrees of a 360-degree circle, which is the arc this instrument can honestly sweep.
+'
+' @param walkDir - +1 the up side, -1 the down side
+' @param walkStop - WS_* that ended it
+' @param lastIdx - leg index of the last point measured, may be -1
+
+    if walkDir > 0
+        legBoundUp := boundTypeFor(walkStop, lastIdx)
+    else
+        legBoundDown := boundTypeFor(walkStop, lastIdx)
+
+PRI boundTypeFor(walkStop, lastIdx) : boundType
+' Task 3595: classify one side's stop into the physics that caused it.
+'
+' A fault or a droop is the torque wall: the motor could not make the torque the commanded rate needed
+' at that lead. The hard limit is the INSTRUMENT's edge, not the motor's, and is named as such so it
+' can never be read as a measured boundary of the motor.
+'
+' NOTE -- A CURRENT ABORT ARRIVES AS WS_RISE, NOT WS_FAULTS, and the distinction has to be made here.
+' isFaultLikeIdx() deliberately excludes PR_ABORT_I, so a current abort never accumulates sideConsec;
+' but isHighIdxFor() deliberately counts PR_ABORT_I as high, so the abort ends the side through the
+' RISE test instead. Both of those are right on their own terms -- an abort IS a high-current point,
+' and it IS a bracket -- but "the current rose past its minimum" and "the current hit the safety
+' abort" are not the same result, and a report that called both RISE would hide the wall. So the last
+' point's own result decides, and a rise that ended on an abort is named CURRENT.
+'
+' @param walkStop - WS_* that ended the side
+' @param lastIdx - leg index of the last point measured, may be -1
+' @returns boundType - BT_* naming the physics
+
+    boundType := BT_NONE
+    case walkStop
+        WS_RISE:
+            boundType := BT_RISE
+            if (lastIdx >= 0) and (lastIdx < legCount)
+                if legResult[lastIdx] == PR_ABORT_I
+                    boundType := BT_CURRENT
+        WS_HARD_LIMIT:
+            boundType := BT_LIMIT
+        WS_DROOP:
+            boundType := BT_TORQUE
+        WS_FAULTS:
+            boundType := BT_TORQUE
+        other:
+            boundType := BT_NONE
 
 PRI refineCliffEdge(side, signIdx, walkDir, defSwept, curStep, curConsec, pointLimitMv) | goodStep, ...
     goodDeg, faultDeg
@@ -4136,6 +4383,16 @@ PRI emitPoint3(side)
 ' maximum): tag(9) + seq(1+3+1+4=9) + motor(1+5+1+5=12) + zero_mV_x10(1+11+1+7=20) +
 ' net_mV_x10(1+10+1+7=19) = 69 bytes, well under the 280-byte bound.
 '
+' TASK 3595 APPENDS THE DRIVE-SPAN READINGS HERE, and here rather than in a sixth record because
+' this one had the room: + span_ms(1+7+1+7=16) + span_rate_x10(1+13+1+7=22) + follow_pct(1+10+1+7=19)
+' + duty_mean(1+9+1+7=18) + duty_max(1+8+1+7=17) = 92, for 161 bytes. Still well under 280.
+'
+' NOTE -- THESE FIVE ARE PRESENT ON EVERY COMMANDED POINT, WHATEVER ITS RESULT. That is the whole reason
+' they exist: BS-POINT's ticks / win_ms / rate_x10 / samples all gate on bPtWinRan, and the window
+' only runs once a point has reached AT_SPEED -- so run 7's log carries rate_x10,NA at all 19 of its
+' 19 non-OK points (MEASURED, debug_260914-114703.log). The boundary points, the only ones that say
+' where the drive gave up, were the exact points the instrument measured nothing about.
+'
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 
     benchLog.begin(@"BS-POINT3")
@@ -4143,6 +4400,11 @@ PRI emitPoint3(side)
     benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
     benchLog.naNumField(@"zero_mV_x10", ptZeroX10, LIM_SMALL, bPtZeroValid)
     benchLog.naNumField(@"net_mV_x10", ptNetX10, LIM_SMALL, (ptSamples > 0) and bPtZeroValid)   ' no zero, no net: never print a raw mean under a net label
+    benchLog.naNumField(@"span_ms", spanDriveMs, LIM_SMALL, bPtSpanValid)
+    benchLog.naNumField(@"span_rate_x10", ptSpanRateX10, LIM_SMALL, bPtSpanValid)
+    benchLog.naNumField(@"follow_pct", ptFollowPct, LIM_SMALL, bPtSpanValid)
+    benchLog.naNumField(@"span_duty_mean", ptSpanDutyMean, LIM_SMALL, bPtSpanValid)
+    benchLog.naNumField(@"span_duty_max", ptSpanDutyMax, LIM_SMALL, bPtSpanValid)
     lineEmit()
 
 PRI emitRstAlone(side) | slotIdx
@@ -4469,6 +4731,43 @@ PRI emitLeg(side, speedIdx, signIdx, legExit, refEndIdx, driftPctX10, bDriftVali
     benchLog.tokenField(@"exit", legExitToken(legExit), TOKMAX_LEG_EXIT)
     benchLog.naNumField(@"ref_start_net_mV_x10", refStartNetOrZero(), LIM_SMALL, isValidIdx(0) and (legPhase[0] == PH_REF_START))  ' task 3540 D5
     benchLog.naNumField(@"ref_end_net_mV_x10", refEndNetOrZero(refEndIdx), LIM_SMALL, isValidIdx(refEndIdx))                       ' task 3540 D5
+    lineEmit()
+    emitArc(side, speedIdx, signIdx)                        ' task 3595: the arc reached, and what bounded each end
+
+PRI emitArc(side, speedIdx, signIdx) | arcDeg
+' Emit BS-ARC (task 3595): the arc this leg actually reached, and the boundary TYPE at each end.
+'
+' THE POINT OF THE RECORD IS THAT A SWEEP REPORTS AN ARC, NOT A PASS. The reachable arc is bounded by
+' the motor and not by the instrument, and its two ends are bounded by different physics: too much
+' lead explodes the current, too little cannot make the torque. Run 7 measured both on every leg
+' (debug_260914-114703.log) -- ABORT_I at swept +/-63 on both motors in both directions, and FAULT
+' from +7 down to -11 on the LEFT positive leg -- leaving the LEFT negative leg a clean run from +8 to
+' +53. That is 45 electrical degrees of 360, and a report that did not say so let a reader believe the
+' sweep had covered the circle.
+'
+' arc_deg is 0 rather than NA when no valid point was reached: the leg ran and reached nothing, which
+' is a measurement of zero arc, not an absence of measurement. bounded_by tells them apart -- an arc
+' of 0 with both ends NONE is a leg that never got going.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param signIdx - SIGN_NEG or SIGN_POS
+'
+' @local arcDeg - the reached span in electrical degrees
+
+    arcDeg := 0
+    if bLegArcValid
+        arcDeg := legArcHiDeg - legArcLoDeg
+    benchLog.begin(@"BS-ARC")
+    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
+    benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.naNumField(@"arc_lo_deg", legArcLoDeg, LIM_TINY, bLegArcValid)
+    benchLog.naNumField(@"arc_hi_deg", legArcHiDeg, LIM_TINY, bLegArcValid)
+    benchLog.numField(@"arc_deg", arcDeg, LIM_TINY)
+    benchLog.tokenField(@"bound_lo", boundTypeToken(legBoundDown), TOKMAX_BOUND)
+    benchLog.tokenField(@"bound_hi", boundTypeToken(legBoundUp), TOKMAX_BOUND)
+    benchLog.numField(@"circle_deg", DEGREES_PER_TURN, LIM_SMALL)
     lineEmit()
 
 PRI refStartMeanOrZero() : meanX10
@@ -5227,8 +5526,28 @@ PRI walkStopToken(walkStop) : pTok
             pTok := @sWsFaults
         WS_HARD_LIMIT:
             pTok := @sWsHardLimit
+        WS_DROOP:                                           ' task 3595: without this case the new stop prints RUN_ABORT
+            pTok := @sWsDroop
         other:
             pTok := @sWsRunAbort
+
+PRI boundTypeToken(boundType) : pTok
+' Boundary-type token (task 3595): what STOPPED this side of the arc.
+'
+' @param boundType - BT_* value
+' @returns pTok - boundary-type token
+
+    case boundType
+        BT_CURRENT:
+            pTok := @sBtCurrent
+        BT_TORQUE:
+            pTok := @sBtTorque
+        BT_RISE:
+            pTok := @sBtRise
+        BT_LIMIT:
+            pTok := @sBtLimit
+        other:
+            pTok := @sBtNone
 
 PRI bracketToken(reason) : pTok
 ' Bracket-verdict token.
