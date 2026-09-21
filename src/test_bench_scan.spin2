@@ -275,6 +275,15 @@ CON { drive increments -- NONE may exceed DRIVE_CEILING_INCRE }
     QTR_SPEED_INCRE     = DRIVE_CEILING_INCRE / 4           ' 36_750_000, quarter speed
     HALF_SPEED_INCRE    = DRIVE_CEILING_INCRE / 2           ' 73_500_000, half speed
     PREFLIGHT_INCRE     = DRIVE_CEILING_INCRE / 8           ' 18_375_000, gentle nudge
+    ' Task 3595: the exploratory WALK's own speed, an eighth. The reachable arc is set by the motor,
+    '  and it WIDENS as the commanded speed falls -- MEASURED in run 7 (debug_260914-114703.log): at
+    '  quarter speed the torque wall sits at swept +7 down to -11, while at half speed the last clean
+    '  point on each of the four legs had already retreated to 8 / -11 / -17 / 9. Every one of those
+    '  four half-speed fits came back EDGE or POOR and pinned, because the minimum sat hard against
+    '  that wall with nothing measurable below it. Walking slower is what puts room under the minimum.
+    '  This increment is not a guess: it is PREFLIGHT_INCRE, which every run already uses to nudge both
+    '  wheels and which is therefore known to turn this motor.
+    LOW_SPEED_INCRE     = DRIVE_CEILING_INCRE / 8           ' 18_375_000, eighth speed -- the walking rung
     JOG_INCRE           = QTR_SPEED_INCRE                   ' recovery jog, at the self-checked rate
 
 CON { run sequencing enums }
@@ -292,11 +301,24 @@ CON { run sequencing enums }
     #0, SIGN_NEG, SIGN_POS
     SIGN_SLOTS = 2
 
-  ' Speed rung:
-  '  SPEED_QTR  - QTR_SPEED_INCRE
-  '  SPEED_HALF - HALF_SPEED_INCRE
-    #0, SPEED_QTR, SPEED_HALF
-    SPEED_SLOTS = 2
+  ' Speed rung, slowest first (task 3595):
+  '  SPEED_LOW  - LOW_SPEED_INCRE, an eighth. THE WALKING RUNG: the exploratory coarse walk runs here,
+  '               because the reachable arc widens as the commanded speed falls.
+  '  SPEED_QTR  - QTR_SPEED_INCRE, a confirm rung
+  '  SPEED_HALF - HALF_SPEED_INCRE, a confirm rung
+  '
+  ' SPEED_LOW IS FIRST, WHICH RENUMBERS THE OTHER TWO, and that is safe here where it would not be
+  '  elsewhere in this file: a speed reaches the log only through speedToken(), never as an integer, so
+  '  no record changes meaning. What it does change is resultSlot()'s arithmetic, which is internal and
+  '  derives from SPEED_SLOTS. Slowest-first also lets emitResults() keep walking the rungs in order.
+  '
+  ' WHICH RUNG WALKS IS A ROLE, NOT A SPEED, and the code asks bWalkRung() rather than naming a speed
+  '  -- SPEED_QTR used to carry both meanings at once, which is exactly the shape that drifts.
+    #0, SPEED_LOW, SPEED_QTR, SPEED_HALF
+    SPEED_SLOTS = 3
+  ' WHICH rung walks, named once. Every site that means "the exploratory leg" reads this rather than
+  '  naming a speed, so moving the walk to another rung is one edit and not a hunt.
+    SPEED_WALK  = SPEED_LOW
     RESULT_SLOTS = SIDE_SLOTS * SIGN_SLOTS * SPEED_SLOTS
 
   ' Point phase:
@@ -407,9 +429,15 @@ CON { sampling and windows }
     MAX_BATCHES              = 20
     MIN_BATCHES_FOR_SE       = 2
     WIN_TICKS_COARSE         = 180                          ' 2 wheel revolutions
+    WIN_TICKS_COARSE_LOW     = 90                           ' task 3595: the coarse walk at an eighth -- same seconds per point
     WIN_TICKS_FINE           = 270                          ' 3 wheel revolutions (also REF at 1/4)
     WIN_TICKS_SELF           = 450                          ' 5 wheel revolutions
     WIN_TICKS_HALF           = 540                          ' 6 wheel revolutions at 1/2 speed
+    ' Task 3595: the walking rung's window. HALF the coarse tick count at HALF the rate is the SAME
+    '  wall-clock second per point, so adding a third rung costs points, not a longer point -- run 7
+    '  took 728 s of a 1_800 s cap, and this keeps the added rung inside it. 90 ticks still yields
+    '  3 batch means at BATCH_TICKS 30, above MIN_BATCHES_FOR_SE, so the standard error survives.
+    WIN_TICKS_LOW            = 90                           ' 1 wheel revolution at 1/8 speed
     WINDOW_TIMEOUT_MARGIN_MS = 1_000
     ' The shortest drive span worth dividing (task 3595). A point stopped in its first few samples has
     '  no rate to report, and a tick count over a handful of ms is quantisation, not a measurement.
@@ -435,6 +463,13 @@ CON { expected rates and self-check bands }
     RATE_HALF_EXPECTED = 196
     RATE_HALF_LO       = 182
     RATE_HALF_HI       = 212
+    ' Task 3595, the walking rung: the same law at an eighth -- 98.2 / 2 = 49.1. The band is the
+    '  quarter band's own fractional width (-8 % / +8 %) carried down, so no rung is judged more
+    '  loosely than another. A rung whose band was widened to make it pass would be measuring its own
+    '  tolerance instead of the motor.
+    RATE_LOW_EXPECTED  = 49
+    RATE_LOW_LO        = 45
+    RATE_LOW_HI        = 53
 
     ' Pass 1 means /6136: +1/4 90.7/91.6 mV, -1/4 169.5/168.2 mV; bands +/-25%
     POS_QTR_LO_MV      = 68
@@ -834,6 +869,7 @@ sMotRight       BYTE    "RIGHT", 0
 
 sSpeedQtr       BYTE    "QTR", 0
 sSpeedHalf      BYTE    "HALF", 0
+sSpeedLow       BYTE    "LOW", 0                            ' task 3595: the walking rung, an eighth
 
 sSignNeg        BYTE    "NEG", 0
 sSignPos        BYTE    "POS", 0
@@ -981,17 +1017,24 @@ sSfTaskStartIll BYTE    "3524", 0                           ' R7-SCAN-STARTILL: 
 sSfTaskNoStall  BYTE    "3534", 0                           ' R11-SCAN-NOSTALL: scan watchdog
 sSfTaskLut      BYTE    "3535", 0                           ' R12-SCAN-ALIVE / R12-SCAN-RATE: driver start code in the cog LUT
 sSfTaskZxs      BYTE    "3529", 0                           ' R8-SCAN-ZXS: ADC calibration from a settled average
-sSfTaskScanV4   BYTE    "3530", 0                           ' R9-SCAN-HALFLEG / OWNZERO / PAIR2: scan v4 logic ran
+sSfTaskScanV4   BYTE    "3530", 0                           ' R18-SCAN-LEGBRACKET / OWNZERO / PAIR2: scan v4 logic ran
 sSfCellZxs      BYTE    "R8-SCAN-ZXS", 0
-sSfCellHalfLeg  BYTE    "R9-SCAN-HALFLEG", 0
 sSfCellOwnZero  BYTE    "R9-SCAN-OWNZERO", 0
 sSfCellPair2    BYTE    "R9-SCAN-PAIR2", 0
 sSfCritZxsI     BYTE    "ZXS_I", 0
 sSfCritZxsU     BYTE    "ZXS_U", 0
 sSfCritZxsV     BYTE    "ZXS_V", 0
 sSfCritZxsW     BYTE    "ZXS_W", 0
-sSfCritMinBrNeg BYTE    "MIN_BRACKETED_NEG", 0                ' task 3540 (D7): replaces CLIFF_PROBED
-sSfCritMinBrPos BYTE    "MIN_BRACKETED_POS", 0
+' Task 3595: the bracketing criterion now covers EVERY leg, not just the half-speed one, so each
+'  instance names its sign AND its rung. Without the rung, the three instances per sign would be
+'  indistinguishable lines -- run 7's D7 defect, which cost that sheet its "4 of 2" reading.
+sSfCellLegBr    BYTE    "R18-SCAN-LEGBRACKET", 0
+sSfCritBrNegLow BYTE    "MIN_BR_NEG_LOW", 0
+sSfCritBrPosLow BYTE    "MIN_BR_POS_LOW", 0
+sSfCritBrNegQtr BYTE    "MIN_BR_NEG_QTR", 0
+sSfCritBrPosQtr BYTE    "MIN_BR_POS_QTR", 0
+sSfCritBrNegHlf BYTE    "MIN_BR_NEG_HALF", 0
+sSfCritBrPosHlf BYTE    "MIN_BR_POS_HALF", 0
 sSfCritOwnZero  BYTE    "PTS_NO_OWN_ZERO", 0
 sSfCritNetRatio BYTE    "NET_RATIO_ONLY", 0
 sSfUnitsMvX10   BYTE    "MV_X10", 0
@@ -1581,6 +1624,12 @@ PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
         measureZero(side, PH_ZERO_INIT)
     if abortReason == AR_NONE
         bSelfPassed := bRunSelfCheck(side)
+    ' task 3595: the WALKING rung first -- every confirm rung centres on the minimum it finds, so it
+    '  has to have run. Slowest first is also widest-arc first, which is the whole reason it walks.
+    if abortReason == AR_NONE
+        runLeg(side, SPEED_WALK, firstSign)
+    if abortReason == AR_NONE
+        runLeg(side, SPEED_WALK, secondSign)
     if abortReason == AR_NONE
         runLeg(side, SPEED_QTR, firstSign)
     if abortReason == AR_NONE
@@ -2268,7 +2317,7 @@ PRI bWindowPoint(side, speedIdx, winTicks) : bWinDone | startMs, startTicks, tic
 ' @local thresholdX10 - unsettled threshold x10
 
     bWinDone := FALSE
-    expectedRate := (speedIdx == SPEED_HALF) ? RATE_HALF_EXPECTED : RATE_QTR_EXPECTED
+    expectedRate := expectedRateX10(speedIdx) / X10         ' task 3595: one place owns each rung's expected rate
     timeoutMs := ((winTicks * MS_PER_SEC * 2) / expectedRate) + WINDOW_TIMEOUT_MARGIN_MS
     halfTicks := winTicks / 2
     senseSum := 0
@@ -2431,13 +2480,16 @@ PRI closeDriveSpan(side, speedIdx)
 PRI expectedRateX10(speedIdx) : rateX10
 ' The commanded tick rate for a speed rung, x10 -- the denominator ptFollowPct is measured against.
 '
-' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param speedIdx - SPEED_LOW, SPEED_QTR or SPEED_HALF
 ' @returns rateX10 - expected ticks per second x10
 
-    if speedIdx == SPEED_HALF
-        rateX10 := RATE_HALF_EXPECTED * X10
-    else
-        rateX10 := RATE_QTR_EXPECTED * X10
+    case speedIdx
+        SPEED_HALF:
+            rateX10 := RATE_HALF_EXPECTED * X10
+        SPEED_LOW:
+            rateX10 := RATE_LOW_EXPECTED * X10
+        other:
+            rateX10 := RATE_QTR_EXPECTED * X10
 
 PRI flushCharge() : chargeMvS
 ' Move whole mV-seconds of integrated sense into the run total.
@@ -2596,10 +2648,13 @@ PRI bRecoverFromFault(side, motorIncre, sweptDeg) : bCleared | jogIncre, coolSta
             if (getms() - coolStartMs) >= FAULT_COOL_MS
                 quit
 
-PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, refLimitMv, pointLimitMv, ...
+PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, refLimitMv, pointLimitMv, ...
     refStartIdx, refEndIdx, centreDeg, legExit, stopUp, stopDown, bBracketed, driftPctX10, bDriftValid
-' Run one leg. 1/4 speed: REF_START, coarse walk both ways, bracket, fine, fit (one extension),
-' REF_END. 1/2 speed: REF_START, confirm points around the 1/4-speed minimum, fit, REF_END.
+' Run one leg. THE WALKING RUNG (task 3595, an eighth): REF_START, coarse walk both ways, bracket,
+' fine, fit (one extension), REF_END. A CONFIRM RUNG (a quarter, a half): REF_START, confirm points
+' around the WALKING rung's minimum, fit, REF_END. Which rung walks is asked by bWalkRung(), never by
+' naming a speed -- adding the low rung is precisely the change that would otherwise have left every
+' `speedIdx == SPEED_QTR` still compiling while quietly meaning the wrong leg.
 ' CHANGE 1 (scan v3): legLimitUpDeg/legLimitDownDeg bound the sweep window at whichever side's
 ' last good point precedes a fault edge (refreshLegLimits(), fed by every legMeasure() in this
 ' leg); runFinePoints()/runExtension() never command an offset past that limit, and bEvaluateBracket()
@@ -2612,7 +2667,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
 ' @param signIdx - SIGN_NEG or SIGN_POS
 '
 ' @local slotIdx - this leg's result slot
-' @local qtrSlot - the same motor and sign's 1/4-speed result slot
+' @local walkSlot - the same motor and sign's WALKING-rung result slot, which every confirm rung centres on
 ' @local defSwept - default offset in signed swept degrees
 ' @local refWinTicks - reference window ticks
 ' @local refLimitMv - REF_START relative abort threshold
@@ -2630,7 +2685,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
 ' @local bDriftValid - TRUE when both references were valid
 
     slotIdx := resultSlot(side, signIdx, speedIdx)
-    qtrSlot := resultSlot(side, signIdx, SPEED_QTR)
+    walkSlot := resultSlot(side, signIdx, SPEED_WALK)        ' task 3595: the walking rung's slot, which every confirm rung centres on
     defSwept := defaultSwept(signIdx)
     legReset()
     clearFit()
@@ -2638,14 +2693,19 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
     legLimitDownDeg := defSwept - HARD_LIMIT_DEG
     legExit := LX_DONE
     refEndIdx := -1
-    if speedIdx == SPEED_QTR
+    if bWalkRung(speedIdx)
+        refWinTicks := WIN_TICKS_LOW                        ' task 3595: fewer TICKS at an eighth is the same TIME per point
+        refLimitMv := (selfMeanX10[selfSlot(side, signIdx)] * POINT_ABORT_X100) / (X100 * X10)
+    elseif speedIdx == SPEED_QTR
         refWinTicks := WIN_TICKS_FINE
         refLimitMv := (selfMeanX10[selfSlot(side, signIdx)] * POINT_ABORT_X100) / (X100 * X10)
     else
         refWinTicks := WIN_TICKS_HALF
         refLimitMv := (selfMeanX10[selfSlot(side, signIdx)] * SPEED_CURRENT_RATIO * POINT_ABORT_X100) / (X100 * X10)
 
-    if (speedIdx == SPEED_HALF) and (resStatus[qtrSlot] <> FS_OK) and (resStatus[qtrSlot] <> FS_POOR)
+    ' task 3595: a CONFIRM rung centres on the WALKING rung's fit, so it is the walk slot that must
+    '  have produced a usable one -- not quarter speed, which is now itself a confirm rung.
+    if (bWalkRung(speedIdx) == FALSE) and (resStatus[walkSlot] <> FS_OK) and (resStatus[walkSlot] <> FS_POOR)
         legExit := LX_SKIPPED
     else
         refStartIdx := legMeasure(side, speedIdx, signIdx, PH_REF_START, defSwept, refWinTicks, refLimitMv)
@@ -2659,9 +2719,9 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
             ' moves every JUDGEMENT of an already-measured mean onto net means, but this
             ' threshold feeds a raw-sample comparison, so it must stay in the same, raw, units.
             pointLimitMv := (legMeanX10[refStartIdx] * POINT_ABORT_X100) / (X100 * X10)
-            bBracketed := TRUE                              ' half speed: provisional, only to admit runFinePoints() below
+            bBracketed := TRUE                              ' a confirm rung: provisional, only to admit runFinePoints() below
             centreDeg := defSwept
-            if speedIdx == SPEED_QTR
+            if bWalkRung(speedIdx)
                 stopUp := walkSide(side, signIdx, 1, defSwept, pointLimitMv)
                 stopDown := walkSide(side, signIdx, -1, defSwept, pointLimitMv)
                 refreshLegLimits(defSwept)                  ' CHANGE 1: bound the window at the fault edge
@@ -2671,15 +2731,15 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, qtrSlot, defSwept, refWinTicks, r
                 else
                     fitStatus := FS_NOT_BRACKETED
             else
-                centreDeg := floatToBoundedInt(resMinF[qtrSlot], LIM_TINY)
+                centreDeg := floatToBoundedInt(resMinF[walkSlot], LIM_TINY)
             if bBracketed and (abortReason == AR_NONE)
                 legExit := runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv)
-                fitLeg(centreDeg, (speedIdx == SPEED_QTR) ? FIT_MIN_PTS : CONFIRM_MIN_PTS, speedIdx)
+                fitLeg(centreDeg, fitMinPtsFor(speedIdx), speedIdx)
                 if (fitStatus == FS_EDGE) and (legExit == LX_DONE) and (abortReason == AR_NONE)
                     legExit := runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv)
-                    fitLeg(centreDeg, (speedIdx == SPEED_QTR) ? FIT_MIN_PTS : CONFIRM_MIN_PTS, speedIdx)
+                    fitLeg(centreDeg, fitMinPtsFor(speedIdx), speedIdx)
                     bFitExtended := TRUE
-                if speedIdx == SPEED_HALF
+                if bWalkRung(speedIdx) == FALSE
                     ' task 3540 D2: the real rise-on-both-sides test, now that the confirm/cliff
                     ' points exist to judge it against -- overwrites the provisional TRUE above.
                     bBracketed := bEvaluateHalfBracket()
@@ -3051,7 +3111,7 @@ PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepId
             walkStop := WS_RUN_ABORT
             quit
         sweptDeg := defSwept + (walkDir * stepIdx * COARSE_STEP_DEG)
-        ptIdx := legMeasure(side, SPEED_QTR, signIdx, PH_COARSE, sweptDeg, WIN_TICKS_COARSE, pointLimitMv)
+        ptIdx := legMeasure(side, SPEED_WALK, signIdx, PH_COARSE, sweptDeg, WIN_TICKS_COARSE_LOW, pointLimitMv)
         nPts += 1
         lastSwept := sweptDeg
         updateLegLow()
@@ -3163,7 +3223,7 @@ PRI refineCliffEdge(side, signIdx, walkDir, defSwept, curStep, curConsec, pointL
     goodStep := curStep - curConsec
     goodDeg := defSwept + (walkDir * goodStep * COARSE_STEP_DEG)
     faultDeg := goodDeg + (walkDir * COARSE_STEP_DEG)
-    probeTowardFault(side, SPEED_QTR, signIdx, walkDir, goodDeg, faultDeg, WIN_TICKS_COARSE, pointLimitMv)
+    probeTowardFault(side, SPEED_WALK, signIdx, walkDir, goodDeg, faultDeg, WIN_TICKS_COARSE_LOW, pointLimitMv)
 
 PRI probeTowardFault(side, speedIdx, signIdx, dir, goodDeg, faultDeg, winTicks, pointLimitMv) | probeDeg, nextDeg, ptIdx
 ' Task 3540 D1 (coordinator review): after a clean cliff probe, keep probing CLIFF_HALF_STEP_DEG
@@ -3409,14 +3469,15 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
 
     legExit := LX_DONE
     legConsecFaults := 0
-    if speedIdx == SPEED_QTR
+    ' task 3595: the WALKING rung sweeps the full fine set around the minimum it just bracketed; a
+    '  CONFIRM rung measures the shorter confirm set around the centre the walk handed it.
+    if bWalkRung(speedIdx)
         pOrder := @fineOrder
         orderCount := FINE_ORDER_COUNT
-        winTicks := WIN_TICKS_FINE
     else
         pOrder := @confirmOrder
         orderCount := CONFIRM_ORDER_COUNT
-        winTicks := WIN_TICKS_HALF
+    winTicks := winTicksFor(speedIdx)
     repeat orderIdx from 0 to orderCount - 1
         if abortReason <> AR_NONE
             quit
@@ -3425,7 +3486,7 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
         sweptDeg := centreDeg + (LONG[pOrder][orderIdx] * FINE_STEP_DEG)
         if bWithinHardLimit(sweptDeg, defSwept) and bWithinWindowLimit(sweptDeg)
             ptIdx := legMeasure(side, speedIdx, signIdx, PH_FINE, sweptDeg, winTicks, pointLimitMv)
-            if (speedIdx == SPEED_HALF) and isFaultLikeIdx(ptIdx) and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
+            if (bWalkRung(speedIdx) == FALSE) and isFaultLikeIdx(ptIdx) and (legConsecFaults < LEG_FAULT_CAP) and (abortReason == AR_NONE)
                 probeConfirmCliff(side, speedIdx, signIdx, defSwept, sweptDeg, pointLimitMv)
             refreshLegLimits(defSwept)
     if legConsecFaults >= LEG_FAULT_CAP
@@ -3464,7 +3525,7 @@ PRI probeConfirmCliff(side, speedIdx, signIdx, defSwept, faultDeg, pointLimitMv)
     dir := (faultDeg > defSwept) ? 1 : -1
     goodDeg, bFromFault := legLimitForDir(defSwept, dir)
     if bFromFault
-        probeTowardFault(side, speedIdx, signIdx, dir, goodDeg, faultDeg, WIN_TICKS_HALF, pointLimitMv)
+        probeTowardFault(side, speedIdx, signIdx, dir, goodDeg, faultDeg, winTicksFor(speedIdx), pointLimitMv)
 
 PRI runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv) : legExit | extDir, edgeDeg, extIdx, ...
     extCount, sweptDeg, winTicks
@@ -3488,8 +3549,11 @@ PRI runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv) : legExit | ex
 
     legExit := LX_DONE
     legConsecFaults := 0
-    extCount := (speedIdx == SPEED_QTR) ? EXTEND_PTS : CONFIRM_EXTEND_PTS
-    winTicks := (speedIdx == SPEED_QTR) ? WIN_TICKS_FINE : WIN_TICKS_HALF
+    if bWalkRung(speedIdx)                                  ' task 3595: role, not speed -- PL-29, never a ternary here
+        extCount := EXTEND_PTS
+    else
+        extCount := CONFIRM_EXTEND_PTS
+    winTicks := winTicksFor(speedIdx)
     if fitMinF >. float(fitCentre)
         extDir := 1
         edgeDeg := fitSpanHi
@@ -3581,7 +3645,7 @@ PRI fitLeg(centreDeg, minPts, speedIdx) | ptIdx, nPts, seCnt, uF, yF, u2F, sumOn
     if legCount > 0
         repeat ptIdx from 0 to legCount - 1
             bPtEligible := (legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_EXTEND) or ...
-                ((speedIdx == SPEED_HALF) and (legPhase[ptIdx] == PH_CLIFF))
+                (bFitAdmitsCliff(speedIdx) and (legPhase[ptIdx] == PH_CLIFF))
             if bPtEligible and isValidIdx(ptIdx)
                 uF := float(legDeg[ptIdx] - centreDeg) /. FIT_DEG_SCALE
                 yF := float(legNetX10[ptIdx]) /. 10.0
@@ -3625,7 +3689,7 @@ PRI fitLeg(centreDeg, minPts, speedIdx) | ptIdx, nPts, seCnt, uF, yF, u2F, sumOn
                 rssF := 0.0
                 repeat ptIdx from 0 to legCount - 1
                     bPtEligible := (legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_EXTEND) or ...
-                        ((speedIdx == SPEED_HALF) and (legPhase[ptIdx] == PH_CLIFF))
+                        (bFitAdmitsCliff(speedIdx) and (legPhase[ptIdx] == PH_CLIFF))
                     if bPtEligible and isValidIdx(ptIdx)
                         uF := float(legDeg[ptIdx] - centreDeg) /. FIT_DEG_SCALE
                         yF := float(legNetX10[ptIdx]) /. 10.0
@@ -3727,11 +3791,17 @@ PRI defaultSwept(signIdx) : sweptDeg
 PRI signedIncre(speedIdx, signIdx) : motorIncre
 ' Signed motor increment for a speed and sign.
 '
-' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param speedIdx - SPEED_LOW, SPEED_QTR or SPEED_HALF
 ' @param signIdx - SIGN_NEG or SIGN_POS
 ' @returns motorIncre - signed increment
 
-    motorIncre := (speedIdx == SPEED_HALF) ? HALF_SPEED_INCRE : QTR_SPEED_INCRE
+    case speedIdx
+        SPEED_HALF:
+            motorIncre := HALF_SPEED_INCRE
+        SPEED_LOW:
+            motorIncre := LOW_SPEED_INCRE
+        other:
+            motorIncre := QTR_SPEED_INCRE
     if signIdx == SIGN_NEG
         motorIncre := 0 - motorIncre
 
@@ -3789,17 +3859,82 @@ PRI resultSlot(side, signIdx, speedIdx) : slotIdx
 
     slotIdx := (((sideSlot(side) * SIGN_SLOTS) + signIdx) * SPEED_SLOTS) + speedIdx
 
+PRI bFitAdmitsCliff(speedIdx) : bAdmits
+' Task 3595: whether this rung's fit admits its PH_CLIFF probes.
+'
+' A CONFIRM rung does. Its confirm points are few and sit close to a centre the walk already found, so
+' the cliff probes -- taken right at the fault edge, between the last good point and the first faulted
+' one -- are the only extra data near that edge and they earn their place in the fit.
+'
+' The WALKING rung does not. Its own cliff probes come from the coarse walk's fault edge, far from the
+' minimum it is fitting, and admitting them would pull the quadratic toward a wall rather than through
+' the basin. That was already the rule when quarter speed walked; it is stated as a role here so it
+' stays true now that an eighth does.
+'
+' @param speedIdx - SPEED_* rung
+' @returns bAdmits - TRUE for a confirm rung
+
+    bAdmits := (bWalkRung(speedIdx) == FALSE)
+
+PRI winTicksFor(speedIdx) : winTicks
+' Task 3595: the measurement window, in hall ticks, for a rung's fine/confirm points. Each rung's
+' tick count is chosen so the window lasts about the same WALL-CLOCK time at that rung's rate --
+' halving the rate halves the ticks. One place owns this, because a window whose duration varied by
+' rung would make the rungs' standard errors incomparable, and the whole point of a confirm rung is
+' to be compared against the walk.
+'
+' @param speedIdx - SPEED_* rung
+' @returns winTicks - window length in hall ticks
+
+    case speedIdx
+        SPEED_HALF:
+            winTicks := WIN_TICKS_HALF
+        SPEED_LOW:
+            winTicks := WIN_TICKS_LOW
+        other:
+            winTicks := WIN_TICKS_FINE
+
+PRI fitMinPtsFor(speedIdx) : minPts
+' Task 3595: the fit's minimum point count for a rung -- the walking rung sweeps a full fine set and
+' is held to FIT_MIN_PTS; a confirm rung measures fewer points around an already-found centre and is
+' held to CONFIRM_MIN_PTS.
+'
+' @param speedIdx - SPEED_* rung
+' @returns minPts - the fewest points fitLeg() will accept for that rung
+
+    if bWalkRung(speedIdx)
+        minPts := FIT_MIN_PTS
+    else
+        minPts := CONFIRM_MIN_PTS
+
+PRI bWalkRung(speedIdx) : bWalks
+' Task 3595: report whether this rung is the EXPLORATORY one -- the leg that walks out from the
+' default looking for the minimum, as opposed to a rung that confirms an already-found centre.
+'
+' The distinction used to be spelled `speedIdx == SPEED_QTR`, which made one value carry two meanings:
+' a speed AND a role. Adding a third rung is exactly the change that would have broken every one of
+' those sites silently, since they would all still have compiled and still have named quarter speed
+' while meaning "the walking leg". Asking the role by name is what makes the third rung safe.
+'
+' @param speedIdx - SPEED_* rung
+' @returns bWalks - TRUE for the rung that performs the coarse walk
+
+    bWalks := (speedIdx == SPEED_WALK)
+
 PRI bRateInBand(speedIdx, rateX10) : bInBand
 ' Report whether a tick rate is inside the band for its speed.
 '
-' @param speedIdx - SPEED_QTR or SPEED_HALF
+' @param speedIdx - SPEED_LOW, SPEED_QTR or SPEED_HALF
 ' @param rateX10 - ticks per second x10
 ' @returns bInBand - TRUE when inside the band
 
-    if speedIdx == SPEED_HALF
-        bInBand := (rateX10 >= RATE_HALF_LO * X10) and (rateX10 <= RATE_HALF_HI * X10)
-    else
-        bInBand := (rateX10 >= RATE_QTR_LO * X10) and (rateX10 <= RATE_QTR_HI * X10)
+    case speedIdx
+        SPEED_HALF:
+            bInBand := (rateX10 >= RATE_HALF_LO * X10) and (rateX10 <= RATE_HALF_HI * X10)
+        SPEED_LOW:
+            bInBand := (rateX10 >= RATE_LOW_LO * X10) and (rateX10 <= RATE_LOW_HI * X10)
+        other:
+            bInBand := (rateX10 >= RATE_QTR_LO * X10) and (rateX10 <= RATE_QTR_HI * X10)
 
 PRI clampSense(rawMv) : clampedMv
 ' Clamp a sense sample so the accumulators cannot overflow (PL-20).
@@ -4504,7 +4639,7 @@ PRI emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
 
     benchLog.begin(@"BS-WALK")
     benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    benchLog.tokenField(@"speed", @sSpeedQtr, TOKMAX_SPEED)
+    benchLog.tokenField(@"speed", speedToken(SPEED_WALK), TOKMAX_SPEED)  ' task 3595: only the walking rung walks, and it is no longer QTR
     benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
     benchLog.tokenField(@"side", (walkDir > 0) ? @sSideUp : @sSideDown, TOKMAX_WALK_SIDE)
     benchLog.numField(@"pts", nPts, LIM_TINY)
@@ -4527,7 +4662,7 @@ PRI emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
 
     benchLog.begin(@"BS-BRACKET")
     benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    benchLog.tokenField(@"speed", @sSpeedQtr, TOKMAX_SPEED)
+    benchLog.tokenField(@"speed", speedToken(SPEED_WALK), TOKMAX_SPEED)  ' task 3595: the bracket is the walking rung's
     benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
     benchLog.naNumField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
     benchLog.naNumField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
@@ -4820,8 +4955,9 @@ PRI emitResults(side, firstSign) | orderPos, signIdx
 
     repeat orderPos from 0 to SIGN_SLOTS - 1
         signIdx := (orderPos == 0) ? firstSign : (SIGN_POS - firstSign)
-        emitResult(side, signIdx)
-        emitResultHalf(side, signIdx)
+        emitResult(side, signIdx)                           ' the WALKING rung: the primary result
+        emitResultHalf(side, signIdx, SPEED_QTR)            ' task 3595: one line per CONFIRM rung, each naming its speed
+        emitResultHalf(side, signIdx, SPEED_HALF)
     emitPair(side, firstSign)
     emitPair2(side)
 
@@ -4840,7 +4976,12 @@ PRI hasMinimum(slotIdx) : bHasMin
     bHasMin := (resStatus[slotIdx] == FS_OK) and (bResPinned[slotIdx] == FALSE) and (bResBracketed[slotIdx] <> FALSE)
 
 PRI emitResult(side, signIdx) | slotIdx, bHasMin, bFloorOk, iminX10, savingX10
-' Emit BS-RESULT for one sign at 1/4 speed. Task 3540 D3: i_min_mV_x10 and saving_pct_x10 are now
+' Emit BS-RESULT for one sign at the WALKING rung -- the leg that swept out from the default and
+' bracketed the minimum, which as of task 3595 is an eighth rather than a quarter. This is the
+' primary result because it is the one with the widest reachable arc and therefore the only one whose
+' minimum can be bracketed rather than pinned against a wall.
+'
+' Task 3540 D3: i_min_mV_x10 and saving_pct_x10 are now
 ' judged on the leg's measured floor (resFloorX10, from legMeasuredFloor()), not the fitted vertex
 ' -- run 7's fits read 11.3/9.8/13.2/13.5 mV against measured floors of 13.0/11.4/12.0/15.9 mV
 ' (SCAN-RUN-7-EVALUATION.md sec 3). i_def_mV_x10 (resIdefX10, the averaged REF_START/REF_END) is
@@ -4850,13 +4991,13 @@ PRI emitResult(side, signIdx) | slotIdx, bHasMin, bFloorOk, iminX10, savingX10
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signIdx - SIGN_NEG or SIGN_POS
 '
-' @local slotIdx - 1/4-speed result slot
+' @local slotIdx - the WALKING rung's result slot
 ' @local bHasMin - a usable minimum exists
 ' @local bFloorOk - the leg measured at least one valid point
 ' @local iminX10 - minimum current x10, net, measured floor
 ' @local savingX10 - saving at the minimum vs default, percent x10
 
-    slotIdx := resultSlot(side, signIdx, SPEED_QTR)
+    slotIdx := resultSlot(side, signIdx, SPEED_WALK)
     bHasMin := hasMinimum(slotIdx)
     bFloorOk := bHasMin and (bResFloorValid[slotIdx] <> FALSE)
     iminX10 := resFloorX10[slotIdx]
@@ -4880,8 +5021,18 @@ PRI emitResult(side, signIdx) | slotIdx, bHasMin, bFloorOk, iminX10, savingX10
     benchLog.naNumField(@"i_min_fit_mV_x10", floatToBoundedInt(resIminF[slotIdx] *. 10.0, LIM_SMALL), LIM_SMALL, bHasMin)  ' task 3540 D3, new field at the end
     lineEmit()
 
-PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bHalfFloorOk, bShift, bShiftSe, shiftDegF, shiftSeF, bSig
-' Emit BS-RESULT-HALF for one sign: the 1/2-speed minimum and its shift from 1/4 speed. Task 3540
+PRI emitResultHalf(side, signIdx, confirmSpeed) | halfSlot, walkSlot, bHalfMin, bHalfFloorOk, bShift, bShiftSe, shiftDegF, shiftSeF, bSig
+' Emit BS-RESULT-HALF for one sign at ONE confirm rung: that rung's minimum and its shift from the
+' WALKING rung's.
+'
+' TASK 3595 MADE THIS RECORD PER-RUNG AND GAVE IT A speed FIELD, and the field is not decoration.
+' There are now two confirm rungs (a quarter and a half) against one walking rung, so this record is
+' emitted twice per sign. Without a speed field those two lines would be byte-identical wherever their
+' numbers happened to agree, and a reader could not tell which rung either described -- which is
+' precisely run 7's D7 defect, where two R9-SCAN-HALFLEG lines per motor were identical and the sheet
+' read "4 of 2" (SCAN-RUN-7-EVALUATION.md sec 5 item 7).
+'
+' Task 3540
 ' D2: hasMinimum() now rejects a POOR or pinned fit and a leg that failed the rise-on-both-sides
 ' negative case, so a leg like run 7's L POS -- POOR, pinned, shift +5.4, shift_sig TRUE, printed
 ' from data lowest at the window edge (SCAN-RUN-7-EVALUATION.md sec 2) -- emits no shift or
@@ -4890,10 +5041,11 @@ PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bHalfFloorOk, b
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signIdx - SIGN_NEG or SIGN_POS
+' @param confirmSpeed - the confirm rung this line reports, SPEED_QTR or SPEED_HALF
 '
-' @local halfSlot - 1/2-speed result slot
-' @local qtrSlot - 1/4-speed result slot
-' @local bHalfMin - a usable 1/2-speed minimum exists
+' @local halfSlot - the confirm rung's result slot
+' @local walkSlot - the WALKING rung's result slot, which the shift is measured against
+' @local bHalfMin - a usable confirm-rung minimum exists
 ' @local bHalfFloorOk - bHalfMin AND this leg measured at least one valid point
 ' @local bShift - both minima exist
 ' @local bShiftSe - both minima carry a standard error
@@ -4901,18 +5053,19 @@ PRI emitResultHalf(side, signIdx) | halfSlot, qtrSlot, bHalfMin, bHalfFloorOk, b
 ' @local shiftSeF - shift standard error, degrees
 ' @local bSig - |shift| > SHIFT_SIG_FACTOR * shift SE
 
-    halfSlot := resultSlot(side, signIdx, SPEED_HALF)
-    qtrSlot := resultSlot(side, signIdx, SPEED_QTR)
+    halfSlot := resultSlot(side, signIdx, confirmSpeed)
+    walkSlot := resultSlot(side, signIdx, SPEED_WALK)
     bHalfMin := hasMinimum(halfSlot)
     bHalfFloorOk := bHalfMin and (bResFloorValid[halfSlot] <> FALSE)
-    bShift := bHalfMin and hasMinimum(qtrSlot)
-    bShiftSe := bShift and bResSeValid[halfSlot] and bResSeValid[qtrSlot]
-    shiftDegF := resMinF[halfSlot] -. resMinF[qtrSlot]
-    shiftSeF := fsqrt((resSeF[halfSlot] *. resSeF[halfSlot]) +. (resSeF[qtrSlot] *. resSeF[qtrSlot]))
+    bShift := bHalfMin and hasMinimum(walkSlot)
+    bShiftSe := bShift and bResSeValid[halfSlot] and bResSeValid[walkSlot]
+    shiftDegF := resMinF[halfSlot] -. resMinF[walkSlot]
+    shiftSeF := fsqrt((resSeF[halfSlot] *. resSeF[halfSlot]) +. (resSeF[walkSlot] *. resSeF[walkSlot]))
     bSig := bShiftSe and (fabs(shiftDegF) >. (SHIFT_SIG_FACTOR *. shiftSeF))
     benchLog.begin(@"BS-RESULT-HALF")
     benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
     benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
+    benchLog.tokenField(@"speed", speedToken(confirmSpeed), TOKMAX_SPEED)   ' task 3595: WHICH confirm rung this line is
     benchLog.tokenField(@"status", fitToken(resStatus[halfSlot]), TOKMAX_FIT)
     benchLog.naNumField(@"min_deg_x10", floatToBoundedInt(resMinF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin)
     benchLog.naNumField(@"min_se_deg_x10", floatToBoundedInt(resSeF[halfSlot] *. 10.0, LIM_SMALL), LIM_SMALL, bHalfMin and bResSeValid[halfSlot])
@@ -4930,16 +5083,20 @@ PRI emitPair(side, firstSign) | negSlot, posSlot, bComplete, bPairSe, midF, midS
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param firstSign - the sign whose legs ran first
 '
-' @local negSlot - NEG 1/4-speed slot
-' @local posSlot - POS 1/4-speed slot
+' @local negSlot - NEG slot at the WALKING rung
+' @local posSlot - POS slot at the WALKING rung
 ' @local bComplete - both minima exist
 ' @local bPairSe - both minima carry a standard error
 ' @local midF - midpoint, degrees
 ' @local midSeF - midpoint standard error, degrees
 ' @local leadF - half-difference, degrees
 
-    negSlot := resultSlot(side, SIGN_NEG, SPEED_QTR)
-    posSlot := resultSlot(side, SIGN_POS, SPEED_QTR)
+    ' task 3595: the pair comes from the WALKING rung, because that is the rung with the widest
+    '  reachable arc and therefore the only one whose two minima can both be bracketed rather than
+    '  pinned against a wall. Run 7 took its pair from quarter speed because quarter speed was then
+    '  the walk; taking it from a confirm rung would read a minimum the walk had already placed.
+    negSlot := resultSlot(side, SIGN_NEG, SPEED_WALK)
+    posSlot := resultSlot(side, SIGN_POS, SPEED_WALK)
     bComplete := hasMinimum(negSlot) and hasMinimum(posSlot)
     bPairSe := bComplete and bResSeValid[negSlot] and bResSeValid[posSlot]
     midF := (resMinF[negSlot] +. resMinF[posSlot]) /. 2.0
@@ -4973,8 +5130,8 @@ PRI emitPair2(side) | negSlot, posSlot, bComplete, negX10, posX10, ratioX1000, b
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 '
-' @local negSlot - NEG 1/4-speed slot
-' @local posSlot - POS 1/4-speed slot
+' @local negSlot - NEG slot at the WALKING rung
+' @local posSlot - POS slot at the WALKING rung
 ' @local bComplete - both minima exist, each with a valid measured floor
 ' @local negX10 - NEG minimum current x10, net, measured floor
 ' @local posX10 - POS minimum current x10, net, measured floor
@@ -4982,8 +5139,8 @@ PRI emitPair2(side) | negSlot, posSlot, bComplete, negX10, posX10, ratioX1000, b
 ' @local bRatio - the denominator is positive
 ' @local pairSlot - sideSlot(side), the sign-off accumulator index (task 3537)
 
-    negSlot := resultSlot(side, SIGN_NEG, SPEED_QTR)
-    posSlot := resultSlot(side, SIGN_POS, SPEED_QTR)
+    negSlot := resultSlot(side, SIGN_NEG, SPEED_WALK)       ' task 3595: the walking rung, as BS-PAIR
+    posSlot := resultSlot(side, SIGN_POS, SPEED_WALK)
     bComplete := hasMinimum(negSlot) and hasMinimum(posSlot) and (bResFloorValid[negSlot] <> FALSE) and (bResFloorValid[posSlot] <> FALSE)
     negX10 := resFloorX10[negSlot]
     posX10 := resFloorX10[posSlot]
@@ -5086,7 +5243,7 @@ PRI emitSignoffDecls()
     emitSignoffDecl(@sSfCellAlive, @sSfTaskLut)
     emitSignoffDecl(@sSfCellRate, @sSfTaskLut)
     emitSignoffDecl(@sSfCellZxs, @sSfTaskZxs)
-    emitSignoffDecl(@sSfCellHalfLeg, @sSfTaskScanV4)
+    emitSignoffDecl(@sSfCellLegBr, @sSfTaskScanV4)          ' task 3595: replaces R9-SCAN-HALFLEG, now every leg
     emitSignoffDecl(@sSfCellOwnZero, @sSfTaskScanV4)
     emitSignoffDecl(@sSfCellPair2, @sSfTaskScanV4)
     emitSignoffDecl(@sSfCellRstAlone, @sSfTaskRstAlone)
@@ -5209,28 +5366,56 @@ PRI zxsCritToken(chIdx) : pTok
         other:
             pTok := @sSfCritZxsW
 
-PRI emitHalfLegSignoffs(side) | signIdx, resIdx, pCrit
-' Emit R9-SCAN-HALFLEG for one motor: one BOOL SIGNOFF per half-speed result slot (task 3537,
-' criterion redesigned task 3540 PL-46). measured TRUE when bEvaluateHalfBracket() found the leg's
-' low bracketed by a rise on both sides (bResBracketed); FAILs exactly when the low sits at a
-' fault-bounded window edge with nothing measured beyond it toward the fault -- run 7's failure
-' mode (SCAN-RUN-7-EVALUATION.md sec 2, sec 5 item 1). NOMEAS when the leg never ran (bResLegRan
-' FALSE). Task 3540 D7: each sign's instance carries its own crit token (MIN_BRACKETED_NEG /
-' MIN_BRACKETED_POS), so the two per-motor instances no longer read as duplicates. Worst case:
-' emitSignoffBool(), 173 bytes.
+PRI emitHalfLegSignoffs(side) | signIdx, resIdx, pCrit, speedIdx
+' Emit R18-SCAN-LEGBRACKET for one motor: one BOOL SIGNOFF per result slot -- EVERY sign at EVERY
+' rung, six per motor. measured TRUE when the leg's low was bracketed by a rise on both sides
+' (bResBracketed); FAILs exactly when the low sits at a fault-bounded window edge with nothing
+' measured beyond it toward the fault -- run 7's failure mode (SCAN-RUN-7-EVALUATION.md sec 2, sec 5
+' item 1). NOMEAS when the leg never ran (bResLegRan FALSE).
+'
+' TASK 3595 WIDENED THIS FROM THE HALF-SPEED LEG TO EVERY LEG, and replaced the cell id
+' R9-SCAN-HALFLEG, which named a rung that is no longer the only one judged. The criterion is the one
+' the rebuild exists to enforce: a leg either brackets its minimum or says that it did not. Run 7's
+' four half-speed legs all put their lowest current at the last clean point before a fault and every
+' fit came back EDGE or POOR and pinned, while the sheet still read as though minima had been
+' demonstrated. Judging the walking rung too is what makes that impossible to repeat, because the
+' walking rung is the one now expected to bracket.
+'
+' Worst case: emitSignoffBool(), 173 bytes.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 '
 ' @local signIdx - SIGN_NEG then SIGN_POS
-' @local resIdx - that sign's half-speed result slot
-' @local pCrit - this sign's crit token
+' @local resIdx - that sign and rung's result slot
+' @local pCrit - this sign and rung's crit token
+' @local speedIdx - every rung, SPEED_LOW through SPEED_HALF
 
     repeat signIdx from SIGN_NEG to SIGN_POS
-        beat(CP_EMIT)
-        resIdx := resultSlot(side, signIdx, SPEED_HALF)
-        pCrit := (signIdx == SIGN_NEG) ? @sSfCritMinBrNeg : @sSfCritMinBrPos
-        emitSignoffBool(@sSfCellHalfLeg, @sSfTaskScanV4, side, pCrit, bResLegRan[resIdx] <> FALSE, ...
-            bResBracketed[resIdx] <> FALSE, SIGNOFF_ONE_INSTANCE)
+        repeat speedIdx from SPEED_LOW to SPEED_HALF
+            beat(CP_EMIT)
+            resIdx := resultSlot(side, signIdx, speedIdx)
+            pCrit := legBracketCrit(signIdx, speedIdx)
+            emitSignoffBool(@sSfCellLegBr, @sSfTaskScanV4, side, pCrit, bResLegRan[resIdx] <> FALSE, ...
+                bResBracketed[resIdx] <> FALSE, SIGNOFF_ONE_INSTANCE)
+
+PRI legBracketCrit(signIdx, speedIdx) : pCrit
+' Task 3595: the crit token naming ONE leg -- its sign and its rung -- for R18-SCAN-LEGBRACKET.
+'
+' Every instance must be distinguishable from every other, because there are now six per motor and a
+' reader has to be able to say WHICH leg failed to bracket its minimum. That is the whole content of
+' run 7's D7 finding, where two identical lines made a sheet read "4 of 2".
+'
+' @param signIdx - SIGN_NEG or SIGN_POS
+' @param speedIdx - SPEED_* rung
+' @returns pCrit - pointer to this leg's crit token
+
+    case speedIdx
+        SPEED_LOW:
+            pCrit := (signIdx == SIGN_NEG) ? @sSfCritBrNegLow : @sSfCritBrPosLow
+        SPEED_HALF:
+            pCrit := (signIdx == SIGN_NEG) ? @sSfCritBrNegHlf : @sSfCritBrPosHlf
+        other:
+            pCrit := (signIdx == SIGN_NEG) ? @sSfCritBrNegQtr : @sSfCritBrPosQtr
 
 PRI emitOwnZeroSignoffs(side) | signIdx, speedIdx, resIdx, nInst
 ' Emit R9-SCAN-OWNZERO for one motor (task 3537): one COUNT SIGNOFF per result slot whose leg ran and
@@ -5241,13 +5426,13 @@ PRI emitOwnZeroSignoffs(side) | signIdx, speedIdx, resIdx, nInst
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 '
 ' @local signIdx - SIGN_NEG then SIGN_POS
-' @local speedIdx - SPEED_QTR then SPEED_HALF
+' @local speedIdx - every rung, SPEED_LOW through SPEED_HALF
 ' @local resIdx - the result slot
 ' @local nInst - instances emitted for this motor
 
     nInst := 0
     repeat signIdx from SIGN_NEG to SIGN_POS
-        repeat speedIdx from SPEED_QTR to SPEED_HALF
+        repeat speedIdx from SPEED_LOW to SPEED_HALF        ' task 3595: every rung, walking rung included
             beat(CP_EMIT)
             resIdx := resultSlot(side, signIdx, speedIdx)
             if (bResLegRan[resIdx] <> FALSE) and (resStatus[resIdx] <> FS_NOT_BRACKETED)
@@ -5447,7 +5632,16 @@ PRI speedToken(speedIdx) : pTok
 ' @param speedIdx - SPEED_* value
 ' @returns pTok - QTR or HALF
 
-    pTok := (speedIdx == SPEED_HALF) ? @sSpeedHalf : @sSpeedQtr
+    ' task 3595: a case with a real default, never a ternary. This file's token helpers fall through to
+    '  a WRONG token rather than to "?", so a rung with no case of its own would silently print another
+    '  rung's name -- which is how WS_DROOP first printed RUN_ABORT.
+    case speedIdx
+        SPEED_HALF:
+            pTok := @sSpeedHalf
+        SPEED_LOW:
+            pTok := @sSpeedLow
+        other:
+            pTok := @sSpeedQtr
 
 PRI signToken(signIdx) : pTok
 ' Increment-sign token.
