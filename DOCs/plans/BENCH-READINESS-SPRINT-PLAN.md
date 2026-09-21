@@ -2465,3 +2465,176 @@ them now buys a number we would have to discard.
 
 **Every cell must be able to fail**, and the run sheet declares the seven attributes, before the visit
 is offered.
+
+---
+
+## Sprint Revision — 2026-09-21 (evening): Visit 7b returns, and the two knobs turn out to be one
+
+**Visit 7b ran.** Two unattended legs, control first, both `src_rev,23 fmt,11`, both `exit,COMPLETE`,
+zero faults. Evidence and full findings register:
+[`../analyses/bench/2026-09-21/VISIT-7B-EVALUATION.md`](../analyses/bench/2026-09-21/VISIT-7B-EVALUATION.md);
+logs filed at `../analyses/bench/2026-09-21/`, and the Visit 7 baseline — which existed only in the
+runner's rotating gitignored `src/logs/_OLD/` — at `../analyses/bench/2026-09-20/`.
+
+**The verdict is the top row of the table above, met on its own terms and not renegotiated.**
+
+| motor | rung | VISIT 7 | CONTROL | **CANDIDATE** |
+|---|---|---|---|---|
+| LEFT | 2–5 | 1.93 / 2.02 / 2.04 / 1.97 | 1.96 / 2.04 / 2.06 / 1.99 | **0.99 / 1.01 / 0.95 / 0.98** |
+| RIGHT | 2–5 | 1.88 / 1.91 / 1.93 / 1.87 | 1.89 / 1.92 / 1.94 / 1.88 | **0.95 / 1.01 / 0.92 / 0.91** |
+
+⭐ **The control reproduced Visit 7 within 0.02 on all eight cells**, across a day and a source
+revision. That is what makes this an A/B rather than two runs.
+
+### ⛔ The prize was budgeted to the wrong correction, and the reason matters
+
+The revision above predicted the two corrections would separate cleanly: *"after correction 1 the
+ratio should collapse toward 1.0 **while absolute current stays above ideal**, and what is left over
+is the size of correction 2's prize."*
+
+**That is not what happened. Correction 1 delivered both.** Absolute netted current at rungs 3–5 fell
+**15× to 26×** at the same met rate — `amps_x10k` at rung 6 goes LEFT 7.40 A → 0.46 A, RIGHT
+7.75 A → 0.49 A — corroborated independently by the duty servo's own demand (83.7% → 53.9% at rung 5)
+and by `win_cap` (1_890_038 → 278_434 frames). Commanded rate is met in both legs at `rate/pred`
+0.989–1.009.
+
+**Why the prediction failed is the most important finding of the visit:**
+
+> ⭐⭐ **The commutation offset and the duty-servo setpoint are the same knob.**
+> `err_ = hall_angles[sector] + offset − angle_` (`src/isp_bldc_motor.spin2:4458-4465`), and the servo
+> holds `|err_|` at `sub tmpY, #256/6` = **60°** (`:4477`). The field therefore settles at
+> `hall + offset ∓ 60°`. **Offset and setpoint add.**
+
+And the arithmetic closes:
+
+- the scan moved the lead **L: 43° → 18°** — a **−25°** correction
+- the designer's prescription moves the setpoint **60° → 90°** — a **−30°** correction to the *same
+  quantity*
+
+**The same correction, reached independently, agreeing within 5°.**
+
+### This refines — not reverses — the "different in kind" table above
+
+That table remains right about correction 1 and about two of correction 2's three parts. What changes
+is the third:
+
+| Correction 2's parts | Status after Visit 7b |
+|---|---|
+| The servo holds **60°, not 90°** | ⛔ **Collapses into correction 1.** It is the same knob, and the scan has already turned it. |
+| The field **free-runs** between hall edges (60° sectors) | Unchanged — still genuinely separate, still R18.3's |
+| **Current lag grows with speed** while the lead is fixed | Unchanged — still genuinely separate, still R18.3's |
+
+Three consequences the plan now carries:
+
+1. **The commutation offsets were probably never wrong.** The 60° setpoint was, and the scan
+   compensated for it by moving the offsets. The source comment at `:4477` reads *"256 frac 6 — where
+   6 is # of hall cycles"*: **the 60° is one hall sector width, a structural number, never a torque
+   angle.**
+2. ⛔⛔ **Both corrections must never be applied together.** Adopting 14/338 *and* moving the setpoint
+   to 90° double-corrects by ~55°. The basin is **steep, not broad** — 167.1 → 13.1 mV over 30°, a
+   12.7× change — so that is catastrophic rather than marginal. This is the single largest trap in
+   R18.3 and it is now written into «#3589».
+3. **R18.3's correction 2 is no longer "hold 90° instead of 60°."** It is **"decide which knob carries
+   the lead."** The split matters for three reasons the sum does not capture: the offset is
+   feedforward and instant while the setpoint is servo-regulated; the **start transient is a setpoint
+   problem** (below); and only a servo setpoint can be made speed-dependent, so the split decides what
+   is *able* to adapt.
+
+⚠ **One prediction of `BLDC-COMMUTATION-PRINCIPLES.md` is contradicted, in our favour.** It warned the
+minimum would be broad — *"±15° from the optimum costs only a few percent."* Measured, it is a 12.7×
+basin. Consistent with off-optimum current being dominated by **circulating current that makes heat
+and no torque**, which is also the cleanest reading of the 15–26× collapse.
+
+### The start transient — an operator observation the sheet failed to ask for
+
+**Stephen, 2026-09-21, volunteered after the run:** *"there is an interesting thump at every ramp
+start. It's not immediate; it's just after the ramp starts, but it's every single ramp start for that
+second run."*
+
+The logs carry it, and the reading inverts the question. Startup peak current at the from-rest starts
+is **essentially unchanged across all three legs — 90 to 120 counts.** What collapsed is the *settled*
+current around it, ~109 → ~32, taking peak/settled from 1.01 to **2.6–4.1**.
+
+> **The thump is not new. The silence around it is.**
+
+Mechanism (source-grounded, **hypothesis, no control yet**): `initAngleFmHall` (`:4570-4584`) seeds
+`angle_ = hall + offset` at every spin-up from rest, and the control loop forms `err_` from the same
+table and the same offset — **the offset cancels, so `err_ ≡ 0` at every start, at any offset pair.**
+The servo's setpoint is 60°, so it sits in a **deadband** until `|err_|` climbs past it, then catches
+up; that catch-up is the surge. Offset-independent by construction, which is exactly what three legs
+across two offset pairs show.
+
+**Consequence:** the start transient is now the drive's worst *relative* excursion, it fires at every
+spin-up, **the commutation correction does nothing for it**, and it belongs to R18.3's low-speed and
+startup regime. Carrying more lead in the feedforward offset and less in the setpoint should shrink it
+— testable, and correct by construction.
+
+⚠ **Instrument gap, ours:** the run performs 48 spin-ups in 209 s, its most-repeated event, and no
+cell, record or trace covers a start — all 48 `BM-TS` traces trigger on stops. The only instrument
+that caught this was a person standing next to the rig.
+
+### What Visit 7b established about the offsets, and what it did not
+
+⛔ **Every scan to date swept −63° to +63° electrical — 126° of 360°, about 35%**, bounded by
+`ABORT_I` outside and by the motor faulting inside. One minimum per direction inside that window,
+cross-confirmed on two motors and reproducible across runs 4–7. **So 14/338 is a proven *local*
+minimum; it is not established as the global one.** Theory bounds it — one maximum per cycle per
+direction, and the 180° rival is the reverse-torque solution, excluded because both legs tracked their
+commanded direction at `rate/pred` ≈ 1.000 — but that is an argument, not a measurement.
+
+The wheel has **15 electrical cycles per mechanical revolution** (`hallTicInfoForMotor()`,
+`:1464-1466`), so one electrical cycle is 24° of wheel and any commutation feature repeats **15 times
+around the circumference**: one optimum seen fifteen times, not fifteen optima. The offset is an
+electrical angle applied identically in all fifteen, so "which one around the circumference" is not a
+question the parameter can express.
+
+### R18.2d–e — the work set, inserted before R18.3
+
+**Why a visit is inserted.** R18.3 + R18.4 is 13 hours of design and build, and under the previous
+order all of it rested on three unverified things: the start mechanism, whether our basin is global,
+and the offset/setpoint split. **One ~40-minute unattended wheels-up visit converts all three from
+assumption to measurement before those 13 hours are spent.**
+
+| Plan § | Deliverable | Task | Order |
+|---|---|---|---|
+| **R18.2d** | **Land what Visit 7b proved, instrument what it exposed.** Adopt `Z=−4, L=18` as the shipped 6.5″ default (the old pair becomes the flagged build). Fix `R17-DUAL-TRKICK-A` to carry kick **magnitude** — its count was flat (105 vs 109 of 178) while peak `tr_i_over` fell **6×** (1_247 → 204), so as built it reports no improvement on the run's second-largest gain and would mis-certify the drive change. Fix `R18-DUAL-OFFSETS-A`'s `crit,?` (`APPLIED_EQ_COMPILED` is 19 bytes against `TOKMAX_CRIT` 18). Add a **START trigger** to the `BM-TS` trace machinery. ⛔ **No start-transient fix here** — its mechanism has no control, and building on it is the error D2 exists to prevent. | «#3593» | 1 |
+| **R18.2e** | **Sweep the full electrical cycle**, with a fit-for-purpose instrument. Settles whether the adopted basin is global. ⛔ Non-goals, so they are not re-added: no parameterisation by motor, no stop condition for a motor whose fault behaviour is unmeasured, no user documentation. **Do** keep the seams clean — per-motor quantities in one named block. Generalising to a real motor-adoption tool is «#3592», out of this release. | «#3590» | 2 |
+| **R18.2f** | **Visit 7c — one visit, three answers.** (1) the full-cycle sweep; (2) the **start trace**, whose falsifier is stated in advance: if the surge is the servo deadband, duty stays pinned at `duty_min_` while `|err|` climbs and current surges only as `|err|` crosses 60° — *if duty moves before that crossing, the story is wrong*; (3) a **servo setpoint A/B**, `256/6` against `256/4`, **each at its own compensating lead so total field placement is held constant**, isolating the *split* rather than re-testing placement. Without that compensation the 90° leg runs 30° off-optimum, looks catastrophic, and teaches nothing. | «#3594» | 3 |
+
+Then **R18.3 as before** — designed against the corrected baseline and Visit 7c's three answers, and
+owning what is genuinely left of correction 2 — followed by R18.4, R18.5 and the existing tail.
+
+### Sequence, as re-ordered 2026-09-21 (evening)
+
+Stephen, delegating: *"I'm going to let you control priority because of findings and interactions with
+other tasks. You know better what the priority should be."*
+
+| seq | Task | Plan § | Who | est |
+|---|---|---|---|---|
+| 4 | «#3593» Land what 7b proved, instrument what it exposed | R18.2d | desk | 3h |
+| 5 | «#3590» Sweep the full electrical cycle | R18.2e | desk | 4h |
+| 6 | **«#3594» Visit 7c** | **R18.2f** | **bench, ~40 min** | 3h |
+| 7 | «#3589» Design the sensor integration | R18.3 | desk | 5h |
+| 8 | «#3583» Build the drive change | R18.4 | desk | 8h |
+| 9 | «#3584» Visit 8 | R18.5 | bench | 4h |
+
+The tail is unchanged: «#3585» (benched), «#3591», «#3576», «#3515», «#3516». Out of release:
+«#3506», «#3532», «#3562», and now «#3592».
+
+### Ruling carried into the plan: build the instrument now, generalise it later
+
+**Stephen, 2026-09-21:** *"we could just build this as our standard instrument today and use it for
+this phase for the 6.5, and use it for the doco when we get there. After having experience with it, we
+can generalize it to a real tool and make that part of a later effort."*
+
+Adopted, and it corrected an error this plan's own first rescope of «#3590» had made — specifying that
+the instrument take the motor as a parameter and carry a stop condition for *"a motor whose fault
+behaviour is unknown."* **That is designing against an imagined requirement.** The crux of generalising
+is precisely the stop condition, and it cannot be derived until a second real motor has been observed:
+the 6.5″ droops rather than faults (measured); the Doco's edge behaviour is not observed at all. The
+phasing buys **two real motors before generalising, instead of one real and one imagined** — D7 applied
+where this plan had just violated it. During the Doco run, **record what had to be edited** in the
+named constants block; that list *is* «#3592»'s specification.
+
+⛔ `ADDING_MOTOR.md` must describe the offset procedure **as it actually is** in 6.0.0 and must not
+promise a generalised tool. That constraint belongs to «#3515».
