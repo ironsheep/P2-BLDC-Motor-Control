@@ -2745,19 +2745,33 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, 
             ' moves every JUDGEMENT of an already-measured mean onto net means, but this
             ' threshold feeds a raw-sample comparison, so it must stay in the same, raw, units.
             pointLimitMv := (legMeanX10[refStartIdx] * POINT_ABORT_X100) / (X100 * X10)
-            bBracketed := TRUE                              ' a confirm rung: provisional, only to admit runFinePoints() below
+            ' EVERY RUNG WALKS AND FINDS ITS OWN MINIMUM (task 3595 follow-up, 2026-09-22).
+            '
+            ' A confirm rung used to inherit the walking rung's minimum as its centre. That assumed
+            ' the minimum is in the same place at every speed, and the 2026-09-21 shakedown measured
+            ' that it is not: the RIGHT motor's lowest MEASURED point sits at swept 15 at quarter
+            ' speed and swept 28 at an eighth -- 13 degrees apart, from raw points with nothing
+            ' fitted (DOCs/analyses/bench/2026-09-22/SHAKEDOWN-EVALUATION.md sec 4).
+            '
+            ' What that cost was the whole half-speed rung. Its confirm span was 10..40, centred on
+            ' the walk; if the trend holds, its own optimum sits near 6 -- OUTSIDE the span. It only
+            ' ever measured the rising side, which is why all four half legs came back POOR and why
+            ' no half-speed minimum has ever been demonstrated, in this run or in run 7.
+            '
+            ' The fix is NOT to shift the centre by the measured trend. Two points do not define a
+            ' law, and baking one dataset's slope into the instrument would make it agree with
+            ' itself forever. Each rung walks instead, and finds where its own minimum actually is.
+            ' That needs no assumption, and it yields the third and fourth points the speed law
+            ' needs as a by-product of measuring properly.
+            stopUp := walkSide(side, speedIdx, signIdx, 1, defSwept, pointLimitMv)
+            stopDown := walkSide(side, speedIdx, signIdx, -1, defSwept, pointLimitMv)
+            refreshLegLimits(defSwept)                      ' CHANGE 1: bound the window at the fault edge
+            bBracketed := bEvaluateBracket(side, signIdx, stopUp, stopDown)
             centreDeg := defSwept
-            if bWalkRung(speedIdx)
-                stopUp := walkSide(side, signIdx, 1, defSwept, pointLimitMv)
-                stopDown := walkSide(side, signIdx, -1, defSwept, pointLimitMv)
-                refreshLegLimits(defSwept)                  ' CHANGE 1: bound the window at the fault edge
-                bBracketed := bEvaluateBracket(side, signIdx, stopUp, stopDown)
-                if bBracketed
-                    centreDeg := legDeg[legLowIdx]
-                else
-                    fitStatus := FS_NOT_BRACKETED
+            if bBracketed
+                centreDeg := legDeg[legLowIdx]
             else
-                centreDeg := floatToBoundedInt(resMinF[walkSlot], LIM_TINY)
+                fitStatus := FS_NOT_BRACKETED
             if bBracketed and (abortReason == AR_NONE)
                 legExit := runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv)
                 fitLeg(centreDeg, fitMinPtsFor(speedIdx), speedIdx)
@@ -2765,10 +2779,11 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, 
                     legExit := runExtension(side, speedIdx, signIdx, defSwept, pointLimitMv)
                     fitLeg(centreDeg, fitMinPtsFor(speedIdx), speedIdx)
                     bFitExtended := TRUE
-                if bWalkRung(speedIdx) == FALSE
-                    ' task 3540 D2: the real rise-on-both-sides test, now that the confirm/cliff
-                    ' points exist to judge it against -- overwrites the provisional TRUE above.
-                    bBracketed := bEvaluateConfirmBracket()
+                ' task 3540 D2: the real rise-on-both-sides test, over the points fitLeg() ACTUALLY
+                '  fits, now that they exist. Applied to every rung since 2026-09-22: the walk's own
+                '  verdict above is taken from COARSE points while the fit is built from FINE ones,
+                '  and a bracket verdict should judge the data the fit used, not its neighbours.
+                bBracketed := bEvaluateConfirmBracket()
             if abortReason == AR_NONE
                 refEndIdx := legMeasure(side, speedIdx, signIdx, PH_REF_END, defSwept, refWinTicks, pointLimitMv)
     if (abortReason <> AR_NONE) and (legExit == LX_DONE)
@@ -3113,11 +3128,12 @@ PRI beyondLowCount(walkDir, defSwept) : nBeyond | ptIdx
                     if isValidIdx(ptIdx) or (legResult[ptIdx] == PR_ABORT_I)
                         nBeyond += 1
 
-PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepIdx, sweptDeg, ptIdx, ...
+PRI walkSide(side, speedIdx, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepIdx, sweptDeg, ptIdx, ...
     sideConsec, nPts, lastSwept, droopConsec
 ' Walk coarse points out from the default until RISE, FAULTS, HARD_LIMIT or a run abort.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - the rung this walk runs at; every rung walks and locates its own minimum
 ' @param signIdx - SIGN_NEG or SIGN_POS
 ' @param walkDir - +1 up, -1 down
 ' @param defSwept - default offset, swept degrees
@@ -3144,7 +3160,7 @@ PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepId
             walkStop := WS_RUN_ABORT
             quit
         sweptDeg := defSwept + (walkDir * stepIdx * COARSE_STEP_DEG)
-        ptIdx := legMeasure(side, SPEED_WALK, signIdx, PH_COARSE, sweptDeg, WIN_TICKS_COARSE_LOW, pointLimitMv)
+        ptIdx := legMeasure(side, speedIdx, signIdx, PH_COARSE, sweptDeg, coarseTicksFor(speedIdx), pointLimitMv)
         nPts += 1
         lastSwept := sweptDeg
         updateLegLow()
@@ -3173,7 +3189,7 @@ PRI walkSide(side, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepId
             walkStop := WS_RISE
             quit
     if walkStop == WS_FAULTS
-        refineCliffEdge(side, signIdx, walkDir, defSwept, stepIdx, sideConsec, pointLimitMv)
+        refineCliffEdge(side, speedIdx, signIdx, walkDir, defSwept, stepIdx, sideConsec, pointLimitMv)
     noteBoundary(walkDir, walkStop, ptIdx)
     emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
 
@@ -3231,7 +3247,7 @@ PRI boundTypeFor(walkStop, lastIdx) : boundType
         other:
             boundType := BT_NONE
 
-PRI refineCliffEdge(side, signIdx, walkDir, defSwept, curStep, curConsec, pointLimitMv) | goodStep, ...
+PRI refineCliffEdge(side, speedIdx, signIdx, walkDir, defSwept, curStep, curConsec, pointLimitMv) | goodStep, ...
     goodDeg, faultDeg
 ' Fine-walk into the fault edge the coarse walk just found (PL-31 / BS-CLIFF): reset this
 ' phase's consecutive-fault counter (mirrors runFinePoints/runExtension), then hand off to
@@ -3241,6 +3257,7 @@ PRI refineCliffEdge(side, signIdx, walkDir, defSwept, curStep, curConsec, pointL
 ' tightest good/fault pair from every point in the leg.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - the rung whose walk stopped on faults
 ' @param signIdx - SIGN_NEG or SIGN_POS
 ' @param walkDir - +1 up, -1 down -- the direction that just stopped on faults
 ' @param defSwept - default offset, swept degrees
@@ -3256,7 +3273,7 @@ PRI refineCliffEdge(side, signIdx, walkDir, defSwept, curStep, curConsec, pointL
     goodStep := curStep - curConsec
     goodDeg := defSwept + (walkDir * goodStep * COARSE_STEP_DEG)
     faultDeg := goodDeg + (walkDir * COARSE_STEP_DEG)
-    probeTowardFault(side, SPEED_WALK, signIdx, walkDir, goodDeg, faultDeg, WIN_TICKS_COARSE_LOW, pointLimitMv)
+    probeTowardFault(side, speedIdx, signIdx, walkDir, goodDeg, faultDeg, coarseTicksFor(speedIdx), pointLimitMv)
 
 PRI probeTowardFault(side, speedIdx, signIdx, dir, goodDeg, faultDeg, winTicks, pointLimitMv) | probeDeg, nextDeg, ptIdx
 ' Task 3540 D1 (coordinator review): after a clean cliff probe, keep probing CLIFF_HALF_STEP_DEG
@@ -3911,6 +3928,19 @@ PRI bFitAdmitsCliff(speedIdx) : bAdmits
 ' @returns bAdmits - TRUE for a confirm rung
 
     bAdmits := (bWalkRung(speedIdx) == FALSE)
+
+PRI coarseTicksFor(speedIdx) : winTicks
+' The COARSE walk's window for a rung, in hall ticks (task 3595 follow-up). Same principle as
+' winTicksFor(): halving the rate halves the ticks, so every rung's coarse point lasts about the same
+' wall-clock time and their currents are comparable.
+'
+' @param speedIdx - SPEED_* rung
+' @returns winTicks - coarse window length in hall ticks
+
+    if bWalkRung(speedIdx)
+        winTicks := WIN_TICKS_COARSE_LOW
+    else
+        winTicks := WIN_TICKS_COARSE
 
 PRI winTicksFor(speedIdx) : winTicks
 ' Task 3595: the measurement window, in hall ticks, for a rung's fine/confirm points. Each rung's
