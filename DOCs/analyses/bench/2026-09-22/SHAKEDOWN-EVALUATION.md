@@ -1,5 +1,12 @@
 # Shakedown of the two rebuilt instruments — 2026-09-21 evening
 
+> ⚠ **Two figures in §4 are superseded by `SCAN-SELFLOCATE-EVALUATION.md` (same folder).** That run
+> let every rung locate its own minimum and showed this one's quarter-speed values were biased by the
+> inherited centre. **`L` moves 10–12° per halving, not 9.55°** (the effect is larger), and **`Z` is
+> −3.7° ± 0.6° across five measurements, not stable to 0.15°** (that was one motor's coincidence).
+> The *direction and substance* of §4 stand and were strengthened; the two numbers did not.
+> Everything else in this report is unaffected.
+
 **Logs (this folder, both COMPLETE):**
 - `debug_260921-174553.log` — 2,381 lines, tier `dual-align`, `test_bench_dual.bin`, ALIGN part.
 - `debug_260921-174731.log` — 1,702 lines, tier `scan`, `test_bench_scan.bin`, `src_rev 17, fmt 10`.

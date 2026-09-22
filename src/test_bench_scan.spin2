@@ -589,6 +589,14 @@ CON { safety thresholds }
     ABS_ABORT_MV        = 1_500                             ' 10 A at 150 mV/A; 1.6x the highest Pass 1 sample
     ABS_ABORT_SAMPLES   = 4
     POINT_ABORT_X100    = 250                               ' 2.5x the leg reference
+    ' The ceiling that ordering imposes (2026-09-22). The point-scope abort must be able to fire
+    '  BEFORE the run-scope absolute abort, or a single high-current point ends the run -- which is
+    '  exactly what happened at the half-speed rung, where a 952.9 mV reference put the relative limit
+    '  at 2_382 mV against a 1_500 mV absolute. 80 % of the absolute leaves 300 mV of headroom, and
+    '  the absolute abort additionally needs ABS_ABORT_SAMPLES consecutive reads, so a point on the
+    '  way up trips the survivable guard first with room to spare.
+    POINT_ABORT_CEIL_PCT = 80
+    POINT_ABORT_CEIL_MV  = (ABS_ABORT_MV * POINT_ABORT_CEIL_PCT) / 100
     POINT_ABORT_SAMPLES = 40
     SPEED_CURRENT_RATIO = 5                                 ' Pass 1 half/quarter current ratio
     RUN_TIME_CAP_S      = 1_800
@@ -2719,15 +2727,14 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, 
     legLimitDownDeg := defSwept - HARD_LIMIT_DEG
     legExit := LX_DONE
     refEndIdx := -1
-    if bWalkRung(speedIdx)
-        refWinTicks := WIN_TICKS_LOW                        ' task 3595: fewer TICKS at an eighth is the same TIME per point
-        refLimitMv := (selfMeanX10[selfSlot(side, signIdx)] * POINT_ABORT_X100) / (X100 * X10)
-    elseif speedIdx == SPEED_QTR
-        refWinTicks := WIN_TICKS_FINE
-        refLimitMv := (selfMeanX10[selfSlot(side, signIdx)] * POINT_ABORT_X100) / (X100 * X10)
+    ' Every refLimitMv goes through pointAbortLimit() too, for the reason it documents: a REF_START
+    '  point is measured at the LEGACY offset, which at half speed is itself a high-current place
+    '  (MEASURED 952.9 mV, debug_260921-192618.log seq 67), so its guard needs the same ordering.
+    refWinTicks := winTicksFor(speedIdx)
+    if bWalkRung(speedIdx) or (speedIdx == SPEED_QTR)
+        refLimitMv := pointAbortLimit(selfMeanX10[selfSlot(side, signIdx)])
     else
-        refWinTicks := WIN_TICKS_HALF
-        refLimitMv := (selfMeanX10[selfSlot(side, signIdx)] * SPEED_CURRENT_RATIO * POINT_ABORT_X100) / (X100 * X10)
+        refLimitMv := pointAbortLimit(selfMeanX10[selfSlot(side, signIdx)] * SPEED_CURRENT_RATIO)
 
     ' task 3595: a CONFIRM rung centres on the WALKING rung's fit, so it is the walk slot that must
     '  have produced a usable one -- not quarter speed, which is now itself a confirm rung.
@@ -2744,7 +2751,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, 
             ' against a raw live sample would be off by the zero every time -- scan v4 CHANGE 2
             ' moves every JUDGEMENT of an already-measured mean onto net means, but this
             ' threshold feeds a raw-sample comparison, so it must stay in the same, raw, units.
-            pointLimitMv := (legMeanX10[refStartIdx] * POINT_ABORT_X100) / (X100 * X10)
+            pointLimitMv := pointAbortLimit(legMeanX10[refStartIdx])
             ' EVERY RUNG WALKS AND FINDS ITS OWN MINIMUM (task 3595 follow-up, 2026-09-22).
             '
             ' A confirm rung used to inherit the walking rung's minimum as its centre. That assumed
@@ -2766,7 +2773,7 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, 
             stopUp := walkSide(side, speedIdx, signIdx, 1, defSwept, pointLimitMv)
             stopDown := walkSide(side, speedIdx, signIdx, -1, defSwept, pointLimitMv)
             refreshLegLimits(defSwept)                      ' CHANGE 1: bound the window at the fault edge
-            bBracketed := bEvaluateBracket(side, signIdx, stopUp, stopDown)
+            bBracketed := bEvaluateBracket(side, speedIdx, signIdx, stopUp, stopDown)
             centreDeg := defSwept
             if bBracketed
                 centreDeg := legDeg[legLowIdx]
@@ -3191,7 +3198,7 @@ PRI walkSide(side, speedIdx, signIdx, walkDir, defSwept, pointLimitMv) : walkSto
     if walkStop == WS_FAULTS
         refineCliffEdge(side, speedIdx, signIdx, walkDir, defSwept, stepIdx, sideConsec, pointLimitMv)
     noteBoundary(walkDir, walkStop, ptIdx)
-    emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
+    emitWalk(side, speedIdx, signIdx, walkDir, nPts, lastSwept, walkStop)
 
 PRI noteBoundary(walkDir, walkStop, lastIdx)
 ' Task 3595: record WHAT stopped this side of the arc, so the leg reports a boundary TYPE at each end
@@ -3354,7 +3361,7 @@ PRI computeLegCliff(defSwept, signIdx) | dir, ptIdx, dist, goodDist, faultDist
         legCliffGoodDeg := defSwept + (dir * goodDist)
         legCliffFaultDeg := defSwept + (dir * faultDist)
 
-PRI bEvaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelowOk, bAboveOk, reason, ...
+PRI bEvaluateBracket(side, speedIdx, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBelowOk, bAboveOk, reason, ...
     missingStop, risePctUp, risePctDown
 ' Decide whether a high point exists on both sides of the low; emit BS-BRACKET. CHANGE 1: a side
 ' whose walk stopped WS_FAULTS is judged inside its fault-bounded window (legLimitUpDeg/Down,
@@ -3363,6 +3370,7 @@ PRI bEvaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBel
 ' point itself is one of them, so it qualifies on its own reading like any other point.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - the rung whose walk this judges, carried through to BS-BRACKET
 ' @param signIdx - SIGN_NEG or SIGN_POS
 ' @param stopUp - walk stop of the up side
 ' @param stopDown - walk stop of the down side
@@ -3403,7 +3411,7 @@ PRI bEvaluateBracket(side, signIdx, stopUp, stopDown) : bBracketed | ptIdx, bBel
             reason := BR_RUN_ABORT
         else
             reason := BR_EDGE_HARD_LIMIT
-    emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
+    emitBracket(side, speedIdx, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
 
 PRI bWithinHardLimit(sweptDeg, defSwept) : bWithin
 ' Report whether an offset lies within default +/- HARD_LIMIT_DEG.
@@ -3929,6 +3937,33 @@ PRI bFitAdmitsCliff(speedIdx) : bAdmits
 
     bAdmits := (bWalkRung(speedIdx) == FALSE)
 
+PRI pointAbortLimit(refMeanX10) : limitMv
+' The per-point relative current abort, in raw mV, CLAMPED BELOW THE ABSOLUTE ABORT (2026-09-22).
+'
+' NOTE -- THE TWO GUARDS WERE IN THE WRONG ORDER, AND IT COST A WHOLE RUN. The point-scope abort is
+' POINT_ABORT_X100 (2.5x) of the leg's own reference and ends ONE point; the absolute abort is
+' ABS_ABORT_MV and ends the RUN. At the half-speed rung the leg reference measured 952.9 mV
+' (debug_260921-192618.log seq 67), so the point-scope limit computed to 2_382 mV -- 59 % ABOVE the
+' 1_500 mV that kills the run. The graduated guard could not fire first, so the first genuinely
+' high-current point took the entire run with it: 68 points in, the RIGHT motor never started, and no
+' half-speed minimum was obtained. The arithmetic makes it structural rather than unlucky -- ANY rung
+' whose reference exceeds ABS_ABORT_MV / 2.5 = 600 mV has its relative guard disarmed.
+'
+' NOTE -- THE ABSOLUTE ABORT IS NOT TOUCHED. It is the unattended-safety backstop, and lowering a safety
+' limit so a test can pass is the retreat D1 forbids. What is corrected is the ORDER: the survivable
+' guard is brought back below the fatal one, which is where the design always intended it.
+'
+' The headroom below the absolute abort is deliberate rather than exact. It only has to be enough that
+' a rising point trips the point guard on a sample or two before it would trip the absolute one, and
+' ABS_ABORT_SAMPLES consecutive reads are required for the absolute abort, so a modest margin
+' suffices. The clamp is reported in BS-LIMITS beside both limits, so a reader sees which one bound.
+'
+' @param refMeanX10 - the leg's reference current, raw mean x10 mV
+' @returns limitMv - the per-point abort threshold in raw mV, never at or above the absolute abort
+
+    limitMv := (refMeanX10 * POINT_ABORT_X100) / (X100 * X10)
+    limitMv := limitMv <# POINT_ABORT_CEIL_MV
+
 PRI coarseTicksFor(speedIdx) : winTicks
 ' The COARSE walk's window for a rung, in hall ticks (task 3595 follow-up). Same principle as
 ' winTicksFor(): halving the rate halves the ticks, so every rung's coarse point lasts about the same
@@ -4362,6 +4397,7 @@ PRI emitLimits()
     benchLog.numField(@"fold_back_a", wheelL.I_PEAK_A, LIM_SMALL)
     benchLog.numField(@"abs_abort_samples", ABS_ABORT_SAMPLES, LIM_SMALL)
     benchLog.numField(@"point_abort_x100", POINT_ABORT_X100, LIM_SMALL)
+    benchLog.numField(@"point_abort_ceil_mV", POINT_ABORT_CEIL_MV, LIM_SMALL)   ' 2026-09-22: the guard ordering, visible per run
     benchLog.numField(@"point_abort_samples", POINT_ABORT_SAMPLES, LIM_SMALL)
     benchLog.numField(@"run_time_cap_s", RUN_TIME_CAP_S, LIM_SMALL)
     benchLog.numField(@"run_charge_cap_mVs", RUN_CHARGE_CAP_MVS, LIM_MID)
@@ -4708,10 +4744,16 @@ PRI emitChecksum(side, bStartOk, bZeroPass, bPosIOk, bNegIOk, ratioX1000, bRatio
     benchLog.tokenField(@"first_miss", missToken(missCode), TOKMAX_MISS)
     lineEmit()
 
-PRI emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
+PRI emitWalk(side, speedIdx, signIdx, walkDir, nPts, lastSwept, walkStop)
 ' Emit BS-WALK for one coarse side.
 '
+' The rung is a PARAMETER, not a constant. It was briefly hardcoded to the walking rung, from when
+' that was the only rung that walked -- and the 2026-09-21 19:26 run shows what that cost: all ten
+' BS-WALK rows read `speed,LOW` though four of them were quarter-rung walks. A record that names the
+' wrong rung is worse than one that names none, because it will be believed.
+'
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - the rung that performed this walk
 ' @param signIdx - SIGN_NEG or SIGN_POS
 ' @param walkDir - +1 up, -1 down
 ' @param nPts - points measured on this side
@@ -4720,7 +4762,7 @@ PRI emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
 
     benchLog.begin(@"BS-WALK")
     benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    benchLog.tokenField(@"speed", speedToken(SPEED_WALK), TOKMAX_SPEED)  ' task 3595: only the walking rung walks, and it is no longer QTR
+    benchLog.tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)
     benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
     benchLog.tokenField(@"side", (walkDir > 0) ? @sSideUp : @sSideDown, TOKMAX_WALK_SIDE)
     benchLog.numField(@"pts", nPts, LIM_TINY)
@@ -4731,10 +4773,11 @@ PRI emitWalk(side, signIdx, walkDir, nPts, lastSwept, walkStop)
     benchLog.naNumField(@"low_net_mV_x10", lowNetOrZero(), LIM_SMALL, legLowIdx >= 0)  ' task 3540 D5
     lineEmit()
 
-PRI emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
+PRI emitBracket(side, speedIdx, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
 ' Emit BS-BRACKET.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - the rung whose walk this bracket judges
 ' @param signIdx - SIGN_NEG or SIGN_POS
 ' @param bBelowOk - high point below the low exists
 ' @param bAboveOk - high point above the low exists
@@ -4743,7 +4786,7 @@ PRI emitBracket(side, signIdx, bBelowOk, bAboveOk, bBracketed, reason)
 
     benchLog.begin(@"BS-BRACKET")
     benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    benchLog.tokenField(@"speed", speedToken(SPEED_WALK), TOKMAX_SPEED)  ' task 3595: the bracket is the walking rung's
+    benchLog.tokenField(@"speed", speedToken(speedIdx), TOKMAX_SPEED)   ' every rung walks; name the one that did
     benchLog.tokenField(@"sign", signToken(signIdx), TOKMAX_SIGN)
     benchLog.naNumField(@"low_swept_deg", lowDegOrZero(), LIM_TINY, legLowIdx >= 0)
     benchLog.naNumField(@"low_mV_x10", lowMeanOrZero(), LIM_SMALL, legLowIdx >= 0)
