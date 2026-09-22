@@ -2387,9 +2387,17 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' validVoltageForChoice() check on it -- meaningful, and lets two motors run at different
     ' voltages.
     confgurePowerLimits(eMotorVoltage)
-    ' R18.4 D-1: the feedforward's scale is duty_max over this motor-and-voltage's ceiling increment -- the
-    '  speed at which the back-EMF uses the whole duty range. Never 0: the driver divides by it.
-    ff_ceiling := abs(maxFwdIncreAtPwr) #> 1
+    ' R18.4 D-1: the feedforward's scale is the increment at which the motor's back-EMF would use the whole
+    '  duty range. Task 3603 (PL-107): it is the MOTOR's back-EMF line, not the speed ceiling. Until now it
+    '  was read from maxFwdIncreAtPwr, so raising the ceiling (LIMITS-RESET-PLAN.md L1) would silently have
+    '  weakened the feedforward. The 6.5in line is measured at 18.5 V and scales with the bus voltage.
+    '  The Doco motor has no measured line, so its ceiling table stands in, and its ceilings are not moved.
+    '  Never 0: the driver divides by it.
+    if user.MOTOR_TYPE == MOTR_6_5_INCH
+        ff_ceiling := muldiv64(HUB_FF_INCR_AT_NOMINAL, nominalMilliVolts(eMotorVoltage), HUB_FF_NOMINAL_MV)
+    else
+        ff_ceiling := abs(maxFwdIncreAtPwr)
+    ff_ceiling #>= 1
 
     rSenseForBoard := VALUE_NOT_SET
     if eDetectedBoard == REV_A
@@ -2646,6 +2654,12 @@ CON { 6.5in hub commutation: hall zero and per-direction lead }
     '  and the legacy build's. Tenths of a degree; points at the
     '  eighth, quarter, half and full 18.5 V rungs, one octave apart, interpolated linearly inside each
     '  octave (within ~1 deg of log-speed interpolation at the measured 12.2 deg per doubling).
+    ' Task 3603 (PL-107): the 6.5in back-EMF line the feedforward scales by, kept apart from the speed ceiling.
+    '  MEASURED at 18.5 V: steady duty runs 167-174 per 1e6 of increment (Visit 7c ladder), so duty_max is
+    '  reached at ~147e6. The power table's rows follow the same line scaled by voltage, to within 2.5 %.
+    HUB_FF_INCR_AT_NOMINAL = 147_000_000
+    HUB_FF_NOMINAL_MV      = 18_500
+
     LEAD_POINTS           = 4
     TENTHS_PER_DEGREE     = 10
     TENTHS_PER_TURN       = 3600
@@ -4076,9 +4090,10 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 4         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 5         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
+                                            ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
 
     ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
     LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts
@@ -4206,7 +4221,7 @@ VAR  {  Motor Parameters  }
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
     LONG    duty_max        ' was PWMLIM << 4 <# PWMLIM << 4 but now runtime loaded
     LONG    servo_shift     ' R18.4 D-2: the trim's accumulator shift (SERVO_ACC_SHIFT)
-    LONG    ff_ceiling      ' R18.4 D-1: the power table's ceiling increment; feedforward = |drv_incr| * duty_max / this
+    LONG    ff_ceiling      ' R18.4 D-1: the motor's back-EMF line (task 3603), NOT the speed ceiling; feedforward = |drv_incr| * duty_max / this
     LONG    dead_gap        ' delay between driving h/l side of driver (never drive both at once)
     LONG    ramp_down       ' angle decrement when slowing down
     LONG    cfg_ctcks       ' # clock ticks of the 500 uSec drive-pass deadline (the pass runs every 23 ADC frames, PL-50)

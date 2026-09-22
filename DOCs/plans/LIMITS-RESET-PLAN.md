@@ -100,7 +100,7 @@ that needs the PLOT panel work («#3585») unbenched.
 | 4 | **Move the limits** from Visit 9's report: the L1 ceiling table (18.5 V measured, other voltages scaled by voltage and marked DERIVED), L2 `duty_max` if E2 passes, L3 ramps, L5 floor. The speed-ceiling table in `MOTOR_CHOICE.md` follows. | build-check; a confirming `dual-a` | new; feeds «#3515» |
 | 5 | **E5** under load | the floor-run sheet | «#3591» / «#3576» |
 
-**The one decision that is Stephen's** (raised on its own, not here): raising L1 changes what `power` 100 means,
-because power maps linearly onto the ceiling (C-7). A robot commanded at 60 today would go faster after the
-update. Either power keeps its meaning and the extra range is reached another way, or the scale changes and
-the release note says so.
+**What `power` means when L1 moves — settled by the API, not a decision.** `power` 100 is top speed (C-7:
+power maps linearly onto the ceiling), so when the ceiling rises, 100 rises with it. STEPHEN, 2026-09-22:
+*"100 means top speed, if we moved it, 100 meaning moves."* The release note states the effect: an app runs
+faster at the same `power`, by the ratio Visit 9 measures («#3515»).
