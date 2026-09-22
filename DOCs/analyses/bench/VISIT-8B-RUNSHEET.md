@@ -10,8 +10,8 @@ confirms the table and finishes the one speed that did not bracket.
 
 | Load | Every `BM-BANNER` / `BM-BUILD` must read |
 |---|---|
-| both | `src_rev,29` · `fmt,17` · `drv_rev,4` |
-| `dual-a` | part `A`. Its `BM-RUNG` offsets now **change with speed** (the lead table), so `R18-DUAL-OFFSETS-A` is read against the table, not against 14/338 |
+| both | `src_rev,30` · `fmt,17` · `drv_rev,4` |
+| `dual-a` | part `A`. Its `BM-RUNG` offsets now **change with speed** (the lead table); `R18-DUAL-OFFSETS-A` expects the table's pair at each rung, so it must still PASS |
 | `dual-lead` | part `LEAD`; nine steps per speed, from −7° to 33° |
 
 ---

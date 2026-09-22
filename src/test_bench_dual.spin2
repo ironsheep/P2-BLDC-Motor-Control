@@ -194,6 +194,10 @@
 ''               lowest step; R18-DUAL-LEAD-KNOWN is retired (its answer was the old servo's). Part D's A-8
 ''               not-following cell judges only a poll where the wheel IS short, and the new BM-HOLD logs what
 ''               both BLOCKED-step cells were judged on. drv_rev reads 4 (the lead table filled).
+''               22 Sep 2026 -- SRC_REV=30, FMT 17: task 3601. R18-DUAL-OFFSETS-A expects the pair the lead
+''               schedule gives at the wheel's present speed (testGetLead()), not the compiled fixed pair, which
+''               is now the expectation only when the schedule is off. On the filled table it would otherwise
+''               have failed every rung whose lead is not 18.
 ''
 '' =================================================================================================
 
@@ -257,7 +261,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 29                                       ' hand-bumped whenever this file changes
+    SRC_REV     = 30                                       ' hand-bumped whenever this file changes
     FMT_VERSION = 17                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -1087,6 +1091,7 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     INTEG_SUM_LO      = 0
     INTEG_SUM_HI      = 0
     DEGREES_IN_TURN   = 360                                 ' one turn, for the offset expectation
+    TENTHS_PER_DEG    = 10                                  ' the lead schedule's unit (the driver's TENTHS_PER_DEGREE)
     TRACE_LOST_LO     = 0
     TRACE_LOST_HI     = 0
     OFFSET_BAD_LO     = 0                                   ' R18.2c: rungs whose applied offsets are not the compiled pair
@@ -3437,7 +3442,7 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, windowMs, bPollCurren
     safeEvent := SAFE_NONE
     bReached := FALSE
     rsOffNeg, rsOffPos := wheelGetOffsets(side)
-    foldOffsetCheck(rsOffNeg, rsOffPos)
+    foldOffsetCheck(side, rsOffNeg, rsOffPos)
     _, rgDutyMax, _, _ := wheelDriveConstants(side)
     missedStart, illegalStart := wheelIntegrity(side)
     if bInstArm(INST_SRC_WHEELS, 1) == FALSE
@@ -3785,7 +3790,7 @@ PRI rungSkip(seg, rid, rungIdx, side, motorIncre, whyCode)
 ' @param whyCode - WHY_* naming why it did not run
 
     rsOffNeg, rsOffPos := wheelGetOffsets(side)
-    foldOffsetCheck(rsOffNeg, rsOffPos)
+    foldOffsetCheck(side, rsOffNeg, rsOffPos)
     emitRung(seg, rid, rungIdx, side, motorIncre, RES_SKIPPED, 0, FALSE, FALSE, whyCode)
     segItems := (segItems + 1) <# LIM_SMALL
 
@@ -9354,6 +9359,14 @@ PRI isWheelReady(side) : bReady
         bReady := wheelL.isReady()
     beat(CP_LIB_QUERY)
 
+PRI scheduledDegrees(offsetTenths) : offDegrees
+' One leg of the scheduled pair in whole degrees, rounded exactly as the driver's writeOffsetsTenths() does.
+'
+' @param offsetTenths - Z * 10 +- the lead in tenths, within one turn either way
+' @returns offDegrees - the leg in whole degrees, 0..359
+
+    offDegrees := ((((offsetTenths + DEGREES_IN_TURN * TENTHS_PER_DEG) // (DEGREES_IN_TURN * TENTHS_PER_DEG)) + TENTHS_PER_DEG / 2) / TENTHS_PER_DEG) // DEGREES_IN_TURN
+
 PRI expectedOffsets() : offNeg, offPos
 ' The commutation pair this BUILD compiled, derived from the motor object's own constants.
 '
@@ -9371,16 +9384,35 @@ PRI expectedOffsets() : offNeg, offPos
     if offPos < 0
         offPos += DEGREES_IN_TURN
 
-PRI foldOffsetCheck(offNeg, offPos) | expNeg, expPos
-' Count one reading of the applied offsets against the compiled pair (R18-DUAL-OFFSETS-A).
+PRI foldOffsetCheck(side, offNeg, offPos) | expNeg, expPos, bScheduled, leadTenths
+' Count one reading of the applied offsets against what the build should apply (R18-DUAL-OFFSETS-A).
 '
+' Task 3601: with the lead schedule on, the pair changes with speed, so the expectation is the pair the
+' schedule gives at the wheel's present speed (testGetLead()), not the compiled fixed pair -- which is now
+' only the expectation when the schedule is off (the legacy build, or after a test set the pair by hand).
+' Read at a rung's start, when the wheel is steady at the previous rung, so the front cog's one-slot write
+' lag cannot separate the two readings.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param offNeg - applied offset_fwd degrees
 ' @param offPos - applied offset_rev degrees
 '
-' @local expNeg - the compiled offset_fwd degrees
-' @local expPos - the compiled offset_rev degrees
+' @local expNeg - the expected offset_fwd degrees
+' @local expPos - the expected offset_rev degrees
+' @local bScheduled - T/F where T means the wheel's lead schedule is on
+' @local leadTenths - the schedule's lead at the present speed, tenths of a degree
 
-    expNeg, expPos := expectedOffsets()
+    beat(CP_LIB_OFFSETS)
+    if side == SIDE_RIGHT
+        bScheduled, leadTenths := wheelR.testGetLead()
+    else
+        bScheduled, leadTenths := wheelL.testGetLead()
+    beat(CP_LIB_OFFSETS)
+    if bScheduled == TRUE
+        expNeg := scheduledDegrees(wheelL.HUB_HALL_ZERO_DEGR * TENTHS_PER_DEG + leadTenths)
+        expPos := scheduledDegrees(wheelL.HUB_HALL_ZERO_DEGR * TENTHS_PER_DEG - leadTenths)
+    else
+        expNeg, expPos := expectedOffsets()
     sfOffsetN := (sfOffsetN + 1) <# LIM_SMALL
     if (offNeg <> expNeg) or (offPos <> expPos)
         sfOffsetBad := (sfOffsetBad + 1) <# LIM_SMALL
