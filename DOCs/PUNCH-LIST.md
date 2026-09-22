@@ -5236,6 +5236,8 @@ waiting on its rotor (`lag_s >= LAG_SOFT`) never completes, so an overloaded whe
 branch. A user easing off a struggling motor is ignored. That breaks the API's promise (doctrine P3), and
 it would silently defeat the hold at the achievable rate and the two-wheel path limiter.
 
+**BUILT 2026-09-22 at «#3583» (DRIVER_REV 2); not yet certified: Visit 8's A-6 judges it.**
+
 **Disposition: designed into «#3589», built by «#3583».** `DRIVE-INTEGRATION-DESIGN.md` §5.3 D-4 removes the
 busy test. `.newRqst`'s own branches already handle a change from any running speed and either sign, so
 the fix deletes code. Visit 8's A-6 certifies it, and the shipped binary fails that cell by construction.

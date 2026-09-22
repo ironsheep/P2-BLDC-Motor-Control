@@ -1309,6 +1309,9 @@ PUB testSetLimit(newMaxLimit) : eError
 PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) : eError | fwdDegrees, revDegrees
 '' TESTING USE: set offsets so we can characterize motor current draw
 ''
+'' Turns the dynamic lead schedule OFF, so the pair set here stays applied until
+'' testSetLeadScheduled(TRUE); the call takes about a millisecond (see applyFixedOffsets()).
+''
 '' @param newOfsDegr - the commutation offset to apply, in degrees
 '' @param bFwdIsInverse - T/F where T means forward is the inverse of reverse (DocoEng motor), F the reverse (6.5in motor)
 '' @returns eError - NO_ERROR
@@ -1326,10 +1329,7 @@ PUB testSetFwdRevOffsets(newOfsDegr, bFwdIsInverse) : eError | fwdDegrees, revDe
         fwdDegrees := newOfsDegr
         revDegrees := 360 - fwdDegrees
 
-    offset_fwd  := fwdDegrees frac 360
-    offset_rev  := revDegrees frac 360
-    offset_fwd_degrees := fwdDegrees
-    offset_rev_degrees := revDegrees
+    applyFixedOffsets(fwdDegrees, revDegrees)                                   ' R18.4: turns the lead schedule off
     debug[user.DBGCH_TEST]("MOT:  ", sdec(fwdDegrees), uhex_long(offset_fwd))
     debug[user.DBGCH_TEST](" (tst)", sdec(revDegrees), uhex_long(offset_rev))
     eError := NO_ERROR
@@ -1341,7 +1341,8 @@ PUB testSetFwdRevIndep(fwdDegrees, revDegrees) : eError
 '' motor current draw with asymmetric commutation angles. Both inputs are
 '' normalised into 0..359 (by bounded add/subtract-360 steps) before they are
 '' converted and applied, and the NORMALISED degrees are what testGetFwdRevIndep()
-'' returns.
+'' returns. Turns the dynamic lead schedule OFF, so the pair stays applied until
+'' testSetLeadScheduled(TRUE); the call takes about a millisecond (see applyFixedOffsets()).
 ''
 '' DETAIL: offset_fwd is applied to NEGATIVE motor increments and offset_rev to POSITIVE
 '' motor increments -- the names do not describe the direction of travel.
@@ -1356,11 +1357,8 @@ PUB testSetFwdRevIndep(fwdDegrees, revDegrees) : eError
 '' @returns eError - NO_ERROR
 
     ' FRAC's behaviour for a negative or >= 360 operand is not established, so the operand is
-    '  always brought into 0..359 first
-    offset_fwd_degrees := normalisedDegrees(fwdDegrees)
-    offset_rev_degrees := normalisedDegrees(revDegrees)
-    offset_fwd  := offset_fwd_degrees frac DEGREES_PER_TURN
-    offset_rev  := offset_rev_degrees frac DEGREES_PER_TURN
+    '  always brought into 0..359 first (applyFixedOffsets() does it)
+    applyFixedOffsets(fwdDegrees, revDegrees)                                   ' R18.4: turns the lead schedule off
     debug[user.DBGCH_TEST]("MOT:  ", sdec(offset_fwd_degrees), uhex_long(offset_fwd))
     debug[user.DBGCH_TEST](" (ind)", sdec(offset_rev_degrees), uhex_long(offset_rev))
     eError := NO_ERROR
@@ -1369,14 +1367,41 @@ PUB testGetFwdRevIndep() : fwdDegrees, revDegrees
 '' TESTING USE: return the currently-applied forward and reverse commutation offsets
 ''
 '' Returns the offsets that are ACTUALLY applied by the driver, whether set by init(),
-'' testSetFwdRevOffsets(), or testSetFwdRevIndep(). This getter is used
-'' by automated offset scans (Bench Pass 2a) to verify the offsets before sweeping.
+'' the dynamic lead schedule (rounded to whole degrees), testSetFwdRevOffsets(), or
+'' testSetFwdRevIndep(). This getter is used by automated offset scans (Bench Pass 2a)
+'' to verify the offsets before sweeping.
 ''
 '' @returns fwdDegrees - commutation offset for negative increments, in degrees
 '' @returns revDegrees - commutation offset for positive increments, in degrees
 
     fwdDegrees := offset_fwd_degrees
     revDegrees := offset_rev_degrees
+
+PUB testSetLeadScheduled(bEnable) : eError
+'' TESTING USE: turn the dynamic lead schedule on or off
+''
+'' While on, this motor's front cog re-derives the commutation pair from the lead table
+'' once per 8 ms slot (6.5in motor only). Setting an offset pair with testSetFwdRevOffsets()
+'' or testSetFwdRevIndep() turns it off; this turns it back on.
+''
+'' @param bEnable - T/F where T means the schedule writes the pair; F leaves the pair as it is
+'' @returns eError - NO_ERROR, or ERR_BAD_COUNT when {bEnable} is TRUE on a motor with no lead table
+
+    eError := NO_ERROR
+    if (bEnable == TRUE) and (user.MOTOR_TYPE <> MOTR_6_5_INCH)
+        eError := ERR_BAD_COUNT
+    else
+        bLeadWritePending := TRUE                                               ' first, so the schedule's first slot writes the pair
+        bLeadScheduled := (bEnable == TRUE)
+
+PUB testGetLead() : bScheduled, leadTenths
+'' TESTING USE: return whether the dynamic lead schedule is on, and the lead it gives at the field's present speed
+''
+'' @returns bScheduled - T/F where T means the front cog is writing the pair from the lead table
+'' @returns leadTenths - the table's lead for the present |drv_incr_now|, in tenths of a degree
+
+    bScheduled := bLeadScheduled
+    leadTenths := leadTenthsForIncrement(abs(drv_incr_now))
 
 PUB testDriveAtMotorIncrement(motorIncre) : eError
 '' TESTING USE: set target accelleration to fix value
@@ -1737,6 +1762,42 @@ PUB frontWriteIncrement(nIncre, bSync)
 '' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
 
     frontCommand(nIncre, bSync)
+
+PUB frontShortfall() : bShort, nAchievedPermille, nCmdGen
+'' FRONT COG ONLY: whether this motor is falling short of its command, and what fraction of it the field achieves
+''
+'' R18.4 D-6 (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 5.3). A motor is SHORT when its lag limiter held the
+'' field in any of the last SHORT_SLOTS rpm-window slots. While it is, D-5 has walked the field's rate down to
+'' what the rotor achieves, so drv_incr_now over the commanded increment IS the achieved fraction, exact and
+'' at slot rate -- no 1 s window stands between the shortfall and the reading.
+''
+'' @returns bShort - T/F where T means the lag limiter held this motor's field within the last SHORT_SLOTS slots
+'' @returns nAchievedPermille - the field's rate as a fraction of the commanded rate, 0-1000; 1000 when nothing is commanded
+'' @returns nCmdGen - a count that changes whenever a new command is written, so an owner can tell a new command from a scaled one
+
+    bShort := (holdSlotsAgo < SHORT_SLOTS)
+    nAchievedPermille := PERMILLE_FULL
+    if userCmdIncr <> 0
+        nAchievedPermille := muldiv64(abs(drv_incr_now), PERMILLE_FULL, abs(userCmdIncr)) <# PERMILLE_FULL
+    nCmdGen := userCmdGen
+
+PUB frontScaleCommand(nScalePermille) | scaledIncr
+'' FRONT COG ONLY: run this motor at a fraction of its commanded rate, keeping the command itself
+''
+'' R18.4 D-6: the steering object scales BOTH wheels by one fraction so the platform keeps its path. The
+'' command is kept (getPower() still reads what was commanded, C-2), and a stopped, refused or faulted motor
+'' is left alone. Writes no ATN: the scaled command is taken on the driver's next pass (D-4).
+''
+'' @param nScalePermille - the fraction of the commanded rate to run at, 0-1000
+
+' Local Variables:
+' @local scaledIncr - the commanded increment scaled to {nScalePermille}, its sign kept
+
+    if (userCmdIncr <> 0) and (frontRefusal() == NO_ERROR) and (drv_state <> DCS_FAULTED)
+        scaledIncr := muldiv64(abs(userCmdIncr), (0 #> nScalePermille <# PERMILLE_FULL), PERMILLE_FULL)
+        if userCmdIncr < 0
+            scaledIncr := -scaledIncr
+        setTargetAccel(scaledIncr, FALSE)
 
 PUB frontZeroPower()
 '' FRONT COG ONLY: write a zero driver command and clear the last commanded power (PL-52)
@@ -2211,10 +2272,14 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     degrPerTic, hallTicsPerRotation := hallTicInfoForMotor()
 
     fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE)
-    offset_fwd  := fwdDegrees frac 360
-    offset_rev  := revDegrees frac 360
-    offset_fwd_degrees := fwdDegrees
-    offset_rev_degrees := revDegrees
+    writeOffsetsTenths(fwdDegrees * TENTHS_PER_DEGREE, revDegrees * TENTHS_PER_DEGREE)
+    ' R18.4: the 6.5in pair is re-derived by the front cog from the lead table (flat until measured, so
+    '  identical to the pair just written); a motor with no lead table keeps its fixed pair
+    bLeadWritePending := TRUE
+    bLeadScheduled := (user.MOTOR_TYPE == MOTR_6_5_INCH)
+    userCmdIncr := 0                    ' R18.4 D-6: nothing commanded, and not short: the driver zeroes lag_held at start
+    holdSlotsAgo := SHORT_SLOTS
+    lastLagHeldSeen := 0
 
     debug[user.DBGCH_LIFECYCLE]("MOT: ", udec(fwdDegrees), uhex_long(offset_fwd))
     debug[user.DBGCH_LIFECYCLE]("     ", udec(revDegrees), uhex_long(offset_rev))
@@ -2260,12 +2325,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     duty_max    := (pwm_limit  << 4) / 2 <# pwm_limit << 4      ' ok
                                                         'duty_max    := ((pwm_limit  << 4) / 4) * 3 <# pwm_limit << 4    ' BAD
                                                         'duty_max    := ((pwm_limit  << 4) / 8) * 5 <# pwm_limit << 4    ' BAD
-    ' orig higher power code used this
-    duty_up     := SERVO_DUTY_UP                        ' named with the setpoint: together they set where duty first rises
-    duty_dn     := SERVO_DUTY_DN
-                                                        ' Chip's new code adjusted this, why?
-                                                        '    duty_up     := 8   ' this drops our top-end power by 45%
-                                                        '    duty_dn     := 2
+    servo_shift := SERVO_ACC_SHIFT                      ' R18.4 D-2: the trim's gain (ff_ceiling follows the power limits, below)
     cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
     e_stop      := FALSE
@@ -2299,7 +2359,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     resetHdmiData()
 
     debug[user.DBGCH_LIFECYCLE]("* init values ", udec_long(dead_gap), udec_long(pwm_limit), udec_long(adc_fram), udec_long(duty_min), udec_long(duty_max))
-    debug[user.DBGCH_LIFECYCLE]("*      values ", udec_long(duty_up), udec_long(duty_dn), udec_long(cfg_ctcks))
+    debug[user.DBGCH_LIFECYCLE]("*      values ", udec_long(servo_shift), udec_long(cfg_ctcks))
 
     circInMM_x10, _ := wheelGeometry()
 
@@ -2309,6 +2369,9 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' validVoltageForChoice() check on it -- meaningful, and lets two motors run at different
     ' voltages.
     confgurePowerLimits(eMotorVoltage)
+    ' R18.4 D-1: the feedforward's scale is duty_max over this motor-and-voltage's ceiling increment -- the
+    '  speed at which the back-EMF uses the whole duty range. Never 0: the driver divides by it.
+    ff_ceiling := abs(maxFwdIncreAtPwr) #> 1
 
     rSenseForBoard := VALUE_NOT_SET
     if eDetectedBoard == REV_A
@@ -2556,6 +2619,82 @@ CON { 6.5in hub commutation: hall zero and per-direction lead }
     HUB_HALL_ZERO_DEGR    = -4      ' shipped pair: offset_fwd 14, offset_rev 338
     HUB_LEAD_DEGR         = 18
 #endif
+
+    ' R18.4 dynamic lead (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 7 C-A, Stephen's ruling 2026-09-22): the lead
+    '  that minimises current falls with speed -- 28 deg at an eighth, 15.8 at a quarter, measured on both
+    '  motors -- so the front cog re-derives the pair from a table of lead against |drv_incr| once per slot.
+    '  The table is FLAT at HUB_LEAD_DEGR until a live lead-step run measures it (task 3601), so until then
+    '  the drive places the field exactly as the fixed pair does. Tenths of a degree; points at the
+    '  eighth, quarter, half and full 18.5 V rungs, one octave apart, interpolated linearly inside each
+    '  octave (within ~1 deg of log-speed interpolation at the measured 12.2 deg per doubling).
+    LEAD_POINTS           = 4
+    TENTHS_PER_DEGREE     = 10
+    TENTHS_PER_TURN       = 3600
+    LEAD_WRITE_SETTLE_MS  = 1       ' a test's second write of its pair, after any in-flight schedule write
+
+DAT ' ---- 6.5in dynamic lead table ----
+
+leadIncrTbl     LONG    18_375_000, 36_750_000, 73_500_000, 147_000_000     ' |drv_incr|, ascending: the 18.5 V eighth, quarter, half and full rungs
+leadTenthsTbl   LONG    HUB_LEAD_DEGR * TENTHS_PER_DEGREE                   ' the lead at each, in tenths: FLAT until measured
+                LONG    HUB_LEAD_DEGR * TENTHS_PER_DEGREE
+                LONG    HUB_LEAD_DEGR * TENTHS_PER_DEGREE
+                LONG    HUB_LEAD_DEGR * TENTHS_PER_DEGREE
+
+PRI leadTenthsForIncrement(absIncr) : leadTenths | idx, loTenths, hiTenths, spanIncr, leadStep
+' Return the dynamic lead for a field speed, from the lead table: flat outside its ends, interpolated between points.
+'
+' @param absIncr - the field's increment per drive pass, magnitude
+' @returns leadTenths - the lead, in tenths of a degree
+
+' Local Variables:
+' @local idx - the table point at or above {absIncr}
+' @local loTenths - the lead at the point below
+' @local hiTenths - the lead at the point at or above
+' @local spanIncr - the increment between the two points
+' @local leadStep - how far past the lower point's lead {absIncr} sits, in tenths, as a magnitude
+
+    leadTenths := LONG[@leadTenthsTbl][LEAD_POINTS - 1]                         ' above the table: held flat, never extrapolated
+    if absIncr <= LONG[@leadIncrTbl][0]
+        leadTenths := LONG[@leadTenthsTbl][0]                                   ' below the table: held flat too
+    else
+        repeat idx from 1 to LEAD_POINTS - 1
+            if absIncr <= LONG[@leadIncrTbl][idx]
+                loTenths := LONG[@leadTenthsTbl][idx - 1]
+                hiTenths := LONG[@leadTenthsTbl][idx]
+                spanIncr := LONG[@leadIncrTbl][idx] - LONG[@leadIncrTbl][idx - 1]
+                ' MULDIV64 is unsigned, so the step is scaled as a magnitude and its direction applied after
+                leadStep := muldiv64(abs(hiTenths - loTenths), absIncr - LONG[@leadIncrTbl][idx - 1], spanIncr)
+                if hiTenths >= loTenths
+                    leadTenths := loTenths + leadStep
+                else
+                    leadTenths := loTenths - leadStep
+                quit
+
+PRI writeOffsetsTenths(fwdTenths, revTenths)
+' Write the driver's commutation pair, and the whole-degree record the getter returns, from tenths of a degree.
+'
+' @param fwdTenths - the offset for negative increments, in tenths of a degree, within one turn either way
+' @param revTenths - the offset for positive increments, in tenths of a degree, within one turn either way
+
+    fwdTenths := (fwdTenths + TENTHS_PER_TURN) // TENTHS_PER_TURN                ' into 0..3599 (never an operand FRAC has not
+    revTenths := (revTenths + TENTHS_PER_TURN) // TENTHS_PER_TURN                '  been shown to handle)
+    offset_fwd := fwdTenths frac TENTHS_PER_TURN
+    offset_rev := revTenths frac TENTHS_PER_TURN
+    offset_fwd_degrees := (fwdTenths + TENTHS_PER_DEGREE / 2) / TENTHS_PER_DEGREE // DEGREES_PER_TURN
+    offset_rev_degrees := (revTenths + TENTHS_PER_DEGREE / 2) / TENTHS_PER_DEGREE // DEGREES_PER_TURN
+
+PRI applyFixedOffsets(fwdDegrees, revDegrees)
+' Turn the lead schedule off and apply a fixed pair, twice, so the front cog's schedule cannot overwrite it.
+'
+' @param fwdDegrees - the offset for negative increments, in degrees (normalised into 0..359)
+' @param revDegrees - the offset for positive increments, in degrees (normalised into 0..359)
+
+    ' The front cog writes the pair only while bLeadScheduled is TRUE. A write it had already begun when the
+    '  flag fell lands within microseconds, so the second write, a millisecond later, is the one that stays.
+    bLeadScheduled := FALSE
+    writeOffsetsTenths(normalisedDegrees(fwdDegrees) * TENTHS_PER_DEGREE, normalisedDegrees(revDegrees) * TENTHS_PER_DEGREE)
+    waitms(LEAD_WRITE_SETTLE_MS)
+    writeOffsetsTenths(normalisedDegrees(fwdDegrees) * TENTHS_PER_DEGREE, normalisedDegrees(revDegrees) * TENTHS_PER_DEGREE)
 
 PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr, index
 ' Return the forward and reverse commutation offsets for a motor type (and, for the Doco motor, the board revision and drive voltage).
@@ -2966,7 +3105,10 @@ CON ' -- TASK: the front cog --
   ' STACK_SIZE_LONGS was 48; the call depth grew by about one frame (an owner's front cog -> frontDrive()
   '  -> incrementForPower() -> map()), and the stack need per frame is not established, so it is doubled
   '  and made observable: testGetFrontStats() reports the high-water mark against STACK_SENTINEL.
-  STACK_SIZE_LONGS = 128
+  ' R18.4: raised from 128. Visit 4 measured a 114-of-128 peak, and the dynamic lead adds two call levels
+  '  under frontTrack() (frontApplyLead() -> writeOffsetsTenths()). Hub RAM is plentiful (doctrine P13);
+  '  the next testGetFrontStats() reading re-measures the peak.
+  STACK_SIZE_LONGS = 192
   STACK_SENTINEL   = $5A5A_A5A5         ' pre-launch fill of taskStack; a long still holding it was never used
   R360_WINDOW_SIZE = 5
 
@@ -3567,6 +3709,8 @@ PRI frontCommand(nIncre, bSync)
 
     setTargetAccel(nIncre, bSync)
     bStopUnconfirmed := ((nIncre ZEROX 30) == 0)                               ' any other command supersedes a pending confirmation
+    userCmdIncr := nIncre                                                       ' R18.4 D-6: what was COMMANDED, which a path scale never changes
+    userCmdGen++                                                                '  and a count an owner reads to see a new command arrive
 
 PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode
 ' FRONT COG: on the pass the driver first reads DCS_FAULTED, latch why (S-7): FC_HALL when a hall sensor is reading
@@ -3619,7 +3763,33 @@ PRI updateWindowAccumulators() | nowPos, nHallCntsInSlot
         hallWinEntryCt++
 
     updateFollowing()                                                           ' R18.1: does the measured rate match the commanded one?
+    frontApplyLead()                                                            ' R18.4: the dynamic lead, once per slot
+    if lag_held <> lastLagHeldSeen                                              ' R18.4 D-6: slots since the lag limiter last held
+        holdSlotsAgo := 0
+    elseif holdSlotsAgo < SHORT_SLOTS
+        holdSlotsAgo++
+    lastLagHeldSeen := lag_held
     updateHdmiData()
+
+PRI frontApplyLead() | leadTenths
+' FRONT COG ONLY, once per slot: while the lead schedule is on, write the commutation pair for the field's present speed.
+'
+' Only the lead moves; the servo's setpoint never does (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 3.3 and
+' 5.3 D-3: the two place the field together, so moving both corrects twice). Keyed on the FIELD's speed,
+' drv_incr_now, so the lead follows a ramp rather than jumping to the cruise value at the command. The
+' driver re-reads the pair from its parameter block every frame, so no PASM change carries it.
+
+' Local Variables:
+' @local leadTenths - the lead for the present field speed, in tenths of a degree
+
+    if bLeadScheduled == TRUE
+        leadTenths := leadTenthsForIncrement(abs(drv_incr_now))
+        ' written only when the lead changes, or once after the schedule is turned on: the steering front cog
+        '  services two motors in the tightest budget in the design (section 4.2), and a flat table never changes
+        if (leadTenths <> lastLeadTenths) or (bLeadWritePending == TRUE)
+            writeOffsetsTenths(HUB_HALL_ZERO_DEGR * TENTHS_PER_DEGREE + leadTenths, HUB_HALL_ZERO_DEGR * TENTHS_PER_DEGREE - leadTenths)
+            lastLeadTenths := leadTenths
+            bLeadWritePending := FALSE
 
 PRI updateFollowing() | cmdIncre
 ' FRONT COG ONLY: compare the measured tick rate against the commanded one, once per window slot.
@@ -3873,22 +4043,24 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 1
+    DRIVER_REV                  = 2         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
 
     ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
     LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts
     LAG_HOLD                    = 100       ' 140.6 deg: the field stops advancing (the fault test is at 125)
-    ' The duty servo (drvMotor, after .noFault): each pass adds ((|err_| - SERVO_SETPOINT) * gain) SAR 8 to
-    '  duty -- SERVO_DUTY_UP above the setpoint, SERVO_DUTY_DN below. The SAR truncates, so above the
-    '  setpoint nothing moves until the product reaches 256: duty first RISES at SERVO_ENGAGE (Visit 7c, 8 of
-    '  8 START traces at |err_| 57-59); below it, SAR rounds toward minus infinity and duty always falls. So
-    '  the servo holds |err_| anywhere in a BAND, SERVO_SETPOINT to SERVO_ENGAGE - 1 (59-79 deg) -- PL-101.
-    ' Seeding a start at SERVO_ENGAGE does NOT remove the start surge: measured and removed (task 3600,
-    '  DOCs/analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md section 4).
-    SERVO_SETPOINT              = 256 / 6   ' 42 units, 59 deg (256 per hall cycle)
-    SERVO_DUTY_UP               = 18        ' the servo's gain above the setpoint (init() loads duty_up from it)
-    SERVO_DUTY_DN               = 4         ' ...and below it (init() loads duty_dn from it)
-    SERVO_ENGAGE                = SERVO_SETPOINT + (256 + SERVO_DUTY_UP - 1) / SERVO_DUTY_UP   ' 57 units, 80 deg
+    ' R18.4 (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md section 5.3): the duty the drive applies is a FEEDFORWARD
+    '  from the field's speed (D-1) plus an integral TRIM (D-2). Each frame the trim adds
+    '  (|err_| - SERVO_SETPOINT) * (duty_ >> SERVO_DUTY_PRESHIFT) to its accumulator, and
+    '  duty_ = duty_ff + (accumulator SAR SERVO_ACC_SHIFT): 1/32 duty per count per frame at duty 8192.
+    '  Symmetric and untruncated, so it holds a point; scaled by duty, so its gain follows the stiffness
+    '  the rotor has. The servo it replaces held a 21-degree band and hunted at low speed (PL-101, 5.2).
+    SERVO_SETPOINT              = 48        ' 67.5 deg: where the old servo settled at every running rung; the
+                                            '  LEAD is carried by the offsets, never by moving this (D-3)
+    SERVO_DUTY_PRESHIFT         = 4         ' duty_ >> 4 fits MULS's 16 bits and keeps the accumulator in 32
+    SERVO_ACC_SHIFT             = 14        ' the trim's gain (init() loads servo_shift from it)
+    HOLD_DECAY_SHIFT            = 6         ' D-5: a held pass takes 1/64 off drv_incr, a 33 ms time constant
+    SHORT_SLOTS                 = 4         ' D-6: a motor held in any of the last 4 slots (32 ms) is SHORT
+    PERMILLE_FULL               = 1000      ' D-6: a fraction of the commanded rate, in thousandths
 
     ' S-2 (same design, section 3.4): phase-current limits from the MOSFET both board revisions use, MCAC85N06Y
     '  (DOCs/analyses/BOARD-REVISION-FACTS.md section 1.4). Protection for the board, not a user setting.
@@ -3998,8 +4170,8 @@ VAR  {  Motor Parameters  }
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
     LONG    duty_max        ' was PWMLIM << 4 <# PWMLIM << 4 but now runtime loaded
-    LONG    duty_up
-    LONG    duty_dn
+    LONG    servo_shift     ' R18.4 D-2: the trim's accumulator shift (SERVO_ACC_SHIFT)
+    LONG    ff_ceiling      ' R18.4 D-1: the power table's ceiling increment; feedforward = |drv_incr| * duty_max / this
     LONG    dead_gap        ' delay between driving h/l side of driver (never drive both at once)
     LONG    ramp_down       ' angle decrement when slowing down
     LONG    cfg_ctcks       ' # clock ticks of the 500 uSec drive-pass deadline (the pass runs every 23 ADC frames, PL-50)
@@ -4017,6 +4189,15 @@ VAR  {  Motor Parameters  }
 VAR { Offset tracking for independent setter/getter }
     LONG    offset_fwd_degrees   ' last-applied forward offset, in degrees
     LONG    offset_rev_degrees   ' last-applied reverse offset, in degrees
+    LONG    bLeadScheduled       ' R18.4: T/F where T means the front cog writes the pair from the lead table
+    LONG    bLeadWritePending    ' R18.4: T/F where T means the front cog must write the pair on its next slot, changed or not
+    LONG    lastLeadTenths       ' R18.4: the lead the front cog last wrote, in tenths (valid once a write is made)
+
+VAR { R18.4 D-6: what the path limiter reads }
+    LONG    userCmdIncr          ' the increment last COMMANDED (a path scale never writes this)
+    LONG    userCmdGen           ' advanced by every command written, so an owner sees a new one arrive
+    LONG    holdSlotsAgo         ' rpm-window slots since the lag limiter last held the field, saturating at SHORT_SLOTS
+    LONG    lastLagHeldSeen      ' lag_held as the previous slot read it
 
 CON { error record }
 
@@ -4159,13 +4340,10 @@ drvMotor                                                ' global (task 3535): en
 .notRqStop
                 cmp     sv_tgt_incr, tgt_incr       wz  ' Q: do we have a new request?
     if_z        jmp     #.currRqst                      ' NO, same as last, just continue what we are doing
-                ' Accept a new drive command only when NOT in middle of change
-                cmp     drv_state_, #DCS_STOPPED    wz  ' Q: STOPPED not doing anything?
-    if_nz       cmp     drv_state_, #DCS_AT_SPEED   wz  ' Q: AT_SPEED not doing anything?
-    if_nz       cmp     drv_state_, #DCS_FAULTED    wz  ' Q: FAULTED not doing anything?
-    if_nz       mov     tgt_incr, sv_tgt_incr           ' BUSY, throw away this request this request
-    if_nz       jmp     #.currRqst                      ' BUSY, ignore command, continue same command
-                ' NOT BUSY, fall through to process new request...
+                ' PL-104 (R18.4 D-4): a new request is taken in EVERY state. This once threw a request away
+                '  unless the driver was STOPPED, AT_SPEED or FAULTED, so a motor whose ramp waits on its
+                '  rotor stayed in SPIN_UP and could never be commanded slower. .newRqst's own branches
+                '  already handle a change from any running speed and either sign (.doSpdChange, .notSame).
 .newCmd
 {
 ' -------------------------------------------------------------------------
@@ -4377,10 +4555,12 @@ drvMotor                                                ' global (task 3535): en
     if_c        add     angle_, drv_incr                '  less than LAG_HOLD, so |err_| stays under the 125 fault test
     if_nc       add     lag_held_, #1                   ' R18.1: and when it does NOT advance, that is the one thing err
                                                         '  cannot report -- err is pinned at the hold. Count it instead.
+    if_nc       call    #holdDecay                      ' R18.4 D-5: a held field falls toward the rate the rotor achieves
 '                debug("DRV: ", uhex_(drive_pins), " A:(", sdec_(angle_), ") += DI:(", sdec_(drv_incr), ")")
 
 .endRqst
                 mov     drv_incr_s_, drv_incr           ' publish the field's increment (block-copied with the status run)
+                call    #feedForward                    ' R18.4 D-1: the duty this pass's field speed needs (LUT-resident)
                 ' PL-55: duty ceiling -- during a ramp-down, duty scales with the field's speed (duty0 * |drv_incr|
                 '  / incr0) so drive voltage falls with back-EMF; lifted whenever the rotor trails by LAG_SOFT
                 mov     duty_cap_, duty_max_
@@ -4593,11 +4773,18 @@ drvMotor                                                ' global (task 3535): en
     if_nc       shr     tmpY, #6
     if_nc       sub     duty_, tmpY
     if_nc       jmp     #.dutyLimits
-                sub     tmpY, #SERVO_SETPOINT       wc  ' modulate duty about the setpoint (256 per hall cycle, 6 hall ticks)
-    if_nc       muls    tmpY, duty_up_
-    if_c        muls    tmpY, duty_dn_
-                sar     tmpY, #8                        ' 8-bits is multiplying agressiveness of correction
-                add     duty_, tmpY
+                ' R18.4 D-2 (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 5.3): an integral TRIM above the feedforward.
+                '  Symmetric and untruncated, so it holds a POINT (PL-101's band is gone), and scaled by duty,
+                '  so its gain follows the stiffness the rotor has -- an integral-only loop is stable only
+                '  below a gain that stiffness supports, and at low duty the old servo was above it (5.2).
+                sub     tmpY, #SERVO_SETPOINT           ' |err_| - setpoint, signed (tmpY holds |err_| from the fault test)
+                mov     tmpX, duty_
+                shr     tmpX, #SERVO_DUTY_PRESHIFT      ' duty in MULS's 16 bits; keeps servo_acc inside 32 at duty_max_
+                muls    tmpY, tmpX
+                add     servo_acc, tmpY
+                mov     duty_, servo_acc
+                sar     duty_, servo_shift_             ' the trim...
+                add     duty_, duty_ff                  ' ...rides on the feedforward, which carries the back-EMF (D-1)
 .dutyLimits
                 cmp     bridge, #BR_DRIVE           wz  ' R17.1: an undriven bridge applies no duty, so the servo must not wind duty_
     if_nz       mov     duty_, duty_min_                '  up to duty_max_ against an error it cannot correct -- telemetry reads what is applied
@@ -4607,6 +4794,16 @@ drvMotor                                                ' global (task 3535): en
                                                         '  cap it says only "still pinned" (PL-95). No extra compare, and
                                                         '  nothing between here and the next flag write reads C.
                 fges    duty_, duty_min_
+                ' D-2 anti-windup, ONE for every limiter above and the current fold-back: when the applied duty is
+                '  not what feedforward + trim asked for, the trim is re-derived from what was applied, so the
+                '  accumulator never holds a demand a limiter refused
+                mov     tmpX, servo_acc
+                sar     tmpX, servo_shift_
+                add     tmpX, duty_ff
+                cmp     tmpX, duty_                 wz  ' Q: did a limiter change the demand?
+    if_nz       mov     servo_acc, duty_
+    if_nz       sub     servo_acc, duty_ff
+    if_nz       shl     servo_acc, servo_shift_
 
                 getct   loop_dtcks_                     ' how long was this iteration? send to host
                 sub     loop_dtcks_, drvrSrtTix
@@ -4809,6 +5006,8 @@ lag_s           res 1       ' C-5: signed lag this pass, + when the rotor trails
 duty_cap_       res 1       ' PL-55: duty ceiling, duty_max_ except while ramping down
 duty0           res 1       ' PL-55: duty_ where the current ramp-down started
 incr0           res 1       ' PL-55: |drv_incr| where the current ramp-down started
+duty_ff         res 1       ' R18.4 D-1: the duty this pass's field speed needs, from feedForward
+servo_acc       res 1       ' R18.4 D-2: the trim's accumulator; duty_ = duty_ff + servo_acc SAR servo_shift_
 ' debug variables
 {
 tmp_angle_      res 1       ' TEST: holding area while validating angle
@@ -4851,8 +5050,8 @@ offset_fwd_ res 1           '  16 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
 duty_min_   res 1           ' minimum duty cycle for pwm
 duty_max_   res 1           ' maximum duty cycle for pwm
-duty_up_    res 1           ' up rate for duty cycle for pwm
-duty_dn_    res 1           ' down rate for duty cycle for pwm
+servo_shift_ res 1          ' R18.4 D-2: the trim's accumulator shift (SERVO_ACC_SHIFT)
+ff_ceiling_ res 1           ' R18.4 D-1: the ceiling increment the feedforward scales duty_max_ by
 dead_gap_   res 1           ' gap between driving high and low side pwm
 ramp_down_  res 1           ' angle decrement when slowing down
 cfg_ctcks_  res 1           ' clocks for drv loop
@@ -4889,15 +5088,18 @@ duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the c
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 471 USED, 25 FREE, 2026-09-22 -- read from the compiler, never hand-counted (a hand count
-                 ' here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, DUTY_CAPPED_'s VALUE, whose
-                 ' top 12 bits are its cog address ($1D6). Rarely-run code belongs in the LUT-resident block
-                 ' below (task 3535): lutCodeStart $200 to lutCodeEnd $27B, 123 of 512 longs.
+    fit     496  ' 480 USED, 16 FREE, 2026-09-22 (R18.4) -- read from the compiler, never hand-counted (a hand
+                 ' count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, DUTY_CAPPED_'s VALUE,
+                 ' whose top 12 bits are its cog address ($1DF). LUT code runs at cog speed (2 clocks, p2kb
+                 ' p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS are what
+                 ' this budget is for; code can live in the LUT-resident block below (task 3535):
+                 ' lutCodeStart $200 to lutCodeEnd $28E, 142 of 512 longs.
 
 ' =========================================================================
-'  LUT-RESIDENT CODE ($200-$3FF): the one-time start sequence only (task 3535).
-'  drvMotor (~1913 Hz, PL-50), .ctlMotor (43.9 kHz) and everything .ctlMotor calls
-'  (wait4adc, .shortBridge, .faultBridge, the fault path) stay resident in cog RAM, above.
+'  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
+'  routines R18.4 added (feedForward, holdDecay). LUT code runs at cog speed, but operands
+'  reach only cog RAM, so every REGISTER stays above and any CODE may live here (P13);
+'  crossing between the two is an ordinary 4-clock branch.
 '
 '  MUST stay textually after the `fit 496` line above: this block's hub bytes
 '  must not sit between two org-0 items (see the note at the loader's `jmp
@@ -5072,6 +5274,9 @@ lutCodeStart
                 mov     duty_, duty_min_                ' reset duty
                 mov     duty_cap_, duty_max_            ' PL-55: no ceiling before the first drive pass sets it
                 mov     incr0, #0                       ' PL-55: no ramp-down recorded yet
+                mov     duty_ff, #0                     ' R18.4 D-1: no field speed yet, so no feedforward
+                mov     servo_acc, duty_                ' R18.4 D-2: the trim starts at what is applied, duty_min_
+                shl     servo_acc, servo_shift_
                 mov     curr_stop, stop_mode_           ' save current stop mode
                 call    #checkstop                     ' set drive on or off according to stop mode
 
@@ -5106,9 +5311,29 @@ driveinit                                               ' init drive pwm
                                                         ' a whole period of a periodic signal integrates the same at any start phase.
     _ret_       mov     bridge, #BR_DRIVE               ' driven; checkstop, called before the control loop, sets the stop mode's state
 
+feedForward                                             ' R18.4 D-1: duty_ff := |drv_incr| * duty_max_ / ff_ceiling_, at most duty_max_
+                abs     tmpY, drv_incr                  '  Steady duty is the back-EMF line, measured at 167-174 per 1e6 of
+                qmul    tmpY, duty_max_                 '  increment on both motors (DRIVE-INTEGRATION-DESIGN.md 5.1), and
+                getqx   tmpY                            '  duty_max_ over the power table's ceiling increment is that line
+                getqy   tmpX                            '  (165 at 18.5 V) -- so the servo no longer integrates the ramp's
+                setq    tmpX                            '  rising voltage demand, only what is left. Per drive pass; the
+                qdiv    tmpY, ff_ceiling_               '  64-bit product's high long stays far below the divisor.
+                getqx   duty_ff
+    _ret_       fles    duty_ff, duty_max_
+
+holdDecay                                               ' R18.4 D-5: called on a pass the lag limiter held the field. While
+                cmp     drv_state_, #DCS_AT_SPEED   wz  '  running or spinning up, the field's rate falls toward the rate the
+    if_z        mov     drv_state_, #DCS_SPIN_UP        '  rotor achieves, and the ramp re-arms gently (as PL-78 does), so
+                cmp     drv_state_, #DCS_SPIN_UP    wz  '  the release of a load is a ramp back up, never a step. A stop or a
+    if_z        mov     tmpY, drv_incr                  '  direction change in progress is left alone.
+    if_z        sar     tmpY, #HOLD_DECAY_SHIFT
+    if_z        sub     drv_incr, tmpY
+    if_z        mov     ramp_curr, ramp_min_
+                ret
+
 lutCodeEnd                                               ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 123 of 512 used, COUNTED 2026-09-22 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 142 of 512 used, COUNTED 2026-09-22 (see the cog fit above)
 
 CON { license }
 {{

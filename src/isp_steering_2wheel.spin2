@@ -1036,6 +1036,23 @@ PUB testRightGetFwdRevIndep() : fwdDegrees, revDegrees
 
     fwdDegrees, revDegrees := rtWheel.testGetFwdRevIndep()
 
+PUB testSetLeadScheduled(bEnable) : eError
+'' TESTING USE: turn BOTH motors' dynamic lead schedule on or off (see the motor object's testSetLeadScheduled())
+''
+'' @param bEnable - T/F where T means each front-cog slot writes the pair from the lead table
+'' @returns eError - NO_ERROR, or the left motor's error, else the right motor's
+
+    eError := ltWheel.testSetLeadScheduled(bEnable)
+    if eError == NO_ERROR
+        eError := rtWheel.testSetLeadScheduled(bEnable)
+
+PUB testGetPathScale() : nScalePermille
+'' TESTING USE: return the path limiter's present scale on both wheels' commands, in thousandths (1000 = unscaled)
+''
+'' @returns nScalePermille - the fraction of the commanded rates both wheels run at, 0-1000
+
+    nScalePermille := pathScalePermille
+
 PUB testLeftSetLimit(newMaxLimit) : eError
 '' TESTING USE: set the LEFT motor's override increment limit
 ''
@@ -1566,6 +1583,10 @@ CON { -- TASK: the steering front cog -- }
                                         '  since it is not the motor object's constant (style guide 2.4)
   STACK_SENTINEL   = ltWheel.STACK_SENTINEL   ' the fill pattern stays shared: it is a protocol value, not a size
 
+  ' R18.4 D-6 path-preserving speed limiting (frontLimitPath()): down at once, up slowly
+  PATH_RELEASE_SLOTS = 4                ' clean slots (32 ms) before the scale starts to release
+  PATH_RELEASE_STEP  = 20               ' thousandths released per slot after that: 2 %, ~0.4 s from half to full
+
 VAR { time values & arrays }
 
     long    ticks1ms
@@ -1574,6 +1595,12 @@ VAR { time values & arrays }
     long    senseCog                    ' the front cog: cogid + 1, 0 when not running
 
     long    taskStack[STEER_STACK_LONGS]    ' PL-75: this object's own size, not the motor object's
+
+VAR { R18.4 D-6: the path limiter's state -- the front cog is the only writer }
+    long    pathScalePermille           ' the fraction of the commanded rates both wheels run at, 0-1000
+    long    pathCleanSlots              ' slots since either wheel was last short
+    long    lastLeftCmdGen              ' the left wheel's command count at the last slot
+    long    lastRightCmdGen             ' the right wheel's command count at the last slot
 
 VAR { Data for Motor Position Tracking }
     long    deltaTicks
@@ -1658,6 +1685,10 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     passCount := 0
     ltWheel.frontResetTracking(TRUE)
     rtWheel.frontResetTracking(TRUE)
+    pathScalePermille := ltWheel.PERMILLE_FULL                                  ' R18.4 D-6: no path limiting until a wheel falls short
+    pathCleanSlots := 0
+    _, _, lastLeftCmdGen := ltWheel.frontShortfall()
+    _, _, lastRightCmdGen := rtWheel.frontShortfall()
     LAINIT()
     nextDue := getct() + ticksPerPass
 
@@ -1678,6 +1709,8 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
         ltWheel.frontTrack(passCount)
         rtWheel.frontTrack(passCount)
+        if (passCount +// ltWheel.WINDOW_PASSES) == 0
+            frontLimitPath()                                                    ' R18.4 D-6: once per slot, after the wheels' own slot work
         nowMs := getms()
         if bFrontPlatformLimitsDue(nowMs) == TRUE
             ltWheel.frontZeroPower()                                            ' PL-52: a distance/time stop clears getPower() too
@@ -1718,6 +1751,50 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     '  cannot be released and reused before that cogstop
     repeat
         waitms(ltWheel.FRONT_PARK_MS)
+
+PRI frontLimitPath() | bLeftShort, bRightShort, leftPermille, rightPermille, leftGen, rightGen, wantPermille
+' FRONT COG: path-preserving speed limiting -- when either wheel falls short, run BOTH at the short wheel's achieved fraction.
+'
+' R18.4 D-6, Stephen's ruling "path over speed" (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md section 3 and 5.3).
+' Scaling both commands by one fraction keeps their ratio, so a turn stays the turn commanded and a
+' straight line stays straight; the platform loses speed instead of path. Down at once, up slowly: the
+' scale falls to the shortfall on the slot it is seen, and releases PATH_RELEASE_STEP per slot only after
+' PATH_RELEASE_SLOTS clean slots, so it cannot hunt between the two. A new command from the user starts
+' unscaled. Each wheel's own command, and getPower(), are left as commanded.
+
+' Local Variables:
+' @local bLeftShort - T/F where T means the left wheel's lag limiter held its field in the last few slots
+' @local bRightShort - T/F where T means the right wheel's lag limiter held its field in the last few slots
+' @local leftPermille - the left field's rate as a fraction of its command, 0-1000
+' @local rightPermille - the right field's rate as a fraction of its command, 0-1000
+' @local leftGen - the left wheel's command count, to see a new command arrive
+' @local rightGen - the right wheel's command count
+' @local wantPermille - the fraction the short wheel(s) can sustain
+
+    bLeftShort, leftPermille, leftGen := ltWheel.frontShortfall()
+    bRightShort, rightPermille, rightGen := rtWheel.frontShortfall()
+    if (leftGen <> lastLeftCmdGen) or (rightGen <> lastRightCmdGen)
+        pathScalePermille := ltWheel.PERMILLE_FULL                              ' a new command starts unscaled
+        pathCleanSlots := 0
+        lastLeftCmdGen := leftGen
+        lastRightCmdGen := rightGen
+    elseif (bLeftShort == TRUE) or (bRightShort == TRUE)
+        pathCleanSlots := 0
+        wantPermille := ltWheel.PERMILLE_FULL
+        if bLeftShort == TRUE
+            wantPermille := wantPermille <# leftPermille
+        if bRightShort == TRUE
+            wantPermille := wantPermille <# rightPermille
+        if wantPermille < pathScalePermille
+            pathScalePermille := wantPermille
+            ltWheel.frontScaleCommand(pathScalePermille)
+            rtWheel.frontScaleCommand(pathScalePermille)
+    elseif pathScalePermille < ltWheel.PERMILLE_FULL
+        pathCleanSlots++
+        if pathCleanSlots >= PATH_RELEASE_SLOTS
+            pathScalePermille := (pathScalePermille + PATH_RELEASE_STEP) <# ltWheel.PERMILLE_FULL
+            ltWheel.frontScaleCommand(pathScalePermille)
+            rtWheel.frontScaleCommand(pathScalePermille)
 
 PRI bFrontPlatformLimitsDue(nowMs) : bFired
 ' FRONT COG: return TRUE, and disarm the limit, when a stop written now leaves the platform at rest at its time limit or either wheel at rest at the distance limit.

@@ -257,10 +257,14 @@ MEASURED 2026-09-22, and the method is the point.
   why the count is now read from the compiler, and the comment says so.
 
 **What that means for «#3583».**
-- **Cog RAM is spent only on the 43.9 kHz loop's hot path.** Everything that runs per start, per
-  command or per drive pass (~1,913/s) belongs in the LUT block, which the start sequence,
-  `gettgtincr` and `driveinit` already use.
-- **Count again before adding,** by the method above.
+- **Cog RAM is for REGISTERS; code can live in either memory.** LUT code runs at the same 2 clocks
+  per instruction as cog code (p2kb `p2kbPasm2ExecutionModes`), but instruction operands reach only
+  cog RAM, so every variable the driver works on lives there. A branch between the two costs the
+  ordinary 4 clocks.
+  - *Amended 2026-09-22.* This line first read "cog RAM is spent only on the 43.9 kHz loop's hot
+    path". That was a note from «#3535» transcribed as a rule, and Stephen retired it (doctrine
+    overlay P13).
+- **Count again before adding,** by the method above: cog RAM for registers and LUT for code.
 
 ### 4.2 Front cogs — one has room, one does not
 
@@ -513,7 +517,7 @@ fails on today's drive: the "shipped" column is **MEASURED** from the logs named
 | **A-6** | A speed-DOWN issued during `SPIN_UP` (quarter, then an eighth at 0.3 s) takes effect: `drv_incr` starts falling **within one drive pass** of the command | **discarded** (read from `:4160-4167`; the cell fails on today's binary) | accepted | same |
 | **A-7** | Held at a driven-off offset where the drive cannot follow — the scan's current-wall offset, where it measured 44–47 % following — **`drv_incr_now` settles within 0.2 s** at a rate within 10 % of the measured tick rate, and recovery after the offset is restored meets A-2 | holds `drv_incr` at the command | settles | the floor run's one-sided load |
 | **A-8** | The two following readings agree: D-6's fraction against `testGetFollowing()` within **5 points**, once both are valid, on both a following and a not-following case | n/a — D-6 is new | agree | same |
-| **A-9** | Driver cog RAM free after «#3583» **≥ 10 longs**, counted from the compiler | 25 | ~19 | n/a |
+| **A-9** | The driver still fits, counted from the compiler: cog RAM (registers, plus any code left there) within 496, LUT within 512, and **the register count is stated** so the next change can plan against it. Code may move to LUT freely (P13). | 471 / 123 | 480 / 142 (measured at the build) | n/a |
 | **A-10** | Steering front cog worst pass **≤ 950 µs**, `late` 0 over the run | 914 µs (before `updateFollowing()`) | unknown — measured | n/a |
 
 **Why swing amplitude, and not duty timing.** Pass 1 judged duty timing, which both explanations

@@ -179,6 +179,12 @@
 ''               driver's own hand-bumped DRIVER_REV. The start seed servo_engage marked was measured at Visit
 ''               7c pass 2 and removed, which left the field a constant that does not move when the driver
 ''               does -- the gap it was added to close, open again. drv_rev closes it for every driver change.
+''               22 Sep 2026 -- SRC_REV=27, FMT 15: task 3583 (R18.4). New part LEAD (-D DUAL_PART_LEAD, tier
+''               dual-lead): at the driver's four lead-table speeds, per motor x sign, the commutation pair is
+''               stepped LIVE through Z +- L for L = 18, 13, 8, 3, 23, 28, 33, each step an ordinary measured
+''               rung; each speed ends with the new BM-LEADMIN (lead of least net current, bracketed or not),
+''               and two new cells judge coverage and the quarter's known answer. The lead schedule is turned
+''               back on at the end of every lifetime. Every other part's records are unchanged; drv_rev reads 2.
 ''
 '' =================================================================================================
 
@@ -242,8 +248,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 26                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 14                                        ' BM- record-format version
+    SRC_REV     = 27                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 15                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -279,9 +285,10 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_FLOOR - FLOOR (attended: wheels down, brief observation)
   '  PART_UICHECK - UICHECK (attended: every panel control and attended screen, no motor control at all)
   '  PART_ALIGN - ALIGN (attended: the wheel is turned BY HAND against a coasting bridge; task 3590)
+  '  PART_LEAD  - PREFLT, LEAD (the live lead-step run that measures the dynamic-lead table; task 3583)
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
-        PART_ALIGN
-    PART_COUNT = PART_ALIGN + 1
+        PART_ALIGN, PART_LEAD
+    PART_COUNT = PART_LEAD + 1
 
   ' RUN_TIME_CAP_S per load (design sec 4.2 item 6)
 #ifdef DUAL_PART_A
@@ -322,8 +329,14 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     '  a clock the operator cannot see: the cap has to cover eight full stalls and still end the run
     RUN_TIME_CAP_S = 1_800
 #else
+#ifdef DUAL_PART_LEAD
+    PART_ID        = PART_LEAD
+    ' 2 motors x 2 signs x LEAD_RUNGS x LEAD_STEPS = 112 measured rungs of ~2-8 s, plus lifetimes
+    RUN_TIME_CAP_S = 1_500
+#else
     PART_ID        = PART_NONE
     RUN_TIME_CAP_S = 60
+#endif
 #endif
 #endif
 #endif
@@ -888,8 +901,8 @@ CON { record enums -- each value has a token in the DAT token tables }
   ' Segment (token = the name after SEG_):
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
         SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT, ...
-        SEG_LOWSPD, SEG_ALIGN
-    SEG_COUNT = 17
+        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD
+    SEG_COUNT = 18
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -1488,7 +1501,7 @@ DAT { packed token tables -- zero-separated, indexed by tokenAt(); order follows
 tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
 tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
-                BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0
+                BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0
 tokWhy          BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
@@ -1533,7 +1546,7 @@ tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAUL
 '  an ALIGN build printed adjacent DAT in the part field of BM-BANNER, BM-PLAN, BM-EXIT, every SIGNOFF
 '  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
-                BYTE    "ALIGN", 0
+                BYTE    "ALIGN", 0, "LEAD", 0
 ' ALIGN leg speed class (ASPD_*), direction (ADIR_*) and leg outcome (ALEG_*), task 3590
 tokASpd         BYTE    "SLOW", 0, "FAST", 0
 tokADir         BYTE    "REVERSE", 0, "FORWARD", 0
@@ -1734,6 +1747,16 @@ sSfCritAgClip   BYTE    "BAND_NOT_RAILED", 0
 sSfCritAgCover  BYTE    "LEAST_CROSSINGS", 0
 sSfCritAgRes    BYTE    "LEAST_PER_SECTOR", 0
 sSfCritAgMatrix BYTE    "ALL_FOUR_MEASURED", 0
+' task 3583: the LEAD tier's cells -- the two every part carries, then coverage and the known answer
+sSfCellNoStallL BYTE    "R18-DUAL-NOSTALL-L", 0
+sSfCellDbgMaskL BYTE    "R18-DUAL-DBGMASK-L", 0
+sSfCellLeadBrkt BYTE    "R18-DUAL-LEAD-BRKT", 0
+sSfCellLeadKnown BYTE   "R18-DUAL-LEAD-KNOWN", 0
+sSfCritLeadBrkt BYTE    "MIN_BRACKETED", 0
+sSfCritLeadKnown BYTE   "QTR_MIN_LEAD_DEG", 0
+sSfUnitsDeg     BYTE    "DEG", 0
+' LEAD rung verdict (LEADV_*), task 3583
+tokLeadV        BYTE    "BRACKETED", 0, "EDGE", 0, "NOMEAS", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfUnitsMv      BYTE    "MV", 0
@@ -2411,6 +2434,9 @@ PRI runPart()
             runSegment(SEG_UICHECK)
         PART_ALIGN:
             runSegment(SEG_ALIGN)
+        PART_LEAD:
+            runSegment(SEG_PREFLT)
+            runSegment(SEG_LEAD)
     bRunReturned := TRUE                                    ' before the return, or main() reads a library abort
 
 PRI runSegment(seg)
@@ -2453,6 +2479,8 @@ PRI runSegment(seg)
                 segUiCheck()
             SEG_ALIGN:
                 segAlign()
+            SEG_LEAD:
+                segLead()
     else
         emitSeg(seg, SEGEV_SKIP, bSegAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
 
@@ -6644,6 +6672,211 @@ PRI mouseButton(xPos, yPos, liveMask) : buttonIdx | btnIdx, slotX, slotY
             buttonIdx := btnIdx
             quit
 
+CON { --- LEAD: the live lead-step run that measures the dynamic-lead table (task 3583, R18.4) --- }
+
+  ' DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 7 C-A. At each of the driver's four lead-table speeds, per motor x
+  '  sign, the motor is held at speed and the commutation pair is stepped LIVE through Z + L / Z - L -- not
+  '  restarted at each value, since a per-point start was the suspect in the offset scan's half-rung
+  '  torque bound. Each step is an ordinary measured rung (BM-RUNG .. BM-RUNG3, off_neg / off_pos carry the
+  '  pair), and each speed ends with BM-LEADMIN: the lead of least net current and whether it is bracketed.
+  LEAD_RUNGS        = 4                                     ' the driver's leadIncrTbl points: eighth, quarter, half, full
+  LEAD_STEPS        = 7                                     ' 18 first (the shipped lead), then down, then up
+  LEAD_QTR_RUNG     = 1                                     ' the quarter: the rung whose answer is already known
+  ' R18-DUAL-LEAD-KNOWN: the quarter's minimum was measured at 15.6-15.9 deg under the old servo; the new one
+  '  holds its error a few degrees differently at low speed, so the band is that value +- 7.5 (one step and a half)
+  LEAD_KNOWN_LO     = 8
+  LEAD_KNOWN_HI     = 23
+  ' R18-DUAL-LEAD-BRKT: of each motor's 2 signs x LEAD_RUNGS speeds, at least this many bracket their minimum
+  '  (the eighth and the quarter did in every scan; the half never has, so it is not required)
+  LEAD_BRKT_MIN     = 4
+
+  ' LEAD rung verdict (token = the name after LEADV_):
+  '  LEADV_BRACKETED - the least current is at an interior step, with both neighbours measured
+  '  LEADV_EDGE      - the least current is at the first or last step, or beside an unmeasured one
+  '  LEADV_NOMEAS    - no step at this speed was measured
+    #0, LEADV_BRACKETED, LEADV_EDGE, LEADV_NOMEAS
+    LEADV_COUNT = LEADV_NOMEAS + 1
+    TOKMAX_LEADV = 9
+
+DAT ' ---- LEAD tables ----
+
+leadRungIncre   LONG    DRIVE_CEILING_INCRE / 8, DRIVE_CEILING_INCRE / 4, DRIVE_CEILING_INCRE / 2, DRIVE_CEILING_INCRE
+leadStepDeg     LONG    18, 13, 8, 3, 23, 28, 33                            ' step order: the shipped lead first
+leadAscIdx      LONG    3, 2, 1, 0, 4, 5, 6                                 ' leadStepDeg's indices by ascending lead
+
+VAR { LEAD tier state -- cog 0 only }
+
+    LONG    leadInet[LEAD_STEPS]                            ' net current per step at the speed in progress, mV x10
+    LONG    bLeadStepValid[LEAD_STEPS]                      ' T/F where T means that step's window was measured
+    LONG    sfLeadBrkt[2]                                   ' per motor slot: speeds whose minimum was bracketed
+    LONG    sfLeadN[2]                                      ' per motor slot: speeds with any measured step
+    LONG    sfLeadQtrSum[2]                                 ' per motor slot: the quarter's minimum lead, summed over signs
+    LONG    sfLeadQtrN[2]                                   ' per motor slot: signs whose quarter had a minimum
+
+PRI segLead() | side, signMul
+' LEAD (part LEAD, task 3583): per motor x sign, one lifetime over the four lead-table speeds, stepping the lead live.
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local signMul - SIGN_NEG then SIGN_POS
+
+    segBegin(SEG_LEAD)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
+            beat(CP_LOOP_POLL)
+            leadSign(side, signMul)
+    segEnd(segWhy())
+
+PRI leadSign(side, signMul) | slotIdx, rungIdx, stepIdx, motorIncre, leadDeg, rid, whyCode, safeEvent, minLeadDeg, eVerdict
+' One motor x sign of the LEAD tier: at each speed, every lead step as a measured rung, then BM-LEADMIN; the
+' lead schedule is turned back on at the end, whatever happened.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signMul - SIGN_NEG or SIGN_POS
+'
+' @local slotIdx - motor slot
+' @local rungIdx - the lead-table speed, 0..LEAD_RUNGS-1
+' @local stepIdx - the lead step, 0..LEAD_STEPS-1
+' @local motorIncre - signed increment
+' @local leadDeg - this step's lead, degrees
+' @local rid - rung id
+' @local whyCode - why the remaining steps are skipped, WHY_NONE while they run
+' @local safeEvent - SAFE_* that ended the last step
+' @local minLeadDeg - the speed's lead of least net current, degrees
+' @local eVerdict - LEADV_* for the speed
+
+    slotIdx := side - SIDE_LEFT
+    whyCode := WHY_NONE
+    if bRunContinue(SEG_LEAD) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bWheelStart(SEG_LEAD, side) == FALSE
+        whyCode := stWhy
+    repeat rungIdx from 0 to LEAD_RUNGS - 1
+        motorIncre := leadRungIncre[rungIdx] * signMul
+        repeat stepIdx from 0 to LEAD_STEPS - 1
+            beat(CP_LOOP_POLL)
+            leadDeg := leadStepDeg[stepIdx]
+            bLeadStepValid[stepIdx] := FALSE
+            rid := nextRungId()
+            whyCode := trialSkipWhy(SEG_LEAD, side, whyCode)
+            if whyCode <> WHY_NONE
+                rungSkip(SEG_LEAD, rid, rungIdx, side, motorIncre, whyCode)
+            else
+                ' the pair is changed while the motor runs: the command below repeats the one it is already at
+                wheelSetOffsets(side, wheelL.HUB_HALL_ZERO_DEGR + leadDeg, wheelL.HUB_HALL_ZERO_DEGR - leadDeg)
+                safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE)
+                rungEmitAll(SEG_LEAD, rid, rungIdx, side, motorIncre)
+                bLeadStepValid[stepIdx] := bRgWindowValid and (bLifeZeroValid[slotIdx] <> FALSE) and (safeEvent == SAFE_NONE)
+                leadInet[stepIdx] := rsIMeanX10 - lifeZeroX10[slotIdx]
+                bRungFaultRecover(SEG_LEAD, side, motorIncre, safeEvent)          ' a torque-wall fault is recovered, and the next step runs
+                if (safeEvent == SAFE_ABS_ABORT) or (safeEvent == SAFE_INST_STALL)
+                    whyCode := WHY_LADDER_STOPPED
+        minLeadDeg, eVerdict := leadMinimum()
+        emitLeadMin(side, motorIncre, minLeadDeg, eVerdict)
+        if eVerdict <> LEADV_NOMEAS
+            sfLeadN[slotIdx]++
+        if eVerdict == LEADV_BRACKETED
+            sfLeadBrkt[slotIdx]++
+            if rungIdx == LEAD_QTR_RUNG
+                sfLeadQtrSum[slotIdx] += minLeadDeg
+                sfLeadQtrN[slotIdx]++
+    wheelSetLeadScheduled(side)                                                 ' back on, on every path
+    bZeroAndWaitStopped(side)
+    bInstIdle()
+    wheelStop(side)
+
+PRI leadMinimum() : minLeadDeg, eVerdict | ascPos, stepIdx, minPos, bHaveMin
+' The lead of least net current among this speed's measured steps, and whether it is bracketed.
+'
+' @returns minLeadDeg - that lead, degrees (0 when nothing was measured)
+' @returns eVerdict - LEADV_BRACKETED, LEADV_EDGE or LEADV_NOMEAS
+'
+' @local ascPos - position in ascending-lead order
+' @local stepIdx - the step at that position
+' @local minPos - ascending position of the least current
+' @local bHaveMin - T/F where T means a measured step has been seen
+
+    minLeadDeg := 0
+    minPos := 0
+    bHaveMin := FALSE
+    repeat ascPos from 0 to LEAD_STEPS - 1
+        stepIdx := leadAscIdx[ascPos]
+        if bLeadStepValid[stepIdx] == TRUE
+            if (bHaveMin == FALSE) or (leadInet[stepIdx] < leadInet[leadAscIdx[minPos]])
+                minPos := ascPos
+                bHaveMin := TRUE
+    eVerdict := LEADV_NOMEAS
+    if bHaveMin == TRUE
+        minLeadDeg := leadStepDeg[leadAscIdx[minPos]]
+        eVerdict := LEADV_EDGE
+        if (minPos > 0) and (minPos < LEAD_STEPS - 1)
+            if (bLeadStepValid[leadAscIdx[minPos - 1]] == TRUE) and (bLeadStepValid[leadAscIdx[minPos + 1]] == TRUE)
+                eVerdict := LEADV_BRACKETED
+
+PRI emitLeadMin(side, motorIncre, minLeadDeg, eVerdict) | stepIdx, validN
+' BM-LEADMIN: one speed's lead of least net current, the net current there and at the shipped 18, and the verdict.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+' @param minLeadDeg - the lead of least net current, degrees
+' @param eVerdict - LEADV_*
+'
+' @local stepIdx - a lead step
+' @local validN - steps measured at this speed
+
+    validN := 0
+    repeat stepIdx from 0 to LEAD_STEPS - 1
+        if bLeadStepValid[stepIdx] == TRUE
+            validN++
+    recBegin(@"BM-LEADMIN")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.naNumField(@"lead_min", minLeadDeg, LIM_TINY, eVerdict <> LEADV_NOMEAS)
+    benchLog.naNumField(@"inet_min_x10", leadMinInet(), LIM_MID, eVerdict <> LEADV_NOMEAS)
+    benchLog.naNumField(@"inet18_x10", leadInet[0], LIM_MID, bLeadStepValid[0] == TRUE)     ' step 0 is the shipped 18
+    benchLog.numField(@"steps", validN, LIM_TINY)
+    benchLog.tokenField(@"verdict", tokenAt(@tokLeadV, LEADV_COUNT, eVerdict), TOKMAX_LEADV)
+    emitRecord()
+
+PRI leadMinInet() : minInet | stepIdx, bHaveMin
+' The least net current among this speed's measured steps, mV x10 (0 when none was measured).
+'
+' @returns minInet - that current
+'
+' @local stepIdx - a lead step
+' @local bHaveMin - T/F where T means a measured step has been seen
+
+    minInet := 0
+    bHaveMin := FALSE
+    repeat stepIdx from 0 to LEAD_STEPS - 1
+        if bLeadStepValid[stepIdx] == TRUE
+            if (bHaveMin == FALSE) or (leadInet[stepIdx] < minInet)
+                minInet := leadInet[stepIdx]
+                bHaveMin := TRUE
+
+PRI emitLeadCells() | slotIdx, side
+' The LEAD tier's two judged cells per motor: coverage (R18-DUAL-LEAD-BRKT) and the known answer at the quarter
+' (R18-DUAL-LEAD-KNOWN, the mean of the signs' bracketed minima). Either prints NOMEAS when nothing measured it.
+'
+' @local slotIdx - motor slot
+' @local side - that motor's side
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        side := SIDE_LEFT + slotIdx
+        emitSignoff(@sSfCellLeadBrkt, side, @sSfCritLeadBrkt, sfLeadN[slotIdx] > 0, sfLeadBrkt[slotIdx], LEAD_BRKT_MIN, 2 * LEAD_RUNGS, sfLeadN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellLeadKnown, side, @sSfCritLeadKnown, sfLeadQtrN[slotIdx] > 0, sfLeadQtrSum[slotIdx] / (sfLeadQtrN[slotIdx] #> 1), LEAD_KNOWN_LO, LEAD_KNOWN_HI, sfLeadQtrN[slotIdx], @sSfUnitsDeg)
+
+PRI wheelSetLeadScheduled(side)
+' Turn one wheel's dynamic lead schedule back on after the LEAD tier stepped its pair by hand.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    beat(CP_LIB_OFFSETS)
+    if side == SIDE_RIGHT
+        wheelR.testSetLeadScheduled(TRUE)
+    else
+        wheelL.testSetLeadScheduled(TRUE)
+    beat(CP_LIB_OFFSETS)
+
 CON { --- ALIGN: the hall zero measured cold, cog 0, the bridge never driven (task 3590) --- }
 
 VAR { ALIGN tier state -- cog 0 only }
@@ -9672,6 +9905,9 @@ PRI emitHeaderRecords() | orderIdx
             emitPlan(SEG_FLOOR, 1)
         PART_UICHECK:
             emitPlan(SEG_UICHECK, 1)
+        PART_LEAD:
+            emitPlan(SEG_PREFLT, 1)
+            emitPlan(SEG_LEAD, 2)
     if PART_ID == PART_A
         repeat orderIdx from 0 to LADDER_RUNGS - 1
             emitLadder(orderIdx)
@@ -10954,6 +11190,8 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallU
         PART_ALIGN:
             pCell := @sSfCellNoStallZ
+        PART_LEAD:
+            pCell := @sSfCellNoStallL
         other:
             pCell := @sUnknownTok
 
@@ -10981,6 +11219,8 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskU
         PART_ALIGN:
             pCell := @sSfCellDbgMaskZ
+        PART_LEAD:
+            pCell := @sSfCellDbgMaskL
         other:
             pCell := @sUnknownTok
 
@@ -11109,6 +11349,11 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellAgCover)
                 emitSignoffDecl(@sSfCellAgRes)
                 emitSignoffDecl(@sSfCellAgMatrix)
+            PART_LEAD:
+                emitSignoffDecl(@sSfCellNoStallL)
+                emitSignoffDecl(@sSfCellDbgMaskL)
+                emitSignoffDecl(@sSfCellLeadBrkt)
+                emitSignoffDecl(@sSfCellLeadKnown)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
@@ -11216,6 +11461,8 @@ PRI emitSignoffs() | slotIdx, side
                 emitSignoffBool(@sSfCellUiCheck, SIDE_NONE, @sSfCritUiCheck, bSfUiRan, bSfUiOk, uiStepCount)
             PART_ALIGN:
                 emitAlignCells()
+            PART_LEAD:
+                emitLeadCells()
 
 PRI emitIdleMoveCell(pCell, slotIdx)
 ' IDLEMOVE (task 3572): the other wheel's largest travel over every motor-frame trace this motor was primary in.
