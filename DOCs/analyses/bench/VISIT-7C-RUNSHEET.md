@@ -1,4 +1,4 @@
-# Visit 7c — run sheet, pass 2 (one load, ATTENDED: your hands turn the wheels)
+# Visit 7c — run sheet, pass 2 (two loads; the first needs your hands on the wheels)
 
 **Plan section:** R18.2f ([`../../plans/BENCH-READINESS-SPRINT-PLAN.md`](../../plans/BENCH-READINESS-SPRINT-PLAN.md)).
 **Task:** «#3594».
@@ -13,10 +13,12 @@ mechanism is answered (the servo's 60° deadband, 4 of 4 traces).
 
 | Load | Banner must read |
 |---|---|
-| `dual-align` | `src_rev 24`, `fmt 12`, part `ALIGN` |
+| `dual-align` | `BM-BANNER` `src_rev 25`, `fmt 13`, part `ALIGN` |
+| `dual-a` | `BM-BANNER` `src_rev 25`, `fmt 13`, part `A`; **`BM-BUILD` `servo_engage,57`** |
 
-⛔ `src_rev 23` means the hysteresis and the band test are **not** in the image. The run then repeats
-the 2026-09-21 shakedown and measures nothing. Stop and rebuild.
+⛔ `src_rev` below 24 means the hysteresis and the band test are **not** in the image: the ALIGN run
+repeats the 2026-09-21 shakedown and measures nothing. ⛔ **No `servo_engage` field** means the
+driver's start seed is not in the image, and load 2 certifies nothing. Stop and rebuild either way.
 
 ---
 
@@ -26,23 +28,24 @@ Seven attributes, per *Shared vocabulary — the bench visit* (`~/.claude/skills
 
 | | |
 |---|---|
-| **Purpose** | **Two jobs.** It **certifies** the rebuilt crossing detector (PL-99) and clip test (PL-100). It **measures**, cold and at zero current, two things no driven run can: the hall zero `Z` over the whole circle, and **whether the six hall sectors are equal** (manual hole H-3). It is also the first real reading of back-EMF on this rig. |
-| **Hardware risk** | **None from the drive — no motor is ever driven.** Both drivers start with the bridge set to coast (all six FETs off), and only a driven bridge can fault. MEASURED at the shakedown: worst current in the whole tier **15 mV** against a 150 mV band. Wheels up. Panic throughout: physical battery disconnect. |
-| **Who can observe** | **You turn each wheel by hand.** Nothing else is asked of you: every verdict is printed. |
-| **Runs that carry state** | **None.** Nothing is written to the driver; nothing needs restoring. |
-| **Run length** | **About 3 minutes of turning.** MEASURED at the shakedown: 8 legs, 64 s from the first edge of the first leg to the last. The pauses between legs are yours. |
-| **Repeatability** | Repeatable and idempotent. A leg turned the wrong way is **not** a mistake: legs are labelled by the direction they measure. |
-| **Variant matrix** | One build: `test_bench_dual.spin2` part ALIGN. One rig (Rev B, paired 6.5 in hub, 18.5 V, 270 MHz). One log. |
+| **Purpose** | **Two jobs.** It **certifies** two things built since pass 1: the rebuilt ALIGN crossing detector and clip test (PL-99, PL-100), and the **driver's start seed** («#3600»: a start places the field where the duty servo engages, so there is no pinned wait and catch-up). It **measures**, cold and at zero current, two things no driven run can: the hall zero `Z` over the whole circle, and **whether the six hall sectors are equal** (manual hole H-3). It is also the first real reading of back-EMF on this rig. |
+| **Hardware risk** | **Load 1: none from the drive — no motor is ever driven.** Both drivers start with the bridge set to coast (all six FETs off), and only a driven bridge can fault. MEASURED at the shakedown: worst current in the tier **15 mV** against a 150 mV band. **Load 2:** the same kind of risk as every prior `dual-a` — wheels up, nothing on the platform, no hands near it. What is new is only how a start begins: the field starts 80° ahead of the rotor at minimum duty instead of 0°, so expect a **firmer, earlier** start. The 10 A abort and the fold-back limiter are unchanged and still apply. Panic throughout: physical battery disconnect. |
+| **Who can observe** | **Load 1: you turn each wheel by hand.** Load 2: nobody — hands clear, unattended. Every verdict is printed. |
+| **Runs that carry state** | **None.** Nothing is written to the driver at run time; nothing needs restoring. |
+| **Run length** | **About 15 minutes.** Load 1: ~3 minutes of turning (MEASURED at the shakedown: 8 legs, 64 s first edge to last; the pauses are yours). Load 2: ~12 minutes (MEASURED 2026-09-20: part A ran 693 s). |
+| **Repeatability** | Both repeatable and idempotent. A leg turned the wrong way is **not** a mistake: legs are labelled by the direction they measure. |
+| **Variant matrix** | Two builds of one source, `test_bench_dual.spin2`: part ALIGN and part A, both on the new driver. One rig (Rev B, paired 6.5 in hub, 18.5 V, 270 MHz). Two logs. |
 
 ---
 
 ## The command
 
 ```bash
-tools/bench-run.sh dual-align
+tools/bench-run.sh dual-align     # load 1 -- ATTENDED, your hands, ~3 min of turning
+tools/bench-run.sh dual-a         # load 2 -- unattended, hands clear, ~12 min
 ```
 
-**What your hands do.** Eight legs: left wheel then right, each forward and reverse, each slow then
+**What your hands do in load 1.** Eight legs: left wheel then right, each forward and reverse, each slow then
 brisk. Before each leg the screen prints one line in plain words: which wheel, which way, how fast.
 **Wait for that line with the wheel still.** The tier reads the resting level first and re-takes it
 if the wheel is moving. Turn about 3 turns; the leg ends by itself and the output resumes.
@@ -61,6 +64,7 @@ if the wheel is moving. Turn about 3 turns; the leg ends by itself and the outpu
 | **`Z` cold**, per wheel, per direction, per speed | «#3589»; confirms or retires the driven −3.6 ± 0.4° |
 | **Are the six hall sectors equal?** (H-3) | «#3589»; the RIGHT motor's residual asymmetry; any future sub-sector interpolation |
 | **Back-EMF's usable range** — at what hand speed crossings become countable | «#3589»'s sensor table, the row «#3596» leaves OPEN |
+| **Does the start seed remove the pinned wait?** (load 2, the START trace) | certifies «#3600» |
 
 ---
 
@@ -108,12 +112,38 @@ the new one counts **89**, on both slow and brisk legs. Its timing bias on the s
 remaining ~2.5° late at brisk is the 0.52 ms sample spacing — it predates this change and cancels in the
 forward/reverse mean by design.
 
+### Load 2 — the START trace, against the driver's new start seed («#3600»)
+
+**What changed.** At every start from rest the driver used to place the field exactly on the rotor
+estimate (`err_` = 0). The duty servo only raises duty once `|err_|` reaches **57** units: its setpoint
+is 42, and its truncating gain (18, shifted right 8) adds nothing until the excess reaches 15. So duty
+sat pinned at minimum while the field ran away from a stationary rotor, then caught up hard. Pass 1
+measured exactly that, 4 of 4: **pinned at 1,600 until k=232 (464 ms), first moving at `|err|`
+57–59, `err` reading −1 from k=2.** The field now starts **57 units (80°) ahead** of the rotor in the
+direction of travel.
+
+**Prediction, fixed before the run** — the same four traces (QTR cells, both motors, both directions):
+
+| Reading | Pass 1 (seed 0) | Pass 2 must show |
+|---|---|---|
+| `\|err\|` from k=2 | ~1 | **~57** (the seed) |
+| duty's first change | k=232 (464 ms) | **within the first few samples** — tens of ms at most |
+| from-rest peak current | 64–100, peaking **after** the pinned wait (i=87 at k=369) | **lower**, and early |
+
+⛔ **Falsifier:** `|err|` near 0 at k=2 (the seed is not in the image — check `servo_engage` first), or
+duty still pinned for hundreds of ms, or peak current **unchanged or higher**. Any one of them means the
+seed does not do what the construction claims, and the fix is not certified.
+
+**And nothing else in part A may get worse.** The seed touches only starts from rest — the lines run
+by a speed change, a stop and a hold are unchanged. So every part-A cell that passed at its last run
+must pass again. A new failure anywhere in part A is a finding against this change, not noise.
+
 ---
 
 ## What this pass does NOT decide
 
-- **The start-surge fix.** The mechanism is answered; the fix (start the servo at its setpoint rather
-  than at zero error) is a driver change and rides a later pass with the START trace that certifies it.
+- **The start surge UNDER LOAD.** Wheels are up. This pass shows whether the pinned wait is gone; the
+  size of what is left under load is the tethered floor run's.
 - **The servo setpoint A/B is retired, not deferred.** The driver applies the field at the commanded
   angle and the servo integrates duty until `|err|` equals its setpoint, so at steady state the
   setpoint and the lead combine **by construction** (`isp_bldc_motor.spin2:4456-4463`, `:4580`). A 90°
