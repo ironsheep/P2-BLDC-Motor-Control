@@ -2704,3 +2704,33 @@ named constants block; that list *is* «#3592»'s specification.
 
 ⛔ `ADDING_MOTOR.md` must describe the offset procedure **as it actually is** in 6.0.0 and must not
 promise a generalised tool. That constraint belongs to «#3515».
+
+### Ruling carried into the plan: dynamic lead in, back-EMF deferred — build, measure, then adjust
+
+«#3589» wrote the drive change (`DRIVE-INTEGRATION-DESIGN.md` §5) and priced every candidate function
+(§7). Stephen chose from that table.
+
+**STEPHEN, 2026-09-22:** *"I'm very interested in the dynamic lead, and I'm also very interested in the
+back EMF, but I'm thinking the back EMF is an added capability, and so I might make that a delta release
+after we get the current driver stabilized. My current thinking is to defer back EMF. Let's go with dynamic
+lead. Let's build the driver as you need to now so we can do the testing to calculate dynamic lead, and then
+we'll make final adjustments once we understand the results from the testing."*
+
+**The phasing, as R18.4 → R18.5 → R18.6:**
+1. **R18.4, «#3583» — build.**
+   - D-1, D-2, D-4, D-5 and D-6.
+   - **The dynamic-lead mechanism**: the front cog writes the offsets from a table of L against
+     `drv_incr_now`, every 8 ms slot. **The table is FLAT at the shipped L = 18**, so the drive behaves
+     as shipped in placement until the table is measured.
+   - **The live L-step bench tier** that measures the table.
+2. **R18.5, «#3584» — Visit 8.** It certifies A-1 to A-10 and carries the live L-step run, which fills
+   the table and prices it (§7 C-A).
+3. **R18.6, a new task after «#3584» — fill the table and make the final adjustments**, certified by
+   the rerun they need.
+
+**Deferred to a delta release after 6.0.0 (Stephen's word, above):**
+- back-EMF as a position source (§7 C-B);
+- with it, the torque-peak hold (C-D, PL-105), which needs a sub-sector angle;
+- hall-timing interpolation (C-C), which was priced only as C-D's other route.
+
+The release-window capture (§7 C-B) is that delta release's first measurement.

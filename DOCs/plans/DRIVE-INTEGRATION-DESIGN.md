@@ -581,6 +581,16 @@ whatever the loaded floor run finds.
 | **C-C** | **Hall-timing interpolation** (the angle inside a sector, from the last edge's timing) | Enables C-D above the lowest speeds. In the model, the servo's error band tightens from 27–70 to 46–50. Its benefit to a user, beyond C-D, is not quantified. **At the bottom of the range it misleads:** cogging swings speed ±30 % between edges (MEASURED). | Tightening **modelled**; low-speed limit **measured** | Moderate: ~8–10 cog longs | Only worth measuring if C-D is wanted |
 | **C-D** | **Hold an overloaded motor at the torque peak** (PL-105) | **About 1.8–2.7× today's pull when a wheel is overloaded**, as when climbing or pushing against an obstacle. Today the hold sits at δ ≈ 146–158°, where sin δ is 0.37–0.56 of the peak. It also means less current wasted while held. | **Modelled** on the fitted frame; the δ bracket is the fit's own spread | Needs C-B or C-C first | **The floor run:** how often and how long a wheel sits at the hold in normal use. If never, the benefit is theoretical. |
 
+### 7.3 Stephen's decision, 2026-09-22
+
+- **C-A, dynamic lead: IN.** «#3583» builds the mechanism with the table flat at L = 18, plus the live
+  L-step tier. Visit 8 («#3584») measures the table, and «#3601» fills it and makes the final
+  adjustments.
+- **C-B, back-EMF: DEFERRED** to a delta release after 6.0.0 («#3602»). C-D and C-C go with it.
+- STEPHEN: *"My current thinking is to defer back EMF. Let's go with dynamic lead. Let's build the driver
+  as you need to now so we can do the testing to calculate dynamic lead, and then we'll make final
+  adjustments once we understand the results from the testing."*
+
 **Sequencing note for the decision, not a recommendation of scope.**
 - C-A's firming run needs no driver change, so its benefit can be measured before anything is built.
 - C-D's value hinges on one number the floor run produces.
