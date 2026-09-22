@@ -105,9 +105,42 @@ different question and each feeds a different front of the outer loop
 | Part | The question it answers | Front it feeds |
 |---|---|---|
 | **1 · The learnings** | What do we now know that we did not know before the run? | *information* |
-| **2 · What it means for the driver** | Which driver changes do these answers now license — and which do they **forbid**? | *completion* + *robustness* |
+| **2a · What it means for the driver — what it now DOES** | Which driver changes do these answers license, and which do they **forbid**? | *completion* |
+| **2b · What it means for the driver — what it now KNOWS** | Does the drive itself gain a sensor it can act on, or did this only teach the harness? | *robustness* |
 | **3 · What it changes about the next run** | What should the next pass carry, drop, or re-centre because of this? | *information* + *completion* |
 | **4 · Questions left open** | What still gates a decision, and what would settle it? | names the next question |
+
+⛔ **2a AND 2b ARE SEPARATE, AND BUNDLING THEM IS HOW FRONT 3 GOES MISSING.** *Does the driver do more
+of what it must* and *does the driver now know something it did not* are different questions, and a
+run can advance the first while the second stays flat. That is the documented failure: `follow_pct`
+was built so the **instrument** could tell the drive was not following, while the **drive** stayed
+blind to it — front 1 advanced, front 3 did not, and nothing in the write-up made that visible
+because the two lived in one paragraph.
+
+### Every run is checked against all three fronts — but need not advance all three
+
+⚠ **Requiring every run to advance every front would manufacture driver changes the evidence does not
+license** — the exact trap 2a's *does NOT license* paragraph exists to prevent.
+
+So the rule is about **silence, not motion**: each of the three fronts is **named explicitly** in the
+outcome and is either *advanced* (with the change named) or *recorded as not advanced, with why*. An
+honest **"this run moved nothing on front 3, because it certified a harness mechanism and integrated
+no sensor"** is a correct outcome. A front that simply **is not mentioned** is the failure — that is
+how a pass advances one front and nobody notices the other two did not move.
+
+**Close the outcome with the ledger reading, before and after**, so the claim is computed rather than
+asserted (`.claude/skills/task-execution/project-overlay.md`):
+
+```
+FRONTS  (after this run)
+  completion   driver last changed <N> commits ago
+  information  <K> loads ready and unrun: <names>
+  robustness   sensors the DRIVER acts on: halls <y/n> current <y/n> back-EMF <y/n> follow <y/n>
+```
+
+⛔ Read `robustness` from what the **driver declares** — a `PUB`, an addressed `VAR`, a named `CON` —
+never a word grep. The ledger's first run reported follow-detection present when all five matches
+were the word *follow* in prose comments. A word match lies in the one direction that matters.
 
 **Part 1 goes at the TOP of the report as a `## Headline` table** — one row per learning, claim on the
 left, the number that carries it on the right. **It is written last and placed first**, because it
@@ -125,6 +158,13 @@ own extrapolated optimum is a one-constant change and would likely convert four 
 usable minima."* That is the next run's load, specified in the report that justified it — and it is
 what makes *every bench pass do two jobs*: certify what was built since the last pass, and measure
 for the answers still needed.
+
+⭐ **Part 3 IS the next run sheet's draft load list — it carries forward, it is not re-decided.** The
+next sheet inherits these loads and their justification; what it still owns is the seven attributes,
+the cells, and confirming each can fail. Re-deriving the loads from scratch would discard the one
+moment when the evidence and the reasoning were both in hand. **A load may still be dropped at the
+next sheet — but the sheet says why it was dropped**, so a load cannot vanish by being forgotten
+between the report that called for it and the pass that should have carried it.
 
 **Part 4 is not the same as "What is NOT established" (§8).** §8 is a fence around this run's claims.
 Part 4 is forward-looking: the open question, what would settle it, and which task owns it.
@@ -165,11 +205,13 @@ Title — what ran, when, and the outcome in the title itself
 §1   HEADLINE                     <- part 1. Written last, placed first.
 §2   Root cause                   (aborted runs only)
 §3…  The measurement, quoted from log lines
-§n   What this means for the driver   <- part 2, with its "does NOT license"
+§n   What this means for the driver   <- 2a what it DOES + 2b what it KNOWS,
+                                         with the "does NOT license" paragraph
 §n+1 What this changes about the next run  <- part 3
 §n+2 Findings register            (id + disposition)
 §n+3 What is NOT established      (a fence around THIS run)
 §n+4 Questions left open          <- part 4 (forward-looking; may merge with §n+1)
+§n+5 FRONTS ledger, after         <- computed; every front named, advanced or not
 ```
 
 **A reader who stops after §1 should already have the outcome.** A reader who stops after the driver
