@@ -5130,6 +5130,31 @@ something other than what the sheet says it means.
 
 ---
 
+### PL-101 -- the duty servo holds a 21-degree band, not a setpoint, because its gain truncates
+
+**Found 2026-09-22 at «#3600»**, reading the servo to seed a start at it.
+
+The servo adds `((|err_| - SERVO_SETPOINT) * duty_up) SAR 8` to duty each pass (`isp_bldc_motor.spin2`,
+drvMotor after `.noFault`). With the setpoint 42 and `duty_up` 18, **anything from 42 up to 56 adds
+exactly 0**, while anything below 42 subtracts at least 1 (SAR rounds toward minus infinity). So duty
+is steady anywhere in **|err_| 42-56, i.e. 59-79 deg**, and only rises from 57. MEASURED: Visit 7c's
+four START traces first moved duty at |err| **57-59** (`2026-09-22/VISIT-7C-EVALUATION.md` sec 5).
+
+**Why it matters.** Steady-state field placement is `setpoint - lead + const` only to within that band:
+where in the 21 deg the servo sits depends on how the load and the ramp brought it there, not on any
+knob. The lead `L` the scan measures is therefore measured against a setpoint that is itself a band, and
+«#3589»'s "which knob carries the lead" design has to decide whether the drive should hold a *point*.
+It is a pattern nobody chose by design (P10): an artifact of integer truncation, not a deadband anyone
+specified.
+
+**What it would take:** a decision in «#3589», not a patch here -- either round the servo step (a
+symmetric band of about +/-7) or carry a fractional duty accumulator (no band). Either changes steady-state
+behaviour of a working mechanism, so it is designed and certified, never slipped in (D5). «#3600»'s start
+seed deliberately does NOT change it: it seeds at the band's upper edge (`SERVO_ENGAGE`, derived from the
+two constants), so if the servo changes, the seed follows.
+
+---
+
 ## Removed from this list
 
 **Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
