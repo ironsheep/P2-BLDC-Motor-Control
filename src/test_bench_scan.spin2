@@ -181,8 +181,25 @@
 
 CON { build identity }
 
-    SRC_REV     = 17                                      ' hand-bumped whenever this file changes
-    FMT_VERSION = 10                                        ' BS- record-format version
+    SRC_REV     = 18                                      ' hand-bumped whenever this file changes
+    FMT_VERSION = 11                                        ' BS- record-format version
+
+' fmt 11 changes (task 3594, THE LOOP INVERSION; no existing record's field names, order or content
+'  change -- BS-END only GAINS fields, after right_done and before lib_abort):
+'   - BS-END gains left_rungs, right_rungs and rungs_planned. The run order is now RUNG-OUTER,
+'     MOTOR-INNER, so an abort costs at most the rung it lands in rather than a whole motor. On an
+'     abort left_done/right_done are both FALSE and say nothing about how far the run got; the three
+'     new counts are what carry it, and they are the fields to read on any aborted run.
+'   - BS-POINT3 gains drv_follow_pct, drv_meas_tps and drv_cmd_tps at the END of the record: the
+'     DRIVER's own testGetFollowing() reading beside the harness's follow_pct, read at span close
+'     while the drive command still stands. Two independent computations of one quantity.
+'   - NEW CELL R18-SCAN-FOLLOW (task 3594), two instances per motor, the first caller of
+'     emitSignoffEx(): FOLLOW_AGREES_PCT (positive limb) and FOLLOW_COLLAPSED (negative limb, NOMEAS
+'     when no point drooped). It certifies the driver capability harvested at 31c8b91.
+'   - BS-BUILD gains droop_selftest, after wd_selftest.
+'   - NEW BUILD -D DROOP_SELFTEST (tier scan-droop) and NEW RECORD BS-DROOPTEST, three per run, with
+'     NEW CELL R18-SCAN-DROOPLOGIC (three instances, motor NONE). Pure logic: no preflight, no driver
+'     cog, nothing moves. The normal build emits none of them and the droop build emits no other cell.
 
 ' fmt 10 changes (task 3540, scan v5, PL-46; no existing record's field names, order or content change):
 '   - BS-END gains trap_value, printed on every run (not only an abort).
@@ -385,6 +402,18 @@ CON { run sequencing enums }
   '  WS_DROOP      - task 3595: SIDE_DROOP_STOP consecutive points where the drive stopped FOLLOWING.
   '                  Appended at the end so no existing WS_* value renumbers.
     #0, WS_RISE, WS_FAULTS, WS_HARD_LIMIT, WS_RUN_ABORT, WS_DROOP
+  ' WS_NONE is NOT a stop and never reaches a record. It is stepStopDecision()'s "this point stopped
+  '  nothing" (task 3594), and it is -1 rather than a new enum member precisely so it cannot collide
+  '  with a real WS_* or renumber one -- walkStopToken() is never asked to name it.
+    WS_NONE = -1
+
+  ' Task 3594 droop self-test: what one byte of a sequence means to stepStopDecision().
+    DSQ_CLEAN = 0
+    DSQ_DROOP = 1
+    DSQ_FAULT = 2
+    DSQ_RUN_LEN  = 4
+    DSQ_ISOL_LEN = 6
+    DSQ_FLT_LEN  = 4
 
   ' Boundary type at one end of the reachable arc (task 3595). The arc is bounded by the MOTOR, not by
   '  the instrument, and the two ends are bounded by DIFFERENT physics -- which is a result, so the
@@ -680,6 +709,42 @@ CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-D
 ' driver's 43.9 kHz loop no hall transition can be skipped.
     INTEG_SUM_LO = 0
     INTEG_SUM_HI = 0
+
+' R18-SCAN-FOLLOW (task 3594), units PCT. CERTIFIES THE DRIVER'S OWN testGetFollowing(), harvested
+' into isp_bldc_motor.spin2 at 31c8b91. Front 3 of the release is sensor integration INTO THE DRIVE,
+' and an observable the driver declares but nothing judges has been built, not integrated -- so this
+' cell is what makes that harvest a certified capability rather than an untested one.
+'
+' WHY IT IS A CROSS-CHECK AND NOT A RESTATEMENT. The harness computes its own ptFollowPct from this
+' point's whole drive span against expectedRateX10()'s compile-time rung table. The driver computes
+' nPctOfCmd from its own 1 s rpm window against a commanded rate it DERIVES from the live command.
+' Different numerators, different denominators, different time bases. Agreement is therefore evidence;
+' a wrong derivation in either shows up as a gross disagreement, not a small one.
+'
+' TWO CRITERIA, BECAUSE ONE LIMB VERIFIES NOTHING (D2).
+'  FOLLOW_AGREES_PCT -- the POSITIVE limb. Among points the harness says were FOLLOWING
+'   (ptFollowPct >= FOLLOW_DROOP_PCT), the worst |driver - harness| must not exceed FOLLOW_AGREE_PCT.
+'  FOLLOW_COLLAPSED -- the NEGATIVE limb, and the one that matters. Among points the harness says
+'   were NOT following (ptFollowPct < FOLLOW_LOW_PCT), the driver's LOWEST reading must itself be
+'   below FOLLOW_LOW_PCT. An instrument shown only healthy input has not been verified; this is the
+'   limb that proves the driver's number can actually fall.
+'  NOMEAS, never PASS, when no such point arose -- "the condition did not arise" is an honest result
+'   and is NOT evidence the reading collapses.
+'
+' THE LIMITS ARE MEASURED, not chosen. testGetFollowing()'s own doc records the bench instrument
+' reading 44-47 % of commanded at the current wall while duty saturated, against ~100 while
+' following. FOLLOW_LOW_PCT 60 sits clear of both: above the wall's 47 and far below a following
+' 100. FOLLOW_AGREE_PCT 20 is set by the known time-base difference -- the driver's last-second
+' window reads higher than the harness's whole-span mean, which includes spin-up -- and is tight
+' enough that a wrong denominator (which misses by a FACTOR, not by points) cannot pass.
+'
+' THE "FOLLOWING" THRESHOLD IS FOLLOW_DROOP_PCT ITSELF, not a second constant of the same value.
+'  The scan already defines 80 % as where "the drive is not following" begins (see its CON above),
+'  and a parallel FOLLOW_OK_PCT sitting at 80 would be two names for one meaning, free to drift
+'  apart in a later edit. This cell asks the scan's own question and uses the scan's own number.
+    FOLLOW_LOW_PCT     = 60                                 ' harness reading below which a point counts as NOT following
+    FOLLOW_AGREE_PCT   = 20                                 ' worst permitted |driver - harness| among following points
+    FOLLOW_MIN_POINTS  = 4                                  ' following points needed before the positive limb is judged
 
 ' R6-SCAN-OFFSETS, crit READBACK_BAD, units COUNT. MEASURED (design sec A.4 row 6): offsets read back
 ' exactly at every start of scan run 5; DERIVED: the read-back is integer degrees, so exact.
@@ -1098,6 +1163,28 @@ sSfCritNotAlive BYTE    "STARTS_NOT_ALIVE", 0
 sSfCritRate     BYTE    "RATE_IN_BAND", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
+' Task 3594: R18-SCAN-FOLLOW certifies the DRIVER's own testGetFollowing(), harvested at 31c8b91.
+'  Two criteria because one limb cannot verify it (D2): FOLLOW_AGREES_PCT is the positive limb and
+'  FOLLOW_COLLAPSED_PCT the negative one. Lengths: cell 15 of TOKMAX_CELL 20, crits 17 and 19 --
+'  FOLLOW_COLLAPSED_PCT would print "?" at TOKMAX_CRIT 18, which is how R18-DUAL-OFFSETS-A lost its
+'  crit by one byte, so it is shortened to 18 and checked here rather than discovered in a log.
+sSfTaskFollow   BYTE    "3594", 0                           ' R18-SCAN-FOLLOW: the driver's following reading
+' Task 3594 droop self-test sequences. Each byte is one coarse point as stepStopDecision() sees it:
+'  DSQ_CLEAN followed nothing, DSQ_DROOP drove but did not follow, DSQ_FAULT was fault-like.
+' THE RUN is the shape hardware has never produced; THE ISOLATED shape is the one every real run DID
+'  produce (a droop at the hard limit, then recovery), and it must NOT fire; THE FAULT shape proves
+'  a fault breaks a droop run rather than adding to it.
+bDroopSeqRun    BYTE    1, 1, 1, 0
+bDroopSeqIsol   BYTE    1, 0, 1, 0, 1, 0
+bDroopSeqFlt    BYTE    1, 2, 1, 0
+sSfCellDroopLg  BYTE    "R18-SCAN-DROOPLOGIC", 0
+sSfCritDrpRun   BYTE    "DROOP_RUN_FIRES", 0
+sSfCritDrpIsol  BYTE    "DROOP_ISOLATED_NO", 0
+sSfCritDrpFlt   BYTE    "DROOP_FAULT_RESETS", 0
+sSfCellFollow   BYTE    "R18-SCAN-FOLLOW", 0
+sSfCritFolAgree BYTE    "FOLLOW_AGREES_PCT", 0
+sSfCritFolColl  BYTE    "FOLLOW_COLLAPSED", 0
+sSfUnitsPct     BYTE    "PCT", 0
 sSfPass         BYTE    "PASS", 0
 sSfFail         BYTE    "FAIL", 0
 sSfNomeas       BYTE    "NOMEAS", 0
@@ -1154,8 +1241,15 @@ VAR { run-wide state }
     LONG    runChargeMvS                                    ' integrated sense, mV x s
     LONG    lastIncre                                       ' last commanded motor increment
     LONG    bLastStartOk                                    ' result of the most recent start checks
-    LONG    bLeftDone
-    LONG    bRightDone
+    LONG    bLeftDone                                       ' TRUE once LEFT completed EVERY rung
+    LONG    bRightDone                                      ' TRUE once RIGHT completed EVERY rung
+    ' task 3594 LOOP INVERSION: the rung is the outer loop and the motor the inner one, so a late
+    '  abort no longer costs a whole motor. These four carry what runMotorBlock() used to hold in
+    '  locals, because setup and legs are now separate calls interleaved across both motors.
+    LONG    bLeftSelfOk                                     ' LEFT passed its self-check (gates its RESULT records)
+    LONG    bRightSelfOk                                    ' RIGHT passed its self-check
+    LONG    leftRungsDone                                   ' rungs LEFT completed, 0..SPEED_SLOTS
+    LONG    rightRungsDone                                  ' rungs RIGHT completed, 0..SPEED_SLOTS
 
 VAR { sampling state }
 
@@ -1233,6 +1327,13 @@ VAR { the point just measured }
     LONG    ptSpanDutyMean                                  ' mean duty the servo demanded over it
     LONG    ptSpanDutyMax                                   ' the largest duty it demanded
     LONG    ptFollowPct                                     ' achieved rate as a percent of commanded: 100 = following
+    ' THE DRIVER'S OWN following reading for the same point (task 3594), read at span close while the
+    '  drive command is still standing. The harness's ptFollowPct above and these are computed by
+    '  independent paths; R18-SCAN-FOLLOW judges the driver's against the harness's.
+    LONG    bPtDrvFollowValid                               ' the driver's bValid: its rpm window was full
+    LONG    ptDrvFollowPct                                  ' the driver's nPctOfCmd
+    LONG    ptDrvMeasTps                                    ' the driver's measured ticks/s
+    LONG    ptDrvCmdTps                                     ' the driver's commanded ticks/s -- the denominator that may differ
 
 VAR { the leg in progress }
 
@@ -1328,6 +1429,12 @@ VAR { sign-off accumulators, task 3537 -- index sideSlot(side); cog 0 only, the 
     LONG    zxsAllMin[SIDE_SLOTS * ZXS_CHANNELS]            ' smallest lifetime-first full zero mean, any phase, mV x10
     LONG    zxsAllMax[SIDE_SLOTS * ZXS_CHANNELS]            ' largest lifetime-first full zero mean, any phase, mV x10
     LONG    zxsAllN[SIDE_SLOTS]                             ' zeros folded into zxsAllMin/zxsAllMax
+    ' task 3594 -- R18-SCAN-FOLLOW, the driver's own following reading, judged per motor.
+    LONG    sfFolAgreeN[SIDE_SLOTS]                         ' points where BOTH readings were valid and the harness said FOLLOWING
+    LONG    sfFolAgreeWorst[SIDE_SLOTS]                     ' worst |driver - harness| among those points, PCT
+    LONG    sfFolCollN[SIDE_SLOTS]                          ' points where the harness said NOT following and the driver's window was full
+    LONG    sfFolCollMin[SIDE_SLOTS]                        ' the driver's LOWEST reading among those, PCT -- the negative limb
+    LONG    bSfFolCollSeen[SIDE_SLOTS]                      ' TRUE once any such point arose; FALSE makes the negative limb NOMEAS
     LONG    bResLegRan[RESULT_SLOTS]                        ' TRUE when runLeg() ended this slot's leg other than LX_SKIPPED
     LONG    resZeroMissing[RESULT_SLOTS]                    ' that leg's valid points without a valid own zero
     LONG    resZeroChecked[RESULT_SLOTS]                    ' that leg's valid points (R9-SCAN-OWNZERO's n)
@@ -1442,6 +1549,10 @@ PRI initRunState() | slotIdx
     bLastStartOk := FALSE
     bLeftDone := FALSE
     bRightDone := FALSE
+    bLeftSelfOk := FALSE                                    ' task 3594: set by bRunMotorSetup(), read at emitResults()
+    bRightSelfOk := FALSE
+    leftRungsDone := 0
+    rightRungsDone := 0
     sampPrevMs := runStartMs
     sampChargeMvMs := 0
     bWdtBackstopHit := FALSE                                ' task 3537 phase 2c: no backstop is NOMEAS
@@ -1486,6 +1597,11 @@ PRI initRunState() | slotIdx
         bSfSelfRateOk[slotIdx] := FALSE
         zxsN[slotIdx] := 0
         zxsAllN[slotIdx] := 0
+        sfFolAgreeN[slotIdx] := 0                           ' task 3594 R18-SCAN-FOLLOW
+        sfFolAgreeWorst[slotIdx] := 0
+        sfFolCollN[slotIdx] := 0
+        sfFolCollMin[slotIdx] := POSX                       ' no point folded yet; bSfFolCollSeen is the real guard
+        bSfFolCollSeen[slotIdx] := FALSE                    ' never arose is NOMEAS, not PASS
         bSfPair2Complete[slotIdx] := FALSE
         bSfPair2NetOk[slotIdx] := FALSE
         bSfRstAloneDone[slotIdx] := FALSE                   ' task 3537 R10: no attempt is NOMEAS
@@ -1496,26 +1612,78 @@ PRI initRunState() | slotIdx
         rstAloneIncre[slotIdx] := 0
         rstAloneSwept[slotIdx] := 0
 
-PRI bRunScan() : bCompleted
-' Preflight, then the LEFT and RIGHT motor blocks. Every stage is skipped once the run aborts.
-' Under -D WD_SELFTEST (task 3537 phase 2c, design sec G.3) preflight is followed by the watchdog
-' self-test instead: no motor block is ever on that path.
+PRI bRunScan() : bCompleted | speedIdx
+' Preflight, both motors' setup, then THE RUNGS, each rung serving BOTH motors before the next rung
+' begins. Every stage is skipped once the run aborts. Under -D WD_SELFTEST (task 3537 phase 2c,
+' design sec G.3) preflight is followed by the watchdog self-test instead: no motor leg is ever on
+' that path.
+'
+' *** TASK 3594 -- THE LOOP INVERSION, AND WHY THE ORDER IS THE INSTRUMENT.
+'
+' This used to be `runMotorBlock(LEFT)` then `runMotorBlock(RIGHT)`, each block running all six of
+' its own legs. MOTOR WAS THE OUTER LOOP, so an abort anywhere in LEFT -- including its very last
+' half-speed leg -- cost THE ENTIRE RIGHT MOTOR, which had not been touched. That is not a
+' hypothetical: BOTH aborted runs lost RIGHT completely, and in each the abort arrived after LEFT
+' had already produced everything it was going to produce.
+'
+' With the RUNG outer and the MOTOR inner, an abort costs at most the rung it lands in. A run that
+' dies in the half-speed rung still carries BOTH motors at an eighth and BOTH at a quarter -- and
+' the eighth is the walking rung, the one that actually locates the minimum. The information a run
+' is most likely to lose is now the information it can most afford to lose.
+'
+' !!! THE RUNG ORDER IS LOAD-BEARING and must stay slowest-first. A confirm rung centres on the
+' WALKING rung's fit (runLeg() checks resStatus[walkSlot]), so SPEED_WALK must have run for this
+' motor and sign before any confirm rung does. Rung-outer preserves that for both motors at once;
+' motor-outer preserved it only within one motor.
+'
+' Cost, stated rather than discovered: one motor runs at a time (bRestartSide() stops the other), so
+' interleaving restarts a driver at every motor switch -- six restarts where there used to be two.
+' The four extra restarts are the price of the information above, and bRestartSide() is already the
+' proven repeated path, since setup runs it ZXS_STARTS times per motor.
 '
 ' @returns bCompleted - TRUE when no run abort occurred
+'
+' @local speedIdx - the rung being served, slowest first
 
     bCompleted := FALSE
+#ifdef DROOP_SELFTEST
+    ' task 3594, tier scan-droop: pure logic. NO preflight and NO wheel is ever started, so this
+    '  build cannot fault, abort on current or move the platform.
+    runDroopSelfTest()
+#endif
+#ifndef DROOP_SELFTEST
     if bPreflightWheels() == FALSE
         setRunAbort(AR_PREFLIGHT, 0)                        ' kept only if no earlier cause was recorded
 #ifdef WD_SELFTEST
     runWatchdogSelfTest()                                   ' parks forever once the watchdog declares
 #else
+    ' Both motors are set up FIRST -- cross-start zeros, start checks, zero reading, self-check --
+    '  because a leg reads selfMeanX10[] for its own abort threshold, so neither motor may start a
+    '  leg until its own self-check has run.
     if abortReason == AR_NONE
-        runMotorBlock(SIDE_LEFT, SIGN_NEG)
+        bLeftSelfOk := bRunMotorSetup(SIDE_LEFT)
     if abortReason == AR_NONE
-        bLeftDone := TRUE
-        runMotorBlock(SIDE_RIGHT, SIGN_POS)
-    if abortReason == AR_NONE
-        bRightDone := TRUE
+        bRightSelfOk := bRunMotorSetup(SIDE_RIGHT)
+    ' THE RUNG IS THE OUTER LOOP. Slowest first, and the walking rung is the slowest.
+    repeat speedIdx from 0 to SPEED_SLOTS - 1
+        if abortReason == AR_NONE
+            runSideRung(SIDE_LEFT, speedIdx, SIGN_NEG)
+            if abortReason == AR_NONE
+                leftRungsDone++
+        if abortReason == AR_NONE
+            runSideRung(SIDE_RIGHT, speedIdx, SIGN_POS)
+            if abortReason == AR_NONE
+                rightRungsDone++
+    bLeftDone := (leftRungsDone == SPEED_SLOTS)
+    bRightDone := (rightRungsDone == SPEED_SLOTS)
+    ' RESULT records are emitted for every motor whose self-check passed, ABORT OR NOT -- a motor
+    '  that produced legs reports them. This is the behaviour the old block had and it is the half
+    '  of information preservation the inversion does not itself provide.
+    if bLeftSelfOk
+        emitResults(SIDE_LEFT, SIGN_NEG)
+    if bRightSelfOk
+        emitResults(SIDE_RIGHT, SIGN_POS)
+#endif
 #endif
     bCompleted := (abortReason == AR_NONE)
     bRunReturned := TRUE                                    ' set on the way out, or main() reads it as a library abort
@@ -1633,22 +1801,20 @@ PRI bPreflightWheels() : bAllMoved | side, ticksBefore, ticksAfter, ticksMoved, 
                 bRecoverFromFault(side, PREFLIGHT_INCRE, DEF_NEG_DEG)
     bAllMoved := bAllMoved and (abortReason == AR_NONE)
 
-PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
-' Run one motor's deliberate cross-start zeros, start checks, zero reading, self-check, both
-' quarter-speed legs, both half-speed legs, and its RESULT records.
+PRI bRunMotorSetup(side) : bSelfPassed
+' Run one motor's SETUP ONLY: deliberate cross-start zeros, start checks, zero reading, self-check.
+' Task 3594 split this out of runMotorBlock(), whose legs are now runSideRung()'s, so that BOTH
+' motors are set up before EITHER runs a leg -- see bRunScan() for why the rung became the outer loop.
 ' Task 3537 phase 2b2 (design sec F.3): first, ZXS_STARTS cycles of bRestartSide() -> a PH_XSTART zero
 ' -> a REST_MS rest, each skipped once the run has aborted. The wheel is floated throughout (init()
 ' sets SM_FLOAT, nothing is commanded). bRestartSide()'s start checks still apply: a failed check
-' aborts the run inside bStartSide(), the loop quits on its next pass, and -- new guard -- the block's
-' own bRestartSide() below is then skipped too, so no wheel is started after an abort.
+' aborts the run inside bStartSide(), the loop quits on its next pass, and -- new guard -- this
+' routine's own bRestartSide() below is then skipped too, so no wheel is started after an abort.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param firstSign - SIGN_NEG or SIGN_POS, the sign whose legs run first
 '
-' @local secondSign - the other sign
-' @local bSelfPassed - TRUE when the self-check passed
+' @returns bSelfPassed - TRUE when the self-check passed, which is what gates this motor's RESULT records
 
-    secondSign := SIGN_POS - firstSign
     bSelfPassed := FALSE
     repeat ZXS_STARTS
         beat(CP_LOOP_XSTART)
@@ -1665,22 +1831,30 @@ PRI runMotorBlock(side, firstSign) | secondSign, bSelfPassed
         measureZero(side, PH_ZERO_INIT)
     if abortReason == AR_NONE
         bSelfPassed := bRunSelfCheck(side)
-    ' task 3595: the WALKING rung first -- every confirm rung centres on the minimum it finds, so it
-    '  has to have run. Slowest first is also widest-arc first, which is the whole reason it walks.
+
+PRI runSideRung(side, speedIdx, firstSign) | secondSign
+' Run ONE motor's two legs at ONE rung, restarting that motor's driver first if the other motor is
+' the one currently running. Task 3594: this is the inner body of the inverted loop.
+'
+' The restart is conditional rather than unconditional: within a rung the same motor runs both of
+' its signs back to back, so only the FIRST of the two pays the switch. bRestartSide() is already
+' the proven repeated path (setup runs it ZXS_STARTS times per motor), and it is what keeps the
+' one-motor-at-a-time invariant that bRestartSide() itself enforces by stopping the other side.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param speedIdx - the rung: SPEED_LOW (the walking rung), SPEED_QTR or SPEED_HALF
+' @param firstSign - SIGN_NEG or SIGN_POS, the sign whose leg runs first
+'
+' @local secondSign - the other sign
+
+    secondSign := SIGN_POS - firstSign
+    if currentSide <> side
+        if abortReason == AR_NONE
+            bRestartSide(side)
     if abortReason == AR_NONE
-        runLeg(side, SPEED_WALK, firstSign)
+        runLeg(side, speedIdx, firstSign)
     if abortReason == AR_NONE
-        runLeg(side, SPEED_WALK, secondSign)
-    if abortReason == AR_NONE
-        runLeg(side, SPEED_QTR, firstSign)
-    if abortReason == AR_NONE
-        runLeg(side, SPEED_QTR, secondSign)
-    if abortReason == AR_NONE
-        runLeg(side, SPEED_HALF, firstSign)
-    if abortReason == AR_NONE
-        runLeg(side, SPEED_HALF, secondSign)
-    if bSelfPassed
-        emitResults(side, firstSign)
+        runLeg(side, speedIdx, secondSign)
 
 PRI bRestartSide(side) : bStartOk
 ' Stop whichever wheel is running and this wheel, then start this wheel with start checks.
@@ -2293,6 +2467,10 @@ PRI clearPointRecord()
     ptSpanDutyMean := 0
     ptSpanDutyMax := 0
     ptFollowPct := 0
+    bPtDrvFollowValid := FALSE                              ' task 3594: not read until closeDriveSpan()
+    ptDrvFollowPct := 0
+    ptDrvMeasTps := 0
+    ptDrvCmdTps := 0
 
 PRI bSettlePoint(side, speedIdx) : bSettleOk | startMs, startTicks, spanMs, spanTicks, settleRateX10
 ' Hold SETTLE_MS after AT_SPEED, polling the abort checks, and test the settle rate.
@@ -2508,6 +2686,14 @@ PRI closeDriveSpan(side, speedIdx)
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param speedIdx - SPEED_QTR or SPEED_HALF, naming the commanded rate this is judged against
 
+    ' TASK 3594 -- READ THE DRIVER'S OWN FOLLOWING ANSWER FIRST, AND READ IT HERE.
+    '  Here because the drive command is still standing: this routine is called before anything can
+    '  command zero or reset the driver (see the call site), and the driver's reading is a live
+    '  window -- after the wheel stops, hallWindowSum decays toward zero and the number stops
+    '  meaning what it meant under the command. A reading taken one step later would certify nothing
+    '  and would look like a collapse on EVERY point, which is the failure mode that would make the
+    '  cell pass for the wrong reason.
+    ptDrvMeasTps, ptDrvCmdTps, ptDrvFollowPct, bPtDrvFollowValid := sideFollowing(side)
     if bSpanOpen
         spanDriveMs := getms() - spanStartMs
         spanDriveTicks := abs(sideTicks(side) - spanStartTicks)
@@ -2518,6 +2704,41 @@ PRI closeDriveSpan(side, speedIdx)
         ptSpanDutyMean := spanDutySum / spanSamples
         ptSpanDutyMax := spanDutyMax
         ptFollowPct := (ptSpanRateX10 * X100) / (expectedRateX10(speedIdx))
+        accumFollowPoint(side)
+
+PRI accumFollowPoint(side) | slotIdx, delta
+' Fold this point into R18-SCAN-FOLLOW's two limbs (task 3594). Called from closeDriveSpan() only
+' when bPtSpanValid, so the harness's own reading is a measurement and not a default.
+'
+' WHICH LIMB A POINT FEEDS IS DECIDED BY THE HARNESS, NEVER BY THE DRIVER. That is deliberate: the
+' driver's reading is the thing under test, so letting it choose its own limb would let a stuck
+' reading select the limb it passes. The harness says whether the drive was following; the driver's
+' number is then judged against that verdict.
+'
+' A point in neither band (FOLLOW_LOW_PCT..FOLLOW_DROOP_PCT) feeds NEITHER limb. The gap is where the
+' wall's 44-47 % and a following 100 % are not cleanly separated, and a point there would weaken
+' both limbs rather than strengthen either.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local slotIdx - this motor's accumulator index
+' @local delta - |driver - harness| for this point, PCT
+
+    ' A point whose driver window was not full folds into NEITHER limb: the driver's number is a
+    '  transient there and would be read as a collapse by the negative limb, passing it for the
+    '  wrong reason. One exit, so the guard is a condition and not an early return.
+    if bPtDrvFollowValid <> FALSE
+        slotIdx := sideSlot(side)
+        if ptFollowPct >= FOLLOW_DROOP_PCT
+            delta := abs(ptDrvFollowPct - ptFollowPct)
+            sfFolAgreeN[slotIdx]++
+            if delta > sfFolAgreeWorst[slotIdx]
+                sfFolAgreeWorst[slotIdx] := delta
+        elseif ptFollowPct < FOLLOW_LOW_PCT
+            sfFolCollN[slotIdx]++
+            if ptDrvFollowPct < sfFolCollMin[slotIdx]
+                sfFolCollMin[slotIdx] := ptDrvFollowPct
+            bSfFolCollSeen[slotIdx] := TRUE
 
 PRI expectedRateX10(speedIdx) : rateX10
 ' The commanded tick rate for a speed rung, x10 -- the denominator ptFollowPct is measured against.
@@ -3175,8 +3396,144 @@ PRI beyondLowCount(walkDir, defSwept) : nBeyond | ptIdx
                     if isValidIdx(ptIdx) or (legResult[ptIdx] == PR_ABORT_I)
                         nBeyond += 1
 
+PRI runDroopSelfTest() | runAt, runKind, isolAt, isolKind, fltAt, fltKind, bRunOk, bIsolOk, bFltOk
+' THE DROOP SELF-TEST (task 3594, -D DROOP_SELFTEST, tier scan-droop). No wheel is ever started and
+' no preflight runs: this drives the REAL production function, stepStopDecision(), through three
+' named point sequences and judges what it raises.
+'
+' WHY A DESK CHECK AND NOT A BENCH LOAD. The stop it certifies has never fired: 4 runs, 0 WS_DROOP.
+' The reason is now MEASURED rather than guessed -- droop points DO occur, 4 to 5 per run below
+' FOLLOW_DROOP_PCT, but every one is the FIRST point of a walk side at swept +/-63 with result
+' ABORT_I, and the walk then steps inward and recovers, so the run of droops never reaches
+' SIDE_DROOP_STOP. Provoking two ADJACENT drooping offsets on hardware would spend a bench visit to
+' learn one bit, and the project's own precedent (the scan-wdtest tier) is to certify an instrument
+' mechanism in seconds at the desk instead. What the bench still owes is whether the motor can droop
+' for two adjacent offsets at all -- a question about the MOTOR, which this does not pretend to answer.
+'
+' THE THREE SEQUENCES, and each can fail:
+'  THE RUN      droop, droop, droop -- must raise WS_DROOP at exactly point SIDE_DROOP_STOP. Firing
+'               late is a stop that walks too far; firing early is one that stops a healthy sweep.
+'  THE ISOLATED droop, clean, droop, clean, droop -- must raise NOTHING. This is the shape every real
+'               run produced, so a build that fired here would have stopped all four of them.
+'  THE FAULT    droop, fault, droop -- must raise nothing either: a fault-like point RESETS the droop
+'               run rather than adding to it, because the two stops describe different physics.
+'
+' @local runAt - the point THE RUN sequence stopped at, 0 when none
+' @local runKind - the WS_* THE RUN sequence raised
+' @local isolAt - the point THE ISOLATED sequence stopped at, 0 when none
+' @local isolKind - the WS_* THE ISOLATED sequence raised
+' @local fltAt - the point THE FAULT sequence stopped at, 0 when none
+' @local fltKind - the WS_* THE FAULT sequence raised
+' @local bRunOk - THE RUN sequence's verdict
+' @local bIsolOk - THE ISOLATED sequence's verdict
+' @local bFltOk - THE FAULT sequence's verdict
+
+    beat(CP_EMIT)
+    runAt, runKind := droopSeqRun(@bDroopSeqRun, DSQ_RUN_LEN)
+    isolAt, isolKind := droopSeqRun(@bDroopSeqIsol, DSQ_ISOL_LEN)
+    fltAt, fltKind := droopSeqRun(@bDroopSeqFlt, DSQ_FLT_LEN)
+    bRunOk := (runKind == WS_DROOP) and (runAt == SIDE_DROOP_STOP)
+    bIsolOk := (isolKind == WS_NONE)
+    bFltOk := (fltKind == WS_NONE)
+    ' The numbers go in the log too, not only the verdicts: a FAIL that says WHERE it fired is a
+    '  finding, and a FAIL that only says FALSE is a second investigation.
+    emitDroopTest(@"RUN", runAt, runKind, SIDE_DROOP_STOP, bRunOk)
+    emitDroopTest(@"ISOLATED", isolAt, isolKind, 0, bIsolOk)
+    emitDroopTest(@"FAULT", fltAt, fltKind, 0, bFltOk)
+    emitSignoffBool(@sSfCellDroopLg, @sSfTaskFollow, SIDE_NONE, @sSfCritDrpRun, TRUE, bRunOk, SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellDroopLg, @sSfTaskFollow, SIDE_NONE, @sSfCritDrpIsol, TRUE, bIsolOk, SIGNOFF_ONE_INSTANCE)
+    emitSignoffBool(@sSfCellDroopLg, @sSfTaskFollow, SIDE_NONE, @sSfCritDrpFlt, TRUE, bFltOk, SIGNOFF_ONE_INSTANCE)
+
+PRI droopSeqRun(pSeq, nLen) : stopAt, stopKind | idx, walkStop, sideConsec, droopConsec, code
+' Drive one self-test sequence through stepStopDecision() exactly as walkSide() does -- including
+' QUITTING at the first stop, because a walk that stopped measures no further points and a self-test
+' that kept going would be certifying a loop shape the production code does not have.
+'
+' @param pSeq - pointer to the sequence's bytes, each a DSQ_*
+' @param nLen - how many bytes it has
+' @returns stopAt - 1-based point at which a stop fired, 0 when none did
+' @returns stopKind - the WS_* raised, WS_NONE when none was
+'
+' @local idx - point index
+' @local walkStop - this point's verdict
+' @local sideConsec - the fault run, carried as walkSide() carries it
+' @local droopConsec - the droop run
+' @local code - this point's DSQ_*
+
+    stopAt := 0
+    stopKind := WS_NONE
+    sideConsec := 0
+    droopConsec := 0
+    repeat idx from 0 to nLen - 1
+        code := BYTE[pSeq][idx]
+        walkStop, sideConsec, droopConsec := stepStopDecision(code == DSQ_FAULT, code == DSQ_DROOP, sideConsec, droopConsec)
+        if walkStop <> WS_NONE
+            stopAt := idx + 1
+            stopKind := walkStop
+            quit
+
+PRI emitDroopTest(pName, stopAt, stopKind, expectAt, bPassed) | pStopTok
+' Emit BS-DROOPTEST, one per self-test sequence (task 3594).
+' Worst case: tag(13) + seq(1+3+1+9=14) + stop_at(1+7+1+4=13) + stop(1+4+1+11=17) +
+' expect_at(1+9+1+4=15) + pass(1+4+1+5=11) = 83 bytes.
+'
+' @param pName - the sequence's name
+' @param stopAt - the 1-based point a stop fired at, 0 when none
+' @param stopKind - the WS_* raised, WS_NONE when none
+' @param expectAt - the point it was expected at, 0 when none was expected
+' @param bPassed - the verdict
+'
+' @local pStopTok - the token naming stopKind
+
+    ' if / else, never ? : -- Spin2 evaluates BOTH branches of a ternary (PL-29), so the ternary form
+    '  would call walkStopToken(WS_NONE) on every no-stop sequence and ask it to name -1.
+    '  sBtNone is the shared "NONE" token: no second copy of the same word to drift apart.
+    if stopKind == WS_NONE
+        pStopTok := @sBtNone
+    else
+        pStopTok := walkStopToken(stopKind)
+    benchLog.begin(@"BS-DROOPTEST")
+    benchLog.textField(@"seq", pName)
+    benchLog.numField(@"stop_at", stopAt, LIM_TINY)
+    benchLog.tokenField(@"stop", pStopTok, TOKMAX_WALK_STOP)
+    benchLog.numField(@"expect_at", expectAt, LIM_TINY)
+    benchLog.boolField(@"pass", bPassed)
+    lineEmit()
+
+PRI stepStopDecision(bFaultLike, bDrooped, sideConsec, droopConsec) : walkStop, nextSide, nextDroop
+' THE COARSE WALK'S STOP DECISION FOR ONE POINT, as a pure function (task 3594, extracted from
+' walkSide()). No hardware, no globals, no emission: four numbers in, three numbers out.
+'
+' WHY IT IS A FUNCTION AND NOT FOUR INLINE IFS. Its droop half has never executed. MEASURED over the
+' four runs in DOCs/analyses/bench/2026-09-22/: droop points DO occur -- 4 to 5 per run below
+' FOLLOW_DROOP_PCT -- but every one of them is the FIRST point of a walk side, at the hard limit
+' (swept +/-63, result ABORT_I), after which the walk steps inward and recovers. So droopConsec
+' reaches 1 and is reset, never 2, and WS_DROOP has never once been raised. A stop that has never
+' fired is a stop nobody has seen work, and the run that would exercise it is exactly the run we
+' cannot schedule on demand. Made total and pure, it is certified exhaustively at a desk instead.
+'
+' THE RULE, unchanged from task 3595's inline version: a fault-like point does NOT also count as a
+' droop -- it has already stopped this side by its own route -- and it RESETS the droop run, because
+' the two stops describe different physics and interleaving them would mean neither.
+'
+' @param bFaultLike - isFaultLikeIdx() for this point
+' @param bDrooped - isDroopIdx() for this point
+' @param sideConsec - consecutive fault-like points before this one
+' @param droopConsec - consecutive non-following points before this one
+' @returns walkStop - WS_FAULTS, WS_DROOP, or WS_NONE when this point stops nothing
+' @returns nextSide - the fault run after this point
+' @returns nextDroop - the droop run after this point
+
+    nextSide := (bFaultLike <> FALSE) ? sideConsec + 1 : 0
+    nextDroop := ((bFaultLike == FALSE) and (bDrooped <> FALSE)) ? droopConsec + 1 : 0
+    walkStop := WS_NONE
+    if nextSide >= SIDE_FAULT_STOP
+        walkStop := WS_FAULTS
+    elseif nextDroop >= SIDE_DROOP_STOP
+        walkStop := WS_DROOP
+
 PRI walkSide(side, speedIdx, signIdx, walkDir, defSwept, pointLimitMv) : walkStop | stepIdx, sweptDeg, ptIdx, ...
-    sideConsec, nPts, lastSwept, droopConsec
+    sideConsec, nPts, lastSwept, droopConsec, stepStop
 ' Walk coarse points out from the default until RISE, FAULTS, HARD_LIMIT or a run abort.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -3194,6 +3551,7 @@ PRI walkSide(side, speedIdx, signIdx, walkDir, defSwept, pointLimitMv) : walkSto
 ' @local nPts - points measured on this side
 ' @local lastSwept - last swept offset measured
 ' @local droopConsec - task 3595: consecutive points where the drive stopped following
+' @local stepStop - task 3594: stepStopDecision()'s verdict for this point, WS_NONE when it stops nothing
 
     walkStop := WS_HARD_LIMIT
     sideConsec := 0
@@ -3211,26 +3569,17 @@ PRI walkSide(side, speedIdx, signIdx, walkDir, defSwept, pointLimitMv) : walkSto
         nPts += 1
         lastSwept := sweptDeg
         updateLegLow()
-        if isFaultLikeIdx(ptIdx)
-            sideConsec += 1
-        else
-            sideConsec := 0
-        ' task 3595: a point that drove but did not FOLLOW. Counted separately from a fault, because
-        '  the lag limiter turned what used to be a fault into a droop, and a droop is invisible to
-        '  every other test here (isDroopIdx() carries the argument). A fault-like point does not also
-        '  count as a droop -- it has already stopped this side by its own route.
-        if isFaultLikeIdx(ptIdx) == FALSE and isDroopIdx(ptIdx)
-            droopConsec += 1
-        else
-            droopConsec := 0
+        ' task 3594: the fault/droop counting and the two stops it can raise are now ONE PURE
+        '  FUNCTION, stepStopDecision(). It is extracted rather than inlined because the DROOP half
+        '  has never once executed on hardware (MEASURED: 4 runs, 0 WS_DROOP firings), and a branch
+        '  that has never run is not certified by a run that never reaches it. As a total function of
+        '  four inputs it is certified exhaustively at the desk instead -- see runDroopSelfTest().
+        stepStop, sideConsec, droopConsec := stepStopDecision(isFaultLikeIdx(ptIdx), isDroopIdx(ptIdx), sideConsec, droopConsec)
         if abortReason <> AR_NONE
             walkStop := WS_RUN_ABORT
             quit
-        if sideConsec >= SIDE_FAULT_STOP
-            walkStop := WS_FAULTS
-            quit
-        if droopConsec >= SIDE_DROOP_STOP
-            walkStop := WS_DROOP
+        if stepStop <> WS_NONE
+            walkStop := stepStop
             quit
         if isHighIdx(ptIdx) and (beyondLowCount(walkDir, defSwept) >= MIN_PAST)
             walkStop := WS_RISE
@@ -4267,6 +4616,34 @@ PRI sideTelemetry(side) : nDuty, nErr, nSenseI, eDrvrState, bDidFault, bCogUp
             nDuty, nErr, nSenseI, _, _, _, eDrvrState, bDidFault := wheelL.testGetTelemetry()
     beat(CP_LIB_TELEMETRY)
 
+PRI sideFollowing(side) : nMeasTicksSec, nCmdTicksSec, nPctOfCmd, bValid
+' Snapshot THE DRIVER'S OWN following reading, only from a running cog (PL-21). Task 3594.
+'
+' This is the driver's answer to the same question the harness answers for itself in
+' closeDriveSpan(), and the two are deliberately INDEPENDENT -- different time bases (the driver's
+' own 1 s rpm window against this point's whole drive span) and different denominators (the driver
+' derives its commanded rate from the live command; the harness reads a compile-time rung table in
+' expectedRateX10()). That independence is what makes R18-SCAN-FOLLOW a cross-check rather than a
+' restatement: agreement means two separate paths reached the same number.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nMeasTicksSec - the driver's measured hall ticks per second
+' @returns nCmdTicksSec - the driver's commanded ticks per second, 0 when stopped
+' @returns nPctOfCmd - measured as a percentage of commanded; 100 following, 0 stalled
+' @returns bValid - TRUE when the driver's rpm window is full and a non-zero rate is commanded
+
+    nMeasTicksSec := 0
+    nCmdTicksSec := 0
+    nPctOfCmd := 0
+    bValid := FALSE
+    beat(CP_LIB_TELEMETRY)
+    if bSideCogRunning(side)
+        if side == SIDE_RIGHT
+            nMeasTicksSec, nCmdTicksSec, nPctOfCmd, bValid := wheelR.testGetFollowing()
+        else
+            nMeasTicksSec, nCmdTicksSec, nPctOfCmd, bValid := wheelL.testGetFollowing()
+    beat(CP_LIB_TELEMETRY)
+
 PRI sidePhaseVoltages(side) : nSenseU, nSenseV, nSenseW
 ' Snapshot phase-voltage readings from the named wheel's driver (PL-30: offset source detection).
 '
@@ -4697,6 +5074,15 @@ PRI emitPoint3(side)
     benchLog.naNumField(@"follow_pct", ptFollowPct, LIM_SMALL, bPtSpanValid)
     benchLog.naNumField(@"span_duty_mean", ptSpanDutyMean, LIM_SMALL, bPtSpanValid)
     benchLog.naNumField(@"span_duty_max", ptSpanDutyMax, LIM_SMALL, bPtSpanValid)
+    ' TASK 3594: the DRIVER's own answer to the same question, beside the harness's follow_pct above,
+    '  so the two can be compared point by point in the log and not only through R18-SCAN-FOLLOW's
+    '  two summary verdicts. drv_cmd_tps is the DENOMINATOR the driver derived: when the two
+    '  percentages disagree it is what says whether the numerator or the denominator is at fault.
+    '  + drv_follow_pct(1+14+1+7=23) + drv_meas_tps(1+12+1+7=21) + drv_cmd_tps(1+11+1+7=20) = 64,
+    '  for 225 bytes worst case. Still under the 280-byte bound.
+    benchLog.naNumField(@"drv_follow_pct", ptDrvFollowPct, LIM_SMALL, bPtDrvFollowValid)
+    benchLog.naNumField(@"drv_meas_tps", ptDrvMeasTps, LIM_SMALL, bPtDrvFollowValid)
+    benchLog.naNumField(@"drv_cmd_tps", ptDrvCmdTps, LIM_SMALL, bPtDrvFollowValid)
     lineEmit()
 
 PRI emitRstAlone(side) | slotIdx
@@ -5362,6 +5748,13 @@ PRI emitEnd()
     benchLog.numField(@"charge_mVs", runChargeMvS, LIM_MID)
     benchLog.boolField(@"left_done", bLeftDone)
     benchLog.boolField(@"right_done", bRightDone)
+    ' task 3594: the two booleans above are both FALSE on any abort, which under the INVERTED loop
+    '  throws away the very thing the inversion buys -- how far each motor actually got. A run that
+    '  dies in the half rung now carries both motors through two whole rungs, and these two counts
+    '  are what say so. Read them, not the booleans, when a run aborts.
+    benchLog.numField(@"left_rungs", leftRungsDone, LIM_TINY)
+    benchLog.numField(@"right_rungs", rightRungsDone, LIM_TINY)
+    benchLog.numField(@"rungs_planned", SPEED_SLOTS, LIM_TINY)
     benchLog.boolField(@"lib_abort", (abortReason == AR_LIB_ABORT))
     benchLog.numField(@"trap_value", runTrapCode, LIM_MID)       ' task 3540 TOP-LEVEL TRAP: every run, not only an abort
     lineEmit()
@@ -5381,6 +5774,14 @@ PRI emitBuild()
 #else
     benchLog.boolField(@"wd_selftest", FALSE)
 #endif
+    ' task 3594 fmt 11: which variant this binary is, from its own #ifdef and never a runtime test,
+    '  following the wd_selftest pattern above. A scan-droop log and a scan log differ in what they
+    '  DO NOT contain, and a reader must not have to infer the build from an absence.
+#ifdef DROOP_SELFTEST
+    benchLog.boolField(@"droop_selftest", TRUE)
+#else
+    benchLog.boolField(@"droop_selftest", FALSE)
+#endif
     benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
     benchLog.numField(@"zxs_starts", ZXS_STARTS, LIM_TINY)
     benchLog.numField(@"zxs_max_mV_x10", ZXS_MAX_MV_X10, LIM_TINY)
@@ -5391,6 +5792,10 @@ PRI emitSignoffDecls()
 ' build judges only the four R11-WDT-* cells (design sec F.5, task 3537 phase 2c): a normal-scan cell
 ' declared there could never get a verdict. The normal build declares none of them.
 
+#ifdef DROOP_SELFTEST
+    emitSignoffDecl(@sSfCellDroopLg, @sSfTaskFollow)        ' task 3594: the only cell this build judges
+#endif
+#ifndef DROOP_SELFTEST
 #ifdef WD_SELFTEST
     emitSignoffDecl(@sSfCellWdtFires, @sSfTaskNoStall)
     emitSignoffDecl(@sSfCellWdtCkpt, @sSfTaskNoStall)
@@ -5411,6 +5816,8 @@ PRI emitSignoffDecls()
     emitSignoffDecl(@sSfCellOwnZero, @sSfTaskScanV4)
     emitSignoffDecl(@sSfCellPair2, @sSfTaskScanV4)
     emitSignoffDecl(@sSfCellRstAlone, @sSfTaskRstAlone)
+    emitSignoffDecl(@sSfCellFollow, @sSfTaskFollow)         ' task 3594: certifies the driver's own testGetFollowing()
+#endif
 #endif
 
 PRI emitSignoffDecl(pCell, pTask)
@@ -5444,6 +5851,8 @@ PRI emitSignoffs() | side, slotIdx, bStarted
 '            one NOMEAS instance when the motor has no such slot
 '  R9-PAIR2  BOOL emitPair2()'s bRatio;                                    NOMEAS when the pair was incomplete
 '  R10-RSTALONE BOOL stopped and not faulted after testResetFault() alone; NOMEAS when no eligible fault
+'  R18-FOLLOW two instances (task 3594): agreement with the harness among FOLLOWING points, then the
+'            driver's lowest reading among NOT-following ones; each NOMEAS when its points never arose
 '  then BS-ZXSALL, the informational every-lifetime spread (a BS- record, never a SIGNOFF)
 ' The WD_SELFTEST build emits none of these (it declares none of them): only emitWdtSignoffs().
 '
@@ -5451,6 +5860,11 @@ PRI emitSignoffs() | side, slotIdx, bStarted
 ' @local slotIdx - sideSlot(side)
 ' @local bStarted - TRUE when the motor had at least one start
 
+#ifdef DROOP_SELFTEST
+    ' task 3594: this build's three verdicts were emitted by runDroopSelfTest() itself, from the
+    '  sequences it ran. There are no per-motor accumulators to report -- no motor ran.
+#endif
+#ifndef DROOP_SELFTEST
 #ifdef WD_SELFTEST
     emitWdtSignoffs()
 #else
@@ -5475,10 +5889,44 @@ PRI emitSignoffs() | side, slotIdx, bStarted
         ' R10-SCAN-RSTALONE (task 3537 phase 2b3): unfixed, testResetFault() alone left the wheel
         ' FAULTED and not stopped, so cleared is FALSE -> FAIL. Worst case: emitSignoffBool(), 173 bytes.
         emitSignoffBool(@sSfCellRstAlone, @sSfTaskRstAlone, side, @sSfCritRstAlone, bSfRstAloneDone[slotIdx], bRstAloneCleared[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitFollowSignoffs(side, slotIdx)
         emitZxsAll(side, slotIdx)
     beat(CP_EMIT)
     emitSignoffBool(@sSfCellNoStall, @sSfTaskNoStall, SIDE_NONE, @sSfCritCog0End, TRUE, TRUE, SIGNOFF_ONE_INSTANCE)
 #endif
+#endif
+
+PRI emitFollowSignoffs(side, slotIdx)
+' Emit R18-SCAN-FOLLOW's TWO instances for one motor (task 3594): the positive limb then the
+' negative one. This is what certifies the driver's own testGetFollowing(), harvested at 31c8b91.
+'
+' FOLLOW_AGREES_PCT -- measured = the WORST |driver - harness| among points the harness called
+'  FOLLOWING, hi = FOLLOW_AGREE_PCT, no lo (a perfect 0 must pass). NOMEAS below FOLLOW_MIN_POINTS
+'  following points, because a worst-of-one is not a bound.
+'
+' FOLLOW_COLLAPSED -- measured = the driver's LOWEST reading among points the harness called NOT
+'  following, hi = FOLLOW_LOW_PCT, no lo (0, a stall, is the strongest possible pass). NOMEAS when
+'  no such point arose.
+'
+' *** WHY THE NEGATIVE LIMB IS NOMEAS AND NOT PASS WHEN NOTHING DROOPED. A run in which the drive
+' followed throughout has shown the reading sitting near 100 and nothing else; it has NOT shown the
+' number can fall, which is the only property that makes it useful as a stop condition. Passing there
+' would certify the capability on evidence that cannot distinguish a working reading from one stuck
+' at 100 -- the exact shape D2 exists to forbid, and the shape the droop provocation load exists to
+' make sure this run actually reaches.
+'
+' Worst case: emitSignoffEx(), 196 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - sideSlot(side)
+
+    beat(CP_EMIT)
+    emitSignoffEx(@sSfCellFollow, @sSfTaskFollow, side, @sSfCritFolAgree, ...
+        sfFolAgreeN[slotIdx] >= FOLLOW_MIN_POINTS, sfFolAgreeWorst[slotIdx], ...
+        0, FALSE, FOLLOW_AGREE_PCT, TRUE, TRUE, @sSfUnitsPct, sfFolAgreeN[slotIdx])
+    emitSignoffEx(@sSfCellFollow, @sSfTaskFollow, side, @sSfCritFolColl, ...
+        bSfFolCollSeen[slotIdx] <> FALSE, sfFolCollMin[slotIdx], ...
+        0, FALSE, FOLLOW_LOW_PCT, TRUE, TRUE, @sSfUnitsPct, sfFolCollN[slotIdx])
 
 PRI emitWdtSignoffs()
 ' Emit the four R11-WDT-* SIGNOFF instances from cog 0 (task 3537 phase 2c, WD_SELFTEST build, design
@@ -6345,6 +6793,12 @@ PRI wdEmitEnd()
     wdLog.numField(@"charge_mVs", runChargeMvS, LIM_MID)
     wdLog.boolField(@"left_done", bLeftDone)
     wdLog.boolField(@"right_done", bRightDone)
+    ' task 3594 fmt 11: same three counts as emitEnd(), same place in the order. This record is the
+    '  ONLY end record a stalled run produces, so leaving them out here would lose the rung progress
+    '  on exactly the runs that abort -- the case the inverted loop exists to serve.
+    wdLog.numField(@"left_rungs", leftRungsDone, LIM_TINY)
+    wdLog.numField(@"right_rungs", rightRungsDone, LIM_TINY)
+    wdLog.numField(@"rungs_planned", SPEED_SLOTS, LIM_TINY)
     wdLog.boolField(@"lib_abort", FALSE)
     wdLineEmit()
 

@@ -112,6 +112,7 @@ Usage:  tools/bench-run.sh <tier>
                    char           automated motor characterisation, nine holds  [MOTORS CONNECTED, UNATTENDED]
                    scan           automated per-direction commutation-offset scan  [MOTORS CONNECTED, UNATTENDED]
                    scan-wdtest    watchdog self-test: preflight, deliberate stall, watchdog ends the run  [MOTORS CONNECTED]
+                   scan-droop     droop-stop self-test: pure logic, three point sequences through the real stop decision  [NOTHING MOVES]
                    dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER, LOWSPD  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-a-legacy  as dual-a, on the LEGACY commutation offsets 43/317 -- the control leg, draws far more current  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-clock-200 motion harness clock load at 200 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
@@ -210,6 +211,15 @@ case "$TIER" in
     scan-wdtest)    BENCH_FILE="test_bench_scan.spin2"
                     EXTRA_DEFS=(-D WD_SELFTEST)
                     PRECONDITION="MOTORS CONNECTED, BOTH WHEELS FREE TO TURN -- WATCHDOG SELF-TEST: a brief preflight nudge per wheel, then the scan stalls ON PURPOSE; the watchdog must stop both drivers and end the session within about 15 s"
+                    ;;
+    # scan-droop (task 3594) -- the DROOP STOP's self-test, on the scan-wdtest precedent: certify an
+    #  instrument mechanism in seconds instead of spending a sweep on it. The stop it certifies has
+    #  never fired on hardware (MEASURED: 4 runs, 0 WS_DROOP), because every real droop point is the
+    #  first point of a walk side and the walk then recovers, so the droop run never reaches 2.
+    #  This build never starts a driver cog and never runs preflight, so nothing can move.
+    scan-droop)     BENCH_FILE="test_bench_scan.spin2"
+                    EXTRA_DEFS=(-D DROOP_SELFTEST)
+                    PRECONDITION="NOTHING MOVES -- pure logic. No preflight, no driver cog, no wheel is ever commanded; the motors may stay connected or be disconnected, it makes no difference. Finishes in seconds and emits three BS-DROOPTEST records and three R18-SCAN-DROOPLOGIC verdicts"
                     ;;
     # The motion harness (task 3508; DOCs/plans/MOTION-HARNESS-DESIGN.md sec 4.1). One source, one part
     # per build: every part adds -D BENCH_QUIET (the quiet debug masks) and exactly one DUAL_PART_* flag.
