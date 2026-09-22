@@ -504,9 +504,22 @@ the earlier run's four traces.
 **What it is not.** It is not the servo waiting out a deadband at the start. Starting the field
 80° ahead of the rotor — where the servo first raises duty — was built and measured: duty rose at
 once, the rotor snapped about a tick past the field, duty fell back to its floor for as long as
-before, and the peaks did not change. Why the servo hunts is the open question: the servo holds a
-21° band rather than a point, and raises duty 4.5× faster than it lowers it (§3.2), which together
-have the shape of a limit cycle. That is a suspect, not a finding.
+before, and the peaks did not change.
+
+**Why it hunts — a model's answer, not yet a bench one.** The servo is integral-only. The rotor's
+torque rises with lag only weakly near its operating angle, and more weakly the lower the duty. An
+integral loop around a rotor that stiff only slightly is stable only below a gain that scales with
+that stiffness. At low speed the servo's gain is above it, so the loop oscillates, and every start
+passes through that region.
+- **Evidence you can check without the model:** the same hunting appears at *constant* low speed with
+  no ramp at all (duty peaks 40–60 % above its mean at 10 and 20 × 10⁶), and disappears from 40 × 10⁶
+  up.
+- **A desk model of the drive**, fitted on one parameter, reproduces both that pattern and the start's
+  swings. It also shows that the 21° band and the uneven up/down gain (§3.2) are **not needed** to
+  produce it.
+- **The cure it points to:** give the servo the duty a speed needs in advance, and a gain that scales
+  with duty. The next bench visit judges that change. The design is
+  `DOCs/plans/DRIVE-INTEGRATION-DESIGN.md` §5.
 
 Practical consequences:
 
@@ -660,7 +673,7 @@ Each hole names why it matters and what would settle it. States: **OPEN** ·
 | | *What would settle it:* a full-cycle sweep, which needs a method that does not drive the motor into the current wall to get there. | |
 | **H-5** | **The optimum at the half rung.** Five attempts, five distinct causes. The most recent is informative rather than a failure: the reachable arc there is 20° wide, torque-bounded at both ends, and the extrapolated optimum sits outside it (§6.2). | **OPEN**, and a candidate for **CLOSED-UNANSWERABLE** |
 | | *What would settle it:* a sweep that can report *"the optimum is outside the reachable window"* as a result rather than failing to bracket. If that is the answer, this hole closes as unanswerable on this rig at this voltage, and that is a real finding about the motor. | |
-| **H-6** | **The start surge under load.** Its shape is measured (§6.4) — the servo hunting as the ramp accelerates — but not why it hunts, and not its magnitude: every trace was wheels-up. | **OPEN** |
+| **H-6** | **The start surge under load.** Its shape is measured and its mechanism modelled (§6.4). Its magnitude under load is not: every trace was wheels-up. | **OPEN** |
 | | *What would settle it:* the tethered, loaded floor run. | |
 | **H-7** | **Can the board see regeneration?** The shunt is low-side, so regen drives the sense node below ground. Rev A almost certainly cannot see it; Rev B depends on the INA180B2 variant and its reference pin. | **OPEN** |
 | | *What would settle it:* the INA180B2 datasheet, or a bidirectional external sensor. | |
@@ -740,3 +753,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 | 2026-09-22 | §4 gains the cold back-EMF measurement of Z. §6.4 rewritten: the start surge is the duty servo hunting as the ramp accelerates, not a wait at the setpoint — the earlier account did not survive a seed that removed the wait. §3.2 corrected against the code: the phase function is sine, `err_`'s sign, and the servo's band. H-6 reworded to match. |
 | 2026-09-22 | §2.3 states the measured sector widths, and H-3 is FILLED. The earlier update left both still saying the sectors had never been measured. |
 | 2026-09-22 | §4.6 (how back-EMF locates the magnets) and §4.7 (what differs from unit to unit, including hall lag) added, drawn from the board designer's questions. |
+| 2026-09-22 | §6.4's open question is answered by a desk model: the hunting is a gain-against-stiffness limit cycle, shown at constant low speed as well as at starts. The band and the gain asymmetry are no longer suspects. The bench certification is pending. |

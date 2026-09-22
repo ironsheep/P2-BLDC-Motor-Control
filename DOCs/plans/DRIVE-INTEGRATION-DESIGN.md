@@ -28,13 +28,15 @@ Four channels reach the driver. Two are fully characterised; two are open.
 | **Zero missed and zero illegal transitions at every rung of the ladder, including the two above the nominal ceiling.** | MEASURED: `BENCH-LOG-STUDY-2026-09-21.md` §6.4 |
 | **Speed tracks the command to 0.1–0.3 %** at every rung unloaded, and **to 4 % at the very bottom** (1×10⁶, 2.7 edges/s). | MEASURED: same study §6.1, §6.3 |
 | About **4.3 drive passes per hall edge at the top rung** (1,913 passes/s). | DERIVED at «#3581», corroborated: 44,165 frames/s measured against 44,000 nominal (§6.4) |
-| The hall zero sits at **Z = −3.6 ± 0.4°** and does not move with speed. | MEASURED: four scan self-locations — `MOTOR-6.5IN-TECHNICAL-MANUAL.md` §3 |
+| The hall zero sits at **Z = −3.6 ± 0.4°** driven, **−3.3°** cold from back-EMF, and does not move with speed. | MEASURED: four scan self-locations, and the ALIGN tier — `MOTOR-6.5IN-TECHNICAL-MANUAL.md` §4 |
 
 **What the halls cannot tell:**
 - **Where the rotor is inside a 60° sector.** The field free-runs between edges (PL-95).
 - **Anything fast at low speed.** At 1×10⁶ an edge arrives every 278–448 ms, and the rotor's
   instantaneous speed swings about ±30 % between edges from cogging. MEASURED: study §6.3, F12.
-- **Whether the six sectors are equal.** Hole H-3; the ALIGN tier measures it at Visit 7c pass 2.
+- **Where the rotor is inside a sector, to better than about 1°, even by interpolation.** The six
+  sectors are unequal by ±1° (MEASURED, Visit 7c pass 2 §3.5; manual H-3 FILLED), which is the error
+  floor of any within-sector interpolation.
 
 **What the drive already does with them.**
 - **Position:** `pos`, tracking, and the distance, rotation and time stops.
@@ -124,6 +126,10 @@ which has not been measured (H-6, the floor run «#3591»).
   reach a measured `AT_SPEED`, so it would discard every new speed command: a user easing off a
   struggling motor would be ignored. One value, one meaning (D7). The measured claim is a separate
   observable, C-6.
+  - *Amended by «#3589»:* §5.3 D-4 makes every state accept a command, so the discard argument no
+    longer applies. The decision stands on *one value, one meaning* alone. Under D-5 an overloaded
+    motor's field genuinely runs below its command, so `AT_SPEED` clearing then is this meaning
+    kept, not changed.
 - **Release note:** none — `getDriverState()` is not in the user documents, and nothing changes.
 
 ### C-2 · `getPower()` keeps returning the commanded power
@@ -275,15 +281,274 @@ budget in the design, and it is measured before building, not after.
 
 ---
 
-## 5. What «#3589» decides — named here, not settled
+## 5. The drive change — written by «#3589»
 
-| Decision | Waits on | State 2026-09-22 |
+Sections 1 to 4 are carried in. Two are amended, with the reason given where each changes: §1.1's
+H-3 line (answered) and C-1's second reason (§5.3 D-4 removes the discard it cited; the decision
+stands).
+
+**The evidence base.** Two sources:
+- **The logs, read directly:** the eight START traces (pass 1 `debug_260921-224820.log`, pass 2
+  `debug_260922-122752.log`) and the pass 2 ladder in the same log.
+- **A desk model of the shipped drive**, kept with this plan in [`servo-model/`](servo-model/). It
+  runs the servo exactly as the PASM does, frame by frame at 44 kHz. The ramp and the lag limiter
+  run per drive pass. The hall angle is held per sector, as the driver holds it. The motor is an
+  R-only voltage-mode dq model with one inertia and coulomb plus viscous loss.
+  - Its back-EMF constant comes from the ladder.
+  - **One parameter is fitted:** the physical angle at which the servo's mean error sits.
+  - Inertia and winding resistance are estimates, and **§5.2 shows that the conclusions hold
+    with each halved and doubled.**
+  - Everything the model says is **DERIVED**. The bench certifies it (§5.6).
+
+### 5.1 What the servo actually is — MEASURED, from the source and the traces
+
+1. **It runs every PWM frame, 44,000 times a second,** not once per drive pass (`:4596-4600`, inside
+   `.ctlMotor`).
+2. **It is a relay, not an 18 : 4 proportional gain.**
+   - Below the setpoint, `((|e| − 42) × 4) SAR 8` is **exactly −1 for every |e| from 0 to 41**,
+     whatever the error. `duty_dn = 4` has no effect beyond that −1.
+   - Above the band, `duty_up = 18` gives +1 at |e| 57–70, +2 at 71–84, and so on.
+   - The traces show it: duty moves ±88 per 2 ms sample, which is **±1 per frame** (pass 2 tid 1,
+     k = 2…14 at |e| 58, then k = 16…30 at |e| 15).
+3. **Its input is a 43-count sawtooth.** The hall angle is held for the whole sector, so the error
+   climbs by one sector (256/6 = 42.7 counts) and drops back at every edge. The band is 15 counts
+   wide, so the error sweeps straight through it every sector.
+4. **At running speed that sawtooth dithers the band into a point.** Mean |e| is **48 counts (67.5°)**
+   at every ladder rung from 40 to 120 × 10⁶, both motors, both directions. It is **45** at 20 × 10⁶.
+   So PL-101's band is real for a slowly changing error, and at running speed it averages away.
+5. **Steady duty is proportional to speed.** It runs **167–174 duty counts per 10⁶ of increment** at
+   rungs 3–7 on both motors. That is the back-EMF line. It also equals `duty_max` divided by the
+   18.5 V ceiling increment: 24,264 / 147 × 10⁶ = **165 per 10⁶**.
+
+### 5.2 Why it hunts — the mechanism, and the rival it beats
+
+**The mechanism (DERIVED).** The rotor's torque is `Va·sin δ − E` over the winding resistance, where
+δ is the voltage's angle from the magnets.
+- Its **stiffness** is the rise in torque per degree of lag, `Va·cos δ`. That is small near
+  δ = 90° and proportional to duty.
+- The servo is **integral-only** on the lag.
+- An integral loop around a damped inertia with a spring, `J s³ + D s² + k s + K`, is stable only
+  when `D·k > J·K`. **At low duty the stiffness k is too small for the servo's gain, so the loop
+  limit-cycles.**
+
+A start ramps straight through that low-speed region, so the start surge is that limit cycle.
+
+**The model reproduces the whole picture from its one fitted parameter.** The fit puts δ at about
+79° at the servo's mean error (bracket 76°–84°, e90 = 52–60).
+
+| | Measured (shipped drive) | Model (shipped servo) |
 |---|---|---|
-| **Which knob carries the lead** | ~~the setpoint A/B~~ | The A/B is **retired**: the field sits at the commanded angle and the servo integrates to its setpoint, so setpoint and lead combine **by construction** (`:4467-4474`, `:4591`). What is left is PL-101: the servo holds a **21° band** (|err| 42–56), not a point, because its gain truncates. Whether the drive should hold a point is «#3589»'s call. |
-| **The start transient** | a desk model of the servo, then the START trace | **Its shape is measured, its cause is not** (Visit 7c pass 2, `VISIT-7C-PASS2-EVALUATION.md` §4.3). The rotor follows the slow early ramp at minimum duty; the surge is the servo **hunting** once the ramp outruns that — `e` −35 ↔ −84, duty 3,600 ↔ 6,200, ~150 ms cycle. The start seed («#3600») was built on the earlier deadband reading, did not remove the surge, and was removed. Suspects: PL-101's band and the 18 / 4 gain asymmetry. The next START trace judges **swing amplitude**, since duty timing cannot tell the stories apart. Size **under load** waits on the floor run. |
-| **Back-EMF's usable range** (§1.3), answered in part | back-EMF **while driving** | **Readable coasting from 43 edges/s up**, 2–5° per crossing, floor not reached; Z from it agrees with the driven scan within 0.35° (pass 2 §3). Unmeasured while the bridge drives, which is the case an integration needs. |
-| **The speed law for `L`** | `L` at a half (H-5) | Never obtained in five attempts; a candidate to close as unanswerable on this rig. |
-| **Whether §1.4's bus reading is real** | one known-voltage reading | Found 2026-09-22, unverified. |
+| Steady 10 × 10⁶: duty, peak | 2,020, 2,840–3,310 | 2,011, 2,697 |
+| Steady 20 × 10⁶: duty, peak, err_pk | 3,850, 5,300–5,580, 87–89 | 3,864, 4,911, 81 |
+| Steady 40 × 10⁶ and up | calm, err_pk 71–75 | calm, err_pk 71–72 |
+| Mean error at 40–120 × 10⁶ | 48 | 48.7 |
+| First rotor ticks, QTR start (samples) | 115, 175, 211, 236 | 145, 190, 220, 244 |
+| Duty leaves its floor for good | k ≈ 232–250 | k ≈ 240 |
+| Hunting during acceleration | 3,600 ↔ 6,200–7,000, ~150 ms | 3,000 ↔ 7,700, 120–180 ms |
+
+**The rival, and the reading that separates them.** Pass 2 named two suspects: PL-101's band and the
+18 / 4 asymmetry. The model removes both — a symmetric integral with no truncation, about the same
+point — and **it still hunts at the shipped servo's effective gain** (0.05 duty per count per frame:
+20 × 10⁶ peaks at 4,447 against a mean of 3,785). It stops hunting only when the gain falls below
+what the stiffness supports (0.02). **The band and the asymmetry are not needed to produce the
+surge; the gain against the stiffness is.**
+
+The bench already carries the reading that tells the mechanism from the other rival pass 1
+entertained: *"the servo lags the ramp's rising voltage demand"*. That story needs a ramp. **The
+ladder's steady rungs 1–2 hunt with no ramp at all** — duty peaks 40–60 % above the mean at constant
+speed. MEASURED. A ramp-lag mechanism cannot produce that. A stiffness-limited loop does.
+
+**What the model does not settle.** Its current is a proxy (DC-link power over the bus), so current
+predictions are ratios, never counts. Its δ is fitted, not measured.
+
+### 5.3 The change
+
+**D-1 · Feedforward duty.** Each drive pass, `duty_ff = |drv_incr| × duty_max / ceiling_incr`.
+- The ramp's rising voltage demand then no longer has to be integrated up by the servo.
+- The ceiling increment is the one the power table already carries for this motor and voltage, so
+  **no new per-motor constant is introduced**. Across the 11.1–22.2 V rows it matches the measured
+  18.5 V line, scaled by voltage, within 2.5 %.
+- It is computed once at `init()`, before the cog starts, and patched into the driver image as the
+  hall tables are. It is not a new params-block long, so the ABI is unchanged.
+- For the Doco motor it is derived the same way and **not certified**; that motor is not on the
+  bench.
+
+**D-2 · The trim servo — symmetric, untruncated, gain scheduled on duty, one anti-windup for every
+limiter.** Each frame:
+- `acc += (|e| − SETPOINT) × duty`, a 32-bit accumulator;
+- `duty = duty_ff + acc SAR 18`;
+- then the existing current fold-back, `duty_cap_` and `duty_min_` clamps, **unchanged**;
+- then, **if any of them changed duty**, `acc` is re-derived from the applied duty, so the trim never
+  holds what a limiter refused.
+- The multiply by duty makes the gain proportional to the stiffness the rotor has. `SAR 18` is
+  1/32 per count per frame at duty 8,192.
+- **This removes PL-101's band and the relay by construction.** One value, one meaning: the
+  setpoint is a point.
+
+| Model, every variant (J and R halved and doubled, δ fit ±4, three times the friction) | Shipped | D-1 + D-2 |
+|---|---|---|
+| Steady duty swing (peak − mean), 10 × 10⁶ | 409–1,624 | **46–153** |
+| Steady duty swing, 20 × 10⁶ | 212–2,271 | **40–88** |
+| START: largest duty drop from its running maximum during acceleration | 0.21–0.44 | **0.01–0.04** |
+| START: current peak ÷ settled current | 1.84–14.6 | **1.13–2.57** |
+
+Feedforward with the shipped servo kept as the trim was also run. It halves the start peak, but it
+leaves steady rungs 1–2 hunting exactly as today. **D-1 is not enough without D-2.**
+
+**D-3 · Which knob carries the lead — decision (a).** **The commutation offset carries it:**
+`L = 18`, `Z = −4`, the shipped 14 / 338 pair, **unchanged**.
+- `SETPOINT = 48` counts (67.5°). That is **the mean the shipped servo already settles at**, at every
+  rung where L was measured and tuned (the quarter is rung 3's neighbour; both read 48).
+- **So total steady field placement at the quarter is unchanged, and nothing is corrected twice.**
+  The setpoint does **not** move toward the designer's 90°. The scan's offset correction already
+  made that correction (manual §3.3), and making it again would add ~55° into the steep basin.
+- The one placement change is at low speed. The shipped servo averaged 45 there; the new one holds
+  48 everywhere, **+3 counts (4.2°) more lead at about an eighth**. D-7 carries the consequence.
+
+**D-4 · Every command is accepted in every state — PL-104.** The driver now throws a new speed away
+unless it is `STOPPED`, `AT_SPEED` or `FAULTED` (`:4160-4167`).
+- A wheel whose ramp is waiting on its rotor stays in `SPIN_UP`, and **cannot be commanded slower**
+  (only stop gets through). That breaks the API's promise (doctrine P3), and it would silently
+  defeat D-5 and D-6.
+- `.newRqst`'s own branches already handle a change from any running speed and either sign
+  (`.doSpdChange`, `.notSame`). So the fix **removes** the busy test and adds nothing.
+- PL-78's re-arm of `ramp_curr` still happens once per request. A stream of scale-downs uses the
+  ramp-down rate (fast); a release uses the gentle ramp-up (slow). That is the asymmetry D-6 wants.
+- **C-1 stands**: `AT_SPEED` keeps its ramp-completion meaning. Its second reason ("a measured
+  AT_SPEED would discard every command") is now moot, not wrong. The first reason — one value, one
+  meaning — carries it alone.
+
+**D-5 · Correction 2: hold at the achievable rate.** Today the lag limiter already stops the field
+advancing at `LAG_HOLD`, so the field's rate matches the rotor's. But `drv_incr` keeps the commanded
+value. When the load releases, the field resumes at full rate in one pass, which is a kick.
+- **The change:** on every held pass in `SPIN_UP` or `AT_SPEED`, `drv_incr −= drv_incr SAR 6` (a
+  33 ms time constant at 1,913 passes/s), and the state becomes `SPIN_UP`.
+- A ramp-down or a direction change is never re-labelled. A stop in progress stays a stop.
+- The field's rate then settles at the rotor's achievable rate. Recovery is the ordinary ramp back
+  up, never a step.
+- `lag_held` keeps counting, so the observable is unchanged.
+
+**D-6 · Path-preserving speed limiting, in the steering front cog.** Each 8 ms slot:
+- **A wheel is short** when its `lag_held` advanced in the last 4 slots.
+- **Its achieved fraction** is then `|drv_incr_now| ÷ |commanded|`. Both are already in the status
+  block, and after D-5 the fraction is exact and immediate.
+- While either wheel is short, both wheels are commanded at the lower wheel's fraction. The scale
+  releases by 2 % per slot, about 0.4 s to full, only after 4 clean slots. Down fast, up slow, so
+  it cannot hunt between the two.
+- **This does not need a shorter hall window.** The 1 s window lag named in §3 as this loop's cost
+  is gone, because the drive's own hold counter reports the shortfall at slot rate. So «#3597»'s
+  option (a) is no longer needed for the limiter; «#3597» is free to choose (b) or (c) on its own
+  merits.
+- `testGetFollowing()` stays as the independent reading and the TEST-USE observable (C-6).
+- **Budget:** the limiter runs once per slot and costs two status reads, two compares and, only
+  while active, one `muldiv64` per wheel. It is measured, not assumed (§5.4).
+
+**D-7 · The speed law for L — decision (c): none in 6.0.0.** L stays the compile-time quarter tune.
+- **Pass 2's band hypothesis (P2-10) is answered, and it is not the law.** The ladder's mean error
+  moves 45 → 48 between about the eighth and the quarter. That is 4.2° in the direction that lowers
+  L as speed rises: **about a third of L's measured 12.2°, of the right sign**. D-2 now holds 48 at
+  every speed, so that third is removed by construction and the rest stays H-2.
+- **Why no schedule for the remainder:**
+  - The half rung is unmeasurable (H-5).
+  - A two-point schedule would be tuned against the shipped servo's low-speed placement, which D-3
+    changes by 4.2°.
+  - The absolute cost below the quarter is small unloaded: net current at 20 × 10⁶ is about
+    16 mV, ~0.1 A.
+- **What would reopen it:** Visit 8's ladder showing current at rungs 1–2 **higher** than today's
+  under D-2, or the loaded floor run showing the low-speed current cost is large in amperes.
+
+**D-8 · Back-EMF — decision (d): not integrated in 6.0.0.**
+- **What it would give:** a finer angle, either to interpolate within a sector for a proportional
+  term or to hold the field at the torque peak.
+- **Nothing here needs it.** D-1 and D-2 remove the hunting with the sector-resolution angle.
+- **Interpolation is not free where it would be wanted.** Hall-timing interpolation plus a P term
+  tightens the error from 27–70 to 46–50 in the model, but hunts again at 10 × 10⁶ at higher gain.
+  The model has no cogging, which swings speed ±30 % between edges at the bottom of the range
+  (§1.1). A back-EMF angle is unmeasured below 43 edges/s and **unmeasured while the bridge drives
+  at all**.
+- **The next discriminating measurement, if it is reopened:** per-phase samples during driven
+  rungs 0–2. The harness sums them today.
+- **The robustness front this release advances instead:** the drive acts on its own shortfall (D-5)
+  and the steering object on both wheels' (D-6).
+
+**D-9 · What does not change, and why:**
+- **The ramp shape** (`ramp_min`, `ramp_inc`, `ramp_max`).
+- **The PL-55 ramp-down duty ceiling.** With D-1 it may never bind. Visit 8's speed-down cells read
+  `duty_capped` over each ramp-down, and if it never counts, the ceiling is removed then (D5), not
+  now.
+- **`LAG_SOFT` and `LAG_HOLD`.** In the fitted frame they sit at δ ≈ 124° and ≈ 152°, well past the
+  torque peak, so an overloaded motor is held at about half the torque it could make. But the
+  sawtooth rides ±21 counts on the error, and the shipped servo's steady `err_pk` is already 71–75.
+  **A threshold near the peak would trip in normal running.** Only a sub-sector angle could place it
+  there. **PL-105** records it, and the loaded floor run measures what it costs.
+
+### 5.4 Space and time
+
+| Part | Where | Longs, estimated from the instruction sketch |
+|---|---|---|
+| D-1 `duty_ff` per pass (`abs`, `sca`, store) + its constant | LUT | +4 of 389 free |
+| D-2 accumulator, scheduled multiply, anti-windup re-derive | cog, hot path | +7 of 25 free |
+| D-4 busy test removed | cog | −5 |
+| D-5 decay and state on a held pass | cog, `.justIncr` | +4 |
+| **Net cog RAM** | | **about +6, leaving ~19** |
+
+- **«#3583» counts from the compiler** (§4.1's method), before and after. An estimate is not a count.
+- **The per-frame cost is two instructions over today's servo**: one multiply and the anti-windup
+  test. It sits inside the 22.7 µs frame, and «#3583» confirms `loop_dtcks` does not move beyond
+  noise.
+- **The steering front cog** is the budget that could fail. Its headroom was 8.6 % before
+  `updateFollowing()`. «#3583»'s first part-D run reads `BM-FRONTST` with D-6 in place, and §5.5
+  A-10 judges it.
+
+### 5.5 Acceptance numbers
+
+Every number is **unloaded, wheels up**, with the loaded expectation beside it. Every criterion
+fails on today's drive: the "shipped" column is **MEASURED** from the logs named in §5 unless marked.
+
+| Id | Criterion (new drive, Visit 8) | Shipped | New, predicted | Loaded expectation |
+|---|---|---|---|---|
+| **A-1** | START (QTR, ±36.75 × 10⁶, both motors, 4 traces): the largest fall of duty from its running maximum, between duty leaving its floor and `AT_SPEED`, **≤ 0.10** | **0.34–0.53** (8 traces) | 0.01–0.04 | ≤ 0.10 (model with 3× friction: 0.02) |
+| **A-2** | START current peak ÷ mean current over the trace's last 60 ms, **≤ 1.8** | **1.94–3.04** | 1.13–1.80 (2.57 at the δ bracket's edge) | ≤ 1.8 |
+| **A-3** | Steady rungs 1–2 (10 and 20 × 10⁶): `duty_pk − duty` **≤ 400** and `err_pk` **≤ 76** | 800–1,650 and 75–89 | 40–153 and 69–72 | same |
+| **A-4** | Mean `err` at every rung 1–8 is **47–49** — a point, not a band | 45 at rung 2 | 48 | same |
+| **A-5** | Rungs 3–8 do not regress: steady `duty` and `inet_x10` within **±5 %** of pass 2, `rate_x10` within **0.5 %** of `pred_x10` | the pass 2 ladder | unchanged | n/a |
+| **A-6** | A speed-DOWN issued during `SPIN_UP` (quarter, then an eighth at 0.3 s) takes effect: `drv_incr` starts falling **within one drive pass** of the command | **discarded** (read from `:4160-4167`; the cell fails on today's binary) | accepted | same |
+| **A-7** | Held at a driven-off offset where the drive cannot follow — the scan's current-wall offset, where it measured 44–47 % following — **`drv_incr_now` settles within 0.2 s** at a rate within 10 % of the measured tick rate, and recovery after the offset is restored meets A-2 | holds `drv_incr` at the command | settles | the floor run's one-sided load |
+| **A-8** | The two following readings agree: D-6's fraction against `testGetFollowing()` within **5 points**, once both are valid, on both a following and a not-following case | n/a — D-6 is new | agree | same |
+| **A-9** | Driver cog RAM free after «#3583» **≥ 10 longs**, counted from the compiler | 25 | ~19 | n/a |
+| **A-10** | Steering front cog worst pass **≤ 950 µs**, `late` 0 over the run | 914 µs (before `updateFollowing()`) | unknown — measured | n/a |
+
+**Why swing amplitude, and not duty timing.** Pass 1 judged duty timing, which both explanations
+predicted. A-1 and A-3 judge **amplitude**, which the stiffness-limited loop produces and a correctly
+fed, correctly gained servo does not.
+
+**Honesty about A-2.** The model's current is a proxy. A-1 is the primary judgement of the START, and
+A-2 corroborates it.
+
+### 5.6 The two certifications
+
+1. **Visit 8 («#3584») — wheels up, A-1 to A-10.**
+   - It carries the START trace and the ladder as they stand, plus three new cells: A-6's mid-ramp
+     command, A-7's forced shortfall, and A-8's agreement.
+   - **A-6 and A-7 each have a built-in negative case:** the shipped binary fails both by
+     construction, and the run sheet shows that before the visit.
+2. **The loaded floor run («#3591», at «#3576»).** It judges:
+   - A-1 and A-2 under load;
+   - whether rungs 1–2 hunt loaded (A-3);
+   - what a hold at `LAG_HOLD` costs in current (PL-105);
+   - D-7's low-speed current in amperes;
+   - D-6 on a platform, the one place a wheel can genuinely fall short with its partner following.
+
+## 6. What «#3589» decided, in one table
+
+| Decision | Decided | Where |
+|---|---|---|
+| (a) Which knob carries the lead; point or band | The offset carries L (unchanged). The servo holds a **point**, 48, by construction. | §5.3 D-2, D-3 |
+| (b) The start surge | **Mechanism:** an integral-only servo whose gain exceeds what the rotor's low-duty stiffness supports. **Fix:** feedforward plus a duty-scheduled, untruncated trim. **Separating reading:** steady rungs 1–2 hunt with no ramp; START amplitude A-1. | §5.2, D-1, D-2, A-1, A-3 |
+| (c) The speed law for L | None in 6.0.0. The band explains a third of it, and D-2 removes that third. | §5.3 D-7 |
+| (d) Back-EMF | Not integrated. The next measurement is per-phase samples while driven. | §5.3 D-8 |
+| Path over speed, and its lag | Limited from the drive's own hold counter at slot rate, with no 1 s window. | §5.3 D-5, D-6 |
+| Whether §1.4's bus reading is real | Unchanged: unverified, not designed on. | §1.4 |
 
 ---
 
@@ -295,3 +560,7 @@ budget in the design, and it is measured before building, not after.
 - **2026-09-22** — after Visit 7c pass 2: §1.3 now carries the back-EMF measurement; §4.1 recounted
   after the start seed was removed (25 free); §5's start-transient row now reads the servo hunting,
   and back-EMF's row is answered for coasting.
+- **2026-09-22** — «#3589»: §5 replaced by the drive change (D-1 to D-9), its acceptance numbers
+  (A-1 to A-10) and the two certifications; §6 summarises the four decisions. §1.1's H-3 line
+  answered and the Z row given both values. C-1's second reason is moot under D-4, while the
+  decision stands on its first. The desk model is kept in `servo-model/`.

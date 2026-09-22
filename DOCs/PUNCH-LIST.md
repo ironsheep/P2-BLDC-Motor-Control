@@ -5141,6 +5141,17 @@ something other than what the sheet says it means.
 
 ### PL-101 -- the duty servo holds a 21-degree band, not a setpoint, because its gain truncates
 
+**RESOLVED IN DESIGN 2026-09-22 by «#3589»** (`DRIVE-INTEGRATION-DESIGN.md` §5.1-§5.3; built by «#3583»,
+certified by Visit 8's A-3 and A-4).
+- **The band is real only for a slowly changing error.** At running speed the 43-count hall sawtooth
+  dithers it into a point: mean error 48 at every rung from 40 to 120 × 10⁶ (MEASURED, the pass 2 ladder).
+- **The band and the 18 / 4 asymmetry are NOT the start surge's cause.** The desk model removes both and
+  still hunts at the shipped servo's effective gain. The cause is an integral-only servo whose gain
+  exceeds what the rotor's low-duty stiffness supports.
+- D-2 replaces the servo with a symmetric, untruncated trim, so the band is gone by construction.
+
+The history below is what was believed when the entry was raised.
+
 **Raised in weight 2026-09-22, Visit 7c pass 2: this is now a prime suspect for the START SURGE.** The
 surge is the servo HUNTING as the ramp accelerates -- `e` swinging -35 to -84 and duty 3,600 to 6,200 on
 a ~150 ms cycle, a current peak at each swing's top, in both runs
@@ -5211,6 +5222,42 @@ Z (manual §9.1) and the Doco motor («#3592»).
 **What it would take:** require the read to be still in **voltage** as well as in hall code -- re-take while
 any phase's stray exceeds a cap tied to the first-try population (9-10 mV here) -- or size the band from
 the quietest of the re-takes. Either is a desk change certified by one hand run.
+
+---
+
+### PL-104 -- the driver discards a speed command unless it is stopped, at speed or faulted
+
+**Found 2026-09-22 at «#3589»**, reading the command path to design path-preserving speed limiting.
+
+`drvMotor`'s `.notRqStop` accepts a new non-zero command only in `STOPPED`, `AT_SPEED` or `FAULTED`, and
+otherwise restores the old target and carries on (`isp_bldc_motor.spin2:4160-4167`). A ramp that is
+waiting on its rotor (`lag_s >= LAG_SOFT`) never completes, so an overloaded wheel stays in `SPIN_UP`, and
+**every slower command is thrown away**. Only a stop gets through, because a zero target takes another
+branch. A user easing off a struggling motor is ignored. That breaks the API's promise (doctrine P3), and
+it would silently defeat the hold at the achievable rate and the two-wheel path limiter.
+
+**Disposition: designed into «#3589», built by «#3583».** `DRIVE-INTEGRATION-DESIGN.md` §5.3 D-4 removes the
+busy test. `.newRqst`'s own branches already handle a change from any running speed and either sign, so
+the fix deletes code. Visit 8's A-6 certifies it, and the shipped binary fails that cell by construction.
+
+---
+
+### PL-105 -- the lag limiter holds an overloaded rotor well past its torque peak
+
+**Found 2026-09-22 at «#3589»**, DERIVED from the desk model (`DOCs/plans/servo-model/`). The model is fitted
+to the ladder and START traces, and it puts the voltage at 90° from the magnets when the error is ~56
+counts (bracket 52-60).
+- In that frame, `LAG_SOFT` (80) is **δ ≈ 124°** and `LAG_HOLD` (100) is **δ ≈ 152°**.
+- An overloaded motor is therefore held at roughly **half** the torque it could make, with the rest of
+  its current producing none.
+
+**Why not moved now.** The error the thresholds compare is the hall sawtooth, which rides ±21 counts on
+the true lag. The shipped steady `err_pk` is already 71-75, so a threshold near the torque peak would trip
+in normal running. Placing the hold at the peak needs a sub-sector angle, which «#3589» D-8 does not
+integrate for 6.0.0.
+
+**What would settle its cost:** the loaded floor run («#3591») reading current while held. **What would fix
+it:** a sub-sector angle -- hall-timing interpolation or back-EMF -- against which the hold is compared.
 
 ---
 
