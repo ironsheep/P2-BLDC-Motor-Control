@@ -1,5 +1,12 @@
 # Visit 7c — three loads, two answered, and the new cell caught a real driver defect
 
+> ⛔ **Superseded in one conclusion by pass 2 — read [`VISIT-7C-PASS2-EVALUATION.md`](VISIT-7C-PASS2-EVALUATION.md)
+> §4.3 before relying on §5 here.** This report's claim that the start transient's mechanism is
+> *settled* — the servo waiting out its deadband — did not survive pass 2. A seed that removed the wait
+> left the surge unchanged, and the traces show the rotor moving through the "pinned" period. The
+> surge is the servo hunting as the ramp accelerates. The measurements below stand; the §5 verdict,
+> C-6's "Closed", and the §8 line on correction 2 do not.
+
 **Processed per [`DOCs/procedures/BENCH-RUN-PROCESSING.md`](../../../procedures/BENCH-RUN-PROCESSING.md)** — its first use.
 
 | Load | Log (this folder) | Source | Outcome |
@@ -281,3 +288,11 @@ FRONTS
 ⛔ **`robustness` reads `follow NO` deliberately.** The `PUB` exists, so a declaration check passes —
 but the run proved the value it returns is wrong. **A capability that is declared and wrong is not
 integrated**, and recording it as `y` here would be the word-grep failure wearing a better disguise.
+
+---
+
+## Revision history
+
+- **2026-09-22** — a notice added under the title: the start-transient verdict (§5, C-6, and the
+  correction-2 line in the outcome) is superseded by pass 2, `VISIT-7C-PASS2-EVALUATION.md` §4.3.
+  Nothing else in this report was changed.

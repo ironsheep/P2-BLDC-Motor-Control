@@ -158,10 +158,12 @@ Each PWM frame the driver:
 
 1. reads the current-sense and phase ADCs;
 2. advances the commanded field angle `angle_` by `drv_incr` — the speed command;
-3. computes the three phase outputs as `duty × cos(angle_ + 0° / 120° / 240°)`;
+3. computes the three phase outputs as `duty × sin(angle_ + 0° / 120° / 240°)` — `QROTATE` with
+   no `SETQ`, read back with `GETQY` (p2kb `p2kbPasm2Qrotate`); the source comment says *cos*, and
+   the instruction says otherwise;
 4. reads the halls, looks up the sector's angle, adds the direction's offset, and forms
-   `err_ = hall_angle + offset − angle_` — how far the rotor trails the field;
-5. servos `duty` up or down to hold `|err_|` at its setpoint.
+   `err_ = angle_ − (hall_angle + offset)` — how far the field leads the rotor estimate;
+5. servos `duty` up or down to hold `|err_|` in its band (below).
 
 | Constant | Value | Label |
 |---|---|---|
@@ -170,7 +172,9 @@ Each PWM frame the driver:
 | Field angle resolution | 32-bit fraction of an electrical cycle | source |
 | Rotor angle resolution | **6 positions per electrical cycle** (one per hall sector) | source |
 | Error representation | 8-bit signed, **256 counts per electrical cycle** (1 count = 1.4°) | source |
-| Duty servo setpoint | `256/6` = 42.67 counts = **60° electrical** | source (`sub tmpY, #256/6`) |
+| Duty servo setpoint | `SERVO_SETPOINT` = `256/6` → **42 counts = 59°** (the immediate truncates) | source |
+| Duty servo gains | **18 above** the setpoint, **4 below**, each shifted right 8 | source (`duty_up`, `duty_dn`) |
+| What the servo actually holds | a **band**, 42–56 counts (**59–79°**): the shift truncates, so nothing moves until the excess reaches 15 counts; below 42 duty always falls | DERIVED from the two rows above; MEASURED: duty first rose at 57–59 on eight START traces |
 | Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **24,264** | DERIVED from frame and dead-gap |
 | Dead gap applied | 260 ns (compliant with the 250 ns minimum) | source |
 | Lag: ramp waits | `LAG_SOFT` 80 counts = **112.5°** | source |
@@ -246,11 +250,23 @@ midpoint is Z with the lead cancelled out.
 
 *(`DOCs/analyses/bench/2026-09-22/VISIT-7C-EVALUATION.md` §6.)*
 
-**Take Z = −4° electrical for this motor**, on both units.
+**Measured a second way, cold.** With the bridge coasting and each wheel turned by hand, the three
+phase terminals carry the motor's own back-EMF, whose zero crossings are fixed to the magnets. Placing
+them against the hall edges (8 legs per motor, both directions, two hand speeds, two runs):
+
+| Motor | Z, cold | Slow vs brisk | Label |
+|---|---|---|---|
+| LEFT | **−3.31°** | −3.34 / −3.29 | MEASURED |
+| RIGHT | **−3.25°** | −3.22 / −3.28 | MEASURED |
+
+*(`DOCs/analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md` §3.3.)*
+
+**Take Z = −4° electrical for this motor**, on both units — right to within 0.7° by both methods,
+which is inside the constant's own 1° resolution.
 
 ### 4.3 Why we trust it
 
-Four independent confirmations, and they do not share a signal path:
+Five independent confirmations, and they do not share a signal path:
 
 1. **The symmetry prediction held.** The two per-direction minima are symmetric about a common
    midpoint on both motors, and the two midpoints agree within 0.5°. An aliased or spurious
@@ -260,6 +276,10 @@ Four independent confirmations, and they do not share a signal path:
 4. **Z is speed-invariant, as geometry must be**: it moved 0.2–0.55° across a doubling of
    speed, while the lead L moved 12.2° across the same doubling. That is the instrument's own
    negative case, and it passed.
+5. **A second method, sharing nothing with the first, agrees within 0.35°.** The cold back-EMF
+   measurement uses no drive, no current and no offset sweep, and its own negative case holds too:
+   slow and brisk legs agree within 0.12°. Its hall-frame derivation is itself tested by the data —
+   the three phases fall 120° apart in the one order the drive's phase convention predicts.
 
 ### 4.4 The honest limit
 
@@ -411,34 +431,38 @@ any alignment, the drive is saturated and current readings mean less than they a
 
 ### 6.4 Starting from rest — the transient
 
-**Every spin-up from rest produces a current surge that you can feel.** The mechanism is
-settled, measured on four traces across both motors and both directions:
+**Every spin-up from rest produces a current surge that you can feel.** What the traces show, on
+four starts per run across both motors and both directions, in two runs:
 
-At every start the driver seeds the field angle from the hall sector *using the same offset it
-will later subtract*, so the offset cancels and `err_` begins at **identically zero** — while
-the duty servo's target is 60°. Duty is simultaneously reset to `duty_min_`. The servo therefore
-sits inert in its own deadband until the rotor has fallen 60° behind, and the catch-up is the
-surge.
+1. **The first ~0.45 s is quiet, and the rotor is moving through it.** Early in the ramp the field
+   advances slowly enough for minimum duty (1,600 counts) to drag the rotor with it: `pos` walks
+   several ticks while duty sits at its floor and `|err|` stays small. Duty has no reason to rise
+   until the ramp outruns what minimum duty can hold.
+2. **The surge is the duty servo HUNTING as the ramp accelerates.** From there `err` and duty swing
+   together on a ~150 ms cycle — `err` −35 to −84, duty 3,600 to 6,200 — and each swing's high
+   point is a current peak (57–100 counts, wheels up).
 
-The falsifier was fixed before the run: *if duty moves before `|err|` crosses 60°, the deadband
-story is wrong.*
+| Start (QTR, both directions) | Duty leaves its floor for good | Peak current | at |
+|---|---|---|---|
+| LEFT, two starts | ~0.49 s | 72–100 | 0.74–0.90 s |
+| RIGHT, two starts | ~0.49 s | 57–82 | 0.73–0.91 s |
 
-| Trace | Motor | Duty pinned at | First duty change | `\|err\|` there |
-|---|---|---|---|---|
-| 1 | LEFT | 1,600 | 464 ms | **57** |
-| 8 | LEFT | 1,600 | 464 ms | **57** |
-| 27 | RIGHT | 1,600 | 464 ms | **58** |
-| 34 | RIGHT | 1,600 | 466 ms | **59** |
+MEASURED — `DOCs/analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md` §4.3, and the same shape in
+the earlier run's four traces.
 
-Threshold is 42 counts (60°). **Duty did not move before the crossing on any of the four.** Peak
-current followed *after* duty began climbing. MEASURED — `VISIT-7C-EVALUATION.md` §5.
+**What it is not.** It is not the servo waiting out a deadband at the start. Starting the field
+80° ahead of the rotor — where the servo first raises duty — was built and measured: duty rose at
+once, the rotor snapped about a tick past the field, duty fell back to its floor for as long as
+before, and the peaks did not change. Why the servo hunts is the open question: the servo holds a
+21° band rather than a point, and raises duty 4.5× faster than it lowers it (§3.2), which together
+have the shape of a limit cycle. That is a suspect, not a finding.
 
-Three practical consequences:
+Practical consequences:
 
-- **It is structural.** Every start runs the same initialiser, so it happens every time,
-  regardless of where the rotor stopped.
-- **It is not immediate.** Duty starts at its floor and needs tens of passes to wind up; the
-  surge lands once duty has wound up and before the rotor accelerates away.
+- **It is structural.** Every start runs the same ramp and the same servo, so it happens every
+  time, regardless of where the rotor stopped.
+- **It is not immediate.** The surge arrives three-quarters of a second in, as the wheel
+  accelerates — not at the command.
 - **Alignment does nothing for it.** The startup peak is 90–120 counts at every offset pair
   measured. What alignment changes is the *steady* current around it: at 25° off optimum the
   motor draws ~109 counts continuously, so a surge to ~110 is not an event; at the shipped
@@ -586,7 +610,7 @@ Each hole names why it matters and what would settle it. States: **OPEN** ·
 | | *What would settle it:* a full-cycle sweep, which needs a method that does not drive the motor into the current wall to get there. | |
 | **H-5** | **The optimum at the half rung.** Five attempts, five distinct causes. The most recent is informative rather than a failure: the reachable arc there is 20° wide, torque-bounded at both ends, and the extrapolated optimum sits outside it (§6.2). | **OPEN**, and a candidate for **CLOSED-UNANSWERABLE** |
 | | *What would settle it:* a sweep that can report *"the optimum is outside the reachable window"* as a result rather than failing to bracket. If that is the answer, this hole closes as unanswerable on this rig at this voltage, and that is a real finding about the motor. | |
-| **H-6** | **The start surge under load.** Mechanism is settled (§6.4); magnitude is not — every trace was wheels-up. | **OPEN** |
+| **H-6** | **The start surge under load.** Its shape is measured (§6.4) — the servo hunting as the ramp accelerates — but not why it hunts, and not its magnitude: every trace was wheels-up. | **OPEN** |
 | | *What would settle it:* the tethered, loaded floor run. | |
 | **H-7** | **Can the board see regeneration?** The shunt is low-side, so regen drives the sense node below ground. Rev A almost certainly cannot see it; Rev B depends on the INA180B2 variant and its reference pin. | **OPEN** |
 | | *What would settle it:* the INA180B2 datasheet, or a bidirectional external sensor. | |
@@ -646,6 +670,7 @@ depends on which board it is.** That is §1.3's attribution showing up as a sche
 | Source | What it supplies |
 |---|---|
 | `DOCs/analyses/bench/2026-09-22/VISIT-7C-EVALUATION.md` | Z and L at two rungs both motors; the start-transient traces; the half-rung arc |
+| `DOCs/analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md` | Z measured cold from back-EMF; hall-sector widths; hall lag; the start transient's shape; back-EMF as a position source |
 | `DOCs/analyses/bench/2026-09-21/VISIT-7B-EVALUATION.md` | the alignment A/B; current collapse; direction symmetry; the duty knee; the start surge in context |
 | `DOCs/analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` | the hand-rotation pole count |
 | `DOCs/analyses/BOARD-REVISION-FACTS.md` | vendor hardware facts, sense scaling, dead-time, MOSFET ratings |
@@ -662,3 +687,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 | Date | Change |
 |---|---|
 | 2026-09-22 | First issue. Sections 2–8 describe current understanding; section 9 opens eleven holes, and §9.1 states what the second pair of units can add. |
+| 2026-09-22 | §4 gains the cold back-EMF measurement of Z. §6.4 rewritten: the start surge is the duty servo hunting as the ramp accelerates, not a wait at the setpoint — the earlier account did not survive a seed that removed the wait. §3.2 corrected against the code: the phase function is sine, `err_`'s sign, and the servo's band. H-6 reworded to match. |

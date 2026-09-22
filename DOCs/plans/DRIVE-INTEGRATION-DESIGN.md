@@ -66,12 +66,22 @@ thermal derate to `I_CONT_A` over a ~1 s average (`:1777-1787`). On Rev A the sa
 resolution, and whether it protects Rev A is a question the Rev A pair answers after «#3583»
 (manual §9.1).
 
-### 1.3 Phase voltages as a rotor-angle source — OPEN
+### 1.3 Phase voltages as a rotor-angle source — proven coasting, open while driving
 
 The three phase-sense channels are read and scaled every frame and reach nothing but the status
-block. Whether they carry usable rotor angle between hall edges, and down to what speed, is the
-question the ALIGN tier gives its first real reading on (hand-turned back-EMF). **Left open here by
-design** — «#3589» settles its row from that tier.
+block.
+
+| Claim | Provenance |
+|---|---|
+| With the bridge **coasting**, they carry the motor's back-EMF: clean zero crossings, 2–5° scatter per crossing type, about 45 per type per 3-turn leg. | MEASURED: `2026-09-22/VISIT-7C-PASS2-EVALUATION.md` §3.3, §3.6 |
+| That holds from the slowest leg measured, **43 hall edges/s**, upward. The floor was not reached. | same |
+| Z derived from them agrees with the driven scan within **0.35°**, and the phases fall in the order the drive's `sin(angle_ + n·120°)` convention predicts. | same, §3.3 |
+| The negative half-waves **clip** at the ADC floor (the resting level sits ~55 mV above it), so amplitude is unusable as it stands; crossings are unaffected. | same, `rail_pm` 71–196 ‰ |
+
+**Open, and «#3589» owns it:**
+- **Readability while the bridge drives.** The pins then carry PWM; nothing has measured it.
+- **Readability below 43 edges/s.** The drive's slowest command is 2.7 edges/s, and that low regime
+  is where the halls stop informing and an angle source would be wanted.
 
 ### 1.4 The phase-voltage SUM as a bus-voltage reading — a candidate, unverified
 
@@ -227,16 +237,16 @@ introduces must be mirrored as a `CON` alias in `isp_steering_2wheel.spin2`, or 
 
 ## 4. Space and time the change has to fit in
 
-### 4.1 Driver cog RAM — 17 longs free
+### 4.1 Driver cog RAM — 25 longs free
 
 MEASURED 2026-09-22, and the method is the point.
 
 - **The method.** `pnut-ts -l isp_bldc_motor.spin2`. The symbol table gives each DAT label's cog address
   in the **top 12 bits** of its VALUE.
-- **Cog RAM:** `DRIVER` is at `$000`; the last cog-resident long, `DUTY_CAPPED_`, is at `$1DE`.
-  **479 of the 496 `fit` allows are used — 17 free.**
+- **Cog RAM:** `DRIVER` is at `$000`; the last cog-resident long, `DUTY_CAPPED_`, is at `$1D6`.
+  **471 of the 496 `fit` allows are used — 25 free.** («#3600»'s start seed took 8 of them and was
+  removed after Visit 7c pass 2 showed it did not remove the surge.)
 - **LUT:** `LUTCODESTART` `$200` to `LUTCODEEND` `$27B` — **123 of 512 used, 389 free.**
-- **Before «#3600»** `DUTY_CAPPED_` was at `$1D6`: 25 free. The start seed cost 8.
 - **The old `fit` comment claimed "~400 used", hand-counted from source** — about 80 short. That is
   why the count is now read from the compiler, and the comment says so.
 
@@ -244,8 +254,6 @@ MEASURED 2026-09-22, and the method is the point.
 - **Cog RAM is spent only on the 43.9 kHz loop's hot path.** Everything that runs per start, per
   command or per drive pass (~1,913/s) belongs in the LUT block, which the start sequence,
   `gettgtincr` and `driveinit` already use.
-- **8 longs are recoverable now:** `.startFromRest` runs once per start, so it can move to the LUT.
-  `.checkstopfloaton` would then need a global label.
 - **Count again before adding,** by the method above.
 
 ### 4.2 Front cogs — one has room, one does not
@@ -272,9 +280,9 @@ budget in the design, and it is measured before building, not after.
 | Decision | Waits on | State 2026-09-22 |
 |---|---|---|
 | **Which knob carries the lead** | ~~the setpoint A/B~~ | The A/B is **retired**: the field sits at the commanded angle and the servo integrates to its setpoint, so setpoint and lead combine **by construction** (`:4467-4474`, `:4591`). What is left is PL-101: the servo holds a **21° band** (|err| 42–56), not a point, because its gain truncates. Whether the drive should hold a point is «#3589»'s call. |
-| **The start transient** | the START trace | **Mechanism answered** (Visit 7c, 4 of 4). The fix is built («#3600», `4014b92`) and is certified by Visit 7c pass 2 load 2. Its size **under load** waits on the floor run. |
+| **The start transient** | a desk model of the servo, then the START trace | **Its shape is measured, its cause is not** (Visit 7c pass 2, `VISIT-7C-PASS2-EVALUATION.md` §4.3). The rotor follows the slow early ramp at minimum duty; the surge is the servo **hunting** once the ramp outruns that — `e` −35 ↔ −84, duty 3,600 ↔ 6,200, ~150 ms cycle. The start seed («#3600») was built on the earlier deadband reading, did not remove the surge, and was removed. Suspects: PL-101's band and the 18 / 4 gain asymmetry. The next START trace judges **swing amplitude**, since duty timing cannot tell the stories apart. Size **under load** waits on the floor run. |
+| **Back-EMF's usable range** (§1.3), answered in part | back-EMF **while driving** | **Readable coasting from 43 edges/s up**, 2–5° per crossing, floor not reached; Z from it agrees with the driven scan within 0.35° (pass 2 §3). Unmeasured while the bridge drives, which is the case an integration needs. |
 | **The speed law for `L`** | `L` at a half (H-5) | Never obtained in five attempts; a candidate to close as unanswerable on this rig. |
-| **Back-EMF's usable range** (§1.3) | the ALIGN tier | Pass 2 load 1. |
 | **Whether §1.4's bus reading is real** | one known-voltage reading | Found 2026-09-22, unverified. |
 
 ---
@@ -284,3 +292,6 @@ budget in the design, and it is measured before building, not after.
 - **2026-09-22** — sections 1 to 4 written by «#3596». Section 5 names «#3589»'s scope.
 - **2026-09-22** — Stephen's two rulings: C-6 stays TEST-USE (PL-102 records the possible API), and
   section 3 is path over speed, named path-preserving speed limiting.
+- **2026-09-22** — after Visit 7c pass 2: §1.3 now carries the back-EMF measurement; §4.1 recounted
+  after the start seed was removed (25 free); §5's start-transient row now reads the servo hunting,
+  and back-EMF's row is answered for coasting.

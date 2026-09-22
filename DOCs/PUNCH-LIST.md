@@ -5063,6 +5063,10 @@ a reader counting greens over-counts the run's evidence by two per motor.
 
 ### PL-99 -- the ALIGN crossing detector has no hysteresis, so it counts ~5.5x too many crossings
 
+**CLOSED -- CERTIFIED 2026-09-22, Visit 7c pass 2.** All 16 legs of two `dual-align` runs counted
+266-269 crossings against 270 physical, with `dropped,0`
+([evaluation](analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md) §3.2).
+
 **Status 2026-09-22 («#3594») -- FIXED IN TREE, NOT YET RUN.** `test_bench_dual.spin2` SRC_REV 24: a
 per-phase hysteresis band sized from the bias read's own noise (largest stray + 4 mV), and each crossing
 timed at the midpoint of its raw sign flips, so the band adds no speed-dependent delay. Desk model of the
@@ -5096,6 +5100,11 @@ Doco motor when that effort starts («#3562», «#3592»).
 ---
 
 ### PL-100 -- the ALIGN clip detector judges peak railing when only the crossing region must be clean
+
+**CLOSED 2026-09-22, Visit 7c pass 2 -- the criterion is right, and its first run found a different
+defect, PL-103.** The band test failed five legs; each one's Z matches its clean twin within 0.3°, and
+each had a band inflated by a bias read taken while the wheel still coasted. The criterion judges the
+right region; what it is fed is the problem.
 
 **Status 2026-09-22 («#3594») -- FIXED IN TREE, NOT YET RUN.** The crossing region is defined as each
 phase's **band** -- resting level +/- its hysteresis -- which is where every crossing is detected; a phase
@@ -5132,6 +5141,13 @@ something other than what the sheet says it means.
 
 ### PL-101 -- the duty servo holds a 21-degree band, not a setpoint, because its gain truncates
 
+**Raised in weight 2026-09-22, Visit 7c pass 2: this is now a prime suspect for the START SURGE.** The
+surge is the servo HUNTING as the ramp accelerates -- `e` swinging -35 to -84 and duty 3,600 to 6,200 on
+a ~150 ms cycle, a current peak at each swing's top, in both runs
+([evaluation](analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md) §4.3). A band with no restoring
+force inside it, plus gains of 18 up and 4 down, is the shape of a limit cycle. «#3589» decides the
+servo; the START trace certifies it, judging swing amplitude rather than duty timing.
+
 **Found 2026-09-22 at «#3600»**, reading the servo to seed a start at it.
 
 The servo adds `((|err_| - SERVO_SETPOINT) * duty_up) SAR 8` to duty each pass (`isp_bldc_motor.spin2`,
@@ -5150,8 +5166,8 @@ specified.
 **What it would take:** a decision in «#3589», not a patch here -- either round the servo step (a
 symmetric band of about +/-7) or carry a fractional duty accumulator (no band). Either changes steady-state
 behaviour of a working mechanism, so it is designed and certified, never slipped in (D5). «#3600»'s start
-seed deliberately does NOT change it: it seeds at the band's upper edge (`SERVO_ENGAGE`, derived from the
-two constants), so if the servo changes, the seed follows.
+seed, which seeded a start at the band's upper edge, was measured at Visit 7c pass 2, did not remove the
+surge, and was removed; `SERVO_SETPOINT`, `SERVO_DUTY_UP` and `SERVO_ENGAGE` stay as the names of the band.
 
 ---
 
@@ -5175,6 +5191,26 @@ FALSE until the window has filled, a threshold near 90 % of commanded, and a mir
 `isp_steering_2wheel.spin2`. Shape and threshold are in `DOCs/plans/DRIVE-INTEGRATION-DESIGN.md` C-6.
 **What would reopen it:** a loaded measurement -- the floor run «#3591» -- showing following below the
 threshold in normal use, or a user report of the platform running short of its commanded speed.
+
+---
+
+### PL-103 -- the ALIGN band is sized from motion when the bias read lands on a coasting wheel
+
+**Found 2026-09-22, Visit 7c pass 2** ([evaluation](analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md)
+§3.4). `R18-DUAL-ALIGN-CLIP` failed five legs across the two runs, and every one had needed bias re-takes
+(`bias_tries` 4-22) and came out with a wide hysteresis band (17-58 mV). Every leg whose bias landed first
+try got 9-10 mV. `bAlignBias()` calls a read "still" when the **hall code** does not change, but a wheel
+still coasting inside one sector passes that test while its back-EMF inflates the stray the band is sized
+from. The band then reaches the rail and the leg is refused -- though those legs' Z matches their clean
+twins within 0.3°.
+
+**Why not fixed now:** the tier's job for these two motors is done (Z and H-3 answered and reproduced), and
+the override rule puts driver work first. **It is needed before the tier's next use** -- the Rev A pair's
+Z (manual §9.1) and the Doco motor («#3592»).
+
+**What it would take:** require the read to be still in **voltage** as well as in hall code -- re-take while
+any phase's stray exceeds a cap tied to the first-try population (9-10 mV here) -- or size the band from
+the quietest of the re-takes. Either is a desk change certified by one hand run.
 
 ---
 

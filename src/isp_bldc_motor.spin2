@@ -2261,8 +2261,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
                                                         'duty_max    := ((pwm_limit  << 4) / 4) * 3 <# pwm_limit << 4    ' BAD
                                                         'duty_max    := ((pwm_limit  << 4) / 8) * 5 <# pwm_limit << 4    ' BAD
     ' orig higher power code used this
-    duty_up     := SERVO_DUTY_UP                        ' named: .startFromRest's seed is derived from it
-    duty_dn     := 4
+    duty_up     := SERVO_DUTY_UP                        ' named with the setpoint: together they set where duty first rises
+    duty_dn     := SERVO_DUTY_DN
                                                         ' Chip's new code adjusted this, why?
                                                         '    duty_up     := 8   ' this drops our top-end power by 45%
                                                         '    duty_dn     := 2
@@ -3870,19 +3870,24 @@ CON { driver internal Constants }
     DRVR_STATUS_LONGS_COUNT     = 19
     DRVR_PARAMS_LONGS_COUNT     = 16
 
+    ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
+    '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
+    '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
+    DRIVER_REV                  = 1
+
     ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
     LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts
     LAG_HOLD                    = 100       ' 140.6 deg: the field stops advancing (the fault test is at 125)
     ' The duty servo (drvMotor, after .noFault): each pass adds ((|err_| - SERVO_SETPOINT) * gain) SAR 8 to
-    '  duty, the gain SERVO_DUTY_UP above the setpoint. The SAR truncates, so above the setpoint nothing
-    '  moves until the product reaches 256: duty first RISES at SERVO_ENGAGE, not at SERVO_SETPOINT.
-    '  Visit 7c measured exactly that -- 4 of 4 START traces, duty first moving at |err_| 57-59.
-    ' A start SEEDS the field SERVO_ENGAGE ahead of the rotor (.startFromRest), so duty rises from the first
-    '  pass. A seed short of it is a wait with duty pinned at duty_min_ while the field runs away from a
-    '  stationary rotor, and that wait and its catch-up are the start surge (pinned 464 ms from a seed
-    '  of 0). All three are derived here, never copied, so the seed cannot drift from the servo it serves.
+    '  duty -- SERVO_DUTY_UP above the setpoint, SERVO_DUTY_DN below. The SAR truncates, so above the
+    '  setpoint nothing moves until the product reaches 256: duty first RISES at SERVO_ENGAGE (Visit 7c, 8 of
+    '  8 START traces at |err_| 57-59); below it, SAR rounds toward minus infinity and duty always falls. So
+    '  the servo holds |err_| anywhere in a BAND, SERVO_SETPOINT to SERVO_ENGAGE - 1 (59-79 deg) -- PL-101.
+    ' Seeding a start at SERVO_ENGAGE does NOT remove the start surge: measured and removed (task 3600,
+    '  DOCs/analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md section 4).
     SERVO_SETPOINT              = 256 / 6   ' 42 units, 59 deg (256 per hall cycle)
     SERVO_DUTY_UP               = 18        ' the servo's gain above the setpoint (init() loads duty_up from it)
+    SERVO_DUTY_DN               = 4         ' ...and below it (init() loads duty_dn from it)
     SERVO_ENGAGE                = SERVO_SETPOINT + (256 + SERVO_DUTY_UP - 1) / SERVO_DUTY_UP   ' 57 units, 80 deg
 
     ' S-2 (same design, section 3.4): phase-current limits from the MOSFET both board revisions use, MCAC85N06Y
@@ -4273,7 +4278,7 @@ drvMotor                                                ' global (task 3535): en
 
                 or      drv_incr, drv_incr          wz  ' -and- are we stopped, just about to spin up?
     if_z        mov     ramp_curr, ramp_min_            ' set initial ramp if starting from 0
-    if_z        call    #.startFromRest                 ' drive on per stop mode, and the field seeded where the servo engages
+    if_z        call    #.checkstopfloaton              ' make sure drive is on according to stop mode
                 ' if we are at target, stop the ramp effort
                 cmps    drv_incr, tgt_incr          wz  ' Q: Did we match target?
     if_z        jmp     #.endRUpAtSpeed                 ' YES, (Matched) go mark done
@@ -4471,7 +4476,7 @@ drvMotor                                                ' global (task 3535): en
                 add     tmpX, third                     ' 240 degress further
                 qrotate tmpY, tmpX
 
-                getqy   drive_u_                        ' get three CORDIC results, duty/16*cos(angle_+N*120degree) (N->0,1,2)
+                getqy   drive_u_                        ' get three CORDIC results, duty/16*SIN(angle_+N*120degree) (N->0,1,2): QROTATE with no SETQ, GETQY is Y
                 getqy   drive_v_
                 getqy   drive_w_
 ' used when tracking down PWM drive problem...
@@ -4642,16 +4647,6 @@ drvMotor                                                ' global (task 3535): en
                 mov     prior_incr, #0                  '  e-stop kept drv_incr, and a restart at the same speed declared
                 mov     fwdrev, #0                      '  AT_SPEED against a stopped wheel and faulted
     _ret_       mov     angle_, #0                      ' .rampUp's drv_incr == 0 path re-seeds the angle from the halls
-
-.startFromRest                                          ' a start from rest (.rampUp, drv_incr == 0) -- every start, including
-                call    #.checkstopfloaton              '  the one after a direction change or a fault reset. The bridge per
-                call    #initAngleFmHall                '  stop mode, then the field placed from the ROTOR in both modes (a
-                mov     tmpX, #SERVO_ENGAGE             '  braked hold leaves it where the hold settled), then SERVO_ENGAGE
-                shl     tmpX, #24                       '  ahead in the direction of travel, so duty rises from the first
-                testb   tgt_incr, #31               wc  '  pass. prior_angle keeps the unseeded value on purpose: the
-    if_nc       add     angle_, tmpX                    '  first control pass then reads the seed as motion and sets fwdrev
-    if_c        sub     angle_, tmpX                    '  from it, even straight after a direction change. (bCY=REV)
-                ret
 
 .checkstopfloaton                                       ' about to drive: a coasting bridge (SM_FLOAT) is re-aligned and driven
                 skip    #%1000101                       ' same as inverted floatoff without the coast write
@@ -4894,14 +4889,10 @@ duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the c
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 479 USED, 17 FREE -- COUNTED 2026-09-22 (task 3596), not estimated: the compiler's
-                 ' symbol table gives each DAT label's cog address in its top 12 bits, and the last
-                 ' cog-resident long (duty_capped_) sits at $1DE. Reproduce: `pnut-ts -l isp_bldc_motor.spin2`
-                 ' and read DUTY_CAPPED_'s VALUE. It was 471 before .startFromRest (8, task 3600). An
-                 ' earlier "~400 used" here, counted by hand from source, was about 80 short -- which is
-                 ' why the count is now read from the compiler. The one-time start sequence, gettgtincr
-                 ' and driveinit live in the LUT-resident block below (task 3535): lutCodeStart $200 to
-                 ' lutCodeEnd $27B, 123 of the LUT's 512 longs, 389 free. Code that runs rarely belongs there.
+    fit     496  ' 471 USED, 25 FREE, 2026-09-22 -- read from the compiler, never hand-counted (a hand count
+                 ' here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, DUTY_CAPPED_'s VALUE, whose
+                 ' top 12 bits are its cog address ($1D6). Rarely-run code belongs in the LUT-resident block
+                 ' below (task 3535): lutCodeStart $200 to lutCodeEnd $27B, 123 of 512 longs.
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the one-time start sequence only (task 3535).

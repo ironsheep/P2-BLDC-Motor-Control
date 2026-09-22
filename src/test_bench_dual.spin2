@@ -175,6 +175,10 @@
 ''               start seed (isp_bldc_motor SERVO_ENGAGE). The banner carried no driver identity at all, so
 ''               a log could not show whether a driver change was in the image; a driver without the seed
 ''               has no such constant, so the field's presence is the check.
+''               22 Sep 2026 -- SRC_REV=26, FMT 14: task 3594. BM-BUILD's servo_engage becomes drv_rev, the
+''               driver's own hand-bumped DRIVER_REV. The start seed servo_engage marked was measured at Visit
+''               7c pass 2 and removed, which left the field a constant that does not move when the driver
+''               does -- the gap it was added to close, open again. drv_rev closes it for every driver change.
 ''
 '' =================================================================================================
 
@@ -238,8 +242,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 25                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 13                                        ' BM- record-format version
+    SRC_REV     = 26                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 14                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -6696,7 +6700,7 @@ VAR { ALIGN sign-off accumulators -- cog 0 only }
 
     LONG    sfAgLegs                                        ' legs that ran
     LONG    sfAgPeakI                                       ' worst |sense_i| anywhere in the tier, mV
-    LONG    sfAgClip                                        ' phases whose crossing band touched a rail, across the tier
+    LONG    sfAgBandRailed                                  ' phases whose crossing band touched a rail, across the tier
     LONG    sfAgCoverMin                                    ' fewest crossings any leg kept
     LONG    sfAgResMin                                      ' fewest samples per sector anywhere
     LONG    bSfAgCombo[ALIGN_COMBOS]                        ' wheel x MEASURED direction that returned a leg
@@ -6718,7 +6722,7 @@ PRI segAlign()
     agLegIdx := -1                                          ' alignResetLeg() advances it, so a leg is emitted under its OWN index
     agSamples := 0                                          ' ...and leg 0 has no predecessor to emit
     sfAgPeakI := 0
-    sfAgClip := 0
+    sfAgBandRailed := 0
     sfAgCoverMin := LIM_BIG
     sfAgResMin := LIM_BIG
     alignWheel(SIDE_LEFT)
@@ -6887,7 +6891,7 @@ PRI alignSetBand(phaseIdx, biasMv, minMv, maxMv) | noiseMv
     noiseMv := (maxMv - biasMv) #> (biasMv - minMv)
     agBias[phaseIdx] := biasMv
     agHyst[phaseIdx] := noiseMv + ALIGN_HYST_MARGIN_MV
-    if ((biasMv - agHyst[phaseIdx]) <= ALIGN_CLIP_LO_MV) or ((biasMv + agHyst[phaseIdx]) >= ALIGN_CLIP_HI_MV)
+    if bAlignRailed(biasMv - agHyst[phaseIdx]) or bAlignRailed(biasMv + agHyst[phaseIdx])
         agBandRailed += 1
 
 PRI alignRun(side) | nowCt, uMv, vMv, wMv, iMv, absI
@@ -7044,11 +7048,11 @@ PRI alignCross(phaseIdx, phaseMv, nowCt) | rawSign, newArm
         newArm := 1
     elseif phaseMv < (agBias[phaseIdx] - agHyst[phaseIdx])
         newArm := -1
-    if (agArm[phaseIdx] <> 0) and (newArm <> agArm[phaseIdx])
-        alignKeepCross(phaseIdx, newArm, agFlipCt[phaseIdx] + ((agRawCt[phaseIdx] - agFlipCt[phaseIdx]) / 2) - agSectStartCt)
     if newArm <> agArm[phaseIdx]
+        if agArm[phaseIdx] <> 0                             ' the first arming only chooses a side; it crosses nothing
+            alignKeepCross(phaseIdx, newArm, agFlipCt[phaseIdx] + ((agRawCt[phaseIdx] - agFlipCt[phaseIdx]) / 2) - agSectStartCt)
         bAgFlipSeen[phaseIdx] := FALSE                      ' the next crossing's flips start from here
-    agArm[phaseIdx] := newArm
+        agArm[phaseIdx] := newArm
 
 PRI alignKeepCross(phaseIdx, crossSign, crossCt) | inUs
 ' Hold one crossing for the open sector, to be given the sector's duration when it closes.
@@ -7086,8 +7090,17 @@ PRI alignClipTest(phaseMv)
 '
 ' @param phaseMv - one phase reading, mV
 
-    if (phaseMv >= ALIGN_CLIP_HI_MV) or (phaseMv <= ALIGN_CLIP_LO_MV)
+    if bAlignRailed(phaseMv)
         agClip += 1
+
+PRI bAlignRailed(phaseMv) : bRailed
+' Whether a phase level sits at or past a rail -- the one definition both the peak count and the band
+' test use, so the two cannot disagree about a level exactly on a threshold.
+'
+' @param phaseMv - a phase level, mV
+' @returns bRailed - TRUE at or above ALIGN_CLIP_HI_MV, or at or below ALIGN_CLIP_LO_MV
+
+    bRailed := (phaseMv >= ALIGN_CLIP_HI_MV) or (phaseMv <= ALIGN_CLIP_LO_MV)
 
 PRI alignSignOf(nDiff) : nSign
 ' The sign of a difference, as the crossing test needs it: zero is its own answer, never folded into
@@ -7145,7 +7158,7 @@ PRI alignScoreLeg() | comboIdx
             agOutcome := ALEG_SHORT
     sfAgLegs += 1
     sfAgPeakI #>= agPeakI
-    sfAgClip += agBandRailed
+    sfAgBandRailed += agBandRailed
     if agOutcome == ALEG_OK
         sfAgCoverMin <#= agCross
         sfAgResMin <#= agSectSampMin
@@ -7330,7 +7343,7 @@ PRI emitAlignCells()
 ' Each is NOMEAS when no leg ran, so a tier that never started cannot print a clean sheet.
 
     emitSignoff(@sSfCellAgNoDrv, SIDE_NONE, @sSfCritAgNoDrv, sfAgLegs > 0, sfAgPeakI, ALIGN_NODRIVE_LO, ALIGN_NODRIVE_HI, sfAgLegs, @sSfUnitsMv)
-    emitSignoff(@sSfCellAgClip, SIDE_NONE, @sSfCritAgClip, sfAgLegs > 0, sfAgClip, ALIGN_CLIP_LO, ALIGN_CLIP_HI, sfAgLegs, @sSfUnitsCount)
+    emitSignoff(@sSfCellAgClip, SIDE_NONE, @sSfCritAgClip, sfAgLegs > 0, sfAgBandRailed, ALIGN_CLIP_LO, ALIGN_CLIP_HI, sfAgLegs, @sSfUnitsCount)
     emitSignoff(@sSfCellAgCover, SIDE_NONE, @sSfCritAgCover, sfAgCoverMin < LIM_BIG, sfAgCoverMin, ALIGN_COVER_LO, ALIGN_COVER_HI, sfAgLegs, @sSfUnitsCount)
     emitSignoff(@sSfCellAgRes, SIDE_NONE, @sSfCritAgRes, sfAgResMin < LIM_BIG, sfAgResMin, ALIGN_RES_LO, ALIGN_RES_HI, sfAgLegs, @sSfUnitsCount)
     emitSignoffBool(@sSfCellAgMatrix, SIDE_NONE, @sSfCritAgMatrix, sfAgLegs > 0, bAlignMatrix(), ALIGN_COMBOS)
@@ -9703,8 +9716,8 @@ PRI emitBanner()
     emitRecord()
 
 PRI emitBuild()
-' BM-BUILD: the compiled instrument, limits and C-6 constants, and the driver's start seed. Worst case
-' 254 bytes (237 before servo_engage, which adds ",servo_engage," 14 and at most 3 digits).
+' BM-BUILD: the compiled instrument, limits and C-6 constants, and the driver's revision. Worst case
+' 251 bytes (237 before drv_rev, which adds ",drv_rev," 9 and at most 5 digits).
 
     recBegin(@"BM-BUILD")
     benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
@@ -9719,7 +9732,7 @@ PRI emitBuild()
     benchLog.numField(@"rwire_mohm", RWIRE_MOHM, LIM_SMALL)
     benchLog.numField(@"pack_mV", PACK_MV, LIM_SMALL)
     benchLog.numField(@"fault_cool_ms", FAULT_COOL_MS, LIM_SMALL)
-    benchLog.numField(@"servo_engage", wheelL.SERVO_ENGAGE, LIM_TINY)
+    benchLog.numField(@"drv_rev", wheelL.DRIVER_REV, LIM_SMALL)
     emitRecord()
 
 PRI emitInst(eventCode, ackMs, bAckValid, whyCode)

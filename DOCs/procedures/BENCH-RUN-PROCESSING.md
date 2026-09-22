@@ -1,6 +1,6 @@
 # Processing a set of bench-run logs
 
-**What this is.** The same nine steps, every time a set of logs comes back from the rig. Derived
+**What this is.** The same steps, every time a set of logs comes back from the rig. Derived
 2026-09-22 from the five most recent passes — `SCAN-RUN-7`, `VISIT-7B`, `SHAKEDOWN`,
 `SCAN-SELFLOCATE`, `SCAN-GUARD` — which had converged on this shape without it being written down.
 Every rule below is here because skipping it cost something real; the citation says what.
@@ -25,6 +25,18 @@ reading the analysis. The outcome layer is the point of the exercise; the analys
 ---
 
 ## The ten steps
+
+### 0 · List everything the governing documents require — before opening a log
+
+Compile the full action list first: this procedure, the `p2-dev-cycle` and `task-execution` overlays,
+`dual-agent-handoff` (§5a–§9), *the bench visit*, the run sheet's own falsifiers and carried-in items,
+and the open tasks the pass should discharge. Show it, then start step 1. STEPHEN 2026-09-22, stopping a
+read already under way: *"you wrote the skill overlay to identify everything you should do when
+processing these results do not process them until you have this list."*
+
+> *Why:* a log read before the list shapes the list. The items the list exists to guarantee —
+> discharging dispositions, correcting aged records, closing tasks — are exactly the ones a
+> results-first read forgets.
 
 ### 1 · Park the logs and record the identity of what ran
 
@@ -95,6 +107,16 @@ question this run did not answer; and any measurement whose negative case has ne
 
 > *Why:* this is the section that stops a sheet reading as though minima had been demonstrated when
 > they had not — run 7's failure, which is why the section exists.
+
+### 8a · Tell Stephen the findings and the planned actions — BEFORE acting on them
+
+When steps 1–8 are done, post the findings and the actions they lead to, in plain words, **then** start
+steps 9–10. He reads while the work proceeds, and anything he would redirect is caught before it is
+built rather than after. STEPHEN 2026-09-22: *"summarize the findings and planned actions to me before
+you start work on it so i can be reading while you are working."*
+
+This is not a request for approval. It does not wait for an answer; it makes the plan visible at the
+moment it is formed.
 
 ### 9 · Close the loop — the four-part outcome, and this is what the run was *for*
 
