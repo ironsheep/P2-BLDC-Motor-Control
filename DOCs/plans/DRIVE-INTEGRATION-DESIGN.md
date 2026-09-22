@@ -96,7 +96,7 @@ hold; `BOARD-REVISION-FACTS.md` does not cover phase sensing. Not designed on un
 Each decision below says what the member will do, what the other choice would have been and why it
 was not taken, and the release-note line «#3515» owes. The rule behind all of them (doctrine overlay
 P3): **the API keeps the promise its name and documentation make.** Where the answer is a *new*
-promise, it is marked **awaiting Stephen** rather than decided here.
+promise, it is **Stephen's ruling**, quoted.
 
 The fact that shapes all of them. MEASURED, study §6.1a: **unloaded, the rotor tracks the command to
 0.2 % at every rung up to the top, even with duty pinned from rung 6.** What is lost above the knee is
@@ -124,7 +124,7 @@ which has not been measured (H-6, the floor run «#3591»).
   longer read back what it set, and 0 would no longer mean stopped. Achieved speed is a different
   quantity with its own member (C-6).
 - **Release note:** a clarification only — *"getPower() returns what you commanded, not what the motor
-  achieved; see isFollowing()."*
+  achieved."*
 
 ### C-3 · `isTurning()` keeps its state meaning, with its one gap bounded
 
@@ -144,14 +144,13 @@ which has not been measured (H-6, the floor run «#3591»).
 
 - **Decided.** It caps commanded power in both directions and refuses nothing. When the drive cannot
   reach a command, it runs at the fastest rate it can sustain — R18.4's correction 2, *hold at the
-  achievable rate rather than winding the field ahead* — and C-6 reports it. The call still returns
-  `NO_ERROR`.
+  achievable rate rather than winding the field ahead*. The call still returns `NO_ERROR`.
 - **The other way:** refuse or clamp a cap above a measured ceiling.
 - **Why not.** Achievability depends on load and on the pack, and the call knows neither. The only
   ceiling table is invalidated by this very change (PL-26, PL-38). No per-direction ceiling has ever
   been measured (H-9).
 - **Release note:** *"setMaxSpeed() caps what you command. Under load a motor may run slower than a
-  capped command; isFollowing() tells you when."*
+  capped command; it then holds the fastest speed it can sustain."*
 
 ### C-5 · `setMaxSpeedForDistance()` likewise; a distance move still stops at its distance
 
@@ -160,25 +159,16 @@ which has not been measured (H-6, the floor run «#3591»).
 - **The two-wheel exception** is a path question, section 3.
 - **Release note:** covered by C-4's line.
 
-### C-6 · A measured claim, separate from all of the above — **awaiting Stephen**
+### C-6 · The measured claim stays inside the drive — **ruled: TEST-USE only for 6.0.0**
 
-- **Proposed.** Promote `testGetFollowing()` to a public query:
-
-  ```
-  PUB isFollowing() : bFollowing, bMeasured
-  ```
-
-  `bMeasured` is FALSE until the 1 s window has filled under a non-zero command. That is a state of its
-  own and never folded into either answer (D7).
-- **Proposed threshold: `bFollowing` = measured ≥ 90 % of commanded.** DERIVED from the two measured
-  populations: ~100 while following, with ±1 tick of window quantisation at an eighth ≈ ±2 %; 44–47 %
-  at the wall. Visit 8 certifies the number.
-- **The other way:** leave it TEST-USE only — the user then has no way to learn that a command is not
-  being met, which is the capability this release exists to add (doctrine overlay P12, front 3).
-- **Why it is his.** It is a promise the API has never made (P3), and the first Visit 7c record shows
-  the reading's negative limb has never fired on a run («#3597»).
-- **Release note, if approved:** *"New: isFollowing() reports whether a motor is turning at the speed
-  you commanded."*
+- **STEPHEN 2026-09-22:** *"let's keep in test only for now, and punch-list the possible need thru API."*
+- **So.** `testGetFollowing()` stays TEST-USE. The drive and the steering object **use** the reading
+  internally — for correction 2's hold at the achievable rate, and for section 3's path-preserving
+  speed limiting — and no public member reports it. The possible public query (`isFollowing() :
+  bFollowing, bMeasured`, "following" at ≥ 90 % of commanded) is **PL-102**.
+- **Consequence for the other release notes:** none of C-2, C-4 or C-7 may point a user at a member
+  that does not exist, so their lines say what the drive does and stop there.
+- **Release note:** none.
 
 ### C-7 · The documented speed range
 
@@ -189,8 +179,8 @@ which has not been measured (H-6, the floor run «#3591»).
   margin**, so under load it will not be met. The published speeds are ~4 % high (MEASURED 1,913
   passes/s against the 2,000 they assume — manual §6.1).
 - **Release note:** *"The power range is a commanded speed. Unloaded it is met across the range; the
-  upper part runs with little torque in reserve, so under load a motor may fall short — isFollowing()
-  reports it."* The ~4 % correction is already «#3515»'s.
+  upper part runs with little torque in reserve, so under load a motor may fall short."* The ~4 %
+  correction is already «#3515»'s.
 
 ---
 
@@ -205,23 +195,33 @@ tracks each wheel's distance for its stops (`isp_steering_2wheel.spin2`, `frontD
 **changes the platform's path**: a turn tightens or opens, and a straight line curves. Nothing reports it
 today.
 
-**The decision, awaiting Stephen — path over speed, or speed over path.**
+**Ruled: path over speed.** STEPHEN 2026-09-22: *"yes path over speed"*. Chosen over *speed over path*,
+where each wheel does its best independently: cheaper, but the platform then goes somewhere nobody
+commanded, and with C-6 test-only nothing would report it.
 
-- **Path over speed (recommended).** When either wheel cannot follow, the steering object scales
-  **both** commands by the slower wheel's achievable fraction, so the platform keeps its direction and
-  loses speed. `driveDirection()`, `driveAtPower()` and `driveForDistance(left, right)` all promise a
-  path by their names.
-  - ⚠ **Cost:** it closes a loop on the following reading, and that reading lags by up to its 1 s
-    window. A path correction at that lag lets the platform veer for up to a second. A shorter window
-    is the fix, and it overlaps «#3597»'s option (a).
-- **Speed over path.** Each wheel does its best independently, and the steering object only reports.
-  - Cheaper, and needs nothing from the steering front cog — whose budget is the tight one (section 4).
-  - But the platform goes somewhere nobody commanded.
+**Path-preserving speed limiting.** When either wheel cannot follow its command, the steering object
+scales **both** wheels' commands by the slower wheel's achievable fraction. The platform keeps its
+direction and loses speed. `driveDirection()`, `driveAtPower()` and `driveForDistance(left, right)`
+all promise a path by their names, and this is what keeps that promise.
 
-**The re-export rule holds either way.** C-6 adds no enum. The steering object gains a mirroring
-`isFollowing() : bFollowing, bMeasured` — both wheels following, both measured. Any `DS_*` or `ERR_*`
-that «#3589» introduces must be mirrored as a `CON` alias in `isp_steering_2wheel.spin2`, or callers
-cannot name it.
+- **What to call it, and what not to.** It is **wheel-speed desaturation** in robotics terms: scale
+  every wheel by one factor so the ratio survives. It is **not traction control**. The halls measure
+  wheel rotation, not ground motion, so a wheel that slips spins freely, meets its command and looks
+  healthy. Traction control needs a ground-speed reference this platform does not have. Nor is it
+  *adaptive* drive, which retunes a controller; this limits one. The user documents call it
+  **path-preserving speed limiting**.
+- ⚠ **Its cost — «#3589» designs against it, «#3583» builds it:**
+  - It closes a loop on the following reading, which lags by up to its 1 s window. At that lag the
+    platform can veer for up to a second before the correction takes hold. A shorter or partial window
+    is the fix, and it is the same change as «#3597»'s option (a) — design them together.
+  - It runs in the **steering front cog**, the tightest budget in the design (section 4.2). Measure
+    that cog's pass time today, with `updateFollowing()` in it, before designing the loop.
+  - It must release the scaling when the slow wheel recovers, without hunting between the two.
+- **Release note:** *"When one wheel cannot keep up — one side loaded, say — the platform now slows both
+  wheels together, so it keeps the path you commanded instead of curving off it."*
+
+**The re-export rule.** Neither ruling adds a public enum. Any `DS_*` or `ERR_*` that «#3589»
+introduces must be mirrored as a `CON` alias in `isp_steering_2wheel.spin2`, or callers cannot name it.
 
 ---
 
@@ -282,3 +282,5 @@ budget in the design, and it is measured before building, not after.
 ## Revision history
 
 - **2026-09-22** — sections 1 to 4 written by «#3596». Section 5 names «#3589»'s scope.
+- **2026-09-22** — Stephen's two rulings: C-6 stays TEST-USE (PL-102 records the possible API), and
+  section 3 is path over speed, named path-preserving speed limiting.

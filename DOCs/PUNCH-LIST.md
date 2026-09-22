@@ -5155,6 +5155,29 @@ two constants), so if the servo changes, the seed follows.
 
 ---
 
+### PL-102 -- a user cannot learn that a motor is not meeting its command
+
+**Raised 2026-09-22 at «#3596», and parked by Stephen's ruling.** STEPHEN: *"let's keep in test only for
+now, and punch-list the possible need thru API."*
+
+The drive now measures whether each motor is turning at its commanded speed -- the hall-tick rate over a
+1 s window against the rate the command asks for (`testGetFollowing()`, `isp_bldc_motor.spin2:1468`).
+For 6.0.0 it stays TEST-USE: the drive and the steering object act on it internally (the hold at the
+achievable rate, and path-preserving speed limiting), and no public member reports it.
+
+**The possible need.** Unloaded the rotor meets its command to 0.2 % everywhere (MEASURED,
+`BENCH-LOG-STUDY-2026-09-21.md` §6.1a), so today nothing would report differently. Under load the upper
+~45 % of the range runs with no torque margin, and a user's platform will then run slower than commanded
+with no way to know it -- nor to tell a struggling motor from a healthy one.
+
+**What it would take:** promote the reading as `isFollowing() : bFollowing, bMeasured`, with `bMeasured`
+FALSE until the window has filled, a threshold near 90 % of commanded, and a mirror in
+`isp_steering_2wheel.spin2`. Shape and threshold are in `DOCs/plans/DRIVE-INTEGRATION-DESIGN.md` C-6.
+**What would reopen it:** a loaded measurement -- the floor run «#3591» -- showing following below the
+threshold in normal use, or a user report of the platform running short of its commanded speed.
+
+---
+
 ## Removed from this list
 
 **Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
