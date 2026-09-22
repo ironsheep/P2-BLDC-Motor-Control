@@ -443,21 +443,19 @@ value. When the load releases, the field resumes at full rate in one pass, which
 - **Budget:** the limiter runs once per slot and costs two status reads, two compares and, only
   while active, one `muldiv64` per wheel. It is measured, not assumed (§5.4).
 
-**D-7 · The speed law for L — decision (c): none in 6.0.0.** L stays the compile-time quarter tune.
+**D-7 · The speed law for L — a CANDIDATE, not designed in; Stephen decides, from §7's benefit
+measure.** As designed, L stays the compile-time quarter tune.
 - **Pass 2's band hypothesis (P2-10) is answered, and it is not the law.** The ladder's mean error
   moves 45 → 48 between about the eighth and the quarter. That is 4.2° in the direction that lowers
   L as speed rises: **about a third of L's measured 12.2°, of the right sign**. D-2 now holds 48 at
   every speed, so that third is removed by construction and the rest stays H-2.
-- **Why no schedule for the remainder:**
-  - The half rung is unmeasurable (H-5).
+- **What building it would face:**
+  - The half rung has not been bracketed (H-5).
   - A two-point schedule would be tuned against the shipped servo's low-speed placement, which D-3
     changes by 4.2°.
-  - The absolute cost below the quarter is small unloaded: net current at 20 × 10⁶ is about
-    16 mV, ~0.1 A.
-- **What would reopen it:** Visit 8's ladder showing current at rungs 1–2 **higher** than today's
-  under D-2, or the loaded floor run showing the low-speed current cost is large in amperes.
+- **What it would buy** is §7's row C-A.
 
-**D-8 · Back-EMF — decision (d): not integrated in 6.0.0.**
+**D-8 · Back-EMF as a position source — a CANDIDATE, not designed in; Stephen decides, from §7.**
 - **What it would give:** a finer angle, either to interpolate within a sector for a proportional
   term or to hold the field at the torque peak.
 - **Nothing here needs it.** D-1 and D-2 remove the hunting with the sector-resolution angle.
@@ -545,10 +543,48 @@ A-2 corroborates it.
 |---|---|---|
 | (a) Which knob carries the lead; point or band | The offset carries L (unchanged). The servo holds a **point**, 48, by construction. | §5.3 D-2, D-3 |
 | (b) The start surge | **Mechanism:** an integral-only servo whose gain exceeds what the rotor's low-duty stiffness supports. **Fix:** feedforward plus a duty-scheduled, untruncated trim. **Separating reading:** steady rungs 1–2 hunt with no ramp; START amplitude A-1. | §5.2, D-1, D-2, A-1, A-3 |
-| (c) The speed law for L | None in 6.0.0. The band explains a third of it, and D-2 removes that third. | §5.3 D-7 |
-| (d) Back-EMF | Not integrated. The next measurement is per-phase samples while driven. | §5.3 D-8 |
+| (c) The speed law for L | The band explains a third of it, and D-2 removes that third. A schedule for the rest is **a candidate for Stephen**, priced in §7. | §5.3 D-7, §7 C-A |
+| (d) Back-EMF | Not needed by D-1 to D-6. Integrating it is **a candidate for Stephen**, priced in §7. | §5.3 D-8, §7 C-B |
 | Path over speed, and its lag | Limited from the drive's own hold counter at slot rate, with no 1 s window. | §5.3 D-5, D-6 |
 | Whether §1.4's bus reading is real | Unchanged: unverified, not designed on. | §1.4 |
+
+## 7. Every driver function on the table, and what it buys — for Stephen's release decision
+
+**What goes into the outgoing release is Stephen's decision** (doctrine overlay P5). This section prices
+every function: the ones §5 designs in, and the candidates it does not.
+- **Benefit** is stated in what a user would feel: current, torque, the size of a surge.
+- **Sureness** is stated the same way throughout: **measured** (a log says so), **modelled** (the desk model
+  says so, fitted on one parameter), or **unknown**.
+- **What would firm it up** names the cheapest measurement that turns a modelled or unknown benefit into a
+  measured one.
+
+**One fact frames the whole table.** Unloaded, the drive never runs short. Zero held passes at every rung
+and every transition of the pass 2 ladder: `BM-RUNGHL` `tr_lag,0` and `win_lag,0` on all 178 records.
+MEASURED. **So every function aimed at overload shows no benefit wheels-up**, and its benefit is
+whatever the loaded floor run finds.
+
+### 7.1 Designed in by §5
+
+| Id | Function | Benefit | Sureness | Cost | What would firm it up |
+|---|---|---|---|---|---|
+| **D-1 + D-2** | Feedforward duty and a stiffness-scaled trim | **The start surge and the low-speed hunting go.** Duty's fall during acceleration drops from 34–53 % to 1–4 %. Start current peak drops from 1.9–3.0× settled to 1.1–1.8×. At 10–20 × 10⁶ steady, duty swings of 40–60 % above the mean become under 5 %. This is the surge the manual says you can feel through the frame. | Today's numbers **measured**; the new ones **modelled** | ~+5 cog longs, +4 LUT | Visit 8, A-1 to A-4 |
+| **D-4** | Accept every command in every state | Easing off a motor that is still spinning up works. **Today the command is silently ignored.** | Defect **read from the source**; the shipped binary fails A-6 | −5 cog longs | Visit 8, A-6 |
+| **D-5** | Hold at the achievable rate | No lurch when an overload releases: the field ramps back instead of stepping to full speed. **None unloaded.** | Mechanism **read from the source**; size under load **unknown** | +4 cog longs | Visit 8 A-7 (forced), then the floor run |
+| **D-6** | Path-preserving speed limiting | When one wheel falls short, the platform slows instead of curving off its path. **None unloaded.** How often it matters in real use is **unknown**. | **Unknown** until loaded | Steering front-cog time, not yet measured (A-10) | The floor run, and a one-sided load |
+
+### 7.2 Candidates — not designed in
+
+| Id | Function | Benefit | Sureness | Cost | What would firm it up |
+|---|---|---|---|---|---|
+| **C-A** | **Speed-dependent lead angle** (L scheduled on speed, set from the front cog; no PASM change) | **Below the quarter:** at an eighth, net current 14–17 mV at the shipped pair against 8.7–10.6 mV at the best offset (`debug_260921-223111.log`, both motors, both signs), 1.7× on paper, **about 0.04 A**. **At the quarter:** none, because the shipped pair is the quarter's optimum. **Above the quarter, where the current is:** unknown. Net current at the shipped pair climbs 25 → 45 → 73 → 112 mV (0.17 → 0.75 A) across 60–120 × 10⁶. If L keeps falling as it does below the quarter, the shipped 18° over-leads there by ~10–15°. At the quarter, 10° of over-lead costs 1.8–2.7× and 15° costs 3.0–4.6× (the same scan, both signs). So it **could** be several tenths of an ampere at cruise. That is an extrapolation, not a reading. | Below the quarter **measured**; above it **unknown** | Small: a table in the front cog, offsets already written every frame | **A ladder at rungs 4–7 run at two more offset pairs** (L = 13 and 8). It is a run, not new driver code, and it measures current against L at cruise directly. |
+| **C-B** | **Back-EMF as a position source** | (1) Enables C-D. (2) An angle inside a sector at low speed. (3) A fallback if a hall fails, **but the halls have never missed or given an illegal code on any run**, so that benefit is nil on the evidence. | **Unknown**: back-EMF has never been read while the bridge drives, nor below 43 edges/s | High: new work in the 44 kHz loop, against 25 free cog longs (~19 after §5) | Per-phase samples during driven rungs 0–2. That needs a harness change and a run. |
+| **C-C** | **Hall-timing interpolation** (the angle inside a sector, from the last edge's timing) | Enables C-D above the lowest speeds. In the model, the servo's error band tightens from 27–70 to 46–50. Its benefit to a user, beyond C-D, is not quantified. **At the bottom of the range it misleads:** cogging swings speed ±30 % between edges (MEASURED). | Tightening **modelled**; low-speed limit **measured** | Moderate: ~8–10 cog longs | Only worth measuring if C-D is wanted |
+| **C-D** | **Hold an overloaded motor at the torque peak** (PL-105) | **About 1.8–2.7× today's pull when a wheel is overloaded**, as when climbing or pushing against an obstacle. Today the hold sits at δ ≈ 146–158°, where sin δ is 0.37–0.56 of the peak. It also means less current wasted while held. | **Modelled** on the fitted frame; the δ bracket is the fit's own spread | Needs C-B or C-C first | **The floor run:** how often and how long a wheel sits at the hold in normal use. If never, the benefit is theoretical. |
+
+**Sequencing note for the decision, not a recommendation of scope.**
+- C-A's firming run needs no driver change, so its benefit can be measured before anything is built.
+- C-D's value hinges on one number the floor run produces.
+- C-B's feasibility hinges on a measurement no run has attempted yet.
 
 ---
 
@@ -564,3 +600,6 @@ A-2 corroborates it.
   (A-1 to A-10) and the two certifications; §6 summarises the four decisions. §1.1's H-3 line
   answered and the Z row given both values. C-1's second reason is moot under D-4, while the
   decision stands on its first. The desk model is kept in `servo-model/`.
+- **2026-09-22** — Stephen: release scope is his, and every candidate function comes with a measure of
+  benefit. D-7 and D-8 are re-worded as candidates, and §7 prices every function, designed-in and
+  candidate, for his decision.
