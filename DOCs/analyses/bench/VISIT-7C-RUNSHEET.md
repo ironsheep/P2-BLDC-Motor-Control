@@ -54,10 +54,12 @@ In that order. Load 1 is free and gates the reading of load 2.
 The task body for «#3594» lists the **cold hall-zero ALIGN tier** as load (1), attended, with your
 hands on the wheels for 8 legs. **It is not in this pass**, and this sheet is the authority.
 
-Two defects in the ALIGN instrument put it on `DOCs/PUNCH-LIST.md` instead: its crossing detector has
-**no hysteresis** (~5.5× too many crossings, overflowing the buffer), and its clip criterion judges
-**peak** railing when only the **crossing region** needs to be clean. Running it would produce a
-number nobody could defend.
+Two defects in the ALIGN instrument put it on `DOCs/PUNCH-LIST.md` instead —
+[**PL-99**](../../PUNCH-LIST.md): its crossing detector has **no hysteresis**, so noise around the
+crossing produces ~5.5× too many edges and overflows the buffer; and [**PL-100**](../../PUNCH-LIST.md):
+its clip criterion judges **peak** railing when `Z` is derived from **where the waveform crosses
+zero**, so it fails good traces and passes bad ones. Running it would produce a number nobody could
+defend.
 
 `Z` is not blocked by that. It is held at **−3.6 ± 0.4°** from four scan self-locations and is
 speed-invariant within its own spread. The ALIGN tier would settle it *absolutely and cold*; that is

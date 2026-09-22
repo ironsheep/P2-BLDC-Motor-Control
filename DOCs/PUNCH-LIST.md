@@ -5061,6 +5061,57 @@ a reader counting greens over-counts the run's evidence by two per motor.
 
 ---
 
+### PL-99 -- the ALIGN crossing detector has no hysteresis, so it counts ~5.5x too many crossings
+
+**Found 2026-09-22 at «#3594», filed by the front ledger's override rule.** The cold hall-zero tier
+`dual-align` («#3590») detects back-EMF zero crossings by sign change alone. With no hysteresis band,
+sensor noise around the crossing produces a burst of sign flips instead of one edge: the observed rate
+is about **5.5x** the number of real crossings, and the crossing buffer overflows before a leg
+finishes.
+
+**Why it is here and not fixed in «#3594».** The override rule: the deliverable wins unless it is
+genuinely blocked, and the instrument defect in front of me goes to this list with its evidence
+instead of being fixed because it is the thing in front of me. Left to instinct I would have fixed
+this first -- it is the more interesting problem -- and the bench pass would have gone unbuilt.
+
+**What it would take:** a hysteresis band on the crossing detector, sized from the measured noise
+amplitude in the crossing region (**not** from the peak, see PL-100). Both defects are one task and
+should be fixed together, because the clip criterion is what would tell you the band is right.
+
+**Cost if left:** the ALIGN tier cannot run, so `Z` is never settled absolutely and cold. It is not
+blocking today -- `Z` is held at **-3.6 +/- 0.4 deg** from four scan self-locations and is
+speed-invariant within its own spread -- but the absolute, whole-circle, zero-current measurement is
+the one that would retire the question rather than bound it, and it also stays unavailable for the
+Doco motor when that effort starts («#3562», «#3592»).
+
+---
+
+### PL-100 -- the ALIGN clip detector judges peak railing when only the crossing region must be clean
+
+**Found 2026-09-22 at «#3594»**, alongside PL-99 and in the same instrument.
+
+`R18-DUAL-ALIGN-CLIP` exists so that a flattened back-EMF waveform cannot pass as a measurement. It
+judges **peak** railing -- whether the waveform tops out at the rail. But the hall zero `Z` is derived
+from **where the waveform crosses zero**, not from its amplitude, and the crossing region is the only
+part of the trace the measurement reads.
+
+**So the criterion is wrong in both directions.** A trace whose peaks rail but whose crossings are
+clean is a perfectly good `Z` measurement that this cell would **fail**; a trace whose peaks are fine
+but whose crossing region is noisy or flattened is a bad measurement this cell would **pass**. The
+second is the dangerous one -- it is a cell that cannot fail on the path it exists to police, which is
+PL-98's shape appearing in a second instrument.
+
+**What it would take:** judge the clip criterion over the crossing region only -- the samples within
+the interpolation window either side of the sign change -- rather than over the whole trace. Fix with
+PL-99: the two are the same task, and the crossing-region statistic this needs is also what sizes
+PL-99's hysteresis band.
+
+**Cost if left:** even once PL-99 is fixed, the tier's own guard against a bad measurement does not
+guard the thing that makes the measurement bad. `Z` would be reported with a verdict that means
+something other than what the sheet says it means.
+
+---
+
 ## Removed from this list
 
 **Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
