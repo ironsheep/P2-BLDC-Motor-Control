@@ -1775,11 +1775,24 @@ PUB frontShortfall() : bShort, nAchievedPermille, nCmdGen
 '' @returns nAchievedPermille - the field's rate as a fraction of the commanded rate, 0-1000; 1000 when nothing is commanded
 '' @returns nCmdGen - a count that changes whenever a new command is written, so an owner can tell a new command from a scaled one
 
-    bShort := (holdSlotsAgo < SHORT_SLOTS)
-    nAchievedPermille := PERMILLE_FULL
-    if userCmdIncr <> 0
-        nAchievedPermille := muldiv64(abs(drv_incr_now), PERMILLE_FULL, abs(userCmdIncr)) <# PERMILLE_FULL
+    bShort, nAchievedPermille := shortfallNow()
     nCmdGen := userCmdGen
+
+PUB testGetDriveFollow() : nCmdIncr, nDrvIncr, bShort, nAchievedPermille, nFollowPct, bFollowOk
+'' TESTING USE: the path limiter's view of this motor, beside the rpm window's following reading (R18.4, Visit 8 A-7 / A-8)
+''
+'' @returns nCmdIncr - the increment last COMMANDED (a path scale never changes it)
+'' @returns nDrvIncr - the field's increment per drive pass now
+'' @returns bShort - T/F where T means the lag limiter held the field within the last SHORT_SLOTS slots
+'' @returns nAchievedPermille - the field's rate as a fraction of the commanded rate, 0-1000
+'' @returns nFollowPct - the rpm window's measured rate as a percentage of commanded (testGetFollowing())
+'' @returns bFollowOk - T/F where T means that percentage is valid (the window has filled)
+
+    nCmdIncr := userCmdIncr
+    nDrvIncr := drv_incr_now
+    bShort, nAchievedPermille := shortfallNow()
+    nFollowPct := followPctOfCmd
+    bFollowOk := bFollowValid
 
 PUB frontScaleCommand(nScalePermille) | scaledIncr
 '' FRONT COG ONLY: run this motor at a fraction of its commanded rate, keeping the command itself
@@ -3771,6 +3784,17 @@ PRI updateWindowAccumulators() | nowPos, nHallCntsInSlot
     lastLagHeldSeen := lag_held
     updateHdmiData()
 
+PRI shortfallNow() : bShort, nAchievedPermille
+' Return whether this motor is short, and the fraction of its command the field achieves (frontShortfall()'s rule).
+'
+' @returns bShort - T/F where T means the lag limiter held the field within the last SHORT_SLOTS slots
+' @returns nAchievedPermille - the field's rate as a fraction of the commanded rate, 0-1000; 1000 when nothing is commanded
+
+    bShort := (holdSlotsAgo < SHORT_SLOTS)
+    nAchievedPermille := PERMILLE_FULL
+    if userCmdIncr <> 0
+        nAchievedPermille := muldiv64(abs(drv_incr_now), PERMILLE_FULL, abs(userCmdIncr)) <# PERMILLE_FULL
+
 PRI frontApplyLead() | leadTenths
 ' FRONT COG ONLY, once per slot: while the lead schedule is on, write the commutation pair for the field's present speed.
 '
@@ -4043,7 +4067,8 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 2         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 3         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+                                            ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
 
     ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
     LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts
@@ -5093,7 +5118,7 @@ duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the c
                  ' whose top 12 bits are its cog address ($1DF). LUT code runs at cog speed (2 clocks, p2kb
                  ' p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS are what
                  ' this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $28E, 142 of 512 longs.
+                 ' lutCodeStart $200 to lutCodeEnd $290, 144 of 512 longs (DRIVER_REV 3).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -5325,15 +5350,17 @@ holdDecay                                               ' R18.4 D-5: called on a
                 cmp     drv_state_, #DCS_AT_SPEED   wz  '  running or spinning up, the field's rate falls toward the rate the
     if_z        mov     drv_state_, #DCS_SPIN_UP        '  rotor achieves, and the ramp re-arms gently (as PL-78 does), so
                 cmp     drv_state_, #DCS_SPIN_UP    wz  '  the release of a load is a ramp back up, never a step. A stop or a
-    if_z        mov     tmpY, drv_incr                  '  direction change in progress is left alone.
-    if_z        sar     tmpY, #HOLD_DECAY_SHIFT
-    if_z        sub     drv_incr, tmpY
+                abs     tmpX, drv_incr                  '  direction change in progress is left alone.
+    if_z        cmp     tmpX, ramp_min_             wc  ' NEVER TO ZERO: a SPIN_UP at drv_incr 0 is .rampUp's "starting from
+    if_z_and_nc mov     tmpY, drv_incr                  '  rest", which re-seeds the field from the halls, clears the lag and
+    if_z_and_nc sar     tmpY, #HOLD_DECAY_SHIFT         '  would defeat the blocked-motor protective stop (it needs the lag).
+    if_z_and_nc sub     drv_incr, tmpY                  '  So the decay stops at the ramp's own floor, ramp_min_.
     if_z        mov     ramp_curr, ramp_min_
                 ret
 
 lutCodeEnd                                               ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 142 of 512 used, COUNTED 2026-09-22 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 144 of 512 used, COUNTED 2026-09-22 at DRIVER_REV 3 (see the cog fit above)
 
 CON { license }
 {{

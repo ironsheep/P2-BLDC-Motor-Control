@@ -428,6 +428,10 @@ value. When the load releases, the field resumes at full rate in one pass, which
 - **The change:** on every held pass in `SPIN_UP` or `AT_SPEED`, `drv_incr −= drv_incr SAR 6` (a
   33 ms time constant at 1,913 passes/s), and the state becomes `SPIN_UP`.
 - A ramp-down or a direction change is never re-labelled. A stop in progress stays a stop.
+- **The decay stops at `ramp_min_`, never at zero** (found building Visit 8's A-7, DRIVER_REV 3). A
+  `SPIN_UP` at `drv_incr` 0 is `.rampUp`'s "starting from rest", which re-seeds the field from the halls
+  and clears the lag. On a stalled wheel that would defeat the blocked-motor protective stop, which
+  needs the lag.
 - The field's rate then settles at the rotor's achievable rate. Recovery is the ordinary ramp back
   up, never a step.
 - `lag_held` keeps counting, so the observable is unchanged.

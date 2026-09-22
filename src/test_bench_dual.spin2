@@ -185,6 +185,10 @@
 ''               rung; each speed ends with the new BM-LEADMIN (lead of least net current, bracketed or not),
 ''               and two new cells judge coverage and the quarter's known answer. The lead schedule is turned
 ''               back on at the end of every lifetime. Every other part's records are unchanged; drv_rev reads 2.
+''               22 Sep 2026 -- SRC_REV=28, FMT 16: task 3584 (Visit 8). Part A gains the TAKE segment and
+''               BM-TAKE: A-6 (a slower command taken while SPIN_UP, R18-DUAL-TAKE-A) and A-8's following case
+''               (R18-DUAL-FOLAGREE-A). Part D's BLOCKED step polls each wheel's path-limiter view through the
+''               stall: A-7 (R18-DUAL-HOLDSET-D) and A-8's not-following case (R18-DUAL-NOTFOL-D). drv_rev reads 3.
 ''
 '' =================================================================================================
 
@@ -248,8 +252,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 27                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 15                                        ' BM- record-format version
+    SRC_REV     = 28                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 16                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -719,6 +723,11 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_BLOCK_WAIT_MS       = 4_000                           ' BLOCKED_PASSES is ~1 s of front passes, plus the spin-up
     D_FOLD_HOLD_MS        = 3_000                           ' FOLDBACK: the drive is held this long under the low limit
     D_LIMIT_POLL_MS       = 50                              ' cadence of the limit-state reads inside a limit step
+    ' R18.4 (task 3584, DRIVE-INTEGRATION-DESIGN.md 5.5): the BLOCKED stall is also Visit 8's forced shortfall
+    A7_SETTLE_MS          = 200                             ' A-7: the field has settled this long after the wheel first reads SHORT
+    A7_SETTLE_PCT         = 10                              ' A-7: ...to at most this % of the commanded increment (shipped: 100 %)
+    A8_NOTFOL_PERMILLE    = 500                             ' A-8 not-following: the path limiter's fraction below this
+    A8_NOTFOL_PCT         = 50                              ' A-8 not-following: and the rpm window's percentage below this
     D_DERATE_WAIT_MS      = 3_500                           ' bound on the derate arriving, past its window
     D_LIMIT_PEAK_DEF      = wheelL.I_PEAK_A                 ' the restore values, from the library
     D_LIMIT_CONT_DEF      = wheelL.I_CONT_A
@@ -901,8 +910,8 @@ CON { record enums -- each value has a token in the DAT token tables }
   ' Segment (token = the name after SEG_):
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
         SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT, ...
-        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD
-    SEG_COUNT = 18
+        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE
+    SEG_COUNT = 19
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -1501,7 +1510,7 @@ DAT { packed token tables -- zero-separated, indexed by tokenAt(); order follows
 tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
 tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
-                BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0
+                BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0, "TAKE", 0
 tokWhy          BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
@@ -1747,6 +1756,15 @@ sSfCritAgClip   BYTE    "BAND_NOT_RAILED", 0
 sSfCritAgCover  BYTE    "LEAST_CROSSINGS", 0
 sSfCritAgRes    BYTE    "LEAST_PER_SECTOR", 0
 sSfCritAgMatrix BYTE    "ALL_FOUR_MEASURED", 0
+' task 3584 (Visit 8): the drive change's cells in parts A and D (DRIVE-INTEGRATION-DESIGN.md 5.5 A-6, A-7, A-8)
+sSfCellTake     BYTE    "R18-DUAL-TAKE-A", 0
+sSfCellFolAgree BYTE    "R18-DUAL-FOLAGREE-A", 0
+sSfCellHoldSet  BYTE    "R18-DUAL-HOLDSET-D", 0
+sSfCellNotFol   BYTE    "R18-DUAL-NOTFOL-D", 0
+sSfCritTake     BYTE    "SLOWER_TAKEN", 0
+sSfCritFolAgree BYTE    "FOLLOW_READS_AGREE", 0
+sSfCritHoldSet  BYTE    "FIELD_SETTLES_HELD", 0
+sSfCritNotFol   BYTE    "NOT_FOLLOWING", 0
 ' task 3583: the LEAD tier's cells -- the two every part carries, then coverage and the known answer
 sSfCellNoStallL BYTE    "R18-DUAL-NOSTALL-L", 0
 sSfCellDbgMaskL BYTE    "R18-DUAL-DBGMASK-L", 0
@@ -2095,6 +2113,20 @@ VAR { trace capture staging -- filled by eventCapture() / the FAULTB and OVERSHT
 
 VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
 
+    ' R18.4 Visit 8 (task 3584): A-6 / A-8 following in part A's TAKE segment, A-7 / A-8 not-following in part D's BLOCKED step
+    LONG    bSfTakeRan[INST_MOTORS]                         ' A-6: the speed-down was issued while SPIN_UP at or above QTR
+    LONG    bSfTakeOk[INST_MOTORS]                          ' A-6: drv_incr fell within A6_WINDOW_MS of it
+    LONG    sfTakeMs[INST_MOTORS]                           ' A-6: ms from the command to the first fall seen
+    LONG    bSfFolAgreeRan[INST_MOTORS]                     ' A-8 following: both readings valid at a steady QTR
+    LONG    sfFolAgreeDiff[INST_MOTORS]                     ' A-8 following: |permille/10 - pct|, points
+    LONG    hpFirstShortMs[INST_MOTORS]                     ' A-7: ms into the stall of the first SHORT poll, -1 before it
+    LONG    bSfHoldSetRan[INST_MOTORS]                      ' A-7: a poll A7_SETTLE_MS after the first SHORT one was taken
+    LONG    bSfHoldSetOk[INST_MOTORS]                       ' A-7: the field had settled by it
+    LONG    bSfNotFolRan[INST_MOTORS]                       ' A-8 not-following: the last pre-latch poll had a valid percentage
+    LONG    bSfNotFolOk[INST_MOTORS]                        ' A-8 not-following: both readings said not following
+    LONG    hpLastPermille[INST_MOTORS]                     ' the last pre-latch poll's achieved fraction
+    LONG    hpLastPct[INST_MOTORS]                          ' the last pre-latch poll's following percentage
+
     LONG    sfStarts[INST_MOTORS]                           ' REVB/INTEG: wheel starts
     LONG    sfNotRevb[INST_MOTORS]
     LONG    sfIntegSum[INST_MOTORS]                         ' saturates at LIM_BIG
@@ -2411,6 +2443,7 @@ PRI runPart()
             runSegment(SEG_LIVE)
             runSegment(SEG_LADDER)
             runSegment(SEG_LOWSPD)
+            runSegment(SEG_TAKE)                            ' task 3584: Visit 8's A-6 and A-8 (following)
         PART_CLOCK:
             runSegment(SEG_PREFLT)
             runSegment(SEG_CLOCK)
@@ -2481,6 +2514,8 @@ PRI runSegment(seg)
                 segAlign()
             SEG_LEAD:
                 segLead()
+            SEG_TAKE:
+                segTake()
     else
         emitSeg(seg, SEGEV_SKIP, bSegAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
 
@@ -5739,6 +5774,7 @@ PRI dStepBlocked() | bArmed, eError, startMs, blockMs, eLeftCode, eRightCode, eR
 
     blockMs := 0
     bInstLagExempt := TRUE                                  ' the lag below is provoked on purpose
+    dHoldProbeReset()                                       ' R18.4 A-7 / A-8: the stall is also the forced shortfall
     bArmed := bDArm(SIDE_BOTH)
     eError := dSetLimits(D_BLOCK_PEAK_A, D_BLOCK_CONT_A)
     if bArmed and (eError == NO_ERROR) and (dDrive(SIDE_BOTH, D_POWER) == NO_ERROR)
@@ -5749,6 +5785,8 @@ PRI dStepBlocked() | bArmed, eError, startMs, blockMs, eLeftCode, eRightCode, eR
             if (eLeftCode <> NO_ERROR) and (eRightCode <> NO_ERROR)
                 blockMs := (getms() - startMs) #> 1
                 quit
+            dHoldProbe(SLOT_LEFT, getms() - startMs)          ' before the latch: the stall is still being driven
+            dHoldProbe(SLOT_RIGHT, getms() - startMs)
             waitms(D_LIMIT_POLL_MS)
             if (getms() - startMs) >= D_BLOCK_WAIT_MS
                 quit
@@ -5776,6 +5814,57 @@ PRI dStepBlocked() | bArmed, eError, startMs, blockMs, eLeftCode, eRightCode, eR
     bDRest(SIDE_BOTH)
     bInstIdle()
     bInstLagExempt := FALSE
+
+PRI dHoldProbeReset() | slotIdx
+' Clear the BLOCKED step's A-7 / A-8 probe state for both wheels.
+'
+' @local slotIdx - motor slot
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        hpFirstShortMs[slotIdx] := -1
+        bSfHoldSetRan[slotIdx] := FALSE
+        bSfHoldSetOk[slotIdx] := FALSE
+        bSfNotFolRan[slotIdx] := FALSE
+        bSfNotFolOk[slotIdx] := FALSE
+        hpLastPermille[slotIdx] := 0
+        hpLastPct[slotIdx] := 0
+
+PRI dHoldProbe(slotIdx, elapsedMs) | nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk
+' One BLOCKED-step poll of a wheel's path-limiter view (R18.4, DRIVE-INTEGRATION-DESIGN.md 5.5).
+'
+' A-7 (R18-DUAL-HOLDSET-D): from the first poll that sees the wheel SHORT, the field must settle -- by the
+' first poll at least A7_SETTLE_MS later, |drv_incr| is at most A7_SETTLE_PCT of the commanded increment.
+' The shipped driver held drv_incr at the command for the whole stall, so the cell fails on it. A-8's
+' not-following case (R18-DUAL-NOTFOL-D) is judged later, on the last poll before the latch: both readings
+' must then say the wheel is not following. Records the last reading for that.
+'
+' @param slotIdx - motor slot
+' @param elapsedMs - ms since the stall's drive
+'
+' @local nCmdIncr - the commanded increment
+' @local nDrvIncr - the field's increment now
+' @local bShort - T/F where T means the wheel is short
+' @local nPermille - the achieved fraction, 0-1000
+' @local nPct - the rpm window's following percentage
+' @local bPctOk - T/F where T means that percentage is valid
+
+    beat(CP_LIB_STEER_QUERY)
+    if slotIdx == SLOT_RIGHT
+        nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk := steering.testRightGetDriveFollow()
+    else
+        nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk := steering.testLeftGetDriveFollow()
+    beat(CP_LIB_STEER_QUERY)
+    if (bShort == TRUE) and (hpFirstShortMs[slotIdx] < 0)
+        hpFirstShortMs[slotIdx] := elapsedMs
+    if (hpFirstShortMs[slotIdx] >= 0) and (bSfHoldSetRan[slotIdx] == FALSE) and (elapsedMs - hpFirstShortMs[slotIdx] >= A7_SETTLE_MS)
+        bSfHoldSetRan[slotIdx] := TRUE
+        ' divided first: |drv_incr| x 100 overflows 32 bits at the very increment the shipped driver held,
+        '  which would turn the cell's FAIL case into a pass
+        bSfHoldSetOk[slotIdx] := (nCmdIncr <> 0) and (abs(nDrvIncr) <= (abs(nCmdIncr) / 100) * A7_SETTLE_PCT)
+    hpLastPermille[slotIdx] := nPermille
+    hpLastPct[slotIdx] := nPct
+    bSfNotFolRan[slotIdx] := (bPctOk == TRUE) and (hpFirstShortMs[slotIdx] >= 0)
+    bSfNotFolOk[slotIdx] := (nPermille < A8_NOTFOL_PERMILLE) and (nPct < A8_NOTFOL_PCT)
 
 PRI dProtectiveStop() : eLeftCode, eRightCode
 ' Both wheels' latched protective-stop causes, without clearing them.
@@ -6671,6 +6760,116 @@ PRI mouseButton(xPos, yPos, liveMask) : buttonIdx | btnIdx, slotX, slotY
         if ((liveMask & (DECOD btnIdx)) <> 0) and (xPos >= slotX) and (xPos < slotX + BM_BTN_W) and (yPos >= slotY) and (yPos < slotY + BM_BTN_H)
             buttonIdx := btnIdx
             quit
+
+CON { --- TAKE: a slower command is taken while ramping, and the two following readings agree (task 3584, Visit 8) --- }
+
+  ' DRIVE-INTEGRATION-DESIGN.md 5.5 A-6 and A-8's following case, in part A. Per motor, one lifetime:
+  '  1. A-6 (R18-DUAL-TAKE-A): command HALF from rest; once the field passes QTR while still SPIN_UP,
+  '     command an EIGHTH. The field's increment must FALL within A6_WINDOW_MS. The shipped driver threw
+  '     that command away unless STOPPED, AT_SPEED or FAULTED (PL-104), so its field kept climbing to
+  '     HALF -- the cell fails on it by construction.
+  '  2. A-8 following (R18-DUAL-FOLAGREE-A): command QTR, hold until AT_SPEED and the rpm window has filled,
+  '     then the path limiter's achieved fraction and the rpm window's percentage must agree within FOLAGREE_HI.
+  A6_WINDOW_MS          = 20                                ' the fall must be seen this soon after the command returns
+  TAKE_RAMP_WAIT_MS     = 3_000                             ' bound on reaching QTR while spinning up to HALF
+  TAKE_FOLLOW_HOLD_MS   = 3_000                             ' QTR's ~1 s ramp, then the 1 s rpm window filling
+  FOLAGREE_LO           = 0
+  FOLAGREE_HI           = 5                                 ' points: permille / 10 against pct
+
+PRI segTake() | side
+' TAKE (part A, task 3584): per motor, A-6 then A-8's following case, one lifetime each.
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+
+    segBegin(SEG_TAKE)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        beat(CP_LOOP_POLL)
+        takeWheel(side)
+    segEnd(segWhy())
+
+PRI takeWheel(side) | slotIdx, startMs, cmdMs, nDrvBefore, nDrvNow, eDrvrState, nPermille, nPct, bPctOk
+' One motor's TAKE lifetime (see the section's CON). Emits BM-TAKE with what was read.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local slotIdx - motor slot
+' @local startMs - getms() at the HALF command
+' @local cmdMs - getms() when the EIGHTH command returned
+' @local nDrvBefore - the field's increment just before the EIGHTH command
+' @local nDrvNow - the field's increment while watching for the fall
+' @local eDrvrState - the driver state just before the EIGHTH command
+' @local nPermille - the path limiter's achieved fraction at the steady QTR
+' @local nPct - the rpm window's following percentage at the steady QTR
+' @local bPctOk - T/F where T means that percentage is valid
+
+    slotIdx := side - SIDE_LEFT
+    nDrvBefore := 0
+    eDrvrState := 0
+    nPermille := 0
+    nPct := 0
+    bPctOk := FALSE
+    if (bRunContinue(SEG_TAKE) == TRUE) and (bWheelStart(SEG_TAKE, side) == TRUE)
+        ' 1. A-6: a slower command issued while SPIN_UP
+        wheelCommand(side, HALF_SPEED_INCRE)
+        startMs := getms()
+        repeat
+            beat(CP_LOOP_POLL)
+            _, _, nDrvBefore := wheelDriveHealth(side)
+            if (abs(nDrvBefore) >= QTR_SPEED_INCRE) or ((getms() - startMs) >= TAKE_RAMP_WAIT_MS)
+                quit
+        _, eDrvrState, _ := wheelClearedState(side)
+        wheelCommand(side, DRIVE_CEILING_INCRE / 8)
+        cmdMs := getms()
+        if (eDrvrState == wheelL.DCS_SPIN_UP) and (abs(nDrvBefore) >= QTR_SPEED_INCRE)
+            bSfTakeRan[slotIdx] := TRUE
+            repeat
+                _, _, nDrvNow := wheelDriveHealth(side)
+                if abs(nDrvNow) < abs(nDrvBefore)
+                    bSfTakeOk[slotIdx] := TRUE
+                    sfTakeMs[slotIdx] := (getms() - cmdMs) #> 1
+                    quit
+                if (getms() - cmdMs) >= A6_WINDOW_MS
+                    quit
+        ' 2. A-8 following: a steady QTR, the rpm window full
+        wheelCommand(side, QTR_SPEED_INCRE)
+        waitBeat(TAKE_FOLLOW_HOLD_MS, CP_LOOP_POLL)
+        beat(CP_LIB_QUERY)
+        if side == SIDE_RIGHT
+            _, _, _, nPermille, nPct, bPctOk := wheelR.testGetDriveFollow()
+        else
+            _, _, _, nPermille, nPct, bPctOk := wheelL.testGetDriveFollow()
+        beat(CP_LIB_QUERY)
+        if bPctOk == TRUE
+            bSfFolAgreeRan[slotIdx] := TRUE
+            sfFolAgreeDiff[slotIdx] := abs(nPermille / 10 - nPct)
+        bZeroAndWaitStopped(side)
+        bInstIdle()
+        wheelStop(side)
+    emitTake(side, nDrvBefore, eDrvrState, nPermille, nPct, bPctOk)
+
+PRI emitTake(side, nDrvBefore, eDrvrState, nPermille, nPct, bPctOk) | slotIdx
+' BM-TAKE: one motor's TAKE readings -- A-6's precondition and fall, A-8's two following readings.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param nDrvBefore - the field's increment just before the EIGHTH command
+' @param eDrvrState - the driver state then (DCS_*)
+' @param nPermille - the path limiter's achieved fraction at the steady QTR
+' @param nPct - the rpm window's percentage there
+' @param bPctOk - T/F where T means that percentage is valid
+'
+' @local slotIdx - motor slot
+
+    slotIdx := side - SIDE_LEFT
+    recBegin(@"BM-TAKE")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"drv_before", nDrvBefore, LIM_BIG)
+    benchLog.numField(@"state", eDrvrState, LIM_TINY)
+    benchLog.boolField(@"take_ran", bSfTakeRan[slotIdx])
+    benchLog.boolField(@"fell", bSfTakeOk[slotIdx])
+    benchLog.naNumField(@"take_ms", sfTakeMs[slotIdx], LIM_SMALL, bSfTakeOk[slotIdx] == TRUE)
+    benchLog.numField(@"permille", nPermille, LIM_SMALL)
+    benchLog.naNumField(@"follow_pct", nPct, LIM_SMALL, bPctOk == TRUE)
+    emitRecord()
 
 CON { --- LEAD: the live lead-step run that measures the dynamic-lead table (task 3583, R18.4) --- }
 
@@ -11261,6 +11460,8 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellOffsets)
                 emitSignoffDecl(@sSfCellInstWide)
                 emitSignoffDecl(@sSfCellPhSep)
+                emitSignoffDecl(@sSfCellTake)
+                emitSignoffDecl(@sSfCellFolAgree)
                 emitSignoffDecl(@sSfCellLagA)
                 emitSignoffDecl(@sSfCellNoFold)
                 emitSignoffDecl(@sSfCellRateLaw)
@@ -11328,6 +11529,8 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellFoldBack)
                 emitSignoffDecl(@sSfCellDerate)
                 emitSignoffDecl(@sSfCellBlocked)
+                emitSignoffDecl(@sSfCellHoldSet)
+                emitSignoffDecl(@sSfCellNotFol)
                 emitSignoffDecl(@sSfCellWEstop)
                 emitSignoffDecl(@sSfCellWTimStop)
                 emitSignoffDecl(@sSfCellCmdTmo)
@@ -11410,6 +11613,9 @@ PRI emitSignoffs() | slotIdx, side
                     emitIdleMoveCell(@sSfCellIdleMvA, slotIdx)
                     ' task 3573: NOMEAS when no start from rest gave a control, or no running-speed change was judged
                     emitSignoff(@sSfCellTrKickA, side, @sSfCritTrKick, sfTrN[slotIdx] > 0, sfTrKickPk[slotIdx], TRKICK_LO, TRKICK_HI, sfTrN[slotIdx], @sSfUnitsMv)
+                    ' task 3584 (Visit 8): A-6 and A-8's following case, from the TAKE segment
+                    emitSignoffBool(@sSfCellTake, side, @sSfCritTake, bSfTakeRan[slotIdx], bSfTakeOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitSignoff(@sSfCellFolAgree, side, @sSfCritFolAgree, bSfFolAgreeRan[slotIdx], sfFolAgreeDiff[slotIdx], FOLAGREE_LO, FOLAGREE_HI, SIGNOFF_ONE_INSTANCE, @sSfUnitsCount)
                 emitSignoff(@sSfCellTracesA, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
                 emitSignoff(@sSfCellOffsets, SIDE_NONE, @sSfCritOffsets, sfOffsetN > 0, sfOffsetBad, OFFSET_BAD_LO, OFFSET_BAD_HI, sfOffsetN, @sSfUnitsCount)
                 emitSignoff(@sSfCellInstWide, SIDE_NONE, @sSfCritInstWide, instRunSamples > 0, instRunLate + instRunSkipped + instRunClamps, INSTWIDE_LO, INSTWIDE_HI, instRunSamples, @sSfUnitsCount)
@@ -11484,9 +11690,11 @@ PRI emitLagCells(pCell) | slotIdx
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         emitSignoff(pCell, SIDE_LEFT + slotIdx, @sSfCritLag, instLagN[slotIdx] > 0, instLagMax[slotIdx], LAG_MAX_LO, LAG_MAX_HI, instLagN[slotIdx], @sSfUnitsCount)
 
-PRI emitDStepCells()
+PRI emitDStepCells() | slotIdx
 ' Part D's cells. The steering object's instances carry SIDE_BOTH, the single wheel's SIDE_LEFT, and the
 ' two forms are judged separately because they are two different shapes of the same contract.
+'
+' @local slotIdx - motor slot, for the per-wheel R18.4 cells
 
     emitSignoffBool(@sSfCellLockStep, SIDE_BOTH, @sSfCritLockStep, bSfDStepRan[DST_LOCKSTEP], bSfDStepOk[DST_LOCKSTEP], SIGNOFF_ONE_INSTANCE)
     emitSignoffBool(@sSfCellTrackRst, SIDE_BOTH, @sSfCritTrackRst, bSfDStepRan[DST_TRACKRESET], bSfDStepOk[DST_TRACKRESET], SIGNOFF_ONE_INSTANCE)
@@ -11501,6 +11709,10 @@ PRI emitDStepCells()
     emitSignoffBool(@sSfCellDerate, SIDE_LEFT, @sSfCritDerate, bSfDerateRan[SLOT_LEFT], bSfDerateOk[SLOT_LEFT], SIGNOFF_ONE_INSTANCE)
     emitSignoffBool(@sSfCellDerate, SIDE_RIGHT, @sSfCritDerate, bSfDerateRan[SLOT_RIGHT], bSfDerateOk[SLOT_RIGHT], SIGNOFF_ONE_INSTANCE)
     emitSignoffBool(@sSfCellBlocked, SIDE_BOTH, @sSfCritBlocked, bSfDStepRan[DST_BLOCKED], bSfDStepOk[DST_BLOCKED], SIGNOFF_ONE_INSTANCE)
+    ' R18.4 Visit 8 (task 3584): A-7 and A-8's not-following case, per wheel, from the same stall
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        emitSignoffBool(@sSfCellHoldSet, SIDE_LEFT + slotIdx, @sSfCritHoldSet, bSfHoldSetRan[slotIdx], bSfHoldSetOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitSignoffBool(@sSfCellNotFol, SIDE_LEFT + slotIdx, @sSfCritNotFol, bSfNotFolRan[slotIdx], bSfNotFolOk[slotIdx], SIGNOFF_ONE_INSTANCE)
     ' the single-wheel form: the same latch and the same time stop, with its own front cog
     emitSignoffBool(@sSfCellWEstop, SIDE_LEFT, @sSfCritEstopD, bDEstopRan(TRUE), bDEstopOk(TRUE), SIGNOFF_ONE_INSTANCE)
     emitSignoffBool(@sSfCellWTimStop, SIDE_LEFT, @sSfCritTimeStop, bSfWDStepRan[DST_TIMESTOP], bSfWDStepOk[DST_TIMESTOP], SIGNOFF_ONE_INSTANCE)
