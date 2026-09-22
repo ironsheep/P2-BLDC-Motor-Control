@@ -163,6 +163,14 @@
 ''               of the rotor's advance is visible here and nowhere else, and a spread between the two
 ''               gaps is cogging. No cell judges it: it is characterisation for R18.3, which picks the
 ''               acceptance numbers before R18.4 builds against them.
+''               22 Sep 2026 -- SRC_REV=24, FMT 12: task 3594, the ALIGN instrument's two defects (PL-99,
+''               PL-100). The crossing detector gains a per-phase hysteresis band sized from the bias read's
+''               own noise, and times each crossing at the midpoint of its raw sign flips so the band adds
+''               no speed-dependent delay. The clip cell judges whether each phase's crossing BAND reaches a
+''               rail, not whether its peaks do. BM-AGUIDE gains hyst_u/v/w_mV and band_railed; BM-ALEG's
+''               clip becomes rail_pm (peak railing per thousand readings, no longer a saturated count) and
+''               gains band_railed; BM-ACROSS t_us may now be negative (the crossing precedes its sector's
+''               edge). Only the ALIGN part's records change.
 ''
 '' =================================================================================================
 
@@ -226,8 +234,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 23                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 11                                        ' BM- record-format version
+    SRC_REV     = 24                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 12                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -523,6 +531,21 @@ CON { ALIGN tier (task 3590) -- the hall zero measured cold, and the ONE per-mot
     ALIGN_MIN_SAMP_SECT = 4                                 ' samples per hall sector below which resolution is too coarse
     ALIGN_CLIP_HI_MV    = 3_200                             ' a phase reading at or above this is railed, not measured
     ALIGN_CLIP_LO_MV    = 20                                ' ...and at or below this
+    ' THE CROSSING DETECTOR'S HYSTERESIS BAND (PL-99), per phase, sized from that phase's own noise. The
+    '  stationary bias read also records how far each reading strayed from the mean, and the band's
+    '  half-width is that stray plus ALIGN_HYST_MARGIN_MV. A crossing is kept only when the reading
+    '  leaves the band on the side opposite the one it last left from -- so jitter about the bias, which
+    '  the 2026-09-21 shakedown measured as falling/rising pairs 50-150 us apart and ~5.5x the physical
+    '  count, can no longer make one.
+    ' THE CROSSING IS TIMED AT THE MIDPOINT OF THE RAW SIGN FLIPS that preceded that exit -- the first and
+    '  the last since the band was last left -- and neither at the exit nor at the last flip. Both of
+    '  those are LATE by an amount that grows as the back-EMF amplitude falls, which is a speed-dependent
+    '  bias in the one measurement whose negative case is a speed difference. Desk model, 2026-09-22
+    '  (3 mV noise, the real 0.52 ms channel, a slow 3 Hz and a brisk 25 Hz electrical leg): the old
+    '  detector counted 1_248 crossings against 89 real on the slow leg; this one counts 89 on both,
+    '  and its timing bias on the slow leg is 0.28 deg where timing at the last flip was 9.1 deg.
+    ALIGN_HYST_MARGIN_MV = 4
+    ALIGN_PER_MILLE     = 1_000                             ' rail_pm's scale: railed readings per thousand
     ALIGN_LEGS          = 8                                 ' 2 wheels x 2 directions x 2 speeds
     ALIGN_PHASES        = 3
     ' A FULL LEG'S CROSSINGS FIT BY CONSTRUCTION, so nothing is ever discarded. 3 turns x 15 electrical
@@ -1166,9 +1189,14 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     ALIGN_NODRIVE_MV  = 150
     ALIGN_NODRIVE_LO  = 0
     ALIGN_NODRIVE_HI  = ALIGN_NODRIVE_MV
-    ' ALIGN_CLIP: phase readings at a rail across the tier. A flattened crossing has no zero to find, so
-    '  one railed sample disqualifies the leg it is in -- the count is judged at zero (D2: a clipped
-    '  channel must not be able to pass as a measurement).
+    ' ALIGN_CLIP: phases whose CROSSING REGION reaches a rail, across the tier (PL-100). Z is read only
+    '  where a phase crosses its bias, so what must be clean is the band a crossing is detected in --
+    '  bias +/- the hysteresis -- and not the waveform's peaks. The shakedown's phases rest ~55 mV above
+    '  the bottom rail, so a brisk turn flattens the NEGATIVE PEAKS on 15.7 % of readings while every
+    '  crossing sits well inside the linear range; judging the peaks failed all eight legs for a fault
+    '  that could not move a crossing, and would have passed a band sitting ON a rail. A phase whose
+    '  band touches a rail disqualifies its leg, judged at zero (D2). Peak railing is still counted and
+    '  printed per leg as a rate, because it is what says how much headroom the channel has.
     ALIGN_CLIP_LO     = 0
     ALIGN_CLIP_HI     = 0
     ' ALIGN_COVER / ALIGN_RES: the two ways a leg can run to completion and still measure nothing --
@@ -1694,7 +1722,7 @@ sSfCellAgCover  BYTE    "R18-DUAL-ALIGN-COVER", 0
 sSfCellAgRes    BYTE    "R18-DUAL-ALIGN-RES", 0
 sSfCellAgMatrix BYTE    "R18-DUAL-ALIGN-MTRX", 0
 sSfCritAgNoDrv  BYTE    "PEAK_I_AT_REST", 0
-sSfCritAgClip   BYTE    "PHASE_NOT_RAILED", 0
+sSfCritAgClip   BYTE    "BAND_NOT_RAILED", 0
 sSfCritAgCover  BYTE    "LEAST_CROSSINGS", 0
 sSfCritAgRes    BYTE    "LEAST_PER_SECTOR", 0
 sSfCritAgMatrix BYTE    "ALL_FOUR_MEASURED", 0
@@ -6621,7 +6649,12 @@ VAR { ALIGN tier state -- cog 0 only }
     LONG    agCrossDur[ALIGN_MAX_CROSS]                     ' that sector's full duration, us; 0 while the sector is open
     LONG    agCrossTick[ALIGN_MAX_CROSS]                    ' signed tick index of the sector, so a leg's crossings order
     LONG    agBias[ALIGN_PHASES]                            ' each phase's stationary level, mV -- the level a crossing crosses
-    LONG    agPrevSign[ALIGN_PHASES]                        ' sign of (mV - bias) last sample; 0 until the phase is armed
+    LONG    agHyst[ALIGN_PHASES]                            ' each phase's hysteresis half-band, mV (PL-99)
+    LONG    agRawSign[ALIGN_PHASES]                         ' sign of (mV - bias) at the last sample that had one; 0 before any
+    LONG    agRawCt[ALIGN_PHASES]                           ' getct() of the LAST change of that sign since the band was left
+    LONG    agFlipCt[ALIGN_PHASES]                          ' getct() of the FIRST such change; the crossing is timed between
+    LONG    bAgFlipSeen[ALIGN_PHASES]                       ' TRUE once agFlipCt holds a flip since the band was last left
+    LONG    agArm[ALIGN_PHASES]                             ' side of the band last left: +1 above, -1 below, 0 not yet left
 
     LONG    agLegIdx                                        ' 0..ALIGN_LEGS-1, the leg being run
     LONG    agSide                                          ' SIDE_LEFT or SIDE_RIGHT
@@ -6637,13 +6670,15 @@ VAR { ALIGN tier state -- cog 0 only }
     LONG    agSectHall                                      ' hall code of the open sector
     LONG    agSectSamples                                   ' samples taken inside the open sector
     LONG    agSectSampMin                                   ' fewest samples any closed sector got -- the leg's resolution
+    LONG    agLastSectCt                                    ' the last KEPT sector's duration, clock ticks; 0 when there is none
     LONG    agSectors                                       ' sectors closed and kept
     LONG    agSamples                                       ' samples taken in the leg
     LONG    agCross                                         ' crossings held, pending ones included
     LONG    agPend                                          ' crossings held for the OPEN sector, resolved when it closes
     LONG    agDropped                                       ' crossings a full buffer could not keep -- must stay 0 (D2)
     LONG    agUnusable                                      ' crossings discarded with a sector too long to be a turn
-    LONG    agClip                                          ' phase readings at a rail this leg
+    LONG    agClip                                          ' phase readings at a rail this leg -- peaks, reported as a rate
+    LONG    agBandRailed                                    ' phases whose crossing band touches a rail -- disqualifies the leg
     LONG    agPeakI                                         ' worst |sense_i| this leg, mV -- the no-drive invariant
     LONG    agFirstEdgeMs                                   ' getms() of the leg's first edge -- a timestamp
     LONG    agSpanMs                                        ' first edge to last, ms -- a duration, and never the timestamp
@@ -6657,7 +6692,7 @@ VAR { ALIGN sign-off accumulators -- cog 0 only }
 
     LONG    sfAgLegs                                        ' legs that ran
     LONG    sfAgPeakI                                       ' worst |sense_i| anywhere in the tier, mV
-    LONG    sfAgClip                                        ' railed phase readings across the tier
+    LONG    sfAgClip                                        ' phases whose crossing band touched a rail, across the tier
     LONG    sfAgCoverMin                                    ' fewest crossings any leg kept
     LONG    sfAgResMin                                      ' fewest samples per sector anywhere
     LONG    bSfAgCombo[ALIGN_COMBOS]                        ' wheel x MEASURED direction that returned a leg
@@ -6766,6 +6801,7 @@ PRI alignResetLeg(side, askedDir, speedClass)
     bAgSectOpen := FALSE
     agSectSamples := 0
     agSectSampMin := LIM_BIG
+    agLastSectCt := 0
     agSectors := 0
     agSamples := 0
     agCross := 0
@@ -6773,17 +6809,26 @@ PRI alignResetLeg(side, askedDir, speedClass)
     agDropped := 0
     agUnusable := 0
     agClip := 0
+    agBandRailed := 0
     agPeakI := 0
     agFirstEdgeMs := 0
     agSpanMs := 0
     agOutcome := ALEG_OK
-    longfill(@agPrevSign, 0, ALIGN_PHASES)
     longfill(@agBias, 0, ALIGN_PHASES)
+    longfill(@agHyst, 0, ALIGN_PHASES)
+    longfill(@agRawSign, 0, ALIGN_PHASES)
+    longfill(@agRawCt, 0, ALIGN_PHASES)
+    longfill(@agFlipCt, 0, ALIGN_PHASES)
+    longfill(@bAgFlipSeen, FALSE, ALIGN_PHASES)
+    longfill(@agArm, 0, ALIGN_PHASES)
 
-PRI bAlignBias(side) : bStill | startMs, sumU, sumV, sumW, sampleCount, startHall, uMv, vMv, wMv
+PRI bAlignBias(side) : bStill | startMs, sampleCount, startHall, phaseIdx, phaseMv[ALIGN_PHASES], sumMv[ALIGN_PHASES], minMv[ALIGN_PHASES], maxMv[ALIGN_PHASES]
 ' Read each phase's stationary level for ALIGN_BIAS_MS. The level a back-EMF crossing crosses is the
 ' phase's own reading with the rotor still -- not zero, and not assumed: a coasting phase pin sits
 ' wherever the sense chain puts it, and that is measured here rather than written down.
+'
+' The same read sizes each phase's hysteresis band (PL-99) from how far its readings strayed from their
+' mean, so the band is the noise this channel actually has at this moment rather than a constant.
 '
 ' A read during which the hall code moved is NOT a bias, so it is discarded and the caller re-takes it.
 '
@@ -6791,28 +6836,28 @@ PRI bAlignBias(side) : bStill | startMs, sumU, sumV, sumW, sampleCount, startHal
 ' @returns bStill - TRUE when the whole read completed with no hall movement
 '
 ' @local startMs - getms() the read began
-' @local sumU - phase U total over the read
-' @local sumV - phase V total
-' @local sumW - phase W total
 ' @local sampleCount - samples in the read
 ' @local startHall - hall code when the read began
-' @local uMv - this sample's phase U reading
-' @local vMv - this sample's phase V reading
-' @local wMv - this sample's phase W reading
+' @local phaseIdx - 0 for U, 1 for V, 2 for W
+' @local phaseMv - this sample's three phase readings
+' @local sumMv - each phase's total over the read
+' @local minMv - each phase's lowest reading over the read
+' @local maxMv - each phase's highest reading over the read
 
     bStill := TRUE
-    sumU := 0
-    sumV := 0
-    sumW := 0
     sampleCount := 0
+    longfill(@sumMv, 0, ALIGN_PHASES)
+    longfill(@minMv, LIM_BIG, ALIGN_PHASES)
+    longfill(@maxMv, 0 - LIM_BIG, ALIGN_PHASES)
     startHall := alignHallRead(side)
     startMs := getms()
     repeat
         beat(CP_LOOP_POLL)
-        uMv, vMv, wMv, _ := alignTelemetry(side)
-        sumU += uMv
-        sumV += vMv
-        sumW += wMv
+        phaseMv[0], phaseMv[1], phaseMv[2], _ := alignTelemetry(side)
+        repeat phaseIdx from 0 to ALIGN_PHASES - 1
+            sumMv[phaseIdx] += phaseMv[phaseIdx]
+            minMv[phaseIdx] <#= phaseMv[phaseIdx]
+            maxMv[phaseIdx] #>= phaseMv[phaseIdx]
         sampleCount += 1
         if alignHallRead(side) <> startHall
             bStill := FALSE
@@ -6820,9 +6865,26 @@ PRI bAlignBias(side) : bStill | startMs, sumU, sumV, sumW, sampleCount, startHal
         if (getms() - startMs) >= ALIGN_BIAS_MS
             quit
     if bStill and (sampleCount > 0)
-        agBias[0] := sumU / sampleCount
-        agBias[1] := sumV / sampleCount
-        agBias[2] := sumW / sampleCount
+        agBandRailed := 0
+        repeat phaseIdx from 0 to ALIGN_PHASES - 1
+            alignSetBand(phaseIdx, sumMv[phaseIdx] / sampleCount, minMv[phaseIdx], maxMv[phaseIdx])
+
+PRI alignSetBand(phaseIdx, biasMv, minMv, maxMv) | noiseMv
+' Set one phase's bias and hysteresis band from its stationary read, and count the phase if its band
+' reaches a rail -- the crossing region is the only part of the trace Z is read from (PL-100).
+'
+' @param phaseIdx - 0 for U, 1 for V, 2 for W
+' @param biasMv - the phase's mean stationary reading
+' @param minMv - its lowest stationary reading
+' @param maxMv - its highest stationary reading
+'
+' @local noiseMv - the larger stray of the read from its mean, either side
+
+    noiseMv := (maxMv - biasMv) #> (biasMv - minMv)
+    agBias[phaseIdx] := biasMv
+    agHyst[phaseIdx] := noiseMv + ALIGN_HYST_MARGIN_MV
+    if ((biasMv - agHyst[phaseIdx]) <= ALIGN_CLIP_LO_MV) or ((biasMv + agHyst[phaseIdx]) >= ALIGN_CLIP_HI_MV)
+        agBandRailed += 1
 
 PRI alignRun(side) | nowCt, uMv, vMv, wMv, iMv, absI
 ' The quiet part of a leg: poll as fast as cog 0 can, and end on the ticks or on a stall. Nothing is
@@ -6933,9 +6995,11 @@ PRI alignSectorClose(endCt) | sectCt, crossIdx
                 agCrossDur[crossIdx] := sectCt / TICKS_PER_US
         agSectors += 1
         agSectSampMin <#= agSectSamples
+        agLastSectCt := sectCt
     else
         agUnusable += agPend
         agCross -= agPend
+        agLastSectCt := 0                                   ' a sector that was not a turn is no scale for its successor
     agPend := 0
 
 PRI alignDropPending()
@@ -6947,39 +7011,79 @@ PRI alignDropPending()
     agCross -= agPend
     agPend := 0
 
-PRI alignCross(phaseIdx, phaseMv, nowCt) | nowSign, sectCt
+PRI alignCross(phaseIdx, phaseMv, nowCt) | rawSign, newArm
 ' Test one phase for a crossing of its own bias and, on one, hold the record until the sector closes.
+'
+' TWO THINGS ARE TRACKED, AND THEY ARE DIFFERENT (PL-99). The RAW sign of (reading - bias) flips on
+' every jitter about the bias, so it only ever supplies the crossing's TIME: the midpoint of the first
+' and last raw flips since the band was last left. The ARM is which side of the hysteresis band the
+' reading last LEFT, and only a change of arm -- the reading leaving the band on the far side -- makes
+' a crossing. Jitter inside the band moves the time and never the arm, so it cannot make a crossing,
+' and the crossing it does make is timed where the signal crossed rather than where it left the band.
 '
 ' @param phaseIdx - 0 for U, 1 for V, 2 for W
 ' @param phaseMv - this sample's reading for that phase
 ' @param nowCt - this sample's getct()
 '
-' @local nowSign - sign of (reading - bias) this sample
-' @local sectCt - ticks from the sector's opening edge to this sample
+' @local rawSign - sign of (reading - bias) this sample
+' @local newArm - the side of the band this sample is on, or the old arm while inside it
 
-    nowSign := alignSignOf(phaseMv - agBias[phaseIdx])
-    if (nowSign <> 0) and (agPrevSign[phaseIdx] <> 0) and (nowSign <> agPrevSign[phaseIdx])
-        sectCt := nowCt - agSectStartCt
-        if agCross < ALIGN_MAX_CROSS
-            agCrossKey[agCross] := (phaseIdx << ALIGN_KEY_PHASE_SHIFT) | ((nowSign > 0) ? ALIGN_KEY_RISING : 0) | agSectHall
-            agCrossIn[agCross] := sectCt / TICKS_PER_US
-            agCrossDur[agCross] := 0
-            agCrossTick[agCross] := agTicks
-            agCross += 1
-            agPend += 1
-        else
-            agDropped += 1
-    if nowSign <> 0
-        agPrevSign[phaseIdx] := nowSign
+    rawSign := alignSignOf(phaseMv - agBias[phaseIdx])
+    if (rawSign <> 0) and (rawSign <> agRawSign[phaseIdx])
+        agRawSign[phaseIdx] := rawSign
+        agRawCt[phaseIdx] := nowCt
+        if bAgFlipSeen[phaseIdx] == FALSE
+            agFlipCt[phaseIdx] := nowCt
+            bAgFlipSeen[phaseIdx] := TRUE
+    newArm := agArm[phaseIdx]
+    if phaseMv > (agBias[phaseIdx] + agHyst[phaseIdx])
+        newArm := 1
+    elseif phaseMv < (agBias[phaseIdx] - agHyst[phaseIdx])
+        newArm := -1
+    if (agArm[phaseIdx] <> 0) and (newArm <> agArm[phaseIdx])
+        alignKeepCross(phaseIdx, newArm, agFlipCt[phaseIdx] + ((agRawCt[phaseIdx] - agFlipCt[phaseIdx]) / 2) - agSectStartCt)
+    if newArm <> agArm[phaseIdx]
+        bAgFlipSeen[phaseIdx] := FALSE                      ' the next crossing's flips start from here
+    agArm[phaseIdx] := newArm
+
+PRI alignKeepCross(phaseIdx, crossSign, crossCt) | inUs
+' Hold one crossing for the open sector, to be given the sector's duration when it closes.
+'
+' A CROSSING MAY BE TIMED BEFORE THE OPEN SECTOR'S EDGE. It is timed between its raw sign flips, and a
+' hall edge can land between that time and the reading leaving the band -- so its t_us is NEGATIVE and
+' it belongs to the sector before, placed by this one's duration. That is sound only when the two are
+' about the same length, which the last kept sector's duration bounds: a flip further back than one
+' whole sector, or with no kept sector before it, is not placed and is counted unusable instead.
+'
+' @param phaseIdx - 0 for U, 1 for V, 2 for W
+' @param crossSign - +1 for a rising crossing, -1 for a falling one
+' @param crossCt - clock ticks from the open sector's edge to the crossing; negative when before it
+'
+' @local inUs - crossCt in microseconds
+
+    inUs := crossCt / TICKS_PER_US
+    if (crossCt < 0) and ((0 - crossCt) > agLastSectCt)
+        agUnusable += 1
+    elseif agCross < ALIGN_MAX_CROSS
+        agCrossKey[agCross] := (phaseIdx << ALIGN_KEY_PHASE_SHIFT) | ((crossSign > 0) ? ALIGN_KEY_RISING : 0) | agSectHall
+        agCrossIn[agCross] := inUs
+        agCrossDur[agCross] := 0
+        agCrossTick[agCross] := agTicks
+        agCross += 1
+        agPend += 1
+    else
+        agDropped += 1
 
 PRI alignClipTest(phaseMv)
-' Count a phase reading sitting at a rail. A flattened crossing has no zero to find, so this is what
-' stops a railed channel passing as a measurement.
+' Count a phase reading sitting at a rail. This is PEAK railing -- the channel's headroom -- and it no
+' longer judges the leg: a crossing is read at the bias, and whether THAT region is clean is the band
+' test in alignSetBand() (PL-100). Not clamped, because it is printed as a rate, and a clamped count
+' became an uninformative 99,999 on every shakedown leg.
 '
 ' @param phaseMv - one phase reading, mV
 
     if (phaseMv >= ALIGN_CLIP_HI_MV) or (phaseMv <= ALIGN_CLIP_LO_MV)
-        agClip := (agClip + 1) <# LIM_BIG
+        agClip += 1
 
 PRI alignSignOf(nDiff) : nSign
 ' The sign of a difference, as the crossing test needs it: zero is its own answer, never folded into
@@ -7022,21 +7126,22 @@ PRI alignScoreLeg() | comboIdx
 ' Judge the finished leg and fold it into the tier's accumulators. The leg is scored by what it
 ' MEASURED, never by what was asked of it: a leg turned the wrong way is good data filed correctly.
 '
-' A stall already named itself. Otherwise a railed channel disqualifies the leg outright, and too few
-' crossings makes it SHORT -- both are outcomes the leg reports about itself, not verdicts.
+' A stall already named itself. Otherwise a phase whose crossing band reaches a rail disqualifies the
+' leg outright, and too few crossings makes it SHORT -- both are outcomes the leg reports about itself,
+' not verdicts. Peak railing does not disqualify: it cannot move a crossing (PL-100).
 '
 ' @local comboIdx - wheel x measured direction slot this leg fills
 
     if bAgSectOpen
         agSpanMs := getms() - agFirstEdgeMs
     if agOutcome == ALEG_OK
-        if agClip > 0
+        if agBandRailed > 0
             agOutcome := ALEG_CLIPPED
         elseif agCross < ALIGN_MIN_CROSS
             agOutcome := ALEG_SHORT
     sfAgLegs += 1
     sfAgPeakI #>= agPeakI
-    sfAgClip := (sfAgClip + agClip) <# LIM_BIG
+    sfAgClip += agBandRailed
     if agOutcome == ALEG_OK
         sfAgCoverMin <#= agCross
         sfAgResMin <#= agSectSampMin
@@ -7069,6 +7174,10 @@ PRI alignGuide()
     benchLog.numField(@"bias_u_mV", agBias[0], LIM_SMALL)
     benchLog.numField(@"bias_v_mV", agBias[1], LIM_SMALL)
     benchLog.numField(@"bias_w_mV", agBias[2], LIM_SMALL)
+    benchLog.numField(@"hyst_u_mV", agHyst[0], LIM_SMALL)
+    benchLog.numField(@"hyst_v_mV", agHyst[1], LIM_SMALL)
+    benchLog.numField(@"hyst_w_mV", agHyst[2], LIM_SMALL)
+    benchLog.numField(@"band_railed", agBandRailed, LIM_TINY)
     benchLog.numField(@"bias_tries", agBiasTries, LIM_TINY)
     emitRecord()
     alignSay(alignGuideLine())
@@ -7137,6 +7246,9 @@ PRI alignEmitCross(crossIdx)
 ' degrees is only 4 degrees of wheel on a 15-pole-pair hub. No fit runs here -- a board that fitted its
 ' own data would be reporting a conclusion the log could not be re-read to check (D9).
 '
+' t_us MAY BE NEGATIVE: the crossing then precedes this sector's opening edge and lies in the sector
+' before it, placed on this one's duration (alignKeepCross()). The reader subtracts, never discards.
+'
 ' @param crossIdx - index of the crossing to emit
 
     recBegin(@"BM-ACROSS")
@@ -7150,7 +7262,7 @@ PRI alignEmitCross(crossIdx)
     benchLog.numField(@"dur_us", agCrossDur[crossIdx], LIM_BIG)
     emitRecord()
 
-PRI alignEmitSummary() | rateX10
+PRI alignEmitSummary() | rateX10, railPm
 ' The finished leg in one record: what it was asked for, what it MEASURED, and every count a reader
 ' needs to decide whether its crossings are a measurement.
 '
@@ -7159,11 +7271,18 @@ PRI alignEmitSummary() | rateX10
 ' a fixed ANGLE and the input filter's delay a fixed TIME, so only a real speed difference between the
 ' slow and brisk legs can tell them apart.
 '
+' rail_pm is peak railing per thousand phase readings -- the channel's headroom, reported and not
+' judged (PL-100); band_railed is what judges.
+'
 ' @local rateX10 - measured hall edge rate, edges/s x10
+' @local railPm - railed phase readings per thousand taken
 
     rateX10 := 0
     if bAgSectOpen and (agSpanMs > 0)
         rateX10 := (abs(agTicks) * MS_PER_SEC * 10) / agSpanMs
+    railPm := 0
+    if agSamples > 0
+        railPm := (agClip * ALIGN_PER_MILLE) / (agSamples * ALIGN_PHASES)
     recBegin(@"BM-ALEG")
     benchLog.numField(@"leg", agLegIdx, LIM_TINY)
     benchLog.tokenField(@"motor", sideToken(agSide), TOKMAX_MOTOR)
@@ -7179,7 +7298,8 @@ PRI alignEmitSummary() | rateX10
     benchLog.numField(@"cross", agCross, LIM_SMALL)
     benchLog.numField(@"unusable", agUnusable, LIM_SMALL)
     benchLog.numField(@"dropped", agDropped, LIM_SMALL)
-    benchLog.numField(@"clip", agClip, LIM_SMALL)
+    benchLog.naNumField(@"rail_pm", railPm, LIM_SMALL, agSamples > 0)
+    benchLog.numField(@"band_railed", agBandRailed, LIM_TINY)
     benchLog.numField(@"peak_i_mV", agPeakI, LIM_SMALL)
     benchLog.boolField(@"bias_still", bAgBiasStill)
     benchLog.tokenField(@"outcome", tokenAt(@tokALeg, ALEG_COUNT, agOutcome), TOKMAX_ALEG)

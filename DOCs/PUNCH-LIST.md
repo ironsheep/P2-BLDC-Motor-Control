@@ -5063,6 +5063,15 @@ a reader counting greens over-counts the run's evidence by two per motor.
 
 ### PL-99 -- the ALIGN crossing detector has no hysteresis, so it counts ~5.5x too many crossings
 
+**Status 2026-09-22 («#3594») -- FIXED IN TREE, NOT YET RUN.** `test_bench_dual.spin2` SRC_REV 24: a
+per-phase hysteresis band sized from the bias read's own noise (largest stray + 4 mV), and each crossing
+timed at the midpoint of its raw sign flips, so the band adds no speed-dependent delay. Desk model of the
+new `alignCross()` (3 mV noise, the real 0.52 ms channel): **89 crossings of 89** on slow and brisk legs,
+where the old detector counted **1,248** on the slow one; timing bias 0.28 deg slow. The first cut timed
+at the LAST flip and the model showed it **9.1 deg late** on a slow leg -- caught at the desk, not the rig.
+Certified by the next `dual-align` run: `cross` near 270 per leg and `dropped,0`
+([run sheet](analyses/bench/VISIT-7C-RUNSHEET.md)).
+
 **Found 2026-09-22 at «#3594», filed by the front ledger's override rule.** The cold hall-zero tier
 `dual-align` («#3590») detects back-EMF zero crossings by sign change alone. With no hysteresis band,
 sensor noise around the crossing produces a burst of sign flips instead of one edge: the observed rate
@@ -5087,6 +5096,15 @@ Doco motor when that effort starts («#3562», «#3592»).
 ---
 
 ### PL-100 -- the ALIGN clip detector judges peak railing when only the crossing region must be clean
+
+**Status 2026-09-22 («#3594») -- FIXED IN TREE, NOT YET RUN.** The crossing region is defined as each
+phase's **band** -- resting level +/- its hysteresis -- which is where every crossing is detected; a phase
+whose band reaches a rail disqualifies its leg (`R18-DUAL-ALIGN-CLIP`, crit now `BAND_NOT_RAILED`).
+Railing inside the sample pair either side of a crossing was considered and rejected as the criterion:
+the crossing is timed to one sample regardless, so a railed neighbour cannot move it, and on brisk legs it
+would have discarded most falling edges. Peak railing is still reported, as `rail_pm` per leg, which also
+retires the shakedown's S-5 (the clamped count that read 99,999 on every leg). Negative case, desk model:
+a phase resting at 18 mV is refused.
 
 **Found 2026-09-22 at «#3594»**, alongside PL-99 and in the same instrument.
 
