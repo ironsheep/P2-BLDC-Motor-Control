@@ -1465,6 +1465,33 @@ PUB testGetTelemetry() : nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrS
     eDrvrState := drv_state
     bDidFault := (fault <> false) ? true : false
 
+PUB testGetFollowing() : nMeasTicksSec, nCmdTicksSec, nPctOfCmd, bValid
+'' TESTING USE: whether the drive is FOLLOWING its command -- the measured tick rate against the
+'' commanded one, as a percentage
+''
+'' WHY THIS EXISTS (R18.1, harvested 2026-09-22). testGetDriveHealth() below counts the passes on
+'' which each limiter ACTED, which says the drive ran out of authority but not how far behind it
+'' ended up. This says how far. The bench instrument proved the quantity carries the answer before
+'' the driver owned it: at the current wall the drive was following at 44-47 % of commanded while
+'' duty saturated. Measuring that in a harness integrates nothing -- the drive itself could not tell
+'' whether it was doing what it was told, and now it can.
+''
+'' HOW TO READ IT: 100 is following. Below 100 the motor is turning slower than commanded, and the
+'' number keeps meaning something all the way down -- 0 is stalled, and unlike err (held near
+'' LAG_HOLD and bounded by its own representation) or duty (pinned at its cap) it has no ceiling to
+'' hide behind. NOT valid until the rpm window has filled, so a reading taken within the first second
+'' of a command, or during a ramp, is a transient and {bValid} says so.
+''
+'' @returns nMeasTicksSec - measured hall ticks per second, the rpm window's own sum
+'' @returns nCmdTicksSec - hall ticks per second the present command asks for, 0 when stopped
+'' @returns nPctOfCmd - measured as a percentage of commanded; 100 is following, 0 is stalled
+'' @returns bValid - T/F where T means the window is full and a non-zero rate is commanded
+
+    nMeasTicksSec := hallWindowSum
+    nCmdTicksSec := followCmdTicksSec
+    nPctOfCmd := followPctOfCmd
+    bValid := bFollowValid
+
 PUB testGetDriveHealth() : nLagHeld, nDutyCapped, nDrvIncr, nPos
 '' TESTING USE: the driver's two UNBOUNDED health counters, with the pair needed to interpret them
 ''
@@ -3008,6 +3035,16 @@ VAR { * sense buffer and stack arrays * }
     LONG    hallCntsIn8thSec
     LONG    hallWindowSum
 
+    ' R18.1, harvested 2026-09-22: WHETHER THE DRIVE IS FOLLOWING ITS COMMAND. Front cog writes these
+    '  once per window slot; any cog reads them through testGetFollowing(). They are OBSERVABLES --
+    '  nothing in the control path reads them, and adding them changed no control behaviour.
+    '  These are VAR here and deliberately NOT in the PASM-addressed runs: the driver already
+    '  publishes the raw material (pos, and the unbounded counters testGetDriveHealth() returns), so
+    '  no long crosses the Spin2<->PASM2 boundary for this and the ABI is untouched.
+    LONG    followCmdTicksSec   ' commanded hall ticks/s, derived from targetIncre
+    LONG    followPctOfCmd      ' measured as a percent of commanded: 100 = following, 0 = stalled
+    LONG    bFollowValid        ' T/F where T means the window is full and a non-zero rate was commanded
+
     LONG    rSenseForBoard
     LONG    restZeroSenseMv     ' PL-45: sense_i_mV's rest offset, taken floated at start; subtracted by getCurrent()
     LONG    restZeroSampleSum   ' S3: rest-zero accumulator, between restZeroBegin() and restZeroFinish()
@@ -3581,7 +3618,40 @@ PRI updateWindowAccumulators() | nowPos, nHallCntsInSlot
     if hallWinEntryCt < HALL_WINDOW_SIZE                                        ' incr number of samples in sum until is window size
         hallWinEntryCt++
 
+    updateFollowing()                                                           ' R18.1: does the measured rate match the commanded one?
     updateHdmiData()
+
+PRI updateFollowing()
+' FRONT COG ONLY: compare the measured tick rate against the commanded one, once per window slot.
+'
+' WHY THE DRIVER OWNS THIS AND NOT THE HARNESS. The bench instrument already computed it and proved
+' it carries the answer: at the current wall the drive was following at 44-47 % of commanded while
+' duty saturated (MEASURED, DOCs/analyses/bench/2026-09-22/). But an observable that lives only in a
+' test harness has integrated nothing -- the DRIVE still could not tell whether it was doing what it
+' was told. This is that same quantity, computed where the drive can eventually act on it.
+'
+' HOW IT IS FREE. hallWindowSum is already the ticks moved over the last HALL_WINDOW_SIZE slots, and
+' the window spans one second, so the measured rate needs no new accumulator -- it IS that sum. Only
+' the commanded side is new, and it is one muldiv64 at the slot rate (125 Hz), not the pass rate.
+'
+' THE COMMANDED SIDE IS DERIVED, NEVER TABULATED: the field advances targetIncre angle units per
+' drive pass, one hall cycle is 2^32 angle units and HALL_TICKS_PER_CYCLE ticks, and the drive runs
+' PWM_RATE_IN_HZ / DRIVE_PASS_FRAMES passes per second -- the same three constants rampStepForAccel()
+' already derives its own conversion from. The shift pair mirrors distanceForRampDown()'s idiom:
+' (incr >> 9) x k / 2^23 is incr x k / 2^32 without overflowing.
+'
+' NOT A CONTROL CHANGE. Nothing in the drive path reads these; R18.1's rule is that the observables
+' land with control behaviour unchanged, and the drive change that uses them is R18.4's.
+
+    followCmdTicksSec := 0
+    followPctOfCmd := 0
+    bFollowValid := FALSE
+    if targetIncre <> 0
+        followCmdTicksSec := muldiv64(abs(targetIncre) >> 9, ...
+            HALL_TICKS_PER_CYCLE * (PWM_RATE_IN_HZ / DRIVE_PASS_FRAMES), 1 << 23)
+    if (hallWinEntryCt >= HALL_WINDOW_SIZE) and (followCmdTicksSec > 0)
+        bFollowValid := TRUE
+        followPctOfCmd := (hallWindowSum * 100) / followCmdTicksSec
 
 PRI resetHdmiData()
     tvMaxFps_x10 := tvMaxMPH_x10 := tvMaxkPH_x10 := 0
