@@ -3979,6 +3979,10 @@ constant, so the offset needed to cross it is arithmetic, not a sweep.
 
 ### PL-87 -- the ladder's err_pk is a STEADY-WINDOW statistic, so no cell can see a transition kick
 
+> **Status 2026-09-22, Visit 8:** `R17-DUAL-TRKICK-A` is still FAIL at 233 / 222 mV on DRIVER_REV 3 (221 / 214
+> before). The R18.4 drive change did not move the transition kick, although «#3583» was scoped to subsume it.
+> It remains open (Visit 8 evaluation F-8).
+
 > ## BOTH FIXES LANDED 2026-09-20 («#3580» R18.1, dual SRC_REV 21 / FMT 9); run-time proof owed to Visit 7
 >
 > The box below asked for exactly two things, and both are in the tree:
@@ -5260,6 +5264,22 @@ integrate for 6.0.0.
 
 **What would settle its cost:** the loaded floor run («#3591») reading current while held. **What would fix
 it:** a sub-sector angle -- hall-timing interpolation or back-EMF -- against which the hold is compared.
+
+---
+
+### PL-106 -- the blocked-motor protective stop cannot be provoked on a lifted rig, so no driver change to it is certified
+
+**Found 2026-09-22 at Visit 8** ([evaluation](analyses/bench/2026-09-22/VISIT-8-EVALUATION.md) §3.4, F-3).
+`R16-DUAL-BLOCKED-D` has read NOMEAS (`why,NOT_BLOCKED`) in **every** part-D log on record: 2026-09-17 twice,
+2026-09-19, and Visit 8. At the 1 A limit the step sets, a lifted wheel keeps turning, so the front cog never
+sees a motor commanded to move and standing still. The cell cannot fail on this rig. The Visit 8 run sheet
+wrongly claimed it would certify DRIVER_REV 3's fix: the overload hold's decay now stops at `ramp_min_`, so a
+stall keeps the lag the protective stop needs. **That fix is correct by reading and unmeasured.**
+
+**What it would take:** a stall built by construction. For example, a test-only driver command that holds the
+field still (an increment of 0 with the bridge driven), or a limit low enough to stop a lifted wheel, found
+by stepping it down until the hall ticks stop. Either must be shown able to reach `NOT_BLOCKED`'s negative
+case before the cell is trusted. **The floor run («#3591»)** is the other place a real stall can happen.
 
 ---
 
