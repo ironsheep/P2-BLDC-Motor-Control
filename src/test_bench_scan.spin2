@@ -181,7 +181,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 18                                      ' hand-bumped whenever this file changes
+    SRC_REV     = 19                                      ' hand-bumped whenever this file changes
     FMT_VERSION = 11                                        ' BS- record-format version
 
 ' fmt 11 changes (task 3594, THE LOOP INVERSION; no existing record's field names, order or content
@@ -411,6 +411,14 @@ CON { run sequencing enums }
     DSQ_CLEAN = 0
     DSQ_DROOP = 1
     DSQ_FAULT = 2
+  ' DSQ_BOTH -- fault-like AND drooping at once, and the ONLY code that exercises the guard
+  '  DROOP_FAULT_RESETS exists to police (Visit 7c C-3, found at the desk before the run).
+  '  The overlap is real: isFaultLikeIdx() is TRUE for FAULT/timeouts, isDroopIdx() needs a valid
+  '  span and a low follow_pct, and closeDriveSpan() runs on EVERY commanded point whatever its
+  '  result -- so a point that faulted after driving is both. With the three mutually exclusive
+  '  codes alone, a DSQ_FAULT point had bDrooped FALSE and the droop run reset through the ordinary
+  '  `else 0` branch rather than through the guard, so the cell passed with the guard REMOVED.
+    DSQ_BOTH  = 3
     DSQ_RUN_LEN  = 4
     DSQ_ISOL_LEN = 6
     DSQ_FLT_LEN  = 4
@@ -637,7 +645,14 @@ CON { safety thresholds }
     '  2 motors = 12 legs, and the 2026-09-21 20:09 run spent 4 of a cap of 6 on the LOW and QTR legs
     '  alone, all four legitimate. 16 covers one wall-find per leg with margin, and the run time cap,
     '  the fault cap and the charge cap all still bound a genuinely misbehaving run.
-    RUN_ABORT_I_CAP     = 16
+    ' VISIT 7C C-9, MEASURED: 16 was still too few. The run spent ALL 16 and ended on ABORT_I_CAP at
+    '  914 s having completed 11 of 12 legs -- with faults,0, so every one of the 16 was a legitimate
+    '  wall-find and not a misbehaving drive. The right budget is per LEG END, not per leg: 12 legs
+    '  have 24 ends, and a walk that brackets can end by finding a current wall on EITHER side. 28
+    '  covers all 24 with margin. This cap exists to stop a drive that is repeatedly overcurrent for
+    '  a reason we did not predict; the other three caps (time, fault, charge) are what bound the
+    '  run, and none of them was close -- 914 s of a 1_500 s cap, 0 faults of 24, 52_146 of 432_000.
+    RUN_ABORT_I_CAP     = 28
     DRIFT_FLAG_PCT      = 8
     IMBALANCE_PCT       = 10
     UNSETTLED_PCT       = 3
@@ -1176,7 +1191,7 @@ sSfTaskFollow   BYTE    "3594", 0                           ' R18-SCAN-FOLLOW: t
 '  a fault breaks a droop run rather than adding to it.
 bDroopSeqRun    BYTE    1, 1, 1, 0
 bDroopSeqIsol   BYTE    1, 0, 1, 0, 1, 0
-bDroopSeqFlt    BYTE    1, 2, 1, 0
+bDroopSeqFlt    BYTE    1, 3, 1, 0                          ' Visit 7c C-3: the middle point is DSQ_BOTH, not DSQ_FAULT
 sSfCellDroopLg  BYTE    "R18-SCAN-DROOPLOGIC", 0
 sSfCritDrpRun   BYTE    "DROOP_RUN_FIRES", 0
 sSfCritDrpIsol  BYTE    "DROOP_ISOLATED_NO", 0
@@ -3466,7 +3481,9 @@ PRI droopSeqRun(pSeq, nLen) : stopAt, stopKind | idx, walkStop, sideConsec, droo
     droopConsec := 0
     repeat idx from 0 to nLen - 1
         code := BYTE[pSeq][idx]
-        walkStop, sideConsec, droopConsec := stepStopDecision(code == DSQ_FAULT, code == DSQ_DROOP, sideConsec, droopConsec)
+        ' DSQ_BOTH feeds BOTH predicates at once (Visit 7c C-3) -- that is the whole point of it.
+        walkStop, sideConsec, droopConsec := stepStopDecision((code == DSQ_FAULT) or (code == DSQ_BOTH), ...
+            (code == DSQ_DROOP) or (code == DSQ_BOTH), sideConsec, droopConsec)
         if walkStop <> WS_NONE
             stopAt := idx + 1
             stopKind := walkStop

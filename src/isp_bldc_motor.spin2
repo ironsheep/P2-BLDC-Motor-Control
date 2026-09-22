@@ -3621,8 +3621,11 @@ PRI updateWindowAccumulators() | nowPos, nHallCntsInSlot
     updateFollowing()                                                           ' R18.1: does the measured rate match the commanded one?
     updateHdmiData()
 
-PRI updateFollowing()
+PRI updateFollowing() | cmdIncre
 ' FRONT COG ONLY: compare the measured tick rate against the commanded one, once per window slot.
+'
+' @local cmdIncre - targetIncre as a SIGNED increment: sync bit removed and the sign restored from
+'   bit 30, which is where setTargetAccel()'s ZEROX leaves it
 '
 ' WHY THE DRIVER OWNS THIS AND NOT THE HARNESS. The bench instrument already computed it and proved
 ' it carries the answer: at the current wall the drive was following at 44-47 % of commanded while
@@ -3646,8 +3649,27 @@ PRI updateFollowing()
     followCmdTicksSec := 0
     followPctOfCmd := 0
     bFollowValid := FALSE
-    if targetIncre <> 0
-        followCmdTicksSec := muldiv64(abs(targetIncre) >> 9, ...
+    ' RECOVER THE SIGNED INCREMENT WITH SIGNX 30 (task 3594, Visit 7c C-1). This line read
+    '  abs(targetIncre) on the RAW word, and the raw word is not a signed increment.
+    '
+    ' THE ENCODING, from its only writer, setTargetAccel(): `nTgtIncr ZEROX= 30` keeps bits 0..30 and
+    '  CLEARS THE SIGN, then bit 31 is overwritten with the sync flag. So the increment's sign lives
+    '  in BIT 30, and bit 31 means SYNC and nothing else. abs() on the raw word therefore reads a
+    '  REVERSE command as a huge positive number, and the commanded rate came out NEAR-CONSTANT at
+    '  ~5,650 ticks/s instead of 49 at an eighth and 98 at a quarter.
+    '
+    ' MEASURED, and the arithmetic matches the log to the digit: the raw form computed 5_689 at
+    '  incre -18_375_000 and 5_640 at -36_750_000, exactly what BS-POINT3 carried
+    '  (DOCs/analyses/bench/2026-09-22/VISIT-7C-EVALUATION.md sec 4).
+    '
+    ' !!! `& !SYNC_BIT` IS NOT THE FIX, though it is what the other three readers use. Those three
+    '  only test the result against zero, where a lost sign cannot matter. Here it decides the
+    '  magnitude: masking alone still leaves a reverse command reading 5_640, and fixes exactly one
+    '  of the four sign/sync combinations. SIGNX 30 strips the sync bit AND restores the sign, and is
+    '  correct for all four. The formula and the shift pair were never wrong.
+    cmdIncre := targetIncre SIGNX 30
+    if cmdIncre <> 0
+        followCmdTicksSec := muldiv64(abs(cmdIncre) >> 9, ...
             HALL_TICKS_PER_CYCLE * (PWM_RATE_IN_HZ / DRIVE_PASS_FRAMES), 1 << 23)
     if (hallWinEntryCt >= HALL_WINDOW_SIZE) and (followCmdTicksSec > 0)
         bFollowValid := TRUE
