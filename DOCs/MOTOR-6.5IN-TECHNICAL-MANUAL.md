@@ -121,9 +121,11 @@ ladder records on both motors. **MEASURED** —
 
 The halls are the one sensor in this system that has never given us a bad reading.
 
-⬚ **What we have never measured is whether the six sectors are equal.** They are nominally 60°
-each; real sensor placement makes them unequal, and on this motor a 1° placement error is 15°
-electrical. See §9, hole H-3.
+**The six sectors are unequal by about ±1° electrical**: LEFT ±0.9°, with sector `101` about 61°
+and `001` about 59° on every leg; RIGHT ±0.55°. That comes from sensor placement, and on this motor
+1° of placement is 15° electrical. ±1° is noise to a 60° sector commutator. It would set the error
+floor for any sub-sector interpolation. MEASURED —
+`DOCs/analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md` §3.5.
 
 ---
 
@@ -604,8 +606,7 @@ Each hole names why it matters and what would settle it. States: **OPEN** ·
 | | *What would settle it:* an A/B of two builds differing only in the servo setpoint (60° against 90°), each run at its own compensating lead so total field placement is held constant and the comparison isolates the split rather than re-testing placement. Run at the quarter rung, where the total is measured. | |
 | **H-2** | **Why L falls with speed** — is the speed dependence a property of the motor (electrical time constant) or of our commutation scheme (loop lag)? The textbook model predicts the opposite sign (§5.2). This decides whether a speed law can be written down or must be measured per motor. | **OPEN** |
 | | *What would settle it:* a third speed point, plus a test that separates the two — the motor's time constant does not care about our pass rate, and our loop lag does. | |
-| **H-3** | **Are the six hall sectors equal?** Unequal sectors would superimpose 6-fold structure inside each electrical cycle and would explain the residual RIGHT-motor asymmetry (§7.3). Sub-sector interpolation, if we ever build it, assumes equal sectors. | **OPEN** |
-| | *What would settle it:* back-EMF zero crossings against hall edges with the bridge coasting and the wheel turned by hand — per-sector, at zero current. | |
+| **H-3** | **Are the six hall sectors equal?** No: they are unequal by about ±1° (§2.3). That is too small to matter to a 60° commutator, and it does **not** explain the residual RIGHT-motor asymmetry (§7.3), because RIGHT has the smaller spread. | **FILLED** |
 | **H-4** | **Is the adopted alignment the global optimum?** About 35% of the electrical cycle has been swept (§4.4); one minimum per direction lies inside it. Theory says there should be only one, but that is an argument. | **OPEN** |
 | | *What would settle it:* a full-cycle sweep, which needs a method that does not drive the motor into the current wall to get there. | |
 | **H-5** | **The optimum at the half rung.** Five attempts, five distinct causes. The most recent is informative rather than a failure: the reachable arc there is 20° wide, torque-bounded at both ends, and the extrapolated optimum sits outside it (§6.2). | **OPEN**, and a candidate for **CLOSED-UNANSWERABLE** |
@@ -688,3 +689,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 |---|---|
 | 2026-09-22 | First issue. Sections 2–8 describe current understanding; section 9 opens eleven holes, and §9.1 states what the second pair of units can add. |
 | 2026-09-22 | §4 gains the cold back-EMF measurement of Z. §6.4 rewritten: the start surge is the duty servo hunting as the ramp accelerates, not a wait at the setpoint — the earlier account did not survive a seed that removed the wait. §3.2 corrected against the code: the phase function is sine, `err_`'s sign, and the servo's band. H-6 reworded to match. |
+| 2026-09-22 | §2.3 states the measured sector widths, and H-3 is FILLED. The earlier update left both still saying the sectors had never been measured. |
