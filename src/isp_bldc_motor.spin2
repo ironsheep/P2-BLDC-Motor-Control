@@ -2286,10 +2286,15 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 
     fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE)
     writeOffsetsTenths(fwdDegrees * TENTHS_PER_DEGREE, revDegrees * TENTHS_PER_DEGREE)
-    ' R18.4: the 6.5in pair is re-derived by the front cog from the lead table (flat until measured, so
-    '  identical to the pair just written); a motor with no lead table keeps its fixed pair
+    ' R18.4: the 6.5in pair is re-derived by the front cog from the measured lead table from its first slot on;
+    '  a motor with no lead table keeps its fixed pair, and so does the legacy control build, whose whole
+    '  point is the old fixed pair
     bLeadWritePending := TRUE
+#ifdef HUB_OFFSETS_LEGACY
+    bLeadScheduled := FALSE
+#else
     bLeadScheduled := (user.MOTOR_TYPE == MOTR_6_5_INCH)
+#endif
     userCmdIncr := 0                    ' R18.4 D-6: nothing commanded, and not short: the driver zeroes lag_held at start
     holdSlotsAgo := SHORT_SLOTS
     lastLagHeldSeen := 0
@@ -2634,10 +2639,11 @@ CON { 6.5in hub commutation: hall zero and per-direction lead }
 #endif
 
     ' R18.4 dynamic lead (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 7 C-A, Stephen's ruling 2026-09-22): the lead
-    '  that minimises current falls with speed -- 28 deg at an eighth, 15.8 at a quarter, measured on both
-    '  motors -- so the front cog re-derives the pair from a table of lead against |drv_incr| once per slot.
-    '  The table is FLAT at HUB_LEAD_DEGR until a live lead-step run measures it (task 3601), so until then
-    '  the drive places the field exactly as the fixed pair does. Tenths of a degree; points at the
+    '  that minimises current changes with speed, so the front cog re-derives the pair from a table of lead
+    '  against |drv_incr| once per slot. The table was measured at Visit 8 under the R18.4 servo (task 3601),
+    '  which moved the minima well below the old servo's 28 / 15.8: 18-23 at an eighth, 3-8 at a quarter,
+    '  8 at half and full. HUB_LEAD_DEGR remains the fixed pair init() writes before the front cog runs,
+    '  and the legacy build's. Tenths of a degree; points at the
     '  eighth, quarter, half and full 18.5 V rungs, one octave apart, interpolated linearly inside each
     '  octave (within ~1 deg of log-speed interpolation at the measured 12.2 deg per doubling).
     LEAD_POINTS           = 4
@@ -2648,10 +2654,13 @@ CON { 6.5in hub commutation: hall zero and per-direction lead }
 DAT ' ---- 6.5in dynamic lead table ----
 
 leadIncrTbl     LONG    18_375_000, 36_750_000, 73_500_000, 147_000_000     ' |drv_incr|, ascending: the 18.5 V eighth, quarter, half and full rungs
-leadTenthsTbl   LONG    HUB_LEAD_DEGR * TENTHS_PER_DEGREE                   ' the lead at each, in tenths: FLAT until measured
-                LONG    HUB_LEAD_DEGR * TENTHS_PER_DEGREE
-                LONG    HUB_LEAD_DEGR * TENTHS_PER_DEGREE
-                LONG    HUB_LEAD_DEGR * TENTHS_PER_DEGREE
+' MEASURED at Visit 8 (task 3601; DOCs/analyses/bench/2026-09-22/VISIT-8-EVALUATION.md 3.5), the lead of
+'  least net current per speed under the R18.4 servo, both motors and signs. PROVISIONAL where marked: the
+'  quarter's minimum sat at the lowest step (3 deg) on 3 of 4, so the next dual-lead steps below it.
+leadTenthsTbl   LONG    205                                                 ' eighth: minima 23 and 18 (both bracketed)
+                LONG    50                                                  ' quarter: 8 bracketed, three EDGE at 3 -- PROVISIONAL
+                LONG    80                                                  ' half: 8 on three, one EDGE at 3
+                LONG    80                                                  ' full: 8 on three, one EDGE at 3
 
 PRI leadTenthsForIncrement(absIncr) : leadTenths | idx, loTenths, hiTenths, spanIncr, leadStep
 ' Return the dynamic lead for a field speed, from the lead table: flat outside its ends, interpolated between points.
@@ -4067,8 +4076,9 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 3         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 4         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
+                                            ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
 
     ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
     LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts

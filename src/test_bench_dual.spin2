@@ -189,6 +189,11 @@
 ''               BM-TAKE: A-6 (a slower command taken while SPIN_UP, R18-DUAL-TAKE-A) and A-8's following case
 ''               (R18-DUAL-FOLAGREE-A). Part D's BLOCKED step polls each wheel's path-limiter view through the
 ''               stall: A-7 (R18-DUAL-HOLDSET-D) and A-8's not-following case (R18-DUAL-NOTFOL-D). drv_rev reads 3.
+''               22 Sep 2026 -- SRC_REV=29, FMT 17: task 3601, from the Visit 8 evaluation. LEAD steps down to
+''               -7 deg (nine steps: 18, 13, 8, 3, -2, -7, 23, 28, 33), since the quarter's minimum sat at the old
+''               lowest step; R18-DUAL-LEAD-KNOWN is retired (its answer was the old servo's). Part D's A-8
+''               not-following cell judges only a poll where the wheel IS short, and the new BM-HOLD logs what
+''               both BLOCKED-step cells were judged on. drv_rev reads 4 (the lead table filled).
 ''
 '' =================================================================================================
 
@@ -252,8 +257,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 28                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 16                                        ' BM- record-format version
+    SRC_REV     = 29                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 17                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -1769,10 +1774,7 @@ sSfCritNotFol   BYTE    "NOT_FOLLOWING", 0
 sSfCellNoStallL BYTE    "R18-DUAL-NOSTALL-L", 0
 sSfCellDbgMaskL BYTE    "R18-DUAL-DBGMASK-L", 0
 sSfCellLeadBrkt BYTE    "R18-DUAL-LEAD-BRKT", 0
-sSfCellLeadKnown BYTE   "R18-DUAL-LEAD-KNOWN", 0
 sSfCritLeadBrkt BYTE    "MIN_BRACKETED", 0
-sSfCritLeadKnown BYTE   "QTR_MIN_LEAD_DEG", 0
-sSfUnitsDeg     BYTE    "DEG", 0
 ' LEAD rung verdict (LEADV_*), task 3583
 tokLeadV        BYTE    "BRACKETED", 0, "EDGE", 0, "NOMEAS", 0
 sSfUnitsCount   BYTE    "COUNT", 0
@@ -5814,6 +5816,7 @@ PRI dStepBlocked() | bArmed, eError, startMs, blockMs, eLeftCode, eRightCode, eR
     bDRest(SIDE_BOTH)
     bInstIdle()
     bInstLagExempt := FALSE
+    dHoldEmit()
 
 PRI dHoldProbeReset() | slotIdx
 ' Clear the BLOCKED step's A-7 / A-8 probe state for both wheels.
@@ -5835,8 +5838,8 @@ PRI dHoldProbe(slotIdx, elapsedMs) | nCmdIncr, nDrvIncr, bShort, nPermille, nPct
 ' A-7 (R18-DUAL-HOLDSET-D): from the first poll that sees the wheel SHORT, the field must settle -- by the
 ' first poll at least A7_SETTLE_MS later, |drv_incr| is at most A7_SETTLE_PCT of the commanded increment.
 ' The shipped driver held drv_incr at the command for the whole stall, so the cell fails on it. A-8's
-' not-following case (R18-DUAL-NOTFOL-D) is judged later, on the last poll before the latch: both readings
-' must then say the wheel is not following. Records the last reading for that.
+' not-following case (R18-DUAL-NOTFOL-D) is judged on the last poll at which the wheel was SHORT: both readings
+' must then say it is not following. dHoldEmit() logs the readings behind both verdicts (BM-HOLD).
 '
 ' @param slotIdx - motor slot
 ' @param elapsedMs - ms since the stall's drive
@@ -5861,10 +5864,28 @@ PRI dHoldProbe(slotIdx, elapsedMs) | nCmdIncr, nDrvIncr, bShort, nPermille, nPct
         ' divided first: |drv_incr| x 100 overflows 32 bits at the very increment the shipped driver held,
         '  which would turn the cell's FAIL case into a pass
         bSfHoldSetOk[slotIdx] := (nCmdIncr <> 0) and (abs(nDrvIncr) <= (abs(nCmdIncr) / 100) * A7_SETTLE_PCT)
-    hpLastPermille[slotIdx] := nPermille
-    hpLastPct[slotIdx] := nPct
-    bSfNotFolRan[slotIdx] := (bPctOk == TRUE) and (hpFirstShortMs[slotIdx] >= 0)
-    bSfNotFolOk[slotIdx] := (nPermille < A8_NOTFOL_PERMILLE) and (nPct < A8_NOTFOL_PCT)
+    ' A-8 not-following is judged only on a poll where the wheel IS short: Visit 8 judged a later poll of a wheel
+    '  that had been short once and was following again, and failed a following wheel (evaluation F-4)
+    if (bShort == TRUE) and (bPctOk == TRUE)
+        hpLastPermille[slotIdx] := nPermille
+        hpLastPct[slotIdx] := nPct
+        bSfNotFolRan[slotIdx] := TRUE
+        bSfNotFolOk[slotIdx] := (nPermille < A8_NOTFOL_PERMILLE) and (nPct < A8_NOTFOL_PCT)
+
+PRI dHoldEmit() | slotIdx
+' BM-HOLD, one per wheel after the BLOCKED step: what A-7 and A-8's not-following verdicts were judged on.
+'
+' @local slotIdx - motor slot
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        recBegin(@"BM-HOLD")
+        benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+        benchLog.naNumField(@"first_short_ms", hpFirstShortMs[slotIdx], LIM_SMALL, hpFirstShortMs[slotIdx] >= 0)
+        benchLog.boolField(@"settle_ran", bSfHoldSetRan[slotIdx])
+        benchLog.boolField(@"settled", bSfHoldSetOk[slotIdx])
+        benchLog.naNumField(@"short_permille", hpLastPermille[slotIdx], LIM_SMALL, bSfNotFolRan[slotIdx] == TRUE)
+        benchLog.naNumField(@"short_pct", hpLastPct[slotIdx], LIM_SMALL, bSfNotFolRan[slotIdx] == TRUE)
+        emitRecord()
 
 PRI dProtectiveStop() : eLeftCode, eRightCode
 ' Both wheels' latched protective-stop causes, without clearing them.
@@ -6879,14 +6900,11 @@ CON { --- LEAD: the live lead-step run that measures the dynamic-lead table (tas
   '  torque bound. Each step is an ordinary measured rung (BM-RUNG .. BM-RUNG3, off_neg / off_pos carry the
   '  pair), and each speed ends with BM-LEADMIN: the lead of least net current and whether it is bracketed.
   LEAD_RUNGS        = 4                                     ' the driver's leadIncrTbl points: eighth, quarter, half, full
-  LEAD_STEPS        = 7                                     ' 18 first (the shipped lead), then down, then up
-  LEAD_QTR_RUNG     = 1                                     ' the quarter: the rung whose answer is already known
-  ' R18-DUAL-LEAD-KNOWN: the quarter's minimum was measured at 15.6-15.9 deg under the old servo; the new one
-  '  holds its error a few degrees differently at low speed, so the band is that value +- 7.5 (one step and a half)
-  LEAD_KNOWN_LO     = 8
-  LEAD_KNOWN_HI     = 23
+  LEAD_STEPS        = 9                                     ' 18 first (the shipped lead), then down to -7, then up to 33
+  ' task 3601: the steps reach -7 because Visit 8 found the quarter's minimum at the old lowest step (3) on 3 of 4.
+  '  The quarter's known answer (R18-DUAL-LEAD-KNOWN) was retired with it: its 15.8 deg was the OLD servo's, and
+  '  Visit 8 showed the new servo moves the optimum by more than its band allowed (evaluation F-5).
   ' R18-DUAL-LEAD-BRKT: of each motor's 2 signs x LEAD_RUNGS speeds, at least this many bracket their minimum
-  '  (the eighth and the quarter did in every scan; the half never has, so it is not required)
   LEAD_BRKT_MIN     = 4
 
   ' LEAD rung verdict (token = the name after LEADV_):
@@ -6900,8 +6918,8 @@ CON { --- LEAD: the live lead-step run that measures the dynamic-lead table (tas
 DAT ' ---- LEAD tables ----
 
 leadRungIncre   LONG    DRIVE_CEILING_INCRE / 8, DRIVE_CEILING_INCRE / 4, DRIVE_CEILING_INCRE / 2, DRIVE_CEILING_INCRE
-leadStepDeg     LONG    18, 13, 8, 3, 23, 28, 33                            ' step order: the shipped lead first
-leadAscIdx      LONG    3, 2, 1, 0, 4, 5, 6                                 ' leadStepDeg's indices by ascending lead
+leadStepDeg     LONG    18, 13, 8, 3, -2, -7, 23, 28, 33                    ' step order: the shipped lead first
+leadAscIdx      LONG    5, 4, 3, 2, 1, 0, 6, 7, 8                           ' leadStepDeg's indices by ascending lead
 
 VAR { LEAD tier state -- cog 0 only }
 
@@ -6909,8 +6927,6 @@ VAR { LEAD tier state -- cog 0 only }
     LONG    bLeadStepValid[LEAD_STEPS]                      ' T/F where T means that step's window was measured
     LONG    sfLeadBrkt[2]                                   ' per motor slot: speeds whose minimum was bracketed
     LONG    sfLeadN[2]                                      ' per motor slot: speeds with any measured step
-    LONG    sfLeadQtrSum[2]                                 ' per motor slot: the quarter's minimum lead, summed over signs
-    LONG    sfLeadQtrN[2]                                   ' per motor slot: signs whose quarter had a minimum
 
 PRI segLead() | side, signMul
 ' LEAD (part LEAD, task 3583): per motor x sign, one lifetime over the four lead-table speeds, stepping the lead live.
@@ -6975,9 +6991,6 @@ PRI leadSign(side, signMul) | slotIdx, rungIdx, stepIdx, motorIncre, leadDeg, ri
             sfLeadN[slotIdx]++
         if eVerdict == LEADV_BRACKETED
             sfLeadBrkt[slotIdx]++
-            if rungIdx == LEAD_QTR_RUNG
-                sfLeadQtrSum[slotIdx] += minLeadDeg
-                sfLeadQtrN[slotIdx]++
     wheelSetLeadScheduled(side)                                                 ' back on, on every path
     bZeroAndWaitStopped(side)
     bInstIdle()
@@ -7052,17 +7065,13 @@ PRI leadMinInet() : minInet | stepIdx, bHaveMin
                 minInet := leadInet[stepIdx]
                 bHaveMin := TRUE
 
-PRI emitLeadCells() | slotIdx, side
-' The LEAD tier's two judged cells per motor: coverage (R18-DUAL-LEAD-BRKT) and the known answer at the quarter
-' (R18-DUAL-LEAD-KNOWN, the mean of the signs' bracketed minima). Either prints NOMEAS when nothing measured it.
+PRI emitLeadCells() | slotIdx
+' The LEAD tier's judged cell per motor: coverage (R18-DUAL-LEAD-BRKT), NOMEAS when nothing measured it.
 '
 ' @local slotIdx - motor slot
-' @local side - that motor's side
 
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
-        side := SIDE_LEFT + slotIdx
-        emitSignoff(@sSfCellLeadBrkt, side, @sSfCritLeadBrkt, sfLeadN[slotIdx] > 0, sfLeadBrkt[slotIdx], LEAD_BRKT_MIN, 2 * LEAD_RUNGS, sfLeadN[slotIdx], @sSfUnitsCount)
-        emitSignoff(@sSfCellLeadKnown, side, @sSfCritLeadKnown, sfLeadQtrN[slotIdx] > 0, sfLeadQtrSum[slotIdx] / (sfLeadQtrN[slotIdx] #> 1), LEAD_KNOWN_LO, LEAD_KNOWN_HI, sfLeadQtrN[slotIdx], @sSfUnitsDeg)
+        emitSignoff(@sSfCellLeadBrkt, SIDE_LEFT + slotIdx, @sSfCritLeadBrkt, sfLeadN[slotIdx] > 0, sfLeadBrkt[slotIdx], LEAD_BRKT_MIN, 2 * LEAD_RUNGS, sfLeadN[slotIdx], @sSfUnitsCount)
 
 PRI wheelSetLeadScheduled(side)
 ' Turn one wheel's dynamic lead schedule back on after the LEAD tier stepped its pair by hand.
@@ -11556,7 +11565,6 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellNoStallL)
                 emitSignoffDecl(@sSfCellDbgMaskL)
                 emitSignoffDecl(@sSfCellLeadBrkt)
-                emitSignoffDecl(@sSfCellLeadKnown)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these

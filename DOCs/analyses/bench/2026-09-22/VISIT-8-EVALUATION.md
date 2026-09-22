@@ -138,6 +138,27 @@ the minimum is at the lowest step (3°), so the true minimum may be lower.
   servo, and the new servo moves the optimum by more than the band allowed.
 - **No step faulted**, including 3° at full speed. The torque wall the offset scan hit is not reached here.
 
+### 3.6 Operator observation, and what the logs say about it
+
+**STEPHEN, 2026-09-22:** *"many of the clicks are gone, but some of the 'kicks' in both increasing and decreasing
+speed are still there. They're just smaller than they used to be."* The sheet asked him to watch starts only; the
+speed-change kicks are an observation nobody asked for, so they are a finding to chase in the logs, never a
+verdict (procedure, *Operator observations*). The next sheet names speed changes as a thing to watch.
+
+The ladder's `BM-RUNGTR`, 84 speed changes per motor, old (pass 2) against new:
+
+| | UP: err_pk mean / max | UP: i_over mean | DOWN: err_pk mean / max | DOWN: i_over mean |
+|---|---|---|---|---|
+| old | 73.5 / 92–93 | 28 | 76.5 / 88–89 | 34–38 |
+| new | **70 / 86** | **45** | 76 / 84–88 | 34–38 |
+
+- **The kicks are smaller in angle,** most clearly on speed-ups. That is consistent with what he felt.
+- **The cell's maximum comes from the two probe rungs above the ceiling** (155 ↔ 165 × 10⁶, i_over 193–233),
+  where duty is pinned on both drivers and the drive has no voltage left to absorb a change. That is why
+  `R17-DUAL-TRKICK-A` barely moved while typical transitions did.
+- **Current overshoot on speed-ups rose (28 → 45 mean),** consistent with the flat lead over-leading at cruise (F-2).
+  The filled table is expected to bring it down, and the next `dual-a` re-reads it (F-8).
+
 ---
 
 ## §4 · What this means for the driver

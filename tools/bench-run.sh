@@ -286,12 +286,12 @@ case "$TIER" in
                     ;;
     # dual-lead (task 3583, R18.4) -- measures the driver's dynamic-lead table. At the eighth, quarter,
     #  half and full speeds, per wheel and direction, the commutation pair is stepped LIVE through a lead
-    #  of 18, 13, 8, 3, 23, 28 and 33 degrees while the wheel runs; each step is a measured rung, and
+    #  of 18, 13, 8, 3, -2, -7, 23, 28 and 33 degrees while the wheel runs; each step is a measured rung, and
     #  each speed ends with BM-LEADMIN. The low leads at high speed can reach the torque wall and fault:
     #  a fault is recovered and the next step runs, and the ladder's current abort still applies.
     dual-lead)      BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_LEAD)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part LEAD (PREFLT, LEAD): each wheel, each direction, held at four speeds up to full while its lead is stepped through seven values. At the higher speeds a low lead may FAULT the motor on purpose (the torque wall); it is recovered and the run goes on. The 10 A abort and the fold-back limiter both apply. Run cap 25 minutes"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part LEAD (PREFLT, LEAD): each wheel, each direction, held at four speeds up to full while its lead is stepped through nine values. At the higher speeds a low lead may FAULT the motor on purpose (the torque wall); it is recovered and the run goes on. The 10 A abort and the fold-back limiter both apply. Run cap 25 minutes"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage
