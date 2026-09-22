@@ -146,6 +146,6 @@ must pass again. A new failure anywhere in part A is a finding against this chan
   size of what is left under load is the tethered floor run's.
 - **The servo setpoint A/B is retired, not deferred.** The driver applies the field at the commanded
   angle and the servo integrates duty until `|err|` equals its setpoint, so at steady state the
-  setpoint and the lead combine **by construction** (`isp_bldc_motor.spin2:4456-4463`, `:4580`). A 90°
+  setpoint and the lead combine **by construction** (`isp_bldc_motor.spin2:4467-4474`, `:4591`). A 90°
   build at a lead 31° higher *is* the 60° build. A bench run would measure an equation.
 - **`L` at a half** (H-5) — unchanged by this pass.
