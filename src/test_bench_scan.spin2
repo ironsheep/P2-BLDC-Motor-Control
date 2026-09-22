@@ -602,7 +602,13 @@ CON { safety thresholds }
     RUN_TIME_CAP_S      = 1_800
     RUN_CHARGE_CAP_MVS  = 432_000                           ' 0.8 Ah at 150 mV/A
     RUN_FAULT_CAP       = 24
-    RUN_ABORT_I_CAP     = 6
+    ' RUN_ABORT_I_CAP was sized when a per-point current abort was an ANOMALY. It is not one any more:
+    '  with the arc bounded by current at every rung, each leg's outer side is EXPECTED to end by
+    '  finding that wall, and finding it is the measurement. There are now 3 rungs x 2 signs x
+    '  2 motors = 12 legs, and the 2026-09-21 20:09 run spent 4 of a cap of 6 on the LOW and QTR legs
+    '  alone, all four legitimate. 16 covers one wall-find per leg with margin, and the run time cap,
+    '  the fault cap and the charge cap all still bound a genuinely misbehaving run.
+    RUN_ABORT_I_CAP     = 16
     DRIFT_FLAG_PCT      = 8
     IMBALANCE_PCT       = 10
     UNSETTLED_PCT       = 3
@@ -1156,6 +1162,7 @@ VAR { sampling state }
     LONG    sampPrevMs
     LONG    sampChargeMvMs
     LONG    sampAbsCount
+    LONG    sampCeilCount                                   ' 2026-09-22: consecutive reads at or above POINT_ABORT_CEIL_MV
     LONG    sampOverCount
     LONG    sampLimitMv
     LONG    bSampPointAbort
@@ -2464,6 +2471,7 @@ PRI beginSampling(limitMv)
 
     flushCharge()
     sampAbsCount := 0
+    sampCeilCount := 0
     sampOverCount := 0
     sampLimitMv := limitMv
     bSampPointAbort := FALSE
@@ -2566,9 +2574,30 @@ PRI pollSample(side) | nowMs, stepMs, senseMv, bCogUp, bFaultNow
             sampAbsCount += 1
         else
             sampAbsCount := 0
+        ' THE FAST CEILING GUARD (2026-09-22). One point's current must never be able to end the RUN,
+        '  and twice in a row it did: the absolute abort needs ABS_ABORT_SAMPLES (4 x 5 ms = 20 ms)
+        '  above 1_500 mV, while the relative guard below needs POINT_ABORT_SAMPLES (40 x 5 ms =
+        '  200 ms). The fatal guard is TEN TIMES FASTER, so clamping the relative guard's THRESHOLD
+        '  below the absolute -- which the previous fix did -- could not win a race it was still
+        '  losing on time. MEASURED: debug_260921-200935.log seq 68, an identical run-ending abort
+        '  with the clamp already in place.
+        ' This guard closes the gap by matching the absolute guard's OWN sample count at a threshold
+        '  below it, so a point on its way to 1_500 is abandoned point-scope first, every time. The
+        '  slow relative guard is left exactly as it was: it exists to tolerate a start transient
+        '  while still catching a point that sits above 2.5x its leg's reference, and making it fast
+        '  would abort good points during spin-up, which is the very thing its 40 samples buy.
+        ' The absolute abort is untouched, and stays first in this chain. It is the unattended-safety
+        '  backstop; the point of the fix is that nothing should ever REACH it.
+        if sampSense >= POINT_ABORT_CEIL_MV
+            sampCeilCount += 1
+        else
+            sampCeilCount := 0
         if sampAbsCount >= ABS_ABORT_SAMPLES
             sideStop(side)                                  ' P6: disable the bridge first
             setRunAbort(AR_ABS_CURRENT, sampSense)
+        elseif (sampCeilCount >= ABS_ABORT_SAMPLES) and (bSampPointAbort == FALSE)
+            sideStop(side)
+            bSampPointAbort := TRUE
         elseif (sampLimitMv > 0) and (sampSense > sampLimitMv)
             sampOverCount += 1
             if (sampOverCount >= POINT_ABORT_SAMPLES) and (bSampPointAbort == FALSE)
@@ -2770,8 +2799,19 @@ PRI runLeg(side, speedIdx, signIdx) | slotIdx, walkSlot, defSwept, refWinTicks, 
             ' itself forever. Each rung walks instead, and finds where its own minimum actually is.
             ' That needs no assumption, and it yields the third and fourth points the speed law
             ' needs as a by-product of measuring properly.
-            stopUp := walkSide(side, speedIdx, signIdx, 1, defSwept, pointLimitMv)
+            ' WALK DOWN FIRST -- the safe direction (2026-09-22). From defSwept, which is the LEGACY
+            '  offset, the minimum lies DOWNWARD at every rung measured: 25 at an eighth, 12 at a
+            '  quarter, near 4 at a half by trend. So downward descends into FALLING current while
+            '  upward climbs into the wall. Taking the up side first spent the half-speed leg's only
+            '  point on the most dangerous offset in the run and ended it -- twice
+            '  (debug_260921-192618.log and -200935.log, `HALF,NEG,side,UP,pts,1,stop,RUN_ABORT`,
+            '  with the DOWN side recording pts,0 because it never got to run).
+            ' This is an ORDER, not an assumption about the answer: both sides still walk, the
+            '  bracket still needs a rise on both sides, and if the safe direction were ever the
+            '  other one the up walk that follows would still find the minimum. All it changes is
+            '  which side gets measured while there is still a run left to measure it in.
             stopDown := walkSide(side, speedIdx, signIdx, -1, defSwept, pointLimitMv)
+            stopUp := walkSide(side, speedIdx, signIdx, 1, defSwept, pointLimitMv)
             refreshLegLimits(defSwept)                      ' CHANGE 1: bound the window at the fault edge
             bBracketed := bEvaluateBracket(side, speedIdx, signIdx, stopUp, stopDown)
             centreDeg := defSwept
