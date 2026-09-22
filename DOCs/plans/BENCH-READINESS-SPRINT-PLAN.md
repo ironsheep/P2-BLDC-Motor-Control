@@ -2657,12 +2657,35 @@ other tasks. You know better what the priority should be."*
 | 5 | «#3590» Measure the hall zero cold, from back-EMF | R18.2e | desk | 4h |
 | 6 | «#3595» Rebuild the driven arc sweep for the lead | R18.2e′ | desk | 4h |
 | 7 | **«#3594» Visit 7c** | **R18.2f** | **bench, ~40 min + an attended hand-turn tier** | 3h |
-| 8 | «#3589» Design the sensor integration | R18.3 | desk | 5h |
-| 9 | «#3583» Build the drive change | R18.4 | desk | 8h |
-| 10 | «#3584» Visit 8 | R18.5 | bench | 4h |
+| 8 | «#3596» R18.3's **desk half** — the contract, the two wheels, the cog budget | R18.3 | desk, **needs no bench answer** | 2h |
+| 9 | «#3589» Design the sensor integration — the **bench-gated** half | R18.3 | desk, after Visit 7c | 3h |
+| 10 | «#3583» Build the drive change | R18.4 | desk | 8h |
+| 11 | «#3584» Visit 8 | R18.5 | bench | 4h |
 
 The tail is unchanged: «#3585» (benched), «#3591», «#3576», «#3515», «#3516». Out of release:
 «#3506», «#3532», «#3562», and now «#3592».
+
+### R18.3 split 2026-09-22 — so the roster can always offer an unblocked item
+
+**The defect this fixes is in the plan, not in the execution.** R18 was written as a strict chain, so
+every driver decision sat behind every measurement, and the moment the desk work ran out the roster
+had nothing to offer but the instrument in front of me. That is the random walk the front ledger was
+built to detect, and a ledger that detects it without a startable alternative only reports the problem.
+
+**The split is by gate, not by size.** A decision belongs in «#3589» if and only if a Visit 7c answer
+decides it: which knob carries the lead (the setpoint A/B), the start-transient mechanism (the START
+trace), the speed law for `L` (`L` at a half, still never obtained), and back-EMF's usable range (the
+ALIGN tier). **Everything else in R18.3 was never bench-gated** and moves to «#3596»: the user-visible
+contract, the two-wheel consequence, the PASM cog budget, and the halls/current-sense rows of the
+sensor table.
+
+⭐ **What made the contract ripe is that the measurement already shipped.** `PUB testGetFollowing()`
+landed at `31c8b91` (`isp_bldc_motor.spin2:1468`) and has **no ceiling**, unlike `err` held near
+`LAG_HOLD` or duty pinned at its cap. Meanwhile `DCS_AT_SPEED` is set by the PASM driver at `:4269`
+and `:4302` purely on reaching the commanded increment — **AT_SPEED is a commanded claim today**. So
+"does AT_SPEED become a *measured* claim, and what do `getPower()`, `isTurning()` and `setMaxSpeed()`
+mean when the drive knows a command is unachievable" is answerable at the desk **now**. R18.1's rule
+is untouched: «#3596» decides the contract, **no control path reads the observable until R18.4**.
 
 ### Ruling carried into the plan: build the instrument now, generalise it later
 
