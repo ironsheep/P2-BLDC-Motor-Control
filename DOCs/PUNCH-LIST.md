@@ -5283,6 +5283,21 @@ case before the cell is trusted. **The floor run («#3591»)** is the other plac
 
 ---
 
+### PL-107 -- the speed ceilings predate the R18.4 drive, and the feedforward's scale is the same number
+
+**Found 2026-09-22, Visit 8b** ([evaluation](analyses/bench/2026-09-22/VISIT-8B-EVALUATION.md) §3.5, F-11/F-12).
+- **The ceilings are now conservative.** The power table's ceiling increments (`confgurePowerLimits()`: 147 × 10⁶
+  at 18.5 V) were set when the drive saturated duty at rung 8. On DRIVER_REV 4, rungs 9 and 10 (147, 155 × 10⁶)
+  run at duty 22,400–23,900, below the 24,264 cap. Only the 165 × 10⁶ probe rung saturates. MEASURED.
+- **One value carries two meanings.** `ff_ceiling := abs(maxFwdIncreAtPwr)`, so D-1's feedforward scale IS the
+  command ceiling. Raising the ceiling would silently weaken the feedforward and hand its work back to the trim.
+  Doctrine D7: one value, one meaning.
+
+**Disposition:** the limits study Stephen asked for on 2026-09-22 (*"move them purposefully"*) owns both. Split the
+feedforward's constant from the ceiling first, then move the ceilings from a measurement to the fault edge.
+
+---
+
 ## Removed from this list
 
 **Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,

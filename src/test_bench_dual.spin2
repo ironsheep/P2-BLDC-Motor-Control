@@ -198,6 +198,9 @@
 ''               schedule gives at the wheel's present speed (testGetLead()), not the compiled fixed pair, which
 ''               is now the expectation only when the schedule is off. On the filled table it would otherwise
 ''               have failed every rung whose lead is not 18.
+''               22 Sep 2026 -- SRC_REV=31, FMT 17: task 3601, Visit 8b F-10. A LEAD step counts toward its
+''               speed's minimum only if the wheel ran at >= LEAD_FOLLOW_PCT of its commanded rate: at too low a
+''               lead the rotor slows, and a slower wheel draws less current for that reason alone.
 ''
 '' =================================================================================================
 
@@ -261,7 +264,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 30                                       ' hand-bumped whenever this file changes
+    SRC_REV     = 31                                       ' hand-bumped whenever this file changes
     FMT_VERSION = 17                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -6911,6 +6914,7 @@ CON { --- LEAD: the live lead-step run that measures the dynamic-lead table (tas
   '  Visit 8 showed the new servo moves the optimum by more than its band allowed (evaluation F-5).
   ' R18-DUAL-LEAD-BRKT: of each motor's 2 signs x LEAD_RUNGS speeds, at least this many bracket their minimum
   LEAD_BRKT_MIN     = 4
+  LEAD_FOLLOW_PCT   = 98                                    ' a step's current counts only if it ran at >= this % of commanded
 
   ' LEAD rung verdict (token = the name after LEADV_):
   '  LEADV_BRACKETED - the least current is at an interior step, with both neighbours measured
@@ -6985,7 +6989,9 @@ PRI leadSign(side, signMul) | slotIdx, rungIdx, stepIdx, motorIncre, leadDeg, ri
                 wheelSetOffsets(side, wheelL.HUB_HALL_ZERO_DEGR + leadDeg, wheelL.HUB_HALL_ZERO_DEGR - leadDeg)
                 safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE)
                 rungEmitAll(SEG_LEAD, rid, rungIdx, side, motorIncre)
-                bLeadStepValid[stepIdx] := bRgWindowValid and (bLifeZeroValid[slotIdx] <> FALSE) and (safeEvent == SAFE_NONE)
+                ' a step counts only if the wheel FOLLOWED: at too low a lead the rotor slows, and a slower
+                '  wheel draws less current for that reason alone (Visit 8b F-10: 3 deg ran at 91 % at an eighth)
+                bLeadStepValid[stepIdx] := bRgWindowValid and (bLifeZeroValid[slotIdx] <> FALSE) and (safeEvent == SAFE_NONE) and (bLeadFollowed(motorIncre) == TRUE)
                 leadInet[stepIdx] := rsIMeanX10 - lifeZeroX10[slotIdx]
                 bRungFaultRecover(SEG_LEAD, side, motorIncre, safeEvent)          ' a torque-wall fault is recovered, and the next step runs
                 if (safeEvent == SAFE_ABS_ABORT) or (safeEvent == SAFE_INST_STALL)
@@ -7000,6 +7006,17 @@ PRI leadSign(side, signMul) | slotIdx, rungIdx, stepIdx, motorIncre, leadDeg, ri
     bZeroAndWaitStopped(side)
     bInstIdle()
     wheelStop(side)
+
+PRI bLeadFollowed(motorIncre) : bFollowed | predX10
+' Whether the rung just measured ran at its commanded rate, within LEAD_FOLLOW_PCT (task 3601, Visit 8b F-10).
+'
+' @param motorIncre - the rung's signed increment
+' @returns bFollowed - T/F where T means |rate| is at least LEAD_FOLLOW_PCT % of |predicted|
+'
+' @local predX10 - the predicted rate, ticks/s x 10
+
+    predX10 := abs(predictX10(motorIncre))
+    bFollowed := (predX10 > 0) and (abs(rsRateX10) * 100 >= predX10 * LEAD_FOLLOW_PCT)
 
 PRI leadMinimum() : minLeadDeg, eVerdict | ascPos, stepIdx, minPos, bHaveMin
 ' The lead of least net current among this speed's measured steps, and whether it is bracketed.
