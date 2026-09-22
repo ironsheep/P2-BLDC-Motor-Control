@@ -140,8 +140,10 @@ electrical. See §9, hole H-3.
 | Sense scale | Rev A **5 mV/A** (5 mΩ, no amplifier) · Rev B **150 mV/A** (3 mΩ × INA180B2 gain 50) | ASSUMED (vendor) |
 | Minimum dead-time | **250 ns, both revisions** — set by MOSFET response, not by driver speed | ASSUMED (vendor) |
 
-All bench work in this manual was done on **Rev B** boards, at 30× the sense resolution of Rev
-A. At 10 A, Rev A presents 50 mV to a 3.3 V ADC and Rev B presents 1.5 V. Rev B is the better
+**Every measurement in this manual was taken on the two units of the Rev B platform.** Two more
+units of this motor exist on a Rev A platform; what they can and cannot add, and when, is §9.1.
+
+Rev B has 30× the sense resolution of Rev A. At 10 A, Rev A presents 50 mV to a 3.3 V ADC and Rev B presents 1.5 V. Rev B is the better
 instrument by a wide margin, and that is why measurements are taken there.
 
 Full vendor text and part numbers: `DOCs/analyses/BOARD-REVISION-FACTS.md`.
@@ -594,10 +596,48 @@ Each hole names why it matters and what would settle it. States: **OPEN** ·
 | | *What would settle it:* a speed ladder run to the fault edge in both directions at the shipped alignment. | |
 | **H-10** | **Whether the drive knows it is following.** The driver carries a measured-rate-versus-commanded reading with no ceiling, which is what a droop would show up in — but the reading is not yet trustworthy end to end. | **OPEN** |
 | | *What would settle it:* a scan run re-judging the reading against a corrected denominator. | |
+| **H-11** | **Unit-to-unit variation.** Every measurement in this manual comes from the **two** units on the Rev B platform. Z agrees within 0.55° between them — encouraging, and not a population. **Four units of this motor exist**: two on the Rev B platform and two on a Rev A platform. | **OPEN** |
+| | *What would settle it:* the other two units. They divide into two measurements with very different prerequisites — see §9.1. | |
 
-⬚ **Unit-to-unit variation is not characterised at all.** Everything here comes from two motors
-on one platform. Z agrees within 0.55° between them, which is encouraging and is not a
-population.
+### 9.1 · What the Rev A pair can contribute, and when
+
+The second pair is a real chance to turn single-platform numbers into a population of four, but
+the two quantities are not equally available, and the difference is the current channel.
+
+**Z — the hall zero — needs no current and no drive.** It is measured with the bridge
+**coasting**: the motor is never powered, the wheel is turned by hand, and the hall zero comes
+from the phase voltages the motor generates itself. Nothing in that method reads the
+current-sense channel, so Rev A's 30×-coarser sense (§3.1) does not degrade it, and nothing can
+fault, abort on current, or run away because nothing is ever driven. **This measurement does not
+wait on the driver work at all.**
+
+⬚ One thing to check before assuming it ports: our code scales the three phase channels from
+the P2's own GIO/VIO calibration, with no board-revision term anywhere in that path — only the
+*current* channel carries a per-revision constant. That says our **software** treats the phase
+channels identically on both boards. Whether the two **boards** present phase voltage at the
+same scale is not addressed by the vendor comparison in `BOARD-REVISION-FACTS.md`, which covers
+the current sense and the gate driver and is silent on phase sensing. Confirm it before trusting
+a Rev A phase reading, or the first Rev A leg is measuring the board.
+
+**L — the lead — needs the motor driven, and that is the part that waits.** Two reasons, both
+real:
+
+1. **Safety.** Rev B exists because Rev A boards were damaged in service, and the protection Rev
+   A lacks is a current limit. The driver work adds exactly that (§7.2). Driving a Rev A board
+   hard before it lands is spending a board to learn something the Rev B pair already told us.
+2. **Resolution.** L is found by locating a *current minimum*, and Rev A presents current to the
+   ADC at 5 mV/A against Rev B's 150 mV/A. At the shipped alignment the whole signal is a few
+   hundred millivolts on Rev B, so the same measurement on Rev A sits in the bottom two percent
+   of the range. Expect materially wider error bars, and say so rather than comparing a Rev A L
+   to a Rev B L as though the two had equal weight.
+
+**So the sequence is: Z on the Rev A pair is available early and cheaply and would take the
+population from two to four on the one quantity that is pure motor geometry. L on the Rev A pair
+waits for the current limit, and arrives with a worse error bar than anything in §5.2.**
+
+⭐ That split is worth noticing on its own: **the quantity that belongs to the motor is the one
+that can be measured on any board, and the quantity that belongs to our driver is the one that
+depends on which board it is.** That is §1.3's attribution showing up as a scheduling fact.
 
 ---
 
@@ -621,4 +661,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 
 | Date | Change |
 |---|---|
-| 2026-09-22 | First issue. Sections 2–8 describe current understanding; section 9 opens ten holes. |
+| 2026-09-22 | First issue. Sections 2–8 describe current understanding; section 9 opens eleven holes, and §9.1 states what the second pair of units can add. |
