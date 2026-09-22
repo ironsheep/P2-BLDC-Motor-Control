@@ -2734,3 +2734,15 @@ we'll make final adjustments once we understand the results from the testing."*
 - hall-timing interpolation (C-C), which was priced only as C-D's other route.
 
 The release-window capture (§7 C-B) is that delta release's first measurement.
+
+### R18.7 — move the limits the old drive set, on purpose
+
+Visits 8 and 8b certified the drive change and filled the lead table (R18.5, R18.6, both closed). Cruise current
+fell 22–74 %, and the top rungs no longer saturate. **STEPHEN, 2026-09-22:** *"look for values that were limits
+that were put in place before we had the new drive technology … let's move them purposefully"*, and *"Identify
+which limits are in consideration, and then how you'd run experiments to move them … and then let's plan for
+that."*
+
+The inventory, the experiments and the steps are in [`LIMITS-RESET-PLAN.md`](LIMITS-RESET-PLAN.md), with tasks
+«#3603» (E0: split the feedforward constant from the ceiling), «#3604» (build E1–E4 and the Visit 9 sheet) and
+«#3605» (Visit 9, then move the limits). The loaded margin stays with the floor run («#3591» at «#3576»).
