@@ -88,6 +88,21 @@ CON { Public Interface Constants }
     '  HS_LIMITED  - held at its effort ceiling longer than the time limit; the phases are shorted
     #0, HS_OFF, HS_HOLDING, HS_SLIPPED, HS_LIMITED
 
+    ' Health Check Bits (getHealth()): the checks start() runs with the motor at rest, nothing moving
+    '  HLT_HALLS      - the hall sensors read a legal code, and none has read an illegal one since start
+    '  HLT_SENSE_ZERO - the current sense reads a plausible zero with the bridge off
+    '  HLT_PHASE_U/V/W - that motor lead is connected: its voltage followed another phase's through the windings,
+    '                    and the phase itself could be driven. One open lead fails its own bit; no motor fails all three
+    HLT_HALLS       = 1 << 0
+    HLT_SENSE_ZERO  = 1 << 1
+    HLT_PHASE_U     = 1 << 2
+    HLT_PHASE_V     = 1 << 3
+    HLT_PHASE_W     = 1 << 4
+    HLT_ALL_CHECKS  = HLT_HALLS | HLT_SENSE_ZERO | HLT_PHASE_U | HLT_PHASE_V | HLT_PHASE_W
+    '  HLT_WIRING     - checkWiring() only (it moves the wheel): one electrical cycle each way moved the wheel the same
+    '                   distance both ways with no fault and no bad hall code -- catches swapped or dead hall or phase wiring
+    HLT_WIRING      = 1 << 5
+
     MOTOR_ID_STRLEN = 10
 
     ' Error codes: every command method returns NO_ERROR or one of these, and records it for getError().
@@ -219,6 +234,7 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError, b
         eError := launchFront(bParked)
         if eError == NO_ERROR
             captureRestZero()    ' PL-45: the driver is confirmed running and released; nothing has driven it yet
+            runStartChecks()     ' R19.4: nothing moves; getHealth() reports
             ok := motorCog - 1    ' public contract: the driver cog's id (0-7), per @returns
 
 PUB startOwned(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
@@ -967,6 +983,141 @@ PUB captureRestZero() | idx
             waitms(REST_ZERO_SAMPLE_MS)
             restZeroAddSample()
         restZeroFinish()
+
+PUB runStartChecks() | ePhase, eOther, nSample, nPhaseMv[3], nFollows[3], bDriven[3]
+'' INTERNAL USE: the checks start() runs at rest, nothing moving, after the rest zero (R19.4); ~40 ms
+''
+'' Call once, after captureRestZero() (or the owner's rest-zero window), before any drive request: start()/startEx()
+'' call this themselves. Judges the hall code, the current sense's rest zero and each motor lead, and records the
+'' verdict for getHealth(). The lead check (BR_PROBE) switches one phase at 50 % with the other two off: there is no
+'' current path, so nothing moves, and through the windings the undriven phases' voltages follow the driven one's.
+'' A phase that follows no other phase, or cannot itself be driven, fails its HLT_PHASE_* bit.
+
+' Local Variables:
+' @local ePhase - the phase being probed, PRB_U..PRB_W
+' @local eOther - a phase index 0..2 while reading or judging
+' @local nSample - the reading loop counter
+' @local nPhaseMv - this probe's averaged U, V and W readings, mV
+' @local nFollows - per phase, the probes in which it followed the driven phase
+' @local bDriven - per phase, T/F where T means it read at least CONT_MIN_DRIVEN_MV when it was the one driven
+
+    healthChecked := HLT_ALL_CHECKS
+    healthFailed := 0
+    if ((hall & %111) == %000) or ((hall & %111) == %111) or (hall_illegal <> 0)
+        healthFailed |= HLT_HALLS
+    if (restZeroSenseMv < REST_ZERO_MIN_MV) or (restZeroSenseMv > REST_ZERO_MAX_MV)
+        healthFailed |= HLT_SENSE_ZERO
+    longfill(@nFollows, 0, 3)
+    longfill(@bDriven, FALSE, 3)
+    repeat ePhase from PRB_U to PRB_W
+        probe_phase := ePhase                                                   ' the driver's restBridge takes BR_PROBE on its next pass
+        waitms(PROBE_SETTLE_MS)
+        longfill(@nPhaseMv, 0, 3)
+        repeat nSample from 1 to PROBE_SAMPLES
+            nPhaseMv[0] += sense_u_mV
+            nPhaseMv[1] += sense_v_mV
+            nPhaseMv[2] += sense_w_mV
+            waitms(1)
+        repeat eOther from 0 to 2
+            nPhaseMv[eOther] /= PROBE_SAMPLES
+            probeMv[(ePhase - PRB_U) * 3 + eOther] := nPhaseMv[eOther]
+        bDriven[ePhase - PRB_U] := (nPhaseMv[ePhase - PRB_U] >= CONT_MIN_DRIVEN_MV)
+        repeat eOther from 0 to 2
+            if (eOther <> ePhase - PRB_U) and (nPhaseMv[eOther] * 100 >= nPhaseMv[ePhase - PRB_U] * CONT_FOLLOW_PCT) and (bDriven[ePhase - PRB_U] == TRUE)
+                nFollows[eOther]++
+    probe_phase := PRB_NONE                                                     ' restBridge restores the stop mode's bridge
+    waitms(PROBE_SETTLE_MS)
+    repeat eOther from 0 to 2
+        if (nFollows[eOther] == 0) or (bDriven[eOther] == FALSE)
+            healthFailed |= HLT_PHASE_U << eOther
+    debug[user.DBGCH_LIFECYCLE]("* start checks ", uhex_long(healthChecked), uhex_long(healthFailed), sdec_long(restZeroSenseMv), sdec_long_array(@probeMv, 9))
+
+PUB checkWiring() : eError | nStartPos, nMidPos, nMissed0, nIllegal0, bLegsOk
+'' Move the wheel one electrical cycle forward and back (about 3.5 cm at the tyre on the 6.5in motor) to prove the hall
+'' and phase wiring, and record the verdict as getHealth()'s HLT_WIRING
+''
+'' Opt-in: this moves the wheel, so call it only when the robot may move a little. It catches what start()'s checks,
+'' which move nothing, cannot: a swapped hall pair, swapped phase leads, a dead hall line or a motor that does not
+'' turn. Blocks about half a second, at most twice WALK_LEG_TIMEOUT_MS; the motor ends at rest per holdAtStop(), and
+'' the position tracking (getDistance(), getRotationCount()) is reset.
+''
+'' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it), or ERR_NOT_STARTED, also recorded for getError()
+
+' Local Variables:
+' @local nStartPos - the driver's hall position before the first leg
+' @local nMidPos - the hall position between the legs
+' @local nMissed0 - the missed-transition count before the walk
+' @local nIllegal0 - the illegal-code long before the walk
+' @local bLegsOk - T/F where T means both legs were driven, stopped at rest and did not fault
+
+    eError := NO_ERROR
+    if senseCog == 0
+        eError := recordError(ERR_NOT_STARTED)
+    else
+        nMissed0 := hall_missed
+        nIllegal0 := hall_illegal
+        nStartPos := pos
+        bLegsOk := bWalkLeg(WALK_POWER)
+        nMidPos := pos
+        if bLegsOk == TRUE
+            bLegsOk := bWalkLeg(-WALK_POWER)
+        bJudgeWalk(nMidPos - nStartPos, pos - nMidPos, bLegsOk, (hall_missed == nMissed0) and (hall_illegal == nIllegal0))
+
+PUB bJudgeWalk(nFwdTicks, nRevTicks, bLegsOk, bHallsClean) : bPassed
+'' INTERNAL USE: judge a wiring walk and record it as HLT_WIRING (checkWiring(), and isp_steering_2wheel's per wheel)
+''
+'' @param nFwdTicks - the first leg's raw hall ticks
+'' @param nRevTicks - the second leg's raw hall ticks
+'' @param bLegsOk - T/F where T means both legs were driven, stopped at rest and did not fault
+'' @param bHallsClean - T/F where T means no missed transition and no illegal code during the walk
+'' @returns bPassed - T/F where T means the walk proves the wiring
+
+    walkFwdTicks := nFwdTicks
+    walkRevTicks := nRevTicks
+    bPassed := bLegsOk and bHallsClean and (abs(nFwdTicks) >= WALK_TICKS) and (abs(nFwdTicks) <= WALK_TICKS + WALK_OVERSHOOT_TICKS)
+    bPassed &= (abs(nRevTicks) >= WALK_TICKS) and (abs(nRevTicks) <= WALK_TICKS + WALK_OVERSHOOT_TICKS) and ((nFwdTicks > 0) <> (nRevTicks > 0))
+    healthChecked |= HLT_WIRING
+    if bPassed == TRUE
+        healthFailed &= !HLT_WIRING
+    else
+        healthFailed |= HLT_WIRING
+    debug[user.DBGCH_LIFECYCLE]("* wiring walk ", sdec_long(nFwdTicks), sdec_long(nRevTicks), sdec_long(bLegsOk), sdec_long(bHallsClean), sdec_long(bPassed))
+
+PUB testGetWalk() : nFwdTicks, nRevTicks
+'' TEST USE: the raw hall ticks each leg of the last wiring walk moved (R19.4)
+''
+'' @returns nFwdTicks - the first leg's ticks
+'' @returns nRevTicks - the second leg's ticks
+
+    nFwdTicks := walkFwdTicks
+    nRevTicks := walkRevTicks
+
+PUB getHealth() : nChecked, nFailed
+'' Return what start() checked with the motor at rest, and which checks failed: HLT_* bits
+''
+'' HLT_HALLS (the hall sensors), HLT_SENSE_ZERO (the current sense), and HLT_PHASE_U, HLT_PHASE_V, HLT_PHASE_W (each
+'' motor lead connected and drivable). An open lead fails its own bit; no motor at all fails all three. Nothing moves
+'' during the checks. A motor that fails one still starts: what to do about it is the program's choice. HLT_WIRING
+'' joins them once checkWiring() has run.
+''
+'' @returns nChecked - the HLT_* bits checked since start(); 0 before start()
+'' @returns nFailed - the HLT_* bits that failed; 0 when every check passed
+
+    nChecked := healthChecked
+    nFailed := healthFailed
+
+PUB testGetProbe(ePhase) : nUMv, nVMv, nWMv
+'' TEST USE: the three phase voltages start()'s lead check read while probing {ePhase} (R19.4)
+''
+'' @param ePhase - PRB_U, PRB_V or PRB_W: the phase that was driven
+'' @returns nUMv - the U phase's reading, mV; 0 for any other {ePhase}
+'' @returns nVMv - the V phase's reading, mV
+'' @returns nWMv - the W phase's reading, mV
+
+    if (ePhase >= PRB_U) and (ePhase <= PRB_W)
+        nUMv := probeMv[(ePhase - PRB_U) * 3 + 0]
+        nVMv := probeMv[(ePhase - PRB_U) * 3 + 1]
+        nWMv := probeMv[(ePhase - PRB_U) * 3 + 2]
 
 PUB getCurrent() : fAmps, fWatts
 '' Returns the latest current sense values, net of the rest zero taken at start (PL-45)
@@ -2250,6 +2401,27 @@ PUB getposTrkHallTicks() : retv
 
     retv := posTrkHallTicks
 
+PRI bWalkLeg(power) : bOk | startMs
+' Drive one leg of checkWiring(): WALK_TICKS at {power}, then wait, bounded, for rest.
+'
+' @param power - the leg's power, its sign the direction
+' @returns bOk - T/F where T means the leg was driven, came to rest and did not fault
+
+' Local Variables:
+' @local startMs - getms() when the leg was posted
+
+    bOk := (postRequest(REQ_RESET_TRACKING, 0, 0, 0) == NO_ERROR)              ' the distance limit counts from the tracking's zero
+    if bOk == TRUE
+        bOk := (postRequest(REQ_DRIVE_DISTANCE, WALK_TICKS, power, FALSE) == NO_ERROR)
+    if bOk == TRUE
+        startMs := getms()
+        waitms(WALK_START_MS)
+        repeat until (drv_state == DCS_STOPPED) or (drv_state == DCS_FAULTED) or (getms() - startMs >= WALK_LEG_TIMEOUT_MS)
+            waitms(1)
+        bOk := (drv_state == DCS_STOPPED)
+        if bOk == FALSE
+            postRequest(REQ_STOP, 0, 0, 0)                                      ' a leg that faulted or timed out ends stopped
+
 PRI releasePinBaseClaim()
 ' AE: free whichever slot this instance currently owns (matched by @pinbase, a stable
 ' per-instance identity), so re-init or stop()/restart on the same or a different base never
@@ -2623,6 +2795,13 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     bDerated := FALSE
     blockedPasses := 0
     blockedPos := 0
+    ' R19.4: nothing checked and nothing probed until runStartChecks()
+    probe_phase := PRB_NONE
+    healthChecked := 0
+    healthFailed := 0
+    longfill(@probeMv, 0, 9)
+    walkFwdTicks := 0
+    walkRevTicks := 0
     ' R19.1: no hold before the front cog runs, so the driver at rest applies duty_min exactly as before
     hold_duty := duty_min
     hold_short := FALSE
@@ -3165,7 +3344,7 @@ PRI isAbiLayoutValid() : bValid
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
     ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd
-    bValid &= (@brake_y - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    bValid &= (@probe_phase - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -3186,7 +3365,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@brake_y - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@probe_phase - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -3195,8 +3374,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@brake_y
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @brake_y))
+    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@probe_phase
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @probe_phase))
 
 CON ' --- HDMI Debug Support ---
 
@@ -3405,8 +3584,10 @@ CON { front cog requests }
     '  REQ_SET_TIMEOUT    - arg1 ms, or CMD_TIMEOUT_OFF: set the command timeout and restart its clock (S-8)
     '  REQ_SET_HOLD       - arg1 ceiling %, arg2 rise ms, arg3 limit ms: replace the hold's limits (TEST-USE, R19.1)
     '  REQ_SET_FAULT      - arg1 FR_* mode, arg2 brake %: choose the response to a position fault (TEST-USE, R19.3)
+    '  REQ_WALK           - isp_steering_2wheel only: arg1 stop ticks, arg2 left power, arg3 right power: each wheel's
+    '                       own signed distance move, both synchronized (its checkWiring(), R19.4)
     '  REQ_EXIT           - answer every open request, acknowledge, and park (stop())
-    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_SET_HOLD, REQ_SET_FAULT, REQ_EXIT
+    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_SET_HOLD, REQ_SET_FAULT, REQ_WALK, REQ_EXIT
 
     ' The order a pass applies requests in, by class:
     '  REQ_CLASS_ESTOP - REQ_ESTOP, first, so an e-stop posted with a drive in the same pass refuses the drive
@@ -4297,10 +4478,16 @@ CON { driver internal Constants }
     '             short that caps the braking current; no rotor angle needed (R19.3). While a low side is off
     '             the phase current returns to the supply through the high-side diodes: this brake REGENERATES,
     '             so a supply that cannot sink current sees its voltage rise.
+    '  BR_PROBE - at rest only, for the start-time continuity check (R19.4): one phase (probe_phase_) switches at
+    '             50 % with its dead gap, the other two have all FETs off. No current path exists, so nothing
+    '             moves; through the windings the undriven phases' voltages follow the driven one's.
     '  Which state each stop path takes: at rest SM_FLOAT -> BR_COAST, SM_BRAKE -> BR_DRIVE (hold) or, handed
     '  off, BR_SHORT; a fault -> faultResponse (the response mode decides); an e-stop -> BR_SHORT whatever the
     '  stop mode. The table lowy_tbl, indexed by these values, holds each undriven state's low-side Y.
-    #0, BR_DRIVE, BR_SHORT, BR_COAST, BR_BRAKE
+    #0, BR_DRIVE, BR_SHORT, BR_COAST, BR_BRAKE, BR_PROBE
+
+    ' R19.4: which phase the continuity probe drives (probe_phase)
+    #0, PRB_NONE, PRB_U, PRB_V, PRB_W
 
     ' R19.3 (task 3609): the response to a position fault (|err| >= 125 while driven), testSetFaultResponse()
     '  FR_SHIPPED - the bridge takes the stop mode's fault state at once: SM_FLOAT coasts, SM_BRAKE shorts
@@ -4339,12 +4526,12 @@ CON { driver internal Constants }
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 20
-    DRVR_PARAMS_LONGS_COUNT     = 20
+    DRVR_PARAMS_LONGS_COUNT     = 21
 
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 9         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 10        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4352,6 +4539,7 @@ CON { driver internal Constants }
                                             ' 7: the clip-free duty ceiling is the drive; the 6.5in ceilings 12 % higher, the floor 5.4x lower (task 3605)
                                             ' 8: the hold at rest follows the load, then hands off to the phase short and reports it (task 3608)
                                             ' 9: a selectable fault response: re-sync from the halls and stop, or the graded short BR_BRAKE (task 3609)
+                                            ' 10: start-time checks (BR_PROBE lead check, halls, sense zero), getHealth(), checkWiring() (task 3610)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4384,6 +4572,18 @@ CON { driver internal Constants }
     HOLD_LIMIT_MS               = 10_000    ' ms at the ceiling before the hold hands off to the phase short
     HOLD_LIMIT_MS_MAX           = 600_000   ' the longest time limit testSetHoldLimits() accepts, 10 minutes
     HOLD_RISE_MS_MAX            = 10_000    ' the slowest rise testSetHoldLimits() accepts
+    ' R19.4 (task 3610): the start-time checks (runStartChecks()). PROVISIONAL bands; Visit 10's B-2 and B-3 size them.
+    REST_ZERO_MIN_MV            = -100      ' the current sense's rest zero must lie in this band (left board MEASURED
+    REST_ZERO_MAX_MV            = 200       '  7.1-8.5 mV, PL-45); a dead or railed channel falls outside it
+    PROBE_SETTLE_MS             = 5         ' ms the probe holds a phase before its readings are taken
+    PROBE_SAMPLES               = 4         ' readings averaged per probe, 1 ms apart
+    CONT_MIN_DRIVEN_MV          = 200       ' the driven phase must read at least this (a dead high side does not)
+    CONT_FOLLOW_PCT             = 50        ' an undriven phase follows when it reads at least this % of the driven one
+    WALK_TICKS                  = HALL_TICKS_PER_CYCLE  ' checkWiring(): one electrical cycle each way
+    WALK_POWER                  = 10        ' PROVISIONAL: the power each leg drives at; Visit 10's B-5 sizes it
+    WALK_OVERSHOOT_TICKS        = 3         ' a leg may coast this far past its limit and still pass
+    WALK_START_MS               = 20        ' ms a leg waits before it looks for the stop, so it does not read the rest it left
+    WALK_LEG_TIMEOUT_MS         = 2_000     ' a leg that has not stopped by then fails
     PERMILLE_FULL               = 1000      ' D-6: a fraction of the commanded rate, in thousandths
 
     ' S-2 (same design, section 3.4): phase-current limits from the MOSFET both board revisions use, MCAC85N06Y
@@ -4490,7 +4690,7 @@ VAR  {  Motor Parameters  }
 ' -----------------------------------
 ' VALUES copied to driver each cycle
 ' -----------------------------------
-' TABLE of  20 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
+' TABLE of  21 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -4511,6 +4711,7 @@ VAR  {  Motor Parameters  }
     LONG    hold_short      ' R19.1: T/F where T means the hold at rest (SM_BRAKE) has handed off to the phase short
     LONG    fault_mode      ' R19.3: FR_SHIPPED or FR_GRADED, the response to a position fault
     LONG    brake_y         ' R19.3: BR_BRAKE's low-side PWM Y (frontSetFaultResponse()); frame = off, 0 = fully on
+    LONG    probe_phase     ' R19.4: PRB_* the continuity probe drives at rest; written only by the start-time self-test
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -4567,6 +4768,11 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    faultCause                  ' front-written (init() before start): FC_* of the most recent fault since start
     LONG    bWasFaulted                 ' front-written: T/F where T means the driver read DCS_FAULTED on the previous pass
     LONG    faultIllegalPrev            ' front-written: the driver's hall_illegal long on the previous pass
+    LONG    healthChecked               ' R19.4: HLT_* bits start() checked; written only by runStartChecks()
+    LONG    healthFailed                ' R19.4: HLT_* bits that failed
+    LONG    probeMv[9]                  ' R19.4: per probed phase U, V, W: the U, V and W readings, mV (TEST-USE)
+    LONG    walkFwdTicks                ' R19.4: checkWiring()'s first leg, raw hall ticks (TEST-USE)
+    LONG    walkRevTicks                ' R19.4: checkWiring()'s second leg, raw hall ticks (TEST-USE)
     LONG    faultResyncsPrev            ' front-written (R19.3): the driver's fault_resyncs long on the previous pass
     LONG    faultResyncEvents           ' front-written (R19.3): faults answered by a re-sync and a controlled stop since start
     LONG    bFaultBegan                 ' front-written (R19.3): T/F where T means a fault of either kind began this pass
@@ -5030,12 +5236,7 @@ drvMotor                                                ' global (task 3535): en
                                                         ' inverted (pwmn), and a HIGH on a low-side input turns that FET ON (PL-56)
 
                 cmp     bridge, #BR_DRIVE           wz  ' Z: the bridge is driven this frame (R17.1: see the BR_* constants)
-    if_nz       wypin   #0, drive_pins                  ' undriven: Y = 0 on all six -- high sides LOW (off), low sides HIGH (on)
-    if_nz       alts    bridge, #lowy_tbl - BR_SHORT    ' R19.3: then each low side takes its state's Y from lowy_tbl --
-    if_nz       mov     tmpX, 0-0                       '  SHORT 0 (on), COAST frame (off: all six FETs off), BRAKE brake_y
-    if_nz       wypin   tmpX, pin_pwm_u_l               '  (on for part of each frame, the graded short)
-    if_nz       wypin   tmpX, pin_pwm_v_l
-    if_nz       wypin   tmpX, pin_pwm_w_l
+    if_nz       call    #undrivenPins                   ' undriven: each state's pin values (LUT-resident; leaves Z, which follows)
                 add     drive_u_, dead_gap_             ' make sure low side turns off (inverted) earlier than high side turns on (non-inverted)
     if_z        wypin   drive_u_, pin_pwm_u_l           ' safety on driver board make sure high side off if both low and high side are high, in case of an error
                 sub     drive_u_, dead_gap_             ' shouldn't happen with dead-gap
@@ -5341,6 +5542,7 @@ bridge          res 1       ' R17.1: the bridge state this frame, one of the BR_
 lowy_tbl        res 1       ' [BR_SHORT] 0: low sides constantly on (set at start)
 coast_y         res 1       ' [BR_COAST] R17.1: the PWM frame value; Y = frame holds a pin constantly HIGH (set once at start)
 lowy_brake      res 1       ' [BR_BRAKE] brake_y_, copied every drive pass by gettgtincr
+lowy_probe      res 1       ' [BR_PROBE] coast_y: every low side off, then undrivenPins switches the probed phase (set at start)
 fault_stop      res 1       ' R19.3: T/F where T means a re-synced fault's stop is pending: commands read as 0 until a 0 arrives
 curr_stop       res 1       ' current stop mode
 lag_s           res 1       ' C-5: signed lag this pass, + when the rotor trails the field in the direction of motion
@@ -5387,7 +5589,7 @@ scl_levels      res 4
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
 params_ptr_ res 1           ' params_ptr must be followed by:
-offset_fwd_ res 1           '  20 (DRVR_PARAMS_LONGS_COUNT) parameters
+offset_fwd_ res 1           '  21 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
 duty_min_   res 1           ' minimum duty cycle for pwm
 duty_max_   res 1           ' maximum duty cycle for pwm
@@ -5407,6 +5609,7 @@ hold_duty_  res 1           ' R19.1: the duty applied at rest (DCS_STOPPED), fro
 hold_short_ res 1           ' R19.1: T/F where T means the hold at rest (SM_BRAKE) has handed off to the phase short
 fault_mode_ res 1           ' R19.3: FR_SHIPPED or FR_GRADED
 brake_y_    res 1           ' R19.3: BR_BRAKE's low-side Y; gettgtincr copies it into lowy_tbl's BR_BRAKE entry
+probe_phase_ res 1          ' R19.4: PRB_* the continuity probe drives at rest (restBridge, undrivenPins)
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -5434,12 +5637,12 @@ fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controll
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 482 USED, 14 FREE, 2026-09-23 (R19.3) -- read from the compiler, never hand-counted (a hand
+    fit     496  ' 479 USED, 17 FREE, 2026-09-23 (R19.4) -- read from the compiler, never hand-counted (a hand
                  ' count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, DUTY_CAPPED_'s VALUE,
                  ' whose top 12 bits are its cog address ($1DF). LUT code runs at cog speed (2 clocks, p2kb
                  ' p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS are what
                  ' this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $2B8, 184 of 512 longs (DRIVER_REV 9).
+                 ' lutCodeStart $200 to lutCodeEnd $2CF, 207 of 512 longs (DRIVER_REV 10).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -5497,6 +5700,7 @@ lutCodeStart
                 wypin   #0, drive_pins                  ' high sides Y = 0 (off); DIR is low, so nothing is output until driveinit raises it
                 mov     coast_y, fram                   ' R17.1: the frame period is X[31:16]; Y = frame holds a triangle-PWM
                 shr     coast_y, #16                    '  pin constantly HIGH (p2kbArchSmartPin01000PwmTriangle), BR_COAST's low-side value
+                mov     lowy_probe, coast_y             ' R19.4: BR_PROBE starts from all low sides off, as COAST does
                 wypin   coast_y, pin_pwm_u_l            ' R17.1: so the bridge comes up COASTING when driveinit raises DIR -- with
                 wypin   coast_y, pin_pwm_v_l            '  Y = 0 on the inverted low sides it came up SHORTED for the frame before
                 wypin   coast_y, pin_pwm_w_l            '  the control loop first wrote the stop mode's state
@@ -5687,7 +5891,31 @@ holdDecay                                               ' R18.4 D-5: called on a
     if_z        mov     ramp_curr, ramp_min_
                 ret
 
+undrivenPins                                            ' R19.3/R19.4: once per frame while the bridge is not driven; writes C only,
+                wypin   #0, drive_pins                  '  so the caller's Z survives. Y = 0 on all six: high sides off, low sides on,
+                alts    bridge, #lowy_tbl - BR_SHORT    '  then each low side takes its state's Y from lowy_tbl: SHORT 0 (on),
+                mov     tmpX, 0-0                       '  COAST frame (off: all six FETs off), BRAKE brake_y (on for part of each
+                wypin   tmpX, pin_pwm_u_l               '  frame, the graded short), PROBE frame (off)
+                wypin   tmpX, pin_pwm_v_l
+                wypin   tmpX, pin_pwm_w_l
+                cmp     bridge, #BR_PROBE           wc  ' Q: the continuity probe?
+    if_nc       tjnz    probe_phase_, #.probe           ' YES, with a phase to drive
+                ret
+.probe          mov     tmpX, probe_phase_              ' the probed phase's pins: u_l,u_h / v_l,v_h / w_l,w_h are consecutive
+                sub     tmpX, #PRB_U
+                shl     tmpX, #1
+                mov     tmpY, bias                      ' 50 %, the low side complementary with its dead gap, exactly as the drive
+                add     tmpY, dead_gap_                 '  writes a phase whose level is 0 (see the BR_DRIVE writes in .ctlMotor)
+                alts    tmpX, #pin_pwm_u_l
+                wypin   tmpY, 0-0
+                alts    tmpX, #pin_pwm_u_h
+    _ret_       wypin   bias, 0-0
+
 restBridge                                              ' R19.1: once per drive pass while a stop request finds the motor at rest
+                tjz     probe_phase_, #.noProbe         ' R19.4: the start-time continuity probe asked for?
+    _ret_       mov     bridge, #BR_PROBE               ' YES: undrivenPins switches the probed phase
+.noProbe        cmp     bridge, #BR_PROBE           wz  ' Q: a probe just ended?
+    if_z        call    #checkstop                      ' YES: the bridge takes the stop mode's state again
                 cmp     curr_stop, stop_mode_       wz  ' Q: did the stop mode change at rest?
     if_nz       mov     curr_stop, stop_mode_           ' YES: the bridge takes the new mode now
     if_nz       call    #checkstop
@@ -5727,7 +5955,7 @@ faultResponse                                           ' R19.3: called from the
 
 lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 184 of 512 used, COUNTED 2026-09-23 at DRIVER_REV 9 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 207 of 512 used, COUNTED 2026-09-23 at DRIVER_REV 10 (see the cog fit above)
 
 CON { license }
 {{

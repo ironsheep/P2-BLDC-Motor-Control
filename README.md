@@ -97,6 +97,10 @@ command reporting its result.
   getHoldStatus() reports which
 - getStatus() reports DS_FAULTED and DS_ESTOP
 - getCurrent() reads zero at rest; start() blocks about 1 s to calibrate it
+- start() checks each motor with nothing moving (the hall sensors, the
+  current sense, and each motor lead) and getHealth() reports the result;
+  checkWiring() is an opt-in check that moves each wheel a few centimetres
+  to prove its hall and phase wiring
 - The three hall sensors are read at one instant, so a switching transient
   cannot combine into a false hall code
 - The drive uses a fixed 2 cogs for one motor and 3 for two; startSenseCog()

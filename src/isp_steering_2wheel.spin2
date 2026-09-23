@@ -75,6 +75,15 @@ CON { forward our interface constants }
     HS_SLIPPED      = ltWheel.HS_SLIPPED
     HS_LIMITED      = ltWheel.HS_LIMITED
 
+  ' Health Check Bits (getHealth())
+    HLT_HALLS       = ltWheel.HLT_HALLS
+    HLT_SENSE_ZERO  = ltWheel.HLT_SENSE_ZERO
+    HLT_PHASE_U     = ltWheel.HLT_PHASE_U
+    HLT_PHASE_V     = ltWheel.HLT_PHASE_V
+    HLT_PHASE_W     = ltWheel.HLT_PHASE_W
+    HLT_ALL_CHECKS  = ltWheel.HLT_ALL_CHECKS
+    HLT_WIRING      = ltWheel.HLT_WIRING
+
   ' Driver State Enum
     DCS_Unknown     = ltWheel.DCS_Unknown
     DCS_STOPPED     = ltWheel.DCS_STOPPED
@@ -222,6 +231,8 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
                 rtWheel.restZeroAddSample()
         ltWheel.restZeroFinish()
         rtWheel.restZeroFinish()
+        ltWheel.runStartChecks()                                                ' R19.4: nothing moves; getHealth() reports
+        rtWheel.runStartChecks()
 
         ' pre-launch: no front cog of this instance exists, so these writes have no second writer
         ' one formula for the wheel, owned by the motor object (0 when the configured diameter is 0)
@@ -697,6 +708,26 @@ PUB testSetFaultResponse(eMode, brakePct) : eError | eStatus, eLeftStatus, eRigh
         eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_FAULT, BOTH_MOTORS, eMode, brakePct, 0)
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
+PUB testLeftGetProbe(ePhase) : nUMv, nVMv, nWMv
+'' TEST USE: the LEFT wheel's phase voltages start()'s lead check read while probing {ePhase} (the motor object's testGetProbe())
+''
+'' @param ePhase - the motor object's PRB_U, PRB_V or PRB_W
+'' @returns nUMv - the U phase's reading, mV
+'' @returns nVMv - the V phase's reading, mV
+'' @returns nWMv - the W phase's reading, mV
+
+    nUMv, nVMv, nWMv := ltWheel.testGetProbe(ePhase)
+
+PUB testRightGetProbe(ePhase) : nUMv, nVMv, nWMv
+'' TEST USE: the RIGHT wheel's phase voltages start()'s lead check read while probing {ePhase} (the motor object's testGetProbe())
+''
+'' @param ePhase - the motor object's PRB_U, PRB_V or PRB_W
+'' @returns nUMv - the U phase's reading, mV
+'' @returns nVMv - the V phase's reading, mV
+'' @returns nWMv - the W phase's reading, mV
+
+    nUMv, nVMv, nWMv := rtWheel.testGetProbe(ePhase)
+
 PUB testLeftGetHold() : nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents
 '' TEST USE: the LEFT wheel's hold internals (the motor object's testGetHold())
 ''
@@ -807,6 +838,57 @@ PUB getFaultCause() : eLeftCause, eRightCause
 
     eLeftCause := ltWheel.getFaultCause()
     eRightCause := rtWheel.getFaultCause()
+
+PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeftMissed, nLeftIllegal, nRightMissed, nRightIllegal, bLegsOk
+'' Turn the platform a few degrees in place and back -- each wheel one electrical cycle each way -- to prove each wheel's
+'' hall and phase wiring, and record each verdict as that wheel's getHealth() HLT_WIRING
+''
+'' Opt-in: this moves the robot, so call it only when it may turn a little in place. It catches what start()'s checks,
+'' which move nothing, cannot: a swapped hall pair, swapped phase leads, a dead hall line or a wheel that does not turn.
+'' Blocks about half a second; both wheels end at rest per holdAtStop(), and the position tracking is reset.
+''
+'' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it for each wheel),
+''  or the ERR_* that kept it from running (ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED, ...), also recorded for getError()
+
+' Local Variables:
+' @local nLeftStart - the left driver's hall position before the first leg
+' @local nRightStart - the right driver's hall position before the first leg
+' @local nLeftMid - the left hall position between the legs
+' @local nRightMid - the right hall position between the legs
+' @local nLeftMissed - the left missed-transition count before the walk
+' @local nLeftIllegal - the left illegal-code count before the walk
+' @local nRightMissed - the right missed-transition count before the walk
+' @local nRightIllegal - the right illegal-code count before the walk
+' @local bLegsOk - T/F where T means both legs were driven, both wheels came to rest and neither faulted
+
+    nLeftMissed, nLeftIllegal := ltWheel.getHallIntegrityCounts()
+    nRightMissed, nRightIllegal := rtWheel.getHallIntegrityCounts()
+    nLeftStart := ltWheel.getRawHallTicks()
+    nRightStart := rtWheel.getRawHallTicks()
+    eError, bLegsOk := walkLeg(ltWheel.WALK_POWER, -ltWheel.WALK_POWER)          ' opposite powers: the platform turns in place
+    nLeftMid := ltWheel.getRawHallTicks()
+    nRightMid := rtWheel.getRawHallTicks()
+    if bLegsOk == TRUE
+        eError, bLegsOk := walkLeg(-ltWheel.WALK_POWER, ltWheel.WALK_POWER)
+    if eError == NO_ERROR
+        ltWheel.bJudgeWalk(nLeftMid - nLeftStart, ltWheel.getRawHallTicks() - nLeftMid, bLegsOk, bHallsUnchanged(ltWheel.getHallIntegrityCounts(), nLeftMissed, nLeftIllegal))
+        rtWheel.bJudgeWalk(nRightMid - nRightStart, rtWheel.getRawHallTicks() - nRightMid, bLegsOk, bHallsUnchanged(rtWheel.getHallIntegrityCounts(), nRightMissed, nRightIllegal))
+    eError := recordError(eError)
+
+PUB getHealth() : nLeftChecked, nLeftFailed, nRightChecked, nRightFailed
+'' Return what start() checked on each wheel with the platform at rest, and which checks failed: HLT_* bits
+''
+'' HLT_HALLS (the hall sensors), HLT_SENSE_ZERO (the current sense), and HLT_PHASE_U, HLT_PHASE_V, HLT_PHASE_W (each
+'' motor lead connected and drivable). Nothing moves during the checks. A wheel that fails one still starts: what to
+'' do about it is the program's choice.
+''
+'' @returns nLeftChecked - the HLT_* bits checked on the left wheel; 0 before start()
+'' @returns nLeftFailed - the left wheel's HLT_* bits that failed; 0 when every check passed
+'' @returns nRightChecked - the right wheel's checked bits, the same way
+'' @returns nRightFailed - the right wheel's failed bits, the same way
+
+    nLeftChecked, nLeftFailed := ltWheel.getHealth()
+    nRightChecked, nRightFailed := rtWheel.getHealth()
 
 PUB getHoldStatus() : eLeftState, nLeftDisplacement, eRightState, nRightDisplacement
 '' Return what each wheel's hold at rest is doing (holdAtStop(TRUE)), and how far the load has moved each wheel from where it stopped
@@ -1415,6 +1497,43 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     debug[user.DBGCH_HDMI_DUMP]("* =============")
 
 
+
+PRI bHallsUnchanged(nMissedNow, nIllegalNow, nMissed0, nIllegal0) : bSame
+' Return TRUE when a wheel's hall integrity counts are what they were before a wiring walk.
+'
+' @param nMissedNow - the missed-transition count now
+' @param nIllegalNow - the illegal-code count now
+' @param nMissed0 - the missed-transition count before
+' @param nIllegal0 - the illegal-code count before
+' @returns bSame - T/F where T means neither count moved
+
+    bSame := (nMissedNow == nMissed0) and (nIllegalNow == nIllegal0)
+
+PRI walkLeg(leftPower, rightPower) : eError, bOk | startMs, eLeftStatus, eRightStatus
+' Drive one leg of checkWiring(): each wheel WALK_TICKS at its power, then wait, bounded, for both to rest.
+'
+' @param leftPower - the left wheel's power, its sign the direction
+' @param rightPower - the right wheel's power
+' @returns eError - NO_ERROR once the leg was posted and taken, else the platform's or a wheel's refusal
+' @returns bOk - T/F where T means the leg was driven, both wheels came to rest and neither faulted
+
+' Local Variables:
+' @local startMs - getms() when the leg was posted
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    eError, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_WALK, BOTH_MOTORS, ltWheel.WALK_TICKS, leftPower, rightPower)
+    if eError == NO_ERROR
+        eError := (eLeftStatus <> NO_ERROR) ? eLeftStatus : eRightStatus
+    bOk := (eError == NO_ERROR)
+    if bOk == TRUE
+        startMs := getms()
+        waitms(ltWheel.WALK_START_MS)
+        repeat until ((ltWheel.getDriverState() == DCS_STOPPED) and (rtWheel.getDriverState() == DCS_STOPPED)) or (ltWheel.getDriverState() == DCS_FAULTED) or (rtWheel.getDriverState() == DCS_FAULTED) or (getms() - startMs >= ltWheel.WALK_LEG_TIMEOUT_MS)
+            waitms(1)
+        bOk := (ltWheel.getDriverState() == DCS_STOPPED) and (rtWheel.getDriverState() == DCS_STOPPED)
+        if bOk == FALSE
+            postRequest(ltWheel.REQ_STOP, BOTH_MOTORS, 0, 0, 0)                 ' a leg that faulted or timed out ends stopped
 
 PRI stopFrontCog() | eStatus
 ' Ask the front cog to EXIT, wait bounded for its acknowledgement, then cogstop it; never refuses.
@@ -2060,10 +2179,10 @@ PRI bRequestWaits(eCmd, nArg3) : bWaits
 '
 ' @param eCmd - a REQ_* code
 ' @param nArg3 - the request's third argument (bSync for REQ_DRIVE)
-' @returns bWaits - T/F where T means a synchronized REQ_DRIVE, a REQ_DRIVE_DISTANCE (always synchronized here), a
-'  REQ_CLEAR_ESTOP or REQ_CLEAR_PROTECT, or any REQ_DRIVE while either wheel is FAULTED (PL-66's fault-clear wait)
+' @returns bWaits - T/F where T means a synchronized REQ_DRIVE, a REQ_DRIVE_DISTANCE or REQ_WALK (always synchronized
+'  here), a REQ_CLEAR_ESTOP or REQ_CLEAR_PROTECT, or any REQ_DRIVE while either wheel is FAULTED (PL-66's fault-clear wait)
 
-    bWaits := (eCmd == ltWheel.REQ_CLEAR_ESTOP) or (eCmd == ltWheel.REQ_CLEAR_PROTECT) or (eCmd == ltWheel.REQ_DRIVE_DISTANCE) or ((eCmd == ltWheel.REQ_DRIVE) and ((nArg3 <> FALSE) or (ltWheel.getDriverState() == ltWheel.DCS_FAULTED) or (rtWheel.getDriverState() == ltWheel.DCS_FAULTED)))
+    bWaits := (eCmd == ltWheel.REQ_CLEAR_ESTOP) or (eCmd == ltWheel.REQ_CLEAR_PROTECT) or (eCmd == ltWheel.REQ_DRIVE_DISTANCE) or (eCmd == ltWheel.REQ_WALK) or ((eCmd == ltWheel.REQ_DRIVE) and ((nArg3 <> FALSE) or (ltWheel.getDriverState() == ltWheel.DCS_FAULTED) or (rtWheel.getDriverState() == ltWheel.DCS_FAULTED)))
 
 PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRightStatus, bDidWait | bLeft, bRight, leftPower, rightPower
 ' FRONT COG: apply one taken request to the selected wheels; records nothing, the statuses travel back as data.
@@ -2088,6 +2207,8 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
     '  REQ_DRIVE          - arg1 left power, arg2 right power, arg3 bSync
     '  REQ_DRIVE_DISTANCE - arg1 left stop ticks, arg2 right stop ticks (powers from powersForDistance(); always
     '                       synchronized; tracking reset; each wheel stops at its own limit)
+    '  REQ_WALK           - arg1 stop ticks for both wheels, arg2 left power, arg3 right power, signed (checkWiring();
+    '                       otherwise as REQ_DRIVE_DISTANCE)
     '  REQ_LIMIT_TICKS    - arg1 stop ticks, arg2 bResetTracking
     '  REQ_LIMIT_TIME     - arg1 getms() deadline
     '  REQ_TEST_INCREMENT - arg1 raw increment, for the one selected wheel
@@ -2166,6 +2287,18 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                 eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, leftPower, rightPower, TRUE)
                 if (eLeftStatus <> NO_ERROR) or (eRightStatus <> NO_ERROR)
                     frontDisarmWheelLimits(bLeft, bRight)                       ' not driven: no limit stays armed either
+        ltWheel.REQ_WALK:
+            ' R19.4: as REQ_DRIVE_DISTANCE, with the caller's signed powers and one distance for both wheels
+            bCmdWatched := FALSE
+            eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
+            if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
+                frontResetPlatformTracking()
+                motorStopHallTicks := 0
+                ltWheel.frontSetLimits(nArg1, 0)
+                rtWheel.frontSetLimits(nArg1, 0)
+                eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, nArg2, nArg3, TRUE)
+                if (eLeftStatus <> NO_ERROR) or (eRightStatus <> NO_ERROR)
+                    frontDisarmWheelLimits(bLeft, bRight)
         ltWheel.REQ_LIMIT_TICKS:
             frontDisarmWheelLimits(TRUE, TRUE)                                  ' one distance limit in force at a time
             if nArg2 <> FALSE
