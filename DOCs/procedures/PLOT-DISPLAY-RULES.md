@@ -49,7 +49,7 @@ diagnostic"*). Use the register's mitigations, all of which keep the output:
 | Mitigation | Register | What it does here |
 |---|---|---|
 | Compile out what the build never runs | DBG-16, TCH-3 | `#ifdef` the **bodies**, not just the calls. A call skipped at run time still compiles its records. `T0_ATTENDED` in `test_bench_t0.spin2` |
-| Text from hub, not from the record | DBG-2 | Pass tokens as `@"..."` / `DAT` strings through `zstr_()`: `emitCellBool()`, `emitCellDecl()`, `emitCellNum()` |
+| Text from hub, not from the record | DBG-2 | Pass tokens as `@"..."` / `DAT` strings through the `zstr_` debug formatter: `emitCellBool()`, `emitCellDecl()`, `emitCellNum()` |
 | Merge statements | DBG-4 | Several values in one line, one record |
 | Channel it | DBG-5, DBG-6 | `debug[N]()` under a per-object `DEBUG_MASK`. Plain `debug()` ignores every mask |
 
