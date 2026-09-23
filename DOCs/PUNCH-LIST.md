@@ -3733,12 +3733,10 @@ bears on PL-106.
 
 **Owner:** «#3607» (the discriminator); a driver change, if (a), is a new task.
 
-**2026-09-23 -- a third reading, (c), which now leads: the right bridge was not driving at all (PL-120).** Visit 10's
-start checks read no phase voltage from the right board on fresh starts, with no e-stop anywhere. The last right motion
-on file is 2026-09-22 19:30, before these rows ran at 23:38. A bridge that drives nothing also produces "commanded, no
-position change", which is exactly `ERR_PLATFORM_BLOCKED`. **The discriminator run is withdrawn** until the right bridge
-is shown alive. If rows 6 and 7 of a T0-24 run then still block, the order-swapped build runs unconditionally at the
-next visit.
+**2026-09-23 -- PL-120 is NOT this defect.** An earlier note here said the right bridge being dead explained these
+rows. That was wrong: the same rows blocked at Visit 6a, while the dual tiers still drove the right wheel (last on
+2026-09-22 19:30). T0-24's powered rows have never been seen to drive, so readings (a) and (b) stand. The
+order-swapped run waits until the right wheel drives again (PL-120), then runs unconditionally.
 
 **The limit is a floor, not a measurement of the edge.** 12,404 ran and 15,619 did not; the register's own
 measurements put the edge in (13,332, 15,347]. Raise `DEBUG_FOOTPRINT_MAX` only on a larger build shown, on the
@@ -3810,7 +3808,15 @@ Open. **Rig evidence; waiting on Stephen's confirm answer.**
 - The last right motion on file is `debug_260922-193000.log` `BM-PREFLT ... RIGHT ... ticks,19,moved,TRUE`.
 
 **DERIVED:** the diff `3403024..HEAD` contains no change that acts on one pin base only. The pack pin is P48, outside both motor
-groups (P16–P31, P32–P47).
+groups (P16–P31, P32–P47). The preflight nudge that failed is unchanged since `3403024`, when it moved the right wheel;
+only the driver underneath changed (DRIVER_REV 8–12). About 20 mV on a phase driven at 50 % is what a board with no bus
+voltage would read.
+
+**STEPHEN 2026-09-23:** *"i changed nothing on the motor boards... you should see them both move if you ask."*
+
+**Two readings, undetermined:** (a) the right board's switches are not getting pack voltage; (b) a DRIVER_REV 8–12 change
+stops the right wheel only. **Discriminator:** the same preflight nudge built at `3403024` (tier `dual-clock-270`, about 1
+minute). If the right moves, it is (b), and DRIVER_REV 8–12 get bisected. If not, it is (a).
 
 **Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
 
