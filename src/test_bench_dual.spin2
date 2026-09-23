@@ -201,6 +201,17 @@
 ''               22 Sep 2026 -- SRC_REV=31, FMT 17: task 3601, Visit 8b F-10. A LEAD step counts toward its
 ''               speed's minimum only if the wheel ran at >= LEAD_FOLLOW_PCT of its commanded rate: at too low a
 ''               lead the rotor slows, and a slower wheel draws less current for that reason alone.
+''               22 Sep 2026 -- SRC_REV=32, FMT 18: task 3604 (DOCs/plans/LIMITS-RESET-PLAN.md E1-E4). New part
+''               LIMITS (-D DUAL_PART_LIMITS; tiers dual-limits and, with -D DUTY_MAX_SVM, dual-limits-svm): LIMTOP
+''               climbs to the unloaded top speed and prints BM-TOPSPD per motor x sign, with BM-CLIP per rung --
+''               the PWM levels' range against the rails, from the instrument's new per-capture fold of the
+''               driver's drive_u/v/w; LIMRAMP traces the start at ramp_inc 22/44/88 and a speed-down at
+''               ramp_down 50k/100k (new cause SLOWER), each with BM-RAMP; LIMLOW measures four rungs from the
+''               old floor down, then again with duty_min halved. The SVM build runs LIMTOP only. New cells
+''               R18-DUAL-TOPSPD-M, R18-DUAL-PWMCLIP-M (and BM-CLIPTEST, the judge's own negative case),
+''               R14-DUAL-TRACES-M. rungMeasure() takes the instrument's decimation. tokFinds and the plan
+''               estimates gain the rows LEAD and TAKE were missing (PL-97's mechanism, third instance), and part
+''               A now prints its LOWSPD and TAKE plan rows. drv_rev reads 6.
 ''
 '' =================================================================================================
 
@@ -230,7 +241,8 @@
   HOW IT IS RUN (from the repo root; each load adds -D BENCH_CFG -D BENCH_QUIET and its part flag)
 
       tools/bench-run.sh dual-a | dual-clock-200 | dual-clock-270 | dual-clock-300 | dual-b | dual-brake
-                         | dual-c | dual-d | dual-floor | dual-ui
+                         | dual-c | dual-d | dual-floor | dual-ui | dual-align | dual-lead | dual-limits
+                         | dual-limits-svm
 
   (the clock is part of the tier name, so a mistyped clock is an unknown tier and is refused -- PL-62)
 
@@ -264,8 +276,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 31                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 17                                        ' BM- record-format version
+    SRC_REV     = 32                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 18                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -302,9 +314,11 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_UICHECK - UICHECK (attended: every panel control and attended screen, no motor control at all)
   '  PART_ALIGN - ALIGN (attended: the wheel is turned BY HAND against a coasting bridge; task 3590)
   '  PART_LEAD  - PREFLT, LEAD (the live lead-step run that measures the dynamic-lead table; task 3583)
+  '  PART_LIMITS - PREFLT, LIMTOP, LIMRAMP, LIMLOW (the limits reset's experiments E1-E4; task 3604); the
+  '               DUTY_MAX_SVM build runs PREFLT and LIMTOP only
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
-        PART_ALIGN, PART_LEAD
-    PART_COUNT = PART_LEAD + 1
+        PART_ALIGN, PART_LEAD, PART_LIMITS
+    PART_COUNT = PART_LIMITS + 1
 
   ' RUN_TIME_CAP_S per load (design sec 4.2 item 6)
 #ifdef DUAL_PART_A
@@ -350,6 +364,11 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     ' 2 motors x 2 signs x LEAD_RUNGS x LEAD_STEPS = 112 measured rungs of ~2-8 s, plus lifetimes
     RUN_TIME_CAP_S = 1_500
 #else
+#ifdef DUAL_PART_LIMITS
+    PART_ID        = PART_LIMITS
+    ' about 17 minutes planned (emitPlan()): LIMTOP ~6, LIMRAMP ~5, LIMLOW ~6
+    RUN_TIME_CAP_S = 1_800
+#else
     PART_ID        = PART_NONE
     RUN_TIME_CAP_S = 60
 #endif
@@ -361,6 +380,15 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 #endif
 #endif
 #endif
+#endif
+#endif
+
+  ' Task 3604 (E2): -D DUTY_MAX_SVM builds the motor object with the desk-derived duty ceiling. Here it only
+  '  selects the LIMITS segments: that build re-runs E1's climb and nothing else.
+#ifdef DUTY_MAX_SVM
+    BUILD_SVM = TRUE
+#else
+    BUILD_SVM = FALSE
 #endif
 
 
@@ -419,6 +447,17 @@ CON { drive increments and powers }
     LADDER_DELTA_STEPS  = 15                                ' the six delta cells, entered from rung 0
     LADDER_WALK_STEPS   = LADDER_CLIMB_STEPS + LADDER_DESCEND_STEPS + LADDER_DELTA_STEPS
     LADDER_FAULT_STOP   = 2                                 ' consecutive faulted rungs end a sign's ladder
+    ' Task 3604, LIMTOP (E1): the ladder's twelve speeds, then probes on up until the wheel stops following.
+    '  Only the LIMITS build may command above LADDER_MAX_INCRE; every other part keeps that bound.
+    LIMTOP_PROBES       = 8                                 ' 175 .. 245 x 10^6
+    LIMTOP_STEP_INCRE   = 10_000_000
+    LIMTOP_RUNGS        = LADDER_RUNGS + LIMTOP_PROBES
+    LIMTOP_MAX_INCRE    = LADDER_MAX_INCRE + LIMTOP_PROBES * LIMTOP_STEP_INCRE
+#ifdef DUAL_PART_LIMITS
+    COMMAND_MAX_INCRE   = LIMTOP_MAX_INCRE
+#else
+    COMMAND_MAX_INCRE   = LADDER_MAX_INCRE
+#endif
     ' R18.2 (plan R18.2 item 5): the LOW-SPEED regime, BELOW the ladder's bottom rung. No test has ever
     '  covered it, and it is where BOTH position sources fail at once -- the halls stop producing edges
     '  often enough to inform, and back-EMF is too small for the phase voltages to carry angle. R18.3 has
@@ -762,6 +801,8 @@ CON { instrument cog (design sec 2) }
     INST_ACK_TIMEOUT_MS = 100
     INST_STALL_MS       = 100
     INST_MOTORS         = 2
+    ' PWMCLIP (task 3604): only the LIMITS build pays for the extra status read per motor per pass
+    INST_TRACKS_LEVELS  = (PART_ID == PART_LIMITS)
 
     ' one sample: +0 t, then per motor (LEFT at +1, RIGHT at +5): pos, sense, flags, hwPos
     SMP_T           = 0
@@ -922,8 +963,8 @@ CON { record enums -- each value has a token in the DAT token tables }
   ' Segment (token = the name after SEG_):
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
         SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT, ...
-        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE
-    SEG_COUNT = 19
+        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE, SEG_LIMTOP, SEG_LIMRAMP, SEG_LIMLOW
+    SEG_COUNT = 22
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -931,8 +972,8 @@ CON { record enums -- each value has a token in the DAT token tables }
         WHY_INST_BUSY, WHY_RING_LOST_HEAD, WHY_MOTOR_RETIRED, WHY_OPERATOR_SKIP, WHY_OPERATOR_TIMEOUT, ...
         WHY_NO_PASSTHROUGH, WHY_UNSWEPT_CLOCK, WHY_LADDER_STOPPED, WHY_SYNC_PRECOND, WHY_NO_EXTERNAL_V, ...
         WHY_NO_EXTERNAL_I, WHY_NO_TEMP_SENSOR, WHY_PART_NOT_BUILT, WHY_OPERATOR_STOP, ...
-        WHY_NOT_DERATED, WHY_NOT_BLOCKED
-    WHY_COUNT = 28
+        WHY_NOT_DERATED, WHY_NOT_BLOCKED, WHY_PAST_EDGE
+    WHY_COUNT = 29
 
   ' BM-INST event:
     #0, INST_EV_START, INST_EV_STOP, INST_EV_NOSTART, INST_EV_NOACK
@@ -944,8 +985,8 @@ CON { record enums -- each value has a token in the DAT token tables }
 
   ' trace cause (what was DONE; never what the wheel did afterwards, I7):
     #0, CAUSE_STOPCMD, CAUSE_STOPCOG, CAUSE_FAULT, CAUSE_ESTOP, CAUSE_RAMP, CAUSE_DISTANCE, ...
-        CAUSE_BRAKEHAND, CAUSE_FLOOR, CAUSE_START
-    CAUSE_COUNT = 9
+        CAUSE_BRAKEHAND, CAUSE_FLOOR, CAUSE_START, CAUSE_SLOWER
+    CAUSE_COUNT = 10
 
   ' requested stop mode (what was REQUESTED, I7):
     #0, MODE_FLOAT, MODE_BRAKE
@@ -1524,19 +1565,20 @@ tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
 tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
                 BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0, "TAKE", 0
+                BYTE    "LIMTOP", 0, "LIMRAMP", 0, "LIMLOW", 0
 tokWhy          BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
                 BYTE    "MOTOR_RETIRED", 0, "OPERATOR_SKIP", 0, "OPERATOR_TIMEOUT", 0, "NO_PASSTHROUGH", 0
                 BYTE    "UNSWEPT_CLOCK", 0, "LADDER_STOPPED", 0, "SYNC_PRECOND", 0, "NO_EXTERNAL_V", 0
                 BYTE    "NO_EXTERNAL_I", 0, "NO_TEMP_SENSOR", 0, "PART_NOT_BUILT", 0, "OPERATOR_STOP", 0
-                BYTE    "NOT_DERATED", 0, "NOT_BLOCKED", 0
+                BYTE    "NOT_DERATED", 0, "NOT_BLOCKED", 0, "PAST_EDGE", 0
 tokInstEv       BYTE    "START", 0, "STOP", 0, "NOSTART", 0, "NOACK", 0
 tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED", 0
 tokRes          BYTE    "OK", 0, "FAULT", 0, "STEADY_TIMEOUT", 0, "WINDOW_TIMEOUT", 0, "NO_COG", 0
                 BYTE    "ABORT_I", 0, "SKIPPED", 0
 tokCause        BYTE    "STOPCMD", 0, "STOPCOG", 0, "FAULT", 0, "ESTOP", 0, "RAMP", 0, "DISTANCE", 0
-                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0
+                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0, "SLOWER", 0
 tokMode         BYTE    "FLOAT", 0, "BRAKE", 0
 tokTend         BYTE    "REST", 0, "TIMEOUT", 0, "FAULT", 0, "ABORT", 0, "FROZEN", 0
 tokRst          BYTE    "NONE", 0, "RESET", 0, "RESTART", 0, "FAILED", 0
@@ -1568,7 +1610,7 @@ tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAUL
 '  an ALIGN build printed adjacent DAT in the part field of BM-BANNER, BM-PLAN, BM-EXIT, every SIGNOFF
 '  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
-                BYTE    "ALIGN", 0, "LEAD", 0
+                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0
 ' ALIGN leg speed class (ASPD_*), direction (ADIR_*) and leg outcome (ALEG_*), task 3590
 tokASpd         BYTE    "SLOW", 0, "FAST", 0
 tokADir         BYTE    "REVERSE", 0, "FORWARD", 0
@@ -1605,6 +1647,10 @@ tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-
                 '  returned whatever DAT followed -- masked only because BM-PLAN never emitted a LOWSPD
                 '  row (the earlier study's F1). Adding SEG_ALIGN would have made it two rows, not one.
                 BYTE    "LOWSPD_F12", 0, "HALL_ZERO_Z", 0
+                ' PL-97's third instance: LEAD and TAKE joined the enum without rows here, so a LEAD build's
+                '  BM-PLAN printed finds "?" and est 0 (debug_260922-164207.log). Filled with the rows below.
+                BYTE    "LEAD_TABLE", 0, "A-6_A-8", 0
+                BYTE    "E1_E2_TOP", 0, "E3_RAMPS", 0, "E4_FLOOR", 0
 
 DAT { fixed tokens }
 
@@ -1785,6 +1831,16 @@ sSfCellLeadBrkt BYTE    "R18-DUAL-LEAD-BRKT", 0
 sSfCritLeadBrkt BYTE    "MIN_BRACKETED", 0
 ' LEAD rung verdict (LEADV_*), task 3583
 tokLeadV        BYTE    "BRACKETED", 0, "EDGE", 0, "NOMEAS", 0
+' task 3604: the LIMITS part's cells -- the two every part carries, the traces, the top speed and the PWM clip
+sSfCellNoStallM BYTE    "R18-DUAL-NOSTALL-M", 0
+sSfCellDbgMaskM BYTE    "R18-DUAL-DBGMASK-M", 0
+sSfCellTracesM  BYTE    "R14-DUAL-TRACES-M", 0
+sSfCellTopSpd   BYTE    "R18-DUAL-TOPSPD-M", 0
+sSfCellPwmClip  BYTE    "R18-DUAL-PWMCLIP-M", 0
+sSfCritTopSpd   BYTE    "TOP_INCRE_E6", 0
+sSfCritPwmClip  BYTE    "LEAST_RAIL_ROOM", 0
+sSfUnitsE6      BYTE    "INCR_E6", 0
+sSfUnitsPwm     BYTE    "PWM_CNT", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfUnitsMv      BYTE    "MV", 0
@@ -1812,7 +1868,9 @@ CON { token-table geometry and wait kinds }
   '  EVT_OFFSET    - testSetFwdRevIndep() shifted by faultShiftDeg() at speed: cause FAULT (task 3572, PL-59)
   '  EVT_START     - the command FROM REST: cause START (task 3593, R18.2d). The only event whose mark
   '                  precedes the motion instead of following it, so it has its own capture routine
-    #0, EVT_STOPMOTOR, EVT_STOPCOG, EVT_ESTOP, EVT_OFFSET, EVT_START
+  '  EVT_SLOWER    - a slower command from a running speed: cause SLOWER (task 3604, E3's ramp_down). The
+  '                  capture ends at AT_SPEED on the new speed, not at rest
+    #0, EVT_STOPMOTOR, EVT_STOPCOG, EVT_ESTOP, EVT_OFFSET, EVT_START, EVT_SLOWER
 
 VAR { run-wide state -- cog 0 only }
 
@@ -1893,6 +1951,12 @@ VAR { instrument shared memory -- ownership table, design sec 2.4 }
     '  every capture the part took.
     LONG    instLagMax[INST_MOTORS]
     LONG    instLagN[INST_MOTORS]
+    ' PWMCLIP (task 3604, LIMITS build only): the least and greatest high-side PWM level the driver wrote,
+    '  per motor, over the capture's stored samples with the driver up and not faulted, and how many were
+    '  folded. Per capture: cleared at ARM, so a rung's reading covers its transition and its window.
+    LONG    instLvlMin[INST_MOTORS]
+    LONG    instLvlMax[INST_MOTORS]
+    LONG    instLvlN[INST_MOTORS]
     LONG    instRunSamples                                  ' run-wide, never cleared, saturate at LIM_BIG
     LONG    instRunLate
     LONG    instRunSkipped
@@ -1918,6 +1982,8 @@ VAR { instrument scratch -- written and read by the instrument cog only (keeps i
     LONG    isMissed[INST_MOTORS]
     LONG    isIllegal[INST_MOTORS]
     LONG    isHwPos[INST_MOTORS]
+    LONG    isLvlLo[INST_MOTORS]                            ' PWMCLIP: least of the three levels this read
+    LONG    isLvlHi[INST_MOTORS]                            ' PWMCLIP: greatest of the three levels this read
     LONG    isHallCode[INST_MOTORS]
     LONG    isIgPrev[INST_MOTORS]                           ' missed + illegal at the previous stored sample
     LONG    isDecimCount
@@ -2086,6 +2152,8 @@ VAR { rung staging -- filled by rungMeasure(), read by the rung emitters and the
     LONG    bRgAmpsValid
     LONG    bRgHbOk                                         ' the instrument heartbeat advanced over the window
     LONG    rgDutyMax
+    LONG    rgDeadGap                                       ' task 3604: dead_gap and frame_cnt, read with duty_max for BM-CLIP
+    LONG    rgFrameCnt
     LONG    rgWinStart                                      ' ring totals delimiting the window (sec 12.7), -1 when none
     LONG    rgWinEnd
     LONG    bRgCaptured                                     ' the capture was frozen (drain legal, I10)
@@ -2117,6 +2185,11 @@ VAR { trace capture staging -- filled by eventCapture() / the FAULTB and OVERSHT
     LONG    bCpOffWritten                                   ' the trial wrote offsets (restore owed, I11)
     LONG    bCpOffRestored
     LONG    bCpEstopSet                                     ' the trial issued emergencyCutoff() (clear owed, I11)
+    LONG    cpSlowTo                                        ' EVT_SLOWER: the signed increment commanded at the mark
+    LONG    cpRampMs                                        ' START / SLOWER: mark to AT_SPEED, ms (valid when bCpRampReached)
+    LONG    bCpRampReached                                  ' START / SLOWER: AT_SPEED was reached inside the capture
+    LONG    cpRampLag                                       ' START / SLOWER: lag holds from the mark to AT_SPEED (or the capture's end)
+    LONG    bCpRampLagValid                                 ' both health reads were taken with the driver up
     LONG    trIdleMove                                      ' IDLEMOVE: largest hwPos travel of the other motor over the trace
     LONG    trStopTicks                                     ' STPDECEL: |pos(rest) - pos(mark)| of the primary motor
     LONG    bTrStopValid                                    ' the trace found both a mark and a rest
@@ -2480,6 +2553,12 @@ PRI runPart()
         PART_LEAD:
             runSegment(SEG_PREFLT)
             runSegment(SEG_LEAD)
+        PART_LIMITS:
+            runSegment(SEG_PREFLT)
+            runSegment(SEG_LIMTOP)
+            if BUILD_SVM == FALSE                            ' E2 repeats E1 only (LIMITS-RESET-PLAN.md E2)
+                runSegment(SEG_LIMRAMP)
+                runSegment(SEG_LIMLOW)
     bRunReturned := TRUE                                    ' before the return, or main() reads a library abort
 
 PRI runSegment(seg)
@@ -2526,6 +2605,12 @@ PRI runSegment(seg)
                 segLead()
             SEG_TAKE:
                 segTake()
+            SEG_LIMTOP:
+                segLimTop()
+            SEG_LIMRAMP:
+                segLimRamp()
+            SEG_LIMLOW:
+                segLimLow()
     else
         emitSeg(seg, SEGEV_SKIP, bSegAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
 
@@ -2683,7 +2768,7 @@ PRI segLowSpeed() | side, signMul, rungNum, rid, whyCode, safeEvent, consecFault
                 if whyCode <> WHY_NONE
                     rungSkip(SEG_LOWSPD, rid, rungNum, side, lowIncre[rungNum] * signMul, whyCode)
                 else
-                    safeEvent := lowRung(side, rid, rungNum, lowIncre[rungNum] * signMul)
+                    safeEvent := lowRung(SEG_LOWSPD, side, rid, rungNum, lowIncre[rungNum] * signMul, LOW_WINDOW_MS, 1)
                     if bRungFaultRecover(SEG_LOWSPD, side, lowIncre[rungNum] * signMul, safeEvent)
                         consecFaults += 1
                         if consecFaults >= LADDER_FAULT_STOP
@@ -2697,27 +2782,30 @@ PRI segLowSpeed() | side, signMul, rungNum, rid, whyCode, safeEvent, consecFault
             wheelStop(side)
     segEnd(segWhy())
 
-PRI lowRung(side, rid, rungNum, motorIncre) : safeEvent | slotIdx
-' One LOWSPD rung: the shared measured-rung routine with the low-speed timings, then the rung records
-' and BM-LOW. R17-DUAL-TRKICK-A is NOT folded here -- these transitions are a different population from
-' the ladder's, with a different window and settle, and one verdict over two populations fails on the
-' mixture rather than on the drive (D2), exactly as LIVE's rungs are left out.
+PRI lowRung(seg, side, rid, rungNum, motorIncre, windowMs, decimation) : safeEvent | slotIdx
+' One low-speed rung (LOWSPD, and LIMLOW below the old floor, task 3604): the shared measured-rung routine with
+' the low-speed timings, then the rung records and BM-LOW. R17-DUAL-TRKICK-A is NOT folded here -- these
+' transitions are a different population from the ladder's, with a different window and settle, and one verdict
+' over two populations fails on the mixture rather than on the drive (D2), exactly as LIVE's rungs are left out.
 '
+' @param seg - SEG_LOWSPD or SEG_LIMLOW
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param rid - rung id
-' @param rungNum - this segment's rung number, 0..LOW_RUNGS-1
+' @param rungNum - this segment's rung number
 ' @param motorIncre - signed increment
+' @param windowMs - the measurement window, ms
+' @param decimation - the instrument stores one sample in this many
 ' @returns safeEvent - SAFE_* that ended the rung, SAFE_NONE otherwise
 '
 ' @local slotIdx - motor slot
 
     slotIdx := side - SIDE_LEFT
-    safeEvent := rungMeasure(side, motorIncre, LOW_STEADY_MS, LOW_SETTLE_MS, LOW_WINDOW_MS, TRUE)
+    safeEvent := rungMeasure(side, motorIncre, LOW_STEADY_MS, LOW_SETTLE_MS, windowMs, TRUE, decimation)
     ' I10: an unfrozen ring is never read. rungMeasure() leaves rgCmdStart / rgWinStart / rgWinEnd at -1
     '  when the capture did not freeze, and lowStats()'s guards turn that into reset staging and NA
     '  fields without touching a ring long -- the same contract transitionStats() already keeps.
     lowStats(slotIdx)
-    rungEmitAll(SEG_LOWSPD, rid, rungNum, side, motorIncre)
+    rungEmitAll(seg, rid, rungNum, side, motorIncre)
     emitLow(rid, side, motorIncre, rgWhy)
 
 PRI segClock() | side, signMul
@@ -3298,11 +3386,15 @@ PRI startCapture(side, motorIncre) | safeEvent, bReached, markMs, captureLeftMs
     if bInstArm(INST_SRC_WHEELS, 1) == FALSE
         cpWhy := WHY_INST_NOACK
     else
+        if PART_ID == PART_LIMITS                            ' only LIMRAMP prints the ramp's reading (BM-RAMP)
+            rampLagOpen(side)                                ' outside the measured interval (D6)
         instMark()                                           ' the mark PRECEDES the command: that is the whole point
         markMs := getms()
         wheelCommand(side, motorIncre)
         captureLeftMs := (traceCaptureMs(1) - (getms() - markMs)) #> 0
         safeEvent, bReached := waitWatched(side, captureLeftMs, CP_LOOP_CAPTURE, UNTIL_AT_SPEED)
+        if PART_ID == PART_LIMITS
+            rampLagClose(side, markMs, bReached)
         ' AT_SPEED inside the window is not required and is not a failure: the ramp is longer than the
         '  window by design, so a capture that simply runs out is the expected end
         cpEnd := bReached ? TEND_REST : TEND_TIMEOUT
@@ -3315,14 +3407,43 @@ PRI startCapture(side, motorIncre) | safeEvent, bReached, markMs, captureLeftMs
             cpWhy := WHY_INST_NOACK
         wheelStopMotor(side)                                 ' leave the wheel as every other trial leaves it
 
+PRI rampLagOpen(side)
+' Open a ramp's hold count (task 3604, E3): the driver's lag_held just before the mark. A driver that is not up
+' leaves the count invalid, and rampLagClose() then reports none rather than a difference against nothing.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    bCpRampLagValid := isWheelUp(side)
+    if bCpRampLagValid
+        cpRampLag, _, _ := wheelDriveHealth(side)
+
+PRI rampLagClose(side, markMs, bReached) | lagNow
+' Close a ramp's reading (task 3604, E3): mark to AT_SPEED in ms, and the lag holds across it -- the passes on
+' which the limiter held the field because the rotor could not follow the ramp. Read after the wait ends.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param markMs - getms() at the mark
+' @param bReached - AT_SPEED was reached inside the capture
+'
+' @local lagNow - lag_held now
+
+    bCpRampReached := bReached
+    cpRampMs := getms() - markMs
+    if bCpRampLagValid and isWheelUp(side)
+        lagNow, _, _ := wheelDriveHealth(side)
+        cpRampLag := lagNow - cpRampLag                     ' NOT floored: only a driver restart makes it negative
+    else
+        bCpRampLagValid := FALSE
+
 PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, markMs, captureLeftMs, shiftDeg
 ' Run one wheel trace's motion and capture (design sec 4.4): arm; command; AT_SPEED (<=
 ' STEADY_TIMEOUT_MS); settle SETTLE_MS; read the offsets; mark; the event; capture until rest or
 ' traceCaptureMs(1); freeze. EVT_OFFSET first waits POSTFLT_NO_FAULT_MS for the provoked fault and, when
 ' none comes, restores the offsets and stops the motor at once (why NO_FAULT). EVT_STOPCOG calls stop()
 ' while the instrument runs, because the cog stop IS the event under capture (condition 3): the one I10
-' exception besides the absolute-current abort; a straddled sample is gated by up (I3). Fills the cp*
-' staging; the remaining restores are traceEmitCapture()'s.
+' exception besides the absolute-current abort; a straddled sample is gated by up (I3). EVT_SLOWER commands
+' cpSlowTo at the mark and captures to AT_SPEED on it rather than to rest, reading the ramp's time and hold
+' count (task 3604). Fills the cp* staging; the remaining restores are traceEmitCapture()'s.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param motorIncre - signed increment
@@ -3353,9 +3474,13 @@ PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, mark
             cpWhy := WHY_STEADY_TIMEOUT
         else
             cpWantNeg, cpWantPos := wheelGetOffsets(side)    ' the pair read immediately before the event
+            if eventCode == EVT_SLOWER
+                rampLagOpen(side)                           ' before the mark, outside the measured interval (D6)
             instMark()
             markMs := getms()
             case eventCode
+                EVT_SLOWER:
+                    wheelCommand(side, cpSlowTo)
                 EVT_STOPMOTOR:
                     wheelStopMotor(side)
                 EVT_STOPCOG:
@@ -3383,8 +3508,17 @@ PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, mark
                     cpWhy := WHY_NO_FAULT
             if safeEvent == SAFE_NONE
                 captureLeftMs := (traceCaptureMs(1) - (getms() - markMs)) #> 0
-                safeEvent, bRest := waitRest(side, captureLeftMs, eventCode <> EVT_OFFSET)
-                cpEnd := bRest ? TEND_REST : TEND_TIMEOUT
+                if eventCode == EVT_SLOWER
+                    ' the mirror still reads the old speed's AT_SPEED until the driver takes the command
+                    bReached := FALSE
+                    safeEvent, _ := waitWatched(side, COMMAND_SEEN_MS, CP_LOOP_CAPTURE, UNTIL_TIME)
+                    if safeEvent == SAFE_NONE
+                        safeEvent, bReached := waitWatched(side, (captureLeftMs - COMMAND_SEEN_MS) #> 0, CP_LOOP_CAPTURE, UNTIL_AT_SPEED)
+                    rampLagClose(side, markMs, bReached)
+                    cpEnd := bReached ? TEND_REST : TEND_TIMEOUT
+                else
+                    safeEvent, bRest := waitRest(side, captureLeftMs, eventCode <> EVT_OFFSET)
+                    cpEnd := bRest ? TEND_REST : TEND_TIMEOUT
             if safeEvent <> SAFE_NONE
                 cpEnd := safeEnd(safeEvent)
                 if safeEvent == SAFE_FAULT
@@ -3393,7 +3527,7 @@ PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, mark
         if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
             cpWhy := WHY_INST_NOACK
 
-PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, windowMs, bPollCurrent) : safeEvent | slotIdx, otherIdx, startMs, bReached, missedStart, illegalStart, missedEnd, illegalEnd
+PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, windowMs, bPollCurrent, decimation) : safeEvent | slotIdx, otherIdx, startMs, bReached, missedStart, illegalStart, missedEnd, illegalEnd
 ' One measured rung, the routine LADDER, LIVE and CLOCK share (design sec 4.4): read the offsets,
 ' duty_max and integrity counts; arm; mark; command; AT_SPEED (<= steadyBoundMs); settle; a WINDOW_MS
 ' window delimited by two ring totals (rungWindow(), sec 12.7); freeze; window statistics, the
@@ -3407,6 +3541,8 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, windowMs, bPollCurren
 ' @param windowMs - how long the measurement window runs; WINDOW_MS everywhere but LOWSPD, whose edge
 '                   rate is too low for a 1 s window to hold a measurable tick count (R18.2)
 ' @param bPollCurrent - TRUE to read getCurrent() every CURRENT_POLL_MS in the window
+' @param decimation - the instrument stores one sample in this many: 1 everywhere but LIMLOW, whose window
+'                     and transition together outrun the ring at full rate (task 3604)
 ' @returns safeEvent - SAFE_* that ended the rung early, SAFE_NONE otherwise
 '
 ' @local slotIdx - motor slot
@@ -3446,9 +3582,9 @@ PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, windowMs, bPollCurren
     bReached := FALSE
     rsOffNeg, rsOffPos := wheelGetOffsets(side)
     foldOffsetCheck(side, rsOffNeg, rsOffPos)
-    _, rgDutyMax, _, _ := wheelDriveConstants(side)
+    rgDeadGap, rgDutyMax, _, rgFrameCnt, _ := wheelDriveConstants(side)
     missedStart, illegalStart := wheelIntegrity(side)
-    if bInstArm(INST_SRC_WHEELS, 1) == FALSE
+    if bInstArm(INST_SRC_WHEELS, decimation) == FALSE
         windowStats(slotIdx, otherIdx, -1, -1)              ' resets the rs* staging; reads no ring long
         transitionStats(slotIdx, -1, -1)                    ' and the tr* staging, likewise
         rgResult := RES_SKIPPED
@@ -3854,7 +3990,7 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
         if whyCode <> WHY_NONE
             rungSkip(seg, rid, rungIdx, side, motorIncre, whyCode)
         else
-            safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE)
+            safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE, 1)
             rungEmitAll(seg, rid, rungIdx, side, motorIncre)
             ladderNoFold(side, rungIdx, motorIncre)
             bFaulted := bRungFaultRecover(seg, side, motorIncre, safeEvent)      ' a recovered fault leaves the wheel at rest, which slotLastIncre records
@@ -3950,7 +4086,7 @@ PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeE
         windowStats(slotIdx, SLOT_RIGHT - slotIdx, -1, -1)  ' resets the rs* staging; reads no ring long
         emitLive(rid, side, motorIncre, rpmRead, FALSE, FALSE, skipWhy)
     else
-        safeEvent := rungMeasure(side, motorIncre, STEADY_TIMEOUT_MS, LIVE_SETTLE_MS, WINDOW_MS, FALSE)
+        safeEvent := rungMeasure(side, motorIncre, STEADY_TIMEOUT_MS, LIVE_SETTLE_MS, WINDOW_MS, FALSE, 1)
         if bRgWindowValid
             rpmRead := wheelRpm(side)
         emitLive(rid, side, motorIncre, rpmRead, bRgHbOk, bRgWindowValid, rgWhy)
@@ -4040,7 +4176,7 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
     elseif bWheelStart(SEG_CLOCK, side) == FALSE
         whyCode := stWhy
     else
-        deadGap, _, adcFrame, frameCnt := wheelDriveConstants(side)
+        deadGap, _, adcFrame, frameCnt, _ := wheelDriveConstants(side)
         bFrameOk := bEmitClock(side, adcFrame, frameCnt, deadGap)
         if bSfClkRan[slotIdx]
             bSfClkOk[slotIdx] := (bSfClkOk[slotIdx] <> FALSE) and bFrameOk
@@ -4052,7 +4188,7 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
     if whyCode <> WHY_NONE
         rungSkip(SEG_CLOCK, rid, CLOCK_RUNG_IDX, side, motorIncre, whyCode)
     else
-        safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE)
+        safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE, 1)
         clockHallIntegrity(side)
         rungEmitAll(SEG_CLOCK, rid, CLOCK_RUNG_IDX, side, motorIncre)
         bRungFaultRecover(SEG_CLOCK, side, motorIncre, safeEvent)
@@ -4099,7 +4235,7 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
     fbRstMs := 0
     safeEvent := SAFE_NONE
     bReached := FALSE
-    _, fbDutyMax, _, _ := wheelDriveConstants(side)
+    _, fbDutyMax, _, _, _ := wheelDriveConstants(side)
     cpWantNeg, cpWantPos := wheelGetOffsets(side)
     fbOffNeg := cpWantNeg
     fbOffPos := cpWantPos
@@ -4109,7 +4245,7 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
         fbResult := RES_SKIPPED
         traceSkip(tid, SEG_FAULTB, side, CAUSE_RAMP, motorIncre, MODE_FLOAT, rampInc, fbWhy)
     else
-        rampInc := wheelSetRamp(side, fbRampInc)
+        rampInc, _ := wheelSetRamp(side, fbRampInc, RAMP_DEF_DOWN)
         if bInstArm(INST_SRC_WHEELS, 1) == FALSE
             cpWhy := WHY_INST_NOACK
         else
@@ -6987,7 +7123,7 @@ PRI leadSign(side, signMul) | slotIdx, rungIdx, stepIdx, motorIncre, leadDeg, ri
             else
                 ' the pair is changed while the motor runs: the command below repeats the one it is already at
                 wheelSetOffsets(side, wheelL.HUB_HALL_ZERO_DEGR + leadDeg, wheelL.HUB_HALL_ZERO_DEGR - leadDeg)
-                safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE)
+                safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE, 1)
                 rungEmitAll(SEG_LEAD, rid, rungIdx, side, motorIncre)
                 ' a step counts only if the wheel FOLLOWED: at too low a lead the rotor slows, and a slower
                 '  wheel draws less current for that reason alone (Visit 8b F-10: 3 deg ran at 91 % at an eighth)
@@ -7106,6 +7242,482 @@ PRI wheelSetLeadScheduled(side)
     else
         wheelL.testSetLeadScheduled(TRUE)
     beat(CP_LIB_OFFSETS)
+
+CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LIMITS-RESET-PLAN.md) --- }
+
+  ' LIMTOP (E1; E2 is the same climb on the DUTY_MAX_SVM build). Per motor x sign, one lifetime climbing
+  '  limTopIncre(). A rung is CLEAN when its window ran with no fault, no lag hold and a rate within
+  '  LIMTOP_FOLLOW_PCT of the speed law, widened by the rung's own tick quantisation (rateBandPct()). The EDGE
+  '  is the first rung that is not clean, and TOP the highest clean rung below it. The climb always runs the
+  '  ladder's base rungs -- known speeds, and the per-rung comparison E2 reads -- and stops at the first
+  '  unclean rung at or above DRIVE_CEILING_INCRE; the rest print SKIPPED why PAST_EDGE.
+  '
+  ' FOLLOWING ALONE DOES NOT FIND A USABLE TOP, and BM-TOPSPD says so with a second reading. MEASURED: on the
+  '  shipped drive AND the R18.4 drive every ladder rung up to 165 x 10^6 followed at 99.8-100.3 % with zero
+  '  lag holds, while duty sat at its cap from 147 x 10^6 up (debug_260922-122752.log, -161317.log). A wheel
+  '  that follows with duty pinned has no torque in reserve. So BM-TOPSPD also prints the highest clean rung
+  '  that never capped duty (unsat): the top the drive can still hold a speed at, which is what a load needs.
+  LIMTOP_FOLLOW_PCT     = 98
+  ' R18-DUAL-TOPSPD-M: each motor's worse sign must reach the published 18.5 V ceiling -- a lower top is a
+  '  regression (LIMITS-RESET-PLAN.md E1). A REGRESSION GUARD, not a certification: no driver on file has
+  '  failed it (both logs above follow to 165), so its negative limb is the arithmetic in limTopSign(), not a run.
+  TOPSPD_LO_E6          = DRIVE_CEILING_INCRE / 1_000_000
+  TOPSPD_HI_E6          = LIMTOP_MAX_INCRE / 1_000_000
+  ' R18-DUAL-PWMCLIP-M: the least room any stored level left to a rail, per motor -- the high side's Y above 0,
+  '  and the low side's (Y + dead_gap) below F = frame_cnt / 2 (p2kbArchSmartPin01000PwmTriangle). Negative is a
+  '  clip. The judge's own negative case runs first, on synthetic levels (BM-CLIPTEST); the sampling's is the
+  '  desk prediction the run sheet states (SVM build: 1-2 counts at full duty; default: ~150).
+  PWMCLIP_ROOM_LO       = 0
+  PWMCLIP_ROOM_HI       = LIM_BIG
+  CLIPTEST_FRAME        = 1_000                             ' synthetic F and dead-gap for the judge's self-test
+  CLIPTEST_GAP          = 10
+
+  ' LIMRAMP (E3). Per motor x sign, one lifetime: a START trace from rest to QTR at each ramp_inc, then a SLOWER
+  '  trace from the ceiling to QTR at each ramp_down, each followed by BM-RAMP; the defaults are restored and
+  '  read back at the end (BM-RAMPREST, I11). Duty drop and peak ratio are read from the trace by
+  '  DOCs/plans/servo-model/start_metrics.py, the code that judged A-1 / A-2 at Visit 8.
+  LIMRAMP_INCS          = 3                                 ' 22 (today), 44, 88
+  LIMRAMP_DOWNS         = 2                                 ' 50_000 (today), 100_000
+
+  ' LIMLOW (E4). Per motor x sign, one lifetime: four rungs from the old floor down, then the same four with
+  '  duty_min halved (read back, and restored and read back after). The window is as long as the ring's
+  '  timebase allows: a getct() difference wraps past 2^31 ticks, 7.9 s at 270 MHz, and windowStats() times
+  '  the window by one. At 250_000 that holds about 5 hall edges and at 100_000 about 2 -- enough to say
+  '  whether a rung rotates, and how evenly, not to measure its rate finely.
+  LIMLOW_RUNGS          = 4                                 ' 544_628 (the old floor), 400_000, 250_000, 100_000
+  LIMLOW_VARIANTS       = 2                                 ' duty_min as built, then halved
+  LIMLOW_WINDOW_MS      = 7_500
+  LIMLOW_DECIM          = 3                                 ' 6 ms samples: the ring holds 24.6 s
+  LIMLOW_DUTY_DIV       = 2
+
+  ' BM-TOPSPD edge cause (token = the name after EDGE_):
+  '  EDGE_NONE    - every rung in the table was clean; there is no edge below LIMTOP_MAX_INCRE
+  '  EDGE_FAULT   - the rung faulted
+  '  EDGE_HOLD    - the lag limiter held the field inside the window
+  '  EDGE_SLOW    - the window's rate fell below LIMTOP_FOLLOW_PCT of the speed law
+  '  EDGE_NOWIN   - the rung measured no window (a timeout, an abort or a lost capture)
+    #0, EDGE_NONE, EDGE_FAULT, EDGE_HOLD, EDGE_SLOW, EDGE_NOWIN
+    EDGE_COUNT = EDGE_NOWIN + 1
+    TOKMAX_EDGE = 5
+
+DAT ' ---- LIMITS tables ----
+
+limRampIncs     LONG    RAMP_DEF_INC, RAMP_DEF_INC * 2, RAMP_DEF_INC * 4
+limRampDowns    LONG    RAMP_DEF_DOWN, RAMP_DEF_DOWN * 2
+limLowIncre     LONG    544_628, 400_000, 250_000, 100_000                  ' isp_bldc_motor confgurePowerLimits() floor, then below it
+tokEdge         BYTE    "NONE", 0, "FAULT", 0, "HOLD", 0, "SLOW", 0, "NOWIN", 0
+
+VAR { LIMITS state -- cog 0 only; index = motor slot }
+
+    LONG    sfTopMinE6[INST_MOTORS]                         ' TOPSPD: the lower of the two signs' tops, x 10^-6
+    LONG    sfTopN[INST_MOTORS]                             ' TOPSPD: signs whose climb measured a top
+    LONG    sfClipRoomMin[INST_MOTORS]                      ' PWMCLIP: least room to a rail over the motor's rungs
+    LONG    sfClipN[INST_MOTORS]                            ' PWMCLIP: rungs whose capture folded any level
+    LONG    bSfClipTestOk                                   ' PWMCLIP: the judge passed its own negative case
+
+PRI segLimTop() | side, signMul
+' LIMTOP (part LIMITS, E1 / E2): the judge's self-test, then per motor x sign one climb to the edge.
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local signMul - SIGN_NEG then SIGN_POS
+
+    segBegin(SEG_LIMTOP)
+    clipSelfTest()
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        sfTopMinE6[side - SIDE_LEFT] := LIM_BIG
+        sfClipRoomMin[side - SIDE_LEFT] := LIM_BIG
+        repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
+            beat(CP_LOOP_POLL)
+            limTopSign(side, signMul)
+    segEnd(segWhy())
+
+PRI limTopSign(side, signMul) | slotIdx, rungIdx, motorIncre, rid, whyCode, safeEvent, topIncre, unsatIncre, edgeIncre, edgeCode, consecFaults
+' One motor x sign of LIMTOP: every rung a measured rung plus BM-CLIP, the edge found as the section's CON says,
+' then BM-TOPSPD.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signMul - SIGN_NEG or SIGN_POS
+'
+' @local slotIdx - motor slot
+' @local rungIdx - 0..LIMTOP_RUNGS-1
+' @local motorIncre - signed increment
+' @local rid - rung id
+' @local whyCode - why the remaining rungs are skipped, WHY_NONE while they run
+' @local safeEvent - SAFE_* that ended the last rung
+' @local topIncre - the highest clean rung below the edge, 0 while none
+' @local unsatIncre - the highest clean rung below the edge that never capped duty, 0 while none
+' @local edgeIncre - the first unclean rung, 0 while none
+' @local edgeCode - EDGE_* naming why that rung was not clean
+' @local consecFaults - consecutive faulted rungs, as the ladder counts them
+
+    slotIdx := side - SIDE_LEFT
+    topIncre := 0
+    unsatIncre := 0
+    edgeIncre := 0
+    edgeCode := EDGE_NONE
+    consecFaults := 0
+    whyCode := WHY_NONE
+    if bRunContinue(SEG_LIMTOP) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bWheelStart(SEG_LIMTOP, side) == FALSE
+        whyCode := stWhy
+    repeat rungIdx from 0 to LIMTOP_RUNGS - 1
+        beat(CP_LOOP_POLL)
+        motorIncre := limTopIncre(rungIdx) * signMul
+        rid := nextRungId()
+        whyCode := trialSkipWhy(SEG_LIMTOP, side, whyCode)
+        if whyCode <> WHY_NONE
+            rungSkip(SEG_LIMTOP, rid, rungIdx, side, motorIncre, whyCode)
+        else
+            safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE, 1)
+            rungEmitAll(SEG_LIMTOP, rid, rungIdx, side, motorIncre)
+            limClipRung(rid, side, motorIncre)
+            if edgeIncre == 0
+                edgeCode := limEdgeCode(motorIncre, safeEvent)
+                if edgeCode == EDGE_NONE
+                    topIncre := abs(motorIncre)
+                    if rgHlWinCap == 0
+                        unsatIncre := abs(motorIncre)
+                else
+                    edgeIncre := abs(motorIncre)
+            if bRungFaultRecover(SEG_LIMTOP, side, motorIncre, safeEvent)
+                consecFaults += 1
+                if consecFaults >= LADDER_FAULT_STOP
+                    whyCode := WHY_LADDER_STOPPED
+            else
+                consecFaults := 0
+            if (safeEvent == SAFE_ABS_ABORT) or (safeEvent == SAFE_INST_STALL)
+                whyCode := WHY_LADDER_STOPPED
+            elseif (edgeIncre <> 0) and (abs(motorIncre) >= DRIVE_CEILING_INCRE)
+                whyCode := WHY_PAST_EDGE                    ' found above the ceiling: nothing past it is clean by definition
+    bZeroAndWaitStopped(side)
+    bInstIdle()
+    wheelStop(side)
+    if topIncre > 0
+        sfTopMinE6[slotIdx] <#= topIncre / 1_000_000
+        sfTopN[slotIdx] := (sfTopN[slotIdx] + 1) <# LIM_TINY
+    emitTopSpd(side, signMul, topIncre, unsatIncre, edgeIncre, edgeCode)
+
+PRI limTopIncre(rungIdx) : motorIncre
+' The unsigned increment of LIMTOP's rung: the ladder's twelve speeds, then LIMTOP_STEP_INCRE apart above them.
+'
+' @param rungIdx - 0..LIMTOP_RUNGS-1
+' @returns motorIncre - the rung's increment
+
+    if rungIdx < LADDER_RUNGS
+        motorIncre := ladderIncre[rungIdx]
+    else
+        motorIncre := LADDER_MAX_INCRE + (rungIdx - LADDER_RUNGS + 1) * LIMTOP_STEP_INCRE
+
+PRI limEdgeCode(motorIncre, safeEvent) : edgeCode | predX10, ratioPct
+' Judge the rung just measured: EDGE_NONE when it is clean, else why it is not (the section's CON).
+'
+' @param motorIncre - the rung's signed increment
+' @param safeEvent - SAFE_* that ended the rung
+' @returns edgeCode - EDGE_NONE, EDGE_FAULT, EDGE_HOLD, EDGE_SLOW or EDGE_NOWIN
+'
+' @local predX10 - the speed law's rate, ticks/s x 10
+' @local ratioPct - the window's rate as a percentage of it
+
+    predX10 := abs(predictX10(motorIncre))
+    if safeEvent == SAFE_FAULT
+        edgeCode := EDGE_FAULT
+    elseif (safeEvent <> SAFE_NONE) or (bRgWindowValid == FALSE) or (bRgHlWinValid == FALSE) or (predX10 == 0) or (rsTicks == 0)
+        edgeCode := EDGE_NOWIN
+    elseif rgHlWinLag <> 0
+        edgeCode := EDGE_HOLD
+    else
+        ratioPct := (abs(rsRateX10) * 100) / predX10
+        edgeCode := (ratioPct >= (LIMTOP_FOLLOW_PCT - rateBandPct(rsTicks))) ? EDGE_NONE : EDGE_SLOW
+
+PRI clipRoom(lvlMin, lvlMax, frameHalf, deadGap) : nRoom
+' The least room the levels left to a rail, PWM counts; negative is a clip (R18-DUAL-PWMCLIP-M).
+'
+' @param lvlMin - the least high-side level
+' @param lvlMax - the greatest high-side level
+' @param frameHalf - F, the PWM's Y range (frame_cnt / 2)
+' @param deadGap - dead_gap, added to the high side's level to make the low side's
+' @returns nRoom - lvlMin's room above 0, or the low side's below F, whichever is less
+
+    nRoom := lvlMin <# (frameHalf - (lvlMax + deadGap))
+
+PRI clipSelfTest() | roomOk, roomHigh, roomLow
+' BM-CLIPTEST: the PWMCLIP judge's own negative case, on synthetic levels before anything moves. A level set that
+' just touches both rails must read 0 room (PASS), and one count past either rail must read negative (FAIL). A
+' judge that fails this cannot certify a clip-free build, so PWMCLIP is NOMEAS unless it passes.
+'
+' @local roomOk - room of levels touching both rails exactly
+' @local roomHigh - room with the low side one count past F
+' @local roomLow - room with the high side one count below 0
+
+    roomOk := clipRoom(0, CLIPTEST_FRAME - CLIPTEST_GAP, CLIPTEST_FRAME, CLIPTEST_GAP)
+    roomHigh := clipRoom(0, CLIPTEST_FRAME - CLIPTEST_GAP + 1, CLIPTEST_FRAME, CLIPTEST_GAP)
+    roomLow := clipRoom(-1, CLIPTEST_FRAME - CLIPTEST_GAP, CLIPTEST_FRAME, CLIPTEST_GAP)
+    bSfClipTestOk := (roomOk == 0) and (roomHigh < 0) and (roomLow < 0)
+    recBegin(@"BM-CLIPTEST")
+    benchLog.numField(@"room_ok", roomOk, LIM_SMALL)
+    benchLog.numField(@"room_high", roomHigh, LIM_SMALL)
+    benchLog.numField(@"room_low", roomLow, LIM_SMALL)
+    benchLog.boolField(@"judge_ok", bSfClipTestOk)
+    emitRecord()
+
+PRI limClipRung(rid, side, motorIncre) | slotIdx, lvlMin, lvlMax, lvlN, nRoom, bValid
+' BM-CLIP for the rung just measured, from the instrument's per-capture fold of the driver's levels, and its fold
+' into R18-DUAL-PWMCLIP-M. Read only from a frozen capture (I10). The drive constants are the rung's own,
+' staged by rungMeasure(): dead_gap is in system ticks, one PWM count each, and the Y range is frame_cnt / 2.
+'
+' @param rid - rung id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+'
+' @local slotIdx - motor slot
+' @local lvlMin - the least high-side level the capture stored
+' @local lvlMax - the greatest
+' @local lvlN - samples folded
+' @local nRoom - the least room to a rail
+' @local bValid - T/F where T means the capture was frozen and folded at least one level
+
+    slotIdx := side - SIDE_LEFT
+    lvlMin := instLvlMin[slotIdx]
+    lvlMax := instLvlMax[slotIdx]
+    lvlN := instLvlN[slotIdx]
+    bValid := bRgCaptured and (lvlN > 0)
+    nRoom := 0
+    if bValid
+        nRoom := clipRoom(lvlMin, lvlMax, rgFrameCnt / 2, rgDeadGap)
+        sfClipRoomMin[slotIdx] <#= nRoom
+        sfClipN[slotIdx] := (sfClipN[slotIdx] + 1) <# LIM_BIG
+    recBegin(@"BM-CLIP")
+    benchLog.numField(@"rid", rid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.numField(@"duty_max", rgDutyMax, LIM_BIG)
+    benchLog.numField(@"frame_half", rgFrameCnt / 2, LIM_MID)
+    benchLog.numField(@"dead_gap", rgDeadGap, LIM_SMALL)
+    benchLog.naNumField(@"lvl_min", lvlMin, LIM_MID, bValid)
+    benchLog.naNumField(@"lvl_max", lvlMax, LIM_MID, bValid)
+    benchLog.naNumField(@"room", nRoom, LIM_MID, bValid)
+    benchLog.numField(@"n", lvlN, LIM_BIG)
+    emitRecord()
+
+PRI emitTopSpd(side, signMul, topIncre, unsatIncre, edgeIncre, edgeCode)
+' BM-TOPSPD: one motor x sign's climb -- the plan's top, the top that never capped duty, and the edge.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signMul - SIGN_NEG or SIGN_POS
+' @param topIncre - the highest clean rung below the edge (0 when none)
+' @param unsatIncre - the highest clean rung below the edge that never capped duty (0 when none)
+' @param edgeIncre - the first unclean rung (0 when every rung was clean)
+' @param edgeCode - EDGE_*
+
+    recBegin(@"BM-TOPSPD")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"sign", signMul, LIM_TINY)
+    benchLog.naNumField(@"top", topIncre, LIM_BIG, topIncre > 0)
+    benchLog.naNumField(@"unsat", unsatIncre, LIM_BIG, unsatIncre > 0)
+    benchLog.naNumField(@"edge", edgeIncre, LIM_BIG, edgeIncre > 0)
+    benchLog.tokenField(@"edge_why", tokenAt(@tokEdge, EDGE_COUNT, edgeCode), TOKMAX_EDGE)
+    benchLog.numField(@"follow_pct", LIMTOP_FOLLOW_PCT, LIM_TINY)
+    emitRecord()
+
+PRI segLimRamp() | side, signMul
+' LIMRAMP (part LIMITS, E3): per motor x sign, one lifetime of ramp traces (the section's CON).
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local signMul - SIGN_NEG then SIGN_POS
+
+    segBegin(SEG_LIMRAMP)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
+            beat(CP_LOOP_POLL)
+            limRampSign(side, signMul)
+    segEnd(segWhy())
+
+PRI limRampSign(side, signMul) | settingIdx, whyCode, qtrIncre
+' One motor x sign of LIMRAMP: the START traces at each ramp_inc, the SLOWER traces at each ramp_down, each with
+' BM-RAMP; then the defaults restored and read back, on every path.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signMul - SIGN_NEG or SIGN_POS
+'
+' @local settingIdx - the ramp setting in progress
+' @local whyCode - why the remaining trials are skipped, WHY_NONE while they run
+' @local qtrIncre - the quarter, signed: every trace's target
+
+    qtrIncre := QTR_SPEED_INCRE * signMul
+    whyCode := WHY_NONE
+    if bRunContinue(SEG_LIMRAMP) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bWheelStart(SEG_LIMRAMP, side) == FALSE
+        whyCode := stWhy
+    repeat settingIdx from 0 to LIMRAMP_INCS - 1
+        whyCode := limRampTrial(side, limRampIncs[settingIdx], RAMP_DEF_DOWN, CAUSE_START, 0, qtrIncre, whyCode)
+    repeat settingIdx from 0 to LIMRAMP_DOWNS - 1
+        whyCode := limRampTrial(side, RAMP_DEF_INC, limRampDowns[settingIdx], CAUSE_SLOWER, DRIVE_CEILING_INCRE * signMul, qtrIncre, whyCode)
+    if isWheelUp(side)
+        bRestoreRamp(side)
+    bInstIdle()
+    wheelStop(side)
+
+PRI limRampTrial(side, incWant, downWant, causeCode, fromIncre, toIncre, skipWhy) : whyCode | incBack, downBack
+' One LIMRAMP trace and its BM-RAMP: set the ramp, then a START from rest to toIncre (fromIncre 0) or a SLOWER
+' from fromIncre to toIncre. A skipped trial prints its why and no ramp settings of its own.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param incWant - ramp_inc for the trial
+' @param downWant - ramp_down for the trial
+' @param causeCode - CAUSE_START or CAUSE_SLOWER
+' @param fromIncre - the speed a SLOWER starts from (0 for a START)
+' @param toIncre - the speed commanded at the mark
+' @param skipWhy - WHY_* already known, WHY_NONE when none
+' @returns whyCode - why this and the remaining trials are skipped, WHY_NONE while they run
+'
+' @local incBack - ramp_inc read back, 0 when the trial was skipped
+' @local downBack - ramp_down read back, 0 when the trial was skipped
+
+    beat(CP_LOOP_POLL)
+    incBack := 0
+    downBack := 0
+    whyCode := trialSkipWhy(SEG_LIMRAMP, side, skipWhy)
+    if whyCode == WHY_NONE
+        incBack, downBack := wheelSetRamp(side, incWant, downWant)
+    if causeCode == CAUSE_SLOWER
+        cpSlowTo := toIncre
+        eventTrace(SEG_LIMRAMP, side, fromIncre, CAUSE_SLOWER, EVT_SLOWER, MODE_FLOAT, whyCode)
+    else
+        eventTrace(SEG_LIMRAMP, side, toIncre, CAUSE_START, EVT_START, MODE_FLOAT, whyCode)
+    emitRampRec(side, causeCode, fromIncre, toIncre, incBack, downBack, whyCode)
+
+PRI emitRampRec(side, causeCode, fromIncre, toIncre, incBack, downBack, skipWhy) | bFollowed
+' BM-RAMP: the trace just taken's ramp -- its settings read back, mark to AT_SPEED, and the lag holds across it.
+' followed is TRUE only when AT_SPEED was reached with no hold: the ramp never ran ahead of what the rotor could
+' follow (LIMITS-RESET-PLAN.md E3's third criterion). The trace's own tid is the run's latest.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param causeCode - CAUSE_START or CAUSE_SLOWER
+' @param fromIncre - the speed the ramp started from (0 for a START)
+' @param toIncre - the speed it was commanded to
+' @param incBack - ramp_inc read back
+' @param downBack - ramp_down read back
+' @param skipWhy - WHY_NONE when the trace ran, else why it was skipped (its staging is then empty)
+'
+' @local bFollowed - T/F where T means AT_SPEED was reached with no lag hold
+
+    if skipWhy == WHY_NONE
+        skipWhy := cpWhy
+    bFollowed := bCpRampReached and bCpRampLagValid and (cpRampLag == 0) and (skipWhy == WHY_NONE)
+    recBegin(@"BM-RAMP")
+    benchLog.numField(@"tid", traceSeq, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"cause", tokenAt(@tokCause, CAUSE_COUNT, causeCode), TOKMAX_CAUSE)
+    benchLog.numField(@"from_incre", fromIncre, LIM_BIG)
+    benchLog.numField(@"to_incre", toIncre, LIM_BIG)
+    benchLog.numField(@"ramp_inc", incBack, LIM_BIG)
+    benchLog.numField(@"ramp_down", downBack, LIM_BIG)
+    benchLog.boolField(@"reached", bCpRampReached)
+    benchLog.naNumField(@"ramp_ms", cpRampMs, LIM_MID, bCpRampReached)
+    benchLog.naNumField(@"lag_holds", cpRampLag, LIM_BIG, bCpRampLagValid)
+    benchLog.boolField(@"followed", bFollowed)
+    benchLog.tokenField(@"why", tokenAt(@tokWhy, WHY_COUNT, skipWhy), TOKMAX_WHY)
+    emitRecord()
+
+PRI segLimLow() | side, signMul
+' LIMLOW (part LIMITS, E4): per motor x sign, one lifetime of low rungs, as built and with duty_min halved.
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local signMul - SIGN_NEG then SIGN_POS
+
+    segBegin(SEG_LIMLOW)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
+            beat(CP_LOOP_POLL)
+            limLowSign(side, signMul)
+    segEnd(segWhy())
+
+PRI limLowSign(side, signMul) | variantIdx, rungIdx, motorIncre, rid, whyCode, safeEvent, consecFaults, dutyMinBuilt
+' One motor x sign of LIMLOW: the four rungs descending, with duty_min as built and then halved; duty_min is put
+' back and read back on every path that wrote it, and BM-LOWDUTY records each write.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signMul - SIGN_NEG or SIGN_POS
+'
+' @local variantIdx - 0 as built, 1 halved
+' @local rungIdx - 0..LIMLOW_RUNGS-1
+' @local motorIncre - signed increment
+' @local rid - rung id
+' @local whyCode - why the remaining rungs are skipped, WHY_NONE while they run
+' @local safeEvent - SAFE_* that ended the last rung
+' @local consecFaults - consecutive faulted rungs, as the ladder counts them
+' @local dutyMinBuilt - duty_min as init() derived it, 0 until the lifetime started
+
+    consecFaults := 0
+    dutyMinBuilt := 0
+    whyCode := WHY_NONE
+    if bRunContinue(SEG_LIMLOW) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bWheelStart(SEG_LIMLOW, side) == FALSE
+        whyCode := stWhy
+    else
+        _, _, _, _, dutyMinBuilt := wheelDriveConstants(side)
+    repeat variantIdx from 0 to LIMLOW_VARIANTS - 1
+        if (variantIdx > 0) and (whyCode == WHY_NONE)
+            wheelSetDutyMin(side, dutyMinBuilt / LIMLOW_DUTY_DIV)
+        repeat rungIdx from 0 to LIMLOW_RUNGS - 1
+            beat(CP_LOOP_POLL)
+            motorIncre := limLowIncre[rungIdx] * signMul
+            rid := nextRungId()
+            whyCode := trialSkipWhy(SEG_LIMLOW, side, whyCode)
+            if whyCode <> WHY_NONE
+                rungSkip(SEG_LIMLOW, rid, rungIdx, side, motorIncre, whyCode)
+            else
+                safeEvent := lowRung(SEG_LIMLOW, side, rid, rungIdx, motorIncre, LIMLOW_WINDOW_MS, LIMLOW_DECIM)
+                if bRungFaultRecover(SEG_LIMLOW, side, motorIncre, safeEvent)
+                    consecFaults += 1
+                    if consecFaults >= LADDER_FAULT_STOP
+                        whyCode := WHY_LADDER_STOPPED
+                else
+                    consecFaults := 0
+                if (safeEvent == SAFE_ABS_ABORT) or (safeEvent == SAFE_INST_STALL)
+                    whyCode := WHY_LADDER_STOPPED
+    if (dutyMinBuilt > 0) and isWheelUp(side)                   ' restored on every path that wrote it (I11)
+        wheelSetDutyMin(side, dutyMinBuilt)
+    bZeroAndWaitStopped(side)
+    bInstIdle()
+    wheelStop(side)
+
+PRI wheelSetDutyMin(side, dutyWant) | dutyBack
+' Write one wheel's duty_min (testSetDutyMin()), read it back, and print BM-LOWDUTY: the write and whether it held.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param dutyWant - duty_min, 1/16ths
+'
+' @local dutyBack - duty_min read back
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        wheelR.testSetDutyMin(dutyWant)
+    else
+        wheelL.testSetDutyMin(dutyWant)
+    beat(CP_LIB_QUERY)
+    _, _, _, _, dutyBack := wheelDriveConstants(side)
+    recBegin(@"BM-LOWDUTY")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"duty_min", dutyWant, LIM_MID)
+    benchLog.numField(@"read_back", dutyBack, LIM_MID)
+    benchLog.boolField(@"ok", dutyWant == dutyBack)
+    emitRecord()
+
+PRI emitLimitsCells() | slotIdx
+' The LIMITS part's judged cells: TRACES over LIMRAMP's traces, and per motor TOPSPD and PWMCLIP. Each prints
+' NOMEAS when nothing measured it -- the SVM build takes no trace, and PWMCLIP needs its judge's self-test.
+'
+' @local slotIdx - motor slot
+
+    emitSignoff(@sSfCellTracesM, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        emitSignoff(@sSfCellTopSpd, SIDE_LEFT + slotIdx, @sSfCritTopSpd, sfTopN[slotIdx] > 0, sfTopMinE6[slotIdx], TOPSPD_LO_E6, TOPSPD_HI_E6, sfTopN[slotIdx], @sSfUnitsE6)
+        emitSignoff(@sSfCellPwmClip, SIDE_LEFT + slotIdx, @sSfCritPwmClip, bSfClipTestOk and (sfClipN[slotIdx] > 0), sfClipRoomMin[slotIdx], PWMCLIP_ROOM_LO, PWMCLIP_ROOM_HI, sfClipN[slotIdx], @sSfUnitsPwm)
+
 
 CON { --- ALIGN: the hall zero measured cold, cog 0, the bridge never driven (task 3590) --- }
 
@@ -7878,6 +8490,9 @@ PRI instExecute(seenSeq) | motorIdx
                     isHwPos[motorIdx] := 0
                     isHallCode[motorIdx] := pinread(instMotorBase(motorIdx) + HALL_PIN_OFFSET addpins HALL_PIN_SPAN)
                     isIgPrev[motorIdx] := -1                ' seeded by the first stored sample
+                    instLvlMin[motorIdx] := POSX
+                    instLvlMax[motorIdx] := NEGX
+                    instLvlN[motorIdx] := 0
                 isDecimCount := 0
                 instState := INST_ST_RUN
         INST_CMD_FREEZE:
@@ -7973,10 +8588,14 @@ PRI bHallCodeLegal(hallCode) : bLegal
 
     bLegal := (hallCode <> HALL_CODE_ILLEGAL_LO) and (hallCode <> HALL_CODE_ILLEGAL_HI)
 
-PRI instReadSource()
+PRI instReadSource() | lvlU, lvlV, lvlW
 ' Read the status block of the source latched at ARM, per motor, gated on the driver running (I3):
 ' WHEELS by testGetMotorCog() <> 0, STEER by the driver state <> DCS_Unknown (stop() writes it after
 ' its cogstop). Every call here is debug-free (I1, design sec 1 citations). Instrument cog.
+'
+' @local lvlU - PWMCLIP: phase U's high-side level (LIMITS build only)
+' @local lvlV - PWMCLIP: phase V's
+' @local lvlW - PWMCLIP: phase W's
 
     case instSrc
         INST_SRC_WHEELS:
@@ -7985,11 +8604,19 @@ PRI instReadSource()
                 isDuty[SLOT_LEFT], isErr[SLOT_LEFT], isSenseI[SLOT_LEFT], isSenseU[SLOT_LEFT], isSenseV[SLOT_LEFT], isSenseW[SLOT_LEFT], isState[SLOT_LEFT], isFault[SLOT_LEFT] := wheelL.testGetTelemetry()
                 isPos[SLOT_LEFT] := wheelL.getRawHallTicks()
                 isMissed[SLOT_LEFT], isIllegal[SLOT_LEFT] := wheelL.getHallIntegrityCounts()
+                if INST_TRACKS_LEVELS and (isDecimCount == 0)                  ' only a pass that stores folds them
+                    lvlU, lvlV, lvlW := wheelL.testGetDriveLevels()
+                    isLvlLo[SLOT_LEFT] := lvlU <# lvlV <# lvlW
+                    isLvlHi[SLOT_LEFT] := lvlU #> lvlV #> lvlW
             isUp[SLOT_RIGHT] := (wheelR.testGetMotorCog() <> 0)
             if isUp[SLOT_RIGHT]
                 isDuty[SLOT_RIGHT], isErr[SLOT_RIGHT], isSenseI[SLOT_RIGHT], isSenseU[SLOT_RIGHT], isSenseV[SLOT_RIGHT], isSenseW[SLOT_RIGHT], isState[SLOT_RIGHT], isFault[SLOT_RIGHT] := wheelR.testGetTelemetry()
                 isPos[SLOT_RIGHT] := wheelR.getRawHallTicks()
                 isMissed[SLOT_RIGHT], isIllegal[SLOT_RIGHT] := wheelR.getHallIntegrityCounts()
+                if INST_TRACKS_LEVELS and (isDecimCount == 0)
+                    lvlU, lvlV, lvlW := wheelR.testGetDriveLevels()
+                    isLvlLo[SLOT_RIGHT] := lvlU <# lvlV <# lvlW
+                    isLvlHi[SLOT_RIGHT] := lvlU #> lvlV #> lvlW
         INST_SRC_STEER:
             isState[SLOT_LEFT], isState[SLOT_RIGHT] := steering.testGetDriverState()
             isUp[SLOT_LEFT] := (isState[SLOT_LEFT] <> DCS_UNKNOWN)
@@ -8024,6 +8651,12 @@ PRI instStore(sampleCt) | ringBase, motorIdx, motorOff
         ring[motorOff + SMP_SENSE], ring[motorOff + SMP_PHVW] := instPackSense(motorIdx)
         ring[motorOff + SMP_FLAGS] := instPackFlags(motorIdx)
         ring[motorOff + SMP_HW] := isHwPos[motorIdx]
+        ' PWMCLIP (task 3604): a stored sample's levels, folded where the sample itself is, and only while the
+        '  drive is applying them -- a faulted bridge coasts or shorts whatever the levels read
+        if INST_TRACKS_LEVELS and isUp[motorIdx] and (isFault[motorIdx] == FALSE)
+            instLvlMin[motorIdx] <#= isLvlLo[motorIdx]
+            instLvlMax[motorIdx] #>= isLvlHi[motorIdx]
+            instLvlN[motorIdx] := (instLvlN[motorIdx] + 1) <# LIM_BIG
     instTotal := (instTotal + 1) <# LIM_BIG
     instRunSamples := (instRunSamples + 1) <# LIM_BIG
 
@@ -9062,6 +9695,10 @@ PRI cpReset()
     bCpOffWritten := FALSE
     bCpOffRestored := FALSE
     bCpEstopSet := FALSE
+    cpRampMs := 0
+    bCpRampReached := FALSE
+    cpRampLag := 0
+    bCpRampLagValid := FALSE
 
 PRI traceEmptyEnd(tid, endCode, whyCode)
 ' BM-TRACE-END for a trace with no drainable capture (skipped, or never frozen so never drained, I10):
@@ -9330,7 +9967,8 @@ PRI wheelStopRaw(side)
     bBrakeRequested[side - SIDE_LEFT] := FALSE
 
 PRI wheelCommand(side, motorIncre) | safeIncre
-' Command one wheel's raw increment. Nothing above LADDER_MAX_INCRE is ever sent.
+' Command one wheel's raw increment. Nothing above COMMAND_MAX_INCRE is ever sent: LADDER_MAX_INCRE, except
+' in the LIMITS build, whose climb probes to LIMTOP_MAX_INCRE.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param motorIncre - signed increment
@@ -9338,7 +9976,7 @@ PRI wheelCommand(side, motorIncre) | safeIncre
 ' @local safeIncre - the increment actually sent
 
     safeIncre := motorIncre
-    if abs(motorIncre) > LADDER_MAX_INCRE
+    if abs(motorIncre) > COMMAND_MAX_INCRE
         safeIncre := 0
     curIncre := safeIncre
     beat(CP_LIB_COMMAND)
@@ -9534,21 +10172,23 @@ PRI wheelRampInc(side) : incRamp
         _, _, incRamp, _ := wheelL.getRampingValues()
     beat(CP_LIB_RAMP)
 
-PRI wheelSetRamp(side, incWant) : incReadBack
-' Set a FAULTB trial's ramp (the defaults with ramp_inc replaced) and read ramp_inc back. Every caller
-' restores the defaults with bRestoreRamp() after its freeze (I11).
+PRI wheelSetRamp(side, incWant, downWant) : incReadBack, downReadBack
+' Set a trial's ramp (the defaults with ramp_inc and ramp_down replaced) and read both back: FAULTB's trials
+' and LIMRAMP's (task 3604). Every caller restores the defaults with bRestoreRamp() afterwards (I11).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param incWant - the trial's ramp_inc
+' @param downWant - the trial's ramp_down
 ' @returns incReadBack - ramp_inc read back
+' @returns downReadBack - ramp_down read back
 
     beat(CP_LIB_RAMP)
     if side == SIDE_RIGHT
-        wheelR.setRampingValues(RAMP_DEF_MIN, RAMP_DEF_MAX, incWant, RAMP_DEF_DOWN)
-        _, _, incReadBack, _ := wheelR.getRampingValues()
+        wheelR.setRampingValues(RAMP_DEF_MIN, RAMP_DEF_MAX, incWant, downWant)
+        _, _, incReadBack, downReadBack := wheelR.getRampingValues()
     else
-        wheelL.setRampingValues(RAMP_DEF_MIN, RAMP_DEF_MAX, incWant, RAMP_DEF_DOWN)
-        _, _, incReadBack, _ := wheelL.getRampingValues()
+        wheelL.setRampingValues(RAMP_DEF_MIN, RAMP_DEF_MAX, incWant, downWant)
+        _, _, incReadBack, downReadBack := wheelL.getRampingValues()
     beat(CP_LIB_RAMP)
 
 PRI wheelSetOffsets(side, negDegrees, posDegrees)
@@ -9592,20 +10232,22 @@ PRI bWheelDerated(side) : bDeratedNow
         _, _, bDeratedNow, _, _ := wheelL.testGetCurrentLimitState()
     beat(CP_LIB_QUERY)
 
-PRI wheelDriveConstants(side) : deadGap, dutyMax, adcFrame, frameCnt
-' The drive constants init() derived for one wheel (testGetDriveConstants()).
+PRI wheelDriveConstants(side) : deadGap, dutyMax, adcFrame, frameCnt, dutyMin
+' The drive constants init() derived for one wheel (testGetDriveConstants()); dutyMin as it stands now, since
+' LIMLOW writes it (task 3604).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns deadGap - dead_gap, system ticks
 ' @returns dutyMax - duty_max, 1/16ths
 ' @returns adcFrame - adc_fram
 ' @returns frameCnt - frame_cnt
+' @returns dutyMin - duty_min, 1/16ths
 
     beat(CP_LIB_QUERY)
     if side == SIDE_RIGHT
-        deadGap, _, _, dutyMax, adcFrame, frameCnt := wheelR.testGetDriveConstants()
+        deadGap, _, dutyMin, dutyMax, adcFrame, frameCnt := wheelR.testGetDriveConstants()
     else
-        deadGap, _, _, dutyMax, adcFrame, frameCnt := wheelL.testGetDriveConstants()
+        deadGap, _, dutyMin, dutyMax, adcFrame, frameCnt := wheelL.testGetDriveConstants()
     beat(CP_LIB_QUERY)
 
 PRI wheelDriveHealth(side) : nLagHeld, nDutyCapped, nDrvIncr
@@ -10141,6 +10783,8 @@ PRI emitHeaderRecords() | orderIdx
             emitPlan(SEG_STOPMODE, 2)
             emitPlan(SEG_LIVE, 3)
             emitPlan(SEG_LADDER, 4)
+            emitPlan(SEG_LOWSPD, 5)
+            emitPlan(SEG_TAKE, 6)
         PART_CLOCK:
             emitPlan(SEG_PREFLT, 1)
             emitPlan(SEG_CLOCK, 2)
@@ -10165,6 +10809,12 @@ PRI emitHeaderRecords() | orderIdx
         PART_LEAD:
             emitPlan(SEG_PREFLT, 1)
             emitPlan(SEG_LEAD, 2)
+        PART_LIMITS:
+            emitPlan(SEG_PREFLT, 1)
+            emitPlan(SEG_LIMTOP, 2)
+            if BUILD_SVM == FALSE
+                emitPlan(SEG_LIMRAMP, 3)
+                emitPlan(SEG_LIMLOW, 4)
     if PART_ID == PART_A
         repeat orderIdx from 0 to LADDER_RUNGS - 1
             emitLadder(orderIdx)
@@ -10277,8 +10927,14 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     '  the bias read, so call it 240 s; it stores only crossings, about 135 a leg at the ladder's record
     '  width, so about 25 KB. A stalled leg costs ALIGN_STALL_MS instead, which is why RUN_TIME_CAP_S is
     '  1_800 rather than this estimate.
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25)
+    ' LEAD and TAKE had no entry, so their rows printed 0 (PL-97's mechanism): LEAD MEASURED about 4.5 min at
+    '  Visit 8b for its 112 rungs at the ladder's ~1.2 KB; TAKE is two short lifetimes.
+    ' Task 3604, the LIMITS part. LIMTOP: 4 climbs of up to ~15 rungs at the ladder's ~2.5 s, plus an AT_SPEED
+    '  bound or two at the edge, and BM-CLIP beside each rung's five records. LIMRAMP: 20 traces at STOPMODE's
+    '  worst case of TRACE_EMIT_MAX lines each. LIMLOW: 32 rungs of about 10 s (LIMLOW_WINDOW_MS, its settle
+    '  and a quick AT_SPEED).
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -11449,6 +12105,8 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallZ
         PART_LEAD:
             pCell := @sSfCellNoStallL
+        PART_LIMITS:
+            pCell := @sSfCellNoStallM
         other:
             pCell := @sUnknownTok
 
@@ -11478,6 +12136,8 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskZ
         PART_LEAD:
             pCell := @sSfCellDbgMaskL
+        PART_LIMITS:
+            pCell := @sSfCellDbgMaskM
         other:
             pCell := @sUnknownTok
 
@@ -11614,6 +12274,12 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellNoStallL)
                 emitSignoffDecl(@sSfCellDbgMaskL)
                 emitSignoffDecl(@sSfCellLeadBrkt)
+            PART_LIMITS:
+                emitSignoffDecl(@sSfCellNoStallM)
+                emitSignoffDecl(@sSfCellDbgMaskM)
+                emitSignoffDecl(@sSfCellTracesM)
+                emitSignoffDecl(@sSfCellTopSpd)
+                emitSignoffDecl(@sSfCellPwmClip)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
@@ -11649,6 +12315,8 @@ PRI emitSignoffs() | slotIdx, side
 '  UI     NOSTALL BOOL; DBGMASK BOOL; UICHECK BOOL (every BM-UISTEP OK)
 '  ALIGN  NOSTALL BOOL; DBGMASK BOOL; ALIGN-ND MV (the no-drive invariant), ALIGN-CLIP / -COVER / -RES
 '         COUNT (the three that can disqualify a reading), ALIGN-MTRX BOOL (all four wheel x direction)
+'  LEAD   NOSTALL BOOL; DBGMASK BOOL; LEAD-BRKT COUNT per motor
+'  LIMITS NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; TOPSPD INCR_E6 and PWMCLIP PWM_CNT per motor
 '
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
@@ -11726,6 +12394,8 @@ PRI emitSignoffs() | slotIdx, side
                 emitAlignCells()
             PART_LEAD:
                 emitLeadCells()
+            PART_LIMITS:
+                emitLimitsCells()
 
 PRI emitIdleMoveCell(pCell, slotIdx)
 ' IDLEMOVE (task 3572): the other wheel's largest travel over every motor-frame trace this motor was primary in.

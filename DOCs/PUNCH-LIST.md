@@ -5021,6 +5021,13 @@ tables extended with it -- those were also one entry short and would have return
 rather than failing. `tokPart` extended to `PART_COUNT` in the follow-on commit that built the ALIGN
 measurement core.
 
+**MEASURED, third instance (2026-09-22, found by «#3604»).** `SEG_LEAD` («#3583») and `SEG_TAKE` («#3584»)
+joined the segment enum with no `tokFinds` row and no `estS`/`estKb` entry. The Visit 8b `dual-lead` log shows
+it: `BM-PLAN,...,seg,LEAD,...,finds,?,est_s,0,est_kb,0` (`debug_260922-164207.log`). This time the adjacent DAT
+happened to begin with `"?"`, so the field read as unknown rather than as a wrong word. **FIXED at «#3604»:** both
+rows filled, the LIMITS part's three rows added after them, and part A now prints its LOWSPD and TAKE plan rows
+(F1's two missing rows). The class below is still open, and this is its third instance in three segment additions.
+
 ⛔ **WHAT IS NOT FIXED.** Nothing prevents the next table from being short. **A table's length and its
 enum's count are asserted nowhere**, in either direction, and the failure is silent in both: short
 table prints adjacent memory, and PL-96's over-length token prints `?`. Both are the same underlying
@@ -5293,8 +5300,12 @@ case before the cell is trusted. **The floor run («#3591»)** is the other plac
   command ceiling. Raising the ceiling would silently weaken the feedforward and hand its work back to the trim.
   Doctrine D7: one value, one meaning.
 
-**Disposition:** the limits study Stephen asked for on 2026-09-22 (*"move them purposefully"*) owns both. Split the
-feedforward's constant from the ceiling first, then move the ceilings from a measurement to the fault edge.
+**Disposition:** the limits study Stephen asked for on 2026-09-22 (*"move them purposefully"*,
+[plan](plans/LIMITS-RESET-PLAN.md)) owns both.
+- **Two meanings: FIXED.** E0 («#3603», `06cdb2c`, DRIVER_REV 5) gave the feedforward the motor's own back-EMF
+  line, `HUB_FF_INCR_AT_NOMINAL`. «#3604» (DRIVER_REV 6) keeps that line's slope when `duty_max` moves:
+  `ff_ceiling` scales by `duty_max` over the duty the line was measured against.
+- **The ceilings: OPEN.** Visit 9's `dual-limits` climbs to the edge, and «#3605» moves the table from its report.
 
 ---
 

@@ -1571,6 +1571,37 @@ PUB testGetDriveConstants() : deadGap, pwmLimit, dutyMin, dutyMax, adcFrame, fra
     adcFrame := adc_fram
     frameCnt := frame_cnt
 
+PUB testGetDriveLevels() : nDriveU, nDriveV, nDriveW
+'' TESTING USE: the three high-side PWM levels the driver wrote on its latest frame
+''
+'' Each is the P_PWM_TRIANGLE Y value, valid in 0 to frame_cnt / 2; the low side of the same phase is this plus
+'' the dead-gap, so the PWM does not clip while each level is >= 0 and each level plus the dead-gap is <=
+'' frame_cnt / 2. Debug-free, so a bench instrument cog may call it.
+''
+'' @returns nDriveU - phase U's high-side level, PWM counts
+'' @returns nDriveV - phase V's high-side level, PWM counts
+'' @returns nDriveW - phase W's high-side level, PWM counts
+
+    ' read as one group, for the reason testGetTelemetry() gives: tighter than separate calls, and
+    '  still not atomic against the driver's own block copy -- each value is a real level either way
+    nDriveU := drive_u
+    nDriveV := drive_v
+    nDriveW := drive_w
+
+PUB testSetDutyMin(nDutyMin) : eError
+'' TESTING USE: set the duty floor the driver holds at rest and never drives below
+''
+'' @param nDutyMin - the duty floor, 1/16ths of a PWM count [half the dead-gap, in 1/16ths, to the duty ceiling]
+'' @returns eError - NO_ERROR, or ERR_BAD_COUNT (also recorded for getError()) for a value outside that range; a rejected call changes nothing
+
+    ' init()'s own floor on duty_min is half the dead-gap, so a value below it is one init() could never produce
+    if (nDutyMin < (dead_gap / 2) << 4) or (nDutyMin > duty_max)
+        eError := recordError(ERR_BAD_COUNT)
+        debug[user.DBGCH_ERROR]("! ERROR: testSetDutyMin() rejected ", sdec_long(nDutyMin))
+    else
+        duty_min := nDutyMin
+        eError := NO_ERROR
+
 PUB testGetStopHallTicks() : stopTicks
 '' TESTING USE: snapshot the pending hall-tick stop target set by stopAfterDistance()/stopAfterRotation()
 ''
@@ -2254,7 +2285,7 @@ PRI launchFront(bReleaseDriver) : eError | frontCogId, startMs
         else
             debug[user.DBGCH_LIFECYCLE]("* Front COG #", sdec_(frontCogId))
 
-PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs
+PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs, dutyAtFfLine
 ' Initialise this instance's driver image and state for a validated, claimed start; cannot fail.
 '
 ' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor, already validated and claimed
@@ -2265,6 +2296,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 ' @local fwdDegrees - forward commutation offset for this motor, in degrees
 ' @local revDegrees - reverse commutation offset for this motor, in degrees
 ' @local gapInNs - PWM dead-gap, in nanoseconds
+' @local dutyAtFfLine - the duty the feedforward's back-EMF line was measured to reach at its increment (1/16ths)
 
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
@@ -2340,9 +2372,27 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
                                                         '    duty_min    := dead_gap << 4 #> dead_gap << 4
                                                         ' Chip's new code adjusted this, why?
                                                         '    duty_min    := 200 << 4 #> dead_gap << 4
-    duty_max    := (pwm_limit  << 4) / 2 <# pwm_limit << 4      ' ok
+    ' Task 3604 (LIMITS-RESET-PLAN.md E2): the feedforward's back-EMF line was measured in units of THIS duty
+    '  ceiling, so it is kept apart from duty_max: a build that raises the ceiling must not raise the slope.
+    dutyAtFfLine := (pwm_limit << 4) / 2
+#ifdef DUTY_MAX_SVM
+    ' E2, the desk bound (a -D build variant until the bench certifies it). The drive re-centres the three
+    '  levels on (min + max) / 2 every frame, so a phase swings at most sqrt(3)/2 of the amplitude either side
+    '  of bias. The low side's Y is the high side's plus dead_gap, and P_PWM_TRIANGLE holds Y in 0..F, F =
+    '  frame_cnt / 2 (p2kbArchSmartPin01000PwmTriangle). Centring bias on the switching window, (F - dead_gap)
+    '  / 2, leaves the same room on both rails, and the amplitude that fills it is (F - dead_gap) / sqrt(3),
+    '  less SVM_GUARD_COUNTS for the CORDIC's rounding and the floored centring. INVARIANT: every high-side Y
+    '  stays >= 0 and every low-side Y <= F, so the PWM never clips. The legacy value below uses 1/2 of the
+    '  frame, which leaves ~14 % of the amplitude unused (at 270 MHz: 1_728 against 1_516 counts). The two
+    '  trials marked BAD below both break this invariant under the old bias: 5/8 peaks at 1_641 counts from
+    '  bias and 3/4 at 1_970, against the 1_464 the low side has before it clips.
+    bias        := ((frame_cnt / 2) - dead_gap) / 2
+    duty_max    := muldiv64((frame_cnt / 2) - dead_gap - SVM_GUARD_COUNTS, SVM_INV_ROOT3_PPM, PPM) << 4
+#else
+    duty_max    := dutyAtFfLine                         ' ok (half of pwm_limit << 4, so the old <# clamp never acted)
                                                         'duty_max    := ((pwm_limit  << 4) / 4) * 3 <# pwm_limit << 4    ' BAD
                                                         'duty_max    := ((pwm_limit  << 4) / 8) * 5 <# pwm_limit << 4    ' BAD
+#endif
     servo_shift := SERVO_ACC_SHIFT                      ' R18.4 D-2: the trim's gain (ff_ceiling follows the power limits, below)
     cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
@@ -2397,6 +2447,9 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
         ff_ceiling := muldiv64(HUB_FF_INCR_AT_NOMINAL, nominalMilliVolts(eMotorVoltage), HUB_FF_NOMINAL_MV)
     else
         ff_ceiling := abs(maxFwdIncreAtPwr)
+    ' Task 3604: the driver scales by duty_max, and the line reaches dutyAtFfLine at ff_ceiling, so ff_ceiling
+    '  moves with duty_max and the slope does not. Exactly 1:1 on the default build.
+    ff_ceiling := muldiv64(ff_ceiling, duty_max, dutyAtFfLine)
     ff_ceiling #>= 1
 
     rSenseForBoard := VALUE_NOT_SET
@@ -4090,10 +4143,16 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 5         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 6         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
+                                            ' 6: the feedforward's slope is held when duty_max moves; the DUTY_MAX_SVM build variant (task 3604)
+
+    ' Task 3604 (LIMITS-RESET-PLAN.md E2): the DUTY_MAX_SVM build's duty ceiling, derived in init()
+    SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
+    SVM_INV_ROOT3_PPM           = 577_350   ' 1 / sqrt(3), parts per million
+    PPM                         = 1_000_000
 
     ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
     LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts
