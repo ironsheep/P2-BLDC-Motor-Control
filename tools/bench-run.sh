@@ -59,6 +59,12 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PNUT="${PNUT_TS:-pnut-ts}"
 PNUT_TERM="${PNUT_TERM_TS:-pnut-term-ts}"
 
+# BENCH_MEASURE_ONLY=1 -- set by tools/build-check.sh, never typed at the bench. The tier
+# is compiled and its DEBUG footprint gated exactly as for a run, then the script exits
+# before any terminal, precondition banner or source patch. It lets the commit-time gate
+# measure every tier through this one tier table instead of a copy of it.
+MEASURE_ONLY="${BENCH_MEASURE_ONLY:-}"
+
 # The three clocks the dual-clock-* tiers sweep, in Hz, each named once by its tier
 # below. test_bench_dual.spin2 judges its CLKFRAME sign-off cell only at these (its
 # SF_CLOCK_* constants), so a run at any other clock judges nothing -- see PL-62.
@@ -325,12 +331,12 @@ if ! command -v "$PNUT" >/dev/null 2>&1; then
     exit 2
 fi
 
-if ! command -v "$PNUT_TERM" >/dev/null 2>&1; then
+if [ -z "$MEASURE_ONLY" ] && ! command -v "$PNUT_TERM" >/dev/null 2>&1; then
     echo "ERROR: '$PNUT_TERM' not found on PATH (override with PNUT_TERM_TS=/path/to/pnut-term-ts)" >&2
     exit 2
 fi
 
-if [ -n "$PRECONDITION" ]; then
+if [ -n "$PRECONDITION" ] && [ -z "$MEASURE_ONLY" ]; then
     echo ""
     echo "  ****************************************************************"
     echo "  ** $PRECONDITION"
@@ -352,7 +358,11 @@ echo "bench-run.sh: pwd is now $(pwd)"
 # clkfreq argument is explicitly given. Restored on exit, including on
 # interrupt.
 BACKUP_BENCH=""
-if [ -n "$CLK_OVERRIDE" ]; then
+if [ -n "$MEASURE_ONLY" ] && [ -n "$CLK_OVERRIDE" ]; then
+    # The clock is one CON value; it does not move the DEBUG footprint, and a measurement
+    # must never write a source file.
+    echo "bench-run.sh: measure-only -- clock override $CLK_OVERRIDE not applied, no source file written"
+elif [ -n "$CLK_OVERRIDE" ]; then
     if ! [[ "$CLK_OVERRIDE" =~ ^[0-9]+$ ]]; then
         die "CLK_FREQ must be a number (got '$CLK_OVERRIDE')"
     fi
@@ -382,17 +392,70 @@ fi
 # NOTE: capture $? from the command itself, NOT from inside `if ! cmd; then`
 # -- there $? is the status of the negation (always 0), so the error line
 # would report a failure with "exit 0" and hide the one number worth having.
-run "$PNUT" -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
-STATUS=$?
-if [ $STATUS -ne 0 ]; then
-    echo "ERROR: command failed (exit $STATUS): $PNUT -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE" >&2
-    exit 2
+#
+# TWO COMPILES, the plain one FIRST: the DEBUG footprint is measured as the -d
+# image's size minus the same build's size without -d (P2-HAZARD-REGISTER DBG-1:
+# subtract binary sizes -- no parsing, nothing that can drift). The -d build runs
+# second so the binary left in src/ is the one that is downloaded.
+#
+# Measure-only writes both images under names of its own (-o) and removes them,
+# so build-check.sh can measure tiers side by side without two compiles sharing
+# one .bin; the flags are the run's own.
+BINARY="${BENCH_FILE%.spin2}.bin"
+PLAIN_OUT=()
+DEBUG_OUT=()
+MEASURE_PLAIN="$BINARY"
+MEASURE_DEBUG="$BINARY"
+LIST_OPT=(-l)
+if [ -n "$MEASURE_ONLY" ]; then
+    MEASURE_PLAIN=".footprint-$TIER-plain.bin"
+    MEASURE_DEBUG=".footprint-$TIER-debug.bin"
+    PLAIN_OUT=(-o "$MEASURE_PLAIN")
+    DEBUG_OUT=(-o "$MEASURE_DEBUG")
+    LIST_OPT=()
+    trap 'rm -f "$MEASURE_PLAIN" "$MEASURE_DEBUG"' EXIT
 fi
 
-BINARY="${BENCH_FILE%.spin2}.bin"
-if [ ! -f "$BINARY" ]; then
-    echo "ERROR: compilation succeeded but binary not found: $BINARY" >&2
-    exit 2
+run "$PNUT" ${PLAIN_OUT[@]+"${PLAIN_OUT[@]}"} -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
+STATUS=$?
+if [ $STATUS -ne 0 ] || [ ! -f "$MEASURE_PLAIN" ]; then
+    die "command failed (exit $STATUS): $PNUT ${PLAIN_OUT[*]+${PLAIN_OUT[*]}} -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
+fi
+PLAIN_BYTES=$(wc -c < "$MEASURE_PLAIN" | tr -d ' ')
+
+run "$PNUT" ${DEBUG_OUT[@]+"${DEBUG_OUT[@]}"} ${LIST_OPT[@]+"${LIST_OPT[@]}"} -d -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
+STATUS=$?
+if [ $STATUS -ne 0 ] || [ ! -f "$MEASURE_DEBUG" ]; then
+    die "command failed (exit $STATUS): $PNUT ${DEBUG_OUT[*]+${DEBUG_OUT[*]}} ${LIST_OPT[*]+${LIST_OPT[*]}} -d -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
+fi
+DEBUG_BYTES=$(( $(wc -c < "$MEASURE_DEBUG" | tr -d ' ') - PLAIN_BYTES ))
+
+# ---- refuse an image whose DEBUG data runs past its end (DBG-1) ----------------
+# WHY THIS EXISTS. A -d image's DEBUG data has a hard end, and no tool reports
+# crossing it: any debug() record whose bytes lie past image offset 13,684 is
+# cut at that byte or never sent. MEASURED three times -- 2026-09-20 t0-hand's
+# PLOT create stopped at "hand-rotation an", t0's "T0-23,begin,no_bo" (PL-94)
+# stopped at the same offset, and 2026-09-22's USB captures of t0-hand and
+# t0-stopmode carried no display command at all. Every attended panel was lost
+# this way, and the losses were blamed on cog bursts and the terminal first.
+#
+# THE LIMIT IS THE LARGEST FOOTPRINT MEASURED TO RUN INTACT, never the
+# documented cap (DBG-1): 12,404 bytes, 2026-09-15's t0-hand (6aed714), which
+# drew its panel and delivered every record. The smallest measured to lose
+# records is 15,619 (2026-09-20's t0-hand, a37bac1). Raise the limit only on a
+# larger build shown, on the wire, to deliver its last record.
+#
+# OVER THE LIMIT, DO NOT CUT DIAGNOSTICS. Compile out what the tier never runs
+# (DBG-16), move record text into DAT and emit it with zstr_() (DBG-2), or
+# channel it (DBG-5/6).
+DEBUG_FOOTPRINT_MAX=12404
+echo "bench-run.sh: DEBUG footprint $DEBUG_BYTES bytes (limit $DEBUG_FOOTPRINT_MAX; -d $((PLAIN_BYTES + DEBUG_BYTES)) - plain $PLAIN_BYTES)"
+if [ "$DEBUG_BYTES" -gt "$DEBUG_FOOTPRINT_MAX" ]; then
+    die "tier '$TIER' carries $DEBUG_BYTES bytes of DEBUG data, over the $DEBUG_FOOTPRINT_MAX measured to run intact: its last debug() records would be cut or never sent (DBG-1). Nothing was downloaded. Shrink the footprint without cutting output (DBG-16, DBG-2, DBG-5/6) before this tier runs."
+fi
+if [ -n "$MEASURE_ONLY" ]; then
+    echo "bench-run.sh: measure-only -- tier '$TIER' within the DEBUG footprint limit; not run"
+    exit 0
 fi
 
 # ---- run, with src/ as cwd, batch mode -----------------------------------------

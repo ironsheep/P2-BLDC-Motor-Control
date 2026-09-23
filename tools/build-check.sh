@@ -13,6 +13,10 @@
 #   2. Every top-level file compiles under AT LEAST ONE config block.
 #   3. RELEASE CERTIFICATION: both flagship demos -- demo_single_motor and
 #      demo_dual_motor -- compile. Neither ships uncertified.
+#   4. Every bench tier's DEBUG footprint is within the limit measured to run
+#      intact (P2-HAZARD-REGISTER DBG-1), checked through tools/bench-run.sh's
+#      own tier table in measure-only mode -- so an image that would lose its
+#      last debug() records fails here, at commit time, not at the rig.
 #
 # The user config file is restored on exit, including on interrupt.
 #
@@ -233,9 +237,40 @@ for top in $RELEASE_TOPS; do
     fi
 done
 
+# 5. every bench tier's DEBUG footprint (DBG-1) -- the limit and its provenance live
+#    in bench-run.sh beside the gate that refuses a run; this only walks its tiers.
+#    The tier list is read from bench-run.sh's case labels (4-space indent), and
+#    finding NONE is a failure, never a clean pass (INS-5).
+echo
+echo "Bench-tier DEBUG footprint (bench-run.sh measure-only):"
+BENCH_RUN="${SCRIPT_DIR}/bench-run.sh"
+TIERS=$(sed -nE 's/^    ([a-z0-9|-]+)\).*/\1/p' "$BENCH_RUN" | tr '|' '\n' | grep -vx 'dual-clock')
+if [ -z "$TIERS" ]; then
+    echo "  FAIL  no tiers found in $BENCH_RUN -- the footprint was not checked"
+    RC=1
+fi
+# Tiers are measured in parallel (each writes its own images, see bench-run.sh), one
+# output file per tier, then judged in tier order.
+FP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bldc-footprint.XXXXXX")" || { echo "ERROR: no temp dir" >&2; exit 2; }
+trap 'cleanup; rm -rf "$FP_DIR"' EXIT INT TERM
+JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+printf '%s\n' $TIERS | xargs -P "$JOBS" -I{} sh -c \
+    'PNUT_TS="$1" BENCH_MEASURE_ONLY=1 "$2" "$3" > "$4/$3.out" 2>/dev/null' _ "$PNUT" "$BENCH_RUN" {} "$FP_DIR"
+for tier in $TIERS; do
+    out=$(cat "$FP_DIR/$tier.out" 2>/dev/null)
+    fp=$(printf '%s\n' "$out" | sed -n 's/^bench-run.sh: DEBUG footprint \([0-9]*\) bytes.*/\1/p')
+    if printf '%s\n' "$out" | grep -q "^bench-run.sh: measure-only -- tier '$tier' within"; then
+        [ $VERBOSE -eq 1 ] && echo "  ok    $tier  $fp bytes"
+    else
+        echo "  FAIL  $tier  ${fp:-no measurement} -- $(printf '%s\n' "$out" | grep -m1 '^ERROR:' | cut -c8-)"
+        RC=1
+    fi
+done
+[ $VERBOSE -eq 0 ] && [ $RC -eq 0 ] && echo "  all $(echo $TIERS | wc -w | tr -d ' ') tiers within the limit"
+
 echo
 if [ $RC -eq 0 ]; then
-    echo "PASS: $N_PASSED/$N_TOPS tops certified; both release demos certified."
+    echo "PASS: $N_PASSED/$N_TOPS tops certified; both release demos certified; every bench tier within the DEBUG footprint limit."
 else
     echo "FAIL: build gate not satisfied -- see above."
 fi

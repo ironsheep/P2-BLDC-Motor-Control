@@ -2113,6 +2113,14 @@ are two different findings that happened to be found together; **only this half 
 
 ### PL-85 -- t0's cog bursts truncate DEBUG records ON THE WIRE; a verdict was lost and only a USB capture recovered it
 
+> ⛔ **THE LOST VERDICT IS RE-ATTRIBUTED 2026-09-23 («#3585»): it was the DEBUG data cap (PL-114), not the cog
+> burst.** Rebuilt from `18207c0` (40,918 B, the size downloaded), the `R1-T0-EXHAUST` record's byte 13,683 is
+> the `,` that arrived after `TRUE`, and byte 13,684 is the `l` of `,lo,TRUE,`, which never did. It is the same
+> byte that cut PL-94's record and the 2026-09-20 panel. **What this entry still holds:** the run-together
+> `CogN` prefixes (`CogCog1Cog0`) are a separate observation, and the quiet windows below stay. **What it no
+> longer holds:** the claim that a cog burst cut the record. Nothing that sits below the limit has been shown
+> to be cut by a burst.
+
 > **DESIGNED OUT 2026-09-18 («#3543»), with PL-41; run-time proof owed to Visit 6.** t0 no longer makes the
 > bursts this entry measured: `countFreeCogs()` uses `COGCHK()` and starts nothing, T0-8 / T0-15b / T0-22
 > share one occupy burst and one release burst (`runExhaustionPhase()`), and cog 0 prints nothing across any
@@ -3004,6 +3012,13 @@ AT_SPEED while the field is parked.
 
 ### PL-92 -- the bench runner runs the terminal in console mode, so no attended tier can draw its panel
 
+> ⛔ **CAUSE FOUND 2026-09-23 («#3585»): PL-114, the DEBUG data cap.** Neither the runner nor the display name
+> was the cause. The panel records sat past image offset 13,684, so the P2 never sent them: the `-u` captures
+> of 2026-09-22 carry no `PLOT` byte, and 2026-09-20's create command stopped at that exact byte. **FIXED** by
+> the same change, with the rig proof owed as PL-114 states. The audit table below says the DEBUG budget
+> was *"11,470 of 15,872 bytes -- neither near a limit"*. **That row is wrong.** It came from a count, not from
+> the subtraction DBG-1 prescribes, and the real footprint was 15,619.
+
 **Found 2026-09-19 at Visit 6a**, when `t0-stopmode` put up no UI and Stephen could not tell what to do.
 **MINE, not the tier's.** Open; it blocks every attended tier we have.
 
@@ -3215,6 +3230,13 @@ scaling with duty should be re-read at the same time: it is most permissive exac
 highest, which is backwards for this failure.
 
 ### PL-94 -- `t0` still loses records at cog-start bursts, despite the quiet windows (PL-85's remainder)
+
+> ⛔ **CAUSE FOUND 2026-09-23 («#3585»): PL-114, the DEBUG data cap, not cog-start bursts.** Rebuilt from
+> `60e135b` (44,665 B, the size downloaded), `T0-23,begin,no_bo` ends on byte 13,683, and every later record
+> fell past the limit. That is why `R17-T0-NOBOARDSTART` and `R1-T0-EXHAUST`, which are late in the file,
+> are the two cells that never reported. It also explains why the quiet windows reduced nothing here.
+> **FIXED** by the same change (the `t0` footprint went from 16,004 to 10,511 bytes), with the rig proof owed as
+> PL-114 states.
 
 **Found 2026-09-19 at Visit 6a.** Open. **PL-85 is reduced, not closed.**
 
@@ -3605,6 +3627,58 @@ voltages exist and which are verified. The file is the one end users edit, so th
 
 **FIXED 2026-09-23 («#3606»):** the note now points to `MOTOR_CHOICE.md` and names the two voltages that are refused
 (DocoEng 6.0 V; 25.9 V for both). Comment only; no constant moved. Sweep at the next closeout.
+
+### PL-114 -- a `-d` image loses every `debug()` record whose bytes lie past offset 13,684: the cause behind PL-85, PL-92 and PL-94
+
+**Found 2026-09-23 in «#3585».** The attended panels, PL-94's lost cells and PL-85's lost verdict all have
+this one cause. It is P2-HAZARD-REGISTER **DBG-1**: the DEBUG data has a hard end, and crossing it produces no
+error at compile time or at run time. **A record whose bytes lie past image offset 13,684 is cut at that byte,
+or never sent at all.** Earlier records print normally, so the log looks like a program that emits some
+lines and drops others.
+
+**MEASURED -- the same byte, four times, on three days.** Each image below was rebuilt from the commit that
+ran and matches the downloaded size exactly. Each cut ends on the byte before 13,684:
+
+| Run | Commit, image | What arrived | Byte 13,684 is |
+|---|---|---|---|
+| 2026-09-17 `t0` (PL-85) | `18207c0`, 40,918 B | `...RET_NEG_NOLEAK,measured,TRUE,` then CR LF | the `l` of `,lo,TRUE,` |
+| 2026-09-20 `t0` (PL-94) | `60e135b`, 44,665 B | `T0-23,begin,no_bo` | the next letter of `no_board_start` |
+| 2026-09-20 `t0-hand` (PL-92) | `a37bac1`, 44,439 B | `` `PLOT bench TITLE 'T0-12 hand-rotation an`` | the `c` of `anchor` |
+| 2026-09-22 `t0-hand`, `t0-stopmode` | working tree | no display command at all | below every panel record |
+
+⭐ **The 2026-09-22 run settled which side the loss is on.** It was made with `-u` (`8b94f60`), and
+`usb-traffic_260922-215918.log` / `usb-traffic_260922-220003.log` carry **no `PLOT`, `LAYER` or `crop` byte**.
+The P2 never sent them, and only cog 0 was running. The panel code is the last in the file, so its records
+were the first to fall past the end. The 2026-09-15 `t0-hand` that drew (`6aed714`, 28,520 B) had its panel
+records at bytes 10,829-11,028.
+
+**The measure that would have caught it** is the register's own: the `-d` image's size minus the same
+build's size without `-d`. The footprint grew from **12,404** (2026-09-15, drew) to **15,619** (2026-09-20,
+cut). PL-92's code audit recorded *"11,470 of 15,872 bytes -- neither near a limit"*. That figure came from a
+count, which DBG-2 says gives confident wrong answers, and it closed the question that would have found this.
+
+**FIXED 2026-09-23 («#3585»), no output cut** (the register's mitigations; Stephen: *"All can come into play
+while not having to reduce the debug output volume we need for testing"*):
+
+- **DBG-16, compile out rather than skip at run time.** `T0_ATTENDED` (set by `T0_HAND` and `T0_STOPMODE`)
+  compiles the unattended test bodies out of both attended builds. Before this they were skipped only at the
+  call site, and each attended build still carried every one of their records.
+- **DBG-2, text from hub, not from the record.** Forty-seven literal `SIGNOFF` / `SIGNOFF-DECL` lines now go
+  through `emitCellBool()`, `emitCellDecl()` and the new `emitCellNum()`. A script check rendered each
+  removed line and its replacement from the same arguments, and every field matched.
+- **Footprints:** `t0` 16,004 -> **10,511**; `t0-hand` 15,674 -> **7,592** (panel at 6,789); `t0-stopmode`
+  16,611 -> **8,529** (panel at 7,551).
+- **DBG-1, the gate.** `tools/bench-run.sh` builds each tier without and with `-d`, subtracts, and refuses to
+  start the terminal over **12,404**: the largest footprint measured to run intact, not the documented cap.
+  `tools/build-check.sh` step 5 checks every tier the same way at commit time, through the runner's own tier
+  table. Every tier is measured: the largest after `t0` is `char` at 9,572, and `dual` is 6,861.
+
+**Owed at the rig:** `t0-hand` and `t0-stopmode` draw their panels, and `t0` emits all of its declared cells,
+`R17-T0-NOBOARDSTART` and `R1-T0-EXHAUST` included. That run is the certification. It stays open until then.
+
+**The limit is a floor, not a measurement of the edge.** 12,404 ran and 15,619 did not; the register's own
+measurements put the edge in (13,332, 15,347]. Raise `DEBUG_FOOTPRINT_MAX` only on a larger build shown, on the
+wire, to deliver its last record.
 
 ---
 
