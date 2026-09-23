@@ -17,7 +17,7 @@ benefit, before any becomes the default.
 |---|---|
 | `dual-*` tiers | `BM-BUILD ... drv_rev,12` (the driver as built for this visit). Anything lower means an old tree was built: stop and report. The T0 harness prints no driver revision, so for the T0 tiers the check is the row layout below |
 | `dual-fault` | part `FAULTRESP`; a `BM-FRBUILD` record; `BM-NOTBUILT` for `B4PULSE` only |
-| `dual-start` | part `START` *(completed with its build, see below)* |
+| `dual-start` | part `START`, segment `SKCHECK`, a `BM-SKBUILD` record; `dual-start-nowalk` also prints `BM-NOTBUILT` for the walk |
 | `t0-stopmode` | `T0-24,row,...` records numbered 1 to 8, the first `hold_watch` (the hold rows exist only in this build), rows 6 and 7 powered; `-fltfirst` has rows 5 and 6 powered |
 
 ---
@@ -30,7 +30,7 @@ benefit, before any becomes the default.
 | **Hardware risk** | `dual-fault` **faults the wheels on purpose at up to about 220 rpm commanded**. Each fault ends in the response under test: a phase short that stops the wheel dead, a free coast, a controlled ramp down, or the graded short. **The graded short regenerates into the supply, so it needs a pack, not a bench supply that cannot sink current.** Faults are forced by the driver's own test hook, not by the old offset shift that plugged the motor (PL-119). A forced fault that does not latch in 8 ms stops the wheel. The 10 A abort and the fold-back limiter apply throughout. The board cannot measure a short's own current (PL-118). `t0-stopmode` spins one wheel under power in two rows. **Wheels up throughout. Hands off in every unattended tier. Panic: physical battery disconnect.** |
 | **Who can observe** | `t0-stopmode` is attended: Stephen pushes and spins the wheel as each row's panel asks, and each panel says what he should feel. The unattended tiers need nobody. **One observation is worth having near `dual-fault`:** does a 100 % graded stop sound or look like the full short? That is an observation, not a verdict. |
 | **Runs that carry state** | None. Every `dual-fault` trial runs in its own driver lifetime and restores the fault response. The hold limits are TEST-USE and reset on every start. |
-| **Run length** | `dual-fault` about 6 min (cap 15). `t0-stopmode` about 8 attended rows, roughly 10 min. `dual-start` *(with its build)*. `t0-stopmode-fltfirst` another ~10 min, only if its question is still open after `t0-stopmode`. |
+| **Run length** | `dual-fault` about 6 min (cap 15). `t0-stopmode`: 8 attended rows, roughly 10 min. `dual-start` under 1 min; its three attended negatives about 15 min including the rewiring. `t0-stopmode-fltfirst`: another ~10 min, only if its question is still open after `t0-stopmode`. |
 | **Repeatability** | All repeatable and idempotent. |
 | **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack, 270 MHz, the same rig as Visit 9b. `test_bench_dual.spin2` parts FAULTRESP and START; `test_bench_t0.spin2` T0-24, with and without `-D T0_24_FLT_FIRST`. |
 
@@ -43,12 +43,15 @@ run once (2026-09-22), and its instrument defect (PL-115) is what this rebuild f
 
 ```bash
 tools/bench-run.sh dual-fault             # 1: the fault responses, the platform policy, the hook's negative control
-tools/bench-run.sh dual-start             # 2: the start checks, sized over repeated starts; the wiring walk
-tools/bench-run.sh t0-stopmode            # 3: ATTENDED -- the hold rows and the stop states at the wheel
-tools/bench-run.sh t0-stopmode-fltfirst   # 4: ATTENDED, only if run 3's rows 6-7 blocked again (PL-116)
+tools/bench-run.sh dual-start-nowalk      # 2: ATTENDED WIRING -- B-1 (right hall connector unplugged)
+tools/bench-run.sh dual-start-nowalk      # 3: ATTENDED WIRING -- B-3's negative (one right motor lead unplugged)
+tools/bench-run.sh dual-start             # 4: ATTENDED WIRING -- B-5's negative (two right hall wires swapped)
+tools/bench-run.sh dual-start             # 5: wiring restored -- the start checks sized over 10 starts, and the wiring walk
+tools/bench-run.sh t0-stopmode            # 6: ATTENDED -- the hold rows and the stop states at the wheel
+tools/bench-run.sh t0-stopmode-fltfirst   # 7: ATTENDED, only if run 6's rows 6-7 blocked again (PL-116)
 ```
 
-Then the attended negative controls (below), each a re-run of `dual-start` with one piece of wiring changed.
+Runs 2–4 each change one piece of wiring, battery disconnected: the procedures are under *Attended negative controls*.
 
 ---
 
@@ -102,15 +105,53 @@ report a coast (INS-14), and every coast cell below is read with that in mind.
 *before* the e-stop row. If they reach AT_SPEED and fault as designed, the e-stop clear path is implicated (a driver
 defect and a new task). If they block again, the blocked test is (PL-106).
 
-### `dual-start` — the start checks and the wiring walk
+### `dual-start` — the start checks and the wiring walk (startup study §6)
 
-*Completed when the START part is built (in flight; see «#3613»).*
+Ten steering lifetimes. Each start records `BM-SSTART`, `BM-SKHEALTH` (both wheels) and one `BM-SKPROBE` per wheel;
+the last three also record `BM-SKWALK`; the segment ends with one `BM-SKSUM` per wheel. The header's `BM-SKBUILD`
+prints every band and threshold the cells judge against. There is no PREFLT, because the attended negatives load this
+part with a wheel mis-wired.
 
-### Attended negative controls
+| Cell | Criterion | Fails if | Control | Sizes |
+|---|---|---|---|---|
+| **R19-DUAL-HEALTH-X**, per wheel | 0 of 10 starts with any failed bit | any bit in `l_fail`/`r_fail` | B-1 and B-3's negatives (below) | — (certifies the health word) |
+| **R19-DUAL-RZSPREAD-X**, per wheel | 0 rest zeros outside −100…+200 mV | one outside the band | none at driver level (the band is compiled in) | **REST_ZERO_MIN_MV/MAX_MV**, from `BM-SKSUM rz_min/max/spr/mean_x10`. The gap between the two boards' means answers the study's question of whether one band can serve both |
+| **R19-DUAL-PRBFLR-X**, per wheel, **judged first** | the largest coasting-floor phase reading ≤ 99 mV | the floor reaches 100 mV | this *is* the probe's able-to-report control | the floor the follow threshold must stay above |
+| **R19-DUAL-PROBE-X**, per wheel | 0 of 30 probes whose driven phase reads under 200 mV, or any follower under 50 % of it (stricter than the driver, which needs only one follow) | any bad probe | PRBFLR; B-3's negative | **CONT_MIN_DRIVEN_MV** (`drv_min_mV`), **CONT_FOLLOW_PCT** (`fol_min_pct`) |
+| **R19-DUAL-WALK-X**, per wheel | 0 of 3 walks failing: HLT_WIRING passes, both legs 6–9 ticks in opposite directions, no hall events | `l_ok`/`r_ok` FALSE in `BM-SKWALK` | B-5's negative | **WALK_POWER** (10, provisional) from the legs, `walk_ms` and peak current; the overshoot allowance |
+| **R19-DUAL-PACK-X** | every start reads PACK_NOT_FITTED, 0 mV, and no HLT_PACK | any other reading | — | none: the sensor is not fitted, so its calibration cannot be sized |
+| R19-DUAL-NOSTALL-S, -DBGMASK-S | standard | as in every part | — | — |
 
-*Completed with the START part: B-1 (the hall connector unplugged at boot), B-3's negative (one motor lead unplugged)
-and B-5's negative (two hall wires swapped). Each is a re-run with one piece of wiring changed, and each names the cells
-that must then FAIL.*
+The probe's pulse width and duty are fixed by the build, not swept, so they get no sized value.
+
+### Attended negative controls — run these FIRST (D2), then `dual-start` itself
+
+**Disconnect the battery before every wiring change and before every restore.** Mis-wire the **RIGHT** wheel, so
+that the left wheel is the in-run control. Running the positive `dual-start` last also proves the wiring was restored.
+
+1. **B-1 — the hall connector unplugged at start.** Unplug the RIGHT hall connector, then run
+   `tools/bench-run.sh dual-start-nowalk`. No wheel is ever driven.
+   - **Must read:** every start still succeeds (`BM-SSTART ret_ok,TRUE`); `r_fail` has HLT_HALLS ($0001) set, and
+     `r_ill_lo + r_ill_hi > 0`.
+   - **Verdicts:** HEALTH-X RIGHT FAIL 10/10, LEFT PASS; PROBE, RZSPREAD and PRBFLR PASS on both; WALK NOT_BUILT.
+   - **Restore:** replug the connector.
+2. **B-3's negative — one motor lead unplugged.** Unplug ONE RIGHT phase lead, then run `dual-start-nowalk`.
+   - **Must read:** `r_fail` has exactly one of HLT_PHASE_U/V/W ($0004/$0008/$0010) at every start. The open phase
+     reads at the floor (under 100 mV) as a follower and under the other two probes.
+   - **Verdicts:** PROBE-X RIGHT FAIL, HEALTH-X RIGHT FAIL, PRBFLR PASS, the left wheel all PASS.
+   - **Restore:** replug the lead.
+3. **B-5's negative — two hall wires swapped.** Swap two RIGHT hall signal wires, then run `dual-start` (with the
+   walk). **Watch the last three lifetimes:** the right wheel may jerk or buzz for up to 2 s per leg at power 10.
+   Panic is the battery disconnect.
+   - **Verdicts:** HEALTH and PROBE PASS on both wheels, since start's checks cannot see a swap. WALK-X RIGHT FAIL
+     3/3 (`r_hlt,FALSE`, and `r_ig > 0` and/or legs out of band).
+   - **The left wheel is judged on its own legs** (fixed before this visit: `checkWiring()` first shared one leg
+     result between the wheels). But if the right wheel faults, the platform policy stops the left too. The left's
+     leg may then come up short and fail its band, so the **left verdict is recorded, not pre-registered**, in this
+     load.
+   - **Restore:** the wires. A faulted wheel is recovered in-run with a 5 s cool-down.
+
+Each attended load takes under a minute. With the rewiring, allow about 15 minutes for all three and the positive run.
 
 ---
 

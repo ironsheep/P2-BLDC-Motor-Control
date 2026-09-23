@@ -236,6 +236,19 @@
 ''               the other stop (X-5, PL-117). The startup study's B-4 prints NOT_BUILT. New records BM-FRBUILD,
 ''               BM-NOTBUILT, BM-FRHOOK, BM-FRTRIAL, BM-FRSTAT, BM-FRCUR, BM-FRWIND, BM-FRPHASE, BM-FRREST, BM-FRPLAT;
 ''               BM-ABORT gains reason NO_FAULT; two why tokens. Every other part's records are unchanged
+''               23 Sep 2026 -- SRC_REV=35, FMT 21: task 3613 (R19.7, Visit 10). New part START (-D DUAL_PART_START,
+''               tier dual-start; with -D START_NO_WALK, tier dual-start-nowalk): the startup study's B-cells
+''               (STARTUP-SELFTEST-STUDY-2026-09-23.md sec 6) through the steering object, on DRIVER_REV 12. SKCHECK
+''               starts and stops the steering object SK_LIVES times, one lifetime each, and reads what start() judged:
+''               getHealth(), the illegal hall codes, getPackVoltage() (PACK_NOT_FITTED on the bench) and every
+''               BR_PROBE reading; then, in the same lifetime, a floated window through the instrument gives the
+''               rest zero (as lifetimeZero() takes it: the driver's own restZeroSenseMv has no getter) and the three
+''               phases' coast floor -- the probe's able-to-report control. The last SK_WALKS lifetimes also call
+''               checkWiring() and rebuild each wheel's two legs from the ring. No PREFLT: the attended negatives
+''               (B-1 halls unplugged, B-3 a lead unplugged, B-5 a hall pair swapped) load this same part, and a
+''               preflight would drive the mis-wired wheel before a single start was read. New records BM-SKBUILD,
+''               BM-SKHEALTH, BM-SKPROBE, BM-SKWALK, BM-SKSUM; the NOT_BUILT walk of the no-walk build reuses
+''               BM-NOTBUILT. Every other part's records are unchanged
 ''
 '' =================================================================================================
 
@@ -248,7 +261,7 @@
 
   ONE SOURCE, ONE PART PER BUILD. tools/bench-run.sh chooses the part with -D DUAL_PART_A,
   DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C, DUAL_PART_D, DUAL_PART_FLOOR, DUAL_PART_UICHECK,
-  DUAL_PART_ALIGN, DUAL_PART_LEAD, DUAL_PART_LIMITS or DUAL_PART_FAULTRESP.
+  DUAL_PART_ALIGN, DUAL_PART_LEAD, DUAL_PART_LIMITS, DUAL_PART_FAULTRESP or DUAL_PART_START.
   PART_ID comes from one #ifdef chain; with no part flag the build prints part NONE, runs no segment, and ends cleanly.
 
   COG MODEL
@@ -267,7 +280,7 @@
 
       tools/bench-run.sh dual-a | dual-clock-200 | dual-clock-270 | dual-clock-300 | dual-b | dual-brake
                          | dual-c | dual-d | dual-floor | dual-ui | dual-align | dual-lead | dual-limits
-                         | dual-limits-top | dual-fault
+                         | dual-limits-top | dual-fault | dual-start | dual-start-nowalk
 
   (the clock is part of the tier name, so a mistyped clock is an unknown tier and is refused -- PL-62)
 
@@ -301,8 +314,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 34                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 20                                        ' BM- record-format version
+    SRC_REV     = 35                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 21                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -342,9 +355,11 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_LIMITS - PREFLT, LIMTOP, LIMRAMP, LIMLOW (the limits reset's experiments E1-E4; task 3604); the
   '               LIMITS_TOP_ONLY build runs PREFLT and LIMTOP only
   '  PART_FAULTRESP - PREFLT, FLTRESP, FLTPLAT (the fault study's X-cells, faults forced at speed; task 3613)
+  '  PART_START - SKCHECK (the startup study's B-cells through the steering object, no PREFLT; task 3613); the
+  '               START_NO_WALK build never calls checkWiring()
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
-        PART_ALIGN, PART_LEAD, PART_LIMITS, PART_FAULTRESP
-    PART_COUNT = PART_FAULTRESP + 1
+        PART_ALIGN, PART_LEAD, PART_LIMITS, PART_FAULTRESP, PART_START
+    PART_COUNT = PART_START + 1
 
   ' RUN_TIME_CAP_S per load (design sec 4.2 item 6)
 #ifdef DUAL_PART_A
@@ -402,8 +417,15 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     '  every trial to take its restart
     RUN_TIME_CAP_S = 900
 #else
+#ifdef DUAL_PART_START
+    PART_ID        = PART_START
+    ' about 45 s planned (emitPlan()): SK_LIVES steering lifetimes of ~3.5 s (spacing, the ~1.2 s start, the reads,
+    '  a 1 s floated window) and SK_WALKS walks of ~1.5 s; the cap is four times that, well short of an idle hang
+    RUN_TIME_CAP_S = 180
+#else
     PART_ID        = PART_NONE
     RUN_TIME_CAP_S = 60
+#endif
 #endif
 #endif
 #endif
@@ -424,6 +446,15 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     BUILD_TOP_ONLY = TRUE
 #else
     BUILD_TOP_ONLY = FALSE
+#endif
+
+  ' Task 3613: -D START_NO_WALK builds the START part without checkWiring() (tier dual-start-nowalk), for the attended
+  '  loads that unplug a hall connector (B-1) or a motor lead (B-3's negative): nothing in that build commands a
+  '  wheel, so a mis-wired wheel is only read, never driven. R19-DUAL-WALK-X prints NOT_BUILT there.
+#ifdef START_NO_WALK
+    BUILD_NO_WALK = TRUE
+#else
+    BUILD_NO_WALK = FALSE
 #endif
 
 
@@ -1008,8 +1039,9 @@ CON { record enums -- each value has a token in the DAT token tables }
   ' Segment (token = the name after SEG_):
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
         SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT, ...
-        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE, SEG_LIMTOP, SEG_LIMRAMP, SEG_LIMLOW, SEG_FLTRESP, SEG_FLTPLAT
-    SEG_COUNT = 24
+        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE, SEG_LIMTOP, SEG_LIMRAMP, SEG_LIMLOW, SEG_FLTRESP, SEG_FLTPLAT, ...
+        SEG_SKCHECK
+    SEG_COUNT = 25
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -1611,8 +1643,8 @@ tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
 tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
                 BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0, "TAKE", 0
-                BYTE    "LIMTOP", 0, "LIMRAMP", 0, "LIMLOW", 0, "FLTRESP", 0, "FLTPLAT", 0
-tokWhy         BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
+                BYTE    "LIMTOP", 0, "LIMRAMP", 0, "LIMLOW", 0, "FLTRESP", 0, "FLTPLAT", 0, "SKCHECK", 0
+tokWhy        BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
                 BYTE    "MOTOR_RETIRED", 0, "OPERATOR_SKIP", 0, "OPERATOR_TIMEOUT", 0, "NO_PASSTHROUGH", 0
@@ -1659,7 +1691,7 @@ tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAUL
 '  an ALIGN build printed adjacent DAT in the part field of BM-BANNER, BM-PLAN, BM-EXIT, every SIGNOFF
 '  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
-                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0
+                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0, "START", 0
 ' ALIGN leg speed class (ASPD_*), direction (ADIR_*) and leg outcome (ALEG_*), task 3590
 tokASpd         BYTE    "SLOW", 0, "FAST", 0
 tokADir         BYTE    "REVERSE", 0, "FORWARD", 0
@@ -1702,6 +1734,8 @@ tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-
                 BYTE    "E1_E2_TOP", 0, "E3_RAMPS", 0, "E4_FLOOR", 0
                 ' task 3613: FLTRESP carries X-2, X-3, X-4 and prints X-6 and the startup study's B-4 as NOT_BUILT
                 BYTE    "X-2_X-3_X-4_X-6_B-4", 0, "X-5_PL-117", 0
+                ' task 3613: SKCHECK carries B-2 and B-5; B-1 and B-3's and B-5's negatives are attended loads of the same part
+                BYTE    "B-1_B-2_B-3_B-5", 0
 
 DAT { fixed tokens }
 
@@ -1932,6 +1966,23 @@ sSfCritGraded   BYTE    "BRAKE_PCT_DECEL", 0
 sSfCritB4Pulse  BYTE    "WINDING_R_PULSE", 0
 sSfStudyB4      BYTE    "B-4", 0
 sSfNotBuilt     BYTE    "NOT_BUILT", 0
+' task 3613 (R19.7): the START part's cells -- its own two (suffix S: the -X pair is FAULTRESP's), then the startup
+'  study's, the probe's control (PRBFLR) before the probe, and the unfitted pack sensor
+sSfCellNoStallS BYTE    "R19-DUAL-NOSTALL-S", 0
+sSfCellDbgMaskS BYTE    "R19-DUAL-DBGMASK-S", 0
+sSfCellSkHealth BYTE    "R19-DUAL-HEALTH-X", 0
+sSfCellSkRz     BYTE    "R19-DUAL-RZSPREAD-X", 0
+sSfCellSkPrbFlr BYTE    "R19-DUAL-PRBFLR-X", 0
+sSfCellSkProbe  BYTE    "R19-DUAL-PROBE-X", 0
+sSfCellSkWalk   BYTE    "R19-DUAL-WALK-X", 0
+sSfCellSkPack   BYTE    "R19-DUAL-PACK-X", 0
+sSfCritSkHealth BYTE    "STARTS_WITH_FAIL", 0
+sSfCritSkRz     BYTE    "ZERO_OUT_OF_BAND", 0
+sSfCritSkPrbFlr BYTE    "FLOOR_UNDER_FOLLOW", 0
+sSfCritSkProbe  BYTE    "PROBES_FAILED", 0
+sSfCritSkWalk   BYTE    "WALKS_FAILED", 0
+sSfCritSkPack   BYTE    "PACK_SEEN_FITTED", 0
+sSfStudyB5      BYTE    "B-5", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfUnitsMv      BYTE    "MV", 0
@@ -2603,6 +2654,7 @@ PRI initRunState() | slotIdx
         sfTrKickPk[slotIdx] := 0
         slotLastIncre[slotIdx] := 0
     frResetCells()                                          ' task 3613: the FAULTRESP part's accumulators
+    skResetCells()                                          ' task 3613: the START part's accumulators
 
 PRI runPart()
 ' Run this build's segments in the design's sec 4.1 order. Every segment after a run abort is emitted
@@ -2655,7 +2707,9 @@ PRI runPart()
             runSegment(SEG_PREFLT)
             runSegment(SEG_FLTRESP)                         ' task 3613: X-3, X-2, X-4 per wheel
             runSegment(SEG_FLTPLAT)                         ' task 3613: X-5 through the steering object
-    bRunReturned := TRUE                                   ' before the return, or main() reads a library abort
+        PART_START:
+            runSegment(SEG_SKCHECK)                         ' task 3613: B-2 and B-5, no PREFLT (the part's CON says why)
+    bRunReturned := TRUE                                  ' before the return, or main() reads a library abort
 
 PRI runSegment(seg)
 ' Run one segment when the run caps allow it; otherwise record that it was skipped.
@@ -2711,6 +2765,8 @@ PRI runSegment(seg)
                 segFaultResp()
             SEG_FLTPLAT:
                 segFaultPlat()
+            SEG_SKCHECK:
+                segStartChecks()
     else
         emitSeg(seg, SEGEV_SKIP, bSegAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
 
@@ -10078,6 +10134,671 @@ PRI emitFrHook(side, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk, wh
     whyField(whyCode)
     emitRecord()
 
+CON { --- START: the startup study's B-cells through the steering object (task 3613, R19.7) --- }
+
+  ' WHAT THIS PART IS FOR. Visit 10 sizes what R19.4 exposes -- the rest-zero band (REST_ZERO_MIN_MV / MAX_MV) and the
+  '  lead check's two thresholds (CONT_MIN_DRIVEN_MV, CONT_FOLLOW_PCT) -- and certifies the start checks and the
+  '  opt-in wiring walk, per DOCs/analyses/STARTUP-SELFTEST-STUDY-2026-09-23.md sec 6 (B-2, B-5). Every start is its
+  '  own steering lifetime, so each one re-runs the rest zero, runStartChecks() and the lead probe from scratch.
+  '
+  ' WHAT EACH LIFETIME READS, in this order: getHealth() (checked and failed masks per wheel), the illegal hall codes
+  '  split by kind (B-1's reading), getPackVoltage(), and the nine BR_PROBE readings per wheel (testLeftGetProbe() /
+  '  testRightGetProbe(), PRB_U..PRB_W) -- all of them what start() itself judged. Then, with the bridge coasting
+  '  (holdAtStop(FALSE), nothing commanded), a ZERO_WINDOW_MS window through the instrument gives two things:
+  '   - the REST ZERO, as lifetimeZero() takes every wheel lifetime's: the mean sense_i over the window. The driver's
+  '     own restZeroSenseMv has no getter, and this part adds none; the driver's own verdict on it is HLT_SENSE_ZERO.
+  '   - the COAST FLOOR, each phase's largest |reading| over the window: THE PROBE'S ABLE-TO-REPORT CONTROL. An open
+  '     lead reads this floor while its phase is probed, so the follower test can tell an open lead from a connected
+  '     one only when the floor sits under the least a follower may read and pass (SK_FLOOR_HI_MV).
+  '
+  ' THE WALK (B-5 positive), the last SK_WALKS lifetimes only: checkWiring() turns the platform in place, each wheel
+  '  one electrical cycle each way at WALK_POWER. Its verdict is HLT_WIRING. The steering object has no per-wheel
+  '  testGetWalk(), and this part adds none, so the two legs are REBUILT from the instrument's ring on raw hall ticks
+  '  (the reading checkWiring() itself differences): from the first sample at the mark, the leg out is the largest
+  '  excursion and the leg back is from there to the last sample. A failing walk cannot be rebuilt into a passing one
+  '  -- a leg back that runs past the start moves the excursion to the end, which leaves a leg of 0. checkWiring()
+  '  blocks cog 0: two legs of at most WALK_LEG_TIMEOUT_MS, the second only after a clean first, plus four 20 ms
+  '  request bounds -- about 2.4 s at worst, under WD_STALL_MS. The absolute current abort is not polled while it
+  '  blocks; the walk's peak sense_i is printed from the ring (at WALK_POWER 10 it is small).
+  '
+  ' NO PREFLT. The attended negatives load this same part with a wheel mis-wired on purpose -- B-1 its hall connector
+  '  unplugged, B-3 a motor lead unplugged (both the START_NO_WALK build), B-5 two hall wires swapped -- and a preflight
+  '  would drive that wheel before a single start was read, or end the run at NO_MOTION before the cells. The walk is
+  '  this part's motion proof.
+    SK_LIVES              = 10                              ' steering lifetimes, each one start (B-2: "several starts")
+    SK_WALKS              = 3                               ' the last this many lifetimes also walk (B-5)
+    SK_PHASES             = 3
+    SK_PROBE_LONGS        = SK_PHASES * SK_PHASES           ' per wheel: [probed phase * SK_PHASES + read phase], U V W
+    SK_PCT_SCALE          = 100
+    SK_ZERO_SCALE         = X10                             ' the rest zero is carried x10, as lifetimeZero() carries it
+    ' The least a follower may read and still pass is CONT_FOLLOW_PCT of the least a driven phase may read: 200 x 50 %
+    '  = 100 mV. A coast floor strictly under it would fail the follower test -- the control passes at 99 mV and below.
+    SK_FLOOR_LO_MV        = 0
+    SK_FLOOR_HI_MV        = ((wheelL.CONT_MIN_DRIVEN_MV * wheelL.CONT_FOLLOW_PCT) / SK_PCT_SCALE) - 1
+    ' B-5's pre-registered legs: one electrical cycle, plus the coast checkWiring() allows -- 6 .. 9 ticks each way
+    SK_LEG_LO_TICKS       = wheelL.WALK_TICKS
+    SK_LEG_HI_TICKS       = wheelL.WALK_TICKS + wheelL.WALK_OVERSHOOT_TICKS
+    SK_WALK_PRE_MS        = 20                              ' samples stored before the walk's mark
+    SK_WALK_REST_MS       = 1_000                           ' bound on the rest confirm after checkWiring() returns
+    SK_BAD_LO             = 0                               ' every START count cell passes at zero bad instances
+    SK_BAD_HI             = 0
+    PACK_TOK_COUNT        = wheelL.PACK_PRESENT + 1         ' tokPack is indexed by the library's PACK_*
+    TOKMAX_PACK           = 10
+
+DAT ' ---- START tables ----
+
+tokPack         BYTE    "NOT_FITTED", 0, "ABSENT", 0, "PRESENT", 0
+
+VAR { START state -- cog 0 only }
+
+    ' one lifetime's readings (skStagingReset())
+    LONG    skLife                                          ' the steering lifetime, 0 when none was started
+    LONG    bSkHealthRead                                   ' start()'s verdicts were read from a running object
+    LONG    skChk[INST_MOTORS]                              ' getHealth() checked mask
+    LONG    skFail[INST_MOTORS]                             ' ...and failed mask
+    LONG    skIllLo[INST_MOTORS]                            ' getHallIllegalCodes(): entries into %000
+    LONG    skIllHi[INST_MOTORS]                            ' ...and into %111
+    LONG    skPack                                          ' getPackVoltage() status
+    LONG    skPackMv                                        ' ...and mV
+    LONG    skProbe[INST_MOTORS * SK_PROBE_LONGS]           ' [slot * SK_PROBE_LONGS + probed * SK_PHASES + read], mV
+    LONG    skPrbBadNow[INST_MOTORS]                        ' this start's probes that failed the lead check
+    LONG    bSkZeroValid[INST_MOTORS]                       ' the floated window held samples
+    LONG    skZeroX10[INST_MOTORS]                          ' its mean sense_i, mV x10: the rest zero
+    LONG    skZeroN[INST_MOTORS]                            ' its samples
+    LONG    skFloor[INST_MOTORS * SK_PHASES]                ' each phase's largest |reading| over it, mV
+    LONG    skZeroWhy                                       ' the first cause of a missing window
+    ' one walk (skWalk())
+    LONG    bSkWalkRan                                      ' checkWiring() was called
+    LONG    skWalkErr                                       ' its return
+    LONG    skWalkMs                                        ' how long it blocked
+    LONG    bSkLegsValid                                    ' the legs were rebuilt from the ring
+    LONG    bSkWalkHlt[INST_MOTORS]                         ' HLT_WIRING checked and not failed
+    LONG    skLegFwd[INST_MOTORS]                           ' the leg out, raw hall ticks
+    LONG    skLegRev[INST_MOTORS]                           ' the leg back
+    LONG    skWalkIg[INST_MOTORS]                           ' missed + illegal hall events across the walk
+    LONG    skWalkPkI[INST_MOTORS]                          ' the largest sense_i across it, mV; NEGX when none
+    LONG    bSkWalkOk[INST_MOTORS]                          ' the walk's pre-registered reading held
+    LONG    skWalkCause[INST_MOTORS]                        ' getFaultCause() after it
+    LONG    skWalkWhy                                       ' the first cause of the walk's NA fields
+    ' the cells' accumulators (skResetCells())
+    LONG    sfSkStarts[INST_MOTORS]                         ' HEALTH: starts read
+    LONG    sfSkHealthBad[INST_MOTORS]                      ' ...with any failed bit, or not every check checked
+    LONG    skRzN[INST_MOTORS]                              ' RZSPREAD: rest zeros measured
+    LONG    skRzMin[INST_MOTORS]                            ' ...least, x10
+    LONG    skRzMax[INST_MOTORS]                            ' ...greatest, x10
+    LONG    skRzSum[INST_MOTORS]                            ' ...sum, x10
+    LONG    sfSkRzOut[INST_MOTORS]                          ' ...outside REST_ZERO_MIN_MV .. REST_ZERO_MAX_MV
+    LONG    skFlN[INST_MOTORS]                              ' PRBFLR: coast floors measured
+    LONG    skFlMax[INST_MOTORS]                            ' ...the largest phase reading of any, mV
+    LONG    skPrbN[INST_MOTORS]                             ' PROBE: probes judged (three a start)
+    LONG    sfSkPrbBad[INST_MOTORS]                         ' ...that failed the lead check
+    LONG    skDrvMin[INST_MOTORS]                           ' ...the least driven reading, mV
+    LONG    skFolMinPct[INST_MOTORS]                        ' ...the least follower reading, % of its driven phase
+    LONG    sfSkWalkN[INST_MOTORS]                          ' WALK: walks run
+    LONG    sfSkWalkBad[INST_MOTORS]                        ' ...whose pre-registered reading did not hold
+    LONG    sfSkPackN                                       ' PACK: starts read
+    LONG    sfSkPackBad                                     ' ...that did not read PACK_NOT_FITTED, 0 mV and no HLT_PACK
+
+PRI skResetCells() | slotIdx
+' Clear the START part's cell accumulators (initRunState()): every count 0, every least POSX and greatest NEGX, so a
+' cell no lifetime reached prints NOMEAS.
+'
+' @local slotIdx - motor slot
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        sfSkStarts[slotIdx] := 0
+        sfSkHealthBad[slotIdx] := 0
+        skRzN[slotIdx] := 0
+        skRzMin[slotIdx] := POSX
+        skRzMax[slotIdx] := NEGX
+        skRzSum[slotIdx] := 0
+        sfSkRzOut[slotIdx] := 0
+        skFlN[slotIdx] := 0
+        skFlMax[slotIdx] := 0
+        skPrbN[slotIdx] := 0
+        sfSkPrbBad[slotIdx] := 0
+        skDrvMin[slotIdx] := POSX
+        skFolMinPct[slotIdx] := POSX
+        sfSkWalkN[slotIdx] := 0
+        sfSkWalkBad[slotIdx] := 0
+    sfSkPackN := 0
+    sfSkPackBad := 0
+
+PRI segStartChecks() | lifeIdx, slotIdx
+' SKCHECK (part START, task 3613): SK_LIVES steering lifetimes, each one start with its reads and its floated window
+' (skLifetime()); the last SK_WALKS also walk. Then one BM-SKSUM per wheel: the rest-zero spread and the probe's
+' least margins, the numbers that size the R19.4 thresholds.
+'
+' @local lifeIdx - 0..SK_LIVES-1
+' @local slotIdx - motor slot
+
+    segBegin(SEG_SKCHECK)
+    repeat lifeIdx from 0 to SK_LIVES - 1
+        beat(CP_LOOP_POLL)
+        skLifetime(bSkWalkLife(lifeIdx))
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        emitSkSum(slotIdx)
+    segEnd(segWhy())
+
+PRI bSkWalkLife(lifeIdx) : bWalk
+' Whether a lifetime also walks: the last SK_WALKS of them, and never in the START_NO_WALK build.
+'
+' @param lifeIdx - 0..SK_LIVES-1
+' @returns bWalk - TRUE when this lifetime calls checkWiring()
+
+    bWalk := (BUILD_NO_WALK == FALSE) and (lifeIdx >= (SK_LIVES - SK_WALKS))
+
+PRI skLifetime(bWalk) | whyCode, slotIdx, lifeBefore
+' One steering lifetime: start (bSteerStart(), BM-SSTART); read what start() judged (skReadHealth()) before anything
+' else; the floated window (skZeroWindow()); fold; BM-SKHEALTH and a BM-SKPROBE per wheel; on a walk lifetime the
+' walk, BM-SKWALK and the recovery of any fault it caused; stop.
+'
+' @param bWalk - TRUE when this lifetime also walks
+'
+' @local whyCode - why nothing was read, WHY_NONE when the start was read
+' @local slotIdx - motor slot
+' @local lifeBefore - lifeSeq before the start, so a start that was refused never names a lifetime
+
+    skStagingReset()
+    whyCode := WHY_NONE
+    lifeBefore := lifeSeq
+    if bRunContinue(SEG_SKCHECK) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bSteerStart(SEG_SKCHECK) == FALSE
+        whyCode := WHY_NO_COG
+    else
+        skReadHealth()                                      ' first: exactly what start() left
+        skZeroWindow()
+    if lifeSeq <> lifeBefore
+        skLife := steerLife
+    skFoldStart()
+    emitSkHealth(bWalk, whyCode)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        emitSkProbe(slotIdx, whyCode)
+    if bWalk and (whyCode == WHY_NONE)
+        skWalk()
+        skFoldWalk()
+        emitSkWalk()
+        if bSteerUp
+            steerRecoverFault(0)                            ' a walk that faulted a wheel: recovered, counted, cooled
+    bInstIdle()
+    steerStop()
+    segItems := (segItems + 1) <# LIM_SMALL
+
+PRI skStagingReset() | arrIdx
+' Clear one lifetime's readings and its walk.
+'
+' @local arrIdx - index into a per-wheel array
+
+    skLife := 0
+    bSkHealthRead := FALSE
+    skPack := wheelL.PACK_NOT_FITTED
+    skPackMv := 0
+    skZeroWhy := WHY_NONE
+    repeat arrIdx from 0 to (INST_MOTORS * SK_PROBE_LONGS) - 1
+        skProbe[arrIdx] := 0
+    repeat arrIdx from 0 to (INST_MOTORS * SK_PHASES) - 1
+        skFloor[arrIdx] := 0
+    repeat arrIdx from SLOT_LEFT to SLOT_RIGHT
+        skChk[arrIdx] := 0
+        skFail[arrIdx] := 0
+        skIllLo[arrIdx] := 0
+        skIllHi[arrIdx] := 0
+        skPrbBadNow[arrIdx] := 0
+        bSkZeroValid[arrIdx] := FALSE
+        skZeroX10[arrIdx] := 0
+        skZeroN[arrIdx] := 0
+        bSkWalkHlt[arrIdx] := FALSE
+        skLegFwd[arrIdx] := 0
+        skLegRev[arrIdx] := 0
+        skWalkIg[arrIdx] := 0
+        skWalkPkI[arrIdx] := NEGX
+        bSkWalkOk[arrIdx] := FALSE
+        skWalkCause[arrIdx] := wheelL.FC_NONE
+    bSkWalkRan := FALSE
+    skWalkErr := NO_ERROR
+    skWalkMs := 0
+    bSkLegsValid := FALSE
+    skWalkWhy := WHY_NONE
+
+PRI skReadHealth() | probedIdx, rowBase
+' What start() judged, read through the steering object before anything else touches it: both wheels' getHealth()
+' masks, the illegal hall codes by kind, the pack sensor, and every lead-check reading (three probes a wheel, each the
+' three phase voltages averaged while one phase was driven).
+'
+' @local probedIdx - 0..SK_PHASES-1: the phase driven, U V W
+' @local rowBase - its row's first index in skProbe (the left wheel's; the right's is SK_PROBE_LONGS on)
+
+    beat(CP_LIB_STEER_QUERY)
+    skChk[SLOT_LEFT], skFail[SLOT_LEFT], skChk[SLOT_RIGHT], skFail[SLOT_RIGHT] := steering.getHealth()
+    skIllLo[SLOT_LEFT], skIllHi[SLOT_LEFT], skIllLo[SLOT_RIGHT], skIllHi[SLOT_RIGHT] := steering.getHallIllegalCodes()
+    skPack, skPackMv := steering.getPackVoltage()
+    repeat probedIdx from 0 to SK_PHASES - 1
+        rowBase := probedIdx * SK_PHASES
+        skProbe[rowBase], skProbe[rowBase + 1], skProbe[rowBase + 2] := steering.testLeftGetProbe(wheelL.PRB_U + probedIdx)
+        rowBase += SK_PROBE_LONGS
+        skProbe[rowBase], skProbe[rowBase + 1], skProbe[rowBase + 2] := steering.testRightGetProbe(wheelL.PRB_U + probedIdx)
+    beat(CP_LIB_STEER_QUERY)
+    bSkHealthRead := TRUE
+
+PRI skZeroWindow() | winStartTotal, winEndTotal, safeEvent, slotIdx
+' The floated window, ZERO_WINDOW_MS through the instrument on the steering source with nothing commanded: per wheel
+' the rest zero (windowStats()'s mean sense_i, as lifetimeZero() takes it) and the coast floor (skFloorWindow()).
+' Delimited by two instrument-recorded ring totals (sec 12.7). A safety event voids both.
+'
+' @local winStartTotal - ring total at the window start
+' @local winEndTotal - ring total at the window end
+' @local safeEvent - SAFE_* from the watched wait
+' @local slotIdx - motor slot
+
+    skZeroWhy := WHY_INST_NOACK
+    if bInstArm(INST_SRC_STEER, 1)
+        winStartTotal := instMarkIndex()
+        safeEvent, _ := waitWatched(SIDE_BOTH, ZERO_WINDOW_MS, CP_LOOP_ZERO, UNTIL_TIME)
+        winEndTotal := instMarkIndex()
+        if bInstFreeze(0)
+            skZeroWhy := safeWhy(safeEvent)
+            if safeEvent == SAFE_NONE
+                repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                    windowStats(slotIdx, SLOT_RIGHT - slotIdx, winStartTotal, winEndTotal)
+                    if rsN > 0
+                        skZeroX10[slotIdx] := rsIMeanX10
+                        skZeroN[slotIdx] := rsN
+                        skFloorWindow(slotIdx, winStartTotal, winEndTotal)
+                        bSkZeroValid[slotIdx] := TRUE
+                    else
+                        skZeroWhy := WHY_NO_SAMPLES
+        bInstIdle()
+
+PRI skFloorWindow(slotIdx, winStartTotal, winEndTotal) | sampleIdx, startJ, endJ, floorBase
+' The coast floor of one wheel: each phase's largest |reading| over the window's up samples (I3), bounded by ring
+' index exactly as windowStats() bounds it. Legal only while FROZEN (I10).
+'
+' @param slotIdx - motor slot
+' @param winStartTotal - ring total at the window start
+' @param winEndTotal - ring total at the window end
+'
+' @local sampleIdx - logical index
+' @local startJ - the window's first logical index
+' @local endJ - its last
+' @local floorBase - this wheel's first index in skFloor
+
+    floorBase := slotIdx * SK_PHASES
+    if (winStartTotal >= 0) and (winEndTotal > winStartTotal) and (drStored > 0)
+        startJ := (winStartTotal - drLostHead) #> 0
+        endJ := (winEndTotal - 1 - drLostHead) <# (drStored - 1)
+        if endJ >= startJ                                   ' a Spin2 repeat from a higher bound counts down
+            repeat sampleIdx from startJ to endJ
+                beat(CP_LOOP_DRAIN)
+                if bSmpUp(sampleIdx, slotIdx)
+                    skFloor[floorBase] #>= abs(smpPhU(sampleIdx, slotIdx))
+                    skFloor[floorBase + 1] #>= abs(smpPhV(sampleIdx, slotIdx))
+                    skFloor[floorBase + 2] #>= abs(smpPhW(sampleIdx, slotIdx))
+
+PRI skFoldStart() | slotIdx, phaseIdx
+' Fold one lifetime into the cells. PACK: counted once a start, bad unless it read PACK_NOT_FITTED, 0 mV and neither
+' wheel checked HLT_PACK. HEALTH: bad on any failed bit, or when not every start check was checked. PROBE: each probe
+' judged (skFoldProbe()). RZSPREAD and PRBFLR: from the floated window, when it held samples.
+'
+' @local slotIdx - motor slot
+' @local phaseIdx - 0..SK_PHASES-1
+
+    if bSkHealthRead
+        sfSkPackN := (sfSkPackN + 1) <# LIM_SMALL
+        if (skPack <> wheelL.PACK_NOT_FITTED) or (skPackMv <> 0) or (((skChk[SLOT_LEFT] | skChk[SLOT_RIGHT]) & wheelL.HLT_PACK) <> 0)
+            sfSkPackBad := (sfSkPackBad + 1) <# LIM_SMALL
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        if bSkHealthRead
+            sfSkStarts[slotIdx] := (sfSkStarts[slotIdx] + 1) <# LIM_SMALL
+            if (skFail[slotIdx] <> 0) or ((skChk[slotIdx] & wheelL.HLT_ALL_CHECKS) <> wheelL.HLT_ALL_CHECKS)
+                sfSkHealthBad[slotIdx] := (sfSkHealthBad[slotIdx] + 1) <# LIM_SMALL
+            skFoldProbe(slotIdx)
+        if bSkZeroValid[slotIdx]
+            skRzN[slotIdx] := (skRzN[slotIdx] + 1) <# LIM_SMALL
+            skRzSum[slotIdx] += skZeroX10[slotIdx]
+            skRzMin[slotIdx] <#= skZeroX10[slotIdx]
+            skRzMax[slotIdx] #>= skZeroX10[slotIdx]
+            if (skZeroX10[slotIdx] < (wheelL.REST_ZERO_MIN_MV * SK_ZERO_SCALE)) or (skZeroX10[slotIdx] > (wheelL.REST_ZERO_MAX_MV * SK_ZERO_SCALE))
+                sfSkRzOut[slotIdx] := (sfSkRzOut[slotIdx] + 1) <# LIM_SMALL
+            skFlN[slotIdx] := (skFlN[slotIdx] + 1) <# LIM_SMALL
+            repeat phaseIdx from 0 to SK_PHASES - 1
+                skFlMax[slotIdx] #>= skFloor[(slotIdx * SK_PHASES) + phaseIdx]
+
+PRI skFoldProbe(slotIdx) | probedIdx, readIdx, rowBase, drivenMv, folMv, bBad
+' Judge one wheel's three probes by B-3's pre-registered reading, which is STRICTER than the driver's (a phase passes
+' there when it followed in any one probe): the driven phase reads at least CONT_MIN_DRIVEN_MV, and EACH undriven
+' phase reads at least CONT_FOLLOW_PCT of it. Tracks the least driven reading and the least follower percentage --
+' the margins that size the two thresholds.
+'
+' @param slotIdx - motor slot
+'
+' @local probedIdx - 0..SK_PHASES-1: the phase driven
+' @local readIdx - 0..SK_PHASES-1: the phase read
+' @local rowBase - the probe's first index in skProbe
+' @local drivenMv - the driven phase's reading
+' @local folMv - an undriven phase's reading
+' @local bBad - this probe failed
+
+    skPrbBadNow[slotIdx] := 0
+    repeat probedIdx from 0 to SK_PHASES - 1
+        rowBase := (slotIdx * SK_PROBE_LONGS) + (probedIdx * SK_PHASES)
+        drivenMv := skProbe[rowBase + probedIdx]
+        skDrvMin[slotIdx] <#= drivenMv
+        bBad := (drivenMv < wheelL.CONT_MIN_DRIVEN_MV)
+        repeat readIdx from 0 to SK_PHASES - 1
+            if readIdx <> probedIdx
+                folMv := skProbe[rowBase + readIdx]
+                if drivenMv > 0
+                    skFolMinPct[slotIdx] <#= (folMv * SK_PCT_SCALE) / drivenMv
+                if (folMv * SK_PCT_SCALE) < (drivenMv * wheelL.CONT_FOLLOW_PCT)
+                    bBad := TRUE
+        skPrbN[slotIdx] := (skPrbN[slotIdx] + 1) <# LIM_SMALL
+        if bBad
+            sfSkPrbBad[slotIdx] := (sfSkPrbBad[slotIdx] + 1) <# LIM_SMALL
+            skPrbBadNow[slotIdx] += 1
+
+PRI skWalk() | slotIdx, startMs, safeEvent, bFrozen, igBefore[INST_MOTORS], chkNow[INST_MOTORS], failNow[INST_MOTORS], missedLeft, illegalLeft, missedRight, illegalRight
+' B-5 positive: checkWiring() under the instrument. The integrity counts first; arm; SK_WALK_PRE_MS of samples; mark;
+' checkWiring() (it blocks, see this section's CON); the rest confirm; freeze; then getHealth()'s HLT_WIRING, the
+' integrity counts again and the fault causes; the legs from the ring (skWalkLegs()). Pre-registered, per wheel:
+' NO_ERROR, HLT_WIRING passed, both legs SK_LEG_LO_TICKS .. SK_LEG_HI_TICKS in opposite directions, no hall event.
+'
+' @local slotIdx - motor slot
+' @local startMs - getms() at the call
+' @local safeEvent - SAFE_* from the rest confirm
+' @local bFrozen - the capture froze
+' @local igBefore - per wheel, missed + illegal before the walk
+' @local chkNow - per wheel, getHealth() checked mask after it
+' @local failNow - per wheel, failed mask after it
+' @local missedLeft - the left wheel's missed transitions
+' @local illegalLeft - the left wheel's illegal codes
+' @local missedRight - the right wheel's missed transitions
+' @local illegalRight - the right wheel's illegal codes
+
+    beat(CP_LIB_STEER_QUERY)
+    missedLeft, illegalLeft, missedRight, illegalRight := steering.getHallIntegrityCounts()
+    beat(CP_LIB_STEER_QUERY)
+    igBefore[SLOT_LEFT] := missedLeft + illegalLeft
+    igBefore[SLOT_RIGHT] := missedRight + illegalRight
+    skWalkWhy := WHY_INST_NOACK
+    if bInstArm(INST_SRC_STEER, 1)
+        waitWatched(SIDE_BOTH, SK_WALK_PRE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
+        instMark()
+        startMs := getms()
+        beat(CP_LIB_STEER_DRIVE)
+        skWalkErr := steering.checkWiring()
+        beat(CP_LIB_STEER_DRIVE)
+        skWalkMs := getms() - startMs
+        bSkWalkRan := TRUE
+        safeEvent, _ := waitRest(SIDE_BOTH, SK_WALK_REST_MS, FALSE)
+        bFrozen := bInstFreeze(0)
+        beat(CP_LIB_STEER_QUERY)
+        chkNow[SLOT_LEFT], failNow[SLOT_LEFT], chkNow[SLOT_RIGHT], failNow[SLOT_RIGHT] := steering.getHealth()
+        missedLeft, illegalLeft, missedRight, illegalRight := steering.getHallIntegrityCounts()
+        skWalkCause[SLOT_LEFT], skWalkCause[SLOT_RIGHT] := steering.getFaultCause()
+        beat(CP_LIB_STEER_QUERY)
+        skWalkIg[SLOT_LEFT] := (missedLeft + illegalLeft) - igBefore[SLOT_LEFT]
+        skWalkIg[SLOT_RIGHT] := (missedRight + illegalRight) - igBefore[SLOT_RIGHT]
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            bSkWalkHlt[slotIdx] := ((chkNow[slotIdx] & wheelL.HLT_WIRING) <> 0) and ((failNow[slotIdx] & wheelL.HLT_WIRING) == 0)
+        if bFrozen
+            drainBegin()
+            drainFindMark()
+            skWalkWhy := WHY_NO_SAMPLES
+            if bDrMarkFound and (drMarkJ < (drStored - 1))
+                repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                    skWalkLegs(slotIdx)
+                bSkLegsValid := TRUE
+                skWalkWhy := safeWhy(safeEvent)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        bSkWalkOk[slotIdx] := bSkWalkRan and (skWalkErr == NO_ERROR) and bSkWalkHlt[slotIdx] and bSkLegsValid and bSkLegsOk(skLegFwd[slotIdx], skLegRev[slotIdx]) and (skWalkIg[slotIdx] == 0)
+
+PRI skWalkLegs(slotIdx) | sampleIdx, bFirst, pos0, extAbs, extPos, lastPos
+' One wheel's two legs from the frozen walk capture, on raw hall ticks over its up samples from the mark: the leg out
+' is the largest excursion from the first, the leg back from there to the last (this section's CON). Also the largest
+' sense_i across the walk. Legal only while FROZEN (I10).
+'
+' @param slotIdx - motor slot
+'
+' @local sampleIdx - logical index
+' @local bFirst - no up sample seen yet
+' @local pos0 - the first up sample's position
+' @local extAbs - the largest |excursion| so far
+' @local extPos - the position at it
+' @local lastPos - the last up sample's position
+
+    bFirst := TRUE
+    pos0 := 0
+    extAbs := 0
+    extPos := 0
+    lastPos := 0
+    repeat sampleIdx from drMarkJ to drStored - 1
+        beat(CP_LOOP_DRAIN)
+        if bSmpUp(sampleIdx, slotIdx)
+            lastPos := smpPos(sampleIdx, slotIdx)
+            if bFirst
+                pos0 := lastPos
+                extPos := lastPos
+                bFirst := FALSE
+            elseif abs(lastPos - pos0) > extAbs
+                extAbs := abs(lastPos - pos0)
+                extPos := lastPos
+            skWalkPkI[slotIdx] #>= smpI(sampleIdx, slotIdx)
+    skLegFwd[slotIdx] := extPos - pos0
+    skLegRev[slotIdx] := lastPos - extPos
+
+PRI bSkLegsOk(nFwdTicks, nRevTicks) : bOk
+' B-5's pre-registered legs: each SK_LEG_LO_TICKS .. SK_LEG_HI_TICKS in size, and in opposite directions.
+'
+' @param nFwdTicks - the leg out
+' @param nRevTicks - the leg back
+' @returns bOk - TRUE when both legs hold
+
+    bOk := (abs(nFwdTicks) >= SK_LEG_LO_TICKS) and (abs(nFwdTicks) <= SK_LEG_HI_TICKS) and (abs(nRevTicks) >= SK_LEG_LO_TICKS)
+    bOk &= (abs(nRevTicks) <= SK_LEG_HI_TICKS) and ((nFwdTicks > 0) <> (nRevTicks > 0))
+
+PRI skFoldWalk() | slotIdx
+' Fold one walk into R19-DUAL-WALK-X, per wheel: counted once checkWiring() was called, bad unless its pre-registered
+' reading held (skWalk()).
+'
+' @local slotIdx - motor slot
+
+    if bSkWalkRan
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            sfSkWalkN[slotIdx] := (sfSkWalkN[slotIdx] + 1) <# LIM_SMALL
+            if bSkWalkOk[slotIdx] == FALSE
+                sfSkWalkBad[slotIdx] := (sfSkWalkBad[slotIdx] + 1) <# LIM_SMALL
+
+PRI emitStartCells() | slotIdx, side
+' The START part's judged cells, each NOMEAS when nothing measured it. Per motor, the probe's control before the probe:
+'
+'  HEALTH   - COUNT: starts with any getHealth() failed bit, or with a start check not checked
+'  RZSPREAD - COUNT: starts whose rest zero lay outside REST_ZERO_MIN_MV .. REST_ZERO_MAX_MV (spread: BM-SKSUM)
+'  PRBFLR   - MV: the largest coast-floor phase reading; passes under the least a follower may read (SK_FLOOR_HI_MV)
+'  PROBE    - COUNT: probes whose driven phase read under CONT_MIN_DRIVEN_MV or any follower under CONT_FOLLOW_PCT
+'  WALK     - COUNT: walks whose pre-registered reading did not hold; NOT_BUILT in the START_NO_WALK build
+'
+' and once, PACK - COUNT: starts that did not read PACK_NOT_FITTED, 0 mV and no HLT_PACK.
+'
+' @local slotIdx - motor slot
+' @local side - SIDE_LEFT or SIDE_RIGHT
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        side := SIDE_LEFT + slotIdx
+        emitSignoff(@sSfCellSkHealth, side, @sSfCritSkHealth, sfSkStarts[slotIdx] > 0, sfSkHealthBad[slotIdx], SK_BAD_LO, SK_BAD_HI, sfSkStarts[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellSkRz, side, @sSfCritSkRz, skRzN[slotIdx] > 0, sfSkRzOut[slotIdx], SK_BAD_LO, SK_BAD_HI, skRzN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellSkPrbFlr, side, @sSfCritSkPrbFlr, skFlN[slotIdx] > 0, skFlMax[slotIdx], SK_FLOOR_LO_MV, SK_FLOOR_HI_MV, skFlN[slotIdx], @sSfUnitsMv)
+        emitSignoff(@sSfCellSkProbe, side, @sSfCritSkProbe, skPrbN[slotIdx] > 0, sfSkPrbBad[slotIdx], SK_BAD_LO, SK_BAD_HI, skPrbN[slotIdx], @sSfUnitsCount)
+        if BUILD_NO_WALK
+            emitSignoffNotBuilt(@sSfCellSkWalk, side, @sSfCritSkWalk)
+        else
+            emitSignoff(@sSfCellSkWalk, side, @sSfCritSkWalk, sfSkWalkN[slotIdx] > 0, sfSkWalkBad[slotIdx], SK_BAD_LO, SK_BAD_HI, sfSkWalkN[slotIdx], @sSfUnitsCount)
+    emitSignoff(@sSfCellSkPack, SIDE_NONE, @sSfCritSkPack, sfSkPackN > 0, sfSkPackBad, SK_BAD_LO, SK_BAD_HI, sfSkPackN, @sSfUnitsCount)
+
+PRI emitSkBuild() | nWalks
+' BM-SKBUILD: the START part's compiled, pre-registered numbers, printed before anything moves -- the driver's own
+' R19.4 thresholds the cells judge against, the probe's timing, the walk's band and power, and the control's bound.
+' Worst case 219 bytes.
+'
+' @local nWalks - the walks this build makes
+
+    nWalks := SK_WALKS
+    if BUILD_NO_WALK
+        nWalks := 0
+    recBegin(@"BM-SKBUILD")
+    benchLog.numField(@"lives", SK_LIVES, LIM_TINY)
+    benchLog.numField(@"walks", nWalks, LIM_TINY)
+    benchLog.boolField(@"no_walk", BUILD_NO_WALK)
+    benchLog.numField(@"rz_lo", wheelL.REST_ZERO_MIN_MV, LIM_SMALL)
+    benchLog.numField(@"rz_hi", wheelL.REST_ZERO_MAX_MV, LIM_SMALL)
+    benchLog.numField(@"drv_mV", wheelL.CONT_MIN_DRIVEN_MV, LIM_SMALL)
+    benchLog.numField(@"fol_pct", wheelL.CONT_FOLLOW_PCT, LIM_TINY)
+    benchLog.numField(@"fl_hi", SK_FLOOR_HI_MV, LIM_SMALL)
+    benchLog.numField(@"prb_ms", wheelL.PROBE_SETTLE_MS, LIM_TINY)
+    benchLog.numField(@"prb_n", wheelL.PROBE_SAMPLES, LIM_TINY)
+    benchLog.numField(@"leg_lo", SK_LEG_LO_TICKS, LIM_TINY)
+    benchLog.numField(@"leg_hi", SK_LEG_HI_TICKS, LIM_TINY)
+    benchLog.numField(@"walk_pwr", wheelL.WALK_POWER, LIM_TINY)
+    benchLog.numField(@"zero_ms", ZERO_WINDOW_MS, LIM_SMALL)
+    emitRecord()
+
+PRI emitSkHealth(bWalk, whyCode)
+' BM-SKHEALTH: one start's verdicts from start() itself -- each wheel's getHealth() masks (HLT_* bits, hex), its
+' illegal hall codes by kind (entries into %000 and %111; B-1 reads them), the pack sensor, and whether this lifetime
+' walks. Worst case 223 bytes.
+'
+' @param bWalk - TRUE when this lifetime also walks
+' @param whyCode - why nothing was read, WHY_NONE when it was
+
+    recBegin(@"BM-SKHEALTH")
+    benchLog.naNumField(@"life", skLife, LIM_SMALL, skLife > 0)
+    if bSkHealthRead
+        benchLog.hexField(@"l_chk", skChk[SLOT_LEFT])
+        benchLog.hexField(@"l_fail", skFail[SLOT_LEFT])
+        benchLog.hexField(@"r_chk", skChk[SLOT_RIGHT])
+        benchLog.hexField(@"r_fail", skFail[SLOT_RIGHT])
+        benchLog.tokenField(@"pack", tokenAt(@tokPack, PACK_TOK_COUNT, skPack), TOKMAX_PACK)
+    else
+        benchLog.textField(@"l_chk", @sSfNa)
+        benchLog.textField(@"l_fail", @sSfNa)
+        benchLog.textField(@"r_chk", @sSfNa)
+        benchLog.textField(@"r_fail", @sSfNa)
+        benchLog.textField(@"pack", @sSfNa)
+    benchLog.naNumField(@"pack_mV", skPackMv, LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"l_ill_lo", skIllLo[SLOT_LEFT], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"l_ill_hi", skIllHi[SLOT_LEFT], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"r_ill_lo", skIllLo[SLOT_RIGHT], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"r_ill_hi", skIllHi[SLOT_RIGHT], LIM_SMALL, bSkHealthRead)
+    benchLog.boolField(@"walk", bWalk)
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitSkProbe(slotIdx, whyCode) | rowBase, floorBase, bZero, firstWhy
+' BM-SKPROBE: one wheel's lead check at this start -- p_<driven><read> is the phase read while the named phase was
+' driven (p_uv: V's reading while U was driven) -- its probes that failed (bad, skFoldProbe()), then the floated
+' window: the rest zero, each phase's coast floor and the samples behind them. Worst case 268 bytes.
+'
+' @param slotIdx - motor slot
+' @param whyCode - why nothing was read, WHY_NONE when it was
+'
+' @local rowBase - this wheel's first index in skProbe
+' @local floorBase - its first index in skFloor
+' @local bZero - the window is a measurement
+' @local firstWhy - the first cause of the record's NA fields
+
+    rowBase := slotIdx * SK_PROBE_LONGS
+    floorBase := slotIdx * SK_PHASES
+    bZero := bSkZeroValid[slotIdx] <> FALSE
+    firstWhy := whyCode
+    if (firstWhy == WHY_NONE) and (bZero == FALSE)
+        firstWhy := skZeroWhy
+        if firstWhy == WHY_NONE
+            firstWhy := WHY_NO_SAMPLES
+    recBegin(@"BM-SKPROBE")
+    benchLog.naNumField(@"life", skLife, LIM_SMALL, skLife > 0)
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    benchLog.naNumField(@"p_uu", skProbe[rowBase], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"p_uv", skProbe[rowBase + 1], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"p_uw", skProbe[rowBase + 2], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"p_vu", skProbe[rowBase + 3], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"p_vv", skProbe[rowBase + 4], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"p_vw", skProbe[rowBase + 5], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"p_wu", skProbe[rowBase + 6], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"p_wv", skProbe[rowBase + 7], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"p_ww", skProbe[rowBase + 8], LIM_SMALL, bSkHealthRead)
+    benchLog.naNumField(@"bad", skPrbBadNow[slotIdx], LIM_TINY, bSkHealthRead)
+    benchLog.naNumField(@"zero_x10", skZeroX10[slotIdx], LIM_MID, bZero)
+    benchLog.naNumField(@"fl_u", skFloor[floorBase], LIM_SMALL, bZero)
+    benchLog.naNumField(@"fl_v", skFloor[floorBase + 1], LIM_SMALL, bZero)
+    benchLog.naNumField(@"fl_w", skFloor[floorBase + 2], LIM_SMALL, bZero)
+    benchLog.naNumField(@"n", skZeroN[slotIdx], LIM_SMALL, bZero)
+    whyField(firstWhy)
+    emitRecord()
+
+PRI emitSkWalk()
+' BM-SKWALK: one walk -- checkWiring()'s return, each wheel's HLT_WIRING verdict (l_hlt, r_hlt), its two legs rebuilt
+' from the ring, its hall events across the walk, its peak sense_i, whether the pre-registered reading held (l_ok,
+' r_ok), how long the call blocked, and each wheel's fault cause after it. Worst case 272 bytes.
+
+    recBegin(@"BM-SKWALK")
+    benchLog.naNumField(@"life", skLife, LIM_SMALL, skLife > 0)
+    benchLog.naNumField(@"err", skWalkErr, LIM_SMALL, bSkWalkRan)
+    benchLog.boolField(@"l_hlt", bSkWalkHlt[SLOT_LEFT])
+    benchLog.boolField(@"r_hlt", bSkWalkHlt[SLOT_RIGHT])
+    benchLog.naNumField(@"l_fwd", skLegFwd[SLOT_LEFT], LIM_SMALL, bSkLegsValid)
+    benchLog.naNumField(@"l_rev", skLegRev[SLOT_LEFT], LIM_SMALL, bSkLegsValid)
+    benchLog.naNumField(@"r_fwd", skLegFwd[SLOT_RIGHT], LIM_SMALL, bSkLegsValid)
+    benchLog.naNumField(@"r_rev", skLegRev[SLOT_RIGHT], LIM_SMALL, bSkLegsValid)
+    benchLog.naNumField(@"l_ig", skWalkIg[SLOT_LEFT], LIM_SMALL, bSkWalkRan)
+    benchLog.naNumField(@"r_ig", skWalkIg[SLOT_RIGHT], LIM_SMALL, bSkWalkRan)
+    benchLog.naNumField(@"l_pk_i", skWalkPkI[SLOT_LEFT], LIM_SMALL, bSkLegsValid and (skWalkPkI[SLOT_LEFT] <> NEGX))
+    benchLog.naNumField(@"r_pk_i", skWalkPkI[SLOT_RIGHT], LIM_SMALL, bSkLegsValid and (skWalkPkI[SLOT_RIGHT] <> NEGX))
+    benchLog.boolField(@"l_ok", bSkWalkOk[SLOT_LEFT])
+    benchLog.boolField(@"r_ok", bSkWalkOk[SLOT_RIGHT])
+    benchLog.naNumField(@"walk_ms", skWalkMs, LIM_SMALL, bSkWalkRan)
+    benchLog.tokenField(@"l_cause", tokenAt(@tokFltCause, FC_COUNT, skWalkCause[SLOT_LEFT]), TOKMAX_FCAUSE)
+    benchLog.tokenField(@"r_cause", tokenAt(@tokFltCause, FC_COUNT, skWalkCause[SLOT_RIGHT]), TOKMAX_FCAUSE)
+    whyField(skWalkWhy)
+    emitRecord()
+
+PRI emitSkSum(slotIdx) | bRz, bDrv, bFol, firstWhy
+' BM-SKSUM: one wheel over the whole segment -- the numbers that SIZE R19.4. The rest zero's least, greatest, spread
+' and mean over every start (x10 mV; B-2 compares the spread on one board with the gap between the boards' means) and
+' how many lay outside the driver's band; the probe's least driven reading and least follower percentage, and how
+' many probes failed; the largest coast-floor reading. Worst case 263 bytes.
+'
+' @param slotIdx - motor slot
+'
+' @local bRz - a rest zero was measured
+' @local bDrv - a driven reading was taken
+' @local bFol - a follower percentage was taken
+' @local firstWhy - the first cause of the record's NA fields
+
+    bRz := skRzN[slotIdx] > 0
+    bDrv := skDrvMin[slotIdx] <> POSX
+    bFol := skFolMinPct[slotIdx] <> POSX
+    firstWhy := WHY_NONE
+    if (bRz == FALSE) or (bDrv == FALSE) or (bFol == FALSE)
+        firstWhy := WHY_NO_SAMPLES
+    recBegin(@"BM-SKSUM")
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    benchLog.numField(@"starts", sfSkStarts[slotIdx], LIM_SMALL)
+    benchLog.numField(@"rz_n", skRzN[slotIdx], LIM_SMALL)
+    benchLog.naNumField(@"rz_min_x10", skRzMin[slotIdx], LIM_MID, bRz)
+    benchLog.naNumField(@"rz_max_x10", skRzMax[slotIdx], LIM_MID, bRz)
+    benchLog.naNumField(@"rz_spr_x10", skRzMax[slotIdx] - skRzMin[slotIdx], LIM_MID, bRz)
+    if bRz
+        benchLog.numField(@"rz_mean_x10", skRzSum[slotIdx] / skRzN[slotIdx], LIM_MID)
+    else
+        benchLog.textField(@"rz_mean_x10", @sSfNa)
+    benchLog.numField(@"rz_out", sfSkRzOut[slotIdx], LIM_SMALL)
+    benchLog.naNumField(@"drv_min_mV", skDrvMin[slotIdx], LIM_SMALL, bDrv)
+    benchLog.naNumField(@"fol_min_pct", skFolMinPct[slotIdx], LIM_SMALL, bFol)
+    benchLog.numField(@"prb_bad", sfSkPrbBad[slotIdx], LIM_SMALL)
+    benchLog.naNumField(@"fl_max_mV", skFlMax[slotIdx], LIM_SMALL, skFlN[slotIdx] > 0)
+    whyField(firstWhy)
+    emitRecord()
+
 CON { --- ALIGN: the hall zero measured cold, cog 0, the bridge never driven (task 3590) --- }
 
 VAR { ALIGN tier state -- cog 0 only }
@@ -13178,12 +13899,18 @@ PRI emitHeaderRecords() | orderIdx
             emitPlan(SEG_PREFLT, 1)
             emitPlan(SEG_FLTRESP, 2)
             emitPlan(SEG_FLTPLAT, 3)
+        PART_START:
+            emitPlan(SEG_SKCHECK, 1)
     if PART_ID == PART_A
         repeat orderIdx from 0 to LADDER_RUNGS - 1
             emitLadder(orderIdx)
     if PART_ID == PART_FAULTRESP                            ' task 3613: the pre-registered numbers, and what is not built
         emitFrBuild()
         emitNotBuilt(@sSfCellB4Pulse, @sSfStudyB4, WHY_REPLACED_BY_X2)
+    if PART_ID == PART_START                                ' task 3613: the pre-registered numbers, and the walk when not built
+        emitSkBuild()
+        if BUILD_NO_WALK
+            emitNotBuilt(@sSfCellSkWalk, @sSfStudyB5, WHY_PART_NOT_BUILT)
     beat(CP_EMIT)
     debug(zstr_(@sPanicLine))
     beat(CP_EMIT)
@@ -13303,8 +14030,11 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     '  each its own lifetime (~2 s start and zero), a spin-up of up to ~2 s, a 1 s settle, a capture of about a second
     '  and a FAULT_COOL_MS cool-down -- about 13 s -- and one trace each at STOPMODE's worst case of TRACE_EMIT_MAX lines:
     '  24 traces. FLTPLAT: 2 steering trials of about 15 s, each a trace of up to 3 s at decimation 1.
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200)
+    ' Task 3613, the START part. SKCHECK: SK_LIVES steering lifetimes of about 3.5 s -- START_SPACING_MS, the ~1.2 s
+    '  start (its own ~1 s rest zero and the ~40 ms checks per wheel), the reads and a ZERO_WINDOW_MS window -- and
+    '  SK_WALKS walks of about 1.5 s with their rest confirm; no trace. About 1.3 KB of records a lifetime.
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 45)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 15)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -14479,6 +15209,8 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallM
         PART_FAULTRESP:
             pCell := @sSfCellNoStallX
+        PART_START:
+            pCell := @sSfCellNoStallS
         other:
             pCell := @sUnknownTok
 
@@ -14512,6 +15244,8 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskM
         PART_FAULTRESP:
             pCell := @sSfCellDbgMaskX
+        PART_START:
+            pCell := @sSfCellDbgMaskS
         other:
             pCell := @sUnknownTok
 
@@ -14675,6 +15409,15 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellResync)
                 emitSignoffDecl(@sSfCellPlatStop)
                 emitSignoffDecl(@sSfCellB4Pulse)
+            PART_START:
+                emitSignoffDecl(@sSfCellNoStallS)
+                emitSignoffDecl(@sSfCellDbgMaskS)
+                emitSignoffDecl(@sSfCellSkHealth)
+                emitSignoffDecl(@sSfCellSkRz)
+                emitSignoffDecl(@sSfCellSkPrbFlr)
+                emitSignoffDecl(@sSfCellSkProbe)
+                emitSignoffDecl(@sSfCellSkWalk)
+                emitSignoffDecl(@sSfCellSkPack)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
@@ -14715,6 +15458,8 @@ PRI emitSignoffs() | slotIdx, side
 '  FRESP  NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; per motor HOOKREST and RESYNC BOOL, FORCED, RSTPROV, BLUNT,
 '         GRADED, GRD100, FRREST, RESTFLAT, COASTEMF, SHORTTK and SHORTI COUNT, PLATSTOP PCT (the wheel that was NOT
 '         faulted); B4PULSE NOT_BUILT (emitFaultRespCells())
+'  START  NOSTALL BOOL; DBGMASK BOOL; per motor HEALTH, RZSPREAD, PROBE and WALK COUNT (WALK NOT_BUILT in the
+'         START_NO_WALK build) and PRBFLR MV, the control before the probe; PACK COUNT (emitStartCells())
 '
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
@@ -14796,6 +15541,8 @@ PRI emitSignoffs() | slotIdx, side
                 emitLimitsCells()
             PART_FAULTRESP:
                 emitFaultRespCells()
+            PART_START:
+                emitStartCells()
 
 PRI emitIdleMoveCell(pCell, slotIdx)
 ' IDLEMOVE (task 3572): the other wheel's largest travel over every motor-frame trace this motor was primary in.

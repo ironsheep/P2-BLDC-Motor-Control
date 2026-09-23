@@ -872,7 +872,7 @@ PUB getFaultCause() : eLeftCause, eRightCause
     eLeftCause := ltWheel.getFaultCause()
     eRightCause := rtWheel.getFaultCause()
 
-PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeftMissed, nLeftIllegal, nRightMissed, nRightIllegal, bLegsOk
+PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeftMissed, nLeftIllegal, nRightMissed, nRightIllegal, bLeftOk1, bRightOk1, bLeftOk2, bRightOk2
 '' Turn the platform a few degrees in place and back -- each wheel one electrical cycle each way -- to prove each wheel's
 '' hall and phase wiring, and record each verdict as that wheel's getHealth() HLT_WIRING
 ''
@@ -892,20 +892,25 @@ PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeft
 ' @local nLeftIllegal - the left illegal-code count before the walk
 ' @local nRightMissed - the right missed-transition count before the walk
 ' @local nRightIllegal - the right illegal-code count before the walk
-' @local bLegsOk - T/F where T means both legs were driven, both wheels came to rest and neither faulted
+' @local bLeftOk1 - T/F where T means the left wheel's first leg came to rest without faulting
+' @local bRightOk1 - T/F where T means the right wheel's first leg came to rest without faulting
+' @local bLeftOk2 - T/F where T means the left wheel's second leg came to rest without faulting
+' @local bRightOk2 - T/F where T means the right wheel's second leg came to rest without faulting
 
     nLeftMissed, nLeftIllegal := ltWheel.getHallIntegrityCounts()
     nRightMissed, nRightIllegal := rtWheel.getHallIntegrityCounts()
     nLeftStart := ltWheel.getRawHallTicks()
     nRightStart := rtWheel.getRawHallTicks()
-    eError, bLegsOk := walkLeg(ltWheel.WALK_POWER, -ltWheel.WALK_POWER)          ' opposite powers: the platform turns in place
+    ' each wheel is judged on its OWN legs: one wheel's failed leg never fails the other (a fault on one still stops
+    '  both, R19.2, so the other's short leg shows in its ticks and nowhere else)
+    eError, bLeftOk1, bRightOk1 := walkLeg(ltWheel.WALK_POWER, -ltWheel.WALK_POWER)    ' opposite powers: the platform turns in place
     nLeftMid := ltWheel.getRawHallTicks()
     nRightMid := rtWheel.getRawHallTicks()
-    if bLegsOk == TRUE
-        eError, bLegsOk := walkLeg(-ltWheel.WALK_POWER, ltWheel.WALK_POWER)
     if eError == NO_ERROR
-        ltWheel.bJudgeWalk(nLeftMid - nLeftStart, ltWheel.getRawHallTicks() - nLeftMid, bLegsOk, bHallsUnchanged(ltWheel.getHallIntegrityCounts(), nLeftMissed, nLeftIllegal))
-        rtWheel.bJudgeWalk(nRightMid - nRightStart, rtWheel.getRawHallTicks() - nRightMid, bLegsOk, bHallsUnchanged(rtWheel.getHallIntegrityCounts(), nRightMissed, nRightIllegal))
+        eError, bLeftOk2, bRightOk2 := walkLeg(-ltWheel.WALK_POWER, ltWheel.WALK_POWER)  ' a drive clears a faulted wheel first
+    if eError == NO_ERROR
+        ltWheel.bJudgeWalk(nLeftMid - nLeftStart, ltWheel.getRawHallTicks() - nLeftMid, bLeftOk1 and bLeftOk2, bHallsUnchanged(ltWheel.getHallIntegrityCounts(), nLeftMissed, nLeftIllegal))
+        rtWheel.bJudgeWalk(nRightMid - nRightStart, rtWheel.getRawHallTicks() - nRightMid, bRightOk1 and bRightOk2, bHallsUnchanged(rtWheel.getHallIntegrityCounts(), nRightMissed, nRightIllegal))
     eError := recordError(eError)
 
 PUB getPackVoltage() : ePackStatus, nMilliVolts
@@ -1550,31 +1555,44 @@ PRI bHallsUnchanged(nMissedNow, nIllegalNow, nMissed0, nIllegal0) : bSame
 
     bSame := (nMissedNow == nMissed0) and (nIllegalNow == nIllegal0)
 
-PRI walkLeg(leftPower, rightPower) : eError, bOk | startMs, eLeftStatus, eRightStatus
-' Drive one leg of checkWiring(): each wheel WALK_TICKS at its power, then wait, bounded, for both to rest.
+PRI walkLeg(leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftStatus, eRightStatus
+' Drive one leg of checkWiring(): each wheel WALK_TICKS at its power, then wait, bounded, until each wheel has either come
+' to rest or faulted. Each wheel's result is its own.
 '
 ' @param leftPower - the left wheel's power, its sign the direction
 ' @param rightPower - the right wheel's power
 ' @returns eError - NO_ERROR once the leg was posted and taken, else the platform's or a wheel's refusal
-' @returns bOk - T/F where T means the leg was driven, both wheels came to rest and neither faulted
+' @returns bLeftOk - T/F where T means the leg was driven and the left wheel came to rest without faulting
+' @returns bRightOk - T/F where T means the leg was driven and the right wheel came to rest without faulting
 
 ' Local Variables:
 ' @local startMs - getms() when the leg was posted
 ' @local eLeftStatus - the front cog's status for the left wheel
 ' @local eRightStatus - the front cog's status for the right wheel
 
+    bLeftOk := FALSE
+    bRightOk := FALSE
     eError, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_WALK, BOTH_MOTORS, ltWheel.WALK_TICKS, leftPower, rightPower)
     if eError == NO_ERROR
         eError := (eLeftStatus <> NO_ERROR) ? eLeftStatus : eRightStatus
-    bOk := (eError == NO_ERROR)
-    if bOk == TRUE
+    if eError == NO_ERROR
         startMs := getms()
         waitms(ltWheel.WALK_START_MS)
-        repeat until ((ltWheel.getDriverState() == DCS_STOPPED) and (rtWheel.getDriverState() == DCS_STOPPED)) or (ltWheel.getDriverState() == DCS_FAULTED) or (rtWheel.getDriverState() == DCS_FAULTED) or (getms() - startMs >= ltWheel.WALK_LEG_TIMEOUT_MS)
+        ' a fault on one wheel stops the other along its ramp (R19.2), so wait for BOTH to settle, each at rest or faulted
+        repeat until (bWheelSettled(ltWheel.getDriverState()) and bWheelSettled(rtWheel.getDriverState())) or (getms() - startMs >= ltWheel.WALK_LEG_TIMEOUT_MS)
             waitms(1)
-        bOk := (ltWheel.getDriverState() == DCS_STOPPED) and (rtWheel.getDriverState() == DCS_STOPPED)
-        if bOk == FALSE
+        bLeftOk := (ltWheel.getDriverState() == DCS_STOPPED)
+        bRightOk := (rtWheel.getDriverState() == DCS_STOPPED)
+        if (bLeftOk == FALSE) or (bRightOk == FALSE)
             postRequest(ltWheel.REQ_STOP, BOTH_MOTORS, 0, 0, 0)                 ' a leg that faulted or timed out ends stopped
+
+PRI bWheelSettled(eDrvState) : bSettled
+' Return TRUE when a wheel's driver state means its walk leg is over: at rest, or faulted.
+'
+' @param eDrvState - the wheel's DCS_* state
+' @returns bSettled - T/F where T means DCS_STOPPED or DCS_FAULTED
+
+    bSettled := (eDrvState == DCS_STOPPED) or (eDrvState == DCS_FAULTED)
 
 PRI stopFrontCog() | eStatus
 ' Ask the front cog to EXIT, wait bounded for its acknowledgement, then cogstop it; never refuses.

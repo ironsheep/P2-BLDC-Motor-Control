@@ -128,6 +128,8 @@ Usage:  tools/bench-run.sh <tier>
                    dual-clock-300 motion harness clock load at 300 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-b         motion harness part B: PREFLT, FAULTB, OVERSHT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-fault     motion harness part FAULTRESP: PREFLT, FLTRESP, FLTPLAT -- the fault study's X-cells, faults forced at speed  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-start     motion harness part START: SKCHECK -- 10 starts through the steering object reading every start check; the last 3 call checkWiring() (the platform turns a few degrees in place)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-start-nowalk  as dual-start without checkWiring(): nothing is commanded -- the load for B-1 (hall connector unplugged) and B-3's negative (a motor lead unplugged)  [WHEELS UP, ATTENDED WIRING CHANGE]
                    dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
                    dual-c         motion harness part C: PREFLT, BASELINE, POSTFLT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-d         motion harness part D: PREFLT, STEERSEG, LIMIT -- the front cog's contract and current limiting  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
@@ -284,6 +286,22 @@ case "$TIER" in
     dual-fault)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_FAULTRESP)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part FAULTRESP (PREFLT, FLTRESP, FLTPLAT): FAULTS ARE FORCED ON PURPOSE AT SPEED (testForceFault(), DRIVER_REV 12), one wheel at a time at 40, 80 and 120 x 10^6 (up to about 220 rpm commanded), and each wheel stops per the response under test -- a phase short that STOPS IT DEAD, a free coast, a re-synced ramp down, or a graded short at 10, 25, 50 and 100 % entered by a second forced fault on that ramp; then, through the steering object at power 50, one wheel is faulted and the other must stop. The 10 A abort and the fold-back limiter both apply. Run cap 15 minutes, expected about 6"
+                    ;;
+    # dual-start (task 3613, plan R19.7; DOCs/analyses/STARTUP-SELFTEST-STUDY-2026-09-23.md sec 6) -- the start checks.
+    #  Ten steering lifetimes read what start() judged (getHealth(), the lead probe, the pack sensor) and a floated
+    #  window's rest zero and coast floor; the last three call checkWiring(). No PREFLT: the attended negatives load
+    #  this part with a wheel mis-wired on purpose.
+    dual-start)     BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part START (SKCHECK): the steering object is started and stopped 10 times; each start pulses each motor lead at 50 % for a few ms with nothing able to move. In the last 3 lifetimes checkWiring() turns the platform in place, each wheel one electrical cycle (about 6 hall ticks, 3.5 cm at the tyre) each way at power 10. Run cap 3 minutes, expected under 1"
+                    ;;
+    # dual-start-nowalk -- the same part built with -D START_NO_WALK: checkWiring() is never called, so nothing in the
+    #  build commands a wheel. The load for the attended B-1 (a hall connector unplugged) and B-3 negative (a motor
+    #  lead unplugged): a mis-wired wheel is only read, never driven.
+    dual-start-nowalk)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NO_WALK)
+                    PRECONDITION="WHEELS UP -- ATTENDED WIRING CHANGE for B-1 or B-3's negative: with the BATTERY DISCONNECTED, unplug ONE wheel's hall connector (B-1) or ONE motor phase lead (B-3) as the run sheet says, then reconnect the battery. Motion harness part START without the walk: the steering object is started and stopped 10 times and no wheel is ever driven. Restore the wiring with the battery disconnected afterwards. Run cap 3 minutes, expected under 1"
                     ;;
     dual-brake)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_BRAKE)
