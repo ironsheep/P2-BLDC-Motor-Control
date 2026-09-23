@@ -45,6 +45,60 @@ See also:
 Latest Changes:
 
 ```
+23 September 2026  v6.0.0
+A reworked drive: lower current, a quiet start, built-in protection, and every
+command reporting its result.
+- BREAKING: command methods return NO_ERROR or a negative ERR_* code instead
+  of aborting on bad arguments. Calls that ignore the result need no change;
+  code relying on an abort to stop a cog must check the result.
+- BREAKING: power values run about 12% faster on the 6.5" motor: power 100 at
+  18.5V is now 294 RPM. Code tuned to a particular speed may need its power
+  lowered.
+- BREAKING: start() refuses a pin group where no board is detected
+  (ERR_BOARD_NOT_DETECTED) unless BRD_REV_A or BRD_REV_B is forced.
+  Platforms whose boards are detected need no change.
+- BREAKING: setAcceleration(rate) takes mm/s^2 at the wheel rim (1 to 10,000);
+  it previously passed {rate} to the driver as its ramp step. Code that passed
+  a ramp step should call setRampingValues() instead.
+- 6.5" motor: commutation uses the motor's measured hall position and a lead
+  that follows speed; unloaded running current is 8 to 25 times lower than
+  v5.0.2's at the same speed
+- Starting from rest is smooth: the current surge at spin-up is gone
+- Forward and reverse draw the same current, to within a few percent
+- getError() returns the calling cog's first error; the steering object's
+  returns its own, the left wheel's and the right wheel's
+- Current limiting protects the board: output folds back above 40 A and
+  derates to 27 A under sustained load
+- Protective stop: a commanded motor that cannot turn for about a second is
+  stopped until clearProtectiveStop() (ERR_PLATFORM_BLOCKED,
+  getProtectiveStop())
+- Two wheels: when one wheel cannot keep up, both slow together, so the
+  platform keeps the path you commanded
+- A loaded motor that cannot reach its command holds the fastest speed it can
+  sustain instead of faulting
+- setCommandTimeout(ms): opt-in link-loss guard that stops the motors when
+  drive commands stop arriving
+- getDriveVoltage() returns the configured drive voltage
+- getFaultCause(), getHallIntegrityCounts() and getHallIllegalCodes() report
+  why a motor faulted and the health of its hall sensors
+- stopAfterDistance(), stopAfterRotation() and stopAfterTime() bring the motor
+  to rest at the limit instead of past it
+- driveForDistance(left, right) drives each wheel its own distance, so unequal
+  distances turn
+- Distance commands accept DDU_KM and DDU_MI
+- holdAtStop(false) coasts with all bridge transistors off; a fault coasts or
+  brakes as holdAtStop() selects; emergencyCutoff() brakes and latches until
+  clearEmergency()
+- getStatus() reports DS_FAULTED and DS_ESTOP
+- getCurrent() reads zero at rest; start() blocks about 1 s to calibrate it
+- The three hall sensors are read at one instant, so a switching transient
+  cannot combine into a false hall code
+- The drive uses a fixed 2 cogs for one motor and 3 for two; startSenseCog()
+  starts nothing and is kept so 5.x programs still compile
+- The PWM dead-time is 260 ns on both board revisions, meeting the 250 ns
+  minimum both board manuals specify
+- Serial: a refused command replies with the error's name and code; new
+  settimeout and getvoltage commands
 21 February 2025  v5.0.2
 - BUGFIX: consecutive drive-for-distance calls now work (#23)
 - Motor drive gap is now adjusted by board type - REV_B uses a shorter gap,
@@ -131,6 +185,13 @@ Latest Changes:
 Things we know about that still need attention:
 
 ```
+  v6.0.0
+- The drive does not measure battery voltage: getCurrent()'s watts and the
+  speed table assume the configured DRIVE_VOLTAGE.
+- getCurrent() does not show regenerative current.
+- Speeds and stopping distances are characterized unloaded; under load the
+  motor has less torque in reserve near top speed.
+- calibrate() is not implemented.
   v5.0.2
 - Drive status reporting is not working in the base objects, so it is also
   reported badly over the serial interface.
@@ -182,7 +243,7 @@ There are two objects in our motor control system. There is a lower-level object
 
 If you are working with a dual motor device then you'll be coding to the interface of this upper-level steering object as you develop your drive algorithms.  If you were to work with say a three-wheeled device then you may want to create a steering object that can better coordinate all three motors at the same time. Actually this is true for any other number of motors you decide to control. Create your own better-suited steering object, base it on this project's 2-wheel version. (_And, if you do, please consider contributing your work to this project so it can be available to us all! See: [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control/tree/develop#how-to-contribute) below._)
 
-The drive subsystem currently uses two cogs, one for each motor and a third cog for active tracking of wheel position. Conceptually, the drive system is always running. It is influenced by updating control variable values. When the values change the drive subsystem responds accordingly. The public methods of both the steering object and the motor object simply write to these control variables and/or read from associated status variables returning their current value or an interpretation thereof.
+The drive uses 2 cogs for a single motor and 3 for a two-wheel platform; how they divide the work, and how your calls reach them, is described in [Objects and cogs](DRIVE-OBJECTS.md#objects-and-cogs).
 
 The interfaces for these two objects are described in [BLDC Motor Drive Objects](DRIVE-OBJECTS.md)
 
@@ -200,9 +261,9 @@ In this diagram there are three **rectangular objects** depicting files (yellow 
 
 We now have a working motor drive system that is fun to use. While this was being developed we kept track of further improvements that can be made in the future. Here's our list of the most notable:
 
-- Implement reading (and correct scaling) of the actual current draw of the motor (or both motors if two-wheeled system) - this is now possible with RevB boards
-- Implement acceleration control
-- Replace simple built-in spin-up, spin-down ramps with better
+- Measure the battery voltage, so power figures and speed limits can follow a sagging pack
+- A public query for whether each motor is keeping up with its command
+- Support for platforms with more than two motors (such as the DocoEng motors driving a CNC)
 
 ## DEMOs
 

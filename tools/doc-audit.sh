@@ -35,11 +35,14 @@ cd "$ROOT" || exit 2
 # here explicitly so the exclusion is visible rather than implied.
 #   DOCs/analyses/  point-in-time studies; they describe a moment, not the code
 #   DOCs/plans/     sprint working material
+#   DOCs/PUNCH-LIST.md  the findings register: it names methods as they were when
+#                   found, or as proposed, so its method names are records, not claims
 #   .claude/        agent configuration, not shipped
 #   .todo-mcp/      agent tooling, replaced wholesale on upgrade
 DOCS=$(git ls-files '*.md' 2>/dev/null \
        | grep -v '^DOCs/analyses/' \
        | grep -v '^DOCs/plans/' \
+       | grep -vx 'DOCs/PUNCH-LIST.md' \
        | grep -v '^\.claude/' \
        | grep -v '^\.todo-mcp/')
 
@@ -73,7 +76,7 @@ pinfloat pinclear pinstart pintoggle wrpin wxpin wypin rdpin akpin
 lookup lookdown strcopy strsize string abort round float trunc send recv
 byte word long lstring bytemove wordmove longmove bytefill wordfill longfill
 muldiv64 getrnd rotxy polxy xypol qsin qcos nan clkset locknew lockret
-locktry lockrel lockchk regexec regload call"
+locktry lockrel lockchk regexec regload call debug"
 
 # ---- ORPHAN ------------------------------------------------------------
 # A doc that writes `someMethod()` in backticks is asserting that method exists.

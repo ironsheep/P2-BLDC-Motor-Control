@@ -16,6 +16,7 @@ On this Page:
 - [Adjust config file to your desired configuration](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#adjust-config-file-to-your-desired-configuration) 
 - [Include project objects in your top-object-file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#include-project-objects-in-your-top-object-file)
 - [Make calls to steering or motor object to drive your platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
+- [Checking for errors](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#checking-for-errors)
 
 Additional pages:
 
@@ -33,11 +34,11 @@ The objects provided by this project read a user configuration to determine how 
 
 Lastly you'll start the objects and then add your drive code and any sensor code you wish to use.
 
-
+**Budget your cogs.** The drive uses **2 cogs** for a single motor and **3 cogs** for a two-wheel platform, leaving 6 or 5 for your application. See [Objects and cogs](DRIVE-OBJECTS.md#objects-and-cogs).
 
 ### Adjust config file to your desired configuration
 
-Edit the user configuration file and adjust the settings to describe the configuration you will be using.
+Edit the user configuration file, **isp\_bldc\_motor\_userconfig.spin2**, and adjust the settings to describe the configuration you will be using.
 
 Here's the Author's two-wheel setup:
 
@@ -46,25 +47,28 @@ Here's the Author's two-wheel setup:
 ' AUTHORs  TEST configuration (dual Motor)
 ' -------------------------------------------------------------------
 {
+    ' using 6.5" hub motors
+    MOTOR_TYPE = MOTR_6_5_INCH
+
     ' using Mini Edge Breakout
     LEFT_MOTOR_BASE = PINS_P0_P15
     RIGHT_MOTOR_BASE = PINS_P16_P31
 
-	' using 6.5" hub motors
-    MOTOR_TYPE = MOTR_6_5_INCH
-    
     ' using a 5s battery
     DRIVE_VOLTAGE = PWR_18p5V
 
-    MOTOR_DIA_IN_INCH = 6.5   ' 6.5 inches (floating point constant)
-    
+    WHEEL_DIA_IN_INCH = 6.5   ' 6.5 inches (floating point constant)
+
+    ' let the driver recognize each board's revision
+    LEFT_BOARD_TYPE = BRD_AUTO_DET
+    RIGHT_BOARD_TYPE = BRD_AUTO_DET
 '}
 ```
 
 You will need to configure one of:
 
 - `ONLY_MOTOR_BASE` =  &nbsp; {pinBaseConstant}  &nbsp;  -OR-
-- `LEFT_MOTOR_BASE` = &nbsp; {pinBaseConstant} and `RIGHT_MOTOR_BASE` = {pinBase}
+- `LEFT_MOTOR_BASE` = &nbsp; {pinBaseConstant} and `RIGHT_MOTOR_BASE` = {pinBaseConstant}
 
 and then set your motor type:
 
@@ -76,7 +80,14 @@ and then set:
 
 as well as:
 
-- `MOTOR_DIA_IN_INCH` = &nbsp; {wheelDiameterInInches}  (floating point value)
+- `WHEEL_DIA_IN_INCH` = &nbsp; {wheelDiameterInInches}  (floating point value; 0.0 when no wheel is attached)
+
+and the board detection, one of:
+
+- `ONLY_BOARD_TYPE` = &nbsp; {detectModeConstant}  &nbsp;  -OR-
+- `LEFT_BOARD_TYPE` = &nbsp; {detectModeConstant} and `RIGHT_BOARD_TYPE` = {detectModeConstant}
+
+Use `BRD_AUTO_DET` unless you have a reason not to. With it, `start()` refuses a pin group where it cannot detect a board, because without the board's revision the driver has no current limit for it. `BRD_REV_A` or `BRD_REV_B` forces a revision; forcing one that does not match your hardware will cause the driver to not work.
 
 Here's the Author's single motor setup:
 
@@ -85,40 +96,22 @@ Here's the Author's single motor setup:
 ' AUTHORs  TEST configuration (docEng single Motor)
 ' -------------------------------------------------------------------
 {
-    ' using JonnyMac breakout board
+    ' using smaller docoEng.com motor
+    MOTOR_TYPE = MOTR_DOCO_4KRPM
 
+    ' using JonnyMac breakout board
     ONLY_MOTOR_BASE = PINS_P16_P31
 
-	' using smaller docoEng.com motor
-    MOTOR_TYPE = MOTR_DOCO_4KRPM
-    
-    ' using a 5s battery
-    DRIVE_VOLTAGE = PWR_18p5V
+    DRIVE_VOLTAGE = PWR_12p0V
 
-	' no wheel attached to this motor
-    MOTOR_DIA_IN_INCH = 0.0   ' 0 inches (floating point constant)
-    
+    ' no wheel attached to this motor
+    WHEEL_DIA_IN_INCH = 0.0   ' 0 inches (floating point constant)
+
+    ONLY_BOARD_TYPE = BRD_AUTO_DET
 '}
 ```
 
-In this case you configure:
-
-- `ONLY_MOTOR_BASE` =  &nbsp; {pinBaseConstant}  
-
-and then set your motor type:
-
-- `MOTOR_TYPE ` =  &nbsp; {motorTypeConstant}
-
-and then set:
-
-- `DRIVE_VOLTAGE` =  &nbsp; {voltageConstant}
-
-as well as:
-
-- `MOTOR_DIA_IN_INCH` = &nbsp; {wheelDiameterInInches}  (floating point value)
-
-
-**NOTE:** *The constants you can use for {pinBaseConstant}, {motorTypeConstant} and {voltageConstant} are provided at the top of the file for you.*
+**NOTE:** *The constants you can use for {pinBaseConstant}, {motorTypeConstant}, {voltageConstant} and {detectModeConstant} are provided at the top of the file for you. Which voltages each motor supports is in [MOTOR_CHOICE.md](MOTOR_CHOICE.md).*
 
 Save your changes and you are ready to start adding the driver to your code.
 
@@ -128,7 +121,7 @@ You now need to select objects based on if you are a one-wheel or two-wheel conf
 
 ### Using Two Motor Objects
 
-- isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size
+- isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size)
 - isp\_steering_2wheel.spin2 - the steering object which include the motor objects
 
 You simply include them with something like:
@@ -146,10 +139,15 @@ Starting the wheels object in Spin2 is also pretty simple:
 
 ```script
 
-PUB main() | eOpStatus, nIdx, nCollId, eRxQStatus, eCmdId, tmpVar
+PUB main() | frontCog, eError, eLeftError, eRightError
 
-    ' start our motor drivers (left and right)
-    wheels.start(wheels.PINS_P0_P15, wheels.PINS_P16_P31, wheels.PWR_12V)
+    ' start our motor drivers (left and right) and the front cog that serves them: 3 cogs
+    frontCog := wheels.start(user.LEFT_MOTOR_BASE, user.RIGHT_MOTOR_BASE, user.DRIVE_VOLTAGE, user.LEFT_BOARD_TYPE, user.RIGHT_BOARD_TYPE)
+    if frontCog < 0
+        ' start() refused: getError() says why, and which wheel
+        eError, eLeftError, eRightError := wheels.getError()
+        debug("motors did not start: ", sdec_long(eError), sdec_long(eLeftError), sdec_long(eRightError))
+        return
 
     ' just don't draw current at stop
     wheels.holdAtStop(false)
@@ -162,8 +160,8 @@ PUB main() | eOpStatus, nIdx, nCollId, eRxQStatus, eCmdId, tmpVar
 
 ### Using A Single Motor Object
 
-- isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size
-- isp\_bldc_motor.spin2 - the motor object which includes a single motor tracking object
+- isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size)
+- isp\_bldc_motor.spin2 - the motor object
 
 You simply include them with something like:
 
@@ -176,31 +174,29 @@ OBJ { Objects Used by this Object }
 
 #### Start the Single-motor Object
 
-Starting the wheel and tracking objects in Spin2 is also pretty simple:
+Starting the motor object in Spin2 is also pretty simple. `start()` launches everything the motor needs, the driver and its front cog: 2 cogs.
 
 ```script
 
-PUB main() | motorCog, senseCog, basePin, voltage
+PUB main() | motorCog
 
-    basePin := wheel.validBasePinForChoice(user.ONLY_MOTOR_BASE)
-    voltage := wheel.validVoltageForChoice(user.DRIVE_VOLTAGE)
+    ' start our single motor driver and its front cog
+    motorCog := wheel.start(user.ONLY_MOTOR_BASE, user.DRIVE_VOLTAGE, user.ONLY_BOARD_TYPE)
+    if motorCog < 0
+        ' start() refused: getError() says why
+        debug("motor did not start: ", sdec_long(wheel.getError()))
+        return
 
-    if basePin <> wheel.INVALID_PIN_BASE and voltage <> wheel.INVALID_VOLTAGE
-        ' start our single motor driver
-        motorCog := wheel.start(basePin, voltage)
- 
-        ' for single motor let's start the single motor sense task
-        senseCog := wheel.startSenseCog()
-
-        ' just don't draw current at stop
-        wheel.holdAtStop(false)
+    ' just don't draw current at stop
+    wheel.holdAtStop(false)
 
   ... and do your app stuff from here on ...
   
-        wheel.stop()   ' if you wish to shutdown COGs and release motor pins
+    wheel.stop()   ' if you wish to shutdown COGs and release motor pins
    
 ```
 
+`start()` checks the pin group, voltage and detection mode itself, and refuses with the reason in `getError()`. The `valid*ForChoice()` methods are there if you want to check a value before you start.
 
 ### And you're off!  Add your own motor control code
 
@@ -208,6 +204,31 @@ You are now at the `... and do your app stuff from here on ...` section of this 
 From here on, just use any of the Public Methods found in the [Steering and Motor control](DRIVE-OBJECTS.md) interface description.  
 
 **Remember:** if you are two wheeled you are calling methods of the [**isp\_steering_2wheel.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-2-wheel-steering-object-public-interface) object `wheels.*` and if you are a single wheel then you are calling methods of the [**isp\_bldc_motor.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-motor-object-public-interface) object `wheel.*`.
+
+### Checking for errors
+
+Every command method returns `NO_ERROR` (0) or a negative `ERR_*` code, and you may ignore it. When you do want to know, there are two ways:
+
+**Check each call** where the answer changes what you do next:
+
+```script
+    eError := wheels.driveForDistance(24, 24, wheels.DDU_IN)
+    if eError <> wheels.NO_ERROR
+        debug("driveForDistance refused: ", sdec_long(eError))
+```
+
+**Or check once, after a group of calls.** Each command also records its error for the calling cog, and `getError()` returns the first one since you last asked, then clears it:
+
+```script
+    wheels.setMaxSpeed(50)
+    wheels.setAcceleration(500)
+    wheels.driveAtPower(40, 40)
+    eError, eLeftError, eRightError := wheels.getError()
+    if eError <> wheels.NO_ERROR or eLeftError <> wheels.NO_ERROR or eRightError <> wheels.NO_ERROR
+        debug("a command was refused: ", sdec_long(eError), sdec_long(eLeftError), sdec_long(eRightError))
+```
+
+The codes, and what each means, are listed in [Drive Objects: Errors](DRIVE-OBJECTS.md#errors). Two latched states refuse every drive until you clear them: an emergency stop (`clearEmergency()`) and a protective stop (`clearProtectiveStop()`).
 
 Have Fun!
 

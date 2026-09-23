@@ -17,6 +17,14 @@ The code for this project implements an active serial receiver running on the P2
 Latest Changes:
 
 ```
+23 September 2026  v6.0.0
+- A command the drive refuses replies "ERROR {cmd} failed: {ERR_NAME} ({code})"
+  instead of OK
+- getstatus reports DS_FAULTED (14) and DS_ESTOP (15)
+- settimeout {ms}: opt-in link-loss guard that stops both motors when drive
+  commands stop arriving
+- getvoltage: the configured drive voltage
+- drivedist and stopaftdist accept DDU_KM (6) and DDU_MI (7)
 04 May 2022 v2.0.0
 - Initial Public Release of Serial support
 ```
@@ -146,6 +154,24 @@ cp /P2-BLDC-Motor-Control-Demo.py {newName}.py      # create new copy
 ```
 
 Do all your development in this new file. Start by replacing the sqaure-pattern drive code with your own.  
+
+The full command set, with every reply, is in [Serial Interface of Steering Object](DRIVE-OBJECTS-SERIAL.md).
+
+### Checking the drive's status
+
+Send `getstatus`; the reply is `stat {left} {right}`, one number per wheel:
+
+| Number | Status | Means | What your code should do |
+| --- | --- | --- | --- |
+| 10 | DS\_Unknown | the drive is not running | check that the P2 started the motors |
+| 11 | DS\_MOVING | the wheel is being driven | — |
+| 12 | DS\_HOLDING | stopped, holding position | — |
+| 13 | DS\_OFF | stopped, coasting | — |
+| 14 | **DS\_FAULTED** | the motor could not follow its command, or a hall sensor failed | send a stop or a new power to clear it; if it recurs, reduce the load or the speed |
+| 15 | **DS\_ESTOP** | emergency-stopped | drives are refused until you send `emerclear` |
+
+A drive command that the P2 refuses tells you why in its reply, for example
+`ERROR drivepwr failed: ERR_EMERGENCY_STOPPED (-1016)`, so your code can read the reason instead of polling for it.
 
 Have fun!
 

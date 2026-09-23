@@ -68,11 +68,12 @@ We're adding the DocoEng.com BLDC motor - 4,000 RPM, 24V to the driver. The moto
 - Determine new fwd/rev offset constants that yield lowest current draw at fixed speed/rpm
 - Adjust motor position sense code to new motor hall geometry so rotation positon tracking are correct for the motor
 - Determine and add max request values for each voltage we support
+- Record the new motor's rows in the [Motor Reference tables](MOTOR_CHOICE.md#motor-reference-top-speed-at-each-drive-voltage) (top speed at each voltage, and its commutation), marking which rows you verified on your hardware
 - Validate all your work, when it's complete, share it with us!
 
 ## What Driver needs to know about a motor
 
-_I'm writing this section after the v3.0.0 release is completed. This release (v3.0.0) finished the implementation of the new docoEng Motor but leaves unfinished the re-evaluation of the new upper-limits possible with the 6.5" motor. In this release we fixed a BUG with PWM generation at higher RPMs. Therefore the 6.5" motor should be capable of running better than the limits we fixed in the driver. Read on as this will soon make sense._
+_The supported motors' results, for comparison with yours, are in the [Motor Reference tables](MOTOR_CHOICE.md#motor-reference-top-speed-at-each-drive-voltage)._
 
 Today our driver cannot detect the "hall order" or the "mechanical offset of hall sensors in degrees" at runtime. So, we build these values into our driver.
 
@@ -189,7 +190,7 @@ When adding a new motor you'll adjust the case statement within `hallTicInfoForM
 
 For all of our BLDC motors you will see that for a given voltage used to drive the motor you will find that there is a maximum RPM that can be achieved. The "fun" part is that you can ask the motor to go faster but it will still max out at this same MAX RPM but it will continue to consume greater ammounts of current trying.
 
-So, we optimize this system as if it were a battery powered system. As we add new motors we do our best to characterize the new motor to learn what these upper limits are. We back off the number we find, lowering it as far as possible while still achieveing the same top RPM. The number we record then represents the highest RPM we can achieve with the motor but at the lowest current possible while still achieving that RPM.
+So, we optimize this system as if it were a battery powered system. As we add new motors we do our best to characterize the new motor to learn what these upper limits are. The driver keeps some voltage in reserve at full speed, so it can still correct the motor when something pushes back, and the number we record is the fastest speed that keeps that reserve. For the 6.5" motor we measured it at one voltage, the speed at which the drive still has about 7% of its output in hand, and scaled it to the other voltages. Past that point the motor can often be driven faster, but only by drawing much more current, and it can lose step.
 
 To sum up... the numbers we record for a given power then give us the 100% setting we use when the user calls for 100% power. It is also the value we use to scale the range so that value in the 0-100% range all get correctly representative values.
 
