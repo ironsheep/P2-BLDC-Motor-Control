@@ -5312,6 +5312,14 @@ field still (an increment of 0 with the bridge driven), or a limit low enough to
 by stepping it down until the hall ticks stop. Either must be shown able to reach `NOT_BLOCKED`'s negative
 case before the cell is trusted. **The floor run («#3591»)** is the other place a real stall can happen.
 
+**A construction found, 2026-09-23 (Visit 9b, [evaluation](analyses/bench/2026-09-23/VISIT-9B-EVALUATION.md) §5, G-3).**
+`dual-limits-top`'s over-command step lowers the limits to 1 A and commands 245 × 10⁶. On three wheel-directions
+the wheel fell to **2–4 % of command** (`h_pct` 2–4, the field walked down to 6–19 × 10⁶), with no fault. The
+fold-back limits estimated *phase* current, which rises as duty falls, so once it bites it keeps biting. That is
+the nearest a lifted rig has come to "commanded and standing still". The BLOCKED step's 1 A limit at power 50 never
+crosses, because a lifted wheel there draws about 0.14 A. The same limit under an over-command does cross. Whether it
+reaches a true stall, and so the protective stop, is untried.
+
 ---
 
 ### PL-107 -- the speed ceilings predate the R18.4 drive, and the feedforward's scale is the same number
@@ -5342,6 +5350,12 @@ at 235 × 10⁶ on the raised duty ceiling: `rate/pred 81.8`, `win_lag,23`, `err
 at 150 mV/A), one sample, no fault and no abort (`debug_260922-185255.log`). The same wheel slipped at 245 on the old
 ceiling with a small peak. It happens only where duty is pinned and the rotor follows by field weakening, which is
 above every published ceiling after «#3605». A user reaches it only by commanding a raw increment.
+
+**Repeated and sustained, 2026-09-23 (Visit 9b, §2, G-4).** The same wheel-direction slipped stepping from 235 to 245
+× 10⁶: `tr_err_pk,113`, 9 lag holds, `tr_i_pk,3_495` mV (~23 A), and at least 10 A for the 4 consecutive samples the
+harness's abort needs, which stopped it (`BM-ABORT,...,ABS_CURRENT,value,3_599`). No fault. That makes three runs
+of three. **True size:** about 23 A for about 8 ms on a bridge whose peak rating is 40 A, stopped by the harness. It
+happens only on raw increments above 225 × 10⁶, and the API's own ceiling is now 165 × 10⁶.
 
 **What would make it actionable:** a load whose command can exceed the ceiling (a steering scale-up, or a user
 increment) and a trace captured through a slip. The harness's LIMTOP climb stops at the first slip. **Cost if left:**
