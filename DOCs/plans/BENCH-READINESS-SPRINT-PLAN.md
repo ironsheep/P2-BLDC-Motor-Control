@@ -2795,6 +2795,12 @@ don't have to wait"* (doctrine overlay P12). So every mechanism below is **built
   - *Known limits:* the re-seed takes its direction from the command's sign, so a fault during a ramp to zero may
     seed the wrong half-table and fault again, falling to the blunt response. BR_BRAKE regenerates into the supply,
     so the bench's pack must be able to absorb it.
+  - *Corrected at DRIVER_REV 12:* the re-synced stop first stayed pending only until the front cog's zero command
+    arrived (about 1 ms), so a second fault on the ramp re-synced again and the fallback was unreachable. The stop
+    now stays pending until rest. `testForceFault()` (TEST-USE) faults the driver at its fault test on demand. The
+    offset-shift provocation plugged the motor on 3 of 5 recorded trials (PL-119), and the forced fault replaces it
+    for Visit 10's fault cells.
+  - *The board cannot measure a phase short's current* (PL-118): the shunt does not carry it.
 - **Questions for him once Visit 10 has measured** (each with its measure of benefit, P5):
   1. Should FR_GRADED become the default?
   2. Should the hold's limits and the fault response become public setters rather than TEST-USE?

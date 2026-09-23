@@ -3755,6 +3755,41 @@ wheel to rest on the pass one wheel first reads `DCS_FAULTED`. **Not yet certifi
 
 **Owner:** «#3613» (certification).
 
+### PL-118 -- the board cannot measure a phase short's current: the shunt does not carry it
+
+**Found 2026-09-23** while building Visit 10's fault cells («#3613»).
+
+**MEASURED (record):** the current channel is sensed *"between common MOSFET GND and common system GND"*
+(`DOCs/analyses/BOARD-REVISION-FACTS.md` §2.3).
+
+**DERIVED:** in BR_SHORT every low side is on, and the short-circuit current circulates phase to phase through the
+low-side FETs and their common source node. It never passes from MOSFET ground to system ground, so the shunt reads
+about zero while the short brakes. Consequences:
+- the fault study's short-circuit current (tens of amps, modelled in «#3609»'s WHY) cannot be measured on this board;
+- the fold-back current limit cannot see or limit it;
+- X-2's current comparison is expected to read NOMEAS.
+
+BR_BRAKE's regenerated current, which returns through the supply, is partly visible.
+
+**Owner:** «#3609» phase 3 (the graded response is the only limiter a short has); a measurement would need the
+deferred external sensor («#3506»).
+
+### PL-119 -- the offset-shift fault provocation plugs the motor more often than it faults it
+
+**Found 2026-09-23** while building Visit 10's fault cells («#3613»).
+
+**MEASURED:** of five offset-shift provocations on file, three ended in `BM-ABORT ... reason,ABS_CURRENT` at 3,435,
+3,771 and 2,655 mV (about 23, 25 and 18 A), not in a fault:
+- `debug_260919-173537.log:2988` and `:3376` (POSTFLT);
+- `debug_260919-172908.log:8352` (OVERSHT).
+
+**DERIVED (the agent's trace reading, `debug_260919-173537.log:3041-3052`):** the error landed at -122, the lag
+limiter held it just under the 125 fault test, and the stalled rotor drew rising current.
+
+**Disposition:** Visit 10's fault cells use `testForceFault()` (DRIVER_REV 12) instead: a fault taken at the driver's
+own fault test, on demand, with no plugging. Parts B and C still use the old provocation, behind the 10 A abort.
+Moving them over is a change to certified tiers and is not made here.
+
 ---
 
 ## Removed from this list
