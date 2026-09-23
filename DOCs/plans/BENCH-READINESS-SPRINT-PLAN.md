@@ -2810,3 +2810,16 @@ don't have to wait"* (doctrine overlay P12). So every mechanism below is **built
 **What stays his.** Once Visit 10 has sized the values, each new response goes to him with its measure of benefit
 before it becomes the default (P5): the per-stratum fault response, the graded short, and the startup levels
 and their defaults. E-stop stays a hard short by his ruling.
+
+## Sprint Revision — 2026-09-23 (night): Visit 10 pass 1, and the negatives move into firmware
+
+**Cause: 3 — a premise unmeasured.** R19.7's attended negatives assumed the rig could open one motor lead and swap
+two hall wires. Neither was confirmed with Stephen, and neither is possible. STEPHEN 2026-09-23: *"I can unplug the
+full hall sensor suite from any right or left, but I cannot disconnect the motor leads. I also can't swap hole sensor
+wires."* The same pass also found the right board driving nothing (PL-120) and T0-24's hand rows ending on a clock
+(PL-121, fixed). [Evaluation](../analyses/bench/2026-09-23/VISIT-10-PASS1-EVALUATION.md).
+
+| Item | Change | Task |
+|---|---|---|
+| R19.4 negatives | B-3's negative (one open lead) becomes a firmware negative: `testSetProbeWithhold()` leaves one lead undriven in the start check. B-5's negative (swapped halls) becomes `testSetHallSwap()`, which permutes the driver's hall tables at `init()`. Both are one-shot, set before `start()`, and cost nothing in the drive loop. DRIVER_REV 13. Both target the LEFT wheel, the board shown to drive. **An open winding stays unexercised by any negative**: the rig cannot make one. | «#3614» (harness), driver built |
+| R19.7 | Visit 10 pass 2: six runs, none conditional on another's result. `t0-stopmode-fltfirst` leaves the sheet until the right bridge is shown alive. | «#3613» |

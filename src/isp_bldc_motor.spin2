@@ -838,6 +838,40 @@ PUB testForceFault() : eError
 
     eError := recordError(postRequest(REQ_FORCE_FAULT, 0, 0, 0))
 
+PUB testSetProbeWithhold(ePhase) : eError
+'' TEST USE: leave {ePhase} undriven in the next start()'s lead check, as a phase whose switch cannot drive it -- a
+'' negative control for HLT_PHASE_U/V/W that needs no rewiring (task 3613: the rig cannot open a motor lead)
+''
+'' Call before start(); it applies to that one start, and the check clears it. The withheld phase reads the coasting floor
+'' where its driven reading belongs, so exactly its own HLT_PHASE_* bit fails, and nothing moves. An open winding fails
+'' the follow test instead, and this cannot make one.
+''
+'' @param ePhase - PRB_U, PRB_V or PRB_W to withhold; PRB_NONE clears it
+'' @returns eError - NO_ERROR, or ERR_BAD_COUNT for a value out of range, also recorded for getError()
+
+    if (ePhase < PRB_NONE) or (ePhase > PRB_W)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        testProbeWithhold := ePhase
+        eError := recordError(NO_ERROR)
+
+PUB testSetHallSwap(eSwap) : eError
+'' TEST USE: have the driver read two hall inputs as swapped from the next start(), as a mis-wired hall pair would -- a
+'' negative control for checkWiring() that needs no rewiring (task 3613: the rig cannot swap hall wires)
+''
+'' Call before start(); it applies to that one start, and init() clears it. init() permutes its copy of the hall tables,
+'' so the driver commutes and counts position exactly as it would with those two wires swapped: a drive may jerk or
+'' stall. The drive loop does no extra work.
+''
+'' @param eSwap - HSW_HALLS_01, HSW_HALLS_12 or HSW_HALLS_02: the two hall-code bits read as swapped; HSW_NONE clears it
+'' @returns eError - NO_ERROR, or ERR_BAD_COUNT for a value out of range, also recorded for getError()
+
+    if (eSwap < HSW_NONE) or (eSwap > HSW_HALLS_02)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        testHallSwap := eSwap
+        eError := recordError(NO_ERROR)
+
 PUB testGetFaultResponse() : eMode, nBrakeY, nResyncEvents
 '' TEST USE: the fault response in effect, and how many faults it has re-synced since start (R19.3)
 ''
@@ -1036,7 +1070,7 @@ PUB runStartChecks() | ePhase, eOther, nSample, nPhaseMv[3], nFollows[3], bDrive
     longfill(@nFollows, 0, 3)
     longfill(@bDriven, FALSE, 3)
     repeat ePhase from PRB_U to PRB_W
-        probe_phase := ePhase                                                   ' the driver's restBridge takes BR_PROBE on its next pass
+        probe_phase := (ePhase == testProbeWithhold) ? PRB_NONE : ePhase        ' the driver's restBridge takes BR_PROBE on its next pass; a withheld phase stays undriven
         waitms(PROBE_SETTLE_MS)
         longfill(@nPhaseMv, 0, 3)
         repeat nSample from 1 to PROBE_SAMPLES
@@ -1052,6 +1086,7 @@ PUB runStartChecks() | ePhase, eOther, nSample, nPhaseMv[3], nFollows[3], bDrive
             if (eOther <> ePhase - PRB_U) and (nPhaseMv[eOther] * 100 >= nPhaseMv[ePhase - PRB_U] * CONT_FOLLOW_PCT) and (bDriven[ePhase - PRB_U] == TRUE)
                 nFollows[eOther]++
     probe_phase := PRB_NONE                                                     ' restBridge restores the stop mode's bridge
+    testProbeWithhold := PRB_NONE                                               ' TEST USE: a withheld phase applies to one start only
     waitms(PROBE_SETTLE_MS)
     repeat eOther from 0 to 2
         if (nFollows[eOther] == 0) or (bDriven[eOther] == FALSE)
@@ -2721,6 +2756,48 @@ PRI launchFront(bReleaseDriver) : eError | frontCogId, startMs
         else
             debug[user.DBGCH_LIFECYCLE]("* Front COG #", sdec_(frontCogId))
 
+PRI swapHallTables(eSwap) | bitA, bitB, oldCode, newCode, angles[16], deltaBytes[16]
+' TEST USE (testSetHallSwap()): permute init()'s copy of the hall tables for two hall-code bits read as swapped. With the
+' wires swapped the driver would read P(code), P swapping the two bits, and index its tables with that. So each code's
+' entry becomes the entry the swapped reading would have indexed: angle'[c] = angle[P(c)], and
+' delta'[old<<3 | new] = delta[P(old)<<3 | P(new)]. Both halves of the angle table (forward, reverse) are permuted.
+'
+' @param eSwap - HSW_HALLS_01, HSW_HALLS_12 or HSW_HALLS_02
+'
+' @local bitA - the first swapped hall-code bit
+' @local bitB - the second swapped hall-code bit
+' @local oldCode - the previous hall code, 0..7
+' @local newCode - the current hall code, 0..7
+' @local angles - the unpermuted angle table, 16 longs
+' @local deltaBytes - the unpermuted delta table, 64 bytes
+
+    case eSwap
+        HSW_HALLS_01:
+            bitA, bitB := 0, 1
+        HSW_HALLS_12:
+            bitA, bitB := 1, 2
+        other:
+            bitA, bitB := 0, 2
+    longmove(@angles, @hall_angles, 16)
+    bytemove(@deltaBytes, @deltas, 64)
+    repeat oldCode from 0 to 7
+        LONG[@hall_angles][oldCode] := angles[hallBitsSwapped(oldCode, bitA, bitB)]
+        LONG[@hall_angles][8 + oldCode] := angles[8 + hallBitsSwapped(oldCode, bitA, bitB)]
+        repeat newCode from 0 to 7
+            BYTE[@deltas][(oldCode << 3) | newCode] := BYTE[@deltaBytes][(hallBitsSwapped(oldCode, bitA, bitB) << 3) | hallBitsSwapped(newCode, bitA, bitB)]
+
+PRI hallBitsSwapped(hallCode, bitA, bitB) : swappedCode
+' TEST USE: {hallCode} with bits {bitA} and {bitB} exchanged
+'
+' @param hallCode - a 3-bit hall code
+' @param bitA - one bit position, 0..2
+' @param bitB - the other bit position, 0..2
+' @returns swappedCode - the code with those two bits exchanged
+
+    swappedCode := hallCode & !(DECOD bitA | DECOD bitB)
+    swappedCode |= ((hallCode >> bitA) & 1) << bitB
+    swappedCode |= ((hallCode >> bitB) & 1) << bitA
+
 PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs, dutyAtFfLine
 ' Initialise this instance's driver image and state for a validated, claimed start; cannot fail.
 '
@@ -2777,6 +2854,9 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     else
         longmove(@hall_angles, @hltbAngl4k, 16)
         bytemove(@deltas, @deltas4k, 64)
+    if testHallSwap <> HSW_NONE                                                 ' TEST USE: read two halls as swapped, this start only
+        swapHallTables(testHallSwap)
+        testHallSwap := HSW_NONE
 
 ' average is middle plus deflection for forward or reverse
 '  responsiveness of motor to desire
@@ -4609,6 +4689,9 @@ CON { driver internal Constants }
     ' R19.4: which phase the continuity probe drives (probe_phase)
     #0, PRB_NONE, PRB_U, PRB_V, PRB_W
 
+    ' TEST USE (task 3613): which two hall-code bits testSetHallSwap() makes the driver read as swapped
+    #0, HSW_NONE, HSW_HALLS_01, HSW_HALLS_12, HSW_HALLS_02
+
     ' R19.3 (task 3609): the response to a position fault (|err| >= 125 while driven), testSetFaultResponse()
     '  FR_SHIPPED - the bridge takes the stop mode's fault state at once: SM_FLOAT coasts, SM_BRAKE shorts
     '  FR_GRADED  - with the halls legal, the first fault re-seeds the field from the halls and ramps to a
@@ -4651,7 +4734,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 12        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 13        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4662,6 +4745,7 @@ CON { driver internal Constants }
                                             ' 10: start-time checks (BR_PROBE lead check, halls, sense zero), getHealth(), checkWiring() (task 3610)
                                             ' 11: the optional pack voltage sensor, getPackVoltage() (task 3611)
                                             ' 12: a re-synced stop stays pending until rest, so a second fault takes the fallback; testForceFault()
+                                            ' 13: test-only negatives for the start checks: testSetProbeWithhold(), testSetHallSwap() (task 3613)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4907,6 +4991,8 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    probeMv[9]                  ' R19.4: per probed phase U, V, W: the U, V and W readings, mV (TEST-USE)
     LONG    walkFwdTicks                ' R19.4: checkWiring()'s first leg, raw hall ticks (TEST-USE)
     LONG    walkRevTicks                ' R19.4: checkWiring()'s second leg, raw hall ticks (TEST-USE)
+    LONG    testProbeWithhold           ' TEST-USE: PRB_* the next runStartChecks() leaves undriven; PRB_NONE once it has run
+    LONG    testHallSwap                ' TEST-USE: HSW_* the next init() applies to the hall tables; HSW_NONE once applied
     LONG    bPackOwned                  ' R19.5: T/F where T means this instance reads the pack sensor (startPackSense())
     LONG    packGioRaw                  ' R19.5: the pin's GIO reading, taken at start
     LONG    packVioRaw                  ' R19.5: the pin's VIO reading, taken at start

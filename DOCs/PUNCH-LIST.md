@@ -3733,6 +3733,13 @@ bears on PL-106.
 
 **Owner:** «#3607» (the discriminator); a driver change, if (a), is a new task.
 
+**2026-09-23 -- a third reading, (c), which now leads: the right bridge was not driving at all (PL-120).** Visit 10's
+start checks read no phase voltage from the right board on fresh starts, with no e-stop anywhere. The last right motion
+on file is 2026-09-22 19:30, before these rows ran at 23:38. A bridge that drives nothing also produces "commanded, no
+position change", which is exactly `ERR_PLATFORM_BLOCKED`. **The discriminator run is withdrawn** until the right bridge
+is shown alive. If rows 6 and 7 of a T0-24 run then still block, the order-swapped build runs unconditionally at the
+next visit.
+
 **The limit is a floor, not a measurement of the edge.** 12,404 ran and 15,619 did not; the register's own
 measurements put the edge in (13,332, 15,347]. Raise `DEBUG_FOOTPRINT_MAX` only on a larger build shown, on the
 wire, to deliver its last record.
@@ -3789,6 +3796,36 @@ limiter held it just under the 125 fault test, and the stalled rotor drew rising
 **Disposition:** Visit 10's fault cells use `testForceFault()` (DRIVER_REV 12) instead: a fault taken at the driver's
 own fault test, on demand, with no plugging. Parts B and C still use the old provocation, behind the 10 A abort.
 Moving them over is a change to certified tiers and is not made here.
+
+### PL-120 -- the right board's bridge puts no voltage on any phase
+
+**Found 2026-09-23** at Visit 10 pass 1 ([evaluation](analyses/bench/2026-09-23/VISIT-10-PASS1-EVALUATION.md) §3.1).
+Open. **Rig evidence; waiting on Stephen's confirm answer.**
+
+**MEASURED:**
+- In `debug_260923-160440.log`, every right-wheel phase probe over 10 starts reads 11–27 mV driven, below its own
+  56–62 mV coasting floor. The left wheel reads 782–823 mV with the same binary.
+- `r_fail,$001C` (all three phases) at every start, while the halls are legal and the board detects as REV_B.
+- `debug_260923-160300.log` `BM-PREFLT ... RIGHT ... ticks,0,moved,FALSE`.
+- The last right motion on file is `debug_260922-193000.log` `BM-PREFLT ... RIGHT ... ticks,19,moved,TRUE`.
+
+**DERIVED:** the diff `3403024..HEAD` contains no change that acts on one pin base only. The pack pin is P48, outside both motor
+groups (P16–P31, P32–P47).
+
+**Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
+
+### PL-121 -- T0-24's hand rows ended on a clock that started at START
+
+**Found 2026-09-23** at Visit 10 pass 1 (Stephen: *"I press start, and it automatically completes, and I haven't done
+anything yet"*). **Fixed the same day.**
+
+**MEASURED:** in `debug_260923-160616.log`, rows 1 and 2 ended after 146 and 217 samples (about 2 s and 3 s, their
+`T0_24_HOLD_*_WATCH_MS`), each `displaced,FALSE,aborted,FALSE`. The coast rows' 400 ms rest test counted from START
+too, so a wheel not yet spun read as at rest.
+
+**Fix:** `test_bench_t0.spin2` SRC_REV 12. A hold row's bound runs from the first displacement, and a coast row can
+end at rest only after its first hall tick. Otherwise only DONE, ABORT or the 120 s cap ends a row. It is certified
+at the next T0-24 run.
 
 ---
 

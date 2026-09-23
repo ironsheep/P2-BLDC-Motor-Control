@@ -99,6 +99,12 @@
 ''               SIGNOFF-DECL lines now go through emitCellBool(), emitCellDecl() and the new emitCellNum()
 ''               from hub strings (DBG-2). Footprints: t0 16,004 -> 10,511, t0-hand 15,674 -> 7,592,
 ''               t0-stopmode 16,611 -> 8,529 bytes. No record's text changes.
+''               23 Sep 2026 -- task 3613, SRC_REV 12: a hand row waits for the hand. At Visit 10 every hand
+''               row ended before Stephen touched the wheel. A hold row's watch bound ran from START, so
+''               rows 1 and 2 ended 2 s and 3 s after START. A coast row's 400 ms rest test counted from
+''               START, so a wheel not yet spun read as at rest. Now a hold row's bound runs from the
+''               first displacement, and a coast row can end at rest only after its first hall tick.
+''               Before that, only DONE, ABORT or the 120 s T0_24_HAND_CAP_MS ends a row.
 ''
 '' =================================================================================================
 
@@ -203,7 +209,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 11                                             ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 12                                             ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -2817,12 +2823,12 @@ PRI t0sProbe(rowIdx, seqNum, actionIdx) : handTicks, afterTicks, afterMs, halfMs
             ' says what's happening now even though the release itself isn't known until the row
             ' ends. Running ticks and elapsed ms; the verdict numbers (hand/after/half) are computed
             ' below, once.
-            if (nowMs - lastAnyMs) >= (T0_24_REST_QUIET_MS / 2)
+            if (totalTicks > 0) and ((nowMs - lastAnyMs) >= (T0_24_REST_QUIET_MS / 2))
                 t0sDrawPanel(rowIdx, T0_24_ACT_COASTING, seqNum, totalTicks, 0, nowMs - startMs)
             else
                 t0sDrawPanel(rowIdx, actionIdx, seqNum, totalTicks, 0, nowMs - startMs)
-        if (nowMs - lastAnyMs) >= T0_24_REST_QUIET_MS
-            bEnded := TRUE                                    ' normal end: at rest -- DONE/ABORT only end it EARLY
+        if (totalTicks > 0) and ((nowMs - lastAnyMs) >= T0_24_REST_QUIET_MS)
+            bEnded := TRUE                                    ' normal end: at rest after he spun it -- DONE/ABORT only end it EARLY
         elseif (nowMs - startMs) >= T0_24_HAND_CAP_MS
             bEnded := TRUE                                    ' safety bound on the whole row
         waitms(T0_24_POLL_MS)
@@ -2909,7 +2915,7 @@ PRI t0sHoldWatch(rowIdx, seqNum, actionIdx, watchBoundMs) : bDisplaced, dispFirs
 ' @param rowIdx - passed straight to the log and the panel
 ' @param seqNum - passed straight to the log and the panel
 ' @param actionIdx - passed straight to the panel
-' @param watchBoundMs - hard bound on the whole row
+' @param watchBoundMs - bound on the row, counted from his first displacement of the wheel
 ' @returns bDisplaced - TRUE once he actually pushed the wheel off the hold position
 ' @returns dispFirstMs - as t0sRunHoldRow() documents
 ' @returns ceilFirstMs - as t0sRunHoldRow() documents
@@ -2990,8 +2996,10 @@ PRI t0sHoldWatch(rowIdx, seqNum, actionIdx, watchBoundMs) : bDisplaced, dispFirs
         printIdx += 1
         if (printIdx +// T0_24_HOLD_PRINT_SAMPLES) == 0
             t0sDrawPanel(rowIdx, actionIdx, seqNum, (duty #> 0) <# 9999, (eState #> 0) <# 9999, elapsedMs <# 99999)
-        if elapsedMs >= watchBoundMs
-            bEnded := TRUE
+        if bDisplaced and ((elapsedMs - dispFirstMs) >= watchBoundMs)
+            bEnded := TRUE                                        ' the watch runs from his first push, never from START
+        elseif elapsedMs >= T0_24_HAND_CAP_MS
+            bEnded := TRUE                                        ' nobody pushed: the row ends undisplaced
         waitms(T0_24_HOLD_LOG_MS)
 
 PRI t0sLogHold(rowIdx, posTicks, holdDisp, holdDuty, drvState, senseI)

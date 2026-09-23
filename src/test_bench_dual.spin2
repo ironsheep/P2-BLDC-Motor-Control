@@ -261,6 +261,17 @@
 ''               BM-SPINBUILD, BM-SPINPRE, BM-SPINLEG, BM-SPIN, BM-SPINW, BM-SPINSTART, BM-CRPBUILD, BM-CREEP, BM-CREEPW;
 ''               new cause SPIN, prompts SPIN and CREEP, operator events LETGO and CAUGHT, and four why tokens. Every
 ''               other part's records are unchanged; tokButton gains DONE at index 3, which BM-UISTEP prints by name
+''               23 Sep 2026 -- SRC_REV=37, FMT 23: task 3614 (Visit 10 pass 2). The START part's negatives are made in
+''               FIRMWARE, not by rewiring: the rig can unplug a wheel's hall connector but not a motor lead, and cannot
+''               swap two hall wires (STEPHEN 2026-09-23). Both target the LEFT wheel, the board known to drive; the RIGHT
+''               is the in-run control. -D START_NEG_PHASE (tier dual-start-phaseneg, no walk, as START_NO_WALK) withholds
+''               one LEFT phase from every start's lead check (testLeftSetProbeWithhold()), U V W in turn, and the new cell
+''               R19-DUAL-PHNEG-X counts the starts whose LEFT failed mask is not EXACTLY that phase's HLT_PHASE_* bit (a
+''               dead bridge fails all three, so "some bit failed" could not tell one lead from the bridge). -D
+''               START_NEG_SWAP (tier dual-start-swapneg) reads the LEFT wheel's hall bits 0 and 1 as swapped on every
+''               walk lifetime (testLeftSetHallSwap(HSW_HALLS_01)), and the new cell R19-DUAL-SWNEG-X counts the walks in
+''               which its HLT_WIRING was not judged failed. New record BM-SKNEG, printed before each armed start's
+''               BM-SSTART; BM-SKBUILD appends neg (NONE / PHASE / SWAP) in every START build. No other record changes
 ''
 '' =================================================================================================
 
@@ -292,7 +303,8 @@
 
       tools/bench-run.sh dual-a | dual-clock-200 | dual-clock-270 | dual-clock-300 | dual-b | dual-brake
                          | dual-c | dual-d | dual-floor | dual-ui | dual-align | dual-lead | dual-limits
-                         | dual-limits-top | dual-fault | dual-start | dual-start-nowalk | dual-spin
+                         | dual-limits-top | dual-fault | dual-start | dual-start-nowalk
+                         | dual-start-phaseneg | dual-start-swapneg | dual-spin
 
   (the clock is part of the tier name, so a mistyped clock is an unknown tier and is refused -- PL-62)
 
@@ -326,8 +338,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 36                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 22                                        ' BM- record-format version
+    SRC_REV     = 37                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 23                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -368,7 +380,8 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '               LIMITS_TOP_ONLY build runs PREFLT and LIMTOP only
   '  PART_FAULTRESP - PREFLT, FLTRESP, FLTPLAT (the fault study's X-cells, faults forced at speed; task 3613)
   '  PART_START - SKCHECK (the startup study's B-cells through the steering object, no PREFLT; task 3613); the
-  '               START_NO_WALK build never calls checkWiring()
+  '               START_NO_WALK and START_NEG_PHASE builds never call checkWiring(); START_NEG_PHASE and START_NEG_SWAP
+  '               arm a firmware negative on the LEFT wheel (task 3614)
   '  PART_SPIN  - SPIN, CREEP (attended, wheels down, tethered: the loaded spin-in-place floor tier and the hold's
   '               creep on an incline; no PREFLT, whose single-wheel nudge would pivot a platform on the floor; task 3591)
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
@@ -471,12 +484,34 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 #endif
 
   ' Task 3613: -D START_NO_WALK builds the START part without checkWiring() (tier dual-start-nowalk), for the attended
-  '  loads that unplug a hall connector (B-1) or a motor lead (B-3's negative): nothing in that build commands a
-  '  wheel, so a mis-wired wheel is only read, never driven. R19-DUAL-WALK-X prints NOT_BUILT there.
+  '  load that unplugs a hall connector (B-1): nothing in that build commands a wheel, so a mis-wired wheel is only
+  '  read, never driven. R19-DUAL-WALK-X prints NOT_BUILT there. Task 3614: the START_NEG_PHASE build walks no more
+  '  than it does -- its negative is read at start, and a lead withheld from the check is no reason to drive.
 #ifdef START_NO_WALK
     BUILD_NO_WALK = TRUE
 #else
+#ifdef START_NEG_PHASE
+    BUILD_NO_WALK = TRUE
+#else
     BUILD_NO_WALK = FALSE
+#endif
+#endif
+
+  ' Task 3614: the START part's firmware negative, one per build, always on the LEFT wheel (the RIGHT is the control):
+  '  SKNEG_NONE  - no negative (dual-start, dual-start-nowalk)
+  '  SKNEG_PHASE - -D START_NEG_PHASE (dual-start-phaseneg): every start's lead check withholds one LEFT phase
+  '  SKNEG_SWAP  - -D START_NEG_SWAP (dual-start-swapneg): every walk lifetime's start reads LEFT halls 0 and 1 swapped
+  '  PHASE is taken when both flags are given.
+    #0, SKNEG_NONE, SKNEG_PHASE, SKNEG_SWAP
+    SKNEG_COUNT = SKNEG_SWAP + 1
+#ifdef START_NEG_PHASE
+    BUILD_NEG = SKNEG_PHASE
+#else
+#ifdef START_NEG_SWAP
+    BUILD_NEG = SKNEG_SWAP
+#else
+    BUILD_NEG = SKNEG_NONE
+#endif
 #endif
 
 
@@ -2077,6 +2112,11 @@ sSfCritSkProbe  BYTE    "PROBES_FAILED", 0
 sSfCritSkWalk   BYTE    "WALKS_FAILED", 0
 sSfCritSkPack   BYTE    "PACK_SEEN_FITTED", 0
 sSfStudyB5      BYTE    "B-5", 0
+' task 3614: the START part's firmware negatives, each declared only in its own build (LEFT only)
+sSfCellSkPhNeg  BYTE    "R19-DUAL-PHNEG-X", 0
+sSfCellSkSwNeg  BYTE    "R19-DUAL-SWNEG-X", 0
+sSfCritSkPhNeg  BYTE    "PHASE_NOT_EXACT", 0
+sSfCritSkSwNeg  BYTE    "SWAP_UNDETECTED", 0
 ' task 3591 (R18.2c tail, R19.8): the SPIN part's cells (suffix P) -- the harness's own five, then the spin legs' (the
 '  travel limit, the pair applied, the direction, A-3, A-4, A-1, A-2, A-8, the offsets and their control, X-5 under
 '  load), then the incline's (the two controls before the hold they validate)
@@ -10309,10 +10349,21 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
   '  request bounds -- about 2.4 s at worst, under WD_STALL_MS. The absolute current abort is not polled while it
   '  blocks; the walk's peak sense_i is printed from the ring (at WALK_POWER 10 it is small).
   '
-  ' NO PREFLT. The attended negatives load this same part with a wheel mis-wired on purpose -- B-1 its hall connector
-  '  unplugged, B-3 a motor lead unplugged (both the START_NO_WALK build), B-5 two hall wires swapped -- and a preflight
-  '  would drive that wheel before a single start was read, or end the run at NO_MOTION before the cells. The walk is
-  '  this part's motion proof.
+  ' NO PREFLT. B-1's attended negative loads this same part (the START_NO_WALK build) with a wheel's hall connector
+  '  unplugged, and a preflight would drive that wheel before a single start was read, or end the run at NO_MOTION
+  '  before the cells. The walk is this part's motion proof. B-3's and B-5's negatives need no rewiring (task 3614):
+  '  the rig cannot open a motor lead or swap two hall wires, so the firmware makes both, below.
+  '
+  ' THE FIRMWARE NEGATIVES (task 3614), each its own build and each on the LEFT wheel, the board known to drive; the
+  '  RIGHT runs unarmed beside it as the in-run control. Each hook is one-shot: set on the steering object before
+  '  bSteerStart(), consumed by that start. Every armed start prints BM-SKNEG before its BM-SSTART.
+  '   - START_NEG_PHASE (B-3's negative, no walk): every lifetime withholds one LEFT phase from the lead check
+  '     (testLeftSetProbeWithhold()), U V W in turn by lifetime. R19-DUAL-PHNEG-X counts the starts whose LEFT failed
+  '     mask is not EXACTLY that phase's HLT_PHASE_* bit: a wheel whose bridge drives nothing fails all three bits
+  '     ($001C, debug_260923-160440.log), so a cell satisfied by any failed bit could not tell one lead from a bridge.
+  '   - START_NEG_SWAP (B-5's negative, the walk build): every walk lifetime reads LEFT hall bits 0 and 1 swapped
+  '     (testLeftSetHallSwap(HSW_HALLS_01)). R19-DUAL-SWNEG-X counts the walks in which the LEFT HLT_WIRING was not
+  '     judged failed: a pass, and equally a walk that never judged it, leaves the swap undetected.
     SK_LIVES              = 10                              ' steering lifetimes, each one start (B-2: "several starts")
     SK_WALKS              = 3                               ' the last this many lifetimes also walk (B-5)
     SK_PHASES             = 3
@@ -10332,10 +10383,19 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
     SK_BAD_HI             = 0
     PACK_TOK_COUNT        = wheelL.PACK_PRESENT + 1         ' tokPack is indexed by the library's PACK_*
     TOKMAX_PACK           = 10
+    ' task 3614: the firmware negatives' names (the motor object's own enums, reached as wheelL.<CONST>)
+    SKNEG_SWAP_SEL        = wheelL.HSW_HALLS_01             ' the one hall pair START_NEG_SWAP reads as swapped
+    PRB_TOK_COUNT         = wheelL.PRB_W + 1                ' tokPrbPhase is indexed by the library's PRB_*
+    HSW_TOK_COUNT         = wheelL.HSW_HALLS_02 + 1         ' tokHallSwap by its HSW_*
+    TOKMAX_SKNEG_KIND     = 5
+    TOKMAX_SKNEG_WHICH    = 8
 
 DAT ' ---- START tables ----
 
 tokPack         BYTE    "NOT_FITTED", 0, "ABSENT", 0, "PRESENT", 0
+tokSkNegKind    BYTE    "NONE", 0, "PHASE", 0, "SWAP", 0                                ' indexed by SKNEG_*
+tokPrbPhase     BYTE    "NONE", 0, "U", 0, "V", 0, "W", 0                               ' by PRB_*
+tokHallSwap     BYTE    "NONE", 0, "HALLS_01", 0, "HALLS_12", 0, "HALLS_02", 0          ' by HSW_*
 
 VAR { START state -- cog 0 only }
 
@@ -10355,12 +10415,16 @@ VAR { START state -- cog 0 only }
     LONG    skZeroN[INST_MOTORS]                            ' its samples
     LONG    skFloor[INST_MOTORS * SK_PHASES]                ' each phase's largest |reading| over it, mV
     LONG    skZeroWhy                                       ' the first cause of a missing window
+    LONG    bSkNegArmed                                     ' task 3614: this lifetime's start carried the build's negative
+    LONG    skNegSel                                        ' ...its PRB_* (PHASE) or HSW_* (SWAP) selection
+    LONG    skNegErr                                        ' ...the hook's return
     ' one walk (skWalk())
     LONG    bSkWalkRan                                      ' checkWiring() was called
     LONG    skWalkErr                                       ' its return
     LONG    skWalkMs                                        ' how long it blocked
     LONG    bSkLegsValid                                    ' the legs were rebuilt from the ring
     LONG    bSkWalkHlt[INST_MOTORS]                         ' HLT_WIRING checked and not failed
+    LONG    bSkWalkHltFail[INST_MOTORS]                     ' HLT_WIRING checked and failed (task 3614: the swap caught)
     LONG    skLegFwd[INST_MOTORS]                           ' the leg out, raw hall ticks
     LONG    skLegRev[INST_MOTORS]                           ' the leg back
     LONG    skWalkIg[INST_MOTORS]                           ' missed + illegal hall events across the walk
@@ -10386,6 +10450,10 @@ VAR { START state -- cog 0 only }
     LONG    sfSkWalkBad[INST_MOTORS]                        ' ...whose pre-registered reading did not hold
     LONG    sfSkPackN                                       ' PACK: starts read
     LONG    sfSkPackBad                                     ' ...that did not read PACK_NOT_FITTED, 0 mV and no HLT_PACK
+    LONG    sfSkPhNegN                                      ' PHNEG (task 3614): armed starts read, LEFT
+    LONG    sfSkPhNegBad                                    ' ...whose failed mask was not exactly the withheld phase's bit
+    LONG    sfSkSwNegN                                      ' SWNEG (task 3614): armed walks run, LEFT
+    LONG    sfSkSwNegBad                                    ' ...whose HLT_WIRING was not judged failed
 
 PRI skResetCells() | slotIdx
 ' Clear the START part's cell accumulators (initRunState()): every count 0, every least POSX and greatest NEGX, so a
@@ -10411,6 +10479,10 @@ PRI skResetCells() | slotIdx
         sfSkWalkBad[slotIdx] := 0
     sfSkPackN := 0
     sfSkPackBad := 0
+    sfSkPhNegN := 0
+    sfSkPhNegBad := 0
+    sfSkSwNegN := 0
+    sfSkSwNegBad := 0
 
 PRI segStartChecks() | lifeIdx, slotIdx
 ' SKCHECK (part START, task 3613): SK_LIVES steering lifetimes, each one start with its reads and its floated window
@@ -10423,7 +10495,7 @@ PRI segStartChecks() | lifeIdx, slotIdx
     segBegin(SEG_SKCHECK)
     repeat lifeIdx from 0 to SK_LIVES - 1
         beat(CP_LOOP_POLL)
-        skLifetime(bSkWalkLife(lifeIdx))
+        skLifetime(lifeIdx, bSkWalkLife(lifeIdx))
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         emitSkSum(slotIdx)
     segEnd(segWhy())
@@ -10436,11 +10508,13 @@ PRI bSkWalkLife(lifeIdx) : bWalk
 
     bWalk := (BUILD_NO_WALK == FALSE) and (lifeIdx >= (SK_LIVES - SK_WALKS))
 
-PRI skLifetime(bWalk) | whyCode, slotIdx, lifeBefore
-' One steering lifetime: start (bSteerStart(), BM-SSTART); read what start() judged (skReadHealth()) before anything
-' else; the floated window (skZeroWindow()); fold; BM-SKHEALTH and a BM-SKPROBE per wheel; on a walk lifetime the
-' walk, BM-SKWALK and the recovery of any fault it caused; stop.
+PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
+' One steering lifetime: arm the build's negative, if any (skArmNeg(), BM-SKNEG); start (bSteerStart(), BM-SSTART);
+' read what start() judged (skReadHealth()) before anything else; the floated window (skZeroWindow()); fold;
+' BM-SKHEALTH and a BM-SKPROBE per wheel; on a walk lifetime the walk, BM-SKWALK and the recovery of any fault it
+' caused; stop.
 '
+' @param lifeIdx - 0..SK_LIVES-1
 ' @param bWalk - TRUE when this lifetime also walks
 '
 ' @local whyCode - why nothing was read, WHY_NONE when the start was read
@@ -10452,20 +10526,24 @@ PRI skLifetime(bWalk) | whyCode, slotIdx, lifeBefore
     lifeBefore := lifeSeq
     if bRunContinue(SEG_SKCHECK) == FALSE
         whyCode := WHY_ABORTED
-    elseif bSteerStart(SEG_SKCHECK) == FALSE
-        whyCode := WHY_NO_COG
     else
-        skReadHealth()                                      ' first: exactly what start() left
-        skZeroWindow()
+        skArmNeg(lifeIdx, bWalk)                            ' task 3614: before the start that consumes it
+        if bSteerStart(SEG_SKCHECK) == FALSE
+            whyCode := WHY_NO_COG
+        else
+            skReadHealth()                                  ' first: exactly what start() left
+            skZeroWindow()
     if lifeSeq <> lifeBefore
         skLife := steerLife
     skFoldStart()
+    skFoldPhaseNeg()
     emitSkHealth(bWalk, whyCode)
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         emitSkProbe(slotIdx, whyCode)
     if bWalk and (whyCode == WHY_NONE)
         skWalk()
         skFoldWalk()
+        skFoldSwapNeg()
         emitSkWalk()
         if bSteerUp
             steerRecoverFault(0)                            ' a walk that faulted a wheel: recovered, counted, cooled
@@ -10483,6 +10561,9 @@ PRI skStagingReset() | arrIdx
     skPack := wheelL.PACK_NOT_FITTED
     skPackMv := 0
     skZeroWhy := WHY_NONE
+    bSkNegArmed := FALSE
+    skNegSel := 0
+    skNegErr := NO_ERROR
     repeat arrIdx from 0 to (INST_MOTORS * SK_PROBE_LONGS) - 1
         skProbe[arrIdx] := 0
     repeat arrIdx from 0 to (INST_MOTORS * SK_PHASES) - 1
@@ -10497,6 +10578,7 @@ PRI skStagingReset() | arrIdx
         skZeroX10[arrIdx] := 0
         skZeroN[arrIdx] := 0
         bSkWalkHlt[arrIdx] := FALSE
+        bSkWalkHltFail[arrIdx] := FALSE
         skLegFwd[arrIdx] := 0
         skLegRev[arrIdx] := 0
         skWalkIg[arrIdx] := 0
@@ -10689,6 +10771,7 @@ PRI skWalk() | slotIdx, startMs, safeEvent, bFrozen, igBefore[INST_MOTORS], chkN
         skWalkIg[SLOT_RIGHT] := (missedRight + illegalRight) - igBefore[SLOT_RIGHT]
         repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
             bSkWalkHlt[slotIdx] := ((chkNow[slotIdx] & wheelL.HLT_WIRING) <> 0) and ((failNow[slotIdx] & wheelL.HLT_WIRING) == 0)
+            bSkWalkHltFail[slotIdx] := ((chkNow[slotIdx] & wheelL.HLT_WIRING) <> 0) and ((failNow[slotIdx] & wheelL.HLT_WIRING) <> 0)
         if bFrozen
             drainBegin()
             drainFindMark()
@@ -10757,6 +10840,74 @@ PRI skFoldWalk() | slotIdx
             if bSkWalkOk[slotIdx] == FALSE
                 sfSkWalkBad[slotIdx] := (sfSkWalkBad[slotIdx] + 1) <# LIM_SMALL
 
+PRI skArmNeg(lifeIdx, bWalk)
+' Task 3614: arm this build's firmware negative on the LEFT wheel before the start that consumes it, and print what was
+' armed (BM-SKNEG). PHASE: every lifetime withholds one lead-check phase, PRB_U, PRB_V, PRB_W in turn by lifetime.
+' SWAP: every walk lifetime reads hall bits 0 and 1 swapped. The positive builds arm nothing and print nothing. A hook
+' that refuses is still counted as armed: its start then shows no negative, and the negative's cell fails.
+'
+' @param lifeIdx - 0..SK_LIVES-1
+' @param bWalk - TRUE when this lifetime also walks
+
+    if BUILD_NEG == SKNEG_PHASE
+        skNegSel := wheelL.PRB_U + (lifeIdx // SK_PHASES)
+        beat(CP_LIB_STEER_START)
+        skNegErr := steering.testLeftSetProbeWithhold(skNegSel)
+        beat(CP_LIB_STEER_START)
+        bSkNegArmed := TRUE
+    elseif (BUILD_NEG == SKNEG_SWAP) and bWalk
+        skNegSel := SKNEG_SWAP_SEL
+        beat(CP_LIB_STEER_START)
+        skNegErr := steering.testLeftSetHallSwap(skNegSel)
+        beat(CP_LIB_STEER_START)
+        bSkNegArmed := TRUE
+    if bSkNegArmed
+        emitSkNeg(lifeIdx)
+
+PRI skFoldPhaseNeg() | wantMask
+' Fold one armed start into R19-DUAL-PHNEG-X (START_NEG_PHASE only): counted once start()'s verdicts were read, bad
+' unless the LEFT failed mask is EXACTLY the withheld phase's HLT_PHASE_* bit -- any other bit set, that bit missing,
+' or no bit at all (the hook did not take) is the negative going unseen.
+'
+' @local wantMask - the withheld phase's HLT_PHASE_* bit
+
+    if (BUILD_NEG == SKNEG_PHASE) and bSkNegArmed and bSkHealthRead
+        wantMask := wheelL.HLT_PHASE_U << (skNegSel - wheelL.PRB_U)
+        sfSkPhNegN := (sfSkPhNegN + 1) <# LIM_SMALL
+        if skFail[SLOT_LEFT] <> wantMask
+            sfSkPhNegBad := (sfSkPhNegBad + 1) <# LIM_SMALL
+
+PRI skFoldSwapNeg()
+' Fold one armed walk into R19-DUAL-SWNEG-X (START_NEG_SWAP only): counted once checkWiring() was called, bad unless
+' the LEFT HLT_WIRING was checked AND failed -- a pass, or a walk that never judged it, leaves the swap undetected.
+
+    if (BUILD_NEG == SKNEG_SWAP) and bSkNegArmed and bSkWalkRan
+        sfSkSwNegN := (sfSkSwNegN + 1) <# LIM_SMALL
+        if bSkWalkHltFail[SLOT_LEFT] == FALSE
+            sfSkSwNegBad := (sfSkSwNegBad + 1) <# LIM_SMALL
+
+PRI emitSkNeg(lifeIdx) | pWhich
+' BM-SKNEG (task 3614): the firmware negative armed on the next start, printed before its BM-SSTART -- the part's
+' lifetime index (idx; BM-SKHEALTH's life is the steering lifetime the start then takes), the wheel, the kind, which
+' phase or hall pair, and the hook's return. Worst case 105 bytes.
+'
+' @param lifeIdx - 0..SK_LIVES-1
+'
+' @local pWhich - the selection's token
+
+    if BUILD_NEG == SKNEG_PHASE
+        pWhich := tokenAt(@tokPrbPhase, PRB_TOK_COUNT, skNegSel)
+    else
+        pWhich := tokenAt(@tokHallSwap, HSW_TOK_COUNT, skNegSel)
+    recBegin(@"BM-SKNEG")
+    benchLog.numField(@"idx", lifeIdx, LIM_TINY)
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT), TOKMAX_MOTOR)
+    benchLog.tokenField(@"kind", tokenAt(@tokSkNegKind, SKNEG_COUNT, BUILD_NEG), TOKMAX_SKNEG_KIND)
+    benchLog.tokenField(@"which", pWhich, TOKMAX_SKNEG_WHICH)
+    benchLog.numField(@"err", skNegErr, LIM_SMALL)
+    whyField(WHY_NONE)
+    emitRecord()
+
 PRI emitStartCells() | slotIdx, side
 ' The START part's judged cells, each NOMEAS when nothing measured it. Per motor, the probe's control before the probe:
 '
@@ -10766,7 +10917,11 @@ PRI emitStartCells() | slotIdx, side
 '  PROBE    - COUNT: probes whose driven phase read under CONT_MIN_DRIVEN_MV or any follower under CONT_FOLLOW_PCT
 '  WALK     - COUNT: walks whose pre-registered reading did not hold; NOT_BUILT in the START_NO_WALK build
 '
-' and once, PACK - COUNT: starts that did not read PACK_NOT_FITTED, 0 mV and no HLT_PACK.
+' and once, PACK - COUNT: starts that did not read PACK_NOT_FITTED, 0 mV and no HLT_PACK. Then, only in its own build
+' and LEFT only (task 3614):
+'
+'  PHNEG    - COUNT: armed starts whose LEFT failed mask was not exactly the withheld phase's bit (START_NEG_PHASE)
+'  SWNEG    - COUNT: armed walks whose LEFT HLT_WIRING was not judged failed; NOMEAS with no walk (START_NEG_SWAP)
 '
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
@@ -10782,11 +10937,15 @@ PRI emitStartCells() | slotIdx, side
         else
             emitSignoff(@sSfCellSkWalk, side, @sSfCritSkWalk, sfSkWalkN[slotIdx] > 0, sfSkWalkBad[slotIdx], SK_BAD_LO, SK_BAD_HI, sfSkWalkN[slotIdx], @sSfUnitsCount)
     emitSignoff(@sSfCellSkPack, SIDE_NONE, @sSfCritSkPack, sfSkPackN > 0, sfSkPackBad, SK_BAD_LO, SK_BAD_HI, sfSkPackN, @sSfUnitsCount)
+    if BUILD_NEG == SKNEG_PHASE
+        emitSignoff(@sSfCellSkPhNeg, SIDE_LEFT, @sSfCritSkPhNeg, sfSkPhNegN > 0, sfSkPhNegBad, SK_BAD_LO, SK_BAD_HI, sfSkPhNegN, @sSfUnitsCount)
+    elseif BUILD_NEG == SKNEG_SWAP
+        emitSignoff(@sSfCellSkSwNeg, SIDE_LEFT, @sSfCritSkSwNeg, sfSkSwNegN > 0, sfSkSwNegBad, SK_BAD_LO, SK_BAD_HI, sfSkSwNegN, @sSfUnitsCount)
 
 PRI emitSkBuild() | nWalks
 ' BM-SKBUILD: the START part's compiled, pre-registered numbers, printed before anything moves -- the driver's own
-' R19.4 thresholds the cells judge against, the probe's timing, the walk's band and power, and the control's bound.
-' Worst case 219 bytes.
+' R19.4 thresholds the cells judge against, the probe's timing, the walk's band and power, and the control's bound;
+' last, the build's firmware negative (neg: NONE, PHASE or SWAP; task 3614, appended). Worst case 229 bytes.
 '
 ' @local nWalks - the walks this build makes
 
@@ -10808,6 +10967,7 @@ PRI emitSkBuild() | nWalks
     benchLog.numField(@"leg_hi", SK_LEG_HI_TICKS, LIM_TINY)
     benchLog.numField(@"walk_pwr", wheelL.WALK_POWER, LIM_TINY)
     benchLog.numField(@"zero_ms", ZERO_WINDOW_MS, LIM_SMALL)
+    benchLog.tokenField(@"neg", tokenAt(@tokSkNegKind, SKNEG_COUNT, BUILD_NEG), TOKMAX_SKNEG_KIND)
     emitRecord()
 
 PRI emitSkHealth(bWalk, whyCode)
@@ -17586,6 +17746,10 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellSkProbe)
                 emitSignoffDecl(@sSfCellSkWalk)
                 emitSignoffDecl(@sSfCellSkPack)
+                if BUILD_NEG == SKNEG_PHASE                 ' task 3614: each negative's cell in its own build only
+                    emitSignoffDecl(@sSfCellSkPhNeg)
+                elseif BUILD_NEG == SKNEG_SWAP
+                    emitSignoffDecl(@sSfCellSkSwNeg)
             PART_SPIN:
                 emitSignoffDecl(@sSfCellNoStallP)
                 emitSignoffDecl(@sSfCellDbgMaskP)
@@ -17649,7 +17813,8 @@ PRI emitSignoffs() | slotIdx, side
 '         GRADED, GRD100, FRREST, RESTFLAT, COASTEMF, SHORTTK and SHORTI COUNT, PLATSTOP PCT (the wheel that was NOT
 '         faulted); B4PULSE NOT_BUILT (emitFaultRespCells())
 '  START  NOSTALL BOOL; DBGMASK BOOL; per motor HEALTH, RZSPREAD, PROBE and WALK COUNT (WALK NOT_BUILT in the
-'         START_NO_WALK build) and PRBFLR MV, the control before the probe; PACK COUNT (emitStartCells())
+'         START_NO_WALK build) and PRBFLR MV, the control before the probe; PACK COUNT; PHNEG COUNT (LEFT, the
+'         START_NEG_PHASE build only) or SWNEG COUNT (LEFT, the START_NEG_SWAP build only) (emitStartCells())
 '  SPIN   NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; SPINSTOP, SPINOFF, SPINDIR COUNT and CRPCOAST, CRPLOW TICKS (BOTH);
 '         per motor RSTPROV, SPINHUNT, SPINERR COUNT, SPINSTRT PERMILLE, SPINPEAK, SPINSYM, SPINCTL, SPINLEAD X100,
 '         SPINFOL COUNT, SPINPLAT PCT, CREEP TICKS, CRPHOLD BOOL; LAGBOUND COUNT per motor (emitSpinCells())
