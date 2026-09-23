@@ -114,6 +114,8 @@ Usage:  tools/bench-run.sh <tier>
                    t0-stopmode    Tier 0's T0-24 stop-state hand test only -- 8 ROWS: OPERATOR PUSHES OR SPINS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
                    t0-stopmode-fltfirst  as t0-stopmode with the two powered fault rows before the e-stop row (PL-116's discriminator)  [WHEELS UP, ATTENDED]
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
+                   spin-auto      as spin, the board revision auto-detected (PL-120's first factor)  [WHEELS UP, UNATTENDED]
+                   spin-quiet     as spin, built quiet like the dual and T0 tests (PL-120's second factor)  [WHEELS UP, UNATTENDED]
                    detect         board-detection sweep, PASSIVE (no driver code in the image)
                    detect-lib     as above + the library cross-check (still no driver cog)
                    detect-phase2  adds the driver-cog poisoning probe  [MOTORS MAY STAY CONNECTED, GATE-OVERLAP GROUPS SKIPPED]
@@ -219,6 +221,17 @@ case "$TIER" in
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"
                     PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"
+                    ;;
+    # spin-auto / spin-quiet (task 3613, PL-120): the spin wiring check with ONE thing changed each -- the board
+    #  revision auto-detected (as the dual and T0 harnesses do), or the quiet debug build (as they are built). The
+    #  right wheel turns in plain spin and not in those harnesses; whichever of these stops it names the factor.
+    spin-auto)      BENCH_FILE="test_bench_spin.spin2"
+                    EXTRA_DEFS=(-D SPIN_AUTO_DET)
+                    PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER, WHEELS UP, HANDS OFF -- the spin check with the board revision auto-detected. Under 20 seconds"
+                    ;;
+    spin-quiet)     BENCH_FILE="test_bench_spin.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET)
+                    PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER, WHEELS UP, HANDS OFF -- the spin check built quiet, as the dual and T0 tests are. Under 20 seconds"
                     ;;
     detect)         BENCH_FILE="test_bench_detect.spin2"
                     ;;
