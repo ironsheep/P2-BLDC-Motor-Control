@@ -3737,6 +3737,23 @@ bears on PL-106.
 measurements put the edge in (13,332, 15,347]. Raise `DEBUG_FOOTPRINT_MAX` only on a larger build shown, on the
 wire, to deliver its last record.
 
+### PL-117 -- on a two-wheel platform, a position fault on one wheel does not stop the other
+
+**Found 2026-09-23 in the «#3609» desk study** (`DOCs/analyses/FAULT-STRATA-STUDY-2026-09-23.md` F-1).
+
+**MEASURED (source):** steering's front loop secures both wheels only when a wheel is *blocked*
+(`isp_steering_2wheel.spin2:1754-1759`, whose comment reads *"a platform never drives one wheel"*). Nothing in
+that loop reacts to one wheel reading `DCS_FAULTED`. A search for `isFaulted` in the file finds only getters
+(`:881`, `:1295`, `:1467`); the control search `bFrontProtect` finds `:1755`.
+
+**DERIVED:** the healthy wheel keeps its command, so the platform pivots about the faulted wheel. Whether
+the path limiter (`frontLimitPath`, `:1782`) scales the healthy wheel down after the fault is undetermined.
+
+**Fix direction:** a platform-level fault policy, which belongs to «#3609»'s phase-3 design (root cause R-2).
+Cell X-5 (one wheel faulted, wheels up) certifies it.
+
+**Owner:** «#3609».
+
 ---
 
 ## Removed from this list
