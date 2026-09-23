@@ -74,6 +74,8 @@ command reporting its result.
   getProtectiveStop())
 - Two wheels: when one wheel cannot keep up, both slow together, so the
   platform keeps the path you commanded
+- Two wheels: when one wheel faults, the other ramps to a stop, so the
+  platform stops instead of pivoting about the faulted wheel
 - A loaded motor that cannot reach its command holds the fastest speed it can
   sustain instead of faulting
 - setCommandTimeout(ms): opt-in link-loss guard that stops the motors when

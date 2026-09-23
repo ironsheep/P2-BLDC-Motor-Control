@@ -3749,10 +3749,11 @@ that loop reacts to one wheel reading `DCS_FAULTED`. A search for `isFaulted` in
 **DERIVED:** the healthy wheel keeps its command, so the platform pivots about the faulted wheel. Whether
 the path limiter (`frontLimitPath`, `:1782`) scales the healthy wheel down after the fault is undetermined.
 
-**Fix direction:** a platform-level fault policy, which belongs to «#3609»'s phase-3 design (root cause R-2).
-Cell X-5 (one wheel faulted, wheels up) certifies it.
+**Fixed 2026-09-23 («#3612», plan R19.2):** `frontPlatformFaultStop()` in steering's front loop ramps the other
+wheel to rest on the pass one wheel first reads `DCS_FAULTED`. **Not yet certified:** cell X-5 at Visit 10
+(«#3613») must show the healthy wheel's ticks falling along its ramp.
 
-**Owner:** «#3609».
+**Owner:** «#3613» (certification).
 
 ---
 

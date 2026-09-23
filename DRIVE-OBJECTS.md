@@ -236,7 +236,7 @@ The drive does these on its own. None of them needs a call to turn it on.
 - **Holding what it can sustain.** When a motor cannot reach its commanded speed, under load say, it holds the fastest speed it can sustain rather than winding the field ahead of the rotor.
 - **Path-preserving speed limiting** (two wheels). When one wheel cannot keep up, one side loaded say, the steering object slows both wheels together, so the platform keeps the path you commanded instead of curving off it.
 - **The protective stop.** A motor that is commanded to move but does not turn for about a second, its rotor held far behind the field with no hall transition, is stopped, and so is its partner on a two-wheel platform. It latches: every drive is refused with `ERR_PLATFORM_BLOCKED` until you call `clearProtectiveStop()`. `clearEmergency()` does not release it. Check `getProtectiveStop()` to see whether it has fired.
-- **Faults.** If the rotor cannot follow the field at all, the drive faults. The motor then coasts or brakes as `holdAtStop()` selects, `getStatus()` reports `DS_FAULTED`, and `getFaultCause()` says why. The fault clears when you command a stop or a new power.
+- **Faults.** If the rotor cannot follow the field at all, the drive faults. The motor then coasts or brakes as `holdAtStop()` selects, `getStatus()` reports `DS_FAULTED`, and `getFaultCause()` says why. The fault clears when you command a stop or a new power. On a two-wheel platform, a fault on one wheel also stops the other along its ramp down, as `stopMotors()` would, so the platform stops instead of pivoting about the faulted wheel.
 - **The emergency stop** brakes the motor by shorting its phases and latches until `clearEmergency()`.
 
 ## How far the motor travels while stopping

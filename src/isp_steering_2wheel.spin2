@@ -1687,6 +1687,10 @@ VAR { R18.4 D-6: the path limiter's state -- the front cog is the only writer }
     long    lastLeftCmdGen              ' the left wheel's command count at the last slot
     long    lastRightCmdGen             ' the right wheel's command count at the last slot
 
+VAR { R19.2: the platform fault policy's state -- the front cog is the only writer }
+    long    bLeftWasFaulted             ' T/F where T means the left driver read DCS_FAULTED on the previous pass
+    long    bRightWasFaulted            ' T/F where T means the right driver read DCS_FAULTED on the previous pass
+
 VAR { Data for Motor Position Tracking }
     long    deltaTicks
     ' task 3502: mm-per-tick carried at x100 (not x10) -- see isp_bldc_motor.spin2's
@@ -1774,6 +1778,8 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     pathCleanSlots := 0
     _, _, lastLeftCmdGen := ltWheel.frontShortfall()
     _, _, lastRightCmdGen := rtWheel.frontShortfall()
+    bLeftWasFaulted := (ltWheel.getDriverState() == DCS_FAULTED)                 ' R19.2: a fault that predates this cog is not a new one
+    bRightWasFaulted := (rtWheel.getDriverState() == DCS_FAULTED)
     LAINIT()
     nextDue := getct() + ticksPerPass
 
@@ -1794,6 +1800,7 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
         ltWheel.frontTrack(passCount)
         rtWheel.frontTrack(passCount)
+        frontPlatformFaultStop()                                                ' R19.2: one wheel faulted stops the other, ramped
         if (passCount +// ltWheel.WINDOW_PASSES) == 0
             frontLimitPath()                                                    ' R18.4 D-6: once per slot, after the wheels' own slot work
         nowMs := getms()
@@ -2383,6 +2390,32 @@ PRI frontResetPlatformTracking()
 
     ltWheel.frontResetTracking(TRUE)
     rtWheel.frontResetTracking(TRUE)
+
+PRI frontPlatformFaultStop() | bLeftFaulted, bRightFaulted
+' FRONT COG: once per pass -- on the pass either wheel first reads DCS_FAULTED, stop the other (R19.2, PL-117).
+'
+' A platform never drives one wheel. A wheel that faults has already taken its fault bridge (it coasts or
+' brakes per holdAtStop()); the other is stopped as stopMotors() stops it -- along the drive's ramp down, then
+' the stop mode at rest -- so the platform stops instead of pivoting about the faulted wheel. Any distance
+' limit is disarmed and the command timeout stops watching, as for any stop. getStatus() and getFaultCause()
+' then say which wheel faulted and why.
+
+' Local Variables:
+' @local bLeftFaulted - T/F where T means the left driver reads DCS_FAULTED this pass
+' @local bRightFaulted - T/F where T means the right driver reads DCS_FAULTED this pass
+
+    bLeftFaulted := (ltWheel.getDriverState() == DCS_FAULTED)
+    bRightFaulted := (rtWheel.getDriverState() == DCS_FAULTED)
+    if ((bLeftFaulted == TRUE) and (bLeftWasFaulted == FALSE)) or ((bRightFaulted == TRUE) and (bRightWasFaulted == FALSE))
+        debug[user.DBGCH_FAULT]("-STR- platform fault: ", sdec_long(bLeftFaulted), sdec_long(bRightFaulted), " -- stopping the other wheel")
+        if bLeftFaulted == FALSE
+            ltWheel.frontZeroPower()
+        if bRightFaulted == FALSE
+            rtWheel.frontZeroPower()
+        frontDisarmWheelLimits(TRUE, TRUE)
+        bCmdWatched := FALSE                                                    ' S-8: nothing open-ended is left to watch
+    bLeftWasFaulted := bLeftFaulted
+    bRightWasFaulted := bRightFaulted
 
 PRI frontDisarmWheelLimits(bLeft, bRight)
 ' FRONT COG: disarm the selected wheels' own distance limits, the ones a driveForDistance() arms (AB).
