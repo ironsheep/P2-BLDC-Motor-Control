@@ -54,7 +54,7 @@ becomes misleading:
 |---|---|
 | Pole count, hall geometry, the hall zero **Z** | the **motor** — durable, transfers with any driver |
 | The lead **L**, the servo setpoint, the offsets, the fault ceiling | the **driver** — our choices, not the motor's properties |
-| Direction-to-direction current asymmetry | was **ours**, and is gone (§7.3) |
+| Direction-to-direction current asymmetry | was **ours**, and is gone but for a few percent on one unit (§7.3) |
 | Whether L's speed dependence is the motor's electrical time constant or our commutation lag | **not separated** — §9, hole H-2 |
 | Current readings in mV, the abort thresholds, the ladder rungs | the **instrument** |
 
@@ -165,7 +165,11 @@ Each PWM frame the driver:
    the instruction says otherwise;
 4. reads the halls, looks up the sector's angle, adds the direction's offset, and forms
    `err_ = angle_ − (hall_angle + offset)` — how far the field leads the rotor estimate;
-5. servos `duty` up or down to hold `|err_|` in its band (below).
+5. sets `duty` as a **feedforward** from the field's speed plus an integral **trim** that holds
+   `|err_|` at the setpoint (below).
+
+Separately, once a millisecond, the front cog re-derives the offset pair from the speed, using the
+lead table in §5.2.
 
 | Constant | Value | Label |
 |---|---|---|
@@ -174,10 +178,11 @@ Each PWM frame the driver:
 | Field angle resolution | 32-bit fraction of an electrical cycle | source |
 | Rotor angle resolution | **6 positions per electrical cycle** (one per hall sector) | source |
 | Error representation | 8-bit signed, **256 counts per electrical cycle** (1 count = 1.4°) | source |
-| Duty servo setpoint | `SERVO_SETPOINT` = `256/6` → **42 counts = 59°** (the immediate truncates) | source |
-| Duty servo gains | **18 above** the setpoint, **4 below**, each shifted right 8 | source (`duty_up`, `duty_dn`) |
-| What the servo actually holds | a **band**, 42–56 counts (**59–79°**): the shift truncates, so nothing moves until the excess reaches 15 counts; below 42 duty always falls | DERIVED from the two rows above; MEASURED: duty first rose at 57–59 on eight START traces |
-| Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **24,264** | DERIVED from frame and dead-gap |
+| Duty servo setpoint | `SERVO_SETPOINT` **48 counts = 67.5°** | source |
+| Duty feedforward | the magnitude of `drv_incr` × `duty_max` ÷ `ff_ceiling`, where `ff_ceiling` is the motor's back-EMF line (duty 167–174 per 10⁶ of increment at 18.5 V), kept apart from the speed ceiling | source; the line MEASURED |
+| Duty trim | each frame adds (the magnitude of `err_` − 48) × (duty ÷ 16) to an accumulator, applied shifted right 14: symmetric, untruncated, and with a gain that scales with duty | source |
+| What the servo actually holds | a **point**: mean `err` **47–48 counts** at every rung from 1 to 8, both motors, both directions | MEASURED — `VISIT-8-EVALUATION.md` §3.2 |
+| Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **27,648**, the largest amplitude the PWM carries without clipping after the drive re-centres the three levels each frame | DERIVED from frame and dead-gap; MEASURED clip-free, least room left 2 counts against the desk's 1–2 — `VISIT-9-EVALUATION.md` §2.3 |
 | Dead gap applied | 260 ns (compliant with the 250 ns minimum) | source |
 | Lag: ramp waits | `LAG_SOFT` 80 counts = **112.5°** | source |
 | Lag: field stops advancing | `LAG_HOLD` 100 counts = **140.6°** | source |
@@ -191,28 +196,30 @@ thing to get wrong.
 **Where the field sits relative to the rotor in steady state is set by two separate numbers that
 add together:**
 
-- the **commutation offset**, added to the hall angle before the error is formed. It is
-  feedforward: it takes effect instantly and does not depend on the servo.
-- the **duty servo setpoint**, currently 60°. The servo drives `duty` until `|err_|` settles
-  there, so the rotor ends up trailing the field by the setpoint.
+- the **commutation offset**, added to the hall angle before the error is formed. It takes
+  effect instantly and does not depend on the servo.
+- the **duty servo setpoint**, 67.5°. The trim moves `duty` until `|err_|` settles there, so
+  the rotor ends up trailing the field by the setpoint.
 
-Total steady-state field placement is the **sum**. Two consequences follow, and both are live:
+Total steady-state field placement is the **sum**. Two consequences follow:
 
 1. ⚠ **A correction applied to both knobs is applied twice.** The board designer's principle
-   says drive at ±90° electrical; our servo holds 60°. Separately, sweeping the offsets moved
-   the lead from 43° to 18° — a −25° correction. Those are the **same correction reached
-   independently**, agreeing within 5°, and doing both would mis-place the field by about 55°.
-   Given how steep the current basin is (§7.4: 12.7× over 30°), that is not marginal.
-2. **The two knobs behave differently in time.** Feedforward is instant; the servo is
-   regulated and takes hundreds of passes to get there. §6.4 is the consequence.
+   says drive at ±90° electrical, and the setpoint is below that; the offset's lead makes up the
+   difference. Moving the setpoint as well would count the same correction twice, and given how
+   steep the current basin is (§7.4: 12.7× over 30°), that is not marginal.
+2. **The two knobs behave differently in time.** The offset is instant; the setpoint is reached
+   through the servo, which is regulated.
 
-⬚ Which knob should carry the lead is not decided — §9, hole H-1.
+**So the drive carries the lead in the offset and keeps the setpoint fixed.** The offset is the
+knob that can follow speed at once, and the lead has to follow speed (§5.2). At every speed the
+lead table sits inside the measured region of least current, so no other split of the same total
+placement can lower the steady current further.
 
 ### 3.4 What the driver does *not* do
 
 | The board designer's principle | What we do |
 |---|---|
-| Place power at ±90° electrical from the rotor | The duty servo holds **60°** |
+| Place power at ±90° electrical from the rotor | The duty servo holds **67.5°**, and the offset adds a lead that varies with speed |
 | Resolve electrical angle to 12 bits (4,096 positions) | **6 positions** — one hall sector, 60° wide |
 | Compute electrical angle from a fine mechanical angle | The motor has no shaft and no fine sensor |
 
@@ -362,38 +369,48 @@ make it four.
 ### 5.1 What L is
 
 Z says where the halls sit. **L says how far ahead of the rotor to put the field.** It is a
-drive parameter, not a motor property. The two combine into the shipped offset pair:
+drive parameter, not a motor property. The two combine into the offset pair:
 
 ```
 offset_fwd = Z + L      applied to NEGATIVE increments
 offset_rev = Z − L      applied to POSITIVE increments
 ```
 
-With Z = −4 and L = 18, that is the shipped **14 / 338**.
+Z is a constant (−4°). L comes from the table in §5.2, by speed, so the front cog re-derives the
+pair as the speed changes. The fixed pair **14 / 338** (L = 18°) is written only at start-up,
+before the front cog runs.
 
 ### 5.2 L depends strongly on speed — and not the way theory predicts
 
-| Rung | Commanded rate | LEFT | RIGHT | Label |
+The lead of least net current at four speeds, one octave apart, under the current servo:
+
+| Rung | Increment | Lowest-current lead, both motors and directions | Flat region | Table |
 |---|---|---|---|---|
-| **eighth** | 49 ticks/s | **27.8°** | **28.3°** | MEASURED |
-| **quarter** | 98 ticks/s | **15.85°** | **15.55°** | MEASURED |
+| **eighth** | 18.4 × 10⁶ (49 ticks/s) | 13–23° | 13–23° within ~6 mV | **20.5°** |
+| **quarter** | 36.75 × 10⁶ (98 ticks/s) | −2 to 8° | −2 to 8° within ~15 % | **5°** |
+| **half** | 73.5 × 10⁶ (196 ticks/s) | 3–8° | 3 and 8° within 1–3 % | **8°** |
+| **full** | 147 × 10⁶ (393 ticks/s) | 8° | 13° costs 2× | **8°** |
 
-*(`VISIT-7C-EVALUATION.md` §6; reproduces an earlier independent run's 28.05 ± 0.05 and
-15.88 ± 0.03 to within stated error.)*
+MEASURED, from two runs, counting only steps at which the wheel held its commanded rate —
+`DOCs/analyses/bench/2026-09-22/VISIT-8-EVALUATION.md` §3.5 and `VISIT-8B-EVALUATION.md` §3.6. Every
+table value sits inside its flat region. Between points the drive interpolates linearly; outside
+the table it holds the end value and never extrapolates.
 
-**L falls by about 12.2° for every doubling of speed**, reproducing run-to-run to 0.1° on both
-motors. This is a confirmed result, not a provisional one.
+**L falls by about 15° from the eighth to the quarter, then holds at 3–8° up to full speed.**
+The earlier servo, which held a band rather than a point, measured 27.8 / 28.3° at the eighth and
+15.85 / 15.55° at the quarter, falling 12.2° per doubling. The servo change moved the whole curve.
+That is what a drive parameter does, and it is why L is not quoted as a property of the motor.
 
 ⚠ **The textbook current-lag model gives the wrong sign here.** The standard argument is that
 current lags applied voltage more at higher electrical frequency, so the *voltage* lead needed
-to place the *current* at 90° should **grow** with speed. We measure the reverse, strongly and
-reproducibly. Do not design from that model on this motor. Why the real behaviour goes the
+to place the *current* at 90° should **grow** with speed. On both servos we measure the reverse, or
+at best a flat line. Do not design from that model on this motor. Why the real behaviour goes the
 other way is not established — §9, hole H-2.
 
-**The practical consequence today:** the shipped 14 / 338 pair is a *quarter-speed* tune. It is
-right to about 1° at the quarter rung, and 11–14° away from what the motor wants at an eighth.
-Z is safe in a compile-time constant. **The speed-varying part of L is not**, and no fixed
-number can serve the whole range.
+**The practical consequence:** Z is safe in a compile-time constant. L is not, and no fixed number
+serves the whole range: on the same drive, the table draws 24–78 % less current than a flat 18° at
+rungs 3–8, because 18° over-leads everywhere above the eighth. The table's benefit against the
+earlier drive is in §7.3.
 
 ### 5.3 The basin is steep
 
@@ -420,121 +437,107 @@ order of magnitude in current, not a few percent.**
 
 ### 6.1 Speeds
 
-The speed command is an angle increment applied 1,913 times a second. At 18.5 V the library's
-ceiling increment is 147,000,000.
+The speed command is an angle increment applied 1,913 times a second. `power` 100 commands the
+ceiling increment and `power` 1 the floor.
 
 | | Value | Label |
 |---|---|---|
 | Drive passes per second | 1,913 | DERIVED |
-| Ceiling increment at 18.5 V | 147,000,000 | source |
-| → electrical frequency | **65.5 Hz** | DERIVED |
-| → hall ticks per second | **393** | DERIVED |
-| → wheel speed | **262 RPM** | DERIVED |
-| → rim speed | **2.26 m/s** (5.1 mph) | DERIVED |
-| Minimum increment that produces rotation | 544,628 → **~1 RPM** | source |
+| Ceiling increment at 18.5 V | **165,000,000** | MEASURED — `VISIT-9-EVALUATION.md` §6a; held through the public API, `VISIT-9B-EVALUATION.md` §3 |
+| → electrical frequency | **73.5 Hz** | DERIVED |
+| → hall ticks per second | **441** | DERIVED |
+| → wheel speed | **294 RPM** | DERIVED |
+| → rim speed | **2.54 m/s** (5.7 mph) | DERIVED |
+| Floor increment | **100,000** → 0.27 ticks/s, ~0.2 RPM | MEASURED: every rung down to it rotated steadily at exactly its commanded rate; the lowest tried, so the true floor is lower — `VISIT-9-EVALUATION.md` §4 |
+| Ceiling at the other supply voltages | 165 × 10⁶ scaled by voltage, rounded down | DERIVED: the earlier measured rows followed that line to within 2.5 % |
 
-⚠ **The published table in `MOTOR_CHOICE.md` says 272 RPM / 408 ticks/s at 18.5 V.** Those
-figures assume a 2,000 passes/s drive rate; the real rate is 1,913, and the measured ladder came
-in at 0.946–0.965 of the 2,000 model. **Treat the published speed figures as about 4% high.**
-They are ceilings for the fault limiter, not achieved speeds, and correcting them is release
-work.
+**How the ceiling is chosen.** It is the fastest measured speed that keeps the unloaded duty
+reserve the drive has always shipped with: at 165 × 10⁶ duty runs at 92–93 % of its ceiling, on
+both motors and in both directions. It is not the speed at which the wheel stops following, which
+is far higher (§6.3). How much of that reserve survives a load is not yet measured (§9).
 
-Bench work uses fractions of the ceiling increment as "rungs" — the eighth (49 ticks/s) and the
-quarter (98 ticks/s) rungs appear throughout this manual.
+Every speed figure here is wheels-up. Bench work uses fixed increments as "rungs"; the eighth
+(18.4 × 10⁶, 49 ticks/s) and the quarter (36.75 × 10⁶, 98 ticks/s) appear throughout this manual.
 
 ### 6.2 The two walls
 
-Sweeping the offset at a fixed commanded speed, the motor stops running for **two different
-reasons**, and they are not the same wall:
+Moving the lead away from its optimum at a fixed commanded speed, the motor stops running well
+for **two different reasons**, and they are not the same wall:
 
-| Wall | Where | What happens |
+| Wall | Side | What happens |
 |---|---|---|
-| **Current wall** | swept ±63° | Too much lead. Current explodes; the run aborts on the current cap. |
-| **Torque wall** | swept +7° to −11° at the quarter rung | Too little lead. The motor cannot make enough torque; the field outruns the rotor and it faults. |
+| **Current wall** | too much lead | Current explodes, and the run aborts on the current cap. |
+| **Torque wall** | too little lead | The motor cannot make enough torque. The rotor falls behind the field: it slows, or the field outruns it and it faults. |
 
 At 90° from optimum, torque is zero at any speed. The reachable arc is the band between the two
-walls, and **it narrows as speed rises**:
+walls, and **it narrows as speed rises**. Under the earlier servo the half-rung arc was only 20°
+wide and excluded that servo's optimum.
 
-| Rung | Reachable arc | Bounded by | Label |
-|---|---|---|---|
-| eighth | 40–50° | rise / current | MEASURED |
-| quarter | ~±63 to +7 / −11 | current / torque | MEASURED |
-| **half** | **20°** (23…43 and −43…−23) | **torque at BOTH ends** | MEASURED |
-
-⬚ At the half rung the arc is 20° wide, torque-bounded at both ends, and extrapolating L
-(27.9 → 15.7 → ~3.5) puts the optimum near swept 3–4° — **outside the reachable window
-entirely**. That is a fact about the motor, measured with working guards, no fits pinned and
-zero faults. It is the reason L at the half rung has never been obtained. See §9, hole H-5.
+**Under the current drive the optimum is inside the reachable arc at every rung.** The lead was
+stepped from 33° down to −7° in 5° steps at all four rungs. All 16 minima were bracketed, and no
+step faulted. The torque wall appears as slowing, not as a fault: at the eighth, −2° held only 51 %
+of the commanded rate and −7° never settled.
+MEASURED — `VISIT-8-EVALUATION.md` §3.5, `VISIT-8B-EVALUATION.md` §3.6.
 
 ### 6.3 The duty ceiling
 
-Above a certain speed the duty servo runs out of voltage: it asks for 100% and the rotor still
-cannot keep up, so current falls away rather than rising. That knee is a **voltage / back-EMF
-limit**, not a commutation defect.
+Above a certain speed the drive runs out of voltage: duty reaches its ceiling and can rise no
+further. That knee is a **voltage / back-EMF limit**, not a commutation defect.
 
-**Where the knee sits depends on alignment.** At the shipped alignment duty first pins at rung
-8; driven 25° off optimum the same motor pins at rung 6, two rungs lower. That is what a
-voltage-limit model predicts when the current needed per unit torque falls, and an independent
-frame counter agrees (6.8× fewer capped frames). MEASURED.
+**Where the knee sits.** With the clip-free duty ceiling (27,648 counts, §3.2), duty first caps
+between 175 and 185 × 10⁶ on all four wheel-directions. The old ceiling of 24,264 capped it between
+155 and 165 × 10⁶. The raise moved the knee up 13 % and changed nothing below it: net current at
+rungs 3–8 agrees within ±10 % or ±5 mV, and duty within 0.5 %. MEASURED — `VISIT-9-EVALUATION.md`
+§2.
 
-So alignment buys headroom as well as current. It does not remove the ceiling — above it, at
-any alignment, the drive is saturated and current readings mean less than they appear to.
+**Above the knee the wheel still follows, by field weakening.** With duty pinned, the only way to
+advance the rotor further is more lead. `err` grows from 48 to 65 counts, about 24° more field
+advance, and the wheel keeps its commanded rate up to 245 × 10⁶, the highest command tried. It pays
+in current. On the clip-free ceiling it draws 2.3–2.6 A at 245 × 10⁶ unloaded, against 0.3–0.4 A
+at the knee. The old ceiling needed 3.8–4.2 A for the same speed. MEASURED — `VISIT-9-EVALUATION.md`
+§2.1–2.2.
+
+⚠ **Field-weakened running can slip.** The RIGHT motor, driven forward, lost synchronism between
+235 and 245 × 10⁶ on three consecutive runs, with a current peak of about 23–25 A and no fault. The
+other three wheel-directions held 245 × 10⁶. That is why the ceiling (§6.1) sits below the knee,
+with reserve, rather than at the speed where following ends. MEASURED — `VISIT-9B-EVALUATION.md` §2.
+
+**Alignment moves the knee as well.** Filling the lead table unpinned 147 and 155 × 10⁶, which the
+flat 18° lead had held at the ceiling (`VISIT-8B-EVALUATION.md` §3.5). So alignment buys headroom
+as well as current.
 
 ### 6.4 Starting from rest — the transient
 
-**Every spin-up from rest produces a current surge that you can feel.** What the traces show, on
-four starts per run across both motors and both directions, in two runs:
+**A start from rest is quiet.** The current rises smoothly to the settled value, and duty does
+not swing on the way:
 
-1. **The first ~0.45 s is quiet, and the rotor is moving through it.** Early in the ramp the field
-   advances slowly enough for minimum duty (1,600 counts) to drag the rotor with it: `pos` walks
-   several ticks while duty sits at its floor and `|err|` stays small. Duty has no reason to rise
-   until the ramp outruns what minimum duty can hold.
-2. **The surge is the duty servo HUNTING as the ramp accelerates.** From there `err` and duty swing
-   together on a ~150 ms cycle — `err` −35 to −84, duty 3,600 to 6,200 — and each swing's high
-   point is a current peak (57–100 counts, wheels up).
+| Start to the quarter, both motors, both directions | Largest duty drop while accelerating | Peak current ÷ settled |
+|---|---|---|
+| This drive | **0.01–0.03** | **1.15–1.53** |
+| The earlier drive | 0.34–0.53 | 1.94–3.04 |
 
-| Start (QTR, both directions) | Duty leaves its floor for good | Peak current | at |
-|---|---|---|---|
-| LEFT, two starts | ~0.49 s | 72–100 | 0.74–0.90 s |
-| RIGHT, two starts | ~0.49 s | 57–82 | 0.73–0.91 s |
+MEASURED over two runs — `VISIT-8-EVALUATION.md` §3.1, `VISIT-8B-EVALUATION.md` §3.2.
 
-MEASURED — `DOCs/analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md` §4.3, and the same shape in
-the earlier run's four traces.
+**Why the earlier drive surged.** Its servo was integral-only, with a fixed gain. The rotor's
+torque rises with lag only weakly near its operating angle, and more weakly the lower the duty.
+An integral loop around a rotor that is only slightly stiff is stable only below a gain that
+scales with that stiffness. At low speed the old gain was above that limit, so the loop hunted on a
+~150 ms cycle, and every start passed through that region. It hunted at *constant* low speed too.
+The current drive gives the servo the duty a speed needs in advance (the feedforward) and a trim
+whose gain scales with duty (§3.2). That removed the surge, as a desk model of the drive had
+predicted, with both start figures landing inside the model's predicted ranges.
 
-**What it is not.** It is not the servo waiting out a deadband at the start. Starting the field
-80° ahead of the rotor — where the servo first raises duty — was built and measured: duty rose at
-once, the rotor snapped about a tick past the field, duty fell back to its floor for as long as
-before, and the peaks did not change.
+**What remains at the lowest speeds.** At rungs 1–2 (10 and 20 × 10⁶) duty still swings, 178–399 counts
+against 800–1,650 before, and `err` still peaks at 76–86 counts around its mean of 48. It is a
+small residual, not a surge.
 
-**Why it hunts — a model's answer, not yet a bench one.** The servo is integral-only. The rotor's
-torque rises with lag only weakly near its operating angle, and more weakly the lower the duty. An
-integral loop around a rotor that stiff only slightly is stable only below a gain that scales with
-that stiffness. At low speed the servo's gain is above it, so the loop oscillates, and every start
-passes through that region.
-- **Evidence you can check without the model:** the same hunting appears at *constant* low speed with
-  no ramp at all (duty peaks 40–60 % above its mean at 10 and 20 × 10⁶), and disappears from 40 × 10⁶
-  up.
-- **A desk model of the drive**, fitted on one parameter, reproduces both that pattern and the start's
-  swings. It also shows that the 21° band and the uneven up/down gain (§3.2) are **not needed** to
-  produce it.
-- **The cure it points to:** give the servo the duty a speed needs in advance, and a gain that scales
-  with duty. The next bench visit judges that change. The design is
-  `DOCs/plans/DRIVE-INTEGRATION-DESIGN.md` §5.
+**Faster ramps.** Starts at two and four times the default acceleration also follow cleanly, with
+zero lag-limiter holds. Their current peak grows with the acceleration, as it must (1.26–1.34 ×
+settled at the default rate, 1.51–1.83 at twice it and 1.57–2.13 at four times), and in absolute
+terms it stays at about 0.2 A. Slowing down produces no surge at either rate tried: the current
+only falls. MEASURED — `VISIT-9-EVALUATION.md` §3.
 
-Practical consequences:
-
-- **It is structural.** Every start runs the same ramp and the same servo, so it happens every
-  time, regardless of where the rotor stopped.
-- **It is not immediate.** The surge arrives three-quarters of a second in, as the wheel
-  accelerates — not at the command.
-- **Alignment does nothing for it.** The startup peak is 90–120 counts at every offset pair
-  measured. What alignment changes is the *steady* current around it: at 25° off optimum the
-  motor draws ~109 counts continuously, so a surge to ~110 is not an event; at the shipped
-  alignment the steady current is ~32, and the same surge is a **2.6–4.1× excursion you can
-  feel through the frame.** Driving this motor well makes the start transient audible and
-  palpable — not because the surge grew, but because everything around it got quiet.
-
-⬚ Magnitude under load is not established — every trace above was taken wheels-up. §9, hole H-6.
+Every trace here was taken wheels-up. How a start behaves under load is §9, hole H-6.
 
 ---
 
@@ -548,7 +551,7 @@ Practical consequences:
 | Per-phase voltages | **MEASURED**, carried separately since fmt 11 |
 | Bus voltage | ⛔ **NOT MEASURED — assumed from the configured `DRIVE_VOLTAGE`** |
 | Motor or board temperature | ⛔ not measured |
-| Regenerative current | ⛔ undetermined — the shunt is low-side, so regen drives the sense node below ground; whether the Rev B amplifier sees it has not been established |
+| Regenerative current | ⛔ **not visible** — the shunt is low-side, so regen drives the sense node below ground, and Rev B's amplifier is a one-direction part with no reference pin (§9, H-7) |
 
 ⚠ **Every power figure in this manual is a current measurement against an assumed voltage.**
 There is no battery-voltage feedback anywhere in the system. A sagging pack looks identical to a
@@ -569,21 +572,19 @@ These protect the board, not the motor, and they are not user settings.
 
 ### 7.3 Current in normal running
 
-At the shipped alignment, netted current at the same commanded speed, both motors:
+**What alignment is worth.** Netted current at the same commanded speed on the earlier drive, both
+motors, aligned (offsets 14 / 338) and driven 25° off optimum:
 
-| Motor | Rung | **at the shipped alignment** (neg / pos) | the same motor driven 25° off optimum | cost of that misalignment |
+| Motor | Rung | **aligned** (neg / pos) | the same motor driven 25° off optimum | cost of that misalignment |
 |---|---|---|---|---|
 | LEFT | 3 | **130 / 129** | 1991 / 977 | 15.3× / 7.6× |
 | LEFT | 4 | **230 / 242** | 5422 / 2636 | 23.6× / 10.9× |
 | LEFT | 5 | **417 / 424** | 10879 / 5461 | 26.1× / 12.9× |
 | RIGHT | 5 | **425 / 469** | 11016 / 5875 | 25.9× / 12.5× |
 
-In calibrated amps at rung 6: **0.46 A** LEFT and **0.49 A** RIGHT at the shipped alignment,
-against 7.40 A and 7.75 A at 25° off. MEASURED — `VISIT-7B-EVALUATION.md` §3. The right-hand
-columns are the §5.3 basin measured on the running machine rather than on a sweep.
-
-**Direction symmetry.** At the shipped alignment the reverse-over-forward current ratio is
-**0.91–1.01** across rungs 2–5 on both motors. Forward and reverse now cost the same.
+In calibrated amps at rung 6: **0.46 A** LEFT and **0.49 A** RIGHT aligned, against 7.40 A and
+7.75 A at 25° off. MEASURED — `VISIT-7B-EVALUATION.md` §3. The right-hand columns are the §5.3
+basin measured on the running machine rather than on a sweep.
 
 Three independent observables agree on this and they do not share a signal path: the current
 sense channel, the duty servo's own demand (which fell from 83.7% to 53.9% at rung 5 and is not
@@ -591,9 +592,16 @@ read through the sense channel at all), and the fact that the commanded rate was
 cases to within 1%. **The machine turns the same wheel at the same speed for a fraction of the
 current.**
 
-⚠ A small residual asymmetry remains on the RIGHT motor (0.88–0.93 at rungs 4–7) and has
-changed sign — the alignment slightly overshoots there. It is a few percent of a current that is
-already 20× smaller. ⬚ §9, hole H-3.
+**The current drive goes further.** With the lead following speed (§5.2), net current at rungs
+3–8 is a further **22–74 % below** the aligned earlier drive, and the saving grows with speed:
+22–27 % at rung 3, 70–74 % at rung 7. Duty falls 5–13 % with it, and speed tracks within
+0.04–0.47 % at rungs 4–8. MEASURED — `VISIT-8B-EVALUATION.md` §3.3.
+
+**Direction symmetry.** On the current drive the LEFT motor's two directions draw the same current
+to within 1–4 % at every rung from 40 to 140 × 10⁶. The RIGHT motor keeps a small residual: its
+negative direction draws 2–8 % less than its positive one (for example 264 against 286 mV × 10 at
+100 × 10⁶), the same size as on the earlier drive. It is a few percent of a current that is already
+an order of magnitude smaller than misaligned. MEASURED — `VISIT-9-EVALUATION.md` §2.3.
 
 ### 7.4 What off-optimum current costs
 
@@ -605,9 +613,14 @@ windings.
 
 ### 7.5 Transitions
 
-Changing speed produces a current kick above the settled value. At the shipped alignment the
-worst kick fell from 1,247 to 204 counts and the mean positive kick from 261 to 50 — about 6×.
-MEASURED. Kicks peak where duty saturates.
+Changing speed produces a current kick above the settled value, which you can feel as a small
+jolt. Each drive change has made it smaller. Aligning the earlier drive cut the worst kick from
+1,247 to 204 counts (`VISIT-7B-EVALUATION.md`). With the lead table in place, the mean peak current at a
+speed change is 79–84, against 116–125 with a flat 18° lead, and the worst is 253–270. MEASURED —
+`VISIT-8B-EVALUATION.md` §3.7.
+
+The largest kicks come where duty is pinned, above the knee (§6.3): there the drive has no voltage
+left to absorb a change. Below the knee the kick is smaller but still present in both directions.
 
 ---
 
@@ -617,36 +630,36 @@ Everything here follows from §§4–7 and cites the section it comes from.
 
 **Alignment**
 
-1. **Use Z = −4°, L = 18° (offsets 14 / 338).** Confirmed on two motors and two boards, by four
-   independent routes (§4.3), and worth 15–26× in steady-state current (§7.3).
-2. **Do not apply both the offset correction and a servo-setpoint change.** They add, and doing
-   both mis-places the field by ~55° into a basin that is 12.7× steep over 30° (§3.3).
+1. **Use Z = −4° and a lead that follows speed.** Z is confirmed on two motors and two boards, by
+   five independent routes (§4.3). The lead comes from the table in §5.2. Aligned, the motor draws
+   15–26× less current than 25° off (§7.3), and letting the lead follow speed saves a further
+   22–74 %.
+2. **Carry the lead in the offset; never move the servo setpoint to chase it.** The two add, and
+   changing both mis-places the field in a basin that is 12.7× steep over 30° (§3.3).
 3. **Alignment is the highest-value thing you can get right on this motor** (§7.4). If the board
    runs hot or a direction costs more than the other, suspect alignment first.
 
 **Speed**
 
-4. **The shipped alignment is a quarter-speed tune.** It is close to optimal around 98 ticks/s
-   (≈65 RPM) and progressively wrong as you go slower — 11–14° off at half that speed (§5.2).
-5. **Stay off the duty ceiling** where you care about efficiency or about current readings
-   meaning anything. Above the knee the drive is saturated (§6.3).
-6. **Treat `MOTOR_CHOICE.md`'s speed figures as ~4% high** and as fault ceilings, not achieved
-   speeds (§6.1).
+4. **No fixed offset pair suits the whole speed range.** The lowest-current lead falls about 15°
+   between the eighth and the quarter rung (§5.2). A fixed pair is a one-speed tune.
+5. **Stay below the duty knee** where you care about efficiency or about current readings meaning
+   anything. `power` 100 keeps about 7 % unloaded duty reserve. Above the knee the wheel follows
+   only by field weakening, draws amps unloaded, and can slip with a 23–25 A peak (§6.3).
+6. **Every speed figure is wheels-up.** The reserve left under load is not yet measured (§6.1).
 
 **Starting and stopping**
 
-7. **Expect a current surge at every start from rest**, ~2.6–4.1× the settled current, landing a
-   few hundred milliseconds in (§6.4). If your mechanism cannot take it, ramp in from a low
-   commanded speed rather than starting at target.
-8. **Budget for it in power supply sizing** — it is the drive's worst relative excursion, and it
-   is unaffected by alignment.
+7. **A start from rest is quiet on this drive.** Its current peaks at about 1.2–1.5× the settled
+   value (§6.4). A faster ramp draws more because it accelerates harder, not because it surges.
+8. **Size the supply for acceleration and for speed changes**, not for a start surge (§6.4, §7.5).
 
 **Two-wheel platforms**
 
 9. **The two motors face opposite directions**, so one wheel's forward is the other's reverse.
-   That makes direction symmetry a two-wheel concern, not a nicety: at the shipped alignment
-   the two directions cost the same current (§7.3), so driving in a straight line loads both
-   wheels equally. An alignment that is symmetric about zero rather than about Z costs one
+   That makes direction symmetry a two-wheel concern, not a nicety. Aligned, the two directions
+   cost the same current to within a few percent (§7.3), so driving in a straight line loads both
+   wheels almost equally. An alignment that is symmetric about zero rather than about Z costs one
    wheel of every pair roughly double the current for the same speed.
 
 **Measurement**
@@ -664,26 +677,20 @@ Each hole names why it matters and what would settle it. States: **OPEN** ·
 
 | # | Hole | State |
 |---|---|---|
-| **H-1** | **Which knob should carry the lead** — feedforward offset or servo setpoint. They add (§3.3), so the split is a real choice, and it matters because feedforward is instant while the servo is regulated, and because only a speed-dependent knob can track a speed-dependent optimum. | **OPEN** |
-| | *What would settle it:* an A/B of two builds differing only in the servo setpoint (60° against 90°), each run at its own compensating lead so total field placement is held constant and the comparison isolates the split rather than re-testing placement. Run at the quarter rung, where the total is measured. | |
-| **H-2** | **Why L falls with speed** — is the speed dependence a property of the motor (electrical time constant) or of our commutation scheme (loop lag)? The textbook model predicts the opposite sign (§5.2). This decides whether a speed law can be written down or must be measured per motor. | **OPEN** |
-| | *What would settle it:* a third speed point, plus a test that separates the two — the motor's time constant does not care about our pass rate, and our loop lag does. | |
+| **H-1** | **Which knob should carry the lead.** The offset carries it, following speed, and the servo setpoint stays fixed at 67.5° (§3.3). At every speed the lead table sits inside the measured region of least current, so no other split of the same total placement can lower the steady current (§5.2). The servo that holds the fixed setpoint also removed the start surge (§6.4). | **FILLED** |
+| **H-2** | **Why L falls with speed** — is the speed dependence a property of the motor (electrical time constant) or of our commutation scheme (loop lag)? Four speed points now exist: L falls about 15° from the eighth to the quarter, then holds at 3–8° to full speed (§5.2). The textbook model predicts the opposite sign. This decides whether a speed law can be written down or must be measured per motor. | **OPEN** |
+| | *What would settle it:* a test that separates the two. The motor's time constant does not care about our drive-pass rate, and our loop lag does, so the lead run repeated on a build with a different pass rate would tell them apart. No such run has been planned. | |
 | **H-3** | **Are the six hall sectors equal?** No: they are unequal by about ±1° (§2.3). That is too small to matter to a 60° commutator, and it does **not** explain the residual RIGHT-motor asymmetry (§7.3), because RIGHT has the smaller spread. | **FILLED** |
 | **H-4** | **Is the adopted alignment the global optimum?** About 35% of the electrical cycle has been swept (§4.4); one minimum per direction lies inside it. Theory says there should be only one, but that is an argument. | **OPEN** |
-| | *What would settle it:* a full-cycle sweep, which needs a method that does not drive the motor into the current wall to get there. | |
-| **H-5** | **The optimum at the half rung.** Five attempts, five distinct causes. The most recent is informative rather than a failure: the reachable arc there is 20° wide, torque-bounded at both ends, and the extrapolated optimum sits outside it (§6.2). | **OPEN**, and a candidate for **CLOSED-UNANSWERABLE** |
-| | *What would settle it:* a sweep that can report *"the optimum is outside the reachable window"* as a result rather than failing to bracket. If that is the answer, this hole closes as unanswerable on this rig at this voltage, and that is a real finding about the motor. | |
-| **H-6** | **The start surge under load.** Its shape is measured and its mechanism modelled (§6.4). Its magnitude under load is not: every trace was wheels-up. | **OPEN** |
-| | *What would settle it:* the tethered, loaded floor run. | |
-| **H-7** | **Can the board see regeneration?** The shunt is low-side, so regen drives the sense node below ground. Rev A almost certainly cannot see it; Rev B depends on the INA180B2 variant and its reference pin. | **OPEN** |
-| | *What would settle it:* the INA180B2 datasheet, or a bidirectional external sensor. | |
-| **H-8** | **Bus voltage.** Never measured (§7.1); every power figure rests on the configured nominal. | **OPEN** |
-| | *What would settle it:* a divider and an ADC channel — a hardware addition, currently out of scope. | |
-| **H-9** | **Per-direction speed ceilings.** The published ceilings are single numbers applied to both directions, and no per-direction ceiling has ever been measured. With the direction asymmetry now removed, they should converge — which is itself a prediction nobody has tested. | **OPEN** |
-| | *What would settle it:* a speed ladder run to the fault edge in both directions at the shipped alignment. | |
-| **H-10** | **Whether the drive knows it is following.** The driver carries a measured-rate-versus-commanded reading with no ceiling, which is what a droop would show up in — but the reading is not yet trustworthy end to end. | **OPEN** |
-| | *What would settle it:* a scan run re-judging the reading against a corrected denominator. | |
-| **H-11** | **Unit-to-unit variation.** Every measurement in this manual comes from the **two** units on the Rev B platform. Z agrees within 0.55° between them — encouraging, and not a population. **Four units of this motor exist**: two on the Rev B platform and two on a Rev A platform. | **OPEN** |
+| | *What would settle it:* a full-cycle sweep, which needs a method that does not drive the motor into the current wall to get there. The offset sweep cannot do it, since the walls are what bound it. | |
+| **H-5** | **The optimum at the half rung.** **3–8°**, flat to within 1–3 % across that range on both motors, with the table at 8° (§5.2). The current drive's reachable arc contains it (§6.2). | **FILLED** |
+| **H-6** | **Behaviour under load.** Every number in this manual was taken wheels-up. Not yet measured: how a start behaves under load (§6.4), how much of the ceiling's 7 % duty reserve a load leaves (§6.1), and whether the lead table's saving holds under load (§5.2). | **OPEN** |
+| | *What would settle it:* the tethered, loaded floor run. It is planned, and it waits on the attended display panel it needs. | |
+| **H-7** | **Can the board see regeneration?** No. The shunt is low-side, so regeneration drives the sense node below ground. Rev B's INA180 is the one-direction member of its family, with no reference pin (the vendor names the INA181 as the version that measures both directions), so a reversed current reads as zero. Rev A feeds the node to the ADC with no offset and almost certainly cannot see it either. ASSUMED (vendor, TI's INA180 product page); not measured. | **FILLED** |
+| **H-8** | **Bus voltage.** Never measured (§7.1); every power figure rests on the configured nominal. The board has no voltage channel, and the external front end that would add one is outside the current work. | **CLOSED-UNANSWERABLE** on this rig |
+| **H-9** | **Per-direction speed ceilings.** The same in both directions. Duty first caps between 175 and 185 × 10⁶ on all four wheel-directions, and the ceiling is chosen below that (§6.3). The one difference is above the knee: RIGHT forward loses its field-weakened synchronism between 235 and 245 × 10⁶, and the other three hold 245 × 10⁶. No fault edge was reached, because 245 × 10⁶ was the highest command tried. | **FILLED** |
+| **H-10** | **Whether the drive knows it is following.** Yes. The driver's own reading of measured rate against commanded rate agrees with an independent hall count with a gap of 0 points over 75 rungs, and also when the wheel falls short to 2–4 % of its command. The falling case was shown on three of the four wheel-directions; RIGHT forward's step did not run. MEASURED — `VISIT-9B-EVALUATION.md` §3. | **FILLED** |
+| **H-11** | **Unit-to-unit variation.** Every measurement in this manual comes from the **two** units on the Rev B platform. Measured cold, Z agrees within 0.06° between them — encouraging, and not a population. **Four units of this motor exist**: two on the Rev B platform and two on a Rev A platform. | **OPEN** |
 | | *What would settle it:* the other two units. They divide into two measurements with very different prerequisites — see §9.1. | |
 
 ### 9.1 · What the Rev A pair can contribute, and when
@@ -706,21 +713,24 @@ same scale is not addressed by the vendor comparison in `BOARD-REVISION-FACTS.md
 the current sense and the gate driver and is silent on phase sensing. Confirm it before trusting
 a Rev A phase reading, or the first Rev A leg is measuring the board.
 
-**L — the lead — needs the motor driven, and that is the part that waits.** Two reasons, both
-real:
+**L — the lead — needs the motor driven, and that is the part that costs more.** Two reasons,
+both real:
 
 1. **Safety.** Rev B exists because Rev A boards were damaged in service, and the protection Rev
-   A lacks is a current limit. The driver work adds exactly that (§7.2). Driving a Rev A board
-   hard before it lands is spending a board to learn something the Rev B pair already told us.
+   A lacked is a current limit. The driver now has one (§7.2), so a driven Rev A leg is possible.
+   It is still a risk to a board that is hard to replace, and it would re-measure a drive parameter
+   the Rev B pair has already given, so it is worth running only for a question the Rev B pair
+   cannot answer.
 2. **Resolution.** L is found by locating a *current minimum*, and Rev A presents current to the
    ADC at 5 mV/A against Rev B's 150 mV/A. At the shipped alignment the whole signal is a few
    hundred millivolts on Rev B, so the same measurement on Rev A sits in the bottom two percent
    of the range. Expect materially wider error bars, and say so rather than comparing a Rev A L
    to a Rev B L as though the two had equal weight.
 
-**So the sequence is: Z on the Rev A pair is available early and cheaply and would take the
-population from two to four on the one quantity that is pure motor geometry. L on the Rev A pair
-waits for the current limit, and arrives with a worse error bar than anything in §5.2.**
+**So the sequence is: Z on the Rev A pair is cheap and would take the population from two to four
+on the one quantity that is pure motor geometry. L on the Rev A pair is possible now that the
+current limit exists, but it risks the board and arrives with a worse error bar than anything in
+§5.2.**
 
 ⭐ That split is worth noticing on its own: **the quantity that belongs to the motor is the one
 that can be measured on any board, and the quantity that belongs to our driver is the one that
@@ -732,14 +742,18 @@ depends on which board it is.** That is §1.3's attribution showing up as a sche
 
 | Source | What it supplies |
 |---|---|
-| `DOCs/analyses/bench/2026-09-22/VISIT-7C-EVALUATION.md` | Z and L at two rungs both motors; the start-transient traces; the half-rung arc |
+| `DOCs/analyses/bench/2026-09-23/VISIT-9B-EVALUATION.md` | the ceiling and floor held through the public API; the driver's following reading, holding and falling; RIGHT forward's slip |
+| `DOCs/analyses/bench/2026-09-23/VISIT-9-EVALUATION.md` | the speed ceiling, the floor, the clip-free duty ceiling, field weakening above the knee, ramps, direction symmetry on the current drive |
+| `DOCs/analyses/bench/2026-09-22/VISIT-8B-EVALUATION.md` | the lead table confirmed; cruise current against the earlier drive; the top of the range freed; speed-change kicks |
+| `DOCs/analyses/bench/2026-09-22/VISIT-8-EVALUATION.md` | the start surge gone; the servo holding a point; the lead against speed under the current servo |
+| `DOCs/analyses/bench/2026-09-22/VISIT-7C-EVALUATION.md` | Z and L at two rungs both motors under the earlier servo |
 | `DOCs/analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md` | Z measured cold from back-EMF; hall-sector widths; hall lag; the start transient's shape; back-EMF as a position source |
 | `DOCs/analyses/bench/2026-09-21/VISIT-7B-EVALUATION.md` | the alignment A/B; current collapse; direction symmetry; the duty knee; the start surge in context |
 | `DOCs/analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` | the hand-rotation pole count |
 | `DOCs/analyses/BOARD-REVISION-FACTS.md` | vendor hardware facts, sense scaling, dead-time, MOSFET ratings |
 | `DOCs/analyses/BLDC-COMMUTATION-PRINCIPLES.md` | the board designer's principles, and the two-motor comparison |
-| `src/isp_bldc_motor.spin2` | every driver constant quoted in §3 |
-| `MOTOR_CHOICE.md` | the published speed/voltage table (see §6.1's caveat) |
+| `src/isp_bldc_motor.spin2` | every driver constant quoted in §3, the lead table, the ceiling and floor |
+| TI, INA180 product page (`ti.com/product/INA180`) | the amplifier is the one-direction member of its family |
 
 Bench logs referenced by name live beside their evaluations under `DOCs/analyses/bench/`.
 
@@ -754,3 +768,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 | 2026-09-22 | §2.3 states the measured sector widths, and H-3 is FILLED. The earlier update left both still saying the sectors had never been measured. |
 | 2026-09-22 | §4.6 (how back-EMF locates the magnets) and §4.7 (what differs from unit to unit, including hall lag) added, drawn from the board designer's questions. |
 | 2026-09-22 | §6.4's open question is answered by a desk model: the hunting is a gain-against-stiffness limit cycle, shown at constant low speed as well as at starts. The band and the gain asymmetry are no longer suspects. The bench certification is pending. |
+| 2026-09-23 | Brought to the current drive: the feedforward-and-trim servo holding 67.5° (§3.2–3.4), the lead table that follows speed (§5), the 165 × 10⁶ ceiling, the 100,000 floor, the clip-free duty ceiling and field weakening above the knee (§6.1–6.3), the quiet start (§6.4), and cruise current, direction symmetry and speed-change kicks (§7.3, §7.5). §8 rewritten to match. Section 9: H-1, H-5, H-7, H-9 and H-10 FILLED; H-8 CLOSED-UNANSWERABLE; H-6 widened to cover everything under load; H-2 gains the new speed points. §9.1: the current limit has landed. |
