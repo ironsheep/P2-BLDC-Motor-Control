@@ -3814,9 +3814,21 @@ voltage would read.
 
 **STEPHEN 2026-09-23:** *"i changed nothing on the motor boards... you should see them both move if you ask."*
 
-**Two readings, undetermined:** (a) the right board's switches are not getting pack voltage; (b) a DRIVER_REV 8–12 change
-stops the right wheel only. **Discriminator:** the same preflight nudge built at `3403024` (tier `dual-clock-270`, about 1
-minute). If the right moves, it is (b), and DRIVER_REV 8–12 get bisected. If not, it is (a).
+**Reading (a), no supply, is REFUTED.** STEPHEN 2026-09-23: *"both boards are hardwired to distribution, if one gets
+power they both do."* So this is a defect in our code, and DRIVER_REV 8–12 is where it entered. Checked and cleared by
+reading:
+- the parameter and status contract (22 and 20 longs, same order on both sides);
+- the LUT loader count (label-derived);
+- the pack pin;
+- the preflight code (unchanged);
+- `forwardIsReverse()` (power sign only);
+- every pin write for a pin-base dependence.
+
+**Bisect**, the same nudge at each commit (`dual-clock-270`, about 1 minute each, from a worktree):
+- `3403024` is DRIVER_REV 7, the last known good;
+- then `d33b691` (9), then `524de4a` (8) or `340ff62` (10) as the result points.
+
+At most three runs name the revision.
 
 **Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
 
