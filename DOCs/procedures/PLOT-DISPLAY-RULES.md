@@ -146,16 +146,24 @@ limit, but the interleaving is real.
    only in the log;
 4. when a step did not run, that it did not and why.
 
-One key has one meaning. Rows use one numbering (1-based) in the runner's banner, the panel and the log. One
-vocabulary, matching the API, names each state. The operator is never asked for sub-second timing; take the
-moment from a sensor and let the key say only "done".
+**Every operator action is a titled button, clicked, not a keystroke.** The button's title is the action
+("START ROW", "DONE", "ABORT"), hit-tested through `PC_MOUSE` under `cartesian 1`, as `bmpanel` in
+`test_bench_dual.spin2` does. A key may duplicate a button, but is never the only control. A keystroke first
+costs the operator focusing the window; a click does not. Count what each step costs them (reach, focus,
+read, act) before the panel is built, and remove what can be removed.
+
+One control has one meaning. Rows use one numbering (1-based) in the runner's banner, the panel and the log.
+One vocabulary, matching the API, names each state. The operator is never asked for sub-second timing: take
+the moment from a sensor, and let the button say only "done".
 
 **Why.** Stephen, 2026-09-23, after T0-24's first run with a working panel: *"the instructions were really
 confusing, and I got out of sync with what you were trying to do."* That panel had S and SPACE carrying three
 meanings between them. It numbered rows 1-6 while the log numbered them 0-5. It called the SM_BRAKE row "HOLD
 MODE". It never said what a row should feel like. It asked for SPACE "as you let go" (PL-115). And it left a
 "HANDS OFF -- spins under power" card up for two rows that never spun (PL-116). Doctrine overlay P7 carries
-the rule.
+the rule. On buttons, Stephen, the same day: *"buttons with titles should be all we need in this case vs.
+keystrokes. I have to focus the panel to press keys so mouse clicks is less effort -- always think about the
+interaction effort when designing UIs."*
 
 ## 11 · Signals that are not signals
 
