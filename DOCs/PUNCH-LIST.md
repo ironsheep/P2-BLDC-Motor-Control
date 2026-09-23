@@ -3824,9 +3824,14 @@ reading:
 - `forwardIsReverse()` (power sign only);
 - every pin write for a pin-base dependence.
 
-**Next discriminator:** the existing `spin` tier (unchanged, each wheel alone at 50 % power, current driver). If the
-right turns, the fault is in the slow-nudge and start-check path; if not, a diagnostic tier prints both drivers'
-internals side by side. No git steps at the bench (doctrine overlay P5).
+**MEASURED 2026-09-23 17:48, `debug_260923-174816.log` (`spin`, current driver):**
+- **The right wheel turns and its board is fine**: `SP-PHASE,phase,FWD,wheel,RIGHT,power,50,ticks,-453,...,MOVED`,
+  and REV 454.
+- Its start check passes: `healthFailed = $0000_0000, ... @probeMv = 789 784 788 788 783 787 788 783 787`.
+
+So the harnesses that fail are the ones that differ. Every one of them (dual, T0) auto-detects the board (`spin`
+forces Rev B) and builds with `-D BENCH_QUIET` (`spin` does not). **Next:** the tiers `spin-auto` and `spin-quiet`,
+each changing one of those two factors.
 
 **Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
 
