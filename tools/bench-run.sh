@@ -414,6 +414,7 @@ if [ -n "$MEASURE_ONLY" ]; then
     DEBUG_OUT=(-o "$MEASURE_DEBUG")
     LIST_OPT=()
     trap 'rm -f "$MEASURE_PLAIN" "$MEASURE_DEBUG"' EXIT
+    trap 'rm -f "$MEASURE_PLAIN" "$MEASURE_DEBUG"; exit 130' INT TERM   # as the clock patch's cleanup does
 fi
 
 run "$PNUT" ${PLAIN_OUT[@]+"${PLAIN_OUT[@]}"} -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"

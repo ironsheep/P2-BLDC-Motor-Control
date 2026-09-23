@@ -70,10 +70,12 @@ BACKUP="$(mktemp "${TMPDIR:-/tmp}/bldc-userconfig.XXXXXX")" || {
     exit 2
 }
 cp -p "$CONFIG" "$BACKUP"
+FP_DIR=""                                       # step 5's per-tier results, removed here too
 cleanup() {
     cp -p "$BACKUP" "$CONFIG"
     rm -f "$BACKUP"
     rm -f ./*.bin ./*.lst 2>/dev/null
+    [ -n "$FP_DIR" ] && rm -rf "$FP_DIR"
 }
 trap cleanup EXIT INT TERM
 
@@ -244,22 +246,26 @@ done
 echo
 echo "Bench-tier DEBUG footprint (bench-run.sh measure-only):"
 BENCH_RUN="${SCRIPT_DIR}/bench-run.sh"
-TIERS=$(sed -nE 's/^    ([a-z0-9|-]+)\).*/\1/p' "$BENCH_RUN" | tr '|' '\n' | grep -vx 'dual-clock')
+# The dual-clock-270 and -300 tiers are skipped: measure-only never applies a clock, so
+# they compile exactly what dual-clock-200 compiles, and it stands for all three.
+TIERS=$(sed -nE 's/^    ([a-z0-9|-]+)\).*/\1/p' "$BENCH_RUN" | tr '|' '\n' \
+        | grep -vx -e 'dual-clock' -e 'dual-clock-270' -e 'dual-clock-300')
 if [ -z "$TIERS" ]; then
     echo "  FAIL  no tiers found in $BENCH_RUN -- the footprint was not checked"
     RC=1
 fi
 # Tiers are measured in parallel (each writes its own images, see bench-run.sh), one
-# output file per tier, then judged in tier order.
+# output and one exit status per tier, then judged in tier order. bench-run.sh's exit
+# status is the verdict; its output supplies only the number printed beside it.
 FP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bldc-footprint.XXXXXX")" || { echo "ERROR: no temp dir" >&2; exit 2; }
-trap 'cleanup; rm -rf "$FP_DIR"' EXIT INT TERM
 JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 printf '%s\n' $TIERS | xargs -P "$JOBS" -I{} sh -c \
-    'PNUT_TS="$1" BENCH_MEASURE_ONLY=1 "$2" "$3" > "$4/$3.out" 2>/dev/null' _ "$PNUT" "$BENCH_RUN" {} "$FP_DIR"
+    'PNUT_TS="$1" BENCH_MEASURE_ONLY=1 "$2" "$3" > "$4/$3.out" 2>/dev/null; echo $? > "$4/$3.rc"' \
+    _ "$PNUT" "$BENCH_RUN" {} "$FP_DIR"
 for tier in $TIERS; do
     out=$(cat "$FP_DIR/$tier.out" 2>/dev/null)
     fp=$(printf '%s\n' "$out" | sed -n 's/^bench-run.sh: DEBUG footprint \([0-9]*\) bytes.*/\1/p')
-    if printf '%s\n' "$out" | grep -q "^bench-run.sh: measure-only -- tier '$tier' within"; then
+    if [ "$(cat "$FP_DIR/$tier.rc" 2>/dev/null)" = "0" ]; then
         [ $VERBOSE -eq 1 ] && echo "  ok    $tier  $fp bytes"
     else
         echo "  FAIL  $tier  ${fp:-no measurement} -- $(printf '%s\n' "$out" | grep -m1 '^ERROR:' | cut -c8-)"
