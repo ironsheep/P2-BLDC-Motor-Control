@@ -48,16 +48,18 @@ Check its power and motor connections before run 1. Run 1 then shows in its log 
 ## The commands — run every one, in this order
 
 ```bash
-tools/bench-run.sh dual-start             # 1: the start checks, wiring as built -- and whether the right board drives
-tools/bench-run.sh dual-start-phaseneg    # 2: firmware negative: one LEFT lead withheld per start. Nothing moves
-tools/bench-run.sh dual-start-swapneg     # 3: firmware negative: LEFT halls read as swapped in the walk -- the left wheel may jerk or turn the wrong way
-tools/bench-run.sh dual-start-nowalk      # 4: ATTENDED WIRING -- RIGHT hall connector unplugged (B-1). Nothing moves
-tools/bench-run.sh dual-fault             # 5: the fault responses, the platform policy, the hook's negative control
-tools/bench-run.sh t0-stopmode            # 6: ATTENDED -- the hold rows and the stop states at the RIGHT wheel
+tools/bench-run.sh dual-start             # 1: Hands off. Startup checks with normal wiring; both wheels nudge a little near the end
+tools/bench-run.sh dual-start-phaseneg    # 2: Hands off. The program fakes a dead motor wire on the LEFT wheel; nothing moves
+tools/bench-run.sh dual-start-swapneg     # 3: Hands off. The program fakes crossed sensor wires on the LEFT wheel; it may jerk or turn backwards briefly
+tools/bench-run.sh dual-start-nowalk      # 4: YOU: battery off, unplug the RIGHT wheel's hall-sensor connector, battery on, run; nothing moves
+tools/bench-run.sh dual-fault             # 5: Hands off. Each wheel spins up and is stopped hard on purpose, about 6 minutes
+tools/bench-run.sh t0-stopmode            # 6: YOU, at the RIGHT wheel: follow each panel; every row waits for you
 ```
 
-**Run 4's wiring change:** disconnect the battery, unplug the RIGHT wheel's hall connector, reconnect the battery, and
-run. Then disconnect the battery again, replug the connector, and reconnect.
+**Runs 2 and 3 need nothing from you.** The program fakes each fault itself on the left wheel. No wire is touched.
+
+**Run 4 is the only wiring change:** disconnect the battery, unplug the RIGHT wheel's hall-sensor connector, reconnect
+the battery, and run. Afterwards disconnect the battery again, replug the connector, and reconnect.
 
 **No run depends on another run's result.** If run 1 shows the right board still dead, the right-wheel cells of runs
 5 and 6 come back NOMEAS, and the analysis says so.

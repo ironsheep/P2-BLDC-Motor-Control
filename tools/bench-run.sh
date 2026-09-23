@@ -304,7 +304,7 @@ case "$TIER" in
     dual-start-nowalk)
                     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NO_WALK)
-                    PRECONDITION="WHEELS UP -- ATTENDED WIRING CHANGE for B-1: with the BATTERY DISCONNECTED, unplug the RIGHT wheel's hall connector, then reconnect the battery. Motion harness part START without the walk: the steering object is started and stopped 10 times and no wheel is ever driven. Replug the hall connector with the battery disconnected afterwards. Run cap 3 minutes, expected under 1"
+                    PRECONDITION="WHEELS UP -- YOU CHANGE WIRING: battery off, unplug the RIGHT wheel's hall-sensor connector, battery on, then run. The program does 10 startup checks and no wheel moves. Afterwards: battery off, replug the connector, battery on. Under 1 minute"
                     ;;
     # dual-start-phaseneg (task 3614) -- B-3's negative in firmware, since the rig cannot open a motor lead: each start's
     #  lead check leaves one LEFT phase undriven (testLeftSetProbeWithhold(), rotating U, V, W), so exactly that phase's
@@ -312,14 +312,14 @@ case "$TIER" in
     dual-start-phaseneg)
                     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NEG_PHASE)
-                    PRECONDITION="WHEELS UP, HANDS: NONE, NO WIRING CHANGE -- UNATTENDED motion harness part START with a FIRMWARE negative: each of 10 starts leaves one LEFT motor lead undriven in its lead check, and the check must catch exactly that lead. No wheel is ever driven. Run cap 3 minutes, expected under 1"
+                    PRECONDITION="WHEELS UP, HANDS OFF, DO NOT TOUCH ANY WIRING -- the program fakes a dead motor wire on the LEFT wheel during each of 10 startup checks and must catch it. No wheel moves. Under 1 minute"
                     ;;
     # dual-start-swapneg (task 3614) -- B-5's negative in firmware, since the rig cannot swap hall wires: in the walk
     #  lifetimes the LEFT wheel reads two halls as swapped (testLeftSetHallSwap()), so checkWiring() must fail it.
     dual-start-swapneg)
                     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NEG_SWAP)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE, NO WIRING CHANGE -- UNATTENDED motion harness part START with a FIRMWARE negative: in the last 3 of 10 lifetimes the LEFT wheel drives as though two of its hall wires were swapped, so during checkWiring() the left wheel may JERK, BUZZ, OR TURN BRIEFLY THE WRONG WAY (a swapped pair reverses the sequence the driver reads) for up to 2 s per leg at power 10, until its fault test or the 10 A abort stops it. Panic: battery disconnect. Run cap 3 minutes, expected under 1"
+                    PRECONDITION="WHEELS UP, HANDS OFF, DO NOT TOUCH ANY WIRING -- the program fakes crossed hall-sensor wires on the LEFT wheel, then nudges both wheels 3 times and must notice the left is miswired. The LEFT WHEEL MAY JERK, BUZZ OR TURN BACKWARDS for up to 2 s at a time until it stops itself. Panic: battery disconnect. Under 1 minute"
                     ;;
     # dual-spin (task 3591, plan R18.2c tail and R19.8) -- the tethered spin-in-place FLOOR tier, loaded and attended: the
     #  release's only loaded measurement. Twelve legs through the steering object, each armed with its own distance stop at
