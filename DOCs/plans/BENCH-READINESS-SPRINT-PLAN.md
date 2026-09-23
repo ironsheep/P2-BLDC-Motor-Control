@@ -2776,6 +2776,31 @@ don't have to wait"* (doctrine overlay P12). So every mechanism below is **built
 | R19.7 | **Visit 10, wheels up**: one pass carrying every R19.1–R19.6 cell plus the fault study's X-cells and the startup study's B-cells. Run sheet first. | «#3613» | — |
 | R19.8 | **The floor tier and Visit 6b**, loaded: confirms the offsets, the hold's creep on a measured incline, and the platform fault policy under load. | «#3591», «#3576» | hold ceiling under load |
 
+### R19 as built (2026-09-23), and what the build cannot settle alone
+
+- **R19.1 hold (DRIVER_REV 8, `524de4a`).** The field stays at the stop angle, which acts as a spring. The front
+  cog's `frontHold()` raises the at-rest duty while the hall position is off the hold position, and never lowers it
+  within one rest, so the hold cannot hunt. On a 2-tick slip or at its time limit it hands off to BR_SHORT, and
+  `getHoldStatus()` reports which. *Known limit:* hall resolution is 5.8 mm at the rim, so a push inside one sector
+  is resisted only by the spring at the current duty. A push fast enough to cross two ticks within one front pass
+  can reach the driver's own fault test (about 3 ticks) first. Visit 10's HOLD-SLIP cell records which one fired.
+- **R19.2 platform policy (`d4c03a2`).** When a fault of either kind begins on one wheel, both wheels are stopped
+  along their ramps.
+- **R19.3 fault response (DRIVER_REV 9).** The fault test calls `faultResponse` (in LUT RAM).
+  - **FR_SHIPPED** (the default): today's behaviour exactly.
+  - **FR_GRADED**, halls legal: the first fault re-seeds the field from the halls. The driver then reads its command
+    as 0 until the front cog writes that stop, so it ramps down under control; `getFaultCause()` reads FC_LAG.
+  - **FR_GRADED**, halls lost or a second fault on that stop: SM_BRAKE takes **BR_BRAKE** (the low sides PWM'd at
+    `brake_y`, high sides off, braking current capped) and SM_FLOAT coasts.
+  - *Known limits:* the re-seed takes its direction from the command's sign, so a fault during a ramp to zero may
+    seed the wrong half-table and fault again, falling to the blunt response. BR_BRAKE regenerates into the supply,
+    so the bench's pack must be able to absorb it.
+- **Questions for him once Visit 10 has measured** (each with its measure of benefit, P5):
+  1. Should FR_GRADED become the default?
+  2. Should the hold's limits and the fault response become public setters rather than TEST-USE?
+  3. A motor that re-synced and stopped is not FAULTED, so today only `getFaultCause()` records that it happened.
+     Should `getError()` report it too?
+
 **What stays his.** Once Visit 10 has sized the values, each new response goes to him with its measure of benefit
 before it becomes the default (P5): the per-stratum fault response, the graded short, and the startup levels
 and their defaults. E-stop stays a hard short by his ruling.

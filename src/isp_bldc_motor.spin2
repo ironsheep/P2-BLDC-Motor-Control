@@ -779,6 +779,34 @@ PUB testSetHoldLimits(ceilingPct, riseMs, limitMs) : eError
     else
         eError := recordError(postRequest(REQ_SET_HOLD, ceilingPct, riseMs, limitMs))
 
+PUB testSetFaultResponse(eMode, brakePct) : eError
+'' TEST USE: choose the response to a position fault, so a bench run can compare them (R19.3)
+''
+'' FR_SHIPPED coasts (holdAtStop(FALSE)) or shorts the phases (TRUE) at once. FR_GRADED, while the halls read a
+'' legal code, re-seeds the field from the halls and stops along the ramp down; with the halls lost, or on a second
+'' fault during that stop, it coasts (FALSE) or takes the graded short (TRUE): the low sides on for {brakePct} of
+'' each frame, which caps the braking current and REGENERATES into the supply.
+''
+'' @param eMode - FR_SHIPPED or FR_GRADED
+'' @param brakePct - the graded short's low-side on-time, % of each frame [0..100]
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
+
+    if ((eMode <> FR_SHIPPED) and (eMode <> FR_GRADED)) or (brakePct < 0) or (brakePct > 100)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        eError := recordError(postRequest(REQ_SET_FAULT, eMode, brakePct, 0))
+
+PUB testGetFaultResponse() : eMode, nBrakeY, nResyncEvents
+'' TEST USE: the fault response in effect, and how many faults it has re-synced since start (R19.3)
+''
+'' @returns eMode - FR_SHIPPED or FR_GRADED
+'' @returns nBrakeY - the graded short's low-side PWM value (the frame value is off, 0 fully on)
+'' @returns nResyncEvents - faults answered by a re-sync and a controlled stop since start
+
+    eMode := fault_mode
+    nBrakeY := brake_y
+    nResyncEvents := faultResyncEvents
+
 PUB testGetHold() : nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents
 '' TEST USE: the hold's internals, to judge a bench cell (R19.1)
 ''
@@ -1992,6 +2020,24 @@ PUB frontSetHoldLimits(ceilingPct, riseMs, limitMs)
     holdRiseStep := ((holdCeilDuty - duty_min) / muldiv64(riseMs, FRONT_LOOP_HZ, MS_PER_SEC)) #> 1
     holdLimitPasses := muldiv64(limitMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1
 
+PUB frontSetFaultResponse(eMode, brakePct)
+'' FRONT COG ONLY (or init(), before the front cog starts): choose the response to a position fault (R19.3)
+''
+'' @param eMode - FR_SHIPPED or FR_GRADED
+'' @param brakePct - the graded short's low-side on-time, % of each frame [0..100]; 100 is the full short
+
+    fault_mode := eMode
+    brake_y := (frame_cnt / 2) - muldiv64(frame_cnt / 2, brakePct, 100)       ' Y = frame is off, 0 fully on (inverted low side)
+
+PUB bFrontFaultBegan() : bBegan
+'' FRONT COG ONLY: whether a fault of either kind -- a driver FAULT, or one it re-synced and is stopping -- began this pass
+''
+'' Valid after this pass's frontTrack(); an owner that must not drive one wheel stops the others on it (R19.2).
+''
+'' @returns bBegan - T/F where T means a fault began on this pass
+
+    bBegan := bFaultBegan
+
 PUB frontHold() | nowPos
 '' FRONT COG ONLY: once per pass -- the hold at rest in SM_BRAKE (R19.1)
 ''
@@ -2568,6 +2614,11 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     faultCause := FC_NONE                                                   ' S-7: no fault since this start
     bWasFaulted := FALSE
     faultIllegalPrev := 0                                                   ' the driver zeroes its counts at start too
+    fault_resyncs := 0                                                      ' R19.3: the hub copy, and the front cog's view of it
+    faultResyncsPrev := 0
+    faultResyncEvents := 0
+    bFaultBegan := FALSE
+    frontSetFaultResponse(FAULT_RESPONSE_DEFAULT, BRAKE_PCT_DEFAULT)         ' before the front cog exists, so no race
     phaseAvgMa := 0
     bDerated := FALSE
     blockedPasses := 0
@@ -3114,7 +3165,7 @@ PRI isAbiLayoutValid() : bValid
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
     ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd
-    bValid &= (@hold_short - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    bValid &= (@brake_y - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -3135,7 +3186,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@hold_short - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@brake_y - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -3144,8 +3195,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@hold_short
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @hold_short))
+    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@brake_y
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @brake_y))
 
 CON ' --- HDMI Debug Support ---
 
@@ -3353,8 +3404,9 @@ CON { front cog requests }
     '  REQ_SET_LIMITS     - arg1 peak amps, arg2 continuous amps: replace the current limits (TEST-USE)
     '  REQ_SET_TIMEOUT    - arg1 ms, or CMD_TIMEOUT_OFF: set the command timeout and restart its clock (S-8)
     '  REQ_SET_HOLD       - arg1 ceiling %, arg2 rise ms, arg3 limit ms: replace the hold's limits (TEST-USE, R19.1)
+    '  REQ_SET_FAULT      - arg1 FR_* mode, arg2 brake %: choose the response to a position fault (TEST-USE, R19.3)
     '  REQ_EXIT           - answer every open request, acknowledge, and park (stop())
-    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_SET_HOLD, REQ_EXIT
+    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_SET_HOLD, REQ_SET_FAULT, REQ_EXIT
 
     ' The order a pass applies requests in, by class:
     '  REQ_CLASS_ESTOP - REQ_ESTOP, first, so an e-stop posted with a drive in the same pass refuses the drive
@@ -3732,6 +3784,8 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             frontSetCurrentLimits(nArg1, nArg2)
         REQ_SET_HOLD:
             frontSetHoldLimits(nArg1, nArg2, nArg3)
+        REQ_SET_FAULT:
+            frontSetFaultResponse(nArg1, nArg2)
         REQ_SET_TIMEOUT:
             cmdTimeoutMs := nArg1
             lastDriveMs := getms()                                              ' the clock starts now, never from a stale command
@@ -3917,18 +3971,35 @@ PRI frontCommand(nIncre, bSync)
     userCmdIncr := nIncre                                                       ' R18.4 D-6: what was COMMANDED, which a path scale never changes
     userCmdGen++                                                                '  and a count an owner reads to see a new command arrive
 
-PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode
+PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode, nResyncsNow
 ' FRONT COG: on the pass the driver first reads DCS_FAULTED, latch why (S-7): FC_HALL when a hall sensor is reading
 ' %000 or %111, or entered one since the previous pass, else FC_LAG. The front cog is the cause's only writer.
+' R19.3: a fault the driver answered with a re-sync (FR_GRADED, halls legal) is FC_LAG too, and this pass writes the
+' stop that re-sync is waiting for. Either kind raises bFaultBegan for this pass (bFrontFaultBegan()).
 '
 ' @param eDrvState - the driver state read once for this pass
 
 ' Local Variables:
 ' @local nIllegalNow - the driver's hall_illegal long this pass (any change means a new illegal entry)
 ' @local nHallCode - the hall code the driver last read, from its status copy of hall_ (direction bit dropped)
+' @local nResyncsNow - the driver's fault_resyncs long this pass (any change means a new re-synced fault)
 
+    bFaultBegan := FALSE
+    nResyncsNow := fault_resyncs
+    if nResyncsNow <> faultResyncsPrev
+        ' the driver re-seeded its field and is ramping down, reading 0 until a 0 is written: write it, which also
+        '  clears getPower(), since the motor is being stopped under control (PL-52's "faulted" is not this)
+        faultCause := FC_LAG
+        faultResyncEvents++
+        bFaultBegan := TRUE
+        bCmdWatched := FALSE                                                    ' S-8: nothing open-ended is left to watch
+        frontSetLimits(0, 0)                                                    ' a distance or time limit ends with the stop
+        frontZeroPower()
+        debug[user.DBGCH_FAULT]("-MOT- fault: re-synced from the halls, stopping under control")
+    faultResyncsPrev := nResyncsNow
     nIllegalNow := hall_illegal
     if (eDrvState == DCS_FAULTED) and (bWasFaulted == FALSE)
+        bFaultBegan := TRUE
         ' an illegal code makes the driver's hall angle meaningless, so the lag test trips on it: that fault is
         '  the SENSOR's, and naming it LAG would send the user after a load problem that is not there
         nHallCode := hall & %111
@@ -4219,12 +4290,26 @@ CON { driver internal Constants }
     ' R17.1 / PL-89 (DOCs/plans/STOP-STATE-DESIGN.md): the PASM driver's bridge register holds exactly one of these,
     '  and each state is written so its meaning does not depend on a pin's inversion. The low-side PWM pins are
     '  inverted (pwmn) and a HIGH on a low-side input turns that FET ON (PL-56), so Y = 0 on every pin is SHORT, not off.
-    '  BR_DRIVE - PWM switching: the motor is driven, or held at duty_min once at rest in SM_BRAKE
+    '  BR_DRIVE - PWM switching: the motor is driven, or held at rest in SM_BRAKE (R19.1's hold)
     '  BR_SHORT - high sides Y = 0 (off), low sides Y = 0 (inverted: ON): the phases shorted, a dynamic brake
     '  BR_COAST - high sides Y = 0 (off), low sides Y = frame (inverted: off): all six FETs off, a freewheel
-    '  Which state each stop path takes: at rest SM_FLOAT -> BR_COAST, SM_BRAKE -> BR_DRIVE (hold); a fault
-    '  SM_FLOAT -> BR_COAST, SM_BRAKE -> BR_SHORT; an e-stop -> BR_SHORT whatever the stop mode.
-    #0, BR_DRIVE, BR_SHORT, BR_COAST
+    '  BR_BRAKE - high sides Y = 0 (off), low sides Y = brake_y (inverted: on for part of each frame): a GRADED
+    '             short that caps the braking current; no rotor angle needed (R19.3). While a low side is off
+    '             the phase current returns to the supply through the high-side diodes: this brake REGENERATES,
+    '             so a supply that cannot sink current sees its voltage rise.
+    '  Which state each stop path takes: at rest SM_FLOAT -> BR_COAST, SM_BRAKE -> BR_DRIVE (hold) or, handed
+    '  off, BR_SHORT; a fault -> faultResponse (the response mode decides); an e-stop -> BR_SHORT whatever the
+    '  stop mode. The table lowy_tbl, indexed by these values, holds each undriven state's low-side Y.
+    #0, BR_DRIVE, BR_SHORT, BR_COAST, BR_BRAKE
+
+    ' R19.3 (task 3609): the response to a position fault (|err| >= 125 while driven), testSetFaultResponse()
+    '  FR_SHIPPED - the bridge takes the stop mode's fault state at once: SM_FLOAT coasts, SM_BRAKE shorts
+    '  FR_GRADED  - with the halls legal, the first fault re-seeds the field from the halls and ramps to a
+    '               stop under control; otherwise (halls lost, or a second fault on that ramp) SM_BRAKE takes
+    '               the graded short BR_BRAKE and SM_FLOAT coasts
+    #0, FR_SHIPPED, FR_GRADED
+    FAULT_RESPONSE_DEFAULT      = FR_SHIPPED    ' the shipped response until Visit 10 prices the graded one (P5)
+    BRAKE_PCT_DEFAULT           = 25            ' PROVISIONAL: BR_BRAKE's low-side on-time, % of each frame
 
     ' PL-90: the hall read. The three hall inputs (base+5..7) never straddle the pin-31 port boundary for any legal
     '  base, so ONE read of INA or INB samples all three at the same instant (was three TESTPs, 4 clocks apart).
@@ -4253,19 +4338,20 @@ CON { driver internal Constants }
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
-    DRVR_STATUS_LONGS_COUNT     = 19
-    DRVR_PARAMS_LONGS_COUNT     = 18
+    DRVR_STATUS_LONGS_COUNT     = 20
+    DRVR_PARAMS_LONGS_COUNT     = 20
 
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 8         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 9         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
                                             ' 6: the feedforward's slope is held when duty_max moves; the DUTY_MAX_SVM build variant (task 3604)
                                             ' 7: the clip-free duty ceiling is the drive; the 6.5in ceilings 12 % higher, the floor 5.4x lower (task 3605)
                                             ' 8: the hold at rest follows the load, then hands off to the phase short and reports it (task 3608)
+                                            ' 9: a selectable fault response: re-sync from the halls and stop, or the graded short BR_BRAKE (task 3609)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4345,7 +4431,7 @@ VAR { * Data Structure for PASM Driver * }
 
     ' -------------------------------------
     ' VALUES copied from driver each cycle
-    ' 19 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 20th, "fault" also from driver but only when happens
+    ' 20 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 21st, "fault" also from driver but only when happens
     '
     ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
@@ -4365,8 +4451,9 @@ VAR { * Data Structure for PASM Driver * }
     '  drv_incr_now, lag_held gives the field advance withheld.
     LONG    lag_held                            ' 1 sequential long     passes where the limiter withheld the field advance
     LONG    duty_capped                         ' 1 sequential long     passes where the duty demand exceeded the cap
+    LONG    fault_resyncs                       ' 1 sequential long     R19.3: faults answered by a re-sync and a controlled stop since driver start, unbounded
     ' \ ----------------------------
-    LONG    fault                               ' 1 sequential long     written TRUE ($FFFF_FFFF) on fault; the bridge then takes the stop mode's fault state (BR_COAST or BR_SHORT)
+    LONG    fault                               ' 1 sequential long     written TRUE ($FFFF_FFFF) on every fault, re-synced or not; see faultResponse
 
 VAR { * Data for Motor Position Tracking * }
     LONG    posTrkHallTicks
@@ -4403,7 +4490,7 @@ VAR  {  Motor Parameters  }
 ' -----------------------------------
 ' VALUES copied to driver each cycle
 ' -----------------------------------
-' TABLE of  18 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
+' TABLE of  20 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -4422,6 +4509,8 @@ VAR  {  Motor Parameters  }
     LONG    duty_floor      ' S-2: duty floor for the phase-current estimate (m = 0.1)
     LONG    hold_duty       ' R19.1: the duty applied at rest (DCS_STOPPED); front-written, duty_min when not holding
     LONG    hold_short      ' R19.1: T/F where T means the hold at rest (SM_BRAKE) has handed off to the phase short
+    LONG    fault_mode      ' R19.3: FR_SHIPPED or FR_GRADED, the response to a position fault
+    LONG    brake_y         ' R19.3: BR_BRAKE's low-side PWM Y (frontSetFaultResponse()); frame = off, 0 = fully on
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -4478,6 +4567,9 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    faultCause                  ' front-written (init() before start): FC_* of the most recent fault since start
     LONG    bWasFaulted                 ' front-written: T/F where T means the driver read DCS_FAULTED on the previous pass
     LONG    faultIllegalPrev            ' front-written: the driver's hall_illegal long on the previous pass
+    LONG    faultResyncsPrev            ' front-written (R19.3): the driver's fault_resyncs long on the previous pass
+    LONG    faultResyncEvents           ' front-written (R19.3): faults answered by a re-sync and a controlled stop since start
+    LONG    bFaultBegan                 ' front-written (R19.3): T/F where T means a fault of either kind began this pass
     ' R19.1 (task 3608): the hold at rest. Front-written, and init() sets each before start
     LONG    holdState                   ' HS_* now
     LONG    bHoldArmed                  ' T/F where T means this rest has a hold position
@@ -4537,9 +4629,9 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                                                         ' labels are scoped to the nearest preceding global label,
                                                         ' and these are all referenced from both the LUT-resident
                                                         ' block and the cog-resident block, so they must be
-                                                        ' globally visible (task 3535). .shortBridge, .faultBridge,
-                                                        ' .checkstopfloaton and .checkstopfloatoff stay dot-local:
-                                                        ' nothing outside cog RAM calls them.
+                                                        ' globally visible (task 3535). .shortBridge and
+                                                        ' .checkstopfloatoff stay dot-local: nothing outside cog
+                                                        ' RAM calls them.
 
     ' =========================================================================
     '  MOTOR DRIVE LOOP - one pass every 23 ADC frames: about 1913 passes/s (522.7 uSec) at 200, 270 or 300 MHz.
@@ -4938,11 +5030,12 @@ drvMotor                                                ' global (task 3535): en
                                                         ' inverted (pwmn), and a HIGH on a low-side input turns that FET ON (PL-56)
 
                 cmp     bridge, #BR_DRIVE           wz  ' Z: the bridge is driven this frame (R17.1: see the BR_* constants)
-    if_nz       wypin   #0, drive_pins                  ' SHORT or COAST: Y = 0 on all six -- high sides LOW (off), low sides HIGH (on)
-    if_nz       testb   bridge, #1                  wc  ' C: COAST (BR_COAST is the only state with bit 1 set)
-    if_nz_and_c wypin   coast_y, pin_pwm_u_l            ' COAST: low sides Y = frame -> constant HIGH, inverted to LOW: all six FETs off
-    if_nz_and_c wypin   coast_y, pin_pwm_v_l
-    if_nz_and_c wypin   coast_y, pin_pwm_w_l
+    if_nz       wypin   #0, drive_pins                  ' undriven: Y = 0 on all six -- high sides LOW (off), low sides HIGH (on)
+    if_nz       alts    bridge, #lowy_tbl - BR_SHORT    ' R19.3: then each low side takes its state's Y from lowy_tbl --
+    if_nz       mov     tmpX, 0-0                       '  SHORT 0 (on), COAST frame (off: all six FETs off), BRAKE brake_y
+    if_nz       wypin   tmpX, pin_pwm_u_l               '  (on for part of each frame, the graded short)
+    if_nz       wypin   tmpX, pin_pwm_v_l
+    if_nz       wypin   tmpX, pin_pwm_w_l
                 add     drive_u_, dead_gap_             ' make sure low side turns off (inverted) earlier than high side turns on (non-inverted)
     if_z        wypin   drive_u_, pin_pwm_u_l           ' safety on driver board make sure high side off if both low and high side are high, in case of an error
                 sub     drive_u_, dead_gap_             ' shouldn't happen with dead-gap
@@ -5010,9 +5103,7 @@ drvMotor                                                ' global (task 3535): en
                 abs     tmpY, err_                      ' fault? tmpY is absolute difference from hall angle to requested angle
                 cmp     tmpY, #125                  wc  ' less than ~176deg differ from requested? is ok
                 tjnz    bridge, #.noFault               ' the bridge is not driven: no fault (e.g. a wheel turned by hand)
-    if_nc       call    #.faultBridge                   ' at FAULT: the bridge takes the user's stop mode (COAST or SHORT)
-    if_nc       mov     drv_state_, #DCS_FAULTED        '  also on FAULT: mark our motor as FAULTED
-    if_nc       wrlong  maxNeg, ptra[DRVR_STATUS_LONGS_COUNT] '  also on FAULT: report fault
+    if_nc       call    #faultResponse                  ' at FAULT: report it, and respond per fault_mode_ (LUT-resident, R19.3)
 
 .noFault        mov     tmpX, duty_                     ' S-2: the MOSFET current limit, on a lower bound of phase current:
                 fges    tmpX, duty_floor_               '  I_dc >= 0.75 * m * I_peak, m = duty_ / (4 * frame_cnt), floored
@@ -5072,21 +5163,16 @@ drvMotor                                                ' global (task 3535): en
     ' boundary); driveinit is called only from the LUT-resident start sequence
     ' itself. See lutCodeStart..lutCodeEnd, below the `fit 496` line.
     '
-    ' .shortBridge, .faultBridge and .checkstopfloatoff stay dot-local (task
-    ' 3535): nothing outside cog RAM calls them, so they don't need to be
-    ' globally visible the way checkstop/wait4adc/initAngleFmHall/gettgtincr/
-    ' driveinit/drvMotor/lutCodeStart/lutCodeEnd do. R19.1 moved the drive-
-    ' from-rest entry (was .checkstopfloaton) into the LUT as driveFromRest,
-    ' beside restBridge.
+    ' .shortBridge and .checkstopfloatoff stay dot-local (task 3535): nothing
+    ' outside cog RAM calls them, so they don't need to be globally visible
+    ' the way checkstop/wait4adc/initAngleFmHall/gettgtincr/driveinit/
+    ' drvMotor/lutCodeStart/lutCodeEnd do. R19.1 moved the drive-from-rest
+    ' entry (was .checkstopfloaton) into the LUT as driveFromRest, beside
+    ' restBridge; R19.3 moved the fault's bridge choice (was .faultBridge)
+    ' into the LUT as faultResponse.
 
 .shortBridge                                            ' e-stop: short the phases, whatever the stop mode (no flags changed)
     _ret_       mov     bridge, #BR_SHORT
-
-.faultBridge                                            ' fault: the user's stop mode decides -- SM_FLOAT coasts, SM_BRAKE
-                mov     bridge, #BR_SHORT               '  brakes (a faulted driver has lost the rotor, so it cannot hold a
-                cmp     stop_mode_, #SM_FLOAT       wz  '  position); writes Z only, so the caller's C survives
-    if_z        mov     bridge, #BR_COAST
-                ret
 
 .capStart                                               ' PL-55: remember duty and speed where a ramp-down starts (no flags changed)
                 mov     duty0, duty_
@@ -5250,8 +5336,12 @@ ramp_curr       res 1       ' current ramping up value, ramps up from ramp_min_ 
 angle_          res 1       ' current driver angle
 prior_angle     res 1       ' prior driver angle
 fwdrev          res 1       ' driver current direction used for indexing into hall angle table
-bridge          res 1       ' R17.1: the bridge state this frame, one of BR_DRIVE / BR_SHORT / BR_COAST (see their CON)
-coast_y         res 1       ' R17.1: the PWM frame value; Y = frame holds a pin constantly HIGH (set once at start)
+bridge          res 1       ' R17.1: the bridge state this frame, one of the BR_* states (see their CON)
+' R19.3: lowy_tbl -- each undriven bridge state's low-side Y, indexed by BR_* from BR_SHORT; keep these three in order
+lowy_tbl        res 1       ' [BR_SHORT] 0: low sides constantly on (set at start)
+coast_y         res 1       ' [BR_COAST] R17.1: the PWM frame value; Y = frame holds a pin constantly HIGH (set once at start)
+lowy_brake      res 1       ' [BR_BRAKE] brake_y_, copied every drive pass by gettgtincr
+fault_stop      res 1       ' R19.3: T/F where T means a re-synced fault's stop is pending: commands read as 0 until a 0 arrives
 curr_stop       res 1       ' current stop mode
 lag_s           res 1       ' C-5: signed lag this pass, + when the rotor trails the field in the direction of motion
 duty_cap_       res 1       ' PL-55: duty ceiling, duty_max_ except while ramping down
@@ -5297,7 +5387,7 @@ scl_levels      res 4
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
 params_ptr_ res 1           ' params_ptr must be followed by:
-offset_fwd_ res 1           '  18 (DRVR_PARAMS_LONGS_COUNT) parameters
+offset_fwd_ res 1           '  20 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
 duty_min_   res 1           ' minimum duty cycle for pwm
 duty_max_   res 1           ' maximum duty cycle for pwm
@@ -5315,11 +5405,13 @@ i_limit_k_  res 1           ' S-2: current-limit threshold factor, mV per duty c
 duty_floor_ res 1           ' S-2: the duty below which the phase-current estimate is floored (m = 0.1)
 hold_duty_  res 1           ' R19.1: the duty applied at rest (DCS_STOPPED), front-written
 hold_short_ res 1           ' R19.1: T/F where T means the hold at rest (SM_BRAKE) has handed off to the phase short
+fault_mode_ res 1           ' R19.3: FR_SHIPPED or FR_GRADED
+brake_y_    res 1           ' R19.3: BR_BRAKE's low-side Y; gettgtincr copies it into lowy_tbl's BR_BRAKE entry
 
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied out-of driver each loop iteration
-drive_u_    res 1           ' 19 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
+drive_u_    res 1           ' 20 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -5338,15 +5430,16 @@ hall_illegal_ res 1         ' entries into an illegal hall code, %000 in the low
 drv_incr_s_ res 1           ' copy of drv_incr, the field's increment per drive pass, for the front cog's stop timing
 lag_held_   res 1           ' R18.1: passes where the limiter withheld the field advance -- unbounded, zeroed at driver start
 duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the cap -- unbounded, zeroed at driver start
+fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controlled stop -- unbounded, zeroed at driver start
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 481 USED, 15 FREE, 2026-09-23 (R19.1) -- read from the compiler, never hand-counted (a hand
+    fit     496  ' 482 USED, 14 FREE, 2026-09-23 (R19.3) -- read from the compiler, never hand-counted (a hand
                  ' count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, DUTY_CAPPED_'s VALUE,
                  ' whose top 12 bits are its cog address ($1DF). LUT code runs at cog speed (2 clocks, p2kb
                  ' p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS are what
                  ' this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $29C, 156 of 512 longs (DRIVER_REV 8).
+                 ' lutCodeStart $200 to lutCodeEnd $2B8, 184 of 512 longs (DRIVER_REV 9).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -5499,7 +5592,10 @@ lutCodeStart
                 mov     hall_illegal_, #0
                 mov     lag_held_, #0                   ' R18.1: the health counters restart with them
                 mov     duty_capped_, #0
-                alts    hall_port                       ' prime hall_ from a real read: first control pass then sees old == new
+                mov     fault_resyncs_, #0              ' R19.3: and the re-sync count, with no stop pending,
+                mov     fault_stop, #0
+                mov     lowy_tbl, #0                    '  and BR_SHORT's low-side Y (lowy_tbl's first entry)
+                alts    hall_port                      ' prime hall_ from a real read: first control pass then sees old == new
                 mov     hall_, 0-0                      '  (PL-90: one INA/INB read; hall pins are inputs, nothing ever raises their DIR)
                 shr     hall_, hall_shift
                 and     hall_, #%111
@@ -5545,8 +5641,13 @@ lutCodeStart
     ' above is dead space, same as the equivalent cog-resident layout.
     ' -------------------------------------------------------------------------
 gettgtincr
+                mov     lowy_brake, brake_y_            ' R19.3: the graded short's Y follows its parameter, every drive pass
                 rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
-                testb   tgt_incr, #31               wc  ' bit 31 is used to carry sync info
+                tjz     fault_stop, #.take              ' R19.3: no re-synced fault's stop pending: take the command as written
+                tjnz    tgt_incr, #.stopping            '  pending: the driver reads 0 until the front cog's stop (a 0) arrives,
+                mov     fault_stop, #0                  '  and once it has, the next command is taken as written
+.stopping _ret_ mov     tgt_incr, #0
+.take           testb   tgt_incr, #31               wc  ' bit 31 is used to carry sync info
     if_c        pollatn                             wz  ' need to sync, but dont want to wait so if atn not ready
     if_c_and_nz mov     tgt_incr, sv_tgt_incr           ' reset tgt_incr, if wanting atn and not received it yet
     if_c_and_z  bitl    tgt_incr, #31                   ' have the atn, so
@@ -5602,9 +5703,31 @@ driveFromRest                                           ' R19.1: about to drive 
                 mov     bridge, #BR_DRIVE               '  drive the bridge,
                 jmp     #initAngleFmHall                '  and seed the field from the halls (the rotor moved); returns to our caller
 
-lutCodeEnd                                              ' LUT-resident code ends here (task 3535)
+faultResponse                                           ' R19.3: called from the fault test, |err_| >= 125 while driven. Uses tmpX
+                wrlong  maxNeg, ptra[DRVR_STATUS_LONGS_COUNT] '  only (tmpY carries |err_| on to the servo). Every fault is reported
+                cmp     fault_mode_, #FR_GRADED     wz  ' Q: the graded response?
+    if_nz       jmp     #.blunt                         ' NO: FR_SHIPPED takes the stop mode's fault bridge at once
+                tjnz    fault_stop, #.blunt             ' a second fault on a re-synced stop: control is gone
+                mov     tmpX, hall_
+                and     tmpX, #%111                     ' this pass's hall code
+                cmp     tmpX, #%000                 wz
+    if_nz       cmp     tmpX, #%111                 wz
+    if_z        jmp     #.blunt                         ' an illegal code: the halls cannot re-seed the field
+                mov     fault_stop, #1                  ' RE-SYNC: commands read as 0 until the front cog's stop arrives, so the
+                add     fault_resyncs_, #1              '  driver ramps down; counted, so the front cog writes that stop and reports it;
+                jmp     #initAngleFmHall                '  and the field is re-seeded from the halls. Returns to our caller
+.blunt          mov     fault_stop, #0                  ' a hard fault clears any pending re-sync stop: the next command is taken
+                mov     drv_state_, #DCS_FAULTED        ' the driver is FAULTED until a new request (.resetFault)
+                mov     bridge, #BR_SHORT               ' FR_SHIPPED brakes with the full short,
+                cmp     fault_mode_, #FR_GRADED     wz
+    if_z        mov     bridge, #BR_BRAKE               '  FR_GRADED with the graded one,
+                cmp     stop_mode_, #SM_FLOAT       wz
+    if_z        mov     bridge, #BR_COAST               '  and SM_FLOAT coasts in either mode
+                ret
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 156 of 512 used, COUNTED 2026-09-23 at DRIVER_REV 8 (see the cog fit above)
+lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
+
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 184 of 512 used, COUNTED 2026-09-23 at DRIVER_REV 9 (see the cog fit above)
 
 CON { license }
 {{

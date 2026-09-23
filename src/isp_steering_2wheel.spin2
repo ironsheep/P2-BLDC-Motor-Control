@@ -679,6 +679,24 @@ PUB testSetHoldLimits(ceilingPct, riseMs, limitMs) : eError | eStatus, eLeftStat
         eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_HOLD, BOTH_MOTORS, ceilingPct, riseMs, limitMs)
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
+PUB testSetFaultResponse(eMode, brakePct) : eError | eStatus, eLeftStatus, eRightStatus
+'' TEST USE: choose both wheels' response to a position fault (the motor object's testSetFaultResponse(), R19.3)
+''
+'' @param eMode - FR_SHIPPED or FR_GRADED
+'' @param brakePct - the graded short's low-side on-time, % of each frame [0..100]
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
+
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    if ((eMode <> ltWheel.FR_SHIPPED) and (eMode <> ltWheel.FR_GRADED)) or (brakePct < 0) or (brakePct > 100)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_FAULT, BOTH_MOTORS, eMode, brakePct, 0)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
+
 PUB testLeftGetHold() : nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents
 '' TEST USE: the LEFT wheel's hold internals (the motor object's testGetHold())
 ''
@@ -1687,10 +1705,6 @@ VAR { R18.4 D-6: the path limiter's state -- the front cog is the only writer }
     long    lastLeftCmdGen              ' the left wheel's command count at the last slot
     long    lastRightCmdGen             ' the right wheel's command count at the last slot
 
-VAR { R19.2: the platform fault policy's state -- the front cog is the only writer }
-    long    bLeftWasFaulted             ' T/F where T means the left driver read DCS_FAULTED on the previous pass
-    long    bRightWasFaulted            ' T/F where T means the right driver read DCS_FAULTED on the previous pass
-
 VAR { Data for Motor Position Tracking }
     long    deltaTicks
     ' task 3502: mm-per-tick carried at x100 (not x10) -- see isp_bldc_motor.spin2's
@@ -1778,8 +1792,6 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     pathCleanSlots := 0
     _, _, lastLeftCmdGen := ltWheel.frontShortfall()
     _, _, lastRightCmdGen := rtWheel.frontShortfall()
-    bLeftWasFaulted := (ltWheel.getDriverState() == DCS_FAULTED)                 ' R19.2: a fault that predates this cog is not a new one
-    bRightWasFaulted := (rtWheel.getDriverState() == DCS_FAULTED)
     LAINIT()
     nextDue := getct() + ticksPerPass
 
@@ -2129,6 +2141,11 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                 ltWheel.frontSetHoldLimits(nArg1, nArg2, nArg3)
             if bRight == TRUE
                 rtWheel.frontSetHoldLimits(nArg1, nArg2, nArg3)
+        ltWheel.REQ_SET_FAULT:
+            if bLeft == TRUE
+                ltWheel.frontSetFaultResponse(nArg1, nArg2)
+            if bRight == TRUE
+                rtWheel.frontSetFaultResponse(nArg1, nArg2)
         ltWheel.REQ_SET_TIMEOUT:
             cmdTimeoutMs := nArg1
             lastDriveMs := getms()                                              ' the clock starts now, never from a stale command
@@ -2391,31 +2408,29 @@ PRI frontResetPlatformTracking()
     ltWheel.frontResetTracking(TRUE)
     rtWheel.frontResetTracking(TRUE)
 
-PRI frontPlatformFaultStop() | bLeftFaulted, bRightFaulted
-' FRONT COG: once per pass -- on the pass either wheel first reads DCS_FAULTED, stop the other (R19.2, PL-117).
+PRI frontPlatformFaultStop() | bLeftBegan, bRightBegan
+' FRONT COG: once per pass, after both wheels' frontTrack() -- on the pass a fault begins on either wheel, stop both (R19.2, PL-117).
 '
-' A platform never drives one wheel. A wheel that faults has already taken its fault bridge (it coasts or
-' brakes per holdAtStop()); the other is stopped as stopMotors() stops it -- along the drive's ramp down, then
-' the stop mode at rest -- so the platform stops instead of pivoting about the faulted wheel. Any distance
-' limit is disarmed and the command timeout stops watching, as for any stop. getStatus() and getFaultCause()
-' then say which wheel faulted and why.
+' A platform never drives one wheel. A wheel that faults has either taken its fault bridge or, re-synced from its
+' halls (R19.3), is already stopping itself; every wheel not FAULTED is stopped as stopMotors() stops it -- along
+' the drive's ramp down, then the stop mode at rest -- so the platform stops instead of pivoting about the faulted
+' wheel. Any distance limit is disarmed and the command timeout stops watching, as for any stop. getStatus() and
+' getFaultCause() then say which wheel faulted and why.
 
 ' Local Variables:
-' @local bLeftFaulted - T/F where T means the left driver reads DCS_FAULTED this pass
-' @local bRightFaulted - T/F where T means the right driver reads DCS_FAULTED this pass
+' @local bLeftBegan - T/F where T means a fault began on the left wheel this pass
+' @local bRightBegan - T/F where T means a fault began on the right wheel this pass
 
-    bLeftFaulted := (ltWheel.getDriverState() == DCS_FAULTED)
-    bRightFaulted := (rtWheel.getDriverState() == DCS_FAULTED)
-    if ((bLeftFaulted == TRUE) and (bLeftWasFaulted == FALSE)) or ((bRightFaulted == TRUE) and (bRightWasFaulted == FALSE))
-        debug[user.DBGCH_FAULT]("-STR- platform fault: ", sdec_long(bLeftFaulted), sdec_long(bRightFaulted), " -- stopping the other wheel")
-        if bLeftFaulted == FALSE
+    bLeftBegan := ltWheel.bFrontFaultBegan()
+    bRightBegan := rtWheel.bFrontFaultBegan()
+    if (bLeftBegan == TRUE) or (bRightBegan == TRUE)
+        debug[user.DBGCH_FAULT]("-STR- platform fault: ", sdec_long(bLeftBegan), sdec_long(bRightBegan), " -- stopping both wheels")
+        if ltWheel.getDriverState() <> DCS_FAULTED
             ltWheel.frontZeroPower()
-        if bRightFaulted == FALSE
+        if rtWheel.getDriverState() <> DCS_FAULTED
             rtWheel.frontZeroPower()
         frontDisarmWheelLimits(TRUE, TRUE)
         bCmdWatched := FALSE                                                    ' S-8: nothing open-ended is left to watch
-    bLeftWasFaulted := bLeftFaulted
-    bRightWasFaulted := bRightFaulted
 
 PRI frontDisarmWheelLimits(bLeft, bRight)
 ' FRONT COG: disarm the selected wheels' own distance limits, the ones a driveForDistance() arms (AB).
