@@ -2352,7 +2352,6 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' preload driver values before driver start
     adc_fram    :=    frame_cnt                         ' set ADC to full PWM frame counts
     fram        :=    (frame_cnt / 2) << 16 + 1         ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
-    bias        :=    frame_cnt / 4                     ' PWM center-frame bias
     lutCodePtr  :=    @lutCodeStart                     ' task 3535: hub addr of LUT-resident start sequence, block-loaded by the driver at coginit
 
     ' setup driver parameters based on clock rate
@@ -2372,27 +2371,24 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
                                                         '    duty_min    := dead_gap << 4 #> dead_gap << 4
                                                         ' Chip's new code adjusted this, why?
                                                         '    duty_min    := 200 << 4 #> dead_gap << 4
-    ' Task 3604 (LIMITS-RESET-PLAN.md E2): the feedforward's back-EMF line was measured in units of THIS duty
-    '  ceiling, so it is kept apart from duty_max: a build that raises the ceiling must not raise the slope.
-    dutyAtFfLine := (pwm_limit << 4) / 2
-#ifdef DUTY_MAX_SVM
-    ' E2, the desk bound (a -D build variant until the bench certifies it). The drive re-centres the three
-    '  levels on (min + max) / 2 every frame, so a phase swings at most sqrt(3)/2 of the amplitude either side
-    '  of bias. The low side's Y is the high side's plus dead_gap, and P_PWM_TRIANGLE holds Y in 0..F, F =
-    '  frame_cnt / 2 (p2kbArchSmartPin01000PwmTriangle). Centring bias on the switching window, (F - dead_gap)
-    '  / 2, leaves the same room on both rails, and the amplitude that fills it is (F - dead_gap) / sqrt(3),
-    '  less SVM_GUARD_COUNTS for the CORDIC's rounding and the floored centring. INVARIANT: every high-side Y
-    '  stays >= 0 and every low-side Y <= F, so the PWM never clips. The legacy value below uses 1/2 of the
-    '  frame, which leaves ~14 % of the amplitude unused (at 270 MHz: 1_728 against 1_516 counts). The two
-    '  trials marked BAD below both break this invariant under the old bias: 5/8 peaks at 1_641 counts from
-    '  bias and 3/4 at 1_970, against the 1_464 the low side has before it clips.
+    ' THE DUTY CEILING, derived so the PWM cannot clip (task 3604 built it, Visit 9 certified it, task 3605 made
+    '  it the drive; LIMITS-RESET-PLAN.md E2). The drive re-centres the three levels on (min + max) / 2 every
+    '  frame, so a phase swings at most sqrt(3)/2 of the amplitude either side of bias. The low side's Y is the
+    '  high side's plus dead_gap, and P_PWM_TRIANGLE holds Y in 0..F, F = frame_cnt / 2
+    '  (p2kbArchSmartPin01000PwmTriangle). Centring bias on the switching window, (F - dead_gap) / 2, leaves the
+    '  same room on both rails, and the amplitude that fills it is (F - dead_gap) / sqrt(3), less
+    '  SVM_GUARD_COUNTS for the CORDIC's rounding and the floored centring. INVARIANT: every high-side Y stays
+    '  >= 0 and every low-side Y <= F. MEASURED at Visit 9: the least room any sampled level left was 2 counts,
+    '  the desk's 1-2 (DOCs/plans/servo-model/svm_bound.py).
+    ' It replaces duty_max := (pwm_limit << 4) / 2 on a bias of F / 2, which left ~14 % of the amplitude unused
+    '  (at 270 MHz: 1_728 against 1_516 counts). The two raises tried on that old bias, 5/8 and 3/4 of pwm_limit,
+    '  were recorded as BAD; both clip under it (peaks of 1_641 and 1_970 counts from bias, against the 1_464 the
+    '  low side had).
     bias        := ((frame_cnt / 2) - dead_gap) / 2
     duty_max    := muldiv64((frame_cnt / 2) - dead_gap - SVM_GUARD_COUNTS, SVM_INV_ROOT3_PPM, PPM) << 4
-#else
-    duty_max    := dutyAtFfLine                         ' ok (half of pwm_limit << 4, so the old <# clamp never acted)
-                                                        'duty_max    := ((pwm_limit  << 4) / 4) * 3 <# pwm_limit << 4    ' BAD
-                                                        'duty_max    := ((pwm_limit  << 4) / 8) * 5 <# pwm_limit << 4    ' BAD
-#endif
+    ' The feedforward's back-EMF line was measured against the OLD ceiling, so that duty is kept apart from
+    '  duty_max: ff_ceiling scales by the two below, and the slope does not move with the ceiling.
+    dutyAtFfLine := (pwm_limit << 4) / 2
     servo_shift := SERVO_ACC_SHIFT                      ' R18.4 D-2: the trim's gain (ff_ceiling follows the power limits, below)
     cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
@@ -2448,7 +2444,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     else
         ff_ceiling := abs(maxFwdIncreAtPwr)
     ' Task 3604: the driver scales by duty_max, and the line reaches dutyAtFfLine at ff_ceiling, so ff_ceiling
-    '  moves with duty_max and the slope does not. Exactly 1:1 on the default build.
+    '  moves with duty_max and the slope does not (1_728 / 1_516 of the line's own figure at 270 MHz).
     ff_ceiling := muldiv64(ff_ceiling, duty_max, dutyAtFfLine)
     ff_ceiling #>= 1
 
@@ -2712,6 +2708,11 @@ CON { 6.5in hub commutation: hall zero and per-direction lead }
     '  reached at ~147e6. The power table's rows follow the same line scaled by voltage, to within 2.5 %.
     HUB_FF_INCR_AT_NOMINAL = 147_000_000
     HUB_FF_NOMINAL_MV      = 18_500
+    ' Task 3605 (Visit 9): the 6.5in speed ceiling at HUB_FF_NOMINAL_MV and the floor, both MEASURED; the other
+    '  voltages' ceilings scale from the first (confgurePowerLimits() gives the rule and the evidence)
+    HUB_CEIL_INCR_AT_NOMINAL = 165_000_000
+    HUB_CEIL_ROUND           = 500_000
+    HUB_FLOOR_INCR           = 100_000
 
     LEAD_POINTS           = 4
     TENTHS_PER_DEGREE     = 10
@@ -2928,28 +2929,25 @@ PRI confgurePowerLimits(userVoltage) | index
         minRevIncreAtPwr := 544_628                 ' anything below yields NO rotation
     else
         ' rows: PWR_6p0V, PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
-        ' PL-50: the RPM and cts/Sec figures below have no log behind them and sit within 1.5% of a 2000-passes/s
-        '  model. The driver applies drv_incr about 1913 times a second (one drive pass per 23 ADC frames, see
-        '  drvMotor), and Visit 2's ladder MEASURED 0.946-0.965 of that model, so 147_000_000 runs about 393
-        '  ticks/s, not 408 (DERIVED). The increments are the fault ceilings and are unchanged. (The DOCO figures
-        '  above do match the real rate: 282_000_000 -> 754 cts/Sec recorded, 753.7 DERIVED.)
-        ' PL-38: 6.0V and 7.4V are PLACEHOLDERs, not measured. The 11.1V row is the nearest measured
-        '  point (90_000_000 -> 165.3 RPM); the ~14.8 RPM/V slope across the five measured rows
-        '  (11.1V..22.2V) predicts ~89 RPM at 6.0V and ~110 RPM at 7.4V. Scaled at 90_000_000/165.3
-        '  RPM and rounded DOWN (erring low, so a placeholder never promises a speed this motor may
-        '  not reach at that voltage): 48_400_000 (~89 RPM) and 59_800_000 (~110 RPM). Measure and
-        '  replace at the next bench session with a supply at each voltage (MOTOR_CHOICE.md, task #3515).
-        ' 48_400_000  PLACEHOLDER anything above yields RPM ~89  (not measured)
-        ' 59_800_000  PLACEHOLDER anything above yields RPM ~110 (not measured)
-        ' 90_000_000  anything above yields RPM 165.3, cts/Sec 248 (until fault at 170.6 256)
-        ' 97_000_000  anything above yields RPM 181.3, cts/Sec 272 (until fault at 186.6 280)
-        ' 120_000_000 anything above yields RPM 224.0, cts/Sec 336 (until fault at 229.8 344)
-        ' 147_000_000 anything above yields RPM 272.0, cts/Sec 408 (until fault at 277.3 416)
-        ' 172_000_000 anything above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
-        ' 172_000_000     FAKE above yields RPM 320.0, cts/Sec 480 (until fault at 325.3 480)
-        maxFwdIncreAtPwr := lookup(index:  48_400_000,  59_800_000,  90_000_000,  97_000_000,  120_000_000,  147_000_000,  172_000_000,  172_000_000)
-        maxRevIncreAtPwr := lookup(index: -48_400_000, -59_800_000, -90_000_000, -97_000_000, -120_000_000, -147_000_000, -172_000_000, -172_000_000)
-        minFwdIncreAtPwr := 544_628           ' anything below yields NO rotation
+        ' Task 3605 (LIMITS-RESET-PLAN.md L1, L5), from Visit 9 (DOCs/analyses/bench/2026-09-23/VISIT-9-EVALUATION.md).
+        '  The old table was the OLD drive's fault edges. The R18.4 drive follows far past them unloaded -- to the
+        '  harness's 245_000_000 command cap -- but above the point where duty first caps it does so by field
+        '  weakening, drawing 3-4 A to spin a lifted wheel, and a slip there dumps current (PL-108). So the ceiling
+        '  is not where the wheel stops following.
+        ' THE CEILING RULE: the fastest measured speed that keeps the unloaded duty reserve the drive already
+        '  shipped with. 147_000_000 ran at 92.7 % of its duty cap (Visit 8b); on the duty ceiling init() now
+        '  derives, 165_000_000 runs at 92-93 % (MEASURED at 18.5 V, both motors, both directions). How much of
+        '  that reserve survives a load is the floor run's to say (E5).
+        ' The other rows are DERIVED: back-EMF rises with speed and the headroom with the supply, so the same
+        '  reserve sits at a speed proportional to the voltage -- the old measured rows followed that line to
+        '  within 2.5 %. So the table is one measured constant, HUB_CEIL_INCR_AT_NOMINAL, scaled by the supply
+        '  and rounded DOWN to HUB_CEIL_ROUND so no row promises more (6.0 V: 53_500_000 ... 24.0 V: 214_000_000).
+        ' THE FLOOR: every rung from the old 544_628 ("anything below yields NO rotation") down to 100_000
+        '  rotated at exactly its commanded rate, steadily (MEASURED, Visit 9 E4). 100_000 is the lowest tried;
+        '  the true floor is lower and unmeasured.
+        maxFwdIncreAtPwr := muldiv64(HUB_CEIL_INCR_AT_NOMINAL, nominalMilliVolts(userVoltage), HUB_FF_NOMINAL_MV) / HUB_CEIL_ROUND * HUB_CEIL_ROUND
+        maxRevIncreAtPwr := 0 - maxFwdIncreAtPwr
+        minFwdIncreAtPwr := HUB_FLOOR_INCR
         minRevIncreAtPwr := 0 - minFwdIncreAtPwr
 
     eUserSelectedVolts := userVoltage
@@ -4143,13 +4141,14 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 6         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 7         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
                                             ' 6: the feedforward's slope is held when duty_max moves; the DUTY_MAX_SVM build variant (task 3604)
+                                            ' 7: the clip-free duty ceiling is the drive; the 6.5in ceilings 12 % higher, the floor 5.4x lower (task 3605)
 
-    ' Task 3604 (LIMITS-RESET-PLAN.md E2): the DUTY_MAX_SVM build's duty ceiling, derived in init()
+    ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
     SVM_INV_ROOT3_PPM           = 577_350   ' 1 / sqrt(3), parts per million
     PPM                         = 1_000_000

@@ -181,8 +181,19 @@
 
 CON { build identity }
 
-    SRC_REV     = 19                                      ' hand-bumped whenever this file changes
-    FMT_VERSION = 11                                        ' BS- record-format version
+    SRC_REV     = 20                                      ' hand-bumped whenever this file changes
+    FMT_VERSION = 12                                        ' BS- record-format version
+
+' fmt 12 changes (task 3597; no record's field names, order or content change):
+'   - CELL R18-SCAN-FOLLOW RETIRED, both instances. Its negative limb could never fire here (Visit 7c
+'     C-2, 16 of 16): a point droops because ABORT_I cut it short, and a point cut short never fills the
+'     driver's 1 s window, so the validity guard -- which is right -- excluded every one. A cell with a
+'     positive limb only is the shape D2 forbids, so the certification of the driver's
+'     testGetFollowing() moved, both limbs, to test_bench_dual.spin2's LIMITS part, where an over-command
+'     under a lowered current limit builds the not-following case deliberately, with a full window and the
+'     current bounded by the drive's own limiter (R18-DUAL-FOLLOW-M, R18-DUAL-FOLFALL-M). BS-POINT3 still
+'     prints the driver's reading per point.
+'   - emitSignoffEx(), whose only caller that cell was, is deleted with it.
 
 ' fmt 11 changes (task 3594, THE LOOP INVERSION; no existing record's field names, order or content
 '  change -- BS-END only GAINS fields, after right_done and before lib_abort):
@@ -725,42 +736,6 @@ CON { sign-off verdicts, task 3537 -- record contract DOCs/plans/VISIT-SIGNOFF-D
     INTEG_SUM_LO = 0
     INTEG_SUM_HI = 0
 
-' R18-SCAN-FOLLOW (task 3594), units PCT. CERTIFIES THE DRIVER'S OWN testGetFollowing(), harvested
-' into isp_bldc_motor.spin2 at 31c8b91. Front 3 of the release is sensor integration INTO THE DRIVE,
-' and an observable the driver declares but nothing judges has been built, not integrated -- so this
-' cell is what makes that harvest a certified capability rather than an untested one.
-'
-' WHY IT IS A CROSS-CHECK AND NOT A RESTATEMENT. The harness computes its own ptFollowPct from this
-' point's whole drive span against expectedRateX10()'s compile-time rung table. The driver computes
-' nPctOfCmd from its own 1 s rpm window against a commanded rate it DERIVES from the live command.
-' Different numerators, different denominators, different time bases. Agreement is therefore evidence;
-' a wrong derivation in either shows up as a gross disagreement, not a small one.
-'
-' TWO CRITERIA, BECAUSE ONE LIMB VERIFIES NOTHING (D2).
-'  FOLLOW_AGREES_PCT -- the POSITIVE limb. Among points the harness says were FOLLOWING
-'   (ptFollowPct >= FOLLOW_DROOP_PCT), the worst |driver - harness| must not exceed FOLLOW_AGREE_PCT.
-'  FOLLOW_COLLAPSED -- the NEGATIVE limb, and the one that matters. Among points the harness says
-'   were NOT following (ptFollowPct < FOLLOW_LOW_PCT), the driver's LOWEST reading must itself be
-'   below FOLLOW_LOW_PCT. An instrument shown only healthy input has not been verified; this is the
-'   limb that proves the driver's number can actually fall.
-'  NOMEAS, never PASS, when no such point arose -- "the condition did not arise" is an honest result
-'   and is NOT evidence the reading collapses.
-'
-' THE LIMITS ARE MEASURED, not chosen. testGetFollowing()'s own doc records the bench instrument
-' reading 44-47 % of commanded at the current wall while duty saturated, against ~100 while
-' following. FOLLOW_LOW_PCT 60 sits clear of both: above the wall's 47 and far below a following
-' 100. FOLLOW_AGREE_PCT 20 is set by the known time-base difference -- the driver's last-second
-' window reads higher than the harness's whole-span mean, which includes spin-up -- and is tight
-' enough that a wrong denominator (which misses by a FACTOR, not by points) cannot pass.
-'
-' THE "FOLLOWING" THRESHOLD IS FOLLOW_DROOP_PCT ITSELF, not a second constant of the same value.
-'  The scan already defines 80 % as where "the drive is not following" begins (see its CON above),
-'  and a parallel FOLLOW_OK_PCT sitting at 80 would be two names for one meaning, free to drift
-'  apart in a later edit. This cell asks the scan's own question and uses the scan's own number.
-    FOLLOW_LOW_PCT     = 60                                 ' harness reading below which a point counts as NOT following
-    FOLLOW_AGREE_PCT   = 20                                 ' worst permitted |driver - harness| among following points
-    FOLLOW_MIN_POINTS  = 4                                  ' following points needed before the positive limb is judged
-
 ' R6-SCAN-OFFSETS, crit READBACK_BAD, units COUNT. MEASURED (design sec A.4 row 6): offsets read back
 ' exactly at every start of scan run 5; DERIVED: the read-back is integer degrees, so exact.
     READBACK_BAD_LO = 0
@@ -1178,12 +1153,7 @@ sSfCritNotAlive BYTE    "STARTS_NOT_ALIVE", 0
 sSfCritRate     BYTE    "RATE_IN_BAND", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
-' Task 3594: R18-SCAN-FOLLOW certifies the DRIVER's own testGetFollowing(), harvested at 31c8b91.
-'  Two criteria because one limb cannot verify it (D2): FOLLOW_AGREES_PCT is the positive limb and
-'  FOLLOW_COLLAPSED_PCT the negative one. Lengths: cell 15 of TOKMAX_CELL 20, crits 17 and 19 --
-'  FOLLOW_COLLAPSED_PCT would print "?" at TOKMAX_CRIT 18, which is how R18-DUAL-OFFSETS-A lost its
-'  crit by one byte, so it is shortened to 18 and checked here rather than discovered in a log.
-sSfTaskFollow   BYTE    "3594", 0                           ' R18-SCAN-FOLLOW: the driver's following reading
+sSfTaskFollow   BYTE    "3594", 0                           ' task 3594's cells: R18-SCAN-DROOPLOGIC
 ' Task 3594 droop self-test sequences. Each byte is one coarse point as stepStopDecision() sees it:
 '  DSQ_CLEAN followed nothing, DSQ_DROOP drove but did not follow, DSQ_FAULT was fault-like.
 ' THE RUN is the shape hardware has never produced; THE ISOLATED shape is the one every real run DID
@@ -1196,10 +1166,6 @@ sSfCellDroopLg  BYTE    "R18-SCAN-DROOPLOGIC", 0
 sSfCritDrpRun   BYTE    "DROOP_RUN_FIRES", 0
 sSfCritDrpIsol  BYTE    "DROOP_ISOLATED_NO", 0
 sSfCritDrpFlt   BYTE    "DROOP_FAULT_RESETS", 0
-sSfCellFollow   BYTE    "R18-SCAN-FOLLOW", 0
-sSfCritFolAgree BYTE    "FOLLOW_AGREES_PCT", 0
-sSfCritFolColl  BYTE    "FOLLOW_COLLAPSED", 0
-sSfUnitsPct     BYTE    "PCT", 0
 sSfPass         BYTE    "PASS", 0
 sSfFail         BYTE    "FAIL", 0
 sSfNomeas       BYTE    "NOMEAS", 0
@@ -1344,7 +1310,7 @@ VAR { the point just measured }
     LONG    ptFollowPct                                     ' achieved rate as a percent of commanded: 100 = following
     ' THE DRIVER'S OWN following reading for the same point (task 3594), read at span close while the
     '  drive command is still standing. The harness's ptFollowPct above and these are computed by
-    '  independent paths; R18-SCAN-FOLLOW judges the driver's against the harness's.
+    '  independent paths; BS-POINT3 prints both (the cell that judged them is retired, fmt 12).
     LONG    bPtDrvFollowValid                               ' the driver's bValid: its rpm window was full
     LONG    ptDrvFollowPct                                  ' the driver's nPctOfCmd
     LONG    ptDrvMeasTps                                    ' the driver's measured ticks/s
@@ -1444,12 +1410,6 @@ VAR { sign-off accumulators, task 3537 -- index sideSlot(side); cog 0 only, the 
     LONG    zxsAllMin[SIDE_SLOTS * ZXS_CHANNELS]            ' smallest lifetime-first full zero mean, any phase, mV x10
     LONG    zxsAllMax[SIDE_SLOTS * ZXS_CHANNELS]            ' largest lifetime-first full zero mean, any phase, mV x10
     LONG    zxsAllN[SIDE_SLOTS]                             ' zeros folded into zxsAllMin/zxsAllMax
-    ' task 3594 -- R18-SCAN-FOLLOW, the driver's own following reading, judged per motor.
-    LONG    sfFolAgreeN[SIDE_SLOTS]                         ' points where BOTH readings were valid and the harness said FOLLOWING
-    LONG    sfFolAgreeWorst[SIDE_SLOTS]                     ' worst |driver - harness| among those points, PCT
-    LONG    sfFolCollN[SIDE_SLOTS]                          ' points where the harness said NOT following and the driver's window was full
-    LONG    sfFolCollMin[SIDE_SLOTS]                        ' the driver's LOWEST reading among those, PCT -- the negative limb
-    LONG    bSfFolCollSeen[SIDE_SLOTS]                      ' TRUE once any such point arose; FALSE makes the negative limb NOMEAS
     LONG    bResLegRan[RESULT_SLOTS]                        ' TRUE when runLeg() ended this slot's leg other than LX_SKIPPED
     LONG    resZeroMissing[RESULT_SLOTS]                    ' that leg's valid points without a valid own zero
     LONG    resZeroChecked[RESULT_SLOTS]                    ' that leg's valid points (R9-SCAN-OWNZERO's n)
@@ -1612,11 +1572,6 @@ PRI initRunState() | slotIdx
         bSfSelfRateOk[slotIdx] := FALSE
         zxsN[slotIdx] := 0
         zxsAllN[slotIdx] := 0
-        sfFolAgreeN[slotIdx] := 0                           ' task 3594 R18-SCAN-FOLLOW
-        sfFolAgreeWorst[slotIdx] := 0
-        sfFolCollN[slotIdx] := 0
-        sfFolCollMin[slotIdx] := POSX                       ' no point folded yet; bSfFolCollSeen is the real guard
-        bSfFolCollSeen[slotIdx] := FALSE                    ' never arose is NOMEAS, not PASS
         bSfPair2Complete[slotIdx] := FALSE
         bSfPair2NetOk[slotIdx] := FALSE
         bSfRstAloneDone[slotIdx] := FALSE                   ' task 3537 R10: no attempt is NOMEAS
@@ -2705,9 +2660,8 @@ PRI closeDriveSpan(side, speedIdx)
     '  Here because the drive command is still standing: this routine is called before anything can
     '  command zero or reset the driver (see the call site), and the driver's reading is a live
     '  window -- after the wheel stops, hallWindowSum decays toward zero and the number stops
-    '  meaning what it meant under the command. A reading taken one step later would certify nothing
-    '  and would look like a collapse on EVERY point, which is the failure mode that would make the
-    '  cell pass for the wrong reason.
+    '  meaning what it meant under the command. BS-POINT3 prints it beside the harness's own reading;
+    '  the cell that judged the two here is retired (task 3597, see fmt 12).
     ptDrvMeasTps, ptDrvCmdTps, ptDrvFollowPct, bPtDrvFollowValid := sideFollowing(side)
     if bSpanOpen
         spanDriveMs := getms() - spanStartMs
@@ -2719,41 +2673,6 @@ PRI closeDriveSpan(side, speedIdx)
         ptSpanDutyMean := spanDutySum / spanSamples
         ptSpanDutyMax := spanDutyMax
         ptFollowPct := (ptSpanRateX10 * X100) / (expectedRateX10(speedIdx))
-        accumFollowPoint(side)
-
-PRI accumFollowPoint(side) | slotIdx, delta
-' Fold this point into R18-SCAN-FOLLOW's two limbs (task 3594). Called from closeDriveSpan() only
-' when bPtSpanValid, so the harness's own reading is a measurement and not a default.
-'
-' WHICH LIMB A POINT FEEDS IS DECIDED BY THE HARNESS, NEVER BY THE DRIVER. That is deliberate: the
-' driver's reading is the thing under test, so letting it choose its own limb would let a stuck
-' reading select the limb it passes. The harness says whether the drive was following; the driver's
-' number is then judged against that verdict.
-'
-' A point in neither band (FOLLOW_LOW_PCT..FOLLOW_DROOP_PCT) feeds NEITHER limb. The gap is where the
-' wall's 44-47 % and a following 100 % are not cleanly separated, and a point there would weaken
-' both limbs rather than strengthen either.
-'
-' @param side - SIDE_LEFT or SIDE_RIGHT
-'
-' @local slotIdx - this motor's accumulator index
-' @local delta - |driver - harness| for this point, PCT
-
-    ' A point whose driver window was not full folds into NEITHER limb: the driver's number is a
-    '  transient there and would be read as a collapse by the negative limb, passing it for the
-    '  wrong reason. One exit, so the guard is a condition and not an early return.
-    if bPtDrvFollowValid <> FALSE
-        slotIdx := sideSlot(side)
-        if ptFollowPct >= FOLLOW_DROOP_PCT
-            delta := abs(ptDrvFollowPct - ptFollowPct)
-            sfFolAgreeN[slotIdx]++
-            if delta > sfFolAgreeWorst[slotIdx]
-                sfFolAgreeWorst[slotIdx] := delta
-        elseif ptFollowPct < FOLLOW_LOW_PCT
-            sfFolCollN[slotIdx]++
-            if ptDrvFollowPct < sfFolCollMin[slotIdx]
-                sfFolCollMin[slotIdx] := ptDrvFollowPct
-            bSfFolCollSeen[slotIdx] := TRUE
 
 PRI expectedRateX10(speedIdx) : rateX10
 ' The commanded tick rate for a speed rung, x10 -- the denominator ptFollowPct is measured against.
@@ -4640,8 +4559,8 @@ PRI sideFollowing(side) : nMeasTicksSec, nCmdTicksSec, nPctOfCmd, bValid
 ' closeDriveSpan(), and the two are deliberately INDEPENDENT -- different time bases (the driver's
 ' own 1 s rpm window against this point's whole drive span) and different denominators (the driver
 ' derives its commanded rate from the live command; the harness reads a compile-time rung table in
-' expectedRateX10()). That independence is what makes R18-SCAN-FOLLOW a cross-check rather than a
-' restatement: agreement means two separate paths reached the same number.
+' expectedRateX10()). That independence is what makes the pair a cross-check rather than a restatement:
+' agreement means two separate paths reached the same number (judged now in test_bench_dual.spin2, fmt 12).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns nMeasTicksSec - the driver's measured hall ticks per second
@@ -5092,8 +5011,7 @@ PRI emitPoint3(side)
     benchLog.naNumField(@"span_duty_mean", ptSpanDutyMean, LIM_SMALL, bPtSpanValid)
     benchLog.naNumField(@"span_duty_max", ptSpanDutyMax, LIM_SMALL, bPtSpanValid)
     ' TASK 3594: the DRIVER's own answer to the same question, beside the harness's follow_pct above,
-    '  so the two can be compared point by point in the log and not only through R18-SCAN-FOLLOW's
-    '  two summary verdicts. drv_cmd_tps is the DENOMINATOR the driver derived: when the two
+    '  so the two can be compared point by point in the log. drv_cmd_tps is the DENOMINATOR the driver derived: when the two
     '  percentages disagree it is what says whether the numerator or the denominator is at fault.
     '  + drv_follow_pct(1+14+1+7=23) + drv_meas_tps(1+12+1+7=21) + drv_cmd_tps(1+11+1+7=20) = 64,
     '  for 225 bytes worst case. Still under the 280-byte bound.
@@ -5833,7 +5751,6 @@ PRI emitSignoffDecls()
     emitSignoffDecl(@sSfCellOwnZero, @sSfTaskScanV4)
     emitSignoffDecl(@sSfCellPair2, @sSfTaskScanV4)
     emitSignoffDecl(@sSfCellRstAlone, @sSfTaskRstAlone)
-    emitSignoffDecl(@sSfCellFollow, @sSfTaskFollow)         ' task 3594: certifies the driver's own testGetFollowing()
 #endif
 #endif
 
@@ -5906,44 +5823,11 @@ PRI emitSignoffs() | side, slotIdx, bStarted
         ' R10-SCAN-RSTALONE (task 3537 phase 2b3): unfixed, testResetFault() alone left the wheel
         ' FAULTED and not stopped, so cleared is FALSE -> FAIL. Worst case: emitSignoffBool(), 173 bytes.
         emitSignoffBool(@sSfCellRstAlone, @sSfTaskRstAlone, side, @sSfCritRstAlone, bSfRstAloneDone[slotIdx], bRstAloneCleared[slotIdx], SIGNOFF_ONE_INSTANCE)
-        emitFollowSignoffs(side, slotIdx)
         emitZxsAll(side, slotIdx)
     beat(CP_EMIT)
     emitSignoffBool(@sSfCellNoStall, @sSfTaskNoStall, SIDE_NONE, @sSfCritCog0End, TRUE, TRUE, SIGNOFF_ONE_INSTANCE)
 #endif
 #endif
-
-PRI emitFollowSignoffs(side, slotIdx)
-' Emit R18-SCAN-FOLLOW's TWO instances for one motor (task 3594): the positive limb then the
-' negative one. This is what certifies the driver's own testGetFollowing(), harvested at 31c8b91.
-'
-' FOLLOW_AGREES_PCT -- measured = the WORST |driver - harness| among points the harness called
-'  FOLLOWING, hi = FOLLOW_AGREE_PCT, no lo (a perfect 0 must pass). NOMEAS below FOLLOW_MIN_POINTS
-'  following points, because a worst-of-one is not a bound.
-'
-' FOLLOW_COLLAPSED -- measured = the driver's LOWEST reading among points the harness called NOT
-'  following, hi = FOLLOW_LOW_PCT, no lo (0, a stall, is the strongest possible pass). NOMEAS when
-'  no such point arose.
-'
-' *** WHY THE NEGATIVE LIMB IS NOMEAS AND NOT PASS WHEN NOTHING DROOPED. A run in which the drive
-' followed throughout has shown the reading sitting near 100 and nothing else; it has NOT shown the
-' number can fall, which is the only property that makes it useful as a stop condition. Passing there
-' would certify the capability on evidence that cannot distinguish a working reading from one stuck
-' at 100 -- the exact shape D2 exists to forbid, and the shape the droop provocation load exists to
-' make sure this run actually reaches.
-'
-' Worst case: emitSignoffEx(), 196 bytes.
-'
-' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param slotIdx - sideSlot(side)
-
-    beat(CP_EMIT)
-    emitSignoffEx(@sSfCellFollow, @sSfTaskFollow, side, @sSfCritFolAgree, ...
-        sfFolAgreeN[slotIdx] >= FOLLOW_MIN_POINTS, sfFolAgreeWorst[slotIdx], ...
-        0, FALSE, FOLLOW_AGREE_PCT, TRUE, TRUE, @sSfUnitsPct, sfFolAgreeN[slotIdx])
-    emitSignoffEx(@sSfCellFollow, @sSfTaskFollow, side, @sSfCritFolColl, ...
-        bSfFolCollSeen[slotIdx] <> FALSE, sfFolCollMin[slotIdx], ...
-        0, FALSE, FOLLOW_LOW_PCT, TRUE, TRUE, @sSfUnitsPct, sfFolCollN[slotIdx])
 
 PRI emitWdtSignoffs()
 ' Emit the four R11-WDT-* SIGNOFF instances from cog 0 (task 3537 phase 2c, WD_SELFTEST build, design
@@ -6143,58 +6027,6 @@ PRI emitSignoff(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, hiLi
     benchLog.naNumField(@"measured", boundedVal, LIM_BIG, bMeasured)
     benchLog.numField(@"lo", loLimit, LIM_BIG)
     benchLog.numField(@"hi", hiLimit, LIM_BIG)
-    benchLog.tokenField(@"units", pUnits, TOKMAX_UNITS)
-    if bMeasured
-        benchLog.numField(@"n", instCount, LIM_SMALL)
-    else
-        benchLog.numField(@"n", 0, LIM_SMALL)
-    benchLog.tokenField(@"verdict", pVerdict, TOKMAX_SFVERDICT)
-    lineEmit()
-
-PRI emitSignoffEx(pCell, pTask, side, pCrit, bMeasured, measuredVal, loLimit, bHasLo, hiLimit, bHasHi, bConditionsOk, pUnits, instCount) | boundedVal, pVerdict
-' Emit one SIGNOFF verdict (design sec B.1, sf 1) whose limits may be NA and whose PASS may need a
-' condition beyond lo..hi. Same fields, order and clamps as emitSignoff(), which can do neither.
-' PASS only when measured AND bConditionsOk AND every present limit holds; FAIL when measured
-' otherwise; NOMEAS, with measured NA and n 0, when not measured. Judged on the clamped value.
-' No caller yet: phase 2b2's R8/R9 cells need neither NA limits nor extra conditions, and the
-' every-lifetime spread became the plain BS-ZXSALL record instead of ZXSALL_* SIGNOFFs. Kept for a
-' later task 3537 phase.
-' Worst case, by clamp widths: identical to emitSignoff(), 196 bytes (an NA limit is shorter).
-'
-' @param pCell - pointer to the cell id token
-' @param pTask - pointer to the owning todo-mcp task id, as plain text
-' @param side - SIDE_* the instance belongs to
-' @param pCrit - pointer to the criterion token
-' @param bMeasured - TRUE when the instance was measured
-' @param measuredVal - the instance's measured value
-' @param loLimit - lowest passing value, compiled in (ignored when bHasLo is FALSE)
-' @param bHasLo - TRUE when the cell has a low limit; FALSE prints lo NA
-' @param hiLimit - highest passing value, compiled in (ignored when bHasHi is FALSE)
-' @param bHasHi - TRUE when the cell has a high limit; FALSE prints hi NA
-' @param bConditionsOk - TRUE when every non-range condition of the criterion holds
-' @param pUnits - pointer to the units token
-' @param instCount - starts, points or read-backs behind measuredVal
-'
-' @local boundedVal - measuredVal clamped to +/-LIM_BIG
-' @local pVerdict - PASS, FAIL or NOMEAS token
-
-    boundedVal := (measuredVal #> (0 - LIM_BIG)) <# LIM_BIG
-    if bMeasured == FALSE
-        pVerdict := @sSfNomeas
-    elseif (bConditionsOk == TRUE) and ((bHasLo == FALSE) or (boundedVal >= loLimit)) and ((bHasHi == FALSE) or (boundedVal <= hiLimit))
-        pVerdict := @sSfPass
-    else
-        pVerdict := @sSfFail
-    benchLog.begin(@"SIGNOFF")
-    benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
-    benchLog.tokenField(@"bin", @sSfBinScan, TOKMAX_BIN)
-    benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
-    benchLog.tokenField(@"task", pTask, TOKMAX_TASK)
-    benchLog.tokenField(@"motor", motorToken(side), TOKMAX_MOTOR)
-    benchLog.tokenField(@"crit", pCrit, TOKMAX_CRIT)
-    benchLog.naNumField(@"measured", boundedVal, LIM_BIG, bMeasured)
-    benchLog.naNumField(@"lo", loLimit, LIM_BIG, bHasLo)
-    benchLog.naNumField(@"hi", hiLimit, LIM_BIG, bHasHi)
     benchLog.tokenField(@"units", pUnits, TOKMAX_UNITS)
     if bMeasured
         benchLog.numField(@"n", instCount, LIM_SMALL)

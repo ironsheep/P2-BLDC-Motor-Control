@@ -5070,6 +5070,30 @@ decisive evidence for the underlying «#3529» work was the right motor's zero l
 **Cost if left:** two cells contribute a green line to every sign-off sheet while proving nothing, and
 a reader counting greens over-counts the run's evidence by two per motor.
 
+**RESOLVED (3) — `R18-SCAN-FOLLOW`'s negative limb could never fire, so the cell moved (Visit 7c C-2,
+«#3597»).** MEASURED: all 16 points the scan scored below `FOLLOW_LOW_PCT` had the driver reading NA
+(`VISIT-7C-EVALUATION.md` §4). This was structural, not bad luck. In the scan a point droops only at the
+current wall, where `ABORT_I` cuts it short, and a point cut short never fills the driver's 1 s window. The
+validity guard is right to exclude it, because an unfilled window reads low for reasons that have nothing to
+do with the drive. The three options, judged on this cell's merits alone:
+- **(a) a partial-window driver reading** — rejected. It is a driver change made for a harness's sake, and
+  the path limiter no longer needs it (D-6 reads `lag_held` at slot rate).
+- **(c) judge the raw measured/commanded pair** — rejected. The measured side *is* the same unfilled window,
+  so it fails for the same reason.
+- **(b) a not-following case that still completes its window** — **chosen, and built by construction.** The
+  LIMITS part commands `LIMTOP_MAX_INCRE` **with the motor's current limits lowered to 1 A**, then puts them back
+  and reads them back (`BM-OCLIM`). The over-command alone was not enough: Visit 9 measured three of four
+  wheel-directions *following* it by field weakening (2.3–4.2 A), and the fourth falling short only by a slip with
+  a ~25 A peak (PL-108). With the current capped, the drive has to fall back to what it holds at 1 A (about 76–80 % of
+  the command on Visit 9's figures), while `targetIncre` stays at the command. The driver must read the shortfall
+  with a full window, bounded by its own limiter. `test_bench_dual.spin2` judges both limbs with one criterion,
+  split by the harness's own verdict: `R18-DUAL-FOLLOW-M` on following readings and `R18-DUAL-FOLFALL-M` below 90 %.
+  A reading stuck at 100 fails the second. The same step gives A-8 a not-following case a lifted rig can reach,
+  which part D's stall cannot (PL-106). It is also the fold-back's first exercise at a limit a lifted wheel
+  actually crosses on the new drive: Visit 8's FOLDBACK passed at 695 mA against an 8 A limit.
+- **The scan cell is retired, both instances** (`test_bench_scan.spin2` SRC_REV 20, fmt 12). A cell with one
+  limb is the shape D2 forbids. `BS-POINT3` still prints both readings per point.
+
 ---
 
 ### PL-99 -- the ALIGN crossing detector has no hysteresis, so it counts ~5.5x too many crossings
@@ -5305,7 +5329,55 @@ case before the cell is trusted. **The floor run («#3591»)** is the other plac
 - **Two meanings: FIXED.** E0 («#3603», `06cdb2c`, DRIVER_REV 5) gave the feedforward the motor's own back-EMF
   line, `HUB_FF_INCR_AT_NOMINAL`. «#3604» (DRIVER_REV 6) keeps that line's slope when `duty_max` moves:
   `ff_ceiling` scales by `duty_max` over the duty the line was measured against.
-- **The ceilings: OPEN.** Visit 9's `dual-limits` climbs to the edge, and «#3605» moves the table from its report.
+- **The ceilings: MOVED in «#3605»** from Visit 9 ([evaluation](analyses/bench/2026-09-23/VISIT-9-EVALUATION.md)):
+  147 → 165 × 10⁶ at 18.5 V on the raised duty ceiling, the other voltages scaled by voltage. Confirmed by the next
+  `dual-limits` run.
+
+---
+
+### PL-108 -- a rotor that slips out of field-weakened synchronism draws a single ~25 A peak
+
+**Found 2026-09-23, Visit 9** ([evaluation](analyses/bench/2026-09-23/VISIT-9-EVALUATION.md) §2.2, F-3). RIGHT forward
+at 235 × 10⁶ on the raised duty ceiling: `rate/pred 81.8`, `win_lag,23`, `err_pk,111`, `i_max,3_718` mV (about 25 A
+at 150 mV/A), one sample, no fault and no abort (`debug_260922-185255.log`). The same wheel slipped at 245 on the old
+ceiling with a small peak. It happens only where duty is pinned and the rotor follows by field weakening, which is
+above every published ceiling after «#3605». A user reaches it only by commanding a raw increment.
+
+**What would make it actionable:** a load whose command can exceed the ceiling (a steering scale-up, or a user
+increment) and a trace captured through a slip. The harness's LIMTOP climb stops at the first slip. **Cost if left:**
+none inside the published range; unknown outside it.
+
+---
+
+### PL-109 -- the ramp criteria cannot rank ramp rates: A-2's denominator moves, and the speed-down "peak" is the cruise
+
+**Found 2026-09-23, Visit 9** (§3, F-5, F-6).
+- **A-2 (START).** It divides the peak by the trace's last 60 ms. At `ramp_inc` 22 and 44 that tail is settled
+  quarter-speed current. At 88 the capture ends at the instant of reaching speed, so its tail still carries
+  acceleration current. Result: 88 "passed" (1.28–1.44) while 44 failed (1.82 / 1.85). On one settled denominator the
+  order is the physical one: 1.3, then 1.5–1.8, then 1.6–2.1. A-2 was built to catch the old start surge, and a
+  harder ramp draws more current by design, so it is also the wrong gate for ramp rate.
+- **The speed-down criterion** takes the pre-fall cruise current as its "peak", so its own 50,000 control fails
+  (4.5–10.7×).
+
+**Fix when E5 is designed:** judge a ramp by what can go wrong with it. That means lag holds (already in `BM-RAMP`),
+duty drop, and current **excess above the steady current at the same instantaneous speed**, not above a tail. The
+floor run («#3591») is where the ramp decision is made, so the criterion lands with it.
+
+---
+
+### PL-110 -- at crawl speeds duty sits on `duty_min`, and halving it cuts the current 3-13x
+
+**Found 2026-09-23, Visit 9** (§4, F-8). At every LIMLOW rung (544,628 down to 100,000) duty reads exactly
+`duty_min`: 1,600 as built, 800 halved. Net current falls from 77–96 to 5–31 (mV × 10). Every rung still rotates at
+its commanded rate, with the gap spread about twice as wide (for example 250,000: 1,254–1,710 ms against
+786–1,998). `duty_min` is `100 << 4 #> (dead_gap / 2) << 4` in `init()`, Chip's original, and the plan marks it
+**measure only** (L6).
+
+**What it would take to move it:** loaded evidence that the lower floor still starts and holds a platform. That is
+the floor run's crawl. The trade is crawl current against crawl smoothness, and a user feels both. **Cost if left:**
+small: about 0.05 A net per motor at a crawl (8–9 mV at 150 mV/A), drawn for nothing. It is a cleanliness question,
+not a battery one.
 
 ---
 

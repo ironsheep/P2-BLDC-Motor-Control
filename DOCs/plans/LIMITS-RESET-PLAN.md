@@ -86,7 +86,9 @@ unchanged drive for 25 minutes.
 
   The same arithmetic explains the two trials the source marks "BAD". Under the old bias the low side had 1,464
   counts before it clipped, and 5/8 peaks at 1,641 while 3/4 peaks at 1,970. Both clipped.
-- **Build — done:** `-D DUTY_MAX_SVM` (DRIVER_REV 6). The feedforward's slope does **not** move with `duty_max`:
+- **Build — done, then adopted:** `-D DUTY_MAX_SVM` (DRIVER_REV 6), certified at Visit 9 (PWM room 2 against the
+  desk's 1–2; `unsat` +12.9 %; rungs 3–8 unchanged) and made the drive's only construction at DRIVER_REV 7. The
+  feedforward's slope does **not** move with `duty_max`:
   `ff_ceiling` scales by `duty_max` over the duty the back-EMF line was measured against. That is exactly 1:1 on
   the default build (PL-107's trap, one level down).
 - **Instrument — done:** the instrument cog folds the least and greatest `drive_u/v/w` over every capture's
@@ -134,9 +136,9 @@ that needs the PLOT panel work («#3585») unbenched.
 | Step | What | Gate | Task |
 |---|---|---|---|
 | 1 | **E0**: split the feedforward constant from the ceiling | build-check, check_style | «#3603», done |
-| 2 | **Build E1–E4**: probe rungs above 165 × 10⁶, the `DUTY_MAX_SVM` variant and its clip cell, the ramp settings, and the low-speed rungs; plus the Visit 9 run sheet ([`VISIT-9-RUNSHEET.md`](../analyses/bench/VISIT-9-RUNSHEET.md)) | build-check, check_style; each new cell shown able to fail | «#3604» |
-| 3 | **Visit 9** (wheels up): `dual-limits` (E1, E3, E4), then `dual-limits-svm` (E2) | the run sheet | «#3605» |
-| 4 | **Move the limits** from Visit 9's report: the L1 ceiling table (18.5 V measured, other voltages scaled by voltage and marked DERIVED), L2 `duty_max` if E2 passes, L3 ramps, L5 floor. The speed-ceiling table in `MOTOR_CHOICE.md` follows. | build-check; a confirming `dual-a` | «#3605»; feeds «#3515» |
+| 2 | **Build E1–E4**: probe rungs above 165 × 10⁶, the `DUTY_MAX_SVM` variant and its clip cell, the ramp settings, and the low-speed rungs; plus the Visit 9 run sheet ([`VISIT-9-RUNSHEET.md`](../analyses/bench/VISIT-9-RUNSHEET.md)) | build-check, check_style; each new cell shown able to fail | «#3604», done |
+| 3 | **Visit 9** (wheels up): `dual-limits` (E1, E3, E4), then `dual-limits-svm` (E2) — **run 2026-09-22, both complete** ([evaluation](../analyses/bench/2026-09-23/VISIT-9-EVALUATION.md)) | the run sheet | «#3605», done |
+| 4 | **Move the limits** from Visit 9's report. **Moved (DRIVER_REV 7):** L2 the clip-free `duty_max` is the drive; L1 147 → 165 × 10⁶ at 18.5 V on the rule *keep today's ~7 % unloaded duty reserve*, the other voltages scaled and DERIVED; L5 544,628 → 100,000. **Not moved:** L3 (A-2 cannot rank ramps, PL-109; the stop ramp waits for E5); L6 (PL-110). The speed-ceiling table in `MOTOR_CHOICE.md` follows. | build-check; the confirming **`dual-limits-top`**, which carries the power check (`R18-DUAL-POWERMAP-M`); `dual-a`'s raw ladder cannot see a power table | «#3605»; feeds «#3515» |
 | 5 | **E5** under load | the floor-run sheet | «#3591» / «#3576» |
 
 **What `power` means when L1 moves — settled by the API, not a decision.** `power` 100 is top speed (C-7:

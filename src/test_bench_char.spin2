@@ -152,7 +152,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 11                                       ' hand-bumped whenever this file changes
+    SRC_REV     = 12                                       ' hand-bumped whenever this file changes (12: task 3605 -- the library's power map moved, STEER_POWER 13 -> 12)
     FMT_VERSION = 8                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG; 4: phase C adds SIGNOFF-DECL and SIGNOFF sf 1; 5: phase D adds BC-STEER, BC-BRAKE and four sign-off cells; 6: task 3539 -- removed BC-STEER's "aborted" field (replaced by "drive_done") and BC-BRAKE's "abort" field: every trap used to capture a normal return is gone, so there is nothing left to name as aborted; 7: task 3560 -- adds BC-STEERERR and cell R16-CHAR-STEERERR, no existing record changes shape; 8: task 3574 -- BC-SENSE drops min_mV, max_mV and watts_mW)
 
 CON { timing }
@@ -367,22 +367,25 @@ CON ' ---- Steering and Brake-Start Phases ----
 
   ' R10-CHAR-STEERLIVE drive power. DERIVED from isp_steering_2wheel.spin2 driveAtPower() ->
   ' isp_bldc_motor.spin2 driveAtPowerEx(): power is clamped to [-100, 100], then to
-  ' [-maxSpeed, maxSpeed] (init() sets maxSpeed 75; nothing here calls setMaxSpeed(), so 13 passes
+  ' [-maxSpeed, maxSpeed] (init() sets maxSpeed 75; nothing here calls setMaxSpeed(), so 12 passes
   ' unclamped), negated for the right wheel (forwardIsReverse()), then incrementForPower() ->
   ' map(power, 1, 100, minFwdIncreAtPwr, maxFwdIncreAtPwr). confgurePowerLimits() gives the 6.5in
-  ' motor at PWR_18p5V min 544_628 and max 147_000_000 (DRIVE_CEILING_INCRE). map()'s integer slope
-  ' is (147_000_000 - 544_628) / (100 - 1) = 146_455_372 / 99 = 1_479_347 (truncated), and the
-  ' result is 544_628 + 1_479_347 x (power - 1):
-  '   power 12 -> 16_817_445 (1_557_555 under PREFLIGHT_INCRE)
-  '   power 13 -> 18_296_792 (   78_208 under PREFLIGHT_INCRE)  <- nearest
-  '   power 14 -> 19_776_139 (1_401_139 over  PREFLIGHT_INCRE)
-  ' The negative branch maps to -18_296_792 by the same arithmetic, so the right wheel's commanded
+  ' motor at PWR_18p5V min 100_000 and max 165_000_000 (task 3605, from Visit 9; before it 544_628 and
+  ' 147_000_000, when power 13 was the nearest). These are the LIBRARY's map, kept apart from
+  ' DRIVE_CEILING_INCRE, which is this harness's own speed reference and did not move. map()'s integer
+  ' slope is (165_000_000 - 100_000) / (100 - 1) = 164_900_000 / 99 = 1_665_656 (truncated), and the
+  ' result is 100_000 + 1_665_656 x (power - 1):
+  '   power 11 -> 16_756_560 (1_618_440 under PREFLIGHT_INCRE)
+  '   power 12 -> 18_422_216 (   47_216 over  PREFLIGHT_INCRE)  <- nearest
+  '   power 13 -> 20_087_872 (1_712_872 over  PREFLIGHT_INCRE)
+  ' The negative branch maps to -18_422_216 by the same arithmetic, so the right wheel's commanded
   ' increment is the same magnitude. STEER_CMD_INCRE repeats map()'s arithmetic at compile time.
-    STEER_POWER         = 13
+    STEER_POWER         = 12
     POWER_FULL          = 100                               ' driveAtPowerEx() power ceiling
     POWER_MIN_STEP      = 1                                 ' map()'s inMin for a forward request
-    LIB_MIN_FWD_INCRE   = 544_628                           ' confgurePowerLimits(): 6.5in minFwdIncreAtPwr
-    STEER_CMD_INCRE     = LIB_MIN_FWD_INCRE + ((DRIVE_CEILING_INCRE - LIB_MIN_FWD_INCRE) / (POWER_FULL - POWER_MIN_STEP)) * (STEER_POWER - POWER_MIN_STEP)
+    LIB_MIN_FWD_INCRE   = 100_000                           ' confgurePowerLimits(): 6.5in minFwdIncreAtPwr at 18.5 V
+    LIB_MAX_FWD_INCRE   = 165_000_000                       ' confgurePowerLimits(): 6.5in maxFwdIncreAtPwr at 18.5 V
+    STEER_CMD_INCRE     = LIB_MIN_FWD_INCRE + ((LIB_MAX_FWD_INCRE - LIB_MIN_FWD_INCRE) / (POWER_FULL - POWER_MIN_STEP)) * (STEER_POWER - POWER_MIN_STEP)
 
   ' R10-CHAR-STEERFAIL, crit RET_NEG_NOLEAK, units BOOL. TRUE when start() returned STEERFAIL_RET
   ' (DERIVED from isp_steering_2wheel.spin2 start(): a failed motor start stops whichever motor did

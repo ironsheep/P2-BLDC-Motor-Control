@@ -127,7 +127,7 @@ Usage:  tools/bench-run.sh <tier>
                    dual-align     motion harness part ALIGN -- NO MOTOR IS DRIVEN: the operator turns each wheel BY HAND, 8 legs, to measure the hall zero cold  [ATTENDED]
                    dual-lead      motion harness part LEAD: PREFLT, LEAD -- the live lead-step run that measures the dynamic-lead table  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-limits    motion harness part LIMITS: PREFLT, LIMTOP, LIMRAMP, LIMLOW -- the limits reset's top speed, ramps and low-speed floor  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   dual-limits-svm  as dual-limits' LIMTOP only, on the DUTY_MAX_SVM driver build (the raised duty ceiling)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-limits-top  as dual-limits' LIMTOP only: the climb and the power check that confirm moved limits  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
 
 Examples:
   tools/bench-run.sh detect
@@ -299,16 +299,17 @@ case "$TIER" in
     #  now lie. LIMTOP climbs each wheel and direction past today's 147 x 10^6 ceiling, 10 x 10^6 at a time, until
     #  the wheel stops following (at most 245 x 10^6); LIMRAMP traces starts and speed-downs at faster ramps;
     #  LIMLOW runs four speeds from today's low-speed floor down, then again with duty_min halved.
-    # dual-limits-svm (E2) -- the SAME binary's LIMTOP only, with -D DUTY_MAX_SVM compiling the motor object's
-    #  desk-derived duty ceiling (about 14 % more amplitude, the PWM bias centred on its switching window). The
-    #  flag only changes constants init() writes before the driver starts; nothing is left modified on the board.
+    # dual-limits-top (task 3605) -- the SAME part's LIMTOP only (-D LIMITS_TOP_ONLY): each wheel and direction
+    #  climbs to the edge, then is commanded power 100 and power 1 through the public API to confirm the moved
+    #  power table reached the drive. (It replaces dual-limits-svm: the duty ceiling that tier compared is now
+    #  the drive's own.)
     dual-limits)    BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_LIMITS)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part LIMITS (PREFLT, LIMTOP, LIMRAMP, LIMLOW). THE WHEELS RUN FASTER THAN ANY RUN BEFORE: each wheel, each direction, climbs past today's top speed until it stops keeping up (at most about 440 rpm commanded). At the edge a wheel may FAULT on purpose; it is recovered and the run goes on. Then faster starts, faster slow-downs, and very slow speeds that may barely turn. The 10 A abort and the fold-back limiter both apply. Run cap 30 minutes"
                     ;;
-    dual-limits-svm) BENCH_FILE="test_bench_dual.spin2"
-                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_LIMITS -D DUTY_MAX_SVM)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part LIMITS, TOP-SPEED CLIMB ONLY, on the RAISED DUTY CEILING build (DUTY_MAX_SVM). The wheels should reach a higher top speed than dual-limits did; at the edge a wheel may FAULT on purpose and is recovered. The 10 A abort and the fold-back limiter both apply. Run cap 30 minutes, expected about 6"
+    dual-limits-top) BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_LIMITS -D LIMITS_TOP_ONLY)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part LIMITS, TOP-SPEED CLIMB ONLY: each wheel, each direction, climbs to about 440 rpm commanded as at Visit 9, then runs at full power and at least power through the public API. At the edge a wheel may slip or FAULT on purpose; it is recovered. The 10 A abort and the fold-back limiter both apply. Run cap 30 minutes, expected about 5"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage

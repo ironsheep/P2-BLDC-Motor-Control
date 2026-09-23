@@ -212,6 +212,17 @@
 ''               R14-DUAL-TRACES-M. rungMeasure() takes the instrument's decimation. tokFinds and the plan
 ''               estimates gain the rows LEAD and TAKE were missing (PL-97's mechanism, third instance), and part
 ''               A now prints its LOWSPD and TAKE plan rows. drv_rev reads 6.
+''               23 Sep 2026 -- SRC_REV=33, FMT 19: task 3605, from Visit 9. The duty ceiling it certified is the
+''               drive's (drv_rev 7), so -D DUTY_MAX_SVM and tier dual-limits-svm are gone; -D LIMITS_TOP_ONLY (tier
+''               dual-limits-top) builds the climb alone, the load that confirms moved limits. Each climb now ends
+''               with the power check: driveAtPower(+-100) and (+-1) through the public API, read back against
+''               the moved table as BM-POWER, judged by the new cell R18-DUAL-POWERMAP-M. DRIVE_CEILING_INCRE stays
+''               147_000_000 as this harness's speed reference; the library's map is LIB_MAX/MIN_FWD_INCRE.
+''               Same revision, task 3597: the certification of the driver's own following reading moves here from
+''               the scan (R18-SCAN-FOLLOW retired, PL-98 (3)). Every clean LIMTOP rung and an over-command step
+''               after each climb -- LIMTOP_MAX_INCRE under current limits lowered to OVERCMD_LIMIT_A, restored after
+''               (BM-OCLIM) -- print BM-FOLLOW, and the new cells R18-DUAL-FOLLOW-M / R18-DUAL-FOLFALL-M judge the
+''               driver against the harness on the populations the harness picks.
 ''
 '' =================================================================================================
 
@@ -242,7 +253,7 @@
 
       tools/bench-run.sh dual-a | dual-clock-200 | dual-clock-270 | dual-clock-300 | dual-b | dual-brake
                          | dual-c | dual-d | dual-floor | dual-ui | dual-align | dual-lead | dual-limits
-                         | dual-limits-svm
+                         | dual-limits-top
 
   (the clock is part of the tier name, so a mistyped clock is an unknown tier and is refused -- PL-62)
 
@@ -276,8 +287,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 32                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 18                                        ' BM- record-format version
+    SRC_REV     = 33                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 19                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -315,7 +326,7 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_ALIGN - ALIGN (attended: the wheel is turned BY HAND against a coasting bridge; task 3590)
   '  PART_LEAD  - PREFLT, LEAD (the live lead-step run that measures the dynamic-lead table; task 3583)
   '  PART_LIMITS - PREFLT, LIMTOP, LIMRAMP, LIMLOW (the limits reset's experiments E1-E4; task 3604); the
-  '               DUTY_MAX_SVM build runs PREFLT and LIMTOP only
+  '               LIMITS_TOP_ONLY build runs PREFLT and LIMTOP only
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
         PART_ALIGN, PART_LEAD, PART_LIMITS
     PART_COUNT = PART_LIMITS + 1
@@ -383,12 +394,13 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 #endif
 #endif
 
-  ' Task 3604 (E2): -D DUTY_MAX_SVM builds the motor object with the desk-derived duty ceiling. Here it only
-  '  selects the LIMITS segments: that build re-runs E1's climb and nothing else.
-#ifdef DUTY_MAX_SVM
-    BUILD_SVM = TRUE
+  ' Task 3605: -D LIMITS_TOP_ONLY builds the LIMITS part with its climb only (tier dual-limits-top), the load
+  '  that confirms moved limits. The duty-ceiling variant Visit 9's E2 compared (-D DUTY_MAX_SVM, task 3604) is
+  '  gone: its ceiling is now the drive's.
+#ifdef LIMITS_TOP_ONLY
+    BUILD_TOP_ONLY = TRUE
 #else
-    BUILD_SVM = FALSE
+    BUILD_TOP_ONLY = FALSE
 #endif
 
 
@@ -426,9 +438,19 @@ CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
 
 CON { drive increments and powers }
 
-' isp_bldc_motor.spin2 confgurePowerLimits(): 147_000_000 is the 18.5V ceiling. Only the ladder's two
-' probe rungs exceed it (open question Q2, ruled keep): LADDER_MAX_INCRE bounds every command.
+' THIS HARNESS'S SPEED REFERENCE, not the library's ceiling. 147_000_000 was the 18.5V ceiling until task
+' 3605 moved the library's to 165_000_000 (Visit 9). Every load here -- the ladder, QTR / HALF, the lead-table
+' speeds -- is defined from this number, and keeping it is what keeps each visit's rungs comparable with the
+' last; the library's own map is LIB_MAX_FWD_INCRE / LIB_MIN_FWD_INCRE below. Only the ladder's two probe rungs
+' exceed it (open question Q2, ruled keep): LADDER_MAX_INCRE bounds every command.
     DRIVE_CEILING_INCRE = 147_000_000
+    ' task 3605: the library's 6.5in power map at 18.5 V (confgurePowerLimits()), which LIMTOP's power check
+    '  reads back through the public API. Mirrored on purpose: they are the check's independent expectation, and
+    '  reading them from the driver would judge the driver against itself.
+    LIB_MAX_FWD_INCRE   = 165_000_000
+    LIB_MIN_FWD_INCRE   = 100_000
+    POWER_FULL          = 100
+    POWER_MIN           = 1
     QTR_SPEED_INCRE     = DRIVE_CEILING_INCRE / 4           ' 36_750_000
     HALF_SPEED_INCRE    = DRIVE_CEILING_INCRE / 2           ' 73_500_000
     PREFLIGHT_INCRE     = DRIVE_CEILING_INCRE / 8           ' 18_375_000
@@ -1837,6 +1859,12 @@ sSfCellDbgMaskM BYTE    "R18-DUAL-DBGMASK-M", 0
 sSfCellTracesM  BYTE    "R14-DUAL-TRACES-M", 0
 sSfCellTopSpd   BYTE    "R18-DUAL-TOPSPD-M", 0
 sSfCellPwmClip  BYTE    "R18-DUAL-PWMCLIP-M", 0
+sSfCellFollowM  BYTE    "R18-DUAL-FOLLOW-M", 0
+sSfCellFolFall  BYTE    "R18-DUAL-FOLFALL-M", 0
+sSfCritFolGap   BYTE    "FOLLOW_GAP_PTS", 0
+sSfUnitsPct     BYTE    "PCT", 0
+sSfCellPowerMap BYTE    "R18-DUAL-POWERMAP-M", 0
+sSfCritPowerMap BYTE    "POWER_TABLE_HELD", 0
 sSfCritTopSpd   BYTE    "TOP_INCRE_E6", 0
 sSfCritPwmClip  BYTE    "LEAST_RAIL_ROOM", 0
 sSfUnitsE6      BYTE    "INCR_E6", 0
@@ -2556,7 +2584,7 @@ PRI runPart()
         PART_LIMITS:
             runSegment(SEG_PREFLT)
             runSegment(SEG_LIMTOP)
-            if BUILD_SVM == FALSE                            ' E2 repeats E1 only (LIMITS-RESET-PLAN.md E2)
+            if BUILD_TOP_ONLY == FALSE                       ' dual-limits-top: the confirming climb only (task 3605)
                 runSegment(SEG_LIMRAMP)
                 runSegment(SEG_LIMLOW)
     bRunReturned := TRUE                                    ' before the return, or main() reads a library abort
@@ -7245,7 +7273,7 @@ PRI wheelSetLeadScheduled(side)
 
 CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LIMITS-RESET-PLAN.md) --- }
 
-  ' LIMTOP (E1; E2 is the same climb on the DUTY_MAX_SVM build). Per motor x sign, one lifetime climbing
+  ' LIMTOP (E1; Visit 9 ran E2 as the same climb on the since-adopted duty ceiling). Per motor x sign, one lifetime climbing
   '  limTopIncre(). A rung is CLEAN when its window ran with no fault, no lag hold and a rate within
   '  LIMTOP_FOLLOW_PCT of the speed law, widened by the rung's own tick quantisation (rateBandPct()). The EDGE
   '  is the first rung that is not clean, and TOP the highest clean rung below it. The climb always runs the
@@ -7266,11 +7294,51 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
   ' R18-DUAL-PWMCLIP-M: the least room any stored level left to a rail, per motor -- the high side's Y above 0,
   '  and the low side's (Y + dead_gap) below F = frame_cnt / 2 (p2kbArchSmartPin01000PwmTriangle). Negative is a
   '  clip. The judge's own negative case runs first, on synthetic levels (BM-CLIPTEST); the sampling's is the
-  '  desk prediction the run sheet states (SVM build: 1-2 counts at full duty; default: ~150).
+  '  desk prediction: 1-2 counts at full duty (Visit 9 read 2 on the ceiling now the drive's; the old read 151).
   PWMCLIP_ROOM_LO       = 0
   PWMCLIP_ROOM_HI       = LIM_BIG
   CLIPTEST_FRAME        = 1_000                             ' synthetic F and dead-gap for the judge's self-test
   CLIPTEST_GAP          = 10
+  ' R18-DUAL-POWERMAP-M (task 3605): the moved power table reaches the drive through the PUBLIC API. At the end of
+  '  each climb, setMaxSpeed(100), then driveAtPower(+-100) and driveAtPower(+-1); the increment the driver holds
+  '  (testGetDriveFollow()'s commanded side) must equal LIB_MAX_FWD_INCRE / LIB_MIN_FWD_INCRE exactly. The
+  '  NEGATIVE CASE is the table this replaced: 147_000_000 and 544_628 fail it by construction. maxSpeed is read
+  '  first and put back after.
+  POWERCHK_HOLD_MS      = 3_000                             ' the ramp from wherever the climb ended, and the settle
+  ' R18-DUAL-FOLLOW-M / R18-DUAL-FOLFALL-M (task 3597): the DRIVER's own following reading -- testGetDriveFollow()'s
+  '  rpm-window percentage -- judged against the HARNESS's rate over the same second. Moved here from the scan's
+  '  R18-SCAN-FOLLOW, whose negative limb could never fire (PL-98 (3)).
+  ' A CROSS-CHECK, NOT A RESTATEMENT. The harness counts ticks in its own window against the speed law
+  '  (predictX10()); the driver sums its rpm window against a rate it derives from the live command. Different
+  '  numerators and denominators, so agreement is evidence, and a wrong derivation misses by a factor, not by points.
+  ' ONE CRITERION, TWO POPULATIONS, AND THE HARNESS PICKS THE POPULATION: letting the reading under test pick its
+  '  own limb would let a stuck reading choose the limb it passes. Both cells judge the gap |driver - harness| less
+  '  the window's own tick quantisation (rateBandPct()) against FOLLOW_GAP_PTS:
+  '   FOLLOW  - readings the harness says FOLLOWED (>= LIMTOP_FOLLOW_PCT): every clean LIMTOP rung;
+  '   FOLFALL - readings the harness says did NOT (< FOLLOW_SHORT_PCT): the over-command step after each climb.
+  '  A reading stuck at 100 fails FOLFALL by the whole shortfall; one stuck low fails FOLLOW. A reading between the
+  '  two thresholds feeds neither, and a driver window that had not filled feeds neither (its number is a transient
+  '  and would read as a fall for the wrong reason). NOMEAS, never PASS, when a population is empty.
+  ' THE OVER-COMMAND STEP BUILDS THE NEGATIVE CASE ON PURPOSE (P10), and its current limit is what makes it
+  '  certain. An over-command ALONE is not enough: MEASURED at Visit 9, three of four wheel-directions follow
+  '  LIMTOP_MAX_INCRE by field weakening, drawing 2.3-4.2 A, and the fourth fell short only by slipping, with a
+  '  ~25 A single peak (PL-108) -- a negative case stumbled into, not built. So the step lowers the motor's current
+  '  limits to OVERCMD_LIMIT_A first. Field weakening needs current, the limit caps it, and the drive must fall back
+  '  to a speed it holds at that current -- about 185-195 x 10^6 on the Visit 9 figures, 76-80 % of the command --
+  '  while targetIncre stays at the command. The driver's window fills at a real shortfall, bounded by the drive's
+  '  own limiter, far from the scan's current wall where every scan droop was cut short. The limits are restored
+  '  and read back before anything else runs (BM-OCLIM, I11). The harness still decides the population.
+  FOLLOW_SHORT_PCT      = 90
+  FOLLOW_GAP_PTS        = 5
+  OVERCMD_HOLD_MS       = 3_000                             ' the field settles at the rotor's rate, and the 1 s window refills
+  OVERCMD_LIMIT_A       = 1                                 ' peak and continuous, amps: testSetCurrentLimits()'s least
+
+  ' BM-FOLLOW kind (token = the name after FOLK_):
+  '  FOLK_RUNG - a LIMTOP rung, read at its window's end with its command still standing
+  '  FOLK_OVER - the over-command step after a climb
+    #0, FOLK_RUNG, FOLK_OVER
+    FOLK_COUNT = FOLK_OVER + 1
+    TOKMAX_FOLK = 4
 
   ' LIMRAMP (E3). Per motor x sign, one lifetime: a START trace from rest to QTR at each ramp_inc, then a SLOWER
   '  trace from the ceiling to QTR at each ramp_down, each followed by BM-RAMP; the defaults are restored and
@@ -7304,8 +7372,9 @@ DAT ' ---- LIMITS tables ----
 
 limRampIncs     LONG    RAMP_DEF_INC, RAMP_DEF_INC * 2, RAMP_DEF_INC * 4
 limRampDowns    LONG    RAMP_DEF_DOWN, RAMP_DEF_DOWN * 2
-limLowIncre     LONG    544_628, 400_000, 250_000, 100_000                  ' isp_bldc_motor confgurePowerLimits() floor, then below it
+limLowIncre     LONG    544_628, 400_000, 250_000, 100_000                  ' the old confgurePowerLimits() floor, then below it (Visit 9 moved the floor to 100_000)
 tokEdge         BYTE    "NONE", 0, "FAULT", 0, "HOLD", 0, "SLOW", 0, "NOWIN", 0
+tokFolK         BYTE    "RUNG", 0, "OVER", 0
 
 VAR { LIMITS state -- cog 0 only; index = motor slot }
 
@@ -7314,6 +7383,19 @@ VAR { LIMITS state -- cog 0 only; index = motor slot }
     LONG    sfClipRoomMin[INST_MOTORS]                      ' PWMCLIP: least room to a rail over the motor's rungs
     LONG    sfClipN[INST_MOTORS]                            ' PWMCLIP: rungs whose capture folded any level
     LONG    bSfClipTestOk                                   ' PWMCLIP: the judge passed its own negative case
+    LONG    sfPowerN[INST_MOTORS]                           ' POWERMAP: power commands read back
+    LONG    bSfPowerBad[INST_MOTORS]                        ' POWERMAP: any one did not hold exactly the table's increment
+    ' followRead()'s staging: the driver's view as a window closed (task 3597), read by followFold() and BM-POWER
+    LONG    folCmdIncr
+    LONG    folDrvIncr
+    LONG    bFolShort
+    LONG    folPermille
+    LONG    folPct
+    LONG    bFolOk
+    LONG    sfFolGapWorst[INST_MOTORS]                      ' FOLLOW: worst unexplained gap among following readings, points
+    LONG    sfFolN[INST_MOTORS]                             ' FOLLOW: readings judged
+    LONG    sfFallGapWorst[INST_MOTORS]                     ' FOLFALL: worst unexplained gap among not-following readings, points
+    LONG    sfFallN[INST_MOTORS]                            ' FOLFALL: readings judged
 
 PRI segLimTop() | side, signMul
 ' LIMTOP (part LIMITS, E1 / E2): the judge's self-test, then per motor x sign one climb to the edge.
@@ -7370,8 +7452,11 @@ PRI limTopSign(side, signMul) | slotIdx, rungIdx, motorIncre, rid, whyCode, safe
             rungSkip(SEG_LIMTOP, rid, rungIdx, side, motorIncre, whyCode)
         else
             safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE, 1)
+            followRead(side)                                ' as the window closes, before any record is printed
             rungEmitAll(SEG_LIMTOP, rid, rungIdx, side, motorIncre)
             limClipRung(rid, side, motorIncre)
+            if (safeEvent == SAFE_NONE) and bRgWindowValid and (rsTicks <> 0)
+                followFold(rid, side, motorIncre, FOLK_RUNG, rsTicks, rsRateX10)
             if edgeIncre == 0
                 edgeCode := limEdgeCode(motorIncre, safeEvent)
                 if edgeCode == EDGE_NONE
@@ -7390,6 +7475,9 @@ PRI limTopSign(side, signMul) | slotIdx, rungIdx, motorIncre, rid, whyCode, safe
                 whyCode := WHY_LADDER_STOPPED
             elseif (edgeIncre <> 0) and (abs(motorIncre) >= DRIVE_CEILING_INCRE)
                 whyCode := WHY_PAST_EDGE                    ' found above the ceiling: nothing past it is clean by definition
+    if (whyCode == WHY_NONE) or (whyCode == WHY_PAST_EDGE)
+        overCommandStep(side, signMul)
+        limPowerCheck(side, signMul)
     bZeroAndWaitStopped(side)
     bInstIdle()
     wheelStop(side)
@@ -7518,6 +7606,201 @@ PRI emitTopSpd(side, signMul, topIncre, unsatIncre, edgeIncre, edgeCode)
     benchLog.naNumField(@"edge", edgeIncre, LIM_BIG, edgeIncre > 0)
     benchLog.tokenField(@"edge_why", tokenAt(@tokEdge, EDGE_COUNT, edgeCode), TOKMAX_EDGE)
     benchLog.numField(@"follow_pct", LIMTOP_FOLLOW_PCT, LIM_TINY)
+    emitRecord()
+
+PRI holdThenWindow(side, holdMs) : safeEvent, nTicks, nMs | startTicks, startMs
+' Hold the command standing for holdMs, then count the wheel's hall ticks over a WINDOW_MS window, watched for
+' safety throughout, and take the driver's following reading at the window's end (followRead()). A safety event
+' in the hold skips the window, leaving nTicks and nMs 0.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param holdMs - the hold before the window, ms
+' @returns safeEvent - SAFE_* that ended the hold or the window, SAFE_NONE otherwise
+' @returns nTicks - ticks moved across the window, signed
+' @returns nMs - the window's length, ms
+'
+' @local startTicks - the hall position at the window's start
+' @local startMs - getms() there
+
+    nTicks := 0
+    nMs := 0
+    safeEvent, _ := waitWatched(side, holdMs, CP_LOOP_SETTLE, UNTIL_TIME)
+    if safeEvent == SAFE_NONE
+        startTicks := wheelRawTicks(side)
+        startMs := getms()
+        safeEvent, _ := waitWatched(side, WINDOW_MS, CP_LOOP_WINDOW, UNTIL_TIME)
+        nTicks := wheelRawTicks(side) - startTicks
+        nMs := getms() - startMs
+    followRead(side)
+
+PRI followRead(side)
+' Stage the driver's view of the command standing (testGetDriveFollow()) for followFold() and BM-POWER, read the
+' moment a window closes so the driver's own 1 s window covers the harness's, not the records printed after it.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    folCmdIncr, folDrvIncr, bFolShort, folPermille, folPct, bFolOk := wheelDriveFollow(side)
+
+PRI overCommandStep(side, signMul) | motorIncre, safeEvent, nTicks, nMs, peakWas, contWas
+' The FOLFALL population's step (task 3597): lower the current limits to OVERCMD_LIMIT_A, command
+' LIMTOP_MAX_INCRE, hold while the field falls back to what the rotor holds at that current and the driver's window
+' refills, then a WINDOW_MS tick count and the driver's reading at its end, the command still standing. The limits
+' are put back and read back on every path; a fault is recovered, and the step is then not judged.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signMul - SIGN_NEG or SIGN_POS
+'
+' @local motorIncre - the over-command, signed
+' @local safeEvent - SAFE_* from the watched waits
+' @local nTicks - ticks moved across the window
+' @local nMs - the window's length, ms
+' @local peakWas - the peak limit before the step, amps
+' @local contWas - the continuous limit before the step, amps
+
+    motorIncre := LIMTOP_MAX_INCRE * signMul
+    peakWas, contWas := wheelLimits(side)
+    wheelSetLimits(side, OVERCMD_LIMIT_A, OVERCMD_LIMIT_A)
+    wheelCommand(side, motorIncre)
+    safeEvent, nTicks, nMs := holdThenWindow(side, OVERCMD_HOLD_MS)
+    if (safeEvent == SAFE_NONE) and (nMs > 0) and (nTicks <> 0)
+        followFold(nextRungId(), side, motorIncre, FOLK_OVER, nTicks, (nTicks * RATE_X10_SCALE) / nMs)
+    wheelSetLimits(side, peakWas, contWas)
+    emitOverCmdLimits(side, peakWas, contWas)
+    bRungFaultRecover(SEG_LIMTOP, side, motorIncre, safeEvent)
+
+PRI emitOverCmdLimits(side, peakWant, contWant) | nPeakA, nContA
+' BM-OCLIM: the current limits read back after the over-command step put them back (I11).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param peakWant - the peak limit restored, amps
+' @param contWant - the continuous limit restored, amps
+'
+' @local nPeakA - the peak limit read back
+' @local nContA - the continuous limit read back
+
+    nPeakA, nContA := wheelLimits(side)
+    recBegin(@"BM-OCLIM")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"set_a", OVERCMD_LIMIT_A, LIM_TINY)
+    benchLog.numField(@"peak_a", nPeakA, LIM_TINY)
+    benchLog.numField(@"cont_a", nContA, LIM_TINY)
+    benchLog.boolField(@"restored", (nPeakA == peakWant) and (nContA == contWant))
+    emitRecord()
+
+PRI followFold(rid, side, motorIncre, eKind, nTicks, rateX10) | slotIdx, predX10, harnessPct, nBand, nGap
+' BM-FOLLOW for one reading, and its fold into R18-DUAL-FOLLOW-M or R18-DUAL-FOLFALL-M by the HARNESS's own verdict
+' (the section's CON). The driver's side is followRead()'s staging, taken as the harness's window closed.
+'
+' @param rid - rung id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - the command standing, signed
+' @param eKind - FOLK_RUNG or FOLK_OVER
+' @param nTicks - ticks in the harness's window, signed and non-zero
+' @param rateX10 - the harness's rate over it, ticks/s x 10, signed
+'
+' @local slotIdx - motor slot
+' @local predX10 - the speed law's rate for the command, x10
+' @local harnessPct - the harness's rate as a percentage of it
+' @local nBand - the harness window's tick quantisation, percent
+' @local nGap - |driver - harness| less nBand, floored at 0
+
+    slotIdx := side - SIDE_LEFT
+    predX10 := abs(predictX10(motorIncre))
+    harnessPct := 0
+    if predX10 > 0
+        harnessPct := (abs(rateX10) * 100) / predX10
+    nBand := rateBandPct(nTicks)
+    nGap := (abs(folPct - harnessPct) - nBand) #> 0
+    if (bFolOk == TRUE) and (predX10 > 0)
+        if harnessPct >= LIMTOP_FOLLOW_PCT
+            sfFolGapWorst[slotIdx] #>= nGap
+            sfFolN[slotIdx] := (sfFolN[slotIdx] + 1) <# LIM_BIG
+        elseif harnessPct < FOLLOW_SHORT_PCT
+            sfFallGapWorst[slotIdx] #>= nGap
+            sfFallN[slotIdx] := (sfFallN[slotIdx] + 1) <# LIM_BIG
+    recBegin(@"BM-FOLLOW")
+    benchLog.numField(@"rid", rid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"kind", tokenAt(@tokFolK, FOLK_COUNT, eKind), TOKMAX_FOLK)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.numField(@"drv_incr", folDrvIncr, LIM_BIG)
+    benchLog.numField(@"h_pct", harnessPct, LIM_SMALL)
+    benchLog.naNumField(@"d_pct", folPct, LIM_SMALL, bFolOk == TRUE)
+    benchLog.numField(@"band", nBand, LIM_TINY)
+    benchLog.naNumField(@"gap", nGap, LIM_SMALL, bFolOk == TRUE)
+    benchLog.numField(@"permille", folPermille, LIM_SMALL)
+    benchLog.boolField(@"short", bFolShort)
+    emitRecord()
+
+PRI limPowerCheck(side, signMul) | speedWas, checkIdx, nPower, nExpect, safeEvent, nTicks, nMs, bHeld
+' R18-DUAL-POWERMAP-M (task 3605): full and least power through the public API, each read back against the moved
+' table, with BM-POWER per command; maxSpeed is restored to what it was. The driver holds the mapped increment
+' the moment driveAtPower() returns, so the verdict needs no wait: full power is held and windowed only so BM-POWER
+' can say whether the wheel follows at the new top, and least power (under one hall edge a second) is read at once.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signMul - SIGN_NEG or SIGN_POS
+'
+' @local speedWas - maxSpeed before the check
+' @local checkIdx - 0 full power, 1 least power
+' @local nPower - the signed power commanded
+' @local nExpect - the increment the table maps it to
+' @local safeEvent - SAFE_* from the watched waits
+' @local nTicks - ticks moved across the window (0 when none ran)
+' @local nMs - the window's length, ms (0 when none ran)
+' @local bHeld - T/F where T means the driver holds exactly nExpect
+
+    speedWas := wheelMaxSpeed(side)
+    wheelSetMaxSpeed(side, POWER_FULL)
+    repeat checkIdx from 0 to 1
+        nPower := lookupz(checkIdx: POWER_FULL, POWER_MIN) * signMul
+        nExpect := lookupz(checkIdx: LIB_MAX_FWD_INCRE, LIB_MIN_FWD_INCRE) * signMul
+        wheelDriveAtPower(side, nPower)
+        if checkIdx == 0
+            safeEvent, nTicks, nMs := holdThenWindow(side, POWERCHK_HOLD_MS)
+        else
+            safeEvent := SAFE_NONE
+            nTicks := 0
+            nMs := 0
+            followRead(side)
+        bHeld := (folCmdIncr == nExpect)
+        sfPowerN[side - SIDE_LEFT] := (sfPowerN[side - SIDE_LEFT] + 1) <# LIM_SMALL
+        bSfPowerBad[side - SIDE_LEFT] |= (bHeld == FALSE)
+        emitPower(side, nPower, nExpect, bHeld, nTicks, nMs, safeEvent)
+        bRungFaultRecover(SEG_LIMTOP, side, nExpect, safeEvent)
+    wheelSetMaxSpeed(side, speedWas)
+
+PRI emitPower(side, nPower, nExpect, bHeld, nTicks, nMs, safeEvent) | predX10, bRate, nPct
+' BM-POWER: one power command read back -- the table's increment, what the driver holds (followRead()'s staging),
+' the field then, and the rate over the window as a percentage of the speed law's (NA when no window ran).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param nPower - the signed power commanded
+' @param nExpect - the table's increment for it
+' @param bHeld - T/F where T means the driver holds exactly nExpect
+' @param nTicks - ticks across the window
+' @param nMs - the window's length, ms
+' @param safeEvent - SAFE_* that ended the command's hold or window
+'
+' @local predX10 - the speed law's rate for nExpect, x10
+' @local bRate - T/F where T means a window ran and the rate is printed
+' @local nPct - the window's rate as a percentage of the speed law's, 0 when none ran
+
+    predX10 := abs(predictX10(nExpect))
+    bRate := (safeEvent == SAFE_NONE) and (nMs > 0) and (predX10 > 0)
+    nPct := 0
+    if bRate
+        nPct := ((abs(nTicks) * RATE_X10_SCALE) / nMs) * 100 / predX10
+    recBegin(@"BM-POWER")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"power", nPower, LIM_TINY)
+    benchLog.numField(@"expect", nExpect, LIM_BIG)
+    benchLog.numField(@"cmd_incr", folCmdIncr, LIM_BIG)
+    benchLog.numField(@"drv_incr", folDrvIncr, LIM_BIG)
+    benchLog.boolField(@"held", bHeld)
+    benchLog.numField(@"ticks", nTicks, LIM_MID)
+    benchLog.naNumField(@"follow_pct", nPct, LIM_SMALL, bRate)
+    benchLog.tokenField(@"why", tokenAt(@tokWhy, WHY_COUNT, safeWhy(safeEvent)), TOKMAX_WHY)
     emitRecord()
 
 PRI segLimRamp() | side, signMul
@@ -7709,7 +7992,7 @@ PRI wheelSetDutyMin(side, dutyWant) | dutyBack
 
 PRI emitLimitsCells() | slotIdx
 ' The LIMITS part's judged cells: TRACES over LIMRAMP's traces, and per motor TOPSPD and PWMCLIP. Each prints
-' NOMEAS when nothing measured it -- the SVM build takes no trace, and PWMCLIP needs its judge's self-test.
+' NOMEAS when nothing measured it -- the top-only build takes no trace, and PWMCLIP needs its judge's self-test.
 '
 ' @local slotIdx - motor slot
 
@@ -7717,7 +8000,109 @@ PRI emitLimitsCells() | slotIdx
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         emitSignoff(@sSfCellTopSpd, SIDE_LEFT + slotIdx, @sSfCritTopSpd, sfTopN[slotIdx] > 0, sfTopMinE6[slotIdx], TOPSPD_LO_E6, TOPSPD_HI_E6, sfTopN[slotIdx], @sSfUnitsE6)
         emitSignoff(@sSfCellPwmClip, SIDE_LEFT + slotIdx, @sSfCritPwmClip, bSfClipTestOk and (sfClipN[slotIdx] > 0), sfClipRoomMin[slotIdx], PWMCLIP_ROOM_LO, PWMCLIP_ROOM_HI, sfClipN[slotIdx], @sSfUnitsPwm)
+        emitSignoffBool(@sSfCellPowerMap, SIDE_LEFT + slotIdx, @sSfCritPowerMap, sfPowerN[slotIdx] > 0, bSfPowerBad[slotIdx] == FALSE, sfPowerN[slotIdx])
+        emitSignoff(@sSfCellFollowM, SIDE_LEFT + slotIdx, @sSfCritFolGap, sfFolN[slotIdx] > 0, sfFolGapWorst[slotIdx], 0, FOLLOW_GAP_PTS, sfFolN[slotIdx], @sSfUnitsPct)
+        emitSignoff(@sSfCellFolFall, SIDE_LEFT + slotIdx, @sSfCritFolGap, sfFallN[slotIdx] > 0, sfFallGapWorst[slotIdx], 0, FOLLOW_GAP_PTS, sfFallN[slotIdx], @sSfUnitsPct)
 
+
+PRI wheelMaxSpeed(side) : nSpeed
+' One wheel's maxSpeed (getMaxSpeed()), the clamp driveAtPower() applies.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nSpeed - maxSpeed, percent
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        nSpeed := wheelR.getMaxSpeed()
+    else
+        nSpeed := wheelL.getMaxSpeed()
+    beat(CP_LIB_QUERY)
+
+PRI wheelSetMaxSpeed(side, nSpeed)
+' setMaxSpeed() on one wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param nSpeed - maxSpeed, percent
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        wheelR.setMaxSpeed(nSpeed)
+    else
+        wheelL.setMaxSpeed(nSpeed)
+    beat(CP_LIB_QUERY)
+
+PRI wheelDriveAtPower(side, nPower)
+' driveAtPower() on one wheel: the public command, through the power table.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param nPower - power, -100 to 100
+
+    curIncre := 0                                           ' a power command's increment is the table's, not this wrapper's (as dDrive())
+    beat(CP_LIB_COMMAND)
+    if side == SIDE_RIGHT
+        wheelR.driveAtPower(nPower)
+    else
+        wheelL.driveAtPower(nPower)
+    beat(CP_LIB_COMMAND)
+
+PRI wheelDriveFollow(side) : nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk
+' The path limiter's view of one wheel beside the driver's rpm-window percentage (testGetDriveFollow()).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nCmdIncr - the increment last commanded
+' @returns nDrvIncr - the field's increment now
+' @returns bShort - T/F where T means the lag limiter held the field recently
+' @returns nPermille - the field's rate as a fraction of the commanded, 0-1000
+' @returns nPct - the rpm window's measured rate as a percentage of commanded
+' @returns bPctOk - T/F where T means that window has filled
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk := wheelR.testGetDriveFollow()
+    else
+        nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk := wheelL.testGetDriveFollow()
+    beat(CP_LIB_QUERY)
+
+PRI wheelLimits(side) : nPeakA, nContA
+' One wheel's current limits in force (testGetCurrentLimitState()).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nPeakA - the peak phase-current limit, amps
+' @returns nContA - the continuous limit, amps
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        nPeakA, nContA, _, _, _ := wheelR.testGetCurrentLimitState()
+    else
+        nPeakA, nContA, _, _, _ := wheelL.testGetCurrentLimitState()
+    beat(CP_LIB_QUERY)
+
+PRI wheelSetLimits(side, peakAmps, contAmps)
+' One wheel's current limits (testSetCurrentLimits()); every caller restores them and reads them back.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param peakAmps - the peak limit, amps
+' @param contAmps - the continuous limit, amps
+
+    beat(CP_LIB_COMMAND)
+    if side == SIDE_RIGHT
+        wheelR.testSetCurrentLimits(peakAmps, contAmps)
+    else
+        wheelL.testSetCurrentLimits(peakAmps, contAmps)
+    beat(CP_LIB_COMMAND)
+
+PRI wheelRawTicks(side) : nTicks
+' One wheel's raw hall position (getRawHallTicks()).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns nTicks - hall ticks since the driver started
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        nTicks := wheelR.getRawHallTicks()
+    else
+        nTicks := wheelL.getRawHallTicks()
+    beat(CP_LIB_QUERY)
 
 CON { --- ALIGN: the hall zero measured cold, cog 0, the bridge never driven (task 3590) --- }
 
@@ -10812,7 +11197,7 @@ PRI emitHeaderRecords() | orderIdx
         PART_LIMITS:
             emitPlan(SEG_PREFLT, 1)
             emitPlan(SEG_LIMTOP, 2)
-            if BUILD_SVM == FALSE
+            if BUILD_TOP_ONLY == FALSE
                 emitPlan(SEG_LIMRAMP, 3)
                 emitPlan(SEG_LIMLOW, 4)
     if PART_ID == PART_A
@@ -12280,6 +12665,9 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellTracesM)
                 emitSignoffDecl(@sSfCellTopSpd)
                 emitSignoffDecl(@sSfCellPwmClip)
+                emitSignoffDecl(@sSfCellPowerMap)
+                emitSignoffDecl(@sSfCellFollowM)
+                emitSignoffDecl(@sSfCellFolFall)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
