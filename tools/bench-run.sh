@@ -29,8 +29,9 @@
 #
 # --exit-on-end-session makes pnut-term-ts close itself once the tier's binary
 # prints its DEBUG_END_SESSION marker, so this produces one binary and one
-# log with no keypress and no interrupt needed, and it is the ONLY terminal
-# flag this script passes (PL-92). Every tier's binary emits that marker:
+# log with no keypress and no interrupt needed. Beside it the script passes -u,
+# ahead of -r, so every run also leaves a USB-traffic capture (see step 2's
+# comment) -- those two are the only terminal flags (PL-92). Every tier's binary emits that marker:
 # test_bench_t0, test_bench_spin, test_bench_detect, test_bench_char,
 # test_bench_scan and test_bench_dual.
 #
@@ -410,12 +411,17 @@ fi
 # running with --console-mode". One invocation serves every tier -- an
 # unattended tier draws no window because it creates none, not because the
 # terminal was told it may not.
+#
+# -u ON EVERY RUN, and BEFORE -r (STEPHEN 2026-09-23: "always specify -u along
+# with the -r (-u first)"). The USB-traffic capture is the wire-level record that
+# the debug log is not (PL-85: a verdict the log lost survived only on USB), so
+# every tier carries one rather than the run that happened to be repeated with it.
 LOG_BEFORE="$(newest_log)"
 
-run "$PNUT_TERM" -r "$BINARY" --exit-on-end-session
+run "$PNUT_TERM" -u -r "$BINARY" --exit-on-end-session
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
-    echo "ERROR: command failed (exit $STATUS): $PNUT_TERM -r $BINARY --exit-on-end-session" >&2
+    echo "ERROR: command failed (exit $STATUS): $PNUT_TERM -u -r $BINARY --exit-on-end-session" >&2
     exit 2
 fi
 
