@@ -3575,6 +3575,11 @@ and a `getprot` command replying `prot {leftCode} {rightCode}`; the same two in 
 rows in `DRIVE-OBJECTS-SERIAL.md`. Compile-checkable; the run-time proof needs the protective stop provoked, which
 PL-106 says a lifted rig has not yet done.
 
+**Fixed in tree 2026-09-23 («#3606»):** `protclear` and `getprot` in `isp_steering_serial.spin2` (`CMD_PROT_CLR`,
+`CMD_GET_PROT`), `clearProtectiveStop()` / `getProtectiveStop()` in the Python client, both rows in
+`DRIVE-OBJECTS-SERIAL.md`. `tools/build-check.sh` 48/48, `py_compile` clean. **Run-time proof owed**: a provoked
+protective stop, which waits on PL-106's construction; until then this entry stays open.
+
 ### PL-112 -- `demo_single_motor.spin2` still calls `startSenseCog()`
 
 **Found 2026-09-23 in «#3515»**, writing `DEVELOP.md`'s single-motor example. `src/demo_single_motor.spin2:88`
@@ -3583,6 +3588,10 @@ cog became part of `start()`, `startSenseCog()` starts nothing and returns the f
 single-motor demo is the example users copy, and it shows a call the documentation now describes as kept only so
 5.x programs compile. **Fix direction:** drop the call and test `start()`'s own result, as `DEVELOP.md` now shows;
 the demo is certified by `tools/build-check.sh`, so the change rides the gate.
+
+**FIXED 2026-09-23 («#3606»):** the call is gone and the demo tests `start()`'s result;
+`demo_single_motor` CERTIFIED by `tools/build-check.sh`. The start path is unchanged at run time (`startSenseCog()`
+started nothing), so no bench run is owed. Sweep at the next closeout.
 
 ### PL-113 -- the user configuration's "NO SUPPORT FOR" note lists voltages the 6.5" motor now supports
 
@@ -3593,6 +3602,9 @@ measurement, not yet run on our hardware); the DocoEng motor supports 7.4 V and 
 (`powerTableIndex()`). A user reading the config is told the opposite of what `validVoltageForChoice()` does.
 **Fix direction:** replace the note with a pointer to `MOTOR_CHOICE.md`'s table, which states per motor which
 voltages exist and which are verified. The file is the one end users edit, so the change is small and visible.
+
+**FIXED 2026-09-23 («#3606»):** the note now points to `MOTOR_CHOICE.md` and names the two voltages that are refused
+(DocoEng 6.0 V; 25.9 V for both). Comment only; no constant moved. Sweep at the next closeout.
 
 ---
 

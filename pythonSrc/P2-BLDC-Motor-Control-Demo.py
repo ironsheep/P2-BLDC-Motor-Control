@@ -378,6 +378,12 @@ class BLDCMotorControl:
         commandStr = 'emerclear\n'
         self.sendCommand(commandStr)
 
+    # PUB clearProtectiveStop()
+    #  releases a latched protective stop (a blocked motor); emerclear does not
+    def clearProtectiveStop(self):
+        commandStr = 'protclear\n'
+        self.sendCommand(commandStr)
+
     # -------------------------
     # PUBLIC Configure Methods
     # -------------------------
@@ -465,6 +471,14 @@ class BLDCMotorControl:
         responseStr = self.sendCommand(commandStr)
         eVoltage, nMilliVolts = self.getValues('volt', responseStr, 2)
         return int(eVoltage), int(nMilliVolts)
+
+    # PUB getProtectiveStop() : eLeftCode, eRightCode
+    #  each wheel's latched protective-stop code (e.g. -2001 ERR_PLATFORM_BLOCKED), 0 when none
+    def getProtectiveStop(self):
+        commandStr = 'getprot\n'
+        responseStr = self.sendCommand(commandStr)
+        eLeftCode, eRightCode = self.getValues('prot', responseStr, 2)
+        return int(eLeftCode), int(eRightCode)
 
     # ------- PRIVATE (Support) Methods --------
     # common send method

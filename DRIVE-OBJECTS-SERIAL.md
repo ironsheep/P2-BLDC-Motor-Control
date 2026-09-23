@@ -68,6 +68,7 @@ Units and status travel as the numbers of their enums:
 | PUB stopMotors()<BR><PRE>SER stopmotors<br>SER Returns: OK</PRE> | Stops both motors, killing any motion that was still in progress</BR> AFFECTED BY: holdAtStop()
 | PUB emergencyCutoff()<BR><PRE>SER emercutoff<br>SER Returns: OK</PRE> | EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress. Drives are refused until `emerclear`.
 | PUB clearEmergency()<BR><PRE>SER emerclear<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Clear the emergency stop, allowing the motors to be controlled again
+| PUB clearProtectiveStop()<BR><PRE>SER protclear<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Acknowledge a protective stop: a motor commanded to move that did not turn for about a second stops both motors, and every drive is refused with `ERR_PLATFORM_BLOCKED (-2001)` until this. `emerclear` does not release it.
 |  **>--- CONFIG**
 | PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode)<BR><PRE>SER N/A</PRE> | Called by the serial top-level from your user configuration
 | PUB stop() <BR><PRE>SER N/A</PRE>| Stop cogs and release pins assigned to motor drivers
@@ -83,6 +84,7 @@ Units and status travel as the numbers of their enums:
 | PUB getRotationCount(rotationUnits) : leftRotationCount, rightRotationCount <BR><PRE>SER getrot {r-u}<br>SER Returns: rot {ltRotCountInUnits} {rtRotCountInUnits} \| ERROR {errormsg}</PRE>| Returns accumulated rotation in {rotationUnits}, since last reset, for each of the motors.
 | PUB getPower() : leftPower, rightPower <BR><PRE>SER getpwr<br>SER Returns: pwr {ltPwr} {rtPwr}</PRE>| Returns the last commanded power value for each of the motors (zero once the motor is stopped)
 | PUB getStatus() : eLeftStatus, eRightStatus<BR><PRE>SER getstatus<br>SER Returns: stat {ltStatus} {rtStatus}</PRE> | Returns each motor's drive status as a number (see the table above). **DS\_FAULTED (14)**: the motor has faulted, and clears when a stop or a new power is commanded. **DS\_ESTOP (15)**: the motor is emergency-stopped until `emerclear`.
+| PUB getProtectiveStop() : eLeftCode, eRightCode <BR><PRE>SER getprot<br>SER Returns: prot {ltCode} {rtCode}</PRE>| Returns each wheel's latched protective-stop code (-2001 for `ERR_PLATFORM_BLOCKED`), or 0 when none
 | PUB getDriveVoltage() : eVoltage, nMilliVolts <BR><PRE>SER getvoltage<br>SER Returns: volt {pwrEnum} {milliVolts}</PRE>| Returns the configured drive voltage, as its PWR\_\* number and its nominal value in mV. This is the configured value, not a measurement.
 | PUB getMaxSpeed() : maxSpeed <BR><PRE>SER getmaxspd<br>SER Returns: speedmax {maxSpeed}</PRE>| Returns the last specified {maxSpeed}
 | PUB getMaxSpeedForDistance() : maxSpeed4dist <BR><PRE>SER getmaxspdfordist<br>SER Returns: speeddistmax {maxSpeed}</PRE>| Returns the last specified {maxSpeedForDistance}

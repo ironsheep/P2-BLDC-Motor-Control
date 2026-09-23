@@ -45,6 +45,7 @@ CON { command-names enum }
 #15, CMD_GET_DIST, CMD_GET_ROT, CMD_GET_PWR
 #18, CMD_GET_STAT, CMD_GET_MAX_SPD, CMD_GET_MAX_DIST_SPD
 #21, CMD_GET_VOLT, CMD_SET_TIMEOUT
+#23, CMD_PROT_CLR, CMD_GET_PROT
 
 DAT { command table }
 
@@ -71,6 +72,8 @@ DAT { command table }
     cmdGetMaxDistSpd    BYTE    "getmaxspdfordist",0
     cmdGetVolt          BYTE    "getvoltage",0
     cmdSetTimeout       BYTE    "settimeout",0
+    cmdProtClr          BYTE    "protclear",0
+    cmdGetProt          BYTE    "getprot",0
 
     ' now describe cmd enum and # parms for each string
     cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
@@ -95,6 +98,8 @@ DAT { command table }
                 long  @cmdGetMaxDistSpd, CMD_GET_MAX_DIST_SPD, 0
                 long  @cmdGetVolt, CMD_GET_VOLT, 0
                 long  @cmdSetTimeout, CMD_SET_TIMEOUT, 1
+                long  @cmdProtClr, CMD_PROT_CLR, 0
+                long  @cmdGetProt, CMD_GET_PROT, 0
     cmdLast
     ' calculate the number of entries in table
     cmdEntryCt long ((@cmdLast - @cmdsFirst) / 4) / 3
@@ -146,6 +151,8 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
     long[@cmdsFirst][19 * 3] := @cmdGetMaxDistSpd
     long[@cmdsFirst][20 * 3] := @cmdGetVolt
     long[@cmdsFirst][21 * 3] := @cmdSetTimeout
+    long[@cmdsFirst][22 * 3] := @cmdProtClr
+    long[@cmdsFirst][23 * 3] := @cmdGetProt
 
     ' validate user settings/choicess
     '  do NOT start motor unless all are legit!
@@ -488,6 +495,19 @@ PRI processCommand(pValues) | eError
             ltValue, rtValue := wheels.getDriveVoltage()
             ' format response
             strFmt.sFormatStr2(@msgWork, @"volt %d %d\n", ltValue, rtValue)
+            ' send to host
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_PROT_CLR:
+            ' PL-111: the host's only way to release a latched protective stop (emerclear does not)
+            eError := wheels.clearProtectiveStop()
+            replyWithStatus(pValues, eError)
+
+        CMD_GET_PROT:
+            ' get requested value(s): each wheel's latched protective-stop code, NO_ERROR when none
+            ltValue, rtValue := wheels.getProtectiveStop()
+            ' format response
+            strFmt.sFormatStr2(@msgWork, @"prot %d %d\n", ltValue, rtValue)
             ' send to host
             serialQueue.sendResponse(@msgWork)
 

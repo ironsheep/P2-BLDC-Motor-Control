@@ -24,6 +24,8 @@ Latest Changes:
 - settimeout {ms}: opt-in link-loss guard that stops both motors when drive
   commands stop arriving
 - getvoltage: the configured drive voltage
+- protclear and getprot: release and read a protective stop (a blocked
+  motor), which emerclear does not release
 - drivedist and stopaftdist accept DDU_KM (6) and DDU_MI (7)
 04 May 2022 v2.0.0
 - Initial Public Release of Serial support
