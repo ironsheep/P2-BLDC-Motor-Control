@@ -223,6 +223,19 @@
 ''               after each climb -- LIMTOP_MAX_INCRE under current limits lowered to OVERCMD_LIMIT_A, restored after
 ''               (BM-OCLIM) -- print BM-FOLLOW, and the new cells R18-DUAL-FOLLOW-M / R18-DUAL-FOLFALL-M judge the
 ''               driver against the harness on the populations the harness picks.
+''               23 Sep 2026 -- SRC_REV=34, FMT 20: task 3613 (R19.7, Visit 10). New part FAULTRESP
+''               (-D DUAL_PART_FAULTRESP, tier dual-fault): the fault study's X-cells (FAULT-STRATA-STUDY-2026-09-23.md
+''               sec 7), on DRIVER_REV 12. Every fault is FORCED (testForceFault()), never provoked by an offset
+''               shift (PL-119), and guarded: one that does not latch within FR_PROVOKE_MS stops the wheel and is
+''               counted as the hook failing. FLTRESP, per wheel: the hook's own negative control first (a forced
+''               fault at rest must not fault); at three ladder speeds the shipped response with holdAtStop(TRUE)
+''               (X-2, the phase short) and FALSE (X-3, the coast, its phases at rest as its negative control); at
+''               the middle speed FR_GRADED once (X-4, the re-sync, now onto the correct offsets) and twice on the
+''               ramp (X-6, the graded short at 10/25/50/100 %, with the same double fault coasting as its lower
+''               bound and X-2 as its full-short bound). FLTPLAT faults one wheel of the steering object and watches
+''               the other stop (X-5, PL-117). The startup study's B-4 prints NOT_BUILT. New records BM-FRBUILD,
+''               BM-NOTBUILT, BM-FRHOOK, BM-FRTRIAL, BM-FRSTAT, BM-FRCUR, BM-FRWIND, BM-FRPHASE, BM-FRREST, BM-FRPLAT;
+''               BM-ABORT gains reason NO_FAULT; two why tokens. Every other part's records are unchanged
 ''
 '' =================================================================================================
 
@@ -234,7 +247,8 @@
   block, its calibrated sense channel and the hall inputs.
 
   ONE SOURCE, ONE PART PER BUILD. tools/bench-run.sh chooses the part with -D DUAL_PART_A,
-  DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C, DUAL_PART_D, DUAL_PART_FLOOR or DUAL_PART_UICHECK.
+  DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C, DUAL_PART_D, DUAL_PART_FLOOR, DUAL_PART_UICHECK,
+  DUAL_PART_ALIGN, DUAL_PART_LEAD, DUAL_PART_LIMITS or DUAL_PART_FAULTRESP.
   PART_ID comes from one #ifdef chain; with no part flag the build prints part NONE, runs no segment, and ends cleanly.
 
   COG MODEL
@@ -253,7 +267,7 @@
 
       tools/bench-run.sh dual-a | dual-clock-200 | dual-clock-270 | dual-clock-300 | dual-b | dual-brake
                          | dual-c | dual-d | dual-floor | dual-ui | dual-align | dual-lead | dual-limits
-                         | dual-limits-top
+                         | dual-limits-top | dual-fault
 
   (the clock is part of the tier name, so a mistyped clock is an unknown tier and is refused -- PL-62)
 
@@ -287,8 +301,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 33                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 19                                        ' BM- record-format version
+    SRC_REV     = 34                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 20                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -327,9 +341,10 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_LEAD  - PREFLT, LEAD (the live lead-step run that measures the dynamic-lead table; task 3583)
   '  PART_LIMITS - PREFLT, LIMTOP, LIMRAMP, LIMLOW (the limits reset's experiments E1-E4; task 3604); the
   '               LIMITS_TOP_ONLY build runs PREFLT and LIMTOP only
+  '  PART_FAULTRESP - PREFLT, FLTRESP, FLTPLAT (the fault study's X-cells, faults forced at speed; task 3613)
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
-        PART_ALIGN, PART_LEAD, PART_LIMITS
-    PART_COUNT = PART_LIMITS + 1
+        PART_ALIGN, PART_LEAD, PART_LIMITS, PART_FAULTRESP
+    PART_COUNT = PART_FAULTRESP + 1
 
   ' RUN_TIME_CAP_S per load (design sec 4.2 item 6)
 #ifdef DUAL_PART_A
@@ -380,8 +395,16 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     ' about 17 minutes planned (emitPlan()): LIMTOP ~6, LIMRAMP ~5, LIMLOW ~6
     RUN_TIME_CAP_S = 1_800
 #else
+#ifdef DUAL_PART_FAULTRESP
+    PART_ID        = PART_FAULTRESP
+    ' about 6 minutes planned (emitPlan()): 24 driven wheel trials of ~13 s, 2 at-rest hook checks of ~4 s and 2
+    '  steering trials of ~15 s, each with its own lifetime and a FAULT_COOL_MS cool-down; the cap leaves room for
+    '  every trial to take its restart
+    RUN_TIME_CAP_S = 900
+#else
     PART_ID        = PART_NONE
     RUN_TIME_CAP_S = 60
+#endif
 #endif
 #endif
 #endif
@@ -985,8 +1008,8 @@ CON { record enums -- each value has a token in the DAT token tables }
   ' Segment (token = the name after SEG_):
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
         SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT, ...
-        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE, SEG_LIMTOP, SEG_LIMRAMP, SEG_LIMLOW
-    SEG_COUNT = 22
+        SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE, SEG_LIMTOP, SEG_LIMRAMP, SEG_LIMLOW, SEG_FLTRESP, SEG_FLTPLAT
+    SEG_COUNT = 24
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -994,8 +1017,8 @@ CON { record enums -- each value has a token in the DAT token tables }
         WHY_INST_BUSY, WHY_RING_LOST_HEAD, WHY_MOTOR_RETIRED, WHY_OPERATOR_SKIP, WHY_OPERATOR_TIMEOUT, ...
         WHY_NO_PASSTHROUGH, WHY_UNSWEPT_CLOCK, WHY_LADDER_STOPPED, WHY_SYNC_PRECOND, WHY_NO_EXTERNAL_V, ...
         WHY_NO_EXTERNAL_I, WHY_NO_TEMP_SENSOR, WHY_PART_NOT_BUILT, WHY_OPERATOR_STOP, ...
-        WHY_NOT_DERATED, WHY_NOT_BLOCKED, WHY_PAST_EDGE
-    WHY_COUNT = 29
+        WHY_NOT_DERATED, WHY_NOT_BLOCKED, WHY_PAST_EDGE, WHY_NOT_VISIBLE, WHY_REPLACED_BY_X2
+    WHY_COUNT = 31
 
   ' BM-INST event:
     #0, INST_EV_START, INST_EV_STOP, INST_EV_NOSTART, INST_EV_NOACK
@@ -1026,9 +1049,10 @@ CON { record enums -- each value has a token in the DAT token tables }
     #0, RSTEP_RESET, RSTEP_RESTART
     RSTEP_COUNT = 2
 
-  ' BM-ABORT reason (NO_MOTION and FAULT_CAP added to the design's four, see file notes):
-    #0, ABR_ABS_CURRENT, ABR_INST_STALLED, ABR_TIME_CAP, ABR_SYNC_PRECOND, ABR_NO_MOTION, ABR_FAULT_CAP
-    ABR_COUNT = 6
+  ' BM-ABORT reason (NO_MOTION and FAULT_CAP added to the design's four, see file notes; NO_FAULT by task 3613:
+  '  a forced fault that had not latched within FR_PROVOKE_MS -- the hook failed -- so the wheel was stopped):
+    #0, ABR_ABS_CURRENT, ABR_INST_STALLED, ABR_TIME_CAP, ABR_SYNC_PRECOND, ABR_NO_MOTION, ABR_FAULT_CAP, ABR_NO_FAULT
+    ABR_COUNT = 7
 
   ' BM-ABORT scope:
     #0, SCOPE_TRIAL, SCOPE_SEG, SCOPE_RUN
@@ -1587,14 +1611,17 @@ tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
 tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
                 BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0, "TAKE", 0
-                BYTE    "LIMTOP", 0, "LIMRAMP", 0, "LIMLOW", 0
-tokWhy          BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
+                BYTE    "LIMTOP", 0, "LIMRAMP", 0, "LIMLOW", 0, "FLTRESP", 0, "FLTPLAT", 0
+tokWhy         BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
                 BYTE    "MOTOR_RETIRED", 0, "OPERATOR_SKIP", 0, "OPERATOR_TIMEOUT", 0, "NO_PASSTHROUGH", 0
                 BYTE    "UNSWEPT_CLOCK", 0, "LADDER_STOPPED", 0, "SYNC_PRECOND", 0, "NO_EXTERNAL_V", 0
                 BYTE    "NO_EXTERNAL_I", 0, "NO_TEMP_SENSOR", 0, "PART_NOT_BUILT", 0, "OPERATOR_STOP", 0
                 BYTE    "NOT_DERATED", 0, "NOT_BLOCKED", 0, "PAST_EDGE", 0
+                ' task 3613: NOT_VISIBLE -- the DC-link shunt cannot see the quantity (a phase short's current circulates
+                '  in the low sides and never crosses it, PL-118); REPLACED_BY_X2 -- B-4's NOT_BUILT reason
+                BYTE    "NOT_VISIBLE", 0, "REPLACED_BY_X2", 0
 tokInstEv       BYTE    "START", 0, "STOP", 0, "NOSTART", 0, "NOACK", 0
 tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED", 0
 tokRes          BYTE    "OK", 0, "FAULT", 0, "STEADY_TIMEOUT", 0, "WINDOW_TIMEOUT", 0, "NO_COG", 0
@@ -1606,7 +1633,7 @@ tokTend         BYTE    "REST", 0, "TIMEOUT", 0, "FAULT", 0, "ABORT", 0, "FROZEN
 tokRst          BYTE    "NONE", 0, "RESET", 0, "RESTART", 0, "FAILED", 0
 tokRstep        BYTE    "RESET", 0, "RESTART", 0
 tokAbr          BYTE    "ABS_CURRENT", 0, "INST_STALLED", 0, "TIME_CAP", 0, "SYNC_PRECOND", 0
-                BYTE    "NO_MOTION", 0, "FAULT_CAP", 0
+                BYTE    "NO_MOTION", 0, "FAULT_CAP", 0, "NO_FAULT", 0
 tokScope        BYTE    "TRIAL", 0, "SEG", 0, "RUN", 0
 tokAns          BYTE    "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0, "NONE", 0
 tokInput        BYTE    "KEY", 0, "MOUSE", 0, "NONE", 0
@@ -1632,7 +1659,7 @@ tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAUL
 '  an ALIGN build printed adjacent DAT in the part field of BM-BANNER, BM-PLAN, BM-EXIT, every SIGNOFF
 '  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
-                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0
+                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0
 ' ALIGN leg speed class (ASPD_*), direction (ADIR_*) and leg outcome (ALEG_*), task 3590
 tokASpd         BYTE    "SLOW", 0, "FAST", 0
 tokADir         BYTE    "REVERSE", 0, "FORWARD", 0
@@ -1673,6 +1700,8 @@ tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-
                 '  BM-PLAN printed finds "?" and est 0 (debug_260922-164207.log). Filled with the rows below.
                 BYTE    "LEAD_TABLE", 0, "A-6_A-8", 0
                 BYTE    "E1_E2_TOP", 0, "E3_RAMPS", 0, "E4_FLOOR", 0
+                ' task 3613: FLTRESP carries X-2, X-3, X-4 and prints X-6 and the startup study's B-4 as NOT_BUILT
+                BYTE    "X-2_X-3_X-4_X-6_B-4", 0, "X-5_PL-117", 0
 
 DAT { fixed tokens }
 
@@ -1869,6 +1898,40 @@ sSfCritTopSpd   BYTE    "TOP_INCRE_E6", 0
 sSfCritPwmClip  BYTE    "LEAST_RAIL_ROOM", 0
 sSfUnitsE6      BYTE    "INCR_E6", 0
 sSfUnitsPwm     BYTE    "PWM_CNT", 0
+' task 3613 (R19.7): the FAULTRESP part's cells -- the harness's own four, the forced-fault hook's two, the restore of
+'  what each trial changed, then one per X-cell with X-3's and X-6's controls beside them, and B-4 NOT_BUILT
+sSfCellNoStallX BYTE    "R19-DUAL-NOSTALL-X", 0
+sSfCellDbgMaskX BYTE    "R19-DUAL-DBGMASK-X", 0
+sSfCellTracesX  BYTE    "R14-DUAL-TRACES-X", 0
+sSfCellRstProvX BYTE    "R14-DUAL-RSTPROV-X", 0
+sSfCellHookRest BYTE    "R19-DUAL-HOOKREST-X", 0
+sSfCellForced   BYTE    "R19-DUAL-FORCED-X", 0
+sSfCellBlunt    BYTE    "R19-DUAL-BLUNT-X", 0
+sSfCellGrd100   BYTE    "R19-DUAL-GRD100-X", 0
+sSfCritHookRest BYTE    "NO_FAULT_AT_REST", 0
+sSfCritForced   BYTE    "FORCED_NOT_LATCHED", 0
+sSfCritBlunt    BYTE    "SECOND_IS_FAULTED", 0
+sSfCritGrd100   BYTE    "FULL_MATCHES_SHORT", 0
+sSfCellFrRest   BYTE    "R19-DUAL-FRREST-X", 0
+sSfCellShortI   BYTE    "R19-DUAL-SHORTI-X", 0
+sSfCellShortTk  BYTE    "R19-DUAL-SHORTTK-X", 0
+sSfCellCoastEmf BYTE    "R19-DUAL-COASTEMF-X", 0
+sSfCellRestFlat BYTE    "R19-DUAL-RESTFLAT-X", 0
+sSfCellResync   BYTE    "R19-DUAL-RESYNC-X", 0
+sSfCellPlatStop BYTE    "R19-DUAL-PLATSTOP-X", 0
+sSfCellGraded   BYTE    "R19-DUAL-GRADED-X", 0
+sSfCellB4Pulse  BYTE    "R19-DUAL-B4PULSE-X", 0
+sSfCritFrRest   BYTE    "FR_HOLD_RESTORED", 0
+sSfCritShortI   BYTE    "SHORT_I_RISES", 0
+sSfCritShortTk  BYTE    "SHORT_LT_COAST", 0
+sSfCritCoastEmf BYTE    "COAST_EMF_AT_HALL", 0
+sSfCritRestFlat BYTE    "REST_PHASES_FLAT", 0
+sSfCritResync   BYTE    "RESYNC_STOPPED", 0
+sSfCritPlatStop BYTE    "OTHER_WHEEL_PCT", 0
+sSfCritGraded   BYTE    "BRAKE_PCT_DECEL", 0
+sSfCritB4Pulse  BYTE    "WINDING_R_PULSE", 0
+sSfStudyB4      BYTE    "B-4", 0
+sSfNotBuilt     BYTE    "NOT_BUILT", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfUnitsMv      BYTE    "MV", 0
@@ -2539,6 +2602,7 @@ PRI initRunState() | slotIdx
         sfTrN[slotIdx] := 0                                 ' TRKICK's two accumulators and the from_incre state
         sfTrKickPk[slotIdx] := 0
         slotLastIncre[slotIdx] := 0
+    frResetCells()                                          ' task 3613: the FAULTRESP part's accumulators
 
 PRI runPart()
 ' Run this build's segments in the design's sec 4.1 order. Every segment after a run abort is emitted
@@ -2587,7 +2651,11 @@ PRI runPart()
             if BUILD_TOP_ONLY == FALSE                       ' dual-limits-top: the confirming climb only (task 3605)
                 runSegment(SEG_LIMRAMP)
                 runSegment(SEG_LIMLOW)
-    bRunReturned := TRUE                                    ' before the return, or main() reads a library abort
+        PART_FAULTRESP:
+            runSegment(SEG_PREFLT)
+            runSegment(SEG_FLTRESP)                         ' task 3613: X-3, X-2, X-4 per wheel
+            runSegment(SEG_FLTPLAT)                         ' task 3613: X-5 through the steering object
+    bRunReturned := TRUE                                   ' before the return, or main() reads a library abort
 
 PRI runSegment(seg)
 ' Run one segment when the run caps allow it; otherwise record that it was skipped.
@@ -2639,6 +2707,10 @@ PRI runSegment(seg)
                 segLimRamp()
             SEG_LIMLOW:
                 segLimLow()
+            SEG_FLTRESP:
+                segFaultResp()
+            SEG_FLTPLAT:
+                segFaultPlat()
     else
         emitSeg(seg, SEGEV_SKIP, bSegAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
 
@@ -8104,6 +8176,1908 @@ PRI wheelRawTicks(side) : nTicks
         nTicks := wheelL.getRawHallTicks()
     beat(CP_LIB_QUERY)
 
+CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 3613, R19.7) --- }
+
+  ' WHAT THIS PART IS FOR. Visit 10 sizes what R19.3 exposes and certifies the responses before any becomes the
+  '  default (P5). The cells are DOCs/analyses/FAULT-STRATA-STUDY-2026-09-23.md sec 7's X-2 .. X-6, each judged
+  '  against the reading pre-registered for it, restated where it is judged. EVERY TRIAL IS ITS OWN DRIVER LIFETIME:
+  '  a start re-inits the fault response, the stop mode and the fault latch -- and discards a forced fault still
+  '  pending -- so no trial, and no abort, leaves the next one in a state it did not choose. The explicit restores
+  '  after each trial are still made, and read back, as the evidence they took (R19-DUAL-FRREST-X).
+  '
+  ' EVERY FAULT IS FORCED (testForceFault(), DRIVER_REV 12): the driver takes a fault at its own fault test on its next
+  '  DRIVEN frame, so the response is the mode's real response and getFaultCause() reads FC_LAG (the halls are legal).
+  '  The offsets are never touched, so no field is left 180 degrees off: the offset-shift provocation this replaces
+  '  faulted 2 of 5 times on file and plugged the motor into the 10 A abort the other 3 (PL-119). The forced fault is
+  '  still GUARDED (frGuard()): cog 0 reads the mirror with no wait for FR_PROVOKE_MS and stops the wheel on the first
+  '  read at or over ABS_ABORT_MV, or when no fault latched by then -- a failure of the HOOK, recorded as BM-ABORT
+  '  reason NO_FAULT and counted by R19-DUAL-FORCED-X. The hook's own negative control runs first on each wheel: a
+  '  forced fault AT REST, bridge coasting, must not fault (R19-DUAL-HOOKREST-X). A request made at rest stays pending
+  '  in the driver (force_seen is advanced only by a fault), so that check ends its lifetime and the pending request
+  '  with it.
+  '
+  ' A SECOND FORCED FAULT DURING A RE-SYNCED RAMP TAKES THE FALLBACK (DRIVER_REV 12: fault_stop now stays pending until
+  '  rest). X-6 uses it: FR_GRADED with holdAtStop(TRUE) at FR_SPEED_X6, the second fault forced once the mirror reads
+  '  DCS_SPIN_DN, gives BR_BRAKE at each brake % in frBrakePcts; its coast bound is the same double fault with
+  '  holdAtStop(FALSE) (X6C), and its full-short bound is X-2 at the same speed.
+  '
+  ' THE DC-LINK SHUNT CANNOT SEE A PHASE SHORT'S CURRENT. DERIVED (BOARD-REVISION-FACTS.md sec 2.3: the shunt sits
+  '  between the common MOSFET ground and system ground): with every low side on, the phase currents circulate
+  '  through the low-side FETs and their common node and never cross the shunt. So X-2's pre-registered "peak
+  '  current rises with speed" is judged only when the highest speed's post-fault peak stands FR_I_VISIBLE_MV over
+  '  the lifetime zero; otherwise R19-DUAL-SHORTI-X is NOMEAS and BM-FRWIND's winding resistance NA, why NOT_VISIBLE.
+  '  A flat zero is reported as unobservable, never as a short that drew nothing.
+  '
+  ' The startup study's B-4 current pulse was not built; X-2 replaces it (R19-DUAL-B4PULSE-X NOT_BUILT, why
+  '  REPLACED_BY_X2), and by PL-118 its winding-resistance estimate from the short's current is expected to read NA.
+    FR_SPEEDS             = 3                               ' a low, middle and high rung of the ladder (frRungIdx)
+    FR_SPEED_X4           = 1                               ' X-4 runs once per wheel, at the middle rung
+    FR_SPEED_X6           = 1                               ' X-6 and its bounds too, so X-2's middle rung is its full-short bound
+    FR_PHASES             = 3
+    FR_WINS               = 3                               ' FRW_PRE, FRW_MOVE, FRW_REST
+    FR_BRAKE_PCT          = wheelL.BRAKE_PCT_DEFAULT        ' 25: the graded short's %, the driver's own default
+    FR_BRAKE_STEPS        = 4                               ' frBrakePcts: 10, 25, 50, 100
+    FR_GRADED_POINTS      = FR_BRAKE_STEPS + 1              ' the coast bound (X6C) as point 0, then the four brake %s
+    FR_GRADED_MIN_POINTS  = 3                               ' a monotone reading needs at least three measured points
+    ' 100 % graded is the full short (brake_y 0 is every low side on), entered a few ms later on a ramp already begun,
+    '  so it should stop within hall quantisation of X-2's short at the same speed: one tick either side, and one more
+    '  for the slower speed at the second fault.
+    FR_FULL_TOL_TICKS     = 2
+    ' FR_PROVOKE_MS: testForceFault() returns once the front cog has taken the request (a front pass, 1 ms); the driver
+    '  faults on its next driven pass (0.52 ms) and the instrument mirrors the latch within one 2 ms sample, so a
+    '  forced fault shows by about 4 ms. 8 ms is twice that.
+    FR_PROVOKE_MS         = 8
+    FR_SECOND_WAIT_MS     = 50                              ' X-6: the bound on the mirror reading SPIN_DN before the second force
+    FR_HOOK_SETTLE_MS     = 200                             ' HOOKREST: at rest this long before the force
+    FR_HOOK_WIN_MS        = 500                             ' ...and watched this long after it
+    ' X-4's ramp. A re-synced stop reads its command as 0 and ramps down at ramp_down per drive pass, so from |incre| it
+    '  takes |incre| / RAMP_DEF_DOWN passes at FR_PASSES_PER_SEC. MEASURED against it: a commanded stop from half speed
+    '  took 730 ms to the start of rest (BASELINE, debug_260919-173537.log, mark_k 50 to rest_k 415) against 768 ms
+    '  predicted -- the last sparse ticks read as rest a little early. The re-synced stop must land inside
+    '  FR_RAMP_LO_PCT..FR_RAMP_HI_PCT of the prediction: a short (a few ms) or a stop that ran on fails it.
+    FR_PASSES_PER_SEC     = wheelL.PWM_RATE_IN_HZ / wheelL.DRIVE_PASS_FRAMES      ' 1_913
+    FR_RAMP_LO_PCT        = 50
+    FR_RAMP_HI_PCT        = 150
+    FR_PRE_SAMPLES        = 250                             ' 500 ms before the mark: the wheel's rate, current and duty at speed
+    FR_SETTLE_SAMPLES     = 2                               ' the moving window starts this many samples after the fault
+    FR_REST_WIN_MS        = 500                             ' X-3's negative control: the phases floated at rest, before spin-up
+    FR_REST_MIN_SAMPLES   = 50                              ' a rest window shorter than this (100 ms) judges nothing
+    ' FLAT. MEASURED 2026-09-22 (the ALIGN tier's bias reads, debug_260922-122515.log and -122644.log): a floated phase
+    '  at rest strays at most 18 mV from its mean (hyst 9-22 mV is that stray + ALIGN_HYST_MARGIN_MV), so its
+    '  peak-to-peak at rest is at most 36 mV. A coast from speed swings hundreds (Visit 6's coast moved the phase SUM
+    '  alone 541-1_013 mV). A phase under FR_FLAT_MV peak-to-peak is flat; the crossing band is half of it, above the
+    '  rest stray, so noise about a flat phase makes no crossing.
+    FR_FLAT_MV            = 50
+    FR_XING_BAND_MV       = FR_FLAT_MV / 2
+    FR_XING_PER_CYCLE     = 2                               ' a phase crosses its mean twice per electrical cycle
+    FR_XING_MIN           = 2                               ' one full alternation at least, so a single step is not a swing
+    FR_COAST_MIN_TICKS    = wheelL.HALL_TICKS_PER_CYCLE     ' one electrical cycle: a coast of fewer ticks is NOMEAS
+    SENSE_MV_PER_A        = 150                             ' the Rev B sense scale (BOARD-REVISION-FACTS.md sec 2.4)
+    ' 1 A over the lifetime zero: the floated zero reads -0.5 to +8.7 mV over 200 starts (ALIGN_NODRIVE_MV's note)
+    FR_I_VISIBLE_MV       = SENSE_MV_PER_A
+    FR_RISE_MIN_SPEEDS    = 2                               ' "rises with speed" needs two measured speeds
+    FR_BAD_LO             = 0                               ' every FAULTRESP count cell passes at zero bad instances
+    FR_BAD_HI             = 0
+    ' X-5. The other wheel must be at rest one ramp time after the fault. MEASURED: a commanded stop from half speed
+    '  takes about 730 ms (BASELINE, debug_260919-173537.log, mark_k 50 to rest_k 415 at 2 ms); D_REST_MS, the
+    '  harness's bound on the platform reaching rest after a stop, is used as the ramp time. The window after it must
+    '  show the wheel under FR_PLAT_REST_PCT of its pre-fault rate; a wheel driving on reads about 100 %.
+    FR_PLAT_RAMP_MS       = D_REST_MS
+    FR_PLAT_WIN_MS        = 500
+    FR_PLAT_MARGIN_MS     = 200
+    FR_PLAT_CAPTURE_MS    = FR_PLAT_RAMP_MS + FR_PLAT_WIN_MS + REST_CONFIRM_MS + FR_PLAT_MARGIN_MS
+    FR_PLAT_RAMP_SAMPLES  = (FR_PLAT_RAMP_MS * INST_RATE_HZ) / MS_PER_SEC
+    FR_PLAT_WIN_SAMPLES   = (FR_PLAT_WIN_MS * INST_RATE_HZ) / MS_PER_SEC
+    FR_PLAT_PCT_LO        = 0
+    FR_PLAT_REST_PCT      = 10
+    FR_PLAT_MIN_TICKS     = 10                              ' the other wheel's pre-fault window: it was turning
+    FR_PCT_SCALE          = 100
+
+  ' The X-cell of a wheel trial (token = tokFrCell):
+  '  FRC_X2 - SHORT from speed: FR_SHIPPED, holdAtStop(TRUE)
+  '  FRC_X3 - COAST from speed: FR_SHIPPED, holdAtStop(FALSE)
+  '  FRC_X4 - RE-SYNC: FR_GRADED, holdAtStop(FALSE): one forced fault, re-seeded onto the correct offsets
+  '  FRC_X6 - GRADED SHORT: FR_GRADED at frBrakePcts[], holdAtStop(TRUE): a second forced fault on the re-synced ramp
+  '  FRC_X6C - X-6's coast bound: the same double fault with holdAtStop(FALSE), which coasts
+    #0, FRC_X2, FRC_X3, FRC_X4, FRC_X6, FRC_X6C
+    FRC_COUNT = FRC_X6C + 1
+    TOKMAX_FRCELL = 3
+
+  ' The outcome of a forced fault (and, for X-6, of its second):
+  '  FRO_FAULT    - the fault latched inside FR_PROVOKE_MS (the second: the mirror read DCS_FAULTED inside it)
+  '  FRO_NO_FAULT - it did not: the HOOK failed. A first fault's wheel was stopped (BM-ABORT NO_FAULT); a second's
+  '                 wheel is left ramping under control, since nothing is wrong with it
+  '  FRO_ABORT_I  - the current reached ABS_ABORT_MV first; the wheel was stopped (BM-ABORT ABS_CURRENT)
+  '  FRO_NOT_RUN  - the trial never reached this fault; why says what stopped it (for a second: none was asked)
+    #0, FRO_FAULT, FRO_NO_FAULT, FRO_ABORT_I, FRO_NOT_RUN
+    FRO_COUNT = FRO_NOT_RUN + 1
+    TOKMAX_FROUT = 8
+
+  ' What the driver was SEEN to do after the fault (I7: observed, never labelled in advance):
+  '  FRP_NONE       - nothing to classify (no fault, or the after-reads could not be taken)
+  '  FRP_FAULTED    - DCS_FAULTED with no re-sync: the stop mode's fault bridge (FR_SHIPPED's, or FR_GRADED's blunt)
+  '  FRP_RESYNC     - one re-sync and no DCS_FAULTED: re-seeded from the halls and stopped along the ramp
+  '  FRP_RESYNC_N   - two or more re-syncs and no DCS_FAULTED: it faulted again on the ramp and re-seeded again
+  '  FRP_RESYNC_FLT - a re-sync, then DCS_FAULTED
+    #0, FRP_NONE, FRP_FAULTED, FRP_RESYNC, FRP_RESYNC_N, FRP_RESYNC_FLT
+    FRP_COUNT = FRP_RESYNC_FLT + 1
+    TOKMAX_FRPATH = 10
+
+  ' BM-FRPHASE window:
+  '  FRW_PRE  - floated at rest before spin-up: X-3's negative control, measured first
+  '  FRW_MOVE - from FR_SETTLE_SAMPLES after the fault to rest: the wheel coasting or braked
+  '  FRW_REST - from rest to the capture's end, the bridge in its post-fault state
+    #0, FRW_PRE, FRW_MOVE, FRW_REST
+    TOKMAX_FRWIN = 4
+
+    FR_MODE_COUNT = wheelL.FR_GRADED + 1                    ' tokFrMode is indexed by the library's FR_*
+    TOKMAX_FRMODE = 7
+    HS_COUNT = wheelL.HS_LIMITED + 1                        ' tokHold is indexed by the library's HS_*
+    TOKMAX_HOLD = 7
+
+DAT ' ---- FAULTRESP tables ----
+
+' The three rungs, as ladderIncre indices: 40, 80 and 120 x 10^6, low, middle and high. The high rung stays below the
+'  ceiling: the full short from it is the hardest stop in the part, and every X-2 ends in one.
+frRungIdx       LONG    3, 5, 7
+' X-6's brake %s, ascending: testSetFaultResponse(FR_GRADED, pct) before each trial
+frBrakePcts     LONG    10, 25, 50, 100
+tokFrCell       BYTE    "X-2", 0, "X-3", 0, "X-4", 0, "X-6", 0, "X6C", 0
+tokFrOut        BYTE    "FAULT", 0, "NO_FAULT", 0, "ABORT_I", 0, "NOT_RUN", 0
+tokFrPath       BYTE    "NONE", 0, "FAULTED", 0, "RESYNC", 0, "RESYNC_N", 0, "RESYNC_FLT", 0
+tokFrMode       BYTE    "SHIPPED", 0, "GRADED", 0
+tokFrWin        BYTE    "PRE", 0, "MOVE", 0, "REST", 0
+tokHold         BYTE    "OFF", 0, "HOLDING", 0, "SLIPPED", 0, "LIMITED", 0
+
+VAR { FAULTRESP state -- cog 0 only }
+
+    ' the trial in hand (frStagingReset())
+    LONG    frCell                                          ' FRC_*
+    LONG    frSpeedIdx                                      ' 0..FR_SPEEDS-1
+    LONG    frBrakeIdx                                      ' X-6: 0..FR_BRAKE_STEPS-1 into frBrakePcts
+    LONG    frBrakePct                                      ' the graded short's % this trial set
+    LONG    frMode                                          ' FR_* the trial set
+    LONG    frReqMode                                       ' MODE_* the trial requested
+    LONG    frSetErr                                        ' testSetFaultResponse()'s return
+    LONG    frOutcome                                       ' FRO_* of the (first) forced fault
+    LONG    frOutcome2                                      ' FRO_* of X-6's second, FRO_NOT_RUN when none was asked
+    LONG    frForceErr                                      ' testForceFault()'s return (the first)
+    LONG    frForceErr2                                     ' ...and X-6's second
+    LONG    bFrForced                                       ' the first fault was requested
+    LONG    frMarkMs                                        ' getms() at the forced fault's mark
+    LONG    frGuardPkMv                                     ' the largest mirrored sense_i inside the guard, mV
+    LONG    frCaptureSafe                                   ' SAFE_* that ended the post-fault capture
+    LONG    frBrakeYBase                                    ' testGetFaultResponse()'s brake_y at the lifetime's start
+    LONG    frResyncBase                                    ' ...its re-sync count at speed, just before the forced fault
+    LONG    frResyncAfter                                   ' ...and after the capture
+    LONG    bFrReadsValid                                   ' the after-reads were taken from a running driver
+    LONG    frCause                                         ' getFaultCause() after the capture
+    LONG    frPath                                          ' FRP_*
+    LONG    frWhy                                           ' first cause of the trial's NA fields
+    LONG    frPreWhy                                        ' ...and of the negative-control window's
+    LONG    frDutyMax                                       ' duty_max of this lifetime
+    LONG    bFrRestUp                                       ' the restores were issued to a running driver
+    LONG    frRestErr                                       ' the fault-response restore's return
+    ' the capture's readings (frStats())
+    LONG    bFrPreValid                                     ' the pre-fault window held samples
+    LONG    frPreX10                                        ' the wheel's rate over it, ticks/s x10
+    LONG    frPreIX10                                       ' its mean sense_i, mV x10
+    LONG    frPreDuty                                       ' its mean duty
+    LONG    bFrFltFound                                     ' a sample at or after the mark carried the fault latch
+    LONG    frFltJ                                          ' the first one, logical index
+    LONG    bFrFlt2Found                                    ' X-6: a sample after it read DCS_FAULTED (the second fault's fallback)
+    LONG    frFlt2J                                         ' ...the first one
+    LONG    frRefJ                                          ' the reading's reference: the second fault for X-6 / X6C, else the first
+    LONG    bFrRestFound                                    ' the trace found rest after the reference
+    LONG    frRestJ                                         ' where the still run began, logical index
+    LONG    frTicksRest                                     ' |pos| from the reference to rest
+    LONG    frRestMs                                        ' ms from the reference to rest
+    LONG    frT1                                            ' ticks over the first half of that interval
+    LONG    frT2                                            ' ...and the second: a falling rate has frT1 > frT2
+    LONG    bFrPkValid                                      ' an up sample lay between the fault and rest
+    LONG    frPkI                                           ' the largest sense_i there, mV
+    LONG    frPkK                                           ' its trace k
+    LONG    bFrSawSpinDn                                    ' DCS_SPIN_DN seen after the fault
+    LONG    bFrSawFaulted                                   ' DCS_FAULTED seen after the fault
+    LONG    frStEnd                                         ' the state on the capture's last sample
+    ' the three phase windows, [window] or [window * FR_PHASES + phase]
+    LONG    bFrWinValid[FR_WINS]
+    LONG    frWinN[FR_WINS]
+    LONG    frWinTicks[FR_WINS]
+    LONG    frWinPp[FR_WINS * FR_PHASES]
+    LONG    frWinX[FR_WINS * FR_PHASES]
+    ' X-5 (frPlatStats()): the wheel that was NOT faulted
+    LONG    bFrPlatPreValid                                 ' its pre-fault window held samples
+    LONG    bFrPlatPreOk                                    ' ...and it was turning (FR_PLAT_MIN_TICKS)
+    LONG    frPlatPreX10
+    LONG    bFrPlatWinValid                                 ' its window one ramp time after the fault was measured
+    LONG    frPlatWinX10
+    LONG    frPlatPct                                       ' the window's rate as a percentage of the pre-fault rate
+    LONG    bFrPlatRestFound
+    LONG    frPlatRestJ
+    LONG    frPlatRestMs                                    ' ms from the fault to its rest
+    LONG    bFrPlatSpinDn                                   ' DCS_SPIN_DN seen on it after the fault
+    ' the cells' accumulators, [slot] or [slot * FR_SPEEDS + speed] (frResetCells())
+    LONG    frShortPk[INST_MOTORS * FR_SPEEDS]              ' SHORTI: X-2's post-fault peak sense_i per speed
+    LONG    bFrShortPkRan[INST_MOTORS * FR_SPEEDS]
+    LONG    bFrShortVis[INST_MOTORS * FR_SPEEDS]
+    LONG    frShortTicks[INST_MOTORS * FR_SPEEDS]           ' SHORTTK: X-2's fault-to-rest ticks per speed
+    LONG    bFrShortTkRan[INST_MOTORS * FR_SPEEDS]
+    LONG    frCoastTicks[INST_MOTORS * FR_SPEEDS]           ' ...and X-3's
+    LONG    bFrCoastTkRan[INST_MOTORS * FR_SPEEDS]
+    LONG    sfCoastN[INST_MOTORS]                           ' COASTEMF: X-3 coasts judged, and those that stayed flat
+    LONG    sfCoastBad[INST_MOTORS]
+    LONG    sfRestN[INST_MOTORS]                            ' RESTFLAT: rest windows judged, and those that were not flat
+    LONG    sfRestBad[INST_MOTORS]
+    LONG    bSfResyncRan[INST_MOTORS]                       ' RESYNC
+    LONG    bSfResyncOk[INST_MOTORS]
+    LONG    sfFrRestN[INST_MOTORS]                          ' FRREST: restores read back, and those that did not hold
+    LONG    sfFrRestBad[INST_MOTORS]
+    LONG    bSfPlatRan[INST_MOTORS]                         ' PLATSTOP, indexed by the wheel that was NOT faulted
+    LONG    sfPlatPct[INST_MOTORS]
+    LONG    frGradedTicks[INST_MOTORS * FR_GRADED_POINTS]   ' GRADED: [slot * FR_GRADED_POINTS + point], point 0 the coast bound
+    LONG    frGradedMs[INST_MOTORS * FR_GRADED_POINTS]
+    LONG    bFrGradedRan[INST_MOTORS * FR_GRADED_POINTS]
+    LONG    sfBluntN[INST_MOTORS]                           ' BLUNT: double-fault trials judged, and those not FAULTED after the second
+    LONG    sfBluntBad[INST_MOTORS]
+    LONG    sfForcedN[INST_MOTORS]                          ' FORCED: driven forced faults, and those that did not latch
+    LONG    sfForcedBad[INST_MOTORS]
+    LONG    bSfHookRan[INST_MOTORS]                         ' HOOKREST
+    LONG    bSfHookOk[INST_MOTORS]
+
+PRI frResetCells() | arrIdx, slotIdx
+' Clear the FAULTRESP part's cell accumulators (initRunState()): every count 0 and every ran FALSE, so a cell no
+' trial reached prints NOMEAS.
+'
+' @local arrIdx - [slot * FR_SPEEDS + speed] index
+' @local slotIdx - motor slot
+
+    repeat arrIdx from 0 to (INST_MOTORS * FR_SPEEDS) - 1
+        frShortPk[arrIdx] := 0
+        bFrShortPkRan[arrIdx] := FALSE
+        bFrShortVis[arrIdx] := FALSE
+        frShortTicks[arrIdx] := 0
+        bFrShortTkRan[arrIdx] := FALSE
+        frCoastTicks[arrIdx] := 0
+        bFrCoastTkRan[arrIdx] := FALSE
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        sfCoastN[slotIdx] := 0
+        sfCoastBad[slotIdx] := 0
+        sfRestN[slotIdx] := 0
+        sfRestBad[slotIdx] := 0
+        bSfResyncRan[slotIdx] := FALSE
+        bSfResyncOk[slotIdx] := FALSE
+        sfFrRestN[slotIdx] := 0
+        sfFrRestBad[slotIdx] := 0
+        bSfPlatRan[slotIdx] := FALSE
+        sfPlatPct[slotIdx] := 0
+        sfBluntN[slotIdx] := 0
+        sfBluntBad[slotIdx] := 0
+        sfForcedN[slotIdx] := 0
+        sfForcedBad[slotIdx] := 0
+        bSfHookRan[slotIdx] := FALSE
+        bSfHookOk[slotIdx] := FALSE
+    repeat arrIdx from 0 to (INST_MOTORS * FR_GRADED_POINTS) - 1
+        frGradedTicks[arrIdx] := 0
+        frGradedMs[arrIdx] := 0
+        bFrGradedRan[arrIdx] := FALSE
+
+PRI segFaultResp() | side, speedIdx, brakeIdx
+' FLTRESP (part FAULTRESP, task 3613): the fault study's wheel-frame X-cells. Per wheel: FIRST the hook's negative
+' control (a forced fault at rest must not fault, frHookRestTrial()); then at each rung of frRungIdx in ascending
+' order X-3 (the coast, its own negative control first) and X-2 (the short) at the same speed, so each speed's pair is
+' taken a minute apart at most; then at the middle rung X-4 (the re-sync), X-6's coast bound (X6C) and X-6 at each
+' brake % ascending. Every trial is its own lifetime (frTrial()), and every forced fault is guarded (frGuard()).
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local speedIdx - 0..FR_SPEEDS-1, ascending
+' @local brakeIdx - 0..FR_BRAKE_STEPS-1, ascending
+
+    segBegin(SEG_FLTRESP)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        beat(CP_LOOP_POLL)
+        frHookRestTrial(side)
+        repeat speedIdx from 0 to FR_SPEEDS - 1
+            beat(CP_LOOP_POLL)
+            frTrial(side, FRC_X3, speedIdx, 0)
+            frTrial(side, FRC_X2, speedIdx, 0)
+        beat(CP_LOOP_POLL)
+        frTrial(side, FRC_X4, FR_SPEED_X4, 0)
+        frTrial(side, FRC_X6C, FR_SPEED_X6, 0)
+        repeat brakeIdx from 0 to FR_BRAKE_STEPS - 1
+            beat(CP_LOOP_POLL)
+            frTrial(side, FRC_X6, FR_SPEED_X6, brakeIdx)
+    segEnd(segWhy())
+
+PRI segFaultPlat()
+' FLTPLAT (part FAULTRESP, task 3613): X-5, PL-117 -- one wheel of the steering object faults while both drive, and
+' the other must stop along its ramp. Once per wheel, each its own steering lifetime: the LEFT forced under
+' FR_SHIPPED (the fault latches, DCS_FAULTED), then the RIGHT under FR_GRADED (it re-syncs and stops itself). The
+' policy is stated for a fault of EITHER kind (R19.2), so the two forced faults the cell needs cover both kinds, and
+' each wheel is once the one faulted and once the one watched.
+
+    segBegin(SEG_FLTPLAT)
+    wheelStop(SIDE_LEFT)                                    ' shared pin claims (PL-18), as OVERSHT does
+    wheelStop(SIDE_RIGHT)
+    frPlatTrial(SIDE_LEFT, wheelL.FR_SHIPPED)
+    frPlatTrial(SIDE_RIGHT, wheelL.FR_GRADED)
+    segEnd(segWhy())
+
+PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyCode, rampInc
+' One wheel-frame X-cell trial in its own driver lifetime: start the wheel alone (the lifetime zero is read inside
+' bWheelStart()); X-3 only, the phases at rest (the negative control, first); set the fault response (X-6 at its
+' brake %); X-2 and X-6, holdAtStop(TRUE) before the spin-up; spin up, settle and force the fault -- X-6 and X6C a
+' second on the re-synced ramp (frCapture()); then, in I11's order, the reads that must see the driver as the fault
+' left it, every restore, and only then the trace and the readings; recover the fault and cool; read the restores
+' back at rest (frRestoreCheck()); stop the wheel.
+'
+' The sign is NEG, as POSTFLT's, so these traces sit beside part C's.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param cellKind - FRC_X2, FRC_X3, FRC_X4, FRC_X6 or FRC_X6C
+' @param speedIdx - 0..FR_SPEEDS-1, the rung in frRungIdx
+' @param brakeIdx - X-6: 0..FR_BRAKE_STEPS-1 into frBrakePcts (ignored otherwise)
+'
+' @local slotIdx - motor slot
+' @local tid - trace id
+' @local motorIncre - signed increment
+' @local whyCode - why the trial did not run, WHY_NONE when it did
+' @local rampInc - ramp_inc read back for the trace header
+
+    slotIdx := side - SIDE_LEFT
+    motorIncre := ladderIncre[frRungIdx[speedIdx]] * SIGN_NEG
+    tid := nextTraceId()
+    cpReset()
+    frStagingReset(cellKind, speedIdx, brakeIdx)
+    whyCode := WHY_NONE
+    if bRunContinue(SEG_FLTRESP) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bWheelStart(SEG_FLTRESP, side) == FALSE
+        whyCode := stWhy
+    whyCode := trialSkipWhy(SEG_FLTRESP, side, whyCode)
+    rampInc := wheelRampInc(side)
+    if whyCode <> WHY_NONE
+        frWhy := whyCode
+        cpWantNeg, cpWantPos := wheelGetOffsets(side)
+        traceSkip(tid, SEG_FLTRESP, side, CAUSE_FAULT, motorIncre, frReqMode, rampInc, whyCode)
+        emitFrTrial(tid, side, motorIncre)
+    else
+        _, frBrakeYBase, _ := wheelFaultResponse(side)
+        _, frDutyMax, _, _, _ := wheelDriveConstants(side)
+        if cellKind == FRC_X3
+            frRestWindow(side, slotIdx)                     ' the negative control, measured FIRST (D2)
+        frSetErr := wheelSetFaultResponse(side, frMode, frBrakePct)
+        if frReqMode == MODE_BRAKE
+            wheelHold(side, TRUE)
+        frCapture(side, slotIdx, motorIncre)
+        frReadAfter(side)                                   ' reads only: the driver as the fault left it
+        frRestore(side, slotIdx)                            ' I11: before anything is drained or judged
+        traceEmitCapture(SEG_FLTRESP, side, tid, CAUSE_FAULT, motorIncre, frReqMode, rampInc)
+        if bCpFrozen
+            frStats(slotIdx)
+        frClassify()
+        emitFrTrial(tid, side, motorIncre)
+        emitFrResults(tid, side, slotIdx, motorIncre)
+        frFold(slotIdx)
+        if isWheelUp(side)
+            traceRecover(SEG_FLTRESP, side, tid, motorIncre, FAULT_COOL_MS)
+        else
+            waitBeat(FAULT_COOL_MS, CP_LOOP_COOL)           ' stopped by a guard or an abort: nothing to recover, the same cool
+        frRestoreCheck(tid, side, slotIdx)                  ' a lifetime a guard or an abort ended prints NA, not judged
+    bInstIdle()
+    wheelStop(side)
+    segItems := (segItems + 1) <# LIM_SMALL
+
+PRI frStagingReset(cellKind, speedIdx, brakeIdx)
+' Clear the trial staging, and name the trial's fault response, brake % and stop request from its X-cell.
+'
+' @param cellKind - FRC_* value
+' @param speedIdx - 0..FR_SPEEDS-1
+' @param brakeIdx - X-6: 0..FR_BRAKE_STEPS-1 into frBrakePcts
+
+    frCell := cellKind
+    frSpeedIdx := speedIdx
+    frBrakeIdx := brakeIdx
+    frBrakePct := FR_BRAKE_PCT
+    if cellKind == FRC_X6
+        frBrakePct := frBrakePcts[brakeIdx]
+    frMode := wheelL.FR_SHIPPED
+    if (cellKind == FRC_X4) or (cellKind == FRC_X6) or (cellKind == FRC_X6C)
+        frMode := wheelL.FR_GRADED
+    frReqMode := MODE_FLOAT
+    if (cellKind == FRC_X2) or (cellKind == FRC_X6)
+        frReqMode := MODE_BRAKE
+    frSetErr := NO_ERROR
+    frOutcome := FRO_NOT_RUN
+    frOutcome2 := FRO_NOT_RUN
+    frForceErr := NO_ERROR
+    frForceErr2 := NO_ERROR
+    bFrForced := FALSE
+    frMarkMs := getms()
+    frGuardPkMv := 0
+    frCaptureSafe := SAFE_NONE
+    frBrakeYBase := 0
+    frResyncBase := 0
+    frResyncAfter := 0
+    bFrReadsValid := FALSE
+    frCause := wheelL.FC_NONE
+    frPath := FRP_NONE
+    frWhy := WHY_NONE
+    frPreWhy := WHY_NONE
+    frDutyMax := 0
+    bFrRestUp := FALSE
+    frRestErr := NO_ERROR
+    frWinReset(FRW_PRE)
+    frStatReset()
+
+PRI frStatReset()
+' Clear the capture's readings and its two post-fault phase windows (the pre-spin-up window is the trial's own).
+
+    bFrPreValid := FALSE
+    frPreX10 := 0
+    frPreIX10 := 0
+    frPreDuty := 0
+    bFrFltFound := FALSE
+    frFltJ := 0
+    bFrFlt2Found := FALSE
+    frFlt2J := 0
+    frRefJ := 0
+    bFrRestFound := FALSE
+    frRestJ := 0
+    frTicksRest := 0
+    frRestMs := 0
+    frT1 := 0
+    frT2 := 0
+    bFrPkValid := FALSE
+    frPkI := 0
+    frPkK := 0
+    bFrSawSpinDn := FALSE
+    bFrSawFaulted := FALSE
+    frStEnd := DCS_UNKNOWN
+    frWinReset(FRW_MOVE)
+    frWinReset(FRW_REST)
+
+PRI frWinReset(winIdx) | phaseIdx
+' Clear one phase window.
+'
+' @param winIdx - FRW_* value
+'
+' @local phaseIdx - 0..FR_PHASES-1
+
+    bFrWinValid[winIdx] := FALSE
+    frWinN[winIdx] := 0
+    frWinTicks[winIdx] := 0
+    repeat phaseIdx from 0 to FR_PHASES - 1
+        frWinPp[(winIdx * FR_PHASES) + phaseIdx] := 0
+        frWinX[(winIdx * FR_PHASES) + phaseIdx] := 0
+
+PRI frRestWindow(side, slotIdx) | winStartTotal, winEndTotal, startJ, endJ
+' X-3's negative control, measured FIRST (D2): the three phases over FR_REST_WIN_MS with the wheel at rest and the
+' bridge floated, before anything is commanded. The coast's own at-rest tail (FRW_REST) is its second instance. Both
+' must read flat, or R19-DUAL-RESTFLAT-X fails -- a channel that swings with nothing turning would otherwise pass X-3
+' on noise. The window is delimited by two instrument-recorded ring totals (sec 12.7).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+'
+' @local winStartTotal - ring total at the window start
+' @local winEndTotal - ring total at the window end
+' @local startJ - logical index of the window's first sample
+' @local endJ - logical index of its last
+
+    frPreWhy := WHY_INST_NOACK
+    if bInstArm(INST_SRC_WHEELS, 1)
+        winStartTotal := instMarkIndex()
+        waitWatched(side, FR_REST_WIN_MS, CP_LOOP_ZERO, UNTIL_TIME)
+        winEndTotal := instMarkIndex()
+        if bInstFreeze(0)
+            drainBegin()
+            if (winStartTotal >= 0) and (winEndTotal > winStartTotal) and (drStored > 0)
+                startJ := (winStartTotal - drLostHead) #> 0
+                endJ := (winEndTotal - 1 - drLostHead) <# (drStored - 1)
+                frPhaseWindow(FRW_PRE, slotIdx, startJ, endJ)
+            frPreWhy := WHY_NO_SAMPLES
+            if bFrWinValid[FRW_PRE]
+                frPreWhy := WHY_NONE
+        bInstIdle()
+
+PRI frCapture(side, slotIdx, motorIncre) | safeEvent, bReached, bRest, captureLeftMs
+' A wheel trial's motion and capture, shaped as eventCapture()'s fault path: arm; command; AT_SPEED (<=
+' LADDER_STEADY_MS, the high rung's spin-up from rest); settle SETTLE_MS; read the re-sync count at speed; the guarded
+' forced fault (frProvoke()) and, for X-6 / X6C, the second on its ramp (frForceSecond()); a fault is the event, so
+' the capture then runs until rest or traceCaptureMs(1) without ending on it; freeze. Fills the cp* staging, as
+' eventCapture() does, so traceEmitCapture() emits it as it emits every other trace. The offsets are read only for
+' the trace header.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+' @param motorIncre - signed increment
+'
+' @local safeEvent - SAFE_* from the watched waits
+' @local bReached - AT_SPEED was reached
+' @local bRest - rest was confirmed
+' @local captureLeftMs - capture bound still owed after the forced fault
+
+    safeEvent := SAFE_NONE
+    bReached := FALSE
+    cpWantNeg, cpWantPos := wheelGetOffsets(side)
+    if bInstArm(INST_SRC_WHEELS, 1) == FALSE
+        cpWhy := WHY_INST_NOACK
+    else
+        wheelCommand(side, motorIncre)
+        safeEvent, bReached := waitWatched(side, LADDER_STEADY_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+        if (safeEvent == SAFE_NONE) and bReached
+            safeEvent, _ := waitWatched(side, SETTLE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
+        if safeEvent <> SAFE_NONE
+            cpWhy := safeWhy(safeEvent)
+            cpEnd := safeEnd(safeEvent)
+            bCpFaultSeen := (safeEvent == SAFE_FAULT)
+        elseif bReached == FALSE
+            cpWhy := WHY_STEADY_TIMEOUT
+        else
+            _, _, frResyncBase := wheelFaultResponse(side)
+            frOutcome := frProvoke(side, slotIdx, FALSE)
+            if frOutcome == FRO_FAULT
+                bCpFaultSeen := TRUE
+                if (frCell == FRC_X6) or (frCell == FRC_X6C)
+                    frOutcome2 := frForceSecond(side, slotIdx)
+                if frOutcome2 == FRO_ABORT_I
+                    frCaptureSafe := SAFE_ABS_ABORT
+                    cpEnd := TEND_ABORT
+                else
+                    captureLeftMs := (traceCaptureMs(1) - (getms() - frMarkMs)) #> 0
+                    safeEvent, bRest := waitRest(side, captureLeftMs, FALSE)
+                    frCaptureSafe := safeEvent
+                    cpEnd := TEND_TIMEOUT
+                    if bRest
+                        cpEnd := TEND_REST
+                    if safeEvent <> SAFE_NONE
+                        cpEnd := safeEnd(safeEvent)
+            elseif frOutcome == FRO_ABORT_I
+                cpWhy := WHY_ABORTED
+                cpEnd := TEND_ABORT
+            else
+                cpWhy := WHY_NO_FAULT
+                cpEnd := TEND_ABORT
+        bCpFrozen := bInstFreeze(0)
+        if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
+            cpWhy := WHY_INST_NOACK
+
+PRI frProvoke(side, slotIdx, bSteerForm) : outcome | stopSide
+' The forced fault, marked and guarded: the mark, testForceFault() on this wheel only -- through the wheel object or
+' the steering object -- and frGuard(). The driver takes it at its own fault test on its next driven frame.
+'
+' @param side - the wheel faulted: SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - its motor slot
+' @param bSteerForm - TRUE through the steering object, FALSE through the wheel object
+' @returns outcome - FRO_FAULT, FRO_NO_FAULT or FRO_ABORT_I
+'
+' @local stopSide - what a guarded stop stops: the wheel, or the whole steering object
+
+    instMark()
+    frMarkMs := getms()
+    bFrForced := TRUE
+    if bSteerForm
+        frForceErr := steerForceFault(side)
+        stopSide := SIDE_BOTH
+    else
+        frForceErr := wheelForceFault(side)
+        stopSide := side
+    outcome := frGuard(slotIdx, stopSide, FALSE, frMarkMs)
+
+PRI frForceSecond(side, slotIdx) : outcome | startMs, markMs
+' X-6 and X6C: the SECOND forced fault, on the ramp the first one's re-sync began. Wait (<= FR_SECOND_WAIT_MS) for the
+' mirror to read DCS_SPIN_DN, then force again and guard it: the driver's pending re-synced stop (DRIVER_REV 12) sends
+' it to the fallback -- BR_BRAKE at the trial's brake % in SM_BRAKE, a coast in SM_FLOAT -- which reads DCS_FAULTED.
+' No new mark: the trace keeps the first fault's, and frStats() finds the second from the state.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+' @returns outcome - FRO_FAULT (DCS_FAULTED read), FRO_NO_FAULT (not, inside FR_PROVOKE_MS) or FRO_ABORT_I
+'
+' @local startMs - getms() when the wait for SPIN_DN began
+' @local markMs - getms() at the second force
+
+    startMs := getms()
+    repeat
+        beat(CP_LOOP_CAPTURE)
+        if (instLastState[slotIdx] == DCS_SPIN_DN) or ((getms() - startMs) >= FR_SECOND_WAIT_MS)
+            quit
+    markMs := getms()
+    frForceErr2 := wheelForceFault(side)
+    outcome := frGuard(slotIdx, side, TRUE, markMs)
+
+PRI frGuard(slotIdx, stopSide, bSecond, markMs) : outcome
+' THE FORCED FAULT'S GUARD (see this section's CON). For FR_PROVOKE_MS after markMs, read the instrument's mirror with no
+' wait between reads. The first fault ends the guard on the fault latch; X-6's second on the state reading
+' DCS_FAULTED (the latch is already set). A single read at or over ABS_ABORT_MV stops at once what stopSide names --
+' the wheel, or the whole steering object -- and records BM-ABORT ABS_CURRENT. A first fault that did not latch is a
+' failure of the HOOK: the wheel is stopped too (it is driving on with a request outstanding) and BM-ABORT NO_FAULT
+' recorded. A second that did not go FAULTED leaves the wheel ramping under control, so nothing is stopped: BM-FRTRIAL's
+' second field and R19-DUAL-BLUNT-X carry it. The standard absolute abort stays in force for the rest of every capture.
+'
+' @param slotIdx - the faulted wheel's slot
+' @param stopSide - SIDE_LEFT, SIDE_RIGHT or SIDE_BOTH
+' @param bSecond - TRUE for X-6's second fault
+' @param markMs - getms() just before the force
+' @returns outcome - FRO_FAULT, FRO_NO_FAULT or FRO_ABORT_I
+
+    outcome := FRO_NO_FAULT
+    frGuardPkMv #>= 0
+    repeat
+        beat(CP_LOOP_CAPTURE)
+        if instLastUp[slotIdx] <> FALSE
+            frGuardPkMv #>= instLastI[slotIdx]
+            if (bSecond == FALSE) and (instLastFault[slotIdx] <> FALSE)
+                outcome := FRO_FAULT
+                quit
+            if bSecond and (instLastState[slotIdx] == DCS_FAULTED)
+                outcome := FRO_FAULT
+                quit
+            if instLastI[slotIdx] >= ABS_ABORT_MV
+                outcome := FRO_ABORT_I
+                quit
+        if (getms() - markMs) >= FR_PROVOKE_MS
+            quit
+    if outcome == FRO_ABORT_I
+        abortStopMotor(stopSide, slotIdx)
+        emitAbort(curSeg, curTid, stopSide, curIncre, ABR_ABS_CURRENT, frGuardPkMv, SCOPE_TRIAL)
+    elseif (outcome == FRO_NO_FAULT) and (bSecond == FALSE)
+        abortStopMotor(stopSide, slotIdx)
+        emitAbort(curSeg, curTid, stopSide, curIncre, ABR_NO_FAULT, frGuardPkMv, SCOPE_TRIAL)
+
+PRI frReadAfter(side)
+' The reads that must see the driver as the fault left it, after the freeze and before any restore or recovery: the
+' re-sync count (testGetFaultResponse()) and the cause (getFaultCause()). A driver an abort stopped gives none.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    bFrReadsValid := isWheelUp(side)
+    if bFrReadsValid
+        _, _, frResyncAfter := wheelFaultResponse(side)
+        frCause := wheelFaultCause(side)
+
+PRI frRestore(side, slotIdx)
+' I11: undo every side effect of the trial before anything is drained or judged -- the fault response to FR_SHIPPED at
+' FR_BRAKE_PCT, and the stop mode to FLOAT. The offsets are never touched in this part. A driver an abort stopped needs
+' neither, since its next start re-inits both (and drops any forced fault still pending).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+
+    bFrRestUp := isWheelUp(side)
+    if bFrRestUp
+        frRestErr := wheelSetFaultResponse(side, wheelL.FR_SHIPPED, FR_BRAKE_PCT)
+    if bBrakeRequested[slotIdx]
+        restoreStopMode(side)
+
+PRI frRestoreCheck(tid, side, slotIdx) | eMode, nBrakeY, eHold, bMeasured, bOk
+' Read the restores back once the wheel is at rest after its recovery, print BM-FRREST and fold R19-DUAL-FRREST-X: the
+' fault response reads FR_SHIPPED with this lifetime's own brake_y, and the hold reads HS_OFF -- which it can only
+' do at rest in SM_FLOAT, since SM_BRAKE at rest holds (R19.1). The library has no stop-mode getter, so the hold
+' status is the stop mode's read-back. A lifetime a guard or an abort ended is printed NA and not judged.
+'
+' @param tid - trace id of the trial
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+'
+' @local eMode - the fault response read back
+' @local nBrakeY - the graded short's Y read back
+' @local eHold - the hold status read back
+' @local bMeasured - the restores went to a driver that is still running
+' @local bOk - all three held
+
+    eMode := wheelL.FR_SHIPPED
+    nBrakeY := 0
+    eHold := wheelL.HS_OFF
+    bOk := FALSE
+    bMeasured := bFrRestUp and isWheelUp(side)
+    if bMeasured
+        eMode, nBrakeY, _ := wheelFaultResponse(side)
+        eHold := wheelHoldStatus(side)
+        bOk := (frRestErr == NO_ERROR) and (eMode == wheelL.FR_SHIPPED) and (nBrakeY == frBrakeYBase) and (eHold == wheelL.HS_OFF)
+        sfFrRestN[slotIdx] := (sfFrRestN[slotIdx] + 1) <# LIM_SMALL
+        if bOk == FALSE
+            sfFrRestBad[slotIdx] := (sfFrRestBad[slotIdx] + 1) <# LIM_SMALL
+    emitFrRest(tid, side, eMode, nBrakeY, eHold, bMeasured, bOk)
+
+PRI frStats(slotIdx) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, iSum, dutySum, upCount, midJ, endJ, eState
+' The trial's readings from its frozen capture, after bTraceDrain() located the mark and rest: the wheel's rate,
+' current and duty over FR_PRE_SAMPLES before the mark; the first sample carrying the fault latch; the states seen
+' after it; the reference (that sample, or for X-6 / X6C the first DCS_FAULTED one, where the fallback begins); from
+' the reference to rest, ticks and ms, each half's ticks and the largest sense_i; and the MOVE and REST phase windows.
+' Legal only while FROZEN (I10).
+'
+' @param slotIdx - motor slot under test
+'
+' @local sampleIdx - logical index
+' @local preStartJ - first sample of the pre-fault window
+' @local preEndJ - its last, the sample before the mark
+' @local preTicks - |pos| across it
+' @local preMs - its length, ms
+' @local iSum - sum of sense_i over its up samples
+' @local dutySum - sum of duty over them
+' @local upCount - its up samples
+' @local midJ - the sample halfway from the fault to rest
+' @local endJ - the last sample of the moving window
+' @local eState - a sample's driver state
+
+    frStatReset()
+    if bDrMarkFound and (drEndJ > drMarkJ)
+        preStartJ := (drMarkJ - FR_PRE_SAMPLES) #> 0
+        preEndJ := drMarkJ - 1
+        if preEndJ > preStartJ
+            iSum := 0
+            dutySum := 0
+            upCount := 0
+            repeat sampleIdx from preStartJ to preEndJ
+                beat(CP_LOOP_DRAIN)
+                if bSmpUp(sampleIdx, slotIdx)
+                    iSum += smpI(sampleIdx, slotIdx)
+                    dutySum += smpDuty(sampleIdx, slotIdx)
+                    upCount += 1
+            preTicks := abs(smpPos(preEndJ, slotIdx) - smpPos(preStartJ, slotIdx))
+            preMs := (smpT(preEndJ) - smpT(preStartJ)) / TICKS_PER_MS
+            if (preMs > 0) and (upCount > 0)
+                frPreX10 := (preTicks * RATE_X10_SCALE) / preMs
+                frPreIX10 := (iSum * X10) / upCount
+                frPreDuty := dutySum / upCount
+                bFrPreValid := TRUE
+        repeat sampleIdx from drMarkJ to drEndJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpFault(sampleIdx, slotIdx)
+                frFltJ := sampleIdx
+                bFrFltFound := TRUE
+                quit
+    if bFrFltFound
+        ' the reference: X-6 and X6C are read from their SECOND fault -- the first sample after the first that reads
+        '  DCS_FAULTED, where the fallback's bridge begins; every other cell from the first
+        frRefJ := frFltJ
+        repeat sampleIdx from frFltJ to drEndJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx)
+                eState := smpState(sampleIdx, slotIdx)
+                if eState == DCS_SPIN_DN
+                    bFrSawSpinDn := TRUE
+                if eState == DCS_FAULTED
+                    if bFrSawFaulted == FALSE
+                        frFlt2J := sampleIdx
+                    bFrSawFaulted := TRUE
+        if ((frCell == FRC_X6) or (frCell == FRC_X6C)) and bFrSawFaulted
+            frRefJ := frFlt2J
+            bFrFlt2Found := TRUE
+        if bDrRestFound and ((drStartJ + drRestK) >= frRefJ)
+            frRestJ := drStartJ + drRestK
+            bFrRestFound := TRUE
+        endJ := drEndJ
+        if bFrRestFound
+            endJ := frRestJ
+        repeat sampleIdx from frRefJ to endJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx) and ((bFrPkValid == FALSE) or (smpI(sampleIdx, slotIdx) > frPkI))
+                frPkI := smpI(sampleIdx, slotIdx)
+                frPkK := sampleIdx - drStartJ
+                bFrPkValid := TRUE
+        if bSmpUp(drEndJ, slotIdx)
+            frStEnd := smpState(drEndJ, slotIdx)
+        if bFrRestFound
+            frTicksRest := abs(smpPos(frRestJ, slotIdx) - smpPos(frRefJ, slotIdx))
+            frRestMs := (smpT(frRestJ) - smpT(frRefJ)) / TICKS_PER_MS
+            midJ := frRefJ + ((frRestJ - frRefJ) / 2)
+            frT1 := abs(smpPos(midJ, slotIdx) - smpPos(frRefJ, slotIdx))
+            frT2 := abs(smpPos(frRestJ, slotIdx) - smpPos(midJ, slotIdx))
+            frPhaseWindow(FRW_MOVE, slotIdx, frRefJ + FR_SETTLE_SAMPLES, frRestJ - 1)
+            frPhaseWindow(FRW_REST, slotIdx, frRestJ, drEndJ)
+        else
+            frPhaseWindow(FRW_MOVE, slotIdx, frRefJ + FR_SETTLE_SAMPLES, drEndJ)
+
+PRI frPhaseWindow(winIdx, slotIdx, startJ, endJ) | sampleIdx, phaseIdx, phaseMv, upCount, sumMv[FR_PHASES], minMv[FR_PHASES], maxMv[FR_PHASES], lastSide[FR_PHASES], meanMv
+' One phase window's readings from drained samples: per phase, the peak-to-peak and the number of crossings of its
+' own mean -- a sample leaving the band mean +/- FR_XING_BAND_MV on the side opposite the one it last left from --
+' and the hall ticks across the window. Two passes: the means first, then the crossings. Up samples only (I3).
+'
+' @param winIdx - FRW_* value
+' @param slotIdx - motor slot
+' @param startJ - first logical index of the window
+' @param endJ - last logical index of the window
+'
+' @local sampleIdx - logical index
+' @local phaseIdx - 0..FR_PHASES-1 (U, V, W)
+' @local phaseMv - one phase reading, mV
+' @local upCount - up samples in the window
+' @local sumMv - per-phase sum, |sum| <= 32_767 x 4_096
+' @local minMv - per-phase least reading
+' @local maxMv - per-phase greatest reading
+' @local lastSide - per phase, the side of the band last left: -1 below, +1 above, 0 not yet
+' @local meanMv - a phase's mean over the window
+
+    frWinReset(winIdx)
+    if (startJ >= 0) and (endJ > startJ) and (endJ < drStored)
+        upCount := 0
+        repeat phaseIdx from 0 to FR_PHASES - 1
+            sumMv[phaseIdx] := 0
+            minMv[phaseIdx] := POSX
+            maxMv[phaseIdx] := NEGX
+            lastSide[phaseIdx] := 0
+        repeat sampleIdx from startJ to endJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx)
+                upCount += 1
+                repeat phaseIdx from 0 to FR_PHASES - 1
+                    phaseMv := frPhaseMv(sampleIdx, slotIdx, phaseIdx)
+                    sumMv[phaseIdx] += phaseMv
+                    minMv[phaseIdx] <#= phaseMv
+                    maxMv[phaseIdx] #>= phaseMv
+        if upCount > 1
+            repeat phaseIdx from 0 to FR_PHASES - 1
+                meanMv := sumMv[phaseIdx] / upCount
+                frWinPp[(winIdx * FR_PHASES) + phaseIdx] := maxMv[phaseIdx] - minMv[phaseIdx]
+                repeat sampleIdx from startJ to endJ
+                    beat(CP_LOOP_DRAIN)
+                    if bSmpUp(sampleIdx, slotIdx)
+                        phaseMv := frPhaseMv(sampleIdx, slotIdx, phaseIdx)
+                        if phaseMv > (meanMv + FR_XING_BAND_MV)
+                            if lastSide[phaseIdx] < 0
+                                frWinX[(winIdx * FR_PHASES) + phaseIdx] += 1
+                            lastSide[phaseIdx] := 1
+                        elseif phaseMv < (meanMv - FR_XING_BAND_MV)
+                            if lastSide[phaseIdx] > 0
+                                frWinX[(winIdx * FR_PHASES) + phaseIdx] += 1
+                            lastSide[phaseIdx] := -1
+            frWinN[winIdx] := upCount
+            frWinTicks[winIdx] := abs(smpPos(endJ, slotIdx) - smpPos(startJ, slotIdx))
+            bFrWinValid[winIdx] := TRUE
+
+PRI frPhaseMv(sampleIdx, slotIdx, phaseIdx) : phaseMv
+' One phase of a logical sample.
+'
+' @param sampleIdx - logical index
+' @param slotIdx - motor slot
+' @param phaseIdx - 0 U, 1 V, 2 W
+' @returns phaseMv - mV
+
+    case phaseIdx
+        0:
+            phaseMv := smpPhU(sampleIdx, slotIdx)
+        1:
+            phaseMv := smpPhV(sampleIdx, slotIdx)
+        other:
+            phaseMv := smpPhW(sampleIdx, slotIdx)
+
+PRI bFrWinFlat(winIdx) : bFlat | phaseIdx
+' Whether every phase of a window stayed under FR_FLAT_MV peak-to-peak.
+'
+' @param winIdx - FRW_* value
+' @returns bFlat - TRUE when all three are flat
+'
+' @local phaseIdx - 0..FR_PHASES-1
+
+    bFlat := TRUE
+    repeat phaseIdx from 0 to FR_PHASES - 1
+        if frWinPp[(winIdx * FR_PHASES) + phaseIdx] >= FR_FLAT_MV
+            bFlat := FALSE
+
+PRI frXingExpected(winIdx) : nCrossings
+' The crossings a window's hall ticks imply: FR_XING_PER_CYCLE per electrical cycle of HALL_TICKS_PER_CYCLE ticks.
+'
+' @param winIdx - FRW_* value
+' @returns nCrossings - expected crossings per phase
+
+    nCrossings := (frWinTicks[winIdx] * FR_XING_PER_CYCLE) / wheelL.HALL_TICKS_PER_CYCLE
+
+PRI bFrCoastSwings() : bSwings | phaseIdx, xNeed
+' X-3's pre-registered reading on the MOVE window: every phase swings at least FR_FLAT_MV peak-to-peak AND crosses its
+' mean at least half as often as the hall ticks imply (never fewer than FR_XING_MIN) -- it varies, and at the hall
+' rate. Half, because the back-EMF falls with the coast, so the last cycles fall inside the band. FAILS if the phases
+' stay flat while the halls tick.
+'
+' @returns bSwings - TRUE when all three phases swing at the hall rate
+'
+' @local phaseIdx - 0..FR_PHASES-1
+' @local xNeed - the crossings each phase needs
+
+    xNeed := (frXingExpected(FRW_MOVE) / 2) #> FR_XING_MIN
+    bSwings := TRUE
+    repeat phaseIdx from 0 to FR_PHASES - 1
+        if (frWinPp[(FRW_MOVE * FR_PHASES) + phaseIdx] < FR_FLAT_MV) or (frWinX[(FRW_MOVE * FR_PHASES) + phaseIdx] < xNeed)
+            bSwings := FALSE
+
+PRI bFrIVisible(slotIdx) : bVisible
+' Whether the post-fault peak sense_i stands FR_I_VISIBLE_MV over this lifetime's floated zero -- the DC-link shunt
+' saw a current at all (this section's CON: a phase short's current never crosses it).
+'
+' @param slotIdx - motor slot
+' @returns bVisible - TRUE when the peak is a visible current
+
+    bVisible := bFrPkValid and (bLifeZeroValid[slotIdx] <> FALSE) and ((frPkI - (lifeZeroX10[slotIdx] / X10)) >= FR_I_VISIBLE_MV)
+
+PRI frClassify()
+' Name what the driver was SEEN to do after the fault (FRP_*, I7), and the first cause of the trial's NA fields.
+
+    frPath := FRP_NONE
+    if (frOutcome == FRO_FAULT) and bFrReadsValid and bCpFrozen and bFrFltFound
+        if (frResyncAfter - frResyncBase) <= 0
+            if bFrSawFaulted
+                frPath := FRP_FAULTED
+        elseif bFrSawFaulted
+            frPath := FRP_RESYNC_FLT
+        elseif (frResyncAfter - frResyncBase) == 1
+            frPath := FRP_RESYNC
+        else
+            frPath := FRP_RESYNC_N
+    if frWhy == WHY_NONE
+        if frOutcome == FRO_NOT_RUN
+            frWhy := cpWhy
+            if frWhy == WHY_NONE
+                frWhy := WHY_NOT_REACHED
+        elseif frOutcome == FRO_NO_FAULT
+            frWhy := WHY_NO_FAULT
+        elseif frOutcome == FRO_ABORT_I
+            frWhy := WHY_ABORTED
+        elseif bCpFrozen == FALSE
+            frWhy := WHY_INST_NOACK
+        elseif bFrFltFound == FALSE
+            frWhy := WHY_NOT_REACHED
+        elseif frCaptureSafe <> SAFE_NONE
+            frWhy := safeWhy(frCaptureSafe)
+        elseif bFrRestFound == FALSE
+            frWhy := WHY_NOT_REACHED
+
+PRI frFold(slotIdx) | arrIdx, bClean, pointIdx
+' Fold the trial into its cells. A trial counts only when its forced fault latched, the capture found it, and nothing
+' ended the capture early -- a fault that did not latch, or an abort, measured nothing. X-2 and X-3 count only a fault
+' the driver answered with DCS_FAULTED (the shipped bridge they are about). Every forced fault that was requested
+' counts toward R19-DUAL-FORCED-X, the hook's own reliability.
+'
+' @param slotIdx - motor slot
+'
+' @local arrIdx - [slot * FR_SPEEDS + speed] index
+' @local bClean - the fault was forced, captured and not cut short
+' @local pointIdx - X-6 / X6C: the point in the graded chain, 0 the coast bound
+
+    arrIdx := (slotIdx * FR_SPEEDS) + frSpeedIdx
+    bClean := (frOutcome == FRO_FAULT) and bCpFrozen and bFrFltFound and (frCaptureSafe == SAFE_NONE)
+    frFoldForced(slotIdx)
+    if (frCell == FRC_X6) or (frCell == FRC_X6C)
+        ' BLUNT (DRIVER_REV 12): the second fault on a re-synced ramp must read DCS_FAULTED. Judged when the first
+        '  latched and re-synced and the second was asked and not cut short by the current trip
+        if (frOutcome == FRO_FAULT) and bCpFrozen and bFrFltFound and bFrReadsValid and ((frResyncAfter - frResyncBase) >= 1) and (frOutcome2 <> FRO_NOT_RUN) and (frOutcome2 <> FRO_ABORT_I)
+            sfBluntN[slotIdx] := (sfBluntN[slotIdx] + 1) <# LIM_SMALL
+            if (frOutcome2 <> FRO_FAULT) or (bFrFlt2Found == FALSE)
+                sfBluntBad[slotIdx] := (sfBluntBad[slotIdx] + 1) <# LIM_SMALL
+        pointIdx := 0
+        if frCell == FRC_X6
+            pointIdx := frBrakeIdx + 1
+        if bClean and (frOutcome2 == FRO_FAULT) and bFrFlt2Found and bFrRestFound
+            frGradedTicks[(slotIdx * FR_GRADED_POINTS) + pointIdx] := frTicksRest
+            frGradedMs[(slotIdx * FR_GRADED_POINTS) + pointIdx] := frRestMs
+            bFrGradedRan[(slotIdx * FR_GRADED_POINTS) + pointIdx] := TRUE
+    case frCell
+        FRC_X2:
+            if bClean and bFrSawFaulted and bFrPkValid
+                frShortPk[arrIdx] := frPkI
+                bFrShortPkRan[arrIdx] := TRUE
+                bFrShortVis[arrIdx] := bFrIVisible(slotIdx)
+            if bClean and bFrSawFaulted and bFrRestFound
+                frShortTicks[arrIdx] := frTicksRest
+                bFrShortTkRan[arrIdx] := TRUE
+        FRC_X3:
+            if bClean and bFrSawFaulted and bFrRestFound
+                frCoastTicks[arrIdx] := frTicksRest
+                bFrCoastTkRan[arrIdx] := TRUE
+            if bClean and bFrSawFaulted and bFrWinValid[FRW_MOVE] and (frWinTicks[FRW_MOVE] >= FR_COAST_MIN_TICKS)
+                sfCoastN[slotIdx] := (sfCoastN[slotIdx] + 1) <# LIM_SMALL
+                if bFrCoastSwings() == FALSE
+                    sfCoastBad[slotIdx] := (sfCoastBad[slotIdx] + 1) <# LIM_SMALL
+            frFoldRest(slotIdx, FRW_PRE)
+            frFoldRest(slotIdx, FRW_REST)
+        FRC_X4:
+            ' Pre-registered, the re-sync onto the CORRECT offsets: exactly one re-sync (no second fault), FC_LAG, no
+            '  DCS_FAULTED, SPIN_DN then STOPPED at the capture's end, the hall rate falling (the first half of the
+            '  fault-to-rest interval turns more ticks than the second), and rest reached in FR_RAMP_LO_PCT ..
+            '  FR_RAMP_HI_PCT of the configured ramp's time from that speed (frRampPredMs()).
+            if bClean and bFrReadsValid
+                bSfResyncRan[slotIdx] := TRUE
+                bSfResyncOk[slotIdx] := ((frResyncAfter - frResyncBase) == 1) and (frCause == wheelL.FC_LAG) and (bFrSawFaulted == FALSE) and bFrSawSpinDn and (frStEnd == DCS_STOPPED) and bFrRestFound and (frT1 > frT2) and bFrRampInBand()
+
+PRI frFoldForced(slotIdx)
+' Fold one requested forced fault into R19-DUAL-FORCED-X: bad when it did not latch inside FR_PROVOKE_MS (the hook
+' failed). One that met the current trip first is not the hook's failure and is not counted bad.
+'
+' @param slotIdx - the faulted wheel's slot
+
+    if bFrForced
+        sfForcedN[slotIdx] := (sfForcedN[slotIdx] + 1) <# LIM_SMALL
+        if frOutcome == FRO_NO_FAULT
+            sfForcedBad[slotIdx] := (sfForcedBad[slotIdx] + 1) <# LIM_SMALL
+
+PRI frRampPredMs() : nMs
+' The configured ramp's time to rest from the trial's speed: |incre| / RAMP_DEF_DOWN drive passes at FR_PASSES_PER_SEC.
+' 836 ms at 80 x 10^6.
+'
+' @returns nMs - predicted ms from the stop's start to rest
+
+    nMs := ((ladderIncre[frRungIdx[frSpeedIdx]] / RAMP_DEF_DOWN) * MS_PER_SEC) / FR_PASSES_PER_SEC
+
+PRI bFrRampInBand() : bInBand
+' Whether the fault-to-rest time sits inside FR_RAMP_LO_PCT .. FR_RAMP_HI_PCT of frRampPredMs().
+'
+' @returns bInBand - TRUE when rest was found and the time is in the band
+
+    bInBand := bFrRestFound and ((frRestMs * FR_PCT_SCALE) >= (frRampPredMs() * FR_RAMP_LO_PCT)) and ((frRestMs * FR_PCT_SCALE) <= (frRampPredMs() * FR_RAMP_HI_PCT))
+
+PRI frFoldRest(slotIdx, winIdx)
+' Fold one at-rest window into R19-DUAL-RESTFLAT-X, X-3's negative control: counted when it held at least
+' FR_REST_MIN_SAMPLES samples, and bad when any phase swung FR_FLAT_MV or more.
+'
+' @param slotIdx - motor slot
+' @param winIdx - FRW_PRE or FRW_REST
+
+    if bFrWinValid[winIdx] and (frWinN[winIdx] >= FR_REST_MIN_SAMPLES)
+        sfRestN[slotIdx] := (sfRestN[slotIdx] + 1) <# LIM_SMALL
+        if bFrWinFlat(winIdx) == FALSE
+            sfRestBad[slotIdx] := (sfRestBad[slotIdx] + 1) <# LIM_SMALL
+
+PRI frPlatTrial(side, eMode) | slotIdx, otherIdx, tid, sid, whyCode, safeEvent, bReached, bRest
+' X-5 (PL-117, R19.2): one wheel of the steering object faults while both drive, and the OTHER must stop along its ramp
+' (the steering object's frontPlatformFaultStop(), DRIVER_REV 9+). Its own steering lifetime: start; set the fault
+' response on both wheels; arm on the steering source; driveAtPower(FLTAPI_POWER) on both; AT_SPEED and settle; force a
+' fault on {side} ONLY, guarded (frProvoke()); capture until both wheels rest or FR_PLAT_CAPTURE_MS; freeze; stop and
+' restore BEFORE any check (I11); BM-STRACE, BM-TS, BM-TRACE-END (primary LEFT, as every steering trace), BM-FRPLAT;
+' recover each faulted wheel; stop the steering object.
+'
+' Pre-registered: one ramp time (FR_PLAT_RAMP_MS) after the fault, the other wheel turns at most FR_PLAT_REST_PCT of its
+' pre-fault rate. FAILS when it keeps turning near its commanded rate (about 100 %). NOMEAS unless the forced fault
+' latched and the other wheel was turning before it.
+'
+' @param side - the wheel faulted: SIDE_LEFT or SIDE_RIGHT
+' @param eMode - FR_SHIPPED (the fault latches) or FR_GRADED (the faulted wheel re-syncs and stops itself)
+'
+' @local slotIdx - the faulted wheel's slot
+' @local otherIdx - the watched wheel's slot
+' @local tid - trace id
+' @local sid - the steering start's life, 0 when it did not start
+' @local whyCode - why the trial measured nothing, WHY_NONE while it runs
+' @local safeEvent - SAFE_* from the watched waits
+' @local bReached - both wheels reached AT_SPEED
+' @local bRest - both wheels were confirmed at rest
+
+    slotIdx := side - SIDE_LEFT
+    otherIdx := SLOT_RIGHT - slotIdx
+    tid := nextTraceId()
+    cpReset()
+    frStagingReset(FRC_X3, FR_SPEED_X4, 0)                  ' clears the staging; X-5's own mode and request follow
+    frMode := eMode
+    frReqMode := MODE_FLOAT
+    frPlatReset()
+    fltLeftCause := wheelL.FC_NONE
+    fltRightCause := wheelL.FC_NONE
+    sid := 0
+    safeEvent := SAFE_NONE
+    whyCode := WHY_NONE
+    if bRunContinue(SEG_FLTPLAT) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bSteerStart(SEG_FLTPLAT) == FALSE
+        whyCode := WHY_NO_COG
+    else
+        sid := steerLife
+        frSetErr := steerSetFaultResponse(eMode, FR_BRAKE_PCT)
+        if bInstArm(INST_SRC_STEER, 1) == FALSE
+            whyCode := WHY_INST_NOACK
+        elseif bSteerDriveBoth(SEG_FLTPLAT, tid, FLTAPI_POWER) == FALSE
+            whyCode := WHY_SYNC_PRECOND
+        else
+            safeEvent, bReached := waitWatched(SIDE_BOTH, D_AT_SPEED_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+            if (safeEvent == SAFE_NONE) and bReached
+                safeEvent, _ := waitWatched(SIDE_BOTH, SETTLE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
+            if safeEvent <> SAFE_NONE
+                whyCode := safeWhy(safeEvent)
+            elseif bReached == FALSE
+                whyCode := WHY_STEADY_TIMEOUT
+            else
+                frOutcome := frProvoke(side, slotIdx, TRUE)
+                if frOutcome == FRO_FAULT
+                    bCpFaultSeen := TRUE
+                    safeEvent, bRest := waitRest(SIDE_BOTH, FR_PLAT_CAPTURE_MS, FALSE)
+                    frCaptureSafe := safeEvent
+                    cpEnd := TEND_TIMEOUT
+                    if bRest
+                        cpEnd := TEND_REST
+                    if safeEvent <> SAFE_NONE
+                        cpEnd := safeEnd(safeEvent)
+                elseif frOutcome == FRO_ABORT_I
+                    whyCode := WHY_ABORTED
+                else
+                    whyCode := WHY_NO_FAULT
+        bCpFrozen := bInstFreeze(0)
+        frPlatRestore()                                     ' I11: before anything is drained or judged
+    if whyCode <> WHY_NONE
+        cpEnd := TEND_ABORT
+    emitSTrace(tid, SEG_FLTPLAT, CAUSE_FAULT, FLTAPI_POWER, FLTAPI_POWER, TRUE, 0, MODE_FLOAT, whyCode)
+    if bCpFrozen
+        bTraceDrain(tid, SLOT_LEFT, SLOT_RIGHT, cpEnd)
+        frPlatStats(slotIdx, otherIdx)
+    elseif whyCode <> WHY_NONE
+        traceEmptyEnd(tid, cpEnd, whyCode)
+    else
+        traceEmptyEnd(tid, cpEnd, WHY_INST_NOACK)
+    frWhy := frPlatWhy(whyCode)
+    emitFrPlat(tid, sid, side)
+    frPlatFold(otherIdx)
+    frFoldForced(slotIdx)
+    if bSteerUp
+        steerRecoverFault(tid)
+    elseif (frOutcome == FRO_NO_FAULT) or (frOutcome == FRO_ABORT_I) or (frCaptureSafe <> SAFE_NONE)
+        waitBeat(FAULT_COOL_MS, CP_LOOP_COOL)               ' stopped by a guard or an abort: the same cool-down
+    bInstIdle()
+    steerStop()
+    segItems := (segItems + 1) <# LIM_SMALL
+
+PRI frPlatReset()
+' Clear X-5's readings of the watched wheel.
+
+    bFrPlatPreValid := FALSE
+    bFrPlatPreOk := FALSE
+    frPlatPreX10 := 0
+    bFrPlatWinValid := FALSE
+    frPlatWinX10 := 0
+    frPlatPct := 0
+    bFrPlatRestFound := FALSE
+    frPlatRestJ := 0
+    frPlatRestMs := 0
+    bFrPlatSpinDn := FALSE
+
+PRI frPlatRestore()
+' I11 for X-5: stop the platform, then undo the trial's side effect before anything is drained -- the fault response
+' to FR_SHIPPED at FR_BRAKE_PCT on both wheels -- and read each wheel's fault cause. A steering object a guard or an
+' abort stopped needs nothing: its next start re-inits it.
+
+    if bSteerUp
+        steerStopMotors()
+        frRestErr := steerSetFaultResponse(wheelL.FR_SHIPPED, FR_BRAKE_PCT)
+        beat(CP_LIB_STEER_QUERY)
+        fltLeftCause, fltRightCause := steering.getFaultCause()
+        beat(CP_LIB_STEER_QUERY)
+
+PRI frPlatStats(fSlot, oSlot) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, restSamples, stillCount, runStartJ, winStartJ, winEndJ, winTicks, winMs
+' X-5's readings from the frozen steering capture: the faulted wheel's first latched sample; the WATCHED wheel's rate
+' over FR_PRE_SAMPLES before the mark, its rest after the fault (pos and hwPos unchanged for REST_CONFIRM_MS, as
+' traceFindRest() finds the primary's), whether it passed through DCS_SPIN_DN, and its rate over FR_PLAT_WIN_SAMPLES
+' starting FR_PLAT_RAMP_SAMPLES after the fault. A watched wheel already at rest before that window opened reads 0 there
+' even when the capture ended first -- the capture waits for BOTH wheels' rest. Legal only while FROZEN (I10).
+'
+' @param fSlot - the faulted wheel's slot
+' @param oSlot - the watched wheel's slot
+'
+' @local sampleIdx - logical index
+' @local preStartJ - first sample of the pre-fault window
+' @local preEndJ - its last
+' @local preTicks - the watched wheel's |pos| across it
+' @local preMs - its length, ms
+' @local restSamples - stored samples spanning REST_CONFIRM_MS
+' @local stillCount - consecutive unchanged samples so far
+' @local runStartJ - where the current still run began
+' @local winStartJ - the window's first sample
+' @local winEndJ - its last
+' @local winTicks - the watched wheel's |pos| across it
+' @local winMs - its length, ms
+
+    frStatReset()
+    if bDrMarkFound and (drEndJ > drMarkJ)
+        preStartJ := (drMarkJ - FR_PRE_SAMPLES) #> 0
+        preEndJ := drMarkJ - 1
+        if preEndJ > preStartJ
+            preTicks := abs(smpPos(preEndJ, oSlot) - smpPos(preStartJ, oSlot))
+            preMs := (smpT(preEndJ) - smpT(preStartJ)) / TICKS_PER_MS
+            if preMs > 0
+                frPlatPreX10 := (preTicks * RATE_X10_SCALE) / preMs
+                bFrPlatPreValid := TRUE
+                bFrPlatPreOk := (preTicks >= FR_PLAT_MIN_TICKS)
+        repeat sampleIdx from drMarkJ to drEndJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpFault(sampleIdx, fSlot)
+                frFltJ := sampleIdx
+                bFrFltFound := TRUE
+                quit
+    if bFrFltFound and (frFltJ < drEndJ)
+        restSamples := ((REST_CONFIRM_MS * INST_RATE_HZ) / MS_PER_SEC / instDecimate) #> 1
+        stillCount := 0
+        runStartJ := frFltJ
+        repeat sampleIdx from frFltJ + 1 to drEndJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, oSlot) and (smpState(sampleIdx, oSlot) == DCS_SPIN_DN)
+                bFrPlatSpinDn := TRUE
+            if (smpPos(sampleIdx, oSlot) == smpPos(sampleIdx - 1, oSlot)) and (smpHw(sampleIdx, oSlot) == smpHw(sampleIdx - 1, oSlot))
+                stillCount += 1
+                if (stillCount >= restSamples) and (bFrPlatRestFound == FALSE)
+                    frPlatRestJ := runStartJ
+                    bFrPlatRestFound := TRUE
+            else
+                stillCount := 0
+                runStartJ := sampleIdx
+        if bFrPlatRestFound
+            frPlatRestMs := (smpT(frPlatRestJ) - smpT(frFltJ)) / TICKS_PER_MS
+        winStartJ := frFltJ + FR_PLAT_RAMP_SAMPLES
+        winEndJ := winStartJ + FR_PLAT_WIN_SAMPLES - 1
+        if winEndJ <= drEndJ
+            winTicks := abs(smpPos(winEndJ, oSlot) - smpPos(winStartJ, oSlot))
+            winMs := (smpT(winEndJ) - smpT(winStartJ)) / TICKS_PER_MS
+            if winMs > 0
+                frPlatWinX10 := (winTicks * RATE_X10_SCALE) / winMs
+                bFrPlatWinValid := TRUE
+        elseif bFrPlatRestFound and (frPlatRestJ <= winStartJ)
+            frPlatWinX10 := 0
+            bFrPlatWinValid := TRUE
+        if bFrPlatWinValid and bFrPlatPreOk and (frPlatPreX10 > 0)
+            frPlatPct := (frPlatWinX10 * FR_PCT_SCALE) / frPlatPreX10
+
+PRI bFrPlatMeasured() : bMeasured
+' Whether X-5's trial measured the cell: the forced fault latched, the capture found it, the watched wheel was
+' turning before it, and its window one ramp time later was read.
+'
+' @returns bMeasured - TRUE when R19-DUAL-PLATSTOP-X has an instance
+
+    bMeasured := (frOutcome == FRO_FAULT) and bCpFrozen and bFrFltFound and bFrPlatPreOk and bFrPlatWinValid and (frPlatPreX10 > 0)
+
+PRI frPlatWhy(whyCode) : firstWhy
+' The first cause of BM-FRPLAT's NA fields.
+'
+' @param whyCode - why the trial measured nothing, WHY_NONE when it ran
+' @returns firstWhy - WHY_* value
+
+    firstWhy := whyCode
+    if firstWhy == WHY_NONE
+        if bCpFrozen == FALSE
+            firstWhy := WHY_INST_NOACK
+        elseif (bFrFltFound == FALSE) or (bFrPlatPreOk == FALSE) or (bFrPlatWinValid == FALSE)
+            firstWhy := WHY_NOT_REACHED
+        elseif frCaptureSafe <> SAFE_NONE
+            firstWhy := safeWhy(frCaptureSafe)
+        elseif bFrPlatRestFound == FALSE
+            firstWhy := WHY_NOT_REACHED                     ' the watched wheel never rested: its rest time is NA
+
+PRI frPlatFold(oSlot)
+' Fold X-5 into R19-DUAL-PLATSTOP-X, the instance of the wheel that was NOT faulted.
+'
+' @param oSlot - the watched wheel's slot
+
+    if bFrPlatMeasured()
+        bSfPlatRan[oSlot] := TRUE
+        sfPlatPct[oSlot] := frPlatPct
+
+PRI frShortRise(slotIdx) : nMeasured, nBad, bVisible | speedIdx, arrIdx, lastPk
+' R19-DUAL-SHORTI-X's reading: across the speeds X-2 measured, in ascending order, how many steps did NOT raise the
+' post-fault peak current, and whether the highest measured speed's peak was a visible current at all.
+'
+' @param slotIdx - motor slot
+' @returns nMeasured - speeds with a measured peak
+' @returns nBad - steps up in speed whose peak did not rise
+' @returns bVisible - the highest measured speed's peak was visible (bFrIVisible())
+'
+' @local speedIdx - 0..FR_SPEEDS-1
+' @local arrIdx - [slot * FR_SPEEDS + speed] index
+' @local lastPk - the previous measured speed's peak
+
+    nMeasured := 0
+    nBad := 0
+    bVisible := FALSE
+    lastPk := 0
+    repeat speedIdx from 0 to FR_SPEEDS - 1
+        arrIdx := (slotIdx * FR_SPEEDS) + speedIdx
+        if bFrShortPkRan[arrIdx]
+            if (nMeasured > 0) and (frShortPk[arrIdx] <= lastPk)
+                nBad += 1
+            lastPk := frShortPk[arrIdx]
+            bVisible := bFrShortVis[arrIdx]
+            nMeasured += 1
+
+PRI frShortVsCoast(slotIdx) : nPairs, nBad | speedIdx, arrIdx
+' R19-DUAL-SHORTTK-X's reading: at each speed where both X-2 and X-3 reached rest, the short must stop in FEWER ticks
+' than the coast.
+'
+' @param slotIdx - motor slot
+' @returns nPairs - speeds with both readings
+' @returns nBad - those where the short took as many ticks or more
+'
+' @local speedIdx - 0..FR_SPEEDS-1
+' @local arrIdx - [slot * FR_SPEEDS + speed] index
+
+    nPairs := 0
+    nBad := 0
+    repeat speedIdx from 0 to FR_SPEEDS - 1
+        arrIdx := (slotIdx * FR_SPEEDS) + speedIdx
+        if bFrShortTkRan[arrIdx] and bFrCoastTkRan[arrIdx]
+            nPairs += 1
+            if frShortTicks[arrIdx] >= frCoastTicks[arrIdx]
+                nBad += 1
+
+PRI emitFaultRespCells() | slotIdx, side, nMeasured, nBad, bVisible, gradedIdx, shortIdx
+' The FAULTRESP part's judged cells, each NOMEAS when nothing measured it, then the one it prints NOT_BUILT.
+'
+'  TRACES   - COUNT: traces whose lost head reached the mark, or that dropped samples
+'  HOOKREST - BOOL per motor: a forced fault at rest (bridge coasting) did not fault -- the hook's negative control
+'  FORCED   - COUNT per motor: requested forced faults that did not latch inside FR_PROVOKE_MS (the hook failed)
+'  RSTPROV  - COUNT per motor: faults testResetFault() alone did not clear (every forced fault is recovered by it)
+'  FRREST   - COUNT per motor: restores that did not read back FR_SHIPPED, this lifetime's brake_y and HS_OFF
+'  RESTFLAT - COUNT per motor: X-3's at-rest windows (before spin-up, and after the coast) that were not flat
+'  COASTEMF - COUNT per motor: X-3 coasts whose phases did not swing at the hall rate
+'  SHORTTK  - COUNT per motor: speeds where X-2's short took as many ticks to rest as X-3's coast, or more
+'  SHORTI   - COUNT per motor: speed steps where X-2's peak current did not rise; NOMEAS unless it was visible
+'  RESYNC   - BOOL per motor: X-4 re-synced once onto the correct offsets and stopped along the configured ramp
+'  BLUNT    - COUNT per motor: X-6 / X6C second faults on a re-synced ramp that did not read DCS_FAULTED
+'  GRADED   - COUNT per motor: steps of the chain coast, 10, 25, 50, 100 % where ticks or time to rest rose, plus one
+'             when the 100 % point is not strictly below the coast's in either
+'  GRD100   - COUNT per motor: |ticks to rest| of X-6 at 100 % less X-2's short at the same speed
+'  PLATSTOP - PCT per watched motor: its rate one ramp time after the other wheel faulted
+'
+' @local slotIdx - motor slot
+' @local side - SIDE_LEFT or SIDE_RIGHT
+' @local nMeasured - instances behind a computed cell
+' @local nBad - its bad instances
+' @local bVisible - SHORTI: the peak was a visible current
+' @local gradedIdx - GRD100: X-6's 100 % point
+' @local shortIdx - GRD100: X-2 at FR_SPEED_X6
+
+    emitSignoff(@sSfCellTracesX, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        side := SIDE_LEFT + slotIdx
+        emitSignoffBool(@sSfCellHookRest, side, @sSfCritHookRest, bSfHookRan[slotIdx], bSfHookOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitSignoff(@sSfCellForced, side, @sSfCritForced, sfForcedN[slotIdx] > 0, sfForcedBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfForcedN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellRstProvX, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellBlunt, side, @sSfCritBlunt, sfBluntN[slotIdx] > 0, sfBluntBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfBluntN[slotIdx], @sSfUnitsCount)
+        nMeasured, nBad := frGradedChain(slotIdx)
+        emitSignoff(@sSfCellGraded, side, @sSfCritGraded, nMeasured >= FR_GRADED_MIN_POINTS, nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
+        gradedIdx := (slotIdx * FR_GRADED_POINTS) + FR_BRAKE_STEPS
+        shortIdx := (slotIdx * FR_SPEEDS) + FR_SPEED_X6
+        emitSignoff(@sSfCellGrd100, side, @sSfCritGrd100, bFrGradedRan[gradedIdx] and bFrShortTkRan[shortIdx], abs(frGradedTicks[gradedIdx] - frShortTicks[shortIdx]), 0, FR_FULL_TOL_TICKS, SIGNOFF_ONE_INSTANCE, @sSfUnitsCount)
+        emitSignoff(@sSfCellFrRest, side, @sSfCritFrRest, sfFrRestN[slotIdx] > 0, sfFrRestBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfFrRestN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellRestFlat, side, @sSfCritRestFlat, sfRestN[slotIdx] > 0, sfRestBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfRestN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellCoastEmf, side, @sSfCritCoastEmf, sfCoastN[slotIdx] > 0, sfCoastBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfCoastN[slotIdx], @sSfUnitsCount)
+        nMeasured, nBad := frShortVsCoast(slotIdx)
+        emitSignoff(@sSfCellShortTk, side, @sSfCritShortTk, nMeasured > 0, nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
+        nMeasured, nBad, bVisible := frShortRise(slotIdx)
+        emitSignoff(@sSfCellShortI, side, @sSfCritShortI, (nMeasured >= FR_RISE_MIN_SPEEDS) and bVisible, nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
+        emitSignoffBool(@sSfCellResync, side, @sSfCritResync, bSfResyncRan[slotIdx], bSfResyncOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitSignoff(@sSfCellPlatStop, side, @sSfCritPlatStop, bSfPlatRan[slotIdx], sfPlatPct[slotIdx], FR_PLAT_PCT_LO, FR_PLAT_REST_PCT, SIGNOFF_ONE_INSTANCE, @sSfUnitsPct)
+    emitSignoffNotBuilt(@sSfCellB4Pulse, SIDE_NONE, @sSfCritB4Pulse)
+
+PRI frGradedChain(slotIdx) : nPoints, nBad | pointIdx, arrIdx, lastTicks, lastMs, firstTicks, firstMs
+' R19-DUAL-GRADED-X's reading, X-6's pre-registered one: along the chain coast (X6C), 10, 25, 50, 100 %, ticks AND time
+' from the second fault to rest fall monotonically as the brake % rises. A step between measured points where either
+' ROSE is bad -- equal is allowed, because one hall tick and one 2 ms sample are the resolution and the upper points
+' stop within a tick or two -- and one more is bad when the last measured point is not strictly below the first in
+' ticks, or in time: a flat chain has not shown the brake doing anything.
+'
+' @param slotIdx - motor slot
+' @returns nPoints - measured points
+' @returns nBad - bad steps, plus the overall-fall check
+'
+' @local pointIdx - 0..FR_GRADED_POINTS-1
+' @local arrIdx - [slot * FR_GRADED_POINTS + point] index
+' @local lastTicks - the previous measured point's ticks
+' @local lastMs - ...and ms
+' @local firstTicks - the first measured point's ticks
+' @local firstMs - ...and ms
+
+    nPoints := 0
+    nBad := 0
+    lastTicks := 0
+    lastMs := 0
+    firstTicks := 0
+    firstMs := 0
+    repeat pointIdx from 0 to FR_GRADED_POINTS - 1
+        arrIdx := (slotIdx * FR_GRADED_POINTS) + pointIdx
+        if bFrGradedRan[arrIdx]
+            if nPoints == 0
+                firstTicks := frGradedTicks[arrIdx]
+                firstMs := frGradedMs[arrIdx]
+            elseif (frGradedTicks[arrIdx] > lastTicks) or (frGradedMs[arrIdx] > lastMs)
+                nBad += 1
+            lastTicks := frGradedTicks[arrIdx]
+            lastMs := frGradedMs[arrIdx]
+            nPoints += 1
+    if (nPoints >= 2) and ((lastTicks >= firstTicks) or (lastMs >= firstMs))
+        nBad += 1
+
+PRI emitFrBuild()
+' BM-FRBUILD: the FAULTRESP part's compiled, pre-registered numbers, printed before anything moves so a log shows the
+' thresholds its verdicts were judged on. Worst case 259 bytes.
+
+    recBegin(@"BM-FRBUILD")
+    benchLog.numField(@"lo_incre", ladderIncre[frRungIdx[0]], LIM_BIG)
+    benchLog.numField(@"mid_incre", ladderIncre[frRungIdx[1]], LIM_BIG)
+    benchLog.numField(@"hi_incre", ladderIncre[frRungIdx[2]], LIM_BIG)
+    benchLog.numField(@"brake_pct", FR_BRAKE_PCT, LIM_TINY)
+    benchLog.numField(@"provoke_ms", FR_PROVOKE_MS, LIM_SMALL)
+    benchLog.numField(@"wait2_ms", FR_SECOND_WAIT_MS, LIM_SMALL)
+    benchLog.numField(@"flat_mV", FR_FLAT_MV, LIM_SMALL)
+    benchLog.numField(@"vis_mV", FR_I_VISIBLE_MV, LIM_SMALL)
+    benchLog.numField(@"ramp_ms", FR_PLAT_RAMP_MS, LIM_SMALL)
+    benchLog.numField(@"rest_pct", FR_PLAT_REST_PCT, LIM_TINY)
+    benchLog.numField(@"min_ticks", FR_COAST_MIN_TICKS, LIM_TINY)
+    benchLog.numField(@"ramp_lo", FR_RAMP_LO_PCT, LIM_TINY)
+    benchLog.numField(@"ramp_hi", FR_RAMP_HI_PCT, LIM_TINY)
+    benchLog.numField(@"full_tol", FR_FULL_TOL_TICKS, LIM_TINY)
+    emitRecord()
+
+PRI emitNotBuilt(pCell, pStudy, whyCode)
+' BM-NOTBUILT: a cell this build declares and cannot build, the study cell it stands for, and why. Worst case 85 bytes.
+'
+' @param pCell - pointer to the cell id
+' @param pStudy - pointer to the study's cell name
+' @param whyCode - WHY_* naming the reason
+
+    recBegin(@"BM-NOTBUILT")
+    benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
+    benchLog.tokenField(@"study", pStudy, TOKMAX_FRCELL)
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitFrTrial(tid, side, motorIncre)
+' BM-FRTRIAL: one wheel trial -- its X-cell, what it set and requested, the forced fault and its outcome, and what the
+' driver was seen to do. second is X-6's second forced fault (NOT_RUN when none was asked), and f2_err its call's
+' return. Worst case 274 bytes.
+'
+' @param tid - trace id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+
+    recBegin(@"BM-FRTRIAL")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.tokenField(@"cell", tokenAt(@tokFrCell, FRC_COUNT, frCell), TOKMAX_FRCELL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.tokenField(@"fr_mode", tokenAt(@tokFrMode, FR_MODE_COUNT, frMode), TOKMAX_FRMODE)
+    benchLog.numField(@"brake_pct", frBrakePct, LIM_TINY)
+    benchLog.tokenField(@"req_mode", tokenAt(@tokMode, MODE_COUNT, frReqMode), TOKMAX_REQMODE)
+    benchLog.numField(@"set_err", frSetErr, LIM_SMALL)
+    benchLog.naNumField(@"f_err", frForceErr, LIM_SMALL, bFrForced)
+    benchLog.tokenField(@"outcome", tokenAt(@tokFrOut, FRO_COUNT, frOutcome), TOKMAX_FROUT)
+    benchLog.tokenField(@"second", tokenAt(@tokFrOut, FRO_COUNT, frOutcome2), TOKMAX_FROUT)
+    benchLog.naNumField(@"f2_err", frForceErr2, LIM_SMALL, frOutcome2 <> FRO_NOT_RUN)
+    benchLog.tokenField(@"path", tokenAt(@tokFrPath, FRP_COUNT, frPath), TOKMAX_FRPATH)
+    benchLog.naNumField(@"rs_d", frResyncAfter - frResyncBase, LIM_TINY, bFrReadsValid and (frOutcome == FRO_FAULT))
+    benchLog.tokenField(@"cause", tokenAt(@tokFltCause, FC_COUNT, frCause), TOKMAX_FCAUSE)
+    benchLog.naNumField(@"g_mV", frGuardPkMv, LIM_SMALL, bFrForced)
+    whyField(frWhy)
+    emitRecord()
+
+PRI emitFrResults(tid, side, slotIdx, motorIncre)
+' A wheel trial's readings: BM-FRSTAT and BM-FRCUR, BM-FRWIND for X-2, and the phase windows -- X-3's negative control
+' first, then the moving window and the at-rest tail.
+'
+' @param tid - trace id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+' @param motorIncre - signed increment
+
+    emitFrStat(tid, side, motorIncre)
+    emitFrCur(tid, side, slotIdx)
+    if frCell == FRC_X2
+        emitFrWind(tid, side, slotIdx, motorIncre)
+    if frCell == FRC_X3
+        emitFrPhase(tid, side, FRW_PRE)
+    emitFrPhase(tid, side, FRW_MOVE)
+    emitFrPhase(tid, side, FRW_REST)
+
+PRI emitFrStat(tid, side, motorIncre)
+' BM-FRSTAT: the fault's motion -- where it was latched, where X-6's second read DCS_FAULTED, and where rest began (trace
+' k), the rate before it, ticks and ms from the reference (frStats()) to rest against the configured ramp's prediction
+' from this speed (exp_ms, X-4's band), each half's ticks, and the states seen after the fault. f2_k is NA by
+' construction for every cell but X-6 and X6C. Worst case 270 bytes.
+'
+' @param tid - trace id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+
+    recBegin(@"BM-FRSTAT")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.naNumField(@"flt_k", frFltJ - drStartJ, LIM_SMALL, bFrFltFound)
+    benchLog.naNumField(@"f2_k", frFlt2J - drStartJ, LIM_SMALL, bFrFlt2Found)
+    benchLog.naNumField(@"rest_k", frRestJ - drStartJ, LIM_SMALL, bFrRestFound)
+    benchLog.naNumField(@"pre_x10", frPreX10, LIM_MID, bFrPreValid)
+    benchLog.numField(@"exp_ms", frRampPredMs(), LIM_SMALL)
+    benchLog.naNumField(@"t_rest_ms", frRestMs, LIM_SMALL, bFrRestFound)
+    benchLog.naNumField(@"ticks_rest", frTicksRest, LIM_SMALL, bFrRestFound)
+    benchLog.naNumField(@"t1", frT1, LIM_SMALL, bFrRestFound)
+    benchLog.naNumField(@"t2", frT2, LIM_SMALL, bFrRestFound)
+    benchLog.boolField(@"spin_dn", bFrSawSpinDn)
+    benchLog.boolField(@"flt_st", bFrSawFaulted)
+    benchLog.tokenField(@"st_end", dcsToken(frStEnd), TOKMAX_STATE)
+    whyField(frWhy)
+    emitRecord()
+
+PRI emitFrCur(tid, side, slotIdx) | whyCode
+' BM-FRCUR: the DC-link current around the fault -- the lifetime zero, the mean current and duty at speed before it,
+' duty_max, the largest sense_i from the fault to rest and where, and whether that peak was a visible current. Worst
+' case 183 bytes.
+'
+' @param tid - trace id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+'
+' @local whyCode - the first cause of the record's NA fields
+
+    whyCode := frWhy
+    if (whyCode == WHY_NONE) and (bLifeZeroValid[slotIdx] == FALSE)
+        whyCode := WHY_NO_SAMPLES
+    recBegin(@"BM-FRCUR")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.naNumField(@"zero_x10", lifeZeroX10[slotIdx], LIM_MID, bLifeZeroValid[slotIdx])
+    benchLog.naNumField(@"pre_i_x10", frPreIX10, LIM_MID, bFrPreValid)
+    benchLog.naNumField(@"pre_duty", frPreDuty, LIM_SMALL, bFrPreValid)
+    benchLog.numField(@"duty_max", frDutyMax, LIM_SMALL)
+    benchLog.naNumField(@"pk_i", frPkI, LIM_SMALL, bFrPkValid)
+    benchLog.naNumField(@"pk_k", frPkK, LIM_SMALL, bFrPkValid)
+    benchLog.boolField(@"i_vis", bFrIVisible(slotIdx))
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitFrWind(tid, side, slotIdx, motorIncre) | bEmf, emfMv, bNet, netMv, bR, rMohm, whyCode
+' BM-FRWIND (X-2 only): the winding resistance the log allows, R = back-EMF / short-circuit current. The back-EMF is
+' the driver's own line -- the mean duty at speed before the fault, as a fraction of duty_max, of the nominal pack
+' (PACK_MV); DERIVED, an estimate: the modulation's scale and the I x R drop are in it. The current is the post-fault
+' peak over the lifetime zero at SENSE_MV_PER_A. It replaces the startup study's B-4 pulse. When the peak is not a
+' visible current (bFrIVisible(); this section's CON says why it should not be), r_mohm is NA, why NOT_VISIBLE.
+' Worst case 137 bytes.
+'
+' @param tid - trace id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - motor slot
+' @param motorIncre - signed increment
+'
+' @local bEmf - the back-EMF estimate is valid
+' @local emfMv - the estimate, mV
+' @local bNet - the net peak current is valid
+' @local netMv - the post-fault peak over the zero, mV
+' @local bR - the resistance is valid
+' @local rMohm - the resistance, milliohms
+' @local whyCode - the first cause of the record's NA fields
+
+    bEmf := bFrPreValid and (frDutyMax > 0)
+    emfMv := 0
+    if bEmf
+        emfMv := (frPreDuty * PACK_MV) / frDutyMax
+    bNet := bFrPkValid and (bLifeZeroValid[slotIdx] <> FALSE)
+    netMv := 0
+    if bNet
+        netMv := frPkI - (lifeZeroX10[slotIdx] / X10)
+    bR := bEmf and bFrIVisible(slotIdx) and (netMv > 0)
+    rMohm := 0
+    if bR
+        rMohm := (emfMv * SENSE_MV_PER_A) / netMv
+    whyCode := frWhy
+    if whyCode == WHY_NONE
+        if bFrIVisible(slotIdx) == FALSE
+            whyCode := WHY_NOT_VISIBLE
+        elseif bEmf == FALSE
+            whyCode := WHY_NO_SAMPLES
+    recBegin(@"BM-FRWIND")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.naNumField(@"emf_mV", emfMv, LIM_SMALL, bEmf)
+    benchLog.naNumField(@"i_net_mV", netMv, LIM_SMALL, bNet)
+    benchLog.naNumField(@"r_mohm", rMohm, LIM_SMALL, bR)
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitFrPhase(tid, side, winIdx) | winBase, whyCode
+' BM-FRPHASE: one phase window -- samples, hall ticks across it, each phase's peak-to-peak and crossings of its mean,
+' the crossings the ticks imply, and whether all three stayed flat. Worst case 205 bytes.
+'
+' @param tid - trace id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param winIdx - FRW_* value
+'
+' @local winBase - the window's first index in frWinPp / frWinX
+' @local whyCode - the first cause of the record's NA fields
+
+    winBase := winIdx * FR_PHASES
+    whyCode := WHY_NONE
+    if bFrWinValid[winIdx] == FALSE
+        if winIdx == FRW_PRE
+            whyCode := frPreWhy
+        else
+            whyCode := frWhy
+        if whyCode == WHY_NONE
+            whyCode := WHY_NO_SAMPLES                       ' e.g. a short that stopped inside FR_SETTLE_SAMPLES
+    recBegin(@"BM-FRPHASE")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"win", tokenAt(@tokFrWin, FR_WINS, winIdx), TOKMAX_FRWIN)
+    benchLog.naNumField(@"n", frWinN[winIdx], LIM_SMALL, bFrWinValid[winIdx])
+    benchLog.naNumField(@"ticks", frWinTicks[winIdx], LIM_SMALL, bFrWinValid[winIdx])
+    benchLog.naNumField(@"pp_u", frWinPp[winBase], LIM_SMALL, bFrWinValid[winIdx])
+    benchLog.naNumField(@"pp_v", frWinPp[winBase + 1], LIM_SMALL, bFrWinValid[winIdx])
+    benchLog.naNumField(@"pp_w", frWinPp[winBase + 2], LIM_SMALL, bFrWinValid[winIdx])
+    benchLog.naNumField(@"x_u", frWinX[winBase], LIM_SMALL, bFrWinValid[winIdx])
+    benchLog.naNumField(@"x_v", frWinX[winBase + 1], LIM_SMALL, bFrWinValid[winIdx])
+    benchLog.naNumField(@"x_w", frWinX[winBase + 2], LIM_SMALL, bFrWinValid[winIdx])
+    benchLog.naNumField(@"x_exp", frXingExpected(winIdx), LIM_SMALL, bFrWinValid[winIdx])
+    if bFrWinValid[winIdx]
+        benchLog.boolField(@"flat", bFrWinFlat(winIdx))
+    else
+        benchLog.textField(@"flat", @sSfNa)
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitFrRest(tid, side, eMode, nBrakeY, eHold, bMeasured, bOk)
+' BM-FRREST: a wheel trial's restores read back at rest after the recovery -- the fault response, the graded short's Y
+' against this lifetime's own, and the hold status (HS_OFF is SM_FLOAT at rest). Worst case 156 bytes.
+'
+' @param tid - trace id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param eMode - the fault response read back
+' @param nBrakeY - its brake_y read back
+' @param eHold - the hold status read back
+' @param bMeasured - the read-backs came from the lifetime the restores went to
+' @param bOk - all three held
+
+    recBegin(@"BM-FRREST")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    if bMeasured
+        benchLog.tokenField(@"fr_back", tokenAt(@tokFrMode, FR_MODE_COUNT, eMode), TOKMAX_FRMODE)
+        benchLog.tokenField(@"hs_back", tokenAt(@tokHold, HS_COUNT, eHold), TOKMAX_HOLD)
+    else
+        benchLog.textField(@"fr_back", @sSfNa)
+        benchLog.textField(@"hs_back", @sSfNa)
+    benchLog.naNumField(@"by_back", nBrakeY, LIM_SMALL, bMeasured)
+    benchLog.naNumField(@"by_base", frBrakeYBase, LIM_SMALL, bMeasured)
+    benchLog.numField(@"set_err", frRestErr, LIM_SMALL)
+    benchLog.boolField(@"ok", bMeasured and bOk)
+    if bMeasured
+        whyField(WHY_NONE)
+    else
+        whyField(WHY_NO_COG)
+    emitRecord()
+
+PRI emitFrPlat(tid, sid, side)
+' BM-FRPLAT: X-5 -- the wheel faulted and its fault response, the forced fault's call and outcome, then the WATCHED
+' wheel: its rate before the fault, in the window one ramp time after it and as a percentage, its ms to rest (o_rest)
+' and whether it passed through SPIN_DN (o_spndn); and each wheel's fault cause. Worst case 275 bytes.
+'
+' @param tid - trace id
+' @param sid - the steering start's life, 0 when it did not start
+' @param side - the wheel faulted
+
+    recBegin(@"BM-FRPLAT")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.naNumField(@"sid", sid, LIM_SMALL, sid > 0)
+    benchLog.tokenField(@"flt_motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"fr_mode", tokenAt(@tokFrMode, FR_MODE_COUNT, frMode), TOKMAX_FRMODE)
+    benchLog.numField(@"set_err", frSetErr, LIM_SMALL)
+    benchLog.naNumField(@"f_err", frForceErr, LIM_SMALL, bFrForced)
+    benchLog.tokenField(@"outcome", tokenAt(@tokFrOut, FRO_COUNT, frOutcome), TOKMAX_FROUT)
+    benchLog.naNumField(@"flt_k", frFltJ - drStartJ, LIM_SMALL, bFrFltFound)
+    benchLog.naNumField(@"o_pre_x10", frPlatPreX10, LIM_MID, bFrPlatPreValid)
+    benchLog.naNumField(@"o_win_x10", frPlatWinX10, LIM_MID, bFrPlatWinValid)
+    benchLog.naNumField(@"o_pct", frPlatPct, LIM_SMALL, bFrPlatMeasured())
+    benchLog.naNumField(@"o_rest", frPlatRestMs, LIM_SMALL, bFrPlatRestFound)
+    benchLog.boolField(@"o_spndn", bFrPlatSpinDn)
+    benchLog.tokenField(@"l_cause", tokenAt(@tokFltCause, FC_COUNT, fltLeftCause), TOKMAX_FCAUSE)
+    benchLog.tokenField(@"r_cause", tokenAt(@tokFltCause, FC_COUNT, fltRightCause), TOKMAX_FCAUSE)
+    whyField(frWhy)
+    emitRecord()
+
+PRI emitSignoffNotBuilt(pCell, side, pCrit)
+' One NOT_BUILT SIGNOFF: a cell this build declares and does not build, measured NA, n 0 (the reason is its
+' BM-NOTBUILT header record). Worst case 166 bytes.
+'
+' @param pCell - pointer to the cell id
+' @param side - SIDE_* value
+' @param pCrit - pointer to the criterion token
+
+    benchLog.begin(@"SIGNOFF")
+    benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
+    benchLog.tokenField(@"bin", @sSfBin, TOKMAX_BIN)
+    benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
+    benchLog.tokenField(@"task", @sSfTask, TOKMAX_TASK)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.tokenField(@"crit", pCrit, TOKMAX_CRIT)
+    benchLog.textField(@"measured", @sSfNa)
+    benchLog.textField(@"lo", @sSfNa)
+    benchLog.textField(@"hi", @sSfNa)
+    benchLog.tokenField(@"units", @sSfNa, TOKMAX_UNITS)
+    benchLog.numField(@"n", 0, LIM_SMALL)
+    benchLog.tokenField(@"verdict", @sSfNotBuilt, TOKMAX_SFVERDICT)
+    emitRecord()
+
+PRI wheelSetFaultResponse(side, eMode, brakePct) : eError
+' testSetFaultResponse() on one wheel (R19.3, TEST-USE): the response to a position fault, and the graded short's %.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param eMode - FR_SHIPPED or FR_GRADED
+' @param brakePct - the graded short's low-side on-time, % of each frame
+' @returns eError - the library's return
+
+    beat(CP_LIB_COMMAND)
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        eError := wheelR.testSetFaultResponse(eMode, brakePct)
+    else
+        eError := wheelL.testSetFaultResponse(eMode, brakePct)
+    beat(CP_LIB_COMMAND)
+
+PRI wheelFaultResponse(side) : eMode, nBrakeY, nResyncs
+' testGetFaultResponse() of one wheel: the response in effect, the graded short's Y, and the re-syncs since start.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eMode - FR_SHIPPED or FR_GRADED
+' @returns nBrakeY - the graded short's low-side PWM Y
+' @returns nResyncs - faults answered by a re-sync and a controlled stop since start
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        eMode, nBrakeY, nResyncs := wheelR.testGetFaultResponse()
+    else
+        eMode, nBrakeY, nResyncs := wheelL.testGetFaultResponse()
+    beat(CP_LIB_QUERY)
+
+PRI wheelFaultCause(side) : eCause
+' getFaultCause() of one wheel.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eCause - FC_NONE, FC_LAG or FC_HALL
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        eCause := wheelR.getFaultCause()
+    else
+        eCause := wheelL.getFaultCause()
+    beat(CP_LIB_QUERY)
+
+PRI wheelHoldStatus(side) : eHoldState
+' getHoldStatus() of one wheel, the state only.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eHoldState - HS_OFF, HS_HOLDING, HS_SLIPPED or HS_LIMITED
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        eHoldState, _ := wheelR.getHoldStatus()
+    else
+        eHoldState, _ := wheelL.getHoldStatus()
+    beat(CP_LIB_QUERY)
+
+PRI steerSetFaultResponse(eMode, brakePct) : eError
+' testSetFaultResponse() on both steering wheels (R19.3, TEST-USE).
+'
+' @param eMode - FR_SHIPPED or FR_GRADED
+' @param brakePct - the graded short's low-side on-time, % of each frame
+' @returns eError - the steering object's return
+
+    beat(CP_LIB_STEER_DRIVE)
+    eError := steering.testSetFaultResponse(eMode, brakePct)
+    beat(CP_LIB_STEER_DRIVE)
+
+PRI wheelForceFault(side) : eError
+' testForceFault() on one wheel (R19.3, TEST-USE): the driver faults on its next driven frame.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eError - the library's return
+
+    beat(CP_LIB_COMMAND)
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        eError := wheelR.testForceFault()
+    else
+        eError := wheelL.testForceFault()
+    beat(CP_LIB_COMMAND)
+
+PRI steerForceFault(side) : eError
+' testLeftForceFault() / testRightForceFault() on the steering object: one wheel faults on its next driven frame.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eError - the steering object's return
+
+    beat(CP_LIB_STEER_DRIVE)
+    if side == SIDE_RIGHT
+        eError := steering.testRightForceFault()
+    else
+        eError := steering.testLeftForceFault()
+    beat(CP_LIB_STEER_DRIVE)
+
+PRI frHookRestTrial(side) | slotIdx, whyCode, sampleIdx, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk
+' HOOKREST, the forced-fault hook's negative control, run FIRST on each wheel (D2). In its own lifetime, holdAtStop(FALSE)
+' (the lifetime's own), the wheel at rest and the bridge coasting: testForceFault() must NOT fault, because the driver
+' looks for a forced fault only on a DRIVEN frame (isp_bldc_motor.spin2, the fault test's `tjnz bridge, #.noFault`
+' ahead of the force check). Watched FR_HOOK_WIN_MS after the force: no sample may carry the fault latch and every
+' sample must read DCS_STOPPED. FAILS on either -- a hook that faults a motor it is not driving. The request stays
+' pending in the driver (only a fault advances force_seen), so this lifetime ends here and the pending request with it;
+' the next trial starts a fresh one. BM-FRHOOK.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local slotIdx - motor slot
+' @local whyCode - why nothing was measured, WHY_NONE when it was
+' @local sampleIdx - logical index
+' @local nSamples - up samples watched after the force
+' @local bFaultSeen - a sample carried the fault latch
+' @local bStateOk - every sample was up and read DCS_STOPPED
+' @local hwMoved - hall ticks the wheel moved across the window (hwPos)
+' @local bMeasured - samples after the force were read
+' @local bOk - no fault, and STOPPED throughout
+
+    slotIdx := side - SIDE_LEFT
+    curTid := 0
+    frForceErr := NO_ERROR
+    nSamples := 0
+    bFaultSeen := FALSE
+    bStateOk := TRUE
+    hwMoved := 0
+    bMeasured := FALSE
+    whyCode := WHY_NONE
+    if bRunContinue(SEG_FLTRESP) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bWheelStart(SEG_FLTRESP, side) == FALSE
+        whyCode := stWhy
+    whyCode := trialSkipWhy(SEG_FLTRESP, side, whyCode)
+    if whyCode == WHY_NONE
+        if bInstArm(INST_SRC_WHEELS, 1) == FALSE
+            whyCode := WHY_INST_NOACK
+        else
+            waitWatched(side, FR_HOOK_SETTLE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
+            instMark()
+            frForceErr := wheelForceFault(side)
+            waitWatched(side, FR_HOOK_WIN_MS, CP_LOOP_CAPTURE, UNTIL_TIME)    ' a fault ends it early: the samples say so
+            if bInstFreeze(0)
+                drainBegin()
+                drainFindMark()
+                if bDrMarkFound and (drMarkJ < drStored)
+                    repeat sampleIdx from drMarkJ to drStored - 1
+                        beat(CP_LOOP_DRAIN)
+                        nSamples += 1
+                        if bSmpFault(sampleIdx, slotIdx)
+                            bFaultSeen := TRUE
+                        if (bSmpUp(sampleIdx, slotIdx) == FALSE) or (smpState(sampleIdx, slotIdx) <> DCS_STOPPED)
+                            bStateOk := FALSE
+                    hwMoved := abs(smpHw(drStored - 1, slotIdx) - smpHw(drMarkJ, slotIdx))
+                    bMeasured := TRUE
+                else
+                    whyCode := WHY_NO_SAMPLES
+            else
+                whyCode := WHY_INST_NOACK
+    bOk := bMeasured and (bFaultSeen == FALSE) and bStateOk
+    if bMeasured
+        bSfHookRan[slotIdx] := TRUE
+        bSfHookOk[slotIdx] := bOk
+    emitFrHook(side, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk, whyCode)
+    bInstIdle()
+    wheelStop(side)                                         ' ends the lifetime, and the pending forced request with it
+    segItems := (segItems + 1) <# LIM_SMALL
+
+PRI emitFrHook(side, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk, whyCode)
+' BM-FRHOOK: the hook's at-rest negative control -- the force call's return, the samples watched after it, whether any
+' carried the fault latch, whether every one read DCS_STOPPED, how far the wheel moved, and the verdict's input. Worst
+' case 131 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param nSamples - samples watched after the force
+' @param bFaultSeen - a sample carried the fault latch
+' @param bStateOk - every sample was up and read DCS_STOPPED
+' @param hwMoved - hall ticks moved across the window
+' @param bMeasured - the samples were read
+' @param bOk - no fault, and STOPPED throughout
+' @param whyCode - WHY_* naming the cause of every NA
+
+    recBegin(@"BM-FRHOOK")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"f_err", frForceErr, LIM_SMALL)
+    benchLog.naNumField(@"n", nSamples, LIM_SMALL, bMeasured)
+    if bMeasured
+        benchLog.boolField(@"flt", bFaultSeen)
+        benchLog.boolField(@"st_ok", bStateOk)
+    else
+        benchLog.textField(@"flt", @sSfNa)
+        benchLog.textField(@"st_ok", @sSfNa)
+    benchLog.naNumField(@"hw_moved", hwMoved, LIM_SMALL, bMeasured)
+    benchLog.boolField(@"ok", bOk)
+    whyField(whyCode)
+    emitRecord()
+
 CON { --- ALIGN: the hall zero measured cold, cog 0, the bridge never driven (task 3590) --- }
 
 VAR { ALIGN tier state -- cog 0 only }
@@ -11200,9 +13174,16 @@ PRI emitHeaderRecords() | orderIdx
             if BUILD_TOP_ONLY == FALSE
                 emitPlan(SEG_LIMRAMP, 3)
                 emitPlan(SEG_LIMLOW, 4)
+        PART_FAULTRESP:
+            emitPlan(SEG_PREFLT, 1)
+            emitPlan(SEG_FLTRESP, 2)
+            emitPlan(SEG_FLTPLAT, 3)
     if PART_ID == PART_A
         repeat orderIdx from 0 to LADDER_RUNGS - 1
             emitLadder(orderIdx)
+    if PART_ID == PART_FAULTRESP                            ' task 3613: the pre-registered numbers, and what is not built
+        emitFrBuild()
+        emitNotBuilt(@sSfCellB4Pulse, @sSfStudyB4, WHY_REPLACED_BY_X2)
     beat(CP_EMIT)
     debug(zstr_(@sPanicLine))
     beat(CP_EMIT)
@@ -11318,8 +13299,12 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     '  bound or two at the edge, and BM-CLIP beside each rung's five records. LIMRAMP: 20 traces at STOPMODE's
     '  worst case of TRACE_EMIT_MAX lines each. LIMLOW: 32 rungs of about 10 s (LIMLOW_WINDOW_MS, its settle
     '  and a quick AT_SPEED).
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45)
+    ' Task 3613, the FAULTRESP part. FLTRESP: per wheel the hook's at-rest check (~4 s, no trace) and 12 driven trials,
+    '  each its own lifetime (~2 s start and zero), a spin-up of up to ~2 s, a 1 s settle, a capture of about a second
+    '  and a FAULT_COOL_MS cool-down -- about 13 s -- and one trace each at STOPMODE's worst case of TRACE_EMIT_MAX lines:
+    '  24 traces. FLTPLAT: 2 steering trials of about 15 s, each a trace of up to 3 s at decimation 1.
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -12492,6 +14477,8 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallL
         PART_LIMITS:
             pCell := @sSfCellNoStallM
+        PART_FAULTRESP:
+            pCell := @sSfCellNoStallX
         other:
             pCell := @sUnknownTok
 
@@ -12523,6 +14510,8 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskL
         PART_LIMITS:
             pCell := @sSfCellDbgMaskM
+        PART_FAULTRESP:
+            pCell := @sSfCellDbgMaskX
         other:
             pCell := @sUnknownTok
 
@@ -12668,6 +14657,24 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellPowerMap)
                 emitSignoffDecl(@sSfCellFollowM)
                 emitSignoffDecl(@sSfCellFolFall)
+            PART_FAULTRESP:
+                emitSignoffDecl(@sSfCellNoStallX)
+                emitSignoffDecl(@sSfCellDbgMaskX)
+                emitSignoffDecl(@sSfCellTracesX)
+                emitSignoffDecl(@sSfCellHookRest)
+                emitSignoffDecl(@sSfCellForced)
+                emitSignoffDecl(@sSfCellRstProvX)
+                emitSignoffDecl(@sSfCellBlunt)
+                emitSignoffDecl(@sSfCellGraded)
+                emitSignoffDecl(@sSfCellGrd100)
+                emitSignoffDecl(@sSfCellFrRest)
+                emitSignoffDecl(@sSfCellRestFlat)
+                emitSignoffDecl(@sSfCellCoastEmf)
+                emitSignoffDecl(@sSfCellShortTk)
+                emitSignoffDecl(@sSfCellShortI)
+                emitSignoffDecl(@sSfCellResync)
+                emitSignoffDecl(@sSfCellPlatStop)
+                emitSignoffDecl(@sSfCellB4Pulse)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
@@ -12705,6 +14712,9 @@ PRI emitSignoffs() | slotIdx, side
 '         COUNT (the three that can disqualify a reading), ALIGN-MTRX BOOL (all four wheel x direction)
 '  LEAD   NOSTALL BOOL; DBGMASK BOOL; LEAD-BRKT COUNT per motor
 '  LIMITS NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; TOPSPD INCR_E6 and PWMCLIP PWM_CNT per motor
+'  FRESP  NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; per motor HOOKREST and RESYNC BOOL, FORCED, RSTPROV, BLUNT,
+'         GRADED, GRD100, FRREST, RESTFLAT, COASTEMF, SHORTTK and SHORTI COUNT, PLATSTOP PCT (the wheel that was NOT
+'         faulted); B4PULSE NOT_BUILT (emitFaultRespCells())
 '
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
@@ -12784,6 +14794,8 @@ PRI emitSignoffs() | slotIdx, side
                 emitLeadCells()
             PART_LIMITS:
                 emitLimitsCells()
+            PART_FAULTRESP:
+                emitFaultRespCells()
 
 PRI emitIdleMoveCell(pCell, slotIdx)
 ' IDLEMOVE (task 3572): the other wheel's largest travel over every motor-frame trace this motor was primary in.

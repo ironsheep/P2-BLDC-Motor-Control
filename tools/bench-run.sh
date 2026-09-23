@@ -111,7 +111,8 @@ Usage:  tools/bench-run.sh <tier>
                    t0             Tier 0 -- no motor, no motion, no risk
                    panel          PLOT pipeline probe: two windows differing ONLY in name, no motors, reads out in the log  [NOTHING MOVES, ATTENDED]
                    t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
-                   t0-stopmode    Tier 0's T0-24 stop-state hand test only -- OPERATOR TURNS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
+                   t0-stopmode    Tier 0's T0-24 stop-state hand test only -- 8 ROWS: OPERATOR PUSHES OR SPINS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
+                   t0-stopmode-fltfirst  as t0-stopmode with the two powered fault rows before the e-stop row (PL-116's discriminator)  [WHEELS UP, ATTENDED]
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    detect         board-detection sweep, PASSIVE (no driver code in the image)
                    detect-lib     as above + the library cross-check (still no driver cog)
@@ -126,6 +127,7 @@ Usage:  tools/bench-run.sh <tier>
                    dual-clock-270 motion harness clock load at 270 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-300 motion harness clock load at 300 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-b         motion harness part B: PREFLT, FAULTB, OVERSHT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-fault     motion harness part FAULTRESP: PREFLT, FLTRESP, FLTPLAT -- the fault study's X-cells, faults forced at speed  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
                    dual-c         motion harness part C: PREFLT, BASELINE, POSTFLT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-d         motion harness part D: PREFLT, STEERSEG, LIMIT -- the front cog's contract and current limiting  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
@@ -198,7 +200,17 @@ case "$TIER" in
     #  under a hand, not library chatter.
     t0-stopmode)    BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPMODE)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP -- ATTENDED stop-state hand test on the RIGHT wheel: click the t0stop window first; nothing happens until you press S. Each row names on the panel what to do BEFORE it runs -- turn or spin the wheel by hand, then SPACE. ROWS 4 AND 5 SPIN THE WHEEL UNDER POWER AND FAULT IT ON PURPOSE: hands off until the panel asks, SPACE aborts a powered row"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP -- ATTENDED stop-state hand test on the RIGHT wheel, 8 rows: click the t0stop window first; nothing happens until you click START ROW. Each row's panel says what to do and what you should feel BEFORE it runs. Rows 1-3 (the hold): push the wheel off where it stopped and hold it. Rows 4, 5 and 8: spin the wheel briskly and let go -- the row ends itself once the wheel is at rest. ROWS 6 AND 7 SPIN THE WHEEL UNDER POWER AND FAULT IT ON PURPOSE: hands off, ABORT stops a powered row. Buttons: START ROW, DONE, ABORT (keys S, D, SPACE do the same)"
+                    ;;
+    # t0-stopmode-fltfirst (task 3607, PL-116's discriminator) -- the same tier with the two powered fault rows
+    #  run BEFORE the e-stop row. After Visit 6a both powered rows latched ERR_PLATFORM_BLOCKED on a lifted wheel
+    #  straight after the e-stop row's clearEmergency(): reaching AT_SPEED here and faulting as designed points at
+    #  the e-stop clear path; a second block points at the blocked test itself (PL-106). -D T0_24_FLT_FIRST only
+    #  reorders the rows; the binary is otherwise the same.
+    t0-stopmode-fltfirst)
+                    BENCH_FILE="test_bench_t0.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPMODE -D T0_24_FLT_FIRST)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP -- ATTENDED stop-state hand test on the RIGHT wheel, 8 rows, the TWO POWERED FAULT ROWS NOW COME BEFORE THE E-STOP ROW (rows 5 and 6): click the t0stop window first; nothing happens until you click START ROW. Rows 1-3: push the wheel off where it stopped and hold it. Rows 4, 7 and 8: spin briskly and let go. ROWS 5 AND 6 SPIN THE WHEEL UNDER POWER AND FAULT IT ON PURPOSE: hands off, ABORT stops a powered row"
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"
                     PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"
@@ -264,6 +276,14 @@ case "$TIER" in
     dual-b)         BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_B)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part B (PREFLT, FAULTB ramp trials that fault on purpose, OVERSHT distance moves through the steering object), run cap 20 minutes"
+                    ;;
+    # dual-fault (task 3613, plan R19.7; DOCs/analyses/FAULT-STRATA-STUDY-2026-09-23.md sec 7) -- the fault responses.
+    #  Every fault is FORCED through testForceFault() (DRIVER_REV 12), taken at the driver's own fault test: the old
+    #  offset-shift provocation plugged the motor more often than it faulted it (PL-119). Each trial runs in its own
+    #  driver lifetime; a forced fault that does not latch within 8 ms stops the wheel at once.
+    dual-fault)     BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_FAULTRESP)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part FAULTRESP (PREFLT, FLTRESP, FLTPLAT): FAULTS ARE FORCED ON PURPOSE AT SPEED (testForceFault(), DRIVER_REV 12), one wheel at a time at 40, 80 and 120 x 10^6 (up to about 220 rpm commanded), and each wheel stops per the response under test -- a phase short that STOPS IT DEAD, a free coast, a re-synced ramp down, or a graded short at 10, 25, 50 and 100 % entered by a second forced fault on that ramp; then, through the steering object at power 50, one wheel is faulted and the other must stop. The 10 A abort and the fold-back limiter both apply. Run cap 15 minutes, expected about 6"
                     ;;
     dual-brake)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_BRAKE)
