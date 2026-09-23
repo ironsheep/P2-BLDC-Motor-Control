@@ -83,6 +83,12 @@ CON { forward our interface constants }
     HLT_PHASE_W     = ltWheel.HLT_PHASE_W
     HLT_ALL_CHECKS  = ltWheel.HLT_ALL_CHECKS
     HLT_WIRING      = ltWheel.HLT_WIRING
+    HLT_PACK        = ltWheel.HLT_PACK
+
+  ' Pack Sensor Status Enum (getPackVoltage())
+    PACK_NOT_FITTED = ltWheel.PACK_NOT_FITTED
+    PACK_ABSENT     = ltWheel.PACK_ABSENT
+    PACK_PRESENT    = ltWheel.PACK_PRESENT
 
   ' Driver State Enum
     DCS_Unknown     = ltWheel.DCS_Unknown
@@ -233,6 +239,7 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         rtWheel.restZeroFinish()
         ltWheel.runStartChecks()                                                ' R19.4: nothing moves; getHealth() reports
         rtWheel.runStartChecks()
+        ltWheel.startPackSense()                                                ' R19.5: one pack, read through the left wheel
 
         ' pre-launch: no front cog of this instance exists, so these writes have no second writer
         ' one formula for the wheel, owned by the motor object (0 when the configured diameter is 0)
@@ -874,6 +881,14 @@ PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeft
         ltWheel.bJudgeWalk(nLeftMid - nLeftStart, ltWheel.getRawHallTicks() - nLeftMid, bLegsOk, bHallsUnchanged(ltWheel.getHallIntegrityCounts(), nLeftMissed, nLeftIllegal))
         rtWheel.bJudgeWalk(nRightMid - nRightStart, rtWheel.getRawHallTicks() - nRightMid, bLegsOk, bHallsUnchanged(rtWheel.getHallIntegrityCounts(), nRightMissed, nRightIllegal))
     eError := recordError(eError)
+
+PUB getPackVoltage() : ePackStatus, nMilliVolts
+'' Return the pack voltage from the optional pack voltage sensor (VOLTAGE-SENSOR.md), averaged over about 64 ms
+''
+'' @returns ePackStatus - PACK_PRESENT, PACK_ABSENT (fitted, but it reads no pack: unplugged or an open lead), or PACK_NOT_FITTED
+'' @returns nMilliVolts - the pack voltage in mV, calibrated by user.PACK_SENSE_CAL_PERMILLE; 0 unless PACK_PRESENT
+
+    ePackStatus, nMilliVolts := ltWheel.getPackVoltage()
 
 PUB getHealth() : nLeftChecked, nLeftFailed, nRightChecked, nRightFailed
 '' Return what start() checked on each wheel with the platform at rest, and which checks failed: HLT_* bits
@@ -1955,6 +1970,7 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
             rtWheel.frontProtectiveStop(ERR_PLATFORM_BLOCKED)
         ltWheel.frontHold()                                                     ' R19.1: each wheel's hold at rest, after this pass's stops
         rtWheel.frontHold()
+        ltWheel.frontSamplePack()                                               ' R19.5: the pack voltage, when fitted
         showDriveStatesOnChange()
         LALOOPEND()
 

@@ -102,6 +102,14 @@ CON { Public Interface Constants }
     '  HLT_WIRING     - checkWiring() only (it moves the wheel): one electrical cycle each way moved the wheel the same
     '                   distance both ways with no fault and no bad hall code -- catches swapped or dead hall or phase wiring
     HLT_WIRING      = 1 << 5
+    '  HLT_PACK       - checked only with the pack voltage sensor fitted (user.PACK_SENSOR_FITTED): it reads a pack
+    HLT_PACK        = 1 << 6
+
+    ' Pack Sensor Status Enum (getPackVoltage()): the optional pack voltage sensor, VOLTAGE-SENSOR.md
+    '  PACK_NOT_FITTED - user.PACK_SENSOR_FITTED is FALSE, or this instance does not read it (the steering object's right wheel)
+    '  PACK_ABSENT     - fitted, but it reads under PACK_ABSENT_MV: unplugged, or its lead is open (R4 pulls the pin to 0 V)
+    '  PACK_PRESENT    - a pack voltage is being read
+    #0, PACK_NOT_FITTED, PACK_ABSENT, PACK_PRESENT
 
     MOTOR_ID_STRLEN = 10
 
@@ -235,6 +243,7 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError, b
         if eError == NO_ERROR
             captureRestZero()    ' PL-45: the driver is confirmed running and released; nothing has driven it yet
             runStartChecks()     ' R19.4: nothing moves; getHealth() reports
+            startPackSense()     ' R19.5: the pack voltage sensor, when fitted
             ok := motorCog - 1    ' public contract: the driver cog's id (0-7), per @returns
 
 PUB startOwned(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
@@ -277,6 +286,10 @@ PUB stop() : eError
         ' the same way init() marks a not-yet-started instance (DCS_Unknown), AFTER the cog
         ' is stopped so this write cannot race the driver's own block-copy of the status run.
         drv_state := DCS_Unknown
+
+    if bPackOwned == TRUE                                                       ' R19.5: no front cog reads it now
+        bPackOwned := FALSE
+        pinclear(user.PACK_SENSE_PIN)
 
     ' Release EVERY pin of the group, AFTER the cogstop. The driver is not "sensed half, driven
     ' half": it WRPINs ADC smart-pin modes onto base+0..4 (adc_pins) as well as PWM modes onto
@@ -1091,6 +1104,57 @@ PUB testGetWalk() : nFwdTicks, nRevTicks
 
     nFwdTicks := walkFwdTicks
     nRevTicks := walkRevTicks
+
+PUB startPackSense() | nPin
+'' INTERNAL USE: calibrate and start reading the pack voltage sensor, when user.PACK_SENSOR_FITTED (R19.5); ~2 ms
+''
+'' start()/startEx() call this themselves; isp_steering_2wheel calls it on its left wheel only, since a robot has one
+'' pack. The pin is refused (not read, with a warning) when it lies inside this motor's own pin group. Adds HLT_PACK
+'' to getHealth(): it fails when the sensor reads no pack.
+
+' Local Variables:
+' @local nPin - user.PACK_SENSE_PIN
+
+    nPin := user.PACK_SENSE_PIN
+    if user.PACK_SENSOR_FITTED <> FALSE
+        if (nPin < 0) or (nPin > 63) or ((nPin >= pinbase) and (nPin < pinbase + 16))
+            debug[user.DBGCH_WARNING]("! WARNING: PACK_SENSE_PIN ", sdec_long(nPin), " is not a free pin, the pack sensor is not read")
+        else
+            pinstart(nPin, P_ADC | P_ADC_GIO, PACK_ADC_X, 0)                      ' P2AN001: GIO, VIO, then the pin, one path
+            packGioRaw := packRead(nPin)
+            wrpin(nPin, P_ADC | P_ADC_VIO)
+            packVioRaw := packRead(nPin)
+            wrpin(nPin, P_ADC | P_ADC_1X)
+            packAvgMv := packMvFromRaw(packRead(nPin)) << PACK_AVG_SHIFT
+            bPackOwned := TRUE
+            healthChecked |= HLT_PACK
+            if (packAvgMv >> PACK_AVG_SHIFT) < PACK_ABSENT_MV
+                healthFailed |= HLT_PACK
+            debug[user.DBGCH_LIFECYCLE]("* pack sensor ", sdec_long(nPin), sdec_long(packGioRaw), sdec_long(packVioRaw), sdec_long(packAvgMv >> PACK_AVG_SHIFT))
+
+PUB frontSamplePack()
+'' FRONT COG ONLY: once per pass -- fold the pack sensor's latest sample into its average (R19.5)
+''
+'' A no-op on an instance that does not read the sensor (startPackSense()).
+
+    if bPackOwned == TRUE
+        packAvgMv += ((packMvFromRaw(rdpin(user.PACK_SENSE_PIN)) << PACK_AVG_SHIFT) - packAvgMv) SAR PACK_AVG_SHIFT
+
+PUB getPackVoltage() : ePackStatus, nMilliVolts
+'' Return the pack voltage from the optional pack voltage sensor (VOLTAGE-SENSOR.md), averaged over about 64 ms
+''
+'' @returns ePackStatus - PACK_PRESENT, PACK_ABSENT (fitted, but it reads no pack: unplugged or an open lead), or PACK_NOT_FITTED
+'' @returns nMilliVolts - the pack voltage in mV, calibrated by user.PACK_SENSE_CAL_PERMILLE; 0 unless PACK_PRESENT
+
+    ePackStatus := PACK_NOT_FITTED
+    nMilliVolts := 0
+    if bPackOwned == TRUE
+        nMilliVolts := packAvgMv >> PACK_AVG_SHIFT
+        if nMilliVolts < PACK_ABSENT_MV
+            ePackStatus := PACK_ABSENT
+            nMilliVolts := 0
+        else
+            ePackStatus := PACK_PRESENT
 
 PUB getHealth() : nChecked, nFailed
 '' Return what start() checked with the motor at rest, and which checks failed: HLT_* bits
@@ -2422,6 +2486,34 @@ PRI bWalkLeg(power) : bOk | startMs
         if bOk == FALSE
             postRequest(REQ_STOP, 0, 0, 0)                                      ' a leg that faulted or timed out ends stopped
 
+PRI packRead(nPin) : nRaw | nSample
+' Return the pack pin's reading in its current source, after P2AN001's flush: PACK_FLUSH_SAMPLES discarded, then
+' PACK_CAL_SAMPLES averaged.
+'
+' @param nPin - the pack sensor pin
+' @returns nRaw - the averaged SINC2 sample
+
+' Local Variables:
+' @local nSample - the sample loop counter
+
+    waitct(getct() + PACK_SAMPLE_CLOCKS * PACK_FLUSH_SAMPLES)
+    nRaw := 0
+    repeat nSample from 1 to PACK_CAL_SAMPLES
+        waitct(getct() + PACK_SAMPLE_CLOCKS)
+        nRaw += rdpin(nPin)
+    nRaw /= PACK_CAL_SAMPLES
+
+PRI packMvFromRaw(nRaw) : nPackMv
+' Return the pack voltage for one pin reading: ratiometric against GIO and VIO, through the divider, calibrated.
+'
+' @param nRaw - a SINC2 sample in the pin's P_ADC_1X source
+' @returns nPackMv - the pack voltage, mV, never negative
+
+    nPackMv := 0
+    if packVioRaw > packGioRaw
+        nPackMv := muldiv64(nRaw - packGioRaw, PACK_FULL_SCALE_MV, packVioRaw - packGioRaw) #> 0
+        nPackMv := muldiv64(nPackMv, PACK_DIVIDER_X100 * user.PACK_SENSE_CAL_PERMILLE, 100 * 1000)
+
 PRI releasePinBaseClaim()
 ' AE: free whichever slot this instance currently owns (matched by @pinbase, a stable
 ' per-instance identity), so re-init or stop()/restart on the same or a different base never
@@ -2802,6 +2894,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     longfill(@probeMv, 0, 9)
     walkFwdTicks := 0
     walkRevTicks := 0
+    bPackOwned := FALSE                                                     ' R19.5: startPackSense() takes the pin
+    packAvgMv := 0
     ' R19.1: no hold before the front cog runs, so the driver at rest applies duty_min exactly as before
     hold_duty := duty_min
     hold_short := FALSE
@@ -3781,6 +3875,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         if bFrontProtect() == TRUE                                               ' S-2: current derate; a blocked motor latches a protective stop
             frontProtectiveStop(ERR_PLATFORM_BLOCKED)
         frontHold()                                                             ' R19.1: the hold at rest, after this pass's stops
+        frontSamplePack()                                                       ' R19.5: the pack voltage, when fitted
         LALOOPEND()                                                             ' let LA know end of loop
 
         ' 4. accounting, then the absolute schedule
@@ -4531,7 +4626,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 10        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 11        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4540,6 +4635,7 @@ CON { driver internal Constants }
                                             ' 8: the hold at rest follows the load, then hands off to the phase short and reports it (task 3608)
                                             ' 9: a selectable fault response: re-sync from the halls and stop, or the graded short BR_BRAKE (task 3609)
                                             ' 10: start-time checks (BR_PROBE lead check, halls, sense zero), getHealth(), checkWiring() (task 3610)
+                                            ' 11: the optional pack voltage sensor, getPackVoltage() (task 3611)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4584,6 +4680,17 @@ CON { driver internal Constants }
     WALK_OVERSHOOT_TICKS        = 3         ' a leg may coast this far past its limit and still pass
     WALK_START_MS               = 20        ' ms a leg waits before it looks for the stop, so it does not read the rest it left
     WALK_LEG_TIMEOUT_MS         = 2_000     ' a leg that has not stopped by then fails
+    ' R19.5 (task 3611): the pack voltage sensor, VOLTAGE-SENSOR.md. P2AN001's ratiometric method: the pin, GIO and VIO
+    '  read through one ADC path, pin mV = (pin - GIO) / (VIO - GIO) x 3300. SINC2 SAMPLING, not filtering: the front
+    '  cog reads once a pass, and sampling mode completes each conversion in hardware (p2kbArchSmartPin11000AdcInternalClock).
+    PACK_ADC_X                  = %00_1101  ' SINC2 sampling, a 2^13-clock sample
+    PACK_SAMPLE_CLOCKS          = 1 << 13
+    PACK_FLUSH_SAMPLES          = 4         ' samples discarded after a source switch (P2AN001: 3), then
+    PACK_CAL_SAMPLES            = 8         '  this many averaged (P2AN001: "sum 8 clean")
+    PACK_FULL_SCALE_MV          = 3_300     ' VIO - GIO
+    PACK_DIVIDER_X100           = 781       ' pack = pin x 7.81: 10.0k / (68.1k + 10.0k), VOLTAGE-SENSOR.md
+    PACK_ABSENT_MV              = 1_000     ' a pack under 1 V is no pack: R4 pulls an unplugged sensor to about 0 V
+    PACK_AVG_SHIFT              = 6         ' the reading's average over about 64 front passes (64 ms)
     PERMILLE_FULL               = 1000      ' D-6: a fraction of the commanded rate, in thousandths
 
     ' S-2 (same design, section 3.4): phase-current limits from the MOSFET both board revisions use, MCAC85N06Y
@@ -4773,6 +4880,10 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    probeMv[9]                  ' R19.4: per probed phase U, V, W: the U, V and W readings, mV (TEST-USE)
     LONG    walkFwdTicks                ' R19.4: checkWiring()'s first leg, raw hall ticks (TEST-USE)
     LONG    walkRevTicks                ' R19.4: checkWiring()'s second leg, raw hall ticks (TEST-USE)
+    LONG    bPackOwned                  ' R19.5: T/F where T means this instance reads the pack sensor (startPackSense())
+    LONG    packGioRaw                  ' R19.5: the pin's GIO reading, taken at start
+    LONG    packVioRaw                  ' R19.5: the pin's VIO reading, taken at start
+    LONG    packAvgMv                   ' R19.5: front-written: the pack voltage, mV << PACK_AVG_SHIFT
     LONG    faultResyncsPrev            ' front-written (R19.3): the driver's fault_resyncs long on the previous pass
     LONG    faultResyncEvents           ' front-written (R19.3): faults answered by a re-sync and a controlled stop since start
     LONG    bFaultBegan                 ' front-written (R19.3): T/F where T means a fault of either kind began this pass
