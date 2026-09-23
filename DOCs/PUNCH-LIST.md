@@ -3824,11 +3824,9 @@ reading:
 - `forwardIsReverse()` (power sign only);
 - every pin write for a pin-base dependence.
 
-**Bisect**, the same nudge at each commit (`dual-clock-270`, about 1 minute each, from a worktree):
-- `3403024` is DRIVER_REV 7, the last known good;
-- then `d33b691` (9), then `524de4a` (8) or `340ff62` (10) as the result points.
-
-At most three runs name the revision.
+**Next discriminator:** the existing `spin` tier (unchanged, each wheel alone at 50 % power, current driver). If the
+right turns, the fault is in the slow-nudge and start-check path; if not, a diagnostic tier prints both drivers'
+internals side by side. No git steps at the bench (doctrine overlay P5).
 
 **Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
 
