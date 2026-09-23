@@ -249,6 +249,18 @@
 ''               preflight would drive the mis-wired wheel before a single start was read. New records BM-SKBUILD,
 ''               BM-SKHEALTH, BM-SKPROBE, BM-SKWALK, BM-SKSUM; the NOT_BUILT walk of the no-walk build reuses
 ''               BM-NOTBUILT. Every other part's records are unchanged
+''               23 Sep 2026 -- SRC_REV=36, FMT 22: task 3591 (R18.2c tail, R19.8). New part SPIN (-D DUAL_PART_SPIN,
+''               tier dual-spin): the tethered spin-in-place FLOOR tier, loaded and attended -- the release's only
+''               loaded measurement. SPIN runs twelve legs through the steering object, each armed with its own
+''               distance stop at one revolution of the platform (derived from the 387 mm track width) before it is
+''               driven, each clockwise leg followed by a counter-clockwise one: the confirmed offsets (the lead
+''               schedule) at three speeds, the legacy pair as the control, the fixed pair at the quarter, and two
+''               legs that fault one wheel on purpose. CREEP parks the loaded platform on a measured incline: a coast
+''               control that must roll, a low-ceiling control that must slip, then the provisional hold ceiling.
+''               The panel gains the DONE button and the SPIN / CREEP screens (tools/gen_dual_assets.py). New records
+''               BM-SPINBUILD, BM-SPINPRE, BM-SPINLEG, BM-SPIN, BM-SPINW, BM-SPINSTART, BM-CRPBUILD, BM-CREEP, BM-CREEPW;
+''               new cause SPIN, prompts SPIN and CREEP, operator events LETGO and CAUGHT, and four why tokens. Every
+''               other part's records are unchanged; tokButton gains DONE at index 3, which BM-UISTEP prints by name
 ''
 '' =================================================================================================
 
@@ -261,7 +273,7 @@
 
   ONE SOURCE, ONE PART PER BUILD. tools/bench-run.sh chooses the part with -D DUAL_PART_A,
   DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C, DUAL_PART_D, DUAL_PART_FLOOR, DUAL_PART_UICHECK,
-  DUAL_PART_ALIGN, DUAL_PART_LEAD, DUAL_PART_LIMITS, DUAL_PART_FAULTRESP or DUAL_PART_START.
+  DUAL_PART_ALIGN, DUAL_PART_LEAD, DUAL_PART_LIMITS, DUAL_PART_FAULTRESP, DUAL_PART_START or DUAL_PART_SPIN.
   PART_ID comes from one #ifdef chain; with no part flag the build prints part NONE, runs no segment, and ends cleanly.
 
   COG MODEL
@@ -280,7 +292,7 @@
 
       tools/bench-run.sh dual-a | dual-clock-200 | dual-clock-270 | dual-clock-300 | dual-b | dual-brake
                          | dual-c | dual-d | dual-floor | dual-ui | dual-align | dual-lead | dual-limits
-                         | dual-limits-top | dual-fault | dual-start | dual-start-nowalk
+                         | dual-limits-top | dual-fault | dual-start | dual-start-nowalk | dual-spin
 
   (the clock is part of the tier name, so a mistyped clock is an unknown tier and is refused -- PL-62)
 
@@ -314,8 +326,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 35                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 21                                        ' BM- record-format version
+    SRC_REV     = 36                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 22                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -357,9 +369,11 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_FAULTRESP - PREFLT, FLTRESP, FLTPLAT (the fault study's X-cells, faults forced at speed; task 3613)
   '  PART_START - SKCHECK (the startup study's B-cells through the steering object, no PREFLT; task 3613); the
   '               START_NO_WALK build never calls checkWiring()
+  '  PART_SPIN  - SPIN, CREEP (attended, wheels down, tethered: the loaded spin-in-place floor tier and the hold's
+  '               creep on an incline; no PREFLT, whose single-wheel nudge would pivot a platform on the floor; task 3591)
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
-        PART_ALIGN, PART_LEAD, PART_LIMITS, PART_FAULTRESP, PART_START
-    PART_COUNT = PART_START + 1
+        PART_ALIGN, PART_LEAD, PART_LIMITS, PART_FAULTRESP, PART_START, PART_SPIN
+    PART_COUNT = PART_SPIN + 1
 
   ' RUN_TIME_CAP_S per load (design sec 4.2 item 6)
 #ifdef DUAL_PART_A
@@ -423,8 +437,16 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     '  a 1 s floated window) and SK_WALKS walks of ~1.5 s; the cap is four times that, well short of an idle hang
     RUN_TIME_CAP_S = 180
 #else
+#ifdef DUAL_PART_SPIN
+    PART_ID        = PART_SPIN
+    ' about 7 minutes planned (emitPlan()): twelve legs of 3-9 s, each after a START he clicks, six steering starts and
+    '  two fault cool-downs, then the incline's three trials of about 40 s each. Every screen waits on him for at most
+    '  2 minutes and a timeout ends its segment, so the cap covers the planned run with every wait at its bound once
+    RUN_TIME_CAP_S = 1_800
+#else
     PART_ID        = PART_NONE
     RUN_TIME_CAP_S = 60
+#endif
 #endif
 #endif
 #endif
@@ -1040,8 +1062,8 @@ CON { record enums -- each value has a token in the DAT token tables }
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
         SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT, ...
         SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE, SEG_LIMTOP, SEG_LIMRAMP, SEG_LIMLOW, SEG_FLTRESP, SEG_FLTPLAT, ...
-        SEG_SKCHECK
-    SEG_COUNT = 25
+        SEG_SKCHECK, SEG_SPIN, SEG_CREEP
+    SEG_COUNT = 27
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -1049,8 +1071,9 @@ CON { record enums -- each value has a token in the DAT token tables }
         WHY_INST_BUSY, WHY_RING_LOST_HEAD, WHY_MOTOR_RETIRED, WHY_OPERATOR_SKIP, WHY_OPERATOR_TIMEOUT, ...
         WHY_NO_PASSTHROUGH, WHY_UNSWEPT_CLOCK, WHY_LADDER_STOPPED, WHY_SYNC_PRECOND, WHY_NO_EXTERNAL_V, ...
         WHY_NO_EXTERNAL_I, WHY_NO_TEMP_SENSOR, WHY_PART_NOT_BUILT, WHY_OPERATOR_STOP, ...
-        WHY_NOT_DERATED, WHY_NOT_BLOCKED, WHY_PAST_EDGE, WHY_NOT_VISIBLE, WHY_REPLACED_BY_X2
-    WHY_COUNT = 31
+        WHY_NOT_DERATED, WHY_NOT_BLOCKED, WHY_PAST_EDGE, WHY_NOT_VISIBLE, WHY_REPLACED_BY_X2, ...
+        WHY_OVERTRAVEL, WHY_LIMIT_REFUSED, WHY_TICK_SIZE_DIFFERS, WHY_NO_INCLINE_LOAD
+    WHY_COUNT = 35
 
   ' BM-INST event:
     #0, INST_EV_START, INST_EV_STOP, INST_EV_NOSTART, INST_EV_NOACK
@@ -1062,8 +1085,8 @@ CON { record enums -- each value has a token in the DAT token tables }
 
   ' trace cause (what was DONE; never what the wheel did afterwards, I7):
     #0, CAUSE_STOPCMD, CAUSE_STOPCOG, CAUSE_FAULT, CAUSE_ESTOP, CAUSE_RAMP, CAUSE_DISTANCE, ...
-        CAUSE_BRAKEHAND, CAUSE_FLOOR, CAUSE_START, CAUSE_SLOWER
-    CAUSE_COUNT = 10
+        CAUSE_BRAKEHAND, CAUSE_FLOOR, CAUSE_START, CAUSE_SLOWER, CAUSE_SPIN
+    CAUSE_COUNT = 11
 
   ' requested stop mode (what was REQUESTED, I7):
     #0, MODE_FLOAT, MODE_BRAKE
@@ -1106,9 +1129,9 @@ CON { record enums -- each value has a token in the DAT token tables }
     #0, STOPBY_TIMER, STOPBY_OPERATOR, STOPBY_ABORT
     STOPBY_COUNT = 3
 
-  ' BM-OPER prompt:
-    #0, PROMPT_BRAKE_L, PROMPT_FLOOR, PROMPT_UICHECK
-    PROMPT_COUNT = 3
+  ' BM-OPER prompt (task 3591: SPIN and CREEP, the dual-spin tier's two segments):
+    #0, PROMPT_BRAKE_L, PROMPT_FLOOR, PROMPT_UICHECK, PROMPT_SPIN, PROMPT_CREEP
+    PROMPT_COUNT = 5
 
   ' BM-UISTEP kind (UICHECK):
   '  UIK_CONTROL - one live button, which must arrive both as its key and as a mouse click
@@ -1131,8 +1154,10 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  OPEV_ANSWER  - a FLOOR answer chosen
   '  OPEV_DONE    - the attended sequence ended; why names a short end
   '  OPEV_STOP    - STOP chosen while a wheel could move
-    #0, OPEV_SHOWN, OPEV_START, OPEV_SKIP, OPEV_TIMEOUT, OPEV_ANSWER, OPEV_DONE, OPEV_STOP
-    OPEV_COUNT = 7
+  '  OPEV_LETGO   - task 3591: DONE on CREEP_RELEASE -- he has let go of the platform on the incline
+  '  OPEV_CAUGHT  - task 3591: DONE on CREEP_CATCH -- he is holding it again
+    #0, OPEV_SHOWN, OPEV_START, OPEV_SKIP, OPEV_TIMEOUT, OPEV_ANSWER, OPEV_DONE, OPEV_STOP, OPEV_LETGO, OPEV_CAUGHT
+    OPEV_COUNT = 9
 
   ' BM-SEG event:
     #0, SEGEV_BEGIN, SEGEV_END, SEGEV_SKIP
@@ -1427,7 +1452,18 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_SCR_UI_CONTROL       = 12
     BM_SCR_UI_INTRO         = 13
     BM_SCR_UI_END           = 14
-    BM_SCR_COUNT            = 15
+    BM_SCR_SPIN_READY       = 15
+    BM_SCR_SPIN_FAULT_READY = 16
+    BM_SCR_SPIN_SETUP       = 17
+    BM_SCR_SPIN_DRIVE       = 18
+    BM_SCR_SPIN_FAULT_DRIVE = 19
+    BM_SCR_CREEP_MOVE       = 20
+    BM_SCR_CREEP_SETUP      = 21
+    BM_SCR_CREEP_RELEASE    = 22
+    BM_SCR_CREEP_WATCH      = 23
+    BM_SCR_CREEP_CATCH      = 24
+    BM_SCR_SPIN_END         = 25
+    BM_SCR_COUNT            = 26
     BM_SCR_LONGS            = 4
     BM_SCR_PREVIEW_FIRST    = 0
     BM_SCR_PREVIEW_LAST     = 7
@@ -1455,6 +1491,40 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_STATE_LOGGING        = 16
     BM_STATE_STOPPED_BY_YOU = 17
     BM_STATE_ENDED_EARLY    = 18
+    BM_STATE_NXT_R_SLOW     = 19
+    BM_STATE_NXT_L_SLOW     = 20
+    BM_STATE_NXT_R_MED      = 21
+    BM_STATE_NXT_L_MED      = 22
+    BM_STATE_NXT_R_BRISK    = 23
+    BM_STATE_NXT_L_BRISK    = 24
+    BM_STATE_SPN_R_SLOW     = 25
+    BM_STATE_SPN_L_SLOW     = 26
+    BM_STATE_SPN_R_MED      = 27
+    BM_STATE_SPN_L_MED      = 28
+    BM_STATE_SPN_R_BRISK    = 29
+    BM_STATE_SPN_L_BRISK    = 30
+    BM_STATE_FLT_NEXT_R     = 31
+    BM_STATE_FLT_NEXT_L     = 32
+    BM_STATE_FLT_R          = 33
+    BM_STATE_FLT_L          = 34
+    BM_STATE_SPUN_ALL       = 35
+    BM_STATE_SPUN_EARLY     = 36
+    BM_STATE_SPUN_STOP      = 37
+    BM_STATE_SPUN_SKIP      = 38
+    BM_STATE_SPUN_TIMEOUT   = 39
+    BM_STATE_CRP_COAST      = 40
+    BM_STATE_CRP_LOWCEIL    = 41
+    BM_STATE_CRP_HOLD       = 42
+    BM_STATE_EXP_COAST      = 43
+    BM_STATE_EXP_LOWCEIL    = 44
+    BM_STATE_EXP_HOLD       = 45
+    BM_STATE_RES_ROLLED     = 46
+    BM_STATE_RES_NOROLL     = 47
+    BM_STATE_RES_HOLDING    = 48
+    BM_STATE_RES_CREPT      = 49
+    BM_STATE_RES_SLIPPED    = 50
+    BM_STATE_RES_LIMITED    = 51
+    BM_STATE_RES_NOTRUN     = 52
 
     BM_BTN_W                = 108
     BM_BTN_H                = 36
@@ -1462,20 +1532,21 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_BTN_PITCH            = 116
     BM_BTN_ROW1_Y           = 156
     BM_BTN_ROW2_Y           = 198
-    BM_BTN_ROW2_FIRST       = 3
-    BM_BTN_STRIP_FIRST      = 7
+    BM_BTN_ROW2_FIRST       = 4
+    BM_BTN_STRIP_FIRST      = 8
     BM_BTN_NORMAL           = 0
     BM_BTN_HILITE           = 1
     BM_BTN_START            = 0
     BM_BTN_SKIP             = 1
     BM_BTN_STOP             = 2
-    BM_BTN_LEFT             = 3
-    BM_BTN_RIGHT            = 4
-    BM_BTN_STRAIGHT         = 5
-    BM_BTN_NOMOVE           = 6
-    BM_BTN_LOOKS_RIGHT      = 7
-    BM_BTN_WRONG            = 8
-    BM_BTN_COUNT            = 9
+    BM_BTN_DONE             = 3
+    BM_BTN_LEFT             = 4
+    BM_BTN_RIGHT            = 5
+    BM_BTN_STRAIGHT         = 6
+    BM_BTN_NOMOVE           = 7
+    BM_BTN_LOOKS_RIGHT      = 8
+    BM_BTN_WRONG            = 9
+    BM_BTN_COUNT            = 10
 
     BM_STRIP_X              = 12
     BM_STRIP_Y              = 242
@@ -1501,6 +1572,8 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_CD_DRIVES_AGAIN      = 2
     BM_CD_DRIVING_FOR       = 3
     BM_CD_CLOSES_IN         = 4
+    BM_CD_LEG               = 5
+    BM_CD_WATCHING          = 6
 
     BM_HEART_X              = 448
     BM_HEART_Y              = 4
@@ -1526,6 +1599,17 @@ bmScreens       LONG    BM_STATE_WAITING, DECOD BM_BTN_START, BM_CD_GIVES_UP, OP
                 LONG    BM_STATE_UI_CHECK, 0, BM_CD_GIVES_UP, UI_STEP_TIMEOUT_MS                                             ' BM_SCR_UI_CONTROL
                 LONG    BM_STATE_UI_CHECK, DECOD BM_BTN_START, BM_CD_GIVES_UP, UI_STEP_TIMEOUT_MS                            ' BM_SCR_UI_INTRO
                 LONG    BM_STATE_UI_PASSED, DECOD BM_BTN_START, BM_CD_CLOSES_IN, OPER_END_TIMEOUT_MS                         ' BM_SCR_UI_END
+                LONG    BM_STATE_NXT_R_SLOW, DECOD BM_BTN_START | DECOD BM_BTN_SKIP, BM_CD_LEG, OPER_START_TIMEOUT_MS        ' BM_SCR_SPIN_READY
+                LONG    BM_STATE_FLT_NEXT_R, DECOD BM_BTN_START | DECOD BM_BTN_SKIP, BM_CD_LEG, OPER_START_TIMEOUT_MS        ' BM_SCR_SPIN_FAULT_READY
+                LONG    BM_STATE_STARTING, DECOD BM_BTN_STOP, BM_CD_NONE, 0                                                  ' BM_SCR_SPIN_SETUP
+                LONG    BM_STATE_SPN_R_SLOW, DECOD BM_BTN_STOP, BM_CD_LEG, SPIN_LEG_MS                                       ' BM_SCR_SPIN_DRIVE
+                LONG    BM_STATE_FLT_R, DECOD BM_BTN_STOP, BM_CD_LEG, SPIN_LEG_MS                                            ' BM_SCR_SPIN_FAULT_DRIVE
+                LONG    BM_STATE_SPUN_ALL, DECOD BM_BTN_START | DECOD BM_BTN_SKIP, BM_CD_GIVES_UP, OPER_START_TIMEOUT_MS     ' BM_SCR_CREEP_MOVE
+                LONG    BM_STATE_CRP_COAST, 0, BM_CD_NONE, 0                                                                 ' BM_SCR_CREEP_SETUP
+                LONG    BM_STATE_EXP_COAST, DECOD BM_BTN_STOP | DECOD BM_BTN_DONE, BM_CD_GIVES_UP, OPER_START_TIMEOUT_MS     ' BM_SCR_CREEP_RELEASE
+                LONG    BM_STATE_EXP_COAST, DECOD BM_BTN_STOP, BM_CD_WATCHING, CREEP_WIN_MS                                  ' BM_SCR_CREEP_WATCH
+                LONG    BM_STATE_RES_HOLDING, DECOD BM_BTN_DONE, BM_CD_GIVES_UP, OPER_ANSWER_TIMEOUT_MS                      ' BM_SCR_CREEP_CATCH
+                LONG    BM_STATE_DONE, DECOD BM_BTN_START, BM_CD_CLOSES_IN, OPER_END_TIMEOUT_MS                              ' BM_SCR_SPIN_END
 
 CON { operator panel -- hand-written companions to the generated geometry (design sec 8) }
 
@@ -1644,6 +1728,7 @@ tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDE
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
                 BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0, "TAKE", 0
                 BYTE    "LIMTOP", 0, "LIMRAMP", 0, "LIMLOW", 0, "FLTRESP", 0, "FLTPLAT", 0, "SKCHECK", 0
+                BYTE    "SPIN", 0, "CREEP", 0
 tokWhy        BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
@@ -1654,12 +1739,17 @@ tokWhy        BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "S
                 ' task 3613: NOT_VISIBLE -- the DC-link shunt cannot see the quantity (a phase short's current circulates
                 '  in the low sides and never crosses it, PL-118); REPLACED_BY_X2 -- B-4's NOT_BUILT reason
                 BYTE    "NOT_VISIBLE", 0, "REPLACED_BY_X2", 0
+                ' task 3591: OVERTRAVEL -- a spin leg passed its distance limit and the harness e-stopped it; LIMIT_REFUSED
+                '  -- the steering object refused the leg's distance stop, so the leg was never driven; TICK_SIZE_DIFFERS
+                '  -- its travel per tick is not the one the limit was derived with, so no leg is driven; NO_INCLINE_LOAD
+                '  -- the coast control did not roll, so the incline does not load the hold and its cells judge nothing
+                BYTE    "OVERTRAVEL", 0, "LIMIT_REFUSED", 0, "TICK_SIZE_DIFFERS", 0, "NO_INCLINE_LOAD", 0
 tokInstEv       BYTE    "START", 0, "STOP", 0, "NOSTART", 0, "NOACK", 0
 tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED", 0
 tokRes          BYTE    "OK", 0, "FAULT", 0, "STEADY_TIMEOUT", 0, "WINDOW_TIMEOUT", 0, "NO_COG", 0
                 BYTE    "ABORT_I", 0, "SKIPPED", 0
 tokCause        BYTE    "STOPCMD", 0, "STOPCOG", 0, "FAULT", 0, "ESTOP", 0, "RAMP", 0, "DISTANCE", 0
-                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0, "SLOWER", 0
+                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0, "SLOWER", 0, "SPIN", 0
 tokMode         BYTE    "FLOAT", 0, "BRAKE", 0
 tokTend         BYTE    "REST", 0, "TIMEOUT", 0, "FAULT", 0, "ABORT", 0, "FROZEN", 0
 tokRst          BYTE    "NONE", 0, "RESET", 0, "RESTART", 0, "FAILED", 0
@@ -1671,7 +1761,7 @@ tokAns          BYTE    "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0, "NONE
 tokInput        BYTE    "KEY", 0, "MOUSE", 0, "NONE", 0
 tokSlower       BYTE    "LEFT", 0, "RIGHT", 0, "EQUAL", 0
 tokStopBy       BYTE    "TIMER", 0, "OPERATOR", 0, "ABORT", 0
-tokPrompt       BYTE    "BRAKE_L", 0, "FLOOR", 0, "UICHECK", 0
+tokPrompt       BYTE    "BRAKE_L", 0, "FLOOR", 0, "UICHECK", 0, "SPIN", 0, "CREEP", 0
 tokUiKind       BYTE    "CONTROL", 0, "PREVIEW", 0
 tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0
 tokDStep        BYTE    "ESTOP_LATCH", 0, "ESTOP_REFUSE", 0, "ESTOP_CLEAR", 0, "ORDERED", 0
@@ -1680,10 +1770,11 @@ tokDStep        BYTE    "ESTOP_LATCH", 0, "ESTOP_REFUSE", 0, "ESTOP_CLEAR", 0, "
 tokDRes         BYTE    "PASS", 0, "FAIL", 0, "NOMEAS", 0
 ' the library's FC_* fault causes (task 3572, S-7), in enum order
 tokFltCause     BYTE    "NONE", 0, "LAG", 0, "HALL", 0
-' operator panel buttons, in BM_BTN_* order
-tokButton       BYTE    "START", 0, "SKIP", 0, "STOP", 0, "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0
+' operator panel buttons, in BM_BTN_* order (task 3591: DONE is index 3)
+tokButton       BYTE    "START", 0, "SKIP", 0, "STOP", 0, "DONE", 0, "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0
                 BYTE    "LOOKSOK", 0, "WRONG", 0
 tokOpEv         BYTE    "SHOWN", 0, "START", 0, "SKIP", 0, "TIMEOUT", 0, "ANSWER", 0, "DONE", 0, "STOP", 0
+                BYTE    "LETGO", 0, "CAUGHT", 0
 tokSegEv        BYTE    "BEGIN", 0, "END", 0, "SKIP", 0
 tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG", 0
 tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAULTED", 0, "ESTOP", 0
@@ -1691,7 +1782,7 @@ tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAUL
 '  an ALIGN build printed adjacent DAT in the part field of BM-BANNER, BM-PLAN, BM-EXIT, every SIGNOFF
 '  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
-                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0, "START", 0
+                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0, "START", 0, "SPIN", 0
 ' ALIGN leg speed class (ASPD_*), direction (ADIR_*) and leg outcome (ALEG_*), task 3590
 tokASpd         BYTE    "SLOW", 0, "FAST", 0
 tokADir         BYTE    "REVERSE", 0, "FORWARD", 0
@@ -1736,6 +1827,9 @@ tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-
                 BYTE    "X-2_X-3_X-4_X-6_B-4", 0, "X-5_PL-117", 0
                 ' task 3613: SKCHECK carries B-2 and B-5; B-1 and B-3's and B-5's negatives are attended loads of the same part
                 BYTE    "B-1_B-2_B-3_B-5", 0
+                ' task 3591: SPIN carries the offsets under load, A-1 A-2 A-3 A-4 and A-8 loaded, and X-5 on the floor; CREEP
+                '  sizes task 3608's hold ceiling
+                BYTE    "OFFS_A1-4_A8_X-5", 0, "HOLD_CEIL_3608", 0
 
 DAT { fixed tokens }
 
@@ -1983,6 +2077,47 @@ sSfCritSkProbe  BYTE    "PROBES_FAILED", 0
 sSfCritSkWalk   BYTE    "WALKS_FAILED", 0
 sSfCritSkPack   BYTE    "PACK_SEEN_FITTED", 0
 sSfStudyB5      BYTE    "B-5", 0
+' task 3591 (R18.2c tail, R19.8): the SPIN part's cells (suffix P) -- the harness's own five, then the spin legs' (the
+'  travel limit, the pair applied, the direction, A-3, A-4, A-1, A-2, A-8, the offsets and their control, X-5 under
+'  load), then the incline's (the two controls before the hold they validate)
+sSfCellNoStallP BYTE    "R19-DUAL-NOSTALL-P", 0
+sSfCellDbgMaskP BYTE    "R19-DUAL-DBGMASK-P", 0
+sSfCellTracesP  BYTE    "R14-DUAL-TRACES-P", 0
+sSfCellRstProvP BYTE    "R14-DUAL-RSTPROV-P", 0
+sSfCellLagP     BYTE    "R16-DUAL-LAGBND-P", 0
+sSfCellSpStop   BYTE    "R19-DUAL-SPINSTOP-P", 0
+sSfCellSpOff    BYTE    "R19-DUAL-SPINOFF-P", 0
+sSfCellSpDir    BYTE    "R19-DUAL-SPINDIR-P", 0
+sSfCellSpHunt   BYTE    "R19-DUAL-SPINHUNT-P", 0
+sSfCellSpErr    BYTE    "R19-DUAL-SPINERR-P", 0
+sSfCellSpStrt   BYTE    "R19-DUAL-SPINSTRT-P", 0
+sSfCellSpPeak   BYTE    "R19-DUAL-SPINPEAK-P", 0
+sSfCellSpFol    BYTE    "R19-DUAL-SPINFOL-P", 0
+sSfCellSpSym    BYTE    "R19-DUAL-SPINSYM-P", 0
+sSfCellSpCtl    BYTE    "R19-DUAL-SPINCTL-P", 0
+sSfCellSpLead   BYTE    "R19-DUAL-SPINLEAD-P", 0
+sSfCellSpPlat   BYTE    "R19-DUAL-SPINPLAT-P", 0
+sSfCellCrCoast  BYTE    "R19-DUAL-CRPCOAST-P", 0
+sSfCellCrLow    BYTE    "R19-DUAL-CRPLOW-P", 0
+sSfCellCreep    BYTE    "R19-DUAL-CREEP-P", 0
+sSfCellCrHold   BYTE    "R19-DUAL-CRPHOLD-P", 0
+sSfCritSpStop   BYTE    "STOP_OFF_LIMIT", 0
+sSfCritSpOff    BYTE    "PAIR_NOT_APPLIED", 0
+sSfCritSpDir    BYTE    "WHEEL_WRONG_WAY", 0
+sSfCritSpHunt   BYTE    "HUNTS_LOADED", 0
+sSfCritSpErr    BYTE    "ERR_OFF_POINT", 0
+sSfCritSpStrt   BYTE    "START_DUTY_DROP_PM", 0
+sSfCritSpPeak   BYTE    "START_I_RATIO_X100", 0
+sSfCritSpSym    BYTE    "DIR_RATIO_X100", 0
+sSfCritSpCtl    BYTE    "CONTROL_I_X100", 0
+sSfCritSpLead   BYTE    "SCHED_OVER_FIXED", 0
+sSfCritCrCoast  BYTE    "COAST_ROLLED_TICKS", 0
+sSfCritCrLow    BYTE    "LOWCEIL_CREPT", 0
+sSfCritCreep    BYTE    "CREEP_WHILE_HOLD", 0
+sSfCritCrHold   BYTE    "HELD_AT_WINDOW_END", 0
+sSfUnitsTicks   BYTE    "TICKS", 0
+sSfUnitsPm      BYTE    "PERMILLE", 0
+sSfUnitsX100    BYTE    "X100", 0
 sSfUnitsCount   BYTE    "COUNT", 0
 sSfUnitsBool    BYTE    "BOOL", 0
 sSfUnitsMv      BYTE    "MV", 0
@@ -2655,6 +2790,7 @@ PRI initRunState() | slotIdx
         slotLastIncre[slotIdx] := 0
     frResetCells()                                          ' task 3613: the FAULTRESP part's accumulators
     skResetCells()                                          ' task 3613: the START part's accumulators
+    spResetCells()                                          ' task 3591: the SPIN part's accumulators
 
 PRI runPart()
 ' Run this build's segments in the design's sec 4.1 order. Every segment after a run abort is emitted
@@ -2709,6 +2845,10 @@ PRI runPart()
             runSegment(SEG_FLTPLAT)                         ' task 3613: X-5 through the steering object
         PART_START:
             runSegment(SEG_SKCHECK)                         ' task 3613: B-2 and B-5, no PREFLT (the part's CON says why)
+        PART_SPIN:
+            runSegment(SEG_SPIN)                            ' task 3591: the loaded legs, no PREFLT (the part's CON says why)
+            runSegment(SEG_CREEP)
+            spinFinish()                                    ' the end screen, drawn even when a segment was skipped
     bRunReturned := TRUE                                  ' before the return, or main() reads a library abort
 
 PRI runSegment(seg)
@@ -2767,6 +2907,10 @@ PRI runSegment(seg)
                 segFaultPlat()
             SEG_SKCHECK:
                 segStartChecks()
+            SEG_SPIN:
+                segSpin()
+            SEG_CREEP:
+                segCreep()
     else
         emitSeg(seg, SEGEV_SKIP, bSegAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
 
@@ -2790,15 +2934,17 @@ PRI bRunContinue(seg) : bContinue | elapsedS
     bContinue := (bRunAborted == FALSE)
 
 PRI bSegAttended(seg) : bAttended
-' Report whether a segment needs a person at the rig (OUTSIDE, FLOOR, UICHECK and ALIGN).
+' Report whether a segment needs a person at the rig (OUTSIDE, FLOOR, UICHECK, ALIGN, SPIN and CREEP).
 '
 ' ALIGN is attended in a way none of the others are: the person is not watching the run, he IS the
-' actuator -- every leg advances only because he turns the wheel by hand.
+' actuator -- every leg advances only because he turns the wheel by hand. CREEP shares some of that: he
+' carries the platform onto the incline, lets go of it and takes hold of it again.
 '
 ' @param seg - SEG_* value
 ' @returns bAttended - TRUE for an attended segment
 
     bAttended := (seg == SEG_OUTSIDE) or (seg == SEG_FLOOR) or (seg == SEG_UICHECK) or (seg == SEG_ALIGN)
+    bAttended := bAttended or (seg == SEG_SPIN) or (seg == SEG_CREEP)
 
 PRI segBegin(seg)
 ' Open a segment: reset its counters and emit BM-SEG BEGIN.
@@ -6997,7 +7143,7 @@ PRI panelReadInput(liveMask) : buttonIdx, inputCode
 ' Poll the keyboard, then the mouse, once each (design sec 8.2). PC_KEY and PC_MOUSE each carry their own
 ' backtick and end their debug() statement (p2kbSpin2DbgPcKey, p2kbSpin2DbgPcMouse). A key or a click is
 ' taken only after a released reading (src/test_bench_t0.spin2 testT0_12()'s arming), and only for a live
-' button: keys S START, K SKIP, space STOP, L R T N the answers; a click by the button's bounding box.
+' button: keys S START, K SKIP, space STOP, D DONE, L R T N the answers; a click by the button's bounding box.
 '
 ' @param liveMask - PNL_LIVE_* mask of the buttons that may be chosen
 ' @returns buttonIdx - BM_BTN_* chosen, PNL_BTN_NONE when none
@@ -7031,7 +7177,7 @@ PRI panelReadInput(liveMask) : buttonIdx, inputCode
                 inputCode := INPUT_MOUSE
 
 PRI keyButton(keyValue, liveMask) : buttonIdx
-' The live button a key names (either letter case): S START, K SKIP, space STOP, L LEFT, R RIGHT,
+' The live button a key names (either letter case): S START, K SKIP, space STOP, D DONE, L LEFT, R RIGHT,
 ' T STRAIGHT, N DID NOT MOVE, Y LOOKS RIGHT, W SOMETHING WRONG.
 '
 ' @param keyValue - PC_KEY's reading
@@ -7045,6 +7191,8 @@ PRI keyButton(keyValue, liveMask) : buttonIdx
             buttonIdx := BM_BTN_SKIP
         " ":
             buttonIdx := BM_BTN_STOP
+        "D", "d":
+            buttonIdx := BM_BTN_DONE
         "L", "l":
             buttonIdx := BM_BTN_LEFT
         "R", "r":
@@ -10799,6 +10947,2013 @@ PRI emitSkSum(slotIdx) | bRz, bDrv, bFol, firstWhy
     whyField(firstWhy)
     emitRecord()
 
+CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task 3591, R18.2c tail, R19.8) --- }
+
+  ' WHAT THIS PART IS FOR. The release's only LOADED measurement: attended, wheels down, the platform on the floor and
+  '  tethered. Its jobs (task 3591; DOCs/plans/BENCH-READINESS-SPRINT-PLAN.md R19.8):
+  '   1. confirm the commutation offsets under load: the confirmed pair (the shipped lead schedule, Visits 8 and 8b)
+  '      against the legacy pair, the control that unloaded drew 15-26x the current and ~2x in one direction (Visit
+  '      7b), and against today's fixed pair at the quarter, where the schedule moved the lead from 18 to 5 degrees;
+  '   2. hold or falsify R18.3's loaded expectations (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 5.5, 5.6 item 2): A-1 and
+  '      A-2 at the quarter's START, A-3 at rungs 1 and 2, A-4 at every confirmed-pair leg, A-8's following case;
+  '   3. X-5 under load: one wheel faulted on purpose and the other stopped by the platform (R19.2, PL-117);
+  '   4. CREEP (segment CREEP): the hold's creep on a measured incline, which sizes HOLD_CEILING_PCT (task 3608).
+  '
+  ' THE SAFETY ENVELOPE IS THE DESIGN (doctrine overlay P1; the runner's PRECONDITION says it again):
+  '  - Nothing moves before START on a READY screen, and STOP is live on every screen where a wheel can move.
+  '  - Every leg's travel limit is ARMED BEFORE IT IS DRIVEN: stopAfterDistance(SPIN_LEG_MM) resets the tracking and
+  '    arms the steering front cog's platform limit as one request, and a leg whose limit is refused is never driven.
+  '    The limit stops BOTH wheels at rest when EITHER has travelled SPIN_LEG_TICKS, each wheel's stop beginning early
+  '    by its own stopping distance: the front cog's frontStopTicks() arithmetic that R16-DUAL-STOPLIM-B certifies.
+  '  - The limit is ONE REVOLUTION of the platform. Spinning in place, each tyre rolls on a circle whose diameter is
+  '    the track, TRACK_MM, so a revolution moves each tyre pi x 387 mm = 1_215.8 mm = 211.07 hall ticks at the 6.5in
+  '    hub's 5.76 mm a tick. SPIN_LEG_TICKS is the whole ticks under it, 211 (359.9 degrees).
+  '  - Every leg ENDS at its limit, so every leg is also a live test of the limit (R19-DUAL-SPINSTOP-P). The harness
+  '    watches both wheels on the instrument's mirror and e-stops a leg one electrical cycle past the limit
+  '    (SPIN_OVERTRAVEL_TICKS); a leg still moving at SPIN_LEG_MS is stopped.
+  '  - Every clockwise leg is followed by a counter-clockwise one of the same speed and limit, so the tether is never
+  '    wound more than one leg -- one turn -- and each pair leaves it where it started.
+  '  - A fault on either wheel stops the other along its ramp (R19.2); the 10 A abort stops both at once; any leg that
+  '    does not end at its limit ends the SPIN segment, and every leg after it prints NOT_RUN.
+  '  - The speeds are the ladder's rungs 1 and 2 and the quarter: at most 36.7 x 10^6, 22 % of the ceiling, about 170
+  '    degrees a second of platform rotation. Nothing here nears the top speed, so E5's margin is not judged here.
+  '  - The panic procedure is the battery disconnect.
+  '
+  ' WHY THE STEERING OBJECT AND ITS PUBLIC CALLS. driveAtPower(+p, -p) is the call a user makes to spin a platform, and
+  '  the path it takes -- the front cog's synchronized release, its distance stop, its path limiter and its platform
+  '  fault policy -- is what a floor run exists to load. Speeds are POWERS through its map, not raw increments: 7, 13
+  '  and 23 command 10.09, 20.09 and 36.74 x 10^6 (100_000 + 1_665_656 x (power - 1) at 18.5 V).
+  '
+  ' DIRECTIONS. RIGHT is clockwise seen from above: driveAtPower(+p, -p), the left wheel forward and the right back.
+  '  The steering object reverses the right wheel (STEER_RIGHT_RAW_SIGN), so BOTH motors then run POSITIVE increments
+  '  (offset_rev in both drivers), and in a LEFT leg both run negative. A pair of legs is therefore each motor once in
+  '  each direction: the loaded current by direction. The direction each wheel RAN is measured from its raw travel and
+  '  judged against the one commanded (R19-DUAL-SPINDIR-P).
+  '
+  ' WHAT A LEG READS, from one capture at decimation 1, frozen right after the leg's window so no leg outruns the ring
+  '  (the mirror the guard and the waits read stays live while FROZEN): the START from the mark before the command to
+  '  the first AT_SPEED sample (A-1, A-2: the quarter's confirmed-pair legs); then, SPIN_SETTLE_MS after AT_SPEED, with
+  '  the rpm window refilled with steady running, a steady window per wheel -- sense_i, duty, err, the rate, and
+  '  getCurrent() net of the rest zero every CURRENT_POLL_MS -- and at its end both following readings (A-8), the path
+  '  limiter's scale and the pair each driver applied. The ring window is two instrument totals read with no new mark,
+  '  so the START's mark stays where the trace needs it (floorRun()'s endTotal is the precedent).
+    TRACK_MM              = 387                             ' STEPHEN 2026-09-19: 15.25 in, tyre centre to tyre centre
+    SPIN_PI_NUM           = 355                             ' pi as 355 / 113, within 0.3 ppm
+    SPIN_PI_DEN           = 113
+    SPIN_X100             = 100
+    SPIN_PM               = 1_000
+    ' 0.01 mm of tyre travel per hall tick: pi x 165.1 mm / 90 ticks, the steering object's own figure (testGetTickInMM()).
+    '  Every lifetime reads it back, and a lifetime reading any other value drives no leg (WHY_TICK_SIZE_DIFFERS).
+    TICK_MM_X100          = 576
+    SPIN_LEG_DEG          = 360                             ' THE TRAVEL LIMIT: one revolution of the platform per leg
+    SPIN_REV_MM_X100      = (TRACK_MM * SPIN_PI_NUM * SPIN_X100) / SPIN_PI_DEN                    ' 121_579: pi x 387 mm
+    SPIN_LEG_TICKS        = (SPIN_REV_MM_X100 * SPIN_LEG_DEG) / (DEGREES_IN_TURN * TICK_MM_X100)  ' 211
+    ' stopAfterDistance()'s argument, rounded UP so the steering object's own conversion (mm x 100 / 576, truncated)
+    '  lands back on exactly SPIN_LEG_TICKS: 1_216 mm -> 211.1 -> 211. BM-SPINBUILD prints the round trip (tick_back).
+    SPIN_LEG_MM           = ((SPIN_LEG_TICKS * TICK_MM_X100) + SPIN_X100 - 1) / SPIN_X100
+    SPIN_OVERTRAVEL_TICKS = wheelL.HALL_TICKS_PER_CYCLE     ' 6: one electrical cycle, 35 mm, ~10 degrees of platform
+    SPIN_STOP_TOL_TICKS   = STOP_LIMIT_HI                   ' 2: the distance stop's promise, at rest within about two ticks
+    SPIN_DIR_MIN_TICKS    = wheelL.HALL_TICKS_PER_CYCLE     ' a leg that moved less than this is not judged for its direction
+    SPIN_LEGS             = 12                              ' MUST match tools/gen_dual_assets.py SPIN_LEGS (the LEG label)
+    SPIN_PAIRS            = SPIN_LEGS / 2
+
+  ' SPIN_SPEED_*: a leg's speed class; its power, window and scheduled lead are spinPower, spinWinMs and spinSchedLead
+    #0, SPIN_SPEED_SLOW, SPIN_SPEED_MED, SPIN_SPEED_BRISK
+    SPIN_SPEEDS           = 3
+    TOKMAX_SPSPEED        = 6
+  ' SPIN_DIR_*: RIGHT, clockwise from above (both motors positive), then LEFT (both negative); a pair's first leg is
+  '  RIGHT. The order is load-bearing: gen_dual_assets.py's NXT_ / SPN_ / FLT_ state words are indexed by it
+    #0, SPIN_DIR_RIGHT, SPIN_DIR_LEFT
+    SPIN_DIRS             = 2
+    TOKMAX_SPDIR          = 5
+  ' SPOFF_*: the commutation pair a pair of legs runs
+  '  SPOFF_SCHED  - the confirmed offsets: the shipped lead schedule (Z -4, L from the Visit 8 / 8b table), untouched
+  '  SPOFF_LEGACY - the default pair in R18.2c's own words, 43 / 317 (Z 0, L 43; today's HUB_OFFSETS_LEGACY build),
+  '                 written live: the CONTROL, expected to cost clearly more current and to split by direction
+  '  SPOFF_FIXED  - today's fixed pair, 14 / 338 (Z -4, L 18), written live: what the schedule replaced at the quarter
+    #0, SPOFF_SCHED, SPOFF_LEGACY, SPOFF_FIXED
+    SPOFF_COUNT           = 3
+    TOKMAX_SPOFF          = 6
+    SPIN_LEGACY_NEG       = 43                              ' the legacy pair, MIRRORED ON PURPOSE (this build compiles the
+    SPIN_LEGACY_POS       = 317                             '  shipped one): offset_fwd, then offset_rev
+  ' SPKIND_*: NORMAL runs to its limit; FAULT has one wheel forced to fault at speed -- the RIGHT leg's LEFT wheel, the
+  '  LEFT leg's RIGHT wheel -- so each wheel is once the one faulted and once the one watched (X-5 under load)
+    #0, SPKIND_NORMAL, SPKIND_FAULT
+    SPKIND_COUNT          = 2
+    TOKMAX_SPKIND         = 6
+  ' The pairs by role: rows of spinPairOffs / spinPairSpeed / spinPairKind, run in this order, slowest first
+    SPIN_PAIR_SLOW        = 0                               ' SCHED, SLOW: A-3 rung 1, A-4
+    SPIN_PAIR_MED         = 1                               ' SCHED, MEDIUM: A-3 rung 2, A-4, A-8, SPINSYM
+    SPIN_PAIR_LEGACY      = 2                               ' LEGACY, MEDIUM: SPINCTL's control, beside the pair it controls
+    SPIN_PAIR_BRISK       = 3                               ' SCHED, BRISK: A-1, A-2, A-4, A-8, SPINLEAD's numerator
+    SPIN_PAIR_FIXED       = 4                               ' FIXED, BRISK: SPINLEAD's denominator
+    SPIN_PAIR_FAULT       = 5                               ' the fault pair, SLOW: X-5 under load
+  ' SPSTOP_*: what ended a leg
+  '  SPSTOP_NOT_RUN    - it never ran; why names what stopped it
+  '  SPSTOP_LIMIT      - its distance stop brought both wheels to rest (a NORMAL leg's only good end)
+  '  SPSTOP_OPERATOR   - STOP on the panel
+  '  SPSTOP_ABORT      - the 10 A abort, a stalled instrument, or the forced-fault guard
+  '  SPSTOP_OVERTRAVEL - a wheel passed the limit by SPIN_OVERTRAVEL_TICKS and the harness e-stopped the platform
+  '  SPSTOP_TIMEOUT    - still moving at SPIN_LEG_MS, so the harness stopped it
+  '  SPSTOP_FAULT      - a wheel faulted: on a FAULT leg the event under test, on a NORMAL leg an end
+    #0, SPSTOP_NOT_RUN, SPSTOP_LIMIT, SPSTOP_OPERATOR, SPSTOP_ABORT, SPSTOP_OVERTRAVEL, SPSTOP_TIMEOUT, SPSTOP_FAULT
+    SPSTOP_COUNT          = 7
+    TOKMAX_SPSTOP         = 10
+    SPIN_MIRROR_MS        = 10                              ' after an ARM, before the mirror is read: several instrument passes
+    SPIN_ATSPEED_MS       = 4_000                           ' both wheels AT_SPEED after the command; the quarter's is about 1 s
+    SPIN_SETTLE_MS        = 1_000                           ' after AT_SPEED: the rpm window refills with steady running (A-8)
+    SPIN_WIN_MIN_MS       = 250                             ' a window the limit cut shorter than this measures nothing
+    SPIN_LEG_MS           = 15_000                          ' from the command; the slow leg takes about 8.2 s unloaded
+    SPIN_FAULT_SETTLE_MS  = 1_000                           ' a fault leg runs steady this long first (FR_PRE_SAMPLES is 500 ms)
+    SPIN_LEAD_SETTLE_MS   = 20                              ' two 8 ms slots: the schedule's first write once turned back on
+
+  ' The pre-registered bands (BM-SPINPRE prints every one before anything moves). R18.3's are DRIVE-INTEGRATION-DESIGN.md
+  '  5.5's loaded expectations, each "same" as unloaded unless stated; the offsets' are this tier's own.
+    A1_DROP_PM_HI         = 100                             ' A-1: duty's largest fall from its running maximum, <= 0.10
+    A2_RATIO_X100_HI      = 180                             ' A-2: the START's current peak over its last 60 ms mean, <= 1.8
+    A2_TAIL_SAMPLES       = 31                              ' start_metrics.py's tail, t >= t_last - 60 ms at 2 ms: 31 samples
+    SPIN_DUTY_FLOOR       = 1_600                           ' where duty "leaves its floor" (start_metrics.py floor = duty_min)
+    A3_SWING_HI           = 400                             ' A-3: duty_pk - duty over a steady window, rungs 1 and 2
+    A3_ERR_PK_HI          = 76                              ' A-3: err_pk there
+    A4_ERR_LO             = 47                              ' A-4: |mean err| in every window: a point, SERVO_SETPOINT 48
+    A4_ERR_HI             = 49
+    ' SPINSYM: the confirmed pair's larger direction current over its smaller, per wheel, at the MEDIUM rung. Unloaded
+    '  Visit 7b read reverse over forward 0.91-1.01 at rungs 2-5 (101-110 by this measure); under load a common friction
+    '  current dilutes any split further, so 1.25 is loose. The legacy pair read 1.88-2.06 unloaded.
+    SPINSYM_LO            = 100
+    SPINSYM_HI            = 125
+    ' SPINCTL: THE OFFSETS' CONTROL. The legacy pair's mean current over the confirmed pair's, per wheel, same rung. It
+    '  must show the offset's effect for SPINSYM's PASS to count (INS-14): unloaded it was 15-26x at rungs 3-5, and a
+    '  load adds the same torque current to both, so the floor is set well under that at 1.25x.
+    SPINCTL_LO            = 125
+    ' SPINLEAD: the schedule's quarter (lead 5.1) over the fixed pair's (lead 18), per wheel. The quarter's minimum was
+    '  measured flat from -2 to 8 degrees (Visit 8b), so 18 sits outside it: the schedule must draw no more, 5 % for noise.
+    SPINLEAD_LO           = 0
+    SPINLEAD_HI           = 105
+    SPIN_BAD_LO           = 0                               ' every SPIN count cell passes at zero bad instances
+    SPIN_BAD_HI           = 0
+
+  ' CREEP. The platform on a measured incline, its wheels rolling straight down the slope, three trials in this order,
+  '  each its own steering lifetime while he holds the platform:
+  '   CRK_COAST   - holdAtStop(FALSE), the bridge floating: THE INCLINE'S CONTROL. It must roll, or the incline does not
+  '                 load the wheels past friction and cogging and no hold reading here is evidence (INS-14). It is braked
+  '                 (emergencyCutoff(): the phases shorted) as soon as it has rolled CREEP_CTRL_TICKS.
+  '   CRK_LOWCEIL - holdAtStop(TRUE) with the ceiling at CREEP_LOW_CEIL_PCT: THE HOLD'S CONTROL. That ceiling is under
+  '                 duty_min, so the first tick of creep drops the spring below where it started: it must slip. A hold
+  '                 that survives it says this incline never asks for more than duty_min, so the ceiling is not sized.
+  '   CRK_HOLD    - holdAtStop(TRUE) at the PROVISIONAL limits (HOLD_CEILING_PCT, HOLD_RISE_MS, HOLD_LIMIT_MS): the
+  '                 measurement. Pre-registered: ZERO ticks of creep while HOLDING, and HOLDING at the watch's end.
+  '  Creep is counted on the instrument's own hall decode (hwPos) from the moment he clicks DONE after letting go, so the
+  '  driver's own displacement (getHoldStatus()) is a second, independent reading. A hold trial that creeps
+  '  CREEP_BOUND_TICKS is braked at once. What sizes the ceiling is recorded per wheel: the hold duty reached against
+  '  the ceiling in force, the longest time at the ceiling, sense_i and getCurrent() at hold, and how the hold resolved
+  '  (HS_HOLDING, HS_SLIPPED, HS_LIMITED). The incline's angle and the platform's mass cannot be known here: the run
+  '  sheet records both, measured by him.
+    #0, CRK_COAST, CRK_LOWCEIL, CRK_HOLD
+    CRK_COUNT             = 3
+    TOKMAX_CRK            = 7
+    CREEP_CEIL_PCT        = wheelL.HOLD_CEILING_PCT         ' 10: the provisional ceiling under test
+    CREEP_LOW_CEIL_PCT    = 1                               ' the control's: 1 % of duty_max, under duty_min (about 5.8 %)
+    CREEP_WIN_MS          = 15_000                          ' HOLD_LIMIT_MS (10 s) at the ceiling plus its rise: LIMITED can show
+    CREEP_CTRL_WIN_MS     = 5_000                           ' the coast control's longest watch
+    CREEP_CTRL_TICKS      = 3                               ' the coast control has rolled this far (17 mm): it passes, and is braked
+    CREEP_BOUND_TICKS     = 6                               ' a hold trial that creeps this far (35 mm) is braked at once
+    CREEP_POLL_MS         = 50                              ' the hold getters' cadence inside the watch
+    CREEP_DECIM           = 10                              ' 20 ms samples: a 15 s watch is 750 of them
+    CREEP_ZERO_LO         = 0                               ' the pre-registered creep while HOLDING at the provisional ceiling
+    CREEP_ZERO_HI         = 0
+    CREEP_ONE_TRIAL       = 1
+  ' CRSTOP_*: what ended a creep trial's watch
+  '  CRSTOP_NOT_RUN  - the watch never began; why names what stopped it
+  '  CRSTOP_TIMER    - it ran its window
+  '  CRSTOP_BOUND    - the creep reached the trial's bound, and the phases were shorted
+  '  CRSTOP_OPERATOR - STOP on the panel, and the phases were shorted
+  '  CRSTOP_ABORT    - the 10 A abort or a stalled instrument
+    #0, CRSTOP_NOT_RUN, CRSTOP_TIMER, CRSTOP_BOUND, CRSTOP_OPERATOR, CRSTOP_ABORT
+    CRSTOP_COUNT          = 5
+    TOKMAX_CRSTOP         = 8
+
+DAT ' ---- SPIN tables ----
+
+' per SPIN_SPEED_*: the power driveAtPower() is given; the steady window's length (the quarter's leaves its limit about
+'  14 ticks: a 31-tick spin-up, 98 ticks of settle, 49 of window and a 19-tick stop inside 211); and the lead the
+'  schedule gives at the commanded increment, in tenths -- MIRRORED ON PURPOSE from isp_bldc_motor.spin2's leadTenthsTbl
+'  (205 up to the eighth, 50 at the quarter, the step between truncated by leadTenthsForIncrement()) as SPINOFF's
+'  independent expectation: reading it back from the driver would judge the driver against itself
+spinPower       LONG    7, 13, 23                           ' 10_093_936 / 20_087_872 / 36_744_432
+spinWinMs       LONG    2_000, 1_000, 500
+spinSchedLead   LONG    205, 191, 51
+' per pair (SPIN_PAIR_*): its commutation pair, speed and kind; each pair's two legs run RIGHT, then LEFT
+spinPairOffs    LONG    SPOFF_SCHED, SPOFF_SCHED, SPOFF_LEGACY, SPOFF_SCHED, SPOFF_FIXED, SPOFF_SCHED
+spinPairSpeed   LONG    SPIN_SPEED_SLOW, SPIN_SPEED_MED, SPIN_SPEED_MED, SPIN_SPEED_BRISK, SPIN_SPEED_BRISK, SPIN_SPEED_SLOW
+spinPairKind    LONG    SPKIND_NORMAL, SPKIND_NORMAL, SPKIND_NORMAL, SPKIND_NORMAL, SPKIND_NORMAL, SPKIND_FAULT
+tokSpOff        BYTE    "SCHED", 0, "LEGACY", 0, "FIXED", 0
+tokSpSpeed      BYTE    "SLOW", 0, "MEDIUM", 0, "BRISK", 0
+tokSpDir        BYTE    "RIGHT", 0, "LEFT", 0
+tokSpKind       BYTE    "NORMAL", 0, "FAULT", 0
+tokSpStop       BYTE    "NOT_RUN", 0, "LIMIT", 0, "OPERATOR", 0, "ABORT", 0, "OVERTRAVEL", 0, "TIMEOUT", 0, "FAULT", 0
+tokCrk          BYTE    "COAST", 0, "LOWCEIL", 0, "HOLD", 0
+tokCrStop       BYTE    "NOT_RUN", 0, "TIMER", 0, "BOUND", 0, "OPERATOR", 0, "ABORT", 0
+
+VAR { SPIN part state -- cog 0 only }
+
+    ' one leg (spLegReset())
+    LONG    spLeg                                           ' 0..SPIN_LEGS-1
+    LONG    spSid                                           ' the steering lifetime it ran in, 0 when none
+    LONG    spStopBy                                        ' SPSTOP_*
+    LONG    spWhy                                           ' the first cause of the leg's NA fields
+    LONG    spLeftPwr                                       ' the powers commanded
+    LONG    spRightPwr
+    LONG    bSpDriven                                       ' driveAtPower() was called
+    LONG    spDriveErr                                      ' ...and its return
+    LONG    spLimErr                                        ' stopAfterDistance()'s return
+    LONG    bSpReached                                      ' both wheels read AT_SPEED
+    LONG    spAtMs                                          ' ms from the command to that
+    LONG    bSpWinValid                                     ' the steady window ran at least SPIN_WIN_MIN_MS, uninterrupted
+    LONG    spWinMs                                         ' its length
+    LONG    spWinStart                                      ' ring totals delimiting it, -1 when none
+    LONG    spWinEnd
+    LONG    spCmdMs                                         ' getms() at the command
+    LONG    bSpStopBegan                                    ' a wheel's mirror left AT_SPEED for SPIN_DN or STOPPED: the limit fired
+    LONG    bSpOvertravel                                   ' the travel guard e-stopped the leg
+    LONG    spPathPm                                        ' testGetPathScale() at the window's end
+    LONG    bSpReadsValid                                   ' the window-end reads were taken
+    LONG    bSpTravelValid                                  ' each wheel's raw travel was read at rest
+    LONG    bSpTrkValid                                     ' ...and the steering object's tracked ticks
+    LONG    spAmpsN                                         ' getCurrent() reads over the window
+    LONG    spFaultSide                                     ' a FAULT leg's wheel forced to fault, SIDE_NONE otherwise
+    LONG    spPos0[INST_MOTORS]                             ' each wheel's raw pos (mirror) before the command
+    LONG    spTravel[INST_MOTORS]                           ' raw pos at rest less spPos0, signed
+    LONG    spTrk[INST_MOTORS]                              ' the tracked ticks at rest: what the distance stop counts
+    LONG    spAmpsSum[INST_MOTORS]                          ' getCurrent() over the window, A x 10_000
+    LONG    spOffNeg[INST_MOTORS]                           ' the pair each driver applied, read at the window's end
+    LONG    spOffPos[INST_MOTORS]
+    LONG    spFolPm[INST_MOTORS]                            ' the path limiter's achieved fraction there
+    LONG    spFolPct[INST_MOTORS]                           ' the rpm window's following percentage there
+    LONG    bSpFolOk[INST_MOTORS]                           ' ...valid
+    LONG    bSpShort[INST_MOTORS]                           ' the lag limiter held within the last few slots
+    ' the START, per wheel (spStartStats())
+    LONG    bSpStartOk[INST_MOTORS]
+    LONG    spAtK[INST_MOTORS]                              ' trace k of the first AT_SPEED sample
+    LONG    spLeaveK[INST_MOTORS]                           ' k where duty left its floor for good
+    LONG    spRunMax[INST_MOTORS]                           ' the running maximum of duty before AT_SPEED
+    LONG    spDropPm[INST_MOTORS]                           ' duty's largest fall from it, per mille
+    LONG    spPeakI[INST_MOTORS]                            ' the START's current peak, mV
+    LONG    spTailX10[INST_MOTORS]                          ' the last A2_TAIL_SAMPLES' mean current, mV x10
+    LONG    spRatioX100[INST_MOTORS]                        ' the peak over it, x100
+    LONG    spTailN[INST_MOTORS]                            ' the tail's samples
+    ' the lifetime (spinOpenLifetime())
+    LONG    spLifeSid                                       ' the lifetime's sid, 0 when none is up
+    LONG    spLifeTick                                      ' its travel per tick, read back; 0 when not read
+    LONG    bSpOffWritten                                   ' it wrote a fixed pair (restore owed, I11)
+    ' kept per leg for the cells that compare legs, [leg * INST_MOTORS + slot]
+    LONG    spLegAmps[SPIN_LEGS * INST_MOTORS]              ' getCurrent() mean over the leg's window, A x 10_000
+    LONG    bSpLegAmps[SPIN_LEGS * INST_MOTORS]
+    ' the segments
+    LONG    bSpSegRan                                       ' segSpin() ran
+    LONG    spSegWhy                                        ' why SPIN ended short, WHY_NONE when every leg ran
+    LONG    crSegWhy                                        ' why CREEP ended short
+    ' the cells' accumulators (spResetCells())
+    LONG    sfSpStopN                                       ' SPINSTOP: legs that ended at the limit or past it
+    LONG    sfSpStopBad                                     ' ...not at rest within SPIN_STOP_TOL_TICKS of it
+    LONG    sfSpOffN                                        ' SPINOFF: legs whose applied pair was judged
+    LONG    sfSpOffBad                                      ' ...not the pair under test
+    LONG    sfSpDirN                                        ' SPINDIR: legs whose travel was judged
+    LONG    sfSpDirBad                                      ' ...a wheel ran the other way
+    LONG    sfSpHuntN[INST_MOTORS]                          ' SPINHUNT: confirmed-pair windows at SLOW and MEDIUM
+    LONG    sfSpHuntBad[INST_MOTORS]
+    LONG    sfSpErrN[INST_MOTORS]                           ' SPINERR: every confirmed-pair window
+    LONG    sfSpErrBad[INST_MOTORS]
+    LONG    sfSpA1N[INST_MOTORS]                            ' SPINSTRT: the quarter's START traces
+    LONG    sfSpA1Max[INST_MOTORS]                          ' ...the worst drop, per mille
+    LONG    sfSpA2N[INST_MOTORS]                            ' SPINPEAK: the same traces
+    LONG    sfSpA2Max[INST_MOTORS]                          ' ...the worst ratio, x100
+    LONG    sfSpFolN[INST_MOTORS]                           ' SPINFOL: confirmed-pair reads at MEDIUM and BRISK
+    LONG    sfSpFolMax[INST_MOTORS]                         ' ...the widest gap, points
+
+VAR { CREEP state -- cog 0 only }
+
+    ' one trial (crReset())
+    LONG    crKind                                          ' CRK_*
+    LONG    crSid                                           ' its steering lifetime, 0 when none
+    LONG    crStopBy                                        ' CRSTOP_*
+    LONG    crWhy                                           ' the first cause of its NA fields
+    LONG    crSetErr                                        ' testSetHoldLimits()'s return
+    LONG    bCrReleased                                     ' he clicked DONE after letting go
+    LONG    crReleaseMs                                     ' ms from the RELEASE screen to that DONE
+    LONG    crWinMs                                         ' the watch's length
+    LONG    crBoundTicks                                    ' the watch's creep bound
+    LONG    crWinStart                                      ' ring totals delimiting the watch, -1 when none
+    LONG    crWinEnd
+    LONG    bCrFrozen                                       ' the capture was frozen (drain legal, I10)
+    LONG    bCrPolled                                       ' a hold poll was taken
+    LONG    crAmpsN                                         ' getCurrent() reads over the watch
+    LONG    crRelHw[INST_MOTORS]                            ' hwPos (mirror) at DONE
+    LONG    crCreep[INST_MOTORS]                            ' the largest |hwPos - crRelHw| over the watch, ticks
+    LONG    crHoldCreep[INST_MOTORS]                        ' ...while the last hold poll read HS_HOLDING
+    LONG    crState[INST_MOTORS]                            ' getHoldStatus() at the last poll (HS_*)
+    LONG    crDisp[INST_MOTORS]                             ' ...the driver's own displacement there, signed
+    LONG    crCeilDuty[INST_MOTORS]                         ' testGetHold(): the ceiling in force, duty counts
+    LONG    crDutyPk[INST_MOTORS]                           ' ...the largest hold duty polled
+    LONG    crDutyEnd[INST_MOTORS]                          ' ...the hold duty at the last poll
+    LONG    crCeilMs[INST_MOTORS]                           ' ...the longest run at the ceiling, front passes (ms)
+    LONG    crSlips0[INST_MOTORS]                           ' ...slip and limit events at the first poll
+    LONG    crLimits0[INST_MOTORS]
+    LONG    crSlips[INST_MOTORS]                            ' ...and how many more by the last
+    LONG    crLimits[INST_MOTORS]
+    LONG    crAmpsSum[INST_MOTORS]                          ' getCurrent() over the watch, A x 10_000
+    ' the cells
+    LONG    bSfCrCoastRan                                   ' CRPCOAST: the coast control was released
+    LONG    sfCrCoastTicks                                  ' ...how far it rolled, the farther wheel
+    LONG    bSfCrLowRan                                     ' CRPLOW: the low-ceiling control was released
+    LONG    sfCrLowTicks                                    ' ...how far it crept, the farther wheel
+    LONG    bSfCreepRan[INST_MOTORS]                        ' CREEP / CRPHOLD: the hold trial was released
+    LONG    sfCreepTicks[INST_MOTORS]                       ' ...its creep while HOLDING
+    LONG    bSfCrHoldOk[INST_MOTORS]                        ' ...HOLDING when its watch ran out
+
+PRI spResetCells() | slotIdx, arrIdx
+' Clear the SPIN part's segment state and cell accumulators (initRunState()): every count 0 and every ran FALSE, so a
+' cell no leg or trial reached prints NOMEAS.
+'
+' @local slotIdx - motor slot
+' @local arrIdx - [leg * INST_MOTORS + slot] index
+
+    bSpSegRan := FALSE
+    spSegWhy := WHY_NONE
+    crSegWhy := WHY_NONE
+    spLifeSid := 0
+    spLifeTick := 0
+    bSpOffWritten := FALSE
+    sfSpStopN := 0
+    sfSpStopBad := 0
+    sfSpOffN := 0
+    sfSpOffBad := 0
+    sfSpDirN := 0
+    sfSpDirBad := 0
+    bSfCrCoastRan := FALSE
+    sfCrCoastTicks := 0
+    bSfCrLowRan := FALSE
+    sfCrLowTicks := 0
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        sfSpHuntN[slotIdx] := 0
+        sfSpHuntBad[slotIdx] := 0
+        sfSpErrN[slotIdx] := 0
+        sfSpErrBad[slotIdx] := 0
+        sfSpA1N[slotIdx] := 0
+        sfSpA1Max[slotIdx] := 0
+        sfSpA2N[slotIdx] := 0
+        sfSpA2Max[slotIdx] := 0
+        sfSpFolN[slotIdx] := 0
+        sfSpFolMax[slotIdx] := 0
+        bSfCreepRan[slotIdx] := FALSE
+        sfCreepTicks[slotIdx] := 0
+        bSfCrHoldOk[slotIdx] := FALSE
+    repeat arrIdx from 0 to (SPIN_LEGS * INST_MOTORS) - 1
+        spLegAmps[arrIdx] := 0
+        bSpLegAmps[arrIdx] := FALSE
+
+PRI segSpin() | legIdx, whyCode
+' SPIN (part SPIN, task 3591): the twelve legs in the pair table's order, slowest first (see the section's CON), each
+' behind its READY screen with nothing moving before START. The first leg that does not end at its limit -- and a
+' SKIP or a timeout on a READY screen -- ends the segment, and every leg after it prints BM-SPIN NOT_RUN naming that
+' cause. A lifetime still up at the end is closed.
+'
+' @local legIdx - 0..SPIN_LEGS-1
+' @local whyCode - why the segment ended short, WHY_NONE while every leg ends as it should
+
+    segBegin(SEG_SPIN)
+    bSpSegRan := TRUE
+    panelSetup()
+    whyCode := WHY_NONE
+    repeat legIdx from 0 to SPIN_LEGS - 1
+        beat(CP_LOOP_POLL)
+        if whyCode == WHY_NONE
+            whyCode := spinLeg(legIdx)
+        else
+            spinNotRun(legIdx, whyCode)
+    if bSteerUp
+        spinCloseLifetime()
+    operFlush()
+    spSegWhy := whyCode
+    ' if/else, never `? :` (PL-29): segWhy() is a call
+    if whyCode <> WHY_NONE
+        segEnd(whyCode)
+    else
+        segEnd(segWhy())
+
+PRI spinLeg(legIdx) : whyCode | pairIdx, dirIdx, speedIdx, legKind, scrReady, buttonIdx, inputCode, tid
+' One leg (see the section's CON): its READY screen, naming the leg in its state line and its number in the digits, and
+' nothing moving before START; the pair's lifetime, opened at the first leg that runs in it; the motion to the limit
+' (spinDrive()); the records, under LOGGING (spinRecords()); a fault's recovery; the lifetime closed after a FAULT leg,
+' after the pair's second leg, or after any leg that did not end as it should.
+'
+' @param legIdx - 0..SPIN_LEGS-1
+' @returns whyCode - WHY_NONE when the leg ended as it should (a FAULT leg: its forced fault latched), else why SPIN ends
+'
+' @local pairIdx - the leg's pair
+' @local dirIdx - SPIN_DIR_*
+' @local speedIdx - SPIN_SPEED_*
+' @local legKind - SPKIND_*
+' @local scrReady - BM_SCR_SPIN_READY or BM_SCR_SPIN_FAULT_READY
+' @local buttonIdx - BM_BTN_* chosen on it, PNL_BTN_NONE on timeout
+' @local inputCode - INPUT_* of that choice
+' @local tid - trace id
+
+    pairIdx := legIdx / SPIN_DIRS
+    dirIdx := legIdx // SPIN_DIRS
+    speedIdx := spinPairSpeed[pairIdx]
+    legKind := spinPairKind[pairIdx]
+    spLegReset(legIdx)
+    tid := nextTraceId()
+    cpReset()
+    whyCode := WHY_NONE
+    ' 1. READY (rule 10: what runs next and what he should see are on the screen before he clicks)
+    if legKind == SPKIND_FAULT
+        scrReady := BM_SCR_SPIN_FAULT_READY
+        panelShowLeg(scrReady, BM_STATE_FLT_NEXT_R + dirIdx, legIdx + 1)
+    else
+        scrReady := BM_SCR_SPIN_READY
+        panelShowLeg(scrReady, BM_STATE_NXT_R_SLOW + (speedIdx * SPIN_DIRS) + dirIdx, legIdx + 1)
+    operShown(PROMPT_SPIN)
+    buttonIdx, inputCode, _ := operWait(scrCdMs(scrReady), SIDE_NONE, FALSE)
+    if buttonIdx == BM_BTN_START
+        operNote(PROMPT_SPIN, OPEV_START, ANS_NONE, inputCode, getms() - operShownMs, WHY_NONE)
+    elseif buttonIdx == BM_BTN_SKIP
+        operNote(PROMPT_SPIN, OPEV_SKIP, ANS_NONE, inputCode, getms() - operShownMs, WHY_OPERATOR_SKIP)
+        whyCode := WHY_OPERATOR_SKIP
+    else
+        operNote(PROMPT_SPIN, OPEV_TIMEOUT, ANS_NONE, INPUT_NONE, getms() - operShownMs, WHY_OPERATOR_TIMEOUT)
+        whyCode := WHY_OPERATOR_TIMEOUT
+    operFlush()
+    ' 2. the pair's lifetime, at the first leg that runs in it
+    if (whyCode == WHY_NONE) and (bSteerUp == FALSE)
+        panelShow(BM_SCR_SPIN_SETUP, BM_STATE_STARTING, PNL_BTN_NONE)
+        operShown(PROMPT_SPIN)
+        whyCode := spinOpenLifetime(pairIdx)
+        if (whyCode == WHY_NONE) and bPanelStopPressed()     ' a STOP made while the start blocked cancels the leg
+            whyCode := WHY_OPERATOR_STOP
+    spSid := spLifeSid                                      ' so a lifetime that refused to drive still names what it read
+    ' 3. the motion
+    if whyCode == WHY_NONE
+        whyCode := spinDrive(tid, legIdx, dirIdx, speedIdx, legKind)
+    else
+        spWhy := whyCode
+    ' 4. the records, and a fault's recovery (which counts it, R14-DUAL-RSTPROV-P, and cools)
+    panelShow(BM_SCR_LOGGING, BM_STATE_LOGGING, PNL_BTN_NONE)
+    operFlush()
+    spinRecords(tid, legIdx, pairIdx, dirIdx, speedIdx, legKind)
+    if bSteerUp and (spStopBy == SPSTOP_FAULT)
+        steerRecoverFault(tid)
+    ' 5. the lifetime ends after a fault leg, the pair's second leg, or any short end
+    if bSteerUp and ((legKind == SPKIND_FAULT) or (dirIdx == SPIN_DIR_LEFT) or (whyCode <> WHY_NONE))
+        spinCloseLifetime()
+    segItems := (segItems + 1) <# LIM_SMALL
+
+PRI spLegReset(legIdx) | slotIdx
+' Clear one leg's staging.
+'
+' @param legIdx - 0..SPIN_LEGS-1
+'
+' @local slotIdx - motor slot
+
+    spLeg := legIdx
+    spSid := 0
+    spStopBy := SPSTOP_NOT_RUN
+    spWhy := WHY_NONE
+    spLeftPwr := 0
+    spRightPwr := 0
+    bSpDriven := FALSE
+    spDriveErr := NO_ERROR
+    spLimErr := NO_ERROR
+    bSpReached := FALSE
+    spAtMs := 0
+    bSpWinValid := FALSE
+    spWinMs := 0
+    spWinStart := -1
+    spWinEnd := -1
+    spCmdMs := getms()
+    bSpStopBegan := FALSE
+    bSpOvertravel := FALSE
+    spPathPm := 0
+    bSpReadsValid := FALSE
+    bSpTravelValid := FALSE
+    bSpTrkValid := FALSE
+    spAmpsN := 0
+    spFaultSide := SIDE_NONE
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        spPos0[slotIdx] := 0
+        spTravel[slotIdx] := 0
+        spTrk[slotIdx] := 0
+        spAmpsSum[slotIdx] := 0
+        spOffNeg[slotIdx] := 0
+        spOffPos[slotIdx] := 0
+        spFolPm[slotIdx] := 0
+        spFolPct[slotIdx] := 0
+        bSpFolOk[slotIdx] := FALSE
+        bSpShort[slotIdx] := FALSE
+        bSpStartOk[slotIdx] := FALSE
+        spAtK[slotIdx] := 0
+        spLeaveK[slotIdx] := 0
+        spRunMax[slotIdx] := 0
+        spDropPm[slotIdx] := 0
+        spPeakI[slotIdx] := 0
+        spTailX10[slotIdx] := 0
+        spRatioX100[slotIdx] := 0
+        spTailN[slotIdx] := 0
+
+PRI spinOpenLifetime(pairIdx) : whyCode | offNeg, offPos
+' Open a pair's steering lifetime: start (bSteerStart(): holdAtStop(FALSE), BM-SSTART); read the steering object's
+' travel per tick and drive no leg unless it is TICK_MM_X100, since the limit in ticks would then not be the one derived
+' and stated; write the pair's commutation pair unless it is the schedule (restored by spinCloseLifetime(), I11).
+'
+' @param pairIdx - the pair
+' @returns whyCode - WHY_NONE when the lifetime is up with the pair applied, else the cause
+'
+' @local offNeg - a fixed pair's offset_fwd, degrees
+' @local offPos - its offset_rev
+
+    whyCode := WHY_NONE
+    bSpOffWritten := FALSE
+    spLifeSid := 0
+    spLifeTick := 0
+    if bRunContinue(SEG_SPIN) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bSteerStart(SEG_SPIN) == FALSE
+        whyCode := WHY_NO_COG
+    else
+        spLifeSid := steerLife
+        spLifeTick := steerTickInMM()
+        if spLifeTick <> TICK_MM_X100
+            whyCode := WHY_TICK_SIZE_DIFFERS
+        else
+            case spinPairOffs[pairIdx]
+                SPOFF_LEGACY:
+                    steerSetPair(SPIN_LEGACY_NEG, SPIN_LEGACY_POS)
+                SPOFF_FIXED:
+                    offNeg, offPos := expectedOffsets()
+                    steerSetPair(offNeg, offPos)
+
+PRI spinCloseLifetime() | slotIdx, wantNeg, wantPos, offNeg, offPos
+' Close the pair's lifetime: a stop (the platform is at rest after a leg, so it costs nothing); when this lifetime wrote
+' a fixed pair, the schedule turned back on and the pair read back at rest against the schedule's first point
+' (BM-OFFREST per wheel, I11); then the steering object stopped, the instrument idled first (I10).
+'
+' @local slotIdx - motor slot
+' @local wantNeg - the schedule's offset_fwd at rest (its lead below the eighth, as SLOW's)
+' @local wantPos - its offset_rev
+' @local offNeg - offset_fwd read back
+' @local offPos - offset_rev read back
+
+    if bSteerUp
+        steerStopMotors()
+        if bSpOffWritten
+            beat(CP_LIB_OFFSETS)
+            steering.testSetLeadScheduled(TRUE)
+            beat(CP_LIB_OFFSETS)
+            waitBeat(SPIN_LEAD_SETTLE_MS, CP_LOOP_REST)
+            wantNeg, wantPos := spinExpectedPair(SPOFF_SCHED, SPIN_SPEED_SLOW)
+            repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                offNeg, offPos := steerGetPair(SIDE_LEFT + slotIdx)
+                emitOffRest(SIDE_LEFT + slotIdx, wantNeg, wantPos, offNeg, offPos, (offNeg == wantNeg) and (offPos == wantPos))
+    bSpOffWritten := FALSE
+    spLifeSid := 0
+    bInstIdle()
+    steerStop()
+
+PRI spinDrive(tid, legIdx, dirIdx, speedIdx, legKind) : whyCode | slotIdx, power, safeEvent, bReached, remainMs
+' One leg's motion and capture (see the section's CON): arm the capture; each wheel's position before anything moves;
+' the travel limit ARMED BEFORE THE DRIVE (a refused limit and the leg is never driven); SYNC_PRECOND; the DRIVE
+' screen, the mark, driveAtPower(); both AT_SPEED; then a NORMAL leg's settle and steady window (spinWindow()), or a
+' FAULT leg's settle and guarded forced fault (spinFault()); freeze; then the leg's own end -- a NORMAL leg to its
+' limit and both wheels STOPPED -- and rest, the travel guard live throughout (spinWatch()). Fills the sp* staging;
+' emits nothing.
+'
+' @param tid - trace id
+' @param legIdx - 0..SPIN_LEGS-1
+' @param dirIdx - SPIN_DIR_*
+' @param speedIdx - SPIN_SPEED_*
+' @param legKind - SPKIND_*
+' @returns whyCode - WHY_NONE when the leg ended as it should, else why SPIN must end
+'
+' @local slotIdx - motor slot
+' @local power - the leg's power, magnitude
+' @local safeEvent - SAFE_* from the watched waits
+' @local bReached - the watched wait reached what it waited for
+' @local remainMs - SPIN_LEG_MS still owed when the leg's end is awaited
+
+    whyCode := WHY_NONE
+    safeEvent := SAFE_NONE
+    power := spinPower[speedIdx]
+    if dirIdx == SPIN_DIR_RIGHT
+        spLeftPwr := power
+        spRightPwr := 0 - power
+    else
+        spLeftPwr := 0 - power
+        spRightPwr := power
+    if legKind == SPKIND_FAULT
+        spinFaultReset(dirIdx)                              ' before anything: a leg that never forces reads FRO_NOT_RUN
+    if bInstArm(INST_SRC_STEER, 1) == FALSE
+        whyCode := WHY_INST_NOACK
+    else
+        waitBeat(SPIN_MIRROR_MS, CP_LOOP_READY)            ' the mirror refreshes on the instrument's next passes
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            spPos0[slotIdx] := instLastPos[slotIdx]
+        spLimErr := steerArmLimit()
+        if spLimErr <> NO_ERROR
+            whyCode := WHY_LIMIT_REFUSED
+        elseif bSteerDrivePrecondition(SEG_SPIN, tid) == FALSE
+            whyCode := WHY_SYNC_PRECOND
+        else
+            ' the DRIVE screen is up before the wheels move (PL-64: no START instruction stays up while they do)
+            if legKind == SPKIND_FAULT
+                panelShowLeg(BM_SCR_SPIN_FAULT_DRIVE, BM_STATE_FLT_R + dirIdx, legIdx + 1)
+            else
+                panelShowLeg(BM_SCR_SPIN_DRIVE, BM_STATE_SPN_R_SLOW + (speedIdx * SPIN_DIRS) + dirIdx, legIdx + 1)
+            operShown(PROMPT_SPIN)
+            instMarkIndex()                                  ' the START's mark PRECEDES the command (startCapture()'s rule)
+            spCmdMs := getms()
+            curIncre := 0
+            beat(CP_LIB_STEER_DRIVE)
+            spDriveErr := steering.driveAtPower(spLeftPwr, spRightPwr)
+            beat(CP_LIB_STEER_DRIVE)
+            bSpDriven := TRUE
+            bReached := FALSE
+            if spDriveErr <> NO_ERROR
+                ' refused (ERR_SYNC_TIMEOUT stops both, ERR_EMERGENCY_STOPPED writes nothing): never read as a stop at the limit
+                spStopBy := SPSTOP_ABORT
+                whyCode := WHY_SYNC_PRECOND
+                steerStopMotors()
+            else
+                safeEvent, bReached := spinWatch(UNTIL_AT_SPEED, SPIN_ATSPEED_MS, FALSE)
+            if (whyCode == WHY_NONE) and (safeEvent == SAFE_NONE) and (bSpOvertravel == FALSE) and bReached
+                bSpReached := TRUE
+                spAtMs := getms() - spCmdMs
+                if legKind == SPKIND_FAULT
+                    safeEvent := spinFault(dirIdx)
+                else
+                    safeEvent, _ := spinWatch(UNTIL_TIME, SPIN_SETTLE_MS, FALSE)
+                    if (safeEvent == SAFE_NONE) and (bSpOvertravel == FALSE) and (bSpStopBegan == FALSE)
+                        safeEvent := spinWindow(spinWinMs[speedIdx])
+            bCpFrozen := bInstFreeze(0)
+            if whyCode == WHY_NONE
+                whyCode := spinEnd(safeEvent, legKind)
+            if (whyCode == WHY_NONE) and (legKind == SPKIND_NORMAL) and (spStopBy == SPSTOP_NOT_RUN)
+                ' a NORMAL leg now ends at its limit: both wheels STOPPED, then at rest, the guard still live
+                remainMs := (SPIN_LEG_MS - (getms() - spCmdMs)) #> SAMPLE_MS
+                safeEvent, bReached := spinWatch(UNTIL_STOPPED, remainMs, FALSE)
+                whyCode := spinEnd(safeEvent, legKind)
+                if (whyCode == WHY_NONE) and (spStopBy == SPSTOP_NOT_RUN)
+                    if bReached
+                        spStopBy := SPSTOP_LIMIT
+                    else
+                        spStopBy := SPSTOP_TIMEOUT
+                        whyCode := WHY_STOP_TIMEOUT
+                        steerStopMotors()
+            waitRest(SIDE_BOTH, STOP_TIMEOUT_MS, FALSE)
+            spinTravel()
+    spWhy := whyCode
+    if (bCpFrozen == FALSE) and (whyCode == WHY_NONE)
+        spWhy := WHY_INST_NOACK
+
+PRI spinEnd(safeEvent, legKind) : whyCode
+' Classify how a leg's watched phase ended and take the stop it calls for. The travel guard first (it has already
+' shorted the phases), then STOP (a ramped stop), the current abort or a stalled instrument (the abort has stopped the
+' steering object; a stall is stopped here), a fault (the platform policy is stopping the other wheel), and a FAULT
+' leg's own forced fault. Leaves spStopBy SPSTOP_NOT_RUN when nothing ended the leg yet.
+'
+' @param safeEvent - SAFE_* the phase ended on
+' @param legKind - SPKIND_*
+' @returns whyCode - WHY_NONE unless the leg ended short
+
+    whyCode := WHY_NONE
+    if bSpOvertravel
+        spStopBy := SPSTOP_OVERTRAVEL
+        whyCode := WHY_OVERTRAVEL
+    elseif safeEvent == SAFE_OPER_STOP
+        spStopBy := SPSTOP_OPERATOR
+        whyCode := WHY_OPERATOR_STOP
+        if bSteerUp
+            panelShow(BM_SCR_STOPPING, BM_STATE_STOPPING, PNL_BTN_NONE)
+            steerStopMotors()
+    elseif (safeEvent == SAFE_ABS_ABORT) or (safeEvent == SAFE_INST_STALL)
+        spStopBy := SPSTOP_ABORT
+        whyCode := safeWhy(safeEvent)
+        if bSteerUp
+            panelShow(BM_SCR_STOPPING, BM_STATE_STOPPING, PNL_BTN_NONE)
+            steerStopMotors()
+    elseif safeEvent == SAFE_FAULT
+        spStopBy := SPSTOP_FAULT
+        whyCode := WHY_FAULTED
+    elseif legKind == SPKIND_FAULT
+        if frOutcome == FRO_FAULT
+            spStopBy := SPSTOP_FAULT                        ' the event under test: the leg ended as it should
+        elseif frOutcome == FRO_NOT_RUN
+            spStopBy := SPSTOP_TIMEOUT                      ' AT_SPEED or the settle never came
+            whyCode := WHY_STEADY_TIMEOUT
+            if bSteerUp
+                steerStopMotors()
+        else
+            spStopBy := SPSTOP_ABORT                        ' the guard stopped the steering object (BM-ABORT names why)
+            whyCode := WHY_NO_FAULT
+            if frOutcome == FRO_ABORT_I
+                whyCode := WHY_ABORTED
+    ' otherwise nothing has ended the leg: a NORMAL leg whose AT_SPEED or window never came still ends at its limit,
+    '  which the caller waits for, and its window prints NA with the cause (emitSpinW())
+
+PRI spinWatch(untilKind, boundMs, bPollCurrent) : safeEvent, bReached | startMs, lastPollMs, nLtAmps, nRtAmps
+' A spin leg's watched wait: waitWatched()'s beat, panel tick, safety read and STOP on both wheels, plus the leg's own
+' two watches. THE TRAVEL GUARD (bSpinGuardTripped()) e-stops the platform the moment either wheel's mirrored
+' position is past the leg's limit by SPIN_OVERTRAVEL_TICKS. THE STOP BEGINNING: a wheel's mirror reading DCS_SPIN_DN
+' or DCS_STOPPED means the limit has fired, which ends an UNTIL_TIME wait early (bSpStopBegan). With bPollCurrent,
+' getCurrent() every CURRENT_POLL_MS into spAmpsSum -- the only library call inside the wait, as rungWindow()'s is.
+'
+' @param untilKind - UNTIL_TIME, UNTIL_AT_SPEED or UNTIL_STOPPED
+' @param boundMs - the wait's bound
+' @param bPollCurrent - TRUE to read getCurrent()
+' @returns safeEvent - SAFE_* that ended the wait, SAFE_NONE otherwise (the guard firing is bSpOvertravel)
+' @returns bReached - TRUE when the state was reached; for UNTIL_TIME, when the whole bound ran uncut
+'
+' @local startMs - getms() when the wait began
+' @local lastPollMs - getms() of the last getCurrent()
+' @local nLtAmps - the left wheel's getCurrent(), A x 10_000
+' @local nRtAmps - the right wheel's
+
+    safetyReset()
+    safeEvent := SAFE_NONE
+    bReached := FALSE
+    startMs := getms()
+    lastPollMs := startMs - CURRENT_POLL_MS
+    repeat
+        beat(CP_LOOP_POLL)
+        panelTick(startMs, boundMs)
+        if bPollCurrent and ((getms() - lastPollMs) >= CURRENT_POLL_MS)
+            lastPollMs := getms()
+            beat(CP_LIB_STEER_QUERY)
+            nLtAmps, _, nRtAmps, _ := steering.getCurrent()
+            beat(CP_LIB_STEER_QUERY)
+            spAmpsSum[SLOT_LEFT] += (nLtAmps #> (0 - LIM_MID)) <# LIM_MID
+            spAmpsSum[SLOT_RIGHT] += (nRtAmps #> (0 - LIM_MID)) <# LIM_MID
+            spAmpsN += 1
+        waitms(SAMPLE_MS)
+        safeEvent := safetyPoll(SIDE_BOTH)
+        if (safeEvent == SAFE_NONE) and bPanelStopPressed()
+            safeEvent := SAFE_OPER_STOP
+        if bSpinGuardTripped()
+            quit
+        if untilKind == UNTIL_AT_SPEED
+            bReached := bMirrorAllInState(SIDE_BOTH, DCS_AT_SPEED)
+        elseif untilKind == UNTIL_STOPPED
+            bReached := bMirrorAllInState(SIDE_BOTH, DCS_STOPPED)
+        elseif bSpinStopBegun()
+            bSpStopBegan := TRUE
+            quit
+        if (safeEvent <> SAFE_NONE) or bReached or ((getms() - startMs) >= boundMs)
+            quit
+    if untilKind == UNTIL_TIME
+        bReached := (safeEvent == SAFE_NONE) and (bSpOvertravel == FALSE) and (bSpStopBegan == FALSE)
+
+PRI bSpinGuardTripped() : bTripped | slotIdx
+' THE TRAVEL GUARD: when either wheel's mirrored position has passed the leg's limit by SPIN_OVERTRAVEL_TICKS -- the
+' distance stop should have brought it to rest that far back -- e-stop the platform at once (both wheels' phases
+' shorted, the latch set; the next lifetime clears it). Once tripped it stays tripped for the leg (bSpOvertravel).
+'
+' @returns bTripped - T/F where T means the guard has fired on this leg
+'
+' @local slotIdx - motor slot
+
+    bTripped := bSpOvertravel
+    if bTripped == FALSE
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            if abs(instLastPos[slotIdx] - spPos0[slotIdx]) > (SPIN_LEG_TICKS + SPIN_OVERTRAVEL_TICKS)
+                bTripped := TRUE
+        if bTripped
+            bSpOvertravel := TRUE
+            steerEstop()
+
+PRI bSpinStopBegun() : bBegun | slotIdx
+' Whether either wheel's mirror reads the stop under way (DCS_SPIN_DN) or done (DCS_STOPPED): the distance stop has fired.
+'
+' @returns bBegun - T/F where T means a wheel is stopping or stopped
+'
+' @local slotIdx - motor slot
+
+    bBegun := FALSE
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        if (instLastUp[slotIdx] <> FALSE) and ((instLastState[slotIdx] == DCS_SPIN_DN) or (instLastState[slotIdx] == DCS_STOPPED))
+            bBegun := TRUE
+
+PRI spinWindow(winMs) : safeEvent | winStartMs
+' A NORMAL leg's steady window: two instrument totals read with no new mark (the START's mark stays in place), winMs of
+' spinWatch() with getCurrent() polled, then the window-end reads (spinReads()). Valid when it ran at least
+' SPIN_WIN_MIN_MS with no event and no guard -- a window the limit cut short is still valid past that.
+'
+' @param winMs - the window's length
+' @returns safeEvent - SAFE_* that ended it early, SAFE_NONE otherwise
+'
+' @local winStartMs - getms() at its start
+
+    spWinStart := instTotal
+    winStartMs := getms()
+    safeEvent, _ := spinWatch(UNTIL_TIME, winMs, TRUE)
+    spWinEnd := instTotal
+    spWinMs := getms() - winStartMs
+    bSpWinValid := (safeEvent == SAFE_NONE) and (bSpOvertravel == FALSE) and (spWinMs >= SPIN_WIN_MIN_MS)
+    if (safeEvent == SAFE_NONE) and (bSpOvertravel == FALSE)
+        spinReads()
+
+PRI spinReads() | slotIdx, side
+' The reads at a leg's window end, while both wheels still run steady: each wheel's two following readings and whether
+' its lag limiter held lately (testGetDriveFollow(), A-8), the path limiter's scale, and the pair each driver applied.
+'
+' @local slotIdx - motor slot
+' @local side - SIDE_LEFT or SIDE_RIGHT
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        side := SIDE_LEFT + slotIdx
+        beat(CP_LIB_STEER_QUERY)
+        if side == SIDE_RIGHT
+            _, _, bSpShort[slotIdx], spFolPm[slotIdx], spFolPct[slotIdx], bSpFolOk[slotIdx] := steering.testRightGetDriveFollow()
+        else
+            _, _, bSpShort[slotIdx], spFolPm[slotIdx], spFolPct[slotIdx], bSpFolOk[slotIdx] := steering.testLeftGetDriveFollow()
+        beat(CP_LIB_STEER_QUERY)
+        spOffNeg[slotIdx], spOffPos[slotIdx] := steerGetPair(side)
+    beat(CP_LIB_STEER_QUERY)
+    spPathPm := steering.testGetPathScale()
+    beat(CP_LIB_STEER_QUERY)
+    bSpReadsValid := TRUE
+
+PRI spinFaultReset(dirIdx)
+' Clear a FAULT leg's X-5 staging -- the FAULTRESP part's, which frProvoke(), frPlatStats() and emitFrPlat() read and
+' write -- and name the wheel to be faulted: the RIGHT leg's LEFT wheel, the LEFT leg's RIGHT. The fault response is
+' the lifetime's default, FR_SHIPPED, the one the floor tier's own safety relies on; nothing here changes it.
+'
+' @param dirIdx - SPIN_DIR_*
+
+    frStagingReset(FRC_X3, FR_SPEED_X4, 0)                  ' frOutcome FRO_NOT_RUN, and every reading cleared
+    frMode := wheelL.FR_SHIPPED
+    frReqMode := MODE_FLOAT
+    frPlatReset()
+    fltLeftCause := wheelL.FC_NONE
+    fltRightCause := wheelL.FC_NONE
+    spFaultSide := SIDE_LEFT + dirIdx
+
+PRI spinFault(dirIdx) : safeEvent | slotIdx, bRest
+' A FAULT leg's event, X-5 under load (R19.2): SPIN_FAULT_SETTLE_MS steady and the window-end reads; then the guarded
+' forced fault on ONE wheel (spinFaultReset() named it) through the steering object -- frProvoke(): its mark,
+' testLeftForceFault() or testRightForceFault(), and frGuard(), which stops the whole steering object if the fault does
+' not latch in FR_PROVOKE_MS or the current reaches the abort; then the capture runs until both wheels rest or
+' FR_PLAT_CAPTURE_MS, the fault not ending it (frPlatTrial()'s shape).
+'
+' @param dirIdx - SPIN_DIR_*
+' @returns safeEvent - SAFE_* that ended the settle or the capture, SAFE_NONE otherwise
+'
+' @local slotIdx - the faulted wheel's slot
+' @local bRest - both wheels were confirmed at rest
+
+    slotIdx := dirIdx
+    safeEvent, _ := spinWatch(UNTIL_TIME, SPIN_FAULT_SETTLE_MS, FALSE)
+    if (safeEvent == SAFE_NONE) and (bSpOvertravel == FALSE) and (bSpStopBegan == FALSE)
+        spinReads()
+        frOutcome := frProvoke(spFaultSide, slotIdx, TRUE)
+        if frOutcome == FRO_FAULT
+            bCpFaultSeen := TRUE
+            safeEvent, bRest := waitRest(SIDE_BOTH, FR_PLAT_CAPTURE_MS, FALSE)
+            frCaptureSafe := safeEvent
+            cpEnd := TEND_TIMEOUT
+            if bRest
+                cpEnd := TEND_REST
+            if safeEvent <> SAFE_NONE
+                cpEnd := safeEnd(safeEvent)
+
+PRI spinTravel() | slotIdx, leftTicks, rightTicks
+' Each wheel's travel once the leg is at rest: the raw position against where it began (the mirror, live while FROZEN;
+' after an abort's stop() the last running position), and the steering object's tracked ticks -- what the distance stop
+' counts -- while it is up. A wheel that faulted or an e-stopped platform restarts its tracking every pass, so its
+' tracked count reads 0 there and the raw travel carries the leg.
+'
+' @local slotIdx - motor slot
+' @local leftTicks - the left wheel's tracked ticks
+' @local rightTicks - the right wheel's
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        spTravel[slotIdx] := instLastPos[slotIdx] - spPos0[slotIdx]
+    bSpTravelValid := bSpDriven
+    if bSteerUp
+        leftTicks, rightTicks := steerTrackTicks()
+        spTrk[SLOT_LEFT] := abs(leftTicks)
+        spTrk[SLOT_RIGHT] := abs(rightTicks)
+        bSpTrkValid := TRUE
+
+PRI spinRecords(tid, legIdx, pairIdx, dirIdx, speedIdx, legKind) | slotIdx, otherIdx, faultIdx
+' A leg's records and folds, the capture frozen (I10). The quarter's confirmed-pair legs drain their capture as a
+' steering trace (BM-STRACE cause SPIN, BM-TS, BM-TRACE-END) and print each wheel's START (BM-SPINSTART, A-1 and A-2);
+' a FAULT leg drains its capture as FLTPLAT does (cause FAULT) and prints BM-FRPLAT (X-5); then BM-SPIN, and per wheel
+' its window's statistics (BM-SPINW). A leg that never ran prints BM-SPIN alone.
+'
+' @param tid - trace id
+' @param legIdx - 0..SPIN_LEGS-1
+' @param pairIdx - its pair
+' @param dirIdx - SPIN_DIR_*
+' @param speedIdx - SPIN_SPEED_*
+' @param legKind - SPKIND_*
+'
+' @local slotIdx - motor slot
+' @local otherIdx - the other slot
+' @local faultIdx - a FAULT leg's faulted slot
+
+    if bSpDriven == FALSE
+        emitSpin(tid, legIdx)
+    else
+        if legKind == SPKIND_FAULT
+            emitSTrace(tid, SEG_SPIN, CAUSE_FAULT, spLeftPwr, spRightPwr, TRUE, 0, MODE_FLOAT, spWhy)
+            faultIdx := dirIdx
+            if bCpFrozen
+                bTraceDrain(tid, SLOT_LEFT, SLOT_RIGHT, cpEnd)
+                frPlatStats(faultIdx, SLOT_RIGHT - faultIdx)
+            else
+                traceEmptyEnd(tid, TEND_ABORT, spWhy)
+            if bSteerUp
+                beat(CP_LIB_STEER_QUERY)
+                fltLeftCause, fltRightCause := steering.getFaultCause()
+                beat(CP_LIB_STEER_QUERY)
+            frWhy := frPlatWhy(spWhy)
+            emitFrPlat(tid, spSid, spFaultSide)
+            frPlatFold(SLOT_RIGHT - faultIdx)
+        elseif pairIdx == SPIN_PAIR_BRISK
+            emitSTrace(tid, SEG_SPIN, CAUSE_SPIN, spLeftPwr, spRightPwr, TRUE, 0, MODE_FLOAT, spWhy)
+            cpEnd := TEND_FROZEN                            ' frozen after its window, as designed: the trace ends running
+            if spWhy <> WHY_NONE
+                cpEnd := TEND_ABORT
+            if bCpFrozen
+                bTraceDrain(tid, SLOT_LEFT, SLOT_RIGHT, cpEnd)
+                repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                    spStartStats(slotIdx)
+                    emitSpinStart(legIdx, slotIdx)
+                    spinFoldStart(slotIdx)
+            else
+                traceEmptyEnd(tid, TEND_ABORT, spWhy)
+        emitSpin(tid, legIdx)
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            otherIdx := SLOT_RIGHT - slotIdx
+            if bCpFrozen and bSpWinValid
+                windowStats(slotIdx, otherIdx, spWinStart, spWinEnd)
+            else
+                windowStats(slotIdx, otherIdx, -1, -1)      ' resets the rs* staging; reads no ring long (I10)
+            emitSpinW(legIdx, slotIdx)
+            spinFoldWheel(legIdx, pairIdx, speedIdx, slotIdx)
+        spinFoldLeg(pairIdx, dirIdx, speedIdx)
+
+PRI spStartStats(slotIdx) | sampleIdx, atJ, leaveJ, dutyNow, tailJ, tailSum
+' One wheel's START from the drained capture (bTraceDrain() located the mark and the trace's first sample), exactly as
+' DOCs/plans/servo-model/start_metrics.py defines A-1 and A-2 on a trace that ends at AT_SPEED: the trace runs from its
+' first sample to this wheel's first AT_SPEED sample. A-1: from where duty last sat at or under SPIN_DUTY_FLOOR ("left
+' its floor for good") up to AT_SPEED, the largest fall of duty from its running maximum, per mille of that maximum.
+' A-2: the trace's current peak over the mean of its last A2_TAIL_SAMPLES (60 ms at 2 ms). Every stored sample counts,
+' where start_metrics.py sees only the emitted lines. Only samples with the driver up count (I3). Legal while FROZEN.
+'
+' @param slotIdx - motor slot
+'
+' @local sampleIdx - logical index
+' @local atJ - the first AT_SPEED sample, -1 when none
+' @local leaveJ - the first sample after duty's last visit to its floor
+' @local dutyNow - this sample's duty
+' @local tailJ - the tail's first sample
+' @local tailSum - the tail's summed current, mV
+
+    atJ := -1
+    if bDrMarkFound
+        repeat sampleIdx from drMarkJ to drEndJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx) and (smpState(sampleIdx, slotIdx) == DCS_AT_SPEED)
+                atJ := sampleIdx
+                quit
+    if atJ > drStartJ
+        leaveJ := drStartJ
+        repeat sampleIdx from drStartJ to atJ - 1
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx) and (smpDuty(sampleIdx, slotIdx) <= SPIN_DUTY_FLOOR)
+                leaveJ := sampleIdx + 1
+        spRunMax[slotIdx] := 0
+        spDropPm[slotIdx] := 0
+        if leaveJ < atJ
+            repeat sampleIdx from leaveJ to atJ - 1
+                beat(CP_LOOP_DRAIN)
+                if bSmpUp(sampleIdx, slotIdx)
+                    dutyNow := smpDuty(sampleIdx, slotIdx)
+                    spRunMax[slotIdx] #>= dutyNow
+                    if spRunMax[slotIdx] > 0
+                        spDropPm[slotIdx] #>= ((spRunMax[slotIdx] - dutyNow) * SPIN_PM) / spRunMax[slotIdx]
+        spPeakI[slotIdx] := NEGX
+        repeat sampleIdx from drStartJ to atJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx)
+                spPeakI[slotIdx] #>= smpI(sampleIdx, slotIdx)
+        tailJ := (atJ - A2_TAIL_SAMPLES + 1) #> drStartJ
+        tailSum := 0
+        spTailN[slotIdx] := 0
+        repeat sampleIdx from tailJ to atJ
+            beat(CP_LOOP_DRAIN)
+            if bSmpUp(sampleIdx, slotIdx)
+                tailSum += smpI(sampleIdx, slotIdx)
+                spTailN[slotIdx] += 1
+        spAtK[slotIdx] := atJ - drStartJ
+        spLeaveK[slotIdx] := leaveJ - drStartJ
+        if (spTailN[slotIdx] > 0) and (tailSum > 0) and (spPeakI[slotIdx] <> NEGX)
+            spTailX10[slotIdx] := (tailSum * X10) / spTailN[slotIdx]
+            spRatioX100[slotIdx] := (spPeakI[slotIdx] * SPIN_X100 * spTailN[slotIdx]) / tailSum
+            bSpStartOk[slotIdx] := TRUE
+
+PRI spinFoldStart(slotIdx)
+' Fold one wheel's START into R19-DUAL-SPINSTRT-P (A-1, the worst drop) and R19-DUAL-SPINPEAK-P (A-2, the worst ratio).
+'
+' @param slotIdx - motor slot
+
+    if bSpStartOk[slotIdx]
+        sfSpA1N[slotIdx] := (sfSpA1N[slotIdx] + 1) <# LIM_SMALL
+        sfSpA1Max[slotIdx] #>= spDropPm[slotIdx]
+        sfSpA2N[slotIdx] := (sfSpA2N[slotIdx] + 1) <# LIM_SMALL
+        sfSpA2Max[slotIdx] #>= spRatioX100[slotIdx]
+
+PRI spinFoldWheel(legIdx, pairIdx, speedIdx, slotIdx) | arrIdx
+' Fold one wheel's window (the rs* staging windowStats() just filled) into the per-leg current the cross-leg cells
+' compare, and, on a confirmed-pair leg, into A-4 (every speed), A-3 (SLOW and MEDIUM, rungs 1 and 2) and A-8's
+' following case (MEDIUM and BRISK, the rpm window then holds at least a second of steady running).
+'
+' @param legIdx - 0..SPIN_LEGS-1
+' @param pairIdx - its pair
+' @param speedIdx - SPIN_SPEED_*
+' @param slotIdx - motor slot
+'
+' @local arrIdx - [leg * INST_MOTORS + slot] index
+
+    arrIdx := (legIdx * INST_MOTORS) + slotIdx
+    if bSpWinValid and bCpFrozen and (rsN > 0)
+        if spAmpsN > 0
+            spLegAmps[arrIdx] := spAmpsSum[slotIdx] / spAmpsN
+            bSpLegAmps[arrIdx] := TRUE
+        if spinPairOffs[pairIdx] == SPOFF_SCHED
+            sfSpErrN[slotIdx] := (sfSpErrN[slotIdx] + 1) <# LIM_SMALL
+            if (abs(rsErrMean) < A4_ERR_LO) or (abs(rsErrMean) > A4_ERR_HI)
+                sfSpErrBad[slotIdx] := (sfSpErrBad[slotIdx] + 1) <# LIM_SMALL
+            if speedIdx <> SPIN_SPEED_BRISK
+                sfSpHuntN[slotIdx] := (sfSpHuntN[slotIdx] + 1) <# LIM_SMALL
+                if ((rsDutyPk - rsDutyMean) > A3_SWING_HI) or (rsErrPk > A3_ERR_PK_HI)
+                    sfSpHuntBad[slotIdx] := (sfSpHuntBad[slotIdx] + 1) <# LIM_SMALL
+            if (speedIdx <> SPIN_SPEED_SLOW) and bSpReadsValid and (bSpFolOk[slotIdx] <> FALSE)
+                sfSpFolN[slotIdx] := (sfSpFolN[slotIdx] + 1) <# LIM_SMALL
+                sfSpFolMax[slotIdx] #>= abs((spFolPm[slotIdx] / 10) - spFolPct[slotIdx])
+
+PRI spinFoldLeg(pairIdx, dirIdx, speedIdx) | slotIdx, wantNeg, wantPos, bBad, bJudged, wantSign
+' Fold one leg into the cells judged per leg on the platform:
+'  SPINSTOP - a leg that ended at its limit or past it: bad when it was past it, or when the farther wheel's tracked
+'             travel is not within SPIN_STOP_TOL_TICKS of SPIN_LEG_TICKS
+'  SPINOFF  - the pair each driver applied against the pair under test (spinExpectedPair()); a confirmed-pair leg is
+'             judged only when the path limiter ran it unscaled and neither wheel was held, since the schedule keys its
+'             lead on the field's speed
+'  SPINDIR  - each wheel's raw travel against the direction commanded, when it moved at least SPIN_DIR_MIN_TICKS
+'
+' @param pairIdx - the leg's pair
+' @param dirIdx - SPIN_DIR_*
+' @param speedIdx - SPIN_SPEED_*
+'
+' @local slotIdx - motor slot
+' @local wantNeg - the expected offset_fwd
+' @local wantPos - the expected offset_rev
+' @local bBad - T/F where T means the leg fails the cell
+' @local bJudged - T/F where T means the leg counts toward the cell
+' @local wantSign - the raw travel's expected sign: +1 RIGHT, -1 LEFT
+
+    if (spStopBy == SPSTOP_LIMIT) or (spStopBy == SPSTOP_OVERTRAVEL)
+        sfSpStopN := (sfSpStopN + 1) <# LIM_SMALL
+        bBad := (spStopBy == SPSTOP_OVERTRAVEL) or (bSpTrkValid == FALSE)
+        if bBad == FALSE
+            bBad := abs((spTrk[SLOT_LEFT] #> spTrk[SLOT_RIGHT]) - SPIN_LEG_TICKS) > SPIN_STOP_TOL_TICKS
+        if bBad
+            sfSpStopBad := (sfSpStopBad + 1) <# LIM_SMALL
+    if bSpReadsValid
+        bJudged := (spinPairOffs[pairIdx] <> SPOFF_SCHED)
+        if bJudged == FALSE
+            bJudged := (spPathPm == SPIN_PM) and (bSpShort[SLOT_LEFT] == FALSE) and (bSpShort[SLOT_RIGHT] == FALSE)
+        if bJudged
+            wantNeg, wantPos := spinExpectedPair(spinPairOffs[pairIdx], speedIdx)
+            sfSpOffN := (sfSpOffN + 1) <# LIM_SMALL
+            bBad := FALSE
+            repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                if (spOffNeg[slotIdx] <> wantNeg) or (spOffPos[slotIdx] <> wantPos)
+                    bBad := TRUE
+            if bBad
+                sfSpOffBad := (sfSpOffBad + 1) <# LIM_SMALL
+    if bSpTravelValid and ((abs(spTravel[SLOT_LEFT]) #> abs(spTravel[SLOT_RIGHT])) >= SPIN_DIR_MIN_TICKS)
+        wantSign := SIGN_POS
+        if dirIdx == SPIN_DIR_LEFT
+            wantSign := SIGN_NEG
+        sfSpDirN := (sfSpDirN + 1) <# LIM_SMALL
+        bBad := FALSE
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            if (spTravel[slotIdx] * wantSign) <= 0
+                bBad := TRUE
+        if bBad
+            sfSpDirBad := (sfSpDirBad + 1) <# LIM_SMALL
+
+PRI spinExpectedPair(offKind, speedIdx) : offNeg, offPos
+' The commutation pair a leg must apply: the legacy pair, the compiled fixed pair, or the schedule's at the leg's
+' commanded increment (spinSchedLead, rounded as the driver's writeOffsetsTenths() rounds, scheduledDegrees()).
+'
+' @param offKind - SPOFF_*
+' @param speedIdx - SPIN_SPEED_*
+' @returns offNeg - offset_fwd, degrees
+' @returns offPos - offset_rev, degrees
+
+    case offKind
+        SPOFF_LEGACY:
+            offNeg := SPIN_LEGACY_NEG
+            offPos := SPIN_LEGACY_POS
+        SPOFF_FIXED:
+            offNeg, offPos := expectedOffsets()
+        other:
+            offNeg := scheduledDegrees((wheelL.HUB_HALL_ZERO_DEGR * TENTHS_PER_DEG) + spinSchedLead[speedIdx])
+            offPos := scheduledDegrees((wheelL.HUB_HALL_ZERO_DEGR * TENTHS_PER_DEG) - spinSchedLead[speedIdx])
+
+PRI spinIncre(power) : nIncre
+' The increment a positive power commands on the 6.5in map at 18.5 V, by the motor object's own map() arithmetic
+' (confgurePowerLimits(), incrementForPower()) on the harness's mirrored limits, LIB_MIN_FWD_INCRE and LIB_MAX_FWD_INCRE.
+'
+' @param power - power [1..100]
+' @returns nIncre - the driver angle increment
+
+    nIncre := LIB_MIN_FWD_INCRE + (((LIB_MAX_FWD_INCRE - LIB_MIN_FWD_INCRE) / (POWER_FULL - POWER_MIN)) * (power - POWER_MIN))
+
+PRI spinNotRun(legIdx, whyCode)
+' BM-SPIN for a leg that never ran: its identity from the tables and the cause.
+'
+' @param legIdx - 0..SPIN_LEGS-1
+' @param whyCode - WHY_* naming why
+
+    spLegReset(legIdx)
+    spWhy := whyCode
+    emitSpin(0, legIdx)
+
+PRI spinOutcomeState() : stateIdx
+' The CREEP segment's first screen names how SPIN ended (rule 10.4: a step that did not run says so, and why).
+'
+' @returns stateIdx - BM_STATE_SPUN_*
+
+    case spSegWhy
+        WHY_NONE:
+            stateIdx := BM_STATE_SPUN_ALL
+        WHY_OPERATOR_STOP:
+            stateIdx := BM_STATE_SPUN_STOP
+        WHY_OPERATOR_SKIP:
+            stateIdx := BM_STATE_SPUN_SKIP
+        WHY_OPERATOR_TIMEOUT:
+            stateIdx := BM_STATE_SPUN_TIMEOUT
+        other:
+            stateIdx := BM_STATE_SPUN_EARLY
+    if bSpSegRan == FALSE
+        stateIdx := BM_STATE_SPUN_EARLY
+
+PRI panelShowLeg(scr, stateIdx, legNum)
+' Draw a LEG screen (countdown kind BM_CD_LEG): as panelShow(), with the leg number -- 1-based, as the run sheet and the
+' log number legs -- in the digits under the LEG label. The digits never count down.
+'
+' @param scr - BM_SCR_* value
+' @param stateIdx - BM_STATE_* cell
+' @param legNum - 1..SPIN_LEGS
+
+    panelCompose(scr, stateIdx, scrLive(scr), scrLive(scr), PNL_BTN_NONE, BM_STRIP_BLANK, FALSE)
+    bPnlCountdownLive := FALSE
+    pnlSeconds := legNum
+    panelRender()
+
+PRI steerArmLimit() : eError
+' stopAfterDistance(SPIN_LEG_MM, DDU_MM) on the steering object: its tracking reset and its platform distance stop
+' armed as one front-cog request (F-4), before the leg is driven. The driveAtPower() that follows disarms each wheel's
+' own limit but not this one.
+'
+' @returns eError - the steering object's return; anything but NO_ERROR and the leg is never driven
+
+    beat(CP_LIB_STEER_DRIVE)
+    eError := steering.stopAfterDistance(SPIN_LEG_MM, steering.DDU_MM)
+    beat(CP_LIB_STEER_DRIVE)
+
+PRI steerSetPair(offNeg, offPos)
+' testSetFwdRevIndep() on both steering wheels, which turns each wheel's lead schedule off; spinCloseLifetime() owes the
+' restore (bSpOffWritten).
+'
+' @param offNeg - offset_fwd, degrees
+' @param offPos - offset_rev, degrees
+
+    beat(CP_LIB_OFFSETS)
+    steering.testLeftSetFwdRevIndep(offNeg, offPos)
+    steering.testRightSetFwdRevIndep(offNeg, offPos)
+    beat(CP_LIB_OFFSETS)
+    bSpOffWritten := TRUE
+
+PRI steerGetPair(side) : offNeg, offPos
+' The commutation pair one steering wheel applies now.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns offNeg - offset_fwd, degrees
+' @returns offPos - offset_rev, degrees
+
+    beat(CP_LIB_OFFSETS)
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        offNeg, offPos := steering.testRightGetFwdRevIndep()
+    else
+        offNeg, offPos := steering.testLeftGetFwdRevIndep()
+    beat(CP_LIB_OFFSETS)
+
+PRI steerEstop()
+' emergencyCutoff() on the steering object: both wheels' phases shorted at once and the latch set. It brakes a moving
+' wheel hard and holds nothing still; the next lifetime's start() clears the latch (init()).
+
+    beat(CP_LIB_ESTOP)
+    steering.emergencyCutoff()
+    beat(CP_LIB_ESTOP)
+
+PRI steerSetHoldLimits(ceilingPct) : eError
+' testSetHoldLimits() on both steering wheels: a creep trial's ceiling with the provisional rise and time limit.
+'
+' @param ceilingPct - the hold's duty ceiling, % of duty_max
+' @returns eError - the steering object's return
+
+    beat(CP_LIB_HOLD)
+    eError := steering.testSetHoldLimits(ceilingPct, wheelL.HOLD_RISE_MS, wheelL.HOLD_LIMIT_MS)
+    beat(CP_LIB_HOLD)
+
+PRI segCreep() | kindIdx, whyCode, buttonIdx, inputCode
+' CREEP (part SPIN, task 3591): the hold's creep on the measured incline. Its first screen asks him to carry the platform
+' onto the incline and hold it there -- nothing is powered, the wheels roll freely -- and names how SPIN ended (rule
+' 10.4); nothing is started before START. Then the three trials in order, the coast control, the low-ceiling control and
+' the hold at its provisional limits (creepTrial()), each its own steering lifetime while he holds the platform. A SKIP
+' or a timeout on the first screen, or a trial that could not hand the platform back to him, ends the segment, and
+' every trial after it prints NOT_RUN.
+'
+' @local kindIdx - CRK_COAST..CRK_HOLD
+' @local whyCode - why the segment ended short, WHY_NONE while it runs
+' @local buttonIdx - BM_BTN_* chosen on the first screen, PNL_BTN_NONE on timeout
+' @local inputCode - INPUT_* of that choice
+
+    segBegin(SEG_CREEP)
+    if bPanelUp == FALSE
+        panelSetup()
+    panelShow(BM_SCR_CREEP_MOVE, spinOutcomeState(), PNL_BTN_NONE)
+    operShown(PROMPT_CREEP)
+    buttonIdx, inputCode, _ := operWait(scrCdMs(BM_SCR_CREEP_MOVE), SIDE_NONE, FALSE)
+    whyCode := WHY_NONE
+    if buttonIdx == BM_BTN_START
+        operNote(PROMPT_CREEP, OPEV_START, ANS_NONE, inputCode, getms() - operShownMs, WHY_NONE)
+    elseif buttonIdx == BM_BTN_SKIP
+        operNote(PROMPT_CREEP, OPEV_SKIP, ANS_NONE, inputCode, getms() - operShownMs, WHY_OPERATOR_SKIP)
+        whyCode := WHY_OPERATOR_SKIP
+    else
+        operNote(PROMPT_CREEP, OPEV_TIMEOUT, ANS_NONE, INPUT_NONE, getms() - operShownMs, WHY_OPERATOR_TIMEOUT)
+        whyCode := WHY_OPERATOR_TIMEOUT
+    operFlush()
+    repeat kindIdx from CRK_COAST to CRK_HOLD
+        beat(CP_LOOP_POLL)
+        if whyCode == WHY_NONE
+            whyCode := creepTrial(kindIdx)
+        else
+            creepNotRun(kindIdx, whyCode)
+    operFlush()
+    crSegWhy := whyCode
+    ' if/else, never `? :` (PL-29): segWhy() is a call
+    if whyCode <> WHY_NONE
+        segEnd(whyCode)
+    else
+        segEnd(segWhy())
+
+PRI creepTrial(kind) : whyCode | buttonIdx, inputCode, safeEvent, shownMs, slotIdx
+' One creep trial in its own steering lifetime while he holds the platform on the incline (see the section's CON).
+' SETUP: keep holding; the start; a hold trial's ceiling (steerSetHoldLimits()) and holdAtStop(TRUE), the coast nothing;
+' the capture armed. RELEASE: he lets go and clicks DONE; STOP shorts the phases at once. The watch (creepWatch());
+' freeze. CATCH: he takes hold again and clicks DONE, and only then are the wheels switched off -- a CATCH he never
+' answers leaves them shorted and ends the segment. Then the trial's records and folds.
+'
+' @param kind - CRK_*
+' @returns whyCode - WHY_NONE when the segment may go on to the next trial, else why it must end
+'
+' @local buttonIdx - BM_BTN_* chosen, PNL_BTN_NONE on timeout
+' @local inputCode - INPUT_* of that choice
+' @local safeEvent - SAFE_* that ended the RELEASE wait
+' @local shownMs - getms() when the screen was drawn
+' @local slotIdx - motor slot
+
+    crReset(kind)
+    whyCode := WHY_NONE
+    panelShow(BM_SCR_CREEP_SETUP, BM_STATE_CRP_COAST + kind, PNL_BTN_NONE)
+    operShown(PROMPT_CREEP)
+    if bRunContinue(SEG_CREEP) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bSteerStart(SEG_CREEP) == FALSE
+        whyCode := WHY_NO_COG
+        if bSteerUp
+            steerStop()                                     ' started but not ready: nothing was set, he is still holding it
+    else
+        crSid := steerLife
+        if kind == CRK_LOWCEIL
+            crSetErr := steerSetHoldLimits(CREEP_LOW_CEIL_PCT)
+            steerHold(TRUE)
+        elseif kind == CRK_HOLD
+            crSetErr := steerSetHoldLimits(CREEP_CEIL_PCT)
+            steerHold(TRUE)
+        if bInstArm(INST_SRC_STEER, CREEP_DECIM) == FALSE
+            crWhy := WHY_INST_NOACK
+        else
+            waitBeat(SPIN_MIRROR_MS, CP_LOOP_READY)        ' the mirror refreshes on the instrument's next passes
+            panelShow(BM_SCR_CREEP_RELEASE, BM_STATE_EXP_COAST + kind, PNL_BTN_NONE)
+            operShown(PROMPT_CREEP)
+            shownMs := getms()
+            buttonIdx, inputCode, safeEvent := operWait(scrCdMs(BM_SCR_CREEP_RELEASE), SIDE_BOTH, TRUE)
+            if buttonIdx == BM_BTN_DONE
+                operNote(PROMPT_CREEP, OPEV_LETGO, ANS_NONE, inputCode, getms() - shownMs, WHY_NONE)
+                bCrReleased := TRUE
+                crReleaseMs := getms() - shownMs
+                creepWatch(kind)
+            elseif buttonIdx == BM_BTN_STOP
+                operNote(PROMPT_CREEP, OPEV_STOP, ANS_NONE, inputCode, getms() - shownMs, WHY_OPERATOR_STOP)
+                steerEstop()
+                crStopBy := CRSTOP_OPERATOR
+                crWhy := WHY_OPERATOR_STOP
+            elseif safeEvent <> SAFE_NONE
+                crStopBy := CRSTOP_ABORT
+                crWhy := safeWhy(safeEvent)
+                if bSteerUp
+                    steerEstop()
+            else
+                operNote(PROMPT_CREEP, OPEV_TIMEOUT, ANS_NONE, INPUT_NONE, getms() - shownMs, WHY_OPERATOR_TIMEOUT)
+                crWhy := WHY_OPERATOR_TIMEOUT
+            bCrFrozen := bInstFreeze(0)
+        ' CATCH: nothing is switched off until he holds the platform again
+        panelShow(BM_SCR_CREEP_CATCH, crResultState(), PNL_BTN_NONE)
+        operShown(PROMPT_CREEP)
+        shownMs := getms()
+        buttonIdx, inputCode, _ := operWait(scrCdMs(BM_SCR_CREEP_CATCH), SIDE_NONE, FALSE)
+        if buttonIdx == BM_BTN_DONE
+            operNote(PROMPT_CREEP, OPEV_CAUGHT, ANS_NONE, inputCode, getms() - shownMs, WHY_NONE)
+            steerStop()                                     ' idles the instrument first (I10); the ring stays drainable
+        else
+            operNote(PROMPT_CREEP, OPEV_TIMEOUT, ANS_NONE, INPUT_NONE, getms() - shownMs, WHY_OPERATOR_TIMEOUT)
+            whyCode := WHY_OPERATOR_TIMEOUT
+            if bSteerUp
+                steerEstop()                                ' shorted, never released: SPIN_END says to hold it or lift it off
+    if crWhy == WHY_NONE
+        crWhy := whyCode
+    panelShow(BM_SCR_LOGGING, BM_STATE_LOGGING, PNL_BTN_NONE)
+    operFlush()
+    emitCreep(kind)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        if bCrFrozen
+            windowStats(slotIdx, SLOT_RIGHT - slotIdx, crWinStart, crWinEnd)
+        else
+            windowStats(slotIdx, SLOT_RIGHT - slotIdx, -1, -1)
+        emitCreepW(kind, slotIdx)
+    crFold(kind)
+    segItems := (segItems + 1) <# LIM_SMALL
+
+PRI crReset(kind) | slotIdx
+' Clear one creep trial's staging.
+'
+' @param kind - CRK_*
+'
+' @local slotIdx - motor slot
+
+    crKind := kind
+    crSid := 0
+    crStopBy := CRSTOP_NOT_RUN
+    crWhy := WHY_NONE
+    crSetErr := NO_ERROR
+    bCrReleased := FALSE
+    crReleaseMs := 0
+    crWinMs := 0
+    crBoundTicks := 0
+    crWinStart := -1
+    crWinEnd := -1
+    bCrFrozen := FALSE
+    bCrPolled := FALSE
+    crAmpsN := 0
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        crRelHw[slotIdx] := 0
+        crCreep[slotIdx] := 0
+        crHoldCreep[slotIdx] := 0
+        crState[slotIdx] := wheelL.HS_OFF
+        crDisp[slotIdx] := 0
+        crCeilDuty[slotIdx] := 0
+        crDutyPk[slotIdx] := 0
+        crDutyEnd[slotIdx] := 0
+        crCeilMs[slotIdx] := 0
+        crSlips0[slotIdx] := 0
+        crLimits0[slotIdx] := 0
+        crSlips[slotIdx] := 0
+        crLimits[slotIdx] := 0
+        crAmpsSum[slotIdx] := 0
+
+PRI creepWatch(kind) | winMs, startMs, lastPollMs, slotIdx, safeNow, creepNow
+' The watch after he let go: the release's reference -- each wheel's hwPos on the instrument's own hall decode, and a
+' first hold poll; then every SAMPLE_MS the safety read and each wheel's creep from that reference (crCreep, and
+' crHoldCreep while the last poll read HS_HOLDING), and every CREEP_POLL_MS a hold poll (crPollHold()). It ends at the
+' trial's window (CRSTOP_TIMER), at its bound of creep on either wheel (CRSTOP_BOUND, the phases shorted at once), on
+' STOP (CRSTOP_OPERATOR, shorted), or on the current abort or a stalled instrument (CRSTOP_ABORT). The coast control's
+' window and bound are its own: it is braked as soon as it has shown the roll it exists to show.
+'
+' @param kind - CRK_*
+'
+' @local winMs - the trial's window
+' @local startMs - getms() at the release
+' @local lastPollMs - getms() of the last hold poll
+' @local slotIdx - motor slot
+' @local safeNow - this pass's safety read
+' @local creepNow - this pass's creep on one wheel, ticks
+
+    winMs := CREEP_WIN_MS
+    crBoundTicks := CREEP_BOUND_TICKS
+    if kind == CRK_COAST
+        winMs := CREEP_CTRL_WIN_MS
+        crBoundTicks := CREEP_CTRL_TICKS
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        crRelHw[slotIdx] := instLastHw[slotIdx]
+    crPollHold()
+    crWinStart := instTotal
+    panelShow(BM_SCR_CREEP_WATCH, BM_STATE_EXP_COAST + kind, PNL_BTN_NONE)
+    operShown(PROMPT_CREEP)
+    safetyReset()
+    startMs := getms()
+    lastPollMs := startMs
+    crStopBy := CRSTOP_TIMER
+    repeat
+        beat(CP_LOOP_CAPTURE)
+        panelTick(startMs, winMs)
+        waitms(SAMPLE_MS)
+        safeNow := safetyPoll(SIDE_BOTH)
+        if (safeNow == SAFE_ABS_ABORT) or (safeNow == SAFE_INST_STALL)
+            crStopBy := CRSTOP_ABORT
+            crWhy := safeWhy(safeNow)
+            if bSteerUp
+                steerEstop()
+            quit
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            creepNow := abs(instLastHw[slotIdx] - crRelHw[slotIdx])
+            crCreep[slotIdx] #>= creepNow
+            if crState[slotIdx] == wheelL.HS_HOLDING
+                crHoldCreep[slotIdx] #>= creepNow
+        if (crCreep[SLOT_LEFT] #> crCreep[SLOT_RIGHT]) >= crBoundTicks
+            crStopBy := CRSTOP_BOUND
+            steerEstop()
+            quit
+        if bPanelStopPressed()
+            crStopBy := CRSTOP_OPERATOR
+            crWhy := WHY_OPERATOR_STOP
+            steerEstop()
+            quit
+        if (getms() - lastPollMs) >= CREEP_POLL_MS
+            lastPollMs := getms()
+            crPollHold()
+        if (getms() - startMs) >= winMs
+            quit
+    if crStopBy == CRSTOP_TIMER
+        crPollHold()                                        ' the hold as its window ends; a braked trial keeps its last poll
+    crWinEnd := instTotal
+    crWinMs := getms() - startMs
+
+PRI crPollHold() | slotIdx, eLeftState, nLeftDisp, eRightState, nRightDisp, holdDuty, ceilDuty, ceilPasses, nSlips, nLimits, nLtAmps, nRtAmps
+' One hold poll: each wheel's getHoldStatus() -- its state and the driver's own displacement -- and testGetHold() --
+' the hold duty now, the ceiling in force, the passes at it, and the slip and limit events, counted from the first poll
+' -- and getCurrent(), net of the rest zero.
+'
+' @local slotIdx - motor slot
+' @local eLeftState - the left wheel's HS_*
+' @local nLeftDisp - its displacement, ticks
+' @local eRightState - the right wheel's HS_*
+' @local nRightDisp - its displacement
+' @local holdDuty - one wheel's hold duty now
+' @local ceilDuty - its ceiling
+' @local ceilPasses - its consecutive front passes (ms) at the ceiling
+' @local nSlips - its holds ended by a slip since start
+' @local nLimits - its holds ended by the time limit since start
+' @local nLtAmps - the left wheel's getCurrent(), A x 10_000
+' @local nRtAmps - the right wheel's
+
+    beat(CP_LIB_STEER_QUERY)
+    eLeftState, nLeftDisp, eRightState, nRightDisp := steering.getHoldStatus()
+    nLtAmps, _, nRtAmps, _ := steering.getCurrent()
+    beat(CP_LIB_STEER_QUERY)
+    crState[SLOT_LEFT] := eLeftState
+    crDisp[SLOT_LEFT] := nLeftDisp
+    crState[SLOT_RIGHT] := eRightState
+    crDisp[SLOT_RIGHT] := nRightDisp
+    crAmpsSum[SLOT_LEFT] += (nLtAmps #> (0 - LIM_MID)) <# LIM_MID
+    crAmpsSum[SLOT_RIGHT] += (nRtAmps #> (0 - LIM_MID)) <# LIM_MID
+    crAmpsN += 1
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        beat(CP_LIB_STEER_QUERY)
+        if slotIdx == SLOT_RIGHT                            ' if/else, never `? :` -- PL-29, PL-76
+            holdDuty, ceilDuty, ceilPasses, nSlips, nLimits := steering.testRightGetHold()
+        else
+            holdDuty, ceilDuty, ceilPasses, nSlips, nLimits := steering.testLeftGetHold()
+        beat(CP_LIB_STEER_QUERY)
+        if bCrPolled == FALSE
+            crSlips0[slotIdx] := nSlips
+            crLimits0[slotIdx] := nLimits
+            crDutyPk[slotIdx] := holdDuty
+        crDutyPk[slotIdx] #>= holdDuty
+        crDutyEnd[slotIdx] := holdDuty
+        crCeilDuty[slotIdx] := ceilDuty
+        crCeilMs[slotIdx] #>= ceilPasses
+        crSlips[slotIdx] := nSlips - crSlips0[slotIdx]
+        crLimits[slotIdx] := nLimits - crLimits0[slotIdx]
+    bCrPolled := TRUE
+
+PRI crResultState() : stateIdx | slotIdx, bSlip, bLimit, bCrept
+' The CATCH screen's result line (rule 10.3: what he just saw, in the API's words for the hold): a released coast rolled
+' or did not; a hold slipped, hit its time limit, crept while holding, or held still (the worst wheel's).
+'
+' @returns stateIdx - BM_STATE_RES_*
+'
+' @local slotIdx - motor slot
+' @local bSlip - a wheel's hold read HS_SLIPPED
+' @local bLimit - a wheel's hold read HS_LIMITED
+' @local bCrept - a wheel crept at least a tick
+
+    if bCrReleased == FALSE
+        stateIdx := BM_STATE_RES_NOTRUN
+    elseif crKind == CRK_COAST
+        stateIdx := BM_STATE_RES_NOROLL
+        if (crCreep[SLOT_LEFT] #> crCreep[SLOT_RIGHT]) >= CREEP_CTRL_TICKS
+            stateIdx := BM_STATE_RES_ROLLED
+    else
+        bSlip := FALSE
+        bLimit := FALSE
+        bCrept := FALSE
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            if crState[slotIdx] == wheelL.HS_SLIPPED
+                bSlip := TRUE
+            elseif crState[slotIdx] == wheelL.HS_LIMITED
+                bLimit := TRUE
+            if crCreep[slotIdx] > 0
+                bCrept := TRUE
+        if bSlip
+            stateIdx := BM_STATE_RES_SLIPPED
+        elseif bLimit
+            stateIdx := BM_STATE_RES_LIMITED
+        elseif bCrept
+            stateIdx := BM_STATE_RES_CREPT
+        else
+            stateIdx := BM_STATE_RES_HOLDING
+
+PRI crFold(kind) | slotIdx
+' Fold a released trial into its cells: the coast control's roll or the low-ceiling control's creep, each the farther
+' wheel's; or, for the hold, each wheel's creep while HOLDING and whether it was HOLDING when its window ran out.
+'
+' @param kind - CRK_*
+'
+' @local slotIdx - motor slot
+
+    if bCrReleased
+        case kind
+            CRK_COAST:
+                bSfCrCoastRan := TRUE
+                sfCrCoastTicks := crCreep[SLOT_LEFT] #> crCreep[SLOT_RIGHT]
+            CRK_LOWCEIL:
+                bSfCrLowRan := TRUE
+                sfCrLowTicks := crCreep[SLOT_LEFT] #> crCreep[SLOT_RIGHT]
+            other:
+                repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                    bSfCreepRan[slotIdx] := TRUE
+                    sfCreepTicks[slotIdx] := crHoldCreep[slotIdx]
+                    bSfCrHoldOk[slotIdx] := (crStopBy == CRSTOP_TIMER) and (crState[slotIdx] == wheelL.HS_HOLDING)
+
+PRI bCreepMeasured(slotIdx) : bMeasured
+' Whether the hold's cells have an instance on a wheel: the hold trial was released AND the coast control rolled -- an
+' incline that does not roll a floated platform does not load the hold, and a hold that "holds" there is no evidence.
+'
+' @param slotIdx - motor slot
+' @returns bMeasured - T/F where T means R19-DUAL-CREEP-P and R19-DUAL-CRPHOLD-P judge this wheel
+
+    bMeasured := bSfCreepRan[slotIdx] and bSfCrCoastRan and (sfCrCoastTicks >= CREEP_CTRL_TICKS)
+
+PRI creepNotRun(kind, whyCode) | slotIdx
+' BM-CREEP and BM-CREEPW for a trial that never ran: the cause, every reading NA.
+'
+' @param kind - CRK_*
+' @param whyCode - WHY_* naming why
+'
+' @local slotIdx - motor slot
+
+    crReset(kind)
+    crWhy := whyCode
+    emitCreep(kind)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        windowStats(slotIdx, SLOT_RIGHT - slotIdx, -1, -1)  ' resets the rs* staging; reads no ring long
+        emitCreepW(kind, slotIdx)
+
+PRI spinFinish() | whyCode
+' The SPIN part's end screen, drawn whenever the panel is up, even after a segment the run skipped: the tier's outcome
+' -- SPIN's short end first, else CREEP's, else ABORTED when the run aborted -- on SPIN_END, which says the wheels roll
+' freely once it closes. It waits for START (<= its countdown) so he reads it before the session ends.
+'
+' @local whyCode - the outcome drawn
+
+    if bPanelUp
+        whyCode := spSegWhy
+        if whyCode == WHY_NONE
+            whyCode := crSegWhy
+        if (whyCode == WHY_NONE) and bRunAborted
+            whyCode := WHY_ABORTED
+        panelFinish(BM_SCR_SPIN_END, outcomeState(whyCode))
+
+PRI spinPairAmps(pairIdx, slotIdx) : bValid, nAmps | arrRight, arrLeft
+' One wheel's mean window current over a pair's two legs (RIGHT and LEFT), net of the rest zero.
+'
+' @param pairIdx - SPIN_PAIR_*
+' @param slotIdx - motor slot
+' @returns bValid - T/F where T means both legs' windows were measured
+' @returns nAmps - their mean, A x 10_000
+'
+' @local arrRight - the RIGHT leg's index into spLegAmps
+' @local arrLeft - the LEFT leg's
+
+    arrRight := (((pairIdx * SPIN_DIRS) + SPIN_DIR_RIGHT) * INST_MOTORS) + slotIdx
+    arrLeft := (((pairIdx * SPIN_DIRS) + SPIN_DIR_LEFT) * INST_MOTORS) + slotIdx
+    bValid := (bSpLegAmps[arrRight] <> FALSE) and (bSpLegAmps[arrLeft] <> FALSE)
+    nAmps := (spLegAmps[arrRight] + spLegAmps[arrLeft]) / 2
+
+PRI spinSymRatio(slotIdx) : bMeasured, nRatioX100 | arrRight, arrLeft, rightAmps, leftAmps
+' R19-DUAL-SPINSYM-P's reading: at the MEDIUM rung on the confirmed pair, the wheel's larger direction current over its
+' smaller, x100 (the RIGHT leg runs the motor's positive increments, the LEFT its negative).
+'
+' @param slotIdx - motor slot
+' @returns bMeasured - T/F where T means both directions were measured with a positive current
+' @returns nRatioX100 - the ratio, x100; 0 when not measured
+'
+' @local arrRight - the RIGHT leg's index into spLegAmps
+' @local arrLeft - the LEFT leg's
+' @local rightAmps - its current, A x 10_000
+' @local leftAmps - the LEFT leg's
+
+    arrRight := (((SPIN_PAIR_MED * SPIN_DIRS) + SPIN_DIR_RIGHT) * INST_MOTORS) + slotIdx
+    arrLeft := (((SPIN_PAIR_MED * SPIN_DIRS) + SPIN_DIR_LEFT) * INST_MOTORS) + slotIdx
+    rightAmps := spLegAmps[arrRight]
+    leftAmps := spLegAmps[arrLeft]
+    bMeasured := (bSpLegAmps[arrRight] <> FALSE) and (bSpLegAmps[arrLeft] <> FALSE) and (rightAmps > 0) and (leftAmps > 0)
+    nRatioX100 := 0
+    if bMeasured
+        nRatioX100 := ((rightAmps #> leftAmps) * SPIN_X100) / (rightAmps <# leftAmps)
+
+PRI spinOverRatio(pairNum, pairDen, slotIdx) : bMeasured, nRatioX100 | bNum, numAmps, bDen, denAmps
+' One wheel's mean current over one pair's two legs against another's, x100: SPINCTL (the legacy control over the
+' confirmed pair at MEDIUM) and SPINLEAD (the schedule's quarter over the fixed pair's).
+'
+' @param pairNum - the numerator's SPIN_PAIR_*
+' @param pairDen - the denominator's SPIN_PAIR_*
+' @param slotIdx - motor slot
+' @returns bMeasured - T/F where T means all four legs were measured with a positive current
+' @returns nRatioX100 - the ratio, x100; 0 when not measured
+'
+' @local bNum - the numerator pair was measured
+' @local numAmps - its mean, A x 10_000
+' @local bDen - the denominator pair was measured
+' @local denAmps - its mean
+
+    bNum, numAmps := spinPairAmps(pairNum, slotIdx)
+    bDen, denAmps := spinPairAmps(pairDen, slotIdx)
+    bMeasured := bNum and bDen and (numAmps > 0) and (denAmps > 0)
+    nRatioX100 := 0
+    if bMeasured
+        nRatioX100 := (numAmps * SPIN_X100) / denAmps
+
+PRI emitSpinCells() | slotIdx, side, bMeas, nRatio
+' The SPIN part's judged cells, each NOMEAS when nothing measured it (NOSTALL, DBGMASK and LAGBND are the caller's). On
+' the platform: TRACES, SPINSTOP, SPINOFF, SPINDIR COUNT. Per motor: RSTPROV, SPINHUNT (A-3) and SPINERR (A-4) COUNT,
+' SPINSTRT PERMILLE (A-1's worst drop), SPINPEAK X100 (A-2's worst ratio), SPINFOL (A-8's widest gap, points), SPINSYM,
+' SPINCTL and SPINLEAD X100, SPINPLAT PCT (the wheel NOT faulted). Then the incline: its two controls, CRPCOAST and
+' CRPLOW TICKS, before the hold they validate -- per motor CREEP TICKS and CRPHOLD BOOL, NOMEAS unless the coast control
+' rolled (bCreepMeasured()).
+'
+' @local slotIdx - motor slot
+' @local side - SIDE_LEFT or SIDE_RIGHT
+' @local bMeas - a ratio cell's instance was measured
+' @local nRatio - its ratio, x100
+
+    emitSignoff(@sSfCellTracesP, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
+    emitSignoff(@sSfCellSpStop, SIDE_BOTH, @sSfCritSpStop, sfSpStopN > 0, sfSpStopBad, SPIN_BAD_LO, SPIN_BAD_HI, sfSpStopN, @sSfUnitsCount)
+    emitSignoff(@sSfCellSpOff, SIDE_BOTH, @sSfCritSpOff, sfSpOffN > 0, sfSpOffBad, SPIN_BAD_LO, SPIN_BAD_HI, sfSpOffN, @sSfUnitsCount)
+    emitSignoff(@sSfCellSpDir, SIDE_BOTH, @sSfCritSpDir, sfSpDirN > 0, sfSpDirBad, SPIN_BAD_LO, SPIN_BAD_HI, sfSpDirN, @sSfUnitsCount)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        side := SIDE_LEFT + slotIdx
+        emitSignoff(@sSfCellRstProvP, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellSpHunt, side, @sSfCritSpHunt, sfSpHuntN[slotIdx] > 0, sfSpHuntBad[slotIdx], SPIN_BAD_LO, SPIN_BAD_HI, sfSpHuntN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellSpErr, side, @sSfCritSpErr, sfSpErrN[slotIdx] > 0, sfSpErrBad[slotIdx], SPIN_BAD_LO, SPIN_BAD_HI, sfSpErrN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellSpStrt, side, @sSfCritSpStrt, sfSpA1N[slotIdx] > 0, sfSpA1Max[slotIdx], 0, A1_DROP_PM_HI, sfSpA1N[slotIdx], @sSfUnitsPm)
+        emitSignoff(@sSfCellSpPeak, side, @sSfCritSpPeak, sfSpA2N[slotIdx] > 0, sfSpA2Max[slotIdx], 0, A2_RATIO_X100_HI, sfSpA2N[slotIdx], @sSfUnitsX100)
+        emitSignoff(@sSfCellSpFol, side, @sSfCritFolGap, sfSpFolN[slotIdx] > 0, sfSpFolMax[slotIdx], FOLAGREE_LO, FOLAGREE_HI, sfSpFolN[slotIdx], @sSfUnitsCount)
+        bMeas, nRatio := spinSymRatio(slotIdx)
+        emitSignoff(@sSfCellSpSym, side, @sSfCritSpSym, bMeas, nRatio, SPINSYM_LO, SPINSYM_HI, SPIN_DIRS, @sSfUnitsX100)
+        bMeas, nRatio := spinOverRatio(SPIN_PAIR_LEGACY, SPIN_PAIR_MED, slotIdx)
+        emitSignoff(@sSfCellSpCtl, side, @sSfCritSpCtl, bMeas, nRatio, SPINCTL_LO, LIM_BIG, SPIN_DIRS * 2, @sSfUnitsX100)
+        bMeas, nRatio := spinOverRatio(SPIN_PAIR_BRISK, SPIN_PAIR_FIXED, slotIdx)
+        emitSignoff(@sSfCellSpLead, side, @sSfCritSpLead, bMeas, nRatio, SPINLEAD_LO, SPINLEAD_HI, SPIN_DIRS * 2, @sSfUnitsX100)
+        emitSignoff(@sSfCellSpPlat, side, @sSfCritPlatStop, bSfPlatRan[slotIdx], sfPlatPct[slotIdx], FR_PLAT_PCT_LO, FR_PLAT_REST_PCT, SIGNOFF_ONE_INSTANCE, @sSfUnitsPct)
+    emitSignoff(@sSfCellCrCoast, SIDE_BOTH, @sSfCritCrCoast, bSfCrCoastRan, sfCrCoastTicks, CREEP_CTRL_TICKS, LIM_BIG, CREEP_ONE_TRIAL, @sSfUnitsTicks)
+    emitSignoff(@sSfCellCrLow, SIDE_BOTH, @sSfCritCrLow, bSfCrLowRan, sfCrLowTicks, wheelL.HOLD_SLIP_TICKS, LIM_BIG, CREEP_ONE_TRIAL, @sSfUnitsTicks)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        side := SIDE_LEFT + slotIdx
+        emitSignoff(@sSfCellCreep, side, @sSfCritCreep, bCreepMeasured(slotIdx), sfCreepTicks[slotIdx], CREEP_ZERO_LO, CREEP_ZERO_HI, CREEP_ONE_TRIAL, @sSfUnitsTicks)
+        emitSignoffBool(@sSfCellCrHold, side, @sSfCritCrHold, bCreepMeasured(slotIdx), bSfCrHoldOk[slotIdx], CREEP_ONE_TRIAL)
+
+PRI emitSpinHeader() | legIdx
+' The SPIN part's header, printed before anything moves: BM-SPINBUILD (the travel limit and its derivation from the
+' track width), BM-SPINPRE (every pre-registered band), one BM-SPINLEG per leg (what each will run and the pair it must
+' apply) and BM-CRPBUILD (the incline's numbers).
+'
+' @local legIdx - 0..SPIN_LEGS-1
+
+    emitSpinBuild()
+    emitSpinPre()
+    repeat legIdx from 0 to SPIN_LEGS - 1
+        emitSpinLegPlan(legIdx)
+    emitCrpBuild()
+
+PRI emitSpinBuild()
+' BM-SPINBUILD: the travel limit and its derivation -- the track width, pi as a ratio, the tyre travel per tick, one
+' platform revolution in 0.01 mm, the limit in degrees and in ticks, the millimetres stopAfterDistance() is given and the
+' ticks the steering object turns them back into (tick_back, which must equal leg_ticks), the over-travel guard's
+' margin, the stop's tolerance, the leg bound and the leg count. Worst case 212 bytes.
+
+    recBegin(@"BM-SPINBUILD")
+    benchLog.numField(@"track_mm", TRACK_MM, LIM_SMALL)
+    benchLog.numField(@"pi_num", SPIN_PI_NUM, LIM_TINY)
+    benchLog.numField(@"pi_den", SPIN_PI_DEN, LIM_TINY)
+    benchLog.numField(@"tick_x100", TICK_MM_X100, LIM_SMALL)
+    benchLog.numField(@"rev_x100", SPIN_REV_MM_X100, LIM_MID)
+    benchLog.numField(@"leg_deg", SPIN_LEG_DEG, LIM_TINY)
+    benchLog.numField(@"leg_ticks", SPIN_LEG_TICKS, LIM_SMALL)
+    benchLog.numField(@"leg_mm", SPIN_LEG_MM, LIM_SMALL)
+    benchLog.numField(@"tick_back", (SPIN_LEG_MM * SPIN_X100) / TICK_MM_X100, LIM_SMALL)
+    benchLog.numField(@"over", SPIN_OVERTRAVEL_TICKS, LIM_TINY)
+    benchLog.numField(@"tol", SPIN_STOP_TOL_TICKS, LIM_TINY)
+    benchLog.numField(@"leg_ms", SPIN_LEG_MS, LIM_SMALL)
+    benchLog.numField(@"legs", SPIN_LEGS, LIM_TINY)
+    emitRecord()
+
+PRI emitSpinPre()
+' BM-SPINPRE: every band the SPIN cells are judged against, pre-registered: A-1's drop and A-2's ratio with its tail and
+' duty's floor, A-3's swing and err peak, A-4's point, SPINSYM's ceiling, SPINCTL's floor, SPINLEAD's ceiling, A-8's
+' gap, X-5's rest percentage, and the settle and AT_SPEED bounds they are read after. Worst case 237 bytes.
+
+    recBegin(@"BM-SPINPRE")
+    benchLog.numField(@"a1_pm", A1_DROP_PM_HI, LIM_TINY)
+    benchLog.numField(@"a2_x100", A2_RATIO_X100_HI, LIM_TINY)
+    benchLog.numField(@"a2_tail", A2_TAIL_SAMPLES, LIM_TINY)
+    benchLog.numField(@"floor", SPIN_DUTY_FLOOR, LIM_SMALL)
+    benchLog.numField(@"a3_swing", A3_SWING_HI, LIM_TINY)
+    benchLog.numField(@"a3_err", A3_ERR_PK_HI, LIM_TINY)
+    benchLog.numField(@"a4_lo", A4_ERR_LO, LIM_TINY)
+    benchLog.numField(@"a4_hi", A4_ERR_HI, LIM_TINY)
+    benchLog.numField(@"sym_hi", SPINSYM_HI, LIM_TINY)
+    benchLog.numField(@"ctl_lo", SPINCTL_LO, LIM_TINY)
+    benchLog.numField(@"lead_hi", SPINLEAD_HI, LIM_TINY)
+    benchLog.numField(@"fol_hi", FOLAGREE_HI, LIM_TINY)
+    benchLog.numField(@"plat_pct", FR_PLAT_REST_PCT, LIM_TINY)
+    benchLog.numField(@"settle_ms", SPIN_SETTLE_MS, LIM_SMALL)
+    benchLog.numField(@"atspd_ms", SPIN_ATSPEED_MS, LIM_SMALL)
+    emitRecord()
+
+PRI emitSpinLegPlan(legIdx) | pairIdx, dirIdx, speedIdx, leftPwr, nIncre, wantNeg, wantPos
+' BM-SPINLEG: one row of the leg table, printed before anything moves -- the leg's number (1-based, as the panel and
+' the run sheet number it), pair, commutation pair, speed, direction and kind; the left wheel's power (the right's is
+' its negation); the increment that power commands (spinIncre()) and C-1's predicted tick rate for it; the steady
+' window (NA on a FAULT leg, which has none); the pair each driver must apply (SPINOFF's expectation); and whether the
+' leg is drained as a trace. Worst case 215 bytes.
+'
+' @param legIdx - 0..SPIN_LEGS-1
+'
+' @local pairIdx - its pair
+' @local dirIdx - SPIN_DIR_*
+' @local speedIdx - SPIN_SPEED_*
+' @local leftPwr - the left wheel's power
+' @local nIncre - the increment the power commands
+' @local wantNeg - the expected offset_fwd
+' @local wantPos - the expected offset_rev
+
+    pairIdx := legIdx / SPIN_DIRS
+    dirIdx := legIdx // SPIN_DIRS
+    speedIdx := spinPairSpeed[pairIdx]
+    leftPwr := spinPower[speedIdx]
+    if dirIdx == SPIN_DIR_LEFT
+        leftPwr := 0 - leftPwr
+    nIncre := spinIncre(spinPower[speedIdx])
+    wantNeg, wantPos := spinExpectedPair(spinPairOffs[pairIdx], speedIdx)
+    recBegin(@"BM-SPINLEG")
+    benchLog.numField(@"leg", legIdx + 1, LIM_TINY)
+    benchLog.numField(@"pair", pairIdx + 1, LIM_TINY)
+    benchLog.tokenField(@"offs", tokenAt(@tokSpOff, SPOFF_COUNT, spinPairOffs[pairIdx]), TOKMAX_SPOFF)
+    benchLog.tokenField(@"speed", tokenAt(@tokSpSpeed, SPIN_SPEEDS, speedIdx), TOKMAX_SPSPEED)
+    benchLog.tokenField(@"dir", tokenAt(@tokSpDir, SPIN_DIRS, dirIdx), TOKMAX_SPDIR)
+    benchLog.tokenField(@"kind", tokenAt(@tokSpKind, SPKIND_COUNT, spinPairKind[pairIdx]), TOKMAX_SPKIND)
+    benchLog.numField(@"l_pwr", leftPwr, LIM_TINY)
+    benchLog.numField(@"incre", nIncre, LIM_BIG)
+    benchLog.numField(@"pred_x10", predictX10(nIncre), LIM_MID)
+    benchLog.naNumField(@"win_ms", spinWinMs[speedIdx], LIM_SMALL, spinPairKind[pairIdx] == SPKIND_NORMAL)
+    benchLog.numField(@"exp_neg", wantNeg, LIM_TINY)
+    benchLog.numField(@"exp_pos", wantPos, LIM_TINY)
+    benchLog.boolField(@"traced", (pairIdx == SPIN_PAIR_BRISK) or (spinPairKind[pairIdx] == SPKIND_FAULT))
+    emitRecord()
+
+PRI emitCrpBuild()
+' BM-CRPBUILD: the incline's compiled numbers -- the provisional ceiling under test and the control's, the rise and time
+' limit both trials run with, the slip threshold the driver hands off at, the hold watch's window and the coast
+' control's, the coast control's roll and the hold trials' bound, the poll cadence and the capture's decimation. The
+' incline's angle and the platform's mass are not here: the run sheet records both. Worst case 184 bytes.
+
+    recBegin(@"BM-CRPBUILD")
+    benchLog.numField(@"ceil_pct", CREEP_CEIL_PCT, LIM_TINY)
+    benchLog.numField(@"low_pct", CREEP_LOW_CEIL_PCT, LIM_TINY)
+    benchLog.numField(@"rise_ms", wheelL.HOLD_RISE_MS, LIM_SMALL)
+    benchLog.numField(@"limit_ms", wheelL.HOLD_LIMIT_MS, LIM_SMALL)
+    benchLog.numField(@"slip_ticks", wheelL.HOLD_SLIP_TICKS, LIM_TINY)
+    benchLog.numField(@"win_ms", CREEP_WIN_MS, LIM_SMALL)
+    benchLog.numField(@"ctrl_ms", CREEP_CTRL_WIN_MS, LIM_SMALL)
+    benchLog.numField(@"ctrl_ticks", CREEP_CTRL_TICKS, LIM_TINY)
+    benchLog.numField(@"bound", CREEP_BOUND_TICKS, LIM_TINY)
+    benchLog.numField(@"poll_ms", CREEP_POLL_MS, LIM_TINY)
+    benchLog.numField(@"decim", CREEP_DECIM, LIM_TINY)
+    emitRecord()
+
+PRI emitSpin(tid, legIdx) | pairIdx
+' BM-SPIN: one leg -- its trace id when it was drained, its number (1-based, as the panel and the run sheet number it),
+' pair, commutation pair, speed, direction and kind; the lifetime and the travel per tick that lifetime read back; the
+' powers; what ended it (stop_by); command to both AT_SPEED; the window's length; each wheel's tracked ticks at rest --
+' what the distance stop counts, against BM-SPINBUILD's leg_ticks; and the path limiter's scale at the window's end.
+' Worst case 272 bytes.
+'
+' @param tid - trace id, 0 when none was drained
+' @param legIdx - 0..SPIN_LEGS-1
+'
+' @local pairIdx - its pair
+
+    pairIdx := legIdx / SPIN_DIRS
+    recBegin(@"BM-SPIN")
+    benchLog.naNumField(@"tid", tid, LIM_SMALL, tid > 0)
+    benchLog.numField(@"leg", legIdx + 1, LIM_TINY)
+    benchLog.numField(@"pair", pairIdx + 1, LIM_TINY)
+    benchLog.tokenField(@"offs", tokenAt(@tokSpOff, SPOFF_COUNT, spinPairOffs[pairIdx]), TOKMAX_SPOFF)
+    benchLog.tokenField(@"speed", tokenAt(@tokSpSpeed, SPIN_SPEEDS, spinPairSpeed[pairIdx]), TOKMAX_SPSPEED)
+    benchLog.tokenField(@"dir", tokenAt(@tokSpDir, SPIN_DIRS, legIdx // SPIN_DIRS), TOKMAX_SPDIR)
+    benchLog.tokenField(@"kind", tokenAt(@tokSpKind, SPKIND_COUNT, spinPairKind[pairIdx]), TOKMAX_SPKIND)
+    benchLog.naNumField(@"sid", spSid, LIM_SMALL, spSid > 0)
+    benchLog.naNumField(@"tick", spLifeTick, LIM_SMALL, (spSid > 0) and (spLifeTick > 0))
+    benchLog.naNumField(@"l_pwr", spLeftPwr, LIM_TINY, bSpDriven)
+    benchLog.naNumField(@"r_pwr", spRightPwr, LIM_TINY, bSpDriven)
+    benchLog.tokenField(@"stop_by", tokenAt(@tokSpStop, SPSTOP_COUNT, spStopBy), TOKMAX_SPSTOP)
+    benchLog.naNumField(@"at_ms", spAtMs, LIM_SMALL, bSpReached)
+    benchLog.naNumField(@"win_ms", spWinMs, LIM_SMALL, bSpWinValid)
+    benchLog.naNumField(@"l_trk", spTrk[SLOT_LEFT], LIM_SMALL, bSpTrkValid)
+    benchLog.naNumField(@"r_trk", spTrk[SLOT_RIGHT], LIM_SMALL, bSpTrkValid)
+    benchLog.naNumField(@"path_pm", spPathPm, LIM_SMALL, bSpReadsValid)
+    whyField(spWhy)
+    emitRecord()
+
+PRI emitSpinW(legIdx, slotIdx) | bWin, mSign, whyCode
+' BM-SPINW: one wheel's leg -- THE LOADED CURRENT BY DIRECTION. The direction it RAN (m_sign, from its raw travel: +1 is
+' the positive increments a RIGHT leg commands) and that travel; over the steady window its mean sense_i (mV x10) and
+' peak, its mean getCurrent() net of the rest zero (A x 10_000), duty and its peak, the signed mean err and the |err|
+' peak, and its rate (ticks/s x10); at the window's end its two following readings, whether its lag limiter held lately,
+' and the pair it applied. Worst case 277 bytes.
+'
+' @param legIdx - 0..SPIN_LEGS-1
+' @param slotIdx - motor slot
+'
+' @local bWin - the window's statistics are a measurement
+' @local mSign - the raw travel's sign
+' @local whyCode - the first cause of the record's NA fields
+
+    bWin := bSpWinValid and bCpFrozen and (rsN > 0)
+    mSign := 0
+    if spTravel[slotIdx] > 0
+        mSign := SIGN_POS
+    elseif spTravel[slotIdx] < 0
+        mSign := SIGN_NEG
+    whyCode := spWhy
+    if (whyCode == WHY_NONE) and (bWin == FALSE)
+        if bSpReached == FALSE
+            whyCode := WHY_STEADY_TIMEOUT
+        elseif bSpStopBegan or (spinPairKind[legIdx / SPIN_DIRS] == SPKIND_FAULT)
+            whyCode := WHY_NOT_REACHED                      ' the limit fired, or the forced fault came, before a window
+        else
+            whyCode := WHY_NO_SAMPLES
+    recBegin(@"BM-SPINW")
+    benchLog.numField(@"leg", legIdx + 1, LIM_TINY)
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    benchLog.naNumField(@"m_sign", mSign, LIM_TINY, bSpTravelValid)
+    benchLog.naNumField(@"raw", spTravel[slotIdx], LIM_SMALL, bSpTravelValid)
+    benchLog.naNumField(@"i_x10", rsIMeanX10, LIM_MID, bWin)
+    benchLog.naNumField(@"i_max", rsIMax, LIM_SMALL, bWin)
+    benchLog.naNumField(@"amps", spAmpsSum[slotIdx] / (spAmpsN #> 1), LIM_MID, bWin and (spAmpsN > 0))
+    benchLog.naNumField(@"duty", rsDutyMean, LIM_SMALL, bWin)
+    benchLog.naNumField(@"duty_pk", rsDutyPk, LIM_SMALL, bWin)
+    benchLog.naNumField(@"err", rsErrMean, LIM_TINY, bWin)
+    benchLog.naNumField(@"err_pk", rsErrPk, LIM_TINY, bWin)
+    benchLog.naNumField(@"rate_x10", rsRateX10, LIM_MID, bWin)
+    benchLog.naNumField(@"fol_pct", spFolPct[slotIdx], LIM_SMALL, bSpReadsValid and (bSpFolOk[slotIdx] <> FALSE))
+    benchLog.naNumField(@"fol_pm", spFolPm[slotIdx], LIM_SMALL, bSpReadsValid)
+    benchLog.boolField(@"short", bSpShort[slotIdx])
+    benchLog.naNumField(@"off_neg", spOffNeg[slotIdx], LIM_TINY, bSpReadsValid)
+    benchLog.naNumField(@"off_pos", spOffPos[slotIdx], LIM_TINY, bSpReadsValid)
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitSpinStart(legIdx, slotIdx) | whyCode
+' BM-SPINSTART: one wheel's START on a quarter-speed confirmed-pair leg (spStartStats()) -- trace k of its first
+' AT_SPEED sample and of duty leaving its floor for good, duty's running maximum and largest fall from it (A-1, per
+' mille), the current peak, the tail's mean (mV x10) and samples, and their ratio (A-2, x100). Worst case 199 bytes.
+'
+' @param legIdx - 0..SPIN_LEGS-1
+' @param slotIdx - motor slot
+'
+' @local whyCode - NOT_REACHED when the capture held no AT_SPEED sample or no positive tail
+
+    whyCode := WHY_NONE
+    if bSpStartOk[slotIdx] == FALSE
+        whyCode := WHY_NOT_REACHED
+    recBegin(@"BM-SPINSTART")
+    benchLog.numField(@"leg", legIdx + 1, LIM_TINY)
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    benchLog.naNumField(@"at_k", spAtK[slotIdx], LIM_SMALL, bSpStartOk[slotIdx])
+    benchLog.naNumField(@"leave_k", spLeaveK[slotIdx], LIM_SMALL, bSpStartOk[slotIdx])
+    benchLog.naNumField(@"run_max", spRunMax[slotIdx], LIM_SMALL, bSpStartOk[slotIdx])
+    benchLog.naNumField(@"drop_pm", spDropPm[slotIdx], LIM_SMALL, bSpStartOk[slotIdx])
+    benchLog.naNumField(@"pk_i", spPeakI[slotIdx], LIM_SMALL, bSpStartOk[slotIdx])
+    benchLog.naNumField(@"tail_x10", spTailX10[slotIdx], LIM_MID, bSpStartOk[slotIdx])
+    benchLog.naNumField(@"ratio_x100", spRatioX100[slotIdx], LIM_SMALL, bSpStartOk[slotIdx])
+    benchLog.naNumField(@"tail_n", spTailN[slotIdx], LIM_SMALL, bSpStartOk[slotIdx])
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitCreep(kind) | ceilPct
+' BM-CREEP: one creep trial -- its number (1-based) and kind, the lifetime, the ceiling it set and testSetHoldLimits()'s
+' return (NA for the coast, which sets none), the watch's length and creep bound, what ended the watch (stop_by),
+' whether he released the platform and how long after the RELEASE screen he clicked DONE. Worst case 185 bytes.
+'
+' @param kind - CRK_*
+'
+' @local ceilPct - the ceiling the trial set, % of duty_max
+
+    ceilPct := CREEP_CEIL_PCT
+    if kind == CRK_LOWCEIL
+        ceilPct := CREEP_LOW_CEIL_PCT
+    recBegin(@"BM-CREEP")
+    benchLog.numField(@"trial", kind + 1, LIM_TINY)
+    benchLog.tokenField(@"kind", tokenAt(@tokCrk, CRK_COUNT, kind), TOKMAX_CRK)
+    benchLog.naNumField(@"sid", crSid, LIM_SMALL, crSid > 0)
+    benchLog.naNumField(@"ceil_pct", ceilPct, LIM_TINY, kind <> CRK_COAST)
+    benchLog.naNumField(@"set_err", crSetErr, LIM_SMALL, (kind <> CRK_COAST) and (crSid > 0))
+    benchLog.naNumField(@"win_ms", crWinMs, LIM_SMALL, bCrReleased)
+    benchLog.naNumField(@"bound", crBoundTicks, LIM_TINY, bCrReleased)
+    benchLog.tokenField(@"stop_by", tokenAt(@tokCrStop, CRSTOP_COUNT, crStopBy), TOKMAX_CRSTOP)
+    benchLog.boolField(@"released", bCrReleased)
+    benchLog.naNumField(@"rel_ms", crReleaseMs, LIM_SMALL, bCrReleased)
+    whyField(crWhy)
+    emitRecord()
+
+PRI emitCreepW(kind, slotIdx) | bWin, whyCode
+' BM-CREEPW: one wheel of a creep trial -- WHAT SIZES HOLD_CEILING_PCT UNDER LOAD. How the hold resolved (state, HS_*)
+' and the driver's own displacement; the creep on the instrument's hall decode since the release (creep) and while
+' HOLDING (h_creep); the ceiling in force, the largest and the last hold duty, the longest time at the ceiling (ms), the
+' slip and limit events; over the watch its mean sense_i (mV x10), its mean getCurrent() net of the rest zero (A x
+' 10_000), and the samples behind the sense mean. Worst case 274 bytes.
+'
+' @param kind - CRK_*
+' @param slotIdx - motor slot
+'
+' @local bWin - the watch's ring statistics are a measurement
+' @local whyCode - the first cause of the record's NA fields, or of a hold reading that judges nothing
+
+    bWin := bCrFrozen and (rsN > 0)
+    whyCode := crWhy
+    if (whyCode == WHY_NONE) and (kind == CRK_HOLD) and bCrReleased and (bCreepMeasured(slotIdx) == FALSE)
+        whyCode := WHY_NOT_REACHED                          ' the coast control never ran to its release
+        if bSfCrCoastRan
+            whyCode := WHY_NO_INCLINE_LOAD                  ' it ran and did not roll: the incline does not load the hold
+    recBegin(@"BM-CREEPW")
+    benchLog.numField(@"trial", kind + 1, LIM_TINY)
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    benchLog.tokenField(@"state", tokenAt(@tokHold, HS_COUNT, crState[slotIdx]), TOKMAX_HOLD)
+    benchLog.naNumField(@"disp", crDisp[slotIdx], LIM_SMALL, bCrPolled)
+    benchLog.naNumField(@"creep", crCreep[slotIdx], LIM_TINY, bCrReleased)
+    benchLog.naNumField(@"h_creep", crHoldCreep[slotIdx], LIM_TINY, bCrReleased)
+    benchLog.naNumField(@"ceil_duty", crCeilDuty[slotIdx], LIM_SMALL, bCrPolled)
+    benchLog.naNumField(@"duty_pk", crDutyPk[slotIdx], LIM_SMALL, bCrPolled)
+    benchLog.naNumField(@"duty_end", crDutyEnd[slotIdx], LIM_SMALL, bCrPolled)
+    benchLog.naNumField(@"ceil_ms", crCeilMs[slotIdx], LIM_SMALL, bCrPolled)
+    benchLog.naNumField(@"slips", crSlips[slotIdx], LIM_TINY, bCrPolled)
+    benchLog.naNumField(@"limits", crLimits[slotIdx], LIM_TINY, bCrPolled)
+    benchLog.naNumField(@"i_x10", rsIMeanX10, LIM_MID, bWin)
+    benchLog.naNumField(@"amps", crAmpsSum[slotIdx] / (crAmpsN #> 1), LIM_MID, crAmpsN > 0)
+    benchLog.naNumField(@"n", rsN, LIM_SMALL, bWin)
+    whyField(whyCode)
+    emitRecord()
+
 CON { --- ALIGN: the hall zero measured cold, cog 0, the bridge never driven (task 3590) --- }
 
 VAR { ALIGN tier state -- cog 0 only }
@@ -13901,6 +16056,9 @@ PRI emitHeaderRecords() | orderIdx
             emitPlan(SEG_FLTPLAT, 3)
         PART_START:
             emitPlan(SEG_SKCHECK, 1)
+        PART_SPIN:
+            emitPlan(SEG_SPIN, 1)
+            emitPlan(SEG_CREEP, 2)
     if PART_ID == PART_A
         repeat orderIdx from 0 to LADDER_RUNGS - 1
             emitLadder(orderIdx)
@@ -13911,6 +16069,8 @@ PRI emitHeaderRecords() | orderIdx
         emitSkBuild()
         if BUILD_NO_WALK
             emitNotBuilt(@sSfCellSkWalk, @sSfStudyB5, WHY_PART_NOT_BUILT)
+    if PART_ID == PART_SPIN                                 ' task 3591: the limit's derivation, every leg and every band, before anything moves
+        emitSpinHeader()
     beat(CP_EMIT)
     debug(zstr_(@sPanicLine))
     beat(CP_EMIT)
@@ -14033,8 +16193,12 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     ' Task 3613, the START part. SKCHECK: SK_LIVES steering lifetimes of about 3.5 s -- START_SPACING_MS, the ~1.2 s
     '  start (its own ~1 s rest zero and the ~40 ms checks per wheel), the reads and a ZERO_WINDOW_MS window -- and
     '  SK_WALKS walks of about 1.5 s with their rest confirm; no trace. About 1.3 KB of records a lifetime.
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 45)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 15)
+    ' Task 3591, the SPIN part, whose time is mostly the OPERATOR's. SPIN: twelve legs, each a READY screen he clicks
+    '  (call it 5 s), a leg of 3-9 s and its records, plus six steering starts and two FAULT_COOL_MS cool-downs --
+    '  about 240 s; four traces at TRACE_EMIT_MAX lines (the quarter's two START legs and the two fault legs) and about
+    '  1 KB of records a leg. CREEP: carrying the platform to the incline, then three trials of about 40 s each.
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 45, 240, 180)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 15, 400, 6)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -15211,6 +17375,8 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallX
         PART_START:
             pCell := @sSfCellNoStallS
+        PART_SPIN:
+            pCell := @sSfCellNoStallP
         other:
             pCell := @sUnknownTok
 
@@ -15246,6 +17412,8 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskX
         PART_START:
             pCell := @sSfCellDbgMaskS
+        PART_SPIN:
+            pCell := @sSfCellDbgMaskP
         other:
             pCell := @sUnknownTok
 
@@ -15418,6 +17586,28 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellSkProbe)
                 emitSignoffDecl(@sSfCellSkWalk)
                 emitSignoffDecl(@sSfCellSkPack)
+            PART_SPIN:
+                emitSignoffDecl(@sSfCellNoStallP)
+                emitSignoffDecl(@sSfCellDbgMaskP)
+                emitSignoffDecl(@sSfCellTracesP)
+                emitSignoffDecl(@sSfCellRstProvP)
+                emitSignoffDecl(@sSfCellLagP)
+                emitSignoffDecl(@sSfCellSpStop)
+                emitSignoffDecl(@sSfCellSpOff)
+                emitSignoffDecl(@sSfCellSpDir)
+                emitSignoffDecl(@sSfCellSpHunt)
+                emitSignoffDecl(@sSfCellSpErr)
+                emitSignoffDecl(@sSfCellSpStrt)
+                emitSignoffDecl(@sSfCellSpPeak)
+                emitSignoffDecl(@sSfCellSpFol)
+                emitSignoffDecl(@sSfCellSpSym)
+                emitSignoffDecl(@sSfCellSpCtl)
+                emitSignoffDecl(@sSfCellSpLead)
+                emitSignoffDecl(@sSfCellSpPlat)
+                emitSignoffDecl(@sSfCellCrCoast)
+                emitSignoffDecl(@sSfCellCrLow)
+                emitSignoffDecl(@sSfCellCreep)
+                emitSignoffDecl(@sSfCellCrHold)
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
@@ -15460,6 +17650,9 @@ PRI emitSignoffs() | slotIdx, side
 '         faulted); B4PULSE NOT_BUILT (emitFaultRespCells())
 '  START  NOSTALL BOOL; DBGMASK BOOL; per motor HEALTH, RZSPREAD, PROBE and WALK COUNT (WALK NOT_BUILT in the
 '         START_NO_WALK build) and PRBFLR MV, the control before the probe; PACK COUNT (emitStartCells())
+'  SPIN   NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; SPINSTOP, SPINOFF, SPINDIR COUNT and CRPCOAST, CRPLOW TICKS (BOTH);
+'         per motor RSTPROV, SPINHUNT, SPINERR COUNT, SPINSTRT PERMILLE, SPINPEAK, SPINSYM, SPINCTL, SPINLEAD X100,
+'         SPINFOL COUNT, SPINPLAT PCT, CREEP TICKS, CRPHOLD BOOL; LAGBOUND COUNT per motor (emitSpinCells())
 '
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
@@ -15543,6 +17736,9 @@ PRI emitSignoffs() | slotIdx, side
                 emitFaultRespCells()
             PART_START:
                 emitStartCells()
+            PART_SPIN:
+                emitSpinCells()
+                emitLagCells(@sSfCellLagP)
 
 PRI emitIdleMoveCell(pCell, slotIdx)
 ' IDLEMOVE (task 3572): the other wheel's largest travel over every motor-frame trace this motor was primary in.

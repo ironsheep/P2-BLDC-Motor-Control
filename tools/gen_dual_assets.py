@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Generate the DEBUG PLOT assets for src/test_bench_dual.spin2's operator panel (window bmpanel), drawn
 by the attended OUTSIDE segment (-D DUAL_PART_BRAKE, bench-run.sh tier dual-brake) and FLOOR segment
-(-D DUAL_PART_FLOOR, tier dual-floor), and by the no-motor-control UICHECK walkthrough (-D DUAL_PART_UICHECK,
+(-D DUAL_PART_FLOOR, tier dual-floor), by the tethered spin-in-place floor tier's SPIN and CREEP segments
+(-D DUAL_PART_SPIN, task 3591), and by the no-motor-control UICHECK walkthrough (-D DUAL_PART_UICHECK,
 tier dual-ui) -- DOCs/plans/MOTION-HARNESS-DESIGN.md sec 8.2 and 8.3, rebuilt per
 DOCs/analyses/ATTENDED-UI-AUDIT-2026-09-15.md sec 6 (PL-64).
+
+Task 3591 added the SPIN and CREEP screens, the DONE button (row 1, key D: "I did what this screen asked", the
+way T0-24's DONE means it -- DOCs/procedures/PLOT-DISPLAY-RULES.md rule 10) and two number labels: LEG, whose
+digits show the running leg number instead of a countdown, and WATCHING. Inserting DONE at index 3 moved
+the row-2 answers and the verdict pair one index on; every Spin2 use names them, so only the generated block
+moves. The DejaVu fallback below is gen_t0stop_assets.py's: the build and doc gates also run on Linux, where
+neither macOS face exists, so without it the panel would render in the bitmap default at one size.
 
 Structured exactly like tools/gen_t0hand_assets.py, and follows the same crop-and-overlay technique in
 DOCs/REF-NO-COMMIT/dbg-display-theory/: layers are loaded once with LAYER; a frame is composed by
@@ -13,8 +21,10 @@ DAT screen table of the same numbers, and writes the run sheet's screen list, so
 the run sheet cannot drift. The BM_* block and the bmScreens table in test_bench_dual.spin2 are byte-for-byte
 what con_block() and dat_block() print; if anything here changes, re-run this script and re-paste.
 
-    python3 tools/gen_dual_assets.py            # write src/bm_*.bmp and the screen list, print CON + DAT
-    python3 tools/gen_dual_assets.py --preview  # also write PNGs for visual check
+    python3 tools/gen_dual_assets.py                    # write src/bm_*.bmp and the screen list, print CON + DAT
+    python3 tools/gen_dual_assets.py --preview          # also write PNGs for visual check
+    python3 tools/gen_dual_assets.py --no-screen-list   # the BMPs and the CON + DAT only; the screen list is
+                                                        #  left as it is (a run that may not touch DOCs/)
 
 Layers (the Spin2 LAYER numbers):
     1 bm_bg.bmp       header, prompt well, state well, countdown wells, empty button frames, footer
@@ -71,8 +81,8 @@ DGT_BLANK = 10
 BTN_W, BTN_H = 108, 36
 BTN_COL0_X, BTN_PITCH = 12, 116
 BTN_ROW1_Y, BTN_ROW2_Y = 156, 198
-BTN_ROW2_FIRST = 3                         # buttons 0..2 on row 1, 3..6 on row 2
-BTN_STRIP_FIRST = 7                        # buttons 7..8 in the verdict strip
+BTN_ROW2_FIRST = 4                         # buttons 0..3 on row 1, 4..7 on row 2 (task 3591: DONE joined row 1)
+BTN_STRIP_FIRST = 8                        # buttons 8..9 in the verdict strip
 BTN_NORMAL, BTN_HILITE = 0, 1              # column in bm_buttons.bmp
 BTN_VARIANTS = 2
 
@@ -87,6 +97,10 @@ CELL_PAD = 8
 FLOOR_RUN_S = 2                            # a brief turn-direction observation (design sec 12.1 Q10)
 FLOOR_POWER = 50
 FLOOR_DIRECTION = 50
+# Task 3591 -- MUST match test_bench_dual.spin2's SPIN_LEGS (the LEG label's range) and SPIN_LEG_DEG (the prompts'
+# "ONE TURN": the travel limit is one revolution of the platform). Regenerate if either changes.
+SPIN_LEGS = 12
+SPIN_LEG_DEG = 360
 
 # State words, in BM_STATE_* order. A screen names its default state; a few screens draw another at run time
 # (a UI check step's progress, and the end screens' outcome).
@@ -110,16 +124,59 @@ STATES = [
     ("LOGGING", "WRITING THE LOG"),
     ("STOPPED_BY_YOU", "STOPPED BY YOU"),
     ("ENDED_EARLY", "ENDED EARLY - SEE THE LOG"),
+    # Task 3591, the SPIN segment. INDEXED BY ARITHMETIC in test_bench_dual.spin2, so the order is the contract
+    #  (check_layout() asserts it): a leg's word is BASE + speed * 2 + direction, speed SLOW, MEDIUM, BRISK and
+    #  direction RIGHT (clockwise seen from above) then LEFT -- SPIN_SPEED_* and SPIN_DIR_* there. NXT_ is the
+    #  READY screen's word, SPN_ the DRIVE screen's. Every name stays within the CON block's 24-column name field.
+    ("NXT_R_SLOW", "NEXT: SPIN RIGHT, SLOW"),
+    ("NXT_L_SLOW", "NEXT: SPIN LEFT, SLOW"),
+    ("NXT_R_MED", "NEXT: SPIN RIGHT, MEDIUM"),
+    ("NXT_L_MED", "NEXT: SPIN LEFT, MEDIUM"),
+    ("NXT_R_BRISK", "NEXT: SPIN RIGHT, BRISK"),
+    ("NXT_L_BRISK", "NEXT: SPIN LEFT, BRISK"),
+    ("SPN_R_SLOW", "SPINNING RIGHT, SLOW"),
+    ("SPN_L_SLOW", "SPINNING LEFT, SLOW"),
+    ("SPN_R_MED", "SPINNING RIGHT, MEDIUM"),
+    ("SPN_L_MED", "SPINNING LEFT, MEDIUM"),
+    ("SPN_R_BRISK", "SPINNING RIGHT, BRISK"),
+    ("SPN_L_BRISK", "SPINNING LEFT, BRISK"),
+    ("FLT_NEXT_R", "NEXT: FAULT LEG, RIGHT"),
+    ("FLT_NEXT_L", "NEXT: FAULT LEG, LEFT"),
+    ("FLT_R", "FAULT LEG: SPINNING RIGHT"),
+    ("FLT_L", "FAULT LEG: SPINNING LEFT"),
+    # SPUN_: the SPIN segment's outcome, drawn on the CREEP segment's first screen (rule 10.4: a step that did not run)
+    ("SPUN_ALL", "SPIN LEGS: ALL RAN"),
+    ("SPUN_EARLY", "SPIN LEGS: ENDED EARLY"),
+    ("SPUN_STOP", "SPIN LEGS: STOPPED BY YOU"),
+    ("SPUN_SKIP", "SPIN LEGS: SKIPPED BY YOU"),
+    ("SPUN_TIMEOUT", "SPIN LEGS: TIMED OUT"),
+    # the CREEP segment: BASE + trial kind, kind COAST, LOWCEIL, HOLD (CRK_* there)
+    ("CRP_COAST", "COAST CONTROL"),
+    ("CRP_LOWCEIL", "LOW-CEILING CONTROL"),
+    ("CRP_HOLD", "HOLD AT THE CEILING"),
+    ("EXP_COAST", "EXPECT: ROLLS DOWNHILL"),
+    ("EXP_LOWCEIL", "EXPECT: SLIPS, THEN DRAGS"),
+    ("EXP_HOLD", "EXPECT: DOES NOT MOVE"),
+    # what a trial did, in the API's own words for the hold (getHoldStatus(): HOLDING, SLIPPED, LIMITED)
+    ("RES_ROLLED", "RESULT: ROLLED, BRAKED"),
+    ("RES_NOROLL", "RESULT: DID NOT ROLL"),
+    ("RES_HOLDING", "RESULT: HOLDING, STILL"),
+    ("RES_CREPT", "RESULT: HOLDING, CREPT"),
+    ("RES_SLIPPED", "RESULT: SLIPPED"),
+    ("RES_LIMITED", "RESULT: LIMITED"),
+    ("RES_NOTRUN", "RESULT: NOT MEASURED"),
 ]
 STATE = {name: idx for idx, (name, _) in enumerate(STATES)}
 
 # Buttons, in BM_BTN_* order: (name, label, key hint). The keys are test_bench_dual.spin2's keyButton() map.
 # LOOKS RIGHT and SOMETHING WRONG are the dual-ui verdict: their keys are used by no attended screen, and they
 # are drawn only in the verdict strip, so no input can both operate a screen and judge it (audit sec 6 item 2).
+# DONE (task 3591) takes row 1's fourth slot: one meaning, "I have done what this screen asks" (rule 10).
 BUTTONS = [
     ("START", "START", "KEY S"),
     ("SKIP", "SKIP", "KEY K"),
     ("STOP", "STOP", "SPACE BAR"),
+    ("DONE", "DONE", "KEY D"),
     ("LEFT", "LEFT", "KEY L"),
     ("RIGHT", "RIGHT", "KEY R"),
     ("STRAIGHT", "STRAIGHT", "KEY T"),
@@ -136,6 +193,10 @@ CD_KINDS = [
     ("DRIVES_AGAIN", "WHEELS DRIVE AGAIN IN (SECONDS)"),
     ("DRIVING_FOR", "DRIVING FOR (SECONDS)"),
     ("CLOSES_IN", "CLOSES IN (SECONDS)"),
+    # task 3591: LEG's digits are the running leg number, 1-based as the run sheet and the log number them, and
+    #  never count down; WATCHING counts the creep window down
+    ("LEG", "LEG NUMBER (1 TO %d)" % SPIN_LEGS),
+    ("WATCHING", "WATCHING FOR (SECONDS)"),
 ]
 CD = {name: idx for idx, (name, _) in enumerate(CD_KINDS)}
 
@@ -204,6 +265,54 @@ SCREENS = [
     ("UI_END",
      "UI CHECK FINISHED -- NO MOTOR RAN. THE RESULT IS BELOW. CLICK START (KEY S) TO CLOSE.",
      "UI_PASSED", ["START"], "CLOSES_IN", "OPER_END_TIMEOUT_MS"),
+    # Task 3591, the tethered spin-in-place floor tier (dual-spin). Every screen says what runs now, the one thing
+    #  to do next, and what he should see; the state line under the prompt names the leg or the trial (its word is
+    #  chosen at run time), and on the LEG screens the digits are the leg number (PLOT-DISPLAY-RULES.md rule 10).
+    ("SPIN_READY",
+     "SPIN LEG READY. STAND OUTSIDE THE CIRCLE THE PLATFORM SWEEPS, TETHER SLACK. CLICK START (KEY S): IT SPINS "
+     "IN PLACE AS THE LINE BELOW SAYS AND STOPS BY ITSELF WITHIN ONE TURN. SKIP (KEY K) ENDS THE SPIN LEGS.",
+     "NXT_R_SLOW", ["START", "SKIP"], "LEG", "OPER_START_TIMEOUT_MS"),
+    ("SPIN_FAULT_READY",
+     "FAULT LEG READY. IT SPINS SLOWLY, THEN ONE WHEEL IS FAULTED ON PURPOSE: YOU SHOULD SEE BOTH WHEELS STOP "
+     "WITHIN A MOMENT. STAND CLEAR. CLICK START (KEY S) TO RUN IT. SKIP (KEY K) ENDS THE SPIN LEGS.",
+     "FLT_NEXT_R", ["START", "SKIP"], "LEG", "OPER_START_TIMEOUT_MS"),
+    ("SPIN_SETUP",
+     "STARTING THE DRIVERS AND SETTING UP THE NEXT LEGS. NOTHING SPINS YET -- STAND CLEAR, THE LEG FOLLOWS AT "
+     "ONCE. STOP (SPACE BAR) CANCELS IT.",
+     "STARTING", ["STOP"], "NONE", "0"),
+    ("SPIN_DRIVE",
+     "SPINNING IN PLACE. YOU SHOULD SEE A STEADY TURN WITH NO DRIFT ACROSS THE FLOOR, THEN A GENTLE STOP BY "
+     "ITSELF WITHIN ONE TURN. STOP (SPACE BAR) STOPS IT NOW.",
+     "SPN_R_SLOW", ["STOP"], "LEG", "SPIN_LEG_MS"),
+    ("SPIN_FAULT_DRIVE",
+     "SPINNING SLOWLY. IN ABOUT TWO SECONDS ONE WHEEL IS FAULTED ON PURPOSE: BOTH WHEELS SHOULD STOP WITHIN A "
+     "MOMENT, THE FAULTED ONE COASTING. STOP (SPACE BAR) STOPS IT NOW.",
+     "FLT_R", ["STOP"], "LEG", "SPIN_LEG_MS"),
+    ("CREEP_MOVE",
+     "NOW THE INCLINE. CARRY THE PLATFORM ONTO THE INCLINE YOU MEASURED, WHEELS ROLLING STRAIGHT DOWN THE SLOPE, "
+     "AND HOLD IT STILL WITH ONE HAND: ITS WHEELS ROLL FREELY. CLICK START (KEY S) WHILE HOLDING IT. SKIP (KEY K) "
+     "ENDS THE TIER.",
+     "SPUN_ALL", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("CREEP_SETUP",
+     "KEEP HOLDING THE PLATFORM STILL. THE HARNESS IS STARTING THE DRIVERS AND SETTING UP THE TRIAL NAMED BELOW. "
+     "NOTHING MOVES. WAIT FOR THE NEXT SCREEN.",
+     "CRP_COAST", [], "NONE", "0"),
+    ("CREEP_RELEASE",
+     "LET GO OF THE PLATFORM AND KEEP YOUR HAND JUST BELOW IT, THEN CLICK DONE (KEY D). WHAT IT SHOULD DO IS ON "
+     "THE LINE BELOW. STOP (SPACE BAR) BRAKES THE WHEELS AT ONCE.",
+     "EXP_COAST", ["STOP", "DONE"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("CREEP_WATCH",
+     "WATCHING FOR CREEP. HANDS OFF, YOUR HAND NEAR. IF IT ROLLS A FEW CENTIMETRES THE HARNESS BRAKES THE WHEELS "
+     "ITSELF. STOP (SPACE BAR) BRAKES THEM NOW.",
+     "EXP_COAST", ["STOP"], "WATCHING", "CREEP_WIN_MS"),
+    ("CREEP_CATCH",
+     "TAKE HOLD OF THE PLATFORM AGAIN AND KEEP IT STILL, THEN CLICK DONE (KEY D). THE WHEELS ARE THEN SWITCHED "
+     "OFF AND ROLL FREELY, AND THE NEXT TRIAL, IF ANY, SETS UP WHILE YOU HOLD IT.",
+     "RES_HOLDING", ["DONE"], "GIVES_UP", "OPER_ANSWER_TIMEOUT_MS"),
+    ("SPIN_END",
+     "FINISHED. THE RESULT IS BELOW. WHEN THIS PANEL CLOSES THE WHEELS ARE OFF AND ROLL FREELY: IF THE PLATFORM "
+     "IS ON THE INCLINE, HOLD IT OR LIFT IT OFF. CLICK START (KEY S) TO CLOSE.",
+     "DONE", ["START"], "CLOSES_IN", "OPER_END_TIMEOUT_MS"),
 ]
 SCR = {name: idx for idx, (name, *_rest) in enumerate(SCREENS)}
 SCR_PREVIEW_FIRST, SCR_PREVIEW_LAST = SCR["BRAKE_START"], SCR["END"]
@@ -228,6 +337,8 @@ C_INK_DARK = (20, 20, 20)
 FONTS = [
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
     "/System/Library/Fonts/Helvetica.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
 
@@ -348,6 +459,19 @@ def check_layout():
     assert CD_X + CD_COUNT * DGT_W <= PANEL_W, "countdown digits leave the panel"
     assert STATE_Y + STATE_H <= BTN_ROW1_Y, "state row overlaps the buttons"
     assert FOOT_Y + FOOT_H <= PANEL_H, "footer leaves the panel"
+    # task 3591: test_bench_dual.spin2 reaches these state words by BASE + offset, so their order is part of the contract
+    runs = [("NXT_", ["R_SLOW", "L_SLOW", "R_MED", "L_MED", "R_BRISK", "L_BRISK"]),
+            ("SPN_", ["R_SLOW", "L_SLOW", "R_MED", "L_MED", "R_BRISK", "L_BRISK"]),
+            ("FLT_NEXT_", ["R", "L"]), ("FLT_", ["R", "L"]),
+            ("CRP_", ["COAST", "LOWCEIL", "HOLD"]), ("EXP_", ["COAST", "LOWCEIL", "HOLD"])]
+    for prefix, suffixes in runs:
+        base = STATE[prefix + suffixes[0]]
+        for offset, suffix in enumerate(suffixes):
+            assert STATE[prefix + suffix] == base + offset, "state %s%s is out of its arithmetic order" % (prefix, suffix)
+    # every generated name keeps the CON block's alignment (con_block() pads names to 24 columns)
+    for group in con_groups():
+        for name, _value in group:
+            assert len(name) < 24, "generated name %s overruns the CON block's name column" % name
 
 
 def draw_button(d, x, y, label, key, hilite):
@@ -604,10 +728,13 @@ def main():
             png = os.path.join(out, name.replace(".bmp", ".png"))
             img.save(png)
             sys.stderr.write(f"      + {png}\n")
-    list_path = os.path.join(root, SCREEN_LIST_PATH)
-    with open(list_path, "w") as fh:
-        fh.write(screen_list())
-    sys.stderr.write(f"wrote {list_path}\n")
+    if "--no-screen-list" in sys.argv:
+        sys.stderr.write(f"--no-screen-list: {SCREEN_LIST_PATH} left as it is\n")
+    else:
+        list_path = os.path.join(root, SCREEN_LIST_PATH)
+        with open(list_path, "w") as fh:
+            fh.write(screen_list())
+        sys.stderr.write(f"wrote {list_path}\n")
     print(con_block())
     print(dat_block())
 

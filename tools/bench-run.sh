@@ -130,6 +130,7 @@ Usage:  tools/bench-run.sh <tier>
                    dual-fault     motion harness part FAULTRESP: PREFLT, FLTRESP, FLTPLAT -- the fault study's X-cells, faults forced at speed  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-start     motion harness part START: SKCHECK -- 10 starts through the steering object reading every start check; the last 3 call checkWiring() (the platform turns a few degrees in place)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-start-nowalk  as dual-start without checkWiring(): nothing is commanded -- the load for B-1 (hall connector unplugged) and B-3's negative (a motor lead unplugged)  [WHEELS UP, ATTENDED WIRING CHANGE]
+                   dual-spin      motion harness part SPIN: SPIN, CREEP -- WHEELS DOWN, TETHERED: 12 spin-in-place legs of at most one platform turn (2 fault a wheel on purpose), then 3 hold trials on a measured incline  [ATTENDED]
                    dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
                    dual-c         motion harness part C: PREFLT, BASELINE, POSTFLT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-d         motion harness part D: PREFLT, STEERSEG, LIMIT -- the front cog's contract and current limiting  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
@@ -302,6 +303,15 @@ case "$TIER" in
                     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NO_WALK)
                     PRECONDITION="WHEELS UP -- ATTENDED WIRING CHANGE for B-1 or B-3's negative: with the BATTERY DISCONNECTED, unplug ONE wheel's hall connector (B-1) or ONE motor phase lead (B-3) as the run sheet says, then reconnect the battery. Motion harness part START without the walk: the steering object is started and stopped 10 times and no wheel is ever driven. Restore the wiring with the battery disconnected afterwards. Run cap 3 minutes, expected under 1"
+                    ;;
+    # dual-spin (task 3591, plan R18.2c tail and R19.8) -- the tethered spin-in-place FLOOR tier, loaded and attended: the
+    #  release's only loaded measurement. Twelve legs through the steering object, each armed with its own distance stop at
+    #  one revolution of the platform (pi x the 387 mm track = 211 hall ticks) BEFORE it is driven, each clockwise leg
+    #  followed by a counter-clockwise one, two of them faulting a wheel on purpose; then three hold trials on a measured
+    #  incline. No PREFLT: its single-wheel nudge would pivot a platform standing on the floor.
+    dual-spin)      BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN)
+                    PRECONDITION="PLATFORM ON THE FLOOR, WHEELS DOWN, TETHERED -- ATTENDED motion harness part SPIN (SPIN, CREEP): THE PLATFORM SPINS IN PLACE UNDER POWER WITH YOU BESIDE IT. BEFORE THE RUN: a clear level hard floor at least 1 m all round; the tether slack, hung from above the platform centre or with at least 1 m of free length so one full turn cannot pull it; you stand outside the circle the platform sweeps; the incline ready beside it (a rigid ramp at the angle you measured, long enough for the platform plus 10 cm, a stop block at its low end); the incline angle and the platform mass written on the run sheet. TRAVEL LIMIT: every leg is armed, before it moves, with the steering object's own distance stop at ONE REVOLUTION of the platform (pi x 387 mm track = 1_216 mm = 211 hall ticks per tyre), and the harness e-stops any leg 6 ticks past it; each clockwise leg is followed by a counter-clockwise one, so the tether winds at most one turn. Speeds at most power 23 (36.7 x 10^6, about half a platform turn a second). LEGS 11 AND 12 FAULT ONE WHEEL ON PURPOSE at the slow speed: the platform should stop within a moment. Nothing moves until you click START on a READY screen; STOP (click or space bar) is live whenever a wheel can move; the 10 A abort and the fold-back limiter apply. INCLINE (second segment): you carry the platform onto the ramp, wheels rolling straight down the slope, and hold it; the panel says when to let go (click DONE) and when to take hold again (click DONE); the harness brakes a coasting platform after about 17 mm and a creeping one after 35 mm. PANIC: disconnect the battery. Click the bmpanel window first. Run cap 30 minutes, about 5 minutes of run plus your setup"
                     ;;
     dual-brake)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_BRAKE)
