@@ -2746,3 +2746,36 @@ that."*
 The inventory, the experiments and the steps are in [`LIMITS-RESET-PLAN.md`](LIMITS-RESET-PLAN.md), with tasks
 «#3603» (E0: split the feedforward constant from the ceiling), «#3604» (build E1–E4 and the Visit 9 sheet) and
 «#3605» (Visit 9, then move the limits). The loaded margin stays with the floor run («#3591» at «#3576»).
+
+## Sprint Revision — 2026-09-23: R19, the drive ends well — hold, faults, startup — built ahead of the bench
+
+**Why this section exists.** Four tasks opened on 2026-09-23 had no plan section: «#3608» (brake at rest becomes a
+real hold), «#3609» (fault strata), «#3610» (startup self-test) and «#3611» (the 5S voltage sensor). The two desk
+studies then landed (`DOCs/analyses/FAULT-STRATA-STUDY-2026-09-23.md`, `STARTUP-SELFTEST-STUDY-2026-09-23.md`).
+This section gives all of that work a home and a sequence.
+
+**The ruling that shapes it.** STEPHEN, 2026-09-23: *"make sure you have nothing that you could do left in advance
+of any bench run please. bench runs to determine gate values is better than waiting to design algorithm if we
+don't have to wait"* (doctrine overlay P12). So every mechanism below is **built before the bench**:
+- every threshold, ceiling and rate is a named, settable parameter with a stated provisional value;
+- every new behaviour is selectable, so the next visit can compare it against the shipped one, as R18.4's lead
+  table shipped flat;
+- the visit's job is to **size the values and certify** the mechanisms, not to inform their design.
+
+**Sequence** (P10: the drive's core first). Each item builds its own bench cells, a new tier of
+`tools/bench-run.sh`, and each cell states its pre-registered reading and can FAIL.
+
+| # | Work | Task | Parameters the bench sizes |
+|---|---|---|---|
+| R19.1 | **The real hold.** At rest in SM_BRAKE, a hold servo on hall position: duty rises with displacement and time, above a hold setpoint well inside today's 67.5° running setpoint. It has a duty ceiling and a time-at-ceiling limit, then hands off to BR_SHORT and reports slip. The status is **driver-owned** (front 3). | «#3608» | hold setpoint, gain, duty ceiling, time limit, slip ticks |
+| R19.2 | **The platform fault policy** (PL-117). When one wheel faults, the other stops at the user's deceleration instead of driving on. | «#3612» | none (correct by construction) |
+| R19.3 | **Fault response by stratum** (fault study R-1). FC_LAG with legal halls: re-sync the field from the halls and ramp down at the user's deceleration, and fall back to the stop-mode bridge if it faults again. FC_HALL: coast, keeping the back-EMF signal (F-7). A **graded short**: low sides PWM'd at a set duty, high sides off, a new bridge state that caps braking current. The response stays selectable against today's. | «#3609» phase 3 | graded-short duty, re-sync retry count, the default response |
+| R19.4 | **Startup stage 1 and a health report.** Start reports an illegal boot hall code (S-1); the rest zero is judged against a per-revision band (S-2); a phase-voltage continuity pulse (S-5); a TEST-USE bitstream capture of the DC-link rise for winding R (1e); a readable per-check health word. **Stage 2's one-electrical-cycle walk** is an opt-in method. | «#3610» | rest-zero bands, continuity threshold, pulse width and duty |
+| R19.5 | **The pack voltage.** The driver reads Stephen's divider on a user-config pin, **not fitted by default**; an absent sensor reads ABSENT, and the calibration constant is settable. It feeds R19.4's health word. | «#3611» | calibration constant (his pin choice and unit still pending) |
+| R19.6 | **T0-24 rebuilt**: coast timed from the hall signal, the powered-rows-first discriminator, titled buttons. | «#3607» | — |
+| R19.7 | **Visit 10, wheels up**: one pass carrying every R19.1–R19.6 cell plus the fault study's X-cells and the startup study's B-cells. Run sheet first. | «#3613» | — |
+| R19.8 | **The floor tier and Visit 6b**, loaded: confirms the offsets, the hold's creep on a measured incline, and the platform fault policy under load. | «#3591», «#3576» | hold ceiling under load |
+
+**What stays his.** Once Visit 10 has sized the values, each new response goes to him with its measure of benefit
+before it becomes the default (P5): the per-stratum fault response, the graded short, and the startup levels
+and their defaults. E-stop stays a hard short by his ruling.
