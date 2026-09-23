@@ -69,6 +69,12 @@ CON { forward our interface constants }
     FC_LAG          = ltWheel.FC_LAG
     FC_HALL         = ltWheel.FC_HALL
 
+  ' Hold State Enum (getHoldStatus())
+    HS_OFF          = ltWheel.HS_OFF
+    HS_HOLDING      = ltWheel.HS_HOLDING
+    HS_SLIPPED      = ltWheel.HS_SLIPPED
+    HS_LIMITED      = ltWheel.HS_LIMITED
+
   ' Driver State Enum
     DCS_Unknown     = ltWheel.DCS_Unknown
     DCS_STOPPED     = ltWheel.DCS_STOPPED
@@ -654,6 +660,47 @@ PUB testSetCurrentLimits(peakAmps, contAmps) : eError | eStatus, eLeftStatus, eR
         eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_LIMITS, BOTH_MOTORS, peakAmps, contAmps, 0)
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
+PUB testSetHoldLimits(ceilingPct, riseMs, limitMs) : eError | eStatus, eLeftStatus, eRightStatus
+'' TEST USE: replace both wheels' hold limits at rest (holdAtStop(TRUE)), so a bench run can size them
+''
+'' @param ceilingPct - the hold's duty ceiling, % of the drive's full duty [1..100]
+'' @param riseMs - ms from the minimum duty to the ceiling while a wheel stays displaced [1..HOLD_RISE_MS_MAX]
+'' @param limitMs - ms at the ceiling before the hold hands off to the phase short [1..HOLD_LIMIT_MS_MAX]
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
+
+' Local Variables:
+' @local eStatus - the front cog's platform status
+' @local eLeftStatus - the front cog's status for the left wheel
+' @local eRightStatus - the front cog's status for the right wheel
+
+    if (ceilingPct < 1) or (ceilingPct > 100) or (riseMs < 1) or (riseMs > ltWheel.HOLD_RISE_MS_MAX) or (limitMs < 1) or (limitMs > ltWheel.HOLD_LIMIT_MS_MAX)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_HOLD, BOTH_MOTORS, ceilingPct, riseMs, limitMs)
+        eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
+
+PUB testLeftGetHold() : nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents
+'' TEST USE: the LEFT wheel's hold internals (the motor object's testGetHold())
+''
+'' @returns nHoldDuty - the duty the driver applies at rest now
+'' @returns nCeilDuty - the hold's duty ceiling
+'' @returns nCeilPasses - consecutive front passes (ms) the hold has spent at its ceiling
+'' @returns nSlipEvents - holds ended by a slip since start
+'' @returns nLimitEvents - holds ended by the time limit since start
+
+    nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents := ltWheel.testGetHold()
+
+PUB testRightGetHold() : nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents
+'' TEST USE: the RIGHT wheel's hold internals (the motor object's testGetHold())
+''
+'' @returns nHoldDuty - the duty the driver applies at rest now
+'' @returns nCeilDuty - the hold's duty ceiling
+'' @returns nCeilPasses - consecutive front passes (ms) the hold has spent at its ceiling
+'' @returns nSlipEvents - holds ended by a slip since start
+'' @returns nLimitEvents - holds ended by the time limit since start
+
+    nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents := rtWheel.testGetHold()
+
 CON { --- Subsystem Status --- }
 
 PUB getError() : eError, eLeftError, eRightError | nEvents
@@ -742,6 +789,17 @@ PUB getFaultCause() : eLeftCause, eRightCause
 
     eLeftCause := ltWheel.getFaultCause()
     eRightCause := rtWheel.getFaultCause()
+
+PUB getHoldStatus() : eLeftState, nLeftDisplacement, eRightState, nRightDisplacement
+'' Return what each wheel's hold at rest is doing (holdAtStop(TRUE)), and how far the load has moved each wheel from where it stopped
+''
+'' @returns eLeftState - the left wheel's HS_HOLDING, HS_SLIPPED or HS_LIMITED (handed off to the phase short), or HS_OFF when not holding
+'' @returns nLeftDisplacement - hall ticks the left wheel has moved from its stop position this rest, signed; 0 when not holding
+'' @returns eRightState - the right wheel's hold state, the same way
+'' @returns nRightDisplacement - the right wheel's displacement, the same way
+
+    eLeftState, nLeftDisplacement := ltWheel.getHoldStatus()
+    eRightState, nRightDisplacement := rtWheel.getHoldStatus()
 
 PUB getHallIllegalCodes() : nLtAllLow, nLtAllHigh, nRtAllLow, nRtAllHigh
 '' Return each motor's illegal hall codes split by kind since the motors were last started: all three lines low, and all three high
@@ -1757,6 +1815,8 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         if (bLeftBlocked == TRUE) or (bRightBlocked == TRUE)
             ltWheel.frontProtectiveStop(ERR_PLATFORM_BLOCKED)
             rtWheel.frontProtectiveStop(ERR_PLATFORM_BLOCKED)
+        ltWheel.frontHold()                                                     ' R19.1: each wheel's hold at rest, after this pass's stops
+        rtWheel.frontHold()
         showDriveStatesOnChange()
         LALOOPEND()
 
@@ -2057,6 +2117,11 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                 ltWheel.frontSetCurrentLimits(nArg1, nArg2)
             if bRight == TRUE
                 rtWheel.frontSetCurrentLimits(nArg1, nArg2)
+        ltWheel.REQ_SET_HOLD:
+            if bLeft == TRUE
+                ltWheel.frontSetHoldLimits(nArg1, nArg2, nArg3)
+            if bRight == TRUE
+                rtWheel.frontSetHoldLimits(nArg1, nArg2, nArg3)
         ltWheel.REQ_SET_TIMEOUT:
             cmdTimeoutMs := nArg1
             lastDriveMs := getms()                                              ' the clock starts now, never from a stale command

@@ -89,6 +89,10 @@ command reporting its result.
 - holdAtStop(false) coasts with all bridge transistors off; a fault coasts or
   brakes as holdAtStop() selects; emergencyCutoff() brakes and latches until
   clearEmergency()
+- holdAtStop(true) holds a stopped wheel with as much effort as its load
+  needs, up to a ceiling; if the load moves the wheel past the hold, or the
+  hold stays at its ceiling too long, it shorts the phases instead.
+  getHoldStatus() reports which
 - getStatus() reports DS_FAULTED and DS_ESTOP
 - getCurrent() reads zero at rest; start() blocks about 1 s to calibrate it
 - The three hall sensors are read at one instant, so a switching transient

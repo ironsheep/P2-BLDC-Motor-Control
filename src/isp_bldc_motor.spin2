@@ -81,6 +81,13 @@ CON { Public Interface Constants }
     '  FC_HALL - a hall sensor read an illegal code (%000 or %111) at the fault: dead, unpowered or disconnected
     #0, FC_NONE, FC_LAG, FC_HALL
 
+    ' Hold State Enum (getHoldStatus()): what the hold at rest is doing (holdAtStop(TRUE))
+    '  HS_OFF      - not holding: moving, holdAtStop(FALSE), faulted, emergency-stopped or not started
+    '  HS_HOLDING  - at rest and holding its stop position, with only as much effort as the load needs
+    '  HS_SLIPPED  - the load moved the wheel past the hold; the phases are shorted (a speed-dependent drag)
+    '  HS_LIMITED  - held at its effort ceiling longer than the time limit; the phases are shorted
+    #0, HS_OFF, HS_HOLDING, HS_SLIPPED, HS_LIMITED
+
     MOTOR_ID_STRLEN = 10
 
     ' Error codes: every command method returns NO_ERROR or one of these, and records it for getError().
@@ -424,8 +431,12 @@ PUB holdAtStop(bEnable) : eError
 ''
 '' PL-58: chooses hold or release only at rest. Every stop commanded from speed follows the driver's own ramp
 '' regardless of this setting; MEASURED (Visit 2) both settings take the same distance to stop from a given speed.
-'' Coast turns all six bridge FETs off. On a fault the motor coasts (bEnable=false) or brakes (bEnable=true):
-'' a faulted driver has lost the rotor, so it cannot hold a position. emergencyCutoff() always brakes.
+'' Coast turns all six bridge FETs off. The hold keeps the wheel where it stopped, spending only the effort the
+'' load pushes back with: the more a slope or a push moves the wheel, the harder it holds, up to a ceiling. If the
+'' load moves the wheel past the hold, or it holds at its ceiling too long, it shorts the motor phases instead (a
+'' drag that grows with speed but cannot hold a wheel still) and getHoldStatus() says which. On a fault the motor
+'' coasts (bEnable=false) or brakes (bEnable=true): a faulted driver has lost the rotor, so it cannot hold a
+'' position. emergencyCutoff() always brakes.
 ''
 '' @param bEnable - T/F where T means hold position at rest and F means coast
 '' @returns eError - NO_ERROR
@@ -755,6 +766,34 @@ PUB testSetCurrentLimits(peakAmps, contAmps) : eError
     else
         eError := recordError(postRequest(REQ_SET_LIMITS, peakAmps, contAmps, 0))
 
+PUB testSetHoldLimits(ceilingPct, riseMs, limitMs) : eError
+'' TEST USE: replace the hold's limits at rest (holdAtStop(TRUE)), so a bench run can size them
+''
+'' @param ceilingPct - the hold's duty ceiling, % of the drive's full duty [1..100]
+'' @param riseMs - ms from the minimum duty to the ceiling while the wheel stays displaced [1..HOLD_RISE_MS_MAX]
+'' @param limitMs - ms at the ceiling before the hold hands off to the phase short [1..HOLD_LIMIT_MS_MAX]
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
+
+    if (ceilingPct < 1) or (ceilingPct > 100) or (riseMs < 1) or (riseMs > HOLD_RISE_MS_MAX) or (limitMs < 1) or (limitMs > HOLD_LIMIT_MS_MAX)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        eError := recordError(postRequest(REQ_SET_HOLD, ceilingPct, riseMs, limitMs))
+
+PUB testGetHold() : nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents
+'' TEST USE: the hold's internals, to judge a bench cell (R19.1)
+''
+'' @returns nHoldDuty - the duty the driver applies at rest now
+'' @returns nCeilDuty - the hold's duty ceiling
+'' @returns nCeilPasses - consecutive front passes (ms) the hold has spent at its ceiling
+'' @returns nSlipEvents - holds ended by a slip since start
+'' @returns nLimitEvents - holds ended by the time limit since start
+
+    nHoldDuty := hold_duty
+    nCeilDuty := holdCeilDuty
+    nCeilPasses := holdCeilPasses
+    nSlipEvents := holdSlipEvents
+    nLimitEvents := holdLimitEvents
+
 PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue, ticsPerRotation
 '' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
 ''
@@ -959,6 +998,15 @@ PUB getStatus() : eStatus
             eStatus := DS_OFF
     elseif isReady()
         eStatus := DS_MOVING
+
+PUB getHoldStatus() : eHoldState, nDisplacement
+'' Return what the hold at rest is doing (holdAtStop(TRUE)), and how far the load has moved the wheel from where it stopped
+''
+'' @returns eHoldState - HS_HOLDING while holding; HS_SLIPPED or HS_LIMITED when the hold has handed off to the phase short (the load moved the wheel past the hold, or it held at its ceiling too long); HS_OFF when not holding
+'' @returns nDisplacement - hall ticks from the stop position this rest, signed; 0 when not holding
+
+    eHoldState := holdState
+    nDisplacement := holdDisp
 
 PUB getDriverState() : eDrvrState
 '' Return Enum [DCS_*] value representing state of driver
@@ -1933,6 +1981,60 @@ PUB frontSetCurrentLimits(peakAmps, contAmps)
     bDerated := FALSE
     i_limit_k := currentLimitK(limitPeakA)
 
+PUB frontSetHoldLimits(ceilingPct, riseMs, limitMs)
+'' FRONT COG ONLY (or init(), before the front cog starts): replace the hold's limits (R19.1)
+''
+'' @param ceilingPct - the hold's duty ceiling, % of duty_max [1..100]
+'' @param riseMs - ms from duty_min to the ceiling while the wheel stays displaced [1..HOLD_RISE_MS_MAX]
+'' @param limitMs - ms at the ceiling before the hold hands off to the phase short [1..HOLD_LIMIT_MS_MAX]
+
+    holdCeilDuty := muldiv64(duty_max, ceilingPct, 100) #> duty_min
+    holdRiseStep := ((holdCeilDuty - duty_min) / muldiv64(riseMs, FRONT_LOOP_HZ, MS_PER_SEC)) #> 1
+    holdLimitPasses := muldiv64(limitMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1
+
+PUB frontHold() | nowPos
+'' FRONT COG ONLY: once per pass -- the hold at rest in SM_BRAKE (R19.1)
+''
+'' At rest the driver keeps the field at the stop angle, a spring whose torque grows with the rotor's
+'' displacement. While the hall position is off the hold position this raises the duty the driver applies,
+'' up to holdCeilDuty, and never lowers it within one rest, so a held load does not hunt. A displacement of
+'' HOLD_SLIP_TICKS, or holdLimitPasses at the ceiling, hands the hold off to the phase short (the driver's
+'' restBridge); that is reported through getHoldStatus() and stays until the next command.
+
+' Local Variables:
+' @local nowPos - the driver's hall position this pass
+
+    if (drv_state <> DCS_STOPPED) or (stop_mode <> SM_BRAKE)
+        ' not holding: the next rest starts a new hold, and the driver at rest applies duty_min
+        holdState := HS_OFF
+        bHoldArmed := FALSE
+        hold_short := FALSE
+        hold_duty := duty_min
+        holdDisp := 0
+    else
+        nowPos := pos
+        if bHoldArmed == FALSE
+            bHoldArmed := TRUE                                                  ' this rest's hold position is where it stopped
+            holdPos := nowPos
+            holdCeilPasses := 0
+            hold_duty := duty_min
+            holdState := HS_HOLDING
+        holdDisp := nowPos - holdPos
+        if holdState == HS_HOLDING                                              ' a handed-off hold stays shorted until the next command
+            if abs(holdDisp) >= HOLD_SLIP_TICKS
+                hold_short := TRUE
+                holdState := HS_SLIPPED
+                holdSlipEvents++
+            else
+                if holdDisp <> 0
+                    hold_duty := (hold_duty + holdRiseStep) <# holdCeilDuty
+                if hold_duty < holdCeilDuty
+                    holdCeilPasses := 0
+                elseif ++holdCeilPasses >= holdLimitPasses
+                    hold_short := TRUE
+                    holdState := HS_LIMITED
+                    holdLimitEvents++
+
 PUB frontEStop(bEStop)
 '' FRONT COG ONLY: latch (T) or release (F) this motor's emergency stop; a zero command is written either way
 ''
@@ -2470,6 +2572,14 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     bDerated := FALSE
     blockedPasses := 0
     blockedPos := 0
+    ' R19.1: no hold before the front cog runs, so the driver at rest applies duty_min exactly as before
+    hold_duty := duty_min
+    hold_short := FALSE
+    holdState := HS_OFF
+    bHoldArmed := FALSE
+    holdSlipEvents := 0
+    holdLimitEvents := 0
+    frontSetHoldLimits(HOLD_CEILING_PCT, HOLD_RISE_MS, HOLD_LIMIT_MS)             ' before the front cog exists, so no race
 
 
 VAR { * user request values * }
@@ -3004,7 +3114,7 @@ PRI isAbiLayoutValid() : bValid
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
     ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd
-    bValid &= (@duty_floor - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    bValid &= (@hold_short - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -3025,7 +3135,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@duty_floor - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@hold_short - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -3034,8 +3144,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@duty_floor
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @duty_floor))
+    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@hold_short
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @hold_short))
 
 CON ' --- HDMI Debug Support ---
 
@@ -3191,6 +3301,7 @@ CON ' -- TASK: the front cog --
     FRONT_PARK_MS          = 1_000      ' period of the parked front cog's idle wait after EXIT
     LATE_MARGIN_US         = 100        ' a pass with less than this left before its slot ends is late: waitct() is skipped
     US_PER_SEC             = 1_000_000
+    MS_PER_SEC             = 1_000
 
   ' STACK_SIZE_LONGS was 48; the call depth grew by about one frame (an owner's front cog -> frontDrive()
   '  -> incrementForPower() -> map()), and the stack need per frame is not established, so it is doubled
@@ -3241,8 +3352,9 @@ CON { front cog requests }
     '  REQ_CLEAR_PROTECT  - release a protective stop: clear the cause, then as REQ_CLEAR_ESTOP
     '  REQ_SET_LIMITS     - arg1 peak amps, arg2 continuous amps: replace the current limits (TEST-USE)
     '  REQ_SET_TIMEOUT    - arg1 ms, or CMD_TIMEOUT_OFF: set the command timeout and restart its clock (S-8)
+    '  REQ_SET_HOLD       - arg1 ceiling %, arg2 rise ms, arg3 limit ms: replace the hold's limits (TEST-USE, R19.1)
     '  REQ_EXIT           - answer every open request, acknowledge, and park (stop())
-    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_EXIT
+    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_SET_HOLD, REQ_EXIT
 
     ' The order a pass applies requests in, by class:
     '  REQ_CLASS_ESTOP - REQ_ESTOP, first, so an e-stop posted with a drive in the same pass refuses the drive
@@ -3435,6 +3547,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
             frontZeroPower()                                                    ' S-8: stopped as stopMotor() stops, so holdAtStop() applies
         if bFrontProtect() == TRUE                                               ' S-2: current derate; a blocked motor latches a protective stop
             frontProtectiveStop(ERR_PLATFORM_BLOCKED)
+        frontHold()                                                             ' R19.1: the hold at rest, after this pass's stops
         LALOOPEND()                                                             ' let LA know end of loop
 
         ' 4. accounting, then the absolute schedule
@@ -3617,6 +3730,8 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
                 eStatus, bDidWait := frontClearEStopAndWait()                       ' zero command first, then the latch released
         REQ_SET_LIMITS:
             frontSetCurrentLimits(nArg1, nArg2)
+        REQ_SET_HOLD:
+            frontSetHoldLimits(nArg1, nArg2, nArg3)
         REQ_SET_TIMEOUT:
             cmdTimeoutMs := nArg1
             lastDriveMs := getms()                                              ' the clock starts now, never from a stale command
@@ -4139,17 +4254,18 @@ CON { driver internal Constants }
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 19
-    DRVR_PARAMS_LONGS_COUNT     = 16
+    DRVR_PARAMS_LONGS_COUNT     = 18
 
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 7         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 8         ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
                                             ' 6: the feedforward's slope is held when duty_max moves; the DUTY_MAX_SVM build variant (task 3604)
                                             ' 7: the clip-free duty ceiling is the drive; the 6.5in ceilings 12 % higher, the floor 5.4x lower (task 3605)
+                                            ' 8: the hold at rest follows the load, then hands off to the phase short and reports it (task 3608)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4171,6 +4287,17 @@ CON { driver internal Constants }
     SERVO_ACC_SHIFT             = 14        ' the trim's gain (init() loads servo_shift from it)
     HOLD_DECAY_SHIFT            = 6         ' D-5: a held pass takes 1/64 off drv_incr, a 33 ms time constant
     SHORT_SLOTS                 = 4         ' D-6: a motor held in any of the last 4 slots (32 ms) is SHORT
+    ' R19.1 (task 3608): the hold at rest in SM_BRAKE. The field stays at the stop angle, a spring whose restoring
+    '  torque grows with the rotor's displacement; the front cog raises the duty while the hall position is off
+    '  the hold position, up to a ceiling, and falls back to the phase short on a slip or after the time limit.
+    '  PROVISIONAL values, each settable (testSetHoldLimits()); Visit 10 and the floor run size them.
+    HOLD_CEILING_PCT            = 10        ' the hold's duty ceiling, % of duty_max
+    HOLD_RISE_MS                = 250       ' ms from duty_min to the ceiling while the wheel stays displaced
+    HOLD_SLIP_TICKS             = 2         ' hall ticks off the hold position that count as a slip: 120 deg electrical,
+                                            '  a physical margin below the pole slip (the driver's fault test trips near 3)
+    HOLD_LIMIT_MS               = 10_000    ' ms at the ceiling before the hold hands off to the phase short
+    HOLD_LIMIT_MS_MAX           = 600_000   ' the longest time limit testSetHoldLimits() accepts, 10 minutes
+    HOLD_RISE_MS_MAX            = 10_000    ' the slowest rise testSetHoldLimits() accepts
     PERMILLE_FULL               = 1000      ' D-6: a fraction of the commanded rate, in thousandths
 
     ' S-2 (same design, section 3.4): phase-current limits from the MOSFET both board revisions use, MCAC85N06Y
@@ -4276,7 +4403,7 @@ VAR  {  Motor Parameters  }
 ' -----------------------------------
 ' VALUES copied to driver each cycle
 ' -----------------------------------
-' TABLE of  16 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
+' TABLE of  18 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -4293,6 +4420,8 @@ VAR  {  Motor Parameters  }
     LONG    ramp_inc        ' angle increment: inc every drive pass from min to max
     LONG    i_limit_k       ' S-2: current-limit threshold factor (currentLimitK()); init() before start, then the front cog only
     LONG    duty_floor      ' S-2: duty floor for the phase-current estimate (m = 0.1)
+    LONG    hold_duty       ' R19.1: the duty applied at rest (DCS_STOPPED); front-written, duty_min when not holding
+    LONG    hold_short      ' R19.1: T/F where T means the hold at rest (SM_BRAKE) has handed off to the phase short
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -4349,6 +4478,17 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    faultCause                  ' front-written (init() before start): FC_* of the most recent fault since start
     LONG    bWasFaulted                 ' front-written: T/F where T means the driver read DCS_FAULTED on the previous pass
     LONG    faultIllegalPrev            ' front-written: the driver's hall_illegal long on the previous pass
+    ' R19.1 (task 3608): the hold at rest. Front-written, and init() sets each before start
+    LONG    holdState                   ' HS_* now
+    LONG    bHoldArmed                  ' T/F where T means this rest has a hold position
+    LONG    holdPos                     ' pos where this rest began
+    LONG    holdDisp                    ' pos - holdPos, this pass
+    LONG    holdCeilPasses              ' consecutive passes with hold_duty at the ceiling
+    LONG    holdCeilDuty                ' the ceiling, in duty counts (HOLD_CEILING_PCT of duty_max)
+    LONG    holdRiseStep                ' duty counts added per pass while the wheel is displaced
+    LONG    holdLimitPasses             ' passes at the ceiling before the hand-off to the short
+    LONG    holdSlipEvents              ' holds ended by a slip since start, unbounded
+    LONG    holdLimitEvents             ' holds ended by the time limit since start, unbounded
     LONG    cmdTimeoutSeen[COG_SLOT_COUNT]  ' per calling cog, written only by that cog's getError(): timeouts it has been told of
 
 DAT  {  Motor DRIVER  }
@@ -4444,9 +4584,7 @@ drvMotor                                                ' global (task 3535): en
                 ' this is a stop request
                 cmp     drv_state_, #DCS_STOPPED    wz  ' Q: are we already stopped?
     if_nz       jmp     #.newRqst                       ' NO, not stopped, go do stop!
-                cmp     curr_stop, stop_mode_       wz  ' stopped, see if stop mode has changed and update drive_pin state
-    if_nz       mov     curr_stop, stop_mode_           ' update curr stop mode
-    if_nz       call    #checkstop                   ' set drive on or off according to stop mode
+                call    #restBridge                     ' at rest: the stop mode's bridge, and the hold's hand-off (LUT-resident)
                 jmp     #.endRqst                       ' YES, motor at STOP, just exit (w/o increment)
 .notRqStop
                 cmp     sv_tgt_incr, tgt_incr       wz  ' Q: do we have a new request?
@@ -4567,7 +4705,7 @@ drvMotor                                                ' global (task 3535): en
 
                 or      drv_incr, drv_incr          wz  ' -and- are we stopped, just about to spin up?
     if_z        mov     ramp_curr, ramp_min_            ' set initial ramp if starting from 0
-    if_z        call    #.checkstopfloaton              ' make sure drive is on according to stop mode
+    if_z        call    #driveFromRest                  ' a bridge left coasting or shorted at rest is re-aligned and driven (LUT)
                 ' if we are at target, stop the ramp effort
                 cmps    drv_incr, tgt_incr          wz  ' Q: Did we match target?
     if_z        jmp     #.endRUpAtSpeed                 ' YES, (Matched) go mark done
@@ -4896,6 +5034,8 @@ drvMotor                                                ' global (task 3535): en
                 mov     duty_, servo_acc
                 sar     duty_, servo_shift_             ' the trim...
                 add     duty_, duty_ff                  ' ...rides on the feedforward, which carries the back-EMF (D-1)
+                cmp     drv_state_, #DCS_STOPPED    wz  ' R19.1: at rest the front cog's hold law sets the duty, not the trim;
+    if_z        mov     duty_, hold_duty_               '  the fold-back above still lowers it frame by frame when over the limit
 .dutyLimits
                 cmp     bridge, #BR_DRIVE           wz  ' R17.1: an undriven bridge applies no duty, so the servo must not wind duty_
     if_nz       mov     duty_, duty_min_                '  up to duty_max_ against an error it cannot correct -- telemetry reads what is applied
@@ -4932,10 +5072,12 @@ drvMotor                                                ' global (task 3535): en
     ' boundary); driveinit is called only from the LUT-resident start sequence
     ' itself. See lutCodeStart..lutCodeEnd, below the `fit 496` line.
     '
-    ' .shortBridge, .faultBridge, .checkstopfloaton and .checkstopfloatoff
-    ' stay dot-local (task 3535): nothing outside cog RAM calls them, so they
-    ' don't need to be globally visible the way checkstop/wait4adc/
-    ' initAngleFmHall/gettgtincr/driveinit/drvMotor/lutCodeStart/lutCodeEnd do.
+    ' .shortBridge, .faultBridge and .checkstopfloatoff stay dot-local (task
+    ' 3535): nothing outside cog RAM calls them, so they don't need to be
+    ' globally visible the way checkstop/wait4adc/initAngleFmHall/gettgtincr/
+    ' driveinit/drvMotor/lutCodeStart/lutCodeEnd do. R19.1 moved the drive-
+    ' from-rest entry (was .checkstopfloaton) into the LUT as driveFromRest,
+    ' beside restBridge.
 
 .shortBridge                                            ' e-stop: short the phases, whatever the stop mode (no flags changed)
     _ret_       mov     bridge, #BR_SHORT
@@ -4956,8 +5098,6 @@ drvMotor                                                ' global (task 3535): en
                 mov     fwdrev, #0                      '  AT_SPEED against a stopped wheel and faulted
     _ret_       mov     angle_, #0                      ' .rampUp's drv_incr == 0 path re-seeds the angle from the halls
 
-.checkstopfloaton                                       ' about to drive: a coasting bridge (SM_FLOAT) is re-aligned and driven
-                skip    #%1000101                       ' same as inverted floatoff without the coast write
 .checkstopfloatoff                                      ' now at rest: the bridge takes the user's stop mode
                 skip    #%001100                        ' same as checkstop without initAngleFmHall and duty reset
 checkstop                                               ' the bridge takes the user's stop mode (holdAtStop())
@@ -5157,7 +5297,7 @@ scl_levels      res 4
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
 params_ptr_ res 1           ' params_ptr must be followed by:
-offset_fwd_ res 1           '  16 (DRVR_PARAMS_LONGS_COUNT) parameters
+offset_fwd_ res 1           '  18 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
 duty_min_   res 1           ' minimum duty cycle for pwm
 duty_max_   res 1           ' maximum duty cycle for pwm
@@ -5173,6 +5313,8 @@ ramp_min_   res 1           ' angle increment: start of ramp up every drive pass
 ramp_inc_   res 1           ' angle increment: inc every drive pass from min to max
 i_limit_k_  res 1           ' S-2: current-limit threshold factor, mV per duty count << 16 (see currentLimitK())
 duty_floor_ res 1           ' S-2: the duty below which the phase-current estimate is floored (m = 0.1)
+hold_duty_  res 1           ' R19.1: the duty applied at rest (DCS_STOPPED), front-written
+hold_short_ res 1           ' R19.1: T/F where T means the hold at rest (SM_BRAKE) has handed off to the phase short
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -5199,12 +5341,12 @@ duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the c
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 480 USED, 16 FREE, 2026-09-22 (R18.4) -- read from the compiler, never hand-counted (a hand
+    fit     496  ' 481 USED, 15 FREE, 2026-09-23 (R19.1) -- read from the compiler, never hand-counted (a hand
                  ' count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, DUTY_CAPPED_'s VALUE,
                  ' whose top 12 bits are its cog address ($1DF). LUT code runs at cog speed (2 clocks, p2kb
                  ' p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS are what
                  ' this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $290, 144 of 512 longs (DRIVER_REV 3).
+                 ' lutCodeStart $200 to lutCodeEnd $29C, 156 of 512 longs (DRIVER_REV 8).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -5444,9 +5586,25 @@ holdDecay                                               ' R18.4 D-5: called on a
     if_z        mov     ramp_curr, ramp_min_
                 ret
 
-lutCodeEnd                                               ' LUT-resident code ends here (task 3535)
+restBridge                                              ' R19.1: once per drive pass while a stop request finds the motor at rest
+                cmp     curr_stop, stop_mode_       wz  ' Q: did the stop mode change at rest?
+    if_nz       mov     curr_stop, stop_mode_           ' YES: the bridge takes the new mode now
+    if_nz       call    #checkstop
+                cmp     stop_mode_, #SM_BRAKE       wz  ' Q: holding at rest?
+    if_nz       ret                                     ' NO: SM_FLOAT coasts, there is nothing to hold
+                tjz     hold_short_, #driveFromRest     ' the hold is wanted: a bridge left shorted is re-aligned and driven
+    _ret_       mov     bridge, #BR_SHORT               ' the front cog handed the hold off (slip or time limit): phases shorted
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 144 of 512 used, COUNTED 2026-09-22 at DRIVER_REV 3 (see the cog fit above)
+driveFromRest                                           ' R19.1: about to drive from rest, or to hold again after a hand-off
+                cmp     bridge, #BR_DRIVE           wz  ' Q: already driven? (SM_BRAKE held at rest keeps its field)
+    if_z        ret
+                mov     duty_, duty_min_                ' coasting or shorted: reset duty, which reduces jerk if not fully aligned,
+                mov     bridge, #BR_DRIVE               '  drive the bridge,
+                jmp     #initAngleFmHall                '  and seed the field from the halls (the rotor moved); returns to our caller
+
+lutCodeEnd                                              ' LUT-resident code ends here (task 3535)
+
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 156 of 512 used, COUNTED 2026-09-23 at DRIVER_REV 8 (see the cog fit above)
 
 CON { license }
 {{
