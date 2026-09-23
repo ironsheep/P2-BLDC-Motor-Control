@@ -41,6 +41,9 @@ reads 4S, 3S and 2S packs; see [Other pack sizes](#other-pack-sizes).
         │
      yellow ──► female header ──► P2 ADC pin
      black  ──► female header ──► P2 GND pin (the same header group as the ADC pin)
+
+  Every GND on the small board (R2, C1 and R4) joins at one point, and that point IS the black wire.
+  The black wire is the sensor's only ground. C2's "PACK −" is at the pack end and is not on the board.
 ```
 
 ## Parts
@@ -97,6 +100,8 @@ overshoot or the bus rising while the motors brake.
      and leave its pack end unconnected.
 3. **The small board.** Solder R2, C1, R3 and R4 to a small piece of perfboard, laid out as the schematic
    shows. Keep the tap node (the joint of R1's wire, R2, C1 and R3) short: that node is where noise gets in.
+   **Join the ground ends of R2, C1 and R4 at one point, and solder the black lead to that point.** It is
+   the board's only ground and the sensor's only ground connection.
 4. **P2 end: two short leads with female headers.** From the board, a **yellow** lead (after R3) goes to the
    chosen ADC pin, and a **black** lead goes to a **GND pin on the same header group**. Use single-pin
    housings if the two pins are not adjacent. Keep these leads short.
