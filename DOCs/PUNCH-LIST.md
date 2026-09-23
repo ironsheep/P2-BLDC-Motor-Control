@@ -2119,7 +2119,9 @@ are two different findings that happened to be found together; **only this half 
 > byte that cut PL-94's record and the 2026-09-20 panel. **What this entry still holds:** the run-together
 > `CogN` prefixes (`CogCog1Cog0`) are a separate observation, and the quiet windows below stay. **What it no
 > longer holds:** the claim that a cog burst cut the record. Nothing that sits below the limit has been shown
-> to be cut by a burst.
+> to be cut by a burst. ✅ **2026-09-22 23:42:** `R1-T0-EXHAUST` reported whole, PASS, through the same
+> exhaustion burst, and no line in any of that pass's three logs carries two `CogN` prefixes. The quiet windows
+> hold. **This entry can close at the next closeout.**
 
 > **DESIGNED OUT 2026-09-18 («#3543»), with PL-41; run-time proof owed to Visit 6.** t0 no longer makes the
 > bursts this entry measured: `countFreeCogs()` uses `COGCHK()` and starts nothing, T0-8 / T0-15b / T0-22
@@ -3015,7 +3017,8 @@ AT_SPEED while the field is parked.
 > ⛔ **CAUSE FOUND 2026-09-23 («#3585»): PL-114, the DEBUG data cap.** Neither the runner nor the display name
 > was the cause. The panel records sat past image offset 13,684, so the P2 never sent them: the `-u` captures
 > of 2026-09-22 carry no `PLOT` byte, and 2026-09-20's create command stopped at that exact byte. **FIXED** by
-> the same change, with the rig proof owed as PL-114 states. The audit table below says the DEBUG budget
+> the same change, and ✅ **CERTIFIED 2026-09-22 23:37-23:42**: both panels drew through this runner (see
+> PL-114). Sweep at the next closeout. The audit table below says the DEBUG budget
 > was *"11,470 of 15,872 bytes -- neither near a limit"*. **That row is wrong.** It came from a count, not from
 > the subtraction DBG-1 prescribes, and the real footprint was 15,619.
 
@@ -3235,8 +3238,10 @@ highest, which is backwards for this failure.
 > `60e135b` (44,665 B, the size downloaded), `T0-23,begin,no_bo` ends on byte 13,683, and every later record
 > fell past the limit. That is why `R17-T0-NOBOARDSTART` and `R1-T0-EXHAUST`, which are late in the file,
 > are the two cells that never reported. It also explains why the quiet windows reduced nothing here.
-> **FIXED** by the same change (the `t0` footprint went from 16,004 to 10,511 bytes), with the rig proof owed as
-> PL-114 states.
+> **FIXED** by the same change (the `t0` footprint went from 16,004 to 10,511 bytes). ✅ **CERTIFIED 2026-09-22
+> 23:42**: `t0` reported 24 of 24 declared cells, `R17-T0-NOBOARDSTART` and `R1-T0-EXHAUST` among them, with no
+> line carrying two `CogN` prefixes (`analyses/bench/2026-09-22/debug_260922-234144.log`). Sweep at the next
+> closeout.
 
 **Found 2026-09-19 at Visit 6a.** Open. **PL-85 is reduced, not closed.**
 
@@ -3494,6 +3499,11 @@ field still (an increment of 0 with the bridge driven), or a limit low enough to
 by stepping it down until the hall ticks stop. Either must be shown able to reach `NOT_BLOCKED`'s negative
 case before the cell is trusted. **The floor run («#3591»)** is the other place a real stall can happen.
 
+⚠ **2026-09-22 23:40 -- the stop DID fire on a lifted rig, possibly for the wrong reason (PL-116).** T0-24's
+two powered rows each latched `ERR_PLATFORM_BLOCKED` at power 50, straight after the e-stop row's
+`clearEmergency()`. Until PL-116 separates "the drive did not resume" from "the test false-fired", this does not
+certify the blocked test.
+
 **A construction found, 2026-09-23 (Visit 9b, [evaluation](analyses/bench/2026-09-23/VISIT-9B-EVALUATION.md) §5, G-3).**
 `dual-limits-top`'s over-command step lowers the limits to 1 A and commands 245 × 10⁶. On three wheel-directions
 the wheel fell to **2–4 % of command** (`h_pct` 2–4, the field walked down to 6–19 × 10⁶), with no fault. The
@@ -3675,6 +3685,53 @@ while not having to reduce the debug output volume we need for testing"*):
 
 **Owed at the rig:** `t0-hand` and `t0-stopmode` draw their panels, and `t0` emits all of its declared cells,
 `R17-T0-NOBOARDSTART` and `R1-T0-EXHAUST` included. That run is the certification. It stays open until then.
+
+✅ **CERTIFIED 2026-09-22 23:37-23:42** ([evaluation](analyses/bench/2026-09-22/PANEL-CERTIFICATION-EVALUATION.md)).
+Binaries from `4d5772b`. Both panels drew, and their USB captures carry the whole stream: `t0-hand` 1 `PLOT`,
+3 `LAYER`, 249 `crop`; `t0-stopmode` 1 `PLOT`, 4 `LAYER`, 1,996 `crop`. `t0` reported 24 of 24 declared cells,
+30 lines, all PASS, and every record shape matches 2026-09-19's. Sweep at the next closeout.
+
+### PL-115 -- T0-24 times the coast from the SPACE press, and the wheel has already stopped by then
+
+**Found 2026-09-22 23:39** ([evaluation](analyses/bench/2026-09-22/PANEL-CERTIFICATION-EVALUATION.md) §3.3, F3), on
+the first T0-24 run with a working panel. Open. **Instrument defect; the drive is not implicated.**
+
+**MEASURED.** Every row reads `after_ticks,0,after_ms,0,half_ms,0`. That includes row 6, where the driver cog is
+stopped and the wheel is free. The panel's hand-tick readout, decoded from its digit crops, shows the count
+stopping **1.3-2.4 s before the release registered** on every row: row 6 held at 584 from 23:40:47.47 until
+the release at 23:40:49.12. `t0sProbe()` starts the coast phase at the SPACE press and ends it after 400 ms
+without a hall change, so it only ever timed a wheel at rest. As a result `RESTCOAST`, `STOPGAP` and `FREEREF`
+FAIL on the instrument. `RESTSHORT` PASSes with a reading that could not have failed (0 is inside 0-60).
+
+**Fix direction.** Time the coast from the wheel, not the key. Keep the hand phase's tick timestamps, take the
+release as the last tick of the hand-driven rate, and let SPACE only end the row ("spin it, let go, press SPACE
+when it has stopped"). `FREEREF` must then show a free coast above its 150 ms floor, which is the check that
+this instrument can report a coast at all. That check comes first, before any other cell is read (register
+INS-14). Key checks ran every 112 ms (median) against PC_KEY's ~100 ms latch; the rebuild should read the key
+at least every ~50 ms.
+
+**Owner:** «#3607», the run-time proof of the stop states («#3578», done, built the tier). It is in the release.
+
+### PL-116 -- after T0-24's e-stop row, a lifted wheel did not turn under power 50, and the blocked stop latched
+
+**Found 2026-09-22 23:40** ([evaluation](analyses/bench/2026-09-22/PANEL-CERTIFICATION-EVALUATION.md) §3.3, F4).
+Open. **Possibly a driver defect; undetermined.**
+
+**MEASURED.** Both powered rows (the fault provocations, under FLOAT then BRAKE) report
+`why,NOT_AT_SPEED,note,no_offset_was_written` and `protective,-2_001`, which is `ERR_PLATFORM_BLOCKED`. So the
+driver's blocked test (`isp_bldc_motor.spin2:1895`) saw a commanded motor at `LAG_SOFT` or beyond with no
+position change, on a lifted wheel, within 4 s of `driveAtPower(50)`. The panel showed the `POWERED` card (hands
+off) on both rows. Both rows come directly after row 3's `emergencyCutoff()` and the teardown's
+`clearEmergency()`, and no certified run has ever driven a wheel after `clearEmergency()`: dual-d's
+`DST_ESTOP_CLEAR` checks only that the platform stays at rest.
+
+**The two readings, and the discriminator.** Either (a) drive does not resume after an e-stop is cleared,
+which is a driver defect in the clear path and in the release, or (b) the blocked test false-fires on a
+lifted start at power 50. **Run T0-24's powered rows before its e-stop row** (one build flag), wheels up.
+Reaching AT_SPEED and faulting as designed implicates (a); a second block implicates (b). Either result also
+bears on PL-106.
+
+**Owner:** «#3607» (the discriminator); a driver change, if (a), is a new task.
 
 **The limit is a floor, not a measurement of the edge.** 12,404 ran and 15,619 did not; the register's own
 measurements put the edge in (13,332, 15,347]. Raise `DEBUG_FOOTPRINT_MAX` only on a larger build shown, on the
