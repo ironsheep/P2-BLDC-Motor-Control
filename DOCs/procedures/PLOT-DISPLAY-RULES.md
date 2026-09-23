@@ -136,7 +136,28 @@ one (the quiet window).
 (`usb-traffic_260917-174323.log`, PL-85). This is separate from rule 1. PL-85's lost *verdict* was the data
 limit, but the interleaving is real.
 
-## 10 · Signals that are not signals
+## 10 · The screen keeps the operator in step with the program
+
+**Rule.** Every screen states four things:
+
+1. what the program is doing now;
+2. the one thing the operator does next;
+3. what they should feel or see while doing it -- the row's prediction, in plain words, on the panel and not
+   only in the log;
+4. when a step did not run, that it did not and why.
+
+One key has one meaning. Rows use one numbering (1-based) in the runner's banner, the panel and the log. One
+vocabulary, matching the API, names each state. The operator is never asked for sub-second timing; take the
+moment from a sensor and let the key say only "done".
+
+**Why.** Stephen, 2026-09-23, after T0-24's first run with a working panel: *"the instructions were really
+confusing, and I got out of sync with what you were trying to do."* That panel had S and SPACE carrying three
+meanings between them. It numbered rows 1-6 while the log numbered them 0-5. It called the SM_BRAKE row "HOLD
+MODE". It never said what a row should feel like. It asked for SPACE "as you let go" (PL-115). And it left a
+"HANDS OFF -- spins under power" card up for two rows that never spun (PL-116). Doctrine overlay P7 carries
+the rule.
+
+## 11 · Signals that are not signals
 
 - **`[SYSTEM] WINDOW_PLACED` does not mean a window opened.** It is absent from the 2026-09-20 probe log, whose
   two windows both drew (`BENCH-LOG-STUDY-2026-09-21.md` F3 amendment).
