@@ -3966,7 +3966,14 @@ against the rebuilt src_rev 13 source, not only the src_rev 12 that ran:
    poll (every 100–150 ms, suspended while the wheel turns) lands while the mouse button is down.
 5. There is no redo, and the log records no input, so a missed click cannot be told from an ignored one.
 
-**Disposition:** ⛔ fix: a pedagogical study of the whole sequence, then a rebuild. It is a new task.
+**Disposition:** ⛔ fix: a pedagogical study of the whole sequence, then a rebuild. Task «#3619».
+
+**BUILT 2026-09-24 (test_bench_t0 SRC_REV 14, not yet certified).** Design: `DOCs/plans/T0-24-INTERACTION-DESIGN.md`.
+Each row runs INTRO (a preview, START ROW) → SETUP → ACT → RESULT (NEXT ROW or REDO ROW). A hand row ends only on DONE
+or ABORT. Only live buttons are drawn. Cog 0 polls the mouse every pass (~30 ms), and a new measure cog does all the
+measuring and prints nothing. Every press is logged. The generator renders every screen from the same screen table the
+harness reads, and all 60 were read at the desk. The next `t0-stopmode` certifies it: the run sheet's UI-CLICK, UI-MISS,
+UI-WAIT, UI-REDO and UI-ABORT checks, each able to fail.
 
 ---
 

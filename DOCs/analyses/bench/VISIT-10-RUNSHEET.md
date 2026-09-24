@@ -17,7 +17,7 @@ read a coast. [Pass 2 evaluation](2026-09-23/VISIT-10-PASS2-EVALUATION.md). Pass
 | `dual-start` | part `START`, `BM-SKBUILD ... no_walk,FALSE`, negative `NONE` |
 | `dual-start-swapneg` | part `START`, `BM-SKBUILD` negative `SWAP`, a `BM-SKNEG` record before each of the last 3 `BM-SSTART` |
 | `dual-fault` | part `FRESP`; a `BM-FRBUILD` record; `BM-NOTBUILT` for `B4PULSE` only |
-| `t0-stopmode` | `src_rev 13`; `T0-24,row,...` records numbered 1 to 8 |
+| `t0-stopmode` | `src_rev 14`; a `T0-24,cogs` record with `measure_cog` 0–7; `T0-24,row,...` records numbered 1 to 8 |
 
 ---
 
@@ -29,7 +29,7 @@ read a coast. [Pass 2 evaluation](2026-09-23/VISIT-10-PASS2-EVALUATION.md). Pass
 | **Hardware risk** | `dual-fault` **faults the wheels on purpose at up to about 220 rpm commanded**. Each fault ends in a phase short, a free coast, a controlled ramp down, or the graded short. The graded short now actually runs, and **it regenerates into the supply, so it needs the pack, not a bench supply.** `dual-start-swapneg` drives the left wheel as if two hall wires were crossed; the new guard shorts a leg as soon as it draws more than 1 A. `t0-stopmode` spins the right wheel under power in rows 6 and 7, and in row 5 the program shorts the wheel while you watch it coast. **Wheels up throughout. Hands off in every unattended tier. Panic: physical battery disconnect.** |
 | **Who can observe** | `t0-stopmode` is attended; each row says on its panel what to do and what you should feel. The unattended tiers need nobody, and **nobody should touch the wheels during `dual-fault`**: pass 2's right-wheel trials 14–17 were disturbed by a hand, and they are re-run here. |
 | **Runs that carry state** | None. The swap negative applies to one start each. |
-| **Run length** | About 15 minutes unattended, then about 10 minutes attended for run 4. |
+| **Run length** | About 15 minutes unattended, then about 15 minutes attended for run 4, at your pace. |
 | **Repeatability** | All repeatable and idempotent. |
 | **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack, 270 MHz. `test_bench_dual.spin2` parts START (two builds) and FAULTRESP; `test_bench_t0.spin2` T0-24. |
 
@@ -44,20 +44,19 @@ run 1 judges.
 **2026-09-24 13:31 ran the OLD tree** (pass 2's, `60255bc`): the pass 3 commits had never been pushed, so nothing on
 this sheet was exercised ([evaluation](2026-09-24/VISIT-10-PASS3-EVALUATION.md), PL-125).
 
-- **Push from the authoring tree first.** The source to run is **`e268310`** (`git log --oneline -1 -- src/`); any
-  later commit that only touches documents carries the same source.
-- **At the bench, pull.** The banner is then the check (table above): `src_rev,40,fmt,25`, `drv_rev,16`.
+- **Push from the authoring tree first.** The source to run is the commit that carries T0-24's rebuilt panel
+  (`test_bench_t0` src_rev 14, «#3619»), named in the hand-back; `git log --oneline -1 -- src/` at the bench must show
+  it. Runs 1–3 need only `e268310` or later, so the same pull serves all four.
+- **At the bench, pull.** The banners are then the check (table above).
 
-## The commands — run 1 to 3 now; run 4 waits for its rebuild
+## The commands — run every one, in this order
 
 ```bash
 tools/bench-run.sh dual-start             # 1: Hands off. Startup checks with normal wiring; both wheels nudge a little near the end
 tools/bench-run.sh dual-start-swapneg     # 2: Hands off. The program fakes crossed sensor wires on the LEFT wheel; it may twitch, then stops itself
 tools/bench-run.sh dual-fault             # 3: Hands off, and keep hands away. Each wheel spins up and is stopped on purpose, about 6 minutes
+tools/bench-run.sh t0-stopmode            # 4: YOU, at the RIGHT wheel. Each row shows its plan first; nothing moves on until you click
 ```
-
-**Run 4, `t0-stopmode`, is NOT ready.** Its panel is being rebuilt (PL-127: rows that do not wait for you, dead DONE
-and ABORT buttons, no redo). It comes back with its own sheet section.
 
 **No run depends on another run's result, and nothing needs rewiring.**
 
@@ -111,28 +110,50 @@ forced through `testForceFault()`, each trial in its own driver lifetime, at 40,
 **Pre-registered for X-6 in hold mode:** with the fallback held, the wheel now stops on the graded short, not on the
 hold. The stop takes longer than pass 2's 27–59 ms at low brake %, and approaches the full short's at 100 %.
 
-### `t0-stopmode` — the stop states at the wheel (ATTENDED, right wheel) — BEING REBUILT, not in this run (PL-127)
+### `t0-stopmode` — the stop states at the wheel (ATTENDED, right wheel) — the panel rebuilt (PL-127, «#3619»)
 
-**The panel names the RIGHT wheel on every screen.** Every row waits for you. **FREEREF is emitted first:** if it fails,
-the instrument has not shown it can report a coast, and every coast cell is read with that in mind.
+**How it works now.** Every row first shows its whole plan: what it tests, what you will do, and what you should feel.
+**Nothing happens until you click START ROW.** A green **YOUR TURN** banner means it is waiting for you, and **only
+DONE ends your turn**. The line under **SEEN NOW** tells you when the program has what it needs ("GOT IT, CLICK DONE").
+A red banner means the program is driving the wheel: hands off, and **ABORT stops it at once**. Every row ends on a
+**RESULT** screen that stays until you click **NEXT ROW** or **REDO ROW**. The forward button is always on the right,
+ABORT and REDO always on the left, and only buttons that work are drawn. Enter and Esc work as the right and left
+buttons.
 
-**The reading is `band_ticks`:** the hall ticks the wheel turns from 120 ticks/s down to rest. It is the same measure on
-every row, whatever speed the spin reached. **A spin row needs a hard spin that passes 120 ticks/s.** If yours does not,
-the panel says TOO SLOW and asks you to spin again, up to 3 tries; only then is the row not measured, and the panel
-says so.
+**The reading is `band_ticks`:** the hall ticks the wheel turns from 120 ticks/s down to rest, the same on every row.
+A spin row needs a hard spin. If it is too slow, the panel says so, and you just spin again.
+
+**Three things to do on purpose** (each makes one of the interaction's checks able to fail):
+
+1. **Row 1, on its first screen:** click once on the empty panel **left of START ROW** before you click START ROW.
+2. **Row 4 (COAST AT REST):** after its result, click **REDO ROW** once, and spin it again.
+3. **Row 6 (FAULT, COAST MODE):** click **ABORT** while it spins up. After its result, click **REDO ROW** and let it run.
 
 | Row | You click, then | You should feel or see | Cell | Pre-registered reading | Fails if |
 |---|---|---|---|---|---|
-| 1 HOLD-RISE | START ROW, push the wheel off where it stopped and hold it, DONE | the resistance **grow** over about ¼ s | R17-T0-HOLDRISE | HS_HOLDING throughout; the ceiling within 400 ms of the first push | not in time, or SLIPPED, LIMITED or FAULTED |
-| 2 HOLD-SLIP | START ROW, push past a low ceiling, DONE | it **give way**, then drag | R17-T0-HOLDSLIP | starts HS_HOLDING at 0 (else NOMEAS), then HS_SLIPPED before any FAULTED | the hold persists, or FAULTED first |
-| 3 HOLD-LIMIT | START ROW, a steady push at the ceiling for about 2 s | it hold, then **let go** | R17-T0-HOLDLIMIT | starts HS_HOLDING at 0 (else NOMEAS), then HS_LIMITED within 7 s | it never hands off |
-| 4 COAST AT REST | START ROW, spin it hard, let go | it spin freely and coast | R17-T0-RESTCOAST | band_ticks ≥ 7 | ≤ 6 |
-| 5 E-STOP AS IT COASTS | START ROW, spin it hard, let go | it coast, then **stop abruptly**: the program shorts it as it slows | R17-T0-RESTSHORT | band_ticks ≤ 4, the e-stop latched at the band entry | ≥ 5, or the short was not applied |
+| 1 HOLD-RISE | START ROW; push the wheel and keep pushing; DONE | the resistance **grow** over about ¼ s | R17-T0-HOLDRISE | HS_HOLDING throughout; the ceiling within 400 ms of the first push | not in time, or SLIPPED, LIMITED or FAULTED |
+| 2 HOLD-SLIP | START ROW; turn it firmly; DONE | it **give way**, then drag | R17-T0-HOLDSLIP | starts HS_HOLDING at 0 (else NOMEAS), then HS_SLIPPED before any FAULTED | the hold persists, or FAULTED first |
+| 3 HOLD-LIMIT | START ROW; a steady push for about 3 s; DONE | it hold, then **let go** | R17-T0-HOLDLIMIT | starts HS_HOLDING at 0 (else NOMEAS), then HS_LIMITED | it never hands off |
+| 4 COAST AT REST | START ROW; spin it hard, let go; DONE when stopped | it spin freely and coast | R17-T0-RESTCOAST | band_ticks ≥ 7 | ≤ 6 |
+| 5 E-STOP AS IT COASTS | START ROW; spin it hard, let go; DONE | it coast, then **stop abruptly** | R17-T0-RESTSHORT | band_ticks ≤ 4, the e-stop latched at the band entry | ≥ 5, or the short was not applied |
 | (4 − 5) | — | — | R17-T0-STOPGAP | ≥ 3 ticks apart | < 3 |
-| 6 FAULT, COAST MODE | START ROW; **hands off**, it drives and is faulted on purpose; ABORT if needed | the wheel coasts after the fault | R17-T0-FLTCOAST | band_ticks ≥ 7 and still FAULTED | either false, or it never reached AT_SPEED |
+| 6 FAULT, COAST MODE | START ROW; **hands off**; it ends by itself | the wheel coasts after the fault | R17-T0-FLTCOAST | band_ticks ≥ 7 and still FAULTED | either false, or it never reached AT_SPEED |
 | 7 FAULT, BRAKE MODE | as row 6 | the wheel brakes hard after the fault | R17-T0-FLTSHORT | band_ticks ≤ 4 and still FAULTED | either false, or it never reached AT_SPEED |
 | (6 − 7) | — | — | R17-T0-FLTGAP | ≥ 3 ticks apart | < 3 |
-| 8 DRIVER COG STOPPED | START ROW, spin it hard, let go | it coast exactly as row 4 did | **R17-T0-FREEREF** | band_ticks ≥ 7 | ≤ 6 |
+| 8 DRIVER COG STOPPED | START ROW; spin it hard, let go; DONE, then FINISH | it coast exactly as row 4 did | **R17-T0-FREEREF** | band_ticks ≥ 7 | ≤ 6 |
+
+**The interaction's own checks, judged in the report from the log** (`T0-24,input` / `screen` / `status` records):
+
+| Check | Passes when | Fails if |
+|---|---|---|
+| **UI-CLICK** — clicks arrive | every button click is a `T0-24,input` record naming that button | a click he made has no record, or a live button reads `MISS` |
+| **UI-MISS** — the negative for UI-CLICK | the deliberate click in act 1 reads `hit,MISS` | it reads a button, or does not appear |
+| **UI-WAIT** — no hand row moves on without him | every hand row's ACT → RESULT change follows a `DONE` or `ABORT` input record | an ACT screen of rows 1–5 or 8 ends with no such record |
+| **UI-REDO** — the restart | act 2's row 4 shows `run,2`, with its own tries and result | no second run |
+| **UI-ABORT** — ABORT on a powered row | act 3's row 6 run 1 ends `why,ABORTED`, its RESULT `screen` record within 100 ms of the ABORT `input` record, and run 2 measures | more than 100 ms, or no run 2 |
+
+FREEREF is emitted first: if it fails, the instrument has not shown it can report a coast, and every coast cell is read
+with that in mind.
 
 The thresholds come from every coast and short on record (`test_bench_t0.spin2`, `CON { T0-24 sign-off limits }`,
 each with its log): a coast predicts 9–36 band ticks and a short 1–3. Ticks 5 and 6 are a dead band that passes neither.
