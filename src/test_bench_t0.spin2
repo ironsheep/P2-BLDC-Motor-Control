@@ -165,6 +165,10 @@
 ''               24 Sep 2026 -- SRC_REV 15 (PL-128): the window title loses its parentheses. At src_rev 14 the ')' of
 ''               '(P16 BOARD)' closed the debug() call, the rest of the line became a comment, and the window opened at
 ''               the host's default size, a quarter of the panel. No record changes.
+''               24 Sep 2026 -- SRC_REV 16 (PL-130, PL-131): HOLD-RISE judges the hold's rise from its rate while
+''               displaced (rise_ms, new on the hold_start record), in 220-280 ms, not the wall time from his first
+''               push; a slip or limit after the ceiling no longer fails it. Its res1 is rise_ms. Rows 1, 4 and 6
+''               ask on the panel for the three deliberate acts (the empty-panel click, a REDO, an ABORT).
 ''
 '' =================================================================================================
 
@@ -269,7 +273,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 15                                            ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 16                                            ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -624,7 +628,7 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_SPAN_TO_RATE  = T0_24_TICK_RING * 1_000               ' a six-interval span in ms -> ticks/s
 
 ' A hold row's outcome, written by the measure cog into t0wHoldRes[]
-    T0_24_HR_LONGS      = 14
+    T0_24_HR_LONGS      = 15
     T0_24_HR_DISPLACED  = 0
     T0_24_HR_DISP_MS    = 1
     T0_24_HR_CEIL_MS    = 2
@@ -639,6 +643,7 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_HR_START_DISP = 11
     T0_24_HR_START_HELD = 12
     T0_24_HR_MAX_DISP   = 13
+    T0_24_HR_RISE_MS    = 14                                    ' the rise its displaced rate implies, ms; -1 if never (PL-130)
 
     T0_24_POLL_MS       = 1                                     ' hall poll period, as T0-12 polls (5 revolutions per second
                                                                  ' before two transitions could fall between polls)
@@ -712,7 +717,13 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_HOLD_DEFAULT_CEIL_PCT = 10                             ' the driver's own default (established-decisions block)
     T0_24_HOLD_DEFAULT_RISE_MS  = 250
     T0_24_HOLD_DEFAULT_LIMIT_MS = 10_000
-    T0_24_HOLD_RISE_OK_MS     = 400                              ' DERIVED -- HOLD_RISE_MS (250) plus a sampling/reaction margin
+    ' PL-130: the hold rises only while the wheel is displaced, so HOLD-RISE judges the rise's own rate, never the
+    '  wall time from the first push, which is how firmly he pushed. The rate comes from sample pairs displaced and
+    '  under the ceiling at both ends, so no interval's edge enters it: rise_ms = (ceiling - duty_min) x their ms /
+    '  their duty gain. DRIVER_REV 17's truncated step made a 250 ms rise take 291 (Visit 10 pass 3); the band
+    '  fails that and holds 250.
+    T0_24_HOLD_RISE_LO_MS     = 220                              ' DERIVED -- HOLD_RISE_MS (250) less a 10 ms sample either end
+    T0_24_HOLD_RISE_HI_MS     = 280                              ' DERIVED -- HOLD_RISE_MS (250) plus it; DRIVER_REV 17's 291 fails
     T0_24_HOLD_SLIP_CEIL_PCT  = 2                                ' HOLD-SLIP: a ceiling low enough a hand push beats it
     T0_24_HOLD_LIMIT_TEST_MS  = 2_000                            ' HOLD-LIMIT: the time limit this row sets and watches for
 ' Re-arming the hold (task 3617, PL-123 item 1). The front cog arms a new hold only after a pass that sees
@@ -799,7 +810,7 @@ sCellFltShort   BYTE    "R17-T0-FLTSHORT", 0                    ' row: a forced 
 sCellFltGap     BYTE    "R17-T0-FLTGAP", 0                      ' the two fault rows are different states, by a margin
 sCellFreeRef    BYTE    "R17-T0-FREEREF", 0                     ' last row: the released pins, this run's free yardstick
 
-sCritHoldRise   BYTE    "DUTY_RISES_TO_CEILING", 0
+sCritHoldRise   BYTE    "RISE_MS_IN_BAND", 0
 sCritHoldSlip   BYTE    "SLIPS_WITHIN_2_TICKS", 0
 sCritHoldLimit  BYTE    "LIMITS_AFTER_SUSTAINED_PUSH", 0
 ' task 3617 (PL-123 item 2): the stop cells judge band_ticks, not the half-rate time, so their tokens say so
@@ -3001,7 +3012,7 @@ PRI t0sPrintRow(rowIdx, seqNum, runNum) | tryIdx, pTry, sampleIdx, firstIdx, pSa
                 pSample := @t0wHold[(sampleIdx +// T0_24_HOLD_RING) * T0_24_HOLD_LONGS]
                 debug("T0-24,hold_log,row,", udec_(seqNum), ",run,", udec_(runNum), ",ms,", udec_(long[pSample][T0_24_HS_MS]), ",pos,", sdec_(long[pSample][T0_24_HS_POS]), ",disp,", sdec_(long[pSample][T0_24_HS_DISP]), ",duty,", udec_(long[pSample][T0_24_HS_DUTY]), ",drv_state,", udec_(long[pSample][T0_24_HS_DRV_STATE]), ",sense_i,", sdec_(long[pSample][T0_24_HS_SENSE_I]))
             debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",hold_result,displaced,", zstr_(t0wHoldRes[T0_24_HR_DISPLACED] ? @"TRUE" : @"FALSE"), ",disp_first_ms,", sdec_(t0wHoldRes[T0_24_HR_DISP_MS]), ",ceil_first_ms,", sdec_(t0wHoldRes[T0_24_HR_CEIL_MS]), ",ceil_sense_i,", sdec_(t0wHoldRes[T0_24_HR_CEIL_I]), ",slip_first_ms,", sdec_(t0wHoldRes[T0_24_HR_SLIP_MS]), ",limit_first_ms,", sdec_(t0wHoldRes[T0_24_HR_LIMIT_MS]), ",fault_first_ms,", sdec_(t0wHoldRes[T0_24_HR_FAULT_MS]), ",fault_first,", zstr_(t0wHoldRes[T0_24_HR_FLT_FIRST] ? @"TRUE" : @"FALSE"), ",aborted,", zstr_(t0wHoldRes[T0_24_HR_ABORTED] ? @"TRUE" : @"FALSE"), ",pass,", zstr_(t0wHoldRes[T0_24_HR_PASS] ? @"PASS" : @"FAIL"))
-            debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",hold_start,start_hs,", udec_(t0wHoldRes[T0_24_HR_START_HS]), ",start_disp,", sdec_(t0wHoldRes[T0_24_HR_START_DISP]), ",start_held,", zstr_(t0wHoldRes[T0_24_HR_START_HELD] ? @"TRUE" : @"FALSE"), ",max_disp,", udec_(t0wHoldRes[T0_24_HR_MAX_DISP]), ",samples,", udec_(t0wHoldCount), ",dropped,", udec_(firstIdx), ",protective,", sdec_(t0wProtCode))
+            debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",hold_start,start_hs,", udec_(t0wHoldRes[T0_24_HR_START_HS]), ",start_disp,", sdec_(t0wHoldRes[T0_24_HR_START_DISP]), ",start_held,", zstr_(t0wHoldRes[T0_24_HR_START_HELD] ? @"TRUE" : @"FALSE"), ",max_disp,", udec_(t0wHoldRes[T0_24_HR_MAX_DISP]), ",rise_ms,", sdec_(t0wHoldRes[T0_24_HR_RISE_MS]), ",samples,", udec_(t0wHoldCount), ",dropped,", udec_(firstIdx), ",protective,", sdec_(t0wProtCode))
         other:
             if (rowIdx == T0_24_ROW_FLTCOAST) or (rowIdx == T0_24_ROW_FLTHOLD)
                 debug("T0-24,provoke,row,", udec_(seqNum), ",run,", udec_(runNum), ",stop_mode,", zstr_((rowIdx == T0_24_ROW_FLTHOLD) ? @"BRAKE" : @"FLOAT"), ",fr_err,", sdec_(t0wFrErr), ",force_err,", sdec_(t0wForceErr), ",at_speed,", zstr_(bT0wAtSpeed ? @"TRUE" : @"FALSE"), ",release_span_ms,", udec_(t0sReleaseSpan[rowIdx]), ",faulted,", zstr_(bT0wFaulted ? @"TRUE" : @"FALSE"), ",band_entered,", zstr_(bT0wEntered ? @"TRUE" : @"FALSE"), ",driver_state,", udec_(t0wDrvState), ",abort_amps_x10k,", sdec_(t0wAbortAmps))
@@ -3699,7 +3710,7 @@ PRI t0sSpinPhrase(priorIdx, bShorted, bestSpan, curSpan) : statusIdx
     else
         statusIdx := T0S_ST_SPIN_SLOW
 
-PRI t0sHoldAct(rowIdx) | hallCode, priorHall, posAccum, startMs, elapsedMs, eState, disp, duty, ceilDuty, drvState, senseI, bDisplaced, dispFirstMs, ceilFirstMs, ceilSenseI, slipFirstMs, limitFirstMs, faultFirstMs, maxDisp, startHs, startDisp, bStartHeld, bMeasured, bPass, bFaultedFirst, bAborted, eventMs, pSample
+PRI t0sHoldAct(rowIdx) | hallCode, priorHall, posAccum, startMs, elapsedMs, eState, disp, duty, ceilDuty, drvState, senseI, bDisplaced, dispFirstMs, ceilFirstMs, ceilSenseI, slipFirstMs, limitFirstMs, faultFirstMs, maxDisp, startHs, startDisp, bStartHeld, bMeasured, bPass, bFaultedFirst, bAborted, eventMs, pSample, startDuty, priorMs, priorDuty, bPriorRising, riseSpanMs, riseGain, riseMs
 ' The three hold-mechanism rows' ACT (task 3608, DRIVER_REV 8; measure cog): watch the driver's own
 ' hold state change under a hand, sample it every 10 ms (pos, holdDisp, hold duty, drv_state,
 ' sense_i) into the t0wHold ring for cog 0 to print after the step, and judge each row from those
@@ -3737,6 +3748,13 @@ PRI t0sHoldAct(rowIdx) | hallCode, priorHall, posAccum, startMs, elapsedMs, eSta
 ' @local bAborted - TRUE when ABORT ended the row
 ' @local eventMs - the row's own event (ceiling, slip or limit), ms into the row; -1 if never
 ' @local pSample - this sample's record in the t0wHold ring
+' @local startDuty - the hold duty at the first sample: duty_min on a fresh hold
+' @local priorMs - the previous sample's elapsedMs
+' @local priorDuty - the previous sample's hold duty
+' @local bPriorRising - TRUE when the previous sample was displaced and under the ceiling
+' @local riseSpanMs - ms between sample pairs displaced and under the ceiling at both ends (PL-130)
+' @local riseGain - the hold duty those pairs gained
+' @local riseMs - the rise the rate implies, duty_min to the ceiling, ms; -1 if no pair was seen
 
     priorHall := t0sHallCode()
     posAccum := 0
@@ -3749,7 +3767,11 @@ PRI t0sHoldAct(rowIdx) | hallCode, priorHall, posAccum, startMs, elapsedMs, eSta
     faultFirstMs := -1
     maxDisp := 0
     t0wHoldCount := 0
+    bPriorRising := FALSE
+    riseSpanMs := 0
+    riseGain := 0
     startHs, startDisp := motor.getHoldStatus()                ' the state the row begins from, before any push
+    startDuty, _, _, _, _ := motor.testGetHold()
     startMs := getms()
     repeat while (t0wStopReq == FALSE) and (t0wAbortReq == FALSE)
         hallCode := t0sHallCode()
@@ -3775,6 +3797,12 @@ PRI t0sHoldAct(rowIdx) | hallCode, priorHall, posAccum, startMs, elapsedMs, eSta
         if (faultFirstMs < 0) and (drvState == motor.DCS_FAULTED)
             faultFirstMs := elapsedMs
         maxDisp := maxDisp #> abs(disp)
+        if bPriorRising and (disp <> 0) and (duty < ceilDuty)             ' PL-130: a pair rising at both ends
+            riseSpanMs += elapsedMs - priorMs
+            riseGain += duty - priorDuty
+        bPriorRising := (disp <> 0) and (duty < ceilDuty)
+        priorMs := elapsedMs
+        priorDuty := duty
         pSample := @t0wHold[(t0wHoldCount +// T0_24_HOLD_RING) * T0_24_HOLD_LONGS]
         long[pSample][T0_24_HS_MS] := elapsedMs
         long[pSample][T0_24_HS_POS] := posAccum
@@ -3799,9 +3827,16 @@ PRI t0sHoldAct(rowIdx) | hallCode, priorHall, posAccum, startMs, elapsedMs, eSta
     bStartHeld := (startHs == motor.HS_HOLDING) and (startDisp == 0)
     bMeasured := bDisplaced and bStartHeld and (bAborted == FALSE)
     bFaultedFirst := bDisplaced and (faultFirstMs >= 0) and ((slipFirstMs < 0) or (faultFirstMs <= slipFirstMs))
+    riseMs := -1
+    if riseGain > 0                                             ' if/else, never `? :` -- PL-29, PL-76
+        riseMs := muldiv64(ceilDuty - startDuty, riseSpanMs, riseGain)
     case rowIdx
         T0_24_ROW_HOLDRISE:
-            bPass := bDisplaced and (ceilFirstMs >= 0) and ((ceilFirstMs - dispFirstMs) <= T0_24_HOLD_RISE_OK_MS) and (slipFirstMs < 0) and (limitFirstMs < 0) and (faultFirstMs < 0)
+            ' PL-130: the rise's rate, and the hold still holding when it reached the ceiling; what a push past the
+            '  ceiling does afterwards (a slip, the time limit) is rows 2 and 3's, not this one's
+            bPass := bDisplaced and (ceilFirstMs >= 0) and (riseMs >= T0_24_HOLD_RISE_LO_MS) and (riseMs <= T0_24_HOLD_RISE_HI_MS)
+            bPass &= ((slipFirstMs < 0) or (slipFirstMs >= ceilFirstMs)) and ((limitFirstMs < 0) or (limitFirstMs >= ceilFirstMs))
+            bPass &= (faultFirstMs < 0) or (faultFirstMs >= ceilFirstMs)
             bT0sHoldRiseMeasured := bMeasured
             bT0sHoldRisePass := bPass
             eventMs := ceilFirstMs
@@ -3829,6 +3864,7 @@ PRI t0sHoldAct(rowIdx) | hallCode, priorHall, posAccum, startMs, elapsedMs, eSta
     t0wHoldRes[T0_24_HR_START_DISP] := startDisp
     t0wHoldRes[T0_24_HR_START_HELD] := bStartHeld
     t0wHoldRes[T0_24_HR_MAX_DISP] := maxDisp
+    t0wHoldRes[T0_24_HR_RISE_MS] := riseMs
     if bAborted                                                 ' if/else, never `? :` -- PL-29, PL-76
         t0wWhy := T0S_ST_NM_ABORTED
     elseif bStartHeld == FALSE
@@ -3837,7 +3873,9 @@ PRI t0sHoldAct(rowIdx) | hallCode, priorHall, posAccum, startMs, elapsedMs, eSta
         t0wWhy := T0S_ST_NM_NO_PUSH
     else
         t0wWhy := T0S_ST_MEASURED
-    if bDisplaced and (eventMs >= 0)
+    if rowIdx == T0_24_ROW_HOLDRISE
+        t0wRes1 := riseMs                                       ' PL-130: the rise its rate implies, ms displaced
+    elseif bDisplaced and (eventMs >= 0)
         t0wRes1 := eventMs - dispFirstMs                        ' from his first push to the row's own event
     t0wRes2 := maxDisp
 
@@ -3895,7 +3933,7 @@ PRI t0sRowPrediction(rowIdx) : pText
 ' @returns pText - pointer to the prediction text
 
     case rowIdx
-        T0_24_ROW_HOLDRISE:  pText := @"DUTY_RISES_FROM_DUTY_MIN_TOWARD_THE_CEILING_WITHIN_ABOUT_250_MS"
+        T0_24_ROW_HOLDRISE:  pText := @"WHILE_DISPLACED_THE_DUTY_RISES_TO_THE_CEILING_IN_ABOUT_250_MS"
         T0_24_ROW_HOLDSLIP:  pText := @"HS_SLIPPED_WITHIN_2_TICKS_THEN_A_SPEED_DEPENDENT_DRAG_NO_HOLD"
         T0_24_ROW_HOLDLIMIT: pText := @"HS_LIMITED_AFTER_ABOUT_2_S_AT_THE_CEILING"
         T0_24_ROW_COAST:     pText := @"SPINS_FREELY_AND_COASTS"

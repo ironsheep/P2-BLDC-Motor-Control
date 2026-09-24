@@ -4048,6 +4048,52 @@ pack sensor, «#3611»), and closed-loop current. `sense_i` sees the regenerated
 frame (PL-118). It regenerates into the pack by design. *Confidence:* modelled. The winding R and L are both
 unmeasured, and measuring them (X-1, B-4) is what firms it up.
 
+### PL-130 -- the hold's rise took 291 ms, not 250, and HOLD-RISE judged the operator's push instead of the rise
+
+**Found 2026-09-24** at Visit 10's attended `t0-stopmode` (`debug_260924-171927.log`, row 1, three runs; evaluation
+`VISIT-10-PASS3-T0-DUALSTART-EVALUATION.md`).
+
+**MEASURED:** R17-T0-HOLDRISE FAIL on all three runs, `res1` (first push to ceiling) 291, 3_231 and 522 ms against a
+400 ms bound. The hold log shows why the three disagree. `frontHold()` raises the duty only while `holdDisp <> 0`, and
+never lowers it within a rest. So the duty climbs only while he holds the wheel a tick off its place, and a gentle push
+is won back in tens of ms and then balanced (run 2: ten short displaced spans over 3.2 s). The wall time measures his
+push, not the rise. The **rate** agrees on every run. Over sample pairs displaced and under the ceiling at both ends,
+the implied rise is **291, 290, 289 ms**.
+
+**ROOT CAUSE (DERIVED):**
+- **Driver:** `holdRiseStep := (ceiling − duty_min) / risePasses` truncates. Here that is 1_164 / 250 = 4.66, cut to 4,
+  so the ceiling comes after 1_164 / 4 = **291** displaced passes, not the documented `riseMs` of 250. It is 16 % slow
+  against the API's own definition (`testSetHoldLimits()`: "ms from duty_min to the ceiling while the wheel stays
+  displaced"). A contract defect (P3).
+- **Instrument:** HOLD-RISE timed the wall clock from the first push. It also failed a run that slipped *after*
+  reaching the ceiling (run 1: ceiling at 1_726 ms, slip at 2_308 ms under a push past the ceiling, which is row 2's
+  event).
+
+**FIX:** ⛔ DRIVER_REV 18. The duty is `duty_min + (ceiling − duty_min) × displacedPasses / risePasses`, so it reaches
+the ceiling after exactly `riseMs` displaced, by construction. `test_bench_t0` SRC_REV 16: HOLD-RISE judges the
+rate-implied `rise_ms` (new on the `hold_start` record) in **220–280 ms**, and only the events before the ceiling. The
+pass 3 runs are that band's negative from real material: all three (289–291) fail it. Row 1's card now says the
+resistance grows while he holds the wheel off its place, until it matches his push.
+**Certified when** the next `t0-stopmode` row 1 reads `rise_ms` in the band with HOLD-RISE PASS.
+
+### PL-131 -- the interaction's three negative acts were asked only on the run sheet, and my hand-back outran the sheet
+
+**Found 2026-09-24**, same run. UI-MISS (the empty-panel click in row 1), UI-REDO as registered (row 4) and UI-ABORT
+(row 6) are **NOMEAS**: none of the three acts was made. The log's inputs are all START_ROW, DONE, NEXT_ROW, REDO_ROW
+(row 1, twice, by his choice) and FINISH. The acts lived only on the run sheet, and P7 says *nothing in the runner's
+banner that the panel does not repeat*. The same holds for a run sheet. REDO itself works: row 1 runs 2 and 3 each
+carry their own tries and result.
+
+The same visit also exposed a process gap of mine. The c4a1128 hand-back said `BENCH: READY` for `dual-fault`, but the
+run sheet still read "run 3 is NOT ready". He ran the sheet, so `dual-fault` did not run. A hand-back's READY line and
+the run sheet's command block must change in the same commit.
+
+**FIX:** `gen_t0stop_assets.py` puts each act on its own row's card: row 1 INTRO (click the empty panel first), row 4
+RESULT (click REDO ROW once), row 6 INTRO and ACT (click ABORT on the first run, then REDO ROW). Walked on the
+storyboard at the desk. The run sheet is re-cut with `dual-fault` in its command block.
+**Certified when** the next `t0-stopmode` shows a `hit,MISS` input in row 1, row 4 `run,2`, and row 6 run 1
+`why,ABORTED` with its RESULT screen within 100 ms of the ABORT input.
+
 ---
 
 ## Removed from this list

@@ -13,11 +13,9 @@ read a coast. [Pass 2 evaluation](2026-09-23/VISIT-10-PASS2-EVALUATION.md). Pass
 
 | Load | Every banner / build record must read |
 |---|---|
-| `dual-*` tiers | `BM-BANNER,...,src_rev,41,fmt,25` and `BM-BUILD ... drv_rev,16`. Anything lower means an old tree was built: stop and report |
-| `dual-start` | part `START`, `BM-SKBUILD ... no_walk,FALSE`, negative `NONE` |
-| `dual-start-swapneg` | part `START`, `BM-SKBUILD` negative `SWAP`, a `BM-SKNEG` record before each of the last 3 `BM-SSTART` |
+| `dual-*` tiers | `BM-BANNER,...,src_rev,42,fmt,26` and `BM-BUILD ... drv_rev,18`. Anything lower means an old tree was built: stop and report |
 | `dual-fault` | part `FRESP`; a `BM-FRBUILD` record; `BM-NOTBUILT` for `B4PULSE` only |
-| `t0-stopmode` | `src_rev 15`; the `PLOT t0stop` create ends `SIZE 560 470 POS 60 60 HIDEXY UPDATE` (PL-128); a `T0-24,cogs` record with `measure_cog` 0–7; `T0-24,row,...` records numbered 1 to 8 |
+| `t0-stopmode` | `src_rev 16`; a `hold_start` record carries `rise_ms`; the `PLOT t0stop` create ends `SIZE 560 470 POS 60 60 HIDEXY UPDATE` (PL-128); a `T0-24,cogs` record with `measure_cog` 0–7; `T0-24,row,...` records numbered 1 to 8 |
 
 ---
 
@@ -26,38 +24,36 @@ read a coast. [Pass 2 evaluation](2026-09-23/VISIT-10-PASS2-EVALUATION.md). Pass
 | | |
 |---|---|
 | **Purpose** | **Certification, and sizing the graded short.** It certifies that a second fault during a re-synced stop now takes the fallback and holds it (BLUNT). It sizes BRAKE_PCT_DEFAULT (GRADED, GRD100). It certifies the walk's current guard against the crossed-hall walk, the Rev B rest-zero band (−20…+40 mV), the REST window's fix, and T0-24's rebuilt instrument, each against its negative. |
-| **Hardware risk** | `dual-fault` **faults the wheels on purpose at up to about 220 rpm commanded**. Each fault ends in a phase short, a free coast, a controlled ramp down, or the graded short. The graded short now actually runs, and **it regenerates into the supply, so it needs the pack, not a bench supply.** `dual-start-swapneg` drives the left wheel as if two hall wires were crossed; the new guard shorts a leg as soon as it draws more than 1 A. `t0-stopmode` spins the right wheel under power in rows 6 and 7, and in row 5 the program shorts the wheel while you watch it coast. **Wheels up throughout. Hands off in every unattended tier. Panic: physical battery disconnect.** |
+| **Hardware risk** | `dual-fault` **faults the wheels on purpose at up to about 220 rpm commanded**. Each fault ends in a phase short, a free coast, a controlled ramp down, or the graded short. The graded short is the full short switched on and off every 10 ms, so each short slice draws the full short's current, and each switch to coast returns a little current to the supply: **run it on the pack, not a bench supply.** `t0-stopmode` spins the right wheel under power in rows 6 and 7, and in row 5 the program shorts the wheel while you watch it coast. **Wheels up throughout. Hands off in every unattended tier. Panic: physical battery disconnect.** |
 | **Who can observe** | `t0-stopmode` is attended; each row says on its panel what to do and what you should feel. The unattended tiers need nobody, and **nobody should touch the wheels during `dual-fault`**: pass 2's right-wheel trials 14–17 were disturbed by a hand, and they are re-run here. |
-| **Runs that carry state** | None. The swap negative applies to one start each. |
-| **Run length** | About 15 minutes unattended, then about 15 minutes attended for run 4, at your pace. |
+| **Runs that carry state** | None. |
+| **Run length** | About 10 minutes unattended for run 1, then about 15 minutes attended for run 2, at your pace. |
 | **Repeatability** | All repeatable and idempotent. |
 | **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack, 270 MHz. `test_bench_dual.spin2` parts START (two builds) and FAULTRESP; `test_bench_t0.spin2` T0-24. |
 
-**Not re-run, and why:** `dual-start-phaseneg` and `dual-start-nowalk` certified in pass 2, and nothing under them has
-changed since. The lead probe and the hall check are untouched; the only start-check change is the rest-zero band, which
-run 1 judges.
+**Not re-run, and why:** every `dual-start*` tier is certified (pass 2 and today), and driver 18 changes only the hold
+at rest, which no start check enters.
 
 ---
 
 ## ⛔ First: push, then pull — the tree to run
 
-**The 16:14–16:33 re-run** ([evaluation](2026-09-24/VISIT-10-PASS3-RERUN-EVALUATION.md)) certified BLUNT (left),
-the walk guard's negative, the REST window and the rest-zero band. `dual-start-swapneg` is done and drops. T0-24's
-window opened undersized (PL-128, fixed). The graded short does not brake below 100 % (PL-129, being fixed). The
-right wheel's own trials hit PL-120 again.
+**Done so far:**
+- 16:14–16:33 ([evaluation](2026-09-24/VISIT-10-PASS3-RERUN-EVALUATION.md)): BLUNT (left), the walk guard's negative,
+  the REST window and the rest-zero band certified.
+- 17:19–17:26 ([evaluation](2026-09-24/VISIT-10-PASS3-T0-DUALSTART-EVALUATION.md)): `dual-start` all PASS, and it
+  drops. `t0-stopmode` 9 of 10: the hold rose 16 % slow (PL-130, fixed in driver 18). Its three deliberate acts are now
+  asked on the panel (PL-131).
 
 - **Push from the authoring tree first**, then pull at the bench. The source to run is named in the hand-back, and
   `git log --oneline -1 -- src/` at the bench must show it. The banners are the check (table above).
 
-## The commands — run 1 and 2 now; run 3 waits for PL-129's fix
+## The commands — both are ready
 
 ```bash
-tools/bench-run.sh t0-stopmode            # 1: YOU, at the RIGHT wheel. Each row shows its plan first; nothing moves on until you click
-tools/bench-run.sh dual-start             # 2: Hands off. Startup checks with normal wiring; both wheels nudge a little near the end
+tools/bench-run.sh dual-fault             # 1: Hands off, nobody touches the wheels. Faults both wheels on purpose; the graded short now brakes
+tools/bench-run.sh t0-stopmode            # 2: YOU, at the RIGHT wheel. Do what each row's panel says, including the three extra clicks it asks for
 ```
-
-**Run 3, `dual-fault`, is NOT ready:** the graded short is being fixed first (PL-129), so that one pass sizes it. It
-now also dumps a wheel's driver state if a trial never reaches speed (PL-120).
 
 **No run depends on another run's result, and nothing needs rewiring.**
 
@@ -68,26 +64,10 @@ now also dumps a wheel's driver state if a trial never reaches speed (PL-120).
 Every criterion is fixed here, before the run (D2). Cells print their own verdict; the rest are judged in the report
 from the named records.
 
-### `dual-start` — the rest-zero band, and the guard's positive control
-
-| Cell | Criterion | Fails if | Control | Sizes |
-|---|---|---|---|---|
-| **R19-DUAL-RZSPREAD-X**, per wheel | 0 rest zeros outside **−20…+40 mV** (`BM-SKSUM rz_lo,-20,rz_hi,40`) | one outside the band | pass 2's 40 starts per wheel: left 6.7–9.0, right −0.3–3.1 | certifies the sized band |
-| **R19-DUAL-WALK-X**, per wheel | 0 of 3 walks failing | `l_ok`/`r_ok` FALSE | run 2 | **the guard's positive control**: a healthy walk must never trip it |
-| R19-DUAL-HEALTH-X, PROBE-X, PRBFLR-X, PACK-X | as pass 2 | as pass 2 | — | — |
-
-**Pre-registered:** every healthy `BM-SKWALK l_pk_i` stays near pass 2's 12–21 mV, far under the guard's 150 mV net.
-
-### `dual-start-swapneg` — the guard's negative, and B-5's
-
-| Cell | Criterion | Fails if |
-|---|---|---|
-| **R19-DUAL-SWNEG-X**, LEFT | 0 of 3 walks in which the left's HLT_WIRING was not judged failed | the swap went undetected in any walk |
-| **The guard (judged in the report)** | every crossed walk's `BM-SKWALK l_pk_i` stays **under 577 mV**, the least pass 2 read unguarded | any walk at or above 577 mV: the guard did not bound it |
-
-Pass 2 read 577, 3,858 and 594 mV on these walks. The guard shorts the leg within one front pass and one drive pass
-(about 1.5 ms) of 150 mV net, so the instrument should see a small fraction of that. A walk that never reaches the bound
-(the rotor happens to follow) is not a failure, provided HLT_WIRING still fails it.
+- **`dual-start`: done** 17:25, all 13 PASS: rest zeros in band on both wheels, healthy walks at 13–21 mV against the
+  guard's 150 mV ([evaluation](2026-09-24/VISIT-10-PASS3-T0-DUALSTART-EVALUATION.md) §2).
+- **`dual-start-swapneg`: done** 16:14. The guard bounded every crossed walk and HLT_WIRING failed each one
+  ([evaluation](2026-09-24/VISIT-10-PASS3-RERUN-EVALUATION.md) §2).
 
 ### `dual-fault` — the fallback and the graded short (fault study §7)
 
@@ -119,21 +99,19 @@ buttons.
 **The reading is `band_ticks`:** the hall ticks the wheel turns from 120 ticks/s down to rest, the same on every row.
 A spin row needs a hard spin. If it is too slow, the panel says so, and you just spin again.
 
-**Three things to do on purpose** (each makes one of the interaction's checks able to fail):
-
-1. **Row 1, on its first screen:** click once on the empty panel **left of START ROW** before you click START ROW.
-2. **Row 4 (COAST AT REST):** after its result, click **REDO ROW** once, and spin it again.
-3. **Row 6 (FAULT, COAST MODE):** click **ABORT** while it spins up. After its result, click **REDO ROW** and let it run.
+**Three extra clicks, each asked on its row's panel** (each makes one of the interaction's checks able to fail): row 1's
+first screen asks for a click on the empty panel, row 4's result asks for one REDO ROW, and row 6 asks for ABORT on its
+first run, then REDO ROW.
 
 | Row | You click, then | You should feel or see | Cell | Pre-registered reading | Fails if |
 |---|---|---|---|---|---|
-| 1 HOLD-RISE | START ROW; push the wheel and keep pushing; DONE | the resistance **grow** over about ¼ s | R17-T0-HOLDRISE | HS_HOLDING throughout; the ceiling within 400 ms of the first push | not in time, or SLIPPED, LIMITED or FAULTED |
+| 1 HOLD-RISE | START ROW; push the wheel firmly and keep pushing; DONE | the resistance **grow** while you hold it off its place | R17-T0-HOLDRISE | `rise_ms` 220–280 (driver 18; driver 17 read 289–291), and no slip, limit or fault before the ceiling | outside the band, or an event before the ceiling |
 | 2 HOLD-SLIP | START ROW; turn it firmly; DONE | it **give way**, then drag | R17-T0-HOLDSLIP | starts HS_HOLDING at 0 (else NOMEAS), then HS_SLIPPED before any FAULTED | the hold persists, or FAULTED first |
 | 3 HOLD-LIMIT | START ROW; a steady push for about 3 s; DONE | it hold, then **let go** | R17-T0-HOLDLIMIT | starts HS_HOLDING at 0 (else NOMEAS), then HS_LIMITED | it never hands off |
 | 4 COAST AT REST | START ROW; spin it hard, let go; DONE when stopped | it spin freely and coast | R17-T0-RESTCOAST | band_ticks ≥ 7 | ≤ 6 |
 | 5 E-STOP AS IT COASTS | START ROW; spin it hard, let go; DONE | it coast, then **stop abruptly** | R17-T0-RESTSHORT | band_ticks ≤ 4, the e-stop latched at the band entry | ≥ 5, or the short was not applied |
 | (4 − 5) | — | — | R17-T0-STOPGAP | ≥ 3 ticks apart | < 3 |
-| 6 FAULT, COAST MODE | START ROW; **hands off**; it ends by itself | the wheel coasts after the fault | R17-T0-FLTCOAST | band_ticks ≥ 7 and still FAULTED | either false, or it never reached AT_SPEED |
+| 6 FAULT, COAST MODE | START ROW; **hands off**; first run: ABORT as it spins up, then REDO ROW; the rerun ends by itself | the wheel coasts after the fault | R17-T0-FLTCOAST | band_ticks ≥ 7 and still FAULTED | either false, or it never reached AT_SPEED |
 | 7 FAULT, BRAKE MODE | as row 6 | the wheel brakes hard after the fault | R17-T0-FLTSHORT | band_ticks ≤ 4 and still FAULTED | either false, or it never reached AT_SPEED |
 | (6 − 7) | — | — | R17-T0-FLTGAP | ≥ 3 ticks apart | < 3 |
 | 8 DRIVER COG STOPPED | START ROW; spin it hard, let go; DONE, then FINISH | it coast exactly as row 4 did | **R17-T0-FREEREF** | band_ticks ≥ 7 | ≤ 6 |

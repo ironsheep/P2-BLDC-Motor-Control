@@ -2303,7 +2303,7 @@ PUB frontSetHoldLimits(ceilingPct, riseMs, limitMs)
 '' @param limitMs - ms at the ceiling before the hold hands off to the phase short [1..HOLD_LIMIT_MS_MAX]
 
     holdCeilDuty := muldiv64(duty_max, ceilingPct, 100) #> duty_min
-    holdRiseStep := ((holdCeilDuty - duty_min) / muldiv64(riseMs, FRONT_LOOP_HZ, MS_PER_SEC)) #> 1
+    holdRisePasses := muldiv64(riseMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1
     holdLimitPasses := muldiv64(limitMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1
 
 PUB frontSetFaultResponse(eMode, brakePct)
@@ -2356,6 +2356,7 @@ PUB frontHold() | nowPos
         if bHoldArmed == FALSE
             bHoldArmed := TRUE                                                  ' this rest's hold position is where it stopped
             holdPos := nowPos
+            holdDispPasses := 0
             holdCeilPasses := 0
             hold_duty := duty_min
             holdState := HS_HOLDING
@@ -2366,8 +2367,9 @@ PUB frontHold() | nowPos
                 holdState := HS_SLIPPED
                 holdSlipEvents++
             else
-                if holdDisp <> 0
-                    hold_duty := (hold_duty + holdRiseStep) <# holdCeilDuty
+                if holdDisp <> 0                                                ' the duty follows the displaced passes, so the
+                    holdDispPasses := (holdDispPasses + 1) <# holdRisePasses    '  ceiling comes after exactly riseMs displaced
+                    hold_duty := duty_min + muldiv64(holdCeilDuty - duty_min, holdDispPasses, holdRisePasses)
                 if hold_duty < holdCeilDuty
                     holdCeilPasses := 0
                 elseif ++holdCeilPasses >= holdLimitPasses
@@ -4821,7 +4823,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 17        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 18        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4837,6 +4839,7 @@ CON { driver internal Constants }
                                             ' 15: a wiring-walk leg is shorted and fails once its current passes WALK_I_LIMIT_MV (PL-122, task 3618)
                                             ' 16: the Rev B rest-zero band sized from Visit 10 (-20/+40 mV); Rev A keeps -100/+200 (task 3613)
                                             ' 17: BR_BRAKE slices the full short over a 10 ms period, no longer a per-frame low-side PWM (PL-129, task 3620)
+                                            ' 18: the hold's duty follows its displaced passes, so it reaches the ceiling in riseMs, not 16 % later (PL-130)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -5108,7 +5111,8 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    holdDisp                    ' pos - holdPos, this pass
     LONG    holdCeilPasses              ' consecutive passes with hold_duty at the ceiling
     LONG    holdCeilDuty                ' the ceiling, in duty counts (HOLD_CEILING_PCT of duty_max)
-    LONG    holdRiseStep                ' duty counts added per pass while the wheel is displaced
+    LONG    holdRisePasses              ' displaced passes from duty_min to the ceiling (riseMs; PL-130)
+    LONG    holdDispPasses              ' displaced passes this rest, at most holdRisePasses
     LONG    holdLimitPasses             ' passes at the ceiling before the hand-off to the short
     LONG    holdSlipEvents              ' holds ended by a slip since start, unbounded
     LONG    holdLimitEvents             ' holds ended by the time limit since start, unbounded
