@@ -198,7 +198,11 @@ Part 4 is forward-looking: the open question, what would settle it, and which ta
   happened.** Naming the destination is not arriving at it.
 - **Watch** → recorded where the next run's reader will see it.
 - Then update the plan/tasks and the sprint resume key, and **commit the evaluation together with its
-  logs**.
+  logs**. Since Stephen's 2026-09-23 `.gitignore` change (`/DOCs/analyses`), a new evaluation and its logs stay in
+  the tree untracked. Do not force-add them. The tracked record is the punch list and the run sheet, and those
+  are committed.
+- **When the banner check fails because the tree was not pushed**, the run sheet's resume states the SHA to run
+  and PUSH FIRST before anything else is written (PL-125).
 
 > *Why:* 2026-09-22 — two instrument defects were correctly deferred, announced as "on the punch
 > list" in the breadcrumb, the run sheet and to Stephen, and **never written down**. The breadcrumb is

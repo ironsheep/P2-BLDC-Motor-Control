@@ -39,16 +39,32 @@ run 1 judges.
 
 ---
 
-## The commands — run every one, in this order
+## ⛔ First: push, then pull — the tree to run
+
+**2026-09-24 13:31 ran the OLD tree** (pass 2's, `60255bc`): the pass 3 commits had never been pushed, so nothing on
+this sheet was exercised ([evaluation](2026-09-24/VISIT-10-PASS3-EVALUATION.md), PL-125).
+
+- **Push from the authoring tree first.** The source to run is **`e268310`** (`git log --oneline -1 -- src/`); any
+  later commit that only touches documents carries the same source.
+- **At the bench, pull.** The banner is then the check (table above): `src_rev,40,fmt,25`, `drv_rev,16`.
+
+## The commands — run 1 to 3 now; run 4 waits for its rebuild
 
 ```bash
 tools/bench-run.sh dual-start             # 1: Hands off. Startup checks with normal wiring; both wheels nudge a little near the end
 tools/bench-run.sh dual-start-swapneg     # 2: Hands off. The program fakes crossed sensor wires on the LEFT wheel; it may twitch, then stops itself
 tools/bench-run.sh dual-fault             # 3: Hands off, and keep hands away. Each wheel spins up and is stopped on purpose, about 6 minutes
-tools/bench-run.sh t0-stopmode            # 4: YOU, at the RIGHT wheel: follow each panel; every row waits for you
 ```
 
+**Run 4, `t0-stopmode`, is NOT ready.** Its panel is being rebuilt (PL-127: rows that do not wait for you, dead DONE
+and ABORT buttons, no redo). It comes back with its own sheet section.
+
 **No run depends on another run's result, and nothing needs rewiring.**
+
+**Watch for one thing during run 3 (PL-126):** if the log window stops scrolling for more than about 10 s, look at the
+right wheel before you touch anything, and note whether it is still turning, coasting or stopped. That is the only
+observation this sheet asks for. The first try at 13:38 went silent 2 s into a right-wheel spin-up, and the log cannot
+say whether the P2 reset or hung.
 
 ---
 
@@ -95,7 +111,7 @@ forced through `testForceFault()`, each trial in its own driver lifetime, at 40,
 **Pre-registered for X-6 in hold mode:** with the fallback held, the wheel now stops on the graded short, not on the
 hold. The stop takes longer than pass 2's 27–59 ms at low brake %, and approaches the full short's at 100 %.
 
-### `t0-stopmode` — the stop states at the wheel (ATTENDED, right wheel)
+### `t0-stopmode` — the stop states at the wheel (ATTENDED, right wheel) — BEING REBUILT, not in this run (PL-127)
 
 **The panel names the RIGHT wheel on every screen.** Every row waits for you. **FREEREF is emitted first:** if it fails,
 the instrument has not shown it can report a coast, and every coast cell is read with that in mind.

@@ -3881,6 +3881,9 @@ wheel. The leg fails, and the walk releases only the guard's own e-stop. DESK TR
 takes at most one front pass (1 ms) plus one drive pass (0.52 ms). The next `dual-start-swapneg` certifies it: the
 crossed walks trip, and no healthy walk does.
 
+**2026-09-24 13:34, pass 3 — NOT EXERCISED.** The bench ran the pass 2 tree (PL-125). The unguarded walk read
+`l_pk_i,3_860` again.
+
 ### PL-123 -- T0-24's instrument: hold rows inherit state, the coast metric depends on spin speed, the wheel is unnamed
 
 **Found 2026-09-23** at Visit 10 pass 2 (evaluation §3.6). Four instrument defects, one fix batch:
@@ -3906,6 +3909,9 @@ crossed walks trip, and no healthy walk does.
 
 Visit 10 pass 3 certifies it.
 
+**2026-09-24, pass 3 — NOT EXERCISED** (the bench ran src_rev 12, PL-125). The interaction defects Stephen reported
+there survive in src_rev 13 and are PL-127. The instrument fixes above are carried into that rebuild.
+
 ### PL-124 -- dual-fault's REST window opens while the driver's ramp is still driving the bridge
 
 **Found 2026-09-24** during «#3616»'s desk trace of Visit 10 pass 2 (evaluation §7 P2-F11).
@@ -3921,6 +3927,46 @@ DCS_FAULTED at rest, not at the last tick. RESTFLAT's X-4 cells are not evidence
 **BUILT 2026-09-24 (test_bench_dual SRC_REV 40, not yet certified).** The REST window now opens at the first sample from
 rest that reads STOPPED, FAULTED or ESTOP; when none does, the window is not measured. The next `dual-fault` run
 certifies it: X-4's RESTFLAT holds.
+
+**2026-09-24 13:31, pass 3 — NOT EXERCISED.** The bench ran the pass 2 tree (PL-125). Still built, still uncertified.
+
+### PL-125 -- the pass 3 hand-back did not name the commit to run, and the tree was never pushed
+
+**Found 2026-09-24** at Visit 10 pass 3 ([evaluation](analyses/bench/2026-09-24/VISIT-10-PASS3-EVALUATION.md)).
+
+**MEASURED:** all five logs read the pass 2 tree (dual `src_rev,38,fmt,24`, `drv_rev,13`; T0 `src_rev 12`). `main` was
+five commits ahead of `origin/main` (`d0dd14f`..`e268310`, every pass 3 change), and the bench builds what git delivers.
+The hand-back said `BENCH: READY` with no SHA and no "push first". `dual-agent-handoff` §7 item 1 requires the SHA.
+
+**Disposition:** ⛔ fixed at once. The run sheet's resume now states the SHA to run and PUSH FIRST whenever `main` is
+ahead of origin. Doctrine overlay P1's BENCH line carries the rule. A whole bench pass was spent on it.
+
+### PL-126 -- the P2's output stopped mid-record 2 s into right trial 19, and the wire then carried lone zero bytes
+
+**Found 2026-09-24** in the first `dual-fault` try of pass 3 (evaluation §3). This ran the pass 2 binary.
+
+**MEASURED:** the last record is `BM-START,seq,4_886,...,RIGHT,life,23` at 13:42:15.410. Then
+`usb-traffic_260924-133841.log` shows `$20 $00` at 13:42:17.554 and four lone `$00` bytes over 49 s. No other capture in
+the set holds one. The harness watchdog printed nothing. The rerun and pass 2 both passed the same trial.
+
+**Undetermined:** a P2 reset, a supply loss, or a hang with its TX line disturbed. The log cannot separate them.
+**Watch:** the next run sheet says in advance what to look at if the log stops scrolling. A second instance, or that
+observation, makes it actionable. Owner «#3613».
+
+### PL-127 -- T0-24's interaction: rows end on timers, results are overwritten, ABORT/DONE are mostly dead, no redo
+
+**Found 2026-09-24** (Stephen: *"It's not waiting for me to complete rows... In some cases, I didn't do anything at all,
+and it just moves on to the next one... Your abort and done buttons are not working at all."*). Evaluation §4 reads it
+against the rebuilt src_rev 13 source, not only the src_rev 12 that ran:
+
+1. Rows end on the program's timers (a watch bound after the first push, rest detection, a 120 s cap), not on him.
+2. A row's result screen is replaced by the next row's arm screen at once (20 ms in `debug_260924-135130.log`).
+3. The panel shows the action for each phase but never what the program saw, or why a row did not count.
+4. All three buttons are always drawn. DONE and ABORT are live only in narrow windows, and a click is seen only when a
+   poll (every 100–150 ms, suspended while the wheel turns) lands while the mouse button is down.
+5. There is no redo, and the log records no input, so a missed click cannot be told from an ignored one.
+
+**Disposition:** ⛔ fix: a pedagogical study of the whole sequence, then a rebuild. It is a new task.
 
 ---
 

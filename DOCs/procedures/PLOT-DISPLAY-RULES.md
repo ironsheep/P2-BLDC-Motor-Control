@@ -152,6 +152,12 @@ limit, but the interleaving is real.
 costs the operator focusing the window; a click does not. Count what each step costs them (reach, focus,
 read, act) before the panel is built, and remove what can be removed.
 
+**The operator ends every step they take part in.** A timer may end only a step they are not part of. A step's result
+stays on the screen, saying what the program saw and whether it counted, until they click NEXT or REDO. Every step can
+be redone. Only live buttons are drawn, and the input is polled often enough that a click cannot fall between polls.
+Every input taken is logged, with the button it hit or the position it missed at. **The review renders every screen
+of the sequence, in order, and reads them at the desk before the visit** (PL-127).
+
 One control has one meaning. Rows use one numbering (1-based) in the runner's banner, the panel and the log.
 One vocabulary, matching the API, names each state. The operator is never asked for sub-second timing: take
 the moment from a sensor, and let the button say only "done".
