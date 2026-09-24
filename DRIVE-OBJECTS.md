@@ -110,7 +110,7 @@ The object **isp\_steering_2wheel.spin2** provides the following methods. Every 
 | PUB isStopped() : bState | Return T/F where T means both motors are stopped
 | PUB isStarting() : bState | Return T/F where T means either motor is spinning up
 | PUB isTurning() : bState | Return T/F where T means either motor is commanded to move and is not stopped, faulted or emergency-stopped. A motor that stalls is stopped by the protective stop within about a second.
-| PUB isFaulted() : bState | Return T/F where T means either motor has faulted (the fault clears when a stop or a different power is commanded)
+| PUB isFaulted() : bState | Return T/F where T means either motor has faulted (the fault clears only when a stop or a power is commanded)
 | PUB isEmergency() : bState | Return T/F where T means either motor is emergency-stopped
 |  **>--- VALIDATION**
 | PUB validBasePinForChoice(userBasePin) : legalBasePin | Returns {userBasePin} when it is a legal PINS\_\* group, else INVALID\_PIN\_BASE
@@ -186,7 +186,7 @@ The object **isp\_bldc_motor.spin2** provides the following methods. Every metho
 | PUB isStarting() : bState | Return T/F where T means the motor is spinning up
 | PUB isTurning() : bState | Return T/F where T means the motor is commanded to move and is not stopped, faulted or emergency-stopped. A motor that stalls is stopped by the protective stop within about a second.
 | PUB isEmergency() : bState | Return T/F where T means the motor is emergency-stopped
-| PUB isFaulted() : bState | Return T/F where T means the motor has faulted (the fault clears when a stop or a different power is commanded)
+| PUB isFaulted() : bState | Return T/F where T means the motor has faulted (the fault clears only when a stop or a power is commanded)
 |  **>--- VALIDATION**
 | PUB validBasePinForChoice(userBasePin) : legalBasePin | as the steering object's
 | PUB validVoltageForChoice(userVoltage) : legalVoltage | as the steering object's

@@ -1275,7 +1275,7 @@ PUB getDriveVoltage() : eVoltage, nMilliVolts
 PUB getStatus() : eStatus
 '' Returns status of motor drive state for this motor: enumerated constant: DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF, DS_FAULTED, or DS_ESTOP
 ''
-'' @returns eStatus - DS_FAULTED while the driver is faulted (until a stop or a different power is commanded), DS_ESTOP while emergency-stopped, DS_HOLDING or DS_OFF when stopped (per holdAtStop()), DS_MOVING while otherwise running, DS_Unknown when the driver is not running
+'' @returns eStatus - DS_FAULTED while the driver is faulted (until a stop or a power is commanded), DS_ESTOP while emergency-stopped, DS_HOLDING or DS_OFF when stopped (per holdAtStop()), DS_MOVING while otherwise running, DS_Unknown when the driver is not running
 
     eStatus := DS_Unknown                               ' if not one of the following status
     if isFaulted()                                      ' M: a faulted motor is not moving, so this is tested first
@@ -1463,7 +1463,7 @@ PUB isStopped() : bState
 PUB isFaulted() : bState
 '' Return T/F where T means the motor is faulted now
 ''
-'' @returns bState - T/F where T means the driver is faulted; it clears when a stop or a different power is commanded (isFaultSignal() keeps the record that it happened)
+'' @returns bState - T/F where T means the driver is faulted; it clears only when a stop or a power is commanded (isFaultSignal() keeps the record that it happened)
 
     bState := (drv_state == DCS_FAULTED) ? true : false
 
@@ -1777,13 +1777,10 @@ PUB testResetFault() : eError
     eError := NO_ERROR
     if fault
         debug[user.DBGCH_TEST]("MOT: reset fault...")
-        ' PL-28(a): the driver only leaves DCS_FAULTED via its .newRqst path. A STOP request
-        ' (tgt_incr == 0) always reaches .newRqst while not already DCS_STOPPED
-        ' (isp_bldc_motor.spin2:2140-2148), regardless of whether it differs from the prior
-        ' command; a nonzero command only gets there if it differs (:2150). So issuing zero
-        ' here, rather than waiting on the caller to have done so, guarantees the fault-clear
-        ' code (:2179-2189) runs on the driver's next pass. The zero goes through stopMotor(), the
-        ' securing path, so the front cog writes it when one runs.
+        ' PL-28(a), task 3616: the driver leaves DCS_FAULTED only when the front cog clears it, and a
+        ' commanded stop does (frontStopCommanded()). So issuing the stop here, rather than waiting on
+        ' the caller to have done so, guarantees the driver's next pass clears the fault. The stop goes
+        ' through stopMotor(), the securing path, so the front cog writes it when one runs.
         stopMotor()
         clearFaultSignal()
         waitms(30) ' values will clear in 20ms but leave extra time to occur
@@ -2101,16 +2098,11 @@ PUB frontClearFault() : eStatus, bDidWait
     eStatus := NO_ERROR
     bDidWait := FALSE
     if drv_state == DCS_FAULTED
-        ' PL-66: only the front cog can tell a request that just arrived from one still standing --
-        '  the driver's own sv_tgt_incr==tgt_incr compare (.notRqStop) tests "still standing", not
-        '  "just arrived", because drvMotor saves sv_tgt_incr from tgt_incr every pass before
-        '  re-reading it. So the fault-clear edge is made here, not in the driver: a zero command
-        '  always reaches the driver's stop-request check before that compare (drv_state <>
-        '  DCS_STOPPED jumps straight to .newRqst -> .resetFault -> DCS_STOPPED, in one pass -- read
-        '  against .noEStop/.newRqst/.resetFault), so a bounded wait for drv_state leaving
-        '  DCS_FAULTED clears it, for every drive while FAULTED, not only an equal-power retry (a
-        '  differing command already reached .resetFault on its own, unconditionally).
-        frontZeroPower()                                                    ' PL-52: also clears getPower() while we try
+        ' PL-66: only the front cog can tell a request that just arrived from one still standing, so the
+        '  fault-clear edge is made here, not in the driver: fault_clr advances (task 3616), and the
+        '  driver's latch releases on the pass it sees the advance (.noEStop -> .resetFault), for every
+        '  drive while FAULTED. The bounded wait is for drv_state leaving DCS_FAULTED.
+        frontStopCommanded()                                                ' PL-52: also clears getPower() while we try
         bDidWait := TRUE
         if bFrontWaitForDriver(WAIT_FAULT_LEFT) == FALSE
             eStatus := ERR_NO_RESPONSE                                      ' did not clear in the bound; the zero command stays written
@@ -2142,12 +2134,13 @@ PUB frontWriteIncrement(nIncre, bSync)
 '' FRONT COG ONLY: write a raw driver increment (stops, and the TEST-USE path) with no emergency-stop check
 ''
 '' PL-52: does not update getPower() -- REQ_TEST_INCREMENT writes a raw driver increment, not a commanded
-'' power, so motorPower is left exactly as it was
+'' power, so motorPower is left exactly as it was. A commanded write, so it also clears a fault (task 3616)
 ''
 '' @param nIncre - the driver angle increment; 0 stops
 '' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
 
     frontCommand(nIncre, bSync)
+    releaseFaultLatch()
 
 PUB frontShortfall() : bShort, nAchievedPermille, nCmdGen
 '' FRONT COG ONLY: whether this motor is falling short of its command, and what fraction of it the field achieves
@@ -2207,6 +2200,18 @@ PUB frontZeroPower()
 
     motorPower := 0
     frontCommand(0, FALSE)
+
+PUB frontStopCommanded()
+'' FRONT COG ONLY: a stop the user commanded (REQ_STOP, and the clear before a drive): write a zero command and release
+'' a FAULTED driver to the stop mode (task 3616)
+''
+'' DCS_FAULTED is a latch in the driver: only an advance of fault_clr clears it, and a zero command alone never does.
+'' The zero is written first, so the driver pass that sees the advance also reads the zero and comes to rest.
+'' A stop the front cog makes on its own (a limit, a timeout, a re-synced fault) uses frontZeroPower() and leaves
+'' a fault standing.
+
+    frontZeroPower()
+    releaseFaultLatch()
 
 PUB frontRefusal() : eStatus
 '' FRONT COG ONLY: return why a drive must be refused now, or NO_ERROR
@@ -2526,6 +2531,7 @@ PUB frontSecure(bEStop)
         e_stop := TRUE
     motorPower := 0                                                             ' PL-52: this is a genuine stop
     setTargetAccel(0, false)
+    releaseFaultLatch()                                                         ' task 3616: a commanded stop clears a fault
 
 PUB getposTrkHallTicks() : retv
 '' INTERNAL USE: return our position tracking hall-ticks
@@ -3004,6 +3010,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' R19.4: nothing checked and nothing probed until runStartChecks()
     probe_phase := PRB_NONE
     force_seq := 0                                                          ' R19.3: the driver's force_seen starts at 0 too
+    fault_clr := 0                                                          ' task 3616: and its fault_clr_seen
     healthChecked := 0
     healthFailed := 0
     longfill(@probeMv, 0, 9)
@@ -3553,7 +3560,7 @@ PRI isAbiLayoutValid() : bValid
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
     ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd
-    bValid &= (@force_seq - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    bValid &= (@fault_clr - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -3574,7 +3581,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@force_seq - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@fault_clr - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -3583,8 +3590,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@force_seq
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @force_seq))
+    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@fault_clr
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @fault_clr))
 
 CON ' --- HDMI Debug Support ---
 
@@ -4163,7 +4170,7 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             frontEStop(TRUE)
         REQ_STOP:
             bCmdWatched := FALSE
-            frontZeroPower()                                                    ' PL-52: a commanded stop clears getPower() too
+            frontStopCommanded()                                                ' PL-52: clears getPower() too; task 3616: and a fault
         REQ_CLEAR_ESTOP:
             eStatus := protectiveCode                                           ' a protective stop is released only by its own clear
             if eStatus == NO_ERROR
@@ -4364,6 +4371,12 @@ PRI frontCommand(nIncre, bSync)
     bStopUnconfirmed := ((nIncre ZEROX 30) == 0)                               ' any other command supersedes a pending confirmation
     userCmdIncr := nIncre                                                       ' R18.4 D-6: what was COMMANDED, which a path scale never changes
     userCmdGen++                                                                '  and a count an owner reads to see a new command arrive
+
+PRI releaseFaultLatch()
+' FRONT COG: the one place a commanded write releases a FAULTED driver (task 3616): advance fault_clr. Call it
+' AFTER the command is written, so the driver pass that sees the advance also reads that command.
+
+    fault_clr++
 
 PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode, nResyncsNow
 ' FRONT COG: on the pass the driver first reads DCS_FAULTED, latch why (S-7): FC_HALL when a hall sensor is reading
@@ -4742,12 +4755,12 @@ CON { driver internal Constants }
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 20
-    DRVR_PARAMS_LONGS_COUNT     = 22
+    DRVR_PARAMS_LONGS_COUNT     = 23
 
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 13        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 14        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4759,6 +4772,7 @@ CON { driver internal Constants }
                                             ' 11: the optional pack voltage sensor, getPackVoltage() (task 3611)
                                             ' 12: a re-synced stop stays pending until rest, so a second fault takes the fallback; testForceFault()
                                             ' 13: test-only negatives for the start checks: testSetProbeWithhold(), testSetHallSwap() (task 3613)
+                                            ' 14: DCS_FAULTED is a latch: only a commanded stop or drive clears it, never a zero already standing (task 3616)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4920,7 +4934,7 @@ VAR  {  Motor Parameters  }
 ' -----------------------------------
 ' VALUES copied to driver each cycle
 ' -----------------------------------
-' TABLE of  22 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
+' TABLE of  23 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -4943,6 +4957,7 @@ VAR  {  Motor Parameters  }
     LONG    brake_y         ' R19.3: BR_BRAKE's low-side PWM Y (frontSetFaultResponse()); frame = off, 0 = fully on
     LONG    probe_phase     ' R19.4: PRB_* the continuity probe drives at rest; written only by the start-time self-test
     LONG    force_seq       ' R19.3 TEST-USE: front-written, advanced by testForceFault(); the driver faults once per advance
+    LONG    fault_clr       ' task 3616: front-written, advanced by frontStopCommanded(); a FAULTED driver clears once per advance
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -5114,6 +5129,20 @@ drvMotor                                                ' global (task 3535): en
                 mov     sv_tgt_incr, tgt_incr
 
                 call    #gettgtincr                     ' get rate of increment ( +/- drive power, or 0 stop)
+                ' task 3616: DCS_FAULTED is a LATCH. It clears only when the front cog advances fault_clr_ (a commanded
+                '  stop or drive, frontStopCommanded()), never because the command reads 0: a re-synced stop has
+                '  already written 0, so a fault during it once cleared on the next pass and its fallback never held.
+                '  The front cog writes its 0 before advancing fault_clr_, so the clearing pass reads that 0.
+                cmp     drv_state_, #DCS_FAULTED    wz  ' Q: is MOTOR faulted?
+    if_nz       jmp     #.notFaulted                    ' NO, go take the command
+                cmp     fault_clr_, fault_clr_seen  wz  ' Q: has the front cog cleared the fault?
+    if_z        jmp     #.endRqst                       ' NO, still FAULTED: no command is taken, the fault's bridge stays
+.resetFault
+                call    #.clearRun                      ' zero the running state (shared with the e-stop entry, PL-57)
+                mov     drv_state_, #DCS_STOPPED        ' reset fault -> to stopped
+                call    #checkstop                      ' set drive pwm according to stop mode
+.notFaulted
+                mov     fault_clr_seen, fault_clr_      ' consumed: and when not FAULTED, a clear has nothing to clear
                 or      tgt_incr, tgt_incr          wz  ' Q: being asked to stop?
     if_nz       jmp     #.notRqStop                     ' NO, not exception, check next
                 ' this is a stop request
@@ -5147,18 +5176,7 @@ drvMotor                                                ' global (task 3535): en
             ' let's see if user wants to change speed
     ' -------------------------------------------------------------------------
                 mov     prior_incr, sv_tgt_incr         ' have new request - save the prior!
-                ' first, if faulted, clear fault
-                cmp     drv_state_, #DCS_FAULTED    wz  ' Q: is MOTOR faulted?
-    if_nz       jmp     #.chkStopCmd                    ' NO, go to next check
-            ' MOTOR faulted, clear fault so we can run again
-.resetFault
-                call    #.clearRun                      ' zero the running state (shared with the e-stop entry, PL-57)
-                mov     drv_state_, #DCS_STOPPED        ' reset fault -> to stopped
-                                                        ' drive_pins were floated when detect fault
-                call    #checkstop                   ' set drive pwm according to stop mode
-                ' if we were faulted, we are already stopped so just do nothing if new stop request
-                or      tgt_incr, tgt_incr          wz  ' Q: is stop request?
-    if_z        jmp     #.endRqst                       ' YES, is stop and motor STOPPED, just exit (w/o increment)
+                                                        ' (never FAULTED here: that latch is handled above)
 .chkStopCmd
                 ' if NEW request is stop
                 ' NOTE: (earlier code ensures we are NOT stopped or FAULTed when we get here)
@@ -5787,6 +5805,7 @@ lowy_brake      res 1       ' [BR_BRAKE] brake_y_, copied every drive pass by ge
 lowy_probe      res 1       ' [BR_PROBE] coast_y: every low side off, then undrivenPins switches the probed phase (set at start)
 fault_stop      res 1       ' R19.3: T/F where T means a re-synced fault's stop is pending: commands read as 0 until at rest
 force_seen      res 1       ' R19.3 TEST-USE: the last force_seq_ a fault took
+fault_clr_seen  res 1       ' task 3616: the last fault_clr_ a drive pass consumed
 curr_stop       res 1       ' current stop mode
 lag_s           res 1       ' C-5: signed lag this pass, + when the rotor trails the field in the direction of motion
 duty_cap_       res 1       ' PL-55: duty ceiling, duty_max_ except while ramping down
@@ -5832,7 +5851,7 @@ scl_levels      res 4
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
 params_ptr_ res 1           ' params_ptr must be followed by:
-offset_fwd_ res 1           '  22 (DRVR_PARAMS_LONGS_COUNT) parameters
+offset_fwd_ res 1           '  23 (DRVR_PARAMS_LONGS_COUNT) parameters
 offset_rev_ res 1
 duty_min_   res 1           ' minimum duty cycle for pwm
 duty_max_   res 1           ' maximum duty cycle for pwm
@@ -5854,6 +5873,7 @@ fault_mode_ res 1           ' R19.3: FR_SHIPPED or FR_GRADED
 brake_y_    res 1           ' R19.3: BR_BRAKE's low-side Y; gettgtincr copies it into lowy_tbl's BR_BRAKE entry
 probe_phase_ res 1          ' R19.4: PRB_* the continuity probe drives at rest (restBridge, undrivenPins)
 force_seq_  res 1           ' R19.3 TEST-USE: advanced by testForceFault(); a driven frame whose force_seen differs faults
+fault_clr_  res 1           ' task 3616: advanced by the front cog to clear DCS_FAULTED; a drive pass whose fault_clr_seen differs clears it
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -5881,12 +5901,12 @@ fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controll
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 486 USED, 10 FREE, 2026-09-23 (R19.3 forced fault) -- read from the compiler, never hand-counted (a hand
-                 ' count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, DUTY_CAPPED_'s VALUE,
-                 ' whose top 12 bits are its cog address ($1DF). LUT code runs at cog speed (2 clocks, p2kb
-                 ' p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS are what
-                 ' this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $2CF, 207 of 512 longs (DRIVER_REV 12).
+    fit     496  ' 489 USED, 7 FREE, 2026-09-24 (DRIVER_REV 14, the fault latch) -- read from the compiler, never hand-counted
+                 ' (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FAULT_RESYNCS_'s VALUE,
+                 ' whose top 12 bits are its cog address ($1E8, the last register, so USED is $1E9). LUT code runs at cog
+                 ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
+                 ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
+                 ' lutCodeStart $200 to lutCodeEnd $2D0, 208 of 512 longs (DRIVER_REV 14).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -6042,7 +6062,8 @@ lutCodeStart
                 mov     duty_capped_, #0
                 mov     fault_resyncs_, #0              ' R19.3: and the re-sync count, with no stop pending,
                 mov     fault_stop, #0
-                mov     force_seen, #0                  '  and no forced fault (init() zeroes force_seq too)
+                mov     force_seen, #0                  '  and no forced fault (init() zeroes force_seq too),
+                mov     fault_clr_seen, #0              '  and no fault clear (init() zeroes fault_clr too)
                 mov     lowy_tbl, #0                    '  and BR_SHORT's low-side Y (lowy_tbl's first entry)
                 alts    hall_port                      ' prime hall_ from a real read: first control pass then sees old == new
                 mov     hall_, 0-0                      '  (PL-90: one INA/INB read; hall pins are inputs, nothing ever raises their DIR)
@@ -6188,8 +6209,8 @@ faultResponse                                           ' R19.3: called from the
                 mov     fault_stop, #1                  ' RE-SYNC: commands read as 0 until the front cog's stop arrives, so the
                 add     fault_resyncs_, #1              '  driver ramps down; counted, so the front cog writes that stop and reports it;
                 jmp     #initAngleFmHall                '  and the field is re-seeded from the halls. Returns to our caller
-.blunt          mov     fault_stop, #0                  ' a hard fault clears any pending re-sync stop: the next command is taken
-                mov     drv_state_, #DCS_FAULTED        ' the driver is FAULTED until a new request (.resetFault)
+.blunt          mov     fault_stop, #0                  ' a hard fault ends any pending re-sync stop: the latch below governs now
+                mov     drv_state_, #DCS_FAULTED        ' the driver is FAULTED until the front cog clears it (fault_clr_)
                 mov     bridge, #BR_SHORT               ' FR_SHIPPED brakes with the full short,
                 cmp     fault_mode_, #FR_GRADED     wz
     if_z        mov     bridge, #BR_BRAKE               '  FR_GRADED with the graded one,
@@ -6199,7 +6220,7 @@ faultResponse                                           ' R19.3: called from the
 
 lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 207 of 512 used, COUNTED 2026-09-23 at DRIVER_REV 12 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 208 of 512 used, COUNTED 2026-09-24 at DRIVER_REV 14 (see the cog fit above)
 
 CON { license }
 {{

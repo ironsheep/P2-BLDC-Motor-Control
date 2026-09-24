@@ -3885,6 +3885,19 @@ passes a bound. A wiring check must not stress the hardware it is checking (P14)
 
 **Disposition:** ⛔ fix. Task «#3617».
 
+### PL-124 -- dual-fault's REST window opens while the driver's ramp is still driving the bridge
+
+**Found 2026-09-24** during «#3616»'s desk trace of Visit 10 pass 2 (evaluation §7 P2-F11).
+
+**MEASURED:** in trial 7 (X-4, a re-synced stop in float), the REST window opens at the last hall tick (`rest_k,461`).
+The driver there still reads `st,SPIN_DN` with the bridge driven (`ph` about 2_400 across the three phases). At
+`st,STOPPED` (k 469, `ph,85`) the bridge coasts. That one step reads as `pp_u,791 ... x_u,1`, and it fails RESTFLAT. Right
+trial 19 shows the same thing (`pp_u,773`). The bridge does not switch at rest.
+
+**Disposition:** ⛔ fix in test_bench_dual.spin2: the REST window opens at the first sample that reads DCS_STOPPED or
+DCS_FAULTED at rest, not at the last tick. RESTFLAT's X-4 cells are not evidence until then. Fixed in the harness batch
+ahead of the next `dual-fault` run.
+
 ---
 
 ## Removed from this list
