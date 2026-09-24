@@ -13,11 +13,11 @@ read a coast. [Pass 2 evaluation](2026-09-23/VISIT-10-PASS2-EVALUATION.md). Pass
 
 | Load | Every banner / build record must read |
 |---|---|
-| `dual-*` tiers | `BM-BANNER,...,src_rev,40,fmt,25` and `BM-BUILD ... drv_rev,16`. Anything lower means an old tree was built: stop and report |
+| `dual-*` tiers | `BM-BANNER,...,src_rev,41,fmt,25` and `BM-BUILD ... drv_rev,16`. Anything lower means an old tree was built: stop and report |
 | `dual-start` | part `START`, `BM-SKBUILD ... no_walk,FALSE`, negative `NONE` |
 | `dual-start-swapneg` | part `START`, `BM-SKBUILD` negative `SWAP`, a `BM-SKNEG` record before each of the last 3 `BM-SSTART` |
 | `dual-fault` | part `FRESP`; a `BM-FRBUILD` record; `BM-NOTBUILT` for `B4PULSE` only |
-| `t0-stopmode` | `src_rev 14`; a `T0-24,cogs` record with `measure_cog` 0–7; `T0-24,row,...` records numbered 1 to 8 |
+| `t0-stopmode` | `src_rev 15`; the `PLOT t0stop` create ends `SIZE 560 470 POS 60 60 HIDEXY UPDATE` (PL-128); a `T0-24,cogs` record with `measure_cog` 0–7; `T0-24,row,...` records numbered 1 to 8 |
 
 ---
 
@@ -41,29 +41,25 @@ run 1 judges.
 
 ## ⛔ First: push, then pull — the tree to run
 
-**2026-09-24 13:31 ran the OLD tree** (pass 2's, `60255bc`): the pass 3 commits had never been pushed, so nothing on
-this sheet was exercised ([evaluation](2026-09-24/VISIT-10-PASS3-EVALUATION.md), PL-125).
+**The 16:14–16:33 re-run** ([evaluation](2026-09-24/VISIT-10-PASS3-RERUN-EVALUATION.md)) certified BLUNT (left),
+the walk guard's negative, the REST window and the rest-zero band. `dual-start-swapneg` is done and drops. T0-24's
+window opened undersized (PL-128, fixed). The graded short does not brake below 100 % (PL-129, being fixed). The
+right wheel's own trials hit PL-120 again.
 
-- **Push from the authoring tree first.** The source to run is the commit that carries T0-24's rebuilt panel
-  (`test_bench_t0` src_rev 14, «#3619»), named in the hand-back; `git log --oneline -1 -- src/` at the bench must show
-  it. Runs 1–3 need only `e268310` or later, so the same pull serves all four.
-- **At the bench, pull.** The banners are then the check (table above).
+- **Push from the authoring tree first**, then pull at the bench. The source to run is named in the hand-back, and
+  `git log --oneline -1 -- src/` at the bench must show it. The banners are the check (table above).
 
-## The commands — run every one, in this order
+## The commands — run 1 and 2 now; run 3 waits for PL-129's fix
 
 ```bash
-tools/bench-run.sh dual-start             # 1: Hands off. Startup checks with normal wiring; both wheels nudge a little near the end
-tools/bench-run.sh dual-start-swapneg     # 2: Hands off. The program fakes crossed sensor wires on the LEFT wheel; it may twitch, then stops itself
-tools/bench-run.sh dual-fault             # 3: Hands off, and keep hands away. Each wheel spins up and is stopped on purpose, about 6 minutes
-tools/bench-run.sh t0-stopmode            # 4: YOU, at the RIGHT wheel. Each row shows its plan first; nothing moves on until you click
+tools/bench-run.sh t0-stopmode            # 1: YOU, at the RIGHT wheel. Each row shows its plan first; nothing moves on until you click
+tools/bench-run.sh dual-start             # 2: Hands off. Startup checks with normal wiring; both wheels nudge a little near the end
 ```
 
-**No run depends on another run's result, and nothing needs rewiring.**
+**Run 3, `dual-fault`, is NOT ready:** the graded short is being fixed first (PL-129), so that one pass sizes it. It
+now also dumps a wheel's driver state if a trial never reaches speed (PL-120).
 
-**Watch for one thing during run 3 (PL-126):** if the log window stops scrolling for more than about 10 s, look at the
-right wheel before you touch anything, and note whether it is still turning, coasting or stopped. That is the only
-observation this sheet asks for. The first try at 13:38 went silent 2 s into a right-wheel spin-up, and the log cannot
-say whether the P2 reset or hung.
+**No run depends on another run's result, and nothing needs rewiring.**
 
 ---
 

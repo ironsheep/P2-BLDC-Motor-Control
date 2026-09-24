@@ -287,6 +287,10 @@
 ''               24 Sep 2026 -- SRC_REV=40: PL-124. FLTRESP's REST phase window opens at the first sample from rest that reads
 ''               the driver settled (STOPPED, FAULTED or ESTOP), not at the last hall tick, so a re-synced ramp's final step
 ''               to the stop mode's bridge no longer reads as a swing at rest. No record changes shape
+''               24 Sep 2026 -- SRC_REV=41: PL-120's second form. A FLTRESP trial whose wheel never reaches AT_SPEED now
+''               dumps that wheel's driver runs at the timeout, still commanded (BM-ABI* where,TIMEOUT). At pass 3 the
+''               right drove at PREFLT and then in no later lifetime, and no dump fell in a failing one. No record
+''               changes shape; the where token gains one value
 ''
 '' =================================================================================================
 
@@ -353,7 +357,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 40                                       ' hand-bumped whenever this file changes
+    SRC_REV     = 41                                      ' hand-bumped whenever this file changes
     FMT_VERSION = 25                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -3640,7 +3644,7 @@ PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bM
             bRecoverFault(SEG_PREFLT, 0, side, PREFLIGHT_INCRE, FAULT_COOL_MS)
     bMoved := bMeasured and (ticksMoved <> 0)
     emitPreflt(side, PREFLIGHT_INCRE, ticksMoved, hwMoved, bMeasured, whyCode)
-    abiDumpWheel(side)                                      ' task 3615: after the nudge, before wheelStop()
+    abiDumpWheel(side, ABIW_PREFLT)                         ' task 3615: after the nudge, before wheelStop()
     bInstIdle()
     wheelStop(side)
 
@@ -8993,6 +8997,7 @@ PRI frCapture(side, slotIdx, motorIncre) | safeEvent, bReached, bRest, captureLe
             bCpFaultSeen := (safeEvent == SAFE_FAULT)
         elseif bReached == FALSE
             cpWhy := WHY_STEADY_TIMEOUT
+            abiDumpWheel(side, ABIW_TIMEOUT)                    ' PL-120: the failing lifetime's driver, still commanded
         else
             _, _, frResyncBase := wheelFaultResponse(side)
             frOutcome := frProvoke(side, slotIdx, FALSE)
@@ -15296,8 +15301,11 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
   '                 object, after skReadHealth() and before anything is folded; motorCog from steering.testGetMotorCogs()
   '  ABIW_PREFLT  - PREFLT, in every part that runs it, the wheel just nudged, after the nudge and before wheelStop(),
   '                 through wheelL / wheelR -- whether or not it moved
-    #0, ABIW_SKSTART, ABIW_PREFLT
-    ABIW_COUNT      = ABIW_PREFLT + 1
+  '  ABIW_TIMEOUT - part FRESP, a trial whose wheel never reached AT_SPEED, at the timeout while it is still commanded
+  '                 (PL-120's second form, 2026-09-24: the right drove at PREFLT, then not in any later lifetime, and no
+  '                 dump fell in a failing one)
+    #0, ABIW_SKSTART, ABIW_PREFLT, ABIW_TIMEOUT
+    ABIW_COUNT      = ABIW_TIMEOUT + 1
     TOKMAX_ABIWHERE = 7
 
     ABI_LAUNCH_LONGS = 4                                    ' pinbase, params_ptr, targetAngle, targetIncre
@@ -15317,7 +15325,7 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
 
 DAT ' ---- ABI dump tables ----
 
-tokAbiWhere     BYTE    "SKSTART", 0, "PREFLT", 0
+tokAbiWhere     BYTE    "SKSTART", 0, "PREFLT", 0, "TIMEOUT", 0
 ' isp_bldc_motor.spin2 VAR names, declaration order: the launch run, the status run and fault, the parameter run
 tokAbiName      BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "targetIncre", 0
                 BYTE    "drive_u", 0, "drive_v", 0, "drive_w", 0
@@ -15362,10 +15370,11 @@ PRI abiDumpSteer() | pLaunchL, pStatusL, pParamsL, pLaunchR, pStatusR, pParamsR
     emitAbi(SLOT_LEFT, ABIW_SKSTART, steerLife)
     emitAbi(SLOT_RIGHT, ABIW_SKSTART, steerLife)
 
-PRI abiDumpWheel(side) | slotIdx, pLaunch, pStatus, pParams
-' PREFLT: one wheel's runs and its motorCog through its own motor object, then BM-ABI*.
+PRI abiDumpWheel(side, whereCode) | slotIdx, pLaunch, pStatus, pParams
+' PREFLT or TIMEOUT: one wheel's runs and its motorCog through its own motor object, then BM-ABI*.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param whereCode - ABIW_PREFLT or ABIW_TIMEOUT
 '
 ' @local slotIdx - motor slot
 ' @local pLaunch - the driver's @pinbase
@@ -15383,7 +15392,7 @@ PRI abiDumpWheel(side) | slotIdx, pLaunch, pStatus, pParams
     beat(CP_LIB_QUERY)
     abiSnapshot(slotIdx, pLaunch, pStatus, pParams)
     bAbiCogValid[slotIdx] := TRUE
-    emitAbi(slotIdx, ABIW_PREFLT, slotLife[slotIdx])
+    emitAbi(slotIdx, whereCode, slotLife[slotIdx])
 
 PRI abiSnapshot(slotIdx, pLaunch, pStatus, pParams) | rowBase
 ' Copy one driver's three runs into its abiSnap row, one longmove() per run, nothing interpreted.

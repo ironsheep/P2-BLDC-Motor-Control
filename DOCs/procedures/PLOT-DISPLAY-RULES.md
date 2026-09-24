@@ -97,12 +97,20 @@ T0-12 was built as an empty PLOT window that only hosted `PC_KEY`, and the cell 
 
 **Rule.** A window name starts with a letter or `_`, is none of the 103 reserved debug-display words, and is
 unique within its first 30 characters; matching is case-insensitive. Text arguments (`TITLE`, `LAYER` file
-names) are in **single** quotes, and contain no apostrophe.
+names) are in **single** quotes, and contain **no apostrophe and no parenthesis**. A `)` in the text closes the
+`debug()` call, and the rest of the line becomes a Spin2 comment. It compiles clean. `tools/check_style.sh`
+check T128 enforces the parenthesis half.
 
 **Why.** Both failures are silent at compile time and at run time. A bad name opens no window, and every later
 command to it goes nowhere. A double-quoted title is silently dropped (p2kb `p2kbSpin2Debug`,
 `window_name_rules` and `string_quoting`). `bench` and `t0stop` are both legal; the 2026-09-20 probe drew
 both (`debug_260920-215353.log`).
+
+**The parenthesis (PL-128).** T0-24's title `'... RIGHT WHEEL (P16 BOARD)'` lost the `' SIZE 560 470 POS 60 60 HIDEXY
+UPDATE` after it. The window opened at the host's default size, showing a quarter of the panel. The wire capture
+`usb-traffic_260924-162831.log` ends the create at `(P16 BOARD`; the image built from that source holds no
+`HIDEXY UPDATE`, and the fixed source's does. The storyboard review could not catch it, because it renders the art,
+not the create command.
 
 ## 7 · Declare the coordinate basis; never rely on the default
 

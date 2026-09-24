@@ -1071,6 +1071,23 @@ def check_cog_events(lines, methods, raw_lines):
     return out
 
 
+DISPLAY_TEXT_PAREN_RE = re.compile(r"\bdebug\s*(?:\[[^\]]*\])?\s*\(\s*`[^']*'[^']*[()]", re.IGNORECASE)
+
+
+def check_display_text_parens(raw_lines):
+    """T128 (PUNCH-LIST PL-128, PLOT-DISPLAY-RULES rule 6): a parenthesis inside a display command's
+    quoted text ('...') in a backtick debug(). A ')' there closes the debug() call, the rest of the line
+    becomes a Spin2 comment, and it compiles clean: T0-24's window lost SIZE ... HIDEXY UPDATE that way
+    and opened at the host's default size. Read from the raw line, because the lexer already sees
+    the lost half as a comment."""
+    out = []
+    for i, raw in enumerate(raw_lines, 1):
+        if DISPLAY_TEXT_PAREN_RE.search(raw):
+            out.append(('T128', 'PL-128', i,
+                        "a parenthesis in a display command's quoted text -- a ')' ends the debug() call"))
+    return out
+
+
 def check_doc_completeness(lines, methods):
     """C3f (guide 4.3 / 4.4, PUNCH-LIST PL-10): every parameter, return value
     and local has its @param / @returns / @local tag."""
@@ -1131,7 +1148,7 @@ def check_storage_names(lines):
 ALL_CHECK_IDS = ["S1.1", "S1.2", "A7", "A8", "C9", "A6", "C3a", "C3b", "C3c",
                   "C3d", "C3e", "C4", "C6", "C7", "A3", "A4", "A5",
                   "S1.5", "S1.9", "S2.4", "S3.1", "S3.2", "S5.0", "S5.1", "S5.2",
-                  "S5.3", "S5.4", "S5.41", "C3f", "C6b", "T29", "T41"]
+                  "S5.3", "S5.4", "S5.41", "C3f", "C6b", "T29", "T41", "T128"]
 
 # The checks that FAIL the gate: every one. A new check is added to ALL_CHECK_IDS in the
 # same commit that brings the tree clean for it -- or, if the tree cannot be brought clean
@@ -1155,7 +1172,7 @@ COVERAGE_LINES = [
     "T2 NOT CHECKED by this gate (20): an agent audit, DOCs/procedures/STYLE-T2-AUDIT.md; T3 (2): 5.8 5.9, "
     "Stephen's read",
     "Project checks: C3f (4.3/4.4 element->tag, PL-10), T29 (? : with a call, PL-29), "
-    "T41 (bench cog start/stop in a quiet window, PL-41/PL-85)",
+    "T41 (bench cog start/stop in a quiet window, PL-41/PL-85), T128 (no parenthesis in display text, PL-128)",
 ]
 
 
@@ -1177,6 +1194,7 @@ def run_all_checks(path):
     findings += check_obj_constants(path, lines, raw_lines)
     findings += check_ternary_call(lines)
     findings += check_cog_events(lines, methods, raw_lines)
+    findings += check_display_text_parens(raw_lines)
     findings += check_doc_completeness(lines, methods)
     findings += check_decl_border(lines)
     findings += check_storage_names(lines)

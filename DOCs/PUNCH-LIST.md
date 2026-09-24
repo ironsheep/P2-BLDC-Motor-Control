@@ -3843,6 +3843,13 @@ same 22 parameters as the left. Everything since pass 1 has run DRIVER_REV 13 an
 and 36. **Undetermined** between a change in that range and a transient rig state. **Watch:** the dump stays in every
 START lifetime and every PREFLT, so a recurrence is captured on its first run.
 
+**2026-09-24 16:15, pass 3 re-run — RECURRED, SECOND FORM** ([evaluation](analyses/bench/2026-09-24/VISIT-10-PASS3-RERUN-EVALUATION.md)
+§4). In `dual-fault` the right drove at PREFLT (`ticks,18,moved,TRUE`). Then all 12 of its own-object trials timed out
+with the phases at 15–170 mV (`pos,0`). Then it drove again through the steering object at 16:20:47. So this form
+follows the left wheel's trials, on the standalone right-wheel path. The shared driver image is **cleared by
+reading**. No dump fell in a failing lifetime. **Built:** `test_bench_dual` src_rev 41 dumps the wheel's driver runs at
+any FLTRESP timeout (`BM-ABI* where,TIMEOUT`), so the next recurrence is captured while it fails.
+
 **Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
 
 ### PL-121 -- T0-24's hand rows ended on a clock that started at START
@@ -3883,6 +3890,10 @@ crossed walks trip, and no healthy walk does.
 
 **2026-09-24 13:34, pass 3 — NOT EXERCISED.** The bench ran the pass 2 tree (PL-125). The unguarded walk read
 `l_pk_i,3_860` again.
+
+**2026-09-24 16:14 — CERTIFIED (the negative).** The crossed walks peaked at 162, 157 and 159 mV
+(`debug_260924-161408.log` `BM-SKWALK` life 8–10), all under the 577 mV bound, and HLT_WIRING still failed all three.
+The positive control, that a healthy walk never trips the guard, waits on `dual-start`, which did not run.
 
 ### PL-123 -- T0-24's instrument: hold rows inherit state, the coast metric depends on spin speed, the wheel is unnamed
 
@@ -3930,6 +3941,8 @@ certifies it: X-4's RESTFLAT holds.
 
 **2026-09-24 13:31, pass 3 — NOT EXERCISED.** The bench ran the pass 2 tree (PL-125). Still built, still uncertified.
 
+**2026-09-24 16:15 — CERTIFIED.** `R19-DUAL-RESTFLAT-X` LEFT 0 of 6, RIGHT 0 of 3 (`debug_260924-161533.log`). Closed.
+
 ### PL-125 -- the pass 3 hand-back did not name the commit to run, and the tree was never pushed
 
 **Found 2026-09-24** at Visit 10 pass 3 ([evaluation](analyses/bench/2026-09-24/VISIT-10-PASS3-EVALUATION.md)).
@@ -3974,6 +3987,35 @@ or ABORT. Only live buttons are drawn. Cog 0 polls the mouse every pass (~30 ms)
 measuring and prints nothing. Every press is logged. The generator renders every screen from the same screen table the
 harness reads, and all 60 were read at the desk. The next `t0-stopmode` certifies it: the run sheet's UI-CLICK, UI-MISS,
 UI-WAIT, UI-REDO and UI-ABORT checks, each able to fail.
+
+**2026-09-24 16:24–16:33 — NOT CERTIFIED: the window opened at the default size (PL-128).** Enter reached START ROW,
+the hold re-armed fresh, the ACT screen waited 3 min 37 s without moving on, and every keypress was logged. No mouse
+press was possible, because the buttons were off the visible window.
+
+### PL-128 -- a parenthesis in T0-24's window title cut the create command, and the window opened undersized
+
+**Found 2026-09-24** at the pass 3 re-run (Stephen's screenshot; evaluation §5).
+
+**MEASURED:** `debug_260924-162831.log:23` and its USB capture end the create at `... RIGHT WHEEL (P16 BOARD`. The `)` in
+the single-quoted title closed the `debug(` call. The rest of the line (`' SIZE 560 470 POS 60 60 HIDEXY UPDATE`) became a
+Spin2 comment, and it compiled clean. The image built from `53b6b31` holds no `HIDEXY UPDATE`; the fixed source's image
+holds the whole command. The title came in at src_rev 13, which never reached the rig before today.
+
+**Fixed:** `test_bench_t0` src_rev 15 (no parentheses in the title). PLOT-DISPLAY-RULES rule 6 now forbids a
+parenthesis in display text. `tools/check_style.sh` check T128 enforces it: it hits the old line and passes the new one.
+The desk review could not catch it, because the storyboard renders the art, not the create command. Certified when the
+next `t0-stopmode` opens at full size.
+
+### PL-129 -- the graded short does not brake below 100 %
+
+**Found 2026-09-24** at the pass 3 re-run (evaluation §3).
+
+**MEASURED:** left wheel, 80 × 10⁶, from the second fault to rest: coast 442 ms / 47 ticks; 10 % 474 / 51; 25 % 490 / 41;
+50 % 602 / 45; 100 % 10 / 1 (`debug_260924-161533.log` `BM-FRSTAT` tids 8–12). R19-DUAL-GRADED-X FAIL, GRD100 PASS.
+10–50 % stop no sooner than a coast, and 50 % is slower.
+
+**Disposition:** ⛔ fix in the driver. The fallback path is certified (BLUNT), but what FR_GRADED applies below 100 % does
+not brake. BRAKE_PCT_DEFAULT stays unsized, and FR_GRADED must not become a default, until it does. New task.
 
 ---
 
