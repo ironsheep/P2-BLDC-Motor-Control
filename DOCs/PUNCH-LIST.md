@@ -3904,8 +3904,11 @@ The driver there still reads `st,SPIN_DN` with the bridge driven (`ph` about 2_4
 trial 19 shows the same thing (`pp_u,773`). The bridge does not switch at rest.
 
 **Disposition:** ⛔ fix in test_bench_dual.spin2: the REST window opens at the first sample that reads DCS_STOPPED or
-DCS_FAULTED at rest, not at the last tick. RESTFLAT's X-4 cells are not evidence until then. Fixed in the harness batch
-ahead of the next `dual-fault` run.
+DCS_FAULTED at rest, not at the last tick. RESTFLAT's X-4 cells are not evidence until then.
+
+**BUILT 2026-09-24 (test_bench_dual SRC_REV 40, not yet certified).** The REST window now opens at the first sample from
+rest that reads STOPPED, FAULTED or ESTOP; when none does, the window is not measured. The next `dual-fault` run
+certifies it: X-4's RESTFLAT holds.
 
 ---
 

@@ -284,6 +284,9 @@
 ''               24 Sep 2026 -- SRC_REV=39, FMT 25: task 3616 (DRIVER_REV 14). The driver's parameter run gains fault_clr,
 ''               the latch clear for DCS_FAULTED, after force_seq: BM-ABIP3 now runs duty_floor .. fault_clr. No other
 ''               record changes
+''               24 Sep 2026 -- SRC_REV=40: PL-124. FLTRESP's REST phase window opens at the first sample from rest that reads
+''               the driver settled (STOPPED, FAULTED or ESTOP), not at the last hall tick, so a re-synced ramp's final step
+''               to the stop mode's bridge no longer reads as a swing at rest. No record changes shape
 ''
 '' =================================================================================================
 
@@ -350,7 +353,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 39                                       ' hand-bumped whenever this file changes
+    SRC_REV     = 40                                       ' hand-bumped whenever this file changes
     FMT_VERSION = 25                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -9157,12 +9160,14 @@ PRI frRestoreCheck(tid, side, slotIdx) | eMode, nBrakeY, eHold, bMeasured, bOk
             sfFrRestBad[slotIdx] := (sfFrRestBad[slotIdx] + 1) <# LIM_SMALL
     emitFrRest(tid, side, eMode, nBrakeY, eHold, bMeasured, bOk)
 
-PRI frStats(slotIdx) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, iSum, dutySum, upCount, midJ, endJ, eState
+PRI frStats(slotIdx) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, iSum, dutySum, upCount, midJ, endJ, eState, restWinJ
 ' The trial's readings from its frozen capture, after bTraceDrain() located the mark and rest: the wheel's rate,
 ' current and duty over FR_PRE_SAMPLES before the mark; the first sample carrying the fault latch; the states seen
 ' after it; the reference (that sample, or for X-6 / X6C the first DCS_FAULTED one, where the fallback begins); from
 ' the reference to rest, ticks and ms, each half's ticks and the largest sense_i; and the MOVE and REST phase windows.
-' Legal only while FROZEN (I10).
+' The REST window opens at the first sample from rest on that reads the driver settled (STOPPED, FAULTED or ESTOP),
+' not at the last tick: a re-synced ramp still drives the bridge after the wheel's last tick, and its step to the stop
+' mode's bridge read as a p-p swing at rest (PL-124). Legal only while FROZEN (I10).
 '
 ' @param slotIdx - motor slot under test
 '
@@ -9177,6 +9182,7 @@ PRI frStats(slotIdx) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, iSum, dut
 ' @local midJ - the sample halfway from the fault to rest
 ' @local endJ - the last sample of the moving window
 ' @local eState - a sample's driver state
+' @local restWinJ - the REST window's first sample: the first settled one from rest on, or past drEndJ when none
 
     frStatReset()
     if bDrMarkFound and (drEndJ > drMarkJ)
@@ -9243,7 +9249,16 @@ PRI frStats(slotIdx) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, iSum, dut
             frT1 := abs(smpPos(midJ, slotIdx) - smpPos(frRefJ, slotIdx))
             frT2 := abs(smpPos(frRestJ, slotIdx) - smpPos(midJ, slotIdx))
             frPhaseWindow(FRW_MOVE, slotIdx, frRefJ + FR_SETTLE_SAMPLES, frRestJ - 1)
-            frPhaseWindow(FRW_REST, slotIdx, frRestJ, drEndJ)
+            restWinJ := drEndJ + 1                                          ' PL-124: none settled leaves REST unmeasured
+            repeat sampleIdx from frRestJ to drEndJ
+                beat(CP_LOOP_DRAIN)
+                if bSmpUp(sampleIdx, slotIdx)
+                    eState := smpState(sampleIdx, slotIdx)
+                    if (eState == DCS_STOPPED) or (eState == DCS_FAULTED) or (eState == DCS_ESTOP)
+                        restWinJ := sampleIdx
+                        quit
+            if restWinJ <= drEndJ
+                frPhaseWindow(FRW_REST, slotIdx, restWinJ, drEndJ)
         else
             frPhaseWindow(FRW_MOVE, slotIdx, frRefJ + FR_SETTLE_SAMPLES, drEndJ)
 

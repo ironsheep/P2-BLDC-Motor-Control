@@ -1065,7 +1065,10 @@ PUB runStartChecks() | ePhase, eOther, nSample, nPhaseMv[3], nFollows[3], bDrive
     healthFailed := 0
     if ((hall & %111) == %000) or ((hall & %111) == %111) or (hall_illegal <> 0)
         healthFailed |= HLT_HALLS
-    if (restZeroSenseMv < REST_ZERO_MIN_MV) or (restZeroSenseMv > REST_ZERO_MAX_MV)
+    if eDetectedBoard == REV_A
+        if (restZeroSenseMv < REST_ZERO_MIN_MV_REVA) or (restZeroSenseMv > REST_ZERO_MAX_MV_REVA)
+            healthFailed |= HLT_SENSE_ZERO
+    elseif (restZeroSenseMv < REST_ZERO_MIN_MV) or (restZeroSenseMv > REST_ZERO_MAX_MV)
         healthFailed |= HLT_SENSE_ZERO
     longfill(@nFollows, 0, 3)
     longfill(@bDriven, FALSE, 3)
@@ -4811,7 +4814,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 15        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 16        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4825,6 +4828,7 @@ CON { driver internal Constants }
                                             ' 13: test-only negatives for the start checks: testSetProbeWithhold(), testSetHallSwap() (task 3613)
                                             ' 14: DCS_FAULTED is a latch: only a commanded stop or drive clears it, never a zero already standing (task 3616)
                                             ' 15: a wiring-walk leg is shorted and fails once its current passes WALK_I_LIMIT_MV (PL-122, task 3618)
+                                            ' 16: the Rev B rest-zero band sized from Visit 10 (-20/+40 mV); Rev A keeps -100/+200 (task 3613)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4858,8 +4862,11 @@ CON { driver internal Constants }
     HOLD_LIMIT_MS_MAX           = 600_000   ' the longest time limit testSetHoldLimits() accepts, 10 minutes
     HOLD_RISE_MS_MAX            = 10_000    ' the slowest rise testSetHoldLimits() accepts
     ' R19.4 (task 3610): the start-time checks (runStartChecks()). PROVISIONAL bands; Visit 10's B-2 and B-3 size them.
-    REST_ZERO_MIN_MV            = -100      ' the current sense's rest zero must lie in this band (left board MEASURED
-    REST_ZERO_MAX_MV            = 200       '  7.1-8.5 mV, PL-45); a dead or railed channel falls outside it
+    REST_ZERO_MIN_MV            = -20       ' Rev B: the current sense's rest zero must lie in this band; a dead or railed
+    REST_ZERO_MAX_MV            = 40        '  channel falls outside it. Visit 10 pass 2 MEASURED 40 starts per board: left
+                                            '  6.7-9.0 mV, right -0.3-3.1 mV; about 3x margin on both
+    REST_ZERO_MIN_MV_REVA       = -100      ' Rev A (a different sense resistor): PROVISIONAL, no Rev A rest zero has been
+    REST_ZERO_MAX_MV_REVA       = 200       '  measured, so the band stays wide until one is
     PROBE_SETTLE_MS             = 5         ' ms the probe holds a phase before its readings are taken
     PROBE_SAMPLES               = 4         ' readings averaged per probe, 1 ms apart
     CONT_MIN_DRIVEN_MV          = 200       ' the driven phase must read at least this (a dead high side does not)
