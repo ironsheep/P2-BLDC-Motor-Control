@@ -4017,6 +4017,37 @@ next `t0-stopmode` opens at full size.
 **Disposition:** ⛔ fix in the driver. The fallback path is certified (BLUNT), but what FR_GRADED applies below 100 % does
 not brake. BRAKE_PCT_DEFAULT stays unsized, and FR_GRADED must not become a default, until it does. New task.
 
+**ROOT CAUSE (DERIVED, «#3620», 2026-09-24):** the code did what it was designed to do, and the design was wrong.
+BR_BRAKE held the high sides off and PWM'd the three low sides together at `brakePct` of each 22.7 µs frame (the triangle
+PWM's inverted Y was right: p2kbArchSmartPin01000PwmTriangle). With the high sides off, that circuit is a **boost
+converter**, the winding inductance boosting the back-EMF into the supply through the high-side diodes. It carries
+continuous current only when the duty exceeds 1 − E / V_bus. At the trials' 80 × 10⁶ the drive's own back-EMF estimate
+is E ≈ 8.4 V (`BM-FRWIND emf_mV,8_383`). On the 18.5 V pack that puts the threshold near **55 %**. So 10, 25 and 50 %
+all sat below it and carried almost nothing: each frame's current rise is E·D·T / L, a fraction of an ampere for any plausible hub-motor L.
+(`g_mV`, the DC-link peak, cannot confirm it. It read 231–655 mV at every step, 100 % included, because the shunt is
+blind to a short's circulating current, PL-118.) 100 % is the full short, so it stopped the wheel in one tick. That accounts for
+every row. The spread of the four sub-threshold rows (442–602 ms, 41–51 ticks) is the spread of four coasts. It is
+also why no fixed per-frame duty could have worked: E falls as the wheel slows, so the threshold climbs toward 100 %
+during the very stop it is meant to shape.
+
+**FIX (DRIVER_REV 17, correct by construction):** the graded short is now **sliced**. For every `BRAKE_PERIOD_FRAMES`
+(440 frames, 10 ms, `BRAKE_PERIOD_MS` PROVISIONAL) the first `brake_on` frames are BR_SHORT and the rest BR_COAST. The
+slice starts on a shorted frame at the fault. The period is meant to be many winding L/R time constants, so each
+shorted slice brakes as the full short does. The average torque is then `brakePct` of the full short's at every speed
+down to rest, with no threshold. 0 % is a coast and 100 % the full short, as before. It caps the **average** torque, the
+deceleration a tall platform feels, and **not the peak current**, which is the full short's in each slice. The winding
+L/R has never been measured (FAULT-STRATA-STUDY U-3), which is why the period is a named, provisional parameter.
+**Certified when** the next `dual-fault`'s graded chain falls monotonically coast → 10 → 25 → 50 → 100 % in ms and in
+ticks (R19-DUAL-GRADED-X), with GRD100 still PASS. That run also sizes BRAKE_PCT_DEFAULT.
+
+**PRICED, not built (P5):** a brake that caps the **peak current** is the boost circuit run on purpose. That means the
+low-side duty held just above 1 − E / V_bus by a servo, with current i ≈ (E − (1−D)·V_bus) / R. *Buys:* the phase
+current held to a set value, so the FETs and windings never see a full short's surge. The full short is modelled at
+~30–65 A at speed (task 3609's WHY), and PL-108 saw ~25 A on a slip. *Costs:* it needs E (the hall speed) and V_bus (the
+pack sensor, «#3611»), and closed-loop current. `sense_i` sees the regenerated current only in the off part of each
+frame (PL-118). It regenerates into the pack by design. *Confidence:* modelled. The winding R and L are both
+unmeasured, and measuring them (X-1, B-4) is what firms it up.
+
 ---
 
 ## Removed from this list

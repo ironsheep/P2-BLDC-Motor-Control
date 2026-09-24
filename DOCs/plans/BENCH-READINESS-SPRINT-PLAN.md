@@ -2790,11 +2790,15 @@ don't have to wait"* (doctrine overlay P12). So every mechanism below is **built
   - **FR_SHIPPED** (the default): today's behaviour exactly.
   - **FR_GRADED**, halls legal: the first fault re-seeds the field from the halls. The driver then reads its command
     as 0 until the front cog writes that stop, so it ramps down under control; `getFaultCause()` reads FC_LAG.
-  - **FR_GRADED**, halls lost or a second fault on that stop: SM_BRAKE takes **BR_BRAKE** (the low sides PWM'd at
-    `brake_y`, high sides off, braking current capped) and SM_FLOAT coasts.
+  - **FR_GRADED**, halls lost or a second fault on that stop: SM_BRAKE takes **BR_BRAKE** (the full short for
+    `brake_on` of every `BRAKE_PERIOD_FRAMES` frames, coasting for the rest, so the average braking torque is that
+    fraction of the full short's) and SM_FLOAT coasts.
   - *Known limits:* the re-seed takes its direction from the command's sign, so a fault during a ramp to zero may
-    seed the wrong half-table and fault again, falling to the blunt response. BR_BRAKE regenerates into the supply,
-    so the bench's pack must be able to absorb it.
+    seed the wrong half-table and fault again, falling to the blunt response. BR_BRAKE caps the average torque, not
+    the peak current, which is the full short's.
+  - *Corrected at DRIVER_REV 17 (PL-129):* BR_BRAKE first PWM'd the low sides within each 22.7 µs frame. With the high
+    sides off that is a boost converter, which carries current only above a duty of 1 − back-EMF / supply, so 10–50 %
+    braked like a coast. It now slices the full short over a 10 ms period (`BRAKE_PERIOD_MS`, provisional).
   - *Corrected at DRIVER_REV 12:* the re-synced stop first stayed pending only until the front cog's zero command
     arrived (about 1 ms), so a second fault on the ramp re-synced again and the fallback was unreachable. The stop
     now stays pending until rest. `testForceFault()` (TEST-USE) faults the driver at its fault test on demand. The

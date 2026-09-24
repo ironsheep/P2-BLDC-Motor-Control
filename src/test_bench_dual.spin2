@@ -291,6 +291,9 @@
 ''               dumps that wheel's driver runs at the timeout, still commanded (BM-ABI* where,TIMEOUT). At pass 3 the
 ''               right drove at PREFLT and then in no later lifetime, and no dump fell in a failing one. No record
 ''               changes shape; the where token gains one value
+''               24 Sep 2026 -- SRC_REV=42, FMT 26: PL-129 (DRIVER_REV 17). The graded short is now sliced over a
+''               brake period, so the driver's brake_y became brake_on (shorted frames per period): BM-FRREST's
+''               by_back/by_base become bo_back/bo_base, and the ABI dump's brake_y label reads brake_on
 ''
 '' =================================================================================================
 
@@ -357,8 +360,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 41                                      ' hand-bumped whenever this file changes
-    FMT_VERSION = 25                                        ' BM- record-format version
+    SRC_REV     = 42                                      ' hand-bumped whenever this file changes
+    FMT_VERSION = 26                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -8500,7 +8503,7 @@ CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 361
     FR_BRAKE_STEPS        = 4                               ' frBrakePcts: 10, 25, 50, 100
     FR_GRADED_POINTS      = FR_BRAKE_STEPS + 1              ' the coast bound (X6C) as point 0, then the four brake %s
     FR_GRADED_MIN_POINTS  = 3                               ' a monotone reading needs at least three measured points
-    ' 100 % graded is the full short (brake_y 0 is every low side on), entered a few ms later on a ramp already begun,
+    ' 100 % graded is the full short (brake_on is the whole period), entered a few ms later on a ramp already begun,
     '  so it should stop within hall quantisation of X-2's short at the same speed: one tick either side, and one more
     '  for the slower speed at the second fault.
     FR_FULL_TOL_TICKS     = 2
@@ -8628,7 +8631,7 @@ VAR { FAULTRESP state -- cog 0 only }
     LONG    frMarkMs                                        ' getms() at the forced fault's mark
     LONG    frGuardPkMv                                     ' the largest mirrored sense_i inside the guard, mV
     LONG    frCaptureSafe                                   ' SAFE_* that ended the post-fault capture
-    LONG    frBrakeYBase                                    ' testGetFaultResponse()'s brake_y at the lifetime's start
+    LONG    frBrakeOnBase                                   ' testGetFaultResponse()'s brake_on at the lifetime's start
     LONG    frResyncBase                                    ' ...its re-sync count at speed, just before the forced fault
     LONG    frResyncAfter                                   ' ...and after the capture
     LONG    bFrReadsValid                                   ' the after-reads were taken from a running driver
@@ -8825,7 +8828,7 @@ PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyC
         traceSkip(tid, SEG_FLTRESP, side, CAUSE_FAULT, motorIncre, frReqMode, rampInc, whyCode)
         emitFrTrial(tid, side, motorIncre)
     else
-        _, frBrakeYBase, _ := wheelFaultResponse(side)
+        _, frBrakeOnBase, _ := wheelFaultResponse(side)
         _, frDutyMax, _, _, _ := wheelDriveConstants(side)
         if cellKind == FRC_X3
             frRestWindow(side, slotIdx)                     ' the negative control, measured FIRST (D2)
@@ -8879,7 +8882,7 @@ PRI frStagingReset(cellKind, speedIdx, brakeIdx)
     frMarkMs := getms()
     frGuardPkMv := 0
     frCaptureSafe := SAFE_NONE
-    frBrakeYBase := 0
+    frBrakeOnBase := 0
     frResyncBase := 0
     frResyncAfter := 0
     bFrReadsValid := FALSE
@@ -9135,9 +9138,9 @@ PRI frRestore(side, slotIdx)
     if bBrakeRequested[slotIdx]
         restoreStopMode(side)
 
-PRI frRestoreCheck(tid, side, slotIdx) | eMode, nBrakeY, eHold, bMeasured, bOk
+PRI frRestoreCheck(tid, side, slotIdx) | eMode, nBrakeOn, eHold, bMeasured, bOk
 ' Read the restores back once the wheel is at rest after its recovery, print BM-FRREST and fold R19-DUAL-FRREST-X: the
-' fault response reads FR_SHIPPED with this lifetime's own brake_y, and the hold reads HS_OFF -- which it can only
+' fault response reads FR_SHIPPED with this lifetime's own brake_on, and the hold reads HS_OFF -- which it can only
 ' do at rest in SM_FLOAT, since SM_BRAKE at rest holds (R19.1). The library has no stop-mode getter, so the hold
 ' status is the stop mode's read-back. A lifetime a guard or an abort ended is printed NA and not judged.
 '
@@ -9146,24 +9149,24 @@ PRI frRestoreCheck(tid, side, slotIdx) | eMode, nBrakeY, eHold, bMeasured, bOk
 ' @param slotIdx - motor slot
 '
 ' @local eMode - the fault response read back
-' @local nBrakeY - the graded short's Y read back
+' @local nBrakeOn - the graded short's shorted frames per period, read back
 ' @local eHold - the hold status read back
 ' @local bMeasured - the restores went to a driver that is still running
 ' @local bOk - all three held
 
     eMode := wheelL.FR_SHIPPED
-    nBrakeY := 0
+    nBrakeOn := 0
     eHold := wheelL.HS_OFF
     bOk := FALSE
     bMeasured := bFrRestUp and isWheelUp(side)
     if bMeasured
-        eMode, nBrakeY, _ := wheelFaultResponse(side)
+        eMode, nBrakeOn, _ := wheelFaultResponse(side)
         eHold := wheelHoldStatus(side)
-        bOk := (frRestErr == NO_ERROR) and (eMode == wheelL.FR_SHIPPED) and (nBrakeY == frBrakeYBase) and (eHold == wheelL.HS_OFF)
+        bOk := (frRestErr == NO_ERROR) and (eMode == wheelL.FR_SHIPPED) and (nBrakeOn == frBrakeOnBase) and (eHold == wheelL.HS_OFF)
         sfFrRestN[slotIdx] := (sfFrRestN[slotIdx] + 1) <# LIM_SMALL
         if bOk == FALSE
             sfFrRestBad[slotIdx] := (sfFrRestBad[slotIdx] + 1) <# LIM_SMALL
-    emitFrRest(tid, side, eMode, nBrakeY, eHold, bMeasured, bOk)
+    emitFrRest(tid, side, eMode, nBrakeOn, eHold, bMeasured, bOk)
 
 PRI frStats(slotIdx) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, iSum, dutySum, upCount, midJ, endJ, eState, restWinJ
 ' The trial's readings from its frozen capture, after bTraceDrain() located the mark and rest: the wheel's rate,
@@ -9797,7 +9800,7 @@ PRI emitFaultRespCells() | slotIdx, side, nMeasured, nBad, bVisible, gradedIdx, 
 '  HOOKREST - BOOL per motor: a forced fault at rest (bridge coasting) did not fault -- the hook's negative control
 '  FORCED   - COUNT per motor: requested forced faults that did not latch inside FR_PROVOKE_MS (the hook failed)
 '  RSTPROV  - COUNT per motor: faults testResetFault() alone did not clear (every forced fault is recovered by it)
-'  FRREST   - COUNT per motor: restores that did not read back FR_SHIPPED, this lifetime's brake_y and HS_OFF
+'  FRREST   - COUNT per motor: restores that did not read back FR_SHIPPED, this lifetime's brake_on and HS_OFF
 '  RESTFLAT - COUNT per motor: X-3's at-rest windows (before spin-up, and after the coast) that were not flat
 '  COASTEMF - COUNT per motor: X-3 coasts whose phases did not swing at the hall rate
 '  SHORTTK  - COUNT per motor: speeds where X-2's short took as many ticks to rest as X-3's coast, or more
@@ -10109,14 +10112,14 @@ PRI emitFrPhase(tid, side, winIdx) | winBase, whyCode
     whyField(whyCode)
     emitRecord()
 
-PRI emitFrRest(tid, side, eMode, nBrakeY, eHold, bMeasured, bOk)
-' BM-FRREST: a wheel trial's restores read back at rest after the recovery -- the fault response, the graded short's Y
-' against this lifetime's own, and the hold status (HS_OFF is SM_FLOAT at rest). Worst case 156 bytes.
+PRI emitFrRest(tid, side, eMode, nBrakeOn, eHold, bMeasured, bOk)
+' BM-FRREST: a wheel trial's restores read back at rest after the recovery -- the fault response, the graded short's
+' brake_on against this lifetime's own, and the hold status (HS_OFF is SM_FLOAT at rest). Worst case 156 bytes.
 '
 ' @param tid - trace id
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param eMode - the fault response read back
-' @param nBrakeY - its brake_y read back
+' @param nBrakeOn - its brake_on read back
 ' @param eHold - the hold status read back
 ' @param bMeasured - the read-backs came from the lifetime the restores went to
 ' @param bOk - all three held
@@ -10130,8 +10133,8 @@ PRI emitFrRest(tid, side, eMode, nBrakeY, eHold, bMeasured, bOk)
     else
         benchLog.textField(@"fr_back", @sSfNa)
         benchLog.textField(@"hs_back", @sSfNa)
-    benchLog.naNumField(@"by_back", nBrakeY, LIM_SMALL, bMeasured)
-    benchLog.naNumField(@"by_base", frBrakeYBase, LIM_SMALL, bMeasured)
+    benchLog.naNumField(@"bo_back", nBrakeOn, LIM_SMALL, bMeasured)
+    benchLog.naNumField(@"bo_base", frBrakeOnBase, LIM_SMALL, bMeasured)
     benchLog.numField(@"set_err", frRestErr, LIM_SMALL)
     benchLog.boolField(@"ok", bMeasured and bOk)
     if bMeasured
@@ -10196,7 +10199,7 @@ PRI wheelSetFaultResponse(side, eMode, brakePct) : eError
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param eMode - FR_SHIPPED or FR_GRADED
-' @param brakePct - the graded short's low-side on-time, % of each frame
+' @param brakePct - the graded short's shorted time, % of each brake period
 ' @returns eError - the library's return
 
     beat(CP_LIB_COMMAND)
@@ -10206,19 +10209,19 @@ PRI wheelSetFaultResponse(side, eMode, brakePct) : eError
         eError := wheelL.testSetFaultResponse(eMode, brakePct)
     beat(CP_LIB_COMMAND)
 
-PRI wheelFaultResponse(side) : eMode, nBrakeY, nResyncs
-' testGetFaultResponse() of one wheel: the response in effect, the graded short's Y, and the re-syncs since start.
+PRI wheelFaultResponse(side) : eMode, nBrakeOn, nResyncs
+' testGetFaultResponse() of one wheel: the response in effect, the graded short's brake_on, and the re-syncs since start.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns eMode - FR_SHIPPED or FR_GRADED
-' @returns nBrakeY - the graded short's low-side PWM Y
+' @returns nBrakeOn - the graded short's shorted frames per brake period
 ' @returns nResyncs - faults answered by a re-sync and a controlled stop since start
 
     beat(CP_LIB_QUERY)
     if side == SIDE_RIGHT
-        eMode, nBrakeY, nResyncs := wheelR.testGetFaultResponse()
+        eMode, nBrakeOn, nResyncs := wheelR.testGetFaultResponse()
     else
-        eMode, nBrakeY, nResyncs := wheelL.testGetFaultResponse()
+        eMode, nBrakeOn, nResyncs := wheelL.testGetFaultResponse()
     beat(CP_LIB_QUERY)
 
 PRI wheelFaultCause(side) : eCause
@@ -10251,7 +10254,7 @@ PRI steerSetFaultResponse(eMode, brakePct) : eError
 ' testSetFaultResponse() on both steering wheels (R19.3, TEST-USE).
 '
 ' @param eMode - FR_SHIPPED or FR_GRADED
-' @param brakePct - the graded short's low-side on-time, % of each frame
+' @param brakePct - the graded short's shorted time, % of each brake period
 ' @returns eError - the steering object's return
 
     beat(CP_LIB_STEER_DRIVE)
@@ -15337,7 +15340,7 @@ tokAbiName      BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "target
                 BYTE    "ff_ceiling", 0, "dead_gap", 0
                 BYTE    "ramp_down", 0, "cfg_ctcks", 0, "stop_mode", 0, "e_stop", 0, "ramp_max", 0, "ramp_min", 0
                 BYTE    "ramp_inc", 0, "i_limit_k", 0
-                BYTE    "duty_floor", 0, "hold_duty", 0, "hold_short", 0, "fault_mode", 0, "brake_y", 0
+                BYTE    "duty_floor", 0, "hold_duty", 0, "hold_short", 0, "fault_mode", 0, "brake_on", 0
                 BYTE    "probe_phase", 0, "force_seq", 0, "fault_clr", 0
 ' the one long lineAddNum() cannot negate: NEGX printed as the signed decimal it is
 sAbiNegx        BYTE    "-2_147_483_648", 0
