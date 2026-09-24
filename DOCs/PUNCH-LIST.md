@@ -3837,6 +3837,12 @@ dual (and possibly T0) harness path, and in `dual-start` it shows inside `steeri
 at the start check and at the preflight nudge, inside that harness, and lets `dual-fault` carry on with the wheel that
 moves. It rides on Visit 10 pass 2.
 
+**2026-09-23 19:23, Visit 10 pass 2 — DID NOT REPRODUCE.** The right wheel drove in every run
+([evaluation](analyses/bench/2026-09-23/VISIT-10-PASS2-EVALUATION.md) §3.1, §3.3). Its first `BM-ABI*` dump reads the
+same 22 parameters as the left. Everything since pass 1 has run DRIVER_REV 13 and harness src_rev 37–38; pass 1 ran 12
+and 36. **Undetermined** between a change in that range and a transient rig state. **Watch:** the dump stays in every
+START lifetime and every PREFLT, so a recurrence is captured on its first run.
+
 **Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
 
 ### PL-121 -- T0-24's hand rows ended on a clock that started at START
@@ -3851,6 +3857,33 @@ too, so a wheel not yet spun read as at rest.
 **Fix:** `test_bench_t0.spin2` SRC_REV 12. A hold row's bound runs from the first displacement, and a coast row can
 end at rest only after its first hall tick. Otherwise only DONE, ABORT or the 120 s cap ends a row. It is certified
 at the next T0-24 run.
+
+**2026-09-23 19:34 — CERTIFIED.** Row 1 waited 10.4 s for Stephen's push (`disp_first_ms,10_362`), and the coast rows
+ended only after the wheel turned. Closed.
+
+### PL-122 -- the wiring walk has no current guard, and a miswired wheel drew about 26 A
+
+**Found 2026-09-23** at Visit 10 pass 2 ([evaluation](analyses/bench/2026-09-23/VISIT-10-PASS2-EVALUATION.md) §3.2).
+
+**MEASURED:** in `dual-start-swapneg`, with the left halls read as crossed, `BM-SKWALK ... life,9 ... l_pk_i,3_858`
+(about 25.7 A at 150 mV/A); the other two walks read 577 and 594 mV (about 4 A). The harness's 10 A abort is not polled
+while `checkWiring()` blocks, and the walk has no guard of its own.
+
+**Disposition:** ⛔ fix in the driver. A walk leg ends, and the check fails as HLT_WIRING, as soon as the phase current
+passes a bound. A wiring check must not stress the hardware it is checking (P14). Task «#3618».
+
+### PL-123 -- T0-24's instrument: hold rows inherit state, the coast metric depends on spin speed, the wheel is unnamed
+
+**Found 2026-09-23** at Visit 10 pass 2 (evaluation §3.6). Four instrument defects, one fix batch:
+1. **Hold rows 2 and 3 start slipped.** Row 1's slip state carries over (`disp_first_ms,0,...,slip_first_ms,0`), so
+   row 2's PASS proves nothing. Re-arm the hold before each row, and NOMEAS a row that does not start HS_HOLDING.
+2. **FREEREF FAILS (100 ms against 150).** Half-rate time depends on the hand spin: row 8's brisk spin halved in 100 ms,
+   row 5's slow one in 472 ms. The coast cells need a speed-invariant metric.
+3. **The fault rows use the offset-shift provocation**, which does not fault (PL-119). They should use
+   `testForceFault()`.
+4. **The panels do not name the wheel** before the rows begin; Stephen was unsure which wheel to use.
+
+**Disposition:** ⛔ fix. Task «#3617».
 
 ---
 
