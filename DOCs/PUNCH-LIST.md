@@ -3872,6 +3872,15 @@ while `checkWiring()` blocks, and the walk has no guard of its own.
 **Disposition:** ⛔ fix in the driver. A walk leg ends, and the check fails as HLT_WIRING, as soon as the phase current
 passes a bound. A wiring check must not stress the hardware it is checking (P14). Task «#3618».
 
+**BUILT 2026-09-24, DRIVER_REV 15 (not yet certified).** Every leg now runs under a guard in the front cog
+(`frontWalkGuard()`, every pass in both objects). The guard trips when the DC-link sense, net of the rest zero, reaches
+`WALK_I_LIMIT_MV` (150 mV, 1 A). That is about 10x the healthy peak (about 13 mV net) and a quarter of the least
+miswired leg (577 mV). On a trip the guard e-stops that motor, and the driver shorts the phases on its next drive pass.
+A zero command would not do: it ramps the field down at 50_000 a pass, about 200 ms of further drive against a stalled
+wheel. The leg fails, and the walk releases only the guard's own e-stop. DESK TRACE: from the reading to the short
+takes at most one front pass (1 ms) plus one drive pass (0.52 ms). The next `dual-start-swapneg` certifies it: the
+crossed walks trip, and no healthy walk does.
+
 ### PL-123 -- T0-24's instrument: hold rows inherit state, the coast metric depends on spin speed, the wheel is unnamed
 
 **Found 2026-09-23** at Visit 10 pass 2 (evaluation §3.6). Four instrument defects, one fix batch:

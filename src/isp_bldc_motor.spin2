@@ -1100,7 +1100,8 @@ PUB checkWiring() : eError | nStartPos, nMidPos, nMissed0, nIllegal0, bLegsOk
 '' Opt-in: this moves the wheel, so call it only when the robot may move a little. It catches what start()'s checks,
 '' which move nothing, cannot: a swapped hall pair, swapped phase leads, a dead hall line or a motor that does not
 '' turn. Blocks about half a second, at most twice WALK_LEG_TIMEOUT_MS; the motor ends at rest per holdAtStop(), and
-'' the position tracking (getDistance(), getRotationCount()) is reset.
+'' the position tracking (getDistance(), getRotationCount()) is reset. A leg that draws more current than a healthy
+'' walk ever does (miswiring stalls the rotor against the field) is ended at once by shorting the phases, and fails.
 ''
 '' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it), or ERR_NOT_STARTED, also recorded for getError()
 
@@ -2370,6 +2371,40 @@ PUB frontHold() | nowPos
                     holdState := HS_LIMITED
                     holdLimitEvents++
 
+PUB frontArmWalkGuard()
+'' FRONT COG ONLY: arm the current guard for the walk leg just commanded (REQ_WALK, PL-122)
+''
+'' Call it after the leg's command is written: any later command disarms it (frontCommand()).
+
+    bWalkTripped := FALSE
+    bWalkGuardArmed := TRUE
+
+PUB frontWalkGuard() | nNetMv
+'' FRONT COG ONLY: once per pass -- end an armed walk leg whose current reaches WALK_I_LIMIT_MV (PL-122)
+''
+'' A wiring check must not stress what it checks. A zero command would ramp the field down for a few hundred ms more of
+'' drive against a wheel that is not following, so the leg ends with this motor's e-stop instead: the driver shorts
+'' the phases on its next pass, and the rotor, barely turning, generates almost no current into the short. The walk
+'' releases that e-stop once the leg is over (bWalkLeg(), and isp_steering_2wheel's walkLeg()); a user's e-stop taken
+'' in the meantime is theirs, and is left alone (frontEStop()).
+
+' Local Variables:
+' @local nNetMv - this pass's DC-link sense, net of the rest zero, mV
+
+    if bWalkGuardArmed == TRUE
+        nNetMv := sense_i_mV - restZeroSenseMv
+        if nNetMv >= WALK_I_LIMIT_MV
+            frontEStop(TRUE)                                                    ' disarms the guard (frontCommand())
+            bWalkTripped := TRUE                                                '  after the e-stop, which would clear it
+            debug[user.DBGCH_FAULT]("-MOT- wiring walk: current ", sdec_long(nNetMv), " mV over the guard, leg shorted")
+
+PUB isWalkGuardTripped() : bTripped
+'' INTERNAL USE: whether the current guard ended the last walk leg (PL-122)
+''
+'' @returns bTripped - T/F where T means the guard shorted the leg with this motor's e-stop, which is still the guard's
+
+    bTripped := bWalkTripped
+
 PUB frontEStop(bEStop)
 '' FRONT COG ONLY: latch (T) or release (F) this motor's emergency stop; a zero command is written either way
 ''
@@ -2377,6 +2412,7 @@ PUB frontEStop(bEStop)
 
     if bEStop <> FALSE
         motorPower := 0                                                         ' PL-52: an e-stop is a genuine stop, not a fault
+        bWalkTripped := FALSE                                                   ' PL-122: an e-stop taken now is not the walk guard's to release
         e_stop := TRUE
         frontCommand(0, FALSE)
     else
@@ -2541,24 +2577,24 @@ PUB getposTrkHallTicks() : retv
     retv := posTrkHallTicks
 
 PRI bWalkLeg(power) : bOk | startMs
-' Drive one leg of checkWiring(): WALK_TICKS at {power}, then wait, bounded, for rest.
+' Drive one leg of checkWiring(): WALK_TICKS at {power} under the current guard, then wait, bounded, for rest.
 '
 ' @param power - the leg's power, its sign the direction
-' @returns bOk - T/F where T means the leg was driven, came to rest and did not fault
+' @returns bOk - T/F where T means the leg was driven, came to rest, did not fault and was not shorted by the guard
 
 ' Local Variables:
 ' @local startMs - getms() when the leg was posted
 
-    bOk := (postRequest(REQ_RESET_TRACKING, 0, 0, 0) == NO_ERROR)              ' the distance limit counts from the tracking's zero
-    if bOk == TRUE
-        bOk := (postRequest(REQ_DRIVE_DISTANCE, WALK_TICKS, power, FALSE) == NO_ERROR)
+    bOk := (postRequest(REQ_WALK, WALK_TICKS, power, 0) == NO_ERROR)           ' zeroes the tracking the distance limit counts from
     if bOk == TRUE
         startMs := getms()
         waitms(WALK_START_MS)
-        repeat until (drv_state == DCS_STOPPED) or (drv_state == DCS_FAULTED) or (getms() - startMs >= WALK_LEG_TIMEOUT_MS)
+        repeat until (drv_state == DCS_STOPPED) or (drv_state == DCS_FAULTED) or (drv_state == DCS_ESTOP) or (getms() - startMs >= WALK_LEG_TIMEOUT_MS)
             waitms(1)
         bOk := (drv_state == DCS_STOPPED)
-        if bOk == FALSE
+        if bWalkTripped == TRUE
+            postRequest(REQ_CLEAR_ESTOP, 0, 0, 0)                               ' PL-122: the guard's short, released: the leg failed
+        elseif bOk == FALSE
             postRequest(REQ_STOP, 0, 0, 0)                                      ' a leg that faulted or timed out ends stopped
 
 PRI packRead(nPin) : nRaw | nSample
@@ -3015,6 +3051,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     healthFailed := 0
     longfill(@probeMv, 0, 9)
     walkFwdTicks := 0
+    bWalkGuardArmed := bWalkTripped := FALSE                                    ' PL-122: no walk leg under guard
     walkRevTicks := 0
     bPackOwned := FALSE                                                     ' R19.5: startPackSense() takes the pin
     packAvgMv := 0
@@ -3801,8 +3838,8 @@ CON { front cog requests }
     '  REQ_SET_HOLD       - arg1 ceiling %, arg2 rise ms, arg3 limit ms: replace the hold's limits (TEST-USE, R19.1)
     '  REQ_SET_FAULT      - arg1 FR_* mode, arg2 brake %: choose the response to a position fault (TEST-USE, R19.3)
     '  REQ_FORCE_FAULT    - fault the driver on its next driven frame, as if the rotor had lost the field (TEST-USE, R19.3)
-    '  REQ_WALK           - isp_steering_2wheel only: arg1 stop ticks, arg2 left power, arg3 right power: each wheel's
-    '                       own signed distance move, both synchronized (its checkWiring(), R19.4)
+    '  REQ_WALK           - arg1 stop ticks, arg2 power (isp_steering_2wheel: arg2 left, arg3 right power, both
+    '                       synchronized): a checkWiring() leg, a signed distance move under the current guard (R19.4, PL-122)
     '  REQ_EXIT           - answer every open request, acknowledge, and park (stop())
     #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_SET_HOLD, REQ_SET_FAULT, REQ_FORCE_FAULT, REQ_WALK, REQ_EXIT
 
@@ -3990,6 +4027,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         LALOOPSTART()                                                           ' main LA tracking code
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
         frontTrack(passCount)
+        frontWalkGuard()                                                        ' PL-122: a walk leg's current, checked every pass
         nowMs := getms()
         if bFrontLimitsDue(nowMs) == TRUE
             frontZeroPower()                                                    ' PL-52: a distance/time stop clears getPower() too
@@ -4200,6 +4238,18 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             if eStatus == NO_ERROR
                 frontSetLimits(nArg1, motorStopMSecs)                           ' the time limit is kept, as before
                 eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
+        REQ_WALK:
+            ' PL-122: a checkWiring() leg: as REQ_DRIVE_DISTANCE from a zeroed tracking, then under the current guard
+            bCmdWatched := FALSE
+            eStatus := frontRefusal()
+            if eStatus == NO_ERROR
+                frontResetTracking(FALSE)                                       ' the distance limit counts from here
+                frontSetLimits(nArg1, 0)
+                eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
+                if eStatus == NO_ERROR
+                    frontArmWalkGuard()
+                else
+                    frontSetLimits(0, 0)                                        ' not driven: no limit stays armed either
         REQ_LIMIT_TICKS:
             frontSetLimits(nArg1, motorStopMSecs)
         REQ_LIMIT_TIME:
@@ -4368,6 +4418,7 @@ PRI frontCommand(nIncre, bSync)
 ' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
 
     setTargetAccel(nIncre, bSync)
+    bWalkGuardArmed := FALSE                                                    ' PL-122: any command ends a walk leg's guard; REQ_WALK re-arms after its own
     bStopUnconfirmed := ((nIncre ZEROX 30) == 0)                               ' any other command supersedes a pending confirmation
     userCmdIncr := nIncre                                                       ' R18.4 D-6: what was COMMANDED, which a path scale never changes
     userCmdGen++                                                                '  and a count an owner reads to see a new command arrive
@@ -4760,7 +4811,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 14        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 15        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4773,6 +4824,7 @@ CON { driver internal Constants }
                                             ' 12: a re-synced stop stays pending until rest, so a second fault takes the fallback; testForceFault()
                                             ' 13: test-only negatives for the start checks: testSetProbeWithhold(), testSetHallSwap() (task 3613)
                                             ' 14: DCS_FAULTED is a latch: only a commanded stop or drive clears it, never a zero already standing (task 3616)
+                                            ' 15: a wiring-walk leg is shorted and fails once its current passes WALK_I_LIMIT_MV (PL-122, task 3618)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4817,6 +4869,10 @@ CON { driver internal Constants }
     WALK_OVERSHOOT_TICKS        = 3         ' a leg may coast this far past its limit and still pass
     WALK_START_MS               = 20        ' ms a leg waits before it looks for the stop, so it does not read the rest it left
     WALK_LEG_TIMEOUT_MS         = 2_000     ' a leg that has not stopped by then fails
+    WALK_I_LIMIT_MV             = 150       ' PL-122: a leg whose DC-link sense, net of the rest zero, reaches this is shorted and
+                                            '  fails. Visit 10 pass 2 MEASURED healthy legs at 20-21 mV raw left (rest zero 7-9 mV,
+                                            '  so ~13 mV net) and 12-14 mV right; crossed halls 577, 3_858 and 594 mV. ~10x the
+                                            '  healthy peak, a quarter of the least miswired one (1 A at 150 mV/A)
     ' R19.5 (task 3611): the pack voltage sensor, VOLTAGE-SENSOR.md. P2AN001's ratiometric method: the pin, GIO and VIO
     '  read through one ADC path, pin mV = (pin - GIO) / (VIO - GIO) x 3300. SINC2 SAMPLING, not filtering: the front
     '  cog reads once a pass, and sampling mode completes each conversion in hardware (p2kbArchSmartPin11000AdcInternalClock).
@@ -5019,6 +5075,8 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    probeMv[9]                  ' R19.4: per probed phase U, V, W: the U, V and W readings, mV (TEST-USE)
     LONG    walkFwdTicks                ' R19.4: checkWiring()'s first leg, raw hall ticks (TEST-USE)
     LONG    walkRevTicks                ' R19.4: checkWiring()'s second leg, raw hall ticks (TEST-USE)
+    LONG    bWalkGuardArmed             ' front-written (PL-122): T/F where T means a walk leg is driving under the current guard
+    LONG    bWalkTripped                ' front-written (PL-122): T/F where T means the guard shorted the last leg (and its e-stop is the guard's)
     LONG    testProbeWithhold           ' TEST-USE: PRB_* the next runStartChecks() leaves undriven; PRB_NONE once it has run
     LONG    testHallSwap                ' TEST-USE: HSW_* the next init() applies to the hall tables; HSW_NONE once applied
     LONG    bPackOwned                  ' R19.5: T/F where T means this instance reads the pack sensor (startPackSense())

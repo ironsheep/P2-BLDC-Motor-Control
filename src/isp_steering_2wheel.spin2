@@ -938,7 +938,8 @@ PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeft
 ''
 '' Opt-in: this moves the robot, so call it only when it may turn a little in place. It catches what start()'s checks,
 '' which move nothing, cannot: a swapped hall pair, swapped phase leads, a dead hall line or a wheel that does not turn.
-'' Blocks about half a second; both wheels end at rest per holdAtStop(), and the position tracking is reset.
+'' Blocks about half a second; both wheels end at rest per holdAtStop(), and the position tracking is reset. A wheel whose
+'' leg draws more current than a healthy walk ever does is ended at once by shorting its phases, and fails.
 ''
 '' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it for each wheel),
 ''  or the ERR_* that kept it from running (ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED, ...), also recorded for getError()
@@ -1615,9 +1616,9 @@ PRI bHallsUnchanged(nMissedNow, nIllegalNow, nMissed0, nIllegal0) : bSame
 
     bSame := (nMissedNow == nMissed0) and (nIllegalNow == nIllegal0)
 
-PRI walkLeg(leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftStatus, eRightStatus
-' Drive one leg of checkWiring(): each wheel WALK_TICKS at its power, then wait, bounded, until each wheel has either come
-' to rest or faulted. Each wheel's result is its own.
+PRI walkLeg(leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftStatus, eRightStatus, bLeftTripped, bRightTripped
+' Drive one leg of checkWiring(): each wheel WALK_TICKS at its power under its current guard, then wait, bounded, until
+' each wheel has come to rest, faulted or been shorted by its guard. Each wheel's result is its own.
 '
 ' @param leftPower - the left wheel's power, its sign the direction
 ' @param rightPower - the right wheel's power
@@ -1629,6 +1630,8 @@ PRI walkLeg(leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftS
 ' @local startMs - getms() when the leg was posted
 ' @local eLeftStatus - the front cog's status for the left wheel
 ' @local eRightStatus - the front cog's status for the right wheel
+' @local bLeftTripped - T/F where T means the left wheel's current guard shorted its leg (PL-122)
+' @local bRightTripped - T/F where T means the right wheel's current guard shorted its leg
 
     bLeftOk := FALSE
     bRightOk := FALSE
@@ -1643,16 +1646,20 @@ PRI walkLeg(leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftS
             waitms(1)
         bLeftOk := (ltWheel.getDriverState() == DCS_STOPPED)
         bRightOk := (rtWheel.getDriverState() == DCS_STOPPED)
+        bLeftTripped := ltWheel.isWalkGuardTripped()
+        bRightTripped := rtWheel.isWalkGuardTripped()
+        if (bLeftTripped == TRUE) or (bRightTripped == TRUE)                    ' PL-122: release only the guard's own shorts
+            postRequest(ltWheel.REQ_CLEAR_ESTOP, ((bLeftTripped == TRUE) ? LEFT_MOTOR_BIT : 0) | ((bRightTripped == TRUE) ? RIGHT_MOTOR_BIT : 0), 0, 0, 0)
         if (bLeftOk == FALSE) or (bRightOk == FALSE)
             postRequest(ltWheel.REQ_STOP, BOTH_MOTORS, 0, 0, 0)                 ' a leg that faulted or timed out ends stopped
 
 PRI bWheelSettled(eDrvState) : bSettled
-' Return TRUE when a wheel's driver state means its walk leg is over: at rest, or faulted.
+' Return TRUE when a wheel's driver state means its walk leg is over: at rest, faulted, or shorted by its guard.
 '
 ' @param eDrvState - the wheel's DCS_* state
-' @returns bSettled - T/F where T means DCS_STOPPED or DCS_FAULTED
+' @returns bSettled - T/F where T means DCS_STOPPED, DCS_FAULTED or DCS_ESTOP
 
-    bSettled := (eDrvState == DCS_STOPPED) or (eDrvState == DCS_FAULTED)
+    bSettled := (eDrvState == DCS_STOPPED) or (eDrvState == DCS_FAULTED) or (eDrvState == DCS_ESTOP)
 
 PRI stopFrontCog() | eStatus
 ' Ask the front cog to EXIT, wait bounded for its acknowledgement, then cogstop it; never refuses.
@@ -2050,6 +2057,8 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
         ltWheel.frontTrack(passCount)
         rtWheel.frontTrack(passCount)
+        ltWheel.frontWalkGuard()                                                ' PL-122: a walk leg's current, checked every pass
+        rtWheel.frontWalkGuard()
         frontPlatformFaultStop()                                                ' R19.2: one wheel faulted stops the other, ramped
         if (passCount +// ltWheel.WINDOW_PASSES) == 0
             frontLimitPath()                                                    ' R18.4 D-6: once per slot, after the wheels' own slot work
@@ -2424,6 +2433,11 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                 eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, nArg2, nArg3, TRUE)
                 if (eLeftStatus <> NO_ERROR) or (eRightStatus <> NO_ERROR)
                     frontDisarmWheelLimits(bLeft, bRight)
+                else                                                            ' PL-122: each leg runs under its wheel's current guard
+                    if bLeft == TRUE
+                        ltWheel.frontArmWalkGuard()
+                    if bRight == TRUE
+                        rtWheel.frontArmWalkGuard()
         ltWheel.REQ_LIMIT_TICKS:
             frontDisarmWheelLimits(TRUE, TRUE)                                  ' one distance limit in force at a time
             if nArg2 <> FALSE
