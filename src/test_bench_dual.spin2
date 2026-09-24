@@ -272,6 +272,15 @@
 ''               walk lifetime (testLeftSetHallSwap(HSW_HALLS_01)), and the new cell R19-DUAL-SWNEG-X counts the walks in
 ''               which its HLT_WIRING was not judged failed. New record BM-SKNEG, printed before each armed start's
 ''               BM-SSTART; BM-SKBUILD appends neg (NONE / PHASE / SWAP) in every START build. No other record changes
+''               24 Sep 2026 -- SRC_REV=38, FMT 24: task 3615 (PL-120, Visit 10 pass 2). New records BM-ABIL, BM-ABIS1..3
+''               and BM-ABIP1..3: each driver's shared hub runs dumped RAW in isp_bldc_motor VAR order under the VAR's own
+''               names -- the 4 launch longs, the status run and fault, the parameter run, and motorCog -- copied in one
+''               pass before anything is printed. Where: SKSTART (part START, every lifetime whose steering start returned
+''               a cog, both wheels, after skReadHealth() and before any fold; motorCog through steering.testGetMotorCogs()) and PREFLT
+''               (every part that runs it, the wheel just nudged, before wheelStop()). Part FAULTRESP only: ONE wheel that
+''               fails PREFLT is retired for the run and named by BM-ABORT scope SEG (was RUN); FLTRESP runs every trial of
+''               the other, the retired wheel's cells print NOMEAS, and FLTPLAT, which needs both, prints its BM-FRPLAT with
+''               why MOTOR_RETIRED and PLATSTOP NOMEAS. Both wheels failing still ends the run. No existing record changes shape
 ''
 '' =================================================================================================
 
@@ -338,8 +347,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 37                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 23                                        ' BM- record-format version
+    SRC_REV     = 38                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 24                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -3533,31 +3542,48 @@ PRI uiCheckScreen(scr) | startMs, buttonIdx, inputCode, resultCode
         waitBeat(UI_HILITE_MS, CP_LOOP_OPER)
     emitUiStep(UIK_PREVIEW, PNL_BTN_NONE, buttonIdx, inputCode == INPUT_KEY, inputCode == INPUT_MOUSE, scr, resultCode, getms() - startMs)
 
-PRI bSegPreflight() : bAllMoved | side, bMoved
+PRI bSegPreflight() : bRunGoes | side, bMoved, nFailed, failedSide
 ' PREFLT (every motion load, design sec 4.4): prove each wheel turns before anything is measured. A
-' wheel that moves 0 ticks ends the run with BM-ABORT scope RUN reason NO_MOTION.
+' wheel that moves 0 ticks ends the run with BM-ABORT scope RUN reason NO_MOTION -- except in part FAULTRESP,
+' where ONE such wheel is retired for the run (bSlotRetired, and bFrPreRetired so its cells print NOMEAS), named
+' by BM-ABORT scope SEG, and the part goes on with the other wheel; both failing ends the run as in every part
+' (task 3615, PL-120: the trip must measure the left wheel whatever the right does).
 '
-' @returns bAllMoved - TRUE when both wheels moved
+' @returns bRunGoes - TRUE when the run continues: both wheels moved, or in FAULTRESP exactly one did
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
 ' @local bMoved - this wheel moved
+' @local nFailed - wheels that did not move
+' @local failedSide - the last wheel that did not move, SIDE_NONE when none
 
     segBegin(SEG_PREFLT)
-    bAllMoved := TRUE
+    nFailed := 0
+    failedSide := SIDE_NONE
     repeat side from SIDE_LEFT to SIDE_RIGHT
         beat(CP_LOOP_POLL)
         bMoved := bPreflightWheel(side)
         if bMoved == FALSE
-            bAllMoved := FALSE
+            nFailed += 1
+            failedSide := side
         segItems += 1
-    if bAllMoved == FALSE
-        emitAbort(SEG_PREFLT, 0, SIDE_NONE, PREFLIGHT_INCRE, ABR_NO_MOTION, 0, SCOPE_RUN)
-    segEnd(bAllMoved ? WHY_NONE : WHY_ABORTED)
+    bRunGoes := (nFailed == 0)
+    if (nFailed == 1) and (PART_ID == PART_FAULTRESP)
+        bSlotRetired[failedSide - SIDE_LEFT] := TRUE
+        bFrPreRetired[failedSide - SIDE_LEFT] := TRUE
+        emitAbort(SEG_PREFLT, 0, failedSide, PREFLIGHT_INCRE, ABR_NO_MOTION, 0, SCOPE_SEG)
+        bRunGoes := TRUE
+        segEnd(WHY_MOTOR_RETIRED)
+    else
+        if nFailed > 0
+            emitAbort(SEG_PREFLT, 0, SIDE_NONE, PREFLIGHT_INCRE, ABR_NO_MOTION, 0, SCOPE_RUN)
+        segEnd(bRunGoes ? WHY_NONE : WHY_ABORTED)
 
 PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bMeasured, whyCode, lastJ
 ' One wheel's preflight: start it alone (I6), arm the instrument on it, PREFLIGHT_INCRE for
 ' PREFLIGHT_MS, zero, wait stopped, freeze, and measure the driver tick and hwPos deltas from the ring.
-' Emits BM-START (inside bWheelStart()) and BM-PREFLT. A fault is recovered per sec 4.2.
+' Emits BM-START (inside bWheelStart()) and BM-PREFLT. A fault is recovered per sec 4.2. Then, before the
+' wheel is stopped, what its driver holds (abiDumpWheel(), BM-ABIL / -ABIS* / -ABIP*, task 3615), whether it
+' moved or not.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bMoved - TRUE when the driver's tick count changed across the nudge
@@ -3608,6 +3634,7 @@ PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bM
             bRecoverFault(SEG_PREFLT, 0, side, PREFLIGHT_INCRE, FAULT_COOL_MS)
     bMoved := bMeasured and (ticksMoved <> 0)
     emitPreflt(side, PREFLIGHT_INCRE, ticksMoved, hwMoved, bMeasured, whyCode)
+    abiDumpWheel(side)                                      ' task 3615: after the nudge, before wheelStop()
     bInstIdle()
     wheelStop(side)
 
@@ -8668,6 +8695,7 @@ VAR { FAULTRESP state -- cog 0 only }
     LONG    sfForcedBad[INST_MOTORS]
     LONG    bSfHookRan[INST_MOTORS]                         ' HOOKREST
     LONG    bSfHookOk[INST_MOTORS]
+    LONG    bFrPreRetired[INST_MOTORS]                      ' task 3615: retired by PREFLT (did not move); every cell NOMEAS
 
 PRI frResetCells() | arrIdx, slotIdx
 ' Clear the FAULTRESP part's cell accumulators (initRunState()): every count 0 and every ran FALSE, so a cell no
@@ -8701,6 +8729,7 @@ PRI frResetCells() | arrIdx, slotIdx
         sfForcedBad[slotIdx] := 0
         bSfHookRan[slotIdx] := FALSE
         bSfHookOk[slotIdx] := FALSE
+        bFrPreRetired[slotIdx] := FALSE
     repeat arrIdx from 0 to (INST_MOTORS * FR_GRADED_POINTS) - 1
         frGradedTicks[arrIdx] := 0
         frGradedMs[arrIdx] := 0
@@ -9472,7 +9501,8 @@ PRI frPlatTrial(side, eMode) | slotIdx, otherIdx, tid, sid, whyCode, safeEvent, 
 '
 ' Pre-registered: one ramp time (FR_PLAT_RAMP_MS) after the fault, the other wheel turns at most FR_PLAT_REST_PCT of its
 ' pre-fault rate. FAILS when it keeps turning near its commanded rate (about 100 %). NOMEAS unless the forced fault
-' latched and the other wheel was turning before it.
+' latched and the other wheel was turning before it. With either wheel retired (task 3615: PREFLT, or recovery step
+' 4) the steering object is never started: BM-FRPLAT prints why MOTOR_RETIRED and the cell NOMEAS.
 '
 ' @param side - the wheel faulted: SIDE_LEFT or SIDE_RIGHT
 ' @param eMode - FR_SHIPPED (the fault latches) or FR_GRADED (the faulted wheel re-syncs and stops itself)
@@ -9501,6 +9531,8 @@ PRI frPlatTrial(side, eMode) | slotIdx, otherIdx, tid, sid, whyCode, safeEvent, 
     whyCode := WHY_NONE
     if bRunContinue(SEG_FLTPLAT) == FALSE
         whyCode := WHY_ABORTED
+    elseif bSlotRetired[SLOT_LEFT] or bSlotRetired[SLOT_RIGHT]
+        whyCode := WHY_MOTOR_RETIRED                        ' task 3615: X-5 needs both wheels, and a retired one is never driven
     elseif bSteerStart(SEG_FLTPLAT) == FALSE
         whyCode := WHY_NO_COG
     else
@@ -9735,7 +9767,7 @@ PRI frShortVsCoast(slotIdx) : nPairs, nBad | speedIdx, arrIdx
             if frShortTicks[arrIdx] >= frCoastTicks[arrIdx]
                 nBad += 1
 
-PRI emitFaultRespCells() | slotIdx, side, nMeasured, nBad, bVisible, gradedIdx, shortIdx
+PRI emitFaultRespCells() | slotIdx, side, nMeasured, nBad, bVisible, gradedIdx, shortIdx, bLive
 ' The FAULTRESP part's judged cells, each NOMEAS when nothing measured it, then the one it prints NOT_BUILT.
 '
 '  TRACES   - COUNT: traces whose lost head reached the mark, or that dropped samples
@@ -9754,6 +9786,9 @@ PRI emitFaultRespCells() | slotIdx, side, nMeasured, nBad, bVisible, gradedIdx, 
 '  GRD100   - COUNT per motor: |ticks to rest| of X-6 at 100 % less X-2's short at the same speed
 '  PLATSTOP - PCT per watched motor: its rate one ramp time after the other wheel faulted
 '
+' A wheel PREFLT retired (task 3615, bFrPreRetired) measured none of its cells: each prints NOMEAS. RSTPROV is the one
+' that could otherwise read a PREFLT fault's recovery as an FLTRESP instance.
+'
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
 ' @local nMeasured - instances behind a computed cell
@@ -9761,28 +9796,30 @@ PRI emitFaultRespCells() | slotIdx, side, nMeasured, nBad, bVisible, gradedIdx, 
 ' @local bVisible - SHORTI: the peak was a visible current
 ' @local gradedIdx - GRD100: X-6's 100 % point
 ' @local shortIdx - GRD100: X-2 at FR_SPEED_X6
+' @local bLive - this wheel was not retired by PREFLT
 
     emitSignoff(@sSfCellTracesX, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         side := SIDE_LEFT + slotIdx
-        emitSignoffBool(@sSfCellHookRest, side, @sSfCritHookRest, bSfHookRan[slotIdx], bSfHookOk[slotIdx], SIGNOFF_ONE_INSTANCE)
-        emitSignoff(@sSfCellForced, side, @sSfCritForced, sfForcedN[slotIdx] > 0, sfForcedBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfForcedN[slotIdx], @sSfUnitsCount)
-        emitSignoff(@sSfCellRstProvX, side, @sSfCritRstProv, sfFaults[slotIdx] > 0, sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx], @sSfUnitsCount)
-        emitSignoff(@sSfCellBlunt, side, @sSfCritBlunt, sfBluntN[slotIdx] > 0, sfBluntBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfBluntN[slotIdx], @sSfUnitsCount)
+        bLive := (bFrPreRetired[slotIdx] == FALSE)
+        emitSignoffBool(@sSfCellHookRest, side, @sSfCritHookRest, bLive and bSfHookRan[slotIdx], bSfHookOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitSignoff(@sSfCellForced, side, @sSfCritForced, bLive and (sfForcedN[slotIdx] > 0), sfForcedBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfForcedN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellRstProvX, side, @sSfCritRstProv, bLive and (sfFaults[slotIdx] > 0), sfResetUncleared[slotIdx], RESET_UNCLEAR_LO, RESET_UNCLEAR_HI, sfFaults[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellBlunt, side, @sSfCritBlunt, bLive and (sfBluntN[slotIdx] > 0), sfBluntBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfBluntN[slotIdx], @sSfUnitsCount)
         nMeasured, nBad := frGradedChain(slotIdx)
-        emitSignoff(@sSfCellGraded, side, @sSfCritGraded, nMeasured >= FR_GRADED_MIN_POINTS, nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
+        emitSignoff(@sSfCellGraded, side, @sSfCritGraded, bLive and (nMeasured >= FR_GRADED_MIN_POINTS), nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
         gradedIdx := (slotIdx * FR_GRADED_POINTS) + FR_BRAKE_STEPS
         shortIdx := (slotIdx * FR_SPEEDS) + FR_SPEED_X6
-        emitSignoff(@sSfCellGrd100, side, @sSfCritGrd100, bFrGradedRan[gradedIdx] and bFrShortTkRan[shortIdx], abs(frGradedTicks[gradedIdx] - frShortTicks[shortIdx]), 0, FR_FULL_TOL_TICKS, SIGNOFF_ONE_INSTANCE, @sSfUnitsCount)
-        emitSignoff(@sSfCellFrRest, side, @sSfCritFrRest, sfFrRestN[slotIdx] > 0, sfFrRestBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfFrRestN[slotIdx], @sSfUnitsCount)
-        emitSignoff(@sSfCellRestFlat, side, @sSfCritRestFlat, sfRestN[slotIdx] > 0, sfRestBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfRestN[slotIdx], @sSfUnitsCount)
-        emitSignoff(@sSfCellCoastEmf, side, @sSfCritCoastEmf, sfCoastN[slotIdx] > 0, sfCoastBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfCoastN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellGrd100, side, @sSfCritGrd100, bLive and bFrGradedRan[gradedIdx] and bFrShortTkRan[shortIdx], abs(frGradedTicks[gradedIdx] - frShortTicks[shortIdx]), 0, FR_FULL_TOL_TICKS, SIGNOFF_ONE_INSTANCE, @sSfUnitsCount)
+        emitSignoff(@sSfCellFrRest, side, @sSfCritFrRest, bLive and (sfFrRestN[slotIdx] > 0), sfFrRestBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfFrRestN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellRestFlat, side, @sSfCritRestFlat, bLive and (sfRestN[slotIdx] > 0), sfRestBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfRestN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellCoastEmf, side, @sSfCritCoastEmf, bLive and (sfCoastN[slotIdx] > 0), sfCoastBad[slotIdx], FR_BAD_LO, FR_BAD_HI, sfCoastN[slotIdx], @sSfUnitsCount)
         nMeasured, nBad := frShortVsCoast(slotIdx)
-        emitSignoff(@sSfCellShortTk, side, @sSfCritShortTk, nMeasured > 0, nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
+        emitSignoff(@sSfCellShortTk, side, @sSfCritShortTk, bLive and (nMeasured > 0), nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
         nMeasured, nBad, bVisible := frShortRise(slotIdx)
-        emitSignoff(@sSfCellShortI, side, @sSfCritShortI, (nMeasured >= FR_RISE_MIN_SPEEDS) and bVisible, nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
-        emitSignoffBool(@sSfCellResync, side, @sSfCritResync, bSfResyncRan[slotIdx], bSfResyncOk[slotIdx], SIGNOFF_ONE_INSTANCE)
-        emitSignoff(@sSfCellPlatStop, side, @sSfCritPlatStop, bSfPlatRan[slotIdx], sfPlatPct[slotIdx], FR_PLAT_PCT_LO, FR_PLAT_REST_PCT, SIGNOFF_ONE_INSTANCE, @sSfUnitsPct)
+        emitSignoff(@sSfCellShortI, side, @sSfCritShortI, bLive and (nMeasured >= FR_RISE_MIN_SPEEDS) and bVisible, nBad, FR_BAD_LO, FR_BAD_HI, nMeasured, @sSfUnitsCount)
+        emitSignoffBool(@sSfCellResync, side, @sSfCritResync, bLive and bSfResyncRan[slotIdx], bSfResyncOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitSignoff(@sSfCellPlatStop, side, @sSfCritPlatStop, bLive and bSfPlatRan[slotIdx], sfPlatPct[slotIdx], FR_PLAT_PCT_LO, FR_PLAT_REST_PCT, SIGNOFF_ONE_INSTANCE, @sSfUnitsPct)
     emitSignoffNotBuilt(@sSfCellB4Pulse, SIDE_NONE, @sSfCritB4Pulse)
 
 PRI frGradedChain(slotIdx) : nPoints, nBad | pointIdx, arrIdx, lastTicks, lastMs, firstTicks, firstMs
@@ -10510,7 +10547,8 @@ PRI bSkWalkLife(lifeIdx) : bWalk
 
 PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
 ' One steering lifetime: arm the build's negative, if any (skArmNeg(), BM-SKNEG); start (bSteerStart(), BM-SSTART);
-' read what start() judged (skReadHealth()) before anything else; the floated window (skZeroWindow()); fold;
+' read what start() judged (skReadHealth()) before anything else; whenever start() returned a cog, ready or not, what
+' both drivers hold (abiDumpSteer(), BM-ABI*, task 3615); the floated window (skZeroWindow()); fold;
 ' BM-SKHEALTH and a BM-SKPROBE per wheel; on a walk lifetime the walk, BM-SKWALK and the recovery of any fault it
 ' caused; stop.
 '
@@ -10532,6 +10570,9 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
             whyCode := WHY_NO_COG
         else
             skReadHealth()                                  ' first: exactly what start() left
+        if bSteerUp
+            abiDumpSteer()                                  ' task 3615: both drivers, before anything is folded
+        if whyCode == WHY_NONE
             skZeroWindow()
     if lifeSeq <> lifeBefore
         skLife := steerLife
@@ -15210,6 +15251,212 @@ PRI traceRecover(seg, side, tid, motorIncre, coolMs) : rstCode, rstMs | slotIdx,
             rstCode := RST_RESTART
         waitBeat(coolMs, CP_LOOP_COOL)
     bZeroAndWaitStopped(side)
+
+CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 (task 3615, PL-120) --- }
+
+  ' WHY THIS EXISTS. The right wheel drives in every SPIN variant but drove nothing in dual-start and dual-fault
+  '  (pass 1), and three bench trips localised that without showing it. These records show it: the three hub runs
+  '  the driver cog shares with Spin2 by address offset (isp_bldc_motor.spin2 VAR, reached through testGetAbiAddrs()):
+  '  the ABI_LAUNCH_LONGS launch longs (pinbase .. targetIncre), the DRVR_STATUS_LONGS_COUNT status longs the driver
+  '  writes every pass and fault after them, the DRVR_PARAMS_LONGS_COUNT parameters it reads every pass, and the
+  '  object's motorCog.
+  '
+  ' THE DUMP IS THE INSTRUMENT (D2): every value is the long as the driver holds it -- never scaled, clamped, decoded
+  '  or named by a token -- in VAR declaration order under the VAR's own name, so a log reads against that block
+  '  without the source. Each wheel's runs are copied with one longmove() apiece, before anything is printed, so the
+  '  seven records describe one moment and not seven. The names are tokAbiName's, written from the VAR block; BM-ABIL
+  '  prints the driver's own st_n and par_n beside them, so a driver whose runs changed length shows in the log
+  '  rather than silently shifting every name after the change.
+  '
+  ' Records, each worst case under 280 bytes (header: tag 8 + seq 15 + where 14 + motor 12 + life 13 = 62; a raw
+  '  field is 2 + len(name) + 14, "-2_147_483_648"): BM-ABIL the launch run, motorCog, st_n, par_n, why (232); BM-ABIS1
+  '  drive_u .. sense_i_mV (235); BM-ABIS2 hall .. drv_state (217); BM-ABIS3 hall_missed .. fault (246); BM-ABIP1
+  '  offset_fwd .. dead_gap (239); BM-ABIP2 ramp_down .. i_limit_k (256); BM-ABIP3 duty_floor .. force_seq (240).
+  '
+  ' Where (token = tokAbiWhere):
+  '  ABIW_SKSTART - part START, every lifetime whose steering start() returned a cog, both wheels through the steering
+  '                 object, after skReadHealth() and before anything is folded; motorCog from steering.testGetMotorCogs()
+  '  ABIW_PREFLT  - PREFLT, in every part that runs it, the wheel just nudged, after the nudge and before wheelStop(),
+  '                 through wheelL / wheelR -- whether or not it moved
+    #0, ABIW_SKSTART, ABIW_PREFLT
+    ABIW_COUNT      = ABIW_PREFLT + 1
+    TOKMAX_ABIWHERE = 7
+
+    ABI_LAUNCH_LONGS = 4                                    ' pinbase, params_ptr, targetAngle, targetIncre
+    ABI_STATUS_LONGS = 21                                   ' drive_u .. fault_resyncs (DRVR_STATUS_LONGS_COUNT, 20), then fault
+    ABI_PARAMS_LONGS = 22                                   ' offset_fwd .. force_seq (DRVR_PARAMS_LONGS_COUNT)
+    ABI_STATUS_BASE  = ABI_LAUNCH_LONGS                     ' the status run's first long in a wheel's abiSnap row
+    ABI_PARAMS_BASE  = ABI_STATUS_BASE + ABI_STATUS_LONGS   ' ...and the parameter run's
+    ABI_LONGS        = ABI_PARAMS_BASE + ABI_PARAMS_LONGS   ' 47 per wheel, the entries in tokAbiName
+    ' each record's [first, last] in a wheel's abiSnap row, declaration order
+    ABI_S1_FIRST = ABI_STATUS_BASE                          ' drive_u
+    ABI_S2_FIRST = ABI_STATUS_BASE + 7                      ' hall
+    ABI_S3_FIRST = ABI_STATUS_BASE + 14                     ' hall_missed
+    ABI_P1_FIRST = ABI_PARAMS_BASE                          ' offset_fwd
+    ABI_P2_FIRST = ABI_PARAMS_BASE + 7                      ' ramp_down
+    ABI_P3_FIRST = ABI_PARAMS_BASE + 15                     ' duty_floor
+    ABI_LAST     = ABI_LONGS - 1                            ' force_seq
+
+DAT ' ---- ABI dump tables ----
+
+tokAbiWhere     BYTE    "SKSTART", 0, "PREFLT", 0
+' isp_bldc_motor.spin2 VAR names, declaration order: the launch run, the status run and fault, the parameter run
+tokAbiName      BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "targetIncre", 0
+                BYTE    "drive_u", 0, "drive_v", 0, "drive_w", 0
+                BYTE    "sense_u_mV", 0, "sense_v_mV", 0, "sense_w_mV", 0, "sense_i_mV", 0
+                BYTE    "hall", 0, "pos", 0, "duty", 0, "err", 0, "loop_ticks", 0, "loop_ctcks", 0, "drv_state", 0
+                BYTE    "hall_missed", 0, "hall_illegal", 0, "drv_incr_now", 0, "lag_held", 0, "duty_capped", 0
+                BYTE    "fault_resyncs", 0, "fault", 0
+                BYTE    "offset_fwd", 0, "offset_rev", 0, "duty_min", 0, "duty_max", 0, "servo_shift", 0
+                BYTE    "ff_ceiling", 0, "dead_gap", 0
+                BYTE    "ramp_down", 0, "cfg_ctcks", 0, "stop_mode", 0, "e_stop", 0, "ramp_max", 0, "ramp_min", 0
+                BYTE    "ramp_inc", 0, "i_limit_k", 0
+                BYTE    "duty_floor", 0, "hold_duty", 0, "hold_short", 0, "fault_mode", 0, "brake_y", 0
+                BYTE    "probe_phase", 0, "force_seq", 0
+' the one long lineAddNum() cannot negate: NEGX printed as the signed decimal it is
+sAbiNegx        BYTE    "-2_147_483_648", 0
+
+VAR { ABI dump -- cog 0 only }
+
+    LONG    abiSnap[INST_MOTORS * ABI_LONGS]                ' [slot * ABI_LONGS + i]: the three runs, as copied
+    LONG    abiCog[INST_MOTORS]                             ' motorCog as held (cogid + 1, 0 when not started)
+    LONG    bAbiCogValid[INST_MOTORS]                       ' abiCog was read (FALSE through the steering object)
+
+PRI abiDumpSteer() | pLaunchL, pStatusL, pParamsL, pLaunchR, pStatusR, pParamsR
+' SKSTART: both steering wheels' runs, copied back to back and only then printed (BM-ABI* per wheel, LEFT first).
+'
+' @local pLaunchL - the LEFT driver's @pinbase
+' @local pStatusL - ...@drive_u
+' @local pParamsL - ...@offset_fwd
+' @local pLaunchR - the RIGHT driver's @pinbase
+' @local pStatusR - ...@drive_u
+' @local pParamsR - ...@offset_fwd
+
+    beat(CP_LIB_STEER_QUERY)
+    pLaunchL, pStatusL, pParamsL := steering.testLeftGetAbiAddrs()
+    pLaunchR, pStatusR, pParamsR := steering.testRightGetAbiAddrs()
+    abiCog[SLOT_LEFT], abiCog[SLOT_RIGHT] := steering.testGetMotorCogs()
+    beat(CP_LIB_STEER_QUERY)
+    abiSnapshot(SLOT_LEFT, pLaunchL, pStatusL, pParamsL)
+    abiSnapshot(SLOT_RIGHT, pLaunchR, pStatusR, pParamsR)
+    bAbiCogValid[SLOT_LEFT] := TRUE
+    bAbiCogValid[SLOT_RIGHT] := TRUE
+    emitAbi(SLOT_LEFT, ABIW_SKSTART, steerLife)
+    emitAbi(SLOT_RIGHT, ABIW_SKSTART, steerLife)
+
+PRI abiDumpWheel(side) | slotIdx, pLaunch, pStatus, pParams
+' PREFLT: one wheel's runs and its motorCog through its own motor object, then BM-ABI*.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+'
+' @local slotIdx - motor slot
+' @local pLaunch - the driver's @pinbase
+' @local pStatus - ...@drive_u
+' @local pParams - ...@offset_fwd
+
+    slotIdx := side - SIDE_LEFT
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        pLaunch, pStatus, pParams := wheelR.testGetAbiAddrs()
+        abiCog[slotIdx] := wheelR.testGetMotorCog()
+    else
+        pLaunch, pStatus, pParams := wheelL.testGetAbiAddrs()
+        abiCog[slotIdx] := wheelL.testGetMotorCog()
+    beat(CP_LIB_QUERY)
+    abiSnapshot(slotIdx, pLaunch, pStatus, pParams)
+    bAbiCogValid[slotIdx] := TRUE
+    emitAbi(slotIdx, ABIW_PREFLT, slotLife[slotIdx])
+
+PRI abiSnapshot(slotIdx, pLaunch, pStatus, pParams) | rowBase
+' Copy one driver's three runs into its abiSnap row, one longmove() per run, nothing interpreted.
+'
+' @param slotIdx - motor slot
+' @param pLaunch - @pinbase
+' @param pStatus - @drive_u (fault is the long after the DRVR_STATUS_LONGS_COUNT run)
+' @param pParams - @offset_fwd
+'
+' @local rowBase - the wheel's first index in abiSnap
+
+    rowBase := slotIdx * ABI_LONGS
+    longmove(@abiSnap[rowBase], pLaunch, ABI_LAUNCH_LONGS)
+    longmove(@abiSnap[rowBase + ABI_STATUS_BASE], pStatus, ABI_STATUS_LONGS)
+    longmove(@abiSnap[rowBase + ABI_PARAMS_BASE], pParams, ABI_PARAMS_LONGS)
+
+PRI emitAbi(slotIdx, whereCode, lifeValue) | rowBase, longIdx
+' BM-ABIL, then BM-ABIS1..3 and BM-ABIP1..3, from one wheel's abiSnap row (sizes in the section's CON note).
+'
+' @param slotIdx - motor slot
+' @param whereCode - ABIW_* value
+' @param lifeValue - the lifetime the dump was taken in (steerLife or slotLife), NA when 0
+'
+' @local rowBase - the wheel's first index in abiSnap
+' @local longIdx - index within the row
+
+    rowBase := slotIdx * ABI_LONGS
+    abiHead(@"BM-ABIL", slotIdx, whereCode, lifeValue)
+    repeat longIdx from 0 to ABI_LAUNCH_LONGS - 1
+        abiRawField(tokenAt(@tokAbiName, ABI_LONGS, longIdx), abiSnap[rowBase + longIdx])
+    if bAbiCogValid[slotIdx]
+        abiRawField(@"motorCog", abiCog[slotIdx])
+    else
+        benchLog.textField(@"motorCog", @sSfNa)
+    benchLog.numField(@"st_n", wheelL.DRVR_STATUS_LONGS_COUNT, LIM_TINY)
+    benchLog.numField(@"par_n", wheelL.DRVR_PARAMS_LONGS_COUNT, LIM_TINY)
+    if bAbiCogValid[slotIdx]
+        whyField(WHY_NONE)
+    else
+        whyField(WHY_NO_PASSTHROUGH)
+    emitRecord()
+    emitAbiRun(@"BM-ABIS1", slotIdx, whereCode, lifeValue, ABI_S1_FIRST, ABI_S2_FIRST - 1)
+    emitAbiRun(@"BM-ABIS2", slotIdx, whereCode, lifeValue, ABI_S2_FIRST, ABI_S3_FIRST - 1)
+    emitAbiRun(@"BM-ABIS3", slotIdx, whereCode, lifeValue, ABI_S3_FIRST, ABI_P1_FIRST - 1)
+    emitAbiRun(@"BM-ABIP1", slotIdx, whereCode, lifeValue, ABI_P1_FIRST, ABI_P2_FIRST - 1)
+    emitAbiRun(@"BM-ABIP2", slotIdx, whereCode, lifeValue, ABI_P2_FIRST, ABI_P3_FIRST - 1)
+    emitAbiRun(@"BM-ABIP3", slotIdx, whereCode, lifeValue, ABI_P3_FIRST, ABI_LAST)
+
+PRI emitAbiRun(pTag, slotIdx, whereCode, lifeValue, firstIdx, lastIdx) | rowBase, longIdx
+' One BM-ABIS* / BM-ABIP* record: the header, then abiSnap[firstIdx .. lastIdx] of the wheel's row, raw, named.
+'
+' @param pTag - the record tag
+' @param slotIdx - motor slot
+' @param whereCode - ABIW_* value
+' @param lifeValue - the lifetime the dump was taken in, NA when 0
+' @param firstIdx - the first long, index within the row
+' @param lastIdx - the last
+'
+' @local rowBase - the wheel's first index in abiSnap
+' @local longIdx - index within the row
+
+    rowBase := slotIdx * ABI_LONGS
+    abiHead(pTag, slotIdx, whereCode, lifeValue)
+    repeat longIdx from firstIdx to lastIdx
+        abiRawField(tokenAt(@tokAbiName, ABI_LONGS, longIdx), abiSnap[rowBase + longIdx])
+    emitRecord()
+
+PRI abiHead(pTag, slotIdx, whereCode, lifeValue)
+' Begin one BM-ABI* record: tag, seq, where, motor, life.
+'
+' @param pTag - the record tag
+' @param slotIdx - motor slot
+' @param whereCode - ABIW_* value
+' @param lifeValue - the lifetime the dump was taken in, NA when 0
+
+    recBegin(pTag)
+    benchLog.tokenField(@"where", tokenAt(@tokAbiWhere, ABIW_COUNT, whereCode), TOKMAX_ABIWHERE)
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    benchLog.naNumField(@"life", lifeValue, LIM_SMALL, lifeValue > 0)
+
+PRI abiRawField(pName, rawValue)
+' Append one long as held, signed decimal and unclamped (D2). NEGX, which lineAddNum() cannot negate, prints as the
+' same decimal text.
+'
+' @param pName - the field name
+' @param rawValue - the long
+
+    if rawValue == NEGX
+        benchLog.textField(pName, @sAbiNegx)
+    else
+        benchLog.unclampedNumField(pName, rawValue)
 
 CON { --- wheel and steering wrappers: every library call is bracketed by beat(CP_LIB_*) --- }
 

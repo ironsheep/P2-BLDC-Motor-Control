@@ -3830,8 +3830,12 @@ reading:
 - Its start check passes: `healthFailed = $0000_0000, ... @probeMv = 789 784 788 788 783 787 788 783 787`.
 
 So the harnesses that fail are the ones that differ. Every one of them (dual, T0) auto-detects the board (`spin`
-forces Rev B) and builds with `-D BENCH_QUIET` (`spin` does not). **Next:** the tiers `spin-auto` and `spin-quiet`,
-each changing one of those two factors.
+forces Rev B) and builds with `-D BENCH_QUIET` (`spin` does not). **Both factors are CLEARED:** `spin-auto` and
+`spin-quiet` (`debug_260923-180445.log`, `-180517.log`) drove the right 453–454 ticks each way. So the cause is in the
+dual (and possibly T0) harness path, and in `dual-start` it shows inside `steering.start()`
+([evaluation](analyses/bench/2026-09-23/PL-120-SPIN-EVALUATION.md)). **Next:** «#3615» dumps both drivers' shared runs
+at the start check and at the preflight nudge, inside that harness, and lets `dual-fault` carry on with the wheel that
+moves. It rides on Visit 10 pass 2.
 
 **Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
 

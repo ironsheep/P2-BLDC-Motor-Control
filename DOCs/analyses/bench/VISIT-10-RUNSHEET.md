@@ -21,7 +21,7 @@ Check its power and motor connections before run 1. Run 1 then shows in its log 
 
 | Load | Every banner / build record must read |
 |---|---|
-| `dual-*` tiers | `BM-BUILD ... drv_rev,13`. Anything lower means an old tree was built: stop and report |
+| `dual-*` tiers | `BM-BANNER,...,src_rev,38,fmt,24` and `BM-BUILD ... drv_rev,13`. Anything lower means an old tree was built: stop and report |
 | `dual-start` | part `START`, `BM-SKBUILD ... no_walk,FALSE`, negative `NONE` |
 | `dual-start-phaseneg` | part `START`, `BM-SKBUILD` negative `PHASE`, a `BM-SKNEG` record before every `BM-SSTART` |
 | `dual-start-swapneg` | part `START`, `BM-SKBUILD` negative `SWAP`, a `BM-SKNEG` record before each of the last 3 `BM-SSTART` |
@@ -85,6 +85,23 @@ The last three also record `BM-SKWALK`, and the segment ends with one `BM-SKSUM`
 | **R19-DUAL-WALK-X**, per wheel | 0 of 3 walks failing: HLT_WIRING passes, both legs 6–9 ticks in opposite directions, no hall events | `l_ok`/`r_ok` FALSE | run 3 | **WALK_POWER** (10, provisional), the overshoot allowance |
 | **R19-DUAL-PACK-X** | every start reads PACK_NOT_FITTED, 0 mV, no HLT_PACK | any other reading | — | none: no sensor fitted |
 
+**The driver-state dump (PL-120, «#3615»).** Every lifetime prints `BM-ABI*` for both wheels: the launch, status and
+parameter runs the driver shares with Spin2, read raw from hub. Pre-registered, for a wheel that drives:
+
+| Field | Expected on both wheels at SKSTART | Values the `spin` runs printed |
+|---|---|---|
+| `pinbase` | 32 (left) / 16 (right) | 32 / 16 |
+| `e_stop` | 0 | — |
+| `stop_mode` | SM_FLOAT | — |
+| `duty_min` / `duty_max` | 1,600 / 27,648 | 1,600 / 27,648 |
+| `dead_gap` | 70 | 70 |
+| `probe_phase` | 0 (PRB_NONE) after the check | — |
+| `drv_state` | DCS_STOPPED | — |
+
+**Any field where the right differs from the left, other than `pinbase`, is PL-120's cause, or leads straight to it.**
+If every field matches and the right still reads no lead voltage, the cause sits in the driver cog's own registers,
+which Spin cannot read. The next build then dumps those from the driver itself.
+
 ⚠ **A wheel's walk is judged only when its partner's walk moved.** Both wheels walk at once, and the platform policy
 stops one wheel when the other cannot move. In pass 1 the left's legs came up 3 ticks against a dead right. A walk
 whose partner moved 0 ticks is recorded as partner-limited, not as a verdict.
@@ -125,7 +142,9 @@ Run 1 is this cell's control, and the report judges it from the logs.
 
 ### `dual-fault` — the fault responses (fault study §7)
 
-Unchanged from pass 1, where the preflight aborted on the dead right board and nothing ran. Every fault is forced
+In pass 1 the preflight found the right wheel not moving and ended the run. **Now a wheel that fails the preflight is
+retired for the run, and every trial of the other wheel still runs.** The retired wheel's cells print NOMEAS, and so
+does FLTPLAT, which needs both wheels. Each preflight also prints the `BM-ABI*` dump for the wheel it nudged. Every fault is forced
 through `testForceFault()`, each trial in its own driver lifetime. Speeds are 40, 80 and 120 × 10⁶, all negative.
 
 | Cell | Judged by | Criterion | Fails if | Control |
