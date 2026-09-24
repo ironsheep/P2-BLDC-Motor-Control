@@ -105,6 +105,43 @@
 ''               START, so a wheel not yet spun read as at rest. Now a hold row's bound runs from the
 ''               first displacement, and a coast row can end at rest only after its first hall tick.
 ''               Before that, only DONE, ABORT or the 120 s T0_24_HAND_CAP_MS ends a row.
+''               24 Sep 2026 -- task 3617, SRC_REV 13 (PL-123, VISIT-10-PASS2-EVALUATION.md SS3.6). Four
+''               instrument fixes to T0-24, one per PL-123 item:
+''               (1) Each hold row re-arms the hold before it runs (bT0sRearmHold(): SM_FLOAT for
+''               T0_24_REARM_MS, then SM_BRAKE again), and is set up only when getHoldStatus() then reads
+''               HS_HOLDING at displacement 0 with no fault signal. The watch's first sample must read the
+''               same, or the row's cell is NOMEAS. New record T0-24,row,N,rearm; hold_result gains
+''               start_hs, start_disp and start_held.
+''               (2) The half-rate time is replaced by a speed-invariant reading: band_ticks, the hall ticks
+''               the wheel carries from T0_24_BAND_RATE (120 ticks/s) to rest. The band is fixed and the same
+''               for every row, so the reading does not depend on how fast the wheel was spun or driven. A
+''               row released below the band is NOMEAS (in_band FALSE). The limits are re-derived from the
+''               logs on record (CON { T0-24 sign-off limits }). The numeric cells now print units TICKS,
+''               and the seven stop cells' criterion tokens are renamed to say so. Every six-tick span now covers six tick
+''               intervals, one electrical cycle. Up to SRC_REV 12, t0sProbe() and t0sMeasureSteadyRate()
+''               covered five, so their release_span_ms values in older logs are five intervals. The coast
+''               row no longer reads the panel's input or redraws it while the wheel is turning. Each such
+''               read stops the hall poll for about 30 ms, and at speed that dropped ticks. Records: the
+''               coast record and the row record replace half_ms with band_ticks, band_ms and in_band.
+''               The coast record also gains band_span_ms and band_entered, and at_rest gains band_entered.
+''               (3) The fault rows force the fault with testForceFault() (DRIVER_REV 12+) under FR_SHIPPED,
+''               not the offset shift, which plugged the motor instead (PL-119, pass 2 aborted at 10.4 A).
+''               The provoke record changes shape. The rows end with testResetFault(), because
+''               DCS_FAULTED is a latch since DRIVER_REV 14.
+''               (4) The panel names the wheel, RIGHT WHEEL (P16 BOARD), from the first screen on. The
+''               window title carries it, and so does the header art (tools/gen_t0stop_assets.py
+''               HEADER_TEXT).
+''               Same task, the arbiter's ruling on the first round (P7: nothing silent):
+''               The art is regenerated. The fault row under SM_BRAKE is labelled "FAULT, BRAKE MODE",
+''               since "hold" means only the hold at rest. The spin rows ask for a HARD spin that must
+''               pass the measuring speed. A spin row whose try is not measured shows a TOO SLOW cell
+''               that keeps the row's prediction, and it is tried again, up to T0_24_SPIN_TRIES (3)
+''               (t0sRunSpinRow(), record T0-24,row,N,try). Only then, or when DONE / ABORT ended a try,
+''               is it NOMEAS, on a screen that says why (T0_24_ACT_SPIN_NOMEAS). The E-STOP row is spun
+''               FREE, and t0sProbe() applies emergencyCutoff() at the band-entry tick: a hand cannot
+''               spin a shorted wheel into the band (pass 2 reached 22.5 ticks/s). It counts only when
+''               the short was applied there and latched. The coast record gains shorted.
+''               t0sBandTick() enters the band only after a release above it.
 ''
 '' =================================================================================================
 
@@ -209,7 +246,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 12                                             ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 13                                             ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -399,9 +436,9 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_ROW_HOLDSLIP  = 1                                     ' a low ceiling: a push should beat it and slip to the short
     T0_24_ROW_HOLDLIMIT = 2                                     ' a sustained push at the ceiling: should hand off on the timer
     T0_24_ROW_COAST     = 3                                     ' holdAtStop(FALSE) at rest: BR_COAST
-    T0_24_ROW_ESTOP     = 4                                     ' emergencyCutoff(): BR_SHORT
-    T0_24_ROW_FLTCOAST  = 5                                     ' a provoked fault under SM_FLOAT: BR_COAST
-    T0_24_ROW_FLTHOLD   = 6                                     ' a provoked fault under SM_BRAKE: BR_SHORT
+    T0_24_ROW_ESTOP     = 4                                     ' emergencyCutoff() on the coasting wheel at the band: BR_SHORT
+    T0_24_ROW_FLTCOAST  = 5                                     ' a forced fault under SM_FLOAT: BR_COAST
+    T0_24_ROW_FLTHOLD   = 6                                     ' a forced fault under SM_BRAKE: BR_SHORT
     T0_24_ROW_COGSTOP   = 7                                     ' stop(): the pins released -- the free yardstick, ALWAYS LAST
 
 ' The action cell each phase shows, indexing t0s_actions.bmp (tools/gen_t0stop_assets.py)
@@ -409,7 +446,7 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_ACT_SETUP       = 1
     T0_24_ACT_POWERED     = 2
     T0_24_ACT_SPIN_FREE   = 3                                   ' COAST, COGSTOP: predicted to coast -- the FEEL cue names it
-    T0_24_ACT_SPIN_BRAKE  = 4                                   ' ESTOP: predicted to resist -- a distinct FEEL cue (rule 10.3)
+    T0_24_ACT_SPIN_BRAKE  = 4                                   ' ESTOP: the program shorts it as it slows -- a distinct cue (rule 10.3)
     T0_24_ACT_COASTING    = 5
     T0_24_ACT_ROWDONE     = 6
     T0_24_ACT_ALLDONE     = 7
@@ -418,6 +455,15 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_ACT_HOLDHOLD    = 10                                  ' HOLD-LIMIT: sustained push at the ceiling
     T0_24_ACT_NOTSTART    = 11                                  ' start() never came up ready: every cell is NOMEAS
     T0_24_ACT_ROWSKIPPED  = 12                                  ' this row's state was never reached
+' task 3617: a spin row released below the measuring speed says so and is tried again, up to
+' T0_24_SPIN_TRIES in all. Each retry cell keeps its row's prediction (free coast, or the program's short).
+    T0_24_ACT_RETRY_FREE_2  = 13                                ' too slow: try 2 of 3, COAST / COGSTOP
+    T0_24_ACT_RETRY_FREE_3  = 14                                ' too slow: try 3 of 3, COAST / COGSTOP
+    T0_24_ACT_RETRY_BRAKE_2 = 15                                ' too slow: try 2 of 3, ESTOP
+    T0_24_ACT_RETRY_BRAKE_3 = 16                                ' too slow: try 3 of 3, ESTOP
+    T0_24_ACT_SPIN_NOMEAS   = 17                                ' never passed the measuring speed: the cell is NOMEAS
+    T0_24_SPIN_TRIES      = 3                                   ' baked into the retry cells' text -- regenerate the art
+                                                                 ' (tools/gen_t0stop_assets.py SPIN_TRIES) if this changes
     T0_24_ROW_ALLDONE     = T0_24_ROW_COUNT                     ' the row layer's cell after the eight, shown once they are done
 
 ' Titled buttons (PLOT-DISPLAY-RULES.md rule 10; doctrine overlay P7): every operator action is one
@@ -450,34 +496,67 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_KEY_DONE_LC   = "d"
     T0_24_KEY_ABORT     = " "                                   ' duplicates ABORT
     T0_24_HAND_CAP_MS   = 120_000                               ' bound on a hand-timed row: nobody ending it still ends it
-    T0_24_COAST_CAP_MS  = 20_000                                ' bound on the after-release phase
     T0_24_REST_QUIET_MS = 400                                   ' no hall transition for this long = the wheel is at rest
-    T0_24_TICK_RING     = 6                                     ' tick timestamps kept: one electrical cycle of hall ticks,
-                                                                 ' so the rate reading spans a whole commutation cycle and
-                                                                 ' cogging cannot bias one tick's interval
-    T0_24_HALF_FACTOR   = 2                                     ' "half the release rate" = twice the release interval
+    T0_24_TICK_RING     = 6                                     ' tick timestamps kept: one electrical cycle of hall ticks.
+                                                                 ' Every span is read BEFORE the new tick overwrites the
+                                                                 ' oldest slot, so it covers SIX intervals, a whole
+                                                                 ' commutation cycle, and the hall spacing cannot bias it
+                                                                 ' (task 3617: SRC_REV 12's t0sProbe() read after writing,
+                                                                 ' and so spanned five)
+    T0_24_IO_QUIET_MS   = T0_24_REST_QUIET_MS / 2               ' a coast row reads the panel's input and redraws it only
+                                                                 ' after this long with no hall tick. MEASURED: one
+                                                                 ' PC_KEY + PC_MOUSE read stops the poll ~30 ms (the arm
+                                                                 ' wait's 50 ms loop repeats every 80 ms,
+                                                                 ' debug_260923-193439.log:36-60). At 100+ ticks/s that
+                                                                 ' merges hall ticks, which reads as the wheel slowing.
+                                                                 ' 200 ms between ticks is under 5 ticks/s: at rest
 ' PL-115 (rebuilt again after arbiter review): the release is read from the HALL SIGNAL as the
 ' RATE PEAK, not from a fixed tick-to-tick gap threshold and not from a keypress. See t0sProbe()'s
 ' doc comment for why a fixed gap threshold is wrong -- it lands the release near the END of a
 ' free coast, not its start.
 
-' The provoked fault (rows FLTCOAST/FLTHOLD) is R17.5's COMPUTED provocation, ported to one wheel: drive to
-' speed, read this wheel's own position error, and shift both commutation offsets by exactly what
-' moves that error onto the driver's fault test. Same power as the dual harness's own provocation,
-' so this tier's post-fault readings and R17-DUAL-FLTSTOP-C's compare.
+' THE STOP READING (task 3617, PL-123 item 2): band_ticks, the hall ticks the wheel carries after its rate
+' falls to T0_24_BAND_RATE, to rest. The band is fixed and the same on every row, and a coast row's
+' release must be above it (in_band), so the reading does not depend on how fast the wheel was spun.
+' The band is entered at the first tick after the release whose six-interval span is
+' T0_24_BAND_SPAN_MS or more. A wheel that stops within one span of a release above the band never
+' shows that span; there the reading is every tick after the release, an upper bound. Only a
+' braked wheel does this: a coast carries at least 9 ticks past the band. The limits and their
+' derivation are in CON { T0-24 sign-off limits }.
+'
+' THE E-STOP ROW IS SHORTED BY THE PROGRAM, AT THE BAND (task 3617, arbiter ruling on PL-123). A
+' shorted wheel resists a hand far too hard to spin into the band. At pass 2 the hand reached 22.5
+' ticks/s (debug_260923-193439.log:2081). So the e-stop row is set up coasting (holdAtStop(FALSE)),
+' he spins it hard and lets go, and t0sProbe() calls emergencyCutoff() at the band-entry tick, the
+' same tick band_ticks counts from. The reading is therefore the SHORT's ticks from 120 ticks/s,
+' comparable with every other row. If the e-stop did not short, the wheel coasts on for 9 or more
+' ticks and RESTSHORT fails: the negative can still fail. A row where the e-stop was never applied,
+' or did not latch, is not a reading of the short. It is not measured. The other brake-state rows
+' need no such change: FLTHOLD is driven into the band by the motor itself, and the hold rows are
+' pushes judged on the hold's state, not on band_ticks.
+    T0_24_BAND_RATE     = 120                                   ' ticks/s: the rate the reading is counted from
+    T0_24_BAND_SPAN_MS  = T0_24_TICK_RING * 1_000 / T0_24_BAND_RATE ' 50 ms: six intervals at T0_24_BAND_RATE
+
+' The forced fault (rows FLTCOAST/FLTHOLD, task 3617, PL-123 item 3): drive to speed, then testForceFault()
+' under FR_SHIPPED. The driver faults on its next DRIVEN frame, at its own fault test, and takes the stop
+' mode's bridge at once: SM_FLOAT coasts, SM_BRAKE shorts. That bridge holds until a stop or a drive is
+' commanded (DRIVER_REV 14+). The offset-shift provocation this replaces never faulted in T0-24. At
+' Visit 10 pass 2 it plugged the motor into the 10 A abort on both rows (debug_260923-193439.log:2194,
+' :2250; PL-119). Same power as the dual harness, so this tier's post-fault readings and its X-2/X-3
+' compare.
     T0_24_FLT_POWER     = 50                                    ' driveAtPower(50), the dual harness's FLTAPI_POWER
     T0_24_SPEED_MS      = 4_000                                 ' AT_SPEED bound (the dual harness's STEADY_TIMEOUT_MS)
-    T0_24_SETTLE_MS     = 1_000                                 ' at speed before the error reads
+    T0_24_SETTLE_MS     = 1_000                                 ' at speed before the fault is forced
     T0_24_SAMPLE_MS     = 5                                     ' poll cadence of every bounded wait here
-    T0_24_ERR_SAMPLES   = 16                                    ' err reads averaged at speed before the shift
-    T0_24_NO_FAULT_MS   = 2_000                                 ' wait for the provoked fault; none by then is NO_FAULT
+' T0_24_FORCE_WAIT_MS: testForceFault() returns once the front cog has taken the request (one front pass,
+'  1 ms). The driver faults on its next driven pass (0.52 ms), and bT0sWaitDriver() reads every
+'  T0_24_SAMPLE_MS, so a forced fault shows by the second read, about 7 ms. 15 ms is twice that (the dual
+'  harness's FR_PROVOKE_MS rule, where 2 ms reads give 8 ms). No fault by then is a failure of the hook,
+'  and the wheel is stopped.
+    T0_24_FORCE_WAIT_MS = 15
     T0_24_UNTIL_SPEED   = 0                                     ' the two driver states a powered window ever waits on
     T0_24_UNTIL_FAULT   = 1
     T0_24_REST_WAIT_MS  = 30_000                                ' bound on the post-fault coast to rest
-    T0_24_ERR_PER_TURN  = 256                                   ' the driver's err: one electrical cycle, signed 8-bit
-    T0_24_ERR_MASK      = T0_24_ERR_PER_TURN - 1
-    T0_24_ERR_TARGET    = 128                                   ' = -128: the wrap point, 3 units past the |err| >= 125 test
-    T0_24_DEG_PER_TURN  = 360
     T0_24_ABORT_AMPS    = 100_000                               ' 10 A in getCurrent()'s 0.1 mA units: the powered window's
                                                                  ' absolute abort, the same ceiling the dual harness aborts on
 
@@ -500,25 +579,71 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_HOLD_SLIP_WATCH_MS  = 3_000                            ' bound on HOLD-SLIP reaching HS_SLIPPED or DCS_FAULTED
     T0_24_HOLD_LIMIT_TEST_MS  = 2_000                            ' HOLD-LIMIT: the time limit this row sets and watches for
     T0_24_HOLD_LIMIT_WATCH_MS = 7_000                            ' bound: the limit itself plus margin for a late hand-off
+' Re-arming the hold (task 3617, PL-123 item 1). The front cog arms a new hold only after a pass that sees
+' the motor off rest or the stop mode off SM_BRAKE (frontHold()). A stopMotor() at rest is neither, so at
+' Visit 10 pass 2 rows 2 and 3 began with row 1's slip still in force (disp_first_ms,0 ... slip_first_ms,0,
+' debug_260923-193439.log:1329, :1921). Each hold row therefore selects SM_FLOAT for T0_24_REARM_MS
+' first. The front cog runs once per ms, so 20 ms is 20 passes to read HS_OFF. Then SM_BRAKE again arms
+' a new hold where the wheel now is. When the stop mode changes at rest, the driver re-seeds the field
+' from the halls (restBridge, checkstop, initAngleFmHall). So the re-armed hold does not pull the wheel
+' back to row 1's stop angle.
+    T0_24_REARM_MS            = 20
 
 CON { T0-24 sign-off limits -- each with its provenance }
 
-' The discriminating reading is NOT how far the wheel carries on: that scales with however hard
-' Stephen pushed. It is how long the wheel takes to fall to HALF the rate it had when he let go.
-' A shorted winding brakes with a torque proportional to speed, so that time is a property of the
-' bridge state and not of his push; a free wheel decays on bearing and cogging drag alone.
-' DERIVED from PL-56's Visit 2 measurement (STOP-STATE-DESIGN.md SS2): emergencyCutoff() -- the
-' SHORT state -- stopped a half-speed wheel within ONE tick, where stop() coasted 38-48 ticks.
-' At a hand's rate that puts SHORT's half-rate time at a few tick intervals (tens of ms) and a
-' free wheel's at a few hundred; the two limits below leave a 90 ms dead band between them, so
-' neither verdict can be reached by the other state's reading.
-    SF_FREE_HALF_MS     = 150                                   ' DERIVED -- at or above this, the wheel is freewheeling
-    SF_BRAKE_HALF_MS    = 60                                    ' DERIVED -- at or below this, the wheel is being braked
-    SF_MODE_GAP_MS      = 100                                   ' DERIVED -- the gap two stop modes must differ by, the shape
-                                                                 ' of the dual harness's own FLTSTOP_GAP_TICKS
+' THE READING IS band_ticks: the hall ticks from T0_24_BAND_RATE (120 ticks/s) to rest (task 3617,
+' PL-123 item 2). It REPLACES the half-rate time, which depended on the spin. A free wheel slows at a
+' nearly constant rate (Coulomb drag), so the time to half its speed grows with the speed. At Visit 10
+' pass 2 the half-rate time ranged 100-472 ms across rows (VISIT-10-PASS2-EVALUATION.md SS3.6), and
+' FREEREF failed on a healthy wheel. A fixed band removes the spin: the wheel is counted only from 120
+' ticks/s down, whatever it was released at. The count scales as 1/deceleration: 120^2 / (2 x decel)
+' for a constant-rate coast. A short brakes with a torque that grows with speed, and stops within a
+' few ticks.
+'
+' DERIVED FROM EVERY STOP ON RECORD with a known rate, a tick count and a time to rest. Deceleration is
+' r0 / t_rest and r0^2 / (2 x ticks), in ticks/s^2:
+'  COAST (BR_COAST):
+'   debug_260923-192848.log BM-FRSTAT seq 341   LEFT  X-3  pre_x10 1_064, 312 ms, 14 ticks  ->  341 / 404
+'   debug_260923-192848.log BM-FRSTAT seq 880   LEFT  X-3  pre_x10 2_128, 536 ms, 54 ticks  ->  397 / 419
+'   debug_260923-192848.log BM-FRSTAT seq 1_434 LEFT  X-3  pre_x10 3_212, 703 ms, 115 ticks ->  457 / 449
+'   debug_260923-192848.log BM-FRSTAT seq 3_587 RIGHT X-3  pre_x10 1_064, 183 ms, 12 ticks  ->  581 / 472
+'   debug_260923-193439.log:2003  T0-24 row 4 RIGHT at rest, span 54 ms / 5 intervals = 92.6 ticks/s,
+'                                  220 ms, 12 ticks                                          ->  421 / 357
+'   debug_260923-193439.log:2342  T0-24 row 8 RIGHT pins released, span 21 ms / 5 = 238 ticks/s,
+'                                  1_298 ms, 105 ticks (likely undercounted, T0_24_IO_QUIET_MS) ->  183 / 270
+'  The most deceleration on record is 581 ticks/s^2, on the RIGHT wheel, the wheel this tier tests.
+'  SHORT (BR_SHORT), ticks from the fault to rest:
+'   debug_260923-192848.log BM-FRSTAT seq 559 / 1_098 / 1_693  LEFT  X-2 from 106 / 213 / 321 ticks/s -> 1 / 1 / 3
+'   debug_260923-192848.log BM-FRSTAT seq 5_141                RIGHT X-2 from 321 ticks/s          -> 2
+'   PL-56 (Visit 2, STOP-STATE-DESIGN.md SS2): emergencyCutoff() stopped a half-speed wheel within 1 tick
+'  The most a short carried on record is 3 ticks, from 106 to 321 ticks/s, all above the band.
+'  X-2 counts from the fault itself. The fault rows here count from the first 5 ms sample that reads
+'  it (bT0sWaitDriver()), about one tick at 220 ticks/s later, so a short reads at most X-2's count.
+' PREDICTED band_ticks for a coast: the band is entered when a six-interval span reaches 50 ms. Under a
+'  constant deceleration a, a span's mean rate is the rate at its midpoint, 25 ms before the entry
+'  tick. So the rate at entry is 120 - 0.025 a, and the ticks to rest are (120 - 0.025 a)^2 / (2 a).
+'  At a = 581: 105.5^2 / 1_162 = 9.6, counted as 9. At a = 183: 36. A coast reads 9 to 36 and a short
+'  reads 1 to 3. The two limits below sit on either side of a dead band (5-6 ticks), so no reading of
+'  one state can pass the other's cell.
+' THE BAND IS 120 ticks/s BECAUSE the coast must carry enough ticks to be told from a short. At 100
+'  ticks/s the worst coast carries 5.9 ticks (count 5) against a short's 3, with no margin either
+'  side. The cost: a spin released below 120 ticks/s (1.3 rev/s) cannot be read. Pass 2's row 4
+'  (92.6) would not have been. Such a row says so and is tried again, up to T0_24_SPIN_TRIES, before
+'  it is NOMEAS. Row 8 (238) and the driven fault rows clear the band (about 220 ticks/s at power 50,
+'  span 22 ms / 5 intervals, debug_260923-193439.log:2195). The e-stop row cannot be spun by hand
+'  against the short (pass 2 reached 22.5 ticks/s, :2081). So he spins it FREE, and the program
+'  applies emergencyCutoff() at the band entry (T0_24_ROW_ESTOP, t0sProbe()).
+    SF_COAST_MIN_TICKS  = 7                                     ' DERIVED -- at or above this the wheel coasted: 2 under the
+                                                                 ' least coast predicted (9), 4 over the most a short carried (3)
+    SF_BRAKE_MAX_TICKS  = 4                                     ' DERIVED -- at or below this the wheel was braked: 1 over the
+                                                                 ' most a short carried (3), 5 under the least coast (9)
+    SF_MODE_GAP_TICKS   = SF_COAST_MIN_TICKS - SF_BRAKE_MAX_TICKS ' DERIVED -- 3: two rows on opposite sides of the dead band
+                                                                 ' differ by at least this. Predicted: at least 9 - 3 = 6
+    SF_BAND_TICKS_HI    = 1_000                                 ' no upper criterion: the least deceleration on record (183)
+                                                                 ' predicts 36 ticks; 1_000 only fills the record's hi field
     SF_HAND_MIN_TICKS   = 10                                    ' DERIVED -- the row is judged only when the wheel actually
-                                                                 ' moved: 10 hall ticks is 40 degrees of wheel, and the tick
-                                                                 ' ring needs its six before a release rate exists
+                                                                 ' moved: 10 hall ticks is 40 degrees of wheel, and a
+                                                                 ' six-interval span needs seven ticks before a release rate exists
 
 DAT { owning task numbers, printed in each cell's records }
 
@@ -533,21 +658,22 @@ sCellHoldLimit  BYTE    "R17-T0-HOLDLIMIT", 0                   ' row 3: a susta
 sCellRestCoast  BYTE    "R17-T0-RESTCOAST", 0                   ' row 4: holdAtStop(FALSE) at rest really coasts
 sCellRestShort  BYTE    "R17-T0-RESTSHORT", 0                   ' row 5: the e-stop brakes -- and so did the old float
 sCellStopGap    BYTE    "R17-T0-STOPGAP", 0                     ' rows 4 and 5 are different states, by a margin
-sCellFltCoast   BYTE    "R17-T0-FLTCOAST", 0                    ' row: a fault under SM_FLOAT coasts
-sCellFltShort   BYTE    "R17-T0-FLTSHORT", 0                    ' row: a fault under SM_BRAKE brakes
+sCellFltCoast   BYTE    "R17-T0-FLTCOAST", 0                    ' row: a forced fault under SM_FLOAT coasts
+sCellFltShort   BYTE    "R17-T0-FLTSHORT", 0                    ' row: a forced fault under SM_BRAKE brakes
 sCellFltGap     BYTE    "R17-T0-FLTGAP", 0                      ' the two fault rows are different states, by a margin
 sCellFreeRef    BYTE    "R17-T0-FREEREF", 0                     ' last row: the released pins, this run's free yardstick
 
 sCritHoldRise   BYTE    "DUTY_RISES_TO_CEILING", 0
 sCritHoldSlip   BYTE    "SLIPS_WITHIN_2_TICKS", 0
 sCritHoldLimit  BYTE    "LIMITS_AFTER_SUSTAINED_PUSH", 0
-sCritRestCoast  BYTE    "COAST_HALF_MS", 0
-sCritRestShort  BYTE    "SHORT_HALF_MS", 0
-sCritStopGap    BYTE    "COAST_LESS_SHORT_MS", 0
-sCritFltCoast   BYTE    "FLT_COAST_HALF_AND_FAULTED", 0
-sCritFltShort   BYTE    "FLT_SHORT_HALF_AND_FAULTED", 0
-sCritFltGap     BYTE    "FLTCOAST_LESS_FLTHOLD_MS", 0
-sCritFreeRef    BYTE    "FREE_HALF_MS", 0
+' task 3617 (PL-123 item 2): the stop cells judge band_ticks, not the half-rate time, so their tokens say so
+sCritRestCoast  BYTE    "COAST_BAND_TICKS", 0
+sCritRestShort  BYTE    "SHORT_BAND_TICKS", 0
+sCritStopGap    BYTE    "COAST_LESS_SHORT_TICKS", 0
+sCritFltCoast   BYTE    "FLT_COAST_BAND_AND_FAULTED", 0
+sCritFltShort   BYTE    "FLT_SHORT_BAND_AND_FAULTED", 0
+sCritFltGap     BYTE    "FLTCOAST_LESS_FLTHOLD_TICKS", 0
+sCritFreeRef    BYTE    "FREE_BAND_TICKS", 0
 
 DAT { T0-12 hand-copy of the driver's hall-position-delta table (PL-39) }
 
@@ -636,9 +762,17 @@ VAR { T0-24 per-row readings (-D T0_STOPMODE only) }
     LONG    t0sHandTicks[T0_24_ROW_COUNT]                       ' hall ticks while his hand was on the wheel
     LONG    t0sAfterTicks[T0_24_ROW_COUNT]                      ' hall ticks after he let go
     LONG    t0sAfterMs[T0_24_ROW_COUNT]                         ' how long those took
-    LONG    t0sHalfMs[T0_24_ROW_COUNT]                          ' ms from the release to half the release rate: the criterion
-    LONG    bT0sRowMeasured[T0_24_ROW_COUNT]                    ' TRUE when the row's state was reached AND he turned the wheel
+    LONG    t0sBandTicks[T0_24_ROW_COUNT]                       ' ticks from T0_24_BAND_RATE to rest: the criterion (task 3617)
+    LONG    t0sBandMs[T0_24_ROW_COUNT]                          ' ms those took (printed, not judged)
+    LONG    bT0sInBand[T0_24_ROW_COUNT]                         ' TRUE when the release was above T0_24_BAND_RATE
+    LONG    bT0sRowMeasured[T0_24_ROW_COUNT]                    ' TRUE when the row's state was reached AND its release was in band
     LONG    bT0sStillFaulted[T0_24_ROW_COUNT]                   ' rows FLTCOAST/FLTHOLD: still FAULTED when the row ended
+
+' The band entry of the coast being measured, shared by t0sProbe() and t0sCoastDecay() through
+' t0sBandReset(), t0sBandTick() and t0sBandResult(), so every row's reading is one computation.
+    LONG    bT0sBandEntered                                     ' TRUE once a span after the release reached T0_24_BAND_SPAN_MS
+    LONG    t0sBandEntryTick                                    ' the tick count at that tick
+    LONG    t0sBandEntryMs                                      ' getms() at that tick
 
 ' Hold rows (task 3608): one outcome per row, judged directly from the driver's own state
 ' transitions -- never from how hard or how long he pushed.
@@ -2278,10 +2412,14 @@ PRI testT0_24() | seqPos, rowIdx, startResult, bReady
 '   HOLDSLIP    pushed past a low ceiling             predicted HS_SLIPPED, a hand-off to the short
 '   HOLDLIMIT   a sustained push at the ceiling       predicted HS_LIMITED after the time limit
 '   COAST       holdAtStop(FALSE) + stopMotor()      predicted BR_COAST, a freewheel
-'   ESTOP       emergencyCutoff()                    predicted BR_SHORT, a dynamic brake
-'   FLTCOAST    a provoked fault under SM_FLOAT       predicted BR_COAST
-'   FLTHOLD     a provoked fault under SM_BRAKE       predicted BR_SHORT
+'   ESTOP       spun free; the program applies       predicted BR_SHORT, a dynamic brake
+'               emergencyCutoff() at the band entry  (task 3617: a hand cannot spin a short into the band)
+'   FLTCOAST    a forced fault under SM_FLOAT         predicted BR_COAST
+'   FLTHOLD     a forced fault under SM_BRAKE         predicted BR_SHORT
 '   COGSTOP     stop()                                the pins released: the free yardstick, ALWAYS LAST
+' Each hold row re-arms the hold first and runs only from HS_HOLDING at displacement 0 (PL-123 item 1).
+' Every stop row is read as band_ticks, the ticks from T0_24_BAND_RATE to rest (PL-123 item 2). A spin
+' row released below the band says so on the panel and is tried again, up to T0_24_SPIN_TRIES.
 ' COGSTOP is always last because stop() ends the driver cog; FLTCOAST/FLTHOLD are the only rows
 ' that drive under power. -D T0_24_FLT_FIRST (PL-116's discriminator) runs FLTCOAST/FLTHOLD ahead
 ' of ESTOP: if they then reach AT_SPEED and fault as designed, the e-stop clear path is implicated
@@ -2304,6 +2442,9 @@ PRI testT0_24() | seqPos, rowIdx, startResult, bReady
 '
 ' FREEREF IS READ FIRST (INS-14): t0sEmitCells() prints the free-yardstick cell before any other,
 ' so the log shows the instrument proved it can report a coast before any other cell is trusted.
+'
+' THE WHEEL IS NAMED ON EVERY SCREEN (PL-123 item 4): the panel window's title carries it from the
+' first frame on, because the header art (t0s_bg.bmp) does not.
 '
 ' @local seqPos - position in THIS run's execution order, 0-based
 ' @local rowIdx - the row at that position, T0_24_ROW_*
@@ -2342,7 +2483,7 @@ PRI testT0_24() | seqPos, rowIdx, startResult, bReady
     motor.getError()                                            '  and it is the only release on the not-ready path
     debug("T0-24,end")
 
-PRI t0sRunRow(rowIdx, seqNum) | actionIdx, handTicks, afterTicks, afterMs, halfMs, releaseSpan, protCode, bSetUp
+PRI t0sRunRow(rowIdx, seqNum) | releaseSpan, protCode, bSetUp
 ' Run one row end to end: announce it, wait to be armed, build the state, measure it, and print
 ' the row's record. Nothing here judges: t0sEmitCells() does that once, at the end, because three
 ' of the cells compare one row with another.
@@ -2351,12 +2492,7 @@ PRI t0sRunRow(rowIdx, seqNum) | actionIdx, handTicks, afterTicks, afterMs, halfM
 ' @param seqNum - this run's 1-based position -- what the panel, the log AND the runner banner
 '                 all call this row (PLOT-DISPLAY-RULES.md rule 10: one numbering)
 '
-' @local actionIdx - the action cell this row asks for
-' @local handTicks - hall ticks while his hand was on the wheel (0 for the hold-mechanism rows)
-' @local afterTicks - hall ticks after release
-' @local afterMs - how long those took
-' @local halfMs - ms from the release to half the release rate: this row's criterion
-' @local releaseSpan - the six-tick span at release, ms; 0 when there was no release rate
+' @local releaseSpan - the spin rows' six-interval span at release, ms; 0 when there was no release rate
 ' @local protCode - getProtectiveStop()'s code, read once for the row's record
 ' @local bSetUp - TRUE when the row's stop state was actually reached
 
@@ -2368,87 +2504,153 @@ PRI t0sRunRow(rowIdx, seqNum) | actionIdx, handTicks, afterTicks, afterMs, halfM
         t0sDrawPanel(rowIdx, T0_24_ACT_POWERED, seqNum, 0, 0, 0) ' the panel says the wheel is about to spin BEFORE it does,
     else                                                        '  and says so for as long as it is spinning (overlay P1)
         t0sDrawPanel(rowIdx, T0_24_ACT_SETUP, seqNum, 0, 0, 0)
-    bSetUp := bT0sSetUpRow(rowIdx)
+    bSetUp := bT0sSetUpRow(rowIdx, seqNum)
     if bSetUp
         case rowIdx
             T0_24_ROW_HOLDRISE, T0_24_ROW_HOLDSLIP, T0_24_ROW_HOLDLIMIT:
                 t0sRunHoldRow(rowIdx, seqNum)                   ' writes its own bT0sHold*[] verdicts and log lines
             T0_24_ROW_FLTCOAST, T0_24_ROW_FLTHOLD:
                 ' bT0sSetUpRow() already ran bT0sProvoke(), which measured this row's own coast
-                ' (t0sMeasureFaultCoast()) and wrote t0s*[rowIdx] and bT0sRowMeasured[rowIdx] --
+                ' (t0sCoastDecay()) and wrote t0s*[rowIdx] and bT0sRowMeasured[rowIdx] --
                 ' a hand-driven t0sProbe() here would just find an already-stopped wheel (the
                 ' fault's own coast, not a turn), which is why it is not called for these two rows.
-            other:
-                ' PLOT-DISPLAY-RULES.md rule 10.3: the panel names what he should FEEL, not just
-                ' what to do -- ESTOP predicts a growing resistance, COAST and COGSTOP both predict
-                ' a free coast.
-                if rowIdx == T0_24_ROW_ESTOP                    ' if/else, never `? :` -- PL-29, PL-76
-                    actionIdx := T0_24_ACT_SPIN_BRAKE
-                else                                             ' T0_24_ROW_COAST, T0_24_ROW_COGSTOP
-                    actionIdx := T0_24_ACT_SPIN_FREE
-                handTicks, afterTicks, afterMs, halfMs, releaseSpan := t0sProbe(rowIdx, seqNum, actionIdx)
-                t0sHandTicks[rowIdx] := handTicks
-                t0sAfterTicks[rowIdx] := afterTicks
-                t0sAfterMs[rowIdx] := afterMs
-                t0sHalfMs[rowIdx] := halfMs
-                bT0sRowMeasured[rowIdx] := (handTicks >= SF_HAND_MIN_TICKS) and (releaseSpan > 0)
+            other:                                               ' COAST, ESTOP, COGSTOP: the spin rows
+                releaseSpan := t0sRunSpinRow(rowIdx, seqNum)    ' writes t0s*[rowIdx]; retries a spin below the band
     else
         bT0sRowMeasured[rowIdx] := FALSE
+        case rowIdx                                             ' a hold row that never ran has no verdict (PL-123 item 1)
+            T0_24_ROW_HOLDRISE:  bT0sHoldRiseMeasured := FALSE
+            T0_24_ROW_HOLDSLIP:  bT0sHoldSlipMeasured := FALSE
+            T0_24_ROW_HOLDLIMIT: bT0sHoldLimitMeasured := FALSE
     protCode := motor.getProtectiveStop()
     if (rowIdx <> T0_24_ROW_HOLDRISE) and (rowIdx <> T0_24_ROW_HOLDSLIP) and (rowIdx <> T0_24_ROW_HOLDLIMIT)
-        debug("T0-24,row,", udec_(seqNum), ",set_up,", zstr_(bSetUp ? @"TRUE" : @"FALSE"), ",hand_ticks,", udec_(t0sHandTicks[rowIdx]), ",after_ticks,", udec_(t0sAfterTicks[rowIdx]), ",after_ms,", udec_(t0sAfterMs[rowIdx]), ",half_ms,", udec_(t0sHalfMs[rowIdx]), ",release_span_ms,", udec_(releaseSpan), ",still_faulted,", zstr_(bT0sStillFaulted[rowIdx] ? @"TRUE" : @"FALSE"), ",protective,", sdec_(protCode), ",measured,", zstr_(bT0sRowMeasured[rowIdx] ? @"TRUE" : @"FALSE"))
+        debug("T0-24,row,", udec_(seqNum), ",set_up,", zstr_(bSetUp ? @"TRUE" : @"FALSE"), ",hand_ticks,", udec_(t0sHandTicks[rowIdx]), ",after_ticks,", udec_(t0sAfterTicks[rowIdx]), ",after_ms,", udec_(t0sAfterMs[rowIdx]), ",band_ticks,", udec_(t0sBandTicks[rowIdx]), ",band_ms,", udec_(t0sBandMs[rowIdx]), ",in_band,", zstr_(bT0sInBand[rowIdx] ? @"TRUE" : @"FALSE"), ",release_span_ms,", udec_(releaseSpan), ",still_faulted,", zstr_(bT0sStillFaulted[rowIdx] ? @"TRUE" : @"FALSE"), ",protective,", sdec_(protCode), ",measured,", zstr_(bT0sRowMeasured[rowIdx] ? @"TRUE" : @"FALSE"))
     else
         debug("T0-24,row,", udec_(seqNum), ",set_up,", zstr_(bSetUp ? @"TRUE" : @"FALSE"), ",protective,", sdec_(protCode))
     t0sTearDownRow(rowIdx)
     if bSetUp == FALSE
         t0sDrawPanel(rowIdx, T0_24_ACT_ROWSKIPPED, seqNum, 0, 0, 0)
+    elseif ((rowIdx == T0_24_ROW_COAST) or (rowIdx == T0_24_ROW_ESTOP) or (rowIdx == T0_24_ROW_COGSTOP)) and (bT0sRowMeasured[rowIdx] == FALSE)
+        t0sDrawPanel(rowIdx, T0_24_ACT_SPIN_NOMEAS, seqNum, t0sHandTicks[rowIdx], t0sAfterTicks[rowIdx], t0sAfterMs[rowIdx]) ' never silent (task 3617)
     elseif (rowIdx <> T0_24_ROW_HOLDRISE) and (rowIdx <> T0_24_ROW_HOLDSLIP) and (rowIdx <> T0_24_ROW_HOLDLIMIT)
         t0sDrawPanel(rowIdx, T0_24_ACT_ROWDONE, seqNum, t0sHandTicks[rowIdx], t0sAfterTicks[rowIdx], t0sAfterMs[rowIdx])
     ' the hold rows already left their own ROWDONE/ROWSKIPPED screen up (t0sRunHoldRow())
 
-PRI bT0sSetUpRow(rowIdx) : bSetUp
+PRI t0sRunSpinRow(rowIdx, seqNum) : releaseSpan | tryNum, actionIdx, handTicks, afterTicks, afterMs, bandTicks, bandMs, bInBand, bShorted, bButtonEnded, bLatched, bMeasured, bShortRow, pWhy
+' The spin rows -- COAST, ESTOP, COGSTOP (task 3617, arbiter ruling on PL-123): he spins the wheel
+' hard and lets go, and t0sProbe() reads band_ticks. NOTHING IS SILENT. A try that never passed the
+' measuring speed shows a TOO SLOW cell that asks for a harder spin. The cell keeps the row's own
+' prediction. The probe is re-armed, up to T0_24_SPIN_TRIES in all. Only then, or when DONE / ABORT
+' ended a try, is the row NOMEAS, and t0sRunRow() shows T0_24_ACT_SPIN_NOMEAS saying why. Every try
+' is logged (T0-24,row,N,try,...).
+'
+' THE E-STOP ROW is spun FREE and shorted by the program at the band entry (bShortAtBand). It is
+' measured only when the short was applied there AND the e-stop latched (isEmergency()): a quick
+' stop with no short applied is not a reading of the short. A try whose short cannot be read is
+' released (clearEmergency()) before the next spin, which must start free.
+'
+' @param rowIdx - T0_24_ROW_COAST, T0_24_ROW_ESTOP or T0_24_ROW_COGSTOP
+' @param seqNum - this run's 1-based row position
+' @returns releaseSpan - the last try's six-interval span at release, ms, for the row record
+'
+' @local tryNum - this try, 1..T0_24_SPIN_TRIES
+' @local actionIdx - the cell shown while waiting for this try's spin
+' @local handTicks - t0sProbe()'s reading, this try
+' @local afterTicks - t0sProbe()'s reading, this try
+' @local afterMs - t0sProbe()'s reading, this try
+' @local bandTicks - t0sProbe()'s band reading, this try
+' @local bandMs - t0sProbe()'s band ms, this try
+' @local bInBand - TRUE when this try's release was above T0_24_BAND_RATE
+' @local bShorted - TRUE when this try applied the e-stop at the band entry
+' @local bButtonEnded - TRUE when DONE or ABORT ended this try
+' @local bLatched - isEmergency() after the try
+' @local bMeasured - TRUE when this try is a reading
+' @local bShortRow - TRUE for the e-stop row
+' @local pWhy - the try's outcome token, for the log
+
+    bShortRow := (rowIdx == T0_24_ROW_ESTOP)
+    tryNum := 1
+    repeat
+        if tryNum == 1                                          ' if/else, never `? :` -- PL-29, PL-76
+            if bShortRow
+                actionIdx := T0_24_ACT_SPIN_BRAKE
+            else
+                actionIdx := T0_24_ACT_SPIN_FREE
+        elseif tryNum == 2
+            if bShortRow
+                actionIdx := T0_24_ACT_RETRY_BRAKE_2
+            else
+                actionIdx := T0_24_ACT_RETRY_FREE_2
+        else
+            if bShortRow
+                actionIdx := T0_24_ACT_RETRY_BRAKE_3
+            else
+                actionIdx := T0_24_ACT_RETRY_FREE_3
+        handTicks, afterTicks, afterMs, bandTicks, bandMs, bInBand, releaseSpan, bShorted, bButtonEnded := t0sProbe(rowIdx, seqNum, actionIdx, bShortRow)
+        bLatched := motor.isEmergency()
+        bMeasured := (handTicks >= SF_HAND_MIN_TICKS) and bInBand
+        if bShortRow
+            bMeasured := bMeasured and bShorted and bLatched
+        if bMeasured
+            pWhy := @"MEASURED"
+        elseif bInBand == FALSE
+            pWhy := @"TOO_SLOW"
+        elseif handTicks < SF_HAND_MIN_TICKS
+            pWhy := @"TOO_FEW_TICKS"
+        elseif bShorted == FALSE
+            pWhy := @"NOT_SHORTED"
+        else
+            pWhy := @"ESTOP_NOT_LATCHED"
+        debug("T0-24,row,", udec_(seqNum), ",try,", udec_(tryNum), ",of,", udec_(T0_24_SPIN_TRIES), ",measured,", zstr_(bMeasured ? @"TRUE" : @"FALSE"), ",why,", zstr_(pWhy), ",button_ended,", zstr_(bButtonEnded ? @"TRUE" : @"FALSE"), ",estop_latched,", zstr_(bLatched ? @"TRUE" : @"FALSE"))
+        if bMeasured or bButtonEnded or (tryNum >= T0_24_SPIN_TRIES)
+            quit
+        if bShortRow and bLatched                               ' the next spin must start free
+            motor.clearEmergency()
+            motor.holdAtStop(FALSE)
+            motor.stopMotor()
+            waitms(T0_24_REARM_MS)
+        tryNum += 1
+    t0sHandTicks[rowIdx] := handTicks
+    t0sAfterTicks[rowIdx] := afterTicks
+    t0sAfterMs[rowIdx] := afterMs
+    t0sBandTicks[rowIdx] := bandTicks
+    t0sBandMs[rowIdx] := bandMs
+    bT0sInBand[rowIdx] := bInBand
+    bT0sRowMeasured[rowIdx] := bMeasured
+
+PRI bT0sSetUpRow(rowIdx, seqNum) : bSetUp
 ' Put the driver into this row's stop or hold state, and report whether it got there.
 '
 ' A stop state is only what the DRIVER is in, so each row checks the driver rather than assuming
-' the call took: the e-stop row reads isEmergency(), the two fault rows require the provoked
-' fault, and every powered-hold row requires isFaultSignal() to still read FALSE right after
-' setup (a fault recorded from here, not carried over from an earlier row).
+' the call took: the e-stop row must read NOT emergency-stopped (it is spun free, and shorted at the
+' band by t0sProbe()), the two fault rows require the forced
+' fault, and every hold row requires a NEW hold (bT0sRearmHold(): HS_HOLDING at displacement 0,
+' and isFaultSignal() still FALSE -- a fault recorded from here, not carried over from an earlier row).
 '
 ' @param rowIdx - which row, T0_24_ROW_*
+' @param seqNum - this run's 1-based row position, for the hold rows' rearm record
 ' @returns bSetUp - TRUE when the row's state was reached
 
     bSetUp := FALSE
     case rowIdx
         T0_24_ROW_HOLDRISE:
-            motor.testSetHoldLimits(T0_24_HOLD_DEFAULT_CEIL_PCT, T0_24_HOLD_DEFAULT_RISE_MS, T0_24_HOLD_DEFAULT_LIMIT_MS)
-            motor.clearFaultSignal()
-            motor.holdAtStop(TRUE)
-            motor.stopMotor()
-            waitms(T0_24_SETTLE_MS)
-            bSetUp := (motor.isFaultSignal() == FALSE)
+            bSetUp := bT0sRearmHold(seqNum, T0_24_HOLD_DEFAULT_CEIL_PCT, T0_24_HOLD_DEFAULT_LIMIT_MS)
         T0_24_ROW_HOLDSLIP:
-            motor.testSetHoldLimits(T0_24_HOLD_SLIP_CEIL_PCT, T0_24_HOLD_DEFAULT_RISE_MS, T0_24_HOLD_DEFAULT_LIMIT_MS)
-            motor.clearFaultSignal()
-            motor.holdAtStop(TRUE)
-            motor.stopMotor()
-            waitms(T0_24_SETTLE_MS)
-            bSetUp := (motor.isFaultSignal() == FALSE)
+            bSetUp := bT0sRearmHold(seqNum, T0_24_HOLD_SLIP_CEIL_PCT, T0_24_HOLD_DEFAULT_LIMIT_MS)
         T0_24_ROW_HOLDLIMIT:
-            motor.testSetHoldLimits(T0_24_HOLD_DEFAULT_CEIL_PCT, T0_24_HOLD_DEFAULT_RISE_MS, T0_24_HOLD_LIMIT_TEST_MS)
-            motor.clearFaultSignal()
-            motor.holdAtStop(TRUE)
-            motor.stopMotor()
-            waitms(T0_24_SETTLE_MS)
-            bSetUp := (motor.isFaultSignal() == FALSE)
+            bSetUp := bT0sRearmHold(seqNum, T0_24_HOLD_DEFAULT_CEIL_PCT, T0_24_HOLD_LIMIT_TEST_MS)
         T0_24_ROW_COAST:
             motor.holdAtStop(FALSE)
             motor.stopMotor()
             waitms(T0_24_SETTLE_MS)
             bSetUp := TRUE
         T0_24_ROW_ESTOP:
-            motor.emergencyCutoff()
+            ' task 3617: set up COASTING, so he can spin it into the band. t0sProbe() applies the
+            ' e-stop itself at the band entry, and t0sRunSpinRow() requires it to have latched.
+            motor.holdAtStop(FALSE)
+            motor.stopMotor()
             waitms(T0_24_SETTLE_MS)
-            bSetUp := motor.isEmergency()
+            bSetUp := (motor.isEmergency() == FALSE)            ' free to spin: no e-stop left from before
         T0_24_ROW_FLTCOAST:
             bSetUp := bT0sProvoke(FALSE, rowIdx)
         T0_24_ROW_FLTHOLD:
@@ -2477,110 +2679,123 @@ PRI t0sTearDownRow(rowIdx)
             motor.clearProtectiveStop()
             motor.testSetHoldLimits(T0_24_HOLD_DEFAULT_CEIL_PCT, T0_24_HOLD_DEFAULT_RISE_MS, T0_24_HOLD_DEFAULT_LIMIT_MS)
         T0_24_ROW_ESTOP:
-            motor.clearEmergency()
-        T0_24_ROW_FLTCOAST:
-            motor.clearFaultSignal()                            ' the driver itself leaves DCS_FAULTED on the next row's
-            motor.clearProtectiveStop()                         '  first command (isp_bldc_motor.spin2:1124)
-        T0_24_ROW_FLTHOLD:
-            motor.clearFaultSignal()
+            if motor.isEmergency()                              ' latched only when a try applied the short
+                motor.clearEmergency()
+        T0_24_ROW_FLTCOAST, T0_24_ROW_FLTHOLD:
+            ' DCS_FAULTED is a latch (DRIVER_REV 14+): only a commanded stop or drive clears it, and the
+            ' fault's bridge holds until then. testResetFault() commands the stop, clears the fault
+            ' signal and waits for DCS_STOPPED. It acts only on a recorded fault; a row that did not
+            ' fault already stopped the wheel in bT0sProvoke().
+            motor.testResetFault()
             motor.clearProtectiveStop()
         other:
             motor.getError()                                    ' the rows that need no teardown still drain the error slot
 
-PRI bT0sProvoke(bHold, rowIdx) : bFaulted | negOfs, posOfs, shiftDeg, bAtSpeed, releaseSpan, afterTicks, afterMs, halfMs
+PRI bT0sRearmHold(seqNum, ceilingPct, limitMs) : bHeld | offState, eState, nDisp, bFaultSig
+' PL-123 item 1: start a hold row from a NEW hold, never from the last row's. The front cog arms a hold
+' only after a pass that finds the stop mode off SM_BRAKE or the motor off rest (frontHold()), so
+' SM_FLOAT is selected for T0_24_REARM_MS (the old hold reads HS_OFF), then SM_BRAKE again (a new
+' hold is armed where the wheel now is). The row is set up only when the new hold reads HS_HOLDING
+' at displacement 0 with no fault signal; otherwise its cell is NOMEAS, never judged from an
+' inherited slip.
+'
+' @param seqNum - this run's 1-based row position, for the record
+' @param ceilingPct - the row's hold ceiling, % (testSetHoldLimits())
+' @param limitMs - the row's time limit at the ceiling, ms (testSetHoldLimits())
+' @returns bHeld - TRUE when the old hold ended and a new one holds at displacement 0
+'
+' @local offState - getHoldStatus()'s state with SM_FLOAT selected, HS_* (HS_OFF when the old hold ended)
+' @local eState - getHoldStatus()'s state once SM_BRAKE is back, HS_*
+' @local nDisp - getHoldStatus()'s displacement then, hall ticks
+' @local bFaultSig - isFaultSignal() then
+
+    motor.testSetHoldLimits(ceilingPct, T0_24_HOLD_DEFAULT_RISE_MS, limitMs)
+    motor.clearFaultSignal()
+    motor.holdAtStop(FALSE)
+    motor.stopMotor()
+    waitms(T0_24_REARM_MS)
+    offState, _ := motor.getHoldStatus()
+    motor.holdAtStop(TRUE)
+    motor.stopMotor()
+    waitms(T0_24_SETTLE_MS)
+    eState, nDisp := motor.getHoldStatus()
+    bFaultSig := motor.isFaultSignal()
+    bHeld := (offState == motor.HS_OFF) and (eState == motor.HS_HOLDING) and (nDisp == 0) and (bFaultSig == FALSE)
+    debug("T0-24,row,", udec_(seqNum), ",rearm,off_hs,", udec_(offState), ",hs,", udec_(eState), ",disp,", sdec_(nDisp), ",fault_sig,", zstr_(bFaultSig ? @"TRUE" : @"FALSE"), ",held,", zstr_(bHeld ? @"TRUE" : @"FALSE"))
+
+PRI bT0sProvoke(bHold, rowIdx) : bFaulted | eFaultMode, eForce, bAtSpeed, releaseSpan, afterTicks, afterMs, bandTicks, bandMs, bInBand, bEntered
 ' The two fault rows: fault the driver at speed under the stop mode bHold selects, then let the
 ' wheel come to rest with the fault still in force. Writes this row's own t0s*[rowIdx] readings
 ' directly (t0sRunRow() does not call t0sProbe() for these two rows -- see its comment).
 '
-' THE PROVOCATION IS COMPUTED, NOT CHOSEN (R17.5, PL-86/PL-59, ported from the dual harness's
-' faultShiftDeg()): an offset written at rest is absorbed by the start's re-seed and the lag
-' limiter, and the wheel then draws ~16 A without ever faulting. Driven at speed, shifting both
-' offsets by exactly what moves this wheel's own position error onto the |err| >= 125 test faults
-' it in the NEXT control frame, before any current can build.
+' THE FAULT IS FORCED, NOT PROVOKED (task 3617, PL-123 item 3; PL-119). testForceFault() faults the
+' driver on its next DRIVEN frame, at its own fault test, so the response is the real one: under
+' FR_SHIPPED the bridge takes the stop mode's fault state at once, SM_FLOAT a coast and SM_BRAKE a
+' short. No offset is touched, so the field is never left off the rotor to plug the motor, as the
+' offset shift did at Visit 10 pass 2 (10.4 A aborts, debug_260923-193439.log:2194, :2250).
+' FR_SHIPPED is set explicitly, so the row does not rest on the start-up default.
 '
-' NOTHING IS COMMANDED AFTER THE FAULT. The driver leaves DCS_FAULTED as soon as a stop or a
-' different power is commanded (isp_bldc_motor.spin2:1124), and leaving it re-runs checkstop --
-' which would replace the fault's bridge state with the at-rest one and measure the wrong thing.
-' So the coast to rest here is only a measurement, never a command.
+' NOTHING IS COMMANDED AFTER THE FAULT. DCS_FAULTED is a latch (DRIVER_REV 14+): the fault's bridge
+' holds until a stop or a drive is commanded, and either would replace it with another state and
+' measure the wrong thing. So the coast to rest here is only a measurement; t0sTearDownRow() ends
+' the fault afterwards. No record is printed between the fault and rest either: a debug() line stops
+' the hall poll, and a short stops the wheel within a few ms.
 '
 ' @param bHold - TRUE selects SM_BRAKE (predicted BR_SHORT on the fault), FALSE SM_FLOAT (BR_COAST)
 ' @param rowIdx - T0_24_ROW_FLTCOAST or T0_24_ROW_FLTHOLD, for the per-row readings
-' @returns bFaulted - TRUE when the driver faulted and the wheel then reached rest
+' @returns bFaulted - TRUE when the driver faulted and the wheel then came to rest
 '
-' @local negOfs - the offset applied to negative increments, read before the shift and put back after
-' @local posOfs - the offset applied to positive increments
-' @local shiftDeg - the computed shift, degrees
+' @local eFaultMode - testSetFaultResponse()'s return
+' @local eForce - testForceFault()'s return
 ' @local bAtSpeed - TRUE when the wheel reached AT_SPEED inside the bound
-' @local releaseSpan - the steady AT_SPEED six-tick span, measured just before the offsets are
-'                       shifted: the fault's own "release rate", parallel to t0sProbe()'s hand rate
+' @local releaseSpan - the steady AT_SPEED six-interval span, measured just before the fault: the
+'                       fault's own "release rate", parallel to t0sProbe()'s hand rate
 ' @local afterTicks - t0sCoastDecay()'s tick count, written into this row's array
 ' @local afterMs - t0sCoastDecay()'s elapsed-ms reading, written into this row's array
-' @local halfMs - t0sCoastDecay()'s half-rate reading, written into this row's array
+' @local bandTicks - t0sCoastDecay()'s band reading, written into this row's array
+' @local bandMs - the ms that took, written into this row's array
+' @local bInBand - TRUE when the steady rate was above T0_24_BAND_RATE
+' @local bEntered - TRUE when a span reached the band (a coast); FALSE when the wheel stopped inside one span
 
     bFaulted := FALSE
     releaseSpan := 0
+    eForce := 0
+    eFaultMode := motor.testSetFaultResponse(motor.FR_SHIPPED, motor.BRAKE_PCT_DEFAULT)
+    motor.clearFaultSignal()                                    ' the fault signal then records this row's fault only
     motor.holdAtStop(bHold)
     motor.driveAtPower(T0_24_FLT_POWER)
     bAtSpeed := bT0sWaitDriver(T0_24_UNTIL_SPEED, T0_24_SPEED_MS)
     if bAtSpeed
         waitms(T0_24_SETTLE_MS)
         releaseSpan := t0sMeasureSteadyRate(T0_24_SPEED_MS)
-        negOfs, posOfs := motor.testGetFwdRevIndep()
-        shiftDeg := t0sFaultShiftDeg()
-        motor.testSetFwdRevIndep(negOfs + shiftDeg, posOfs + shiftDeg)
-        bFaulted := bT0sWaitDriver(T0_24_UNTIL_FAULT, T0_24_NO_FAULT_MS)
-        motor.testSetFwdRevIndep(negOfs, posOfs)                ' put them back on EVERY path that wrote them
-        debug("T0-24,provoke,hold_mode,", zstr_(bHold ? @"BRAKE" : @"FLOAT"), ",offset_neg,", udec_(negOfs), ",offset_pos,", udec_(posOfs), ",shift_deg,", udec_(shiftDeg), ",release_span_ms,", udec_(releaseSpan), ",faulted,", zstr_(bFaulted ? @"TRUE" : @"FALSE"))
+        eForce := motor.testForceFault()
+        bFaulted := bT0sWaitDriver(T0_24_UNTIL_FAULT, T0_24_FORCE_WAIT_MS)
+        if bFaulted
+            afterTicks, afterMs, bandTicks, bandMs, bInBand := t0sCoastDecay(releaseSpan, getms(), T0_24_REST_QUIET_MS, T0_24_REST_WAIT_MS)
+            bEntered := bT0sBandEntered
+        debug("T0-24,provoke,stop_mode,", zstr_(bHold ? @"BRAKE" : @"FLOAT"), ",fr_err,", sdec_(eFaultMode), ",force_err,", sdec_(eForce), ",release_span_ms,", udec_(releaseSpan), ",faulted,", zstr_(bFaulted ? @"TRUE" : @"FALSE"))
     else
-        debug("T0-24,provoke,hold_mode,", zstr_(bHold ? @"BRAKE" : @"FLOAT"), ",why,NOT_AT_SPEED,note,no_offset_was_written")
+        debug("T0-24,provoke,stop_mode,", zstr_(bHold ? @"BRAKE" : @"FLOAT"), ",why,NOT_AT_SPEED,note,no_fault_was_forced")
     if bFaulted
-        afterTicks, afterMs, halfMs := t0sCoastDecay(releaseSpan, getms(), T0_24_REST_QUIET_MS, T0_24_REST_WAIT_MS)
         t0sHandTicks[rowIdx] := 0
         t0sAfterTicks[rowIdx] := afterTicks
         t0sAfterMs[rowIdx] := afterMs
-        t0sHalfMs[rowIdx] := halfMs
+        t0sBandTicks[rowIdx] := bandTicks
+        t0sBandMs[rowIdx] := bandMs
+        bT0sInBand[rowIdx] := bInBand
         bT0sStillFaulted[rowIdx] := (motor.getDriverState() == motor.DCS_FAULTED)
-        bT0sRowMeasured[rowIdx] := (releaseSpan > 0)            ' the wheel really was turning fast enough to read a rate
-        debug("T0-24,at_rest,waited_ms,", udec_(afterMs), ",driver_state,", udec_(motor.getDriverState()))
+        bT0sRowMeasured[rowIdx] := bInBand                      ' the wheel was driven above the band before the fault
+        debug("T0-24,at_rest,waited_ms,", udec_(afterMs), ",driver_state,", udec_(motor.getDriverState()), ",band_entered,", zstr_(bEntered ? @"TRUE" : @"FALSE"))
     else
         motor.stopMotor()                                       ' no fault to preserve, so the wheel is stopped at once
         t0sHandTicks[rowIdx] := 0
         t0sAfterTicks[rowIdx] := 0
         t0sAfterMs[rowIdx] := 0
-        t0sHalfMs[rowIdx] := 0
+        t0sBandTicks[rowIdx] := 0
+        t0sBandMs[rowIdx] := 0
+        bT0sInBand[rowIdx] := FALSE
         bT0sStillFaulted[rowIdx] := FALSE
         bT0sRowMeasured[rowIdx] := FALSE
-
-PRI t0sFaultShiftDeg() : shiftDeg | sampleIdx, errSum, errMean, shiftUnits
-' The commutation-offset shift that puts this wheel's position error on the driver's fault test.
-'
-' The driver's err is one electrical cycle in T0_24_ERR_PER_TURN signed units, so it wraps at
-' +-128, and it faults at |err| >= 125. err = field angle - (hall angle + offset), and the offset
-' maps positively, so raising the offset by D units lowers err by D in the next control frame.
-' D = err + T0_24_ERR_TARGET lands the error on the wrap: any landing 125..131 away faults, which
-' is +-3 units of margin against the 1-degree offset resolution.
-'
-' @returns shiftDeg - the shift to add to both of this wheel's offsets, degrees
-'
-' @local sampleIdx - read counter
-' @local errSum - sum of the reads
-' @local errMean - the wheel's mean position error at speed, err units
-' @local shiftUnits - the shift, err units
-
-    errSum := 0
-    repeat sampleIdx from 1 to T0_24_ERR_SAMPLES
-        errSum += t0sWheelErr()
-        waitms(T0_24_SAMPLE_MS)
-    errMean := errSum / T0_24_ERR_SAMPLES
-    shiftUnits := (errMean + T0_24_ERR_TARGET) & T0_24_ERR_MASK
-    shiftDeg := ((shiftUnits * T0_24_DEG_PER_TURN) + (T0_24_ERR_PER_TURN / 2)) / T0_24_ERR_PER_TURN
-
-PRI t0sWheelErr() : nErr
-' This wheel's latest position error from the driver's status block.
-'
-' @returns nErr - the error, signed err units
-
-    _, nErr, _, _, _, _, _, _ := motor.testGetTelemetry()
 
 PRI bT0sWaitDriver(untilKind, boundMs) : bReached | waitedMs, sampleIdx, bEnded
 ' The one bounded wait a powered window uses, for either state it ever waits on. The absolute
@@ -2598,7 +2813,13 @@ PRI bT0sWaitDriver(untilKind, boundMs) : bReached | waitedMs, sampleIdx, bEnded
     bReached := FALSE
     bEnded := FALSE
     waitedMs := 0
-    sampleIdx := 0
+    ' From 1, not 0 (task 3617): the panel's input is read when sampleIdx reaches a multiple of
+    ' T0_24_KEY_SAMPLES, and that read stops this cog for about 30 ms (T0_24_IO_QUIET_MS). Read at
+    ' sample 0 it would fall straight after testForceFault(), and the fault rows' coast measurement
+    ' would start ~35 ms after the fault, missing a short's few ticks. From 1, the 15 ms fault wait
+    ' reads no input, so the measurement starts within one T0_24_SAMPLE_MS of the fault. The AT_SPEED
+    ' wait's first ABORT read moves from 0 ms to ~100 ms; the 10 A abort is still read every sample.
+    sampleIdx := 1
     repeat while bEnded == FALSE
         if bT0sDriverAt(untilKind)
             bReached := TRUE
@@ -2647,84 +2868,140 @@ PRI bT0sPoweredAbort(sampleIdx) : bAbort | amps, buttonIdx
     if bAbort
         motor.stopMotor()
 
-PRI t0sMeasureSteadyRate(boundMs) : releaseSpan | hallCode, priorCode, tickMs[T0_24_TICK_RING], ringIdx, tickN, startMs
-' The AT_SPEED six-tick span, measured just before a fault is provoked -- the fault rows' own
+PRI t0sMeasureSteadyRate(boundMs) : releaseSpan | hallCode, priorCode, tickMs[T0_24_TICK_RING], ringIdx, tickN, startMs, nowMs
+' The AT_SPEED six-interval span, measured just before the fault is forced -- the fault rows' own
 ' "release rate", read the same way t0sProbe() reads a hand's (PL-115: a rate from the hall
-' signal, never from a keypress or a guess).
+' signal, never from a keypress or a guess). Six intervals, one electrical cycle: the span is read
+' from the slot the new tick is about to overwrite, which holds the tick six before it (task 3617;
+' SRC_REV 12 read after writing, and so spanned five).
 '
-' @param boundMs - give up and return 0 if the ring never fills inside this bound
-' @returns releaseSpan - the six-tick span, ms; 0 when it never filled
+' @param boundMs - give up and return 0 if seven ticks never arrive inside this bound
+' @returns releaseSpan - the six-interval span, ms; 0 when it was never read
 '
 ' @local hallCode - the 3-bit hall code just read
 ' @local priorCode - the previous poll's code
 ' @local tickMs - the last T0_24_TICK_RING tick timestamps
-' @local ringIdx - where the next tick's timestamp goes
+' @local ringIdx - where the next tick's timestamp goes, and so the oldest kept
 ' @local tickN - ticks counted so far
 ' @local startMs - getms() at the start, for the bound
+' @local nowMs - getms() at the tick just counted
 
     priorCode := t0sHallCode()
     ringIdx := 0
     tickN := 0
     releaseSpan := 0
     startMs := getms()
-    repeat while (tickN < T0_24_TICK_RING) and ((getms() - startMs) < boundMs)
+    repeat while (tickN <= T0_24_TICK_RING) and ((getms() - startMs) < boundMs)
         hallCode := t0sHallCode()
         if hallCode <> priorCode
-            tickMs[ringIdx] := getms()
-            ringIdx := (ringIdx + 1) +// T0_24_TICK_RING
+            nowMs := getms()
             tickN += 1
+            if tickN > T0_24_TICK_RING                          ' every slot holds a tick: this one is six ticks back
+                releaseSpan := nowMs - tickMs[ringIdx]
+            tickMs[ringIdx] := nowMs
+            ringIdx := (ringIdx + 1) +// T0_24_TICK_RING
             priorCode := hallCode
         waitms(T0_24_POLL_MS)
-    if tickN >= T0_24_TICK_RING
-        releaseSpan := tickMs[(ringIdx + T0_24_TICK_RING - 1) +// T0_24_TICK_RING] - tickMs[ringIdx]
 
-PRI t0sCoastDecay(releaseSpan, releaseMs, restQuietMs, boundMs) : afterTicks, afterMs, halfMs | hallCode, priorCode, tickMs[T0_24_TICK_RING], ringIdx, lastTickMs, nowMs, spanNow, bEnded
-' The "what does the wheel do with nobody driving it" measurement shared by every after-release
-' phase in this file: counts hall ticks from releaseMs, and reports the ms to fall to HALF the
-' release rate, or the whole coast when it never halves (task 3607/PL-115).
+PRI t0sCoastDecay(releaseSpan, releaseMs, restQuietMs, boundMs) : afterTicks, afterMs, bandTicks, bandMs, bInBand | hallCode, priorCode, tickMs[T0_24_TICK_RING], ringIdx, lastTickMs, nowMs, spanNow, bEnded
+' The fault rows' coast measurement: what the wheel does with nobody driving it, counted from the
+' fault (releaseMs) to rest, and read as band_ticks exactly as t0sProbe() reads a hand's release --
+' the same three helpers compute it (t0sBandReset(), t0sBandTick(), t0sBandResult()). No input is
+' read and nothing is drawn in here, so the 1 ms hall poll never stalls.
 '
-' @param releaseSpan - the six-tick span at release, ms; 0 disables the half-rate test
+' @param releaseSpan - the six-interval span at release (the steady driven rate), ms
 ' @param releaseMs - getms() at the moment of release
 ' @param restQuietMs - no transition for this long ends the coast (the wheel is at rest)
 ' @param boundMs - hard bound on the whole coast
 ' @returns afterTicks - hall ticks counted after releaseMs
 ' @returns afterMs - ms from releaseMs to the last tick
-' @returns halfMs - ms from releaseMs to half the release rate, or the whole coast when it never halved
+' @returns bandTicks - ticks from T0_24_BAND_RATE to rest (0 when the release was not above the band)
+' @returns bandMs - ms those took
+' @returns bInBand - TRUE when the release was above T0_24_BAND_RATE
 '
 ' @local hallCode - the 3-bit hall code just read
 ' @local priorCode - the previous poll's code
 ' @local tickMs - the last T0_24_TICK_RING tick timestamps, THIS call's own ring (starts empty)
-' @local ringIdx - where the next tick's timestamp goes
+' @local ringIdx - where the next tick's timestamp goes, and so the oldest kept
 ' @local lastTickMs - getms() at the last transition
 ' @local nowMs - this poll's getms()
-' @local spanNow - the six-tick span at the tick just counted
+' @local spanNow - the six-interval span ending at the tick just counted
 ' @local bEnded - TRUE once the coast is over
 
     priorCode := t0sHallCode()
     afterTicks := 0
-    halfMs := -1
     ringIdx := 0
     lastTickMs := releaseMs
+    t0sBandReset()
     bEnded := FALSE
     repeat while bEnded == FALSE
         hallCode := t0sHallCode()
         nowMs := getms()
         if hallCode <> priorCode
             afterTicks += 1
-            spanNow := nowMs - tickMs[ringIdx]                  ' only trusted once the ring has filled once (guarded below)
+            if afterTicks > T0_24_TICK_RING                     ' every slot holds a tick of this coast: six intervals back
+                spanNow := nowMs - tickMs[ringIdx]
+                t0sBandTick(afterTicks, nowMs, spanNow, releaseSpan)
             tickMs[ringIdx] := nowMs
             ringIdx := (ringIdx + 1) +// T0_24_TICK_RING
             priorCode := hallCode
             lastTickMs := nowMs
-            if (halfMs < 0) and (releaseSpan > 0) and (afterTicks >= T0_24_TICK_RING) and (spanNow >= (releaseSpan * T0_24_HALF_FACTOR))
-                halfMs := nowMs - releaseMs
         bEnded := ((nowMs - lastTickMs) >= restQuietMs) or ((nowMs - releaseMs) >= boundMs)
         waitms(T0_24_POLL_MS)
     afterMs := (lastTickMs - releaseMs) #> 0
-    if halfMs < 0
-        halfMs := afterMs                                       ' it stopped before the rate ever halved: the whole coast
+    bandTicks, bandMs, bInBand := t0sBandResult(releaseSpan, 0, releaseMs, afterTicks, lastTickMs)
 
-PRI t0sProbe(rowIdx, seqNum, actionIdx) : handTicks, afterTicks, afterMs, halfMs, releaseSpan | hallCode, priorCode, pollIdx, nowMs, startMs, tickMs[T0_24_TICK_RING], ringIdx, totalTicks, bestSpan, bestEndMs, bestTickIdx, curSpan, lastAnyMs, buttonIdx, bEnded
+PRI t0sBandReset()
+' Forget any band entry: a new coast begins (t0sCoastDecay()), or a faster release was found and the
+' band is now entered after it (t0sProbe()).
+
+    bT0sBandEntered := FALSE
+    t0sBandEntryTick := 0
+    t0sBandEntryMs := 0
+
+PRI t0sBandTick(tickIdx, nowMs, spanNow, releaseSpan)
+' At each tick after the release whose six-interval span is valid: the first span of
+' T0_24_BAND_SPAN_MS or more enters the band (the wheel's rate has fallen to T0_24_BAND_RATE) --
+' but only after a release ABOVE the band. A slow spin's windows are all that long, and entering on
+' one would fire the e-stop row's short with nothing to measure (task 3617).
+'
+' @param tickIdx - this tick's count, in the caller's own numbering
+' @param nowMs - getms() at this tick
+' @param spanNow - the six-interval span ending at this tick, ms
+' @param releaseSpan - the release's six-interval span so far, ms (0 or -1: none yet)
+
+    if (bT0sBandEntered == FALSE) and (releaseSpan > 0) and (releaseSpan < T0_24_BAND_SPAN_MS) and (spanNow >= T0_24_BAND_SPAN_MS)
+        bT0sBandEntered := TRUE
+        t0sBandEntryTick := tickIdx
+        t0sBandEntryMs := nowMs
+
+PRI t0sBandResult(releaseSpan, releaseTick, releaseMs, lastTick, lastMs) : bandTicks, bandMs, bInBand
+' The row's stop reading (PL-123 item 2): the ticks, and the ms, from the band entry to the last tick.
+' A wheel released above the band that stopped before any span reached it -- only a braked wheel does
+' this, since a coast carries 9 or more ticks past the band -- reads every tick after the release,
+' which bounds its ticks from the band from above. A release not above the band is no reading at all.
+'
+' @param releaseSpan - the six-interval span at the release, ms
+' @param releaseTick - the tick count at the release, in the caller's numbering
+' @param releaseMs - getms() at the release
+' @param lastTick - the tick count at the last tick
+' @param lastMs - getms() at the last tick
+' @returns bandTicks - ticks from the band to rest; 0 when not in band
+' @returns bandMs - ms from the band to the last tick; 0 when not in band
+' @returns bInBand - TRUE when the release was faster than T0_24_BAND_RATE
+
+    bInBand := (releaseSpan > 0) and (releaseSpan < T0_24_BAND_SPAN_MS)
+    bandTicks := 0
+    bandMs := 0
+    if bInBand
+        if bT0sBandEntered
+            bandTicks := lastTick - t0sBandEntryTick
+            bandMs := (lastMs - t0sBandEntryMs) #> 0
+        else
+            bandTicks := lastTick - releaseTick
+            bandMs := (lastMs - releaseMs) #> 0
+
+PRI t0sProbe(rowIdx, seqNum, actionIdx, bShortAtBand) : handTicks, afterTicks, afterMs, bandTicks, bandMs, bInBand, releaseSpan, bShorted, bButtonEnded | hallCode, priorCode, pollIdx, nowMs, startMs, tickMs[T0_24_TICK_RING], ringIdx, totalTicks, bestSpan, bestEndMs, bestTickIdx, curSpan, lastAnyMs, buttonIdx, bQuiet, bEnded
 ' The hand-driven rows' measurement: what the wheel does under a hand, counted by this harness's
 ' own hall poll (T0-12's proven loop and its hand-maintained delta table's pin set) so that rows
 ' with a driver cog running and COGSTOP, which has none, are measured by the identical instrument.
@@ -2741,29 +3018,49 @@ PRI t0sProbe(rowIdx, seqNum, actionIdx) : handTicks, afterTicks, afterMs, halfMs
 ' guarantee (INS-14) by construction.
 '
 ' ONE CONTINUOUS PASS, single 6-tick ring, O(1) extra state -- no history buffer is kept. At every
-' tick past the first T0_24_TICK_RING, the CURRENT six-tick span is compared against the RUNNING
-' MINIMUM span seen so far in this row. A new minimum means a faster peak has been found: record
-' its end time and tick count, and discard any half-rate reading taken against the previous
-' (slower) peak -- it no longer means anything once the reference rate has moved. Once no smaller
+' tick past the first T0_24_TICK_RING, the CURRENT six-interval span (read from the slot the new tick
+' is about to overwrite: the tick six back) is compared against the RUNNING MINIMUM span seen so far
+' in this row. A new minimum means a faster peak has been found: record its end time and tick count,
+' and forget any band entry taken after the previous (slower) peak (t0sBandReset()). Once no smaller
 ' span is found for the rest of the row, the running minimum IS the release: the peak was real,
-' not a blip, because nothing after it was ever faster. The half-rate crossing is looked for the
-' same way live, against whichever span is currently the running minimum, so it self-corrects
-' every time the minimum improves.
+' not a blip, because nothing after it was ever faster. The band entry is looked for live, after
+' whichever span is currently the running minimum, so it self-corrects every time the minimum
+' improves.
 '
-' WHY HALF-RATE TIME AND NOT DISTANCE. How far the wheel carries on scales with however hard he
-' pushed, so a fixed tick limit would be a reading about his arm. A shorted winding brakes with a
-' torque proportional to speed, so the time to halve is a property of the bridge state and not of
-' the push -- which is what the cells judge. The distance is printed beside it all the same.
+' WHY TICKS FROM A FIXED RATE, NOT THE HALF-RATE TIME (task 3617, PL-123 item 2). A free wheel slows
+' at a nearly constant rate, so the time to half its speed grows with the speed he gave it: at Visit
+' 10 pass 2 the half-rate time read 100-472 ms across rows, and FREEREF failed on a healthy wheel.
+' Counting only from T0_24_BAND_RATE down makes the reading the same whatever the spin, provided
+' the release was above the band (in_band); t0sBandResult() and CON { T0-24 sign-off limits }.
+'
+' THE POLL IS NEVER STALLED WHILE THE WHEEL TURNS. The panel's input read (PC_KEY + PC_MOUSE, a
+' round trip to the host of about 30 ms) and the redraw run only after T0_24_IO_QUIET_MS with no
+' tick. At SRC_REV 12 they ran every ~100 ms regardless, and each read could merge several ticks
+' of a fast spin into one. DONE and ABORT therefore answer before the spin and once the wheel has
+' all but stopped. The row ends by itself at rest.
+'
+' THE E-STOP ROW'S SHORT IS APPLIED HERE (bShortAtBand, task 3617). At the band-entry tick,
+' emergencyCutoff() is called at once, so band_ticks counts the short from the same rate as every
+' coast. The call waits on the front cog's answer (one front pass, about 1 ms), well inside the
+' 8 ms tick interval at the band. It prints nothing here: its "-- EMERGENCY STOP --" line is on
+' DBGCH_FAULT, which the tier's -D BENCH_QUIET compiles out (isp_bldc_motor_userconfig_bench.spin2
+' MOTOR_DBG_MASK). After it the release is frozen: a later, faster window cannot move
+' the band entry away from the moment the short was applied.
 '
 ' @param rowIdx - the row being measured, for the panel and the log
 ' @param seqNum - this run's 1-based row position, for the panel and the log
-' @param actionIdx - the action cell this row asks for
+' @param actionIdx - the action cell this row shows while waiting for the spin
+' @param bShortAtBand - TRUE for the e-stop row: apply emergencyCutoff() at the band-entry tick
 ' @returns handTicks - hall ticks up to and including the release (the rate-peak tick)
 ' @returns afterTicks - hall ticks after the release
 ' @returns afterMs - ms from the release to the last tick
-' @returns halfMs - ms from the release to half the release rate, or the whole coast when it never halved
-' @returns releaseSpan - the six-tick span AT the release (the row's minimum span), ms; 0 when
-'          fewer than T0_24_TICK_RING ticks were ever seen (no release rate to take)
+' @returns bandTicks - ticks from T0_24_BAND_RATE to rest: the row's criterion; 0 when not in band
+' @returns bandMs - ms those took
+' @returns bInBand - TRUE when the release was faster than T0_24_BAND_RATE
+' @returns releaseSpan - the six-interval span AT the release (the row's minimum span), ms; 0 when
+'          T0_24_TICK_RING + 1 ticks were never seen (no release rate to take)
+' @returns bShorted - TRUE when emergencyCutoff() was applied at the band entry (bShortAtBand only)
+' @returns bButtonEnded - TRUE when DONE or ABORT ended the row, rather than rest or the cap
 '
 ' @local hallCode - the 3-bit hall code just read
 ' @local priorCode - the previous poll's code
@@ -2773,12 +3070,13 @@ PRI t0sProbe(rowIdx, seqNum, actionIdx) : handTicks, afterTicks, afterMs, halfMs
 ' @local tickMs - the last T0_24_TICK_RING tick timestamps
 ' @local ringIdx - where the next tick's timestamp goes, and so the oldest kept
 ' @local totalTicks - every hall tick counted this row, released or not
-' @local bestSpan - the running minimum six-tick span seen so far; -1 until T0_24_TICK_RING ticks
+' @local bestSpan - the running minimum six-interval span seen so far; -1 until T0_24_TICK_RING + 1 ticks
 ' @local bestEndMs - getms() at the tick ending the current-best (fastest) window: the release, so far
 ' @local bestTickIdx - totalTicks at the moment bestSpan was last set
-' @local curSpan - the six-tick span ending at the tick just counted
+' @local curSpan - the six-interval span ending at the tick just counted
 ' @local lastAnyMs - the last tick of any kind, for the REST_QUIET auto-end
 ' @local buttonIdx - this poll's t0sReadAction() reading
+' @local bQuiet - TRUE when no tick has come for T0_24_IO_QUIET_MS: only then is the panel read or drawn
 ' @local bEnded - TRUE once the row is over
 
     t0sDrawPanel(rowIdx, actionIdx, seqNum, 0, 0, 0)
@@ -2790,7 +3088,9 @@ PRI t0sProbe(rowIdx, seqNum, actionIdx) : handTicks, afterTicks, afterMs, halfMs
     bestSpan := -1
     bestEndMs := 0
     bestTickIdx := 0
-    halfMs := -1
+    bShorted := FALSE
+    bButtonEnded := FALSE
+    t0sBandReset()
     bEnded := FALSE
     startMs := getms()
     lastAnyMs := startMs
@@ -2800,30 +3100,35 @@ PRI t0sProbe(rowIdx, seqNum, actionIdx) : handTicks, afterTicks, afterMs, halfMs
         if hallCode <> priorCode
             priorCode := hallCode
             lastAnyMs := nowMs
-            tickMs[ringIdx] := nowMs
-            ringIdx := (ringIdx + 1) +// T0_24_TICK_RING
             totalTicks += 1
-            if totalTicks >= T0_24_TICK_RING
-                curSpan := nowMs - tickMs[ringIdx]           ' ringIdx now holds the OLDEST of the last six
-                if (bestSpan < 0) or (curSpan < bestSpan)
+            if totalTicks > T0_24_TICK_RING
+                curSpan := nowMs - tickMs[ringIdx]           ' ringIdx holds the tick six back, about to be overwritten
+                if ((bestSpan < 0) or (curSpan < bestSpan)) and (bShorted == FALSE)
                     bestSpan := curSpan
                     bestEndMs := nowMs
                     bestTickIdx := totalTicks
-                    halfMs := -1                              ' a faster peak supersedes any earlier half-rate read
-                elseif (halfMs < 0) and (curSpan >= (bestSpan * T0_24_HALF_FACTOR))
-                    halfMs := nowMs - bestEndMs
+                    t0sBandReset()                            ' a faster peak: the band is entered after IT
+                else
+                    t0sBandTick(totalTicks, nowMs, curSpan, bestSpan)
+                    if bShortAtBand and bT0sBandEntered and (bShorted == FALSE)
+                        motor.emergencyCutoff()               ' the e-stop row: BR_SHORT from the band-entry tick on
+                        bShorted := TRUE
+            tickMs[ringIdx] := nowMs
+            ringIdx := (ringIdx + 1) +// T0_24_TICK_RING
         pollIdx += 1
-        if (pollIdx +// T0_24_INPUT_POLLS) == 0
+        bQuiet := (nowMs - lastAnyMs) >= T0_24_IO_QUIET_MS
+        if bQuiet and ((pollIdx +// T0_24_INPUT_POLLS) == 0)
             buttonIdx := t0sReadAction(DECOD T0_24_BTN_DONE | DECOD T0_24_BTN_ABORT)
             if (buttonIdx == T0_24_BTN_DONE) or (buttonIdx == T0_24_BTN_ABORT)
                 bEnded := TRUE
-        if (pollIdx +// T0_24_PRINT_POLLS) == 0
-            ' Live display only -- never feeds the algorithm above. Once it has been quiet for half
-            ' the rest threshold, show COASTING instead of the driving prompt, so the screen still
+                bButtonEnded := TRUE
+        if bQuiet and ((pollIdx +// T0_24_PRINT_POLLS) == 0)
+            ' Live display only -- never feeds the algorithm above. Once the wheel has turned and
+            ' then been quiet, show COASTING instead of the driving prompt, so the screen still
             ' says what's happening now even though the release itself isn't known until the row
-            ' ends. Running ticks and elapsed ms; the verdict numbers (hand/after/half) are computed
+            ' ends. Running ticks and elapsed ms; the verdict numbers (hand/after/band) are computed
             ' below, once.
-            if (totalTicks > 0) and ((nowMs - lastAnyMs) >= (T0_24_REST_QUIET_MS / 2))
+            if totalTicks > 0
                 t0sDrawPanel(rowIdx, T0_24_ACT_COASTING, seqNum, totalTicks, 0, nowMs - startMs)
             else
                 t0sDrawPanel(rowIdx, actionIdx, seqNum, totalTicks, 0, nowMs - startMs)
@@ -2834,21 +3139,19 @@ PRI t0sProbe(rowIdx, seqNum, actionIdx) : handTicks, afterTicks, afterMs, halfMs
         waitms(T0_24_POLL_MS)
 
     if bestSpan < 0
-        releaseSpan := 0                                      ' fewer than T0_24_TICK_RING ticks all row: unmeasured
+        releaseSpan := 0                                      ' too few ticks all row for one span: unmeasured
         handTicks := totalTicks
         afterTicks := 0
         afterMs := 0
-        halfMs := 0
     else
         releaseSpan := bestSpan
         handTicks := bestTickIdx
         afterTicks := totalTicks - bestTickIdx
         afterMs := (lastAnyMs - bestEndMs) #> 0
-        if halfMs < 0
-            halfMs := afterMs                                 ' it stopped before the rate ever halved: the whole coast
-    debug("T0-24,row,", udec_(seqNum), ",coast,hand_ticks,", udec_(handTicks), ",release_span_ms,", udec_(releaseSpan), ",after_ticks,", udec_(afterTicks), ",after_ms,", udec_(afterMs), ",half_ms,", udec_(halfMs))
+    bandTicks, bandMs, bInBand := t0sBandResult(releaseSpan, bestTickIdx, bestEndMs, totalTicks, lastAnyMs)
+    debug("T0-24,row,", udec_(seqNum), ",coast,hand_ticks,", udec_(handTicks), ",release_span_ms,", udec_(releaseSpan), ",after_ticks,", udec_(afterTicks), ",after_ms,", udec_(afterMs), ",band_span_ms,", udec_(T0_24_BAND_SPAN_MS), ",in_band,", zstr_(bInBand ? @"TRUE" : @"FALSE"), ",band_entered,", zstr_(bT0sBandEntered ? @"TRUE" : @"FALSE"), ",band_ticks,", udec_(bandTicks), ",band_ms,", udec_(bandMs), ",shorted,", zstr_(bShorted ? @"TRUE" : @"FALSE"))
 
-PRI t0sRunHoldRow(rowIdx, seqNum) | actionIdx, watchMs, bDisplaced, dispFirstMs, ceilFirstMs, ceilSenseI, slipFirstMs, limitFirstMs, faultFirstMs, bAborted, bPass, bFaultedFirst
+PRI t0sRunHoldRow(rowIdx, seqNum) | actionIdx, watchMs, bDisplaced, dispFirstMs, ceilFirstMs, ceilSenseI, slipFirstMs, limitFirstMs, faultFirstMs, bAborted, bPass, bFaultedFirst, startHs, startDisp, bStartHeld, bMeasured
 ' The three hold-mechanism rows (task 3608, DRIVER_REV 8): watch the driver's own hold state
 ' transition under a hand, log per 10 ms (pos, holdDisp, hold duty, drv_state, sense_i), and judge
 ' each row from those transitions, never from how hard or how long he pushed.
@@ -2869,6 +3172,10 @@ PRI t0sRunHoldRow(rowIdx, seqNum) | actionIdx, watchMs, bDisplaced, dispFirstMs,
 ' @local bPass - this row's pre-registered criterion
 ' @local bFaultedFirst - TRUE when the driver's own fault test beat the front cog's slip test
 '        (HOLD-SLIP only; recorded either way, per task 3607's spec)
+' @local startHs - getHoldStatus()'s state at the watch's first sample, HS_*
+' @local startDisp - its displacement then, hall ticks
+' @local bStartHeld - TRUE when the watch began on a fresh hold: HS_HOLDING at displacement 0
+' @local bMeasured - TRUE when the row's cell is a measurement: a fresh hold, and he pushed it
 
     case rowIdx
         T0_24_ROW_HOLDRISE:
@@ -2884,28 +3191,35 @@ PRI t0sRunHoldRow(rowIdx, seqNum) | actionIdx, watchMs, bDisplaced, dispFirstMs,
     t0sDrawPanel(rowIdx, actionIdx, seqNum, 0, 0, 0)
     debug("T0-24,row,", udec_(seqNum), ",id,", udec_(rowIdx), ",hold_watch,begin,asking_for,", zstr_(t0sRowAction(rowIdx)))
 
-    bDisplaced, dispFirstMs, ceilFirstMs, ceilSenseI, slipFirstMs, limitFirstMs, faultFirstMs, bAborted := t0sHoldWatch(rowIdx, seqNum, actionIdx, watchMs)
+    bDisplaced, dispFirstMs, ceilFirstMs, ceilSenseI, slipFirstMs, limitFirstMs, faultFirstMs, bAborted, startHs, startDisp := t0sHoldWatch(rowIdx, seqNum, actionIdx, watchMs)
 
+    ' PL-123 item 1: a row whose first sample is not a fresh hold (HS_HOLDING at displacement 0) is
+    ' judged from whatever the last row left, so its cell is NOMEAS whatever it reads
+    bStartHeld := (startHs == motor.HS_HOLDING) and (startDisp == 0)
+    bMeasured := bDisplaced and bStartHeld
     bFaultedFirst := bDisplaced and (faultFirstMs >= 0) and ((slipFirstMs < 0) or (faultFirstMs <= slipFirstMs))
     case rowIdx
         T0_24_ROW_HOLDRISE:
             bPass := bDisplaced and (ceilFirstMs >= 0) and ((ceilFirstMs - dispFirstMs) <= T0_24_HOLD_RISE_OK_MS) and (slipFirstMs < 0) and (limitFirstMs < 0) and (faultFirstMs < 0)
-            bT0sHoldRiseMeasured := bDisplaced
+            bT0sHoldRiseMeasured := bMeasured
             bT0sHoldRisePass := bPass
         T0_24_ROW_HOLDSLIP:
             bPass := bDisplaced and (slipFirstMs >= 0) and (bFaultedFirst == FALSE)
-            bT0sHoldSlipMeasured := bDisplaced
+            bT0sHoldSlipMeasured := bMeasured
             bT0sHoldSlipPass := bPass
             bT0sHoldSlipFaultedFirst := bFaultedFirst
         other:
             bPass := bDisplaced and (limitFirstMs >= 0)
-            bT0sHoldLimitMeasured := bDisplaced
+            bT0sHoldLimitMeasured := bMeasured
             bT0sHoldLimitPass := bPass
 
-    debug("T0-24,row,", udec_(seqNum), ",hold_result,displaced,", zstr_(bDisplaced ? @"TRUE" : @"FALSE"), ",disp_first_ms,", sdec_(dispFirstMs), ",ceil_first_ms,", sdec_(ceilFirstMs), ",ceil_sense_i,", sdec_(ceilSenseI), ",slip_first_ms,", sdec_(slipFirstMs), ",limit_first_ms,", sdec_(limitFirstMs), ",fault_first_ms,", sdec_(faultFirstMs), ",fault_first,", zstr_(bFaultedFirst ? @"TRUE" : @"FALSE"), ",aborted,", zstr_(bAborted ? @"TRUE" : @"FALSE"), ",pass,", zstr_(bPass ? @"PASS" : @"FAIL"))
-    t0sDrawPanel(rowIdx, bDisplaced ? T0_24_ACT_ROWDONE : T0_24_ACT_ROWSKIPPED, seqNum, 0, 0, 0)
+    debug("T0-24,row,", udec_(seqNum), ",hold_result,displaced,", zstr_(bDisplaced ? @"TRUE" : @"FALSE"), ",disp_first_ms,", sdec_(dispFirstMs), ",ceil_first_ms,", sdec_(ceilFirstMs), ",ceil_sense_i,", sdec_(ceilSenseI), ",slip_first_ms,", sdec_(slipFirstMs), ",limit_first_ms,", sdec_(limitFirstMs), ",fault_first_ms,", sdec_(faultFirstMs), ",fault_first,", zstr_(bFaultedFirst ? @"TRUE" : @"FALSE"), ",aborted,", zstr_(bAborted ? @"TRUE" : @"FALSE"), ",pass,", zstr_(bPass ? @"PASS" : @"FAIL"), ",start_hs,", udec_(startHs), ",start_disp,", sdec_(startDisp), ",start_held,", zstr_(bStartHeld ? @"TRUE" : @"FALSE"))
+    if bMeasured                                                 ' if/else, never `? :` -- PL-29, PL-76
+        t0sDrawPanel(rowIdx, T0_24_ACT_ROWDONE, seqNum, 0, 0, 0)
+    else                                                         ' not pushed, or not a fresh hold: its cell is NOMEAS
+        t0sDrawPanel(rowIdx, T0_24_ACT_ROWSKIPPED, seqNum, 0, 0, 0)
 
-PRI t0sHoldWatch(rowIdx, seqNum, actionIdx, watchBoundMs) : bDisplaced, dispFirstMs, ceilFirstMs, ceilSenseI, slipFirstMs, limitFirstMs, faultFirstMs, bAborted | hallCode, priorHall, posAccum, startMs, nowMs, elapsedMs, eState, disp, duty, ceilDuty, ceilPasses, slipEvents, limitEvents, drvState, senseI, sampleIdx, printIdx, buttonIdx, bEnded
+PRI t0sHoldWatch(rowIdx, seqNum, actionIdx, watchBoundMs) : bDisplaced, dispFirstMs, ceilFirstMs, ceilSenseI, slipFirstMs, limitFirstMs, faultFirstMs, bAborted, startHs, startDisp | hallCode, priorHall, posAccum, startMs, nowMs, elapsedMs, eState, disp, duty, ceilDuty, ceilPasses, slipEvents, limitEvents, drvState, senseI, sampleIdx, printIdx, buttonIdx, bEnded
 ' The 10 ms sampling loop every hold row shares (task 3607's hold-row spec): logs pos, holdDisp,
 ' hold duty, drv_state, sense_i once per T0_24_HOLD_LOG_MS through the ONE shared debug() format
 ' in t0sLogHold() (DBG-2/DBG-4: one compiled record however many times it runs). Input (DONE /
@@ -2924,6 +3238,8 @@ PRI t0sHoldWatch(rowIdx, seqNum, actionIdx, watchBoundMs) : bDisplaced, dispFirs
 ' @returns limitFirstMs - as t0sRunHoldRow() documents
 ' @returns faultFirstMs - as t0sRunHoldRow() documents
 ' @returns bAborted - TRUE when ABORT ended the row early
+' @returns startHs - getHoldStatus()'s state at the first sample, HS_* (PL-123 item 1)
+' @returns startDisp - getHoldStatus()'s displacement at the first sample, hall ticks
 '
 ' @local hallCode - the 3-bit hall code just read
 ' @local priorHall - the previous poll's code
@@ -2958,6 +3274,7 @@ PRI t0sHoldWatch(rowIdx, seqNum, actionIdx, watchBoundMs) : bDisplaced, dispFirs
     sampleIdx := 0
     printIdx := 0
     bEnded := FALSE
+    startHs, startDisp := motor.getHoldStatus()                 ' the state the watch begins from, before any push
     startMs := getms()
     repeat while bEnded == FALSE
         hallCode := t0sHallCode()
@@ -3120,9 +3437,9 @@ PRI t0sRowPrediction(rowIdx) : pText
         T0_24_ROW_HOLDSLIP:  pText := @"HS_SLIPPED_WITHIN_2_TICKS_THEN_A_SPEED_DEPENDENT_DRAG_NO_HOLD"
         T0_24_ROW_HOLDLIMIT: pText := @"HS_LIMITED_AFTER_ABOUT_2_S_AT_THE_CEILING"
         T0_24_ROW_COAST:     pText := @"SPINS_FREELY_AND_COASTS"
-        T0_24_ROW_ESTOP:     pText := @"RESISTS_HARDER_THE_FASTER_IT_IS_TURNED"
-        T0_24_ROW_FLTCOAST:  pText := @"SPINS_FREELY_AND_COASTS"
-        T0_24_ROW_FLTHOLD:   pText := @"RESISTS_HARDER_THE_FASTER_IT_IS_TURNED"
+        T0_24_ROW_ESTOP:     pText := @"THE_PROGRAM_SHORTS_IT_AS_IT_SLOWS_AND_IT_STOPS_ABRUPTLY"
+        T0_24_ROW_FLTCOAST:  pText := @"THE_FORCED_FAULT_LETS_IT_COAST_TO_A_STOP"
+        T0_24_ROW_FLTHOLD:   pText := @"THE_FORCED_FAULT_SHORTS_IT_AND_IT_STOPS_ALMOST_AT_ONCE"
         other:               pText := @"SPINS_FREELY_THE_PINS_ARE_RELEASED"
 
 PRI t0sRowAction(rowIdx) : pText
@@ -3137,7 +3454,9 @@ PRI t0sRowAction(rowIdx) : pText
         T0_24_ROW_HOLDRISE:  pText := @"PUSH_IT_BY_HAND_AND_HOLD_IT_DISPLACED_THEN_CLICK_DONE"
         T0_24_ROW_HOLDSLIP:  pText := @"PUSH_IT_PAST_THE_LOW_CEILING_THEN_CLICK_DONE"
         T0_24_ROW_HOLDLIMIT: pText := @"PUSH_IT_TO_THE_CEILING_AND_HOLD_STEADILY_FOR_ABOUT_2_S"
-        other:               pText := @"SPIN_IT_BRISKLY_THEN_LET_GO_THE_WHEEL_TIMES_ITSELF"
+        T0_24_ROW_FLTCOAST, T0_24_ROW_FLTHOLD:
+                             pText := @"HANDS_OFF_IT_DRIVES_ITSELF_AND_IS_FAULTED_ON_PURPOSE_ABORT_STOPS_IT"
+        other:               pText := @"SPIN_IT_HARD_AND_LET_GO_IT_MUST_PASS_THE_MEASURING_SPEED"
 
 PRI t0sEmitCells() | coastGap, fltGap
 ' Every cell this tier judges, emitted once, after the last row. FREEREF is emitted FIRST
@@ -3145,35 +3464,40 @@ PRI t0sEmitCells() | coastGap, fltGap
 ' read before any other cell is trusted. Three others compare two rows with each other and so
 ' cannot be judged where either row runs.
 '
-' @local coastGap - COAST's half-rate time less ESTOP's, ms
-' @local fltGap - FLTCOAST's half-rate time less FLTHOLD's, ms
+' Every stop cell judges band_ticks (task 3617, PL-123 item 2) against the limits derived in
+' CON { T0-24 sign-off limits }: a coast carries SF_COAST_MIN_TICKS or more from T0_24_BAND_RATE,
+' a brake SF_BRAKE_MAX_TICKS or fewer. A row released below the band is NOMEAS, never judged.
+' FREEREF can FAIL: a wheel that stops like a brake reads at most SF_BRAKE_MAX_TICKS, under its limit.
+'
+' @local coastGap - COAST's band_ticks less ESTOP's
+' @local fltGap - FLTCOAST's band_ticks less FLTHOLD's
 
-    t0sEmitNum(@sCellFreeRef, @sCritFreeRef, t0sHalfMs[T0_24_ROW_COGSTOP], SF_FREE_HALF_MS, T0_24_COAST_CAP_MS, bT0sRowMeasured[T0_24_ROW_COGSTOP], t0sHalfMs[T0_24_ROW_COGSTOP] >= SF_FREE_HALF_MS)
+    t0sEmitNum(@sCellFreeRef, @sCritFreeRef, t0sBandTicks[T0_24_ROW_COGSTOP], SF_COAST_MIN_TICKS, SF_BAND_TICKS_HI, bT0sRowMeasured[T0_24_ROW_COGSTOP], t0sBandTicks[T0_24_ROW_COGSTOP] >= SF_COAST_MIN_TICKS)
     emitCellBool(@sCellHoldRise, @sTaskHoldRows, @"RIGHT", @sCritHoldRise, bT0sHoldRiseMeasured, bT0sHoldRisePass, 1)
     emitCellBool(@sCellHoldSlip, @sTaskHoldRows, @"RIGHT", @sCritHoldSlip, bT0sHoldSlipMeasured, bT0sHoldSlipPass, 1)
     emitCellBool(@sCellHoldLimit, @sTaskHoldRows, @"RIGHT", @sCritHoldLimit, bT0sHoldLimitMeasured, bT0sHoldLimitPass, 1)
-    t0sEmitNum(@sCellRestCoast, @sCritRestCoast, t0sHalfMs[T0_24_ROW_COAST], SF_FREE_HALF_MS, T0_24_COAST_CAP_MS, bT0sRowMeasured[T0_24_ROW_COAST], t0sHalfMs[T0_24_ROW_COAST] >= SF_FREE_HALF_MS)
-    t0sEmitNum(@sCellRestShort, @sCritRestShort, t0sHalfMs[T0_24_ROW_ESTOP], 0, SF_BRAKE_HALF_MS, bT0sRowMeasured[T0_24_ROW_ESTOP], t0sHalfMs[T0_24_ROW_ESTOP] <= SF_BRAKE_HALF_MS)
-    coastGap := t0sHalfMs[T0_24_ROW_COAST] - t0sHalfMs[T0_24_ROW_ESTOP]
-    t0sEmitNum(@sCellStopGap, @sCritStopGap, coastGap, SF_MODE_GAP_MS, T0_24_COAST_CAP_MS, bT0sRowMeasured[T0_24_ROW_COAST] and bT0sRowMeasured[T0_24_ROW_ESTOP], coastGap >= SF_MODE_GAP_MS)
-    emitCellBool(@sCellFltCoast, @sTaskStopMode, @"RIGHT", @sCritFltCoast, bT0sRowMeasured[T0_24_ROW_FLTCOAST], (t0sHalfMs[T0_24_ROW_FLTCOAST] >= SF_FREE_HALF_MS) and bT0sStillFaulted[T0_24_ROW_FLTCOAST], 1)
-    emitCellBool(@sCellFltShort, @sTaskStopMode, @"RIGHT", @sCritFltShort, bT0sRowMeasured[T0_24_ROW_FLTHOLD], (t0sHalfMs[T0_24_ROW_FLTHOLD] <= SF_BRAKE_HALF_MS) and bT0sStillFaulted[T0_24_ROW_FLTHOLD], 1)
-    fltGap := t0sHalfMs[T0_24_ROW_FLTCOAST] - t0sHalfMs[T0_24_ROW_FLTHOLD]
-    t0sEmitNum(@sCellFltGap, @sCritFltGap, fltGap, SF_MODE_GAP_MS, T0_24_COAST_CAP_MS, bT0sRowMeasured[T0_24_ROW_FLTCOAST] and bT0sRowMeasured[T0_24_ROW_FLTHOLD], fltGap >= SF_MODE_GAP_MS)
+    t0sEmitNum(@sCellRestCoast, @sCritRestCoast, t0sBandTicks[T0_24_ROW_COAST], SF_COAST_MIN_TICKS, SF_BAND_TICKS_HI, bT0sRowMeasured[T0_24_ROW_COAST], t0sBandTicks[T0_24_ROW_COAST] >= SF_COAST_MIN_TICKS)
+    t0sEmitNum(@sCellRestShort, @sCritRestShort, t0sBandTicks[T0_24_ROW_ESTOP], 0, SF_BRAKE_MAX_TICKS, bT0sRowMeasured[T0_24_ROW_ESTOP], t0sBandTicks[T0_24_ROW_ESTOP] <= SF_BRAKE_MAX_TICKS)
+    coastGap := t0sBandTicks[T0_24_ROW_COAST] - t0sBandTicks[T0_24_ROW_ESTOP]
+    t0sEmitNum(@sCellStopGap, @sCritStopGap, coastGap, SF_MODE_GAP_TICKS, SF_BAND_TICKS_HI, bT0sRowMeasured[T0_24_ROW_COAST] and bT0sRowMeasured[T0_24_ROW_ESTOP], coastGap >= SF_MODE_GAP_TICKS)
+    emitCellBool(@sCellFltCoast, @sTaskStopMode, @"RIGHT", @sCritFltCoast, bT0sRowMeasured[T0_24_ROW_FLTCOAST], (t0sBandTicks[T0_24_ROW_FLTCOAST] >= SF_COAST_MIN_TICKS) and bT0sStillFaulted[T0_24_ROW_FLTCOAST], 1)
+    emitCellBool(@sCellFltShort, @sTaskStopMode, @"RIGHT", @sCritFltShort, bT0sRowMeasured[T0_24_ROW_FLTHOLD], (t0sBandTicks[T0_24_ROW_FLTHOLD] <= SF_BRAKE_MAX_TICKS) and bT0sStillFaulted[T0_24_ROW_FLTHOLD], 1)
+    fltGap := t0sBandTicks[T0_24_ROW_FLTCOAST] - t0sBandTicks[T0_24_ROW_FLTHOLD]
+    t0sEmitNum(@sCellFltGap, @sCritFltGap, fltGap, SF_MODE_GAP_TICKS, SF_BAND_TICKS_HI, bT0sRowMeasured[T0_24_ROW_FLTCOAST] and bT0sRowMeasured[T0_24_ROW_FLTHOLD], fltGap >= SF_MODE_GAP_TICKS)
 
-PRI t0sEmitNum(pCell, pCrit, measuredMs, loMs, hiMs, bMeasured, bPass)
-' One numeric SIGNOFF for a T0-24 cell, in ms, through the shared emitCellNum() -- one record
-' format for every numeric cell in this file, from hub strings (DBG-2).
+PRI t0sEmitNum(pCell, pCrit, measuredTicks, loTicks, hiTicks, bMeasured, bPass)
+' One numeric SIGNOFF for a T0-24 cell, in hall ticks (task 3617: band_ticks), through the shared
+' emitCellNum() -- one record format for every numeric cell in this file, from hub strings (DBG-2).
 '
 ' @param pCell - pointer to the cell id
 ' @param pCrit - pointer to the criterion token
-' @param measuredMs - the reading
-' @param loMs - the criterion's low limit
-' @param hiMs - its high limit
-' @param bMeasured - TRUE when the row was set up AND the wheel was actually turned
+' @param measuredTicks - the reading
+' @param loTicks - the criterion's low limit
+' @param hiTicks - its high limit
+' @param bMeasured - TRUE when the row was set up AND its release was above the band
 ' @param bPass - the criterion held
 
-    emitCellNum(pCell, @sTaskStopMode, @"RIGHT", pCrit, bMeasured, measuredMs, loMs, hiMs, @"MS", bMeasured ? 1 : 0, bPass ? @"PASS" : @"FAIL")
+    emitCellNum(pCell, @sTaskStopMode, @"RIGHT", pCrit, bMeasured, measuredTicks, loTicks, hiTicks, @"TICKS", bMeasured ? 1 : 0, bPass ? @"PASS" : @"FAIL")
 
 PRI t0sSetupPanel() | btnIdx, slotX
 ' Create the T0-24 panel window and load its layers -- crop-and-overlay technique,
@@ -3191,10 +3515,15 @@ PRI t0sSetupPanel() | btnIdx, slotX
 ' The assets t0s_bg.bmp, t0s_rows.bmp, t0s_actions.bmp, t0s_digits.bmp and t0s_buttons.bmp are
 ' generated by `python3 tools/gen_t0stop_assets.py` and committed beside this file.
 '
+' THE TITLE NAMES THE WHEEL (task 3617, PL-123 item 4). At Visit 10 pass 2 no panel named it before
+' the rows began, and Stephen was unsure which wheel to use. The window title shows on every screen
+' from the first on, in the words the art's own action texts use (gen_t0stop_assets.py WHEEL_TEXT).
+' It is single-quoted and has no apostrophe (PLOT-DISPLAY-RULES.md rule 6).
+'
 ' @local btnIdx - button slot being blitted
 ' @local slotX - that slot's left edge
 
-    debug(`PLOT t0stop TITLE 'T0-24 stop-state hand test' SIZE 480 344 POS 60 80 HIDEXY UPDATE)
+    debug(`PLOT t0stop TITLE 'T0-24 stop-state hand test -- RIGHT WHEEL (P16 BOARD)' SIZE 480 344 POS 60 80 HIDEXY UPDATE)
     debug(`t0stop cartesian 1)
     debug(`t0stop LAYER 1 't0s_bg.bmp')
     debug(`t0stop LAYER 2 't0s_rows.bmp')

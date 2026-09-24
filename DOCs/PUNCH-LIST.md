@@ -3894,6 +3894,18 @@ crossed walks trip, and no healthy walk does.
 
 **Disposition:** ⛔ fix. Task «#3617».
 
+**BUILT 2026-09-24 (test_bench_t0 SRC_REV 13, not yet certified):**
+1. Each hold row re-arms the hold: float for 20 ms, then brake again. A row that does not start HS_HOLDING at 0 is NOMEAS.
+2. The stop metric is now `band_ticks`: the ticks from 120 ticks/s down to rest. A coast predicts 9–36 and a short 1–3.
+   The thresholds (coast ≥ 7, brake ≤ 4) are derived in the source from every coast and short on record.
+   - A spin too slow for the band says TOO SLOW and retries, up to 3 tries.
+   - The e-stop row is spun free, and the program shorts it at the band entry. A hand cannot spin a shorted wheel into
+     the band.
+3. Rows 6 and 7 fault through `testForceFault()` under FR_SHIPPED.
+4. The panel header names the RIGHT wheel on every screen, and the fault row reads "FAULT, BRAKE MODE".
+
+Visit 10 pass 3 certifies it.
+
 ### PL-124 -- dual-fault's REST window opens while the driver's ramp is still driving the bridge
 
 **Found 2026-09-24** during «#3616»'s desk trace of Visit 10 pass 2 (evaluation §7 P2-F11).

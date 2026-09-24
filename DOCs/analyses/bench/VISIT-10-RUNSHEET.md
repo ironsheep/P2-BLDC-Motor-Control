@@ -1,19 +1,11 @@
-# Visit 10 — run sheet, pass 2 (the drive ends well: the hold, the fault responses, the platform policy, startup checks)
+# Visit 10 — run sheet, pass 3 (the fallback, the walk guard, and T0-24 rebuilt)
 
-**Task:** «#3613» runs it. **Built by:** «#3608» (hold), «#3612» (platform policy), «#3609» (fault response), «#3610»
-(start checks), «#3607» (T0-24), «#3614» (the firmware negatives). **Plan:** `BENCH-READINESS-SPRINT-PLAN.md`, R19.
+**Task:** «#3613» runs it. **Built by:** «#3616» (the fault latch), «#3618» (the walk's current guard), PL-124 (the
+REST window), «#3617» (T0-24's instrument). **Plan:** `BENCH-READINESS-SPRINT-PLAN.md`, R19.
 
-**Pass 1 (2026-09-23 16:03–16:06):** three runs came back. The right board drove nothing (PL-120), and T0-24's rows
-ended before a hand was on the wheel (PL-121, fixed). No fault-response or hold cell was measured.
-[Evaluation](2026-09-23/VISIT-10-PASS1-EVALUATION.md).
-
----
-
-## Before the session — the right board
-
-**The right motor board put no voltage on any motor lead in every run of pass 1** (PL-120). The left board, on the
-same program, did. Every load below that drives the right wheel measures nothing until that board drives again.
-Check its power and motor connections before run 1. Run 1 then shows in its log whether it drives.
+**Passes 1 and 2 (2026-09-23):** the start checks and their negatives certified; the right board drives again. The
+fallback to the graded short never showed, the walk drew about 26 A on crossed halls, and T0-24's instrument could not
+read a coast. [Pass 2 evaluation](2026-09-23/VISIT-10-PASS2-EVALUATION.md). Pass 3 re-runs only what changed under it.
 
 ---
 
@@ -21,13 +13,11 @@ Check its power and motor connections before run 1. Run 1 then shows in its log 
 
 | Load | Every banner / build record must read |
 |---|---|
-| `dual-*` tiers | `BM-BANNER,...,src_rev,38,fmt,24` and `BM-BUILD ... drv_rev,13`. Anything lower means an old tree was built: stop and report |
+| `dual-*` tiers | `BM-BANNER,...,src_rev,40,fmt,25` and `BM-BUILD ... drv_rev,16`. Anything lower means an old tree was built: stop and report |
 | `dual-start` | part `START`, `BM-SKBUILD ... no_walk,FALSE`, negative `NONE` |
-| `dual-start-phaseneg` | part `START`, `BM-SKBUILD` negative `PHASE`, a `BM-SKNEG` record before every `BM-SSTART` |
 | `dual-start-swapneg` | part `START`, `BM-SKBUILD` negative `SWAP`, a `BM-SKNEG` record before each of the last 3 `BM-SSTART` |
-| `dual-start-nowalk` | part `START`, `BM-SKBUILD ... no_walk,TRUE`, negative `NONE` |
 | `dual-fault` | part `FRESP`; a `BM-FRBUILD` record; `BM-NOTBUILT` for `B4PULSE` only |
-| `t0-stopmode` | `src_rev 12`; `T0-24,row,...` records numbered 1 to 8 |
+| `t0-stopmode` | `src_rev 13`; `T0-24,row,...` records numbered 1 to 8 |
 
 ---
 
@@ -35,13 +25,17 @@ Check its power and motor connections before run 1. Run 1 then shows in its log 
 
 | | |
 |---|---|
-| **Purpose** | **Measurement and certification**, as pass 1 declared it. It sizes the hold's ceiling in amps, the graded short's duty, the rest-zero band, the lead-check thresholds and the wiring walk's power. It certifies the hold's hand-offs, the re-synced stop, the graded-short fallback, the platform stop when one wheel faults, the forced-fault hook's own negative, the stop-state coasts, and each start check against a negative it must catch. |
-| **Hardware risk** | `dual-fault` **faults the wheels on purpose at up to about 220 rpm commanded**. Each fault ends in a phase short, a free coast, a controlled ramp down, or the graded short. **The graded short regenerates into the supply, so it needs the pack, not a bench supply.** The 10 A abort and the fold-back limiter apply throughout. `dual-start-swapneg` drives the left wheel as if two hall wires were swapped. A swapped pair reverses the hall sequence the driver reads, so the wheel may jerk, buzz or turn briefly the wrong way, for up to 2 s per leg at power 10, until its fault test or the 10 A abort stops it. `t0-stopmode` spins the right wheel under power in rows 6 and 7. **Wheels up throughout. Hands off in every unattended tier. Panic: physical battery disconnect.** |
-| **Who can observe** | `t0-stopmode` is attended. Each row waits for you after START ROW and says on its panel what to do and what you should feel. The unattended tiers need nobody. One observation is worth having near `dual-fault`: does a 100 % graded stop sound or look like the full short? That is an observation, not a verdict. |
-| **Runs that carry state** | None. The firmware negatives apply to one start each, and the next start reads the wiring as it is. |
-| **Run length** | About 15 minutes of unattended runs, 2 minutes of rewiring for run 4, and about 10 minutes attended for run 6. |
+| **Purpose** | **Certification, and sizing the graded short.** It certifies that a second fault during a re-synced stop now takes the fallback and holds it (BLUNT). It sizes BRAKE_PCT_DEFAULT (GRADED, GRD100). It certifies the walk's current guard against the crossed-hall walk, the Rev B rest-zero band (−20…+40 mV), the REST window's fix, and T0-24's rebuilt instrument, each against its negative. |
+| **Hardware risk** | `dual-fault` **faults the wheels on purpose at up to about 220 rpm commanded**. Each fault ends in a phase short, a free coast, a controlled ramp down, or the graded short. The graded short now actually runs, and **it regenerates into the supply, so it needs the pack, not a bench supply.** `dual-start-swapneg` drives the left wheel as if two hall wires were crossed; the new guard shorts a leg as soon as it draws more than 1 A. `t0-stopmode` spins the right wheel under power in rows 6 and 7, and in row 5 the program shorts the wheel while you watch it coast. **Wheels up throughout. Hands off in every unattended tier. Panic: physical battery disconnect.** |
+| **Who can observe** | `t0-stopmode` is attended; each row says on its panel what to do and what you should feel. The unattended tiers need nobody, and **nobody should touch the wheels during `dual-fault`**: pass 2's right-wheel trials 14–17 were disturbed by a hand, and they are re-run here. |
+| **Runs that carry state** | None. The swap negative applies to one start each. |
+| **Run length** | About 15 minutes unattended, then about 10 minutes attended for run 4. |
 | **Repeatability** | All repeatable and idempotent. |
-| **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack, 270 MHz. `test_bench_dual.spin2` parts START (four builds) and FAULTRESP; `test_bench_t0.spin2` T0-24. |
+| **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack, 270 MHz. `test_bench_dual.spin2` parts START (two builds) and FAULTRESP; `test_bench_t0.spin2` T0-24. |
+
+**Not re-run, and why:** `dual-start-phaseneg` and `dual-start-nowalk` certified in pass 2, and nothing under them has
+changed since. The lead probe and the hall check are untouched; the only start-check change is the rest-zero band, which
+run 1 judges.
 
 ---
 
@@ -49,142 +43,83 @@ Check its power and motor connections before run 1. Run 1 then shows in its log 
 
 ```bash
 tools/bench-run.sh dual-start             # 1: Hands off. Startup checks with normal wiring; both wheels nudge a little near the end
-tools/bench-run.sh dual-start-phaseneg    # 2: Hands off. The program fakes a dead motor wire on the LEFT wheel; nothing moves
-tools/bench-run.sh dual-start-swapneg     # 3: Hands off. The program fakes crossed sensor wires on the LEFT wheel; it may jerk or turn backwards briefly
-tools/bench-run.sh dual-start-nowalk      # 4: YOU: battery off, unplug the RIGHT wheel's hall-sensor connector, battery on, run; nothing moves
-tools/bench-run.sh dual-fault             # 5: Hands off. Each wheel spins up and is stopped hard on purpose, about 6 minutes
-tools/bench-run.sh t0-stopmode            # 6: YOU, at the RIGHT wheel: follow each panel; every row waits for you
+tools/bench-run.sh dual-start-swapneg     # 2: Hands off. The program fakes crossed sensor wires on the LEFT wheel; it may twitch, then stops itself
+tools/bench-run.sh dual-fault             # 3: Hands off, and keep hands away. Each wheel spins up and is stopped on purpose, about 6 minutes
+tools/bench-run.sh t0-stopmode            # 4: YOU, at the RIGHT wheel: follow each panel; every row waits for you
 ```
 
-**Runs 2 and 3 need nothing from you.** The program fakes each fault itself on the left wheel. No wire is touched.
-
-**Run 4 is the only wiring change:** disconnect the battery, unplug the RIGHT wheel's hall-sensor connector, reconnect
-the battery, and run. Afterwards disconnect the battery again, replug the connector, and reconnect.
-
-**No run depends on another run's result.** If run 1 shows the right board still dead, the right-wheel cells of runs
-5 and 6 come back NOMEAS, and the analysis says so.
+**No run depends on another run's result, and nothing needs rewiring.**
 
 ---
 
 ## What each load decides, and how each can fail
 
-Every criterion is fixed here, before the run (D2). Cells print their own verdict. The rest are judged in the report
+Every criterion is fixed here, before the run (D2). Cells print their own verdict; the rest are judged in the report
 from the named records.
 
-### `dual-start` — the start checks and the wiring walk (startup study §6)
-
-Ten steering lifetimes. Each start records `BM-SSTART`, `BM-SKHEALTH` (both wheels) and one `BM-SKPROBE` per wheel.
-The last three also record `BM-SKWALK`, and the segment ends with one `BM-SKSUM` per wheel.
+### `dual-start` — the rest-zero band, and the guard's positive control
 
 | Cell | Criterion | Fails if | Control | Sizes |
 |---|---|---|---|---|
-| **R19-DUAL-PRBFLR-X**, per wheel, **judged first** | the largest coasting-floor phase reading ≤ 99 mV | the floor reaches 100 mV | this *is* the probe's able-to-report control | the floor the follow threshold must stay above |
-| **R19-DUAL-HEALTH-X**, per wheel | 0 of 10 starts with any failed bit | any bit in `l_fail`/`r_fail` | runs 2 and 4 | — |
-| **R19-DUAL-RZSPREAD-X**, per wheel | 0 rest zeros outside −100…+200 mV | one outside the band | — | **REST_ZERO_MIN_MV/MAX_MV** from `BM-SKSUM`. Pass 1 measured the left at 7.7–8.5 mV and the right at 0.3–2.4 mV |
-| **R19-DUAL-PROBE-X**, per wheel | 0 of 30 probes whose driven phase reads under 200 mV, or any follower under 50 % of it | any bad probe | PRBFLR; run 2 | **CONT_MIN_DRIVEN_MV**, **CONT_FOLLOW_PCT**. Pass 1 left: driven ≥ 782 mV, followers ≥ 95 % |
-| **R19-DUAL-WALK-X**, per wheel | 0 of 3 walks failing: HLT_WIRING passes, both legs 6–9 ticks in opposite directions, no hall events | `l_ok`/`r_ok` FALSE | run 3 | **WALK_POWER** (10, provisional), the overshoot allowance |
-| **R19-DUAL-PACK-X** | every start reads PACK_NOT_FITTED, 0 mV, no HLT_PACK | any other reading | — | none: no sensor fitted |
+| **R19-DUAL-RZSPREAD-X**, per wheel | 0 rest zeros outside **−20…+40 mV** (`BM-SKSUM rz_lo,-20,rz_hi,40`) | one outside the band | pass 2's 40 starts per wheel: left 6.7–9.0, right −0.3–3.1 | certifies the sized band |
+| **R19-DUAL-WALK-X**, per wheel | 0 of 3 walks failing | `l_ok`/`r_ok` FALSE | run 2 | **the guard's positive control**: a healthy walk must never trip it |
+| R19-DUAL-HEALTH-X, PROBE-X, PRBFLR-X, PACK-X | as pass 2 | as pass 2 | — | — |
 
-**The driver-state dump (PL-120, «#3615»).** Every lifetime prints `BM-ABI*` for both wheels: the launch, status and
-parameter runs the driver shares with Spin2, read raw from hub. Pre-registered, for a wheel that drives:
+**Pre-registered:** every healthy `BM-SKWALK l_pk_i` stays near pass 2's 12–21 mV, far under the guard's 150 mV net.
 
-| Field | Expected on both wheels at SKSTART | Values the `spin` runs printed |
-|---|---|---|
-| `pinbase` | 32 (left) / 16 (right) | 32 / 16 |
-| `e_stop` | 0 | — |
-| `stop_mode` | SM_FLOAT | — |
-| `duty_min` / `duty_max` | 1,600 / 27,648 | 1,600 / 27,648 |
-| `dead_gap` | 70 | 70 |
-| `probe_phase` | 0 (PRB_NONE) after the check | — |
-| `drv_state` | DCS_STOPPED | — |
-
-**Any field where the right differs from the left, other than `pinbase`, is PL-120's cause, or leads straight to it.**
-If every field matches and the right still reads no lead voltage, the cause sits in the driver cog's own registers,
-which Spin cannot read. The next build then dumps those from the driver itself.
-
-⚠ **A wheel's walk is judged only when its partner's walk moved.** Both wheels walk at once, and the platform policy
-stops one wheel when the other cannot move. In pass 1 the left's legs came up 3 ticks against a dead right. A walk
-whose partner moved 0 ticks is recorded as partner-limited, not as a verdict.
-
-### `dual-start-phaseneg` — B-3's negative, in firmware
-
-The rig cannot open a motor lead (Rig facts, 2026-09-23). Instead each start's lead check leaves one LEFT lead undriven,
-rotating U, V, W, so the probe reads a real undriven output. That is the reading a dead switch gives. The right wheel
-is the in-run control.
+### `dual-start-swapneg` — the guard's negative, and B-5's
 
 | Cell | Criterion | Fails if |
 |---|---|---|
-| **R19-DUAL-PHNEG-X**, LEFT | every start's `l_fail` is **exactly** the withheld lead's bit ($0004 / $0008 / $0010) | any start with no bit, another bit, or more than one. $001C, a whole dead bridge as in pass 1, FAILS it |
-| R19-DUAL-HEALTH-X, RIGHT | 0 of 10 | any failed bit on the untouched wheel |
+| **R19-DUAL-SWNEG-X**, LEFT | 0 of 3 walks in which the left's HLT_WIRING was not judged failed | the swap went undetected in any walk |
+| **The guard (judged in the report)** | every crossed walk's `BM-SKWALK l_pk_i` stays **under 577 mV**, the least pass 2 read unguarded | any walk at or above 577 mV: the guard did not bound it |
 
-**What it cannot show:** an open *winding*, which fails the follow test rather than the drive test. The rig cannot make
-one, and firmware cannot fake one honestly. That half of the lead check stays unexercised by a negative.
+Pass 2 read 577, 3,858 and 594 mV on these walks. The guard shorts the leg within one front pass and one drive pass
+(about 1.5 ms) of 150 mV net, so the instrument should see a small fraction of that. A walk that never reaches the bound
+(the rotor happens to follow) is not a failure, provided HLT_WIRING still fails it.
 
-### `dual-start-swapneg` — B-5's negative, in firmware
+### `dual-fault` — the fallback and the graded short (fault study §7)
 
-The rig cannot swap hall wires. Instead, in the three walk lifetimes, the LEFT driver reads hall bits 0 and 1 as
-swapped. It commutes and counts exactly as it would with those two wires crossed.
+The cells and their controls are pass 2's (see its sheet in the evaluation), with the changes below. Every fault is
+forced through `testForceFault()`, each trial in its own driver lifetime, at 40, 80 and 120 × 10⁶.
 
-| Cell | Criterion | Fails if |
-|---|---|---|
-| **R19-DUAL-SWNEG-X**, LEFT | 0 of 3 walks in which the left's HLT_WIRING was not judged failed | the swap went undetected, or was never judged, in any walk. NOMEAS if no walk ran |
+| Cell | Criterion | Fails if | What changed |
+|---|---|---|---|
+| **R19-DUAL-BLUNT-X** | every X-6 / X6C second fault reads DCS_FAULTED, and it **stays** FAULTED until the trial's recovery | the fallback is not taken, or drops back to STOPPED on its own | DRIVER_REV 14: the fault is a latch. Pass 2 read `second,NO_FAULT` 10/10 because the fault was wiped in about 0.5 ms |
+| **R19-DUAL-GRADED-X** | `BM-FRSTAT f2_k`: coast, then 10, 25, 50, 100 %: ticks and time to rest never rise as brake % rises; 100 % below the coast | a rise, or no overall fall | first run; **sizes BRAKE_PCT_DEFAULT** (25 provisional) |
+| **R19-DUAL-GRD100-X** | 100 % graded against the full short at 80 × 10⁶, within 2 ticks | differs by more | first run |
+| **R19-DUAL-RESTFLAT-X** | every phase under 50 mV p-p at rest, the REST window opening once the driver reads settled | a channel swings with nothing turning | PL-124: pass 2's X-4 failures (≈790 mV) were the ramp's last step, read too early |
+| R19-DUAL-SHORTTK-X, COASTEMF-X, RIGHT at 80 and 120 | as pass 2 | as pass 2 | re-run: pass 2's right trials 14–17 were hand-disturbed |
+| every other cell | as pass 2 | as pass 2 | unchanged |
 
-⚠ **SWNEG's PASS counts only if run 1's LEFT walk passed and the right wheel moved in these walks.** A left walk cut
-short by a partner that cannot move also fails HLT_WIRING, and that failure would have nothing to do with the swap.
-Run 1 is this cell's control, and the report judges it from the logs.
-| R19-DUAL-HEALTH-X, LEFT | 0 of 10 | a start check fires: the start checks cannot see a swap, so a FAIL here is a finding |
+**Pre-registered for X-6 in hold mode:** with the fallback held, the wheel now stops on the graded short, not on the
+hold. The stop takes longer than pass 2's 27–59 ms at low brake %, and approaches the full short's at 100 %.
 
-### `dual-start-nowalk` with the right hall connector unplugged — B-1
+### `t0-stopmode` — the stop states at the wheel (ATTENDED, right wheel)
 
-- **Must read:** every start still succeeds (`BM-SSTART ret_ok,TRUE`); `r_fail` has HLT_HALLS ($0001) set, and
-  `r_ill_lo + r_ill_hi > 0`.
-- **Verdicts:** HEALTH-X RIGHT FAIL 10/10 and LEFT PASS; PROBE, RZSPREAD and PRBFLR PASS on both. WALK is NOT_BUILT.
+**The panel names the RIGHT wheel on every screen.** Every row waits for you. **FREEREF is emitted first:** if it fails,
+the instrument has not shown it can report a coast, and every coast cell is read with that in mind.
 
-### `dual-fault` — the fault responses (fault study §7)
+**The reading is `band_ticks`:** the hall ticks the wheel turns from 120 ticks/s down to rest. It is the same measure on
+every row, whatever speed the spin reached. **A spin row needs a hard spin that passes 120 ticks/s.** If yours does not,
+the panel says TOO SLOW and asks you to spin again, up to 3 tries; only then is the row not measured, and the panel
+says so.
 
-In pass 1 the preflight found the right wheel not moving and ended the run. **Now a wheel that fails the preflight is
-retired for the run, and every trial of the other wheel still runs.** The retired wheel's cells print NOMEAS, and so
-does FLTPLAT, which needs both wheels. Each preflight also prints the `BM-ABI*` dump for the wheel it nudged. Every fault is forced
-through `testForceFault()`, each trial in its own driver lifetime. Speeds are 40, 80 and 120 × 10⁶, all negative.
-
-| Cell | Judged by | Criterion | Fails if | Control |
-|---|---|---|---|---|
-| **R19-DUAL-HOOKREST-X** | `BM-FRHOOK`, per motor, **first** | a forced fault at rest (hold off, bridge coasting) latches nothing; the state stays STOPPED for 500 ms | the hook faults an undriven motor | **The hook's own negative control** |
-| **R19-DUAL-FORCED-X** | `BM-FRTRIAL outcome`, `BM-ABORT NO_FAULT` | every requested first fault latches within 8 ms | the hook failed to fault a driven motor | HOOKREST |
-| **R19-DUAL-RESTFLAT-X** | `BM-FRPHASE PRE/REST` | every phase under 50 mV p-p at rest | a channel swings with nothing turning | measured first |
-| **R19-DUAL-COASTEMF-X** | `BM-FRPHASE MOVE`, FR_SHIPPED, FLOAT, 3 speeds | every phase ≥ 50 mV p-p, crossing at the hall rate, while coasting | flat while the halls tick | RESTFLAT |
-| **R19-DUAL-SHORTTK-X** | `BM-FRSTAT`, FR_SHIPPED BRAKE against FLOAT | the short stops in fewer ticks than the coast | short ≥ coast at any speed | paired speeds |
-| **R19-DUAL-SHORTI-X** | `BM-FRCUR`, `BM-FRWIND` | peak current rises with speed | no rise | **Expected NOMEAS**: the shunt cannot see a short (PL-118) |
-| **R19-DUAL-RESYNC-X** | FR_GRADED 25 %, FLOAT, 80 × 10⁶ | exactly one re-sync, FC_LAG, never FAULTED, SPIN_DN then STOPPED, rest within 50–150 % of the ramp's time | any of those | the re-sync count before the fault |
-| **R19-DUAL-BLUNT-X** | the second forced fault on a re-synced ramp | reads DCS_FAULTED | the fallback is not taken | — |
-| **R19-DUAL-GRADED-X** | `BM-FRSTAT f2_k`: coast, then 10, 25, 50, 100 % | ticks and time to rest never rise as brake % rises; 100 % below the coast | a rise, or no overall fall | **Sizes BRAKE_PCT_DEFAULT (25, provisional)** |
-| **R19-DUAL-GRD100-X** | 100 % graded against the full short at 80 × 10⁶ | within 2 ticks | differs by more | — |
-| **R19-DUAL-PLATSTOP-X** | `BM-FRPLAT`, power 50: LEFT faulted under FR_SHIPPED, then RIGHT under FR_GRADED | the watched wheel falls to ≤ 10 % of its rate within 2 s | it keeps driving (PL-117) | NOMEAS unless it turned ≥ 10 ticks before |
-| **R19-DUAL-FRREST-X** | `BM-FRREST` after each trial | FR_SHIPPED, the lifetime's brake_y, HS_OFF | a restore did not take | — |
-| R19-DUAL-B4PULSE-X | — | NOT_BUILT (PL-118) | — | — |
-
-### `t0-stopmode` — the hold rows and the stop states at the wheel (ATTENDED, right wheel)
-
-**Every row waits for you.** After START ROW, nothing is timed until you touch the wheel. A hold row's clock starts at
-your first push, and a coast row ends only after the wheel has turned and come to rest (PL-121's fix). DONE or ABORT
-ends a row early. A row nobody touches ends after 2 minutes, marked as not done. **FREEREF is emitted first:** if it
-fails, the instrument has not shown it can report a coast, and every coast cell is read with that in mind.
-
-| Row | He clicks, then | He should feel | Cell | Pre-registered reading | Fails if |
+| Row | You click, then | You should feel or see | Cell | Pre-registered reading | Fails if |
 |---|---|---|---|---|---|
-| 1 HOLD-RISE | START ROW, pushes the wheel off where it stopped and holds it, DONE | the resistance **grow** over about ¼ s | R17-T0-HOLDRISE | HS_HOLDING throughout; duty reaches the ceiling within 400 ms of the first displacement. **Records sense_i at the ceiling** | the ceiling is not reached in time, or SLIPPED, LIMITED or FAULTED |
-| 2 HOLD-SLIP | START ROW, pushes past a 2 % ceiling, DONE | it **give way**, then a drag that grows with speed | R17-T0-HOLDSLIP | HS_SLIPPED before any DCS_FAULTED; the slip count advances | the hold persists, or FAULTED comes first |
-| 3 HOLD-LIMIT | START ROW, a steady push at the ceiling for about 2 s | it hold, then **let go** after about 2 s | R17-T0-HOLDLIMIT | HS_LIMITED within 7 s of the first push | it never hands off |
-| 4 COAST AT REST | START ROW, spins briskly, lets go | it spin freely and coast | R17-T0-RESTCOAST | half-rate time ≥ 150 ms | < 150 ms |
-| 5 E-STOP AT REST | START ROW, spins briskly, lets go | it resist harder the faster it turns, then stop quickly | R17-T0-RESTSHORT | half-rate time ≤ 60 ms | > 60 ms |
-| (4 − 5) | — | — | R17-T0-STOPGAP | ≥ 100 ms apart | < 100 ms |
-| 6 FAULT, COAST MODE | START ROW; **hands off**, it drives and faults itself; ABORT if needed | the wheel coasts after the fault | R17-T0-FLTCOAST | half-rate ≥ 150 ms and still FAULTED | either false, or it never reached AT_SPEED |
-| 7 FAULT, HOLD MODE | as row 6 | the wheel brakes hard after the fault | R17-T0-FLTSHORT | half-rate ≤ 60 ms and still FAULTED | either false, or it never reached AT_SPEED |
-| (6 − 7) | — | — | R17-T0-FLTGAP | ≥ 100 ms apart | < 100 ms |
-| 8 DRIVER COG STOPPED | START ROW, spins briskly, lets go | it coast exactly as row 4 did | **R17-T0-FREEREF** | half-rate ≥ 150 ms | < 150 ms |
+| 1 HOLD-RISE | START ROW, push the wheel off where it stopped and hold it, DONE | the resistance **grow** over about ¼ s | R17-T0-HOLDRISE | HS_HOLDING throughout; the ceiling within 400 ms of the first push | not in time, or SLIPPED, LIMITED or FAULTED |
+| 2 HOLD-SLIP | START ROW, push past a low ceiling, DONE | it **give way**, then drag | R17-T0-HOLDSLIP | starts HS_HOLDING at 0 (else NOMEAS), then HS_SLIPPED before any FAULTED | the hold persists, or FAULTED first |
+| 3 HOLD-LIMIT | START ROW, a steady push at the ceiling for about 2 s | it hold, then **let go** | R17-T0-HOLDLIMIT | starts HS_HOLDING at 0 (else NOMEAS), then HS_LIMITED within 7 s | it never hands off |
+| 4 COAST AT REST | START ROW, spin it hard, let go | it spin freely and coast | R17-T0-RESTCOAST | band_ticks ≥ 7 | ≤ 6 |
+| 5 E-STOP AS IT COASTS | START ROW, spin it hard, let go | it coast, then **stop abruptly**: the program shorts it as it slows | R17-T0-RESTSHORT | band_ticks ≤ 4, the e-stop latched at the band entry | ≥ 5, or the short was not applied |
+| (4 − 5) | — | — | R17-T0-STOPGAP | ≥ 3 ticks apart | < 3 |
+| 6 FAULT, COAST MODE | START ROW; **hands off**, it drives and is faulted on purpose; ABORT if needed | the wheel coasts after the fault | R17-T0-FLTCOAST | band_ticks ≥ 7 and still FAULTED | either false, or it never reached AT_SPEED |
+| 7 FAULT, BRAKE MODE | as row 6 | the wheel brakes hard after the fault | R17-T0-FLTSHORT | band_ticks ≤ 4 and still FAULTED | either false, or it never reached AT_SPEED |
+| (6 − 7) | — | — | R17-T0-FLTGAP | ≥ 3 ticks apart | < 3 |
+| 8 DRIVER COG STOPPED | START ROW, spin it hard, let go | it coast exactly as row 4 did | **R17-T0-FREEREF** | band_ticks ≥ 7 | ≤ 6 |
 
-**PL-116's order-swapped build (`t0-stopmode-fltfirst`) is off this sheet.** Its question assumed a right bridge that
-drives. If rows 6–7 block with the bridge shown alive in run 1, the next sheet carries it unconditionally.
+The thresholds come from every coast and short on record (`test_bench_t0.spin2`, `CON { T0-24 sign-off limits }`,
+each with its log): a coast predicts 9–36 band ticks and a short 1–3. Ticks 5 and 6 are a dead band that passes neither.
 
 ---
 
@@ -193,18 +128,17 @@ drives. If rows 6–7 block with the bridge shown alive in run 1, the next sheet
 - **Any loaded value**: the hold's creep on a slope and its ceiling under load belong to the floor run («#3576»).
 - **A phase short's current** (PL-118).
 - **The pack voltage**: no sensor is fitted («#3611»).
-- **An open motor winding, or a hall pair actually crossed at the connector**: the rig cannot make either. The
-  firmware negatives cover a dead switch and a swapped reading.
+- **An open motor winding, or a hall pair actually crossed at the connector**: the rig cannot make either.
+- **A Rev A rest zero**: no Rev A board is on the rig, so Rev A keeps its wide provisional band.
 
 ---
 
 ## After the visit
 
-One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`. Then every R19 parameter gets a sized
-value or a stated reason it has none. The P5 questions go to Stephen, each with its measured benefit:
+One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`. Then BRAKE_PCT_DEFAULT gets a sized value
+or a stated reason it has none. The P5 questions go to Stephen, each with its measured benefit:
 
 - Should FR_GRADED become the default?
 - Should the hold limits and the fault response become public setters?
 - Should a re-synced fault be reported through getError()?
-- What should start() do when a check fails? Pass 1 gave this a measured case: ten successful starts over a right
-  board that could not drive.
+- What should start() do when a check fails?
