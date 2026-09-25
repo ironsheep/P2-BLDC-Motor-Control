@@ -2842,3 +2842,30 @@ wires."* The same pass also found the right board driving nothing (PL-120) and T
 |---|---|---|
 | R19.4 negatives | B-3's negative (one open lead) becomes a firmware negative: `testSetProbeWithhold()` leaves one lead undriven in the start check. B-5's negative (swapped halls) becomes `testSetHallSwap()`, which permutes the driver's hall tables at `init()`. Both are one-shot, set before `start()`, and cost nothing in the drive loop. DRIVER_REV 13. Both target the LEFT wheel, the board shown to drive. **An open winding stays unexercised by any negative**: the rig cannot make one. | «#3614» (harness), driver built |
 | R19.7 | Visit 10 pass 2: six runs, none conditional on another's result. `t0-stopmode-fltfirst` leaves the sheet until the right bridge is shown alive. | «#3613» |
+
+## Sprint Revision — 2026-09-25: R20, the user learns what the driver did — Stephen's five API rulings
+
+**Why.** Visit 10 pass 4 closed the winding check and left the right wheel's fault cells owed (PL-120). Stephen then
+answered the P5 questions R19 queued, and a fifth he raised. His words, 2026-09-25, each answered in the standard form:
+
+| # | Ruling | STEPHEN |
+|---|---|---|
+| 1 | FR_GRADED becomes the default fault response, once the right wheel's fault cells certify | *"yes A"* |
+| 2 | `setFaultResponse(eMode, brakePct)` and `setHoldLimits(ceilingPct, riseMs, limitMs)` become public, validated, with getters; steering mirrors both and re-exports `FR_*`; the hold defaults are documented as sized unloaded | *"yes A"* |
+| 3 | `getStopReason()`, in both objects (steering returns both wheels): SR_NONE, SR_COMMANDED, SR_AT_LIMIT, SR_FAULT, SR_FAULT_BRAKED, SR_BLOCKED, SR_LINK_LOST, SR_EMERGENCY, SR_PARTNER. It is sticky until the next drive command. `getStatus()` is unchanged (what, not why), and it is not a `getError()` code | *"if we do stop because a fault happened the user's code needs to know that even tho' we came to a controlled stop. the user needs to know how the stop was commanded when not expected"*, then *"yes A"* |
+| 4 | `start()` refuses (−1, `ERR_START_CHECK_FAILED`) when a start check still fails after bounded retries (provisional 3, sized by the bench). `setStartChecks(bRefuse)` before `start()` opts out. Steering refuses if either wheel fails. `getHealth()` gains a third result: the checks that failed at least once and then passed | *"yes B and make sure if a retry would clear it that we don't stop"* |
+| 5 | A driver-owned soft-event log. The front cog queues each handled condition (kind, ms, motor, value); `getEvent()` drains it; overflow reports itself as `EV_LOST`; per-kind totals are readable; stop reasons join the stream | *"yes A"* |
+
+**The work set.** Each item carries its bench cells, and each cell can fail (overlay P1).
+
+| Plan § | Deliverable | Task |
+|---|---|---|
+| R20.1 | Rulings 1–5 in the motor, steering and serial objects, with their cells. Design first: the event kinds and queue, the retry, and every stop path's reason, returned for review before code | «R20.1» |
+| R20.2 | PL-136: a wheel dead at PREFLT gets retried at once, dumped, traced per phase, and probed | «#3613» |
+| R20.3 | PL-137: the driver keeps each walk leg's record; `dual-start` walks every lifetime | «#3610» |
+| R20.4 | The pack voltage on Stephen's fitted sensor: his pin, the one-time calibration, the two-voltage cells and the absent negative; the winding check reads the measured V | «#3611» |
+| R20.5 | Documentation for everything since 2026-09-23 | «#3516»'s README duty |
+| R20.6 | Visit 10 pass 5: certify R20.1–R20.4 in one pass | «#3613» |
+
+**Budget to watch:** the steering front cog's worst pass (914 µs against 950 before `updateFollowing()`) takes the event
+queue's writes. The build measures it.
