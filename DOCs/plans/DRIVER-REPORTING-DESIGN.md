@@ -536,3 +536,76 @@ ERR_START_CHECK_FAILED, HOLD_*_MAX and EV_QUEUE_DEPTH re-exports are still owed.
 **Part 3 must know (harness):** `test_bench_dual`'s ABI dump still sizes the status run at 21 with `fault` last
 (`ABI_STATUS_LONGS`, `tokAbiName`, ~:15872): it now names `foldback_frames` as `fault` and drops `fault`. BM-ABIL's
 `st_n` prints 21. The retries add up to ~0.9 s per wheel whose phase is withheld, ~3.9 s with a failing sense zero.
+
+---
+
+## Build notes (part 2, `isp_steering_2wheel`, `isp_steering_serial`)
+
+**Where §1.2's S: rows now live** (line numbers in the part-2 working tree of `src/isp_steering_2wheel.spin2`; every
+record follows its path's command writes, both wheels', D6):
+
+| Row | Site |
+|---|---|
+| 1 REQ_STOP | `frontApply()` :2668, after both `frontStopCommanded()` |
+| 2, 3 drive / zero / not taken | `frontDriveWheels()`: taken → `frontNoteDrives()` :2918, :2920 (open, or SR_COMMANDED for a zero); refused-clear :2885, sync not taken :2916, write race :2926 → SR_COMMANDED on both |
+| 4 TEST-USE increment | `frontApply()` :2766 |
+| 5 limits | platform :2344 (both), per-wheel `driveForDistance` :2348, :2351 |
+| 6 command timeout | :2355 (both) |
+| 7 blocked | :2362 → `frontRecordBlocked()` :3040 (blocked SR_BLOCKED, other SR_PARTNER, both blocked both SR_BLOCKED) |
+| 10 partner fault | `frontPlatformFaultStop()` :3022, :3024 |
+| 11 REQ_ESTOP | `frontApply()` :2660 |
+| walk leg | `frontDriveWheels(..., bOpens = FALSE)` from REQ_WALK: SR_COMMANDED on a taken or failed leg, nothing on a refused one (part 1 deviation 6) |
+| `frontNoteStartChecks()` | `frontLoop()` entry :2311, :2312 |
+| `frontEventChecks()`, `frontLateCheck()` | :2368-2370, on `passCount +// WINDOW_PASSES == WINDOW_PASSES / 2` |
+| EV_PATH_LIMIT | `frontLimitPath()` :2425 (release on a new command), :2442 (engage), :2450 (full release) |
+
+`start()` refuses at :296-306: both wheels' `runStartChecks()` (left, then right), then `ltWheel.stop()`,
+`rtWheel.stop()`, `ERR_START_CHECK_FAILED` in the platform slot and in each failing wheel's slot, and no front cog.
+
+**Measured (compiler):** `isp_steering_serial` 43_072 → 45_464 bytes; `test_bench_dual -d -D BENCH_CFG -D BENCH_QUIET
+-D DUAL_PART_D` 132_465 → 133_515 bytes (both `pnut-ts -q`, before and after, on a scratch copy with the first dual
+config block active). Code size only; the front pass time and stack are NOT measured (R20-DUAL-FRONTST-EV).
+
+**Deviations from the design and the brief:**
+1. **`geterror` is a new serial command.** Q6's ruling names it, but the serial top level had no such command. Its
+   reply is `err {code} {ltCode} {rtCode}`, not `error ...`: a host that matches the `ERROR` reply without regard to
+   case must not read an answer as a failure.
+2. **The serial top level tells a refused start from getHealth(), not getError().** A refusal leaves a refusing HLT_*
+   bit failed on a wheel; every other start failure leaves none (its checks never ran, or all passed), and this top
+   level never opts out. Reading getError() would drain the very codes `geterror` must return. Every other start
+   failure keeps the old behaviour: no host link.
+3. **On the refused-start link every command but `gethealth` and `geterror` is answered
+   `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`**, without draining the error record.
+4. **EV_PATH_LIMIT pairing.** A new drive command resets the limiter to full scale; if it was limited, that reset
+   queues the release (value 1000), so every engage has its release. The release goes to the log the engage went to.
+   The engage and release are queued on the slot pass, but only on their edges, inside branches that already exist.
+5. **getEvent() with nothing unread returns `eWheel` 0**, as it returns `nMs` and `nValue` 0: 0 is no EVW_* value.
+   The serial `event` reply carries it (`event 60 0 0 0`).
+6. **getEventTotal() validates on the steering object** and records ERR_BAD_COUNT in the platform's slot, not in
+   each wheel's.
+7. **SR_PARTNER on a fault goes to the wheel whose own fault did not begin that pass**, not to "the wheel not
+   DCS_FAULTED": a re-synced wheel is not FAULTED but already holds SR_FAULT_CONTROLLED (first cause wins either way).
+8. **EV_PACK reads as EVW_LEFT**, per §2.2 (only EV_LATE_PASS is named a platform event). The EVW_LEFT comment says
+   so. Open point for Stephen: the pack is the platform's, and EVW_PLATFORM may be the truer value.
+9. **`testLeftSetProbeWithholdFirst()` / `testRightSetProbeWithholdFirst()` added** (named in §3, not in the brief's list).
+10. **DRIVE-OBJECTS-SERIAL.md also gained** FR_* and HLT_* rows in the numbers table (`setfaultresp` and `health` carry
+    them as numbers), a paragraph on the refused-start link, and the `geterror` row.
+11. **`test_bench_dual`**: the two steering setter call sites (:10628, :12961) and four comments moved to the new names;
+    the two `steering.getHealth()` sites (:11087, :11250) take `_` for the recovered masks. No other harness change.
+
+**Part 3 must know (harness):**
+- `WD_STALL_MS = 4_000` (test_bench_dual:1324) is beaten around `steering.start()` (`bSteerStart()`, :16576/:16580) only.
+  A steering start now spends ~1 s rest zero + each wheel's checks in turn: with one phase withheld on BOTH wheels
+  ≈ 1 + 2 × (0.04 + 0.87) ≈ 2.9 s before the front cog; with a failing sense zero ≈ 1 + 2 × 3.9 ≈ 8.8 s. The
+  refusal lifetimes withhold a phase on one wheel (≈ 2 s) but a double withhold or a dead sense channel exceeds 4 s.
+- Refusal: `start()` = −1; `getError()` = ERR_START_CHECK_FAILED in the platform slot and each failing wheel's slot;
+  `getHealth()` (6 results) readable after it. `setStartChecks(FALSE)` before `start()` opts out and is kept across
+  starts until changed.
+- `getEvent()`/`getEventTotal()` read both wheels' logs through one cursor per cog; EV_LATE_PASS arrives as
+  EVW_PLATFORM and is counted in `nPlatform`; EV_PATH_LIMIT on the short wheel.
+- The ABI dump item above (part 1) is unchanged by part 2.
+
+**Review of part 2 (arbiter), 2026-09-25.** Part 2's deviation 8 is corrected, not kept. EV_PACK now arrives as
+EVW_PLATFORM and is counted in `nPlatform`, as EV_LATE_PASS is. The pack is the platform's; the left wheel's object
+only reads it. Reporting it as EVW_LEFT would give one value two meanings (D7). Gates after the fix: build-check
+48/48 with both demos certified; style PASS.

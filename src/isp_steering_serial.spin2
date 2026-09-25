@@ -46,6 +46,9 @@ CON { command-names enum }
 #18, CMD_GET_STAT, CMD_GET_MAX_SPD, CMD_GET_MAX_DIST_SPD
 #21, CMD_GET_VOLT, CMD_SET_TIMEOUT
 #23, CMD_PROT_CLR, CMD_GET_PROT
+#25, CMD_GET_STOP_RSN, CMD_GET_HEALTH, CMD_GET_EVENT, CMD_GET_EV_TOTAL
+#29, CMD_SET_FAULT_RESP, CMD_GET_FAULT_RESP, CMD_SET_HOLD_LIM, CMD_GET_HOLD_LIM
+#33, CMD_GET_ERROR
 
 DAT { command table }
 
@@ -74,6 +77,15 @@ DAT { command table }
     cmdSetTimeout       BYTE    "settimeout",0
     cmdProtClr          BYTE    "protclear",0
     cmdGetProt          BYTE    "getprot",0
+    cmdGetStopRsn       BYTE    "getstopreason",0
+    cmdGetHealth        BYTE    "gethealth",0
+    cmdGetEvent         BYTE    "getevent",0
+    cmdGetEvTotal       BYTE    "getevtotal",0
+    cmdSetFaultResp     BYTE    "setfaultresp",0
+    cmdGetFaultResp     BYTE    "getfaultresp",0
+    cmdSetHoldLim       BYTE    "setholdlimits",0
+    cmdGetHoldLim       BYTE    "getholdlimits",0
+    cmdGetError         BYTE    "geterror",0
 
     ' now describe cmd enum and # parms for each string
     cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
@@ -100,6 +112,15 @@ DAT { command table }
                 long  @cmdSetTimeout, CMD_SET_TIMEOUT, 1
                 long  @cmdProtClr, CMD_PROT_CLR, 0
                 long  @cmdGetProt, CMD_GET_PROT, 0
+                long  @cmdGetStopRsn, CMD_GET_STOP_RSN, 0
+                long  @cmdGetHealth, CMD_GET_HEALTH, 0
+                long  @cmdGetEvent, CMD_GET_EVENT, 0
+                long  @cmdGetEvTotal, CMD_GET_EV_TOTAL, 1
+                long  @cmdSetFaultResp, CMD_SET_FAULT_RESP, 2
+                long  @cmdGetFaultResp, CMD_GET_FAULT_RESP, 0
+                long  @cmdSetHoldLim, CMD_SET_HOLD_LIM, 3
+                long  @cmdGetHoldLim, CMD_GET_HOLD_LIM, 0
+                long  @cmdGetError, CMD_GET_ERROR, 0
     cmdLast
     ' calculate the number of entries in table
     cmdEntryCt long ((@cmdLast - @cmdsFirst) / 4) / 3
@@ -108,8 +129,11 @@ DAT { command table }
     msgWork             BYTE    0[256]     ' 256 bytes in which to format the outgoing message
 
 
-PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt, senseCog, eError, eLeftError, eRightError
+PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt, senseCog, eError, eLeftError, eRightError, bStartRefused
 '' DEMO Driving a two wheeled platform
+''
+'' R20.1: when start()'s checks refuse the platform, the host link still opens, answering only gethealth and geterror
+'' (every other command is answered ERR_NOT_STARTED), so the host can learn why the motors did not start.
 ''
 
 ' Local Variables:
@@ -125,6 +149,7 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
 ' @local eError - this cog's collected steering error, after a failed start
 ' @local eLeftError - this cog's collected left-wheel error
 ' @local eRightError - this cog's collected right-wheel error
+' @local bStartRefused - T/F where T means start()'s checks refused the platform, so the host link answers only why
 
     debug("* Serial I/F to dual motor platform")
 
@@ -153,6 +178,15 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
     long[@cmdsFirst][21 * 3] := @cmdSetTimeout
     long[@cmdsFirst][22 * 3] := @cmdProtClr
     long[@cmdsFirst][23 * 3] := @cmdGetProt
+    long[@cmdsFirst][24 * 3] := @cmdGetStopRsn
+    long[@cmdsFirst][25 * 3] := @cmdGetHealth
+    long[@cmdsFirst][26 * 3] := @cmdGetEvent
+    long[@cmdsFirst][27 * 3] := @cmdGetEvTotal
+    long[@cmdsFirst][28 * 3] := @cmdSetFaultResp
+    long[@cmdsFirst][29 * 3] := @cmdGetFaultResp
+    long[@cmdsFirst][30 * 3] := @cmdSetHoldLim
+    long[@cmdsFirst][31 * 3] := @cmdGetHoldLim
+    long[@cmdsFirst][32 * 3] := @cmdGetError
 
     ' validate user settings/choicess
     '  do NOT start motor unless all are legit!
@@ -168,11 +202,18 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
 
         ' start our motor drivers (left and right)
         senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
+        bStartRefused := FALSE
         if senseCog < 0
-            ' never offer the host a command interface to motors that are not running
-            eError, eLeftError, eRightError := wheels.getError()
-            debug("* ERROR motors did not start: ", sdec_long(eError), sdec_long(eLeftError), sdec_long(eRightError))
-        else
+            ' never offer the host a command interface to motors that are not running. R20.1 (Q6): a start its checks
+            '  refused still opens the host link, answering only gethealth and geterror, so the host can ask why; its
+            '  errors are left for geterror, not drained here
+            bStartRefused := bStartChecksRefused()
+            if bStartRefused == TRUE
+                debug("* ERROR motors did not start: a start check failed; the host may ask gethealth and geterror")
+            else
+                eError, eLeftError, eRightError := wheels.getError()
+                debug("* ERROR motors did not start: ", sdec_long(eError), sdec_long(eLeftError), sdec_long(eRightError))
+        if (senseCog >= 0) or (bStartRefused == TRUE)
             '' start our serial host communications
             hostIF.startx(GW_RX2, GW_TX2, GW_BAUDRATE, hostIF.PU_15K)    ' tell singleton our pins and rate
 
@@ -185,7 +226,10 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
                 if serialQueue.hasCommand(@cmdsFirst, cmdEntryCt)
                     opStatus, pValues := serialQueue.getCommandParms()
                     if opStatus == serialQueue.OP_SUCCESS
-                        processCommand(pValues)
+                        if (bStartRefused == TRUE) and (bSaysWhy(pValues) == FALSE)
+                            replyNotStarted(pValues)
+                        else
+                            processCommand(pValues)
                 else
                     waitms(1000)    ' for 1 sec
     else
@@ -212,8 +256,14 @@ DAT { parse work variables }
     nSpeed          LONG    0
     bHoldEnable     LONG    0
     nTimeout        LONG    0
+    nEvKind         LONG    0
+    nFaultMode      LONG    0
+    nBrakePct       LONG    0
+    nHoldCeilPct    LONG    0
+    nHoldRiseMs     LONG    0
+    nHoldLimitMs    LONG    0
 
-PRI processCommand(pValues) | eError
+PRI processCommand(pValues) | eError, nOut1, nOut2, nOut3, nOut4, nOut5, nOut6
 ' F-7: every command calls the library first and replies from its status, so a request the library
 '  refuses gets an ERROR reply naming the code instead of an OK for work that never happened
 '
@@ -221,6 +271,12 @@ PRI processCommand(pValues) | eError
 
 ' Local Variables:
 ' @local eError - the library's result for the command
+' @local nOut1 - a getter's first result, in reply order (R20.1's multi-value replies)
+' @local nOut2 - its second result
+' @local nOut3 - its third result
+' @local nOut4 - its fourth result
+' @local nOut5 - its fifth result
+' @local nOut6 - its sixth result
 
     debug("* HANDLE ", zstr_(long [pValues][serialQueue.ENT_CMDSTR_IDX]))
 '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
@@ -511,6 +567,95 @@ PRI processCommand(pValues) | eError
             ' send to host
             serialQueue.sendResponse(@msgWork)
 
+        CMD_GET_STOP_RSN:
+            ' R20.1: why each wheel's last drive ended, SR_* (40-48)
+            ltValue, rtValue := wheels.getStopReason()
+            strFmt.sFormatStr2(@msgWork, @"stopreason %d %d\n", ltValue, rtValue)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_HEALTH:
+            ' R20.1: each wheel's checked, failed and recovered HLT_* bits; answered after a refused start too
+            nOut1, nOut2, nOut3, nOut4, nOut5, nOut6 := wheels.getHealth()
+            strFmt.sFormatStr6(@msgWork, @"health %d %d %d %d %d %d\n", nOut1, nOut2, nOut3, nOut4, nOut5, nOut6)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_EVENT:
+            ' R20.1: this cog's next event, one per request: kind (EV_*), ms, wheel (EVW_*), value; kind 60 when none
+            nOut1, nOut2, nOut3, nOut4 := wheels.getEvent()
+            strFmt.sFormatStr4(@msgWork, @"event %d %d %d %d\n", nOut1, nOut2, nOut3, nOut4)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_EV_TOTAL:
+            ' get incoming parm values
+            nEvKind := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values: the counted kinds, EV_STOP to EV_FOLDBACK
+            if not bInRange(nEvKind, wheels.EV_STOP, wheels.EV_FOLDBACK)
+                ' invalid, report so...
+                strFmt.sFormatStr3(@msgWork, @"EventKind (%d) out of range [%d, %d]", nEvKind, wheels.EV_STOP, wheels.EV_FOLDBACK)
+                serialQueue.sendError(@msgWork)
+            else
+                nOut1, nOut2, nOut3 := wheels.getEventTotal(nEvKind)
+                strFmt.sFormatStr3(@msgWork, @"evtotal %d %d %d\n", nOut1, nOut2, nOut3)
+                serialQueue.sendResponse(@msgWork)
+
+        CMD_SET_FAULT_RESP:
+            ' get incoming parm values
+            nFaultMode := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            nBrakePct := LONG[pValues][serialQueue.ENT_PARM2_IDX]
+            ' validate values
+            if (nFaultMode <> wheels.FR_SHIPPED) and (nFaultMode <> wheels.FR_GRADED)
+                ' invalid, report so...
+                strFmt.sFormatStr3(@msgWork, @"FaultMode (%d) not [%d (FR_SHIPPED), %d (FR_GRADED)]", nFaultMode, wheels.FR_SHIPPED, wheels.FR_GRADED)
+                serialQueue.sendError(@msgWork)
+            elseif not bInRange(nBrakePct, 0, 100)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"BrakePct (%d) out of range [0, 100]", nBrakePct)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, act on request, then report its outcome
+                eError := wheels.setFaultResponse(nFaultMode, nBrakePct)
+                replyWithStatus(pValues, eError)
+
+        CMD_GET_FAULT_RESP:
+            nOut1, nOut2 := wheels.getFaultResponse()
+            strFmt.sFormatStr2(@msgWork, @"faultresp %d %d\n", nOut1, nOut2)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_SET_HOLD_LIM:
+            ' get incoming parm values
+            nHoldCeilPct := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            nHoldRiseMs := LONG[pValues][serialQueue.ENT_PARM2_IDX]
+            nHoldLimitMs := LONG[pValues][serialQueue.ENT_PARM3_IDX]
+            ' validate values
+            if not bInRange(nHoldCeilPct, 1, 100)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"HoldCeilingPct (%d) out of range [1, 100]", nHoldCeilPct)
+                serialQueue.sendError(@msgWork)
+            elseif not bInRange(nHoldRiseMs, 1, wheels.HOLD_RISE_MS_MAX)
+                ' invalid, report so...
+                strFmt.sFormatStr2(@msgWork, @"HoldRiseMs (%d) out of range [1, %d]", nHoldRiseMs, wheels.HOLD_RISE_MS_MAX)
+                serialQueue.sendError(@msgWork)
+            elseif not bInRange(nHoldLimitMs, 1, wheels.HOLD_LIMIT_MS_MAX)
+                ' invalid, report so...
+                strFmt.sFormatStr2(@msgWork, @"HoldLimitMs (%d) out of range [1, %d]", nHoldLimitMs, wheels.HOLD_LIMIT_MS_MAX)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, act on request, then report its outcome
+                eError := wheels.setHoldLimits(nHoldCeilPct, nHoldRiseMs, nHoldLimitMs)
+                replyWithStatus(pValues, eError)
+
+        CMD_GET_HOLD_LIM:
+            nOut1, nOut2, nOut3 := wheels.getHoldLimits()
+            strFmt.sFormatStr3(@msgWork, @"holdlimits %d %d %d\n", nOut1, nOut2, nOut3)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_ERROR:
+            ' R20.1: this cog's first recorded errors -- the platform's, the left wheel's, the right wheel's -- read and
+            '  cleared; answered after a refused start too. The reply is "err", so no host reads it as an ERROR reply.
+            nOut1, nOut2, nOut3 := wheels.getError()
+            strFmt.sFormatStr3(@msgWork, @"err %d %d %d\n", nOut1, nOut2, nOut3)
+            serialQueue.sendResponse(@msgWork)
+
         other:
             debug("ERROR bad ENUM for command:", udec_(cmdEnum))
 
@@ -545,6 +690,43 @@ PRI replyWithStatus(pValues, eError) | eSteerError, eLeftError, eRightError
         debug("* command failed ", sdec_long(eError), sdec_long(eSteerError), sdec_long(eLeftError), sdec_long(eRightError))
         strFmt.sFormatStr3(@msgWork, @"%s failed: %s (%d)", long[pValues][serialQueue.ENT_CMDSTR_IDX], errorName(eError), eError)
         serialQueue.sendError(@msgWork)
+
+PRI bStartChecksRefused() : bRefused | nLeftFailed, nRightFailed
+' Return TRUE when a failed start() was refused by its start checks (R20.1), read from getHealth(), not getError(), so
+' this cog's errors are left for the host's geterror.
+'
+' A start refused by its checks leaves a refusing HLT_* bit failed on a wheel; every other failure returns before the
+' checks run (they never ran: nothing failed) or after they all passed. This top level never opts out of the refusal.
+'
+' @returns bRefused - T/F where T means a wheel still fails a check that refuses the start (HLT_ALL_CHECKS)
+
+' Local Variables:
+' @local nLeftFailed - the left wheel's failed HLT_* bits
+' @local nRightFailed - the right wheel's failed HLT_* bits
+
+    _, nLeftFailed, _, _, nRightFailed, _ := wheels.getHealth()
+    bRefused := ((nLeftFailed | nRightFailed) & wheels.HLT_ALL_CHECKS) <> 0
+
+PRI bSaysWhy(pValues) : bWhy | eCmd
+' Return TRUE for a command the host link answers after a refused start (R20.1): gethealth and geterror.
+'
+' @param pValues - the parsed command entry
+' @returns bWhy - T/F where T means the command is gethealth or geterror
+
+' Local Variables:
+' @local eCmd - the command's CMD_* enum
+
+    eCmd := long[pValues][serialQueue.ENT_CMDENUM_IDX]
+    bWhy := (eCmd == CMD_GET_HEALTH) or (eCmd == CMD_GET_ERROR)
+
+PRI replyNotStarted(pValues)
+' Reply to a command the host link does not answer after a refused start (R20.1): an ERROR naming ERR_NOT_STARTED.
+' This cog's recorded errors are not drained, so geterror still returns the refusal's.
+'
+' @param pValues - the parsed command entry, for the command's name
+
+    strFmt.sFormatStr3(@msgWork, @"%s failed: %s (%d)", long[pValues][serialQueue.ENT_CMDSTR_IDX], errorName(wheels.ERR_NOT_STARTED), wheels.ERR_NOT_STARTED)
+    serialQueue.sendError(@msgWork)
 
 PRI errorName(eError) : pName
 ' Return the name of a library error code, for a host reply.
@@ -591,6 +773,8 @@ PRI errorName(eError) : pName
             pName := @"ERR_BOARD_NOT_DETECTED"
         wheels.ERR_COMMAND_TIMEOUT:
             pName := @"ERR_COMMAND_TIMEOUT"
+        wheels.ERR_START_CHECK_FAILED:
+            pName := @"ERR_START_CHECK_FAILED"
         wheels.ERR_PROTECTIVE_STOP:
             pName := @"ERR_PROTECTIVE_STOP"
         wheels.ERR_PLATFORM_BLOCKED:
