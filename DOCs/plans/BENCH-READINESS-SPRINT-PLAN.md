@@ -2860,7 +2860,7 @@ answered the P5 questions R19 queued, and a fifth he raised. His words, 2026-09-
 
 | Plan § | Deliverable | Task |
 |---|---|---|
-| R20.1 | Rulings 1–5 in the motor, steering and serial objects, with their cells. Design first: the event kinds and queue, the retry, and every stop path's reason, returned for review before code | «R20.1» |
+| R20.1 | Rulings 1–5 in the motor, steering and serial objects, with their cells. Design first: the event kinds and queue, the retry, and every stop path's reason, returned for review before code | «#3621» |
 | R20.2 | PL-136: a wheel dead at PREFLT gets retried at once, dumped, traced per phase, and probed | «#3613» |
 | R20.3 | PL-137: the driver keeps each walk leg's record; `dual-start` walks every lifetime | «#3610» |
 | R20.4 | The pack voltage on Stephen's fitted sensor: his pin, the one-time calibration, the two-voltage cells and the absent negative; the winding check reads the measured V | «#3611» |
