@@ -3883,8 +3883,9 @@ any FLTRESP timeout (`BM-ABI* where,TIMEOUT`), so the next recurrence is capture
   show 0 and 165–189. Every parameter matches the healthy dumps.
 - **MEASURED:** the next program load, 3 minutes later (`dual-start`), drove the right normally in every lifetime.
 - **Settled:** the left's trials are **not** a precondition.
-- **Corrected:** "gone after a reload" was too strong. The state can be present at a fresh load; a *later* load has
-  cleared it every time so far.
+- **Corrected:** "gone after a reload" was too strong, but this run shows only that **one** drive failed. The harness
+  started the right once and never retried it (PL-136), so a transient first-drive failure is not ruled out. The next
+  two program loads turned the right in every start: 20 starts, 6 walk legs, 36 winding pulses.
 - **Still open:** whether time clears it inside one program, and what the phases do during the failing drive. Neither
   diagnostic could fire (PL-136).
 
@@ -4226,9 +4227,12 @@ The right wheel failed PREFLT. `BM-FRRECSUM,...,probed,FALSE`, and no `where,NOM
 does not move*, wherever it happens:
 - a PREFLT nudge with no hall tick by FR_NOMOTION_MS dumps (`where,NOMOTION`) mid-nudge;
 - a PREFLT that fails emits its ring as a trace;
-- it arms the recovery probe on that wheel, run before FLTRESP. A wheel the probe recovers is un-retired and runs its
-  trials.
-Rides on the next `dual-fault-rightfirst`.
+- **first, PREFLT retries the non-moving wheel at once**, in 3 fresh lifetimes about 1 s apart, each dumped and traced
+  like the first. Pass 4 started the right exactly once (`BM-START ... motor,RIGHT` occurs once in the log), so one
+  failed attempt could not tell a transient first-drive failure from a persistent one. Stephen, 2026-09-25: *"the
+  right wheel is turning and providing results in the other two tests.... so maybe didn't retry?"*;
+- only if all of those fail, arm the recovery probe on that wheel (20 s gaps), run before FLTRESP.
+A wheel either stage recovers is un-retired and runs its trials. Rides on the next `dual-fault-rightfirst`.
 
 ### PL-137 -- the wiring walk failed a correctly wired wheel: a 5-tick return leg
 
