@@ -4234,6 +4234,35 @@ does not move*, wherever it happens:
 - only if all of those fail, arm the recovery probe on that wheel (20 s gaps), run before FLTRESP.
 A wheel either stage recovers is un-retired and runs its trials. Rides on the next `dual-fault-rightfirst`.
 
+**2026-09-25 -- BUILT (not yet certified).** `test_bench_dual` SRC_REV 46, FMT 30; no library object changed.
+- **Every part's PREFLT:** the nudge's wait is `waitWatchedNoMo()` (FLTRESP's NOMOTION loop, moved out of
+  `frWaitAtSpeed()` unchanged), so a nudge with no hall tick by FR_NOMOTION_MS dumps `BM-ABI* where,NOMOTION` mid-nudge.
+  A nudge that does not move emits its ring as a trace (`BM-TRACE seg,PREFLT,cause,START`, `BM-TS`, `BM-TRACE-END`),
+  drained before any fault recovery re-arms the ring. In FAULTRESP every nudge is traced, so a moving wheel's nudge is the
+  in-run control.
+- **The three phases:** the ring always stored u, v and w apart (`instPackSense()`); `BM-TS` printed only their sum.
+  `BM-TS` now appends `u`, `v`, `w` (mV, NA when the driver is down), in every trace.
+- **FAULTRESP only, the stages:** a wheel whose nudge does not move is retried at once in PF_RETRY_TRIES = 3 fresh
+  lifetimes, PF_RETRY_GAP_MS = 1 s apart, each nudged, dumped and traced like the first. New record **`BM-PFRETRY`**
+  (motor, try, life, ms from the first failure, moved, ticks, hw, tid of its trace, why). Only if every retry fails,
+  and it is the only such wheel, the recovery probe runs on it before FLTRESP (`BM-FRRECOV` gains `seg`, here `PREFLT`).
+  A wheel either stage moves is not retired. Its cells read NOMEAS while the stages run and live again when one moves;
+  `bSlotRetired` is set only after both fail, since it would refuse the retries' own starts. FLTRESP's own probe keeps
+  its one turn.
+- **Records:** `BM-FRRECSUM` gains `l_pf`/`r_pf` (NO_FAIL, RETRY, PROBE, DEAD, UNDECIDED), `l_pf_rec`/`r_pf_rec`
+  (TRUE, FALSE, NA only when nothing was decided), `l_pf_n`/`r_pf_n` (retries made) and `l_pf_try`/`r_pf_try`. Its
+  `recovered` and `tries` now print NA when the FLTRESP probe did not run (they read FALSE and 0: silent zeros).
+  `BM-FRDIAG` gains `pf_tries`, `pf_gap_ms`.
+- **Why the stages are FAULTRESP's only:** every other part ends its run on a PREFLT failure by contract. A retried wheel
+  would be measured there as though it had not failed. The dump and the trace change no outcome, so they run
+  everywhere.
+- **Compiled** (pnut-ts 1.55.8, scratch copy, first dual config block, the runner's `-D` sets): `dual-fault` and
+  `dual-fault-rightfirst` 133_736 plain / 141_175 with `-d`, DEBUG footprint 7_439 (limit 12_404, unchanged from src_rev
+  45). Style gate PASS.
+- **Worst case, `dual-fault-rightfirst`:** about 6 minutes planned; plus about 2.2 minutes for a wheel dead through
+  PREFLT (retries of about 15 s, then the probe's 2 minutes); plus 2.2 more if a wheel then dies mid-run. At most about
+  10.5 minutes, under the 15-minute cap.
+
 ### PL-137 -- the wiring walk failed a correctly wired wheel: a 5-tick return leg
 
 **Found 2026-09-25** at Visit 10 pass 4, `dual-start` ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS4-EVALUATION.md)

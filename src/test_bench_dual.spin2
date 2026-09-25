@@ -327,6 +327,18 @@
 ''               just before why, which stays last.
 ''               The ABI dump names the 21-long status run (foldback_frames) and fault (BM-ABIS3 gains foldback_frames).
 ''               TOKMAX_CELL goes to 22 for the two longest R20 ids
+''               25 Sep 2026 -- SRC_REV=46, FMT 30: PL-136 (task 3613, Visit 10 pass 4 sec 4a). PL-120's diagnostics now key
+''               on a commanded wheel that does not move, in PREFLT too. In EVERY part, a PREFLT nudge with no hall tick
+''               by FR_NOMOTION_MS dumps that driver's runs mid-nudge (BM-ABI* where,NOMOTION), and a nudge that does not
+''               move emits its ring as a trace (BM-TRACE seg,PREFLT cause,START; in FAULTRESP every nudge is traced, the
+''               moving ones as the in-run control). In part FAULTRESP only, a wheel whose nudge did not move is retried AT
+''               ONCE in up to PF_RETRY_TRIES fresh lifetimes PF_RETRY_GAP_MS apart, each nudged, dumped and traced as the
+''               first (new BM-PFRETRY per retry); when every retry fails and it is the only such wheel, the recovery probe
+''               runs on it before FLTRESP (BM-FRRECOV seg,PREFLT). A wheel either stage moves is un-retired and runs its
+''               trials. BM-TS gains u, v and w, the three phases the ring always carried apart (only their sum ph was
+''               printed); BM-FRRECOV gains seg; BM-FRDIAG gains pf_tries and pf_gap_ms; BM-FRRECSUM gains l_pf, l_pf_rec,
+''               l_pf_n, l_pf_try and the same for r_, and its recovered and tries print NA when the FLTRESP probe did not
+''               run. The FLTRESP-time NOMOTION dump and recovery probe are unchanged
 ''
 '' =================================================================================================
 
@@ -393,8 +405,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 45                                      ' hand-bumped whenever this file changes
-    FMT_VERSION = 29                                        ' BM- record-format version
+    SRC_REV     = 46                                      ' hand-bumped whenever this file changes
+    FMT_VERSION = 30                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -499,7 +511,10 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     ' about 6 minutes planned (emitPlan()): 24 driven wheel trials of ~13 s, 2 at-rest hook checks of ~4 s and 2
     '  steering trials of ~15 s, each with its own lifetime and a FAULT_COOL_MS cool-down; the cap leaves room for
     '  every trial to take its restart. PL-120's recovery probe, which runs only after a no-motion failure and at most
-    '  once, adds at most FR_RECOVER_TRIES x FR_RECOVER_GAP_MS (2 minutes) plus its last try's lifetime
+    '  once, adds at most FR_RECOVER_TRIES x FR_RECOVER_GAP_MS (2 minutes) plus its last try's lifetime. PL-136: a wheel
+    '  that does not move at PREFLT adds its PF_RETRY_TRIES retries (about 5 s each) and, if they all fail, a PREFLT
+    '  probe of the same 2 minutes, before FLTRESP; the FLTRESP probe can still run once after that. Worst case about
+    '  6 + 2.2 + 2.2 = 10.5 minutes, under the cap
     RUN_TIME_CAP_S = 900
 #else
 #ifdef DUAL_PART_START
@@ -1031,7 +1046,8 @@ CON { instrument cog (design sec 2) }
     SMP_HW          = 3
     SMP_PHVW        = 4                                     ' phase V (high 16) | phase W (low 16)
 
-    ' sense long: i (i16) << 16 | phase sum (i16); flags long: duty << 16 | err << 8 | state << 5 |
+    ' sense long: i (i16) << 16 | phase U (i16), and phase V, W in SMP_PHVW (the three are stored apart; smpPh()
+    '  re-derives their sum, and BM-TS prints all four); flags long: duty << 16 | err << 8 | state << 5 |
     '  fault << 4 | up << 3 | integDelta
     SENSE_I_SHIFT    = 16
     SENSE_PH_MASK    = $FFFF
@@ -3741,10 +3757,17 @@ PRI bSegPreflight() : bRunGoes | side, bMoved, nFailed, failedSide
 ' by BM-ABORT scope SEG, and the part goes on with the other wheel; both failing ends the run as in every part
 ' (task 3615, PL-120: the trip must measure the left wheel whatever the right does).
 '
+' PL-136, part FAULTRESP: before a wheel counts as not moving it is diagnosed in two stages. First, AT ONCE and before
+' the other wheel's nudge, up to PF_RETRY_TRIES fresh lifetimes (bPfRetry()). Then, only when every retry failed and it
+' is the only wheel still unmoved, the recovery probe on it, before FLTRESP (bPfProbe()). A wheel either stage moves is
+' not retired, and its FLTRESP trials and FLTPLAT run. The stages are FAULTRESP's only: in every other part a PREFLT
+' failure ends the run by that part's contract, and a wheel that needed a retry would be measured there as though it
+' had not. The mid-nudge dump and the trace, which change no outcome, run in every part (bPreflightWheel()).
+'
 ' @returns bRunGoes - TRUE when the run continues: both wheels moved, or in FAULTRESP exactly one did
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
-' @local bMoved - this wheel moved
+' @local bMoved - this wheel moved (at its first nudge, or in FAULTRESP at a retry)
 ' @local nFailed - wheels that did not move
 ' @local failedSide - the last wheel that did not move, SIDE_NONE when none
 
@@ -3754,10 +3777,15 @@ PRI bSegPreflight() : bRunGoes | side, bMoved, nFailed, failedSide
     repeat side from SIDE_LEFT to SIDE_RIGHT
         beat(CP_LOOP_POLL)
         bMoved := bPreflightWheel(side)
+        if (bMoved == FALSE) and (PART_ID == PART_FAULTRESP)
+            bMoved := bPfRetry(side)                        ' PL-136: at once, in fresh lifetimes
         if bMoved == FALSE
             nFailed += 1
             failedSide := side
         segItems += 1
+    if (nFailed == 1) and (PART_ID == PART_FAULTRESP)
+        if bPfProbe(failedSide)                             ' PL-136: every retry failed; the probe, before FLTRESP
+            nFailed := 0
     bRunGoes := (nFailed == 0)
     if (nFailed == 1) and (PART_ID == PART_FAULTRESP)
         bSlotRetired[failedSide - SIDE_LEFT] := TRUE
@@ -3767,15 +3795,26 @@ PRI bSegPreflight() : bRunGoes | side, bMoved, nFailed, failedSide
         segEnd(WHY_MOTOR_RETIRED)
     else
         if nFailed > 0
+            if PART_ID == PART_FAULTRESP
+                emitFrRecSum()                              ' PL-136: both wheels dead after their retries still reports
+                                                            '  its stages, so the run's end never reads as nothing tried
             emitAbort(SEG_PREFLT, 0, SIDE_NONE, PREFLIGHT_INCRE, ABR_NO_MOTION, 0, SCOPE_RUN)
         segEnd(bRunGoes ? WHY_NONE : WHY_ABORTED)
 
-PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bMeasured, whyCode, lastJ
-' One wheel's preflight: start it alone (I6), arm the instrument on it, PREFLIGHT_INCRE for
+PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bMeasured, whyCode, lastJ, bStopped, bFrozen, endCode
+' One wheel's preflight: start it alone (I6), arm the instrument on it, mark, PREFLIGHT_INCRE for
 ' PREFLIGHT_MS, zero, wait stopped, freeze, and measure the driver tick and hwPos deltas from the ring.
 ' Emits BM-START (inside bWheelStart()) and BM-PREFLT. A fault is recovered per sec 4.2. Then, before the
 ' wheel is stopped, what its driver holds (abiDumpWheel(), BM-ABIL / -ABIS* / -ABIP*, task 3615), whether it
 ' moved or not.
+'
+' PL-136, in every part that runs PREFLT:
+'  - the nudge's wait is waitWatchedNoMo(), so a nudge with no hall tick by FR_NOMOTION_MS dumps the driver's runs
+'    mid-nudge, while the drive is still on (BM-ABI* where,NOMOTION) -- the mechanism FLTRESP's trials use;
+'  - a nudge that did not move emits its frozen ring as a trace (pfTrace()), and in part FAULTRESP every nudge does, so
+'    a failing nudge's per-phase shape has a moving one's beside it in the same run. The trace is drained BEFORE a
+'    fault is recovered, because recovery step 3 restarts the wheel and re-arms the ring (lifetimeZero()).
+' The nudge's readings are staged (pf*) for BM-PFRETRY.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @returns bMoved - TRUE when the driver's tick count changed across the nudge
@@ -3787,6 +3826,9 @@ PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bM
 ' @local bMeasured - the deltas are measurements
 ' @local whyCode - first cause of any NA in BM-PREFLT
 ' @local lastJ - logical index of the last drained sample
+' @local bStopped - the stop wait saw DCS_STOPPED
+' @local bFrozen - the ring was frozen on the nudge
+' @local endCode - TEND_* the trace names: how the capture ended
 
     slotIdx := side - SIDE_LEFT
     bMoved := FALSE
@@ -3795,21 +3837,32 @@ PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bM
     hwMoved := 0
     whyCode := WHY_NONE
     safeEvent := SAFE_NONE
+    bStopped := FALSE
+    bFrozen := FALSE
+    endCode := TEND_ABORT
     curTid := 0
+    pfTid := 0
+    bPfCmdValid := FALSE
+    pfCmdMs := getms()
+    pfEndMs := pfCmdMs
     if bWheelStart(SEG_PREFLT, side) == FALSE
         whyCode := stWhy
     elseif bInstArm(INST_SRC_WHEELS, 1) == FALSE
         whyCode := WHY_INST_NOACK
     else
-        instMark()
+        instMark()                                          ' the mark is the command: the trace's k 0
+        pfCmdMs := getms()
+        bPfCmdValid := TRUE
         wheelCommand(side, PREFLIGHT_INCRE)
-        safeEvent, _ := waitWatched(side, PREFLIGHT_MS, CP_LOOP_CAPTURE, UNTIL_TIME)
+        safeEvent, _, _ := waitWatchedNoMo(side, slotIdx, PREFLIGHT_MS, CP_LOOP_CAPTURE, UNTIL_TIME)   ' PL-136: + NOMOTION dump
+        pfEndMs := getms()
         if safeEvent == SAFE_NONE
             wheelCommand(side, 0)
-            safeEvent, _ := waitWatched(side, STOP_TIMEOUT_MS, CP_LOOP_STOPPED, UNTIL_STOPPED)
+            safeEvent, bStopped := waitWatched(side, STOP_TIMEOUT_MS, CP_LOOP_STOPPED, UNTIL_STOPPED)
         else
             wheelCommand(side, 0)
-        if bInstFreeze(0)
+        bFrozen := bInstFreeze(0)
+        if bFrozen
             drainBegin()
             if drStored > 1
                 lastJ := drStored - 1
@@ -3820,15 +3873,114 @@ PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bM
                 whyCode := WHY_NO_SAMPLES
         else
             whyCode := WHY_INST_NOACK
+        bMoved := bMeasured and (ticksMoved <> 0)
+        if safeEvent <> SAFE_NONE
+            endCode := safeEnd(safeEvent)
+        elseif bStopped
+            endCode := TEND_REST
+        else
+            endCode := TEND_TIMEOUT
+        if bFrozen and ((bMoved == FALSE) or (PART_ID == PART_FAULTRESP))
+            pfTrace(side, whyCode, endCode)                 ' PL-136: while FROZEN, before any recovery re-arms the ring
         if safeEvent == SAFE_INST_STALL
             emitAbort(SEG_PREFLT, 0, side, PREFLIGHT_INCRE, ABR_INST_STALLED, INST_STALL_MS, SCOPE_SEG)
         if safeEvent == SAFE_FAULT
             bRecoverFault(SEG_PREFLT, 0, side, PREFLIGHT_INCRE, FAULT_COOL_MS)
     bMoved := bMeasured and (ticksMoved <> 0)
+    pfTicks := ticksMoved
+    pfHw := hwMoved
+    bPfMeasured := bMeasured
+    pfWhy := whyCode
+    if (pfWhy == WHY_NONE) and (safeEvent <> SAFE_NONE)
+        pfWhy := safeWhy(safeEvent)
     emitPreflt(side, PREFLIGHT_INCRE, ticksMoved, hwMoved, bMeasured, whyCode)
     abiDumpWheel(side, ABIW_PREFLT)                         ' task 3615: after the nudge, before wheelStop()
     bInstIdle()
     wheelStop(side)
+
+PRI pfTrace(side, whyCode, endCode) | slotIdx, offNeg, offPos
+' PL-136: a PREFLT nudge's frozen ring as one wheel trace -- BM-TRACE (seg PREFLT, cause START: a start from rest at
+' PREFLIGHT_INCRE; the offsets and ramp_inc read back now), then bTraceDrain()'s BM-TS lines and BM-TRACE-END. The mark
+' is the command, so every 2 ms sample of the drive's first TRACE_DENSE_SAMPLES (0.5 s of PREFLIGHT_MS) is a line, and
+' after that every change and every 50 ms. BM-TS carries the three phases apart (u, v, w) beside their sum, current and
+' duty: PL-120's leading reading -- the low-side switches not turning on, so one phase held high and then draining as its
+' high-side bootstrap empties -- needs the shape per phase, which the sum hides. The trace counts toward
+' R14-DUAL-TRACES-X as every trace does. Legal only while the ring is FROZEN (I10). Sets pfTid.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param whyCode - the nudge's WHY_* (NONE when it ran)
+' @param endCode - TEND_* naming how the capture ended
+'
+' @local slotIdx - motor slot
+' @local offNeg - offset_fwd read back
+' @local offPos - offset_rev read back
+
+    slotIdx := side - SIDE_LEFT
+    pfTid := nextTraceId()
+    offNeg, offPos := wheelGetOffsets(side)
+    emitTrace(pfTid, SEG_PREFLT, side, CAUSE_START, PREFLIGHT_INCRE, offNeg, offPos, MODE_FLOAT, wheelRampInc(side), whyCode)
+    bTraceDrain(pfTid, slotIdx, SLOT_RIGHT - slotIdx, endCode)
+
+PRI bPfRetry(side) : bMoved | slotIdx, tryIdx
+' PL-136, part FAULTRESP, the first stage: a wheel whose PREFLT nudge did not move is retried AT ONCE, in up to
+' PF_RETRY_TRIES fresh driver lifetimes, each PF_RETRY_GAP_MS after the previous one stopped, each nudged, dumped and
+' traced exactly as the first (bPreflightWheel()) and followed by its BM-PFRETRY. It ends at the first retry that
+' moves (pfOutcome RETRY), on a run cap, or when a failed fault recovery retires the wheel (both UNDECIDED). Pass 4
+' started the right wheel once and never again, so one failed drive could not tell a transient first-drive failure
+' from a persistent one (VISIT-10-PASS4-EVALUATION.md sec 4); this is the second, third and fourth drive.
+'
+' The wheel's cells print NOMEAS (bFrPreRetired) from here until a stage moves it. bSlotRetired is NOT set here: it
+' would refuse the retries' own starts (bWheelStart()), and bSegPreflight() sets it only when every stage has failed.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns bMoved - TRUE when a retry moved the wheel
+'
+' @local slotIdx - motor slot
+' @local tryIdx - 1..PF_RETRY_TRIES
+
+    slotIdx := side - SIDE_LEFT
+    bMoved := FALSE
+    pfOutcome[slotIdx] := PFO_UNDECIDED
+    pfFailMs[slotIdx] := pfEndMs                            ' the retries' and the probe's clock start at the failure
+    pfFailTid[slotIdx] := pfTid
+    bFrPreRetired[slotIdx] := TRUE
+    repeat tryIdx from 1 to PF_RETRY_TRIES
+        beat(CP_LOOP_POLL)
+        if (bRunContinue(SEG_PREFLT) == FALSE) or bSlotRetired[slotIdx]
+            quit
+        waitBeat(PF_RETRY_GAP_MS, CP_LOOP_REST)
+        bMoved := bPreflightWheel(side)
+        pfTries[slotIdx] := tryIdx
+        emitPfRetry(side, tryIdx)
+        if bMoved
+            pfOutcome[slotIdx] := PFO_RETRY
+            pfRecTry[slotIdx] := tryIdx
+            bFrPreRetired[slotIdx] := FALSE                 ' un-retired: its trials run
+            quit
+
+PRI bPfProbe(side) : bRecovered | slotIdx, nTries, recTry, whyCode
+' PL-136, part FAULTRESP, the second stage: every immediate retry failed and this is the only wheel still unmoved, so
+' PL-120's recovery probe runs on it now, BEFORE FLTRESP -- probeRun() from the first nudge's failure (pfFailMs),
+' each try a BM-FRRECOV with seg PREFLT. A try that moves un-retires the wheel (pfOutcome PROBE) and its trials run.
+' All FR_RECOVER_TRIES tries unmoved is DEAD: time inside one program did not clear it. A probe ended short (a run cap,
+' a retirement) stays UNDECIDED. This probe is PREFLT's own: FLTRESP's probe keeps its one turn (frRecoverProbe()).
+'
+' @param side - the unmoved wheel: SIDE_LEFT or SIDE_RIGHT
+' @returns bRecovered - TRUE when a probe try moved it
+'
+' @local slotIdx - motor slot
+' @local nTries - probe tries made
+' @local recTry - the try that moved it, 0 when none
+' @local whyCode - what ended the probe short, WHY_NONE when it ran out or recovered
+
+    slotIdx := side - SIDE_LEFT
+    bRecovered, nTries, recTry, _, whyCode := probeRun(SEG_PREFLT, pfFailTid[slotIdx], side, pfFailMs[slotIdx])
+    if bRecovered
+        pfOutcome[slotIdx] := PFO_PROBE
+        pfRecTry[slotIdx] := recTry
+        bFrPreRetired[slotIdx] := FALSE                     ' un-retired: its trials run
+    elseif (whyCode == WHY_NONE) and (nTries == FR_RECOVER_TRIES)
+        pfOutcome[slotIdx] := PFO_DEAD
 
 CON { --- segment routines: traces (STOPMODE, BASELINE, POSTFLT, FAULTB), rungs (LADDER, LIVE, CLOCK), OVERSHT --- }
 
@@ -8852,12 +9004,38 @@ CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 361
   '     each a fresh driver lifetime that drives FR_RECOVER_INCRE (NEG, as the trials) for FR_RECOVER_DRIVE_MS; it
   '     ends at the first try that moves. It decides TIME against RELOAD: a wheel that moves in a later try recovered
   '     with time inside one program; one that never moves needs the reload. One probe per run bounds a dead wheel's
-  '     cost at about 2 minutes, not 2 minutes per trial.
+  '     cost at about 2 minutes, not 2 minutes per trial. (PL-136 adds PREFLT's own probe, below, which does not take
+  '     this one's turn: a wheel recovered at PREFLT that then dies mid-run is still probed here.)
     FR_NOMOTION_MS        = 150                             ' PROVISIONAL: commanded this long with no hall tick
     FR_RECOVER_TRIES      = 6
     FR_RECOVER_GAP_MS     = 20_000                          ' try n starts n x this after the failure
     FR_RECOVER_DRIVE_MS   = 2_000
     FR_RECOVER_INCRE      = 40_000_000                      ' the low rung's speed, ladderIncre[frRungIdx[0]]
+
+  ' PL-136, PL-120 AT PREFLT (Visit 10 pass 4, 2026-09-25 11:41, VISIT-10-PASS4-EVALUATION.md sec 4a): the right wheel
+  '  did not move on the first drive of a fresh load, was retired by PREFLT, and so ran no FLTRESP trial -- and both
+  '  diagnostics above hung off a trial, so neither fired, and the nudge's ring was drained to count ticks and thrown
+  '  away. The diagnostics now key on a commanded wheel that does not move, wherever it happens:
+  '   - every part: a PREFLT nudge with no hall tick by FR_NOMOTION_MS dumps where,NOMOTION mid-nudge, and a nudge that
+  '     did not move is traced (in FAULTRESP every nudge is, as the in-run control) -- bPreflightWheel();
+  '   - FAULTRESP only: a wheel whose nudge did not move is retried AT ONCE in PF_RETRY_TRIES fresh lifetimes
+  '     (bPfRetry(), BM-PFRETRY); only if every retry fails, and it is the only such wheel, the recovery probe runs on
+  '     it before FLTRESP (bPfProbe(), BM-FRRECOV seg,PREFLT). A wheel either stage moves runs its trials. The retries
+  '     tell a transient first-drive failure from a persistent one; the probe, as at FLTRESP, time from the reload.
+  '     BM-FRRECSUM reports both stages per wheel (l_pf / r_pf).
+    PF_RETRY_TRIES        = 3                               ' fresh lifetimes, at once, after a nudge that did not move
+    PF_RETRY_GAP_MS       = 1_000                           ' from one attempt's wheelStop() to the next one's start
+
+  ' What PREFLT's stages found for a wheel (token = tokPfOut; BM-FRRECSUM l_pf and r_pf):
+  '  PFO_NO_FAIL   - its first nudge moved; no stage ran
+  '  PFO_RETRY     - an immediate retry moved it: recovered, and its trials run
+  '  PFO_PROBE     - every retry failed and a recovery-probe try moved it: recovered, and its trials run
+  '  PFO_DEAD      - every retry and all FR_RECOVER_TRIES probe tries left it unmoved: not recovered, retired
+  '  PFO_UNDECIDED - its first nudge did not move and the stages ended before deciding: a run cap, a retirement by a
+  '                  failed fault recovery, or both wheels unmoved (the run then ends, and no probe runs)
+    #0, PFO_NO_FAIL, PFO_RETRY, PFO_PROBE, PFO_DEAD, PFO_UNDECIDED
+    PFO_COUNT    = PFO_UNDECIDED + 1
+    TOKMAX_PFOUT = 9
 
   ' PL-120, THE ORDER: -D FRESP_RIGHT_FIRST (tier dual-fault-rightfirst) runs the RIGHT wheel's own FLTRESP trials
   '  before the LEFT's, everything else identical (PREFLT and FLTPLAT keep their order). The failure followed the left
@@ -8927,6 +9105,7 @@ tokFrPath       BYTE    "NONE", 0, "FAULTED", 0, "RESYNC", 0, "RESYNC_N", 0, "RE
 tokFrMode       BYTE    "SHIPPED", 0, "GRADED", 0
 tokFrWin        BYTE    "PRE", 0, "MOVE", 0, "REST", 0
 tokHold         BYTE    "OFF", 0, "HOLDING", 0, "SLIPPED", 0, "LIMITED", 0
+tokPfOut        BYTE    "NO_FAIL", 0, "RETRY", 0, "PROBE", 0, "DEAD", 0, "UNDECIDED", 0
 
 VAR { FAULTRESP state -- cog 0 only }
 
@@ -9035,6 +9214,21 @@ VAR { FAULTRESP state -- cog 0 only }
     LONG    frRecMs                                         ' ...its ms since the failure
     LONG    frProbeWhy                                      ' what ended the probe short: NONE, ABORTED or MOTOR_RETIRED
     LONG    frTryMs                                         ' the try in hand: ms since the failure at its command
+    ' PL-136: PREFLT's retries and probe, per wheel (frResetCells(); bPfRetry(), bPfProbe()), for BM-FRRECSUM
+    LONG    pfOutcome[INST_MOTORS]                          ' PFO_*: what PREFLT's stages found
+    LONG    pfTries[INST_MOTORS]                            ' immediate retries made
+    LONG    pfRecTry[INST_MOTORS]                           ' the retry (RETRY) or probe try (PROBE) that moved it, 1-based
+    LONG    pfFailMs[INST_MOTORS]                           ' getms() when its first nudge's drive ended unmoved
+    LONG    pfFailTid[INST_MOTORS]                          ' that nudge's trace id, 0 when it was not traced
+    ' PL-136: the PREFLT nudge in hand, staged by bPreflightWheel() in every part, read by BM-PFRETRY
+    LONG    pfTid                                           ' its trace id, 0 when it was not traced
+    LONG    pfTicks                                         ' driver pos delta
+    LONG    pfHw                                            ' the instrument's hall-count delta
+    LONG    bPfMeasured                                     ' the deltas are measurements
+    LONG    pfWhy                                           ' first cause of an NA, or what ended the drive early
+    LONG    pfCmdMs                                         ' getms() at its command
+    LONG    bPfCmdValid                                     ' the command was sent
+    LONG    pfEndMs                                         ' getms() when its drive ended
     ' task 3621 (R20.1): the trial's stop reason (frReadAfter()), and the reporting cells' accumulators (frResetCells())
     LONG    frSr                                            ' getStopReason() after the capture, beside the drain of its log
     LONG    sfSrFaultN[INST_MOTORS]                         ' SR-FAULT: trials judged -- X-4 (the positive), X-2 and HOOKREST (the negatives)
@@ -9052,7 +9246,8 @@ VAR { FAULTRESP state -- cog 0 only }
 
 PRI frResetCells() | arrIdx, slotIdx
 ' Clear the FAULTRESP part's cell accumulators (initRunState()): every count 0 and every ran FALSE, so a cell no
-' trial reached prints NOMEAS. The recovery probe's state too, so BM-FRRECSUM reads probed FALSE when none ran.
+' trial reached prints NOMEAS. The recovery probe's state too, so BM-FRRECSUM reads probed FALSE when none ran, and
+' PREFLT's stages (PL-136), so each wheel reads NO_FAIL until its first nudge fails.
 '
 ' @local arrIdx - [slot * FR_SPEEDS + speed] index
 ' @local slotIdx - motor slot
@@ -9109,6 +9304,12 @@ PRI frResetCells() | arrIdx, slotIdx
     frRecMs := 0
     frProbeWhy := WHY_NONE
     frTryMs := 0
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT             ' PL-136: no PREFLT stage has run
+        pfOutcome[slotIdx] := PFO_NO_FAIL
+        pfTries[slotIdx] := 0
+        pfRecTry[slotIdx] := 0
+        pfFailMs[slotIdx] := 0
+        pfFailTid[slotIdx] := 0
 
 PRI segFaultResp() | side, speedIdx, brakeIdx
 ' FLTRESP (part FAULTRESP, task 3613): the fault study's wheel-frame X-cells. Per wheel: FIRST the hook's negative
@@ -9117,7 +9318,8 @@ PRI segFaultResp() | side, speedIdx, brakeIdx
 ' taken a minute apart at most; then at the middle rung X-4 (the re-sync), X-6's coast bound (X6C) and X-6 at each
 ' brake % ascending. Every trial is its own lifetime (frTrial()), and every forced fault is guarded (frGuard()).
 ' The wheels run FR_SIDE_FIRST then FR_SIDE_LAST: LEFT first, or RIGHT first in the FRESP_RIGHT_FIRST build (PL-120).
-' After the trials, BM-FRRECSUM: whether PL-120's recovery probe ran (frTrial()) and what it found.
+' After the trials, BM-FRRECSUM: whether PL-120's recovery probe ran (frTrial()) and what it found, and what PREFLT's
+' stages found for each wheel (PL-136, bSegPreflight()).
 '
 ' @local side - FR_SIDE_FIRST then FR_SIDE_LAST
 ' @local speedIdx - 0..FR_SPEEDS-1, ascending
@@ -9405,26 +9607,43 @@ PRI frCapture(side, slotIdx, motorIncre) | safeEvent, bReached, bRest, captureLe
         if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
             cpWhy := WHY_INST_NOACK
 
-PRI frWaitAtSpeed(side, slotIdx) : safeEvent, bReached | startMs, basePos, baseHw, bBaseTaken, bTicked, bDumped
-' A FLTRESP trial's wait for its wheel to reach speed: waitWatched(side, LADDER_STEADY_MS, CP_LOOP_ATSPEED,
-' UNTIL_AT_SPEED) pass for pass -- one safetyReset(), a beat and a SAMPLE_MS wait every pass, the same safety poll and
-' the same ends -- with PL-120's NOMOTION dump added: once FR_NOMOTION_MS has passed since the wait began (the command
-' was sent just before it) and neither the mirrored driver pos nor the instrument's own hall count has changed, the
-' wheel's driver runs are dumped once (abiDumpWheel(), where NOMOTION) and the wait carries on to its own end. The
-' baseline is the mirror on the first pass, SAMPLE_MS after the command, so it is a post-ARM sample. The dump's reads are
-' hub reads of the driver's own runs, as the TIMEOUT dump's are; the safety poll resumes on the next pass.
+PRI frWaitAtSpeed(side, slotIdx) : safeEvent, bReached
+' A FLTRESP trial's wait for its wheel to reach speed: waitWatchedNoMo()'s AT_SPEED wait of LADDER_STEADY_MS, which is
+' waitWatched(side, LADDER_STEADY_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED) pass for pass with PL-120's NOMOTION dump added.
+' Until SRC_REV 46 that loop lived here; PL-136 moved it, unchanged, into waitWatchedNoMo() so PREFLT's nudge dumps by
+' the same mechanism.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param slotIdx - its motor slot
 ' @returns safeEvent - SAFE_* that ended the wait, SAFE_NONE otherwise
 ' @returns bReached - TRUE when the mirror read DCS_AT_SPEED
+
+    safeEvent, bReached, _ := waitWatchedNoMo(side, slotIdx, LADDER_STEADY_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+
+PRI waitWatchedNoMo(side, slotIdx, durationMs, cpId, untilKind) : safeEvent, bReached, bDumped | startMs, basePos, baseHw, bBaseTaken, bTicked
+' A commanded wheel's watched wait with PL-120's NOMOTION dump: waitWatched(side, durationMs, cpId, untilKind) pass for
+' pass -- one safetyReset(), a beat and a SAMPLE_MS wait every pass, the same safety poll and the same ends -- plus,
+' once FR_NOMOTION_MS has passed since the wait began (the command was sent just before it) and neither the mirrored
+' driver pos nor the instrument's own hall count has changed, the wheel's driver runs dumped once (abiDumpWheel(), where
+' NOMOTION) while the drive is still on; the wait then carries on to its own end. The baseline is the mirror on the
+' first pass, SAMPLE_MS after the command, so it is a post-ARM sample. The dump's reads are hub reads of the driver's
+' own runs, as the TIMEOUT dump's are; the safety poll resumes on the next pass. Used by FLTRESP's trials
+' (frWaitAtSpeed()) and, PL-136, by every PREFLT nudge (bPreflightWheel()).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param slotIdx - its motor slot
+' @param durationMs - the wait's bound
+' @param cpId - CP_LOOP_* beaten every pass
+' @param untilKind - UNTIL_AT_SPEED (ends when the mirror reads DCS_AT_SPEED) or UNTIL_TIME (runs its full bound)
+' @returns safeEvent - SAFE_* that ended the wait, SAFE_NONE otherwise
+' @returns bReached - UNTIL_AT_SPEED: TRUE when the mirror read DCS_AT_SPEED; UNTIL_TIME: TRUE when the full bound ran
+' @returns bDumped - TRUE when the NOMOTION dump was taken
 '
 ' @local startMs - getms() when the wait began
 ' @local basePos - the mirrored driver pos on the first pass
 ' @local baseHw - the mirrored hall count on the first pass
 ' @local bBaseTaken - the baseline has been read
 ' @local bTicked - pos or the hall count has changed since the baseline
-' @local bDumped - the NOMOTION dump has been taken
 
     safetyReset()
     safeEvent := SAFE_NONE
@@ -9436,13 +9655,14 @@ PRI frWaitAtSpeed(side, slotIdx) : safeEvent, bReached | startMs, basePos, baseH
     bDumped := FALSE
     startMs := getms()
     repeat
-        beat(CP_LOOP_ATSPEED)
-        panelTick(startMs, LADDER_STEADY_MS)
+        beat(cpId)
+        panelTick(startMs, durationMs)
         waitms(SAMPLE_MS)
         safeEvent := safetyPoll(side)
         if (safeEvent == SAFE_NONE) and bPanelStopPressed()
             safeEvent := SAFE_OPER_STOP
-        bReached := bMirrorAllInState(side, DCS_AT_SPEED)
+        if untilKind == UNTIL_AT_SPEED
+            bReached := bMirrorAllInState(side, DCS_AT_SPEED)
         if bBaseTaken == FALSE
             basePos := instLastPos[slotIdx]
             baseHw := instLastHw[slotIdx]
@@ -9453,8 +9673,10 @@ PRI frWaitAtSpeed(side, slotIdx) : safeEvent, bReached | startMs, basePos, baseH
             if (getms() - startMs) >= FR_NOMOTION_MS
                 abiDumpWheel(side, ABIW_NOMOTION)
                 bDumped := TRUE
-        if (safeEvent <> SAFE_NONE) or bReached or ((getms() - startMs) >= LADDER_STEADY_MS)
+        if (safeEvent <> SAFE_NONE) or bReached or ((getms() - startMs) >= durationMs)
             quit
+    if untilKind == UNTIL_TIME
+        bReached := (safeEvent == SAFE_NONE)
 
 PRI frProvoke(side, slotIdx, bSteerForm) : outcome | stopSide
 ' The forced fault, marked and guarded: the mark, testForceFault() on this wheel only -- through the wheel object or
@@ -9672,57 +9894,80 @@ PRI frRestoreCheck(tid, side, slotIdx) | eMode, nBrakeOn, eHold, bMeasured, bOk
             sfFrRestBad[slotIdx] := (sfFrRestBad[slotIdx] + 1) <# LIM_SMALL
     emitFrRest(tid, side, eMode, nBrakeOn, eHold, bMeasured, bOk)
 
-PRI frRecoverProbe(tid, side) | slotIdx, tryIdx, bMoved
-' PL-120's RECOVERY probe (this part's CON note), run once per run, after the first FLTRESP trial that ended
-' STEADY_TIMEOUT and before the next trial: up to FR_RECOVER_TRIES tries on that wheel, try n starting n x
-' FR_RECOVER_GAP_MS after the failure (frFailMs), each its own driver lifetime (bFrRecoverTry(), one BM-FRRECOV each).
-' It ends at the first try that moves, on a run cap (bRunContinue(): why ABORTED), or when the wheel is retired (why
-' MOTOR_RETIRED). Every wait is beat-polled (waitBeat(), and waitWatched() inside a try), so the watchdog is fed
-' throughout; the worst case is FR_RECOVER_TRIES x FR_RECOVER_GAP_MS (2 minutes) plus the last try's lifetime (about
-' 8 s: the start and its zero, the drive, the stop bound). BM-FRRECSUM, after FLTRESP's trials, carries the summary.
+PRI frRecoverProbe(tid, side)
+' PL-120's RECOVERY probe at FLTRESP (this part's CON note), run once per run, after the first FLTRESP trial that ended
+' STEADY_TIMEOUT and before the next trial: probeRun() on that wheel from the failure (frFailMs), its summary kept for
+' BM-FRRECSUM's probed .. ms and why. PL-136's PREFLT probe (bPfProbe()) is separate and does not take this one's turn.
 '
 ' @param tid - trace id of the failed trial
 ' @param side - its wheel: SIDE_LEFT or SIDE_RIGHT
+
+    bFrProbed := TRUE
+    frProbeTid := tid
+    frProbeSide := side
+    bFrRecovered, frProbeTries, frRecTry, frRecMs, frProbeWhy := probeRun(SEG_FLTRESP, tid, side, frFailMs)
+
+PRI probeRun(seg, tid, side, failMs) : bRecovered, nTries, recTry, recMs, whyCode | slotIdx, tryIdx, bMoved
+' PL-120's recovery probe itself, from FLTRESP (frRecoverProbe()) or, PL-136, from PREFLT (bPfProbe()): up to
+' FR_RECOVER_TRIES tries on the wheel, try n starting n x FR_RECOVER_GAP_MS after failMs, each its own driver lifetime
+' (bFrRecoverTry(), one BM-FRRECOV each, its seg naming the stage). It ends at the first try that moves, on a run cap
+' (bRunContinue(): why ABORTED), or when the wheel is retired (why MOTOR_RETIRED). Every wait is beat-polled (waitBeat(),
+' and waitWatched() inside a try), so the watchdog is fed throughout; the worst case is FR_RECOVER_TRIES x
+' FR_RECOVER_GAP_MS (2 minutes) plus the last try's lifetime (about 8 s: the start and its zero, the drive, the stop
+' bound). Unchanged from SRC_REV 44's frRecoverProbe() but for seg and failMs, which were SEG_FLTRESP and frFailMs.
+'
+' @param seg - SEG_FLTRESP or SEG_PREFLT: the stage the probe runs in
+' @param tid - trace id of the failed trial or nudge
+' @param side - its wheel: SIDE_LEFT or SIDE_RIGHT
+' @param failMs - getms() at the failure the tries are timed from
+' @returns bRecovered - TRUE when a try moved the wheel
+' @returns nTries - tries made
+' @returns recTry - the try that moved it, 1-based; 0 when none did
+' @returns recMs - its ms from the failure to its command; 0 when none did
+' @returns whyCode - what ended the probe short: WHY_NONE, WHY_ABORTED or WHY_MOTOR_RETIRED
 '
 ' @local slotIdx - motor slot
 ' @local tryIdx - 1..FR_RECOVER_TRIES
 ' @local bMoved - the try moved
 
     slotIdx := side - SIDE_LEFT
-    bFrProbed := TRUE
-    frProbeTid := tid
-    frProbeSide := side
-    frProbeWhy := WHY_NONE
+    bRecovered := FALSE
+    nTries := 0
+    recTry := 0
+    recMs := 0
+    whyCode := WHY_NONE
     repeat tryIdx from 1 to FR_RECOVER_TRIES
         beat(CP_LOOP_POLL)
-        if bRunContinue(SEG_FLTRESP) == FALSE
-            frProbeWhy := WHY_ABORTED
+        if bRunContinue(seg) == FALSE
+            whyCode := WHY_ABORTED
             quit
         if bSlotRetired[slotIdx]
-            frProbeWhy := WHY_MOTOR_RETIRED
+            whyCode := WHY_MOTOR_RETIRED
             quit
-        waitBeat(((tryIdx * FR_RECOVER_GAP_MS) - (getms() - frFailMs)) #> 0, CP_LOOP_REST)
-        if bRunContinue(SEG_FLTRESP) == FALSE
-            frProbeWhy := WHY_ABORTED
+        waitBeat(((tryIdx * FR_RECOVER_GAP_MS) - (getms() - failMs)) #> 0, CP_LOOP_REST)
+        if bRunContinue(seg) == FALSE
+            whyCode := WHY_ABORTED
             quit
-        bMoved := bFrRecoverTry(tid, side, tryIdx)
-        frProbeTries := tryIdx
+        bMoved := bFrRecoverTry(seg, tid, side, tryIdx, failMs)
+        nTries := tryIdx
         if bMoved
-            bFrRecovered := TRUE
-            frRecTry := tryIdx
-            frRecMs := frTryMs
+            bRecovered := TRUE
+            recTry := tryIdx
+            recMs := frTryMs
             quit
 
-PRI bFrRecoverTry(tid, side, tryIdx) : bMoved | slotIdx, motorIncre, safeEvent, ticksMoved, hwMoved, bMeasured, whyCode, lastJ, sampleIdx, pkPh, pkI, bPkValid
+PRI bFrRecoverTry(seg, tid, side, tryIdx, failMs) : bMoved | slotIdx, motorIncre, safeEvent, ticksMoved, hwMoved, bMeasured, whyCode, lastJ, sampleIdx, pkPh, pkI, bPkValid
 ' One recovery try, on bPreflightWheel()'s shape: start the wheel alone (bWheelStart(), a fresh lifetime as every
 ' trial's is), arm the instrument, command FR_RECOVER_INCRE NEG for FR_RECOVER_DRIVE_MS, zero, wait stopped
 ' (<= STOP_TIMEOUT_MS), freeze; the driver pos and hall-count deltas across the capture, and over its up samples the
 ' largest phase sum smpPh() and sense_i smpI() -- BM-TS's ph and i, from the same ring. A fault is counted toward the run
 ' cap and cooled FAULT_COOL_MS; the lifetime then ends (wheelStop()), which discards it. Emits BM-FRRECOV.
 '
+' @param seg - SEG_FLTRESP or SEG_PREFLT: the stage the probe runs in
 ' @param tid - trace id of the failed trial
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param tryIdx - 1..FR_RECOVER_TRIES
+' @param failMs - getms() at the failure this try is timed from
 ' @returns bMoved - TRUE when the driver's pos changed across the capture
 '
 ' @local slotIdx - motor slot
@@ -9749,14 +9994,14 @@ PRI bFrRecoverTry(tid, side, tryIdx) : bMoved | slotIdx, motorIncre, safeEvent, 
     bPkValid := FALSE
     whyCode := WHY_NONE
     safeEvent := SAFE_NONE
-    frTryMs := getms() - frFailMs
-    if bWheelStart(SEG_FLTRESP, side) == FALSE
+    frTryMs := getms() - failMs
+    if bWheelStart(seg, side) == FALSE
         whyCode := stWhy
     elseif bInstArm(INST_SRC_WHEELS, 1) == FALSE
         whyCode := WHY_INST_NOACK
     else
         instMark()
-        frTryMs := getms() - frFailMs
+        frTryMs := getms() - failMs
         wheelCommand(side, motorIncre)
         safeEvent, _ := waitWatched(side, FR_RECOVER_DRIVE_MS, CP_LOOP_CAPTURE, UNTIL_TIME)
         wheelCommand(side, 0)
@@ -9786,12 +10031,12 @@ PRI bFrRecoverTry(tid, side, tryIdx) : bMoved | slotIdx, motorIncre, safeEvent, 
         if (whyCode == WHY_NONE) and (safeEvent <> SAFE_NONE)
             whyCode := safeWhy(safeEvent)
         if safeEvent == SAFE_INST_STALL
-            emitAbort(SEG_FLTRESP, tid, side, motorIncre, ABR_INST_STALLED, INST_STALL_MS, SCOPE_TRIAL)
+            emitAbort(seg, tid, side, motorIncre, ABR_INST_STALLED, INST_STALL_MS, SCOPE_TRIAL)
         if safeEvent == SAFE_FAULT
             runFaults := (runFaults + 1) <# LIM_BIG
             waitBeat(FAULT_COOL_MS, CP_LOOP_COOL)
     bMoved := bMeasured and (ticksMoved <> 0)
-    emitFrRecov(tid, side, tryIdx, ticksMoved, hwMoved, bMeasured, pkPh, pkI, bPkValid, whyCode)
+    emitFrRecov(seg, tid, side, tryIdx, ticksMoved, hwMoved, bMeasured, pkPh, pkI, bPkValid, whyCode)
     bInstIdle()
     wheelStop(side)
 
@@ -10608,7 +10853,7 @@ PRI emitFrBuild()
 PRI emitFrDiag()
 ' BM-FRDIAG: PL-120's diagnostic constants and this build's wheel order, printed after BM-FRBUILD and before anything
 ' moves (BM-FRBUILD, at 259 bytes, has no room for them under 280). right_first TRUE is the FRESP_RIGHT_FIRST build
-' (tier dual-fault-rightfirst). Worst case 136 bytes.
+' (tier dual-fault-rightfirst). PL-136 appends PREFLT's retry count and gap (pf_tries, pf_gap_ms). Worst case 168 bytes.
 
     recBegin(@"BM-FRDIAG")
     benchLog.numField(@"nomo_ms", FR_NOMOTION_MS, LIM_SMALL)
@@ -10617,6 +10862,8 @@ PRI emitFrDiag()
     benchLog.numField(@"rec_drive_ms", FR_RECOVER_DRIVE_MS, LIM_SMALL)
     benchLog.numField(@"rec_incre", FR_RECOVER_INCRE, LIM_BIG)
     benchLog.boolField(@"right_first", BUILD_RIGHT_FIRST)
+    benchLog.numField(@"pf_tries", PF_RETRY_TRIES, LIM_TINY)
+    benchLog.numField(@"pf_gap_ms", PF_RETRY_GAP_MS, LIM_SMALL)
     emitRecord()
 
 PRI emitNotBuilt(pCell, pStudy, whyCode)
@@ -10662,19 +10909,21 @@ PRI emitFrTrial(tid, side, motorIncre)
     whyField(frWhy)
     emitRecord()
 
-PRI emitFrRecov(tid, side, tryIdx, ticksMoved, hwMoved, bMeasured, pkPh, pkI, bPkValid, whyCode) | slotIdx
+PRI emitFrRecov(seg, tid, side, tryIdx, ticksMoved, hwMoved, bMeasured, pkPh, pkI, bPkValid, whyCode) | slotIdx
 ' BM-FRRECOV: one try of PL-120's recovery probe -- the failed trial's tid, the wheel, the try (1-based), this try's
 ' driver lifetime, ms from the failure to its command (to its start attempt when it never started), moved and the driver
 ' pos delta (ticks) with the instrument's own hall-count delta (hw) beside it, the largest phase sum (pk_ph, BM-TS's ph)
-' and sense_i (pk_i, BM-TS's i) over the capture's up samples, and why.
+' and sense_i (pk_i, BM-TS's i) over the capture's up samples, the stage the probe ran in (seg: FLTRESP, or PREFLT for
+' PL-136's probe of a wheel whose every PREFLT retry failed, where tid is the failed nudge's trace), and why.
 '  RECOVERED reads moved,TRUE with ticks non-zero and hw beside it, and pk_ph well above the dead reading.
 '  STILL DEAD reads moved,FALSE, ticks,0 and hw,0 with why NONE (the drive ran its full FR_RECOVER_DRIVE_MS), pk_ph at
 '   the dead bridge's level (PL-120: 30-50 mV on BM-TS ph from the first frame, trials 18-24) and pk_i at the lifetime
 '   zero (0-9 mV).
 '  A why other than NONE means the try did not measure a full drive (NO_COG, INST_NOACK, FAULTED, ABORTED ...) and
 '   decides nothing either way.
-' Worst case 178 bytes.
+' Worst case 191 bytes (178, and seg's 13, PL-136).
 '
+' @param seg - SEG_FLTRESP or SEG_PREFLT: the stage the probe ran in
 ' @param tid - trace id of the failed trial
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param tryIdx - 1..FR_RECOVER_TRIES
@@ -10700,30 +10949,96 @@ PRI emitFrRecov(tid, side, tryIdx, ticksMoved, hwMoved, bMeasured, pkPh, pkI, bP
     benchLog.naNumField(@"hw", hwMoved, LIM_MID, bMeasured)
     benchLog.naNumField(@"pk_ph", pkPh, LIM_SMALL, bPkValid)
     benchLog.naNumField(@"pk_i", pkI, LIM_SMALL, bPkValid)
+    benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     whyField(whyCode)
+    emitRecord()
+
+PRI emitPfRetry(side, tryIdx) | slotIdx
+' BM-PFRETRY (PL-136): one immediate retry of a wheel whose PREFLT nudge did not move, printed after the retry's own
+' BM-START, BM-PREFLT, any where,NOMOTION dump, its trace (BM-TRACE seg PREFLT) and its where,PREFLT dump -- the wheel,
+' the retry (1-based, of PF_RETRY_TRIES), its driver lifetime, ms from the first nudge's failure to this retry's command,
+' moved with the driver pos delta (ticks) and the instrument's own hall-count delta (hw) beside it, the tid of its
+' trace, and why.
+'  RECOVERED reads moved,TRUE with ticks non-zero and hw beside it: the first failure did not persist, and the wheel's
+'   FLTRESP trials run.
+'  STILL DEAD reads moved,FALSE, ticks,0 and hw,0 with why NONE: the nudge ran its full PREFLIGHT_MS and nothing turned.
+'  A why other than NONE means the retry did not measure a full nudge (NO_COG, INST_NOACK, FAULTED ...) and decides
+'   nothing either way; ms is NA when it never commanded, tid NA when its ring was not frozen.
+' Worst case 148 bytes.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param tryIdx - 1..PF_RETRY_TRIES
+'
+' @local slotIdx - motor slot
+
+    slotIdx := side - SIDE_LEFT
+    recBegin(@"BM-PFRETRY")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"try", tryIdx, LIM_TINY)
+    benchLog.naNumField(@"life", slotLife[slotIdx], LIM_SMALL, slotLife[slotIdx] > 0)
+    benchLog.naNumField(@"ms", pfCmdMs - pfFailMs[slotIdx], LIM_MID, bPfCmdValid)
+    benchLog.boolField(@"moved", bPfMeasured and (pfTicks <> 0))
+    benchLog.naNumField(@"ticks", pfTicks, LIM_SMALL, bPfMeasured)
+    benchLog.naNumField(@"hw", pfHw, LIM_MID, bPfMeasured)
+    benchLog.naNumField(@"tid", pfTid, LIM_SMALL, pfTid > 0)
+    whyField(pfWhy)
     emitRecord()
 
 PRI emitFrRecSum()
 ' BM-FRRECSUM: PL-120's recovery probe, once per run after FLTRESP's trials, whether or not it ran. probed FALSE (every
-' other field NA or NONE) means no FLTRESP trial ended STEADY_TIMEOUT. probed TRUE names the failed trial (tid), its
-' wheel and the tries made.
+' other probe field NA or NONE) means no FLTRESP trial ended STEADY_TIMEOUT. probed TRUE names the failed trial (tid),
+' its wheel and the tries made.
 '  RECOVERED reads recovered,TRUE with the try that moved and its ms since the failure: time inside one program
 '   cleared the state.
 '  STILL DEAD reads recovered,FALSE, tries FR_RECOVER_TRIES, try and ms NA, why NONE: 2 minutes did not clear it, so
 '   the reload is what does.
 '  why ABORTED or MOTOR_RETIRED with recovered FALSE means the probe ended short and decides nothing.
-' Worst case 136 bytes.
+' PL-136: recovered and tries print NA when probed is FALSE (a probe that did not run recovered nothing and made no
+' try; FALSE and 0 there were silent zeros, D2). Then, per wheel, what PREFLT's stages found (pfSumFields()): l_pf and
+' r_pf NO_FAIL, RETRY, PROBE, DEAD or UNDECIDED; l_pf_rec / r_pf_rec TRUE for RETRY and PROBE, FALSE for DEAD, and NA only
+' where nothing was decided (NO_FAIL, UNDECIDED); the retries made; and the retry or probe try that moved it. So a wheel
+' that failed PREFLT always reads a named outcome here, never a silent NA.
+' Worst case 248 bytes (136, and 56 per wheel).
 
     recBegin(@"BM-FRRECSUM")
     benchLog.boolField(@"probed", bFrProbed)
-    benchLog.boolField(@"recovered", bFrRecovered)
+    if bFrProbed
+        benchLog.boolField(@"recovered", bFrRecovered)
+    else
+        benchLog.textField(@"recovered", @sSfNa)
     benchLog.naNumField(@"tid", frProbeTid, LIM_SMALL, bFrProbed)
     benchLog.tokenField(@"motor", sideToken(frProbeSide), TOKMAX_MOTOR)
-    benchLog.numField(@"tries", frProbeTries, LIM_TINY)
+    benchLog.naNumField(@"tries", frProbeTries, LIM_TINY, bFrProbed)
     benchLog.naNumField(@"try", frRecTry, LIM_TINY, bFrRecovered)
     benchLog.naNumField(@"ms", frRecMs, LIM_MID, bFrRecovered)
+    pfSumFields(@"l_pf", @"l_pf_rec", @"l_pf_n", @"l_pf_try", SLOT_LEFT)
+    pfSumFields(@"r_pf", @"r_pf_rec", @"r_pf_n", @"r_pf_try", SLOT_RIGHT)
     whyField(frProbeWhy)
     emitRecord()
+
+PRI pfSumFields(pOutName, pRecName, pTriesName, pTryName, slotIdx) | eOut
+' BM-FRRECSUM's four PREFLT-stage fields for one wheel (PL-136): the outcome token, recovered (TRUE / FALSE, NA when
+' nothing was decided), the immediate retries made (NA when its first nudge moved), and the retry or probe try that
+' moved it (NA unless RETRY or PROBE).
+'
+' @param pOutName - the outcome field's name
+' @param pRecName - the recovered field's name
+' @param pTriesName - the retries-made field's name
+' @param pTryName - the moving-try field's name
+' @param slotIdx - motor slot
+'
+' @local eOut - PFO_* the wheel's stages found
+
+    eOut := pfOutcome[slotIdx]
+    benchLog.tokenField(pOutName, tokenAt(@tokPfOut, PFO_COUNT, eOut), TOKMAX_PFOUT)
+    if (eOut == PFO_RETRY) or (eOut == PFO_PROBE)
+        benchLog.boolField(pRecName, TRUE)
+    elseif eOut == PFO_DEAD
+        benchLog.boolField(pRecName, FALSE)
+    else
+        benchLog.textField(pRecName, @sSfNa)
+    benchLog.naNumField(pTriesName, pfTries[slotIdx], LIM_TINY, eOut <> PFO_NO_FAIL)
+    benchLog.naNumField(pTryName, pfRecTry[slotIdx], LIM_TINY, (eOut == PFO_RETRY) or (eOut == PFO_PROBE))
 
 PRI emitFrResults(tid, side, slotIdx, motorIncre)
 ' A wheel trial's readings: BM-FRSTAT and BM-FRCUR, BM-FRWIND for X-2, and the phase windows -- X-3's negative control
@@ -16511,7 +16826,9 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
   '                 dump fell in a failing one)
   '  ABIW_NOMOTION - part FRESP, a trial whose wheel has been commanded for FR_NOMOTION_MS with no hall tick, once per
   '                 trial, while it is still commanded and before the driver's ~1 s protective stop (PL-120's
-  '                 2026-09-24 21:21 recurrence: the TIMEOUT dump read only the state after that stop had latched)
+  '                 2026-09-24 21:21 recurrence: the TIMEOUT dump read only the state after that stop had latched).
+  '                 PL-136: also every PREFLT nudge, in every part, by the same test (waitWatchedNoMo()); its life is the
+  '                 one BM-START seg PREFLT names, so a reader tells it from a trial's
     #0, ABIW_SKSTART, ABIW_PREFLT, ABIW_TIMEOUT, ABIW_NOMOTION
     ABIW_COUNT      = ABIW_NOMOTION + 1
     TOKMAX_ABIWHERE = 8                                     ' NOMOTION, the longest
@@ -16583,7 +16900,8 @@ PRI abiDumpSteer() | pLaunchL, pStatusL, pParamsL, pLaunchR, pStatusR, pParamsR
     emitAbi(SLOT_RIGHT, ABIW_SKSTART, steerLife)
 
 PRI abiDumpWheel(side, whereCode) | slotIdx, pLaunch, pStatus, pParams
-' PREFLT, TIMEOUT or NOMOTION: one wheel's runs and its motorCog through its own motor object, then BM-ABI*.
+' PREFLT, TIMEOUT or NOMOTION (a FLTRESP trial's or, PL-136, a PREFLT nudge's): one wheel's runs and its motorCog
+' through its own motor object, then BM-ABI*.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param whereCode - ABIW_PREFLT, ABIW_TIMEOUT or ABIW_NOMOTION
@@ -18295,7 +18613,8 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
 '
 ' @local bAttended - the segment needs a person
 ' @local estS - planned seconds (design sec 4.4)
-' @local estKb - worst-case log KB: traces x (TRACE_EMIT_MAX x 241 B + headers) plus records
+' @local estKb - worst-case log KB: traces x (TRACE_EMIT_MAX x 241 B + headers) plus records (BM-TS is 271 B since
+'  SRC_REV 46; the figures were not rescaled)
 
     bAttended := bSegAttended(seg)
     ' OVERSHT: the four distance trials plus the fault-API trial (task 3552) -- about 6 s of poll, the
@@ -18325,7 +18644,11 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     '  and a FAULT_COOL_MS cool-down -- about 13 s -- and one trace each at STOPMODE's worst case of TRACE_EMIT_MAX lines:
     '  24 traces. FLTPLAT: 2 steering trials of about 15 s, each a trace of up to 3 s at decimation 1. PL-120's recovery
     '  probe is not in FLTRESP's est_s: it runs only after a no-motion failure, at most once, and adds at most about
-    '  2 minutes and, per try, its BM-START and BM-FRRECOV.
+    '  2 minutes and, per try, its BM-START and BM-FRRECOV. Nor are PL-136's PREFLT stages in PREFLT's: they run only
+    '  when a nudge does not move, and add at most PF_RETRY_TRIES lifetimes of about 5 s (each a trace) and one probe
+    '  of about 2 minutes. FAULTRESP's PREFLT traces every nudge (two traces of about 300 lines), inside its est_kb.
+    ' PL-136: BM-TS grew from 241 to 271 bytes (u, v, w); the est_kb figures were set at 241 and are about 12 % low for
+    '  the trace-heavy segments.
     ' Task 3613, the START part. SKCHECK: SK_LIVES steering lifetimes of about 3.5 s -- START_SPACING_MS, the ~1.2 s
     '  start (its own ~1 s rest zero and the ~40 ms checks per wheel), the reads and a ZERO_WINDOW_MS window -- and
     '  SK_WALKS walks of about 1.5 s with their rest confirm; no trace. About 1.3 KB of records a lifetime.
@@ -18787,7 +19110,9 @@ PRI emitSTrace(tid, seg, causeCode, leftPower, rightPower, bPowersValid, dirValu
 
 PRI emitTs(sampleIdx, kIdx, posRel, hwRel) | bUp, bOtherUp, bLate
 ' BM-TS: one stored sample of the trace in drain (drPri primary, drOth other). lt is computed from the
-' stored t of the previous sample. Worst case 241 bytes.
+' stored t of the previous sample. PL-136 appends u, v and w, the primary's three phase voltages (mV), which the ring
+' has always stored apart (instPackSense()) and which were printed only as their sum ph; NA when its driver was down,
+' as ph is. Worst case 271 bytes (241, and 3 x 10).
 '
 ' @param sampleIdx - logical index
 ' @param kIdx - trace index k
@@ -18821,6 +19146,9 @@ PRI emitTs(sampleIdx, kIdx, posRel, hwRel) | bUp, bOtherUp, bLate
     benchLog.numField(@"o_hw", smpHw(sampleIdx, drOth) - smpHw(drStartJ, drOth), LIM_MID)
     benchLog.naNumField(@"o_i", smpI(sampleIdx, drOth), LIM_SMALL, bOtherUp)
     benchLog.boolField(@"o_up", bOtherUp)
+    benchLog.naNumField(@"u", smpPhU(sampleIdx, drPri), LIM_SMALL, bUp)
+    benchLog.naNumField(@"v", smpPhV(sampleIdx, drPri), LIM_SMALL, bUp)
+    benchLog.naNumField(@"w", smpPhW(sampleIdx, drPri), LIM_SMALL, bUp)
     whyField((bUp and bOtherUp) ? WHY_NONE : WHY_NO_COG)
     emitRecord()
 
