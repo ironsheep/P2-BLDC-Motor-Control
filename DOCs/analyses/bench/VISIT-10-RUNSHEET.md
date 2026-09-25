@@ -12,6 +12,17 @@
 - 21:21 [evaluation](2026-09-25/VISIT-10-DUALFAULT-T0-EVALUATION.md): the graded short and the hold's rise certified;
   BRAKE_PCT sized to 10. The right wheel's bridge died mid-run and was back on the next program load (PL-120), so every
   right-wheel fault cell is still owed.
+- 11:41 pass 4 [evaluation](2026-09-25/VISIT-10-PASS4-EVALUATION.md):
+  - The winding check is certified on both wheels (363–460 mΩ), with its negative.
+  - The right wheel was dead on its first drive (PL-120), so its fault cells are NOMEAS again. Neither PL-120 diagnostic
+    could fire (PL-136).
+  - One false wiring-walk FAIL on the healthy left (PL-137).
+
+## ⛔ Pass 5 is NOT READY
+
+Its loads are `dual-fault-rightfirst` (after PL-136: diagnose a wheel that is dead at pre-flight) and `dual-start`
+(after PL-137: walk every lifetime and print each leg's record). `dual-start-phaseneg` is dropped (certified 10 of 10).
+The commands below are pass 4's, kept until pass 5's replace them. **Do not run them.**
 
 ---
 

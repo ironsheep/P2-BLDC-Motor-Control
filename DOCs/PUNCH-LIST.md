@@ -3875,6 +3875,19 @@ any FLTRESP timeout (`BM-ABI* where,TIMEOUT`), so the next recurrence is capture
     2 minutes, logging phase voltage and current. It decides time against reload.
   - A `dual-fault-rightfirst` tier, which decides whether the left's trials are a precondition.
 
+**2026-09-25 11:41, pass 4 `dual-fault-rightfirst` at 2783921 -- RECURRED ON THE FIRST DRIVE OF A FRESH LOAD**
+([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS4-EVALUATION.md) §2, §4).
+- **MEASURED:** `BM-PREFLT,...,motor,RIGHT,...,ticks,0,hw_ticks,0,moved,FALSE`, before any left trial. The wheel was
+  retired, so all 12 right trials and both platform trials printed `NOT_RUN ... MOTOR_RETIRED`.
+- **MEASURED:** its PREFLT dump shows `lag_held,637` and `duty_capped,1_474`. The same wheel's five healthy PREFLT dumps
+  show 0 and 165–189. Every parameter matches the healthy dumps.
+- **MEASURED:** the next program load, 3 minutes later (`dual-start`), drove the right normally in every lifetime.
+- **Settled:** the left's trials are **not** a precondition.
+- **Corrected:** "gone after a reload" was too strong. The state can be present at a fresh load; a *later* load has
+  cleared it every time so far.
+- **Still open:** whether time clears it inside one program, and what the phases do during the failing drive. Neither
+  diagnostic could fire (PL-136).
+
 ### PL-121 -- T0-24's hand rows ended on a clock that started at START
 
 **Found 2026-09-23** at Visit 10 pass 1 (Stephen: *"I press start, and it automatically completes, and I haven't done
@@ -4167,6 +4180,15 @@ negative: both of its pairs read WND_NOT_VISIBLE. V is the nominal drive voltage
 `test_bench_dual` SRC_REV 43 carries the cells: R19-DUAL-WINDR-X and R19-DUAL-WINDSPR-X in `dual-start`,
 R19-DUAL-WINDNEG-X in `dual-start-phaseneg`.
 
+**2026-09-25 11:45, CERTIFIED** ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS4-EVALUATION.md) §5, §6).
+- WINDR and WINDSPR PASS on both wheels.
+- Left 383–460 mΩ and right 363–460 mΩ per pair, against the pre-registered 300–600. The wheels' means are 442 and
+  420 mΩ, 5 % apart.
+- WINDNEG exact in 10 of 10 lifetimes; the right read all three pairs in every lifetime.
+- **Watch:** at 5 % duty the net reading is 14–19 mV, so each 1 mV step is about 6 % of R. Actionable if a decision ever
+  needs an imbalance below 20 %.
+- Closed.
+
 ### PL-134 -- HOLD-RISE's rate estimate kept counting after the hold slipped
 
 **Found 2026-09-24** at `t0-stopmode` 21:29 (`debug_260924-212939.log`, row 1 run 1). `rise_ms,16_539`: he pushed past the
@@ -4187,6 +4209,48 @@ control that performs it.
 - Row 6's first run draws ABORT as its only control, and its RESULT draws REDO ROW only.
 - Each screen says in one line why it asks.
 Later runs of those rows are unchanged.
+
+### PL-136 -- PL-120's diagnostics are reachable only from a fault trial, so a wheel dead at PREFLT is never diagnosed
+
+**Found 2026-09-25** at Visit 10 pass 4 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS4-EVALUATION.md) §4a).
+The right wheel failed PREFLT. `BM-FRRECSUM,...,probed,FALSE`, and no `where,NOMOTION` dump fell on it.
+- Both diagnostics are reached only from `frTrial()`: the NOMOTION dump through `frWaitAtSpeed()`, the recovery probe
+  through `bTimedOut`.
+- `bSegPreflight()` retires a non-moving wheel before FLTRESP, and its trials are then skipped.
+- `bPreflightWheel()` also drains the instrument ring to count ticks but never emits it, so the failing drive's
+  per-frame phase voltage, current and duty were measured and discarded.
+- The run sheet and the runner's precondition text both promised the probe "if a wheel stops driving". The build did
+  not keep that promise.
+
+**Disposition:** ⛔ **FIX** in `test_bench_dual`, correct by construction. The diagnostics key on *a commanded wheel that
+does not move*, wherever it happens:
+- a PREFLT nudge with no hall tick by FR_NOMOTION_MS dumps (`where,NOMOTION`) mid-nudge;
+- a PREFLT that fails emits its ring as a trace;
+- it arms the recovery probe on that wheel, run before FLTRESP. A wheel the probe recovers is un-retired and runs its
+  trials.
+Rides on the next `dual-fault-rightfirst`.
+
+### PL-137 -- the wiring walk failed a correctly wired wheel: a 5-tick return leg
+
+**Found 2026-09-25** at Visit 10 pass 4, `dual-start` ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS4-EVALUATION.md)
+§5).
+- **MEASURED:** `BM-SKWALK,...,life,9,...,l_hlt,FALSE,...,l_fwd,7,l_rev,-5,...,l_pk_i,20,...,walk_ms,1_621`. The other
+  two walks read 7/−8 and 7/−7 at 1_275 ms. The legs come from the instrument's own ring, independently of the driver,
+  and the driver's own HLT_WIRING agrees.
+- It is the first short leg in 24 healthy positive walks on file. Halls were clean, and the current stayed at its
+  healthy peak.
+- **Ruled out by the ring:** the midpoint being read before the rotor settles (`walkLeg()` waits for DCS_STOPPED,
+  which means the field's increment reached zero, not rotor rest). That would have pushed the excursion past 7.
+
+**Why it matters:** `checkWiring()` told a correctly wired robot its wheel is miswired. A self-test that cries wolf
+teaches the user to ignore it (P14).
+
+**Disposition:** ⛔ **FIX (diagnostic first)**. Cause not established, so no behaviour change yet.
+- The driver keeps each leg's own record: start, stop and end position, and what ended it (limit, timeout, guard,
+  fault). A test getter per wheel exposes it through the steering object.
+- `dual-start` walks in all 10 lifetimes, not the last 3, and prints it.
+- Then fix the cause the record shows.
+
 ---
 
 ## Removed from this list
