@@ -4284,6 +4284,30 @@ teaches the user to ignore it (P14).
 - `dual-start` walks in all 10 lifetimes, not the last 3, and prints it.
 - Then fix the cause the record shows.
 
+**BUILT (diagnostic, not yet run)**, 2026-09-25, uncommitted (task «#3610»; `DRIVER_REV` 24, `test_bench_dual` SRC_REV 47
+/ FMT 31). No PASM change; no behaviour change to the walk or its judgement.
+- **The driver's record.** Each wheel keeps one record per leg (`WLEG_OUT`, `WLEG_BACK`), read with the motor object's
+  TEST-USE `testGetWalkLeg(eLeg)` or the steering object's `testLeftGetWalkLeg()` / `testRightGetWalkLeg()`. It holds:
+  - how the leg ended, `WLE_*`: LIMIT, TIMEOUT, GUARD, FAULT, ESTOP, OTHER, or NOT_RUN;
+  - the leg's elapsed ms, and the lag-held passes over it;
+  - the post position (the one the distance limit counts from), and the furthest the rotor went from it;
+  - where and when the distance limit fired, with the tracked ticks and the stopping ticks it fired on;
+  - where and when the driver first reported rest after the leg's motion;
+  - where the wait ended, and where the rotor settled, with when it last moved.
+
+  A reading not taken is `WALK_NA`. A leg that did not run reads NOT_RUN and `WALK_NA` throughout.
+- **Who writes it.** The front cog opens, watches and notes the leg (`frontWalkBegin()`, `frontWalkWatch()`,
+  `frontWalkNoteLimit()`). The walking cog writes the end fields (`walkNoteLeg()`) right after its wait, before any
+  release or stop. `REQ_WALK`'s arg1 now names the leg; the stop is always `WALK_TICKS`.
+- **The settle position is watched, not guessed.** The front cog follows the leg's position every pass until the next
+  drive command closes the watch. So the first leg's settle is its position at the second leg's command. The second
+  leg's is its position when `dual-start` reads the record, after the walk's own rest confirm.
+- **The harness.** `dual-start` walks in all 10 lifetimes; `dual-start-swapneg` keeps its last 3. Each walk prints a new
+  `BM-SKWLEG` per wheel per leg, four a walk, beside `BM-SKWALK`. No cell judges it, and no criterion changed.
+- **Found while building: the stall watchdog did not cover a steering walk.** The steering walk runs its second leg even
+  after a timed-out first, so two timed-out legs block cog 0 about 4.1 s, past `WD_STALL_MS`. The harness now grants
+  `WD_WALK_GRACE_MS` (4_134 ms, derived from the library's bounds) for that one call, and `BM-SKBUILD` prints it.
+
 ---
 
 ## Removed from this list

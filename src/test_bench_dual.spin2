@@ -339,6 +339,16 @@
 ''               printed); BM-FRRECOV gains seg; BM-FRDIAG gains pf_tries and pf_gap_ms; BM-FRRECSUM gains l_pf, l_pf_rec,
 ''               l_pf_n, l_pf_try and the same for r_, and its recovered and tries print NA when the FLTRESP probe did not
 ''               run. The FLTRESP-time NOMOTION dump and recovery probe are unchanged
+''               25 Sep 2026 -- SRC_REV=47, FMT 31: PL-137 (task 3610, Visit 10 pass 4 sec 5; DRIVER_REV 24). The wiring walk
+''               failed a healthy left wheel once, and its cause is not established, so the driver now keeps each leg's own
+''               record and this part prints it. dual-start walks in ALL SK_LIVES lifetimes (SK_WALKS = SK_LIVES there;
+''               dual-start-swapneg keeps its last 3, SK_WALKS_SWAP), and after each walk prints a new BM-SKWLEG per wheel per
+''               leg -- four a walk -- beside the ring-rebuilt BM-SKWALK, from the steering object's new testLeftGetWalkLeg() /
+''               testRightGetWalkLeg(), read after the walk's rest confirm. It is a diagnostic: no cell judges it, and no
+''               cell's criterion changes (R19-DUAL-WALK-X is now over 10 walks). The stall watchdog allows checkWiring() its
+''               derived worst case, WD_WALK_GRACE_MS, as it allows a start its own: the steering walk runs its second leg
+''               after a timed-out first, so two timed-out legs block cog 0 about 4.1 s, past WD_STALL_MS. BM-SKBUILD
+''               appends wd_walk_ms
 ''
 '' =================================================================================================
 
@@ -405,8 +415,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 46                                      ' hand-bumped whenever this file changes
-    FMT_VERSION = 30                                        ' BM- record-format version
+    SRC_REV     = 47                                      ' hand-bumped whenever this file changes
+    FMT_VERSION = 31                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -519,8 +529,9 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 #else
 #ifdef DUAL_PART_START
     PART_ID        = PART_START
-    ' about 45 s planned (emitPlan()): SK_LIVES steering lifetimes of ~3.5 s (spacing, the ~1.2 s start, the reads,
-    '  a 1 s floated window) and SK_WALKS walks of ~1.5 s; the cap is four times that, well short of an idle hang
+    ' about 60 s planned (emitPlan()): SK_LIVES steering lifetimes of ~3.5 s (spacing, the ~1.2 s start, the reads,
+    '  a 1 s floated window) and SK_WALKS walks of ~1.5 s (PL-137: 10 in dual-start, was 3); the cap is three times
+    '  that, well short of an idle hang
     RUN_TIME_CAP_S = 180
 #else
 #ifdef DUAL_PART_SPIN
@@ -1389,6 +1400,18 @@ CON { watchdog cog }
     WD_WHEEL_CHECKS_MS  = WD_PROBE_MS + WD_WIND_MS + (wheelL.START_CHECK_RETRIES * WD_RETRY_MS)  ' runStartChecks(), one wheel, worst
     WD_START_GRACE_MS   = STEER_ATN_WAIT_MS + (2 * wheelL.REST_ZERO_READY_TIMEOUT_MS) + (wheelL.REST_ZERO_SAMPLE_COUNT * wheelL.REST_ZERO_SAMPLE_MS) + (2 * WD_WHEEL_CHECKS_MS) + wheelL.FRONT_START_TIMEOUT_MS + wheelL.REQ_POLL_MS
 
+' THE WALK IS THE OTHER (PL-137). steering.checkWiring() blocks cog 0 for both legs, and the steering walk runs its second
+'  leg whenever the first was posted -- a timed-out first leg included (walkLeg(): "a drive clears a faulted wheel
+'  first") -- so its worst case is two legs at their bound, over WD_STALL_MS alone. Cog 0 grants WD_WALK_GRACE_MS for
+'  exactly that one call, as for a start. From the library's constants, per leg at its worst:
+'   - the leg's post, answered at its bound                         REQ_ACK_TIMEOUT_MS + 2 x REQ_POLL_MS      22
+'   - the wait, WALK_START_MS inside it, then its last poll          WALK_LEG_TIMEOUT_MS + REQ_POLL_MS      2_001
+'   - the guard's release and the stop, each at its bound            2 x (REQ_ACK_TIMEOUT_MS + 2 x REQ_POLL_MS)  44
+'  = 2_067 ms a leg, 4_134 ms a walk. Healthy walks MEASURED 1_275 ms (Visit 10 pass 4); the false FAIL took 1_621.
+    WD_WALK_POST_MS     = wheelL.REQ_ACK_TIMEOUT_MS + (2 * wheelL.REQ_POLL_MS)         ' one steering request at its bound
+    WD_WALK_LEG_MS      = WD_WALK_POST_MS + wheelL.WALK_LEG_TIMEOUT_MS + wheelL.REQ_POLL_MS + (2 * WD_WALK_POST_MS)
+    WD_WALK_GRACE_MS    = wheelL.WALK_LEGS * WD_WALK_LEG_MS
+
 CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
 
     ' COUNT limits
@@ -1834,7 +1857,8 @@ wdCheckpoint    LONG    CP_INIT                             ' beat()'s last chec
 wdDeclaring     LONG    FALSE                               ' the watchdog's only write: TRUE as declareStall()'s
                                                              ' first act; cog 0 parks in beat() once it is set
 wdGraceMs       LONG    0                                   ' cog 0 only: WD_START_GRACE_MS while it is inside a start()
-                                                             ' call (task 3621), 0 otherwise; the watchdog adds it
+                                                             ' call (task 3621), WD_WALK_GRACE_MS inside checkWiring()
+                                                             ' (PL-137), 0 otherwise; the watchdog adds it
 
 DAT { segment tables (design sec 4.4) }
 
@@ -11498,15 +11522,26 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
   '     lead reads this floor while its phase is probed, so the follower test can tell an open lead from a connected
   '     one only when the floor sits under the least a follower may read and pass (SK_FLOOR_HI_MV).
   '
-  ' THE WALK (B-5 positive), the last SK_WALKS lifetimes only: checkWiring() turns the platform in place, each wheel
-  '  one electrical cycle each way at WALK_POWER. Its verdict is HLT_WIRING. The steering object has no per-wheel
-  '  testGetWalk(), and this part adds none, so the two legs are REBUILT from the instrument's ring on raw hall ticks
-  '  (the reading checkWiring() itself differences): from the first sample at the mark, the leg out is the largest
-  '  excursion and the leg back is from there to the last sample. A failing walk cannot be rebuilt into a passing one
-  '  -- a leg back that runs past the start moves the excursion to the end, which leaves a leg of 0. checkWiring()
-  '  blocks cog 0: two legs of at most WALK_LEG_TIMEOUT_MS, the second only after a clean first, plus four 20 ms
-  '  request bounds -- about 2.4 s at worst, under WD_STALL_MS. The absolute current abort is not polled while it
-  '  blocks; the walk's peak sense_i is printed from the ring (at WALK_POWER 10 it is small).
+  ' THE WALK (B-5 positive), the last SK_WALKS lifetimes: checkWiring() turns the platform in place, each wheel
+  '  one electrical cycle each way at WALK_POWER. Its verdict is HLT_WIRING. The two legs are REBUILT from the
+  '  instrument's ring on raw hall ticks (the reading checkWiring() itself differences), independently of the driver:
+  '  from the first sample at the mark, the leg out is the largest excursion and the leg back is from there to the last
+  '  sample. A failing walk cannot be rebuilt into a passing one -- a leg back that runs past the start moves the
+  '  excursion to the end, which leaves a leg of 0. checkWiring() blocks cog 0: in the steering object two legs of at
+  '  most WALK_LEG_TIMEOUT_MS each, the second run after a timed-out first too, plus the request bounds -- about 4.1 s
+  '  at worst, so the watchdog is granted WD_WALK_GRACE_MS for that one call (derived at the constant). The absolute
+  '  current abort is not polled while it blocks; the walk's peak sense_i is printed from the ring (at WALK_POWER 10 it
+  '  is small).
+  '
+  ' THE DRIVER'S OWN LEG RECORD (PL-137, DRIVER_REV 24). Visit 10 pass 4 saw a healthy left wheel come back 5 ticks
+  '  (walk_ms 1_621, against 1_275), and neither the ring's two numbers nor HLT_WIRING could say why. So dual-start walks
+  '  in every lifetime (SK_WALKS = SK_LIVES; a false FAIL at about 1 in 24 needs the walks), and after the rest confirm
+  '  each wheel's record of each leg is read (testLeftGetWalkLeg() / testRightGetWalkLeg()) and printed as BM-SKWLEG:
+  '  how the leg ended (WLE_*), its post position, and relative to that the furthest it went, where the distance limit
+  '  fired (with the tracked ticks and the stopping ticks it fired on), where the driver first reported rest, where the
+  '  wait ended, and where the rotor settled -- the first leg's at the second leg's command, the second's at this read,
+  '  after the rest confirm -- with the ms of each and the lag-held passes. A DIAGNOSTIC: no cell judges it; the report
+  '  reads it beside BM-SKWALK. dual-start-swapneg keeps its last SK_WALKS_SWAP walks, its negative unchanged.
   '
   ' NO PREFLT. B-1's attended negative loads this same part (the START_NO_WALK build) with a wheel's hall connector
   '  unplugged, and a preflight would drive that wheel before a single start was read, or end the run at NO_MOTION
@@ -11541,7 +11576,9 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
     SK_LIVES_BASE         = 10                              ' steering lifetimes, each one start (B-2: "several starts")
     SK_LIVES_PHASENEG     = 12                              ' task 3621: START_NEG_PHASE's, 4 blocks of U V W (skModeOf())
     SK_LIVES              = SK_LIVES_BASE + ((BUILD_NEG == SKNEG_PHASE) & (SK_LIVES_PHASENEG - SK_LIVES_BASE))
-    SK_WALKS              = 3                               ' the last this many lifetimes also walk (B-5)
+    SK_WALKS_SWAP         = 3                               ' dual-start-swapneg: its last this many lifetimes walk (B-5's negative)
+    ' the last this many lifetimes also walk (B-5): every one in dual-start (PL-137), SK_WALKS_SWAP otherwise
+    SK_WALKS              = SK_WALKS_SWAP + (BUILD_START_POS & (SK_LIVES - SK_WALKS_SWAP))
     SK_PHASES             = 3
     SK_PROBE_LONGS        = SK_PHASES * SK_PHASES           ' per wheel: [probed phase * SK_PHASES + read phase], U V W
     SK_PCT_SCALE          = 100
@@ -11573,6 +11610,15 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
     WIND_SPREAD_PCT       = 20                              ' a lifetime's pairs each within this % of their mean
     WND_TOK_COUNT         = wheelL.WND_UNSETTLED + 1        ' tokWndState is indexed by the library's WND_*
     TOKMAX_WND            = 11                              ' NOT_VISIBLE
+    ' PL-137: one wheel's record of one walk leg, in skWl[] from skWlBase(), in the getter's order (testLeftGetWalkLeg())
+    #0, SKWL_END, SKWL_END_MS, SKWL_POST, SKWL_PEAK, SKWL_LIM, SKWL_LIM_MS, SKWL_TRK, SKWL_STPTK, SKWL_STOP, ...
+        SKWL_STOP_MS, SKWL_ENDP, SKWL_SETTLE, SKWL_MV_MS, SKWL_FINAL, SKWL_LAG
+    SKWL_FIELDS           = SKWL_LAG + 1
+    SKWL_LONGS            = INST_MOTORS * wheelL.WALK_LEGS * SKWL_FIELDS
+    WLEG_TOK_COUNT        = wheelL.WALK_LEGS                ' tokWalkLeg is indexed by the library's WLEG_*
+    WLE_TOK_COUNT         = wheelL.WLE_OTHER + 1            ' tokWalkEnd by its WLE_*
+    TOKMAX_WLEG           = 4                               ' BACK
+    TOKMAX_WLE            = 7                               ' NOT_RUN, TIMEOUT
 
   ' THE START REFUSAL (task 3621, R20.1; DRIVER-REPORTING-DESIGN.md SS3). start() now re-runs a failing check up to
   '  START_CHECK_RETRIES times and then REFUSES the start (-1, ERR_START_CHECK_FAILED) unless setStartChecks(FALSE) was
@@ -11624,6 +11670,8 @@ tokPrbPhase     BYTE    "NONE", 0, "U", 0, "V", 0, "W", 0                       
 tokHallSwap     BYTE    "NONE", 0, "HALLS_01", 0, "HALLS_12", 0, "HALLS_02", 0          ' by HSW_*
 tokWndState     BYTE    "NOT_RUN", 0, "MEASURED", 0, "NOT_VISIBLE", 0, "TRIPPED", 0, "UNSETTLED", 0   ' by WND_*
 tokSkMode       BYTE    "DEFAULT", 0, "OPTOUT", 0, "REFUSE", 0, "FIRST", 0                            ' by SKM_* (task 3621)
+tokWalkLeg      BYTE    "OUT", 0, "BACK", 0                                                           ' by WLEG_* (PL-137)
+tokWalkEnd      BYTE    "NOT_RUN", 0, "LIMIT", 0, "TIMEOUT", 0, "GUARD", 0, "FAULT", 0, "ESTOP", 0, "OTHER", 0   ' by WLE_*
 
 VAR { START state -- cog 0 only }
 
@@ -11664,6 +11712,8 @@ VAR { START state -- cog 0 only }
     LONG    bSkWalkOk[INST_MOTORS]                          ' the walk's pre-registered reading held
     LONG    skWalkCause[INST_MOTORS]                        ' getFaultCause() after it
     LONG    skWalkWhy                                       ' the first cause of the walk's NA fields
+    LONG    bSkWlRead                                       ' PL-137: the driver's leg records were read after the walk
+    LONG    skWl[SKWL_LONGS]                                ' ...each wheel's, each leg's, at skWlBase(): the getter's values
     ' the cells' accumulators (skResetCells())
     LONG    sfSkStarts[INST_MOTORS]                         ' HEALTH: starts read
     LONG    sfSkHealthBad[INST_MOTORS]                      ' ...with any failed bit, or not every check checked
@@ -11753,29 +11803,31 @@ PRI segStartChecks() | lifeIdx, slotIdx
     segEnd(segWhy())
 
 PRI bSkWalkLife(lifeIdx) : bWalk
-' Whether a lifetime also walks: the last SK_WALKS of them, and never in the START_NO_WALK build.
+' Whether a lifetime also walks: the last SK_WALKS of them (every one in dual-start, PL-137), and never in the
+' START_NO_WALK build.
 '
 ' @param lifeIdx - 0..SK_LIVES-1
 ' @returns bWalk - TRUE when this lifetime calls checkWiring()
 
     bWalk := (BUILD_NO_WALK == FALSE) and (lifeIdx >= (SK_LIVES - SK_WALKS))
 
-PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
+PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, legIdx, lifeBefore
 ' One steering lifetime: arm the build's negative, if any (skArmNeg(), BM-SKNEG), and the winding check, if this
 ' lifetime carries it (skArmWind(), task 3610); start (bSteerStart(), BM-SSTART); read what start() judged
 ' (skReadHealth(), then skReadWinding()) before anything else; whenever start() returned a cog, ready or not, what
 ' both drivers hold (abiDumpSteer(), BM-ABI*, task 3615); the floated window (skZeroWindow()); fold;
 ' BM-SKHEALTH, a BM-SKPROBE per wheel and, on an armed lifetime, a BM-SKWIND per wheel; on a walk lifetime the walk,
-' BM-SKWALK and the recovery of any fault it caused; stop. Task 3621: the lifetime's start mode (skModeOf()) is set
-' before the start (skSetRefusal(), and skArmNeg() in START_NEG_PHASE); a start that returned -1 prints BM-SREFUSE
-' (bSteerStart()) and is folded into the refusal cells (skFoldModes()); a started object's event log is drained last,
-' EV_SETTLE_MS after the lifetime's last act, and folded (skEvents()).
+' BM-SKWALK, a BM-SKWLEG per wheel per leg (PL-137) and the recovery of any fault it caused; stop. Task 3621: the
+' lifetime's start mode (skModeOf()) is set before the start (skSetRefusal(), and skArmNeg() in START_NEG_PHASE); a
+' start that returned -1 prints BM-SREFUSE (bSteerStart()) and is folded into the refusal cells (skFoldModes()); a
+' started object's event log is drained last, EV_SETTLE_MS after the lifetime's last act, and folded (skEvents()).
 '
 ' @param lifeIdx - 0..SK_LIVES-1
 ' @param bWalk - TRUE when this lifetime also walks
 '
 ' @local whyCode - why nothing was read, WHY_NONE when the start was read
 ' @local slotIdx - motor slot
+' @local legIdx - the library's WLEG_OUT, then WLEG_BACK
 ' @local lifeBefore - lifeSeq before the start, so a start that was refused never names a lifetime
 
     skStagingReset()
@@ -11815,6 +11867,9 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
         skFoldWalk()
         skFoldSwapNeg()
         emitSkWalk()
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT         ' PL-137: the driver's own record, each wheel, each leg
+            repeat legIdx from wheelL.WLEG_OUT to wheelL.WLEG_BACK
+                emitSkWalkLeg(slotIdx, legIdx)
         if bSteerUp
             steerRecoverFault(0)                            ' a walk that faulted a wheel: recovered, counted, cooled
     bInstIdle()
@@ -11869,6 +11924,8 @@ PRI skStagingReset() | arrIdx
     skWalkMs := 0
     bSkLegsValid := FALSE
     skWalkWhy := WHY_NONE
+    bSkWlRead := FALSE                                      ' PL-137
+    longfill(@skWl, wheelL.WALK_NA, SKWL_LONGS)
 
 PRI skReadHealth() | probedIdx, rowBase
 ' What start() judged, read through the steering object before anything else touches it: both wheels' getHealth()
@@ -12006,13 +12063,15 @@ PRI skFoldProbe(slotIdx) | probedIdx, readIdx, rowBase, drivenMv, folMv, bBad
             sfSkPrbBad[slotIdx] := (sfSkPrbBad[slotIdx] + 1) <# LIM_SMALL
             skPrbBadNow[slotIdx] += 1
 
-PRI skWalk() | slotIdx, startMs, safeEvent, bFrozen, igBefore[INST_MOTORS], chkNow[INST_MOTORS], failNow[INST_MOTORS], missedLeft, illegalLeft, missedRight, illegalRight
+PRI skWalk() | slotIdx, legIdx, startMs, safeEvent, bFrozen, igBefore[INST_MOTORS], chkNow[INST_MOTORS], failNow[INST_MOTORS], missedLeft, illegalLeft, missedRight, illegalRight
 ' B-5 positive: checkWiring() under the instrument. The integrity counts first; arm; SK_WALK_PRE_MS of samples; mark;
-' checkWiring() (it blocks, see this section's CON); the rest confirm; freeze; then getHealth()'s HLT_WIRING, the
-' integrity counts again and the fault causes; the legs from the ring (skWalkLegs()). Pre-registered, per wheel:
+' checkWiring() (it blocks, see this section's CON; the watchdog is granted WD_WALK_GRACE_MS for that one call); the
+' rest confirm; freeze; then getHealth()'s HLT_WIRING, the integrity counts again, the fault causes and (PL-137) each
+' wheel's own record of each leg (skReadWalkLeg()); the legs from the ring (skWalkLegs()). Pre-registered, per wheel:
 ' NO_ERROR, HLT_WIRING passed, both legs SK_LEG_LO_TICKS .. SK_LEG_HI_TICKS in opposite directions, no hall event.
 '
 ' @local slotIdx - motor slot
+' @local legIdx - the library's WLEG_OUT, then WLEG_BACK
 ' @local startMs - getms() at the call
 ' @local safeEvent - SAFE_* from the rest confirm
 ' @local bFrozen - the capture froze
@@ -12033,11 +12092,13 @@ PRI skWalk() | slotIdx, startMs, safeEvent, bFrozen, igBefore[INST_MOTORS], chkN
     if bInstArm(INST_SRC_STEER, 1)
         waitWatched(SIDE_BOTH, SK_WALK_PRE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
         instMark()
+        wdGraceMs := WD_WALK_GRACE_MS                       ' PL-137: for this one call only (derived at the constant)
         startMs := getms()
         beat(CP_LIB_STEER_DRIVE)
         skWalkErr := steering.checkWiring()
         beat(CP_LIB_STEER_DRIVE)
         skWalkMs := getms() - startMs
+        wdGraceMs := 0
         bSkWalkRan := TRUE
         safeEvent, _ := waitRest(SIDE_BOTH, SK_WALK_REST_MS, FALSE)
         bFrozen := bInstFreeze(0)
@@ -12046,6 +12107,10 @@ PRI skWalk() | slotIdx, startMs, safeEvent, bFrozen, igBefore[INST_MOTORS], chkN
         missedLeft, illegalLeft, missedRight, illegalRight := steering.getHallIntegrityCounts()
         skWalkCause[SLOT_LEFT], skWalkCause[SLOT_RIGHT] := steering.getFaultCause()
         beat(CP_LIB_STEER_QUERY)
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT         ' PL-137: after the rest confirm, so the second leg's settle is at rest
+            repeat legIdx from wheelL.WLEG_OUT to wheelL.WLEG_BACK
+                skReadWalkLeg(slotIdx, legIdx)
+        bSkWlRead := TRUE
         skWalkIg[SLOT_LEFT] := (missedLeft + illegalLeft) - igBefore[SLOT_LEFT]
         skWalkIg[SLOT_RIGHT] := (missedRight + illegalRight) - igBefore[SLOT_RIGHT]
         repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
@@ -12106,6 +12171,102 @@ PRI bSkLegsOk(nFwdTicks, nRevTicks) : bOk
 
     bOk := (abs(nFwdTicks) >= SK_LEG_LO_TICKS) and (abs(nFwdTicks) <= SK_LEG_HI_TICKS) and (abs(nRevTicks) >= SK_LEG_LO_TICKS)
     bOk &= (abs(nRevTicks) <= SK_LEG_HI_TICKS) and ((nFwdTicks > 0) <> (nRevTicks > 0))
+
+PRI skWlBase(slotIdx, legIdx) : nBase
+' PL-137: where one wheel's record of one walk leg starts in skWl.
+'
+' @param slotIdx - motor slot
+' @param legIdx - the library's WLEG_OUT or WLEG_BACK
+' @returns nBase - the index of its SKWL_END long
+
+    nBase := ((slotIdx * wheelL.WALK_LEGS) + legIdx) * SKWL_FIELDS
+
+PRI skReadWalkLeg(slotIdx, legIdx) | pRec
+' PL-137: one wheel's own record of one walk leg, through the steering object, into skWl in the getter's order (SKWL_*).
+'
+' @param slotIdx - motor slot
+' @param legIdx - the library's WLEG_OUT or WLEG_BACK
+'
+' @local pRec - the record's first long in skWl
+
+    pRec := @skWl[skWlBase(slotIdx, legIdx)]
+    beat(CP_LIB_STEER_QUERY)
+    if slotIdx == SLOT_LEFT
+        long[pRec][SKWL_END], long[pRec][SKWL_END_MS], long[pRec][SKWL_POST], long[pRec][SKWL_PEAK], long[pRec][SKWL_LIM], long[pRec][SKWL_LIM_MS], long[pRec][SKWL_TRK], long[pRec][SKWL_STPTK], long[pRec][SKWL_STOP], long[pRec][SKWL_STOP_MS], long[pRec][SKWL_ENDP], long[pRec][SKWL_SETTLE], long[pRec][SKWL_MV_MS], long[pRec][SKWL_FINAL], long[pRec][SKWL_LAG] := steering.testLeftGetWalkLeg(legIdx)
+    else
+        long[pRec][SKWL_END], long[pRec][SKWL_END_MS], long[pRec][SKWL_POST], long[pRec][SKWL_PEAK], long[pRec][SKWL_LIM], long[pRec][SKWL_LIM_MS], long[pRec][SKWL_TRK], long[pRec][SKWL_STPTK], long[pRec][SKWL_STOP], long[pRec][SKWL_STOP_MS], long[pRec][SKWL_ENDP], long[pRec][SKWL_SETTLE], long[pRec][SKWL_MV_MS], long[pRec][SKWL_FINAL], long[pRec][SKWL_LAG] := steering.testRightGetWalkLeg(legIdx)
+    beat(CP_LIB_STEER_QUERY)
+
+PRI emitSkWalkLeg(slotIdx, legIdx) | recBase, postPos, bRan
+' BM-SKWLEG (PL-137): the driver's own record of one walk leg for one wheel, beside BM-SKWALK's ring-rebuilt legs. The
+' leg (OUT, BACK), how it ended (end: the library's WLE_* name -- LIMIT is the healthy ending), its elapsed ms and its
+' post position (raw hall ticks); then, as hall ticks from the post and clamped at +-999, the furthest it went (peak),
+' where the distance limit fired (lim; lim_ms, and the tracked ticks trk and stopping ticks stp_tk it fired on), where
+' the driver first reported rest (stop, stop_ms), where the wait ended (end_p), where the rotor settled (settle; final
+' TRUE once the next drive closed the watch -- the OUT leg's at the BACK leg's command, the BACK leg's still open at this
+' read, after the rest confirm) and when it last moved (mv_ms); last the drive passes the lag limiter held the field
+' (lag). A reading the driver did not take prints NA; a leg that did not run prints NA throughout (end NOT_RUN); a
+' record not read prints NA throughout with the walk's why. Worst case 264 bytes.
+'
+' @param slotIdx - motor slot
+' @param legIdx - the library's WLEG_OUT or WLEG_BACK
+'
+' @local recBase - the record's first index in skWl
+' @local postPos - its post position, WALK_NA when not taken
+' @local bRan - the record was read and the leg ran
+
+    recBase := skWlBase(slotIdx, legIdx)
+    postPos := skWl[recBase + SKWL_POST]
+    bRan := bSkWlRead and (skWl[recBase + SKWL_END] <> wheelL.WLE_NOT_RUN)
+    recBegin(@"BM-SKWLEG")
+    benchLog.naNumField(@"life", skLife, LIM_SMALL, skLife > 0)
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    benchLog.tokenField(@"leg", tokenAt(@tokWalkLeg, WLEG_TOK_COUNT, legIdx), TOKMAX_WLEG)
+    if bSkWlRead
+        benchLog.tokenField(@"end", tokenAt(@tokWalkEnd, WLE_TOK_COUNT, skWl[recBase + SKWL_END]), TOKMAX_WLE)
+    else
+        benchLog.textField(@"end", @sSfNa)
+    skWlNumField(@"ms", recBase + SKWL_END_MS, LIM_SMALL)
+    skWlNumField(@"post", recBase + SKWL_POST, LIM_BIG)
+    skWlDeltaField(@"peak", recBase + SKWL_PEAK, postPos)
+    skWlDeltaField(@"lim", recBase + SKWL_LIM, postPos)
+    skWlNumField(@"lim_ms", recBase + SKWL_LIM_MS, LIM_SMALL)
+    skWlNumField(@"trk", recBase + SKWL_TRK, LIM_TINY)
+    skWlNumField(@"stp_tk", recBase + SKWL_STPTK, LIM_TINY)
+    skWlDeltaField(@"stop", recBase + SKWL_STOP, postPos)
+    skWlNumField(@"stop_ms", recBase + SKWL_STOP_MS, LIM_SMALL)
+    skWlDeltaField(@"end_p", recBase + SKWL_ENDP, postPos)
+    skWlDeltaField(@"settle", recBase + SKWL_SETTLE, postPos)
+    if bRan
+        benchLog.boolField(@"final", skWl[recBase + SKWL_FINAL])
+    else
+        benchLog.textField(@"final", @sSfNa)
+    skWlNumField(@"mv_ms", recBase + SKWL_MV_MS, LIM_SMALL)
+    skWlNumField(@"lag", recBase + SKWL_LAG, LIM_SMALL)
+    if bSkWlRead
+        whyField(WHY_NONE)
+    else
+        whyField(skWalkWhy)
+    emitRecord()
+
+PRI skWlNumField(pName, wlIdx, limitAbs)
+' PL-137: one BM-SKWLEG number as the driver gave it, NA when it is the library's WALK_NA (not taken).
+'
+' @param pName - pointer to the field name
+' @param wlIdx - its index in skWl
+' @param limitAbs - clamp magnitude (LIM_*)
+
+    benchLog.naNumField(pName, skWl[wlIdx], limitAbs, skWl[wlIdx] <> wheelL.WALK_NA)
+
+PRI skWlDeltaField(pName, wlIdx, postPos)
+' PL-137: one BM-SKWLEG position as hall ticks from the leg's post position, clamped at +-LIM_TINY; NA when either is
+' the library's WALK_NA.
+'
+' @param pName - pointer to the field name
+' @param wlIdx - its index in skWl
+' @param postPos - the leg's post position
+
+    benchLog.naNumField(pName, skWl[wlIdx] - postPos, LIM_TINY, (skWl[wlIdx] <> wheelL.WALK_NA) and (postPos <> wheelL.WALK_NA))
 
 PRI skFoldWalk() | slotIdx
 ' Fold one walk into R19-DUAL-WALK-X, per wheel: counted once checkWiring() was called, bad unless its pre-registered
@@ -12519,7 +12680,8 @@ PRI skrEmit(pCell, side, pCrit, skrIdx)
 PRI emitSkBuild() | nWalks
 ' BM-SKBUILD: the START part's compiled, pre-registered numbers, printed before anything moves -- the driver's own
 ' R19.4 thresholds the cells judge against, the probe's timing, the walk's band and power, and the control's bound;
-' last, the build's firmware negative (neg: NONE, PHASE or SWAP; task 3614, appended). Worst case 229 bytes.
+' then the build's firmware negative (neg: NONE, PHASE or SWAP; task 3614, appended); last (PL-137, appended) the
+' watchdog's extra allowance inside checkWiring(), wd_walk_ms. Worst case 248 bytes.
 '
 ' @local nWalks - the walks this build makes
 
@@ -12542,6 +12704,7 @@ PRI emitSkBuild() | nWalks
     benchLog.numField(@"walk_pwr", wheelL.WALK_POWER, LIM_TINY)
     benchLog.numField(@"zero_ms", ZERO_WINDOW_MS, LIM_SMALL)
     benchLog.tokenField(@"neg", tokenAt(@tokSkNegKind, SKNEG_COUNT, BUILD_NEG), TOKMAX_SKNEG_KIND)
+    benchLog.numField(@"wd_walk_ms", WD_WALK_GRACE_MS, LIM_SMALL)   ' PL-137: the watchdog's extra allowance inside checkWiring()
     emitRecord()
 
 PRI emitSkHealth(bWalk, whyCode)
@@ -18651,13 +18814,14 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     '  the trace-heavy segments.
     ' Task 3613, the START part. SKCHECK: SK_LIVES steering lifetimes of about 3.5 s -- START_SPACING_MS, the ~1.2 s
     '  start (its own ~1 s rest zero and the ~40 ms checks per wheel), the reads and a ZERO_WINDOW_MS window -- and
-    '  SK_WALKS walks of about 1.5 s with their rest confirm; no trace. About 1.3 KB of records a lifetime.
+    '  SK_WALKS walks of about 1.5 s with their rest confirm; no trace. About 1.3 KB of records a lifetime. PL-137:
+    '  dual-start walks in all 10 (was 3), and each walk adds four BM-SKWLEG of up to 264 B: about 60 s and 25 KB.
     ' Task 3591, the SPIN part, whose time is mostly the OPERATOR's. SPIN: twelve legs, each a READY screen he clicks
     '  (call it 5 s), a leg of 3-9 s and its records, plus six steering starts and two FAULT_COOL_MS cool-downs --
     '  about 240 s; four traces at TRACE_EMIT_MAX lines (the quarter's two START legs and the two fault legs) and about
     '  1 KB of records a leg. CREEP: carrying the platform to the incline, then three trials of about 40 s each.
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 45, 240, 180)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 15, 400, 6)
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 60, 240, 180)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 25, 400, 6)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -20429,7 +20593,8 @@ CON { --- watchdog cog (test_bench_scan.spin2 pattern, design sec 4.3): runs in 
 
 PRI watchdog() | lastSeenBeat, lastChangeMs, msSinceBeat
 ' Watch cog 0's heartbeat every WD_POLL_MS; declare a stall once it has not advanced for WD_STALL_MS, plus the grace
-' cog 0 grants while it is inside a start() call (wdGraceMs, task 3621: WD_START_GRACE_MS, derived where it is defined).
+' cog 0 grants while it is inside a start() call (wdGraceMs, task 3621: WD_START_GRACE_MS) or a checkWiring() call
+' (PL-137: WD_WALK_GRACE_MS), each derived where it is defined.
 ' Runs forever: declareStall() never returns.
 '
 ' @local lastSeenBeat - wdHeartbeat at the previous sample

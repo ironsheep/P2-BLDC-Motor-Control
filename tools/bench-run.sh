@@ -132,7 +132,7 @@ Usage:  tools/bench-run.sh <tier>
                    dual-b         motion harness part B: PREFLT, FAULTB, OVERSHT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-fault     motion harness part FAULTRESP: PREFLT, FLTRESP, FLTPLAT -- the fault study's X-cells, faults forced at speed  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-fault-rightfirst  as dual-fault with the RIGHT wheel's own trials run before the LEFT's (PL-120's order test)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   dual-start     motion harness part START: SKCHECK -- 10 starts through the steering object reading every start check; the last 3 call checkWiring() (the platform turns a few degrees in place)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-start     motion harness part START: SKCHECK -- 10 starts through the steering object reading every start check; every one calls checkWiring() (the platform turns a few degrees in place) and prints the driver's own record of each leg  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-start-nowalk  as dual-start without checkWiring(), each start told to go ahead despite a failed check: nothing is commanded -- the load for B-1 (one wheel's hall connector unplugged)  [WHEELS UP, ATTENDED WIRING CHANGE]
                    dual-start-phaseneg  12 starts with one LEFT phase withheld from the lead check in firmware (B-3's negative), in three kinds: started anyway, refused, withheld on the first try only; nothing is commanded  [WHEELS UP, UNATTENDED]
                    dual-start-swapneg   as dual-start, with the LEFT wheel reading two halls as swapped in the walk lifetimes (B-5's negative): the left wheel may jerk  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
@@ -330,11 +330,12 @@ case "$TIER" in
                     ;;
     # dual-start (task 3613, plan R19.7; DOCs/analyses/STARTUP-SELFTEST-STUDY-2026-09-23.md sec 6) -- the start checks.
     #  Ten steering lifetimes read what start() judged (getHealth(), the lead probe, the pack sensor) and a floated
-    #  window's rest zero and coast floor; the last three call checkWiring(). No PREFLT: the attended negatives load
-    #  this part with a wheel mis-wired on purpose.
+    #  window's rest zero and coast floor; every one calls checkWiring() (PL-137, src_rev 47: was the last three) and
+    #  prints the driver's own record of each leg (BM-SKWLEG). No PREFLT: the attended negatives load this part with a
+    #  wheel mis-wired on purpose.
     dual-start)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part START (SKCHECK): the steering object is started and stopped 10 times; each start pulses each motor lead at 50 % for a few ms with nothing able to move. In the first 2 lifetimes the winding check also drives each pair of leads in turn for up to 0.3 s: EACH WHEEL TWITCHES A LITTLE, three times, as it lines up with each pair. In the last 3 lifetimes checkWiring() turns the platform in place, each wheel one electrical cycle (about 6 hall ticks, 3.5 cm at the tyre) each way at power 10. Each lifetime ends with a still second while the program reads the driver's event log. You do nothing. Run cap 3 minutes, expected about 1"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part START (SKCHECK): the steering object is started and stopped 10 times; each start pulses each motor lead at 50 % for a few ms with nothing able to move. In the first 2 starts the winding check also drives each pair of leads in turn for up to 0.3 s: EACH WHEEL TWITCHES A LITTLE, three times, as it lines up with each pair. AFTER EVERY START, all 10 of them, the wiring check turns the platform in place and back: EACH WHEEL TURNS A LITTLE ONE WAY, then back (about 3.5 cm at the tyre each way, slowly, about 1.5 s in all), the two wheels turning opposite ways. Each start ends with a still second while the program reads what the driver recorded. You do nothing. Run cap 3 minutes, expected about 1"
                     ;;
     # dual-start-nowalk -- the same part built with -D START_NO_WALK: checkWiring() is never called, so nothing in the
     #  build commands a wheel. The load for the attended B-1 (one wheel's hall connector unplugged): a mis-wired wheel is

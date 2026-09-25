@@ -1320,10 +1320,12 @@ PUB checkWiring() : eError | nStartPos, nMidPos, nMissed0, nIllegal0, bLegsOk
         nMissed0 := hall_missed
         nIllegal0 := hall_illegal
         nStartPos := pos
-        bLegsOk := bWalkLeg(WALK_POWER)
+        bLegsOk := bWalkLeg(WLEG_OUT, WALK_POWER)
         nMidPos := pos
         if bLegsOk == TRUE
-            bLegsOk := bWalkLeg(-WALK_POWER)
+            bLegsOk := bWalkLeg(WLEG_BACK, -WALK_POWER)
+        else
+            walkNoteLeg(WLEG_BACK, FALSE)                                       ' PL-137: its record reads not run, never an earlier walk's
         bJudgeWalk(nMidPos - nStartPos, pos - nMidPos, bLegsOk, (hall_missed == nMissed0) and (hall_illegal == nIllegal0))
 
 PUB bJudgeWalk(nFwdTicks, nRevTicks, bLegsOk, bHallsClean) : bPassed
@@ -1354,6 +1356,95 @@ PUB testGetWalk() : nFwdTicks, nRevTicks
 
     nFwdTicks := walkFwdTicks
     nRevTicks := walkRevTicks
+
+PUB walkNoteLeg(eLeg, bRan) | eDrvState
+'' INTERNAL USE: end walk leg {eLeg}'s record where checkWiring()'s wait for it ended (PL-137; checkWiring(), and
+'' isp_steering_2wheel's per wheel)
+''
+'' Call it on the walking cog, the one writer of the end fields, right after the wait and before any stop or release
+'' that follows it, so the record holds the state that ended the wait. The front cog goes on watching the position
+'' until the next drive command (frontWalkWatch()), which is how the record learns where the rotor settled.
+''
+'' @param eLeg - WLEG_OUT or WLEG_BACK; any other value records nothing
+'' @param bRan - T/F where T means the leg was posted and taken; F records it WLE_NOT_RUN
+
+' Local Variables:
+' @local eDrvState - the driver state read once, at the end of the wait
+
+    if (eLeg >= WLEG_OUT) and (eLeg <= WLEG_BACK)
+        if bRan == FALSE
+            wlEnd[eLeg] := WLE_NOT_RUN
+            wlEndMs[eLeg] := wlEndPos[eLeg] := wlLagHeld[eLeg] := WALK_NA
+        else
+            eDrvState := drv_state
+            wlEndMs[eLeg] := getms() - wlPostMs[eLeg]
+            wlEndPos[eLeg] := pos
+            wlLagHeld[eLeg] := lag_held - wlLag0[eLeg]
+            ' the first cause that holds, in WLE_*'s documented order: a state the wait ends on names its own cause,
+            '  and a wheel that had not settled when the wait ended is the bound's
+            if bWalkTripped == TRUE
+                wlEnd[eLeg] := WLE_GUARD
+            elseif (eDrvState == DCS_FAULTED) or (bWlFaultSeen[eLeg] == TRUE)
+                wlEnd[eLeg] := WLE_FAULT
+            elseif eDrvState == DCS_ESTOP
+                wlEnd[eLeg] := WLE_ESTOP
+            elseif eDrvState <> DCS_STOPPED
+                wlEnd[eLeg] := WLE_TIMEOUT
+            elseif wlLimMs[eLeg] <> WALK_NA
+                wlEnd[eLeg] := WLE_LIMIT
+            else
+                wlEnd[eLeg] := WLE_OTHER
+        bWlRan[eLeg] := bRan                                                    ' LAST: the end fields above are this leg's
+
+PUB testGetWalkLeg(eLeg) : eEnd, nEndMs, nPostPos, nPeakPos, nLimitPos, nLimitMs, nLimitTrk, nLimitStopTicks, nStopPos, nStopMs, nEndPos, nSettlePos, nLastMoveMs, bSettleFinal, nLagHeld
+'' TEST USE: one leg of the last wiring walk, as the driver saw it (PL-137) -- read it after checkWiring() returns
+''
+'' Positions are raw hall ticks (getRawHallTicks()); times are ms from the leg's post, when its command was written and
+'' taken. A reading not taken is WALK_NA, and a leg that did not run (WLE_NOT_RUN, also any {eLeg} out of range) reads
+'' WALK_NA throughout. The settle position is watched every front pass from the post until the next drive command --
+'' the second leg's command, for the first leg -- so nothing guesses when the rotor has come to rest: bSettleFinal says
+'' whether the watch has ended, and nLastMoveMs when the rotor last moved.
+''
+'' @param eLeg - WLEG_OUT or WLEG_BACK
+'' @returns eEnd - WLE_*: how the leg ended, judged when checkWiring()'s wait for it ended
+'' @returns nEndMs - ms from the post to the end of that wait: the leg's elapsed time
+'' @returns nPostPos - the position the leg's distance limit counted from
+'' @returns nPeakPos - the position furthest from nPostPos, either way, while watched
+'' @returns nLimitPos - the position right after the distance limit's stop was written; WALK_NA if it never fired
+'' @returns nLimitMs - ms from the post to the limit firing; WALK_NA if it never fired
+'' @returns nLimitTrk - the tracked hall ticks it fired on, each step counted whichever way; WALK_NA if it never fired
+'' @returns nLimitStopTicks - the stopping distance it allowed for, hall ticks; WALK_NA if it never fired
+'' @returns nStopPos - the position when the driver first reported rest (DCS_STOPPED, DCS_FAULTED or DCS_ESTOP) after reporting the leg's motion; WALK_NA if it never did while watched
+'' @returns nStopMs - ms from the post to that report; WALK_NA likewise
+'' @returns nEndPos - the position at the end of the wait
+'' @returns nSettlePos - the position when the watch ended, or the latest while it runs
+'' @returns nLastMoveMs - ms from the post to the last position change while watched; WALK_NA if the rotor never moved
+'' @returns bSettleFinal - T/F where T means the watch has ended (the next drive command), so nSettlePos is final; F if the leg did not run
+'' @returns nLagHeld - drive passes the lag limiter held the field, from the post to the end of the wait
+
+    eEnd := WLE_NOT_RUN
+    nEndMs := nPostPos := nPeakPos := nLimitPos := nLimitMs := nLimitTrk := nLimitStopTicks := WALK_NA
+    nStopPos := nStopMs := nEndPos := nSettlePos := nLastMoveMs := nLagHeld := WALK_NA
+    bSettleFinal := FALSE
+    if (eLeg >= WLEG_OUT) and (eLeg <= WLEG_BACK)
+        if bWlRan[eLeg] == TRUE
+            eEnd := wlEnd[eLeg]
+            nEndMs := wlEndMs[eLeg]
+            nPostPos := wlPostPos[eLeg]
+            nPeakPos := wlPeakPos[eLeg]
+            nLimitMs := wlLimMs[eLeg]
+            if nLimitMs <> WALK_NA
+                nLimitPos := wlLimPos[eLeg]
+                nLimitTrk := wlLimTrk[eLeg]
+                nLimitStopTicks := wlLimStopTk[eLeg]
+            nStopMs := wlStopMs[eLeg]
+            if nStopMs <> WALK_NA
+                nStopPos := wlStopPos[eLeg]
+            nEndPos := wlEndPos[eLeg]
+            bSettleFinal := bWlClosed[eLeg]                                     ' first: a watch closing now leaves its final pos below
+            nSettlePos := wlLastPos[eLeg]
+            nLastMoveMs := wlLastMoveMs[eLeg]
+            nLagHeld := wlLagHeld[eLeg]
 
 PUB startPackSense() | nPin
 '' INTERNAL USE: calibrate and start reading the pack voltage sensor, when user.PACK_SENSOR_FITTED (R19.5); ~2 ms
@@ -2710,8 +2801,41 @@ PUB frontArmWalkGuard()
     bWalkTripped := FALSE
     bWalkGuardArmed := TRUE
 
+PUB frontWalkBegin(eLeg)
+'' FRONT COG ONLY: open walk leg {eLeg}'s record and start watching its position (PL-137, testGetWalkLeg())
+''
+'' Call it after the leg's command is written and taken, beside frontArmWalkGuard(), and before this pass's tracking:
+'' the post position is the one the leg's distance limit counts from. Opening the first leg also empties the second's
+'' record, so a second leg never posted reads WALK_NA, never an earlier walk's. The watch runs every pass
+'' (frontWalkGuard()) until the next drive command closes it (frontCommand()).
+''
+'' @param eLeg - WLEG_OUT or WLEG_BACK; any other value opens nothing
+
+    if (eLeg >= WLEG_OUT) and (eLeg <= WLEG_BACK)
+        if walkWatchLeg <> WLEG_NONE
+            frontWalkClose()                                                    ' the leg's own command already did, unless it was a zero
+        if eLeg == WLEG_OUT
+            walkLegOpen(WLEG_BACK, WALK_NA)                                     ' the second leg: empty until its own post
+        walkLegOpen(eLeg, trackBasePos)
+        wlPostMs[eLeg] := getms()
+        walkWatchLeg := eLeg                                                    ' LAST: the watch reads the record above
+
+PUB frontWalkNoteLimit()
+'' FRONT COG ONLY: after a distance limit's stop is written (frontZeroPower()), note it in the watched walk leg's record (PL-137)
+''
+'' The first firing in a leg is kept; the limit's decision (bFrontLimitsDue()) left the stopping ticks it allowed for,
+'' and the tracked ticks are unchanged until the next pass's tracking. A no-op with no leg watched.
+
+    if walkWatchLeg <> WLEG_NONE
+        if wlLimMs[walkWatchLeg] == WALK_NA
+            wlLimPos[walkWatchLeg] := pos
+            wlLimTrk[walkWatchLeg] := posTrkHallTicks
+            wlLimStopTk[walkWatchLeg] := limitStopTicks
+            wlLimMs[walkWatchLeg] := getms() - wlPostMs[walkWatchLeg]         ' LAST: marks the limit noted
+
 PUB frontWalkGuard() | nNetMv
-'' FRONT COG ONLY: once per pass -- end an armed walk leg whose current reaches WALK_I_LIMIT_MV (PL-122)
+'' FRONT COG ONLY: once per pass -- end an armed walk leg whose current reaches WALK_I_LIMIT_MV (PL-122), and follow a
+'' watched walk leg's position (PL-137, frontWalkWatch())
 ''
 '' A wiring check must not stress what it checks. A zero command would ramp the field down for a few hundred ms more of
 '' drive against a wheel that is not following, so the leg ends with this motor's e-stop instead: the driver shorts
@@ -2729,6 +2853,8 @@ PUB frontWalkGuard() | nNetMv
             bWalkTripped := TRUE                                                '  after the e-stop, which would clear it
             frontQueueEvent(EV_WALK_GUARD, nNetMv)                              ' R20.1: after the short is written
             debug[user.DBGCH_FAULT]("-MOT- wiring walk: current ", sdec_long(nNetMv), " mV over the guard, leg shorted")
+    if walkWatchLeg <> WLEG_NONE                                                ' PL-137: one compare a pass while no leg is watched
+        frontWalkWatch()
 
 PUB isWalkGuardTripped() : bTripped
 '' INTERNAL USE: whether the current guard ended the last walk leg (PL-122)
@@ -2841,16 +2967,20 @@ PUB frontSetLimits(nTicks, nMsDeadline)
     motorStopHallTicks := nTicks
     motorStopMSecs := nMsDeadline
 
-PUB bFrontLimitsDue(nowMs) : bFired
+PUB bFrontLimitsDue(nowMs) : bFired | nStopTicks
 '' FRONT COG ONLY: return TRUE, and disarm the limit, when a stop written now leaves the motor at rest at its time or distance limit
 ''
 '' The stop begins early by the field's own stopping time or distance at its current speed (frontStopMs(),
 '' frontStopTicks()), so the motor is at rest at the limit, not a ramp past it. A limit already inside the
 '' stopping distance or time fires at once. The time limit is checked first; the distance limit only while no
-'' time limit is armed. The owner writes the stop.
+'' time limit is armed. The owner writes the stop, then frontWalkNoteLimit(), which reads the stopping ticks a fired
+'' distance limit allowed for (PL-137).
 ''
 '' @param nowMs - getms() for this pass
 '' @returns bFired - T/F where T means a limit fired in this call and the owner must stop the motor now
+
+' Local Variables:
+' @local nStopTicks - the field's stopping distance now, hall ticks
 
     bFired := FALSE
     if motorStopMSecs > 0
@@ -2859,9 +2989,11 @@ PUB bFrontLimitsDue(nowMs) : bFired
             motorStopMSecs := 0                                                 ' and clear user request
             bFired := TRUE
     elseif motorStopHallTicks > 0
-        if posTrkHallTicks + frontStopTicks() >= motorStopHallTicks
+        nStopTicks := frontStopTicks()
+        if posTrkHallTicks + nStopTicks >= motorStopHallTicks
             debug[user.DBGCH_SENSE]("-MOT- distance limit reached")
             motorStopHallTicks := 0                                             ' and clear user request
+            limitStopTicks := nStopTicks                                        ' PL-137: the decision's own figure, kept for the record
             bFired := TRUE
 
 PUB frontResetTracking(bWholeWindow) | nowPos
@@ -3107,26 +3239,101 @@ PRI frontLatchStop(eKind)
     e_stop := eKind                                                             ' one write, so the driver never sees the other kind first
     frontCommand(0, FALSE)
 
-PRI bWalkLeg(power) : bOk | startMs
+PRI bWalkLeg(eLeg, power) : bOk | startMs
 ' Drive one leg of checkWiring(): WALK_TICKS at {power} under the current guard, then wait, bounded, for rest.
 '
+' @param eLeg - WLEG_OUT or WLEG_BACK: the leg's record (PL-137)
 ' @param power - the leg's power, its sign the direction
 ' @returns bOk - T/F where T means the leg was driven, came to rest, did not fault and was not shorted by the guard
 
 ' Local Variables:
 ' @local startMs - getms() when the leg was posted
 
-    bOk := (postRequest(REQ_WALK, WALK_TICKS, power, 0) == NO_ERROR)           ' zeroes the tracking the distance limit counts from
-    if bOk == TRUE
+    bOk := (postRequest(REQ_WALK, eLeg, power, 0) == NO_ERROR)                 ' zeroes the tracking the distance limit counts from
+    if bOk == FALSE
+        walkNoteLeg(eLeg, FALSE)
+    else
         startMs := getms()
         waitms(WALK_START_MS)
         repeat until (drv_state == DCS_STOPPED) or (drv_state == DCS_FAULTED) or (drv_state == DCS_ESTOP) or (getms() - startMs >= WALK_LEG_TIMEOUT_MS)
             waitms(1)
         bOk := (drv_state == DCS_STOPPED)
+        walkNoteLeg(eLeg, TRUE)                                                 ' PL-137: before the release or stop below
         if bWalkTripped == TRUE
             postRequest(REQ_CLEAR_ESTOP, 0, 0, 0)                               ' PL-122: the guard's short, released: the leg failed
         elseif bOk == FALSE
             postRequest(REQ_STOP, 0, 0, 0)                                      ' a leg that faulted or timed out ends stopped
+
+PRI frontWalkWatch() | eLeg, nowPos, eDrvState
+' FRONT COG: once per pass while a walk leg is watched (frontWalkGuard()) -- follow its position, and note the driver's
+' first rest state after the leg's motion (PL-137). Only a moving rotor costs more than two reads.
+'
+' "After the leg's motion" is the first DCS_SPIN_UP, DCS_AT_SPEED or DCS_SLOW_TO_CHG seen since the post, so neither
+' the rest the leg left nor the ramp-down of an earlier motion is read as this leg's stop.
+
+' Local Variables:
+' @local eLeg - the WLEG_* watched
+' @local nowPos - the driver's position this pass
+' @local eDrvState - the driver state this pass
+
+    eLeg := walkWatchLeg
+    nowPos := pos
+    if nowPos <> wlLastPos[eLeg]
+        wlLastPos[eLeg] := nowPos
+        wlLastMoveMs[eLeg] := getms() - wlPostMs[eLeg]
+        if abs(nowPos - wlPostPos[eLeg]) > abs(wlPeakPos[eLeg] - wlPostPos[eLeg])
+            wlPeakPos[eLeg] := nowPos
+    if bFaultBegan == TRUE                                                      ' this pass's frontTrack() raised it
+        bWlFaultSeen[eLeg] := TRUE
+    if wlStopMs[eLeg] == WALK_NA
+        eDrvState := drv_state
+        if bWlLeftRest[eLeg] == FALSE
+            bWlLeftRest[eLeg] := (eDrvState == DCS_SPIN_UP) or (eDrvState == DCS_AT_SPEED) or (eDrvState == DCS_SLOW_TO_CHG)
+        elseif (eDrvState == DCS_STOPPED) or (eDrvState == DCS_FAULTED) or (eDrvState == DCS_ESTOP)
+            wlStopPos[eLeg] := nowPos
+            wlStopMs[eLeg] := getms() - wlPostMs[eLeg]                          ' LAST: marks the stop noted
+
+PRI frontWalkClose() | eLeg
+' FRONT COG: end the watched walk leg's watch -- its last reading, taken now, is where the rotor settled (PL-137). Called
+' by the next drive command (frontCommand()) and by the next leg's opening (frontWalkBegin()).
+
+' Local Variables:
+' @local eLeg - the WLEG_* whose watch ends
+
+    eLeg := walkWatchLeg
+    frontWalkWatch()                                                            ' one last reading, at the close
+    walkWatchLeg := WLEG_NONE
+    bWlClosed[eLeg] := TRUE                                                     ' after the reading: a getter that sees it reads a final pos
+
+PRI walkLegOpen(eLeg, nPostPos)
+' Empty walk leg {eLeg}'s front-written record and start it at {nPostPos} (PL-137): frontWalkBegin() on the front cog,
+' walkRecordReset() in init() before the front cog exists. Leaves wlPostMs to its caller.
+'
+' @param eLeg - WLEG_OUT or WLEG_BACK
+' @param nPostPos - the position the leg starts from, or WALK_NA for a leg emptied until its own post
+
+    wlPostPos[eLeg] := nPostPos
+    wlPeakPos[eLeg] := nPostPos
+    wlLastPos[eLeg] := nPostPos
+    wlLimMs[eLeg] := wlLimPos[eLeg] := wlLimTrk[eLeg] := wlLimStopTk[eLeg] := WALK_NA
+    wlStopMs[eLeg] := wlStopPos[eLeg] := wlLastMoveMs[eLeg] := WALK_NA
+    wlLag0[eLeg] := lag_held
+    bWlLeftRest[eLeg] := bWlFaultSeen[eLeg] := bWlClosed[eLeg] := FALSE
+
+PRI walkRecordReset() | eLeg
+' init(), before the front cog exists: no walk leg recorded and none watched (PL-137).
+
+' Local Variables:
+' @local eLeg - WLEG_OUT, then WLEG_BACK
+
+    walkWatchLeg := WLEG_NONE
+    limitStopTicks := 0
+    repeat eLeg from WLEG_OUT to WLEG_BACK
+        walkLegOpen(eLeg, WALK_NA)
+        wlPostMs[eLeg] := 0
+        wlEnd[eLeg] := WLE_NOT_RUN
+        wlEndMs[eLeg] := wlEndPos[eLeg] := wlLagHeld[eLeg] := WALK_NA
+        bWlRan[eLeg] := FALSE
 
 PRI packRead(nPin) : nRaw | nSample
 ' Return the pack pin's reading in its current source, after P2AN001's flush: PACK_FLUSH_SAMPLES discarded, then
@@ -3600,6 +3807,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     walkFwdTicks := 0
     bWalkGuardArmed := bWalkTripped := FALSE                                    ' PL-122: no walk leg under guard
     walkRevTicks := 0
+    walkRecordReset()                                                       ' PL-137: no leg recorded, none watched
     bPackOwned := FALSE                                                     ' R19.5: startPackSense() takes the pin
     packAvgMv := 0
     ' R19.1: no hold before the front cog runs, so the driver at rest applies duty_min exactly as before
@@ -4180,6 +4388,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     bValid &= bOutsideDriverRuns(@bWindProbe, @windNetMv[2])
+    bValid &= bOutsideDriverRuns(@walkWatchLeg, @bWlRan[WALK_LEGS - 1])          ' PL-137: the walk's per-leg record
     if bValid == FALSE
         debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@probe_y - @offset_fwd))
 
@@ -4401,8 +4610,9 @@ CON { front cog requests }
     '  REQ_SET_HOLD       - arg1 ceiling %, arg2 rise ms, arg3 limit ms: replace the hold's limits (setHoldLimits(), R19.1)
     '  REQ_SET_FAULT      - arg1 FR_* mode, arg2 brake %: choose the response to a position fault (setFaultResponse(), R19.3)
     '  REQ_FORCE_FAULT    - fault the driver on its next driven frame, as if the rotor had lost the field (TEST-USE, R19.3)
-    '  REQ_WALK           - arg1 stop ticks, arg2 power (isp_steering_2wheel: arg2 left, arg3 right power, both
-    '                       synchronized): a checkWiring() leg, a signed distance move under the current guard (R19.4, PL-122)
+    '  REQ_WALK           - arg1 the leg, WLEG_* (PL-137), arg2 power (isp_steering_2wheel: arg2 left, arg3 right power,
+    '                       both synchronized): a checkWiring() leg, a signed move of WALK_TICKS under the current guard
+    '                       (R19.4, PL-122), whose record then opens (frontWalkBegin())
     '  REQ_EXIT           - answer every open request, acknowledge, and park (stop())
     '  REQ_NOTE_START     - log the start checks' retries (EV_CHECK_RETRY) once start() has succeeded (R20.1); appended
     '                       after REQ_EXIT so no code moves
@@ -4598,6 +4808,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         if bFrontLimitsDue(nowMs) == TRUE
             frontZeroPower()                                                    ' PL-52: a distance/time stop clears getPower() too
             frontRecordStop(SR_AT_LIMIT)
+            frontWalkNoteLimit()                                                ' PL-137: a walk leg's limit, after its stop
         if bFrontCommandTimedOut(nowMs) == TRUE
             frontZeroPower()                                                    ' S-8: stopped as stopMotor() stops, so holdAtStop() applies
             frontRecordStop(SR_LINK_LOST)
@@ -4816,15 +5027,17 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
                 eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
                 frontNoteDriveCommand(eStatus, nArg2)
         REQ_WALK:
-            ' PL-122: a checkWiring() leg: as REQ_DRIVE_DISTANCE from a zeroed tracking, then under the current guard
+            ' PL-122: a checkWiring() leg: as REQ_DRIVE_DISTANCE from a zeroed tracking, then under the current guard;
+            '  PL-137: arg1 names the leg, whose record opens once it is driven
             bCmdWatched := FALSE
             eStatus := frontRefusal()
             if eStatus == NO_ERROR
                 frontResetTracking(FALSE)                                       ' the distance limit counts from here
-                frontSetLimits(nArg1, 0)
+                frontSetLimits(WALK_TICKS, 0)
                 eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
                 if eStatus == NO_ERROR
                     frontArmWalkGuard()
+                    frontWalkBegin(nArg1)
                 else
                     frontSetLimits(0, 0)                                        ' not driven: no limit stays armed either
                 ' R20.1: a walk leg opens no drive; one left open is ended by the program's own call, checkWiring()
@@ -5033,6 +5246,8 @@ PRI frontCommand(nIncre, bSync)
     bStopUnconfirmed := ((nIncre ZEROX 30) == 0)                               ' any other command supersedes a pending confirmation
     userCmdIncr := nIncre                                                       ' R18.4 D-6: what was COMMANDED, which a path scale never changes
     userCmdGen++                                                                '  and a count an owner reads to see a new command arrive
+    if (nIncre <> 0) and (walkWatchLeg <> WLEG_NONE)                            ' PL-137: a drive ends a walk leg's watch; its own stops do not
+        frontWalkClose()
 
 PRI releaseFaultLatch()
 ' FRONT COG: the one place a commanded write releases a FAULTED driver (task 3616): advance fault_clr. Call it
@@ -5449,7 +5664,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 23        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 24        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -5472,6 +5687,8 @@ CON { driver internal Constants }
                                             ' 22: BRAKE_PCT_DEFAULT sized to 10 from Visit 10's graded chain (task 3613)
                                             ' 23: R20.1 -- the fold-back counter (status run 21 longs, foldback_frames), stop reasons,
                                             '     the event log, start() refuses a check still failing after its retries (task 3621)
+                                            ' 24: PL-137 -- each wiring-walk leg keeps its own record (testGetWalkLeg()); REQ_WALK's
+                                            '     arg1 names the leg, its stop is always WALK_TICKS (task 3610). No PASM change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -5560,6 +5777,23 @@ CON { driver internal Constants }
                                             '  fails. Visit 10 pass 2 MEASURED healthy legs at 20-21 mV raw left (rest zero 7-9 mV,
                                             '  so ~13 mV net) and 12-14 mV right; crossed halls 577, 3_858 and 594 mV. ~10x the
                                             '  healthy peak, a quarter of the least miswired one (1 A at 150 mV/A)
+    ' PL-137 (task 3610), TEST-USE: each wiring-walk leg keeps its own record (testGetWalkLeg()), so a leg that fails
+    '  its judgement says how it ended. Which leg (REQ_WALK's arg1):
+    '  WLEG_OUT  - the first leg: checkWiring() drives it at +WALK_POWER (isp_steering_2wheel: the left wheel +, the right -)
+    '  WLEG_BACK - the second leg, the other way
+    #0, WLEG_OUT, WLEG_BACK
+    WALK_LEGS                   = WLEG_BACK + 1
+    WLEG_NONE                   = -1        ' walkWatchLeg when no leg's position is being watched
+    ' How a leg ended (testGetWalkLeg()'s eEnd), judged at the end of checkWiring()'s wait for it, in this order:
+    '  WLE_NOT_RUN - not posted, or the post was refused or not answered: every other reading is WALK_NA
+    '  WLE_GUARD   - the walk's current guard shorted the leg (PL-122)
+    '  WLE_FAULT   - the driver faulted during the leg: DCS_FAULTED, or a fault it re-synced and stopped
+    '  WLE_ESTOP   - an emergency or protective stop that was not the guard's (DCS_ESTOP)
+    '  WLE_TIMEOUT - the wheel was still moving when WALK_LEG_TIMEOUT_MS ran out
+    '  WLE_LIMIT   - at rest (DCS_STOPPED) after its distance limit fired: the healthy ending
+    '  WLE_OTHER   - at rest with no limit fired: stopped for the other wheel's fault, or by a program's stop
+    #0, WLE_NOT_RUN, WLE_LIMIT, WLE_TIMEOUT, WLE_GUARD, WLE_FAULT, WLE_ESTOP, WLE_OTHER
+    WALK_NA                     = NEGX      ' testGetWalkLeg(): a reading that was not taken
     ' R19.5 (task 3611): the pack voltage sensor, VOLTAGE-SENSOR.md. P2AN001's ratiometric method: the pin, GIO and VIO
     '  read through one ADC path, pin mV = (pin - GIO) / (VIO - GIO) x 3300. SINC2 SAMPLING, not filtering: the front
     '  cog reads once a pass, and sampling mode completes each conversion in hardware (p2kbArchSmartPin11000AdcInternalClock).
@@ -5828,6 +6062,33 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    holdCeilPct                 ' the hold's ceiling, % of duty_max, as set
     LONG    holdRiseMs                  ' the hold's rise, ms, as set
     LONG    holdLimitMs                 ' the hold's time limit, ms, as set
+
+VAR { PL-137: the wiring walk's per-leg record (testGetWalkLeg()) -- Spin2 only, never addressed by the PASM driver }
+    ' Indexed by WLEG_*. init() empties it before start. Front-written: frontWalkBegin() opens a leg, frontWalkWatch()
+    '  follows it every pass, frontWalkNoteLimit() notes its limit, frontWalkClose() ends the watch. Walker-written (the
+    '  cog in checkWiring(), through walkNoteLeg()): the end fields, bWlRan LAST. Every long has exactly one writer.
+    LONG    walkWatchLeg                ' front-written: the WLEG_* whose position is being watched, WLEG_NONE for none
+    LONG    limitStopTicks              ' front-written: the stopping ticks the distance limit allowed for when it last fired
+    LONG    wlPostMs[WALK_LEGS]         ' front-written: getms() when the leg's command was written and taken
+    LONG    wlPostPos[WALK_LEGS]        ' front-written: pos the leg's distance limit counts from (the tracking reset)
+    LONG    wlPeakPos[WALK_LEGS]        ' front-written: the pos furthest from wlPostPos while watched
+    LONG    wlLimMs[WALK_LEGS]          ' front-written: ms from the post to the distance limit firing; WALK_NA if it did not
+    LONG    wlLimPos[WALK_LEGS]         ' front-written: pos right after the limit's stop was written
+    LONG    wlLimTrk[WALK_LEGS]         ' front-written: the tracked hall ticks (summed |steps|) the limit fired on
+    LONG    wlLimStopTk[WALK_LEGS]      ' front-written: the stopping ticks the limit allowed for
+    LONG    wlStopMs[WALK_LEGS]         ' front-written: ms from the post to the driver's first rest state after moving
+    LONG    wlStopPos[WALK_LEGS]        ' front-written: pos at that pass
+    LONG    wlLastPos[WALK_LEGS]        ' front-written: pos as last watched: the settled position once bWlClosed
+    LONG    wlLastMoveMs[WALK_LEGS]     ' front-written: ms from the post to the last change of pos while watched
+    LONG    wlLag0[WALK_LEGS]           ' front-written: lag_held at the post
+    LONG    bWlLeftRest[WALK_LEGS]      ' front-written: T/F where T means the driver has reported this leg's motion
+    LONG    bWlFaultSeen[WALK_LEGS]     ' front-written: T/F where T means a fault of either kind began while watched
+    LONG    bWlClosed[WALK_LEGS]        ' front-written: T/F where T means the watch ended at the next drive command
+    LONG    wlEnd[WALK_LEGS]            ' walker-written: WLE_*
+    LONG    wlEndMs[WALK_LEGS]          ' walker-written: ms from the post to the end of the wait
+    LONG    wlEndPos[WALK_LEGS]         ' walker-written: pos at the end of the wait
+    LONG    wlLagHeld[WALK_LEGS]        ' walker-written: lag_held passes from the post to the end of the wait
+    LONG    bWlRan[WALK_LEGS]           ' walker-written LAST: T/F where T means the leg was posted and taken
 
 DAT  {  Motor DRIVER  }
 '

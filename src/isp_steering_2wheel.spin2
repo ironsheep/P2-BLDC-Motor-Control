@@ -951,6 +951,52 @@ PUB testRightGetWinding(ePair) : eState, nMilliOhms, nNetMv
 
     eState, nMilliOhms, nNetMv := rtWheel.testGetWinding(ePair)
 
+PUB testLeftGetWalkLeg(eLeg) : eEnd, nEndMs, nPostPos, nPeakPos, nLimitPos, nLimitMs, nLimitTrk, nLimitStopTicks, nStopPos, nStopMs, nEndPos, nSettlePos, nLastMoveMs, bSettleFinal, nLagHeld
+'' TEST USE: the LEFT wheel's own record of one leg of the last checkWiring() (PL-137; the motor object's testGetWalkLeg(),
+'' where every value, its units and its WALK_NA form are described) -- read it after checkWiring() returns
+''
+'' @param eLeg - the motor object's WLEG_OUT or WLEG_BACK
+'' @returns eEnd - the motor object's WLE_*: how the leg ended
+'' @returns nEndMs - ms from the post to the end of checkWiring()'s wait for the leg
+'' @returns nPostPos - the raw hall position the leg's distance limit counted from
+'' @returns nPeakPos - the position furthest from nPostPos while watched
+'' @returns nLimitPos - the position right after the distance limit's stop was written
+'' @returns nLimitMs - ms from the post to the limit firing
+'' @returns nLimitTrk - the tracked hall ticks it fired on
+'' @returns nLimitStopTicks - the stopping distance it allowed for, hall ticks
+'' @returns nStopPos - the position at the driver's first rest state after the leg's motion
+'' @returns nStopMs - ms from the post to that state
+'' @returns nEndPos - the position at the end of the wait
+'' @returns nSettlePos - the position when the watch ended (the next drive command), or the latest
+'' @returns nLastMoveMs - ms from the post to the last position change while watched
+'' @returns bSettleFinal - T/F where T means the watch has ended, so nSettlePos is final
+'' @returns nLagHeld - drive passes the lag limiter held the field, from the post to the end of the wait
+
+    eEnd, nEndMs, nPostPos, nPeakPos, nLimitPos, nLimitMs, nLimitTrk, nLimitStopTicks, nStopPos, nStopMs, nEndPos, nSettlePos, nLastMoveMs, bSettleFinal, nLagHeld := ltWheel.testGetWalkLeg(eLeg)
+
+PUB testRightGetWalkLeg(eLeg) : eEnd, nEndMs, nPostPos, nPeakPos, nLimitPos, nLimitMs, nLimitTrk, nLimitStopTicks, nStopPos, nStopMs, nEndPos, nSettlePos, nLastMoveMs, bSettleFinal, nLagHeld
+'' TEST USE: the RIGHT wheel's own record of one leg of the last checkWiring() (PL-137; the motor object's
+'' testGetWalkLeg()) -- read it after checkWiring() returns
+''
+'' @param eLeg - the motor object's WLEG_OUT or WLEG_BACK
+'' @returns eEnd - the motor object's WLE_*: how the leg ended
+'' @returns nEndMs - ms from the post to the end of checkWiring()'s wait for the leg
+'' @returns nPostPos - the raw hall position the leg's distance limit counted from
+'' @returns nPeakPos - the position furthest from nPostPos while watched
+'' @returns nLimitPos - the position right after the distance limit's stop was written
+'' @returns nLimitMs - ms from the post to the limit firing
+'' @returns nLimitTrk - the tracked hall ticks it fired on
+'' @returns nLimitStopTicks - the stopping distance it allowed for, hall ticks
+'' @returns nStopPos - the position at the driver's first rest state after the leg's motion
+'' @returns nStopMs - ms from the post to that state
+'' @returns nEndPos - the position at the end of the wait
+'' @returns nSettlePos - the position when the watch ended (the next drive command), or the latest
+'' @returns nLastMoveMs - ms from the post to the last position change while watched
+'' @returns bSettleFinal - T/F where T means the watch has ended, so nSettlePos is final
+'' @returns nLagHeld - drive passes the lag limiter held the field, from the post to the end of the wait
+
+    eEnd, nEndMs, nPostPos, nPeakPos, nLimitPos, nLimitMs, nLimitTrk, nLimitStopTicks, nStopPos, nStopMs, nEndPos, nSettlePos, nLastMoveMs, bSettleFinal, nLagHeld := rtWheel.testGetWalkLeg(eLeg)
+
 PUB testLeftGetProbe(ePhase) : nUMv, nVMv, nWMv
 '' TEST USE: the LEFT wheel's phase voltages start()'s lead check read while probing {ePhase} (the motor object's testGetProbe())
 ''
@@ -1202,11 +1248,14 @@ PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeft
     nRightStart := rtWheel.getRawHallTicks()
     ' each wheel is judged on its OWN legs: one wheel's failed leg never fails the other (a fault on one still stops
     '  both, R19.2, so the other's short leg shows in its ticks and nowhere else)
-    eError, bLeftOk1, bRightOk1 := walkLeg(ltWheel.WALK_POWER, -ltWheel.WALK_POWER)    ' opposite powers: the platform turns in place
+    eError, bLeftOk1, bRightOk1 := walkLeg(ltWheel.WLEG_OUT, ltWheel.WALK_POWER, -ltWheel.WALK_POWER)     ' opposite powers: the platform turns in place
     nLeftMid := ltWheel.getRawHallTicks()
     nRightMid := rtWheel.getRawHallTicks()
     if eError == NO_ERROR
-        eError, bLeftOk2, bRightOk2 := walkLeg(-ltWheel.WALK_POWER, ltWheel.WALK_POWER)  ' a drive clears a faulted wheel first
+        eError, bLeftOk2, bRightOk2 := walkLeg(ltWheel.WLEG_BACK, -ltWheel.WALK_POWER, ltWheel.WALK_POWER) ' a drive clears a faulted wheel first
+    else
+        ltWheel.walkNoteLeg(ltWheel.WLEG_BACK, FALSE)                           ' PL-137: its record reads not run, never an earlier walk's
+        rtWheel.walkNoteLeg(ltWheel.WLEG_BACK, FALSE)
     if eError == NO_ERROR
         ltWheel.bJudgeWalk(nLeftMid - nLeftStart, ltWheel.getRawHallTicks() - nLeftMid, bLeftOk1 and bLeftOk2, bHallsUnchanged(ltWheel.getHallIntegrityCounts(), nLeftMissed, nLeftIllegal))
         rtWheel.bJudgeWalk(nRightMid - nRightStart, rtWheel.getRawHallTicks() - nRightMid, bRightOk1 and bRightOk2, bHallsUnchanged(rtWheel.getHallIntegrityCounts(), nRightMissed, nRightIllegal))
@@ -1879,10 +1928,12 @@ PRI bHallsUnchanged(nMissedNow, nIllegalNow, nMissed0, nIllegal0) : bSame
 
     bSame := (nMissedNow == nMissed0) and (nIllegalNow == nIllegal0)
 
-PRI walkLeg(leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftStatus, eRightStatus, bLeftTripped, bRightTripped
+PRI walkLeg(eLeg, leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftStatus, eRightStatus, bLeftTripped, bRightTripped
 ' Drive one leg of checkWiring(): each wheel WALK_TICKS at its power under its current guard, then wait, bounded, until
-' each wheel has come to rest, faulted or been shorted by its guard. Each wheel's result is its own.
+' each wheel has come to rest, faulted or been shorted by its guard. Each wheel's result is its own, and so is its
+' record of the leg (PL-137): ended here, before any release or stop, so it holds the state that ended the wait.
 '
+' @param eLeg - the motor object's WLEG_OUT or WLEG_BACK: which leg's record
 ' @param leftPower - the left wheel's power, its sign the direction
 ' @param rightPower - the right wheel's power
 ' @returns eError - NO_ERROR once the leg was posted and taken, else the platform's or a wheel's refusal
@@ -1898,10 +1949,13 @@ PRI walkLeg(leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftS
 
     bLeftOk := FALSE
     bRightOk := FALSE
-    eError, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_WALK, BOTH_MOTORS, ltWheel.WALK_TICKS, leftPower, rightPower)
+    eError, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_WALK, BOTH_MOTORS, eLeg, leftPower, rightPower)
     if eError == NO_ERROR
         eError := (eLeftStatus <> NO_ERROR) ? eLeftStatus : eRightStatus
-    if eError == NO_ERROR
+    if eError <> NO_ERROR
+        ltWheel.walkNoteLeg(eLeg, FALSE)                                        ' PL-137: not driven (the invariant: neither wheel)
+        rtWheel.walkNoteLeg(eLeg, FALSE)
+    else
         startMs := getms()
         waitms(ltWheel.WALK_START_MS)
         ' a fault on one wheel stops the other along its ramp (R19.2), so wait for BOTH to settle, each at rest or faulted
@@ -1911,6 +1965,8 @@ PRI walkLeg(leftPower, rightPower) : eError, bLeftOk, bRightOk | startMs, eLeftS
         bRightOk := (rtWheel.getDriverState() == DCS_STOPPED)
         bLeftTripped := ltWheel.isWalkGuardTripped()
         bRightTripped := rtWheel.isWalkGuardTripped()
+        ltWheel.walkNoteLeg(eLeg, TRUE)                                         ' PL-137: before the release or stop below
+        rtWheel.walkNoteLeg(eLeg, TRUE)
         if (bLeftTripped == TRUE) or (bRightTripped == TRUE)                    ' PL-122: release only the guard's own shorts
             postRequest(ltWheel.REQ_CLEAR_ESTOP, ((bLeftTripped == TRUE) ? LEFT_MOTOR_BIT : 0) | ((bRightTripped == TRUE) ? RIGHT_MOTOR_BIT : 0), 0, 0, 0)
         if (bLeftOk == FALSE) or (bRightOk == FALSE)
@@ -2347,9 +2403,11 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         if ltWheel.bFrontLimitsDue(nowMs) == TRUE
             ltWheel.frontZeroPower()
             ltWheel.frontRecordStop(SR_AT_LIMIT)
+            ltWheel.frontWalkNoteLimit()                                        ' PL-137: a walk leg's limit, after its stop
         if rtWheel.bFrontLimitsDue(nowMs) == TRUE
             rtWheel.frontZeroPower()
             rtWheel.frontRecordStop(SR_AT_LIMIT)
+            rtWheel.frontWalkNoteLimit()
         if bFrontCommandTimedOut(nowMs) == TRUE
             ltWheel.frontZeroPower()                                            ' S-8: stopped as stopMotors() stops them, so holdAtStop() applies
             rtWheel.frontZeroPower()
@@ -2636,8 +2694,8 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
     '  REQ_DRIVE          - arg1 left power, arg2 right power, arg3 bSync
     '  REQ_DRIVE_DISTANCE - arg1 left stop ticks, arg2 right stop ticks (powers from powersForDistance(); always
     '                       synchronized; tracking reset; each wheel stops at its own limit)
-    '  REQ_WALK           - arg1 stop ticks for both wheels, arg2 left power, arg3 right power, signed (checkWiring();
-    '                       otherwise as REQ_DRIVE_DISTANCE)
+    '  REQ_WALK           - arg1 the leg (the motor object's WLEG_*, PL-137), arg2 left power, arg3 right power, signed
+    '                       (checkWiring(); otherwise as REQ_DRIVE_DISTANCE, each wheel's stop the motor's WALK_TICKS)
     '  REQ_LIMIT_TICKS    - arg1 stop ticks, arg2 bResetTracking
     '  REQ_LIMIT_TIME     - arg1 getms() deadline
     '  REQ_TEST_INCREMENT - arg1 raw increment, for the one selected wheel
@@ -2725,23 +2783,25 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                 if (eLeftStatus <> NO_ERROR) or (eRightStatus <> NO_ERROR)
                     frontDisarmWheelLimits(bLeft, bRight)                       ' not driven: no limit stays armed either
         ltWheel.REQ_WALK:
-            ' R19.4: as REQ_DRIVE_DISTANCE, with the caller's signed powers and one distance for both wheels
+            ' R19.4: as REQ_DRIVE_DISTANCE, with the caller's signed powers and WALK_TICKS for both wheels
             bCmdWatched := FALSE
             eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
             if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
                 frontResetPlatformTracking()
                 motorStopHallTicks := 0
-                ltWheel.frontSetLimits(nArg1, 0)
-                rtWheel.frontSetLimits(nArg1, 0)
+                ltWheel.frontSetLimits(ltWheel.WALK_TICKS, 0)
+                rtWheel.frontSetLimits(ltWheel.WALK_TICKS, 0)
                 ' R20.1: a walk leg opens no drive; one left open is ended by the program's own call, checkWiring()
                 eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, nArg2, nArg3, TRUE, FALSE)
                 if (eLeftStatus <> NO_ERROR) or (eRightStatus <> NO_ERROR)
                     frontDisarmWheelLimits(bLeft, bRight)
-                else                                                            ' PL-122: each leg runs under its wheel's current guard
-                    if bLeft == TRUE
+                else                                                            ' PL-122: each leg runs under its wheel's current guard;
+                    if bLeft == TRUE                                            '  PL-137: and each wheel's record of leg arg1 opens
                         ltWheel.frontArmWalkGuard()
+                        ltWheel.frontWalkBegin(nArg1)
                     if bRight == TRUE
                         rtWheel.frontArmWalkGuard()
+                        rtWheel.frontWalkBegin(nArg1)
         ltWheel.REQ_LIMIT_TICKS:
             frontDisarmWheelLimits(TRUE, TRUE)                                  ' one distance limit in force at a time
             if nArg2 <> FALSE
