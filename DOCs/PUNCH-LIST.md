@@ -3889,6 +3889,28 @@ any FLTRESP timeout (`BM-ABI* where,TIMEOUT`), so the next recurrence is capture
 - **Still open:** whether time clears it inside one program, and what the phases do during the failing drive. Neither
   diagnostic could fire (PL-136).
 
+**2026-09-25, desk read of the pin path (read-only survey).**
+- **The pin set-up has no dependence on the pin group:**
+  - pins base+8..13 are u_l, u_h, v_l, v_h, w_l, w_h;
+  - the high sides run in `pwmt`, the low sides in `pwmn` (inverted);
+  - dead time is in software;
+  - only the driver cog writes them, and every bridge state writes Y only.
+  Nothing else in `src/` touches P16–P47. So no code path found treats base 16 differently from base 32.
+- **The measured levels contradict the "low sides off" hypothesis** stated in the pass 4 evaluation. Two readings
+  sit below the right's own 56–62 mV coasting floor:
+  - the lead probe's 11–27 mV driven (pass 1);
+  - the 18 mV drain at 21:21, with duty in BR_DRIVE.
+
+  Only a conducting low side pulls a phase below the float level. **DERIVED, moderate confidence: the high-side
+  drive is what fails.** Candidates:
+  - the Rev B high-side gate supply or bootstrap/UVLO on the right board;
+  - the high-side outputs P25, P27 and P29 not reaching it.
+  The one fact against hardware is that a later load has always cleared it.
+- **Survives a driver restart, not a reload, and is not in the dumps:** the shared driver image (`bias`, `fram`,
+  `hall_angles`, `deltas`), which both motor instances share and `init()` rewrites before each launch. **Next dump
+  should carry these.**
+- The pass 5 sheet's signature row was corrected to this reading before any pass 5 log was read.
+
 ### PL-121 -- T0-24's hand rows ended on a clock that started at START
 
 **Found 2026-09-23** at Visit 10 pass 1 (Stephen: *"I press start, and it automatically completes, and I haven't done
@@ -4307,6 +4329,33 @@ teaches the user to ignore it (P14).
 - **Found while building: the stall watchdog did not cover a steering walk.** The steering walk runs its second leg even
   after a timed-out first, so two timed-out legs block cog 0 about 4.1 s, past `WD_STALL_MS`. The harness now grants
   `WD_WALK_GRACE_MS` (4_134 ms, derived from the library's bounds) for that one call, and `BM-SKBUILD` prints it.
+
+### PL-138 -- while a gate pin's DIR is low its smart pin still drives, so all three low sides are ON: a phase short outside any bridge state
+
+**Found 2026-09-25** by a read-only desk study for PL-120. Not yet checked against the silicon on the rig.
+- **DERIVED from the source and p2kb.** The gate pins run smart-pin PWM modes with the output enabled regardless of DIR
+  (p2kb `p2kbArchSmartPins`: "%01 Output enabled regardless of DIR").
+- While DIR is low a smart pin is held in reset and outputs low (`p2kbArchSmartPin01000PwmTriangle`). On the low sides'
+  inverted mode (`pwmn`) that is **ON**; the high sides are off.
+- So every window where a motor's gate pins keep their mode with DIR low is an **all-low-sides short**, which no bridge
+  state asked for:
+  - the driver's sense calibration;
+  - the park while it waits for ATN;
+  - `stop()`'s interval between `cogstop` and `pinclear`.
+- At rest it is a brake, and harmless. On a wheel that is still turning when a driver restarts, it is an unrequested
+  short.
+
+**A source conflict, recorded before either side is acted on (overlay P7):**
+- `p2kbSpin2Cogstop` says COGSTOP disables smart-pin modes.
+- `p2kbArchSmartPins` and the comment at `isp_bldc_motor.spin2` ~:358 say the mode persists.
+
+**Disposition:** ⛔ **FIX by construction once confirmed.** A pin carries a smart mode only while its cog drives it:
+- set the mode after DIR is raised;
+- clear it before the cog stops.
+
+That removes the window rather than characterising it. **First:** resolve the source conflict with p2kb, and check
+whether the window is reachable while a wheel turns (a restart, or a stop then start while coasting). It rides with
+the next driver change.
 
 ---
 
