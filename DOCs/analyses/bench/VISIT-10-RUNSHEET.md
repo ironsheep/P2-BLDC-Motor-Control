@@ -1,39 +1,39 @@
-# Visit 10 — run sheet, pass 4 (the right wheel's failure caught in the act, and the winding check)
+# Visit 10 — run sheet, pass 5 (the right wheel diagnosed where it fails; stop reasons, events and start refusal certified)
 
-**Task:** «#3613» runs it. **Built by:** «#3609» (the protective stop in the stop mode, PL-132; the re-sync direction),
-«#3610» (the winding check, PL-133), «#3613» (the PL-120 diagnostics, the required panel tests PL-135, BRAKE_PCT 10).
-**Plan:** `BENCH-READINESS-SPRINT-PLAN.md`, R19.
+**Task:** «#3613» runs it. **Built by:**
+- «#3621»: stop reasons, the event log, start refusal with retries, public fault and hold setters, the fold-back counter.
+- «#3613»: PL-136, a wheel dead at pre-flight retried and diagnosed.
+- «#3610»: PL-137, each wiring-walk leg recorded.
 
-**Done so far (pass 3):**
-- 16:14 [evaluation](2026-09-24/VISIT-10-PASS3-RERUN-EVALUATION.md): fault fallback latch, walk guard's negative, REST
-  window and Rev B rest-zero band certified.
-- 17:19 [evaluation](2026-09-24/VISIT-10-PASS3-T0-DUALSTART-EVALUATION.md): start checks certified (13/13); the hold's
-  rise was found 16 % slow and fixed.
-- 21:21 [evaluation](2026-09-25/VISIT-10-DUALFAULT-T0-EVALUATION.md): the graded short and the hold's rise certified;
-  BRAKE_PCT sized to 10. The right wheel's bridge died mid-run and was back on the next program load (PL-120), so every
-  right-wheel fault cell is still owed.
+**Plan:** `BENCH-READINESS-SPRINT-PLAN.md`, R20.6. **Design and cells:** `DOCs/plans/DRIVER-REPORTING-DESIGN.md` §6 and its build notes.
+
+**Done so far:**
+- Pass 3 (09-24, three evaluations under `2026-09-24/` and `2026-09-25/`):
+  - certified the fault fallback, the graded short (BRAKE_PCT 10), the hold's rise, the start checks, the REST window and the rest-zero band;
+  - the right wheel's fault cells were owed (PL-120).
 - 11:41 pass 4 [evaluation](2026-09-25/VISIT-10-PASS4-EVALUATION.md):
-  - The winding check is certified on both wheels (363–460 mΩ), with its negative.
-  - The right wheel was dead on its first drive (PL-120), so its fault cells are NOMEAS again. Neither PL-120 diagnostic
-    could fire (PL-136).
-  - One false wiring-walk FAIL on the healthy left (PL-137).
-
-## ⛔ Pass 5 is NOT READY
-
-Its loads are `dual-fault-rightfirst` (after PL-136: diagnose a wheel that is dead at pre-flight) and `dual-start`
-(after PL-137: walk every lifetime and print each leg's record). `dual-start-phaseneg` is dropped (certified 10 of 10).
-The commands below are pass 4's, kept until pass 5's replace them. **Do not run them.**
+  - the winding check certified on both wheels (363–460 mΩ) with its negative;
+  - the right wheel died on its first drive and was never retried (PL-120, PL-136);
+  - one false wiring-walk FAIL on the left (PL-137).
 
 ---
+
+## ⛔ First: PUSH, then pull at the bench
+
+`main` is ahead of origin. **Push from the authoring tree first**, then pull at the bench. `git log --oneline -1 -- src/`
+at the bench must show **57fe70a** or later.
 
 ## Check the banner before reading anything else
 
 | Load | Every banner / build record must read |
 |---|---|
-| `dual-*` tiers | `BM-BANNER,...,src_rev,44,fmt,28` and `BM-BUILD ... drv_rev,22`. Anything lower means an old tree was built: stop and report |
-| `dual-fault-rightfirst` | part `FRESP`; `BM-FRBUILD`, then `BM-FRDIAG ... right_first,TRUE`; `BM-FRRECSUM` before `BM-END` |
-| `dual-start` | part `START`, `BM-SKBUILD ... neg,NONE`; a `BM-SKWIND` pair per wheel in lifetimes 1 and 2 |
-| `dual-start-phaseneg` | part `START`, `BM-SKBUILD` negative `PHASE`; a `BM-SKNEG` and a `BM-SKWIND` per wheel in every lifetime |
+| every `dual-*` tier | `BM-BANNER,...,src_rev,47,fmt,31` and `BM-BUILD ... drv_rev,24`. Anything lower means an old tree: stop and report |
+| `dual-fault-rightfirst` | part `FRESP`; `BM-FRDIAG ... right_first,TRUE,pf_tries,3,pf_gap_ms,1_000` |
+| `dual-start` | part `START`; `BM-SKBUILD ... walks,10,no_walk,FALSE ... neg,NONE ... wd_walk_ms,4_134` |
+| `dual-start-phaseneg` | part `START`; `BM-SKBUILD` negative `PHASE`; 12 lifetimes |
+| `dual-start-swapneg` | part `START`; `BM-SKBUILD` negative `SWAP` |
+| `dual-d` | part `D` |
+| `t0-stopreason` | the t0 banner at `src_rev,18`; test T0-25 only |
 
 ---
 
@@ -41,97 +41,117 @@ The commands below are pass 4's, kept until pass 5's replace them. **Do not run 
 
 | | |
 |---|---|
-| **Purpose** | **Diagnosis, certification and sizing.** It catches PL-120 while it happens: a dump 150 ms into a drive that is not moving, a same-run recovery probe, and the right wheel's trials run first. That decides whether time or a reload clears it, and whether the left's trials are a precondition. It re-runs every right-wheel fault cell and the platform stop policy. It measures the winding resistance for the first time (PL-133) against its negative. |
-| **Hardware risk** | `dual-fault-rightfirst` **faults the wheels on purpose at up to about 220 rpm commanded**; each fault ends in a phase short, a coast, a controlled ramp or the graded short. **Run it on the pack.** The winding check in both `dual-start` tiers drives each pair of motor leads for up to 0.3 s: **each wheel twitches a little, three times, at each measured start.** **Wheels up throughout. Hands off in every unattended tier. Panic: physical battery disconnect.** |
-| **Who can observe** | No tier needs anyone, and **nobody touches the wheels during `dual-fault-rightfirst`.** |
-| **Runs that carry state** | None across runs. Within `dual-fault-rightfirst`, the recovery probe follows the first wheel that fails to move. |
-| **Run length** | About 6 minutes for `dual-fault-rightfirst`, plus at most 2 minutes if the recovery probe runs; about 1 minute for `dual-start`; about 2 for `dual-start-phaseneg`. |
+| **Purpose** | **Certification and diagnosis.** It certifies every R20.1 mechanism on the bench: stop reasons, the event log, start refusal and its retries, and the fold-back counter. It diagnoses PL-120 wherever it strikes, because a wheel dead at pre-flight is now retried at once, dumped mid-drive, traced per phase, and then probed. It re-runs every right-wheel fault cell and the platform stop. It catches the wiring walk's false FAIL in its own record, over 10 walks. It measures the steering front cog's worst pass with the new event writes. |
+| **Hardware risk** | `dual-fault-rightfirst` **faults the wheels on purpose at up to about 220 rpm**, and each stops by a short, a coast, a ramp or the graded short. **Run it on the pack.** `dual-d` stops the wheels dead, latches an e-stop, and **lowers the current limit until the motor cannot turn.** `t0-stopreason` includes an **e-stop that brakes the right wheel abruptly.** `dual-start-swapneg`: **the left wheel may jerk or buzz for up to 2 s at a time.** **Wheels up throughout. Hands off in every tier. Panic: physical battery disconnect.** |
+| **Who can observe** | No tier needs anyone. |
+| **Runs that carry state** | None across runs. |
+| **Run length** | `dual-fault-rightfirst` about 6 minutes: about 8.5 if the right needs the 20 s probe, at most about 10.5. `dual-start` about 1. `dual-start-phaseneg` about 2. `dual-start-swapneg` under 1. `dual-d` about 1.5. `t0-stopreason` under 1. **Total about 13–17 minutes.** |
 | **Repeatability** | All repeatable and idempotent. |
-| **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack, 270 MHz. `test_bench_dual.spin2` parts FAULTRESP (right first) and START (two builds). |
+| **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack, 270 MHz. `test_bench_dual` parts FAULTRESP (right first), START (three builds) and D; `test_bench_t0` T0-25. |
 
 ---
 
-## ⛔ First: push, then pull — the tree to run
-
-**Push from the authoring tree first**, then pull at the bench. The source to run is named in the hand-back, and
-`git log --oneline -1 -- src/` at the bench must show it. The banners are the check (table above).
-
-## The commands — three, all hands off, about 10 minutes
+## The commands — six, all hands off, about 15 minutes
 
 ```bash
-tools/bench-run.sh dual-fault-rightfirst  # 1: Hands off, on the pack. The RIGHT wheel's fault trials first, then the left's
-tools/bench-run.sh dual-start             # 2: Hands off. Startup checks; the wheels twitch at the first two starts, then nudge near the end
-tools/bench-run.sh dual-start-phaseneg    # 3: Hands off. A faked dead motor wire on the LEFT; the wheels twitch at every start
+tools/bench-run.sh dual-fault-rightfirst  # 1: On the pack. Faults each wheel on purpose at speed, RIGHT wheel first. If a wheel won't turn at the start, the program retries it by itself (up to ~2 min)
+tools/bench-run.sh dual-start             # 2: 10 starts; the wheels twitch at the first two, and at EVERY start both turn a little one way and back
+tools/bench-run.sh dual-start-phaseneg    # 3: 12 starts with a faked dead LEFT motor wire; 3 are refused on purpose ("start refused" lines are expected)
+tools/bench-run.sh dual-start-swapneg     # 4: Fakes crossed LEFT hall wires; the LEFT wheel may jerk or buzz briefly, 3 times
+tools/bench-run.sh dual-d                 # 5: Stops dead, holds an e-stop, lowers the current limit until the wheels can't turn, then restores it
+tools/bench-run.sh t0-stopreason          # 6: The RIGHT wheel driven slowly and stopped every way a program can, including one abrupt e-stop
 ```
 
-**No run depends on another run's result, and nothing needs rewiring.**
+**No run depends on another run's result, and nothing needs rewiring or touching.**
 
 **Not run this pass, and why:**
-- **`dual-fault` (left first):** the left-first case is already on record twice (16:15 and 21:21, the right dying after
-  the left's trials). The left's cells certified at 21:21 on an unchanged path.
-- **`t0-stopmode`:** 10 of 10 at 21:29, and nothing it exercises has changed. Its new checks (PL-134, PL-135) test the
-  instrument; they ride along the next time a driver change needs the tier.
+- **`dual-fault` (left first):** its case is on disk three times.
+- **`t0-stopmode`** (attended): it would only add R20-T0-EV-HOLD, a consistency check of the hold's events. That check prints NOMEAS here and rides along the next time a hold change needs the tier (overlay P10).
+- **`dual-start-nowalk`** (attended, hall connector unplugged): it would only add R20-DUAL-EV-HALLILL, which prints NOMEAS here for the same reason.
+- **The pack-voltage tier:** the sensor is not fitted yet («#3611»). R20-PACK-EV prints NOMEAS / NOT_BUILT.
 
 ---
 
 ## What each load decides, and how each can fail
 
-Every criterion is fixed here, before the run (D2). Cells print their own verdict; the rest are judged in the report
-from the named records.
+Every criterion is fixed here, before the run (D2). The cells print their own verdicts. Each cell's exact negative is
+in `DRIVER-REPORTING-DESIGN.md` §6 and the part 3 build notes; the lines below are what the report judges.
 
-### `dual-fault-rightfirst` — PL-120, then every right-wheel fault cell
+### 1 · `dual-fault-rightfirst` — PL-120 where it strikes, and every right-wheel cell
 
-| What | Criterion | Reading that decides it |
-|---|---|---|
-| **The right's fault cells** (BLUNT, GRADED, GRD100, RESYNC, RESTFLAT, SHORTTK, COASTEMF) | as pass 3 | owed since pass 2; the left's pass 3 values are the comparison |
-| **PLATSTOP** (one wheel faults, the other stops) | as pass 3 | never measured |
-| **PL-120, ordering** | — | the right dies in `dual-fault-rightfirst` before any left trial → the left's trials are **not** a precondition; it drives through all its trials there → they are, against the two left-first failures already on record (16:15, 21:21) |
-| **PL-120, recovery** | — | `BM-FRRECSUM ... recovered,TRUE` within the 2 minutes → time clears it; `recovered,FALSE` → it survives in the program until a reload |
-| **PL-120, the failing moment** | — | `BM-ABI* where,NOMOTION`: the driver's runs 150 ms into a drive that is not moving, before the protective stop overwrites them. Compared against the same wheel's PREFLT dump |
+| What | Decides it |
+|---|---|
+| **PL-120's stage**, from `BM-FRRECSUM r_pf` | `NO_FAIL`: the right drove. `RETRY`: a transient first-drive failure. `PROBE`: time inside one program clears it. `DEAD`: only a reload clears it. **Falsifier of the build:** `r_pf,NO_FAIL` after a `BM-PREFLT ... RIGHT ... moved,FALSE` |
+| **PL-120's signature**, from the right's PREFLT `BM-TRACE`/`BM-TS` (`u,v,w,i,d`) against the left's healthy trace | **Pre-registered (the low-side hypothesis):** one phase near the top of its range at the start of the nudge, draining to tens of mV within about 200 ms, with `i` near 0 and `d` rising. **Refuted if** all three phases stay flat and low from the first sample, or current flows |
+| The right's fault cells (BLUNT, GRADED, GRD100, RESYNC, RESTFLAT, SHORTTK, COASTEMF, FRREST, HOOKREST, FORCED) | as pass 3; the left's pass 3 values are the comparison |
+| **PLATSTOP** and **R20-DUAL-SR-PARTNER** | never yet measured: the other wheel stops, and it reads `SR_PARTNER` |
+| R20-DUAL-SR-FAULT, R20-DUAL-SR-FLOST | the re-synced trial reads `SR_FAULT_CONTROLLED`; the hard ones read `SR_FAULT_LOST`; each is the other's negative |
+| **R20-DUAL-FRONTST-EV** | the steering front cog's worst pass ≤ 950 µs, 0 late passes, stack under its allocation |
 
-**Pre-registered:** the left reproduces pass 3's graded chain within hall quantisation, now with BRAKE_PCT's restore at 10.
-A NOMOTION dump on a wheel that then drives is read as early, not as a failure.
+**Pre-registered:** the left reproduces pass 4's chains within hall quantisation, since nothing under them changed.
 
-### `dual-start` — the winding check (PL-133), and the start checks as certified
+### 2 · `dual-start` — the walk caught in the act, and start refusal's positive
 
-| Cell | Criterion | Fails if |
-|---|---|---|
-| **R19-DUAL-WINDR-X**, per wheel | every pair in lifetimes 1–2 reads WND_MEASURED within 100–1_500 mΩ (PROVISIONAL plausibility band) | a pair not MEASURED (NOT_VISIBLE, TRIPPED, UNSETTLED) or outside the band |
-| **R19-DUAL-WINDSPR-X**, per wheel | each lifetime's three pairs within 20 % of their mean | a pair further out: an unbalanced winding or a weak switch |
-| HEALTH, RZSPREAD, PROBE, PRBFLR, WALK, PACK | as pass 3 | as pass 3 |
+| What | Decides it |
+|---|---|
+| R19-DUAL-WALK-X, per wheel, now over 10 walks | 0 failed walks. A false FAIL is now read from its `BM-SKWLEG` pair (below) |
+| **PL-137's reading**, from `BM-SKWLEG` (not a cell) | limit tracked ticks > the true distance from the post → hall chatter counted twice; settle ≠ end → the rotor moved after the judgement read; a TIMEOUT end or a large lag-held count → a stall; limit at 6–7 with the settle at 5 → spring-back |
+| R20-DUAL-NOREFUSE | 10 of 10 starts return ≥ 0 |
+| R20-DUAL-RETRY (positive half) | no start reports a recovered check and no EV_CHECK_RETRY: a spurious retry fails it |
+| R20-DUAL-EV-WALKGUARD, -HALLMISSED (negative halves) | 0 guard events and 0 hall events on the healthy walks |
+| WINDR, WINDSPR, HEALTH, RZSPREAD, PROBE, PRBFLR, PACK | as pass 4 (363–460 mΩ; wheels within 20 %) |
 
-**Pre-registered (report):** each pair 300–600 mΩ; the two wheels within 20 % of each other.
+### 3 · `dual-start-phaseneg` — refusal, opt-out and retry
 
-### `dual-start-phaseneg` — the winding check's negative
+| What | Decides it |
+|---|---|
+| **R20-DUAL-REFUSE** | the 3 refusal starts return −1 with `ERR_START_CHECK_FAILED` for the platform and the LEFT, and `getHealth()` names exactly the withheld phase |
+| **R20-DUAL-OPTOUT** | the opt-out starts return ≥ 0 with the same bit failed. REFUSE and OPTOUT are each other's control |
+| **R20-DUAL-RETRY** (positive half) | the withhold-first starts return ≥ 0, report the withheld bit as recovered, and log EV_CHECK_RETRY |
+| PHNEG-X, WINDNEG-X | as pass 4, judged on the 6 opt-out starts |
 
-| Cell | Criterion | Fails if |
-|---|---|---|
-| **R19-DUAL-WINDNEG-X**, LEFT | in every lifetime exactly the two pairs through the withheld phase read WND_NOT_VISIBLE and the third WND_MEASURED | the hook did not take (three MEASURED) or the wrong pair went dark |
-| R19-DUAL-PHNEG-X, LEFT | as pass 2 | as pass 2 |
+### 4 · `dual-start-swapneg` — the event halves of the wiring negative
 
-**In-run control (report):** the RIGHT's three pairs all MEASURED in every lifetime.
+| What | Decides it |
+|---|---|
+| R20-DUAL-EV-WALKGUARD (positive half) | each swapped LEFT walk the guard ends logs EV_WALK_GUARD with a value at or over the guard's limit |
+| R20-DUAL-EV-HALLMISSED (positive half) | the sum of the LEFT's EV_HALL_MISSED values equals its missed-count growth |
+| the existing swap negative's cells | as pass 2 |
 
+### 5 · `dual-d` — fold-back and the limit events
+
+| What | Decides it |
+|---|---|
+| **R20-DUAL-EV-FOLDBACK** | an engage/release pair in the lowered-limit steps; none at default limits |
+| R20-DUAL-EV-CLIMIT | events match what the derate step saw. **NOMEAS if no wheel derates wheels-up**; it then moves to the floor run |
+| R20-DUAL-EV-PATH | an engage/release pair in the blocked step, and none in STEERSEG. **NOMEAS if no wheel falls short** |
+| R20-T0-EV-LATE | a late pass if and only if an EV_LATE_PASS. The positive side is NOMEAS while late stays 0 |
+| the part D cells | as Visit 8 |
+
+### 6 · `t0-stopreason` — every stop reason a lifted wheel can show, and the event log
+
+| Cell | Decides it |
+|---|---|
+| R20-T0-SR-COMMANDED, -ATLIMIT, -ESTOP, -LINKLOST | each reason reads correctly, and its negative reads `SR_COMMANDED` or `SR_NONE` as §6 states |
+| R20-T0-EV-STOP | exactly `41 42 41 47 41 46 41`, in rising ms |
+| **R20-T0-EV-LOST** | EV_LOST comes first, counts what was dropped, and 16 are kept. **A dropped event never reads as none** |
+| R20-T0-EV-TOTAL, -2COG | the totals count drained and dropped alike; two reading cogs each see every event |
 
 ---
 
 ## What this visit cannot measure, named
 
-- **Any loaded value**: the hold's creep and ceiling under load, and the blocked-wheel stop in the stop mode (PL-132),
-  belong to the floor run («#3576»); a lifted wheel cannot be blocked (PL-106).
-- **A phase short's current** (PL-118).
-- **The pack voltage**: no sensor is fitted («#3611»); the winding check uses the nominal 18.5 V.
-- **An open motor winding, or a hall pair crossed at the connector**: the rig cannot make either.
-- **A Rev A winding reading**: Rev A's sense scale cannot resolve it, so no pair is driven there.
+- **SR_BLOCKED:** a lifted wheel cannot be blocked (PL-106). It belongs to the floor run («#3576»).
+- **The hold's events (EV-HOLD) and the hall-illegal event (EV-HALLILL):** their tiers are attended and not run this pass.
+- **The pack voltage:** no sensor is fitted.
+- **Anything loaded:** the hold's creep, the fault responses under load, and the path limiter on a real platform.
+- **Whether the right bridge's cause is ours or the board's.** This pass can only locate it: low sides against everything else, and transient against persistent.
 
 ---
 
 ## After the visit
 
-One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`. Then the P5 questions go to Stephen, each
-with its measured benefit:
-
-- Should FR_GRADED become the default? (Benefit measured at pass 3: about 28× gentler than the full short in brake mode,
-  for about 21 ticks more travel, at 80 × 10⁶, left wheel.)
-- Should the hold limits and the fault response become public setters?
-- Should a re-synced fault be reported through getError()?
-- What should start() do when a check fails?
+One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`. Then:
+- **If the right wheel's fault cells certify,** land FR_GRADED as the default (Stephen, *"yes A"*, conditional on this pass). It is one constant and a driver revision.
+- Size START_CHECK_RETRIES and the retry gap from what the refusal and retry cells saw.
+- Read PL-137's cause from the leg records, and fix it.
