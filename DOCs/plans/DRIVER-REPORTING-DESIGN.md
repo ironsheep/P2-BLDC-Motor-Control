@@ -653,7 +653,7 @@ default-limit negatives read `getEventTotal()` instead, which is never lost. T0-
 | R20-DUAL-EV-WALKGUARD | dual-start-swapneg: LEFT GUARD_EV_ON_SWAP, RIGHT NO_GUARD_EV. dual-start: BOTH NO_GUARD_EV | each swapped LEFT walk: ≥ 1 EV_WALK_GUARD, each ≥ WALK_I_LIMIT_MV | none, a value under the limit; any EV_WALK_GUARD on an unswapped walk |
 | R20-DUAL-EV-HALLMISSED | dual-start-swapneg: LEFT MISSED_SUM_EQUAL. dual-start: BOTH NO_HALL_EV | EV_HALL_MISSED values sum to the LEFT missed count (lifetimes that missed one) | sum differs; any EV_HALL_MISSED or EV_HALL_ILLEGAL in dual-start |
 | R20-DUAL-EV-HALLILL | dual-start-nowalk: RIGHT ILLEGAL_SUM_EQUAL, LEFT NO_ILLEGAL_EV | EV_HALL_ILLEGAL values sum to the RIGHT illegal count (lifetimes with one) | sum differs; any LEFT EV_HALL_ILLEGAL |
-| R20-PACK-EV | dual-start | PACK_UNPLUG_EV: NOT_BUILT (BM-NOTBUILT study R20.4, why PART_NOT_BUILT) | PACK_STEADY_NO_EV: an EV_PACK while the pack stands; NOMEAS while `getPackVoltage()` reads PACK_NOT_FITTED |
+| R20-PACK-EV | dual-start (steady half); the unplug half moved to the `dual-pack` tier (R20.4, «#3611») | PACK_UNPLUG_EV: in `dual-pack` | PACK_STEADY_NO_EV: an EV_PACK while the pack stands; NOMEAS while `getPackVoltage()` reads PACK_NOT_FITTED |
 | R20-FLOOR-SR-BLOCKED | — | left for the floor tier, not built | dual-d's BLOCK drain prints the BLOCKED step's EV_STOP values as BM-EV should it ever block wheels-up |
 
 **START lifetimes (item 3).** `dual-start-phaseneg` now runs 12 lifetimes in four blocks of three (U, V, W):

@@ -1026,8 +1026,9 @@ PUB testSetWindingProbe(bEnable) : eError
 PUB testGetWinding(ePair) : eState, nMilliOhms, nNetMv
 '' TEST USE: one winding pair's reading from the last start that measured the windings (R19.4 1e)
 ''
-'' The resistance is d^2 x V / I_dc, with V the nominal drive voltage (getDriveVoltage()), not a measurement: a pack
-'' below nominal reads proportionally low.
+'' The resistance is d^2 x V / I_dc. V is the pack voltage the pack sensor read at that start when it is fitted and read
+'' a pack, else the nominal drive voltage (getDriveVoltage()), with which a pack below nominal reads proportionally low.
+'' testGetWindingVoltage() says which V it was (R20.4).
 ''
 '' @param ePair - 0 for U->V, 1 for V->W, 2 for W->U
 '' @returns eState - WND_NOT_RUN, WND_MEASURED, WND_NOT_VISIBLE, WND_TRIPPED or WND_UNSETTLED (WND_NOT_RUN for a pair out of range)
@@ -1042,6 +1043,16 @@ PUB testGetWinding(ePair) : eState, nMilliOhms, nNetMv
         nNetMv := windNetMv[ePair]
         if eState == WND_MEASURED
             nMilliOhms := windMohm[ePair]
+
+PUB testGetWindingVoltage() : ePackStatus, nMilliVolts
+'' TEST USE: the drive voltage the last winding check computed its resistances with, and where it came from (R20.4)
+''
+'' @returns ePackStatus - PACK_PRESENT: the pack sensor's reading at that start; PACK_ABSENT (fitted, but it read no pack)
+''   or PACK_NOT_FITTED (not fitted, or not readable by this instance): the nominal drive voltage was used
+'' @returns nMilliVolts - that voltage, mV; 0 (with PACK_NOT_FITTED) before a start has measured the windings
+
+    ePackStatus := windVoltSrc
+    nMilliVolts := windVoltMv
 
 PUB testSetHallSwap(eSwap) : eError
 '' TEST USE: have the driver read two hall inputs as swapped from the next start(), as a mis-wired hall pair would -- a
@@ -1450,22 +1461,19 @@ PUB startPackSense() | nPin
 '' INTERNAL USE: calibrate and start reading the pack voltage sensor, when user.PACK_SENSOR_FITTED (R19.5); ~2 ms
 ''
 '' start()/startEx() call this themselves; isp_steering_2wheel calls it on its left wheel only, since a robot has one
-'' pack. The pin is refused (not read, with a warning) when it lies inside this motor's own pin group. Adds HLT_PACK
-'' to getHealth(): it fails when the sensor reads no pack.
+'' pack. The pin is refused (not read, with a warning) when it lies inside this motor's own pin group or one another
+'' started motor holds (R20.4: before, only its own). Adds HLT_PACK to getHealth(): it fails when the sensor reads no
+'' pack.
 
 ' Local Variables:
 ' @local nPin - user.PACK_SENSE_PIN
 
     nPin := user.PACK_SENSE_PIN
     if user.PACK_SENSOR_FITTED <> FALSE
-        if (nPin < 0) or (nPin > 63) or ((nPin >= pinbase) and (nPin < pinbase + 16))
+        if bPackPinUsable() == FALSE
             debug[user.DBGCH_WARNING]("! WARNING: PACK_SENSE_PIN ", sdec_long(nPin), " is not a free pin, the pack sensor is not read")
         else
-            pinstart(nPin, P_ADC | P_ADC_GIO, PACK_ADC_X, 0)                      ' P2AN001: GIO, VIO, then the pin, one path
-            packGioRaw := packRead(nPin)
-            wrpin(nPin, P_ADC | P_ADC_VIO)
-            packVioRaw := packRead(nPin)
-            wrpin(nPin, P_ADC | P_ADC_1X)
+            packCalibrate(nPin)
             packAvgMv := packMvFromRaw(packRead(nPin)) << PACK_AVG_SHIFT
             evLastPack := packStatusFor(packAvgMv >> PACK_AVG_SHIFT)            ' R20.1: EV_PACK reports changes from this, set before the front cog reads it
             bPackOwned := TRUE
@@ -1495,6 +1503,28 @@ PUB getPackVoltage() : ePackStatus, nMilliVolts
         ePackStatus := packStatusFor(nMilliVolts)
         if ePackStatus <> PACK_PRESENT
             nMilliVolts := 0
+
+PUB testGetPackRaw() : nPinMv, nUncalMv, nGioRaw, nVioRaw | nRaw
+'' TEST USE: the readings under getPackVoltage(), for the sensor's one-time calibration (R20.4)
+''
+'' Unlike getPackVoltage(), these are raw and ungated: they read whatever the pin holds, a pack or not.
+''
+'' @returns nPinMv - the pin's own voltage now, before the divider, mV: ONE SINC2 sample, ratiometric (0 unless read)
+'' @returns nUncalMv - getPackVoltage()'s average WITHOUT user.PACK_SENSE_CAL_PERMILLE, mV: the reading the meter's is
+''   divided by, CAL_PERMILLE = 1000 x meter / nUncalMv (0 unless read)
+'' @returns nGioRaw - the ADC's GIO reading, taken when the sensor was started (0 unless read)
+'' @returns nVioRaw - its VIO reading, likewise
+
+' Local Variables:
+' @local nRaw - the pin's latest SINC2 sample
+
+    nPinMv := nUncalMv := nGioRaw := nVioRaw := 0
+    if (bPackOwned == TRUE) and (packVioRaw > packGioRaw)
+        nRaw := rdpin(user.PACK_SENSE_PIN)
+        nPinMv := muldiv64(nRaw - packGioRaw, PACK_FULL_SCALE_MV, packVioRaw - packGioRaw) #> 0
+        nUncalMv := muldiv64(packAvgMv >> PACK_AVG_SHIFT, 1000, user.PACK_SENSE_CAL_PERMILLE #> 1)
+        nGioRaw := packGioRaw
+        nVioRaw := packVioRaw
 
 PUB getHealth() : nChecked, nFailed, nRecovered
 '' Return what start() checked with the motor at rest, which checks failed, and which failed at first and then passed: HLT_* bits
@@ -1557,7 +1587,7 @@ PUB getDriveVoltage() : eVoltage, nMilliVolts
 '' Return the drive (battery) voltage this motor was started for, and its nominal value
 ''
 '' This is the PWR_* value given to start() -- the demos pass the user configuration's DRIVE_VOLTAGE -- not a
-'' measurement: this object does not measure the supply.
+'' measurement. The optional pack sensor measures the supply: see getPackVoltage().
 ''
 '' @returns eVoltage - the PWR_* value in effect; PWR_Unknown, with ERR_NOT_STARTED recorded for getError(), before the first start()
 '' @returns nMilliVolts - the nominal voltage of {eVoltage} in mV (e.g. 18_500 for PWR_18p5V); 0 before the first start()
@@ -3152,7 +3182,8 @@ PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTake
 ' writer. Each pair: the return phase's low side on, then the driven phase at nLevel. Readings are taken only after
 ' WIND_SETTLE_MS and once the halls have held still for WIND_STILL_MS, since a turning rotor's back-EMF biases the
 ' current; a hall change discards them and starts again. The pair ends at once if the net DC-link reading passes
-' WIND_I_LIMIT_MA. R = d^2 x V / I_dc = (nLevel / F)^2 x V x rSense / net.
+' WIND_I_LIMIT_MA. R = d^2 x V / I_dc = (nLevel / F)^2 x V x rSense / net. V is windVoltage()'s, read before the first
+' pair and kept for testGetWindingVoltage() (R20.4): the measured pack when the sensor reads one, else the nominal.
 '
 ' @local ePair - 0..2: U->V, V->W, W->U
 ' @local eFrom - the driven phase, PRB_*
@@ -3165,11 +3196,12 @@ PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTake
 ' @local nStill - ms the halls have held one position
 ' @local nPos - the hall position they held
 ' @local bTripped - T/F where T means the pair passed WIND_I_LIMIT_MA
-' @local nVoltMv - the nominal drive voltage, mV
+' @local nVoltMv - the drive voltage R is computed with, mV (windVoltage())
 ' @local nLimitMv - WIND_I_LIMIT_MA on this board's sense scale, mV
 ' @local nMinMv - WIND_MIN_VISIBLE_MA on this board's sense scale, mV
 
-    _, nVoltMv := getDriveVoltage()
+    windVoltSrc, nVoltMv := windVoltage()                                       ' R20.4: at rest, before any pair is driven
+    windVoltMv := nVoltMv
     nLevel := muldiv64(frame_cnt / 2, WIND_DUTY_PCT, 100)
     nLimitMv := 0
     nMinMv := 0
@@ -3227,7 +3259,7 @@ PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTake
                 windMohm[ePair] := muldiv64(nVoltMv * rSenseForBoard, nLevel * nLevel, (frame_cnt / 2) * (frame_cnt / 2)) / windNetMv[ePair]
                 windState[ePair] := WND_MEASURED
             waitms(PROBE_SETTLE_MS)                                             ' the winding's current decays before the next pair
-    debug[user.DBGCH_LIFECYCLE]("* winding check ", sdec_long_array(@windState, 3), sdec_long_array(@windMohm, 3), sdec_long_array(@windNetMv, 3))
+    debug[user.DBGCH_LIFECYCLE]("* winding check ", sdec_long_array(@windState, 3), sdec_long_array(@windMohm, 3), sdec_long_array(@windNetMv, 3), sdec_long(windVoltSrc), sdec_long(windVoltMv))
 
 PRI frontLatchStop(eKind)
 ' FRONT COG ONLY: latch the stop that secures this motor, and write a zero command
@@ -3334,6 +3366,71 @@ PRI walkRecordReset() | eLeg
         wlEnd[eLeg] := WLE_NOT_RUN
         wlEndMs[eLeg] := wlEndPos[eLeg] := wlLagHeld[eLeg] := WALK_NA
         bWlRan[eLeg] := FALSE
+
+PRI bPackPinUsable() : bUsable | nPin
+' Return TRUE when this instance may read the pack sensor: user.PACK_SENSOR_FITTED, and user.PACK_SENSE_PIN is a P2 pin
+' outside this motor's own pin group AND outside every group another instance has claimed (the AE registry). R20.4:
+' both wheels of a steering object read the pin, and a motor board's pin must never be restarted as an ADC -- base+8..13
+' drive the gates -- so a pin in EITHER wheel's group is refused by both.
+'
+' @returns bUsable - T/F where F means the sensor is not fitted, or its pin is not one this instance may read
+'
+' @local nPin - user.PACK_SENSE_PIN
+
+    nPin := user.PACK_SENSE_PIN
+    bUsable := (user.PACK_SENSOR_FITTED <> FALSE) and (nPin >= 0) and (nPin <= 63) and ((nPin < pinbase) or (nPin >= pinbase + 16))
+    bUsable &= (gOwnerP0P15 == 0) or (nPin > 15)
+    bUsable &= (gOwnerP8P23 == 0) or (nPin < 8) or (nPin > 23)
+    bUsable &= (gOwnerP16P31 == 0) or (nPin < 16) or (nPin > 31)
+    bUsable &= (gOwnerP32P47 == 0) or (nPin < 32) or (nPin > 47)
+    bUsable &= (gOwnerP40P55 == 0) or (nPin < 40) or (nPin > 55)
+
+PRI packCalibrate(nPin)
+' Start the pack pin's ADC and take its GIO and VIO readings, then leave it reading the pin (P_ADC_1X): P2AN001's GIO,
+' VIO, then the pin, through one path. packMvFromRaw() converts through the two readings taken here. ~1 ms.
+'
+' @param nPin - the pack sensor pin
+
+    pinstart(nPin, P_ADC | P_ADC_GIO, PACK_ADC_X, 0)
+    packGioRaw := packRead(nPin)
+    wrpin(nPin, P_ADC | P_ADC_VIO)
+    packVioRaw := packRead(nPin)
+    wrpin(nPin, P_ADC | P_ADC_1X)
+
+PRI windVoltage() : ePackStatus, nMilliVolts | nPin, nSum
+' The drive voltage the winding check computes with (R20.4): the pack sensor's reading when the sensor is fitted, this
+' instance may read it (bPackPinUsable()) and it reads a pack now; otherwise the nominal drive voltage (getDriveVoltage()).
+'
+' THE READING IS TAKEN HERE, AVERAGED. runStartChecks() runs before startPackSense() in every start, and a steering
+' object's right wheel never reads the sensor at all, so no front-cog average exists yet. This takes its own:
+' packCalibrate(), then PACK_CHECK_READS readings PACK_CHECK_GAP_MS apart, each itself PACK_CAL_SAMPLES SINC2 samples
+' after the flush (packRead()) -- the same ~64 ms the front cog's average spans, never one sample. ~70 ms, only when
+' the winding check is armed. The pin is left reading (P_ADC_1X), not cleared: startPackSense() starts it again, and
+' another object already reading the pin keeps its reading. An instance that already reads it uses its own average.
+'
+' @returns ePackStatus - PACK_PRESENT when nMilliVolts is the pack's reading; PACK_ABSENT (fitted, read no pack) or
+'   PACK_NOT_FITTED (not fitted, or not readable here) when it is the nominal voltage
+' @returns nMilliVolts - the voltage, mV
+'
+' @local nPin - user.PACK_SENSE_PIN
+' @local nSum - the readings summed, mV; then their mean
+
+    _, nMilliVolts := getDriveVoltage()
+    ePackStatus := PACK_NOT_FITTED
+    nPin := user.PACK_SENSE_PIN
+    if bPackPinUsable() == TRUE
+        if bPackOwned == TRUE
+            nSum := packAvgMv >> PACK_AVG_SHIFT
+        else
+            packCalibrate(nPin)
+            nSum := 0
+            repeat PACK_CHECK_READS
+                waitms(PACK_CHECK_GAP_MS)
+                nSum += packMvFromRaw(packRead(nPin))
+            nSum /= PACK_CHECK_READS
+        ePackStatus := packStatusFor(nSum)
+        if ePackStatus == PACK_PRESENT
+            nMilliVolts := nSum
 
 PRI packRead(nPin) : nRaw | nSample
 ' Return the pack pin's reading in its current source, after P2AN001's flush: PACK_FLUSH_SAMPLES discarded, then
@@ -3797,6 +3894,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     windState[0] := WND_NOT_RUN                                             ' and no winding reading until a start measures one
     windState[1] := WND_NOT_RUN
     windState[2] := WND_NOT_RUN
+    windVoltMv := 0                                                         ' R20.4: nor the voltage one would use
+    windVoltSrc := PACK_NOT_FITTED
     force_seq := 0                                                          ' R19.3: the driver's force_seen starts at 0 too
     fault_clr := 0                                                          ' task 3616: and its fault_clr_seen
     healthChecked := 0
@@ -4387,7 +4486,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@protectiveCode, @holdLimitMs)                   ' R20.1: the run now ends at holdLimitMs
     bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
-    bValid &= bOutsideDriverRuns(@bWindProbe, @windNetMv[2])
+    bValid &= bOutsideDriverRuns(@bWindProbe, @windVoltSrc)                       ' R20.4: the run now ends at windVoltSrc
     bValid &= bOutsideDriverRuns(@walkWatchLeg, @bWlRan[WALK_LEGS - 1])          ' PL-137: the walk's per-leg record
     if bValid == FALSE
         debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@probe_y - @offset_fwd))
@@ -5664,7 +5763,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 24        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 25        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -5689,6 +5788,10 @@ CON { driver internal Constants }
                                             '     the event log, start() refuses a check still failing after its retries (task 3621)
                                             ' 24: PL-137 -- each wiring-walk leg keeps its own record (testGetWalkLeg()); REQ_WALK's
                                             '     arg1 names the leg, its stop is always WALK_TICKS (task 3610). No PASM change
+                                            ' 25: R20.4 -- the winding check computes with the pack sensor's own averaged reading
+                                            '     when it reads a pack, else the nominal (testGetWindingVoltage()); testGetPackRaw()
+                                            '     for the sensor's calibration; the sensor pin is refused inside ANY claimed motor
+                                            '     pin group, not only this motor's own (task 3611). No PASM change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -5805,6 +5908,10 @@ CON { driver internal Constants }
     PACK_DIVIDER_X100           = 781       ' pack = pin x 7.81: 10.0k / (68.1k + 10.0k), VOLTAGE-SENSOR.md
     PACK_ABSENT_MV              = 1_000     ' a pack under 1 V is no pack: R4 pulls an unplugged sensor to about 0 V
     PACK_AVG_SHIFT              = 6         ' the reading's average over about 64 front passes (64 ms)
+    ' R20.4 (task 3611): the winding check's own pack reading (windVoltage()), taken before any front-cog average exists:
+    '  this many packRead()s this far apart, the same ~64 ms the front cog's average spans
+    PACK_CHECK_READS            = 16
+    PACK_CHECK_GAP_MS           = 4
     PERMILLE_FULL               = 1000      ' D-6: a fraction of the commanded rate, in thousandths
 
     ' S-2 (same design, section 3.4): phase-current limits from the MOSFET both board revisions use, MCAC85N06Y
@@ -6007,6 +6114,8 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    windState[3]                ' R19.4 1e: WND_* per pair U->V, V->W, W->U, from the last start that measured them
     LONG    windMohm[3]                 ' R19.4 1e: each WND_MEASURED pair's resistance, milliohms
     LONG    windNetMv[3]                ' R19.4 1e: each pair's averaged DC-link reading over the rest zero, mV
+    LONG    windVoltMv                  ' R20.4: the drive voltage those resistances were computed with, mV; 0 until measured
+    LONG    windVoltSrc                 ' R20.4: where it came from: PACK_PRESENT (the sensor), else PACK_ABSENT / PACK_NOT_FITTED (nominal)
     LONG    bPackOwned                  ' R19.5: T/F where T means this instance reads the pack sensor (startPackSense())
     LONG    packGioRaw                  ' R19.5: the pin's GIO reading, taken at start
     LONG    packVioRaw                  ' R19.5: the pin's VIO reading, taken at start
