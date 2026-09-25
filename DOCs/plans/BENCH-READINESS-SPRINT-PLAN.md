@@ -2820,7 +2820,9 @@ don't have to wait"* (doctrine overlay P12). So every mechanism below is **built
   moves the rotor to each pair's alignment. The negative is a withheld phase, whose two pairs read NOT_VISIBLE. It
   replaces B-4's `NOT_BUILT` / `REPLACED_BY_X2`, since X-2 cannot see a short's current (PL-118). Parameters for the
   bench to size: `WIND_DUTY_PCT`, `WIND_SETTLE_MS`, `WIND_I_LIMIT_MA`.
-- **Questions for him once Visit 10 has measured** (each with its measure of benefit, P5):
+- **Questions for him once Visit 10 has measured** — **all answered 2026-09-25; the rulings are in R20 below**
+  (graded default once the right wheel certifies; public setters; `getStopReason()` in place of a `getError()` code). The
+  questions as first posed (each with its measure of benefit, P5):
   1. Should FR_GRADED become the default?
   2. Should the hold's limits and the fault response become public setters rather than TEST-USE?
   3. A motor that re-synced and stopped is not FAULTED, so today only `getFaultCause()` records that it happened.
