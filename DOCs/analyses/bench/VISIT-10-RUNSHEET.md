@@ -27,7 +27,7 @@ at the bench must show **57fe70a** or later.
 
 | Load | Every banner / build record must read |
 |---|---|
-| every `dual-*` tier | `BM-BANNER,...,src_rev,47,fmt,31` and `BM-BUILD ... drv_rev,24`. Anything lower means an old tree: stop and report |
+| every `dual-*` tier | `BM-BANNER,...,src_rev,47,fmt,31` with `BM-BUILD ... drv_rev,24` (pulled at 57fe70a), **or** `src_rev,48,fmt,32` with `drv_rev,25` (pulled at 24d2cb9 or later: adds the pack tier, and with no sensor fitted runs the same path). Anything lower means an old tree: stop and report |
 | `dual-fault-rightfirst` | part `FRESP`; `BM-FRDIAG ... right_first,TRUE,pf_tries,3,pf_gap_ms,1_000` |
 | `dual-start` | part `START`; `BM-SKBUILD ... walks,10,no_walk,FALSE ... neg,NONE ... wd_walk_ms,4_134` |
 | `dual-start-phaseneg` | part `START`; `BM-SKBUILD` negative `PHASE`; 12 lifetimes |
