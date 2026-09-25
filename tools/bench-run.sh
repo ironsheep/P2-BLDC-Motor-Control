@@ -130,6 +130,7 @@ Usage:  tools/bench-run.sh <tier>
                    dual-clock-300 motion harness clock load at 300 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-b         motion harness part B: PREFLT, FAULTB, OVERSHT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-fault     motion harness part FAULTRESP: PREFLT, FLTRESP, FLTPLAT -- the fault study's X-cells, faults forced at speed  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-fault-rightfirst  as dual-fault with the RIGHT wheel's own trials run before the LEFT's (PL-120's order test)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-start     motion harness part START: SKCHECK -- 10 starts through the steering object reading every start check; the last 3 call checkWiring() (the platform turns a few degrees in place)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-start-nowalk  as dual-start without checkWiring(): nothing is commanded -- the load for B-1 (one wheel's hall connector unplugged)  [WHEELS UP, ATTENDED WIRING CHANGE]
                    dual-start-phaseneg  as dual-start-nowalk, with one LEFT phase withheld from each start's lead check in firmware (B-3's negative): nothing is commanded  [WHEELS UP, UNATTENDED]
@@ -207,7 +208,7 @@ case "$TIER" in
     #  under a hand, not library chatter.
     t0-stopmode)    BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPMODE)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP -- ATTENDED stop-state hand test on the RIGHT wheel, 8 rows: click the t0stop window first; nothing happens until you click START ROW. Each row's panel says what to do and what you should feel BEFORE it runs. Every hand row WAITS FOR YOU after START ROW: nothing is timed until you touch the wheel. Rows 1-3 (the hold): push the wheel off where it stopped and hold it. Rows 4, 5 and 8: spin the wheel briskly and let go -- the row ends itself once the wheel is at rest. ROWS 6 AND 7 SPIN THE WHEEL UNDER POWER AND FAULT IT ON PURPOSE: hands off, ABORT stops a powered row. Buttons: START ROW, DONE, ABORT (keys S, D, SPACE do the same)"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP -- ATTENDED stop-state hand test on the RIGHT wheel, 8 rows: click the t0stop window first; nothing happens until you click START ROW. Each row's panel says what to do and what you should feel BEFORE it runs. Every hand row WAITS FOR YOU after START ROW: nothing is timed until you touch the wheel. Rows 1-3 (the hold): push the wheel off where it stopped and hold it. Rows 4, 5 and 8: spin the wheel briskly and let go -- the row ends itself once the wheel is at rest. ROWS 6 AND 7 SPIN THE WHEEL UNDER POWER AND FAULT IT ON PURPOSE: hands off, ABORT stops a powered row. THREE PANEL TESTS, each asked on its own screen: row 1 first asks you to click a grey box, row 4 asks for one REDO ROW, row 6 asks you to click ABORT as it spins up and then REDO ROW. Buttons only: START ROW, DONE, ABORT, NEXT ROW, REDO ROW (Enter = the right button, Esc = the left)"
                     ;;
     # t0-stopmode-fltfirst (task 3607, PL-116's discriminator) -- the same tier with the two powered fault rows
     #  run BEFORE the e-stop row. After Visit 6a both powered rows latched ERR_PLATFORM_BLOCKED on a lifted wheel
@@ -298,10 +299,20 @@ case "$TIER" in
     # dual-fault (task 3613, plan R19.7; DOCs/analyses/FAULT-STRATA-STUDY-2026-09-23.md sec 7) -- the fault responses.
     #  Every fault is FORCED through testForceFault() (DRIVER_REV 12), taken at the driver's own fault test: the old
     #  offset-shift provocation plugged the motor more often than it faulted it (PL-119). Each trial runs in its own
-    #  driver lifetime; a forced fault that does not latch within 8 ms stops the wheel at once.
+    #  driver lifetime; a forced fault that does not latch within 8 ms stops the wheel at once. PL-120 (src_rev 44): a
+    #  trial whose wheel shows no hall tick 150 ms into its drive dumps that driver's runs, and after the first trial
+    #  that never reaches speed the harness retries that wheel on its own (the recovery probe) before going on.
     dual-fault)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_FAULTRESP)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part FAULTRESP (PREFLT, FLTRESP, FLTPLAT): FAULTS ARE FORCED ON PURPOSE AT SPEED (testForceFault(), DRIVER_REV 12), one wheel at a time at 40, 80 and 120 x 10^6 (up to about 220 rpm commanded), and each wheel stops per the response under test -- a phase short that STOPS IT DEAD, a free coast, a re-synced ramp down, or a graded short at 10, 25, 50 and 100 % entered by a second forced fault on that ramp; then, through the steering object at power 50, one wheel is faulted and the other must stop. The 10 A abort and the fold-back limiter both apply. Run cap 15 minutes, expected about 6"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part FAULTRESP (PREFLT, FLTRESP, FLTPLAT): FAULTS ARE FORCED ON PURPOSE AT SPEED (testForceFault(), DRIVER_REV 12), one wheel at a time at 40, 80 and 120 x 10^6 (up to about 220 rpm commanded), and each wheel stops per the response under test -- a phase short that STOPS IT DEAD, a free coast, a re-synced ramp down, or a graded short at 10, 25, 50 and 100 % entered by a second forced fault on that ramp; then, through the steering object at power 50, one wheel is faulted and the other must stop. IF A WHEEL STOPS DRIVING (PL-120), the run pauses its trials to retry that wheel alone, up to 6 times, one every 20 s, each a 2 s drive at 40 x 10^6: that wheel may start turning again during the pause, and the pause adds at most about 2 minutes, once per run. The 10 A abort and the fold-back limiter both apply. Run cap 15 minutes, expected about 6 (about 8 with the retry)"
+                    ;;
+    # dual-fault-rightfirst (PL-120, src_rev 44) -- the same part built with -D FRESP_RIGHT_FIRST: the RIGHT wheel's own
+    #  FLTRESP trials run before the LEFT's; PREFLT, FLTPLAT and everything else are identical. At 2026-09-24 21:21 the
+    #  right stopped driving after the left's trials had run; this order decides whether they are its precondition.
+    dual-fault-rightfirst)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_FAULTRESP -D FRESP_RIGHT_FIRST)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part FAULTRESP (PREFLT, FLTRESP, FLTPLAT) with the RIGHT WHEEL'S TRIALS FIRST, then the left's: FAULTS ARE FORCED ON PURPOSE AT SPEED (testForceFault()), one wheel at a time at 40, 80 and 120 x 10^6 (up to about 220 rpm commanded), and each wheel stops per the response under test -- a phase short that STOPS IT DEAD, a free coast, a re-synced ramp down, or a graded short at 10, 25, 50 and 100 % entered by a second forced fault on that ramp; then, through the steering object at power 50, one wheel is faulted and the other must stop. IF A WHEEL STOPS DRIVING (PL-120), the run pauses its trials to retry that wheel alone, up to 6 times, one every 20 s, each a 2 s drive at 40 x 10^6: that wheel may start turning again during the pause, and the pause adds at most about 2 minutes, once per run. The 10 A abort and the fold-back limiter both apply. Run cap 15 minutes, expected about 6 (about 8 with the retry)"
                     ;;
     # dual-start (task 3613, plan R19.7; DOCs/analyses/STARTUP-SELFTEST-STUDY-2026-09-23.md sec 6) -- the start checks.
     #  Ten steering lifetimes read what start() judged (getHealth(), the lead probe, the pack sensor) and a floated

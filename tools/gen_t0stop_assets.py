@@ -22,6 +22,14 @@ THE SCREEN TABLE IS THE CONTRACT. For each row and phase, SCREENS below names th
 two reading labels and the two buttons. The harness reads the same table (printed as DAT t0sScreenTab),
 and --storyboard renders it. So the screens reviewed at the desk are the screens the harness draws.
 
+THE PANEL TESTS (PL-131, PL-135). Three deliberate acts make the interaction's negatives able to fail:
+a click on no button (UI-MISS), a REDO (UI-REDO) and an ABORT on a powered row (UI-ABORT). Asked for
+only in card text, none was made. So each is now REQUIRED on the first run of its row, by a screen of
+its own that draws only the control that performs it, with a PANEL TEST line saying what to do and why.
+PANEL_TESTS below names them. They are printed as DAT t0sTestTab, keyed by (row, phase), and the
+harness shows a row's test screen in place of the normal one on that row's first run. A test only takes
+controls away (checked below), so a later run is the normal row, unchanged.
+
 DEBUG LAYER requires 24-bit uncompressed (BI_RGB) BMP with no alpha, which is exactly what Pillow
 writes for an "RGB" image saved as .bmp. Sprite cells are OPAQUE, so every cell carries the colour of
 the region it lands on.
@@ -69,6 +77,8 @@ BANNERS = [
     ("B_RESULT", "RESULT  --  READ IT, THEN CHOOSE A BUTTON", (36, 84, 150)),
     ("B_ALLDONE", "ALL ROWS DONE", (70, 76, 86)),
     ("B_NOTREADY", "THE DRIVER DID NOT START", (160, 40, 36)),
+    ("B_PANEL_MISS", "FIRST, A TEST OF THE PANEL  --  CLICK THE GREY BOX", (70, 76, 86)),
+    ("B_RESULT_REDO", "RESULT  --  READ IT, THEN CLICK REDO ROW", (36, 84, 150)),
 ]
 
 # Status phrases shown under SEEN NOW (layer 6). Each is (id, text, kind): kind picks the ink --
@@ -115,6 +125,8 @@ STATUSES = [
     ("ST_NM_10A", "STOPPED AT THE 10 A LIMIT  --  NOT MEASURED", "warn"),
     ("ST_CELLS_LOGGED", "THE CELLS ARE IN THE LOG", "good"),
     ("ST_NOT_READY", "THE DRIVER DID NOT START  --  NOTHING RAN", "warn"),
+    ("ST_WAIT_MISS", "WAITING FOR YOUR CLICK ON THE GREY BOX", "wait"),
+    ("ST_MISS_GOT", "IT HIT NO BUTTON  --  GOT IT, NOW CLICK START ROW", "good"),
 ]
 
 # Reading labels (layer 7).
@@ -129,7 +141,11 @@ LABELS = [
     ("L_TICKS", "HALL TICKS"),
     ("L_BAND_TICKS", "BAND TICKS"),
     ("L_BAND_MS", "BAND MS"),
+    ("L_MISS_BOX", "GREY BOX  --  NOT A BUTTON"),     # drawn as a grey box: row 1's panel test clicks it
 ]
+# The grey box is reading label 1's slot, and fills it: the harness hit-tests exactly this rectangle.
+# It is well clear of the button row, so a click on it can hit no button.
+BOX_X, BOX_Y, BOX_W, BOX_H = LBL_X, READ1_Y, LBL_W, LBL_H
 
 # Buttons (layer 8). Each is (id, title, key, slot): the forward action is always RIGHT, the other LEFT.
 BUTTONS = [
@@ -158,7 +174,7 @@ SPIN_ENDS = "When it has stopped, click DONE. Too slow? Spin it again, as often 
 ROWS = [
     dict(id="HOLDRISE", name="HOLD-RISE", kind="hold", setup="ST_ARM_HOLD",
          intro=("The driver holds the stopped wheel in place. You check the hold gets stronger when you push.",
-                "First click once on the empty panel left of START ROW. Then push the wheel and keep pushing.",
+                "Push the right wheel firmly by hand and keep pushing.",
                 "The resistance grows while you hold the wheel off its place, until it matches your push."),
          act=("The hold is ON.",
               "Push the right wheel firmly by hand and keep pushing.",
@@ -197,7 +213,7 @@ ROWS = [
               "Spin the right wheel hard by hand and let go. Hands off after.",
               "It spins freely and coasts to a stop.",
               SPIN_ENDS),
-         expect="A coast: 7 or more ticks to rest. Then click REDO ROW once, and spin it again.",
+         expect="A coast: 7 or more ticks from the measuring speed to rest.",
          act_lbl=("L_SPEED", "L_TICKS"), res_lbl=("L_BAND_TICKS", "L_BAND_MS"),
          walk=["ST_WAIT_SPIN", "ST_SPIN_FAST", "ST_SLOWING", "ST_STOP_GOT"]),
     dict(id="ESTOP", name="E-STOP AS IT COASTS", kind="spin", setup="ST_SET_COAST",
@@ -213,10 +229,10 @@ ROWS = [
          walk=["ST_WAIT_SPIN", "ST_SPIN_FAST", "ST_ESTOP_ON", "ST_STOP_GOT"]),
     dict(id="FLTCOAST", name="FAULT, COAST MODE", kind="power", setup="ST_PREP_FAULT",
          intro=("The program spins the right wheel under power, then faults it on purpose, in coast mode.",
-                "Hands off. First run: click ABORT as it spins up. Then click REDO ROW and let it run.",
+                "Hands off. The first run tests the panel: click ABORT as it spins up, then REDO ROW.",
                 "After the fault it coasts to a stop."),
          act=("Driving the right wheel, then faulting it on purpose.",
-              "Hands off. First run: click ABORT now. After REDO ROW: watch the wheel.",
+              "Hands off. Watch the wheel.",
               "After the fault it coasts to a stop.",
               "By itself, when the wheel stops. ABORT stops the wheel now."),
          expect="A coast: 7 or more ticks from the measuring speed, and the driver still faulted.",
@@ -247,11 +263,41 @@ ROWS = [
 ]
 assert len(ROWS) == ROW_COUNT
 
-# Cards (layer 4): three per row, in row order -- INTRO, ACT, RESULT -- then the two whole-test cards.
+# The panel tests (PL-135), each shown on the first run of its row in place of that (row, phase)'s
+# normal screen. act is the one control drawn: "BOX" the grey box (no button at all; the harness moves
+# on only when a click lands on it, so a key cannot do it), or the left button that performs the act.
+# The right slot is always empty, so Enter does nothing on these screens. banner None keeps the phase's
+# own banner (the powered row's red HANDS OFF stays). card is the screen's own card.
+PANEL_TESTS = [
+    dict(row="HOLDRISE", phase="PH_INTRO", act="BOX", banner="B_PANEL_MISS",
+         card=[("PANEL TEST", "A test of the panel: click the grey box once. It is not a button, so the "
+                              "log must show your click as a miss."),
+               ("YOU WILL SEE", "START ROW appears, with this row's plan. Nothing moves until you click it."),
+               ("KEYS", "A key does not count here. It must be a click on the grey box.")]),
+    dict(row="COAST", phase="PH_RESULT", act="BT_REDO", banner="B_RESULT_REDO",
+         card=[("EXPECTED", "A coast: 7 or more ticks from the measuring speed to rest."),
+               ("PANEL TEST", "A test of the panel: click REDO ROW once, then spin the wheel again. It shows "
+                              "a row can be run twice."),
+               ("THEN", "The second run's result has NEXT ROW.")]),
+    dict(row="FLTCOAST", phase="PH_ACT", act="BT_ABORT", banner=None,
+         card=[("NOW", "Driving the right wheel, then faulting it on purpose."),
+               ("PANEL TEST", "A test of the panel: click ABORT now, as it spins up. It shows ABORT stops "
+                              "the wheel at once."),
+               ("FEEL", "Hands off. It coasts to a stop after you click ABORT."),
+               ("ENDS", "When you click ABORT. If you do not, by itself when the wheel stops.")]),
+    dict(row="FLTCOAST", phase="PH_RESULT", act="BT_REDO", banner="B_RESULT_REDO",
+         card=[("EXPECTED", "NOT MEASURED  --  YOU ABORTED IT. On this first run that is the aim."),
+               ("PANEL TEST", "A test of the panel: click REDO ROW, and let the second run end by itself."),
+               ("THEN", "The second run's result has NEXT ROW.")]),
+]
+
+# Cards (layer 4): three per row, in row order -- INTRO, ACT, RESULT -- then the two whole-test cards,
+# then one per panel test, in PANEL_TESTS order.
 CARD_INTRO, CARD_ACT, CARD_RESULT, CARDS_PER_ROW = 0, 1, 2, 3
 CARD_NOTREADY = ROW_COUNT * CARDS_PER_ROW
 CARD_ALLDONE = CARD_NOTREADY + 1
-CARD_COUNT = CARD_ALLDONE + 1
+CARD_TEST0 = CARD_ALLDONE + 1
+CARD_COUNT = CARD_TEST0 + len(PANEL_TESTS)
 
 
 def cards():
@@ -274,6 +320,8 @@ def cards():
                 ("YOU", "Nothing more at the rig. The log says why.")])
     out.append([("DONE", "All eight rows are done."),
                 ("YOU", "Nothing more at the rig. The ten cells are in the log.")])
+    for t in PANEL_TESTS:
+        out.append(t["card"])
     assert len(out) == CARD_COUNT
     return out
 
@@ -321,10 +369,51 @@ def opening_status(row_idx, phase):
     return STAT["ST_BLANK"]
 
 
+ROW_IDX = {r["id"]: i for i, r in enumerate(ROWS)}
+
+
+def test_for(row_idx, phase):
+    """The PANEL_TESTS index for one (row, phase), or None when it has no panel test."""
+    for ti, t in enumerate(PANEL_TESTS):
+        if ROW_IDX[t["row"]] == row_idx and t["phase"] == phase:
+            return ti
+    return None
+
+
+def test_screen(ti):
+    """A panel test's screen: the normal one with every control taken away but the act's own."""
+    t = PANEL_TESTS[ti]
+    ri = ROW_IDX[t["row"]]
+    banner, _, lbl1, lbl2, _, _ = screen_for(ri, t["phase"])
+    if t["banner"] is not None:
+        banner = BAN[t["banner"]]
+    if t["act"] == "BOX":
+        lbl1, left_btn = LBL["L_MISS_BOX"], BTN["BT_NONE"]
+    else:
+        left_btn = BTN[t["act"]]
+    return banner, CARD_TEST0 + ti, lbl1, lbl2, left_btn, BTN["BT_NONE"]
+
+
+def screen_any(row_idx, phase, first_run):
+    """The screen the harness shows: the panel test's on a row's first run where it has one."""
+    ti = test_for(row_idx, phase) if first_run else None
+    return screen_for(row_idx, phase) if ti is None else test_screen(ti)
+
+
 for _r in range(ROW_COUNT):                           # the slot rule, checked rather than trusted
     for _p in PHASES:
-        _, _, _, _, _l, _rt = screen_for(_r, _p)
-        assert BUTTONS[_l][3] in (None, "L") and BUTTONS[_rt][3] in (None, "R"), (_r, _p)
+        for _first in (False, True):
+            _, _, _l1, _, _l, _rt = screen_any(_r, _p, _first)
+            assert BUTTONS[_l][3] in (None, "L") and BUTTONS[_rt][3] in (None, "R"), (_r, _p)
+            if _p in ("PH_INTRO", "PH_RESULT"):       # a screen cog 0 waits on alone must offer a way on
+                assert _l != BTN["BT_NONE"] or _rt != BTN["BT_NONE"] or _l1 == LBL["L_MISS_BOX"], (_r, _p)
+for _ti, _t in enumerate(PANEL_TESTS):                # a test only takes controls away
+    assert list(PANEL_TESTS).count(_t) == 1 and _t["phase"] in PHASES and _t["phase"] != "PH_SETUP", _t
+    _ri = ROW_IDX[_t["row"]]
+    _, _, _, _, _nl, _ = screen_for(_ri, _t["phase"])
+    assert _t["act"] == "BOX" or BTN[_t["act"]] == _nl, _t
+    assert (_t["act"] == "BOX") == (_t["phase"] == "PH_INTRO"), _t   # the harness ends only the intro on the box
+    assert [test_for(_ri, _t["phase"])] == [_ti], _t
 
 # ---------------------------------------------------------------- colours ---
 C_PANEL = (28, 32, 38)
@@ -339,6 +428,7 @@ C_WARN = (250, 150, 70)
 C_FRAME = (90, 96, 106)
 C_BTN = (54, 62, 72)
 C_BTN_HI = (220, 200, 90)
+C_BOX = (150, 154, 162)                            # the panel test's grey box
 
 FONTS = [
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -485,8 +575,11 @@ def build_statuses():
 def build_labels():
     img = Image.new("RGB", (LBL_W, LBL_H * len(LABELS)), C_PANEL)
     d = ImageDraw.Draw(img)
-    for i, (_, text) in enumerate(LABELS):
-        if text:
+    for i, (lid, text) in enumerate(LABELS):
+        if lid == "L_MISS_BOX":                       # flat grey, one line, no key line: unlike any button
+            d.rectangle([0, i * LBL_H, BOX_W - 1, i * LBL_H + BOX_H - 1], fill=C_BOX, outline=C_TEXT)
+            centre(d, (0, i * LBL_H, BOX_W, BOX_H), text, fit(d, text, 14, BOX_W - 16), (20, 20, 20))
+        elif text:
             left(d, (0, i * LBL_H, LBL_W, LBL_H), text, fit(d, text, 16, LBL_W - 8), C_DIM)
     return img
 
@@ -553,7 +646,10 @@ def con_block():
            ("T0S_CARD_ALLDONE", CARD_ALLDONE), ("T0S_NAME_ALLDONE", ROW_COUNT),
            ("T0S_NAME_NOTREADY", ROW_COUNT + 1),
            ("T0S_SCREEN_BYTES", 7), ("T0S_SCR_BANNER", 0), ("T0S_SCR_CARD", 1), ("T0S_SCR_LBL1", 2),
-           ("T0S_SCR_LBL2", 3), ("T0S_SCR_BTN_L", 4), ("T0S_SCR_BTN_R", 5), ("T0S_SCR_STATUS", 6)]
+           ("T0S_SCR_LBL2", 3), ("T0S_SCR_BTN_L", 4), ("T0S_SCR_BTN_R", 5), ("T0S_SCR_STATUS", 6),
+           ("T0S_BOX_X", BOX_X), ("T0S_BOX_Y", BOX_Y), ("T0S_BOX_W", BOX_W), ("T0S_BOX_H", BOX_H),
+           ("T0S_TEST_COUNT", len(PANEL_TESTS)), ("T0S_TEST_BYTES", 9), ("T0S_TEST_ROW", 0),
+           ("T0S_TEST_PHASE", 1), ("T0S_TEST_SCREEN", 2)]
     lines += ["    %-24s = %d" % (n, v) for n, v in geo]
     # The row ids: the harness defines its T0_24_ROW_* from these, so the table's row order and the
     # harness's ids cannot drift apart.
@@ -576,6 +672,14 @@ def dat_block():
         for p in PHASES:
             vals = screen_for(ri, p) + (opening_status(ri, p),)
             lines.append("    BYTE    %s   ' %s %s" % (", ".join("%2d" % v for v in vals), r["id"], p))
+    lines += ["", "' The panel tests (PL-135): T0S_TEST_COUNT entries of T0S_TEST_BYTES bytes -- the row and phase",
+              "' (T0S_TEST_ROW, T0S_TEST_PHASE), then a screen entry laid out as above (from T0S_TEST_SCREEN).",
+              "' A row's first run shows this screen in place of its (row, phase) entry in t0sScreenTab.",
+              "t0sTestTab"]
+    for ti, t in enumerate(PANEL_TESTS):
+        ri = ROW_IDX[t["row"]]
+        vals = (ri, PH[t["phase"]]) + test_screen(ti) + (opening_status(ri, t["phase"]),)
+        lines.append("    BYTE    %s   ' %s %s panel test" % (", ".join("%2d" % v for v in vals), t["row"], t["phase"]))
     return "\n".join(lines)
 
 
@@ -616,16 +720,31 @@ def storyboard(out_dir, layers):
     for ri in range(ROW_COUNT):
         seq = ri + 1
         r = ROWS[ri]
-        steps = [("PH_INTRO", "ST_WAIT_START"), ("PH_SETUP", r["setup"])]
-        steps += [("PH_ACT", s) for s in r["walk"]]
-        steps += [("PH_RESULT", "ST_MEASURED")]
-        for p, st in steps:
-            ban, card, l1, l2, bl, br = screen_for(ri, p)
-            v1 = SAMPLE_READINGS.get(lbl_name[l1]) if p in ("PH_ACT", "PH_RESULT") else None
-            v2 = SAMPLE_READINGS.get(lbl_name[l2]) if p in ("PH_ACT", "PH_RESULT") else None
+        # (phase, status, first run): the harness's own sequence (t0sRunRow()), panel tests included
+        if test_for(ri, "PH_INTRO") is not None:      # the grey box first, then the normal intro
+            steps = [("PH_INTRO", "ST_WAIT_MISS", True), ("PH_INTRO", "ST_MISS_GOT", False)]
+        else:
+            steps = [("PH_INTRO", "ST_WAIT_START", False)]
+        runs = [True]
+        if test_for(ri, "PH_RESULT") is not None:     # a first RESULT with REDO ROW only: the row runs twice
+            runs.append(False)
+        for first in runs:
+            steps.append(("PH_SETUP", r["setup"], first))
+            act_ti = test_for(ri, "PH_ACT") if first else None
+            if act_ti is not None and PANEL_TESTS[act_ti]["act"] == "BT_ABORT":   # the ABORT ends the ACT
+                steps += [("PH_ACT", r["walk"][0], True), ("PH_RESULT", "ST_NM_ABORTED", True)]
+            else:
+                steps += [("PH_ACT", s, first) for s in r["walk"]]
+                steps.append(("PH_RESULT", "ST_MEASURED", first))
+        for p, st, first in steps:
+            ban, card, l1, l2, bl, br = screen_any(ri, p, first)
+            shown = p in ("PH_ACT", "PH_RESULT") and not st.startswith("ST_NM")
+            v1 = SAMPLE_READINGS.get(lbl_name[l1]) if shown else None
+            v2 = SAMPLE_READINGS.get(lbl_name[l2]) if shown else None
             img = compose(layers, ri, seq, ban, card, STAT[st], l1, l2, v1, v2, bl, br)
             n += 1
-            img.save(os.path.join(out_dir, "%02d_row%d_%s_%s.png" % (n, seq, p[3:].lower(), st[3:].lower())))
+            tag = "_test" if (first and test_for(ri, p) is not None) else ""
+            img.save(os.path.join(out_dir, "%02d_row%d_%s_%s%s.png" % (n, seq, p[3:].lower(), st[3:].lower(), tag)))
     img = compose(layers, ROW_COUNT, 0, BAN["B_ALLDONE"], CARD_ALLDONE, STAT["ST_CELLS_LOGGED"],
                   LBL["L_BLANK"], LBL["L_BLANK"], None, None, BTN["BT_NONE"], BTN["BT_NONE"])
     n += 1

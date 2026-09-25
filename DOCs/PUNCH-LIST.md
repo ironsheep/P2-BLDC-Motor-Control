@@ -3850,7 +3850,30 @@ follows the left wheel's trials, on the standalone right-wheel path. The shared 
 reading**. No dump fell in a failing lifetime. **Built:** `test_bench_dual` src_rev 41 dumps the wheel's driver runs at
 any FLTRESP timeout (`BM-ABI* where,TIMEOUT`), so the next recurrence is captured while it fails.
 
-**Owner:** «#3613». Nothing that drives the right wheel can certify anything until this clears.
+**2026-09-24 21:21, Visit 10 `dual-fault` at 62366a5 -- RECURRED, AND THE DUMP LANDED**
+([evaluation](analyses/bench/2026-09-25/VISIT-10-DUALFAULT-T0-EVALUATION.md) §4).
+- **MEASURED:** the right drove its own trials 13–16 (40 and 80 × 10⁶, two full shorts from speed). From trial 17
+  (21:24:33, its first 120 × 10⁶ start) it produced no motion in 8 fresh driver lifetimes.
+  - Trial 17's phase reading rose to 2_194 mV as the drive started, then drained to 18 mV within about 200 ms while
+    duty rose to 5_101. The DC-link current stayed at 0–9 mV throughout.
+  - Trials 18–24 read 30–50 mV from their first frame (`BM-TS ... ph`).
+  - The protective stop latched about 1 s into each: the TIMEOUT dump reads `drv_state,7`, `e_stop,-1`, `pos,0`,
+    `lag_held,1_852`.
+  - The closing platform trial (steering) at 21:26 shows the right at 14 ticks/s against the left's 217.
+- **Then at 21:29, in a fresh program load (`t0-stopmode`), the right drove normally**, powered rows included.
+- **CLEARED:**
+  - *Orphan cogs:* every lifetime's driver took cog 3 and its front cog took cog 4 (`Cog3/Cog4 INIT`). A leftover cog
+    would have pushed them to 5 and 6.
+  - *The LA marker pins:* every use is inside a `{ ... '}` comment block (no symbol in the compiler listing).
+  - *Board detection leaving a pin driven:* `pinfloat()` always follows `pinhigh()` after 1 ms.
+  - *A supply loss:* ruled out by Stephen's rig fact (one distribution).
+- So the failing state survives driver restarts within one program and is gone after a reload. **Undetermined**
+  whether time or the reload clears it.
+- **NEXT (built for the next pass):**
+  - A dump at the first 150 ms of commanded drive with no hall tick, before the protective stop overwrites the state.
+  - A same-run recovery probe after a no-motion failure: a 2 s drive at 40 × 10⁶ in a fresh lifetime every 20 s for
+    2 minutes, logging phase voltage and current. It decides time against reload.
+  - A `dual-fault-rightfirst` tier, which decides whether the left's trials are a precondition.
 
 ### PL-121 -- T0-24's hand rows ended on a clock that started at START
 
@@ -4040,6 +4063,11 @@ L/R has never been measured (FAULT-STRATA-STUDY U-3), which is why the period is
 **Certified when** the next `dual-fault`'s graded chain falls monotonically coast → 10 → 25 → 50 → 100 % in ms and in
 ticks (R19-DUAL-GRADED-X), with GRD100 still PASS. That run also sizes BRAKE_PCT_DEFAULT.
 
+**CERTIFIED 2026-09-24 21:22** (left, `debug_260924-212122.log` tids 8–12): coast 518 ms/52 ticks, 10 % 282/22, 25 % 84/7,
+50 % 16/2, 100 % 10/1. GRADED PASS, GRD100 PASS, BLUNT PASS. Braking rises faster than the % (the slice is near the
+winding's L/R), and the chain is still monotone. **BRAKE_PCT_DEFAULT sized to 10** (DRIVER_REV 22). The right wheel's
+cells are NOMEAS under PL-120. [Evaluation](analyses/bench/2026-09-25/VISIT-10-DUALFAULT-T0-EVALUATION.md) §3.
+
 **PRICED, not built (P5):** a brake that caps the **peak current** is the boost circuit run on purpose. That means the
 low-side duty held just above 1 − E / V_bus by a servo, with current i ≈ (E − (1−D)·V_bus) / R. *Buys:* the phase
 current held to a set value, so the FETs and windings never see a full short's surge. The full short is modelled at
@@ -4075,6 +4103,8 @@ rate-implied `rise_ms` (new on the `hold_start` record) in **220–280 ms**, and
 pass 3 runs are that band's negative from real material: all three (289–291) fail it. Row 1's card now says the
 resistance grows while he holds the wheel off its place, until it matches his push.
 **Certified when** the next `t0-stopmode` row 1 reads `rise_ms` in the band with HOLD-RISE PASS.
+**CERTIFIED 2026-09-24 21:30** (`debug_260924-212939.log`): row 1 run 2 `rise_ms,250` with HOLD-RISE PASS; row 3 reads 249.
+(Run 1's `16_539` was the estimator counting after a slip, PL-134.)
 
 ### PL-131 -- the interaction's three negative acts were asked only on the run sheet, and my hand-back outran the sheet
 
@@ -4137,6 +4167,26 @@ negative: both of its pairs read WND_NOT_VISIBLE. V is the nominal drive voltage
 `test_bench_dual` SRC_REV 43 carries the cells: R19-DUAL-WINDR-X and R19-DUAL-WINDSPR-X in `dual-start`,
 R19-DUAL-WINDNEG-X in `dual-start-phaseneg`.
 
+### PL-134 -- HOLD-RISE's rate estimate kept counting after the hold slipped
+
+**Found 2026-09-24** at `t0-stopmode` 21:29 (`debug_260924-212939.log`, row 1 run 1). `rise_ms,16_539`: he pushed past the
+hold, it slipped at 2_328 ms with the duty frozen at 2_684 (ceiling 2_764), and the wheel stayed displaced for seconds.
+Pairs with no duty gain piled up time. Up to the slip, the rate reads **251 ms**, the same as runs 2 and 3 (250, 249).
+The cell's FAIL for that run was right (the hold gave way before its ceiling). The printed number was not.
+**FIXED** (`test_bench_t0` SRC_REV 17): a pair counts only while `getHoldStatus()` reads HS_HOLDING at both ends.
+
+### PL-135 -- a card that asks for a deliberate act does not get it: the interaction's negatives are still unmeasured
+
+**Found 2026-09-24**, same run. Rows 1, 4 and 6 now asked on their cards for the three acts that make UI-MISS, UI-REDO and
+UI-ABORT able to fail (PL-131). None was made: no `hit,MISS` input, row 4 ran once, and row 6 took no ABORT. A line of
+card text competes with the row's own instructions and is read past.
+**FIX, correct by construction:** the program *requires* each act on the first run of its row, and draws only the
+control that performs it.
+- Row 1's intro screen shows no START ROW until one click lands on the marked empty area, which reads `hit,MISS`.
+- Row 4's first RESULT draws REDO ROW only.
+- Row 6's first run draws ABORT as its only control, and its RESULT draws REDO ROW only.
+- Each screen says in one line why it asks.
+Later runs of those rows are unchanged.
 ---
 
 ## Removed from this list
