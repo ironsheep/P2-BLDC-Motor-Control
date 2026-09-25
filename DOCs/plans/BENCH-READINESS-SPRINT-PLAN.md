@@ -2801,9 +2801,10 @@ don't have to wait"* (doctrine overlay P12). So every mechanism below is **built
   - *Corrected at DRIVER_REV 19 («#3609»):* the re-seed took its direction from the command's sign. A fault on a ramp to
     zero reads 0, which is FWD, so a reverse wheel was seeded in the wrong half-table and faulted again. It now takes
     the direction the field was moving (`fwdrev`).
-  - **Open (S2, study F-5):** the blocked-wheel protective stop secures the motor through the e-stop, so it shorts even
-    under SM_FLOAT. The fix is a protective stop that takes the user's stop mode at once (PL-132). No wheels-up cell can
-    provoke it (PL-106).
+  - *Corrected at DRIVER_REV 20 (S2, study F-5, PL-132):* the blocked-wheel protective stop secured the motor through
+    the e-stop, so it shorted even under SM_FLOAT. `e_stop` now carries its kind (ES_HARD, ES_PROTECT), and a protective
+    stop takes the stop mode's state at once: SM_FLOAT coasts, and SM_BRAKE shorts, since a blocked wheel cannot be held.
+    An e-stop still always shorts. No wheels-up cell can provoke it (PL-106), so the floor run («#3576») certifies it.
   - *Corrected at DRIVER_REV 17 (PL-129):* BR_BRAKE first PWM'd the low sides within each 22.7 µs frame. With the high
     sides off that is a boost converter, which carries current only above a duty of 1 − back-EMF / supply, so 10–50 %
     braked like a coast. It now slices the full short over a 10 ms period (`BRAKE_PERIOD_MS`, provisional).

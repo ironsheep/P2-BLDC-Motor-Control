@@ -2267,9 +2267,12 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
 PUB frontProtectiveStop(eProtectiveCode)
 '' FRONT COG ONLY: secure this motor now and latch a protective stop until clearProtectiveStop()
 ''
+'' The motor stops at once in its stop mode's state: SM_FLOAT coasts, SM_BRAKE shorts the phases (a blocked wheel
+'' cannot be held). An emergency stop shorts whatever the stop mode; a protective stop honours it (PL-132).
+''
 '' @param eProtectiveCode - ERR_PLATFORM_BLOCKED or another -2_0xx cause; any other value latches ERR_PROTECTIVE_STOP
 
-    frontEStop(TRUE)                                                            ' 1. secure: the e-stop shorts the phases, whatever the stop mode; getPower() reads 0
+    frontLatchStop(ES_PROTECT)                                                  ' 1. secure at once, in the stop mode's state (PL-132); getPower() reads 0
     if (eProtectiveCode > ERR_PROTECTIVE_STOP) or (eProtectiveCode < ERR_PROTECTIVE_STOP - 99)
         eProtectiveCode := ERR_PROTECTIVE_STOP
     if protectiveCode == NO_ERROR
@@ -2417,13 +2420,10 @@ PUB frontEStop(bEStop)
 '' @param bEStop - T/F where T latches the emergency stop and F releases it
 
     if bEStop <> FALSE
-        motorPower := 0                                                         ' PL-52: an e-stop is a genuine stop, not a fault
-        bWalkTripped := FALSE                                                   ' PL-122: an e-stop taken now is not the walk guard's to release
-        e_stop := TRUE
-        frontCommand(0, FALSE)
+        frontLatchStop(ES_HARD)                                                 ' the phases shorted, whatever the stop mode
     else
         frontCommand(0, FALSE)                                                  ' zero first: nothing moves when the latch releases
-        e_stop := FALSE
+        e_stop := ES_OFF
 
 PUB frontConfirmStop()
 '' FRONT COG ONLY: once per pass, before requests: write a stop again until the driver's command reads zero
@@ -2570,7 +2570,7 @@ PUB frontSecure(bEStop)
 '' @param bEStop - T/F where T also latches the emergency stop
 
     if bEStop <> FALSE
-        e_stop := TRUE
+        e_stop := ES_HARD
     motorPower := 0                                                             ' PL-52: this is a genuine stop
     setTargetAccel(0, false)
     releaseFaultLatch()                                                         ' task 3616: a commanded stop clears a fault
@@ -2581,6 +2581,16 @@ PUB getposTrkHallTicks() : retv
 '' @returns retv - the position-tracking hall-tick count
 
     retv := posTrkHallTicks
+
+PRI frontLatchStop(eKind)
+' FRONT COG ONLY: latch the stop that secures this motor, and write a zero command
+'
+' @param eKind - ES_HARD (an emergency stop: the phases shorted) or ES_PROTECT (a protective stop: the stop mode's state)
+
+    motorPower := 0                                                             ' PL-52: an e-stop is a genuine stop, not a fault
+    bWalkTripped := FALSE                                                       ' PL-122: an e-stop taken now is not the walk guard's to release
+    e_stop := eKind                                                             ' one write, so the driver never sees the other kind first
+    frontCommand(0, FALSE)
 
 PRI bWalkLeg(power) : bOk | startMs
 ' Drive one leg of checkWiring(): WALK_TICKS at {power} under the current guard, then wait, bounded, for rest.
@@ -2969,7 +2979,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     servo_shift := SERVO_ACC_SHIFT                      ' R18.4 D-2: the trim's gain (ff_ceiling follows the power limits, below)
     cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
-    e_stop      := FALSE
+    e_stop      := ES_OFF
     ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
     ' NOTES: 220410 -  at 14.8V 40_000 seems to fault a lot on gravel surface (i'm switching) to 10_000 and PWR_14p8V to see if motors stay operational (5_000 dog slow)
     ' NOTES: 220413 -  at 14.8V 10_000 better on gravel surface  but too slow a ramp to 15_000 and PWR_14p8V to see if motors stay operational
@@ -4773,6 +4783,12 @@ CON { driver internal Constants }
     '  stop mode. The table lowy_tbl, indexed by these values, holds each undriven state's low-side Y.
     #0, BR_DRIVE, BR_SHORT, BR_COAST, BR_BRAKE, BR_PROBE
 
+    ' PL-132: the stop latched in e_stop, which the driver reads by kind (estopBridge)
+    '  ES_OFF     - no stop latched
+    '  ES_HARD    - an emergency stop: the phases shorted, whatever the stop mode (emergencyCutoff(), the walk guard)
+    '  ES_PROTECT - a protective stop (frontProtectiveStop()): the stop mode's state at once, SM_FLOAT coasts
+    #0, ES_OFF, ES_HARD, ES_PROTECT
+
     ' R19.4: which phase the continuity probe drives (probe_phase)
     #0, PRB_NONE, PRB_U, PRB_V, PRB_W
 
@@ -4823,7 +4839,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 19        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 20        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4841,6 +4857,7 @@ CON { driver internal Constants }
                                             ' 17: BR_BRAKE slices the full short over a 10 ms period, no longer a per-frame low-side PWM (PL-129, task 3620)
                                             ' 18: the hold's duty follows its displaced passes, so it reaches the ceiling in riseMs, not 16 % later (PL-130)
                                             ' 19: a re-synced fault seeds the field in the way it was moving, not the command's sign (task 3609)
+                                            ' 20: a protective stop takes the stop mode's state at once (SM_FLOAT coasts); only an e-stop always shorts (PL-132)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -5020,7 +5037,7 @@ VAR  {  Motor Parameters  }
     LONG    ramp_down       ' angle decrement when slowing down
     LONG    cfg_ctcks       ' # clock ticks of the 500 uSec drive-pass deadline (the pass runs every 23 ADC frames, PL-50)
     LONG    stop_mode       ' control / user setting, enum: [SM_FLOAT, SM_BRAKE]
-    LONG    e_stop          ' T/F where T means stop all motor function
+    LONG    e_stop          ' ES_* (PL-132): ES_OFF, or the kind of stop latched; any other value stops all motor function
     LONG    ramp_max        ' angle increment: max ramp up every drive pass
     LONG    ramp_min        ' angle increment: start of ramp up every drive pass
     LONG    ramp_inc        ' angle increment: inc every drive pass from min to max
@@ -5196,7 +5213,7 @@ drvMotor                                                ' global (task 3535): en
 .eStop
                 cmp     drv_state_, #DCS_ESTOP      wz  ' Q: Are we already Emergency Stopped?
     if_z        jmp     #.endRqst                       ' YES, motor is at ESTOP, just exit (w/o increment)
-                call    #.shortBridge                   ' brake: "immediately stop" (emergencyCutoff()), whatever the stop mode
+                call    #estopBridge                    ' "immediately stop": ES_HARD shorts whatever the stop mode, ES_PROTECT honours it
                 call    #.clearRun                      ' PL-57: no running increment survives an e-stop
                 mov     drv_state_, #DCS_ESTOP          ' mark that we are stopped
                 jmp     #.endRqst                       ' motor now at ESTOP, just exit (w/o increment)
@@ -5709,9 +5726,6 @@ drvMotor                                                ' global (task 3535): en
     ' restBridge; R19.3 moved the fault's bridge choice (was .faultBridge)
     ' into the LUT as faultResponse.
 
-.shortBridge                                            ' e-stop: short the phases, whatever the stop mode (no flags changed)
-    _ret_       mov     bridge, #BR_SHORT
-
 .capStart                                               ' PL-55: remember duty and speed where a ramp-down starts (no flags changed)
                 mov     duty0, duty_
     _ret_       abs     incr0, drv_incr
@@ -5941,7 +5955,7 @@ dead_gap_   res 1           ' gap between driving high and low side pwm
 ramp_down_  res 1           ' angle decrement when slowing down
 cfg_ctcks_  res 1           ' clocks for drv loop
 stop_mode_  res 1           ' float or brake mode
-e_stop_     res 1           ' T/F where T means stopal motor function
+e_stop_     res 1           ' ES_*: ES_OFF, or the kind of stop latched (PL-132); non-zero stops all motor function
 ramp_max_   res 1           ' angle increment: max ramp up every drive pass
 ramp_min_   res 1           ' angle increment: start of ramp up every drive pass
 ramp_inc_   res 1           ' angle increment: inc every drive pass from min to max
@@ -5981,12 +5995,12 @@ fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controll
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 490 USED, 6 FREE, 2026-09-24 (DRIVER_REV 17, the sliced brake) -- read from the compiler, never hand-counted
+    fit     496  ' 489 USED, 7 FREE, 2026-09-25 (DRIVER_REV 20, the e-stop kinds) -- read from the compiler, never hand-counted
                  ' (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FAULT_RESYNCS_'s VALUE,
-                 ' whose top 12 bits are its cog address ($1E9, the last register, so USED is $1EA). LUT code runs at cog
+                 ' whose top 12 bits are its cog address ($1E8, the last register, so USED is $1E9). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $2D6, 214 of 512 longs (DRIVER_REV 19).
+                 ' lutCodeStart $200 to lutCodeEnd $2DB, 219 of 512 longs (DRIVER_REV 20).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -6304,9 +6318,16 @@ faultResponse                                           ' R19.3: called from the
     if_z        mov     bridge, #BR_COAST               '  and SM_FLOAT coasts in either mode
                 ret
 
+estopBridge                                             ' PL-132: called once, as the stop latches (writes Z)
+                mov     bridge, #BR_SHORT               ' ES_HARD, and ES_PROTECT under SM_BRAKE: the phases shorted
+                cmp     e_stop_, #ES_PROTECT        wz  ' Q: a protective stop?
+    if_z        cmp     stop_mode_, #SM_FLOAT       wz  ' YES: and the user chose to coast?
+    if_z        mov     bridge, #BR_COAST               ' YES: all six FETs off
+                ret
+
 lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 214 of 512 used, COUNTED 2026-09-25 at DRIVER_REV 19 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 219 of 512 used, COUNTED 2026-09-25 at DRIVER_REV 20 (see the cog fit above)
 
 CON { license }
 {{

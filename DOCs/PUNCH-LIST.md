@@ -4110,6 +4110,13 @@ and refuses drives until `clearProtectiveStop()`. **Unmeasurable wheels-up** (PL
 blocked), so it is certified by construction and by the floor run («#3576»). Building it gates no load on the current
 bench pass.
 
+**FIXED (DRIVER_REV 20, 2026-09-25), not bench-certified:** `e_stop` carries its kind: ES_OFF, ES_HARD (emergency
+stop, walk guard, `frontSecure()`) or ES_PROTECT (`frontProtectiveStop()`), written in one store by `frontLatchStop()`.
+The PASM latch calls `estopBridge` (LUT), which shorts for ES_HARD and for ES_PROTECT under SM_BRAKE, and coasts for
+ES_PROTECT under SM_FLOAT. Every reader tests non-zero, so the refusal semantics are unchanged. DRIVE-OBJECTS.md's
+*Protection and limits* says which state the stop takes. ⚠ It is a user-visible behaviour change, so it needs a release
+note line («#3516»).
+
 ---
 
 ## Removed from this list
