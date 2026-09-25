@@ -57,6 +57,9 @@ command reporting its result.
 - BREAKING: start() refuses a pin group where no board is detected
   (ERR_BOARD_NOT_DETECTED) unless BRD_REV_A or BRD_REV_B is forced.
   Platforms whose boards are detected need no change.
+- BREAKING: start() refuses a motor that still fails a start check after
+  retrying it (ERR_START_CHECK_FAILED). Call setStartChecks(false) before
+  start() to start it anyway.
 - BREAKING: setAcceleration(rate) takes mm/s^2 at the wheel rim (1 to 10,000);
   it previously passed {rate} to the driver as its ramp step. Code that passed
   a ramp step should call setRampingValues() instead.
@@ -98,9 +101,22 @@ command reporting its result.
 - getStatus() reports DS_FAULTED and DS_ESTOP
 - getCurrent() reads zero at rest; start() blocks about 1 s to calibrate it
 - start() checks each motor with nothing moving (the hall sensors, the
-  current sense, and each motor lead) and getHealth() reports the result;
+  current sense, and each motor lead) and retries a check that fails;
+  getHealth() reports what failed and what passed only on a retry;
   checkWiring() is an opt-in check that moves each wheel a few centimetres
   to prove its hall and phase wiring
+- getStopReason() says why a motor's last drive ended: your command, its
+  limit, a fault, a blocked wheel, a lost link, an emergency stop, or (two
+  wheels) the other wheel
+- getEvent() and getEventTotal() report what the drive handled on its own:
+  stops, faults, current limiting, hall-sensor trouble and more; every cog
+  reads every event, and events lost to a full log are reported, not dropped
+- setFaultResponse() chooses what a motor does on a fault: stop at once (the
+  default), or re-sync and stop along the ramp down
+- setHoldLimits() tunes the hold at rest; its defaults were sized with the
+  wheels unloaded
+- getPackVoltage() reads the battery pack from an optional voltage sensor
+  (VOLTAGE-SENSOR.md)
 - The three hall sensors are read at one instant, so a switching transient
   cannot combine into a false hall code
 - The drive uses a fixed 2 cogs for one motor and 3 for two; startSenseCog()
@@ -196,8 +212,9 @@ Things we know about that still need attention:
 
 ```
   v6.0.0
-- The drive does not measure battery voltage: getCurrent()'s watts and the
-  speed table assume the configured DRIVE_VOLTAGE.
+- The optional pack sensor reports the battery voltage (getPackVoltage()),
+  but the drive does not use it yet: getCurrent()'s watts and the speed
+  table assume the configured DRIVE_VOLTAGE.
 - getCurrent() does not show regenerative current.
 - Speeds and stopping distances are characterized unloaded; under load the
   motor has less torque in reserve near top speed.

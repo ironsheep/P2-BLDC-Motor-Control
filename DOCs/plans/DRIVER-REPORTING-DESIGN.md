@@ -414,7 +414,7 @@ the `t0-stopmode` precedent (DEVIATION, §9).
 
 - **DRIVE-OBJECTS.md, both interface tables:**
   - `getStopReason()`, with the SR\_\* list, "first stop after a drive", and the no-answer limit;
-  - `getEvent()` and `getEventTotal()`, with per-cog reading, EV_LOST, and "no peak fold-back in the log";
+  - `getEvent()` and `getEventTotal()`, with per-cog reading, EV_LOST, and EV_FOLDBACK (the Q3 ruling);
   - `setFaultResponse` / `getFaultResponse`;
   - `setHoldLimits` / `getHoldLimits`, "sized unloaded";
   - `setStartChecks`;
