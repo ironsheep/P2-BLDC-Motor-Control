@@ -856,6 +856,41 @@ PUB testSetProbeWithhold(ePhase) : eError
         testProbeWithhold := ePhase
         eError := recordError(NO_ERROR)
 
+PUB testSetWindingProbe(bEnable) : eError
+'' TEST USE: have the next start()'s checks also measure each winding pair's resistance (R19.4 1e)
+''
+'' Call before start(); it applies to that one start, and the check clears it. Each pair in turn (U->V, V->W, W->U) is
+'' driven at WIND_DUTY_PCT with the next phase's low side on, for 0.1 to 0.3 s, and read from the DC-link shunt. THE ROTOR
+'' MOVES: it turns to each pair's alignment, up to half an electrical cycle, so use it wheels up or where a twitch is
+'' safe. A phase withheld by testSetProbeWithhold() neither drives nor returns, so both pairs it belongs to read
+'' WND_NOT_VISIBLE: the negative control.
+''
+'' @param bEnable - T/F where T measures the windings at the next start
+'' @returns eError - NO_ERROR, also recorded for getError()
+
+    bWindProbe := (bEnable <> FALSE)
+    eError := recordError(NO_ERROR)
+
+PUB testGetWinding(ePair) : eState, nMilliOhms, nNetMv
+'' TEST USE: one winding pair's reading from the last start that measured the windings (R19.4 1e)
+''
+'' The resistance is d^2 x V / I_dc, with V the nominal drive voltage (getDriveVoltage()), not a measurement: a pack
+'' below nominal reads proportionally low.
+''
+'' @param ePair - 0 for U->V, 1 for V->W, 2 for W->U
+'' @returns eState - WND_NOT_RUN, WND_MEASURED, WND_NOT_VISIBLE, WND_TRIPPED or WND_UNSETTLED (WND_NOT_RUN for a pair out of range)
+'' @returns nMilliOhms - the pair's resistance in milliohms when WND_MEASURED, else 0
+'' @returns nNetMv - the pair's averaged DC-link reading over the rest zero, mV (0 when WND_NOT_RUN)
+
+    eState := WND_NOT_RUN
+    nMilliOhms := 0
+    nNetMv := 0
+    if (ePair >= 0) and (ePair <= 2)
+        eState := windState[ePair]
+        nNetMv := windNetMv[ePair]
+        if eState == WND_MEASURED
+            nMilliOhms := windMohm[ePair]
+
 PUB testSetHallSwap(eSwap) : eError
 '' TEST USE: have the driver read two hall inputs as swapped from the next start(), as a mis-wired hall pair would -- a
 '' negative control for checkWiring() that needs no rewiring (task 3613: the rig cannot swap hall wires)
@@ -1090,6 +1125,9 @@ PUB runStartChecks() | ePhase, eOther, nSample, nPhaseMv[3], nFollows[3], bDrive
             if (eOther <> ePhase - PRB_U) and (nPhaseMv[eOther] * 100 >= nPhaseMv[ePhase - PRB_U] * CONT_FOLLOW_PCT) and (bDriven[ePhase - PRB_U] == TRUE)
                 nFollows[eOther]++
     probe_phase := PRB_NONE                                                     ' restBridge restores the stop mode's bridge
+    if bWindProbe                                                               ' TEST USE (R19.4 1e): the winding pairs, same withheld phase
+        measureWindings()
+    bWindProbe := FALSE                                                         ' TEST USE: applies to one start only
     testProbeWithhold := PRB_NONE                                               ' TEST USE: a withheld phase applies to one start only
     waitms(PROBE_SETTLE_MS)
     repeat eOther from 0 to 2
@@ -2582,6 +2620,90 @@ PUB getposTrkHallTicks() : retv
 
     retv := posTrkHallTicks
 
+PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTaken, nStill, nPos, bTripped, nVoltMv, nLimitMv, nMinMv
+' TEST USE (R19.4 1e, task 3610): drive each winding pair at WIND_DUTY_PCT and record its resistance (testGetWinding())
+'
+' Called only from runStartChecks(), at rest and before any front cog commands the driver, so the probe longs have one
+' writer. Each pair: the return phase's low side on, then the driven phase at nLevel. Readings are taken only after
+' WIND_SETTLE_MS and once the halls have held still for WIND_STILL_MS, since a turning rotor's back-EMF biases the
+' current; a hall change discards them and starts again. The pair ends at once if the net DC-link reading passes
+' WIND_I_LIMIT_MA. R = d^2 x V / I_dc = (nLevel / F)^2 x V x rSense / net.
+'
+' @local ePair - 0..2: U->V, V->W, W->U
+' @local eFrom - the driven phase, PRB_*
+' @local eSink - the return phase, PRB_*
+' @local nLevel - the driven high side's Y, WIND_DUTY_PCT of the frame's F
+' @local nElapsed - ms since the pair was driven
+' @local nNet - one reading's DC-link mV over the rest zero
+' @local nSum - the settled readings' sum
+' @local nTaken - the settled readings taken, at most WIND_SAMPLES
+' @local nStill - ms the halls have held one position
+' @local nPos - the hall position they held
+' @local bTripped - T/F where T means the pair passed WIND_I_LIMIT_MA
+' @local nVoltMv - the nominal drive voltage, mV
+' @local nLimitMv - WIND_I_LIMIT_MA on this board's sense scale, mV
+' @local nMinMv - WIND_MIN_VISIBLE_MA on this board's sense scale, mV
+
+    _, nVoltMv := getDriveVoltage()
+    nLevel := muldiv64(frame_cnt / 2, WIND_DUTY_PCT, 100)
+    nLimitMv := 0
+    nMinMv := 0
+    if rSenseForBoard <> VALUE_NOT_SET
+        nLimitMv := muldiv64(WIND_I_LIMIT_MA, rSenseForBoard, 1_000)
+        nMinMv := muldiv64(WIND_MIN_VISIBLE_MA, rSenseForBoard, 1_000)
+    repeat ePair from 0 to 2
+        eFrom := PRB_U + ePair
+        eSink := PRB_U + ((ePair + 1) // 3)
+        bTripped := FALSE
+        nSum := 0
+        nTaken := 0
+        windNetMv[ePair] := 0
+        if (rSenseForBoard == VALUE_NOT_SET) or (rSenseForBoard < WIND_MIN_RSENSE)  ' no scale fine enough to read or guard it
+            windState[ePair] := WND_NOT_VISIBLE
+        elseif (eFrom == testProbeWithhold) or (eSink == testProbeWithhold)     ' a withheld phase neither drives nor returns
+            windState[ePair] := WND_NOT_VISIBLE
+        else
+            probe_y := nLevel                                                   ' the level and the return first: probe_phase starts it
+            probe_sink := eSink
+            probe_phase := eFrom
+            nPos := pos
+            nStill := 0
+            repeat nElapsed from 1 to WIND_SETTLE_MAX_MS
+                waitms(1)
+                nNet := sense_i_mV - restZeroSenseMv
+                if nNet > nLimitMv
+                    bTripped := TRUE
+                    quit
+                if pos <> nPos                                                  ' the rotor turned: its back-EMF biased what was taken
+                    nPos := pos
+                    nStill := 0
+                    nSum := 0
+                    nTaken := 0
+                else
+                    nStill++
+                if (nElapsed > WIND_SETTLE_MS) and (nStill >= WIND_STILL_MS)
+                    nSum += nNet
+                    nTaken++
+                    if nTaken >= WIND_SAMPLES
+                        quit
+            probe_phase := PRB_NONE                                             ' the pair ends before anything is computed
+            probe_sink := PRB_NONE
+            probe_y := 0
+            if nTaken > 0
+                windNetMv[ePair] := nSum / nTaken
+            if bTripped
+                windNetMv[ePair] := nNet                                        ' the reading that tripped it
+                windState[ePair] := WND_TRIPPED
+            elseif nTaken < WIND_SAMPLES
+                windState[ePair] := WND_UNSETTLED
+            elseif (windNetMv[ePair] < nMinMv) or (windNetMv[ePair] <= 0)
+                windState[ePair] := WND_NOT_VISIBLE
+            else
+                windMohm[ePair] := muldiv64(nVoltMv * rSenseForBoard, nLevel * nLevel, (frame_cnt / 2) * (frame_cnt / 2)) / windNetMv[ePair]
+                windState[ePair] := WND_MEASURED
+            waitms(PROBE_SETTLE_MS)                                             ' the winding's current decays before the next pair
+    debug[user.DBGCH_LIFECYCLE]("* winding check ", sdec_long_array(@windState, 3), sdec_long_array(@windMohm, 3), sdec_long_array(@windNetMv, 3))
+
 PRI frontLatchStop(eKind)
 ' FRONT COG ONLY: latch the stop that secures this motor, and write a zero command
 '
@@ -3061,6 +3183,11 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     blockedPos := 0
     ' R19.4: nothing checked and nothing probed until runStartChecks()
     probe_phase := PRB_NONE
+    probe_sink := PRB_NONE                                                  ' R19.4 1e: no return phase, and the probe's own 50 %
+    probe_y := 0
+    windState[0] := WND_NOT_RUN                                             ' and no winding reading until a start measures one
+    windState[1] := WND_NOT_RUN
+    windState[2] := WND_NOT_RUN
     force_seq := 0                                                          ' R19.3: the driver's force_seen starts at 0 too
     fault_clr := 0                                                          ' task 3616: and its fault_clr_seen
     healthChecked := 0
@@ -3613,7 +3740,7 @@ PRI isAbiLayoutValid() : bValid
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
     ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd
-    bValid &= (@fault_clr - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    bValid &= (@probe_y - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -3633,8 +3760,9 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@protectiveCode, @cmdTimeoutSeen[COG_SLOT_COUNT - 1])
     bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
+    bValid &= bOutsideDriverRuns(@bWindProbe, @windNetMv[2])
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@fault_clr - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@probe_y - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -3643,8 +3771,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@fault_clr
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @fault_clr))
+    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@probe_y
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @probe_y))
 
 CON ' --- HDMI Debug Support ---
 
@@ -4834,12 +4962,12 @@ CON { driver internal Constants }
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 20
-    DRVR_PARAMS_LONGS_COUNT     = 23
+    DRVR_PARAMS_LONGS_COUNT     = 25
 
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 20        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 21        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4858,6 +4986,7 @@ CON { driver internal Constants }
                                             ' 18: the hold's duty follows its displaced passes, so it reaches the ceiling in riseMs, not 16 % later (PL-130)
                                             ' 19: a re-synced fault seeds the field in the way it was moving, not the command's sign (task 3609)
                                             ' 20: a protective stop takes the stop mode's state at once (SM_FLOAT coasts); only an e-stop always shorts (PL-132)
+                                            ' 21: TEST-USE winding check at start: probe_sink/probe_y (params run 25 longs), testGetWinding() (task 3610)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -4898,6 +5027,30 @@ CON { driver internal Constants }
     REST_ZERO_MAX_MV_REVA       = 200       '  measured, so the band stays wide until one is
     PROBE_SETTLE_MS             = 5         ' ms the probe holds a phase before its readings are taken
     PROBE_SAMPLES               = 4         ' readings averaged per probe, 1 ms apart
+    ' R19.4 1e (task 3610), TEST-USE: the winding check (testSetWindingProbe()). One phase switches at WIND_DUTY_PCT with
+    '  the next phase's low side ON, so a steady current I flows through that pair and returns through the DC-link
+    '  shunt for the high side's on-time. The shunt's frame average is then I_dc = d x I and I = d x V / R, so
+    '  R = d^2 x V / I_dc from today's per-frame reading -- no sub-frame sampling. It moves the rotor to that pair's
+    '  alignment (up to half an electrical cycle), which is why it is opt-in.
+    WIND_DUTY_PCT               = 5         ' PROVISIONAL: the pair's duty; about 3 A through 0.3 ohm on 18.5 V
+    WIND_SETTLE_MS              = 100       ' PROVISIONAL: ms before readings are taken: the rotor's turn to the pair, and L/R
+    WIND_STILL_MS               = 30        ' PROVISIONAL: and the halls unchanged this long, so no back-EMF biases a reading
+    WIND_SETTLE_MAX_MS          = 300       ' PROVISIONAL: the bound; a pair still turning then reads WND_UNSETTLED. Two wheels'
+                                            '  starts run back to back in one steering start(): 2 x 3 x 305 ms stays inside a 4 s stall watchdog
+    WIND_SAMPLES                = 8         ' readings averaged per pair, 1 ms apart
+    WIND_I_LIMIT_MA             = 400       ' PROVISIONAL: the net DC-link mA that ends a pair at once (~8 A of phase at 5 %; 60 mV on Rev B)
+    WIND_MIN_VISIBLE_MA         = 20        ' PROVISIONAL: a net reading under this is NOT_VISIBLE (no current path), never a value
+    WIND_MIN_RSENSE             = 50        ' mV per A: a coarser sense scale (Rev A, 5) cannot resolve the pair or guard it, so no pair is driven
+
+    ' R19.4 1e: a winding pair's reading (testGetWinding())
+    '  WND_NOT_RUN     - no start has measured it (testSetWindingProbe() was not set)
+    '  WND_MEASURED    - nMilliOhms holds the pair's resistance
+    '  WND_NOT_VISIBLE - the pair drew under WIND_MIN_VISIBLE_MA (an open lead, a dead switch, a withheld phase), or the
+    '                    board's sense scale is under WIND_MIN_RSENSE and the pair was not driven
+    '  WND_TRIPPED     - the pair passed WIND_I_LIMIT_MA and was ended: far less resistance than a winding should have
+    '  WND_UNSETTLED   - the rotor was still turning (a hall change) when WIND_SETTLE_MAX_MS ran out: its back-EMF
+    '                    would bias the reading, so none was taken
+    #0, WND_NOT_RUN, WND_MEASURED, WND_NOT_VISIBLE, WND_TRIPPED, WND_UNSETTLED
     CONT_MIN_DRIVEN_MV          = 200       ' the driven phase must read at least this (a dead high side does not)
     CONT_FOLLOW_PCT             = 50        ' an undriven phase follows when it reads at least this % of the driven one
     WALK_TICKS                  = HALL_TICKS_PER_CYCLE  ' checkWiring(): one electrical cycle each way
@@ -5050,6 +5203,8 @@ VAR  {  Motor Parameters  }
     LONG    probe_phase     ' R19.4: PRB_* the continuity probe drives at rest; written only by the start-time self-test
     LONG    force_seq       ' R19.3 TEST-USE: front-written, advanced by testForceFault(); the driver faults once per advance
     LONG    fault_clr       ' task 3616: front-written, advanced by frontStopCommanded(); a FAULTED driver clears once per advance
+    LONG    probe_sink      ' R19.4 1e TEST-USE: PRB_* whose low side the probe holds ON (the winding check's return), PRB_NONE for none
+    LONG    probe_y         ' R19.4 1e TEST-USE: the probed phase's high-side Y (its duty), 0 for the continuity probe's 50 %
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -5115,6 +5270,10 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    bWalkTripped                ' front-written (PL-122): T/F where T means the guard shorted the last leg (and its e-stop is the guard's)
     LONG    testProbeWithhold           ' TEST-USE: PRB_* the next runStartChecks() leaves undriven; PRB_NONE once it has run
     LONG    testHallSwap                ' TEST-USE: HSW_* the next init() applies to the hall tables; HSW_NONE once applied
+    LONG    bWindProbe                  ' TEST-USE (R19.4 1e): T/F where T means the next runStartChecks() measures the windings
+    LONG    windState[3]                ' R19.4 1e: WND_* per pair U->V, V->W, W->U, from the last start that measured them
+    LONG    windMohm[3]                 ' R19.4 1e: each WND_MEASURED pair's resistance, milliohms
+    LONG    windNetMv[3]                ' R19.4 1e: each pair's averaged DC-link reading over the rest zero, mV
     LONG    bPackOwned                  ' R19.5: T/F where T means this instance reads the pack sensor (startPackSense())
     LONG    packGioRaw                  ' R19.5: the pin's GIO reading, taken at start
     LONG    packVioRaw                  ' R19.5: the pin's VIO reading, taken at start
@@ -5968,6 +6127,8 @@ brake_on_   res 1           ' R19.3: BR_BRAKE's shorted frames per BRAKE_PERIOD_
 probe_phase_ res 1          ' R19.4: PRB_* the continuity probe drives at rest (restBridge, undrivenPins)
 force_seq_  res 1           ' R19.3 TEST-USE: advanced by testForceFault(); a driven frame whose force_seen differs faults
 fault_clr_  res 1           ' task 3616: advanced by the front cog to clear DCS_FAULTED; a drive pass whose fault_clr_seen differs clears it
+probe_sink_ res 1           ' R19.4 1e TEST-USE: PRB_* whose low side the probe holds ON, PRB_NONE for none
+probe_y_    res 1           ' R19.4 1e TEST-USE: the probed phase's high-side Y, 0 for 50 % (bias)
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -5995,12 +6156,12 @@ fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controll
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 489 USED, 7 FREE, 2026-09-25 (DRIVER_REV 20, the e-stop kinds) -- read from the compiler, never hand-counted
+    fit     496  ' 491 USED, 5 FREE, 2026-09-25 (DRIVER_REV 21, the winding check) -- read from the compiler, never hand-counted
                  ' (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FAULT_RESYNCS_'s VALUE,
-                 ' whose top 12 bits are its cog address ($1E8, the last register, so USED is $1E9). LUT code runs at cog
+                 ' whose top 12 bits are its cog address ($1EA, the last register, so USED is $1EB). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $2DB, 219 of 512 longs (DRIVER_REV 20).
+                 ' lutCodeStart $200 to lutCodeEnd $2E5, 229 of 512 longs (DRIVER_REV 21).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -6268,11 +6429,21 @@ undrivenPins                                            ' R19.3/R19.4: once per 
                 sub     tmpX, #PRB_U
                 shl     tmpX, #1
                 mov     tmpY, bias                      ' 50 %, the low side complementary with its dead gap, exactly as the drive
-                add     tmpY, dead_gap_                 '  writes a phase whose level is 0 (see the BR_DRIVE writes in .ctlMotor)
+                cmp     probe_y_, #1                wc  '  writes a phase whose level is 0 (see the BR_DRIVE writes in .ctlMotor);
+    if_nc       mov     tmpY, probe_y_                  '  R19.4 1e: or the winding check's own level (C only: Z is the caller's)
+                add     tmpY, dead_gap_
                 alts    tmpX, #pin_pwm_u_l
-                wypin   tmpY, 0-0
+                wypin   tmpY, 0-0                       ' low side: the level plus the dead gap, complementary
+                sub     tmpY, dead_gap_
                 alts    tmpX, #pin_pwm_u_h
-    _ret_       wypin   bias, 0-0
+                wypin   tmpY, 0-0                       ' high side: the level
+                tjz     probe_sink_, #.probeEnd         ' R19.4 1e: a return phase asked for?
+                mov     tmpX, probe_sink_               ' YES: its low side ON (Y = 0, inverted), its high side already off,
+                sub     tmpX, #PRB_U                    '  so the probed phase's current returns through the DC-link shunt
+                shl     tmpX, #1
+                alts    tmpX, #pin_pwm_u_l
+                wypin   #0, 0-0
+.probeEnd       ret
 
 restBridge                                              ' R19.1: once per drive pass while a stop request finds the motor at rest
                 tjz     probe_phase_, #.noProbe         ' R19.4: the start-time continuity probe asked for?
@@ -6327,7 +6498,7 @@ estopBridge                                             ' PL-132: called once, a
 
 lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 219 of 512 used, COUNTED 2026-09-25 at DRIVER_REV 20 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 229 of 512 used, COUNTED 2026-09-25 at DRIVER_REV 21 (see the cog fit above)
 
 CON { license }
 {{

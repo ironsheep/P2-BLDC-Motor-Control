@@ -2814,6 +2814,12 @@ don't have to wait"* (doctrine overlay P12). So every mechanism below is **built
     offset-shift provocation plugged the motor on 3 of 5 recorded trials (PL-119), and the forced fault replaces it
     for Visit 10's fault cells.
   - *The board cannot measure a phase short's current* (PL-118): the shunt does not carry it.
+- **R19.4 item 1e, the winding resistance (DRIVER_REV 21, «#3610», PL-133).** Built on the frame-average reading, not
+  the bitstream capture this row first named. A driven pair (one high side at `WIND_DUTY_PCT`, the next low side on)
+  returns through the DC-link shunt, so R = d² × V / I_dc. It is opt-in (`testSetWindingProbe()`), TEST-USE, and
+  moves the rotor to each pair's alignment. The negative is a withheld phase, whose two pairs read NOT_VISIBLE. It
+  replaces B-4's `NOT_BUILT` / `REPLACED_BY_X2`, since X-2 cannot see a short's current (PL-118). Parameters for the
+  bench to size: `WIND_DUTY_PCT`, `WIND_SETTLE_MS`, `WIND_I_LIMIT_MA`.
 - **Questions for him once Visit 10 has measured** (each with its measure of benefit, P5):
   1. Should FR_GRADED become the default?
   2. Should the hold's limits and the fault response become public setters rather than TEST-USE?

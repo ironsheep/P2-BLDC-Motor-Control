@@ -309,7 +309,7 @@ case "$TIER" in
     #  this part with a wheel mis-wired on purpose.
     dual-start)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part START (SKCHECK): the steering object is started and stopped 10 times; each start pulses each motor lead at 50 % for a few ms with nothing able to move. In the last 3 lifetimes checkWiring() turns the platform in place, each wheel one electrical cycle (about 6 hall ticks, 3.5 cm at the tyre) each way at power 10. Run cap 3 minutes, expected under 1"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part START (SKCHECK): the steering object is started and stopped 10 times; each start pulses each motor lead at 50 % for a few ms with nothing able to move. In the first 2 lifetimes the winding check also drives each pair of leads in turn for up to 0.3 s: EACH WHEEL TWITCHES A LITTLE, three times, as it lines up with each pair. In the last 3 lifetimes checkWiring() turns the platform in place, each wheel one electrical cycle (about 6 hall ticks, 3.5 cm at the tyre) each way at power 10. Run cap 3 minutes, expected under 1"
                     ;;
     # dual-start-nowalk -- the same part built with -D START_NO_WALK: checkWiring() is never called, so nothing in the
     #  build commands a wheel. The load for the attended B-1 (one wheel's hall connector unplugged): a mis-wired wheel is
@@ -321,11 +321,12 @@ case "$TIER" in
                     ;;
     # dual-start-phaseneg (task 3614) -- B-3's negative in firmware, since the rig cannot open a motor lead: each start's
     #  lead check leaves one LEFT phase undriven (testLeftSetProbeWithhold(), rotating U, V, W), so exactly that phase's
-    #  HLT_PHASE bit must fail. No walk, so nothing is commanded.
+    #  HLT_PHASE bit must fail. No walk. Task 3610: every start also runs the winding check, whose two pairs through the
+#  withheld phase must read NOT_VISIBLE (R19-DUAL-WINDNEG-X); the pairs it does drive twitch the wheels.
     dual-start-phaseneg)
                     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NEG_PHASE)
-                    PRECONDITION="WHEELS UP, HANDS OFF, DO NOT TOUCH ANY WIRING -- the program fakes a dead motor wire on the LEFT wheel during each of 10 startup checks and must catch it. No wheel moves. Under 1 minute"
+                    PRECONDITION="WHEELS UP, HANDS OFF, DO NOT TOUCH ANY WIRING -- the program fakes a dead motor wire on the LEFT wheel during each of 10 startup checks and must catch it. Each start also checks the motor windings: BOTH WHEELS TWITCH A LITTLE at every start (the right three times, the left once). Under 2 minutes"
                     ;;
     # dual-start-swapneg (task 3614) -- B-5's negative in firmware, since the rig cannot swap hall wires: in the walk
     #  lifetimes the LEFT wheel reads two halls as swapped (testLeftSetHallSwap()), so checkWiring() must fail it.

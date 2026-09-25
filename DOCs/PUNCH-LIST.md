@@ -4117,6 +4117,26 @@ ES_PROTECT under SM_FLOAT. Every reader tests non-zero, so the refusal semantics
 *Protection and limits* says which state the stop takes. ⚠ It is a user-visible behaviour change, so it needs a release
 note line («#3516»).
 
+### PL-133 -- the winding resistance had no instrument: B-4 was "replaced" by a cell that cannot read it
+
+**Found 2026-09-25** («#3610»). Plan R19.4 item 1e is the winding resistance. It sets a full short's current («#3609»
+U-3, the tip-over and FET-stress case) and the priced current-capped brake (PL-129). Visit 10 printed B-4 as
+`NOT_BUILT` with the reason `REPLACED_BY_X2`. But X-2 reads a phase short's current, and that current never crosses the
+DC-link shunt (PL-118). X-2's own `BM-FRWIND` accordingly reads `r_mohm,NA,why,NOT_VISIBLE` (pass 3,
+`debug_260924-161533.log`). The replacement could not produce the value, so a plan item had been dropped in effect
+without anyone deciding to drop it.
+
+**FIX (DRIVER_REV 21, not bench-certified):** a *driven* pulse does cross the shunt. With one phase's high side switching
+at a duty d and the next phase's low side held on, the frame-averaged DC-link current is d × I, and I = d × V / R. So
+R = d² × V / I_dc comes from the existing per-frame reading, with no sub-frame sampling (the study's bitstream
+question, U-1, is not needed). `testSetWindingProbe(TRUE)` before `start()` runs it in the start checks. It is opt-in
+because the rotor turns to each pair's alignment. Readings are taken only once the halls have held still, since a
+turning rotor's back-EMF biases the current. A pair still turning at the 300 ms bound reads WND_UNSETTLED, never a
+value (the bound keeps two wheels' checks inside the harness's 4 s stall watchdog). A withheld phase gives the
+negative: both of its pairs read WND_NOT_VISIBLE. V is the nominal drive voltage until «#3611» is fitted.
+`test_bench_dual` SRC_REV 43 carries the cells: R19-DUAL-WINDR-X and R19-DUAL-WINDSPR-X in `dual-start`,
+R19-DUAL-WINDNEG-X in `dual-start-phaseneg`.
+
 ---
 
 ## Removed from this list

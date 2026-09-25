@@ -294,6 +294,13 @@
 ''               24 Sep 2026 -- SRC_REV=42, FMT 26: PL-129 (DRIVER_REV 17). The graded short is now sliced over a
 ''               brake period, so the driver's brake_y became brake_on (shorted frames per period): BM-FRREST's
 ''               by_back/by_base become bo_back/bo_base, and the ABI dump's brake_y label reads brake_on
+''               25 Sep 2026 -- SRC_REV=43, FMT 27: task 3610 (R19.4 1e, DRIVER_REV 21). The START part arms the driver's
+''               winding check (steering.testSetWindingProbe(TRUE)) before the start: lifetimes 0 .. SK_WIND_LIVES-1 of
+''               the dual-start build, and every lifetime of the START_NEG_PHASE build, beside its withheld LEFT phase.
+''               After skReadHealth() each wheel's three pairs (U->V, V->W, W->U) are read, and each armed lifetime prints
+''               a new BM-SKWIND per wheel. New cells R19-DUAL-WINDR-X and R19-DUAL-WINDSPR-X per wheel (dual-start only)
+''               and R19-DUAL-WINDNEG-X, LEFT (START_NEG_PHASE only). The ABI dump's parameter run is 25 longs (probe_sink,
+''               probe_y). No other record changes
 ''
 '' =================================================================================================
 
@@ -360,8 +367,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 42                                      ' hand-bumped whenever this file changes
-    FMT_VERSION = 26                                        ' BM- record-format version
+    SRC_REV     = 43                                      ' hand-bumped whenever this file changes
+    FMT_VERSION = 27                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -403,7 +410,8 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_FAULTRESP - PREFLT, FLTRESP, FLTPLAT (the fault study's X-cells, faults forced at speed; task 3613)
   '  PART_START - SKCHECK (the startup study's B-cells through the steering object, no PREFLT; task 3613); the
   '               START_NO_WALK and START_NEG_PHASE builds never call checkWiring(); START_NEG_PHASE and START_NEG_SWAP
-  '               arm a firmware negative on the LEFT wheel (task 3614)
+  '               arm a firmware negative on the LEFT wheel (task 3614); START and START_NEG_PHASE arm the winding
+  '               check (task 3610, BUILD_WIND)
   '  PART_SPIN  - SPIN, CREEP (attended, wheels down, tethered: the loaded spin-in-place floor tier and the hold's
   '               creep on an incline; no PREFLT, whose single-wheel nudge would pivot a platform on the floor; task 3591)
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
@@ -533,6 +541,26 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     BUILD_NEG = SKNEG_SWAP
 #else
     BUILD_NEG = SKNEG_NONE
+#endif
+#endif
+
+  ' Task 3610 (R19.4 1e): which START lifetimes arm the driver's winding check (steering.testSetWindingProbe(TRUE)),
+  '  which MOVES each rotor to each pair's alignment:
+  '  SKWIND_NONE - no lifetime (dual-start-nowalk, whose wheels are never driven, and dual-start-swapneg)
+  '  SKWIND_POS  - the dual-start build (no START_* flag): lifetimes 0 .. SK_WIND_LIVES-1, judged by WINDR and WINDSPR
+  '  SKWIND_NEG  - the START_NEG_PHASE build: every lifetime, beside its withheld LEFT phase, judged by WINDNEG
+    #0, SKWIND_NONE, SKWIND_POS, SKWIND_NEG
+#ifdef START_NEG_PHASE
+    BUILD_WIND = SKWIND_NEG
+#else
+#ifdef START_NEG_SWAP
+    BUILD_WIND = SKWIND_NONE
+#else
+#ifdef START_NO_WALK
+    BUILD_WIND = SKWIND_NONE
+#else
+    BUILD_WIND = SKWIND_POS
+#endif
 #endif
 #endif
 
@@ -2139,6 +2167,14 @@ sSfCellSkPhNeg  BYTE    "R19-DUAL-PHNEG-X", 0
 sSfCellSkSwNeg  BYTE    "R19-DUAL-SWNEG-X", 0
 sSfCritSkPhNeg  BYTE    "PHASE_NOT_EXACT", 0
 sSfCritSkSwNeg  BYTE    "SWAP_UNDETECTED", 0
+' task 3610 (R19.4 1e): the winding check's cells -- WINDR and WINDSPR per motor in the dual-start build only, WINDNEG
+'  (LEFT) in the START_NEG_PHASE build only
+sSfCellSkWindR  BYTE    "R19-DUAL-WINDR-X", 0
+sSfCellSkWindSp BYTE    "R19-DUAL-WINDSPR-X", 0
+sSfCellSkWindNg BYTE    "R19-DUAL-WINDNEG-X", 0
+sSfCritSkWindR  BYTE    "PAIRS_OFF_BAND", 0
+sSfCritSkWindSp BYTE    "LIVES_OVER_SPREAD", 0
+sSfCritSkWindNg BYTE    "WIND_NEG_NOT_EXACT", 0
 ' task 3591 (R18.2c tail, R19.8): the SPIN part's cells (suffix P) -- the harness's own five, then the spin legs' (the
 '  travel limit, the pair applied, the direction, A-3, A-4, A-1, A-2, A-8, the offsets and their control, X-5 under
 '  load), then the incline's (the two controls before the hold they validate)
@@ -10427,6 +10463,19 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
   '   - START_NEG_SWAP (B-5's negative, the walk build): every walk lifetime reads LEFT hall bits 0 and 1 swapped
   '     (testLeftSetHallSwap(HSW_HALLS_01)). R19-DUAL-SWNEG-X counts the walks in which the LEFT HLT_WIRING was not
   '     judged failed: a pass, and equally a walk that never judged it, leaves the swap undetected.
+  '
+  ' THE WINDING CHECK (task 3610, R19.4 1e; BUILD_WIND). Armed on the steering object before bSteerStart(), one-shot
+  '  like the negatives, it has start() drive each wheel's pairs U->V, V->W, W->U in turn from the DC link and report
+  '  each pair's state and resistance (testLeftGetWinding() / testRightGetWinding(), read right after skReadHealth()).
+  '  THE ROTORS MOVE to each pair's alignment: wheels up. Every armed lifetime prints BM-SKWIND per wheel.
+  '   - dual-start: lifetimes 0 .. SK_WIND_LIVES-1. R19-DUAL-WINDR-X counts the pairs not WND_MEASURED or outside
+  '     WIND_R_LO_MOHM .. WIND_R_HI_MOHM (a PROVISIONAL plausibility band); R19-DUAL-WINDSPR-X counts the lifetimes
+  '     whose three pairs are not all MEASURED and within WIND_SPREAD_PCT of their mean. Pre-registered for the report
+  '     (not a cell): each pair 300-600 mohm (task 3609), the two wheels within 20 %.
+  '   - START_NEG_PHASE: every lifetime, beside its withheld LEFT phase. A withheld phase neither drives nor returns, so
+  '     R19-DUAL-WINDNEG-X counts the LEFT lifetimes in which the two pairs containing it are not both WND_NOT_VISIBLE
+  '     or the third is not WND_MEASURED: a hook that did not take (three MEASURED) fails it, and so does the wrong
+  '     pair going dark. The RIGHT is the in-run control (all three MEASURED), judged in the report from BM-SKWIND.
     SK_LIVES              = 10                              ' steering lifetimes, each one start (B-2: "several starts")
     SK_WALKS              = 3                               ' the last this many lifetimes also walk (B-5)
     SK_PHASES             = 3
@@ -10452,6 +10501,14 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
     HSW_TOK_COUNT         = wheelL.HSW_HALLS_02 + 1         ' tokHallSwap by its HSW_*
     TOKMAX_SKNEG_KIND     = 5
     TOKMAX_SKNEG_WHICH    = 8
+    ' task 3610: the winding check (the motor object's WND_* reached as wheelL.<CONST>)
+    SK_WIND_LIVES         = 2                               ' dual-start: lifetimes 0 .. SK_WIND_LIVES-1 arm it
+    SK_WIND_PAIRS         = 3                               ' U->V, V->W, W->U: pair p drives phase p, returns through p+1
+    WIND_R_LO_MOHM        = 100                             ' PROVISIONAL plausibility band for one pair, mohm
+    WIND_R_HI_MOHM        = 1_500
+    WIND_SPREAD_PCT       = 20                              ' a lifetime's pairs each within this % of their mean
+    WND_TOK_COUNT         = wheelL.WND_UNSETTLED + 1        ' tokWndState is indexed by the library's WND_*
+    TOKMAX_WND            = 11                              ' NOT_VISIBLE
 
 DAT ' ---- START tables ----
 
@@ -10459,6 +10516,7 @@ tokPack         BYTE    "NOT_FITTED", 0, "ABSENT", 0, "PRESENT", 0
 tokSkNegKind    BYTE    "NONE", 0, "PHASE", 0, "SWAP", 0                                ' indexed by SKNEG_*
 tokPrbPhase     BYTE    "NONE", 0, "U", 0, "V", 0, "W", 0                               ' by PRB_*
 tokHallSwap     BYTE    "NONE", 0, "HALLS_01", 0, "HALLS_12", 0, "HALLS_02", 0          ' by HSW_*
+tokWndState     BYTE    "NOT_RUN", 0, "MEASURED", 0, "NOT_VISIBLE", 0, "TRIPPED", 0, "UNSETTLED", 0   ' by WND_*
 
 VAR { START state -- cog 0 only }
 
@@ -10481,6 +10539,10 @@ VAR { START state -- cog 0 only }
     LONG    bSkNegArmed                                     ' task 3614: this lifetime's start carried the build's negative
     LONG    skNegSel                                        ' ...its PRB_* (PHASE) or HSW_* (SWAP) selection
     LONG    skNegErr                                        ' ...the hook's return
+    LONG    bSkWindArmed                                    ' task 3610: this lifetime's start carried the winding check
+    LONG    skWindState[INST_MOTORS * SK_WIND_PAIRS]        ' [slot * SK_WIND_PAIRS + pair]: WND_*
+    LONG    skWindMohm[INST_MOTORS * SK_WIND_PAIRS]         ' ...the pair's resistance when WND_MEASURED, mohm
+    LONG    skWindMv[INST_MOTORS * SK_WIND_PAIRS]           ' ...its net DC-link reading, mV
     ' one walk (skWalk())
     LONG    bSkWalkRan                                      ' checkWiring() was called
     LONG    skWalkErr                                       ' its return
@@ -10517,6 +10579,12 @@ VAR { START state -- cog 0 only }
     LONG    sfSkPhNegBad                                    ' ...whose failed mask was not exactly the withheld phase's bit
     LONG    sfSkSwNegN                                      ' SWNEG (task 3614): armed walks run, LEFT
     LONG    sfSkSwNegBad                                    ' ...whose HLT_WIRING was not judged failed
+    LONG    sfSkWindRN[INST_MOTORS]                         ' WINDR (task 3610): pairs read, dual-start
+    LONG    sfSkWindRBad[INST_MOTORS]                       ' ...not WND_MEASURED or outside WIND_R_LO_MOHM .. WIND_R_HI_MOHM
+    LONG    sfSkWindSpN[INST_MOTORS]                        ' WINDSPR: armed lifetimes read, dual-start
+    LONG    sfSkWindSpBad[INST_MOTORS]                      ' ...whose pairs were not all MEASURED within WIND_SPREAD_PCT
+    LONG    sfSkWindNgN                                     ' WINDNEG: armed lifetimes read, LEFT, START_NEG_PHASE
+    LONG    sfSkWindNgBad                                   ' ...whose pair states were not exactly the withheld phase's
 
 PRI skResetCells() | slotIdx
 ' Clear the START part's cell accumulators (initRunState()): every count 0, every least POSX and greatest NEGX, so a
@@ -10540,12 +10608,18 @@ PRI skResetCells() | slotIdx
         skFolMinPct[slotIdx] := POSX
         sfSkWalkN[slotIdx] := 0
         sfSkWalkBad[slotIdx] := 0
+        sfSkWindRN[slotIdx] := 0
+        sfSkWindRBad[slotIdx] := 0
+        sfSkWindSpN[slotIdx] := 0
+        sfSkWindSpBad[slotIdx] := 0
     sfSkPackN := 0
     sfSkPackBad := 0
     sfSkPhNegN := 0
     sfSkPhNegBad := 0
     sfSkSwNegN := 0
     sfSkSwNegBad := 0
+    sfSkWindNgN := 0
+    sfSkWindNgBad := 0
 
 PRI segStartChecks() | lifeIdx, slotIdx
 ' SKCHECK (part START, task 3613): SK_LIVES steering lifetimes, each one start with its reads and its floated window
@@ -10572,11 +10646,12 @@ PRI bSkWalkLife(lifeIdx) : bWalk
     bWalk := (BUILD_NO_WALK == FALSE) and (lifeIdx >= (SK_LIVES - SK_WALKS))
 
 PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
-' One steering lifetime: arm the build's negative, if any (skArmNeg(), BM-SKNEG); start (bSteerStart(), BM-SSTART);
-' read what start() judged (skReadHealth()) before anything else; whenever start() returned a cog, ready or not, what
+' One steering lifetime: arm the build's negative, if any (skArmNeg(), BM-SKNEG), and the winding check, if this
+' lifetime carries it (skArmWind(), task 3610); start (bSteerStart(), BM-SSTART); read what start() judged
+' (skReadHealth(), then skReadWinding()) before anything else; whenever start() returned a cog, ready or not, what
 ' both drivers hold (abiDumpSteer(), BM-ABI*, task 3615); the floated window (skZeroWindow()); fold;
-' BM-SKHEALTH and a BM-SKPROBE per wheel; on a walk lifetime the walk, BM-SKWALK and the recovery of any fault it
-' caused; stop.
+' BM-SKHEALTH, a BM-SKPROBE per wheel and, on an armed lifetime, a BM-SKWIND per wheel; on a walk lifetime the walk,
+' BM-SKWALK and the recovery of any fault it caused; stop.
 '
 ' @param lifeIdx - 0..SK_LIVES-1
 ' @param bWalk - TRUE when this lifetime also walks
@@ -10592,10 +10667,12 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
         whyCode := WHY_ABORTED
     else
         skArmNeg(lifeIdx, bWalk)                            ' task 3614: before the start that consumes it
+        skArmWind(lifeIdx)                                  ' task 3610: likewise, after the phase it may sit beside
         if bSteerStart(SEG_SKCHECK) == FALSE
             whyCode := WHY_NO_COG
         else
             skReadHealth()                                  ' first: exactly what start() left
+            skReadWinding()
         if bSteerUp
             abiDumpSteer()                                  ' task 3615: both drivers, before anything is folded
         if whyCode == WHY_NONE
@@ -10604,9 +10681,13 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
         skLife := steerLife
     skFoldStart()
     skFoldPhaseNeg()
+    skFoldWinding()
     emitSkHealth(bWalk, whyCode)
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         emitSkProbe(slotIdx, whyCode)
+    if bSkWindArmed
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            emitSkWind(slotIdx, whyCode)
     if bWalk and (whyCode == WHY_NONE)
         skWalk()
         skFoldWalk()
@@ -10631,6 +10712,11 @@ PRI skStagingReset() | arrIdx
     bSkNegArmed := FALSE
     skNegSel := 0
     skNegErr := NO_ERROR
+    bSkWindArmed := FALSE
+    repeat arrIdx from 0 to (INST_MOTORS * SK_WIND_PAIRS) - 1
+        skWindState[arrIdx] := wheelL.WND_NOT_RUN
+        skWindMohm[arrIdx] := 0
+        skWindMv[arrIdx] := 0
     repeat arrIdx from 0 to (INST_MOTORS * SK_PROBE_LONGS) - 1
         skProbe[arrIdx] := 0
     repeat arrIdx from 0 to (INST_MOTORS * SK_PHASES) - 1
@@ -10975,6 +11061,127 @@ PRI emitSkNeg(lifeIdx) | pWhich
     whyField(WHY_NONE)
     emitRecord()
 
+PRI skArmWind(lifeIdx)
+' Task 3610 (R19.4 1e): arm the driver's winding check on both wheels before the start that consumes it -- in the
+' dual-start build lifetimes 0 .. SK_WIND_LIVES-1, in the START_NEG_PHASE build every lifetime (after skArmNeg() has
+' withheld its LEFT phase), in any other build none. THE ROTORS MOVE at that start, to each pair's alignment. Nothing
+' prints here: every armed lifetime's BM-SKWIND carries what the check read.
+'
+' @param lifeIdx - 0..SK_LIVES-1
+
+    if (BUILD_WIND == SKWIND_NEG) or ((BUILD_WIND == SKWIND_POS) and (lifeIdx < SK_WIND_LIVES))
+        beat(CP_LIB_STEER_START)
+        steering.testSetWindingProbe(TRUE)
+        beat(CP_LIB_STEER_START)
+        bSkWindArmed := TRUE
+
+PRI skReadWinding() | pairIdx
+' Task 3610: each wheel's three winding pairs (U->V, V->W, W->U) from the start just made, read right after
+' skReadHealth(), on an armed lifetime only: an unarmed start measures nothing of its own.
+'
+' @local pairIdx - 0..SK_WIND_PAIRS-1, the pair; the right wheel's entries are SK_WIND_PAIRS on
+
+    if bSkWindArmed
+        beat(CP_LIB_STEER_QUERY)
+        repeat pairIdx from 0 to SK_WIND_PAIRS - 1
+            skWindState[pairIdx], skWindMohm[pairIdx], skWindMv[pairIdx] := steering.testLeftGetWinding(pairIdx)
+            skWindState[SK_WIND_PAIRS + pairIdx], skWindMohm[SK_WIND_PAIRS + pairIdx], skWindMv[SK_WIND_PAIRS + pairIdx] := steering.testRightGetWinding(pairIdx)
+        beat(CP_LIB_STEER_QUERY)
+
+PRI skFoldWinding() | slotIdx, pairIdx, windBase, sumMohm, meanMohm, bAllMeasured, bLifeOk, withIdx, wantState
+' Task 3610: fold one armed lifetime whose start()'s verdicts were read into the winding cells.
+'  dual-start, per wheel: WINDR counts each pair, bad unless WND_MEASURED and WIND_R_LO_MOHM .. WIND_R_HI_MOHM;
+'   WINDSPR counts the lifetime, bad unless all three pairs are MEASURED and each lies within WIND_SPREAD_PCT of
+'   their mean.
+'  START_NEG_PHASE, LEFT only: WINDNEG counts the lifetime, bad unless the two pairs containing the withheld phase
+'   (pair p drives phase p and returns through p+1) are WND_NOT_VISIBLE and the third is WND_MEASURED. Three MEASURED
+'   (the hook did not take) and the wrong pair dark both fail it.
+'
+' @local slotIdx - motor slot
+' @local pairIdx - 0..SK_WIND_PAIRS-1: U->V, V->W, W->U
+' @local windBase - this wheel's first index in the skWind* arrays
+' @local sumMohm - the lifetime's MEASURED resistances summed, mohm
+' @local meanMohm - their mean, mohm
+' @local bAllMeasured - every pair read WND_MEASURED
+' @local bLifeOk - the lifetime's reading held (WINDSPR or WINDNEG)
+' @local withIdx - the withheld phase as a pair index, 0..SK_WIND_PAIRS-1
+' @local wantState - the WND_* a pair must read under the withheld phase
+
+    if bSkWindArmed and bSkHealthRead
+        if BUILD_WIND == SKWIND_POS
+            repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                windBase := slotIdx * SK_WIND_PAIRS
+                sumMohm := 0
+                bAllMeasured := TRUE
+                repeat pairIdx from 0 to SK_WIND_PAIRS - 1
+                    sfSkWindRN[slotIdx] := (sfSkWindRN[slotIdx] + 1) <# LIM_SMALL
+                    if skWindState[windBase + pairIdx] <> wheelL.WND_MEASURED
+                        bAllMeasured := FALSE
+                        sfSkWindRBad[slotIdx] := (sfSkWindRBad[slotIdx] + 1) <# LIM_SMALL
+                    else
+                        sumMohm += skWindMohm[windBase + pairIdx]
+                        if (skWindMohm[windBase + pairIdx] < WIND_R_LO_MOHM) or (skWindMohm[windBase + pairIdx] > WIND_R_HI_MOHM)
+                            sfSkWindRBad[slotIdx] := (sfSkWindRBad[slotIdx] + 1) <# LIM_SMALL
+                sfSkWindSpN[slotIdx] := (sfSkWindSpN[slotIdx] + 1) <# LIM_SMALL
+                bLifeOk := bAllMeasured
+                if bAllMeasured
+                    meanMohm := sumMohm / SK_WIND_PAIRS
+                    repeat pairIdx from 0 to SK_WIND_PAIRS - 1
+                        if (abs(skWindMohm[windBase + pairIdx] - meanMohm) * SK_PCT_SCALE) > (meanMohm * WIND_SPREAD_PCT)
+                            bLifeOk := FALSE
+                if bLifeOk == FALSE
+                    sfSkWindSpBad[slotIdx] := (sfSkWindSpBad[slotIdx] + 1) <# LIM_SMALL
+        elseif (BUILD_WIND == SKWIND_NEG) and bSkNegArmed
+            withIdx := skNegSel - wheelL.PRB_U
+            windBase := SLOT_LEFT * SK_WIND_PAIRS
+            bLifeOk := TRUE
+            repeat pairIdx from 0 to SK_WIND_PAIRS - 1
+                wantState := wheelL.WND_MEASURED
+                if (pairIdx == withIdx) or (((pairIdx + 1) // SK_WIND_PAIRS) == withIdx)
+                    wantState := wheelL.WND_NOT_VISIBLE
+                if skWindState[windBase + pairIdx] <> wantState
+                    bLifeOk := FALSE
+            sfSkWindNgN := (sfSkWindNgN + 1) <# LIM_SMALL
+            if bLifeOk == FALSE
+                sfSkWindNgBad := (sfSkWindNgBad + 1) <# LIM_SMALL
+
+PRI emitSkWind(slotIdx, whyCode) | windBase
+' BM-SKWIND (task 3610): one wheel's winding check at an armed start, printed per wheel on every armed lifetime --
+' per pair (uv: U->V, vw: V->W, wu: W->U) its WND_* state, its resistance (<pair>_mohm, NA unless MEASURED) and its
+' net DC-link reading over the rest zero (<pair>_mV); every pair field NA when start()'s verdicts were not read.
+' Worst case 207 bytes.
+'
+' @param slotIdx - motor slot
+' @param whyCode - why nothing was read, WHY_NONE when it was
+'
+' @local windBase - this wheel's first index in the skWind* arrays
+
+    windBase := slotIdx * SK_WIND_PAIRS
+    recBegin(@"BM-SKWIND")
+    benchLog.naNumField(@"life", skLife, LIM_SMALL, skLife > 0)
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    windPairFields(@"uv", @"uv_mohm", @"uv_mV", windBase)
+    windPairFields(@"vw", @"vw_mohm", @"vw_mV", windBase + 1)
+    windPairFields(@"wu", @"wu_mohm", @"wu_mV", windBase + 2)
+    whyField(whyCode)
+    emitRecord()
+
+PRI windPairFields(pStateName, pMohmName, pMvName, arrIdx)
+' BM-SKWIND's three fields for one pair: the state token (NA unread), the resistance (NA unless WND_MEASURED) and the
+' net mV (NA unread). Worst case 45 bytes: state 2 + 2 + TOKMAX_WND, mohm 2 + 7 + 7, mV 2 + 5 + 7.
+'
+' @param pStateName - the state field's name
+' @param pMohmName - the resistance field's name
+' @param pMvName - the net reading field's name
+' @param arrIdx - the pair's index in the skWind* arrays
+
+    if bSkHealthRead
+        benchLog.tokenField(pStateName, tokenAt(@tokWndState, WND_TOK_COUNT, skWindState[arrIdx]), TOKMAX_WND)
+    else
+        benchLog.textField(pStateName, @sSfNa)
+    benchLog.naNumField(pMohmName, skWindMohm[arrIdx], LIM_SMALL, bSkHealthRead and (skWindState[arrIdx] == wheelL.WND_MEASURED))
+    benchLog.naNumField(pMvName, skWindMv[arrIdx], LIM_SMALL, bSkHealthRead)
+
 PRI emitStartCells() | slotIdx, side
 ' The START part's judged cells, each NOMEAS when nothing measured it. Per motor, the probe's control before the probe:
 '
@@ -10990,6 +11197,16 @@ PRI emitStartCells() | slotIdx, side
 '  PHNEG    - COUNT: armed starts whose LEFT failed mask was not exactly the withheld phase's bit (START_NEG_PHASE)
 '  SWNEG    - COUNT: armed walks whose LEFT HLT_WIRING was not judged failed; NOMEAS with no walk (START_NEG_SWAP)
 '
+' and the winding check's (task 3610), each only in its own build, each passing at 0 and failing at 1 or more:
+'
+'  WINDR    - COUNT per motor (dual-start): pairs not WND_MEASURED (NOT_RUN, NOT_VISIBLE, TRIPPED, UNSETTLED), or
+'             MEASURED under WIND_R_LO_MOHM or over WIND_R_HI_MOHM; NOMEAS when no armed start was read
+'  WINDSPR  - COUNT per motor (dual-start): armed lifetimes whose three pairs were not all MEASURED, or any pair lay
+'             more than WIND_SPREAD_PCT from the three's mean
+'  WINDNEG  - COUNT, LEFT (START_NEG_PHASE): armed lifetimes in which either pair containing the withheld phase was
+'             not WND_NOT_VISIBLE, or the third was not WND_MEASURED -- three MEASURED (the hook did not take) fails
+'             it, as does the wrong pair going dark
+'
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
 
@@ -11003,11 +11220,16 @@ PRI emitStartCells() | slotIdx, side
             emitSignoffNotBuilt(@sSfCellSkWalk, side, @sSfCritSkWalk)
         else
             emitSignoff(@sSfCellSkWalk, side, @sSfCritSkWalk, sfSkWalkN[slotIdx] > 0, sfSkWalkBad[slotIdx], SK_BAD_LO, SK_BAD_HI, sfSkWalkN[slotIdx], @sSfUnitsCount)
+        if BUILD_WIND == SKWIND_POS                         ' task 3610
+            emitSignoff(@sSfCellSkWindR, side, @sSfCritSkWindR, sfSkWindRN[slotIdx] > 0, sfSkWindRBad[slotIdx], SK_BAD_LO, SK_BAD_HI, sfSkWindRN[slotIdx], @sSfUnitsCount)
+            emitSignoff(@sSfCellSkWindSp, side, @sSfCritSkWindSp, sfSkWindSpN[slotIdx] > 0, sfSkWindSpBad[slotIdx], SK_BAD_LO, SK_BAD_HI, sfSkWindSpN[slotIdx], @sSfUnitsCount)
     emitSignoff(@sSfCellSkPack, SIDE_NONE, @sSfCritSkPack, sfSkPackN > 0, sfSkPackBad, SK_BAD_LO, SK_BAD_HI, sfSkPackN, @sSfUnitsCount)
     if BUILD_NEG == SKNEG_PHASE
         emitSignoff(@sSfCellSkPhNeg, SIDE_LEFT, @sSfCritSkPhNeg, sfSkPhNegN > 0, sfSkPhNegBad, SK_BAD_LO, SK_BAD_HI, sfSkPhNegN, @sSfUnitsCount)
     elseif BUILD_NEG == SKNEG_SWAP
         emitSignoff(@sSfCellSkSwNeg, SIDE_LEFT, @sSfCritSkSwNeg, sfSkSwNegN > 0, sfSkSwNegBad, SK_BAD_LO, SK_BAD_HI, sfSkSwNegN, @sSfUnitsCount)
+    if BUILD_WIND == SKWIND_NEG                             ' task 3610
+        emitSignoff(@sSfCellSkWindNg, SIDE_LEFT, @sSfCritSkWindNg, sfSkWindNgN > 0, sfSkWindNgBad, SK_BAD_LO, SK_BAD_HI, sfSkWindNgN, @sSfUnitsCount)
 
 PRI emitSkBuild() | nWalks
 ' BM-SKBUILD: the START part's compiled, pre-registered numbers, printed before anything moves -- the driver's own
@@ -15290,14 +15512,15 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
   ' THE DUMP IS THE INSTRUMENT (D2): every value is the long as the driver holds it -- never scaled, clamped, decoded
   '  or named by a token -- in VAR declaration order under the VAR's own name, so a log reads against that block
   '  without the source. Each wheel's runs are copied with one longmove() apiece, before anything is printed, so the
-  '  seven records describe one moment and not seven. The names are tokAbiName's, written from the VAR block; BM-ABIL
+  '  eight records describe one moment and not eight. The names are tokAbiName's, written from the VAR block; BM-ABIL
   '  prints the driver's own st_n and par_n beside them, so a driver whose runs changed length shows in the log
   '  rather than silently shifting every name after the change.
   '
   ' Records, each worst case under 280 bytes (header: tag 8 + seq 15 + where 14 + motor 12 + life 13 = 62; a raw
   '  field is 2 + len(name) + 14, "-2_147_483_648"): BM-ABIL the launch run, motorCog, st_n, par_n, why (232); BM-ABIS1
   '  drive_u .. sense_i_mV (235); BM-ABIS2 hall .. drv_state (217); BM-ABIS3 hall_missed .. fault (246); BM-ABIP1
-  '  offset_fwd .. dead_gap (239); BM-ABIP2 ramp_down .. i_limit_k (256); BM-ABIP3 duty_floor .. fault_clr (265).
+  '  offset_fwd .. dead_gap (239); BM-ABIP2 ramp_down .. i_limit_k (256); BM-ABIP3 duty_floor .. fault_clr (265); BM-ABIP4
+  '  probe_sink .. probe_y (111).
   '
   ' Where (token = tokAbiWhere):
   '  ABIW_SKSTART - part START, every lifetime whose steering start() returned a cog, both wheels through the steering
@@ -15313,10 +15536,10 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
 
     ABI_LAUNCH_LONGS = 4                                    ' pinbase, params_ptr, targetAngle, targetIncre
     ABI_STATUS_LONGS = 21                                   ' drive_u .. fault_resyncs (DRVR_STATUS_LONGS_COUNT, 20), then fault
-    ABI_PARAMS_LONGS = 23                                   ' offset_fwd .. fault_clr (DRVR_PARAMS_LONGS_COUNT)
+    ABI_PARAMS_LONGS = 25                                   ' offset_fwd .. probe_y (DRVR_PARAMS_LONGS_COUNT)
     ABI_STATUS_BASE  = ABI_LAUNCH_LONGS                     ' the status run's first long in a wheel's abiSnap row
     ABI_PARAMS_BASE  = ABI_STATUS_BASE + ABI_STATUS_LONGS   ' ...and the parameter run's
-    ABI_LONGS        = ABI_PARAMS_BASE + ABI_PARAMS_LONGS   ' 48 per wheel, the entries in tokAbiName
+    ABI_LONGS        = ABI_PARAMS_BASE + ABI_PARAMS_LONGS   ' 50 per wheel, the entries in tokAbiName
     ' each record's [first, last] in a wheel's abiSnap row, declaration order
     ABI_S1_FIRST = ABI_STATUS_BASE                          ' drive_u
     ABI_S2_FIRST = ABI_STATUS_BASE + 7                      ' hall
@@ -15324,7 +15547,8 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
     ABI_P1_FIRST = ABI_PARAMS_BASE                          ' offset_fwd
     ABI_P2_FIRST = ABI_PARAMS_BASE + 7                      ' ramp_down
     ABI_P3_FIRST = ABI_PARAMS_BASE + 15                     ' duty_floor
-    ABI_LAST     = ABI_LONGS - 1                            ' fault_clr
+    ABI_P4_FIRST = ABI_PARAMS_BASE + 23                     ' probe_sink
+    ABI_LAST     = ABI_LONGS - 1                            ' probe_y
 
 DAT ' ---- ABI dump tables ----
 
@@ -15342,6 +15566,7 @@ tokAbiName      BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "target
                 BYTE    "ramp_inc", 0, "i_limit_k", 0
                 BYTE    "duty_floor", 0, "hold_duty", 0, "hold_short", 0, "fault_mode", 0, "brake_on", 0
                 BYTE    "probe_phase", 0, "force_seq", 0, "fault_clr", 0
+                BYTE    "probe_sink", 0, "probe_y", 0
 ' the one long lineAddNum() cannot negate: NEGX printed as the signed decimal it is
 sAbiNegx        BYTE    "-2_147_483_648", 0
 
@@ -15413,7 +15638,7 @@ PRI abiSnapshot(slotIdx, pLaunch, pStatus, pParams) | rowBase
     longmove(@abiSnap[rowBase + ABI_PARAMS_BASE], pParams, ABI_PARAMS_LONGS)
 
 PRI emitAbi(slotIdx, whereCode, lifeValue) | rowBase, longIdx
-' BM-ABIL, then BM-ABIS1..3 and BM-ABIP1..3, from one wheel's abiSnap row (sizes in the section's CON note).
+' BM-ABIL, then BM-ABIS1..3 and BM-ABIP1..4, from one wheel's abiSnap row (sizes in the section's CON note).
 '
 ' @param slotIdx - motor slot
 ' @param whereCode - ABIW_* value
@@ -15442,7 +15667,8 @@ PRI emitAbi(slotIdx, whereCode, lifeValue) | rowBase, longIdx
     emitAbiRun(@"BM-ABIS3", slotIdx, whereCode, lifeValue, ABI_S3_FIRST, ABI_P1_FIRST - 1)
     emitAbiRun(@"BM-ABIP1", slotIdx, whereCode, lifeValue, ABI_P1_FIRST, ABI_P2_FIRST - 1)
     emitAbiRun(@"BM-ABIP2", slotIdx, whereCode, lifeValue, ABI_P2_FIRST, ABI_P3_FIRST - 1)
-    emitAbiRun(@"BM-ABIP3", slotIdx, whereCode, lifeValue, ABI_P3_FIRST, ABI_LAST)
+    emitAbiRun(@"BM-ABIP3", slotIdx, whereCode, lifeValue, ABI_P3_FIRST, ABI_P4_FIRST - 1)
+    emitAbiRun(@"BM-ABIP4", slotIdx, whereCode, lifeValue, ABI_P4_FIRST, ABI_LAST)
 
 PRI emitAbiRun(pTag, slotIdx, whereCode, lifeValue, firstIdx, lastIdx) | rowBase, longIdx
 ' One BM-ABIS* / BM-ABIP* record: the header, then abiSnap[firstIdx .. lastIdx] of the wheel's row, raw, named.
@@ -18027,6 +18253,11 @@ PRI emitSignoffDecls()
                     emitSignoffDecl(@sSfCellSkPhNeg)
                 elseif BUILD_NEG == SKNEG_SWAP
                     emitSignoffDecl(@sSfCellSkSwNeg)
+                if BUILD_WIND == SKWIND_POS                 ' task 3610: the winding cells, likewise
+                    emitSignoffDecl(@sSfCellSkWindR)
+                    emitSignoffDecl(@sSfCellSkWindSp)
+                elseif BUILD_WIND == SKWIND_NEG
+                    emitSignoffDecl(@sSfCellSkWindNg)
             PART_SPIN:
                 emitSignoffDecl(@sSfCellNoStallP)
                 emitSignoffDecl(@sSfCellDbgMaskP)
@@ -18091,7 +18322,8 @@ PRI emitSignoffs() | slotIdx, side
 '         faulted); B4PULSE NOT_BUILT (emitFaultRespCells())
 '  START  NOSTALL BOOL; DBGMASK BOOL; per motor HEALTH, RZSPREAD, PROBE and WALK COUNT (WALK NOT_BUILT in the
 '         START_NO_WALK build) and PRBFLR MV, the control before the probe; PACK COUNT; PHNEG COUNT (LEFT, the
-'         START_NEG_PHASE build only) or SWNEG COUNT (LEFT, the START_NEG_SWAP build only) (emitStartCells())
+'         START_NEG_PHASE build only) or SWNEG COUNT (LEFT, the START_NEG_SWAP build only); WINDR and WINDSPR COUNT
+'         per motor (dual-start only) or WINDNEG COUNT (LEFT, START_NEG_PHASE only) (emitStartCells())
 '  SPIN   NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; SPINSTOP, SPINOFF, SPINDIR COUNT and CRPCOAST, CRPLOW TICKS (BOTH);
 '         per motor RSTPROV, SPINHUNT, SPINERR COUNT, SPINSTRT PERMILLE, SPINPEAK, SPINSYM, SPINCTL, SPINLEAD X100,
 '         SPINFOL COUNT, SPINPLAT PCT, CREEP TICKS, CRPHOLD BOOL; LAGBOUND COUNT per motor (emitSpinCells())
