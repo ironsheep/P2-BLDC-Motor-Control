@@ -311,6 +311,22 @@
 ''               new constants and the build's wheel order, since BM-FRBUILD has no room under 280 bytes). -D
 ''               FRESP_RIGHT_FIRST (tier dual-fault-rightfirst) runs the RIGHT wheel's own FLTRESP trials before the
 ''               LEFT's. The where token gains NOMOTION. No existing record changes shape
+''               25 Sep 2026 -- SRC_REV=45, FMT 29: task 3621 (R20.1 part 3, DOCs/plans/DRIVER-REPORTING-DESIGN.md SS6). The
+''               driver now reports why a drive ended (getStopReason()) and what it handled on its own (getEvent()), and
+''               start() refuses a start check that still fails after its retries. Cog 0 reads the event log by DRAINING
+''               it (evDrain()): every event is printed as the new BM-EV and folded into the cell that judges it. New
+''               cells: FAULTRESP -- R20-DUAL-SR-FAULT, R20-DUAL-SR-FLOST, R20-DUAL-SR-PARTNER, R20-DUAL-FRONTST-EV and
+''               R20-T0-EV-LATE (new records BM-SR, BM-FRONTST after each FLTPLAT trial); part D -- R20-DUAL-EV-FOLDBACK,
+''               R20-DUAL-EV-CLIMIT, R20-DUAL-EV-PATH and R20-T0-EV-LATE (new BM-EVTOT); START -- R20-DUAL-REFUSE, -OPTOUT,
+''               -RETRY, -NOREFUSE, -EV-WALKGUARD, -EV-HALLMISSED, -EV-HALLILL and R20-PACK-EV, each in its own build.
+''               START_NEG_PHASE's lifetimes (now 12) rotate three ways: opt-out (setStartChecks(FALSE), where PHNEG-X and
+''               WINDNEG-X are judged exactly as before), refusal, and withhold-first. dual-start-nowalk opts out. A start
+''               that returns -1 prints BM-SREFUSE (steering) or BM-REFUSE (a wheel): the cause from getError() and every
+''               getHealth() mask. The stall watchdog allows a start its derived worst case, WD_START_GRACE_MS, on top of
+''               WD_STALL_MS (BM-BUILD appends wd_start_ms). BM-SKHEALTH gains refuse, l_rec, r_rec and BM-SKNEG mode, each
+''               just before why, which stays last.
+''               The ABI dump names the 21-long status run (foldback_frames) and fault (BM-ABIS3 gains foldback_frames).
+''               TOKMAX_CELL goes to 22 for the two longest R20 ids
 ''
 '' =================================================================================================
 
@@ -377,8 +393,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 44                                      ' hand-bumped whenever this file changes
-    FMT_VERSION = 28                                        ' BM- record-format version
+    SRC_REV     = 45                                      ' hand-bumped whenever this file changes
+    FMT_VERSION = 29                                        ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -575,6 +591,12 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 #endif
 #endif
 #endif
+
+  ' Task 3621 (R20.1): the two START builds with no firmware negative, told apart for the reporting cells each judges:
+  '  BUILD_START_POS - dual-start: every start must be taken (NOREFUSE), and no retry, guard trip or hall event reported
+  '  BUILD_START_B1  - dual-start-nowalk (B-1, a hall connector unplugged): opts out of the refusal, reports illegal codes
+    BUILD_START_POS = (BUILD_NEG == SKNEG_NONE) & (BUILD_NO_WALK == FALSE)
+    BUILD_START_B1  = (BUILD_NEG == SKNEG_NONE) & BUILD_NO_WALK
 
 
 CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
@@ -1130,7 +1152,8 @@ CON { record widths and token lengths }
     TOKMAX_CP        = 10
     TOKMAX_TASK      = 5
     TOKMAX_BIN       = 6
-    TOKMAX_CELL      = 20
+    TOKMAX_CELL      = 22                                   ' task 3621: R20-DUAL-EV-HALLMISSED, the longest id
+    TOKMAX_STUDY     = 5                                    ' BM-NOTBUILT's study: B-4, B-5, R20.4
     TOKMAX_CRIT      = 18
     TOKMAX_UNITS     = 8
     TOKMAX_SFVERDICT = 9
@@ -1320,10 +1343,35 @@ CON { cog-0 progress checkpoints -- watchdog heartbeat contract (design sec 4.3)
 CON { watchdog cog }
 
 ' WD_STALL_MS sits above every legitimate un-beaten gap (DERIVED, design sec 4.3): testResetFault() <=
-' 2_030 ms; steering.driveForDistance() about 400 ms; steering.start() 100 ms.
+' 2_030 ms; steering.driveForDistance() about 400 ms.
     WD_STALL_MS       = 4_000
     WD_STACK_LONGS    = 128
     WD_STACK_SENTINEL = $5A5A_5A5A
+
+' A START IS THE ONE CALL THAT CAN BLOCK LONGER (task 3621, R20.1). Since start() re-runs a failing check before it
+'  refuses, one steering.start() or wheel start() can block cog 0 for many seconds, legitimately. So cog 0 grants the
+'  watchdog WD_START_GRACE_MS more, in wdGraceMs, for exactly the duration of that one call, and takes it back after.
+'  The grace is not a guess: it is every wait the library's steering start() can make, summed from the library's own
+'  constants at their worst (both wheels failing every refusing check, the winding check armed), and a wheel's start()
+'  makes a subset of the same waits for one wheel (its extra REQ_ACK_TIMEOUT_MS for the start note is under the
+'  steering start's own 100 ms ATN wait, which a wheel start does not make). WD_STALL_MS stays on top of it as the
+'  margin for the code between the waits, as it was for every other call:
+'   - the lockstep release's fixed wait                             STEER_ATN_WAIT_MS                      100
+'   - each wheel's rest-zero readiness bound                        2 x REST_ZERO_READY_TIMEOUT_MS          20
+'   - the shared rest-zero window                                   REST_ZERO_SAMPLE_COUNT x _SAMPLE_MS  1_000
+'   - per wheel (x2): the first attempt's lead probe                WD_PROBE_MS                            32
+'                     its winding check (armed: START part)         3 pairs x (WIND_SETTLE_MAX_MS + PROBE_SETTLE_MS)  915
+'                     START_CHECK_RETRIES retries, each the gap,
+'                     a fresh rest zero and the probe again          3 x (250 + 10 + 1_000 + 32)        3_876
+'   - the front cog's first pass                                    FRONT_START_TIMEOUT_MS + REQ_POLL_MS  ~101
+'  = about 10.9 s, so a start is watched against about 14.9 s, and every other call against WD_STALL_MS alone.
+    STEER_ATN_WAIT_MS   = 100                               ' isp_steering_2wheel start(): waitms(100) before the lockstep ATN
+    WD_PROBE_MS         = (3 * (wheelL.PROBE_SETTLE_MS + wheelL.PROBE_SAMPLES)) + wheelL.PROBE_SETTLE_MS    ' probeLeads(): 3 probes, then the settle
+    WD_WIND_MS          = 3 * (wheelL.WIND_SETTLE_MAX_MS + wheelL.PROBE_SETTLE_MS)     ' measureWindings(): 3 pairs at their bound
+    WD_REST_ZERO_MS     = wheelL.REST_ZERO_READY_TIMEOUT_MS + (wheelL.REST_ZERO_SAMPLE_COUNT * wheelL.REST_ZERO_SAMPLE_MS)
+    WD_RETRY_MS         = wheelL.START_CHECK_RETRY_MS + WD_REST_ZERO_MS + WD_PROBE_MS  ' one retry of every refusing check
+    WD_WHEEL_CHECKS_MS  = WD_PROBE_MS + WD_WIND_MS + (wheelL.START_CHECK_RETRIES * WD_RETRY_MS)  ' runStartChecks(), one wheel, worst
+    WD_START_GRACE_MS   = STEER_ATN_WAIT_MS + (2 * wheelL.REST_ZERO_READY_TIMEOUT_MS) + (wheelL.REST_ZERO_SAMPLE_COUNT * wheelL.REST_ZERO_SAMPLE_MS) + (2 * WD_WHEEL_CHECKS_MS) + wheelL.FRONT_START_TIMEOUT_MS + wheelL.REQ_POLL_MS
 
 CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
 
@@ -1769,6 +1817,8 @@ wdHeartbeat     LONG    0                                  ' beat() increments t
 wdCheckpoint    LONG    CP_INIT                             ' beat()'s last checkpoint id
 wdDeclaring     LONG    FALSE                               ' the watchdog's only write: TRUE as declareStall()'s
                                                              ' first act; cog 0 parks in beat() once it is set
+wdGraceMs       LONG    0                                   ' cog 0 only: WD_START_GRACE_MS while it is inside a start()
+                                                             ' call (task 3621), 0 otherwise; the watchdog adds it
 
 DAT { segment tables (design sec 4.4) }
 
@@ -2225,6 +2275,48 @@ sSfCritCrCoast  BYTE    "COAST_ROLLED_TICKS", 0
 sSfCritCrLow    BYTE    "LOWCEIL_CREPT", 0
 sSfCritCreep    BYTE    "CREEP_WHILE_HOLD", 0
 sSfCritCrHold   BYTE    "HELD_AT_WINDOW_END", 0
+' task 3621 (R20.1, DRIVER-REPORTING-DESIGN.md SS6): the driver's reporting. Each cell is declared only in the build
+'  that can judge it; where a cell's negative lives in another build, each build prints the half it holds under its
+'  own criterion, and the cell's verdict is both halves
+sSfCellSrFault  BYTE    "R20-DUAL-SR-FAULT", 0                  ' FAULTRESP: X-4 reads SR_FAULT_CONTROLLED, X-2 and HOOKREST not
+sSfCellSrLost   BYTE    "R20-DUAL-SR-FLOST", 0                  ' FAULTRESP: X-2, X-3, X-6 read SR_FAULT_LOST, X-4 not
+sSfCellSrPart   BYTE    "R20-DUAL-SR-PARTNER", 0                ' FLTPLAT: the other wheel reads SR_PARTNER
+sSfCellFrontEv  BYTE    "R20-DUAL-FRONTST-EV", 0                ' FLTPLAT: the fault pass's event burst inside the budget
+sSfCellEvLate   BYTE    "R20-T0-EV-LATE", 0                     ' every FRONTST: EV_LATE_PASS iff a late pass
+sSfCellEvFold   BYTE    "R20-DUAL-EV-FOLDBACK", 0               ' part D: the fold-back's engage and release, none at default limits
+sSfCellEvClim   BYTE    "R20-DUAL-EV-CLIMIT", 0                 ' part D: the derate's engage and release, none at default limits
+sSfCellEvPath   BYTE    "R20-DUAL-EV-PATH", 0                   ' part D: the path limiter's engage and release, none in STEERSEG
+sSfCellRefuse   BYTE    "R20-DUAL-REFUSE", 0                    ' START_NEG_PHASE: a withheld phase refuses the start, with its cause
+sSfCellOptOut   BYTE    "R20-DUAL-OPTOUT", 0                    ' START_NEG_PHASE: the same withheld phase, opted out, starts
+sSfCellRetry    BYTE    "R20-DUAL-RETRY", 0                     ' START_NEG_PHASE and dual-start: a first-attempt failure recovered, and reported
+sSfCellNoRefuse BYTE    "R20-DUAL-NOREFUSE", 0                  ' dual-start: a healthy start is not refused
+sSfCellEvGuard  BYTE    "R20-DUAL-EV-WALKGUARD", 0              ' dual-start-swapneg and dual-start: the walk guard's trip reported
+sSfCellEvMiss   BYTE    "R20-DUAL-EV-HALLMISSED", 0             ' dual-start-swapneg and dual-start: missed hall transitions reported
+sSfCellEvIll    BYTE    "R20-DUAL-EV-HALLILL", 0                ' dual-start-nowalk (B-1): illegal hall codes reported
+sSfCellPackEv   BYTE    "R20-PACK-EV", 0                        ' dual-start: the pack sensor's changes reported
+sSfCritSrFault  BYTE    "RESYNC_SR_AND_EV", 0
+sSfCritSrLost   BYTE    "LOST_SR_AND_EV", 0
+sSfCritSrPart   BYTE    "OTHER_IS_PARTNER", 0
+sSfCritFrontEv  BYTE    "BURST_PASS_950US", 0
+sSfCritLateRep  BYTE    "LATE_REPORTED", 0
+sSfCritLateNone BYTE    "NO_LATE_NO_EVENT", 0
+sSfCritEvFold   BYTE    "FOLD_EV_PAIRED", 0
+sSfCritEvClim   BYTE    "DERATE_EV_PAIRED", 0
+sSfCritEvPath   BYTE    "PATH_EV_PAIRED", 0
+sSfCritRefuse   BYTE    "REFUSED_WITH_CAUSE", 0
+sSfCritOptOut   BYTE    "OPTOUT_STARTS", 0
+sSfCritRetry    BYTE    "RETRY_REPORTED", 0
+sSfCritNoRetry  BYTE    "NO_SPURIOUS_RETRY", 0
+sSfCritNoRefuse BYTE    "HEALTHY_REFUSED", 0
+sSfCritGuardEv  BYTE    "GUARD_EV_ON_SWAP", 0
+sSfCritNoGuard  BYTE    "NO_GUARD_EV", 0
+sSfCritMissSum  BYTE    "MISSED_SUM_EQUAL", 0
+sSfCritNoHall   BYTE    "NO_HALL_EV", 0
+sSfCritIllSum   BYTE    "ILLEGAL_SUM_EQUAL", 0
+sSfCritNoIll    BYTE    "NO_ILLEGAL_EV", 0
+sSfCritPackQ    BYTE    "PACK_STEADY_NO_EV", 0
+sSfCritPackEv   BYTE    "PACK_UNPLUG_EV", 0
+sSfStudyR204    BYTE    "R20.4", 0
 sSfUnitsTicks   BYTE    "TICKS", 0
 sSfUnitsPm      BYTE    "PERMILLE", 0
 sSfUnitsX100    BYTE    "X100", 0
@@ -2466,6 +2558,18 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    ssLeftBoard
     LONG    ssRightBoard
     LONG    ssWhy
+    ' task 3621: a start that returned -1 -- BM-SREFUSE (steering) and BM-REFUSE (a wheel); read right after the call
+    LONG    bSsCalled                                       ' bSteerStart() called steering.start() (the instrument allowed it)
+    LONG    ssErr                                           ' steering getError(): the platform's code
+    LONG    ssLErr                                          ' ...the left wheel's
+    LONG    ssRErr                                          ' ...the right wheel's
+    LONG    ssChk[INST_MOTORS]                              ' getHealth(), per wheel: checked
+    LONG    ssFail[INST_MOTORS]                             ' ...failed
+    LONG    ssRec[INST_MOTORS]                              ' ...recovered
+    LONG    stErr                                           ' a wheel's getError()
+    LONG    stChk                                           ' its getHealth(): checked
+    LONG    stFail                                          ' ...failed
+    LONG    stRec                                           ' ...recovered
     LONG    fbTrial                                         ' BM-FBTRIAL
     LONG    fbRampInc
     LONG    fbIncre
@@ -2661,6 +2765,29 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    bSfFltStopRan[INST_MOTORS * MODE_COUNT]
     LONG    sfHallIllegal[INST_MOTORS]                      ' HALL (task 3571): %000 + %111 entries over this clock's lifetimes
     LONG    sfHallLives[INST_MOTORS]                        ' lifetimes folded into sfHallIllegal
+
+    ' task 3621 (R20.1): R20-T0-EV-LATE, per front-cog form as FRONTST's slots are ([0] the steering front cog, [1] the
+    '  single wheel's), and part D's event cells (r20ResetCells())
+    LONG    sfLateRepN[INST_MOTORS]                         ' FRONTST reads with a late pass
+    LONG    sfLateRepBad[INST_MOTORS]                       ' ...whose form's EV_LATE_PASS total was 0
+    LONG    sfLateNoneN[INST_MOTORS]                        ' FRONTST reads with no late pass
+    LONG    sfLateNoneBad[INST_MOTORS]                      ' ...whose form's EV_LATE_PASS total was not 0
+    LONG    dEvStages                                       ' part D's LIMIT steps drained (dEvStage())
+    LONG    dEvUnclean                                      ' ...whose drain was not clean
+    LONG    dFoldPairs                                      ' EV_FOLDBACK engage/release pairs across them, both logs
+    LONG    dFoldBadSeq                                     ' logs of a stage whose EV_FOLDBACK sequence was not well formed
+    LONG    dPathBadSeq                                     ' ...whose EV_PATH_LIMIT sequence was not
+    LONG    dPathPairs                                      ' EV_PATH_LIMIT pairs in the BLOCK stage
+    LONG    bDPathShort                                     ' the BLOCK step saw a wheel SHORT (its path-limiter view)
+    LONG    bDBlockDrained                                  ' the BLOCK stage was drained
+    LONG    dClimN                                          ' EV-CLIMIT: wheels judged in the DERATE stage
+    LONG    dClimBad                                        ' ...whose EV_CURRENT_LIMIT did not match the derate seen
+    LONG    bDClimPos                                       ' ...a wheel derated
+    LONG    dDefForms                                       ' default-limit forms whose totals were read (BM-EVTOT)
+    LONG    dDefFoldBad                                     ' ...with an EV_FOLDBACK
+    LONG    dDefClimBad                                     ' ...with an EV_CURRENT_LIMIT
+    LONG    bDDefSteer                                      ' STEERSEG's totals were read
+    LONG    dDefPathBad                                     ' ...and held an EV_PATH_LIMIT
 
 VAR { operator panel and attended-segment staging -- cog 0 only }
 
@@ -2901,6 +3028,7 @@ PRI initRunState() | slotIdx
     frResetCells()                                          ' task 3613: the FAULTRESP part's accumulators
     skResetCells()                                          ' task 3613: the START part's accumulators
     spResetCells()                                          ' task 3591: the SPIN part's accumulators
+    r20ResetCells()                                         ' task 3621: EV-LATE's and part D's event cells
 
 PRI runPart()
 ' Run this build's segments in the design's sec 4.1 order. Every segment after a run abort is emitted
@@ -3433,8 +3561,11 @@ PRI segCurrentLimits() | whyCode
         whyCode := WHY_NO_COG
     if whyCode == WHY_NONE
         dStepFoldBack()
+        dEvStage(EVST_D_FOLD)                               ' task 3621: each step's events, drained once it has settled
         dStepDerate()
+        dEvStage(EVST_D_DERATE)
         dStepBlocked()
+        dEvStage(EVST_D_BLOCK)
         dLimitRestore()                                     ' I11: the MOSFET values back, read back, before anything else
         steerStop()
     else
@@ -6115,6 +6246,107 @@ PRI dStepFrontStats(side) | nPasses, nLate, nMaxTicks, nStackHi, nStackOf, slotI
     bSfFrontRan[slotIdx] := (nPasses > 0)
     bSfFrontOk[slotIdx] := bHealthy
     emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi, nStackOf)
+    dEvDefaults(side, slotIdx, nLate)                       ' task 3621: this default-limit form's event totals, beside its FRONTST
+
+PRI dEvDefaults(side, formIdx, nLate) | lFold, rFold, lClim, rClim, lPath, rPath, nLateEv, stage
+' Task 3621: one of part D's DEFAULT-LIMIT forms -- the steering object in STEERSEG, or the single wheel in LIMIT's
+' wheel half -- read beside its FRONTST: getEventTotal() since its start for the kinds only a lowered limit should make,
+' printed as BM-EVTOT. These are the NEGATIVES of R20-DUAL-EV-FOLDBACK and -EV-CLIMIT (none of either at the shipped
+' limits), and STEERSEG's is R20-DUAL-EV-PATH's (a steering segment with no wheel short: no EV_PATH_LIMIT). Totals, not a
+' drain: they are never lost, however many stops the form's steps queued. The late count goes to R20-T0-EV-LATE.
+'
+' @param side - SIDE_BOTH (the steering object) or SIDE_LEFT (the single wheel)
+' @param formIdx - [0] the steering front cog, [1] the single wheel's
+' @param nLate - the form's late passes, from its FRONTST
+'
+' @local lFold - the left wheel's EV_FOLDBACK total (the single wheel's own)
+' @local rFold - the right wheel's (0 for the single wheel)
+' @local lClim - the left wheel's EV_CURRENT_LIMIT total
+' @local rClim - the right wheel's
+' @local lPath - the left wheel's EV_PATH_LIMIT total
+' @local rPath - the right wheel's
+' @local nLateEv - the form's EV_LATE_PASS total
+' @local stage - EVST_STEERSEG or EVST_WHEEL
+
+    rFold := 0
+    rClim := 0
+    rPath := 0
+    if side == SIDE_BOTH
+        stage := EVST_STEERSEG
+        beat(CP_LIB_STEER_QUERY)
+        lFold, rFold, _ := steering.getEventTotal(steering.EV_FOLDBACK)
+        lClim, rClim, _ := steering.getEventTotal(steering.EV_CURRENT_LIMIT)
+        lPath, rPath, _ := steering.getEventTotal(steering.EV_PATH_LIMIT)
+        _, _, nLateEv := steering.getEventTotal(steering.EV_LATE_PASS)
+        beat(CP_LIB_STEER_QUERY)
+        bDDefSteer := TRUE
+        if (lPath + rPath) <> 0
+            dDefPathBad := (dDefPathBad + 1) <# LIM_SMALL
+    else
+        stage := EVST_WHEEL
+        lFold := wheelEventTotal(side, wheelL.EV_FOLDBACK)
+        lClim := wheelEventTotal(side, wheelL.EV_CURRENT_LIMIT)
+        lPath := wheelEventTotal(side, wheelL.EV_PATH_LIMIT)
+        nLateEv := wheelEventTotal(side, wheelL.EV_LATE_PASS)
+    emitEvTot(stage, side, lFold, rFold, lClim, rClim, lPath, rPath, nLateEv)
+    dDefForms := (dDefForms + 1) <# LIM_SMALL
+    if (lFold + rFold) <> 0
+        dDefFoldBad := (dDefFoldBad + 1) <# LIM_SMALL
+    if (lClim + rClim) <> 0
+        dDefClimBad := (dDefClimBad + 1) <# LIM_SMALL
+    lateFold(formIdx, nLate, nLateEv)
+
+PRI dEvStage(stage) | logIdx, nPairs, bFormed, nCount, bOk, bRestored
+' Task 3621: drain the steering object's log after one of part D's three LIMIT steps (lowered current limits), EV_SETTLE_MS
+' after the step's stop, so the fold-back's release -- queued after a second of quiet -- is in the drain with its engage.
+' Folds R20-DUAL-EV-FOLDBACK (every stage), R20-DUAL-EV-CLIMIT (the DERATE stage) and R20-DUAL-EV-PATH (every stage's
+' pairing; the BLOCK stage's pair).
+'  EV_FOLDBACK and EV_PATH_LIMIT: per log, the sequence must be engage, release ... ending on a release (evPairs())
+'  EV_CURRENT_LIMIT, DERATE stage, per wheel against what dStepDerate() saw of the same wheel: a wheel that derated and
+'   came back logs D_DERATE_CONT_A then D_DERATE_PEAK_A; one that derated and did not come back, D_DERATE_CONT_A alone;
+'   one that never derated, nothing
+'
+' @param stage - EVST_D_FOLD, EVST_D_DERATE or EVST_D_BLOCK
+'
+' @local logIdx - EVI_LEFT or EVI_RIGHT
+' @local nPairs - pairs in one log
+' @local bFormed - that log's sequence was well formed
+' @local nCount - one wheel's EV_CURRENT_LIMIT events
+' @local bOk - that wheel's EV_CURRENT_LIMIT matched its derate
+' @local bRestored - dStepDerate() saw that wheel derate AND come back
+
+    waitBeat(EV_SETTLE_MS, CP_LOOP_REST)
+    evDrain(EVSRC_STEER, stage)
+    dEvStages := (dEvStages + 1) <# LIM_SMALL
+    if bEvdClean() == FALSE
+        dEvUnclean := (dEvUnclean + 1) <# LIM_SMALL
+    repeat logIdx from EVI_LEFT to EVI_RIGHT
+        nPairs, bFormed := evPairs(logIdx, EVQ_FOLD)
+        dFoldPairs := (dFoldPairs + nPairs) <# LIM_SMALL
+        if bFormed == FALSE
+            dFoldBadSeq := (dFoldBadSeq + 1) <# LIM_SMALL
+        nPairs, bFormed := evPairs(logIdx, EVQ_PATH)
+        if stage == EVST_D_BLOCK
+            dPathPairs := (dPathPairs + nPairs) <# LIM_SMALL
+        if bFormed == FALSE
+            dPathBadSeq := (dPathBadSeq + 1) <# LIM_SMALL
+        if stage == EVST_D_DERATE
+            nCount := evCount(logIdx, wheelL.EV_CURRENT_LIMIT)
+            bRestored := bSfDerateOk[logIdx]
+            if bSfDerateRan[logIdx] and bRestored
+                bOk := (nCount == 2) and (evSeqAt(logIdx, EVQ_CLIMIT, 0) == D_DERATE_CONT_A) and (evSeqAt(logIdx, EVQ_CLIMIT, 1) == D_DERATE_PEAK_A)
+            elseif bSfDerateRan[logIdx]
+                bOk := (nCount == 1) and (evSeqAt(logIdx, EVQ_CLIMIT, 0) == D_DERATE_CONT_A)
+            else
+                bOk := (nCount == 0)
+            if bSfDerateRan[logIdx]
+                bDClimPos := TRUE
+            dClimN := (dClimN + 1) <# LIM_SMALL
+            if (bOk == FALSE) or (bEvdClean() == FALSE)
+                dClimBad := (dClimBad + 1) <# LIM_SMALL
+    if stage == EVST_D_BLOCK
+        bDBlockDrained := TRUE
+        bDPathShort := (hpFirstShortMs[SLOT_LEFT] >= 0) or (hpFirstShortMs[SLOT_RIGHT] >= 0)
 
 PRI dStepCoopShut(side) | startMs, elapsedMs
 ' COOPSHUT: stop() returns inside D_COOPSHUT_MS.
@@ -8803,6 +9035,20 @@ VAR { FAULTRESP state -- cog 0 only }
     LONG    frRecMs                                         ' ...its ms since the failure
     LONG    frProbeWhy                                      ' what ended the probe short: NONE, ABORTED or MOTOR_RETIRED
     LONG    frTryMs                                         ' the try in hand: ms since the failure at its command
+    ' task 3621 (R20.1): the trial's stop reason (frReadAfter()), and the reporting cells' accumulators (frResetCells())
+    LONG    frSr                                            ' getStopReason() after the capture, beside the drain of its log
+    LONG    sfSrFaultN[INST_MOTORS]                         ' SR-FAULT: trials judged -- X-4 (the positive), X-2 and HOOKREST (the negatives)
+    LONG    sfSrFaultBad[INST_MOTORS]                       ' ...that did not read as pre-registered
+    LONG    bSfSrFaultPos[INST_MOTORS]                      ' ...an X-4 was judged
+    LONG    bSfSrFaultNeg[INST_MOTORS]                      ' ...an X-2 or HOOKREST was judged
+    LONG    sfSrLostN[INST_MOTORS]                          ' SR-FLOST: trials judged -- X-2, X-3, X-6, X6C (the positives), X-4 (the negative)
+    LONG    sfSrLostBad[INST_MOTORS]
+    LONG    bSfSrLostPos[INST_MOTORS]
+    LONG    bSfSrLostNeg[INST_MOTORS]
+    LONG    bSfPartRan[INST_MOTORS]                         ' SR-PARTNER, indexed by the wheel FLTPLAT faulted
+    LONG    bSfPartOk[INST_MOTORS]
+    LONG    bSfFrontEvRan[INST_MOTORS]                      ' FRONTST-EV, indexed by the wheel FLTPLAT faulted
+    LONG    bSfFrontEvOk[INST_MOTORS]
 
 PRI frResetCells() | arrIdx, slotIdx
 ' Clear the FAULTRESP part's cell accumulators (initRunState()): every count 0 and every ran FALSE, so a cell no
@@ -8837,6 +9083,18 @@ PRI frResetCells() | arrIdx, slotIdx
         bSfHookRan[slotIdx] := FALSE
         bSfHookOk[slotIdx] := FALSE
         bFrPreRetired[slotIdx] := FALSE
+        sfSrFaultN[slotIdx] := 0                            ' task 3621
+        sfSrFaultBad[slotIdx] := 0
+        bSfSrFaultPos[slotIdx] := FALSE
+        bSfSrFaultNeg[slotIdx] := FALSE
+        sfSrLostN[slotIdx] := 0
+        sfSrLostBad[slotIdx] := 0
+        bSfSrLostPos[slotIdx] := FALSE
+        bSfSrLostNeg[slotIdx] := FALSE
+        bSfPartRan[slotIdx] := FALSE
+        bSfPartOk[slotIdx] := FALSE
+        bSfFrontEvRan[slotIdx] := FALSE
+        bSfFrontEvOk[slotIdx] := FALSE
     repeat arrIdx from 0 to (INST_MOTORS * FR_GRADED_POINTS) - 1
         frGradedTicks[arrIdx] := 0
         frGradedMs[arrIdx] := 0
@@ -8957,6 +9215,7 @@ PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyC
         emitFrTrial(tid, side, motorIncre)
         emitFrResults(tid, side, slotIdx, motorIncre)
         frFold(slotIdx)
+        frSrFold(slotIdx)                                   ' task 3621: the stop reason and the events frReadAfter() read
         if isWheelUp(side)
             traceRecover(SEG_FLTRESP, side, tid, motorIncre, FAULT_COOL_MS)
         else
@@ -9282,7 +9541,8 @@ PRI frGuard(slotIdx, stopSide, bSecond, markMs) : outcome
 
 PRI frReadAfter(side)
 ' The reads that must see the driver as the fault left it, after the freeze and before any restore or recovery: the
-' re-sync count (testGetFaultResponse()) and the cause (getFaultCause()). A driver an abort stopped gives none.
+' re-sync count (testGetFaultResponse()), the cause (getFaultCause()), and (task 3621) the stop reason and this
+' lifetime's event log, drained (BM-EV, then BM-SR). A driver an abort stopped gives none.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 
@@ -9290,6 +9550,83 @@ PRI frReadAfter(side)
     if bFrReadsValid
         _, _, frResyncAfter := wheelFaultResponse(side)
         frCause := wheelFaultCause(side)
+        frSr := wheelStopReason(side)
+        evDrain(EVSRC_LEFT + (side - SIDE_LEFT), EVST_FRTRIAL)
+        emitSr(EVST_FRTRIAL, side, frSr, frSr, side == SIDE_LEFT, side == SIDE_RIGHT)
+
+PRI frSrFold(slotIdx) | bJudged, nStops, firstStop, secondStop, bOk
+' Fold one FLTRESP trial into R20-DUAL-SR-FAULT and R20-DUAL-SR-FLOST (task 3621, DRIVER-REPORTING-DESIGN.md SS6), from
+' frReadAfter()'s stop reason and drain. Judged only when the trial's fault -- and X-6's / X6C's second -- latched and
+' the reads were taken from a running driver. Each reading is exact: the stop reason, the EV_STOP sequence and the
+' fault events' counts, on a clean drain.
+'  X-4        - SR_FAULT_CONTROLLED; one EV_STOP of it; one EV_FAULT_RESYNC, value FC_LAG; no EV_FAULT. SR-FAULT's
+'               positive, and SR-FLOST's negative (it must not read SR_FAULT_LOST)
+'  X-2, X-3   - SR_FAULT_LOST; one EV_STOP of it; one EV_FAULT. SR-FLOST's positives; X-2 is also SR-FAULT's negative
+'               (it must not read SR_FAULT_CONTROLLED)
+'  X-6, X6C   - the escalation: SR_FAULT_LOST; EV_STOP SR_FAULT_CONTROLLED then SR_FAULT_LOST; one EV_FAULT_RESYNC and one
+'               EV_FAULT. SR-FLOST's positives
+'
+' @param slotIdx - motor slot (its log index too)
+'
+' @local bJudged - the trial can be judged
+' @local nStops - EV_STOP events in the drain
+' @local firstStop - the first EV_STOP's value
+' @local secondStop - the second's
+' @local bOk - the positive reading held
+
+    bJudged := bFrReadsValid and (frOutcome == FRO_FAULT)
+    if (frCell == FRC_X6) or (frCell == FRC_X6C)
+        bJudged &= (frOutcome2 == FRO_FAULT)
+    if bJudged
+        nStops := evCount(slotIdx, wheelL.EV_STOP)
+        firstStop := evSeqAt(slotIdx, EVQ_STOP, 0)
+        secondStop := evSeqAt(slotIdx, EVQ_STOP, 1)
+        case frCell
+            FRC_X4:
+                bOk := bEvdClean() and (frSr == wheelL.SR_FAULT_CONTROLLED) and (nStops == 1) and (firstStop == wheelL.SR_FAULT_CONTROLLED)
+                bOk &= (evCount(slotIdx, wheelL.EV_FAULT_RESYNC) == 1) and (evSum(slotIdx, wheelL.EV_FAULT_RESYNC) == wheelL.FC_LAG) and (evCount(slotIdx, wheelL.EV_FAULT) == 0)
+                srFaultNote(slotIdx, TRUE, bOk)
+                srLostNote(slotIdx, FALSE, frSr <> wheelL.SR_FAULT_LOST)
+            FRC_X2, FRC_X3:
+                bOk := bEvdClean() and (frSr == wheelL.SR_FAULT_LOST) and (nStops == 1) and (firstStop == wheelL.SR_FAULT_LOST)
+                bOk &= (evCount(slotIdx, wheelL.EV_FAULT) == 1)
+                srLostNote(slotIdx, TRUE, bOk)
+                if frCell == FRC_X2
+                    srFaultNote(slotIdx, FALSE, frSr <> wheelL.SR_FAULT_CONTROLLED)
+            other:
+                bOk := bEvdClean() and (frSr == wheelL.SR_FAULT_LOST) and (nStops == 2) and (firstStop == wheelL.SR_FAULT_CONTROLLED)
+                bOk &= (secondStop == wheelL.SR_FAULT_LOST) and (evCount(slotIdx, wheelL.EV_FAULT_RESYNC) == 1) and (evCount(slotIdx, wheelL.EV_FAULT) == 1)
+                srLostNote(slotIdx, TRUE, bOk)
+
+PRI srFaultNote(slotIdx, bPositive, bOk)
+' Count one instance of R20-DUAL-SR-FAULT.
+'
+' @param slotIdx - motor slot
+' @param bPositive - TRUE for X-4, FALSE for a negative (X-2, HOOKREST)
+' @param bOk - the instance read as pre-registered
+
+    sfSrFaultN[slotIdx] := (sfSrFaultN[slotIdx] + 1) <# LIM_SMALL
+    if bOk == FALSE
+        sfSrFaultBad[slotIdx] := (sfSrFaultBad[slotIdx] + 1) <# LIM_SMALL
+    if bPositive
+        bSfSrFaultPos[slotIdx] := TRUE
+    else
+        bSfSrFaultNeg[slotIdx] := TRUE
+
+PRI srLostNote(slotIdx, bPositive, bOk)
+' Count one instance of R20-DUAL-SR-FLOST.
+'
+' @param slotIdx - motor slot
+' @param bPositive - TRUE for X-2, X-3, X-6, X6C; FALSE for X-4, the negative
+' @param bOk - the instance read as pre-registered
+
+    sfSrLostN[slotIdx] := (sfSrLostN[slotIdx] + 1) <# LIM_SMALL
+    if bOk == FALSE
+        sfSrLostBad[slotIdx] := (sfSrLostBad[slotIdx] + 1) <# LIM_SMALL
+    if bPositive
+        bSfSrLostPos[slotIdx] := TRUE
+    else
+        bSfSrLostNeg[slotIdx] := TRUE
 
 PRI frRestore(side, slotIdx)
 ' I11: undo every side effect of the trial before anything is drained or judged -- the fault response to FR_SHIPPED at
@@ -9882,6 +10219,8 @@ PRI frPlatTrial(side, eMode) | slotIdx, otherIdx, tid, sid, whyCode, safeEvent, 
                 else
                     whyCode := WHY_NO_FAULT
         bCpFrozen := bInstFreeze(0)
+        if frOutcome == FRO_FAULT
+            frPlatReport(slotIdx, otherIdx)                 ' task 3621: reads only, as the fault left the platform
         frPlatRestore()                                     ' I11: before anything is drained or judged
     if whyCode <> WHY_NONE
         cpEnd := TEND_ABORT
@@ -9918,6 +10257,61 @@ PRI frPlatReset()
     frPlatRestJ := 0
     frPlatRestMs := 0
     bFrPlatSpinDn := FALSE
+
+PRI frPlatReport(fSlot, oSlot) | eLeftReason, eRightReason, eFaulted, eOther, eWant, bOk, nPasses, nLate, nMaxTicks, nStackHi, nStackOf, nLateEv
+' Task 3621: what the platform reports of one X-5 trial whose forced fault latched, read as the fault left it -- like
+' frReadAfter(), reads only, before frPlatRestore() (which stops the platform and would write nothing it could not):
+'  R20-DUAL-SR-PARTNER - both getStopReason()s and the drained log (BM-SR, BM-EV). The faulted wheel reads the response's
+'                        own reason, SR_FAULT_LOST under FR_SHIPPED (LEFT) or SR_FAULT_CONTROLLED under FR_GRADED (RIGHT),
+'                        with one EV_STOP of it; the other reads SR_PARTNER with one EV_STOP of it. The faulted wheel
+'                        reading PARTNER, or the other a fault reason, fails; so does an unclean drain
+'  R20-DUAL-FRONTST-EV - the steering front cog's loop health over this lifetime, whose worst pass includes the fault pass
+'                        and its burst of three events (SS2.3): worst pass at most FRONT_EV_PASS_US, no late pass, stack
+'                        under its allocation (BM-FRONTST)
+'  R20-T0-EV-LATE      - that late count beside the platform's EV_LATE_PASS total
+'
+' @param fSlot - the faulted wheel's slot (its log index too)
+' @param oSlot - the other wheel's
+'
+' @local eLeftReason - the left wheel's SR_*
+' @local eRightReason - the right wheel's SR_*
+' @local eFaulted - the faulted wheel's
+' @local eOther - the other wheel's
+' @local eWant - the reason the faulted wheel's response gives
+' @local bOk - SR-PARTNER's reading held
+' @local nPasses - steering front passes since its start
+' @local nLate - passes that overran their slot
+' @local nMaxTicks - the longest pass body, system ticks
+' @local nStackHi - stack longs ever used
+' @local nStackOf - the allocation
+' @local nLateEv - the platform's EV_LATE_PASS total
+
+    beat(CP_LIB_STEER_QUERY)
+    eLeftReason, eRightReason := steering.getStopReason()
+    beat(CP_LIB_STEER_QUERY)
+    evDrain(EVSRC_STEER, EVST_FRPLAT)
+    emitSr(EVST_FRPLAT, SIDE_LEFT + fSlot, eLeftReason, eRightReason, TRUE, TRUE)
+    eFaulted := eLeftReason
+    eOther := eRightReason
+    if fSlot == SLOT_RIGHT
+        eFaulted := eRightReason
+        eOther := eLeftReason
+    eWant := wheelL.SR_FAULT_LOST
+    if frMode == wheelL.FR_GRADED
+        eWant := wheelL.SR_FAULT_CONTROLLED
+    bOk := bEvdClean() and (eFaulted == eWant) and (eOther == wheelL.SR_PARTNER)
+    bOk &= (evCount(fSlot, wheelL.EV_STOP) == 1) and (evSeqAt(fSlot, EVQ_STOP, 0) == eWant)
+    bOk &= (evCount(oSlot, wheelL.EV_STOP) == 1) and (evSeqAt(oSlot, EVQ_STOP, 0) == wheelL.SR_PARTNER)
+    bSfPartRan[fSlot] := TRUE
+    bSfPartOk[fSlot] := bOk
+    nPasses, nLate, nMaxTicks, nStackHi, nStackOf := dFrontStats(SIDE_BOTH)
+    emitFrontSt(SIDE_BOTH, nPasses, nLate, nMaxTicks, nStackHi, nStackOf)
+    bSfFrontEvRan[fSlot] := (nPasses > 0)
+    bSfFrontEvOk[fSlot] := (nLate == 0) and (nMaxTicks <= FRONT_EV_PASS_US * TICKS_PER_US) and (nStackHi < nStackOf)
+    beat(CP_LIB_STEER_QUERY)
+    _, _, nLateEv := steering.getEventTotal(steering.EV_LATE_PASS)
+    beat(CP_LIB_STEER_QUERY)
+    lateFold(SLOT_LEFT, nLate, nLateEv)
 
 PRI frPlatRestore()
 ' I11 for X-5: stop the platform, then undo the trial's side effect before anything is drained -- the fault response
@@ -10102,6 +10496,9 @@ PRI emitFaultRespCells() | slotIdx, side, nMeasured, nBad, bVisible, gradedIdx, 
 '  GRD100   - COUNT per motor: |ticks to rest| of X-6 at 100 % less X-2's short at the same speed
 '  PLATSTOP - PCT per watched motor: its rate one ramp time after the other wheel faulted
 '
+' and task 3621's (R20.1): SR-FAULT and SR-FLOST (COUNT per motor), SR-PARTNER and FRONTST-EV (BOOL per faulted motor),
+' EV-LATE (COUNT, the steering form).
+'
 ' A wheel PREFLT retired (task 3615, bFrPreRetired) measured none of its cells: each prints NOMEAS. RSTPROV is the one
 ' that could otherwise read a PREFLT fault's recovery as an FLTRESP instance.
 '
@@ -10137,6 +10534,17 @@ PRI emitFaultRespCells() | slotIdx, side, nMeasured, nBad, bVisible, gradedIdx, 
         emitSignoffBool(@sSfCellResync, side, @sSfCritResync, bLive and bSfResyncRan[slotIdx], bSfResyncOk[slotIdx], SIGNOFF_ONE_INSTANCE)
         emitSignoff(@sSfCellPlatStop, side, @sSfCritPlatStop, bLive and bSfPlatRan[slotIdx], sfPlatPct[slotIdx], FR_PLAT_PCT_LO, FR_PLAT_REST_PCT, SIGNOFF_ONE_INSTANCE, @sSfUnitsPct)
     emitSignoffNotBuilt(@sSfCellB4Pulse, SIDE_NONE, @sSfCritB4Pulse)
+    ' task 3621 (R20.1): the reporting cells. SR-FAULT and SR-FLOST are measured only once BOTH their positive and their
+    '  negative trial were judged on the wheel (frSrFold(), frHookRestTrial()); SR-PARTNER and FRONTST-EV are per FLTPLAT
+    '  trial, named by the wheel that trial faulted (frPlatReport()); EV-LATE is the steering form's, over those trials
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        side := SIDE_LEFT + slotIdx
+        bLive := (bFrPreRetired[slotIdx] == FALSE)
+        emitSignoff(@sSfCellSrFault, side, @sSfCritSrFault, bLive and bSfSrFaultPos[slotIdx] and bSfSrFaultNeg[slotIdx], sfSrFaultBad[slotIdx], R20_BAD_LO, R20_BAD_HI, sfSrFaultN[slotIdx], @sSfUnitsCount)
+        emitSignoff(@sSfCellSrLost, side, @sSfCritSrLost, bLive and bSfSrLostPos[slotIdx] and bSfSrLostNeg[slotIdx], sfSrLostBad[slotIdx], R20_BAD_LO, R20_BAD_HI, sfSrLostN[slotIdx], @sSfUnitsCount)
+        emitSignoffBool(@sSfCellSrPart, side, @sSfCritSrPart, bSfPartRan[slotIdx], bSfPartOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+        emitSignoffBool(@sSfCellFrontEv, side, @sSfCritFrontEv, bSfFrontEvRan[slotIdx], bSfFrontEvOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+    emitLateCells(SLOT_LEFT, SIDE_BOTH)
 
 PRI frGradedChain(slotIdx) : nPoints, nBad | pointIdx, arrIdx, lastTicks, lastMs, firstTicks, firstMs
 ' R19-DUAL-GRADED-X's reading, X-6's pre-registered one: along the chain coast (X6C), 10, 25, 50, 100 %, ticks AND time
@@ -10212,7 +10620,8 @@ PRI emitFrDiag()
     emitRecord()
 
 PRI emitNotBuilt(pCell, pStudy, whyCode)
-' BM-NOTBUILT: a cell this build declares and cannot build, the study cell it stands for, and why. Worst case 85 bytes.
+' BM-NOTBUILT: a cell this build declares and cannot build, the study cell or plan item it stands for, and why. Worst
+' case 89 bytes (the study token widened to TOKMAX_STUDY by task 3621, for R20-PACK-EV's R20.4).
 '
 ' @param pCell - pointer to the cell id
 ' @param pStudy - pointer to the study's cell name
@@ -10220,7 +10629,7 @@ PRI emitNotBuilt(pCell, pStudy, whyCode)
 
     recBegin(@"BM-NOTBUILT")
     benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
-    benchLog.tokenField(@"study", pStudy, TOKMAX_FRCELL)
+    benchLog.tokenField(@"study", pStudy, TOKMAX_STUDY)
     whyField(whyCode)
     emitRecord()
 
@@ -10540,7 +10949,7 @@ PRI emitFrPlat(tid, sid, side)
 
 PRI emitSignoffNotBuilt(pCell, side, pCrit)
 ' One NOT_BUILT SIGNOFF: a cell this build declares and does not build, measured NA, n 0 (the reason is its
-' BM-NOTBUILT header record). Worst case 166 bytes.
+' BM-NOTBUILT header record). Worst case 168 bytes.
 '
 ' @param pCell - pointer to the cell id
 ' @param side - SIDE_* value
@@ -10654,7 +11063,7 @@ PRI steerForceFault(side) : eError
         eError := steering.testLeftForceFault()
     beat(CP_LIB_STEER_DRIVE)
 
-PRI frHookRestTrial(side) | slotIdx, whyCode, sampleIdx, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk
+PRI frHookRestTrial(side) | slotIdx, whyCode, sampleIdx, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk, hookSr
 ' HOOKREST, the forced-fault hook's negative control, run FIRST on each wheel (D2). In its own lifetime, holdAtStop(FALSE)
 ' (the lifetime's own), the wheel at rest and the bridge coasting: testForceFault() must NOT fault, because the driver
 ' looks for a forced fault only on a DRIVEN frame (isp_bldc_motor.spin2, the fault test's `tjnz bridge, #.noFault`
@@ -10674,6 +11083,7 @@ PRI frHookRestTrial(side) | slotIdx, whyCode, sampleIdx, nSamples, bFaultSeen, b
 ' @local hwMoved - hall ticks the wheel moved across the window (hwPos)
 ' @local bMeasured - samples after the force were read
 ' @local bOk - no fault, and STOPPED throughout
+' @local hookSr - task 3621: getStopReason() after the window, R20-DUAL-SR-FAULT's HOOKREST negative (BM-SR)
 
     slotIdx := side - SIDE_LEFT
     curTid := 0
@@ -10719,6 +11129,10 @@ PRI frHookRestTrial(side) | slotIdx, whyCode, sampleIdx, nSamples, bFaultSeen, b
         bSfHookRan[slotIdx] := TRUE
         bSfHookOk[slotIdx] := bOk
     emitFrHook(side, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk, whyCode)
+    if bMeasured and isWheelUp(side)                        ' task 3621: nothing was driven, so no drive has ended: SR_NONE
+        hookSr := wheelStopReason(side)
+        emitSr(EVST_FRHOOK, side, hookSr, hookSr, side == SIDE_LEFT, side == SIDE_RIGHT)
+        srFaultNote(slotIdx, FALSE, hookSr == wheelL.SR_NONE)
     bInstIdle()
     wheelStop(side)                                         ' ends the lifetime, and the pending forced request with it
     segItems := (segItems + 1) <# LIM_SMALL
@@ -10791,6 +11205,8 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
   '     (testLeftSetProbeWithhold()), U V W in turn by lifetime. R19-DUAL-PHNEG-X counts the starts whose LEFT failed
   '     mask is not EXACTLY that phase's HLT_PHASE_* bit: a wheel whose bridge drives nothing fails all three bits
   '     ($001C, debug_260923-160440.log), so a cell satisfied by any failed bit could not tell one lead from a bridge.
+  '     Task 3621: since a failing check now refuses the start, the lifetimes rotate through three start modes (THE
+  '     START REFUSAL, below), and PHNEG-X counts the opt-out ones, which start exactly as every lifetime did before.
   '   - START_NEG_SWAP (B-5's negative, the walk build): every walk lifetime reads LEFT hall bits 0 and 1 swapped
   '     (testLeftSetHallSwap(HSW_HALLS_01)). R19-DUAL-SWNEG-X counts the walks in which the LEFT HLT_WIRING was not
   '     judged failed: a pass, and equally a walk that never judged it, leaves the swap undetected.
@@ -10807,7 +11223,9 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
   '     R19-DUAL-WINDNEG-X counts the LEFT lifetimes in which the two pairs containing it are not both WND_NOT_VISIBLE
   '     or the third is not WND_MEASURED: a hook that did not take (three MEASURED) fails it, and so does the wrong
   '     pair going dark. The RIGHT is the in-run control (all three MEASURED), judged in the report from BM-SKWIND.
-    SK_LIVES              = 10                              ' steering lifetimes, each one start (B-2: "several starts")
+    SK_LIVES_BASE         = 10                              ' steering lifetimes, each one start (B-2: "several starts")
+    SK_LIVES_PHASENEG     = 12                              ' task 3621: START_NEG_PHASE's, 4 blocks of U V W (skModeOf())
+    SK_LIVES              = SK_LIVES_BASE + ((BUILD_NEG == SKNEG_PHASE) & (SK_LIVES_PHASENEG - SK_LIVES_BASE))
     SK_WALKS              = 3                               ' the last this many lifetimes also walk (B-5)
     SK_PHASES             = 3
     SK_PROBE_LONGS        = SK_PHASES * SK_PHASES           ' per wheel: [probed phase * SK_PHASES + read phase], U V W
@@ -10841,6 +11259,48 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
     WND_TOK_COUNT         = wheelL.WND_UNSETTLED + 1        ' tokWndState is indexed by the library's WND_*
     TOKMAX_WND            = 11                              ' NOT_VISIBLE
 
+  ' THE START REFUSAL (task 3621, R20.1; DRIVER-REPORTING-DESIGN.md SS3). start() now re-runs a failing check up to
+  '  START_CHECK_RETRIES times and then REFUSES the start (-1, ERR_START_CHECK_FAILED) unless setStartChecks(FALSE) was
+  '  called. Each lifetime's start is given a MODE, set before it (skSetRefusal(), skArmNeg()) and printed on BM-SKHEALTH
+  '  (refuse) and BM-SKNEG (mode):
+  '   SKM_DEFAULT - refusal on (the library's default), nothing withheld: dual-start, dual-start-swapneg
+  '   SKM_OPTOUT  - setStartChecks(FALSE): every dual-start-nowalk lifetime (B-1's unplugged halls must still start), and
+  '                 START_NEG_PHASE's blocks 0 and 3 with the LEFT phase withheld from EVERY attempt -- where R19-DUAL-PHNEG-X
+  '                 and R19-DUAL-WINDNEG-X are judged exactly as before task 3621, and where R20-DUAL-OPTOUT is judged
+  '   SKM_REFUSE  - refusal on, the LEFT phase withheld from every attempt: START_NEG_PHASE's block 1 (R20-DUAL-REFUSE)
+  '   SKM_FIRST   - refusal on, the LEFT phase withheld from the FIRST attempt only
+  '                 (testLeftSetProbeWithholdFirst()): START_NEG_PHASE's block 2 (R20-DUAL-RETRY)
+  '  A block is SK_PHASES lifetimes, so each mode withholds U, V and W once (the phase is lifeIdx // SK_PHASES, as
+  '  before). The winding check is armed only in the opt-out lifetimes: it honours only the every-attempt withhold, and
+  '  a refused start reads nothing of it.
+    #0, SKM_DEFAULT, SKM_OPTOUT, SKM_REFUSE, SKM_FIRST
+    SKM_COUNT             = SKM_FIRST + 1
+    SKM_ROTATION          = 3                               ' START_NEG_PHASE: OPTOUT, REFUSE, FIRST, then OPTOUT again
+    TOKMAX_SKMODE         = 7                               ' DEFAULT
+  ' The reporting cells the START builds judge (task 3621, SS6), each a count of instances and of bad ones (skrNote()):
+  '  SKR_REF   - REFUSE, START_NEG_PHASE block 1: -1, ERR_START_CHECK_FAILED from the platform and the LEFT, and the LEFT
+  '              failed mask exactly the withheld bit, read after the refusal (BM-SREFUSE)
+  '  SKR_OPT   - OPTOUT, START_NEG_PHASE's opt-out blocks: the start taken, with the LEFT failed mask exactly that bit
+  '  SKR_RET   - RETRY's positive, START_NEG_PHASE block 2: the start taken, LEFT failed 0, recovered the bit, and one
+  '              LEFT EV_CHECK_RETRY valued the bit | 2 attempts
+  '  SKR_NORET - RETRY's negative, per wheel judged: recovered 0 and no EV_CHECK_RETRY -- START_NEG_PHASE's RIGHT every
+  '              started lifetime and its LEFT in the opt-out ones (withheld every attempt, so never recovered);
+  '              dual-start both wheels every started lifetime
+  '  SKR_NOREF - NOREFUSE, dual-start: a start returned -1
+  '  SKR_GRD   - EV-WALKGUARD's positive, dual-start-swapneg LEFT walks: at least one EV_WALK_GUARD, each at least
+  '              WALK_I_LIMIT_MV (Visit 10 pass 2 MEASURED every crossed-hall leg at 577 mV or more, so the guard trips)
+  '  SKR_NOGRD - its negative, per wheel judged: no EV_WALK_GUARD -- swapneg's RIGHT walks, dual-start's walks, both wheels
+  '  SKR_MIS   - EV-HALLMISSED's positive, swapneg LEFT walk lifetimes that missed a transition: the EV_HALL_MISSED values
+  '              sum to getHallIntegrityCounts()'s missed count
+  '  SKR_NOHAL - its negative, dual-start, both wheels every started lifetime: no EV_HALL_MISSED and no EV_HALL_ILLEGAL
+  '  SKR_ILL   - EV-HALLILL's positive, dual-start-nowalk RIGHT lifetimes with an illegal code: the EV_HALL_ILLEGAL values
+  '              sum to getHallIllegalCodes()'s two counts
+  '  SKR_NOILL - its negative, dual-start-nowalk LEFT (connected), every started lifetime: no EV_HALL_ILLEGAL
+  '  SKR_PACK  - R20-PACK-EV's negative, dual-start with the pack sensor fitted: no EV_PACK while the pack stands
+  '  Every instance judged on a drain that was not clean is bad.
+    #0, SKR_REF, SKR_OPT, SKR_RET, SKR_NORET, SKR_NOREF, SKR_GRD, SKR_NOGRD, SKR_MIS, SKR_NOHAL, SKR_ILL, SKR_NOILL, SKR_PACK
+    SKR_COUNT             = SKR_PACK + 1
+
 DAT ' ---- START tables ----
 
 tokPack         BYTE    "NOT_FITTED", 0, "ABSENT", 0, "PRESENT", 0
@@ -10848,6 +11308,7 @@ tokSkNegKind    BYTE    "NONE", 0, "PHASE", 0, "SWAP", 0                        
 tokPrbPhase     BYTE    "NONE", 0, "U", 0, "V", 0, "W", 0                               ' by PRB_*
 tokHallSwap     BYTE    "NONE", 0, "HALLS_01", 0, "HALLS_12", 0, "HALLS_02", 0          ' by HSW_*
 tokWndState     BYTE    "NOT_RUN", 0, "MEASURED", 0, "NOT_VISIBLE", 0, "TRIPPED", 0, "UNSETTLED", 0   ' by WND_*
+tokSkMode       BYTE    "DEFAULT", 0, "OPTOUT", 0, "REFUSE", 0, "FIRST", 0                            ' by SKM_* (task 3621)
 
 VAR { START state -- cog 0 only }
 
@@ -10916,6 +11377,12 @@ VAR { START state -- cog 0 only }
     LONG    sfSkWindSpBad[INST_MOTORS]                      ' ...whose pairs were not all MEASURED within WIND_SPREAD_PCT
     LONG    sfSkWindNgN                                     ' WINDNEG: armed lifetimes read, LEFT, START_NEG_PHASE
     LONG    sfSkWindNgBad                                   ' ...whose pair states were not exactly the withheld phase's
+    ' task 3621 (R20.1): the lifetime's start mode and what it recovered, and the reporting cells' accumulators
+    LONG    skLifeMode                                      ' SKM_* of the lifetime in hand
+    LONG    bSkStartTried                                   ' its start was called
+    LONG    skRec[INST_MOTORS]                              ' getHealth()'s recovered mask, per wheel, of a start that ran
+    LONG    sfSkrN[SKR_COUNT]                               ' instances judged, per SKR_*
+    LONG    sfSkrBad[SKR_COUNT]                             ' ...that did not read as pre-registered
 
 PRI skResetCells() | slotIdx
 ' Clear the START part's cell accumulators (initRunState()): every count 0, every least POSX and greatest NEGX, so a
@@ -10951,6 +11418,8 @@ PRI skResetCells() | slotIdx
     sfSkSwNegBad := 0
     sfSkWindNgN := 0
     sfSkWindNgBad := 0
+    longfill(@sfSkrN, 0, SKR_COUNT)                         ' task 3621
+    longfill(@sfSkrBad, 0, SKR_COUNT)
 
 PRI segStartChecks() | lifeIdx, slotIdx
 ' SKCHECK (part START, task 3613): SK_LIVES steering lifetimes, each one start with its reads and its floated window
@@ -10982,7 +11451,10 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
 ' (skReadHealth(), then skReadWinding()) before anything else; whenever start() returned a cog, ready or not, what
 ' both drivers hold (abiDumpSteer(), BM-ABI*, task 3615); the floated window (skZeroWindow()); fold;
 ' BM-SKHEALTH, a BM-SKPROBE per wheel and, on an armed lifetime, a BM-SKWIND per wheel; on a walk lifetime the walk,
-' BM-SKWALK and the recovery of any fault it caused; stop.
+' BM-SKWALK and the recovery of any fault it caused; stop. Task 3621: the lifetime's start mode (skModeOf()) is set
+' before the start (skSetRefusal(), and skArmNeg() in START_NEG_PHASE); a start that returned -1 prints BM-SREFUSE
+' (bSteerStart()) and is folded into the refusal cells (skFoldModes()); a started object's event log is drained last,
+' EV_SETTLE_MS after the lifetime's last act, and folded (skEvents()).
 '
 ' @param lifeIdx - 0..SK_LIVES-1
 ' @param bWalk - TRUE when this lifetime also walks
@@ -10992,11 +11464,13 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
 ' @local lifeBefore - lifeSeq before the start, so a start that was refused never names a lifetime
 
     skStagingReset()
+    skLifeMode := skModeOf(lifeIdx)
     whyCode := WHY_NONE
     lifeBefore := lifeSeq
     if bRunContinue(SEG_SKCHECK) == FALSE
         whyCode := WHY_ABORTED
     else
+        skSetRefusal()                                      ' task 3621: kept across starts, so set every lifetime
         skArmNeg(lifeIdx, bWalk)                            ' task 3614: before the start that consumes it
         skArmWind(lifeIdx)                                  ' task 3610: likewise, after the phase it may sit beside
         if bSteerStart(SEG_SKCHECK) == FALSE
@@ -11004,6 +11478,7 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
         else
             skReadHealth()                                  ' first: exactly what start() left
             skReadWinding()
+        bSkStartTried := bSsCalled                          ' task 3621: start() was called, so its return and cause are this lifetime's
         if bSteerUp
             abiDumpSteer()                                  ' task 3615: both drivers, before anything is folded
         if whyCode == WHY_NONE
@@ -11013,6 +11488,7 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
     skFoldStart()
     skFoldPhaseNeg()
     skFoldWinding()
+    skFoldModes()                                           ' task 3621: REFUSE, OPTOUT, NOREFUSE, and a FIRST start not taken
     emitSkHealth(bWalk, whyCode)
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         emitSkProbe(slotIdx, whyCode)
@@ -11027,6 +11503,8 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, lifeBefore
         if bSteerUp
             steerRecoverFault(0)                            ' a walk that faulted a wheel: recovered, counted, cooled
     bInstIdle()
+    if bSteerUp
+        skEvents(bWalk)                                     ' task 3621: this lifetime's event log, drained last
     steerStop()
     segItems := (segItems + 1) <# LIM_SMALL
 
@@ -11037,6 +11515,7 @@ PRI skStagingReset() | arrIdx
 
     skLife := 0
     bSkHealthRead := FALSE
+    bSkStartTried := FALSE
     skPack := wheelL.PACK_NOT_FITTED
     skPackMv := 0
     skZeroWhy := WHY_NONE
@@ -11055,6 +11534,7 @@ PRI skStagingReset() | arrIdx
     repeat arrIdx from SLOT_LEFT to SLOT_RIGHT
         skChk[arrIdx] := 0
         skFail[arrIdx] := 0
+        skRec[arrIdx] := 0
         skIllLo[arrIdx] := 0
         skIllHi[arrIdx] := 0
         skPrbBadNow[arrIdx] := 0
@@ -11077,14 +11557,14 @@ PRI skStagingReset() | arrIdx
 
 PRI skReadHealth() | probedIdx, rowBase
 ' What start() judged, read through the steering object before anything else touches it: both wheels' getHealth()
-' masks, the illegal hall codes by kind, the pack sensor, and every lead-check reading (three probes a wheel, each the
+' masks (checked, failed and, task 3621, recovered), the illegal hall codes by kind, the pack sensor, and every lead-check reading (three probes a wheel, each the
 ' three phase voltages averaged while one phase was driven).
 '
 ' @local probedIdx - 0..SK_PHASES-1: the phase driven, U V W
 ' @local rowBase - its row's first index in skProbe (the left wheel's; the right's is SK_PROBE_LONGS on)
 
     beat(CP_LIB_STEER_QUERY)
-    skChk[SLOT_LEFT], skFail[SLOT_LEFT], _, skChk[SLOT_RIGHT], skFail[SLOT_RIGHT], _ := steering.getHealth()
+    skChk[SLOT_LEFT], skFail[SLOT_LEFT], skRec[SLOT_LEFT], skChk[SLOT_RIGHT], skFail[SLOT_RIGHT], skRec[SLOT_RIGHT] := steering.getHealth()
     skIllLo[SLOT_LEFT], skIllHi[SLOT_LEFT], skIllLo[SLOT_RIGHT], skIllHi[SLOT_RIGHT] := steering.getHallIllegalCodes()
     skPack, skPackMv := steering.getPackVoltage()
     repeat probedIdx from 0 to SK_PHASES - 1
@@ -11326,7 +11806,8 @@ PRI skFoldWalk() | slotIdx
 
 PRI skArmNeg(lifeIdx, bWalk)
 ' Task 3614: arm this build's firmware negative on the LEFT wheel before the start that consumes it, and print what was
-' armed (BM-SKNEG). PHASE: every lifetime withholds one lead-check phase, PRB_U, PRB_V, PRB_W in turn by lifetime.
+' armed (BM-SKNEG). PHASE: every lifetime withholds one lead-check phase, PRB_U, PRB_V, PRB_W in turn by lifetime --
+' from every attempt, or (task 3621, SKM_FIRST lifetimes) from the first attempt only.
 ' SWAP: every walk lifetime reads hall bits 0 and 1 swapped. The positive builds arm nothing and print nothing. A hook
 ' that refuses is still counted as armed: its start then shows no negative, and the negative's cell fails.
 '
@@ -11336,7 +11817,10 @@ PRI skArmNeg(lifeIdx, bWalk)
     if BUILD_NEG == SKNEG_PHASE
         skNegSel := wheelL.PRB_U + (lifeIdx // SK_PHASES)
         beat(CP_LIB_STEER_START)
-        skNegErr := steering.testLeftSetProbeWithhold(skNegSel)
+        if skLifeMode == SKM_FIRST                          ' task 3621: the first attempt only, so a retry recovers it
+            skNegErr := steering.testLeftSetProbeWithholdFirst(skNegSel)
+        else
+            skNegErr := steering.testLeftSetProbeWithhold(skNegSel)
         beat(CP_LIB_STEER_START)
         bSkNegArmed := TRUE
     elseif (BUILD_NEG == SKNEG_SWAP) and bWalk
@@ -11351,11 +11835,12 @@ PRI skArmNeg(lifeIdx, bWalk)
 PRI skFoldPhaseNeg() | wantMask
 ' Fold one armed start into R19-DUAL-PHNEG-X (START_NEG_PHASE only): counted once start()'s verdicts were read, bad
 ' unless the LEFT failed mask is EXACTLY the withheld phase's HLT_PHASE_* bit -- any other bit set, that bit missing,
-' or no bit at all (the hook did not take) is the negative going unseen.
+' or no bit at all (the hook did not take) is the negative going unseen. Task 3621: only the opt-out lifetimes, whose
+' start runs with the phase withheld from every attempt, are the start this cell was written for.
 '
 ' @local wantMask - the withheld phase's HLT_PHASE_* bit
 
-    if (BUILD_NEG == SKNEG_PHASE) and bSkNegArmed and bSkHealthRead
+    if (BUILD_NEG == SKNEG_PHASE) and bSkNegArmed and bSkHealthRead and (skLifeMode == SKM_OPTOUT)    ' task 3621: exactly as before
         wantMask := wheelL.HLT_PHASE_U << (skNegSel - wheelL.PRB_U)
         sfSkPhNegN := (sfSkPhNegN + 1) <# LIM_SMALL
         if skFail[SLOT_LEFT] <> wantMask
@@ -11370,10 +11855,123 @@ PRI skFoldSwapNeg()
         if bSkWalkHltFail[SLOT_LEFT] == FALSE
             sfSkSwNegBad := (sfSkSwNegBad + 1) <# LIM_SMALL
 
+PRI skModeOf(lifeIdx) : eMode
+' Task 3621: a lifetime's start mode (this part's CON, SKM_*): START_NEG_PHASE rotates blocks of SK_PHASES lifetimes
+' through OPTOUT, REFUSE and FIRST; dual-start-nowalk opts out every lifetime; every other START build is DEFAULT.
+'
+' @param lifeIdx - 0..SK_LIVES-1
+' @returns eMode - SKM_*
+
+    if BUILD_NEG == SKNEG_PHASE
+        eMode := lookupz((lifeIdx / SK_PHASES) // SKM_ROTATION : SKM_OPTOUT, SKM_REFUSE, SKM_FIRST)
+    elseif BUILD_START_B1
+        eMode := SKM_OPTOUT
+    else
+        eMode := SKM_DEFAULT
+
+PRI skSetRefusal()
+' Task 3621: set the lifetime's refusal choice on the steering object before its start -- refusal on unless the
+' lifetime opts out (SKM_OPTOUT). setStartChecks() is kept across starts, so it is set every lifetime, never assumed.
+
+    beat(CP_LIB_STEER_START)
+    steering.setStartChecks(skLifeMode <> SKM_OPTOUT)
+    beat(CP_LIB_STEER_START)
+
+PRI skrNote(skrIdx, bOk)
+' Task 3621: count one instance of a START reporting cell (SKR_*).
+'
+' @param skrIdx - SKR_*
+' @param bOk - the instance read as pre-registered
+
+    sfSkrN[skrIdx] := (sfSkrN[skrIdx] + 1) <# LIM_SMALL
+    if bOk == FALSE
+        sfSkrBad[skrIdx] := (sfSkrBad[skrIdx] + 1) <# LIM_SMALL
+
+PRI skFoldModes() | wantMask, bTaken
+' Task 3621: fold one lifetime whose start was called into the cells judged on the start itself (this part's CON,
+' SKR_*): REFUSE and OPTOUT (START_NEG_PHASE), NOREFUSE (dual-start), and a START_NEG_PHASE FIRST start that was not
+' taken, which is a bad RETRY instance (the taken ones are judged on their event log, skEvents()). A refusal's cause
+' and masks are bSteerStart()'s, read right after the call (BM-SREFUSE).
+'
+' @local wantMask - the withheld phase's HLT_PHASE_* bit (START_NEG_PHASE)
+' @local bTaken - the start returned a cog
+
+    if bSkStartTried
+        bTaken := (ssRet >= 0)
+        if BUILD_NEG == SKNEG_PHASE
+            wantMask := wheelL.HLT_PHASE_U << (skNegSel - wheelL.PRB_U)
+            case skLifeMode
+                SKM_REFUSE:
+                    skrNote(SKR_REF, (bTaken == FALSE) and (skNegErr == NO_ERROR) and (ssErr == wheelL.ERR_START_CHECK_FAILED) and (ssLErr == wheelL.ERR_START_CHECK_FAILED) and (ssFail[SLOT_LEFT] == wantMask))
+                SKM_OPTOUT:
+                    skrNote(SKR_OPT, bTaken and bSkHealthRead and (skNegErr == NO_ERROR) and (skFail[SLOT_LEFT] == wantMask))
+                SKM_FIRST:
+                    if bTaken == FALSE
+                        skrNote(SKR_RET, FALSE)
+        elseif BUILD_START_POS
+            skrNote(SKR_NOREF, bTaken)
+
+PRI skEvents(bWalk) | bClean, missedL, illegalL, missedR, illegalR, wantMask, slotIdx, nGuard, seqIdx, bOk
+' Task 3621: the lifetime's event log, drained EV_SETTLE_MS after its last act (so a rate-limited hall count is in it),
+' with the hall counts read beside it, then folded into the START reporting cells this build judges (this part's CON,
+' SKR_*). Called only for a started object, before its stop.
+'
+' @param bWalk - TRUE when this lifetime walked
+'
+' @local bClean - the drain ended on EV_NONE with nothing lost
+' @local missedL - the left wheel's missed hall transitions since its start
+' @local illegalL - its illegal hall codes (%000 and %111 entries)
+' @local missedR - the right wheel's missed transitions
+' @local illegalR - its illegal codes
+' @local wantMask - the withheld phase's HLT_PHASE_* bit (START_NEG_PHASE)
+' @local slotIdx - motor slot, which is also its log's index
+' @local nGuard - the left wheel's EV_WALK_GUARD events
+' @local seqIdx - 0..nGuard-1
+' @local bOk - one instance's reading held
+
+    waitBeat(EV_SETTLE_MS, CP_LOOP_REST)
+    evDrain(EVSRC_STEER, EVST_SKCHECK)
+    beat(CP_LIB_STEER_QUERY)
+    missedL, illegalL, missedR, illegalR := steering.getHallIntegrityCounts()
+    beat(CP_LIB_STEER_QUERY)
+    bClean := bEvdClean()
+    if BUILD_NEG == SKNEG_PHASE
+        wantMask := wheelL.HLT_PHASE_U << (skNegSel - wheelL.PRB_U)
+        if skLifeMode == SKM_FIRST                          ' RETRY's positive: recovered, and reported once with 2 attempts
+            bOk := bClean and bSkHealthRead and (skFail[SLOT_LEFT] == 0) and (skRec[SLOT_LEFT] == wantMask)
+            bOk &= (evCount(SLOT_LEFT, wheelL.EV_CHECK_RETRY) == 1) and (evSeqAt(SLOT_LEFT, EVQ_RETRY, 0) == (wantMask | (2 << wheelL.EV_START_ATTEMPT_SHIFT)))
+            skrNote(SKR_RET, bOk)
+        elseif skLifeMode == SKM_OPTOUT                     ' withheld from every attempt: never recovered
+            skrNote(SKR_NORET, bClean and (skRec[SLOT_LEFT] == 0) and (evCount(SLOT_LEFT, wheelL.EV_CHECK_RETRY) == 0))
+        skrNote(SKR_NORET, bClean and (skRec[SLOT_RIGHT] == 0) and (evCount(SLOT_RIGHT, wheelL.EV_CHECK_RETRY) == 0))
+    elseif BUILD_START_POS
+        repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+            skrNote(SKR_NORET, bClean and (skRec[slotIdx] == 0) and (evCount(slotIdx, wheelL.EV_CHECK_RETRY) == 0))
+            skrNote(SKR_NOHAL, bClean and ((evCount(slotIdx, wheelL.EV_HALL_MISSED) + evCount(slotIdx, wheelL.EV_HALL_ILLEGAL)) == 0))
+            if bWalk and bSkWalkRan
+                skrNote(SKR_NOGRD, bClean and (evCount(slotIdx, wheelL.EV_WALK_GUARD) == 0))
+        if skPack <> wheelL.PACK_NOT_FITTED
+            skrNote(SKR_PACK, bClean and (evCount(EVI_PLAT, wheelL.EV_PACK) == 0))
+    elseif BUILD_NEG == SKNEG_SWAP
+        if bWalk and bSkWalkRan
+            nGuard := evCount(SLOT_LEFT, wheelL.EV_WALK_GUARD)
+            bOk := bClean and (nGuard >= 1) and (nGuard <= EV_SEQ_MAX)
+            if bOk                                          ' a Spin2 repeat from a higher bound counts down
+                repeat seqIdx from 0 to nGuard - 1
+                    bOk &= (evSeqAt(SLOT_LEFT, EVQ_GUARD, seqIdx) >= wheelL.WALK_I_LIMIT_MV)
+            skrNote(SKR_GRD, bOk)
+            skrNote(SKR_NOGRD, bClean and (evCount(SLOT_RIGHT, wheelL.EV_WALK_GUARD) == 0))
+            if missedL > 0
+                skrNote(SKR_MIS, bClean and (evSum(SLOT_LEFT, wheelL.EV_HALL_MISSED) == missedL))
+    elseif BUILD_START_B1
+        if illegalR > 0
+            skrNote(SKR_ILL, bClean and (evSum(SLOT_RIGHT, wheelL.EV_HALL_ILLEGAL) == illegalR))
+        skrNote(SKR_NOILL, bClean and (evCount(SLOT_LEFT, wheelL.EV_HALL_ILLEGAL) == 0))
+
 PRI emitSkNeg(lifeIdx) | pWhich
 ' BM-SKNEG (task 3614): the firmware negative armed on the next start, printed before its BM-SSTART -- the part's
 ' lifetime index (idx; BM-SKHEALTH's life is the steering lifetime the start then takes), the wheel, the kind, which
-' phase or hall pair, and the hook's return. Worst case 105 bytes.
+' phase or hall pair, the hook's return, and (task 3621, before why) the lifetime's start mode. Worst case 118 bytes.
 '
 ' @param lifeIdx - 0..SK_LIVES-1
 '
@@ -11389,18 +11987,19 @@ PRI emitSkNeg(lifeIdx) | pWhich
     benchLog.tokenField(@"kind", tokenAt(@tokSkNegKind, SKNEG_COUNT, BUILD_NEG), TOKMAX_SKNEG_KIND)
     benchLog.tokenField(@"which", pWhich, TOKMAX_SKNEG_WHICH)
     benchLog.numField(@"err", skNegErr, LIM_SMALL)
+    benchLog.tokenField(@"mode", tokenAt(@tokSkMode, SKM_COUNT, skLifeMode), TOKMAX_SKMODE)
     whyField(WHY_NONE)
     emitRecord()
 
 PRI skArmWind(lifeIdx)
 ' Task 3610 (R19.4 1e): arm the driver's winding check on both wheels before the start that consumes it -- in the
-' dual-start build lifetimes 0 .. SK_WIND_LIVES-1, in the START_NEG_PHASE build every lifetime (after skArmNeg() has
-' withheld its LEFT phase), in any other build none. THE ROTORS MOVE at that start, to each pair's alignment. Nothing
+' dual-start build lifetimes 0 .. SK_WIND_LIVES-1, in the START_NEG_PHASE build every opt-out lifetime (task 3621: the
+' check honours only the every-attempt withhold, after skArmNeg() has set it), in any other build none. THE ROTORS MOVE at that start, to each pair's alignment. Nothing
 ' prints here: every armed lifetime's BM-SKWIND carries what the check read.
 '
 ' @param lifeIdx - 0..SK_LIVES-1
 
-    if (BUILD_WIND == SKWIND_NEG) or ((BUILD_WIND == SKWIND_POS) and (lifeIdx < SK_WIND_LIVES))
+    if ((BUILD_WIND == SKWIND_NEG) and (skLifeMode == SKM_OPTOUT)) or ((BUILD_WIND == SKWIND_POS) and (lifeIdx < SK_WIND_LIVES))
         beat(CP_LIB_STEER_START)
         steering.testSetWindingProbe(TRUE)
         beat(CP_LIB_STEER_START)
@@ -11538,6 +12137,13 @@ PRI emitStartCells() | slotIdx, side
 '             not WND_NOT_VISIBLE, or the third was not WND_MEASURED -- three MEASURED (the hook did not take) fails
 '             it, as does the wrong pair going dark
 '
+' and task 3621's reporting cells, each a COUNT of bad instances in its own build (this part's CON, SKR_*):
+' START_NEG_PHASE REFUSE, OPTOUT (LEFT) and RETRY (LEFT RETRY_REPORTED, BOTH NO_SPURIOUS_RETRY); dual-start NOREFUSE,
+' RETRY (NO_SPURIOUS_RETRY), EV-WALKGUARD (NO_GUARD_EV), EV-HALLMISSED (NO_HALL_EV) and R20-PACK-EV (PACK_STEADY_NO_EV,
+' NOMEAS unless the sensor is fitted; PACK_UNPLUG_EV NOT_BUILT); dual-start-swapneg EV-WALKGUARD (LEFT GUARD_EV_ON_SWAP,
+' RIGHT NO_GUARD_EV) and EV-HALLMISSED (LEFT MISSED_SUM_EQUAL); dual-start-nowalk EV-HALLILL (RIGHT ILLEGAL_SUM_EQUAL,
+' LEFT NO_ILLEGAL_EV).
+'
 ' @local slotIdx - motor slot
 ' @local side - SIDE_LEFT or SIDE_RIGHT
 
@@ -11561,6 +12167,39 @@ PRI emitStartCells() | slotIdx, side
         emitSignoff(@sSfCellSkSwNeg, SIDE_LEFT, @sSfCritSkSwNeg, sfSkSwNegN > 0, sfSkSwNegBad, SK_BAD_LO, SK_BAD_HI, sfSkSwNegN, @sSfUnitsCount)
     if BUILD_WIND == SKWIND_NEG                             ' task 3610
         emitSignoff(@sSfCellSkWindNg, SIDE_LEFT, @sSfCritSkWindNg, sfSkWindNgN > 0, sfSkWindNgBad, SK_BAD_LO, SK_BAD_HI, sfSkWindNgN, @sSfUnitsCount)
+    ' task 3621 (R20.1): the reporting cells, each in the build that judges it (this part's CON, SKR_*). REFUSE and
+    '  OPTOUT are each the other's control, so each is measured only when both ran. A cell whose negative lives in
+    '  another build prints the half this build holds, under its own criterion.
+    if BUILD_NEG == SKNEG_PHASE
+        emitSignoff(@sSfCellRefuse, SIDE_LEFT, @sSfCritRefuse, (sfSkrN[SKR_REF] > 0) and (sfSkrN[SKR_OPT] > 0), sfSkrBad[SKR_REF], R20_BAD_LO, R20_BAD_HI, sfSkrN[SKR_REF], @sSfUnitsCount)
+        emitSignoff(@sSfCellOptOut, SIDE_LEFT, @sSfCritOptOut, (sfSkrN[SKR_OPT] > 0) and (sfSkrN[SKR_REF] > 0), sfSkrBad[SKR_OPT], R20_BAD_LO, R20_BAD_HI, sfSkrN[SKR_OPT], @sSfUnitsCount)
+        skrEmit(@sSfCellRetry, SIDE_LEFT, @sSfCritRetry, SKR_RET)
+        skrEmit(@sSfCellRetry, SIDE_BOTH, @sSfCritNoRetry, SKR_NORET)
+    elseif BUILD_START_POS
+        skrEmit(@sSfCellNoRefuse, SIDE_BOTH, @sSfCritNoRefuse, SKR_NOREF)
+        skrEmit(@sSfCellRetry, SIDE_BOTH, @sSfCritNoRetry, SKR_NORET)
+        skrEmit(@sSfCellEvGuard, SIDE_BOTH, @sSfCritNoGuard, SKR_NOGRD)
+        skrEmit(@sSfCellEvMiss, SIDE_BOTH, @sSfCritNoHall, SKR_NOHAL)
+        skrEmit(@sSfCellPackEv, SIDE_NONE, @sSfCritPackQ, SKR_PACK)             ' NOMEAS while the sensor is not fitted
+        emitSignoffNotBuilt(@sSfCellPackEv, SIDE_NONE, @sSfCritPackEv)          ' the unplug and replug: R20.4's pack run
+    elseif BUILD_NEG == SKNEG_SWAP
+        skrEmit(@sSfCellEvGuard, SIDE_LEFT, @sSfCritGuardEv, SKR_GRD)
+        skrEmit(@sSfCellEvGuard, SIDE_RIGHT, @sSfCritNoGuard, SKR_NOGRD)
+        skrEmit(@sSfCellEvMiss, SIDE_LEFT, @sSfCritMissSum, SKR_MIS)
+    elseif BUILD_START_B1
+        skrEmit(@sSfCellEvIll, SIDE_RIGHT, @sSfCritIllSum, SKR_ILL)
+        skrEmit(@sSfCellEvIll, SIDE_LEFT, @sSfCritNoIll, SKR_NOILL)
+
+PRI skrEmit(pCell, side, pCrit, skrIdx)
+' Task 3621: one START reporting cell's instance: the bad count of its SKR_* instances, passing at 0; NOMEAS when none
+' was judged.
+'
+' @param pCell - pointer to the cell id
+' @param side - SIDE_* the instance is about
+' @param pCrit - pointer to the criterion token
+' @param skrIdx - SKR_*
+
+    emitSignoff(pCell, side, pCrit, sfSkrN[skrIdx] > 0, sfSkrBad[skrIdx], R20_BAD_LO, R20_BAD_HI, sfSkrN[skrIdx], @sSfUnitsCount)
 
 PRI emitSkBuild() | nWalks
 ' BM-SKBUILD: the START part's compiled, pre-registered numbers, printed before anything moves -- the driver's own
@@ -11593,7 +12232,9 @@ PRI emitSkBuild() | nWalks
 PRI emitSkHealth(bWalk, whyCode)
 ' BM-SKHEALTH: one start's verdicts from start() itself -- each wheel's getHealth() masks (HLT_* bits, hex), its
 ' illegal hall codes by kind (entries into %000 and %111; B-1 reads them), the pack sensor, and whether this lifetime
-' walks. Worst case 223 bytes.
+' walks; then, added by task 3621 before why (still last), whether this start refused a failing check (refuse: FALSE
+' when it opted out) and each wheel's recovered mask (l_rec, r_rec, hex). A refused start's own masks are
+' BM-SREFUSE's. Worst case 260 bytes.
 '
 ' @param bWalk - TRUE when this lifetime also walks
 ' @param whyCode - why nothing was read, WHY_NONE when it was
@@ -11618,6 +12259,13 @@ PRI emitSkHealth(bWalk, whyCode)
     benchLog.naNumField(@"r_ill_lo", skIllLo[SLOT_RIGHT], LIM_SMALL, bSkHealthRead)
     benchLog.naNumField(@"r_ill_hi", skIllHi[SLOT_RIGHT], LIM_SMALL, bSkHealthRead)
     benchLog.boolField(@"walk", bWalk)
+    benchLog.boolField(@"refuse", skLifeMode <> SKM_OPTOUT)
+    if bSkHealthRead
+        benchLog.hexField(@"l_rec", skRec[SLOT_LEFT])
+        benchLog.hexField(@"r_rec", skRec[SLOT_RIGHT])
+    else
+        benchLog.textField(@"l_rec", @sSfNa)
+        benchLog.textField(@"r_rec", @sSfNa)
     whyField(whyCode)
     emitRecord()
 
@@ -15850,7 +16498,7 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
   ' Records, each worst case under 280 bytes (header: tag 8 + seq 15 + where 15 + motor 12 + life 13 = 63, where
   '  widened by one for NOMOTION; a raw field is 2 + len(name) + 14, "-2_147_483_648"): BM-ABIL the launch run, motorCog,
   '  st_n, par_n, why (233); BM-ABIS1 drive_u .. sense_i_mV (236); BM-ABIS2 hall .. drv_state (218); BM-ABIS3
-  '  hall_missed .. fault (247); BM-ABIP1 offset_fwd .. dead_gap (240); BM-ABIP2 ramp_down .. i_limit_k (257); BM-ABIP3
+  '  hall_missed .. fault (278: foldback_frames, task 3621, adds 31); BM-ABIP1 offset_fwd .. dead_gap (240); BM-ABIP2 ramp_down .. i_limit_k (257); BM-ABIP3
   '  duty_floor .. fault_clr (266); BM-ABIP4 probe_sink .. probe_y (112).
   '
   ' Where (token = tokAbiWhere):
@@ -15869,11 +16517,13 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
     TOKMAX_ABIWHERE = 8                                     ' NOMOTION, the longest
 
     ABI_LAUNCH_LONGS = 4                                    ' pinbase, params_ptr, targetAngle, targetIncre
-    ABI_STATUS_LONGS = 21                                   ' drive_u .. fault_resyncs (DRVR_STATUS_LONGS_COUNT, 20), then fault
+    ' task 3621: the status run is sized from the library's own count, plus fault after it, so a driver whose run grows
+    '  cannot silently drop fault off the end of the copy (at src_rev 44 a literal 21 did, after R20.1's foldback_frames)
+    ABI_STATUS_LONGS = wheelL.DRVR_STATUS_LONGS_COUNT + 1   ' drive_u .. foldback_frames (21), then fault
     ABI_PARAMS_LONGS = 25                                   ' offset_fwd .. probe_y (DRVR_PARAMS_LONGS_COUNT)
     ABI_STATUS_BASE  = ABI_LAUNCH_LONGS                     ' the status run's first long in a wheel's abiSnap row
     ABI_PARAMS_BASE  = ABI_STATUS_BASE + ABI_STATUS_LONGS   ' ...and the parameter run's
-    ABI_LONGS        = ABI_PARAMS_BASE + ABI_PARAMS_LONGS   ' 50 per wheel, the entries in tokAbiName
+    ABI_LONGS        = ABI_PARAMS_BASE + ABI_PARAMS_LONGS   ' 51 per wheel, the entries in tokAbiName
     ' each record's [first, last] in a wheel's abiSnap row, declaration order
     ABI_S1_FIRST = ABI_STATUS_BASE                          ' drive_u
     ABI_S2_FIRST = ABI_STATUS_BASE + 7                      ' hall
@@ -15893,7 +16543,7 @@ tokAbiName      BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "target
                 BYTE    "sense_u_mV", 0, "sense_v_mV", 0, "sense_w_mV", 0, "sense_i_mV", 0
                 BYTE    "hall", 0, "pos", 0, "duty", 0, "err", 0, "loop_ticks", 0, "loop_ctcks", 0, "drv_state", 0
                 BYTE    "hall_missed", 0, "hall_illegal", 0, "drv_incr_now", 0, "lag_held", 0, "duty_capped", 0
-                BYTE    "fault_resyncs", 0, "fault", 0
+                BYTE    "fault_resyncs", 0, "foldback_frames", 0, "fault", 0
                 BYTE    "offset_fwd", 0, "offset_rev", 0, "duty_min", 0, "duty_max", 0, "servo_shift", 0
                 BYTE    "ff_ceiling", 0, "dead_gap", 0
                 BYTE    "ramp_down", 0, "cfg_ctcks", 0, "stop_mode", 0, "e_stop", 0, "ramp_max", 0, "ramp_min", 0
@@ -16048,6 +16698,459 @@ PRI abiRawField(pName, rawValue)
     else
         benchLog.unclampedNumField(pName, rawValue)
 
+CON { --- the driver's reporting (task 3621, R20.1): stop reasons and the soft-event log, read by cog 0 --- }
+
+  ' WHAT IS READ. R20.1 has the driver report why each drive ended (getStopReason(), SR_*) and what it handled on its
+  '  own (getEvent(), EV_*): DOCs/plans/DRIVER-REPORTING-DESIGN.md SS1, SS2. Cog 0 is the only reader in this file, and it
+  '  reads the log only by DRAINING it (evDrain()): getEvent() until EV_NONE, every event printed as one BM-EV and
+  '  counted into the evd* staging, so the cell that judges a drain and a person reading the log see the same events.
+  '  A drain that does not end on EV_NONE inside EV_DRAIN_MAX reads, or that is told EV_LOST, is not clean (bEvdClean()),
+  '  and every cell judged on an unclean drain FAILS: a lost event never reads as none (D2).
+  '
+  ' WHERE (the stage printed on each BM-EV and BM-SR):
+  '  EVST_SKCHECK  - part START, each lifetime whose start returned a cog, EV_SETTLE_MS after its last act, before the stop
+  '  EVST_FRTRIAL  - part FAULTRESP, each FLTRESP trial whose forced fault latched, right after its capture (frReadAfter())
+  '  EVST_FRHOOK   - HOOKREST: the stop reason only (BM-SR), no drain
+  '  EVST_FRPLAT   - each FLTPLAT trial, after its capture, before the platform is stopped
+  '  EVST_D_FOLD, EVST_D_DERATE, EVST_D_BLOCK - part D's three LIMIT steps, each drained EV_SETTLE_MS after its stop
+  '  EVST_STEERSEG, EVST_WHEEL - part D's two default-limit forms: getEventTotal() only (BM-EVTOT), beside FRONTST
+  '
+  ' EV_SETTLE_MS. A rate-limited kind (the hall counts) and the fold-back's release are queued only on the event-check
+  '  pass after EV_RATE_GAP_MS of quiet, and that check runs every EV_CHECK_MS. The last change is seen at most one check
+  '  after it happens, and the release is queued at most one check after the gap has run from there: EV_RATE_GAP_MS +
+  '  2 x EV_CHECK_MS after the last change. Two more checks are margin. Every drain that needs it is taken at least this
+  '  long after its act has come to rest (waitRest()'s own REST_CONFIRM_MS comes on top), so it holds every event the act
+  '  produced.
+    EV_KIND_SLOTS    = wheelL.EV_FOLDBACK - wheelL.EV_NONE + 1                     ' 16: EV_NONE .. EV_FOLDBACK
+  ' The log a drained event came from (steering's EVW_* less EVW_LEFT; a wheel object's own events are its side's):
+    #0, EVI_LEFT, EVI_RIGHT, EVI_PLAT
+    EV_WHEELS        = EVI_PLAT + 1
+  ' The kinds a drain keeps in order, the first EV_SEQ_MAX of each per log (every kind is counted and summed):
+    #0, EVQ_STOP, EVQ_CLIMIT, EVQ_PATH, EVQ_FOLD, EVQ_RETRY, EVQ_GUARD
+    EVQ_COUNT        = EVQ_GUARD + 1
+    EV_SEQ_MAX       = 6
+    EV_DRAIN_MAX     = (2 * (wheelL.EV_QUEUE_DEPTH + 1)) + 8                       ' two logs' kept events and EV_LOST each, and what arrives meanwhile
+    EV_CHECK_MS      = (wheelL.WINDOW_PASSES * MS_PER_SEC) / wheelL.FRONT_LOOP_HZ  ' 8: the front cog's event-check period
+    EV_SETTLE_MS     = wheelL.EV_RATE_GAP_MS + (4 * EV_CHECK_MS)                   ' 1_032
+  ' The object a drain reads:
+    #0, EVSRC_STEER, EVSRC_LEFT, EVSRC_RIGHT
+  ' The stage (token = tokEvStage):
+    #0, EVST_SKCHECK, EVST_FRTRIAL, EVST_FRHOOK, EVST_FRPLAT, EVST_D_FOLD, EVST_D_DERATE, EVST_D_BLOCK, EVST_STEERSEG, EVST_WHEEL
+    EVST_COUNT       = EVST_WHEEL + 1
+    TOKMAX_EVSTAGE   = 8
+    TOKMAX_EVKIND    = 12
+    TOKMAX_EVWHEEL   = 5
+    TOKMAX_SR        = 10
+    SR_TOK_COUNT     = wheelL.SR_PARTNER - wheelL.SR_NONE + 1                      ' tokSr is indexed by the library's SR_* less SR_NONE
+  ' R20-DUAL-FRONTST-EV (SS2.3): A-10's gate on the steering front cog's worst pass, the budget the event records spend
+    FRONT_EV_PASS_US = 950
+    R20_BAD_LO       = 0                                                           ' every R20 count cell passes at zero bad instances
+    R20_BAD_HI       = 0
+
+DAT ' ---- reporting tables (task 3621) ----
+
+tokEvStage      BYTE    "SKCHECK", 0, "FRTRIAL", 0, "FRHOOK", 0, "FRPLAT", 0, "D_FOLD", 0, "D_DERATE", 0, "D_BLOCK", 0
+                BYTE    "STEERSEG", 0, "WHEEL", 0
+' the library's EV_*, EV_NONE first (EV_FAULT_RESYNC printed RESYNC, EV_CURRENT_LIMIT CUR_LIMIT)
+tokEvKind       BYTE    "NONE", 0, "LOST", 0, "STOP", 0, "RESYNC", 0, "FAULT", 0, "HOLD_SLIP", 0, "HOLD_LIMIT", 0
+                BYTE    "CUR_LIMIT", 0, "PATH_LIMIT", 0, "HALL_MISSED", 0, "HALL_ILLEGAL", 0, "WALK_GUARD", 0
+                BYTE    "LATE_PASS", 0, "PACK", 0, "CHECK_RETRY", 0, "FOLDBACK", 0
+tokEvWheel      BYTE    "LEFT", 0, "RIGHT", 0, "PLAT", 0
+' the library's SR_*, SR_NONE first (SR_FAULT_CONTROLLED printed FAULT_CTRL)
+tokSr           BYTE    "NONE", 0, "COMMANDED", 0, "AT_LIMIT", 0, "FAULT_CTRL", 0, "FAULT_LOST", 0, "BLOCKED", 0
+                BYTE    "LINK_LOST", 0, "EMERGENCY", 0, "PARTNER", 0
+
+VAR { the driver's reporting (task 3621) -- one drain's staging, cog 0 only }
+
+    LONG    evdN[EV_WHEELS * EV_KIND_SLOTS]                 ' [log * EV_KIND_SLOTS + kind - EV_NONE]: events of that kind read
+    LONG    evdSum[EV_WHEELS * EV_KIND_SLOTS]               ' ...their values summed
+    LONG    evdSeq[EV_WHEELS * EVQ_COUNT * EV_SEQ_MAX]      ' [(log * EVQ_COUNT + EVQ_*) * EV_SEQ_MAX + i]: the first values, in order
+    LONG    evdLost                                         ' events the drain was told it lost (EV_LOST values), and unknown kinds
+    LONG    evdReads                                        ' events of any kind it read
+    LONG    bEvdEnded                                       ' it ended on EV_NONE inside EV_DRAIN_MAX reads
+
+PRI evDrain(src, stage) | eKind, nMs, eWheel, nValue, logIdx
+' DRAIN one event log (this section's CON): getEvent() until EV_NONE, at most EV_DRAIN_MAX reads, each event printed as
+' BM-EV and counted into the evd* staging, cleared first. The steering object merges both wheels' logs and the
+' platform's; a wheel object's log is its own.
+'
+' @param src - EVSRC_STEER, EVSRC_LEFT (wheelL) or EVSRC_RIGHT (wheelR)
+' @param stage - EVST_* printed on each BM-EV
+'
+' @local eKind - a read's kind
+' @local nMs - its getms() stamp
+' @local eWheel - the steering object's EVW_* for it
+' @local nValue - its value
+' @local logIdx - EVI_* of the log that held it
+
+    longfill(@evdN, 0, EV_WHEELS * EV_KIND_SLOTS)
+    longfill(@evdSum, 0, EV_WHEELS * EV_KIND_SLOTS)
+    longfill(@evdSeq, 0, EV_WHEELS * EVQ_COUNT * EV_SEQ_MAX)
+    evdLost := 0
+    evdReads := 0
+    bEvdEnded := FALSE
+    repeat EV_DRAIN_MAX
+        beat(CP_LIB_STEER_QUERY)
+        if src == EVSRC_STEER                               ' if/else, never `? :` -- PL-29, PL-76
+            eKind, nMs, eWheel, nValue := steering.getEvent()
+        elseif src == EVSRC_RIGHT
+            eKind, nMs, nValue := wheelR.getEvent()
+            eWheel := steering.EVW_RIGHT
+        else
+            eKind, nMs, nValue := wheelL.getEvent()
+            eWheel := steering.EVW_LEFT
+        beat(CP_LIB_STEER_QUERY)
+        if eKind == wheelL.EV_NONE
+            bEvdEnded := TRUE
+            quit
+        evdReads += 1
+        logIdx := ((eWheel - steering.EVW_LEFT) #> EVI_LEFT) <# EVI_PLAT
+        evFold(logIdx, eKind, nValue)
+        emitEv(stage, eKind, nMs, logIdx, nValue)
+
+PRI evFold(logIdx, eKind, nValue) | arrIdx, qIdx
+' Count one drained event into the evd* staging: its kind's count and sum, and, for a kind kept in order, its value.
+' A kind outside EV_NONE .. EV_FOLDBACK is counted as lost: it is not a value this file can judge.
+'
+' @param logIdx - EVI_*
+' @param eKind - EV_*
+' @param nValue - its value
+'
+' @local arrIdx - the kind's index in evdN / evdSum
+' @local qIdx - EVQ_* for a kind kept in order, -1 otherwise
+
+    if (eKind < wheelL.EV_NONE) or (eKind > wheelL.EV_FOLDBACK)
+        evdLost += 1
+    else
+        if eKind == wheelL.EV_LOST
+            evdLost += nValue #> 1
+        arrIdx := (logIdx * EV_KIND_SLOTS) + (eKind - wheelL.EV_NONE)
+        qIdx := evqOf(eKind)
+        if (qIdx >= 0) and (evdN[arrIdx] < EV_SEQ_MAX)
+            evdSeq[(((logIdx * EVQ_COUNT) + qIdx) * EV_SEQ_MAX) + evdN[arrIdx]] := nValue
+        evdN[arrIdx] += 1
+        evdSum[arrIdx] += nValue
+
+PRI evqOf(eKind) : qIdx
+' The EVQ_* slot a kind is kept in order under, or -1.
+'
+' @param eKind - EV_*
+' @returns qIdx - EVQ_STOP, EVQ_CLIMIT, EVQ_PATH, EVQ_FOLD, EVQ_RETRY, EVQ_GUARD, or -1
+
+    case eKind
+        wheelL.EV_STOP:
+            qIdx := EVQ_STOP
+        wheelL.EV_CURRENT_LIMIT:
+            qIdx := EVQ_CLIMIT
+        wheelL.EV_PATH_LIMIT:
+            qIdx := EVQ_PATH
+        wheelL.EV_FOLDBACK:
+            qIdx := EVQ_FOLD
+        wheelL.EV_CHECK_RETRY:
+            qIdx := EVQ_RETRY
+        wheelL.EV_WALK_GUARD:
+            qIdx := EVQ_GUARD
+        other:
+            qIdx := -1
+
+PRI evCount(logIdx, eKind) : nCount
+' Events of one kind the last drain read from one log.
+'
+' @param logIdx - EVI_*
+' @param eKind - EV_NONE .. EV_FOLDBACK
+' @returns nCount - the count
+
+    nCount := evdN[(logIdx * EV_KIND_SLOTS) + (eKind - wheelL.EV_NONE)]
+
+PRI evSum(logIdx, eKind) : nSum
+' The values of one kind the last drain read from one log, summed.
+'
+' @param logIdx - EVI_*
+' @param eKind - EV_NONE .. EV_FOLDBACK
+' @returns nSum - the sum
+
+    nSum := evdSum[(logIdx * EV_KIND_SLOTS) + (eKind - wheelL.EV_NONE)]
+
+PRI evSeqAt(logIdx, qIdx, seqIdx) : nValue
+' The seqIdx'th value of a kind kept in order, from one log of the last drain.
+'
+' @param logIdx - EVI_*
+' @param qIdx - EVQ_*
+' @param seqIdx - 0..EV_SEQ_MAX-1
+' @returns nValue - the value
+
+    nValue := evdSeq[(((logIdx * EVQ_COUNT) + qIdx) * EV_SEQ_MAX) + seqIdx]
+
+PRI bEvdClean() : bClean
+' Whether the last drain can be judged: it ended on EV_NONE and nothing was lost.
+'
+' @returns bClean - TRUE when it can
+
+    bClean := bEvdEnded and (evdLost == 0)
+
+PRI evPairs(logIdx, qIdx) : nPairs, bFormed | eKind, nVals, seqIdx, nValue
+' The engage/release pairs one log's EV_FOLDBACK (qIdx EVQ_FOLD: engage value 0, release a frame count over 0) or
+' EV_PATH_LIMIT (EVQ_PATH: engage under PERMILLE_FULL, release PERMILLE_FULL) holds in the last drain, and whether the
+' whole sequence is engage, release, engage, release ..., ending on a release, with every value in order kept.
+'
+' @param logIdx - EVI_*
+' @param qIdx - EVQ_FOLD or EVQ_PATH
+' @returns nPairs - the pairs, when well formed; 0 otherwise
+' @returns bFormed - TRUE when the sequence is well formed (an empty one is)
+'
+' @local eKind - the kind qIdx keeps
+' @local nVals - its events in the drain
+' @local seqIdx - 0..nVals-1
+' @local nValue - one value
+
+    eKind := wheelL.EV_PATH_LIMIT
+    if qIdx == EVQ_FOLD
+        eKind := wheelL.EV_FOLDBACK
+    nVals := evCount(logIdx, eKind)
+    bFormed := (nVals <= EV_SEQ_MAX) and ((nVals // 2) == 0)
+    if bFormed and (nVals > 0)                              ' a Spin2 repeat from a higher bound counts down
+        repeat seqIdx from 0 to nVals - 1
+            nValue := evSeqAt(logIdx, qIdx, seqIdx)
+            if (seqIdx // 2) == 0
+                if qIdx == EVQ_FOLD
+                    bFormed &= (nValue == 0)
+                else
+                    bFormed &= (nValue < wheelL.PERMILLE_FULL)
+            elseif qIdx == EVQ_FOLD
+                bFormed &= (nValue > 0)
+            else
+                bFormed &= (nValue == wheelL.PERMILLE_FULL)
+    nPairs := 0
+    if bFormed
+        nPairs := nVals / 2
+
+PRI wheelStopReason(side) : eReason
+' getStopReason() of one wheel object (R20.1).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @returns eReason - SR_*
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT                                   ' if/else, never `? :` -- PL-29, PL-76
+        eReason := wheelR.getStopReason()
+    else
+        eReason := wheelL.getStopReason()
+    beat(CP_LIB_QUERY)
+
+PRI wheelEventTotal(side, eKind) : nCount
+' getEventTotal() of one wheel object (R20.1): the events of a kind queued since its start, read or not, lost or not.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param eKind - EV_STOP .. EV_FOLDBACK
+' @returns nCount - the total
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        nCount := wheelR.getEventTotal(eKind)
+    else
+        nCount := wheelL.getEventTotal(eKind)
+    beat(CP_LIB_QUERY)
+
+PRI wheelDrainError(side)
+' Drain one wheel object's error slot for this cog (getError(), result discarded): what an earlier call left is not
+' the next start's cause.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        wheelR.getError()
+    else
+        wheelL.getError()
+    beat(CP_LIB_QUERY)
+
+PRI wheelReadRefusal(side)
+' A wheel start that returned -1: its getError() cause and its getHealth() masks, into the st* staging BM-REFUSE prints.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        stErr := wheelR.getError()
+        stChk, stFail, stRec := wheelR.getHealth()
+    else
+        stErr := wheelL.getError()
+        stChk, stFail, stRec := wheelL.getHealth()
+    beat(CP_LIB_QUERY)
+
+PRI emitEv(stage, eKind, nMs, logIdx, nValue)
+' BM-EV (task 3621): one event a drain read -- the stage, the kind, getms() when it was queued, the log that held it
+' (PLAT: the platform's own), and its value, meaning per EV_* (DRIVER-REPORTING-DESIGN.md SS2.1). Worst case 101 bytes.
+'
+' @param stage - EVST_*
+' @param eKind - EV_*
+' @param nMs - the event's getms() stamp
+' @param logIdx - EVI_*
+' @param nValue - the event's value
+
+    recBegin(@"BM-EV")
+    benchLog.tokenField(@"stage", tokenAt(@tokEvStage, EVST_COUNT, stage), TOKMAX_EVSTAGE)
+    benchLog.tokenField(@"kind", tokenAt(@tokEvKind, EV_KIND_SLOTS, eKind - wheelL.EV_NONE), TOKMAX_EVKIND)
+    benchLog.tokenField(@"wheel", tokenAt(@tokEvWheel, EV_WHEELS, logIdx), TOKMAX_EVWHEEL)
+    benchLog.numField(@"ms", nMs, LIM_BIG)
+    benchLog.numField(@"value", nValue, LIM_BIG)
+    emitRecord()
+
+PRI emitSr(stage, side, eLeftReason, eRightReason, bLeftRead, bRightRead)
+' BM-SR (task 3621): the stop reasons read at one point -- the stage, the wheel the stage is about (the one faulted, or
+' the one started alone), the trace in hand, and each wheel's getStopReason() (NA for a wheel not read). Worst case
+' 93 bytes.
+'
+' @param stage - EVST_*
+' @param side - SIDE_LEFT, SIDE_RIGHT or SIDE_BOTH
+' @param eLeftReason - the left wheel's SR_*
+' @param eRightReason - the right wheel's SR_*
+' @param bLeftRead - the left wheel's was read
+' @param bRightRead - the right wheel's was read
+
+    recBegin(@"BM-SR")
+    benchLog.tokenField(@"stage", tokenAt(@tokEvStage, EVST_COUNT, stage), TOKMAX_EVSTAGE)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.naNumField(@"tid", curTid, LIM_SMALL, curTid > 0)
+    srField(@"l_sr", eLeftReason, bLeftRead)
+    srField(@"r_sr", eRightReason, bRightRead)
+    emitRecord()
+
+PRI srField(pName, eReason, bRead)
+' One stop-reason field: the SR_* token, or NA when not read.
+'
+' @param pName - the field name
+' @param eReason - SR_*
+' @param bRead - TRUE when eReason was read
+
+    if bRead
+        benchLog.tokenField(pName, tokenAt(@tokSr, SR_TOK_COUNT, eReason - wheelL.SR_NONE), TOKMAX_SR)
+    else
+        benchLog.textField(pName, @sSfNa)
+
+PRI emitEvTot(stage, side, lFold, rFold, lClim, rClim, lPath, rPath, nLate)
+' BM-EVTOT (task 3621): one of part D's default-limit forms, its getEventTotal() since its start for the kinds a lowered
+' limit makes, read beside its FRONTST: EV_FOLDBACK, EV_CURRENT_LIMIT and EV_PATH_LIMIT per wheel, and EV_LATE_PASS (the
+' steering object's is the platform's). The single wheel prints its own in the l_ fields and NA in the r_ ones. Worst
+' case 150 bytes.
+'
+' @param stage - EVST_STEERSEG or EVST_WHEEL
+' @param side - SIDE_BOTH (the steering object) or SIDE_LEFT (the single wheel)
+' @param lFold - the left wheel's EV_FOLDBACK total
+' @param rFold - the right wheel's
+' @param lClim - the left wheel's EV_CURRENT_LIMIT total
+' @param rClim - the right wheel's
+' @param lPath - the left wheel's EV_PATH_LIMIT total
+' @param rPath - the right wheel's
+' @param nLate - the form's EV_LATE_PASS total
+
+    recBegin(@"BM-EVTOT")
+    benchLog.tokenField(@"stage", tokenAt(@tokEvStage, EVST_COUNT, stage), TOKMAX_EVSTAGE)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"l_fold", lFold, LIM_SMALL)
+    benchLog.naNumField(@"r_fold", rFold, LIM_SMALL, side == SIDE_BOTH)
+    benchLog.numField(@"l_clim", lClim, LIM_SMALL)
+    benchLog.naNumField(@"r_clim", rClim, LIM_SMALL, side == SIDE_BOTH)
+    benchLog.numField(@"l_path", lPath, LIM_SMALL)
+    benchLog.naNumField(@"r_path", rPath, LIM_SMALL, side == SIDE_BOTH)
+    benchLog.numField(@"late", nLate, LIM_SMALL)
+    emitRecord()
+
+PRI emitSRefuse(seg)
+' BM-SREFUSE (task 3621): a steering start() that returned -1, and why -- the three getError() codes (the platform's,
+' then each wheel's; ERR_START_CHECK_FAILED is a refusal) and both wheels' getHealth() masks (HLT_* bits, hex), all read
+' right after the call. Worst case 190 bytes.
+'
+' @param seg - SEG_* in progress
+
+    recBegin(@"BM-SREFUSE")
+    benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
+    benchLog.numField(@"life", steerLife, LIM_SMALL)
+    benchLog.numField(@"ret", ssRet, LIM_TINY)
+    benchLog.numField(@"err", ssErr, LIM_SMALL)
+    benchLog.numField(@"l_err", ssLErr, LIM_SMALL)
+    benchLog.numField(@"r_err", ssRErr, LIM_SMALL)
+    benchLog.hexField(@"l_chk", ssChk[SLOT_LEFT])
+    benchLog.hexField(@"l_fail", ssFail[SLOT_LEFT])
+    benchLog.hexField(@"l_rec", ssRec[SLOT_LEFT])
+    benchLog.hexField(@"r_chk", ssChk[SLOT_RIGHT])
+    benchLog.hexField(@"r_fail", ssFail[SLOT_RIGHT])
+    benchLog.hexField(@"r_rec", ssRec[SLOT_RIGHT])
+    emitRecord()
+
+PRI emitRefuse(seg, side)
+' BM-REFUSE (task 3621): a wheel start() that returned -1, and why -- its getError() code and its getHealth() masks
+' (HLT_* bits, hex), read right after the call. Worst case 130 bytes.
+'
+' @param seg - SEG_* in progress
+' @param side - SIDE_LEFT or SIDE_RIGHT
+
+    recBegin(@"BM-REFUSE")
+    benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"life", slotLife[side - SIDE_LEFT], LIM_SMALL)
+    benchLog.numField(@"ret", stCogRet, LIM_TINY)
+    benchLog.numField(@"err", stErr, LIM_SMALL)
+    benchLog.hexField(@"chk", stChk)
+    benchLog.hexField(@"fail", stFail)
+    benchLog.hexField(@"rec", stRec)
+    emitRecord()
+
+PRI r20ResetCells() | formIdx
+' Clear R20-T0-EV-LATE's and part D's event-cell accumulators (initRunState()), so a cell nothing reached prints NOMEAS.
+'
+' @local formIdx - [0] the steering front cog, [1] the single wheel's
+
+    repeat formIdx from SLOT_LEFT to SLOT_RIGHT
+        sfLateRepN[formIdx] := 0
+        sfLateRepBad[formIdx] := 0
+        sfLateNoneN[formIdx] := 0
+        sfLateNoneBad[formIdx] := 0
+    dEvStages := 0
+    dEvUnclean := 0
+    dFoldPairs := 0
+    dFoldBadSeq := 0
+    dPathBadSeq := 0
+    dPathPairs := 0
+    bDPathShort := FALSE
+    bDBlockDrained := FALSE
+    dClimN := 0
+    dClimBad := 0
+    bDClimPos := FALSE
+    dDefForms := 0
+    dDefFoldBad := 0
+    dDefClimBad := 0
+    bDDefSteer := FALSE
+    dDefPathBad := 0
+
+PRI lateFold(formIdx, nLate, nLateEv)
+' Fold one FRONTST read into R20-T0-EV-LATE (task 3621, SS6): EV_LATE_PASS is queued iff a front pass ran late. A read
+' with late passes and no event is bad; so is one with an event and no late pass.
+'
+' @param formIdx - [0] the steering front cog, [1] the single wheel's
+' @param nLate - the form's late passes since its start
+' @param nLateEv - its EV_LATE_PASS total since its start
+
+    if nLate > 0
+        sfLateRepN[formIdx] := (sfLateRepN[formIdx] + 1) <# LIM_SMALL
+        if nLateEv == 0
+            sfLateRepBad[formIdx] := (sfLateRepBad[formIdx] + 1) <# LIM_SMALL
+    else
+        sfLateNoneN[formIdx] := (sfLateNoneN[formIdx] + 1) <# LIM_SMALL
+        if nLateEv <> 0
+            sfLateNoneBad[formIdx] := (sfLateNoneBad[formIdx] + 1) <# LIM_SMALL
+
+PRI emitLateCells(formIdx, side)
+' R20-T0-EV-LATE's two instances for one front-cog form: LATE_REPORTED (reads with a late pass, each must have its
+' EV_LATE_PASS; NOMEAS while no pass has run late -- MEASURED 0 at Visit 8) and NO_LATE_NO_EVENT (reads with none, each
+' must have no EV_LATE_PASS). Together they are the iff; either instance FAILS on one bad read.
+'
+' @param formIdx - [0] the steering front cog, [1] the single wheel's
+' @param side - SIDE_BOTH (steering) or SIDE_LEFT (the wheel)
+
+    emitSignoff(@sSfCellEvLate, side, @sSfCritLateRep, sfLateRepN[formIdx] > 0, sfLateRepBad[formIdx], R20_BAD_LO, R20_BAD_HI, sfLateRepN[formIdx], @sSfUnitsCount)
+    emitSignoff(@sSfCellEvLate, side, @sSfCritLateNone, sfLateNoneN[formIdx] > 0, sfLateNoneBad[formIdx], R20_BAD_LO, R20_BAD_HI, sfLateNoneN[formIdx], @sSfUnitsCount)
+
 CON { --- wheel and steering wrappers: every library call is bracketed by beat(CP_LIB_*) --- }
 
 PRI bWheelStart(seg, side) : bStarted | slotIdx, cogValue, startMs, restMs, nMissed, nIllegal
@@ -16055,7 +17158,9 @@ PRI bWheelStart(seg, side) : bStarted | slotIdx, cogValue, startMs, restMs, nMis
 ' stop the steering object and both wheels first (I6, shared pin claims PL-18); keep starts at least
 ' START_SPACING_MS apart; start with board detection never forced (I12); wait ready; read the cog,
 ' board, offsets and integrity counts; take this lifetime's floated zero-command sense mean through
-' the instrument; emit BM-START. A retired motor is not started.
+' the instrument; emit BM-START. A retired motor is not started. Task 3621: the start is watched with the
+' start grace (WD_START_GRACE_MS), and a start that returns -1 is followed by BM-REFUSE -- its getError() cause
+' and its getHealth() masks, read right after the call.
 '
 ' @param seg - SEG_* in progress
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -16083,6 +17188,10 @@ PRI bWheelStart(seg, side) : bStarted | slotIdx, cogValue, startMs, restMs, nMis
         restMs := START_SPACING_MS - (getms() - lastStartMs)
         if bAnyStart and (restMs > 0)
             waitBeat(restMs, CP_LOOP_REST)
+        ' task 3621: this cog's error slot is drained first, so a refusal's getError() below is this start's cause, and
+        '  the watchdog is granted WD_START_GRACE_MS for this one call only: start() may re-run a failing check
+        wheelDrainError(side)
+        wdGraceMs := WD_START_GRACE_MS
         beat(CP_LIB_START)
         if side == SIDE_RIGHT
             benchLog.cogEventBegin()
@@ -16093,6 +17202,9 @@ PRI bWheelStart(seg, side) : bStarted | slotIdx, cogValue, startMs, restMs, nMis
             stCogRet := wheelL.start(LEFT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE)
             benchLog.cogEventEnd()
         beat(CP_LIB_START)
+        wdGraceMs := 0
+        if stCogRet < 0
+            wheelReadRefusal(side)                          ' the cause and every health mask, before anything else runs
         lastStartMs := getms()
         bAnyStart := TRUE
         lifeSeq := (lifeSeq + 1) <# LIM_SMALL
@@ -16132,6 +17244,8 @@ PRI bWheelStart(seg, side) : bStarted | slotIdx, cogValue, startMs, restMs, nMis
         else
             stWhy := WHY_NO_COG
         emitStart(seg, side)
+        if stCogRet < 0
+            emitRefuse(seg, side)                           ' task 3621: why the start returned -1
 
 PRI lifetimeZero(side) : whyCode | slotIdx, winStartTotal, winEndTotal
 ' Take this driver lifetime's floated zero-command sense_i and phase-sum means: ZERO_WINDOW_MS through
@@ -16551,7 +17665,9 @@ PRI bSteerStart(seg) : bStarted | startMs, restMs, leftMissed, leftIllegal, righ
 ' Start the steering object: refuse unless the instrument is IDLE or FROZEN (I10); stop both wheel
 ' instances first (shared pin claims, PL-18); detection never forced (I12); wait ready; read both
 ' drivers' states, offsets, integrity counts and detected boards (testGetBoardTypes(), sec 12.1 Q8);
-' set holdAtStop(FALSE); emit BM-SSTART. The steering start's life is the sid its records carry.
+' set holdAtStop(FALSE); emit BM-SSTART. The steering start's life is the sid its records carry. Task 3621: the
+' start is watched with the start grace (WD_START_GRACE_MS), and a start that returns -1 is followed by
+' BM-SREFUSE -- the three getError() codes and both wheels' getHealth() masks, read right after the call.
 '
 ' @param seg - SEG_* in progress
 ' @returns bStarted - TRUE when start() returned a cog id and both drivers reported ready
@@ -16565,19 +17681,33 @@ PRI bSteerStart(seg) : bStarted | startMs, restMs, leftMissed, leftIllegal, righ
 
     bStarted := FALSE
     ssWhy := WHY_NONE
+    bSsCalled := FALSE
     if bInstQuiet() == FALSE
         instRefused(seg)
     else
+        bSsCalled := TRUE
         wheelStopRaw(SIDE_LEFT)
         wheelStopRaw(SIDE_RIGHT)
         restMs := START_SPACING_MS - (getms() - lastStartMs)
         if bAnyStart and (restMs > 0)
             waitBeat(restMs, CP_LOOP_REST)
+        ' task 3621: this cog's three error slots are drained first, so a refusal's getError() below is this start's
+        '  cause, and the watchdog is granted WD_START_GRACE_MS for this one call only (its derivation is at the constant)
+        beat(CP_LIB_STEER_QUERY)
+        steering.getError()
+        beat(CP_LIB_STEER_QUERY)
+        wdGraceMs := WD_START_GRACE_MS
         beat(CP_LIB_STEER_START)
         benchLog.cogEventBegin()
         ssRet := steering.start(LEFT_TEST_BASE, RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TEST_DET_MODE)
         benchLog.cogEventEnd()
         beat(CP_LIB_STEER_START)
+        wdGraceMs := 0
+        if ssRet < 0                                        ' the cause and every health mask, before anything else runs
+            beat(CP_LIB_STEER_QUERY)
+            ssErr, ssLErr, ssRErr := steering.getError()
+            ssChk[SLOT_LEFT], ssFail[SLOT_LEFT], ssRec[SLOT_LEFT], ssChk[SLOT_RIGHT], ssFail[SLOT_RIGHT], ssRec[SLOT_RIGHT] := steering.getHealth()
+            beat(CP_LIB_STEER_QUERY)
         lastStartMs := getms()
         bAnyStart := TRUE
         lifeSeq := (lifeSeq + 1) <# LIM_SMALL
@@ -16607,6 +17737,8 @@ PRI bSteerStart(seg) : bStarted | startMs, restMs, leftMissed, leftIllegal, righ
         if bSteerUp
             steerHold(FALSE)
         emitSStart(seg)
+        if ssRet < 0
+            emitSRefuse(seg)                                ' task 3621: why the start returned -1
 
 PRI steerStop()
 ' Stop the steering object (both drivers and its sense cog), returning the instrument to IDLE first
@@ -17067,6 +18199,8 @@ PRI emitHeaderRecords() | orderIdx
         emitSkBuild()
         if BUILD_NO_WALK
             emitNotBuilt(@sSfCellSkWalk, @sSfStudyB5, WHY_PART_NOT_BUILT)
+        if BUILD_START_POS                                  ' task 3621: R20-PACK-EV's unplug and replug is R20.4's attended run
+            emitNotBuilt(@sSfCellPackEv, @sSfStudyR204, WHY_PART_NOT_BUILT)
     if PART_ID == PART_SPIN                                 ' task 3591: the limit's derivation, every leg and every band, before anything moves
         emitSpinHeader()
     beat(CP_EMIT)
@@ -17111,7 +18245,8 @@ PRI emitBanner()
 
 PRI emitBuild()
 ' BM-BUILD: the compiled instrument, limits and C-6 constants, and the driver's revision. Worst case
-' 251 bytes (237 before drv_rev, which adds ",drv_rev," 9 and at most 5 digits).
+' 271 bytes (237 before drv_rev, which adds ",drv_rev," 9 and at most 5 digits; wd_start_ms, task 3621, appended,
+' adds 2 + 11 + 7).
 
     recBegin(@"BM-BUILD")
     benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
@@ -17127,6 +18262,7 @@ PRI emitBuild()
     benchLog.numField(@"pack_mV", PACK_MV, LIM_SMALL)
     benchLog.numField(@"fault_cool_ms", FAULT_COOL_MS, LIM_SMALL)
     benchLog.numField(@"drv_rev", wheelL.DRIVER_REV, LIM_SMALL)
+    benchLog.numField(@"wd_start_ms", WD_START_GRACE_MS, LIM_SMALL)   ' task 3621: the watchdog's extra allowance inside a start()
     emitRecord()
 
 PRI emitInst(eventCode, ackMs, bAckValid, whyCode)
@@ -18530,6 +19666,10 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellCmdTmo)
                 emitSignoffDecl(@sSfCellWCmdTmo)
                 emitSignoffDecl(@sSfCellDirSign)
+                emitSignoffDecl(@sSfCellEvFold)             ' task 3621
+                emitSignoffDecl(@sSfCellEvClim)
+                emitSignoffDecl(@sSfCellEvPath)
+                emitSignoffDecl(@sSfCellEvLate)
             PART_FLOOR:
                 emitSignoffDecl(@sSfCellNoStallF)
                 emitSignoffDecl(@sSfCellDbgMaskF)
@@ -18577,6 +19717,11 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellResync)
                 emitSignoffDecl(@sSfCellPlatStop)
                 emitSignoffDecl(@sSfCellB4Pulse)
+                emitSignoffDecl(@sSfCellSrFault)            ' task 3621
+                emitSignoffDecl(@sSfCellSrLost)
+                emitSignoffDecl(@sSfCellSrPart)
+                emitSignoffDecl(@sSfCellFrontEv)
+                emitSignoffDecl(@sSfCellEvLate)
             PART_START:
                 emitSignoffDecl(@sSfCellNoStallS)
                 emitSignoffDecl(@sSfCellDbgMaskS)
@@ -18595,6 +19740,21 @@ PRI emitSignoffDecls()
                     emitSignoffDecl(@sSfCellSkWindSp)
                 elseif BUILD_WIND == SKWIND_NEG
                     emitSignoffDecl(@sSfCellSkWindNg)
+                if BUILD_NEG == SKNEG_PHASE                 ' task 3621: the reporting cells, each in its own build
+                    emitSignoffDecl(@sSfCellRefuse)
+                    emitSignoffDecl(@sSfCellOptOut)
+                    emitSignoffDecl(@sSfCellRetry)
+                elseif BUILD_START_POS
+                    emitSignoffDecl(@sSfCellNoRefuse)
+                    emitSignoffDecl(@sSfCellRetry)
+                    emitSignoffDecl(@sSfCellEvGuard)
+                    emitSignoffDecl(@sSfCellEvMiss)
+                    emitSignoffDecl(@sSfCellPackEv)
+                elseif BUILD_NEG == SKNEG_SWAP
+                    emitSignoffDecl(@sSfCellEvGuard)
+                    emitSignoffDecl(@sSfCellEvMiss)
+                elseif BUILD_START_B1
+                    emitSignoffDecl(@sSfCellEvIll)
             PART_SPIN:
                 emitSignoffDecl(@sSfCellNoStallP)
                 emitSignoffDecl(@sSfCellDbgMaskP)
@@ -18620,7 +19780,7 @@ PRI emitSignoffDecls()
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
-' fields). Worst case: tag(12) + sf(8) + bin(11) + cell(26) + task(11) = 68 bytes.
+' fields). Worst case: tag(12) + sf(8) + bin(11) + cell(28) + task(11) = 70 bytes.
 '
 ' @param pCell - pointer to the cell id
 
@@ -18660,7 +19820,9 @@ PRI emitSignoffs() | slotIdx, side
 '  START  NOSTALL BOOL; DBGMASK BOOL; per motor HEALTH, RZSPREAD, PROBE and WALK COUNT (WALK NOT_BUILT in the
 '         START_NO_WALK build) and PRBFLR MV, the control before the probe; PACK COUNT; PHNEG COUNT (LEFT, the
 '         START_NEG_PHASE build only) or SWNEG COUNT (LEFT, the START_NEG_SWAP build only); WINDR and WINDSPR COUNT
-'         per motor (dual-start only) or WINDNEG COUNT (LEFT, START_NEG_PHASE only) (emitStartCells())
+'         per motor (dual-start only) or WINDNEG COUNT (LEFT, START_NEG_PHASE only); task 3621's reporting cells, COUNT,
+'         each in its own build (emitStartCells())
+'  D and FRESP also carry task 3621's reporting cells (emitDEvCells(), emitFaultRespCells())
 '  SPIN   NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; SPINSTOP, SPINOFF, SPINDIR COUNT and CRPCOAST, CRPLOW TICKS (BOTH);
 '         per motor RSTPROV, SPINHUNT, SPINERR COUNT, SPINSTRT PERMILLE, SPINPEAK, SPINSYM, SPINCTL, SPINLEAD X100,
 '         SPINFOL COUNT, SPINPLAT PCT, CREEP TICKS, CRPHOLD BOOL; LAGBOUND COUNT per motor (emitSpinCells())
@@ -18803,6 +19965,37 @@ PRI emitDStepCells() | slotIdx
     emitSignoffBool(@sSfCellWCmdTmo, SIDE_LEFT, @sSfCritCmdTmo, bSfWDStepRan[DST_CMDTIMEOUT], bSfWDStepOk[DST_CMDTIMEOUT], SIGNOFF_ONE_INSTANCE)
     ' task 3577 (AC): the direction sign, the steering object only -- a single wheel has no direction
     emitSignoffBool(@sSfCellDirSign, SIDE_BOTH, @sSfCritDirSign, bSfDStepRan[DST_DIRSIGN], bSfDStepOk[DST_DIRSIGN], SIGNOFF_ONE_INSTANCE)
+    emitDEvCells()                                          ' task 3621
+
+PRI emitDEvCells() | nBad
+' Part D's event cells (task 3621, DRIVER-REPORTING-DESIGN.md SS6), each a COUNT of bad instances, passing at 0, and
+' each measured only when BOTH its positive (the LIMIT segment's lowered limits, dEvStage()) and its negative (a
+' default-limit form's totals, dEvDefaults()) were read:
+'  EV-FOLDBACK - positive: the three LIMIT stages hold at least one EV_FOLDBACK engage (0) and release (frames > 0), every
+'                log's sequence well formed, every drain clean; negative: no EV_FOLDBACK in either default-limit form.
+'                Bad: each malformed log, each unclean drain, no pair at all (1), each default form with one
+'  EV-CLIMIT   - positive: a wheel dStepDerate() saw derate logged D_DERATE_CONT_A, then D_DERATE_PEAK_A once it came
+'                back, and a wheel that never derated logged none; NOMEAS unless one derated (SS6: wheels-up may not
+'                reach it); negative: none in either default-limit form. Bad: each wheel that did not match, each form
+'                with one
+'  EV-PATH     - positive: the BLOCK step, which saw a wheel SHORT, holds an EV_PATH_LIMIT engage (under 1000) and its
+'                release (1000), every LIMIT stage's sequences well formed; NOMEAS unless a wheel was seen SHORT;
+'                negative: none in STEERSEG. Bad: each malformed log, each unclean drain, no pair (1), STEERSEG with one
+'  EV-LATE     - per front-cog form (emitLateCells())
+'
+' @local nBad - one cell's bad instances
+
+    nBad := dFoldBadSeq + dEvUnclean + dDefFoldBad
+    if dFoldPairs == 0
+        nBad += 1
+    emitSignoff(@sSfCellEvFold, SIDE_BOTH, @sSfCritEvFold, (dEvStages == 3) and (dDefForms > 0), nBad, R20_BAD_LO, R20_BAD_HI, dEvStages + dDefForms, @sSfUnitsCount)
+    emitSignoff(@sSfCellEvClim, SIDE_BOTH, @sSfCritEvClim, bDClimPos and (dDefForms > 0), dClimBad + dDefClimBad, R20_BAD_LO, R20_BAD_HI, dClimN + dDefForms, @sSfUnitsCount)
+    nBad := dPathBadSeq + dDefPathBad + dEvUnclean
+    if dPathPairs == 0
+        nBad += 1
+    emitSignoff(@sSfCellEvPath, SIDE_BOTH, @sSfCritEvPath, bDBlockDrained and bDPathShort and bDDefSteer, nBad, R20_BAD_LO, R20_BAD_HI, dEvStages + 1, @sSfUnitsCount)
+    emitLateCells(SLOT_LEFT, SIDE_BOTH)
+    emitLateCells(SLOT_RIGHT, SIDE_LEFT)
 
 PRI bDEstopRan(bWheelForm) : bRan
 ' Whether all three e-stop steps of one form were measured.
@@ -18830,7 +20023,7 @@ PRI bDEstopOk(bWheelForm) : bOk
 PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, instCount, pUnits) | boundedVal, pVerdict
 ' One numeric SIGNOFF verdict (test_bench_scan.spin2 emitSignoff(), units named by the caller). Judged on the
 ' clamped printed value; PASS only when measured and in range; NOMEAS with measured NA and n 0 when not
-' measured. Worst case 196 bytes.
+' measured. Worst case 198 bytes.
 '
 ' @param pCell - pointer to the cell id
 ' @param side - SIDE_NONE, SIDE_LEFT or SIDE_RIGHT
@@ -18869,7 +20062,7 @@ PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, in
 
 PRI emitSignoffBool(pCell, side, pCrit, bMeasured, bCriterionMet, instCount) | pVerdict
 ' One BOOL SIGNOFF verdict: measured TRUE/FALSE (NA when not measured), lo TRUE, hi TRUE. PASS only
-' when measured and TRUE. Worst case 173 bytes.
+' when measured and TRUE. Worst case 175 bytes.
 '
 ' @param pCell - pointer to the cell id
 ' @param side - SIDE_NONE, SIDE_LEFT or SIDE_RIGHT
@@ -18907,7 +20100,8 @@ PRI emitSignoffBool(pCell, side, pCrit, bMeasured, bCriterionMet, instCount) | p
 CON { --- watchdog cog (test_bench_scan.spin2 pattern, design sec 4.3): runs in its own cog --- }
 
 PRI watchdog() | lastSeenBeat, lastChangeMs, msSinceBeat
-' Watch cog 0's heartbeat every WD_POLL_MS; declare a stall once it has not advanced for WD_STALL_MS.
+' Watch cog 0's heartbeat every WD_POLL_MS; declare a stall once it has not advanced for WD_STALL_MS, plus the grace
+' cog 0 grants while it is inside a start() call (wdGraceMs, task 3621: WD_START_GRACE_MS, derived where it is defined).
 ' Runs forever: declareStall() never returns.
 '
 ' @local lastSeenBeat - wdHeartbeat at the previous sample
@@ -18923,7 +20117,7 @@ PRI watchdog() | lastSeenBeat, lastChangeMs, msSinceBeat
             lastChangeMs := getms()
         else
             msSinceBeat := getms() - lastChangeMs
-            if msSinceBeat >= WD_STALL_MS
+            if msSinceBeat >= WD_STALL_MS + wdGraceMs
                 declareStall(msSinceBeat)
 
 PRI declareStall(msSinceBeat)
@@ -19023,7 +20217,7 @@ PRI wdEmitWatchdog2()
     wdEmitRecord()
 
 PRI wdEmitNoStall()
-' This part's R14-DUAL-NOSTALL-* as FAIL from the watchdog cog: measured FALSE, n 1. Worst case 173 bytes.
+' This part's R14-DUAL-NOSTALL-* as FAIL from the watchdog cog: measured FALSE, n 1. Worst case 175 bytes.
 
     wdLog.begin(@"SIGNOFF")
     wdLog.numField(@"sf", SF_VERSION, LIM_TINY)

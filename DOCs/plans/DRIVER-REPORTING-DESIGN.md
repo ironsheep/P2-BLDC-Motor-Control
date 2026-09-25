@@ -609,3 +609,116 @@ config block active). Code size only; the front pass time and stack are NOT meas
 EVW_PLATFORM and is counted in `nPlatform`, as EV_LATE_PASS is. The pack is the platform's; the left wheel's object
 only reads it. Reporting it as EVW_LEFT would give one value two meanings (D7). Gates after the fix: build-check
 48/48 with both demos certified; style PASS.
+
+---
+
+## Build notes (part 3, the harnesses and the runner)
+
+Files: `src/test_bench_t0.spin2` (SRC_REV 17 → 18), `src/test_bench_dual.spin2` (SRC_REV 44 → 45, FMT 28 → 29),
+`tools/bench-run.sh`. No library object changed.
+
+**How the harness reads the log.** The dual harness reads the event log only by DRAINING it (`evDrain()`): `getEvent()` to
+EV_NONE, each event printed as a new BM-EV record and counted per log and kind; the first six values of the kinds whose
+order matters (EV_STOP, EV_CURRENT_LIMIT, EV_PATH_LIMIT, EV_FOLDBACK, EV_CHECK_RETRY, EV_WALK_GUARD) are kept in order.
+A drain that does not end on EV_NONE inside its bound, or is told EV_LOST, is unclean, and every cell judged on it FAILS
+(D2). Where a count must include rate-limited events, the drain waits `EV_SETTLE_MS` = EV_RATE_GAP_MS + 4 × 8 ms after
+the act (the change is seen one check late at most, the release one check after the gap; two checks of margin). The
+default-limit negatives read `getEventTotal()` instead, which is never lost. T0-25 prints each event as `T0-25,ev`.
+
+**Cells as built.** Every cell is a SIGNOFF (BOOL, or COUNT of bad instances passing at 0) with its criterion token.
+
+| Cell | Tier (build) | Positive | How it FAILs |
+|---|---|---|---|
+| R20-T0-SR-COMMANDED | t0-stopreason | stopMotor() → 41, still 41 500 ms later | any of the seven legs' reads as its drive opens is not SR_NONE (six follow a recorded stop, so a reason a new drive does not clear fails); a leg call returned an error |
+| R20-T0-SR-ATLIMIT | t0-stopreason | 300 ms time limit → 42 | stopMotor() at 100 ms under the armed limit is not 41, or is not still 41 after the deadline passes at rest |
+| R20-T0-SR-ESTOP | t0-stopreason | emergencyCutoff() at speed → 47 | stop, rest, e-stop at rest: not 41 both times |
+| R20-T0-SR-LINKLOST | t0-stopreason | timeout 100 ms, 400 ms silent → 46 | drive re-sent every 30 ms for 400 ms is not still SR_NONE, or its stopMotor() is not 41 |
+| R20-T0-EV-STOP | t0-stopreason | exactly 41 42 41 47 41 46 41, ms rising | missing, extra, reordered, a tie in ms, any loss, no EV_NONE |
+| R20-T0-EV-LOST | t0-stopreason | 20 cycles unread → EV_LOST first, value = queued − 16 (4 when only the 20 stops were queued), then 16 kept, then EV_NONE | EV_NONE or any kind before EV_LOST, a wrong count, not 16 kept, the cycles' EV_STOP total not 20 |
+| R20-T0-EV-TOTAL | t0-stopreason | getEventTotal(EV_STOP) = 27 | 23 (drained only) or anything but 27 |
+| R20-T0-EV-2COG | t0-stopreason | helper cog and cog 0 each read the same 4 EV_STOP | either reads fewer or more, or loses one; NOMEAS if the helper never started |
+| R20-T0-EV-HOLD | t0-stopmode | slip row: one EV_HOLD_SLIP, \|value\| ≥ HOLD_SLIP_TICKS; limit row: one EV_HOLD_LIMIT | per hold row judged, events ≠ the hold states the measure cog saw in that ACT; measured only when a measured row did not slip (the negative) |
+| R20-DUAL-SR-FAULT | dual-fault | X-4: 43, one EV_STOP 43, one EV_FAULT_RESYNC valued FC_LAG, no EV_FAULT | X-2 reads 43; HOOKREST not SR_NONE; measured only with both an X-4 and a negative judged |
+| R20-DUAL-SR-FLOST | dual-fault | X-2, X-3: 44, one EV_STOP 44, one EV_FAULT; X-6 and X6C: 44 with EV_STOP 43 then 44 | X-4 reads 44; measured only with both judged |
+| R20-DUAL-SR-PARTNER | dual-fault (FLTPLAT, per faulted wheel) | faulted wheel the response's reason (44 LEFT/FR_SHIPPED, 43 RIGHT/FR_GRADED) with one EV_STOP of it; other 48 with one EV_STOP 48 | the faulted wheel reading 48, the other any other reason, an unclean drain |
+| R20-DUAL-FRONTST-EV | dual-fault (after each FLTPLAT fault) | steering worst pass ≤ 950 µs, late 0, stack < STEER_STACK_LONGS | its own threshold; NOMEAS when the fault did not latch (no burst) |
+| R20-T0-EV-LATE | dual-d (both forms), dual-fault (steering) | LATE_REPORTED: a form with late passes has EV_LATE_PASS | NO_LATE_NO_EVENT: a form with no late pass has an EV_LATE_PASS; LATE_REPORTED NOMEAS while late stays 0 |
+| R20-DUAL-EV-FOLDBACK | dual-d | the three LIMIT steps' drains hold an EV_FOLDBACK engage (0) then release (> 0) | no pair at all; any log's sequence not engage/release…; any unclean drain; an EV_FOLDBACK total in STEERSEG or the wheel half |
+| R20-DUAL-EV-CLIMIT | dual-d (DERATE drain) | a wheel DERATE saw derate and return: EV_CURRENT_LIMIT 8 then 20 | that wheel's events differ; a wheel that never derated logs one; an EV_CURRENT_LIMIT total in STEERSEG or the wheel half; NOMEAS unless a wheel derated |
+| R20-DUAL-EV-PATH | dual-d (BLOCK drain) | a wheel seen SHORT: engage (< 1000) then release (1000) | no pair; any LIMIT stage's sequence malformed; unclean drain; an EV_PATH_LIMIT total in STEERSEG; NOMEAS unless a wheel was seen SHORT |
+| R20-DUAL-REFUSE | dual-start-phaseneg (REFUSE block) | −1, platform and LEFT ERR_START_CHECK_FAILED, LEFT failed = the withheld bit (BM-SREFUSE) | any of those differs; measured only with OPTOUT lifetimes run too |
+| R20-DUAL-OPTOUT | dual-start-phaseneg (OPTOUT blocks) | start taken, LEFT failed = the withheld bit | a refusal, or another mask; measured only with REFUSE lifetimes run too |
+| R20-DUAL-RETRY | dual-start-phaseneg: LEFT RETRY_REPORTED; BOTH NO_SPURIOUS_RETRY. dual-start: BOTH NO_SPURIOUS_RETRY | FIRST block: taken, LEFT failed 0, recovered = bit, one LEFT EV_CHECK_RETRY valued bit \| 2 << 8 | a FIRST start not taken or mis-reported; NO_SPURIOUS: RIGHT (phaseneg, every started lifetime), LEFT in OPTOUT lifetimes, both wheels in dual-start: recovered ≠ 0 or any EV_CHECK_RETRY |
+| R20-DUAL-NOREFUSE | dual-start | every start ≥ 0 | a start returned −1 (BM-SREFUSE says why) |
+| R20-DUAL-EV-WALKGUARD | dual-start-swapneg: LEFT GUARD_EV_ON_SWAP, RIGHT NO_GUARD_EV. dual-start: BOTH NO_GUARD_EV | each swapped LEFT walk: ≥ 1 EV_WALK_GUARD, each ≥ WALK_I_LIMIT_MV | none, a value under the limit; any EV_WALK_GUARD on an unswapped walk |
+| R20-DUAL-EV-HALLMISSED | dual-start-swapneg: LEFT MISSED_SUM_EQUAL. dual-start: BOTH NO_HALL_EV | EV_HALL_MISSED values sum to the LEFT missed count (lifetimes that missed one) | sum differs; any EV_HALL_MISSED or EV_HALL_ILLEGAL in dual-start |
+| R20-DUAL-EV-HALLILL | dual-start-nowalk: RIGHT ILLEGAL_SUM_EQUAL, LEFT NO_ILLEGAL_EV | EV_HALL_ILLEGAL values sum to the RIGHT illegal count (lifetimes with one) | sum differs; any LEFT EV_HALL_ILLEGAL |
+| R20-PACK-EV | dual-start | PACK_UNPLUG_EV: NOT_BUILT (BM-NOTBUILT study R20.4, why PART_NOT_BUILT) | PACK_STEADY_NO_EV: an EV_PACK while the pack stands; NOMEAS while `getPackVoltage()` reads PACK_NOT_FITTED |
+| R20-FLOOR-SR-BLOCKED | — | left for the floor tier, not built | dual-d's BLOCK drain prints the BLOCKED step's EV_STOP values as BM-EV should it ever block wheels-up |
+
+**START lifetimes (item 3).** `dual-start-phaseneg` now runs 12 lifetimes in four blocks of three (U, V, W):
+OPTOUT, REFUSE, FIRST, OPTOUT. R19-DUAL-PHNEG-X and R19-DUAL-WINDNEG-X are folded from the OPTOUT lifetimes only,
+whose starts run exactly as every lifetime did before (n 6, was 10); the winding check is armed only there, since it
+honours only the every-attempt withhold. `dual-start-nowalk` sets `setStartChecks(FALSE)` before every start.
+`setStartChecks()` is set every lifetime, never assumed, since it persists across starts.
+
+**Refused starts (item 4).** `bSteerStart()` drains cog 0's three error slots before `start()`, reads `getError()` and
+all six `getHealth()` masks right after a −1, and prints BM-SREFUSE after BM-SSTART; `bWheelStart()` does the same
+for one wheel as BM-REFUSE.
+
+**ABI dump (item 5).** `ABI_STATUS_LONGS = wheelL.DRVR_STATUS_LONGS_COUNT + 1`, so the copy is sized by the library's own
+count and `fault` cannot fall off its end again; `tokAbiName` gains `foldback_frames` before `fault`. BM-ABIS3 grows to
+278 bytes.
+
+**The stall watchdog (item 6).** Derivation: the watchdog now declares at `WD_STALL_MS + wdGraceMs`. Cog 0 sets
+`wdGraceMs := WD_START_GRACE_MS` immediately before the beat that precedes a `start()` call, and 0 after the beat that
+follows it, in `bSteerStart()` and `bWheelStart()` only. `WD_START_GRACE_MS` is every wait `isp_steering_2wheel.start()`
+can make, from the library's constants at their worst (both wheels failing every refusing check, the winding check
+armed):
+
+| Wait | From | ms |
+|---|---|---:|
+| the lockstep release | `waitms(100)` in steering `start()` (`STEER_ATN_WAIT_MS`) | 100 |
+| two rest-zero readiness bounds | 2 × REST_ZERO_READY_TIMEOUT_MS | 20 |
+| the shared rest-zero window | REST_ZERO_SAMPLE_COUNT × REST_ZERO_SAMPLE_MS | 1_000 |
+| per wheel × 2: first lead probe | 3 × (PROBE_SETTLE_MS + PROBE_SAMPLES) + PROBE_SETTLE_MS | 32 |
+| per wheel × 2: winding check | 3 × (WIND_SETTLE_MAX_MS + PROBE_SETTLE_MS) | 915 |
+| per wheel × 2: the retries | START_CHECK_RETRIES × (START_CHECK_RETRY_MS + REST_ZERO_READY_TIMEOUT_MS + 1_000 + 32) | 3_876 |
+| the front cog's first pass | FRONT_START_TIMEOUT_MS + REQ_POLL_MS | 101 |
+| **total** | 100 + 20 + 1_000 + 2 × 4_823 + 101 | **10_867** |
+
+A wheel's `start()` makes a subset for one wheel (its REQ_ACK_TIMEOUT_MS start note is under the steering start's own
+100 ms ATN wait). WD_STALL_MS (4 s) stays on top as the margin for the code between the waits, as it is for every other
+call. BM-BUILD appends `wd_start_ms`.
+
+**Measured (compiler, `pnut-ts -q`, a scratch copy, the runner's -D sets).** DEBUG footprints (−d minus plain, the
+runner's own measure; limit 12,404): t0 11,085 (unchanged); t0-stopreason 8,236 (new); t0-stopmode 10,804 → 11,006;
+every dual tier 7,439 (dual-d, dual-fault; unchanged), START builds 7,435.
+
+**Deviations from the design and the brief:**
+1. **EV-LOST judges `EV_LOST == queued − 16`**, with `queued` from `getEventTotal()` summed over every kind, the baseline
+   taken just before the read that returns EV_NONE (so no event can fall between the baseline and the cursor), and
+   also requires the cycles' EV_STOP total to be 20. Pre-registered: queued 20, EV_LOST 4. An unrelated event in the
+   window then moves the expected count instead of failing a correct log.
+2. **SR-COMMANDED's negative covers all seven legs' opening reads**: the first leg's alone cannot tell a never-cleared
+   reason from `start()`'s own SR_NONE.
+3. **EV-HOLD is a consistency cell**: each hold row's events must match the HS_SLIPPED / HS_LIMITED the measure cog saw
+   in that ACT. The design's "the hold row that must not slip" names no row, and since SRC_REV 16 HOLDRISE may slip
+   after its ceiling. Measured only when HOLDSLIP slipped, HOLDLIMIT limited, and some measured row did not slip.
+4. **Cells whose negative lives in another build print one half per build**, under distinct criteria (RETRY:
+   phaseneg + dual-start; EV-WALKGUARD and EV-HALLMISSED: swapneg + dual-start; EV-HALLILL: both halves in nowalk).
+   The cell's verdict is both halves. In-build controls were added: RETRY's RIGHT and opt-out LEFT in phaseneg, and
+   EV-WALKGUARD's RIGHT in swapneg.
+5. **SR-FAULT, SR-FLOST and SR-PARTNER also require the exact EV_STOP sequence and fault-event counts** on a clean drain,
+   not the stop reason alone. X6C (X-6's coast bound, the same double fault) counts as an escalation positive.
+6. **EV-CLIMIT is judged per wheel against the DERATE step's own observation**, so a wheel that never derated must log
+   none; NOMEAS unless one derated. **EV-FOLDBACK is judged over all three LIMIT steps**, and a LIMIT segment with no
+   engage/release pair fails. **EV-PATH's pairing** is checked in all three LIMIT drains, its pair in the BLOCK drain.
+7. **`dual-start-phaseneg` has 12 lifetimes** (was 10), so each mode withholds U, V and W; PHNEG-X and WINDNEG-X n is 6.
+8. **R20-T0-EV-LATE keeps its design id** though it is judged in the dual harness, as two instances per front-cog form.
+9. **`TOKMAX_CELL` 20 → 22** (R20-DUAL-EV-WALKGUARD and -EV-HALLMISSED); BM-NOTBUILT's study width 3 → 5 (`TOKMAX_STUDY`,
+   for R20.4). **`T0_ATTENDED` is renamed `T0_OWN_TIER`**: T0_STOPREASON compiles the unattended bodies out too, and is not
+   attended.
+10. **The start refusal record** drains cog 0's error slots before each start: a code an earlier call left there was
+    read by nothing, and would otherwise be read as the refusal's cause.
+11. **R20-FLOOR-SR-BLOCKED is left for the floor tier**, not declared NOMEAS by ruling in dual-d.

@@ -113,6 +113,7 @@ Usage:  tools/bench-run.sh <tier>
                    t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
                    t0-stopmode    Tier 0's T0-24 stop-state hand test only -- 8 ROWS: OPERATOR PUSHES OR SPINS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
                    t0-stopmode-fltfirst  as t0-stopmode with the two powered fault rows before the e-stop row (PL-116's discriminator)  [WHEELS UP, ATTENDED]
+                   t0-stopreason  Tier 0's T0-25 only -- the RIGHT wheel driven slowly and stopped each way a program can, to read why it stopped and the driver's event log  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    spin-auto      as spin, the board revision auto-detected (PL-120's first factor)  [WHEELS UP, UNATTENDED]
                    spin-quiet     as spin, built quiet like the dual and T0 tests (PL-120's second factor)  [WHEELS UP, UNATTENDED]
@@ -132,8 +133,8 @@ Usage:  tools/bench-run.sh <tier>
                    dual-fault     motion harness part FAULTRESP: PREFLT, FLTRESP, FLTPLAT -- the fault study's X-cells, faults forced at speed  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-fault-rightfirst  as dual-fault with the RIGHT wheel's own trials run before the LEFT's (PL-120's order test)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-start     motion harness part START: SKCHECK -- 10 starts through the steering object reading every start check; the last 3 call checkWiring() (the platform turns a few degrees in place)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   dual-start-nowalk  as dual-start without checkWiring(): nothing is commanded -- the load for B-1 (one wheel's hall connector unplugged)  [WHEELS UP, ATTENDED WIRING CHANGE]
-                   dual-start-phaseneg  as dual-start-nowalk, with one LEFT phase withheld from each start's lead check in firmware (B-3's negative): nothing is commanded  [WHEELS UP, UNATTENDED]
+                   dual-start-nowalk  as dual-start without checkWiring(), each start told to go ahead despite a failed check: nothing is commanded -- the load for B-1 (one wheel's hall connector unplugged)  [WHEELS UP, ATTENDED WIRING CHANGE]
+                   dual-start-phaseneg  12 starts with one LEFT phase withheld from the lead check in firmware (B-3's negative), in three kinds: started anyway, refused, withheld on the first try only; nothing is commanded  [WHEELS UP, UNATTENDED]
                    dual-start-swapneg   as dual-start, with the LEFT wheel reading two halls as swapped in the walk lifetimes (B-5's negative): the left wheel may jerk  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-spin      motion harness part SPIN: SPIN, CREEP -- WHEELS DOWN, TETHERED: 12 spin-in-place legs of at most one platform turn (2 fault a wheel on purpose), then 3 hold trials on a measured incline  [ATTENDED]
                    dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
@@ -219,6 +220,13 @@ case "$TIER" in
                     BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPMODE -D T0_24_FLT_FIRST)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP -- ATTENDED stop-state hand test on the RIGHT wheel, 8 rows, the TWO POWERED FAULT ROWS NOW COME BEFORE THE E-STOP ROW (rows 5 and 6): click the t0stop window first; nothing happens until you click START ROW. Rows 1-3: push the wheel off where it stopped and hold it. Rows 4, 7 and 8: spin briskly and let go. ROWS 5 AND 6 SPIN THE WHEEL UNDER POWER AND FAULT IT ON PURPOSE: hands off, ABORT stops a powered row"
+                    ;;
+    # t0-stopreason (task 3621, R20.1; DOCs/plans/DRIVER-REPORTING-DESIGN.md SS6) -- T0-25 only, the stop-reason and
+    #  event-log cells. Plain t0 promises no motion and every one of these cells has to drive the wheel, so it is its own
+    #  build of the t0 binary, as t0-stopmode is; unlike it, nothing waits on a person. BENCH_QUIET for the same reason.
+    t0-stopreason)  BENCH_FILE="test_bench_t0.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPREASON)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the program drives the RIGHT wheel (the P16 board) slowly, at power 15, about 30 short times, and stops it each way a program can -- a normal stop, a timed stop, an EMERGENCY STOP THAT BRAKES IT ABRUPTLY, and the stop that comes when commands stop arriving -- then reads why each drive stopped and what the driver logged. Nothing waits for you and no window opens. Under 1 minute"
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"
                     PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"
@@ -320,7 +328,7 @@ case "$TIER" in
     #  this part with a wheel mis-wired on purpose.
     dual-start)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part START (SKCHECK): the steering object is started and stopped 10 times; each start pulses each motor lead at 50 % for a few ms with nothing able to move. In the first 2 lifetimes the winding check also drives each pair of leads in turn for up to 0.3 s: EACH WHEEL TWITCHES A LITTLE, three times, as it lines up with each pair. In the last 3 lifetimes checkWiring() turns the platform in place, each wheel one electrical cycle (about 6 hall ticks, 3.5 cm at the tyre) each way at power 10. Run cap 3 minutes, expected under 1"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part START (SKCHECK): the steering object is started and stopped 10 times; each start pulses each motor lead at 50 % for a few ms with nothing able to move. In the first 2 lifetimes the winding check also drives each pair of leads in turn for up to 0.3 s: EACH WHEEL TWITCHES A LITTLE, three times, as it lines up with each pair. In the last 3 lifetimes checkWiring() turns the platform in place, each wheel one electrical cycle (about 6 hall ticks, 3.5 cm at the tyre) each way at power 10. Each lifetime ends with a still second while the program reads the driver's event log. You do nothing. Run cap 3 minutes, expected about 1"
                     ;;
     # dual-start-nowalk -- the same part built with -D START_NO_WALK: checkWiring() is never called, so nothing in the
     #  build commands a wheel. The load for the attended B-1 (one wheel's hall connector unplugged): a mis-wired wheel is
@@ -328,16 +336,19 @@ case "$TIER" in
     dual-start-nowalk)
                     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NO_WALK)
-                    PRECONDITION="WHEELS UP -- YOU CHANGE WIRING: battery off, unplug the RIGHT wheel's hall-sensor connector, battery on, then run. The program does 10 startup checks and no wheel moves. Afterwards: battery off, replug the connector, battery on. Under 1 minute"
+                    PRECONDITION="WHEELS UP -- YOU CHANGE WIRING: battery off, unplug the RIGHT wheel's hall-sensor connector, battery on, then run. The program does 10 startup checks, each told to go ahead even though the unplugged wheel fails its check, and no wheel moves. Afterwards: battery off, replug the connector, battery on. Under 1 minute"
                     ;;
     # dual-start-phaseneg (task 3614) -- B-3's negative in firmware, since the rig cannot open a motor lead: each start's
     #  lead check leaves one LEFT phase undriven (testLeftSetProbeWithhold(), rotating U, V, W), so exactly that phase's
-    #  HLT_PHASE bit must fail. No walk. Task 3610: every start also runs the winding check, whose two pairs through the
-#  withheld phase must read NOT_VISIBLE (R19-DUAL-WINDNEG-X); the pairs it does drive twitch the wheels.
+    #  HLT_PHASE bit must fail. No walk. Task 3610: the opt-out starts also run the winding check, whose two pairs through
+    #  the withheld phase must read NOT_VISIBLE (R19-DUAL-WINDNEG-X); the pairs it does drive twitch the wheels.
+    #  Task 3621: a failing check now refuses the start, so the 12 starts rotate three ways in blocks of three (U, V, W):
+    #  opt-out (setStartChecks(FALSE), where PHNEG-X and WINDNEG-X are judged as before, and R20-DUAL-OPTOUT), refusal
+    #  (R20-DUAL-REFUSE), and withheld from the first attempt only (R20-DUAL-RETRY).
     dual-start-phaseneg)
                     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NEG_PHASE)
-                    PRECONDITION="WHEELS UP, HANDS OFF, DO NOT TOUCH ANY WIRING -- the program fakes a dead motor wire on the LEFT wheel during each of 10 startup checks and must catch it. Each start also checks the motor windings: BOTH WHEELS TWITCH A LITTLE at every start (the right three times, the left once). Under 2 minutes"
+                    PRECONDITION="WHEELS UP, HANDS OFF, DO NOT TOUCH ANY WIRING -- UNATTENDED, YOU DO NOTHING: the program fakes a dead motor wire on the LEFT wheel at each of 12 startup checks and must catch it. At 6 of them it has the start go ahead anyway; at 3 it lets the start refuse and checks it says why; at 3 it fakes the wire only on the first try and checks the retry is reported. At those first 6 it also checks the motor windings: BOTH WHEELS TWITCH A LITTLE then (the right three times, the left once). Under 2 minutes"
                     ;;
     # dual-start-swapneg (task 3614) -- B-5's negative in firmware, since the rig cannot swap hall wires: in the walk
     #  lifetimes the LEFT wheel reads two halls as swapped (testLeftSetHallSwap()), so checkWiring() must fail it.
@@ -365,7 +376,7 @@ case "$TIER" in
                     ;;
     dual-d)         BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_D)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part D (PREFLT, STEERSEG, LIMIT): the front cog's contract and current limiting. THE WHEELS STOP DEAD, JERK AND STAND STILL UNDER POWER ON PURPOSE -- an emergency stop is latched and held, a stop is ordered while another cog drives, and the current limits are lowered until the motor cannot turn (the protective-stop test) before being restored, run cap 15 minutes"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part D (PREFLT, STEERSEG, LIMIT): the front cog's contract and current limiting. THE WHEELS STOP DEAD, JERK AND STAND STILL UNDER POWER ON PURPOSE -- an emergency stop is latched and held, a stop is ordered while another cog drives, and the current limits are lowered until the motor cannot turn (the protective-stop test) before being restored. After each lowered-limit step the wheels rest about a second while the program reads the driver's event log. You do nothing. Run cap 15 minutes"
                     ;;
     dual-floor)     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_FLOOR)

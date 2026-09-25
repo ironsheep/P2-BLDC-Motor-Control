@@ -173,6 +173,14 @@
 ''               reads HS_HOLDING at both ends; and the three acts are REQUIRED on their row's first run by a screen
 ''               drawing only the control that performs each (t0sTestTab): row 1's grey box, row 4's and row 6's REDO,
 ''               row 6's ABORT. The screen record gains panel_test.
+''               25 Sep 2026 -- task 3621 (R20.1 part 3), SRC_REV 18: the driver's reporting (DRIVER-REPORTING-DESIGN.md
+''               SS6). New build -D T0_STOPREASON (tier t0-stopreason, UNATTENDED, the RIGHT wheel driven at power 15):
+''               T0-25 runs the four stop-reason legs and the event-log checks -- R20-T0-SR-COMMANDED, -SR-ATLIMIT,
+''               -SR-ESTOP, -SR-LINKLOST, R20-T0-EV-STOP, -EV-LOST, -EV-TOTAL and -EV-2COG. New records T0-25,leg / ev /
+''               lost / total / twocog. T0_ATTENDED becomes T0_OWN_TIER: it compiles the unattended bodies out of every
+''               build that runs one test of its own, which now includes an unattended one. T0-24 (t0-stopmode) gains
+''               R20-T0-EV-HOLD: after each hold row's ACT, cog 0 reads the event log, and the hand-offs it reports must
+''               match the hold states the measure cog saw. New record T0-24,row,N,run,K,events.
 ''
 '' =================================================================================================
 
@@ -239,18 +247,22 @@
   no sign-off cell.
 }
 
-' T0_ATTENDED is set by either attended build (T0_HAND, T0_STOPMODE). It COMPILES OUT every unattended
-' test body, not just its call: a call gated at run time still compiles its debug() records, and this
-' binary's DEBUG data has a hard end. Any record whose bytes lie past image offset 13,684 is cut at
-' that byte or never sent -- measured three times: 2026-09-20 t0-hand's PLOT create stopped at
+' T0_OWN_TIER is set by every build that runs one test of its own (T0_HAND, T0_STOPMODE, T0_STOPREASON). It
+' COMPILES OUT every unattended test body, not just its call: a call gated at run time still compiles its debug()
+' records, and this binary's DEBUG data has a hard end. Any record whose bytes lie past image offset 13,684 is cut
+' at that byte or never sent -- measured three times: 2026-09-20 t0-hand's PLOT create stopped at
 ' "hand-rotation an", t0's "T0-23,begin,no_bo" (PL-94) stopped at the same offset, and 2026-09-22's
 ' USB captures carried no display command at all (P2-HAZARD-REGISTER DBG-1, DBG-16). Gating the bodies
 ' takes t0-hand's DEBUG footprint from 15,674 to about 7,250 bytes, and changes nothing it prints.
+' (Named T0_ATTENDED until task 3621: T0_STOPREASON runs its own test unattended, so "attended" no longer said it.)
 #ifdef T0_HAND
-#define T0_ATTENDED
+#define T0_OWN_TIER
 #endif
 #ifdef T0_STOPMODE
-#define T0_ATTENDED
+#define T0_OWN_TIER
+#endif
+#ifdef T0_STOPREASON
+#define T0_OWN_TIER
 #endif
 
 CON { bench target }
@@ -277,7 +289,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 17                                            ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 18                                            ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -330,6 +342,41 @@ CON { cog-exhaustion probe (T0-8, T0-15) }
 
     MAX_SPACER_COGS   = 7                                       ' every cog besides this harness's own
     SPACER_STACK_LONGS = 32                                     ' generous headroom for a trivial idle loop
+
+CON { stop reasons and the event log (T0-25, -D T0_STOPREASON only; task 3621, DRIVER-REPORTING-DESIGN.md SS6) }
+
+' The RIGHT wheel (T0_MOTOR_BASE) is driven at T0_25_POWER, wheels up, and stopped each way a program can stop it.
+'  Each value is the design's pre-registered one (SS6), not tuned here.
+    T0_25_POWER         = 15                                    ' every drive in T0-25
+    T0_25_RUN_MS        = 300                                   ' a leg drives this long before its stop
+    T0_25_STICKY_MS     = 500                                   ' COMMANDED: the reason still reads the same this much later
+    T0_25_LIMIT_MS      = 300                                   ' ATLIMIT: stopAfterTime()'s limit, DTU_MILLISEC
+    T0_25_EARLY_MS      = 100                                   ' ATLIMIT's negative: stopMotor() this soon, the limit still armed
+    T0_25_TIMEOUT_MS    = 100                                   ' LINKLOST: setCommandTimeout()
+    T0_25_SILENT_MS     = 400                                   ' ...and no command for this long
+    T0_25_REFRESH_MS    = 30                                    ' LINKLOST's negative: the drive re-sent this often, for T0_25_SILENT_MS
+    T0_25_REST_MS       = 3_000                                 ' bound on the driver reading DCS_STOPPED after a stop
+    T0_25_EV_STOPS      = 7                                     ' EV-STOP: the stops the SR legs record, in order (t0rWantStop())
+    T0_25_CYCLES        = 20                                    ' EV-LOST: drive/stop cycles with nothing read
+    T0_25_CYCLE_MS      = 60                                    ' each cycle's drive, and its pause after the stop
+    T0_25_COG_CYCLES    = 4                                     ' EV-2COG: the stops both reading cogs must each read
+    T0_25_HELPER_STACK  = 128                                   ' the helper reader cog: getEvent() and its callee, with headroom
+    T0_25_HANDSHAKE_MS  = 2_000                                 ' bound on each of the helper cog's two handshakes
+    T0_25_DRAIN_MAX     = 40                                    ' bound on one drain: EV_QUEUE_DEPTH + EV_LOST + what arrives meanwhile
+
+  ' T0-25's seven stop legs, run in this order (t0rLeg()); each reads getStopReason() as its drive opens, after its stop,
+  '  and once more after the leg's own later act:
+  '  T0R_LEG_CMD       - stopMotor() after T0_25_RUN_MS: SR_COMMANDED, and still SR_COMMANDED T0_25_STICKY_MS later
+  '  T0R_LEG_LIMIT     - stopAfterTime(T0_25_LIMIT_MS) armed, then the drive: the limit stops it, SR_AT_LIMIT
+  '  T0R_LEG_LIMIT_NEG - the same limit armed, stopMotor() at T0_25_EARLY_MS: SR_COMMANDED, and still so once the
+  '                      limit's deadline has passed at rest (a limit firing with no drive open records nothing)
+  '  T0R_LEG_ESTOP     - emergencyCutoff() at speed: SR_EMERGENCY, and still so after clearEmergency()
+  '  T0R_LEG_ESTOP_NEG - stopMotor(), rest, then emergencyCutoff() AT REST: SR_COMMANDED both times (first cause wins)
+  '  T0R_LEG_LINK      - setCommandTimeout(T0_25_TIMEOUT_MS), the drive, then no command for T0_25_SILENT_MS: SR_LINK_LOST
+  '  T0R_LEG_LINK_NEG  - the same timeout, the drive re-sent every T0_25_REFRESH_MS for T0_25_SILENT_MS (the drive still
+  '                      open, SR_NONE), then stopMotor(): SR_COMMANDED; the timeout is turned off again
+    #0, T0R_LEG_CMD, T0R_LEG_LIMIT, T0R_LEG_LIMIT_NEG, T0R_LEG_ESTOP, T0R_LEG_ESTOP_NEG, T0R_LEG_LINK, T0R_LEG_LINK_NEG
+    T0R_LEGS            = T0R_LEG_LINK_NEG + 1
 
 CON { hand-rotation anchor (T0-12, -D T0_HAND only) }
 
@@ -577,6 +624,7 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_ROW_FLTCOAST  = T0S_ROW_FLTCOAST                      ' a forced fault under SM_FLOAT: BR_COAST
     T0_24_ROW_FLTHOLD   = T0S_ROW_FLTHOLD                       ' a forced fault under SM_BRAKE: BR_SHORT
     T0_24_ROW_COGSTOP   = T0S_ROW_COGSTOP                       ' stop(): the pins released -- the free yardstick, ALWAYS LAST
+    T0_24_EV_READ_MAX   = 40                                    ' task 3621: bound on one read of the event log (t0sEvRead())
 
 ' THE PANEL AND THE MEASURE COG (task 3619, PL-127; DOCs/plans/T0-24-INTERACTION-DESIGN.md). Every row
 ' runs INTRO -> SETUP -> ACT -> RESULT. The operator ends every step he takes part in (DONE, or ABORT),
@@ -840,6 +888,27 @@ sCritFltShort   BYTE    "FLT_SHORT_BAND_AND_FAULTED", 0
 sCritFltGap     BYTE    "FLTCOAST_LESS_FLTHOLD_TICKS", 0
 sCritFreeRef    BYTE    "FREE_BAND_TICKS", 0
 
+' task 3621 (R20.1): the driver's reporting -- T0-25's cells (-D T0_STOPREASON) and T0-24's event cell (-D T0_STOPMODE)
+sTaskReporting  BYTE    "3621", 0
+sCellEvHold     BYTE    "R20-T0-EV-HOLD", 0                     ' T0-24 rows 1-3: the hold's hand-offs reported as events
+sCritEvHold     BYTE    "EV_MATCHES_HOLD_STATE", 0
+sCellSrCmd      BYTE    "R20-T0-SR-COMMANDED", 0                ' T0-25: a stopMotor() reads SR_COMMANDED, and nothing before it
+sCellSrLimit    BYTE    "R20-T0-SR-ATLIMIT", 0                  ' ...a time limit reads SR_AT_LIMIT, an earlier stopMotor() not
+sCellSrEstop    BYTE    "R20-T0-SR-ESTOP", 0                    ' ...emergencyCutoff() reads SR_EMERGENCY, one at rest changes nothing
+sCellSrLink     BYTE    "R20-T0-SR-LINKLOST", 0                 ' ...the command timeout reads SR_LINK_LOST, a refreshed drive not
+sCellEvStop     BYTE    "R20-T0-EV-STOP", 0                     ' ...the seven stops as seven EV_STOP, in order
+sCellEvLost     BYTE    "R20-T0-EV-LOST", 0                     ' ...a reader 20 behind is told EV_LOST 4 first, then keeps 16
+sCellEvTotal    BYTE    "R20-T0-EV-TOTAL", 0                    ' ...getEventTotal() counts the lost ones too
+sCellEv2Cog     BYTE    "R20-T0-EV-2COG", 0                     ' ...two reading cogs each read every stop
+sCritSrCmd      BYTE    "NONE_OPEN_CMD_STOP", 0
+sCritSrLimit    BYTE    "LIMIT_NOT_EARLY_STOP", 0
+sCritSrEstop    BYTE    "ESTOP_NOT_AT_REST", 0
+sCritSrLink     BYTE    "LOST_NOT_REFRESHED", 0
+sCritEvStop     BYTE    "SEVEN_STOPS_IN_ORDER", 0
+sCritEvLost     BYTE    "LOST_FIRST_THEN_16", 0
+sCritEvTotal    BYTE    "TOTAL_COUNTS_LOST", 0
+sCritEv2Cog     BYTE    "EACH_COG_READS_ALL", 0
+
 DAT { T0-12 hand-copy of the driver's hall-position-delta table (PL-39) }
 
 ' HAND-MAINTAINED COPY of isp_bldc_motor.spin2:1885-1892 (deltas65), indexed (old<<3 | new) same as
@@ -950,6 +1019,17 @@ VAR { T0-24 per-row readings (-D T0_STOPMODE only) }
     LONG    bT0sHoldLimitMeasured
     LONG    bT0sHoldLimitPass                                   ' HS_LIMITED reached after the sustained push
 
+' R20-T0-EV-HOLD (task 3621): per hold row, its last run's event-log reading after ACT (cog 0 only) beside the
+' hold states the measure cog saw in that ACT (t0wHoldRes), so the cell compares two sources of one fact.
+    LONG    bT0sEvRan[T0_24_ROW_COUNT]                          ' cog 0 read the log after this row's ACT
+    LONG    t0sEvSlips[T0_24_ROW_COUNT]                         ' EV_HOLD_SLIP events that ACT
+    LONG    t0sEvSlipMin[T0_24_ROW_COUNT]                       ' ...the least |value| among them, hall ticks
+    LONG    t0sEvLimits[T0_24_ROW_COUNT]                        ' EV_HOLD_LIMIT events that ACT
+    LONG    bT0sEvClean[T0_24_ROW_COUNT]                        ' the read ended on EV_NONE with nothing lost
+    LONG    bT0sEvSlipSeen[T0_24_ROW_COUNT]                     ' the measure cog saw HS_SLIPPED that ACT
+    LONG    bT0sEvLimitSeen[T0_24_ROW_COUNT]                    ' ...and HS_LIMITED
+    LONG    bT0sEvMeasured[T0_24_ROW_COUNT]                     ' ...and the row's own cell was a measurement
+
 ' The panel's input (cog 0 only): PC_MOUSE's seven longs, one array so they are adjacent by
 ' construction (DISPLAY-PATTERNS-builders-guide.md SS7), and the state that turns readings into presses.
     LONG    t0sMouse[T0_24_MOUSE_LONGS]
@@ -996,6 +1076,21 @@ VAR { T0-24 per-row readings (-D T0_STOPMODE only) }
     LONG    t0wHold[T0_24_HOLD_RING * T0_24_HOLD_LONGS]
     LONG    t0wHoldCount                                        ' samples this run, including any the ring dropped
     LONG    t0wHoldRes[T0_24_HR_LONGS]
+#endif
+
+#ifdef T0_STOPREASON
+VAR { T0-25 helper reader cog (-D T0_STOPREASON only) }
+
+' R20-T0-EV-2COG needs a SECOND cog reading the event log while cog 0 reads it too, because what it certifies -- one
+' cursor per reading cog -- cannot show from one cog's reads. The helper only reads and counts; it prints nothing.
+' Cog 0 writes bT0rGo; the helper writes every other long, bT0rReady and bT0rDone last. Each long has one writer.
+    LONG    t0rStack[T0_25_HELPER_STACK]
+    LONG    bT0rReady                                           ' helper: it has read the log to EV_NONE (caught up)
+    LONG    bT0rGo                                              ' cog 0: its stops are made; read them now
+    LONG    t0rHelperStops                                      ' helper: EV_STOP events it read after bT0rGo
+    LONG    t0rHelperReads                                      ' helper: events of any kind it read after bT0rGo
+    LONG    bT0rHelperClean                                     ' helper: that read ended on EV_NONE with nothing lost
+    LONG    bT0rDone                                            ' helper: the counts above are final
 #endif
 
 #ifdef T0_STOPMODE
@@ -1085,6 +1180,9 @@ PUB main() | trapCode
     '  T0_24_FLT_POWER. The banner says so, because "no motion" in a log this build wrote would be
     '  a false description of what the operator was standing next to.
     debug("* test_bench_t0 -- T0-24 stop-state hand test: ATTENDED, THE WHEEL SPINS ON TWO ROWS -- src_rev ", udec_(SRC_REV))
+#elseifdef T0_STOPREASON
+    ' T0-25 drives the RIGHT wheel on every leg, so its banner says so, as T0-24's does
+    debug("* test_bench_t0 -- T0-25 stop reasons and event log: UNATTENDED, THE RIGHT WHEEL IS DRIVEN -- src_rev ", udec_(SRC_REV))
 #else
     debug("* test_bench_t0 -- Tier 0: no motion -- src_rev ", udec_(SRC_REV))
 #endif
@@ -1112,6 +1210,10 @@ PRI runTier0Tests()
     ' T0_STOPMODE build (bench-run.sh t0-stopmode): T0-24 only, for the same reason -- it waits on
     ' a person at every row, and on two rows it drives the motor. Its cells are its own.
     testT0_24()
+#elseifdef T0_STOPREASON
+    ' T0_STOPREASON build (bench-run.sh t0-stopreason, task 3621): T0-25 only. Unattended, but it drives the RIGHT
+    ' wheel, which plain t0 promises never to do (DRIVER-REPORTING-DESIGN.md SS6, the t0-stopmode precedent).
+    testT0_25()
 #else
     ' Sign-off declarations (design rule 3, SS 0): one per cell this binary will judge, emitted
     ' before anything starts a cog. Row 8 (R8-T0-ZXS) covers all four channel variants (ZXS_I/
@@ -1190,10 +1292,10 @@ PRI runTier0Tests()
     runExhaustionPhase()
 #endif
 
-#ifndef T0_ATTENDED
-' Unattended test bodies -- compiled out of both attended builds (T0_ATTENDED, top of file). The three
-' helpers the attended tests share, bWaitReady(), emitCellDecl() and emitCellBool(), sit between the
-' gated ranges.
+#ifndef T0_OWN_TIER
+' Unattended test bodies -- compiled out of every build that runs one test of its own (T0_OWN_TIER, top of
+' file). The three helpers those tests share, bWaitReady(), emitCellDecl() and emitCellBool(), sit between
+' the gated ranges.
 PRI testT0_1() | deadGap, minGap, bPass
 ' A1 / R17-T0-DEADGAP (task 3574): the whole of init() runs through testSetup() and the commutation dead gap it
 ' derives is at least DEADTIME_MIN_NS at this clock. Both Parallax 64010 manuals specify a 250 ns minimum on
@@ -1327,7 +1429,7 @@ PRI bWaitReady(startResult) : bReady | readyMs
             readyMs += READY_POLL_MS
         bReady := motor.isReady()
 
-#ifndef T0_ATTENDED
+#ifndef T0_OWN_TIER
 PRI testT0_5() | minDef, maxDef, incDef, decrDef, eBelow, eNegative, eAbove, bRefuseOk, eAnchor, stepAnchor, bAnchorOk, eTop, stepTop, bTopOk, eRestore, bPass
 ' G / R17-T0-ACCEL (task 3577): setAcceleration() takes a rate in mm/s^2 at the rim, refuses one outside
 ' [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] with ERR_BAD_COUNT and changes nothing, and turns an accepted one into a
@@ -1445,7 +1547,7 @@ PRI emitCellNum(pCell, pTask, pMotor, pCrit, bMeasured, measuredVal, loVal, hiVa
     else
         debug("SIGNOFF,sf,1,bin,T0,cell,", zstr_(pCell), ",task,", zstr_(pTask), ",motor,", zstr_(pMotor), ",crit,", zstr_(pCrit), ",measured,NA,lo,", sdec_(loVal), ",hi,", sdec_(hiVal), ",units,", zstr_(pUnits), ",n,", udec_(nCount), ",verdict,NOMEAS")
 
-#ifndef T0_ATTENDED
+#ifndef T0_OWN_TIER
 PRI bRampEquals(minWant, maxWant, incWant, decrWant) : bSame | minRamp, maxRamp, incRamp, decrRamp
 ' Report whether `motor`'s four ramping values read back exactly as given.
 '
@@ -2503,6 +2605,410 @@ PRI testT0_15bJudge(cogsOccupied, baseline, startResult, rawMotorCog, freeAfter)
     emitCellBool(@"R1-T0-EXHAUST", @"3499", @"NONE", @"RET_NEG_NOLEAK", TRUE, bPass, 1)
 #endif
 
+#ifdef T0_STOPREASON
+PRI testT0_25() | startResult, bReady, eStartErr
+' T0-25, stop reasons and the soft-event log (task 3621, R20.1; DRIVER-REPORTING-DESIGN.md SS1, SS2, SS6) -- compiled
+' only under -D T0_STOPREASON (its own bench-run.sh tier, t0-stopreason), because every leg drives the RIGHT wheel
+' (T0_MOTOR_BASE) and plain t0 promises no motion. UNATTENDED: nothing waits on a person.
+'
+' THE CELLS, each with the negative that lets it FAIL (SS6):
+'   R20-T0-SR-COMMANDED - stopMotor() reads SR_COMMANDED, still 500 ms later; NEGATIVE: every leg's read as its drive
+'                          opens is SR_NONE -- six of the seven follow a stop that left a reason, so a reason a new
+'                          drive does not clear fails here
+'   R20-T0-SR-ATLIMIT   - a time limit reads SR_AT_LIMIT; NEGATIVE: stopMotor() under the same armed limit reads
+'                          SR_COMMANDED, and still does after the limit's deadline passes at rest
+'   R20-T0-SR-ESTOP     - emergencyCutoff() at speed reads SR_EMERGENCY; NEGATIVE: one at rest after a stop leaves
+'                          SR_COMMANDED (first cause wins, and no drive is open)
+'   R20-T0-SR-LINKLOST  - the command timeout reads SR_LINK_LOST; NEGATIVE: re-sent drives keep it open (SR_NONE), and
+'                          the stopMotor() after them reads SR_COMMANDED
+'   R20-T0-EV-STOP      - reading the log after the legs gives exactly seven EV_STOP, 41 42 41 47 41 46 41, in rising
+'                          ms; a missing, extra or reordered one fails, and so does any loss
+'   R20-T0-EV-LOST      - T0_25_CYCLES drive/stop cycles with nothing read, then a read: EV_LOST first, its value the
+'                          events queued past EV_QUEUE_DEPTH (4 when the cycles' 20 stops are all that was queued), then
+'                          EV_QUEUE_DEPTH retained, then EV_NONE; EV_NONE before EV_LOST, a wrong count or fewer kept fails
+'   R20-T0-EV-TOTAL     - getEventTotal(EV_STOP) is 27 (7 + 20); one that counts only what was read (23) fails
+'   R20-T0-EV-2COG      - a helper cog and cog 0 each read the same T0_25_COG_CYCLES stops; a shared cursor gives
+'                          one of them fewer, which fails
+' A start that does not come up ready leaves every cell NOMEAS, and the start's getError() is printed.
+'
+' @local startResult - start()'s return
+' @local bReady - TRUE when the driver came up ready
+' @local eStartErr - getError() after a start that did not come up
+
+    emitCellDecl(@sCellSrCmd, @sTaskReporting)
+    emitCellDecl(@sCellSrLimit, @sTaskReporting)
+    emitCellDecl(@sCellSrEstop, @sTaskReporting)
+    emitCellDecl(@sCellSrLink, @sTaskReporting)
+    emitCellDecl(@sCellEvStop, @sTaskReporting)
+    emitCellDecl(@sCellEvLost, @sTaskReporting)
+    emitCellDecl(@sCellEvTotal, @sTaskReporting)
+    emitCellDecl(@sCellEv2Cog, @sTaskReporting)
+    debug("T0-25,begin,wheel,RIGHT_P16,power,", udec_(T0_25_POWER), ",legs,", udec_(T0R_LEGS), ",cycles,", udec_(T0_25_CYCLES))
+
+    benchLog.cogEventBegin()
+    startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
+    bReady := bWaitReady(startResult)
+    eStartErr := motor.getError()                               ' NO_ERROR after a good start; the -1's cause otherwise
+    debug("T0-25,start_return,", sdec_(startResult), ",ready,", zstr_(bReady ? @"TRUE" : @"FALSE"), ",error,", sdec_(eStartErr))
+    if bReady
+        motor.holdAtStop(FALSE)                                 ' coast at rest: the hold's hand-offs are T0-24's, not these legs'
+        t0rStopLegs()
+        t0rEvLost()
+        t0rTwoCog()
+    else
+        emitCellBool(@sCellSrCmd, @sTaskReporting, @"RIGHT", @sCritSrCmd, FALSE, FALSE, 0)
+        emitCellBool(@sCellSrLimit, @sTaskReporting, @"RIGHT", @sCritSrLimit, FALSE, FALSE, 0)
+        emitCellBool(@sCellSrEstop, @sTaskReporting, @"RIGHT", @sCritSrEstop, FALSE, FALSE, 0)
+        emitCellBool(@sCellSrLink, @sTaskReporting, @"RIGHT", @sCritSrLink, FALSE, FALSE, 0)
+        emitCellBool(@sCellEvStop, @sTaskReporting, @"RIGHT", @sCritEvStop, FALSE, FALSE, 0)
+        emitCellBool(@sCellEvLost, @sTaskReporting, @"RIGHT", @sCritEvLost, FALSE, FALSE, 0)
+        emitCellBool(@sCellEvTotal, @sTaskReporting, @"RIGHT", @sCritEvTotal, FALSE, FALSE, 0)
+        emitCellBool(@sCellEv2Cog, @sTaskReporting, @"RIGHT", @sCritEv2Cog, FALSE, FALSE, 0)
+    benchLog.cogEventBegin()
+    motor.stop()
+    motor.getError()                                            ' drain this cog's slot
+    debug("T0-25,end")
+
+PRI t0rStopLegs() | legIdx, legErr[T0R_LEGS], legOpen[T0R_LEGS], legStop[T0R_LEGS], legAfter[T0R_LEGS], bOpensNone, stopBuf[T0_25_EV_STOPS], nStops, nRead, nLost, bEnded, bRising, bOrder
+' The four stop-reason cells and R20-T0-EV-STOP: the seven legs in order (t0rLeg(), each printed as T0-25,leg), then
+' one read of the log, which must hold exactly their seven EV_STOP in order.
+'
+' @local legIdx - T0R_LEG_*
+' @local legErr - each leg's first non-zero call return, NO_ERROR when every call took
+' @local legOpen - each leg's getStopReason() as its drive opened
+' @local legStop - ...after its stop
+' @local legAfter - ...after its later act
+' @local bOpensNone - every leg's open read was SR_NONE and every leg's calls took
+' @local stopBuf - the EV_STOP values read, in order
+' @local nStops - EV_STOP events read
+' @local nRead - events of any kind read
+' @local nLost - events the read was told it lost
+' @local bEnded - the read ended on EV_NONE
+' @local bRising - each EV_STOP's ms was later than the one before
+' @local bOrder - exactly T0_25_EV_STOPS EV_STOP, each the one its leg recorded
+
+    bOpensNone := TRUE
+    repeat legIdx from 0 to T0R_LEGS - 1
+        legErr[legIdx], legOpen[legIdx], legStop[legIdx], legAfter[legIdx] := t0rLeg(legIdx)
+        bOpensNone &= (legOpen[legIdx] == motor.SR_NONE) and (legErr[legIdx] == motor.NO_ERROR)
+    emitCellBool(@sCellSrCmd, @sTaskReporting, @"RIGHT", @sCritSrCmd, TRUE, bOpensNone and (legStop[T0R_LEG_CMD] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_CMD] == motor.SR_COMMANDED), T0R_LEGS + 2)
+    emitCellBool(@sCellSrLimit, @sTaskReporting, @"RIGHT", @sCritSrLimit, TRUE, (legErr[T0R_LEG_LIMIT] == motor.NO_ERROR) and (legStop[T0R_LEG_LIMIT] == motor.SR_AT_LIMIT) and (legErr[T0R_LEG_LIMIT_NEG] == motor.NO_ERROR) and (legStop[T0R_LEG_LIMIT_NEG] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_LIMIT_NEG] == motor.SR_COMMANDED), 3)
+    emitCellBool(@sCellSrEstop, @sTaskReporting, @"RIGHT", @sCritSrEstop, TRUE, (legErr[T0R_LEG_ESTOP] == motor.NO_ERROR) and (legStop[T0R_LEG_ESTOP] == motor.SR_EMERGENCY) and (legErr[T0R_LEG_ESTOP_NEG] == motor.NO_ERROR) and (legStop[T0R_LEG_ESTOP_NEG] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_ESTOP_NEG] == motor.SR_COMMANDED), 3)
+    emitCellBool(@sCellSrLink, @sTaskReporting, @"RIGHT", @sCritSrLink, TRUE, (legErr[T0R_LEG_LINK] == motor.NO_ERROR) and (legStop[T0R_LEG_LINK] == motor.SR_LINK_LOST) and (legErr[T0R_LEG_LINK_NEG] == motor.NO_ERROR) and (legOpen[T0R_LEG_LINK_NEG] == motor.SR_NONE) and (legStop[T0R_LEG_LINK_NEG] == motor.SR_COMMANDED), 3)
+
+    nStops, nRead, nLost, bEnded, bRising, _ := t0rDrain(@"STOP", @stopBuf, T0_25_EV_STOPS)
+    bOrder := (nStops == T0_25_EV_STOPS)
+    if bOrder
+        repeat legIdx from 0 to T0_25_EV_STOPS - 1
+            bOrder &= (stopBuf[legIdx] == t0rWantStop(legIdx))
+    emitCellBool(@sCellEvStop, @sTaskReporting, @"RIGHT", @sCritEvStop, TRUE, bOrder and bRising and bEnded and (nLost == 0), T0_25_EV_STOPS)
+
+PRI t0rLeg(legIdx) : eErr, srOpen, srStop, srAfter | startMs, bRest
+' One stop-reason leg (this CON's T0R_LEG_* notes say what each does and reads), printed as T0-25,leg. Every leg ends
+' with the driver at rest (bounded) and this cog's error slot drained, so the next leg starts from rest and clean.
+'
+' @param legIdx - T0R_LEG_*
+' @returns eErr - the first non-zero return of the leg's calls, NO_ERROR when every one took
+' @returns srOpen - getStopReason() as the drive opened (LINK_NEG: after its re-sent drives)
+' @returns srStop - getStopReason() after the stop
+' @returns srAfter - getStopReason() after the leg's later act (the wait, the clear, the e-stop at rest)
+'
+' @local startMs - getms() when LINK_NEG's re-sent drives began
+' @local bRest - the driver read DCS_STOPPED at the leg's end
+
+    eErr := motor.NO_ERROR
+    case legIdx
+        T0R_LEG_LIMIT, T0R_LEG_LIMIT_NEG:
+            eErr := motor.stopAfterTime(T0_25_LIMIT_MS, motor.DTU_MILLISEC)     ' armed before the drive it limits
+        T0R_LEG_LINK:
+            eErr := motor.setCommandTimeout(T0_25_TIMEOUT_MS)                   ' left on through LINK_NEG
+    eErr := t0rFirstErr(eErr, motor.driveAtPower(T0_25_POWER))
+    srOpen := motor.getStopReason()
+    case legIdx
+        T0R_LEG_CMD:
+            waitms(T0_25_RUN_MS)
+            motor.stopMotor()
+            srStop := motor.getStopReason()
+            waitms(T0_25_STICKY_MS)
+            srAfter := motor.getStopReason()
+        T0R_LEG_LIMIT:
+            waitms(T0_25_LIMIT_MS)                                              ' the limit's stop is written by then: it begins early by the ramp
+            bT0rRest()
+            srStop := motor.getStopReason()
+            srAfter := srStop
+        T0R_LEG_LIMIT_NEG:
+            waitms(T0_25_EARLY_MS)
+            motor.stopMotor()
+            srStop := motor.getStopReason()
+            waitms(T0_25_LIMIT_MS)                                              ' past the armed deadline: it fires at rest, no drive open
+            srAfter := motor.getStopReason()
+        T0R_LEG_ESTOP:
+            waitms(T0_25_RUN_MS)
+            motor.emergencyCutoff()
+            srStop := motor.getStopReason()
+            eErr := t0rFirstErr(eErr, motor.clearEmergency())
+            srAfter := motor.getStopReason()
+        T0R_LEG_ESTOP_NEG:
+            waitms(T0_25_RUN_MS)
+            motor.stopMotor()
+            srStop := motor.getStopReason()
+            bT0rRest()
+            motor.emergencyCutoff()                                             ' at rest, after the stop: no drive is open
+            srAfter := motor.getStopReason()
+            eErr := t0rFirstErr(eErr, motor.clearEmergency())
+        T0R_LEG_LINK:
+            waitms(T0_25_SILENT_MS)                                             ' no command: the timeout stops it
+            srStop := motor.getStopReason()
+            srAfter := srStop
+        T0R_LEG_LINK_NEG:
+            startMs := getms()
+            repeat while (getms() - startMs) < T0_25_SILENT_MS
+                waitms(T0_25_REFRESH_MS)
+                eErr := t0rFirstErr(eErr, motor.driveAtPower(T0_25_POWER))
+            srOpen := motor.getStopReason()                                     ' still open: no timeout fired on a live link
+            motor.stopMotor()
+            srStop := motor.getStopReason()
+            srAfter := srStop
+            eErr := t0rFirstErr(eErr, motor.setCommandTimeout(motor.CMD_TIMEOUT_OFF))
+    bRest := bT0rRest()
+    motor.getError()                                                            ' LINK's ERR_COMMAND_TIMEOUT, or nothing
+    debug("T0-25,leg,", zstr_(t0rLegName(legIdx)), ",err,", sdec_(eErr), ",sr_open,", udec_(srOpen), ",sr_stop,", udec_(srStop), ",sr_after,", udec_(srAfter), ",rest,", zstr_(bRest ? @"TRUE" : @"FALSE"))
+
+PRI t0rEvLost() | bBase, eKind, totBefore, stopsBefore, eErr, cycleIdx, totAfter, stopsAfter, queued, nStops, nRead, nLost, bEnded, firstKind, nKept, nTotal
+' R20-T0-EV-LOST and R20-T0-EV-TOTAL. First the log is read to EV_NONE with every kind's total taken just before the
+' read that returns EV_NONE -- so no event can fall between the baseline and the cursor: one queued after the totals
+' is either returned by that read (and the baseline is taken again) or counted in queued below. Then T0_25_CYCLES
+' drive/stop cycles with nothing read, and one read: EV_LOST first, valued at the events queued past
+' EV_QUEUE_DEPTH, then EV_QUEUE_DEPTH kept, then EV_NONE. The cycles' own EV_STOP total must be T0_25_CYCLES.
+' Pre-registered (SS6): the cycles' 20 stops are all that is queued, so EV_LOST 4, then 16 EV_STOP.
+'
+' @local bBase - the log was read to EV_NONE, so the baseline is exact
+' @local eKind - a read's kind
+' @local totBefore - every counted kind's total at the baseline
+' @local stopsBefore - EV_STOP's total at the baseline
+' @local eErr - the cycles' first non-zero drive return
+' @local cycleIdx - 1..T0_25_CYCLES
+' @local totAfter - every counted kind's total after the cycles
+' @local stopsAfter - EV_STOP's total after them
+' @local queued - events queued across the cycles, of any kind
+' @local nStops - EV_STOP events the read returned
+' @local nRead - events of any kind it returned, EV_LOST among them
+' @local nLost - the value EV_LOST reported
+' @local bEnded - the read ended on EV_NONE
+' @local firstKind - the kind the read returned first
+' @local nKept - events returned after the EV_LOST
+' @local nTotal - getEventTotal(EV_STOP) at the end
+
+    bBase := FALSE
+    repeat T0_25_DRAIN_MAX
+        totBefore := t0rTotalAll()
+        stopsBefore := motor.getEventTotal(motor.EV_STOP)
+        eKind, _, _ := motor.getEvent()
+        if eKind == motor.EV_NONE
+            bBase := TRUE
+            quit
+    eErr := motor.NO_ERROR
+    repeat cycleIdx from 1 to T0_25_CYCLES
+        eErr := t0rFirstErr(eErr, motor.driveAtPower(T0_25_POWER))
+        waitms(T0_25_CYCLE_MS)
+        motor.stopMotor()
+        waitms(T0_25_CYCLE_MS)
+    bT0rRest()
+    totAfter := t0rTotalAll()
+    stopsAfter := motor.getEventTotal(motor.EV_STOP)
+    queued := totAfter - totBefore
+    nStops, nRead, nLost, bEnded, _, firstKind := t0rDrain(@"LOST", 0, 0)
+    nKept := (nRead - 1) #> 0
+    debug("T0-25,lost,base,", zstr_(bBase ? @"TRUE" : @"FALSE"), ",queued,", sdec_(queued), ",cycle_stops,", sdec_(stopsAfter - stopsBefore), ",first_kind,", udec_(firstKind), ",lost,", sdec_(nLost), ",kept,", sdec_(nKept), ",kept_stops,", udec_(nStops), ",ended,", zstr_(bEnded ? @"TRUE" : @"FALSE"), ",err,", sdec_(eErr))
+    emitCellBool(@sCellEvLost, @sTaskReporting, @"RIGHT", @sCritEvLost, bBase, (eErr == motor.NO_ERROR) and (stopsAfter - stopsBefore == T0_25_CYCLES) and (queued > motor.EV_QUEUE_DEPTH) and (firstKind == motor.EV_LOST) and (nLost == queued - motor.EV_QUEUE_DEPTH) and (nKept == motor.EV_QUEUE_DEPTH) and bEnded, 3)
+    nTotal := motor.getEventTotal(motor.EV_STOP)
+    debug("T0-25,total,ev_stop,", sdec_(nTotal), ",want,", udec_(T0_25_EV_STOPS + T0_25_CYCLES))
+    emitCellBool(@sCellEvTotal, @sTaskReporting, @"RIGHT", @sCritEvTotal, TRUE, nTotal == T0_25_EV_STOPS + T0_25_CYCLES, 1)
+
+PRI t0rTwoCog() | helperCog, startMs, bHelperReady, eErr, cycleIdx, nStops, nRead, nLost, bEnded, bHelperDone
+' R20-T0-EV-2COG: a helper cog (t0rHelper()) reads the log to EV_NONE and says so; cog 0 does the same, then makes
+' T0_25_COG_CYCLES drive/stop cycles and releases the helper; both then read, at the same time, each through its own
+' cursor, and each must read exactly T0_25_COG_CYCLES EV_STOP with nothing lost. NOMEAS when the helper never started
+' or never reported. The helper is stopped by this cog, in a quiet window, whatever happened.
+'
+' @local helperCog - cogspin()'s return; < 0 when no cog was free
+' @local startMs - getms() when a handshake wait began
+' @local bHelperReady - the helper caught up before the cycles
+' @local eErr - the cycles' first non-zero drive return
+' @local cycleIdx - 1..T0_25_COG_CYCLES
+' @local nStops - EV_STOP events cog 0 read after the cycles
+' @local nRead - events of any kind cog 0 read then
+' @local nLost - events cog 0 was told it lost
+' @local bEnded - cog 0's read ended on EV_NONE
+' @local bHelperDone - the helper reported its counts
+
+    bT0rReady := FALSE
+    bT0rGo := FALSE
+    bT0rDone := FALSE
+    t0rDrain(@"CATCHUP", 0, 0)                                  ' cog 0 at the head too, before the cycles
+    benchLog.cogEventBegin()
+    helperCog := cogspin(NEWCOG, t0rHelper(), @t0rStack)
+    benchLog.cogEventEnd()
+    startMs := getms()
+    repeat while (helperCog >= 0) and (bT0rReady == FALSE) and ((getms() - startMs) < T0_25_HANDSHAKE_MS)
+        waitms(READY_POLL_MS)
+    bHelperReady := bT0rReady
+    eErr := motor.NO_ERROR
+    nStops := 0
+    nRead := 0
+    nLost := 0
+    bEnded := FALSE
+    if bHelperReady
+        repeat cycleIdx from 1 to T0_25_COG_CYCLES
+            eErr := t0rFirstErr(eErr, motor.driveAtPower(T0_25_POWER))
+            waitms(T0_25_CYCLE_MS)
+            motor.stopMotor()
+            waitms(T0_25_CYCLE_MS)
+        bT0rRest()
+        bT0rGo := TRUE                                          ' the helper reads now, while cog 0 reads too
+        nStops, nRead, nLost, bEnded, _, _ := t0rDrain(@"TWOCOG", 0, 0)
+        startMs := getms()
+        repeat while (bT0rDone == FALSE) and ((getms() - startMs) < T0_25_HANDSHAKE_MS)
+            waitms(READY_POLL_MS)
+    bHelperDone := bT0rDone
+    if helperCog >= 0
+        benchLog.cogEventBegin()
+        cogstop(helperCog)
+    debug("T0-25,twocog,helper_cog,", sdec_(helperCog), ",ready,", zstr_(bHelperReady ? @"TRUE" : @"FALSE"), ",done,", zstr_(bHelperDone ? @"TRUE" : @"FALSE"), ",main_stops,", udec_(nStops), ",helper_stops,", udec_(t0rHelperStops), ",main_reads,", udec_(nRead), ",helper_reads,", udec_(t0rHelperReads), ",err,", sdec_(eErr))
+    emitCellBool(@sCellEv2Cog, @sTaskReporting, @"RIGHT", @sCritEv2Cog, bHelperReady and bHelperDone, (eErr == motor.NO_ERROR) and (nStops == T0_25_COG_CYCLES) and (t0rHelperStops == T0_25_COG_CYCLES) and bEnded and (nLost == 0) and bT0rHelperClean, 2)
+
+PRI t0rHelper() | eKind, nValue, bLost
+' The helper reader cog of R20-T0-EV-2COG (its own cog; prints nothing). It reads the log to EV_NONE -- its cursor
+' starts at 0, so it is told EV_LOST and then reads what is kept -- and says it is ready; once cog 0 says go, it reads
+' again to EV_NONE, counting EV_STOP, and reports. Then it parks until cog 0 stops it.
+'
+' @local eKind - a read's kind
+' @local nValue - its value
+' @local bLost - the counted read was told it lost events
+
+    repeat T0_25_DRAIN_MAX
+        eKind, _, _ := motor.getEvent()
+        if eKind == motor.EV_NONE
+            quit
+    bT0rReady := TRUE
+    repeat until bT0rGo
+        waitms(1)
+    t0rHelperStops := 0
+    t0rHelperReads := 0
+    bT0rHelperClean := FALSE
+    bLost := FALSE
+    repeat T0_25_DRAIN_MAX
+        eKind, _, nValue := motor.getEvent()
+        if eKind == motor.EV_NONE
+            bT0rHelperClean := (bLost == FALSE)
+            quit
+        t0rHelperReads += 1
+        if eKind == motor.EV_LOST
+            bLost := TRUE
+        elseif eKind == motor.EV_STOP
+            t0rHelperStops += 1
+    bT0rDone := TRUE
+    repeat
+        waitms(T0_25_CYCLE_MS)
+
+PRI t0rDrain(pPhase, pStops, maxStops) : nStops, nRead, nLost, bEnded, bRising, firstKind | eKind, nMs, nValue, lastStopMs
+' Read this cog's log to EV_NONE (at most T0_25_DRAIN_MAX reads), printing every event as T0-25,ev. One debug()
+' record serves every read in T0-25 (DBG-2).
+'
+' @param pPhase - pointer to the phase's name, printed on each event
+' @param pStops - where to store the EV_STOP values in order, 0 for nowhere
+' @param maxStops - how many values pStops holds
+' @returns nStops - EV_STOP events read
+' @returns nRead - events of any kind read, EV_LOST among them
+' @returns nLost - EV_LOST's values summed
+' @returns bEnded - the read ended on EV_NONE inside the bound
+' @returns bRising - each EV_STOP's ms was later than the previous one's
+' @returns firstKind - the first kind read, EV_NONE when there was none
+'
+' @local eKind - a read's kind
+' @local nMs - its getms() stamp
+' @local nValue - its value
+' @local lastStopMs - the previous EV_STOP's ms
+
+    nStops := 0
+    nRead := 0
+    nLost := 0
+    bEnded := FALSE
+    bRising := TRUE
+    firstKind := motor.EV_NONE
+    lastStopMs := 0
+    repeat T0_25_DRAIN_MAX
+        eKind, nMs, nValue := motor.getEvent()
+        if nRead == 0
+            firstKind := eKind
+        if eKind == motor.EV_NONE
+            bEnded := TRUE
+            quit
+        nRead += 1
+        debug("T0-25,ev,", zstr_(pPhase), ",n,", udec_(nRead), ",kind,", udec_(eKind), ",ms,", udec_(nMs), ",value,", sdec_(nValue))
+        if eKind == motor.EV_LOST
+            nLost += nValue
+        elseif eKind == motor.EV_STOP
+            if (nStops > 0) and ((nMs - lastStopMs) <= 0)
+                bRising := FALSE
+            lastStopMs := nMs
+            if nStops < maxStops
+                long[pStops][nStops] := nValue
+            nStops += 1
+
+PRI bT0rRest() : bRest | startMs
+' Wait, bounded by T0_25_REST_MS, for the driver to read DCS_STOPPED.
+'
+' @returns bRest - TRUE when it did
+'
+' @local startMs - getms() when the wait began
+
+    startMs := getms()
+    repeat until (motor.getDriverState() == motor.DCS_STOPPED) or ((getms() - startMs) >= T0_25_REST_MS)
+        waitms(READY_POLL_MS)
+    bRest := (motor.getDriverState() == motor.DCS_STOPPED)
+
+PRI t0rTotalAll() : nSum | eKind
+' Every counted kind's getEventTotal(), summed: the events queued since start(), read or not, lost or not.
+'
+' @returns nSum - the sum over EV_STOP .. EV_FOLDBACK
+'
+' @local eKind - EV_STOP .. EV_FOLDBACK
+
+    nSum := 0
+    repeat eKind from motor.EV_STOP to motor.EV_FOLDBACK
+        nSum += motor.getEventTotal(eKind)
+
+PRI t0rFirstErr(eFirst, eNext) : eErr
+' The first non-zero of two call returns.
+'
+' @param eFirst - the earlier return
+' @param eNext - the later one
+' @returns eErr - eFirst when it is not NO_ERROR, else eNext
+
+    eErr := eFirst
+    if eErr == motor.NO_ERROR
+        eErr := eNext
+
+PRI t0rWantStop(stopIdx) : eReason
+' The SR_* the stopIdx'th EV_STOP must carry: the legs' stops in T0R_LEG_* order -- ESTOP_NEG's e-stop at rest records
+' none, so its one stop is the stopMotor() before it.
+'
+' @param stopIdx - 0..T0_25_EV_STOPS-1
+' @returns eReason - SR_COMMANDED, SR_AT_LIMIT, SR_EMERGENCY or SR_LINK_LOST
+
+    eReason := lookupz(stopIdx : motor.SR_COMMANDED, motor.SR_AT_LIMIT, motor.SR_COMMANDED, motor.SR_EMERGENCY, motor.SR_COMMANDED, motor.SR_LINK_LOST, motor.SR_COMMANDED)
+
+PRI t0rLegName(legIdx) : pName
+' The name a leg is printed under.
+'
+' @param legIdx - T0R_LEG_*
+' @returns pName - pointer to the name
+
+    pName := lookupz(legIdx : @"COMMANDED", @"ATLIMIT", @"ATLIMIT_NEG", @"ESTOP", @"ESTOP_NEG", @"LINKLOST", @"LINKLOST_NEG")
+#endif
+
 #ifdef T0_HAND
 PRI testT0_12() | keyCode, bArmed, hallPin, hallCode, priorCode, transitions, illegalCount, pollIdx, pos
 ' T0-12, hand-rotation anchor -- SEPARABLE, compiled only under -D T0_HAND
@@ -2711,6 +3217,7 @@ PRI testT0_24() | seqPos, startResult, bReady, workerCog
     emitCellDecl(@sCellFltShort, @sTaskStopMode)
     emitCellDecl(@sCellFltGap, @sTaskStopMode)
     emitCellDecl(@sCellFreeRef, @sTaskStopMode)
+    emitCellDecl(@sCellEvHold, @sTaskReporting)                 ' task 3621: the hold's hand-offs as events (rows 1-3)
     debug("T0-24,begin,wheel,RIGHT_P16,rows,", udec_(T0_24_ROW_COUNT), ",fault_power,", udec_(T0_24_FLT_POWER), ",prompt,each_row_is_previewed_and_waits_for_the_operator")
 
     benchLog.cogEventBegin()
@@ -2780,11 +3287,15 @@ PRI t0sRunRow(rowIdx, seqNum) | runNum, btn, bRan, whyShown, res1, res2, bFirst,
         t0wAbortReq := FALSE                                    '  measure cog is idle between jobs
         bRan := bT0sSetUp(rowIdx, seqNum)
         if bRan
+            if bT0sHoldRow(rowIdx)
+                t0sEvRead(rowIdx, seqNum, runNum, FALSE)            ' task 3621: what SETUP left is not this ACT's
             t0sRunJob(rowIdx, seqNum, T0S_PH_ACT, T0_24_JOB_ACT, bFirst)
             whyShown := t0wWhy
             res1 := t0wRes1
             res2 := t0wRes2
             t0sPrintRow(rowIdx, seqNum, runNum)
+            if bT0sHoldRow(rowIdx)
+                t0sEvRead(rowIdx, seqNum, runNum, TRUE)             ' task 3621: this ACT's hand-offs, as the log reports them
         else
             if t0wAbortReq
                 whyShown := T0S_ST_NM_ABORTED
@@ -4060,6 +4571,113 @@ PRI t0sEmitCells() | coastGap, fltGap
     emitCellBool(@sCellFltShort, @sTaskStopMode, @"RIGHT", @sCritFltShort, bT0sRowMeasured[T0_24_ROW_FLTHOLD], (t0sBandTicks[T0_24_ROW_FLTHOLD] <= SF_BRAKE_MAX_TICKS) and bT0sStillFaulted[T0_24_ROW_FLTHOLD], 1)
     fltGap := t0sBandTicks[T0_24_ROW_FLTCOAST] - t0sBandTicks[T0_24_ROW_FLTHOLD]
     t0sEmitNum(@sCellFltGap, @sCritFltGap, fltGap, SF_MODE_GAP_TICKS, SF_BAND_TICKS_HI, bT0sRowMeasured[T0_24_ROW_FLTCOAST] and bT0sRowMeasured[T0_24_ROW_FLTHOLD], fltGap >= SF_MODE_GAP_TICKS)
+    t0sEmitEvHold()
+
+PRI t0sEmitEvHold() | rowIdx, nJudged, bPos1, bPos2, bNeg, bPass, bRowOk
+' R20-T0-EV-HOLD (task 3621, DRIVER-REPORTING-DESIGN.md SS6): the hold's hand-offs to the phase short are logged as
+' events. Two sources of one fact are compared per hold row's last run whose own cell was a measurement: the event log
+' cog 0 read after the ACT (t0sEvRead()), and the hold states the measure cog saw during it. A row passes when it holds
+' one EV_HOLD_SLIP, of |value| at least HOLD_SLIP_TICKS, exactly when HS_SLIPPED was seen, and one EV_HOLD_LIMIT exactly
+' when HS_LIMITED was seen, with nothing lost. Measured only when the positives arose -- HOLDSLIP slipped and HOLDLIMIT
+' limited -- AND a measured row did not slip, which is the negative: a hold that did not hand off must log none (SS6:
+' "the hold row that must not slip: none"). An event logged for a hand-off that did not happen fails, as does one
+' missing.
+'
+' @local rowIdx - T0_24_ROW_HOLDRISE .. T0_24_ROW_HOLDLIMIT
+' @local nJudged - hold rows judged
+' @local bPos1 - HOLDSLIP was measured and slipped
+' @local bPos2 - HOLDLIMIT was measured and limited
+' @local bNeg - a measured hold row did not slip
+' @local bPass - every judged row matched
+' @local bRowOk - this row matched
+
+    nJudged := 0
+    bPass := TRUE
+    bNeg := FALSE
+    repeat rowIdx from T0_24_ROW_HOLDRISE to T0_24_ROW_HOLDLIMIT
+        if bT0sEvRan[rowIdx] and bT0sEvMeasured[rowIdx]
+            nJudged += 1
+            bRowOk := bT0sEvClean[rowIdx]
+            if bT0sEvSlipSeen[rowIdx]
+                bRowOk &= (t0sEvSlips[rowIdx] == 1) and (t0sEvSlipMin[rowIdx] >= motor.HOLD_SLIP_TICKS)
+            else
+                bRowOk &= (t0sEvSlips[rowIdx] == 0)
+                bNeg := TRUE
+            if bT0sEvLimitSeen[rowIdx]
+                bRowOk &= (t0sEvLimits[rowIdx] == 1)
+            else
+                bRowOk &= (t0sEvLimits[rowIdx] == 0)
+            bPass &= bRowOk
+    bPos1 := bT0sEvRan[T0_24_ROW_HOLDSLIP] and bT0sEvMeasured[T0_24_ROW_HOLDSLIP] and bT0sEvSlipSeen[T0_24_ROW_HOLDSLIP]
+    bPos2 := bT0sEvRan[T0_24_ROW_HOLDLIMIT] and bT0sEvMeasured[T0_24_ROW_HOLDLIMIT] and bT0sEvLimitSeen[T0_24_ROW_HOLDLIMIT]
+    emitCellBool(@sCellEvHold, @sTaskReporting, @"RIGHT", @sCritEvHold, bPos1 and bPos2 and bNeg, bPass, nJudged)
+
+PRI bT0sHoldRow(rowIdx) : bHold
+' Whether a row is one of the three hold rows (task 3608), whose ACT the event log is read around (task 3621).
+'
+' @param rowIdx - T0_24_ROW_*
+' @returns bHold - TRUE for HOLDRISE, HOLDSLIP and HOLDLIMIT
+
+    bHold := (rowIdx == T0_24_ROW_HOLDRISE) or (rowIdx == T0_24_ROW_HOLDSLIP) or (rowIdx == T0_24_ROW_HOLDLIMIT)
+
+PRI t0sEvRead(rowIdx, seqNum, runNum, bKeep) | eKind, nValue, nSlips, nSlipMin, nLimits, nOther, bLost, bEnded
+' Read cog 0's event log to EV_NONE (task 3621, R20-T0-EV-HOLD; at most T0_24_EV_READ_MAX reads). Before a hold row's
+' ACT the read only discards what SETUP's re-arm left. After it, the hand-offs it held are kept for the row beside the
+' hold states the measure cog saw in that same ACT (t0wHoldRes, still this run's) and printed as
+' T0-24,row,N,run,K,events. The measure cog is idle between jobs, and only cog 0 reads the log.
+'
+' @param rowIdx - the hold row, T0_24_ROW_*
+' @param seqNum - this run's 1-based row position
+' @param runNum - the row's run, 1-based
+' @param bKeep - TRUE after the ACT: keep and print; FALSE before it: discard
+'
+' @local eKind - a read's kind
+' @local nValue - its value
+' @local nSlips - EV_HOLD_SLIP events read
+' @local nSlipMin - the least |value| among them, hall ticks; 0 when none
+' @local nLimits - EV_HOLD_LIMIT events read
+' @local nOther - events of any other kind read
+' @local bLost - the read was told it lost events
+' @local bEnded - the read ended on EV_NONE inside the bound
+
+    nSlips := 0
+    nSlipMin := POSX
+    nLimits := 0
+    nOther := 0
+    bLost := FALSE
+    bEnded := FALSE
+    repeat T0_24_EV_READ_MAX
+        eKind, _, nValue := motor.getEvent()
+        if eKind == motor.EV_NONE
+            bEnded := TRUE
+            quit
+        if eKind == motor.EV_LOST
+            bLost := TRUE
+        elseif eKind == motor.EV_HOLD_SLIP
+            nSlips += 1
+            nSlipMin <#= abs(nValue)
+        elseif eKind == motor.EV_HOLD_LIMIT
+            nLimits += 1
+        else
+            nOther += 1
+    if nSlips == 0
+        nSlipMin := 0
+    if bKeep
+        bT0sEvRan[rowIdx] := TRUE
+        t0sEvSlips[rowIdx] := nSlips
+        t0sEvSlipMin[rowIdx] := nSlipMin
+        t0sEvLimits[rowIdx] := nLimits
+        bT0sEvClean[rowIdx] := bEnded and (bLost == FALSE)
+        bT0sEvSlipSeen[rowIdx] := (t0wHoldRes[T0_24_HR_SLIP_MS] >= 0)
+        bT0sEvLimitSeen[rowIdx] := (t0wHoldRes[T0_24_HR_LIMIT_MS] >= 0)
+        case rowIdx                                             ' the row's own cell's measured flag, this run's
+            T0_24_ROW_HOLDRISE:
+                bT0sEvMeasured[rowIdx] := bT0sHoldRiseMeasured
+            T0_24_ROW_HOLDSLIP:
+                bT0sEvMeasured[rowIdx] := bT0sHoldSlipMeasured
+            other:
+                bT0sEvMeasured[rowIdx] := bT0sHoldLimitMeasured
+        debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",events,slip,", udec_(nSlips), ",slip_min,", udec_(nSlipMin), ",limit,", udec_(nLimits), ",other,", udec_(nOther), ",lost,", zstr_(bLost ? @"TRUE" : @"FALSE"), ",ended,", zstr_(bEnded ? @"TRUE" : @"FALSE"), ",hs_slip,", zstr_(bT0sEvSlipSeen[rowIdx] ? @"TRUE" : @"FALSE"), ",hs_limit,", zstr_(bT0sEvLimitSeen[rowIdx] ? @"TRUE" : @"FALSE"))
 
 PRI t0sEmitNum(pCell, pCrit, measuredTicks, loTicks, hiTicks, bMeasured, bPass)
 ' One numeric SIGNOFF for a T0-24 cell, in hall ticks (task 3617: band_ticks), through the shared
