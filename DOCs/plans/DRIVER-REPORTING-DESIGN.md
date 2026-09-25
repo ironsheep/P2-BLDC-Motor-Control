@@ -491,3 +491,48 @@ Two go to Stephen, one at a time:
 - the per-event cost (the FRONTST cell measures it);
 - the `t0-stopreason` tier name;
 - whether `REQ_NOTE_START` is appended after `REQ_EXIT` (the codes are internal, not on the wire).
+
+---
+
+## Build notes (part 1, `isp_bldc_motor`)
+
+**Measured (compiler, `pnut-ts -q -l isp_bldc_motor.spin2`, the `.lst` symbol values):**
+- Cog RAM **491 → 493 of 496** (`FOLDBACK_CNT_` at $1EC; was `FAULT_RESYNCS_` at $1EA). 3 free.
+- LUT **229 → 230 of 512** (`LUTCODEEND` $2E5 → $2E6). §7 said the LUT was unchanged; the `mov foldback_cnt_, #0`
+  that zeroes the counter at driver start sits in the LUT-resident start sequence beside `fault_resyncs_`'s.
+- `DRIVER_REV` 22 → 23. Status run 20 → 21 longs; `foldback_frames` is its last long, before `fault`.
+
+**Deviations from the design:**
+1. **The fold-back `if_nc add` is not free on a normal frame.** A cancelled conditional instruction still takes its
+   2 clocks (p2kb `p2kbPasm2ConditionalExecution`: "same execution time regardless of condition"). §2.1 said a normal
+   frame costs nothing; it costs 2 clocks of a ~6_100-clock frame at 270 MHz. ADD without WC/WZ leaves C for the
+   `if_nc jmp` after it.
+2. **EV_LATE_PASS is checked on the opposite-phase pass** (every 8 ms), not only on a late pass, so a count carried
+   past the rate gap is never stranded when no further late pass comes. One compare every 8 passes.
+3. **Escalation needs one more long, `bResyncStopOpen`**: SR_FAULT_CONTROLLED escalates only while its stop has not yet
+   reached rest (DCS_STOPPED clears it), so a fault at rest much later does not rewrite the reason. One test per pass in
+   `frontNoteFault()` while no re-synced stop is under way.
+4. **`healthAttempts` is a new long**, for EV_CHECK_RETRY's attempts field.
+5. **The withheld phases are cleared at the end of `runStartChecks()`** (after every attempt), not at the end of
+   `start()`: the same effect for both objects, with no steering change. The winding probe runs in the first attempt
+   only and honours `testSetProbeWithhold()`, not `testSetProbeWithholdFirst()`. `testGetProbe()` reads the last
+   attempt's probe.
+6. **A walk leg (`REQ_WALK`) records SR_COMMANDED** after its command, which ends a drive left open (§1.1) and is a
+   no-op otherwise. A drive the driver did not take (ERR_SYNC_TIMEOUT) or a fault clear that timed out (ERR_NO_RESPONSE)
+   records SR_COMMANDED and opens nothing.
+7. **New INTERNAL `peekEvent()`** (same result as `getEvent()`, cursor not moved), because steering's `getEvent()`
+   merges two rings by `nMs` and must see both heads before it consumes one. A `getEvent()` after a `peekEvent()`
+   returns the same event, or EV_LOST if the ring lapped that cog in between.
+8. EV_LOST's `nMs` is `getms()` at the read.
+
+**Part 2 must know (steering):** the motor's front API is `frontOpenDrive()`, `frontRecordStop(eReason)`,
+`frontQueueEvent(eKind, nValue)`, `frontEventChecks(nowMs)` (per wheel, on the opposite phase), `frontNoteStartChecks()`
+(per wheel at the front cog's entry). Rows 8/9 already run inside `frontTrack()`, but record nothing until the steering
+apply sites call `frontOpenDrive()`. `runStartChecks()` now returns the refusing bits still failed. The motor's
+`getHealth()` returns three results (steering's call sites take `_` for now). `testSetFaultResponse` /
+`testSetHoldLimits` remain on the steering object and must be renamed there; the FR_*, SR_*, EV_*,
+ERR_START_CHECK_FAILED, HOLD_*_MAX and EV_QUEUE_DEPTH re-exports are still owed.
+
+**Part 3 must know (harness):** `test_bench_dual`'s ABI dump still sizes the status run at 21 with `fault` last
+(`ABI_STATUS_LONGS`, `tokAbiName`, ~:15872): it now names `foldback_frames` as `fault` and drops `fault`. BM-ABIL's
+`st_n` prints 21. The retries add up to ~0.9 s per wheel whose phase is withheld, ~3.9 s with a failing sense zero.

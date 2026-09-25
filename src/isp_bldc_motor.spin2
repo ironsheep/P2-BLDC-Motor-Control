@@ -111,6 +111,52 @@ CON { Public Interface Constants }
     '  PACK_PRESENT    - a pack voltage is being read
     #0, PACK_NOT_FITTED, PACK_ABSENT, PACK_PRESENT
 
+    ' Fault Response Enum (setFaultResponse()): what the motor does on a position fault (|err| >= 125 while driven)
+    '  FR_SHIPPED - the bridge takes the stop mode's fault state at once: SM_FLOAT coasts, SM_BRAKE shorts
+    '  FR_GRADED  - with the halls legal, the first fault re-seeds the field from the halls and ramps to a
+    '               stop under control; otherwise (halls lost, or a second fault on that ramp) SM_BRAKE takes
+    '               the graded short BR_BRAKE and SM_FLOAT coasts
+    #0, FR_SHIPPED, FR_GRADED
+
+    ' setHoldLimits(): the slowest rise and the longest time limit it accepts
+    HOLD_RISE_MS_MAX            = 10_000
+    HOLD_LIMIT_MS_MAX           = 600_000   ' 10 minutes
+
+    ' Stop Reason Enum (getStopReason()): why the last drive ended (serial hosts receive these as numbers -- append new
+    '  values, never renumber; from 40, so none can be read as a DS_*, REV_* or BRD_* value, and none is an error)
+    '  SR_NONE             - no drive has ended since the last accepted drive command, or since start()
+    '  SR_COMMANDED        - a call the program made ended it: a stop, a zero power, or a call that replaced it
+    '  SR_AT_LIMIT         - its distance, rotation or time limit was reached
+    '  SR_FAULT_CONTROLLED - a position fault the driver answered by re-syncing from the halls and stopping under control
+    '  SR_FAULT_LOST       - a position fault latched (DCS_FAULTED): control was lost, and the fault's bridge state took over
+    '  SR_BLOCKED          - a protective stop: commanded to move, held at its current limit, and not moving
+    '  SR_LINK_LOST        - setCommandTimeout(): no drive command arrived in time
+    '  SR_EMERGENCY        - emergencyCutoff()
+    '  SR_PARTNER          - isp_steering_2wheel only: the other wheel's condition stopped this one; read that wheel's reason
+    #40, SR_NONE, SR_COMMANDED, SR_AT_LIMIT, SR_FAULT_CONTROLLED, SR_FAULT_LOST, SR_BLOCKED, SR_LINK_LOST, SR_EMERGENCY, SR_PARTNER
+
+    ' Event Kind Enum (getEvent()): the soft conditions the motor handled on its own (serial hosts receive these as
+    '  numbers -- append new values, never renumber; from 60, apart from every other enum)
+    '  EV_NONE          - nothing unread (value 0)
+    '  EV_LOST          - this cog fell more than EV_QUEUE_DEPTH events behind (value: events lost); it always comes first
+    '  EV_STOP          - a drive ended (value: the SR_* recorded, as getStopReason() then reads)
+    '  EV_FAULT_RESYNC  - a position fault answered by a re-sync and a controlled stop (value: FC_LAG)
+    '  EV_FAULT         - a position fault latched, DCS_FAULTED (value: FC_LAG or FC_HALL)
+    '  EV_HOLD_SLIP     - the hold at rest handed off to the phase short on a slip (value: the displacement, hall ticks)
+    '  EV_HOLD_LIMIT    - the hold at rest handed off to the phase short at its time limit (value: the duty it held)
+    '  EV_CURRENT_LIMIT - the thermal derate engaged or released (value: the phase-current limit now in force, amps)
+    '  EV_PATH_LIMIT    - isp_steering_2wheel only: the path limiter engaged or fully released (value: the scale, per mille)
+    '  EV_HALL_MISSED   - missed hall transitions (value: how many since the last EV_HALL_MISSED); at most one a second
+    '  EV_HALL_ILLEGAL  - illegal hall codes, %000 and %111 (value: how many since the last); at most one a second
+    '  EV_WALK_GUARD    - checkWiring()'s current guard shorted a leg (value: the net DC-link mV that tripped it)
+    '  EV_LATE_PASS     - the front cog overran its 1 ms slot (value: late passes since the last); at most one a second
+    '  EV_PACK          - the pack sensor's status changed (value: the new PACK_*); at most one a second
+    '  EV_CHECK_RETRY   - a start check failed, then passed on a retry (value: the recovered HLT_* bits | attempts << 8)
+    '  EV_FOLDBACK      - the driver's per-frame current fold-back engaged (value 0), then went quiet for a second
+    '                     (value: the frames it limited since it engaged)
+    #60, EV_NONE, EV_LOST, EV_STOP, EV_FAULT_RESYNC, EV_FAULT, EV_HOLD_SLIP, EV_HOLD_LIMIT, EV_CURRENT_LIMIT, EV_PATH_LIMIT, EV_HALL_MISSED, EV_HALL_ILLEGAL, EV_WALK_GUARD, EV_LATE_PASS, EV_PACK, EV_CHECK_RETRY, EV_FOLDBACK
+    EV_QUEUE_DEPTH              = 16        ' PROVISIONAL: the events each reading cog can fall behind before it loses its oldest
+
     MOTOR_ID_STRLEN = 10
 
     ' Error codes: every command method returns NO_ERROR or one of these, and records it for getError().
@@ -137,6 +183,7 @@ CON { Public Interface Constants }
     '   ERR_NO_RESPONSE        - the front cog did not answer within its bound (at start, or for a request)
     '   ERR_BOARD_NOT_DETECTED - start: no board was detected at the pin group and no revision was forced; getCurrent(): no current scale
     '   ERR_COMMAND_TIMEOUT    - setCommandTimeout() is on and no drive command arrived within it: the motor was stopped
+    '   ERR_START_CHECK_FAILED - start: a start check still failed after its retries, so the motor was not started (getHealth() says which)
     '   ERR_PROTECTIVE_STOP    - a protective stop is latched for a cause outside the named ones
     '   ERR_PLATFORM_BLOCKED   - a protective stop is latched: a commanded motor held at its current limit did not move
     NO_ERROR                = 0
@@ -159,6 +206,7 @@ CON { Public Interface Constants }
     ERR_NO_RESPONSE         = -1_017
     ERR_BOARD_NOT_DETECTED  = -1_018
     ERR_COMMAND_TIMEOUT     = -1_019
+    ERR_START_CHECK_FAILED  = -1_020
     ERR_PROTECTIVE_STOP     = -2_000
     ERR_PLATFORM_BLOCKED    = -2_001
 
@@ -205,6 +253,9 @@ PUB start(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
 '' getCurrent() nets out; a failure returns well before that (captureRestZero() runs last)
 '' With BRD_AUTO_DET a pin group where no board is detected is refused (ERR_BOARD_NOT_DETECTED): without its
 '' board revision the motor would have no current limit. Force BRD_REV_A or BRD_REV_B to drive it anyway.
+'' R20.1: a start check (getHealth()) that still fails after START_CHECK_RETRIES retries refuses the start
+'' (ERR_START_CHECK_FAILED; getHealth() stays readable) unless setStartChecks(FALSE) was called first. The retries
+'' add time only on a failure: up to about 4 s.
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
@@ -221,6 +272,7 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError, b
 '' PL-45: on success, this blocks for about 1 s while it samples the current-sense rest zero
 '' getCurrent() nets out; a failure returns well before that (captureRestZero() runs last)
 '' With BRD_AUTO_DET a pin group where no board is detected is refused (ERR_BOARD_NOT_DETECTED), as by start().
+'' A start check still failing after its retries refuses the start (ERR_START_CHECK_FAILED), as by start().
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
@@ -242,9 +294,18 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError, b
         eError := launchFront(bParked)
         if eError == NO_ERROR
             captureRestZero()    ' PL-45: the driver is confirmed running and released; nothing has driven it yet
-            runStartChecks()     ' R19.4: nothing moves; getHealth() reports
-            startPackSense()     ' R19.5: the pack voltage sensor, when fitted
-            ok := motorCog - 1    ' public contract: the driver cog's id (0-7), per @returns
+            ' R19.4: nothing moves; getHealth() reports. R20.1: a refusing check still failing after its retries refuses
+            '  the start, unless setStartChecks(FALSE); stop() leaves getHealth()'s verdict readable
+            if (runStartChecks() <> 0) and (bStartChecksOptOut == FALSE)
+                stop()
+                eError := recordError(ERR_START_CHECK_FAILED)
+                debug[user.DBGCH_ERROR]("! ERROR: start refused, a start check still fails after its retries ", uhex_long(healthFailed))
+            else
+                startPackSense()     ' R19.5: the pack voltage sensor, when fitted
+                ' R20.1: the front cog is the event log's only writer, so it queues EV_CHECK_RETRY, not this cog
+                if postRequest(REQ_NOTE_START, 0, 0, 0) <> NO_ERROR
+                    debug[user.DBGCH_ERROR]("! ERROR: startEx(", zstr_(@motorId), ") front cog did not take the start's check record")
+                ok := motorCog - 1    ' public contract: the driver cog's id (0-7), per @returns
 
 PUB startOwned(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
 '' INTERNAL USE: start this motor's driver parked for its owner's ATN, with no front cog of its own (for isp_steering_2wheel)
@@ -490,6 +551,59 @@ PUB setCommandTimeout(nMs) : eError
         debug[user.DBGCH_ERROR]("! ERROR: setCommandTimeout() rejected ", sdec_long(nMs))
     else
         eError := recordError(postRequest(REQ_SET_TIMEOUT, nMs, 0, 0))    ' the front cog owns the clock
+
+PUB setFaultResponse(eMode, brakePct) : eError
+'' Choose what the motor does on a position fault: the rotor could not follow the field (an overload or a stall)
+''
+'' FR_SHIPPED coasts (holdAtStop(FALSE)) or shorts the phases (TRUE) at once. FR_GRADED, while the halls read a
+'' legal code, re-seeds the field from the halls and stops along the ramp down (getStopReason() reads
+'' SR_FAULT_CONTROLLED); with the halls lost, or on a second fault during that stop, it coasts (FALSE) or takes the
+'' graded short (TRUE): the phases shorted for {brakePct} of each BRAKE_PERIOD_MS and coasting for the rest, which
+'' scales the average braking torque to {brakePct} of the full short's. The peak current is still the full short's.
+'' start() restores the default (FAULT_RESPONSE_DEFAULT at BRAKE_PCT_DEFAULT).
+''
+'' @param eMode - FR_SHIPPED or FR_GRADED
+'' @param brakePct - the graded short's shorted time, % of each brake period [0..100]
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError(); a rejected call changes nothing
+
+    if ((eMode <> FR_SHIPPED) and (eMode <> FR_GRADED)) or (brakePct < 0) or (brakePct > 100)
+        eError := recordError(ERR_BAD_COUNT)
+        debug[user.DBGCH_ERROR]("! ERROR: setFaultResponse() rejected ", sdec_long(eMode), sdec_long(brakePct))
+    else
+        eError := recordError(postRequest(REQ_SET_FAULT, eMode, brakePct, 0))    ' the front cog is the only writer
+
+PUB setHoldLimits(ceilingPct, riseMs, limitMs) : eError
+'' Set the limits of the hold at rest (holdAtStop(TRUE)): how hard it may hold, how fast it gets there, and for how long
+''
+'' The hold spends only the effort the load pushes back with, rising to {ceilingPct} over {riseMs} while the wheel stays
+'' displaced; after {limitMs} at that ceiling it hands off to the phase short (getHoldStatus() reads HS_LIMITED). The
+'' defaults (HOLD_CEILING_PCT, HOLD_RISE_MS, HOLD_LIMIT_MS) were sized with the wheels unloaded; a loaded robot may need
+'' others. start() restores the defaults.
+''
+'' @param ceilingPct - the hold's duty ceiling, % of the drive's full duty [1..100]
+'' @param riseMs - ms from the minimum duty to the ceiling while the wheel stays displaced [1..HOLD_RISE_MS_MAX]
+'' @param limitMs - ms at the ceiling before the hold hands off to the phase short [1..HOLD_LIMIT_MS_MAX]
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError(); a rejected call changes nothing
+
+    if (ceilingPct < 1) or (ceilingPct > 100) or (riseMs < 1) or (riseMs > HOLD_RISE_MS_MAX) or (limitMs < 1) or (limitMs > HOLD_LIMIT_MS_MAX)
+        eError := recordError(ERR_BAD_COUNT)
+        debug[user.DBGCH_ERROR]("! ERROR: setHoldLimits() rejected ", sdec_long(ceilingPct), sdec_long(riseMs), sdec_long(limitMs))
+    else
+        eError := recordError(postRequest(REQ_SET_HOLD, ceilingPct, riseMs, limitMs))    ' the front cog is the only writer
+
+PUB setStartChecks(bRefuse) : eError
+'' Choose whether start() refuses to start a motor that fails a start check: call it BEFORE start()
+''
+'' By default start() refuses (-1, ERR_START_CHECK_FAILED) when a check of HLT_HALLS, HLT_SENSE_ZERO or HLT_PHASE_U/V/W
+'' still fails after START_CHECK_RETRIES retries. With {bRefuse} FALSE the motor starts anyway, and getHealth() still
+'' says what failed. The retries run either way. HLT_WIRING and HLT_PACK never refuse. The choice is kept across
+'' stop() and start() until it is changed.
+''
+'' @param bRefuse - T/F where T means refuse a start whose checks fail (the default), F means start anyway
+'' @returns eError - NO_ERROR
+
+    bStartChecksOptOut := (bRefuse == FALSE)
+    eError := NO_ERROR
 
 PUB resetTracking() : eError
 '' Resets the position tracking values returned by getDistance() and getRotations()
@@ -766,6 +880,59 @@ PUB getError() : eError | nEvents
         eError := ERR_COMMAND_TIMEOUT
         cmdTimeoutSeen[COGID()] := nEvents
 
+PUB getStopReason() : eReason
+'' Return why the last drive ended: the first stop after the last accepted drive command
+''
+'' A drive is opened by a non-zero power, driveForDistance() or a non-zero test increment the motor accepted; a refused
+'' command opens nothing. The first stop after it is the reason, and it stays readable until the next accepted drive
+'' command; a later stop of the resting motor changes nothing (the event log, getEvent(), still reports a fault). The one
+'' exception: SR_FAULT_CONTROLLED becomes SR_FAULT_LOST when a second fault latches on that controlled stop. This is not
+'' an error code, and getStatus() is unchanged by it. LIMIT: when a running front cog fails to answer a stop in time the
+'' caller's cog stops the motor directly and records nothing, so a drive left open then reads SR_NONE.
+''
+'' @returns eReason - SR_COMMANDED, SR_AT_LIMIT, SR_FAULT_CONTROLLED, SR_FAULT_LOST, SR_BLOCKED, SR_LINK_LOST or SR_EMERGENCY; SR_NONE while a drive is open, or when none has ended since start()
+
+    eReason := stopReason
+
+PUB getEvent() : eKind, nMs, nValue
+'' Return this cog's oldest unread event from the motor's soft-event log, or EV_NONE when it has read them all
+''
+'' The log holds what the motor handled on its own (EV_* in the constants): a stop and its reason, a fault, the hold's
+'' hand-off, a current limit, hall trouble, a late front pass, the pack sensor, a start check that needed a retry.
+'' Every cog that calls this reads the whole log for itself, in order: no cog can take another's event. A cog that
+'' falls more than EV_QUEUE_DEPTH events behind loses its oldest, and is told first, with EV_LOST: a lost event never
+'' reads as EV_NONE. start() empties the log. The peak current fold-back is logged as EV_FOLDBACK, its engage and its
+'' release only; each frame it acted is not.
+''
+'' @returns eKind - the EV_* kind; EV_NONE when nothing is unread, EV_LOST when events were lost before the next one
+'' @returns nMs - getms() when the event was queued (for EV_LOST, getms() now); 0 for EV_NONE
+'' @returns nValue - the event's value, meaning per EV_* (for EV_LOST, how many were lost); 0 for EV_NONE
+
+    eKind, nMs, nValue := readEvent(TRUE)
+
+PUB peekEvent() : eKind, nMs, nValue
+'' INTERNAL USE: return what getEvent() would return on this cog, without reading it (for isp_steering_2wheel's merge)
+''
+'' The next getEvent() on this cog returns the same event, or EV_LOST if the log lapped this cog in between.
+''
+'' @returns eKind - the EV_* kind; EV_NONE when nothing is unread, EV_LOST when events were lost before the next one
+'' @returns nMs - getms() when the event was queued (for EV_LOST, getms() now); 0 for EV_NONE
+'' @returns nValue - the event's value, meaning per EV_* (for EV_LOST, how many were lost); 0 for EV_NONE
+
+    eKind, nMs, nValue := readEvent(FALSE)
+
+PUB getEventTotal(eKind) : nCount
+'' Return how many events of one kind the motor has queued since start(), read or not, lost or not
+''
+'' @param eKind - an EV_* kind from EV_STOP to EV_FOLDBACK
+'' @returns nCount - the events of {eKind} since start(); 0, with ERR_BAD_COUNT recorded for getError(), for EV_NONE, EV_LOST or any other value
+
+    nCount := 0
+    if (eKind < EV_STOP) or (eKind > EV_FOLDBACK)
+        recordError(ERR_BAD_COUNT)
+    else
+        nCount := evTotal[eKind - EV_STOP]
+
 PUB getProtectiveStop() : eProtectiveCode
 '' Return the latched protective stop's cause, without clearing it
 ''
@@ -795,42 +962,11 @@ PUB testSetCurrentLimits(peakAmps, contAmps) : eError
     else
         eError := recordError(postRequest(REQ_SET_LIMITS, peakAmps, contAmps, 0))
 
-PUB testSetHoldLimits(ceilingPct, riseMs, limitMs) : eError
-'' TEST USE: replace the hold's limits at rest (holdAtStop(TRUE)), so a bench run can size them
-''
-'' @param ceilingPct - the hold's duty ceiling, % of the drive's full duty [1..100]
-'' @param riseMs - ms from the minimum duty to the ceiling while the wheel stays displaced [1..HOLD_RISE_MS_MAX]
-'' @param limitMs - ms at the ceiling before the hold hands off to the phase short [1..HOLD_LIMIT_MS_MAX]
-'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
-
-    if (ceilingPct < 1) or (ceilingPct > 100) or (riseMs < 1) or (riseMs > HOLD_RISE_MS_MAX) or (limitMs < 1) or (limitMs > HOLD_LIMIT_MS_MAX)
-        eError := recordError(ERR_BAD_COUNT)
-    else
-        eError := recordError(postRequest(REQ_SET_HOLD, ceilingPct, riseMs, limitMs))
-
-PUB testSetFaultResponse(eMode, brakePct) : eError
-'' TEST USE: choose the response to a position fault, so a bench run can compare them (R19.3)
-''
-'' FR_SHIPPED coasts (holdAtStop(FALSE)) or shorts the phases (TRUE) at once. FR_GRADED, while the halls read a
-'' legal code, re-seeds the field from the halls and stops along the ramp down; with the halls lost, or on a second
-'' fault during that stop, it coasts (FALSE) or takes the graded short (TRUE): the phases shorted for {brakePct} of
-'' each BRAKE_PERIOD_MS and coasting for the rest, which scales the average braking torque to {brakePct} of the full short's.
-'' The peak current is still the full short's.
-''
-'' @param eMode - FR_SHIPPED or FR_GRADED
-'' @param brakePct - the graded short's shorted time, % of each brake period [0..100]
-'' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value out of range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
-
-    if ((eMode <> FR_SHIPPED) and (eMode <> FR_GRADED)) or (brakePct < 0) or (brakePct > 100)
-        eError := recordError(ERR_BAD_COUNT)
-    else
-        eError := recordError(postRequest(REQ_SET_FAULT, eMode, brakePct, 0))
-
 PUB testForceFault() : eError
 '' TEST USE: fault the motor on its next driven frame, as if the rotor had lost the field -- a safe, repeatable stand-in
 '' for a provoked position fault (R19.3)
 ''
-'' The driver takes it where it takes a real fault and answers per testSetFaultResponse(); getFaultCause() then reads
+'' The driver takes it where it takes a real fault and answers per setFaultResponse(); getFaultCause() then reads
 '' FC_LAG, since the halls are legal. A second call while a re-synced stop is still ramping down takes the fallback
 '' (the graded short, or a coast). A request made while the bridge is not driven (coasting, shorted, faulted) is
 '' dropped, never kept for later; the hold at rest (holdAtStop(TRUE)) does drive the bridge, so it is taken there.
@@ -843,9 +979,10 @@ PUB testSetProbeWithhold(ePhase) : eError
 '' TEST USE: leave {ePhase} undriven in the next start()'s lead check, as a phase whose switch cannot drive it -- a
 '' negative control for HLT_PHASE_U/V/W that needs no rewiring (task 3613: the rig cannot open a motor lead)
 ''
-'' Call before start(); it applies to that one start, and the check clears it. The withheld phase reads the coasting floor
-'' where its driven reading belongs, so exactly its own HLT_PHASE_* bit fails, and nothing moves. An open winding fails
-'' the follow test instead, and this cannot make one.
+'' Call before start(); it applies to that one start, in every attempt its retries make (so the start is refused unless
+'' setStartChecks(FALSE)), and the checks clear it when they end. The withheld phase reads the coasting floor where its
+'' driven reading belongs, so exactly its own HLT_PHASE_* bit fails, and nothing moves. An open winding fails the follow
+'' test instead, and this cannot make one.
 ''
 '' @param ePhase - PRB_U, PRB_V or PRB_W to withhold; PRB_NONE clears it
 '' @returns eError - NO_ERROR, or ERR_BAD_COUNT for a value out of range, also recorded for getError()
@@ -854,6 +991,21 @@ PUB testSetProbeWithhold(ePhase) : eError
         eError := recordError(ERR_BAD_COUNT)
     else
         testProbeWithhold := ePhase
+        eError := recordError(NO_ERROR)
+
+PUB testSetProbeWithholdFirst(ePhase) : eError
+'' TEST USE: leave {ePhase} undriven in the FIRST attempt only of the next start()'s lead check, so its HLT_PHASE_* bit
+'' fails once and then passes on the retry -- the positive control for getHealth()'s {nRecovered} and EV_CHECK_RETRY
+''
+'' Call before start(); it applies to that one start's first attempt, and the checks clear it when they end.
+''
+'' @param ePhase - PRB_U, PRB_V or PRB_W to withhold; PRB_NONE clears it
+'' @returns eError - NO_ERROR, or ERR_BAD_COUNT for a value out of range, also recorded for getError()
+
+    if (ePhase < PRB_NONE) or (ePhase > PRB_W)
+        eError := recordError(ERR_BAD_COUNT)
+    else
+        testProbeWithholdFirst := ePhase
         eError := recordError(NO_ERROR)
 
 PUB testSetWindingProbe(bEnable) : eError
@@ -1080,60 +1232,67 @@ PUB captureRestZero() | idx
             restZeroAddSample()
         restZeroFinish()
 
-PUB runStartChecks() | ePhase, eOther, nSample, nPhaseMv[3], nFollows[3], bDriven[3]
-'' INTERNAL USE: the checks start() runs at rest, nothing moving, after the rest zero (R19.4); ~40 ms
+PUB runStartChecks() : nStillFailed | nEverFailed, nIllegal0, nPhasesNow, eWithheld
+'' INTERNAL USE: the checks start() runs at rest, nothing moving, after the rest zero (R19.4), with bounded retries
+'' (R20.1); ~40 ms when every check passes
 ''
 '' Call once, after captureRestZero() (or the owner's rest-zero window), before any drive request: start()/startEx()
 '' call this themselves. Judges the hall code, the current sense's rest zero and each motor lead, and records the
 '' verdict for getHealth(). The lead check (BR_PROBE) switches one phase at 50 % with the other two off: there is no
 '' current path, so nothing moves, and through the windings the undriven phases' voltages follow the driven one's.
 '' A phase that follows no other phase, or cannot itself be driven, fails its HLT_PHASE_* bit.
+'' A refusing check (START_CHECKS_REFUSE) that fails is re-run, up to START_CHECK_RETRIES times START_CHECK_RETRY_MS
+'' apart, in this same driver lifetime, and only while it still fails: the lead probes again, the hall code legal with no
+'' new illegal code during the gap, and the rest zero re-captured (captureRestZero(), ~1 s). A check that passes once
+'' stays passed, so a failure a retry clears never refuses a start. Whether to refuse is the caller's (startEx()).
+''
+'' @returns nStillFailed - the START_CHECKS_REFUSE bits still failing after the retries; 0 when every refusing check passed
 
 ' Local Variables:
-' @local ePhase - the phase being probed, PRB_U..PRB_W
-' @local eOther - a phase index 0..2 while reading or judging
-' @local nSample - the reading loop counter
-' @local nPhaseMv - this probe's averaged U, V and W readings, mV
-' @local nFollows - per phase, the probes in which it followed the driven phase
-' @local bDriven - per phase, T/F where T means it read at least CONT_MIN_DRIVEN_MV when it was the one driven
+' @local nEverFailed - the refusing bits that failed in the first attempt
+' @local nIllegal0 - hall_illegal before a retry's gap
+' @local nPhasesNow - the HLT_PHASE_* bits one probe of the three leads failed
+' @local eWithheld - the phase the first attempt's probes leave undriven (TEST-USE), PRB_NONE for none
 
     healthChecked := HLT_ALL_CHECKS
     healthFailed := 0
-    if ((hall & %111) == %000) or ((hall & %111) == %111) or (hall_illegal <> 0)
+    healthRecovered := 0
+    healthAttempts := 1
+    if (bHallCodeLegal() == FALSE) or (hall_illegal <> 0)
         healthFailed |= HLT_HALLS
-    if eDetectedBoard == REV_A
-        if (restZeroSenseMv < REST_ZERO_MIN_MV_REVA) or (restZeroSenseMv > REST_ZERO_MAX_MV_REVA)
-            healthFailed |= HLT_SENSE_ZERO
-    elseif (restZeroSenseMv < REST_ZERO_MIN_MV) or (restZeroSenseMv > REST_ZERO_MAX_MV)
+    if bSenseZeroOutOfBand() == TRUE
         healthFailed |= HLT_SENSE_ZERO
-    longfill(@nFollows, 0, 3)
-    longfill(@bDriven, FALSE, 3)
-    repeat ePhase from PRB_U to PRB_W
-        probe_phase := (ePhase == testProbeWithhold) ? PRB_NONE : ePhase        ' the driver's restBridge takes BR_PROBE on its next pass; a withheld phase stays undriven
-        waitms(PROBE_SETTLE_MS)
-        longfill(@nPhaseMv, 0, 3)
-        repeat nSample from 1 to PROBE_SAMPLES
-            nPhaseMv[0] += sense_u_mV
-            nPhaseMv[1] += sense_v_mV
-            nPhaseMv[2] += sense_w_mV
-            waitms(1)
-        repeat eOther from 0 to 2
-            nPhaseMv[eOther] /= PROBE_SAMPLES
-            probeMv[(ePhase - PRB_U) * 3 + eOther] := nPhaseMv[eOther]
-        bDriven[ePhase - PRB_U] := (nPhaseMv[ePhase - PRB_U] >= CONT_MIN_DRIVEN_MV)
-        repeat eOther from 0 to 2
-            if (eOther <> ePhase - PRB_U) and (nPhaseMv[eOther] * 100 >= nPhaseMv[ePhase - PRB_U] * CONT_FOLLOW_PCT) and (bDriven[ePhase - PRB_U] == TRUE)
-                nFollows[eOther]++
-    probe_phase := PRB_NONE                                                     ' restBridge restores the stop mode's bridge
-    if bWindProbe                                                               ' TEST USE (R19.4 1e): the winding pairs, same withheld phase
+    eWithheld := testProbeWithhold
+    if testProbeWithholdFirst <> PRB_NONE                                       ' TEST USE: the first attempt's own withheld phase
+        eWithheld := testProbeWithholdFirst
+    healthFailed |= probeLeads(eWithheld)
+    if bWindProbe                                                               ' TEST USE (R19.4 1e): the winding pairs, first attempt only
         measureWindings()
     bWindProbe := FALSE                                                         ' TEST USE: applies to one start only
-    testProbeWithhold := PRB_NONE                                               ' TEST USE: a withheld phase applies to one start only
-    waitms(PROBE_SETTLE_MS)
-    repeat eOther from 0 to 2
-        if (nFollows[eOther] == 0) or (bDriven[eOther] == FALSE)
-            healthFailed |= HLT_PHASE_U << eOther
-    debug[user.DBGCH_LIFECYCLE]("* start checks ", uhex_long(healthChecked), uhex_long(healthFailed), sdec_long(restZeroSenseMv), sdec_long_array(@probeMv, 9))
+    nEverFailed := healthFailed & START_CHECKS_REFUSE
+
+    ' R20.1: bounded retries of what still fails. A check that passes is never re-run, so it cannot fail again here.
+    repeat while ((healthFailed & START_CHECKS_REFUSE) <> 0) and (healthAttempts <= START_CHECK_RETRIES)
+        debug[user.DBGCH_LIFECYCLE]("* start checks: retry ", udec_long(healthAttempts), uhex_long(healthFailed))
+        nIllegal0 := hall_illegal
+        waitms(START_CHECK_RETRY_MS)                                            ' the gap a transient may pass in
+        healthAttempts++
+        if (healthFailed & HLT_HALLS) <> 0
+            if (bHallCodeLegal() == TRUE) and (hall_illegal == nIllegal0)       ' legal now, and no new illegal code in the gap
+                healthFailed &= !HLT_HALLS
+        if (healthFailed & HLT_SENSE_ZERO) <> 0
+            captureRestZero()                                                   ' nothing has driven the motor: a fresh rest zero
+            if bSenseZeroOutOfBand() == FALSE
+                healthFailed &= !HLT_SENSE_ZERO
+        if (healthFailed & HLT_PHASES) <> 0
+            nPhasesNow := probeLeads(testProbeWithhold)                         ' all three probes, re-judging only the failed bits
+            healthFailed &= (!HLT_PHASES) | nPhasesNow                          ' a phase bit stays failed only if it fails again
+
+    healthRecovered := nEverFailed & !healthFailed
+    testProbeWithhold := PRB_NONE                                               ' TEST USE: a withheld phase applies to one start only,
+    testProbeWithholdFirst := PRB_NONE                                          '  in every attempt (or the first only) of it
+    nStillFailed := healthFailed & START_CHECKS_REFUSE
+    debug[user.DBGCH_LIFECYCLE]("* start checks ", uhex_long(healthChecked), uhex_long(healthFailed), uhex_long(healthRecovered), udec_long(healthAttempts), sdec_long(restZeroSenseMv), sdec_long_array(@probeMv, 9))
 
 PUB checkWiring() : eError | nStartPos, nMidPos, nMissed0, nIllegal0, bLegsOk
 '' Move the wheel one electrical cycle forward and back (about 3.5 cm at the tyre on the 6.5in motor) to prove the hall
@@ -1217,6 +1376,7 @@ PUB startPackSense() | nPin
             packVioRaw := packRead(nPin)
             wrpin(nPin, P_ADC | P_ADC_1X)
             packAvgMv := packMvFromRaw(packRead(nPin)) << PACK_AVG_SHIFT
+            evLastPack := packStatusFor(packAvgMv >> PACK_AVG_SHIFT)            ' R20.1: EV_PACK reports changes from this, set before the front cog reads it
             bPackOwned := TRUE
             healthChecked |= HLT_PACK
             if (packAvgMv >> PACK_AVG_SHIFT) < PACK_ABSENT_MV
@@ -1241,25 +1401,26 @@ PUB getPackVoltage() : ePackStatus, nMilliVolts
     nMilliVolts := 0
     if bPackOwned == TRUE
         nMilliVolts := packAvgMv >> PACK_AVG_SHIFT
-        if nMilliVolts < PACK_ABSENT_MV
-            ePackStatus := PACK_ABSENT
+        ePackStatus := packStatusFor(nMilliVolts)
+        if ePackStatus <> PACK_PRESENT
             nMilliVolts := 0
-        else
-            ePackStatus := PACK_PRESENT
 
-PUB getHealth() : nChecked, nFailed
-'' Return what start() checked with the motor at rest, and which checks failed: HLT_* bits
+PUB getHealth() : nChecked, nFailed, nRecovered
+'' Return what start() checked with the motor at rest, which checks failed, and which failed at first and then passed: HLT_* bits
 ''
 '' HLT_HALLS (the hall sensors), HLT_SENSE_ZERO (the current sense), and HLT_PHASE_U, HLT_PHASE_V, HLT_PHASE_W (each
 '' motor lead connected and drivable). An open lead fails its own bit; no motor at all fails all three. Nothing moves
-'' during the checks. A motor that fails one still starts: what to do about it is the program's choice. HLT_WIRING
-'' joins them once checkWiring() has run.
+'' during the checks. A check that fails is retried, up to START_CHECK_RETRIES times; one still failing after that
+'' refuses the start (-1, ERR_START_CHECK_FAILED) unless setStartChecks(FALSE) was called, and these results stay
+'' readable after the refusal. HLT_WIRING joins them once checkWiring() has run, and HLT_PACK with the pack sensor.
 ''
 '' @returns nChecked - the HLT_* bits checked since start(); 0 before start()
 '' @returns nFailed - the HLT_* bits that failed; 0 when every check passed
+'' @returns nRecovered - the HLT_* bits that failed at least once and then passed on a retry (not in {nFailed}); 0 when none needed one
 
     nChecked := healthChecked
     nFailed := healthFailed
+    nRecovered := healthRecovered
 
 PUB testGetProbe(ePhase) : nUMv, nVMv, nWMv
 '' TEST USE: the three phase voltages start()'s lead check read while probing {ePhase} (R19.4)
@@ -1341,6 +1502,26 @@ PUB getHoldStatus() : eHoldState, nDisplacement
 
     eHoldState := holdState
     nDisplacement := holdDisp
+
+PUB getHoldLimits() : ceilingPct, riseMs, limitMs
+'' Return the limits of the hold at rest in effect, as setHoldLimits() set them (start() restores the defaults)
+''
+'' @returns ceilingPct - the hold's duty ceiling, % of the drive's full duty
+'' @returns riseMs - ms from the minimum duty to the ceiling while the wheel stays displaced
+'' @returns limitMs - ms at the ceiling before the hold hands off to the phase short
+
+    ceilingPct := holdCeilPct
+    riseMs := holdRiseMs
+    limitMs := holdLimitMs
+
+PUB getFaultResponse() : eMode, brakePct
+'' Return the response to a position fault in effect, as setFaultResponse() set it (start() restores the default)
+''
+'' @returns eMode - FR_SHIPPED or FR_GRADED
+'' @returns brakePct - the graded short's shorted time, % of each brake period
+
+    eMode := fault_mode
+    brakePct := faultBrakePct
 
 PUB getDriverState() : eDrvrState
 '' Return Enum [DCS_*] value representing state of driver
@@ -2272,7 +2453,8 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
 '' I_phase >= I_dc / (0.75 x m) with m = duty / (4 x frame_cnt) (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.4).
 '' Its ~1 s average above the continuous limit lowers the driver's fold-back to that limit, and the peak
 '' limit returns below I_RESTORE_PCT of it. A motor commanded to move that stays at the lag limit with
-'' no hall tick for BLOCKED_PASSES is blocked; the caller latches the protective stop. Records nothing.
+'' no hall tick for BLOCKED_PASSES is blocked; the caller latches the protective stop. Records no error; a derate's
+'' engage and release are logged as EV_CURRENT_LIMIT (R20.1).
 ''
 '' @returns bBlocked - T/F where T means this motor has been blocked for BLOCKED_PASSES
 
@@ -2290,9 +2472,11 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
         if (bDerated == FALSE) and (phaseAvgMa >= (limitContA * 1_000) << CURRENT_AVG_SHIFT)
             bDerated := TRUE
             i_limit_k := currentLimitK(limitContA)
+            frontQueueEvent(EV_CURRENT_LIMIT, limitContA)                       ' R20.1: the limit now in force, after it is written
         elseif (bDerated == TRUE) and (phaseAvgMa < (limitContA * 10 * I_RESTORE_PCT) << CURRENT_AVG_SHIFT)
             bDerated := FALSE
             i_limit_k := currentLimitK(limitPeakA)
+            frontQueueEvent(EV_CURRENT_LIMIT, limitPeakA)
 
     nowPos := pos
     if ((targetIncre & !SYNC_BIT) <> 0) and (abs(err) >= LAG_SOFT) and (nowPos == blockedPos) and ((drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED) or (drv_state == DCS_SPIN_DN))
@@ -2343,6 +2527,9 @@ PUB frontSetHoldLimits(ceilingPct, riseMs, limitMs)
 '' @param riseMs - ms from duty_min to the ceiling while the wheel stays displaced [1..HOLD_RISE_MS_MAX]
 '' @param limitMs - ms at the ceiling before the hold hands off to the phase short [1..HOLD_LIMIT_MS_MAX]
 
+    holdCeilPct := ceilingPct                                                   ' R20.1: as set, for getHoldLimits()
+    holdRiseMs := riseMs
+    holdLimitMs := limitMs
     holdCeilDuty := muldiv64(duty_max, ceilingPct, 100) #> duty_min
     holdRisePasses := muldiv64(riseMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1
     holdLimitPasses := muldiv64(limitMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1
@@ -2353,6 +2540,7 @@ PUB frontSetFaultResponse(eMode, brakePct)
 '' @param eMode - FR_SHIPPED or FR_GRADED
 '' @param brakePct - the graded short's shorted time, % of each brake period [0..100]; 100 is the full short, 0 a coast
 
+    faultBrakePct := brakePct                                                   ' R20.1: as set, for getFaultResponse()
     fault_mode := eMode
     brake_on := muldiv64(BRAKE_PERIOD_FRAMES, brakePct, 100)                  ' shorted frames per brake period
 
@@ -2372,6 +2560,100 @@ PUB bFrontFaultBegan() : bBegan
 '' @returns bBegan - T/F where T means a fault began on this pass
 
     bBegan := bFaultBegan
+
+PUB frontOpenDrive()
+'' FRONT COG ONLY: an accepted drive command opens a drive: getStopReason() reads SR_NONE until a stop ends it (R20.1)
+''
+'' Call it after the drive's command is written. A refused command must not call it.
+
+    stopReason := SR_NONE
+    bDriveOpen := TRUE
+    bResyncStopOpen := FALSE
+
+PUB frontRecordStop(eReason)
+'' FRONT COG ONLY: the one writer of getStopReason(): record why the open drive ended, and log it as EV_STOP (R20.1)
+''
+'' Call it after the stop's command is written, so no record delays a stop (D6). First cause wins: with no drive open
+'' it records nothing. The one exception is the escalation, which frontNoteFault() makes itself.
+''
+'' @param eReason - the SR_* that ended the drive
+
+    if bDriveOpen == TRUE
+        bDriveOpen := FALSE
+        stopReason := eReason
+        bResyncStopOpen := (eReason == SR_FAULT_CONTROLLED)                    ' a second fault before rest escalates it
+        frontQueueEvent(EV_STOP, eReason)
+
+PUB frontQueueEvent(eKind, nValue) | slotIdx
+'' FRONT COG ONLY: the one writer of the event log: queue one event for every reading cog (getEvent(), R20.1)
+''
+'' Never waits on a reader: a reader more than EV_QUEUE_DEPTH behind loses its own oldest events and is told so.
+''
+'' @param eKind - the EV_* kind
+'' @param nValue - the event's value, meaning per EV_*
+
+' Local Variables:
+' @local slotIdx - the ring slot this event is written to
+
+    slotIdx := evHead +// EV_RING_SLOTS
+    evKind[slotIdx] := eKind
+    evMs[slotIdx] := getms()
+    evVal[slotIdx] := nValue
+    if (eKind >= EV_STOP) and (eKind <= EV_FOLDBACK)
+        evTotal[eKind - EV_STOP]++
+    evHead++                                                                    ' LAST: publishes the slot written above
+
+PUB frontEventChecks(nowMs) | nNow, ePackNow
+'' FRONT COG ONLY: every WINDOW_PASSES passes, on the phase opposite the rpm window's slot pass -- queue the rate-limited
+'' and counted events: missed and illegal hall codes, the pack sensor's status, and the driver's current fold-back (R20.1)
+''
+'' Each rate-limited kind is queued at most once per EV_RATE_GAP_MS, and carries every count since its last event, so no
+'' count is dropped. The fold-back is reported on its engage (value 0), and again once it has been still for
+'' EV_RATE_GAP_MS (value: the frames it limited since the engage).
+''
+'' @param nowMs - getms() for this pass
+
+' Local Variables:
+' @local nNow - a driver count read once
+' @local ePackNow - the pack sensor's status now
+
+    nNow := hall_missed
+    if (nNow <> evLastMissed) and (nowMs - evMissedMs >= EV_RATE_GAP_MS)
+        frontQueueEvent(EV_HALL_MISSED, nNow - evLastMissed)
+        evLastMissed := nNow
+        evMissedMs := nowMs
+    nNow := hall_illegal
+    nNow := (nNow & HALL_ILL_WORD_MAX) + (nNow >> 16)                           ' the %000 and %111 words, summed
+    if (nNow <> evLastIllegal) and (nowMs - evIllegalMs >= EV_RATE_GAP_MS)
+        frontQueueEvent(EV_HALL_ILLEGAL, nNow - evLastIllegal)
+        evLastIllegal := nNow
+        evIllegalMs := nowMs
+    if bPackOwned == TRUE
+        ePackNow := packStatusFor(packAvgMv >> PACK_AVG_SHIFT)
+        if (ePackNow <> evLastPack) and (nowMs - evPackMs >= EV_RATE_GAP_MS)
+            frontQueueEvent(EV_PACK, ePackNow)
+            evLastPack := ePackNow
+            evPackMs := nowMs
+    nNow := foldback_frames
+    if nNow <> evLastFold
+        if bFoldActive == FALSE                                                 ' the engage edge
+            bFoldActive := TRUE
+            evFoldBase := evLastFold
+            frontQueueEvent(EV_FOLDBACK, 0)
+        evLastFold := nNow
+        evFoldMs := nowMs
+    elseif (bFoldActive == TRUE) and (nowMs - evFoldMs >= EV_RATE_GAP_MS)       ' still for the gap: released
+        bFoldActive := FALSE
+        frontQueueEvent(EV_FOLDBACK, nNow - evFoldBase)
+
+PUB frontNoteStartChecks()
+'' FRONT COG ONLY: once per start, after the start checks -- log EV_CHECK_RETRY when a check failed and then passed (R20.1)
+''
+'' The single motor's start() posts it (REQ_NOTE_START); an owner (isp_steering_2wheel) calls it from its front cog's entry,
+'' since its checks finished before that cog existed.
+
+    if healthRecovered <> 0
+        frontQueueEvent(EV_CHECK_RETRY, healthRecovered | (healthAttempts << EV_START_ATTEMPT_SHIFT))
 
 PUB frontHold() | nowPos
 '' FRONT COG ONLY: once per pass -- the hold at rest in SM_BRAKE (R19.1)
@@ -2407,6 +2689,7 @@ PUB frontHold() | nowPos
                 hold_short := TRUE
                 holdState := HS_SLIPPED
                 holdSlipEvents++
+                frontQueueEvent(EV_HOLD_SLIP, holdDisp)                         ' R20.1: after the hand-off is written
             else
                 if holdDisp <> 0                                                ' the duty follows the displaced passes, so the
                     holdDispPasses := (holdDispPasses + 1) <# holdRisePasses    '  ceiling comes after exactly riseMs displaced
@@ -2417,6 +2700,7 @@ PUB frontHold() | nowPos
                     hold_short := TRUE
                     holdState := HS_LIMITED
                     holdLimitEvents++
+                    frontQueueEvent(EV_HOLD_LIMIT, hold_duty)                   ' R20.1: after the hand-off is written
 
 PUB frontArmWalkGuard()
 '' FRONT COG ONLY: arm the current guard for the walk leg just commanded (REQ_WALK, PL-122)
@@ -2443,6 +2727,7 @@ PUB frontWalkGuard() | nNetMv
         if nNetMv >= WALK_I_LIMIT_MV
             frontEStop(TRUE)                                                    ' disarms the guard (frontCommand())
             bWalkTripped := TRUE                                                '  after the e-stop, which would clear it
+            frontQueueEvent(EV_WALK_GUARD, nNetMv)                              ' R20.1: after the short is written
             debug[user.DBGCH_FAULT]("-MOT- wiring walk: current ", sdec_long(nNetMv), " mV over the guard, leg shorted")
 
 PUB isWalkGuardTripped() : bTripped
@@ -2620,6 +2905,114 @@ PUB getposTrkHallTicks() : retv
 
     retv := posTrkHallTicks
 
+PRI readEvent(bAdvance) : eKind, nMs, nValue | cogIdx, nCursor, nHead, nLag, slotIdx
+' Read the calling cog's next event from the log (getEvent(), peekEvent()), advancing its cursor only when asked.
+'
+' Each cog's cursor has one writer, this cog; the ring and its head one writer, the front cog (as getError()'s
+' cmdTimeoutSeen). The ring holds EV_QUEUE_DEPTH + 1 slots, and the front cog writes a slot before it publishes the
+' head, so the slot it may be rewriting is never one a cog within EV_QUEUE_DEPTH of the head is copying: a copy
+' followed by a head still within EV_QUEUE_DEPTH was whole.
+'
+' @param bAdvance - T/F where T moves this cog's cursor past what is returned (getEvent()), F leaves it (peekEvent())
+' @returns eKind - the EV_* kind; EV_NONE when nothing is unread, EV_LOST when events were lost before the next one
+' @returns nMs - getms() when the event was queued (for EV_LOST, getms() now); 0 for EV_NONE
+' @returns nValue - the event's value, meaning per EV_* (for EV_LOST, how many were lost); 0 for EV_NONE
+
+' Local Variables:
+' @local cogIdx - this cog's id, the index of its own cursor
+' @local nCursor - the next sequence this cog reads
+' @local nHead - the front cog's published head, read once per step
+' @local nLag - events queued that this cog has not read
+' @local slotIdx - the ring slot of {nCursor}
+
+    cogIdx := COGID()
+    if evCursorEpoch[cogIdx] <> evEpoch                                        ' a cursor from an earlier start() is dropped
+        evCursor[cogIdx] := 0
+        evCursorEpoch[cogIdx] := evEpoch
+    eKind := EV_NONE
+    nMs := 0
+    nValue := 0
+    nCursor := evCursor[cogIdx]
+    nHead := evHead
+    nLag := nHead - nCursor
+    if nLag < 0                                                                 ' only if read across a start(): read from the start
+        nCursor := 0
+        nLag := nHead
+    if (nLag > 0) and (nLag <= EV_QUEUE_DEPTH)
+        slotIdx := nCursor +// EV_RING_SLOTS
+        eKind := evKind[slotIdx]
+        nMs := evMs[slotIdx]
+        nValue := evVal[slotIdx]
+        nHead := evHead                                                         ' again: did the front cog lap the copy?
+        nLag := nHead - nCursor
+        if (nLag <= EV_QUEUE_DEPTH) and (bAdvance == TRUE)
+            evCursor[cogIdx] := nCursor + 1
+    if nLag > EV_QUEUE_DEPTH                                                    ' fell behind (or lapped during the copy)
+        eKind := EV_LOST
+        nMs := getms()
+        nValue := nLag - EV_QUEUE_DEPTH
+        if bAdvance == TRUE
+            evCursor[cogIdx] := nHead - EV_QUEUE_DEPTH                          ' the oldest event still retained is read next
+
+PRI probeLeads(eWithheld) : nPhasesFailed | ePhase, eOther, nSample, nPhaseMv[3], nFollows[3], bDriven[3]
+' The start checks' lead probe (R19.4): drive each phase in turn at 50 % with the other two off, and judge each lead.
+'
+' Called only from runStartChecks(), at rest and before any drive request, so the probe longs have one writer. Leaves
+' probe_phase at PRB_NONE and the bridge settled. Records each probe's readings in probeMv (testGetProbe()).
+'
+' @param eWithheld - PRB_U, PRB_V or PRB_W to leave undriven (TEST-USE), or PRB_NONE
+' @returns nPhasesFailed - the HLT_PHASE_* bits of the leads that followed no other phase or could not be driven
+
+' Local Variables:
+' @local ePhase - the phase being probed, PRB_U..PRB_W
+' @local eOther - a phase index 0..2 while reading or judging
+' @local nSample - the reading loop counter
+' @local nPhaseMv - this probe's averaged U, V and W readings, mV
+' @local nFollows - per phase, the probes in which it followed the driven phase
+' @local bDriven - per phase, T/F where T means it read at least CONT_MIN_DRIVEN_MV when it was the one driven
+
+    nPhasesFailed := 0
+    longfill(@nFollows, 0, 3)
+    longfill(@bDriven, FALSE, 3)
+    repeat ePhase from PRB_U to PRB_W
+        probe_phase := (ePhase == eWithheld) ? PRB_NONE : ePhase                ' the driver's restBridge takes BR_PROBE on its next pass; a withheld phase stays undriven
+        waitms(PROBE_SETTLE_MS)
+        longfill(@nPhaseMv, 0, 3)
+        repeat nSample from 1 to PROBE_SAMPLES
+            nPhaseMv[0] += sense_u_mV
+            nPhaseMv[1] += sense_v_mV
+            nPhaseMv[2] += sense_w_mV
+            waitms(1)
+        repeat eOther from 0 to 2
+            nPhaseMv[eOther] /= PROBE_SAMPLES
+            probeMv[(ePhase - PRB_U) * 3 + eOther] := nPhaseMv[eOther]
+        bDriven[ePhase - PRB_U] := (nPhaseMv[ePhase - PRB_U] >= CONT_MIN_DRIVEN_MV)
+        repeat eOther from 0 to 2
+            if (eOther <> ePhase - PRB_U) and (nPhaseMv[eOther] * 100 >= nPhaseMv[ePhase - PRB_U] * CONT_FOLLOW_PCT) and (bDriven[ePhase - PRB_U] == TRUE)
+                nFollows[eOther]++
+    probe_phase := PRB_NONE                                                     ' restBridge restores the stop mode's bridge
+    waitms(PROBE_SETTLE_MS)
+    repeat eOther from 0 to 2
+        if (nFollows[eOther] == 0) or (bDriven[eOther] == FALSE)
+            nPhasesFailed |= HLT_PHASE_U << eOther
+
+PRI bSenseZeroOutOfBand() : bOut
+' Return TRUE when the current sense's rest zero lies outside this board revision's band (HLT_SENSE_ZERO fails).
+'
+' @returns bOut - T/F where T means restZeroSenseMv is outside the band
+
+    if eDetectedBoard == REV_A
+        bOut := (restZeroSenseMv < REST_ZERO_MIN_MV_REVA) or (restZeroSenseMv > REST_ZERO_MAX_MV_REVA)
+    else
+        bOut := (restZeroSenseMv < REST_ZERO_MIN_MV) or (restZeroSenseMv > REST_ZERO_MAX_MV)
+
+PRI bHallCodeLegal() : bLegal
+' Return TRUE when the hall code the driver last read is legal, neither %000 nor %111.
+'
+' @returns bLegal - T/F where F means a hall sensor reads dead, unpowered, disconnected or stuck high
+
+    bLegal := ((hall & %111) <> %000) and ((hall & %111) <> %111)
+
 PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTaken, nStill, nPos, bTripped, nVoltMv, nLimitMv, nMinMv
 ' TEST USE (R19.4 1e, task 3610): drive each winding pair at WIND_DUTY_PCT and record its resistance (testGetWinding())
 '
@@ -2751,6 +3144,14 @@ PRI packRead(nPin) : nRaw | nSample
         waitct(getct() + PACK_SAMPLE_CLOCKS)
         nRaw += rdpin(nPin)
     nRaw /= PACK_CAL_SAMPLES
+
+PRI packStatusFor(nPackMv) : ePackStatus
+' Return the pack sensor's status for an averaged reading: the one threshold getPackVoltage() and EV_PACK both use.
+'
+' @param nPackMv - the averaged pack voltage, mV
+' @returns ePackStatus - PACK_ABSENT under PACK_ABSENT_MV, else PACK_PRESENT
+
+    ePackStatus := (nPackMv < PACK_ABSENT_MV) ? PACK_ABSENT : PACK_PRESENT
 
 PRI packMvFromRaw(nRaw) : nPackMv
 ' Return the pack voltage for one pin reading: ratiometric against GIO and VIO, through the divider, calibrated.
@@ -3173,6 +3574,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     bWasFaulted := FALSE
     faultIllegalPrev := 0                                                   ' the driver zeroes its counts at start too
     fault_resyncs := 0                                                      ' R19.3: the hub copy, and the front cog's view of it
+    foldback_frames := 0                                                    ' R20.1: likewise the fold-back count, which the driver zeroes too
     faultResyncsPrev := 0
     faultResyncEvents := 0
     bFaultBegan := FALSE
@@ -3192,6 +3594,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     fault_clr := 0                                                          ' task 3616: and its fault_clr_seen
     healthChecked := 0
     healthFailed := 0
+    healthRecovered := 0                                                    ' R20.1: bStartChecksOptOut is kept: it is set before start()
+    healthAttempts := 0
     longfill(@probeMv, 0, 9)
     walkFwdTicks := 0
     bWalkGuardArmed := bWalkTripped := FALSE                                    ' PL-122: no walk leg under guard
@@ -3206,6 +3610,21 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     holdSlipEvents := 0
     holdLimitEvents := 0
     frontSetHoldLimits(HOLD_CEILING_PCT, HOLD_RISE_MS, HOLD_LIMIT_MS)             ' before the front cog exists, so no race
+    ' R20.1: no drive has ended, and the event log is empty. A new epoch makes every reader cog drop its old cursor.
+    stopReason := SR_NONE
+    bDriveOpen := FALSE
+    bResyncStopOpen := FALSE
+    evHead := 0
+    evEpoch++
+    longfill(@evTotal, 0, EV_KINDS_COUNTED)
+    evLastMissed := 0                                                       ' the driver's counts restart at 0 with it
+    evLastIllegal := 0
+    evLastLate := 0                                                         ' launchFront() zeroes frontLatePasses
+    evLastPack := PACK_NOT_FITTED                                           ' startPackSense() sets the status it starts with
+    evLastFold := 0
+    evFoldBase := 0
+    bFoldActive := FALSE
+    evMissedMs := evIllegalMs := evLateMs := evPackMs := evFoldMs := getms() - EV_RATE_GAP_MS    ' the first of each may go at once
 
 
 VAR { * user request values * }
@@ -3757,7 +4176,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@frontMaxPassTicks, @frontMaxPassTicks)
     bValid &= bOutsideDriverRuns(@trackBasePos, @trackBasePos)
     bValid &= bOutsideDriverRuns(@bStopUnconfirmed, @bStopUnconfirmed)
-    bValid &= bOutsideDriverRuns(@protectiveCode, @cmdTimeoutSeen[COG_SLOT_COUNT - 1])
+    bValid &= bOutsideDriverRuns(@protectiveCode, @holdLimitMs)                   ' R20.1: the run now ends at holdLimitMs
     bValid &= bOutsideDriverRuns(@taskStack[0], @taskStack[STACK_SIZE_LONGS - 1])
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     bValid &= bOutsideDriverRuns(@bWindProbe, @windNetMv[2])
@@ -3979,13 +4398,15 @@ CON { front cog requests }
     '  REQ_CLEAR_PROTECT  - release a protective stop: clear the cause, then as REQ_CLEAR_ESTOP
     '  REQ_SET_LIMITS     - arg1 peak amps, arg2 continuous amps: replace the current limits (TEST-USE)
     '  REQ_SET_TIMEOUT    - arg1 ms, or CMD_TIMEOUT_OFF: set the command timeout and restart its clock (S-8)
-    '  REQ_SET_HOLD       - arg1 ceiling %, arg2 rise ms, arg3 limit ms: replace the hold's limits (TEST-USE, R19.1)
-    '  REQ_SET_FAULT      - arg1 FR_* mode, arg2 brake %: choose the response to a position fault (TEST-USE, R19.3)
+    '  REQ_SET_HOLD       - arg1 ceiling %, arg2 rise ms, arg3 limit ms: replace the hold's limits (setHoldLimits(), R19.1)
+    '  REQ_SET_FAULT      - arg1 FR_* mode, arg2 brake %: choose the response to a position fault (setFaultResponse(), R19.3)
     '  REQ_FORCE_FAULT    - fault the driver on its next driven frame, as if the rotor had lost the field (TEST-USE, R19.3)
     '  REQ_WALK           - arg1 stop ticks, arg2 power (isp_steering_2wheel: arg2 left, arg3 right power, both
     '                       synchronized): a checkWiring() leg, a signed distance move under the current guard (R19.4, PL-122)
     '  REQ_EXIT           - answer every open request, acknowledge, and park (stop())
-    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_SET_HOLD, REQ_SET_FAULT, REQ_FORCE_FAULT, REQ_WALK, REQ_EXIT
+    '  REQ_NOTE_START     - log the start checks' retries (EV_CHECK_RETRY) once start() has succeeded (R20.1); appended
+    '                       after REQ_EXIT so no code moves
+    #1, REQ_ESTOP, REQ_STOP, REQ_CLEAR_ESTOP, REQ_DRIVE, REQ_DRIVE_DISTANCE, REQ_LIMIT_TICKS, REQ_LIMIT_TIME, REQ_RESET_TRACKING, REQ_RESET_MAX, REQ_TEST_INCREMENT, REQ_CLEAR_PROTECT, REQ_SET_LIMITS, REQ_SET_TIMEOUT, REQ_SET_HOLD, REQ_SET_FAULT, REQ_FORCE_FAULT, REQ_WALK, REQ_EXIT, REQ_NOTE_START
 
     ' The order a pass applies requests in, by class:
     '  REQ_CLASS_ESTOP - REQ_ESTOP, first, so an e-stop posted with a drive in the same pass refuses the drive
@@ -4173,14 +4594,21 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         frontTrack(passCount)
         frontWalkGuard()                                                        ' PL-122: a walk leg's current, checked every pass
         nowMs := getms()
+        ' R20.1: each stop's record follows its command write (D6)
         if bFrontLimitsDue(nowMs) == TRUE
             frontZeroPower()                                                    ' PL-52: a distance/time stop clears getPower() too
+            frontRecordStop(SR_AT_LIMIT)
         if bFrontCommandTimedOut(nowMs) == TRUE
             frontZeroPower()                                                    ' S-8: stopped as stopMotor() stops, so holdAtStop() applies
+            frontRecordStop(SR_LINK_LOST)
         if bFrontProtect() == TRUE                                               ' S-2: current derate; a blocked motor latches a protective stop
             frontProtectiveStop(ERR_PLATFORM_BLOCKED)
+            frontRecordStop(SR_BLOCKED)
         frontHold()                                                             ' R19.1: the hold at rest, after this pass's stops
         frontSamplePack()                                                       ' R19.5: the pack voltage, when fitted
+        if (passCount +// WINDOW_PASSES) == WINDOW_PASSES / 2                    ' R20.1: opposite the rpm window's slot pass
+            frontEventChecks(nowMs)
+            frontLateCheck(nowMs)
         LALOOPEND()                                                             ' let LA know end of loop
 
         ' 4. accounting, then the absolute schedule
@@ -4346,13 +4774,16 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
 
     eStatus := NO_ERROR
     bDidWait := FALSE
+    ' R20.1: every record (frontOpenDrive(), frontRecordStop()) follows the command its path writes (D6)
     case eCmd
         REQ_ESTOP:
             bCmdWatched := FALSE                                                ' S-8: no open-ended drive to watch
             frontEStop(TRUE)
+            frontRecordStop(SR_EMERGENCY)                                       ' here, not in frontEStop(): the walk guard uses that too
         REQ_STOP:
             bCmdWatched := FALSE
             frontStopCommanded()                                                ' PL-52: clears getPower() too; task 3616: and a fault
+            frontRecordStop(SR_COMMANDED)
         REQ_CLEAR_ESTOP:
             eStatus := protectiveCode                                           ' a protective stop is released only by its own clear
             if eStatus == NO_ERROR
@@ -4375,6 +4806,7 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
         REQ_DRIVE:
             eStatus, bDidWait := frontDriveAndSync(nArg1, nArg3 <> FALSE)
             frontWatchCommand((eStatus == NO_ERROR) and (nArg1 <> 0))
+            frontNoteDriveCommand(eStatus, nArg1)
         REQ_DRIVE_DISTANCE:
             ' atomic: the limit is armed and the motor driven, or neither (I1 item 2)
             bCmdWatched := FALSE                                                ' S-8: a bounded move is not watched
@@ -4382,6 +4814,7 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             if eStatus == NO_ERROR
                 frontSetLimits(nArg1, motorStopMSecs)                           ' the time limit is kept, as before
                 eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
+                frontNoteDriveCommand(eStatus, nArg2)
         REQ_WALK:
             ' PL-122: a checkWiring() leg: as REQ_DRIVE_DISTANCE from a zeroed tracking, then under the current guard
             bCmdWatched := FALSE
@@ -4394,6 +4827,8 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
                     frontArmWalkGuard()
                 else
                     frontSetLimits(0, 0)                                        ' not driven: no limit stays armed either
+                ' R20.1: a walk leg opens no drive; one left open is ended by the program's own call, checkWiring()
+                frontRecordStop(SR_COMMANDED)
         REQ_LIMIT_TICKS:
             frontSetLimits(nArg1, motorStopMSecs)
         REQ_LIMIT_TIME:
@@ -4407,6 +4842,38 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             if eStatus == NO_ERROR
                 frontWriteIncrement(nArg1, FALSE)
             frontWatchCommand((eStatus == NO_ERROR) and (nArg1 <> 0))
+            frontNoteDriveCommand(eStatus, nArg1)
+        REQ_NOTE_START:
+            frontNoteStartChecks()                                              ' R20.1: EV_CHECK_RETRY, from the only writer of the log
+
+PRI frontNoteDriveCommand(eStatus, nPowerOrIncre)
+' FRONT COG: after a drive command's apply, open the drive it started or record the stop it made (R20.1).
+'
+' An accepted non-zero command opens a drive; an accepted zero ends the open one SR_COMMANDED. A command the driver did
+' not take (ERR_SYNC_TIMEOUT), or a fault that did not clear (ERR_NO_RESPONSE), leaves the motor zeroed: the program's
+' call ended the open drive, SR_COMMANDED. A refused command (protective or emergency stop) wrote nothing and records nothing.
+'
+' @param eStatus - the apply's status
+' @param nPowerOrIncre - the command's power, or its raw increment; 0 is a stop
+
+    if eStatus == NO_ERROR
+        if nPowerOrIncre <> 0
+            frontOpenDrive()
+        else
+            frontRecordStop(SR_COMMANDED)
+    elseif (eStatus == ERR_SYNC_TIMEOUT) or (eStatus == ERR_NO_RESPONSE)
+        frontRecordStop(SR_COMMANDED)
+
+PRI frontLateCheck(nowMs)
+' FRONT COG: every WINDOW_PASSES passes -- log this front cog's late passes as EV_LATE_PASS, at most once per
+' EV_RATE_GAP_MS, each event carrying every late pass since the last (R20.1).
+'
+' @param nowMs - getms() for this pass
+
+    if (frontLatePasses <> evLastLate) and (nowMs - evLateMs >= EV_RATE_GAP_MS)
+        frontQueueEvent(EV_LATE_PASS, frontLatePasses - evLastLate)
+        evLastLate := frontLatePasses
+        evLateMs := nowMs
 
 PRI frontWatchCommand(bOpenEnded)
 ' FRONT COG: record an applied drive command for the command timeout (S-8): watched while it is open-ended motion.
@@ -4578,6 +5045,8 @@ PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode, nResyncsNow
 ' %000 or %111, or entered one since the previous pass, else FC_LAG. The front cog is the cause's only writer.
 ' R19.3: a fault the driver answered with a re-sync (FR_GRADED, halls legal) is FC_LAG too, and this pass writes the
 ' stop that re-sync is waiting for. Either kind raises bFaultBegan for this pass (bFrontFaultBegan()).
+' R20.1: a re-sync ends the open drive SR_FAULT_CONTROLLED (EV_FAULT_RESYNC, EV_STOP); a latched fault ends it
+' SR_FAULT_LOST (EV_FAULT, EV_STOP), and escalates an SR_FAULT_CONTROLLED whose stop has not yet reached rest.
 '
 ' @param eDrvState - the driver state read once for this pass
 
@@ -4597,6 +5066,8 @@ PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode, nResyncsNow
         bCmdWatched := FALSE                                                    ' S-8: nothing open-ended is left to watch
         frontSetLimits(0, 0)                                                    ' a distance or time limit ends with the stop
         frontZeroPower()
+        frontQueueEvent(EV_FAULT_RESYNC, FC_LAG)                                ' R20.1: recorded after the stop is written (D6)
+        frontRecordStop(SR_FAULT_CONTROLLED)
         debug[user.DBGCH_FAULT]("-MOT- fault: re-synced from the halls, stopping under control")
     faultResyncsPrev := nResyncsNow
     nIllegalNow := hall_illegal
@@ -4609,6 +5080,18 @@ PRI frontNoteFault(eDrvState) | nIllegalNow, nHallCode, nResyncsNow
             faultCause := FC_HALL
         else
             faultCause := FC_LAG
+        ' R20.1: the driver has already taken the fault's bridge, so nothing here delays it
+        frontQueueEvent(EV_FAULT, faultCause)
+        if (bDriveOpen == FALSE) and (bResyncStopOpen == TRUE) and (stopReason == SR_FAULT_CONTROLLED)
+            ' the one exception to first-wins: a fault latched on the re-synced stop means control was lost
+            stopReason := SR_FAULT_LOST
+            bResyncStopOpen := FALSE
+            frontQueueEvent(EV_STOP, SR_FAULT_LOST)
+        else
+            frontRecordStop(SR_FAULT_LOST)
+    if bResyncStopOpen == TRUE                                                  ' one test a pass unless a re-synced stop is under way
+        if eDrvState == DCS_STOPPED
+            bResyncStopOpen := FALSE                                            ' the re-synced stop reached rest: no longer escalates
     bWasFaulted := (eDrvState == DCS_FAULTED)
     faultIllegalPrev := nIllegalNow
 
@@ -4923,12 +5406,8 @@ CON { driver internal Constants }
     ' TEST USE (task 3613): which two hall-code bits testSetHallSwap() makes the driver read as swapped
     #0, HSW_NONE, HSW_HALLS_01, HSW_HALLS_12, HSW_HALLS_02
 
-    ' R19.3 (task 3609): the response to a position fault (|err| >= 125 while driven), testSetFaultResponse()
-    '  FR_SHIPPED - the bridge takes the stop mode's fault state at once: SM_FLOAT coasts, SM_BRAKE shorts
-    '  FR_GRADED  - with the halls legal, the first fault re-seeds the field from the halls and ramps to a
-    '               stop under control; otherwise (halls lost, or a second fault on that ramp) SM_BRAKE takes
-    '               the graded short BR_BRAKE and SM_FLOAT coasts
-    #0, FR_SHIPPED, FR_GRADED
+    ' R19.3 (task 3609): the response to a position fault (|err| >= 125 while driven), setFaultResponse(); the FR_*
+    '  enum is in the public constants (R20.1), its values unchanged: the PASM compares #FR_GRADED
     FAULT_RESPONSE_DEFAULT      = FR_SHIPPED    ' the shipped response until Visit 10 prices the graded one (P5)
     BRAKE_PCT_DEFAULT           = 10            ' BR_BRAKE's shorted time, % of each brake period. SIZED at Visit 10 (left, 80 x 10^6,
                                             '  second fault to rest): coast 518 ms / 52 ticks, 10 % 282 / 22, 25 % 84 / 7, 50 % 16 / 2,
@@ -4964,13 +5443,13 @@ CON { driver internal Constants }
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
-    DRVR_STATUS_LONGS_COUNT     = 20
+    DRVR_STATUS_LONGS_COUNT     = 21        ' drive_u .. foldback_frames (R20.1 added foldback_frames), then fault
     DRVR_PARAMS_LONGS_COUNT     = 25
 
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 22        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 23        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4991,6 +5470,8 @@ CON { driver internal Constants }
                                             ' 20: a protective stop takes the stop mode's state at once (SM_FLOAT coasts); only an e-stop always shorts (PL-132)
                                             ' 21: TEST-USE winding check at start: probe_sink/probe_y (params run 25 longs), testGetWinding() (task 3610)
                                             ' 22: BRAKE_PCT_DEFAULT sized to 10 from Visit 10's graded chain (task 3613)
+                                            ' 23: R20.1 -- the fold-back counter (status run 21 longs, foldback_frames), stop reasons,
+                                            '     the event log, start() refuses a check still failing after its retries (task 3621)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -5015,14 +5496,13 @@ CON { driver internal Constants }
     ' R19.1 (task 3608): the hold at rest in SM_BRAKE. The field stays at the stop angle, a spring whose restoring
     '  torque grows with the rotor's displacement; the front cog raises the duty while the hall position is off
     '  the hold position, up to a ceiling, and falls back to the phase short on a slip or after the time limit.
-    '  PROVISIONAL values, each settable (testSetHoldLimits()); Visit 10 and the floor run size them.
+    '  PROVISIONAL values, each settable (setHoldLimits(); its maxima are public), and SIZED UNLOADED (wheels up):
+    '  the floor run (R19.8) sizes them under a load.
     HOLD_CEILING_PCT            = 10        ' the hold's duty ceiling, % of duty_max
     HOLD_RISE_MS                = 250       ' ms from duty_min to the ceiling while the wheel stays displaced
     HOLD_SLIP_TICKS             = 2         ' hall ticks off the hold position that count as a slip: 120 deg electrical,
                                             '  a physical margin below the pole slip (the driver's fault test trips near 3)
     HOLD_LIMIT_MS               = 10_000    ' ms at the ceiling before the hold hands off to the phase short
-    HOLD_LIMIT_MS_MAX           = 600_000   ' the longest time limit testSetHoldLimits() accepts, 10 minutes
-    HOLD_RISE_MS_MAX            = 10_000    ' the slowest rise testSetHoldLimits() accepts
     ' R19.4 (task 3610): the start-time checks (runStartChecks()). PROVISIONAL bands; Visit 10's B-2 and B-3 size them.
     REST_ZERO_MIN_MV            = -20       ' Rev B: the current sense's rest zero must lie in this band; a dead or railed
     REST_ZERO_MAX_MV            = 40        '  channel falls outside it. Visit 10 pass 2 MEASURED 40 starts per board: left
@@ -5031,6 +5511,20 @@ CON { driver internal Constants }
     REST_ZERO_MAX_MV_REVA       = 200       '  measured, so the band stays wide until one is
     PROBE_SETTLE_MS             = 5         ' ms the probe holds a phase before its readings are taken
     PROBE_SAMPLES               = 4         ' readings averaged per probe, 1 ms apart
+    ' R20.1 (task 3621): start() re-checks a failed check before it refuses (setStartChecks()). A retry re-runs only the
+    '  refusing checks still failing, in the same driver lifetime: the three lead probes (~40 ms), the hall code with no
+    '  new illegal code during the gap, and the rest zero re-captured (~1 s). Worst added time, only on a failure:
+    '  START_CHECK_RETRIES x (START_CHECK_RETRY_MS + 1_000 + 40) ms, about 3.9 s per motor.
+    START_CHECKS_REFUSE         = HLT_ALL_CHECKS    ' the checks whose failure refuses the start; not HLT_WIRING, not HLT_PACK
+    HLT_PHASES                  = HLT_PHASE_U | HLT_PHASE_V | HLT_PHASE_W       ' the three bits one probe of the leads judges
+    START_CHECK_RETRIES         = 3         ' PROVISIONAL (Stephen, "provisional 3"): up to 4 attempts; the bench sizes it
+    START_CHECK_RETRY_MS        = 250       ' PROVISIONAL: the gap before each retry, so a transient can pass
+    ' R20.1 (task 3621): the soft-event log (getEvent()). A ring of EV_QUEUE_DEPTH + 1 slots: the one slot the front cog
+    '  may be rewriting is never one a reader within EV_QUEUE_DEPTH of the head can be copying, so a torn copy is detected.
+    EV_RING_SLOTS               = EV_QUEUE_DEPTH + 1
+    EV_KINDS_COUNTED            = EV_FOLDBACK - EV_STOP + 1     ' getEventTotal(): EV_STOP .. EV_FOLDBACK; EV_NONE and EV_LOST have none
+    EV_RATE_GAP_MS              = 1_000     ' PROVISIONAL: the least gap between two rate-limited events of one kind, ms
+    EV_START_ATTEMPT_SHIFT      = 8         ' EV_CHECK_RETRY's value: the recovered HLT_* bits | attempts << this
     ' R19.4 1e (task 3610), TEST-USE: the winding check (testSetWindingProbe()). One phase switches at WIND_DUTY_PCT with
     '  the next phase's low side ON, so a steady current I flows through that pair and returns through the DC-link
     '  shunt for the high side's on-time. The shunt's frame average is then I_dc = d x I and I = d x V / R, so
@@ -5124,7 +5618,7 @@ VAR { * Data Structure for PASM Driver * }
 
     ' -------------------------------------
     ' VALUES copied from driver each cycle
-    ' 20 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 21st, "fault" also from driver but only when happens
+    ' 21 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 22nd, "fault" also from driver but only when happens
     '
     ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
@@ -5145,6 +5639,7 @@ VAR { * Data Structure for PASM Driver * }
     LONG    lag_held                            ' 1 sequential long     passes where the limiter withheld the field advance
     LONG    duty_capped                         ' 1 sequential long     passes where the duty demand exceeded the cap
     LONG    fault_resyncs                       ' 1 sequential long     R19.3: faults answered by a re-sync and a controlled stop since driver start, unbounded
+    LONG    foldback_frames                     ' 1 sequential long     R20.1: frames the per-frame current fold-back lowered the duty since driver start, unbounded
     ' \ ----------------------------
     LONG    fault                               ' 1 sequential long     written TRUE ($FFFF_FFFF) on every fault, re-synced or not; see faultResponse
 
@@ -5298,6 +5793,41 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    holdSlipEvents              ' holds ended by a slip since start, unbounded
     LONG    holdLimitEvents             ' holds ended by the time limit since start, unbounded
     LONG    cmdTimeoutSeen[COG_SLOT_COUNT]  ' per calling cog, written only by that cog's getError(): timeouts it has been told of
+    ' R20.1 (task 3621): stop reasons (getStopReason()). Front-written (frontRecordStop(), frontOpenDrive()); init() before start
+    LONG    stopReason                  ' SR_* of the last drive that ended; SR_NONE while one is open, or since start()
+    LONG    bDriveOpen                  ' T/F where T means an accepted drive command has not yet been ended by a stop
+    LONG    bResyncStopOpen             ' T/F where T means the last drive ended SR_FAULT_CONTROLLED and has not reached rest
+    ' R20.1: the soft-event log (getEvent()). The ring, its head and the totals are front-written; init() empties them
+    LONG    evKind[EV_RING_SLOTS]       ' EV_* per slot; slot = sequence +// EV_RING_SLOTS
+    LONG    evMs[EV_RING_SLOTS]         ' getms() when queued
+    LONG    evVal[EV_RING_SLOTS]        ' the event's value, meaning per EV_*
+    LONG    evHead                      ' events queued this lifetime; written LAST in each queue (the publish)
+    LONG    evEpoch                     ' this lifetime's number, advanced by init(), so a reader drops a cursor from an earlier one
+    LONG    evTotal[EV_KINDS_COUNTED]   ' per kind, EV_STOP .. EV_FOLDBACK: events queued this lifetime; never lost
+    LONG    evCursor[COG_SLOT_COUNT]    ' per reading cog, written only by that cog's getEvent(): the next sequence it reads
+    LONG    evCursorEpoch[COG_SLOT_COUNT]   ' per reading cog, likewise: the evEpoch its cursor belongs to
+    LONG    evLastMissed                ' front-written: hall_missed as last reported by EV_HALL_MISSED
+    LONG    evMissedMs                  ' front-written: getms() of the last EV_HALL_MISSED
+    LONG    evLastIllegal               ' front-written: hall_illegal's two words summed, as last reported by EV_HALL_ILLEGAL
+    LONG    evIllegalMs                 ' front-written: getms() of the last EV_HALL_ILLEGAL
+    LONG    evLastLate                  ' front-written: frontLatePasses as last reported by EV_LATE_PASS
+    LONG    evLateMs                    ' front-written: getms() of the last EV_LATE_PASS
+    LONG    evLastPack                  ' front-written (startPackSense() before it reads): the PACK_* last reported
+    LONG    evPackMs                    ' front-written: getms() of the last EV_PACK
+    LONG    evLastFold                  ' front-written: foldback_frames as last read
+    LONG    evFoldBase                  ' front-written: foldback_frames before the engage now reported
+    LONG    evFoldMs                    ' front-written: getms() when the fold-back count last grew
+    LONG    bFoldActive                 ' front-written: T/F where T means an EV_FOLDBACK engage awaits its release
+    ' R20.1: start() refusal and retries (runStartChecks(), setStartChecks())
+    LONG    healthRecovered             ' HLT_* refusing bits that failed in an attempt and passed in the last; written only by runStartChecks()
+    LONG    healthAttempts              ' attempts the last runStartChecks() made, 1 .. START_CHECK_RETRIES + 1
+    LONG    bStartChecksOptOut          ' T/F where T means start() does not refuse (setStartChecks(FALSE)); NOT reset by init()
+    LONG    testProbeWithholdFirst      ' TEST-USE: PRB_* the next runStartChecks() leaves undriven in its FIRST attempt only
+    ' R20.1: the fault response and the hold limits as set (front-written by their front* setters; init() before start)
+    LONG    faultBrakePct               ' the graded short's %, as set (brake_on holds frames)
+    LONG    holdCeilPct                 ' the hold's ceiling, % of duty_max, as set
+    LONG    holdRiseMs                  ' the hold's rise, ms, as set
+    LONG    holdLimitMs                 ' the hold's time limit, ms, as set
 
 DAT  {  Motor DRIVER  }
 '
@@ -5830,6 +6360,9 @@ drvMotor                                                ' global (task 3535): en
     if_nc       mov     tmpY, duty_                     ' YES: fold back ~1.6 % per frame, and skip the servo this frame
     if_nc       shr     tmpY, #6
     if_nc       sub     duty_, tmpY
+    if_nc       add     foldback_cnt_, #1               ' R20.1: counted (EV_FOLDBACK). No WC/WZ: C still selects the jump below.
+                                                        '  Cancelled on a normal frame, which still spends its 2 clocks (p2kb
+                                                        '  p2kbPasm2ConditionalExecution: same time whatever the condition)
     if_nc       jmp     #.dutyLimits
                 ' R18.4 D-2 (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 5.3): an integral TRIM above the feedforward.
                 '  Symmetric and untruncated, so it holds a POINT (PL-101's band is gone), and scaled by duty,
@@ -5868,7 +6401,7 @@ drvMotor                                                ' global (task 3535): en
                 getct   loop_dtcks_                     ' how long was this iteration? send to host
                 sub     loop_dtcks_, drvrSrtTix
 
-                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal/drv_incr to hub
+                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal/drv_incr/lag_held/duty_capped/fault_resyncs/foldback_cnt to hub
                 wrlong  drive_u_, ptra
 .loop           jnct1   #.ctlMotor                      ' if not time for drv loop just go to ctl loop
                 jmp     #drvMotor
@@ -6137,7 +6670,7 @@ probe_y_    res 1           ' R19.4 1e TEST-USE: the probed phase's high-side Y,
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied out-of driver each loop iteration
-drive_u_    res 1           ' 20 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
+drive_u_    res 1           ' 21 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -6157,15 +6690,16 @@ drv_incr_s_ res 1           ' copy of drv_incr, the field's increment per drive 
 lag_held_   res 1           ' R18.1: passes where the limiter withheld the field advance -- unbounded, zeroed at driver start
 duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the cap -- unbounded, zeroed at driver start
 fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controlled stop -- unbounded, zeroed at driver start
+foldback_cnt_ res 1         ' R20.1: frames the current fold-back lowered duty_ -- unbounded, zeroed at driver start (hub foldback_frames)
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 491 USED, 5 FREE, 2026-09-25 (DRIVER_REV 21, the winding check) -- read from the compiler, never hand-counted
-                 ' (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FAULT_RESYNCS_'s VALUE,
-                 ' whose top 12 bits are its cog address ($1EA, the last register, so USED is $1EB). LUT code runs at cog
+    fit     496  ' 493 USED, 3 FREE, 2026-09-25 (DRIVER_REV 23, the fold-back counter) -- read from the compiler, never
+                 ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FOLDBACK_CNT_'s
+                 ' VALUE, whose top 12 bits are its cog address ($1EC, the last register, so USED is $1ED). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $2E5, 229 of 512 longs (DRIVER_REV 21).
+                 ' lutCodeStart $200 to lutCodeEnd $2E6, 230 of 512 longs (DRIVER_REV 23).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -6320,6 +6854,7 @@ lutCodeStart
                 mov     lag_held_, #0                   ' R18.1: the health counters restart with them
                 mov     duty_capped_, #0
                 mov     fault_resyncs_, #0              ' R19.3: and the re-sync count, with no stop pending,
+                mov     foldback_cnt_, #0               ' R20.1: and the fold-back count,
                 mov     fault_stop, #0
                 mov     force_seen, #0                  '  and no forced fault (init() zeroes force_seq too),
                 mov     fault_clr_seen, #0              '  and no fault clear (init() zeroes fault_clr too)
@@ -6502,7 +7037,7 @@ estopBridge                                             ' PL-132: called once, a
 
 lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 229 of 512 used, COUNTED 2026-09-25 at DRIVER_REV 21 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 230 of 512 used, COUNTED 2026-09-25 at DRIVER_REV 23 (see the cog fit above)
 
 CON { license }
 {{
