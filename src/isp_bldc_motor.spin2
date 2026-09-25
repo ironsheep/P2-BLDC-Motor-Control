@@ -2269,7 +2269,7 @@ PUB frontProtectiveStop(eProtectiveCode)
 ''
 '' @param eProtectiveCode - ERR_PLATFORM_BLOCKED or another -2_0xx cause; any other value latches ERR_PROTECTIVE_STOP
 
-    frontEStop(TRUE)                                                            ' 1. secure: the driver floats the drive, getPower() reads 0
+    frontEStop(TRUE)                                                            ' 1. secure: the e-stop shorts the phases, whatever the stop mode; getPower() reads 0
     if (eProtectiveCode > ERR_PROTECTIVE_STOP) or (eProtectiveCode < ERR_PROTECTIVE_STOP - 99)
         eProtectiveCode := ERR_PROTECTIVE_STOP
     if protectiveCode == NO_ERROR
@@ -4823,7 +4823,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 18        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 19        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -4840,6 +4840,7 @@ CON { driver internal Constants }
                                             ' 16: the Rev B rest-zero band sized from Visit 10 (-20/+40 mV); Rev A keeps -100/+200 (task 3613)
                                             ' 17: BR_BRAKE slices the full short over a 10 ms period, no longer a per-frame low-side PWM (PL-129, task 3620)
                                             ' 18: the hold's duty follows its displaced passes, so it reaches the ceiling in riseMs, not 16 % later (PL-130)
+                                            ' 19: a re-synced fault seeds the field in the way it was moving, not the command's sign (task 3609)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -5754,10 +5755,11 @@ countIllegal                                            ' PL-90: count an entry 
 
 initAngleFmHall
                 ' init angle & prior from current motor position
+                testb   tgt_incr, #31               wc  ' Q: from rest, the command's way: FWD or REV? (bCY=REV)
+initAngleFmHallC                                        ' entry with C already set (bCY=REV): faultResponse's re-sync
                 alts    hall_port                       ' PL-90: one read of INA or INB, all three hall lines at one instant
                 mov     hall_, 0-0
                 shr     hall_, hall_shift               ' U to bit 0, V to bit 1, W to bit 2 (the old TESTP/RCL order)
-                testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (bCY=REV)
                 bitc    hall_, #3                       ' point to correct FWD/REV half of table
                 and     hall_, #%1111                   ' keep the code and the direction bit, drop the port's other pins
                 alts    hall_, #hall_angles
@@ -5984,7 +5986,7 @@ fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controll
                  ' whose top 12 bits are its cog address ($1E9, the last register, so USED is $1EA). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $2D5, 213 of 512 longs (DRIVER_REV 17).
+                 ' lutCodeStart $200 to lutCodeEnd $2D6, 214 of 512 longs (DRIVER_REV 19).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -6290,7 +6292,8 @@ faultResponse                                           ' R19.3: called from the
     if_z        jmp     #.blunt                         ' an illegal code: the halls cannot re-seed the field
                 mov     fault_stop, #1                  ' RE-SYNC: commands read as 0 until the front cog's stop arrives, so the
                 add     fault_resyncs_, #1              '  driver ramps down; counted, so the front cog writes that stop and reports it;
-                jmp     #initAngleFmHall                '  and the field is re-seeded from the halls. Returns to our caller
+                testb   fwdrev, #0                  wc  '  and the field is re-seeded from the halls in the way the field was moving,
+                jmp     #initAngleFmHallC               '  not the command's (a ramp to zero reads 0, FWD). Returns to our caller
 .blunt          mov     fault_stop, #0                  ' a hard fault ends any pending re-sync stop: the latch below governs now
                 mov     drv_state_, #DCS_FAULTED       ' the driver is FAULTED until the front cog clears it (fault_clr_)
                 mov     bridge, #BR_SHORT               ' FR_SHIPPED brakes with the full short,
@@ -6303,7 +6306,7 @@ faultResponse                                           ' R19.3: called from the
 
 lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 213 of 512 used, COUNTED 2026-09-24 at DRIVER_REV 17 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 214 of 512 used, COUNTED 2026-09-25 at DRIVER_REV 19 (see the cog fit above)
 
 CON { license }
 {{

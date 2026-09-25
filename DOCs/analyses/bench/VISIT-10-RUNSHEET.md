@@ -13,7 +13,7 @@ read a coast. [Pass 2 evaluation](2026-09-23/VISIT-10-PASS2-EVALUATION.md). Pass
 
 | Load | Every banner / build record must read |
 |---|---|
-| `dual-*` tiers | `BM-BANNER,...,src_rev,42,fmt,26` and `BM-BUILD ... drv_rev,18`. Anything lower means an old tree was built: stop and report |
+| `dual-*` tiers | `BM-BANNER,...,src_rev,42,fmt,26` and `BM-BUILD ... drv_rev,19`. Anything lower means an old tree was built: stop and report |
 | `dual-fault` | part `FRESP`; a `BM-FRBUILD` record; `BM-NOTBUILT` for `B4PULSE` only |
 | `t0-stopmode` | `src_rev 16`; a `hold_start` record carries `rise_ms`; the `PLOT t0stop` create ends `SIZE 560 470 POS 60 60 HIDEXY UPDATE` (PL-128); a `T0-24,cogs` record with `measure_cog` 0–7; `T0-24,row,...` records numbered 1 to 8 |
 

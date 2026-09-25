@@ -4094,6 +4094,22 @@ storyboard at the desk. The run sheet is re-cut with `dual-fault` in its command
 **Certified when** the next `t0-stopmode` shows a `hit,MISS` input in row 1, row 4 `run,2`, and row 6 run 1
 `why,ABORTED` with its RESULT screen within 100 ms of the ABORT input.
 
+### PL-132 -- the blocked-wheel protective stop shorts the phases even when the user chose coast
+
+**Found 2026-09-23** as fault study F-5, and **filed 2026-09-25** («#3609» phase 3). `frontProtectiveStop()` secures
+the motor with `frontEStop(TRUE)`. The PASM e-stop takes `.shortBridge` "whatever the stop mode"
+(`isp_bldc_motor.spin2`, the `.eStop` branch). So a blocked wheel under SM_FLOAT is shorted, and the user's
+`holdAtStop(FALSE)` is not honoured on this path (P3: behaviour the API lets the user select is theirs). The wheel is
+stationary by construction, so the short brakes nothing. The cost is on a slope: a short at rest creeps, and the user
+who chose coast gets a state they did not choose. The e-stop itself stays a hard short by Stephen's ruling. Only its
+reuse here is the defect.
+
+**Disposition:** ⛔ fix in the driver, «#3609». The protective stop gets its own immediate stop that takes the stop mode's
+at-rest state: SM_FLOAT coasts, SM_BRAKE holds, and the hold's own hand-off to the short still applies. It still latches
+and refuses drives until `clearProtectiveStop()`. **Unmeasurable wheels-up** (PL-106: a lifted wheel cannot be
+blocked), so it is certified by construction and by the floor run («#3576»). Building it gates no load on the current
+bench pass.
+
 ---
 
 ## Removed from this list

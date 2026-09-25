@@ -2793,9 +2793,17 @@ don't have to wait"* (doctrine overlay P12). So every mechanism below is **built
   - **FR_GRADED**, halls lost or a second fault on that stop: SM_BRAKE takes **BR_BRAKE** (the full short for
     `brake_on` of every `BRAKE_PERIOD_FRAMES` frames, coasting for the rest, so the average braking torque is that
     fraction of the full short's) and SM_FLOAT coasts.
-  - *Known limits:* the re-seed takes its direction from the command's sign, so a fault during a ramp to zero may
-    seed the wrong half-table and fault again, falling to the blunt response. BR_BRAKE caps the average torque, not
-    the peak current, which is the full short's.
+  - **Halls lost, departing from the R19.3 row above:** the row said FC_HALL should coast to keep the back-EMF signal
+    (F-7). The build instead follows the user's stop mode: SM_BRAKE takes the graded short. Back-EMF is not a position
+    source until «#3602» (after 6.0.0), so a coast would keep a signal nothing reads, and it would leave an SM_BRAKE
+    platform rolling on a slope. When «#3602» lands, halls-lost under SM_BRAKE is the case it re-opens.
+  - *Known limit:* BR_BRAKE caps the average torque, not the peak current, which is the full short's.
+  - *Corrected at DRIVER_REV 19 («#3609»):* the re-seed took its direction from the command's sign. A fault on a ramp to
+    zero reads 0, which is FWD, so a reverse wheel was seeded in the wrong half-table and faulted again. It now takes
+    the direction the field was moving (`fwdrev`).
+  - **Open (S2, study F-5):** the blocked-wheel protective stop secures the motor through the e-stop, so it shorts even
+    under SM_FLOAT. The fix is a protective stop that takes the user's stop mode at once (PL-132). No wheels-up cell can
+    provoke it (PL-106).
   - *Corrected at DRIVER_REV 17 (PL-129):* BR_BRAKE first PWM'd the low sides within each 22.7 µs frame. With the high
     sides off that is a boost converter, which carries current only above a duty of 1 − back-EMF / supply, so 10–50 %
     braked like a coast. It now slices the full short over a 10 ms period (`BRAKE_PERIOD_MS`, provisional).
