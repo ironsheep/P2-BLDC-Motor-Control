@@ -28,7 +28,7 @@ is chased; everything else is recorded and waits. Each remaining entry carries i
 | PL-78 | The platform jolts ("slams") at each speed change | R17-DUAL-TRKICK-A PASS on the current driver (last FAIL at Visit 8b, 183/182 mV) |
 | PL-87 | The instrument that measures that speed-change kick | Same cell as PL-78, judged on the current driver |
 | PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | A blocked-wheel cell that trips SR_BLOCKED (the floor run «#3576» has none today) |
-| PL-143 | The command timeout cuts short a drive whose own stop limit already bounds it | Stephen's ruling, then the doc or code follows it |
+| PL-143 | The command timeout exempts `driveForDistance()` but watches other bounded moves | RULED: no carve-outs, every drive watched, refresh unchanged; build in the Pass A batch |
 | PL-148 | The serial control path (object, protocol doc, Python demo) has never run on hardware | A host-driven serial run, wheels up |
 | PL-149 | No shipped demo has run on hardware against the 6.0 API | One wheels-up run of each release demo |
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | Two cells added to the floor run, then the floor run |
@@ -2099,6 +2099,18 @@ AND START REFUSAL CAUGHT IT** ([evaluation](analyses/bench/2026-09-25/VISIT-10-P
   it tries the right every 10 s for up to 3 min, with each try's per-phase readings (`T0-25,recover` / `recovered`).
   The pass 7 sheet asks Stephen, in advance, to note when the pack is connected.
 
+**2026-09-26 night -- a supply we never checked, and the board reseated on its headers.**
+- **MEASURED (record):** the gate drive does not come from the pack. On Rev B it is 12 V from a switching boost
+  regulator fed by the P2's **VIO3V3 pin on the upper accessory header**, rated 50 mA, shared by all four half-bridges
+  (BOARD-REVISION-FACTS.md §2, the manual text Stephen supplied). The 2026-09-23 refutation ("both boards share one
+  pack") covered the bus, not this supply.
+- **DERIVED:** a gate supply that is dead or restarting fits the whole signature: all three high sides dead at once,
+  halls and phase sensing unaffected, recovery within minutes, and code identical on both boards. A marginal header
+  contact or a regulator dropping out fits the timing. It is not established.
+- **STEPHEN 2026-09-26:** *"i'll reseat the board on the headers (i only did motor to board) then we'll monitor..."*
+  From the next run, a PL-120 episode is read against that reseat. T0-25's recovery timer records any episode's length
+  with no extra load.
+
 ### PL-126 -- the P2's output stopped mid-record 2 s into right trial 19, and the wire then carried lone zero bytes
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench watch, one instance)
@@ -2253,6 +2265,18 @@ windows, never from one run's worst. The next `dual-fault-rightfirst` carries it
 **Disposition: question for Stephen** (the API contract is his, D10). Either a drive with an armed platform limit is
 bounded and not watched, as `driveForDistance()` is; or it is watched, the doc says so, and a program re-sends it.
 Once ruled, the RC demo gains `setCommandTimeout()` as its link-loss guard for wheels-down driving.
+
+**RULED, STEPHEN 2026-09-26:** *"i wouldn't expect carveouts"*, and on my proposal to also change what refreshes the
+timeout: *"are you asking me to reshape the mechanism vs, just apply it correctly?"*
+- **The build:** the command timeout watches every drive, with no exemptions. `driveForDistance()`'s bounded-move
+  exemption (`bCmdWatched := FALSE`, steering `REQ_DRIVE_DISTANCE`) goes, and a drive with a `stopAfter*()` limit
+  armed is watched like any other. The refresh is unchanged: a drive command resets the clock.
+- **Docs:** `setCommandTimeout()` in DRIVE-OBJECTS.md and DRIVE-OBJECTS-SERIAL.md, and the README line. With the guard
+  on, a program running a long move re-sends its drive. Re-sending `driveAtPower()`/`driveDirection()` keeps an armed
+  `stopAfter*()` limit (`REQ_DRIVE` disarms only the per-wheel limits `driveForDistance()` sets, steering ~:2822).
+  Re-sending `driveForDistance()` restarts its distance.
+- **Then the RC demo** enables the guard. It is built in the Pass A batch, and its cell is CMDTIMEOUT extended to a
+  bounded move.
 
 ### PL-144 -- the path limiter hunts: a wheel that cannot sustain its command cycles the platform between 8 % and 100 %
 
