@@ -2,7 +2,8 @@
 
 **Task:** «#3613» runs it. **Plan:** `BENCH-READINESS-SPRINT-PLAN.md`, R20.6.
 
-**Built for this pass (DRIVER_REV 30; `test_bench_dual` SRC_REV 52; `test_bench_t0` SRC_REV 20):**
+**Built for this pass (DRIVER_REV 31; `test_bench_dual` SRC_REV 52; `test_bench_t0` SRC_REV 20):**
+- DRIVER_REV 31: FR_GRADED is the default fault response (Stephen's ruling, its condition met at pass 5).
 - PL-144: the steering path limiter releases only once both fields have reached the present scale, so it no longer
   cycles between 8 % and 100 %. New cell R20-DUAL-PATH-HUNT.
 - PL-147: the following percentage is of the user's command, so it agrees with the limiter's reading (R18-DUAL-NOTFOL-D).
@@ -24,7 +25,8 @@
 ## ⛔ First: PUSH, then pull at the bench
 
 `main` is ahead of origin. **Push from the authoring tree first**, then pull at the bench. `git log --oneline -1 -- src/`
-at the bench must show **f4a8e85** or later (DRIVER_REV 30).
+at the bench must show **3e665db** or later (DRIVER_REV 31: FR_GRADED is now the default fault response, as
+ruled. Every fault trial sets its response explicitly, so no cell on this sheet rests on the default).
 
 **What this change invalidated:** the subject under test changed (the motor and steering objects), so every cell that
 drives through the steering object restarts. That is why STEERSEG, RESTCOAST and the walk are re-proved. T0-25's
@@ -41,7 +43,7 @@ after power-on.
 | Load | Every banner / build record must read |
 |---|---|
 | `t0-stopreason` | the t0 banner at `src_rev 20` |
-| every `dual-*` tier | `BM-BANNER,...,src_rev,52,fmt,34` and `BM-BUILD ... drv_rev,30`. Anything lower means an old tree: stop and report |
+| every `dual-*` tier | `BM-BANNER,...,src_rev,52,fmt,34` and `BM-BUILD ... drv_rev,31`. Anything lower means an old tree: stop and report |
 | `dual-start` | part `START`; `BM-SKBUILD ... walks,10,no_walk,FALSE ... neg,NONE` |
 | `dual-d` | part `D`; `SIGNOFF-DECL ... R20-DUAL-PATH-HUNT` present |
 
@@ -51,7 +53,7 @@ after power-on.
 
 | | |
 |---|---|
-| **Purpose** | **Certification** of DRIVER_REV 30: PL-144 (PATH-HUNT), PL-147 (NOTFOL-D), PL-146 (EV-FOLDBACK), EV-PATH's positive. It re-proves STEERSEG, RESTCOAST and the walk on the changed limiter. **Measurement:** PL-120's recovery time, if the right is refused at load, placed against the pack's power-on time. |
+| **Purpose** | **Certification** of DRIVER_REV 30–31: PL-144 (PATH-HUNT), PL-147 (NOTFOL-D), PL-146 (EV-FOLDBACK), EV-PATH's positive. It re-proves STEERSEG, RESTCOAST and the walk on the changed limiter. **Measurement:** PL-120's recovery time, if the right is refused at load, placed against the pack's power-on time. |
 | **Hardware risk** | • `t0-stopreason`: **an e-stop brakes one wheel abruptly.**<br>• `dual-d`: **the wheels stop dead**; an e-stop is latched; **the current limit is lowered until a wheel cannot keep up**; and **twice the platform is switched off while the wheels spin**.<br>**Wheels up throughout. Hands off in every tier. Panic: physical battery disconnect.** |
 | **Who can observe** | No tier needs anyone. One note from you: the pack's power-on time (above). |
 | **Runs that carry state** | None across runs. PL-120, if it strikes, can outlast a reload for up to about 2 minutes. `t0-stopreason` now waits it out and times it. |
