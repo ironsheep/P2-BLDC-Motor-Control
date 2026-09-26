@@ -4441,6 +4441,32 @@ src_rev 49, 2026-09-26), so the next `dual-start` places each late pass against 
 count. If they are the walk's own, the front-cog budget is extended to cover it. Candidates: the front cog's walk watch
 (`frontWalkWatch()`) and the steering stop/start sequence.
 
+### PL-141 -- the path limiter reads every platform start from rest as a shortfall and throttles both wheels to zero
+
+**Found 2026-09-26** at Visit 10 pass 5 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §4), from the
+event log R20.1 added.
+- **MEASURED:** both healthy platform starts in `dual-fault-rightfirst` (steering, power 50, before any fault):
+  - `PATH_LIMIT,wheel,LEFT,ms,278_232,value,0`, then its release `ms,278_672,value,1_000`;
+  - `PATH_LIMIT,wheel,RIGHT,ms,289_305,value,0`, then `ms,289_745,value,1_000`.
+  The walk legs (PL-137) show the same engage at 2 ‰.
+- **DERIVED:** at a start from rest the lag limiter holds each field until its rotor catches up. So each wheel reads
+  SHORT (`frontShortfall()`, any hold in the last `SHORT_SLOTS`), with an achieved fraction near 0. `frontLimitPath()`
+  scales both commands to the lower fraction, 0 ‰, and releases at `PATH_RELEASE_STEP` (20 ‰) per 8 ms slot after 4
+  clean slots: 32 + 50 × 8 = 432 ms, which matches the measured 440 ms.
+- **Consequences:** every steering start from rest is re-ramped by the limiter, whatever acceleration the user set.
+  While scaled to 0 the drivers can report `DCS_STOPPED`, so a program that polls for rest, as `checkWiring()` did, sees
+  a false stop. Each start also logs an engage/release pair, which R20-DUAL-EV-PATH's "none in STEERSEG" negative would
+  count.
+- **The ruling it implements stands:** Stephen's "path over speed" (R18.4 D-6). The defect is what counts as short.
+  When both wheels are held equally at start, their ratio is already the commanded one, and scaling both to the
+  shortfall preserves no path the drive was losing.
+
+**Disposition: ⛔ FIX, design first** (task «#3622»). The shortfall that scales the platform should be one wheel falling
+behind the other's achieved fraction, so a start where both are held together does not engage. It should also not be
+read while a wheel is still in its start-from-rest hold, if that can be told apart from a blocked start. A blocked wheel
+at start must still engage it (SR_BLOCKED's path), so the design states how it tells the two apart. It is certified by
+R20-DUAL-EV-PATH (no engage at a healthy start) and by the blocked-step engage in part D.
+
 ---
 
 ## Removed from this list
