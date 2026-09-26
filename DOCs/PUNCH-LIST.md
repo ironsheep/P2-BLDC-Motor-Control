@@ -33,7 +33,14 @@ is chased; everything else is recorded and waits. Each remaining entry carries i
 | PL-149 | No shipped demo has run on hardware against the 6.0 API | One wheels-up run of each release demo |
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | Two cells added to the floor run, then the floor run |
 | PL-151 | Turning by distance, fault cause, e-stop status and stop-after-rotation lack current evidence | One regression tier on the current driver |
-| PL-152 | Every bench tier compiles twice and carries every harness part ever written | One compile at the bench; one part per tier (after pass 7) |
+| PL-152 | Every bench tier compiles twice and carries every harness part ever written | One compile at the bench; one part per tier |
+| PL-153 | The odometer resets itself, and distance limits count from it instead of from where they were armed | Odometer = total travel, reset only on request; each limit counts from its own start |
+| PL-154 | Serial: hold can't be set from the host example, commands can wait 1 s, non-numbers accepted | Fix the wrapper, the loop and the parser; serial certification run |
+| PL-155 | Settings lost on `start()` without saying so; several have no getter | User settings persist across starts, with getters |
+| PL-156 | No "move finished" test; the demos' wait loop hangs on a fault or e-stop | A finished-move predicate; the demos wait on it with a bound |
+| PL-157 | Serial and the Python host lag the 6.0 getters | Serial command + doc row + Python wrapper for each |
+| PL-158 | `getStatus()` HOLDING after hand-off; rotation limits truncate | Status follows the hold state; limits round |
+| PL-159 | Doc-only API fixes: `calibrate()`, `fAmps`, the backing-up pattern, serial doc gaps | The docs corrected |
 
 **Awaits certification** (fix built, not yet run)
 
@@ -2443,6 +2450,110 @@ tests we've ever run. They should be fairly pointed."*
 1. The bench compiles once, with `-d`. The footprint stays enforced by the commit gate.
 2. Each `test_bench_dual` part goes behind its own compile flag, so a tier builds only its part and the shared plumbing.
    Every tier's banner and cells are re-checked, and the images are measured before and after.
+
+### PL-153 -- the odometer resets itself, and the distance limits count from the odometer instead of from where they were armed
+
+> **6.0 status (2026-09-26 audit):** RELEASE — ruled by Stephen from the public-API audit (API-1, API-5).
+
+**Found 2026-09-26** by the public-API usability audit («#3613» session; read-only survey, verified in source).
+- **API-1 (VERIFIED):** the motor object's `driveForDistance()`, `stopAfterDistance()` and both objects'
+  `stopAfterRotation()` compare the limit against `posTrkHallTicks`, the odometer since the last reset
+  (`isp_bldc_motor.spin2` ~:3059), and arming does not reset it (motor `REQ_DRIVE_DISTANCE` ~:5157, `REQ_LIMIT_TICKS`;
+  steering `stopAfterRotation` posts no reset ~:645). A second `driveForDistance(1, DDU_FT)` stops at once.
+- **API-5:** the odometer is zeroed silently while a motor is FAULTED or e-stopped (`frontResetTracking` every pass,
+  ~:2990) and by the steering object's distance moves (~:2830, :2863). `getDistance()` after an e-stop reads 0.
+
+**STEPHEN 2026-09-26:** *"I would think odometer is distance traveled... if you backed up, you also moved distance...
+it's total amount traveled."* So the odometer stays unsigned total travel and resets only on `resetTracking()`.
+Each distance or rotation limit counts the travel from the point where it was armed.
+
+**Disposition: ⛔ build.** Separate the odometer from the limit base. Remove the silent resets. Change the
+`resetTracking()` docs ("use current position as home") to say it resets the odometer. A T0 cell: two back-to-back
+`driveForDistance()` moves each travel their distance; an e-stop leaves `getDistance()` unchanged.
+
+### PL-154 -- the serial path: hold cannot be set from the host example, every command can wait 1 s, and non-numbers become numbers
+
+> **6.0 status (2026-09-26 audit):** RELEASE — the serial path is a deliverable; the 1 s wait also delays `emercutoff`.
+
+**Found 2026-09-26** by the public-API audit (API-2, API-3 and API-10; API-2 and API-3 VERIFIED in source) and the
+serial certification build.
+- **API-2:** `pythonSrc/P2-BLDC-Motor-Control-Demo.py` `holdAtStop()` sends `hold False` / `hold True`
+  (~:406). `isp_queue_serial.spin2`'s `decimalForString` (~:415-437) does not check its digits, so the P2 rejects the
+  resulting number (`isp_steering_serial.spin2` ~:460 accepts only -1/0).
+- **API-3:** `isp_steering_serial.spin2` ~:233-234 runs `waitms(1000)` whenever its queue is empty, which is the normal
+  state between a host's commands. Every command can wait up to 1 s, `emercutoff` and `stopmotors` included, and a
+  `settimeout` under about 2 s cannot be kept alive.
+- **API-10:** any non-numeric parameter is silently turned into a number.
+- **Serial doc gaps:** three undocumented ERROR forms (`isp_queue_serial.spin2` ~:252, :277, :284); how a host learns of a
+  timeout (`geterror` -1019, stop reason 46) is not documented; the doc's example quotes the wrong message text.
+
+**Disposition: ⛔ build.** The wrapper sends -1/0; the loop polls its receive queue at about 1 ms; parameters must be
+digits or a leading minus, else ERROR; the doc says all of this. Certified by `pythonSrc/serial_certify.py` (PL-148).
+
+### PL-155 -- settings a user makes are lost on start() without saying so, and several have no getter
+
+> **6.0 status (2026-09-26 audit):** RELEASE — the same class as the acceleration finding (API-4).
+
+**Found 2026-09-26** by the public-API audit. `init()` resets `setMaxSpeed` (~:3869), `setMaxSpeedForDistance`
+(~:3870), `holdAtStop` (~:3844) and `forwardIsReverse` (~:3858) on every `start()`. Their docs do not say so, and they
+return NO_ERROR before start. There is no `holdAtStop` getter, `forwardIsReverse` has no undo or getter, and neither
+object has `getCommandTimeout()`.
+
+**Disposition: ⛔ build.** It goes with the acceleration/deceleration persistence (the kick spec). User settings live
+outside `init()`'s reset and are applied at every start. Each gets a getter, `forwardIsReverse` takes an enable, and
+the steering and serial mirrors follow.
+
+### PL-156 -- there is no "move finished" test, and the demos' wait loop hangs on a fault or e-stop
+
+> **6.0 status (2026-09-26 audit):** RELEASE — users copy the demos (API-7).
+
+**Found 2026-09-26** by the public-API audit. `isStopped()` is DCS_STOPPED only. The demos' `waitUntilMotorDone()`
+(`demo_dual_motor.spin2` ~:297-315, `demo_single_motor.spin2` ~:285-296) loops unbounded on `isStarting()`, then on
+`isStopped()`. It hangs when a fault or e-stop ends a move, or when a 2 ms poll misses SPIN_UP.
+
+**Disposition: ⛔ build.** A predicate true once the motor is not moving under a command (stopped, faulted, e-stopped
+or protectively stopped). The demos wait on it with a bound and report `getStopReason()`.
+
+### PL-157 -- the serial protocol and the Python host example have not kept up with the 6.0 getters
+
+> **6.0 status (2026-09-26 audit):** RELEASE — STEPHEN: *"when we added getters, we should have been keeping our serial
+> interface up to date"* (API-9, API-13).
+
+**Found 2026-09-26** by the public-API audit.
+- **Serial lacks:** pack voltage, current, fault cause, hold status, hall counts, `checkWiring`, `setStartChecks`.
+- **The Python example lacks:** stop reason, events, `geterror`, health, fault response and hold limits.
+
+**Disposition: ⛔ build.** Every user-facing getter, and every setter a host needs, has a serial command, a
+DRIVE-OBJECTS-SERIAL.md row and a Python wrapper. Measured speed is **not** in 6.0 (STEPHEN: *"I'm not saying add
+measured speed right now"*); `getPower()` reports what was commanded.
+
+### PL-158 -- getStatus() says HOLDING after the hold has handed off, and rotation limits and counts truncate
+
+> **6.0 status (2026-09-26 audit):** RELEASE — ruled in (API-11, API-12).
+
+**Found 2026-09-26** by the public-API audit.
+- **API-11:** `getStatus()` reports DS_HOLDING whenever the stop mode is brake and the motor is stopped (~:1634-1638).
+  That includes a hold that has handed off to the short, and a post-fault brake.
+- **API-12:** DRU_DEGREES limits truncate (90° becomes 88°, ~:740), and `getRotationCount(DRU_ROTATIONS)` is an
+  integer divide (~:1190).
+
+**Disposition: ⛔ build.** DS_HOLDING follows the hold's own state. Limits round to the nearest tick. The integer
+resolution of each getter is documented.
+
+### PL-159 -- documentation the API audit found wrong or missing
+
+> **6.0 status (2026-09-26 audit):** RELEASE — the doc-only items, ruled in.
+
+**Found 2026-09-26** by the public-API audit.
+- **API-14:** `calibrate()` is public and returns NO_ERROR while doing nothing.
+- **API-15:** `getCurrent()` returns `fAmps`, an integer in 0.1 mA, named like a float.
+- **API-6, STEPHEN 2026-09-26 "B":** `driveForDistance()` stays forward-only. The docs teach backing up as
+  `driveAtPower(-power)` then `stopAfterDistance()`, and state that the two calls are not one atomic move.
+- The serial doc gaps listed in PL-154.
+
+**Disposition: ⛔ build (docs).** `calibrate()` states plainly that it does nothing and returns an error code (the API
+is kept). The `fAmps` result is renamed in the doc and the source comment. The backing-up pattern goes in
+DRIVE-OBJECTS.md and DEVELOP.md.
 
 ---
 
