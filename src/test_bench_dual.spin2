@@ -385,6 +385,9 @@
 ''               BLOCK step's most EV_PATH_LIMIT pairs in one log, PASS at exactly 1 (pass 6's pre-fix driver: 5). Part D's
 ''               event drains wait, bounded, for both drivers at DCS_STOPPED before their settle, so a stalled wheel's
 ''               fold-back release is not drained early (R20-DUAL-EV-FOLDBACK). No record changes shape
+''               26 Sep 2026 -- SRC_REV=53, FMT 34: PL-143 (DRIVER_REV 32). CMDTIMEOUT gains a third limb: a D_CMDTMO_BOUND_M
+''               driveForDistance() left silent must stop at the timeout with ERR_COMMAND_TIMEOUT (the pre-32 library
+''               exempted it and drove on). Judged in the existing R17-DUAL-CMDTMO-D / -WCMDTMO-D cells. No record changes shape
 ''
 '' =================================================================================================
 
@@ -452,7 +455,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 52                                    ' hand-bumped whenever this file changes
+    SRC_REV     = 53                                   ' hand-bumped whenever this file changes
     FMT_VERSION = 34                                      ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -1026,6 +1029,8 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_CMDTMO_MS           = 500
     D_CMDTMO_REFRESH_MS   = 1_500                           ' three timeouts' worth of refreshed driving
     D_CMDTMO_EVERY_MS     = 200                             ' well inside D_CMDTMO_MS, so a working refresh never lapses
+    D_CMDTMO_BOUND_M      = 20                              ' PL-143 limb 3: a driveForDistance() of many seconds at any speed the
+                                                            '  platform reaches, so a stop inside the rest bound is the timeout's
     ' DIRSIGN (task 3577, finding AC): driveDirection(D_POWER, +-D_DIRECTION) slows the wheel on the side turned
     '  toward to (100 - D_DIRECTION)% of D_POWER, so at 50/50 one wheel runs at power 50 and the other at 25.
     '  DERIVED from OVERSHT's measured leg (529 ticks in about 3.2 s at power 50): about 165 ticks/s against about
@@ -5850,6 +5855,27 @@ PRI dDrive(side, powerValue) : eError
         eError := wheelL.driveAtPower(powerValue)
         beat(CP_LIB_COMMAND)
 
+PRI dDriveDistance(side, distanceM) : eError
+' Drive this form a distance through the PUBLIC driveForDistance() a user would call, and return what it returned.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @param distanceM - the distance for every wheel of this form, metres
+' @returns eError - NO_ERROR or the ERR_* code the library returned
+
+    curIncre := 0
+    if side == SIDE_BOTH
+        beat(CP_LIB_STEER_DRIVE)
+        eError := steering.driveForDistance(distanceM, distanceM, steering.DDU_M)
+        beat(CP_LIB_STEER_DRIVE)
+    elseif side == SIDE_RIGHT
+        beat(CP_LIB_COMMAND)
+        eError := wheelR.driveForDistance(distanceM, wheelR.DDU_M)
+        beat(CP_LIB_COMMAND)
+    else
+        beat(CP_LIB_COMMAND)
+        eError := wheelL.driveForDistance(distanceM, wheelL.DDU_M)
+        beat(CP_LIB_COMMAND)
+
 PRI dEstop(side)
 ' Emergency-stop this form.
 '
@@ -6400,6 +6426,15 @@ PRI dStepCmdTimeout(side) | bArmed, bAtSpeed, startMs, lastDriveMs, bHeld, eErro
             stopMs := getms() - lastDriveMs
             eError := dCollectError(side)
             bOk := bRest and (stopMs >= D_CMDTMO_MS) and (eError == wheelL.ERR_COMMAND_TIMEOUT) and (dPowerSum(side) == 0)
+        ' 3. BOUNDED AND SILENT (PL-143, STEPHEN 2026-09-26 "no carve-outs"): a driveForDistance() far longer than the
+        '  timeout, then no command -- must stop at the timeout, not run on to its distance. The library before
+        '  DRIVER_REV 32 exempted this move ("a bounded move is not watched"), so it drove on and fails this limb.
+        if bOk
+            bOk := (dDriveDistance(side, D_CMDTMO_BOUND_M) == NO_ERROR)
+            lastDriveMs := getms()
+            bRest := bOk and bDRestWithin(side, D_CMDTMO_MS + D_REST_MS)
+            eError := dCollectError(side)
+            bOk := bRest and ((getms() - lastDriveMs) >= D_CMDTMO_MS) and (eError == wheelL.ERR_COMMAND_TIMEOUT)
         dSetTimeout(side, wheelL.CMD_TIMEOUT_OFF)               ' I11: off again before anything else drives
         dStepDone(DST_CMDTIMEOUT, side, TRUE, bHeld and bOk, stopMs, D_CMDTMO_MS, D_CMDTMO_MS + D_REST_MS, WHY_NONE)
     else
