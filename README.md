@@ -294,14 +294,21 @@ We now have a working motor drive system that is fun to use. While this was bein
 
 ## DEMOs
 
-A small number of demos are provided with this project:
+A small number of demos are provided with this project. Each one also shows how to read what the drive reports:
+- why `start()` refused a motor (`getHealth()`);
+- why a drive ended (`getStopReason()`);
+- what the drive handled on its own (`getEvent()`);
+- the fault response in effect.
+
+They print these in words through the small helper object [demo_drive_names.spin2](src/demo_drive_names.spin2), which
+you can reuse.
 
 | Spin2 File Name(s)                                                 | Demonstration                                                                                                                                                                                                            | Required Board                                                                                           |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | [demo_single_motor.spin2](src/demo_single_motor.spin2)             | Provides example code for controlling a single motor and position sensing of the single motor. (Uses HDMI (DVI) as display of live motor details.                                                                        | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
 | [demo_dual_motor.spin2](src/demo_dual_motor.spin2)                 | Provides example code for controlling a pair of motors and using the 2-wheel steering object.                                                                                                                            | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
-| [demo_dual_motor_hdmi.spin2](src/demo_dual_motor_hdmi.spin2)       | Provides example code for controlling a pair of motors and using the 2-wheel steering object.                                                                                                                            | Any of the three P2 boards with four 12-pin header pairs (**NOT the 64019 P2 edge mini-breakout board**) |
-| [demo_dual_motor_rc.spin2](src/demo_dual_motor_rc.spin2)           | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object                                                                     | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
+| [demo_dual_motor_hdmi.spin2](src/demo_dual_motor_hdmi.spin2)       | Provides example code for controlling a pair of motors and using the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables during one steady drive | Any of the three P2 boards with four 12-pin header pairs (**NOT the 64019 P2 edge mini-breakout board**) |
+| [demo_dual_motor_rc.spin2](src/demo_dual_motor_rc.spin2)           | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object; prints each event and stop as it happens, and re-arming the kill switch (swD) acknowledges a protective stop | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
 | [demo_dual_motor_rc_hdmi.spin2](src/demo_dual_motor_rc_hdmi.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables | Any of the three P2 boards with four 12-pin header pairs (**NOT the 64019 P2 edge mini-breakout board**) |
 
 _NOTE: we built these demos over time as we developed the driver. There can be better examples but in the interest of time, so that we can get more of us using this driver as soon as possible, we are releasing these in their current state and will improve them over time._

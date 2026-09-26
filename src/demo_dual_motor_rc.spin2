@@ -1,13 +1,21 @@
 '' =================================================================================================
 ''
 ''   File....... demo_dual_motor_rc.spin2
-''   Purpose.... Demonstrate R/C driving of a two-wheeled platform
+''   Purpose.... Demonstrate R/C driving of a two-wheeled platform, and reading what the drive reports as it drives
 ''   Authors.... Stephen M Moraco
 ''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Mar 2022
-''   Updated.... 04 May 2022
+''   Updated.... 26 Sep 2026
+''
+''   What it shows, beyond driving from the FlySky sticks:
+''   1. start() checks each wheel before anything moves, and refuses a wheel that fails -- how to tell why (getHealth())
+''   2. every pass of the control loop drains the drive's event log (getEvent()): faults, current limiting, the path
+''      limiter, hall trouble and every stop with its reason are printed as they happen
+''   3. a protective stop (a wheel commanded to move that cannot: blocked) latches and refuses every drive; the
+''      emergency switch acknowledges it -- flip swD to cut-off and back (clearEmergency() + clearProtectiveStop())
+''   4. losing the transmitter stops the platform (hasSignal()), and why a drive was refused is explained once
 ''
 '' =================================================================================================
 
@@ -38,6 +46,7 @@ OBJ { our Drive Subsystem }
     user        : "isp_bldc_motor_userconfig"       ' driver configuration
     wheels      : "isp_steering_2wheel"                    ' the dual-drive BLDC motors
     remoteCtl   : "isp_flysky_rx"                   ' the FlySky Transmitter
+    names       : "demo_drive_names"                ' words for the drive's reported values, for the debug output
 
 VAR
 
@@ -72,12 +81,19 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detec
     if basePinLt <> wheels.INVALID_PIN_BASE and basePinRt <> wheels.INVALID_PIN_BASE and voltage <> wheels.INVALID_VOLTAGE and motor <> wheels.INVALID_MOTOR and detectModeLt <> wheels.INVALID_DET_MODE and detectModeRt <> wheels.INVALID_DET_MODE
         ' start our dual motor driver
 
-        ' start our motor drivers (left and right)
+        ' 1. start() checks each wheel's hall sensors, current sense and motor leads with nothing moving, retries a
+        '  check that fails, and refuses to start if one still fails (setStartChecks(false), before start(), starts
+        '  the platform anyway)
         senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
         if senseCog < 0
-            ' start() returned -1: getError() says why, and which wheel
+            ' start() returned -1: getError() says why, and which wheel; getHealth() names a failed check
             bCommandSucceeded(senseCog, @"start")
+            showHealth()
         else
+            showHealth()                                        ' what the start checks found, even when they passed
+            showPack()
+            showFaultResponse()
+
             ' override defaults, use 100 %
             wheels.setMaxSpeed(100)
             wheels.setMaxSpeedForDistance(100)
@@ -192,7 +208,11 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
                 debug("-------  Motor E-OFF")
                 wheels.emergencyCutoff()
             else
+                ' 3. re-arming the kill switch is the operator's acknowledgement: it releases the emergency stop AND
+                '  any protective stop (a blocked wheel), each of which latches until the program clears it. Both
+                '  wheels stay stopped until the sticks command them.
                 wheels.clearEmergency()
+                wheels.clearProtectiveStop()
                 if not bIgnoreJoySticks
                     debug("  Motor Enabled")
                 else
@@ -238,6 +258,8 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
             elseif bOneRotation == true and nDoingOneRotation == true           ' switch must be reset before allowed again
                 nDoingOneRotation := false
 
+        showEvents()                                            ' 2. whatever the drive handled on its own since the last pass
+
         if bDoneTesting
             debug("--> quit loop")
             quit
@@ -263,7 +285,124 @@ PRI bCommandSucceeded(eError, pWhat) : bSucceeded | eSteerError, eLeftError, eRi
     bSucceeded := (eError == wheels.NO_ERROR)
     if bSucceeded == FALSE
         eSteerError, eLeftError, eRightError := wheels.getError()
-        debug("* ERROR ", zstr_(pWhat), " refused: ", sdec_long(eError), sdec_long(eSteerError), sdec_long(eLeftError), sdec_long(eRightError))
+        debug("* ERROR ", zstr_(pWhat), " refused: ", zstr_(names.errorName(eSteerError)), ", LEFT ", zstr_(names.errorName(eLeftError)), ", RIGHT ", zstr_(names.errorName(eRightError)))
+        explainRefusal()
+
+PRI explainRefusal() | eLeftCode, eRightCode, eLeftReason, eRightReason
+' After a refused drive: say what is holding the platform stopped, and what clears it.
+'
+' A drive is refused while a stop latches: an emergency stop, or a protective stop (a wheel commanded to move that
+' could not -- blocked, say, against a kerb). getProtectiveStop() reads the latched cause without clearing it, and
+' getStopReason() says how the last drive ended (SR_BLOCKED for the blocked wheel, SR_PARTNER for the other).
+
+' Local Variables:
+' @local eLeftCode - the left wheel's latched protective cause, NO_ERROR when none
+' @local eRightCode - the right wheel's
+' @local eLeftReason - the left wheel's SR_* value
+' @local eRightReason - the right wheel's SR_* value
+
+    eLeftCode, eRightCode := wheels.getProtectiveStop()
+    eLeftReason, eRightReason := wheels.getStopReason()
+    debug("  last stop: LEFT ", zstr_(names.stopReason(eLeftReason)), ", RIGHT ", zstr_(names.stopReason(eRightReason)))
+    if (eLeftCode <> wheels.NO_ERROR) or (eRightCode <> wheels.NO_ERROR)
+        debug("  PROTECTIVE STOP latched (", zstr_(names.errorName(eLeftCode)), "): free the wheel, then flip swD to cut-off and back")
+
+PRI showHealth() | nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered
+' Report what start() checked on each wheel, which checks failed, and which failed at first and passed on a retry.
+'
+' getHealth() returns three masks of HLT_* bits per wheel. A recovered check started the motor normally -- worth
+' knowing about (a loose connector can look like that), but not a failure.
+
+' Local Variables:
+' @local nLeftChecked - the left wheel's HLT_* bits that were checked
+' @local nLeftFailed - ...that still failed
+' @local nLeftRecovered - ...that failed, then passed on a retry
+' @local nRightChecked - the right wheel's, likewise
+' @local nRightFailed - the right wheel's still failing
+' @local nRightRecovered - the right wheel's recovered
+
+    nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered := wheels.getHealth()
+    debug("* start checks: LEFT checked ", uhex_byte_(nLeftChecked), ", RIGHT checked ", uhex_byte_(nRightChecked))
+    showHealthBits(@"LEFT", @"FAILED", nLeftFailed)
+    showHealthBits(@"LEFT", @"recovered on a retry", nLeftRecovered)
+    showHealthBits(@"RIGHT", @"FAILED", nRightFailed)
+    showHealthBits(@"RIGHT", @"recovered on a retry", nRightRecovered)
+
+PRI showHealthBits(pWheel, pWhat, nBits) | nBit
+' Name each check set in a getHealth() mask.
+'
+' @param pWheel - pointer to the wheel's name
+' @param pWhat - pointer to what the mask means (failed, or recovered)
+' @param nBits - the mask of HLT_* bits
+
+' Local Variables:
+' @local nBit - the bit being tested
+
+    repeat nBit from 0 to names.HEALTH_BITS - 1
+        if nBits & (1 << nBit)
+            debug("*   ", zstr_(pWheel), " ", zstr_(names.healthBit(nBit)), " ", zstr_(pWhat))
+
+PRI showPack() | ePackStatus, nMilliVolts
+' Report the battery pack's voltage, when the optional pack voltage sensor is fitted (VOLTAGE-SENSOR.md).
+
+' Local Variables:
+' @local ePackStatus - PACK_NOT_FITTED, PACK_ABSENT or PACK_PRESENT
+' @local nMilliVolts - the pack voltage, mV, when PACK_PRESENT
+
+    ePackStatus, nMilliVolts := wheels.getPackVoltage()
+    debug("* pack: ", zstr_(names.packStatus(ePackStatus)), " ", udec_(nMilliVolts), " mV")
+
+PRI showFaultResponse() | eMode, brakePct
+' Report the fault response in effect.
+'
+' FR_SHIPPED, the default, coasts or brakes at once (per holdAtStop()) when a wheel's rotor cannot follow its field.
+' FR_GRADED re-syncs from the hall sensors and stops along the ramp instead, which is gentler on a tall robot:
+'   wheels.setFaultResponse(wheels.FR_GRADED, 10)    ' 10 = brake at 10 % if control is lost anyway
+' start() restores the default, so a program sets its choice after each start().
+
+' Local Variables:
+' @local eMode - FR_SHIPPED or FR_GRADED
+' @local brakePct - the graded brake's share of a full short, %
+
+    eMode, brakePct := wheels.getFaultResponse()
+    debug("* fault response: ", zstr_(names.faultResponse(eMode)), ", brake ", udec_(brakePct), " %")
+
+PRI showEvents() | eKind, nMs, eWheel, nValue
+' Drain this cog's event log: what the drive handled on its own, oldest first, both wheels merged.
+'
+' Each cog reads every event for itself. A cog that falls more than EV_QUEUE_DEPTH events behind is told first, with
+' EV_LOST (its value: how many it lost) -- so a gap never reads as "nothing happened". EV_STOP carries the stop
+' reason: a stop you did not command (SR_FAULT_*, SR_BLOCKED, SR_PARTNER) is how a driver learns the robot stopped
+' itself. Most others carry a count or a measurement (DRIVE-OBJECTS.md, "Stop reasons and events").
+
+' Local Variables:
+' @local eKind - the event's EV_* kind; EV_NONE when all are read
+' @local nMs - getms() when it happened
+' @local eWheel - EVW_LEFT, EVW_RIGHT or EVW_PLATFORM
+' @local nValue - the event's value
+
+    repeat
+        eKind, nMs, eWheel, nValue := wheels.getEvent()
+        if eKind == wheels.EV_NONE
+            quit
+        if eKind == wheels.EV_STOP
+            debug("  event ", udec_(nMs), " ms ", zstr_(wheelName(eWheel)), " ", zstr_(names.eventKind(eKind)), " ", zstr_(names.stopReason(nValue)))
+        else
+            debug("  event ", udec_(nMs), " ms ", zstr_(wheelName(eWheel)), " ", zstr_(names.eventKind(eKind)), " ", sdec_(nValue))
+
+PRI wheelName(eWheel) : pName
+' Name getEvent()'s wheel: the left's, the right's, or the platform's own event (a late front-cog pass, the pack).
+'
+' @param eWheel - EVW_LEFT, EVW_RIGHT or EVW_PLATFORM
+' @returns pName - pointer to its name
+
+    case eWheel
+        wheels.EVW_LEFT:
+            pName := @"LEFT"
+        wheels.EVW_RIGHT:
+            pName := @"RIGHT"
+        other:
+            pName := @"PLATFORM"
 
 PRI waitUntilMotorReady()
     if wheels.isReady() == false

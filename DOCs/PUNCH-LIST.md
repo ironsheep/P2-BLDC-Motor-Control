@@ -3937,7 +3937,14 @@ AND START REFUSAL CAUGHT IT** ([evaluation](analyses/bench/2026-09-25/VISIT-10-P
   refusal (`test_bench_dual` src_rev 49), and `test_bench_t0` src_rev 19 prints `T0-25,rprobe` and then falls back to
   the LEFT wheel, so the next death records its per-phase millivolts and voids nothing.
 - **Still open:** the trigger (both deaths followed ordinary driving, one right after an e-stop; the fault tier's harder
-  use did not trigger it), and whether the board or our pin handling holds the state. PL-138's all-low-sides window
+  use did not trigger it), and whether the board or our pin handling holds the state.
+- **2026-09-26, rig fact from Stephen:** the RIGHT motor had a weak connection, found several runs ago. He re-checks it
+  before pass 6.
+  - All three phases failing at once fits a shared path better than one phase lead: the board's supply or ground, or
+    the high-side gate supply. Recovery with time fits an intermittent contact.
+  - **Pass 6 will be confounded.** The reseat and three driver-side changes (PL-138 parts 1-2, PL-141) land together.
+    A pass with no death clears neither by itself. The reading that tells them apart is the next death's
+    `BM-RPROBE` / `T0-25,rprobe` signature, if one comes. PL-138's all-low-sides window
   touches this path and is the next driver-side candidate.
 
 ### PL-121 -- T0-24's hand rows ended on a clock that started at START
@@ -4527,6 +4534,38 @@ behind the other's achieved fraction, so a start where both are held together do
 read while a wheel is still in its start-from-rest hold, if that can be told apart from a blocked start. A blocked wheel
 at start must still engage it (SR_BLOCKED's path), so the design states how it tells the two apart. It is certified by
 R20-DUAL-EV-PATH (no engage at a healthy start) and by the blocked-step engage in part D.
+
+### PL-142 -- the compile gate never builds a top with DEBUG, so a broken debug() line in a release demo passes
+
+**Found 2026-09-26** while updating the demos («#3624»).
+- **MEASURED:** a two-line file whose `debug()` names an undefined symbol builds with `pnut-ts -q` (exit 0, 6_292 B)
+  and fails with `pnut-ts -q -d` (`error:Expected an expression term`).
+- `tools/build-check.sh` compiles every object and top with `-q` only (`:194`, `:204`). Only the bench tiers are built
+  with DEBUG, by the footprint measure.
+- So the two release demos, whose whole output is `debug()`, are "certified" without their debug lines ever compiling.
+
+**Why it matters:** the demos are what users copy, and a user builds them with DEBUG on. A release gate that cannot
+fail on a demo's output lines has certified nothing about them (D2).
+
+**Disposition: Punch list** (instrument). The fix is one more compile per certified release demo, with `-d`, under the
+config block that certified it. It belongs to the release gate («#3516» runs it). Until then, «#3624» checks every demo
+with `-d` in a scratch copy.
+
+### PL-143 -- the command timeout watches a drive whose own limit bounds it, so "arm a limit, then drive" is cut short
+
+**Found 2026-09-26** while updating the RC demo («#3624»).
+- **DERIVED from the source:** `REQ_DRIVE` marks every non-zero drive as open-ended for the command timeout
+  (`isp_steering_2wheel.spin2` ~:2816, `frontWatchCommand()`). That includes a `driveDirection()` or `driveAtPower()`
+  after `stopAfterTime()`, `stopAfterRotation()` or `stopAfterDistance()`. Only `driveForDistance()` is exempt, "a
+  bounded move" (DRIVE-OBJECTS.md, `setCommandTimeout()`).
+- So with `setCommandTimeout()` on, the library's own recommended pattern ("arm the limit BEFORE the drive") stops at
+  the timeout unless the program re-sends the drive. Re-sending may itself disturb the armed limit; that is not checked.
+- The RC demo's slow one-rotation drive is exactly that pattern. It would be cut after the timeout, so the demo does
+  not turn the guard on yet.
+
+**Disposition: question for Stephen** (the API contract is his, D10). Either a drive with an armed platform limit is
+bounded and not watched, as `driveForDistance()` is; or it is watched, the doc says so, and a program re-sends it.
+Once ruled, the RC demo gains `setCommandTimeout()` as its link-loss guard for wheels-down driving.
 
 **2026-09-26 -- desk design, then BUILT (not yet certified), task «#3622», DRIVER_REV 28, `test_bench_dual` src_rev 50.**
 - **Found while designing, verified here: today's scale-to-0 disables the blocked-wheel protective stop under the

@@ -1,13 +1,20 @@
 '' =================================================================================================
 ''
 ''   File....... demo_single_motor.spin2
-''   Purpose.... Demonstrate control of a single BLDC Motor
+''   Purpose.... Demonstrate control of a single BLDC Motor, and reading what the drive reports
 ''   Authors.... Stephen M Moraco
 ''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Feb 2022
-''   Updated.... 9 Feb 2022
+''   Updated.... 26 Sep 2026
+''
+''   What it shows, in order:
+''   1. start() checks the motor before anything moves, and refuses one that fails -- how to tell why (getHealth())
+''   2. checkWiring(): an opt-in check that turns the wheel a little to prove the hall and phase wiring
+''   3. the fault response in effect, and how to choose the graded one (setFaultResponse())
+''   4. driving: always arm a limit BEFORE the drive it guards, so the motor never runs without one
+''   5. after each drive: why it ended (getStopReason()), and what the drive handled on its own (getEvent())
 ''
 '' =================================================================================================
 
@@ -40,6 +47,7 @@ OBJ { our Motor(s) }
     user        :   "isp_bldc_motor_userconfig"     ' driver configuration
     tvDebug     :   "isp_hdmi_debug"         ' HDMI debug object
     wheel       :   "isp_bldc_motor"        ' the single BLDC motor
+    names       :   "demo_drive_names"      ' words for the drive's reported values, for the debug output
 
 DAT { run-time condition vars }
 
@@ -77,23 +85,40 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
     motor := wheel.validMotorForChoice(user.MOTOR_TYPE)
 
     if basePin <> wheel.INVALID_PIN_BASE and voltage <> wheel.INVALID_VOLTAGE and motor <> wheel.INVALID_MOTOR and detectMode <> wheel.INVALID_DET_MODE
+        ' 1. start() checks the hall sensors, current sense and motor leads with nothing moving, retries a check
+        '  that fails, and refuses to start if one still fails. TRUE is the default; setStartChecks(false), called
+        '  before start(), starts the motor anyway (getHealth() still reports what failed).
+        wheel.setStartChecks(true)
+
         ' start our single motor driver and its front cog, which enforces the stop limits (2 cogs)
         motorCog := wheel.start(basePin, voltage, detectMode)
         'tvDebug.reportMotorCog(motorCog)
 
         if motorCog < 0
-            ' start() refused: the cause is waiting in getError()
+            ' start() refused: the cause is waiting in getError(). A refused start check is ERR_START_CHECK_FAILED,
+            '  and getHealth() then names the check -- a disconnected motor lead, say
             eError := wheel.getError()
-            debug("* ERROR motor did not start: ", sdec_long(eError))
+            debug("* ERROR motor did not start: ", zstr_(names.errorName(eError)))
+            showHealth()
         else
+            showHealth()                                        ' what the start checks found, even when they passed
+            showPack()
+
             if bUseHDMI
                 nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheel.getDebugData()
                 debug("* Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
 
                 tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
 
-            ' - testing NEW Control Method -
-            ' ensure motor is ready be commanded
+            ' 2. prove the wiring. This TURNS THE WHEEL one electrical cycle (about 3.5 cm at the tyre) forward and
+            '  back. Its verdict is getHealth()'s HLT_WIRING bit.
+            if bCommandSucceeded(wheel.checkWiring(), @"checkWiring")
+                showWiring()
+
+            ' 3. what the motor does if its rotor cannot follow the field (an overload or a stall)
+            showFaultResponse()
+
+            ' 4. ensure motor is ready be commanded
             waitUntilMotorReady()
             wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
             'wheel.setMaxSpeed(90)  ' override 75% with 90% for these tests
@@ -106,12 +131,14 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
                 eError := wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
             if bCommandSucceeded(eError, @"FWD run")
                 waitUntilMotorDone()
+            showWhatHappened()                                  ' 5. expect SR_AT_LIMIT: the time limit was reached
 
             eError := wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' hold at speed for 15 Sec
             if eError == wheel.NO_ERROR
                 eError := wheel.driveAtPower(-100)                     ' REV at 100% pwr
             if bCommandSucceeded(eError, @"REV run")
                 waitUntilMotorDone()
+            showWhatHappened()
 
             debug("* holding for 20 secs...")
             waitms(20000)   ' 20 seconds, then stop
@@ -142,7 +169,105 @@ PRI bCommandSucceeded(eError, pWhat) : bSucceeded | eFirstError
     bSucceeded := (eError == wheel.NO_ERROR)
     if bSucceeded == FALSE
         eFirstError := wheel.getError()
-        debug("* ERROR ", zstr_(pWhat), " refused: ", sdec_long(eError), sdec_long(eFirstError))
+        debug("* ERROR ", zstr_(pWhat), " refused: ", zstr_(names.errorName(eError)), " (first: ", zstr_(names.errorName(eFirstError)), ")")
+
+PRI showHealth() | nChecked, nFailed, nRecovered
+' Report what start() checked, which checks failed, and which failed at first and passed on a retry.
+'
+' getHealth() returns three masks of HLT_* bits. A recovered check started the motor normally -- worth knowing
+' about (a loose connector can look like that), but not a failure.
+
+' Local Variables:
+' @local nChecked - the HLT_* bits that were checked
+' @local nFailed - ...that still failed
+' @local nRecovered - ...that failed, then passed on a retry
+
+    nChecked, nFailed, nRecovered := wheel.getHealth()
+    debug("* start checks: checked ", uhex_byte_(nChecked))
+    showHealthBits(@"FAILED", nFailed)
+    showHealthBits(@"recovered on a retry", nRecovered)
+
+PRI showHealthBits(pWhat, nBits) | nBit
+' Name each check set in a getHealth() mask.
+'
+' @param pWhat - pointer to what the mask means (failed, or recovered)
+' @param nBits - the mask of HLT_* bits
+
+' Local Variables:
+' @local nBit - the bit being tested
+
+    repeat nBit from 0 to names.HEALTH_BITS - 1
+        if nBits & (1 << nBit)
+            debug("*   ", zstr_(names.healthBit(nBit)), " ", zstr_(pWhat))
+
+PRI showWiring() | nFailed
+' Report checkWiring()'s verdict: its HLT_WIRING bit in getHealth()'s failed mask.
+
+' Local Variables:
+' @local nFailed - the failed bits
+
+    _, nFailed, _ := wheel.getHealth()
+    debug("* wiring: ", zstr_((nFailed & wheel.HLT_WIRING) ? @"FAILED" : @"ok"))
+
+PRI showPack() | ePackStatus, nMilliVolts
+' Report the battery pack's voltage, when the optional pack voltage sensor is fitted (VOLTAGE-SENSOR.md).
+
+' Local Variables:
+' @local ePackStatus - PACK_NOT_FITTED, PACK_ABSENT or PACK_PRESENT
+' @local nMilliVolts - the pack voltage, mV, when PACK_PRESENT
+
+    ePackStatus, nMilliVolts := wheel.getPackVoltage()
+    debug("* pack: ", zstr_(names.packStatus(ePackStatus)), " ", udec_(nMilliVolts), " mV")
+
+PRI showFaultResponse() | eMode, brakePct
+' Report the fault response in effect.
+'
+' FR_SHIPPED, the default, coasts or brakes at once (per holdAtStop()) when the rotor cannot follow its field.
+' FR_GRADED re-syncs from the hall sensors and stops along the ramp instead:
+'   wheel.setFaultResponse(wheel.FR_GRADED, 10)    ' 10 = brake at 10 % if control is lost anyway
+' start() restores the default, so a program sets its choice after each start().
+
+' Local Variables:
+' @local eMode - FR_SHIPPED or FR_GRADED
+' @local brakePct - the graded brake's share of a full short, %
+
+    eMode, brakePct := wheel.getFaultResponse()
+    debug("* fault response: ", zstr_(names.faultResponse(eMode)), ", brake ", udec_(brakePct), " %")
+
+PRI showWhatHappened() | eReason
+' After a drive: why it ended, then every event the drive logged since the last look.
+'
+' getStopReason() answers "why did it stop?" -- SR_AT_LIMIT for a limit you armed, SR_COMMANDED for a stop you
+' asked for, and otherwise something you did NOT ask for: a fault, a blocked wheel, a lost link, an emergency stop.
+' It stays readable until the next drive command.
+
+' Local Variables:
+' @local eReason - the SR_* value
+
+    eReason := wheel.getStopReason()
+    debug("* stopped: ", zstr_(names.stopReason(eReason)))
+    showEvents()
+
+PRI showEvents() | eKind, nMs, nValue
+' Drain this cog's event log: what the drive handled on its own, oldest first.
+'
+' Each cog reads every event for itself. A cog that falls more than EV_QUEUE_DEPTH events behind is told first, with
+' EV_LOST (its value: how many it lost) -- so a gap never reads as "nothing happened". EV_STOP's value is the stop
+' reason; most others carry a count or a measurement (DRIVE-OBJECTS.md, "Stop reasons and events").
+
+' Local Variables:
+' @local eKind - the event's EV_* kind; EV_NONE when all are read
+' @local nMs - getms() when it happened
+' @local nValue - the event's value
+
+    repeat
+        eKind, nMs, nValue := wheel.getEvent()
+        if eKind == wheel.EV_NONE
+            quit
+        if eKind == wheel.EV_STOP
+            debug("*   event ", udec_(nMs), " ms ", zstr_(names.eventKind(eKind)), " ", zstr_(names.stopReason(nValue)))
+        else
+            debug("*   event ", udec_(nMs), " ms ", zstr_(names.eventKind(eKind)), " ", sdec_(nValue))
 
 PRI waitUntilMotorReady()
     if wheel.isReady() == false

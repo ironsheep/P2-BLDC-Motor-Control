@@ -1,13 +1,20 @@
 '' =================================================================================================
 ''
 ''   File....... demo_dual_motor_hdmi.spin2
-''   Purpose.... Demonstrate driving a two-wheeled platform
+''   Purpose.... Demonstrate driving a two-wheeled platform with both motors' live values on an HDMI display
 ''   Authors.... Stephen M Moraco
-''               -- Copyright (c) 2022 Iron Sheep Productions, LLC
+''               -- Copyright (c) 2023 Iron Sheep Productions, LLC
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Mar 2023
-''   Updated.... 21 Mar 2023
+''   Updated.... 26 Sep 2026
+''
+''   demo_dual_motor.spin2's reporting, with an HDMI display and one steady drive to watch it by. In order:
+''   1. start() checks each wheel before anything moves, and refuses a wheel that fails -- how to tell why (getHealth())
+''   2. checkWiring(): an opt-in check that moves the robot a few degrees to prove the hall and phase wiring
+''   3. the fault response in effect, and how to choose the graded one (setFaultResponse())
+''   4. one drive, both wheels at different powers for 10 s, with the limit armed BEFORE the drive it guards
+''   5. after it: why it ended (getStopReason()), and what the drive handled on its own (getEvent())
 ''
 '' =================================================================================================
 
@@ -33,6 +40,7 @@ OBJ { our Drive Subsystem }
     user    :   "isp_bldc_motor_userconfig"             ' driver configuration
     wheels  :   "isp_steering_2wheel"                   ' the dual-drive BLDC motors
     tvDebug :   "isp_hdmi_debug"                        ' HDMI debug object
+    names   :   "demo_drive_names"                      ' words for the drive's reported values, for the debug output
 
 DAT { run-time condition vars }
 
@@ -73,55 +81,48 @@ PUB main() | basePinLt, basePinRt, voltage, motor, basePin, detectModeLt, detect
     motor := wheels.validMotorForChoice(user.MOTOR_TYPE)
 
     if basePinLt <> wheels.INVALID_PIN_BASE and basePinRt <> wheels.INVALID_PIN_BASE and voltage <> wheels.INVALID_VOLTAGE and motor <> wheels.INVALID_MOTOR and detectModeLt <> wheels.INVALID_DET_MODE and detectModeRt <> wheels.INVALID_DET_MODE
-        ' start our dual motor driver
+        ' 1. start() checks each wheel's hall sensors, current sense and motor leads with nothing moving, retries a
+        '  check that fails, and refuses to start if one still fails. TRUE is the default; setStartChecks(false),
+        '  called before start(), starts the platform anyway (getHealth() still reports what failed).
+        wheels.setStartChecks(true)
 
         ' start our motor drivers (left and right)
         senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
         if senseCog < 0
-            ' start() returned -1: getError() says why, and which wheel
+            ' start() returned -1: getError() says why, and for which wheel. A refused start check is
+            '  ERR_START_CHECK_FAILED, and getHealth() then names the check -- a disconnected motor lead, say
             bCommandSucceeded(senseCog, @"start")
+            showHealth()
         else
+            showHealth()                                        ' what the start checks found, even when they passed
+            showPack()
+
             ' just don't draw current at stop
             wheels.holdAtStop(false)
             'wheels.setMaxSpeed(100)  ' override 75% with 100%
 
+            ' 2. prove the wiring. This MOVES THE ROBOT: each wheel turns one electrical cycle (about 3.5 cm at the
+            '  tyre) out and back, the two wheels opposite ways, so the platform turns a few degrees in place and
+            '  returns. Its verdict is each wheel's HLT_WIRING bit in getHealth().
+            if bCommandSucceeded(wheels.checkWiring(), @"checkWiring")
+                showWiring()
+
+            ' 3. what a wheel does if its rotor cannot follow the field (an overload or a stall)
+            showFaultResponse()
 
             if bUseHDMI
                 connectMotorToHDMI()
 
-            ' now drive! -- always arm the limit BEFORE driving, so the motors never run without one
-            'waitUntilMotorReady()
+            ' 4. now drive! -- always arm the limit BEFORE driving, so the motors never run without one
+            waitUntilMotorReady()
 
-{
-            debug("* BOTH Wheels")
-            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-            if eError == wheels.NO_ERROR
-                eError := wheels.driveDirection(80, -25)
-            if bCommandSucceeded(eError, @"turn one way")
-                waitUntilMotorDone()
-
-            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-            if eError == wheels.NO_ERROR
-                eError := wheels.driveDirection(80, 25)
-            if bCommandSucceeded(eError, @"turn the other way")
-                waitUntilMotorDone()
-'}
-'{
-            debug("* LT Wheel")
-            eError := wheels.stopAfterTime(10, wheels.DTU_SEC)      ' hold at speed for 10 Sec
+            debug("* BOTH Wheels, different powers")
+            eError := wheels.stopAfterTime(10, wheels.DTU_SEC)      ' hold at speed for 10 Sec, to watch the display
             if eError == wheels.NO_ERROR
                 eError := wheels.driveAtPower(40, 50)
             if bCommandSucceeded(eError, @"both wheels")
                 waitUntilMotorDone()
-'}
-{
-            debug("* RT Wheel")
-            eError := wheels.stopAfterTime(15, wheels.DTU_SEC)      ' hold at speed for 15 Sec
-            if eError == wheels.NO_ERROR
-                eError := wheels.driveAtPower(0, 100)
-            if bCommandSucceeded(eError, @"right wheel")
-                waitUntilMotorDone()
-'}
+            showWhatHappened()                                  ' 5. expect SR_AT_LIMIT: the time limit was reached
         ' turn off our motor drivers (safe whether or not they started)
         wheels.stop()
     else
@@ -129,6 +130,127 @@ PUB main() | basePinLt, basePinRt, voltage, motor, basePin, detectModeLt, detect
 
     debug("* DONE")
 
+PRI showHealth() | nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered
+' Report what start() checked on each wheel, which checks failed, and which failed at first and passed on a retry.
+'
+' getHealth() returns three masks of HLT_* bits per wheel. A recovered check started the motor normally -- it is
+' worth knowing about (a loose connector can look like that), but it is not a failure.
+
+' Local Variables:
+' @local nLeftChecked - the left wheel's HLT_* bits that were checked
+' @local nLeftFailed - ...that still failed
+' @local nLeftRecovered - ...that failed, then passed on a retry
+' @local nRightChecked - the right wheel's, likewise
+' @local nRightFailed - the right wheel's still failing
+' @local nRightRecovered - the right wheel's recovered
+
+    nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered := wheels.getHealth()
+    debug("* start checks: LEFT checked ", uhex_byte_(nLeftChecked), ", RIGHT checked ", uhex_byte_(nRightChecked))
+    showHealthBits(@"LEFT", @"FAILED", nLeftFailed)
+    showHealthBits(@"LEFT", @"recovered on a retry", nLeftRecovered)
+    showHealthBits(@"RIGHT", @"FAILED", nRightFailed)
+    showHealthBits(@"RIGHT", @"recovered on a retry", nRightRecovered)
+
+PRI showHealthBits(pWheel, pWhat, nBits) | nBit
+' Name each check set in a getHealth() mask.
+'
+' @param pWheel - pointer to the wheel's name
+' @param pWhat - pointer to what the mask means (failed, or recovered)
+' @param nBits - the mask of HLT_* bits
+
+' Local Variables:
+' @local nBit - the bit being tested
+
+    repeat nBit from 0 to names.HEALTH_BITS - 1
+        if nBits & (1 << nBit)
+            debug("*   ", zstr_(pWheel), " ", zstr_(names.healthBit(nBit)), " ", zstr_(pWhat))
+
+PRI showWiring() | nLeftFailed, nRightFailed
+' Report checkWiring()'s verdict for each wheel: its HLT_WIRING bit in getHealth()'s failed mask.
+
+' Local Variables:
+' @local nLeftFailed - the left wheel's failed bits
+' @local nRightFailed - the right wheel's failed bits
+
+    _, nLeftFailed, _, _, nRightFailed, _ := wheels.getHealth()
+    debug("* wiring: LEFT ", zstr_((nLeftFailed & wheels.HLT_WIRING) ? @"FAILED" : @"ok"), ", RIGHT ", zstr_((nRightFailed & wheels.HLT_WIRING) ? @"FAILED" : @"ok"))
+
+PRI showPack() | ePackStatus, nMilliVolts
+' Report the battery pack's voltage, when the optional pack voltage sensor is fitted (VOLTAGE-SENSOR.md).
+
+' Local Variables:
+' @local ePackStatus - PACK_NOT_FITTED, PACK_ABSENT or PACK_PRESENT
+' @local nMilliVolts - the pack voltage, mV, when PACK_PRESENT
+
+    ePackStatus, nMilliVolts := wheels.getPackVoltage()
+    debug("* pack: ", zstr_(names.packStatus(ePackStatus)), " ", udec_(nMilliVolts), " mV")
+
+PRI showFaultResponse() | eMode, brakePct
+' Report the fault response in effect.
+'
+' FR_SHIPPED, the default, coasts or brakes at once (per holdAtStop()) when a wheel's rotor cannot follow its field.
+' FR_GRADED re-syncs from the hall sensors and stops along the ramp instead, which is gentler on a tall robot:
+'   wheels.setFaultResponse(wheels.FR_GRADED, 10)    ' 10 = brake at 10 % if control is lost anyway
+' start() restores the default, so a program sets its choice after each start().
+
+' Local Variables:
+' @local eMode - FR_SHIPPED or FR_GRADED
+' @local brakePct - the graded brake's share of a full short, %
+
+    eMode, brakePct := wheels.getFaultResponse()
+    debug("* fault response: ", zstr_(names.faultResponse(eMode)), ", brake ", udec_(brakePct), " %")
+
+PRI showWhatHappened() | eLeftReason, eRightReason
+' After a drive: why each wheel's drive ended, then every event the drive logged since the last look.
+'
+' getStopReason() answers "why did it stop?" -- SR_AT_LIMIT for a limit you armed, SR_COMMANDED for a stop you
+' asked for, and otherwise something you did NOT ask for: a fault, a blocked wheel, a lost link, an emergency stop.
+' SR_PARTNER means the other wheel's condition stopped this one; read the other wheel's reason. It stays readable
+' until that wheel's next drive command.
+
+' Local Variables:
+' @local eLeftReason - the left wheel's SR_* value
+' @local eRightReason - the right wheel's SR_* value
+
+    eLeftReason, eRightReason := wheels.getStopReason()
+    debug("* stopped: LEFT ", zstr_(names.stopReason(eLeftReason)), ", RIGHT ", zstr_(names.stopReason(eRightReason)))
+    showEvents()
+
+PRI showEvents() | eKind, nMs, eWheel, nValue
+' Drain this cog's event log: what the drive handled on its own, oldest first, both wheels merged.
+'
+' Each cog reads every event for itself. A cog that falls more than EV_QUEUE_DEPTH events behind is told first, with
+' EV_LOST (its value: how many it lost) -- so a gap never reads as "nothing happened". EV_STOP's value is the stop
+' reason; most others carry a count or a measurement (DRIVE-OBJECTS.md, "Stop reasons and events").
+
+' Local Variables:
+' @local eKind - the event's EV_* kind; EV_NONE when all are read
+' @local nMs - getms() when it happened
+' @local eWheel - EVW_LEFT, EVW_RIGHT or EVW_PLATFORM
+' @local nValue - the event's value
+
+    repeat
+        eKind, nMs, eWheel, nValue := wheels.getEvent()
+        if eKind == wheels.EV_NONE
+            quit
+        if eKind == wheels.EV_STOP
+            debug("*   event ", udec_(nMs), " ms ", zstr_(wheelName(eWheel)), " ", zstr_(names.eventKind(eKind)), " ", zstr_(names.stopReason(nValue)))
+        else
+            debug("*   event ", udec_(nMs), " ms ", zstr_(wheelName(eWheel)), " ", zstr_(names.eventKind(eKind)), " ", sdec_(nValue))
+
+PRI wheelName(eWheel) : pName
+' Name getEvent()'s wheel: the left's, the right's, or the platform's own event (a late front-cog pass, the pack).
+'
+' @param eWheel - EVW_LEFT, EVW_RIGHT or EVW_PLATFORM
+' @returns pName - pointer to its name
+
+    case eWheel
+        wheels.EVW_LEFT:
+            pName := @"LEFT"
+        wheels.EVW_RIGHT:
+            pName := @"RIGHT"
+        other:
+            pName := @"PLATFORM"
 
 PRI connectMotorToHDMI() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars
 ' connect our two motors to the HDMI display mech
@@ -157,7 +279,6 @@ PRI connectMotorToHDMI() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGr
         tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
 '}
 
-
 PRI bCommandSucceeded(eError, pWhat) : bSucceeded | eSteerError, eLeftError, eRightError
 ' Report a refused command with the cause and the wheel, and collect this cog's errors so the next failure records its own.
 '
@@ -173,9 +294,11 @@ PRI bCommandSucceeded(eError, pWhat) : bSucceeded | eSteerError, eLeftError, eRi
     bSucceeded := (eError == wheels.NO_ERROR)
     if bSucceeded == FALSE
         eSteerError, eLeftError, eRightError := wheels.getError()
-        debug("* ERROR ", zstr_(pWhat), " refused: ", sdec_long(eError), sdec_long(eSteerError), sdec_long(eLeftError), sdec_long(eRightError))
+        debug("* ERROR ", zstr_(pWhat), " refused: ", zstr_(names.errorName(eSteerError)), ", LEFT ", zstr_(names.errorName(eLeftError)), ", RIGHT ", zstr_(names.errorName(eRightError)))
 
 PRI waitUntilMotorReady()
+' if wheels are NOT ready, then wait until they are ready
+'
     if wheels.isReady() == false
         debug("* wait motors ready...")
         repeat
@@ -187,6 +310,9 @@ PRI waitUntilMotorReady()
 
 
 PRI waitUntilMotorDone()
+' If wheels are not started, then wait until they are started
+'  then if wheels are not stopped, wait until they are stopped
+'
     if wheels.isStarting() == false
          debug("* wait until motors start...")
          repeat
