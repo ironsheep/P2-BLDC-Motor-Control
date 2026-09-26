@@ -1,51 +1,50 @@
-# Visit 10 — run sheet, pass 7 (the path limiter's hunt fixed, one "following" meaning, and PL-120's recovery timed)
+# Visit 10 — run sheet, pass 7 (the burn-down pass: close every wheels-up item that has landed)
 
-**Task:** «#3613» runs it. **Plan:** `BENCH-READINESS-SPRINT-PLAN.md`, R20.6.
+**Task:** «#3613» runs it. **Burn-down:** `DOCs/PUNCH-LIST.md`, "Release burn-down".
 
-**Built for this pass (DRIVER_REV 31; `test_bench_dual` SRC_REV 52; `test_bench_t0` SRC_REV 20):**
-- DRIVER_REV 31: FR_GRADED is the default fault response (Stephen's ruling, its condition met at pass 5).
-- PL-144: the steering path limiter releases only once both fields have reached the present scale, so it no longer
-  cycles between 8 % and 100 %. New cell R20-DUAL-PATH-HUNT.
-- PL-147: the following percentage is of the user's command, so it agrees with the limiter's reading (R18-DUAL-NOTFOL-D).
-- PL-146: part D's event drains wait for both drivers to stop before settling (R20-DUAL-EV-FOLDBACK).
-- R20-DUAL-EV-PATH's positive precondition: a wheel held while its commanded partner is not.
-- PL-120: after a refused right, T0-25 tries the right every 10 s for up to 3 min and prints when it comes back.
+**What this pass can close** (all built and gated; none has run on hardware):
 
-**Done so far:**
-- Passes 3–5 (09-24/25): the fault responses on both wheels, the hold, the start checks, the winding check, and
-  refusal / opt-out / retry certified.
-- Pass 6 (09-26 12:33), [evaluation](2026-09-26/VISIT-10-PASS6-EVALUATION.md):
-  - T0-25 certified, 8 of 8 on the left;
-  - the walk fix (PL-137), the gate-pin fix (PL-138) and the no-engage-at-start fix (PL-141) certified;
-  - PL-120 struck at the first load, after the reseat, and was back in under 2 minutes;
-  - PL-144 and PL-147 found, now built.
+| Closes | What it proves | Tier |
+|---|---|---|
+| PL-78 / PL-87 / PL-95 | **the speed-change kick is gone** (the arrival pass now advances the field) | `dual-kick` |
+| PL-144 | the path limiter no longer hunts | `dual-d` |
+| PL-147 | the two "following" readings agree | `dual-d` |
+| PL-146 | the fold-back events drain after the fields stop | `dual-d` |
+| PL-143 | the command timeout watches every drive, `driveForDistance()` included | `dual-d` |
+| PL-141 (positive half) | the path limiter engages for a wheel behind its partner | `dual-d` |
+| PL-151 | turning by distance, fault cause, fault retry | `dual-reg`, `t0-stopreason` |
+| PL-153 | the odometer is total travel; each limit counts from where it was armed | `t0-stopreason` |
+| PL-155, PL-158, PL-159, PL-160 (API half) | every API setting accepts its range, refuses outside it, reads back, and survives `start()` | `t0-api`, `t0-stopreason` |
+| PL-156 | `isMoveDone()` | `t0-stopreason` |
+| PL-152 | the pointed tiers themselves (one compile, one part) | every dual tier |
+| «#3611» pair 1 | the pack calibration applied (1012) | `dual-pack` |
+| PL-120 | read against the header reseat; any refusal times its recovery | `t0-stopreason` |
+
+**Not in this pass** (Stephen, 2026-09-26): serial and demo testing wait for a release-candidate driver. The floor
+run's load items (the hold on an incline, the loaded path limiter and overload hold, a chocked wheel) wait for the
+floor run.
 
 ---
 
 ## ⛔ First: PUSH, then pull at the bench
 
-`main` is ahead of origin. **Push from the authoring tree first**, then pull at the bench. `git log --oneline -1 -- src/`
-at the bench must show **3e665db** or later (DRIVER_REV 31: FR_GRADED is now the default fault response, as
-ruled. Every fault trial sets its response explicitly, so no cell on this sheet rests on the default).
+`git log --oneline -1 -- src/` at the bench must show **cd6f1b7** or later (DRIVER_REV 35).
 
-**What this change invalidated:** the subject under test changed (the motor and steering objects), so every cell that
-drives through the steering object restarts. That is why STEERSEG, RESTCOAST and the walk are re-proved. T0-25's
-reporting code did not change; it re-runs only because it goes first.
+**What this invalidated:** the driver changed (DRIVER_REV 30→35), so every cell that drives certifies again, and that
+is the purpose of this pass.
 
 ## ⭐ Before anything: note the time you connect the pack
 
-**Write down the clock time when you connect the battery to the platform**, and whether it was connected already.
-PL-120 struck on the first load of the day at passes 4 and 6. The log alone cannot say whether that load came right
-after power-on.
+**Write down the clock time you connect the battery**, and whether it was already connected. PL-120 has struck on the
+first load of the day twice.
 
 ## Check the banner before reading anything else
 
 | Load | Every banner / build record must read |
 |---|---|
-| `t0-stopreason` | the t0 banner at `src_rev 20` |
-| every `dual-*` tier | `BM-BANNER,...,src_rev,52,fmt,34` and `BM-BUILD ... drv_rev,31`. Anything lower means an old tree: stop and report |
-| `dual-start` | part `START`; `BM-SKBUILD ... walks,10,no_walk,FALSE ... neg,NONE` |
-| `dual-d` | part `D`; `SIGNOFF-DECL ... R20-DUAL-PATH-HUNT` present |
+| `t0-stopreason`, `t0-api` | the t0 banner at `src_rev 23` |
+| every `dual-*` tier | `BM-BANNER,...,src_rev,55,fmt,35` and `BM-BUILD ... drv_rev,35` |
+| `dual-pack` | `BM-PKBUILD,...,fitted,TRUE,pin,0,cal_pm,1_012,calibrated,TRUE` |
 
 ---
 
@@ -53,78 +52,47 @@ after power-on.
 
 | | |
 |---|---|
-| **Purpose** | **Certification** of DRIVER_REV 30–31: PL-144 (PATH-HUNT), PL-147 (NOTFOL-D), PL-146 (EV-FOLDBACK), EV-PATH's positive. It re-proves STEERSEG, RESTCOAST and the walk on the changed limiter. **Measurement:** PL-120's recovery time, if the right is refused at load, placed against the pack's power-on time. |
-| **Hardware risk** | • `t0-stopreason`: **an e-stop brakes one wheel abruptly.**<br>• `dual-d`: **the wheels stop dead**; an e-stop is latched; **the current limit is lowered until a wheel cannot keep up**; and **twice the platform is switched off while the wheels spin**.<br>**Wheels up throughout. Hands off in every tier. Panic: physical battery disconnect.** |
-| **Who can observe** | No tier needs anyone. One note from you: the pack's power-on time (above). |
-| **Runs that carry state** | None across runs. PL-120, if it strikes, can outlast a reload for up to about 2 minutes. `t0-stopreason` now waits it out and times it. |
-| **Run length** | `t0-stopreason` under 1 minute, or up to about 4 if the right is refused. `dual-start` about 1. `dual-d` about 2 to 2.5. **Total about 4–7 minutes.** |
+| **Purpose** | **Certification** of DRIVER_REV 30–35 and the API contract, plus one pack-calibration confirmation. |
+| **Hardware risk** | • `t0-stopreason`: one wheel driven slowly, **one abrupt e-stop**.<br>• `dual-d`: **the wheels stop dead**, an e-stop is latched, the current limit is lowered until a wheel cannot keep up, and twice the platform is switched off while the wheels spin.<br>• `dual-reg`: **one wheel is faulted on purpose**, twice.<br>• `dual-kick`: each wheel in turn runs up to **top speed** (about 300 rpm).<br>**Wheels up throughout. Panic: physical battery disconnect.** |
+| **Who can observe** | Every tier is hands-off except `dual-pack`: you unplug and replug the sensor Powerpole twice, when told. Also note the pack's power-on time (above). |
+| **Runs that carry state** | None across runs. If PL-120 strikes, `t0-stopreason` waits for the right wheel to come back, up to 3 minutes. |
+| **Run length** | `t0-stopreason` about 1.5 min (up to about 4.5 if the right is refused). `t0-api` about 15 s. `dual-start` about 1. `dual-d` about 2.5. `dual-reg` under 1. `dual-kick` under 2. `dual-pack` under 3. **Total about 12 minutes.** |
 | **Repeatability** | All repeatable and idempotent. |
-| **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack, 270 MHz. `test_bench_t0` T0-25; `test_bench_dual` part START and part D. |
+| **Variant matrix** | Rev B, the paired 6.5in hubs, 18.5 V pack (sensor on P0), 270 MHz. `test_bench_t0` T0-25 and T0-26; `test_bench_dual` parts START, D, REG, KICK, PACK. |
 
 ---
 
-## The commands — three, all hands off
+## The commands — seven, in this order
 
 ```bash
-tools/bench-run.sh t0-stopreason        # 1: FIRST, right after power-on if you can. One wheel driven slowly and stopped every way, one abrupt e-stop. If the right is refused, it keeps trying the right for up to 3 minutes
-tools/bench-run.sh dual-start           # 2: 10 starts; the wheels twitch at the first two, and at EVERY start both turn a little one way and back
-tools/bench-run.sh dual-d               # 3: Stops dead, holds an e-stop, lowers the current limit until a wheel can't keep up; twice switches the platform off while the wheels spin
+tools/bench-run.sh t0-stopreason   # 1: FIRST. One wheel driven slowly and stopped every way; one abrupt e-stop; two short distance moves; the left instead if the right won't start
+tools/bench-run.sh t0-api          # 2: NOTHING MOVES. Every API setting with good and bad values; about 15 s
+tools/bench-run.sh dual-start      # 3: 10 starts; at every start both wheels turn a little one way and back
+tools/bench-run.sh dual-d          # 4: stops dead, holds an e-stop, lowers the current limit; twice switches the platform off while spinning
+tools/bench-run.sh dual-reg        # 5: two turns by distance; then each wheel is faulted on purpose and restarted
+tools/bench-run.sh dual-kick       # 6: one wheel at a time steps up to top speed and back down
+tools/bench-run.sh dual-pack       # 7: NOTHING MOVES. Hands off 60 s, then unplug/replug the sensor Powerpole AT THE PACK twice, when told. No meter reading needed
 ```
 
-**No run depends on another run's result, and nothing needs rewiring or touching.**
-
-**Not run this pass, and why:**
-- **`dual-start-swapneg`:** certified 3/3 at pass 6, and the walk runs outside the changed limiter.
-- **`dual-fault-rightfirst`:** the fault path is unchanged. RESTFLAT (PL-139) rides with the next fault-response change.
-- **`dual-start-phaseneg`, `t0-stopmode`, `dual-start-nowalk`, the pack tier:** unchanged paths, or no sensor fitted.
+**No run depends on another run's result, and nothing needs rewiring.**
 
 ---
 
-## What each load decides, and how each can fail
+## What each load decides
 
 Every criterion is fixed here, before the run (D2). The cells print their own verdicts.
 
-### 1 · `t0-stopreason`
-
-| What | Decides it |
+| Tier | Decides it |
 |---|---|
-| T0-25's eight cells | as pass 6 (the reporting code did not change): a regression check |
-| PL-120 (not a cell) | if refused: `T0-25,recover,try,N,ms,...` lines and `T0-25,recovered,...,ms,M`, each try with its `refused`/`health` and `rprobe` lines. Read against your power-on time. `recovered,...,ms,NA` means it outlasted 3 minutes |
-
-### 2 · `dual-start`
-
-| What | Decides it |
-|---|---|
-| R19-DUAL-WALK-X, per wheel | 0 of 10; no `BM-SKWLEG` ending `OTHER` |
-| No path engage at a start | no `EV PATH_LIMIT` in the run |
-| Every other START cell | as pass 6 |
-
-### 3 · `dual-d`
-
-| What | Decides it |
-|---|---|
-| **R20-DUAL-PATH-HUNT** | **exactly 1** engage/release pair in the behind wheel's log in the BLOCK step. Pass 6's pre-fix driver logged 5, which is the negative. NOMEAS if no wheel is seen held while its partner is not |
-| **R18-DUAL-NOTFOL-D**, the held wheel | PASS: both readings below their thresholds together (pass 6: 84 ‰ against 105 %) |
-| **R20-DUAL-EV-FOLDBACK** | 0 bad: every LIMIT stage's fold-back log engage, release … ending on a release |
-| **R20-DUAL-EV-PATH** | positive on the new precondition, and still no engage in STEERSEG |
-| R20-DUAL-RESTCOAST, STEERSEG steps, LAGBND, FRONTST | as pass 6 |
-| R16-DUAL-WTIMSTOP-D | judged as declared. Its 20 ms slack is known to sit inside its own spread (PL-145), so a FAIL up to about +30 ms is read against that |
-| DERATE, CLIMIT, BLOCKED | NOMEAS wheels-up, as declared |
-
----
-
-## What this visit cannot measure, named
-
-- **SR_BLOCKED and how the limiter settles on the floor:** the floor run («#3576»).
-- **PL-120's cause:** this pass times the recovery. The board's high side is the reading it cannot see into.
-- **The hold's events, the hall-illegal event, the pack voltage:** their tiers are not run.
-
-## Open questions
-
-- What does PL-120's first-load failure follow, and how long does it last?
-- Does the fixed limiter hold one engage per shortfall?
+| `t0-stopreason` | T0-25's eight cells, as before; R20-T0-ROTSTOP (one turn to within 3 ticks); R20-T0-ESTOPSTATUS; **R20-T0-ODOMETER** (two back-to-back moves each travel their distance; e-stop leaves the odometer unchanged); **R20-T0-MOVEDONE**; **R20-T0-PERSIST** |
+| `t0-api` | every R20-T0-API-* family at 0 bad calls (ACCEL including setDeceleration, MAXSPEED, HOLD, FAULTRESP, HOLDLIMITS, TIMEOUT, LIMITS, PERSIST, CALIBRATE, STEER) |
+| `dual-start` | WALK 0/10 per wheel, no leg ending OTHER, no PATH_LIMIT at a start; the other START cells as before |
+| `dual-d` | **R20-DUAL-PATH-HUNT exactly 1** (pre-fix: 5); **R18-DUAL-NOTFOL-D PASS**; **R20-DUAL-EV-FOLDBACK 0 bad**; R20-DUAL-EV-PATH positive; **CMDTIMEOUT including the bounded limb** (a 20 m `driveForDistance()` left silent stops at the timeout); RESTCOAST and the STEERSEG steps as before. WTIMSTOP is read against PL-145 (its slack sits inside its own spread) |
+| `dual-reg` | R17-DUAL-TURNDIST-B (each wheel within 0–2 ticks of its own target); R17-DUAL-FLTCAUSE-B (FC_LAG on the faulted wheel, FC_NONE after healthy drives); R16-DUAL-FLTRETRY-B (the same power clears the fault and drives) |
+| `dual-kick` | **R21-DUAL-TRKICK-T ≤ 50 mV per motor** over the seven worst transitions (the pre-fix logs read 64–183) |
+| `dual-pack` | R20-PACK-METER CAL_POINT (the applied calibration against your DMM's 20.74 V pair); ABSENT and EV as before |
 
 ## After the visit
 
-One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`. Then close PL-144, PL-146 and PL-147 on
-their cells.
+One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`. Then close every punch-list item its
+cells certify, and re-count the burn-down.
