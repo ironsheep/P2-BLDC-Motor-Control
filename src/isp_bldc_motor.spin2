@@ -5770,7 +5770,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 26        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 27        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -5801,6 +5801,11 @@ CON { driver internal Constants }
                                             '     pin group, not only this motor's own (task 3611). No PASM change
                                             ' 26: PL-137 fix -- isWalkWatched(), so the steering path limiter stays out of a
                                             '     wiring walk and each wheel's verdict is its own (task 3610). No PASM change
+                                            ' 27: PL-138 part 1 -- every gate is held OFF through the sense calibration and
+                                            '     the ATN park (low sides mode 0 driven low; high sides pwmt in reset), and
+                                            '     the low sides take pwmn in driveinit's unbroken run to the DIR raise, so
+                                            '     the all-low-sides short shrinks from calibration + park to ~20 clocks
+                                            '     (task 3623). PASM (LUT) change; no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6861,8 +6866,8 @@ initAngleFmHallC                                        ' entry with C already s
 all_pins        LONG    (13 << 6) + 0           ' all-pins variable (0 addpins 13) needs ADD/OR of basepin, skip last 2 pwm pins, not used
 drive_pins      LONG    (5 << 6) + 8            ' drive-pins variable (+8 addpins 5) needs ADD of basepin, skip last 2 pwm pins, not used
 adc_pins        LONG    (4 << 6) + 0            ' drive-pins variable (+0 addpins 4) needs ADD/OR of basepin, note total of 5 pins, adc_x not used
-pwmt            LONG    %000_000000_01_01000_0  ' PWM true (P_BITDAC | P_PWM_TRIANGLE | P_OE)
-pwmn            LONG    %001_000000_01_01000_0  ' PWM not (P_INVERT_OUTPUT | P_BITDAC | P_PWM_TRIANGLE | P_OE)
+pwmt            LONG    %000_000000_01_01000_0  ' PWM true (P_PWM_TRIANGLE | P_OE: TT = %01, output enabled REGARDLESS of DIR; PL-138)
+pwmn            LONG    %001_000000_01_01000_0  ' PWM not (P_INVERT_OUTPUT | P_PWM_TRIANGLE | P_OE): with DIR low it outputs HIGH, ON
 adc_fram        LONG    0                       ' set ADC to full PWM frame counts [was: LONG    FRAME]
 fram            LONG    0                       ' PWM frame: width=FRAME/2, div sysclk by 1 (no division) [was: LONG (FRAME / 2) << 16 + 1 ]
 bias            LONG    0                       ' PWM center-frame bias [was: LONG    FRAME / 4]
@@ -7078,7 +7083,7 @@ foldback_cnt_ res 1         ' R20.1: frames the current fold-back lowered duty_ 
                  ' VALUE, whose top 12 bits are its cog address ($1EC, the last register, so USED is $1ED). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $2E6, 230 of 512 longs (DRIVER_REV 23).
+                 ' lutCodeStart $200 to lutCodeEnd $2F5, 245 of 512 longs (DRIVER_REV 27, PL-138).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -7125,21 +7130,31 @@ lutCodeStart
 
                 dirl    all_pins                        ' disable PWM and ADC pins for configuration
 
-                wrpin   pwmn, pin_pwm_u_l               ' set up PWM pins, low side is inverted
-                wrpin   pwmt, pin_pwm_u_h               ' high side is not inverted
-                wrpin   pwmn, pin_pwm_v_l
+                ' PL-138: every gate is held OFF, actively, from here to driveinit (the sense calibration, and the park
+                '  waiting for ATN). pwmt/pwmn are P_OE modes, whose output is enabled REGARDLESS OF DIR, and a PWM smart
+                '  pin held in reset (DIR low) outputs LOW (p2kbArchSmartPins, p2kbArchSmartPin01000PwmTriangle):
+                '  - a high side in pwmt with DIR low outputs LOW, so it is OFF, and may wait there;
+                '  - a low side in pwmn with DIR low would output HIGH, which is ON: all three low sides ON is a phase
+                '    short no bridge state asked for. So the low sides are NOT put in pwmn here: they stay plain pins
+                '    (mode 0) driven LOW (OFF) until driveinit gives them their mode, right before the DIR raise.
+                wrpin   pwmt, pin_pwm_u_h               ' high sides: PWM true, off while DIR is low
                 wrpin   pwmt, pin_pwm_v_h
-                wrpin   pwmn, pin_pwm_w_l
                 wrpin   pwmt, pin_pwm_w_h
+                outl    pin_pwm_u_l                     ' low sides: OUT low, then mode 0 (an earlier lifetime's pwmn may
+                outl    pin_pwm_v_l                     '  still be set: stop() only pinclears after its cogstop), then DIR
+                outl    pin_pwm_w_l                     '  high -- driven LOW, which is OFF
+                wrpin   #0, pin_pwm_u_l
+                wrpin   #0, pin_pwm_v_l
+                wrpin   #0, pin_pwm_w_l
+                dirh    pin_pwm_u_l
+                dirh    pin_pwm_v_l
+                dirh    pin_pwm_w_l
 
                 wxpin   fram, drive_pins                '  and set PWM frame width, too, matches adc period
-                wypin   #0, drive_pins                  ' high sides Y = 0 (off); DIR is low, so nothing is output until driveinit raises it
+                wypin   #0, drive_pins                  ' high sides Y = 0 (off) once driveinit raises their DIR
                 mov     coast_y, fram                   ' R17.1: the frame period is X[31:16]; Y = frame holds a triangle-PWM
                 shr     coast_y, #16                    '  pin constantly HIGH (p2kbArchSmartPin01000PwmTriangle), BR_COAST's low-side value
                 mov     lowy_probe, coast_y             ' R19.4: BR_PROBE starts from all low sides off, as COAST does
-                wypin   coast_y, pin_pwm_u_l            ' R17.1: so the bridge comes up COASTING when driveinit raises DIR -- with
-                wypin   coast_y, pin_pwm_v_l            '  Y = 0 on the inverted low sides it came up SHORTED for the frame before
-                wypin   coast_y, pin_pwm_w_l            '  the control loop first wrote the stop mode's state
 
                 ' ADC setup - GIO level
                 wrpin   adc_modes+0, adc_pins           ' switch ADC to GIO calibration
@@ -7297,7 +7312,24 @@ gettgtincr
 
 driveinit                                               ' init drive pwm
                 dirh    adc_pins                        ' enable ADC pins (base+0..4)
-                dirh    drive_pins                      ' enable PWM pins (base+8..13)
+                ' PL-138: the low sides take pwmn only here, in one unbroken run up to the DIR raise. WRPIN needs DIR low
+                '  (p2kbPasm2Wrpin), and a pwmn pin with DIR low outputs HIGH (ON), so from the first WRPIN below to the
+                '  dirh the low sides are ON: 10 instructions, about 20 clocks (74 ns at 270 MHz), under the boards'
+                '  250 ns minimum dead time. The high sides are OFF throughout (pwmt in reset outputs LOW), so no phase
+                '  has both sides on. Nothing may be inserted in this run: no wait, call or branch.
+                dirl    pin_pwm_u_l
+                dirl    pin_pwm_v_l
+                dirl    pin_pwm_w_l
+                wrpin   pwmn, pin_pwm_u_l               ' low side is inverted: the window opens here
+                wrpin   pwmn, pin_pwm_v_l
+                wrpin   pwmn, pin_pwm_w_l
+                wxpin   fram, pin_pwm_u_l               ' the frame width, as the high sides have it
+                wxpin   fram, pin_pwm_v_l
+                wxpin   fram, pin_pwm_w_l
+                wypin   coast_y, pin_pwm_u_l            ' R17.1: the bridge comes up COASTING when DIR rises -- with Y = 0 on the
+                wypin   coast_y, pin_pwm_v_l            '  inverted low sides it came up SHORTED for the frame before the control
+                wypin   coast_y, pin_pwm_w_l            '  loop first wrote the stop mode's state
+                dirh    drive_pins                      ' enable PWM pins (base+8..13): the window closes here
                                                         ' the ADC and PWM smart pins are never disabled after this.
                                                         ' Never DIRH the whole 0..13 range: it spans the hall inputs (base+5..7) and
                                                         ' drives them low, and the first hall read after start then sees an illegal code
@@ -7416,7 +7448,7 @@ estopBridge                                             ' PL-132: called once, a
 
 lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 230 of 512 used, COUNTED 2026-09-25 at DRIVER_REV 23 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 245 of 512 used, COUNTED 2026-09-26 at DRIVER_REV 27 (see the cog fit above)
 
 CON { license }
 {{
