@@ -21,6 +21,15 @@ can address, but an eye towards whether we have everything we need to meet the c
 we're trying to release in 6."* Only work that makes a 6.0 feature (README.md "Latest Changes", v6.0.0) operational
 is chased; everything else is recorded and waits. Each remaining entry carries its status under its heading.
 
+**Where each item certifies (Stephen, 2026-09-26):** *"most of these API changes can be tested wheels up... make all
+the driver changes, add a couple of rapid tests at the bench to prove that the API methods range check correctly and
+do the right thing, and then we can call them done without having to test on the floor."*
+- **Wheels-up, and done when it passes:** every API contract (range checks, refusals, getters, persistence), the
+  odometer and limits, the finished-move test, status and rounding, the command timeout, the stop reasons and events,
+  the serial path. They run as one pointed contract tier plus the short motion cells.
+- **The floor run keeps only claims about load:** the kick's inertia term and feel, the hold on an incline, the path
+  limiter and the overload hold under load, and the protective stop on a chocked wheel.
+
 **Release — chased**
 
 | Entry | What it is | What closes it |
