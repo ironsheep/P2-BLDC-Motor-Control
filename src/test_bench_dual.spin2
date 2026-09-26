@@ -370,6 +370,15 @@
 ''               same rule (dBehindPoll(), D_BEHIND_POLLS running), not one seen SHORT: part D's BLOCKED step stalls both
 ''               wheels together and no longer owes a pair. Its STEERSEG negative (no engage) now fails the pass 5
 ''               behaviour. No record changes
+''               26 Sep 2026 -- SRC_REV=51, FMT 34: PL-138 (task 3623, DRIVER_REV 29). Part D's STEERSEG ends with the new
+''               step RESTCOAST, after COOPSHUT, on two lifetimes of its own: both wheels at power D_RC_POWER (about
+''               80 x 10^6), then steering.stop() alone -- the reference, a free coast -- and, in the second, stop() and
+''               start() back to back. The instrument counts each wheel's hall ticks straight from the pins (source
+''               INST_SRC_NONE, so it reads no library object across the stop and start) over RC_WINDOW_MS from the
+''               stop. New cell R20-DUAL-RESTCOAST per wheel: FAIL when the restarted wheel keeps under RC_KEEP_PCT of
+''               the reference's rate, which the pre-DRIVER_REV 27 low-side short through the ATN park would cause
+''               (derived). New record BM-RESTCOAST per wheel; BM-DSTEP gains the step token RESTCOAST, and STEERSEG's
+''               BM-PLAN row gains PL138 and the step's time. No existing record changes shape
 ''
 '' =================================================================================================
 
@@ -437,8 +446,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 50                                     ' hand-bumped whenever this file changes
-    FMT_VERSION = 33                                      ' BM- record-format version
+    SRC_REV     = 51                                     ' hand-bumped whenever this file changes
+    FMT_VERSION = 34                                      ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -1026,6 +1035,28 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_FRONT_PASS_TICKS_HI = TICKS_PER_MS                    ' one pass, in system ticks at this clock
     D_FRONT_STACK_HI      = wheelL.STACK_SIZE_LONGS         ' high-water must be below this
 
+  ' RESTCOAST (task 3623, PL-138): a steering stop() and start() back to back while both wheels coast. Two runs, each
+  '  its own lifetime: the REFERENCE (stop() alone: a free coast) and the TRIAL (stop() then start()). RC_WINDOW_MS covers
+  '  the restart's two driver launches and the >= 100 ms park before its ATN (isp_steering_2wheel start()), the windows
+  '  that held every low side ON before DRIVER_REV 27. At OVERSHT's measured ~165 ticks/s at power 50, a free coast
+  '  gives about 40 ticks in the window, so one tick of quantisation is about 2.5 %.
+    D_RC_POWER            = 49                              ' spinIncre(49) = 80_051_488, PL-138's "about 80 x 10^6"
+    #0, RC_REF, RC_TRIAL
+    RC_RUNS               = 2
+    RC_WINDOW_MS          = 250                             ' hall ticks counted over this from the stop call
+    RC_PRE_MS             = 200                             ' at speed, instrument on the pins, before the stop call
+    RC_TAIL_MS            = 20                              ' the capture runs this long past the window, so its end is stored
+    RC_DECIM              = 2                               ' 4 ms a stored sample: the ring holds 16 s, past a start that retries
+    RC_REST_MS            = 15_000                          ' bound on a free coast reaching rest (a bound, not a wait)
+    ' the restart must be CALLED inside the window's first fifth, or the window cannot hold its parks: the harness's own
+    '  start costs three cog-event quiet windows and two no-op wheel stops before it calls start() (about 10 ms). The
+    '  START_SPACING_MS wait cannot add to it -- the trial's spin-up and D_SETTLE_MS alone exceed it -- and call_ms
+    '  prints what it was.
+    RC_CALL_MAX_MS        = RC_WINDOW_MS / 5
+    RC_PCT_SCALE          = 100
+    RC_KEEP_PCT           = 80                              ' PROVISIONAL: the trial keeps >= this % of the reference's rate
+    RC_KEEP_HI_PCT        = LIM_SMALL                       ' the claim is one-sided: no upper bound is judged
+
   ' LIMIT segment: testSetCurrentLimits() lowers the limits so a lifted wheel can reach them, then the
   '  MOSFET values are restored and read back (I11). The library's own constants are the restore values.
     D_FOLD_PEAK_A         = 8                               ' FOLDBACK: peak == cont, so only the fold-back acts
@@ -1364,10 +1395,11 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  DST_RETRY       - PL-66: the same power after a fault reaches AT_SPEED again
   '  DST_CMDTIMEOUT  - S-8: a refreshed drive keeps running, and one left unrefreshed stops and reports it
   '  DST_DIRSIGN     - AC: a positive driveDirection() makes the RIGHT wheel the slower, a negative one the LEFT
+  '  DST_RESTCOAST   - PL-138: a platform stopped and restarted while its wheels coast keeps its coast (the worse wheel)
     #0, DST_ESTOP_LATCH, DST_ESTOP_REFUSE, DST_ESTOP_CLEAR, DST_ORDERED, DST_COOPSHUT, DST_TRACKRESET, ...
         DST_TIMESTOP, DST_LOCKSTEP, DST_FOLDBACK, DST_DERATE, DST_BLOCKED, DST_RETRY, DST_CMDTIMEOUT, ...
-        DST_DIRSIGN
-    DST_COUNT = 14
+        DST_DIRSIGN, DST_RESTCOAST
+    DST_COUNT = 15
 
   ' BM-DSTEP result:
   '  DRES_PASS   - the step's own criterion held
@@ -1995,8 +2027,8 @@ tokUiKind       BYTE    "CONTROL", 0, "PREVIEW", 0
 tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0
 tokDStep        BYTE    "ESTOP_LATCH", 0, "ESTOP_REFUSE", 0, "ESTOP_CLEAR", 0, "ORDERED", 0
                 BYTE    "COOPSHUT", 0, "TRACKRESET", 0, "TIMESTOP", 0, "LOCKSTEP", 0, "FOLDBACK", 0
-                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0, "CMDTIMEOUT", 0, "DIRSIGN", 0
-tokDRes         BYTE    "PASS", 0, "FAIL", 0, "NOMEAS", 0
+                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0, "CMDTIMEOUT", 0, "DIRSIGN", 0, "RESTCOAST", 0
+tokDRes        BYTE    "PASS", 0, "FAIL", 0, "NOMEAS", 0
 ' the library's FC_* fault causes (task 3572, S-7), in enum order
 tokFltCause     BYTE    "NONE", 0, "LAG", 0, "HALL", 0
 ' operator panel buttons, in BM_BTN_* order (task 3591: DONE is index 3)
@@ -2042,7 +2074,7 @@ tokCp           BYTE    "INIT", 0, "INST_ACK", 0, "READY", 0, "ZERO", 0, "ATSPEE
 ' BM-PLAN finds, per segment (finding ids joined by "_"), indexed by SEG_*
 tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-3_C-6", 0, "S-3", 0
                 BYTE    "C-5_Z_S-1", 0, "C-3_AB", 0, "M_AF_S-5_Z", 0, "FIELD_Q", 0, "S-9a", 0, "AC", 0
-                BYTE    "UI", 0, "S-4_FRONTCOG_S-8", 0, "S-2_C-5", 0
+                BYTE    "UI", 0, "S-4_FRONTCOG_S-8_PL138", 0, "S-2_C-5", 0
                 ' PL-97: these last two close a table that was SHORT of SEG_COUNT. tokenAt() bounds on
                 '  the ENUM count, not the table length, so SEG_LOWSPD already indexed past the end and
                 '  returned whatever DAT followed -- masked only because BM-PLAN never emitted a LOWSPD
@@ -2403,7 +2435,10 @@ sSfCritIllSum   BYTE    "ILLEGAL_SUM_EQUAL", 0
 sSfCritNoIll    BYTE    "NO_ILLEGAL_EV", 0
 sSfCritPackQ    BYTE    "PACK_STEADY_NO_EV", 0
 sSfCritPackEv   BYTE    "PACK_UNPLUG_EV", 0
-sSfStudyR204    BYTE    "R20.4", 0
+' task 3623 (PL-138): part D's RESTCOAST, one instance per wheel
+sSfCellRestCst  BYTE    "R20-DUAL-RESTCOAST", 0                 ' part D: a steering stop() and start() back to back keeps the coast
+sSfCritRestCst  BYTE    "KEPT_PCT_OF_COAST", 0
+sSfStudyR204   BYTE    "R20.4", 0
 ' R20.4 (task 3611): the PACK part's cells (suffix V) -- its own two, then the meter pairs, the absent reading, and
 '  R20-PACK-EV's two halves under the criteria dual-start declares
 sSfCellNoStallV BYTE    "R20-DUAL-NOSTALL-V", 0
@@ -2641,6 +2676,7 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    stIllegal
     LONG    stWhy
     LONG    ssRet                                           ' BM-SSTART
+    LONG    ssCallMs                                        ' getms() just before steering.start() (task 3623: RESTCOAST's call_ms)
     LONG    bSsRetOk
     LONG    ssLeftState
     LONG    ssRightState
@@ -3130,6 +3166,7 @@ PRI initRunState() | slotIdx
     spResetCells()                                          ' task 3591: the SPIN part's accumulators
     pkResetCells()                                          ' task 3611: the PACK part's
     r20ResetCells()                                         ' task 3621: EV-LATE's and part D's event cells
+    rcResetCells()                                          ' task 3623: RESTCOAST's
 
 PRI runPart()
 ' Run this build's segments in the design's sec 4.1 order. Every segment after a run abort is emitted
@@ -3611,7 +3648,8 @@ PRI segSteerContract() | whyCode
 '
 ' THE ORDER IS THE CONSTRUCTION. LOCKSTEP must run first: it watches the platform's very first departure
 ' from rest, which only exists once per start. COOPSHUT must run last on each object: it is the shutdown.
-' Everything between leaves the object running and at rest.
+' Everything between leaves the object running and at rest. RESTCOAST (task 3623) runs after COOPSHUT on
+' lifetimes of its own, because its reference and its trial each END a lifetime with a stop() from speed.
 '
 ' @local whyCode - why the steering half did not run, WHY_NONE when it did
 
@@ -3633,6 +3671,7 @@ PRI segSteerContract() | whyCode
         dStepDirSign()
         dStepFrontStats(SIDE_BOTH)
         dStepCoopShut(SIDE_BOTH)                            ' stops the steering object
+        dStepRestCoast()                                    ' task 3623: two lifetimes of its own, each stopped
     else
         dStepSkip(DST_LOCKSTEP, SIDE_BOTH, whyCode)
         dStepSkip(DST_TRACKRESET, SIDE_BOTH, whyCode)
@@ -3644,6 +3683,7 @@ PRI segSteerContract() | whyCode
         dStepSkip(DST_CMDTIMEOUT, SIDE_BOTH, whyCode)
         dStepSkip(DST_DIRSIGN, SIDE_BOTH, whyCode)
         dStepSkip(DST_COOPSHUT, SIDE_BOTH, whyCode)
+        dStepSkip(DST_RESTCOAST, SIDE_BOTH, whyCode)
         steerStop()
     segEnd(segWhy())
 
@@ -6609,6 +6649,224 @@ PRI dStepCoopShut(side) | startMs, elapsedMs
     dShutdown(side)
     elapsedMs := getms() - startMs
     dStepDone(DST_COOPSHUT, side, TRUE, elapsedMs < D_COOPSHUT_MS, elapsedMs, 0, D_COOPSHUT_MS - 1, WHY_NONE)
+
+VAR { RESTCOAST (task 3623, PL-138) -- one step's staging, cog 0 only }
+
+    LONG    rcPreX10[RC_RUNS * INST_MOTORS]                 ' [run * INST_MOTORS + slot]: hall ticks/s x10 over RC_PRE_MS before the stop
+    LONG    rcTicks[RC_RUNS * INST_MOTORS]                  ' ...hall ticks from the stop call to the window's end
+    LONG    rcWinX10[RC_RUNS * INST_MOTORS]                 ' ...that window's rate, hall ticks/s x10
+    LONG    rcWhy[RC_RUNS]                                  ' per run: WHY_NONE when it measured
+    LONG    bRcCalled                                       ' the trial called start()
+    LONG    rcRet                                           ' ...and start() returned this
+    LONG    rcCallMs                                        ' ...this long after the stop call
+    LONG    rcCoastMs                                       ' the reference: stop call to confirmed rest, ms; -1 when not confirmed
+    LONG    rcKeepPct[INST_MOTORS]                          ' R20-DUAL-RESTCOAST's number per wheel: trial rate / reference rate, %
+    LONG    bRcRan[INST_MOTORS]                             ' ...measured
+
+PRI rcResetCells() | slotIdx
+' Task 3623: RESTCOAST's staging, before anything runs (initRunState()).
+'
+' @local slotIdx - motor slot
+
+    bRcCalled := FALSE
+    rcRet := -1
+    rcCallMs := 0
+    rcCoastMs := -1
+    rcWhy[RC_REF] := WHY_ABORTED
+    rcWhy[RC_TRIAL] := WHY_ABORTED
+    longfill(@rcPreX10, 0, RC_RUNS * INST_MOTORS)
+    longfill(@rcTicks, 0, RC_RUNS * INST_MOTORS)
+    longfill(@rcWinX10, 0, RC_RUNS * INST_MOTORS)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        rcKeepPct[slotIdx] := 0
+        bRcRan[slotIdx] := FALSE
+
+PRI dStepRestCoast() | runIdx, slotIdx, whyCode, slotWhy, bBothRan, bBothOk, worstPct
+' RESTCOAST (task 3623, PL-138): a platform stopped and restarted back to back while its wheels coast keeps its coast.
+'
+' WHAT IT CERTIFIES. Before DRIVER_REV 27 every driver start held all three low sides ON -- a phase short, a brake --
+' through its sense calibration and, under steering.start(), through the park that waits for the ATN (at least
+' 100 ms a wheel: the start launches both drivers, then waits 100 ms before the one COGATN). A wheel still coasting
+' when the platform was restarted was braked by it. DRIVER_REV 27 holds every gate OFF through both, and DRIVER_REV 29
+' releases the bridge at stop(). PRE-REGISTERED: on DRIVER_REV >= 27 each wheel keeps its coasting rate across a
+' steering stop() + start(); on DRIVER_REV <= 26 it would have lost much of it inside RC_WINDOW_MS.
+'
+' THE NEGATIVE IS THE PRE-FIX BEHAVIOUR, DERIVED -- this harness cannot re-run the old driver. What makes a braking
+' restart FAIL is the IN-RUN CONTROL: the same run's REFERENCE, steering.stop() alone from the same speed, a free
+' coast measured over the same window by the same instrument. The trial differs from it by the start() alone, so a
+' start that shorts the phases reads well under RC_KEEP_PCT of it.
+'
+' WHY THE REFERENCE IS stop() AND NOT stopMotors(). PL-58: every stop commanded from speed follows the driver's own
+' ramp whatever holdAtStop() selects, so a stopMotors() "coast" is a driven deceleration -- faster than a free coast.
+' A reference that low would let a braking restart pass. stop() on DRIVER_REV 29 coasts the bridge and lets go.
+'
+' THE INSTRUMENT RUNS ACROSS THE STOP AND THE START, and it may: armed on INST_SRC_NONE it reads no library object at
+' all -- only each wheel's hall pins, with PINREAD, which changes no pin configuration -- so the straddled read I10
+' guards against cannot arise. The ring is drained only once it is frozen (I10).
+'
+' A START THAT RETURNS -1 IS NOMEAS unless it was refused by its own start checks (ERR_START_CHECK_FAILED). The checks
+' run after the ATN, so both drivers were launched and parked -- the windows under test -- and the checks meet a wheel
+' still turning, by construction. Any other -1 may not have launched a driver at all, and a restart that parks
+' nothing would pass for nothing.
+'
+' @local runIdx - RC_REF then RC_TRIAL
+' @local slotIdx - motor slot
+' @local whyCode - the first run's WHY_*, WHY_NONE when both measured
+' @local slotWhy - this wheel's WHY_*
+' @local bBothRan - both wheels measured, for BM-DSTEP
+' @local bBothOk - both wheels kept RC_KEEP_PCT
+' @local worstPct - the smaller kept percentage
+
+    repeat runIdx from RC_REF to RC_TRIAL
+        if bRunContinue(SEG_STEERSEG) == FALSE
+            rcWhy[runIdx] := WHY_ABORTED
+        elseif bSteerStart(SEG_STEERSEG) == FALSE
+            rcWhy[runIdx] := WHY_NO_COG
+        else
+            rcWhy[runIdx] := rcRun(runIdx)
+        steerStop()                                         ' idles the instrument first (I10); safe on a stopped object
+        if rcWhy[runIdx] <> WHY_NONE                        ' a trial without its reference judges nothing
+            quit
+    whyCode := rcWhy[RC_REF]
+    if whyCode == WHY_NONE
+        whyCode := rcWhy[RC_TRIAL]
+    bBothRan := TRUE
+    bBothOk := TRUE
+    worstPct := LIM_SMALL
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        slotWhy := whyCode
+        if (slotWhy == WHY_NONE) and ((rcWinX10[(RC_REF * INST_MOTORS) + slotIdx] == 0) or (rcPreX10[(RC_REF * INST_MOTORS) + slotIdx] == 0) or (rcPreX10[(RC_TRIAL * INST_MOTORS) + slotIdx] == 0))
+            slotWhy := WHY_NOT_REACHED                      ' a wheel not turning at a stop, or a reference that did not coast
+        if slotWhy == WHY_NONE
+            rcKeepPct[slotIdx] := ((rcWinX10[(RC_TRIAL * INST_MOTORS) + slotIdx] * RC_PCT_SCALE) / rcWinX10[(RC_REF * INST_MOTORS) + slotIdx]) <# LIM_SMALL
+            bRcRan[slotIdx] := TRUE
+            worstPct <#= rcKeepPct[slotIdx]
+            if rcKeepPct[slotIdx] < RC_KEEP_PCT
+                bBothOk := FALSE
+        else
+            bBothRan := FALSE
+            if whyCode == WHY_NONE
+                whyCode := slotWhy
+        emitRestCoast(slotIdx, slotWhy)
+    dStepDone(DST_RESTCOAST, SIDE_BOTH, bBothRan, bBothOk, worstPct, RC_KEEP_PCT, RC_KEEP_HI_PCT, bBothRan ? WHY_NONE : whyCode)
+
+PRI rcRun(runIdx) : whyCode | safeEvent, bAtSpeed, markMs, leftMs
+' One RESTCOAST run on a started steering object: both wheels to D_RC_POWER and AT_SPEED (the instrument on the steering
+' object, so the safety watch holds); then the instrument re-armed on the pins alone for RC_PRE_MS; the mark and
+' steering.stop(), and for the trial start() at once; the window and its tail; freeze and drain; then a bounded wait for
+' the wheels to coast to rest. Leaves the object as the run left it; the caller stops it.
+'
+' @param runIdx - RC_REF (stop() alone) or RC_TRIAL (stop() then start())
+' @returns whyCode - WHY_NONE when the window was measured
+'
+' @local safeEvent - SAFE_* from the watched waits
+' @local bAtSpeed - both wheels reached AT_SPEED and settled
+' @local markMs - getms() at the mark, just before the stop call
+' @local leftMs - window and tail still owed after the stop (and start)
+
+    whyCode := WHY_NONE
+    markMs := -1
+    bAtSpeed := FALSE
+    if bDArm(SIDE_BOTH) == FALSE
+        whyCode := WHY_INST_NOACK
+    elseif dDrive(SIDE_BOTH, D_RC_POWER) <> NO_ERROR
+        whyCode := WHY_NOT_REACHED
+    else
+        bAtSpeed := bDHoldSpeed(SIDE_BOTH)
+        if bAtSpeed == FALSE
+            whyCode := WHY_NOT_REACHED
+    if whyCode == WHY_NONE
+        bInstFreeze(0)                                      ' FROZEN is quiet: the arm below is legal from it
+        if bInstArm(INST_SRC_NONE, RC_DECIM) == FALSE
+            whyCode := WHY_INST_NOACK
+    if whyCode == WHY_NONE
+        safeEvent, _ := waitWatched(SIDE_BOTH, RC_PRE_MS, CP_LOOP_SETTLE, UNTIL_TIME)
+        if safeEvent <> SAFE_NONE
+            whyCode := safeWhy(safeEvent)
+    if whyCode == WHY_NONE
+        markMs := rcSteerStop()
+        if runIdx == RC_TRIAL
+            bSteerStartNow(SEG_STEERSEG)                    ' the harness's own start, its checks on; no walk, no winding probe
+            bRcCalled := TRUE
+            rcRet := ssRet
+            rcCallMs := ssCallMs - markMs
+        leftMs := (RC_WINDOW_MS + RC_TAIL_MS) - (getms() - markMs)
+        if leftMs > 0
+            safeEvent, _ := waitWatched(SIDE_BOTH, leftMs, CP_LOOP_CAPTURE, UNTIL_TIME)
+            if safeEvent <> SAFE_NONE
+                whyCode := safeWhy(safeEvent)
+        if bInstFreeze(0) == FALSE
+            whyCode := WHY_INST_NOACK
+        elseif whyCode == WHY_NONE
+            whyCode := rcDrain(runIdx)
+        if (whyCode == WHY_NONE) and (runIdx == RC_TRIAL)
+            if (rcRet < 0) and (ssErr <> wheelL.ERR_START_CHECK_FAILED)
+                whyCode := WHY_NO_COG                       ' the restart may have parked nothing (see dStepRestCoast())
+            elseif rcCallMs > RC_CALL_MAX_MS
+                whyCode := WHY_WINDOW_TIMEOUT               ' the restart came too late for the window to hold its parks
+    else
+        dStopMotion(SIDE_BOTH)                              ' never reached the stop: bring the platform down under power
+    if bDRestWithin(SIDE_BOTH, RC_REST_MS) and (runIdx == RC_REF) and (markMs <> -1)
+        rcCoastMs := getms() - markMs                       ' includes waitRest()'s REST_CONFIRM_MS dwell
+
+PRI rcSteerStop() : markMs
+' steering.stop() WITH THE INSTRUMENT RUNNING on INST_SRC_NONE -- RESTCOAST's one I10 exception, sound because that source
+' reads no library object (dStepRestCoast()). The cog-event quiet window opens first (PL-41), then the mark, so the
+' window's start sits just before the stop call.
+'
+' @returns markMs - getms() at the mark
+
+    benchLog.cogEventBegin()
+    instMark()
+    markMs := getms()
+    beat(CP_LIB_STEER_STOP)
+    steering.stop()
+    beat(CP_LIB_STEER_STOP)
+    bSteerUp := FALSE
+
+PRI rcDrain(runIdx) : whyCode | slotIdx, sampleIdx, endJ, winTicks, preMs, winMs, arrIdx
+' Read one run's frozen capture (I10): per wheel, the hall ticks and rate over RC_PRE_MS before the mark and over
+' RC_WINDOW_MS from it. The window ends at the last stored sample no later than RC_WINDOW_MS after the mark, and each
+' rate is taken over the stored samples' own timestamps, so a window a sample short is still a rate, not a count
+' short. A window whose stored span falls a sample period short of RC_WINDOW_MS is not a measurement.
+'
+' @param runIdx - RC_REF or RC_TRIAL
+' @returns whyCode - WHY_NONE when both wheels' numbers were read
+'
+' @local slotIdx - motor slot
+' @local sampleIdx - logical index
+' @local endJ - the window's last sample
+' @local winTicks - RC_WINDOW_MS in system ticks
+' @local preMs - the pre-stop span, ms
+' @local winMs - the window's stored span, ms
+' @local arrIdx - [run * INST_MOTORS + slot]
+
+    whyCode := WHY_NONE
+    drainBegin()
+    drainFindMark()
+    if (bDrMarkFound == FALSE) or (drMarkJ < 1)
+        whyCode := WHY_RING_LOST_HEAD                       ' no mark, or no sample before it to take the speed from
+    else
+        winTicks := RC_WINDOW_MS * TICKS_PER_MS
+        endJ := drMarkJ
+        ' drMarkJ < drStored (drainFindMark()), so this range never counts down
+        repeat sampleIdx from drMarkJ to drStored - 1
+            beat(CP_LOOP_DRAIN)
+            if (smpT(sampleIdx) - smpT(drMarkJ)) > winTicks
+                quit
+            endJ := sampleIdx
+        if (smpT(endJ) - smpT(drMarkJ)) < (winTicks - (RC_DECIM * INST_PERIOD_TICKS))
+            whyCode := WHY_NO_SAMPLES
+        else
+            preMs := (smpT(drMarkJ) - smpT(0)) / TICKS_PER_MS
+            winMs := (smpT(endJ) - smpT(drMarkJ)) / TICKS_PER_MS
+            repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+                arrIdx := (runIdx * INST_MOTORS) + slotIdx
+                rcPreX10[arrIdx] := 0
+                if preMs > 0
+                    rcPreX10[arrIdx] := ((abs(smpHw(drMarkJ, slotIdx) - smpHw(0, slotIdx)) * RATE_X10_SCALE) / preMs) <# LIM_SMALL
+                rcTicks[arrIdx] := abs(smpHw(endJ, slotIdx) - smpHw(drMarkJ, slotIdx)) <# LIM_SMALL
+                rcWinX10[arrIdx] := ((rcTicks[arrIdx] * RATE_X10_SCALE) / winMs) <# LIM_SMALL
 
 PRI dLimitState(slotIdx) : nPeakA, nContA, bDeratedNow, nPhaseMa, nLimitK
 ' One wheel's current-limit state, read through the steering object's pass-through.
@@ -19032,13 +19290,28 @@ PRI bZeroAndWaitStopped(side) : bStopped | bArmedHere
         if bArmedHere
             bInstFreeze(0)
 
-PRI bSteerStart(seg) : bStarted | startMs, restMs, leftMissed, leftIllegal, rightMissed, rightIllegal
-' Start the steering object: refuse unless the instrument is IDLE or FROZEN (I10); stop both wheel
-' instances first (shared pin claims, PL-18); detection never forced (I12); wait ready; read both
-' drivers' states, offsets, integrity counts and detected boards (testGetBoardTypes(), sec 12.1 Q8);
-' set holdAtStop(FALSE); emit BM-SSTART. The steering start's life is the sid its records carry. Task 3621: the
+PRI bSteerStart(seg) : bStarted
+' Start the steering object: refuse unless the instrument is IDLE or FROZEN (I10), then bSteerStartNow().
+'
+' @param seg - SEG_* in progress
+' @returns bStarted - TRUE when start() returned a cog id and both drivers reported ready
+
+    bStarted := FALSE
+    ssWhy := WHY_NONE
+    bSsCalled := FALSE
+    if bInstQuiet() == FALSE
+        instRefused(seg)
+    else
+        bStarted := bSteerStartNow(seg)
+
+PRI bSteerStartNow(seg) : bStarted | startMs, restMs, leftMissed, leftIllegal, rightMissed, rightIllegal
+' Start the steering object: stop both wheel instances first (shared pin claims, PL-18); detection never forced (I12);
+' wait ready; read both drivers' states, offsets, integrity counts and detected boards (testGetBoardTypes(), sec 12.1
+' Q8); set holdAtStop(FALSE); emit BM-SSTART. The steering start's life is the sid its records carry. Task 3621: the
 ' start is watched with the start grace (WD_START_GRACE_MS), and a start that returns -1 is followed by
 ' BM-SREFUSE -- the three getError() codes and both wheels' getHealth() masks, read right after the call.
+' Every caller but one comes through bSteerStart()'s I10 guard. RESTCOAST (task 3623) calls here directly, with the
+' instrument running on INST_SRC_NONE, which reads no library object (dStepRestCoast()).
 '
 ' @param seg - SEG_* in progress
 ' @returns bStarted - TRUE when start() returned a cog id and both drivers reported ready
@@ -19052,66 +19325,63 @@ PRI bSteerStart(seg) : bStarted | startMs, restMs, leftMissed, leftIllegal, righ
 
     bStarted := FALSE
     ssWhy := WHY_NONE
-    bSsCalled := FALSE
-    if bInstQuiet() == FALSE
-        instRefused(seg)
-    else
-        bSsCalled := TRUE
-        wheelStopRaw(SIDE_LEFT)
-        wheelStopRaw(SIDE_RIGHT)
-        restMs := START_SPACING_MS - (getms() - lastStartMs)
-        if bAnyStart and (restMs > 0)
-            waitBeat(restMs, CP_LOOP_REST)
-        ' task 3621: this cog's three error slots are drained first, so a refusal's getError() below is this start's
-        '  cause, and the watchdog is granted WD_START_GRACE_MS for this one call only (its derivation is at the constant)
+    bSsCalled := TRUE
+    wheelStopRaw(SIDE_LEFT)
+    wheelStopRaw(SIDE_RIGHT)
+    restMs := START_SPACING_MS - (getms() - lastStartMs)
+    if bAnyStart and (restMs > 0)
+        waitBeat(restMs, CP_LOOP_REST)
+    ' task 3621: this cog's three error slots are drained first, so a refusal's getError() below is this start's
+    '  cause, and the watchdog is granted WD_START_GRACE_MS for this one call only (its derivation is at the constant)
+    beat(CP_LIB_STEER_QUERY)
+    steering.getError()
+    beat(CP_LIB_STEER_QUERY)
+    wdGraceMs := WD_START_GRACE_MS
+    beat(CP_LIB_STEER_START)
+    benchLog.cogEventBegin()
+    ssCallMs := getms()                                     ' task 3623: RESTCOAST's call_ms
+    ssRet := steering.start(LEFT_TEST_BASE, RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TEST_DET_MODE)
+    benchLog.cogEventEnd()
+    beat(CP_LIB_STEER_START)
+    wdGraceMs := 0
+    if ssRet < 0                                            ' the cause and every health mask, before anything else runs
         beat(CP_LIB_STEER_QUERY)
-        steering.getError()
+        ssErr, ssLErr, ssRErr := steering.getError()
+        ssChk[SLOT_LEFT], ssFail[SLOT_LEFT], ssRec[SLOT_LEFT], ssChk[SLOT_RIGHT], ssFail[SLOT_RIGHT], ssRec[SLOT_RIGHT] := steering.getHealth()
         beat(CP_LIB_STEER_QUERY)
-        wdGraceMs := WD_START_GRACE_MS
-        beat(CP_LIB_STEER_START)
-        benchLog.cogEventBegin()
-        ssRet := steering.start(LEFT_TEST_BASE, RIGHT_TEST_BASE, TEST_VOLTAGE, TEST_DET_MODE, TEST_DET_MODE)
-        benchLog.cogEventEnd()
-        beat(CP_LIB_STEER_START)
-        wdGraceMs := 0
-        if ssRet < 0                                        ' the cause and every health mask, before anything else runs
-            beat(CP_LIB_STEER_QUERY)
-            ssErr, ssLErr, ssRErr := steering.getError()
-            ssChk[SLOT_LEFT], ssFail[SLOT_LEFT], ssRec[SLOT_LEFT], ssChk[SLOT_RIGHT], ssFail[SLOT_RIGHT], ssRec[SLOT_RIGHT] := steering.getHealth()
-            beat(CP_LIB_STEER_QUERY)
-        lastStartMs := getms()
-        bAnyStart := TRUE
-        lifeSeq := (lifeSeq + 1) <# LIM_SMALL
-        steerLife := lifeSeq
-        bSsRetOk := (ssRet >= 0) and (ssRet <= MAX_COG_ID)
-        bSteerUp := (ssRet >= 0)
-        startMs := getms()
-        repeat
-            beat(CP_LIB_STEER_QUERY)
-            bStarted := steering.isReady()
-            beat(CP_LIB_STEER_QUERY)
-            if bStarted or ((getms() - startMs) >= READY_TIMEOUT_MS)
-                quit
-            beat(CP_LOOP_READY)
-            waitms(SAMPLE_MS)
-        ssReadyMs := getms() - startMs
+    lastStartMs := getms()
+    bAnyStart := TRUE
+    lifeSeq := (lifeSeq + 1) <# LIM_SMALL
+    steerLife := lifeSeq
+    bSsRetOk := (ssRet >= 0) and (ssRet <= MAX_COG_ID)
+    bSteerUp := (ssRet >= 0)
+    startMs := getms()
+    repeat
         beat(CP_LIB_STEER_QUERY)
-        ssLeftState, ssRightState := steering.testGetDriverState()
-        ssLeftNeg, ssLeftPos := steering.testLeftGetFwdRevIndep()
-        ssRightNeg, ssRightPos := steering.testRightGetFwdRevIndep()
-        leftMissed, leftIllegal, rightMissed, rightIllegal := steering.getHallIntegrityCounts()
-        ssLeftBoard, ssRightBoard := steering.testGetBoardTypes()
+        bStarted := steering.isReady()
         beat(CP_LIB_STEER_QUERY)
-        ssLeftIg := leftMissed + leftIllegal
-        ssRightIg := rightMissed + rightIllegal
-        bStarted := bSsRetOk and (bStarted <> FALSE)
-        if bSteerUp
-            steerHold(FALSE)
-        emitSStart(seg)
-        if ssRet < 0
-            emitSRefuse(seg)                                ' task 3621: why the start returned -1
-            emitRProbe(seg, SIDE_LEFT, TRUE)                ' PL-120: what the refusing lead check read, per wheel
-            emitRProbe(seg, SIDE_RIGHT, TRUE)
+        if bStarted or ((getms() - startMs) >= READY_TIMEOUT_MS)
+            quit
+        beat(CP_LOOP_READY)
+        waitms(SAMPLE_MS)
+    ssReadyMs := getms() - startMs
+    beat(CP_LIB_STEER_QUERY)
+    ssLeftState, ssRightState := steering.testGetDriverState()
+    ssLeftNeg, ssLeftPos := steering.testLeftGetFwdRevIndep()
+    ssRightNeg, ssRightPos := steering.testRightGetFwdRevIndep()
+    leftMissed, leftIllegal, rightMissed, rightIllegal := steering.getHallIntegrityCounts()
+    ssLeftBoard, ssRightBoard := steering.testGetBoardTypes()
+    beat(CP_LIB_STEER_QUERY)
+    ssLeftIg := leftMissed + leftIllegal
+    ssRightIg := rightMissed + rightIllegal
+    bStarted := bSsRetOk and (bStarted <> FALSE)
+    if bSteerUp
+        steerHold(FALSE)
+    emitSStart(seg)
+    if ssRet < 0
+        emitSRefuse(seg)                                    ' task 3621: why the start returned -1
+        emitRProbe(seg, SIDE_LEFT, TRUE)                    ' PL-120: what the refusing lead check read, per wheel
+        emitRProbe(seg, SIDE_RIGHT, TRUE)
 
 PRI steerStop()
 ' Stop the steering object (both drivers and its sense cog), returning the instrument to IDLE first
@@ -19683,6 +19953,9 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     ' OVERSHT: the four distance trials plus the fault-API trial (task 3552) -- about 6 s of poll, the
     '  stop, and up to two FAULT_COOL_MS cool-downs. Its rows are BM-OUT, already counted in est_kb.
     ' STEERSEG and LIMIT (task 3560) print few records and no traces: their time is the steps' own holds
+    ' Task 3623: STEERSEG's RESTCOAST adds two lifetimes -- three steering starts of ~1.2 s, two spin-ups with
+    '  D_SETTLE_MS, two windows, and two free coasts to rest -- about 25 s, at most about 60 s with both coasts at
+    '  RC_REST_MS; 180 -> 240 s. Three BM-SSTART, two BM-RESTCOAST and a BM-DSTEP: about 1.5 KB, 4 -> 6
     ' R18.1: LADDER's walk went from 12 steps to LADDER_WALK_STEPS per motor and sign -- 38 x 4 = 152
     '  measured rungs against 48 -- and each rung now prints five records rather than four. Visit 6a
     '  MEASURED 119_523 ms and about 960 B per rung for the 48, so the walk is about 375 s and 180 KB;
@@ -19723,8 +19996,8 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     ' Task 3611, the PACK part, whose time is mostly the OPERATOR's: the ~1.5 s start, step 1's 60 s, and four steps he
     '  ends, call them 15 s each with their settles -- about 150 s; 30 BM-PKREAD of ~110 B and a handful of others,
     '  about 5 KB.
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 180, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 60, 240, 180, 150)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 4, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 25, 400, 6, 5)
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 240, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 60, 240, 180, 150)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 6, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 25, 400, 6, 5)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -20548,6 +20821,47 @@ PRI emitDStep(side)
     whyField(dsWhy)
     emitRecord()
 
+PRI emitRestCoast(slotIdx, whyCode) | refIdx, trialIdx, eResult
+' BM-RESTCOAST (task 3623, PL-138): one wheel's two RESTCOAST runs. Rates are hall ticks/s x10 from the instrument's
+' pin-decoded position: *_pre over RC_PRE_MS before the stop call (the speed each run stopped from), *_x10 over the
+' window of win_ms from it, whose ticks are *_ticks. keep_pct is tr_x10 / ref_x10 in %, the cell's number. rs_ret is
+' the trial's start() return and call_ms how long after the stop call it was called; coast_ms is the reference's stop
+' call to confirmed rest (REST_CONFIRM_MS included), NA when rest was not confirmed inside RC_REST_MS.
+' Worst case 269 bytes.
+'
+' @param slotIdx - motor slot
+' @param whyCode - WHY_* naming what this wheel's number is missing, WHY_NONE when it was measured
+'
+' @local refIdx - the reference run's staging index for this wheel
+' @local trialIdx - the trial run's
+' @local eResult - DRES_*
+
+    refIdx := (RC_REF * INST_MOTORS) + slotIdx
+    trialIdx := (RC_TRIAL * INST_MOTORS) + slotIdx
+    if bRcRan[slotIdx] == FALSE
+        eResult := DRES_NOMEAS
+    elseif rcKeepPct[slotIdx] >= RC_KEEP_PCT
+        eResult := DRES_PASS
+    else
+        eResult := DRES_FAIL
+    recBegin(@"BM-RESTCOAST")
+    benchLog.tokenField(@"motor", sideToken(SIDE_LEFT + slotIdx), TOKMAX_MOTOR)
+    benchLog.numField(@"power", D_RC_POWER, LIM_TINY)
+    benchLog.numField(@"win_ms", RC_WINDOW_MS, LIM_SMALL)
+    benchLog.naNumField(@"ref_pre_x10", rcPreX10[refIdx], LIM_SMALL, rcWhy[RC_REF] == WHY_NONE)
+    benchLog.naNumField(@"ref_ticks", rcTicks[refIdx], LIM_SMALL, rcWhy[RC_REF] == WHY_NONE)
+    benchLog.naNumField(@"ref_x10", rcWinX10[refIdx], LIM_SMALL, rcWhy[RC_REF] == WHY_NONE)
+    benchLog.naNumField(@"tr_pre_x10", rcPreX10[trialIdx], LIM_SMALL, rcWhy[RC_TRIAL] == WHY_NONE)
+    benchLog.naNumField(@"tr_ticks", rcTicks[trialIdx], LIM_SMALL, rcWhy[RC_TRIAL] == WHY_NONE)
+    benchLog.naNumField(@"tr_x10", rcWinX10[trialIdx], LIM_SMALL, rcWhy[RC_TRIAL] == WHY_NONE)
+    benchLog.naNumField(@"keep_pct", rcKeepPct[slotIdx], LIM_SMALL, bRcRan[slotIdx])
+    benchLog.naNumField(@"rs_ret", rcRet, LIM_TINY, bRcCalled)
+    benchLog.naNumField(@"call_ms", rcCallMs, LIM_SMALL, bRcCalled)
+    benchLog.naNumField(@"coast_ms", rcCoastMs, LIM_SMALL, rcCoastMs >= 0)
+    benchLog.tokenField(@"result", tokenAt(@tokDRes, DRES_COUNT, eResult), TOKMAX_DRES)
+    whyField(whyCode)
+    emitRecord()
+
 PRI emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi, nStackOf)
 ' BM-FRONTST: one front cog's loop health, with the pass time in microseconds beside the raw ticks so the
 ' reading does not have to be divided by a clock the reader has to look up. Worst case 174 bytes.
@@ -21069,6 +21383,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellEvClim)
                 emitSignoffDecl(@sSfCellEvPath)
                 emitSignoffDecl(@sSfCellEvLate)
+                emitSignoffDecl(@sSfCellRestCst)            ' task 3623
             PART_FLOOR:
                 emitSignoffDecl(@sSfCellNoStallF)
                 emitSignoffDecl(@sSfCellDbgMaskF)
@@ -21209,8 +21524,8 @@ PRI emitSignoffs() | slotIdx, side
 '  B      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; RAMPREST BOOL per motor;
 '         FLTAPI BOOL (the steering object, BOTH); FLTCAUSE BOOL (BOTH); OFFREST-B BOOL and IDLEMOVE-B COUNT
 '         per motor; STOPLIM and TURNDIST COUNT (BOTH); DISTM BOOL (BOTH)
-'  D      NOSTALL BOOL; DBGMASK BOOL; LAGBOUND COUNT per motor; each part-D step's cell, DIRSIGN among them
-'         (emitDStepCells())
+'  D      NOSTALL BOOL; DBGMASK BOOL; LAGBOUND COUNT per motor; each part-D step's cell, DIRSIGN among them,
+'         and RESTCOAST PCT per motor (emitDStepCells())
 '  BRAKE  NOSTALL BOOL; DBGMASK BOOL; BRAKEFLT BOOL (LEFT)
 '  C      NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; RSTPROV COUNT per motor; OFFREST BOOL per motor;
 '         IDLEMOVE-C COUNT and FLTSTOP BOOL per motor
@@ -21376,6 +21691,9 @@ PRI emitDStepCells() | slotIdx
     ' task 3577 (AC): the direction sign, the steering object only -- a single wheel has no direction
     emitSignoffBool(@sSfCellDirSign, SIDE_BOTH, @sSfCritDirSign, bSfDStepRan[DST_DIRSIGN], bSfDStepOk[DST_DIRSIGN], SIGNOFF_ONE_INSTANCE)
     emitDEvCells()                                          ' task 3621
+    ' task 3623 (PL-138): each wheel's rate kept across a steering stop() + start(), against the same run's free coast
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        emitSignoff(@sSfCellRestCst, SIDE_LEFT + slotIdx, @sSfCritRestCst, bRcRan[slotIdx], rcKeepPct[slotIdx], RC_KEEP_PCT, RC_KEEP_HI_PCT, SIGNOFF_ONE_INSTANCE, @sSfUnitsPct)
 
 PRI emitDEvCells() | nBad
 ' Part D's event cells (task 3621, DRIVER-REPORTING-DESIGN.md SS6), each a COUNT of bad instances, passing at 0, and

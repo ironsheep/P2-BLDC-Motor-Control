@@ -4440,6 +4440,33 @@ the next driver change.
 
 **Disposition: ⛔ FIX, built as «#3623»** (two parts: start side, then stop side), before pass 6.
 
+**2026-09-26 -- BUILT, both parts (not yet run).** Each part's PASM was reviewed line by line, and the gates passed.
+- **Part 1, 74ac12b (DRIVER_REV 27):**
+  - Every gate is held **actively OFF** through calibration and the ATN park. The high sides sit in pwmt in reset
+    (LOW). The low sides sit in mode 0, driven LOW. This is stronger than the design's floating pins, so it does not
+    rely on the board's pull-downs.
+  - `driveinit` gives the low sides pwmn, X and coast Y in one unbroken 10-instruction run ending at the DIR raise:
+    about 20 clocks, with the high sides off throughout.
+  - The pwmt/pwmn comments are corrected.
+- **Part 2, 96b4b18 (DRIVER_REV 29):**
+  - `stop()` sets the new params long `drv_release` (ABI: params run 26, PASM register, `isAbiLayoutValid()`, all
+    together). It then waits, bounded to 1.7 ms, for `DCS_RELEASED`.
+  - The driver coasts two frames and drops the high sides' modes, which stay off throughout. It then drops each low
+    side's mode: one instruction ON, alone, every high side off. It leaves every gate pin driven LOW, reports and parks.
+  - `pinclear` follows the cogstop as the backstop.
+  - A parked or calibrating driver never answers. Its cogstop then cuts nothing driven, per part 1.
+  - `DCS_RELEASED` is mirrored in the steering object.
+  - Cog RAM is 494/496 and LUT 280/512, both read from the compiler.
+- **Bench cell R20-DUAL-RESTCOAST, BUILT** (`test_bench_dual` src_rev 51, fmt 34; part D's STEERSEG, after COOPSHUT):
+  - **Reference:** `steering.stop()` alone from about 80 × 10⁶, a free coast.
+  - **Trial:** `stop()` then `start()` at once.
+  - The instrument runs on the hall pins alone (`INST_SRC_NONE`) across both.
+  - **PASS:** the trial keeps at least `RC_KEEP_PCT` (80, provisional) of the reference's tick rate over 250 ms.
+  - **Its negative is the pre-fix driver, derived:** a ≥ 100 ms all-low-sides park falls inside the window. The
+    reference is the in-run control.
+  - A restart refused by its own checks still counts, since the parks precede the checks.
+  - New record `BM-RESTCOAST` per wheel.
+
 ### PL-139 -- RESTFLAT's 50 mV at-rest band was set on the left board, and the right's coast rest read 51
 
 **Found 2026-09-26** at Visit 10 pass 5 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §2).
