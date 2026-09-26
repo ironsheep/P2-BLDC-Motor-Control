@@ -323,10 +323,16 @@ PUB startOwned(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
     if launchDriver(eMotorBasePin, eMotorVoltage, eDetectionMode, TRUE) == NO_ERROR
         ok := motorCog - 1
 
-PUB stop() : eError
+PUB stop() : eError | releaseStart
 '' Stop cogs and release pins assigned to this motor
 ''
+'' PL-138: a running driver is first asked to let go of its bridge (it coasts, then drops its gate modes), and
+'' stop() waits for that, bounded (RELEASE_TIMEOUT_US, under 2 ms), before it stops the driver cog.
+''
 '' @returns eError - NO_ERROR; stopping always succeeds, on a started or an unstarted instance
+
+' Local Variables:
+' @local releaseStart - getct() when the driver was asked to release
 
     ' PL-41: the front cog is asked to EXIT first. It answers every open request, acknowledges, and
     '  parks with no output, so the cogstop below cannot cut a debug line. Without an answer in the
@@ -338,7 +344,24 @@ PUB stop() : eError
         senseCog := 0
 
     if motorCog     ' stop motor drive
+        ' PL-138 (W4): a cogstop drops every DIR the driver holds (p2kbSpin2Cogstop), and on a DRIVING bridge
+        '  each high side that was ON turns off on the same clock edge its low side turns on: a shoot-through
+        '  with no dead gap. So the driver is asked to release first (driverRelease): it coasts
+        '  RELEASE_WAIT_FRAMES frames, drops its gate modes with every gate OFF, reports DCS_RELEASED and
+        '  parks. No front cog remains (this instance's is stopped above; an owner's is stopped by the owner
+        '  before it calls here), so this cog is the one writer of drv_release. The wait is bounded and the cogstop follows regardless: a driver not yet in
+        '  its loop (calibrating, or parked for its ATN) never answers, and holds every gate OFF there (PL-138
+        '  part 1: high sides pwmt in reset, low sides mode 0 driven LOW), so its cogstop cuts nothing driven.
+        drv_release := TRUE
+        releaseStart := getct()
+        repeat until (drv_state == DCS_RELEASED) or (getct() - releaseStart >= RELEASE_TIMEOUT_US * ticks1us)
+        if drv_state <> DCS_RELEASED
+            debug[user.DBGCH_LIFECYCLE]("* driver did not report DCS_RELEASED in ", udec_(RELEASE_TIMEOUT_US), " us (not yet driving?); stopping anyway")
         cogstop(motorCog - 1)
+        ' PL-138 (W3): the backstop, at once. A driver that did not release leaves its low sides in pwmn, and with
+        '  DIR low (the cogstop cleared it) a pwmn pin outputs HIGH: all three low sides ON until the modes are
+        '  cleared. motorCog <> 0 means this instance's init() ran, so pinbase is this instance's claimed group.
+        pinclear(pinbase addpins DRV_PIN_SPAN)
         motorCog := 0
         ' PL-52: no front cog remains to own motorPower (this instance's, or the owner's, is already
         ' stopped above / by the owner before calling here), so this write cannot race a second writer.
@@ -3903,6 +3926,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     probe_phase := PRB_NONE
     probe_sink := PRB_NONE                                                  ' R19.4 1e: no return phase, and the probe's own 50 %
     probe_y := 0
+    drv_release := FALSE                                                    ' PL-138: the new driver drives; only stop() asks it to let go
     windState[0] := WND_NOT_RUN                                             ' and no winding reading until a start measures one
     windState[1] := WND_NOT_RUN
     windState[2] := WND_NOT_RUN
@@ -4477,8 +4501,8 @@ PRI isAbiLayoutValid() : bValid
     bValid := (@drive_u - @pinbase) == DRVR_LAUNCH_LONGS_COUNT * 4
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
-    ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd
-    bValid &= (@probe_y - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd, the last drv_release (PL-138)
+    bValid &= (@drv_release - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -4501,7 +4525,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@bWindProbe, @windVoltSrc)                       ' R20.4: the run now ends at windVoltSrc
     bValid &= bOutsideDriverRuns(@walkWatchLeg, @bWlRan[WALK_LEGS - 1])          ' PL-137: the walk's per-leg record
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@probe_y - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@drv_release - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -4510,8 +4534,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@probe_y
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @probe_y))
+    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@drv_release
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @drv_release))
 
 CON ' --- HDMI Debug Support ---
 
@@ -5693,8 +5717,11 @@ CON { driver interface Constants }
     '  DCS_SLOW_TO_CHG      - motor is slowing down to change direction, then will be SPEEDING_UP
     '  DCS_FAULTED          - motor faulted (couldn't drive to requested speed)
     '  DCS_ESTOP            - motor in emergency stop (external stop requested)
+    '  DCS_RELEASED         - PL-138: stop() asked the driver to let go; its bridge coasted and every pin it drove
+    '                         is plain and driven OFF (or input). It parks until stop()'s cogstop, which then
+    '                         writes DCS_Unknown, so it is seen only inside stop()
     '
-    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP
+    #0, DCS_Unknown, DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP, DCS_RELEASED
 
 CON { driver internal Constants }
 
@@ -5770,12 +5797,20 @@ CON { driver internal Constants }
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 21        ' drive_u .. foldback_frames (R20.1 added foldback_frames), then fault
-    DRVR_PARAMS_LONGS_COUNT     = 25
+    DRVR_PARAMS_LONGS_COUNT     = 26        ' offset_fwd .. drv_release (PL-138 appended drv_release)
+
+    ' PL-138 (W4): the driver's release, which stop() asks for before its cogstop (driverRelease, stop())
+    RELEASE_WAIT_FRAMES         = 2         ' PWM frames the release holds the bridge COASTING before it drops the gate modes
+    RELEASE_TIMEOUT_MARGIN      = 3         ' how many times the worst case stop() waits for DCS_RELEASED before it cogstops anyway
+    ' The worst case: the driver tests drv_release once per drive pass (DRIVE_PASS_FRAMES), then holds the coast
+    '  RELEASE_WAIT_FRAMES; (23 + 2) frames at 44 kHz = 568 us, so the bound is 1_704 us
+    RELEASE_TIMEOUT_US          = (DRIVE_PASS_FRAMES + RELEASE_WAIT_FRAMES) * 1_000_000 / PWM_RATE_IN_HZ * RELEASE_TIMEOUT_MARGIN
+    DRV_PIN_SPAN                = 13        ' addpins operand: base+0..13, every pin the driver configures (its all_pins)
 
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 28        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 29        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -5815,6 +5850,12 @@ CON { driver internal Constants }
                                             '     command is never below ramp_min, so a scaled wheel cannot read at rest or
                                             '     zero the blocked test's target; the steering limiter engages only for a
                                             '     wheel behind its partner (task 3622). No PASM change
+                                            ' 29: PL-138 part 2 -- stop() asks the driver to release (drv_release, params
+                                            '     run 26 longs) and waits, bounded, for DCS_RELEASED before its cogstop: the
+                                            '     bridge coasts two frames, then every gate pin is plain and driven OFF, so
+                                            '     the cogstop no longer cuts a driving bridge (W4) or leaves the low sides
+                                            '     in pwmn with DIR low (W3); pinclear right after the cogstop as the
+                                            '     backstop (task 3623). PASM (cog + LUT) and ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -5991,7 +6032,7 @@ VAR { * Data Structure for PASM Driver * }
     LONG    duty, err                           ' 2 sequential longs    returns data continually
     LONG    loop_ticks                          ' 1 sequential long     returns control loop duration in ticks continually
     LONG    loop_ctcks                          ' 1 sequential long     returns drive loop duration in ticks continually
-    LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP]
+    LONG    drv_state                           ' enum [DCS_STOPPED, DCS_SPIN_UP, DCS_AT_SPEED, DCS_SPIN_DN, DCS_SLOW_TO_CHG, DCS_FAULTED, DCS_ESTOP, DCS_RELEASED]
     LONG    hall_missed, hall_illegal           ' 2 sequential longs    hall integrity counts since driver start; hall_illegal is %000 << 0 | %111 << 16 (see getHallIllegalCodes())
     LONG    drv_incr_now                        ' 1 sequential long     the field's angle increment per drive pass, for stop timing
     ' R18.1 (PL-95): two UNBOUNDED health counters. `err` and `duty` both top out -- err is held near
@@ -6042,7 +6083,9 @@ VAR  {  Motor Parameters  }
 ' -----------------------------------
 ' VALUES copied to driver each cycle
 ' -----------------------------------
-' TABLE of  23 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle
+' TABLE of 26 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle, offset_fwd .. drv_release:
+'  append only at the END, and change DRVR_PARAMS_LONGS_COUNT, the PASM register block (offset_fwd_ ..) and
+'  isAbiLayoutValid() with it
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
     LONG    offset_rev      ' 228 frac 360 (Doug's motor)
     LONG    duty_min        ' was 100 << 4 #> OFFSET << 4 but now runtime loaded
@@ -6068,6 +6111,9 @@ VAR  {  Motor Parameters  }
     LONG    fault_clr       ' task 3616: front-written, advanced by frontStopCommanded(); a FAULTED driver clears once per advance
     LONG    probe_sink      ' R19.4 1e TEST-USE: PRB_* whose low side the probe holds ON (the winding check's return), PRB_NONE for none
     LONG    probe_y         ' R19.4 1e TEST-USE: the probed phase's high-side Y (its duty), 0 for the continuity probe's 50 %
+    LONG    drv_release     ' PL-138: T/F where T asks the driver to release (coast, drop its gate modes, report DCS_RELEASED
+                            '  and park); init() writes FALSE before the launch, and only stop() writes TRUE, once no front
+                            '  cog exists. The LAST long of the run
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -6544,7 +6590,8 @@ drvMotor                                                ' global (task 3535): en
 
 .endRqst
                 mov     drv_incr_s_, drv_incr           ' publish the field's increment (block-copied with the status run)
-                call    #feedForward                    ' R18.4 D-1: the duty this pass's field speed needs (LUT-resident)
+                call    #passEnd                        ' PL-138: a release asked for leaves here, and never returns; else
+                                                        '  R18.4 D-1: the duty this pass's field speed needs (LUT-resident)
                 ' PL-55: duty ceiling -- during a ramp-down, duty scales with the field's speed (duty0 * |drv_incr|
                 '  / incr0) so drive voltage falls with back-EMF; lifted whenever the rotor trails by LAG_SOFT
                 mov     duty_cap_, duty_max_
@@ -7034,7 +7081,7 @@ scl_levels      res 4
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
 params_ptr_ res 1           ' params_ptr must be followed by:
-offset_fwd_ res 1           '  23 (DRVR_PARAMS_LONGS_COUNT) parameters
+offset_fwd_ res 1           '  26 (DRVR_PARAMS_LONGS_COUNT) parameters, offset_fwd_ .. drv_release_, in the hub run's order
 offset_rev_ res 1
 duty_min_   res 1           ' minimum duty cycle for pwm
 duty_max_   res 1           ' maximum duty cycle for pwm
@@ -7059,6 +7106,7 @@ force_seq_  res 1           ' R19.3 TEST-USE: advanced by testForceFault(); a dr
 fault_clr_  res 1           ' task 3616: advanced by the front cog to clear DCS_FAULTED; a drive pass whose fault_clr_seen differs clears it
 probe_sink_ res 1           ' R19.4 1e TEST-USE: PRB_* whose low side the probe holds ON, PRB_NONE for none
 probe_y_    res 1           ' R19.4 1e TEST-USE: the probed phase's high-side Y, 0 for 50 % (bias)
+drv_release_ res 1          ' PL-138: non-zero asks for the release (passEnd -> driverRelease); the LAST parameter
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -7087,12 +7135,12 @@ foldback_cnt_ res 1         ' R20.1: frames the current fold-back lowered duty_ 
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 493 USED, 3 FREE, 2026-09-25 (DRIVER_REV 23, the fold-back counter) -- read from the compiler, never
+    fit     496  ' 494 USED, 2 FREE, 2026-09-26 (DRIVER_REV 29, PL-138's drv_release_) -- read from the compiler, never
                  ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FOLDBACK_CNT_'s
-                 ' VALUE, whose top 12 bits are its cog address ($1EC, the last register, so USED is $1ED). LUT code runs at cog
+                 ' VALUE, whose top 12 bits are its cog address ($1ED, the last register, so USED is $1EE). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $2F5, 245 of 512 longs (DRIVER_REV 27, PL-138).
+                 ' lutCodeStart $200 to lutCodeEnd $318, 280 of 512 longs (DRIVER_REV 29, PL-138).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -7149,9 +7197,9 @@ lutCodeStart
                 wrpin   pwmt, pin_pwm_u_h               ' high sides: PWM true, off while DIR is low
                 wrpin   pwmt, pin_pwm_v_h
                 wrpin   pwmt, pin_pwm_w_h
-                outl    pin_pwm_u_l                     ' low sides: OUT low, then mode 0 (an earlier lifetime's pwmn may
-                outl    pin_pwm_v_l                     '  still be set: stop() only pinclears after its cogstop), then DIR
-                outl    pin_pwm_w_l                     '  high -- driven LOW, which is OFF
+                outl    pin_pwm_u_l                     ' low sides: OUT low, then mode 0 (never assume an earlier lifetime's
+                outl    pin_pwm_v_l                     '  release or pinclear cleared its pwmn: stop() may not have run), then
+                outl    pin_pwm_w_l                     '  DIR high -- driven LOW, which is OFF
                 wrpin   #0, pin_pwm_u_l
                 wrpin   #0, pin_pwm_v_l
                 wrpin   #0, pin_pwm_w_l
@@ -7347,6 +7395,11 @@ driveinit                                               ' init drive pwm
                                                         ' a whole period of a periodic signal integrates the same at any start phase.
     _ret_       mov     bridge, #BR_DRIVE               ' driven; checkstop, called before the control loop, sets the stop mode's state
 
+passEnd                                                 ' called once per drive pass, at .endRqst, which every path of the pass reaches
+                tjnz    drv_release_, #driverRelease    ' PL-138: stop() asked for the release. This pass's bridge state is decided
+                                                        '  and no pin has taken it yet (.ctlMotor writes the Y values next), so the
+                                                        '  release overrides whichever BR_* state it is, e-stop and fault included.
+                                                        '  A JMP out of this CALL: driverRelease never returns. Else fall through
 feedForward                                             ' R18.4 D-1: duty_ff := |drv_incr| * duty_max_ / ff_ceiling_, at most duty_max_
                 abs     tmpY, drv_incr                  '  Steady duty is the back-EMF line, measured at 167-174 per 1e6 of
                 qmul    tmpY, duty_max_                 '  increment on both motors (DRIVE-INTEGRATION-DESIGN.md 5.1), and
@@ -7455,9 +7508,65 @@ estopBridge                                             ' PL-132: called once, a
     if_z        mov     bridge, #BR_COAST               ' YES: all six FETs off
                 ret
 
-lutCodeEnd                                             ' LUT-resident code ends here (task 3535)
+driverRelease                                           ' PL-138 (W3, W4): reached only from passEnd, once stop() has set drv_release.
+                                                        '  Every gate is OFF throughout, but for each low side's one-instruction
+                                                        '  window in step 3 (and each gate pin is undriven for the one instruction
+                                                        '  between its WRPIN #0 and its DRVL). Never returns
+                ' 1. COAST, as BR_COAST does: high sides Y = 0 (off), low sides Y = coast_y (inverted: off). A triangle
+                '    PWM pin takes a new Y at its next frame start (p2kbArchSmartPins live_update_behavior, pwm_triangle),
+                '    and each write here only turns a FET OFF, so no order of them puts both sides of a phase ON.
+                wypin   #0, pin_pwm_u_h
+                wypin   #0, pin_pwm_v_h
+                wypin   #0, pin_pwm_w_h
+                wypin   coast_y, pin_pwm_u_l
+                wypin   coast_y, pin_pwm_v_l
+                wypin   coast_y, pin_pwm_w_l
+                ' 2. hold the coast RELEASE_WAIT_FRAMES frames. adc_fram is frame_cnt clocks and a triangle frame is
+                '    2 x (frame_cnt / 2) <= frame_cnt, and WAITX waits 2 + D clocks (p2kbPasm2Waitx): so every pin has
+                '    captured its coast Y within the first frame and output it for at least one whole frame after.
+                mov     tmpX, #RELEASE_WAIT_FRAMES
+.coast          waitx   adc_fram
+                djnz    tmpX, #.coast
+                ' 3. every gate is OFF. Each gate pin now drops its smart mode and is held driven OFF, as part 1 holds
+                '    the low sides until driveinit. WRPIN needs DIR low (p2kbPasm2Wrpin), a PWM pin in reset outputs LOW
+                '    (p2kbArchSmartPin01000PwmTriangle), and mode 0 with DIR low drives nothing (p2kbArchSmartPins,
+                '    smart_pin_off: DIR enables output). Per pin: DIRL, WRPIN #0, then DRVL, which sets OUT low and DIR
+                '    high in one instruction (p2kbPasm2Drvl): driven LOW, OFF.
+                '    High sides (pwmt): LOW in reset, so never ON in this sequence.
+                dirl    pin_pwm_u_h
+                wrpin   #0, pin_pwm_u_h
+                drvl    pin_pwm_u_h
+                dirl    pin_pwm_v_h
+                wrpin   #0, pin_pwm_v_h
+                drvl    pin_pwm_v_h
+                dirl    pin_pwm_w_h
+                wrpin   #0, pin_pwm_w_h
+                drvl    pin_pwm_w_h
+                '    Low sides (pwmn): an inverted PWM pin in reset outputs HIGH, which is ON, from its DIRL to its WRPIN:
+                '    one instruction apart, 2 clocks (7.4 ns at 270 MHz) if WRPIN reaches the pin with DIR's 3-clock
+                '    latency (p2kbPasm2Drvl gives DIR's; p2kb gives none for WRPIN). One low side at a time, every high
+                '    side OFF: no phase has both sides on and no two low sides are on together, so no two FETs are
+                '    ever ON at once. Nothing may go between a DIRL and its WRPIN.
+                dirl    pin_pwm_u_l                     ' U low side ON: the window opens
+                wrpin   #0, pin_pwm_u_l                 '  mode 0, DIR low: undriven, the window closes
+                drvl    pin_pwm_u_l                     '  driven LOW, OFF
+                dirl    pin_pwm_v_l
+                wrpin   #0, pin_pwm_v_l
+                drvl    pin_pwm_v_l
+                dirl    pin_pwm_w_l
+                wrpin   #0, pin_pwm_w_l
+                drvl    pin_pwm_w_l
+                dirl    adc_pins                        ' the ADC pins (inputs): reset, then plain
+                wrpin   #0, adc_pins                    ' (the hall inputs keep their filter until stop()'s pinclear)
+                mov     drv_state_, #DCS_RELEASED       ' only now, so DCS_RELEASED means every gate is let go
+                setq    #DRVR_STATUS_LONGS_COUNT-1      ' the status run, once, as .ctlMotor writes it: stop() waits for this
+                wrlong  drive_u_, ptra
+.park           waitatn                                 ' parked, doing nothing, until stop()'s cogstop. Nothing ATNs a released
+                jmp     #.park                          '  driver, and one that did would only go round again (p2kbPasm2Waitatn)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 245 of 512 used, COUNTED 2026-09-26 at DRIVER_REV 27 (see the cog fit above)
+lutCodeEnd                                            ' LUT-resident code ends here (task 3535)
+
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 280 of 512 used, COUNTED 2026-09-26 at DRIVER_REV 29 (see the cog fit above)
 
 CON { license }
 {{
