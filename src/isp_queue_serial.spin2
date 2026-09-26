@@ -308,16 +308,6 @@ PUB sendError(pMsg)
     serialChan.str(@"\n")
     debug(" ERROR: [", zstr_(pMsg), "] raw=[", zstr_(@currSingleLineBffr), "]")
 
-PRI sendBadParam()
-' Reply to sender naming the first parameter that is not a decimal integer: "ERROR Parameter {n} ({text}) is not a decimal integer"
-
-    serialChan.str(@"ERROR Parameter ")
-    serialChan.dec(nBadParamNbr)
-    serialChan.str(@" (")
-    serialChan.str(@badValueStr)
-    serialChan.str(@") is not a decimal integer\n")
-    debug(" ERROR: parameter #", udec_(nBadParamNbr), " [", zstr_(@badValueStr), "] not a number, raw=[", zstr_(@currSingleLineBffr), "]")
-
 PUB sendOK()
 '' Reply to sender with OK message
 ''
@@ -457,6 +447,47 @@ PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx, bHaveNeg
         if bHaveNeg
             decimalValue := 0 - decimalValue
 
+PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitValue
+'' Return long value for given hexadecimal string
+''
+'' @param pHexStr - pointer to the hexadecimal text, with or without a 0x prefix
+'' @returns valueOfHex - the value of the text
+
+' Local Variables:
+' @local nChar - the character being converted, upper-cased
+' @local nIdx - loop index
+' @local nOffset - index of the first digit (2 past a 0x prefix)
+' @local nDigitValue - the value of that digit, 0-15
+
+    nOffset := 0
+    'debug("CONV: [", zstr_(pHexStr), "]")
+    if(bStrHasLowCasePrefix(pHexStr, string("0x"))) ' handle both 0xFEA94 and FEA94
+        ' skip over prefix
+        nOffset := 2
+    valueOfHex := 0
+    repeat nIdx from nOffset to strsize(pHexStr) - 1
+        valueOfHex *= 16
+        nChar := BYTE[pHexStr][nIdx] & $DF    ' convert upper case to lower
+        if nchar >= $30 && nchar <= $46
+            if nChar > $39
+                nDigitValue := nChar - $41 + 10  ' remove 'A' but leave as 10-15
+            else
+                nDigitValue := nChar - $30  ' remove '0' leave as 0-9
+            valueOfHex += nDigitValue
+            'debug("CONV: ", uhex(nIdx), ", ",uhex(nChar), ", ", uhex(nDigitValue), ", ", uhex(valueOfHex))
+
+    'debug("CONV: [", zstr_(pHexStr), "]= ", uhex_long(valueOfHex))
+
+PRI sendBadParam()
+' Reply to sender naming the first parameter that is not a decimal integer: "ERROR Parameter {n} ({text}) is not a decimal integer"
+
+    serialChan.str(@"ERROR Parameter ")
+    serialChan.dec(nBadParamNbr)
+    serialChan.str(@" (")
+    serialChan.str(@badValueStr)
+    serialChan.str(@") is not a decimal integer\n")
+    debug(" ERROR: parameter #", udec_(nBadParamNbr), " [", zstr_(@badValueStr), "] not a number, raw=[", zstr_(@currSingleLineBffr), "]")
+
 PRI decimalForToken(pDecimalStr, nTokenLen) : bIsNumber, decimalValue | nIdx, nDigit, bHaveNeg, nFirstIdx
 ' Return the value of a decimal integer, and whether the text is one: an optional leading '-', then only the digits
 ' 0-9, at least one, within [-2_147_483_647, 2_147_483_647] (PL-154).
@@ -489,37 +520,6 @@ PRI decimalForToken(pDecimalStr, nTokenLen) : bIsNumber, decimalValue | nIdx, nD
         decimalValue := 0
     elseif bHaveNeg
         decimalValue := -decimalValue
-
-PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitValue
-'' Return long value for given hexadecimal string
-''
-'' @param pHexStr - pointer to the hexadecimal text, with or without a 0x prefix
-'' @returns valueOfHex - the value of the text
-
-' Local Variables:
-' @local nChar - the character being converted, upper-cased
-' @local nIdx - loop index
-' @local nOffset - index of the first digit (2 past a 0x prefix)
-' @local nDigitValue - the value of that digit, 0-15
-
-    nOffset := 0
-    'debug("CONV: [", zstr_(pHexStr), "]")
-    if(bStrHasLowCasePrefix(pHexStr, string("0x"))) ' handle both 0xFEA94 and FEA94
-        ' skip over prefix
-        nOffset := 2
-    valueOfHex := 0
-    repeat nIdx from nOffset to strsize(pHexStr) - 1
-        valueOfHex *= 16
-        nChar := BYTE[pHexStr][nIdx] & $DF    ' convert upper case to lower
-        if nchar >= $30 && nchar <= $46
-            if nChar > $39
-                nDigitValue := nChar - $41 + 10  ' remove 'A' but leave as 10-15
-            else
-                nDigitValue := nChar - $30  ' remove '0' leave as 0-9
-            valueOfHex += nDigitValue
-            'debug("CONV: ", uhex(nIdx), ", ",uhex(nChar), ", ", uhex(nDigitValue), ", ", uhex(valueOfHex))
-
-    'debug("CONV: [", zstr_(pHexStr), "]= ", uhex_long(valueOfHex))
 
 PRI parseCommandAndValue() : opStatus, pValues | pStr
 ' Interpret command and return descriptor
