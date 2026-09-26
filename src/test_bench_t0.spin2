@@ -181,6 +181,10 @@
 ''               build that runs one test of its own, which now includes an unattended one. T0-24 (t0-stopmode) gains
 ''               R20-T0-EV-HOLD: after each hold row's ACT, cog 0 reads the event log, and the hand-offs it reports must
 ''               match the hold states the measure cog saw. New record T0-24,row,N,run,K,events.
+''               26 Sep 2026 -- SRC_REV 19 (Visit 10 pass 5, task 3613): pass 5's T0-25 was voided when PL-120 left the
+''               right bridge dead and start() refused it. A RIGHT start refused by its checks now prints T0-25,refused
+''               and three T0-25,rprobe (the last attempt's lead-check mV), then T0-25 starts the LEFT wheel
+''               (T0_SECOND_BASE, T0-25,fallback) and its cells name LEFT. Nothing else changes.
 ''
 '' =================================================================================================
 
@@ -289,7 +293,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 18                                            ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 19                                           ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -1091,6 +1095,7 @@ VAR { T0-25 helper reader cog (-D T0_STOPREASON only) }
     LONG    t0rHelperReads                                      ' helper: events of any kind it read after bT0rGo
     LONG    bT0rHelperClean                                     ' helper: that read ended on EV_NONE with nothing lost
     LONG    bT0rDone                                            ' helper: the counts above are final
+    LONG    pT0rWheel                                           ' cog 0: the wheel T0-25 drives, "RIGHT" or "LEFT" (its cells' motor field)
 #endif
 
 #ifdef T0_STOPMODE
@@ -1181,8 +1186,8 @@ PUB main() | trapCode
     '  a false description of what the operator was standing next to.
     debug("* test_bench_t0 -- T0-24 stop-state hand test: ATTENDED, THE WHEEL SPINS ON TWO ROWS -- src_rev ", udec_(SRC_REV))
 #elseifdef T0_STOPREASON
-    ' T0-25 drives the RIGHT wheel on every leg, so its banner says so, as T0-24's does
-    debug("* test_bench_t0 -- T0-25 stop reasons and event log: UNATTENDED, THE RIGHT WHEEL IS DRIVEN -- src_rev ", udec_(SRC_REV))
+    ' T0-25 drives the RIGHT wheel on every leg (the LEFT if the right's start checks refuse it), so its banner says so, as T0-24's does
+    debug("* test_bench_t0 -- T0-25 stop reasons and event log: UNATTENDED, THE RIGHT WHEEL IS DRIVEN (THE LEFT IF THE RIGHT IS REFUSED) -- src_rev ", udec_(SRC_REV))
 #else
     debug("* test_bench_t0 -- Tier 0: no motion -- src_rev ", udec_(SRC_REV))
 #endif
@@ -2629,12 +2634,16 @@ PRI testT0_25() | startResult, bReady, eStartErr
 '   R20-T0-EV-TOTAL     - getEventTotal(EV_STOP) is 27 (7 + 20); one that counts only what was read (23) fails
 '   R20-T0-EV-2COG      - a helper cog and cog 0 each read the same T0_25_COG_CYCLES stops; a shared cursor gives
 '                          one of them fewer, which fails
-' A start that does not come up ready leaves every cell NOMEAS, and the start's getError() is printed.
+' A start that does not come up ready leaves every cell NOMEAS, and the start's getError() is printed. A RIGHT start its
+' checks refuse (ERR_START_CHECK_FAILED: pass 5 saw PL-120 outlast a reload) is followed by one start of the LEFT wheel
+' (T0_SECOND_BASE), so one dead bridge does not void the tier; the cells then name LEFT. The cells certify the reporting,
+' which is the same on either wheel.
 '
 ' @local startResult - start()'s return
 ' @local bReady - TRUE when the driver came up ready
 ' @local eStartErr - getError() after a start that did not come up
 
+    pT0rWheel := @"RIGHT"
     emitCellDecl(@sCellSrCmd, @sTaskReporting)
     emitCellDecl(@sCellSrLimit, @sTaskReporting)
     emitCellDecl(@sCellSrEstop, @sTaskReporting)
@@ -2651,24 +2660,54 @@ PRI testT0_25() | startResult, bReady, eStartErr
     bReady := bWaitReady(startResult)
     eStartErr := motor.getError()                               ' NO_ERROR after a good start; the -1's cause otherwise
     debug("T0-25,start_return,", sdec_(startResult), ",ready,", zstr_(bReady ? @"TRUE" : @"FALSE"), ",error,", sdec_(eStartErr))
+    if (bReady == FALSE) and (eStartErr == motor.ERR_START_CHECK_FAILED)
+        t0rPrintHealth()                                        ' PL-120: what refused the right, before the left replaces it
+        benchLog.cogEventBegin()
+        motor.stop()
+        benchLog.cogEventEnd()
+        pT0rWheel := @"LEFT"
+        benchLog.cogEventBegin()
+        startResult := motor.start(T0_SECOND_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+        benchLog.cogEventEnd()
+        bReady := bWaitReady(startResult)
+        eStartErr := motor.getError()
+        debug("T0-25,fallback,wheel,LEFT_P32,start_return,", sdec_(startResult), ",ready,", zstr_(bReady ? @"TRUE" : @"FALSE"), ",error,", sdec_(eStartErr))
     if bReady
         motor.holdAtStop(FALSE)                                 ' coast at rest: the hold's hand-offs are T0-24's, not these legs'
         t0rStopLegs()
         t0rEvLost()
         t0rTwoCog()
     else
-        emitCellBool(@sCellSrCmd, @sTaskReporting, @"RIGHT", @sCritSrCmd, FALSE, FALSE, 0)
-        emitCellBool(@sCellSrLimit, @sTaskReporting, @"RIGHT", @sCritSrLimit, FALSE, FALSE, 0)
-        emitCellBool(@sCellSrEstop, @sTaskReporting, @"RIGHT", @sCritSrEstop, FALSE, FALSE, 0)
-        emitCellBool(@sCellSrLink, @sTaskReporting, @"RIGHT", @sCritSrLink, FALSE, FALSE, 0)
-        emitCellBool(@sCellEvStop, @sTaskReporting, @"RIGHT", @sCritEvStop, FALSE, FALSE, 0)
-        emitCellBool(@sCellEvLost, @sTaskReporting, @"RIGHT", @sCritEvLost, FALSE, FALSE, 0)
-        emitCellBool(@sCellEvTotal, @sTaskReporting, @"RIGHT", @sCritEvTotal, FALSE, FALSE, 0)
-        emitCellBool(@sCellEv2Cog, @sTaskReporting, @"RIGHT", @sCritEv2Cog, FALSE, FALSE, 0)
+        emitCellBool(@sCellSrCmd, @sTaskReporting, pT0rWheel, @sCritSrCmd, FALSE, FALSE, 0)
+        emitCellBool(@sCellSrLimit, @sTaskReporting, pT0rWheel, @sCritSrLimit, FALSE, FALSE, 0)
+        emitCellBool(@sCellSrEstop, @sTaskReporting, pT0rWheel, @sCritSrEstop, FALSE, FALSE, 0)
+        emitCellBool(@sCellSrLink, @sTaskReporting, pT0rWheel, @sCritSrLink, FALSE, FALSE, 0)
+        emitCellBool(@sCellEvStop, @sTaskReporting, pT0rWheel, @sCritEvStop, FALSE, FALSE, 0)
+        emitCellBool(@sCellEvLost, @sTaskReporting, pT0rWheel, @sCritEvLost, FALSE, FALSE, 0)
+        emitCellBool(@sCellEvTotal, @sTaskReporting, pT0rWheel, @sCritEvTotal, FALSE, FALSE, 0)
+        emitCellBool(@sCellEv2Cog, @sTaskReporting, pT0rWheel, @sCritEv2Cog, FALSE, FALSE, 0)
     benchLog.cogEventBegin()
     motor.stop()
     motor.getError()                                            ' drain this cog's slot
     debug("T0-25,end")
+
+PRI t0rPrintHealth() | nChecked, nFailed, nRecovered, nUMv, nVMv, nWMv, ePhase
+' PL-120 (Visit 10 pass 5): a refused start's getHealth() masks and the last attempt's lead-check readings, as
+' T0-25,refused and one T0-25,rprobe per driven phase (mV) -- the per-phase signature a dead bridge leaves.
+'
+' @local nChecked - getHealth(): the HLT_* bits checked
+' @local nFailed - ...still failing
+' @local nRecovered - ...recovered on a retry
+' @local nUMv - U's reading while ePhase was driven, mV
+' @local nVMv - V's reading
+' @local nWMv - W's reading
+' @local ePhase - the phase that was driven, PRB_U..PRB_W
+
+    nChecked, nFailed, nRecovered := motor.getHealth()
+    debug("T0-25,refused,wheel,RIGHT_P16,chk,", uhex_(nChecked), ",fail,", uhex_(nFailed), ",rec,", uhex_(nRecovered))
+    repeat ePhase from motor.PRB_U to motor.PRB_W
+        nUMv, nVMv, nWMv := motor.testGetProbe(ePhase)
+        debug("T0-25,rprobe,driven,", udec_(ePhase - motor.PRB_U), ",u_mV,", sdec_(nUMv), ",v_mV,", sdec_(nVMv), ",w_mV,", sdec_(nWMv))
 
 PRI t0rStopLegs() | legIdx, legErr[T0R_LEGS], legOpen[T0R_LEGS], legStop[T0R_LEGS], legAfter[T0R_LEGS], bOpensNone, stopBuf[T0_25_EV_STOPS], nStops, nRead, nLost, bEnded, bRising, bOrder
 ' The four stop-reason cells and R20-T0-EV-STOP: the seven legs in order (t0rLeg(), each printed as T0-25,leg), then
@@ -2692,17 +2731,17 @@ PRI t0rStopLegs() | legIdx, legErr[T0R_LEGS], legOpen[T0R_LEGS], legStop[T0R_LEG
     repeat legIdx from 0 to T0R_LEGS - 1
         legErr[legIdx], legOpen[legIdx], legStop[legIdx], legAfter[legIdx] := t0rLeg(legIdx)
         bOpensNone &= (legOpen[legIdx] == motor.SR_NONE) and (legErr[legIdx] == motor.NO_ERROR)
-    emitCellBool(@sCellSrCmd, @sTaskReporting, @"RIGHT", @sCritSrCmd, TRUE, bOpensNone and (legStop[T0R_LEG_CMD] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_CMD] == motor.SR_COMMANDED), T0R_LEGS + 2)
-    emitCellBool(@sCellSrLimit, @sTaskReporting, @"RIGHT", @sCritSrLimit, TRUE, (legErr[T0R_LEG_LIMIT] == motor.NO_ERROR) and (legStop[T0R_LEG_LIMIT] == motor.SR_AT_LIMIT) and (legErr[T0R_LEG_LIMIT_NEG] == motor.NO_ERROR) and (legStop[T0R_LEG_LIMIT_NEG] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_LIMIT_NEG] == motor.SR_COMMANDED), 3)
-    emitCellBool(@sCellSrEstop, @sTaskReporting, @"RIGHT", @sCritSrEstop, TRUE, (legErr[T0R_LEG_ESTOP] == motor.NO_ERROR) and (legStop[T0R_LEG_ESTOP] == motor.SR_EMERGENCY) and (legErr[T0R_LEG_ESTOP_NEG] == motor.NO_ERROR) and (legStop[T0R_LEG_ESTOP_NEG] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_ESTOP_NEG] == motor.SR_COMMANDED), 3)
-    emitCellBool(@sCellSrLink, @sTaskReporting, @"RIGHT", @sCritSrLink, TRUE, (legErr[T0R_LEG_LINK] == motor.NO_ERROR) and (legStop[T0R_LEG_LINK] == motor.SR_LINK_LOST) and (legErr[T0R_LEG_LINK_NEG] == motor.NO_ERROR) and (legOpen[T0R_LEG_LINK_NEG] == motor.SR_NONE) and (legStop[T0R_LEG_LINK_NEG] == motor.SR_COMMANDED), 3)
+    emitCellBool(@sCellSrCmd, @sTaskReporting, pT0rWheel, @sCritSrCmd, TRUE, bOpensNone and (legStop[T0R_LEG_CMD] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_CMD] == motor.SR_COMMANDED), T0R_LEGS + 2)
+    emitCellBool(@sCellSrLimit, @sTaskReporting, pT0rWheel, @sCritSrLimit, TRUE, (legErr[T0R_LEG_LIMIT] == motor.NO_ERROR) and (legStop[T0R_LEG_LIMIT] == motor.SR_AT_LIMIT) and (legErr[T0R_LEG_LIMIT_NEG] == motor.NO_ERROR) and (legStop[T0R_LEG_LIMIT_NEG] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_LIMIT_NEG] == motor.SR_COMMANDED), 3)
+    emitCellBool(@sCellSrEstop, @sTaskReporting, pT0rWheel, @sCritSrEstop, TRUE, (legErr[T0R_LEG_ESTOP] == motor.NO_ERROR) and (legStop[T0R_LEG_ESTOP] == motor.SR_EMERGENCY) and (legErr[T0R_LEG_ESTOP_NEG] == motor.NO_ERROR) and (legStop[T0R_LEG_ESTOP_NEG] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_ESTOP_NEG] == motor.SR_COMMANDED), 3)
+    emitCellBool(@sCellSrLink, @sTaskReporting, pT0rWheel, @sCritSrLink, TRUE, (legErr[T0R_LEG_LINK] == motor.NO_ERROR) and (legStop[T0R_LEG_LINK] == motor.SR_LINK_LOST) and (legErr[T0R_LEG_LINK_NEG] == motor.NO_ERROR) and (legOpen[T0R_LEG_LINK_NEG] == motor.SR_NONE) and (legStop[T0R_LEG_LINK_NEG] == motor.SR_COMMANDED), 3)
 
     nStops, nRead, nLost, bEnded, bRising, _ := t0rDrain(@"STOP", @stopBuf, T0_25_EV_STOPS)
     bOrder := (nStops == T0_25_EV_STOPS)
     if bOrder
         repeat legIdx from 0 to T0_25_EV_STOPS - 1
             bOrder &= (stopBuf[legIdx] == t0rWantStop(legIdx))
-    emitCellBool(@sCellEvStop, @sTaskReporting, @"RIGHT", @sCritEvStop, TRUE, bOrder and bRising and bEnded and (nLost == 0), T0_25_EV_STOPS)
+    emitCellBool(@sCellEvStop, @sTaskReporting, pT0rWheel, @sCritEvStop, TRUE, bOrder and bRising and bEnded and (nLost == 0), T0_25_EV_STOPS)
 
 PRI t0rLeg(legIdx) : eErr, srOpen, srStop, srAfter | startMs, bRest
 ' One stop-reason leg (this CON's T0R_LEG_* notes say what each does and reads), printed as T0-25,leg. Every leg ends
@@ -2821,10 +2860,10 @@ PRI t0rEvLost() | bBase, eKind, totBefore, stopsBefore, eErr, cycleIdx, totAfter
     nStops, nRead, nLost, bEnded, _, firstKind := t0rDrain(@"LOST", 0, 0)
     nKept := (nRead - 1) #> 0
     debug("T0-25,lost,base,", zstr_(bBase ? @"TRUE" : @"FALSE"), ",queued,", sdec_(queued), ",cycle_stops,", sdec_(stopsAfter - stopsBefore), ",first_kind,", udec_(firstKind), ",lost,", sdec_(nLost), ",kept,", sdec_(nKept), ",kept_stops,", udec_(nStops), ",ended,", zstr_(bEnded ? @"TRUE" : @"FALSE"), ",err,", sdec_(eErr))
-    emitCellBool(@sCellEvLost, @sTaskReporting, @"RIGHT", @sCritEvLost, bBase, (eErr == motor.NO_ERROR) and (stopsAfter - stopsBefore == T0_25_CYCLES) and (queued > motor.EV_QUEUE_DEPTH) and (firstKind == motor.EV_LOST) and (nLost == queued - motor.EV_QUEUE_DEPTH) and (nKept == motor.EV_QUEUE_DEPTH) and bEnded, 3)
+    emitCellBool(@sCellEvLost, @sTaskReporting, pT0rWheel, @sCritEvLost, bBase, (eErr == motor.NO_ERROR) and (stopsAfter - stopsBefore == T0_25_CYCLES) and (queued > motor.EV_QUEUE_DEPTH) and (firstKind == motor.EV_LOST) and (nLost == queued - motor.EV_QUEUE_DEPTH) and (nKept == motor.EV_QUEUE_DEPTH) and bEnded, 3)
     nTotal := motor.getEventTotal(motor.EV_STOP)
     debug("T0-25,total,ev_stop,", sdec_(nTotal), ",want,", udec_(T0_25_EV_STOPS + T0_25_CYCLES))
-    emitCellBool(@sCellEvTotal, @sTaskReporting, @"RIGHT", @sCritEvTotal, TRUE, nTotal == T0_25_EV_STOPS + T0_25_CYCLES, 1)
+    emitCellBool(@sCellEvTotal, @sTaskReporting, pT0rWheel, @sCritEvTotal, TRUE, nTotal == T0_25_EV_STOPS + T0_25_CYCLES, 1)
 
 PRI t0rTwoCog() | helperCog, startMs, bHelperReady, eErr, cycleIdx, nStops, nRead, nLost, bEnded, bHelperDone
 ' R20-T0-EV-2COG: a helper cog (t0rHelper()) reads the log to EV_NONE and says so; cog 0 does the same, then makes
@@ -2876,7 +2915,7 @@ PRI t0rTwoCog() | helperCog, startMs, bHelperReady, eErr, cycleIdx, nStops, nRea
         benchLog.cogEventBegin()
         cogstop(helperCog)
     debug("T0-25,twocog,helper_cog,", sdec_(helperCog), ",ready,", zstr_(bHelperReady ? @"TRUE" : @"FALSE"), ",done,", zstr_(bHelperDone ? @"TRUE" : @"FALSE"), ",main_stops,", udec_(nStops), ",helper_stops,", udec_(t0rHelperStops), ",main_reads,", udec_(nRead), ",helper_reads,", udec_(t0rHelperReads), ",err,", sdec_(eErr))
-    emitCellBool(@sCellEv2Cog, @sTaskReporting, @"RIGHT", @sCritEv2Cog, bHelperReady and bHelperDone, (eErr == motor.NO_ERROR) and (nStops == T0_25_COG_CYCLES) and (t0rHelperStops == T0_25_COG_CYCLES) and bEnded and (nLost == 0) and bT0rHelperClean, 2)
+    emitCellBool(@sCellEv2Cog, @sTaskReporting, pT0rWheel, @sCritEv2Cog, bHelperReady and bHelperDone, (eErr == motor.NO_ERROR) and (nStops == T0_25_COG_CYCLES) and (t0rHelperStops == T0_25_COG_CYCLES) and bEnded and (nLost == 0) and bT0rHelperClean, 2)
 
 PRI t0rHelper() | eKind, nValue, bLost
 ' The helper reader cog of R20-T0-EV-2COG (its own cog; prints nothing). It reads the log to EV_NONE -- its cursor

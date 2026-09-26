@@ -3911,6 +3911,35 @@ any FLTRESP timeout (`BM-ABI* where,TIMEOUT`), so the next recurrence is capture
   should carry these.**
 - The pass 5 sheet's signature row was corrected to this reading before any pass 5 log was read.
 
+**2026-09-25 19:52-20:11, Visit 10 pass 5 at 24d2cb9 (DRIVER_REV 25) -- STRUCK TWICE AFTER DRIVING, OUTLASTED A RELOAD,
+AND START REFUSAL CAUGHT IT** ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §2, §3).
+- **MEASURED, the fault tier did not see it:** `dual-fault-rightfirst` `BM-FRRECSUM,...,r_pf,NO_FAIL`. The right drove
+  all 13 of its own lifetimes (40-120 × 10⁶, shorts, coasts, graded shorts) and both platform trials.
+- **MEASURED, death 1 (`dual-start`, about 20:05:04):** life 5's walk BACK leg, right
+  `end,OTHER,...,peak,0,...,lag,325`. The left was healthy but scaled by the path limiter, `peak,-3`. Lives 6-10: every
+  start refused after its 3 retries (about 4.0 s each):
+  `BM-SREFUSE,...,r_err,-1_020,...,r_fail,$001C`, with the left clean (`l_fail,$0000`).
+- **MEASURED, death 2 (`dual-d`, between 20:10:22.9 and 20:10:29.2):** after ESTOP_LATCH/ESTOP_CLEAR the platform never
+  reached speed. Then ORDERED..DIRSIGN were `NOT_REACHED`, `BM-EVTOT ... l_path,2,r_path,56`, and the LIMIT segment's
+  start was refused, `r_fail,$001C`.
+- **MEASURED, a reload did NOT clear it:** `t0-stopreason`, a fresh program load at 20:11:43 (about 80 s after death 2),
+  was refused at its first start: `healthFailed = $0000_001C`. **This falsifies "a later load has always cleared it"**,
+  the one fact recorded above against a hardware cause.
+- **MEASURED, time did:** `dual-start-phaseneg` loaded about 100 s after death 1 and probed the right healthy in every
+  lifetime (`p_uu,796 ... p_ww,798`).
+- **So:** the failing state survives driver restarts **and** a program reload, and clears within about 80-100 s. That
+  weighs against anything the program image holds (the shared driver image included, which the reload rewrites) and
+  toward a state in the right board that recovers with time. A time-recovering high-side gate supply fits the corrected
+  reading.
+- **The probe fits the corrected reading, but the signature was not printed.** The lead probe drives each phase's high
+  side at 50 % (`probeLeads()`), and all three failing means no high side raised its phase. But the harness read probe
+  mV only when `start()` returned a cog, so the refused starts printed NA. **BUILT 2026-09-26:** `BM-RPROBE` after every
+  refusal (`test_bench_dual` src_rev 49), and `test_bench_t0` src_rev 19 prints `T0-25,rprobe` and then falls back to
+  the LEFT wheel, so the next death records its per-phase millivolts and voids nothing.
+- **Still open:** the trigger (both deaths followed ordinary driving, one right after an e-stop; the fault tier's harder
+  use did not trigger it), and whether the board or our pin handling holds the state. PL-138's all-low-sides window
+  touches this path and is the next driver-side candidate.
+
 ### PL-121 -- T0-24's hand rows ended on a clock that started at START
 
 **Found 2026-09-23** at Visit 10 pass 1 (Stephen: *"I press start, and it automatically completes, and I haven't done
@@ -4330,6 +4359,26 @@ teaches the user to ignore it (P14).
   after a timed-out first, so two timed-out legs block cog 0 about 4.1 s, past `WD_STALL_MS`. The harness now grants
   `WD_WALK_GRACE_MS` (4_134 ms, derived from the library's bounds) for that one call, and `BM-SKBUILD` prints it.
 
+**2026-09-26 -- CAUSE FOUND at pass 5, FIX BUILT (not yet certified).** The leg records caught it
+([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §4).
+- **MEASURED.** Healthy walks end `end,LIMIT` at about 634 ms. Every failed walk ended `end,OTHER` or `TIMEOUT` with no
+  limit fired, and each one sits beside an `EV PATH_LIMIT`:
+  - `dual-start` life 3, both wheels' OUT leg: `end,OTHER,ms,29,...,peak,0`, with `PATH_LIMIT,wheel,LEFT,...,value,2`
+    and its release 24 ms later;
+  - `dual-start-swapneg` life 9, the healthy RIGHT: `OUT,end,OTHER,ms,28`, with `PATH_LIMIT,wheel,RIGHT,...,value,2`;
+  - `dual-start-swapneg` life 10, the healthy RIGHT: `OUT,end,TIMEOUT,...,peak,2`, scaled to 55 by the swapped left's
+    stall (`PATH_LIMIT,wheel,LEFT,...,value,55`);
+  - `dual-start` life 5, the healthy LEFT: `BACK,end,OTHER,ms,552,...,peak,-3`, while the right's bridge died (PL-120).
+- **Cause.** `REQ_WALK` ran under the steering path limiter (`frontLimitPath()`, R18.4 D-6). At leg start a wheel's lag
+  limiter holds its field, so the wheel reads SHORT. The limiter then scales **both** wheels to that wheel's fraction,
+  2 ‰. Both drivers read `DCS_STOPPED`, and `walkLeg()` ends the leg. The same coupling fails a healthy wheel for its
+  partner's stall. Pass 4's 5-tick return leg fits a late engage.
+- **Fix, by construction:** the path limiter keeps a platform's path while it drives, and a wiring walk is not a platform
+  drive; it judges each wheel on its own. The steering front cog now runs `frontLimitPath()` only while neither wheel has
+  a walk leg open (the motor object's new `isWalkWatched()`, `DRIVER_REV` 26). No PASM change; no criterion changed.
+- **Certifies on** the next `dual-start` (R19-DUAL-WALK-X 0 of 10 on each wheel) and `dual-start-swapneg`. There, the
+  healthy RIGHT must pass all 3 walks while the swapped left fails. A walk leg that still ends OTHER fails the fix.
+
 ### PL-138 -- while a gate pin's DIR is low its smart pin still drives, so all three low sides are ON: a phase short outside any bridge state
 
 **Found 2026-09-25** by a read-only desk study for PL-120. Not yet checked against the silicon on the rig.
@@ -4356,6 +4405,41 @@ teaches the user to ignore it (P14).
 That removes the window rather than characterising it. **First:** resolve the source conflict with p2kb, and check
 whether the window is reachable while a wheel turns (a restart, or a stop then start while coasting). It rides with
 the next driver change.
+
+### PL-139 -- RESTFLAT's 50 mV at-rest band was set on the left board, and the right's coast rest read 51
+
+**Found 2026-09-26** at Visit 10 pass 5 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §2).
+- **MEASURED:** `R19-DUAL-RESTFLAT-X` RIGHT FAIL, 1 of 6 windows. It is trial 5 (X-3, coast from −80 × 10⁶), REST
+  window: `BM-FRPHASE,...,tid,5,motor,RIGHT,win,REST,n,154,ticks,0,pp_u,35,pp_v,51,pp_w,23,...,flat,FALSE`.
+  `FR_FLAT_MV` is 50.
+- The right's other X-3 rest windows read 40 and 15 mV peak to peak. The left's read 38, 19 and 38.
+- No hall tick moved in the window. The swing is under one hall step of rotor settling after a free coast.
+- **The verdict stands (D2):** the criterion was fixed before the run.
+
+**Why it matters:** RESTFLAT is COASTEMF's negative control. A band that the healthy right touches at rest cannot
+separate "flat" from "turning" on that board with margin.
+
+**Disposition: Watch.** It bears on the coast measurement's control, not on any fault response. What would make it
+actionable is a second right rest window over 50 mV with no tick. The band is then sized from both boards' rest
+windows, never from one run's worst. The next `dual-fault-rightfirst` carries it as is.
+
+### PL-140 -- the steering front cog logs late passes during the start checks
+
+**Found 2026-09-26** at Visit 10 pass 5 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §5).
+- **MEASURED:** `BM-EV,...,stage,SKCHECK,kind,LATE_PASS,wheel,PLAT,...,value,1` twice in `dual-start` (ms 4_031 and
+  25_025) and once in `dual-start-swapneg` (ms 40_838). Each is one late pass at the end of a lifetime's walk.
+- Against it, the fault tier's front cog: `BM-FRONTST,...,late,0,max_us,404` and `495`. Part D's:
+  `late,0,max_us,866`.
+- No cell judges late passes in part START, so nothing failed. The event log reported what it saw, which is the event
+  log working.
+
+**Why it matters:** the front cog's budget (R20-DUAL-FRONTST-EV, ≤ 950 µs) is certified only where it was measured. A
+late pass at the walk's end is a pass the budget does not cover.
+
+**Disposition: Watch, with its instrument built.** Part START now prints `BM-FRONTST` after each walk (`test_bench_dual`
+src_rev 49, 2026-09-26), so the next `dual-start` places each late pass against that lifetime's worst pass and late
+count. If they are the walk's own, the front-cog budget is extended to cover it. Candidates: the front cog's walk watch
+(`frontWalkWatch()`) and the steering stop/start sequence.
 
 ---
 

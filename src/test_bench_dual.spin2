@@ -359,6 +359,12 @@
 ''               pack sensor's reading when it reads a pack: BM-SKWIND appends v_src and v_mV before why, and dual-start
 ''               gains R20-PACK-WINDV per motor. WD_WIND_MS includes that reading. Five why tokens and one event stage
 ''               (PACK) are appended. No other record changes
+''               26 Sep 2026 -- SRC_REV=49, FMT 33: Visit 10 pass 5 (task 3613). PL-120 struck twice after driving and
+''               start refusal caught it, but a refused start printed no lead-check readings. New record BM-RPROBE, one
+''               per wheel after every BM-SREFUSE and after every BM-REFUSE: the last attempt's p_<driven><read> (mV), so
+''               the next dead bridge records its own per-phase signature. DRIVER_REV 26 (PL-137's fix: the steering path
+''               limiter stays out of a wiring walk). Part START also prints BM-FRONTST after each walk (PL-140: its
+''               LATE_PASS events are placed against the front cog's own counts). No other record changes
 ''
 '' =================================================================================================
 
@@ -426,8 +432,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 48                                      ' hand-bumped whenever this file changes
-    FMT_VERSION = 32                                       ' BM- record-format version
+    SRC_REV     = 49                                      ' hand-bumped whenever this file changes
+    FMT_VERSION = 33                                      ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -11935,6 +11941,7 @@ PRI skLifetime(lifeIdx, bWalk) | whyCode, slotIdx, legIdx, lifeBefore
             repeat legIdx from wheelL.WLEG_OUT to wheelL.WLEG_BACK
                 emitSkWalkLeg(slotIdx, legIdx)
         if bSteerUp
+            skFrontSt()                                     ' PL-140: this lifetime's front-cog worst pass and late count, beside its walk
             steerRecoverFault(0)                            ' a walk that faulted a wheel: recovered, counted, cooled
     bInstIdle()
     if bSteerUp
@@ -11992,6 +11999,19 @@ PRI skStagingReset() | arrIdx
     skWalkWhy := WHY_NONE
     bSkWlRead := FALSE                                      ' PL-137
     longfill(@skWl, wheelL.WALK_NA, SKWL_LONGS)
+
+PRI skFrontSt() | nPasses, nLate, nMaxTicks, nStackHi, nStackOf
+' PL-140: BM-FRONTST for this lifetime's steering front cog after its walk -- passes, late passes, the worst pass body
+' and the stack mark since the cog was launched -- so a LATE_PASS event in part START can be placed. No cell judges it.
+'
+' @local nPasses - passes since the front cog was launched
+' @local nLate - passes that overran their slot
+' @local nMaxTicks - longest pass body, in system ticks
+' @local nStackHi - stack longs ever used
+' @local nStackOf - the allocation that mark is against
+
+    nPasses, nLate, nMaxTicks, nStackHi, nStackOf := dFrontStats(SIDE_BOTH)
+    emitFrontSt(SIDE_BOTH, nPasses, nLate, nMaxTicks, nStackHi, nStackOf)
 
 PRI skReadHealth() | probedIdx, rowBase
 ' What start() judged, read through the steering object before anything else touches it: both wheels' getHealth()
@@ -18358,6 +18378,40 @@ PRI emitSRefuse(seg)
     benchLog.hexField(@"r_rec", ssRec[SLOT_RIGHT])
     emitRecord()
 
+PRI emitRProbe(seg, side, bSteer) | ePhase, nUMv, nVMv, nWMv
+' BM-RPROBE (PL-120, Visit 10 pass 5): one wheel's lead-check readings after a start() that returned -1 -- the last
+' attempt's, which the driver keeps until the next start (testGetProbe()). p_<driven><read> as BM-SKPROBE. A wheel
+' whose bridge stopped driving shows here which phases it could still raise and where the others sat. Worst case
+' 150 bytes.
+'
+' @param seg - SEG_* in progress
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param bSteer - T/F where T means the steering object's start refused (life is the steering life), F a wheel's own
+'
+' @local ePhase - the phase that was driven, PRB_U..PRB_W
+' @local nUMv - U's reading while ePhase was driven, mV
+' @local nVMv - V's reading
+' @local nWMv - W's reading
+
+    recBegin(@"BM-RPROBE")
+    benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
+    benchLog.numField(@"life", bSteer ? steerLife : slotLife[side - SIDE_LEFT], LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    repeat ePhase from wheelL.PRB_U to wheelL.PRB_W
+        beat(bSteer ? CP_LIB_STEER_QUERY : CP_LIB_QUERY)
+        if bSteer and (side == SIDE_LEFT)
+            nUMv, nVMv, nWMv := steering.testLeftGetProbe(ePhase)
+        elseif bSteer
+            nUMv, nVMv, nWMv := steering.testRightGetProbe(ePhase)
+        elseif side == SIDE_LEFT
+            nUMv, nVMv, nWMv := wheelL.testGetProbe(ePhase)
+        else
+            nUMv, nVMv, nWMv := wheelR.testGetProbe(ePhase)
+        benchLog.numField(lookupz(ePhase - wheelL.PRB_U : @"p_uu", @"p_vu", @"p_wu"), nUMv, LIM_SMALL)
+        benchLog.numField(lookupz(ePhase - wheelL.PRB_U : @"p_uv", @"p_vv", @"p_wv"), nVMv, LIM_SMALL)
+        benchLog.numField(lookupz(ePhase - wheelL.PRB_U : @"p_uw", @"p_vw", @"p_ww"), nWMv, LIM_SMALL)
+    emitRecord()
+
 PRI emitRefuse(seg, side)
 ' BM-REFUSE (task 3621): a wheel start() that returned -1, and why -- its getError() code and its getHealth() masks
 ' (HLT_* bits, hex), read right after the call. Worst case 130 bytes.
@@ -18526,6 +18580,7 @@ PRI bWheelStart(seg, side) : bStarted | slotIdx, cogValue, startMs, restMs, nMis
         emitStart(seg, side)
         if stCogRet < 0
             emitRefuse(seg, side)                           ' task 3621: why the start returned -1
+            emitRProbe(seg, side, FALSE)                    ' PL-120: what the refusing lead check read
 
 PRI lifetimeZero(side) : whyCode | slotIdx, winStartTotal, winEndTotal
 ' Take this driver lifetime's floated zero-command sense_i and phase-sum means: ZERO_WINDOW_MS through
@@ -19019,6 +19074,8 @@ PRI bSteerStart(seg) : bStarted | startMs, restMs, leftMissed, leftIllegal, righ
         emitSStart(seg)
         if ssRet < 0
             emitSRefuse(seg)                                ' task 3621: why the start returned -1
+            emitRProbe(seg, SIDE_LEFT, TRUE)                ' PL-120: what the refusing lead check read, per wheel
+            emitRProbe(seg, SIDE_RIGHT, TRUE)
 
 PRI steerStop()
 ' Stop the steering object (both drivers and its sense cog), returning the instrument to IDLE first
