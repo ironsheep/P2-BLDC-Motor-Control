@@ -216,6 +216,12 @@ CON { Public Interface Constants }
     ACCEL_MIN_MM_S2         = 1
     ACCEL_MAX_MM_S2         = 10_000
 
+    ' setDeceleration(): the accepted rate, mm/s squared at the wheel rim. The floor is higher than setAcceleration()'s:
+    '  every stop ramps down at this rate, the command timeout's and a controlled fault stop's (FR_GRADED) included, so
+    '  it must stay a stop -- at 250 a wheel at 2 m/s is at rest in 8 s. The built-in rate is about 1,470 (6.5in wheel).
+    DECEL_MIN_MM_S2         = 250
+    DECEL_MAX_MM_S2         = 10_000
+
     ' setRampingValues(): the largest ramp step, which keeps the driver's ramp sum inside a signed long
     RAMP_STEP_MAX           = $4000_0000
 
@@ -237,10 +243,11 @@ CON { Public Interface Constants }
     '    holdAtStop()              isHoldAtStop()
     '    setForwardIsReverse()     isForwardReversed()     (forwardIsReverse() is setForwardIsReverse(TRUE))
     '    setStartChecks()          (read by start() itself)
+    '    setAcceleration()         getAcceleration()       (PL-160)
+    '    setDeceleration()         getDeceleration()       (PL-160)
+    '    setRampingValues()        getRampingValues()      (PL-160: the raw ramp; the last ramp call wins)
     '  start() RESTORES the defaults of the protective settings, which need a running motor (ERR_NOT_STARTED before
     '  start()), so a program sets them after every start(): setFaultResponse(), setHoldLimits(), setCommandTimeout().
-    '  setAcceleration() and setRampingValues() are restored to the built-in ramp by start() until the ramp change that
-    '  keeps them lands; it adds its values to the kept set above (applyUserSettings()).
 
 OBJ { objects / constants included by this object }
 
@@ -471,9 +478,11 @@ PUB setAcceleration(rate) : eError | rampStep
 '' Set how fast the motor speeds up: every speed-up from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
 ''
 '' Until this is called the motor uses a gentle built-in ramp that starts near 44 mm/s squared and grows by about
-'' 1_240 mm/s squared every second (6.5in wheel). Slowing down and stopping keep their own fixed rate, so the
-'' stopping distances do not change. The motor can still accelerate more slowly than asked: the drive never lets
-'' the field run further ahead of the rotor than the motor can follow.
+'' 1_240 mm/s squared every second (6.5in wheel). Slowing down and stopping are set apart, by setDeceleration(), so
+'' this does not change the stopping distances. The motor can still accelerate more slowly than asked: the drive never
+'' lets the field run further ahead of the rotor than the motor can follow.
+'' PL-160: kept across stop() and start(), and may be set before start(); getAcceleration() reads it back. It replaces
+'' the speed-up part of an earlier setRampingValues(), and a later setRampingValues() replaces it: the last call wins.
 ''
 '' @param rate - acceleration while speeding up, mm/s squared [ACCEL_MIN_MM_S2 to ACCEL_MAX_MM_S2]
 '' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range (also recorded for getError()); a rejected call changes nothing
@@ -481,16 +490,91 @@ PUB setAcceleration(rate) : eError | rampStep
 ' Local Variables:
 ' @local rampStep - the constant driver increment step per drive pass that gives {rate}
 
-    eError, rampStep := rampStepForAccel(rate)
+    eError, rampStep := rampStepForAccel(rate, ACCEL_MIN_MM_S2, ACCEL_MAX_MM_S2)
     if eError == NO_ERROR
         ' G: the ramp starts, continues and ends at one step, so the field accelerates at a constant rate
-        eError := setRampingValues(rampStep, rampStep, 0, ramp_down)
+        usrRampMin := rampStep                                                  ' PL-160: kept, first; a start() applies it
+        usrRampMax := rampStep
+        usrRampInc := 0
+        usrAccel := rate
+        if bSettingsLive == TRUE
+            applyRamps()                                                        '  and in effect now on a running motor
     else
         eError := recordError(eError)
         debug[user.DBGCH_ERROR]("! ERROR: setAcceleration() rejected ", sdec_long(eError), sdec_long(rate))
 
+PUB setDeceleration(rate) : eError | rampStep
+'' Set how fast the motor slows down: every slow-down and stop from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
+''
+'' Until this is called the motor slows at its built-in rate, about 1_470 mm/s squared (6.5in wheel). The stopping
+'' distance follows it: a lower rate stops further on. stopAfterDistance(), stopAfterRotation() and stopAfterTime()
+'' start their stop early by the distance and time this rate takes, so they still come to rest at their limit. The
+'' command timeout's stop and a controlled fault stop (FR_GRADED) ramp down at it too, which is why its floor,
+'' DECEL_MIN_MM_S2, is higher than setAcceleration()'s. emergencyCutoff() does not ramp and is not affected. The motor
+'' can still slow more gently than asked: the ramp down waits whenever the rotor runs too far ahead of the field.
+'' PL-160: kept across stop() and start(), and may be set before start(); getDeceleration() reads it back. It replaces
+'' the slow-down step of an earlier setRampingValues(), and a later setRampingValues() replaces it: the last call wins.
+''
+'' @param rate - deceleration while slowing down or stopping, mm/s squared [DECEL_MIN_MM_S2 to DECEL_MAX_MM_S2]
+'' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range (also recorded for getError()); a rejected call changes nothing
+
+' Local Variables:
+' @local rampStep - the constant driver decrement step per drive pass that gives {rate}
+
+    eError, rampStep := rampStepForAccel(rate, DECEL_MIN_MM_S2, DECEL_MAX_MM_S2)
+    if eError == NO_ERROR
+        usrRampDown := rampStep                                                 ' PL-160: kept, first; a start() applies it
+        usrDecel := rate
+        if bSettingsLive == TRUE
+            applyRamps()                                                        '  and in effect now on a running motor
+    else
+        eError := recordError(eError)
+        debug[user.DBGCH_ERROR]("! ERROR: setDeceleration() rejected ", sdec_long(eError), sdec_long(rate))
+
+PUB getAcceleration() : nRate | minRamp, maxRamp, incRamp
+'' Return the rate the motor speeds up at, mm/s squared at the wheel rim; 0 when the speed-up ramp has no single rate
+''
+'' After setAcceleration() this is the rate it was given. The built-in ramp grows as it goes, so it has no single rate,
+'' and this returns 0 -- a value no setter accepts, so it cannot be mistaken for a rate. After setRampingValues() it is
+'' the rate its constant step gives (incRamp 0 and minRamp = maxRamp), or 0 for a ramp that grows. 0 also when the
+'' configured wheel diameter is 0. The kept setting, so it reads the same before start().
+''
+'' @returns nRate - the speed-up rate, mm/s squared, or 0 (no single rate)
+
+' Local Variables:
+' @local minRamp - the kept speed-up ramp's first step
+' @local maxRamp - its largest step
+' @local incRamp - its growth per drive pass
+
+    nRate := usrAccel
+    if nRate == 0
+        minRamp, maxRamp, incRamp, _ := keptRamps()
+        if (incRamp == 0) and (minRamp == maxRamp)
+            nRate := rateForRampStep(minRamp)
+
+PUB getDeceleration() : nRate | decrRamp
+'' Return the rate the motor slows down and stops at, mm/s squared at the wheel rim
+''
+'' After setDeceleration() this is the rate it was given; until then the built-in rate, about 1_470 (6.5in wheel);
+'' after setRampingValues() the rate its decrRamp gives. 0 only when the configured wheel diameter is 0. The kept
+'' setting, so it reads the same before start().
+''
+'' @returns nRate - the slow-down rate, mm/s squared
+
+' Local Variables:
+' @local decrRamp - the kept slow-down step
+
+    nRate := usrDecel
+    if nRate == 0
+        _, _, _, decrRamp := keptRamps()
+        nRate := rateForRampStep(decrRamp)
+
 PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp) : eError
-'' Change the ramping parameters, in the driver's own units (angle increment per drive pass)
+'' Change the ramping parameters, in the driver's own units (angle increment per drive pass): the raw form of the ramp
+''
+'' setAcceleration() and setDeceleration() are the user interface to the ramp, in mm/s squared; this is the raw
+'' escape beneath them. The last call wins: this replaces what both set, and each of them replaces its own part of
+'' this. PL-160: kept across stop() and start(), and may be set before start(); getRampingValues() reads it back.
 ''
 '' @param minRamp - angle increment at the start of a ramp up [1 to maxRamp]
 '' @param maxRamp - largest angle increment a ramp up reaches [minRamp to RAMP_STEP_MAX]
@@ -504,24 +588,34 @@ PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp) : eError
         eError := recordError(ERR_BAD_COUNT)
         debug[user.DBGCH_ERROR]("! ERROR: setRampingValues() rejected ", sdec_long(minRamp), sdec_long(maxRamp), sdec_long(incRamp), sdec_long(decrRamp))
     else
-        ramp_min := minRamp
-        ramp_max := maxRamp
-        ramp_inc := incRamp
-        ramp_down := decrRamp
+        usrRampMin := minRamp                                                   ' PL-160: kept, first; a start() applies it
+        usrRampMax := maxRamp
+        usrRampInc := incRamp
+        usrRampDown := decrRamp
+        usrAccel := 0                                                           ' the rates asked for are replaced: the getters
+        usrDecel := 0                                                           '  now read the rates these steps give
+        if bSettingsLive == TRUE
+            applyRamps()                                                        '  and in effect now on a running motor
         eError := NO_ERROR
 
 PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
-'' Return the ramping parameters
+'' Return the ramping parameters, in the driver's own units
+''
+'' While the motor runs, the values the driver is using; before start() (or after stop()), the values the next
+'' start() applies (PL-160). Until a ramp setter is called these are the built-in ramp's.
 ''
 '' @returns minRamp - ramp_min, the increment added on the first drive pass
 '' @returns maxRamp - ramp_max, the increment ceiling
 '' @returns incRamp - ramp_inc, added to the ramp every drive pass
 '' @returns decrRamp - ramp_down, the fixed ramp-down step
 
-    minRamp := ramp_min
-    maxRamp := ramp_max
-    incRamp := ramp_inc
-    decrRamp := ramp_down
+    if bSettingsLive == TRUE
+        minRamp := ramp_min
+        maxRamp := ramp_max
+        incRamp := ramp_inc
+        decrRamp := ramp_down
+    else
+        minRamp, maxRamp, incRamp, decrRamp := keptRamps()
 
 PUB setMaxSpeed(speed) : eError | limitSpeed
 '' Limit top-speed to {speed} where {speed} is [1 to 100]  (default is MAX_SPEED_DEFAULT, 75)
@@ -717,7 +811,7 @@ CON { --- Subsystem Control --- }
 PUB driveForDistance(distance, distanceUnits) : eError | nStopTicks
 '' Control the forward direction of this motor using the {distance} and {distanceUnits} inputs.
 '' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI].
-'' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
+'' AFFECTED BY:  setAcceleration(), setDeceleration(), setMaxSpeedForDistance(), holdAtStop()
 ''
 '' PL-153: the distance counts from this call, whatever the odometer (getDistance()) reads, so two calls in a row
 '' each travel their own distance. FORWARD ONLY: to back up a distance, drive in reverse and arm a distance limit:
@@ -747,7 +841,7 @@ PUB driveAtPower(power) : eError
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input.
 '' Turns the motor on at {power}. PL-66: a FAULTED motor is cleared first, automatically, every time --
 '' a repeated power is no different from a new one.
-'' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
+'' AFFECTED BY:  setAcceleration(), setDeceleration(), setMaxSpeed(), holdAtStop()
 ''
 '' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
 '' @returns eError - NO_ERROR, or ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED or ERR_NO_RESPONSE (a FAULTED motor did not clear in the bound, or the front cog did not answer; also recorded for getError()); on an error nothing new is written (a FAULTED motor's failed clear leaves a zero command)
@@ -758,7 +852,7 @@ PUB driveAtPowerEx(power, sync) : eError | limitPwr
 '' Control the speed and direction of this motor using the {power, [(-100) to 100]} input. (allow sync setting)
 '' Turns the motor on at {power}. PL-66: a FAULTED motor is cleared first, automatically, every time --
 '' a repeated power is no different from a new one.
-'' AFFECTED BY:  setAcceleration(), setMaxSpeed(), holdAtStop()
+'' AFFECTED BY:  setAcceleration(), setDeceleration(), setMaxSpeed(), holdAtStop()
 ''
 '' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
 '' @param sync - non zero if the front cog should release the command to the driver with ATN and wait, bounded, for the driver to take it
@@ -786,6 +880,7 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks
 ''
 '' The stop begins early, by the distance the ramp-down needs at the motor's current speed, so the motor comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
+'' AFFECTED BY:  setDeceleration() (the ramp-down's rate, read afresh every pass)
 '' PL-153: the rotation counts from this call (turning either way), not from the odometer (getRotationCount()).
 '' PL-158: DRU_DEGREES rounds to the nearest hall tick (4 degrees on the 6.5in motor: 90 is 23 ticks, 92 degrees).
 ''
@@ -813,6 +908,7 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks
 ''
 '' The stop begins early, by the distance the ramp-down needs at the motor's current speed, so the motor comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
+'' AFFECTED BY:  setDeceleration() (the ramp-down's rate, read afresh every pass)
 '' PL-153: the distance counts from this call (forward or back), not from the odometer (getDistance()). With
 '' driveAtPower(-power) it backs the motor up a distance: two calls, not one atomic move (see driveForDistance()).
 ''
@@ -840,6 +936,7 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
 ''
 '' The stop begins early, by the time the ramp-down needs at the motor's current speed, so the motor is at
 '' rest by the limit (within a few milliseconds). A limit shorter than that time stops at once.
+'' AFFECTED BY:  setDeceleration() (the ramp-down's rate, read afresh every pass)
 ''
 '' @param nTime - time to run, at least 1
 '' @param eTimeUnits - units of {nTime}: DTU_MILLISEC or DTU_SEC
@@ -878,6 +975,7 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs
 PUB stopMotor() : eError
 '' Stops the motor, killing any motion that was still in progress
 '' PL-58: the stop itself always follows the driver's ramp; holdAtStop() only selects hold vs. coast once AT REST
+'' AFFECTED BY:  setDeceleration() (the ramp's rate), holdAtStop()
 ''
 '' @returns eError - NO_ERROR; stopping always succeeds
 
@@ -4080,19 +4178,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     bSettingsLive := FALSE
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
     e_stop      := ES_OFF
-    ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
-    ' NOTES: 220410 -  at 14.8V 40_000 seems to fault a lot on gravel surface (i'm switching) to 10_000 and PWR_14p8V to see if motors stay operational (5_000 dog slow)
-    ' NOTES: 220413 -  at 14.8V 10_000 better on gravel surface  but too slow a ramp to 15_000 and PWR_14p8V to see if motors stay operational
-    ' 50_000 for 12v & 18_5v
-    '   ramp_min - start ramping at this value
-    '   ramp_max - max ramping at this value, once reach this value, keep incrementing with this value
-    '   ramp_inc - ramping increment, added to ramp_min every drive pass (~522.7 us, PL-50). Effectively defines the acceleration
-    ramp_max := 200_000                                 ' 200k angle max increment/decrement
-    ramp_min := 1_500                                   ' 1k5 angle min increment: start add this every drive pass to ramp up from zero
-    ramp_inc := 22                                      ' increment to ramping speed, add to ramp_min every drive pass until ramp_max reached
-    ramp_down := 50_000                                 ' fixed ramp down speed
-
-    ' PL-155: the program's kept settings (max speeds, reversal) are applied, never reset; init() once reset them here
+    ' PL-155 / PL-160: the program's kept settings (max speeds, reversal, the ramp) are applied, never reset; init() once
+    '  reset them here. The ramp is the built-in one (RAMP_*_BUILTIN) until a ramp setter is called.
     applyUserSettings()
     fault := FALSE
     hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
@@ -4208,8 +4295,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 PRI applyUserSettings()
 ' PL-155: copy the program's kept settings into the working values the front cog reads: init() (before the driver
 ' runs) and applyStartSettings() (as a start ends). Each kept value is 0 until set -- a VAR is 0 at load -- and 0 reads
-' as its default, so nothing needs a first-time initialisation. A setting added to the kept set (the ramp change's
-' acceleration and deceleration) adds its copy here, and its setter the usr* store beside its working write.
+' as its default, so nothing needs a first-time initialisation. A setting added to the kept set adds its copy here,
+' and its setter the usr* store beside its working write. PL-160: the ramp is copied by applyRamps().
 
     maxSpeed := usrMaxSpeed
     if maxSpeed == 0
@@ -4218,6 +4305,52 @@ PRI applyUserSettings()
     if maxSpeed4dist == 0
         maxSpeed4dist := MAX_SPEED_DEFAULT
     motorIsReversed := usrReversed
+    applyRamps()
+
+CON { PL-160: the built-in ramp, in the driver's units -- what the ramp is until a program sets one }
+
+    ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
+    ' NOTES: 220410 -  at 14.8V 40_000 seems to fault a lot on gravel surface (i'm switching) to 10_000 and PWR_14p8V to see if motors stay operational (5_000 dog slow)
+    ' NOTES: 220413 -  at 14.8V 10_000 better on gravel surface  but too slow a ramp to 15_000 and PWR_14p8V to see if motors stay operational
+    ' 50_000 for 12v & 18_5v
+    '   ramp_min - start ramping at this value
+    '   ramp_max - max ramping at this value, once reach this value, keep incrementing with this value
+    '   ramp_inc - ramping increment, added to ramp_min every drive pass (~522.7 us, PL-50). Effectively defines the acceleration
+    '   ramp_down - the fixed step every slow-down and stop takes off the increment each drive pass: about 1_470 mm/s^2 (6.5in)
+    RAMP_MIN_BUILTIN    = 1_500         ' 1k5 angle min increment: start add this every drive pass to ramp up from zero
+    RAMP_MAX_BUILTIN    = 200_000       ' 200k angle max increment/decrement
+    RAMP_INC_BUILTIN    = 22            ' increment to ramping speed, add to ramp_min every drive pass until ramp_max reached
+    RAMP_DOWN_BUILTIN   = 50_000        ' fixed ramp down speed
+
+PRI keptRamps() : minRamp, maxRamp, incRamp, decrRamp
+' PL-160: return the ramp the program has kept, in the driver's units: the built-in ramp for any part never set.
+'
+' usrRampMin is 0 until setAcceleration() or setRampingValues() sets the speed-up ramp (a set step is at least 1),
+' and usrRampDown 0 until setDeceleration() or setRampingValues() sets the slow-down step.
+'
+' @returns minRamp - the speed-up ramp's first step
+' @returns maxRamp - its largest step
+' @returns incRamp - its growth per drive pass
+' @returns decrRamp - the slow-down step
+
+    if usrRampMin == 0
+        minRamp := RAMP_MIN_BUILTIN
+        maxRamp := RAMP_MAX_BUILTIN
+        incRamp := RAMP_INC_BUILTIN
+    else
+        minRamp := usrRampMin
+        maxRamp := usrRampMax
+        incRamp := usrRampInc
+    decrRamp := usrRampDown
+    if decrRamp == 0
+        decrRamp := RAMP_DOWN_BUILTIN
+
+PRI applyRamps()
+' PL-160: copy the kept ramp into the four working longs the driver block-copies every cycle (the params run), which
+' the front cog's stop prediction (frontStopTicks(), frontStopMs()) also reads live. Called by applyUserSettings()
+' and, on a running motor, by each ramp setter after its kept store.
+
+    ramp_min, ramp_max, ramp_inc, ramp_down := keptRamps()
 
 
 VAR { * user request values * }
@@ -4392,33 +4525,61 @@ PRI maxDistanceInUnits(nUnitInMM_x100, nTickInMM_x100) : nMaxDistance
     if nUnitInMM_x100 > nTickInMM_x100
         nMaxDistance := muldiv64(POSX, nTickInMM_x100, nUnitInMM_x100)
 
-PRI rampStepForAccel(rate) : eError, rampStep | nTickInMM_x100, fPassesPerSec, fMmPerSec2PerStep
-' Convert an acceleration at the wheel rim to the driver ramp step that gives it; records nothing.
+PRI rampStepForAccel(rate, minRate, maxRate) : eError, rampStep | fMmPerSec2PerStep
+' Convert an acceleration (or a deceleration) at the wheel rim to the driver ramp step that gives it; records nothing.
 '
-' The driver adds the step to the field's increment every drive pass, and one hall cycle (2^32 angle units) is
-' HALL_TICKS_PER_CYCLE ticks, so one step accelerates the rim by passes/s^2 x HALL_TICKS_PER_CYCLE x mm/tick / 2^32.
-'
-' @param rate - acceleration while speeding up, mm/s squared [ACCEL_MIN_MM_S2 to ACCEL_MAX_MM_S2]
+' @param rate - the rate, mm/s squared
+' @param minRate - the smallest rate accepted (ACCEL_MIN_MM_S2 or DECEL_MIN_MM_S2)
+' @param maxRate - the largest rate accepted (ACCEL_MAX_MM_S2 or DECEL_MAX_MM_S2)
 ' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range
 ' @returns rampStep - the driver ramp step per drive pass; meaningful only when {eError} is NO_ERROR
 
 ' Local Variables:
-' @local nTickInMM_x100 - wheel travel per hall tick in hundredths of a mm, 0 when the wheel diameter is 0
-' @local fPassesPerSec - drive passes per second (float)
-' @local fMmPerSec2PerStep - the rim acceleration one ramp step gives, mm/s squared (float)
+' @local fMmPerSec2PerStep - the rim acceleration one ramp step gives, mm/s squared (float); 0.0 with no wheel diameter
 
     eError := NO_ERROR
     rampStep := 0
-    _, nTickInMM_x100 := wheelGeometry()
-    if nTickInMM_x100 == 0
+    fMmPerSec2PerStep := rampStepScale()
+    if fMmPerSec2PerStep == 0.0
         eError := ERR_NO_WHEEL_DIA
-    elseif (rate < ACCEL_MIN_MM_S2) or (rate > ACCEL_MAX_MM_S2)
+    elseif (rate < minRate) or (rate > maxRate)
         eError := ERR_BAD_COUNT
     else
+        rampStep := 1 #> round(float(rate) /. fMmPerSec2PerStep)
+
+PRI rateForRampStep(rampStep) : nRate | fMmPerSec2PerStep
+' PL-160: convert a driver ramp step back to the rim acceleration it gives, rounded to the nearest mm/s squared.
+'
+' @param rampStep - the driver ramp step per drive pass
+' @returns nRate - mm/s squared; 0 when the configured wheel diameter is 0
+
+' Local Variables:
+' @local fMmPerSec2PerStep - the rim acceleration one ramp step gives, mm/s squared (float); 0.0 with no wheel diameter
+
+    nRate := 0
+    fMmPerSec2PerStep := rampStepScale()
+    if fMmPerSec2PerStep <> 0.0
+        nRate := round(float(rampStep) *. fMmPerSec2PerStep)
+
+PRI rampStepScale() : fMmPerSec2PerStep | nTickInMM_x100, fPassesPerSec
+' Return the rim acceleration one driver ramp step gives, mm/s squared (float): 0.0 when the wheel diameter is 0.
+'
+' The driver adds (or takes) the step to the field's increment every drive pass, and one hall cycle (2^32 angle units)
+' is HALL_TICKS_PER_CYCLE ticks, so one step accelerates the rim by passes/s^2 x HALL_TICKS_PER_CYCLE x mm/tick / 2^32.
+' About 0.02946 mm/s squared on the 6.5in wheel.
+'
+' @returns fMmPerSec2PerStep - the rim acceleration per step (float), or 0.0
+
+' Local Variables:
+' @local nTickInMM_x100 - wheel travel per hall tick in hundredths of a mm, 0 when the wheel diameter is 0
+' @local fPassesPerSec - drive passes per second (float)
+
+    fMmPerSec2PerStep := 0.0
+    _, nTickInMM_x100 := wheelGeometry()
+    if nTickInMM_x100 <> 0
         ' C-1 (certified): one drive pass every DRIVE_PASS_FRAMES PWM frames
         fPassesPerSec := float(PWM_RATE_IN_HZ) /. float(DRIVE_PASS_FRAMES)
         fMmPerSec2PerStep := fPassesPerSec *. fPassesPerSec *. float(HALL_TICKS_PER_CYCLE) *. (float(nTickInMM_x100) /. F_MM_X100_PER_MM) /. F_ANGLE_UNITS_PER_CYCLE
-        rampStep := 1 #> round(float(rate) /. fMmPerSec2PerStep)
 
 CON { 6.5in hub commutation: hall zero and per-direction lead }
 
@@ -6070,7 +6231,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 34      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 35      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6136,6 +6297,12 @@ CON { driver internal Constants }
                                             '     non-zero target advances the field like every AT_SPEED pass, instead of
                                             '     skipping its increment (.endRUpAtSpeed, .endRDnAtTgt jump to .justIncr).
                                             '     PASM change (two jump targets, no instruction added); no ABI change
+                                            ' 35: PL-160 (user half) -- setDeceleration() sets ramp_down in mm/s^2
+                                            '     [DECEL_MIN_MM_S2..DECEL_MAX_MM_S2], with getAcceleration() and
+                                            '     getDeceleration(); setAcceleration(), setDeceleration() and
+                                            '     setRampingValues() are kept across start() and may be set before it (the
+                                            '     last ramp call wins); the built-in ramp is unchanged until one is called.
+                                            '     No PASM change; no ABI change (the new longs are Spin2-only)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6560,7 +6727,13 @@ VAR { PL-153 / PL-155: the limits' travel, and the program's kept settings -- Sp
     LONG    usrMaxSpeed4dist            ' setMaxSpeedForDistance() [1..100]; 0: MAX_SPEED_DEFAULT
     LONG    usrStopMode                 ' holdAtStop(): SM_BRAKE or SM_FLOAT; 0 (SM_Unknown): SM_FLOAT
     LONG    usrReversed                 ' setForwardIsReverse(): T/F; 0: not reversed
-    LONG    bSettingsLive               ' T/F where T means a start has applied the kept settings, so a setter writes the working value too
+    LONG    usrRampMin                  ' PL-160: the speed-up ramp's first step (setAcceleration(), setRampingValues()); 0: built in
+    LONG    usrRampMax                  '  its largest step
+    LONG    usrRampInc                  '  its growth per drive pass (0 for setAcceleration()'s constant ramp)
+    LONG    usrRampDown                 ' PL-160: the slow-down step (setDeceleration(), setRampingValues()); 0: built in
+    LONG    usrAccel                    ' PL-160: the rate setAcceleration() was given, mm/s^2; 0: none (built in, or raw)
+    LONG    usrDecel                    ' PL-160: the rate setDeceleration() was given, mm/s^2; 0: none (built in, or raw)
+    LONG    bSettingsLive              ' T/F where T means a start has applied the kept settings, so a setter writes the working value too
 
 DAT  {  Motor DRIVER  }
 '

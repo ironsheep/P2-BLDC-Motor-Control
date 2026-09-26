@@ -210,6 +210,15 @@
 ''               their ERR_* and nothing changed, settings made before start() kept, calibrate() not implemented; one
 ''               cell per method family, each counting its bad calls, with a T0-26,chk record per call. Wheels up,
 ''               unattended, no motion (records T0-26,*).
+''               26 Sep 2026 -- SRC_REV 23 (DRIVER_REV 35; PL-160, user half): T0-26 checks setDeceleration(). In
+''               R20-T0-API-ACCEL: its boundaries [DECEL_MIN_MM_S2 .. DECEL_MAX_MM_S2] accepted and read back through
+''               getDeceleration(), the values just outside (and 0, -1) refused with ERR_BAD_COUNT and the ramp and both
+''               getters unchanged; setAcceleration()'s rows now also read back through getAcceleration(); and a set
+''               deceleration reaches the driver -- on the running motor getRampingValues()'s decrRamp equals the step
+''               this file converts the rate to (T0A_DECEL_PROBE), and lands within 1% of the built-in 50_000 for the
+''               rate that step gives (T0A_DECEL_ANCHOR). In R20-T0-API-PERSIST: setAcceleration() and setDeceleration()
+''               made with the motor stopped read back after each start() and the restart, and the kept deceleration is
+''               the driver's decrRamp. No new debug() record: every check is a T0-26,chk.
 ''
 '' =================================================================================================
 
@@ -321,7 +330,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 22                                         ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 23                                        ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -3477,6 +3486,8 @@ CON { the API contract (T0-26, -D T0_API only; SRC_REV 22, DRIVER_REV 33) }
     T0A_UNRES       = motor.ERR_LIMIT_UNRESOLVABLE
     T0A_ACC_MIN     = motor.ACCEL_MIN_MM_S2
     T0A_ACC_MAX     = motor.ACCEL_MAX_MM_S2
+    T0A_DEC_MIN     = motor.DECEL_MIN_MM_S2                     ' PL-160: setDeceleration()'s range
+    T0A_DEC_MAX     = motor.DECEL_MAX_MM_S2
     T0A_SPD_MIN     = motor.MAX_SPEED_MIN
     T0A_SPD_MAX     = motor.MAX_SPEED_MAX
     T0A_SPD_DEF     = motor.MAX_SPEED_DEFAULT
@@ -3504,9 +3515,19 @@ CON { the API contract (T0-26, -D T0_API only; SRC_REV 22, DRIVER_REV 33) }
     T0A_TIME_TOL_MS = 1_000                                     ' ...its deadline must lie within this of now + T0A_TIME_S
     T0A_PERSIST_SPD = 40                                        ' PERSIST: setMaxSpeed() before start(), not the default 75
     T0A_PERSIST_DST = 30                                        ' ...setMaxSpeedForDistance(), different again
+    T0A_PERSIST_ACC = 600                                       ' ...setAcceleration(), mm/s^2 (PL-160)
+    T0A_PERSIST_DEC = 900                                       ' ...setDeceleration(), mm/s^2, not the built-in ~1_473
+    T0A_DECEL_PROBE = 2_000                                     ' ACCEL: the rate whose step is checked on the running driver
+    ' ACCEL: DERIVED -- the built-in ramp_down, 50_000 steps x 0.02945 mm/s^2 per step (1913 passes/s, 6 ticks per
+    '  electrical cycle, 5.76 mm per tick, 2^32 per cycle; see ACCEL_ANCHOR_MM_S2) = 1_473 mm/s^2. So
+    '  setDeceleration(T0A_DECEL_ANCHOR) must land within 1% of the built-in ramp_down: a factor wrong anywhere in the
+    '  conversion moves it far outside that. The bench's 6.5in wheel (BENCH_CFG) only.
+    T0A_DECEL_ANCHOR = 1_473
+    T0A_ANCHOR_TOL_DIV = 100                                    ' 1% of the built-in ramp_down
     T0A_STATUS_MS   = 500                                       ' HOLD: bound on getStatus() following holdAtStop() at rest
     ' each table's rows (DAT below): a row added there is counted here
     T0A_ACCEL_ROWS  = 5
+    T0A_DECEL_ROWS  = 6
     T0A_SPEED_ROWS  = 6
     T0A_FAULT_ROWS  = 7
     T0A_HOLD_ROWS   = 8
@@ -3517,12 +3538,19 @@ CON { the API contract (T0-26, -D T0_API only; SRC_REV 22, DRIVER_REV 33) }
 
 DAT { the API contract's tables (T0-26) -- one row per checked call; add a row to check one more value }
 
-' ACCEL: setAcceleration(rate) -> its return. EXTEND HERE for the ramp change: a deceleration setter gets a table of its
-'  own and a loop in t0aAccel() beside this one, judged the same way.
+' ACCEL: setAcceleration(rate) -> its return; t0aDecelTab below is setDeceleration()'s, judged the same way (PL-160)
 t0aAccelTab     LONG    T0A_ACC_MIN,        T0A_OK
                 LONG    T0A_ACC_MAX,        T0A_OK
                 LONG    T0A_ACC_MIN - 1,    T0A_BAD_COUNT
                 LONG    T0A_ACC_MAX + 1,    T0A_BAD_COUNT
+                LONG    -1,                 T0A_BAD_COUNT
+
+' ACCEL: setDeceleration(rate) -> its return (PL-160)
+t0aDecelTab     LONG    T0A_DEC_MIN,        T0A_OK
+                LONG    T0A_DEC_MAX,        T0A_OK
+                LONG    T0A_DEC_MIN - 1,    T0A_BAD_COUNT
+                LONG    T0A_DEC_MAX + 1,    T0A_BAD_COUNT
+                LONG    0,                  T0A_BAD_COUNT
                 LONG    -1,                 T0A_BAD_COUNT
 
 ' MAXSPEED: setMaxSpeed(value) and setMaxSpeedForDistance(value) -> NO_ERROR always, and the getter reads the value
@@ -3592,7 +3620,7 @@ sCritApi        BYTE    "BAD_CALLS_ZERO", 0
 sUnitsApi       BYTE    "CALLS", 0
 sCellApiCal     BYTE    "R20-T0-API-CALIBRATE", 0               ' calibrate(): ERR_NOT_IMPLEMENTED, on both objects (PL-159)
 sCellApiPers    BYTE    "R20-T0-API-PERSIST", 0                 ' kept settings survive start() and a restart; protective ones reset (PL-155)
-sCellApiAccel   BYTE    "R20-T0-API-ACCEL", 0                   ' setAcceleration()
+sCellApiAccel   BYTE    "R20-T0-API-ACCEL", 0                   ' setAcceleration(), setDeceleration() and their getters
 sCellApiSpeed   BYTE    "R20-T0-API-MAXSPEED", 0                ' setMaxSpeed(), setMaxSpeedForDistance()
 sCellApiHold    BYTE    "R20-T0-API-HOLD", 0                    ' holdAtStop(), setForwardIsReverse(), forwardIsReverse()
 sCellApiFault   BYTE    "R20-T0-API-FAULTRESP", 0               ' setFaultResponse()
@@ -3617,11 +3645,15 @@ PRI testT0_26() | bReady
 ' Each can FAIL: a setter whose range check were removed returns NO_ERROR where its ERR_* is wanted, and changes the
 ' read-back; a setter that did not store reads back its old value.
 '   R20-T0-API-CALIBRATE  - calibrate() on the motor and the steering object returns ERR_NOT_IMPLEMENTED and records it
-'   R20-T0-API-PERSIST    - with the motor stopped: max speeds, the hold and the reversal are accepted and read back; the
-'                           protective setters are refused (ERR_NOT_STARTED); after start(), and after a second
-'                           stop()/start(), the kept ones read back and the protective ones read their defaults
-'   R20-T0-API-ACCEL      - setAcceleration() at [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] gives a constant ramp; just outside,
-'                           and negative, ERR_BAD_COUNT with the ramp unchanged
+'   R20-T0-API-PERSIST    - with the motor stopped: max speeds, the hold, the reversal, the acceleration and the
+'                           deceleration are accepted and read back; the protective setters are refused
+'                           (ERR_NOT_STARTED); after start(), and after a second stop()/start(), the kept ones read back
+'                           (the ramp also as the driver's own steps) and the protective ones read their defaults
+'   R20-T0-API-ACCEL      - setAcceleration() at [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] gives a constant ramp and reads
+'                           back; setDeceleration() at [DECEL_MIN_MM_S2 .. DECEL_MAX_MM_S2] sets only the slow-down step
+'                           and reads back; just outside, 0 and negative, ERR_BAD_COUNT with the ramp and both getters
+'                           unchanged; a set deceleration is the running driver's decrRamp, at the step this file
+'                           converts it to, and the built-in rate's step lands within 1% of the built-in ramp_down
 '   R20-T0-API-MAXSPEED   - setMaxSpeed() and setMaxSpeedForDistance() return NO_ERROR and read back the value saturated to
 '                           [1..100]
 '   R20-T0-API-HOLD       - holdAtStop(TRUE/FALSE) reads back through isHoldAtStop(), and getStatus() follows it at rest
@@ -3732,23 +3764,34 @@ PRI t0aCalibrate() | eGot, eLeft
     t0aChk(@"steer.calibrate", 0, motor.ERR_NOT_IMPLEMENTED, eGot, motor.ERR_NOT_IMPLEMENTED, eLeft)
     t0aCell(@sCellApiCal, @"BOTH", TRUE)
 
-PRI bT0aPersist() : bReady | startResult, passIdx, eGot
-' R20-T0-API-PERSIST (PL-155). With `motor` stopped: the kept setters are accepted and read back at once; the protective
-' setters are refused with ERR_NOT_STARTED. Then start(), stop() and start() again: after each start the kept settings
-' read back and the protective ones read their defaults (getCommandTimeout() 0, the default fault response and hold
-' limits). NEGATIVE: the pre-33 start() reset the kept ones to 75, 75, coast and not reversed, which fails. Leaves the
-' motor started and every kept setting back at its default. NOMEAS when a start does not come up. (Each setter is
-' called on a line of its own, then its getter: a read-back never depends on argument evaluation order.)
+PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD
+' R20-T0-API-PERSIST (PL-155, PL-160). With `motor` stopped: the kept setters are accepted and read back at once; the
+' protective setters are refused with ERR_NOT_STARTED. Then start(), stop() and start() again: after each start the kept
+' settings read back -- the acceleration and deceleration also as the running driver's own ramp steps -- and the
+' protective ones read their defaults (getCommandTimeout() 0, the default fault response and hold limits). NEGATIVE:
+' the pre-33 start() reset the kept ones to 75, 75, coast and not reversed, and the pre-35 start() the ramp to the
+' built-in one, which fails. Leaves the motor started and every kept setting back at its default (the ramp at the
+' built-in values, read back before any call). NOMEAS when a start does not come up. (Each setter is called on a line
+' of its own, then its getter: a read-back never depends on argument evaluation order.)
 '
 ' @returns bReady - the motor is started (the last start came up)
 '
 ' @local startResult - a start()'s return
 ' @local passIdx - 1 after the first start, 2 after the restart
 ' @local eGot - a setter's return
+' @local minD - the built-in ramp's ramp_min, read before any call
+' @local maxD - ...ramp_max
+' @local incD - ...ramp_inc
+' @local decD - ...ramp_down
 
     t0aBad := 0
     t0aChecks := 0
     motor.getError()
+    minD, maxD, incD, decD := motor.getRampingValues()                          ' stopped: the ramp start() will apply
+    eGot := motor.setAcceleration(T0A_PERSIST_ACC)
+    t0aChk(@"setAcceleration.stopped", T0A_PERSIST_ACC, T0A_OK, eGot, T0A_PERSIST_ACC, motor.getAcceleration())
+    eGot := motor.setDeceleration(T0A_PERSIST_DEC)
+    t0aChk(@"setDeceleration.stopped", T0A_PERSIST_DEC, T0A_OK, eGot, T0A_PERSIST_DEC, motor.getDeceleration())
     eGot := motor.setMaxSpeed(T0A_PERSIST_SPD)
     t0aChk(@"setMaxSpeed.stopped", T0A_PERSIST_SPD, T0A_OK, eGot, T0A_PERSIST_SPD, motor.getMaxSpeed())
     eGot := motor.setMaxSpeedForDistance(T0A_PERSIST_DST)
@@ -3778,10 +3821,14 @@ PRI bT0aPersist() : bReady | startResult, passIdx, eGot
         t0aChk(@"getCommandTimeout.started", passIdx, T0A_OK, T0A_OK, 0, motor.getCommandTimeout())
         t0aChk(@"getFaultResponse.started", passIdx, T0A_OK, T0A_OK, TRUE, bFaultIs(motor.FAULT_RESPONSE_DEFAULT, motor.BRAKE_PCT_DEFAULT))
         t0aChk(@"getHoldLimits.started", passIdx, T0A_OK, T0A_OK, TRUE, bHoldLimitsAre(T0A_CEIL_DEF, T0A_RISE_DEF, T0A_LIMIT_DEF))
+        t0aChk(@"getAcceleration.started", passIdx, T0A_OK, T0A_OK, T0A_PERSIST_ACC, motor.getAcceleration())
+        t0aChk(@"getDeceleration.started", passIdx, T0A_OK, T0A_OK, T0A_PERSIST_DEC, motor.getDeceleration())
+        t0aChk(@"ramp.started", passIdx, T0A_OK, T0A_OK, TRUE, bT0aRampIs(t0aStepFor(T0A_PERSIST_ACC), t0aStepFor(T0A_PERSIST_ACC), 0, t0aStepFor(T0A_PERSIST_DEC)))
     motor.setMaxSpeed(T0A_SPD_DEF)                                              ' the defaults again: kept across starts now
     motor.setMaxSpeedForDistance(T0A_SPD_DEF)
     motor.holdAtStop(FALSE)
     motor.setForwardIsReverse(FALSE)
+    motor.setRampingValues(minD, maxD, incD, decD)                              ' PL-160: the built-in ramp's values
     motor.getError()
     t0aCell(@sCellApiPers, @"RIGHT", bReady)
 
@@ -3813,18 +3860,29 @@ PRI bHoldLimitsAre(ceilingPct, riseMs, limitMs) : bSame | nCeil, nRise, nLimit
     nCeil, nRise, nLimit := motor.getHoldLimits()
     bSame := (nCeil == ceilingPct) and (nRise == riseMs) and (nLimit == limitMs)
 
-PRI t0aAccel() | minD, maxD, incD, decD, rowIdx, nRate, eWant, eGot, nMin, nMax, nInc, nDec, rMin, rMax, rInc, rDec, bOk
-' R20-T0-API-ACCEL: setAcceleration() per t0aAccelTab. Accepted: a constant ramp -- ramp_min = ramp_max > 0, ramp_inc 0,
-' ramp_down untouched. Refused: ERR_BAD_COUNT and the ramp exactly as it was. The default ramp is put back after.
+PRI t0aAccel() | minD, maxD, incD, decD, tabIdx, pTab, nRows, rowIdx, nRate, eWant, eGot, nAccWas, nDecWas, nMin, nMax, nInc, nDec, rMin, rMax, rInc, rDec, bOk
+' R20-T0-API-ACCEL: setAcceleration() per t0aAccelTab, then setDeceleration() per t0aDecelTab (PL-160), on the running
+' motor. setAcceleration() accepted: a constant ramp -- ramp_min = ramp_max > 0, ramp_inc 0 -- ramp_down untouched, and
+' getAcceleration() reads the rate. setDeceleration() accepted: ramp_down > 0, the speed-up ramp untouched, and
+' getDeceleration() reads the rate. Refused: ERR_BAD_COUNT, the ramp exactly as it was and both getters unchanged. Then
+' the driver check: setDeceleration(T0A_DECEL_PROBE) leaves getRampingValues()'s decrRamp (the running driver's own
+' ramp_down) at t0aStepFor()'s step, and setDeceleration(T0A_DECEL_ANCHOR) within 1% of the built-in ramp_down.
+' NEGATIVE: a setter without its range check returns NO_ERROR where ERR_BAD_COUNT is wanted; a setDeceleration() that
+' did not reach ramp_down fails the driver check. The default ramp is put back after.
 '
-' @local minD - the ramp's ramp_min before the family
+' @local minD - the ramp's ramp_min before the family (the built-in ramp, PERSIST put it back)
 ' @local maxD - ...ramp_max
 ' @local incD - ...ramp_inc
 ' @local decD - ...ramp_down
+' @local tabIdx - 0 for setAcceleration()'s table, 1 for setDeceleration()'s
+' @local pTab - the table
+' @local nRows - its rows
 ' @local rowIdx - the table row
 ' @local nRate - the row's rate
 ' @local eWant - the row's return
-' @local eGot - setAcceleration()'s return
+' @local eGot - the setter's return
+' @local nAccWas - getAcceleration() just before the call
+' @local nDecWas - getDeceleration() just before the call
 ' @local nMin - ramp_min just before the call
 ' @local nMax - ramp_max just before
 ' @local nInc - ramp_inc just before
@@ -3836,20 +3894,75 @@ PRI t0aAccel() | minD, maxD, incD, decD, rowIdx, nRate, eWant, eGot, nMin, nMax,
 ' @local bOk - the read-back held
 
     minD, maxD, incD, decD := motor.getRampingValues()
-    repeat rowIdx from 0 to T0A_ACCEL_ROWS - 1
-        nRate := long[@t0aAccelTab][rowIdx * 2]
-        eWant := long[@t0aAccelTab][rowIdx * 2 + 1]
-        nMin, nMax, nInc, nDec := motor.getRampingValues()
-        eGot := motor.setAcceleration(nRate)
-        rMin, rMax, rInc, rDec := motor.getRampingValues()
-        if eWant == T0A_OK
-            bOk := (rMin == rMax) and (rMin > 0) and (rInc == 0) and (rDec == nDec)
-        else
-            bOk := (rMin == nMin) and (rMax == nMax) and (rInc == nInc) and (rDec == nDec)
-        t0aChk(@"setAcceleration", nRate, eWant, eGot, TRUE, bOk)
+    repeat tabIdx from 0 to 1
+        pTab := (tabIdx == 0) ? @t0aAccelTab : @t0aDecelTab
+        nRows := (tabIdx == 0) ? T0A_ACCEL_ROWS : T0A_DECEL_ROWS
+        repeat rowIdx from 0 to nRows - 1
+            nRate := long[pTab][rowIdx * 2]
+            eWant := long[pTab][rowIdx * 2 + 1]
+            nMin, nMax, nInc, nDec := motor.getRampingValues()
+            nAccWas := motor.getAcceleration()
+            nDecWas := motor.getDeceleration()
+            if tabIdx == 0
+                eGot := motor.setAcceleration(nRate)
+            else
+                eGot := motor.setDeceleration(nRate)
+            rMin, rMax, rInc, rDec := motor.getRampingValues()
+            if eWant <> T0A_OK
+                bOk := (rMin == nMin) and (rMax == nMax) and (rInc == nInc) and (rDec == nDec)
+                bOk &= (motor.getAcceleration() == nAccWas) and (motor.getDeceleration() == nDecWas)
+            elseif tabIdx == 0
+                bOk := (rMin == rMax) and (rMin > 0) and (rInc == 0) and (rDec == nDec)
+                bOk &= (motor.getAcceleration() == nRate) and (motor.getDeceleration() == nDecWas)
+            else
+                bOk := (rMin == nMin) and (rMax == nMax) and (rInc == nInc) and (rDec > 0)
+                bOk &= (motor.getDeceleration() == nRate) and (motor.getAcceleration() == nAccWas)
+            t0aChk((tabIdx == 0) ? @"setAcceleration" : @"setDeceleration", nRate, eWant, eGot, TRUE, bOk)
+    eGot := motor.setDeceleration(T0A_DECEL_PROBE)
+    _, _, _, rDec := motor.getRampingValues()
+    t0aChk(@"setDeceleration.driver", T0A_DECEL_PROBE, T0A_OK, eGot, t0aStepFor(T0A_DECEL_PROBE), rDec)
+    eGot := motor.setDeceleration(T0A_DECEL_ANCHOR)
+    _, _, _, rDec := motor.getRampingValues()
+    t0aChk(@"setDeceleration.anchor", T0A_DECEL_ANCHOR, T0A_OK, eGot, TRUE, abs(rDec - decD) <= decD / T0A_ANCHOR_TOL_DIV)
     motor.setRampingValues(minD, maxD, incD, decD)
     motor.getError()
     t0aCell(@sCellApiAccel, @"RIGHT", TRUE)
+
+PRI t0aStepFor(nRate) : nStep | nTickInMM_x100, fPassesPerSec, fPerStep
+' The driver ramp step a rim rate gives, worked out here from the motor's own constants and wheel geometry (DRIVE-OBJECTS.md:
+' one step changes the rim speed by passes/s squared x 6 ticks per cycle x mm per tick / 2^32 every second), so a
+' setter that stored anything else reads back wrong.
+'
+' @param nRate - the rate, mm/s squared
+' @returns nStep - the step, at least 1; 0 when the configured wheel diameter is 0
+'
+' @local nTickInMM_x100 - wheel travel per hall tick, hundredths of a mm
+' @local fPassesPerSec - drive passes per second (float)
+' @local fPerStep - mm/s squared per step (float)
+
+    nStep := 0
+    _, nTickInMM_x100 := motor.wheelGeometry()
+    if nTickInMM_x100 <> 0
+        fPassesPerSec := float(motor.PWM_RATE_IN_HZ) /. float(motor.DRIVE_PASS_FRAMES)
+        fPerStep := fPassesPerSec *. fPassesPerSec *. float(motor.HALL_TICKS_PER_CYCLE) *. (float(nTickInMM_x100) /. 100.0) /. 4_294_967_296.0
+        nStep := 1 #> round(float(nRate) /. fPerStep)
+
+PRI bT0aRampIs(minWant, maxWant, incWant, decrWant) : bSame | minRamp, maxRamp, incRamp, decrRamp
+' Report whether `motor`'s four ramping values read back exactly as given.
+'
+' @param minWant - expected ramp_min
+' @param maxWant - expected ramp_max
+' @param incWant - expected ramp_inc
+' @param decrWant - expected ramp_down
+' @returns bSame - TRUE when all four read back equal
+'
+' @local minRamp - ramp_min read back
+' @local maxRamp - ramp_max read back
+' @local incRamp - ramp_inc read back
+' @local decrRamp - ramp_down read back
+
+    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
+    bSame := (minRamp == minWant) and (maxRamp == maxWant) and (incRamp == incWant) and (decrRamp == decrWant)
 
 PRI t0aSpeed() | rowIdx, nValue, nWant, eGot
 ' R20-T0-API-MAXSPEED: both max-speed setters per t0aSpeedTab -- NO_ERROR, and the getter reads the saturated value. The

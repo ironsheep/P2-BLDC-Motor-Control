@@ -51,6 +51,7 @@ CON { command-names enum }
 #33, CMD_GET_ERROR
 #34, CMD_GET_PACK_VOLT, CMD_GET_CURRENT, CMD_GET_FAULT_CAUSE, CMD_GET_HOLD_STAT
 #38, CMD_GET_HALL_COUNTS, CMD_GET_HALL_ILLEGAL, CMD_CHECK_WIRING, CMD_SET_START_CHK
+#42, CMD_SET_DECEL, CMD_GET_ACCEL, CMD_GET_DECEL
 
 CON { command loop }
 
@@ -100,6 +101,9 @@ DAT { command table }
     cmdGetHallIllegal   BYTE    "gethallillegal",0
     cmdCheckWiring      BYTE    "checkwiring",0
     cmdSetStartChk      BYTE    "setstartchecks",0
+    cmdSetDecel         BYTE    "setdecel",0
+    cmdGetAccel         BYTE    "getaccel",0
+    cmdGetDecel         BYTE    "getdecel",0
 
     ' now describe cmd enum and # parms for each string
     cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
@@ -143,6 +147,9 @@ DAT { command table }
                 long  @cmdGetHallIllegal, CMD_GET_HALL_ILLEGAL, 0
                 long  @cmdCheckWiring, CMD_CHECK_WIRING, 0
                 long  @cmdSetStartChk, CMD_SET_START_CHK, 1
+                long  @cmdSetDecel, CMD_SET_DECEL, 1
+                long  @cmdGetAccel, CMD_GET_ACCEL, 0
+                long  @cmdGetDecel, CMD_GET_DECEL, 0
     cmdLast
     ' calculate the number of entries in table
     cmdEntryCt long ((@cmdLast - @cmdsFirst) / 4) / 3
@@ -220,6 +227,9 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
     long[@cmdsFirst][38 * 3] := @cmdGetHallIllegal
     long[@cmdsFirst][39 * 3] := @cmdCheckWiring
     long[@cmdsFirst][40 * 3] := @cmdSetStartChk
+    long[@cmdsFirst][41 * 3] := @cmdSetDecel
+    long[@cmdsFirst][42 * 3] := @cmdGetAccel
+    long[@cmdsFirst][43 * 3] := @cmdGetDecel
 
     ' validate user settings/choicess
     '  do NOT start motor unless all are legit!
@@ -478,6 +488,31 @@ PRI processCommand(pValues) | eError, nOut1, nOut2, nOut3, nOut4, nOut5, nOut6
                 ' all good, act on request, then report its outcome
                 eError := wheels.setAcceleration(nRate)
                 replyWithStatus(pValues, eError)
+
+        CMD_SET_DECEL:
+            ' get incoming parm values (PL-160)
+            nRate := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values
+            if not bInRange(nRate, wheels.DECEL_MIN_MM_S2, wheels.DECEL_MAX_MM_S2)
+                ' invalid, report so...
+                strFmt.sFormatStr3(@msgWork, @"Decel Rate (%d) out of range [%d, %d] mm/s^2", nRate, wheels.DECEL_MIN_MM_S2, wheels.DECEL_MAX_MM_S2)
+                serialQueue.sendError(@msgWork)
+            else
+                ' all good, act on request, then report its outcome
+                eError := wheels.setDeceleration(nRate)
+                replyWithStatus(pValues, eError)
+
+        CMD_GET_ACCEL:
+            ' PL-160: the speed-up rate, mm/s^2; 0 means the built-in ramp, which has no single rate
+            onlyValue := wheels.getAcceleration()
+            strFmt.sFormatStr1(@msgWork, @"accel %d\n", onlyValue)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_DECEL:
+            ' PL-160: the slow-down and stop rate, mm/s^2 (the built-in rate until setdecel)
+            onlyValue := wheels.getDeceleration()
+            strFmt.sFormatStr1(@msgWork, @"decel %d\n", onlyValue)
+            serialQueue.sendResponse(@msgWork)
 
         CMD_SET_SPD:
             ' get incoming parm values

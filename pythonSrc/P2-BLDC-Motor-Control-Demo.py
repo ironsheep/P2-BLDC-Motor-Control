@@ -388,8 +388,16 @@ class BLDCMotorControl:
     # PUBLIC Configure Methods
     # -------------------------
     # PUB setAcceleration(rate)
+    #  how fast both wheels speed up, mm/s^2 at the rim [1 to 10000]; kept across start() on the P2
     def setAcceleration(self, rate):
         commandStr = 'setaccel {}\n'.format(rate)
+        self.sendCommand(commandStr)
+
+    # PUB setDeceleration(rate)
+    #  how fast both wheels slow down and stop, mm/s^2 at the rim [250 to 10000]; every stop, and so every
+    #  stopping distance, follows it. Kept across start() on the P2
+    def setDeceleration(self, rate):
+        commandStr = 'setdecel {}\n'.format(rate)
         self.sendCommand(commandStr)
 
     # PUB setMaxSpeed(speed)
@@ -488,6 +496,22 @@ class BLDCMotorControl:
         commandStr = 'getmaxspdfordist\n'
         responseStr = self.sendCommand(commandStr)
         onlyValue = self.getValues('speeddistmax', responseStr, 1)
+        return onlyValue
+
+    # PUB getAcceleration() : nRate
+    #  the speed-up rate, mm/s^2; 0 means the built-in ramp, which has no single rate
+    def getAcceleration(self):
+        commandStr = 'getaccel\n'
+        responseStr = self.sendCommand(commandStr)
+        onlyValue = self.getValues('accel', responseStr, 1)
+        return onlyValue
+
+    # PUB getDeceleration() : nRate
+    #  the slow-down and stop rate, mm/s^2 (the built-in rate, about 1470, until setDeceleration())
+    def getDeceleration(self):
+        commandStr = 'getdecel\n'
+        responseStr = self.sendCommand(commandStr)
+        onlyValue = self.getValues('decel', responseStr, 1)
         return onlyValue
 
     # PUB getDriveVoltage() : eVoltage, nMilliVolts

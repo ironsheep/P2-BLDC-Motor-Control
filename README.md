@@ -62,7 +62,12 @@ command reporting its result.
   start() to start it anyway.
 - BREAKING: setAcceleration(rate) takes mm/s^2 at the wheel rim (1 to 10,000);
   it previously passed {rate} to the driver as its ramp step. Code that passed
-  a ramp step should call setRampingValues() instead.
+  a ramp step should call setRampingValues() instead. New setDeceleration(rate)
+  sets how fast the motors slow down and stop (250 to 10,000 mm/s^2), and with
+  it the stopping distance; the stop limits still come to rest at their limit.
+  Both may be set before start() and are kept across it; getAcceleration() and
+  getDeceleration() read them back. Until they are called the built-in ramp is
+  unchanged.
 - 6.5" motor: commutation uses the motor's measured hall position and a lead
   that follows speed; unloaded running current at low and middle speeds is
   8 to 25 times lower than with v5.0.2's commutation offsets

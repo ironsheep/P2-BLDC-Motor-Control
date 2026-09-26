@@ -190,6 +190,10 @@ CON { forward our interface constants }
     ACCEL_MIN_MM_S2         = ltWheel.ACCEL_MIN_MM_S2
     ACCEL_MAX_MM_S2         = ltWheel.ACCEL_MAX_MM_S2
 
+  ' setDeceleration(): the accepted rate, mm/s squared at the wheel rim (a higher floor: every stop ramps down at it)
+    DECEL_MIN_MM_S2         = ltWheel.DECEL_MIN_MM_S2
+    DECEL_MAX_MM_S2         = ltWheel.DECEL_MAX_MM_S2
+
   ' setCommandTimeout(): 0 turns it off (the default); otherwise the accepted range, in ms
     CMD_TIMEOUT_OFF         = ltWheel.CMD_TIMEOUT_OFF
     CMD_TIMEOUT_MIN_MS      = ltWheel.CMD_TIMEOUT_MIN_MS
@@ -201,7 +205,8 @@ CON { forward our interface constants }
     MAX_SPEED_MAX           = ltWheel.MAX_SPEED_MAX
 
   ' PL-155: WHICH SETTINGS start() KEEPS -- the motor object's rule, both wheels alike. Kept across stop() and start(), and
-  '  settable before start(): setMaxSpeed(), setMaxSpeedForDistance(), holdAtStop(), setStartChecks(). Restored to their
+  '  settable before start(): setMaxSpeed(), setMaxSpeedForDistance(), holdAtStop(), setStartChecks(), and (PL-160)
+  '  setAcceleration() and setDeceleration() (the motor object's setRampingValues() too). Restored to their
   '  defaults by every start(), and settable only while started: setFaultResponse(), setHoldLimits(), setCommandTimeout().
 
 OBJ { our Motors }
@@ -379,13 +384,47 @@ PUB stop() : eError
 PUB setAcceleration(rate) : eError
 '' Set how fast both wheels speed up: every speed-up from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
 ''
-'' Slowing down and stopping keep their own fixed rate, so the stopping distances do not change. See the motor
-'' object's setAcceleration() for the default ramp used until this is called.
+'' Slowing down and stopping are set apart, by setDeceleration(), so this does not change the stopping distances. See
+'' the motor object's setAcceleration() for the default ramp used until this is called.
+'' PL-160: kept across stop() and start(), and may be set before start(); getAcceleration() reads it back.
 ''
 '' @param rate - acceleration while speeding up, mm/s squared [ACCEL_MIN_MM_S2 to ACCEL_MAX_MM_S2]
 '' @returns eError - NO_ERROR, or the first wheel's ERR_* code (ERR_NO_WHEEL_DIA, or ERR_BAD_COUNT for a {rate} outside the range; also recorded for getError()); a rejected call changes neither wheel
 
     eError := firstError(ltWheel.setAcceleration(rate), rtWheel.setAcceleration(rate))
+
+PUB setDeceleration(rate) : eError
+'' Set how fast both wheels slow down: every slow-down and stop from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
+''
+'' Until this is called both wheels slow at the built-in rate, about 1_470 mm/s squared (6.5in wheel). The stopping
+'' distance follows it; stopAfterDistance(), stopAfterRotation(), stopAfterTime() and driveForDistance() still come to
+'' rest at their limit. See the motor object's setDeceleration() for the stops it governs and its floor.
+'' PL-160: kept across stop() and start(), and may be set before start(); getDeceleration() reads it back.
+''
+'' @param rate - deceleration while slowing down or stopping, mm/s squared [DECEL_MIN_MM_S2 to DECEL_MAX_MM_S2]
+'' @returns eError - NO_ERROR, or the first wheel's ERR_* code (ERR_NO_WHEEL_DIA, or ERR_BAD_COUNT for a {rate} outside the range; also recorded for getError()); a rejected call changes neither wheel
+
+    eError := firstError(ltWheel.setDeceleration(rate), rtWheel.setDeceleration(rate))
+
+PUB getAcceleration() : nRate
+'' Return the rate both wheels speed up at, mm/s squared at the wheel rim; 0 when the speed-up ramp has no single rate
+''
+'' Both wheels always carry the same setting; it is read from the left wheel. 0 means the built-in ramp, which grows as
+'' it goes (see the motor object's getAcceleration()).
+''
+'' @returns nRate - the speed-up rate, mm/s squared, or 0 (no single rate); the kept setting, so it reads the same before start()
+
+    nRate := ltWheel.getAcceleration()
+
+PUB getDeceleration() : nRate
+'' Return the rate both wheels slow down and stop at, mm/s squared at the wheel rim
+''
+'' Both wheels always carry the same setting; it is read from the left wheel. Until setDeceleration() is called, the
+'' built-in rate, about 1_470 (6.5in wheel).
+''
+'' @returns nRate - the slow-down rate, mm/s squared; the kept setting, so it reads the same before start()
+
+    nRate := ltWheel.getDeceleration()
 
 PUB setMaxSpeed(speed) : eError
 '' Limit top-speed to {speed}  (default is MAX_SPEED_DEFAULT, 75)
@@ -576,7 +615,7 @@ PUB driveDirection(power, direction) : eError
 '' Control the speed and direction of your robot using the {power} and {direction} inputs.
 '' Turns both motors on at {power, [(-100) to 100]} but adjusted by {direction, [(-100) to 100]}.
 '' A positive {direction} turns right and a negative one left, by slowing the wheel on that side; at 100 it stops.
-'' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
+'' AFFECTED BY: setAcceleration(), setDeceleration(),setMaxSpeed(), holdAtStop()
 ''
 '' @param power - power [(-100) to 100], saturated to that range; 0 stops
 '' @param direction - direction [(-100) to 100], saturated to that range; 0 is straight ahead, positive turns right, negative left
@@ -590,7 +629,7 @@ PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits) : eError | nLe
 '' Each wheel runs at a power in proportion to its distance, the longer one at setMaxSpeedForDistance() (never above
 '' setMaxSpeed()), so both finish at about the same time, and each comes to rest at its own distance (within about two
 '' hall ticks). A distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI].
-'' AFFECTED BY: setAcceleration(), setMaxSpeedForDistance(), setMaxSpeed(), holdAtStop()
+'' AFFECTED BY: setAcceleration(), setDeceleration(),setMaxSpeedForDistance(), setMaxSpeed(), holdAtStop()
 ''
 '' PL-153: each wheel's distance counts from this call, and the odometers (getDistance()) are left as they are, so two
 '' calls in a row each travel their own distances. FORWARD ONLY: to back up a distance, drive in reverse and arm a
@@ -628,7 +667,7 @@ PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits) : eError | nLe
 PUB driveAtPower(leftPower, rightPower) : eError | eStatus, eLeftStatus, eRightStatus
 '' Control the speed and direction of your robot using the {leftPower} and {rightPower} inputs.
 '' Turns left motor on at {leftPower} and right at {rightPower}. Where {*Power} are in the range [(-100) to 100].
-'' AFFECTED BY: setAcceleration(), setMaxSpeed(), holdAtStop()
+'' AFFECTED BY: setAcceleration(), setDeceleration(),setMaxSpeed(), holdAtStop()
 ''
 '' @param leftPower - left motor power [(-100) to 100], saturated to that range; 0 stops
 '' @param rightPower - right motor power [(-100) to 100], saturated to that range; 0 stops
@@ -659,6 +698,7 @@ PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, eSt
 ''
 '' The stop begins early, by the distance each wheel's ramp-down needs at its current speed, so the platform comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
+'' AFFECTED BY: setDeceleration() (the ramp-down's rate, read afresh every pass)
 '' PL-153: each wheel's rotation counts from this call (turning either way), not from the odometer (getRotationCount()).
 '' PL-158: DRU_DEGREES rounds to the nearest hall tick (4 degrees on the 6.5in motor: 90 is 23 ticks, 92 degrees).
 ''
@@ -693,6 +733,7 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, eStatus,
 ''
 '' The stop begins early, by the distance each wheel's ramp-down needs at its current speed, so the platform comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
+'' AFFECTED BY: setDeceleration() (the ramp-down's rate, read afresh every pass)
 '' PL-153: each wheel's distance counts from this call (forward or back), not from the odometer (getDistance()), and
 '' the odometers are left as they are. With driveAtPower(-power, -power) it backs the platform up a distance: two
 '' calls, not one atomic move (see driveForDistance()).
@@ -727,6 +768,7 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs, eStatus, eL
 ''
 '' The stop begins early, by the time the slower wheel's ramp-down needs at its current speed, so the platform is at
 '' rest by the limit (within a few milliseconds). A limit shorter than that time stops at once.
+'' AFFECTED BY: setDeceleration() (the ramp-down's rate, read afresh every pass)
 ''
 '' @param nTime - time to run, at least 1
 '' @param eTimeUnits - units of {nTime}: DTU_MILLISEC or DTU_SEC
@@ -770,6 +812,7 @@ PUB stopAfterTime(nTime, eTimeUnits) : eError | timeNow, nStopMSecs, eStatus, eL
 PUB stopMotors() : eError
 '' Stops both motors, killing any motion that was still in progress
 '' PL-58: the stop itself always follows each driver's ramp; holdAtStop() only selects hold vs. coast once AT REST
+'' AFFECTED BY: setDeceleration() (the ramp's rate), holdAtStop()
 ''
 '' @returns eError - NO_ERROR; stopping always succeeds
 

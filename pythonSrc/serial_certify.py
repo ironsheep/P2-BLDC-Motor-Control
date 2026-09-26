@@ -5,7 +5,7 @@ serial_certify.py -- host-side certification of the P2 serial control path (PL-1
 
 WHAT IT PROVES
   The serial top level (src/isp_steering_serial.spin2) answers a real host as DRIVE-OBJECTS-SERIAL.md says, on
-  the dual-motor platform. Five cells, each printed as a SIGNOFF verdict line in the bench logs' shape:
+  the dual-motor platform. Nine cells, each printed as a SIGNOFF verdict line in the bench logs' shape:
 
     R20-SER-ERRREPLY   an out-of-range command is refused with an ERROR naming the value and its range; a command
                        the drive refuses (a drive while e-stopped) is refused with "ERROR {cmd} failed: {NAME} ({code})";
@@ -25,10 +25,14 @@ WHAT IT PROVES
     R20-SER-GETTERS    (PL-157) each new getter returns a well-formed reply; checkwiring runs and its verdict reads back
                        in gethealth (HLT_WIRING); setstartchecks is refused while the motors run. The refused-start
                        half of setstartchecks is NOMEAS: it needs a platform whose start checks fail
+    R20-SER-RAMP       (PL-160) setaccel and setdecel round-trip through getaccel and getdecel; a value just outside
+                       either range is refused with an ERROR and changes nothing; after a fresh start getaccel reads 0
+                       (the built-in ramp, no single rate). Run last: the P2 keeps the rates until it is reset
 
 PRECONDITION
   - WHEELS UP (platform on blocks, both wheels free) and HANDS OFF for the whole run. The wheels turn at power 30.
-  - The P2 runs src/isp_steering_serial.spin2 (the dual-motor serial top level), built at DRIVER_REV 32 or later.
+  - The P2 runs src/isp_steering_serial.spin2 (the dual-motor serial top level), built at DRIVER_REV 35 or later
+    (R20-SER-RAMP's setdecel, getaccel and getdecel arrived at 35; the other cells need 32).
   - Wired as SERIAL-CONTROL.md describes: host Tx -> P2 pin 57, host Rx <- P2 pin 56, grounds joined, 624,000 baud.
   - Best: start this script, THEN reset/power the P2, so the script sees the P2's "ident:" line and the fault-response
     default is read from a fresh start. A P2 already waiting for its ident answer also counts as fresh.
@@ -90,6 +94,8 @@ SR_NONE, SR_LINK_LOST = 40, 46
 FR_SHIPPED, FR_GRADED, BRAKE_PCT_DEFAULT = 0, 1, 10
 DRU_HALL_TICKS, DDU_M = 1, 5
 MAX_SPEED_DEFAULT = 75              # setMaxSpeedForDistance() default, restored after the bounded case
+ACCEL_MIN_MM_S2, ACCEL_MAX_MM_S2 = 1, 10000     # setaccel's range (ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2)
+DECEL_MIN_MM_S2, DECEL_MAX_MM_S2 = 250, 10000   # setdecel's range (DECEL_MIN_MM_S2 .. DECEL_MAX_MM_S2), PL-160
 
 # -----------------------------------------------------------------------------
 # Test constants
@@ -127,7 +133,12 @@ HLT_WIRING = 32
 SF_VERSION = 1
 SF_BIN = "SERIAL"
 CELLS = ["R20-SER-LATENCY", "R20-SER-NUMPARSE", "R20-SER-FAULTRESP", "R20-SER-VOLT", "R20-SER-PROTCLEAR",
-         "R20-SER-ERRREPLY", "R20-SER-GETTERS", "R20-SER-TIMEOUT"]
+         "R20-SER-ERRREPLY", "R20-SER-GETTERS", "R20-SER-TIMEOUT", "R20-SER-RAMP"]
+
+# PL-160 ramp round trips: (command, value) pairs set in turn, each read back; and the refused values, one step outside
+RAMP_SETS = [("setaccel", 800), ("setaccel", 1500), ("setdecel", 1000), ("setdecel", 2000)]
+RAMP_REFUSED = [("setaccel", ACCEL_MIN_MM_S2 - 1), ("setaccel", ACCEL_MAX_MM_S2 + 1),
+                ("setdecel", DECEL_MIN_MM_S2 - 1), ("setdecel", DECEL_MAX_MM_S2 + 1)]
 
 
 class LinkDead(Exception):
@@ -666,6 +677,62 @@ def cell_getters(link, cell, log):
     cell.nomeas("BOTH", "STARTCHECKS_OPT_OUT_STARTS", True, True, "BOOL", "NEEDS_A_REFUSED_START", log)
 
 
+def read_rates(link):
+    """Return [accel, decel] from getaccel and getdecel, or None when either reply is malformed."""
+    accel = nums(link.cmd("getaccel"), "accel", 1)
+    decel = nums(link.cmd("getdecel"), "decel", 1)
+    if accel is None or decel is None:
+        return None
+    return [accel[0], decel[0]]
+
+
+def cell_ramp(link, cell, fresh, log):
+    # Claim (PL-160, DRIVE-OBJECTS-SERIAL.md): setaccel {rate} and setdecel {rate} take mm/s^2 at the rim and read back
+    #  through getaccel and getdecel as the rate given; getaccel reads 0 while the built-in ramp (no single rate) is in use.
+    # NEGATIVE: each round trip uses two different values per setter, so a getter that echoed a constant FAILs; a value one
+    #  step outside either range must be refused with an ERROR and leave both rates as they were, so a range check that
+    #  was missing (or a refusal that still stored) FAILs. getaccel/getdecel sent with a parameter must be refused.
+    first = read_rates(link)
+    log.line("SER-RAMP,start,accel,{},decel,{}".format(first[0] if first else "NA", first[1] if first else "NA"))
+    if fresh:
+        cell.judge("NONE", "DEFAULT_ACCEL_NO_SINGLE_RATE", first[0] if first else None, 0, 0, "MM_S2")
+        cell.judge("NONE", "DEFAULT_DECEL_POSITIVE", first[1] if first else None, 1, DECEL_MAX_MM_S2, "MM_S2")
+    else:
+        cell.nomeas("NONE", "DEFAULT_ACCEL_NO_SINGLE_RATE", 0, 0, "MM_S2", "NOT_FRESH_START", log)
+        cell.nomeas("NONE", "DEFAULT_DECEL_POSITIVE", 1, DECEL_MAX_MM_S2, "MM_S2", "NOT_FRESH_START", log)
+
+    misses = 0
+    for command, value in RAMP_SETS:
+        if not is_ok(link.cmd("{} {}".format(command, value))):
+            misses += 1
+        rates = read_rates(link)
+        got = None if rates is None else (rates[0] if command == "setaccel" else rates[1])
+        if got != value:
+            misses += 1
+    cell.judge("NONE", "SET_GET_MISMATCHES", misses if not link.dry else None, 0, 0, "COUNT", n=len(RAMP_SETS))
+
+    # refused values: an ERROR reply, and both rates in effect (1500, 2000) unchanged
+    bad = 0
+    for command, value in RAMP_REFUSED:
+        reply = link.cmd("{} {}".format(command, value))
+        if reply is None or not reply.startswith("ERROR "):
+            bad += 1
+        if read_rates(link) != [RAMP_SETS[1][1], RAMP_SETS[3][1]]:
+            bad += 1
+    cell.judge("NONE", "REFUSED_CHANGED_NOTHING", bad if not link.dry else None, 0, 0, "COUNT", n=len(RAMP_REFUSED))
+
+    extra = 0
+    for command in ("getaccel", "getdecel"):
+        if link.cmd("{} 1".format(command)) == "ERROR Missing/Extra parameter(s)":
+            extra += 1
+    cell.judge("NONE", "GETTERS_COUNT_ENFORCED", extra if not link.dry else None, 2, 2, "COUNT", n=2)
+
+    # the deceleration read at the start is put back (every stop ramps at it); the speed-up rate has no serial way back
+    #  to the built-in ramp, so it stays at the last value set until the P2 is reset
+    if first is not None and DECEL_MIN_MM_S2 <= first[1] <= DECEL_MAX_MM_S2:
+        link.cmd("setdecel {}".format(first[1]))
+
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
@@ -736,6 +803,8 @@ def main():
         done.add("R20-SER-GETTERS")
         cell_timeout(link, cells["R20-SER-TIMEOUT"], log)
         done.add("R20-SER-TIMEOUT")
+        cell_ramp(link, cells["R20-SER-RAMP"], fresh, log)            # last: the P2 keeps the speed-up rate set here
+        done.add("R20-SER-RAMP")
     except LinkDead as why:
         abort_why = str(why)
     except KeyboardInterrupt:

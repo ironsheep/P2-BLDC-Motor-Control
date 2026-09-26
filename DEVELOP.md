@@ -17,6 +17,7 @@ On this Page:
 - [Include project objects in your top-object-file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#include-project-objects-in-your-top-object-file)
 - [Make calls to steering or motor object to drive your platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
 - [Driving a distance, and waiting for it to finish](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#driving-a-distance-and-waiting-for-it-to-finish) - and backing up
+- [Tuning the ramp for your robot's mass](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#tuning-the-ramp-for-your-robots-mass) - acceleration, deceleration and stopping distance
 - [Checking for errors](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#checking-for-errors)
 
 Additional pages:
@@ -206,7 +207,7 @@ From here on, just use any of the Public Methods found in the [Steering and Moto
 
 **Remember:** if you are two wheeled you are calling methods of the [**isp\_steering_2wheel.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-2-wheel-steering-object-public-interface) object `wheels.*` and if you are a single wheel then you are calling methods of the [**isp\_bldc_motor.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-motor-object-public-interface) object `wheel.*`.
 
-**Your settings are kept.** `setMaxSpeed()`, `setMaxSpeedForDistance()`, `holdAtStop()` and (motor object) `setForwardIsReverse()` may be called before `start()`, and are kept across `stop()` and `start()`. The protective settings, `setFaultResponse()`, `setHoldLimits()` and `setCommandTimeout()`, need a running motor, and every `start()` restores their defaults, so set them after each `start()`. See [Settings start() keeps](DRIVE-OBJECTS.md#settings-start-keeps).
+**Your settings are kept.** `setMaxSpeed()`, `setMaxSpeedForDistance()`, `holdAtStop()`, `setAcceleration()`, `setDeceleration()` and (motor object) `setForwardIsReverse()` may be called before `start()`, and are kept across `stop()` and `start()`. The protective settings, `setFaultResponse()`, `setHoldLimits()` and `setCommandTimeout()`, need a running motor, and every `start()` restores their defaults, so set them after each `start()`. See [Settings start() keeps](DRIVE-OBJECTS.md#settings-start-keeps).
 
 ### Driving a distance, and waiting for it to finish
 
@@ -235,6 +236,17 @@ From here on, just use any of the Public Methods found in the [Steering and Moto
 These are **two calls, not one atomic move**: the platform is already reversing when the limit is armed, and a limit counts from the moment it is armed. Make the calls the other way round (`stopAfterDistance()` first, at rest, then `driveAtPower(-40, -40)`) and the limit counts from before the platform moves. See [Backing up a distance](DRIVE-OBJECTS.md#backing-up-a-distance).
 
 **The odometer is total travel.** `getDistance()` and `getRotationCount()` count every tick each wheel turns, forward and back, since the last `resetTracking()` or `start()`; nothing else resets them. Each distance or rotation limit counts only its own travel, from when it was armed.
+
+### Tuning the ramp for your robot's mass
+
+The built-in ramp suits a light platform: it eases into motion and stops at about 1,470 mm/s² (roughly 0.15 g). A heavier or taller robot usually wants gentler rates, and you set the two ends apart, in mm/s² at the wheel rim: `setAcceleration(rate)` for speeding up and `setDeceleration(rate)` for slowing down and every stop. Both may be set before `start()` and are kept across it, and `getAcceleration()` and `getDeceleration()` read them back.
+
+```script
+    wheels.setAcceleration(600)                         ' ease a heavy robot into motion
+    wheels.setDeceleration(900)                         ' and stop it more gently than the built-in ~1,470
+```
+
+Lower the rates when the wheels slip on starts or stops (above about half of *g*, 5,000 mm/s², most tyres let go), or when a tall robot pitches or tips as it stops. A rate the motor cannot deliver for your robot's mass is not a fault: the ramp waits for the rotor, so the robot just speeds up or stops less sharply than asked. Remember what the deceleration costs: **the stopping distance is speed² ÷ (2 × rate)**, so halving the rate doubles it (1 m/s at 900 mm/s² takes about 0.56 m). `stopAfterDistance()`, `stopAfterRotation()`, `stopAfterTime()` and `driveForDistance()` allow for it themselves and still stop at their limit; a plain `stopMotors()` does not, so leave the room. `emergencyCutoff()` ignores the rate: it is always a hard stop. See [How far the motor travels while stopping](DRIVE-OBJECTS.md#how-far-the-motor-travels-while-stopping).
 
 ### Checking for errors
 
