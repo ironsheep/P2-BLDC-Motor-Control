@@ -2283,6 +2283,9 @@ CON { -- TASK: the steering front cog -- }
   ' R18.4 D-6 path-preserving speed limiting (frontLimitPath()): down at once, up slowly
   PATH_RELEASE_SLOTS = 4                ' clean slots (32 ms) before the scale starts to release
   PATH_RELEASE_STEP  = 20               ' thousandths released per slot after that: 2 %, ~0.4 s from half to full
+  PATH_BEHIND_PERMILLE = 100            ' PL-141, PROVISIONAL (the bench sizes it): a held wheel is BEHIND, and narrows the
+                                        '  platform, only when its commanded partner's achieved fraction leads its own by more
+                                        '  than this. Twice A-8's 50-thousandths agreement band, and five release steps
 
 VAR { time values & arrays }
 
@@ -2391,8 +2394,8 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     pathScalePermille := ltWheel.PERMILLE_FULL                                  ' R18.4 D-6: no path limiting until a wheel falls short
     pathCleanSlots := 0
     pathEvWheel := EVW_LEFT
-    _, _, lastLeftCmdGen := ltWheel.frontShortfall()
-    _, _, lastRightCmdGen := rtWheel.frontShortfall()
+    _, _, lastLeftCmdGen, _ := ltWheel.frontShortfall()
+    _, _, lastRightCmdGen, _ := rtWheel.frontShortfall()
     ' R20.1: the start checks finished before this cog existed, and this cog is each wheel's log's only writer, so it
     '  logs their retries (EV_CHECK_RETRY) here, once, before its first pass
     ltWheel.frontNoteStartChecks()
@@ -2481,15 +2484,22 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     repeat
         waitms(ltWheel.FRONT_PARK_MS)
 
-PRI frontLimitPath() | bLeftShort, bRightShort, leftPermille, rightPermille, leftGen, rightGen, wantPermille, prevPermille
-' FRONT COG: path-preserving speed limiting -- when either wheel falls short, run BOTH at the short wheel's achieved fraction.
+PRI frontLimitPath() | bLeftShort, bRightShort, leftPermille, rightPermille, leftGen, rightGen, bLeftCmd, bRightCmd, bLeftBehind, bRightBehind, wantPermille, prevPermille
+' FRONT COG: path-preserving speed limiting -- when one wheel falls BEHIND its partner, run BOTH at its achieved fraction.
 '
 ' R18.4 D-6, Stephen's ruling "path over speed" (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md section 3 and 5.3).
 ' Scaling both commands by one fraction keeps their ratio, so a turn stays the turn commanded and a
 ' straight line stays straight; the platform loses speed instead of path. Down at once, up slowly: the
 ' scale falls to the shortfall on the slot it is seen, and releases PATH_RELEASE_STEP per slot only after
-' PATH_RELEASE_SLOTS clean slots, so it cannot hunt between the two. A new command from the user starts
-' unscaled. Each wheel's own command, and getPower(), are left as commanded.
+' PATH_RELEASE_SLOTS clean slots (no field held), so it cannot hunt between the two. A new command from the
+' user starts unscaled. Each wheel's own command, and getPower(), are left as commanded.
+'
+' PL-141: BEHIND, not merely held. A wheel whose field is held (SHORT) narrows the platform only when its partner
+' is commanded and achieves more than PATH_BEHIND_PERMILLE more of its own command -- the path is being lost only
+' when the wheels' fractions part. At a start from rest both fields are held together at about the same fraction,
+' their ratio is already the commanded one, and nothing engages (it scaled both to 0 before, re-ramping every start
+' for 440 ms and zeroing the targets a blocked wheel's protective stop counts on). While a held wheel is within the
+' margin, the scale holds: no deepening, no release. A partner with no command keeps any path, so it is never led.
 
 ' Local Variables:
 ' @local bLeftShort - T/F where T means the left wheel's lag limiter held its field in the last few slots
@@ -2498,14 +2508,20 @@ PRI frontLimitPath() | bLeftShort, bRightShort, leftPermille, rightPermille, lef
 ' @local rightPermille - the right field's rate as a fraction of its command, 0-1000
 ' @local leftGen - the left wheel's command count, to see a new command arrive
 ' @local rightGen - the right wheel's command count
-' @local wantPermille - the fraction the short wheel(s) can sustain
+' @local bLeftCmd - T/F where T means the left wheel has a non-zero command
+' @local bRightCmd - T/F where T means the right wheel has a non-zero command
+' @local bLeftBehind - T/F where T means the left is held and trails its commanded partner by more than the margin
+' @local bRightBehind - T/F where T means the right is held and trails its commanded partner by more than the margin
+' @local wantPermille - the fraction the behind wheel sustains
 ' @local prevPermille - the scale before a new command or a drop replaced it (R20.1: tells the engage and release edges)
 
     ' R20.1: EV_PATH_LIMIT on the engage (the drop from full scale) and the full release only, never each deepening step,
-    '  each queued after the scale is written. The engage goes to the short wheel's log (the lower one when both are
-    '  short, a tie the left), and its release to the same log, so every engage has its release.
-    bLeftShort, leftPermille, leftGen := ltWheel.frontShortfall()
-    bRightShort, rightPermille, rightGen := rtWheel.frontShortfall()
+    '  each queued after the scale is written. The engage goes to the behind wheel's log, and its release to the same
+    '  log, so every engage has its release.
+    bLeftShort, leftPermille, leftGen, bLeftCmd := ltWheel.frontShortfall()
+    bRightShort, rightPermille, rightGen, bRightCmd := rtWheel.frontShortfall()
+    bLeftBehind := (bLeftShort == TRUE) and (bRightCmd == TRUE) and (rightPermille - leftPermille > PATH_BEHIND_PERMILLE)
+    bRightBehind := (bRightShort == TRUE) and (bLeftCmd == TRUE) and (leftPermille - rightPermille > PATH_BEHIND_PERMILLE)
     if (leftGen <> lastLeftCmdGen) or (rightGen <> lastRightCmdGen)
         prevPermille := pathScalePermille
         pathScalePermille := ltWheel.PERMILLE_FULL                              ' a new command starts unscaled
@@ -2514,23 +2530,19 @@ PRI frontLimitPath() | bLeftShort, bRightShort, leftPermille, rightPermille, lef
         lastRightCmdGen := rightGen
         if prevPermille < ltWheel.PERMILLE_FULL                                 ' R20.1: so the limiter has fully released
             frontQueuePathEvent(pathScalePermille)
-    elseif (bLeftShort == TRUE) or (bRightShort == TRUE)
+    elseif (bLeftBehind == TRUE) or (bRightBehind == TRUE)                     ' at most one can be: each trails the other
         pathCleanSlots := 0
-        wantPermille := ltWheel.PERMILLE_FULL
-        if bLeftShort == TRUE
-            wantPermille := wantPermille <# leftPermille
-        if bRightShort == TRUE
-            wantPermille := wantPermille <# rightPermille
+        wantPermille := (bLeftBehind == TRUE) ? leftPermille : rightPermille
         if wantPermille < pathScalePermille
             prevPermille := pathScalePermille
             pathScalePermille := wantPermille
             ltWheel.frontScaleCommand(pathScalePermille)
             rtWheel.frontScaleCommand(pathScalePermille)
             if prevPermille == ltWheel.PERMILLE_FULL                            ' R20.1: the engage edge
-                pathEvWheel := EVW_LEFT
-                if (bRightShort == TRUE) and ((bLeftShort == FALSE) or (rightPermille < leftPermille))
-                    pathEvWheel := EVW_RIGHT
+                pathEvWheel := (bLeftBehind == TRUE) ? EVW_LEFT : EVW_RIGHT
                 frontQueuePathEvent(pathScalePermille)
+    elseif (bLeftShort == TRUE) or (bRightShort == TRUE)
+        pathCleanSlots := 0                                                     ' PL-141: held within the margin -- the scale holds
     elseif pathScalePermille < ltWheel.PERMILLE_FULL
         pathCleanSlots++
         if pathCleanSlots >= PATH_RELEASE_SLOTS

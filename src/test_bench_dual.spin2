@@ -365,6 +365,11 @@
 ''               the next dead bridge records its own per-phase signature. DRIVER_REV 26 (PL-137's fix: the steering path
 ''               limiter stays out of a wiring walk). Part START also prints BM-FRONTST after each walk (PL-140: its
 ''               LATE_PASS events are placed against the front cog's own counts). No other record changes
+''               26 Sep 2026 -- SRC_REV=50: PL-141 (task 3622, DRIVER_REV 28). The steering path limiter now engages only
+''               for a wheel BEHIND its partner, so R20-DUAL-EV-PATH's positive precondition is a wheel seen behind by the
+''               same rule (dBehindPoll(), D_BEHIND_POLLS running), not one seen SHORT: part D's BLOCKED step stalls both
+''               wheels together and no longer owes a pair. Its STEERSEG negative (no engage) now fails the pass 5
+''               behaviour. No record changes
 ''
 '' =================================================================================================
 
@@ -432,7 +437,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 49                                      ' hand-bumped whenever this file changes
+    SRC_REV     = 50                                     ' hand-bumped whenever this file changes
     FMT_VERSION = 33                                      ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -1044,6 +1049,7 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_BLOCK_WAIT_MS       = 4_000                           ' BLOCKED_PASSES is ~1 s of front passes, plus the spin-up
     D_FOLD_HOLD_MS        = 3_000                           ' FOLDBACK: the drive is held this long under the low limit
     D_LIMIT_POLL_MS       = 50                              ' cadence of the limit-state reads inside a limit step
+    D_BEHIND_POLLS        = 2                               ' PL-141: polls running a wheel must read BEHIND to count as seen (reads are not simultaneous)
     ' R18.4 (task 3584, DRIVE-INTEGRATION-DESIGN.md 5.5): the BLOCKED stall is also Visit 8's forced shortfall
     A7_SETTLE_MS          = 200                             ' A-7: the field has settled this long after the wheel first reads SHORT
     A7_SETTLE_PCT         = 10                              ' A-7: ...to at most this % of the commanded increment (shipped: 100 %)
@@ -2790,6 +2796,10 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    bSfNotFolOk[INST_MOTORS]                        ' A-8 not-following: both readings said not following
     LONG    hpLastPermille[INST_MOTORS]                     ' the last pre-latch poll's achieved fraction
     LONG    hpLastPct[INST_MOTORS]                          ' the last pre-latch poll's following percentage
+    LONG    bHpShortNow[INST_MOTORS]                        ' PL-141: this poll's SHORT, per wheel
+    LONG    hpPermNow[INST_MOTORS]                          ' ...its achieved fraction
+    LONG    hpCmdNow[INST_MOTORS]                           ' ...its commanded increment
+    LONG    hpBehindRun[INST_MOTORS]                        ' ...consecutive polls it was BEHIND its partner
 
     LONG    sfStarts[INST_MOTORS]                           ' REVB/INTEG: wheel starts
     LONG    sfNotRevb[INST_MOTORS]
@@ -2868,7 +2878,7 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    dFoldBadSeq                                     ' logs of a stage whose EV_FOLDBACK sequence was not well formed
     LONG    dPathBadSeq                                     ' ...whose EV_PATH_LIMIT sequence was not
     LONG    dPathPairs                                      ' EV_PATH_LIMIT pairs in the BLOCK stage
-    LONG    bDPathShort                                     ' the BLOCK step saw a wheel SHORT (its path-limiter view)
+    LONG    bDPathBehind                                    ' the BLOCK step saw a wheel BEHIND its partner (PL-141's rule), 2 polls running
     LONG    bDBlockDrained                                  ' the BLOCK stage was drained
     LONG    dClimN                                          ' EV-CLIMIT: wheels judged in the DERATE stage
     LONG    dClimBad                                        ' ...whose EV_CURRENT_LIMIT did not match the derate seen
@@ -6484,7 +6494,8 @@ PRI dEvDefaults(side, formIdx, nLate) | lFold, rFold, lClim, rClim, lPath, rPath
 ' Task 3621: one of part D's DEFAULT-LIMIT forms -- the steering object in STEERSEG, or the single wheel in LIMIT's
 ' wheel half -- read beside its FRONTST: getEventTotal() since its start for the kinds only a lowered limit should make,
 ' printed as BM-EVTOT. These are the NEGATIVES of R20-DUAL-EV-FOLDBACK and -EV-CLIMIT (none of either at the shipped
-' limits), and STEERSEG's is R20-DUAL-EV-PATH's (a steering segment with no wheel short: no EV_PATH_LIMIT). Totals, not a
+' limits), and STEERSEG's is R20-DUAL-EV-PATH's (a steering segment with no wheel behind its partner: no EV_PATH_LIMIT --
+' PL-141: pass 5 engaged at every healthy start, which this negative now fails). Totals, not a
 ' drain: they are never lost, however many stops the form's steps queued. The late count goes to R20-T0-EV-LATE.
 '
 ' @param side - SIDE_BOTH (the steering object) or SIDE_LEFT (the single wheel)
@@ -6578,7 +6589,9 @@ PRI dEvStage(stage) | logIdx, nPairs, bFormed, nCount, bOk, bRestored
                 dClimBad := (dClimBad + 1) <# LIM_SMALL
     if stage == EVST_D_BLOCK
         bDBlockDrained := TRUE
-        bDPathShort := (hpFirstShortMs[SLOT_LEFT] >= 0) or (hpFirstShortMs[SLOT_RIGHT] >= 0)
+        ' PL-141: the path limiter now engages only for a wheel BEHIND its partner, so a stall of both wheels
+        '  together (this step's, wheels up) no longer owes a pair; the positive half needs one seen behind
+        bDPathBehind := (hpBehindRun[SLOT_LEFT] >= D_BEHIND_POLLS) or (hpBehindRun[SLOT_RIGHT] >= D_BEHIND_POLLS)
 
 PRI dStepCoopShut(side) | startMs, elapsedMs
 ' COOPSHUT: stop() returns inside D_COOPSHUT_MS.
@@ -6827,6 +6840,7 @@ PRI dStepBlocked() | bArmed, eError, startMs, blockMs, eLeftCode, eRightCode, eR
                 quit
             dHoldProbe(SLOT_LEFT, getms() - startMs)          ' before the latch: the stall is still being driven
             dHoldProbe(SLOT_RIGHT, getms() - startMs)
+            dBehindPoll()                                   ' PL-141: after both wheels' readings of this poll
             waitms(D_LIMIT_POLL_MS)
             if (getms() - startMs) >= D_BLOCK_WAIT_MS
                 quit
@@ -6869,6 +6883,25 @@ PRI dHoldProbeReset() | slotIdx
         bSfNotFolOk[slotIdx] := FALSE
         hpLastPermille[slotIdx] := 0
         hpLastPct[slotIdx] := 0
+        bHpShortNow[slotIdx] := FALSE
+        hpPermNow[slotIdx] := 0
+        hpCmdNow[slotIdx] := 0
+        hpBehindRun[slotIdx] := 0
+
+PRI dBehindPoll() | slotIdx, otherIdx, bBehind
+' PL-141: after both wheels' dHoldProbe() of one poll, count each wheel's consecutive polls BEHIND its partner by the
+' steering object's own rule -- held (SHORT), the partner commanded, and the partner's achieved fraction ahead by more
+' than steering.PATH_BEHIND_PERMILLE. The two readings are not taken at one instant, so a wheel counts as seen behind
+' (R20-DUAL-EV-PATH's positive precondition, bDPathBehind) only after D_BEHIND_POLLS polls running.
+'
+' @local slotIdx - motor slot
+' @local otherIdx - its partner's slot
+' @local bBehind - T/F where T means this wheel is behind on this poll
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        otherIdx := SLOT_RIGHT - slotIdx
+        bBehind := (bHpShortNow[slotIdx] == TRUE) and (hpCmdNow[otherIdx] <> 0) and (hpPermNow[otherIdx] - hpPermNow[slotIdx] > steering.PATH_BEHIND_PERMILLE)
+        hpBehindRun[slotIdx] := bBehind ? (hpBehindRun[slotIdx] + 1) <# LIM_SMALL : 0
 
 PRI dHoldProbe(slotIdx, elapsedMs) | nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk
 ' One BLOCKED-step poll of a wheel's path-limiter view (R18.4, DRIVE-INTEGRATION-DESIGN.md 5.5).
@@ -6895,6 +6928,9 @@ PRI dHoldProbe(slotIdx, elapsedMs) | nCmdIncr, nDrvIncr, bShort, nPermille, nPct
     else
         nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk := steering.testLeftGetDriveFollow()
     beat(CP_LIB_STEER_QUERY)
+    bHpShortNow[slotIdx] := bShort                          ' PL-141: dBehindPoll() compares the two wheels' readings
+    hpPermNow[slotIdx] := nPermille
+    hpCmdNow[slotIdx] := nCmdIncr
     if (bShort == TRUE) and (hpFirstShortMs[slotIdx] < 0)
         hpFirstShortMs[slotIdx] := elapsedMs
     if (hpFirstShortMs[slotIdx] >= 0) and (bSfHoldSetRan[slotIdx] == FALSE) and (elapsedMs - hpFirstShortMs[slotIdx] >= A7_SETTLE_MS)
@@ -18446,7 +18482,7 @@ PRI r20ResetCells() | formIdx
     dFoldBadSeq := 0
     dPathBadSeq := 0
     dPathPairs := 0
-    bDPathShort := FALSE
+    bDPathBehind := FALSE
     bDBlockDrained := FALSE
     dClimN := 0
     dClimBad := 0
@@ -21352,8 +21388,9 @@ PRI emitDEvCells() | nBad
 '                back, and a wheel that never derated logged none; NOMEAS unless one derated (SS6: wheels-up may not
 '                reach it); negative: none in either default-limit form. Bad: each wheel that did not match, each form
 '                with one
-'  EV-PATH     - positive: the BLOCK step, which saw a wheel SHORT, holds an EV_PATH_LIMIT engage (under 1000) and its
-'                release (1000), every LIMIT stage's sequences well formed; NOMEAS unless a wheel was seen SHORT;
+'  EV-PATH     - positive: the BLOCK step, which saw a wheel BEHIND its partner (PL-141's rule, D_BEHIND_POLLS polls
+'                running), holds an EV_PATH_LIMIT engage (under 1000) and its release (1000), every LIMIT stage's
+'                sequences well formed; NOMEAS unless a wheel was seen behind (a stall of both together is not);
 '                negative: none in STEERSEG. Bad: each malformed log, each unclean drain, no pair (1), STEERSEG with one
 '  EV-LATE     - per front-cog form (emitLateCells())
 '
@@ -21367,7 +21404,7 @@ PRI emitDEvCells() | nBad
     nBad := dPathBadSeq + dDefPathBad + dEvUnclean
     if dPathPairs == 0
         nBad += 1
-    emitSignoff(@sSfCellEvPath, SIDE_BOTH, @sSfCritEvPath, bDBlockDrained and bDPathShort and bDDefSteer, nBad, R20_BAD_LO, R20_BAD_HI, dEvStages + 1, @sSfUnitsCount)
+    emitSignoff(@sSfCellEvPath, SIDE_BOTH, @sSfCritEvPath, bDBlockDrained and bDPathBehind and bDDefSteer, nBad, R20_BAD_LO, R20_BAD_HI, dEvStages + 1, @sSfUnitsCount)
     emitLateCells(SLOT_LEFT, SIDE_BOTH)
     emitLateCells(SLOT_RIGHT, SIDE_LEFT)
 

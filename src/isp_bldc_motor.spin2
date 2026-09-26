@@ -2487,8 +2487,8 @@ PUB frontWriteIncrement(nIncre, bSync)
     frontCommand(nIncre, bSync)
     releaseFaultLatch()
 
-PUB frontShortfall() : bShort, nAchievedPermille, nCmdGen
-'' FRONT COG ONLY: whether this motor is falling short of its command, and what fraction of it the field achieves
+PUB frontShortfall() : bShort, nAchievedPermille, nCmdGen, bCommanded
+'' FRONT COG ONLY: whether this motor's field is held short of its command, and what fraction of it the field achieves
 ''
 '' R18.4 D-6 (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 5.3). A motor is SHORT when its lag limiter held the
 '' field in any of the last SHORT_SLOTS rpm-window slots. While it is, D-5 has walked the field's rate down to
@@ -2498,9 +2498,11 @@ PUB frontShortfall() : bShort, nAchievedPermille, nCmdGen
 '' @returns bShort - T/F where T means the lag limiter held this motor's field within the last SHORT_SLOTS slots
 '' @returns nAchievedPermille - the field's rate as a fraction of the commanded rate, 0-1000; 1000 when nothing is commanded
 '' @returns nCmdGen - a count that changes whenever a new command is written, so an owner can tell a new command from a scaled one
+'' @returns bCommanded - T/F where T means a non-zero command is in force (PL-141: only then is nAchievedPermille a measure)
 
     bShort, nAchievedPermille := shortfallNow()
     nCmdGen := userCmdGen
+    bCommanded := (userCmdIncr <> 0)
 
 PUB testGetDriveFollow() : nCmdIncr, nDrvIncr, bShort, nAchievedPermille, nFollowPct, bFollowOk
 '' TESTING USE: the path limiter's view of this motor, beside the rpm window's following reading (R18.4, Visit 8 A-7 / A-8)
@@ -2523,7 +2525,10 @@ PUB frontScaleCommand(nScalePermille) | scaledIncr
 ''
 '' R18.4 D-6: the steering object scales BOTH wheels by one fraction so the platform keeps its path. The
 '' command is kept (getPower() still reads what was commanded, C-2), and a stopped, refused or faulted motor
-'' is left alone. Writes no ATN: the scaled command is taken on the driver's next pass (D-4).
+'' is left alone. Writes no ATN: the scaled command is taken on the driver's next pass (D-4). A scaled command is
+'' never below ramp_min (PL-141): a commanded wheel scaled to zero would read at rest (DCS_STOPPED) while commanded,
+'' and would zero the target a blocked wheel's protective stop counts on (bFrontProtect()), as D-5 never walks a
+'' field below ramp_min either.
 ''
 '' @param nScalePermille - the fraction of the commanded rate to run at, 0-1000
 
@@ -2531,7 +2536,7 @@ PUB frontScaleCommand(nScalePermille) | scaledIncr
 ' @local scaledIncr - the commanded increment scaled to {nScalePermille}, its sign kept
 
     if (userCmdIncr <> 0) and (frontRefusal() == NO_ERROR) and (drv_state <> DCS_FAULTED)
-        scaledIncr := muldiv64(abs(userCmdIncr), (0 #> nScalePermille <# PERMILLE_FULL), PERMILLE_FULL)
+        scaledIncr := muldiv64(abs(userCmdIncr), (0 #> nScalePermille <# PERMILLE_FULL), PERMILLE_FULL) #> (ramp_min <# abs(userCmdIncr))
         if userCmdIncr < 0
             scaledIncr := -scaledIncr
         setTargetAccel(scaledIncr, FALSE)
@@ -5770,7 +5775,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 27        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 28        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -5806,6 +5811,10 @@ CON { driver internal Constants }
                                             '     the low sides take pwmn in driveinit's unbroken run to the DIR raise, so
                                             '     the all-low-sides short shrinks from calibration + park to ~20 clocks
                                             '     (task 3623). PASM (LUT) change; no ABI change
+                                            ' 28: PL-141 -- frontShortfall() also returns bCommanded, and a path-scaled
+                                            '     command is never below ramp_min, so a scaled wheel cannot read at rest or
+                                            '     zero the blocked test's target; the steering limiter engages only for a
+                                            '     wheel behind its partner (task 3622). No PASM change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring

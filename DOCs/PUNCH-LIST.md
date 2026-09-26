@@ -4501,6 +4501,28 @@ read while a wheel is still in its start-from-rest hold, if that can be told apa
 at start must still engage it (SR_BLOCKED's path), so the design states how it tells the two apart. It is certified by
 R20-DUAL-EV-PATH (no engage at a healthy start) and by the blocked-step engage in part D.
 
+**2026-09-26 -- desk design, then BUILT (not yet certified), task «#3622», DRIVER_REV 28, `test_bench_dual` src_rev 50.**
+- **Found while designing, verified here: today's scale-to-0 disables the blocked-wheel protective stop under the
+  steering object.**
+  - `bFrontProtect()` counts blocked passes only while `targetIncre <> 0` (`isp_bldc_motor.spin2` ~:2603).
+  - A blocked wheel's achieved fraction is `ramp_min / command`, which is 0 ‰. So the limiter wrote zero targets and
+    the count reset every pass. SR_BLOCKED could never latch.
+  - This is derived from the source; the rig has never blocked a wheel.
+- **Built:**
+  - `frontLimitPath()` engages or deepens only for a wheel BEHIND. That means held, its partner commanded
+    (`frontShortfall()` gains `bCommanded`), and the partner's fraction ahead by more than `PATH_BEHIND_PERMILLE`
+    (100, PROVISIONAL).
+  - A held wheel within the margin holds the scale: no deepening, no release.
+  - `frontScaleCommand()` never scales below `ramp_min` (capped at the command). A scaled wheel cannot read at rest or
+    zero the blocked test's target.
+- **Harness:** EV-PATH's positive half now needs a wheel seen behind by the same rule on 2 polls running
+  (`dBehindPoll()`). Part D's BLOCKED step stalls both wheels together, so that half reads NOMEAS on a lifted rig. Its
+  STEERSEG negative (no engage) fails the pass 5 behaviour.
+- **Open, for the bench:**
+  - A turn from rest ramps both wheels by the same absolute increment, so their fractions part and the limiter may
+    engage. The path is kept, just slower.
+  - The margin is sized from the gaps seen.
+
 ---
 
 ## Removed from this list
