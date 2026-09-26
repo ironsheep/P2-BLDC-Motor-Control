@@ -227,6 +227,10 @@ case "$TIER" in
     # t0-stopreason (task 3621, R20.1; DOCs/plans/DRIVER-REPORTING-DESIGN.md SS6) -- T0-25 only, the stop-reason and
     #  event-log cells. Plain t0 promises no motion and every one of these cells has to drive the wheel, so it is its own
     #  build of the t0 binary, as t0-stopmode is; unlike it, nothing waits on a person. BENCH_QUIET for the same reason.
+    t0-api)         BENCH_FILE="test_bench_t0.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D T0_API)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING, NOTHING MOVES: the program calls every API setting with good and bad values and reads each back. It starts the right motor (the P16 board) twice and the platform once, and never drives a wheel. No window opens. About 15 seconds"
+                    ;;
     t0-stopreason)  BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPREASON)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the program drives the RIGHT wheel (the P16 board; THE LEFT, the P32 board, INSTEAD if the right fails its start checks) slowly, at power 15, about 30 short times, and stops it each way a program can -- a normal stop, a timed stop, an EMERGENCY STOP THAT BRAKES IT ABRUPTLY, and the stop that comes when commands stop arriving -- then reads why each drive stopped and what the driver logged. Then it drives the wheel ONE FULL TURN to a stop-after-rotation limit, drives it again for a few seconds with no limit, and e-stops it once more at rest. IF THE RIGHT WAS REFUSED, it then tries to start the right every 10 s, for up to 3 minutes, to time its return. Nothing waits for you and no window opens. Under 1 minute, or up to about 4 if the right is refused"
