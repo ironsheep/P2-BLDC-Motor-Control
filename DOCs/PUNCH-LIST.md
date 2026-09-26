@@ -4406,6 +4406,40 @@ That removes the window rather than characterising it. **First:** resolve the so
 whether the window is reachable while a wheel turns (a restart, or a stop then start while coasting). It rides with
 the next driver change.
 
+**2026-09-26 -- desk design returned (read-only task-design study; claims re-checked against the source here).**
+- **The p2kb conflict is resolved for the silicon doc.** Per `p2kbArchSmartPins` (*reset_without_reconfiguring*, from
+  the silicon doc), DIR low resets a smart pin but keeps its WRPIN mode. The mode is per pin, not per cog, so COGSTOP
+  cannot clear it. `p2kbSpin2Cogstop`'s "smart pin modes disabled" has no silicon source and is a p2kb correction to
+  file. The driver's `pwmt`/`pwmn` (`:6864-6865`) are TT=%01, which is P_OE, output enabled regardless of DIR. Their
+  comments say P_BITDAC, which is wrong. So PL-138's reading holds: with DIR low, the inverted low sides are ON.
+- **The disposition's "set the mode after DIR is raised" is forbidden:** p2kb requires DIR low at WRPIN. What can be
+  built is WRPIN, then DIRH, as one unbroken instruction run.
+- **Windows, each reachable while a wheel turns:**
+  - W1: calibration (`:7126-7222`, about 0.7 ms);
+  - W2: the park at `waitatn` (`:7225`; at least 100 ms per wheel under `steering.start()`);
+  - W3: `stop()`'s cogstop to pinclear (`:340-372`).
+- **New, W4: `stop()` cogstops a DRIVING driver** (`:340`; also `steering.stop()`, and `setupForStart()` restarting a
+  running instance). At the DIR fall every high side that was ON turns off on the same clock edge as its low side
+  turns on. That is a shoot-through with no dead gap.
+- **Construction:**
+  - (1) Leave the gate pins in mode 0 through calibration and park.
+  - (2) In `driveinit`, WRPIN the high sides (off in reset), then the low sides, the X/Y values, then DIRH ADC and
+    drive pins. That leaves a window of about 20 clocks, under the 250 ns minimum, with the high sides off throughout.
+  - (3) A driver release step: write coast Y, wait two frames, then DIRL and WRPIN #0 back to back, and report a new
+    `DCS_RELEASED`.
+  - (4) `stop()` requests the release and waits, bounded, before the cogstop.
+  - (5) `pinclear` right after the cogstop, as a backstop.
+
+  Steps 1-2 have no ABI impact. Steps 3-4 add one params long (`DRVR_PARAMS_LONGS_COUNT` 25→26) and one DCS value.
+- **Relation to PL-120: low confidence.** An all-low-sides short charges the bootstraps rather than draining them.
+  Death 1 fell mid-walk: life 5's start check had passed (`BM-SKHEALTH,...,life,5,...,r_fail,$0000`). Death 2 fell after
+  an e-stop, which changes only Y.
+- **Proposed cell RESTCOAST:** spin the right to about 80 × 10⁶, then `steering.stop()` and `start()` back to back. A
+  sampler cog counts hall edges. It FAILs when the speed kept is under 0.8× a same-run SM_FLOAT coast reference, which
+  the W2 short should cause today. W4 has no bench-observable consequence.
+
+**Disposition: ⛔ FIX, built as «#3623»** (two parts: start side, then stop side), before pass 6.
+
 ### PL-139 -- RESTFLAT's 50 mV at-rest band was set on the left board, and the right's coast rest read 51
 
 **Found 2026-09-26** at Visit 10 pass 5 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §2).
