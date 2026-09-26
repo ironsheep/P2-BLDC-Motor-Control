@@ -82,7 +82,7 @@ of the motor and how to drive it.
 | Wheel outside diameter | 6.5 in = 165.1 mm | ASSUMED (nameplate) |
 | Wheel circumference | 518.6 mm | DERIVED (π × 165.1) |
 | Travel per hall tick | **5.76 mm** | DERIVED (518.6 / 90) |
-| Hall state sequence | forward (CW): 1-3-2-6-4-5 · reverse (CCW): 1-5-4-6-2-3 | ASSUMED (library table) |
+| Hall state sequence | positive power (ticks rising): 1-5-4-6-2-3 · negative power (ticks falling): 1-3-2-6-4-5 | DERIVED (`deltas65`) and MEASURED (+50 power raised `pos`), PL-39 |
 | Winding resistance, phase to phase | **≈ 0.43 Ω** (every pair 0.35–0.49 Ω) | MEASURED, §2.4 |
 
 There is **no shaft**. The motor *is* the wheel, so there is nowhere to mount a shaft encoder
@@ -632,8 +632,8 @@ unit reaches rest in 821–837 ms and 88 ticks, and the RIGHT in 817 ms, against
 ramp falls back to the graded short (or to a coast in float mode), and the fallback holds. MEASURED —
 `VISIT-10-PASS2-EVALUATION.md` §3.3, `VISIT-10-PASS5-EVALUATION.md` §2.
 
-This is `FR_GRADED`. The shipped default is still `FR_SHIPPED`, which coasts or shorts at once by stop
-mode. Whether `FR_GRADED` becomes the default is an open ruling, not a measurement gap. On a
+This is `FR_GRADED`, and it is the driver's default (DRIVER_REV 31). `FR_SHIPPED`, which coasts or
+shorts at once by stop mode, stays selectable. On a
 two-wheel platform, a fault on one wheel now stops the other (both units, pass 5).
 
 **At rest, the stop states are distinct at the wheel.** On the RIGHT unit, a hand spin gives:

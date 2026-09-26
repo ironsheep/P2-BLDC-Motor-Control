@@ -15,7 +15,7 @@ The new Motor we've added:
 | **-- docoEng.com 4k RPM 24v motor --** || the new Parallax small motor
 | Hall Tics per Revolution | 24 ticks | 
 | Degrees per hall tick | 15 degrees
-| Ticks per hall-cycle | 6 ticks | FWD (CW): 1-5-4-6-2-3</br>REV (CCW): 1-3-2-6-4-5
+| Ticks per hall-cycle | 6 ticks | positive power (ticks rising): 1-5-4-6-2-3</br>negative power (ticks falling): 1-3-2-6-4-5
 | Hall-cycles per Revolution | 4 hall-cycles |
 | Degrees per Hall-cycle | 90 degrees |
 | Magnets	| 8 poles |
