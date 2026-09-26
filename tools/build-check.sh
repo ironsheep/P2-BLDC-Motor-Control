@@ -12,7 +12,8 @@
 #   1. Every library object compiles under EVERY config block.
 #   2. Every top-level file compiles under AT LEAST ONE config block.
 #   3. RELEASE CERTIFICATION: both flagship demos -- demo_single_motor and
-#      demo_dual_motor -- compile. Neither ships uncertified.
+#      demo_dual_motor -- compile. Neither ships uncertified. Every demo_* top
+#      must also compile with -d (DEBUG), which a plain compile never checks (PL-142).
 #   4. Every bench tier's DEBUG footprint is within the limit measured to run
 #      intact (P2-HAZARD-REGISTER DBG-1), checked through tools/bench-run.sh's
 #      own tier table in measure-only mode -- so an image that would lose its
@@ -169,6 +170,7 @@ TOPS=$(ls *.spin2 2>/dev/null | sed 's/\.spin2$//' \
 # PASSED holds "name=label" rows, one per certified top.
 PASSED=""
 N_PASSED=0
+DEBUG_FAILED=""                                  # demo_* tops that compile plain but not with -d (PL-142)
 FAILED_LIB=0
 N_TOPS=$(echo $TOPS | wc -w | tr -d ' ')
 
@@ -207,6 +209,16 @@ $top=$label"
             N_PASSED=$((N_PASSED + 1))
             n_new=$((n_new + 1))
             [ $VERBOSE -eq 1 ] && echo "  ok    [$label] $top"
+            # PL-142: a shipped demo must also compile with DEBUG, under the block it passed in --
+            #  a plain compile skips every debug() line, so a broken one would ship unseen
+            case "$top" in
+                demo_*)
+                    if ! "$PNUT" -q -d "$top.spin2" >/dev/null 2>&1; then
+                        DEBUG_FAILED="$DEBUG_FAILED $top"
+                        echo "  FAIL  [$label] $top does not compile with -d (DEBUG)"
+                    fi
+                    ;;
+            esac
         fi
     done
     [ $VERBOSE -eq 0 ] && echo "  $label: objects ok, +$n_new tops newly certified"
@@ -226,13 +238,20 @@ if [ -n "$UNBUILT" ]; then
     echo "FAIL: tops that compile under no config:$UNBUILT"
     RC=1
 fi
+if [ -n "$DEBUG_FAILED" ]; then
+    echo "FAIL: demos that do not compile with -d (DEBUG):$DEBUG_FAILED"
+    RC=1
+fi
 
 # 4. release certification -- both flagship demos
 echo "Release certification:"
 for top in $RELEASE_TOPS; do
     lbl=$(passed_label "$top")
-    if [ -n "$lbl" ]; then
-        echo "  CERTIFIED  $top  ($lbl)"
+    if [ -n "$lbl" ] && printf '%s\n' $DEBUG_FAILED | grep -qx "$top"; then
+        echo "  BLOCKED    $top  -- does not compile with -d (DEBUG)"
+        RC=1
+    elif [ -n "$lbl" ]; then
+        echo "  CERTIFIED  $top  ($lbl, plain and -d)"
     else
         echo "  BLOCKED    $top  -- compiles under no config block"
         RC=1
