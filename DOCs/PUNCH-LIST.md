@@ -21,6 +21,10 @@ can address, but an eye towards whether we have everything we need to meet the c
 we're trying to release in 6."* Only work that makes a 6.0 feature (README.md "Latest Changes", v6.0.0) operational
 is chased; everything else is recorded and waits. Each remaining entry carries its status under its heading.
 
+**Demo and serial testing come after a release-candidate driver (STEPHEN 2026-09-26):** *"let's not complicate this
+pass with serial testing... all demo testing will be after we have a release condidate driver"*. So PL-148, PL-149,
+and the hardware halves of PL-154 and PL-157 certify in the release-candidate pass, not before.
+
 **Where each item certifies (Stephen, 2026-09-26):** *"most of these API changes can be tested wheels up... make all
 the driver changes, add a couple of rapid tests at the bench to prove that the API methods range check correctly and
 do the right thing, and then we can call them done without having to test on the floor."*
