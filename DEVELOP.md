@@ -16,6 +16,7 @@ On this Page:
 - [Adjust config file to your desired configuration](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#adjust-config-file-to-your-desired-configuration) 
 - [Include project objects in your top-object-file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#include-project-objects-in-your-top-object-file)
 - [Make calls to steering or motor object to drive your platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
+- [Driving a distance, and waiting for it to finish](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#driving-a-distance-and-waiting-for-it-to-finish) - and backing up
 - [Checking for errors](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#checking-for-errors)
 
 Additional pages:
@@ -204,6 +205,36 @@ You are now at the `... and do your app stuff from here on ...` section of this 
 From here on, just use any of the Public Methods found in the [Steering and Motor control](DRIVE-OBJECTS.md) interface description.  
 
 **Remember:** if you are two wheeled you are calling methods of the [**isp\_steering_2wheel.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-2-wheel-steering-object-public-interface) object `wheels.*` and if you are a single wheel then you are calling methods of the [**isp\_bldc_motor.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-motor-object-public-interface) object `wheel.*`.
+
+**Your settings are kept.** `setMaxSpeed()`, `setMaxSpeedForDistance()`, `holdAtStop()` and (motor object) `setForwardIsReverse()` may be called before `start()`, and are kept across `stop()` and `start()`. The protective settings, `setFaultResponse()`, `setHoldLimits()` and `setCommandTimeout()`, need a running motor, and every `start()` restores their defaults, so set them after each `start()`. See [Settings start() keeps](DRIVE-OBJECTS.md#settings-start-keeps).
+
+### Driving a distance, and waiting for it to finish
+
+`driveForDistance()` drives forward and brings the wheels to rest at the distance, counted from the call. To wait for it, poll `isMoveDone()` **with a bound**, then ask `getStopReason()` why it ended:
+
+```script
+    eError := wheels.driveForDistance(24, 24, wheels.DDU_IN)
+    if eError == wheels.NO_ERROR
+        startMs := getms()
+        repeat until wheels.isMoveDone() or (getms() - startMs >= 10_000)
+            waitms(10)
+        if wheels.isMoveDone() == false
+            wheels.stopMotors()                         ' not over in time: end it yourself
+        eLeftReason, eRightReason := wheels.getStopReason()   ' SR_AT_LIMIT when the distance was reached
+```
+
+`isMoveDone()` is TRUE once the wheels are at rest with nothing commanded, and at once on a fault, an emergency stop or a protective stop, so the wait cannot hang on one of those. (`isStopped()` alone never becomes TRUE on a fault or an emergency stop.)
+
+**Backing up a distance.** `driveForDistance()` is forward only. To back up, drive in reverse and arm a distance limit:
+
+```script
+    wheels.driveAtPower(-40, -40)                       ' drive in reverse...
+    wheels.stopAfterDistance(24, wheels.DDU_IN)         ' ...and bring the platform to rest 24 in from here
+```
+
+These are **two calls, not one atomic move**: the platform is already reversing when the limit is armed, and a limit counts from the moment it is armed. Make the calls the other way round (`stopAfterDistance()` first, at rest, then `driveAtPower(-40, -40)`) and the limit counts from before the platform moves. See [Backing up a distance](DRIVE-OBJECTS.md#backing-up-a-distance).
+
+**The odometer is total travel.** `getDistance()` and `getRotationCount()` count every tick each wheel turns, forward and back, since the last `resetTracking()` or `start()`; nothing else resets them. Each distance or rotation limit counts only its own travel, from when it was armed.
 
 ### Checking for errors
 

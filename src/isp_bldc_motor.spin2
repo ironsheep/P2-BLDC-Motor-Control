@@ -184,6 +184,7 @@ CON { Public Interface Constants }
     '   ERR_BOARD_NOT_DETECTED - start: no board was detected at the pin group and no revision was forced; getCurrent(): no current scale
     '   ERR_COMMAND_TIMEOUT    - setCommandTimeout() is on and no drive command arrived within it: the motor was stopped
     '   ERR_START_CHECK_FAILED - start: a start check still failed after its retries, so the motor was not started (getHealth() says which)
+    '   ERR_NOT_IMPLEMENTED    - the method is kept so programs compile, but does nothing (calibrate())
     '   ERR_PROTECTIVE_STOP    - a protective stop is latched for a cause outside the named ones
     '   ERR_PLATFORM_BLOCKED   - a protective stop is latched: a commanded motor held at its current limit did not move
     NO_ERROR                = 0
@@ -207,6 +208,7 @@ CON { Public Interface Constants }
     ERR_BOARD_NOT_DETECTED  = -1_018
     ERR_COMMAND_TIMEOUT     = -1_019
     ERR_START_CHECK_FAILED  = -1_020
+    ERR_NOT_IMPLEMENTED     = -1_021
     ERR_PROTECTIVE_STOP     = -2_000
     ERR_PLATFORM_BLOCKED    = -2_001
 
@@ -221,6 +223,24 @@ CON { Public Interface Constants }
     CMD_TIMEOUT_OFF         = 0
     CMD_TIMEOUT_MIN_MS      = 10
     CMD_TIMEOUT_MAX_MS      = 60_000
+
+    ' setMaxSpeed() and setMaxSpeedForDistance(): the top speed until one is set, and the range a value is saturated to
+    MAX_SPEED_DEFAULT       = 75
+    MAX_SPEED_MIN           = 1
+    MAX_SPEED_MAX           = 100
+
+    ' PL-155: WHICH SETTINGS start() KEEPS. The settings below are the program's own: they may be made before start(), are
+    '  kept across stop() and start(), and are applied at every start() (after its checks, which run with the motor
+    '  floated). Each reads back through its getter:
+    '    setMaxSpeed()             getMaxSpeed()
+    '    setMaxSpeedForDistance()  getMaxSpeedForDistance()
+    '    holdAtStop()              isHoldAtStop()
+    '    setForwardIsReverse()     isForwardReversed()     (forwardIsReverse() is setForwardIsReverse(TRUE))
+    '    setStartChecks()          (read by start() itself)
+    '  start() RESTORES the defaults of the protective settings, which need a running motor (ERR_NOT_STARTED before
+    '  start()), so a program sets them after every start(): setFaultResponse(), setHoldLimits(), setCommandTimeout().
+    '  setAcceleration() and setRampingValues() are restored to the built-in ramp by start() until the ramp change that
+    '  keeps them lands; it adds its values to the kept set above (applyUserSettings()).
 
 OBJ { objects / constants included by this object }
 
@@ -301,6 +321,7 @@ PUB startEx(eMotorBasePin, eMotorVoltage, eDetectionMode, sync) : ok | eError, b
                 eError := recordError(ERR_START_CHECK_FAILED)
                 debug[user.DBGCH_ERROR]("! ERROR: start refused, a start check still fails after its retries ", uhex_long(healthFailed))
             else
+                applyStartSettings() ' PL-155: the program's kept settings, now the checks have run with the motor floated
                 startPackSense()     ' R19.5: the pack voltage sensor, when fitted
                 ' R20.1: the front cog is the event log's only writer, so it queues EV_CHECK_RETRY, not this cog
                 if postRequest(REQ_NOTE_START, 0, 0, 0) <> NO_ERROR
@@ -313,6 +334,7 @@ PUB startOwned(eMotorBasePin, eMotorVoltage, eDetectionMode) : ok
 '' The owner releases the driver with COGATN and then services this motor from its own front cog
 '' through the front*() routines. Commands on this instance itself return ERR_NOT_STARTED.
 '' An undetected board is refused (ERR_BOARD_NOT_DETECTED) unless a revision is forced, as by start().
+'' PL-155: the owner calls applyStartSettings() once its start checks have passed, as start() does.
 ''
 '' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor
 '' @param eMotorVoltage - The voltage ENUM (PWR_*) for this motor
@@ -333,6 +355,8 @@ PUB stop() : eError | releaseStart
 
 ' Local Variables:
 ' @local releaseStart - getct() when the driver was asked to release
+
+    bSettingsLive := FALSE  ' PL-155: a setter now only stores its value, for the next start() to apply
 
     ' PL-41: the front cog is asked to EXIT first. It answers every open request, acknowledges, and
     '  parks with no output, so the cogstop below cannot cut a debug line. Without an answer in the
@@ -500,44 +524,54 @@ PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
     decrRamp := ramp_down
 
 PUB setMaxSpeed(speed) : eError | limitSpeed
-'' Limit top-speed to {speed} where {speed} is [1 to 100]  (default is 75)
+'' Limit top-speed to {speed} where {speed} is [1 to 100]  (default is MAX_SPEED_DEFAULT, 75)
 ''
-'' @param speed - top speed [1 to 100]; a value outside the range is saturated to it
+'' PL-155: kept across stop() and start(), and may be set before start(); getMaxSpeed() reads it back.
+''
+'' @param speed - top speed [MAX_SPEED_MIN to MAX_SPEED_MAX]; a value outside the range is saturated to it
 '' @returns eError - NO_ERROR
 
 ' Local Variables:
 ' @local limitSpeed - {speed} saturated to [1 to 100]
 
-    limitSpeed :=  1 #> speed <# 100
+    limitSpeed :=  MAX_SPEED_MIN #> speed <# MAX_SPEED_MAX
     if limitSpeed <> speed
         debug[user.DBGCH_WARNING]("! WARNING: setMaxSpeed() speed out of range (corrected):", udec_long(speed), " - must be [1 to 100]")
     debug[user.DBGCH_COMMAND]("setMaxSpeed() ", udec_long(limitSpeed))
-    maxSpeed := limitSpeed      ' remember user value
+    usrMaxSpeed := limitSpeed                                                   ' PL-155: kept, first; a start() applies it
+    if bSettingsLive == TRUE
+        maxSpeed := limitSpeed                                                  '  and in effect now on a running motor
     eError := NO_ERROR
 
 PUB setMaxSpeedForDistance(speed) : eError | limitSpeed4dist
-'' Limit top-speed of driveDistance() operations to {speed} where {speed} is [1 to 100]  (default is 75)
+'' Limit top-speed of driveForDistance() operations to {speed} where {speed} is [1 to 100]  (default is MAX_SPEED_DEFAULT, 75)
 ''
-'' @param speed - top speed [1 to 100]; a value outside the range is saturated to it
+'' PL-155: kept across stop() and start(), and may be set before start(); getMaxSpeedForDistance() reads it back.
+''
+'' @param speed - top speed [MAX_SPEED_MIN to MAX_SPEED_MAX]; a value outside the range is saturated to it
 '' @returns eError - NO_ERROR
 
 ' Local Variables:
 ' @local limitSpeed4dist - {speed} saturated to [1 to 100]
 
-    limitSpeed4dist :=  1 #> speed <# 100
+    limitSpeed4dist :=  MAX_SPEED_MIN #> speed <# MAX_SPEED_MAX
     if limitSpeed4dist <> speed
         debug[user.DBGCH_WARNING]("! WARNING: setMaxSpeedForDistance() speed out of range (corrected):", udec_long(speed), " - must be [1 to 100]")
     debug[user.DBGCH_COMMAND]("setMaxSpeedForDistance() ", udec_long(limitSpeed4dist))
-    maxSpeed4dist := limitSpeed4dist      ' remember user value
+    usrMaxSpeed4dist := limitSpeed4dist                                         ' PL-155: kept, first; a start() applies it
+    if bSettingsLive == TRUE
+        maxSpeed4dist := limitSpeed4dist
     eError := NO_ERROR
 
 PUB calibrate() : eError
-'' NOT WORKING: (we may or may not need this?)
-''  have motor drivers determine fixed-offset constants
+'' NOT IMPLEMENTED: this method does nothing, and returns ERR_NOT_IMPLEMENTED (PL-159)
 ''
-'' @returns eError - NO_ERROR
+'' It is kept so that programs which call it still compile. No calibration is needed: the commutation offsets
+'' for each supported motor are built in.
+''
+'' @returns eError - ERR_NOT_IMPLEMENTED, always (also recorded for getError())
 
-    eError := NO_ERROR
+    eError := recordError(ERR_NOT_IMPLEMENTED)
 
 PUB holdAtStop(bEnable) : eError
 '' Informs the motor control cog to actively hold position (bEnable=true) or coast (bEnable=false) once AT REST
@@ -550,12 +584,23 @@ PUB holdAtStop(bEnable) : eError
 '' drag that grows with speed but cannot hold a wheel still) and getHoldStatus() says which. On a fault the motor
 '' coasts (bEnable=false) or brakes (bEnable=true): a faulted driver has lost the rotor, so it cannot hold a
 '' position. emergencyCutoff() always brakes.
+'' PL-155: kept across stop() and start(), and may be set before start(); isHoldAtStop() reads it back. start()
+'' applies it once its checks have run, which they do with the motor floated (coasting) whatever is chosen here.
 ''
-'' @param bEnable - T/F where T means hold position at rest and F means coast
+'' @param bEnable - T/F where T means hold position at rest and F means coast (any non-zero value is T)
 '' @returns eError - NO_ERROR
 
-    stop_mode := (bEnable) ? SM_BRAKE : SM_FLOAT
+    usrStopMode := (bEnable) ? SM_BRAKE : SM_FLOAT                             ' PL-155: kept, first; a start() applies it
+    if bSettingsLive == TRUE
+        stop_mode := usrStopMode                                                '  and in effect now on a running motor
     eError := NO_ERROR
+
+PUB isHoldAtStop() : bEnable
+'' Return whether the motor holds its position at rest (holdAtStop(TRUE)) or coasts (FALSE, the default)
+''
+'' @returns bEnable - T/F where T means hold at rest, F means coast; the kept setting, so it reads the same before start()
+
+    bEnable := (usrStopMode == SM_BRAKE)
 
 PUB setCommandTimeout(nMs) : eError
 '' Stop the motor if no drive command arrives within {nMs} while it is driven: a link-loss guard, off by default
@@ -565,7 +610,8 @@ PUB setCommandTimeout(nMs) : eError
 '' the motor stops, as stopMotor() stops it (holdAtStop() chooses hold or coast at rest), and ERR_COMMAND_TIMEOUT is
 '' reported once by getError() on every cog that calls it. Re-sending the same driveAtPower() keeps an armed
 '' stopAfter*() limit; re-sending driveForDistance() starts its distance again. Setting it restarts the clock.
-'' start() turns it off.
+'' A protective setting (PL-155): start() turns it off, and it needs a running motor (ERR_NOT_STARTED before start()),
+'' so set it after every start(). getCommandTimeout() reads it back.
 ''
 '' @param nMs - the timeout in ms [CMD_TIMEOUT_MIN_MS to CMD_TIMEOUT_MAX_MS], or CMD_TIMEOUT_OFF (0) to turn it off
 '' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value outside the range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError(); a rejected call changes nothing
@@ -576,6 +622,15 @@ PUB setCommandTimeout(nMs) : eError
     else
         eError := recordError(postRequest(REQ_SET_TIMEOUT, nMs, 0, 0))    ' the front cog owns the clock
 
+PUB getCommandTimeout() : nMs
+'' Return the command timeout in effect, as setCommandTimeout() set it
+''
+'' @returns nMs - the timeout in ms, or CMD_TIMEOUT_OFF (0) when it is off: before start(), and after every start() until set
+
+    nMs := cmdTimeoutMs
+    if senseCog == 0                                                            ' start() turns it off; nothing watches it now
+        nMs := CMD_TIMEOUT_OFF
+
 PUB setFaultResponse(eMode, brakePct) : eError
 '' Choose what the motor does on a position fault: the rotor could not follow the field (an overload or a stall)
 ''
@@ -584,7 +639,8 @@ PUB setFaultResponse(eMode, brakePct) : eError
 '' SR_FAULT_CONTROLLED); with the halls lost, or on a second fault during that stop, it coasts (FALSE) or takes the
 '' graded short (TRUE): the phases shorted for {brakePct} of each BRAKE_PERIOD_MS and coasting for the rest, which
 '' scales the average braking torque to {brakePct} of the full short's. The peak current is still the full short's.
-'' start() restores the default: FR_GRADED at BRAKE_PCT_DEFAULT (10 %).
+'' A protective setting (PL-155): start() restores the default, FR_GRADED at BRAKE_PCT_DEFAULT (10 %), and it needs a
+'' running motor (ERR_NOT_STARTED before start()), so set it after every start(). getFaultResponse() reads it back.
 ''
 '' @param eMode - FR_SHIPPED or FR_GRADED
 '' @param brakePct - the graded short's shorted time, % of each brake period [0..100]
@@ -602,7 +658,8 @@ PUB setHoldLimits(ceilingPct, riseMs, limitMs) : eError
 '' The hold spends only the effort the load pushes back with, rising to {ceilingPct} over {riseMs} while the wheel stays
 '' displaced; after {limitMs} at that ceiling it hands off to the phase short (getHoldStatus() reads HS_LIMITED). The
 '' defaults (HOLD_CEILING_PCT, HOLD_RISE_MS, HOLD_LIMIT_MS) were sized with the wheels unloaded; a loaded robot may need
-'' others. start() restores the defaults.
+'' others. A protective setting (PL-155): start() restores the defaults, and it needs a running motor (ERR_NOT_STARTED
+'' before start()), so set it after every start(). getHoldLimits() reads it back.
 ''
 '' @param ceilingPct - the hold's duty ceiling, % of the drive's full duty [1..100]
 '' @param riseMs - ms from the minimum duty to the ceiling while the wheel stays displaced [1..HOLD_RISE_MS_MAX]
@@ -630,7 +687,12 @@ PUB setStartChecks(bRefuse) : eError
     eError := NO_ERROR
 
 PUB resetTracking() : eError
-'' Resets the position tracking values returned by getDistance() and getRotations()
+'' Resets the odometer: the distance getDistance() and the rotation getRotationCount() report start again from 0
+''
+'' PL-153: the odometer is the total distance the wheel has travelled, forward and back alike (backing up is travel
+'' too), since the last resetTracking() or start(). Nothing else resets it: not a drive, a limit, a fault, an
+'' emergency stop or checkWiring(). An armed distance or rotation limit is not moved by it: each counts the travel
+'' from the moment it was armed.
 ''
 '' @returns eError - NO_ERROR once the front cog has applied the reset, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
 
@@ -657,6 +719,12 @@ PUB driveForDistance(distance, distanceUnits) : eError | nStopTicks
 '' Turn the motor on then turn it off again after it reaches the specified {distance} in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI].
 '' AFFECTED BY:  setAcceleration(), setMaxSpeedForDistance(), holdAtStop()
 ''
+'' PL-153: the distance counts from this call, whatever the odometer (getDistance()) reads, so two calls in a row
+'' each travel their own distance. FORWARD ONLY: to back up a distance, drive in reverse and arm a distance limit:
+'' driveAtPower(-power), then stopAfterDistance(distance, units). Those are two calls, not one atomic move, and the
+'' limit counts from its own call, so the travel between the two is not counted; armed first instead (as the demos
+'' arm every limit), it counts from before the motor moves.
+''
 '' @param distance - distance to travel, at least 1
 '' @param distanceUnits - units of {distance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
 '' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError() (ERR_EMERGENCY_STOPPED while emergency-stopped); on any error neither the limit is armed nor the motor started
@@ -670,7 +738,7 @@ PUB driveForDistance(distance, distanceUnits) : eError | nStopTicks
     if (eError == NO_ERROR) and (senseCog == 0)
         eError := ERR_NOT_STARTED
     if eError == NO_ERROR
-        eError := postRequest(REQ_DRIVE_DISTANCE, nStopTicks, maxSpeed4dist, FALSE)
+        eError := postRequest(REQ_DRIVE_DISTANCE, nStopTicks, getMaxSpeedForDistance(), FALSE)
     eError := recordError(eError)
     if eError <> NO_ERROR
         debug[user.DBGCH_ERROR]("! ERROR: driveForDistance(", zstr_(@motorId), ") rejected ", sdec_long(eError), sdec_long(distance), sdec_long(distanceUnits))
@@ -712,45 +780,26 @@ PUB driveAtPowerEx(power, sync) : eError | limitPwr
         ' the front cog saturates again and maps the power to the driver increment
         eError := recordError(postRequest(REQ_DRIVE, limitPwr, 0, (sync <> FALSE)))
 
-PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, degreesPerTic, ticsPerRotation
+PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks
 '' Stops the motor so it is at rest at {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
 '' USE WITH:  driveAtPower(); the front cog start() launched enforces the limit
 ''
 '' The stop begins early, by the distance the ramp-down needs at the motor's current speed, so the motor comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
+'' PL-153: the rotation counts from this call (turning either way), not from the odometer (getRotationCount()).
+'' PL-158: DRU_DEGREES rounds to the nearest hall tick (4 degrees on the 6.5in motor: 90 is 23 ticks, 92 degrees).
 ''
 '' @param nRotationCount - rotation to travel, at least 1, resolving to at least one hall tick
 '' @param eRotationUnits - units of {nRotationCount}: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
-'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError() (ERR_NOT_STARTED when the motor is not started); a rejected call leaves any armed limit in place
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError() (ERR_BAD_COUNT under 1 or past a long's hall ticks, ERR_BAD_UNITS, ERR_LIMIT_UNRESOLVABLE, ERR_NOT_STARTED when the motor is not started); a rejected call leaves any armed limit in place
 
 ' Local Variables:
 ' @local nStopTicks - the requested rotation in hall ticks
-' @local degreesPerTic - degrees of rotation per hall tick for this motor
-' @local ticsPerRotation - hall ticks per rotation for this motor
 
     ' validate everything, then commit: nothing is changed until every check has passed
-    eError := NO_ERROR
-    nStopTicks := 0
-    degreesPerTic, ticsPerRotation := hallTicInfoForMotor()
-    case eRotationUnits
-        DRU_HALL_TICKS:
-            nStopTicks := nRotationCount
-        DRU_DEGREES:
-            ' ticks = degrees / 4 (6.5")
-            nStopTicks := nRotationCount / degreesPerTic
-        DRU_ROTATIONS:
-            ' ticks = rotations * 90 (6.5")
-            nStopTicks := nRotationCount * ticsPerRotation
-        other:
-            eError := ERR_BAD_UNITS
-
-    if nRotationCount < 1
-        eError := ERR_BAD_COUNT
-    elseif eError == NO_ERROR
-        if nStopTicks < 1
-            eError := ERR_LIMIT_UNRESOLVABLE
-        elseif senseCog == 0
-            eError := ERR_NOT_STARTED
+    eError, nStopTicks := ticksForRotation(nRotationCount, eRotationUnits)
+    if (eError == NO_ERROR) and (senseCog == 0)
+        eError := ERR_NOT_STARTED
 
     if eError == NO_ERROR
         eError := postRequest(REQ_LIMIT_TICKS, nStopTicks, 0, 0)    ' the front cog arms it
@@ -764,6 +813,8 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks
 ''
 '' The stop begins early, by the distance the ramp-down needs at the motor's current speed, so the motor comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
+'' PL-153: the distance counts from this call (forward or back), not from the odometer (getDistance()). With
+'' driveAtPower(-power) it backs the motor up a distance: two calls, not one atomic move (see driveForDistance()).
 ''
 '' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
 '' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
@@ -873,12 +924,35 @@ PUB clearEmergency() : eError
         debug[user.DBGCH_ERROR]("! ERROR: clearEmergency(", zstr_(@motorId), ") not cleared ", sdec_long(eError))
 
 PUB forwardIsReverse() : eError
-'' Call when we have two motors and one of them needs to be reversed
+'' Call when we have two motors and one of them needs to be reversed: the same as setForwardIsReverse(TRUE)
+''
+'' PL-155: kept across stop() and start(), and may be set before start(); setForwardIsReverse(FALSE) undoes it.
 ''
 '' @returns eError - NO_ERROR
 
-    motorIsReversed := TRUE
+    eError := setForwardIsReverse(TRUE)
+
+PUB setForwardIsReverse(bEnable) : eError
+'' Reverse this motor's sense of forward (bEnable=true), for a motor mounted facing the other way, or restore it (false, the default)
+''
+'' A positive power then turns the motor the other way; getPower() and every other value still read as commanded.
+'' PL-155: kept across stop() and start(), and may be set before start(); isForwardReversed() reads it back. It is
+'' applied to the next drive command, not to one already running.
+''
+'' @param bEnable - T/F where T means forward and reverse are swapped for this motor (any non-zero value is T)
+'' @returns eError - NO_ERROR
+
+    usrReversed := (bEnable <> FALSE)                                           ' PL-155: kept, first; a start() applies it
+    if bSettingsLive == TRUE
+        motorIsReversed := usrReversed
     eError := NO_ERROR
+
+PUB isForwardReversed() : bEnable
+'' Return whether this motor's sense of forward is reversed (setForwardIsReverse(), forwardIsReverse())
+''
+'' @returns bEnable - T/F where T means forward and reverse are swapped; the kept setting, so it reads the same before start()
+
+    bEnable := usrReversed
 
 CON { --- Subsystem Status --- }
 
@@ -1122,10 +1196,14 @@ PUB testGetHold() : nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents
     nLimitEvents := holdLimitEvents
 
 PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue, ticsPerRotation
-'' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since last reset
+'' Returns the odometer: the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by this motor since the last resetTracking() or start()
+''
+'' PL-153: TOTAL travel, never negative -- forward and back both add to it (backing up is travel too). Only
+'' resetTracking() and start() reset it. RESOLUTION: the count is whole hall ticks (about 5.76 mm on the 6.5in wheel),
+'' and the result is rounded to the nearest whole unit: DDU_M reads 0 until 0.5 m, DDU_MI until half a mile.
 ''
 '' @param eDistanceUnits - units of the returned distance: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
-'' @returns nDistanceInUnits - distance travelled; 0, with ERR_BAD_UNITS or ERR_NO_WHEEL_DIA recorded for getError(), when it cannot be measured
+'' @returns nDistanceInUnits - distance travelled, rounded to the nearest unit; 0, with ERR_BAD_UNITS or ERR_NO_WHEEL_DIA recorded for getError(), when it cannot be measured
 
 ' Local Variables:
 ' @local fMMpTick - wheel travel per hall tick, in mm (float)
@@ -1167,7 +1245,11 @@ PUB getDistance(eDistanceUnits) : nDistanceInUnits | fMMpTick, fValue, ticsPerRo
                 debug[user.DBGCH_ERROR]("! ERROR: invalid distanceUnits Value:", udec_long(eDistanceUnits))
 
 PUB getRotationCount(eRotationUnits) : rotationCount | degreesPerTic, ticsPerRotation
-'' Returns accumulated {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS], since last reset, for this motor.
+'' Returns the odometer as a rotation: {rotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS, or DRU_HALL_TICKS] since the last resetTracking() or start(), for this motor.
+''
+'' PL-153: total rotation either way, never negative, as getDistance(). RESOLUTION (PL-158): DRU_HALL_TICKS counts
+'' each tick; DRU_DEGREES is ticks x degrees per tick, so it steps by 4 degrees (6.5in motor) or 15 (DocoEng);
+'' DRU_ROTATIONS counts WHOLE rotations completed, truncated (89 ticks of a 90-tick rotation read 0).
 ''
 '' @param eRotationUnits - units of the returned rotation: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
 '' @returns rotationCount - rotation accumulated; 0, with ERR_BAD_UNITS recorded for getError(), when the units are not DRU_*
@@ -1335,8 +1417,9 @@ PUB checkWiring() : eError | nStartPos, nMidPos, nMissed0, nIllegal0, bLegsOk
 ''
 '' Opt-in: this moves the wheel, so call it only when the robot may move a little. It catches what start()'s checks,
 '' which move nothing, cannot: a swapped hall pair, swapped phase leads, a dead hall line or a motor that does not
-'' turn. Blocks about half a second, at most twice WALK_LEG_TIMEOUT_MS; the motor ends at rest per holdAtStop(), and
-'' the position tracking (getDistance(), getRotationCount()) is reset. A leg that draws more current than a healthy
+'' turn. Blocks about half a second, at most twice WALK_LEG_TIMEOUT_MS; the motor ends at rest per holdAtStop(). The
+'' walk's travel, both legs, adds to the odometer (getDistance(), getRotationCount()), which it no longer resets
+'' (PL-153); each leg's own distance counts from the leg's start. A leg that draws more current than a healthy
 '' walk ever does (miswiring stalls the rotor against the field) is ended at once by shorting the phases, and fails.
 ''
 '' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it), or ERR_NOT_STARTED, also recorded for getError()
@@ -1583,8 +1666,11 @@ PUB testGetProbe(ePhase) : nUMv, nVMv, nWMv
 PUB getCurrent() : fAmps, fWatts
 '' Returns the latest current sense values, net of the rest zero taken at start (PL-45)
 ''
-'' @returns fAmps - motor current in units of 0.1 mA (amps x 10_000); 0, with ERR_BOARD_NOT_DETECTED recorded for getError(), when the board was never detected
-'' @returns fWatts - motor power in mW; 0 under the same condition
+'' PL-159: despite their names, both results are INTEGERS, not floats. The first is the current in tenths of a
+'' milliamp (nCurrent_0p1mA: 12_345 reads 1.2345 A); the second is the power in milliwatts (nPower_mW).
+''
+'' @returns fAmps - nCurrent_0p1mA: the motor current as an integer in tenths of a mA (amps x 10_000); 0, with ERR_BOARD_NOT_DETECTED recorded for getError(), when the board was never detected
+'' @returns fWatts - nPower_mW: the motor power as an integer in mW; 0 under the same condition
 
     fAmps, fWatts := scaledCurrent()
     if rSenseForBoard == VALUE_NOT_SET
@@ -1596,16 +1682,20 @@ PUB getCurrent() : fAmps, fWatts
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
 ''
-'' @returns nSpeed - the maximum speed last set by setMaxSpeed(), [1 to 100]
+'' @returns nSpeed - the maximum speed last set by setMaxSpeed(), [1 to 100]; MAX_SPEED_DEFAULT (75) until one is set. The kept setting (PL-155), so it reads the same before start()
 
-    nSpeed := maxSpeed  ' return last specified user value
+    nSpeed := usrMaxSpeed                                                       ' 0 until set: a VAR is 0 at load
+    if nSpeed == 0
+        nSpeed := MAX_SPEED_DEFAULT
 
 PUB getMaxSpeedForDistance() : nSpeed4dist
 '' Returns the last specified {maxSpeedForDistance}
 ''
-'' @returns nSpeed4dist - the maximum speed for distance moves last set by setMaxSpeedForDistance(), [1 to 100]
+'' @returns nSpeed4dist - the maximum speed for distance moves last set by setMaxSpeedForDistance(), [1 to 100]; MAX_SPEED_DEFAULT (75) until one is set, before start() as after
 
-    nSpeed4dist := maxSpeed4dist  ' return last specified user value
+    nSpeed4dist := usrMaxSpeed4dist
+    if nSpeed4dist == 0
+        nSpeed4dist := MAX_SPEED_DEFAULT
 
 PUB getDriveVoltage() : eVoltage, nMilliVolts
 '' Return the drive (battery) voltage this motor was started for, and its nominal value
@@ -1624,7 +1714,11 @@ PUB getDriveVoltage() : eVoltage, nMilliVolts
 PUB getStatus() : eStatus
 '' Returns status of motor drive state for this motor: enumerated constant: DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF, DS_FAULTED, or DS_ESTOP
 ''
-'' @returns eStatus - DS_FAULTED while the driver is faulted (until a stop or a power is commanded), DS_ESTOP while emergency-stopped, DS_HOLDING or DS_OFF when stopped (per holdAtStop()), DS_MOVING while otherwise running, DS_Unknown when the driver is not running
+'' PL-158: DS_HOLDING follows the hold itself: it reads only while the hold at rest (holdAtStop(TRUE)) is holding. A hold
+'' that has handed off to the phase short (getHoldStatus() reads HS_SLIPPED or HS_LIMITED) is no longer holding, and
+'' reads DS_OFF, as a coasting motor does: stopped, and not holding. getHoldStatus() tells the two apart.
+''
+'' @returns eStatus - DS_FAULTED while the driver is faulted (until a stop or a power is commanded), DS_ESTOP while emergency- or protectively stopped, DS_HOLDING when stopped and holding, DS_OFF when stopped and not holding (coasting, or the hold handed off to the phase short), DS_MOVING while otherwise running, DS_Unknown when the driver is not running
 
     eStatus := DS_Unknown                               ' if not one of the following status
     if isFaulted()                                      ' M: a faulted motor is not moving, so this is tested first
@@ -1632,9 +1726,11 @@ PUB getStatus() : eStatus
     elseif isEmergency()                                ' M: nor is an emergency-stopped one
         eStatus := DS_ESTOP
     elseif isStopped()
-        if stop_mode == SM_BRAKE
+        ' PL-158: the driver holds at rest only in SM_BRAKE with the hold not handed off (restBridge: hold_short set
+        '  means the phases are shorted instead), so that is when it reads DS_HOLDING
+        if (stop_mode == SM_BRAKE) and (hold_short == FALSE)
             eStatus := DS_HOLDING
-        elseif stop_mode == SM_FLOAT
+        else
             eStatus := DS_OFF
     elseif isReady()
         eStatus := DS_MOVING
@@ -1828,6 +1924,27 @@ PUB isStopped() : bState
 '' @returns bState - T/F where T means the driver state is DCS_STOPPED
 
     bState := (drv_state == DCS_STOPPED) ? true : false
+
+PUB isMoveDone() : bDone | eDrvState
+'' Return T/F where T means the motor is not moving under a command: the last drive is over, however it ended (PL-156)
+''
+'' TRUE once the motor is at rest with no drive commanded (a limit, a stop, a timeout or a zero power ended it, or a
+'' re-synced fault's controlled stop reached rest), and at once while it is faulted, emergency-stopped or protectively
+'' stopped: nothing will move it until the program acts. FALSE from the moment a drive command is accepted -- even
+'' before the driver has taken it -- and through its ramp down. A drive with no limit never ends by itself, so wait on
+'' this with a bound, then read getStopReason() for why the drive ended. TRUE when the motor is not started. Unlike
+'' isStopped(), which is only the rest state, a fault or an emergency stop ends the wait.
+''
+'' @returns bDone - T/F where T means no commanded motion is under way
+
+' Local Variables:
+' @local eDrvState - the driver state, read once
+
+    eDrvState := drv_state
+    ' the command is written (targetIncre) before the front cog answers the drive request, so a caller that has its
+    '  answer never sees a stale rest: a non-zero command at DCS_STOPPED is a drive the driver has not taken yet
+    bDone := (eDrvState == DCS_FAULTED) or (eDrvState == DCS_ESTOP) or (eDrvState == DCS_Unknown) or (eDrvState == DCS_RELEASED)
+    bDone |= (eDrvState == DCS_STOPPED) and ((targetIncre & !SYNC_BIT) == 0)
 
 PUB isFaulted() : bState
 '' Return T/F where T means the motor is faulted now
@@ -2257,8 +2374,9 @@ PUB testSetMotorReversed(bEnable) : eError
 '' @param bEnable - T/F where T means forward and reverse are swapped for this motor
 '' @returns eError - NO_ERROR
 
-    ' NOTE: forwardIsReverse() is deliberately one-way. A test that measures this motor both
-    '  with and without the reversal needs to be able to put it back.
+    ' NOTE: the running motor's working copy only, for this run: the next start() applies the kept setting again
+    '  (setForwardIsReverse(), PL-155, is the user's undo). A test that measures this motor both with and without
+    '  the reversal puts it back here without changing what the program chose.
     motorIsReversed := bEnable
     eError := NO_ERROR
 
@@ -2311,11 +2429,18 @@ PUB testSetDutyMin(nDutyMin) : eError
         eError := NO_ERROR
 
 PUB testGetStopHallTicks() : stopTicks
-'' TESTING USE: snapshot the pending hall-tick stop target set by stopAfterDistance()/stopAfterRotation()
+'' TESTING USE: snapshot the pending hall-tick stop target set by stopAfterDistance()/stopAfterRotation()/driveForDistance()
 ''
-'' @returns stopTicks - hall ticks remaining until the commanded stop, 0 when none is pending
+'' @returns stopTicks - the armed limit's hall ticks, counted from where it was armed (PL-153); 0 when none is pending
 
     stopTicks := motorStopHallTicks
+
+PUB testGetStopMs() : nMsDeadline
+'' TESTING USE: snapshot the pending time limit set by stopAfterTime()
+''
+'' @returns nMsDeadline - the getms() value at which the stop begins to be at rest by, 0 when none is pending
+
+    nMsDeadline := motorStopMSecs
 
 PUB testGetRpm() : nRpm
 '' TESTING USE: return the motor's current RPM, averaged over the hall-tick window
@@ -2864,7 +2989,8 @@ PUB frontWalkBegin(eLeg)
 '' FRONT COG ONLY: open walk leg {eLeg}'s record and start watching its position (PL-137, testGetWalkLeg())
 ''
 '' Call it after the leg's command is written and taken, beside frontArmWalkGuard(), and before this pass's tracking:
-'' the post position is the one the leg's distance limit counts from. Opening the first leg also empties the second's
+'' the post position is the one the leg's distance limit counts from (PL-153: where frontSetLimits() armed it; the
+'' odometer is no longer reset for a leg). Opening the first leg also empties the second's
 '' record, so a second leg never posted reads WALK_NA, never an earlier walk's. The watch runs every pass
 '' (frontWalkGuard()) until the next drive command closes it (frontCommand()).
 ''
@@ -2875,7 +3001,7 @@ PUB frontWalkBegin(eLeg)
             frontWalkClose()                                                    ' the leg's own command already did, unless it was a zero
         if eLeg == WLEG_OUT
             walkLegOpen(WLEG_BACK, WALK_NA)                                     ' the second leg: empty until its own post
-        walkLegOpen(eLeg, trackBasePos)
+        walkLegOpen(eLeg, limitBasePos)                                         ' PL-153: the position the leg's limit was armed at
         wlPostMs[eLeg] := getms()
         walkWatchLeg := eLeg                                                    ' LAST: the watch reads the record above
 
@@ -2888,7 +3014,7 @@ PUB frontWalkNoteLimit()
     if walkWatchLeg <> WLEG_NONE
         if wlLimMs[walkWatchLeg] == WALK_NA
             wlLimPos[walkWatchLeg] := pos
-            wlLimTrk[walkWatchLeg] := posTrkHallTicks
+            wlLimTrk[walkWatchLeg] := trkTravelTicks - limitBaseTicks           ' PL-153: the leg's own travel, as the limit counted it
             wlLimStopTk[walkWatchLeg] := limitStopTicks
             wlLimMs[walkWatchLeg] := getms() - wlPostMs[walkWatchLeg]         ' LAST: marks the limit noted
 
@@ -2976,27 +3102,34 @@ PUB frontDriverCogBit() : cogBit
     if motorCog <> 0
         cogBit := 1 << (motorCog - 1)
 
-PUB frontTrack(passCount) | eDrvState, nowPos
+PUB frontTrack(passCount) | eDrvState, nowPos, nStep
 '' FRONT COG ONLY: once per pass, latch a new fault's cause and accumulate position tracking; every WINDOW_PASSES passes advance the rpm window
+''
+'' PL-153: the travel is added every pass, faulted and emergency-stopped included -- a wheel that coasts or is pushed
+'' then has travelled -- to the odometer (posTrkHallTicks, reset only by resetTracking() and start()) and to the travel
+'' the limits count from their arming (trkTravelTicks, never reset while the front cog runs). Only the rpm window and
+'' the HDMI maxima restart every pass while faulted or e-stopped, as they always did.
 ''
 '' @param passCount - the owner's pass counter, advanced by one every pass
 
 ' Local Variables:
 ' @local eDrvState - the driver state read once for this pass
 ' @local nowPos - the driver's position read once for this pass
+' @local nStep - hall ticks moved since the previous pass, either way
 
     eDrvState := drv_state
     frontNoteFault(eDrvState)
+    nowPos := pos
+    nStep := absDistanceInTics(nowPos, trackBasePos)
+    posTrkHallTicks += nStep                                                    ' the odometer
+    trkTravelTicks += nStep                                                     ' the limits' travel
+    trackBasePos := nowPos
     if (eDrvState == DCS_FAULTED) or (eDrvState == DCS_ESTOP)
-        ' a faulted or emergency-stopped motor restarts its tracking and window every pass
-        frontResetTracking(TRUE)
+        ' a faulted or emergency-stopped motor restarts its rpm window every pass (PL-153: its odometer is kept)
+        resetWindowAccumulators(nowPos)
         LARESET()                                                               ' reset LA tracking
-    else
-        nowPos := pos
-        posTrkHallTicks += absDistanceInTics(nowPos, trackBasePos)
-        trackBasePos := nowPos
-        if (passCount +// WINDOW_PASSES) == 0
-            updateWindowAccumulators()
+    elseif (passCount +// WINDOW_PASSES) == 0
+        updateWindowAccumulators()
 
 PUB frontStopTicks() : nTicks | incr, passes
 '' FRONT COG ONLY: return the hall ticks the field still travels if a stop is written now
@@ -3027,11 +3160,34 @@ PUB frontStopMs() : nMs
 PUB frontSetLimits(nTicks, nMsDeadline)
 '' FRONT COG ONLY: arm this motor's stop limits (0 disarms either)
 ''
-'' @param nTicks - stop once the tracked hall ticks pass this count; 0 for none
+'' PL-153: a distance armed here counts the travel from this call (frontTravelNow()), never the odometer, so a second
+'' limit or a second driveForDistance() travels its own distance. Arming it again, even to the same count, restarts it.
+''
+'' @param nTicks - stop once the hall ticks travelled since this call, either way, reach this count; 0 for none
 '' @param nMsDeadline - stop once getms() passes this value; 0 for none
 
+    if nTicks > 0
+        limitBaseTicks := frontTravelNow()                                      ' first: the limit counts from here
+        limitBasePos := pos
     motorStopHallTicks := nTicks
     motorStopMSecs := nMsDeadline
+
+PUB frontSetTimeLimit(nMsDeadline)
+'' FRONT COG ONLY: arm (or, with 0, disarm) the time limit alone, leaving an armed distance limit counting from where it was armed
+''
+'' @param nMsDeadline - stop once getms() passes this value; 0 for none
+
+    motorStopMSecs := nMsDeadline
+
+PUB frontTravelNow() : nTicks
+'' FRONT COG ONLY: the hall ticks travelled, either way, since the front cog started, up to this instant (PL-153)
+''
+'' A limit's base and an owner's platform limit are taken from this, so each counts from the instant it is armed:
+'' frontTrack()'s total plus the ticks moved since this pass's tracking. Never reset while the front cog runs.
+''
+'' @returns nTicks - the travel, hall ticks
+
+    nTicks := trkTravelTicks + absDistanceInTics(pos, trackBasePos)
 
 PUB bFrontLimitsDue(nowMs) : bFired | nStopTicks
 '' FRONT COG ONLY: return TRUE, and disarm the limit, when a stop written now leaves the motor at rest at its time or distance limit
@@ -3040,7 +3196,7 @@ PUB bFrontLimitsDue(nowMs) : bFired | nStopTicks
 '' frontStopTicks()), so the motor is at rest at the limit, not a ramp past it. A limit already inside the
 '' stopping distance or time fires at once. The time limit is checked first; the distance limit only while no
 '' time limit is armed. The owner writes the stop, then frontWalkNoteLimit(), which reads the stopping ticks a fired
-'' distance limit allowed for (PL-137).
+'' distance limit allowed for (PL-137). PL-153: the distance is the travel since the limit was armed (frontSetLimits()).
 ''
 '' @param nowMs - getms() for this pass
 '' @returns bFired - T/F where T means a limit fired in this call and the owner must stop the motor now
@@ -3056,14 +3212,16 @@ PUB bFrontLimitsDue(nowMs) : bFired | nStopTicks
             bFired := TRUE
     elseif motorStopHallTicks > 0
         nStopTicks := frontStopTicks()
-        if posTrkHallTicks + nStopTicks >= motorStopHallTicks
+        if (trkTravelTicks - limitBaseTicks) + nStopTicks >= motorStopHallTicks  ' PL-153: travel since arming, not the odometer
             debug[user.DBGCH_SENSE]("-MOT- distance limit reached")
             motorStopHallTicks := 0                                             ' and clear user request
             limitStopTicks := nStopTicks                                        ' PL-137: the decision's own figure, kept for the record
             bFired := TRUE
 
 PUB frontResetTracking(bWholeWindow) | nowPos
-'' FRONT COG ONLY: zero this motor's position tracking from its current position, and optionally the rpm window and HDMI maxima
+'' FRONT COG ONLY: zero this motor's odometer from its current position (resetTracking()), and optionally the rpm window and HDMI maxima
+''
+'' PL-153: the odometer only. The travel the limits count keeps running, so an armed limit is not moved.
 ''
 '' @param bWholeWindow - T/F where T also resets the rpm window and the HDMI maxima
 
@@ -3073,11 +3231,35 @@ PUB frontResetTracking(bWholeWindow) | nowPos
     nowPos := pos
     if bWholeWindow <> FALSE
         resetWindowAccumulators(nowPos)
+    trkTravelTicks += absDistanceInTics(nowPos, trackBasePos)                   ' the limits' travel is kept up to this instant
     trackBasePos := nowPos
     posTrkHallTicks := 0
 
+PUB frontResetWindow()
+'' FRONT COG ONLY: restart the rpm window and the HDMI maxima from the current position, the odometer untouched (PL-153)
+''
+'' For an owner that restarts the window with a new move (isp_steering_2wheel's distance drive and wiring walk).
+
+    resetWindowAccumulators(pos)
+    LARESET()                                                                   ' reset LA tracking
+
+PUB frontStartTracking() | nowPos
+'' FRONT COG ONLY: once, as a front cog starts -- zero the odometer, the limits' travel and the rpm window (start())
+''
+
+' Local Variables:
+' @local nowPos - the driver's position, adopted as the new base
+
+    nowPos := pos
+    resetWindowAccumulators(nowPos)
+    trackBasePos := nowPos
+    posTrkHallTicks := 0
+    trkTravelTicks := 0
+    limitBaseTicks := 0
+    limitBasePos := nowPos
+
 PUB frontResetMax()
-'' FRONT COG ONLY: reset the rpm window, the HDMI maxima and the position tracking (TEST-USE testResetMaxValues())
+'' FRONT COG ONLY: reset the rpm window, the HDMI maxima and the odometer (TEST-USE testResetMaxValues())
 ''
 
     frontResetTracking(TRUE)
@@ -3097,11 +3279,63 @@ PUB frontSecure(bEStop)
     releaseFaultLatch()                                                         ' task 3616: a commanded stop clears a fault
 
 PUB getposTrkHallTicks() : retv
-'' INTERNAL USE: return our position tracking hall-ticks
+'' INTERNAL USE: return the odometer in hall ticks: the total travel, either way, since the last resetTracking() or start() (PL-153)
 ''
-'' @returns retv - the position-tracking hall-tick count
+'' @returns retv - the odometer's hall-tick count, never negative
 
     retv := posTrkHallTicks
+
+PUB applyStartSettings()
+'' INTERNAL USE: apply the program's kept settings (PL-155) once a start's checks have passed, and let the setters act at once from now on
+''
+'' start() calls it; an owner that starts this motor with startOwned() (isp_steering_2wheel) calls it once its checks
+'' pass. The start checks and the rest zero run with the motor floated (init()'s SM_FLOAT), so the kept stop mode is
+'' applied only here. stop() ends it: a setter then only stores its value for the next start.
+
+    bSettingsLive := TRUE                                                       ' first: a setter racing this writes the working copy too
+    applyUserSettings()
+    stop_mode := usrStopMode                                                    ' the stop mode last: the checks are over
+    if stop_mode <> SM_BRAKE
+        stop_mode := SM_FLOAT                                                   ' never set: coast, the default
+
+PUB ticksForRotation(nRotationCount, eRotationUnits) : eError, nStopTicks | degreesPerTic, ticsPerRotation
+'' INTERNAL USE: validate a rotation and convert it to hall ticks, with no side effects and nothing recorded (for isp_steering_2wheel)
+''
+'' PL-158: DRU_DEGREES rounds to the nearest tick (a remainder of half a tick or more rounds up).
+''
+'' @param nRotationCount - rotation to travel, at least 1, resolving to at least one hall tick
+'' @param eRotationUnits - units of {nRotationCount}: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
+'' @returns eError - NO_ERROR, ERR_BAD_COUNT (less than 1, or more hall ticks than a long holds), ERR_BAD_UNITS or ERR_LIMIT_UNRESOLVABLE
+'' @returns nStopTicks - the rotation in hall ticks; meaningful only when {eError} is NO_ERROR
+
+' Local Variables:
+' @local degreesPerTic - degrees of rotation per hall tick for this motor
+' @local ticsPerRotation - hall ticks per rotation for this motor
+
+    eError := NO_ERROR
+    nStopTicks := 0
+    degreesPerTic, ticsPerRotation := hallTicInfoForMotor()
+    if nRotationCount < 1
+        eError := ERR_BAD_COUNT
+    else
+        case eRotationUnits
+            DRU_HALL_TICKS:
+                nStopTicks := nRotationCount
+            DRU_DEGREES:
+                ' ticks = degrees / 4 (6.5"), to the nearest tick; the remainder is doubled, never the count, so no overflow
+                nStopTicks := nRotationCount / degreesPerTic
+                if (nRotationCount // degreesPerTic) * 2 >= degreesPerTic
+                    nStopTicks++
+            DRU_ROTATIONS:
+                ' ticks = rotations * 90 (6.5"); a count whose ticks would not fit a long is refused, not wrapped
+                if nRotationCount > POSX / ticsPerRotation
+                    eError := ERR_BAD_COUNT
+                else
+                    nStopTicks := nRotationCount * ticsPerRotation
+            other:
+                eError := ERR_BAD_UNITS
+        if (eError == NO_ERROR) and (nStopTicks < 1)
+            eError := ERR_LIMIT_UNRESOLVABLE
 
 PRI readEvent(bAdvance) : eKind, nMs, nValue | cogIdx, nCursor, nHead, nLag, slotIdx
 ' Read the calling cog's next event from the log (getEvent(), peekEvent()), advancing its cursor only when asked.
@@ -3317,7 +3551,7 @@ PRI bWalkLeg(eLeg, power) : bOk | startMs
 ' Local Variables:
 ' @local startMs - getms() when the leg was posted
 
-    bOk := (postRequest(REQ_WALK, eLeg, power, 0) == NO_ERROR)                 ' zeroes the tracking the distance limit counts from
+    bOk := (postRequest(REQ_WALK, eLeg, power, 0) == NO_ERROR)                 ' arms the leg's distance, counted from the post
     if bOk == FALSE
         walkNoteLeg(eLeg, FALSE)
     else
@@ -3841,6 +4075,9 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     dutyAtFfLine := (pwm_limit << 4) / 2
     servo_shift := SERVO_ACC_SHIFT                      ' R18.4 D-2: the trim's gain (ff_ceiling follows the power limits, below)
     cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
+    ' PL-155: floated for the rest zero and the start checks, WHATEVER holdAtStop() chose; the program's own stop mode
+    '  is applied by applyStartSettings() once the checks pass (usrStopMode is kept, never reset here)
+    bSettingsLive := FALSE
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
     e_stop      := ES_OFF
     ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
@@ -3855,7 +4092,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ramp_inc := 22                                      ' increment to ramping speed, add to ramp_min every drive pass until ramp_max reached
     ramp_down := 50_000                                 ' fixed ramp down speed
 
-    motorIsReversed := FALSE    ' by default our motor direction is not reversed
+    ' PL-155: the program's kept settings (max speeds, reversal) are applied, never reset; init() once reset them here
+    applyUserSettings()
     fault := FALSE
     hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
     hall_illegal := 0
@@ -3865,9 +4103,6 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     loop_ticks := 0
     minDrvTics := 65535
     drv_state := DCS_Unknown
-
-    maxSpeed := 75            ' [1-100] default 75
-    maxSpeed4dist := 75      ' [1-100] default 75
 
     ' preset HDMI Monitor values
     resetHdmiData()
@@ -3969,6 +4204,20 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     evFoldBase := 0
     bFoldActive := FALSE
     evMissedMs := evIllegalMs := evLateMs := evPackMs := evFoldMs := getms() - EV_RATE_GAP_MS    ' the first of each may go at once
+
+PRI applyUserSettings()
+' PL-155: copy the program's kept settings into the working values the front cog reads: init() (before the driver
+' runs) and applyStartSettings() (as a start ends). Each kept value is 0 until set -- a VAR is 0 at load -- and 0 reads
+' as its default, so nothing needs a first-time initialisation. A setting added to the kept set (the ramp change's
+' acceleration and deceleration) adds its copy here, and its setter the usr* store beside its working write.
+
+    maxSpeed := usrMaxSpeed
+    if maxSpeed == 0
+        maxSpeed := MAX_SPEED_DEFAULT
+    maxSpeed4dist := usrMaxSpeed4dist
+    if maxSpeed4dist == 0
+        maxSpeed4dist := MAX_SPEED_DEFAULT
+    motorIsReversed := usrReversed
 
 
 VAR { * user request values * }
@@ -4525,6 +4774,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@hallCountsWindow[0], @hallCountsWindow[HALL_WINDOW_SIZE - 1])
     bValid &= bOutsideDriverRuns(@bWindProbe, @windVoltSrc)                       ' R20.4: the run now ends at windVoltSrc
     bValid &= bOutsideDriverRuns(@walkWatchLeg, @bWlRan[WALK_LEGS - 1])          ' PL-137: the walk's per-leg record
+    bValid &= bOutsideDriverRuns(@trkTravelTicks, @bSettingsLive)                ' PL-153 / PL-155: the limits' travel, the kept settings
     if bValid == FALSE
         debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@drv_release - @offset_fwd))
 
@@ -4737,8 +4987,8 @@ CON { front cog requests }
     '  REQ_DRIVE_DISTANCE - arg1 stop ticks, arg2 power: refused while emergency-stopped, else arm the limit and drive
     '  REQ_LIMIT_TICKS    - arg1 stop ticks: arm the hall-tick stop limit
     '  REQ_LIMIT_TIME     - arg1 getms() deadline, never 0: arm the time stop limit
-    '  REQ_RESET_TRACKING - zero the position tracking
-    '  REQ_RESET_MAX      - reset the rpm window, the HDMI maxima and the position tracking (TEST-USE)
+    '  REQ_RESET_TRACKING - zero the odometer (PL-153: an armed limit keeps counting from its own arming)
+    '  REQ_RESET_MAX      - reset the rpm window, the HDMI maxima and the odometer (TEST-USE)
     '  REQ_TEST_INCREMENT - arg1 raw driver increment: refused while emergency-stopped, else written (TEST-USE)
     '  REQ_CLEAR_PROTECT  - release a protective stop: clear the cause, then as REQ_CLEAR_ESTOP
     '  REQ_SET_LIMITS     - arg1 peak amps, arg2 continuous amps: replace the current limits (TEST-USE)
@@ -4917,7 +5167,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
     ticksPerPass := CLKFREQ / FRONT_LOOP_HZ
     lateMarginTicks := (CLKFREQ / US_PER_SEC) * LATE_MARGIN_US
     passCount := 0
-    frontResetTracking(TRUE)
+    frontStartTracking()                                                        ' PL-153: the odometer and the limits' travel start at 0
     LAINIT()                                                                    ' init LA
     if bReleaseDriver == TRUE
         cogatn(frontDriverCogBit())                                             ' release the parked driver: one ATN, from its owner
@@ -5158,19 +5408,19 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             ' atomic: the limit is armed and the motor driven, or neither (I1 item 2)
             eStatus := frontRefusal()
             if eStatus == NO_ERROR
-                frontSetLimits(nArg1, motorStopMSecs)                           ' the time limit is kept, as before
+                frontSetLimits(nArg1, motorStopMSecs)                           ' the time limit is kept, as before; PL-153: the
+                                                                                '  distance counts from here, not the odometer
                 eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
                 frontNoteDriveCommand(eStatus, nArg2)
             ' PL-143, STEPHEN 2026-09-26 "no carve-outs": the command timeout watches this drive like any other
             frontWatchCommand((eStatus == NO_ERROR) and (nArg2 <> 0))
         REQ_WALK:
-            ' PL-122: a checkWiring() leg: as REQ_DRIVE_DISTANCE from a zeroed tracking, then under the current guard;
+            ' PL-122: a checkWiring() leg: as REQ_DRIVE_DISTANCE, then under the current guard;
             '  PL-137: arg1 names the leg, whose record opens once it is driven
             bCmdWatched := FALSE
             eStatus := frontRefusal()
             if eStatus == NO_ERROR
-                frontResetTracking(FALSE)                                       ' the distance limit counts from here
-                frontSetLimits(WALK_TICKS, 0)
+                frontSetLimits(WALK_TICKS, 0)                                   ' PL-153: the leg counts from here; the odometer is kept
                 eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
                 if eStatus == NO_ERROR
                     frontArmWalkGuard()
@@ -5180,11 +5430,11 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
                 ' R20.1: a walk leg opens no drive; one left open is ended by the program's own call, checkWiring()
                 frontRecordStop(SR_COMMANDED)
         REQ_LIMIT_TICKS:
-            frontSetLimits(nArg1, motorStopMSecs)
+            frontSetLimits(nArg1, motorStopMSecs)                               ' PL-153: counts from here, not the odometer
         REQ_LIMIT_TIME:
-            frontSetLimits(motorStopHallTicks, nArg1)
+            frontSetTimeLimit(nArg1)                                            ' an armed distance keeps counting from its own arming
         REQ_RESET_TRACKING:
-            frontResetTracking(FALSE)                                           ' tracking only: the rpm window keeps running
+            frontResetTracking(FALSE)                                           ' the odometer only: the rpm window and the limits keep running
         REQ_RESET_MAX:
             frontResetMax()
         REQ_TEST_INCREMENT:
@@ -5820,7 +6070,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 32      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 34      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -5873,6 +6123,19 @@ CON { driver internal Constants }
                                             '     at Visit 10 pass 5). No PASM change
                                             ' 32: the command timeout watches every drive, driveForDistance() included (PL-143,
                                             '     Stephen: no carve-outs). No PASM change
+                                            ' 33: the public-API audit's release items. PL-153: the odometer is total travel,
+                                            '     reset only by resetTracking() and start() (no longer by a fault, an e-stop, a
+                                            '     walk or a steering distance move), and every distance or rotation limit counts
+                                            '     from its own arming (trkTravelTicks, limitBaseTicks). PL-155: max speeds, the
+                                            '     stop mode and the reversal are kept across start() and may be set before it,
+                                            '     with getters (isHoldAtStop(), setForwardIsReverse(), isForwardReversed(),
+                                            '     getCommandTimeout()). PL-156: isMoveDone(). PL-158: DS_HOLDING only while the
+                                            '     hold holds; DRU_DEGREES limits round. PL-159: calibrate() returns
+                                            '     ERR_NOT_IMPLEMENTED. No PASM change; no ABI change (the new longs are Spin2-only)
+                                            ' 34: THE KICK (PL-78, PL-87, PL-95): the drive pass on which a ramp arrives at a
+                                            '     non-zero target advances the field like every AT_SPEED pass, instead of
+                                            '     skipping its increment (.endRUpAtSpeed, .endRDnAtTgt jump to .justIncr).
+                                            '     PASM change (two jump targets, no instruction added); no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6285,6 +6548,20 @@ VAR { PL-137: the wiring walk's per-leg record (testGetWalkLeg()) -- Spin2 only,
     LONG    wlLagHeld[WALK_LEGS]        ' walker-written: lag_held passes from the post to the end of the wait
     LONG    bWlRan[WALK_LEGS]           ' walker-written LAST: T/F where T means the leg was posted and taken
 
+VAR { PL-153 / PL-155: the limits' travel, and the program's kept settings -- Spin2 only, never addressed by the PASM driver }
+    ' Placed after every PASM-addressed run, like the error record; isAbiLayoutValid() checks the block.
+    LONG    trkTravelTicks              ' front-written: hall ticks travelled either way since the front cog started; never reset
+                                        '  while it runs (the odometer, posTrkHallTicks, is reset by resetTracking())
+    LONG    limitBaseTicks              ' front-written: frontTravelNow() when the distance limit was armed
+    LONG    limitBasePos                ' front-written: pos when the distance limit was armed (a walk leg's post position)
+    ' The program's kept settings (PL-155), written by their setters on any cog, read by applyUserSettings() and the
+    '  getters. NOT reset by init(), stop() or start(). 0 until set, and 0 reads as the default.
+    LONG    usrMaxSpeed                 ' setMaxSpeed() [1..100]; 0: MAX_SPEED_DEFAULT
+    LONG    usrMaxSpeed4dist            ' setMaxSpeedForDistance() [1..100]; 0: MAX_SPEED_DEFAULT
+    LONG    usrStopMode                 ' holdAtStop(): SM_BRAKE or SM_FLOAT; 0 (SM_Unknown): SM_FLOAT
+    LONG    usrReversed                 ' setForwardIsReverse(): T/F; 0: not reversed
+    LONG    bSettingsLive               ' T/F where T means a start has applied the kept settings, so a setter writes the working value too
+
 DAT  {  Motor DRIVER  }
 '
 ' PASM Driver Program
@@ -6528,8 +6805,15 @@ drvMotor                                                ' global (task 3535): en
     if_c_and_z  subs    drv_incr, final_ramp            ' NO, add remaining final delta
                 jmp     #.justIncr                      ' increment motor angle, then exit
 .endRUpAtSpeed
+                ' PL-78 / PL-87 / PL-95 (DRIVER_REV 34), THE KICK: the pass a ramp arrives at its target must advance the
+                '  field like every AT_SPEED pass after it. This once jumped to .endRqst, skipping the increment on the one
+                '  arrival pass only; each arrival then dropped a whole drv_incr of field phase (12.3 deg electrical at
+                '  147e6), which rang the load angle at ~18 Hz, and its motoring lobe was the current kick at every speed
+                '  change. .justIncr is the path every AT_SPEED pass takes (.chkSlow2Chg falls to it): the LAG_HOLD gate,
+                '  the lag_held count and holdDecay, nothing else, so the arrival pass is now an ordinary at-speed pass.
+                '  JMP #A has no flag effect without WC/WZ (p2kbPasm2Jmp); .justIncr sets its own C, so no flag carries in.
                 mov     drv_state_, #DCS_AT_SPEED       ' YES, show we got to desired speed!
-                jmp     #.endRqst                       ' motor AT_SPEED, just exit (w/o increment)
+                jmp     #.justIncr                      ' motor AT_SPEED: advance the field this pass too (was .endRqst)
 
     ' -------------------------------------------------------------------------
 .chkDn          cmp     drv_state_, #DCS_SPIN_DN    wz  ' Q: Spinning Down?
@@ -6561,8 +6845,11 @@ drvMotor                                                ' global (task 3535): en
                 ' AT TARGET now adjust state
                 or      tgt_incr, tgt_incr          wz  ' Q: was our target ZERO? (are we stopping?)
                 ' at target but it's not zero so we are AT_SPEED!
+                ' PL-78 / PL-87 / PL-95 (DRIVER_REV 34), THE KICK: a ramp DOWN to a non-zero target arrives the same way as
+                '  .endRUpAtSpeed, and skipped the same increment; it now advances the field as every AT_SPEED pass does.
+                '  The zero-target arrival below (.endAtZero, STOPPED) is unchanged: there the field correctly stops.
     if_nz       mov     drv_state_, #DCS_AT_SPEED       ' YES, show we got here!
-    if_nz       jmp     #.endRqst                       ' motor AT_SPEED, just exit (w/o increment)
+    if_nz       jmp     #.justIncr                      ' motor AT_SPEED: advance the field this pass too (was .endRqst)
 .endAtZero
                 ' at target but it is zero so we are STOPPED!
                 mov     drv_state_, #DCS_STOPPED        ' report that we are stopped

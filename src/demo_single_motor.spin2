@@ -42,6 +42,11 @@ CON { application io pins }
     'MTR_HOLD_AT_SPEED_IN_SEC = 6        ' use for LA capture of both sides (fwd, rev)
     MTR_HOLD_AT_SPEED_IN_SEC = 15
 
+    ' bWaitUntilMotorDone()'s bound: the limit armed for the drive, plus this for the ramp down and a margin. A drive that
+    '  is not over by then is stopped, and reported: something ended it late, or its limit never fired.
+    MOVE_MARGIN_MS      = 5_000
+    MOVE_POLL_MS        = 10
+
 OBJ { our Motor(s) }
 
     user        :   "isp_bldc_motor_userconfig"     ' driver configuration
@@ -130,14 +135,14 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
             if eError == wheel.NO_ERROR
                 eError := wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
             if bCommandSucceeded(eError, @"FWD run")
-                waitUntilMotorDone()
+                bWaitUntilMotorDone(MTR_HOLD_AT_SPEED_IN_SEC * 1_000 + MOVE_MARGIN_MS)
             showWhatHappened()                                  ' 5. expect SR_AT_LIMIT: the time limit was reached
 
             eError := wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' hold at speed for 15 Sec
             if eError == wheel.NO_ERROR
                 eError := wheel.driveAtPower(-100)                     ' REV at 100% pwr
             if bCommandSucceeded(eError, @"REV run")
-                waitUntilMotorDone()
+                bWaitUntilMotorDone(MTR_HOLD_AT_SPEED_IN_SEC * 1_000 + MOVE_MARGIN_MS)
             showWhatHappened()
 
             debug("* holding for 20 secs...")
@@ -281,24 +286,33 @@ PRI waitUntilMotorReady()
     debug("* Motor ready, let's drive!")
 
 
-PRI waitUntilMotorDone()
-    if wheel.isStarting() == false
-         debug("* wait until motor starts...")
-         repeat
-            if wheel.isStarting()
-                quit
-            else
-                waitms(2)
+PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eReason, eError
+' Wait, at most {maxMs}, for the drive just commanded to be over -- however it ends -- then say why it ended.
+'
+' isMoveDone() is TRUE once the motor is at rest with no drive commanded, and at once on a fault, an emergency stop or
+' a protective stop, so this cannot hang on one of those (waiting for isStopped() alone did). It is FALSE from the
+' moment the drive command is accepted, so no short-lived state can be missed between polls. The bound covers the one
+' case it cannot: a drive whose limit never fires. Then the motor is stopped here, and getError() is reported.
+'
+' @param maxMs - the longest the drive may take, ms: its limit plus a margin
+' @returns bDone - T/F where T means the drive ended by itself within {maxMs}
 
-    if wheel.isStopped() == false
-        debug("* wait until motor finishes...")
-        repeat
-            if wheel.isStopped()
-                quit
-            else
-                waitms(2)
-    debug("* Motor stopped! wait 4ms")
-    'waitms(4)
+' Local Variables:
+' @local startMs - getms() when the wait began
+' @local eReason - why the drive ended, getStopReason()
+' @local eError - this cog's first recorded error, on a timeout (collected outside debug(), which a non-debug build removes)
+
+    debug("* wait until motor finishes...")
+    startMs := getms()
+    repeat until wheel.isMoveDone() or (getms() - startMs >= maxMs)
+        waitms(MOVE_POLL_MS)
+    bDone := wheel.isMoveDone()
+    if bDone == FALSE
+        wheel.stopMotor()                                       ' the drive outlived its bound: end it, then report
+        eError := wheel.getError()
+        debug("* TIMEOUT: the drive was not over after ", udec_(maxMs), " ms, stopped; error: ", zstr_(names.errorName(eError)))
+    eReason := wheel.getStopReason()
+    debug("* Motor done in ", udec_(getms() - startMs), " ms: ", zstr_(names.stopReason(eReason)))
 
 CON { license }
 {{

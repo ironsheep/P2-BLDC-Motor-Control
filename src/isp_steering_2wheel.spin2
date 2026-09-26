@@ -182,6 +182,7 @@ CON { forward our interface constants }
     ERR_BOARD_NOT_DETECTED  = ltWheel.ERR_BOARD_NOT_DETECTED
     ERR_COMMAND_TIMEOUT     = ltWheel.ERR_COMMAND_TIMEOUT
     ERR_START_CHECK_FAILED  = ltWheel.ERR_START_CHECK_FAILED
+    ERR_NOT_IMPLEMENTED     = ltWheel.ERR_NOT_IMPLEMENTED
     ERR_PROTECTIVE_STOP     = ltWheel.ERR_PROTECTIVE_STOP
     ERR_PLATFORM_BLOCKED    = ltWheel.ERR_PLATFORM_BLOCKED
 
@@ -193,6 +194,15 @@ CON { forward our interface constants }
     CMD_TIMEOUT_OFF         = ltWheel.CMD_TIMEOUT_OFF
     CMD_TIMEOUT_MIN_MS      = ltWheel.CMD_TIMEOUT_MIN_MS
     CMD_TIMEOUT_MAX_MS      = ltWheel.CMD_TIMEOUT_MAX_MS
+
+  ' setMaxSpeed() and setMaxSpeedForDistance(): the top speed until one is set, and the range a value is saturated to
+    MAX_SPEED_DEFAULT       = ltWheel.MAX_SPEED_DEFAULT
+    MAX_SPEED_MIN           = ltWheel.MAX_SPEED_MIN
+    MAX_SPEED_MAX           = ltWheel.MAX_SPEED_MAX
+
+  ' PL-155: WHICH SETTINGS start() KEEPS -- the motor object's rule, both wheels alike. Kept across stop() and start(), and
+  '  settable before start(): setMaxSpeed(), setMaxSpeedForDistance(), holdAtStop(), setStartChecks(). Restored to their
+  '  defaults by every start(), and settable only while started: setFaultResponse(), setHoldLimits(), setCommandTimeout().
 
 OBJ { our Motors }
 
@@ -271,7 +281,7 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
             rtWheel.stop()
         debug[user.DBGCH_ERROR]("!! ERROR filed to start left/right drive cog(s)")
     else
-        rtWheel.forwardIsReverse()
+        rtWheel.forwardIsReverse()                                              ' PL-155: kept by the wheel, applied with its other settings
         cogmask := (1<<ltcog)|(1<<rtcog)
         waitms(100)
         debug[user.DBGCH_LIFECYCLE](" sendatn: ", sdec(ltcog), " ", sdec(rtcog))
@@ -307,6 +317,8 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
                 rtWheel.recordCallerError(ERR_START_CHECK_FAILED)
             debug[user.DBGCH_ERROR]("!! ERROR start refused, a start check still fails after its retries ", uhex_long(nLeftStill), uhex_long(nRightStill))
         else
+            ltWheel.applyStartSettings()                                        ' PL-155: each wheel's kept settings, now the checks
+            rtWheel.applyStartSettings()                                        '  have run with both floated
             ltWheel.startPackSense()                                            ' R19.5: one pack, read through the left wheel
 
             ' pre-launch: no front cog of this instance exists, so these writes have no second writer
@@ -376,26 +388,32 @@ PUB setAcceleration(rate) : eError
     eError := firstError(ltWheel.setAcceleration(rate), rtWheel.setAcceleration(rate))
 
 PUB setMaxSpeed(speed) : eError
-'' Limit top-speed to {speed}
+'' Limit top-speed to {speed}  (default is MAX_SPEED_DEFAULT, 75)
 ''
-'' @param speed - top speed [1 to 100]; a value outside the range is saturated to it
+'' PL-155: kept across stop() and start(), and may be set before start(); getMaxSpeed() reads it back.
+''
+'' @param speed - top speed [MAX_SPEED_MIN to MAX_SPEED_MAX]; a value outside the range is saturated to it
 '' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
 
     eError := firstError(ltWheel.setMaxSpeed(speed), rtWheel.setMaxSpeed(speed))
 
 PUB setMaxSpeedForDistance(speed) : eError
-'' Limit top-speed of driveDistance() operations to {speed}
+'' Limit top-speed of driveForDistance() operations to {speed}  (default is MAX_SPEED_DEFAULT, 75)
 ''
-'' @param speed - top speed [1 to 100]; a value outside the range is saturated to it
+'' PL-155: kept across stop() and start(), and may be set before start(); getMaxSpeedForDistance() reads it back.
+''
+'' @param speed - top speed [MAX_SPEED_MIN to MAX_SPEED_MAX]; a value outside the range is saturated to it
 '' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
 
     eError := firstError(ltWheel.setMaxSpeedForDistance(speed), rtWheel.setMaxSpeedForDistance(speed))
 
 PUB calibrate() : eError
-'' NOT WORKING: (we may need this?)
-'' have motor drivers determine fixed-offset constants
+'' NOT IMPLEMENTED: this method does nothing, and returns ERR_NOT_IMPLEMENTED (PL-159)
 ''
-'' @returns eError - NO_ERROR
+'' It is kept so that programs which call it still compile. No calibration is needed: the commutation offsets
+'' for each supported motor are built in.
+''
+'' @returns eError - ERR_NOT_IMPLEMENTED, always (recorded in each wheel's slot for getError())
 
     eError := firstError(ltWheel.calibrate(), rtWheel.calibrate())
 
@@ -404,11 +422,30 @@ PUB holdAtStop(bEnable) : eError
 ''
 '' PL-58: chooses hold or release only at rest. Every stop commanded from speed follows each driver's own ramp
 '' regardless of this setting; MEASURED (Visit 2) both settings take the same distance to stop from a given speed.
+'' PL-155: kept across stop() and start(), and may be set before start(); isHoldAtStop() reads it back.
 ''
 '' @param bEnable - T/F where T means hold position at rest and F means coast
 '' @returns eError - NO_ERROR, or the first wheel's ERR_* code (also recorded for getError())
 
     eError := firstError(ltWheel.holdAtStop(bEnable), rtWheel.holdAtStop(bEnable))
+
+PUB isHoldAtStop() : bEnable
+'' Return whether both wheels hold their position at rest (holdAtStop(TRUE)) or coast (FALSE, the default)
+''
+'' Both wheels always carry the same setting; it is read from the left wheel.
+''
+'' @returns bEnable - T/F where T means hold at rest, F means coast; the kept setting, so it reads the same before start()
+
+    bEnable := ltWheel.isHoldAtStop()
+
+PUB isForwardReversed() : bLeftReversed, bRightReversed
+'' Return each wheel's reversal: start() reverses the right wheel's sense of forward, since the two motors face opposite ways
+''
+'' @returns bLeftReversed - T/F where T means the left wheel's forward and reverse are swapped (FALSE as shipped)
+'' @returns bRightReversed - T/F where T means the right wheel's are swapped (TRUE once start() has run)
+
+    bLeftReversed := ltWheel.isForwardReversed()
+    bRightReversed := rtWheel.isForwardReversed()
 
 PUB setCommandTimeout(nMs) : eError | eStatus, eLeftStatus, eRightStatus
 '' Stop both motors if no drive command arrives within {nMs} while they are driven: a link-loss guard, off by default
@@ -418,7 +455,8 @@ PUB setCommandTimeout(nMs) : eError | eStatus, eLeftStatus, eRightStatus
 '' arrive in time both motors stop, as stopMotors() stops them (holdAtStop() chooses hold or coast at rest), and
 '' ERR_COMMAND_TIMEOUT is reported once by getError() (its first result) on every cog that calls it. Re-sending the same
 '' driveDirection() or driveAtPower() keeps an armed stopAfter*() limit; re-sending driveForDistance() starts its
-'' distance again. Setting it restarts the clock. start() turns it off.
+'' distance again. Setting it restarts the clock. A protective setting (PL-155): start() turns it off, and it needs a
+'' started platform (ERR_NOT_STARTED before start()), so set it after every start(). getCommandTimeout() reads it back.
 ''
 '' @param nMs - the timeout in ms [CMD_TIMEOUT_MIN_MS to CMD_TIMEOUT_MAX_MS], or CMD_TIMEOUT_OFF (0) to turn it off
 '' @returns eError - NO_ERROR, ERR_BAD_COUNT for a value outside the range, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError(); a rejected call changes nothing
@@ -436,6 +474,15 @@ PUB setCommandTimeout(nMs) : eError | eStatus, eLeftStatus, eRightStatus
         eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_SET_TIMEOUT, BOTH_MOTORS, nMs, 0, 0)
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
+PUB getCommandTimeout() : nMs
+'' Return the platform's command timeout in effect, as setCommandTimeout() set it
+''
+'' @returns nMs - the timeout in ms, or CMD_TIMEOUT_OFF (0) when it is off: before start(), and after every start() until set
+
+    nMs := cmdTimeoutMs
+    if senseCog == 0                                                            ' start() turns it off; nothing watches it now
+        nMs := CMD_TIMEOUT_OFF
+
 PUB setFaultResponse(eMode, brakePct) : eError | eStatus, eLeftStatus, eRightStatus
 '' Choose what both wheels do on a position fault: a wheel's rotor could not follow the field (an overload or a stall)
 ''
@@ -445,7 +492,8 @@ PUB setFaultResponse(eMode, brakePct) : eError | eStatus, eLeftStatus, eRightSta
 '' graded short (TRUE): the phases shorted for {brakePct} of each brake period and coasting for the rest, which scales
 '' the average braking torque to {brakePct} of the full short's. The peak current is still the full short's. Either
 '' way the other wheel is stopped along its ramp (getStopReason() reads SR_PARTNER for it). Both wheels always carry
-'' the same response. start() restores the default, FR_GRADED at 10 %.
+'' the same response. A protective setting (PL-155): start() restores the default, FR_GRADED at 10 %, and it needs a
+'' started platform (ERR_NOT_STARTED before start()), so set it after every start(). getFaultResponse() reads it back.
 ''
 '' @param eMode - FR_SHIPPED or FR_GRADED
 '' @param brakePct - the graded short's shorted time, % of each brake period [0..100]
@@ -470,7 +518,8 @@ PUB setHoldLimits(ceilingPct, riseMs, limitMs) : eError | eStatus, eLeftStatus, 
 '' The hold spends only the effort the load pushes back with, rising to {ceilingPct} over {riseMs} while a wheel stays
 '' displaced; after {limitMs} at that ceiling it hands off to the phase short (getHoldStatus() reads HS_LIMITED). The
 '' defaults were sized with the wheels unloaded; a loaded robot may need others. Both wheels always carry the same
-'' limits. start() restores the defaults.
+'' limits. A protective setting (PL-155): start() restores the defaults, and it needs a started platform
+'' (ERR_NOT_STARTED before start()), so set it after every start(). getHoldLimits() reads it back.
 ''
 '' @param ceilingPct - the hold's duty ceiling, % of the drive's full duty [1..100]
 '' @param riseMs - ms from the minimum duty to the ceiling while a wheel stays displaced [1..HOLD_RISE_MS_MAX]
@@ -505,8 +554,11 @@ PUB setStartChecks(bRefuse) : eError
     eError := NO_ERROR
 
 PUB resetTracking() : eError | eStatus, eLeftStatus, eRightStatus
-'' Resets the position tracking values returned by getDistance() and getRotations()
-''  Effectively: use current position as home from now on
+'' Resets both wheels' odometers: the distances getDistance() and the rotations getRotationCount() report start again from 0
+''
+'' PL-153: each odometer is the total distance its wheel has travelled, forward and back alike, since the last
+'' resetTracking() or start(). Nothing else resets it: not a drive, a limit, a fault, an emergency stop or
+'' checkWiring(). An armed distance or rotation limit is not moved by it: each counts from the moment it was armed.
 ''
 '' @returns eError - NO_ERROR once the front cog has applied the reset, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
 
@@ -539,6 +591,12 @@ PUB driveForDistance(leftDistance, rightDistance, eDistanceUnits) : eError | nLe
 '' setMaxSpeed()), so both finish at about the same time, and each comes to rest at its own distance (within about two
 '' hall ticks). A distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI].
 '' AFFECTED BY: setAcceleration(), setMaxSpeedForDistance(), setMaxSpeed(), holdAtStop()
+''
+'' PL-153: each wheel's distance counts from this call, and the odometers (getDistance()) are left as they are, so two
+'' calls in a row each travel their own distances. FORWARD ONLY: to back up a distance, drive in reverse and arm a
+'' distance limit: driveAtPower(-power, -power), then stopAfterDistance(distance, units) -- two calls, not one atomic
+'' move. The limit counts from its own call, so the travel between the two is not counted; armed first instead (as the
+'' demos arm every limit), it counts from before the platform moves.
 ''
 '' @param leftDistance - distance for the left wheel, at least 1
 '' @param rightDistance - distance for the right wheel, at least 1
@@ -595,53 +653,34 @@ PUB driveAtPower(leftPower, rightPower) : eError | eStatus, eLeftStatus, eRightS
         eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_DRIVE, BOTH_MOTORS, leftPower, rightPower, TRUE)
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
 
-PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, degreesPerTic, ticsPerRotation, eStatus, eLeftStatus, eRightStatus
+PUB stopAfterRotation(nRotationCount, eRotationUnits) : eError | nStopTicks, eStatus, eLeftStatus, eRightStatus
 '' Stops both motors so they are at rest when either motor reaches {rotationCount} of {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, or DRU_ROTATIONS].
 '' USE WITH: driveDirection(), driveAtPower()
 ''
 '' The stop begins early, by the distance each wheel's ramp-down needs at its current speed, so the platform comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
+'' PL-153: each wheel's rotation counts from this call (turning either way), not from the odometer (getRotationCount()).
+'' PL-158: DRU_DEGREES rounds to the nearest hall tick (4 degrees on the 6.5in motor: 90 is 23 ticks, 92 degrees).
 ''
 '' @param nRotationCount - rotation to travel, at least 1, resolving to at least one hall tick
 '' @param eRotationUnits - units of {nRotationCount}: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
-'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit in place
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError() (ERR_BAD_COUNT under 1 or past a long's hall ticks, ERR_BAD_UNITS, ERR_LIMIT_UNRESOLVABLE, ERR_NOT_STARTED); a rejected call leaves any armed limit in place
 
 ' Local Variables:
 ' @local nStopTicks - the requested rotation in hall ticks
-' @local degreesPerTic - degrees of rotation per hall tick for this motor
-' @local ticsPerRotation - hall ticks per rotation for this motor
 ' @local eStatus - the front cog's platform status
 ' @local eLeftStatus - the front cog's status for the left wheel
 ' @local eRightStatus - the front cog's status for the right wheel
 
     ' validate everything, then commit: nothing is changed until every check has passed
-    eError := NO_ERROR
-    nStopTicks := 0
-    degreesPerTic, ticsPerRotation := ltWheel.hallTicInfoForMotor()
-    case eRotationUnits
-        DRU_HALL_TICKS:
-            nStopTicks := nRotationCount
-        DRU_DEGREES:
-            ' ticks = degrees / 4
-            nStopTicks := nRotationCount / degreesPerTic
-        DRU_ROTATIONS:
-            ' ticks = rotations * 90
-            nStopTicks := nRotationCount * ticsPerRotation
-        other:
-            eError := ERR_BAD_UNITS
-
-    if nRotationCount < 1
-        eError := ERR_BAD_COUNT
-    elseif eError == NO_ERROR
-        if nStopTicks < 1
-            eError := ERR_LIMIT_UNRESOLVABLE
-        elseif senseCog == 0
-            ' F-5c: start() would erase it, so a limit set before start() is refused, not silently lost
-            eError := ERR_NOT_STARTED
+    eError, nStopTicks := ltWheel.ticksForRotation(nRotationCount, eRotationUnits)
+    if (eError == NO_ERROR) and (senseCog == 0)
+        ' F-5c: start() would erase it, so a limit set before start() is refused, not silently lost
+        eError := ERR_NOT_STARTED
 
     if eError == NO_ERROR
-        debug[user.DBGCH_COMMAND](" stopAfterRotation: ", udec(nRotationCount), " ", udec(degreesPerTic), " ", udec(ticsPerRotation), " ", udec(nStopTicks))
-        ' the front cog arms it, keeping the tracking as it is
+        debug[user.DBGCH_COMMAND](" stopAfterRotation: ", udec(nRotationCount), " ", udec(eRotationUnits), " ", udec(nStopTicks))
+        ' the front cog arms it, counting from here (PL-153)
         eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_LIMIT_TICKS, BOTH_MOTORS, nStopTicks, FALSE, 0)
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
     else
@@ -654,10 +693,13 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, eStatus,
 ''
 '' The stop begins early, by the distance each wheel's ramp-down needs at its current speed, so the platform comes
 '' to rest at the limit (within about two hall ticks), not past it. A limit shorter than that distance stops at once.
+'' PL-153: each wheel's distance counts from this call (forward or back), not from the odometer (getDistance()), and
+'' the odometers are left as they are. With driveAtPower(-power, -power) it backs the platform up a distance: two
+'' calls, not one atomic move (see driveForDistance()).
 ''
 '' @param nDistance - distance to travel, at least 1, resolving to at least one hall tick
 '' @param eDistanceUnits - units of {nDistance}: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
-'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit and the tracking in place
+'' @returns eError - NO_ERROR, or the ERR_* code also recorded for getError(); a rejected call leaves any armed limit and the odometers in place
 
 ' Local Variables:
 ' @local nStopTicks - the requested distance in hall ticks
@@ -671,8 +713,8 @@ PUB stopAfterDistance(nDistance, eDistanceUnits) : eError | nStopTicks, eStatus,
         ' F-5c: start() would erase it, so a limit set before start() is refused, not silently lost
         eError := ERR_NOT_STARTED
     if eError == NO_ERROR
-        ' F-4: tracking restarts only for an accepted limit, which counts from here; the front cog
-        '  resets the tracking and arms the limit as one action
+        ' F-4: only an accepted limit changes anything; PL-153: it counts from here, the front cog taking each wheel's
+        '  base as it arms it (arg2 TRUE: the rpm windows restart with it, as they always did; the odometers do not)
         eStatus, eLeftStatus, eRightStatus := postRequest(ltWheel.REQ_LIMIT_TICKS, BOTH_MOTORS, nStopTicks, TRUE, 0)
         eError := recordRequestResult(eStatus, eLeftStatus, eRightStatus)
     else
@@ -1174,18 +1216,24 @@ PUB getEventTotal(eKind) : nLeft, nRight, nPlatform
             nLeft := 0
 
 PUB getDistance(eDistanceUnits) : leftDistanceInUnits, rightDistanceInUnits
-'' Returns the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled by each motor since last reset
+'' Returns each wheel's odometer: the distance in {distanceUnits} [DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM, DDU_MI] travelled since the last resetTracking() or start()
+''
+'' PL-153: TOTAL travel per wheel, never negative -- forward and back both add to it. Only resetTracking() and start()
+'' reset it. RESOLUTION: whole hall ticks (about 5.76 mm on the 6.5in wheel), rounded to the nearest whole unit.
 ''
 '' @param eDistanceUnits - units of the returned distances: DDU_MM, DDU_CM, DDU_IN, DDU_FT, DDU_M, DDU_KM or DDU_MI
-'' @returns leftDistanceInUnits - left wheel distance; 0, with ERR_BAD_UNITS or ERR_NO_WHEEL_DIA recorded for getError(), when it cannot be measured
-'' @returns rightDistanceInUnits - right wheel distance; 0, with ERR_BAD_UNITS or ERR_NO_WHEEL_DIA recorded for getError(), when it cannot be measured
+'' @returns leftDistanceInUnits - left wheel distance, rounded to the nearest unit; 0, with ERR_BAD_UNITS or ERR_NO_WHEEL_DIA recorded for getError(), when it cannot be measured
+'' @returns rightDistanceInUnits - right wheel distance, the same way
 
     debug[user.DBGCH_SENSE]("- gdi ", sdec_long(ltWheel.getposTrkHallTicks()), sdec_long(rtWheel.getposTrkHallTicks()))
     leftDistanceInUnits := convertDistance(ltWheel.getposTrkHallTicks(), eDistanceUnits)
     rightDistanceInUnits := convertDistance(rtWheel.getposTrkHallTicks(), eDistanceUnits)
 
 PUB getRotationCount(eRotationUnits) : leftRotationCount, rightRotationCount
-'' Returns accumulated {*RotationCount} in {rotationUnits} [DRU_DEGREES, DRU_ROTATIONS], since last reset, for each of the motors.
+'' Returns each wheel's odometer as a rotation: {*RotationCount} in {rotationUnits} [DRU_HALL_TICKS, DRU_DEGREES, DRU_ROTATIONS] since the last resetTracking() or start().
+''
+'' PL-153: total rotation either way, never negative. RESOLUTION (PL-158): DRU_HALL_TICKS counts each tick; DRU_DEGREES
+'' steps by the motor's degrees per tick (4 on the 6.5in motor, 15 DocoEng); DRU_ROTATIONS counts WHOLE rotations, truncated.
 ''
 '' @param eRotationUnits - units of the returned rotations: DRU_HALL_TICKS, DRU_DEGREES or DRU_ROTATIONS
 '' @returns leftRotationCount - left wheel rotation; 0, with ERR_BAD_UNITS recorded for getError(), when the units are not DRU_*
@@ -1207,8 +1255,10 @@ PUB getPower() : leftPower, rightPower
 PUB getCurrent() : nLtAmps, nLtWatts, nRtAmps, nRtWatts
 '' Returns the latest current sense values for each motor
 ''
-'' @returns nLtAmps - the left motor's current, as the motor object's getCurrent() reports it
-'' @returns nLtWatts - the left motor's power draw, as the motor object's getCurrent() reports it
+'' PL-159: all four are integers: each current in tenths of a milliamp (12_345 reads 1.2345 A), each power in mW.
+''
+'' @returns nLtAmps - the left motor's current, an integer in tenths of a mA, as the motor object's getCurrent() reports it
+'' @returns nLtWatts - the left motor's power draw, an integer in mW, as the motor object's getCurrent() reports it
 '' @returns nRtAmps - the right motor's current, the same way
 '' @returns nRtWatts - the right motor's power draw, the same way
 
@@ -1243,7 +1293,8 @@ PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeft
 ''
 '' Opt-in: this moves the robot, so call it only when it may turn a little in place. It catches what start()'s checks,
 '' which move nothing, cannot: a swapped hall pair, swapped phase leads, a dead hall line or a wheel that does not turn.
-'' Blocks about half a second; both wheels end at rest per holdAtStop(), and the position tracking is reset. A wheel whose
+'' Blocks about half a second; both wheels end at rest per holdAtStop(). The walk's travel adds to each wheel's odometer,
+'' which it no longer resets (PL-153); each leg's own distance counts from the leg's start. A wheel whose
 '' leg draws more current than a healthy walk ever does is ended at once by shorting its phases, and fails.
 ''
 '' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it for each wheel),
@@ -1366,6 +1417,9 @@ PUB getHallIllegalCodes() : nLtAllLow, nLtAllHigh, nRtAllLow, nRtAllHigh
 PUB getStatus() : eLeftStatus, eRightStatus
 '' Returns status of motor drive state for each motor: enumerated constant DS_*
 ''
+'' PL-158: DS_HOLDING only while that wheel's hold is holding; a hold handed off to the phase short reads DS_OFF
+'' (getHoldStatus() says which).
+''
 '' @returns eLeftStatus - the left motor's DS_* status (DS_Unknown, DS_MOVING, DS_HOLDING, DS_OFF, DS_FAULTED or DS_ESTOP)
 '' @returns eRightStatus - the right motor's DS_* status, the same way
 
@@ -1375,7 +1429,7 @@ PUB getStatus() : eLeftStatus, eRightStatus
 PUB getMaxSpeed() : nSpeed
 '' Returns the last specified {maxSpeed}
 ''
-'' @returns nSpeed - the maximum speed last set by setMaxSpeed(), [1 to 100]
+'' @returns nSpeed - the maximum speed last set by setMaxSpeed(), [1 to 100]; MAX_SPEED_DEFAULT (75) until one is set, before start() as after (PL-155)
 
     ' NOTE: they both contain same value so return only right-wheel value
     'nSpeed := ltWheel.getMaxSpeed()  ' return last specified user value
@@ -1384,7 +1438,7 @@ PUB getMaxSpeed() : nSpeed
 PUB getMaxSpeedForDistance() : nSpeed4dist
 '' Returns the last specified {maxSpeedForDistance}
 ''
-'' @returns nSpeed4dist - the maximum speed for distance moves last set by setMaxSpeedForDistance(), [1 to 100]
+'' @returns nSpeed4dist - the maximum speed for distance moves last set by setMaxSpeedForDistance(), [1 to 100]; MAX_SPEED_DEFAULT (75) until one is set, before start() as after (PL-155)
 
     ' NOTE: they both contain same value so return only right-wheel value
     'nSpeed4dist := ltWheel.getMaxSpeedForDistance()  ' return last specified user value
@@ -1846,6 +1900,13 @@ PUB testGetTickInMM() : nTickInMM_x100
 
     nTickInMM_x100 := tickInMM_x100
 
+PUB testGetStopHallTicks() : stopTicks
+'' TESTING USE: snapshot the platform's pending hall-tick stop target set by stopAfterDistance()/stopAfterRotation()
+''
+'' @returns stopTicks - the armed platform limit's hall ticks, counted on each wheel from where it was armed (PL-153); 0 when none is pending
+
+    stopTicks := motorStopHallTicks
+
 PUB testLeftGetCurrentLimitState() : nPeakA, nContA, bDeratedNow, nPhaseAvgMa, nLimitK
 '' TESTING USE: return the LEFT motor's current limits, derate state, judged average and fold-back factor
 ''
@@ -1881,6 +1942,17 @@ PUB isStopped() : bState
 '' @returns bState - T/F where T means both motors' drivers are DCS_STOPPED
 
     bState := ltWheel.isStopped() and rtWheel.isStopped()
+
+PUB isMoveDone() : bDone
+'' Return T/F where T means neither wheel is moving under a command: the last drive is over, however it ended (PL-156)
+''
+'' The motor object's isMoveDone() on both wheels: TRUE once each wheel is at rest with no drive commanded, or is
+'' faulted, emergency-stopped or protectively stopped; FALSE from the moment a drive command is accepted, through its
+'' ramp down. A drive with no limit never ends by itself, so wait on this with a bound, then read getStopReason().
+''
+'' @returns bDone - T/F where T means no commanded motion is under way on either wheel
+
+    bDone := ltWheel.isMoveDone() and rtWheel.isMoveDone()
 
 PUB isStarting() : bState
 '' Return T/F where T means the either motor is spinning up
@@ -2321,6 +2393,8 @@ VAR { Data for Motor Position Tracking }
     '  Position Tracking vars
     long    motorStopHallTicks
     long    motorStopMSecs
+    long    platBaseLeft                ' front-written (PL-153): the left wheel's frontTravelNow() when the platform limit was armed
+    long    platBaseRight               ' front-written (PL-153): the right wheel's, likewise
     '  Drive vars
     long    rqstPower
     long    rqstDirection
@@ -2391,8 +2465,10 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     ticksPerPass := CLKFREQ / ltWheel.FRONT_LOOP_HZ
     lateMarginTicks := (CLKFREQ / ltWheel.US_PER_SEC) * ltWheel.LATE_MARGIN_US
     passCount := 0
-    ltWheel.frontResetTracking(TRUE)
-    rtWheel.frontResetTracking(TRUE)
+    ltWheel.frontStartTracking()                                                ' PL-153: each odometer and each wheel's travel start at 0
+    rtWheel.frontStartTracking()
+    platBaseLeft := 0                                                           '  and so does the platform limit's count
+    platBaseRight := 0
     pathScalePermille := ltWheel.PERMILLE_FULL                                  ' R18.4 D-6: no path limiting until a wheel falls short
     pathCleanSlots := 0
     pathEvWheel := EVW_LEFT
@@ -2566,6 +2642,7 @@ PRI bFrontPlatformLimitsDue(nowMs) : bFired
 ' FRONT COG: return TRUE, and disarm the limit, when a stop written now leaves the platform at rest at its time limit or either wheel at rest at the distance limit.
 '
 ' Each wheel's stop begins early by its own stopping distance, and the time stop by the longer of the two stopping times.
+' PL-153: each wheel's distance is its travel since the limit was armed (platBaseLeft/Right), never its odometer.
 '
 ' @param nowMs - getms() for this pass
 ' @returns bFired - T/F where T means a limit fired and both wheels must be stopped now
@@ -2577,7 +2654,7 @@ PRI bFrontPlatformLimitsDue(nowMs) : bFired
         motorStopMSecs := 0                                                     ' and clear user request
         bFired := TRUE
     elseif motorStopHallTicks > 0
-        if (ltWheel.getposTrkHallTicks() + ltWheel.frontStopTicks() >= motorStopHallTicks) or (rtWheel.getposTrkHallTicks() + rtWheel.frontStopTicks() >= motorStopHallTicks)
+        if ((ltWheel.frontTravelNow() - platBaseLeft) + ltWheel.frontStopTicks() >= motorStopHallTicks) or ((rtWheel.frontTravelNow() - platBaseRight) + rtWheel.frontStopTicks() >= motorStopHallTicks)
             debug[user.DBGCH_SENSE]("-STEER- distance limit reached")
             motorStopHallTicks := 0                                             ' and clear user request
             bFired := TRUE
@@ -2747,10 +2824,12 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
     ' Request arguments here:
     '  REQ_DRIVE          - arg1 left power, arg2 right power, arg3 bSync
     '  REQ_DRIVE_DISTANCE - arg1 left stop ticks, arg2 right stop ticks (powers from powersForDistance(); always
-    '                       synchronized; tracking reset; each wheel stops at its own limit)
+    '                       synchronized; rpm windows restarted, odometers kept (PL-153); each wheel stops at its own
+    '                       limit, counted from here)
     '  REQ_WALK           - arg1 the leg (the motor object's WLEG_*, PL-137), arg2 left power, arg3 right power, signed
     '                       (checkWiring(); otherwise as REQ_DRIVE_DISTANCE, each wheel's stop the motor's WALK_TICKS)
-    '  REQ_LIMIT_TICKS    - arg1 stop ticks, arg2 bResetTracking
+    '  REQ_LIMIT_TICKS    - arg1 stop ticks, counted from here on each wheel (PL-153); arg2 T/F where T also restarts
+    '                       the rpm windows (stopAfterDistance(), as before PL-153 reset them with the tracking)
     '  REQ_LIMIT_TIME     - arg1 getms() deadline
     '  REQ_TEST_INCREMENT - arg1 raw increment, for the one selected wheel
     ' AB: the per-wheel limits belong to one driveForDistance() alone, so every other drive, stop or distance
@@ -2824,10 +2903,11 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
             eLeftStatus, eRightStatus, bDidWait := frontDriveWheels(bLeft, bRight, nArg1, nArg2, nArg3 <> FALSE, TRUE)
             frontWatchCommand((eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR) and ((nArg1 <> 0) or (nArg2 <> 0)))
         ltWheel.REQ_DRIVE_DISTANCE:
-            ' atomic: tracking reset, each wheel's limit armed and both driven, or none of it (I1 item 2)
+            ' atomic: each wheel's limit armed and both driven, or none of it (I1 item 2)
             eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
             if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
-                frontResetPlatformTracking()
+                frontResetPlatformWindows()                                     ' PL-153: the rpm windows restart; the odometers are kept, and
+                                                                                '  each wheel's limit counts from its own arming below
                 motorStopHallTicks := 0                                         ' AB: each wheel stops at its own limit; the time limit is kept, as before
                 ltWheel.frontSetLimits(nArg1, 0)
                 rtWheel.frontSetLimits(nArg2, 0)
@@ -2842,7 +2922,7 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
             bCmdWatched := FALSE
             eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
             if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)
-                frontResetPlatformTracking()
+                frontResetPlatformWindows()                                     ' PL-153: as REQ_DRIVE_DISTANCE, the odometers kept
                 motorStopHallTicks := 0
                 ltWheel.frontSetLimits(ltWheel.WALK_TICKS, 0)
                 rtWheel.frontSetLimits(ltWheel.WALK_TICKS, 0)
@@ -2860,7 +2940,9 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
         ltWheel.REQ_LIMIT_TICKS:
             frontDisarmWheelLimits(TRUE, TRUE)                                  ' one distance limit in force at a time
             if nArg2 <> FALSE
-                frontResetPlatformTracking()                                    ' F-4: the limit counts from here
+                frontResetPlatformWindows()                                     ' the rpm windows only, as before; PL-153: not the odometers
+            platBaseLeft := ltWheel.frontTravelNow()                            ' PL-153: the limit counts each wheel's travel from here,
+            platBaseRight := rtWheel.frontTravelNow()                           '  first, before the limit it guards is in force
             motorStopHallTicks := nArg1
         ltWheel.REQ_LIMIT_TIME:
             motorStopMSecs := nArg1
@@ -3105,11 +3187,20 @@ PRI frontWaitForDrivers(eWaitFor, bLeft, bRight) : bLeftDone, bRightDone | waitS
             quit
 
 PRI frontResetPlatformTracking()
-' FRONT COG: restart both wheels' tracking, rpm windows and HDMI maxima from their current positions.
+' FRONT COG: resetTracking() -- zero both wheels' odometers, and restart their rpm windows and HDMI maxima. PL-153: an
+' armed limit keeps counting from its own arming (each wheel's travel is never reset while the front cog runs).
 '
 
     ltWheel.frontResetTracking(TRUE)
     rtWheel.frontResetTracking(TRUE)
+
+PRI frontResetPlatformWindows()
+' FRONT COG: restart both wheels' rpm windows and HDMI maxima, the odometers untouched (PL-153): what a distance drive, a
+' walk leg and stopAfterDistance() restarted before PL-153, less the odometer.
+'
+
+    ltWheel.frontResetWindow()
+    rtWheel.frontResetWindow()
 
 PRI frontPlatformFaultStop() | bLeftBegan, bRightBegan
 ' FRONT COG: once per pass, after both wheels' frontTrack() -- on the pass a fault begins on either wheel, stop both (R19.2, PL-117).

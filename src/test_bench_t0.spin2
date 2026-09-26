@@ -198,6 +198,18 @@
 ''               T0-25,rotstop_neg). R20-T0-ESTOPSTATUS: getStatus() at rest is not DS_ESTOP, reads DS_ESTOP after
 ''               emergencyCutoff() and not after clearEmergency() (record T0-25,estopstatus). A start that does not
 ''               come up leaves both NOMEAS, as the other eight.
+''               26 Sep 2026 -- SRC_REV 22 (DRIVER_REV 33/34; PL-153, PL-155, PL-156, PL-158, PL-159): three T0-25 cells
+''               run after R20-T0-ESTOPSTATUS, the existing ten and the EV-STOP sequence untouched. R20-T0-ODOMETER: two
+''               back-to-back driveForDistance() moves each travel their own distance within T0_25_ROT_TOL_TICKS, and the
+''               odometer (getRotationCount(), getDistance()) is unchanged across an emergencyCutoff()/clearEmergency()
+''               held T0_25_ESTOP_HOLD_MS (record T0-25,odometer). R20-T0-MOVEDONE: isMoveDone() is FALSE as the move
+''               is accepted, TRUE at rest after it and TRUE while e-stopped (record T0-25,movedone). R20-T0-PERSIST:
+''               max speeds, the hold and the reversal set with the motor stopped read back after a restart, and the
+''               hold is in force (record T0-25,persist). New build -D T0_API (tier t0-api): T0-26, the API contract --
+''               every value-taking setter's boundaries accepted and read back, the values just outside refused with
+''               their ERR_* and nothing changed, settings made before start() kept, calibrate() not implemented; one
+''               cell per method family, each counting its bad calls, with a T0-26,chk record per call. Wheels up,
+''               unattended, no motion (records T0-26,*).
 ''
 '' =================================================================================================
 
@@ -264,7 +276,7 @@
   no sign-off cell.
 }
 
-' T0_OWN_TIER is set by every build that runs one test of its own (T0_HAND, T0_STOPMODE, T0_STOPREASON). It
+' T0_OWN_TIER is set by every build that runs one test of its own (T0_HAND, T0_STOPMODE, T0_STOPREASON, T0_API). It
 ' COMPILES OUT every unattended test body, not just its call: a call gated at run time still compiles its debug()
 ' records, and this binary's DEBUG data has a hard end. Any record whose bytes lie past image offset 13,684 is cut
 ' at that byte or never sent -- measured three times: 2026-09-20 t0-hand's PLOT create stopped at
@@ -279,6 +291,9 @@
 #define T0_OWN_TIER
 #endif
 #ifdef T0_STOPREASON
+#define T0_OWN_TIER
+#endif
+#ifdef T0_API
 #define T0_OWN_TIER
 #endif
 
@@ -306,7 +321,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 21                                         ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 22                                         ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -398,6 +413,18 @@ CON { stop reasons and the event log (T0-25, -D T0_STOPREASON only; task 3621, D
   '  posTrkHallTicks counts whole ticks, so the crossing is seen up to one tick late -- 3 in all, either side. At
   '  ~59 ticks/s a 1 ms pass carries ~0.06 ticks, so the pass cadence adds nothing further.
     T0_25_ROT_TOL_TICKS = 3
+
+' SRC_REV 22 (DRIVER_REV 33): R20-T0-ODOMETER, R20-T0-MOVEDONE and R20-T0-PERSIST, run after R20-T0-ESTOPSTATUS (t0rOdometer(),
+'  t0rPersist()). Their stops fall after every event read, as ROTSTOP's do.
+    T0_25_ODO_CM        = 30                                    ' ODOMETER: each driveForDistance(): 52 ticks on the 6.5" wheel (5.76 mm
+                                                                '  a tick), about a second at T0_25_POWER -- well past the ramp's 2 ticks
+    T0_25_ODO_WAIT_MS   = 10_000                                ' bound on each move ending (isMoveDone())
+    T0_25_ESTOP_HOLD_MS = 100                                   ' the e-stop is held this long: 100 front passes, EACH of which zeroed
+                                                                '  the pre-33 odometer (frontTrack()), so one pass would do
+    T0_25_PERSIST_SPEED = 40                                    ' PERSIST: setMaxSpeed() with the motor stopped -- not the default 75
+    T0_25_PERSIST_DIST  = 30                                    ' ...setMaxSpeedForDistance(), likewise, and different from the first
+    T0_25_HOLD_ARM_MS   = 500                                   ' bound on the restarted motor's hold reading HS_HOLDING: the front cog
+                                                                '  arms it on its first pass at rest, so ~1 ms; 500 is margin
 
   ' T0-25's seven stop legs, run in this order (t0rLeg()); each reads getStopReason() as its drive opens, after its stop,
   '  and once more after the leg's own later act:
@@ -949,6 +976,16 @@ sCellRotStop    BYTE    "R20-T0-ROTSTOP", 0                     ' T0-25: stopAft
 sCellEstopStat  BYTE    "R20-T0-ESTOPSTATUS", 0                 ' ...getStatus() reads DS_ESTOP only while emergency-stopped
 sCritRotStop    BYTE    "RESTS_AT_LIMIT_NOT_UNARMED", 0
 sCritEstopStat  BYTE    "ESTOP_ONLY_WHILE_LATCHED", 0
+' SRC_REV 22 (DRIVER_REV 33): the public-API audit's release items; no todo-mcp task was named, so the PL ids stand in
+sTaskPl153      BYTE    "PL-153", 0
+sTaskPl155      BYTE    "PL-155", 0
+sTaskPl156      BYTE    "PL-156", 0
+sCellOdometer   BYTE    "R20-T0-ODOMETER", 0                    ' T0-25: two driveForDistance() each travel their own; an e-stop keeps the odometer
+sCellMoveDone   BYTE    "R20-T0-MOVEDONE", 0                    ' ...isMoveDone() FALSE as a move opens, TRUE at its rest and while e-stopped
+sCellPersist    BYTE    "R20-T0-PERSIST", 0                     ' ...settings made with the motor stopped survive the restart, and apply
+sCritOdometer   BYTE    "EACH_MOVE_OWN_DIST_ESTOP_KEEPS", 0
+sCritMoveDone   BYTE    "FALSE_OPEN_TRUE_REST_ESTOP", 0
+sCritPersist    BYTE    "SET_STOPPED_READS_AFTER_START", 0
 
 DAT { T0-12 hand-copy of the driver's hall-position-delta table (PL-39) }
 
@@ -1133,6 +1170,7 @@ VAR { T0-25 helper reader cog (-D T0_STOPREASON only) }
     LONG    bT0rHelperClean                                     ' helper: that read ended on EV_NONE with nothing lost
     LONG    bT0rDone                                            ' helper: the counts above are final
     LONG    pT0rWheel                                           ' cog 0: the wheel T0-25 drives, "RIGHT" or "LEFT" (its cells' motor field)
+    LONG    t0rBase                                             ' cog 0: that wheel's PINS_* group, for R20-T0-PERSIST's restart
 #endif
 
 #ifdef T0_STOPMODE
@@ -1225,6 +1263,9 @@ PUB main() | trapCode
 #elseifdef T0_STOPREASON
     ' T0-25 drives the RIGHT wheel on every leg (the LEFT if the right's start checks refuse it), so its banner says so, as T0-24's does
     debug("* test_bench_t0 -- T0-25 stop reasons and event log: UNATTENDED, THE RIGHT WHEEL IS DRIVEN (THE LEFT IF THE RIGHT IS REFUSED) -- src_rev ", udec_(SRC_REV))
+#elseifdef T0_API
+    ' T0-26 starts the motor and the steering object but drives nothing: its one drive command is refused
+    debug("* test_bench_t0 -- T0-26 API contract: UNATTENDED, WHEELS UP, NO MOTION -- src_rev ", udec_(SRC_REV))
 #else
     debug("* test_bench_t0 -- Tier 0: no motion -- src_rev ", udec_(SRC_REV))
 #endif
@@ -1256,6 +1297,10 @@ PRI runTier0Tests()
     ' T0_STOPREASON build (bench-run.sh t0-stopreason, task 3621): T0-25 only. Unattended, but it drives the RIGHT
     ' wheel, which plain t0 promises never to do (DRIVER-REPORTING-DESIGN.md SS6, the t0-stopmode precedent).
     testT0_25()
+#elseifdef T0_API
+    ' T0_API build (tier t0-api, SRC_REV 22): T0-26 only, the API contract. Unattended and motionless, but its own tier:
+    ' it starts and stops the motor and the steering object three times, which plain t0's cells must not see.
+    testT0_26()
 #else
     ' Sign-off declarations (design rule 3, SS 0): one per cell this binary will judge, emitted
     ' before anything starts a cog. Row 8 (R8-T0-ZXS) covers all four channel variants (ZXS_I/
@@ -2679,6 +2724,18 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
 '   R20-T0-ESTOPSTATUS  - (PL-151) getStatus() at rest is a real state other than DS_ESTOP, DS_ESTOP after
 '                          emergencyCutoff(), and a real state other than DS_ESTOP after clearEmergency(); a getter that
 '                          never reads DS_ESTOP, or keeps reading it after the clear, fails
+'   R20-T0-ODOMETER     - (PL-153, SRC_REV 22) two driveForDistance(T0_25_ODO_CM) in a row, from a reset odometer, each
+'                          travel the library's own ticks for it within T0_25_ROT_TOL_TICKS, reading SR_AT_LIMIT; then the
+'                          odometer holds across emergencyCutoff() for T0_25_ESTOP_HOLD_MS and clearEmergency(); NEGATIVE:
+'                          the pre-33 driver counts the second move from the odometer, so it fires at once, and zeroes the
+'                          odometer on every e-stopped pass, so it reads 0 after -- either fails
+'   R20-T0-MOVEDONE     - (PL-156) isMoveDone() FALSE right after each move is accepted, TRUE once it has ended at rest, and
+'                          TRUE while e-stopped; a predicate that is isStopped() (FALSE e-stopped), always TRUE, or never
+'                          TRUE (the moves' bounded waits run out) fails
+'   R20-T0-PERSIST      - (PL-155) setMaxSpeed(), setMaxSpeedForDistance(), holdAtStop(TRUE) and setForwardIsReverse(TRUE)
+'                          made with the motor stopped read back after start(), and the hold is in force (HS_HOLDING);
+'                          NEGATIVE: the pre-33 start() reset them (75, 75, coast), which fails; a restart that does not
+'                          come up is NOMEAS. Every setting is put back to its default after
 ' A start that does not come up ready leaves every cell NOMEAS, and the start's getError() is printed. A RIGHT start its
 ' checks refuse (ERR_START_CHECK_FAILED: pass 5 saw PL-120 outlast a reload) is followed by one start of the LEFT wheel
 ' (T0_SECOND_BASE), so one dead bridge does not void the tier; the cells then name LEFT. The cells certify the reporting,
@@ -2691,6 +2748,7 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
 ' @local refusedMs - getms() at that refusal
 
     pT0rWheel := @"RIGHT"
+    t0rBase := T0_MOTOR_BASE
     emitCellDecl(@sCellSrCmd, @sTaskReporting)
     emitCellDecl(@sCellSrLimit, @sTaskReporting)
     emitCellDecl(@sCellSrEstop, @sTaskReporting)
@@ -2701,6 +2759,9 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
     emitCellDecl(@sCellEv2Cog, @sTaskReporting)
     emitCellDecl(@sCellRotStop, @sTaskPl151)
     emitCellDecl(@sCellEstopStat, @sTaskPl151)
+    emitCellDecl(@sCellOdometer, @sTaskPl153)
+    emitCellDecl(@sCellMoveDone, @sTaskPl156)
+    emitCellDecl(@sCellPersist, @sTaskPl155)
     debug("T0-25,begin,wheel,RIGHT_P16,power,", udec_(T0_25_POWER), ",legs,", udec_(T0R_LEGS), ",cycles,", udec_(T0_25_CYCLES))
 
     benchLog.cogEventBegin()
@@ -2717,6 +2778,7 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
         motor.stop()
         benchLog.cogEventEnd()
         pT0rWheel := @"LEFT"
+        t0rBase := T0_SECOND_BASE
         benchLog.cogEventBegin()
         startResult := motor.start(T0_SECOND_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
         benchLog.cogEventEnd()
@@ -2730,6 +2792,8 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
         t0rTwoCog()
         t0rRotStop()                                            ' PL-151: after EV-STOP's read and EV-TOTAL's count
         t0rEstopStatus()
+        t0rOdometer()                                           ' SRC_REV 22: ODOMETER and MOVEDONE, then PERSIST, which restarts
+        t0rPersist()                                            '  the motor (so it runs last)
     else
         emitCellBool(@sCellSrCmd, @sTaskReporting, pT0rWheel, @sCritSrCmd, FALSE, FALSE, 0)
         emitCellBool(@sCellSrLimit, @sTaskReporting, pT0rWheel, @sCritSrLimit, FALSE, FALSE, 0)
@@ -2741,6 +2805,9 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
         emitCellBool(@sCellEv2Cog, @sTaskReporting, pT0rWheel, @sCritEv2Cog, FALSE, FALSE, 0)
         emitCellBool(@sCellRotStop, @sTaskPl151, pT0rWheel, @sCritRotStop, FALSE, FALSE, 0)
         emitCellBool(@sCellEstopStat, @sTaskPl151, pT0rWheel, @sCritEstopStat, FALSE, FALSE, 0)
+        emitCellBool(@sCellOdometer, @sTaskPl153, pT0rWheel, @sCritOdometer, FALSE, FALSE, 0)
+        emitCellBool(@sCellMoveDone, @sTaskPl156, pT0rWheel, @sCritMoveDone, FALSE, FALSE, 0)
+        emitCellBool(@sCellPersist, @sTaskPl155, pT0rWheel, @sCritPersist, FALSE, FALSE, 0)
     benchLog.cogEventBegin()
     motor.stop()
     motor.getError()                                            ' drain this cog's slot
@@ -3106,6 +3173,149 @@ PRI t0rEstopStatus() | stBefore, stEstop, estopMs, eErr, stClear, clearMs
     debug("T0-25,estopstatus,before,", udec_(stBefore), ",estop,", udec_(stEstop), ",estop_ms,", udec_(estopMs), ",clear,", udec_(stClear), ",clear_ms,", udec_(clearMs), ",err,", sdec_(eErr))
     emitCellBool(@sCellEstopStat, @sTaskPl151, pT0rWheel, @sCritEstopStat, TRUE, (eErr == motor.NO_ERROR) and (stBefore <> motor.DS_ESTOP) and (stBefore <> motor.DS_Unknown) and (stEstop == motor.DS_ESTOP) and (stClear <> motor.DS_ESTOP) and (stClear <> motor.DS_Unknown), 3)
 
+PRI t0rOdometer() | wantTicks, eErr, odo0, odo1, odo2, sr1, sr2, bOpen1, bOpen2, bDone1, bDone2, odoBefore, mmBefore, bEstopDone, odoAfter, mmAfter, bOdoPass
+' R20-T0-ODOMETER (PL-153) and R20-T0-MOVEDONE (PL-156), SRC_REV 22, after R20-T0-ESTOPSTATUS. From rest and a reset
+' odometer, two driveForDistance(T0_25_ODO_CM, DDU_CM) in a row at T0_25_POWER (setMaxSpeedForDistance(), put back to the
+' default after), each waited on with isMoveDone() (t0rOdoMove()); then emergencyCutoff() at rest, held
+' T0_25_ESTOP_HOLD_MS, and clearEmergency(). ODOMETER PASS: every call took, both moves read SR_AT_LIMIT at rest and
+' each travelled the library's own ticks for the distance (ticksForDistance()) within T0_25_ROT_TOL_TICKS -- the
+' second counted from its own start, not the odometer's -- and the odometer is not zeroed by the e-stop: getRotationCount()
+' reads what it read before it (within the tolerance, a settling tick) and getDistance(DDU_MM) no less, and not 0.
+' MOVEDONE PASS: isMoveDone() read FALSE as each move was accepted, TRUE once each ended at rest, and TRUE while
+' e-stopped. The e-stop at rest opens and ends no drive, so it records no EV_STOP. Prints T0-25,odometer and
+' T0-25,movedone.
+'
+' @local wantTicks - T0_25_ODO_CM in hall ticks (ticksForDistance())
+' @local eErr - the first non-zero call return, NO_ERROR when every one took
+' @local odo0 - getRotationCount(DRU_HALL_TICKS) after the reset
+' @local odo1 - ...after the first move
+' @local odo2 - ...after the second
+' @local sr1 - the first move's getStopReason() at its end
+' @local sr2 - the second's
+' @local bOpen1 - isMoveDone() as the first move was accepted
+' @local bOpen2 - ...the second
+' @local bDone1 - the first move ended at rest (DCS_STOPPED) within T0_25_ODO_WAIT_MS
+' @local bDone2 - the second, likewise
+' @local odoBefore - the odometer (hall ticks) before the e-stop
+' @local mmBefore - getDistance(DDU_MM) before it
+' @local bEstopDone - isMoveDone() while e-stopped
+' @local odoAfter - the odometer after clearEmergency()
+' @local mmAfter - getDistance(DDU_MM) after it
+' @local bOdoPass - ODOMETER's verdict
+
+    _, wantTicks := motor.ticksForDistance(T0_25_ODO_CM, motor.DDU_CM)
+    bT0rRest()
+    eErr := motor.setMaxSpeedForDistance(T0_25_POWER)                           ' the moves at T0-25's power, not 75
+    eErr := t0rFirstErr(eErr, motor.resetTracking())
+    odo0 := motor.getRotationCount(motor.DRU_HALL_TICKS)
+    eErr, bOpen1, bDone1, sr1 := t0rOdoMove(eErr)
+    odo1 := motor.getRotationCount(motor.DRU_HALL_TICKS)
+    eErr, bOpen2, bDone2, sr2 := t0rOdoMove(eErr)
+    odo2 := motor.getRotationCount(motor.DRU_HALL_TICKS)
+
+    odoBefore := odo2
+    mmBefore := motor.getDistance(motor.DDU_MM)
+    motor.emergencyCutoff()
+    t0rAwaitStatus(motor.DS_ESTOP, TRUE)
+    waitms(T0_25_ESTOP_HOLD_MS)
+    bEstopDone := motor.isMoveDone()
+    eErr := t0rFirstErr(eErr, motor.clearEmergency())
+    t0rAwaitStatus(motor.DS_ESTOP, FALSE)
+    odoAfter := motor.getRotationCount(motor.DRU_HALL_TICKS)
+    mmAfter := motor.getDistance(motor.DDU_MM)
+    eErr := t0rFirstErr(eErr, motor.setMaxSpeedForDistance(motor.MAX_SPEED_DEFAULT))
+    motor.getError()                                                            ' drain this cog's slot
+
+    bOdoPass := (eErr == motor.NO_ERROR) and (wantTicks > T0_25_ROT_TOL_TICKS) and (sr1 == motor.SR_AT_LIMIT) and (sr2 == motor.SR_AT_LIMIT)
+    bOdoPass &= (abs (odo1 - odo0 - wantTicks) <= T0_25_ROT_TOL_TICKS) and (abs (odo2 - odo1 - wantTicks) <= T0_25_ROT_TOL_TICKS)
+    bOdoPass &= (odoBefore > 0) and (odoAfter >= odoBefore) and (odoAfter - odoBefore <= T0_25_ROT_TOL_TICKS) and (mmAfter >= mmBefore) and (mmAfter > 0)
+    debug("T0-25,odometer,want,", sdec_(wantTicks), ",tol,", udec_(T0_25_ROT_TOL_TICKS), ",move1,", sdec_(odo1 - odo0), ",sr1,", udec_(sr1), ",move2,", sdec_(odo2 - odo1), ",sr2,", udec_(sr2), ",odo_before,", sdec_(odoBefore), ",odo_after,", sdec_(odoAfter), ",mm_before,", sdec_(mmBefore), ",mm_after,", sdec_(mmAfter), ",err,", sdec_(eErr))
+    debug("T0-25,movedone,open1,", zstr_(t0rTF(bOpen1)), ",done1,", zstr_(t0rTF(bDone1)), ",open2,", zstr_(t0rTF(bOpen2)), ",done2,", zstr_(t0rTF(bDone2)), ",estop,", zstr_(t0rTF(bEstopDone)))
+    emitCellBool(@sCellOdometer, @sTaskPl153, pT0rWheel, @sCritOdometer, TRUE, bOdoPass, 3)
+    emitCellBool(@sCellMoveDone, @sTaskPl156, pT0rWheel, @sCritMoveDone, TRUE, (bOpen1 == FALSE) and (bOpen2 == FALSE) and bDone1 and bDone2 and bEstopDone, 5)
+
+PRI t0rOdoMove(eErrIn) : eErr, bOpenDone, bDone, srStop | startMs
+' One ODOMETER move: driveForDistance(T0_25_ODO_CM, DDU_CM), isMoveDone() read at once, then waited on, bounded by
+' T0_25_ODO_WAIT_MS; a move not over by then is stopped here (and fails its cell).
+'
+' @param eErrIn - the first non-zero call return so far
+' @returns eErr - it, or this move's call's
+' @returns bOpenDone - isMoveDone() as the move was accepted (the contract: FALSE)
+' @returns bDone - T/F where T means the move ended within the bound with the driver at rest (DCS_STOPPED)
+' @returns srStop - getStopReason() then
+'
+' @local startMs - getms() when the move was accepted
+
+    eErr := t0rFirstErr(eErrIn, motor.driveForDistance(T0_25_ODO_CM, motor.DDU_CM))
+    bOpenDone := motor.isMoveDone()
+    startMs := getms()
+    repeat until motor.isMoveDone() or ((getms() - startMs) >= T0_25_ODO_WAIT_MS)
+        waitms(READY_POLL_MS)
+    bDone := motor.isMoveDone() and (motor.getDriverState() == motor.DCS_STOPPED)
+    if bDone == FALSE
+        motor.stopMotor()                                                       ' never ended: the harness ends it
+        bT0rRest()
+    srStop := motor.getStopReason()
+
+PRI t0rPersist() | eErr, startResult, bReady, nSpeed, nSpeed4d, bHold, bRev, eHold, eStatus, startMs, bPass
+' R20-T0-PERSIST (PL-155), SRC_REV 22, last in T0-25: it restarts the motor. With the motor STOPPED, setMaxSpeed(),
+' setMaxSpeedForDistance(), holdAtStop(TRUE) and setForwardIsReverse(TRUE); then start() on the same wheel. PASS: every
+' setter took, and after the start the getters read what was set -- T0_25_PERSIST_SPEED, T0_25_PERSIST_DIST, TRUE,
+' TRUE -- and the hold is in force: getHoldStatus() reads HS_HOLDING within T0_25_HOLD_ARM_MS and getStatus()
+' DS_HOLDING (PL-158). NOMEAS when the restart does not come up. Every setting is put back to its default after,
+' whatever happened, since they are now kept across starts. Prints T0-25,persist.
+'
+' @local eErr - the first non-zero setter return, NO_ERROR when every one took
+' @local startResult - the restart's start() return
+' @local bReady - it came up ready
+' @local nSpeed - getMaxSpeed() after it
+' @local nSpeed4d - getMaxSpeedForDistance() after it
+' @local bHold - isHoldAtStop() after it
+' @local bRev - isForwardReversed() after it
+' @local eHold - getHoldStatus() once HS_HOLDING or the bound passed
+' @local eStatus - getStatus() then
+' @local startMs - getms() when that wait began
+' @local bPass - the verdict
+
+    benchLog.cogEventBegin()
+    motor.stop()
+    motor.getError()
+    eErr := motor.setMaxSpeed(T0_25_PERSIST_SPEED)
+    eErr := t0rFirstErr(eErr, motor.setMaxSpeedForDistance(T0_25_PERSIST_DIST))
+    eErr := t0rFirstErr(eErr, motor.holdAtStop(TRUE))
+    eErr := t0rFirstErr(eErr, motor.setForwardIsReverse(TRUE))
+    startResult := motor.start(t0rBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
+    bReady := bWaitReady(startResult)
+    nSpeed := motor.getMaxSpeed()
+    nSpeed4d := motor.getMaxSpeedForDistance()
+    bHold := motor.isHoldAtStop()
+    bRev := motor.isForwardReversed()
+    startMs := getms()
+    repeat
+        eHold, _ := motor.getHoldStatus()
+        if (eHold == motor.HS_HOLDING) or ((getms() - startMs) >= T0_25_HOLD_ARM_MS)
+            quit
+        waitms(READY_POLL_MS)
+    eStatus := motor.getStatus()
+    bPass := (eErr == motor.NO_ERROR) and (nSpeed == T0_25_PERSIST_SPEED) and (nSpeed4d == T0_25_PERSIST_DIST) and bHold and bRev
+    bPass &= (eHold == motor.HS_HOLDING) and (eStatus == motor.DS_HOLDING)
+    motor.setMaxSpeed(motor.MAX_SPEED_DEFAULT)                                  ' back to the defaults: kept across starts now
+    motor.setMaxSpeedForDistance(motor.MAX_SPEED_DEFAULT)
+    motor.holdAtStop(FALSE)
+    motor.setForwardIsReverse(FALSE)
+    motor.getError()
+    debug("T0-25,persist,start_return,", sdec_(startResult), ",speed,", sdec_(nSpeed), ",speed_dist,", sdec_(nSpeed4d), ",hold,", zstr_(t0rTF(bHold)), ",rev,", zstr_(t0rTF(bRev)), ",hold_state,", udec_(eHold), ",status,", udec_(eStatus), ",err,", sdec_(eErr))
+    emitCellBool(@sCellPersist, @sTaskPl155, pT0rWheel, @sCritPersist, bReady, bPass, 5)
+
+PRI t0rTF(bValue) : pText
+' TRUE or FALSE, for a record.
+'
+' @param bValue - T/F
+' @returns pText - pointer to "TRUE" or "FALSE"
+
+    pText := (bValue <> FALSE) ? @"TRUE" : @"FALSE"
+
 PRI t0rAwaitStatus(eStatus, bIs) : eRead, nMs | startMs
 ' Wait, bounded by T0_25_REST_MS, for getStatus() to read eStatus (bIs TRUE) or anything else (bIs FALSE).
 '
@@ -3253,6 +3463,726 @@ PRI t0rLegName(legIdx) : pName
 ' @returns pName - pointer to the name
 
     pName := lookupz(legIdx : @"COMMANDED", @"ATLIMIT", @"ATLIMIT_NEG", @"ESTOP", @"ESTOP_NEG", @"LINKLOST", @"LINKLOST_NEG")
+#endif
+
+#ifdef T0_API
+CON { the API contract (T0-26, -D T0_API only; SRC_REV 22, DRIVER_REV 33) }
+
+' STEPHEN 2026-09-26: "add a couple of rapid tests at the bench to prove that the API methods range check correctly and do
+'  the right thing". One cell per method family; each counts the checked calls whose return or read-back broke the
+'  documented contract, PASS at 0. Every limit below is the library's own public constant, so the table moves with it.
+    T0A_OK          = motor.NO_ERROR
+    T0A_BAD_COUNT   = motor.ERR_BAD_COUNT
+    T0A_BAD_UNITS   = motor.ERR_BAD_UNITS
+    T0A_UNRES       = motor.ERR_LIMIT_UNRESOLVABLE
+    T0A_ACC_MIN     = motor.ACCEL_MIN_MM_S2
+    T0A_ACC_MAX     = motor.ACCEL_MAX_MM_S2
+    T0A_SPD_MIN     = motor.MAX_SPEED_MIN
+    T0A_SPD_MAX     = motor.MAX_SPEED_MAX
+    T0A_SPD_DEF     = motor.MAX_SPEED_DEFAULT
+    T0A_FR_SHIPPED  = motor.FR_SHIPPED
+    T0A_FR_GRADED   = motor.FR_GRADED
+    T0A_RISE_MAX    = motor.HOLD_RISE_MS_MAX
+    T0A_LIMIT_MAX   = motor.HOLD_LIMIT_MS_MAX
+    T0A_CEIL_DEF    = motor.HOLD_CEILING_PCT
+    T0A_RISE_DEF    = motor.HOLD_RISE_MS
+    T0A_LIMIT_DEF   = motor.HOLD_LIMIT_MS
+    T0A_TO_MIN      = motor.CMD_TIMEOUT_MIN_MS
+    T0A_TO_MAX      = motor.CMD_TIMEOUT_MAX_MS
+    T0A_DDU_UNK     = motor.DDU_Unknown                         ' the units enums, for the DAT tables below
+    T0A_DDU_MM      = motor.DDU_MM
+    T0A_DDU_CM      = motor.DDU_CM
+    T0A_DDU_M       = motor.DDU_M
+    T0A_DDU_MI      = motor.DDU_MI
+    T0A_DRU_UNK     = motor.DRU_Unknown
+    T0A_DRU_TICKS   = motor.DRU_HALL_TICKS
+    T0A_DRU_DEG     = motor.DRU_DEGREES
+    T0A_DRU_ROT     = motor.DRU_ROTATIONS
+    T0A_DTU_UNK     = motor.DTU_Unknown
+    T0A_DTU_SEC     = motor.DTU_SEC
+    T0A_TIME_S      = 60                                        ' LIMITS: stopAfterTime()'s accepted case, in s: it never fires here
+    T0A_TIME_TOL_MS = 1_000                                     ' ...its deadline must lie within this of now + T0A_TIME_S
+    T0A_PERSIST_SPD = 40                                        ' PERSIST: setMaxSpeed() before start(), not the default 75
+    T0A_PERSIST_DST = 30                                        ' ...setMaxSpeedForDistance(), different again
+    T0A_STATUS_MS   = 500                                       ' HOLD: bound on getStatus() following holdAtStop() at rest
+    ' each table's rows (DAT below): a row added there is counted here
+    T0A_ACCEL_ROWS  = 5
+    T0A_SPEED_ROWS  = 6
+    T0A_FAULT_ROWS  = 7
+    T0A_HOLD_ROWS   = 8
+    T0A_TIMEOUT_ROWS = 6
+    T0A_DIST_ROWS   = 6
+    T0A_ROT_ROWS    = 9
+    T0A_TIME_ROWS   = 4
+
+DAT { the API contract's tables (T0-26) -- one row per checked call; add a row to check one more value }
+
+' ACCEL: setAcceleration(rate) -> its return. EXTEND HERE for the ramp change: a deceleration setter gets a table of its
+'  own and a loop in t0aAccel() beside this one, judged the same way.
+t0aAccelTab     LONG    T0A_ACC_MIN,        T0A_OK
+                LONG    T0A_ACC_MAX,        T0A_OK
+                LONG    T0A_ACC_MIN - 1,    T0A_BAD_COUNT
+                LONG    T0A_ACC_MAX + 1,    T0A_BAD_COUNT
+                LONG    -1,                 T0A_BAD_COUNT
+
+' MAXSPEED: setMaxSpeed(value) and setMaxSpeedForDistance(value) -> NO_ERROR always, and the getter reads the value
+'  SATURATED to [1..100] (the documented contract: these saturate, they do not refuse). The last row puts the default back.
+t0aSpeedTab     LONG    T0A_SPD_MIN,        T0A_SPD_MIN
+                LONG    T0A_SPD_MAX,        T0A_SPD_MAX
+                LONG    T0A_SPD_MIN - 1,    T0A_SPD_MIN
+                LONG    T0A_SPD_MAX + 1,    T0A_SPD_MAX
+                LONG    -5,                 T0A_SPD_MIN
+                LONG    T0A_SPD_DEF,        T0A_SPD_DEF
+
+' FAULTRESP: setFaultResponse(mode, pct) -> its return; which argument the row varies (0 mode, 1 pct)
+t0aFaultTab     LONG    T0A_FR_SHIPPED,     0,      T0A_OK,         1
+                LONG    T0A_FR_GRADED,      100,    T0A_OK,         1
+                LONG    T0A_FR_GRADED,      10,     T0A_OK,         0
+                LONG    T0A_FR_GRADED + 1,  10,     T0A_BAD_COUNT,  0
+                LONG    -1,                 10,     T0A_BAD_COUNT,  0
+                LONG    T0A_FR_SHIPPED,     -1,     T0A_BAD_COUNT,  1
+                LONG    T0A_FR_GRADED,      101,    T0A_BAD_COUNT,  1
+
+' HOLDLIMITS: setHoldLimits(ceiling, rise, limit) -> its return; which argument the row varies (0 ceiling, 1 rise, 2 limit)
+t0aHoldTab      LONG    1,              1,                  1,                  T0A_OK,         0
+                LONG    100,            T0A_RISE_MAX,       T0A_LIMIT_MAX,      T0A_OK,         0
+                LONG    0,              T0A_RISE_DEF,       T0A_LIMIT_DEF,      T0A_BAD_COUNT,  0
+                LONG    101,            T0A_RISE_DEF,       T0A_LIMIT_DEF,      T0A_BAD_COUNT,  0
+                LONG    T0A_CEIL_DEF,   0,                  T0A_LIMIT_DEF,      T0A_BAD_COUNT,  1
+                LONG    T0A_CEIL_DEF,   T0A_RISE_MAX + 1,   T0A_LIMIT_DEF,      T0A_BAD_COUNT,  1
+                LONG    T0A_CEIL_DEF,   T0A_RISE_DEF,       0,                  T0A_BAD_COUNT,  2
+                LONG    T0A_CEIL_DEF,   T0A_RISE_DEF,       T0A_LIMIT_MAX + 1,  T0A_BAD_COUNT,  2
+
+' TIMEOUT: setCommandTimeout(ms) -> its return; the last row turns it off again
+t0aTimeoutTab   LONG    T0A_TO_MIN,         T0A_OK
+                LONG    T0A_TO_MAX,         T0A_OK
+                LONG    T0A_TO_MIN - 1,     T0A_BAD_COUNT
+                LONG    T0A_TO_MAX + 1,     T0A_BAD_COUNT
+                LONG    -1,                 T0A_BAD_COUNT
+                LONG    0,                  T0A_OK
+
+' LIMITS: stopAfterDistance(n, units) and driveForDistance(n, units) -> their return (driveForDistance() is checked on
+'  its refusals only: an accepted one moves the wheel)
+t0aDistTab      LONG    1,      T0A_DDU_M,          T0A_OK
+                LONG    0,      T0A_DDU_CM,         T0A_BAD_COUNT
+                LONG    1,      T0A_DDU_UNK,        T0A_BAD_UNITS
+                LONG    1,      T0A_DDU_MI + 1,     T0A_BAD_UNITS
+                LONG    1,      T0A_DDU_MM,         T0A_UNRES
+                LONG    POSX,   T0A_DDU_MI,         T0A_BAD_COUNT
+
+' LIMITS / STEER: stopAfterRotation(n, units) -> its return; ticks are worked out from the motor's own geometry
+t0aRotTab       LONG    1,      T0A_DRU_TICKS,      T0A_OK
+                LONG    1,      T0A_DRU_ROT,        T0A_OK
+                LONG    90,     T0A_DRU_DEG,        T0A_OK
+                LONG    0,      T0A_DRU_TICKS,      T0A_BAD_COUNT
+                LONG    1,      T0A_DRU_UNK,        T0A_BAD_UNITS
+                LONG    1,      T0A_DRU_ROT + 1,    T0A_BAD_UNITS
+                LONG    POSX,   T0A_DRU_ROT,        T0A_BAD_COUNT
+                LONG    1,      T0A_DRU_DEG,        T0A_OK
+                LONG    2,      T0A_DRU_DEG,        T0A_OK
+
+' LIMITS: stopAfterTime(n, units) -> its return
+t0aTimeTab      LONG    T0A_TIME_S,     T0A_DTU_SEC,        T0A_OK
+                LONG    0,              T0A_DTU_SEC,        T0A_BAD_COUNT
+                LONG    1,              T0A_DTU_UNK,        T0A_BAD_UNITS
+                LONG    1,              T0A_DTU_SEC + 1,    T0A_BAD_UNITS
+
+sTaskApi        BYTE    "API-0926", 0                           ' the owner's scope of 2026-09-26; no todo-mcp task was named
+sCritApi        BYTE    "BAD_CALLS_ZERO", 0
+sUnitsApi       BYTE    "CALLS", 0
+sCellApiCal     BYTE    "R20-T0-API-CALIBRATE", 0               ' calibrate(): ERR_NOT_IMPLEMENTED, on both objects (PL-159)
+sCellApiPers    BYTE    "R20-T0-API-PERSIST", 0                 ' kept settings survive start() and a restart; protective ones reset (PL-155)
+sCellApiAccel   BYTE    "R20-T0-API-ACCEL", 0                   ' setAcceleration()
+sCellApiSpeed   BYTE    "R20-T0-API-MAXSPEED", 0                ' setMaxSpeed(), setMaxSpeedForDistance()
+sCellApiHold    BYTE    "R20-T0-API-HOLD", 0                    ' holdAtStop(), setForwardIsReverse(), forwardIsReverse()
+sCellApiFault   BYTE    "R20-T0-API-FAULTRESP", 0               ' setFaultResponse()
+sCellApiHLim    BYTE    "R20-T0-API-HOLDLIMITS", 0              ' setHoldLimits()
+sCellApiTo      BYTE    "R20-T0-API-TIMEOUT", 0                 ' setCommandTimeout()
+sCellApiLim     BYTE    "R20-T0-API-LIMITS", 0                  ' stopAfterDistance(), stopAfterRotation(), stopAfterTime(), driveForDistance()'s refusals
+sCellApiSteer   BYTE    "R20-T0-API-STEER", 0                   ' the steering object's own validation: timeout, fault, hold limits, limits
+
+VAR { the API contract's running count (T0-26) }
+
+    LONG    t0aBad                                              ' the family's checked calls that broke the contract
+    LONG    t0aChecks                                           ' the family's checked calls
+
+PRI testT0_26() | bReady
+' T0-26, the API contract (-D T0_API only, tier t0-api): wheels up, unattended, NO MOTION -- every start() commands zero
+' speed, and the only drive command sent is refused. Under a minute: three starts, about 1.3 s each, and a few hundred
+' bounded calls. setStartChecks(FALSE) on both objects first: this tier checks the API, not the bridges, so a start check
+' failing (PL-120's dead right bridge) does not void it; it is put back to TRUE at the end.
+'
+' THE CELLS, one per method family, each measured as the checked calls that broke the documented contract (a record
+' T0-26,chk per call: the method, the value, the ERR_* wanted and got, and the read-back wanted and got), PASS at 0.
+' Each can FAIL: a setter whose range check were removed returns NO_ERROR where its ERR_* is wanted, and changes the
+' read-back; a setter that did not store reads back its old value.
+'   R20-T0-API-CALIBRATE  - calibrate() on the motor and the steering object returns ERR_NOT_IMPLEMENTED and records it
+'   R20-T0-API-PERSIST    - with the motor stopped: max speeds, the hold and the reversal are accepted and read back; the
+'                           protective setters are refused (ERR_NOT_STARTED); after start(), and after a second
+'                           stop()/start(), the kept ones read back and the protective ones read their defaults
+'   R20-T0-API-ACCEL      - setAcceleration() at [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] gives a constant ramp; just outside,
+'                           and negative, ERR_BAD_COUNT with the ramp unchanged
+'   R20-T0-API-MAXSPEED   - setMaxSpeed() and setMaxSpeedForDistance() return NO_ERROR and read back the value saturated to
+'                           [1..100]
+'   R20-T0-API-HOLD       - holdAtStop(TRUE/FALSE) reads back through isHoldAtStop(), and getStatus() follows it at rest
+'                           (DS_HOLDING / DS_OFF); forwardIsReverse(), setForwardIsReverse(TRUE/FALSE/non-zero) read back
+'   R20-T0-API-FAULTRESP  - setFaultResponse(): both modes and 0/100 % accepted and read back; a bad mode or % refused,
+'                           unchanged
+'   R20-T0-API-HOLDLIMITS - setHoldLimits(): each argument's two ends accepted, each one step outside refused, unchanged
+'   R20-T0-API-TIMEOUT    - setCommandTimeout(): 0 and [MIN..MAX] accepted and read back; just outside refused, unchanged
+'   R20-T0-API-LIMITS     - at rest: stopAfterDistance(), stopAfterRotation() (DRU_DEGREES rounds to the nearest tick,
+'                           PL-158) and stopAfterTime() arm what they say and refuse count, unit and resolution errors
+'                           with the armed limit unchanged; driveForDistance() refuses the same and drives nothing
+'   R20-T0-API-STEER      - the steering object's own validation, the same way, on both wheels (3 cogs)
+'
+' @local startResult - a start()'s return
+' @local bReady - the motor came up ready
+
+    emitCellDecl(@sCellApiCal, @sTaskApi)
+    emitCellDecl(@sCellApiPers, @sTaskApi)
+    emitCellDecl(@sCellApiAccel, @sTaskApi)
+    emitCellDecl(@sCellApiSpeed, @sTaskApi)
+    emitCellDecl(@sCellApiHold, @sTaskApi)
+    emitCellDecl(@sCellApiFault, @sTaskApi)
+    emitCellDecl(@sCellApiHLim, @sTaskApi)
+    emitCellDecl(@sCellApiTo, @sTaskApi)
+    emitCellDecl(@sCellApiLim, @sTaskApi)
+    emitCellDecl(@sCellApiSteer, @sTaskApi)
+    debug("T0-26,begin,wheel,RIGHT_P16,driver_rev,", udec_(motor.DRIVER_REV))
+    motor.setStartChecks(FALSE)
+    steer.setStartChecks(FALSE)
+
+    t0aCalibrate()
+    bReady := bT0aPersist()                                      ' leaves the motor started when it came up
+    if bReady
+        t0aAccel()
+        t0aSpeed()
+        t0aHold()
+        t0aFault()
+        t0aHoldLimits()
+        t0aTimeout()
+        t0aLimits()
+    else
+        t0aNoMeas(@sCellApiAccel)
+        t0aNoMeas(@sCellApiSpeed)
+        t0aNoMeas(@sCellApiHold)
+        t0aNoMeas(@sCellApiFault)
+        t0aNoMeas(@sCellApiHLim)
+        t0aNoMeas(@sCellApiTo)
+        t0aNoMeas(@sCellApiLim)
+    benchLog.cogEventBegin()
+    motor.stop()
+    motor.getError()
+    t0aSteer()
+    motor.setStartChecks(TRUE)
+    steer.setStartChecks(TRUE)
+    debug("T0-26,end")
+
+PRI t0aChk(pWhat, nValue, eWant, eGot, rbWant, rbGot)
+' One checked call: its record, and one more bad call when its return or its read-back is not what the contract says.
+' One debug() record serves every check in T0-26 (DBG-2).
+'
+' @param pWhat - pointer to the method (and, for a many-argument call, the argument varied)
+' @param nValue - the value given
+' @param eWant - the return the contract promises
+' @param eGot - the return
+' @param rbWant - the read-back the contract promises (a value, or TRUE for a read-back judged as a whole)
+' @param rbGot - the read-back
+
+    t0aChecks++
+    if (eGot <> eWant) or (rbGot <> rbWant)
+        t0aBad++
+    debug("T0-26,chk,", zstr_(pWhat), ",v,", sdec_(nValue), ",want,", sdec_(eWant), ",got,", sdec_(eGot), ",rb_want,", sdec_(rbWant), ",rb,", sdec_(rbGot))
+
+PRI t0aCell(pCell, pMotor, bMeasured)
+' Emit a family's cell from its count, and start the next family's count from 0.
+'
+' @param pCell - pointer to the cell id
+' @param pMotor - pointer to the motor token
+' @param bMeasured - T/F where F makes it NOMEAS
+
+    emitCellNum(pCell, @sTaskApi, pMotor, @sCritApi, bMeasured, t0aBad, 0, 0, @sUnitsApi, t0aChecks, (t0aBad == 0) ? @"PASS" : @"FAIL")
+    t0aBad := 0
+    t0aChecks := 0
+
+PRI t0aNoMeas(pCell)
+' A family that could not run (its motor did not come up): NOMEAS.
+'
+' @param pCell - pointer to the cell id
+
+    t0aBad := 0
+    t0aChecks := 0
+    t0aCell(pCell, @"RIGHT", FALSE)
+
+PRI t0aCalibrate() | eGot, eLeft
+' R20-T0-API-CALIBRATE: calibrate() is not implemented (PL-159) -- ERR_NOT_IMPLEMENTED, recorded for getError() -- on the
+' motor object and on the steering object, neither started.
+'
+' @local eGot - a calibrate()'s return
+' @local eLeft - the steering object's left-wheel getError() result after its calibrate()
+
+    t0aBad := 0
+    t0aChecks := 0
+    motor.getError()
+    eGot := motor.calibrate()
+    t0aChk(@"calibrate", 0, motor.ERR_NOT_IMPLEMENTED, eGot, motor.ERR_NOT_IMPLEMENTED, motor.getError())
+    steer.getError()
+    eGot := steer.calibrate()
+    _, eLeft, _ := steer.getError()
+    t0aChk(@"steer.calibrate", 0, motor.ERR_NOT_IMPLEMENTED, eGot, motor.ERR_NOT_IMPLEMENTED, eLeft)
+    t0aCell(@sCellApiCal, @"BOTH", TRUE)
+
+PRI bT0aPersist() : bReady | startResult, passIdx, eGot
+' R20-T0-API-PERSIST (PL-155). With `motor` stopped: the kept setters are accepted and read back at once; the protective
+' setters are refused with ERR_NOT_STARTED. Then start(), stop() and start() again: after each start the kept settings
+' read back and the protective ones read their defaults (getCommandTimeout() 0, the default fault response and hold
+' limits). NEGATIVE: the pre-33 start() reset the kept ones to 75, 75, coast and not reversed, which fails. Leaves the
+' motor started and every kept setting back at its default. NOMEAS when a start does not come up. (Each setter is
+' called on a line of its own, then its getter: a read-back never depends on argument evaluation order.)
+'
+' @returns bReady - the motor is started (the last start came up)
+'
+' @local startResult - a start()'s return
+' @local passIdx - 1 after the first start, 2 after the restart
+' @local eGot - a setter's return
+
+    t0aBad := 0
+    t0aChecks := 0
+    motor.getError()
+    eGot := motor.setMaxSpeed(T0A_PERSIST_SPD)
+    t0aChk(@"setMaxSpeed.stopped", T0A_PERSIST_SPD, T0A_OK, eGot, T0A_PERSIST_SPD, motor.getMaxSpeed())
+    eGot := motor.setMaxSpeedForDistance(T0A_PERSIST_DST)
+    t0aChk(@"setMaxSpeedForDistance.stopped", T0A_PERSIST_DST, T0A_OK, eGot, T0A_PERSIST_DST, motor.getMaxSpeedForDistance())
+    eGot := motor.holdAtStop(TRUE)
+    t0aChk(@"holdAtStop.stopped", TRUE, T0A_OK, eGot, TRUE, motor.isHoldAtStop())
+    eGot := motor.setForwardIsReverse(TRUE)
+    t0aChk(@"setForwardIsReverse.stopped", TRUE, T0A_OK, eGot, TRUE, motor.isForwardReversed())
+    eGot := motor.setCommandTimeout(T0A_TO_MIN)
+    t0aChk(@"setCommandTimeout.stopped", T0A_TO_MIN, motor.ERR_NOT_STARTED, eGot, 0, motor.getCommandTimeout())
+    eGot := motor.setFaultResponse(T0A_FR_SHIPPED, 50)
+    t0aChk(@"setFaultResponse.stopped", T0A_FR_SHIPPED, motor.ERR_NOT_STARTED, eGot, 0, 0)
+    eGot := motor.setHoldLimits(50, T0A_RISE_DEF, T0A_LIMIT_DEF)
+    t0aChk(@"setHoldLimits.stopped", 50, motor.ERR_NOT_STARTED, eGot, 0, 0)
+    bReady := TRUE
+    repeat passIdx from 1 to 2
+        benchLog.cogEventBegin()
+        motor.stop()                                                            ' the first: a no-op on a stopped motor
+        startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+        benchLog.cogEventEnd()
+        bReady &= bWaitReady(startResult)
+        debug("T0-26,persist,start,", udec_(passIdx), ",return,", sdec_(startResult))
+        t0aChk(@"getMaxSpeed.started", passIdx, T0A_OK, T0A_OK, T0A_PERSIST_SPD, motor.getMaxSpeed())
+        t0aChk(@"getMaxSpeedForDistance.started", passIdx, T0A_OK, T0A_OK, T0A_PERSIST_DST, motor.getMaxSpeedForDistance())
+        t0aChk(@"isHoldAtStop.started", passIdx, T0A_OK, T0A_OK, TRUE, motor.isHoldAtStop())
+        t0aChk(@"isForwardReversed.started", passIdx, T0A_OK, T0A_OK, TRUE, motor.isForwardReversed())
+        t0aChk(@"getCommandTimeout.started", passIdx, T0A_OK, T0A_OK, 0, motor.getCommandTimeout())
+        t0aChk(@"getFaultResponse.started", passIdx, T0A_OK, T0A_OK, TRUE, bFaultIs(motor.FAULT_RESPONSE_DEFAULT, motor.BRAKE_PCT_DEFAULT))
+        t0aChk(@"getHoldLimits.started", passIdx, T0A_OK, T0A_OK, TRUE, bHoldLimitsAre(T0A_CEIL_DEF, T0A_RISE_DEF, T0A_LIMIT_DEF))
+    motor.setMaxSpeed(T0A_SPD_DEF)                                              ' the defaults again: kept across starts now
+    motor.setMaxSpeedForDistance(T0A_SPD_DEF)
+    motor.holdAtStop(FALSE)
+    motor.setForwardIsReverse(FALSE)
+    motor.getError()
+    t0aCell(@sCellApiPers, @"RIGHT", bReady)
+
+PRI bFaultIs(eMode, brakePct) : bSame | eGotMode, nGotPct
+' Report whether `motor`'s fault response reads back as given.
+'
+' @param eMode - the FR_* expected
+' @param brakePct - the % expected
+' @returns bSame - TRUE when both read back equal
+'
+' @local eGotMode - getFaultResponse()'s mode
+' @local nGotPct - its %
+
+    eGotMode, nGotPct := motor.getFaultResponse()
+    bSame := (eGotMode == eMode) and (nGotPct == brakePct)
+
+PRI bHoldLimitsAre(ceilingPct, riseMs, limitMs) : bSame | nCeil, nRise, nLimit
+' Report whether `motor`'s hold limits read back as given.
+'
+' @param ceilingPct - the ceiling expected
+' @param riseMs - the rise expected
+' @param limitMs - the time limit expected
+' @returns bSame - TRUE when all three read back equal
+'
+' @local nCeil - getHoldLimits()'s ceiling
+' @local nRise - its rise
+' @local nLimit - its time limit
+
+    nCeil, nRise, nLimit := motor.getHoldLimits()
+    bSame := (nCeil == ceilingPct) and (nRise == riseMs) and (nLimit == limitMs)
+
+PRI t0aAccel() | minD, maxD, incD, decD, rowIdx, nRate, eWant, eGot, nMin, nMax, nInc, nDec, rMin, rMax, rInc, rDec, bOk
+' R20-T0-API-ACCEL: setAcceleration() per t0aAccelTab. Accepted: a constant ramp -- ramp_min = ramp_max > 0, ramp_inc 0,
+' ramp_down untouched. Refused: ERR_BAD_COUNT and the ramp exactly as it was. The default ramp is put back after.
+'
+' @local minD - the ramp's ramp_min before the family
+' @local maxD - ...ramp_max
+' @local incD - ...ramp_inc
+' @local decD - ...ramp_down
+' @local rowIdx - the table row
+' @local nRate - the row's rate
+' @local eWant - the row's return
+' @local eGot - setAcceleration()'s return
+' @local nMin - ramp_min just before the call
+' @local nMax - ramp_max just before
+' @local nInc - ramp_inc just before
+' @local nDec - ramp_down just before
+' @local rMin - ramp_min after
+' @local rMax - ramp_max after
+' @local rInc - ramp_inc after
+' @local rDec - ramp_down after
+' @local bOk - the read-back held
+
+    minD, maxD, incD, decD := motor.getRampingValues()
+    repeat rowIdx from 0 to T0A_ACCEL_ROWS - 1
+        nRate := long[@t0aAccelTab][rowIdx * 2]
+        eWant := long[@t0aAccelTab][rowIdx * 2 + 1]
+        nMin, nMax, nInc, nDec := motor.getRampingValues()
+        eGot := motor.setAcceleration(nRate)
+        rMin, rMax, rInc, rDec := motor.getRampingValues()
+        if eWant == T0A_OK
+            bOk := (rMin == rMax) and (rMin > 0) and (rInc == 0) and (rDec == nDec)
+        else
+            bOk := (rMin == nMin) and (rMax == nMax) and (rInc == nInc) and (rDec == nDec)
+        t0aChk(@"setAcceleration", nRate, eWant, eGot, TRUE, bOk)
+    motor.setRampingValues(minD, maxD, incD, decD)
+    motor.getError()
+    t0aCell(@sCellApiAccel, @"RIGHT", TRUE)
+
+PRI t0aSpeed() | rowIdx, nValue, nWant, eGot
+' R20-T0-API-MAXSPEED: both max-speed setters per t0aSpeedTab -- NO_ERROR, and the getter reads the saturated value. The
+' table's last row puts the default back.
+'
+' @local rowIdx - the table row
+' @local nValue - the value given
+' @local nWant - the value the getter must read
+' @local eGot - a setter's return
+
+    repeat rowIdx from 0 to T0A_SPEED_ROWS - 1
+        nValue := long[@t0aSpeedTab][rowIdx * 2]
+        nWant := long[@t0aSpeedTab][rowIdx * 2 + 1]
+        eGot := motor.setMaxSpeed(nValue)
+        t0aChk(@"setMaxSpeed", nValue, T0A_OK, eGot, nWant, motor.getMaxSpeed())
+        eGot := motor.setMaxSpeedForDistance(nValue)
+        t0aChk(@"setMaxSpeedForDistance", nValue, T0A_OK, eGot, nWant, motor.getMaxSpeedForDistance())
+    t0aCell(@sCellApiSpeed, @"RIGHT", TRUE)
+
+PRI t0aHold() | eGot
+' R20-T0-API-HOLD: holdAtStop() and the reversal, at rest. holdAtStop(TRUE) reads back TRUE and getStatus() reaches
+' DS_HOLDING (the hold at rest, PL-158); FALSE reads back FALSE and DS_OFF. forwardIsReverse(), and setForwardIsReverse()
+' with FALSE, a non-zero value (T) and FALSE again, read back; it ends FALSE, the default.
+'
+' @local eGot - a setter's return
+
+    eGot := motor.holdAtStop(TRUE)
+    t0aChk(@"holdAtStop", TRUE, T0A_OK, eGot, TRUE, motor.isHoldAtStop())
+    t0aChk(@"holdAtStop.status", TRUE, T0A_OK, eGot, motor.DS_HOLDING, t0aStatusBecomes(motor.DS_HOLDING))
+    eGot := motor.holdAtStop(FALSE)
+    t0aChk(@"holdAtStop", FALSE, T0A_OK, eGot, FALSE, motor.isHoldAtStop())
+    t0aChk(@"holdAtStop.status", FALSE, T0A_OK, eGot, motor.DS_OFF, t0aStatusBecomes(motor.DS_OFF))
+    eGot := motor.forwardIsReverse()
+    t0aChk(@"forwardIsReverse", TRUE, T0A_OK, eGot, TRUE, motor.isForwardReversed())
+    eGot := motor.setForwardIsReverse(FALSE)
+    t0aChk(@"setForwardIsReverse", FALSE, T0A_OK, eGot, FALSE, motor.isForwardReversed())
+    eGot := motor.setForwardIsReverse(5)
+    t0aChk(@"setForwardIsReverse", 5, T0A_OK, eGot, TRUE, motor.isForwardReversed())
+    eGot := motor.setForwardIsReverse(FALSE)
+    t0aChk(@"setForwardIsReverse", FALSE, T0A_OK, eGot, FALSE, motor.isForwardReversed())
+    t0aCell(@sCellApiHold, @"RIGHT", TRUE)
+
+PRI t0aStatusBecomes(eStatus) : eRead | startMs
+' Wait, bounded by T0A_STATUS_MS, for `motor`'s getStatus() to read eStatus (the front cog arms the hold on its next pass).
+'
+' @param eStatus - the DS_* waited for
+' @returns eRead - getStatus() when the wait ended
+'
+' @local startMs - getms() when the wait began
+
+    startMs := getms()
+    repeat
+        eRead := motor.getStatus()
+        if (eRead == eStatus) or ((getms() - startMs) >= T0A_STATUS_MS)
+            quit
+        waitms(READY_POLL_MS)
+
+PRI t0aFault() | rowIdx, eMode, nPct, eWant, eGot, eModeWas, nPctWas, bModeRow
+' R20-T0-API-FAULTRESP: setFaultResponse() per t0aFaultTab. Accepted: getFaultResponse() reads what was set. Refused:
+' ERR_BAD_COUNT and it reads what it read before. The default is put back after.
+'
+' @local rowIdx - the table row
+' @local eMode - the row's mode
+' @local nPct - the row's %
+' @local eWant - the row's return
+' @local eGot - setFaultResponse()'s return
+' @local eModeWas - the mode before the call
+' @local nPctWas - the % before the call
+' @local bModeRow - T/F where T means the row varies the mode, F the %
+
+    repeat rowIdx from 0 to T0A_FAULT_ROWS - 1
+        eMode := long[@t0aFaultTab][rowIdx * 4]
+        nPct := long[@t0aFaultTab][rowIdx * 4 + 1]
+        eWant := long[@t0aFaultTab][rowIdx * 4 + 2]
+        bModeRow := (long[@t0aFaultTab][rowIdx * 4 + 3] == 0)
+        eModeWas, nPctWas := motor.getFaultResponse()
+        eGot := motor.setFaultResponse(eMode, nPct)
+        if eWant == T0A_OK
+            t0aChk(bModeRow ? @"setFaultResponse.mode" : @"setFaultResponse.pct", bModeRow ? eMode : nPct, eWant, eGot, TRUE, bFaultIs(eMode, nPct))
+        else
+            t0aChk(bModeRow ? @"setFaultResponse.mode" : @"setFaultResponse.pct", bModeRow ? eMode : nPct, eWant, eGot, TRUE, bFaultIs(eModeWas, nPctWas))
+    motor.setFaultResponse(motor.FAULT_RESPONSE_DEFAULT, motor.BRAKE_PCT_DEFAULT)
+    motor.getError()
+    t0aCell(@sCellApiFault, @"RIGHT", TRUE)
+
+PRI t0aHoldLimits() | rowIdx, nCeil, nRise, nLimit, eWant, eGot, cWas, rWas, lWas, eArg
+' R20-T0-API-HOLDLIMITS: setHoldLimits() per t0aHoldTab. Accepted: getHoldLimits() reads what was set. Refused:
+' ERR_BAD_COUNT and it reads what it read before. The defaults are put back after.
+'
+' @local rowIdx - the table row
+' @local nCeil - the row's ceiling
+' @local nRise - its rise
+' @local nLimit - its time limit
+' @local eWant - its return
+' @local eGot - setHoldLimits()'s return
+' @local cWas - the ceiling before the call
+' @local rWas - the rise before
+' @local lWas - the time limit before
+' @local eArg - which argument the row varies: 0 ceiling, 1 rise, 2 limit
+
+    repeat rowIdx from 0 to T0A_HOLD_ROWS - 1
+        nCeil := long[@t0aHoldTab][rowIdx * 5]
+        nRise := long[@t0aHoldTab][rowIdx * 5 + 1]
+        nLimit := long[@t0aHoldTab][rowIdx * 5 + 2]
+        eWant := long[@t0aHoldTab][rowIdx * 5 + 3]
+        eArg := long[@t0aHoldTab][rowIdx * 5 + 4]
+        cWas, rWas, lWas := motor.getHoldLimits()
+        eGot := motor.setHoldLimits(nCeil, nRise, nLimit)
+        if eWant == T0A_OK
+            t0aChk(lookupz(eArg : @"setHoldLimits.ceiling", @"setHoldLimits.rise", @"setHoldLimits.limit"), lookupz(eArg : nCeil, nRise, nLimit), eWant, eGot, TRUE, bHoldLimitsAre(nCeil, nRise, nLimit))
+        else
+            t0aChk(lookupz(eArg : @"setHoldLimits.ceiling", @"setHoldLimits.rise", @"setHoldLimits.limit"), lookupz(eArg : nCeil, nRise, nLimit), eWant, eGot, TRUE, bHoldLimitsAre(cWas, rWas, lWas))
+    motor.setHoldLimits(T0A_CEIL_DEF, T0A_RISE_DEF, T0A_LIMIT_DEF)
+    motor.getError()
+    t0aCell(@sCellApiHLim, @"RIGHT", TRUE)
+
+PRI t0aTimeout() | rowIdx, nMs, eWant, nWas, eGot
+' R20-T0-API-TIMEOUT: setCommandTimeout() per t0aTimeoutTab. Accepted: getCommandTimeout() reads it. Refused:
+' ERR_BAD_COUNT and it reads what it read before. The last row turns it off. Nothing is driven, so no timeout fires.
+'
+' @local rowIdx - the table row
+' @local nMs - the row's timeout
+' @local eWant - its return
+' @local nWas - getCommandTimeout() before the call
+' @local eGot - setCommandTimeout()'s return
+
+    repeat rowIdx from 0 to T0A_TIMEOUT_ROWS - 1
+        nMs := long[@t0aTimeoutTab][rowIdx * 2]
+        eWant := long[@t0aTimeoutTab][rowIdx * 2 + 1]
+        nWas := motor.getCommandTimeout()
+        eGot := motor.setCommandTimeout(nMs)
+        t0aChk(@"setCommandTimeout", nMs, eWant, eGot, (eWant == T0A_OK) ? nMs : nWas, motor.getCommandTimeout())
+    motor.getError()
+    t0aCell(@sCellApiTo, @"RIGHT", TRUE)
+
+PRI t0aLimits() | rowIdx, nCount, eUnits, eWant, eGot, nWas, nTicks, msWas
+' R20-T0-API-LIMITS, at rest: stopAfterDistance() per t0aDistTab, stopAfterRotation() per t0aRotTab and stopAfterTime()
+' per t0aTimeTab. Accepted: the armed limit reads back (testGetStopHallTicks(): the library's own ticksForDistance()
+' or ticksForRotation() figure; testGetStopMs(): now + the time, within T0A_TIME_TOL_MS). Refused: the return wanted
+' and the armed limit exactly as before. driveForDistance() per t0aDistTab's refusals: its ERR_* and nothing armed or
+' driven (the armed ticks as before, getPower() 0). The rotation rows' ticks, and whether a DRU_DEGREES row resolves at
+' all, are worked out from the motor's own degrees per tick, to the NEAREST tick (PL-158): 90 degrees is 23 ticks on
+' the 6.5" wheel (22 truncated, the pre-33 driver), 1 degree is unresolvable there and 2 degrees is 1 tick. Nothing is
+' driven; the limits stay armed until stop() clears them.
+'
+' @local rowIdx - the table row
+' @local nCount - the row's count
+' @local eUnits - its units
+' @local eWant - its return
+' @local eGot - the call's return
+' @local nWas - testGetStopHallTicks() before the call
+' @local nTicks - the ticks an accepted row arms
+' @local msWas - testGetStopMs() before a time call
+
+    repeat rowIdx from 0 to T0A_DIST_ROWS - 1
+        nCount := long[@t0aDistTab][rowIdx * 3]
+        eUnits := long[@t0aDistTab][rowIdx * 3 + 1]
+        eWant := long[@t0aDistTab][rowIdx * 3 + 2]
+        nWas := motor.testGetStopHallTicks()
+        _, nTicks := motor.ticksForDistance(nCount, eUnits)
+        eGot := motor.stopAfterDistance(nCount, eUnits)
+        t0aChk(@"stopAfterDistance", nCount, eWant, eGot, (eWant == T0A_OK) ? nTicks : nWas, motor.testGetStopHallTicks())
+        if eWant <> T0A_OK
+            nWas := motor.testGetStopHallTicks()
+            eGot := motor.driveForDistance(nCount, eUnits)
+            t0aChk(@"driveForDistance", nCount, eWant, eGot, TRUE, (motor.testGetStopHallTicks() == nWas) and (motor.getPower() == 0))
+    repeat rowIdx from 0 to T0A_ROT_ROWS - 1
+        nCount := long[@t0aRotTab][rowIdx * 3]
+        eUnits := long[@t0aRotTab][rowIdx * 3 + 1]
+        eWant, nTicks := t0aRotWant(nCount, eUnits, long[@t0aRotTab][rowIdx * 3 + 2])
+        nWas := motor.testGetStopHallTicks()
+        eGot := motor.stopAfterRotation(nCount, eUnits)
+        t0aChk(@"stopAfterRotation", nCount, eWant, eGot, (eWant == T0A_OK) ? nTicks : nWas, motor.testGetStopHallTicks())
+    repeat rowIdx from 0 to T0A_TIME_ROWS - 1
+        nCount := long[@t0aTimeTab][rowIdx * 3]
+        eUnits := long[@t0aTimeTab][rowIdx * 3 + 1]
+        eWant := long[@t0aTimeTab][rowIdx * 3 + 2]
+        msWas := motor.testGetStopMs()
+        eGot := motor.stopAfterTime(nCount, eUnits)
+        if eWant == T0A_OK
+            t0aChk(@"stopAfterTime", nCount, eWant, eGot, TRUE, abs (motor.testGetStopMs() - getms() - nCount * 1_000) <= T0A_TIME_TOL_MS)
+        else
+            t0aChk(@"stopAfterTime", nCount, eWant, eGot, msWas, motor.testGetStopMs())
+    motor.getError()
+    t0aCell(@sCellApiLim, @"RIGHT", TRUE)
+
+PRI t0aRotWant(nCount, eUnits, eTabWant) : eWant, nTicks | degreesPerTic, ticsPerRotation
+' The return and the ticks a stopAfterRotation() row must give, from the motor's own geometry: DRU_DEGREES rounds to the
+' nearest tick (PL-158), and a row that rounds to 0 ticks is ERR_LIMIT_UNRESOLVABLE whatever the table says.
+'
+' @param nCount - the row's count
+' @param eUnits - its units
+' @param eTabWant - the table's return for it
+' @returns eWant - the return wanted
+' @returns nTicks - the ticks an accepted row arms
+'
+' @local degreesPerTic - the motor's degrees per hall tick
+' @local ticsPerRotation - its hall ticks per rotation
+
+    degreesPerTic, ticsPerRotation := motor.hallTicInfoForMotor()
+    eWant := eTabWant
+    nTicks := nCount
+    if eWant == T0A_OK
+        if eUnits == motor.DRU_DEGREES
+            nTicks := (2 * nCount + degreesPerTic) / (2 * degreesPerTic)        ' nearest, a half rounding up
+            if nTicks < 1
+                eWant := T0A_UNRES
+        elseif eUnits == motor.DRU_ROTATIONS
+            nTicks := nCount * ticsPerRotation
+
+PRI t0aSteer() | startResult, bReady, rowIdx, nMs, eWant, nWas, eGot, eModeWas, nPctWas, eMode, nPct, nCount, eUnits, nTicks, nLeftPwr, nRightPwr, nValue, nCeil, nRise, nLimit
+' R20-T0-API-STEER: the steering object's OWN validation (what it checks before it asks its wheels), on both wheels,
+' started on T0_SECOND_BASE and T0_MOTOR_BASE (3 cogs), nothing driven. setCommandTimeout() per t0aTimeoutTab
+' (getCommandTimeout()); setFaultResponse()'s refusals (getFaultResponse() unchanged) and one accepted row; setHoldLimits()'s
+' refusals (getHoldLimits() unchanged); stopAfterRotation() per t0aRotTab and stopAfterDistance() per t0aDistTab
+' (testGetStopHallTicks()); stopAfterTime()'s refusals; driveForDistance()'s refusals (getPower() 0 on both). The
+' protective settings are put back to their defaults, and the platform stopped. NOMEAS when the start does not come up.
+'
+' @local startResult - steer.start()'s return
+' @local bReady - it came up
+' @local rowIdx - a table row
+' @local nMs - a timeout row's ms
+' @local eWant - a row's return
+' @local nWas - the read-back before the call
+' @local eGot - the call's return
+' @local eModeWas - the fault mode before the call
+' @local nPctWas - the fault % before the call
+' @local eMode - a fault row's mode
+' @local nPct - a fault row's %
+' @local nCount - a limit row's count
+' @local eUnits - its units
+' @local nTicks - the ticks an accepted limit row arms
+' @local nLeftPwr - getPower()'s left result
+' @local nRightPwr - its right result
+' @local nValue - the argument a many-argument row varies, for its record
+' @local nCeil - a hold row's ceiling, or (refused) the ceiling it must still read
+' @local nRise - its rise, likewise
+' @local nLimit - its time limit, likewise
+
+    t0aBad := 0
+    t0aChecks := 0
+    benchLog.cogEventBegin()
+    startResult := steer.start(T0_SECOND_BASE, T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
+    bReady := (startResult >= 0)
+    debug("T0-26,steer,start_return,", sdec_(startResult))
+    if bReady
+        repeat rowIdx from 0 to T0A_TIMEOUT_ROWS - 1
+            nMs := long[@t0aTimeoutTab][rowIdx * 2]
+            eWant := long[@t0aTimeoutTab][rowIdx * 2 + 1]
+            nWas := steer.getCommandTimeout()
+            eGot := steer.setCommandTimeout(nMs)
+            t0aChk(@"steer.setCommandTimeout", nMs, eWant, eGot, (eWant == T0A_OK) ? nMs : nWas, steer.getCommandTimeout())
+        repeat rowIdx from 0 to T0A_FAULT_ROWS - 1
+            eMode := long[@t0aFaultTab][rowIdx * 4]
+            nPct := long[@t0aFaultTab][rowIdx * 4 + 1]
+            eWant := long[@t0aFaultTab][rowIdx * 4 + 2]
+            nValue := (long[@t0aFaultTab][rowIdx * 4 + 3] == 0) ? eMode : nPct ' the argument the row varies, for the record
+            eModeWas, nPctWas := steer.getFaultResponse()
+            eGot := steer.setFaultResponse(eMode, nPct)
+            if eWant <> T0A_OK
+                eMode, nPct := eModeWas, nPctWas                                ' refused: it must read what it read before
+            t0aChk(@"steer.setFaultResponse", nValue, eWant, eGot, TRUE, bSteerFaultIs(eMode, nPct))
+        repeat rowIdx from 0 to T0A_HOLD_ROWS - 1
+            nCeil := long[@t0aHoldTab][rowIdx * 5]
+            nRise := long[@t0aHoldTab][rowIdx * 5 + 1]
+            nLimit := long[@t0aHoldTab][rowIdx * 5 + 2]
+            eWant := long[@t0aHoldTab][rowIdx * 5 + 3]
+            nValue := lookupz(long[@t0aHoldTab][rowIdx * 5 + 4] : nCeil, nRise, nLimit)
+            if eWant <> T0A_OK
+                nCeil, nRise, nLimit := steer.getHoldLimits()                   ' refused: it must read what it read before
+            eGot := steer.setHoldLimits(long[@t0aHoldTab][rowIdx * 5], long[@t0aHoldTab][rowIdx * 5 + 1], long[@t0aHoldTab][rowIdx * 5 + 2])
+            t0aChk(@"steer.setHoldLimits", nValue, eWant, eGot, TRUE, bSteerHoldIs(nCeil, nRise, nLimit))
+        repeat rowIdx from 0 to T0A_ROT_ROWS - 1
+            nCount := long[@t0aRotTab][rowIdx * 3]
+            eUnits := long[@t0aRotTab][rowIdx * 3 + 1]
+            eWant, nTicks := t0aRotWant(nCount, eUnits, long[@t0aRotTab][rowIdx * 3 + 2])
+            nWas := steer.testGetStopHallTicks()
+            eGot := steer.stopAfterRotation(nCount, eUnits)
+            t0aChk(@"steer.stopAfterRotation", nCount, eWant, eGot, (eWant == T0A_OK) ? nTicks : nWas, steer.testGetStopHallTicks())
+        repeat rowIdx from 0 to T0A_DIST_ROWS - 1
+            nCount := long[@t0aDistTab][rowIdx * 3]
+            eUnits := long[@t0aDistTab][rowIdx * 3 + 1]
+            eWant := long[@t0aDistTab][rowIdx * 3 + 2]
+            _, nTicks := motor.ticksForDistance(nCount, eUnits)
+            nWas := steer.testGetStopHallTicks()
+            eGot := steer.stopAfterDistance(nCount, eUnits)
+            t0aChk(@"steer.stopAfterDistance", nCount, eWant, eGot, (eWant == T0A_OK) ? nTicks : nWas, steer.testGetStopHallTicks())
+            if eWant <> T0A_OK
+                eGot := steer.driveForDistance(nCount, nCount, eUnits)
+                nLeftPwr, nRightPwr := steer.getPower()
+                t0aChk(@"steer.driveForDistance", nCount, eWant, eGot, TRUE, (nLeftPwr == 0) and (nRightPwr == 0))
+        repeat rowIdx from 1 to T0A_TIME_ROWS - 1                              ' the refusals only: no read-back of the platform's time limit
+            nCount := long[@t0aTimeTab][rowIdx * 3]
+            eUnits := long[@t0aTimeTab][rowIdx * 3 + 1]
+            nWas := steer.testGetStopHallTicks()
+            eGot := steer.stopAfterTime(nCount, eUnits)
+            t0aChk(@"steer.stopAfterTime", nCount, long[@t0aTimeTab][rowIdx * 3 + 2], eGot, nWas, steer.testGetStopHallTicks())
+        steer.setCommandTimeout(0)
+        steer.setFaultResponse(motor.FAULT_RESPONSE_DEFAULT, motor.BRAKE_PCT_DEFAULT)
+        steer.setHoldLimits(T0A_CEIL_DEF, T0A_RISE_DEF, T0A_LIMIT_DEF)
+    benchLog.cogEventBegin()
+    steer.stop()
+    steer.getError()
+    t0aCell(@sCellApiSteer, @"BOTH", bReady)
+
+PRI bSteerFaultIs(eMode, brakePct) : bSame | eGotMode, nGotPct
+' Report whether the steering object's fault response reads back as given.
+'
+' @param eMode - the FR_* expected
+' @param brakePct - the % expected
+' @returns bSame - TRUE when both read back equal
+'
+' @local eGotMode - getFaultResponse()'s mode
+' @local nGotPct - its %
+
+    eGotMode, nGotPct := steer.getFaultResponse()
+    bSame := (eGotMode == eMode) and (nGotPct == brakePct)
+
+PRI bSteerHoldIs(ceilingPct, riseMs, limitMs) : bSame | nCeil, nRise, nLimit
+' Report whether the steering object's hold limits read back as given.
+'
+' @param ceilingPct - the ceiling expected
+' @param riseMs - the rise expected
+' @param limitMs - the time limit expected
+' @returns bSame - TRUE when all three read back equal
+'
+' @local nCeil - getHoldLimits()'s ceiling
+' @local nRise - its rise
+' @local nLimit - its time limit
+
+    nCeil, nRise, nLimit := steer.getHoldLimits()
+    bSame := (nCeil == ceilingPct) and (nRise == riseMs) and (nLimit == limitMs)
 #endif
 
 #ifdef T0_HAND

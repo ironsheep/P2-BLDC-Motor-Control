@@ -117,11 +117,11 @@ PUB main() | basePinLt, basePinRt, voltage, motor, basePin, detectModeLt, detect
             waitUntilMotorReady()
 
             debug("* BOTH Wheels, different powers")
-            eError := wheels.stopAfterTime(10, wheels.DTU_SEC)      ' hold at speed for 10 Sec, to watch the display
+            eError := wheels.stopAfterTime(WATCH_SECS, wheels.DTU_SEC)      ' hold at speed for 10 Sec, to watch the display
             if eError == wheels.NO_ERROR
                 eError := wheels.driveAtPower(40, 50)
             if bCommandSucceeded(eError, @"both wheels")
-                waitUntilMotorDone()
+                bWaitUntilMotorDone(WATCH_SECS * 1_000 + MOVE_MARGIN_MS)
             showWhatHappened()                                  ' 5. expect SR_AT_LIMIT: the time limit was reached
         ' turn off our motor drivers (safe whether or not they started)
         wheels.stop()
@@ -310,26 +310,43 @@ PRI waitUntilMotorReady()
     debug("* Motors ready, let's drive!")
 
 
-PRI waitUntilMotorDone()
-' If wheels are not started, then wait until they are started
-'  then if wheels are not stopped, wait until they are stopped
+PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eLeftReason, eRightReason, eSteerError, eLeftError, eRightError
+' Wait, at most {maxMs}, for the drive just commanded to be over on both wheels -- however it ends -- then say why.
 '
-    if wheels.isStarting() == false
-         debug("* wait until motors start...")
-         repeat
-            if wheels.isStarting()
-                quit
-            else
-                waitms(2)
+' isMoveDone() is TRUE once both wheels are at rest with no drive commanded, and at once on a fault, an emergency stop
+' or a protective stop, so this cannot hang on one of those (waiting for isStopped() alone did). It is FALSE from the
+' moment the drive command is accepted, so no short-lived state can be missed between polls. The bound covers the one
+' case it cannot: a drive whose limit never fires. Then both motors are stopped here, and getError() is reported.
+'
+' @param maxMs - the longest the drive may take, ms: its limit plus a margin
+' @returns bDone - T/F where T means the drive ended by itself within {maxMs}
 
-    if wheels.isStopped() == false
-        debug("* wait until motors finish...")
-        repeat
-            if wheels.isStopped()
-                quit
-            else
-                waitms(2)
-    debug("* Motors stopped!")
+' Local Variables:
+' @local startMs - getms() when the wait began
+' @local eLeftReason - why the left wheel's drive ended, getStopReason()
+' @local eRightReason - why the right wheel's drive ended
+' @local eSteerError - this cog's first steering-object error, on a timeout (collected outside debug())
+' @local eLeftError - this cog's first left-wheel error, on a timeout
+' @local eRightError - this cog's first right-wheel error, on a timeout
+
+    debug("* wait until motors finish...")
+    startMs := getms()
+    repeat until wheels.isMoveDone() or (getms() - startMs >= maxMs)
+        waitms(MOVE_POLL_MS)
+    bDone := wheels.isMoveDone()
+    if bDone == FALSE
+        wheels.stopMotors()                                     ' the drive outlived its bound: end it, then report
+        eSteerError, eLeftError, eRightError := wheels.getError()
+        debug("* TIMEOUT: the drive was not over after ", udec_(maxMs), " ms, stopped; errors: ", zstr_(names.errorName(eSteerError)), ", LEFT ", zstr_(names.errorName(eLeftError)), ", RIGHT ", zstr_(names.errorName(eRightError)))
+    eLeftReason, eRightReason := wheels.getStopReason()
+    debug("* Motors done in ", udec_(getms() - startMs), " ms: LEFT ", zstr_(names.stopReason(eLeftReason)), ", RIGHT ", zstr_(names.stopReason(eRightReason)))
+
+CON { the demo's drive }
+
+    WATCH_SECS          = 10                ' the drive's time limit, long enough to watch the display
+    ' bWaitUntilMotorDone()'s bound is the limit plus this, for the ramp down and a margin
+    MOVE_MARGIN_MS      = 5_000
+    MOVE_POLL_MS        = 10
 
 
 CON { license }

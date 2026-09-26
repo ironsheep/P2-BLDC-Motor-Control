@@ -416,27 +416,34 @@ PRI waitUntilMotorReady()
     debug("* Motors ready, let's drive!")
 
 
-PRI waitUntilMotorDone()
-    if wheels.isStarting() == false
-         debug("* wait until motors start...")
-         repeat
-            if wheels.isStarting()
-                quit
-            else
-                waitms(2)
+PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eLeftReason, eRightReason
+' Wait, at most {maxMs}, for a limited drive to be over on both wheels -- however it ends -- then say why (PL-156).
+'
+' Not used by the RC loop, which drives continuously; kept, bounded, for a program built from this one. isMoveDone() is
+' TRUE on a fault or an emergency stop too, so this cannot hang on one (waiting for isStopped() alone did); a drive whose
+' limit never fires is stopped at the bound.
+'
+' @param maxMs - the longest the drive may take, ms: its limit plus a margin
+' @returns bDone - T/F where T means the drive ended by itself within {maxMs}
 
-    if wheels.isStopped() == false
-        debug("* wait until motors finish...")
-        repeat
-            if wheels.isStopped()
-                quit
-            else
-                waitms(2)
-    debug("* Motors stopped!")
+' Local Variables:
+' @local startMs - getms() when the wait began
+' @local eLeftReason - why the left wheel's drive ended, getStopReason()
+' @local eRightReason - why the right wheel's drive ended
+
+    startMs := getms()
+    repeat until wheels.isMoveDone() or (getms() - startMs >= maxMs)
+        waitms(MOVE_POLL_MS)
+    bDone := wheels.isMoveDone()
+    if bDone == FALSE
+        wheels.stopMotors()                                     ' the drive outlived its bound: end it
+    eLeftReason, eRightReason := wheels.getStopReason()
+    debug("* Motors ", zstr_(bDone ? @"done" : @"TIMEOUT, stopped"), ": LEFT ", zstr_(names.stopReason(eLeftReason)), ", RIGHT ", zstr_(names.stopReason(eRightReason)))
 
 CON
 
    VALUE_NOT_SET = -2
+   MOVE_POLL_MS  = 10                   ' bWaitUntilMotorDone()'s poll
 
    ' the VRA knob's travel maps onto this acceleration range, mm/s squared (setAcceleration())
    RC_ACCEL_MIN_MM_S2 = 200
