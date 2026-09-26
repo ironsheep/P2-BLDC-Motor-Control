@@ -147,6 +147,8 @@ Usage:  tools/bench-run.sh <tier>
                    dual-lead      motion harness part LEAD: PREFLT, LEAD -- the live lead-step run that measures the dynamic-lead table  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-limits    motion harness part LIMITS: PREFLT, LIMTOP, LIMRAMP, LIMLOW -- the limits reset's top speed, ramps and low-speed floor  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-limits-top  as dual-limits' LIMTOP only: the climb and the power check that confirm moved limits  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-reg       motion harness part REG: PREFLT, REGRESS -- two turns by distance, then one fault forced per wheel and the same power sent again (PL-151, PL-66), under a minute  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-kick      motion harness part KICK: PREFLT, KICK -- the seven top-of-range speed changes per wheel and direction, for the kick fix (PL-78, PL-87), under 2 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
 
 Examples:
   tools/bench-run.sh detect
@@ -438,6 +440,19 @@ case "$TIER" in
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_LIMITS -D LIMITS_TOP_ONLY)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part LIMITS, TOP-SPEED CLIMB ONLY: each wheel, each direction, climbs to about 440 rpm commanded as at Visit 9, then runs at full power and at least power through the public API. At the edge a wheel may slip or FAULT on purpose; it is recovered. The 10 A abort and the fold-back limiter both apply. Run cap 30 minutes, expected about 5"
                     ;;
+    # dual-reg (PL-151's part-B half, PL-152's pointed form) -- part REG only: TURNDIST, FLTCAUSE and PL-66's FLTRETRY,
+    #  under part B's own cell ids, in a load that runs nothing else. The fault is forced with testForceFault() (PL-119),
+    #  one wheel per steering lifetime, under FR_SHIPPED so it latches; see the part's CON in test_bench_dual.spin2.
+    dual-reg)       BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_REG)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED, YOU DO NOTHING: first each wheel gets a short slow nudge on its own (under 1 s each). Then BOTH WHEELS TURN TOGETHER AT HALF POWER, TWICE, for a measured distance -- one wheel runs about 10 ft of tyre travel while the other runs about 2 ft and stops first, then the other way round (a few seconds each). Then, TWICE MORE, both wheels spin up to half power and ONE WHEEL IS FAULTED ON PURPOSE (the left, then the right): it coasts, the other wheel slows to a stop beside it, and a second later BOTH SPIN UP AGAIN at half power for a moment before stopping. No window opens. The 10 A abort applies throughout. Run cap 5 minutes, expected under 1"
+                    ;;
+    # dual-kick (the kick fix's certificate; PL-78, PL-87) -- part KICK only: the ladder's own rung walk over the seven
+    #  top-of-range speed changes that carried the pre-fix kicks, per wheel and direction; see the part's CON.
+    dual-kick)      BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_KICK)
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED, YOU DO NOTHING: first each wheel gets a short slow nudge on its own (under 1 s each). Then ONE WHEEL AT A TIME, left then right, each direction in turn (4 runs): the wheel spins up from rest to high speed, then steps UP through four faster speeds to its top speed (about 300 rpm commanded) and back DOWN three steps, holding each speed about 2 seconds, then stops. The other wheel stays still. The 10 A abort and the fold-back limiter both apply. Run cap 5 minutes, expected under 2"
+                    ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage
         ;;
@@ -513,43 +528,59 @@ fi
 # -- there $? is the status of the negation (always 0), so the error line
 # would report a failure with "exit 0" and hide the one number worth having.
 #
-# TWO COMPILES, the plain one FIRST: the DEBUG footprint is measured as the -d
-# image's size minus the same build's size without -d (P2-HAZARD-REGISTER DBG-1:
-# subtract binary sizes -- no parsing, nothing that can drift). The -d build runs
-# second so the binary left in src/ is the one that is downloaded.
+# ONE COMPILE AT THE BENCH; TWO ONLY WHEN MEASURING (PL-152, 2026-09-26). The
+# DEBUG footprint is the -d image's size minus the same build's size without -d
+# (P2-HAZARD-REGISTER DBG-1: subtract binary sizes -- no parsing, nothing that
+# can drift), which takes two compiles, and until now every bench run made both:
+# about 26 s of a test_bench_dual tier's time went to compiling (STEPHEN
+# 2026-09-26: "The script is now compiling files twice").
+#
+# WHERE THE FOOTPRINT IS ENFORCED NOW: at commit time. tools/build-check.sh runs
+# this script with BENCH_MEASURE_ONLY=1 over every tier in the case table above,
+# and the measure-only path below makes both compiles and refuses a tier over
+# DEBUG_FOOTPRINT_MAX exactly as a run used to -- so a tier that would lose its
+# records fails the commit gate, before it can reach the bench.
+#
+# WHY THE BENCH TRUSTS IT: the bench runs a commit that gate passed -- it pulls
+# the gated tree, and the footprint is a property of the source and these flags,
+# not of the machine that compiles them. Measuring it again at the bench bought
+# nothing but the second compile. So a run compiles once, with -d and -l, the
+# very binary it downloads, and says in its transcript that the footprint was
+# not measured here and where it was.
 #
 # Measure-only writes both images under names of its own (-o) and removes them,
 # so build-check.sh can measure tiers side by side without two compiles sharing
 # one .bin; the flags are the run's own.
 BINARY="${BENCH_FILE%.spin2}.bin"
-PLAIN_OUT=()
-DEBUG_OUT=()
-MEASURE_PLAIN="$BINARY"
-MEASURE_DEBUG="$BINARY"
-LIST_OPT=(-l)
 if [ -n "$MEASURE_ONLY" ]; then
     MEASURE_PLAIN=".footprint-$TIER-plain.bin"
     MEASURE_DEBUG=".footprint-$TIER-debug.bin"
-    PLAIN_OUT=(-o "$MEASURE_PLAIN")
-    DEBUG_OUT=(-o "$MEASURE_DEBUG")
-    LIST_OPT=()
     trap 'rm -f "$MEASURE_PLAIN" "$MEASURE_DEBUG"' EXIT
     trap 'rm -f "$MEASURE_PLAIN" "$MEASURE_DEBUG"; exit 130' INT TERM   # as the clock patch's cleanup does
-fi
 
-run "$PNUT" ${PLAIN_OUT[@]+"${PLAIN_OUT[@]}"} -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
-STATUS=$?
-if [ $STATUS -ne 0 ] || [ ! -f "$MEASURE_PLAIN" ]; then
-    die "command failed (exit $STATUS): $PNUT ${PLAIN_OUT[*]+${PLAIN_OUT[*]}} -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
-fi
-PLAIN_BYTES=$(wc -c < "$MEASURE_PLAIN" | tr -d ' ')
+    # the plain one FIRST, as it always ran: its size is the subtrahend
+    run "$PNUT" -o "$MEASURE_PLAIN" -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
+    STATUS=$?
+    if [ $STATUS -ne 0 ] || [ ! -f "$MEASURE_PLAIN" ]; then
+        die "command failed (exit $STATUS): $PNUT -o $MEASURE_PLAIN -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
+    fi
+    PLAIN_BYTES=$(wc -c < "$MEASURE_PLAIN" | tr -d ' ')
 
-run "$PNUT" ${DEBUG_OUT[@]+"${DEBUG_OUT[@]}"} ${LIST_OPT[@]+"${LIST_OPT[@]}"} -d -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
-STATUS=$?
-if [ $STATUS -ne 0 ] || [ ! -f "$MEASURE_DEBUG" ]; then
-    die "command failed (exit $STATUS): $PNUT ${DEBUG_OUT[*]+${DEBUG_OUT[*]}} ${LIST_OPT[*]+${LIST_OPT[*]}} -d -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
+    run "$PNUT" -o "$MEASURE_DEBUG" -d -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
+    STATUS=$?
+    if [ $STATUS -ne 0 ] || [ ! -f "$MEASURE_DEBUG" ]; then
+        die "command failed (exit $STATUS): $PNUT -o $MEASURE_DEBUG -d -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
+    fi
+    DEBUG_BYTES=$(( $(wc -c < "$MEASURE_DEBUG" | tr -d ' ') - PLAIN_BYTES ))
+else
+    # the bench: the one compile, -d (every tier's debug kernel and records) and -l (the listing kept beside it)
+    run "$PNUT" -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
+    STATUS=$?
+    if [ $STATUS -ne 0 ] || [ ! -f "$BINARY" ]; then
+        die "command failed (exit $STATUS): $PNUT -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
+    fi
+    echo "bench-run.sh: DEBUG footprint not measured at the bench (PL-152) -- it is enforced at commit time by tools/build-check.sh, which measures every tier; image $(wc -c < "$BINARY" | tr -d ' ') bytes"
 fi
-DEBUG_BYTES=$(( $(wc -c < "$MEASURE_DEBUG" | tr -d ' ') - PLAIN_BYTES ))
 
 # ---- refuse an image whose DEBUG data runs past its end (DBG-1) ----------------
 # WHY THIS EXISTS. A -d image's DEBUG data has a hard end, and no tool reports
@@ -569,12 +600,16 @@ DEBUG_BYTES=$(( $(wc -c < "$MEASURE_DEBUG" | tr -d ' ') - PLAIN_BYTES ))
 # OVER THE LIMIT, DO NOT CUT DIAGNOSTICS. Compile out what the tier never runs
 # (DBG-16), move record text into DAT and emit it with zstr_() (DBG-2), or
 # channel it (DBG-5/6).
+#
+# PL-152: this gate runs in measure-only, the commit gate's path (the compile
+# section above says why the bench no longer repeats it). build-check.sh reads
+# the "DEBUG footprint N bytes" line below; keep its wording.
 DEBUG_FOOTPRINT_MAX=12404
-echo "bench-run.sh: DEBUG footprint $DEBUG_BYTES bytes (limit $DEBUG_FOOTPRINT_MAX; -d $((PLAIN_BYTES + DEBUG_BYTES)) - plain $PLAIN_BYTES)"
-if [ "$DEBUG_BYTES" -gt "$DEBUG_FOOTPRINT_MAX" ]; then
-    die "tier '$TIER' carries $DEBUG_BYTES bytes of DEBUG data, over the $DEBUG_FOOTPRINT_MAX measured to run intact: its last debug() records would be cut or never sent (DBG-1). Nothing was downloaded. Shrink the footprint without cutting output (DBG-16, DBG-2, DBG-5/6) before this tier runs."
-fi
 if [ -n "$MEASURE_ONLY" ]; then
+    echo "bench-run.sh: DEBUG footprint $DEBUG_BYTES bytes (limit $DEBUG_FOOTPRINT_MAX; -d $((PLAIN_BYTES + DEBUG_BYTES)) - plain $PLAIN_BYTES)"
+    if [ "$DEBUG_BYTES" -gt "$DEBUG_FOOTPRINT_MAX" ]; then
+        die "tier '$TIER' carries $DEBUG_BYTES bytes of DEBUG data, over the $DEBUG_FOOTPRINT_MAX measured to run intact: its last debug() records would be cut or never sent (DBG-1). Shrink the footprint without cutting output (DBG-16, DBG-2, DBG-5/6) before this tier can pass the commit gate and run."
+    fi
     echo "bench-run.sh: measure-only -- tier '$TIER' within the DEBUG footprint limit; not run"
     exit 0
 fi

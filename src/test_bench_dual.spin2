@@ -388,6 +388,29 @@
 ''               26 Sep 2026 -- SRC_REV=53, FMT 34: PL-143 (DRIVER_REV 32). CMDTIMEOUT gains a third limb: a D_CMDTMO_BOUND_M
 ''               driveForDistance() left silent must stop at the timeout with ERR_COMMAND_TIMEOUT (the pre-32 library
 ''               exempted it and drove on). Judged in the existing R17-DUAL-CMDTMO-D / -WCMDTMO-D cells. No record changes shape
+''               26 Sep 2026 -- SRC_REV=54, FMT 35: PL-152, PL-151 (part-B half), and the kick fix's certificate. ONE PART PER
+''               IMAGE (PL-152): every part's code -- its segments, tables, state and emitters -- is compiled only into its own
+''               build, behind the DBP_* symbol its branch of the part chain defines, and code two or more parts share behind a
+''               DBG_* group symbol naming its members (the build-variant CON). The dispatchers (runPart(), runSegment(),
+''               emitHeaderRecords(), emitSignoffDecls(), emitSignoffs(), bSegPreflight()'s FAULTRESP stages and the
+''               panel's no-op calls in the shared watched waits) select by #ifdef where they selected by PART_ID, so every
+''               existing tier runs the same segments and prints the same banner, SIGNOFF-DECL cells and records; until now
+''               the part flag chose what RAN, not what COMPILED. MEASURED (dev container, -d, BENCH_CFG, BENCH_QUIET, the
+''               SRC_REV 53 library objects): the images fell from 152,447 B each to 75,394 B (dual-c) .. 88,759 B (dual-spin),
+''               and a compile from 12.7-13.7 s to 7.6-9.3 s, of which the library objects alone take about 6.5 s.
+''               overshootTrial() takes its segment as a parameter (part B passes SEG_OVERSHT, what it hard-coded).
+''               New part REG (-D DUAL_PART_REG, tier dual-reg; PL-151): PREFLT, then REGRESS -- part B's two turn trials,
+''               FLTCAUSE's negative after them, and one fault forced with testForceFault() per wheel under FR_SHIPPED, each
+''               read for getStatus() and getFaultCause() and retried at the same power (PL-66). It declares R21-DUAL-NOSTALL-R,
+''               R21-DUAL-DBGMASK-R and part B's R17-DUAL-TURNDIST-B, R17-DUAL-FLTCAUSE-B and R16-DUAL-FLTRETRY-B. New records
+''               BM-REGNEG and BM-REGFLT. FOUND, NOT CHANGED: part B's fltApiRetry() waits for speed through waitWatched(),
+''               which ends on the fault flag, and that flag is sticky until a restart -- so R16-DUAL-FLTRETRY-B cannot PASS in
+''               part B on a driver that behaves; part REG's retry wait (regWaitSpeed()) does not end on it.
+''               New part KICK (-D DUAL_PART_KICK, tier dual-kick; PL-78, PL-87): PREFLT, then KICK -- the ladder's own rung
+''               walk (ladderSign()) over kickIdx, the seven top-of-range transitions per wheel and direction that carried the
+''               pre-fix driver's 64-183 mV kicks. Cell R21-DUAL-TRKICK-T per motor, R17-DUAL-TRKICK-A's criterion; new record
+''               BM-KICKTR per transition (signed err extremes, the lowest sense_i, the duty excursion). The record set grows,
+''               so FMT goes to 35; no existing record changes shape
 ''
 '' =================================================================================================
 
@@ -400,9 +423,11 @@
 
   ONE SOURCE, ONE PART PER BUILD. tools/bench-run.sh chooses the part with -D DUAL_PART_A,
   DUAL_PART_CLOCK, DUAL_PART_B, DUAL_PART_BRAKE, DUAL_PART_C, DUAL_PART_D, DUAL_PART_FLOOR, DUAL_PART_UICHECK,
-  DUAL_PART_ALIGN, DUAL_PART_LEAD, DUAL_PART_LIMITS, DUAL_PART_FAULTRESP, DUAL_PART_START, DUAL_PART_SPIN or
-  DUAL_PART_PACK.
+  DUAL_PART_ALIGN, DUAL_PART_LEAD, DUAL_PART_LIMITS, DUAL_PART_FAULTRESP, DUAL_PART_START, DUAL_PART_SPIN,
+  DUAL_PART_PACK, DUAL_PART_REG or DUAL_PART_KICK.
   PART_ID comes from one #ifdef chain; with no part flag the build prints part NONE, runs no segment, and ends cleanly.
+  ONE PART PER IMAGE (PL-152, SRC_REV 54): the same chain defines a DBP_* symbol per part, and each part's code is
+  compiled only into its own image (the build-variant CON says how); the shared plumbing is in every image.
 
   COG MODEL
    - cog 0: runs every command and every emitter; never calls a library getter inside a timed wait.
@@ -421,7 +446,7 @@
       tools/bench-run.sh dual-a | dual-clock-200 | dual-clock-270 | dual-clock-300 | dual-b | dual-brake
                          | dual-c | dual-d | dual-floor | dual-ui | dual-align | dual-lead | dual-limits
                          | dual-limits-top | dual-fault | dual-fault-rightfirst | dual-start | dual-start-nowalk
-                         | dual-start-phaseneg | dual-start-swapneg | dual-spin | dual-pack
+                         | dual-start-phaseneg | dual-start-swapneg | dual-spin | dual-pack | dual-reg | dual-kick
 
   (the clock is part of the tier name, so a mistyped clock is an unknown tier and is refused -- PL-62)
 
@@ -455,8 +480,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 53                                   ' hand-bumped whenever this file changes
-    FMT_VERSION = 34                                      ' BM- record-format version
+    SRC_REV     = 54                                   ' hand-bumped whenever this file changes
+    FMT_VERSION = 35                                      ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -506,60 +531,83 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
   '  PART_PACK  - PACK (attended, nothing moves: the pack voltage sensor read steady, unplugged and replugged twice at
   '               the pack, and its meter pairs; task 3611, R20.4). Built with user.PACK_SENSOR_FITTED FALSE it reads
   '               nothing and every pack cell prints NOT_BUILT
+  '  PART_REG   - PREFLT, REGRESS (PL-151's part-B half, pointed: TURNDIST through the steering object, and a fault
+  '               forced with testForceFault() on each wheel for FLTCAUSE and PL-66's FLTRETRY; wheels up, unattended)
+  '  PART_KICK  - PREFLT, KICK (the speed-change kick at the top of the range, PL-78 / PL-87: seven transitions per
+  '               wheel and direction through the ladder's own rung instrument; wheels up, unattended)
     #0, PART_NONE, PART_A, PART_CLOCK, PART_B, PART_BRAKE, PART_C, PART_D, PART_FLOOR, PART_UICHECK, ...
-        PART_ALIGN, PART_LEAD, PART_LIMITS, PART_FAULTRESP, PART_START, PART_SPIN, PART_PACK
-    PART_COUNT = PART_PACK + 1
+        PART_ALIGN, PART_LEAD, PART_LIMITS, PART_FAULTRESP, PART_START, PART_SPIN, PART_PACK, PART_REG, PART_KICK
+    PART_COUNT = PART_KICK + 1
 
+  ' ONE PART PER IMAGE (PL-152, SRC_REV 54). Each branch below also #defines its own DBP_* symbol, and every part's
+  '  code -- its segments, its tables, its state and its emitters -- sits behind that symbol (or behind a DBG_* group
+  '  symbol, defined after this chain, when two or more parts share it), so a build compiles its own part and the
+  '  shared plumbing only. Until SRC_REV 53 the part flag chose what RAN, not what COMPILED: every tier carried all
+  '  fifteen parts (pass 6's images were all 152,139 B) and each compile took about 13 s. The DBP_* symbols come from
+  '  this one chain, so they are exclusive and follow its precedence exactly as PART_ID does; nothing tests a
+  '  DUAL_PART_* flag directly after it.
   ' RUN_TIME_CAP_S per load (design sec 4.2 item 6)
 #ifdef DUAL_PART_A
+#define DBP_A
     PART_ID        = PART_A
     RUN_TIME_CAP_S = 1_500
 #else
 #ifdef DUAL_PART_CLOCK
+#define DBP_CLOCK
     PART_ID        = PART_CLOCK
     RUN_TIME_CAP_S = 300
 #else
 #ifdef DUAL_PART_B
+#define DBP_B
     PART_ID        = PART_B
     RUN_TIME_CAP_S = 1_200
 #else
 #ifdef DUAL_PART_BRAKE
+#define DBP_BRAKE
     PART_ID        = PART_BRAKE
     RUN_TIME_CAP_S = 600
 #else
 #ifdef DUAL_PART_C
+#define DBP_C
     PART_ID        = PART_C
     RUN_TIME_CAP_S = 900
 #else
 #ifdef DUAL_PART_D
+#define DBP_D
     PART_ID        = PART_D
     RUN_TIME_CAP_S = 900
 #else
 #ifdef DUAL_PART_FLOOR
+#define DBP_FLOOR
     PART_ID        = PART_FLOOR
     RUN_TIME_CAP_S = 600
 #else
 #ifdef DUAL_PART_UICHECK
+#define DBP_UICHECK
     PART_ID        = PART_UICHECK
     RUN_TIME_CAP_S = 1_500
 #else
 #ifdef DUAL_PART_ALIGN
+#define DBP_ALIGN
     PART_ID        = PART_ALIGN
     ' eight hand-turned legs, each waiting on a person and each bounded by ALIGN_STALL_MS rather than by
     '  a clock the operator cannot see: the cap has to cover eight full stalls and still end the run
     RUN_TIME_CAP_S = 1_800
 #else
 #ifdef DUAL_PART_LEAD
+#define DBP_LEAD
     PART_ID        = PART_LEAD
     ' 2 motors x 2 signs x LEAD_RUNGS x LEAD_STEPS = 112 measured rungs of ~2-8 s, plus lifetimes
     RUN_TIME_CAP_S = 1_500
 #else
 #ifdef DUAL_PART_LIMITS
+#define DBP_LIMITS
     PART_ID        = PART_LIMITS
     ' about 17 minutes planned (emitPlan()): LIMTOP ~6, LIMRAMP ~5, LIMLOW ~6
     RUN_TIME_CAP_S = 1_800
 #else
 #ifdef DUAL_PART_FAULTRESP
+#define DBP_FAULTRESP
     PART_ID        = PART_FAULTRESP
     ' about 6 minutes planned (emitPlan()): 24 driven wheel trials of ~13 s, 2 at-rest hook checks of ~4 s and 2
     '  steering trials of ~15 s, each with its own lifetime and a FAULT_COOL_MS cool-down; the cap leaves room for
@@ -571,6 +619,7 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     RUN_TIME_CAP_S = 900
 #else
 #ifdef DUAL_PART_START
+#define DBP_START
     PART_ID        = PART_START
     ' about 60 s planned (emitPlan()): SK_LIVES steering lifetimes of ~3.5 s (spacing, the ~1.2 s start, the reads,
     '  a 1 s floated window) and SK_WALKS walks of ~1.5 s (PL-137: 10 in dual-start, was 3); the cap is three times
@@ -578,6 +627,7 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     RUN_TIME_CAP_S = 180
 #else
 #ifdef DUAL_PART_SPIN
+#define DBP_SPIN
     PART_ID        = PART_SPIN
     ' about 7 minutes planned (emitPlan()): twelve legs of 3-9 s, each after a START he clicks, six steering starts and
     '  two fault cool-downs, then the incline's three trials of about 40 s each. Every screen waits on him for at most
@@ -585,11 +635,27 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     RUN_TIME_CAP_S = 1_800
 #else
 #ifdef DUAL_PART_PACK
+#define DBP_PACK
     PART_ID        = PART_PACK
     ' about 2.5 minutes planned (emitPlan()): the ~1.5 s start, step 1's 60 s, and four steps he ends, each bounded by
     '  PK_ACT_MS (60 s) plus EV_SETTLE_MS; every step at its bound is about 5.5 minutes, so the cap is 10
     RUN_TIME_CAP_S = 600
 #else
+#ifdef DUAL_PART_REG
+#define DBP_REG
+    PART_ID        = PART_REG
+    ' under a minute planned (emitPlan()): PREFLT's two nudges, one steering lifetime of two turn trials, and two more
+    '  of one forced fault and its retry each; the cap is five times that, well short of an idle hang
+    RUN_TIME_CAP_S = 300
+#else
+#ifdef DUAL_PART_KICK
+#define DBP_KICK
+    PART_ID        = PART_KICK
+    ' about 1.7 minutes planned (emitPlan()): PREFLT, then four lifetimes (wheel x direction) of KICK_STEPS rungs at the
+    '  ladder's ~2 s each (MEASURED, debug_260922-161317.log); the cap is about three times that
+    RUN_TIME_CAP_S = 300
+#else
+#define DBP_NONE
     PART_ID        = PART_NONE
     RUN_TIME_CAP_S = 60
 #endif
@@ -606,6 +672,164 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 #endif
 #endif
 #endif
+#endif
+#endif
+#endif
+
+  ' PL-152: the DBG_* group symbols -- code two or more parts share, compiled into exactly those parts' images. Each is
+  '  an #ifdef/#elseifdef list of the DBP_* symbols above (the preprocessor has no OR and no expression), and each
+  '  names its members in its comment. Code every part needs (the instrument, the safety monitor, the watched waits,
+  '  the wheel and steering wrappers, the record emitters of the shared records, the sign-off emitters) is not gated.
+  '  DBG_PREFLT   - the PREFLT segment and its PL-136 retry: A CLOCK B C D LEAD LIMITS FAULTRESP REG KICK
+#ifdef DBP_A
+#define DBG_PREFLT
+#elseifdef DBP_CLOCK
+#define DBG_PREFLT
+#elseifdef DBP_B
+#define DBG_PREFLT
+#elseifdef DBP_C
+#define DBG_PREFLT
+#elseifdef DBP_D
+#define DBG_PREFLT
+#elseifdef DBP_LEAD
+#define DBG_PREFLT
+#elseifdef DBP_LIMITS
+#define DBG_PREFLT
+#elseifdef DBP_FAULTRESP
+#define DBG_PREFLT
+#elseifdef DBP_REG
+#define DBG_PREFLT
+#elseifdef DBP_KICK
+#define DBG_PREFLT
+#endif
+  '  DBG_PANEL    - the bmpanel operator panel and the attended prompts: BRAKE FLOOR UICHECK SPIN
+#ifdef DBP_BRAKE
+#define DBG_PANEL
+#elseifdef DBP_FLOOR
+#define DBG_PANEL
+#elseifdef DBP_UICHECK
+#define DBG_PANEL
+#elseifdef DBP_SPIN
+#define DBG_PANEL
+#endif
+  '  DBG_RUNG     - the measured rung (rungMeasure(), its window, transition and records): A CLOCK LEAD LIMITS KICK
+#ifdef DBP_A
+#define DBG_RUNG
+#elseifdef DBP_CLOCK
+#define DBG_RUNG
+#elseifdef DBP_LEAD
+#define DBG_RUNG
+#elseifdef DBP_LIMITS
+#define DBG_RUNG
+#elseifdef DBP_KICK
+#define DBG_RUNG
+#endif
+  '  DBG_LADDER   - a walk of ladderIncre by an index table (ladderSign()): A KICK
+#ifdef DBP_A
+#define DBG_LADDER
+#elseifdef DBP_KICK
+#define DBG_LADDER
+#endif
+  '  DBG_OVERSHT  - a driveForDistance() trial through the steering object (overshootTrial()): B REG
+#ifdef DBP_B
+#define DBG_OVERSHT
+#elseifdef DBP_REG
+#define DBG_OVERSHT
+#endif
+  '  DBG_TICKMM   - the steering object's own travel-per-tick (steerTickInMM()): B REG SPIN
+#ifdef DBP_B
+#define DBG_TICKMM
+#elseifdef DBP_REG
+#define DBG_TICKMM
+#elseifdef DBP_SPIN
+#define DBG_TICKMM
+#endif
+  '  DBG_PACKTOK  - the pack status tokens (tokPack): START PACK
+#ifdef DBP_START
+#define DBG_PACKTOK
+#elseifdef DBP_PACK
+#define DBG_PACKTOK
+#endif
+  '  DBG_SAY      - one plain operator line on the terminal (alignSay()): ALIGN PACK
+#ifdef DBP_ALIGN
+#define DBG_SAY
+#elseifdef DBP_PACK
+#define DBG_SAY
+#endif
+  '  DBG_LOWRUNG  - a low-speed rung and its BM-LOW (lowRung()): A LIMITS
+#ifdef DBP_A
+#define DBG_LOWRUNG
+#elseifdef DBP_LIMITS
+#define DBG_LOWRUNG
+#endif
+  '  DBG_STOPMODE - one STOPMODE lifetime (stopModeLifetime()): A C
+#ifdef DBP_A
+#define DBG_STOPMODE
+#elseifdef DBP_C
+#define DBG_STOPMODE
+#endif
+  '  DBG_EVTRACE  - a wheel event trace (eventTrace(), eventCapture(), startCapture()): A C LIMITS
+#ifdef DBP_A
+#define DBG_EVTRACE
+#elseifdef DBP_C
+#define DBG_EVTRACE
+#elseifdef DBP_LIMITS
+#define DBG_EVTRACE
+#endif
+  '  DBG_FSHIFT   - the computed offset shift that provokes a fault (faultShiftDeg()): A B C LIMITS
+#ifdef DBP_A
+#define DBG_FSHIFT
+#elseifdef DBP_B
+#define DBG_FSHIFT
+#elseifdef DBP_C
+#define DBG_FSHIFT
+#elseifdef DBP_LIMITS
+#define DBG_FSHIFT
+#endif
+  '  DBG_DDRIVE   - part D's public-API drive of one form (dDrive()): B D
+#ifdef DBP_B
+#define DBG_DDRIVE
+#elseifdef DBP_D
+#define DBG_DDRIVE
+#endif
+  '  DBG_FRONTST  - a front cog's loop health and its BM-FRONTST (dFrontStats()): D FAULTRESP START
+#ifdef DBP_D
+#define DBG_FRONTST
+#elseifdef DBP_FAULTRESP
+#define DBG_FRONTST
+#elseifdef DBP_START
+#define DBG_FRONTST
+#endif
+  '  DBG_OUTPOLL  - the steering public-API poll into BM-OUT rows (steerPollPhase(), outPoll()): B BRAKE FLOOR
+#ifdef DBP_B
+#define DBG_OUTPOLL
+#elseifdef DBP_BRAKE
+#define DBG_OUTPOLL
+#elseifdef DBP_FLOOR
+#define DBG_OUTPOLL
+#endif
+  '  DBG_NOTBUILT - a cell or study printed NOT_BUILT (emitNotBuilt(), emitSignoffNotBuilt()): FAULTRESP START PACK
+#ifdef DBP_FAULTRESP
+#define DBG_NOTBUILT
+#elseifdef DBP_START
+#define DBG_NOTBUILT
+#elseifdef DBP_PACK
+#define DBG_NOTBUILT
+#endif
+  '  DBG_FORCE    - a fault forced through the steering object, and its fault response set: FAULTRESP SPIN REG
+#ifdef DBP_FAULTRESP
+#define DBG_FORCE
+#elseifdef DBP_SPIN
+#define DBG_FORCE
+#elseifdef DBP_REG
+#define DBG_FORCE
+#endif
+  '  DBG_FRPLAT   - FAULTRESP's X-5 machinery -- a forced fault guarded (frProvoke(), frGuard()), the watched wheel's
+  '                 readings (frPlatStats()) and BM-FRPLAT -- which SPIN's two fault legs reuse: FAULTRESP SPIN
+#ifdef DBP_FAULTRESP
+#define DBG_FRPLAT
+#elseifdef DBP_SPIN
+#define DBG_FRPLAT
 #endif
 
   ' Task 3605: -D LIMITS_TOP_ONLY builds the LIMITS part with its climb only (tier dual-limits-top), the load
@@ -1284,8 +1508,8 @@ CON { record enums -- each value has a token in the DAT token tables }
     #0, SEG_NONE, SEG_PREFLT, SEG_STOPMODE, SEG_LIVE, SEG_LADDER, SEG_CLOCK, SEG_FAULTB, SEG_OVERSHT, ...
         SEG_OUTSIDE, SEG_BASELINE, SEG_POSTFLT, SEG_FLOOR, SEG_UICHECK, SEG_STEERSEG, SEG_LIMIT, ...
         SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE, SEG_LIMTOP, SEG_LIMRAMP, SEG_LIMLOW, SEG_FLTRESP, SEG_FLTPLAT, ...
-        SEG_SKCHECK, SEG_SPIN, SEG_CREEP, SEG_PACK
-    SEG_COUNT = 28
+        SEG_SKCHECK, SEG_SPIN, SEG_CREEP, SEG_PACK, SEG_REGRESS, SEG_KICK
+    SEG_COUNT = 30
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -1996,7 +2220,7 @@ tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDE
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
                 BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0, "TAKE", 0
                 BYTE    "LIMTOP", 0, "LIMRAMP", 0, "LIMLOW", 0, "FLTRESP", 0, "FLTPLAT", 0, "SKCHECK", 0
-                BYTE    "SPIN", 0, "CREEP", 0, "PACK", 0
+                BYTE    "SPIN", 0, "CREEP", 0, "PACK", 0, "REGRESS", 0, "KICK", 0
 tokWhy       BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
@@ -2054,7 +2278,7 @@ tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAUL
 '  an ALIGN build printed adjacent DAT in the part field of BM-BANNER, BM-PLAN, BM-EXIT, every SIGNOFF
 '  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
-                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0, "START", 0, "SPIN", 0, "PACK", 0
+                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0, "START", 0, "SPIN", 0, "PACK", 0, "REG", 0, "KICK", 0
 ' ALIGN leg speed class (ASPD_*), direction (ADIR_*) and leg outcome (ALEG_*), task 3590
 tokASpd         BYTE    "SLOW", 0, "FAST", 0
 tokADir         BYTE    "REVERSE", 0, "FORWARD", 0
@@ -2104,6 +2328,9 @@ tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-
                 BYTE    "OFFS_A1-4_A8_X-5", 0, "HOLD_CEIL_3608", 0
                 ' task 3611: PACK carries R20.4 -- the pack sensor's meter pairs, its absent reading and R20-PACK-EV
                 BYTE    "R20.4_PACK_SENSOR", 0
+                ' SRC_REV 54: REGRESS carries PL-151's part-B half (AB's turn, S-7's cause) and PL-66's retry; KICK carries
+                '  the speed-change kick at the top of the range (PL-78, PL-87)
+                BYTE    "PL-151_AB_S-7_PL-66", 0, "PL-78_PL-87_KICK", 0
 
 DAT { fixed tokens }
 
@@ -2458,6 +2685,16 @@ sSfCellNoStallV BYTE    "R20-DUAL-NOSTALL-V", 0
 sSfCellDbgMaskV BYTE    "R20-DUAL-DBGMASK-V", 0
 sSfCellPkMeter  BYTE    "R20-PACK-METER", 0                     ' dual-pack: the calibrated reading against a meter, two pairs
 sSfCellPkAbsent BYTE    "R20-PACK-ABSENT", 0                    ' dual-pack: an unplugged sensor reads absent, never a voltage
+' SRC_REV 54 (PL-151, PL-152): the pointed parts' own cells. Part REG (suffix R) declares its two and then part B's
+'  TURNDIST, FLTCAUSE and FLTRETRY under their own ids -- the same claims, judged the same way, now in a load that runs
+'  nothing else (the collation lets the latest build declaring a cell speak, SF_CLOCK_SLOT's note). Part KICK (suffix
+'  T) declares its two and its own TRKICK: the same criterion as part A's, over a different population of
+'  transitions -- the seven at the top of the range -- so it does not speak for part A's whole ladder.
+sSfCellNoStallR BYTE    "R21-DUAL-NOSTALL-R", 0
+sSfCellDbgMaskR BYTE    "R21-DUAL-DBGMASK-R", 0
+sSfCellNoStallT BYTE    "R21-DUAL-NOSTALL-T", 0
+sSfCellDbgMaskT BYTE    "R21-DUAL-DBGMASK-T", 0
+sSfCellTrKickT  BYTE    "R21-DUAL-TRKICK-T", 0
 sSfCritPkCal    BYTE    "CAL_POINT_MV", 0
 sSfCritPkSecond BYTE    "SECOND_POINT_MV", 0
 sSfCritPkAbsent BYTE    "UNPLUG_NOT_ABSENT", 0
@@ -3174,12 +3411,23 @@ PRI initRunState() | slotIdx
         sfTrN[slotIdx] := 0                                 ' TRKICK's two accumulators and the from_incre state
         sfTrKickPk[slotIdx] := 0
         slotLastIncre[slotIdx] := 0
+    ' PL-152: each part's own accumulators are reset in its own build only, beside the code that folds them
+#ifdef DBP_FAULTRESP
     frResetCells()                                          ' task 3613: the FAULTRESP part's accumulators
+#endif
+#ifdef DBP_START
     skResetCells()                                          ' task 3613: the START part's accumulators
+#endif
+#ifdef DBP_SPIN
     spResetCells()                                          ' task 3591: the SPIN part's accumulators
+#endif
+#ifdef DBP_PACK
     pkResetCells()                                          ' task 3611: the PACK part's
+#endif
     r20ResetCells()                                         ' task 3621: EV-LATE's and part D's event cells
+#ifdef DBP_D
     rcResetCells()                                          ' task 3623: RESTCOAST's
+#endif
 
 PRI runPart()
 ' Run this build's segments in the design's sec 4.1 order. Every segment after a run abort is emitted
@@ -3187,71 +3435,87 @@ PRI runPart()
 '
 ' Returns no value, so the top-level trap in main() carries only an abort code (0 when none), and
 ' bRunReturned alone says whether runPart() reached its end (I9: one value, one meaning).
+'
+' PL-152: one #ifdef chain on the DBP_* symbols, where this was a case on PART_ID -- the same selection, made at
+' compile time, so a build holds only its own part's calls (and so its own part's code).
 
-    case PART_ID
-        PART_A:
-            runSegment(SEG_PREFLT)
-            runSegment(SEG_STOPMODE)
-            runSegment(SEG_LIVE)
-            runSegment(SEG_LADDER)
-            runSegment(SEG_LOWSPD)
-            runSegment(SEG_TAKE)                            ' task 3584: Visit 8's A-6 and A-8 (following)
-        PART_CLOCK:
-            runSegment(SEG_PREFLT)
-            runSegment(SEG_CLOCK)
-        PART_B:
-            runSegment(SEG_PREFLT)
-            runSegment(SEG_FAULTB)
-            runSegment(SEG_OVERSHT)
-        PART_BRAKE:
-            runSegment(SEG_OUTSIDE)
-        PART_C:
-            runSegment(SEG_PREFLT)
-            runSegment(SEG_BASELINE)
-            runSegment(SEG_POSTFLT)
-        PART_D:
-            runSegment(SEG_PREFLT)
-            runSegment(SEG_STEERSEG)
-            runSegment(SEG_LIMIT)
-        PART_FLOOR:
-            runSegment(SEG_FLOOR)
-        PART_UICHECK:
-            runSegment(SEG_UICHECK)
-        PART_ALIGN:
-            runSegment(SEG_ALIGN)
-        PART_LEAD:
-            runSegment(SEG_PREFLT)
-            runSegment(SEG_LEAD)
-        PART_LIMITS:
-            runSegment(SEG_PREFLT)
-            runSegment(SEG_LIMTOP)
-            if BUILD_TOP_ONLY == FALSE                       ' dual-limits-top: the confirming climb only (task 3605)
-                runSegment(SEG_LIMRAMP)
-                runSegment(SEG_LIMLOW)
-        PART_FAULTRESP:
-            runSegment(SEG_PREFLT)
-            runSegment(SEG_FLTRESP)                         ' task 3613: X-3, X-2, X-4 per wheel
-            runSegment(SEG_FLTPLAT)                         ' task 3613: X-5 through the steering object
-        PART_START:
-            runSegment(SEG_SKCHECK)                         ' task 3613: B-2 and B-5, no PREFLT (the part's CON says why)
-        PART_SPIN:
-            runSegment(SEG_SPIN)                            ' task 3591: the loaded legs, no PREFLT (the part's CON says why)
-            runSegment(SEG_CREEP)
-            spinFinish()                                    ' the end screen, drawn even when a segment was skipped
-        PART_PACK:
-            runSegment(SEG_PACK)                            ' task 3611: R20.4, nothing moves (the part's CON says why)
+#ifdef DBP_A
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_STOPMODE)
+    runSegment(SEG_LIVE)
+    runSegment(SEG_LADDER)
+    runSegment(SEG_LOWSPD)
+    runSegment(SEG_TAKE)                                    ' task 3584: Visit 8's A-6 and A-8 (following)
+#elseifdef DBP_CLOCK
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_CLOCK)
+#elseifdef DBP_B
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_FAULTB)
+    runSegment(SEG_OVERSHT)
+#elseifdef DBP_BRAKE
+    runSegment(SEG_OUTSIDE)
+#elseifdef DBP_C
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_BASELINE)
+    runSegment(SEG_POSTFLT)
+#elseifdef DBP_D
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_STEERSEG)
+    runSegment(SEG_LIMIT)
+#elseifdef DBP_FLOOR
+    runSegment(SEG_FLOOR)
+#elseifdef DBP_UICHECK
+    runSegment(SEG_UICHECK)
+#elseifdef DBP_ALIGN
+    runSegment(SEG_ALIGN)
+#elseifdef DBP_LEAD
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_LEAD)
+#elseifdef DBP_LIMITS
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_LIMTOP)
+    if BUILD_TOP_ONLY == FALSE                               ' dual-limits-top: the confirming climb only (task 3605)
+        runSegment(SEG_LIMRAMP)
+        runSegment(SEG_LIMLOW)
+#elseifdef DBP_FAULTRESP
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_FLTRESP)                                 ' task 3613: X-3, X-2, X-4 per wheel
+    runSegment(SEG_FLTPLAT)                                 ' task 3613: X-5 through the steering object
+#elseifdef DBP_START
+    runSegment(SEG_SKCHECK)                                 ' task 3613: B-2 and B-5, no PREFLT (the part's CON says why)
+#elseifdef DBP_SPIN
+    runSegment(SEG_SPIN)                                    ' task 3591: the loaded legs, no PREFLT (the part's CON says why)
+    runSegment(SEG_CREEP)
+    spinFinish()                                            ' the end screen, drawn even when a segment was skipped
+#elseifdef DBP_PACK
+    runSegment(SEG_PACK)                                    ' task 3611: R20.4, nothing moves (the part's CON says why)
+#elseifdef DBP_REG
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_REGRESS)                                 ' PL-151: TURNDIST, then FLTCAUSE and FLTRETRY on forced faults
+#elseifdef DBP_KICK
+    runSegment(SEG_PREFLT)
+    runSegment(SEG_KICK)                                    ' PL-78 / PL-87: the top-of-range transitions
+#endif
     bRunReturned := TRUE                                  ' before the return, or main() reads a library abort
 
+#ifndef DBP_NONE
 PRI runSegment(seg)
 ' Run one segment when the run caps allow it; otherwise record that it was skipped.
+'
+' PL-152: each branch is compiled into the parts that run its segment only (a PART_NONE build runs no segment and
+' holds no runSegment()).
 '
 ' @param seg - SEG_* to run
 
     if bRunContinue(seg)
         case seg
+#ifdef DBG_PREFLT
             SEG_PREFLT:
                 if bSegPreflight() == FALSE
                     bRunAborted := TRUE
+#endif
+#ifdef DBP_A
             SEG_STOPMODE:
                 segStopMode()
             SEG_LIVE:
@@ -3260,52 +3524,90 @@ PRI runSegment(seg)
                 segLadder()
             SEG_LOWSPD:
                 segLowSpeed()
+            SEG_TAKE:
+                segTake()
+#endif
+#ifdef DBP_CLOCK
             SEG_CLOCK:
                 segClock()
+#endif
+#ifdef DBP_B
             SEG_FAULTB:
                 segFaultBoundary()
             SEG_OVERSHT:
                 segOvershoot()
+#endif
+#ifdef DBP_BRAKE
             SEG_OUTSIDE:
                 segOutside()
+#endif
+#ifdef DBP_C
             SEG_BASELINE:
                 segBaseline()
             SEG_POSTFLT:
                 segPostFault()
+#endif
+#ifdef DBP_D
             SEG_STEERSEG:
                 segSteerContract()
             SEG_LIMIT:
                 segCurrentLimits()
+#endif
+#ifdef DBP_FLOOR
             SEG_FLOOR:
                 segFloor()
+#endif
+#ifdef DBP_UICHECK
             SEG_UICHECK:
                 segUiCheck()
+#endif
+#ifdef DBP_ALIGN
             SEG_ALIGN:
                 segAlign()
+#endif
+#ifdef DBP_LEAD
             SEG_LEAD:
                 segLead()
-            SEG_TAKE:
-                segTake()
+#endif
+#ifdef DBP_LIMITS
             SEG_LIMTOP:
                 segLimTop()
             SEG_LIMRAMP:
                 segLimRamp()
             SEG_LIMLOW:
                 segLimLow()
+#endif
+#ifdef DBP_FAULTRESP
             SEG_FLTRESP:
                 segFaultResp()
             SEG_FLTPLAT:
                 segFaultPlat()
+#endif
+#ifdef DBP_START
             SEG_SKCHECK:
                 segStartChecks()
+#endif
+#ifdef DBP_SPIN
             SEG_SPIN:
                 segSpin()
             SEG_CREEP:
                 segCreep()
+#endif
+#ifdef DBP_PACK
             SEG_PACK:
                 segPack()
+#endif
+#ifdef DBP_REG
+            SEG_REGRESS:
+                segRegress()
+#endif
+#ifdef DBP_KICK
+            SEG_KICK:
+                segKick()
+#endif
     else
         emitSeg(seg, SEGEV_SKIP, bSegAttended(seg), 0, 0, 0, 0, WHY_ABORTED)
+#endif
 
 PRI bRunContinue(seg) : bContinue | elapsedS
 ' Check the run caps (design sec 4.2 item 6) before a segment or trial; the first cap hit records a
@@ -3363,6 +3665,7 @@ PRI segEnd(whyCode)
     curSeg := SEG_NONE
     curTid := 0
 
+#ifdef DBP_A
 PRI segStopMode() | side, speedIdx, signMul, repIdx
 ' STOPMODE (part A, T1-1): C-4 deceleration data and the S-9a FLOAT / BRAKE / pins-cleared baselines.
 ' Per motor x speed (QTR, HALF) x sign (NEG, POS) x STOPMODE_REPS: one driver lifetime, three traces,
@@ -3477,7 +3780,9 @@ PRI segLowSpeed() | side, signMul, rungNum, rid, whyCode, safeEvent, consecFault
             bInstIdle()
             wheelStop(side)
     segEnd(segWhy())
+#endif
 
+#ifdef DBG_LOWRUNG
 PRI lowRung(seg, side, rid, rungNum, motorIncre, windowMs, decimation) : safeEvent | slotIdx
 ' One low-speed rung (LOWSPD, and LIMLOW below the old floor, task 3604): the shared measured-rung routine with
 ' the low-speed timings, then the rung records and BM-LOW. R17-DUAL-TRKICK-A is NOT folded here -- these
@@ -3503,7 +3808,9 @@ PRI lowRung(seg, side, rid, rungNum, motorIncre, windowMs, decimation) : safeEve
     lowStats(slotIdx)
     rungEmitAll(seg, rid, rungNum, side, motorIncre)
     emitLow(rid, side, motorIncre, rgWhy)
+#endif
 
+#ifdef DBP_CLOCK
 PRI segClock() | side, signMul
 ' CLOCK (the three clock loads, T1-4): frame count and net current at 75_000_000, per motor x sign.
 '
@@ -3516,7 +3823,9 @@ PRI segClock() | side, signMul
             beat(CP_LOOP_POLL)
             clockLifetime(side, signMul)
     segEnd(segWhy())
+#endif
 
+#ifdef DBP_B
 PRI segFaultBoundary() | side, signMul, trialIdx, whyCode
 ' FAULTB (part B, T1-7): the ramp_inc fault-boundary sweep (C-5, Z; S-1 not measured). Per motor x sign
 ' one lifetime and FB_TRIALS trials, ramp_inc ascending.
@@ -3575,15 +3884,17 @@ PRI segOvershoot() | distIdx, whyCode, sid
     repeat distIdx from 0 to OVERSHT_DISTS - 1
         repeat OVERSHT_REPS
             beat(CP_LOOP_POLL)
-            whyCode := overshootTrial(sid, lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), whyCode)
+            whyCode := overshootTrial(SEG_OVERSHT, sid, lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), whyCode)
     repeat distIdx from 0 to OVERSHT_TURNS - 1
         beat(CP_LOOP_POLL)
-        whyCode := overshootTrial(sid, lookupz(distIdx: OVERSHT_FT_LONG, OVERSHT_FT_SHORT), lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), whyCode)
+        whyCode := overshootTrial(SEG_OVERSHT, sid, lookupz(distIdx: OVERSHT_FT_LONG, OVERSHT_FT_SHORT), lookupz(distIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), whyCode)
     faultApiTrial(sid, whyCode)
     bInstIdle()
     steerStop()
     segEnd(segWhy())
+#endif
 
+#ifdef DBP_BRAKE
 PRI segOutside() | whyCode
 ' OUTSIDE (attended load 6, T1-9): M, AF, S-5, Z. The panel asks for START and nothing moves before it
 ' (sec 8.3); a START timeout ends the segment with no motion. outsideRun() then drives both wheels at
@@ -3608,7 +3919,9 @@ PRI segOutside() | whyCode
         segEnd(whyCode)
     else
         segEnd(segWhy())
+#endif
 
+#ifdef DBP_C
 PRI segBaseline() | side, signMul
 ' BASELINE (part C, before POSTFLT, I7): STOPMODE conditions (1) and (2) at HALF, per motor x sign, one
 ' lifetime each. Shares stopModeLifetime() with STOPMODE.
@@ -3650,9 +3963,11 @@ PRI segPostFault() | side, signMul, reqMode, whyCode
         bInstIdle()
         wheelStop(side)
     segEnd(segWhy())
+#endif
 
 CON { --- part D: the front cog's contract (STEERSEG) and current limiting (LIMIT), task 3560 --- }
 
+#ifdef DBP_D
 PRI segSteerContract() | whyCode
 ' STEERSEG (part D, plan sec R16.8 b): the front cog's contract, measured first through the steering
 ' object -- the three-cog form, where one front cog owns both drivers -- and then through one wheel, the
@@ -3765,7 +4080,9 @@ PRI dWheelHalf(segWhyCode) | whyCode
         dStepSkip(DST_COOPSHUT, SIDE_LEFT, whyCode)
         bInstIdle()
         wheelStop(SIDE_LEFT)
+#endif
 
+#ifdef DBP_FLOOR
 PRI segFloor() | whyCode
 ' FLOOR (attended load 9, T2-1; AC). The panel asks for START and nothing moves before it (sec 8.3); a
 ' START timeout ends the segment with no motion. floorRun() then drives driveDirection(FLOOR_POWER,
@@ -3788,7 +4105,9 @@ PRI segFloor() | whyCode
         segEnd(whyCode)
     else
         segEnd(segWhy())
+#endif
 
+#ifdef DBP_UICHECK
 PRI segUiCheck() | stepIdx
 ' UICHECK (tier dual-ui; STEPHEN 2026-09-15: "a no-motor-control test form of run that takes me thru the
 ' series of UI controls to make sure they work"): no wheel or steering object is ever started. Every panel
@@ -3855,6 +4174,7 @@ PRI uiCheckButton(btnIdx) | startMs, remainMs, buttonIdx, inputCode, bKeyGot, bC
     else
         bSfUiOk := FALSE
     emitUiStep(UIK_CONTROL, btnIdx, PNL_BTN_NONE, bKeyGot, bClickGot, BM_SCR_UI_CONTROL, resultCode, getms() - startMs)
+#endif
 
 PRI uiPressReset()
 ' Forget the last left-button press, so a BM-UISTEP reports only presses made during its own step.
@@ -3863,6 +4183,7 @@ PRI uiPressReset()
     uiPressY := 0
     bUiPressSeen := FALSE
 
+#ifdef DBP_UICHECK
 PRI uiCheckScreen(scr) | startMs, buttonIdx, inputCode, resultCode
 ' One UICHECK screen: an attended screen drawn from its own bmScreens row exactly as the run draws it --
 ' prompt, state, countdown label and start, and its own buttons, drawn but dead -- with the judge
@@ -3892,7 +4213,9 @@ PRI uiCheckScreen(scr) | startMs, buttonIdx, inputCode, resultCode
         panelCompose(scr, scrState(scr), scrLive(scr), PNL_LIVE_NONE, buttonIdx, BM_STRIP_JUDGE, TRUE)
         waitBeat(UI_HILITE_MS, CP_LOOP_OPER)
     emitUiStep(UIK_PREVIEW, PNL_BTN_NONE, buttonIdx, inputCode == INPUT_KEY, inputCode == INPUT_MOUSE, scr, resultCode, getms() - startMs)
+#endif
 
+#ifdef DBG_PREFLT
 PRI bSegPreflight() : bRunGoes | side, bMoved, nFailed, failedSide
 ' PREFLT (every motion load, design sec 4.4): prove each wheel turns before anything is measured. A
 ' wheel that moves 0 ticks ends the run with BM-ABORT scope RUN reason NO_MOTION -- except in part FAULTRESP,
@@ -3917,20 +4240,26 @@ PRI bSegPreflight() : bRunGoes | side, bMoved, nFailed, failedSide
     segBegin(SEG_PREFLT)
     nFailed := 0
     failedSide := SIDE_NONE
+    ' PL-152: the part-FAULTRESP stages are compiled into that part only (they were `PART_ID == PART_FAULTRESP` tests)
     repeat side from SIDE_LEFT to SIDE_RIGHT
         beat(CP_LOOP_POLL)
         bMoved := bPreflightWheel(side)
-        if (bMoved == FALSE) and (PART_ID == PART_FAULTRESP)
+#ifdef DBP_FAULTRESP
+        if bMoved == FALSE
             bMoved := bPfRetry(side)                        ' PL-136: at once, in fresh lifetimes
+#endif
         if bMoved == FALSE
             nFailed += 1
             failedSide := side
         segItems += 1
-    if (nFailed == 1) and (PART_ID == PART_FAULTRESP)
+#ifdef DBP_FAULTRESP
+    if nFailed == 1
         if bPfProbe(failedSide)                             ' PL-136: every retry failed; the probe, before FLTRESP
             nFailed := 0
+#endif
     bRunGoes := (nFailed == 0)
-    if (nFailed == 1) and (PART_ID == PART_FAULTRESP)
+#ifdef DBP_FAULTRESP
+    if nFailed == 1
         bSlotRetired[failedSide - SIDE_LEFT] := TRUE
         bFrPreRetired[failedSide - SIDE_LEFT] := TRUE
         emitAbort(SEG_PREFLT, 0, failedSide, PREFLIGHT_INCRE, ABR_NO_MOTION, 0, SCOPE_SEG)
@@ -3938,11 +4267,15 @@ PRI bSegPreflight() : bRunGoes | side, bMoved, nFailed, failedSide
         segEnd(WHY_MOTOR_RETIRED)
     else
         if nFailed > 0
-            if PART_ID == PART_FAULTRESP
-                emitFrRecSum()                              ' PL-136: both wheels dead after their retries still reports
+            emitFrRecSum()                                  ' PL-136: both wheels dead after their retries still reports
                                                             '  its stages, so the run's end never reads as nothing tried
             emitAbort(SEG_PREFLT, 0, SIDE_NONE, PREFLIGHT_INCRE, ABR_NO_MOTION, 0, SCOPE_RUN)
         segEnd(bRunGoes ? WHY_NONE : WHY_ABORTED)
+#else
+    if nFailed > 0
+        emitAbort(SEG_PREFLT, 0, SIDE_NONE, PREFLIGHT_INCRE, ABR_NO_MOTION, 0, SCOPE_RUN)
+    segEnd(bRunGoes ? WHY_NONE : WHY_ABORTED)
+#endif
 
 PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bMeasured, whyCode, lastJ, bStopped, bFrozen, endCode
 ' One wheel's preflight: start it alone (I6), arm the instrument on it, mark, PREFLIGHT_INCRE for
@@ -4063,7 +4396,9 @@ PRI pfTrace(side, whyCode, endCode) | slotIdx, offNeg, offPos
     offNeg, offPos := wheelGetOffsets(side)
     emitTrace(pfTid, SEG_PREFLT, side, CAUSE_START, PREFLIGHT_INCRE, offNeg, offPos, MODE_FLOAT, wheelRampInc(side), whyCode)
     bTraceDrain(pfTid, slotIdx, SLOT_RIGHT - slotIdx, endCode)
+#endif
 
+#ifdef DBP_FAULTRESP
 PRI bPfRetry(side) : bMoved | slotIdx, tryIdx
 ' PL-136, part FAULTRESP, the first stage: a wheel whose PREFLT nudge did not move is retried AT ONCE, in up to
 ' PF_RETRY_TRIES fresh driver lifetimes, each PF_RETRY_GAP_MS after the previous one stopped, each nudged, dumped and
@@ -4124,9 +4459,11 @@ PRI bPfProbe(side) : bRecovered | slotIdx, nTries, recTry, whyCode
         bFrPreRetired[slotIdx] := FALSE                     ' un-retired: its trials run
     elseif (whyCode == WHY_NONE) and (nTries == FR_RECOVER_TRIES)
         pfOutcome[slotIdx] := PFO_DEAD
+#endif
 
 CON { --- segment routines: traces (STOPMODE, BASELINE, POSTFLT, FAULTB), rungs (LADDER, LIVE, CLOCK), OVERSHT --- }
 
+#ifdef DBG_STOPMODE
 PRI stopModeLifetime(seg, side, motorIncre, bWithStopCog, bWithStart) | whyCode
 ' One stop-mode driver lifetime, the routine STOPMODE and BASELINE share: start the wheel under test
 ' alone (I6; the lifetime zero is read inside bWheelStart()), then, when asked, condition (0) the START
@@ -4158,6 +4495,9 @@ PRI stopModeLifetime(seg, side, motorIncre, bWithStopCog, bWithStart) | whyCode
     bInstIdle()
     wheelStop(side)
 
+#endif
+
+#ifdef DBG_EVTRACE
 PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | tid, whyCode, rampInc
 ' One wheel trace, the trace routine STOPMODE, BASELINE and POSTFLT share: BRAKE requested before
 ' spin-up, on the wheel under test only (I6); eventCapture(); every side effect restored and read back,
@@ -4383,6 +4723,9 @@ PRI eventCapture(side, motorIncre, eventCode) | safeEvent, bReached, bRest, mark
         if (bCpFrozen == FALSE) and (cpWhy == WHY_NONE)
             cpWhy := WHY_INST_NOACK
 
+#endif
+
+#ifdef DBG_RUNG
 PRI rungMeasure(side, motorIncre, steadyBoundMs, settleMs, windowMs, bPollCurrent, decimation) : safeEvent | slotIdx, otherIdx, startMs, bReached, missedStart, illegalStart, missedEnd, illegalEnd
 ' One measured rung, the routine LADDER, LIVE and CLOCK share (design sec 4.4): read the offsets,
 ' duty_max and integrity counts; arm; mark; command; AT_SPEED (<= steadyBoundMs); settle; a WINDOW_MS
@@ -4548,6 +4891,9 @@ PRI transitionStats(slotIdx, cmdTotal, endTotal) | sampleIdx, startJ, endJ, firs
         if trN == 0
             trWhy := WHY_NO_SAMPLES
 
+#endif
+
+#ifdef DBG_LOWRUNG
 PRI lowStats(slotIdx) | sampleIdx, startJ, endJ, refPos, nowPos, lastEdgeT, gapMs
 ' The LOWSPD rung's two readings, both of which exist only at this end of the range (R18.2 item 5).
 '
@@ -4627,6 +4973,9 @@ PRI lowStats(slotIdx) | sampleIdx, startJ, endJ, refPos, nowPos, lastEdgeT, gapM
     if bLsGapValid == FALSE
         lsGapMin := 0
 
+#endif
+
+#ifdef DBG_RUNG
 PRI foldTransitionKick(slotIdx)
 ' TRKICK (PL-87, PL-95): a LADDER rung's transition kick, judged on CURRENT. A change of speed from a
 ' running speed kicks when its transition current peak stands more than TRKICK_EXCESS_MV above what the
@@ -4655,6 +5004,7 @@ PRI foldTransitionKick(slotIdx)
         ' the running PEAK excess, clamped at 0: a transition peaking below its own steady window is
         '  no kick rather than a negative one, and 0 is what "never kicked" must read as
         sfTrKickPk[slotIdx] := (sfTrKickPk[slotIdx] #> trIOver()) <# LIM_BIG
+#endif
 
 VAR { transition statistics (PL-87) -- cog 0 only }
 
@@ -4679,6 +5029,7 @@ VAR { low-speed statistics (R18.2 item 5) -- cog 0 only }
     LONG    lsGapMax                                        ' longest -- with lsGapMin this is the COGGING reading: smooth
     LONG    bLsGapValid                                     '  advance keeps them close, a stepping rotor spreads them
 
+#ifdef DBG_RUNG
 PRI rungWindow(side, windowMs, bPollCurrent) : safeEvent | startMs, lastPollMs, ampsSum, ampsCount, hbStart, bComplete, hlWinLag, hlWinCap, hlEndLag, hlEndCap
 ' The rung's measurement window: a start mark (ring total), windowMs of beat-polled safety reads with
 ' getCurrent() every CURRENT_POLL_MS when asked, and an end mark. The window is delimited by the two
@@ -4766,7 +5117,7 @@ PRI rungEmitAll(seg, rid, rungIdx, side, motorIncre) | slotIdx, rung2Why
     emitRung2(rid, side, motorIncre, rgDutyMax, bRgWindowValid, rung2Why)
     emitRungTransition(rid, side, motorIncre)
     emitRung3(rid, side, motorIncre, rgMissedD, rgIllegalD, rgAmpsX10k, bRgAmpsValid, bRgWindowValid, rgWhy)
-    if seg == SEG_LADDER
+    if (seg == SEG_LADDER) or (seg == SEG_KICK)             ' SRC_REV 54: part KICK's walk is the ladder's, judged the same way
         foldTransitionKick(slotIdx)
     foldIntegrity(slotIdx, rgMissedD, rgIllegalD)
     sfIntegN[slotIdx] := (sfIntegN[slotIdx] + 1) <# LIM_BIG
@@ -4808,6 +5159,9 @@ PRI bRungFaultRecover(seg, side, motorIncre, safeEvent) : bFaulted | bFaultSig
     if bFaulted
         bRecoverFault(seg, 0, side, motorIncre, FAULT_COOL_MS)
 
+#endif
+
+#ifdef DBG_LADDER
 PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, motorIncre, rid, whyCode, consecFaults, safeEvent, bFaulted
 ' One motor x sign of the ladder, driven by an index table into ladderIncre (LADDER passes
 ' ladderAllIdx): one lifetime (zero read inside bWheelStart()), then the rungs in table order, each
@@ -4849,6 +5203,10 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
             safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE, 1)
             rungEmitAll(seg, rid, rungIdx, side, motorIncre)
             ladderNoFold(side, rungIdx, motorIncre)
+#ifdef DBP_KICK
+            kickStats(side - SIDE_LEFT)                     ' SRC_REV 54: the frozen ring, before a recovery can re-arm it (I10)
+            emitKickTr(rid, side, motorIncre)
+#endif
             bFaulted := bRungFaultRecover(seg, side, motorIncre, safeEvent)      ' a recovered fault leaves the wheel at rest, which slotLastIncre records
             if bFaulted
                 consecFaults += 1
@@ -4902,6 +5260,9 @@ PRI ladderNoFold(side, rungIdx, motorIncre) | slotIdx, predX10, ratioPct, bandPc
             bSfRateLawRan[slotIdx] := TRUE
             bSfRateLawOk[slotIdx] := bSfRateLawOk[slotIdx] and (ratioPct >= (RATELAW_PCT_LO - bandPct)) and (ratioPct <= (RATELAW_PCT_HI + bandPct))
 
+#endif
+
+#ifdef DBG_RUNG
 PRI rateBandPct(nTicks) : nExtraPct
 ' What one tick of quantisation is worth, in percent, at this rung's own tick count (PL-79). RATELAW's
 ' band is the criterion PLUS this, so the criterion is never narrower than the resolution the rung had:
@@ -4913,6 +5274,9 @@ PRI rateBandPct(nTicks) : nExtraPct
 
     nExtraPct := ((RATELAW_QUANT_TICKS * 100) / abs(nTicks)) + 1
 
+#endif
+
+#ifdef DBP_A
 PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeEvent, rpmRead
 ' One LIVE rung (design sec 4.4, T1-2): AT_SPEED, settle LIVE_SETTLE_MS so the rpm window fills, a
 ' WINDOW_MS instrument window, then testGetRpm(); BM-LIVE, BM-RUNGTR and BM-RUNGHL. The QTR rung folds
@@ -4959,6 +5323,9 @@ PRI liveRung(side, rid, rungNum, motorIncre, skipWhy) : whyNext | slotIdx, safeE
             whyNext := safeWhy(safeEvent)
     segItems := (segItems + 1) <# LIM_SMALL
 
+#endif
+
+#ifdef DBP_CLOCK
 PRI clockHallIntegrity(side) | slotIdx, nMissed, nAllLow, nAllHigh
 ' PL-90 / PL-69 (task 3571): this wheel's hall integrity over its CLOCK lifetime -- entries into %000, into %111,
 ' and missed transitions -- printed as BM-HALLINT and folded into this clock's R17-DUAL-HALL-K* cell. The counts
@@ -5052,6 +5419,9 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
     bInstIdle()
     wheelStop(side)
 
+#endif
+
+#ifdef DBP_B
 PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, rampInc, safeEvent, bReached, startMs, bStopped
 ' One FAULTB trial (design sec 4.4, T1-7): wheel stopped; setRampingValues(1_500, 200_000, inc, 50_000)
 ' read back; arm; mark; FB_INCRE from standstill; capture until AT_SPEED + FB_AT_SPEED_HOLD_MS, a fault,
@@ -5258,14 +5628,20 @@ PRI traceFaultStats(slotIdx) | sampleIdx, bFirstFlt
                 if (bFirstFlt == FALSE) and bSmpFault(sampleIdx, slotIdx)
                     bFirstFlt := TRUE
                     bFbDsat := (smpDuty(sampleIdx, slotIdx) >= fbDutyMax)
+#endif
 
-PRI overshootTrial(sid, leftFt, rightFt, skipWhy) : whyNext | tid, safeEvent, bReached, recoverWhy, bStraight
+#ifdef DBG_OVERSHT
+PRI overshootTrial(seg, sid, leftFt, rightFt, skipWhy) : whyNext | tid, safeEvent, bReached, recoverWhy, bStraight
 ' One OVERSHT trial (design sec 4.4, T1-8): arm on the steering source (OVERSHT_DECIM); the SYNC_PRECOND
 ' check before the drive call (sec 4.3); mark; driveForDistance(left, right, DDU_FT); wait both wheels
 ' moving, then both STOPPED + OVERSHT_HOLD_MS (<= OVERSHT_WAIT_MS); freeze; BM-STRACE, BM-TS, BM-TRACE-END,
 ' BM-OVERSHOOT, and BM-TURN when the two distances differ; stopMotors(); a fault recovered through the
 ' pass-throughs. power prints OVERSHT_POWER, the value segOvershoot() set (sec 12.8).
 '
+' SRC_REV 54: the segment is a parameter, so part REG's REGRESS runs the same turn trial (PL-151) and its records
+' carry seg REGRESS; part B passes SEG_OVERSHT, which is what this routine hard-coded before.
+'
+' @param seg - SEG_OVERSHT (part B) or SEG_REGRESS (part REG)
 ' @param sid - the steering start's life
 ' @param leftFt - the left wheel's commanded distance, feet
 ' @param rightFt - the right wheel's commanded distance, feet
@@ -5294,13 +5670,13 @@ PRI overshootTrial(sid, leftFt, rightFt, skipWhy) : whyNext | tid, safeEvent, bR
     ovLeftIg := 0
     ovRightIg := 0
     ovWhy := WHY_NONE
-    if (whyNext == WHY_NONE) and (bRunContinue(SEG_OVERSHT) == FALSE)
+    if (whyNext == WHY_NONE) and (bRunContinue(seg) == FALSE)
         whyNext := WHY_ABORTED
     if whyNext <> WHY_NONE
         cpWhy := whyNext
     elseif bInstArm(INST_SRC_STEER, OVERSHT_DECIM) == FALSE
         cpWhy := WHY_INST_NOACK
-    elseif bSteerDrivePrecondition(SEG_OVERSHT, tid) == FALSE
+    elseif bSteerDrivePrecondition(seg, tid) == FALSE
         cpWhy := WHY_SYNC_PRECOND
     else
         instMark()
@@ -5321,7 +5697,7 @@ PRI overshootTrial(sid, leftFt, rightFt, skipWhy) : whyNext | tid, safeEvent, bR
     bCpFrozen := bInstFreeze(0)
     if bSteerUp
         ovLeftTrk, ovRightTrk := steerTrackTicks()
-    emitSTrace(tid, SEG_OVERSHT, CAUSE_DISTANCE, OVERSHT_POWER, OVERSHT_POWER, TRUE, 0, MODE_FLOAT, cpWhy)
+    emitSTrace(tid, seg, CAUSE_DISTANCE, OVERSHT_POWER, OVERSHT_POWER, TRUE, 0, MODE_FLOAT, cpWhy)
     if bCpFrozen and (cpWhy == WHY_NONE)
         bTraceDrain(tid, SLOT_LEFT, SLOT_RIGHT, cpEnd)
         overshootStats()
@@ -5472,6 +5848,9 @@ PRI ticksToMetres(nTicks, tickMmX100) : nMetres
     else
         nMetres := (nTicks * tickMmX100 + (MM_PER_M_X100 / 2)) / MM_PER_M_X100
 
+#endif
+
+#ifdef DBG_TICKMM
 PRI steerTickInMM() : nMmX100
 ' The STEERING object's own travel-per-tick, through its TEST-USE pass-through (PL-84).
 '
@@ -5480,7 +5859,9 @@ PRI steerTickInMM() : nMmX100
     beat(CP_LIB_STEER_QUERY)
     nMmX100 := steering.testGetTickInMM()
     beat(CP_LIB_STEER_QUERY)
+#endif
 
+#ifdef DBG_OVERSHT
 PRI steerDistanceM() : leftM, rightM
 ' Both wheels' travelled distance in metres, through the public getter.
 '
@@ -5491,6 +5872,9 @@ PRI steerDistanceM() : leftM, rightM
     leftM, rightM := steering.getDistance(steering.DDU_M)
     beat(CP_LIB_STEER_QUERY)
 
+#endif
+
+#ifdef DBP_B
 PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy, safeEvent, bReached
 ' The OVERSHT fault-API trial (task 3552, extended by task 3560): certify that a user of the STEERING
 ' object sees a fault through its public API, that the latch task 3547 stopped auto-clearing is still set
@@ -5587,6 +5971,9 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy, safe
             emitOut(tid, sid, rowIdx)
     segItems := (segItems + 1) <# LIM_SMALL
 
+#endif
+
+#ifdef DBG_FSHIFT
 PRI faultShiftDeg(side, bSteerForm) : shiftDeg | sampleIdx, errSum, errMean, shiftUnits
 ' The commutation-offset shift that puts this wheel's position error on the driver's fault test (PL-86, PL-59).
 '
@@ -5635,6 +6022,9 @@ PRI wheelErr(side, bSteerForm) : nErr
         _, nErr, _, _, _, _, _, _ := wheelL.testGetTelemetry()
     beat(CP_LIB_QUERY)
 
+#endif
+
+#ifdef DBP_B
 PRI steerOffsetProvoke(leftShiftDeg, rightShiftDeg) : leftNeg, rightNeg | leftPos, rightPos
 ' Shift each wheel's commutation offsets by its own computed amount (faultShiftDeg()) from the pair it is
 ' running, and return the negative-increment offset each wheel read back. The pair in force is read first and
@@ -5757,6 +6147,7 @@ PRI fltApiVerdict() : whyCode | rowIdx, faultIdx, lastIdx, bStatFaulted, bSigHel
         bSfFltApiRan := TRUE
         bSfFltApiOk := bStatFaulted and bSigHeld and (fltLatchMs >= FLTAPI_LATCH_MS)
         whyCode := WHY_NONE
+#endif
 
 CON { --- part D steps: one claim each, measured once, printed as BM-DSTEP (task 3560) --- }
 
@@ -5778,6 +6169,7 @@ CON { --- part D steps: one claim each, measured once, printed as BM-DSTEP (task
 ' The construction that makes it impossible is if/else, so every helper below uses if/else for a call
 ' and keeps `? :` for selecting a VALUE. A getter behaves the same way; it merely says nothing about it.
 
+#ifdef DBP_D
 PRI dStepDone(stepCode, side, bMeasured, bCriterionMet, measuredVal, loLimit, hiLimit, whyCode)
 ' Record one part-D step: fill the BM-DSTEP staging, fold the cell, emit.
 '
@@ -5827,6 +6219,9 @@ PRI bDArm(side) : bArmed
 
     bArmed := bInstArm((side == SIDE_BOTH) ? INST_SRC_STEER : INST_SRC_WHEELS, FLOOR_DECIM)
 
+#endif
+
+#ifdef DBG_DDRIVE
 PRI dDrive(side, powerValue) : eError
 ' Drive this form at a power through the PUBLIC method a user would call, and return what it returned.
 '
@@ -5855,6 +6250,9 @@ PRI dDrive(side, powerValue) : eError
         eError := wheelL.driveAtPower(powerValue)
         beat(CP_LIB_COMMAND)
 
+#endif
+
+#ifdef DBP_D
 PRI dDriveDistance(side, distanceM) : eError
 ' Drive this form a distance through the PUBLIC driveForDistance() a user would call, and return what it returned.
 '
@@ -6021,6 +6419,9 @@ PRI dResetTracking(side) : eError
         eError := wheelL.resetTracking()
     beat(CP_LIB_COMMAND)
 
+#endif
+
+#ifdef DBG_FRONTST
 PRI dFrontStats(side) : nPasses, nLate, nMaxTicks, nStackHi, nStackOf
 ' This form's front-cog loop health, and the stack allocation its high-water mark is measured against.
 '
@@ -6048,6 +6449,9 @@ PRI dFrontStats(side) : nPasses, nLate, nMaxTicks, nStackHi, nStackOf
         nStackOf := wheelL.STACK_SIZE_LONGS
     beat(CP_LIB_STEER_QUERY)
 
+#endif
+
+#ifdef DBP_D
 PRI dShutdown(side)
 ' Stop this form's cogs through the PUBLIC stop(), with the instrument returned to IDLE first (I10).
 '
@@ -7319,9 +7723,11 @@ PRI dLimitRestore() | slotIdx, nPeakA, nContA
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         nPeakA, nContA, _, _, _ := dLimitState(slotIdx)
         emitLimSt(SIDE_LEFT + slotIdx, slotIdx, DST_BLOCKED, (nPeakA * X10) + nContA)
+#endif
 
 CON { --- attended segments: OUTSIDE and FLOOR (design sec 4.4) and the operator panel (sec 8) --- }
 
+#ifdef DBP_BRAKE
 PRI outsideRun() : whyCode | tid, sid, safeEvent, bReached, rowIdx
 ' The OUTSIDE body after START (design sec 4.4): steering start (holdAtStop(FALSE) inside bSteerStart());
 ' arm on the steering source at FLOOR_DECIM; SYNC_PRECOND then driveAtPower(50, 50); both AT_SPEED (<=
@@ -7471,7 +7877,9 @@ PRI outsideZSteps(tid, markMs) : whyCode | phaseStartMs
             whyCode := safeWhy(steerPollPhase(markMs, phaseStartMs, Z_STEP_MS, FALSE, TRUE))
         else
             whyCode := WHY_SYNC_PRECOND
+#endif
 
+#ifdef DBG_OUTPOLL
 PRI steerPollPhase(markMs, phaseStartMs, durationMs, bUntilStopped, bPoll) : safeEvent | safeNow, bStopAsked
 ' One beat-polled steering step: every SAMPLE_MS a safety read of the instrument mirror (sec 2.8) that
 ' acts on the absolute-current abort and a stalled instrument, but not on a fault flag (a braked or
@@ -7498,16 +7906,20 @@ PRI steerPollPhase(markMs, phaseStartMs, durationMs, bUntilStopped, bPoll) : saf
         beat(CP_LOOP_POLL)
         if bPoll and (outCount < OUT_POLLS) and ((getms() - markMs) >= (outCount * OUT_POLL_MS))
             outPoll(getms() - markMs)
-        panelTick(phaseStartMs, durationMs)
+#ifdef DBG_PANEL
+        panelTick(phaseStartMs, durationMs)                 ' PL-152: the panel is compiled into the attended parts only
+#endif
         waitms(SAMPLE_MS)
         safeNow := safetyPoll(SIDE_BOTH)
         if (safeNow == SAFE_ABS_ABORT) or (safeNow == SAFE_INST_STALL)
             safeEvent := safeNow
             quit
+#ifdef DBG_PANEL
         if bPanelStopPressed()
             bStopAsked := TRUE
             if bUntilStopped == FALSE
                 quit
+#endif
         if bUntilStopped and bMirrorAllInState(SIDE_BOTH, DCS_STOPPED)
             quit
         if (getms() - phaseStartMs) >= durationMs
@@ -7538,7 +7950,9 @@ PRI outPoll(tMs) | rowBase
     outBuf[rowBase + OUT_ESTOP] := steering.isEmergency()
     beat(CP_LIB_STEER_QUERY)
     outCount += 1
+#endif
 
+#ifdef DBP_FLOOR
 PRI floorRun() : whyCode | tid, sid, buttonIdx, inputCode, safeEvent, driveStartMs, startTotal, endTotal
 ' The FLOOR body after START (design sec 4.4): steering start (holdAtStop(FALSE) inside bSteerStart()); arm
 ' at FLOOR_DECIM; SYNC_PRECOND; mark (the trace mark and the rate window's first ring total, sec 12.7);
@@ -7696,7 +8110,9 @@ PRI floorWhy() : whyCode
         whyCode := WHY_OPERATOR_TIMEOUT
     else
         whyCode := WHY_NONE
+#endif
 
+#ifdef DBG_PANEL
 PRI buttonAnswer(buttonIdx) : answerCode
 ' The BM-FLOOR / BM-OPER answer of an answer button.
 '
@@ -8184,6 +8600,7 @@ PRI mouseButton(xPos, yPos, liveMask) : buttonIdx | btnIdx, slotX, slotY
         if ((liveMask & (DECOD btnIdx)) <> 0) and (xPos >= slotX) and (xPos < slotX + BM_BTN_W) and (yPos >= slotY) and (yPos < slotY + BM_BTN_H)
             buttonIdx := btnIdx
             quit
+#endif
 
 CON { --- TAKE: a slower command is taken while ramping, and the two following readings agree (task 3584, Visit 8) --- }
 
@@ -8200,6 +8617,7 @@ CON { --- TAKE: a slower command is taken while ramping, and the two following r
   FOLAGREE_LO           = 0
   FOLAGREE_HI           = 5                                 ' points: permille / 10 against pct
 
+#ifdef DBP_A
 PRI segTake() | side
 ' TAKE (part A, task 3584): per motor, A-6 then A-8's following case, one lifetime each.
 '
@@ -8294,6 +8712,7 @@ PRI emitTake(side, nDrvBefore, eDrvrState, nPermille, nPct, bPctOk) | slotIdx
     benchLog.numField(@"permille", nPermille, LIM_SMALL)
     benchLog.naNumField(@"follow_pct", nPct, LIM_SMALL, bPctOk == TRUE)
     emitRecord()
+#endif
 
 CON { --- LEAD: the live lead-step run that measures the dynamic-lead table (task 3583, R18.4) --- }
 
@@ -8319,6 +8738,7 @@ CON { --- LEAD: the live lead-step run that measures the dynamic-lead table (tas
     LEADV_COUNT = LEADV_NOMEAS + 1
     TOKMAX_LEADV = 9
 
+#ifdef DBP_LEAD
 DAT ' ---- LEAD tables ----
 
 leadRungIncre   LONG    DRIVE_CEILING_INCRE / 8, DRIVE_CEILING_INCRE / 4, DRIVE_CEILING_INCRE / 2, DRIVE_CEILING_INCRE
@@ -8501,6 +8921,7 @@ PRI wheelSetLeadScheduled(side)
     else
         wheelL.testSetLeadScheduled(TRUE)
     beat(CP_LIB_OFFSETS)
+#endif
 
 CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LIMITS-RESET-PLAN.md) --- }
 
@@ -8599,6 +9020,7 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
     EDGE_COUNT = EDGE_NOWIN + 1
     TOKMAX_EDGE = 5
 
+#ifdef DBP_LIMITS
 DAT ' ---- LIMITS tables ----
 
 limRampIncs     LONG    RAMP_DEF_INC, RAMP_DEF_INC * 2, RAMP_DEF_INC * 4
@@ -9334,6 +9756,7 @@ PRI wheelRawTicks(side) : nTicks
     else
         nTicks := wheelL.getRawHallTicks()
     beat(CP_LIB_QUERY)
+#endif
 
 CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 3613, R19.7) --- }
 
@@ -9535,6 +9958,7 @@ CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 361
     HS_COUNT = wheelL.HS_LIMITED + 1                        ' tokHold is indexed by the library's HS_*
     TOKMAX_HOLD = 7
 
+#ifdef DBG_FRPLAT
 DAT ' ---- FAULTRESP tables ----
 
 ' The three rungs, as ladderIncre indices: 40, 80 and 120 x 10^6, low, middle and high. The high rung stays below the
@@ -9549,7 +9973,10 @@ tokFrMode       BYTE    "SHIPPED", 0, "GRADED", 0
 tokFrWin        BYTE    "PRE", 0, "MOVE", 0, "REST", 0
 tokHold         BYTE    "OFF", 0, "HOLDING", 0, "SLIPPED", 0, "LIMITED", 0
 tokPfOut        BYTE    "NO_FAIL", 0, "RETRY", 0, "PROBE", 0, "DEAD", 0, "UNDECIDED", 0
+#endif
 
+' PL-152: this VAR block stays in every build -- the pf* longs below are the PREFLT nudge's staging, which every part
+'  that runs PREFLT writes (bPreflightWheel()); the FAULTRESP code that reads the rest is compiled into that part only.
 VAR { FAULTRESP state -- cog 0 only }
 
     ' the trial in hand (frStagingReset())
@@ -9687,6 +10114,7 @@ VAR { FAULTRESP state -- cog 0 only }
     LONG    bSfFrontEvRan[INST_MOTORS]                      ' FRONTST-EV, indexed by the wheel FLTPLAT faulted
     LONG    bSfFrontEvOk[INST_MOTORS]
 
+#ifdef DBP_FAULTRESP
 PRI frResetCells() | arrIdx, slotIdx
 ' Clear the FAULTRESP part's cell accumulators (initRunState()): every count 0 and every ran FALSE, so a cell no
 ' trial reached prints NOMEAS. The recovery probe's state too, so BM-FRRECSUM reads probed FALSE when none ran, and
@@ -9872,6 +10300,9 @@ PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyC
     if bTimedOut and (bFrProbed == FALSE)
         frRecoverProbe(tid, side)                           ' PL-120: once per run, before the next trial
 
+#endif
+
+#ifdef DBG_FRPLAT
 PRI frStagingReset(cellKind, speedIdx, brakeIdx)
 ' Clear the trial staging, and name the trial's fault response, brake % and stop request from its X-cell.
 '
@@ -9955,6 +10386,9 @@ PRI frWinReset(winIdx) | phaseIdx
         frWinPp[(winIdx * FR_PHASES) + phaseIdx] := 0
         frWinX[(winIdx * FR_PHASES) + phaseIdx] := 0
 
+#endif
+
+#ifdef DBP_FAULTRESP
 PRI frRestWindow(side, slotIdx) | winStartTotal, winEndTotal, startJ, endJ
 ' X-3's negative control, measured FIRST (D2): the three phases over FR_REST_WIN_MS with the wheel at rest and the
 ' bridge floated, before anything is commanded. The coast's own at-rest tail (FRW_REST) is its second instance. Both
@@ -10062,7 +10496,9 @@ PRI frWaitAtSpeed(side, slotIdx) : safeEvent, bReached
 ' @returns bReached - TRUE when the mirror read DCS_AT_SPEED
 
     safeEvent, bReached, _ := waitWatchedNoMo(side, slotIdx, LADDER_STEADY_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+#endif
 
+#ifdef DBG_PREFLT
 PRI waitWatchedNoMo(side, slotIdx, durationMs, cpId, untilKind) : safeEvent, bReached, bDumped | startMs, basePos, baseHw, bBaseTaken, bTicked
 ' A commanded wheel's watched wait with PL-120's NOMOTION dump: waitWatched(side, durationMs, cpId, untilKind) pass for
 ' pass -- one safetyReset(), a beat and a SAMPLE_MS wait every pass, the same safety poll and the same ends -- plus,
@@ -10099,11 +10535,15 @@ PRI waitWatchedNoMo(side, slotIdx, durationMs, cpId, untilKind) : safeEvent, bRe
     startMs := getms()
     repeat
         beat(cpId)
-        panelTick(startMs, durationMs)
+#ifdef DBG_PANEL
+        panelTick(startMs, durationMs)                      ' PL-152: the panel is compiled into the attended parts only
+#endif
         waitms(SAMPLE_MS)
         safeEvent := safetyPoll(side)
+#ifdef DBG_PANEL
         if (safeEvent == SAFE_NONE) and bPanelStopPressed()
             safeEvent := SAFE_OPER_STOP
+#endif
         if untilKind == UNTIL_AT_SPEED
             bReached := bMirrorAllInState(side, DCS_AT_SPEED)
         if bBaseTaken == FALSE
@@ -10120,7 +10560,9 @@ PRI waitWatchedNoMo(side, slotIdx, durationMs, cpId, untilKind) : safeEvent, bRe
             quit
     if untilKind == UNTIL_TIME
         bReached := (safeEvent == SAFE_NONE)
+#endif
 
+#ifdef DBG_FRPLAT
 PRI frProvoke(side, slotIdx, bSteerForm) : outcome | stopSide
 ' The forced fault, marked and guarded: the mark, testForceFault() on this wheel only -- through the wheel object or
 ' the steering object -- and frGuard(). The driver takes it at its own fault test on its next driven frame.
@@ -10143,6 +10585,9 @@ PRI frProvoke(side, slotIdx, bSteerForm) : outcome | stopSide
         stopSide := side
     outcome := frGuard(slotIdx, stopSide, FALSE, frMarkMs)
 
+#endif
+
+#ifdef DBP_FAULTRESP
 PRI frForceSecond(side, slotIdx) : outcome | startMs, markMs
 ' X-6 and X6C: the SECOND forced fault, on the ramp the first one's re-sync began. Wait (<= FR_SECOND_WAIT_MS) for the
 ' mirror to read DCS_SPIN_DN, then force again and guard it: the driver's pending re-synced stop (DRIVER_REV 12) sends
@@ -10165,6 +10610,9 @@ PRI frForceSecond(side, slotIdx) : outcome | startMs, markMs
     frForceErr2 := wheelForceFault(side)
     outcome := frGuard(slotIdx, side, TRUE, markMs)
 
+#endif
+
+#ifdef DBG_FRPLAT
 PRI frGuard(slotIdx, stopSide, bSecond, markMs) : outcome
 ' THE FORCED FAULT'S GUARD (see this section's CON). For FR_PROVOKE_MS after markMs, read the instrument's mirror with no
 ' wait between reads. The first fault ends the guard on the fault latch; X-6's second on the state reading
@@ -10204,6 +10652,9 @@ PRI frGuard(slotIdx, stopSide, bSecond, markMs) : outcome
         abortStopMotor(stopSide, slotIdx)
         emitAbort(curSeg, curTid, stopSide, curIncre, ABR_NO_FAULT, frGuardPkMv, SCOPE_TRIAL)
 
+#endif
+
+#ifdef DBP_FAULTRESP
 PRI frReadAfter(side)
 ' The reads that must see the driver as the fault left it, after the freeze and before any restore or recovery: the
 ' re-sync count (testGetFaultResponse()), the cause (getFaultCause()), and (task 3621) the stop reason and this
@@ -10932,6 +11383,9 @@ PRI frPlatTrial(side, eMode) | slotIdx, otherIdx, tid, sid, whyCode, safeEvent, 
     steerStop()
     segItems := (segItems + 1) <# LIM_SMALL
 
+#endif
+
+#ifdef DBG_FRPLAT
 PRI frPlatReset()
 ' Clear X-5's readings of the watched wheel.
 
@@ -10946,6 +11400,9 @@ PRI frPlatReset()
     frPlatRestMs := 0
     bFrPlatSpinDn := FALSE
 
+#endif
+
+#ifdef DBP_FAULTRESP
 PRI frPlatReport(fSlot, oSlot) | eLeftReason, eRightReason, eFaulted, eOther, eWant, bOk, nPasses, nLate, nMaxTicks, nStackHi, nStackOf, nLateEv
 ' Task 3621: what the platform reports of one X-5 trial whose forced fault latched, read as the fault left it -- like
 ' frReadAfter(), reads only, before frPlatRestore() (which stops the platform and would write nothing it could not):
@@ -11013,6 +11470,9 @@ PRI frPlatRestore()
         fltLeftCause, fltRightCause := steering.getFaultCause()
         beat(CP_LIB_STEER_QUERY)
 
+#endif
+
+#ifdef DBG_FRPLAT
 PRI frPlatStats(fSlot, oSlot) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, restSamples, stillCount, runStartJ, winStartJ, winEndJ, winTicks, winMs
 ' X-5's readings from the frozen steering capture: the faulted wheel's first latched sample; the WATCHED wheel's rate
 ' over FR_PRE_SAMPLES before the mark, its rest after the fault (pos and hwPos unchanged for REST_CONFIRM_MS, as
@@ -11119,6 +11579,9 @@ PRI frPlatFold(oSlot)
         bSfPlatRan[oSlot] := TRUE
         sfPlatPct[oSlot] := frPlatPct
 
+#endif
+
+#ifdef DBP_FAULTRESP
 PRI frShortRise(slotIdx) : nMeasured, nBad, bVisible | speedIdx, arrIdx, lastPk
 ' R19-DUAL-SHORTI-X's reading: across the speeds X-2 measured, in ascending order, how many steps did NOT raise the
 ' post-fault peak current, and whether the highest measured speed's peak was a visible current at all.
@@ -11309,6 +11772,9 @@ PRI emitFrDiag()
     benchLog.numField(@"pf_gap_ms", PF_RETRY_GAP_MS, LIM_SMALL)
     emitRecord()
 
+#endif
+
+#ifdef DBG_NOTBUILT
 PRI emitNotBuilt(pCell, pStudy, whyCode)
 ' BM-NOTBUILT: a cell this build declares and cannot build, the study cell or plan item it stands for, and why. Worst
 ' case 89 bytes (the study token widened to TOKMAX_STUDY by task 3621, for R20-PACK-EV's R20.4).
@@ -11323,6 +11789,9 @@ PRI emitNotBuilt(pCell, pStudy, whyCode)
     whyField(whyCode)
     emitRecord()
 
+#endif
+
+#ifdef DBP_FAULTRESP
 PRI emitFrTrial(tid, side, motorIncre)
 ' BM-FRTRIAL: one wheel trial -- its X-cell, what it set and requested, the forced fault and its outcome, and what the
 ' driver was seen to do. second is X-6's second forced fault (NOT_RUN when none was asked), and f2_err its call's
@@ -11677,6 +12146,9 @@ PRI emitFrRest(tid, side, eMode, nBrakeOn, eHold, bMeasured, bOk)
         whyField(WHY_NO_COG)
     emitRecord()
 
+#endif
+
+#ifdef DBG_FRPLAT
 PRI emitFrPlat(tid, sid, side)
 ' BM-FRPLAT: X-5 -- the wheel faulted and its fault response, the forced fault's call and outcome, then the WATCHED
 ' wheel: its rate before the fault, in the window one ramp time after it and as a percentage, its ms to rest (o_rest)
@@ -11705,6 +12177,9 @@ PRI emitFrPlat(tid, sid, side)
     whyField(frWhy)
     emitRecord()
 
+#endif
+
+#ifdef DBG_NOTBUILT
 PRI emitSignoffNotBuilt(pCell, side, pCrit)
 ' One NOT_BUILT SIGNOFF: a cell this build declares and does not build, measured NA, n 0 (the reason is its
 ' BM-NOTBUILT header record). Worst case 168 bytes.
@@ -11728,6 +12203,9 @@ PRI emitSignoffNotBuilt(pCell, side, pCrit)
     benchLog.tokenField(@"verdict", @sSfNotBuilt, TOKMAX_SFVERDICT)
     emitRecord()
 
+#endif
+
+#ifdef DBP_FAULTRESP
 PRI wheelSetFaultResponse(side, eMode, brakePct) : eError
 ' setFaultResponse() on one wheel (R19.3; public since R20.1): the response to a position fault, and the graded short's %.
 '
@@ -11784,6 +12262,9 @@ PRI wheelHoldStatus(side) : eHoldState
         eHoldState, _ := wheelL.getHoldStatus()
     beat(CP_LIB_QUERY)
 
+#endif
+
+#ifdef DBG_FORCE
 PRI steerSetFaultResponse(eMode, brakePct) : eError
 ' setFaultResponse() on both steering wheels (R19.3; public since R20.1).
 '
@@ -11795,6 +12276,9 @@ PRI steerSetFaultResponse(eMode, brakePct) : eError
     eError := steering.setFaultResponse(eMode, brakePct)
     beat(CP_LIB_STEER_DRIVE)
 
+#endif
+
+#ifdef DBG_FRPLAT
 PRI wheelForceFault(side) : eError
 ' testForceFault() on one wheel (R19.3, TEST-USE): the driver faults on its next driven frame.
 '
@@ -11808,6 +12292,9 @@ PRI wheelForceFault(side) : eError
         eError := wheelL.testForceFault()
     beat(CP_LIB_COMMAND)
 
+#endif
+
+#ifdef DBG_FORCE
 PRI steerForceFault(side) : eError
 ' testLeftForceFault() / testRightForceFault() on the steering object: one wheel faults on its next driven frame.
 '
@@ -11821,6 +12308,9 @@ PRI steerForceFault(side) : eError
         eError := steering.testLeftForceFault()
     beat(CP_LIB_STEER_DRIVE)
 
+#endif
+
+#ifdef DBP_FAULTRESP
 PRI frHookRestTrial(side) | slotIdx, whyCode, sampleIdx, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk, hookSr
 ' HOOKREST, the forced-fault hook's negative control, run FIRST on each wheel (D2). In its own lifetime, holdAtStop(FALSE)
 ' (the lifetime's own), the wheel at rest and the bridge coasting: testForceFault() must NOT fault, because the driver
@@ -11923,6 +12413,7 @@ PRI emitFrHook(side, nSamples, bFaultSeen, bStateOk, hwMoved, bMeasured, bOk, wh
     benchLog.boolField(@"ok", bOk)
     whyField(whyCode)
     emitRecord()
+#endif
 
 CON { --- START: the startup study's B-cells through the steering object (task 3613, R19.7) --- }
 
@@ -12089,9 +12580,15 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
     #0, SKR_REF, SKR_OPT, SKR_RET, SKR_NORET, SKR_NOREF, SKR_GRD, SKR_NOGRD, SKR_MIS, SKR_NOHAL, SKR_ILL, SKR_NOILL, SKR_PACK
     SKR_COUNT             = SKR_PACK + 1
 
-DAT ' ---- START tables ----
+#ifdef DBG_PACKTOK
+DAT ' ---- the pack status tokens, START's and PACK's (PL-152: in those two parts' images only) ----
 
 tokPack         BYTE    "NOT_FITTED", 0, "ABSENT", 0, "PRESENT", 0
+#endif
+
+#ifdef DBP_START
+DAT ' ---- START tables ----
+
 tokSkNegKind    BYTE    "NONE", 0, "PHASE", 0, "SWAP", 0                                ' indexed by SKNEG_*
 tokPrbPhase     BYTE    "NONE", 0, "U", 0, "V", 0, "W", 0                               ' by PRB_*
 tokHallSwap     BYTE    "NONE", 0, "HALLS_01", 0, "HALLS_12", 0, "HALLS_02", 0          ' by HSW_*
@@ -13336,6 +13833,8 @@ PRI emitSkSum(slotIdx) | bRz, bDrv, bFol, firstWhy
     whyField(firstWhy)
     emitRecord()
 
+#endif
+
 CON { --- PACK: the pack voltage sensor, fitted and certified (task 3611, R20.4) --- }
 
   ' WHAT THIS PART IS FOR. R19.5 built the driver's reading of Stephen's pack voltage sensor (VOLTAGE-SENSOR.md, his spec
@@ -13421,6 +13920,7 @@ CON { --- PACK: the pack voltage sensor, fitted and certified (task 3611, R20.4)
     TOKMAX_PKRULE         = 16                              ' sPkRule
     PK_MARK_SLOTS         = 2                               ' [0] the older reading, [1] the newer
 
+#ifdef DBP_PACK
 DAT ' ---- PACK tables and the operator's lines (task 3611) ----
 
 tokPkPair       BYTE    "NONE", 0, "CAL", 0, "SECOND", 0                                ' indexed by PKP_*
@@ -14032,6 +14532,8 @@ PRI emitPackCells() | bJudged, nDiffMv
         emitSignoff(@sSfCellPackEv, SIDE_NONE, @sSfCritPackQ, bPkSteadyRan, pkSteadyEv + (pkReadN - pkPresentN) + (bPkSteadyClean ? 0 : 1), R20_BAD_LO, R20_BAD_HI, pkReadN, @sSfUnitsCount)
         emitSignoff(@sSfCellPackEv, SIDE_NONE, @sSfCritPackEv, pkCycN > 0, pkEvBad, R20_BAD_LO, R20_BAD_HI, pkCycN, @sSfUnitsCount)
 
+#endif
+
 CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task 3591, R18.2c tail, R19.8) --- }
 
   ' WHAT THIS PART IS FOR. The release's only LOADED measurement: attended, wheels down, the platform on the floor and
@@ -14218,6 +14720,7 @@ CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task
     CRSTOP_COUNT          = 5
     TOKMAX_CRSTOP         = 8
 
+#ifdef DBP_SPIN
 DAT ' ---- SPIN tables ----
 
 ' per SPIN_SPEED_*: the power driveAtPower() is given; the steady window's length (the quarter's leaves its limit about
@@ -16039,8 +16542,11 @@ PRI emitCreepW(kind, slotIdx) | bWin, whyCode
     whyField(whyCode)
     emitRecord()
 
+#endif
+
 CON { --- ALIGN: the hall zero measured cold, cog 0, the bridge never driven (task 3590) --- }
 
+#ifdef DBP_ALIGN
 VAR { ALIGN tier state -- cog 0 only }
 
     ' THE LEG'S CROSSINGS ARE HELD, NOT EMITTED, UNTIL THE LEG ENDS. Stephen sets the pace by hand, so
@@ -16625,6 +17131,9 @@ PRI alignDirToken(nDir) : pTok
     else
         pTok := tokenAt(@tokADir, ADIR_COUNT, ADIR_REVERSE)
 
+#endif
+
+#ifdef DBG_SAY
 PRI alignSay(pText)
 ' One plain operator line. No panel: all PLOT/panel work is benched, and this tier needs none. The PACK part's lines
 ' come through here too (task 3611): its steps also end on what a sensor sees, not on a key or a click.
@@ -16634,7 +17143,9 @@ PRI alignSay(pText)
     beat(CP_EMIT)
     debug(zstr_(pText))
     beat(CP_EMIT)
+#endif
 
+#ifdef DBP_ALIGN
 PRI alignEmitLeg() | crossIdx
 ' Emit the leg that just finished: every kept crossing, then the leg's own summary. Nothing is emitted
 ' while the operator is turning, so this burst is what he sees between legs.
@@ -16743,6 +17254,526 @@ PRI emitAlignCells()
     emitSignoff(@sSfCellAgCover, SIDE_NONE, @sSfCritAgCover, sfAgCoverMin < LIM_BIG, sfAgCoverMin, ALIGN_COVER_LO, ALIGN_COVER_HI, sfAgLegs, @sSfUnitsCount)
     emitSignoff(@sSfCellAgRes, SIDE_NONE, @sSfCritAgRes, sfAgResMin < LIM_BIG, sfAgResMin, ALIGN_RES_LO, ALIGN_RES_HI, sfAgLegs, @sSfUnitsCount)
     emitSignoffBool(@sSfCellAgMatrix, SIDE_NONE, @sSfCritAgMatrix, sfAgLegs > 0, bAlignMatrix(), ALIGN_COMBOS)
+
+#endif
+
+CON { --- REG: PL-151's part-B half, pointed -- TURNDIST, FLTCAUSE and FLTRETRY in one short load (SRC_REV 54) --- }
+
+  ' WHAT THIS PART IS FOR. PL-151 found three 6.0 API claims whose evidence is stale or missing: driveForDistance(left,
+  '  right) stopping each wheel at its own distance (R17-DUAL-TURNDIST-B, last PASS at Visit 6a on the pre-R18.4 driver),
+  '  getFaultCause() (R17-DUAL-FLTCAUSE-B, never a PASS), and PL-66's retry -- the same power sent again after a fault
+  '  clears it and drives (R16-DUAL-FLTRETRY-B, never measured). Part B carries all three inside a 20-minute load of
+  '  everything else. This part runs only them, wheels up and unattended, in under a minute (STEPHEN 2026-09-26: "our
+  '  bench run tests should not be an accumulation of all the tests we've ever run"), and declares those same three
+  '  cells: the collation lets the latest build that declares a cell speak.
+  '
+  ' THE ORDER IS THE CONSTRUCTION.
+  '  1. TURNDIST -- one steering lifetime: part B's two turn trials, overshootTrial() unchanged (driveForDistance(10, 2)
+  '     and (2, 10) ft at OVERSHT_POWER), judged as part B judges them: each wheel at rest within STOP_LIMIT_HI ticks of
+  '     its OWN target, in the platform frame. Negative: the unfixed library stopped both wheels at the shorter
+  '     distance, so the long wheel rested hundreds of ticks short and fails.
+  '  2. FLTCAUSE's negative -- in that same lifetime, after those two healthy drives: getFaultCause() reads FC_NONE on
+  '     both wheels. Measured only when the turn trials ran and nothing faulted in them.
+  '  3. FLTCAUSE and FLTRETRY -- one forced fault per wheel, LEFT then RIGHT, each in a steering lifetime of its own (a
+  '     start re-inits the cause, the fault response and the driver's sticky fault flag, so the second trial cannot read
+  '     the first one's fault). The fault response is set to FR_SHIPPED so the fault LATCHES (DCS_FAULTED): PL-66 is
+  '     about a latched fault, and FR_GRADED's re-synced stop zeroes the command itself, which would make the retry a
+  '     change of command and prove nothing. Both wheels are driven at REG_POWER to AT_SPEED; testLeftForceFault() or
+  '     testRightForceFault() (PL-119: the safe, repeatable provocation) faults ONE wheel on its next driven frame; the
+  '     platform comes to rest (the faulted wheel coasts, the steering front cog stops its partner along its ramp); then
+  '     getStatus() and getFaultCause() are read as the fault left them, and the SAME power is commanded again.
+  '      FLTCAUSE - the faulted wheel reads FC_LAG (the halls are legal: testForceFault()'s own contract) and its
+  '                 partner, which only stopped, reads FC_NONE. Negatives: step 2, and the partner in every trial. A
+  '                 cause that is never written, or written to the wrong wheel, or FC_HALL, fails.
+  '      FLTRETRY - measured when the faulted wheel read DS_FAULTED before the retry; PASS when driveAtPower() of the
+  '                 same power returned NO_ERROR and both wheels reached DCS_AT_SPEED within D_AT_SPEED_MS. Negative:
+  '                 PL-66's mechanism -- the driver keeps a repeated request standing and stays FAULTED -- never reaches
+  '                 speed and fails.
+  '     THE RETRY'S WAIT IGNORES THE FAULT FLAG. The driver's fault flag is sticky until clearFaultSignal() or a restart
+  '     (isp_bldc_motor.spin2 clearFaultSignal(), S-5), so waitWatched() would end the retry's wait on the very fault
+  '     being retried from. regWaitSpeed() keeps the absolute-current abort and the instrument stall and waits for
+  '     AT_SPEED itself. (Part B's fltApiRetry() waits through waitWatched(), and so cannot pass on a driver that
+  '     behaves -- recorded in the SRC_REV 54 note, not changed here.)
+    REG_POWER             = FLTAPI_POWER                    ' 50: part B's fault-API power, both wheels
+    REG_BRAKE_PCT         = wheelL.BRAKE_PCT_DEFAULT        ' FR_SHIPPED ignores it; the driver's own default is written
+    ' testForceFault() returns once the front cog took the request (1 ms); the driver faults on its next driven pass and
+    '  the instrument mirrors the flag within one 2 ms sample (FR_PROVOKE_MS's derivation: about 4 ms). 100 ms is 25x.
+    REG_LATCH_MS          = 100
+    ' the platform's rest after the fault: the partner's ramp from half speed (~730 ms MEASURED, FR_PLAT_RAMP_MS's
+    '  note), REST_CONFIRM_MS of stillness, and a margin; a lifted wheel's free coast from half speed is shorter
+    REG_REST_MS           = 3_000
+    REG_TRIALS            = 2                               ' one forced fault per wheel
+    REG_BAD_LO            = 0
+    REG_BAD_HI            = 0
+
+#ifdef DBP_REG
+VAR { REG state -- cog 0 only }
+
+    ' the forced-fault trial in hand (regFaultTrial())
+    LONG    rfSid                                           ' the trial's steering life, 0 when it did not start
+    LONG    rfForceErr                                      ' testLeftForceFault() / testRightForceFault()'s return
+    LONG    rfModeErr                                       ' setFaultResponse(FR_SHIPPED)'s return
+    LONG    bRfLatched                                      ' the fault flag reached the mirror inside REG_LATCH_MS
+    LONG    rfLatchMs                                       ' ...ms from the force
+    LONG    bRfRest                                         ' the platform was confirmed at rest after the fault
+    LONG    rfStat[INST_MOTORS]                             ' getStatus() per wheel, as the fault left the platform
+    LONG    rfCause[INST_MOTORS]                            ' getFaultCause() per wheel, then
+    LONG    bRfRetried                                      ' the same power was commanded again
+    LONG    rfRetryErr                                      ' ...driveAtPower()'s return
+    LONG    bRfSpeed                                        ' both wheels then reached DCS_AT_SPEED
+    LONG    rfRetryMs                                       ' ...ms from the retry command
+    LONG    rfWhy                                           ' why the trial measured nothing, WHY_NONE when it ran
+    ' the cells' accumulators (all zero at load: this part's VAR is read by nothing else)
+    LONG    bRegNegRan                                      ' FLTCAUSE's negative was read
+    LONG    bRegNegOk                                       ' ...and both wheels read FC_NONE
+    LONG    regNegCause[INST_MOTORS]
+    LONG    regCauseN                                       ' forced faults that latched, and whose causes read wrong
+    LONG    regCauseBad
+    LONG    regRetryN                                       ' retries from a fault the API reported latched, and those that
+    LONG    regRetryBad                                     '  did not reach speed
+
+PRI segRegress() | turnIdx, whyCode, sid, side
+' REGRESS (part REG, PL-151): the turn trials and FLTCAUSE's negative in one steering lifetime, then one forced-fault
+' lifetime per wheel (the section's CON says why this order). Both wheel objects are stopped first (shared pin claims,
+' PL-18), as OVERSHT does.
+'
+' @local turnIdx - 0 the left wheel long, 1 the right wheel long
+' @local whyCode - why the remaining turn trials are skipped, WHY_NONE while they run
+' @local sid - the first steering start's life, 0 when it did not start
+' @local side - SIDE_LEFT then SIDE_RIGHT, the wheel faulted
+
+    segBegin(SEG_REGRESS)
+    wheelStop(SIDE_LEFT)
+    wheelStop(SIDE_RIGHT)
+    whyCode := WHY_NONE
+    sid := 0
+    if bRunContinue(SEG_REGRESS) == FALSE
+        whyCode := WHY_ABORTED
+    elseif bSteerStart(SEG_REGRESS) == FALSE
+        whyCode := WHY_NO_COG
+    else
+        sid := steerLife
+        beat(CP_LIB_STEER_DRIVE)
+        steering.setMaxSpeedForDistance(OVERSHT_POWER)
+        beat(CP_LIB_STEER_DRIVE)
+    repeat turnIdx from 0 to OVERSHT_TURNS - 1
+        beat(CP_LOOP_POLL)
+        whyCode := overshootTrial(SEG_REGRESS, sid, lookupz(turnIdx: OVERSHT_FT_LONG, OVERSHT_FT_SHORT), lookupz(turnIdx: OVERSHT_FT_SHORT, OVERSHT_FT_LONG), whyCode)
+    regCauseNegative(sid)
+    bInstIdle()
+    steerStop()
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        beat(CP_LOOP_POLL)
+        regFaultTrial(side)
+    segEnd(segWhy())
+
+PRI regCauseNegative(sid) | eLeftCause, eRightCause
+' FLTCAUSE's negative: after the turn trials' healthy drives, getFaultCause() must read FC_NONE on both wheels. Read only
+' when the steering object is up, a turn trial was measured, and nothing faulted in the segment so far (a fault there
+' would make the drive not a healthy one); BM-REGNEG either way.
+'
+' @param sid - the steering start's life, 0 when it did not start
+'
+' @local eLeftCause - the left wheel's FC_*
+' @local eRightCause - the right wheel's FC_*
+
+    eLeftCause := wheelL.FC_NONE
+    eRightCause := wheelL.FC_NONE
+    if bSteerUp and (sfTurnN > 0) and (segFaults == 0)
+        beat(CP_LIB_STEER_QUERY)
+        eLeftCause, eRightCause := steering.getFaultCause()
+        beat(CP_LIB_STEER_QUERY)
+        bRegNegRan := TRUE
+        bRegNegOk := (eLeftCause == wheelL.FC_NONE) and (eRightCause == wheelL.FC_NONE)
+    regNegCause[SLOT_LEFT] := eLeftCause
+    regNegCause[SLOT_RIGHT] := eRightCause
+    emitRegNeg(sid)
+
+PRI regFaultTrial(side) | slotIdx, otherIdx, tid, safeEvent, bReached, startMs
+' One forced-fault trial on {side} (the section's CON, step 3): its own steering lifetime; FR_SHIPPED on both wheels; arm
+' the instrument on the steering source (its mirror carries the fault flag and the states); both wheels at REG_POWER to
+' AT_SPEED; the forced fault on {side} only, watched for REG_LATCH_MS; the platform to rest; getStatus() and
+' getFaultCause() as the fault left it; the same power again, and the wait for both wheels at AT_SPEED; stop, rest,
+' BM-REGFLT, fold, and the lifetime ends (steerStop(): the next start re-inits the fault response and the fault flag).
+'
+' @param side - the wheel faulted: SIDE_LEFT or SIDE_RIGHT
+'
+' @local slotIdx - the faulted wheel's slot
+' @local otherIdx - its partner's
+' @local tid - the trial's id, printed in BM-REGFLT
+' @local safeEvent - SAFE_* from the watched waits
+' @local bReached - both wheels reached AT_SPEED before the force
+' @local startMs - getms() at the force, then at the retry
+
+    slotIdx := side - SIDE_LEFT
+    otherIdx := SLOT_RIGHT - slotIdx
+    tid := nextTraceId()
+    rfSid := 0
+    rfForceErr := NO_ERROR
+    rfModeErr := NO_ERROR
+    bRfLatched := FALSE
+    rfLatchMs := 0
+    bRfRest := FALSE
+    rfStat[SLOT_LEFT] := wheelL.DS_Unknown
+    rfStat[SLOT_RIGHT] := wheelL.DS_Unknown
+    rfCause[SLOT_LEFT] := wheelL.FC_NONE
+    rfCause[SLOT_RIGHT] := wheelL.FC_NONE
+    bRfRetried := FALSE
+    rfRetryErr := NO_ERROR
+    bRfSpeed := FALSE
+    rfRetryMs := 0
+    rfWhy := WHY_NONE
+    if bRunContinue(SEG_REGRESS) == FALSE
+        rfWhy := WHY_ABORTED
+    elseif bSteerStart(SEG_REGRESS) == FALSE
+        rfWhy := WHY_NO_COG
+    else
+        rfSid := steerLife
+        rfModeErr := steerSetFaultResponse(wheelL.FR_SHIPPED, REG_BRAKE_PCT)
+        if bInstArm(INST_SRC_STEER, 1) == FALSE
+            rfWhy := WHY_INST_NOACK
+        elseif bSteerDriveBoth(SEG_REGRESS, tid, REG_POWER) == FALSE
+            rfWhy := WHY_SYNC_PRECOND
+        else
+            safeEvent, bReached := waitWatched(SIDE_BOTH, D_AT_SPEED_MS, CP_LOOP_ATSPEED, UNTIL_AT_SPEED)
+            if safeEvent <> SAFE_NONE
+                rfWhy := safeWhy(safeEvent)
+            elseif bReached == FALSE
+                rfWhy := WHY_STEADY_TIMEOUT
+            else
+                instMark()
+                startMs := getms()
+                rfForceErr := steerForceFault(side)
+                ' this lifetime holds no fault but the one forced, so the first SAFE_FAULT is the latch; an absolute-current
+                '  read over the abort stops the whole steering object (safetyPoll(SIDE_BOTH))
+                safeEvent, _ := waitWatched(SIDE_BOTH, REG_LATCH_MS, CP_LOOP_CAPTURE, UNTIL_TIME)
+                if safeEvent == SAFE_FAULT
+                    bRfLatched := TRUE
+                    rfLatchMs := getms() - startMs
+                    safeEvent, bRfRest := waitRest(SIDE_BOTH, REG_REST_MS, FALSE)
+                    if safeEvent <> SAFE_NONE
+                        rfWhy := safeWhy(safeEvent)
+                    elseif bSteerUp
+                        regReadAfter()
+                        regRetry()
+                elseif safeEvent == SAFE_NONE
+                    rfWhy := WHY_NO_FAULT                   ' the forced fault never latched: the hook failed
+                else
+                    rfWhy := safeWhy(safeEvent)
+        if bSteerUp
+            steerStopMotors()
+            waitRest(SIDE_BOTH, STOP_TIMEOUT_MS, FALSE)      ' the fault flag stays set: rest, not a fault, ends the wait
+    emitRegFlt(tid, side)
+    regFold(slotIdx, otherIdx)
+    segItems := (segItems + 1) <# LIM_SMALL
+    bInstIdle()
+    steerStop()
+
+PRI regReadAfter() | eLeftStatus, eRightStatus, eLeftCause, eRightCause
+' The reads that must see the platform as the fault left it, before the retry changes it: getStatus() and getFaultCause()
+' per wheel, through the public API a user would call.
+'
+' @local eLeftStatus - left DS_*
+' @local eRightStatus - right DS_*
+' @local eLeftCause - left FC_*
+' @local eRightCause - right FC_*
+
+    beat(CP_LIB_STEER_QUERY)
+    eLeftStatus, eRightStatus := steering.getStatus()
+    eLeftCause, eRightCause := steering.getFaultCause()
+    beat(CP_LIB_STEER_QUERY)
+    rfStat[SLOT_LEFT] := eLeftStatus
+    rfStat[SLOT_RIGHT] := eRightStatus
+    rfCause[SLOT_LEFT] := eLeftCause
+    rfCause[SLOT_RIGHT] := eRightCause
+
+PRI regRetry() | startMs, safeEvent
+' PL-66: THE SAME POWER, COMMANDED AGAIN, clears the fault and drives. driveAtPower(REG_POWER, REG_POWER) -- the very call
+' the trial drove with -- and a wait of at most D_AT_SPEED_MS for both wheels at DCS_AT_SPEED (regWaitSpeed()).
+'
+' @local startMs - getms() at the retry command
+' @local safeEvent - SAFE_* from the wait
+
+    bRfRetried := TRUE
+    curIncre := 0
+    startMs := getms()
+    beat(CP_LIB_STEER_DRIVE)
+    rfRetryErr := steering.driveAtPower(REG_POWER, REG_POWER)
+    beat(CP_LIB_STEER_DRIVE)
+    if rfRetryErr == NO_ERROR
+        safeEvent, bRfSpeed := regWaitSpeed(D_AT_SPEED_MS)
+        if bRfSpeed
+            rfRetryMs := getms() - startMs
+        elseif safeEvent <> SAFE_NONE
+            rfWhy := safeWhy(safeEvent)
+
+PRI regWaitSpeed(boundMs) : safeEvent, bReached | startMs
+' waitWatched(SIDE_BOTH, boundMs, CP_LOOP_ATSPEED, UNTIL_AT_SPEED) pass for pass, except that the fault flag does not end
+' it: the flag is sticky until a restart (the section's CON), so it still carries the fault being retried from. The
+' absolute-current abort and a stalled instrument end it as they end every watched wait.
+'
+' @param boundMs - the wait's bound
+' @returns safeEvent - SAFE_ABS_ABORT or SAFE_INST_STALL when one ended the wait, SAFE_NONE otherwise
+' @returns bReached - TRUE when both wheels' mirrors read DCS_AT_SPEED
+'
+' @local startMs - getms() when the wait began
+
+    safetyReset()
+    safeEvent := SAFE_NONE
+    bReached := FALSE
+    startMs := getms()
+    repeat
+        beat(CP_LOOP_ATSPEED)
+        waitms(SAMPLE_MS)
+        safeEvent := safetyPoll(SIDE_BOTH)
+        if safeEvent == SAFE_FAULT
+            safeEvent := SAFE_NONE
+        bReached := bMirrorAllInState(SIDE_BOTH, DCS_AT_SPEED)
+        if (safeEvent <> SAFE_NONE) or bReached or ((getms() - startMs) >= boundMs)
+            quit
+
+PRI regFold(slotIdx, otherIdx)
+' Fold one forced-fault trial into FLTCAUSE and FLTRETRY (the section's CON).
+'
+' @param slotIdx - the faulted wheel's slot
+' @param otherIdx - its partner's
+
+    if bRfLatched and bRfRetried
+        regCauseN := (regCauseN + 1) <# LIM_SMALL
+        if (rfCause[slotIdx] <> wheelL.FC_LAG) or (rfCause[otherIdx] <> wheelL.FC_NONE)
+            regCauseBad := (regCauseBad + 1) <# LIM_SMALL
+        if rfStat[slotIdx] == wheelL.DS_FAULTED              ' PL-66's precondition: the API reported the fault latched
+            regRetryN := (regRetryN + 1) <# LIM_SMALL
+            if (rfRetryErr <> NO_ERROR) or (bRfSpeed == FALSE)
+                regRetryBad := (regRetryBad + 1) <# LIM_SMALL
+
+PRI emitRegNeg(sid)
+' BM-REGNEG: FLTCAUSE's negative -- each wheel's getFaultCause() after the turn trials' healthy drives. Worst case 108
+' bytes: tag(9) + seq(15) + sid(10) + turns(12) + ran(9) + l_cause(13) + r_cause(13) + ok(8) + why(23).
+'
+' @param sid - the steering start's life
+
+    recBegin(@"BM-REGNEG")
+    benchLog.numField(@"sid", sid, LIM_SMALL)
+    benchLog.numField(@"turns", sfTurnN, LIM_TINY)
+    benchLog.boolField(@"ran", bRegNegRan)
+    benchLog.tokenField(@"l_cause", tokenAt(@tokFltCause, FC_COUNT, regNegCause[SLOT_LEFT]), TOKMAX_FCAUSE)
+    benchLog.tokenField(@"r_cause", tokenAt(@tokFltCause, FC_COUNT, regNegCause[SLOT_RIGHT]), TOKMAX_FCAUSE)
+    benchLog.boolField(@"ok", bRegNegOk)
+    if bRegNegRan
+        whyField(WHY_NONE)
+    elseif bSteerUp == FALSE
+        whyField(WHY_NO_COG)
+    elseif segFaults <> 0
+        whyField(WHY_FAULTED)
+    else
+        whyField(WHY_NOT_REACHED)
+    emitRecord()
+
+PRI emitRegFlt(tid, side)
+' BM-REGFLT: one forced-fault trial -- the force, its latch, the platform's status and cause per wheel as the fault left
+' it, and the same-power retry. Worst case 262 bytes: tag(9) + seq(15) + tid(12) + sid(10) + motor(12) + f_err(14) +
+' latched(14) + latch_ms(17) + rest(11) + l_stat(15) + r_stat(15) + l_cause(13) + r_cause(13) + r_err(14) + retried(14)
+' + speed(12) + retry_ms(17) + why(23).
+'
+' @param tid - the trial's id
+' @param side - the wheel faulted
+
+    recBegin(@"BM-REGFLT")
+    benchLog.numField(@"tid", tid, LIM_SMALL)
+    benchLog.numField(@"sid", rfSid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"f_err", rfForceErr, LIM_SMALL)
+    benchLog.boolField(@"latched", bRfLatched)
+    benchLog.naNumField(@"latch_ms", rfLatchMs, LIM_SMALL, bRfLatched)
+    benchLog.boolField(@"rest", bRfRest)
+    benchLog.tokenField(@"l_stat", statusToken(rfStat[SLOT_LEFT]), TOKMAX_STAT)
+    benchLog.tokenField(@"r_stat", statusToken(rfStat[SLOT_RIGHT]), TOKMAX_STAT)
+    benchLog.tokenField(@"l_cause", tokenAt(@tokFltCause, FC_COUNT, rfCause[SLOT_LEFT]), TOKMAX_FCAUSE)
+    benchLog.tokenField(@"r_cause", tokenAt(@tokFltCause, FC_COUNT, rfCause[SLOT_RIGHT]), TOKMAX_FCAUSE)
+    benchLog.numField(@"r_err", rfRetryErr, LIM_SMALL)
+    benchLog.boolField(@"retried", bRfRetried)
+    benchLog.boolField(@"speed", bRfSpeed)
+    benchLog.naNumField(@"retry_ms", rfRetryMs, LIM_SMALL, bRfSpeed)
+    whyField(rfWhy)
+    emitRecord()
+
+PRI emitRegCells()
+' Part REG's three cells after its own two, each part B's id with part B's criterion token (the section's CON):
+'  TURNDIST - COUNT (BOTH): the worse wheel's |rest - its own target| over the turn trials, platform frame, 0..STOP_LIMIT_HI
+'  FLTCAUSE - BOOL (BOTH): measured when both forced faults latched and the negative was read; TRUE when every faulted
+'             wheel read FC_LAG, every partner FC_NONE, and both wheels FC_NONE after the healthy drives
+'  FLTRETRY - BOOL (BOTH): measured when both faulted wheels read DS_FAULTED before their retry; TRUE when both retries
+'             returned NO_ERROR and reached AT_SPEED
+
+    emitSignoff(@sSfCellTurnDist, SIDE_BOTH, @sSfCritTurnDist, sfTurnN > 0, sfTurnMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfTurnN, @sSfUnitsCount)
+    emitSignoffBool(@sSfCellFltCause, SIDE_BOTH, @sSfCritFltCause, bRegNegRan and (regCauseN == REG_TRIALS), bRegNegOk and (regCauseBad == 0), regCauseN + 1)
+    emitSignoffBool(@sSfCellFltRetry, SIDE_BOTH, @sSfCritFltRetry, regRetryN == REG_TRIALS, regRetryBad == 0, regRetryN)
+#endif
+
+CON { --- KICK: the speed-change kick at the top of the range, pointed (SRC_REV 54; PL-78, PL-87) --- }
+
+  ' WHAT THIS PART IS FOR. The driver's arrival pass skipped the field's increment for one pass at the end of every ramp
+  '  (the kick PL-78 / PL-87 chased); the fix advances the field on that pass. Its certificate is the transition current,
+  '  on exactly the transitions that carried the worst kicks MEASURED on the pre-fix driver: at the top of the range,
+  '  71-214 sense mV above the steady peak (Visit 8b / 9: debug_260922-161317.log, 64-183 mV on these seven, both wheels,
+  '  both directions; debug_260922-185255.log). Part A walks the whole ladder in about 13 minutes; this part walks only
+  '  these seven, per wheel and direction, in under two minutes.
+  '
+  ' THE MEASUREMENT IS PART A'S, UNCHANGED. Each rung is ladderSign()'s: rungMeasure() with the ladder's own timings
+  '  (LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS), so tr_i_over here is the same reading as the pre-fix logs'. Per
+  '  wheel and direction one lifetime walks kickIdx: from rest to 120 x 10^6 (a start, not judged), then the speed-ups
+  '  120->140, 140->147, 147->155, 155->165 and the slow-downs 165->155, 155->147, 147->140 (x 10^6). R21-DUAL-TRKICK-T
+  '  is judged per wheel exactly as R17-DUAL-TRKICK-A is: the running peak tr_i_over over the judged transitions,
+  '  PASS at TRKICK_EXCESS_MV (50 sense mV) or under. Negative: the pre-fix driver's 64-183 mV on these transitions fails.
+  '
+  ' WHAT THE SHUNT CANNOT SEE. A slow-down can kick by regeneration, which drives current back into the bus and so
+  '  under-reads, or reads negative, on the DC-link shunt. So each transition also prints BM-KICKTR from the same frozen
+  '  ring: the signed position-error extremes and the error sample of largest magnitude (tr_err_spk, sign kept), the
+  '  lowest sense_i (tr_i_min, negative under regeneration), and the duty over the transition against the steady
+  '  window's mean (duty_exc: the excursion of larger magnitude, signed). No cell judges them: they are the readings a
+  '  deceleration kick would show where tr_i_over cannot.
+    KICK_STEPS            = 8                               ' entries in kickIdx
+    KICK_RUNG_LO          = 7                               ' ladderIncre index of 120 x 10^6, the walk's lowest speed
+    KICK_RUNG_HI          = 11                              ' ...and of 165 x 10^6, its highest
+
+#ifdef DBP_KICK
+DAT ' ---- KICK tables ----
+
+' the walk, as indices into ladderIncre: 120 from rest, up through 140, 147, 155 to 165, then down to 140
+kickIdx         LONG    7, 8, 9, 10, 11, 10, 9, 8
+
+VAR { KICK state -- cog 0 only }
+
+    LONG    ktN                                             ' up samples in the transition
+    LONG    ktErrMin                                        ' the lowest signed err over it
+    LONG    ktErrMax                                        ' ...the highest
+    LONG    ktErrSpk                                        ' the sample of largest |err|, its sign kept
+    LONG    ktIMin                                          ' the lowest signed sense_i, mV
+    LONG    ktDutyMin                                       ' the lowest duty
+    LONG    ktDutyMax                                       ' ...and the highest
+    LONG    ktWhy                                           ' WHY_NONE when the kt* values are a measurement
+
+PRI segKick() | side, signMul
+' KICK (part KICK): per motor x sign, one lifetime over kickIdx -- ladderSign(), the ladder's own walk, rungs and records
+' (the section's CON).
+'
+' @local side - SIDE_LEFT then SIDE_RIGHT
+' @local signMul - SIGN_NEG then SIGN_POS
+
+    segBegin(SEG_KICK)
+    repeat side from SIDE_LEFT to SIDE_RIGHT
+        repeat signMul from SIGN_NEG to SIGN_POS step SIGN_STEP
+            beat(CP_LOOP_POLL)
+            ladderSign(SEG_KICK, side, signMul, @kickIdx, KICK_STEPS)
+    segEnd(segWhy())
+
+PRI kickStats(slotIdx) | sampleIdx, startJ, endJ, errNow, iNow, dutyNow
+' BM-KICKTR's readings, from the same transition interval transitionStats() walks -- the command mark to the window's start
+' -- in the ring rungMeasure() froze. Legal only while it is FROZEN (I10): ladderSign() calls this before any recovery can
+' restart the wheel and re-arm it. Samples whose driver was not up are left out (I3). A command sample the ring has
+' overwritten is NA (WHY_RING_LOST_HEAD), as transitionStats() says it.
+'
+' @param slotIdx - motor slot under test
+'
+' @local sampleIdx - logical index
+' @local startJ - logical index of the command's sample
+' @local endJ - logical index of the last sample before the window
+' @local errNow - this sample's signed err
+' @local iNow - this sample's signed sense_i
+' @local dutyNow - this sample's duty
+
+    ktN := 0
+    ktErrMin := 0
+    ktErrMax := 0
+    ktErrSpk := 0
+    ktIMin := 0
+    ktDutyMin := 0
+    ktDutyMax := 0
+    if (bRgCaptured == FALSE) or (rgCmdStart < 0) or (rgWinStart <= rgCmdStart)
+        ktWhy := WHY_NO_SAMPLES
+    else
+        drainBegin()
+        if drStored == 0
+            ktWhy := WHY_NO_SAMPLES
+        elseif rgCmdStart < drLostHead
+            ktWhy := WHY_RING_LOST_HEAD
+        else
+            ktWhy := WHY_NONE
+            startJ := rgCmdStart - drLostHead
+            endJ := (rgWinStart - 1 - drLostHead) <# (drStored - 1)
+            if endJ >= startJ
+                repeat sampleIdx from startJ to endJ
+                    beat(CP_LOOP_DRAIN)
+                    if bSmpUp(sampleIdx, slotIdx)
+                        errNow := smpErr(sampleIdx, slotIdx)
+                        iNow := smpI(sampleIdx, slotIdx)
+                        dutyNow := smpDuty(sampleIdx, slotIdx)
+                        if ktN == 0
+                            ktErrMin := errNow
+                            ktErrMax := errNow
+                            ktErrSpk := errNow
+                            ktIMin := iNow
+                            ktDutyMin := dutyNow
+                            ktDutyMax := dutyNow
+                        else
+                            ktErrMin <#= errNow
+                            ktErrMax #>= errNow
+                            if abs(errNow) > abs(ktErrSpk)
+                                ktErrSpk := errNow
+                            ktIMin <#= iNow
+                            ktDutyMin <#= dutyNow
+                            ktDutyMax #>= dutyNow
+                        ktN += 1
+            if ktN == 0
+                ktWhy := WHY_NO_SAMPLES
+
+PRI emitKickTr(rid, side, motorIncre) | dutyExc, whyCode
+' BM-KICKTR: one transition's signed readings beside its BM-RUNGTR (the section's CON). duty is the steady window's mean
+' (BM-RUNG2's), and duty_exc the transition's excursion from it of larger magnitude, signed: positive above the steady
+' duty, negative below. Worst case 267 bytes: tag(9) + seq(15) + rid(12) + motor(12) + incre(19) + from_incre(24) +
+' tr_err_spk(16) + tr_err_min(16) + tr_err_max(16) + tr_i_min(17) + tr_duty_min(20) + tr_duty_max(20) + duty(13) +
+' duty_exc(17) + tr_i_over(18) + why(23).
+'
+' @param rid - rung id
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param motorIncre - signed increment
+'
+' @local dutyExc - the signed excursion
+' @local whyCode - the rung's why when it did not run clean, else the transition's own
+
+    dutyExc := ktDutyMax - rsDutyMean
+    if (rsDutyMean - ktDutyMin) > dutyExc
+        dutyExc := ktDutyMin - rsDutyMean
+    whyCode := rgWhy
+    if whyCode == WHY_NONE
+        whyCode := ktWhy
+    recBegin(@"BM-KICKTR")
+    benchLog.numField(@"rid", rid, LIM_SMALL)
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"incre", motorIncre, LIM_BIG)
+    benchLog.numField(@"from_incre", rgFromIncre, LIM_BIG)
+    benchLog.naNumField(@"tr_err_spk", ktErrSpk, LIM_TINY, ktWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_err_min", ktErrMin, LIM_TINY, ktWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_err_max", ktErrMax, LIM_TINY, ktWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_i_min", ktIMin, LIM_SMALL, ktWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_duty_min", ktDutyMin, LIM_SMALL, ktWhy == WHY_NONE)
+    benchLog.naNumField(@"tr_duty_max", ktDutyMax, LIM_SMALL, ktWhy == WHY_NONE)
+    benchLog.naNumField(@"duty", rsDutyMean, LIM_SMALL, bRgWindowValid)
+    benchLog.naNumField(@"duty_exc", dutyExc, LIM_SMALL, (ktWhy == WHY_NONE) and bRgWindowValid)
+    benchLog.naNumField(@"tr_i_over", trIOver(), LIM_SMALL, bTrIOverValid())
+    whyField(whyCode)
+    emitRecord()
+
+PRI emitKickCells() | slotIdx
+' Part KICK's cell after its own two: R21-DUAL-TRKICK-T per motor, R17-DUAL-TRKICK-A's criterion over this part's
+' judged transitions (the running peak tr_i_over, sense mV, PASS at TRKICK_HI or under; NOMEAS when none was judged).
+'
+' @local slotIdx - motor slot
+
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        emitSignoff(@sSfCellTrKickT, SIDE_LEFT + slotIdx, @sSfCritTrKick, sfTrN[slotIdx] > 0, sfTrKickPk[slotIdx], TRKICK_LO, TRKICK_HI, sfTrN[slotIdx], @sSfUnitsMv)
+#endif
 
 CON { --- instrument cog: runs in its own cog; no debug() anywhere below it (I1) --- }
 
@@ -17305,11 +18336,15 @@ PRI waitWatched(side, durationMs, cpId, untilKind) : safeEvent, bReached | start
     startMs := getms()
     repeat
         beat(cpId)
-        panelTick(startMs, durationMs)
+#ifdef DBG_PANEL
+        panelTick(startMs, durationMs)                      ' PL-152: the panel is compiled into the attended parts only
+#endif
         waitms(SAMPLE_MS)
         safeEvent := safetyPoll(side)
+#ifdef DBG_PANEL
         if (safeEvent == SAFE_NONE) and bPanelStopPressed()
             safeEvent := SAFE_OPER_STOP
+#endif
         if untilKind == UNTIL_STOPPED
             bReached := bMirrorAllInState(side, DCS_STOPPED)
         elseif untilKind == UNTIL_AT_SPEED
@@ -19854,76 +20889,81 @@ PRI emitHeaderRecords() | orderIdx
     emitBanner()
     emitBuild()
     emitSignoffDecls()
-    case PART_ID
-        PART_A:
-            emitPlan(SEG_PREFLT, 1)
-            emitPlan(SEG_STOPMODE, 2)
-            emitPlan(SEG_LIVE, 3)
-            emitPlan(SEG_LADDER, 4)
-            emitPlan(SEG_LOWSPD, 5)
-            emitPlan(SEG_TAKE, 6)
-        PART_CLOCK:
-            emitPlan(SEG_PREFLT, 1)
-            emitPlan(SEG_CLOCK, 2)
-        PART_B:
-            emitPlan(SEG_PREFLT, 1)
-            emitPlan(SEG_FAULTB, 2)
-            emitPlan(SEG_OVERSHT, 3)
-        PART_BRAKE:
-            emitPlan(SEG_OUTSIDE, 1)
-        PART_C:
-            emitPlan(SEG_PREFLT, 1)
-            emitPlan(SEG_BASELINE, 2)
-            emitPlan(SEG_POSTFLT, 3)
-        PART_D:
-            emitPlan(SEG_PREFLT, 1)
-            emitPlan(SEG_STEERSEG, 2)
-            emitPlan(SEG_LIMIT, 3)
-        PART_FLOOR:
-            emitPlan(SEG_FLOOR, 1)
-        PART_UICHECK:
-            emitPlan(SEG_UICHECK, 1)
-        PART_LEAD:
-            emitPlan(SEG_PREFLT, 1)
-            emitPlan(SEG_LEAD, 2)
-        PART_LIMITS:
-            emitPlan(SEG_PREFLT, 1)
-            emitPlan(SEG_LIMTOP, 2)
-            if BUILD_TOP_ONLY == FALSE
-                emitPlan(SEG_LIMRAMP, 3)
-                emitPlan(SEG_LIMLOW, 4)
-        PART_FAULTRESP:
-            emitPlan(SEG_PREFLT, 1)
-            emitPlan(SEG_FLTRESP, 2)
-            emitPlan(SEG_FLTPLAT, 3)
-        PART_START:
-            emitPlan(SEG_SKCHECK, 1)
-        PART_SPIN:
-            emitPlan(SEG_SPIN, 1)
-            emitPlan(SEG_CREEP, 2)
-        PART_PACK:
-            emitPlan(SEG_PACK, 1)
-    if PART_ID == PART_A
-        repeat orderIdx from 0 to LADDER_RUNGS - 1
-            emitLadder(orderIdx)
-    if PART_ID == PART_FAULTRESP                            ' task 3613: the pre-registered numbers, and what is not built
-        emitFrBuild()
-        emitFrDiag()                                        ' PL-120: the NOMOTION / recovery constants and the wheel order
-        emitNotBuilt(@sSfCellB4Pulse, @sSfStudyB4, WHY_REPLACED_BY_X2)
-    if PART_ID == PART_START                                ' task 3613: the pre-registered numbers, and the walk when not built
-        emitSkBuild()
-        if BUILD_NO_WALK
-            emitNotBuilt(@sSfCellSkWalk, @sSfStudyB5, WHY_PART_NOT_BUILT)
-        if BUILD_START_POS                                  ' task 3621: R20-PACK-EV's unplug and replug is R20.4's attended run,
-            emitNotBuilt(@sSfCellPackEv, @sSfStudyR204, WHY_PART_NOT_BUILT)     '  the dual-pack tier (part PACK)
-    if PART_ID == PART_PACK                                 ' task 3611: the part's compiled numbers, and every cell when unfitted
-        emitPkBuild()
-        if user.PACK_SENSOR_FITTED == FALSE
-            emitNotBuilt(@sSfCellPkMeter, @sSfStudyR204, WHY_PACK_NOT_FITTED)
-            emitNotBuilt(@sSfCellPkAbsent, @sSfStudyR204, WHY_PACK_NOT_FITTED)
-            emitNotBuilt(@sSfCellPackEv, @sSfStudyR204, WHY_PACK_NOT_FITTED)
-    if PART_ID == PART_SPIN                                ' task 3591: the limit's derivation, every leg and every band, before anything moves
-        emitSpinHeader()
+    ' PL-152: an #ifdef chain on the DBP_* symbols where this was a case on PART_ID and `if PART_ID ==` tests -- the
+    '  same records, in the same order, selected at compile time
+#ifdef DBP_A
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_STOPMODE, 2)
+    emitPlan(SEG_LIVE, 3)
+    emitPlan(SEG_LADDER, 4)
+    emitPlan(SEG_LOWSPD, 5)
+    emitPlan(SEG_TAKE, 6)
+    repeat orderIdx from 0 to LADDER_RUNGS - 1
+        emitLadder(orderIdx)
+#elseifdef DBP_CLOCK
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_CLOCK, 2)
+#elseifdef DBP_B
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_FAULTB, 2)
+    emitPlan(SEG_OVERSHT, 3)
+#elseifdef DBP_BRAKE
+    emitPlan(SEG_OUTSIDE, 1)
+#elseifdef DBP_C
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_BASELINE, 2)
+    emitPlan(SEG_POSTFLT, 3)
+#elseifdef DBP_D
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_STEERSEG, 2)
+    emitPlan(SEG_LIMIT, 3)
+#elseifdef DBP_FLOOR
+    emitPlan(SEG_FLOOR, 1)
+#elseifdef DBP_UICHECK
+    emitPlan(SEG_UICHECK, 1)
+#elseifdef DBP_LEAD
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_LEAD, 2)
+#elseifdef DBP_LIMITS
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_LIMTOP, 2)
+    if BUILD_TOP_ONLY == FALSE
+        emitPlan(SEG_LIMRAMP, 3)
+        emitPlan(SEG_LIMLOW, 4)
+#elseifdef DBP_FAULTRESP
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_FLTRESP, 2)
+    emitPlan(SEG_FLTPLAT, 3)
+    emitFrBuild()                                           ' task 3613: the pre-registered numbers, and what is not built
+    emitFrDiag()                                            ' PL-120: the NOMOTION / recovery constants and the wheel order
+    emitNotBuilt(@sSfCellB4Pulse, @sSfStudyB4, WHY_REPLACED_BY_X2)
+#elseifdef DBP_START
+    emitPlan(SEG_SKCHECK, 1)
+    emitSkBuild()                                           ' task 3613: the pre-registered numbers, and the walk when not built
+    if BUILD_NO_WALK
+        emitNotBuilt(@sSfCellSkWalk, @sSfStudyB5, WHY_PART_NOT_BUILT)
+    if BUILD_START_POS                                      ' task 3621: R20-PACK-EV's unplug and replug is R20.4's attended run,
+        emitNotBuilt(@sSfCellPackEv, @sSfStudyR204, WHY_PART_NOT_BUILT)         '  the dual-pack tier (part PACK)
+#elseifdef DBP_SPIN
+    emitPlan(SEG_SPIN, 1)
+    emitPlan(SEG_CREEP, 2)
+    emitSpinHeader()                                        ' task 3591: the limit's derivation, every leg and every band, before anything moves
+#elseifdef DBP_PACK
+    emitPlan(SEG_PACK, 1)
+    emitPkBuild()                                           ' task 3611: the part's compiled numbers, and every cell when unfitted
+    if user.PACK_SENSOR_FITTED == FALSE
+        emitNotBuilt(@sSfCellPkMeter, @sSfStudyR204, WHY_PACK_NOT_FITTED)
+        emitNotBuilt(@sSfCellPkAbsent, @sSfStudyR204, WHY_PACK_NOT_FITTED)
+        emitNotBuilt(@sSfCellPackEv, @sSfStudyR204, WHY_PACK_NOT_FITTED)
+#elseifdef DBP_REG
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_REGRESS, 2)
+#elseifdef DBP_KICK
+    emitPlan(SEG_PREFLT, 1)
+    emitPlan(SEG_KICK, 2)
+    repeat orderIdx from KICK_RUNG_LO to KICK_RUNG_HI       ' the ladder rows this part's walk commands
+        emitLadder(orderIdx)
+#endif
     beat(CP_EMIT)
     debug(zstr_(@sPanicLine))
     beat(CP_EMIT)
@@ -20066,8 +21106,14 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     ' Task 3611, the PACK part, whose time is mostly the OPERATOR's: the ~1.5 s start, step 1's 60 s, and four steps he
     '  ends, call them 15 s each with their settles -- about 150 s; 30 BM-PKREAD of ~110 B and a handful of others,
     '  about 5 KB.
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 240, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 60, 240, 180, 150)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 6, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 25, 400, 6, 5)
+    ' SRC_REV 54, the REG part. REGRESS: a steering start (~1.5 s), OVERSHT's two turn trials (~6 s each, a trace of up
+    '  to TRACE_EMIT_MAX lines each), then two forced-fault lifetimes of a start, a spin-up, the fault, the coast to rest
+    '  and the same-power retry to speed -- about 8 s each: about 40 s and, with its two traces, about 230 KB.
+    ' SRC_REV 54, the KICK part. KICK: four lifetimes, each a ~2.7 s start and zero window, the ~4 s start from rest to
+    '  120 x 10^6, and seven more rungs at the ladder's MEASURED ~2 s a rung (debug_260922-161317.log): about 90 s; five
+    '  rung records and a BM-KICKTR a rung, about 1.4 KB, so about 45 KB.
+    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 240, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 60, 240, 180, 150, 40, 90)
+    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 6, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 25, 400, 6, 5, 230, 45)
     recBegin(@"BM-PLAN")
     benchLog.tokenField(@"seg", segToken(seg), TOKMAX_SEG)
     benchLog.numField(@"order", orderIdx, LIM_TINY)
@@ -20078,6 +21124,7 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     benchLog.numField(@"est_kb", estKb, LIM_SMALL)
     emitRecord()
 
+#ifdef DBG_LADDER
 PRI emitLadder(rungIdx) | motorIncre
 ' BM-LADDER: one row of the LADDER table. Worst case 85 bytes.
 '
@@ -20092,6 +21139,8 @@ PRI emitLadder(rungIdx) | motorIncre
     benchLog.numField(@"pred_x10", predictX10(motorIncre), LIM_MID)
     benchLog.boolField(@"probe", rungIdx >= LADDER_BASE_RUNGS)
     emitRecord()
+
+#endif
 
 PRI emitStart(seg, side) | slotIdx, bZero
 ' BM-START from the st* staging and this lifetime's zero. Worst case 264 bytes.
@@ -20151,6 +21200,7 @@ PRI emitSStart(seg)
     whyField(ssWhy)
     emitRecord()
 
+#ifdef DBG_RUNG
 PRI emitRung(seg, rid, rungIdx, side, motorIncre, resultCode, steadyMs, bSteadyValid, bWindowValid, whyCode)
 ' BM-RUNG from the caller's result and the rs* window statistics. Worst case 262 bytes.
 '
@@ -20329,6 +21379,9 @@ PRI emitRungHl(rid, side, motorIncre)
     whyField(rgWhy)
     emitRecord()
 
+#endif
+
+#ifdef DBG_LOWRUNG
 PRI emitLow(rid, side, motorIncre, whyCode)
 ' BM-LOW (R18.2 item 5): the two readings that exist only below the ladder's bottom rung -- whether the
 ' wheel starts and how long starting takes, and the spread of the intervals between hall edges, which is
@@ -20358,6 +21411,9 @@ PRI emitLow(rid, side, motorIncre, whyCode)
     whyField(whyCode)
     emitRecord()
 
+#endif
+
+#ifdef DBG_RUNG
 PRI emitRung3(rid, side, motorIncre, missedD, illegalD, ampsX10k, bAmpsValid, bWindowValid, whyCode) | rsImpl
 ' BM-RUNG3: integrity deltas, hwPos, getCurrent() mean and the capture's counters. Worst case 270 bytes.
 '
@@ -20394,6 +21450,9 @@ PRI emitRung3(rid, side, motorIncre, missedD, illegalD, ampsX10k, bAmpsValid, bW
     whyField(whyCode)
     emitRecord()
 
+#endif
+
+#ifdef DBP_A
 PRI emitLive(rid, side, motorIncre, rpmRead, bHeartbeatOk, bWindowValid, whyCode)
 ' BM-LIVE: instrument liveness beside testGetRpm(). Worst case 203 bytes.
 '
@@ -20420,6 +21479,9 @@ PRI emitLive(rid, side, motorIncre, rpmRead, bHeartbeatOk, bWindowValid, whyCode
     whyField(whyCode)
     emitRecord()
 
+#endif
+
+#ifdef DBP_CLOCK
 PRI bEmitClock(side, adcFram, frameCnt, deadGap) : bFrameOk | expFrame, bSwept
 ' BM-CLOCK: the driver's frame count against the compiled clock's expected value. Also returns the
 ' comparison this clock's R14-DUAL-CLKFRM-K200 / -K270 / -K300 cell folds. Worst case 159 bytes.
@@ -20455,6 +21517,8 @@ PRI bEmitClock(side, adcFram, frameCnt, deadGap) : bFrameOk | expFrame, bSwept
     benchLog.boolField(@"fram_ok", bFrameOk)
     whyField(bSwept ? WHY_NONE : WHY_UNSWEPT_CLOCK)
     emitRecord()
+
+#endif
 
 PRI emitTrace(tid, seg, side, causeCode, motorIncre, offNeg, offPos, reqMode, rampInc, whyCode)
 ' BM-TRACE: a wheel trace header naming what was requested and what was done, never the outcome (I7).
@@ -20603,6 +21667,7 @@ PRI emitTraceEnd(tid, endCode, emptyWhy) | traceSamples, markK, whyCode
     whyField(whyCode)
     emitRecord()
 
+#ifdef DBP_B
 PRI emitFbTrial(tid, side)
 ' BM-FBTRIAL from the fb* staging. Worst case 269 bytes.
 '
@@ -20627,6 +21692,8 @@ PRI emitFbTrial(tid, side)
     benchLog.numField(@"rst_ms", fbRstMs, LIM_SMALL)
     whyField(fbWhy)
     emitRecord()
+
+#endif
 
 PRI emitRampRest(side, minRamp, maxRamp, incRamp, downRamp, bOk)
 ' BM-RAMPREST: the ramp restore read back (I11). Worst case 131 bytes.
@@ -20747,6 +21814,7 @@ PRI emitAbort(seg, tid, side, motorIncre, reasonCode, detailValue, scopeCode)
     whyField(WHY_NONE)
     emitRecord()
 
+#ifdef DBG_OVERSHT
 PRI emitOvershoot(tid, sid, powerValue, distFt, bStraight) | bValid
 ' BM-OVERSHOOT from the ov* staging. Worst case 271 bytes. On a TURN trial (two distances) dist_ft and tgt
 ' print NA, since one number cannot describe both wheels; BM-TURN carries each wheel's (task 3577).
@@ -20804,6 +21872,9 @@ PRI emitTurn(tid, leftFt, rightFt) | bValid
     whyField(ovWhy)
     emitRecord()
 
+#endif
+
+#ifdef DBG_OUTPOLL
 PRI emitOut(tid, sid, rowIdx) | rowBase
 ' BM-OUT: one 100 ms poll of the public API from outBuf. Worst case 239 + faulted(2+7+5=14) +
 ' estop(2+5+5=12) = 265 bytes.
@@ -20836,6 +21907,9 @@ PRI emitOut(tid, sid, rowIdx) | rowBase
     whyField(WHY_NONE)
     emitRecord()
 
+#endif
+
+#ifdef DBP_B
 PRI emitFltApi(tid, sid, whyCode)
 ' BM-FLTAPI: the OVERSHT fault-API trial's own verdict (task 3552). The trial PRINTS WHETHER IT FAULTED,
 ' so a run that provoked nothing says so in one line instead of being inferred from the absence of rows.
@@ -20873,6 +21947,9 @@ PRI emitFltApi(tid, sid, whyCode)
     whyField(whyCode)
     emitRecord()
 
+#endif
+
+#ifdef DBP_D
 PRI emitDStep(side)
 ' BM-DSTEP: one part-D claim, from the ds* staging. One record shape for every step, so the log reads as
 ' one table and a step that could not be provoked prints its NOMEAS row beside the ones that did.
@@ -20932,6 +22009,9 @@ PRI emitRestCoast(slotIdx, whyCode) | refIdx, trialIdx, eResult
     whyField(whyCode)
     emitRecord()
 
+#endif
+
+#ifdef DBG_FRONTST
 PRI emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi, nStackOf)
 ' BM-FRONTST: one front cog's loop health, with the pass time in microseconds beside the raw ticks so the
 ' reading does not have to be divided by a clock the reader has to look up. Worst case 174 bytes.
@@ -20961,6 +22041,9 @@ PRI emitFrontSt(side, nPasses, nLate, nMaxTicks, nStackHi, nStackOf)
     whyField(WHY_NONE)
     emitRecord()
 
+#endif
+
+#ifdef DBP_D
 PRI emitLimSt(side, slotIdx, stepCode, stepValue) | nPeakA, nContA, bDeratedNow, nPhaseMa, nLimitK
 ' BM-LIMST: one wheel's current-limit state as the step that printed it left it, plus that step's own
 ' number. The RESTORE rows are the ones whose peak_a and cont_a read the MOSFET values back (I11).
@@ -20989,6 +22072,8 @@ PRI emitLimSt(side, slotIdx, stepCode, stepValue) | nPeakA, nContA, bDeratedNow,
     benchLog.numField(@"value", stepValue, LIM_BIG)
     whyField(WHY_NONE)
     emitRecord()
+
+#endif
 
 PRI emitLag(side, slotIdx)
 ' BM-LAG: the run's largest |err| the instrument saw for one motor, with the samples behind it.
@@ -21026,6 +22111,7 @@ PRI emitLagAll() | slotIdx
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         emitLag(SIDE_LEFT + slotIdx, slotIdx)
 
+#ifdef DBP_B
 PRI emitStopCur(tid, side, slotIdx)
 ' BM-STOPCUR: what a stop FROM SPEED costs in current, against what holding that speed cost.
 '
@@ -21054,6 +22140,9 @@ PRI emitStopCur(tid, side, slotIdx)
     whyField(bScValid[slotIdx] ? WHY_NONE : WHY_NO_SAMPLES)
     emitRecord()
 
+#endif
+
+#ifdef DBG_OVERSHT
 PRI emitDistM(tid, sid, tickMmX100)
 ' BM-DISTM: the steering object's getDistance(DDU_M) against the ticks it is derived from.
 '
@@ -21088,6 +22177,9 @@ PRI emitDistM(tid, sid, tickMmX100)
     whyField(bSfDistMRan ? WHY_NONE : WHY_NO_SAMPLES)
     emitRecord()
 
+#endif
+
+#ifdef DBP_FLOOR
 PRI emitFloor(tid, sid, runMs, answerCode, inputCode, leftRateX10, rightRateX10, bRatesValid, slowerCode, stopByCode, whyCode)
 ' BM-FLOOR. The rates and slower print NA together when the rates were not measured. Worst case 219 bytes.
 '
@@ -21122,6 +22214,9 @@ PRI emitFloor(tid, sid, runMs, answerCode, inputCode, leftRateX10, rightRateX10,
     whyField(whyCode)
     emitRecord()
 
+#endif
+
+#ifdef DBP_UICHECK
 PRI emitUiStep(kindCode, testedIdx, gotIdx, bKeyGot, bClickGot, promptIdx, resultCode, waitedMs)
 ' BM-UISTEP: one UICHECK step, what was shown and what arrived. tested is the one live button a control step
 ' checks (NA on a screen step); got is the button a screen step received (NA otherwise, or when none did);
@@ -21166,6 +22261,9 @@ PRI uiButtonField(pName, btnIdx)
     else
         benchLog.textField(pName, @sSfNa)
 
+#endif
+
+#ifdef DBG_PANEL
 PRI emitOper(promptCode, eventCode, answerCode, inputCode, waitedMs, whyCode)
 ' BM-OPER: what the operator was shown and did. Worst case 125 bytes.
 '
@@ -21184,6 +22282,8 @@ PRI emitOper(promptCode, eventCode, answerCode, inputCode, waitedMs, whyCode)
     benchLog.numField(@"wait_ms", waitedMs, LIM_MID)
     whyField(whyCode)
     emitRecord()
+
+#endif
 
 PRI emitSeg(seg, eventCode, bAttended, itemCount, faultCount, unrecovCount, elapsedMs, whyCode)
 ' BM-SEG. Worst case 140 bytes.
@@ -21208,6 +22308,7 @@ PRI emitSeg(seg, eventCode, bAttended, itemCount, faultCount, unrecovCount, elap
     whyField(whyCode)
     emitRecord()
 
+#ifdef DBG_PREFLT
 PRI emitPreflt(side, motorIncre, ticksMoved, hwMoved, bMeasured, whyCode)
 ' BM-PREFLT. Worst case 124 bytes.
 '
@@ -21226,6 +22327,8 @@ PRI emitPreflt(side, motorIncre, ticksMoved, hwMoved, bMeasured, whyCode)
     benchLog.boolField(@"moved", bMeasured and (ticksMoved <> 0))
     whyField(bMeasured ? WHY_NONE : whyCode)
     emitRecord()
+
+#endif
 
 PRI emitTrap(trapCode, bReturned)
 ' BM-TRAP: the one top-level trap's value, every run (I9). Worst case 55 bytes.
@@ -21294,6 +22397,10 @@ PRI partNoStallCell() : pCell
             pCell := @sSfCellNoStallP
         PART_PACK:
             pCell := @sSfCellNoStallV
+        PART_REG:
+            pCell := @sSfCellNoStallR
+        PART_KICK:
+            pCell := @sSfCellNoStallT
         other:
             pCell := @sUnknownTok
 
@@ -21333,6 +22440,10 @@ PRI partDbgMaskCell() : pCell
             pCell := @sSfCellDbgMaskP
         PART_PACK:
             pCell := @sSfCellDbgMaskV
+        PART_REG:
+            pCell := @sSfCellDbgMaskR
+        PART_KICK:
+            pCell := @sSfCellDbgMaskT
         other:
             pCell := @sUnknownTok
 
@@ -21359,10 +22470,13 @@ PRI emitSignoffDecls()
 ' One SIGNOFF-DECL per cell this build judges, before anything moves. A build that judges no cell (PART_NONE,
 ' or a CLOCK build at an unswept clock: SF_JUDGES_CELLS) declares nothing. Each cell id is a DAT string passed
 ' by @label on the emitter's own line, so the CLOCK part names each clock's labels under its SF_CLOCK_SLOT.
+'
+' PL-152: an #ifdef chain on the DBP_* symbols where this was a case on PART_ID -- the same declarations, in the same
+' order, for each part. A PART_NONE build (SF_JUDGES_CELLS FALSE) compiles none.
 
+#ifndef DBP_NONE
     if SF_JUDGES_CELLS
-        case PART_ID
-            PART_A:
+#ifdef DBP_A
                 emitSignoffDecl(@sSfCellNoStallA)
                 emitSignoffDecl(@sSfCellDbgMaskA)
                 emitSignoffDecl(@sSfCellInstLive)
@@ -21380,7 +22494,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellRateLaw)
                 emitSignoffDecl(@sSfCellIdleMvA)
                 emitSignoffDecl(@sSfCellTrKickA)
-            PART_CLOCK:
+#elseifdef DBP_CLOCK
                 case SF_CLOCK_SLOT
                     SF_CLOCK_200:
                         emitSignoffDecl(@sSfCellNoStallK200)
@@ -21397,7 +22511,7 @@ PRI emitSignoffDecls()
                         emitSignoffDecl(@sSfCellDbgMaskK300)
                         emitSignoffDecl(@sSfCellClkFrameK300)
                         emitSignoffDecl(@sSfCellHallK300)
-            PART_B:
+#elseifdef DBP_B
                 emitSignoffDecl(@sSfCellNoStallB)
                 emitSignoffDecl(@sSfCellDbgMaskB)
                 emitSignoffDecl(@sSfCellTracesB)
@@ -21414,11 +22528,11 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellFltCause)
                 emitSignoffDecl(@sSfCellOffRestB)
                 emitSignoffDecl(@sSfCellIdleMvB)
-            PART_BRAKE:
+#elseifdef DBP_BRAKE
                 emitSignoffDecl(@sSfCellNoStallH)
                 emitSignoffDecl(@sSfCellDbgMaskH)
                 emitSignoffDecl(@sSfCellBrakeFlt)
-            PART_C:
+#elseifdef DBP_C
                 emitSignoffDecl(@sSfCellNoStallC)
                 emitSignoffDecl(@sSfCellDbgMaskC)
                 emitSignoffDecl(@sSfCellTracesC)
@@ -21428,7 +22542,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellStpDecel)
                 emitSignoffDecl(@sSfCellFltStop)
                 emitSignoffDecl(@sSfCellIdleMvC)
-            PART_D:
+#elseifdef DBP_D
                 emitSignoffDecl(@sSfCellNoStallD)
                 emitSignoffDecl(@sSfCellDbgMaskD)
                 emitSignoffDecl(@sSfCellLagD)
@@ -21455,15 +22569,15 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellPathHunt)           ' PL-144
                 emitSignoffDecl(@sSfCellEvLate)
                 emitSignoffDecl(@sSfCellRestCst)            ' task 3623
-            PART_FLOOR:
+#elseifdef DBP_FLOOR
                 emitSignoffDecl(@sSfCellNoStallF)
                 emitSignoffDecl(@sSfCellDbgMaskF)
                 emitSignoffDecl(@sSfCellFloorAns)
-            PART_UICHECK:
+#elseifdef DBP_UICHECK
                 emitSignoffDecl(@sSfCellNoStallU)
                 emitSignoffDecl(@sSfCellDbgMaskU)
                 emitSignoffDecl(@sSfCellUiCheck)
-            PART_ALIGN:
+#elseifdef DBP_ALIGN
                 emitSignoffDecl(@sSfCellNoStallZ)
                 emitSignoffDecl(@sSfCellDbgMaskZ)
                 emitSignoffDecl(@sSfCellAgNoDrv)
@@ -21471,11 +22585,11 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellAgCover)
                 emitSignoffDecl(@sSfCellAgRes)
                 emitSignoffDecl(@sSfCellAgMatrix)
-            PART_LEAD:
+#elseifdef DBP_LEAD
                 emitSignoffDecl(@sSfCellNoStallL)
                 emitSignoffDecl(@sSfCellDbgMaskL)
                 emitSignoffDecl(@sSfCellLeadBrkt)
-            PART_LIMITS:
+#elseifdef DBP_LIMITS
                 emitSignoffDecl(@sSfCellNoStallM)
                 emitSignoffDecl(@sSfCellDbgMaskM)
                 emitSignoffDecl(@sSfCellTracesM)
@@ -21484,7 +22598,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellPowerMap)
                 emitSignoffDecl(@sSfCellFollowM)
                 emitSignoffDecl(@sSfCellFolFall)
-            PART_FAULTRESP:
+#elseifdef DBP_FAULTRESP
                 emitSignoffDecl(@sSfCellNoStallX)
                 emitSignoffDecl(@sSfCellDbgMaskX)
                 emitSignoffDecl(@sSfCellTracesX)
@@ -21507,7 +22621,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellSrPart)
                 emitSignoffDecl(@sSfCellFrontEv)
                 emitSignoffDecl(@sSfCellEvLate)
-            PART_START:
+#elseifdef DBP_START
                 emitSignoffDecl(@sSfCellNoStallS)
                 emitSignoffDecl(@sSfCellDbgMaskS)
                 emitSignoffDecl(@sSfCellSkHealth)
@@ -21541,7 +22655,7 @@ PRI emitSignoffDecls()
                     emitSignoffDecl(@sSfCellEvMiss)
                 elseif BUILD_START_B1
                     emitSignoffDecl(@sSfCellEvIll)
-            PART_SPIN:
+#elseifdef DBP_SPIN
                 emitSignoffDecl(@sSfCellNoStallP)
                 emitSignoffDecl(@sSfCellDbgMaskP)
                 emitSignoffDecl(@sSfCellTracesP)
@@ -21563,12 +22677,24 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellCrLow)
                 emitSignoffDecl(@sSfCellCreep)
                 emitSignoffDecl(@sSfCellCrHold)
-            PART_PACK:
+#elseifdef DBP_PACK
                 emitSignoffDecl(@sSfCellNoStallV)
                 emitSignoffDecl(@sSfCellDbgMaskV)
                 emitSignoffDecl(@sSfCellPkMeter)
                 emitSignoffDecl(@sSfCellPkAbsent)
                 emitSignoffDecl(@sSfCellPackEv)
+#elseifdef DBP_REG
+                emitSignoffDecl(@sSfCellNoStallR)           ' SRC_REV 54 (PL-151): the pointed regression part
+                emitSignoffDecl(@sSfCellDbgMaskR)
+                emitSignoffDecl(@sSfCellTurnDist)           ' part B's cells, the same claims, now certified here
+                emitSignoffDecl(@sSfCellFltCause)
+                emitSignoffDecl(@sSfCellFltRetry)
+#elseifdef DBP_KICK
+                emitSignoffDecl(@sSfCellNoStallT)           ' SRC_REV 54 (PL-78 / PL-87): the pointed kick part
+                emitSignoffDecl(@sSfCellDbgMaskT)
+                emitSignoffDecl(@sSfCellTrKickT)
+#endif
+#endif
 
 PRI emitSignoffDecl(pCell)
 ' SIGNOFF-DECL for one cell: sf, bin, cell, task only (no seq: the collation reads exactly these
@@ -21628,8 +22754,9 @@ PRI emitSignoffs() | slotIdx, side
     if SF_JUDGES_CELLS
         emitSignoffBool(partNoStallCell(), SIDE_NONE, @sSfCritCog0End, TRUE, TRUE, SIGNOFF_ONE_INSTANCE)
         emitSignoffBool(partDbgMaskCell(), SIDE_NONE, @sSfCritQuiet, TRUE, bQuietMasks, SIGNOFF_ONE_INSTANCE)
-        case PART_ID
-            PART_A:
+        ' PL-152: an #ifdef chain on the DBP_* symbols where this was a case on PART_ID -- the same verdicts, in the
+        '  same order, for each part
+#ifdef DBP_A
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     side := SIDE_LEFT + slotIdx
                     emitSignoffBool(@sSfCellInstLive, side, @sSfCritInstLive, bSfLiveRan[slotIdx], bSfLiveOk[slotIdx], SIGNOFF_ONE_INSTANCE)
@@ -21649,11 +22776,11 @@ PRI emitSignoffs() | slotIdx, side
                 emitSignoff(@sSfCellInstWide, SIDE_NONE, @sSfCritInstWide, instRunSamples > 0, instRunLate + instRunSkipped + instRunClamps, INSTWIDE_LO, INSTWIDE_HI, instRunSamples, @sSfUnitsCount)
                 emitSignoff(@sSfCellPhSep, SIDE_NONE, @sSfCritPhSep, sfPhN > 0, sfPhSame, PHSAME_LO, PHSAME_HI, sfPhN, @sSfUnitsCount)
                 emitLagCells(@sSfCellLagA)
-            PART_CLOCK:
+#elseifdef DBP_CLOCK
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     emitSignoffBool(clockCell(@sSfCellClkFrameK200, @sSfCellClkFrameK270, @sSfCellClkFrameK300), SIDE_LEFT + slotIdx, @sSfCritClkFrame, bSfClkRan[slotIdx], bSfClkOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitSignoff(clockCell(@sSfCellHallK200, @sSfCellHallK270, @sSfCellHallK300), SIDE_LEFT + slotIdx, @sSfCritHall, sfHallLives[slotIdx] > 0, sfHallIllegal[slotIdx], HALL_ILLEGAL_LO, HALL_ILLEGAL_HI, sfHallLives[slotIdx], @sSfUnitsCount)
-            PART_B:
+#elseifdef DBP_B
                 emitSignoff(@sSfCellTracesB, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     side := SIDE_LEFT + slotIdx
@@ -21673,9 +22800,9 @@ PRI emitSignoffs() | slotIdx, side
                 emitSignoff(@sSfCellTurnDist, SIDE_BOTH, @sSfCritTurnDist, sfTurnN > 0, sfTurnMax, STOP_LIMIT_LO, STOP_LIMIT_HI, sfTurnN, @sSfUnitsCount)
                 emitSignoffBool(@sSfCellDistM, SIDE_BOTH, @sSfCritDistM, bSfDistMRan, bSfDistMOk, SIGNOFF_ONE_INSTANCE)
                 emitLagCells(@sSfCellLagB)
-            PART_BRAKE:
+#elseifdef DBP_BRAKE
                 emitSignoffBool(@sSfCellBrakeFlt, SIDE_LEFT, @sSfCritBrakeFlt, bSfBrakeRan, bSfBrakeSeen, SIGNOFF_ONE_INSTANCE)
-            PART_C:
+#elseifdef DBP_C
                 emitSignoff(@sSfCellTracesC, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
                     side := SIDE_LEFT + slotIdx
@@ -21686,28 +22813,33 @@ PRI emitSignoffs() | slotIdx, side
                     emitIdleMoveCell(@sSfCellIdleMvC, slotIdx)
                     emitSignoffBool(@sSfCellFltStop, side, @sSfCritFltStop, bSfFltStopRan[(slotIdx * MODE_COUNT) + MODE_FLOAT] and bSfFltStopRan[(slotIdx * MODE_COUNT) + MODE_BRAKE], sfFltStopTicks[(slotIdx * MODE_COUNT) + MODE_FLOAT] >= sfFltStopTicks[(slotIdx * MODE_COUNT) + MODE_BRAKE] + FLTSTOP_GAP_TICKS, SIGNOFF_ONE_INSTANCE)
                 emitLagCells(@sSfCellLagC)
-            PART_D:
+#elseifdef DBP_D
                 emitDStepCells()
                 emitLagCells(@sSfCellLagD)
-            PART_FLOOR:
+#elseifdef DBP_FLOOR
                 emitSignoffBool(@sSfCellFloorAns, SIDE_NONE, @sSfCritFloorAns, bSfFloorRan, bSfFloorAnswered, SIGNOFF_ONE_INSTANCE)
-            PART_UICHECK:
+#elseifdef DBP_UICHECK
                 emitSignoffBool(@sSfCellUiCheck, SIDE_NONE, @sSfCritUiCheck, bSfUiRan, bSfUiOk, uiStepCount)
-            PART_ALIGN:
+#elseifdef DBP_ALIGN
                 emitAlignCells()
-            PART_LEAD:
+#elseifdef DBP_LEAD
                 emitLeadCells()
-            PART_LIMITS:
+#elseifdef DBP_LIMITS
                 emitLimitsCells()
-            PART_FAULTRESP:
+#elseifdef DBP_FAULTRESP
                 emitFaultRespCells()
-            PART_START:
+#elseifdef DBP_START
                 emitStartCells()
-            PART_SPIN:
+#elseifdef DBP_SPIN
                 emitSpinCells()
                 emitLagCells(@sSfCellLagP)
-            PART_PACK:
+#elseifdef DBP_PACK
                 emitPackCells()
+#elseifdef DBP_REG
+                emitRegCells()                              ' SRC_REV 54 (PL-151)
+#elseifdef DBP_KICK
+                emitKickCells()                             ' SRC_REV 54 (PL-78 / PL-87)
+#endif
 
 PRI emitIdleMoveCell(pCell, slotIdx)
 ' IDLEMOVE (task 3572): the other wheel's largest travel over every motor-frame trace this motor was primary in.
@@ -21729,6 +22861,7 @@ PRI emitLagCells(pCell) | slotIdx
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         emitSignoff(pCell, SIDE_LEFT + slotIdx, @sSfCritLag, instLagN[slotIdx] > 0, instLagMax[slotIdx], LAG_MAX_LO, LAG_MAX_HI, instLagN[slotIdx], @sSfUnitsCount)
 
+#ifdef DBP_D
 PRI emitDStepCells() | slotIdx
 ' Part D's cells. The steering object's instances carry SIDE_BOTH, the single wheel's SIDE_LEFT, and the
 ' two forms are judged separately because they are two different shapes of the same contract.
@@ -21822,6 +22955,8 @@ PRI bDEstopOk(bWheelForm) : bOk
         bOk := bSfWDStepOk[DST_ESTOP_REFUSE] and bSfWDStepOk[DST_ESTOP_LATCH] and bSfWDStepOk[DST_ESTOP_CLEAR]
     else
         bOk := bSfDStepOk[DST_ESTOP_REFUSE] and bSfDStepOk[DST_ESTOP_LATCH] and bSfDStepOk[DST_ESTOP_CLEAR]
+
+#endif
 
 PRI emitSignoff(pCell, side, pCrit, bMeasured, measuredVal, loLimit, hiLimit, instCount, pUnits) | boundedVal, pVerdict
 ' One numeric SIGNOFF verdict (test_bench_scan.spin2 emitSignoff(), units named by the caller). Judged on the
