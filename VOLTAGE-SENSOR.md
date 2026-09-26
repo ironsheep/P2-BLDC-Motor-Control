@@ -128,6 +128,8 @@ yellow and black header contacts:
 
 The P2's ADC pins have a small fixed offset (up to about 9 mV measured, about 70 mV at the pack), and the
 resistors are 1% parts. One calibration covers the resistor tolerances and the loading of R4 and the pin.
+R4's loading alone is about 1 %: R4 sits in parallel with R2 through R3, so with the listed parts the true
+multiplier is about 7.89, not 7.81. Expect a calibration value near 1010 before any tolerance.
 
 1. In `isp_bldc_motor_userconfig.spin2`, set `PACK_SENSOR_FITTED = TRUE` and `PACK_SENSE_PIN` to your pin.
 2. Run your program and read `getPackVoltage()`. At the same moment, read the pack with a meter.
