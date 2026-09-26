@@ -33,7 +33,8 @@
 # ahead of -r, so every run also leaves a USB-traffic capture (see step 2's
 # comment) -- those two are the only terminal flags (PL-92). Every tier's binary emits that marker:
 # test_bench_t0, test_bench_spin, test_bench_detect, test_bench_char,
-# test_bench_scan and test_bench_dual.
+# test_bench_scan and test_bench_dual, and the release demos demo_single_motor
+# and demo_dual_motor when built with -D BENCH_CFG (PL-149).
 #
 # Usage:  tools/bench-run.sh <tier>
 #   <tier>      -- tier name, see usage() below. It is the ONLY argument: nothing
@@ -149,6 +150,8 @@ Usage:  tools/bench-run.sh <tier>
                    dual-limits-top  as dual-limits' LIMTOP only: the climb and the power check that confirm moved limits  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-reg       motion harness part REG: PREFLT, REGRESS -- two turns by distance, then one fault forced per wheel and the same power sent again (PL-151, PL-66), under a minute  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-kick      motion harness part KICK: PREFLT, KICK -- the seven top-of-range speed changes per wheel and direction, for the kick fix (PL-78, PL-87), under 2 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   demo-single    the single-motor release demo on the RIGHT wheel: wiring check, 15 s forward and 15 s reverse at full power (PL-149), about 1 minute  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   demo-dual      the two-wheel release demo: wiring check, 1 ft forward, two 15 s steered drives, then each wheel alone 15 s at full power (PL-149), about 1.5 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
 
 Examples:
   tools/bench-run.sh detect
@@ -456,6 +459,16 @@ case "$TIER" in
     dual-kick)      BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_KICK)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED, YOU DO NOTHING: first each wheel gets a short slow nudge on its own (under 1 s each). Then ONE WHEEL AT A TIME, left then right, each direction in turn (4 runs): the wheel spins up from rest to high speed, then steps UP through four faster speeds to its top speed (about 300 rpm commanded) and back DOWN three steps, holding each speed about 2 seconds, then stops. The other wheel stays still. The 10 A abort and the fold-back limiter both apply. Run cap 5 minutes, expected under 2"
+                    ;;
+    # demo-single / demo-dual (PL-149) -- the two release demos, run as shipped. Under -D BENCH_CFG each reads the bench
+    #  config instead of the end-user one (demo_single_motor drives the bench's RIGHT motor, as it names no single motor)
+    #  and prints DEBUG_END_SESSION after its sequence; a normal build of either is unchanged. Built with the library's
+    #  full debug channels, as a user's -d build is: what the demos print is what is under test.
+    demo-single)    BENCH_FILE="demo_single_motor.spin2"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, RIGHT WHEEL FREE TO TURN, HANDS: NONE -- UNATTENDED, YOU DO NOTHING: the single-motor release demo on the RIGHT wheel (the P16 board); the left wheel is never started. The start checks pulse the motor leads with nothing able to move, then the wiring check TURNS THE RIGHT WHEEL A LITTLE FORWARD AND BACK (about 3.5 cm at the tyre). Then the right wheel runs FORWARD AT FULL POWER for 15 seconds, stops, runs IN REVERSE AT FULL POWER for 15 seconds, and stops; the program then waits 20 seconds with the wheel still and ends. It also starts its HDMI output on P8-P15, which the bench config does not use. About 1 minute"
+                    ;;
+    demo-dual)      BENCH_FILE="demo_dual_motor.spin2"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED, YOU DO NOTHING: the two-wheel release demo. The start checks pulse each motor's leads with nothing able to move, then the wiring check TURNS EACH WHEEL A LITTLE ONE WAY AND BACK, the two opposite ways (about 3.5 cm at the tyre). Then: BOTH WHEELS FORWARD for 1 ft of tyre travel (about a second); BOTH WHEELS at power 80 steering one way for 15 seconds (one wheel faster than the other), then the other way for 15 seconds; then THE LEFT WHEEL ALONE AT FULL POWER for 15 seconds, then THE RIGHT WHEEL ALONE AT FULL POWER for 15 seconds, the other wheel still each time. Each drive ends on its own limit; the wheels coast at rest. About 1.5 minutes, at most about 2"
                     ;;
     *)  echo "ERROR: unknown tier '$TIER'" >&2
         usage
