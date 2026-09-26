@@ -24,7 +24,11 @@
 ## ⛔ First: PUSH, then pull at the bench
 
 `main` is ahead of origin. **Push from the authoring tree first**, then pull at the bench. `git log --oneline -1 -- src/`
-at the bench must show the commit that carries **DRIVER_REV 30** (this sheet's commit or later).
+at the bench must show **f4a8e85** or later (DRIVER_REV 30).
+
+**What this change invalidated:** the subject under test changed (the motor and steering objects), so every cell that
+drives through the steering object restarts. That is why STEERSEG, RESTCOAST and the walk are re-proved. T0-25's
+reporting code did not change; it re-runs only because it goes first.
 
 ## ⭐ Before anything: note the time you connect the pack
 
