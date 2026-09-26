@@ -2564,6 +2564,30 @@ resolution of each getter is documented.
 is kept). The `fAmps` result is renamed in the doc and the source comment. The backing-up pattern goes in
 DRIVE-OBJECTS.md and DEVELOP.md.
 
+### PL-160 -- a user cannot shape the ramp for their robot: deceleration is fixed, settings are lost on start(), and every ramp starts and ends with a torque step
+
+> **6.0 status (2026-09-26 audit):** RELEASE — found by Stephen reviewing the acceleration API.
+
+**Found 2026-09-26.** `setAcceleration(rate)` sets only speeding up. Every slow-down and stop runs at a fixed
+`ramp_down` of about 1,470 mm/s², which only the raw `setRampingValues()` can change. `start()` discards the setting
+(`init()`). The ramp steps acceleration from 0 to full and back in one drive pass at both ends. The desk study
+(kick spec, 2026-09-26) and its model: the speed-change *current* kick is a separate one-pass defect (the field is not
+advanced on the arrival pass, fixed under PL-78/87). The acceleration steps are what a user *feels*, and the jerk
+limit is kept for that.
+
+**STEPHEN 2026-09-26 (Q1):** *"yes sep calls"*. So `setDeceleration(rate)` in mm/s² is added beside `setAcceleration(rate)`,
+which stays as it is.
+
+**Disposition: ⛔ build**, from the kick spec's section B, as amended by the model:
+- one jerk-limited trajectory generator per motor, continuous through every transition and reversal, with
+  τ ≥ 250 ms if starts from the lowest speeds are in scope;
+- acceleration and deceleration set independently, kept across `start()`, with getters and the steering and serial
+  mirrors (`setdecel`);
+- the stop prediction and `stopAfter*()` limits kept exact.
+
+Open owner questions, asked one at a time: Q2 the built-in rates; Q3 `setRampingValues()`; Q4 reporting a held ramp;
+Q5 the inertia term.
+
 ---
 
 ## Removed from this list
