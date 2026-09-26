@@ -29,6 +29,11 @@ is chased; everything else is recorded and waits. Each remaining entry carries i
 | PL-87 | The instrument that measures that speed-change kick | Same cell as PL-78, judged on the current driver |
 | PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | A blocked-wheel cell that trips SR_BLOCKED (the floor run «#3576» has none today) |
 | PL-143 | The command timeout cuts short a drive whose own stop limit already bounds it | Stephen's ruling, then the doc or code follows it |
+| PL-148 | The serial control path (object, protocol doc, Python demo) has never run on hardware | A host-driven serial run, wheels up |
+| PL-149 | No shipped demo has run on hardware against the 6.0 API | One wheels-up run of each release demo |
+| PL-150 | The floor run has no cells for the path limiter or the overload hold under load | Two cells added to the floor run, then the floor run |
+| PL-151 | Turning by distance, fault cause, e-stop status and stop-after-rotation lack current evidence | One regression tier on the current driver |
+| PL-152 | Every bench tier compiles twice and carries every harness part ever written | One compile at the bench; one part per tier (after pass 7) |
 
 **Awaits certification** (fix built, not yet run)
 
@@ -2328,6 +2333,92 @@ for both drivers to read DCS_STOPPED; the settle counts from there. Certifies at
 `targetIncre` still gates validity, so a stopped or e-stopped wheel (driver command zeroed, user command kept) is not
 reported as not following. Test-use observable; no PASM or ABI change. Certifies at pass 7 (NOTFOL-D PASS on a
 behind wheel).
+
+### PL-148 -- the serial control path has never run on hardware
+
+> **6.0 status (2026-09-26 audit):** RELEASE — a shipped deliverable with no hardware evidence.
+
+**Found 2026-09-26** by the release audit (a read-only survey of every 6.0 feature against the bench evaluations).
+- `isp_steering_serial.spin2`, `DRIVE-OBJECTS-SERIAL.md` and `pythonSrc/P2-BLDC-Motor-Control-Demo.py` are 6.0
+  deliverables. So are the serial lines in the README: refusals reply with the error's name and code, and there are
+  `settimeout`, `getvoltage`, `protclear` / `getprot`, `setfaultresp` / `getfaultresp`.
+- **No bench log mentions the serial object or the Python demo.** Their only evidence is the compile gate and
+  `py_compile` (PL-111).
+
+**Disposition: ⛔ release work.** A host-driven run: an RPi or PC running the Python demo against the dual platform,
+wheels up. It must exercise a refused command (error reply), `settimeout` with a silent host, `getvoltage`,
+`setfaultresp`/`getfaultresp`, and `protclear` once PL-106 can provoke a protective stop. Needs a run sheet and
+Stephen's host.
+
+### PL-149 -- no shipped demo has run on hardware against the 6.0 API
+
+> **6.0 status (2026-09-26 audit):** RELEASE — the demos are what users copy; compile-only today.
+
+**Found 2026-09-26** by the release audit.
+- `demo_single_motor` and `demo_dual_motor` (the release demos) were rewritten for the 6.0 API («#3624», 1fa665d), as
+  were the RC and HDMI demos. They now cover start checks, stop reasons, the event log and the fault response.
+- The compile gate certifies them plain and with `-d` (PL-142). **No bench log shows any of them run on the 6.0
+  driver;** the last hardware run of a demo is Visit 1, v5.x.
+
+**Disposition: ⛔ release work.** One wheels-up run of each release demo through `tools/bench-run.sh` (a tier each,
+unattended), read like any other log. The RC demo also needs the RC transmitter, so it is Stephen's call whether it
+joins.
+
+### PL-150 -- the floor run has no cells for two load-dependent 6.0 claims
+
+> **6.0 status (2026-09-26 audit):** RELEASE — the claims are certified wheels-up only.
+
+**Found 2026-09-26** by the release audit. The floor run's sheet (`VISIT-6B-FLOOR-RUNSHEET.md`, «#3576») carries
+SPINSTOP, SPINSTRT, SPINPEAK, SPINSYM, SPINCTL, SPINLEAD, SPINPLAT and the CREEP cells. It carries nothing for:
+- **the path limiter under load** ("when one wheel cannot keep up, both slow together"): certified only wheels-up, at a
+  lowered current limit (pass 7, PL-144);
+- **the overload hold** ("holds the fastest speed it can sustain instead of faulting"): shown only wheels-up under a
+  lowered limit (Visit 9b G-3).
+
+The protective stop on a blocked wheel is PL-106, and the 27 A derate cannot be reached on this rig. The README now
+states the derate as a design limit.
+
+**Disposition: ⛔ release work.** Add a loaded path cell (one wheel dragged or on a higher-friction surface, the platform
+keeping its line) and an overload cell (a command above what the load allows, no fault) to the floor run before it
+runs. Both are designed with the floor run's rebuild for DRIVER_REV 30-31.
+
+### PL-151 -- four 6.0 API behaviours were last certified on the pre-R18.4 driver, or never
+
+> **6.0 status (2026-09-26 audit):** RELEASE — each is a README claim with stale or no evidence.
+
+**Found 2026-09-26** by the release audit.
+- `driveForDistance(left, right)` turns: R17-DUAL-TURNDIST-B PASS at Visit 6a, on the pre-R18.4 driver. Part B has not
+  run since.
+- `getFaultCause()`: R17-DUAL-FLTCAUSE-B NOMEAS at Visit 6a, and no later PASS. A cause is only seen in passing (`cause,LAG`).
+- `getStatus()` reporting `DS_ESTOP`: no cell was found that reads it.
+- `stopAfterRotation()`: no cell was found.
+
+**Disposition: ⛔ release work.** One regression tier on the current driver covers all four:
+- part B's TURNDIST;
+- a FLTCAUSE cell provoked with `testForceFault()` (PL-119), which also lets PL-66's FLTRETRY certify;
+- a `getStatus()` read after an e-stop;
+- a `stopAfterRotation()` leg in T0.
+
+It should be built in the pointed form that PL-152 describes.
+
+### PL-152 -- every bench tier compiles twice, and carries every harness part ever written
+
+> **6.0 status (2026-09-26 audit):** RELEASE (support) — makes every remaining pass cheaper; changes nothing measured.
+
+**Found 2026-09-26** from Stephen's observation: *"The script is now compiling files twice... Your files are large
+enough that they take a really long time to compile... our bench run tests should not be an accumulation of all the
+tests we've ever run. They should be fairly pointed."*
+- **MEASURED (dev container):** `tools/bench-run.sh` compiles each tier plain and then with `-d` to measure the DEBUG
+  footprint from the size difference. A `test_bench_dual` compile takes about 13 s, so each dual tier spends about 26 s
+  compiling. The commit gate already measures the same footprint for every tier, on the tree the bench pulls.
+- **MEASURED:** the dual harness (22,062 lines, 15 parts) compiles all parts into every tier. Pass 6's START,
+  swapneg and D images were all 152,139 B. The driver and steering objects alone compile in about 4 s, so the
+  harness is about 70 % of the compile.
+
+**Disposition: ⛔ FIX, after pass 7** (so the pass on the bench is not disturbed):
+1. The bench compiles once, with `-d`. The footprint stays enforced by the commit gate.
+2. Each `test_bench_dual` part goes behind its own compile flag, so a tier builds only its part and the shared plumbing.
+   Every tier's banner and cells are re-checked, and the images are measured before and after.
 
 ---
 

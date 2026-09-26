@@ -64,14 +64,15 @@ command reporting its result.
   it previously passed {rate} to the driver as its ramp step. Code that passed
   a ramp step should call setRampingValues() instead.
 - 6.5" motor: commutation uses the motor's measured hall position and a lead
-  that follows speed; unloaded running current is 8 to 25 times lower than
-  v5.0.2's at the same speed
+  that follows speed; unloaded running current at low and middle speeds is
+  8 to 25 times lower than with v5.0.2's commutation offsets
 - Starting from rest is smooth: the current surge at spin-up is gone
-- Forward and reverse draw the same current, to within a few percent
+- Forward and reverse draw the same current, to within 8 %
 - getError() returns the calling cog's first error; the steering object's
   returns its own, the left wheel's and the right wheel's
 - Current limiting protects the board: output folds back above 40 A and
-  derates to 27 A under sustained load
+  derates to 27 A under sustained load (limits set from the MOSFET ratings;
+  the fold-back is verified on the bench at a lowered limit)
 - Protective stop: a commanded motor that cannot turn for about a second is
   stopped until clearProtectiveStop() (ERR_PLATFORM_BLOCKED,
   getProtectiveStop())
@@ -79,8 +80,9 @@ command reporting its result.
   platform keeps the path you commanded
 - Two wheels: when one wheel faults, the other ramps to a stop, so the
   platform stops instead of pivoting about the faulted wheel
-- A loaded motor that cannot reach its command holds the fastest speed it can
-  sustain instead of faulting
+- A motor that cannot reach its command holds the fastest speed it can
+  sustain instead of faulting (verified wheels-up under a lowered current
+  limit)
 - setCommandTimeout(ms): opt-in link-loss guard that stops the motors when
   drive commands stop arriving
 - getDriveVoltage() returns the configured drive voltage
