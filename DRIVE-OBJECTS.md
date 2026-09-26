@@ -293,7 +293,7 @@ Every code is below -1,000, so none can be mistaken for a cog id, a power, a dis
 | EV\_HALL\_MISSED | hall transitions were missed; at most one a second | how many since the last |
 | EV\_HALL\_ILLEGAL | the hall sensors read an illegal code (%000 or %111); at most one a second | how many since the last |
 | EV\_WALK\_GUARD | checkWiring() ended a wheel's leg for drawing too much current | the reading that tripped it, mV |
-| EV\_LATE\_PASS | the front cog overran its 1 ms pass; at most one a second | how many since the last |
+| EV\_LATE\_PASS | a front-cog pass ended within 100 µs of its 1 ms slot's end (or past it); at most one a second | how many since the last |
 | EV\_PACK | the pack voltage sensor's status changed; at most one a second | the new PACK\_\* status |
 | EV\_CHECK\_RETRY | a start check failed, then passed on a retry | the recovered HLT\_\* bits, plus the attempts used × 256 |
 

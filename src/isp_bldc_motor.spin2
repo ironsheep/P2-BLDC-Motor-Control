@@ -149,7 +149,7 @@ CON { Public Interface Constants }
     '  EV_HALL_MISSED   - missed hall transitions (value: how many since the last EV_HALL_MISSED); at most one a second
     '  EV_HALL_ILLEGAL  - illegal hall codes, %000 and %111 (value: how many since the last); at most one a second
     '  EV_WALK_GUARD    - checkWiring()'s current guard shorted a leg (value: the net DC-link mV that tripped it)
-    '  EV_LATE_PASS     - the front cog overran its 1 ms slot (value: late passes since the last); at most one a second
+    '  EV_LATE_PASS     - a front-cog pass ended within LATE_MARGIN_US of its 1 ms slot's end, or past it (value: late passes since the last); at most one a second
     '  EV_PACK          - the pack sensor's status changed (value: the new PACK_*); at most one a second
     '  EV_CHECK_RETRY   - a start check failed, then passed on a retry (value: the recovered HLT_* bits | attempts << 8)
     '  EV_FOLDBACK      - the driver's per-frame current fold-back engaged (value 0), then went quiet for a second
@@ -2333,7 +2333,7 @@ PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater |
 '' TESTING USE: return the front cog's loop health counters and its stack high-water mark
 ''
 '' @returns nPasses - passes the front cog has started since it was launched
-'' @returns nLatePasses - passes that overran their slot and were re-anchored, never caught up
+'' @returns nLatePasses - passes that ended within LATE_MARGIN_US of their slot's end (or past it) and were re-anchored, never caught up
 '' @returns nMaxPassTicks - the longest pass body seen, in system ticks
 '' @returns nStackHighWater - stack longs ever used, of STACK_SIZE_LONGS; STACK_SIZE_LONGS itself means an overflow is possible
 
@@ -5559,9 +5559,15 @@ PRI updateFollowing() | cmdIncre
     '  magnitude: masking alone still leaves a reverse command reading 5_640, and fixes exactly one
     '  of the four sign/sync combinations. SIGNX 30 strips the sync bit AND restores the sign, and is
     '  correct for all four. The formula and the shift pair were never wrong.
+    '
+    ' AGAINST THE USER'S COMMAND, NOT THE DRIVER'S (Visit 10 pass 6, R18-DUAL-NOTFOL-D). A path scale
+    '  (frontScaleCommand()) writes a scaled targetIncre and keeps userCmdIncr, so a wheel scaled to 8 %
+    '  read 105 % here while shortfallNow() read 84 permille of the same command: two "following"
+    '  readings, two meanings (D7). targetIncre still gates validity: an e-stop or a stop zeroes it and
+    '  leaves userCmdIncr, and a stopped wheel is not "not following".
     cmdIncre := targetIncre SIGNX 30
-    if cmdIncre <> 0
-        followCmdTicksSec := muldiv64(abs(cmdIncre) >> 9, ...
+    if (cmdIncre <> 0) and (userCmdIncr <> 0)
+        followCmdTicksSec := muldiv64(abs(userCmdIncr) >> 9, ...
             HALL_TICKS_PER_CYCLE * (PWM_RATE_IN_HZ / DRIVE_PASS_FRAMES), 1 << 23)
     if (hallWinEntryCt >= HALL_WINDOW_SIZE) and (followCmdTicksSec > 0)
         bFollowValid := TRUE
@@ -5810,7 +5816,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 29        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 30        ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -5856,6 +5862,9 @@ CON { driver internal Constants }
                                             '     the cogstop no longer cuts a driving bridge (W4) or leaves the low sides
                                             '     in pwmn with DIR low (W3); pinclear right after the cogstop as the
                                             '     backstop (task 3623). PASM (cog + LUT) and ABI change
+                                            ' 30: Visit 10 pass 6 -- the following percentage is of the user's command, not the
+                                            '     path-scaled one (R18-DUAL-NOTFOL-D); the steering limiter releases only once
+                                            '     both fields reach the present scale, so it no longer hunts (PL-144). No PASM change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6152,7 +6161,7 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    ackStatus[COG_SLOT_COUNT]   ' front-written FIRST: NO_ERROR or ERR_* for the answered request
     LONG    ackSeq[COG_SLOT_COUNT]      ' front-written LAST: the sequence it answered
     LONG    frontPasses                 ' front-written heartbeat (zeroed by start before the launch)
-    LONG    frontLatePasses             ' front-written: passes that overran their slot
+    LONG    frontLatePasses             ' front-written: passes that ended within LATE_MARGIN_US of their slot's end
     LONG    frontMaxPassTicks           ' front-written: longest pass body, in ticks
     LONG    trackBasePos                ' front-written: pos at the previous tracking pass
     LONG    bStopUnconfirmed            ' front-written: T/F where T means a stop was written and not yet read back as zero

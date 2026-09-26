@@ -133,7 +133,7 @@ CON { forward our interface constants }
   '  values, never renumber; from 50, apart from every other enum on the wire)
   '  EVW_LEFT     - the left wheel's event
   '  EVW_RIGHT    - the right wheel's event
-  '  EVW_PLATFORM - the platform's own event, not one wheel's: EV_LATE_PASS (the steering front cog overran its slot) and
+  '  EVW_PLATFORM - the platform's own event, not one wheel's: EV_LATE_PASS (a steering front-cog pass ended within 100 us of its slot's end) and
   '                 EV_PACK (the pack sensor, which the left wheel's object reads for the platform)
     #50, EVW_LEFT, EVW_RIGHT, EVW_PLATFORM
 
@@ -1809,7 +1809,7 @@ PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater |
 '' everywhere, so "used all of it" and "used more than all of it" cannot be told apart.
 ''
 '' @returns nPasses - passes the front cog has started since it was launched
-'' @returns nLatePasses - passes that overran their slot and were re-anchored, never caught up
+'' @returns nLatePasses - passes that ended within LATE_MARGIN_US of their slot's end (or past it) and were re-anchored, never caught up
 '' @returns nMaxPassTicks - the longest pass body seen, in system ticks
 '' @returns nStackHighWater - stack longs ever used, of this object's STEER_STACK_LONGS
 
@@ -2183,7 +2183,7 @@ VAR { front cog request slots -- one per calling cog, indexed by COGID(); every 
     LONG    ackMotorStatus[ltWheel.COG_SLOT_COUNT * OWNED_MOTOR_MAX]  ' front-written FIRST: per owned motor, [slot * OWNED_MOTOR_MAX + motor]
     LONG    ackSeq[ltWheel.COG_SLOT_COUNT]      ' front-written LAST: the sequence it answered
     LONG    frontPasses                         ' front-written heartbeat (zeroed by start before the launch)
-    LONG    frontLatePasses                     ' front-written: passes that overran their slot
+    LONG    frontLatePasses                     ' front-written: passes that ended within LATE_MARGIN_US of their slot's end
     LONG    frontMaxPassTicks                   ' front-written: longest pass body, in ticks
     LONG    cmdTimeoutMs                        ' front-written (start() before launch): S-8 command timeout, ms; CMD_TIMEOUT_OFF when off
     LONG    lastDriveMs                         ' front-written: getms() when the last drive command was applied, or the timeout set
@@ -2492,7 +2492,9 @@ PRI frontLimitPath() | bLeftShort, bRightShort, leftPermille, rightPermille, lef
 ' Scaling both commands by one fraction keeps their ratio, so a turn stays the turn commanded and a
 ' straight line stays straight; the platform loses speed instead of path. Down at once, up slowly: the
 ' scale falls to the shortfall on the slot it is seen, and releases PATH_RELEASE_STEP per slot only after
-' PATH_RELEASE_SLOTS clean slots (no field held), so it cannot hunt between the two. A new command from the
+' PATH_RELEASE_SLOTS clean slots (no field held, and both fields at the present scale: PL-144), so the release
+' never outruns the fields and a wheel that cannot sustain its command falls back from near its limit, not
+' from full. A new command from the
 ' user starts unscaled. Each wheel's own command, and getPower(), are left as commanded.
 '
 ' PL-141: BEHIND, not merely held. A wheel whose field is held (SHORT) narrows the platform only when its partner
@@ -2545,7 +2547,13 @@ PRI frontLimitPath() | bLeftShort, bRightShort, leftPermille, rightPermille, lef
     elseif (bLeftShort == TRUE) or (bRightShort == TRUE)
         pathCleanSlots := 0                                                     ' PL-141: held within the margin -- the scale holds
     elseif pathScalePermille < ltWheel.PERMILLE_FULL
-        pathCleanSlots++
+        ' PL-144: a slot is clean only once both FIELDS have reached the present scale. Counting any unheld slot let
+        '  the scale reach full ~0.4 s ahead of a ramping field; the weak wheel then fell behind at full and the
+        '  limiter re-engaged from the bottom -- 5 cycles of 8 % <-> 100 % in 4 s at Visit 10 pass 6.
+        if (leftPermille + PATH_RELEASE_STEP >= pathScalePermille) and (rightPermille + PATH_RELEASE_STEP >= pathScalePermille)
+            pathCleanSlots++
+        else
+            pathCleanSlots := 0
         if pathCleanSlots >= PATH_RELEASE_SLOTS
             pathScalePermille := (pathScalePermille + PATH_RELEASE_STEP) <# ltWheel.PERMILLE_FULL
             ltWheel.frontScaleCommand(pathScalePermille)

@@ -185,6 +185,11 @@
 ''               right bridge dead and start() refused it. A RIGHT start refused by its checks now prints T0-25,refused
 ''               and three T0-25,rprobe (the last attempt's lead-check mV), then T0-25 starts the LEFT wheel
 ''               (T0_SECOND_BASE, T0-25,fallback) and its cells name LEFT. Nothing else changes.
+''               26 Sep 2026 -- SRC_REV 20 (Visit 10 pass 6, task 3613): pass 6's first load refused the right again (PL-120)
+''               and it was back within 2 min. After a refused right and the LEFT's cells, T0-25 now times its return:
+''               one start of the right every T0_25_REC_GAP_MS (10 s) for up to T0_25_REC_MAX_MS (3 min), each printed
+''               T0-25,recover (try, ms since the refusal) with its T0-25,refused or T0-25,health and rprobe lines, then
+''               T0-25,recovered (ms, or NA). The tier runs up to about 3 minutes longer only when the right is refused.
 ''
 '' =================================================================================================
 
@@ -293,7 +298,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 19                                           ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 20                                          ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -367,6 +372,8 @@ CON { stop reasons and the event log (T0-25, -D T0_STOPREASON only; task 3621, D
     T0_25_HELPER_STACK  = 128                                   ' the helper reader cog: getEvent() and its callee, with headroom
     T0_25_HANDSHAKE_MS  = 2_000                                 ' bound on each of the helper cog's two handshakes
     T0_25_DRAIN_MAX     = 40                                    ' bound on one drain: EV_QUEUE_DEPTH + EV_LOST + what arrives meanwhile
+    T0_25_REC_GAP_MS    = 10_000                                ' PL-120: after a refused RIGHT, one start of it every this often...
+    T0_25_REC_MAX_MS    = 180_000                               ' ...until it starts or this long after the refusal
 
   ' T0-25's seven stop legs, run in this order (t0rLeg()); each reads getStopReason() as its drive opens, after its stop,
   '  and once more after the leg's own later act:
@@ -2611,7 +2618,7 @@ PRI testT0_15bJudge(cogsOccupied, baseline, startResult, rawMotorCog, freeAfter)
 #endif
 
 #ifdef T0_STOPREASON
-PRI testT0_25() | startResult, bReady, eStartErr
+PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
 ' T0-25, stop reasons and the soft-event log (task 3621, R20.1; DRIVER-REPORTING-DESIGN.md SS1, SS2, SS6) -- compiled
 ' only under -D T0_STOPREASON (its own bench-run.sh tier, t0-stopreason), because every leg drives the RIGHT wheel
 ' (T0_MOTOR_BASE) and plain t0 promises no motion. UNATTENDED: nothing waits on a person.
@@ -2637,11 +2644,13 @@ PRI testT0_25() | startResult, bReady, eStartErr
 ' A start that does not come up ready leaves every cell NOMEAS, and the start's getError() is printed. A RIGHT start its
 ' checks refuse (ERR_START_CHECK_FAILED: pass 5 saw PL-120 outlast a reload) is followed by one start of the LEFT wheel
 ' (T0_SECOND_BASE), so one dead bridge does not void the tier; the cells then name LEFT. The cells certify the reporting,
-' which is the same on either wheel.
+' which is the same on either wheel. After the cells, t0rRecover() times the refused right's return (PL-120).
 '
 ' @local startResult - start()'s return
 ' @local bReady - TRUE when the driver came up ready
 ' @local eStartErr - getError() after a start that did not come up
+' @local bRightRefused - TRUE when the RIGHT start was refused by its checks
+' @local refusedMs - getms() at that refusal
 
     pT0rWheel := @"RIGHT"
     emitCellDecl(@sCellSrCmd, @sTaskReporting)
@@ -2660,8 +2669,10 @@ PRI testT0_25() | startResult, bReady, eStartErr
     bReady := bWaitReady(startResult)
     eStartErr := motor.getError()                               ' NO_ERROR after a good start; the -1's cause otherwise
     debug("T0-25,start_return,", sdec_(startResult), ",ready,", zstr_(bReady ? @"TRUE" : @"FALSE"), ",error,", sdec_(eStartErr))
-    if (bReady == FALSE) and (eStartErr == motor.ERR_START_CHECK_FAILED)
-        t0rPrintHealth()                                        ' PL-120: what refused the right, before the left replaces it
+    bRightRefused := (bReady == FALSE) and (eStartErr == motor.ERR_START_CHECK_FAILED)
+    if bRightRefused
+        refusedMs := getms()
+        t0rPrintHealth(TRUE)                                    ' PL-120: what refused the right, before the left replaces it
         benchLog.cogEventBegin()
         motor.stop()
         benchLog.cogEventEnd()
@@ -2689,11 +2700,50 @@ PRI testT0_25() | startResult, bReady, eStartErr
     benchLog.cogEventBegin()
     motor.stop()
     motor.getError()                                            ' drain this cog's slot
+    if bRightRefused
+        t0rRecover(refusedMs)
     debug("T0-25,end")
 
-PRI t0rPrintHealth() | nChecked, nFailed, nRecovered, nUMv, nVMv, nWMv, ePhase
-' PL-120 (Visit 10 pass 5): a refused start's getHealth() masks and the last attempt's lead-check readings, as
-' T0-25,refused and one T0-25,rprobe per driven phase (mV) -- the per-phase signature a dead bridge leaves.
+PRI t0rRecover(refusedMs) | tryIdx, startResult, bReady, eStartErr
+' PL-120 (Visit 10 pass 6): after the RIGHT was refused and the cells ran on the LEFT, time how long the right takes to
+' come back. One start of the right every T0_25_REC_GAP_MS until it comes up ready, or T0_25_REC_MAX_MS after the
+' refusal. Each refused try prints T0-25,refused and its rprobe lines, so the signature is seen changing or not; the
+' try that starts prints T0-25,recovered and its own lead-check mV, then stops the wheel. Pass 5 cleared in about 100 s
+' and pass 6 inside 2 min, both only bracketed by the next tier's start; this measures it.
+'
+' @param refusedMs - getms() at the refusal
+'
+' @local tryIdx - the try, 1..
+' @local startResult - start()'s return
+' @local bReady - TRUE when the driver came up ready
+' @local eStartErr - getError() after a start that did not come up
+
+    tryIdx := 0
+    bReady := FALSE
+    repeat while (bReady == FALSE) and (getms() - refusedMs < T0_25_REC_MAX_MS)
+        waitms(T0_25_REC_GAP_MS)
+        tryIdx++
+        benchLog.cogEventBegin()
+        startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+        benchLog.cogEventEnd()
+        bReady := bWaitReady(startResult)
+        eStartErr := motor.getError()
+        debug("T0-25,recover,try,", udec_(tryIdx), ",ms,", udec_(getms() - refusedMs), ",start_return,", sdec_(startResult), ",ready,", zstr_(bReady ? @"TRUE" : @"FALSE"), ",error,", sdec_(eStartErr))
+        if bReady
+            debug("T0-25,recovered,wheel,RIGHT_P16,ms,", udec_(getms() - refusedMs), ",tries,", udec_(tryIdx))
+        t0rPrintHealth(bReady == FALSE)                         ' refused: the signature now; ready: the healthy readings beside it
+        benchLog.cogEventBegin()
+        motor.stop()
+        motor.getError()
+    if bReady == FALSE
+        debug("T0-25,recovered,wheel,RIGHT_P16,ms,NA,tries,", udec_(tryIdx))
+
+PRI t0rPrintHealth(bRefused) | nChecked, nFailed, nRecovered, nUMv, nVMv, nWMv, ePhase
+' PL-120 (Visit 10 pass 5): a RIGHT start's getHealth() masks and the last attempt's lead-check readings, as
+' T0-25,refused (or T0-25,health for a start that came up) and one T0-25,rprobe per driven phase (mV) -- the per-phase
+' signature a dead bridge leaves, and the healthy readings to set beside it.
+'
+' @param bRefused - TRUE for a refused start, FALSE for one that came up (t0rRecover())
 '
 ' @local nChecked - getHealth(): the HLT_* bits checked
 ' @local nFailed - ...still failing
@@ -2704,7 +2754,7 @@ PRI t0rPrintHealth() | nChecked, nFailed, nRecovered, nUMv, nVMv, nWMv, ePhase
 ' @local ePhase - the phase that was driven, PRB_U..PRB_W
 
     nChecked, nFailed, nRecovered := motor.getHealth()
-    debug("T0-25,refused,wheel,RIGHT_P16,chk,", uhex_(nChecked), ",fail,", uhex_(nFailed), ",rec,", uhex_(nRecovered))
+    debug("T0-25,", zstr_(bRefused ? @"refused" : @"health"), ",wheel,RIGHT_P16,chk,", uhex_(nChecked), ",fail,", uhex_(nFailed), ",rec,", uhex_(nRecovered))
     repeat ePhase from motor.PRB_U to motor.PRB_W
         nUMv, nVMv, nWMv := motor.testGetProbe(ePhase)
         debug("T0-25,rprobe,driven,", udec_(ePhase - motor.PRB_U), ",u_mV,", sdec_(nUMv), ",v_mV,", sdec_(nVMv), ",w_mV,", sdec_(nWMv))

@@ -3947,6 +3947,26 @@ AND START REFUSAL CAUGHT IT** ([evaluation](analyses/bench/2026-09-25/VISIT-10-P
     `BM-RPROBE` / `T0-25,rprobe` signature, if one comes. PL-138's all-low-sides window
   touches this path and is the next driver-side candidate.
 
+**2026-09-26 12:33, Visit 10 pass 6 -- RECURRED on the first load after the reseat, WITH its signature**
+([evaluation](analyses/bench/2026-09-26/VISIT-10-PASS6-EVALUATION.md) §3).
+- **MEASURED:** Stephen remade and checked every right-motor connection before the pass. The first program load
+  (`t0-stopreason`, DRIVER_REV 29, so PL-138 parts 1-2 and PL-141 in the image) was refused:
+  `T0-25,refused,wheel,RIGHT_P16,chk,$1F,fail,$1C,rec,$0`, after 3 retries.
+- **The per-phase signature, first time printed:** `T0-25,rprobe,driven,0,u_mV,20,v_mV,17,w_mV,19`,
+  `driven,1,...,20,16,19`, `driven,2,...,20,17,20`. Every phase reads 16-20 mV **with itself driven**: below its own
+  56-62 mV coasting floor, where a live lead reads 777-823 mV. No high side raised its own pin.
+- **MEASURED, back by 12:35:18** (under 2 minutes): `dual-start` started the right healthy in all 10 lifetimes (probes
+  from 789 mV, walks 7/-7, windings 345-431 mΩ), and it stayed healthy for the rest of the pass.
+- **DERIVED, the connection reading weakened:** a motor lead cannot lower the voltage on the board's own driven pin, so
+  a loose phase connection at the motor does not produce this signature, and the reseat did not prevent it. What fits
+  is the board's high-side drive (gate supply or bootstrap) not switching, and recovering within ~2 min. Pass 4's death
+  (11:41) was also the day's first load. **Not established:** whether the pack had just been connected in either case,
+  since nobody was asked to note the power-on time.
+- **Also refuted as the trigger:** PL-138's all-low-sides windows (removed at DRIVER_REV 27/29, in this image).
+- **Built for pass 7:** `test_bench_t0` SRC_REV 20 times the recovery. After a refused right and the left's cells,
+  it tries the right every 10 s for up to 3 min, with each try's per-phase readings (`T0-25,recover` / `recovered`).
+  The pass 7 sheet asks Stephen, in advance, to note when the pack is connected.
+
 ### PL-121 -- T0-24's hand rows ended on a clock that started at START
 
 **Found 2026-09-23** at Visit 10 pass 1 (Stephen: *"I press start, and it automatically completes, and I haven't done
@@ -4386,6 +4406,10 @@ teaches the user to ignore it (P14).
 - **Certifies on** the next `dual-start` (R19-DUAL-WALK-X 0 of 10 on each wheel) and `dual-start-swapneg`. There, the
   healthy RIGHT must pass all 3 walks while the swapped left fails. A walk leg that still ends OTHER fails the fix.
 
+**CERTIFIED 2026-09-26, Visit 10 pass 6.** `dual-start`: R19-DUAL-WALK-X 0 of 10 on each wheel, and all 40 legs end
+`LIMIT`, none `OTHER`, with no `EV PATH_LIMIT` in the run. `dual-start-swapneg`: the healthy RIGHT passes 0 of 3
+(pass 5: 2 of 3 failed) while the swapped left fails 3 of 3, each leg ending `GUARD` at 150-153 mV. **Closed.**
+
 ### PL-138 -- while a gate pin's DIR is low its smart pin still drives, so all three low sides are ON: a phase short outside any bridge state
 
 **Found 2026-09-25** by a read-only desk study for PL-120. Not yet checked against the silicon on the rig.
@@ -4474,6 +4498,9 @@ the next driver change.
   - A restart refused by its own checks still counts, since the parks precede the checks.
   - New record `BM-RESTCOAST` per wheel.
 
+**CERTIFIED 2026-09-26, Visit 10 pass 6:** R20-DUAL-RESTCOAST PASS on both wheels. The restarted platform kept 97 %
+(left) and 102 % (right) of the same run's free coast (`keep_pct,97` / `102`, `rs_ret,5`). **Closed.**
+
 ### PL-139 -- RESTFLAT's 50 mV at-rest band was set on the left board, and the right's coast rest read 51
 
 **Found 2026-09-26** at Visit 10 pass 5 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §2).
@@ -4509,6 +4536,13 @@ src_rev 49, 2026-09-26), so the next `dual-start` places each late pass against 
 count. If they are the walk's own, the front-cog budget is extended to cover it. Candidates: the front cog's walk watch
 (`frontWalkWatch()`) and the steering stop/start sequence.
 
+**Answered 2026-09-26, Visit 10 pass 6.** Every `LATE_PASS` sits beside its lifetime's `BM-FRONTST` with `late,1` and
+`max_us` 880-921 (13 lifetimes across `dual-start` and `swapneg`). Lifetimes with `late,0` read 880-896. So the late
+pass is the walk's own end-pass, and it is **not an overrun**. "Late" is `LATE_MARGIN_US`: a pass that ends within
+100 µs of its 1,000 µs slot's end, so waitct() is skipped and the schedule re-anchored. The worst, 921 µs, is inside the
+950 µs budget. The docs that said "overran its slot" are corrected (motor and steering objects, DRIVE-OBJECTS.md).
+**Closed**, with one Watch: 921 µs leaves 29 µs to the budget. A walk change that adds work to that pass re-opens it.
+
 ### PL-141 -- the path limiter reads every platform start from rest as a shortfall and throttles both wheels to zero
 
 **Found 2026-09-26** at Visit 10 pass 5 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §4), from the
@@ -4534,6 +4568,17 @@ behind the other's achieved fraction, so a start where both are held together do
 read while a wheel is still in its start-from-rest hold, if that can be told apart from a blocked start. A blocked wheel
 at start must still engage it (SR_BLOCKED's path), so the design states how it tells the two apart. It is certified by
 R20-DUAL-EV-PATH (no engage at a healthy start) and by the blocked-step engage in part D.
+
+**2026-09-26, Visit 10 pass 6: the negative CERTIFIED; the positive seen, but the cell could not judge it.**
+- No `EV PATH_LIMIT` at any healthy start: `dual-start` (10 lifetimes), `swapneg`, and STEERSEG
+  (`BM-EVTOT,...,STEERSEG,...,l_path,0,r_path,0`).
+- In the BLOCK step at 1 A, the left fell behind and the log holds five well-formed engage/release pairs
+  (`PATH_LIMIT,wheel,LEFT` 82, 95, 81, 80, 85, each followed by 1_000).
+- R20-DUAL-EV-PATH still read NOMEAS. Its precondition, the steering rule's own fraction gap for 2 polls at 50 ms, is
+  closed by the limiter within one 8 ms slot of engaging. **FIXED (instrument, `test_bench_dual` SRC_REV 52):** the
+  precondition is now a wheel held while its commanded partner is not.
+- The five pairs are themselves a defect: PL-144.
+- **Closed** for the start-from-rest defect. The positive cell certifies at pass 7.
 
 ### PL-142 -- the compile gate never builds a top with DEBUG, so a broken debug() line in a release demo passes
 
@@ -4588,6 +4633,78 @@ Once ruled, the RC demo gains `setCommandTimeout()` as its link-loss guard for w
   - A turn from rest ramps both wheels by the same absolute increment, so their fractions part and the limiter may
     engage. The path is kept, just slower.
   - The margin is sized from the gaps seen.
+
+### PL-144 -- the path limiter hunts: a wheel that cannot sustain its command cycles the platform between 8 % and 100 %
+
+**Found 2026-09-26** at Visit 10 pass 6 ([evaluation](analyses/bench/2026-09-26/VISIT-10-PASS6-EVALUATION.md) §5).
+- **MEASURED** (`dual-d`, BLOCK step at a 1 A limit, the left weaker than the right): five cycles in 4 s.
+  - `PATH_LIMIT,wheel,LEFT` engages at 82, 95, 81, 80 and 85 ‰ (ms 64_946, 65_730, 66_450, 67_162, 67_954);
+  - each is followed by a full release to 1_000 about 430 ms later;
+  - the next engage comes about 300-350 ms after that, a period of 720-790 ms.
+- **The design says otherwise:** DRIVE-INTEGRATION-DESIGN.md §3 requires the limiter to release *"without hunting
+  between the two"*.
+- **Cause, read in `frontLimitPath()`.** A slot counted as clean when no field was held. But the fields ramp toward
+  each released scale at their acceleration, so the scale reached full about 0.4 s before the weak wheel's field did.
+  At full the wheel fell behind again, and the limiter re-engaged from full.
+- On a floor, that is a platform surging between a crawl and full command every ~0.75 s whenever one wheel is
+  overloaded.
+
+**Disposition: ⛔ FIX, built** (DRIVER_REV 30, `isp_steering_2wheel.spin2`). A slot counts as clean only when both
+fields have reached the present scale, within one release step. So the release never outruns the fields, and a wheel
+that cannot sustain its command falls back from near its limit, not from full. No PASM change.
+- **Cell:** R20-DUAL-PATH-HUNT (`test_bench_dual` SRC_REV 52): the BLOCK step's most EV_PATH_LIMIT pairs in one log.
+  PASS at exactly 1. Its negative is pass 6's log: 5 on the pre-fix driver.
+- **Not established:** how the fixed limiter settles on a floor. A wheel behind by less than one release step can still
+  drift slowly, deepening without an event; the floor run shows it.
+- **By design, stated:** a field that stops short of the scale without being held (its ramp waiting at LAG_SOFT) now
+  keeps the scale where it is until the fields catch up or a new command arrives. The path is kept, just slower.
+
+### PL-145 -- R16-DUAL-TIMESTOP's 20 ms slack sits inside the step's own measured spread
+
+**Found 2026-09-26** at Visit 10 pass 6 (evaluation §5).
+- **MEASURED:** the single-wheel form failed, `BM-DSTEP,...,TIMESTOP,motor,LEFT,seg,LIMIT,measured,329,...,hi,320`,
+  which is rest confirmed 29 ms after the deadline.
+- Every TIMESTOP on file reads 254-329 ms (7 runs, both forms). That is -46 to +29 ms against the deadline, once the
+  300 ms rest-confirmation dwell is taken off. One earlier run also failed, at 321 (STEERSEG).
+- **DERIVED:** the stop is timed so the FIELD reaches zero at the deadline (`bFrontLimitsDue()`, `frontStopMs()`). Rest
+  is then confirmed by the last hall tick. At the end of a ramp a tick is tens of ms long, so where the last tick falls
+  scatters the reading by about that much.
+- **The verdict stands (D2).** The 20 ms slack is tighter than the reading's own resolution at the end of a ramp, so
+  the cell can fail a correct stop.
+
+**Disposition: Watch.** The fix is a bound derived from the last tick's duration at the ramp's end, stated before a
+run. It is never the worst reading seen. What would make it actionable: a TIMESTOP later than about 60 ms past its
+deadline, which the tick scatter cannot explain.
+
+### PL-146 -- part D's event drains read a stalled wheel's log before its fold-back released
+
+**Found 2026-09-26** at Visit 10 pass 6 (evaluation §5).
+- **MEASURED:** R20-DUAL-EV-FOLDBACK FAIL, 1 bad. The BLOCK drain holds `FOLDBACK,wheel,LEFT,...,value,0` (engage, ms
+  64_326) and no left release. The right's pair is complete: engage 64_334, release 69_310 with 4_295 frames.
+- **DERIVED:** the drain waited EV_SETTLE_MS (1_032 ms) after the step's rest wait, which confirms rest by *position*.
+  The left was stalled at 1 A, so it read at rest while its field was still ramping down under the fold-back. Its
+  release, queued after a second of quiet, fell after the drain at about ms 69_790.
+- **Not a driver defect:** the driver logged the engage, and would log the release after its quiet second, as
+  designed.
+
+**Disposition: ⛔ FIX, built** (`test_bench_dual` SRC_REV 52). Each part D drain first waits, bounded by D_REST_MS,
+for both drivers to read DCS_STOPPED; the settle counts from there. Certifies at pass 7 (EV-FOLDBACK 0 bad).
+
+### PL-147 -- the two "following" readings measured against different commands while the path limiter scaled
+
+**Found 2026-09-26** at Visit 10 pass 6 (evaluation §5).
+- **MEASURED:** R18-DUAL-NOTFOL-D LEFT FAIL: `BM-HOLD,...,LEFT,...,short_permille,84,short_pct,105`.
+- The limiter's fraction (`shortfallNow()`) is taken against `userCmdIncr`, the user's command.
+- The rpm window's percentage (`updateFollowing()`, `testGetFollowing()`) was taken against `targetIncre`, which a
+  path scale rewrites. So a wheel scaled to 8 % "followed" at 105 % of the scaled command, while the other reading
+  said 84 ‰ of the user's.
+- One value, two meanings (D7).
+- The cell was right to fail. A-8 requires the two readings to agree.
+
+**Disposition: ⛔ FIX, built** (DRIVER_REV 30, `isp_bldc_motor.spin2`). The percentage is now of `userCmdIncr`.
+`targetIncre` still gates validity, so a stopped or e-stopped wheel (driver command zeroed, user command kept) is not
+reported as not following. Test-use observable; no PASM or ABI change. Certifies at pass 7 (NOTFOL-D PASS on a
+behind wheel).
 
 ---
 
