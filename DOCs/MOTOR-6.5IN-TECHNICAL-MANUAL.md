@@ -52,8 +52,8 @@ becomes misleading:
 
 | Quantity | Belongs to |
 |---|---|
-| Pole count, hall geometry, the hall zero **Z** | the **motor** — durable, transfers with any driver |
-| The lead **L**, the servo setpoint, the offsets, the fault ceiling | the **driver** — our choices, not the motor's properties |
+| Pole count, hall geometry, the hall zero **Z**, winding resistance | the **motor** — durable, transfers with any driver |
+| The lead **L**, the servo setpoint, the offsets, the fault ceiling, how it stops and holds | the **driver** — our choices, not the motor's properties |
 | Direction-to-direction current asymmetry | was **ours**, and is gone but for a few percent on one unit (§7.3) |
 | Whether L's speed dependence is the motor's electrical time constant or our commutation lag | **not separated** — §9, hole H-2 |
 | Current readings in mV, the abort thresholds, the ladder rungs | the **instrument** |
@@ -83,6 +83,7 @@ of the motor and how to drive it.
 | Wheel circumference | 518.6 mm | DERIVED (π × 165.1) |
 | Travel per hall tick | **5.76 mm** | DERIVED (518.6 / 90) |
 | Hall state sequence | forward (CW): 1-3-2-6-4-5 · reverse (CCW): 1-5-4-6-2-3 | ASSUMED (library table) |
+| Winding resistance, phase to phase | **≈ 0.43 Ω** (every pair 0.35–0.49 Ω) | MEASURED, §2.4 |
 
 There is **no shaft**. The motor *is* the wheel, so there is nowhere to mount a shaft encoder
 — which is why every position fact below had to be obtained from the halls or by hand, and why
@@ -119,7 +120,39 @@ Across every dual-motor run to date: `missed` 0, `illegal` 0, hardware skips 0, 
 ladder records on both motors. **MEASURED** —
 `DOCs/analyses/bench/2026-09-21/VISIT-7B-EVALUATION.md` F10.
 
+Visit 10 adds that the driver's start check has read legal halls on both motors at every start. The
+only exception was a deliberate unplug of the hall connector, and it was caught every time. The halls
+also kept reading legal through each of the right unit's no-drive episodes (§9, H-16). MEASURED —
+`VISIT-10-PASS2-EVALUATION.md` §3.2, `VISIT-10-PASS4-EVALUATION.md` §2.
+
 The halls are the one sensor in this system that has never given us a bad reading.
+
+### 2.4 The windings
+
+The driver measures the resistance itself, at start, when a program asks it to. It drives each phase
+pair in turn (U→V, V→W, W→U) at 5 % duty and waits until the halls have been still for 30 ms, because a
+turning rotor's back-EMF would bias the reading. It then reads the DC-link current on the shunt:
+R = d² × V × rSense ÷ net mV.
+
+| | LEFT | RIGHT | Label |
+|---|---|---|---|
+| Every pair, two passes | 383–492 mΩ | 345–460 mΩ | MEASURED |
+| Mean over pass 4's two starts | **442 mΩ** | **420 mΩ** | MEASURED |
+| The two units | 5 % apart | | MEASURED |
+
+MEASURED — `VISIT-10-PASS4-EVALUATION.md` §5, `VISIT-10-PASS5-EVALUATION.md` §5. The negative control
+is exact: with one lead withheld in firmware, the two pairs through that lead read "not visible" and
+the third still measures, in 10 of 10 starts.
+
+**How good the number is.** Each reading is only 14–19 mV on the shunt, and one millivolt moves R by
+about 6 %, so a single pair is good to about **±6 %**. The formula also uses the *nominal* 18.5 V,
+because there is no bus-voltage reading (§7.1). Take ≈ 0.43 Ω as right to within about 10 % on both
+units. It is phase to phase through the driver's own bridge, FETs and leads included. It is not a meter
+reading of the bare winding.
+
+**The inductance is not measured.** It is only bounded: the graded short (§6.5) brakes less than its
+duty share at low percentages, which says the winding's L/R time constant is not much shorter than a
+few milliseconds. DERIVED — `VISIT-10-DUALFAULT-T0-EVALUATION.md` §3.
 
 **The six sectors are unequal by about ±1° electrical**: LEFT ±0.9°, with sector `101` about 61°
 and `001` about 59° on every leg; RIGHT ±0.55°. That comes from sensor placement, and on this motor
@@ -140,6 +173,8 @@ floor for any sub-sector interpolation. MEASURED —
 | Gate driver | Rev A: MIC4604 · Rev B: TI UCC27211D | ASSUMED (vendor) |
 | Current sense | low-side shunt in the common MOSFET-ground return — **total bridge current** | ASSUMED (vendor) |
 | Sense scale | Rev A **5 mV/A** (5 mΩ, no amplifier) · Rev B **150 mV/A** (3 mΩ × INA180B2 gain 50) | ASSUMED (vendor) |
+| Phase sense | three **phase-voltage** channels (U, V, W), read every frame beside the current | source; MEASURED in use |
+| Bus-voltage sense | **none on the board** | ASSUMED (vendor) |
 | Minimum dead-time | **250 ns, both revisions** — set by MOSFET response, not by driver speed | ASSUMED (vendor) |
 
 **Every measurement in this manual was taken on the two units of the Rev B platform.** Two more
@@ -147,6 +182,13 @@ units of this motor exist on a Rev A platform; what they can and cannot add, and
 
 Rev B has 30× the sense resolution of Rev A. At 10 A, Rev A presents 50 mV to a 3.3 V ADC and Rev B presents 1.5 V. Rev B is the better
 instrument by a wide margin, and that is why measurements are taken there.
+
+⚠ **The shunt sits between the FETs' common ground and system ground, so it sees only current that
+returns through the supply.** When the drive shorts the phases (all low sides on), the braking current
+circulates phase to phase through the low-side FETs and never crosses the shunt. The board therefore
+cannot measure a phase short's current, and the fold-back limit cannot limit it (PL-118). In practice
+it reads 4–5 mV through a hard short from speed. DERIVED from the vendor's placement; MEASURED at the
+shunt — `VISIT-10-PASS2-EVALUATION.md` §3.3.
 
 Full vendor text and part numbers: `DOCs/analyses/BOARD-REVISION-FACTS.md`.
 
@@ -335,9 +377,15 @@ against the magnets directly. That placement is Z. Three details make the readin
   lag, the offset in use, or the servo, and it works the same on either board revision (subject
   to §9.1's phase-scale check).
 
+**It is also there on a wheel coasting from speed after a fault.** The phase channels carry a back-EMF
+wave of 281–1,006 mV peak to peak, crossing at the hall rate. That holds on both units, at 40–120 × 10⁶.
+MEASURED — `VISIT-10-PASS2-EVALUATION.md` §3.3, `VISIT-10-PASS5-EVALUATION.md` §2 (COASTEMF). A shorted
+bridge ties the phases together and the signal is gone. That is one reason a coast is the kinder
+response when the halls are lost (§6.5).
+
 The same signal exists while the motor is being driven, but the phase pins then also carry the
-drive's PWM. Whether it can still be read there is not yet measured. That is the question that
-decides whether this can become a live position source for the drive, not just a way to measure
+drive's PWM. Whether it can still be read there is not yet measured (§9, H-15). That is the question
+that decides whether this can become a live position source for the drive, not just a way to measure
 the motor.
 
 ### 4.7 What differs from one unit to the next
@@ -539,6 +587,99 @@ only falls. MEASURED — `VISIT-9-EVALUATION.md` §3.
 
 Every trace here was taken wheels-up. How a start behaves under load is §9, hole H-6.
 
+### 6.5 Stopping, faulting and holding
+
+**The two ways to let go of a turning wheel differ by two orders of magnitude.** A coast (all six FETs
+off) lets the wheel roll on its own drag. A short (all low sides on) brakes it against its own
+back-EMF. Here is the LEFT unit from a forced fault at speed, wheels up:
+
+| From | ≈ rim speed | Coast: ticks / ms to rest | Short: ticks / ms to rest |
+|---|---|---|---|
+| 40 × 10⁶ | 0.6 m/s | 14–16 / 312 | 0–1 / 5 |
+| 80 × 10⁶ | 1.2 m/s | 54 / 536 | 1–2 / 9 |
+| 120 × 10⁶ | 1.9 m/s | 115–116 / 703 | 1–3 / 11–89 |
+
+MEASURED over three passes, reproducing within 3 ticks — `VISIT-10-PASS2-EVALUATION.md` §3.3,
+`VISIT-10-DUALFAULT-T0-EVALUATION.md` §3, `VISIT-10-PASS4-EVALUATION.md` §3. The RIGHT unit certified
+the same comparison at pass 5. One tick is 5.76 mm, so the 120 × 10⁶ coast is about 0.67 m of tyre.
+
+⚠ **Read these as the wheel's own behaviour, not a robot's.** Wheels up, a coast is resisted only by the
+motor's drag, and a short stops only the wheel's own inertia. On the floor the platform's mass is behind
+the wheel. A short from speed then becomes a braking torque at the contact patch, and the platform tips
+if its centre of gravity is high. A coast becomes a roll, and on an incline a runaway. The
+short-circuit current behind that torque is about **40–48 A** from the ceiling speed: 17–20 V of back-EMF
+into ≈ 0.43 Ω. That figure is DERIVED from the measured R and has not been measured, because the shunt
+cannot see it (§3.1).
+
+**The graded short sits between the two.** The driver can short the phases for a set percentage of each
+10 ms period (`BRAKE_PCT`). LEFT, 80 × 10⁶, fault to rest:
+
+| Brake % | coast | 10 | 25 | 50 | 100 |
+|---|---|---|---|---|---|
+| ms to rest | 518 | 282 | 84 | 16 | 10 |
+| ticks to rest | 52 | 22 | 7 | 2 | 1 |
+
+MEASURED — `VISIT-10-DUALFAULT-T0-EVALUATION.md` §3; reproduced within 3 ticks at pass 4, and the RIGHT
+certified it at pass 5. It is strictly monotone, and **not linear**. Taken as braking added over the
+coast's drag, 10 %, 25 % and 50 % add about 0.8×, 5× and 30× that drag, where a linear brake would give
+1 : 2.5 : 5. Each short slice ends before the winding current has fully built (§2.4). The driver's
+default is 10 %. It is the gentlest step measured, and it still stops in about half the coast's time
+with about 28× less deceleration than the full short.
+
+**A controlled stop is possible after a lost-control fault.** With the halls still legal, the driver can
+re-seed its field from the halls and ramp down at the configured deceleration. From 80 × 10⁶ the LEFT
+unit reaches rest in 821–837 ms and 88 ticks, and the RIGHT in 817 ms, against 836 ms predicted by the ramp. A second fault during that
+ramp falls back to the graded short (or to a coast in float mode), and the fallback holds. MEASURED —
+`VISIT-10-PASS2-EVALUATION.md` §3.3, `VISIT-10-PASS5-EVALUATION.md` §2.
+
+This is `FR_GRADED`. The shipped default is still `FR_SHIPPED`, which coasts or shorts at once by stop
+mode. Whether `FR_GRADED` becomes the default is an open ruling, not a measurement gap. On a
+two-wheel platform, a fault on one wheel now stops the other (both units, pass 5).
+
+**At rest, the stop states are distinct at the wheel.** On the RIGHT unit, a hand spin gives:
+
+- coast: 12–14 ticks through the measuring band;
+- e-stop short: 0;
+- fault-coast: 13–14;
+- fault-short: 1–3;
+- a stopped cog, the free reference: 13–14.
+
+MEASURED — `VISIT-10-PASS3-T0-DUALSTART-EVALUATION.md` §3, `VISIT-10-DUALFAULT-T0-EVALUATION.md` §5.
+
+**The hold** (`holdAtStop(TRUE)`) is a load-following hold, not a static short. While the wheel is pushed
+off its rest position, duty rises from its floor to a ceiling of 10 % of `duty_max`. It gets there in
+the configured 250 ms (measured 249–250), and it never falls back within that rest. At the ceiling the
+RIGHT unit draws about **0.26–0.27 A** of DC-link current. A firm hand push makes it give way (a slip).
+After its limit time at the ceiling it hands off to the phase short. MEASURED wheels up, by hand. **That
+sizes nothing for a slope** (§9, H-6).
+
+**A wheel commanded but not turning** is caught by the blocked-rotor stop about 1 s in, in the user's
+stop mode. MEASURED — `VISIT-10-DUALFAULT-T0-EVALUATION.md` §4.
+
+### 6.6 What the driver can prove about the motor at start
+
+At start the driver now checks the motor and refuses to start (`ERR_START_CHECK_FAILED`, after 3
+retries) when a check fails. Wheels up, both Rev B units:
+
+| Check | Healthy reading | What a failure looked like | Label |
+|---|---|---|---|
+| Current-sense rest zero | LEFT 6.4–9.4 mV, RIGHT −0.3–3.1 mV; the band is −20…+40 mV | — | MEASURED, 60+ starts |
+| Each lead drives its phase (probe) | driven phase 777–823 mV, undriven phases follow at ≥ 95 % | a withheld lead ≤ 31 mV; a bridge not driving, 11–27 mV on all three | MEASURED |
+| Halls present and legal | legal at every start | connector unplugged: `%111`, caught 10/10 | MEASURED |
+| Winding resistance (opt-in) | §2.4 | the withheld lead's two pairs go dark, 10/10 | MEASURED |
+| Wiring walk, one electrical cycle each way (opt-in, moves the wheel) | legs of 7 ticks out and back, 13–21 mV peak | swapped hall pair (made in firmware): fails 3/3 | MEASURED |
+
+MEASURED — `VISIT-10-PASS2-EVALUATION.md` §3.1–3.2, `VISIT-10-PASS3-T0-DUALSTART-EVALUATION.md` §2,
+`VISIT-10-PASS4-EVALUATION.md` §5–6, `VISIT-10-PASS5-EVALUATION.md` §5.
+
+⚠ **A miswired walk with no guard drew a ~26 A peak** (3,858 mV). The walk now ends a leg at 150 mV net
+(about 1 A), and a miswired walk peaks right at that trip. The wiring walk's false failures on healthy
+wheels had one cause, found at pass 5: the platform path limiter was acting inside the walk. The fix is
+built and certifies at pass 6.
+
+**A start check cannot see what happens later in a run.** The right unit passed its start check and then
+stopped delivering phase voltage mid-run (§9, H-16).
+
 ---
 
 ## 7 · Current and power
@@ -547,15 +688,17 @@ Every trace here was taken wheels-up. How a start behaves under load is §9, hol
 
 | | Status |
 |---|---|
-| Total bridge current | **MEASURED**, calibrated, 150 mV/A on Rev B |
+| Total bridge current (DC link) | **MEASURED**, calibrated, 150 mV/A on Rev B |
 | Per-phase voltages | **MEASURED**, carried separately since fmt 11 |
-| Bus voltage | ⛔ **NOT MEASURED — assumed from the configured `DRIVE_VOLTAGE`** |
+| Winding resistance | **MEASURED** by the driver at start, ±6 % per reading (§2.4) |
+| Bus voltage | ⛔ **NOT MEASURED — assumed from the configured `DRIVE_VOLTAGE`**. The driver can now read an optional external pack sensor (`getPackVoltage()`); none is fitted on this rig yet (§9, H-8) |
+| A phase short's current | ⛔ **not visible** — it never crosses the shunt (§3.1, PL-118) |
 | Motor or board temperature | ⛔ not measured |
 | Regenerative current | ⛔ **not visible** — the shunt is low-side, so regen drives the sense node below ground, and Rev B's amplifier is a one-direction part with no reference pin (§9, H-7) |
 
 ⚠ **Every power figure in this manual is a current measurement against an assumed voltage.**
-There is no battery-voltage feedback anywhere in the system. A sagging pack looks identical to a
-healthy one.
+Until a pack sensor is fitted, nothing in the system feeds back battery voltage. A sagging pack looks
+identical to a healthy one.
 
 ### 7.2 Protection limits
 
@@ -566,9 +709,11 @@ healthy one.
 | Peak restored below | 80% of continuous | design |
 | Averaging window | ~1 s | design |
 | Fault (field outruns rotor) | 175.8° electrical | source |
-| Blocked-rotor detection | ~1 s at the lag limit with no hall tick | source |
+| Blocked-rotor detection | ~1 s at the lag limit with no hall tick; stops in the user's stop mode | source; MEASURED firing at about 1 s (§6.5) |
 
-These protect the board, not the motor, and they are not user settings.
+These protect the board, not the motor, and they are not user settings. None of them can limit the
+current of a phase short, which the shunt cannot see (§3.1). A short is limited only by the winding
+resistance, or by the graded short's duty (§6.5).
 
 ### 7.3 Current in normal running
 
@@ -653,10 +798,18 @@ Everything here follows from §§4–7 and cites the section it comes from.
 7. **A start from rest is quiet on this drive.** Its current peaks at about 1.2–1.5× the settled
    value (§6.4). A faster ramp draws more because it accelerates harder, not because it surges.
 8. **Size the supply for acceleration and for speed changes**, not for a start surge (§6.4, §7.5).
+9. **Choose the stop mode for your platform, not for the wheel.** A short from speed stops the wheel
+   in a tick or two. Behind a tall platform, that is a 40–48 A braking pulse nothing on the board can
+   limit, and a tip-over risk. A coast rolls, and on a slope runs away. The graded short and the
+   re-synced ramp (`FR_GRADED`) sit between them (§6.5).
+10. **The hold resists a push; it is not yet shown to hold a slope** (§6.5, H-6).
+11. **Let the start checks run.** They catch an unplugged hall connector, a dead lead and a bridge that
+    will not drive, before the wheel is commanded (§6.6). The wiring walk moves the wheel about 4 cm,
+    so run it wheels up or with room to move.
 
 **Two-wheel platforms**
 
-9. **The two motors face opposite directions**, so one wheel's forward is the other's reverse.
+12. **The two motors face opposite directions**, so one wheel's forward is the other's reverse.
    That makes direction symmetry a two-wheel concern, not a nicety. Aligned, the two directions
    cost the same current to within a few percent (§7.3), so driving in a straight line loads both
    wheels almost equally. An alignment that is symmetric about zero rather than about Z costs one
@@ -664,9 +817,10 @@ Everything here follows from §§4–7 and cites the section it comes from.
 
 **Measurement**
 
-10. **Use Rev B boards for anything where current matters.** 150 mV/A against 5 mV/A is a 30×
-    resolution difference (§3.1).
-11. **Do not infer bus voltage from anything.** It is not measured (§7.1).
+13. **Use Rev B boards for anything where current matters.** 150 mV/A against 5 mV/A is a 30×
+    resolution difference (§3.1). On Rev A the winding check drives nothing, by design.
+14. **Do not infer bus voltage from anything on the board.** It is not measured (§7.1). Fit the
+    optional pack sensor if the voltage matters to you.
 
 ---
 
@@ -684,14 +838,23 @@ Each hole names why it matters and what would settle it. States: **OPEN** ·
 | **H-4** | **Is the adopted alignment the global optimum?** About 35% of the electrical cycle has been swept (§4.4); one minimum per direction lies inside it. Theory says there should be only one, but that is an argument. | **OPEN** |
 | | *What would settle it:* a full-cycle sweep, which needs a method that does not drive the motor into the current wall to get there. The offset sweep cannot do it, since the walls are what bound it. | |
 | **H-5** | **The optimum at the half rung.** **3–8°**, flat to within 1–3 % across that range on both motors, with the table at 8° (§5.2). The current drive's reachable arc contains it (§6.2). | **FILLED** |
-| **H-6** | **Behaviour under load.** Every number in this manual was taken wheels-up. Not yet measured: how a start behaves under load (§6.4), how much of the ceiling's 7 % duty reserve a load leaves (§6.1), and whether the lead table's saving holds under load (§5.2). | **OPEN** |
-| | *What would settle it:* the tethered, loaded floor run. It is planned, and it waits on the attended display panel it needs. | |
+| **H-6** | **Behaviour under load.** Every number in this manual was taken wheels-up. Not yet measured: how a start behaves under load (§6.4), how much of the ceiling's 7 % duty reserve a load leaves (§6.1), whether the lead table's saving holds under load (§5.2), whether the hold's 10 % ceiling keeps a platform from creeping on an incline (§6.5), and what any stop from speed does to a platform rather than a lifted wheel (§6.5). | **OPEN** |
+| | *What would settle it:* the tethered, loaded floor run, with its creep-on-incline cell (Visit 6b, «#3576»). The display panel it needed is certified and the floor run is built. It is scheduled after Visit 10. | |
 | **H-7** | **Can the board see regeneration?** No. The shunt is low-side, so regeneration drives the sense node below ground. Rev B's INA180 is the one-direction member of its family, with no reference pin (the vendor names the INA181 as the version that measures both directions), so a reversed current reads as zero. Rev A feeds the node to the ADC with no offset and almost certainly cannot see it either. ASSUMED (vendor, TI's INA180 product page); not measured. | **FILLED** |
-| **H-8** | **Bus voltage.** Never measured (§7.1); every power figure rests on the configured nominal. The board has no voltage channel, and the external front end that would add one is outside the current work. | **CLOSED-UNANSWERABLE** on this rig |
+| **H-8** | **Bus voltage.** Never measured (§7.1); every power figure, and the winding resistance (§2.4), rests on the configured nominal 18.5 V. The board has no voltage channel. *Reopened 2026-09-26:* the driver now reads an optional external 5S divider on a spare ADC pin (`getPackVoltage()`, `VOLTAGE-SENSOR.md`). The mean phase voltage while switching was a candidate proxy, but it is unconfirmed (PL-60) and only works while driving. | **OPEN** |
+| | *What would settle it:* the sensor unit fitted, then one calibrating meter reading at the pack, then a check at a second pack voltage («#3611»). The winding check then reads the measured voltage instead of the nominal. | |
 | **H-9** | **Per-direction speed ceilings.** The same in both directions. Duty first caps between 175 and 185 × 10⁶ on all four wheel-directions, and the ceiling is chosen below that (§6.3). The one difference is above the knee: RIGHT forward loses its field-weakened synchronism between 235 and 245 × 10⁶, and the other three hold 245 × 10⁶. No fault edge was reached, because 245 × 10⁶ was the highest command tried. | **FILLED** |
 | **H-10** | **Whether the drive knows it is following.** Yes. The driver's own reading of measured rate against commanded rate agrees with an independent hall count with a gap of 0 points over 75 rungs, and also when the wheel falls short to 2–4 % of its command. The falling case was shown on three of the four wheel-directions; RIGHT forward's step did not run. MEASURED — `VISIT-9B-EVALUATION.md` §3. | **FILLED** |
-| **H-11** | **Unit-to-unit variation.** Every measurement in this manual comes from the **two** units on the Rev B platform. Measured cold, Z agrees within 0.06° between them — encouraging, and not a population. **Four units of this motor exist**: two on the Rev B platform and two on a Rev A platform. | **OPEN** |
+| **H-11** | **Unit-to-unit variation.** Every measurement in this manual comes from the **two** units on the Rev B platform. Measured cold, Z agrees within 0.06° between them. Their winding resistances agree within 5 % (§2.4). Encouraging, and not a population. **Four units of this motor exist**: two on the Rev B platform and two on a Rev A platform. | **OPEN** |
 | | *What would settle it:* the other two units. They divide into two measurements with very different prerequisites — see §9.1. | |
+| **H-12** | **Winding resistance.** ≈ 0.43 Ω phase to phase on both units, measured by the driver at start with an exact negative control (§2.4). The limits: ±6 % per reading, and a nominal rather than a measured voltage (H-8). | **FILLED** |
+| **H-13** | **Winding inductance, and so L/R.** Only bounded: the graded short's sub-linear braking says L/R is not much shorter than a few ms (§2.4, §6.5). It sets how finely a graded short can be sliced, and how a current pulse rises. | **OPEN** |
+| | *What would settle it:* a sub-frame read of the DC-link current's rise during a drive pulse (the ADC's bitstream-capture or scope mode, the startup study's B-4). It is not built. An LCR meter across two leads would give it at once, off the driver. | |
+| **H-14** | **A phase short's current, and the braking torque behind it.** About 40–48 A from the ceiling speed, DERIVED from the measured R (§6.5). The shunt cannot carry it (§3.1, PL-118), so this board can never measure it. | **CLOSED-UNANSWERABLE** on this board |
+| **H-15** | **Can back-EMF be read while the motor is driven?** It is read cleanly while coasting, both cold by hand (§4.6) and from speed after a fault (both units). While driving, every ADC reading averages a whole PWM frame, so today the drive senses back-EMF 0 % of the time. This decides whether back-EMF can become a position source when the halls are lost. | **OPEN** |
+| | *What would settle it:* releasing the bridge for about ten frames at a few speeds and capturing the phase pins in the ADC's scope mode. That is the first measurement of the back-EMF delta release («#3602»), deferred until after 6.0.0. | |
+| **H-16** | **The RIGHT unit's intermittent loss of drive (PL-120).** Six times between 2026-09-23 and 09-25 the right wheel has stopped raising any phase voltage. It happened at the first drive of a load and also mid-run, and it once outlasted a program reload. Its halls read legal throughout. The one time recovery was timed, it cleared within about 100 s without a reload. The lead probe shows **no high side raising its phase**. The same board and wheel drive normally in between (fault cells certified at pass 5). The LEFT unit has never done it. **Not a motor property until shown to be one.** Candidates: a weak connection on the right motor, which Stephen found; the gate-pin windows of PL-138, fixed in the driver on 2026-09-26, with low confidence that it is the cause; or a board-held state. | **OPEN** |
+| | *What would settle it:* Visit 10 pass 6, after Stephen re-checks the right motor's connections. A pass with no event is read against that reseat, never as proof that the driver fix cured it. If it recurs, the refused start's per-phase probe readings (`BM-RPROBE`) say which leads failed. | |
 
 ### 9.1 · What the Rev A pair can contribute, and when
 
@@ -712,6 +875,12 @@ channels identically on both boards. Whether the two **boards** present phase vo
 same scale is not addressed by the vendor comparison in `BOARD-REVISION-FACTS.md`, which covers
 the current sense and the gate driver and is silent on phase sensing. Confirm it before trusting
 a Rev A phase reading, or the first Rev A leg is measuring the board.
+
+**Winding resistance will not come from the driver on Rev A.** At 5 mV/A a 0.1 A probe current is half
+a millivolt, so the winding check deliberately drives nothing on a Rev A board. A meter across each lead
+pair of the unpowered motor is the route there. It would also be the first check of §2.4's Rev B figure
+by an instrument that is not the driver. The start check's current rest-zero band is likewise sized
+only for Rev B (−20…+40 mV); Rev A keeps the wide provisional −100…+200 mV until one is measured.
 
 **L — the lead — needs the motor driven, and that is the part that costs more.** Two reasons,
 both real:
@@ -742,6 +911,15 @@ depends on which board it is.** That is §1.3's attribution showing up as a sche
 
 | Source | What it supplies |
 |---|---|
+| `DOCs/analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md` | the RIGHT unit's fault responses certified; start refusal on a real dead bridge; PL-120 outlasting a reload; winding R second sample |
+| `DOCs/analyses/bench/2026-09-25/VISIT-10-PASS4-EVALUATION.md` | winding resistance and its negative, both units; the left fault chain reproduced; PL-120's no-motion signature |
+| `DOCs/analyses/bench/2026-09-25/VISIT-10-DUALFAULT-T0-EVALUATION.md` | the graded short's braking chain and the L/R bound; the hold's rise; the blocked-rotor stop at ~1 s; the stop states at rest |
+| `DOCs/analyses/bench/2026-09-24/VISIT-10-PASS3-T0-DUALSTART-EVALUATION.md` | the stop states at the wheel; the hold's current at its ceiling; the walk guard's healthy peaks |
+| `DOCs/analyses/bench/2026-09-24/VISIT-10-PASS3-RERUN-EVALUATION.md` | the fault fallback; the walk guard against a crossed walk; the Rev B rest-zero band |
+| `DOCs/analyses/bench/2026-09-23/VISIT-10-PASS2-EVALUATION.md` | coast against short from speed; the re-synced stop; back-EMF while coasting; the start checks and their negatives; the unguarded crossed walk's 26 A |
+| `DOCs/analyses/bench/2026-09-23/VISIT-10-PASS1-EVALUATION.md`, `PL-120-SPIN-EVALUATION.md` | the first PL-120 event, and the right unit driving normally outside it |
+| `DOCs/analyses/FAULT-STRATA-STUDY-2026-09-23.md`, `STARTUP-SELFTEST-STUDY-2026-09-23.md` | what the driver can still read at a fault, and what start can prove about the motor |
+| `DOCs/PUNCH-LIST.md` PL-60, PL-118, PL-120, PL-138 | the bus-voltage proxy, the shunt's blindness to a short, the right unit's loss of drive, the gate-pin windows |
 | `DOCs/analyses/bench/2026-09-23/VISIT-9B-EVALUATION.md` | the ceiling and floor held through the public API; the driver's following reading, holding and falling; RIGHT forward's slip |
 | `DOCs/analyses/bench/2026-09-23/VISIT-9-EVALUATION.md` | the speed ceiling, the floor, the clip-free duty ceiling, field weakening above the knee, ramps, direction symmetry on the current drive |
 | `DOCs/analyses/bench/2026-09-22/VISIT-8B-EVALUATION.md` | the lead table confirmed; cruise current against the earlier drive; the top of the range freed; speed-change kicks |
@@ -769,3 +947,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 | 2026-09-22 | §4.6 (how back-EMF locates the magnets) and §4.7 (what differs from unit to unit, including hall lag) added, drawn from the board designer's questions. |
 | 2026-09-22 | §6.4's open question is answered by a desk model: the hunting is a gain-against-stiffness limit cycle, shown at constant low speed as well as at starts. The band and the gain asymmetry are no longer suspects. The bench certification is pending. |
 | 2026-09-23 | Brought to the current drive: the feedforward-and-trim servo holding 67.5° (§3.2–3.4), the lead table that follows speed (§5), the 165 × 10⁶ ceiling, the 100,000 floor, the clip-free duty ceiling and field weakening above the knee (§6.1–6.3), the quiet start (§6.4), and cruise current, direction symmetry and speed-change kicks (§7.3, §7.5). §8 rewritten to match. Section 9: H-1, H-5, H-7, H-9 and H-10 FILLED; H-8 CLOSED-UNANSWERABLE; H-6 widened to cover everything under load; H-2 gains the new speed points. §9.1: the current limit has landed. |
+| 2026-09-26 | Brought up to Visit 10 passes 1–5. §2.4 adds the winding resistance, measured by the driver (≈ 0.43 Ω, both units within 5 %), and §3.1 adds the sense channels and the shunt's blindness to a phase short (PL-118). §4.6 adds back-EMF seen while coasting from speed. New §6.5 covers stopping, faulting and holding: coast against short, the graded short, the re-synced ramp and the hold. New §6.6 covers what start proves about the motor. §7.1–7.2 updated, and §8 gains stop-mode, hold and start-check advice. Section 9: H-6 widened to the hold and stops under load; H-8 reopened by the pack sensor; H-11 gains R; H-12 FILLED; H-13 (inductance), H-15 (back-EMF while driven) and H-16 (the right unit's loss of drive) OPEN; H-14 CLOSED-UNANSWERABLE. §9.1 adds what Rev A cannot measure. |
