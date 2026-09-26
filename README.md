@@ -111,8 +111,9 @@ command reporting its result.
 - getEvent() and getEventTotal() report what the drive handled on its own:
   stops, faults, current limiting, hall-sensor trouble and more; every cog
   reads every event, and events lost to a full log are reported, not dropped
-- setFaultResponse() chooses what a motor does on a fault: stop at once (the
-  default), or re-sync and stop along the ramp down
+- setFaultResponse() chooses what a motor does on a fault: re-sync from the
+  hall sensors and stop along the ramp down (the default, FR_GRADED), or stop
+  at once (FR_SHIPPED)
 - setHoldLimits() tunes the hold at rest; its defaults were sized with the
   wheels unloaded
 - getPackVoltage() reads the battery pack from an optional voltage sensor
