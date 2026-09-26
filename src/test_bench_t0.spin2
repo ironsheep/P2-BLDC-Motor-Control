@@ -190,6 +190,14 @@
 ''               one start of the right every T0_25_REC_GAP_MS (10 s) for up to T0_25_REC_MAX_MS (3 min), each printed
 ''               T0-25,recover (try, ms since the refusal) with its T0-25,refused or T0-25,health and rprobe lines, then
 ''               T0-25,recovered (ms, or NA). The tier runs up to about 3 minutes longer only when the right is refused.
+''               26 Sep 2026 -- SRC_REV 21 (PL-151, T0 half): two API promises with no cell gain one, each able to FAIL, run
+''               after R20-T0-EV-2COG so the seven legs' EV-STOP read and EV-TOTAL's 27 are untouched. R20-T0-ROTSTOP:
+''               stopAfterRotation(T0_25_ROT_TURNS, DRU_ROTATIONS) from a reset tracking, then the drive, reads SR_AT_LIMIT
+''               at rest within T0_25_ROT_TOL_TICKS of the limit; NEGATIVE, the same drive with nothing armed does not stop
+''               by itself in that window plus T0_25_ROT_NEG_EXTRA_MS and runs past the limit (records T0-25,rotstop and
+''               T0-25,rotstop_neg). R20-T0-ESTOPSTATUS: getStatus() at rest is not DS_ESTOP, reads DS_ESTOP after
+''               emergencyCutoff() and not after clearEmergency() (record T0-25,estopstatus). A start that does not
+''               come up leaves both NOMEAS, as the other eight.
 ''
 '' =================================================================================================
 
@@ -298,7 +306,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 20                                          ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 21                                         ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -374,6 +382,22 @@ CON { stop reasons and the event log (T0-25, -D T0_STOPREASON only; task 3621, D
     T0_25_DRAIN_MAX     = 40                                    ' bound on one drain: EV_QUEUE_DEPTH + EV_LOST + what arrives meanwhile
     T0_25_REC_GAP_MS    = 10_000                                ' PL-120: after a refused RIGHT, one start of it every this often...
     T0_25_REC_MAX_MS    = 180_000                               ' ...until it starts or this long after the refusal
+
+' PL-151 (SRC_REV 21): R20-T0-ROTSTOP and R20-T0-ESTOPSTATUS, run after the eight cells above (t0rRotStop(),
+'  t0rEstopStatus()), so their stops fall after EV-STOP's read and after EV-TOTAL's count.
+    T0_25_ROT_TURNS     = 1                                     ' ROTSTOP: stopAfterRotation(1, DRU_ROTATIONS) -- 90 ticks on the 6.5" wheel
+    T0_25_ROT_WAIT_MS   = 10_000                                ' bound on the limit firing: 90 ticks at power 15 (~59 ticks/s,
+                                                                '  isp_bldc_motor's 49 at an eighth and 98 at a quarter) is ~1.5 s + the ramp
+    T0_25_ROT_NEG_EXTRA_MS = 1_000                              ' the negative drives the positive's fire time plus this: ~59 more
+                                                                '  ticks, so a wheel nothing stopped is well past the limit
+  ' ROTSTOP's tolerance on the tracked ticks at rest against the limit, +/- this. DERIVED from the stop's own logic
+  '  (isp_bldc_motor bFrontLimitsDue()): the stop is written in the first 1 ms front pass where
+  '  posTrkHallTicks + frontStopTicks() >= the limit. frontStopTicks() models the FIELD's ramp-down and floors
+  '  (muldiv64 of incr >> 9), and the rotor follows the field, not exactly; the library states the result as "at rest
+  '  at the limit (within about two hall ticks)" (stopAfterRotation()'s doc) -- 2 ticks. Plus one hall tick:
+  '  posTrkHallTicks counts whole ticks, so the crossing is seen up to one tick late -- 3 in all, either side. At
+  '  ~59 ticks/s a 1 ms pass carries ~0.06 ticks, so the pass cadence adds nothing further.
+    T0_25_ROT_TOL_TICKS = 3
 
   ' T0-25's seven stop legs, run in this order (t0rLeg()); each reads getStopReason() as its drive opens, after its stop,
   '  and once more after the leg's own later act:
@@ -919,6 +943,12 @@ sCritEvStop     BYTE    "SEVEN_STOPS_IN_ORDER", 0
 sCritEvLost     BYTE    "LOST_FIRST_THEN_16", 0
 sCritEvTotal    BYTE    "TOTAL_COUNTS_LOST", 0
 sCritEv2Cog     BYTE    "EACH_COG_READS_ALL", 0
+' PL-151 (SRC_REV 21): the T0 half of its regression tier; the dispatch named no todo-mcp task, so the PL id stands in
+sTaskPl151      BYTE    "PL-151", 0
+sCellRotStop    BYTE    "R20-T0-ROTSTOP", 0                     ' T0-25: stopAfterRotation() rests at its limit, SR_AT_LIMIT
+sCellEstopStat  BYTE    "R20-T0-ESTOPSTATUS", 0                 ' ...getStatus() reads DS_ESTOP only while emergency-stopped
+sCritRotStop    BYTE    "RESTS_AT_LIMIT_NOT_UNARMED", 0
+sCritEstopStat  BYTE    "ESTOP_ONLY_WHILE_LATCHED", 0
 
 DAT { T0-12 hand-copy of the driver's hall-position-delta table (PL-39) }
 
@@ -2641,6 +2671,14 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
 '   R20-T0-EV-TOTAL     - getEventTotal(EV_STOP) is 27 (7 + 20); one that counts only what was read (23) fails
 '   R20-T0-EV-2COG      - a helper cog and cog 0 each read the same T0_25_COG_CYCLES stops; a shared cursor gives
 '                          one of them fewer, which fails
+'   R20-T0-ROTSTOP      - (PL-151, after the cells above) stopAfterRotation(T0_25_ROT_TURNS, DRU_ROTATIONS) arms the
+'                          library's own ticks for it, and the drive rests within T0_25_ROT_TOL_TICKS of them reading
+'                          SR_AT_LIMIT; NEGATIVE: the same drive with nothing armed is still open (SR_NONE) that long
+'                          plus T0_25_ROT_NEG_EXTRA_MS, and past the limit -- a limit that never fires, fires on time
+'                          alone, or stops a drive it was not armed for fails
+'   R20-T0-ESTOPSTATUS  - (PL-151) getStatus() at rest is a real state other than DS_ESTOP, DS_ESTOP after
+'                          emergencyCutoff(), and a real state other than DS_ESTOP after clearEmergency(); a getter that
+'                          never reads DS_ESTOP, or keeps reading it after the clear, fails
 ' A start that does not come up ready leaves every cell NOMEAS, and the start's getError() is printed. A RIGHT start its
 ' checks refuse (ERR_START_CHECK_FAILED: pass 5 saw PL-120 outlast a reload) is followed by one start of the LEFT wheel
 ' (T0_SECOND_BASE), so one dead bridge does not void the tier; the cells then name LEFT. The cells certify the reporting,
@@ -2661,6 +2699,8 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
     emitCellDecl(@sCellEvLost, @sTaskReporting)
     emitCellDecl(@sCellEvTotal, @sTaskReporting)
     emitCellDecl(@sCellEv2Cog, @sTaskReporting)
+    emitCellDecl(@sCellRotStop, @sTaskPl151)
+    emitCellDecl(@sCellEstopStat, @sTaskPl151)
     debug("T0-25,begin,wheel,RIGHT_P16,power,", udec_(T0_25_POWER), ",legs,", udec_(T0R_LEGS), ",cycles,", udec_(T0_25_CYCLES))
 
     benchLog.cogEventBegin()
@@ -2688,6 +2728,8 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
         t0rStopLegs()
         t0rEvLost()
         t0rTwoCog()
+        t0rRotStop()                                            ' PL-151: after EV-STOP's read and EV-TOTAL's count
+        t0rEstopStatus()
     else
         emitCellBool(@sCellSrCmd, @sTaskReporting, pT0rWheel, @sCritSrCmd, FALSE, FALSE, 0)
         emitCellBool(@sCellSrLimit, @sTaskReporting, pT0rWheel, @sCritSrLimit, FALSE, FALSE, 0)
@@ -2697,6 +2739,8 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
         emitCellBool(@sCellEvLost, @sTaskReporting, pT0rWheel, @sCritEvLost, FALSE, FALSE, 0)
         emitCellBool(@sCellEvTotal, @sTaskReporting, pT0rWheel, @sCritEvTotal, FALSE, FALSE, 0)
         emitCellBool(@sCellEv2Cog, @sTaskReporting, pT0rWheel, @sCritEv2Cog, FALSE, FALSE, 0)
+        emitCellBool(@sCellRotStop, @sTaskPl151, pT0rWheel, @sCritRotStop, FALSE, FALSE, 0)
+        emitCellBool(@sCellEstopStat, @sTaskPl151, pT0rWheel, @sCritEstopStat, FALSE, FALSE, 0)
     benchLog.cogEventBegin()
     motor.stop()
     motor.getError()                                            ' drain this cog's slot
@@ -2966,6 +3010,119 @@ PRI t0rTwoCog() | helperCog, startMs, bHelperReady, eErr, cycleIdx, nStops, nRea
         cogstop(helperCog)
     debug("T0-25,twocog,helper_cog,", sdec_(helperCog), ",ready,", zstr_(bHelperReady ? @"TRUE" : @"FALSE"), ",done,", zstr_(bHelperDone ? @"TRUE" : @"FALSE"), ",main_stops,", udec_(nStops), ",helper_stops,", udec_(t0rHelperStops), ",main_reads,", udec_(nRead), ",helper_reads,", udec_(t0rHelperReads), ",err,", sdec_(eErr))
     emitCellBool(@sCellEv2Cog, @sTaskReporting, pT0rWheel, @sCritEv2Cog, bHelperReady and bHelperDone, (eErr == motor.NO_ERROR) and (nStops == T0_25_COG_CYCLES) and (t0rHelperStops == T0_25_COG_CYCLES) and bEnded and (nLost == 0) and bT0rHelperClean, 2)
+
+PRI t0rRotStop() | ticsPerRot, wantTicks, eErr, armedTicks, startMs, fireMs, bFired, srStop, bRest, trkTicks, rotCount, bPass, negArmed, negMs, srNeg, negTicks, bNegRest, bNegPass
+' R20-T0-ROTSTOP (PL-151): from rest and a reset tracking, stopAfterRotation(T0_25_ROT_TURNS, DRU_ROTATIONS) is armed,
+' read back as the library's own hall ticks (testGetStopHallTicks()), then the wheel is driven at T0_25_POWER until
+' getStopReason() leaves SR_NONE, bounded by T0_25_ROT_WAIT_MS. PASS: every call took, the armed ticks are the turns
+' times the motor's ticks per rotation, the limit fired inside the bound, the reason is SR_AT_LIMIT, the driver rests,
+' and the tracked ticks at rest are within T0_25_ROT_TOL_TICKS of the armed ticks. NEGATIVE, in the same cell: from
+' rest and a reset tracking, with nothing armed (read back as 0), the same drive runs the positive's fire time plus
+' T0_25_ROT_NEG_EXTRA_MS (the full bound if the positive never fired); it must still be open (SR_NONE) and past the
+' limit by more than the tolerance, and is then stopped here with stopMotor(). Both stops are EV_STOP events that
+' nothing reads: this runs after EV-STOP's read and EV-TOTAL's count. Prints T0-25,rotstop and T0-25,rotstop_neg.
+'
+' @local ticsPerRot - the motor's hall ticks per rotation (hallTicInfoForMotor())
+' @local wantTicks - T0_25_ROT_TURNS rotations in hall ticks
+' @local eErr - the first non-zero call return of both legs, NO_ERROR when every one took
+' @local armedTicks - testGetStopHallTicks() just after the limit was armed
+' @local startMs - getms() when a leg's drive began
+' @local fireMs - ms from the positive's drive to its reason leaving SR_NONE
+' @local bFired - the positive's reason left SR_NONE inside T0_25_ROT_WAIT_MS
+' @local srStop - the positive's getStopReason() at rest
+' @local bRest - the positive's driver read DCS_STOPPED after the limit
+' @local trkTicks - getRotationCount(DRU_HALL_TICKS) at that rest
+' @local rotCount - getRotationCount(DRU_ROTATIONS) at that rest, printed only
+' @local bPass - the positive held
+' @local negArmed - testGetStopHallTicks() before the negative's drive: 0, nothing armed
+' @local negMs - how long the negative drove before its reason was read
+' @local srNeg - the negative's getStopReason() at the end of that window
+' @local negTicks - getRotationCount(DRU_HALL_TICKS) at that moment
+' @local bNegRest - the negative's driver read DCS_STOPPED after this cog's stopMotor()
+' @local bNegPass - the negative held
+
+    _, ticsPerRot := motor.hallTicInfoForMotor()
+    wantTicks := T0_25_ROT_TURNS * ticsPerRot
+    bT0rRest()
+    eErr := motor.resetTracking()
+    eErr := t0rFirstErr(eErr, motor.stopAfterRotation(T0_25_ROT_TURNS, motor.DRU_ROTATIONS))
+    armedTicks := motor.testGetStopHallTicks()
+    startMs := getms()
+    eErr := t0rFirstErr(eErr, motor.driveAtPower(T0_25_POWER))
+    repeat until (motor.getStopReason() <> motor.SR_NONE) or ((getms() - startMs) >= T0_25_ROT_WAIT_MS)
+        waitms(READY_POLL_MS)
+    fireMs := getms() - startMs
+    bFired := (motor.getStopReason() <> motor.SR_NONE)
+    if bFired == FALSE
+        motor.stopMotor()                                                       ' never fired: the harness ends the drive
+    bRest := bT0rRest()
+    srStop := motor.getStopReason()
+    trkTicks := motor.getRotationCount(motor.DRU_HALL_TICKS)
+    rotCount := motor.getRotationCount(motor.DRU_ROTATIONS)
+    bPass := (eErr == motor.NO_ERROR) and (armedTicks == wantTicks) and bFired and (srStop == motor.SR_AT_LIMIT) and bRest and (abs (trkTicks - armedTicks) <= T0_25_ROT_TOL_TICKS)
+    debug("T0-25,rotstop,turns,", udec_(T0_25_ROT_TURNS), ",want,", sdec_(wantTicks), ",armed,", sdec_(armedTicks), ",tol,", udec_(T0_25_ROT_TOL_TICKS), ",fired,", zstr_(bFired ? @"TRUE" : @"FALSE"), ",fire_ms,", udec_(fireMs), ",sr_stop,", udec_(srStop), ",rest,", zstr_(bRest ? @"TRUE" : @"FALSE"), ",trk,", sdec_(trkTicks), ",rot,", sdec_(rotCount), ",err,", sdec_(eErr))
+
+    eErr := t0rFirstErr(eErr, motor.resetTracking())
+    negArmed := motor.testGetStopHallTicks()
+    negMs := T0_25_ROT_WAIT_MS
+    if bFired
+        negMs := fireMs + T0_25_ROT_NEG_EXTRA_MS
+    startMs := getms()
+    eErr := t0rFirstErr(eErr, motor.driveAtPower(T0_25_POWER))
+    repeat until (motor.getStopReason() <> motor.SR_NONE) or ((getms() - startMs) >= negMs)
+        waitms(READY_POLL_MS)
+    negMs := getms() - startMs
+    srNeg := motor.getStopReason()
+    negTicks := motor.getRotationCount(motor.DRU_HALL_TICKS)
+    motor.stopMotor()
+    bNegRest := bT0rRest()
+    motor.getError()                                                            ' drain this cog's slot
+    bNegPass := (eErr == motor.NO_ERROR) and (negArmed == 0) and (srNeg == motor.SR_NONE) and (negTicks > armedTicks + T0_25_ROT_TOL_TICKS)
+    debug("T0-25,rotstop_neg,armed,", sdec_(negArmed), ",ms,", udec_(negMs), ",sr,", udec_(srNeg), ",trk,", sdec_(negTicks), ",rest,", zstr_(bNegRest ? @"TRUE" : @"FALSE"), ",err,", sdec_(eErr))
+    emitCellBool(@sCellRotStop, @sTaskPl151, pT0rWheel, @sCritRotStop, TRUE, bPass and bNegPass, 2)
+
+PRI t0rEstopStatus() | stBefore, stEstop, estopMs, eErr, stClear, clearMs
+' R20-T0-ESTOPSTATUS (PL-151): getStatus() read at rest, after emergencyCutoff() and after clearEmergency(). The e-stop
+' is applied AT REST, so it opens and ends no drive and records no EV_STOP; it runs last, after every event read. Each
+' read after a call waits, bounded by T0_25_REST_MS, for the driver to report the state the call asks for, since
+' getStatus() reads the driver's own state, which follows the front cog's write by a pass. PASS: the clear took, and
+' the at-rest and after-clear reads are real states (not DS_Unknown, so the driver is running) other than DS_ESTOP,
+' and the after-e-stop read is DS_ESTOP. Prints T0-25,estopstatus.
+'
+' @local stBefore - getStatus() at rest, before the e-stop
+' @local stEstop - getStatus() after emergencyCutoff(), once it reads DS_ESTOP or the bound passes
+' @local estopMs - ms that read waited
+' @local eErr - clearEmergency()'s return
+' @local stClear - getStatus() after clearEmergency(), once it leaves DS_ESTOP or the bound passes
+' @local clearMs - ms that read waited
+
+    bT0rRest()
+    stBefore := motor.getStatus()
+    motor.emergencyCutoff()
+    stEstop, estopMs := t0rAwaitStatus(motor.DS_ESTOP, TRUE)
+    eErr := motor.clearEmergency()
+    stClear, clearMs := t0rAwaitStatus(motor.DS_ESTOP, FALSE)
+    motor.getError()                                                            ' drain this cog's slot
+    debug("T0-25,estopstatus,before,", udec_(stBefore), ",estop,", udec_(stEstop), ",estop_ms,", udec_(estopMs), ",clear,", udec_(stClear), ",clear_ms,", udec_(clearMs), ",err,", sdec_(eErr))
+    emitCellBool(@sCellEstopStat, @sTaskPl151, pT0rWheel, @sCritEstopStat, TRUE, (eErr == motor.NO_ERROR) and (stBefore <> motor.DS_ESTOP) and (stBefore <> motor.DS_Unknown) and (stEstop == motor.DS_ESTOP) and (stClear <> motor.DS_ESTOP) and (stClear <> motor.DS_Unknown), 3)
+
+PRI t0rAwaitStatus(eStatus, bIs) : eRead, nMs | startMs
+' Wait, bounded by T0_25_REST_MS, for getStatus() to read eStatus (bIs TRUE) or anything else (bIs FALSE).
+'
+' @param eStatus - the DS_* waited on
+' @param bIs - TRUE to wait until getStatus() reads eStatus, FALSE until it reads anything else
+' @returns eRead - getStatus() when the wait ended
+' @returns nMs - ms the wait took
+'
+' @local startMs - getms() when the wait began
+
+    startMs := getms()
+    repeat
+        eRead := motor.getStatus()
+        if ((eRead == eStatus) == (bIs <> FALSE)) or ((getms() - startMs) >= T0_25_REST_MS)
+            quit
+        waitms(READY_POLL_MS)
+    nMs := getms() - startMs
 
 PRI t0rHelper() | eKind, nValue, bLost
 ' The helper reader cog of R20-T0-EV-2COG (its own cog; prints nothing). It reads the log to EV_NONE -- its cursor
