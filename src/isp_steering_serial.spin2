@@ -49,6 +49,12 @@ CON { command-names enum }
 #25, CMD_GET_STOP_RSN, CMD_GET_HEALTH, CMD_GET_EVENT, CMD_GET_EV_TOTAL
 #29, CMD_SET_FAULT_RESP, CMD_GET_FAULT_RESP, CMD_SET_HOLD_LIM, CMD_GET_HOLD_LIM
 #33, CMD_GET_ERROR
+#34, CMD_GET_PACK_VOLT, CMD_GET_CURRENT, CMD_GET_FAULT_CAUSE, CMD_GET_HOLD_STAT
+#38, CMD_GET_HALL_COUNTS, CMD_GET_HALL_ILLEGAL, CMD_CHECK_WIRING, CMD_SET_START_CHK
+
+CON { command loop }
+
+    IDLE_POLL_MS = 1        ' PL-154: with no command queued, the loop looks again after this long (was 1 s)
 
 DAT { command table }
 
@@ -86,6 +92,14 @@ DAT { command table }
     cmdSetHoldLim       BYTE    "setholdlimits",0
     cmdGetHoldLim       BYTE    "getholdlimits",0
     cmdGetError         BYTE    "geterror",0
+    cmdGetPackVolt      BYTE    "getpackvolt",0
+    cmdGetCurrent       BYTE    "getcurrent",0
+    cmdGetFaultCause    BYTE    "getfaultcause",0
+    cmdGetHoldStat      BYTE    "getholdstatus",0
+    cmdGetHallCounts    BYTE    "gethallcounts",0
+    cmdGetHallIllegal   BYTE    "gethallillegal",0
+    cmdCheckWiring      BYTE    "checkwiring",0
+    cmdSetStartChk      BYTE    "setstartchecks",0
 
     ' now describe cmd enum and # parms for each string
     cmdsFirst   long  @cmdDrvDir, CMD_DRV_DIR, 2
@@ -121,6 +135,14 @@ DAT { command table }
                 long  @cmdSetHoldLim, CMD_SET_HOLD_LIM, 3
                 long  @cmdGetHoldLim, CMD_GET_HOLD_LIM, 0
                 long  @cmdGetError, CMD_GET_ERROR, 0
+                long  @cmdGetPackVolt, CMD_GET_PACK_VOLT, 0
+                long  @cmdGetCurrent, CMD_GET_CURRENT, 0
+                long  @cmdGetFaultCause, CMD_GET_FAULT_CAUSE, 0
+                long  @cmdGetHoldStat, CMD_GET_HOLD_STAT, 0
+                long  @cmdGetHallCounts, CMD_GET_HALL_COUNTS, 0
+                long  @cmdGetHallIllegal, CMD_GET_HALL_ILLEGAL, 0
+                long  @cmdCheckWiring, CMD_CHECK_WIRING, 0
+                long  @cmdSetStartChk, CMD_SET_START_CHK, 1
     cmdLast
     ' calculate the number of entries in table
     cmdEntryCt long ((@cmdLast - @cmdsFirst) / 4) / 3
@@ -129,11 +151,15 @@ DAT { command table }
     msgWork             BYTE    0[256]     ' 256 bytes in which to format the outgoing message
 
 
-PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt, senseCog, eError, eLeftError, eRightError, bStartRefused
+PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt, senseCog, eError, eLeftError, eRightError
 '' DEMO Driving a two wheeled platform
 ''
-'' R20.1: when start()'s checks refuse the platform, the host link still opens, answering only gethealth and geterror
-'' (every other command is answered ERR_NOT_STARTED), so the host can learn why the motors did not start.
+'' R20.1: when start()'s checks refuse the platform, the host link still opens, answering only gethealth, geterror and
+'' setstartchecks (every other command is answered ERR_NOT_STARTED), so the host can learn why the motors did not start,
+'' and may start them anyway with setstartchecks 0 (PL-157).
+''
+'' PL-154: with no command waiting, the loop looks again every IDLE_POLL_MS (1 ms), so a command is handled about
+'' 1 ms after its line ends.
 ''
 
 ' Local Variables:
@@ -149,7 +175,6 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
 ' @local eError - this cog's collected steering error, after a failed start
 ' @local eLeftError - this cog's collected left-wheel error
 ' @local eRightError - this cog's collected right-wheel error
-' @local bStartRefused - T/F where T means start()'s checks refused the platform, so the host link answers only why
 
     debug("* Serial I/F to dual motor platform")
 
@@ -187,6 +212,14 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
     long[@cmdsFirst][30 * 3] := @cmdSetHoldLim
     long[@cmdsFirst][31 * 3] := @cmdGetHoldLim
     long[@cmdsFirst][32 * 3] := @cmdGetError
+    long[@cmdsFirst][33 * 3] := @cmdGetPackVolt
+    long[@cmdsFirst][34 * 3] := @cmdGetCurrent
+    long[@cmdsFirst][35 * 3] := @cmdGetFaultCause
+    long[@cmdsFirst][36 * 3] := @cmdGetHoldStat
+    long[@cmdsFirst][37 * 3] := @cmdGetHallCounts
+    long[@cmdsFirst][38 * 3] := @cmdGetHallIllegal
+    long[@cmdsFirst][39 * 3] := @cmdCheckWiring
+    long[@cmdsFirst][40 * 3] := @cmdSetStartChk
 
     ' validate user settings/choicess
     '  do NOT start motor unless all are legit!
@@ -199,6 +232,13 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
 
     if basePinLt <> wheels.INVALID_PIN_BASE and basePinRt <> wheels.INVALID_PIN_BASE and voltage <> wheels.INVALID_VOLTAGE and motor <> wheels.INVALID_MOTOR and detectModeLt <> wheels.INVALID_DET_MODE and detectModeRt <> wheels.INVALID_DET_MODE
         ' start our dual motor driver
+
+        ' kept for setstartchecks 0, which retries a start its checks refused
+        startPinLt := basePinLt
+        startPinRt := basePinRt
+        startVoltage := voltage
+        startDetectLt := detectModeLt
+        startDetectRt := detectModeRt
 
         ' start our motor drivers (left and right)
         senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
@@ -231,7 +271,9 @@ PUB main() | opStatus, pValues, basePinLt, basePinRt, voltage, motor, detectMode
                         else
                             processCommand(pValues)
                 else
-                    waitms(1000)    ' for 1 sec
+                    ' PL-154: an idle link is the normal state between a host's commands; look again soon, so a
+                    '  command (emercutoff included) is handled about IDLE_POLL_MS after its line ends
+                    waitms(IDLE_POLL_MS)
     else
         debug("* ERROR user configuration NOT valid!")
 
@@ -262,6 +304,16 @@ DAT { parse work variables }
     nHoldCeilPct    LONG    0
     nHoldRiseMs     LONG    0
     nHoldLimitMs    LONG    0
+    bRefuseChecks   LONG    0
+
+DAT { start state: setstartchecks 0 retries a start its checks refused with these }
+
+    bStartRefused   LONG    FALSE   ' T/F where T means start()'s checks refused the platform, so the host link answers only why
+    startPinLt      LONG    0       ' the validated left-motor base pin
+    startPinRt      LONG    0       ' the validated right-motor base pin
+    startVoltage    LONG    0       ' the validated drive voltage
+    startDetectLt   LONG    0       ' the validated left board detection mode
+    startDetectRt   LONG    0       ' the validated right board detection mode
 
 PRI processCommand(pValues) | eError, nOut1, nOut2, nOut3, nOut4, nOut5, nOut6
 ' F-7: every command calls the library first and replies from its status, so a request the library
@@ -656,6 +708,62 @@ PRI processCommand(pValues) | eError, nOut1, nOut2, nOut3, nOut4, nOut5, nOut6
             strFmt.sFormatStr3(@msgWork, @"err %d %d %d\n", nOut1, nOut2, nOut3)
             serialQueue.sendResponse(@msgWork)
 
+        CMD_GET_PACK_VOLT:
+            ' PL-157: the optional pack sensor's reading: PACK_* status and mV (0 unless PACK_PRESENT)
+            nOut1, nOut2 := wheels.getPackVoltage()
+            strFmt.sFormatStr2(@msgWork, @"packvolt %d %d\n", nOut1, nOut2)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_CURRENT:
+            ' PL-157: each motor's current (0.1 mA units) and power draw (mW), net of the rest zero
+            nOut1, nOut2, nOut3, nOut4 := wheels.getCurrent()
+            strFmt.sFormatStr4(@msgWork, @"current %d %d %d %d\n", nOut1, nOut2, nOut3, nOut4)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_FAULT_CAUSE:
+            ' PL-157: why each wheel's most recent fault since start happened, FC_*
+            nOut1, nOut2 := wheels.getFaultCause()
+            strFmt.sFormatStr2(@msgWork, @"faultcause %d %d\n", nOut1, nOut2)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_HOLD_STAT:
+            ' PL-157: each wheel's hold at rest, HS_*, and its signed displacement in hall ticks
+            nOut1, nOut2, nOut3, nOut4 := wheels.getHoldStatus()
+            strFmt.sFormatStr4(@msgWork, @"holdstatus %d %d %d %d\n", nOut1, nOut2, nOut3, nOut4)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_HALL_COUNTS:
+            ' PL-157: each motor's missed hall transitions and illegal hall codes since start
+            nOut1, nOut2, nOut3, nOut4 := wheels.getHallIntegrityCounts()
+            strFmt.sFormatStr4(@msgWork, @"hallcounts %d %d %d %d\n", nOut1, nOut2, nOut3, nOut4)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_GET_HALL_ILLEGAL:
+            ' PL-157: each motor's illegal hall codes split by kind: %000 entries, then %111 entries
+            nOut1, nOut2, nOut3, nOut4 := wheels.getHallIllegalCodes()
+            strFmt.sFormatStr4(@msgWork, @"hallillegal %d %d %d %d\n", nOut1, nOut2, nOut3, nOut4)
+            serialQueue.sendResponse(@msgWork)
+
+        CMD_CHECK_WIRING:
+            ' PL-157: turns the platform a few degrees in place and back (blocks about 0.5 s); the verdict is each
+            '  wheel's HLT_WIRING bit in gethealth. OK means the walk ran, whatever its verdict
+            eError := wheels.checkWiring()
+            replyWithStatus(pValues, eError)
+
+        CMD_SET_START_CHK:
+            ' get incoming parm values
+            bRefuseChecks := LONG[pValues][serialQueue.ENT_PARM1_IDX]
+            ' validate values
+            if not (bRefuseChecks == TRUE or bRefuseChecks == FALSE)
+                ' invalid, report so...
+                strFmt.sFormatStr1(@msgWork, @"StartChecks (%d) out of range [-1, 0] (T/F)", bRefuseChecks)
+                serialQueue.sendError(@msgWork)
+            elseif bStartRefused == FALSE
+                ' the motors started at power-up, before the host link opened: there is no start left to choose for
+                serialQueue.sendError(@"StartChecks apply only to a start its checks refused: the motors are running")
+            else
+                retryStart(pValues, bRefuseChecks)
+
         other:
             debug("ERROR bad ENUM for command:", udec_(cmdEnum))
 
@@ -708,16 +816,54 @@ PRI bStartChecksRefused() : bRefused | nLeftFailed, nRightFailed
     bRefused := ((nLeftFailed | nRightFailed) & wheels.HLT_ALL_CHECKS) <> 0
 
 PRI bSaysWhy(pValues) : bWhy | eCmd
-' Return TRUE for a command the host link answers after a refused start (R20.1): gethealth and geterror.
+' Return TRUE for a command the host link answers after a refused start (R20.1): gethealth, geterror and
+' setstartchecks (PL-157).
 '
 ' @param pValues - the parsed command entry
-' @returns bWhy - T/F where T means the command is gethealth or geterror
+' @returns bWhy - T/F where T means the command is gethealth, geterror or setstartchecks
 
 ' Local Variables:
 ' @local eCmd - the command's CMD_* enum
 
     eCmd := long[pValues][serialQueue.ENT_CMDENUM_IDX]
-    bWhy := (eCmd == CMD_GET_HEALTH) or (eCmd == CMD_GET_ERROR)
+    bWhy := (eCmd == CMD_GET_HEALTH) or (eCmd == CMD_GET_ERROR) or (eCmd == CMD_SET_START_CHK)
+
+PRI retryStart(pValues, bRefuse) | senseCog, eError, eLeftError, eRightError
+' Apply a host's setstartchecks after start()'s checks refused the platform (PL-157). TRUE keeps the refusal and replies
+' OK. FALSE starts the platform anyway, as setStartChecks(FALSE) before start() would have, and replies OK once it runs
+' (the link then answers every command), or an ERROR naming the code that stopped it. Nothing moves: start()'s checks
+' only probe. It blocks for the start, about 1 s, plus up to about 4 s per wheel whose check still fails.
+'
+' @param pValues - the parsed command entry, for the command's name
+' @param bRefuse - T/F where T means keep refusing a start whose checks fail, F means start anyway
+
+' Local Variables:
+' @local senseCog - the steering front cog's id (0-7), or -1 when the motors did not start
+' @local eError - this cog's collected steering error, after a failed start
+' @local eLeftError - this cog's collected left-wheel error
+' @local eRightError - this cog's collected right-wheel error
+
+    wheels.setStartChecks(bRefuse)
+    if bRefuse == TRUE
+        serialQueue.sendOK()
+    else
+        ' the refusal's errors have been the host's to read; this start records its own
+        wheels.getError()
+        senseCog := wheels.start(startPinLt, startPinRt, startVoltage, startDetectLt, startDetectRt)
+        if senseCog >= 0
+            bStartRefused := FALSE
+            debug("* motors started with the start checks' refusal off")
+            serialQueue.sendOK()
+        else
+            ' still not started: the link keeps answering only why
+            eError, eLeftError, eRightError := wheels.getError()
+            if eError == wheels.NO_ERROR
+                eError := (eLeftError <> wheels.NO_ERROR) ? eLeftError : eRightError
+            if eError == wheels.NO_ERROR
+                eError := wheels.ERR_NOT_STARTED
+            debug("* ERROR motors did not start: ", sdec_long(eError), sdec_long(eLeftError), sdec_long(eRightError))
+            strFmt.sFormatStr3(@msgWork, @"%s failed: %s (%d)", long[pValues][serialQueue.ENT_CMDSTR_IDX], errorName(eError), eError)
+            serialQueue.sendError(@msgWork)
 
 PRI replyNotStarted(pValues)
 ' Reply to a command the host link does not answer after a refused start (R20.1): an ERROR naming ERR_NOT_STARTED.

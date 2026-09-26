@@ -2486,9 +2486,11 @@ Each distance or rotation limit counts the travel from the point where it was ar
 
 **Found 2026-09-26** by the public-API audit (API-2, API-3 and API-10; API-2 and API-3 VERIFIED in source) and the
 serial certification build.
-- **API-2:** `pythonSrc/P2-BLDC-Motor-Control-Demo.py` `holdAtStop()` sends `hold False` / `hold True`
-  (~:406). `isp_queue_serial.spin2`'s `decimalForString` (~:415-437) does not check its digits, so the P2 rejects the
-  resulting number (`isp_steering_serial.spin2` ~:460 accepts only -1/0).
+- **API-2 — WITHDRAWN 2026-09-26, the premise was wrong.** The claim was that `holdAtStop()` sends `hold False` and
+  the P2 rejects it. In fact the parser matches `true`/`false` case-insensitively before the number path
+  (`isp_queue_serial.spin2` ~:798-800, `bStrHasLowCasePrefix`), so `hold False` always worked. The audit marked it
+  VERIFIED having read only the number path, and I relayed that to Stephen as verified. The build found it. The
+  wrapper now sends -1/0 anyway, which is harmless, and the words stay accepted as the documented form.
 - **API-3:** `isp_steering_serial.spin2` ~:233-234 runs `waitms(1000)` whenever its queue is empty, which is the normal
   state between a host's commands. Every command can wait up to 1 s, `emercutoff` and `stopmotors` included, and a
   `settimeout` under about 2 s cannot be kept alive.

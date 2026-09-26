@@ -27,6 +27,13 @@ Latest Changes:
 - protclear and getprot: release and read a protective stop (a blocked
   motor), which emerclear does not release
 - drivedist and stopaftdist accept DDU_KM (6) and DDU_MI (7)
+- Commands are handled about 1 ms after they arrive (an idle P2 used to
+  sleep up to 1 s between checks)
+- A value that is not a decimal integer is refused:
+  "ERROR Parameter {n} ({text}) is not a decimal integer"
+- New commands: getpackvolt, getcurrent, getfaultcause, getholdstatus,
+  gethallcounts, gethallillegal, checkwiring, setstartchecks
+- The Python demo sends hold as -1 / 0, and has a wrapper for every command
 04 May 2022 v2.0.0
 - Initial Public Release of Serial support
 ```
@@ -174,6 +181,17 @@ Send `getstatus`; the reply is `stat {left} {right}`, one number per wheel:
 
 A drive command that the P2 refuses tells you why in its reply, for example
 `ERROR drivepwr failed: ERR_EMERGENCY_STOPPED (-1016)`, so your code can read the reason instead of polling for it.
+Every form of `ERROR` reply is listed in [Commands and replies](DRIVE-OBJECTS-SERIAL.md#commands-and-replies).
+
+Send every value as a decimal integer, and send true and false as `-1` and `0`. The demo's wrappers do this for you.
+
+The P2 checks for a new command every 1 ms, so it answers within a few ms. The exceptions are `checkwiring`, which
+takes about half a second, and a restart with `setstartchecks 0`. The demo's own reply loop checks every 0.2 s. If you
+use `settimeout`, shorten that loop or send your drive commands well inside the timeout.
+
+The P2 never reports a command timeout by itself. After one, `getstopreason` reads 46 (SR\_LINK\_LOST) for each wheel
+and `geterror` reads -1019 (ERR\_COMMAND\_TIMEOUT). See
+[How your host learns of a command timeout](DRIVE-OBJECTS-SERIAL.md#how-your-host-learns-of-a-command-timeout).
 
 Have fun!
 

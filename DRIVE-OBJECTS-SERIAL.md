@@ -35,14 +35,43 @@ commandB
 OK
 ```
 
-**An ERROR reply comes in one of two forms:**
+**An ERROR reply comes in one of these forms.** In each case the command was not run.
 
-- **The value you sent was out of range**, so the command was never tried. The message names the value and its range, for example `ERROR Power (120) out of range [-100, 100]`.
-- **The drive refused the command.** The message names the command, the drive's error and its code, for example `ERROR drivepwr failed: ERR_EMERGENCY_STOPPED (-1016)`. The codes are listed in [Drive Objects: Errors](DRIVE-OBJECTS.md#errors).
+- **The line could not be read as a command.** These are checked first, in this order:
+  - `ERROR Unrecognized String`: the line held no command name (it was empty, or only spaces).
+  - `ERROR Command NOT found`: the first word is not one of the commands below.
+  - `ERROR Missing/Extra parameter(s)`: the command was sent with the wrong number of values.
+  - `ERROR Parameter {n} ({text}) is not a decimal integer`: value {n}, counting from 1, is not a number (see [Values sent as numbers](#values-sent-as-numbers)). For example `drivepwr 20 fast` is refused `ERROR Parameter 2 (fast) is not a decimal integer`.
+- **The value you sent was out of range.** The message names the value and its range. For example `drivepwr 120 0` is refused `ERROR LT-Power (120) out of range [-100, 100]`.
+- **The drive refused the command.** The message names the command, the drive's error and its code. For example `ERROR drivepwr failed: ERR_EMERGENCY_STOPPED (-1016)`. The codes are listed in [Drive Objects: Errors](DRIVE-OBJECTS.md#errors).
 
-An `OK` means the drive accepted the command. The non-OK responses help detect problems early in the development of your control routines; once your drive code is working you should see them only for out-of-range values, an emergency stop, or a protective stop.
+An `OK` means the drive accepted the command. The non-OK responses help detect problems early in the development of your control routines. Once your drive code is working you should see them only for out-of-range values, an emergency stop, or a protective stop.
+
+### How fast the P2 answers
+
+When no command is waiting, the serial top-level checks for a new one every 1 ms. A command is picked up about 1 ms after its line's LF arrives. Then it takes as long as the command itself:
+
+- A getter answers at once.
+- A command the drive applies waits for the drive's answer, which is bounded.
+- `checkwiring` takes about half a second.
+- `setstartchecks 0` takes a full start.
+
+At 624,000 baud each character takes 16 µs on the wire, so sending a command and its reply adds well under 1 ms. (Before 6.0 an idle P2 slept for up to 1 s between checks, so every command could wait that long.)
+
+The P2 sends nothing unasked. The only line it sends on its own is its `ident:` line at start. Every other line is a reply to a command.
+
+### How your host learns of a command timeout
+
+When `settimeout` is on and no drive command arrives in time, both motors stop. The P2 does not send a message to say so. Your host finds out by asking:
+
+- `getstopreason` reads `stopreason 46 46`: 46 is SR\_LINK\_LOST for each wheel.
+- `geterror` reads `err -1019 ...`: its first value is ERR\_COMMAND\_TIMEOUT. It is reported once, and reading it clears it.
+
+Send `geterror` before any command that might be refused. A refused command reads and clears the recorded errors to build its own `ERROR` reply, and that would take the -1019 with it.
 
 ### Values sent as numbers
+
+Every value you send is a decimal integer: the digits 0-9, with an optional leading minus (`-5`), between -2,147,483,647 and 2,147,483,647. Where a command takes true or false you may also send the words `true` and `false` (in any case). A `+` sign, a decimal point, hex (`0x20`) or any other character is refused with `ERROR Parameter {n} ({text}) is not a decimal integer`. Values are separated by spaces or tabs. A line ends with LF, and a CR before the LF is ignored.
 
 Units and status travel as the numbers of their enums:
 
@@ -53,15 +82,25 @@ Units and status travel as the numbers of their enums:
 | {t-u} time units | 1 DTU\_MILLISEC, 2 DTU\_SEC |
 | status (`stat` reply) | 10 DS\_Unknown, 11 DS\_MOVING, 12 DS\_HOLDING, 13 DS\_OFF, 14 DS\_FAULTED, 15 DS\_ESTOP |
 | hold {true \| false} | -1 true (hold), 0 false (coast) |
+| setstartchecks {true \| false} | -1 true (refuse a start whose checks fail), 0 false (start anyway) |
 | stop reason (`stopreason` reply) | 40 SR\_NONE, 41 SR\_COMMANDED, 42 SR\_AT\_LIMIT, 43 SR\_FAULT\_CONTROLLED, 44 SR\_FAULT\_LOST, 45 SR\_BLOCKED, 46 SR\_LINK\_LOST, 47 SR\_EMERGENCY, 48 SR\_PARTNER |
 | event kind (`event` reply, `getevtotal {kind}`) | 60 EV\_NONE, 61 EV\_LOST, 62 EV\_STOP, 63 EV\_FAULT\_RESYNC, 64 EV\_FAULT, 65 EV\_HOLD\_SLIP, 66 EV\_HOLD\_LIMIT, 67 EV\_CURRENT\_LIMIT, 68 EV\_PATH\_LIMIT, 69 EV\_HALL\_MISSED, 70 EV\_HALL\_ILLEGAL, 71 EV\_WALK\_GUARD, 72 EV\_LATE\_PASS, 73 EV\_PACK, 74 EV\_CHECK\_RETRY, 75 EV\_FOLDBACK |
 | event wheel (`event` reply) | 50 EVW\_LEFT, 51 EVW\_RIGHT, 52 EVW\_PLATFORM (the platform's own: EV\_LATE\_PASS, EV\_PACK); 0 with EV\_NONE |
 | fault response {mode} | 0 FR\_SHIPPED, 1 FR\_GRADED |
 | health bits (`health` reply) | 1 HLT\_HALLS, 2 HLT\_SENSE\_ZERO, 4 HLT\_PHASE\_U, 8 HLT\_PHASE\_V, 16 HLT\_PHASE\_W, 32 HLT\_WIRING, 64 HLT\_PACK -- each number is the sum of its bits |
+| pack sensor status (`packvolt` reply) | 0 PACK\_NOT\_FITTED, 1 PACK\_ABSENT, 2 PACK\_PRESENT |
+| fault cause (`faultcause` reply) | 0 FC\_NONE, 1 FC\_LAG, 2 FC\_HALL |
+| hold state (`holdstatus` reply) | 0 HS\_OFF, 1 HS\_HOLDING, 2 HS\_SLIPPED, 3 HS\_LIMITED |
 
-The stop reasons, event kinds and event wheels start at 40, 60 and 50, so none of them can be read as a status, a board revision or an error code. New values are only ever appended.
+The stop reasons, event kinds and event wheels start at 40, 60 and 50, so none of them can be read as a status, a board revision or an error code. The pack status, fault cause and hold state start at 0: read them only from their own replies. New values are only ever appended.
 
-**If the motors do not start because a start check failed**, the serial top-level still answers the host, but only two commands: `gethealth` (which check failed, on which wheel) and `geterror` (`ERR_START_CHECK_FAILED (-1020)` for the platform and for each failing wheel). Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A start that failed for any other reason opens no host link.
+**If the motors do not start because a start check failed**, the serial top-level still answers the host, but only three commands:
+
+- `gethealth` says which check failed, on which wheel.
+- `geterror` reads `ERR_START_CHECK_FAILED (-1020)` for the platform and for each failing wheel.
+- `setstartchecks 0` starts the motors anyway.
+
+Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A start that failed for any other reason opens no host link.
 
 ### The 2-Wheel Steering Object PUBLIC Interface
 
@@ -78,9 +117,11 @@ The stop reasons, event kinds and event wheels start at 40, 60 and 50, so none o
 | PUB emergencyCutoff()<BR><PRE>SER emercutoff<br>SER Returns: OK</PRE> | EMERGENCY-Stop - Immediately stop both motors, killing any motion that was still in progress. Drives are refused until `emerclear`.
 | PUB clearEmergency()<BR><PRE>SER emerclear<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Clear the emergency stop, allowing the motors to be controlled again
 | PUB clearProtectiveStop()<BR><PRE>SER protclear<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Acknowledge a protective stop: a motor commanded to move that did not turn for about a second stops both motors, and every drive is refused with `ERR_PLATFORM_BLOCKED (-2001)` until this. `emerclear` does not release it.
+| PUB checkWiring()<BR><PRE>SER checkwiring<br>SER Returns: OK \| ERROR {errormsg}</PRE> | **Moves the robot:** it turns the platform a few degrees in place and back, one electrical cycle each way per wheel, to prove each wheel's hall and phase wiring. Send it only when the robot may turn a little. It takes about half a second, and both wheels end at rest as `hold` chooses, with the position tracking reset. `OK` means the check ran, whatever its verdict. The verdict is each wheel's HLT\_WIRING bit (32) in `gethealth`: checked, and failed or not.
 |  **>--- CONFIG**
 | PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode)<BR><PRE>SER N/A</PRE> | Called by the serial top-level from your user configuration
 | PUB stop() <BR><PRE>SER N/A</PRE>| Stop cogs and release pins assigned to motor drivers
+| PUB setStartChecks(bRefuse)<BR><PRE>SER setstartchecks {true \| false}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Choose whether a start whose checks fail is refused. The serial top-level starts the motors at power-up, before your host is connected, so this is answered only **after its start checks refused the platform**. `setstartchecks 0` starts the motors anyway, and replies `OK` once they run: from then on every command is answered, and `gethealth` still says what failed. Nothing moves during the start, which takes about 1 s plus up to about 4 s for each wheel whose check still fails. If the start fails for another reason, the reply is `ERROR setstartchecks failed: {ERR_NAME} ({code})`. `setstartchecks -1` keeps the refusal. While the motors run the reply is `ERROR StartChecks apply only to a start its checks refused: the motors are running`.
 | PUB setAcceleration(rate)<BR><PRE>SER setaccel {rate}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Set how fast both wheels speed up, in mm/s² at the wheel rim [1 to 10,000]. Slowing down and stopping keep their own fixed rate.
 | PUB setMaxSpeed(speed)<BR><PRE>SER setspeed {speed}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Limit top-speed to {speed} where {speed} is  [1 to 100] - *DEFAULT is 75 and applies to both forward and reverse*
 | PUB setMaxSpeedForDistance(speed)<BR><PRE>SER setspeedfordist {speed}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Limit top-speed of driveForDistance() operations to {speed} where {speed} is [1 to 100] - *DEFAULT is 75 and applies to both forward and reverse*
@@ -104,6 +145,12 @@ The stop reasons, event kinds and event wheels start at 40, 60 and 50, so none o
 | PUB getHealth() : nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered <BR><PRE>SER gethealth<br>SER Returns: health {ltChk} {ltFail} {ltRecov} {rtChk} {rtFail} {rtRecov}</PRE>| Returns, for each wheel as health bits (see the table above), the checks start ran, the ones that failed, and the ones that failed at first and passed when retried. Answered even when the motors did not start.
 | PUB getError() : eError, eLeftError, eRightError <BR><PRE>SER geterror<br>SER Returns: err {code} {ltCode} {rtCode}</PRE>| Returns, and clears, the first error codes recorded for this link since it last asked: the platform's own, the left wheel's and the right wheel's, 0 when none. Answered even when the motors did not start. (A command the drive refuses reads and clears them for its own `ERROR` reply.)
 | PUB getDriveVoltage() : eVoltage, nMilliVolts <BR><PRE>SER getvoltage<br>SER Returns: volt {pwrEnum} {milliVolts}</PRE>| Returns the configured drive voltage, as its PWR\_\* number and its nominal value in mV. This is the configured value, not a measurement.
+| PUB getPackVoltage() : ePackStatus, nMilliVolts <BR><PRE>SER getpackvolt<br>SER Returns: packvolt {status} {milliVolts}</PRE>| Returns the pack voltage measured by the optional pack voltage sensor ([VOLTAGE-SENSOR.md](VOLTAGE-SENSOR.md)), averaged over about 64 ms. {status} is 2 (PACK\_PRESENT), 1 (PACK\_ABSENT: the sensor is fitted but reads no pack) or 0 (PACK\_NOT\_FITTED). {milliVolts} is 0 unless the status is PACK\_PRESENT.
+| PUB getCurrent() : nLtAmps, nLtWatts, nRtAmps, nRtWatts <BR><PRE>SER getcurrent<br>SER Returns: current {ltCurrent} {ltMilliWatts} {rtCurrent} {rtMilliWatts}</PRE>| Returns each motor's latest current, in units of 0.1 mA (so 12,500 is 1.25 A), and its power draw in mW. Both are net of the rest zero taken at start.
+| PUB getFaultCause() : eLeftCause, eRightCause <BR><PRE>SER getfaultcause<br>SER Returns: faultcause {ltCause} {rtCause}</PRE>| Returns why each wheel's most recent fault since start happened: 1 (FC\_LAG) means the rotor could not follow the field, 2 (FC\_HALL) means a hall sensor read %000 or %111, and 0 (FC\_NONE) means it has not faulted. The cause stays readable after the fault clears; only a later fault replaces it.
+| PUB getHoldStatus() : eLeftState, nLeftDisplacement, eRightState, nRightDisplacement <BR><PRE>SER getholdstatus<br>SER Returns: holdstatus {ltState} {ltTicks} {rtState} {rtTicks}</PRE>| Returns what each wheel's hold at rest (`hold true`) is doing: 1 (HS\_HOLDING), 2 (HS\_SLIPPED) or 3 (HS\_LIMITED), when the hold has handed off to shorting the phases, or 0 (HS\_OFF) when not holding. Each state is followed by the hall ticks the load has moved that wheel from where it stopped, signed, and 0 when not holding.
+| PUB getHallIntegrityCounts() : nLtMissed, nLtIllegal, nRtMissed, nRtIllegal <BR><PRE>SER gethallcounts<br>SER Returns: hallcounts {ltMissed} {ltIllegal} {rtMissed} {rtIllegal}</PRE>| Returns, for each motor since start, the times its hall code changed without a countable single step (missed), and the times its hall sensors entered an illegal code, %000 or %111 (a dead or disconnected sensor)
+| PUB getHallIllegalCodes() : nLtAllLow, nLtAllHigh, nRtAllLow, nRtAllHigh <BR><PRE>SER gethallillegal<br>SER Returns: hallillegal {ltAllLow} {ltAllHigh} {rtAllLow} {rtAllHigh}</PRE>| Returns each motor's illegal hall codes since start, split by kind. %000 (all low) is a sensor without power or a line pulled low; %111 (all high) is a line stuck or floating high. Each count stops at 65,535.
 | PUB getMaxSpeed() : maxSpeed <BR><PRE>SER getmaxspd<br>SER Returns: speedmax {maxSpeed}</PRE>| Returns the last specified {maxSpeed}
 | PUB getMaxSpeedForDistance() : maxSpeed4dist <BR><PRE>SER getmaxspdfordist<br>SER Returns: speeddistmax {maxSpeed}</PRE>| Returns the last specified {maxSpeedForDistance}
 

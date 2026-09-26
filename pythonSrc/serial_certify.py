@@ -18,6 +18,13 @@ WHAT IT PROVES
                        change nothing
     R20-SER-PROTCLEAR  with no protective stop latched, getprot reads 0 0 and protclear is harmless (it does not
                        release a user's e-stop). The latched half is NOMEAS: it needs a provoked protective stop (PL-106)
+    R20-SER-LATENCY    (PL-154) a harmless getter's round trip, send to reply, stays under LATENCY_BOUND_MS: the P2's
+                       idle poll plus the wire time at the baud rate plus this script's read poll
+    R20-SER-NUMPARSE   (PL-154) a parameter that is not a decimal integer is refused with "ERROR Parameter {n} ({text})
+                       is not a decimal integer" and changes nothing; valid numbers, and a CR before the LF, still work
+    R20-SER-GETTERS    (PL-157) each new getter returns a well-formed reply; checkwiring runs and its verdict reads back
+                       in gethealth (HLT_WIRING); setstartchecks is refused while the motors run. The refused-start
+                       half of setstartchecks is NOMEAS: it needs a platform whose start checks fail
 
 PRECONDITION
   - WHEELS UP (platform on blocks, both wheels free) and HANDS OFF for the whole run. The wheels turn at power 30.
@@ -28,8 +35,8 @@ PRECONDITION
   - Pass --drive-voltage with the DRIVE_VOLTAGE of the user configuration the P2 was built with (e.g. PWR_18p5V).
 
 HOW LONG
-  About 3 minutes. The P2's command loop sleeps up to 1 s when its queue is empty, so each command costs up to ~1 s;
-  the three timeout cases add about 45 s of timed motion and silence.
+  About 2 minutes. The P2's command loop looks for a command every 1 ms (PL-154; it slept up to 1 s before), so most
+  of the run is the three timeout cases' 45 s of timed motion and silence.
 
 PANIC PROCEDURE
   Physically disconnect the drive battery. Ctrl-C makes the script send "stopmotors" and "settimeout 0" on the way
@@ -87,10 +94,11 @@ MAX_SPEED_DEFAULT = 75              # setMaxSpeedForDistance() default, restored
 # -----------------------------------------------------------------------------
 # Test constants
 # -----------------------------------------------------------------------------
-REPLY_TIMEOUT_S = 3.0       # the P2 loop sleeps up to 1 s with an empty queue, plus the front cog's bounded answer
+REPLY_TIMEOUT_S = 3.0       # generous: the P2 answers within ms (1 ms idle poll, PL-154), plus the front cog's bounded
+                            #  answer; checkwiring blocks about 0.5 s
 DRIVE_POWER = 30            # gentle, wheels up
-TIMEOUT_MS = 5000           # settimeout value. Must exceed the P2's ~1 s idle sleep plus the getters read after the
-                            #  last drive in the negative case (three getters at up to ~1 s each)
+TIMEOUT_MS = 5000           # settimeout value. Must exceed the getters read after the last drive in the negative case
+                            #  (sized when each could take ~1 s; now far more than enough)
 REST_BOUND_MS = 2500        # ramp down to rest after the timeout fires. DRIVE-OBJECTS.md: from top speed (441 ticks/s)
                             #  the ramp takes ~380 ticks, about 1.7 s; power 30 takes far less. 2.5 s covers full speed
 MID_POLL_S = 1.0            # when the "still running before the timeout" getstatus is sent after the drive
@@ -101,9 +109,25 @@ MIN_MOVE_TICKS = 10         # it ran: hall ticks each wheel must have moved
 DIST_SPEED = 30             # setspeedfordist for the bounded case
 DIST_METERS = 20            # far beyond what the wheels cover before the timeout (~2.5 m/s top speed x 5 s < 20 m)
 
+# PL-154 latency: LATENCY_BOUND_MS = P2_IDLE_POLL_MS + the wire time of command and reply + READ_POLL_S
+P2_IDLE_POLL_MS = 1         # IDLE_POLL_MS in isp_steering_serial.spin2: the command loop's look-again period when idle
+READ_POLL_S = 0.05          # this script's serial read timeout (Link.open): the longest one read waits before it looks again
+BITS_PER_CHAR = 10          # 8N1: start + 8 data + stop
+LATENCY_CMD = "getmaxspd"   # harmless: a getter that reads a status variable and posts nothing to the front cog
+LATENCY_SAMPLES = 20        # the old 1 s idle sleep would put most samples far above the bound, so 20 cannot all pass
+
+# PL-157 getters: command, reply prefix, value count
+NEW_GETTERS = [("getpackvolt", "packvolt", 2), ("getcurrent", "current", 4), ("getfaultcause", "faultcause", 2),
+               ("getholdstatus", "holdstatus", 4), ("gethallcounts", "hallcounts", 4), ("gethallillegal", "hallillegal", 4)]
+PACK_STATES = (0, 1, 2)     # PACK_NOT_FITTED, PACK_ABSENT, PACK_PRESENT
+FC_CAUSES = (0, 1, 2)       # FC_NONE, FC_LAG, FC_HALL
+HS_STATES = (0, 1, 2, 3)    # HS_OFF, HS_HOLDING, HS_SLIPPED, HS_LIMITED
+HLT_WIRING = 32
+
 SF_VERSION = 1
 SF_BIN = "SERIAL"
-CELLS = ["R20-SER-FAULTRESP", "R20-SER-VOLT", "R20-SER-PROTCLEAR", "R20-SER-ERRREPLY", "R20-SER-TIMEOUT"]
+CELLS = ["R20-SER-LATENCY", "R20-SER-NUMPARSE", "R20-SER-FAULTRESP", "R20-SER-VOLT", "R20-SER-PROTCLEAR",
+         "R20-SER-ERRREPLY", "R20-SER-GETTERS", "R20-SER-TIMEOUT"]
 
 
 class LinkDead(Exception):
@@ -158,7 +182,7 @@ class Link:
             self.log.line("PLAN open {} at {} baud".format(self.port_name, self.baud))
             return
         import serial                               # pyserial, as P2-BLDC-Motor-Control-Demo.py uses
-        self.ser = serial.Serial(self.port_name, self.baud, timeout=0.05)
+        self.ser = serial.Serial(self.port_name, self.baud, timeout=READ_POLL_S)
         self.log.line("SER-OPEN,port,{},baud,{}".format(self.port_name, self.baud))
 
     def close(self):
@@ -534,6 +558,114 @@ def cell_timeout(link, cell, log):
     link.cmd("setspeedfordist {}".format(MAX_SPEED_DEFAULT))
 
 
+def latency_bound_ms(baud):
+    """The PL-154 bound: the P2's idle poll + the wire time of LATENCY_CMD and its reply + this script's read poll."""
+    reply_chars = len("speedmax 100") + 1                        # the longest getmaxspd reply, with its LF
+    wire_ms = (len(LATENCY_CMD) + 1 + reply_chars) * BITS_PER_CHAR * 1000.0 / baud
+    return P2_IDLE_POLL_MS + wire_ms + READ_POLL_S * 1000.0
+
+
+def cell_latency(link, cell, log):
+    # Claim (PL-154): the P2 looks for a command every 1 ms when idle, so a command is answered within the bound.
+    # NEGATIVE: under the old 1 s idle sleep a command waited 0-1000 ms, so the max of LATENCY_SAMPLES round trips spread
+    #  over time would almost surely pass the bound (~52 ms at 624,000 baud) and FAIL. Samples are spaced irregularly so
+    #  they do not lock to any P2 period.
+    bound = latency_bound_ms(link.baud)
+    log.line("SER-LATENCY-PLAN,cmd,{},samples,{},p2_poll_ms,{},read_poll_ms,{},baud,{},bound_ms,{:.1f}".format(
+        LATENCY_CMD, LATENCY_SAMPLES, P2_IDLE_POLL_MS, int(READ_POLL_S * 1000), link.baud, bound))
+    worst_ms = 0
+    replies = 0
+    for idx in range(LATENCY_SAMPLES):
+        t0 = time.monotonic()
+        reply = link.cmd(LATENCY_CMD)
+        elapsed_ms = int(round((time.monotonic() - t0) * 1000))
+        if link.dry:
+            log.line("PLAN repeat {} x, 7 to 103 ms apart; judge the slowest round trip".format(LATENCY_SAMPLES))
+            break
+        if nums(reply, "speedmax", 1) is not None:
+            replies += 1
+            worst_ms = max(worst_ms, elapsed_ms)
+        log.line("SER-LATENCY,sample,{},ms,{}".format(idx + 1, elapsed_ms))
+        link.pause((7 + (13 * idx) % 97) / 1000.0, "latency spacing")
+    cell.judge("NONE", "REPLIES_WELL_FORMED", replies, LATENCY_SAMPLES, LATENCY_SAMPLES, "COUNT", n=LATENCY_SAMPLES)
+    cell.judge("NONE", "MAX_ROUND_TRIP", worst_ms if replies else None, 0, int(bound), "MS", n=LATENCY_SAMPLES)
+
+
+BAD_PARAM_RE = re.compile(r"^ERROR Parameter (\d+) \((.*)\) is not a decimal integer$")
+
+
+def cell_numparse(link, cell, log):
+    # Claim (PL-154): each parameter must be a decimal integer with an optional leading minus (or true / false); any other
+    #  text is refused with "ERROR Parameter {n} ({text}) is not a decimal integer" and the command is not run.
+    # NEGATIVE: "setspeed 6O" (letter O) parsed as a number before PL-154 (6*10 + 31 = 91, in range, accepted); here the
+    #  speed must stay at the value set before, so a parser that still turned text into numbers would FAIL. The valid
+    #  "setspeed 60" and a CR-LF terminated "setspeed 70" must reply OK and take effect.
+    set_ok = is_ok(link.cmd("setspeed 60"))
+    before = nums(link.cmd("getmaxspd"), "speedmax", 1)
+    bad_texts = ["6O", "5abc", "-", "--5", "+50", "99999999999", "0x20"]
+    wrong = 0
+    for text in bad_texts:
+        reply = link.cmd("setspeed {}".format(text))
+        match = BAD_PARAM_RE.match(reply) if reply else None
+        if not (match and match.group(1) == "1" and match.group(2) == text):
+            wrong += 1
+    after = nums(link.cmd("getmaxspd"), "speedmax", 1)
+    cell.judge("NONE", "NON_NUMBERS_REFUSED", wrong if not link.dry else None, 0, 0, "COUNT", n=len(bad_texts))
+    cell.judge("NONE", "REFUSED_CHANGED_NOTHING", set_ok and before == [60] and after == [60], True, True, "BOOL")
+
+    # the second parameter is named by its position; a negative number is still a number
+    reply = link.cmd("drivepwr 0 zero")
+    match = BAD_PARAM_RE.match(reply) if reply else None
+    cell.judge("NONE", "NAMES_POSITION", bool(match) and match.group(1) == "2", True, True, "BOOL")
+    neg_ok = is_ok(link.cmd("drivepwr -0 0"))                     # "-0" is a number: power 0, nothing moves
+
+    crlf_ok = is_ok(link.cmd("setspeed 70\r"))
+    crlf_read = nums(link.cmd("getmaxspd"), "speedmax", 1)
+    cell.judge("NONE", "VALID_STILL_WORK", neg_ok and crlf_ok and crlf_read == [70], True, True, "BOOL")
+    link.cmd("setspeed {}".format(MAX_SPEED_DEFAULT))
+
+
+def cell_getters(link, cell, log):
+    # Claim (PL-157): each new getter replies "{prefix} n1 .. nk" with k integers, its enums in their documented ranges.
+    # NEGATIVE: each getter sent with an extra parameter must be refused "ERROR Missing/Extra parameter(s)" -- a table
+    #  entry with the wrong parameter count, or a missing command ("ERROR Command NOT found"), FAILs one or the other.
+    malformed = 0
+    out_of_range = 0
+    extra_refused = 0
+    for command, prefix, count in NEW_GETTERS:
+        values = nums(link.cmd(command), prefix, count)
+        if values is None:
+            malformed += 1
+        elif prefix == "packvolt":
+            out_of_range += 0 if (values[0] in PACK_STATES and values[1] >= 0) else 1
+        elif prefix == "faultcause":
+            out_of_range += 0 if all(v in FC_CAUSES for v in values) else 1
+        elif prefix == "holdstatus":
+            out_of_range += 0 if (values[0] in HS_STATES and values[2] in HS_STATES) else 1
+        elif prefix in ("hallcounts", "hallillegal"):
+            out_of_range += 0 if all(v >= 0 for v in values) else 1
+        if link.cmd("{} 1".format(command)) == "ERROR Missing/Extra parameter(s)":
+            extra_refused += 1
+    n = len(NEW_GETTERS)
+    cell.judge("NONE", "GETTERS_MALFORMED", malformed if not link.dry else None, 0, 0, "COUNT", n=n)
+    cell.judge("NONE", "GETTERS_OUT_OF_RANGE", out_of_range if not link.dry else None, 0, 0, "COUNT", n=n)
+    cell.judge("NONE", "GETTERS_COUNT_ENFORCED", extra_refused if not link.dry else None, n, n, "COUNT", n=n)
+
+    # checkwiring turns the platform a few degrees in place and back (wheels up): OK, then HLT_WIRING is checked on both
+    walk_ok = is_ok(link.cmd("checkwiring"))
+    health = nums(link.cmd("gethealth"), "health", 6)
+    checked = health is not None and (health[0] & HLT_WIRING) != 0 and (health[3] & HLT_WIRING) != 0
+    if health is not None:
+        log.line("SER-WIRING,lt_failed,{},rt_failed,{}".format(health[1] & HLT_WIRING, health[4] & HLT_WIRING))
+    cell.judge("BOTH", "CHECKWIRING_VERDICT_READ", walk_ok and checked, True, True, "BOOL")
+
+    # the motors are running, so there is no start left for setstartchecks to choose for
+    reply = link.cmd("setstartchecks 0")
+    cell.judge("NONE", "STARTCHECKS_REFUSED_RUNNING", reply is not None and reply.startswith("ERROR StartChecks"),
+               True, True, "BOOL")
+    cell.nomeas("BOTH", "STARTCHECKS_OPT_OUT_STARTS", True, True, "BOOL", "NEEDS_A_REFUSED_START", log)
+
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
@@ -588,6 +720,10 @@ def main():
             if stat is None or not all(s in AT_REST for s in stat):
                 raise LinkDead("PREFLIGHT_NOT_AT_REST_{}".format("_".join(str(s) for s in stat) if stat else "NO_REPLY"))
 
+        cell_latency(link, cells["R20-SER-LATENCY"], log)
+        done.add("R20-SER-LATENCY")
+        cell_numparse(link, cells["R20-SER-NUMPARSE"], log)
+        done.add("R20-SER-NUMPARSE")
         cell_faultresp(link, cells["R20-SER-FAULTRESP"], fresh, log)
         done.add("R20-SER-FAULTRESP")
         cell_volt(link, cells["R20-SER-VOLT"], expected_enum, log)
@@ -596,6 +732,8 @@ def main():
         done.add("R20-SER-PROTCLEAR")
         cell_errreply(link, cells["R20-SER-ERRREPLY"], log)
         done.add("R20-SER-ERRREPLY")
+        cell_getters(link, cells["R20-SER-GETTERS"], log)
+        done.add("R20-SER-GETTERS")
         cell_timeout(link, cells["R20-SER-TIMEOUT"], log)
         done.add("R20-SER-TIMEOUT")
     except LinkDead as why:

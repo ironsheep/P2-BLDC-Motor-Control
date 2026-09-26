@@ -403,8 +403,34 @@ class BLDCMotorControl:
         self.sendCommand(commandStr)
 
     # PUB holdAtStop(bEnable)
+    #  the P2 takes a boolean as -1 (true) or 0 (false)
     def holdAtStop(self, bEnable):
-        commandStr = 'hold {}\n'.format(bEnable)
+        commandStr = 'hold {}\n'.format(self.p2Bool(bEnable))
+        self.sendCommand(commandStr)
+
+    # PUB setFaultResponse(eMode, brakePct)
+    #  eMode 0 (FR_SHIPPED) or 1 (FR_GRADED); brakePct [0 to 100]
+    def setFaultResponse(self, eMode, brakePct):
+        commandStr = 'setfaultresp {} {}\n'.format(eMode, brakePct)
+        self.sendCommand(commandStr)
+
+    # PUB setHoldLimits(ceilingPct, riseMs, limitMs)
+    def setHoldLimits(self, ceilingPct, riseMs, limitMs):
+        commandStr = 'setholdlimits {} {} {}\n'.format(ceilingPct, riseMs, limitMs)
+        self.sendCommand(commandStr)
+
+    # PUB setStartChecks(bRefuse)
+    #  answered only when the P2's start checks refused the platform: False starts it anyway, True keeps the refusal.
+    #  While the motors run the P2 replies ERROR (they started before the link opened)
+    def setStartChecks(self, bRefuse):
+        commandStr = 'setstartchecks {}\n'.format(self.p2Bool(bRefuse))
+        self.sendCommand(commandStr)
+
+    # PUB checkWiring()
+    #  MOVES THE ROBOT: turns it a few degrees in place and back (about 0.5 s). The verdict is each wheel's
+    #  HLT_WIRING bit (32) in getHealth()
+    def checkWiring(self):
+        commandStr = 'checkwiring\n'
         self.sendCommand(commandStr)
 
     # PUB setCommandTimeout(nMs)
@@ -480,7 +506,111 @@ class BLDCMotorControl:
         eLeftCode, eRightCode = self.getValues('prot', responseStr, 2)
         return int(eLeftCode), int(eRightCode)
 
+    # PUB getStopReason() : eLeftReason, eRightReason
+    #  why each wheel's last drive ended: 40 SR_NONE .. 48 SR_PARTNER (46 SR_LINK_LOST: the command timeout stopped it)
+    def getStopReason(self):
+        commandStr = 'getstopreason\n'
+        responseStr = self.sendCommand(commandStr)
+        eLeftReason, eRightReason = self.getValues('stopreason', responseStr, 2)
+        return int(eLeftReason), int(eRightReason)
+
+    # PUB getEvent() : eKind, nMs, eWheel, nValue
+    #  the oldest event not yet read over this link; eKind 60 (EV_NONE) when there is none
+    def getEvent(self):
+        commandStr = 'getevent\n'
+        responseStr = self.sendCommand(commandStr)
+        eKind, nMs, eWheel, nValue = self.getValues('event', responseStr, 4)
+        return int(eKind), int(nMs), int(eWheel), int(nValue)
+
+    # PUB getEventTotal(eKind) : nLeft, nRight, nPlatform
+    #  eKind [62 to 75]
+    def getEventTotal(self, eKind):
+        commandStr = 'getevtotal {}\n'.format(eKind)
+        responseStr = self.sendCommand(commandStr)
+        nLeft, nRight, nPlatform = self.getValues('evtotal', responseStr, 3)
+        return int(nLeft), int(nRight), int(nPlatform)
+
+    # PUB getError() : eError, eLeftError, eRightError
+    #  read AND clear the first error codes recorded for this link (0 when none); -1019 is ERR_COMMAND_TIMEOUT
+    def getError(self):
+        commandStr = 'geterror\n'
+        responseStr = self.sendCommand(commandStr)
+        eError, eLeftError, eRightError = self.getValues('err', responseStr, 3)
+        return int(eError), int(eLeftError), int(eRightError)
+
+    # PUB getHealth() : nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered
+    #  HLT_* bits: 1 HALLS, 2 SENSE_ZERO, 4/8/16 PHASE_U/V/W, 32 WIRING, 64 PACK
+    def getHealth(self):
+        commandStr = 'gethealth\n'
+        responseStr = self.sendCommand(commandStr)
+        values = self.getValues('health', responseStr, 6)
+        return tuple(int(value) for value in values)
+
+    # PUB getFaultResponse() : eMode, brakePct
+    def getFaultResponse(self):
+        commandStr = 'getfaultresp\n'
+        responseStr = self.sendCommand(commandStr)
+        eMode, brakePct = self.getValues('faultresp', responseStr, 2)
+        return int(eMode), int(brakePct)
+
+    # PUB getHoldLimits() : ceilingPct, riseMs, limitMs
+    def getHoldLimits(self):
+        commandStr = 'getholdlimits\n'
+        responseStr = self.sendCommand(commandStr)
+        ceilingPct, riseMs, limitMs = self.getValues('holdlimits', responseStr, 3)
+        return int(ceilingPct), int(riseMs), int(limitMs)
+
+    # PUB getPackVoltage() : ePackStatus, nMilliVolts
+    #  the optional pack sensor: status 0 PACK_NOT_FITTED, 1 PACK_ABSENT, 2 PACK_PRESENT; mV is 0 unless PACK_PRESENT
+    def getPackVoltage(self):
+        commandStr = 'getpackvolt\n'
+        responseStr = self.sendCommand(commandStr)
+        ePackStatus, nMilliVolts = self.getValues('packvolt', responseStr, 2)
+        return int(ePackStatus), int(nMilliVolts)
+
+    # PUB getCurrent() : nLtAmps, nLtWatts, nRtAmps, nRtWatts
+    #  current in units of 0.1 mA (amps x 10,000) and power in mW, for each motor
+    def getCurrent(self):
+        commandStr = 'getcurrent\n'
+        responseStr = self.sendCommand(commandStr)
+        nLtAmps, nLtWatts, nRtAmps, nRtWatts = self.getValues('current', responseStr, 4)
+        return int(nLtAmps), int(nLtWatts), int(nRtAmps), int(nRtWatts)
+
+    # PUB getFaultCause() : eLeftCause, eRightCause
+    #  0 FC_NONE, 1 FC_LAG (the rotor could not follow the field), 2 FC_HALL (a hall sensor read %000 or %111)
+    def getFaultCause(self):
+        commandStr = 'getfaultcause\n'
+        responseStr = self.sendCommand(commandStr)
+        eLeftCause, eRightCause = self.getValues('faultcause', responseStr, 2)
+        return int(eLeftCause), int(eRightCause)
+
+    # PUB getHoldStatus() : eLeftState, nLeftDisplacement, eRightState, nRightDisplacement
+    #  state 0 HS_OFF, 1 HS_HOLDING, 2 HS_SLIPPED, 3 HS_LIMITED; displacement in signed hall ticks
+    def getHoldStatus(self):
+        commandStr = 'getholdstatus\n'
+        responseStr = self.sendCommand(commandStr)
+        eLeftState, nLeftDisp, eRightState, nRightDisp = self.getValues('holdstatus', responseStr, 4)
+        return int(eLeftState), int(nLeftDisp), int(eRightState), int(nRightDisp)
+
+    # PUB getHallIntegrityCounts() : nLtMissed, nLtIllegal, nRtMissed, nRtIllegal
+    def getHallIntegrityCounts(self):
+        commandStr = 'gethallcounts\n'
+        responseStr = self.sendCommand(commandStr)
+        nLtMissed, nLtIllegal, nRtMissed, nRtIllegal = self.getValues('hallcounts', responseStr, 4)
+        return int(nLtMissed), int(nLtIllegal), int(nRtMissed), int(nRtIllegal)
+
+    # PUB getHallIllegalCodes() : nLtAllLow, nLtAllHigh, nRtAllLow, nRtAllHigh
+    def getHallIllegalCodes(self):
+        commandStr = 'gethallillegal\n'
+        responseStr = self.sendCommand(commandStr)
+        nLtAllLow, nLtAllHigh, nRtAllLow, nRtAllHigh = self.getValues('hallillegal', responseStr, 4)
+        return int(nLtAllLow), int(nLtAllHigh), int(nRtAllLow), int(nRtAllHigh)
+
     # ------- PRIVATE (Support) Methods --------
+    def p2Bool(self, bValue):
+        # the P2's serial booleans: -1 true, 0 false
+        return -1 if bValue else 0
+
     # common send method
     def sendCommand(self, cmdStr):
         # format and send command, then wait for single line response
@@ -521,10 +651,10 @@ class BLDCMotorControl:
         elif len(lineParts) != ctExpected + 1:
               print_line('! ERROR: BAD line={} wrong number reponses, expected ({})'.format(line.replace('\\n', ''), ctExpected), error=True)
         else:
-            if len(lineParts) == 3:
-                return lineParts[1], lineParts[2]
-            else:
+            if ctExpected == 1:
                 return lineParts[1]
+            else:
+                return tuple(lineParts[1:])
 
     def statusEnumFor(self, iValue):
         # return enum member assoc with int value
