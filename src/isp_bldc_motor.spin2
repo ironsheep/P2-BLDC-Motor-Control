@@ -4363,8 +4363,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' preload driver values before driver start
     adc_fram    :=    frame_cnt                         ' set ADC to full PWM frame counts
     fram        :=    (frame_cnt / 2) << 16 + 1         ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
-    lutCodePtr  :=    @lutCodeStart                     ' task 3535: hub addr of LUT-resident start sequence, block-loaded by the driver at coginit
-    planCodePtr :=    @planOvlStart                     ' PL-161 (DRIVER_REV 39): hub addr of the stop planner, loaded over that sequence as it ends
+    lutCodePtr  :=    @lutCodeStart                     ' task 3535: hub addr of the LUT start image, block-loaded by the driver at coginit
+    planCodePtr :=    @runCodeStart                     ' DRIVER_REV 42: hub addr of the LUT run image, loaded over the start image as it ends
 
     ' setup driver parameters based on clock rate
     ' A1 / PL-9: both 64010 manuals specify a 250 ns minimum dead-gap regardless of board
@@ -6766,7 +6766,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 41      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 42      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6940,6 +6940,17 @@ CON { driver internal Constants }
                                             '     it), and the start sequence now zeroes it, in the long of a dead
                                             '     store (mov sv_tgt_incr, #0). Proved equivalent to mem-reduce-start by
                                             '     tools/pasm_equiv (2055 scenarios); PASM (cog) change; no ABI change
+                                            ' 42: memory reduction WP2 (C2): the LUT holds a START IMAGE (the start
+                                            '     sequence and driveinit, 144 longs) until loadOverlay, then a RUN
+                                            '     IMAGE loaded over it (every routine used only once the drive loop
+                                            '     runs, gettgtincr .. planStage and the stop planner's core, 476
+                                            '     longs; planCodePtr now points at runCodeStart). countIllegal, which
+                                            '     both call, is back in cog RAM. Cog 471 -> 484 of 496; LUT 507 ->
+                                            '     476 of 512; the planner's separate 126-long overlay is gone. No
+                                            '     instruction changes, only relocation; the one-time load at start
+                                            '     grows by 350 longs. Proved equivalent to mem-reduce-start by
+                                            '     tools/pasm_equiv (2055 scenarios); PASM (cog + LUT) change; no ABI
+                                            '     change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7513,9 +7524,12 @@ pl_v            mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
 '                drvl    drvrTmr2PnFld                  ' preset test pins to low
 '}
                 ' task 3535 (fixed layout defect found in review): the one-time start sequence
-                ' (pin setup through the initial checkstop, plus gettgtincr and driveinit) never
-                ' overlaps .drvMotor/.ctlMotor, so it is loaded into LUT RAM ($200-$3FF) instead
-                ' of staying resident in cog RAM, freeing cog longs for upcoming work. Every
+                ' (pin setup through the initial checkstop, plus driveinit) never overlaps
+                ' .drvMotor/.ctlMotor, so it is loaded into LUT RAM ($200-$3FF) instead
+                ' of staying resident in cog RAM, freeing cog longs for upcoming work. DRIVER_REV
+                ' 42 (memory reduction WP2, C2): this loads only the START IMAGE (lutCodeStart ..
+                ' lutCodeEnd); loadOverlay then loads the RUN IMAGE (runCodeStart .. runCodeEnd)
+                ' over it, and the start image calls nothing in the run image. Every
                 ' register/constant/table it touches still lives in cog RAM ($000-$1FF); only
                 ' the instructions moved -- D/S operand fields address $000-$1FF the same whether
                 ' the executing code is in cog or LUT. lutCodePtr is filled in by init() (Spin2)
@@ -7946,10 +7960,11 @@ drvMotor                                                ' global (task 3535): en
     ' =========================================================================
     '  PRIVATE (Utiility) Subroutines
     ' -------------------------------------------------------------------------
-    ' gettgtincr and driveinit moved to the LUT-resident block (task 3535):
-    ' gettgtincr is called only from drvMotor (cog-resident, calls across the
-    ' boundary); driveinit is called only from the LUT-resident start sequence
-    ' itself. See lutCodeStart..lutCodeEnd, below the `fit 496` line.
+    ' gettgtincr and driveinit moved to the LUT (task 3535): gettgtincr is
+    ' called only from drvMotor (cog-resident, calls across the boundary), and
+    ' is in the LUT run image (runCodeStart..runCodeEnd); driveinit is called
+    ' only from the start sequence, and is in the LUT start image
+    ' (lutCodeStart..lutCodeEnd). Both are below the `fit 496` line.
     '
     ' .shortBridge and .checkstopfloatoff stay dot-local (task 3535): nothing
     ' outside cog RAM calls them, so they don't need to be globally visible
@@ -7985,10 +8000,10 @@ wait4adc
 .noWait4adc     ret
 
 loadOverlay                                             ' PL-161 (DRIVER_REV 39): the start sequence's last jump. Its LUT longs are
-pl_Dl           mov     ptrb, planCodePtr               '  spent, so the stop planner is block-loaded over them (planOvlStart ..
-pl_Dh           setq2   #(planOvlEnd - planOvlStart - 1) '  planOvlEnd, below `fit $400`), from cog RAM, since the LUT code this
-pl_n            rdlong  0, ptrb                         '  overwrites is the code that jumped here; then the drive loop starts
-pl_f            jmp     #drvMotor                       ' DRIVER_REV 41 (C1): these four longs are then pl_Dl .. pl_f
+pl_Dl           mov     ptrb, planCodePtr               '  spent, so DRIVER_REV 42 (C2) block-loads the whole RUN IMAGE over them
+pl_Dh           setq2   #(runCodeEnd - runCodeStart - 1) '  (runCodeStart .. runCodeEnd, below `fit 496`), from cog RAM, since the
+pl_n            rdlong  0, ptrb                         '  LUT code this overwrites is the code that jumped here; then the drive
+pl_f            jmp     #drvMotor                       '  loop starts. DRIVER_REV 41 (C1): these four longs are then pl_Dl .. pl_f
 
 planFp                                                  ' PL-161: the plan's field travel in 1/256 hall tick, from its two sums:
                 mov     pl_t, pl_Ul                     '  6 x SUM = 3 U + D (run), and the tick fixed point is SUM x 6 / 2^32
@@ -8053,8 +8068,22 @@ planCorner                                              ' PL-161: planA's corner
                 call    #run                            ' (n - 1, alpha - J, -J)
     _ret_       modc    _set                        wc  ' C = 1: the plan is complete (planA's return, which jumped here)
 
-    ' countIllegal moved to the LUT-resident block (DRIVER_REV 37, PL-146): its 13 longs paid for the fold-back's rest
-    '  offset (sense_zero_, fold_net and three instructions in .noFault). See it beside gettgtincr, below `fit 496`.
+    ' DRIVER_REV 42 (memory reduction WP2, C2): countIllegal is back in cog RAM (DRIVER_REV 37 had moved it to the
+    '  LUT). It is the one routine both images need -- the start sequence calls it once, .ctlMotor on a hall change the
+    '  table did not step -- so it can live in neither LUT image. Unchanged; reached only by CALL.
+countIllegal                                            ' PL-90: count an entry into illegal code tmpY (0..7) in its own word
+                mov     tmpX, #HALL_ILL_HI_WORD         '  of hall_illegal_ -- %000 low, %111 high -- saturating, so one
+                cmp     tmpY, #%000                 wz  '  word never carries into the other. Returns Z set when counted,
+    if_z        mov     tmpX, #HALL_ILL_LO_WORD         '  Z clear for a legal code. Global: .ctlMotor calls it on a hall
+    if_nz       cmp     tmpY, #%111                 wz  '  change the table did not step, and the start sequence (LUT start
+    if_nz       ret                                     '  image) once. A legal code: nothing counted, Z clear.
+                altgw   tmpX, #hall_illegal_            ' this code's 16-bit count
+                getword tmpY
+                cmp     tmpY, ##HALL_ILL_WORD_MAX   wz  ' Q: saturated?
+    if_nz       add     tmpY, #1
+                altsw   tmpX, #hall_illegal_
+                setword tmpY
+    _ret_       modz    _set                        wz  ' Z: counted, whatever the saturation test left in Z
 
 initAngleFmHall
                 ' init angle & prior from current motor position
@@ -8094,9 +8123,9 @@ maxNeg          LONG    $FFFF_FFFF              ' 32-bits of one (max negative s
 sc_v                                            ' (C1) the take pass's v' (an end of its range), for its own advance
 sync_required   LONG    0                       ' non zero if motor loop should wait to start
 sp_P                                            ' (C1) the largest passes so far (the m = 1 plan, then each take pass's)
-lutCodePtr      LONG    0                       ' hub addr of LUT-resident start sequence (task 3535); set by init()
+lutCodePtr      LONG    0                       ' hub addr of the LUT start image (task 3535); set by init()
 sp_F                                            ' (C1) and the largest travel, 1/256 tick
-planCodePtr     LONG    0                       ' PL-161 (DRIVER_REV 39): hub addr of the stop planner's LUT overlay; set by init()
+planCodePtr     LONG    0                       ' PL-161 (DRIVER_REV 39): hub addr of the LUT run image (DRIVER_REV 42; was the planner overlay); set by init()
 
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
@@ -8319,21 +8348,29 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
 '                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
 
 ' $1f8 for reg cogs
-    fit     496  ' 471 USED, 25 FREE, 2026-09-27 (DRIVER_REV 41, memory reduction WP1: 21 run-only registers moved onto
-                 ' start-only longs, C1; was 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) -- read from the compiler, never
-                 ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, PLAN_STAGE's
-                 ' VALUE, whose top 12 bits are its cog address ($1D6, the last register, so USED is $1D7). LUT code runs at cog
-                 ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
-                 ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $3FB, 507 of 512 longs (DRIVER_REV 41, LUTCODEEND's VALUE the same way),
-                 ' and the stop planner's overlay over the spent start sequence, planOvlStart $200 to planOvlEnd $27E, 126 of
-                 ' the 129 longs below gettgtincr ($281).
+    fit     496  ' 484 USED, 12 FREE, 2026-09-27 (DRIVER_REV 42, memory reduction WP2: countIllegal's 13 longs back in cog
+                 ' RAM, C2; 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) -- read from the
+                 ' compiler, never hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`,
+                 ' PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1E3, the last register, so USED is $1E4). LUT
+                 ' code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog
+                 ' RAM, so REGISTERS are what this budget is for; code can live in the LUT images below (task 3535), read
+                 ' the same way (DRIVER_REV 42): the start image, lutCodeStart $200 to lutCodeEnd $290, 144 longs, and the
+                 ' run image loaded over it, runCodeStart $200 to runCodeEnd $3DC, 476 of 512 longs (36 free). Until
+                 ' DRIVER_REV 41 the LUT held 507 resident longs, with the planner's 126-long overlay over the start sequence.
 
 ' =========================================================================
-'  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
-'  routines R18.4 added (feedForward, holdDecay) and PL-160's jerkStep. LUT code runs at cog speed, but operands
-'  reach only cog RAM, so every REGISTER stays above and any CODE may live here (P13);
-'  crossing between the two is an ordinary 4-clock branch.
+'  LUT CODE ($200-$3FF), TWO IMAGES AT THE SAME ADDRESSES (DRIVER_REV 42, memory reduction WP2, C2):
+'  - the START IMAGE, lutCodeStart .. lutCodeEnd: the start sequence (task 3535) and driveinit, block-loaded by the
+'    entry code at coginit (lutCodePtr);
+'  - the RUN IMAGE, runCodeStart .. runCodeEnd: every routine the drive loop uses (gettgtincr, the per-drive-pass
+'    routines R18.4 added, PL-160's jerkStep, the bridge routines, the release, and PL-161's stop planner), block-
+'    loaded over the start image by loadOverlay (cog RAM, planCodePtr) as the start sequence's last act.
+'  The partition is by call graph: the start image calls only cog RAM (wait4adc, countIllegal, checkstop and its
+'  initAngleFmHall, loadOverlay) and its own driveinit; nothing in cog RAM or the run image calls into the start
+'  image. So no run-image address is reached before the load, and no start-image address after it. countIllegal,
+'  the one routine both need, lives in cog RAM. LUT use is the larger image; the start image costs none.
+'  LUT code runs at cog speed, but operands reach only cog RAM, so every REGISTER stays above and any CODE may live
+'  here (P13); crossing between the two is an ordinary 4-clock branch.
 '
 '  MUST stay textually after the `fit 496` line above: this block's hub bytes
 '  must not sit between two org-0 items (see the note at the loader's `jmp
@@ -8540,45 +8577,15 @@ lutCodeStart
                 mov     curr_stop, stop_mode_           ' save current stop mode
                 call    #checkstop                     ' set drive on or off according to stop mode
 
-                jmp     #loadOverlay                    ' boundary crossing: LUT -> cog RAM; PL-161: the stop planner is loaded
-                                                        '  over this start sequence there, then the 2 kHz loop begins
+                jmp     #loadOverlay                    ' boundary crossing: LUT -> cog RAM; DRIVER_REV 42: the run image is
+                                                        '  loaded over this start image there, then the 2 kHz loop begins
 
     ' -------------------------------------------------------------------------
-    ' gettgtincr and driveinit also moved here (task 3535): gettgtincr is used
-    ' only by drvMotor (cog-resident; reaches it by a cross-boundary call, same
-    ' as drvMotor calling checkstop the other way -- see the loader's NOTE,
-    ' above, for the full list of cross-boundary-visible labels); driveinit is
-    ' used only by the start sequence just above. Neither is ever fallen into
-    ' -- both are reached only by CALL -- so their position after the jmp
-    ' above is dead space, same as the equivalent cog-resident layout.
+    ' driveinit also moved here (task 3535): it is used only by the start
+    ' sequence just above, so it is part of the start image. It is never fallen
+    ' into -- it is reached only by CALL -- so its position after the jmp above
+    ' is dead space, same as the equivalent cog-resident layout.
     ' -------------------------------------------------------------------------
-gettgtincr
-                rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
-                tjz     fault_stop, #.take              ' R19.3: no re-synced fault's stop pending: take the command as written
-    _ret_       mov     tgt_incr, #0                    '  pending: the driver reads 0 until it is at rest (.endAtZero clears it)
-.take           testb   tgt_incr, #31               wc  ' bit 31 is used to carry sync info
-    if_c        pollatn                             wz  ' need to sync, but dont want to wait so if atn not ready
-    if_c_and_nz mov     tgt_incr, sv_tgt_incr           ' reset tgt_incr, if wanting atn and not received it yet
-    if_c_and_z  bitl    tgt_incr, #31                   ' have the atn, so
-    if_c_and_z  wrlong  tgt_incr, ptra[-1]              ' let caller know we have taken it by clearing sync bit
-    _ret_       signx   tgt_incr, #30                   ' sign extend back to normal tgt_incr
-
-countIllegal                                            ' PL-90: count an entry into illegal code tmpY (0..7) in its own word
-                mov     tmpX, #HALL_ILL_HI_WORD         '  of hall_illegal_ -- %000 low, %111 high -- saturating, so one
-                cmp     tmpY, #%000                 wz  '  word never carries into the other. Returns Z set when counted,
-    if_z        mov     tmpX, #HALL_ILL_LO_WORD         '  Z clear for a legal code. Global: .ctlMotor (cog RAM) calls it on
-    if_nz       cmp     tmpY, #%111                 wz  '  a hall change the table did not step, and the start sequence
-    if_nz       ret                                     '  above once. A legal code: nothing counted, Z clear.
-                altgw   tmpX, #hall_illegal_            ' this code's 16-bit count
-                getword tmpY
-                cmp     tmpY, ##HALL_ILL_WORD_MAX   wz  ' Q: saturated?
-    if_nz       add     tmpY, #1
-                altsw   tmpX, #hall_illegal_
-                setword tmpY
-    _ret_       modz    _set                        wz  ' Z: counted, whatever the saturation test left in Z
-                                                        ' DRIVER_REV 37 (PL-146): moved here from cog RAM, unchanged; reached
-                                                        '  only by CALL, so its place after gettgtincr's _ret_ is never fallen into
-
 driveinit                                               ' init drive pwm
                 dirh    adc_pins                        ' enable ADC pins (base+0..4)
                 ' PL-138: the low sides take pwmn only here, in one unbroken run up to the DIR raise. WRPIN needs DIR low
@@ -8606,6 +8613,32 @@ driveinit                                               ' init drive pwm
                                                         ' harmless: each ADC count spans exactly one PWM frame (adc_fram = frame_cnt), and
                                                         ' a whole period of a periodic signal integrates the same at any start phase.
     _ret_       mov     bridge, #BR_DRIVE               ' driven; checkstop, called before the control loop, sets the stop mode's state
+
+lutCodeEnd                                              ' the LUT START IMAGE ends here (task 3535; DRIVER_REV 42)
+
+                fit     $400  ' LUT RAM boundary; the start image is 144 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 42 (LUTCODEEND's VALUE)
+
+' =========================================================================
+'  THE LUT RUN IMAGE (DRIVER_REV 42, memory reduction WP2, C2): every routine that runs only once the drive loop has
+'  started, the stop planner's core included (until DRIVER_REV 41 that core was a separate 126-long overlay over the
+'  spent start sequence, the rest resident beneath it). loadOverlay (cog RAM) block-loads it over the start image,
+'  from planCodePtr (set by init()), then enters the drive loop. Nothing may call into this block before that load:
+'  the start image and the cog routines it calls reach no label here. Like the start image, it must stay after every
+'  org-0 item in the file.
+' =========================================================================
+                org     $200
+runCodeStart
+
+gettgtincr                                              ' task 3535: used only by drvMotor (cog-resident; a cross-boundary call)
+                rdlong  tgt_incr, ptra[-1]              ' get rate of increment ( +/- drive power, or 0 stop)
+                tjz     fault_stop, #.take              ' R19.3: no re-synced fault's stop pending: take the command as written
+    _ret_       mov     tgt_incr, #0                    '  pending: the driver reads 0 until it is at rest (.endAtZero clears it)
+.take           testb   tgt_incr, #31               wc  ' bit 31 is used to carry sync info
+    if_c        pollatn                             wz  ' need to sync, but dont want to wait so if atn not ready
+    if_c_and_nz mov     tgt_incr, sv_tgt_incr           ' reset tgt_incr, if wanting atn and not received it yet
+    if_c_and_z  bitl    tgt_incr, #31                   ' have the atn, so
+    if_c_and_z  wrlong  tgt_incr, ptra[-1]              ' let caller know we have taken it by clearing sync bit
+    _ret_       signx   tgt_incr, #30                   ' sign extend back to normal tgt_incr
 
 passEnd                                                 ' called once per drive pass, at .endRqst, which every path of the pass reaches
                 tjnz    drv_release_, #driverRelease    ' PL-138: stop() asked for the release. This pass's bridge state is decided
@@ -8659,7 +8692,7 @@ holdDecay                                               ' R18.4 D-5: called on a
     '  ends any |a| up to Jx there (a larger one, a new target set at v mid-ramp, is pushed against). The state is only
     '  reported: SLOW_TO_CHG while v' is on the
     '  far side of zero from the target, SPIN_UP while |v'| < |target|, else SPIN_DN; a reversal crosses zero in one
-    '  continuous ramp and never stops there. planA .. planC (the LUT overlay, PL-161) are this rule's closed form,
+    '  continuous ramp and never stops there. planA .. planC (the stop planner, PL-161) are this rule's closed form,
     '  for the front cogs' limits.
     '  Uses tmpX, tmpY, jrk_*; one QDIV, QSQRT, QMUL and QDIV (about 230 clocks); C is the result, Z is not kept.
     ' -------------------------------------------------------------------------
@@ -9063,19 +9096,8 @@ planStage
                 mov     stop_fp_, sp_F
     _ret_       mov     plan_stage, #0
 
-lutCodeEnd                                            ' LUT-resident code ends here (task 3535)
-
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 507 of 512 used, read from the compiler 2026-09-27 at DRIVER_REV 41, unchanged since 39 (see the cog fit above)
-
-' =========================================================================
-'  PL-161 (DRIVER_REV 39): THE STOP PLANNER'S LUT OVERLAY. The start sequence (lutCodeStart up to gettgtincr) runs
-'  once; when it ends, loadOverlay (cog RAM) block-loads this code over it, from planCodePtr (set by init()), and
-'  enters the drive loop. So these longs cost no LUT the running driver had. Nothing may call into this block
-'  before the start sequence ends, and the block must end at or before gettgtincr's address (the fit below).
-'  Like the org $200 block above, it must stay after every org-0 item in the file.
-' =========================================================================
-                org     $200
-planOvlStart
+    ' PL-161 (DRIVER_REV 39): the stop planner's core, planA .. rampOut, was a separate overlay over the spent start
+    '  sequence until DRIVER_REV 41; since DRIVER_REV 42 (C2) it is ordinary run-image code, loaded with the rest.
 
     ' -------------------------------------------------------------------------
     ' planA .. planC: the passes and the field travel of the driver's own jerk-limited stop, read at the next pass, from
@@ -9235,8 +9257,10 @@ rampOut
                 qmul    pl_u, jerk_dn_
                 getqx   pl_u
     _ret_       sub     pl_t, pl_u
-planOvlEnd
-                fit     gettgtincr                      ' the overlay ends where the start sequence did
+
+runCodeEnd                                              ' the LUT RUN IMAGE ends here (DRIVER_REV 42)
+
+                fit     $400  ' LUT RAM boundary; the run image is 476 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 42 (RUNCODEEND's VALUE)
 
 CON { license }
 {{

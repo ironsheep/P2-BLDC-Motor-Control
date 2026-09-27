@@ -204,7 +204,7 @@ value in the current tables is 545,000,000 (DocoEng, 11.1 V); the largest 6.5″
 ### One-shot DAT initialization
 
 `sync_required`, the per-motor tables (§4) and the two LUT code pointers (`lutCodePtr`, the
-start sequence; `planCodePtr`, the stop planner's overlay) live in the driver's
+start image; `planCodePtr`, the run image) live in the driver's
 `DAT` image, written by `init()` **before** `coginit`. The cog receives its own copy at load
 time; writing them afterwards has no effect on a running driver.
 
@@ -233,8 +233,8 @@ start(basePin, voltage, detectMode)                   (steering: startOwned() pe
 Inside the driver cog: load the start sequence into LUT RAM and run it there, configure the
 six PWM smart pins (low sides inverted), calibrate the four ADC channels against GIO and VIO,
 compute per-channel scaling with the CORDIC, then — if `sync_required` — `waitatn` until
-released. The start sequence's last act is `loadOverlay`, which loads the stop planner over
-the now-spent start sequence (§4) and enters the drive loop.
+released. The start sequence's last act is `loadOverlay`, which loads the LUT run image over
+the now-spent start image (§4) and enters the drive loop.
 
 **Two wheels start in lockstep.** The steering object starts both drivers parked, reverses
 the right wheel (`forwardIsReverse()`, since the motors face opposite ways), and releases
@@ -320,12 +320,30 @@ tenth frame after the pass (about 230 µs).
 
 Registers live in cog RAM, because instruction operands reach only cog RAM; code may live in
 the LUT, which runs at cog speed. The `fit` comments in the source, read from the compiler at
-DRIVER_REV 39, give the budget: cog RAM **492 of 496** longs; the LUT-resident block
-(`lutCodeStart` $200 … `lutCodeEnd`, the start sequence, `jerkStep` and the other per-pass
-routines) **507 of 512**. The stop planner costs no LUT the running driver had: it is an
-**overlay**, `planOvlStart` $200 … `planOvlEnd`, that `loadOverlay` block-loads from
-`planCodePtr` over the start sequence once that has run — **126 of the 129** longs below
-`gettgtincr`. Nothing may call into the overlay before the start sequence ends.
+DRIVER_REV 42, give the budget:
+
+| Memory | Holds | Used |
+|---|---|---|
+| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `planFp` and `planCorner`, the constants and tables, and every register | **484 of 496** |
+| LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $290: the start sequence and `driveinit` | 144 (hidden under the run image) |
+| LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3DC: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **476 of 512** |
+
+The LUT holds **two images at the same addresses, one after the other** (DRIVER_REV 42). The
+entry code block-loads the start image from `lutCodePtr` and runs it. Its last act is
+`loadOverlay`, in cog RAM, which block-loads the run image from `planCodePtr` over it and
+enters the drive loop. The two are partitioned by call graph: the start image calls only cog
+RAM and its own `driveinit`, and nothing in cog RAM or the run image calls into the start
+image, so no run-image address is reached before the load and no start-image address after
+it. `countIllegal`, which both phases call, lives in cog RAM for that reason. So LUT use is the
+larger of the two images, and the start image costs none. The load happens once, after the ATN
+release: both wheels load the same 476 longs, so their lockstep is unchanged. Until
+DRIVER_REV 41 the LUT held 507 resident longs, and only the planner's 126-long core was an
+overlay over the spent start sequence.
+
+DRIVER_REV 41 also made 21 cog longs do double duty. The entry code, `loadOverlay`, eight
+start-only constants, `adc_modes` and `calibPeriod` are dead once the start sequence has run,
+and each is also the home of a register only the drive loop uses (`pl_v` … `sp_F`, `jrk_e`
+… `jrk_lim`).
 
 ### The frame loop — commutation
 
