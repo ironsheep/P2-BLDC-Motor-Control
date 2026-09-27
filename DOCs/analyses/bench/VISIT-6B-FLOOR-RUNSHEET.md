@@ -39,9 +39,8 @@ The release-candidate pass left three wheels-up items. They run first, on the sa
 | Order | Command | Why | Minutes |
 |---|---|---|---|
 | A1 | `tools/bench-run.sh t0-stopreason` | re-certifies RAMP-SHAPE, RAMP-UNWIND, RAMP-REVERSE, SR-ATLIMIT and EV-STOP after the three harness fixes (RC evaluation F1–F3); banner `src_rev 28` | 2 |
-| A2 | `tools/bench-run.sh dual-pack` | **only if** the Powerpole was not unplugged at the RC pass's prompt (RC F7). Unplug and replug AT THE PACK when told, twice | 3 |
-| A3 | the serial step | **only if** it did not run at the RC pass: `VISIT-10-RUNSHEET.md` step 12, unchanged | 2 + wiring |
-| A4 | `tools/bench-run.sh t0-reva` | optional, your call (PL-163): the Rev A block in `VISIT-10-RUNSHEET.md` | 1 + swaps |
+| A2 | the serial step | **only if** it did not run at the RC pass: `VISIT-10-RUNSHEET.md` step 12, unchanged | 2 + wiring |
+| A3 | `tools/bench-run.sh t0-reva` | optional, your call (PL-163): the Rev A block in `VISIT-10-RUNSHEET.md` | 1 + swaps |
 
 What A1 decides (criteria in source, unchanged except as the SRC_REV 28 note says): R22-T0-RAMP-SHAPE, -REVERSE and
 -UNWIND PASS; R20-T0-SR-ATLIMIT reads SR_COMMANDED on its negative (`T0-25,leg,ATLIMIT_NEG,...,sr_stop,41`); R20-T0-EV-STOP

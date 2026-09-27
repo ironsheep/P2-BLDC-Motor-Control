@@ -21,7 +21,8 @@ Pass 7 (2026-09-26) closed: PL-66, 78, 87, 143, 147, 151, 152, 153, 155, 156, 15
 
 The release-candidate pass (2026-09-27, DRIVER_REV 46,
 [evaluation](analyses/bench/2026-09-27/rc/VISIT-10-RC-EVALUATION.md)) certified: **PL-14, 51, 52, 145, 146, 149, 161**
-(each marked ✅ under its heading; archived at the next sweep). Open after it: 13 release items below, and one visit
+(each marked ✅ under its heading; archived at the next sweep), and **PL-162** closed by Stephen's ruling (no more
+unplug testing; pass 7's detection stands). Open after it: 12 release items below, and one visit
 (a short wheels-up block, then the floor run the same day).
 
 The owner's rule for 6.0.0 (Stephen, 2026-09-26): *"What we need is not an eye towards looking for things we
@@ -52,7 +53,6 @@ do the right thing, and then we can call them done without having to test on the
 | PL-154 | Serial: hold can't be set from the host example, commands can wait 1 s, non-numbers accepted | The serial step |
 | PL-157 | Serial and the Python host lag the 6.0 getters | The serial step |
 | PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Built (DRIVER_REV 38); wheels-up: t0-stopreason at SRC_REV 28 (RAMP-SHAPE, -UNWIND, -REVERSE failed at the RC pass on harness defects, fixed); feel on the floor; owner Q4, Q5 |
-| PL-162 | Two pack cells judged with a wrong instrument (PACK-ABSENT reference, PACK-X criterion) | PACK-X certified at the RC pass; PACK-ABSENT timed out unseen (RC F7): Stephen's fact decides |
 
 **Awaits certification** (fix built, not yet run)
 
@@ -2389,6 +2389,12 @@ judged against the configuration.
 unplug half FAILED on `OPERATOR_TIMEOUT`: no unplug seen in 60 s (`o_seen,FALSE`), so the steady-reference fix was never
 exercised. Whether the Powerpole was unplugged decides it (asked of Stephen): not unplugged → re-run `dual-pack`;
 unplugged → the driver's absent detection is investigated at the desk first (DRIVER_REV 36 changed the pack sampling).
+
+**2026-09-27, STEPHEN RULED: no more unplug testing** — *"we need to stop unplugging the sensor - it's wearing on the
+hardware - we know it works why keep testing it?"* The absent detection's evidence stands on pass 7, where both unplugs
+were detected (the FAIL there was the harness's reference, fixed at SRC_REV 56); DRIVER_REV 36 changed the sampling
+cadence, not the absent test, and the RC pass's steady readings certify the sampling path at DRIVER_REV 46. PL-162 is
+**CLOSED** on that evidence and this ruling; `dual-pack`'s unplug cycles are not run again.
 
 ### PL-163 -- on a Rev A board below about 2.7 A, the fold-back cut the drive on every driven frame
 
