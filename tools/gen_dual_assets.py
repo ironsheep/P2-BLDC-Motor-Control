@@ -6,6 +6,10 @@ by the attended OUTSIDE segment (-D DUAL_PART_BRAKE, bench-run.sh tier dual-brak
 tier dual-ui) -- DOCs/plans/MOTION-HARNESS-DESIGN.md sec 8.2 and 8.3, rebuilt per
 DOCs/analyses/ATTENDED-UI-AUDIT-2026-09-15.md sec 6 (PL-64).
 
+SRC_REV 58 APPENDED the floor run's load screens -- the PL-93 re-drive after each fault leg, the chocked-wheel BLOCK
+trials and the dragged LOAD trials -- their state words and the SPEED number label, after every existing row, so no
+existing index, prompt cell or state cell moves and the art shared with dual-brake is unchanged.
+
 Task 3591 added the SPIN and CREEP screens, the DONE button (row 1, key D: "I did what this screen asked", the
 way T0-24's DONE means it -- DOCs/procedures/PLOT-DISPLAY-RULES.md rule 10) and two number labels: LEG, whose
 digits show the running leg number instead of a countdown, and WATCHING. Inserting DONE at index 3 moved
@@ -101,6 +105,13 @@ FLOOR_DIRECTION = 50
 # "ONE TURN": the travel limit is one revolution of the platform). Regenerate if either changes.
 SPIN_LEGS = 12
 SPIN_LEG_DEG = 360
+# SRC_REV 58 -- MUST match test_bench_dual.spin2's BLK_WAIT_MS / 1_000 (how long the chocked wheel is driven before the
+# harness gives up on the protective stop), LOAD_TRAVEL_MM / 1_000 (a LOAD trial's distance stop) and LOAD_LANE_M (the
+# lane the run sheet asks for: the travel limit plus the stop and a margin). BLK_CHOCK_CM is the run sheet's chock height.
+BLK_WAIT_S = 4
+BLK_CHOCK_CM = 4
+LOAD_TRAVEL_M = 2
+LOAD_LANE_M = 3
 
 # State words, in BM_STATE_* order. A screen names its default state; a few screens draw another at run time
 # (a UI check step's progress, and the end screens' outcome).
@@ -165,6 +176,22 @@ STATES = [
     ("RES_SLIPPED", "RESULT: SLIPPED"),
     ("RES_LIMITED", "RESULT: LIMITED"),
     ("RES_NOTRUN", "RESULT: NOT MEASURED"),
+    # SRC_REV 58, the floor run's load cells (BLOCK and LOAD segments). APPENDED, so every index above is unchanged.
+    #  BLK_ is BASE + trial kind (BLK_COAST, BLK_BRAKE there); LD_ is the READY screen's word, BASE + ready kind
+    #  (LDR_FREE, LDR_DRAG, LDR_LIGHT, LDR_STALL there). check_layout() asserts both orders.
+    ("BLK_CHOCK", "CHOCK THE LEFT WHEEL"),
+    ("BLK_COAST", "TRIAL 1: THE STOP COASTS"),
+    ("BLK_BRAKE", "TRIAL 2: THE STOP BRAKES"),
+    ("BLK_LATCHED", "IT STOPPED ITSELF: CHECKING"),
+    ("LD_SETUP", "STRAP ON, LANE CLEAR"),
+    ("LD_FREE", "NEXT: KEEP THE STRAP SLACK"),
+    ("LD_DRAG", "NEXT: YOU PULL WHEN TOLD"),
+    ("LD_LIGHT", "LAST TOO LIGHT: PULL HARDER"),
+    ("LD_STALL", "LAST STALLED: PULL LESS"),
+    ("LD_SLACK", "KEEP THE STRAP SLACK"),
+    ("LD_PULL", "PULL: SLOW IT, KEEP IT MOVING"),
+    ("LD_LETGO", "LET GO NOW"),
+    ("LD_BACK", "PUSH IT BACK TO THE START"),
 ]
 STATE = {name: idx for idx, (name, _) in enumerate(STATES)}
 
@@ -197,6 +224,9 @@ CD_KINDS = [
     #  never count down; WATCHING counts the creep window down
     ("LEG", "LEG NUMBER (1 TO %d)" % SPIN_LEGS),
     ("WATCHING", "WATCHING FOR (SECONDS)"),
+    # SRC_REV 58: SPEED's digits are the dragged wheel's measured speed as a percentage of its command, live while he
+    #  pulls, so he can slow it without stopping it; they never count down
+    ("SPEED", "SPEED (% OF COMMAND)"),
 ]
 CD = {name: idx for idx, (name, _) in enumerate(CD_KINDS)}
 
@@ -313,6 +343,58 @@ SCREENS = [
      "FINISHED. THE RESULT IS BELOW. WHEN THIS PANEL CLOSES THE WHEELS ARE OFF AND ROLL FREELY: IF THE PLATFORM "
      "IS ON THE INCLINE, HOLD IT OR LIFT IT OFF. CLICK START (KEY S) TO CLOSE.",
      "DONE", ["START"], "CLOSES_IN", "OPER_END_TIMEOUT_MS"),
+    # SRC_REV 58, the floor run's load cells. APPENDED: every screen above keeps its index and its prompt cell.
+    #  SPIN_RD_READY -- after each FAULT leg's recovery, the same slow spin again (PL-93: the drive after a fault)
+    #  FLOOR_SETUP   -- a BLOCK or LOAD trial's steering start, nothing moving
+    #  BLOCK_*       -- the chocked left wheel and the protective stop (PL-106, PL-111, PL-132)
+    #  LOAD_*        -- a straight drive at a lowered current limit, dragged on one side (PL-150)
+    ("SPIN_RD_READY",
+     "FAULT CLEARED. NEXT: THE SAME SLOW SPIN AGAIN, THE SAME WAY, TO CHECK A DRIVE AFTER A FAULT DRAWS NO EXTRA "
+     "CURRENT. IT STOPS BY ITSELF BEFORE THE TURN IS UP. STAND CLEAR. CLICK START (KEY S). SKIP (KEY K) SKIPS ONLY "
+     "THIS RE-DRIVE.",
+     "NXT_R_SLOW", ["START", "SKIP"], "LEG", "OPER_START_TIMEOUT_MS"),
+    ("FLOOR_SETUP",
+     "STARTING THE DRIVERS AND SETTING UP THE TRIAL NAMED BELOW. NOTHING MOVES YET -- HANDS CLEAR, THE TRIAL "
+     "FOLLOWS AT ONCE. STOP (SPACE BAR) CANCELS IT.",
+     "STARTING", ["STOP"], "NONE", "0"),
+    ("BLOCK_SETUP",
+     "BLOCKED-WHEEL TEST. LEAVE THE PLATFORM WHERE IT IS. CHOCK THE LEFT WHEEL (P32 BOARD) FRONT AND BACK: A WEDGE "
+     "OR BLOCK AT LEAST %d CM TALL HARD AGAINST EACH SIDE OF THE TYRE. ONLY THE LEFT WHEEL IS DRIVEN, IN TWO SHORT "
+     "TRIALS. HANDS CLEAR, THEN CLICK START (KEY S). SKIP (KEY K) SKIPS THIS TEST." % BLK_CHOCK_CM,
+     "BLK_CHOCK", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("BLOCK_DRIVE",
+     "THE LEFT WHEEL IS DRIVEN GENTLY AGAINST THE CHOCKS. IT SHOULD NOT TURN, AND WITHIN %d SECONDS THE DRIVE "
+     "SHOULD STOP ITSELF. HANDS CLEAR. STOP (SPACE BAR) STOPS IT NOW." % BLK_WAIT_S,
+     "BLK_COAST", ["STOP"], "GIVES_UP", "BLK_WAIT_MS"),
+    ("BLOCK_CHECK",
+     "THE DRIVE STOPPED ITSELF. THE HARNESS READS THE STOP, CHECKS A DRIVE IS REFUSED, CLEARS THE STOP AND CHECKS "
+     "A DRIVE IS TAKEN AGAIN, STOPPING IT AT ONCE: THE CHOCKED WHEEL MAY PUSH FOR AN INSTANT. HANDS CLEAR, NOTHING "
+     "TO CLICK.",
+     "BLK_LATCHED", [], "NONE", "0"),
+    ("LOAD_SETUP",
+     "LOADED-DRIVE TEST. REMOVE THE CHOCKS. AIM THE PLATFORM'S FRONT DOWN A CLEAR STRAIGHT LANE AT LEAST %d M "
+     "LONG, TETHER SLACK. TIE A STRAP TO THE FRAME BESIDE THE LEFT WHEEL; STAND BEHIND HOLDING ITS END, SLACK. "
+     "CLICK START (KEY S). SKIP (KEY K) SKIPS THIS TEST." % LOAD_LANE_M,
+     "LD_SETUP", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("LOAD_READY",
+     "NEXT: THE PLATFORM DRIVES STRAIGHT AHEAD AT A SLOW WALK AND STOPS BY ITSELF WITHIN %d M. WALK BEHIND IT "
+     "HOLDING THE STRAP; THE LINE BELOW SAYS WHETHER YOU WILL PULL. CLICK START (KEY S). SKIP (KEY K) ENDS THIS "
+     "TEST." % LOAD_TRAVEL_M,
+     "LD_FREE", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("LOAD_DRIVE",
+     "DRIVING STRAIGHT. WALK BEHIND IT, STRAP SLACK, UNTIL THIS PANEL SAYS PULL. STOP (SPACE BAR) STOPS IT NOW.",
+     "LD_SLACK", ["STOP"], "NONE", "0"),
+    ("LOAD_PULL",
+     "PULL BACK ON THE STRAP, FIRMLY AND STEADILY, AS YOU WALK: IT SHOULD SLOW TO ABOUT HALF SPEED BUT KEEP MOVING, "
+     "STRAIGHT. THE NUMBER IS ITS SPEED. KEEP PULLING UNTIL THIS PANEL SAYS LET GO. STOP (SPACE BAR) STOPS IT.",
+     "LD_PULL", ["STOP"], "SPEED", "LOAD_PULL_MS"),
+    ("LOAD_LETGO",
+     "LET GO: KEEP THE STRAP SLACK. THE PLATFORM IS STOPPING BY ITSELF. STOP (SPACE BAR) STOPS IT NOW.",
+     "LD_LETGO", ["STOP"], "NONE", "0"),
+    ("LOAD_BACK",
+     "THE WHEELS ARE OFF AND ROLL FREELY. PUSH THE PLATFORM BACK TO WHERE IT STARTED AND AIM IT DOWN THE LANE "
+     "AGAIN, THEN CLICK DONE (KEY D). AFTER THE LAST TRIAL, UNTIE THE STRAP FIRST.",
+     "LD_BACK", ["DONE"], "GIVES_UP", "OPER_ANSWER_TIMEOUT_MS"),
 ]
 SCR = {name: idx for idx, (name, *_rest) in enumerate(SCREENS)}
 SCR_PREVIEW_FIRST, SCR_PREVIEW_LAST = SCR["BRAKE_START"], SCR["END"]
@@ -463,7 +545,8 @@ def check_layout():
     runs = [("NXT_", ["R_SLOW", "L_SLOW", "R_MED", "L_MED", "R_BRISK", "L_BRISK"]),
             ("SPN_", ["R_SLOW", "L_SLOW", "R_MED", "L_MED", "R_BRISK", "L_BRISK"]),
             ("FLT_NEXT_", ["R", "L"]), ("FLT_", ["R", "L"]),
-            ("CRP_", ["COAST", "LOWCEIL", "HOLD"]), ("EXP_", ["COAST", "LOWCEIL", "HOLD"])]
+            ("CRP_", ["COAST", "LOWCEIL", "HOLD"]), ("EXP_", ["COAST", "LOWCEIL", "HOLD"]),
+            ("BLK_", ["COAST", "BRAKE"]), ("LD_", ["FREE", "DRAG", "LIGHT", "STALL"])]
     for prefix, suffixes in runs:
         base = STATE[prefix + suffixes[0]]
         for offset, suffix in enumerate(suffixes):
