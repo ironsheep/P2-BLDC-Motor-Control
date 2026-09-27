@@ -4646,7 +4646,14 @@ CON { PL-160: the jerk-limited ramp's internal limits, in the driver's units }
     STOP_FP_BITS            = 8
     ' The stop plan saturates beyond this many drive passes (~9 minutes): only a raw setRampingValues() slow-down
     '  step of a few units can ask for a stop that long, and its sums would leave a long. A saturated stop is due at once.
-    PLAN_PASSES_MAX         = 1 << 20
+    PLAN_PASSES_LOG2        = 20            ' WP5 (C5(c)): the driver loads it as DECOD #PLAN_PASSES_LOG2, no ## long
+    PLAN_PASSES_MAX         = 1 << PLAN_PASSES_LOG2
+    ' WP5 (C5(c)): a saturated plan's U sum, high long 2^24 (6 x SUM >= 2^56, beyond any real plan), for planFp to saturate
+    PLAN_SAT_UH_LOG2        = 24
+    ' WP5 (C5(a)): planStage's dispatch, one bit per plan_stage value (DECOD): part A at stages 1, 4, 7, part B at 2, 5, 8
+    '  (part C at 3, 6, 9 is the rest). Each mask fits a 9-bit immediate.
+    PLAN_STAGES_A           = (1 << 1) | (1 << 4) | (1 << 7)
+    PLAN_STAGES_AB          = PLAN_STAGES_A | (1 << 2) | (1 << 5) | (1 << 8)
     ' PL-161 (DRIVER_REV 39): the driver's stop planner saturates the plan (due at once) when an acceleration away from
     '  rest would take more than this many passes to unwind (a jerk-limited ramp unwinds in ~480 at any limit; only a
     '  jerk lowered mid-ramp asks for more), which keeps its products inside 32 and 64 bits.
@@ -6840,7 +6847,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 44      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 45      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7044,6 +7051,17 @@ CON { driver internal Constants }
                                             '     (8 table longs, 12 code longs); start image 144 and run image 476
                                             '     unchanged. Proved equivalent to mem-reduce-start by tools/pasm_equiv
                                             '     (2055 scenarios); PASM (cog) and Spin2 (init) change; no ABI change
+                                            ' 45: memory reduction WP5 (C5): the stop planner consolidated.
+                                            '     planStage runs one parameterised part A, B or C for all three
+                                            '     plans (m = 1, the low end, the high end) and one fold, with
+                                            '     plan_stage still 1 .. 9 and every stage on the same frame; run
+                                            '     forms n (n - 1) / 2 from the n - 1 it has and tests n with TJZ;
+                                            '     planSat and planFp load their constants with DECOD / BMASK;
+                                            '     planCorner takes B = alpha + (alpha - J), 8 J V as one QMUL and
+                                            '     reuses planA's alpha - J. Cog 449 -> 441 of 496, run image 476 ->
+                                            '     457 of 512, start image 144 unchanged. Proved equivalent to
+                                            '     mem-reduce-start by tools/pasm_equiv (2055 scenarios); PASM (cog +
+                                            '     LUT) change; no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -8110,24 +8128,23 @@ planFp                                                  ' PL-161: the plan's fie
                 cmp     pl_q, ##$0080_0000          wc  ' Q: under 2^55, so the quotient fits a long (C)?
                 shl     pl_q, #8
                 or      pl_t, pl_q
-    if_nc       mov     pl_t, ##$7FFF_FFFF              ' NO: saturated
+    if_nc       bmask   pl_t, #30                       ' NO: saturated at POSX, (%10 << 30) - 1 (p2kbPasm2Bmask; WP5, C5(c))
                 ret
 
 planCorner                                              ' PL-161: planA's corner (see planA), here for room: a stop read
                 mov     pl_t, pl_a                      '  just before a reversal's crossing stops the field AT zero. n, the least
-                shl     pl_t, #1                        '  with n alpha - J n (n + 1) / 2 >= V; n - 1 passes from alpha - J down
-                sub     pl_t, jerk_dn_                  '  by J, and the n-th at rest. B = 2 alpha - J
+                add     pl_t, pl_f                      '  with n alpha - J n (n + 1) / 2 >= V; n - 1 passes from alpha - J down
+                                                        '  by J, and the n-th at rest. B = 2 alpha - J = alpha + pl_f: planA left
+                                                        '  pl_f = alpha - J, and nothing here writes pl_f (WP5, C5(d))
                 qmul    pl_t, pl_t
+                mov     pl_c, jerk_dn_                  ' (while the CORDIC works)
+                shl     pl_c, #3                        ' 8 J: J <= 2_091 (jerkForAccel() of a limit capped at ACCEL_STEP_CAP,
+                                                        '  applyRamps() its one writer), so 8 J < 2^32 and 8 J x V is exact
                 getqx   pl_u
                 getqy   pl_q                            ' B^2
-                qmul    pl_v, jerk_dn_
+                qmul    pl_c, pl_v
                 getqx   pl_c
-                getqy   pl_d                            ' J V
-                shl     pl_d, #3                        ' 8 J V, 64-bit
-                mov     pl_n, pl_c
-                shr     pl_n, #29
-                or      pl_d, pl_n
-                shl     pl_c, #3
+                getqy   pl_d                            ' 8 J V, 64-bit (was J V shifted left 3 in 64 bits: the same value)
                 sub     pl_u, pl_c                  wc
                 subx    pl_q, pl_d                      ' B^2 - 8 J V, at least 0 in the corner
                 qsqrt   pl_u, pl_q
@@ -8141,8 +8158,7 @@ planCorner                                              ' PL-161: planA's corner
                 getqx   pl_n                            ' n = ceil((B - isqrt) / 2J): the least n, or one over it
                 mov     pl_c, pl_n
                 sub     pl_c, #1                        ' n - 1
-                mov     pl_u, pl_c
-                add     pl_u, #1
+                mov     pl_u, pl_n                      ' n (was (n - 1) + 1)
                 mul     pl_u, pl_c
                 shr     pl_u, #1                        ' (n - 1) n / 2
                 qmul    pl_u, jerk_dn_
@@ -8154,9 +8170,7 @@ planCorner                                              ' PL-161: planA's corner
     if_nc       mov     pl_n, pl_c                      ' YES: n - 1 is the least
                 add     pl_P, #1                        ' the crossing pass, at rest
                 sub     pl_n, #1
-                mov     pl_f, pl_a
-                sub     pl_f, jerk_dn_                  ' alpha - J, then down by J
-                neg     pl_d, jerk_dn_
+                neg     pl_d, jerk_dn_                  ' pl_f is still planA's alpha - J: the run is from it, down by J
                 call    #run                            ' (n - 1, alpha - J, -J)
     _ret_       modc    _set                        wc  ' C = 1: the plan is complete (planA's return, which jumped here)
 
@@ -8433,18 +8447,18 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
 '                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
 
 ' $1f8 for reg cogs
-    fit     496  ' 449 USED, 47 FREE, 2026-09-27 (DRIVER_REV 44, memory reduction WP4: the hall table as nibbles carrying
-                 ' the integrity events, C4, 8 table longs and 12 code longs; 469 at DRIVER_REV 43, WP3, the frame and
-                 ' drive-pass peepholes; 484 at DRIVER_REV 42, WP2, countIllegal's 13 longs back in cog RAM;
-                 ' 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) -- read from the
-                 ' compiler, never hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`,
-                 ' PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1C0, the last register, so USED is $1C1). LUT
-                 ' code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog
-                 ' RAM, so REGISTERS are what this budget is for; code can live in the LUT images below (task 3535), read
-                 ' the same way (DRIVER_REV 44, unchanged since 42): the start image, lutCodeStart $200 to lutCodeEnd $290,
-                 ' 144 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3DC, 476 of 512 longs (36
-                 ' free). Until DRIVER_REV 41 the LUT held 507 resident longs, with the planner's 126-long overlay over the
-                 ' start sequence.
+    fit     496  ' 441 USED, 55 FREE, 2026-09-27 (DRIVER_REV 45, memory reduction WP5: planFp's BMASK and planCorner's
+                 ' trims, C5; 449 at DRIVER_REV 44, WP4, the hall table as nibbles carrying the integrity events; 469 at
+                 ' DRIVER_REV 43, WP3, the frame and drive-pass peepholes; 484 at DRIVER_REV 42, WP2, countIllegal's 13
+                 ' longs back in cog RAM; 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) --
+                 ' read from the compiler, never hand-counted (a hand count here once ran ~80 short): `pnut-ts -l
+                 ' isp_bldc_motor.spin2`, PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1B8, the last
+                 ' register, so USED is $1B9). LUT code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but
+                 ' instruction operands reach only cog RAM, so REGISTERS are what this budget is for; code can live in the
+                 ' LUT images below (task 3535), read the same way (DRIVER_REV 45): the start image, lutCodeStart $200 to
+                 ' lutCodeEnd $290, 144 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3C9, 457
+                 ' of 512 longs (55 free; 476 until WP5 merged planStage and trimmed run and planSat). Until DRIVER_REV 41
+                 ' the LUT held 507 resident longs, with the planner's 126-long overlay over the start sequence.
 
 ' =========================================================================
 '  LUT CODE ($200-$3FF), TWO IMAGES AT THE SAME ADDRESSES (DRIVER_REV 42, memory reduction WP2, C2):
@@ -8704,7 +8718,7 @@ driveinit                                               ' init drive pwm
 
 lutCodeEnd                                              ' the LUT START IMAGE ends here (task 3535; DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the start image is 144 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 44 (LUTCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the start image is 144 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 45 (LUTCODEEND's VALUE)
 
 ' =========================================================================
 '  THE LUT RUN IMAGE (DRIVER_REV 42, memory reduction WP2, C2): every routine that runs only once the drive loop has
@@ -9060,30 +9074,29 @@ xStar
     '  d i (i - 1) / 2 = n V - first n (n + 1) / 2 - d (n^3 - n) / 6, kept as 6 x SUM = 3 [(n - 1) V + (n + 1) v_end]
     '  + d (n^3 - n) / 2 (exact: no division), in two 64-bit sums: pl_Uh:pl_Ul += (n - 1) V + (n + 1) v_end and
     '  pl_Dh:pl_Dl += d (n^3 - n) / 2. Keeps pl_n and pl_c.
-    '  Up to five QMULs, each waited for before the next is issued. Uses pl_t, pl_u, pl_q; writes C and Z.
+    '  Up to five QMULs, each waited for before the next is issued. Uses pl_t, pl_u, pl_q; writes C, and Z unless n = 0.
+    '  WP5 (C5(b)): h = n (n - 1) / 2 is formed from the n - 1 already in pl_t, while the first QMUL runs, so |first|
+    '  and |d| take pl_q and pl_u; the same values, and every caller finds pl_t, pl_u, pl_q and the flags dead.
     ' -------------------------------------------------------------------------
 run
-                cmp     pl_n, #0                    wz  ' Q: an empty run?
-    if_z        ret
+                tjz     pl_n, #.runEnd                  ' an empty run: nothing (TJZ writes no flag, p2kbPasm2Tjz)
                 add     pl_P, pl_n                      ' its passes
                 mov     pl_t, pl_n
                 sub     pl_t, #1
                 qmul    pl_t, pl_v                      ' (n - 1) V, 64-bit
+                mul     pl_t, pl_n                      ' n (n - 1): exact for n < 65_536, and only ever multiplied by d,
+                shr     pl_t, #1                        '  which is 0 in the one run longer (the plateau)
                 getqx   pl_q
                 getqy   pl_u
                 add     pl_Ul, pl_q                 wc
                 addx    pl_Uh, pl_u
-                abs     pl_t, pl_f                  wc  ' |first|; C: first < 0
-                qmul    pl_t, pl_n                      ' n |first|: at most V + |first|, inside a long
+                abs     pl_q, pl_f                  wc  ' |first|; C: first < 0
+                qmul    pl_q, pl_n                      ' n |first|: at most V + |first|, inside a long
                 getqx   pl_q
     if_c        neg     pl_q                            ' n first (GETQX and QMUL leave C)
                 sub     pl_v, pl_q
-                mov     pl_t, pl_n
-                sub     pl_t, #1
-                mul     pl_t, pl_n                      ' n (n - 1): exact for n < 65_536, and only ever multiplied by d,
-                shr     pl_t, #1                        '  which is 0 in the one run longer (the plateau)
-                abs     pl_q, pl_d                  wc  ' |d|; C: d < 0
-                qmul    pl_t, pl_q                      ' |d| n (n - 1) / 2, inside a long
+                abs     pl_u, pl_d                  wc  ' |d|; C: d < 0
+                qmul    pl_t, pl_u                      ' |d| n (n - 1) / 2, inside a long
                 getqx   pl_u
     if_c        neg     pl_u
                 sub     pl_v, pl_u                      ' V := v_end
@@ -9099,9 +9112,9 @@ run
                 mul     pl_t, pl_n
                 sub     pl_t, #1                        ' n^2 - 1 (n < 65_536 whenever d is not 0)
                 qmul    pl_t, pl_n
+                abs     pl_q, pl_d                      ' (while the CORDIC works)
                 getqx   pl_t                            ' n^3 - n, inside a long for n < 1_625
                 shr     pl_t, #1                        ' (n^3 - n) / 2: (n - 1) n (n + 1) is even
-                abs     pl_q, pl_d
                 qmul    pl_t, pl_q                      ' |d| (n^3 - n) / 2, 64-bit
                 getqx   pl_q
                 getqy   pl_u
@@ -9130,56 +9143,49 @@ run
     '  stop_passes_ is the largest passes-to-rest of the three, counted from the pass after this one; stop_fp_ the
     '  largest travel, 1/256 hall tick. Published by the status write of the tenth frame after the pass (~230 us).
     ' -------------------------------------------------------------------------
+    '  WP5 (C5(a)): ONE parameterised stage per part. Stage s runs part A (s = 1, 4, 7), B (2, 5, 8) or C (3, 6, 9) of
+    '  the plan for end m = 1 (s 1-3), the low end (4-6) or the high end (7-9); only A's (v, a) and the fold's take
+    '  pass differ between the ends. plan_stage keeps its values 1 .. 9 and the same stage runs on the same frame as
+    '  until DRIVER_REV 44 (the same transitions: +1 after A or B, 4 after the m = 1 plan, 7 after the low end, 0 once
+    '  published), so the published pair is the same, on the same frame (the tenth after the pass).
+    ' -------------------------------------------------------------------------
 planStage
-                jmprel  plan_stage                      ' to the stage's entry below (1 .. 9)
-                ret                                     ' 0: none (never called with 0)
-                jmp     #.a0                            ' 1: m = 1, planA
-                jmp     #.b                             ' 2: planB
-                jmp     #.c0                            ' 3: planC, kept as the m = 1 figure
-                jmp     #.aLo                           ' 4: m = 2 at a' = a - Jx, planA
-                jmp     #.b                             ' 5: planB
-                jmp     #.cT                            ' 6: planC, folded in
-                jmp     #.aHi                           ' 7: m = 2 at a' = a + Jx, planA
-                jmp     #.b                             ' 8: planB
-                jmp     #.cT                            ' 9: planC, folded in, and published
-.a0             mov     pl_v, drv_incr
+                decod   pl_t, plan_stage                ' one bit per stage (pl_t is dead here: every part writes it
+                test    pl_t, #PLAN_STAGES_AB       wz  '  before it reads it). Q: part C (stage 3, 6 or 9)?
+    if_z        jmp     #.c
+                add     plan_stage, #1                  ' A or B: the next stage (an A that completes the plan sets its own below)
+                test    pl_t, #PLAN_STAGES_A        wz  ' Q: part B (stage 2, 5 or 8)?
+    if_z        jmp     #planB                          ' YES: its tail's return is ours
+                ' part A (plan_stage now 2, 5 or 8): (v, a) for this end
+                cmp     plan_stage, #5              wcz ' C: m = 1 (stage 1); Z: the low end (stage 4); neither: the high end (7)
+                mov     pl_t, jerk_up_
+                fge     pl_t, jerk_dn_                  ' Jx
+    if_z        neg     pl_t                            ' the low end: -Jx
                 mov     pl_a, accel_now_
-                call    #planA
-    if_c        jmp     #.fin0                          ' the plan ended in planA (at rest, the corner, saturated)
-    _ret_       mov     plan_stage, #2
-.b              call    #planB
-    _ret_       add     plan_stage, #1
-.c0             call    #planC
-.fin0           call    #planFp
-                mov     sp_P, pl_P                      ' the m = 1 figure: the running maximum starts here
-                mov     sp_F, pl_t
-    _ret_       mov     plan_stage, #4
-.aLo            mov     pl_a, jerk_up_
-                fge     pl_a, jerk_dn_
-                neg     pl_a                            ' -Jx
-                jmp     #.aT
-.aHi            mov     pl_a, jerk_up_
-                fge     pl_a, jerk_dn_                  ' +Jx
-.aT             add     pl_a, accel_now_                ' a' = a -/+ Jx
+    if_nc       add     pl_a, pl_t                      ' m = 2: a' = a -/+ Jx (m = 1: a)
                 mov     pl_v, drv_incr
-                add     pl_v, pl_a                      ' v' = v + a'
-                mov     sc_v, pl_v                      ' kept for the take pass's own advance
+    if_nc       add     pl_v, pl_a                      ' m = 2: v' = v + a' (m = 1: v)
+                mov     sc_v, pl_v                      ' kept for the take pass's own advance (read only when m = 2)
                 call    #planA
-    if_c        jmp     #.fold
-    _ret_       add     plan_stage, #1
-.cT             call    #planC
-.fold           add     pl_P, #1                        ' the take pass itself,
-                abs     pl_t, sc_v                      '  whose advance is |v'|: 6 |v'| = 3 x (2 |v'|), into the U sum
-                shl     pl_t, #1
-                add     pl_Ul, pl_t                 wc
-                addx    pl_Uh, #0
-                call    #planFp
+    if_c        jmp     #.fold                          ' the plan ended in planA (at rest, the corner, saturated)
+                ret
+.c              call    #planC
+.fold           test    plan_stage, #%1100          wz  ' Z: m = 1 (plan_stage 2 or 3 here; 5, 6, 8, 9 are m = 2)
+    if_nz       add     pl_P, #1                        ' m = 2: the take pass itself,
+    if_nz       abs     pl_t, sc_v                      '  whose advance is |v'|: 6 |v'| = 3 x (2 |v'|), into the U sum
+    if_nz       shl     pl_t, #1
+    if_nz       add     pl_Ul, pl_t                 wc
+    if_nz       addx    pl_Uh, #0
+    if_z        mov     sp_P, #0                        ' m = 1: the running maximum starts here (max(0, x) = x)
+    if_z        mov     sp_F, #0
+                call    #planFp                         ' (writes C, not Z)
                 fge     sp_P, pl_P                      ' the largest passes (unsigned max)
                 fge     sp_F, pl_t                      ' the largest travel
-                cmp     plan_stage, #7              wc  ' Q: the low end (stage 4 or 6) just done?
-    if_c        mov     plan_stage, #7                  ' YES: the high end next
+                cmp     plan_stage, #7              wc  ' Q: m = 1 or the low end just done?
+    if_c_and_z  mov     plan_stage, #4                  ' m = 1: the low end next
+    if_c_and_nz mov     plan_stage, #7                  ' the low end: the high end next
     if_c        ret
-                mov     stop_passes_, sp_P              ' NO: both ends done -- publish
+                mov     stop_passes_, sp_P              ' both ends done -- publish
                 fle     stop_passes_, ##PLAN_PASSES_MAX
                 mov     stop_fp_, sp_F
     _ret_       mov     plan_stage, #0
@@ -9323,8 +9329,8 @@ planC           cmp     pl_n, pl_c                  wz  ' 2. Q: did the rise rea
                 neg     pl_d, jerk_dn_
                 jmp     #run                            ' (ceil(x0 / J), x0, -J); run's return is ours
 planSat         modc    _set                        wc  ' a plan too long to count (C = 1: complete): a limit fires at once
-                mov     pl_P, ##PLAN_PASSES_MAX
-    _ret_       mov     pl_Uh, ##$0100_0000             ' 6 x SUM >= 2^56 (any D is under 2^44): planFp saturates it
+                decod   pl_P, #PLAN_PASSES_LOG2         ' PLAN_PASSES_MAX (p2kbPasm2Decod; WP5, C5(c): was a ## constant)
+    _ret_       decod   pl_Uh, #PLAN_SAT_UH_LOG2        ' 6 x SUM >= 2^56 (any D is under 2^44): planFp saturates it
 
     ' -------------------------------------------------------------------------
     ' rampOut: f(x) = x + (x - J) + (x - 2J) + ... (terms while positive), the speed one pass at x sheds followed by a
@@ -9348,7 +9354,7 @@ rampOut
 
 runCodeEnd                                              ' the LUT RUN IMAGE ends here (DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the run image is 476 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 44 (RUNCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the run image is 457 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 45 (RUNCODEEND's VALUE)
 
 CON { license }
 {{

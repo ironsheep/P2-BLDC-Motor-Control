@@ -321,13 +321,13 @@ tenth frame after the pass (about 230 µs).
 
 Registers live in cog RAM, because instruction operands reach only cog RAM; code may live in
 the LUT, which runs at cog speed. The `fit` comments in the source, read from the compiler at
-DRIVER_REV 44, give the budget:
+DRIVER_REV 45, give the budget:
 
 | Memory | Holds | Used |
 |---|---|---|
-| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `planFp` and `planCorner`, the constants and tables, and every register | **449 of 496** |
+| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `planFp` and `planCorner`, the constants and tables, and every register | **441 of 496** |
 | LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $290: the start sequence and `driveinit` | 144 (hidden under the run image) |
-| LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3DC: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **476 of 512** |
+| LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3C9: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **457 of 512** |
 
 The LUT holds **two images at the same addresses, one after the other** (DRIVER_REV 42). The
 entry code block-loads the start image from `lutCodePtr` and runs it. Its last act is
@@ -337,7 +337,7 @@ RAM and its own `driveinit`, and nothing in cog RAM or the run image calls into 
 image, so no run-image address is reached before the load and no start-image address after
 it. `countIllegal`, which both phases call, lives in cog RAM for that reason. So LUT use is the
 larger of the two images, and the start image costs none. The load happens once, after the ATN
-release: both wheels load the same 476 longs, so their lockstep is unchanged. Until
+release: both wheels load the same 457 longs, so their lockstep is unchanged. Until
 DRIVER_REV 41 the LUT held 507 resident longs, and only the planner's 126-long core was an
 overlay over the spent start sequence.
 
@@ -361,6 +361,13 @@ out once (`packHallDeltas()`), from the motor's byte table (`deltas65`, `deltas4
 authoring format) with any test hall swap applied. The frame then needs 8 instructions where
 it had 20. A step outside −1..+1 cannot be packed, so every start checks every motor's byte
 table first and refuses a bad one with `ERR_BAD_MOTOR_TABLE` (`bHallDeltaTablesValid()`).
+
+DRIVER_REV 45 took 8 cog longs and 19 run-image longs out of the stop planner. `planStage`
+runs one parameterised part A, B or C for all three plans (the stop taken at the next pass, and
+the two ends of the take pass) and one fold. It adds the take pass only when the plan has one.
+`plan_stage` keeps its values 1 to 9, so each stage runs on the same frame as before and the
+published pair is unchanged. `run`, `planSat`, `planFp` and `planCorner` lost redundant
+instructions, and `DECOD`/`BMASK` replace `##` constants.
 
 ### The frame loop — commutation
 
