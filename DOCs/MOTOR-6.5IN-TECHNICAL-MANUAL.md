@@ -83,7 +83,7 @@ of the motor and how to drive it.
 | Wheel circumference | 518.6 mm | DERIVED (π × 165.1) |
 | Travel per hall tick | **5.76 mm** | DERIVED (518.6 / 90) |
 | Hall state sequence | positive power (ticks rising): 1-5-4-6-2-3 · negative power (ticks falling): 1-3-2-6-4-5 | DERIVED (`deltas65`) and MEASURED (+50 power raised `pos`), PL-39 |
-| Winding resistance, phase to phase | **≈ 0.43 Ω** (every pair 0.35–0.49 Ω) | MEASURED, §2.4 |
+| Winding resistance, phase to phase | **≈ 0.48 Ω** (every pair 0.41–0.55 Ω) | MEASURED, §2.4 |
 
 There is **no shaft**. The motor *is* the wheel, so there is nowhere to mount a shaft encoder
 — which is why every position fact below had to be obtained from the halls or by hand, and why
@@ -136,19 +136,20 @@ R = d² × V × rSense ÷ net mV.
 
 | | LEFT | RIGHT | Label |
 |---|---|---|---|
-| Every pair, two passes | 383–492 mΩ | 345–460 mΩ | MEASURED |
-| Mean over pass 4's two starts | **442 mΩ** | **420 mΩ** | MEASURED |
-| The two units | 5 % apart | | MEASURED |
+| Every pair, on the measured pack voltage (20.72 V) | 454–552 mΩ | 406–515 mΩ | MEASURED |
+| Mean over two starts | **501 mΩ** | **467 mΩ** | MEASURED |
+| The two units | 7 % apart | | MEASURED |
 
-MEASURED — `VISIT-10-PASS4-EVALUATION.md` §5, `VISIT-10-PASS5-EVALUATION.md` §5. The negative control
-is exact: with one lead withheld in firmware, the two pairs through that lead read "not visible" and
-the third still measures, in 10 of 10 starts.
+MEASURED — Visit 10 pass 7 (`2026-09-26/pass7/VISIT-10-PASS7-EVALUATION.md` §3), with the calibrated pack
+sensor supplying V. Earlier passes computed with the *nominal* 18.5 V and read 12 % low (left 442, right
+420 mΩ; `VISIT-10-PASS4-EVALUATION.md` §5), exactly the ratio 18.5 / 20.72. The negative control is exact:
+with one lead withheld in firmware, the two pairs through that lead read "not visible" and the third still
+measures, in 10 of 10 starts.
 
 **How good the number is.** Each reading is only 14–19 mV on the shunt, and one millivolt moves R by
-about 6 %, so a single pair is good to about **±6 %**. The formula also uses the *nominal* 18.5 V,
-because there is no bus-voltage reading (§7.1). Take ≈ 0.43 Ω as right to within about 10 % on both
-units. It is phase to phase through the driver's own bridge, FETs and leads included. It is not a meter
-reading of the bare winding.
+about 6 %, so a single pair is good to about **±6 %**. V is now measured (§7.1). Take **≈ 0.48 Ω** as
+right to within about 7 % on both units. It is phase to phase through the driver's own bridge, FETs and
+leads included. It is not a meter reading of the bare winding.
 
 **The inductance is not measured.** It is only bounded: the graded short (§6.5) brakes less than its
 duty share at low percentages, which says the winding's L/R time constant is not much shorter than a
@@ -607,8 +608,8 @@ the same comparison at pass 5. One tick is 5.76 mm, so the 120 × 10⁶ coast is
 motor's drag, and a short stops only the wheel's own inertia. On the floor the platform's mass is behind
 the wheel. A short from speed then becomes a braking torque at the contact patch, and the platform tips
 if its centre of gravity is high. A coast becomes a roll, and on an incline a runaway. The
-short-circuit current behind that torque is about **40–48 A** from the ceiling speed: 17–20 V of back-EMF
-into ≈ 0.43 Ω. That figure is DERIVED from the measured R and has not been measured, because the shunt
+short-circuit current behind that torque is about **35–42 A** from the ceiling speed: 17–20 V of back-EMF
+into ≈ 0.48 Ω. That figure is DERIVED from the measured R and has not been measured, because the shunt
 cannot see it (§3.1).
 
 **The graded short sits between the two.** The driver can short the phases for a set percentage of each
@@ -764,8 +765,19 @@ jolt. Each drive change has made it smaller. Aligning the earlier drive cut the 
 speed change is 79–84, against 116–125 with a flat 18° lead, and the worst is 253–270. MEASURED —
 `VISIT-8B-EVALUATION.md` §3.7.
 
-The largest kicks come where duty is pinned, above the knee (§6.3): there the drive has no voltage
-left to absorb a change. Below the knee the kick is smaller but still present in both directions.
+**The kick was a driver defect, and it is gone** (DRIVER_REV 34). On the one drive pass where a speed
+change reached its target, the driver did not advance the field, though every pass before and after it
+did. So each arrival stepped the field back by a whole increment, 12° electrical at 147 × 10⁶. That rang
+the rotor's load angle at about 18 Hz, and the motoring half of the ring was the current kick 10–35 ms
+after arrival. It also explains everything the logs had shown: the kick grew with the speed arrived at,
+not with the size of the step, and slow-downs were worse than speed-ups. A desk model reproduced the
+logged kicks within about 10 mV before the fix was built. With the arrival pass advancing the field,
+the worst excess over settled current across the seven worst transitions per wheel and direction is
+**16 mV left and 13 mV right**, against 64–183 before. MEASURED — Visit 10 pass 7, R21-DUAL-TRKICK-T.
+
+What remains at a speed change is the ordinary current it takes to accelerate the wheel. The ramp
+still steps acceleration on and off at its two ends, which a user may feel on a light platform. A
+jerk-limited ramp for that is designed but not built (PL-160).
 
 ---
 
@@ -799,7 +811,7 @@ Everything here follows from §§4–7 and cites the section it comes from.
    value (§6.4). A faster ramp draws more because it accelerates harder, not because it surges.
 8. **Size the supply for acceleration and for speed changes**, not for a start surge (§6.4, §7.5).
 9. **Choose the stop mode for your platform, not for the wheel.** A short from speed stops the wheel
-   in a tick or two. Behind a tall platform, that is a 40–48 A braking pulse nothing on the board can
+   in a tick or two. Behind a tall platform, that is a 35–42 A braking pulse nothing on the board can
    limit, and a tip-over risk. A coast rolls, and on a slope runs away. The graded short and the
    re-synced ramp (`FR_GRADED`) sit between them (§6.5).
 10. **The hold resists a push; it is not yet shown to hold a slope** (§6.5, H-6).
@@ -841,19 +853,19 @@ Each hole names why it matters and what would settle it. States: **OPEN** ·
 | **H-6** | **Behaviour under load.** Every number in this manual was taken wheels-up. Not yet measured: how a start behaves under load (§6.4), how much of the ceiling's 7 % duty reserve a load leaves (§6.1), whether the lead table's saving holds under load (§5.2), whether the hold's 10 % ceiling keeps a platform from creeping on an incline (§6.5), and what any stop from speed does to a platform rather than a lifted wheel (§6.5). | **OPEN** |
 | | *What would settle it:* the tethered, loaded floor run, with its creep-on-incline cell (Visit 6b, «#3576»). The display panel it needed is certified and the floor run is built. It is scheduled after Visit 10. | |
 | **H-7** | **Can the board see regeneration?** No. The shunt is low-side, so regeneration drives the sense node below ground. Rev B's INA180 is the one-direction member of its family, with no reference pin (the vendor names the INA181 as the version that measures both directions), so a reversed current reads as zero. Rev A feeds the node to the ADC with no offset and almost certainly cannot see it either. ASSUMED (vendor, TI's INA180 product page); not measured. | **FILLED** |
-| **H-8** | **Bus voltage.** Never measured (§7.1); every power figure, and the winding resistance (§2.4), rests on the configured nominal 18.5 V. The board has no voltage channel. *Reopened 2026-09-26:* the driver now reads an optional external 5S divider on a spare ADC pin (`getPackVoltage()`, `VOLTAGE-SENSOR.md`). The mean phase voltage while switching was a candidate proxy, but it is unconfirmed (PL-60) and only works while driving. | **OPEN** |
+| **H-8** | **Bus voltage.** The board has no voltage channel. **Measured on this rig since 2026-09-26** by the optional external 5S divider on P0 (`getPackVoltage()`, `VOLTAGE-SENSOR.md`), calibrated once against a DMM to within 7 mV at 20.74 V. The winding check now uses it (§2.4). Still open: a second calibration voltage, and the power figures in §7, which still rest on the nominal. | **OPEN** (second point) |
 | | *What would settle it:* the sensor unit fitted, then one calibrating meter reading at the pack, then a check at a second pack voltage («#3611»). The winding check then reads the measured voltage instead of the nominal. | |
 | **H-9** | **Per-direction speed ceilings.** The same in both directions. Duty first caps between 175 and 185 × 10⁶ on all four wheel-directions, and the ceiling is chosen below that (§6.3). The one difference is above the knee: RIGHT forward loses its field-weakened synchronism between 235 and 245 × 10⁶, and the other three hold 245 × 10⁶. No fault edge was reached, because 245 × 10⁶ was the highest command tried. | **FILLED** |
 | **H-10** | **Whether the drive knows it is following.** Yes. The driver's own reading of measured rate against commanded rate agrees with an independent hall count with a gap of 0 points over 75 rungs, and also when the wheel falls short to 2–4 % of its command. The falling case was shown on three of the four wheel-directions; RIGHT forward's step did not run. MEASURED — `VISIT-9B-EVALUATION.md` §3. | **FILLED** |
 | **H-11** | **Unit-to-unit variation.** Every measurement in this manual comes from the **two** units on the Rev B platform. Measured cold, Z agrees within 0.06° between them. Their winding resistances agree within 5 % (§2.4). Encouraging, and not a population. **Four units of this motor exist**: two on the Rev B platform and two on a Rev A platform. | **OPEN** |
 | | *What would settle it:* the other two units. They divide into two measurements with very different prerequisites — see §9.1. | |
-| **H-12** | **Winding resistance.** ≈ 0.43 Ω phase to phase on both units, measured by the driver at start with an exact negative control (§2.4). The limits: ±6 % per reading, and a nominal rather than a measured voltage (H-8). | **FILLED** |
+| **H-12** | **Winding resistance.** ≈ 0.48 Ω phase to phase on both units, measured by the driver at start with an exact negative control, on the calibrated pack voltage (§2.4). The limit: ±6 % per reading. | **FILLED** |
 | **H-13** | **Winding inductance, and so L/R.** Only bounded: the graded short's sub-linear braking says L/R is not much shorter than a few ms (§2.4, §6.5). It sets how finely a graded short can be sliced, and how a current pulse rises. | **OPEN** |
 | | *What would settle it:* a sub-frame read of the DC-link current's rise during a drive pulse (the ADC's bitstream-capture or scope mode, the startup study's B-4). It is not built. An LCR meter across two leads would give it at once, off the driver. | |
-| **H-14** | **A phase short's current, and the braking torque behind it.** About 40–48 A from the ceiling speed, DERIVED from the measured R (§6.5). The shunt cannot carry it (§3.1, PL-118), so this board can never measure it. | **CLOSED-UNANSWERABLE** on this board |
+| **H-14** | **A phase short's current, and the braking torque behind it.** About 35–42 A from the ceiling speed, DERIVED from the measured R (§6.5). The shunt cannot carry it (§3.1, PL-118), so this board can never measure it. | **CLOSED-UNANSWERABLE** on this board |
 | **H-15** | **Can back-EMF be read while the motor is driven?** It is read cleanly while coasting, both cold by hand (§4.6) and from speed after a fault (both units). While driving, every ADC reading averages a whole PWM frame, so today the drive senses back-EMF 0 % of the time. This decides whether back-EMF can become a position source when the halls are lost. | **OPEN** |
 | | *What would settle it:* releasing the bridge for about ten frames at a few speeds and capturing the phase pins in the ADC's scope mode. That is the first measurement of the back-EMF delta release («#3602»), deferred until after 6.0.0. | |
-| **H-16** | **The RIGHT unit's intermittent loss of drive (PL-120).** Seven times between 2026-09-23 and 09-26 the right wheel has stopped raising any phase voltage. It happened at the first drive of a load (twice on the day's first load) and mid-run, and it once outlasted a program reload. Its halls read legal throughout, and it has come back within about 2 minutes each time it was timed. At pass 6 the per-phase signature was recorded for the first time: **every phase reads 16–20 mV with itself driven**, below its own 56–62 mV resting floor, where a live lead reads about 780 mV. That is the board's high side not switching. A motor lead cannot pull down the board's own driven pin, and it struck after Stephen had remade every right-motor connection. The PL-138 gate-pin fix was also in that image. The same board and wheel drive normally in between (fault cells certified at pass 5), and the LEFT unit has never done it. **Not a motor property: the evidence now points at the right board.** | **OPEN** |
+| **H-16** | **The RIGHT unit's intermittent loss of drive (PL-120).** Seven times between 2026-09-23 and 09-26 the right wheel has stopped raising any phase voltage. It happened at the first drive of a load (twice on the day's first load) and mid-run, and it once outlasted a program reload. Its halls read legal throughout, and it has come back within about 2 minutes each time it was timed. At pass 6 the per-phase signature was recorded for the first time: **every phase reads 16–20 mV with itself driven**, below its own 56–62 mV resting floor, where a live lead reads about 780 mV. That is the board's high side not switching. A motor lead cannot pull down the board's own driven pin, and it struck after Stephen had remade every right-motor connection. The PL-138 gate-pin fix was also in that image. The same board and wheel drive normally in between (fault cells certified at pass 5), and the LEFT unit has never done it. **Not a motor property: the evidence now points at the right board.** The board's gate drive is a 12 V boost regulator fed from the P2 header's 3.3 V, not the pack. At pass 7 (2026-09-26), with the board reseated on its headers and the first load 37 s after the pack was connected, the right started first time in every lifetime. That is one clean pass. | **OPEN** (watch) |
 | | *What would settle it:* timing the recovery from power-on. The next pass times the right's return after a refusal, and Stephen notes when the pack was connected. A board-level cause (the high-side gate supply) is then a question for the board, not the motor. | |
 
 ### 9.1 · What the Rev A pair can contribute, and when
@@ -949,3 +961,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 | 2026-09-23 | Brought to the current drive: the feedforward-and-trim servo holding 67.5° (§3.2–3.4), the lead table that follows speed (§5), the 165 × 10⁶ ceiling, the 100,000 floor, the clip-free duty ceiling and field weakening above the knee (§6.1–6.3), the quiet start (§6.4), and cruise current, direction symmetry and speed-change kicks (§7.3, §7.5). §8 rewritten to match. Section 9: H-1, H-5, H-7, H-9 and H-10 FILLED; H-8 CLOSED-UNANSWERABLE; H-6 widened to cover everything under load; H-2 gains the new speed points. §9.1: the current limit has landed. |
 | 2026-09-26 | Brought up to Visit 10 passes 1–5. §2.4 adds the winding resistance, measured by the driver (≈ 0.43 Ω, both units within 5 %), and §3.1 adds the sense channels and the shunt's blindness to a phase short (PL-118). §4.6 adds back-EMF seen while coasting from speed. New §6.5 covers stopping, faulting and holding: coast against short, the graded short, the re-synced ramp and the hold. New §6.6 covers what start proves about the motor. §7.1–7.2 updated, and §8 gains stop-mode, hold and start-check advice. Section 9: H-6 widened to the hold and stops under load; H-8 reopened by the pack sensor; H-11 gains R; H-12 FILLED; H-13 (inductance), H-15 (back-EMF while driven) and H-16 (the right unit's loss of drive) OPEN; H-14 CLOSED-UNANSWERABLE. §9.1 adds what Rev A cannot measure. |
 | 2026-09-26 | Visit 10 pass 6: H-16 gains the right board's per-phase signature, and the reseat that did not prevent it; the evidence moves from the motor to the board. §6.6: the wiring walk's fix is certified. |
+| 2026-09-27 | Visit 10 pass 7: §7.5 says what the speed-change kick was (the arrival pass skipped the field increment) and that it is gone (16/13 mV against 64–183). §2.4 recomputes the winding resistance on the calibrated pack voltage, ≈ 0.48 Ω (the nominal 18.5 V had read 12 % low), and §6.5, §8 and H-14 follow it (35–42 A). H-8 records the sensor fitted and calibrated. H-16 records one clean pass after the header reseat. |
