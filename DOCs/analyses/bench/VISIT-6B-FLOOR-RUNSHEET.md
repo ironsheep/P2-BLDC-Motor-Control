@@ -1,7 +1,10 @@
 # The floor run — run sheet (the last bench visit before 6.0)
 
 **Task:** «#3576» runs it; «#3591» built it, SRC_REV 58 added the load cells, and SRC_REV 60 re-checked every cell
-against DRIVER_REV 38's jerk-limited ramp and DRIVER_REV 39's stop plan. **Tier:** `dual-spin` (part
+against DRIVER_REV 38's jerk-limited ramp and DRIVER_REV 39's stop plan. SRC_REV 61 (DRIVER_REV 46) changed nothing in
+part SPIN: the driver's later revisions (40's walk, guard and current fixes; 41–45's proved-equivalent memory
+reduction; 46's ramp-API removal) move no floor cell's bound: 40's unbiased current was checked against every
+current bound (test_bench_dual's SRC_REV 60 note), and the walk guard and band are read from the library. It runs after the release-candidate pass. **Tier:** `dual-spin` (part
 `DUAL_PART_SPIN`, one binary). **Burn-down:** `DOCs/PUNCH-LIST.md`, "Release burn-down".
 
 **Why this visit exists:** the floor run keeps only the claims that need a load (Stephen, 2026-09-26). It is the last
@@ -27,15 +30,15 @@ derate cannot be reached on this rig.
 
 ## ⛔ First: push, then pull at the bench
 
-`git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 60** and the
-release-candidate driver, **DRIVER_REV 39**.
+`git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 61** and the
+release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate pass leads to a fix).
 
 ## Check the banner before reading anything else
 
 | Every `dual-*` log must read |
 |---|
-| `BM-BANNER,...,src_rev,60,fmt,38,part,SPIN` |
-| `BM-BUILD ... drv_rev,39`: the driver under test. A lower number means an old tree. |
+| `BM-BANNER,...,src_rev,61,fmt,38,part,SPIN` |
+| `BM-BUILD ... drv_rev,46`: the driver under test. A lower number means an old tree. |
 | `BM-BLKBUILD`, `BM-LDBUILD` and `BM-RDBUILD` present: the load cells' numbers were pre-registered |
 | `BM-SPINLEG` for legs 7–10 (the quarter, BRISK) reads `win_ms,300` (SRC_REV 60; it was 500) |
 
@@ -58,13 +61,13 @@ release-candidate driver, **DRIVER_REV 39**.
 
 | | |
 |---|---|
-| **Purpose** | **Certification** of the load claims above, on the release-candidate driver (DRIVER_REV 39), plus the floor run's measurements: loaded current by direction and pair, and the hold's duty and current on the incline. |
+| **Purpose** | **Certification** of the load claims above, on the release-candidate driver (DRIVER_REV 46), plus the floor run's measurements: loaded current by direction and pair, and the hold's duty and current on the incline. |
 | **Hardware risk** | **The highest this project has: wheels down, a person present.** SPIN turns the platform in place at up to about half a turn a second, at most one turn per leg; legs 11 and 12 fault one wheel on purpose. BLOCK drives only the chocked LEFT wheel, current-limited to 2 A (about 14 N at the tyre); if it turns 17 mm the harness stops it. LOAD drives the platform straight at a slow walk, current-limited to 4 A, at most 2 m, with an e-stop 35 mm past that; you walk behind it. On the incline the platform can roll up to about 17 mm (coast) or 35 mm (hold trials) before the harness brakes it. The 10 A abort and the fold-back limiter apply throughout. **Every start and stop now ramps smoothly and takes longer than at the last floor run: a stop from the quarter takes about 0.6 s and 31 ticks (18 cm of tyre), not 19.** **Stand outside the swept circle while it spins. Panic: disconnect the battery.** |
 | **Who observes / acts** | Stephen, on every screen: each says what is happening, the one next click, and what he should see. He chocks the wheel (BLOCK), pulls the strap (LOAD), handles the platform on the incline (CREEP), and records the ramp's feel (PL-160). |
 | **Runs that carry state** | None. Every pair of legs, every BLOCK and LOAD trial and every creep trial runs in its own steering lifetime; a written offset pair is restored and read back (`BM-OFFREST`); the lowered current limits are restored before each lifetime stops. |
 | **Run length** | About **14 minutes of run**: SPIN about 5.5 (12 legs and 2 re-drives), BLOCK about 1.5, LOAD about 4 (a free trial and 1 to 3 drag trials), CREEP about 2.5. The S-curve changes a leg's time by well under a second (a leg at SLOW still takes about 8.2 s). About **40 minutes at the rig** with the setups. Cap 30 minutes of run. About 35 clicks. |
 | **Repeatability** | Repeatable. Each segment's first screen has SKIP: to rerun only BLOCK, LOAD or the incline, SKIP leg 1 and each segment before the one you want. |
-| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 39, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 7,531 bytes (limit 12,404). |
+| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 7,531 bytes (limit 12,404). |
 
 ## The commands — two, in this order
 
