@@ -16,6 +16,9 @@ closed by the 2026-09-26 release audit are in
 
 ### Release burn-down — 2026-09-26
 
+Pass 7 (2026-09-26) closed: PL-66, 78, 87, 143, 147, 151, 152, 153, 155, 156, 158, 159
+([archive](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-27.md)).
+
 The owner's rule for 6.0.0 (Stephen, 2026-09-26): *"What we need is not an eye towards looking for things we
 can address, but an eye towards whether we have everything we need to meet the criteria for the features that
 we're trying to release in 6."* Only work that makes a 6.0 feature (README.md "Latest Changes", v6.0.0) operational
@@ -38,22 +41,15 @@ do the right thing, and then we can call them done without having to test on the
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-78 | The platform jolts ("slams") at each speed change | R17-DUAL-TRKICK-A PASS on the current driver (last FAIL at Visit 8b, 183/182 mV) |
-| PL-87 | The instrument that measures that speed-change kick | Same cell as PL-78, judged on the current driver |
 | PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | A blocked-wheel cell that trips SR_BLOCKED (the floor run «#3576» has none today) |
-| PL-143 | The command timeout exempts `driveForDistance()` but watches other bounded moves | RULED: no carve-outs, every drive watched, refresh unchanged; build in the Pass A batch |
+| PL-145 | The steering time stop confirmed rest 86 ms past its deadline (pass 7) | pass 8: R16-DUAL-TIMESTOP |
 | PL-148 | The serial control path (object, protocol doc, Python demo) has never run on hardware | A host-driven serial run, wheels up |
 | PL-149 | No shipped demo has run on hardware against the 6.0 API | One wheels-up run of each release demo |
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | Two cells added to the floor run, then the floor run |
-| PL-151 | Turning by distance, fault cause, e-stop status and stop-after-rotation lack current evidence | One regression tier on the current driver |
-| PL-152 | Every bench tier compiles twice and carries every harness part ever written | One compile at the bench; one part per tier |
-| PL-153 | The odometer resets itself, and distance limits count from it instead of from where they were armed | Odometer = total travel, reset only on request; each limit counts from its own start |
 | PL-154 | Serial: hold can't be set from the host example, commands can wait 1 s, non-numbers accepted | Fix the wrapper, the loop and the parser; serial certification run |
-| PL-155 | Settings lost on `start()` without saying so; several have no getter | User settings persist across starts, with getters |
-| PL-156 | No "move finished" test; the demos' wait loop hangs on a fault or e-stop | A finished-move predicate; the demos wait on it with a bound |
 | PL-157 | Serial and the Python host lag the 6.0 getters | Serial command + doc row + Python wrapper for each |
-| PL-158 | `getStatus()` HOLDING after hand-off; rotation limits truncate | Status follows the hold state; limits round |
-| PL-159 | Doc-only API fixes: `calibrate()`, `fAmps`, the backing-up pattern, serial doc gaps | The docs corrected |
+| PL-161 | The steering front cog overruns its 1 ms slot | pass 8: R16-DUAL-FRONTST (late 0, max under 950 µs) |
+| PL-162 | Two pack cells judged with a wrong instrument (PACK-ABSENT reference, PACK-X criterion) | pass 8: R20-PACK-ABSENT and R19-DUAL-PACK-X |
 
 **Awaits certification** (fix built, not yet run)
 
@@ -62,14 +58,12 @@ do the right thing, and then we can call them done without having to test on the
 | PL-14 | The voltage argument to `start()` used to be ignored | A code-reading sign-off or a t0 cell |
 | PL-51 | The steering getter for distance speed returned the wrong value | A cell, or a code-reading sign-off |
 | PL-52 | `getPower()` kept reporting power after a stop | A cell, or a code-reading sign-off |
-| PL-66 | Re-sending the same power did not clear a fault | FLTRETRY once dual-b provokes with `testForceFault()` (PL-119) |
 | PL-93 | After a fault and recovery, the next drive drew 3-4x current | The loaded floor run |
 | PL-95 | The drive ran saturated above mid-range and still reported AT_SPEED | The kick (PL-87) and the loaded floor run |
 | PL-111 | A serial host could not clear a protective stop | A provoked protective stop (PL-106) |
 | PL-132 | The blocked-wheel stop shorted the phases even under coast | The floor run |
-| PL-144 | The two-wheel path limiter cycled the platform between crawl and full | Pass 7 dual-d PATH-HUNT = 1 |
-| PL-146 | Part D read a stalled wheel's events before its fold-back released | Pass 7 EV-FOLDBACK 0 bad |
-| PL-147 | The two "is it following?" readings used different commands | Pass 7 NOTFOL-D PASS |
+| PL-144 | The two-wheel path limiter cycled the platform between crawl and full | pass 8: R20-DUAL-PATH-HUNT = 1 (precondition fixed) |
+| PL-146 | The fold-back counted at rest on an undriven bridge, so the left never released | pass 8: R20-DUAL-EV-FOLDBACK 0 bad (DRIVER_REV 36) |
 
 **Watch**
 
@@ -79,7 +73,7 @@ do the right thing, and then we can call them done without having to test on the
 
 Ancillary, recorded but not chased for 6.0: PL-7, PL-12, PL-16, PL-19, PL-20, PL-21, PL-23, PL-27, PL-31, PL-37,
 PL-43, PL-44, PL-46, PL-53, PL-54, PL-60, PL-63, PL-64, PL-65, PL-67, PL-68, PL-71, PL-96, PL-97, PL-98, PL-102,
-PL-103, PL-105, PL-108, PL-109, PL-110, PL-118, PL-119, PL-126, PL-134, PL-135, PL-136, PL-139, PL-145.
+PL-103, PL-105, PL-108, PL-109, PL-110, PL-118, PL-119, PL-126, PL-134, PL-135, PL-136, PL-139.
 
 ### PL-7 — Six blocks of prose are maintained in two or more documents
 
@@ -879,58 +873,6 @@ which now exists: the spin-in-place floor run STEPHEN approved on 2026-09-17 nee
 by one; corrected in the SRC_REV 12 rebuild (`analyses/ATTENDED-UI-AUDIT-2026-09-15.md` §7). Visible in the
 next attended log's `BM-PLAN`.
 
-### PL-66 -- a faulted motor stays faulted when the caller sends the same power again
-
-> **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: FLTRETRY cannot certify until dual-b's provocation uses testForceFault (PL-119).
-
-**Found 2026-09-15** while stating the fault-clearing rule for «#3547». DERIVED from source, not observed on
-hardware.
-
-**The mechanism (`src/isp_bldc_motor.spin2`, PASM driver):**
-- The driver leaves `DCS_FAULTED` only through `.resetFault`, inside `.newRqst`.
-- A stop always gets there: a zero request while not STOPPED jumps to `.newRqst`.
-- A nonzero request gets there only if it differs from the last one. `.notRqStop` compares it with the saved
-  request and, when they are equal, continues the current request (`.currRqst`).
-- In `DCS_FAULTED`, `.currRqst` matches no state and falls through to `.justIncr`, which advances `angle_` with
-  the drive off. The motor stays faulted.
-
-**Who is affected:** a caller that retries after a fault by sending the power it was already running at, such as
-`driveAtPower(50)` again, or a loop that re-sends its current command. The retry does nothing. Since «#3547»
-`getStatus()` reports `DS_FAULTED`, so the state is visible, but nothing says the retry was ignored. The two-wheel
-object and the serial protocol inherit it.
-
-**Related:** PL-28 item 1 is the same mechanism on the test path. `testResetFault()` works around it by sending
-zero first.
-
-**Fix direction:** decide what a repeated command does while faulted.
-- Treat it as a new request, so a retry restarts the motor. Correct by construction for a retry, but a fault at
-  speed may mean a blocked wheel (PL-47 rule 5), and a retry would drive into it again.
-- Or keep requiring a stop or a changed power first, and state that in `DRIVE-OBJECTS.md` and the method docs.
-
-That is an API and safety decision for Stephen, taken when the fault path is next scheduled. «#3547» documents
-today's rule: *the fault clears when a stop or a different power is commanded*.
-
-**Fixed in tree 2026-09-16 («#3556»). Run-time proof STILL MISSING (aged-state sweep 2026-09-17):**
-`R16-DUAL-FLTRETRY-B` was NOMEAS at Visits 4 and 5 because the fault provocation trips the harness's own
-10 A abort first (PL-86). IN THIS RELEASE with fault handling. Decided by Stephen's
-2026-09-16 API rule: a retry restarts the motor.
-
-**Where the fix lives, and why.** The fault-clear edge is made in the front cog, not the driver.
-`drvMotor` copies `tgt_incr` into `sv_tgt_incr` every pass, so its "same request" compare means "the
-command is still standing". An edge taken there would clear a fault on the very next pass, and the
-fault would never latch. The PASM is unchanged.
-
-**What happens on a drive while FAULTED.** `frontClearFault()`, called from `frontDrive()`, runs
-first. It writes a zero command, and waits a bounded `FRONT_SYNC_WAIT_PASSES` drive passes for
-`drv_state` to leave `DCS_FAULTED`. A zero request reaches `.newRqst` -> `.resetFault` in one pass.
-- On success, the requested command is written.
-- On expiry, it returns `ERR_NO_RESPONSE` and the zero stays written.
-- The wait is counted in `bDidWait` and in `requestWaits()`.
-
-**Two wheels.** `frontDriveWheels()` clears both selected wheels before writing either. If either
-fails, both are zeroed. Invariant: *a platform never drives one selected wheel while refusing the
-other.*
-
 ### PL-68 -- no bench log names the commit it was built from, so a visit ran on an older commit unnoticed
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench provenance tooling)
@@ -977,338 +919,6 @@ the DocoEng motor therefore starts from an increment of 1, where the reverse dir
 max table) and set the minimum from the named no-rotation threshold. The DocoEng tables are also the subject of
 PL-27. Which sprint takes it is Stephen's call.
 
-### PL-78 -- the lag error clamps at 115-116 against a 110 bound, and commanded velocity is not rate-limited (the slam)
-
-> **6.0 status (2026-09-26 audit):** RELEASE — the speed-change kick. Stephen ruled the slam not shippable (2026-09-17); R17-DUAL-TRKICK-A was still FAIL at Visit 8b (183/182 mV) and has not been judged on the current driver.
-
-> **STATUS 2026-09-18 («#3573»):** the first half (`LAGBND`) is certified at Visit 5. The second half -- the slam --
-> is judged at Visit 6 by `R17-DUAL-TRKICK-A` on the new `BM-RUNGTR` transition record (PL-87's box). A source
-> re-read of the speed-change entry found no further construction defect for a same-sign speed-up: the
-> `.doSpdChange` ramp reset is the only inherited state, and it is in the binary. If TRKICK fails, the failing
-> transitions' `incre` pairs name which path to read next (speed-up, ramp-down, or direction change via
-> `.slow2Chg`); the driver comment no longer cites the withdrawn Visit 4 `err_pk` table as evidence.
-
-**Found 2026-09-17 in «#3561»**, Visit 4, all four dual parts. This entry carries both the failing cell and the
-physical effect Stephen reported, because the open question is whether they are one finding or two.
-
-**MEASURED -- `R16-DUAL-LAGBND` `MAX_ABS_ERR`, bound `lo 0 hi 110`, `sat 127` in every record:**
-
-| Part | LEFT | RIGHT | samples (L / R) | Log |
-| --- | --- | --- | --- | --- |
-| A | **115** | **115** | 63 947 / 63 998 | `debug_260917-131445.log` L15301-15302 |
-| B | **115** | **115** | 19 761 / 19 862 | `debug_260917-130012.log` L7574-7575 |
-| C | **116** | **116** | 19 933 / 19 922 | `debug_260917-131237.log` L5621-5622 |
-| D | **115** | 87 | 3 293 / 2 308 | `debug_260917-125859.log` L119-120 |
-
-**«#3558»'s lag limiter is working:** the measurement never reaches `sat 127`, which is where the unfixed driver
-pegs the stored `err` field.
-
-**DERIVED -- the number is too repeatable to be a transient.** 115 / 115 / 115 / 115 / 116 / 116 / 115
-across four parts with completely different motion profiles, sample counts from 2 308 to 63 998, and both
-motors. A peak driven by motion would scatter. Part D's RIGHT reaching only 87 fits: it is the shortest run and
-never demanded enough.
-
-**SETTLED FROM THE SOURCE 2026-09-17, and it makes this an INSTRUMENT defect, not a driver defect.**
-`src/isp_bldc_motor.spin2:3344-3346`:
-
-```spin2
-    ' C-5 (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.2): lag thresholds, err_ units (256 per hall cycle)
-    LAG_SOFT                    = 80        ' 112.5 deg: the ramp waits for the rotor; the PL-55 duty ceiling lifts
-    LAG_HOLD                    = 100       ' 140.6 deg: the field stops advancing (the fault test is at 125)
-```
-
-and `src/isp_bldc_motor.spin2:3803-3804`:
-
-```spin2
-.justIncr   ' just do our increment of angle and we're done!
-                cmps    lag_s, #LAG_HOLD            wc  ' C-5: the field advances only while the rotor trails it by
-    if_c        add     angle_, drv_incr                '  less than LAG_HOLD, so |err_| stays under the 125 fault test
-```
-
-**The clamp is at 100, not at 115.** The test is taken on `lag_s` sampled at the *top* of the pass
-(`:3560`), and the field then advances by one whole `drv_incr` before the next test. So the largest `err_` any
-sampler can observe is **`LAG_HOLD` plus one pass's field advance**, and at the ladder's top rung that quantum is
-roughly 15-16 err units -- which is exactly the 115-116 measured, and exactly why it barely moves between parts.
-
-⛔ **The 110 bound was therefore wrong, not the driver.** It was written as `LAG_HOLD + 10`, under-estimating
-the one-pass quantum at `ladder_max 165_000_000`. The driver is doing precisely what C-5 designed it to do, and
-the fault test at 125 is still never reached -- which is the property that actually matters.
-
-**Fix direction:** set the bound from the design, not from a round number: `LAG_HOLD` plus the maximum per-pass
-field advance at `ladder_max`, computed rather than guessed, with the 125 fault threshold as the hard ceiling the
-cell really guards. **This is the one case where raising the bound is correct** -- not because it turns the cell
-green, but because the old bound described a state the design never promised. Record the arithmetic in the cell
-so the next reader can check it (doctrine D2: a criterion that cannot be met by a correct system has not passed,
-it has misreported).
-
-> ## ⛔ CORRECTED 2026-09-17, BEFORE THE FIX WAS BUILT: "LAG_HOLD + one pass ~= 15-16" DOES NOT COMPUTE.
->
-> **The arithmetic is checkable and it fails.** `err_` is `(hall angle + offset) - angle_` shifted right
-> by 24 bits (`src/isp_bldc_motor.spin2`, the `.noFault` block), so **256 units make one electrical
-> cycle**, and the design document states the same conversion and works it out:
-> *"At the 6.5in ceiling of 172,000,000 it advances `angle_` by 10.25 units per drive pass. At 75 %
-> (110,250,000) it advances 6.57 units"* (`plans/CURRENT-LIMIT-AND-STOP-DESIGN.md`, Units). At the
-> ladder's own top rung, 165,000,000, the advance is **9.8 units**, not 15-16.
->
-> ⛔ **And the measurement refutes the model outright: part A (a ladder to 165,000,000) and part D (a
-> steady power 50, where the advance is a fraction of that) BOTH read 115.** A bound generated from the
-> per-pass advance would differ by several units between those two parts. It does not. **So the gap
-> between `LAG_HOLD` 100 and the observed 115-116 is UNDETERMINED** -- that is a deliverable, not a gap
-> (doctrine overlay P8), and it is recorded here rather than filled with a mechanism.
->
-> The design's own invariant is written the same way and is equally not what is observed:
-> *"`|err_|` cannot exceed `LAG_HOLD` plus one pass's increment (100 + 10.25 < 125)"* (section 3.2). The
-> **conclusion** of that sentence holds -- `|err_|` stays under the 125 fault test, in every part, on both
-> motors -- and its arithmetic does not generate the 115. Only the conclusion is used.
->
-> ### FIXED IN TREE 2026-09-17 -- the bound is the driver's own fault test
->
-> `LAG_MAX_HI` is now `LAG_FAULT_TEST - 1` = **124**, with `LAG_FAULT_TEST = 125` named and sourced to the
-> driver's `cmp tmpY, #125 wc`. That is the only number here the design actually promises, it is what the
-> lag limiter exists to guarantee, and **it has a real negative case**: a driver with no limiter pegs the
-> stored field at its 127 saturation and fails it. `LAG_HOLD_REF = 100` is carried alongside, and
-> `BM-LAG` now prints `hold` and `fault` beside `max_err` and `hi`, so the whole band is in the record and
-> a reading between the gate and the criterion reads as the normal state rather than as a near-miss.
->
-> **What is NOT claimed:** that 115 is now explained. It is bounded, and the bound is sourced. If a future
-> visit reads a `max_err` that walks toward 124, the record now carries every number needed to see it.
-
-**STEPHEN 2026-09-17, the physical effect:** *"On your dual A run, you're making a bunch of speed changes. One of
-the things I noticed in the speed changes is that we are physically slamming the platform... I would think speed
-changes should be really smooth, but they're not, so we need to understand what this effect is."*
-
-**MEASURED -- the slam's signature**, `debug_260917-131445.log` L15170-15205, `BM-RUNG2` LEFT forward:
-
-```
-rung     0    1    2    3    4    5    6    7    8    9   10   11
-err     34   48   48   48   49   48   48   55   63   65   68   73
-err_pk  56   75   71   71   72   72   73   80   88   91   94   98
-gap     22   27   23   23   23   24   25   25   25   26   26   25
-```
-
-**`err_pk` sits ~25 counts above the steady `err` at every rung change, independent of step size.**
-
-**THE MECHANISM, SETTLED FROM THE SOURCE 2026-09-17. It is NOT a missing ramp.** The ramp is applied to every
-change of target -- `.doSpdChange` (`src/isp_bldc_motor.spin2:3655`) routes a speed change to `.rampUp`,
-`.rampDn` or `.slow2Chg` exactly as a start from rest does. **The defect is the ramp's starting RATE.**
-`:3706-3707`, in `.rampUp`:
-
-```spin2
-                or      drv_incr, drv_incr          wz  ' -and- are we stopped, just about to spin up?
-    if_z        mov     ramp_curr, ramp_min_            ' set initial ramp if starting from 0
-```
-
-and `:3715-3718`, the growth:
-
-```spin2
-                mov     curr_ramp, ramp_curr            ' current ramp
-                add     ramp_curr, ramp_inc_            ' increase ramp for next time
-                cmps    ramp_curr, ramp_max_        wc  ' too high?
-    if_nc       mov     ramp_curr, ramp_max_            ' Y set to ramp_max
-```
-
-**`ramp_curr` is reset to `ramp_min_` only when `drv_incr` is zero -- i.e. only when starting from rest.** On a
-speed change from a *running* speed, `drv_incr` is non-zero, so `ramp_curr` is **inherited from the previous
-ramp** and keeps accumulating, while a start from rest begins gently at `ramp_min_` (1 500) and grows.
-
-> **CORRECTED 2026-09-17, same day, before this entry was acted on.** A first draft of this entry said the
-> inherited value is `ramp_max_`. **It is not, and finding C-2b in the companion study already established
-> why:** `ramp_curr` grows by `ramp_inc` = 22 per drive pass from 1 500, and `ramp_max_` = 200 000 is
-> unreachable in every shipped configuration. Growth also stops the moment the ramp completes
-> (`.endRUpAtSpeed`), so it accumulates only across the *ramping* portion of each rung -- roughly 107 to 618
-> passes at Visit 4's measured `steady_ms` of 56-323. Verified in source: `ramp_min := 1_500`,
-> `ramp_max := 200_000`, `ramp_inc := 22` (`src/isp_bldc_motor.spin2:526-528`). **The defect and the fix are
-> unchanged; the magnitude claim was wrong and is withdrawn.**
-
-**What actually limits the jolt, and it is the cleaner explanation.** The ramp is gated by `LAG_SOFT` = 80
-(`:3345`), tested at `:3712`: `cmps lag_s, #LAG_SOFT wc` / `if_nc jmp #.justIncr` -- *the ramp waits for the
-rotor this pass*. So on a transition that starts with a large inherited `ramp_curr`, the ramp drives the lag
-straight into the `LAG_SOFT` gate and is throttled there.
-
-⭐ **The measurement lands exactly where that predicts, and rung 0 is the control.**
-
-| | `err_pk` | vs `LAG_SOFT` = 80 |
-| --- | --- | --- |
-| **rung 0** -- the only transition starting from rest, `ramp_curr` = `ramp_min_` = 1 500 | **56** | **below** -- the limiter is never reached, the ramp is never throttled |
-| rungs 1-11 -- every transition inheriting an accumulated `ramp_curr` | **71-98** | **at or above** -- the ramp hits the lag gate on every one |
-
-The one rung that gets the soft start is the one that stays under the limiter, and it is the one that does not
-slam. Rungs 1-11 each drive the rotor into the lag gate and are held there -- that repeated hit is what is felt
-through the platform.
-
-**Fix direction -- correct by construction (P10):** reset `ramp_curr` to `ramp_min_` at the start of **every**
-new ramp, not only when `drv_incr` is zero. The soft start then applies to every speed change, acceleration is
-continuous at each transition, and `err_pk` should fall toward `err` at rungs 1-11 while rung 0 is unchanged --
-a directly measurable prediction for the next visit, with rung 0 as the built-in control.
-
-**Note what this is NOT.** It is not a missing slew-rate limit (the ramp exists), and it is not the lag clamp
-(see above -- that half is an instrument bound, and `LAG_HOLD` is doing its job). The two halves of this entry
-are two different findings that happened to be found together; **only this half is a driver defect.**
-
-**Status (aged-state sweep 2026-09-17):**
-- **First half (the bound): CLOSED.** `LAGBND` PASS on every part at Visit 5 against the driver's own fault test
-  (115-116 vs 124).
-- **Second half (the slam): fix IN THE BINARY, effect UNMEASURED, and STILL OPEN.** `mov ramp_curr, ramp_min_` at
-  `.doSpdChange` (`src/isp_bldc_motor.spin2:3668`) resets the ramp on every new request. STEPHEN at Visit 5:
-  *"some are not kicking but many still are... so your remove kicking on ramp up is only partially working."* The
-  table above was never a measurement of the slam -- `err`/`err_pk` are steady-window statistics and rung 0 reads
-  the same gap as every other rung (PL-87). The transition instrument (PL-87) comes first; then whatever still
-  kicks is a driver question with evidence behind it. IN THIS RELEASE.
-
-### PL-87 -- the ladder's err_pk is a STEADY-WINDOW statistic, so no cell can see a transition kick
-
-> **6.0 status (2026-09-26 audit):** RELEASE — the speed-change kick. Stephen ruled the slam not shippable (2026-09-17); R17-DUAL-TRKICK-A was still FAIL at Visit 8b (183/182 mV) and has not been judged on the current driver.
-
-> **Status 2026-09-22, Visit 8:** `R17-DUAL-TRKICK-A` is still FAIL at 233 / 222 mV on DRIVER_REV 3 (221 / 214
-> before). The R18.4 drive change did not move the transition kick, although «#3583» was scoped to subsume it.
-> It remains open (Visit 8 evaluation F-8).
-
-> ## BOTH FIXES LANDED 2026-09-20 («#3580» R18.1, dual SRC_REV 21 / FMT 9); run-time proof owed to Visit 7
->
-> The box below asked for exactly two things, and both are in the tree:
->
-> 1. **`R17-DUAL-TRKICK-A` is re-judged on current.** The criterion is `tr_i_over` -- the transition
->    current peak less the rung's **own** steady `i_max`, a new `BM-RUNGTR` field -- above
->    `TRKICK_EXCESS_MV` (50 sense mV, about a third of an amp at the 150 mV/A the harness aborts on).
->    The from-rest control machinery is **deleted** rather than repointed: an instrument built on a
->    clamped observable is blind whatever control it is given.
->    **The number and its negative case are MEASURED**, from all four ladders of
->    `debug_260919-173751.log`, as `tr_i_pk - i_max` per rung:
->
->    | ladder | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
->    |---|---|---|---|---|---|---|---|---|---|---|---|---|
->    | LEFT reverse | -2 | 0 | -2 | -10 | -38 | -66 | **+157** | **+646** | **+401** | **+81** | **+128** | **+128** |
->    | LEFT forward | +1 | +1 | -3 | -7 | -21 | -34 | -76 | **+506** | **+397** | **+91** | **+112** | **+192** |
->    | RIGHT reverse | 0 | 0 | -4 | -22 | -46 | -69 | **+186** | **+677** | **+403** | **+87** | **+110** | -52 |
->    | RIGHT forward | +2 | +1 | -2 | -2 | -10 | -47 | -137 | **+580** | **+412** | **+82** | **+113** | **+214** |
->
->    ⭐ **Below the knee a change of speed costs NOTHING above steady running** -- every reading is at
->    or below zero. At and above it the transition draws two to three times the steady peak. The two
->    populations are separated by a gap running from **-137 to +81 with nothing in it**, so the
->    criterion is not a judgement call. **Visit 6a would have FAILED this cell 11 times of 22 on the
->    LEFT motor and 10 of 22 on the RIGHT** -- against the 0 of 22 that `tr_over` reported.
-> 2. **The short ramps are instrumented.** `LIVE` now emits `BM-RUNGTR` and the new `BM-RUNGHL` for
->    every rung. It does **not** fold `TRKICK`: its settle is `LIVE_SETTLE_MS` against the ladder's
->    `LADDER_SETTLE_MS`, so its transition window is a different length, and one verdict over two
->    populations can fail on the mixture rather than on the drive (doctrine D2).
->
-> **Also landed with them**, because the same instrument is what Visit 7 reads: `BM-RUNGTR` gains
-> `from_incre`, the speed the wheel was holding when the command arrived, so a transition's **delta and
-> its direction** come off the record; and the ladder walk gains a **descent** and six **delta cells**
-> (a small and a large change of speed at low, at the knee and at the ceiling, each taken up and down).
->
-> **What is still owed:** a run. The criterion has never judged a live ladder, and the driver half of
-> the kick is **PL-95**'s, fixed in R18.4.
-
-> ## ⛔ THE REPLACEMENT INSTRUMENT IS ALSO BLIND -- and Visit 6a's own log already holds the reading
-> that is not. Recorded 2026-09-20.
->
-> **STEPHEN 2026-09-20, the observation the run sheet asked for in advance:** *"there we two fwd/rev
-> ramps short/long for each motor. in the short ramps they kicked between 2 and 3. in the long ramps
-> they kicked at each increment"*.
->
-> **`R17-DUAL-TRKICK-A` PASSED with 0 kicks of 22 per wheel. It is a FALSE PASS.** His hand is the
-> control, and doctrine D2 puts the suspicion on the measurement.
->
-> **MEASURED, `debug_260919-173751.log`, the LEFT reverse ladder, twelve rungs in order** (every ramp
-> in the load has the same shape):
->
-> | rung | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
-> |---|---|---|---|---|---|---|---|---|---|---|---|---|
-> | `tr_err_pk` | 98 | 76 | 73 | 75 | 75 | 75 | 78 | 85 | 95 | 97 | 102 | 105 |
-> | `tr_over` **(what TRKICK judged)** | 36 | 3 | 2 | 4 | 3 | 3 | 1 | 0 | 0 | -1 | 0 | -1 |
-> | `tr_i_pk` **(recorded, never judged)** | 19 | 25 | 55 | **234** | **583** | **1197** | **1439** | **1264** | 599 | 200 | 192 | 226 |
->
-> ⭐ **The error says nothing and the current says everything.** Across the ramp `tr_err_pk` moves
-> within a 73-106 band -- about +-15% -- while `tr_i_pk` rises **seventy-five fold** and peaks at rung 7.
-> At the sense calibration the harness uses for its own abort (150 mV/A) rung 7 is **about 9.6 A**, and
-> the RIGHT reverse ladder's rung 7 reads 1_522, **above the 1_500 abort threshold** -- it does not
-> abort only because the abort wants four consecutive samples and this is a transient.
->
-> **DERIVED, and it is the SAME root cause as PL-86, PL-46 and PL-93:** `tr_err_pk` sits in a narrow
-> band around 100 because **the lag limiter holds it there** (`LAG_HOLD` = 100). Position error is a
-> CLAMPED observable, so any instrument built on it is blind by construction -- which is why the Visit 5
-> instrument could not see the kick, and why its replacement cannot either. **Current is not clamped,
-> and it was being recorded beside the error the whole time.**
->
-> **So the kick is MEASURED, on this visit's data, with no further bench time:** it is real, it is on
-> every speed change of the long ramps, it grows with the size of the increment, and it peaks near 10 A.
-> That matches his hand exactly, including "at each increment".
->
-> **Two fixes, both free of a new run:**
-> 1. **Re-judge `TRKICK` on `tr_i_pk`**, not `tr_over`. The criterion becomes a transition current
->    ceiling, or a rise over the from-rest rung, and its negative case is on file in this very table.
-> 2. **The short ramps emit no `BM-RUNGTR` at all** -- only LADDER and CLOCK rungs do, so the LIVE
->    segment, where he felt a kick between rungs 2 and 3, has **no transition record**. Instrument it.
->
-> ⭐ **AND «#3573»'S DRIVER HALF IS NEEDED.** The plan made it conditional on "if Visit 6a's TRKICK says
-> the kick survives". TRKICK said no; the current and his hand both say yes. **The kick survives.**
-
-> ## FIXED IN THE HARNESS 2026-09-18 («#3573», dual SRC_REV 16 / FMT 7); run-time proof owed to Visit 6
->
-> - `rungMeasure()` now marks the ring at the drive command, and `transitionStats()` walks [command mark ..
->   window start] -- the ramp and the settle -- for peak |err| and peak |i|. Every LADDER and CLOCK rung prints
->   them in a new record, `BM-RUNGTR` (177 bytes worst case; `BM-RUNG2` had no room at 269), with `tr_over`: the
->   transition peak less the rung's own steady `err_pk`, so the servo ripple common to both cancels.
-> - **The control is by state, not index:** `from_rest` is TRUE for the first rung of each motor and sign and for
->   the first rung after a recovered fault. A command whose ring sample was overwritten prints NA
->   (`WHY_RING_LOST_HEAD`), never a partial peak.
-> - **New cell `R17-DUAL-TRKICK-A`** (per motor): counts the running-speed changes whose `tr_over` exceeds the
->   control's by more than `TRKICK_MARGIN` (10 err units, ~14 degrees electrical); PASS at 0. The margin is
->   DERIVED; the negative case is Stephen's Visit 5 observation that many transitions still kicked, which this
->   cell must then fail.
-> - `BM-RUNG2`'s `err_pk` stays in the record as the steady statistic it is; its comment now says so.
-> - **Limit, stated:** the instrument samples at 500 Hz, so a kick shorter than ~2 ms can fall between samples.
->   If the cell passes while a kick is still felt, that is the instrument's limit, not the driver's.
-
-**Found 2026-09-17 at Visit 5**, checking Stephen's observation against the data. **Instrument defect,
-mine (P3).** ⛔ **It invalidates the evidence PL-78's second half was built on.**
-
-**STEPHEN 2026-09-17:** *"the ramps from dual-a some are not kicking but many still are... so your
-remove kicking on ramp up is only partially working."*
-
-**The driver fix IS in the binary** -- verified in source, `src/isp_bldc_motor.spin2:3668`,
-`mov ramp_curr, ramp_min_` at `.doSpdChange`, reached once per request from `.newRqst`.
-
-**MEASURED**, LEFT forward, Visit 5 (`debug_260917-173713.log` L15161-15196) against Visit 4's same
-block:
-
-| rung | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `err` V5 | 33 | 48 | 48 | 48 | 48 | 48 | 48 | 55 | 63 | 66 | 69 | 74 |
-| `err_pk` V5 | 57 | 77 | 71 | 72 | 72 | 72 | 72 | 81 | 88 | 91 | 94 | 100 |
-| `err_pk` V4 | 56 | 75 | 71 | 71 | 72 | 72 | 73 | 80 | 88 | 91 | 94 | 98 |
-| gap V5 | 24 | 29 | 23 | 24 | 24 | 24 | 24 | 26 | 25 | 25 | 25 | 26 |
-
-**Unchanged within 1-2 counts at every rung. PL-78's prediction did not happen.**
-
-⭐ **AND THE REASON IS THAT THIS TABLE WAS NEVER A MEASUREMENT OF THE SLAM.**
-
-- `err` and `err_pk` come from `windowStats()`, over the window `rungWindow()` opens **after** AT_SPEED
-  and after the settle. **The transition is over before the window opens.**
-- **Rung 0 is the proof.** It is the only rung that starts from rest, so it always had the soft start and
-  never had the defect -- and its gap is **24**, the same as every other rung's, at **both** visits. A
-  statistic that reads the same on the control and on the suspects is not measuring the difference
-  between them (doctrine D2).
-- **DERIVED:** the ~25-count gap is the AT_SPEED duty-servo ripple. `CURRENT-LIMIT-AND-STOP-DESIGN.md`
-  section 3.2 records the unloaded trace swinging -22 to -70 about a set point of 42 -- a peak about 25
-  above the mean, which is exactly what `err_pk - err` reports.
-
-⛔ **So PL-78's second half rests on window statistics read as transition statistics.** Whether the
-driver change is right, wrong or partial, **this instrument cannot say, and could not have said at
-Visit 4 either.** What Stephen felt with his hands is currently the only evidence about the slam, and it
-says the fix helped some transitions and not others.
-
-**Fix direction -- the measurement already exists and costs NO bench time.** `rungMeasure()` arms the
-instrument at the command, so the ring **already holds every sample of the transition**; `windowStats()`
-simply never reads them. Add a second statistics pass over [arm .. window start] -- the transition --
-giving the peak |err| during the ramp, per rung, and print it in `BM-RUNG2` beside the steady pair.
-**Rung 0 is the built-in control**, and the next ladder load then measures the slam directly instead of
-inferring it.
-
-**IN THIS RELEASE (aged-state sweep 2026-09-17)** -- it gates PL-78's second half, which is a behaviour Stephen
-felt and ruled not shippable.
-
 ---
 
 ## Archived
@@ -1320,6 +930,7 @@ work only** — that is the one question it answers.
 | --- | --- |
 | [`plans/archive/PUNCH-LIST-ARCHIVE-2026-09-17.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-17.md) | PL-3, PL-4, PL-5, **PL-9**, **PL-24** |
 | [plans/archive/PUNCH-LIST-ARCHIVE-2026-09-26.md](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-26.md) | the 50 entries closed by the 2026-09-26 release audit (PL-142 fixed the same evening) |
+| [plans/archive/PUNCH-LIST-ARCHIVE-2026-09-27.md](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-27.md) | the 12 entries certified by Visit 10 pass 7: PL-66, PL-78, PL-87, PL-143, PL-147, PL-151, PL-152, PL-153, PL-155, PL-156, PL-158, PL-159 |
 
 An archive file is never re-edited. If an archived item must be reopened, it comes back here as a
 **new** item that references the archive.
@@ -2131,6 +1742,10 @@ AND START REFUSAL CAUGHT IT** ([evaluation](analyses/bench/2026-09-25/VISIT-10-P
   From the next run, a PL-120 episode is read against that reseat. T0-25's recovery timer records any episode's length
   with no extra load.
 
+**2026-09-27, Visit 10 pass 7 (2026-09-26 17:42):** the board was reseated on its P2 headers beforehand. The pack was
+connected at 17:41:56 (`pack-connect-now.txt`) and the first load came 37 s later. The right started first time in
+every lifetime of every tier. One clean pass after a reseat is one observation, not a fix: **Watch**.
+
 ### PL-126 -- the P2's output stopped mid-record 2 s into right trial 19, and the wire then carried lone zero bytes
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench watch, one instance)
@@ -2268,36 +1883,6 @@ separate "flat" from "turning" on that board with margin.
 actionable is a second right rest window over 50 mV with no tick. The band is then sized from both boards' rest
 windows, never from one run's worst. The next `dual-fault-rightfirst` carries it as is.
 
-### PL-143 -- the command timeout watches a drive whose own limit bounds it, so "arm a limit, then drive" is cut short
-
-> **6.0 status (2026-09-26 audit):** RELEASE — Stephen's ruling on the command timeout versus an armed stopAfter* limit.
-
-**Found 2026-09-26** while updating the RC demo («#3624»).
-- **DERIVED from the source:** `REQ_DRIVE` marks every non-zero drive as open-ended for the command timeout
-  (`isp_steering_2wheel.spin2` ~:2816, `frontWatchCommand()`). That includes a `driveDirection()` or `driveAtPower()`
-  after `stopAfterTime()`, `stopAfterRotation()` or `stopAfterDistance()`. Only `driveForDistance()` is exempt, "a
-  bounded move" (DRIVE-OBJECTS.md, `setCommandTimeout()`).
-- So with `setCommandTimeout()` on, the library's own recommended pattern ("arm the limit BEFORE the drive") stops at
-  the timeout unless the program re-sends the drive. Re-sending may itself disturb the armed limit; that is not checked.
-- The RC demo's slow one-rotation drive is exactly that pattern. It would be cut after the timeout, so the demo does
-  not turn the guard on yet.
-
-**Disposition: question for Stephen** (the API contract is his, D10). Either a drive with an armed platform limit is
-bounded and not watched, as `driveForDistance()` is; or it is watched, the doc says so, and a program re-sends it.
-Once ruled, the RC demo gains `setCommandTimeout()` as its link-loss guard for wheels-down driving.
-
-**RULED, STEPHEN 2026-09-26:** *"i wouldn't expect carveouts"*, and on my proposal to also change what refreshes the
-timeout: *"are you asking me to reshape the mechanism vs, just apply it correctly?"*
-- **The build:** the command timeout watches every drive, with no exemptions. `driveForDistance()`'s bounded-move
-  exemption (`bCmdWatched := FALSE`, steering `REQ_DRIVE_DISTANCE`) goes, and a drive with a `stopAfter*()` limit
-  armed is watched like any other. The refresh is unchanged: a drive command resets the clock.
-- **Docs:** `setCommandTimeout()` in DRIVE-OBJECTS.md and DRIVE-OBJECTS-SERIAL.md, and the README line. With the guard
-  on, a program running a long move re-sends its drive. Re-sending `driveAtPower()`/`driveDirection()` keeps an armed
-  `stopAfter*()` limit (`REQ_DRIVE` disarms only the per-wheel limits `driveForDistance()` sets, steering ~:2822).
-  Re-sending `driveForDistance()` restarts its distance.
-- **Then the RC demo** enables the guard. It is built in the Pass A batch, and its cell is CMDTIMEOUT extended to a
-  bounded move.
-
 ### PL-144 -- the path limiter hunts: a wheel that cannot sustain its command cycles the platform between 8 % and 100 %
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: pass 7 dual-d PATH-HUNT = 1.
@@ -2325,6 +1910,10 @@ that cannot sustain its command falls back from near its limit, not from full. N
 - **By design, stated:** a field that stops short of the scale without being held (its ramp waiting at LAG_SOFT) now
   keeps the scale where it is until the fields catch up or a new command arrives. The path is kept, just slower.
 
+**2026-09-27, Visit 10 pass 7:** the log shows ONE engage in the BLOCK step (`PATH_LIMIT,wheel,LEFT,...,value,91`)
+and its release, where pass 6 showed five cycles. But R20-DUAL-PATH-HUNT read NOMEAS on its precondition, so the cell
+has not judged it; the log is evidence only. The precondition is being fixed (harness SRC_REV 56). Certifies at pass 8.
+
 ### PL-145 -- R16-DUAL-TIMESTOP's 20 ms slack sits inside the step's own measured spread
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench cell slack, watch)
@@ -2344,6 +1933,11 @@ that cannot sustain its command falls back from near its limit, not from full. N
 run. It is never the worst reading seen. What would make it actionable: a TIMESTOP later than about 60 ms past its
 deadline, which the tick scatter cannot explain.
 
+**2026-09-27, Visit 10 pass 7:** ACTIONABLE. The steering TIMESTOP read `measured,386` against 320: rest confirmed
+86 ms past the deadline, beyond this entry's 60 ms line. The single-wheel form (WTIMSTOP) read 314. The root cause is
+being traced at the desk alongside the front-cog overrun (PL-161); late passes and the DRIVER_REV 33 limit bookkeeping
+are the candidates.
+
 ### PL-146 -- part D's event drains read a stalled wheel's log before its fold-back released
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: pass 7 EV-FOLDBACK 0 bad.
@@ -2360,23 +1954,13 @@ deadline, which the tick scatter cannot explain.
 **Disposition: ⛔ FIX, built** (`test_bench_dual` SRC_REV 52). Each part D drain first waits, bounded by D_REST_MS,
 for both drivers to read DCS_STOPPED; the settle counts from there. Certifies at pass 7 (EV-FOLDBACK 0 bad).
 
-### PL-147 -- the two "following" readings measured against different commands while the path limiter scaled
-
-> **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: pass 7 NOTFOL-D PASS.
-
-**Found 2026-09-26** at Visit 10 pass 6 (evaluation §5).
-- **MEASURED:** R18-DUAL-NOTFOL-D LEFT FAIL: `BM-HOLD,...,LEFT,...,short_permille,84,short_pct,105`.
-- The limiter's fraction (`shortfallNow()`) is taken against `userCmdIncr`, the user's command.
-- The rpm window's percentage (`updateFollowing()`, `testGetFollowing()`) was taken against `targetIncre`, which a
-  path scale rewrites. So a wheel scaled to 8 % "followed" at 105 % of the scaled command, while the other reading
-  said 84 ‰ of the user's.
-- One value, two meanings (D7).
-- The cell was right to fail. A-8 requires the two readings to agree.
-
-**Disposition: ⛔ FIX, built** (DRIVER_REV 30, `isp_bldc_motor.spin2`). The percentage is now of `userCmdIncr`.
-`targetIncre` still gates validity, so a stopped or e-stopped wheel (driver command zeroed, user command kept) is not
-reported as not following. Test-use observable; no PASM or ABI change. Certifies at pass 7 (NOTFOL-D PASS on a
-behind wheel).
+**2026-09-27, Visit 10 pass 7:** RE-CAUSED. The drain-timing fix did not cure it: R20-DUAL-EV-FOLDBACK FAIL again,
+1 bad, the left's engage (65_351) with no release.
+- **VERIFIED in source:** the PASM fold-back compares the RAW `sense_i_` (the left board rests at ~8 mV) against
+  `max(duty_, duty_floor_) * i_limit_k_ >> 16`, and it runs on an undriven bridge (`isp_bldc_motor.spin2`
+  ~:7273-7280; the fault test's `tjnz bridge, #.noFault` falls into it). At the harness's 1 A limit the threshold at
+  the duty floor is a few mV, so the left counts a fold-back on every frame at rest and never releases.
+- **FIX in progress:** fold-back acts only on a driven bridge (DRIVER_REV 36). Certifies at pass 8 (EV-FOLDBACK 0 bad).
 
 ### PL-148 -- the serial control path has never run on hardware
 
@@ -2426,64 +2010,6 @@ states the derate as a design limit.
 keeping its line) and an overload cell (a command above what the load allows, no fault) to the floor run before it
 runs. Both are designed with the floor run's rebuild for DRIVER_REV 30-31.
 
-### PL-151 -- four 6.0 API behaviours were last certified on the pre-R18.4 driver, or never
-
-> **6.0 status (2026-09-26 audit):** RELEASE — each is a README claim with stale or no evidence.
-
-**Found 2026-09-26** by the release audit.
-- `driveForDistance(left, right)` turns: R17-DUAL-TURNDIST-B PASS at Visit 6a, on the pre-R18.4 driver. Part B has not
-  run since.
-- `getFaultCause()`: R17-DUAL-FLTCAUSE-B NOMEAS at Visit 6a, and no later PASS. A cause is only seen in passing (`cause,LAG`).
-- `getStatus()` reporting `DS_ESTOP`: no cell was found that reads it.
-- `stopAfterRotation()`: no cell was found.
-
-**Disposition: ⛔ release work.** One regression tier on the current driver covers all four:
-- part B's TURNDIST;
-- a FLTCAUSE cell provoked with `testForceFault()` (PL-119), which also lets PL-66's FLTRETRY certify;
-- a `getStatus()` read after an e-stop;
-- a `stopAfterRotation()` leg in T0.
-
-It should be built in the pointed form that PL-152 describes.
-
-### PL-152 -- every bench tier compiles twice, and carries every harness part ever written
-
-> **6.0 status (2026-09-26 audit):** RELEASE (support) — makes every remaining pass cheaper; changes nothing measured.
-
-**Found 2026-09-26** from Stephen's observation: *"The script is now compiling files twice... Your files are large
-enough that they take a really long time to compile... our bench run tests should not be an accumulation of all the
-tests we've ever run. They should be fairly pointed."*
-- **MEASURED (dev container):** `tools/bench-run.sh` compiles each tier plain and then with `-d` to measure the DEBUG
-  footprint from the size difference. A `test_bench_dual` compile takes about 13 s, so each dual tier spends about 26 s
-  compiling. The commit gate already measures the same footprint for every tier, on the tree the bench pulls.
-- **MEASURED:** the dual harness (22,062 lines, 15 parts) compiles all parts into every tier. Pass 6's START,
-  swapneg and D images were all 152,139 B. The driver and steering objects alone compile in about 4 s, so the
-  harness is about 70 % of the compile.
-
-**Disposition: ⛔ FIX, after pass 7** (so the pass on the bench is not disturbed):
-1. The bench compiles once, with `-d`. The footprint stays enforced by the commit gate.
-2. Each `test_bench_dual` part goes behind its own compile flag, so a tier builds only its part and the shared plumbing.
-   Every tier's banner and cells are re-checked, and the images are measured before and after.
-
-### PL-153 -- the odometer resets itself, and the distance limits count from the odometer instead of from where they were armed
-
-> **6.0 status (2026-09-26 audit):** RELEASE — ruled by Stephen from the public-API audit (API-1, API-5).
-
-**Found 2026-09-26** by the public-API usability audit («#3613» session; read-only survey, verified in source).
-- **API-1 (VERIFIED):** the motor object's `driveForDistance()`, `stopAfterDistance()` and both objects'
-  `stopAfterRotation()` compare the limit against `posTrkHallTicks`, the odometer since the last reset
-  (`isp_bldc_motor.spin2` ~:3059), and arming does not reset it (motor `REQ_DRIVE_DISTANCE` ~:5157, `REQ_LIMIT_TICKS`;
-  steering `stopAfterRotation` posts no reset ~:645). A second `driveForDistance(1, DDU_FT)` stops at once.
-- **API-5:** the odometer is zeroed silently while a motor is FAULTED or e-stopped (`frontResetTracking` every pass,
-  ~:2990) and by the steering object's distance moves (~:2830, :2863). `getDistance()` after an e-stop reads 0.
-
-**STEPHEN 2026-09-26:** *"I would think odometer is distance traveled... if you backed up, you also moved distance...
-it's total amount traveled."* So the odometer stays unsigned total travel and resets only on `resetTracking()`.
-Each distance or rotation limit counts the travel from the point where it was armed.
-
-**Disposition: ⛔ build.** Separate the odometer from the limit base. Remove the silent resets. Change the
-`resetTracking()` docs ("use current position as home") to say it resets the odometer. A T0 cell: two back-to-back
-`driveForDistance()` moves each travel their distance; an e-stop leaves `getDistance()` unchanged.
-
 ### PL-154 -- the serial path: hold cannot be set from the host example, every command can wait 1 s, and non-numbers become numbers
 
 > **6.0 status (2026-09-26 audit):** RELEASE — the serial path is a deliverable; the 1 s wait also delays `emercutoff`.
@@ -2505,30 +2031,6 @@ serial certification build.
 **Disposition: ⛔ build.** The wrapper sends -1/0; the loop polls its receive queue at about 1 ms; parameters must be
 digits or a leading minus, else ERROR; the doc says all of this. Certified by `pythonSrc/serial_certify.py` (PL-148).
 
-### PL-155 -- settings a user makes are lost on start() without saying so, and several have no getter
-
-> **6.0 status (2026-09-26 audit):** RELEASE — the same class as the acceleration finding (API-4).
-
-**Found 2026-09-26** by the public-API audit. `init()` resets `setMaxSpeed` (~:3869), `setMaxSpeedForDistance`
-(~:3870), `holdAtStop` (~:3844) and `forwardIsReverse` (~:3858) on every `start()`. Their docs do not say so, and they
-return NO_ERROR before start. There is no `holdAtStop` getter, `forwardIsReverse` has no undo or getter, and neither
-object has `getCommandTimeout()`.
-
-**Disposition: ⛔ build.** It goes with the acceleration/deceleration persistence (the kick spec). User settings live
-outside `init()`'s reset and are applied at every start. Each gets a getter, `forwardIsReverse` takes an enable, and
-the steering and serial mirrors follow.
-
-### PL-156 -- there is no "move finished" test, and the demos' wait loop hangs on a fault or e-stop
-
-> **6.0 status (2026-09-26 audit):** RELEASE — users copy the demos (API-7).
-
-**Found 2026-09-26** by the public-API audit. `isStopped()` is DCS_STOPPED only. The demos' `waitUntilMotorDone()`
-(`demo_dual_motor.spin2` ~:297-315, `demo_single_motor.spin2` ~:285-296) loops unbounded on `isStarting()`, then on
-`isStopped()`. It hangs when a fault or e-stop ends a move, or when a 2 ms poll misses SPIN_UP.
-
-**Disposition: ⛔ build.** A predicate true once the motor is not moving under a command (stopped, faulted, e-stopped
-or protectively stopped). The demos wait on it with a bound and report `getStopReason()`.
-
 ### PL-157 -- the serial protocol and the Python host example have not kept up with the 6.0 getters
 
 > **6.0 status (2026-09-26 audit):** RELEASE — STEPHEN: *"when we added getters, we should have been keeping our serial
@@ -2541,34 +2043,6 @@ or protectively stopped). The demos wait on it with a bound and report `getStopR
 **Disposition: ⛔ build.** Every user-facing getter, and every setter a host needs, has a serial command, a
 DRIVE-OBJECTS-SERIAL.md row and a Python wrapper. Measured speed is **not** in 6.0 (STEPHEN: *"I'm not saying add
 measured speed right now"*); `getPower()` reports what was commanded.
-
-### PL-158 -- getStatus() says HOLDING after the hold has handed off, and rotation limits and counts truncate
-
-> **6.0 status (2026-09-26 audit):** RELEASE — ruled in (API-11, API-12).
-
-**Found 2026-09-26** by the public-API audit.
-- **API-11:** `getStatus()` reports DS_HOLDING whenever the stop mode is brake and the motor is stopped (~:1634-1638).
-  That includes a hold that has handed off to the short, and a post-fault brake.
-- **API-12:** DRU_DEGREES limits truncate (90° becomes 88°, ~:740), and `getRotationCount(DRU_ROTATIONS)` is an
-  integer divide (~:1190).
-
-**Disposition: ⛔ build.** DS_HOLDING follows the hold's own state. Limits round to the nearest tick. The integer
-resolution of each getter is documented.
-
-### PL-159 -- documentation the API audit found wrong or missing
-
-> **6.0 status (2026-09-26 audit):** RELEASE — the doc-only items, ruled in.
-
-**Found 2026-09-26** by the public-API audit.
-- **API-14:** `calibrate()` is public and returns NO_ERROR while doing nothing.
-- **API-15:** `getCurrent()` returns `fAmps`, an integer in 0.1 mA, named like a float.
-- **API-6, STEPHEN 2026-09-26 "B":** `driveForDistance()` stays forward-only. The docs teach backing up as
-  `driveAtPower(-power)` then `stopAfterDistance()`, and state that the two calls are not one atomic move.
-- The serial doc gaps listed in PL-154.
-
-**Disposition: ⛔ build (docs).** `calibrate()` states plainly that it does nothing and returns an error code (the API
-is kept). The `fAmps` result is renamed in the doc and the source comment. The backing-up pattern goes in
-DRIVE-OBJECTS.md and DEVELOP.md.
 
 ### PL-160 -- a user cannot shape the ramp for their robot: deceleration is fixed, settings are lost on start(), and every ramp starts and ends with a torque step
 
@@ -2593,6 +2067,38 @@ which stays as it is.
 
 Open owner questions, asked one at a time: Q2 the built-in rates; Q3 `setRampingValues()`; Q4 reporting a held ramp;
 Q5 the inertia term.
+
+**2026-09-27, Visit 10 pass 7:** the API half — `setDeceleration()`, persistence across `start()`, and the getters —
+is CERTIFIED by t0-api (10/10 families, 0 bad). The entry stays OPEN for the jerk-limited trajectory generator (the
+feel). Its built-in rates (owner Q2) are unanswered, and do not block anything until that generator is built.
+
+### PL-161 -- the steering front cog overruns its 1 ms slot
+
+> **6.0 status (2026-09-26 audit):** RELEASE — found at Visit 10 pass 7; the front cog is what services every command.
+
+**Found 2026-09-26** at Visit 10 pass 7 ([evaluation](analyses/bench/2026-09-26/pass7/VISIT-10-PASS7-EVALUATION.md) §3, §4).
+- **MEASURED:** STEERSEG `max_us,1_015,late,3` (R16-DUAL-FRONTST-D FAIL). A wiring-walk end-pass took 1,058 µs
+  (pass 6: 874 / 921). About +140 µs was added to the worst pass.
+- **Candidates (UNDETERMINED which):** the pack sampler, which runs every pass (rdpin plus two `muldiv64`), active for
+  the first time now the sensor is fitted; and the per-pass odometer and limit-base work added at DRIVER_REV 33.
+
+**Disposition: ⛔ FIX by construction** (DRIVER_REV 36): the pack is sampled at slot cadence with its conversion off
+the per-pass path, and the per-pass additions are reviewed. Separating the candidates on the bench is not needed.
+Certifies at pass 8 (FRONTST late 0, max under 950 µs).
+
+### PL-162 -- two pack cells are judged with a wrong instrument
+
+> **6.0 status (2026-09-26 audit):** RELEASE (instrument) — found at Visit 10 pass 7.
+
+**Found 2026-09-26** at Visit 10 pass 7 ([evaluation](analyses/bench/2026-09-26/pass7/VISIT-10-PASS7-EVALUATION.md) §3, §4).
+- **R20-PACK-ABSENT FAIL 1 of 2 (VERIFIED in the harness):** the cycle reference and the calibration mark are taken
+  from the last pre-ABSENT sample of a decaying average (`pkRefMv := pkHistMv[0]`, and `pkMarkMv`). Pass 7's reference
+  read 20,505 against a steady 20,688; the replug read 20,684.
+- **R19-DUAL-PACK-X FAIL 10/10 (VERIFIED):** the criterion hard-codes "no sensor fitted", and the sensor is now fitted.
+- The calibration (1012) is unaffected: its mark matched the steady mean within 3 mV.
+
+**Disposition: ⛔ FIX** (harness SRC_REV 56): the reference and the mark come from the steady reading, and PACK-X is
+judged against the configuration.
 
 ---
 
