@@ -7,9 +7,13 @@ Two kinds of writes:
     (deltas, hall_angles, permuted by testSetHallSwap()'s swap) and every `<ptr> := @<label>` pointer init()
     assigns (lutCodePtr, planCodePtr today; relCodePtr or runCodeStart after C8/C2, found by reading init()).
 
-GUARD: `dat_writes_checked()` reads init(), swapHallTables() and launchDriver() of each image and refuses to run
-if they touch a driver DAT symbol this model does not know how to fill. A work package that changes what
-init() puts in the image (C4's packed deltas) must extend this file, or the run stops and says so.
+The delta table is written in whichever layout the image has: 64 bytes, or (WP4/C4, DRIVER_REV 44) the 8
+packed longs pack_deltas() derives from the baseline's per-frame rules, built from the same swapped byte table.
+
+GUARD: `dat_writes_checked()` reads init(), swapHallTables(), launchDriver(), packHallDeltas() and
+deltaTableForMotor() of each image and refuses to run if they touch a driver DAT symbol this model does not know
+how to fill. A work package that changes what init() puts in the image must extend this file, or the run stops
+and says so.
 """
 import re
 
@@ -76,13 +80,15 @@ def pointer_inits(img):
 
 
 def dat_writes_checked(img):
-    """Every driver DAT symbol init(), swapHallTables() and launchDriver() name must be one this model fills."""
+    """Every driver DAT symbol init(), swapHallTables(), launchDriver(), packHallDeltas() and deltaTableForMotor()
+    name must be one this model fills. (A method the source lacks contributes nothing.)"""
     ptrs = pointer_inits(img)
     known = KNOWN_DAT_WRITES | set(ptrs)
     driver_syms = {n for n, a in img.cog_sym.items() if '.' not in n}
     lut_labels = {n for n, (cog, hub, typ) in img.dat.items() if cog is not None and cog >= 0x200 and '.' not in n}
     unknown = set()
-    for hdr in (r'^PRI init\(', r'^PRI swapHallTables\(', r'^PRI launchDriver\('):
+    for hdr in (r'^PRI init\(', r'^PRI swapHallTables\(', r'^PRI launchDriver\(', r'^PRI packHallDeltas\(',
+                r'^PRI deltaTableForMotor\('):
         body = _strip_comments(spin_body(img.source, hdr))
         for ident in set(re.findall(r'[A-Za-z_]\w*', body)):
             u = ident.upper()
@@ -195,6 +201,83 @@ def hall_tables(img, cfg):
                 nd[(old << 3) | new] = deltas[(hall_bits_swapped(old, a, b) << 3) | hall_bits_swapped(new, a, b)]
         angles, deltas = na, nd
     return deltas, angles
+
+
+NIB_MISSED = 0b0100
+NIB_ILLEGAL = 0b1000
+ILLEGAL_CODES = (0b000, 0b111)
+
+
+def baseline_hall_decision(byte_table, old, new):
+    """What the BASELINE frame (mem-reduce-start, .ctlMotor) does with one (old, new) hall pair, as
+    (step, missed, illegal): the amount added to pos_, 1 if hall_missed_ is incremented, 1 if countIllegal is
+    called (with tmpY = new, so the count goes into new's own word). See pack_deltas() for the derivation."""
+    b = byte_table[(old << 3) | new] & 0xFF
+    step = b - 0x100 if b & 0x80 else b               # altgb/getbyte, signx #7
+    if old == new or step != 0:                       # test ...#%111 wz / if_z jmp;  cmp tmpY,#0 wz / if_nz jmp
+        return step, 0, 0
+    if new in ILLEGAL_CODES:                          # countIllegal: Z set (counted) for new == %000 or %111
+        return step, 0, 1
+    if old in ILLEGAL_CODES:                          # cmp old,#%000 wz / if_nz cmp old,#%111 wz
+        return step, 0, 0
+    return step, 1, 0                                 # if_nz add hall_missed_, #1
+
+
+def pack_deltas(byte_table):
+    """The 8 longs a packed-`deltas` driver (DRIVER_REV 44, WP4/C4) must find in its image for the 64-byte
+    delta table `byte_table` (indexed (old << 3) | new, already hall-swapped) that the baseline image is given.
+
+    Derived from the BASELINE PASM only (mem-reduce-start, .ctlMotor, after `and hall_, #%111_111`, so
+    hall_ = old << 3 | new with old, new in 0..7):
+
+        altgb   hall_, #deltas      \\  tmpY := signx(byte[hall_], 7) = the step s
+        getbyte tmpY                 |
+        signx   tmpY, #7             |
+        add     pos_, tmpY          /   pos_ += s, on every pair
+        mov tmpX, hall_ / shr tmpX,#3 / xor tmpX, hall_ / test tmpX, #%111 wz
+        if_z jmp #.hallCounted          old == new: nothing counted
+        cmp tmpY, #0 wz / if_nz jmp     s != 0: nothing counted
+        mov tmpY, hall_ / and tmpY,#%111 / call #countIllegal
+                                        countIllegal(new): new == %000 or %111 -> counted in new's word, Z=1;
+                                        otherwise it returns at once with Z=0 and counts nothing
+        if_z jmp #.hallCounted          counted illegal: never also missed
+        mov tmpY, hall_ / shr tmpY,#3 / cmp tmpY,#%000 wz / if_nz cmp tmpY,#%111 wz
+        if_nz add hall_missed_, #1      old legal: a missed transition; old %000/%111: nothing
+
+    Every decision is a function of (old, new, s) and of nothing else in the cog, so it is a static function of
+    the pair, and a nibble per pair can carry all of it:
+
+        step    = s                                             (every pair)
+        illegal = old != new and s == 0 and new in {%000, %111}
+        missed  = old != new and s == 0 and new not in {%000, %111} and old not in {%000, %111}
+
+    Nibble `new` of long `old`: bits 1:0 = s & 3 (the candidate reads the step back as signx(n & 3, 1)),
+    bit 2 = missed, bit 3 = illegal. illegal and missed are exclusive. The step is exact only for s in -2..+1
+    (bits 1:0 sign-extended); any other byte cannot be carried, and this raises rather than guess. The counted
+    illegal code is `new` itself, which the candidate keeps in tmpY for countIllegal, so the nibble need not
+    say which word."""
+    out = [0] * 8
+    for old in range(8):
+        for new in range(8):
+            step, missed, illegal = baseline_hall_decision(byte_table, old, new)
+            if not -2 <= step <= 1:
+                raise ValueError('delta byte (old %d, new %d) = %d: a packed nibble carries only -2..+1'
+                                 % (old, new, step))
+            nib = (step & 3) | (NIB_MISSED if missed else 0) | (NIB_ILLEGAL if illegal else 0)
+            out[old] |= nib << (4 * new)
+    return out
+
+
+def deltas_packed(img):
+    """True when the image's `deltas` is the packed 8-long table (WP4/C4): hall_angles follows it 32 bytes on,
+    not 64 as with the byte table."""
+    d, a = img.sym_hub('DELTAS'), img.sym_hub('HALL_ANGLES')
+    if d is None or a is None:
+        raise ValueError('%s: no DELTAS / HALL_ANGLES symbol' % img.label)
+    if a - d not in (32, 64):
+        raise ValueError('%s: HALL_ANGLES - DELTAS is %d bytes, neither the byte table (64) nor the packed '
+                         'table (32)' % (img.label, a - d))
+    return a - d == 32
 
 
 def unswapped_tables(img, cfg):

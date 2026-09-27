@@ -187,12 +187,27 @@ class Env:
             put(ptr, ob + img.sym_hub(label))
         deltas, angles = initmodel.hall_tables(img, cfg)
         dh = ob + img.sym_hub('DELTAS')
-        for k in range(64):
-            a = dh + k
-            w = self.hub[a >> 2]
-            sh = 8 * (a & 3)
-            w = (w & ~(0xFF << sh)) | ((deltas[k] & 0xFF) << sh)
-            self.hub[a >> 2] = w & M32
+        try:
+            packed = initmodel.deltas_packed(img)
+        except ValueError as e:
+            raise EmuError(str(e))
+        if packed:
+            # WP4/C4: 8 longs of nibbles, from the same (swapped) byte table the baseline is given
+            try:
+                longs = initmodel.pack_deltas(deltas)
+            except ValueError as e:
+                raise EmuError('%s: %s' % (img.label, e))
+            if dh & 3:
+                raise EmuError('%s: DAT long DELTAS is not aligned with the driver image' % img.label)
+            for k in range(8):
+                self.hub[(dh >> 2) + k] = longs[k]
+        else:
+            for k in range(64):
+                a = dh + k
+                w = self.hub[a >> 2]
+                sh = 8 * (a & 3)
+                w = (w & ~(0xFF << sh)) | ((deltas[k] & 0xFF) << sh)
+                self.hub[a >> 2] = w & M32
         ah = ob + img.sym_hub('HALL_ANGLES')
         for k in range(16):
             self.hub[(ah >> 2) + k] = angles[k]

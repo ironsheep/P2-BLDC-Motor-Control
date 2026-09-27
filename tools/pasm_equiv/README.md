@@ -185,10 +185,18 @@ The three instructions never executed are each unreachable for a static reason:
 
 - **Keep register names.** A register moved or aliased (C1, C7) is found by name. If a work package removes a name
   that is live, the tool reports `register-missing`.
-- **init() changes.** The tool reads `init()`, `swapHallTables()` and `launchDriver()`. It follows every
-  `<ptr> := @<label>` into the image by itself, which covers C2's and C8's pointers. It refuses to run if they
-  write any other driver DAT symbol it does not fill. C4's packed `deltas` must extend `initmodel.py`
-  (`hall_tables()` and `KNOWN_DAT_WRITES`).
+- **init() changes.** The tool reads `init()`, `swapHallTables()`, `launchDriver()`, `packHallDeltas()` and
+  `deltaTableForMotor()`. It follows every `<ptr> := @<label>` into the image by itself, which covers C2's and
+  C8's pointers. It refuses to run if they write any other driver DAT symbol it does not fill. A new init()
+  write must extend `initmodel.py` (`KNOWN_DAT_WRITES` and the fill in `drvenv.py`).
+- **The hall delta table has two layouts**, told apart by `HALL_ANGLES - DELTAS`. At 64 bytes the tool writes
+  the motor's byte table (`deltas65` or `deltas4k`, hall-swapped). At 32 bytes (C4, DRIVER_REV 44: nibble `new`
+  of long `old`) it writes `initmodel.pack_deltas()` of that same swapped byte table. `pack_deltas()` is derived
+  from the baseline's frame code alone: its byte lookup and the check block in `.ctlMotor` that counts missed
+  and illegal transitions. The docstring gives the derivation. Bits 1:0 hold the step; bit 2 is set for a
+  change between two legal codes with no step (a missed transition); bit 3 for a change into `%000`/`%111` with
+  no step (an illegal entry, counted by `countIllegal`). The tool does not use the candidate's Spin2 packer. A
+  byte that the nibble cannot carry (outside −2..+1) stops the run.
 - **A new instruction** is added to `p2cog.py`'s decode table with its p2kb key, after compiling it with `pnut-ts`
   and decoding it back.
 - **Labels the timing report watches:** `drvMotor` (the pass, and the end of the start frame's first part),
