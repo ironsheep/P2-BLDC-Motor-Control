@@ -517,6 +517,13 @@
 ''               three pairs of a lifetime, which only draws them together. The walk guard compares the driver's
 ''               own reading. RZSPREAD judges the harness's own zero (raw means) against the driver's re-derived
 ''               band: its terms are at the START part's CON. No record or cell changes
+''               27 Sep 2026 -- SRC_REV=61, FMT 38: DRIVER_REV 46 removes setRampingValues() and getRampingValues()
+''               (PL-160 owner Q3). FAULTB and LIMRAMP now set each trial's ramp in mm/s^2 through setAcceleration()
+''               and setDeceleration() (wheelSetRamp(), fbAccelRates, limRampUps/Downs; RAMP_DEF_ACCEL_MM_S2 /
+''               RAMP_DEF_DECEL_MM_S2): the same five speed-up limits within a step (FB_OLD_MAX_MM_S2 5_890 gives
+''               200_010 steps where the raw trial set 200_000; FB_DROOP_MIN_ACCEL 200_000 still takes it). Every
+''               read of the four limits is testGetRampLimits(). BM-FBTRIAL's accel_up is the limit READ BACK (0 for
+''               a skipped trial, where it printed the table's). No other record or cell changes
 ''
 '' =================================================================================================
 
@@ -586,7 +593,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 60                                 ' hand-bumped whenever this file changes
+    SRC_REV     = 61                                 ' hand-bumped whenever this file changes
     FMT_VERSION = 38                                     ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -1101,7 +1108,7 @@ CON { drive increments and powers }
     LOW_WINDOW_MS       = 4_000
     LOW_SETTLE_MS       = 1_000                             ' longer than LADDER_SETTLE_MS: these rungs settle slowly
     LOW_STEADY_MS       = 8_000                             ' AT_SPEED bound; the ramp to a low increment is not fast
-    FB_TRIALS           = 5                                 ' accel_up 33_958, 67_916, 135_832, 200_000, 339_576 (fbAccelUps)
+    FB_TRIALS           = 5                                 ' 1_000 .. 10_000 mm/s^2, accel_up 33_958 .. 339_576 (fbAccelRates)
     ' RMPDROOP judges the trials whose ramp the motor cannot follow. Until SRC_REV 59: ramp_inc 500, 2_000 and 10_000,
     '  the three that faulted 3 of 3 at Visit 2 (VISIT-2-RESULTS.md sec 6). Each of them grew its step to the old
     '  ramp_max, 200_000 a pass (about 5_900 mm/s^2), and the two that stayed below it (ramp_inc 22 and 100, at most
@@ -1170,8 +1177,8 @@ CON { drive increments and powers }
     FLTAPI_LATCH_MS     = 3_000                             ' held this long past the fault to pass
 
     ' The built-in ramp (SRC_REV 59, DRIVER_REV 38, PL-160), restored and read back after every FAULTB and LIMRAMP trial
-    '  (I11). Since DRIVER_REV 38 the four ramp longs are the jerk-limited generator's -- getRampingValues()'s minRamp,
-    '  maxRamp, incRamp, decrRamp are jerk_up, accel_up, jerk_dn, accel_dn -- and the built-in ramp is two rates,
+    '  (I11). Since DRIVER_REV 38 the four ramp longs are the jerk-limited generator's -- testGetRampLimits() reads
+    '  jerk_up, accel_up, jerk_dn, accel_dn (DRIVER_REV 46; was getRampingValues()) -- and the built-in ramp is two rates,
     '  ACCEL_BUILTIN_MM_S2 (1_000) and DECEL_BUILTIN_MM_S2 (1_470). MIRRORED on purpose, as LIB_MAX_FWD_INCRE is: the
     '  restore's read-back is judged against this file's own derivation, not the library's. DERIVED for the 6.5in
     '  wheel: one step per drive pass is 1_913.04^2 passes/s^2 x 6 ticks per electrical cycle x 5.76 mm per tick / 2^32
@@ -1183,6 +1190,11 @@ CON { drive increments and powers }
     RAMP_DEF_JERK_DN  = 104
     RAMP_DEF_ACCEL_DN = 49_918
     RAMP_DEF_JERK_X   = RAMP_DEF_JERK_UP #> RAMP_DEF_JERK_DN   ' the larger jerk, at which an acceleration unwinds (jerkStep)
+    ' SRC_REV 61 (DRIVER_REV 46): the ramp is set only in mm/s^2 now (setAcceleration(), setDeceleration()), so a trial's
+    '  ramp is named by its rates; the steps above stay this file's derivation of what they give.
+    RAMP_DEF_ACCEL_MM_S2 = wheelL.ACCEL_BUILTIN_MM_S2          ' 1_000: RAMP_DEF_ACCEL_UP's rate
+    RAMP_DEF_DECEL_MM_S2 = wheelL.DECEL_BUILTIN_MM_S2          ' 1_470: RAMP_DEF_ACCEL_DN's rate
+    FB_OLD_MAX_MM_S2     = 5_890                               ' the stepped ramp's old ramp_max, 200_000 steps: 200_000 x 0.0294485 = 5_889.7
     ' The jerk-limited stop from speed v, in drive passes, DERIVED from the rule (stopPlan()): the slow-down holds A only
     '  when v > A^2 / J (24.0 x 10^6 on these rates); then it takes A / J passes to reach A, (v - A^2 / J) / A at A, and
     '  A / J to leave it -- v / A + A / J in all -- and one pass more for the stop to be taken. Every stop this file
@@ -2427,10 +2439,11 @@ ladderAllIdx    LONG    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11            ' CLIMB,
 ' segment's OWN rung numbers 0..4, not indices into ladderIncre -- BM-RUNG's seg field says which table
 ' a rung number belongs to, as it already does for LIVE and CLOCK.
 lowIncre        LONG    1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000
-' FAULTB: the speed-up limit (accel_up, setRampingValues()'s maxRamp) per trial, ascending (SRC_REV 59; was ramp_inc 22,
-'  100, 500, 2_000, 10_000, plan :917-918). The built-in 1_000 mm/s^2 (RAMP_DEF_ACCEL_UP), twice and four times it, the
-'  old ramp_max, and 10_000 mm/s^2 (ACCEL_MAX_MM_S2: 10_000 / 0.0294485 = 339_575.6), each DERIVED for the 6.5in wheel.
-fbAccelUps      LONG    RAMP_DEF_ACCEL_UP, RAMP_DEF_ACCEL_UP * 2, RAMP_DEF_ACCEL_UP * 4, 200_000, 339_576
+' FAULTB: the speed-up rate per trial, mm/s^2, ascending (SRC_REV 61: set with setAcceleration(); SRC_REV 59 set the
+'  same limits raw, 33_958 / 67_916 / 135_832 / 200_000 / 339_576 steps; was ramp_inc 22, 100, 500, 2_000, 10_000, plan
+'  :917-918). The built-in 1_000 mm/s^2, twice and four times it, the old ramp_max (FB_OLD_MAX_MM_S2, 200_010 steps), and
+'  ACCEL_MAX_MM_S2 (10_000: 339_576 steps), each DERIVED for the 6.5in wheel. The step each gives is read back.
+fbAccelRates    LONG    RAMP_DEF_ACCEL_MM_S2, RAMP_DEF_ACCEL_MM_S2 * 2, RAMP_DEF_ACCEL_MM_S2 * 4, FB_OLD_MAX_MM_S2, 10_000
 
 DAT { hand-maintained copy of the driver's hall-position-delta table }
 
@@ -3219,7 +3232,7 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    stFail                                          ' ...failed
     LONG    stRec                                           ' ...recovered
     LONG    fbTrial                                         ' BM-FBTRIAL
-    LONG    fbAccelUp                                       ' the trial's speed-up limit, fbAccelUps (SRC_REV 59; was fbRampInc)
+    LONG    fbAccelUp                                       ' the trial's speed-up limit read back (SRC_REV 61; was fbRampInc)
     LONG    fbIncre
     LONG    fbOffNeg
     LONG    fbOffPos
@@ -4108,7 +4121,7 @@ PRI segClock() | side, signMul
 #ifdef DBP_B
 PRI segFaultBoundary() | side, signMul, trialIdx, whyCode
 ' FAULTB (part B, T1-7): the ramp fault-boundary sweep (C-5, Z; S-1 not measured). Per motor x sign
-' one lifetime and FB_TRIALS trials, the speed-up limit ascending (fbAccelUps; SRC_REV 59, was ramp_inc).
+' one lifetime and FB_TRIALS trials, the speed-up rate ascending (fbAccelRates; SRC_REV 61, was ramp_inc).
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
 ' @local signMul - SIGN_NEG then SIGN_POS
@@ -5703,8 +5716,8 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
 
 #ifdef DBP_B
 PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, accelUp, safeEvent, bReached, startMs, bStopped
-' One FAULTB trial (design sec 4.4, T1-7): wheel stopped; the trial's speed-up limit (fbAccelUps, SRC_REV 59: was
-' setRampingValues(1_500, 200_000, inc, 50_000)) with the built-in slow-down limit, through wheelSetRamp(), read
+' One FAULTB trial (design sec 4.4, T1-7): wheel stopped; the trial's speed-up rate (fbAccelRates, SRC_REV 61; its
+' limit was set raw at SRC_REV 59) with the built-in slow-down rate, through wheelSetRamp(), its limit read
 ' back; arm; mark; FB_INCRE from standstill; capture until AT_SPEED + FB_AT_SPEED_HOLD_MS, a fault,
 ' or FB_TIMEOUT_MS; freeze; restore the ramp defaults and read them back (BM-RAMPREST, I11) BEFORE any
 ' check; BM-TRACE cause RAMP, BM-TS, BM-TRACE-END; peaks and dsat from the trace; recovery (sec 4.2);
@@ -5712,7 +5725,7 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ac
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signMul - SIGN_NEG or SIGN_POS
-' @param trialIdx - 0-based trial, index into fbAccelUps
+' @param trialIdx - 0-based trial, index into fbAccelRates
 ' @param skipWhy - WHY_NONE to run, else why the lifetime could not start
 '
 ' @local slotIdx - motor slot
@@ -5730,7 +5743,7 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ac
     motorIncre := FB_INCRE * signMul
     cpReset()
     fbTrial := trialIdx + 1
-    fbAccelUp := fbAccelUps[trialIdx]
+    fbAccelUp := 0                                                  ' the limit read back once set; 0 for a skipped trial
     fbIncre := motorIncre
     fbResult := RES_OK
     fbTMs := 0
@@ -5752,7 +5765,8 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ac
         fbResult := RES_SKIPPED
         traceSkip(tid, SEG_FAULTB, side, CAUSE_RAMP, motorIncre, MODE_FLOAT, accelUp, fbWhy)
     else
-        accelUp, _ := wheelSetRamp(side, fbAccelUp, RAMP_DEF_ACCEL_DN)
+        accelUp, _ := wheelSetRamp(side, fbAccelRates[trialIdx], RAMP_DEF_DECEL_MM_S2)
+        fbAccelUp := accelUp
         if bInstArm(INST_SRC_WHEELS, 1) == FALSE
             cpWhy := WHY_INST_NOACK
         else
@@ -9421,8 +9435,8 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
   '  RAMP_TAU_MS), so the traces step those: the built-in limit, twice and four times it speeding up, the built-in
   '  and twice it slowing down. (They stepped ramp_inc 22 / 44 / 88 and ramp_down 50_000 / 100_000, and ramp_inc no
   '  longer does anything.)
-  LIMRAMP_UPS           = 3                                 ' RAMP_DEF_ACCEL_UP x 1, 2, 4 (1_000, 2_000, 4_000 mm/s^2)
-  LIMRAMP_DOWNS         = 2                                 ' RAMP_DEF_ACCEL_DN x 1, 2 (1_470, 2_940 mm/s^2)
+  LIMRAMP_UPS           = 3                                 ' RAMP_DEF_ACCEL_MM_S2 x 1, 2, 4 (1_000, 2_000, 4_000 mm/s^2)
+  LIMRAMP_DOWNS         = 2                                 ' RAMP_DEF_DECEL_MM_S2 x 1, 2 (1_470, 2_940 mm/s^2)
 
   ' LIMLOW (E4). Per motor x sign, one lifetime: four rungs from the old floor down, then the same four with
   '  duty_min halved (read back, and restored and read back after). The window is as long as the ring's
@@ -9448,8 +9462,8 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
 #ifdef DBP_LIMITS
 DAT ' ---- LIMITS tables ----
 
-limRampUps      LONG    RAMP_DEF_ACCEL_UP, RAMP_DEF_ACCEL_UP * 2, RAMP_DEF_ACCEL_UP * 4
-limRampDowns    LONG    RAMP_DEF_ACCEL_DN, RAMP_DEF_ACCEL_DN * 2
+limRampUps      LONG    RAMP_DEF_ACCEL_MM_S2, RAMP_DEF_ACCEL_MM_S2 * 2, RAMP_DEF_ACCEL_MM_S2 * 4    ' mm/s^2 (SRC_REV 61)
+limRampDowns    LONG    RAMP_DEF_DECEL_MM_S2, RAMP_DEF_DECEL_MM_S2 * 2
 limLowIncre     LONG    544_628, 400_000, 250_000, 100_000                  ' the old confgurePowerLimits() floor, then below it (Visit 9 moved the floor to 100_000)
 tokEdge         BYTE    "NONE", 0, "FAULT", 0, "HOLD", 0, "SLOW", 0, "NOWIN", 0
 tokFolK         BYTE    "RUNG", 0, "OVER", 0
@@ -9912,9 +9926,9 @@ PRI limRampSign(side, signMul) | settingIdx, whyCode, qtrIncre
     elseif bWheelStart(SEG_LIMRAMP, side) == FALSE
         whyCode := stWhy
     repeat settingIdx from 0 to LIMRAMP_UPS - 1
-        whyCode := limRampTrial(side, limRampUps[settingIdx], RAMP_DEF_ACCEL_DN, CAUSE_START, 0, qtrIncre, whyCode)
+        whyCode := limRampTrial(side, limRampUps[settingIdx], RAMP_DEF_DECEL_MM_S2, CAUSE_START, 0, qtrIncre, whyCode)
     repeat settingIdx from 0 to LIMRAMP_DOWNS - 1
-        whyCode := limRampTrial(side, RAMP_DEF_ACCEL_UP, limRampDowns[settingIdx], CAUSE_SLOWER, DRIVE_CEILING_INCRE * signMul, qtrIncre, whyCode)
+        whyCode := limRampTrial(side, RAMP_DEF_ACCEL_MM_S2, limRampDowns[settingIdx], CAUSE_SLOWER, DRIVE_CEILING_INCRE * signMul, qtrIncre, whyCode)
     if isWheelUp(side)
         bRestoreRamp(side)
     bInstIdle()
@@ -9925,8 +9939,8 @@ PRI limRampTrial(side, upWant, downWant, causeCode, fromIncre, toIncre, skipWhy)
 ' from fromIncre to toIncre. A skipped trial prints its why and no ramp settings of its own.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param upWant - the speed-up limit, accel_up, for the trial
-' @param downWant - the slow-down limit, accel_dn, for the trial
+' @param upWant - the speed-up rate for the trial, mm/s^2 (SRC_REV 61; its limit accel_up is read back)
+' @param downWant - the slow-down rate for the trial, mm/s^2 (its limit accel_dn is read back)
 ' @param causeCode - CAUSE_START or CAUSE_SLOWER
 ' @param fromIncre - the speed a SLOWER starts from (0 for a START)
 ' @param toIncre - the speed commanded at the mark
@@ -22594,7 +22608,7 @@ PRI wheelEstop(side)
     beat(CP_LIB_ESTOP)
 
 PRI wheelAccelUp(side) : nAccelUp
-' Read back one wheel's speed-up limit, accel_up (getRampingValues()'s maxRamp since DRIVER_REV 38; SRC_REV 59 -- the
+' Read back one wheel's speed-up limit, accel_up (testGetRampLimits()'s second, DRIVER_REV 46; SRC_REV 59 -- the
 ' trace header printed ramp_inc, which DRIVER_REV 38 made the slow-down jerk).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -22602,9 +22616,9 @@ PRI wheelAccelUp(side) : nAccelUp
 
     beat(CP_LIB_RAMP)
     if side == SIDE_RIGHT
-        _, nAccelUp, _, _ := wheelR.getRampingValues()
+        _, nAccelUp, _, _ := wheelR.testGetRampLimits()
     else
-        _, nAccelUp, _, _ := wheelL.getRampingValues()
+        _, nAccelUp, _, _ := wheelL.testGetRampLimits()
     beat(CP_LIB_RAMP)
 
 PRI wheelAccelNow(side) : nAccel
@@ -22621,25 +22635,26 @@ PRI wheelAccelNow(side) : nAccel
         nAccel := wheelL.testGetAccelNow()
     beat(CP_LIB_QUERY)
 
-PRI wheelSetRamp(side, accelUpWant, accelDnWant) : accelUpBack, accelDnBack
-' Set a trial's ramp and read both limits back: FAULTB's trials and LIMRAMP's (task 3604). SRC_REV 59 (DRIVER_REV 38):
-' the raw setter's maxRamp and decrRamp are the speed-up and slow-down limits and minRamp and incRamp have no effect, so
-' they are given 1 and 0, the least its checks accept; the driver pairs each limit with its jerk. Every caller restores
-' the built-in ramp with bRestoreRamp() afterwards (I11).
+PRI wheelSetRamp(side, accelRate, decelRate) : accelUpBack, accelDnBack
+' Set a trial's ramp and read both limits back: FAULTB's trials and LIMRAMP's (task 3604). SRC_REV 61 (DRIVER_REV 46):
+' set through the public API, setAcceleration() and setDeceleration() in mm/s^2 (the raw setRampingValues() is gone);
+' the driver pairs each limit with its jerk. Every caller restores the built-in ramp with bRestoreRamp() afterwards (I11).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param accelUpWant - the trial's speed-up limit, accel_up
-' @param accelDnWant - the trial's slow-down limit, accel_dn
-' @returns accelUpBack - accel_up read back
+' @param accelRate - the trial's speed-up rate, mm/s^2
+' @param decelRate - the trial's slow-down rate, mm/s^2
+' @returns accelUpBack - accel_up read back (testGetRampLimits())
 ' @returns accelDnBack - accel_dn read back
 
     beat(CP_LIB_RAMP)
     if side == SIDE_RIGHT
-        wheelR.setRampingValues(1, accelUpWant, 0, accelDnWant)
-        _, accelUpBack, _, accelDnBack := wheelR.getRampingValues()
+        wheelR.setAcceleration(accelRate)
+        wheelR.setDeceleration(decelRate)
+        _, accelUpBack, _, accelDnBack := wheelR.testGetRampLimits()
     else
-        wheelL.setRampingValues(1, accelUpWant, 0, accelDnWant)
-        _, accelUpBack, _, accelDnBack := wheelL.getRampingValues()
+        wheelL.setAcceleration(accelRate)
+        wheelL.setDeceleration(decelRate)
+        _, accelUpBack, _, accelDnBack := wheelL.testGetRampLimits()
     beat(CP_LIB_RAMP)
 
 PRI wheelSetOffsets(side, negDegrees, posDegrees)
@@ -23096,11 +23111,11 @@ PRI bRestoreRamp(side) : bOk | jerkUp, accelUp, jerkDn, accelDn
     if side == SIDE_RIGHT
         wheelR.setAcceleration(wheelR.ACCEL_BUILTIN_MM_S2)
         wheelR.setDeceleration(wheelR.DECEL_BUILTIN_MM_S2)
-        jerkUp, accelUp, jerkDn, accelDn := wheelR.getRampingValues()
+        jerkUp, accelUp, jerkDn, accelDn := wheelR.testGetRampLimits()
     else
         wheelL.setAcceleration(wheelL.ACCEL_BUILTIN_MM_S2)
         wheelL.setDeceleration(wheelL.DECEL_BUILTIN_MM_S2)
-        jerkUp, accelUp, jerkDn, accelDn := wheelL.getRampingValues()
+        jerkUp, accelUp, jerkDn, accelDn := wheelL.testGetRampLimits()
     beat(CP_LIB_RAMP)
     bOk := (jerkUp == RAMP_DEF_JERK_UP) and (accelUp == RAMP_DEF_ACCEL_UP) and (jerkDn == RAMP_DEF_JERK_DN) and (accelDn == RAMP_DEF_ACCEL_DN)
     bSfRampRan[side - SIDE_LEFT] := TRUE
@@ -24084,7 +24099,7 @@ PRI emitFbTrial(tid, side)
 
 PRI emitRampRest(side, jerkUp, accelUp, jerkDn, accelDn, bOk)
 ' BM-RAMPREST: the ramp restore read back (I11). Worst case 148 bytes. SRC_REV 59 (FMT 38): the four fields are
-' DRIVER_REV 38's names for getRampingValues()'s four (were min, max, inc, down).
+' DRIVER_REV 38's names for testGetRampLimits()'s four (were min, max, inc, down).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param jerkUp - jerk_up read back

@@ -299,8 +299,9 @@ a limit lowered mid-ramp is unwound at the larger jerk. A reversal passes throug
 continuous ramp: only a start from `DCS_STOPPED` seeds the field from the halls. The
 generator's present acceleration is the status long `drv_accel_now`. Built-in limits:
 1,000 mm/s² up and 1,470 mm/s² down (33,958 and 49,918 on the 6.5″ wheel), provisional.
-`setAcceleration()` and `setDeceleration()` set the limits from mm/s²; `setRampingValues()`
-sets them raw, and its `minRamp` and `incRamp` have no effect.
+`setAcceleration()` and `setDeceleration()` set the limits from mm/s², and are the only
+ramp setters (the raw `setRampingValues()` was removed at DRIVER_REV 46). A bench harness
+reads the four driver parameters with the testing hook `testGetRampLimits()`.
 
 Steps 5 and 6 are why the driver seldom faults any more: the field never gets far enough
 ahead of the rotor to trip the 175.8° fault test unless the rotor is truly lost.

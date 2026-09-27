@@ -2159,6 +2159,14 @@ feel). Its built-in rates (owner Q2) are unanswered, and do not block anything u
   was 75 measured). `stopPlan()` adds Spin2 work to every front pass with a limit armed (unmeasured: PL-161's
   R16-DUAL-FRONTST re-certifies it).
 
+**2026-09-27, owner Q3 RULED (STEPHEN: *"Yes, remove the set ramping values and get ramping values calls. We don't need
+them."*).** DRIVER_REV 46: `setRampingValues()` / `getRampingValues()` are gone; `setAcceleration()` /
+`setDeceleration()` (mm/s²) are the only ramp settings, identical on the motor and steering objects and over serial.
+The four driver parameters stay readable to a harness as the TESTING USE `testGetRampLimits()`. The steering setters
+now set the right wheel only once the left accepted (a rejected call changes neither wheel, by construction). README
+lists the removal as BREAKING. Q2 (the built-in rates): Stephen asked whether the defaults make sense; the answer given
+was keep them and confirm on the floor (the floor sheet's PL-160 feel line). Q4 and Q5 remain.
+
 ### PL-161 -- the steering front cog overruns its 1 ms slot
 
 > **6.0 status (2026-09-26 audit):** RELEASE — found at Visit 10 pass 7; the front cog is what services every command.

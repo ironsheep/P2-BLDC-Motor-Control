@@ -231,9 +231,6 @@ CON { Public Interface Constants }
     DECEL_BUILTIN_MM_S2     = 1_470
     RAMP_TAU_MS             = 250
 
-    ' setRampingValues(): the largest value it accepts (the driver runs at most ACCEL_STEP_CAP)
-    RAMP_STEP_MAX           = $4000_0000
-
     ' setCommandTimeout(): 0 turns it off (the default); otherwise the accepted range, in ms
     CMD_TIMEOUT_OFF         = 0
     CMD_TIMEOUT_MIN_MS      = 10
@@ -254,7 +251,6 @@ CON { Public Interface Constants }
     '    setStartChecks()          (read by start() itself)
     '    setAcceleration()         getAcceleration()       (PL-160)
     '    setDeceleration()         getDeceleration()       (PL-160)
-    '    setRampingValues()        getRampingValues()      (PL-160: the raw ramp; the last ramp call wins)
     '  start() RESTORES the defaults of the protective settings, which need a running motor (ERR_NOT_STARTED before
     '  start()), so a program sets them after every start(): setFaultResponse(), setHoldLimits(), setCommandTimeout().
 
@@ -491,8 +487,7 @@ PUB setAcceleration(rate) : eError | rampStep
 '' as the target speed arrives, so the motor never takes a step of torque. Slowing down and stopping are set apart,
 '' by setDeceleration(), so this does not change the stopping distances. The motor can still accelerate more slowly
 '' than asked: the drive never lets the field run further ahead of the rotor than the motor can follow.
-'' PL-160: kept across stop() and start(), and may be set before start(); getAcceleration() reads it back. It replaces
-'' the speed-up part of an earlier setRampingValues(), and a later setRampingValues() replaces it: the last call wins.
+'' PL-160: kept across stop() and start(), and may be set before start(); getAcceleration() reads it back.
 ''
 '' @param rate - acceleration while speeding up, mm/s squared [ACCEL_MIN_MM_S2 to ACCEL_MAX_MM_S2]
 '' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range (also recorded for getError()); a rejected call changes nothing
@@ -520,8 +515,7 @@ PUB setDeceleration(rate) : eError | rampStep
 '' command timeout's stop and a controlled fault stop (FR_GRADED) ramp down at it too, which is why its floor,
 '' DECEL_MIN_MM_S2, is higher than setAcceleration()'s. emergencyCutoff() does not ramp and is not affected. The motor
 '' can still slow more gently than asked: the ramp down waits whenever the rotor runs too far ahead of the field.
-'' PL-160: kept across stop() and start(), and may be set before start(); getDeceleration() reads it back. It replaces
-'' the slow-down step of an earlier setRampingValues(), and a later setRampingValues() replaces it: the last call wins.
+'' PL-160: kept across stop() and start(), and may be set before start(); getDeceleration() reads it back.
 ''
 '' @param rate - deceleration while slowing down or stopping, mm/s squared [DECEL_MIN_MM_S2 to DECEL_MAX_MM_S2]
 '' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range (also recorded for getError()); a rejected call changes nothing
@@ -542,83 +536,27 @@ PUB setDeceleration(rate) : eError | rampStep
 PUB getAcceleration() : nRate
 '' Return the rate the motor speeds up at, mm/s squared at the wheel rim
 ''
-'' After setAcceleration() this is the rate it was given; until then the built-in rate, ACCEL_BUILTIN_MM_S2 (1_000);
-'' after setRampingValues() the rate its maxRamp gives. PL-160 (DRIVER_REV 38): every ramp now has a single steady
-'' rate, so this no longer returns 0 for the built-in ramp. 0 only when the configured wheel diameter is 0. The kept
-'' setting, so it reads the same before start().
+'' After setAcceleration() this is the rate it was given; until then the built-in rate, ACCEL_BUILTIN_MM_S2 (1_000).
+'' PL-160 (DRIVER_REV 38): every ramp has a single steady rate, so this no longer returns 0 for the built-in ramp.
+'' 0 only when the configured wheel diameter is 0. The kept setting, so it reads the same before start().
 ''
 '' @returns nRate - the speed-up rate, mm/s squared
 
-    nRate := usrAccel
-    if nRate == 0
-        if usrAccelStep <> 0
-            nRate := rateForRampStep(usrAccelStep)
-        elseif rampStepScale() <> 0.0
-            nRate := ACCEL_BUILTIN_MM_S2
+    nRate := usrAccel                                                           ' set only with usrAccelStep (setAcceleration())
+    if (nRate == 0) and (rampStepScale() <> 0.0)
+        nRate := ACCEL_BUILTIN_MM_S2
 
 PUB getDeceleration() : nRate
 '' Return the rate the motor slows down and stops at, mm/s squared at the wheel rim
 ''
-'' After setDeceleration() this is the rate it was given; until then the built-in rate, DECEL_BUILTIN_MM_S2 (1_470);
-'' after setRampingValues() the rate its decrRamp gives. 0 only when the configured wheel diameter is 0. The kept
-'' setting, so it reads the same before start().
+'' After setDeceleration() this is the rate it was given; until then the built-in rate, DECEL_BUILTIN_MM_S2 (1_470).
+'' 0 only when the configured wheel diameter is 0. The kept setting, so it reads the same before start().
 ''
 '' @returns nRate - the slow-down rate, mm/s squared
 
-    nRate := usrDecel
-    if nRate == 0
-        if usrDecelStep <> 0
-            nRate := rateForRampStep(usrDecelStep)
-        elseif rampStepScale() <> 0.0
-            nRate := DECEL_BUILTIN_MM_S2
-
-PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp) : eError
-'' Change the ramp's two acceleration limits, in the driver's own units (angle increment change per drive pass): the raw form of the ramp
-''
-'' setAcceleration() and setDeceleration() are the user interface to the ramp, in mm/s squared; this is the raw
-'' escape beneath them. The last call wins: this replaces what both set, and each of them replaces its own part of
-'' this. PL-160: kept across stop() and start(), and may be set before start(); getRampingValues() reads it back.
-'' minRamp and incRamp have no effect since DRIVER_REV 38: the jerk-limited ramp derives its jerks from maxRamp and
-'' decrRamp and RAMP_TAU_MS. They are still checked, so a call that was refused before is refused now.
-''
-'' @param minRamp - no effect since DRIVER_REV 38 [1 to maxRamp]
-'' @param maxRamp - the speed-up acceleration limit: the most the field's increment grows in one drive pass [minRamp to RAMP_STEP_MAX]; above ACCEL_STEP_CAP it runs at ACCEL_STEP_CAP
-'' @param incRamp - no effect since DRIVER_REV 38 [0 to RAMP_STEP_MAX]
-'' @param decrRamp - the slow-down acceleration limit: the most the field's increment falls in one drive pass [1 to RAMP_STEP_MAX]; above ACCEL_STEP_CAP it runs at ACCEL_STEP_CAP
-'' @returns eError - NO_ERROR, or ERR_BAD_COUNT (also recorded for getError()) for a value outside its range; a rejected call changes nothing
-
-    ' G: a zero decrRamp would never stop the motor, and a negative step would ramp the wrong way
-    if (minRamp < 1) or (maxRamp < minRamp) or (maxRamp > RAMP_STEP_MAX) or (incRamp < 0) or (incRamp > RAMP_STEP_MAX) or (decrRamp < 1) or (decrRamp > RAMP_STEP_MAX)
-        eError := recordError(ERR_BAD_COUNT)
-        debug[user.DBGCH_ERROR]("! ERROR: setRampingValues() rejected ", sdec_long(minRamp), sdec_long(maxRamp), sdec_long(incRamp), sdec_long(decrRamp))
-    else
-        usrAccelStep := maxRamp                                                 ' PL-160: kept, first; a start() applies it
-        usrDecelStep := decrRamp
-        usrAccel := 0                                                           ' the rates asked for are replaced: the getters
-        usrDecel := 0                                                           '  now read the rates these steps give
-        if bSettingsLive == TRUE
-            requestRamps()                                                      '  and in effect now on a running motor (its front cog applies it)
-        eError := NO_ERROR
-
-PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
-'' Return the ramp's four driver parameters, in the driver's own units: the two jerks and the two acceleration limits
-''
-'' While the motor runs, the values the driver is using; before start() (or after stop()), the values the next
-'' start() applies (PL-160). Until a ramp setter is called these are the built-in ramp's. Since DRIVER_REV 38 the
-'' four longs are the jerk-limited ramp's: each jerk is its acceleration limit spread over RAMP_TAU_MS.
-''
-'' @returns minRamp - jerk_up, the speed-up jerk: the acceleration a ramp from rest takes on its first pass, and adds every pass after
-'' @returns maxRamp - accel_up, the speed-up acceleration limit
-'' @returns incRamp - jerk_dn, the slow-down jerk
-'' @returns decrRamp - accel_dn, the slow-down acceleration limit
-
-    if bSettingsLive == TRUE
-        minRamp := jerk_up
-        maxRamp := accel_up
-        incRamp := jerk_dn
-        decrRamp := accel_dn
-    else
-        minRamp, maxRamp, incRamp, decrRamp := keptRamps()
+    nRate := usrDecel                                                           ' set only with usrDecelStep (setDeceleration())
+    if (nRate == 0) and (rampStepScale() <> 0.0)
+        nRate := DECEL_BUILTIN_MM_S2
 
 PUB setMaxSpeed(speed) : eError | limitSpeed
 '' Limit top-speed to {speed} where {speed} is [1 to 100]  (default is MAX_SPEED_DEFAULT, 75)
@@ -1530,8 +1468,8 @@ PUB checkWiring() : eError | nStartPos, nMidPos, nMissed0, nIllegal0, bLegsOk
 '' walk's travel, both legs, adds to the odometer (getDistance(), getRotationCount()), which it no longer resets
 '' (PL-153); each leg's own distance counts from the leg's start. A leg that draws more current than a healthy
 '' walk ever does (miswiring stalls the rotor against the field) is ended at once by shorting the phases, and fails.
-'' The walk always runs on the built-in ramp (ACCEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2), whatever setAcceleration(),
-'' setDeceleration() or setRampingValues() chose, and puts the program's own ramp back as it ends (DRIVER_REV 40).
+'' The walk always runs on the built-in ramp (ACCEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2), whatever setAcceleration()
+'' or setDeceleration() chose, and puts the program's own ramp back as it ends (DRIVER_REV 40).
 ''
 '' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it), or ERR_NOT_STARTED, or ERR_NO_RESPONSE (the front cog did not put the built-in ramp in force within its bound: nothing walked, nothing judged), also recorded for getError()
 
@@ -2661,11 +2599,31 @@ PUB testGetAccelNow() : nAccel
 '' rising by at most jerk_up (or jerk_dn) a pass while a ramp eases in, never beyond accel_up (or accel_dn) in size but
 '' while it unwinds from a limit it left. On the pass the target arrives it reads that pass's last step (at most the
 '' jerk), and 0 from the next pass. Same sign as the change it
-'' makes to the field's increment (testGetDriveHealth()'s nDrvIncr). The four limits are getRampingValues().
+'' makes to the field's increment (testGetDriveHealth()'s nDrvIncr). The four limits are testGetRampLimits().
 ''
 '' @returns nAccel - angle-increment units per drive pass, per drive pass; signed
 
     nAccel := drv_accel_now
+
+PUB testGetRampLimits() : jerkUp, accelUp, jerkDn, accelDn
+'' TESTING USE: return the ramp's four driver parameters, in the driver's own units (PL-160, DRIVER_REV 46: was the public getRampingValues())
+''
+'' While the motor runs, the values the driver is using; before start() (or after stop()), the values the next
+'' start() applies. Until setAcceleration() / setDeceleration() is called these are the built-in ramp's. Each jerk is
+'' its acceleration limit spread over RAMP_TAU_MS.
+''
+'' @returns jerkUp - jerk_up, the speed-up jerk: the acceleration a ramp from rest takes on its first pass, and adds every pass after
+'' @returns accelUp - accel_up, the speed-up acceleration limit (angle-increment change per drive pass)
+'' @returns jerkDn - jerk_dn, the slow-down jerk
+'' @returns accelDn - accel_dn, the slow-down acceleration limit
+
+    if bSettingsLive == TRUE
+        jerkUp := jerk_up
+        accelUp := accel_up
+        jerkDn := jerk_dn
+        accelDn := accel_dn
+    else
+        jerkUp, accelUp, jerkDn, accelDn := keptRamps()
 
 PUB testGetAbiAddrs() : pLaunch, pStatus, pParams
 '' TEST USE: the hub addresses of the three runs the driver shares with Spin2, so a bench harness can dump them
@@ -4628,8 +4586,9 @@ CON { PL-160: the jerk-limited ramp's internal limits, in the driver's units }
     '  was a growing one (1_500 first step, +22 a pass, 200_000 ceiling) and a fixed 50_000 step down.
     RAMP_ACCEL_BUILTIN_STEP = 33_958        ' 1_000 mm/s^2 on the 6.5in wheel
     RAMP_DECEL_BUILTIN_STEP = 49_918        ' 1_470 mm/s^2 on the 6.5in wheel (the old ramp down was 50_000, 1_472)
-    ' The largest acceleration limit the generator runs at: setRampingValues() accepts up to RAMP_STEP_MAX but runs above
-    '  this at this. 1e6 is about 29_500 mm/s^2 on the 6.5in wheel, three times ACCEL_MAX_MM_S2. It keeps the stop
+    ' The largest acceleration limit the generator runs at (rampsFor() caps at it). No setter reaches it since the raw
+    '  setRampingValues() was removed (DRIVER_REV 46): ACCEL_MAX_MM_S2 is 339_576 steps on the 6.5in wheel; the cap
+    '  stays as the bound the proofs below rest on. 1e6 is about 29_500 mm/s^2 there. It keeps the stop
     '  plan's products (the driver's planA .. planC, PL-161) inside their longs: a jerk-limited ramp lasts at most ~720
     '  passes at any limit, and the jerk is at most ~2_100 (this over RAMP_TAU_MS).
     ACCEL_STEP_CAP          = 1_000_000
@@ -4644,8 +4603,9 @@ CON { PL-160: the jerk-limited ramp's internal limits, in the driver's units }
     ' The stop prediction's fixed point: 1/256 of a hall tick. angle x 6 x 256 / 2^32 = angle x 3 / 2^23 (the driver's
     '  stop_fp_; PL-161, DRIVER_REV 39).
     STOP_FP_BITS            = 8
-    ' The stop plan saturates beyond this many drive passes (~9 minutes): only a raw setRampingValues() slow-down
-    '  step of a few units can ask for a stop that long, and its sums would leave a long. A saturated stop is due at once.
+    ' The stop plan saturates beyond this many drive passes (~9 minutes), where its sums would leave a long. No setting
+    '  asks for a stop that long (DECEL_MIN_MM_S2 is thousands of steps; only the raw setRampingValues(), removed at
+    '  DRIVER_REV 46, could); the saturation stays as the plan's bound. A saturated stop is due at once.
     PLAN_PASSES_LOG2        = 20            ' WP5 (C5(c)): the driver loads it as DECOD #PLAN_PASSES_LOG2, no ## long
     PLAN_PASSES_MAX         = 1 << PLAN_PASSES_LOG2
     ' WP5 (C5(c)): a saturated plan's U sum, high long 2^24 (6 x SUM >= 2^56, beyond any real plan), for planFp to saturate
@@ -4662,8 +4622,8 @@ CON { PL-160: the jerk-limited ramp's internal limits, in the driver's units }
 PRI keptRamps() : jerkUp, accelUp, jerkDn, accelDn
 ' PL-160: return the ramp the program has kept, as the driver's four parameters: the built-in rate for either part never set.
 '
-' usrAccelStep is 0 until setAcceleration() or setRampingValues() sets the speed-up limit (a set step is at least 1),
-' and usrDecelStep 0 until setDeceleration() or setRampingValues() sets the slow-down limit.
+' usrAccelStep is 0 until setAcceleration() sets the speed-up limit (a set step is at least 1), and usrDecelStep 0
+' until setDeceleration() sets the slow-down limit.
 '
 ' @returns jerkUp - the speed-up jerk
 ' @returns accelUp - the speed-up acceleration limit
@@ -4677,7 +4637,7 @@ PRI rampsFor(nUpStep, nDnStep) : jerkUp, accelUp, jerkDn, accelDn
 '
 ' Each limit is capped at ACCEL_STEP_CAP, and its jerk is the limit spread over RAMP_TAU_MS (jerkForAccel()).
 ' DRIVER_REV 40 (PL-161): a built-in rate's step is init()'s (rampBuiltinUp, rampBuiltinDn), so a front cog's apply
-' does no float. Only a caller before the first start() (getRampingValues()) finds them 0 and converts here; a front
+' does no float. Only a caller before the first start() (testGetRampLimits()) finds them 0 and converts here; a front
 ' cog never can, since none serves this motor before init() has set them.
 '
 ' @param nUpStep - the speed-up acceleration limit, driver units; 0: ACCEL_BUILTIN_MM_S2
@@ -4749,7 +4709,7 @@ PRI requestRamps() : eError | startMs
 ' Call it after the inputs are written (usrAccelStep, usrDecelStep, bWalkRamps). Raising bRampsStale after them is what
 ' makes the front cog's next apply read them (frontApplyRamps()). The flag seen down proves a front apply lowered it
 ' after it was raised here, and that apply reads the inputs afterwards; bRampsBusy, read after the flag, is up until
-' that apply ends. So the wait ends only once the ramp is in force, and a setter's read-back (getRampingValues())
+' that apply ends. So the wait ends only once the ramp is in force, and a setter's read-back (testGetRampLimits())
 ' sees it. The front cog applies a raised flag within 2 passes (4 for a steering wheel: RAMP_PHASE_BIT,
 ' RAMP_WHEEL_BIT), about 4 ms at worst, so REQ_ACK_TIMEOUT_MS holds with room. A front cog that does not serve it
 ' in that bound (stopping, or not started) ends the wait with ERR_NO_RESPONSE, which the setters do not report: the
@@ -4980,20 +4940,6 @@ PRI rampStepForAccel(rate, minRate, maxRate) : eError, rampStep | fMmPerSec2PerS
         eError := ERR_BAD_COUNT
     else
         rampStep := 1 #> round(float(rate) /. fMmPerSec2PerStep)
-
-PRI rateForRampStep(rampStep) : nRate | fMmPerSec2PerStep
-' PL-160: convert a driver ramp step back to the rim acceleration it gives, rounded to the nearest mm/s squared.
-'
-' @param rampStep - the driver ramp step per drive pass
-' @returns nRate - mm/s squared; 0 when the configured wheel diameter is 0
-
-' Local Variables:
-' @local fMmPerSec2PerStep - the rim acceleration one ramp step gives, mm/s squared (float); 0.0 with no wheel diameter
-
-    nRate := 0
-    fMmPerSec2PerStep := rampStepScale()
-    if fMmPerSec2PerStep <> 0.0
-        nRate := round(float(rampStep) *. fMmPerSec2PerStep)
 
 PRI rampStepScale() : fMmPerSec2PerStep | nTickInMM_x100, fPassesPerSec
 ' Return the rim acceleration one driver ramp step gives, mm/s squared (float): 0.0 when the wheel diameter is 0.
@@ -6847,7 +6793,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 45      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 46      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7062,6 +7008,16 @@ CON { driver internal Constants }
                                             '     457 of 512, start image 144 unchanged. Proved equivalent to
                                             '     mem-reduce-start by tools/pasm_equiv (2055 scenarios); PASM (cog +
                                             '     LUT) change; no ABI change
+                                            ' 46: PL-160 owner Q3 (Stephen, 2026-09-27: "remove the set ramping
+                                            '     values and get ramping values calls. We don't need them"). The
+                                            '     public setRampingValues() and getRampingValues() are gone:
+                                            '     setAcceleration() / setDeceleration() (mm/s^2) are the only ramp
+                                            '     setters. The four driver limits stay readable to a harness as
+                                            '     the TESTING USE testGetRampLimits(). RAMP_STEP_MAX and
+                                            '     rateForRampStep() went with them. The steering object's two
+                                            '     ramp setters set the right wheel only once the left accepted,
+                                            '     so a rejected call changes neither wheel by construction.
+                                            '     Spin2 only; the PASM image is unchanged
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7588,8 +7544,8 @@ VAR { PL-153 / PL-155: the limits' travel, and the program's kept settings -- Sp
     LONG    usrMaxSpeed4dist            ' setMaxSpeedForDistance() [1..100]; 0: MAX_SPEED_DEFAULT
     LONG    usrStopMode                 ' holdAtStop(): SM_BRAKE or SM_FLOAT; 0 (SM_Unknown): SM_FLOAT
     LONG    usrReversed                 ' setForwardIsReverse(): T/F; 0: not reversed
-    LONG    usrAccelStep                ' PL-160: the speed-up acceleration limit, driver units (setAcceleration(), setRampingValues()); 0: built in
-    LONG    usrDecelStep                ' PL-160: the slow-down acceleration limit, driver units (setDeceleration(), setRampingValues()); 0: built in
+    LONG    usrAccelStep                ' PL-160: the speed-up acceleration limit, driver units (setAcceleration()); 0: built in
+    LONG    usrDecelStep                ' PL-160: the slow-down acceleration limit, driver units (setDeceleration()); 0: built in
     LONG    usrAccel                    ' PL-160: the rate setAcceleration() was given, mm/s^2; 0: none (built in, or raw)
     LONG    usrDecel                    ' PL-160: the rate setDeceleration() was given, mm/s^2; 0: none (built in, or raw)
     LONG    bWalkRamps                  ' DRIVER_REV 40: T/F where T means a wiring walk runs, so applyRamps() applies the built-in ramp (walkRamps()); init() clears it

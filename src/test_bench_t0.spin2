@@ -280,6 +280,12 @@
 ''               rest reading is centred on 0 (was 0 .. +1 mV), 89 of 100 at worst on Rev B, and the band holds
 ''               only on Rev B. T0-27's net_max_mv nets the driver's own zero, so it reads what the fold compares.
 ''               No record or cell changes.
+''               27 Sep 2026 -- SRC_REV 27 (DRIVER_REV 46, PL-160 owner Q3): setRampingValues() and
+''               getRampingValues() are gone from the library. Every read of the four driver limits is now the
+''               TESTING USE testGetRampLimits() (same four, same order); every restore of the ramp is
+''               setAcceleration() / setDeceleration() of the rates read before (the same rate gives the same step,
+''               so the restored limits are exact, and T0-5 now also judges that). R20-T0-API-ACCEL loses its three
+''               raw rows (setRampingValues.raw, .min0, .cap) and T0A_RAW_UP / T0A_RAW_DN with them.
 ''
 '' =================================================================================================
 
@@ -395,7 +401,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 26                                       ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 27                                       ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -430,7 +436,7 @@ CON { 6.0.0 cells (task 3560) }
 
 CON { API promise and regression cells (tasks 3577, 3574) }
 
-' R17-T0-ACCEL (SRC_REV 25, DRIVER_REV 38): setAcceleration() sets the speed-up acceleration LIMIT, getRampingValues()'s
+' R17-T0-ACCEL (SRC_REV 25, DRIVER_REV 38): setAcceleration() sets the speed-up acceleration LIMIT, testGetRampLimits()'s
 '  maxRamp, and its jerk, minRamp (PL-160). DERIVED, not read from the library: one step per drive pass is
 '  0.0294485 mm/s^2 at the rim of the 6.5in wheel (44_000 / 23 = 1_913.04 passes/s, squared, x 6 ticks per electrical
 '  cycle x 5.76 mm per tick / 2^32 per cycle), so 1_000 mm/s^2 is 33_957.6 steps, 33_958. setAcceleration(
@@ -1801,10 +1807,10 @@ PRI bWaitReady(startResult) : bReady | readyMs
         bReady := motor.isReady()
 
 #ifndef T0_OWN_TIER
-PRI testT0_5() | jerkUpDef, accUpDef, jerkDnDef, accDnDef, eBelow, eNegative, eAbove, bRefuseOk, eAnchor, stepAnchor, bAnchorOk, eTop, stepTop, bTopOk, eRestore, bPass
+PRI testT0_5() | accRateDef, jerkUpDef, accUpDef, jerkDnDef, accDnDef, eBelow, eNegative, eAbove, bRefuseOk, eAnchor, stepAnchor, bAnchorOk, eTop, stepTop, bTopOk, eRestore, bPass
 ' G / R17-T0-ACCEL (task 3577; SRC_REV 25, DRIVER_REV 38): setAcceleration() takes a rate in mm/s^2 at the rim,
 ' refuses one outside [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] with ERR_BAD_COUNT and changes nothing, and turns an
-' accepted one into the jerk-limited ramp's speed-up LIMIT (PL-160): getRampingValues()'s maxRamp (accel_up) the step
+' accepted one into the jerk-limited ramp's speed-up LIMIT (PL-160): testGetRampLimits()'s accelUp (accel_up) the step
 ' for that rate, minRamp (jerk_up) that step's jerk (t0JerkFor()), and the slow-down pair (incRamp jerk_dn, decrRamp
 ' accel_dn) untouched. The step for ACCEL_ANCHOR_MM_S2 must land within 1% of ACCEL_ANCHOR_STEP (the constant's
 ' derivation: the 6.5in wheel's arithmetic, not the library's), and a larger rate must give a larger step. Nothing
@@ -1814,6 +1820,7 @@ PRI testT0_5() | jerkUpDef, accUpDef, jerkDnDef, accDnDef, eBelow, eNegative, eA
 ' incRamp 0, which reads minRamp 33_958 where the jerk is 71 -- either FAILs.
 ' NOMEAS when the active config has no wheel diameter (ERR_NO_WHEEL_DIA): there is no rim to convert at.
 '
+' @local accRateDef - getAcceleration() before any call, set back at the end (the same rate gives the same step)
 ' @local jerkUpDef - the built-in ramp's jerk_up (minRamp), read back before any call
 ' @local accUpDef - its accel_up (maxRamp)
 ' @local jerkDnDef - its jerk_dn (incRamp)
@@ -1828,13 +1835,14 @@ PRI testT0_5() | jerkUpDef, accUpDef, jerkDnDef, accDnDef, eBelow, eNegative, eA
 ' @local eTop - setAcceleration(ACCEL_MAX_MM_S2)'s return
 ' @local stepTop - the limit it produced
 ' @local bTopOk - the top rate produced a jerk-limited speed-up with a larger limit than the anchor's
-' @local eRestore - setRampingValues()'s return restoring the defaults
+' @local eRestore - setAcceleration(accRateDef)'s return restoring the speed-up rate
 ' @local bPass - the cell's measured value and verdict
 
     debug("T0-5,begin")
     motor.testSetup(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     motor.getError()                                        ' start from a clear slot
-    jerkUpDef, accUpDef, jerkDnDef, accDnDef := motor.getRampingValues()
+    accRateDef := motor.getAcceleration()
+    jerkUpDef, accUpDef, jerkDnDef, accDnDef := motor.testGetRampLimits()
 
     eBelow := motor.setAcceleration(motor.ACCEL_MIN_MM_S2 - 1)
     bRefuseOk := (eBelow == motor.ERR_BAD_COUNT) and bRampEquals(jerkUpDef, accUpDef, jerkDnDef, accDnDef)
@@ -1852,8 +1860,8 @@ PRI testT0_5() | jerkUpDef, accUpDef, jerkDnDef, accDnDef, eBelow, eNegative, eA
     stepTop, bTopOk := limitRampStep(@"top", motor.ACCEL_MAX_MM_S2, eTop, jerkDnDef, accDnDef)
     bTopOk := bTopOk and (stepTop > stepAnchor)
 
-    eRestore := motor.setRampingValues(jerkUpDef, accUpDef, jerkDnDef, accDnDef)  ' later tests start this motor
-    bPass := bRefuseOk and bAnchorOk and bTopOk and (eRestore == motor.NO_ERROR)
+    eRestore := motor.setAcceleration(accRateDef)                                 ' later tests start this motor
+    bPass := bRefuseOk and bAnchorOk and bTopOk and (eRestore == motor.NO_ERROR) and bRampEquals(jerkUpDef, accUpDef, jerkDnDef, accDnDef)
     emitCellBool(@"R17-T0-ACCEL", @sTaskPromises, @"NONE", @"MM_S2_LIMIT_JERK", eAnchor <> motor.ERR_NO_WHEEL_DIA, bPass, ACCEL_CALLS_JUDGED)
 
 PRI limitRampStep(pLabel, rateMmS2, eAccel, jerkDnWant, accDnWant) : rampStep, bLimit | nJerk
@@ -1873,7 +1881,7 @@ PRI limitRampStep(pLabel, rateMmS2, eAccel, jerkDnWant, accDnWant) : rampStep, b
     bLimit := (eAccel == motor.NO_ERROR)
     rampStep := 0
     if bLimit
-        _, rampStep, _, _ := motor.getRampingValues()
+        _, rampStep, _, _ := motor.testGetRampLimits()
     nJerk := t0JerkFor(rampStep)
     if bLimit
         bLimit := bRampEquals(nJerk, rampStep, jerkDnWant, accDnWant)
@@ -1944,7 +1952,7 @@ PRI t0JerkFor(nAccel) : nJerk
 #ifndef T0_OWN_TIER
 PRI bRampEquals(minWant, maxWant, incWant, decrWant) : bSame | minRamp, maxRamp, incRamp, decrRamp
 ' Report whether `motor`'s four ramping values read back exactly as given (since DRIVER_REV 38: jerk_up, accel_up,
-' jerk_dn, accel_dn -- getRampingValues()'s minRamp, maxRamp, incRamp, decrRamp).
+' jerk_dn, accel_dn -- testGetRampLimits()'s four, in that order).
 '
 ' @param minWant - expected minRamp (jerk_up)
 ' @param maxWant - expected maxRamp (accel_up)
@@ -1957,7 +1965,7 @@ PRI bRampEquals(minWant, maxWant, incWant, decrWant) : bSame | minRamp, maxRamp,
 ' @local incRamp - incRamp read back
 ' @local decrRamp - decrRamp read back
 
-    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
+    minRamp, maxRamp, incRamp, decrRamp := motor.testGetRampLimits()
     bSame := (minRamp == minWant) and (maxRamp == maxWant) and (incRamp == incWant) and (decrRamp == decrWant)
 
 PRI testT0_6() | resultKm, resultMi, rotResult, eRotCode, eStopDist, eStopCode
@@ -3673,7 +3681,7 @@ PRI t0rRamp() | jerkUp, jerkDn, workerCog, frameCog, bShapeMeas, bShapeOk, bMeas
 ' SRC_REV 26 (PL-161): the frame watcher's cog (t0fWatch()) starts with the sampler and watches every frame of all of
 ' the above; R22-T0-FRAMESLACK is judged after STOPPLAN-M (t0rFrameCell()), and prints T0-25,frame.
 '
-' @local jerkUp - getRampingValues()'s speed-up jerk
+' @local jerkUp - testGetRampLimits()'s speed-up jerk
 ' @local jerkDn - its slow-down jerk
 ' @local workerCog - cogspin()'s return; < 0 when no cog was free
 ' @local frameCog - the frame watcher's cogspin() return; < 0 when no cog was free
@@ -3684,7 +3692,7 @@ PRI t0rRamp() | jerkUp, jerkDn, workerCog, frameCog, bShapeMeas, bShapeOk, bMeas
 ' @local legIdx - T0P_LEG_*
 ' @local bDrove - the frame watch covered driving: the SHAPE watches, or a mid-ramp limit stop, were measured
 
-    jerkUp, t0pAccUp, jerkDn, t0pAccDn := motor.getRampingValues()
+    jerkUp, t0pAccUp, jerkDn, t0pAccDn := motor.testGetRampLimits()
     t0pJerkX := jerkUp #> jerkDn
     t0pLaunch, t0pStatus, _ := motor.testGetAbiAddrs()
     t0pJobSeq := 0
@@ -4474,11 +4482,6 @@ CON { the API contract (T0-26, -D T0_API only; SRC_REV 22, DRIVER_REV 33) }
     T0A_PERSIST_ACC = 600                                       ' ...setAcceleration(), mm/s^2 (PL-160)
     T0A_PERSIST_DEC = 900                                       ' ...setDeceleration(), mm/s^2, not the built-in 1_470
     T0A_DECEL_PROBE = 2_000                                     ' ACCEL: the rate whose step is checked on the running driver
-    ' ACCEL (SRC_REV 25): setRampingValues()'s raw limits. maxRamp and decrRamp are the two limits; minRamp and incRamp
-    '  have no effect but are still checked (DRIVER_REV 38, owner Q3 open), so 1 and 0, the least they accept, must read
-    '  back as the jerks the limits give, and a minRamp of 0 is still refused; a limit above ACCEL_STEP_CAP runs at it.
-    T0A_RAW_UP      = 100_000
-    T0A_RAW_DN      = 150_000
     ' ACCEL (SRC_REV 25, DRIVER_REV 38): DERIVED as ACCEL_ANCHOR_STEP is -- 0.0294485 mm/s^2 per step on the 6.5in wheel
     '  -- 1_470 mm/s^2 is 49_917.6 steps, 49_918. setDeceleration(T0A_DECEL_ANCHOR) must land within 1% of it: a factor
     '  wrong anywhere in the conversion moves it far outside that. The bench's 6.5in wheel (BENCH_CFG) only. (Until
@@ -4618,7 +4621,7 @@ PRI testT0_26() | bReady
 '   R20-T0-API-CALIBRATE  - calibrate() on the motor and the steering object returns ERR_NOT_IMPLEMENTED and records it
 '   R22-T0-API-RAMPDEF    - (PL-160, SRC_REV 25) before any ramp setter, stopped and then on the running driver:
 '                           getAcceleration() reads ACCEL_BUILTIN_MM_S2, getDeceleration() DECEL_BUILTIN_MM_S2, and
-'                           getRampingValues() the jerk-limited ramp's four parameters this file derives from them
+'                           testGetRampLimits() the jerk-limited ramp's four parameters this file derives from them
 '                           (t0aStepFor(), t0JerkFor()), and on the bench's wheel the four DERIVED in CON (71, 33_958,
 '                           104, 49_918). NEGATIVE: DRIVER_REV 37 read getAcceleration() 0 and 1_500, 200_000, 22, 50_000
 '   R20-T0-API-PERSIST    - with the motor stopped: max speeds, the hold, the reversal, the acceleration and the
@@ -4749,9 +4752,9 @@ PRI t0aCalibrate() | eGot, eLeft
 
 PRI t0aRampDef() | stepUp, stepDn, passIdx, startResult, bReady
 ' R22-T0-API-RAMPDEF (PL-160, SRC_REV 25): the built-in ramp, before any ramp setter has been called on `motor` -- first
-' stopped (the ramp the next start() applies), then started and read on the running driver (getRampingValues() reads
+' stopped (the ramp the next start() applies), then started and read on the running driver (testGetRampLimits() reads
 ' the driver's working longs once the kept settings are live), then stopped again. Each time: getAcceleration() reads
-' ACCEL_BUILTIN_MM_S2 and getDeceleration() DECEL_BUILTIN_MM_S2; getRampingValues() reads jerk_up, accel_up, jerk_dn,
+' ACCEL_BUILTIN_MM_S2 and getDeceleration() DECEL_BUILTIN_MM_S2; testGetRampLimits() reads jerk_up, accel_up, jerk_dn,
 ' accel_dn as this file derives them from those two rates (t0aStepFor(), t0JerkFor()); and on the bench's wheel, while the
 ' built-in rates are the two the CON derived them for, 71, 33_958, 104 and 49_918. NEGATIVE: DRIVER_REV 37 read
 ' getAcceleration() 0 (a growing ramp has no single rate) and the stepped ramp's 1_500, 200_000, 22, 50_000. NOMEAS when
@@ -4788,7 +4791,7 @@ PRI t0aRampDef() | stepUp, stepDn, passIdx, startResult, bReady
     motor.getError()
     t0aCell(@sCellApiRampDef, @"RIGHT", bReady)
 
-PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD, eOther, eVolt, eGotVolt, nGotMv
+PRI bT0aPersist() : bReady | startResult, passIdx, eGot, accRateD, decRateD, eOther, eVolt, eGotVolt, nGotMv
 ' R20-T0-API-PERSIST (PL-155, PL-160). With `motor` stopped: the kept setters are accepted and read back at once; the
 ' protective setters are refused with ERR_NOT_STARTED. Then start(), stop() and start() again: after each start the kept
 ' settings read back -- the acceleration and deceleration also as the running driver's own ramp steps -- and the
@@ -4808,10 +4811,8 @@ PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD,
 ' @local startResult - a start()'s return
 ' @local passIdx - 1 after the first start, 2 after the restart; 3 the other voltage's start, 4 DRIVE_VOLTAGE's (PL-14)
 ' @local eGot - a setter's return
-' @local minD - the built-in ramp's minRamp (jerk_up since DRIVER_REV 38), read before any call
-' @local maxD - ...maxRamp (accel_up)
-' @local incD - ...incRamp (jerk_dn)
-' @local decD - ...decrRamp (accel_dn)
+' @local accRateD - getAcceleration() before any call, set back at the end (the same rate gives the same step)
+' @local decRateD - getDeceleration() before any call, likewise
 ' @local eOther - the other voltage PL-14's start uses, or INVALID_VOLTAGE
 ' @local eVolt - the voltage a PL-14 start is given
 ' @local eGotVolt - getDriveVoltage()'s PWR_* after it
@@ -4820,7 +4821,8 @@ PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD,
     t0aBad := 0
     t0aChecks := 0
     motor.getError()
-    minD, maxD, incD, decD := motor.getRampingValues()                          ' stopped: the ramp start() will apply
+    accRateD := motor.getAcceleration()                                         ' stopped: the rates start() will apply
+    decRateD := motor.getDeceleration()
     eGot := motor.setAcceleration(T0A_PERSIST_ACC)
     t0aChk(@"setAcceleration.stopped", T0A_PERSIST_ACC, T0A_OK, eGot, T0A_PERSIST_ACC, motor.getAcceleration())
     eGot := motor.setDeceleration(T0A_PERSIST_DEC)
@@ -4862,7 +4864,8 @@ PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD,
     motor.setMaxSpeedForDistance(T0A_SPD_DEF)
     motor.holdAtStop(FALSE)
     motor.setForwardIsReverse(FALSE)
-    motor.setRampingValues(minD, maxD, incD, decD)                              ' PL-160: the built-in ramp's values (min and inc are its jerks, which DRIVER_REV 38 re-derives)
+    motor.setAcceleration(accRateD)                                             ' PL-160: the rates read before any call (the built-in ones)
+    motor.setDeceleration(decRateD)
     motor.getError()
     eOther := t0aOtherVoltage()                                                 ' PL-14: start() honours its voltage argument
     t0aChk(@"voltage.other", eOther, T0A_OK, T0A_OK, TRUE, eOther <> motor.INVALID_VOLTAGE)
@@ -4941,26 +4944,22 @@ PRI bHoldLimitsAre(ceilingPct, riseMs, limitMs) : bSame | nCeil, nRise, nLimit
     nCeil, nRise, nLimit := motor.getHoldLimits()
     bSame := (nCeil == ceilingPct) and (nRise == riseMs) and (nLimit == limitMs)
 
-PRI t0aAccel() | minD, maxD, incD, decD, tabIdx, pTab, nRows, rowIdx, nRate, eWant, eGot, nAccWas, nDecWas, nMin, nMax, nInc, nDec, rMin, rMax, rInc, rDec, bOk
+PRI t0aAccel() | accRateD, decRateD, tabIdx, pTab, nRows, rowIdx, nRate, eWant, eGot, nAccWas, nDecWas, nMin, nMax, nInc, nDec, rMin, rMax, rInc, rDec, bOk
 ' R20-T0-API-ACCEL: setAcceleration() per t0aAccelTab, then setDeceleration() per t0aDecelTab (PL-160), on the running
-' motor. SRC_REV 25 (DRIVER_REV 38): getRampingValues() reads the jerk-limited ramp's four parameters -- minRamp jerk_up,
+' motor. SRC_REV 25 (DRIVER_REV 38): testGetRampLimits() reads the jerk-limited ramp's four parameters -- minRamp jerk_up,
 ' maxRamp accel_up, incRamp jerk_dn, decrRamp accel_dn. setAcceleration() accepted: accel_up the step this file converts
 ' the rate to (capped at ACCEL_STEP_CAP), jerk_up its jerk (t0JerkFor()), the slow-down pair untouched, and
 ' getAcceleration() reads the rate. setDeceleration() accepted: the same for the slow-down pair, the speed-up pair
 ' untouched, and getDeceleration() reads the rate. Refused: ERR_BAD_COUNT, the ramp exactly as it was and both getters
 ' unchanged. Then the driver check: setDeceleration(T0A_DECEL_PROBE) leaves the running driver's decrRamp (accel_dn) at
-' t0aStepFor()'s step, and setDeceleration(T0A_DECEL_ANCHOR) within 1% of T0A_DECEL_ANCHOR_STEP (DERIVED in CON). Then
-' the raw setRampingValues(): minRamp 1 and incRamp 0 read back as the jerks of the two limits given (they have no effect
-' since DRIVER_REV 38), a minRamp of 0 is still refused with the ramp unchanged, and a speed-up limit of twice
-' ACCEL_STEP_CAP reads back as ACCEL_STEP_CAP with its jerk.
+' t0aStepFor()'s step, and setDeceleration(T0A_DECEL_ANCHOR) within 1% of T0A_DECEL_ANCHOR_STEP (DERIVED in CON).
+' SRC_REV 27 (DRIVER_REV 46): the raw setRampingValues() rows are gone with the call (owner Q3).
 ' NEGATIVE: a setter without its range check returns NO_ERROR where ERR_BAD_COUNT is wanted; a setDeceleration() that
 ' did not reach accel_dn fails the driver check; DRIVER_REV 35-37's constant ramp (minRamp = maxRamp, incRamp 0) fails
 ' every accepted setAcceleration() row. The default ramp is put back after.
 '
-' @local minD - the ramp's minRamp (jerk_up) before the family (the built-in ramp, PERSIST put it back)
-' @local maxD - ...maxRamp (accel_up)
-' @local incD - ...incRamp (jerk_dn)
-' @local decD - ...decrRamp (accel_dn)
+' @local accRateD - getAcceleration() before the family (the built-in rate, PERSIST put it back), set back after
+' @local decRateD - getDeceleration() before the family, likewise
 ' @local tabIdx - 0 for setAcceleration()'s table, 1 for setDeceleration()'s
 ' @local pTab - the table
 ' @local nRows - its rows
@@ -4980,21 +4979,22 @@ PRI t0aAccel() | minD, maxD, incD, decD, tabIdx, pTab, nRows, rowIdx, nRate, eWa
 ' @local rDec - decrRamp after
 ' @local bOk - the read-back held
 
-    minD, maxD, incD, decD := motor.getRampingValues()
+    accRateD := motor.getAcceleration()
+    decRateD := motor.getDeceleration()
     repeat tabIdx from 0 to 1
         pTab := (tabIdx == 0) ? @t0aAccelTab : @t0aDecelTab
         nRows := (tabIdx == 0) ? T0A_ACCEL_ROWS : T0A_DECEL_ROWS
         repeat rowIdx from 0 to nRows - 1
             nRate := long[pTab][rowIdx * 2]
             eWant := long[pTab][rowIdx * 2 + 1]
-            nMin, nMax, nInc, nDec := motor.getRampingValues()
+            nMin, nMax, nInc, nDec := motor.testGetRampLimits()
             nAccWas := motor.getAcceleration()
             nDecWas := motor.getDeceleration()
             if tabIdx == 0
                 eGot := motor.setAcceleration(nRate)
             else
                 eGot := motor.setDeceleration(nRate)
-            rMin, rMax, rInc, rDec := motor.getRampingValues()
+            rMin, rMax, rInc, rDec := motor.testGetRampLimits()
             if eWant <> T0A_OK
                 bOk := (rMin == nMin) and (rMax == nMax) and (rInc == nInc) and (rDec == nDec)
                 bOk &= (motor.getAcceleration() == nAccWas) and (motor.getDeceleration() == nDecWas)
@@ -5006,19 +5006,13 @@ PRI t0aAccel() | minD, maxD, incD, decD, tabIdx, pTab, nRows, rowIdx, nRate, eWa
                 bOk &= (motor.getDeceleration() == nRate) and (motor.getAcceleration() == nAccWas)
             t0aChk((tabIdx == 0) ? @"setAcceleration" : @"setDeceleration", nRate, eWant, eGot, TRUE, bOk)
     eGot := motor.setDeceleration(T0A_DECEL_PROBE)
-    _, _, _, rDec := motor.getRampingValues()
+    _, _, _, rDec := motor.testGetRampLimits()
     t0aChk(@"setDeceleration.driver", T0A_DECEL_PROBE, T0A_OK, eGot, t0aStepFor(T0A_DECEL_PROBE), rDec)
     eGot := motor.setDeceleration(T0A_DECEL_ANCHOR)
-    _, _, _, rDec := motor.getRampingValues()
+    _, _, _, rDec := motor.testGetRampLimits()
     t0aChk(@"setDeceleration.anchor", T0A_DECEL_ANCHOR, T0A_OK, eGot, TRUE, abs(rDec - T0A_DECEL_ANCHOR_STEP) <= T0A_DECEL_ANCHOR_STEP / T0A_ANCHOR_TOL_DIV)
-    ' SRC_REV 25: the raw setter -- min and inc read back as the jerks, a minRamp of 0 refused, a limit capped
-    eGot := motor.setRampingValues(1, T0A_RAW_UP, 0, T0A_RAW_DN)
-    t0aChk(@"setRampingValues.raw", T0A_RAW_UP, T0A_OK, eGot, TRUE, bT0aRampIs(t0JerkFor(T0A_RAW_UP), T0A_RAW_UP, t0JerkFor(T0A_RAW_DN), T0A_RAW_DN))
-    eGot := motor.setRampingValues(0, T0A_RAW_DN, 0, T0A_RAW_UP)
-    t0aChk(@"setRampingValues.min0", 0, T0A_BAD_COUNT, eGot, TRUE, bT0aRampIs(t0JerkFor(T0A_RAW_UP), T0A_RAW_UP, t0JerkFor(T0A_RAW_DN), T0A_RAW_DN))
-    eGot := motor.setRampingValues(1, motor.ACCEL_STEP_CAP * 2, 0, T0A_RAW_DN)
-    t0aChk(@"setRampingValues.cap", motor.ACCEL_STEP_CAP * 2, T0A_OK, eGot, TRUE, bT0aRampIs(t0JerkFor(motor.ACCEL_STEP_CAP), motor.ACCEL_STEP_CAP, t0JerkFor(T0A_RAW_DN), T0A_RAW_DN))
-    motor.setRampingValues(minD, maxD, incD, decD)
+    motor.setAcceleration(accRateD)                                             ' the rates before the family (the same rate gives the same step)
+    motor.setDeceleration(decRateD)
     motor.getError()
     t0aCell(@sCellApiAccel, @"RIGHT", TRUE)
 
@@ -5056,7 +5050,7 @@ PRI bT0aRampIs(minWant, maxWant, incWant, decrWant) : bSame | minRamp, maxRamp, 
 ' @local incRamp - incRamp read back
 ' @local decrRamp - decrRamp read back
 
-    minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
+    minRamp, maxRamp, incRamp, decrRamp := motor.testGetRampLimits()
     bSame := (minRamp == minWant) and (maxRamp == maxWant) and (incRamp == incWant) and (decrRamp == decrWant)
 
 PRI t0aSpeed() | rowIdx, nValue, nWant, eGot
