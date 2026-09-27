@@ -78,7 +78,11 @@ cleanup() {
     rm -f ./*.bin ./*.lst 2>/dev/null
     [ -n "$FP_DIR" ] && rm -rf "$FP_DIR"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# An interrupt must END the run, not just restore: a handler that only cleaned up let the walk carry on
+# with its backup deleted. Exiting here runs the EXIT trap's cleanup once.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---- discover the config blocks -----------------------------------------
 # Emits one "lineno:kind" row per block opener, kind = single|dual.

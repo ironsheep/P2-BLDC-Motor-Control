@@ -222,7 +222,14 @@ CON { Public Interface Constants }
     DECEL_MIN_MM_S2         = 250
     DECEL_MAX_MM_S2         = 10_000
 
-    ' setRampingValues(): the largest ramp step, which keeps the driver's ramp sum inside a signed long
+    ' PL-160 (DRIVER_REV 38): the built-in rates, until setAcceleration() / setDeceleration() is called, and the time
+    '  every ramp takes to ease its acceleration in (and out): the jerk is the rate / RAMP_TAU_MS. PROVISIONAL, owner Q2:
+    '  a ruling retunes these three numbers and nothing else.
+    ACCEL_BUILTIN_MM_S2     = 1_000
+    DECEL_BUILTIN_MM_S2     = 1_470
+    RAMP_TAU_MS             = 250
+
+    ' setRampingValues(): the largest value it accepts (the driver runs at most ACCEL_STEP_CAP)
     RAMP_STEP_MAX           = $4000_0000
 
     ' setCommandTimeout(): 0 turns it off (the default); otherwise the accepted range, in ms
@@ -475,12 +482,13 @@ PUB testSetMotorId(pIDStr) : eError
     eError := NO_ERROR
 
 PUB setAcceleration(rate) : eError | rampStep
-'' Set how fast the motor speeds up: every speed-up from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
+'' Set how fast the motor speeds up: every speed-up from now on reaches a steady {rate}, in mm/s squared at the wheel rim
 ''
-'' Until this is called the motor uses a gentle built-in ramp that starts near 44 mm/s squared and grows by about
-'' 1_240 mm/s squared every second (6.5in wheel). Slowing down and stopping are set apart, by setDeceleration(), so
-'' this does not change the stopping distances. The motor can still accelerate more slowly than asked: the drive never
-'' lets the field run further ahead of the rotor than the motor can follow.
+'' Until this is called the motor speeds up at its built-in rate, ACCEL_BUILTIN_MM_S2 (1_000). Every ramp eases in and
+'' out (PL-160, DRIVER_REV 38): the acceleration rises from 0 to {rate} over RAMP_TAU_MS (250 ms) and falls back to 0
+'' as the target speed arrives, so the motor never takes a step of torque. Slowing down and stopping are set apart,
+'' by setDeceleration(), so this does not change the stopping distances. The motor can still accelerate more slowly
+'' than asked: the drive never lets the field run further ahead of the rotor than the motor can follow.
 '' PL-160: kept across stop() and start(), and may be set before start(); getAcceleration() reads it back. It replaces
 '' the speed-up part of an earlier setRampingValues(), and a later setRampingValues() replaces it: the last call wins.
 ''
@@ -488,14 +496,11 @@ PUB setAcceleration(rate) : eError | rampStep
 '' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range (also recorded for getError()); a rejected call changes nothing
 
 ' Local Variables:
-' @local rampStep - the constant driver increment step per drive pass that gives {rate}
+' @local rampStep - the driver's acceleration limit, its increment change per drive pass, that gives {rate}
 
     eError, rampStep := rampStepForAccel(rate, ACCEL_MIN_MM_S2, ACCEL_MAX_MM_S2)
     if eError == NO_ERROR
-        ' G: the ramp starts, continues and ends at one step, so the field accelerates at a constant rate
-        usrRampMin := rampStep                                                  ' PL-160: kept, first; a start() applies it
-        usrRampMax := rampStep
-        usrRampInc := 0
+        usrAccelStep := rampStep                                                ' PL-160: kept, first; a start() applies it
         usrAccel := rate
         if bSettingsLive == TRUE
             applyRamps()                                                        '  and in effect now on a running motor
@@ -504,9 +509,10 @@ PUB setAcceleration(rate) : eError | rampStep
         debug[user.DBGCH_ERROR]("! ERROR: setAcceleration() rejected ", sdec_long(eError), sdec_long(rate))
 
 PUB setDeceleration(rate) : eError | rampStep
-'' Set how fast the motor slows down: every slow-down and stop from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
+'' Set how fast the motor slows down: every slow-down and stop from now on reaches a steady {rate}, in mm/s squared at the wheel rim
 ''
-'' Until this is called the motor slows at its built-in rate, about 1_470 mm/s squared (6.5in wheel). The stopping
+'' Until this is called the motor slows at its built-in rate, DECEL_BUILTIN_MM_S2 (1_470). The deceleration eases in
+'' and out over RAMP_TAU_MS, as setAcceleration()'s does (PL-160). The stopping
 '' distance follows it: a lower rate stops further on. stopAfterDistance(), stopAfterRotation() and stopAfterTime()
 '' start their stop early by the distance and time this rate takes, so they still come to rest at their limit. The
 '' command timeout's stop and a controlled fault stop (FR_GRADED) ramp down at it too, which is why its floor,
@@ -519,11 +525,11 @@ PUB setDeceleration(rate) : eError | rampStep
 '' @returns eError - NO_ERROR, ERR_NO_WHEEL_DIA when the configured wheel diameter is 0, or ERR_BAD_COUNT for a {rate} outside the range (also recorded for getError()); a rejected call changes nothing
 
 ' Local Variables:
-' @local rampStep - the constant driver decrement step per drive pass that gives {rate}
+' @local rampStep - the driver's deceleration limit, its increment change per drive pass, that gives {rate}
 
     eError, rampStep := rampStepForAccel(rate, DECEL_MIN_MM_S2, DECEL_MAX_MM_S2)
     if eError == NO_ERROR
-        usrRampDown := rampStep                                                 ' PL-160: kept, first; a start() applies it
+        usrDecelStep := rampStep                                                ' PL-160: kept, first; a start() applies it
         usrDecel := rate
         if bSettingsLive == TRUE
             applyRamps()                                                        '  and in effect now on a running motor
@@ -531,67 +537,61 @@ PUB setDeceleration(rate) : eError | rampStep
         eError := recordError(eError)
         debug[user.DBGCH_ERROR]("! ERROR: setDeceleration() rejected ", sdec_long(eError), sdec_long(rate))
 
-PUB getAcceleration() : nRate | minRamp, maxRamp, incRamp
-'' Return the rate the motor speeds up at, mm/s squared at the wheel rim; 0 when the speed-up ramp has no single rate
+PUB getAcceleration() : nRate
+'' Return the rate the motor speeds up at, mm/s squared at the wheel rim
 ''
-'' After setAcceleration() this is the rate it was given. The built-in ramp grows as it goes, so it has no single rate,
-'' and this returns 0 -- a value no setter accepts, so it cannot be mistaken for a rate. After setRampingValues() it is
-'' the rate its constant step gives (incRamp 0 and minRamp = maxRamp), or 0 for a ramp that grows. 0 also when the
-'' configured wheel diameter is 0. The kept setting, so it reads the same before start().
+'' After setAcceleration() this is the rate it was given; until then the built-in rate, ACCEL_BUILTIN_MM_S2 (1_000);
+'' after setRampingValues() the rate its maxRamp gives. PL-160 (DRIVER_REV 38): every ramp now has a single steady
+'' rate, so this no longer returns 0 for the built-in ramp. 0 only when the configured wheel diameter is 0. The kept
+'' setting, so it reads the same before start().
 ''
-'' @returns nRate - the speed-up rate, mm/s squared, or 0 (no single rate)
-
-' Local Variables:
-' @local minRamp - the kept speed-up ramp's first step
-' @local maxRamp - its largest step
-' @local incRamp - its growth per drive pass
+'' @returns nRate - the speed-up rate, mm/s squared
 
     nRate := usrAccel
     if nRate == 0
-        minRamp, maxRamp, incRamp, _ := keptRamps()
-        if (incRamp == 0) and (minRamp == maxRamp)
-            nRate := rateForRampStep(minRamp)
+        if usrAccelStep <> 0
+            nRate := rateForRampStep(usrAccelStep)
+        elseif rampStepScale() <> 0.0
+            nRate := ACCEL_BUILTIN_MM_S2
 
-PUB getDeceleration() : nRate | decrRamp
+PUB getDeceleration() : nRate
 '' Return the rate the motor slows down and stops at, mm/s squared at the wheel rim
 ''
-'' After setDeceleration() this is the rate it was given; until then the built-in rate, about 1_470 (6.5in wheel);
+'' After setDeceleration() this is the rate it was given; until then the built-in rate, DECEL_BUILTIN_MM_S2 (1_470);
 '' after setRampingValues() the rate its decrRamp gives. 0 only when the configured wheel diameter is 0. The kept
 '' setting, so it reads the same before start().
 ''
 '' @returns nRate - the slow-down rate, mm/s squared
 
-' Local Variables:
-' @local decrRamp - the kept slow-down step
-
     nRate := usrDecel
     if nRate == 0
-        _, _, _, decrRamp := keptRamps()
-        nRate := rateForRampStep(decrRamp)
+        if usrDecelStep <> 0
+            nRate := rateForRampStep(usrDecelStep)
+        elseif rampStepScale() <> 0.0
+            nRate := DECEL_BUILTIN_MM_S2
 
 PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp) : eError
-'' Change the ramping parameters, in the driver's own units (angle increment per drive pass): the raw form of the ramp
+'' Change the ramp's two acceleration limits, in the driver's own units (angle increment change per drive pass): the raw form of the ramp
 ''
 '' setAcceleration() and setDeceleration() are the user interface to the ramp, in mm/s squared; this is the raw
 '' escape beneath them. The last call wins: this replaces what both set, and each of them replaces its own part of
 '' this. PL-160: kept across stop() and start(), and may be set before start(); getRampingValues() reads it back.
+'' minRamp and incRamp have no effect since DRIVER_REV 38: the jerk-limited ramp derives its jerks from maxRamp and
+'' decrRamp and RAMP_TAU_MS. They are still checked, so a call that was refused before is refused now.
 ''
-'' @param minRamp - angle increment at the start of a ramp up [1 to maxRamp]
-'' @param maxRamp - largest angle increment a ramp up reaches [minRamp to RAMP_STEP_MAX]
-'' @param incRamp - increment added to the ramp every drive pass until maxRamp is reached [0 to RAMP_STEP_MAX]; 0 ramps at a constant minRamp
-'' @param decrRamp - fixed angle decrement per drive pass when slowing down [1 to RAMP_STEP_MAX]
+'' @param minRamp - no effect since DRIVER_REV 38 [1 to maxRamp]
+'' @param maxRamp - the speed-up acceleration limit: the most the field's increment grows in one drive pass [minRamp to RAMP_STEP_MAX]; above ACCEL_STEP_CAP it runs at ACCEL_STEP_CAP
+'' @param incRamp - no effect since DRIVER_REV 38 [0 to RAMP_STEP_MAX]
+'' @param decrRamp - the slow-down acceleration limit: the most the field's increment falls in one drive pass [1 to RAMP_STEP_MAX]; above ACCEL_STEP_CAP it runs at ACCEL_STEP_CAP
 '' @returns eError - NO_ERROR, or ERR_BAD_COUNT (also recorded for getError()) for a value outside its range; a rejected call changes nothing
 
-    ' G: a zero decrRamp would never stop the motor and divides frontStopTicks() by zero, and a negative
-    '  step would ramp the wrong way; RAMP_STEP_MAX keeps the driver's ramp sum inside a signed long
+    ' G: a zero decrRamp would never stop the motor, and a negative step would ramp the wrong way
     if (minRamp < 1) or (maxRamp < minRamp) or (maxRamp > RAMP_STEP_MAX) or (incRamp < 0) or (incRamp > RAMP_STEP_MAX) or (decrRamp < 1) or (decrRamp > RAMP_STEP_MAX)
         eError := recordError(ERR_BAD_COUNT)
         debug[user.DBGCH_ERROR]("! ERROR: setRampingValues() rejected ", sdec_long(minRamp), sdec_long(maxRamp), sdec_long(incRamp), sdec_long(decrRamp))
     else
-        usrRampMin := minRamp                                                   ' PL-160: kept, first; a start() applies it
-        usrRampMax := maxRamp
-        usrRampInc := incRamp
-        usrRampDown := decrRamp
+        usrAccelStep := maxRamp                                                 ' PL-160: kept, first; a start() applies it
+        usrDecelStep := decrRamp
         usrAccel := 0                                                           ' the rates asked for are replaced: the getters
         usrDecel := 0                                                           '  now read the rates these steps give
         if bSettingsLive == TRUE
@@ -599,21 +599,22 @@ PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp) : eError
         eError := NO_ERROR
 
 PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
-'' Return the ramping parameters, in the driver's own units
+'' Return the ramp's four driver parameters, in the driver's own units: the two jerks and the two acceleration limits
 ''
 '' While the motor runs, the values the driver is using; before start() (or after stop()), the values the next
-'' start() applies (PL-160). Until a ramp setter is called these are the built-in ramp's.
+'' start() applies (PL-160). Until a ramp setter is called these are the built-in ramp's. Since DRIVER_REV 38 the
+'' four longs are the jerk-limited ramp's: each jerk is its acceleration limit spread over RAMP_TAU_MS.
 ''
-'' @returns minRamp - ramp_min, the increment added on the first drive pass
-'' @returns maxRamp - ramp_max, the increment ceiling
-'' @returns incRamp - ramp_inc, added to the ramp every drive pass
-'' @returns decrRamp - ramp_down, the fixed ramp-down step
+'' @returns minRamp - jerk_up, the speed-up jerk: the acceleration a ramp from rest takes on its first pass, and adds every pass after
+'' @returns maxRamp - accel_up, the speed-up acceleration limit
+'' @returns incRamp - jerk_dn, the slow-down jerk
+'' @returns decrRamp - accel_dn, the slow-down acceleration limit
 
     if bSettingsLive == TRUE
-        minRamp := ramp_min
-        maxRamp := ramp_max
-        incRamp := ramp_inc
-        decrRamp := ramp_down
+        minRamp := jerk_up
+        maxRamp := accel_up
+        incRamp := jerk_dn
+        decrRamp := accel_dn
     else
         minRamp, maxRamp, incRamp, decrRamp := keptRamps()
 
@@ -870,7 +871,7 @@ PUB driveAtPowerEx(power, sync) : eError | limitPwr
         limitPwr :=  -100 #> power <# 100
         if limitPwr <> power
             debug[user.DBGCH_WARNING]("! WARNING: driveAtPowerEx() power out of range (corrected):", udec_long(power), " - must be [-100 to +100]")
-        debug[user.DBGCH_COMMAND]("-MOT- driveAtPowerEx(", zstr_(@motorId), ") ", sdec_long(limitPwr), udec_long(ramp_max), udec_long(ramp_min))
+        debug[user.DBGCH_COMMAND]("-MOT- driveAtPowerEx(", zstr_(@motorId), ") ", sdec_long(limitPwr), udec_long(accel_up), udec_long(jerk_up))
         ' the front cog saturates again and maps the power to the driver increment
         eError := recordError(postRequest(REQ_DRIVE, limitPwr, 0, (sync <> FALSE)))
 
@@ -2613,6 +2614,19 @@ PUB testGetCurrentLimitState() : nPeakA, nContA, bDeratedNow, nPhaseAvgMa, nLimi
     nPhaseAvgMa := phaseAvgMa SAR CURRENT_AVG_SHIFT
     nLimitK := i_limit_k
 
+PUB testGetAccelNow() : nAccel
+'' TESTING USE: return the trajectory generator's acceleration, the signed change of the field's increment per drive pass (PL-160)
+''
+'' The driver's own state (drv_accel_now), block-copied with the status run every PWM frame: 0 at rest and at speed,
+'' rising by at most jerk_up (or jerk_dn) a pass while a ramp eases in, never beyond accel_up (or accel_dn) in size but
+'' while it unwinds from a limit it left. On the pass the target arrives it reads that pass's last step (at most the
+'' jerk), and 0 from the next pass. Same sign as the change it
+'' makes to the field's increment (testGetDriveHealth()'s nDrvIncr). The four limits are getRampingValues().
+''
+'' @returns nAccel - angle-increment units per drive pass, per drive pass; signed
+
+    nAccel := drv_accel_now
+
 PUB testGetAbiAddrs() : pLaunch, pStatus, pParams
 '' TEST USE: the hub addresses of the three runs the driver shares with Spin2, so a bench harness can dump them
 '' (task 3613, PL-120): the launch run (pinbase, params_ptr, targetAngle, targetIncre), the DRVR_STATUS_LONGS_COUNT
@@ -2803,9 +2817,9 @@ PUB frontScaleCommand(nScalePermille) | scaledIncr
 '' R18.4 D-6: the steering object scales BOTH wheels by one fraction so the platform keeps its path. The
 '' command is kept (getPower() still reads what was commanded, C-2), and a stopped, refused or faulted motor
 '' is left alone. Writes no ATN: the scaled command is taken on the driver's next pass (D-4). A scaled command is
-'' never below ramp_min (PL-141): a commanded wheel scaled to zero would read at rest (DCS_STOPPED) while commanded,
-'' and would zero the target a blocked wheel's protective stop counts on (bFrontProtect()), as D-5 never walks a
-'' field below ramp_min either.
+'' never below DRV_INCR_FLOOR (PL-141): a commanded wheel scaled to zero would read at rest (DCS_STOPPED) while
+'' commanded, and would zero the target a blocked wheel's protective stop counts on (bFrontProtect()), as D-5 never
+'' walks a field below DRV_INCR_FLOOR either. (It was ramp_min until DRIVER_REV 38 reused that long as jerk_up.)
 ''
 '' @param nScalePermille - the fraction of the commanded rate to run at, 0-1000
 
@@ -2813,7 +2827,7 @@ PUB frontScaleCommand(nScalePermille) | scaledIncr
 ' @local scaledIncr - the commanded increment scaled to {nScalePermille}, its sign kept
 
     if (userCmdIncr <> 0) and (frontRefusal() == NO_ERROR) and (drv_state <> DCS_FAULTED)
-        scaledIncr := muldiv64(abs(userCmdIncr), (0 #> nScalePermille <# PERMILLE_FULL), PERMILLE_FULL) #> (ramp_min <# abs(userCmdIncr))
+        scaledIncr := muldiv64(abs(userCmdIncr), (0 #> nScalePermille <# PERMILLE_FULL), PERMILLE_FULL) #> (DRV_INCR_FLOOR <# abs(userCmdIncr))
         if userCmdIncr < 0
             scaledIncr := -scaledIncr
         setTargetAccel(scaledIncr, FALSE)
@@ -3259,31 +3273,37 @@ PUB frontTrack(passCount) | eDrvState, nowPos, nStep
     elseif (passCount +// WINDOW_PASSES) == 0
         updateWindowAccumulators()
 
-PUB frontStopTicks() : nTicks | incr, passes
+PUB frontStopTicks() : nTicks | nFieldFp
 '' FRONT COG ONLY: return the hall ticks the field still travels if a stop is written now
 ''
-'' The driver ramps the increment down by ramp_down every drive pass (.rampDn), so the field travels
-'' incr x (passes + 1) / 2 angle units, with passes = incr / ramp_down, and one hall cycle (2^32) is 6 ticks.
-'' Visit 3 check: 196 ticks/s, an increment of about 73.3M, gives 75 ticks, as measured.
+'' PL-160 (DRIVER_REV 38): the driver's jerk-limited stop from the field's present increment AND acceleration, in
+'' closed form (stopPlan(), whose derivation it carries): exact against the driver's own per-pass arithmetic, to a
+'' few 1/256 of a tick, plus the one pass at the present increment the stop may take to be read (as the formula before
+'' DRIVER_REV 38 also counted). One hall cycle (2^32) is 6 ticks. Rounded down, as before.
 ''
 '' @returns nTicks - the stopping distance in hall ticks; 0 at rest
 
 ' Local Variables:
-' @local incr - the field's current increment per drive pass, unsigned
-' @local passes - drive passes the ramp-down takes, plus one
+' @local nFieldFp - the field's stopping travel, 1/256 hall tick
 
-    incr := abs drv_incr_now
-    passes := incr / ramp_down + 1
-    nTicks := muldiv64(incr >> 9, 3 * passes, 1 << 23)                          ' incr x passes / 2 x 6 / 2^32
+    _, nFieldFp := stopPlan()
+    nTicks := nFieldFp >> STOP_FP_BITS
 
-PUB frontStopMs() : nMs
+PUB frontStopMs() : nMs | nPasses
 '' FRONT COG ONLY: return the milliseconds until the field is at rest if a stop is written now
+''
+'' PL-160 (DRIVER_REV 38): the drive passes of the jerk-limited stop, exact against the driver (stopPlan()), with the
+'' pass the stop may take to be read, at DRIVE_PASS_US each.
 ''
 '' @returns nMs - the stopping time, rounded up; 0 at rest
 
+' Local Variables:
+' @local nPasses - the drive passes until the field is at rest
+
     nMs := 0
-    if drv_incr_now <> 0
-        nMs := ((abs drv_incr_now) / ramp_down + 1) * DRIVE_PASS_US / 1_000 + 1
+    nPasses, _ := stopPlan()
+    if nPasses > 0
+        nMs := nPasses * DRIVE_PASS_US / 1_000 + 1
 
 PUB frontSetLimits(nTicks, nMsDeadline)
 '' FRONT COG ONLY: arm this motor's stop limits (0 disarms either)
@@ -4242,12 +4262,13 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
     e_stop      := ES_OFF
     ' PL-155 / PL-160: the program's kept settings (max speeds, reversal, the ramp) are applied, never reset; init() once
-    '  reset them here. The ramp is the built-in one (RAMP_*_BUILTIN) until a ramp setter is called.
+    '  reset them here. The ramp is the built-in one (ACCEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2) until a ramp setter is called.
     applyUserSettings()
     fault := FALSE
     hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
     hall_illegal := 0
     drv_incr_now := 0           ' no stale field speed across stop()/start(): the stop timing reads it
+    drv_accel_now := 0          ' PL-160: nor a stale acceleration, which the stop timing reads too
 
     ' init status variables
     loop_ticks := 0
@@ -4371,50 +4392,331 @@ PRI applyUserSettings()
     motorIsReversed := usrReversed
     applyRamps()
 
-CON { PL-160: the built-in ramp, in the driver's units -- what the ramp is until a program sets one }
+CON { PL-160: the jerk-limited ramp's internal limits, in the driver's units }
 
-    ' NOTES: 220410 -  at 18.5v 50_000 seems to fault a lot on gravel surface (i'm switching) to 40_000 and PWR_14p8V to see if motors stay operational
-    ' NOTES: 220410 -  at 14.8V 40_000 seems to fault a lot on gravel surface (i'm switching) to 10_000 and PWR_14p8V to see if motors stay operational (5_000 dog slow)
-    ' NOTES: 220413 -  at 14.8V 10_000 better on gravel surface  but too slow a ramp to 15_000 and PWR_14p8V to see if motors stay operational
-    ' 50_000 for 12v & 18_5v
-    '   ramp_min - start ramping at this value
-    '   ramp_max - max ramping at this value, once reach this value, keep incrementing with this value
-    '   ramp_inc - ramping increment, added to ramp_min every drive pass (~522.7 us, PL-50). Effectively defines the acceleration
-    '   ramp_down - the fixed step every slow-down and stop takes off the increment each drive pass: about 1_470 mm/s^2 (6.5in)
-    RAMP_MIN_BUILTIN    = 1_500         ' 1k5 angle min increment: start add this every drive pass to ramp up from zero
-    RAMP_MAX_BUILTIN    = 200_000       ' 200k angle max increment/decrement
-    RAMP_INC_BUILTIN    = 22            ' increment to ramping speed, add to ramp_min every drive pass until ramp_max reached
-    RAMP_DOWN_BUILTIN   = 50_000        ' fixed ramp down speed
+    ' The built-in rates are ACCEL_BUILTIN_MM_S2 and DECEL_BUILTIN_MM_S2 (public, with RAMP_TAU_MS). With no wheel
+    '  diameter configured there is no mm/s^2, and the ramp falls back to these steps: the same two rates on the 6.5in
+    '  wheel (5.76 mm per tick, so 0.0294485 mm/s^2 per step, rampStepScale()). Until DRIVER_REV 38 the built-in ramp
+    '  was a growing one (1_500 first step, +22 a pass, 200_000 ceiling) and a fixed 50_000 step down.
+    RAMP_ACCEL_BUILTIN_STEP = 33_958        ' 1_000 mm/s^2 on the 6.5in wheel
+    RAMP_DECEL_BUILTIN_STEP = 49_918        ' 1_470 mm/s^2 on the 6.5in wheel (the old ramp down was 50_000, 1_472)
+    ' The largest acceleration limit the generator runs at: setRampingValues() accepts up to RAMP_STEP_MAX but runs above
+    '  this at this. 1e6 is about 29_500 mm/s^2 on the 6.5in wheel, three times ACCEL_MAX_MM_S2. It keeps the stop
+    '  prediction's sums (stopPlan()) inside a long: a jerk-limited ramp lasts at most ~720 passes at any limit.
+    ACCEL_STEP_CAP          = 1_000_000
+    ' The jerk is the limit spread over RAMP_TAU_MS: J = A / TAU_PASSES, TAU_PASSES = RAMP_TAU_MS / 1_000 x
+    '  PWM_RATE_IN_HZ / DRIVE_PASS_FRAMES = 478.3 passes at 250 ms. jerkForAccel() computes it as
+    '  A x RAMP_JERK_NUM / RAMP_JERK_DEN (= A x 23 / 11_000), rounded.
+    RAMP_JERK_NUM           = DRIVE_PASS_FRAMES * 1_000
+    RAMP_JERK_DEN           = RAMP_TAU_MS * PWM_RATE_IN_HZ
+    ' PL-141 / D-5: the least field increment a path-scaled command runs at, and the floor of the hold decay. It was
+    '  ramp_min (built in 1_500) until DRIVER_REV 38 reused that long as jerk_up.
+    DRV_INCR_FLOOR          = 1_500
+    ' The stop prediction's fixed point: 1/256 of a hall tick. angle x 6 x 256 / 2^32 = angle x 3 / 2^23.
+    STOP_FP_BITS            = 8
+    STOP_FP_ANGLE_DIV       = 1 << (32 - STOP_FP_BITS - 1)
+    ' The stop prediction saturates beyond this many drive passes (~9 minutes): only a raw setRampingValues() slow-down
+    '  step of a few units can ask for a stop that long, and its sums would leave a long. A saturated stop is due at once.
+    PLAN_PASSES_MAX         = 1 << 20
 
-PRI keptRamps() : minRamp, maxRamp, incRamp, decrRamp
-' PL-160: return the ramp the program has kept, in the driver's units: the built-in ramp for any part never set.
+PRI keptRamps() : jerkUp, accelUp, jerkDn, accelDn
+' PL-160: return the ramp the program has kept, as the driver's four parameters: the built-in rate for either part never set.
 '
-' usrRampMin is 0 until setAcceleration() or setRampingValues() sets the speed-up ramp (a set step is at least 1),
-' and usrRampDown 0 until setDeceleration() or setRampingValues() sets the slow-down step.
+' usrAccelStep is 0 until setAcceleration() or setRampingValues() sets the speed-up limit (a set step is at least 1),
+' and usrDecelStep 0 until setDeceleration() or setRampingValues() sets the slow-down limit. Each limit is capped at
+' ACCEL_STEP_CAP, and its jerk is the limit spread over RAMP_TAU_MS (jerkForAccel()).
 '
-' @returns minRamp - the speed-up ramp's first step
-' @returns maxRamp - its largest step
-' @returns incRamp - its growth per drive pass
-' @returns decrRamp - the slow-down step
+' @returns jerkUp - the speed-up jerk
+' @returns accelUp - the speed-up acceleration limit
+' @returns jerkDn - the slow-down jerk
+' @returns accelDn - the slow-down acceleration limit
 
-    if usrRampMin == 0
-        minRamp := RAMP_MIN_BUILTIN
-        maxRamp := RAMP_MAX_BUILTIN
-        incRamp := RAMP_INC_BUILTIN
-    else
-        minRamp := usrRampMin
-        maxRamp := usrRampMax
-        incRamp := usrRampInc
-    decrRamp := usrRampDown
-    if decrRamp == 0
-        decrRamp := RAMP_DOWN_BUILTIN
+    accelUp := usrAccelStep
+    if accelUp == 0
+        accelUp := builtinStep(ACCEL_BUILTIN_MM_S2, RAMP_ACCEL_BUILTIN_STEP)
+    accelDn := usrDecelStep
+    if accelDn == 0
+        accelDn := builtinStep(DECEL_BUILTIN_MM_S2, RAMP_DECEL_BUILTIN_STEP)
+    accelUp := 1 #> accelUp <# ACCEL_STEP_CAP
+    accelDn := 1 #> accelDn <# ACCEL_STEP_CAP
+    jerkUp := jerkForAccel(accelUp)
+    jerkDn := jerkForAccel(accelDn)
+
+PRI builtinStep(nRateMmS2, nFallbackStep) : nStep | eError
+' PL-160: return a built-in rate's acceleration limit in driver units: from the configured wheel, or the 6.5in wheel's step without one.
+'
+' @param nRateMmS2 - the built-in rate, mm/s squared
+' @param nFallbackStep - the step used when no wheel diameter is configured
+' @returns nStep - the acceleration limit, driver units
+
+' Local Variables:
+' @local eError - NO_ERROR, or ERR_NO_WHEEL_DIA when the rate cannot be converted
+
+    eError, nStep := rampStepForAccel(nRateMmS2, nRateMmS2, nRateMmS2)
+    if eError <> NO_ERROR
+        nStep := nFallbackStep
+
+PRI jerkForAccel(nAccel) : nJerk
+' PL-160: return the jerk that ramps an acceleration limit in over RAMP_TAU_MS: max(1, round(nAccel / TAU_PASSES)).
+'
+' Spin2 side only, so the driver divides by nothing per pass to find it.
+'
+' @param nAccel - the acceleration limit, driver units [1 to ACCEL_STEP_CAP]
+' @returns nJerk - the jerk, driver units per pass, at least 1
+
+    nJerk := 1 #> ((muldiv64(nAccel, 2 * RAMP_JERK_NUM, RAMP_JERK_DEN) + 1) >> 1)
 
 PRI applyRamps()
 ' PL-160: copy the kept ramp into the four working longs the driver block-copies every cycle (the params run), which
 ' the front cog's stop prediction (frontStopTicks(), frontStopMs()) also reads live. Called by applyUserSettings()
-' and, on a running motor, by each ramp setter after its kept store.
+' and, on a running motor, by each ramp setter after its kept store. A running driver takes a new limit smoothly: an
+' acceleration left above a lowered limit unwinds to it at the larger jerk (jerkStep).
 
-    ramp_min, ramp_max, ramp_inc, ramp_down := keptRamps()
+    jerk_up, accel_up, jerk_dn, accel_dn := keptRamps()
+
+PRI stopPlan() : nPasses, nFieldFp | vNow, alpha, nJerk, nAccel, nJerkX, nSpeed, nSteps, nFirst, nCap, nRise, nRoom, nSum, bSaturated
+' PL-160: the drive passes and the field travel of the driver's jerk-limited stop, written now, in closed form (no loop over passes).
+'
+' THE RULE (jerkStep, in the PASM). Seen from a stop, V = |v| is the speed to shed and alpha = -a x sign(v) the
+' acceleration toward rest (alpha > 0 sheds speed). The stop runs on the slow-down pair, J = jerk_dn and A = accel_dn.
+' Each pass the driver takes alpha' = min(U, max(alpha - J, x*(E))) and then v' = v + a', E the speed still to shed and
+' U the jerk-limited step toward A. With
+'   f(x) = x + (x - J) + (x - 2J) + ... (terms while positive): the speed one pass at x sheds, followed by a pure
+'          ramp-out at J. For x in (mJ, (m + 1)J], f(x) = (m + 1) x - J m (m + 1) / 2, and f(mJ) = J m (m + 1) / 2.
+'   x*(E) = the largest x with f(x) <= E = floor((E + J h) / (m + 1)), m the largest with J m (m + 1) / 2 <= E,
+'          h = m (m + 1) / 2 (largestAccel()).
+' the stop is at most five runs, each of alpha in arithmetic progression:
+'  0.  the take pass: the stop may be read one pass late, at the present speed (the formula before DRIVER_REV 38
+'      counted it too).
+'  1a. alpha < 0, the field still speeding up: alpha unwinds to exactly 0 at Jx = max(jerk_up, jerk_dn),
+'      k = ceil(-alpha / Jx) passes, the last at 0.
+'  1b. the rise: y_i = y1 + i J, y1 = alpha + J, taken while y_i <= A and sum(j < i) y_j + f(y_i) <= E. That sum is
+'      J i^2 + 2 y1 i + f(y1), so the last i is floor((sqrt(y1^2 + J (E - f(y1))) - y1) / J): the root in float, then
+'      corrected in integers (risePasses()).
+'  2.  the plateau at A while f(A) <= E: floor((E - f(A)) / A) + 1 passes.
+'  3.  the ramp-out: x0 = x*(E), then x0 - J, x0 - 2J, ...: ceil(x0 / J) passes, and one more when x0 is a multiple of
+'      J and E > f(x0) (the remainder takes its own last pass). The driver spreads E - f(x0) (< m + 1) over the run as
+'      +1 steps; that moves the travel by under 1e-3 tick, and the sums leave it out.
+'  The corner: alpha - J > x*(V), a stop read just before a reversal's zero crossing. The field cannot stop without
+'   crossing zero, so the driver takes alpha - J, alpha - 2J, ... and stops the field AT zero on the pass it would
+'   cross: n, the least with n alpha - J n (n + 1) / 2 >= V (crossingPasses()).
+' Each run of n passes from speed vs with alpha_i = first + (i - 1) d leaves v_i = vs - i first - d i (i - 1) / 2,
+' summed in closed form by segmentFp(). The field advances v on every pass but the one that reaches rest (0 there).
+' An alpha above A (only a lower setDeceleration() while a stop ramps) is taken as A: the driver unwinds it at Jx.
+' Beyond PLAN_PASSES_MAX passes the plan saturates, and a limit fires at once.
+'
+' @returns nPasses - the drive passes until the field is at rest, the take pass included; 0 at rest
+' @returns nFieldFp - the field's travel until then, 1/256 hall tick (STOP_FP_BITS)
+
+' Local Variables:
+' @local vNow - the field's increment, read once
+' @local alpha - the acceleration toward rest, driver units
+' @local nJerk - the slow-down jerk
+' @local nAccel - the slow-down acceleration limit
+' @local nJerkX - the larger jerk, at which an acceleration away from rest unwinds
+' @local nSpeed - the speed still to shed, |increment|, as each run ends
+' @local nSteps - the passes of the run in hand
+' @local nFirst - the run's first alpha
+' @local nCap - the rise's candidates at or under the limit
+' @local nRise - the rise's passes
+' @local nRoom - the speed left over the plateau's own ramp-out
+' @local nSum - the run's travel, 1/256 tick
+' @local bSaturated - T/F where T means the plateau exceeds PLAN_PASSES_MAX
+
+    nPasses := 0
+    nFieldFp := 0
+    bSaturated := FALSE
+    vNow := drv_incr_now
+    if vNow <> 0
+        alpha := drv_accel_now
+        if vNow > 0
+            alpha := -alpha
+        nJerk := jerk_dn
+        nAccel := accel_dn
+        nJerkX := jerk_up #> nJerk
+        alpha <#= nAccel
+        nSpeed := abs vNow
+        nPasses := 1                                                            ' 0. the take pass
+        nFieldFp := muldiv64(3, nSpeed, STOP_FP_ANGLE_DIV)
+        if alpha - nJerk > largestAccel(nSpeed, nJerk)
+            nSteps := crossingPasses(nSpeed, alpha, nJerk)                      ' the corner: stopped AT zero
+            nSum, _ := segmentFp(nSteps - 1, nSpeed, alpha - nJerk, -nJerk)
+            nFieldFp += nSum
+            nPasses += nSteps
+        else
+            if alpha < 0                                                        ' 1a. unwind to 0 at the larger jerk
+                nSteps := (nJerkX - 1 - alpha) / nJerkX
+                nSum, nSpeed := segmentFp(nSteps - 1, nSpeed, alpha + nJerkX, nJerkX)
+                nFieldFp += nSum + muldiv64(3, nSpeed, STOP_FP_ANGLE_DIV)       '  the last of them at 0
+                nPasses += nSteps
+                alpha := 0
+            nFirst := alpha + nJerk                                             ' 1b. the rise
+            nCap := 0
+            nRise := 0
+            if nFirst <= nAccel
+                nCap := (nAccel - nFirst) / nJerk + 1
+                nRise := risePasses(nSpeed, nFirst, nJerk, nCap)
+            nSum, nSpeed := segmentFp(nRise, nSpeed, nFirst, nJerk)
+            nFieldFp += nSum
+            nPasses += nRise
+            if nRise == nCap                                                    ' 2. the plateau, when the rise reached A
+                nRoom := nSpeed - rampOutDv(nAccel, nJerk)
+                if nRoom >= 0
+                    nSteps := nRoom / nAccel + 1
+                    if nSteps > PLAN_PASSES_MAX
+                        bSaturated := TRUE
+                    else
+                        nSum, nSpeed := segmentFp(nSteps, nSpeed, nAccel, 0)
+                        nFieldFp += nSum
+                        nPasses += nSteps
+            if bSaturated == TRUE
+                nPasses := PLAN_PASSES_MAX
+                nFieldFp := POSX
+            elseif nSpeed > 0                                                   ' 3. the ramp-out, from x*
+                nFirst := largestAccel(nSpeed, nJerk)
+                nSteps := (nFirst + nJerk - 1) / nJerk
+                nSum, _ := segmentFp(nSteps, nSpeed, nFirst, -nJerk)
+                nFieldFp += nSum
+                nPasses += nSteps
+                if ((nFirst // nJerk) == 0) and (nSpeed > rampOutDv(nFirst, nJerk))
+                    nPasses++                                                   '  the remainder's own last pass
+        nFieldFp #>= 0                                                          ' each run's terms floor apart: never below 0
+
+PRI rampOutDv(nAccel, nJerk) : nDv | nTerms
+' PL-160: return f(x): the speed one pass at acceleration {nAccel} sheds, followed by a pure ramp-out at {nJerk} (stopPlan()).
+'
+' @param nAccel - the pass's acceleration toward the target, driver units (at most ACCEL_STEP_CAP)
+' @param nJerk - the ramp-out's jerk, at least 1
+' @returns nDv - the speed shed, driver units; {nAccel} itself when it is 0 or less
+
+' Local Variables:
+' @local nTerms - the ramp-out's passes after this one, ceil(nAccel / nJerk) - 1
+
+    nDv := nAccel
+    if nAccel > 0
+        nTerms := (nAccel + nJerk - 1) / nJerk - 1
+        nDv := nAccel + nTerms * nAccel - nJerk * (nTerms * (nTerms + 1) / 2)
+
+PRI largestAccel(nDv, nJerk) : nAccel | nHalfSteps, nRamp, nPairs
+' PL-160: return x*(E), the largest acceleration from which a pure ramp-out at {nJerk} sheds no more than {nDv} (jerkStep's own arithmetic).
+'
+' @param nDv - the speed still to shed, driver units, at most POSX / 2
+' @param nJerk - the jerk, at least 1
+' @returns nAccel - x*, driver units
+
+' Local Variables:
+' @local nHalfSteps - t = floor(2 E / J)
+' @local nRamp - m, the largest with m (m + 1) <= t
+' @local nPairs - h = m (m + 1) / 2
+
+    nHalfSteps := (2 * nDv) / nJerk
+    nRamp := SQRT nHalfSteps
+    if nRamp * (nRamp + 1) > nHalfSteps
+        nRamp--
+    nPairs := nRamp * (nRamp + 1) / 2
+    nAccel := (nDv + nJerk * nPairs) / (nRamp + 1)
+
+PRI risePasses(nSpeed, nFirst, nJerk, nCap) : nRise | nRoom, nIdx, fRoot
+' PL-160: return the rise's passes: candidates nFirst + i nJerk, i < {nCap}, each taken while J i^2 + 2 y1 i + f(y1) <= E (stopPlan() 1b).
+'
+' @param nSpeed - E, the speed still to shed
+' @param nFirst - y1, the first candidate
+' @param nJerk - the jerk
+' @param nCap - the candidates at or under the acceleration limit, at least 1
+' @returns nRise - the passes taken, 0 to {nCap}
+
+' Local Variables:
+' @local nRoom - E - f(y1): the candidates' room
+' @local nIdx - the last candidate that fits
+' @local fRoot - the quadratic's root, float
+
+    nRise := 0
+    nRoom := nSpeed - rampOutDv(nFirst, nJerk)
+    if nRoom >= 0
+        if bRiseFits(nCap - 1, nFirst, nJerk, nRoom)
+            nRise := nCap                                                       ' the whole rise to the limit fits: no root needed
+        else
+            fRoot := (FSQRT(float(nFirst) *. float(nFirst) +. float(nJerk) *. float(nRoom)) -. float(nFirst)) /. float(nJerk)
+            nIdx := 0 #> trunc(fRoot) <# (nCap - 1)
+            repeat 2                                                            ' single-precision root: at most a step or two off
+                if (nIdx > 0) and (bRiseFits(nIdx, nFirst, nJerk, nRoom) == FALSE)
+                    nIdx--
+            repeat 2
+                if (nIdx + 1 < nCap) and (bRiseFits(nIdx + 1, nFirst, nJerk, nRoom) == TRUE)
+                    nIdx++
+            nRise := nIdx + 1
+
+PRI bRiseFits(nIdx, nFirst, nJerk, nRoom) : bFits
+' PL-160: return TRUE when the rise's candidate {nIdx} fits: J i^2 + 2 y1 i <= E - f(y1) (stopPlan() 1b).
+'
+' @param nIdx - i, the candidate, 0 based, with nFirst + i nJerk at or under the limit
+' @param nFirst - y1
+' @param nJerk - J
+' @param nRoom - E - f(y1)
+' @returns bFits - T/F where T means the rise takes candidate {nIdx}
+
+    bFits := (nJerk * nIdx * nIdx + 2 * nFirst * nIdx) <= nRoom
+
+PRI crossingPasses(nSpeed, nAlpha, nJerk) : nSteps | fB, fDisc
+' PL-160: return the passes to zero in stopPlan()'s corner: the least n with n alpha - J n (n + 1) / 2 >= V.
+'
+' @param nSpeed - V, the speed to shed
+' @param nAlpha - alpha, the acceleration toward rest, with alpha - J > x*(V)
+' @param nJerk - J
+' @returns nSteps - n, at least 1
+
+' Local Variables:
+' @local fB - 2 alpha - J, float
+' @local fDisc - (2 alpha - J)^2 - 8 J V, float
+
+    fB := float(2 * nAlpha - nJerk)
+    fDisc := fB *. fB -. 8.0 *. float(nJerk) *. float(nSpeed)
+    nSteps := 1
+    if fDisc >=. 0.0
+        nSteps := 1 #> trunc((fB -. FSQRT(fDisc)) /. (2.0 *. float(nJerk)))
+    repeat 2                                                                    ' single-precision root: corrected in integers
+        if (nSteps > 1) and ((nSteps - 1) * nAlpha - nJerk * ((nSteps - 1) * nSteps / 2) >= nSpeed)
+            nSteps--
+    repeat 3
+        if nSteps * nAlpha - nJerk * (nSteps * (nSteps + 1) / 2) < nSpeed
+            nSteps++
+
+PRI segmentFp(nSteps, nSpeed, nFirst, nStep) : nSumFp, nSpeedEnd | nTri, nTet
+' PL-160: return a run's field travel, sum of v_i = vs - i first - d i (i - 1) / 2 over i = 1..n, and its end speed (stopPlan()).
+'
+' sum = n vs - first n (n + 1) / 2 - d (n + 1) n (n - 1) / 6, each term scaled to 1/256 tick (x 3 / 2^23) through
+' MULDIV64 on non-negative operands. A plateau (d = 0) sums n (2 vs - first (n + 1)) / 2 instead, which holds for any n.
+'
+' @param nSteps - n, the run's passes (0 or less: nothing)
+' @param nSpeed - vs, the speed as the run starts
+' @param nFirst - the run's first acceleration toward rest
+' @param nStep - d, the change of acceleration per pass: +J, -J, or 0 for the plateau
+' @returns nSumFp - the run's field travel, 1/256 tick
+' @returns nSpeedEnd - the speed as the run ends
+
+' Local Variables:
+' @local nTri - n (n + 1) / 2
+' @local nTet - (n + 1) n (n - 1) / 6
+
+    nSumFp := 0
+    nSpeedEnd := nSpeed
+    if nSteps > 0
+        if nStep == 0
+            nSumFp := muldiv64(3 * nSteps, 2 * nSpeed - nFirst * (nSteps + 1), 2 * STOP_FP_ANGLE_DIV)
+            nSpeedEnd := nSpeed - nSteps * nFirst
+        else
+            nTri := nSteps * (nSteps + 1) / 2
+            nTet := (nSteps + 1) * nSteps * (nSteps - 1) / 6
+            nSumFp := muldiv64(3 * nSteps, nSpeed, STOP_FP_ANGLE_DIV)
+            if nFirst > 0
+                nSumFp -= muldiv64(3 * nFirst, nTri, STOP_FP_ANGLE_DIV)
+            else
+                nSumFp += muldiv64(-3 * nFirst, nTri, STOP_FP_ANGLE_DIV)
+            if nStep > 0
+                nSumFp -= muldiv64(3 * nStep, nTet, STOP_FP_ANGLE_DIV)
+            else
+                nSumFp += muldiv64(-3 * nStep, nTet, STOP_FP_ANGLE_DIV)
+            nSpeedEnd := nSpeed - nSteps * nFirst - nStep * (nSteps * (nSteps - 1) / 2)
 
 
 VAR { * user request values * }
@@ -4974,8 +5276,10 @@ PRI isAbiLayoutValid() : bValid
 
     ' the launch block (pinbase, params_ptr, targetAngle, targetIncre) sits right before the status run
     bValid := (@drive_u - @pinbase) == DRVR_LAUNCH_LONGS_COUNT * 4
-    ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
+    ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long;
+    '  PL-160 (DRIVER_REV 38): the run's last long is drv_accel_now (the driver's accel_now_, after foldback_cnt_)
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
+    bValid &= (@drv_accel_now - @drive_u) == (DRVR_STATUS_LONGS_COUNT - 1) * 4
     ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd, the last sense_zero (PL-146)
     bValid &= (@sense_zero - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
@@ -5011,7 +5315,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@sense_zero
+    ' the launch and status run is @pinbase..@fault (fault follows drv_accel_now since DRIVER_REV 38); the parameter
+    '  run is @offset_fwd..@sense_zero
     bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @sense_zero))
 
 CON ' --- HDMI Debug Support ---
@@ -5957,6 +6262,8 @@ CON { --- FRONT COG service surface: called only from a front cog (this object's
 PRI currentLimitK(amps) : nK
 ' Return the driver's fold-back factor for a phase-current limit: threshold mV = duty x nK >> 16.
 '
+' The driver folds on a whole-mV reading ABOVE that floored threshold (DRIVER_REV 38), i.e. at or above its ceiling.
+'
 ' The driver compares the DC-link reading against 0.75 x m x amps x rSense, m = duty / (4 x frame_cnt),
 ' so nK = 3 x amps x rSense x 65536 / (16 x frame_cnt). With no board detected there is no scale, and
 ' nK is set so the threshold is above the ADC's range: no fold-back. PL-73: a driver never starts in that
@@ -6403,7 +6710,7 @@ CON { driver internal Constants }
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
-    DRVR_STATUS_LONGS_COUNT     = 21        ' drive_u .. foldback_frames (R20.1 added foldback_frames), then fault
+    DRVR_STATUS_LONGS_COUNT     = 22        ' drive_u .. drv_accel_now (R20.1 added foldback_frames, PL-160 drv_accel_now), then fault
     DRVR_PARAMS_LONGS_COUNT     = 27        ' offset_fwd .. sense_zero (PL-138 appended drv_release, PL-146 sense_zero)
 
     ' PL-138 (W4): the driver's release, which stop() asks for before its cogstop (driverRelease, stop())
@@ -6417,7 +6724,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 37      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 38      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6506,6 +6813,16 @@ CON { driver internal Constants }
                                             '     compares the DC-link reading net of the rest offset, floored at 0 (sense_zero,
                                             '     params run 27 longs; countIllegal moved to the LUT to pay for it). PASM (cog +
                                             '     LUT) and ABI change
+                                            ' 38: PL-160 -- the jerk-limited trajectory generator (jerkStep, LUT): every
+                                            '     speed change, start, stop and reversal ramps its acceleration in and out
+                                            '     at a limited jerk and lands exactly on its target; the reversal passes
+                                            '     through zero without a stop. The four ramp longs are reused in place as
+                                            '     accel_up / accel_dn / jerk_up / jerk_dn (params run still 27 longs);
+                                            '     drv_accel_now appended to the status run (22 longs, fault after it);
+                                            '     built-in rates 1_000 / 1_470 mm/s^2, tau 250 ms; the stop prediction is
+                                            '     the generator's closed form (stopPlan()). The fold-back folds only above
+                                            '     its threshold's integer count (was at or above a truncated one, which on
+                                            '     Rev A under ~2.7 A folded every driven frame). PASM (cog + LUT) and ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6677,7 +6994,7 @@ VAR { * Data Structure for PASM Driver * }
 
     ' -------------------------------------
     ' VALUES copied from driver each cycle
-    ' 21 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 22nd, "fault" also from driver but only when happens
+    ' 22 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 23rd, "fault" also from driver but only when happens
     '
     ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
@@ -6699,6 +7016,7 @@ VAR { * Data Structure for PASM Driver * }
     LONG    duty_capped                         ' 1 sequential long     passes where the duty demand exceeded the cap
     LONG    fault_resyncs                       ' 1 sequential long     R19.3: faults answered by a re-sync and a controlled stop since driver start, unbounded
     LONG    foldback_frames                     ' 1 sequential long     R20.1: frames the per-frame current fold-back lowered the duty since driver start, unbounded
+    LONG    drv_accel_now                       ' 1 sequential long     PL-160: the generator's acceleration, the signed change of drv_incr_now per drive pass
     ' \ ----------------------------
     LONG    fault                               ' 1 sequential long     written TRUE ($FFFF_FFFF) on every fault, re-synced or not; see faultResponse
 
@@ -6747,13 +7065,13 @@ VAR  {  Motor Parameters  }
     LONG    servo_shift     ' R18.4 D-2: the trim's accumulator shift (SERVO_ACC_SHIFT)
     LONG    ff_ceiling      ' R18.4 D-1: the motor's back-EMF line (task 3603), NOT the speed ceiling; feedforward = |drv_incr| * duty_max / this
     LONG    dead_gap        ' delay between driving h/l side of driver (never drive both at once)
-    LONG    ramp_down       ' angle decrement when slowing down
-    LONG    cfg_ctcks       ' # clock ticks of the 500 uSec drive-pass deadline (the pass runs every 23 ADC frames, PL-50)
+    LONG    accel_dn        ' PL-160: the slow-down acceleration limit, the most drv_incr changes per pass while |drv_incr| falls (was ramp_down)
+    LONG    cfg_ctcks      ' # clock ticks of the 500 uSec drive-pass deadline (the pass runs every 23 ADC frames, PL-50)
     LONG    stop_mode       ' control / user setting, enum: [SM_FLOAT, SM_BRAKE]
     LONG    e_stop          ' ES_* (PL-132): ES_OFF, or the kind of stop latched; any other value stops all motor function
-    LONG    ramp_max        ' angle increment: max ramp up every drive pass
-    LONG    ramp_min        ' angle increment: start of ramp up every drive pass
-    LONG    ramp_inc        ' angle increment: inc every drive pass from min to max
+    LONG    accel_up        ' PL-160: the speed-up acceleration limit, the most drv_incr changes per pass while |drv_incr| grows (was ramp_max)
+    LONG    jerk_up         ' PL-160: the speed-up jerk, the most that acceleration changes per pass (was ramp_min); applyRamps()
+    LONG    jerk_dn         ' PL-160: the slow-down jerk (was ramp_inc); applyRamps() derives both from their limits and RAMP_TAU_MS
     LONG    i_limit_k       ' S-2: current-limit threshold factor (currentLimitK()); init() before start, then the front cog only
     LONG    duty_floor      ' S-2: duty floor for the phase-current estimate (m = 0.1)
     LONG    hold_duty       ' R19.1: the duty applied at rest (DCS_STOPPED); front-written, duty_min when not holding
@@ -6938,10 +7256,8 @@ VAR { PL-153 / PL-155: the limits' travel, and the program's kept settings -- Sp
     LONG    usrMaxSpeed4dist            ' setMaxSpeedForDistance() [1..100]; 0: MAX_SPEED_DEFAULT
     LONG    usrStopMode                 ' holdAtStop(): SM_BRAKE or SM_FLOAT; 0 (SM_Unknown): SM_FLOAT
     LONG    usrReversed                 ' setForwardIsReverse(): T/F; 0: not reversed
-    LONG    usrRampMin                  ' PL-160: the speed-up ramp's first step (setAcceleration(), setRampingValues()); 0: built in
-    LONG    usrRampMax                  '  its largest step
-    LONG    usrRampInc                  '  its growth per drive pass (0 for setAcceleration()'s constant ramp)
-    LONG    usrRampDown                 ' PL-160: the slow-down step (setDeceleration(), setRampingValues()); 0: built in
+    LONG    usrAccelStep                ' PL-160: the speed-up acceleration limit, driver units (setAcceleration(), setRampingValues()); 0: built in
+    LONG    usrDecelStep                ' PL-160: the slow-down acceleration limit, driver units (setDeceleration(), setRampingValues()); 0: built in
     LONG    usrAccel                    ' PL-160: the rate setAcceleration() was given, mm/s^2; 0: none (built in, or raw)
     LONG    usrDecel                    ' PL-160: the rate setDeceleration() was given, mm/s^2; 0: none (built in, or raw)
     LONG    bSettingsLive              ' T/F where T means a start has applied the kept settings, so a setter writes the working value too
@@ -7060,25 +7376,22 @@ drvMotor                                                ' global (task 3535): en
                 call    #checkstop                      ' set drive pwm according to stop mode
 .notFaulted
                 mov     fault_clr_seen, fault_clr_      ' consumed: and when not FAULTED, a clear has nothing to clear
-                or      tgt_incr, tgt_incr          wz  ' Q: being asked to stop?
-    if_nz       jmp     #.notRqStop                     ' NO, not exception, check next
-                ' this is a stop request
-                cmp     drv_state_, #DCS_STOPPED    wz  ' Q: are we already stopped?
-    if_nz       jmp     #.newRqst                       ' NO, not stopped, go do stop!
+                ' PL-160 (DRIVER_REV 38): ONE jerk-limited trajectory generator (jerkStep, LUT) runs every pass the motor is
+                '  not at rest, whatever the state, and takes every command as it stands -- so, as PL-104 (R18.4 D-4)
+                '  required, a new request is taken in EVERY state. It replaces the SPIN_UP / SPIN_DN / SLOW_TO_CHG ramps,
+                '  which stepped the acceleration on and off in one pass at both ends of every ramp; the states are now
+                '  only what the generator reports. A reversal passes through zero in one continuous ramp: only a start
+                '  from DCS_STOPPED seeds the field from the halls (driveFromRest), never the pass that crosses zero.
+                cmp     drv_state_, #DCS_STOPPED    wz  ' Q: at rest?
+    if_nz       jmp     #.running                       ' NO: the generator runs
+                tjnz    tgt_incr, #.fromRest            ' at rest, and a drive asked for: start from rest
                 call    #restBridge                     ' at rest: the stop mode's bridge, and the hold's hand-off (LUT-resident)
-                jmp     #.endRqst                       ' YES, motor at STOP, just exit (w/o increment)
-.notRqStop
-                cmp     sv_tgt_incr, tgt_incr       wz  ' Q: do we have a new request?
-    if_z        jmp     #.currRqst                      ' NO, same as last, just continue what we are doing
-                ' PL-104 (R18.4 D-4): a new request is taken in EVERY state. This once threw a request away
-                '  unless the driver was STOPPED, AT_SPEED or FAULTED, so a motor whose ramp waits on its
-                '  rotor stayed in SPIN_UP and could never be commanded slower. .newRqst's own branches
-                '  already handle a change from any running speed and either sign (.doSpdChange, .notSame).
-.newCmd
+                jmp     #.endRqst                       ' motor at STOP, just exit (w/o increment)
 {
 ' -------------------------------------------------------------------------
 '  TEST-EXERCISER SUPPORT CODE (alternate input path (angle) for TESTing!)
-                rdlong  tmp_angle_, ptra[-2]            ' get desired targetAngle for test (tgt_incr is temp variable in this case)
+'  DRIVER_REV 38: it ran on a new request (.newCmd); no path reaches this place now, so re-enabling it needs a new entry
+                rdlong  tmp_angle_, ptra[-2]           ' get desired targetAngle for test (tgt_incr is temp variable in this case)
                 cmp     tmp_angle_, maxNeg          wz  ' Q: do we have a request?
     if_nz       mov     angle_, tmp_angle_              ' YES, post this value to driver
     if_nz       wrlong  maxNeg, ptra[-2]                ' YES, tell user we got this value
@@ -7087,165 +7400,15 @@ drvMotor                                                ' global (task 3535): en
 '  END OF TEST-EXERCISER SUPPORT CODE
 ' -------------------------------------------------------------------------
 '}
-' =========================================================================
-.newRqst    ' have new request
-            ' determine what we need to do
-            ' let's see if user wants to change speed
-    ' -------------------------------------------------------------------------
-                mov     prior_incr, sv_tgt_incr         ' have new request - save the prior!
-                                                        ' (never FAULTED here: that latch is handled above)
-.chkStopCmd
-                ' if NEW request is stop
-                ' NOTE: (earlier code ensures we are NOT stopped or FAULTed when we get here)
-                or      tgt_incr, tgt_incr          wz  ' Q: is stop request?
-    if_z        mov     drv_state_, #DCS_SPIN_DN        ' YES, mark spin-down
-    if_z        call    #.capStart                      ' PL-55: record where the ramp-down starts, for the duty ceiling
-    if_z        jmp     #.rampDn                        ' YES, go do it!
-.chkStopped
-                ' not stop, have start or speed adjustment?
-                cmp     drv_state_, #DCS_STOPPED    wz  ' Q: are we stopped?
-    if_nz       jmp     #.doSpdChange                   ' NO, so not start, go do speed adjustment
-                                                        ' have start
-.dospinup
-                mov     drv_state_, #DCS_SPIN_UP        ' We are going to ramp up
-                jmp     #.rampUp                        ' now go ramp up!
-
-.doSpdChange
-    ' ------------------------------------
-                ' PL-78: every NEW speed change starts its ramp gently, exactly as a start from rest does.
-                '  .rampUp only reset ramp_curr when drv_incr was 0, so a change from a RUNNING speed
-                '  inherited the accumulated ramp_curr and drove the rotor straight into the LAG_SOFT
-                '  gate on its first pass -- felt as a jolt through the platform at every speed change.
-                '  That is read from this source; the ladder's err_pk is a steady-window statistic and
-                '  does not see a transition (PL-87), so the bench's transition peak is what judges it.
-                '  This is reached only from .newRqst, so it fires once per request, not once per pass
-                '  (.rampUp is re-entered every pass from .chkUp and must NOT be reset there).
-                '  .rampDn/.slow2Chg take their rate from ramp_down_ and ignore ramp_curr, so stopping
-                '  behaviour is unchanged -- confirmed by Visit 4's stop peak being flat across a 455x
-                '  sweep of ramp_inc (PL-82).
-                mov     ramp_curr, ramp_min_
-               ' NO, We have a speed adjustment (determine how to do...)
-                '  NOTEs: [ + >> +, + >> -, - >> -, - >> +]
-                '    + to - -> make direction change (slow down, ramp up in other direction)
-                '    - to + -> make direction change (slow down, ramp up  in other direction)
-                '    + to larger + -> ramp up to new
-                '    + to smaller + -> ramp down to new
-                '    - to larger - -> ramp up to new
-                '    - to smaller - -> ramp down to new
-
-                ' yes we were stopping and haven't yet stopped, so just do speed change
-                ' (we are currently at drv_incr but need to head for tgt_incr instead)
-.notInStop
-                ' first do we have same sign?
-                testb   drv_incr, #31               wc   ' find dual '-' signs (CY=both nega)
-                testb   tgt_incr, #31               andc ' (bCY=REV)
-    if_c        jmp     #.haveSame
-                testbn  drv_incr, #31               wc   ' find dual '+' signs (CY=both posi)
-                testbn  tgt_incr, #31               andc ' (bnCY=FWD)
-    if_nc       jmp     #.notSame
-.haveSame       ' we have prior and new with same sign, so should we slow down or speed up?
-                testb   tgt_incr, #31               wz  ' (bZ=REV)
-                cmps    drv_incr, tgt_incr          wc  ' Q: Should we slow dn or speed up? (CY=speed up)
-    if_nz       modc    _nc                         wc  ' invert C (nCY=slow down), if tgt_incr=FWD
-    if_nc       mov     drv_state_, #DCS_SPIN_UP        ' CY=0: speed up
-    if_nc       jmp     #.rampUp
-    if_c        mov     drv_state_, #DCS_SPIN_DN        ' CY=1: slow down
-    if_c        call    #.capStart                      ' PL-55: record where the ramp-down starts
-    if_c        jmp     #.rampDn
-    ' ------------------------------------
-.notSame    ' we have prior and new but NOT the same sign, let's slowdown then change direction
-                ' let's change direction
-                mov     drv_state_, #DCS_SLOW_TO_CHG
-                call    #.capStart                      ' PL-55: record where the ramp-down starts
-                jmp     #.slow2Chg
-
-    ' ====================================
-.currRqst   ' No new request, continue with
-            '  current request
-    ' -------------------------------------------------------------------------
-.chkStop        cmp     drv_state_, #DCS_STOPPED    wz  ' Q: Stopped?
-    if_z        jmp     #.endRqst                       ' YES, motor STOPPED, just exit (w/o increment)
-                ' motor is running, if ramp do ramp, else increment
-    ' -------------------------------------------------------------------------
-.chkUp          cmp     drv_state_, #DCS_SPIN_UP    wz  ' Q: Spinning Up?
-    if_nz       jmp     #.chkDn                         ' NO, check next
-    ' ------------------------------------
-.rampUp
-                ' if we don't have it, preset our starting angle (assume motor moved during float!)
-
-                or      drv_incr, drv_incr          wz  ' -and- are we stopped, just about to spin up?
-    if_z        mov     ramp_curr, ramp_min_            ' set initial ramp if starting from 0
-    if_z        call    #driveFromRest                  ' a bridge left coasting or shorted at rest is re-aligned and driven (LUT)
-                ' if we are at target, stop the ramp effort
-                cmps    drv_incr, tgt_incr          wz  ' Q: Did we match target?
-    if_z        jmp     #.endRUpAtSpeed                 ' YES, (Matched) go mark done
-                cmps    lag_s, #LAG_SOFT            wc  ' C-5: Q: rotor trailing the field by LAG_SOFT or more?
-    if_nc       jmp     #.justIncr                      ' YES, the ramp waits for the rotor this pass
-                ' do next UP adjustment or set at-speed
-                mov     curr_ramp, ramp_curr            ' current ramp
-                add     ramp_curr, ramp_inc_            ' increase ramp for next time
-                cmps    ramp_curr, ramp_max_        wc  ' too high?
-    if_nc       mov     ramp_curr, ramp_max_            ' Y set to ramp_max
-                ' calculate how far we are from desired
-                mov     final_ramp, tgt_incr            ' compute our delta from curr to target
-                subs    final_ramp, drv_incr
-                ' now are we moving FWD or REV?
-                testb   tgt_incr, #31               wc  ' Q: moving FWD or REV? (bCY=REV)
-.havefast1
-                modz    _c                          wz  ' move C to Z
-                abs     final_ramp                      ' make sure final is +ve
-                cmps    final_ramp, curr_ramp       wc  ' Q: is delta larger than ramp
-    if_nc_and_nz adds   drv_incr, curr_ramp             ' YES, just add ramp value
-    if_c_and_nz adds    drv_incr, final_ramp            ' NO, add remaining final delta
-    if_nc_and_z subs    drv_incr, curr_ramp             ' YES, just add ramp value
-    if_c_and_z  subs    drv_incr, final_ramp            ' NO, add remaining final delta
-                jmp     #.justIncr                      ' increment motor angle, then exit
-.endRUpAtSpeed
-                ' PL-78 / PL-87 / PL-95 (DRIVER_REV 34), THE KICK: the pass a ramp arrives at its target must advance the
-                '  field like every AT_SPEED pass after it. This once jumped to .endRqst, skipping the increment on the one
-                '  arrival pass only; each arrival then dropped a whole drv_incr of field phase (12.3 deg electrical at
-                '  147e6), which rang the load angle at ~18 Hz, and its motoring lobe was the current kick at every speed
-                '  change. .justIncr is the path every AT_SPEED pass takes (.chkSlow2Chg falls to it): the LAG_HOLD gate,
-                '  the lag_held count and holdDecay, nothing else, so the arrival pass is now an ordinary at-speed pass.
-                '  JMP #A has no flag effect without WC/WZ (p2kbPasm2Jmp); .justIncr sets its own C, so no flag carries in.
-                mov     drv_state_, #DCS_AT_SPEED       ' YES, show we got to desired speed!
-                jmp     #.justIncr                      ' motor AT_SPEED: advance the field this pass too (was .endRqst)
-
-    ' -------------------------------------------------------------------------
-.chkDn          cmp     drv_state_, #DCS_SPIN_DN    wz  ' Q: Spinning Down?
-    if_nz       jmp     #.chkSlow2Chg                   ' NO, check next
-    ' ------------------------------------
-.rampDn
-                ' do next DOWN adjustment ends with AT_SPEED or STOPPED
-                ' NOTE!!! if tgt_incr is ZERO then we don't test its sign bit here
-                '  instead we test the sign bit of the current driver target as we are spinning down
-                '  from the current driver target to ZERO!
-                cmps    drv_incr, tgt_incr          wz  ' Q: Did we match target?
-    if_z        jmp     #.endRDnAtTgt                   ' YES, (Matched) go mark done
-                mov     tmpY, lag_s                     ' C-5: Q: rotor leading the field by LAG_SOFT or more?
-                neg     tmpY
-                cmps    tmpY, #LAG_SOFT             wc
-    if_nc       jmp     #.justIncr                      ' YES, the ramp-down waits for the rotor this pass
-                ' calculate how far we are from desired
-                mov     final_ramp, tgt_incr            ' compute our delta from curr to target
-                subs    final_ramp, drv_incr
-                ' now are we moving FWD or REV?
-                or      tgt_incr, tgt_incr          wz  ' Q: are we stopping? (if stopping don't use sign of tgt_incr)
-    if_z        testbn  drv_incr, #31               wc  ' YES, moving FWD or REV? (bCY=FWD)
-    if_nz       testbn  tgt_incr, #31               wc  ' NO, moving FWD or REV? (bCY=FWD)
-.havefast
-
-                mov     curr_ramp, ramp_down_           ' we want to ramp down
-                jmp     #.havefast1                     ' jmp to previous ramping code
-.endRDnAtTgt
-                ' AT TARGET now adjust state
-                or      tgt_incr, tgt_incr          wz  ' Q: was our target ZERO? (are we stopping?)
-                ' at target but it's not zero so we are AT_SPEED!
-                ' PL-78 / PL-87 / PL-95 (DRIVER_REV 34), THE KICK: a ramp DOWN to a non-zero target arrives the same way as
-                '  .endRUpAtSpeed, and skipped the same increment; it now advances the field as every AT_SPEED pass does.
-                '  The zero-target arrival below (.endAtZero, STOPPED) is unchanged: there the field correctly stops.
-    if_nz       mov     drv_state_, #DCS_AT_SPEED       ' YES, show we got here!
-    if_nz       jmp     #.justIncr                      ' motor AT_SPEED: advance the field this pass too (was .endRqst)
+.fromRest       call    #driveFromRest                  ' a bridge left coasting or shorted at rest is re-aligned and driven (LUT)
+.running        call    #jerkStep                       ' PL-160: v, a and the state for this pass (LUT); C = the field is at rest
+                ' PL-78 / PL-87 / PL-95 (DRIVER_REV 34), THE KICK, kept: the pass a ramp arrives at its target advances the
+                '  field like every AT_SPEED pass after it -- jerkStep returns C = 0 on the arrival pass, so it falls to
+                '  .justIncr (the LAG_HOLD gate, the lag_held count and holdDecay) like any other running pass. Skipping
+                '  that one increment once dropped a whole drv_incr of field phase at every arrival (12.3 deg electrical at
+                '  147e6) and rang the load angle at ~18 Hz: the current kick at every speed change. Only the stop's own
+                '  arrival (C = 1: the field is at rest) takes .endAtZero, where the field correctly stops.
+    if_nc       jmp     #.justIncr                      ' JMP has no flag effect (p2kbPasm2Jmp); .justIncr sets its own C
 .endAtZero
                 ' at target but it is zero so we are STOPPED!
                 mov     drv_state_, #DCS_STOPPED        ' report that we are stopped
@@ -7255,29 +7418,6 @@ drvMotor                                                ' global (task 3535): en
 
                 call    #.checkstopfloatoff             ' set drive off according to stop mode
                 jmp     #.endRqst                       ' motor STOPPED, just exit (w/o increment)
-
-    ' -------------------------------------------------------------------------
-.chkSlow2Chg    cmp     drv_state_, #DCS_SLOW_TO_CHG wz ' Q: Are we slowing down to change direction?
-    if_nz       jmp     #.justIncr                      ' NO, check next
-     ' ------------------------------------
-.slow2Chg
-                ' do next DOWN adjustment, if stopped do spinup
-                '  (increment > 0, we are not stopped)
-                ' NOTE!!! tgt_incr is where we are going after we spin down so we don't test its sign bit here
-                '  instead we test the sign bit of the current driver target as we are spinning down
-                '  from the current driver target to ZERO!
-.moreSlow
-                or      drv_incr, drv_incr          wz  ' Q: stopped?
-    if_z        jmp     #.dospinup                      ' yes, go start rampUp
-                mov     tmpY, lag_s                     ' C-5: Q: rotor leading the field by LAG_SOFT or more?
-                neg     tmpY
-                cmps    tmpY, #LAG_SOFT             wc
-    if_nc       jmp     #.justIncr                      ' YES, the ramp-down waits for the rotor this pass
-                                                        ' calculate how far we are from desired
-                mov     final_ramp, drv_incr            ' compute our delta from curr to 0
-                                                        ' now are we moving FWD or REV?
-                testbn  drv_incr, #31               wc  ' YES, moving FWD or REV? (bCY=FWD)
-                jmp     #.havefast                      ' jmp to previous ramp code
 
     ' -------------------------------------------------------------------------
 .justIncr   ' just do our increment of angle and we're done!
@@ -7514,15 +7654,22 @@ drvMotor                                                ' global (task 3535): en
                 mov     tmpX, duty_                     ' S-2: the MOSFET current limit, on a lower bound of phase current:
                 fges    tmpX, duty_floor_               '  I_dc >= 0.75 * m * I_peak, m = duty_ / (4 * frame_cnt), floored
                 sca     tmpX, i_limit_k_                '  threshold (mV) = max(duty_, duty_floor_) * i_limit_k_ >> 16
-                cmps    fold_net, tmpX              wc  ' Q: the net reading at or over the limit? (NC) SCA hands the
-                                                        '  threshold to this S (p2kbPasm2Sca), so tmpX itself is unread
-    if_nc       mov     tmpY, duty_                     ' YES: fold back ~1.6 % per frame, and skip the servo this frame
-    if_nc       shr     tmpY, #6
-    if_nc       sub     duty_, tmpY
-    if_nc       add     foldback_cnt_, #1               ' R20.1: counted (EV_FOLDBACK). No WC/WZ: C still selects the jump below.
-                                                        '  Cancelled on a normal frame, which still spends its 2 clocks (p2kb
-                                                        '  p2kbPasm2ConditionalExecution: same time whatever the condition)
-    if_nc       jmp     #.dutyLimits
+                cmps    fold_net, tmpX              wcz ' Q: the net reading OVER the limit's count? (NC and NZ) SCA hands
+                                                        '  the threshold to this S (p2kbPasm2Sca), so tmpX itself is unread.
+                                                        '  DRIVER_REV 38: the reading is a whole mV count and the threshold t a
+                                                        '  real one that SCA floors, so "reading >= t" is exactly "reading >
+                                                        '  floor(t)" (= reading >= ceil(t)) but for a t that is a whole count,
+                                                        '  where it folds one count late. The old "at or over floor(t)" folded
+                                                        '  up to a count early -- and, at t < 1 (Rev A, 5 mV/A: t = 0.375 x amps
+                                                        '  at the duty floor, so a limit under ~2.7 A), on every driven frame,
+                                                        '  since fold_net is never below 0. Rounding would not mend t < 0.5.
+    if_nc_and_nz mov    tmpY, duty_                     ' YES: fold back ~1.6 % per frame, and skip the servo this frame
+    if_nc_and_nz shr    tmpY, #6
+    if_nc_and_nz sub    duty_, tmpY
+    if_nc_and_nz add    foldback_cnt_, #1               ' R20.1: counted (EV_FOLDBACK). No WC/WZ: C and Z still select the jump
+                                                        '  below. Cancelled on a normal frame, which still spends its 2 clocks
+                                                        '  (p2kbPasm2ConditionalExecution: same time whatever the condition)
+    if_nc_and_nz jmp    #.dutyLimits
                 ' R18.4 D-2 (DOCs/plans/DRIVE-INTEGRATION-DESIGN.md 5.3): an integral TRIM above the feedforward.
                 '  Symmetric and untruncated, so it holds a POINT (PL-101's band is gone), and scaled by duty,
                 '  so its gain follows the stiffness the rotor has -- an integral-only loop is stable only
@@ -7560,7 +7707,7 @@ drvMotor                                                ' global (task 3535): en
                 getct   loop_dtcks_                     ' how long was this iteration? send to host
                 sub     loop_dtcks_, drvrSrtTix
 
-                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal/drv_incr/lag_held/duty_capped/fault_resyncs/foldback_cnt to hub
+                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal/drv_incr/lag_held/duty_capped/fault_resyncs/foldback_cnt/accel_now to hub
                 wrlong  drive_u_, ptra
 .loop           jnct1   #.ctlMotor                      ' if not time for drv loop just go to ctl loop
                 jmp     #drvMotor
@@ -7581,14 +7728,12 @@ drvMotor                                                ' global (task 3535): en
     ' restBridge; R19.3 moved the fault's bridge choice (was .faultBridge)
     ' into the LUT as faultResponse.
 
-.capStart                                               ' PL-55: remember duty and speed where a ramp-down starts (no flags changed)
-                mov     duty0, duty_
-    _ret_       abs     incr0, drv_incr
+    ' PL-55's capture of where a ramp-down starts (was .capStart) is jerkStep's, inline, since DRIVER_REV 38.
 
 .clearRun                                               ' zero the running state, so the next start ramps up from zero
                 mov     drv_incr, #0                    '  called by .resetFault and by the e-stop entry: before PL-57 the
-                mov     prior_incr, #0                  '  e-stop kept drv_incr, and a restart at the same speed declared
-                mov     fwdrev, #0                      '  AT_SPEED against a stopped wheel and faulted
+                mov     accel_now_, #0                  '  e-stop kept drv_incr, and a restart at the same speed declared
+                mov     fwdrev, #0                      '  AT_SPEED against a stopped wheel and faulted. PL-160: and no acceleration
                 mov     fault_stop, #0                  ' R19.3: an e-stop or a fault reset also ends a re-synced fault's stop
     _ret_       mov     angle_, #0                      ' .rampUp's drv_incr == 0 path re-seeds the angle from the halls
 
@@ -7722,14 +7867,15 @@ ctrlSrtTix      res 1
 ctrlEndTix      res 1
 ' driver inputs
 tgt_incr        res 1       ' current user requested target increment
-prior_incr      res 1       ' prior user requested target increment
 sv_tgt_incr     res 1       ' holding area for prior value
 ' control loop variables
-drv_incr        res 1       ' current driver increment
-' ramp up rate, down is always fast
-curr_ramp       res 1       ' ramp to add/sub from drv_incr
-final_ramp      res 1       ' from current to target
-ramp_curr       res 1       ' current ramping up value, ramps up from ramp_min_ to ramp_max_
+drv_incr        res 1       ' current driver increment (v); its acceleration a is accel_now_, in the status run
+' PL-160 (DRIVER_REV 38): jerkStep's working registers, live only within the call (was prior_incr and the old ramp's three)
+jrk_e           res 1       ' E, the speed still to change, |tgt_incr - drv_incr|
+jrk_s           res 1       ' 1 when s, the way the generator pushes, is negative; else 0
+jrk_j           res 1       ' J, the jerk of the side toward s
+jrk_lim         res 1       ' A, the acceleration limit of the side toward s
+jrk_x           res 1       ' x*(E): the largest acceleration a pure ramp-out at J lands from
 
 ' driver actual
 angle_          res 1       ' current driver angle
@@ -7797,13 +7943,13 @@ duty_max_   res 1           ' maximum duty cycle for pwm
 servo_shift_ res 1          ' R18.4 D-2: the trim's accumulator shift (SERVO_ACC_SHIFT)
 ff_ceiling_ res 1           ' R18.4 D-1: the ceiling increment the feedforward scales duty_max_ by
 dead_gap_   res 1           ' gap between driving high and low side pwm
-ramp_down_  res 1           ' angle decrement when slowing down
+accel_dn_   res 1           ' PL-160: the slow-down acceleration limit, A while |v| falls (was ramp_down_)
 cfg_ctcks_  res 1           ' clocks for drv loop
 stop_mode_  res 1           ' float or brake mode
 e_stop_     res 1           ' ES_*: ES_OFF, or the kind of stop latched (PL-132); non-zero stops all motor function
-ramp_max_   res 1           ' angle increment: max ramp up every drive pass
-ramp_min_   res 1           ' angle increment: start of ramp up every drive pass
-ramp_inc_   res 1           ' angle increment: inc every drive pass from min to max
+accel_up_   res 1           ' PL-160: the speed-up acceleration limit, A while |v| grows (was ramp_max_)
+jerk_up_    res 1           ' PL-160: the speed-up jerk, J while |v| grows (was ramp_min_)
+jerk_dn_    res 1           ' PL-160: the slow-down jerk, J while |v| falls (was ramp_inc_)
 i_limit_k_  res 1           ' S-2: current-limit threshold factor, mV per duty count << 16 (see currentLimitK())
 duty_floor_ res 1           ' S-2: the duty below which the phase-current estimate is floored (m = 0.1)
 hold_duty_  res 1           ' R19.1: the duty applied at rest (DCS_STOPPED), front-written
@@ -7821,7 +7967,7 @@ sense_zero_ res 1           ' PL-146 (DRIVER_REV 37): the DC-link rest offset, m
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied out-of driver each loop iteration
-drive_u_    res 1           ' 21 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
+drive_u_    res 1           ' 22 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -7842,20 +7988,22 @@ lag_held_   res 1           ' R18.1: passes where the limiter withheld the field
 duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the cap -- unbounded, zeroed at driver start
 fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controlled stop -- unbounded, zeroed at driver start
 foldback_cnt_ res 1         ' R20.1: frames the current fold-back lowered duty_ -- unbounded, zeroed at driver start (hub foldback_frames)
+accel_now_  res 1           ' PL-160 (DRIVER_REV 38): the generator's acceleration a, the signed change of drv_incr per drive pass --
+                            '  jerkStep's state, and the LAST status long (hub drv_accel_now); zeroed at driver start and at rest
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 487 USED, 9 FREE, 2026-09-27 (DRIVER_REV 37: PL-146's sense_zero_, fold_net and 3 instructions, +5;
-                 ' countIllegal's 13 moved to the LUT; was 495) -- read from the compiler, never
-                 ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FOLDBACK_CNT_'s
-                 ' VALUE, whose top 12 bits are its cog address ($1E6, the last register, so USED is $1E7). LUT code runs at cog
+    fit     496  ' 403 USED, 93 FREE, 2026-09-27 (DRIVER_REV 38, PL-160: the old ramps' cog code replaced by one call to
+                 ' jerkStep in the LUT, -84; was 487 at DRIVER_REV 37) -- read from the compiler, never
+                 ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, ACCEL_NOW_'s
+                 ' VALUE, whose top 12 bits are its cog address ($192, the last register, so USED is $193). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $325, 293 of 512 longs (DRIVER_REV 37, LUTCODEEND's VALUE the same way).
+                 ' lutCodeStart $200 to lutCodeEnd $392, 402 of 512 longs (DRIVER_REV 38, LUTCODEEND's VALUE the same way).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
-'  routines R18.4 added (feedForward, holdDecay). LUT code runs at cog speed, but operands
+'  routines R18.4 added (feedForward, holdDecay) and PL-160's jerkStep. LUT code runs at cog speed, but operands
 '  reach only cog RAM, so every REGISTER stays above and any CODE may live here (P13);
 '  crossing between the two is an ordinary 4-clock branch.
 '
@@ -8031,7 +8179,7 @@ lutCodeStart
                 mov     loop_dtcks_, #0                 ' just in case
                 mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
-                mov     prior_incr, #0                  ' just in case
+                mov     accel_now_, #0                  ' PL-160: and no acceleration (the generator's state)
                 mov     tgt_incr, #0                    ' just in case
                 mov     sv_tgt_incr, #0                 ' just in case
                 mov     fwdrev, #0                      ' just in case
@@ -8046,7 +8194,6 @@ lutCodeStart
                 setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
 
-                mov     ramp_curr, ramp_min_            ' set initial inc ramp
                 mov     duty_, duty_min_                ' reset duty
                 mov     duty_cap_, duty_max_            ' PL-55: no ceiling before the first drive pass sets it
                 mov     incr0, #0                       ' PL-55: no ramp-down recorded yet
@@ -8139,15 +8286,159 @@ feedForward                                             ' R18.4 D-1: duty_ff := 
 
 holdDecay                                               ' R18.4 D-5: called on a pass the lag limiter held the field. While
                 cmp     drv_state_, #DCS_AT_SPEED   wz  '  running or spinning up, the field's rate falls toward the rate the
-    if_z        mov     drv_state_, #DCS_SPIN_UP        '  rotor achieves, and the ramp re-arms gently (as PL-78 does), so
-                cmp     drv_state_, #DCS_SPIN_UP    wz  '  the release of a load is a ramp back up, never a step. A stop or a
-                abs     tmpX, drv_incr                  '  direction change in progress is left alone.
-    if_z        cmp     tmpX, ramp_min_             wc  ' NEVER TO ZERO: a SPIN_UP at drv_incr 0 is .rampUp's "starting from
-    if_z_and_nc mov     tmpY, drv_incr                  '  rest", which re-seeds the field from the halls, clears the lag and
-    if_z_and_nc sar     tmpY, #HOLD_DECAY_SHIFT         '  would defeat the blocked-motor protective stop (it needs the lag).
-    if_z_and_nc sub     drv_incr, tmpY                  '  So the decay stops at the ramp's own floor, ramp_min_.
-    if_z        mov     ramp_curr, ramp_min_
-                ret
+    if_z        mov     drv_state_, #DCS_SPIN_UP        '  rotor achieves, so the release of a load is a ramp back up, never a
+                cmp     drv_state_, #DCS_SPIN_UP    wz  '  step (PL-160: jerkStep ramps it back, from an acceleration its lag
+                abs     tmpX, drv_incr                  '  gate has already eased toward 0). A stop or a direction change in
+                cmp     tmpX, ##DRV_INCR_FLOOR      wc  '  progress is left alone. NEVER TO ZERO: a field decayed to 0 would
+    if_z_and_nc mov     tmpY, drv_incr                  '  read as at rest and zero the lag the blocked-motor protective stop
+    if_z_and_nc sar     tmpY, #HOLD_DECAY_SHIFT         '  needs. So the decay stops at DRV_INCR_FLOOR (was ramp_min_, which
+    if_z_and_nc sub     drv_incr, tmpY                  '  DRIVER_REV 38 reused as jerk_up_). The compare is unconditional:
+                ret                                     '  an AUGS'd instruction is not given a condition here
+
+    ' -------------------------------------------------------------------------
+    ' PL-160 (DRIVER_REV 38): THE JERK-LIMITED TRAJECTORY GENERATOR, once per drive pass while not at rest (drvMotor's
+    '  .running). State: v = drv_incr and a = accel_now_, the signed change of v per pass. Parameters: the speed-up
+    '  pair (accel_up_, jerk_up_) and the slow-down pair (accel_dn_, jerk_dn_); applyRamps() makes each jerk its limit
+    '  over RAMP_TAU_MS, so nothing here divides to find one.
+    '  Each pass, with e = tgt - v, s = sign(e) (or -sign(a) when e is 0), E = |e| and alpha = s a:
+    '   - the side toward s grows |v| when v is 0 or has s's sign (the speed-up pair), else sheds it (the slow-down
+    '     pair): J and A are that side's;
+    '   - x*(E) = the largest alpha from which a pure ramp-out at J (alpha, alpha - J, ... while positive) changes v by
+    '     at most E: m the largest with J m (m + 1) / 2 <= E, h = m (m + 1) / 2, x* = (E + J h) / (m + 1) (floored);
+    '   - U = the jerk-limited step toward A: alpha + J, at most A; from above A (a lowered limit, or the side a
+    '     reversal's crossing hands over) alpha - Jx, at least A; and an alpha on the far side of s (alpha < 0, still
+    '     pushing the other way) unwinds by Jx to exactly 0. Jx = max(jerk_up_, jerk_dn_): an acceleration outside
+    '     its own side's ramp unwinds at the larger jerk, so a stop read mid-speed-up never coasts on for seconds;
+    '   - the lag gate: with the field ahead of the rotor by LAG_SOFT or more in the way a pushes (sign(a) x err_, or
+    '     s x err_ at a = 0), U is instead alpha - J, at least 0: the acceleration eases to 0 rather than freezing
+    '     (the old ramps froze the increment, a step of acceleration);
+    '   - alpha' = min(U, max(alpha - J, x*)): as hard as the jerk and the limit allow, but never beyond x*, so the
+    '     ramp-out lands v exactly on the target; then a' = s alpha' and v' = v + a'.
+    '  A stop (target 0) never takes v through zero: v' at or past it is v = 0, a = 0, at rest (C = 1). That costs an
+    '  acceleration step only when a stop is read just before a reversal's crossing, the one case x* < alpha - J.
+    '  A drive's arrival (v' = target) is AT_SPEED and returns C = 0, so the field advances on the arrival pass (the
+    '  DRIVER_REV 34 kick fix); a keeps that last step (at most J) and the next pass at the target ends it at 0, as it
+    '  ends any |a| up to Jx there (a larger one, a new target set at v mid-ramp, is pushed against). The state is only
+    '  reported: SLOW_TO_CHG while v' is on the
+    '  far side of zero from the target, SPIN_UP while |v'| < |target|, else SPIN_DN; a reversal crosses zero in one
+    '  continuous ramp and never stops there. stopPlan() is this rule's closed form, for the front cog's limits.
+    '  Uses tmpX, tmpY, jrk_*; one QDIV, QSQRT, QMUL and QDIV (about 230 clocks); C is the result, Z is not kept.
+    ' -------------------------------------------------------------------------
+jerkStep
+                mov     jrk_e, tgt_incr
+                subs    jrk_e, drv_incr             wz  ' e := tgt - v  (Z: e is 0; |tgt|, |v| < 2^30, so no overflow)
+    if_nz       mov     tmpY, jrk_e                     ' s: toward the target ...
+    if_nz       jmp     #.haveS
+                abs     tmpY, accel_now_                ' at the target: an arrival's last step (at most J) ends here,
+                mov     tmpX, jerk_up_                  '  a jerk of at most Jx, as does any |a| up to Jx
+                fge     tmpX, jerk_dn_                  ' Jx
+                cmp     tmpX, tmpY                  wc  ' Q: |a| > Jx (a new target set at v, mid-ramp)?
+    if_nc       jmp     #.steady                        ' NO: at speed, a := 0
+                neg     tmpY, accel_now_                ' YES: ... or, e being 0, against a
+.haveS          testb   tmpY, #31                   wc  ' C: s < 0
+                wrc     jrk_s                           ' jrk_s := 1 when s < 0 (WRC writes no flag)
+                abs     jrk_e                           ' E := |e| (no flag written)
+    if_c        neg     accel_now_                      ' alpha := s a, in place; a' is written back below
+                ' the side toward s: the speed-up pair when v is 0 or has s's sign, else the slow-down pair
+                testb   drv_incr, #31               wc  ' C: v < 0
+                testb   jrk_s, #0                   xorc ' C: v's sign is not s's, so pushing toward s sheds |v|
+                cmp     drv_incr, #0                wz  ' Z: v is 0 (either way grows |v|)
+    if_c_and_nz mov     jrk_j, jerk_dn_
+    if_c_and_nz mov     jrk_lim, accel_dn_
+    if_nc_or_z  mov     jrk_j, jerk_up_
+    if_nc_or_z  mov     jrk_lim, accel_up_
+                fge     jrk_j, #1                       ' J is at least 1 (applyRamps() ensures it; the QDIV needs it)
+                ' x*(E), the largest alpha a pure ramp-out at J lands from
+                mov     tmpY, jrk_e
+                shl     tmpY, #1                        ' 2E: E < 2^31, so no bit is lost
+                qdiv    tmpY, jrk_j
+                getqx   tmpY                            ' t := 2E / J
+                qsqrt   tmpY, #0                        ' {0, t} (p2kbPasm2Qsqrt: S is the high long)
+                getqx   tmpX                            ' m := isqrt(t) ...
+                mov     jrk_x, tmpX
+                add     jrk_x, #1
+                mul     jrk_x, tmpX                     ' m (m + 1): E is at most two top speeds (~1.1e9), so m < 47_000 and
+                cmp     tmpY, jrk_x                 wc  '  MUL's 16 x 16 bits hold both factors. Q: t < m (m + 1)?
+    if_c        sub     tmpX, #1                        ' ... the largest m with m (m + 1) <= t, i.e. J m (m + 1) / 2 <= E
+                mov     tmpY, tmpX
+                add     tmpY, #1                        ' m + 1
+                mov     jrk_x, tmpY
+                mul     jrk_x, tmpX
+                shr     jrk_x, #1                       ' h := m (m + 1) / 2
+                qmul    jrk_x, jrk_j
+                getqx   jrk_x                           ' J h, at most E
+                add     jrk_x, jrk_e                    ' E + J h, at most 2E
+                qdiv    jrk_x, tmpY
+                getqx   jrk_x                           ' x* := (E + J h) / (m + 1)
+                ' U, the jerk-limited step toward A
+                mov     tmpY, jerk_up_
+                fge     tmpY, jerk_dn_                  ' Jx := max(jerk_up_, jerk_dn_)
+                mov     tmpX, accel_now_
+                cmps    accel_now_, #0              wc  ' Q: alpha < 0, a still pushing away from s?
+    if_c        add     tmpX, tmpY                      '  YES: it unwinds by Jx, to exactly 0 at most
+    if_c        fles    tmpX, #0
+    if_c        jmp     #.haveU
+                cmps    jrk_lim, accel_now_         wc  ' Q: A < alpha, above this side's limit?
+    if_nc       add     tmpX, jrk_j                     '  NO: up by J, to A at most
+    if_nc       fles    tmpX, jrk_lim
+    if_c        sub     tmpX, tmpY                      '  YES: down by Jx, to A at least
+    if_c        fges    tmpX, jrk_lim
+.haveU          ' the lag gate (C-5's LAG_SOFT): the rotor lag in the way a pushes
+                mov     jrk_e, err_                     ' (E is spent)
+                testb   jrk_s, #0                   wc
+    if_c        neg     jrk_e                           ' s x err_ ...
+                cmps    accel_now_, #0              wc
+    if_c        neg     jrk_e                           ' ... x sign(alpha): sign(a) x err_, or s x err_ when a is 0
+                cmps    jrk_e, #LAG_SOFT            wc  ' Q: the field ahead of the rotor by LAG_SOFT or more, a's way?
+    if_c        jmp     #.notHeld
+                cmps    accel_now_, #0              wc  ' YES: alpha >= 0 eases toward 0 by J (alpha < 0 already
+    if_nc       mov     tmpX, accel_now_                '  unwinds toward 0); the increment keeps moving, never a
+    if_nc       sub     tmpX, jrk_j                     '  step of acceleration
+    if_nc       fges    tmpX, #0
+.notHeld        mov     tmpY, accel_now_
+                sub     tmpY, jrk_j                     ' alpha - J, the least the jerk allows
+                fges    tmpY, jrk_x                     ' max(alpha - J, x*)
+                fles    tmpY, tmpX                      ' alpha' := min(U, max(alpha - J, x*))
+                mov     accel_now_, tmpY
+                testb   jrk_s, #0                   wc
+    if_c        neg     accel_now_                      ' a' := s alpha'
+                mov     tmpY, drv_incr                  ' v, kept for the stop's zero test
+                adds    drv_incr, accel_now_            ' v' := v + a'
+                tjnz    tgt_incr, #.driving             ' a drive's target: its arrival and state below
+                cmp     drv_incr, #0                wz  ' the stop: Q: v' at zero, or through it?
+                testb   drv_incr, #31               wc
+                testb   tmpY, #31                   xorc ' C: v' and v differ in sign
+    if_c_or_z   jmp     #.atRest
+                mov     tmpX, #DCS_SPIN_DN              ' not yet: slowing to the stop
+                jmp     #.report
+.atRest         mov     drv_incr, #0                    ' at rest: the field stops AT zero, never through it
+                mov     accel_now_, #0
+    _ret_       modc    _set                        wc  ' C = 1: at rest (the caller's .endAtZero)
+.driving        cmp     drv_incr, tgt_incr          wz  ' Q: arrived? (a keeps this pass's step, at most J; the next pass,
+    if_z        mov     tmpX, #DCS_AT_SPEED             '  at the target, ends it -- a zeroed here would let a new command
+    if_z        jmp     #.report                        '  on that next pass step the acceleration by up to 2J)
+                mov     tmpX, #DCS_SLOW_TO_CHG
+                testb   drv_incr, #31               wc
+                testb   tgt_incr, #31               xorc ' C: v' and the target differ in sign
+                cmp     drv_incr, #0                wz
+    if_c_and_nz jmp     #.report                        ' v' on the far side of zero: a reversal before its crossing
+                mov     tmpX, #DCS_SPIN_UP
+                abs     tmpY, drv_incr
+                abs     jrk_e, tgt_incr
+                cmp     tmpY, jrk_e                 wc  ' Q: |v'| < |target|?
+    if_nc       mov     tmpX, #DCS_SPIN_DN
+.report         cmp     tmpX, #DCS_SPIN_DN          wz  ' PL-55: record where a ramp-down starts, for the duty ceiling,
+    if_nz       cmp     tmpX, #DCS_SLOW_TO_CHG      wz  '  on the pass the state first turns down (was .capStart, taken
+    if_nz       jmp     #.stateOut                      '  on each slowing request; a ramp-down now continues its line)
+                cmp     drv_state_, #DCS_SPIN_DN    wz
+    if_nz       cmp     drv_state_, #DCS_SLOW_TO_CHG wz
+    if_nz       mov     duty0, duty_
+    if_nz       abs     incr0, drv_incr
+.stateOut       mov     drv_state_, tmpX
+    _ret_       modc    _clr                        wc  ' C = 0: the field advances this pass (.justIncr)
+.steady         mov     accel_now_, #0                  ' at speed: v unchanged, a ended
+                mov     drv_state_, #DCS_AT_SPEED
+    _ret_       cmp     tgt_incr, #1                wc  ' C = 1 only for a target of 0 with the field at 0 (at rest)
 
 undrivenPins                                            ' R19.3/R19.4: once per frame while the bridge is not driven; writes C only,
                 mov     force_seen, force_seq_          '  R19.3: a forced fault asked for while undriven is dropped, never kept for later
@@ -8293,7 +8584,7 @@ driverRelease                                           ' PL-138 (W3, W4): reach
 
 lutCodeEnd                                            ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 293 of 512 used, read from the compiler 2026-09-27 at DRIVER_REV 37 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 402 of 512 used, read from the compiler 2026-09-27 at DRIVER_REV 38 (see the cog fit above)
 
 CON { license }
 {{

@@ -2112,6 +2112,51 @@ Q5 the inertia term.
 is CERTIFIED by t0-api (10/10 families, 0 bad). The entry stays OPEN for the jerk-limited trajectory generator (the
 feel). Its built-in rates (owner Q2) are unanswered, and do not block anything until that generator is built.
 
+**2026-09-27, built (DRIVER_REV 38), the generator.** Not yet run on hardware.
+- **One generator per motor** (`jerkStep`, LUT-resident, called once per drive pass while not at rest). State: v =
+  `drv_incr`, a = its change per pass. Each pass, with e = target - v, s = sign(e), E = |e|, alpha = s a: the side toward
+  s takes the speed-up pair when v is 0 or has s's sign, else the slow-down pair (J, A); x*(E) is the largest alpha from
+  which a pure J ramp-out lands exactly on the target; U is the jerk-limited step toward A; alpha' = min(U, max(alpha -
+  J, x*)). So every ramp eases its acceleration in and out, and lands exactly on its target with a = 0 (arrival advances
+  the field: DRIVER_REV 34's kick fix kept). A reversal passes through zero in one continuous ramp; only a start from
+  DCS_STOPPED seeds the field from the halls; SLOW_TO_CHG is only reported.
+- **Departures from the survey spec, each for a stated reason.** (1) The survey's "|e| > dvStop + |a|, else toward 0"
+  test is made exact by the x* bound, so the ramp-out lands on the target instead of creeping back to it in bumps; that
+  is what lets the stop prediction be closed form. (2) The pair is chosen by the side a is on, not by the target's
+  direction alone, and an acceleration on the far side (or above a lowered limit) unwinds at the larger jerk: with the
+  target's pair, a stop read mid-speed-up unwound the up-ramp's acceleration at the slow-down jerk, for up to ~10 s at
+  the setter limits (DERIVED, desk model). (3) At the target (e = 0) any |a| up to max(jerk_up, jerk_dn) ends at 0: with
+  the survey's snap only (|a| <= J of the side), an arrival's last step met the other side's smaller jerk on the next
+  pass and overshot (desk model); zeroing a on the arrival pass itself let a command on the next pass step it by 2J.
+  (4) The LAG_SOFT gate eases a toward 0 by J, as specified. (5) x* costs two CORDIC divisions and a square root per
+  pass (~230 clocks); the survey's own dvStop divides by J too. J itself is computed on the Spin2 side, as specified. No held-ramp count is kept: without an ABI long the Spin2 side cannot read a cog register, and a PASM
+  debug() would print every pass.
+- **ABI:** params run unchanged at 27 (`ramp_down`/`ramp_max`/`ramp_min`/`ramp_inc` reused in place as
+  `accel_dn`/`accel_up`/`jerk_up`/`jerk_dn`); status run 21 -> 22 (`drv_accel_now` appended, `fault` after it;
+  `isAbiLayoutValid()` checks it). `testGetAccelNow()` (motor) and `testGetAccelNow() : nLeftAccel, nRightAccel`
+  (steering). The path-scale and hold-decay floor is the constant DRV_INCR_FLOOR (1_500), no longer `ramp_min`.
+- **Built-in rates (owner Q2 still open; named constants a ruling only retunes):** ACCEL_BUILTIN_MM_S2 1_000,
+  DECEL_BUILTIN_MM_S2 1_470, RAMP_TAU_MS 250. Each jerk = its limit / 478.3 passes, rounded, at least 1, on the Spin2
+  side. `getAcceleration()` now returns 1_000 until set. `setRampingValues()`: maxRamp and decrRamp are the two limits,
+  minRamp and incRamp have no effect (owner Q3 open); `getRampingValues()` returns the four driver parameters.
+- **Stop prediction:** `frontStopTicks()` / `frontStopMs()` read one closed form of the rule (`stopPlan()`: take pass,
+  unwind, rise, plateau, ramp-out, and the stop-at-zero corner). DERIVED against a pass-by-pass model of the rule over
+  ~7_000 random stops: passes exact, travel within 0.02 tick. The PASM routine's own source lines, executed by an
+  instruction-level interpreter, match that model on 4.5 million passes (desk checks, not bench).
+- **Rev A fold-back (same revision):** the fold compares the whole-mV reading ABOVE the floored threshold (was at or
+  above it). At the duty floor on Rev A the threshold is 0.375 x amps mV, which floored to 0 under ~2.7 A and folded
+  every driven frame.
+- **Negatives** (what shows it did not work): a ramp's drv_accel_now stepping by more than max(jerk_up, jerk_dn) in a
+  pass other than a stop read just before a reversal's zero crossing; a drive that does not settle on its target with
+  drv_accel_now 0 from the pass after its arrival, or overshoots it; a stop that crosses zero; the field stopping
+  (DCS_STOPPED, a hall re-seed) at a reversal's crossing; a distance, rotation or time limit that no longer comes to
+  rest inside the tolerance its existing cell judges; the speed-change current kick back above pass 7's 16/13 mV. Rev A: with `testSetCurrentLimits(2, 2)` a driven, unloaded
+  wheel still counting foldback_frames every frame.
+- **Costs:** cog RAM 403/496 (was 487), LUT 402/512 (was 293), read from the compiler listing. A stop now takes
+  RAMP_TAU_MS longer and travels speed x 0.125 s further than DRIVER_REV 37's (DERIVED; ~100 ticks from 196 ticks/s,
+  was 75 measured). `stopPlan()` adds Spin2 work to every front pass with a limit armed (unmeasured: PL-161's
+  R16-DUAL-FRONTST re-certifies it).
+
 ### PL-161 -- the steering front cog overruns its 1 ms slot
 
 > **6.0 status (2026-09-26 audit):** RELEASE — found at Visit 10 pass 7; the front cog is what services every command.

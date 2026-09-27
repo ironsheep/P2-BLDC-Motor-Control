@@ -194,6 +194,11 @@ CON { forward our interface constants }
     DECEL_MIN_MM_S2         = ltWheel.DECEL_MIN_MM_S2
     DECEL_MAX_MM_S2         = ltWheel.DECEL_MAX_MM_S2
 
+  ' PL-160: the built-in rates until either setter is called, and the time every ramp eases its acceleration in and out
+    ACCEL_BUILTIN_MM_S2     = ltWheel.ACCEL_BUILTIN_MM_S2
+    DECEL_BUILTIN_MM_S2     = ltWheel.DECEL_BUILTIN_MM_S2
+    RAMP_TAU_MS             = ltWheel.RAMP_TAU_MS
+
   ' setCommandTimeout(): 0 turns it off (the default); otherwise the accepted range, in ms
     CMD_TIMEOUT_OFF         = ltWheel.CMD_TIMEOUT_OFF
     CMD_TIMEOUT_MIN_MS      = ltWheel.CMD_TIMEOUT_MIN_MS
@@ -382,10 +387,11 @@ PUB stop() : eError
     eError := NO_ERROR
 
 PUB setAcceleration(rate) : eError
-'' Set how fast both wheels speed up: every speed-up from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
+'' Set how fast both wheels speed up: every speed-up from now on reaches a steady {rate}, in mm/s squared at the wheel rim
 ''
-'' Slowing down and stopping are set apart, by setDeceleration(), so this does not change the stopping distances. See
-'' the motor object's setAcceleration() for the default ramp used until this is called.
+'' Slowing down and stopping are set apart, by setDeceleration(), so this does not change the stopping distances. Until
+'' this is called both wheels speed up at ACCEL_BUILTIN_MM_S2 (1_000). Every ramp eases its acceleration in and out
+'' over RAMP_TAU_MS (PL-160); see the motor object's setAcceleration().
 '' PL-160: kept across stop() and start(), and may be set before start(); getAcceleration() reads it back.
 ''
 '' @param rate - acceleration while speeding up, mm/s squared [ACCEL_MIN_MM_S2 to ACCEL_MAX_MM_S2]
@@ -394,9 +400,9 @@ PUB setAcceleration(rate) : eError
     eError := firstError(ltWheel.setAcceleration(rate), rtWheel.setAcceleration(rate))
 
 PUB setDeceleration(rate) : eError
-'' Set how fast both wheels slow down: every slow-down and stop from now on ramps at a constant {rate}, in mm/s squared at the wheel rim
+'' Set how fast both wheels slow down: every slow-down and stop from now on reaches a steady {rate}, in mm/s squared at the wheel rim
 ''
-'' Until this is called both wheels slow at the built-in rate, about 1_470 mm/s squared (6.5in wheel). The stopping
+'' Until this is called both wheels slow at the built-in rate, DECEL_BUILTIN_MM_S2 (1_470). The stopping
 '' distance follows it; stopAfterDistance(), stopAfterRotation(), stopAfterTime() and driveForDistance() still come to
 '' rest at their limit. See the motor object's setDeceleration() for the stops it governs and its floor.
 '' PL-160: kept across stop() and start(), and may be set before start(); getDeceleration() reads it back.
@@ -407,12 +413,12 @@ PUB setDeceleration(rate) : eError
     eError := firstError(ltWheel.setDeceleration(rate), rtWheel.setDeceleration(rate))
 
 PUB getAcceleration() : nRate
-'' Return the rate both wheels speed up at, mm/s squared at the wheel rim; 0 when the speed-up ramp has no single rate
+'' Return the rate both wheels speed up at, mm/s squared at the wheel rim
 ''
-'' Both wheels always carry the same setting; it is read from the left wheel. 0 means the built-in ramp, which grows as
-'' it goes (see the motor object's getAcceleration()).
+'' Both wheels always carry the same setting; it is read from the left wheel. Until setAcceleration() is called, the
+'' built-in rate, ACCEL_BUILTIN_MM_S2 (PL-160, DRIVER_REV 38: no longer 0); 0 only with no wheel diameter configured.
 ''
-'' @returns nRate - the speed-up rate, mm/s squared, or 0 (no single rate); the kept setting, so it reads the same before start()
+'' @returns nRate - the speed-up rate, mm/s squared; the kept setting, so it reads the same before start()
 
     nRate := ltWheel.getAcceleration()
 
@@ -420,7 +426,7 @@ PUB getDeceleration() : nRate
 '' Return the rate both wheels slow down and stop at, mm/s squared at the wheel rim
 ''
 '' Both wheels always carry the same setting; it is read from the left wheel. Until setDeceleration() is called, the
-'' built-in rate, about 1_470 (6.5in wheel).
+'' built-in rate, DECEL_BUILTIN_MM_S2 (1_470).
 ''
 '' @returns nRate - the slow-down rate, mm/s squared; the kept setting, so it reads the same before start()
 
@@ -1563,6 +1569,18 @@ PUB testGetDriverState() : eLeftState, eRightState
 
     eLeftState := ltWheel.getDriverState()
     eRightState := rtWheel.getDriverState()
+
+PUB testGetAccelNow() : nLeftAccel, nRightAccel
+'' TESTING USE: return each wheel's trajectory-generator acceleration, the signed change of its field increment per drive pass (PL-160)
+''
+'' See the motor object's testGetAccelNow(). The right wheel's is in its own motor's sense: forwardIsReverse() flips
+'' the command, not this reading.
+''
+'' @returns nLeftAccel - the left motor's acceleration, angle-increment units per drive pass, per pass; signed
+'' @returns nRightAccel - the right motor's, likewise
+
+    nLeftAccel := ltWheel.testGetAccelNow()
+    nRightAccel := rtWheel.testGetAccelNow()
 
 PUB testGetBoardTypes() : eLeftBoard, eRightBoard
 '' TESTING USE: return the detected driver-board revision for each motor
