@@ -17,8 +17,25 @@ tools/pasm_equiv/run.sh --candidate-dir /path/to/other/src   # any source tree a
 
 It needs `pnut-ts` on `PATH` (or `--pnut`), `git` for the baseline tag, and Python 3.8+. It builds into a new
 temp directory (or `--work DIR`), never into `src/`. **Exit status:** 0 equivalent and inside the frame budget;
-1 a divergence; 2 a frame-budget failure; 3 incomplete (a build error, an opcode the emulator does not model, an
-operation p2kb calls undefined, or an init() change the model does not know).
+1 a divergence; 2 a frame-budget failure (the start frame included); 3 incomplete (a build error, an opcode the
+emulator does not model, an operation p2kb calls undefined, an init() change the model does not know, or, under
+`--coverage`, moved code the candidate covers less than the baseline did).
+
+## The images
+
+The tool finds the driver's code images in each build's listing; it holds no list of them. It prints each one,
+with its use, for both builds:
+
+- **`cog`**: the org-0 image COGINIT loads from `driver`. Its use counts every org-0 long, RES included (the
+  `fit 496` figure). For coverage, its code ends at the first org-0 data long, `all_pins` (or, without that label,
+  at the first RES long).
+- **a LUT image** for every global label pair `<name>Start` / `<name>End` under an `org` at or above `$200`:
+  `lutCodeStart`/`lutCodeEnd` (the start image), `runCodeStart`/`runCodeEnd` (the run image),
+  `planOvlStart`/`planOvlEnd` (the baseline's overlay), and any later pair, such as a release image. Each is
+  listed with the `SETQ2 #n-1` sites whose block size is its own, or `no SETQ2 load found`.
+
+LUT images share LUT addresses (the run image is loaded over the start image) but never hub bytes. Coverage and
+names are kept by hub position, so each image is reported separately.
 
 ## What it proves
 
@@ -89,20 +106,46 @@ The 55 named scenarios are the plan's §4.2.4 edge suite (`--list`):
 
 Random seeds run 1,500–3,500 frames, and every tenth runs 20,000.
 
-**Frame budget.** For both images the tool prints the worst clocks per window: frame work, the pass frame, and
-each planner stage. Each figure runs from the ADC sample to the next wait, with every hub and CORDIC wait at its
-worst, so it is an upper bound. They are set against the 3,636-clock frame at 160 MHz and the 6,136-clock frame
-at 270 MHz. **A candidate fails if any window exceeds 75 % of the 160 MHz frame** (`--guard`, the plan's §4.4).
-Any window more than 32 clocks over the baseline is flagged. Frames under an adversarial CT1 schedule, and the
-release, are excluded.
+**Frame budget.** For both images the tool prints the worst clocks per window: the start frame, frame work, the
+pass frame, and each planner stage. Each figure runs from the ADC sample to the next wait, with every hub and
+CORDIC wait at its worst, so it is an upper bound. They are set against the 3,636-clock frame at 160 MHz and the
+6,136-clock frame at 270 MHz. **A candidate fails if any window exceeds 75 % of the 160 MHz frame** (`--guard`,
+the plan's §4.4). Any window more than 32 clocks over the baseline is flagged. Frames under an adversarial CT1
+schedule, and the release, are excluded.
 
-**Coverage** (`--coverage`, the plan's §4.2.6). It reports every instruction never executed, every conditional
-seen one way only, and every test-and-branch seen one way only, over the scenarios run. At `mem-reduce-start`,
-the named suite plus 2,000 seeds cover:
+**The start frame** is the frame of the first drive pass, which carries the end of the start sequence. It has no
+sample at its start: it opens when `driveinit`'s `dirh adc_pins` raises DIR on the ADC pins, which restarts the
+ADC count period. The first sample after that lands one period later. The window runs from that DIRH through the
+rest of the start sequence, `loadOverlay`'s SETQ2 load of the run image and the first drive pass, to the first
+frame wait (the first `wait4adc` TESTP). A late cog is caught the same way: the window then ends at the TESTP that
+finds the sample already there. The tool prints the worst start frame for each build, split at the drive pass
+entry, with the SETQ2 load's clocks and longs. The block RDLONG is costed as p2kb gives it: the RDLONG's hub wait
+at its worst, 16 clocks (`p2kbPasm2Rdlong`), then one long per clock (`p2kbPasm2SetqBlockOps`). At
+`mem-reduce-start` the start frame takes 645 clocks: 363 to the pass entry, 141 of them a 126-long overlay load.
+At DRIVER_REV 42 it takes 995: 713 to the pass entry, 491 of them the 476-long run-image load. Both figures come
+from `start_brake_idle` and agree with an instruction trace counted by hand.
+
+**Coverage** (`--coverage`, the plan's §4.2.6). It covers **both builds, image by image**, each mapped by address
+in its own image. It reports every instruction never executed, every conditional seen one way only, and every
+test-and-branch seen one way only, over the scenarios run. At `mem-reduce-start`, the named suite plus 2,000
+seeds cover:
 
 - 945 of 948 instructions;
 - every conditional both ways but two;
 - every test-and-branch both ways.
+
+**Moved code must stay covered.** The tool matches every baseline instruction to its copy in the candidate,
+wherever the work package put it. It works routine by routine: the code under each global label that both builds
+carry on a code long. It takes the longest common subsequence of instructions whose opcode, condition, flags and
+immediates are equal and whose registers and branch targets share a name, so a register that moved or was aliased
+(C1, C7) still matches. A matched instruction was moved. An unmatched one was changed or removed. **The run is
+INCOMPLETE (exit 3) if the baseline executed a moved instruction and the candidate never did, or if the baseline
+took a moved decision both ways and the candidate took it one way only.** Otherwise the equivalence proof would not
+reach that code in its new place. The report also lists the baseline longs left unmatched, which this check does
+not cover. Baseline against itself matches 948 of 948. At DRIVER_REV 42, over the named suite plus 2,000 seeds,
+945 of the 948 match, 942 were executed in both builds, and none was lost. The three unmatched longs are WP2's own
+edits: the two SETQ2 block sizes (`DRIVER+2`, `LOADOVERLAY+1`) and the dead `mov sv_tgt_incr, #0` that became
+`mov err_, #0` (`LUTCODESTART.PIN+109`).
 
 The three instructions never executed are each unreachable for a static reason:
 
@@ -129,7 +172,8 @@ The three instructions never executed are each unreachable for a static reason:
   first `GETQX` must see its own `QDIV`. The P2 overwrites an unread result (P2AN002). A result never read before a
   newer one arrives, or a GETQx with nothing pending, stops the run rather than being guessed.
 - **Timing is a worst-case model, not cycle-exact.** Instructions take 2 clocks; a taken branch or `_RET_` 4;
-  RDLONG 16 (+1 per extra block long); WRLONG 10 (+1 per extra block long); a CORDIC issue 9, with the result 55
+  RDLONG 16 (+1 per extra block long, into cog RAM or, after SETQ2, LUT RAM); WRLONG 10 (+1 per extra block
+  long); a CORDIC issue 9, with the result 55
   clocks after the issue ends. A drive pass lands on the frame the CT1 schedule names, so the proof does not
   depend on a clock count.
 - **Not modelled:** hub execution, interrupts and the debug ISR, SKIPF, the streamer, the FIFO, locks and events
@@ -147,17 +191,24 @@ The three instructions never executed are each unreachable for a static reason:
   (`hall_tables()` and `KNOWN_DAT_WRITES`).
 - **A new instruction** is added to `p2cog.py`'s decode table with its p2kb key, after compiling it with `pnut-ts`
   and decoding it back.
-- **Labels the timing report watches:** `drvMotor` (the pass), `planStage` (a stage) and `driverRelease`. If a
-  label is renamed, the report loses that window's name; the comparison itself is unaffected.
+- **Labels the timing report watches:** `drvMotor` (the pass, and the end of the start frame's first part),
+  `planStage` (a stage) and `driverRelease`. If a label is renamed, the report loses that window's name; the
+  comparison itself is unaffected. The start frame needs no label: it opens at the last DIR rise on the ADC pins
+  before the first pass.
+- **A new image** needs nothing but its label pair, `<name>Start` / `<name>End`, under an `org $200`. The tool
+  finds it, its SETQ2 loader and its coverage by itself. Keep `all_pins` as the first data long of the cog image,
+  or the cog image's coverage ends at its first RES long instead.
+- **Keep routine labels** when code moves. The moved-code check matches instructions under a global label both
+  builds carry; code whose routine was renamed is counted as changed, not moved, and escapes that check.
 
 ## Files
 
 | File | Holds |
 |---|---|
-| `run.sh`, `pasm_equiv.py` | the command line, the parallel runner and the report |
-| `p2image.py` | staging, `pnut-ts -l`, listing and `.bin` extraction, symbols |
+| `run.sh`, `pasm_equiv.py` | the command line, the parallel runner, the report, and the coverage and moved-code check |
+| `p2image.py` | staging, `pnut-ts -l`, listing and `.bin` extraction, symbols, and image discovery |
 | `p2cog.py` | the cog emulator: decode, execute, clocks |
-| `drvenv.py` | the hub layout, pins, ADC and hall stimulus, ATN and the CT1 schedule |
+| `drvenv.py` | the hub layout, pins, ADC and hall stimulus, ATN, the CT1 schedule, and the start-frame clock |
 | `initmodel.py` | `init()`'s parameter run and DAT patches, and the guard on them |
 | `scenarios.py` | the named edge suite and the random scenario generator |
 | `equiv.py` | one run, liveness, and the frame-by-frame comparison |

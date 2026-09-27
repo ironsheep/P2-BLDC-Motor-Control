@@ -9,7 +9,8 @@ writes, RDPIN/RQPIN/AKPIN, TESTP, INA/INB), the attention flag, and the CT1 even
 schedules by frame (an "event point") so a change in a routine's clock count cannot move a drive pass.
 
 Timing model (worst case, the same model as the desk scripts): 2 clocks per instruction, 4 for a taken branch or
-a _RET_, RDLONG 16 (+1 per extra block long), WRLONG 10 (+1 per extra block long), RDLUT 3, a CORDIC issue 9
+a _RET_, RDLONG 16 (+1 per extra block long, into cog or LUT: SETQ/SETQ2 move one long per clock after the hub
+window, p2kbPasm2SetqBlockOps), WRLONG 10 (+1 per extra block long), RDLUT 3, a CORDIC issue 9
 clocks with its result ready 55 clocks after the issue ends (GETQX/GETQY end at max(start + 2, ready)), WAITX
 2 + D. Hub-window and CORDIC-slot waits are taken at their maximum, so every figure is an upper bound.
 """
@@ -143,7 +144,7 @@ class Cog:
         self.extra = 0
         self.icount = 0
         self.track = None                 # liveness tracker (see Tracker) or None
-        self.trace = None                 # ring buffer of recent (ct, pc, w) or None
+        self.trace = None                 # ring buffer of recent (icount, ct, pc, w, hub source) or None
         self.halted = False
         self.last_pc = 0
         self.timing_regs = set()          # registers written from CT (GETCT, ADDCT1): timing, not behaviour
@@ -232,8 +233,8 @@ class Cog:
         self.last_pc = pc
         self.pc = pc + 1
         self.icount += 1
-        if self.trace is not None:
-            self.trace.append((self.icount, self.ct, pc, w))
+        if self.trace is not None:          # + the hub source, so a LUT long is named from the image loaded then
+            self.trace.append((self.icount, self.ct, pc, w, self._src(pc)))
         dec = self.dcache.get(w)
         if dec is None:
             dec = self.decode(w)
@@ -825,7 +826,10 @@ class Cog:
                 base = self.dfield(dec)
                 for k, v in enumerate(vals):
                     self.wreg((base + k) & 0x1FF, v)
+            # p2kbPasm2Rdlong (9..16, the hub window) + p2kbPasm2SetqBlockOps (then one long per clock)
             self.extra = CLK_RDLONG - CLK_INSTR + (n - 1)
+            if self.q_lut:
+                self.env.lut_load(self, addr, n, CLK_RDLONG + (n - 1))
             self._ptr_post(upd, n)
             if dec.c or dec.z:
                 raise Unmodelled('a block RDLONG with WC/WZ')

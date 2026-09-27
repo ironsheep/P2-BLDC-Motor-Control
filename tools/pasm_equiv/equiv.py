@@ -192,6 +192,8 @@ class Runner:
                         if tag == 1:
                             env.pass_ct0 = cog.ct
                             env.log.tags.add('pass')
+                            if env.log.pass_t is None:
+                                env.log.pass_t = cog.ct
                         elif tag == 2:
                             st = cog.cog[ps_reg] if ps_reg is not None else None
                             env.log.tags.add('stage')
@@ -346,7 +348,8 @@ def make_comparator(plan, clog):
         cl = env.logs[fi]
         if bl.blob != cl.blob:
             _explain(fi, bl, cl, plan)
-        clog.append((bl.busy, cl.busy, bl.overrun, cl.overrun, frozenset(bl.tags), bl.stage))
+        clog.append((bl.busy, cl.busy, bl.overrun, cl.overrun, frozenset(bl.tags), bl.stage, bl.start_win,
+                     cl.start_win))
         if final:
             if bres.end != 'parked' or len(blogs) != len(env.logs):
                 raise Divergence(fi, 'end', 'the candidate parked in frame %d; the baseline ended %s after %d frames'
@@ -464,15 +467,33 @@ def classify(tags, stage):
     return 'frame work'
 
 
+START_WINDOW = 'start frame'
+
+
+def start_frame(clog):
+    """(baseline, candidate) start windows of the first drive pass's frame, or None: each is (clocks from the ADC
+    period restart to the first frame wait, restart to the pass entry, SETQ2 load clocks, SETQ2 load longs)."""
+    for bb, cb, bo, co, tags, stage, bsw, csw in clog:
+        if 'pass' in tags:
+            return (bsw, csw) if bsw is not None or csw is not None else None
+    return None
+
+
 def budget_windows(clog):
-    """{window: [baseline max, candidate max]} over the frames after the first drive pass (whose frame carries
-    the end of the start sequence)."""
+    """{window: [baseline max, candidate max]}. The first drive pass's frame, which carries the end of the start
+    sequence, is the 'start frame' window, timed from the ADC period restart (driveinit's DIRH on the ADC pins)
+    rather than from a sample; every later frame is classified as below."""
     worst = {}
     seen = 0
-    for bb, cb, bo, co, tags, stage in clog:
+    for bb, cb, bo, co, tags, stage, bsw, csw in clog:
         if 'pass' in tags:
             seen += 1
             if seen == 1:
+                w = worst.setdefault(START_WINDOW, [0, 0])
+                if bsw is not None:
+                    w[0] = max(w[0], bsw[0])
+                if csw is not None:
+                    w[1] = max(w[1], csw[0])
                 continue
         if not seen:
             continue
@@ -507,16 +528,19 @@ def run_pair(base_img, cand_img, scen, layout, con, coverage=False):
     clog = []
     cmp = make_comparator(plan, clog)
     try:
-        c = Runner(cand_img, scen, layout, con, compare=cmp).run()
+        c = Runner(cand_img, scen, layout, con, compare=cmp, coverage=coverage).run()
     except Divergence as d:
         out['status'] = 'diverged'
         out['div'] = (d.frame, d.kind, d.detail, d.where)
         out['windows'] = budget_windows(clog)
+        out['start'] = start_frame(clog)
         return out
     out['cand_end'] = c.end
     out['cand_instr'] = c.instr
     out['stage_cand'] = c.stage_clocks
+    out['cand_coverage'] = c.coverage
     out['windows'] = budget_windows(clog)
+    out['start'] = start_frame(clog)
     if c.end == 'error':
         out['status'] = 'error'
         out['detail'] = 'candidate: ' + c.end_detail
@@ -553,16 +577,17 @@ def context(img, scen, layout, con, frame, where, side, n=24):
             why = 'the differing %s write' % where[0]
     elif where and where[0] == 'reg':
         addr = where[1] if side == 'base' else where[2]
-        for ic, ct, pc, w in reversed(tr):
+        for ic, ct, pc, w, src in reversed(tr):
             if w and ((w >> 9) & 0x1FF) == addr and _mnem(w) not in _NO_D_WRITE:
                 target = ic
                 why = 'the last instruction writing $%03X before the boundary' % addr
                 break
     sel = [t for t in tr if t[0] <= target][-n:] if target is not None else tr[-n:]
     lines = ['    %s -- up to %s:' % (img.label, why)]
-    for ic, ct, pc, w in sel:
+    for ic, ct, pc, w, src in sel:
         mark = '>>' if ic == target else '  '
-        lines.append('    %s %11d  $%03X %-24s %s' % (mark, ct, pc, pc_name(img, env, cog, pc)[:24], disasm(w, pc)))
+        nm = img.name_for_hub(src - env.obj_base) if src is not None else pc_name(img, env, cog, pc)
+        lines.append('    %s %11d  $%03X %-24s %s' % (mark, ct, pc, nm[:24], disasm(w, pc)))
     return lines, r
 
 

@@ -81,7 +81,7 @@ class FrameLog:
     """One frame's outputs. While the frame runs they are lists; at its end `freeze()` keeps a compressed exact
     rendering (`blob`) for the comparison, plus the few facts the stimulus reads back (field, driven)."""
     __slots__ = ('hub', 'pins', 'qin', 'events', 'busy', 'overrun', 'tags', 'stage', 'field', 'ic', 'blob',
-                 'driven')
+                 'driven', 'restart', 'pass_t', 'loads', 'start_win')
 
     def __init__(self):
         self.hub = []
@@ -96,6 +96,10 @@ class FrameLog:
         self.ic = None                     # when tracing: {'hub': [icount...], 'pins': [...], ...}
         self.blob = None
         self.driven = False
+        self.restart = None                # clock of the frame's last ADC period restart (the ADC pins' DIR rising)
+        self.pass_t = None                 # clock of the frame's first drive-pass entry
+        self.loads = None                  # [(longs, clocks)] of SETQ2 block loads into LUT since the restart
+        self.start_win = None              # (restart -> wait, restart -> pass entry, load clocks, load longs)
 
     def freeze(self, mask, drive_pin, keep=False):
         hub = [(a, 0 if a in mask else v) for a, v in self.hub]    # clock counts are timing, not behaviour
@@ -460,6 +464,23 @@ class Env:
         last_edge = self.adc_en + n * self.adc_period
         return 1 if last_edge > self.pins[pin].last_ack else 0
 
+    def _start_window(self, t):
+        """The frame restarted the ADC period (DIR rose on the ADC pins) and the cog now waits, or is already late:
+        the clocks from that restart to here, the only span the first sample after it leaves the cog."""
+        lg = self.log
+        if lg.restart is not None and lg.start_win is None:
+            loads = lg.loads or ()
+            lg.start_win = (t - lg.restart, None if lg.pass_t is None else lg.pass_t - lg.restart,
+                            sum(c for _, c in loads), sum(n for n, _ in loads))
+
+    def lut_load(self, cog, addr, n, clocks):
+        """A SETQ2 block RDLONG into LUT RAM (p2cog calls this; costed there per p2kbPasm2Rdlong and
+        p2kbPasm2SetqBlockOps: the RDLONG's hub wait, then one long per clock)."""
+        if self.log.restart is not None and self.log.start_win is None:
+            if self.log.loads is None:
+                self.log.loads = []
+            self.log.loads.append((n, clocks))
+
     def testp(self, cog, pin):
         t = cog.ct
         if pin in self.adc_pins:
@@ -469,6 +490,7 @@ class Env:
                 if not self.waiting and self.frame > 0:
                     self.log.overrun = True
                     self.log.busy = t - self.t_boundary
+                    self._start_window(t)
                 self.adc_seen = n
                 self.boundary_pending = True
                 self.t_boundary = t
@@ -477,6 +499,7 @@ class Env:
                 if not self.waiting:
                     self.waiting = True
                     self.log.busy = t - self.t_boundary
+                    self._start_window(t)
                 # a pure spin (this TESTP again after at most two other instructions): skip whole loop turns up
                 #  to the next ADC period, keeping the poll phase exact -- clocks only, nothing else changes
                 if self.spin[0] == cog.last_pc and cog.icount - self.spin[2] <= 3 and self.adc_en is not None:
@@ -550,6 +573,9 @@ class Env:
             if adc_dir_change:
                 cur = self.pins[self.adc_pins[4]]
                 self.adc_en = t
+                self.log.restart = t              # the start-frame window opens here (driveinit's DIRH)
+                self.log.loads = None
+                self.log.start_win = None
                 self.adc_period = cur.x
                 self.adc_seen = 0
                 for p in self.adc_pins:

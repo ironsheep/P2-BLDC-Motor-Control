@@ -2,8 +2,9 @@
 """pasm_equiv: prove a candidate PASM driver image equivalent to the baseline, frame by frame.
 
 See README.md beside this file. Exit status: 0 every scenario equal and every frame inside its budget;
-1 a divergence; 2 a frame-budget failure; 3 the proof could not be completed (a build error, an unmodelled
-opcode, an undefined operation, or a scenario the baseline itself cannot run).
+1 a divergence; 2 a frame-budget failure (the start frame included); 3 the proof could not be completed (a build
+error, an unmodelled opcode, an undefined operation, a scenario the baseline itself cannot run, or, with
+--coverage, moved code the candidate covers less than the baseline did).
 """
 import argparse
 import multiprocessing as mp
@@ -103,7 +104,9 @@ def main(argv=None):
     ap.add_argument('--work', default=None, help='scratch directory for the builds (default: a new temp dir)')
     ap.add_argument('--guard', type=float, default=0.25, help='frame-budget guard at 160 MHz (default 0.25)')
     ap.add_argument('--pnut', default=None, help='path to pnut-ts')
-    ap.add_argument('--coverage', action='store_true', help='report baseline instructions never executed')
+    ap.add_argument('--coverage', action='store_true',
+                    help='report coverage of every code image of both builds, and fail (exit 3) if moved code '
+                         'lost coverage')
     ap.add_argument('--list', action='store_true', help='list the named scenarios and exit')
     args = ap.parse_args(argv)
 
@@ -114,6 +117,19 @@ def main(argv=None):
     finally:
         if own:
             shutil.rmtree(work, ignore_errors=True)
+
+
+def _print_images(img):
+    """Every code image the listing shows (p2image.Image.images): the cog image and each LUT image."""
+    for k, im in enumerate(img.images()):
+        if im.kind == 'cog':
+            where = 'org $%03X..$%03X' % (im.org, im.org + im.used - 1)
+            how = 'COGINIT'
+        else:
+            where = 'org $%03X..$%03X' % (im.org, im.org + im.used - 1) if im.used else 'empty'
+            how = ('SETQ2 at ' + ', '.join(im.loaders)) if im.loaders else 'no SETQ2 load found'
+        print('            %-9s %-14s %3d/%d  %-17s loaded by %s' % (img.label if k == 0 else '', im.title, im.used,
+                                                                    im.size, where, how))
 
 
 def _run(args, work, own):
@@ -154,9 +170,7 @@ def _run(args, work, own):
     print('            candidate %s' % cdesc)
     print('            work dir  %s%s' % (work, ' (removed at exit; --work DIR keeps the builds)' if own else ''))
     for img in (base, cand):
-        u = img.usage()
-        print('            %-9s cog %d/496, LUT resident %s/512, overlay %s' % (
-            img.label, u['cog_used'], u.get('lut_used', '?'), u.get('overlay_used', '?')))
+        _print_images(img)
     ptrs_b, unk_b = initmodel.dat_writes_checked(base)
     ptrs_c, unk_c = initmodel.dat_writes_checked(cand)
     print('            init() pointers: baseline %s, candidate %s' % (ptrs_b, ptrs_c))
@@ -259,7 +273,7 @@ def report(args, results, wall, base, cand):
     over = []
 
     def order(k):
-        return (k.startswith('stage'), k)
+        return (k != equiv.START_WINDOW, k.startswith('stage'), k)
     for cls in sorted(worst, key=order):
         bb, cb = worst[cls][0], worst[cls][1]
         print('    %-12s %9d %9d   %5.1f%% / %5.1f%%        %5.1f%% / %5.1f%%' % (
@@ -270,6 +284,7 @@ def report(args, results, wall, base, cand):
         if cb - bb > 32:
             print('        ^ grew by %d clocks over the baseline (name it in the commit)' % (cb - bb))
     print('    budget: every window <= %d clocks (%d%% guard at 160 MHz)' % (lim160, int(args.guard * 100)))
+    _print_start(results)
     stb, stc = {}, {}
     for r in results:
         for k, v in (r.get('stage_base') or {}).items():
@@ -297,10 +312,13 @@ def report(args, results, wall, base, cand):
         for (name, where), (n, ep) in sorted(un.items()):
             print('    %-16s first read at %-26s (in frame %d), in %d scenarios' % (name, where, ep, n))
     if args.coverage:
-        _coverage(results, base)
+        if _coverage(results, base, cand) and rc in (0, 2):
+            rc = 3
     print('')
     print('VERDICT: %s' % {0: 'EQUIVALENT (every scenario equal, every window inside its budget)',
-                          1: 'NOT EQUIVALENT', 2: 'BUDGET FAILURE', 3: 'INCOMPLETE'}[rc])
+                          1: 'NOT EQUIVALENT', 2: 'BUDGET FAILURE',
+                          3: 'INCOMPLETE' + (' (moved code lost coverage)' if not (by['error'] or by['diverged'])
+                                             else '')}[rc])
     return rc
 
 
@@ -316,45 +334,295 @@ def _context(name, frame, where, base, cand, args):
             img.label, frame, ' '.join('%d' % (x - (1 << 32) if x >> 31 else x) for x in st)))
 
 
-def _coverage(results, base):
-    """The plan's coverage gate: every instruction executed, every conditional both ways, every branch both ways."""
+def _print_start(results):
+    """The start frame: from the ADC period restart (driveinit's DIRH on the ADC pins) through the rest of the start
+    sequence, the SETQ2 load of the run image and the first drive pass, to the first frame wait. The first sample
+    after the restart lands one ADC period (one frame) later, so the whole span must fit in a frame."""
+    best = {}
+    for r in results:
+        if not r.get('budget', True) or not r.get('start'):
+            continue
+        for side, sw in zip(('baseline', 'candidate'), r['start']):
+            if sw is not None and (side not in best or sw[0] > best[side][0][0]):
+                best[side] = (sw, r['scenario'])
+    if not best:
+        print('    start frame: not measured (no scenario reached its first drive pass)')
+        return
+    print('    start frame (ADC period restart -> first frame wait), worst:')
+    for side in ('baseline', 'candidate'):
+        if side not in best:
+            print('        %-9s not measured' % side)
+            continue
+        (tot, to_pass, lc, ll), sc = best[side]
+        print('        %-9s %5d clocks = %s to the drive pass entry (of which %d in a %d-long SETQ2 LUT load) + %s '
+              'first pass to the wait; %.1f%% of 3636 @160 MHz, %.1f%% of 6136 @270 MHz  [%s]' % (
+                  side, tot, '?' if to_pass is None else '%d' % to_pass, lc, ll,
+                  '?' if to_pass is None else '%d' % (tot - to_pass), 100.0 * tot / FRAME_160,
+                  100.0 * tot / FRAME_270, sc))
+
+
+# ---------------------------------------------------------------------------------------------- coverage
+_BR_ABS = {0x6C, 0x6D, 0x70, 0x71, 0x72, 0x73}      # JMP/CALL/CALLD #A (p2kbPasm2Jmp, p2kbPasm2Call, p2kbPasm2Calld)
+_BR_S = {0x59, 0x5A, 0x5B, 0x5C, 0x5E}              # CALLD/CALLPA/DJNZ../TJZ../JNCT1 with a relative #S
+_ALT = {0x4A, 0x4B, 0x4C}                           # ALTx: a #S is a register base
+
+
+def _union(results, key):
     cov = set()
     for r in results:
-        if r.get('coverage'):
-            cov |= r['coverage']
-    ob = drvenv.OBJ_BASE + ((-base.driver_hub) % 4)
-    print('')
-    print('COVERAGE of the baseline image over these scenarios:')
+        if r.get(key):
+            cov |= r[key]
+    return cov
+
+
+def _obj_base(img):
+    return drvenv.OBJ_BASE + ((-img.driver_hub) % 4)
+
+
+def _image_rows(img, cov):
+    """Per code image: (image, longs, never, conditionals seen, one-way, test-and-branches seen, one-way)."""
     import p2cog
-    for label, start, end in (('cog', 'DRIVER', 'ALL_PINS'), ('LUT resident', 'LUTCODESTART', 'LUTCODEEND'),
-                              ('overlay', 'PLANOVLSTART', 'PLANOVLEND')):
-        hs, he = base.sym_hub(start), base.sym_hub(end)
-        if hs is None or he is None:
-            continue
+    ob = _obj_base(img)
+    rows = []
+    for im in img.images():
         never, oneway, br1 = [], [], []
         n = nc = nb = 0
-        for h in range(hs, he, 4):
+        for h in range(im.hub_start, im.hub_end, 4):
             n += 1
             a = ob + h
-            w = base.long_at(h)
+            w = img.long_at(h)
             if (a, 1) not in cov:
-                never.append(base.name_for_hub(h))
+                never.append(img.name_for_hub(h))
             cond = w >> 28
             if w and cond not in (0, 15) and ((a, 0) in cov or (a, 1) in cov):
                 nc += 1
                 if not ((a, 0) in cov and (a, 1) in cov):
-                    oneway.append('%s(%s)' % (base.name_for_hub(h), 'always' if (a, 1) in cov else 'never'))
+                    oneway.append('%s(%s)' % (img.name_for_hub(h), 'always' if (a, 1) in cov else 'never'))
             nm = p2cog.disasm(w).split()
             nm = nm[1] if nm and nm[0].startswith(('if_', '_ret_')) and len(nm) > 1 else (nm[0] if nm else '')
             if nm in ('tjz', 'tjnz', 'djnz', 'jnct1') and (a, 1) in cov:
                 nb += 1
                 if not ((a, 2) in cov and (a, 3) in cov):
-                    br1.append('%s(%s)' % (base.name_for_hub(h), 'taken' if (a, 2) in cov else 'not taken'))
-        print('    %-13s executed %d/%d; never: %s' % (label, n - len(never), n, ', '.join(never) or 'none'))
-        print('    %-13s conditionals both ways %d/%d; one way only: %s' % ('', nc - len(oneway), nc,
-                                                                            ', '.join(oneway) or 'none'))
-        print('    %-13s test-and-branch both ways %d/%d; one way only: %s' % ('', nb - len(br1), nb,
-                                                                               ', '.join(br1) or 'none'))
+                    br1.append('%s(%s)' % (img.name_for_hub(h), 'taken' if (a, 2) in cov else 'not taken'))
+        rows.append((im, n, never, nc, oneway, nb, br1))
+    return rows
+
+
+class _Names:
+    """Names for the operands of one image's code, for matching an instruction to its moved copy in the other.
+
+    A register is the set of names at its address (a C1 alias carries two); a branch target the set of code labels,
+    global or local, at its org address. Two operands match when their sets share a name, so an instruction reading
+    a register that was aliased, or jumping to a routine that moved, still matches."""
+
+    def __init__(self, img):
+        self.img = img
+        self.code = {}            # (image name, org) -> {label}
+        self.globals = {}         # name -> hub, global labels on a code long
+        for name, (org, hub, typ) in img.dat.items():
+            if org is None or typ == 'DAT_LONG_RES':
+                continue
+            im = img.image_at_hub(hub)
+            if im is None or im.org_of(hub) != org:
+                continue
+            self.code.setdefault((im.name, org), set()).add(name)
+            if '.' not in name:
+                self.globals[name] = hub
+        self.lut = [im for im in img.images() if im.kind == 'lut']
+
+    def reg(self, a):
+        """A register's names: its own labels, LABEL+k for every label 1..3 longs below it (an element of a short
+        array, such as adc_modes+1, keeps that name when a C1 alias gives its long a label of its own), and, for a
+        long with no label, LABEL+k from the nearest label below it."""
+        if a >= 0x1F0:
+            return frozenset(['$%03X' % a])
+        names = self.img.cog_names
+        s = set(names.get(a, ()))
+        for k in range(1, 4):
+            for x in names.get(a - k, ()):
+                s.add('%s+%d' % (x, k))
+        if not names.get(a):
+            for k in range(1, a + 1):
+                if names.get(a - k):
+                    s.update('%s+%d' % (x, k) for x in names[a - k])
+                    break
+        return frozenset(s) if s else frozenset(['$%03X' % a])
+
+    def target(self, im, t):
+        """A LUT target is named from EVERY LUT image: which image is loaded at the time of the branch is a run-time
+        fact (resident code calls into an overlay loaded over the start image at the same addresses)."""
+        if t < 0x200:
+            s = self.code.get(('cog', t))
+        else:
+            s = set()
+            for li in self.lut:
+                s |= self.code.get((li.name, t), set())
+        return frozenset(s) if s else frozenset(['@$%03X' % t])
+
+
+def _desc(nm, im, h):
+    """(core bits, D operand, S operand) of the long at hub h: a register or a target as a name set, else a value."""
+    import p2cog
+    img = nm.img
+    w = img.long_at(h)
+    if w == 0:
+        return (0, None, None)
+    pc = im.org_of(h)
+    op = (w >> 21) & 0x7F
+    if op in _BR_ABS:
+        a = w & 0xF_FFFF
+        t = ((pc + 1 + (p2cog.sx(a, 20) >> 2)) & 0xF_FFFF) if (w >> 20) & 1 else a
+        return (w >> 21, None, nm.target(im, t))
+    if op >= 0x78:                                   # AUGS/AUGD: the value itself
+        return (w, None, None)
+    fn = p2cog._OPS.get(op)
+    dec = fn(w) if fn else None
+    if dec is None:
+        return (w, None, None)
+    # fields that select an operation rather than a register are compared as values: the D-only group's S
+    #  (p2kbPasm2Setq ...), and D for POLLx/WAITx, MODCZ and JNCT1's event code
+    if op == 0x6B:
+        d = dec.d if (dec.imm_d or dec.s in (0x024, 0x06F)) else nm.reg(dec.d)
+        return (w >> 18, d, dec.s)
+    d = dec.d if (dec.imm_d or op == 0x5E) else nm.reg(dec.d)
+    if dec.imm_s and op in _BR_S:
+        s = nm.target(im, (pc + 1 + p2cog.sx(dec.s, 9)) & 0xF_FFFF)
+    elif dec.imm_s and op in _ALT:
+        s = nm.reg(dec.s)
+    else:
+        s = dec.s if dec.imm_s else nm.reg(dec.s)
+    return (w >> 18, d, s)
+
+
+def _same(x, y):
+    if x[0] != y[0]:
+        return False
+    for u, v in ((x[1], y[1]), (x[2], y[2])):
+        if isinstance(u, frozenset) and isinstance(v, frozenset):
+            if not (u & v):
+                return False
+        elif u != v:
+            return False
+    return True
+
+
+def _routines(nm, common):
+    """{routine: [(image, hub)]}: each image's code longs, grouped under the last label both images carry."""
+    img = nm.img
+    at = {}
+    for name in common:
+        at.setdefault(nm.globals[name], []).append(name)
+    out = {}
+    for im in img.images():
+        cur = None
+        for h in range(im.hub_start, im.hub_end, 4):
+            here = sorted(n for n in at.get(h, ()) if img.dat[n][0] == im.org_of(h))
+            if here:
+                cur = here[0]
+            if cur is not None:
+                out.setdefault(cur, []).append((im, h))
+    return out
+
+
+def _align(a, b):
+    """The longest common subsequence of two descriptor lists under _same: the index pairs."""
+    n, m = len(a), len(b)
+    L = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        Li, Li1 = L[i], L[i + 1]
+        ai = a[i]
+        for j in range(m - 1, -1, -1):
+            Li[j] = Li1[j + 1] + 1 if _same(ai, b[j]) else max(Li1[j], Li[j + 1])
+    i = j = 0
+    pairs = []
+    while i < n and j < m:
+        if _same(a[i], b[j]) and L[i][j] == L[i + 1][j + 1] + 1:
+            pairs.append((i, j))
+            i += 1
+            j += 1
+        elif L[i + 1][j] >= L[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return pairs
+
+
+def moved_code(base, cand, bcov, ccov):
+    """Match every baseline instruction to its copy in the candidate, wherever the candidate put it: routine by
+    routine (the code under each global label both images carry on a code long), by the longest common subsequence
+    of instructions whose opcode, condition, flags and immediates are equal and whose registers and branch targets
+    share a name. A matched instruction was MOVED; an unmatched one was changed or removed by the work package.
+    Returns [(routine, base hub, cand hub, executed b, executed c, both-ways b, both-ways c)]."""
+    nb, nc = _Names(base), _Names(cand)
+    common = set(nb.globals) & set(nc.globals)
+    rb, rc = _routines(nb, common), _routines(nc, common)
+    obb, obc = _obj_base(base), _obj_base(cand)
+    out = []
+
+    def ways(cov, a, w):
+        cond = w >> 28
+        if w and cond not in (0, 15):
+            return (a, 0) in cov and (a, 1) in cov
+        op = (w >> 21) & 0x7F
+        if op in (0x5B, 0x5C, 0x5E):
+            return (a, 2) in cov and (a, 3) in cov
+        return None
+    for r in sorted(set(rb) & set(rc)):
+        la = [_desc(nb, im, h) for im, h in rb[r]]
+        lb = [_desc(nc, im, h) for im, h in rc[r]]
+        for i, j in _align(la, lb):
+            hb, hc = rb[r][i][1], rc[r][j][1]
+            ab, ac = obb + hb, obc + hc
+            wb, wc = base.long_at(hb), cand.long_at(hc)
+            out.append((r, hb, hc, (ab, 1) in bcov, (ac, 1) in ccov, ways(bcov, ab, wb), ways(ccov, ac, wc)))
+    return out
+
+
+def _coverage(results, base, cand):
+    """The plan's coverage gate, for both images: every instruction executed, every conditional both ways, every
+    test-and-branch both ways; then moved code, which must be covered in the candidate at least as the baseline
+    covered it. Returns True when moved code lost coverage (the run is then INCOMPLETE, exit 3)."""
+    bcov, ccov = _union(results, 'coverage'), _union(results, 'cand_coverage')
+    rows = {}
+    for img, cov in ((base, bcov), (cand, ccov)):
+        rows[img.label] = _image_rows(img, cov)
+    print('')
+    print('COVERAGE over these scenarios (every code image, both builds):')
+    print('    %-9s %-14s %13s %17s %17s' % ('', 'image', 'executed', 'cond. both ways', 'branch both ways'))
+    for img in (base, cand):
+        for k, (im, n, never, nc, oneway, nb, br1) in enumerate(rows[img.label]):
+            print('    %-9s %-14s %6d/%-6d %8d/%-8d %8d/%-8d' % (img.label if k == 0 else '', im.title,
+                                                               n - len(never), n, nc - len(oneway), nc,
+                                                               nb - len(br1), nb))
+    for img in (base, cand):
+        print('    %s:' % img.label)
+        for im, n, never, nc, oneway, nb, br1 in rows[img.label]:
+            print('      %-14s never: %s' % (im.title, ', '.join(never) or 'none'))
+            print('      %-14s conditionals one way only: %s' % ('', ', '.join(oneway) or 'none'))
+            print('      %-14s test-and-branch one way only: %s' % ('', ', '.join(br1) or 'none'))
+    mv = moved_code(base, cand, bcov, ccov)
+    eb = sum(1 for x in mv if x[3])
+    ec = sum(1 for x in mv if x[4])
+    lost = [x for x in mv if x[3] and not x[4]]
+    wlost = [x for x in mv if x[5] and x[6] is False]
+    nb_total = sum(r[1] for r in rows[base.label])
+    print('    moved code: %d of the baseline\'s %d code longs matched in the candidate (the rest changed or removed);'
+          % (len(mv), nb_total))
+    matched = set(x[1] for x in mv)
+    gone = [base.name_for_hub(h) for im in base.images() for h in range(im.hub_start, im.hub_end, 4)
+            if h not in matched]
+    print('      not matched (changed or removed; not checked here): %s' % (
+        ', '.join(gone[:40]) + (' ...' if len(gone) > 40 else '') if gone else 'none'))
+    print('      executed: baseline %d, candidate %d; executed in the baseline only: %s' % (
+        eb, ec, ', '.join('%s -> %s' % (base.name_for_hub(x[1]), cand.name_for_hub(x[2])) for x in lost[:40])
+        or 'none'))
+    print('      both ways in the baseline, one way in the candidate: %s' % (
+        ', '.join('%s -> %s' % (base.name_for_hub(x[1]), cand.name_for_hub(x[2])) for x in wlost[:40]) or 'none'))
+    if lost or wlost:
+        print('COVERAGE FAILURE: moved code the candidate covers less than the baseline did (%d instructions never '
+              'executed, %d decisions one way only); the proof does not reach it' % (len(lost), len(wlost)))
+        return True
+    return False
 
 
 if __name__ == '__main__':

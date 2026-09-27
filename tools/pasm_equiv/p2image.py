@@ -204,17 +204,88 @@ class Image:
         return n if d == 0 else '%s+%d' % (n, d)
 
     def usage(self):
-        """Cog / LUT / overlay use as the listing gives it (the `fit` figures)."""
-        out = {}
-        out['cog_used'] = max(self.cog_sym.values()) + 1
-        s, e = self.sym_addr('LUTCODESTART'), self.sym_addr('LUTCODEEND')
-        if s is not None and e is not None:
-            out['lut_resident_end'] = e
-            out['lut_used'] = e - s
-        s, e = self.sym_addr('PLANOVLSTART'), self.sym_addr('PLANOVLEND')
-        if s is not None and e is not None:
-            out['overlay_used'] = e - s
+        """Cog and per-LUT-image use as the listing gives it (the `fit` figures)."""
+        out = {'cog_used': max(self.cog_sym.values()) + 1}
+        for im in self.images():
+            if im.kind == 'lut':
+                out['lut:' + im.name] = im.used
         return out
+
+    # ---- the code images ----
+    def images(self):
+        """Every code image the driver has, discovered from the listing, never from a fixed list of labels:
+
+        * `cog`: the org-0 image COGINIT loads, from DRIVER. `used` counts every org-0 long, RES included (the
+          `fit 496` figure). Its CODE range, for coverage, ends at the first org-0 data long, ALL_PINS; without
+          that label it ends at the first RES long.
+        * one LUT image per global label pair NAME+START / NAME+END (lutCodeStart/lutCodeEnd, runCodeStart/
+          runCodeEnd, planOvlStart/planOvlEnd, a future releaseStart/releaseEnd ...) under an org >= $200. Its
+          `loaders` are the SETQ2 #n-1 sites, in the cog image or any LUT image, whose block size is the image's.
+          An image no SETQ2 loads is still listed, with no loaders.
+        Images overlap in LUT addresses (a run image loaded over a start image) but never in hub bytes."""
+        if getattr(self, '_images', None) is not None:
+            return self._images
+        ims = []
+        drv = self.dat['DRIVER']
+        ce = self.dat.get('ALL_PINS')
+        if ce is None or ce[0] is None:
+            res = [c for c, h, t in self.dat.values() if t == 'DAT_LONG_RES' and c is not None and c < 0x200]
+            ce_org = min(res) if res else max(self.cog_sym.values()) + 1
+        else:
+            ce_org = ce[0]
+        ims.append(CodeImage('cog', 'DRIVER', None, 'cog', drv[0], max(self.cog_sym.values()) + 1, 496,
+                             drv[1], drv[1] + 4 * (ce_org - drv[0])))
+        for name, (org, hub, typ) in self.dat.items():
+            if '.' in name or org is None or org < 0x200 or not name.endswith('START'):
+                continue
+            stem = name[:-5]
+            e = self.dat.get(stem + 'END')
+            if e is None or e[0] is None or e[0] < org or e[1] - hub != 4 * (e[0] - org):
+                continue
+            ims.append(CodeImage(stem, name, stem + 'END', 'lut', org, e[0] - org, 512, hub, e[1]))
+        ims[1:] = sorted(ims[1:], key=lambda im: im.hub_start)
+        sizes = {}
+        for im in ims:
+            for h in range(im.hub_start, im.hub_end, 4):
+                w = self.long_at(h)
+                if (w >> 21) & 0x7F == 0x6B and (w & 0x1FF) == 0x029 and (w >> 18) & 1:
+                    sizes.setdefault(((w >> 9) & 0x1FF) + 1, []).append(self.name_for_hub(h))
+        for im in ims:
+            if im.kind == 'lut':
+                im.loaders = sizes.get(im.used, [])
+        self._images = ims
+        return ims
+
+    def image_at_hub(self, hub_off):
+        for im in self.images():
+            if im.hub_start <= hub_off < im.hub_end:
+                return im
+        return None
+
+
+class CodeImage:
+    """One code image of the driver: where it sits in the hub object and at which cog/LUT org it runs."""
+
+    def __init__(self, name, start_label, end_label, kind, org, used, size, hub_start, hub_end):
+        self.name = name
+        self.start_label = start_label
+        self.end_label = end_label
+        self.kind = kind                 # 'cog' | 'lut'
+        self.org = org                   # the org address of its first long
+        self.used = used                 # longs (the cog figure counts RES longs too)
+        self.size = size                 # 496 (cog, below the special registers) or 512 (LUT)
+        self.hub_start = hub_start       # its code longs, hub byte offsets in the object, [start, end)
+        self.hub_end = hub_end
+        self.loaders = []
+
+    @property
+    def title(self):
+        if self.kind == 'cog':
+            return 'cog'
+        return 'LUT %s' % self.name
+
+    def org_of(self, hub_off):
+        return self.org + (hub_off - self.hub_start) // 4
 
 
 def build_image(label, stage_dir, pnut, git_ref=None, repo=None, srcdir=None):
