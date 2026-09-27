@@ -66,8 +66,22 @@ command reporting its result.
   sets how fast the motors slow down and stop (250 to 10,000 mm/s^2), and with
   it the stopping distance; the stop limits still come to rest at their limit.
   Both may be set before start() and are kept across it; getAcceleration() and
-  getDeceleration() read them back. Until they are called the built-in ramp is
-  unchanged.
+  getDeceleration() read them back. Until they are called the built-in rates
+  apply: 1,000 mm/s^2 speeding up, 1,470 mm/s^2 slowing down (the old ramp
+  down's rate). getAcceleration() returns 1,000 until set, no longer 0.
+- Every ramp is jerk-limited: the acceleration eases in and out over 250 ms
+  (RAMP_TAU_MS), so no start, speed change, stop or reversal begins or ends
+  with a step of torque, and a reversal passes through zero in one continuous
+  ramp instead of stopping and starting again
+- BEHAVIOUR CHANGE: every stop takes about 0.25 s longer and runs about
+  speed x 0.125 s further than the same deceleration without the easing:
+  from 1.13 m/s, about 0.57 m instead of 0.43 m (derived, not yet measured).
+  stopAfterDistance(), stopAfterRotation(), stopAfterTime() and
+  driveForDistance() allow for it and still stop at their limit; a plain
+  stopMotor() / stopMotors() does not, so leave the extra room
+- setRampingValues(): minRamp and incRamp no longer have any effect (they are
+  still range-checked); maxRamp and decrRamp are the two acceleration limits,
+  and getRampingValues() returns the two jerks and the two limits
 - 6.5" motor: commutation uses the motor's measured hall position and a lead
   that follows speed; unloaded running current at low and middle speeds is
   8 to 25 times lower than with v5.0.2's commutation offsets
@@ -224,8 +238,13 @@ Things we know about that still need attention:
   but the drive does not use it yet: getCurrent()'s watts and the speed
   table assume the configured DRIVE_VOLTAGE.
 - getCurrent() does not show regenerative current.
-- Speeds and stopping distances are characterized unloaded; under load the
-  motor has less torque in reserve near top speed.
+- Speeds are characterized unloaded; under load the motor has less torque in
+  reserve near top speed.
+- The jerk-limited ramp has not yet been run on hardware. Its built-in rates
+  (1,000 / 1,470 mm/s^2, 250 ms easing) are provisional and may be retuned,
+  and its stopping distances and times are derived from the driver's
+  arithmetic, not measured (DRIVE-OBJECTS.md, "How far the motor travels
+  while stopping").
 - calibrate() is not implemented.
   v5.0.2
 - Drive status reporting is not working in the base objects, so it is also

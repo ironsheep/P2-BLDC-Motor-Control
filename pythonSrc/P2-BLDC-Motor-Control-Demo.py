@@ -499,7 +499,7 @@ class BLDCMotorControl:
         return onlyValue
 
     # PUB getAcceleration() : nRate
-    #  the speed-up rate, mm/s^2; 0 means the built-in ramp, which has no single rate
+    #  the speed-up rate, mm/s^2; the built-in 1000 until setAcceleration() is called
     def getAcceleration(self):
         commandStr = 'getaccel\n'
         responseStr = self.sendCommand(commandStr)

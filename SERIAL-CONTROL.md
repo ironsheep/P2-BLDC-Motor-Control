@@ -33,6 +33,11 @@ Latest Changes:
   "ERROR Parameter {n} ({text}) is not a decimal integer"
 - New commands: getpackvolt, getcurrent, getfaultcause, getholdstatus,
   gethallcounts, gethallillegal, checkwiring, setstartchecks
+- setaccel {rate} takes mm/s^2 at the wheel rim; setdecel {rate} sets the
+  slow-down and stop rate; getaccel and getdecel read them back (1,000 and
+  1,470 until set). Every ramp eases in and out over 250 ms, so every stop
+  takes about 0.25 s longer and runs about speed x 0.125 s further than
+  before (derived, not yet measured): leave that room after stopmotors
 - The Python demo sends hold as -1 / 0, and has a wrapper for every command
 04 May 2022 v2.0.0
 - Initial Public Release of Serial support

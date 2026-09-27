@@ -226,19 +226,28 @@ The driver runs two nested loops.
 2. read targetIncre         → sync handshake, sign restore
 3. target is 0?             → start the ramp down (or, if stopped, re-apply the stop mode)
 4. target changed?          → taken in EVERY state; a faulted motor is cleared first
-5. ramp drv_incr toward the target, unless the rotor trails (or, slowing, leads)
-   the field by LAG_SOFT (112.5°): then the ramp waits for the rotor this pass
+5. jerkStep: move the acceleration toward its limit by at most one jerk step, then
+   drv_incr by the acceleration, landing exactly on the target; if the field is
+   ahead of the rotor by LAG_SOFT (112.5°) the way the acceleration pushes, the
+   acceleration eases toward 0 by one jerk step instead
 6. advance angle_ by drv_incr, unless the rotor trails by LAG_HOLD (140.6°):
    then the field is held, lag_held counts it, and drv_incr decays toward the
    rate the rotor achieves (1/64 per held pass)
 7. compute the duty feedforward for this pass's speed
 ```
 
-A speed change starts its ramp from `ramp_min` again, as a start from rest does. A direction
-reversal goes through `DCS_SLOW_TO_CHG`: ramp down through zero, then up the other way.
-Default ramps: `ramp_min` 1,500, `ramp_inc` 22 per pass, `ramp_max` 200,000; ramp down is a
-fixed `ramp_down` 50,000 per pass. `setAcceleration()` replaces the ramp up with a constant
-rate converted from mm/s².
+**The ramp is jerk-limited** (DRIVER_REV 38, PL-160). One trajectory generator, `jerkStep` (in
+the LUT), runs every pass the motor is not at rest, whatever the state, and takes every command
+as it stands; the states are now only what it reports. Four parameter longs drive it:
+`accel_up` and `accel_dn`, the acceleration limits (change of `drv_incr` per pass), and
+`jerk_up` and `jerk_dn`, each its limit spread over `RAMP_TAU_MS` (250 ms). The acceleration
+rises by at most a jerk a pass to its limit, and ramps back out to land exactly on the target;
+a limit lowered mid-ramp is unwound at the larger jerk. A reversal passes through zero in one
+continuous ramp: only a start from `DCS_STOPPED` seeds the field from the halls. The
+generator's present acceleration is the last status long, `drv_accel_now`. Built-in limits:
+1,000 mm/s² up and 1,470 mm/s² down (33,958 and 49,918 on the 6.5″ wheel), provisional.
+`setAcceleration()` and `setDeceleration()` set the limits from mm/s²; `setRampingValues()`
+sets them raw, and its `minRamp` and `incRamp` have no effect.
 
 Steps 5 and 6 are why the driver seldom faults any more: the field never gets far enough
 ahead of the rotor to trip the 175.8° fault test unless the rotor is truly lost.
@@ -286,7 +295,8 @@ carried by the offset.
 
 ### The frame loop — current limit
 
-Each frame the DC-link current reading is compared with a threshold scaled from the phase
+Each frame the bridge is driven, the DC-link current reading less `sense_zero` (the rest zero
+`start()` measured), never below 0, is compared with a threshold scaled from the phase
 limit by the modulation depth (`duty × i_limit_k >> 16`, with duty floored at
 `duty_floor`). At or above it, duty folds back about 1.6 % that frame and the trim is
 skipped. `i_limit_k` holds the 40 A peak limit, or the 27 A continuous limit while the front
@@ -331,7 +341,10 @@ schedule re-anchored, never replayed.
 
 ```
 0. confirm a stop written in an earlier pass, or write it again
-1. take, apply and answer the posted requests (e-stops, then stops, then the rest)
+1. take, apply and answer the posted requests (e-stops, then stops, then the rest); one
+   that depends on the driver (a synchronized take, an e-stop release, a fault clear) is
+   held in flight and answered on the pass that sees the driver act, within 4 drive
+   passes (DRIVER_REV 37) -- no front pass waits on a driver
 2. tracking: latch a new fault's cause; accumulate hall ticks since the last pass
    every 8th pass (125 Hz): advance the 1-second rpm window, update the following
    reading, and re-derive the lead (6.5″ only)
@@ -341,9 +354,12 @@ schedule re-anchored, never replayed.
 5. protection: the phase-current average and the derate; the blocked-motor test
 ```
 
-**Stopping distance** is computed from the ramp: a stop from increment `i` takes
-`i ÷ ramp_down + 1` passes and covers `i × passes ÷ 2` of angle, which is 75 hall ticks from
-196 ticks/s on the 6.5″ motor — the figure the bench measured. Only one limit is live at a
+**Stopping distance** is computed from the ramp by `stopPlan()`: the jerk-limited stop's
+phases (unwinding any acceleration still speeding up, the rise, the plateau at `accel_dn`, the
+ramp-out) summed in closed form from the field's present increment *and* acceleration, exact
+against the driver's own per-pass arithmetic, plus the one pass the stop may take to be read.
+From 196 ticks/s on the 6.5″ motor it is about 100 hall ticks, DERIVED and not yet measured;
+the constant-rate ramp before DRIVER_REV 38 gave 75, the figure the bench measured. Only one limit is live at a
 time: a time limit is checked first, and a distance limit only while no time limit is armed.
 
 **The following reading** divides the rpm window's measured rate by the commanded rate. The

@@ -227,7 +227,8 @@ lead table in §5.2.
 | What the servo actually holds | a **point**: mean `err` **47–48 counts** at every rung from 1 to 8, both motors, both directions | MEASURED — `VISIT-8-EVALUATION.md` §3.2 |
 | Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **27,648**, the largest amplitude the PWM carries without clipping after the drive re-centres the three levels each frame | DERIVED from frame and dead-gap; MEASURED clip-free, least room left 2 counts against the desk's 1–2 — `VISIT-9-EVALUATION.md` §2.3 |
 | Dead gap applied | 260 ns (compliant with the 250 ns minimum) | source |
-| Lag: ramp waits | `LAG_SOFT` 80 counts = **112.5°** | source |
+| Lag: ramp eases its acceleration off (at the ramp's own jerk; it froze the ramp before DRIVER_REV 38) | `LAG_SOFT` 80 counts = **112.5°** | source |
+| Ramp shape | jerk-limited (DRIVER_REV 38): acceleration eases in and out over `RAMP_TAU_MS` **250 ms**; built-in limits **1,000 mm/s²** up and **1,470 mm/s²** down, both provisional | source |
 | Lag: field stops advancing | `LAG_HOLD` 100 counts = **140.6°** | source |
 | Lag: fault | 125 counts = **175.8°** | source |
 
@@ -586,6 +587,10 @@ settled at the default rate, 1.51–1.83 at twice it and 1.57–2.13 at four tim
 terms it stays at about 0.2 A. Slowing down produces no surge at either rate tried: the current
 only falls. MEASURED — `VISIT-9-EVALUATION.md` §3.
 
+⬚ Every figure in this section was taken on the ramp before DRIVER_REV 38, which stepped its acceleration
+on and off. The jerk-limited ramp that replaced it (§7.5) has not yet been run on the motor, so how its
+start current compares is not yet known.
+
 Every trace here was taken wheels-up. How a start behaves under load is §9, hole H-6.
 
 ### 6.5 Stopping, faulting and holding
@@ -632,6 +637,11 @@ re-seed its field from the halls and ramp down at the configured deceleration. F
 unit reaches rest in 821–837 ms and 88 ticks, and the RIGHT in 817 ms, against 836 ms predicted by the ramp. A second fault during that
 ramp falls back to the graded short (or to a coast in float mode), and the fallback holds. MEASURED —
 `VISIT-10-PASS2-EVALUATION.md` §3.3, `VISIT-10-PASS5-EVALUATION.md` §2.
+
+⬚ That ramp is the one before DRIVER_REV 38, which held a constant deceleration from its first pass. The
+jerk-limited ramp eases its deceleration in and out over 250 ms (§7.5), which adds about 250 ms and about
+v × 125 ms of travel to every stop: from 80 × 10⁶ (≈ 1.23 m/s), about 1.09 s and about 115 ticks. DERIVED
+from the driver's arithmetic (`stopPlan()`); not yet measured.
 
 This is `FR_GRADED`, and it is the driver's default (DRIVER_REV 31). `FR_SHIPPED`, which coasts or
 shorts at once by stop mode, stays selectable. On a
@@ -706,6 +716,7 @@ identical to a healthy one.
 | Limit | Value | Basis |
 |---|---|---|
 | Peak, loop folds back | **40 A** | 0.75 × the MOSFET's package-limited 54 A at 100 °C case |
+| What the fold-back compares | the sense reading less the rest zero taken at start, never below 0, and only while the bridge is driven (DRIVER_REV 36–37: an undriven bridge's rest offset had held the fold-back on through noise alone) | source |
 | Continuous, derated to | **27 A** | junction ≤ 125 °C at 50 °C ambient, 55 °C/W |
 | Peak restored below | 80% of continuous | design |
 | Averaging window | ~1 s | design |
@@ -775,9 +786,25 @@ logged kicks within about 10 mV before the fix was built. With the arrival pass 
 the worst excess over settled current across the seven worst transitions per wheel and direction is
 **16 mV left and 13 mV right**, against 64–183 before. MEASURED — Visit 10 pass 7, R21-DUAL-TRKICK-T.
 
-What remains at a speed change is the ordinary current it takes to accelerate the wheel. The ramp
-still steps acceleration on and off at its two ends, which a user may feel on a light platform. A
-jerk-limited ramp for that is designed but not built (PL-160).
+What remains at a speed change is the ordinary current it takes to accelerate the wheel. Until
+DRIVER_REV 37 the ramp also stepped its acceleration on and off at its two ends, which a user may feel
+on a light platform.
+
+**The ramp is now jerk-limited** (DRIVER_REV 38, PL-160). One trajectory generator runs every drive
+pass the motor is not at rest. Its acceleration moves toward its limit by at most one jerk step a pass,
+rising from 0 to the limit over `RAMP_TAU_MS` (250 ms) and ramping back out to land exactly on the
+target speed. A reversal passes through zero without a restart, and the rotor-lag gate eases the
+acceleration off rather than freezing it. The built-in limits are 1,000 mm/s² up and 1,470 mm/s²
+down, the latter the old ramp down's rate; both are provisional. source.
+
+What that costs is DERIVED, from the driver's own per-pass arithmetic (`stopPlan()`, which the stop
+limits use to fire early): a stop from speed v at deceleration a takes about v ÷ a + 0.25 s and runs
+about v² ÷ 2a + v × 0.125 s, so every stop is about 250 ms longer and v × 125 ms further than the
+constant-rate ramp. From 196 ticks/s that is about 100 ticks, against the 75 measured on the old ramp.
+
+⬚ **Not yet known.** The generator has not been run on the motor. The feel of a start, a speed change
+and a stop, the current at each, and the stop distances are all derived and unmeasured, and the
+built-in rates may be retuned once they are.
 
 ---
 
@@ -899,6 +926,8 @@ both real:
 
 1. **Safety.** Rev B exists because Rev A boards were damaged in service, and the protection Rev
    A lacked is a current limit. The driver now has one (§7.2), so a driven Rev A leg is possible.
+   (On Rev A's coarse scale, a limit lowered below about 2.7 A folded back on every driven frame
+   until DRIVER_REV 38 made the threshold compare round correctly. source.)
    It is still a risk to a board that is hard to replace, and it would re-measure a drive parameter
    the Rev B pair has already given, so it is worth running only for a question the Rev B pair
    cannot answer.
@@ -962,3 +991,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 | 2026-09-26 | Brought up to Visit 10 passes 1–5. §2.4 adds the winding resistance, measured by the driver (≈ 0.43 Ω, both units within 5 %), and §3.1 adds the sense channels and the shunt's blindness to a phase short (PL-118). §4.6 adds back-EMF seen while coasting from speed. New §6.5 covers stopping, faulting and holding: coast against short, the graded short, the re-synced ramp and the hold. New §6.6 covers what start proves about the motor. §7.1–7.2 updated, and §8 gains stop-mode, hold and start-check advice. Section 9: H-6 widened to the hold and stops under load; H-8 reopened by the pack sensor; H-11 gains R; H-12 FILLED; H-13 (inductance), H-15 (back-EMF while driven) and H-16 (the right unit's loss of drive) OPEN; H-14 CLOSED-UNANSWERABLE. §9.1 adds what Rev A cannot measure. |
 | 2026-09-26 | Visit 10 pass 6: H-16 gains the right board's per-phase signature, and the reseat that did not prevent it; the evidence moves from the motor to the board. §6.6: the wiring walk's fix is certified. |
 | 2026-09-27 | Visit 10 pass 7: §7.5 says what the speed-change kick was (the arrival pass skipped the field increment) and that it is gone (16/13 mV against 64–183). §2.4 recomputes the winding resistance on the calibrated pack voltage, ≈ 0.48 Ω (the nominal 18.5 V had read 12 % low), and §6.5, §8 and H-14 follow it (35–42 A). H-8 records the sensor fitted and calibrated. H-16 records one clean pass after the header reseat. |
+| 2026-09-27 | DRIVER_REV 36–38 from source, no bench data: §7.5 records the jerk-limited ramp as built (PL-160) and its derived stop cost, and says what is not yet known; §3.2 adds the ramp's shape and the lag gate's new behaviour; §6.4 and §6.5 mark their ramp figures as the pre-38 ramp's and give the derived controlled-stop figures; §7.2 states what the fold-back compares; §9.1 notes the Rev A threshold fix. |
