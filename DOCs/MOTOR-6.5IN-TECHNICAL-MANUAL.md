@@ -641,7 +641,9 @@ ramp falls back to the graded short (or to a coast in float mode), and the fallb
 ⬚ That ramp is the one before DRIVER_REV 38, which held a constant deceleration from its first pass. The
 jerk-limited ramp eases its deceleration in and out over 250 ms (§7.5), which adds about 250 ms and about
 v × 125 ms of travel to every stop: from 80 × 10⁶ (≈ 1.23 m/s), about 1.09 s and about 115 ticks. DERIVED
-from the driver's arithmetic (`stopPlan()`); not yet measured.
+from the driver's arithmetic (`stopPlan()`). **MEASURED wheels up** (release-candidate pass, 2026-09-27,
+DRIVER_REV 46): a stop from 81.7 × 10⁶ took **2,117 drive passes, 1,106 ms, and ran 122 ticks** against the
+driver's own prediction of 120 (`T0-25,plan,leg,0`), consistent with the derivation.
 
 This is `FR_GRADED`, and it is the driver's default (DRIVER_REV 31). `FR_SHIPPED`, which coasts or
 shorts at once by stop mode, stays selectable. On a
@@ -802,9 +804,16 @@ limits use to fire early): a stop from speed v at deceleration a takes about v �
 about v² ÷ 2a + v × 0.125 s, so every stop is about 250 ms longer and v × 125 ms further than the
 constant-rate ramp. From 196 ticks/s that is about 100 ticks, against the 75 measured on the old ramp.
 
-⬚ **Not yet known.** The generator has not been run on the motor. The feel of a start, a speed change
-and a stop, the current at each, and the stop distances are all derived and unmeasured, and the
-built-in rates may be retuned once they are.
+**MEASURED wheels up** (release-candidate pass, 2026-09-27, DRIVER_REV 46, `VISIT-10-RC-EVALUATION.md`):
+sampled pass by pass, a start from rest, a slow-down and an arrival each moved the acceleration by at
+most one jerk step a pass (71 up, 104 down) and never past its limit (33,958 / 49,918), and settled on
+the target; a reversal from +40 × 10⁶ to −40 × 10⁶ passed through zero without the driver reporting
+STOPPED; a stop read at full speed-up unwound its acceleration in 327 passes, as derived. Stop limits
+armed at cruise and mid-ramp came to rest within 2 ticks and 2 ms of their limits. The speed-change kick
+on this ramp is **10 mV left and 12 mV right** (TRKICK-T; 16 / 13 on the stepped ramp).
+
+⬚ **Not yet known.** The feel of a start, a speed change and a stop on the floor, the current each draws
+under load, and whether the built-in rates suit a loaded platform: floor-run items.
 
 ---
 
@@ -995,3 +1004,4 @@ Bench logs referenced by name live beside their evaluations under `DOCs/analyses
 | 2026-09-26 | Visit 10 pass 6: H-16 gains the right board's per-phase signature, and the reseat that did not prevent it; the evidence moves from the motor to the board. §6.6: the wiring walk's fix is certified. |
 | 2026-09-27 | Visit 10 pass 7: §7.5 says what the speed-change kick was (the arrival pass skipped the field increment) and that it is gone (16/13 mV against 64–183). §2.4 recomputes the winding resistance on the calibrated pack voltage, ≈ 0.48 Ω (the nominal 18.5 V had read 12 % low), and §6.5, §8 and H-14 follow it (35–42 A). H-8 records the sensor fitted and calibrated. H-16 records one clean pass after the header reseat. |
 | 2026-09-27 | DRIVER_REV 36–38 from source, no bench data: §7.5 records the jerk-limited ramp as built (PL-160) and its derived stop cost, and says what is not yet known; §3.2 adds the ramp's shape and the lag gate's new behaviour; §6.4 and §6.5 mark their ramp figures as the pre-38 ramp's and give the derived controlled-stop figures; §7.2 states what the fold-back compares; §9.1 notes the Rev A threshold fix. |
+| 2026-09-27 | Visit 10 release-candidate pass (DRIVER_REV 46): §7.5 records the jerk-limited ramp measured wheels up (per-pass shape, reversal, unwind, stop limits within 2 ticks / 2 ms) and the kick at 10 / 12 mV; §6.5 records a measured stop from 81.7 × 10⁶ (1,106 ms, 122 ticks against 120 predicted). |

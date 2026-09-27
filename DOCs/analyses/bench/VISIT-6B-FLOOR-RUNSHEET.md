@@ -23,8 +23,31 @@ bench visit before 6.0, so it has to decide every load-dependent release item in
 It also carries the floor run's own claims, unchanged since «#3591»: the commutation offsets under load, R18.3's loaded
 expectations, X-5 on the floor (PL-117), and the hold on an incline, which sizes `HOLD_CEILING_PCT`.
 
-**Not in this visit:** the serial path and the demos (the release-candidate pass, `VISIT-10-RUNSHEET.md`). The 27 A
-derate cannot be reached on this rig.
+The release-candidate pass (2026-09-27) adds two claims here: **PL-144**, the path limiter under load (LDPATH;
+PATH-HUNT's precondition never arises wheels up), and the hold's own question, **HOLDSET / NOTFOL** (pass 7's wheels-up
+PASS were an artifact of the PL-146 defect, so LDHOLD and HELDATSPD are now the hold's only evidence; PL-150's note).
+
+**The demos ran at the release-candidate pass (PL-149 certified).** The 27 A derate cannot be reached on this rig.
+
+---
+
+## Block A — wheels up, BEFORE the platform goes on the floor (added after the release-candidate pass)
+
+The release-candidate pass left three wheels-up items. They run first, on the same pull, while the wheels are still up.
+`git log --oneline -1 -- src/` must show the commit carrying **test_bench_t0 SRC_REV 28** (harness only; DRIVER_REV 46).
+
+| Order | Command | Why | Minutes |
+|---|---|---|---|
+| A1 | `tools/bench-run.sh t0-stopreason` | re-certifies RAMP-SHAPE, RAMP-UNWIND, RAMP-REVERSE, SR-ATLIMIT and EV-STOP after the three harness fixes (RC evaluation F1–F3); banner `src_rev 28` | 2 |
+| A2 | `tools/bench-run.sh dual-pack` | **only if** the Powerpole was not unplugged at the RC pass's prompt (RC F7). Unplug and replug AT THE PACK when told, twice | 3 |
+| A3 | the serial step | **only if** it did not run at the RC pass: `VISIT-10-RUNSHEET.md` step 12, unchanged | 2 + wiring |
+| A4 | `tools/bench-run.sh t0-reva` | optional, your call (PL-163): the Rev A block in `VISIT-10-RUNSHEET.md` | 1 + swaps |
+
+What A1 decides (criteria in source, unchanged except as the SRC_REV 28 note says): R22-T0-RAMP-SHAPE, -REVERSE and
+-UNWIND PASS; R20-T0-SR-ATLIMIT reads SR_COMMANDED on its negative (`T0-25,leg,ATLIMIT_NEG,...,sr_stop,41`); R20-T0-EV-STOP
+reads `41 42 41 47 41 46 41`. Everything else in the tier as at the RC pass.
+
+Then battery off, the platform on the floor, and the floor run below.
 
 ---
 

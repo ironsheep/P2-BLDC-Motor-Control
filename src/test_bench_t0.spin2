@@ -286,6 +286,15 @@
 ''               setAcceleration() / setDeceleration() of the rates read before (the same rate gives the same step,
 ''               so the restored limits are exact, and T0-5 now also judges that). R20-T0-API-ACCEL loses its three
 ''               raw rows (setRampingValues.raw, .min0, .cap) and T0A_RAW_UP / T0A_RAW_DN with them.
+''               27 Sep 2026 -- SRC_REV 28: three instrument defects the release-candidate pass found (no driver
+''               change). (1) ATLIMIT's negative leg arms its own T0_25_NEG_LIMIT_MS (1_000, DERIVED at the constant):
+''               the 300 ms limit fired ~90 ms into the drive, before the negative's stopMotor(), because a time limit
+''               now fires when the driver's stop plan reaches its deadline -- R20-T0-SR-ATLIMIT and -EV-STOP read
+''               42 where 41 was the design's. (2) A stop's landing pass is judged by the step it took (-vPrev) and
+''               then its end at rest, not by the a = 0 jerkStep publishes on that pass -- RAMP-SHAPE's stops and
+''               RAMP-UNWIND scored |aPrev| (189, 136) as one jerk. (3) The target is read SIGNX 30, as gettgtincr
+''               reads it: bit 31 is the sync flag, so the reversal's -40_075_744 read +2_107_407_904 and REVERSE
+''               could never arrive (NOMEAS).
 ''
 '' =================================================================================================
 
@@ -401,7 +410,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 27                                       ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 28                                       ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -477,6 +486,13 @@ CON { stop reasons and the event log (T0-25, -D T0_STOPREASON only; task 3621, D
     T0_25_STICKY_MS     = 500                                   ' COMMANDED: the reason still reads the same this much later
     T0_25_LIMIT_MS      = 300                                   ' ATLIMIT: stopAfterTime()'s limit, DTU_MILLISEC
     T0_25_EARLY_MS      = 100                                   ' ATLIMIT's negative: stopMotor() this soon, the limit still armed
+    ' SRC_REV 28: the negative's own limit. DRIVER_REV 38/39 fire a time limit when the driver's own stop plan reaches
+    '  the deadline, so a 300 ms limit fires ~90 ms into a power-15 drive (from 100 ms in, the stop takes ~220 ms: the
+    '  unwind of the rising acceleration, then the S-curve down), BEFORE the negative's stopMotor() -- pass RC read
+    '  SR_AT_LIMIT there. DERIVED bound: the longest stop from a power-15 drive is the unwind (A / Jx = 327 passes, 171 ms)
+    '  plus the triangular stop from its speed (2 sqrt(v / J) = 843 passes, 441 ms at 18.5 x 10^6) -- ~612 ms -- plus
+    '  the plan's early bias (~4 ms). A 1_000 ms limit therefore cannot fire before ~384 ms, well after T0_25_EARLY_MS.
+    T0_25_NEG_LIMIT_MS  = 1_000
     T0_25_TIMEOUT_MS    = 100                                   ' LINKLOST: setCommandTimeout()
     T0_25_SILENT_MS     = 400                                   ' ...and no command for this long
     T0_25_REFRESH_MS    = 30                                    ' LINKLOST's negative: the drive re-sent this often, for T0_25_SILENT_MS
@@ -3278,8 +3294,10 @@ PRI t0rLeg(legIdx) : eErr, srOpen, srStop, srAfter | startMs, bRest
 
     eErr := motor.NO_ERROR
     case legIdx
-        T0R_LEG_LIMIT, T0R_LEG_LIMIT_NEG:
+        T0R_LEG_LIMIT:
             eErr := motor.stopAfterTime(T0_25_LIMIT_MS, motor.DTU_MILLISEC)     ' armed before the drive it limits
+        T0R_LEG_LIMIT_NEG:
+            eErr := motor.stopAfterTime(T0_25_NEG_LIMIT_MS, motor.DTU_MILLISEC) ' SRC_REV 28: long enough not to fire first
         T0R_LEG_LINK:
             eErr := motor.setCommandTimeout(T0_25_TIMEOUT_MS)                   ' left on through LINK_NEG
     eErr := t0rFirstErr(eErr, motor.driveAtPower(T0_25_POWER))
@@ -3302,7 +3320,7 @@ PRI t0rLeg(legIdx) : eErr, srOpen, srStop, srAfter | startMs, bRest
             waitms(T0_25_EARLY_MS)
             motor.stopMotor()
             srStop := motor.getStopReason()
-            waitms(T0_25_LIMIT_MS)                                              ' past the armed deadline: it fires at rest, no drive open
+            waitms(T0_25_NEG_LIMIT_MS)                                          ' past the armed deadline: it fires at rest, no drive open
             srAfter := motor.getStopReason()
         T0R_LEG_ESTOP:
             waitms(T0_25_RUN_MS)
@@ -4025,7 +4043,7 @@ PRI t0rTarget() : nTarget
 '
 ' @returns nTarget - the angle increment the driver is told to reach
 
-    nTarget := long[t0pLaunch][T0R_LN_TARGET]
+    nTarget := long[t0pLaunch][T0R_LN_TARGET] signx 30                         ' SRC_REV 28: bit 31 is the sync flag (gettgtincr's SIGNX #30)
 
 PRI bT0pPost(tgtBefore, eMode, boundMs) : bArmed | startMs
 ' Post one watch to the sampler cog and wait, bounded by T0_25_HANDSHAKE_MS, until it has taken its baseline.
@@ -4141,7 +4159,7 @@ PRI t0pWatch(jobSeq) | passCt, settleCt, boundCt, startCt, nowCt, goodCt, arrive
     t0pArmedSeq := jobSeq                                                       ' cog 0 may send the command now
     repeat until bDone
         nowCt := getct()
-        tgt := long[t0pLaunch][T0R_LN_TARGET]
+        tgt := long[t0pLaunch][T0R_LN_TARGET] signx 30                         ' SRC_REV 28: bit 31 is the sync flag, not the sign
         vNow := long[t0pStatus][T0R_ST_INCR]
         accNow := long[t0pStatus][T0R_ST_ACCEL]
         eState := long[t0pStatus][T0R_ST_STATE]
@@ -4238,6 +4256,12 @@ PRI t0pNewPass(vPrev, aPrev, vNow, accNow, bClose)
 
     if bClose == FALSE
         t0pUnres++
+    elseif (vNow == 0) and (accNow == 0) and (vPrev <> 0)
+        ' SRC_REV 28: a stop's landing pass. jerkStep's .atRest publishes a = 0 on the pass v reaches 0, but the step
+        '  that pass took is v's own change, -vPrev; judging the published 0 scored |aPrev| as one jerk (pass RC: 189
+        '  and 136 against 104). Judge the step taken, then its end at rest (-vPrev to 0), which is the next change of a.
+        t0pJudge(vPrev, aPrev, vNow, -vPrev)
+        t0pJerkPk #>= abs(vPrev)
     elseif ((vNow - vPrev) == accNow) or ((vNow == 0) and (accNow == 0))
         t0pJudge(vPrev, aPrev, vNow, accNow)
     else

@@ -19,6 +19,11 @@ closed by the 2026-09-26 release audit are in
 Pass 7 (2026-09-26) closed: PL-66, 78, 87, 143, 147, 151, 152, 153, 155, 156, 158, 159
 ([archive](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-27.md)).
 
+The release-candidate pass (2026-09-27, DRIVER_REV 46,
+[evaluation](analyses/bench/2026-09-27/rc/VISIT-10-RC-EVALUATION.md)) certified: **PL-14, 51, 52, 145, 146, 149, 161**
+(each marked ✅ under its heading; archived at the next sweep). Open after it: 13 release items below, and one visit
+(a short wheels-up block, then the floor run the same day).
+
 The owner's rule for 6.0.0 (Stephen, 2026-09-26): *"What we need is not an eye towards looking for things we
 can address, but an eye towards whether we have everything we need to meet the criteria for the features that
 we're trying to release in 6."* Only work that makes a 6.0 feature (README.md "Latest Changes", v6.0.0) operational
@@ -42,30 +47,22 @@ do the right thing, and then we can call them done without having to test on the
 | Entry | What it is | What closes it |
 | --- | --- | --- |
 | PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | A blocked-wheel cell that trips SR_BLOCKED (the floor run «#3576» has none today) |
-| PL-145 | The steering time stop confirmed rest 86 ms past its deadline (pass 7) | pass 8: R16-DUAL-TIMESTOP |
-| PL-148 | The serial control path (object, protocol doc, Python demo) has never run on hardware | A host-driven serial run, wheels up |
-| PL-149 | No shipped demo has run on hardware against the 6.0 API | One wheels-up run of each release demo |
-| PL-150 | The floor run has no cells for the path limiter or the overload hold under load | Two cells added to the floor run, then the floor run |
-| PL-154 | Serial: hold can't be set from the host example, commands can wait 1 s, non-numbers accepted | Fix the wrapper, the loop and the parser; serial certification run |
-| PL-157 | Serial and the Python host lag the 6.0 getters | Serial command + doc row + Python wrapper for each |
-| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator; the API half certified at pass 7) | Build the generator (owner Q2-Q5), wheels-up cells, feel on the floor |
-| PL-161 | The steering front cog overruns its 1 ms slot | RC pass: R20-DUAL-FRONTST-EV (dual-fault, max ≤ 950 µs, no late pass), R16-DUAL-FRONTST-D (dual-d, limits armed, under 1 ms, late 0), R22-T0-FRAMESLACK (t0-stopreason, no PWM frame overrun from the stop planner) |
-| PL-162 | Two pack cells judged with a wrong instrument (PACK-ABSENT reference, PACK-X criterion) | pass 8: R20-PACK-ABSENT and R19-DUAL-PACK-X |
+| PL-148 | The serial control path (object, protocol doc, Python demo) has never run on hardware | The serial step (the RC sheet's step 12): not run at the RC pass |
+| PL-150 | The floor run has no cells for the path limiter or the overload hold under load | The floor run (cells built, SRC_REV 58-61); it now also carries HOLDSET/NOTFOL's question (RC F4) |
+| PL-154 | Serial: hold can't be set from the host example, commands can wait 1 s, non-numbers accepted | The serial step |
+| PL-157 | Serial and the Python host lag the 6.0 getters | The serial step |
+| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Built (DRIVER_REV 38); wheels-up: t0-stopreason at SRC_REV 28 (RAMP-SHAPE, -UNWIND, -REVERSE failed at the RC pass on harness defects, fixed); feel on the floor; owner Q4, Q5 |
+| PL-162 | Two pack cells judged with a wrong instrument (PACK-ABSENT reference, PACK-X criterion) | PACK-X certified at the RC pass; PACK-ABSENT timed out unseen (RC F7): Stephen's fact decides |
 
 **Awaits certification** (fix built, not yet run)
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-14 | The voltage argument to `start()` used to be ignored | pass 8: R20-T0-API-PERSIST (t0 SRC_REV 24, start at 14.8 V reads back) |
-| PL-51 | The steering getter for distance speed returned the wrong value | pass 8: R20-T0-API-STEER (set/read-back rows) |
-| PL-52 | `getPower()` kept reporting power after a stop | pass 8: R20-T0-SR-COMMANDED (`T0-25,power` 15 then 0) |
 | PL-93 | After a fault and recovery, the next drive drew 3-4x current | The loaded floor run |
 | PL-95 | The drive ran saturated above mid-range and still reported AT_SPEED | The kick (PL-87) and the loaded floor run |
 | PL-111 | A serial host could not clear a protective stop | A provoked protective stop (PL-106) |
 | PL-132 | The blocked-wheel stop shorted the phases even under coast | The floor run |
-| PL-144 | The two-wheel path limiter cycled the platform between crawl and full | pass 8: R20-DUAL-PATH-HUNT = 1 (precondition fixed) |
-| PL-146 | The fold-back counted at rest on an undriven bridge, so the left never released | pass 8: R20-DUAL-EV-FOLDBACK 0 bad (DRIVER_REV 37: rest offset netted too) |
-
+| PL-144 | The two-wheel path limiter cycled the platform between crawl and full | The floor run (R21-DUAL-LDPATH-P): PATH-HUNT's precondition, a wheel falling behind, never arises wheels up (RC pass NOMEAS, as pass 7) |
 | PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | `t0-reva` (optional block, a Rev A board swapped in): R22-T0-REVA-FOLD |
 
 **Watch**
@@ -129,6 +126,9 @@ remaining checks were not exhaustively audited for it; doing that audit is part
 of this item.
 
 ### PL-14 -- `eMotorVoltage` is a documented public parameter that does nothing
+
+> ✅ **DONE — CERTIFIED 2026-09-27, RC pass** (`debug_260927-140745.log`): R20-T0-API-PERSIST PASS; a start at
+> PWR_14p8V read back `5` / `14_800` mV, the restart `6` / `18_500`.
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: no cell; certify by code reading or a t0 cell.
 > **2026-09-27:** cell built — t0 SRC_REV 24 (f9c1d81), R20-T0-API-PERSIST starts at a second supported voltage
@@ -648,6 +648,9 @@ now tells the truth.
 
 ### PL-51 -- the steering object's `getMaxSpeedForDistance()` returns the max speed, not the max speed for distance
 
+> ✅ **DONE — CERTIFIED 2026-09-27, RC pass** (`debug_260927-140745.log`): R20-T0-API-STEER PASS, 0 bad of 51 calls,
+> the distance-speed set/read-back rows included.
+
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: no cell.
 > **2026-09-27:** cell built — t0 SRC_REV 24 (f9c1d81), R20-T0-API-STEER sets the steering distance speed across its
 > range and reads each back. The pre-fix getter returned `getMaxSpeed()` (75). Certifies at pass 8 (`t0-api`).
@@ -680,6 +683,9 @@ now calls `rtWheel.getMaxSpeedForDistance()`, matching `driveForDistance()`'s ow
 object was not checked for the same getter -- out of this task's scope.
 
 ### PL-52 -- `getPower()` keeps reporting the last power after the motor is stopped, against its own doc
+
+> ✅ **DONE — CERTIFIED 2026-09-27, RC pass** (`debug_260927-140529.log`): R20-T0-SR-COMMANDED PASS with
+> `T0-25,power,run,15,want,15,stopped,0`.
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: no cell.
 > **2026-09-27:** cell built — t0 SRC_REV 24 (f9c1d81), T0-25's commanded-stop leg reads `getPower()` while driving
@@ -1894,6 +1900,13 @@ separate "flat" from "turning" on that board with margin.
 actionable is a second right rest window over 50 mV with no tick. The band is then sized from both boards' rest
 windows, never from one run's worst. The next `dual-fault-rightfirst` carries it as is.
 
+**2026-09-27, RC pass: second occurrence, now on the LEFT** (`debug_260927-141904.log`): `BM-FRPHASE,...,tid,3,motor,LEFT,
+win,REST,...,ticks,0,pp_u,35,pp_v,52,pp_w,30` after a free coast from −40M; RESTFLAT LEFT 1 of 6. The actionable
+condition in the disposition is met in form (a second >50 mV window with no tick), on the other board. It stays
+ANCILLARY under the 6.0 rule: the band belongs to the coast measurement's negative control, not a 6.0 feature. The fix,
+when taken: start the rest window after the rotor has settled by a derived time, or size the band from the physics of a
+rotor rocking inside one hall sector — never from these readings.
+
 ### PL-144 -- the path limiter hunts: a wheel that cannot sustain its command cycles the platform between 8 % and 100 %
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: pass 7 dual-d PATH-HUNT = 1.
@@ -1926,6 +1939,9 @@ and its release, where pass 6 showed five cycles. But R20-DUAL-PATH-HUNT read NO
 has not judged it; the log is evidence only. The precondition is being fixed (harness SRC_REV 56). Certifies at pass 8.
 
 ### PL-145 -- R16-DUAL-TIMESTOP's 20 ms slack sits inside the step's own measured spread
+
+> ✅ **DONE — CERTIFIED 2026-09-27, RC pass** (`debug_260927-141141.log`): TIMESTOP-D and WTIMSTOP-D PASS;
+> `BM-TIMESTOP,...,fire_ms,-1_108,zero_ms,-1` (steering) and `zero_ms,-2` (single), bound −6..+6 ms.
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench cell slack, watch)
 
@@ -1962,6 +1978,10 @@ Not covered by the bound, so it would FAIL as a real late stop: ramp-down passes
 LAG_SOFT. Certifies at pass 8.
 
 ### PL-146 -- part D's event drains read a stalled wheel's log before its fold-back released
+
+> ✅ **DONE — CERTIFIED 2026-09-27, RC pass** (`debug_260927-141141.log`): R20-DUAL-EV-FOLDBACK PASS and FOLDBACK-D
+> L/R PASS. Consequence recorded under PL-150: with the offset no longer counted, the unloaded left wheel keeps up at
+> 1 A, so pass 7's HOLDSET/NOTFOL left PASS were this defect's artifact.
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: pass 7 EV-FOLDBACK 0 bad.
 
@@ -2022,6 +2042,10 @@ Stephen's host.
 
 ### PL-149 -- no shipped demo has run on hardware against the 6.0 API
 
+> ✅ **DONE — CERTIFIED 2026-09-27, RC pass** (`debug_260927-143043.log`, `debug_260927-143212.log`): both release
+> demos ran end to end on DRIVER_REV 46 — start checks clean, `* wiring: ok` / `LEFT ok, RIGHT ok`, every
+> `* stopped:` SR_AT_LIMIT, `demo-dual` `* DONE`.
+
 > **6.0 status (2026-09-26 audit):** RELEASE — the demos are what users copy; compile-only today.
 
 **Found 2026-09-26** by the release audit.
@@ -2051,6 +2075,12 @@ states the derate as a design limit.
 **Disposition: ⛔ release work.** Add a loaded path cell (one wheel dragged or on a higher-friction surface, the platform
 keeping its line) and an overload cell (a command above what the load allows, no fault) to the floor run before it
 runs. Both are designed with the floor run's rebuild for DRIVER_REV 30-31.
+
+**2026-09-27, RC pass (evaluation F4): the hold is floor-only, and pass 7's wheels-up evidence for it is withdrawn.**
+Pass 7's R18-DUAL-HOLDSET-D and -NOTFOL-D LEFT PASS came from the 1 A step stalling a left wheel that the PL-146
+defect throttled on its rest offset (`first_short_ms,601`). With PL-146 fixed, neither unloaded wheel holds at 1 A
+(`first_short_ms,NA`, both NOMEAS). The floor run's LDHOLD, HELDATSPD and LDPATH are therefore the only evidence the
+hold and the path limiter will have; PL-144 certifies there too.
 
 ### PL-154 -- the serial path: hold cannot be set from the host example, every command can wait 1 s, and non-numbers become numbers
 
@@ -2168,6 +2198,10 @@ lists the removal as BREAKING. Q2 (the built-in rates): Stephen asked whether th
 was keep them and confirm on the floor (the floor sheet's PL-160 feel line). Q4 and Q5 remain.
 
 ### PL-161 -- the steering front cog overruns its 1 ms slot
+
+> ✅ **DONE — CERTIFIED 2026-09-27, RC pass:** FRONTST-D ×2, FRONTST-EV ×2 (≤ 950 µs) and R22-T0-FRAMESLACK PASS.
+> Worst pass: `dual-start` lifetimes 389–553 µs, `late,0` (pass 7: 533–1,058); STEERSEG 517 µs (pass 7: 1,015,
+> `late,3`); least PWM loop 4,382 clocks against 699 of frame work.
 
 > **6.0 status (2026-09-26 audit):** RELEASE — found at Visit 10 pass 7; the front cog is what services every command.
 
@@ -2350,6 +2384,11 @@ on hardware.
 
 **Disposition: ⛔ FIX** (harness SRC_REV 56): the reference and the mark come from the steady reading, and PACK-X is
 judged against the configuration.
+
+**2026-09-27, RC pass:** R19-DUAL-PACK-X PASS (0 bad of 10) — that half is certified. R20-PACK-ABSENT and PACK-EV's
+unplug half FAILED on `OPERATOR_TIMEOUT`: no unplug seen in 60 s (`o_seen,FALSE`), so the steady-reference fix was never
+exercised. Whether the Powerpole was unplugged decides it (asked of Stephen): not unplugged → re-run `dual-pack`;
+unplugged → the driver's absent detection is investigated at the desk first (DRIVER_REV 36 changed the pack sampling).
 
 ### PL-163 -- on a Rev A board below about 2.7 A, the fold-back cut the drive on every driven frame
 
