@@ -320,11 +320,11 @@ tenth frame after the pass (about 230 µs).
 
 Registers live in cog RAM, because instruction operands reach only cog RAM; code may live in
 the LUT, which runs at cog speed. The `fit` comments in the source, read from the compiler at
-DRIVER_REV 42, give the budget:
+DRIVER_REV 43, give the budget:
 
 | Memory | Holds | Used |
 |---|---|---|
-| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `planFp` and `planCorner`, the constants and tables, and every register | **484 of 496** |
+| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `planFp` and `planCorner`, the constants and tables, and every register | **469 of 496** |
 | LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $290: the start sequence and `driveinit` | 144 (hidden under the run image) |
 | LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3DC: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **476 of 512** |
 
@@ -344,6 +344,13 @@ DRIVER_REV 41 also made 21 cog longs do double duty. The entry code, `loadOverla
 start-only constants, `adc_modes` and `calibPeriod` are dead once the start sequence has run,
 and each is also the home of a register only the drive loop uses (`pl_v` … `sp_F`, `jrk_e`
 … `jrk_lim`).
+
+DRIVER_REV 43 took 15 more cog longs out of the frame loop and the drive pass, each by an exact
+instruction-level identity: the phase levels' minimum and maximum by `FLES`/`FGES`, the centre
+bias and the dead gap folded into the one offset each level is moved by, the fold-back compare
+as `sense_i > t + sense_zero` (no `fold_net` register), `NEGC` for the signed lag, `TJZ` for the
+e-stop and duty-ceiling tests, and `ADDCT1` on `ctrlSrtTix` itself (no `ctrlEndTix`). The pins,
+the hub writes and every live register are unchanged.
 
 ### The frame loop — commutation
 

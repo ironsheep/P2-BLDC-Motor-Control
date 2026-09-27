@@ -6766,7 +6766,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 42      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 43      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6951,6 +6951,15 @@ CON { driver internal Constants }
                                             '     grows by 350 longs. Proved equivalent to mem-reduce-start by
                                             '     tools/pasm_equiv (2055 scenarios); PASM (cog + LUT) change; no ABI
                                             '     change
+                                            ' 43: memory reduction WP3 (C3): frame and drive-pass peepholes, each an
+                                            '     exact identity -- the phase levels' min/max by FLES/FGES, the bias
+                                            '     and dead gap folded into the one centring offset, the fold-back
+                                            '     compare as sense_i_ > t + sense_zero_ (fold_net gone), NEGC for the
+                                            '     signed lag, TJZ for the e-stop and incr0 tests, ADDCT1 on ctrlSrtTix
+                                            '     (ctrlEndTix gone). Cog 484 -> 469 of 496 (13 code longs, 2
+                                            '     registers); start image 144 and run image 476 unchanged. Proved
+                                            '     equivalent to mem-reduce-start by tools/pasm_equiv (2055 scenarios);
+                                            '     PASM (cog) change; no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7572,9 +7581,12 @@ pl_Uh           jmp     #lutCodeStart                   ' enter LUT-resident sta
     ' -------------------------------------------------------------------------
 drvMotor                                                ' global (task 3535): entered via cross-boundary jmp from the LUT-resident loader
                 getct   ctrlSrtTix                      ' remember when we started this loop
-                mov     lag_s, err_                     ' C-5: signed lag, + when the rotor trails the field in the
-                testb   drv_incr, #31               wc  '  direction of motion (err_ is angle_ - rotor angle), - when
-    if_c        neg     lag_s                           '  the rotor leads; read by the holds and the duty ceiling below
+                testb   drv_incr, #31               wc  ' C-5: signed lag, + when the rotor trails the field in the
+                negc    lag_s, err_                     '  direction of motion (err_ is angle_ - rotor angle), - when
+                                                        '  the rotor leads; read by the holds and the duty ceiling below.
+                                                        '  NEGC stores -S when C, else S, and without WC/WZ writes no
+                                                        '  flag (p2kbPasm2Negc): C still holds drv_incr's sign after it,
+                                                        '  as it did after the old MOV / IF_C NEG (WP3, C3(d))
 {
                 ' Logic Analyzer Instrumentation Code
                 drvh    drvrTmrPnFld                    ' HIGH while doing drive determination
@@ -7585,8 +7597,9 @@ drvMotor                                                ' global (task 3535): en
 '
 ' with emergency stop we quickly stop and then ignore everything else until eStop request is removed!
 '
-                or      e_stop_, e_stop_            wz  ' Q: Emergency Stop Requested? (T/F - where T means stop!)
-    if_z        jmp     #.noEStop                       ' No: continue on..
+                tjz     e_stop_, #.noEStop              ' Q: Emergency Stop Requested? (T/F - where T means stop!) No: continue on..
+                                                        '  TJZ writes no flag (p2kbPasm2Tjz); the Z the old OR WZ left is
+                                                        '  rewritten before any read, by .noEStop's and .eStop's CMP WZ
 .eStop
                 cmp     drv_state_, #DCS_ESTOP      wz  ' Q: Are we already Emergency Stopped?
     if_z        jmp     #.endRqst                       ' YES, motor is at ESTOP, just exit (w/o increment)
@@ -7680,8 +7693,8 @@ drvMotor                                                ' global (task 3535): en
     if_nz       jmp     #.capDone                       ' NO: no ceiling beyond duty_max_
                 cmps    lag_s, #LAG_SOFT             wc  ' Q: rotor trailing by LAG_SOFT or more? (NC)
     if_nc       jmp     #.capDone                       ' YES: the motor needs the torque, no ceiling
-                or      incr0, incr0                 wz  ' Q: no recorded start speed? (never divide by 0)
-    if_z        jmp     #.capDone
+                tjz     incr0, #.capDone                ' Q: no recorded start speed? (never divide by 0) TJZ writes no
+                                                        '  flag (p2kbPasm2Tjz); Z is dead from here to .ctlMotor's CMP WZ (WP3)
                 abs     tmpY, drv_incr
                 qmul    duty0, tmpY                     ' 64-bit duty0 * |drv_incr|
                 getqx   tmpY
@@ -7694,9 +7707,9 @@ drvMotor                                                ' global (task 3535): en
 .capDone
                 getct   loop_ctcks_                     ' how long was this pass? send to host
                 sub     loop_ctcks_, ctrlSrtTix
-                ' reset timer (schedule next control loop run)
-                mov     ctrlEndTix, ctrlSrtTix
-                addct1  ctrlEndTix, cfg_ctcks_
+                ' reset timer (schedule next control loop run): CT1 := pass start + cfg_ctcks_. ADDCT1 also writes
+                '  the sum into D (p2kbPasm2Addct1), and ctrlSrtTix is dead until the next pass's GETCT (WP3, C3(e))
+                addct1  ctrlSrtTix, cfg_ctcks_
 {
                 ' Logic Analyzer Instrumentation Code
                 drvl    drvrTmrPnFld                    ' LOW drive determination complete
@@ -7773,45 +7786,44 @@ drvMotor                                                ' global (task 3535): en
 ' used when tracking down PWM drive problem...
 '                mov     driveUsav_, drive_u_           ' copy for later display
 
-                mov     tmpX, drive_u_                  ' get smallest drive level into tmpX
-                cmps    tmpX, drive_v_              wc
-    if_nc       mov     tmpX, drive_v_
-                cmps    tmpX, drive_w_              wc
-    if_nc       mov     tmpX, drive_w_
-
-                mov     tmpY, drive_u_                  ' get largest drive level into tmpY
-                cmps    tmpY, drive_v_              wc
-    if_c        mov     tmpY, drive_v_
-                cmps    tmpY, drive_w_              wc
-    if_c        mov     tmpY, drive_w_
+                mov     tmpX, drive_u_                  ' get smallest drive level into tmpX: FLES is signed min
+                fles    tmpX, drive_v_                  '  (p2kbPasm2Fles), the value the old CMPS WC / IF_NC MOV pair
+                fles    tmpX, drive_w_                  '  chose; no flag written, and the C that pair left was dead
+                                                        '  up to .hallCounted's CMPM WCZ (undrivenPins writes C before it
+                                                        '  reads it; countIllegal reads no C) (WP3, C3(a))
+                mov     tmpY, drive_u_                  ' get largest drive level into tmpY: FGES is signed max (p2kbPasm2Fges)
+                fges    tmpY, drive_v_
+                fges    tmpY, drive_w_
 
                 add     tmpX, tmpY                      ' sum smallest and largest, then divide by 2
                 sar     tmpX, #1
+                ' WP3, C3(b): the centre-bias and the dead gap folded into the one offset, so each level is written once
+                '  as level + bias + dead_gap (the low side's Y) and then once less the gap (the high side's Y). The same
+                '  Y values, in the same order, by mod-2^32 arithmetic, and drive_x_ ends as level + bias, as the status
+                '  run reports it. undrivenPins, called between, reads no drive_x_ and writes tmpX before it reads it
+                sub     tmpX, bias                      ' add center-bias and dead-time offsets to update PWMs
+                sub     tmpX, dead_gap_                 ' center around the triangle counter
+                                                        ' the counter runs from the frame period down to 1 and back up, each PWM period
+                                                        ' the output is high while the counter is at or below Y, so Y = 0 is constant LOW and
+                                                        ' Y = frame is constant HIGH (p2kbArchSmartPin01000PwmTriangle); the low-side pins are
+                                                        ' inverted (pwmn), and a HIGH on a low-side input turns that FET ON (PL-56)
 
                 sub     drive_u_, tmpX                  ' subtract difference from drive levels
                 sub     drive_v_, tmpX                  ' offset round the average drive pwm
                 sub     drive_w_, tmpX
 
-                add     drive_u_, bias                  ' add center-bias and dead-time offsets to update PWMs
-                add     drive_v_, bias                  ' center around the triangle counter
-                add     drive_w_, bias                  ' the counter runs from the frame period down to 1 and back up, each PWM period
-                                                        ' the output is high while the counter is at or below Y, so Y = 0 is constant LOW and
-                                                        ' Y = frame is constant HIGH (p2kbArchSmartPin01000PwmTriangle); the low-side pins are
-                                                        ' inverted (pwmn), and a HIGH on a low-side input turns that FET ON (PL-56)
-
                 cmp     bridge, #BR_DRIVE           wz  ' Z: the bridge is driven this frame (R17.1: see the BR_* constants)
     if_nz       call    #undrivenPins                   ' undriven: each state's pin values (LUT-resident; leaves Z, which follows)
-                add     drive_u_, dead_gap_             ' make sure low side turns off (inverted) earlier than high side turns on (non-inverted)
+                                                        ' the low side's Y is the high side's plus the dead gap: the low side turns
+                                                        ' off (inverted) earlier than the high side turns on (non-inverted)
     if_z        wypin   drive_u_, pin_pwm_u_l           ' safety on driver board make sure high side off if both low and high side are high, in case of an error
                 sub     drive_u_, dead_gap_             ' shouldn't happen with dead-gap
     if_z        wypin   drive_u_, pin_pwm_u_h
 
-                add     drive_v_, dead_gap_             ' dead-gap was OFFSET
     if_z        wypin   drive_v_, pin_pwm_v_l
                 sub     drive_v_, dead_gap_             ' dead-gap was OFFSET
     if_z        wypin   drive_v_, pin_pwm_v_h
 
-                add     drive_w_, dead_gap_             ' dead-gap was OFFSET
     if_z        wypin   drive_w_, pin_pwm_w_l
                 sub     drive_w_, dead_gap_             ' dead-gap was OFFSET
     if_z        wypin   drive_w_, pin_pwm_w_h
@@ -7884,25 +7896,30 @@ drvMotor                                                ' global (task 3535): en
                                                         '  (p2kbPasm2Tjnz), and from the undriven jump above tmpY still
                                                         '  holds |err_|. A fault taken on this frame has already set the
                                                         '  fault's bridge, so its frame skips too, as undriven hereafter.
-                mov     fold_net, sense_i_              ' PL-146 (DRIVER_REV 37): the DC-link reading NET of the board's
-                sub     fold_net, sense_zero_           '  rest offset, floored at 0. A driven bridge at rest (SM_BRAKE)
-                fges    fold_net, #0                    '  read the raw offset (left ~8 mV) against a ~11 mV threshold at
-                                                        '  1 A: counted on noise. sense_zero_ is the front's restZeroSenseMv
-                                                        '  (0 when unmeasured or out of band), mV as sense_i_ is; sense_i_
-                                                        '  itself stays raw, since it is reported (sense_i_mV). FGES is a
-                                                        '  signed floor (p2kbPasm2Fges); no flag is written until the CMPS.
                 mov     tmpX, duty_                     ' S-2: the MOSFET current limit, on a lower bound of phase current:
                 fges    tmpX, duty_floor_               '  I_dc >= 0.75 * m * I_peak, m = duty_ / (4 * frame_cnt), floored
-                sca     tmpX, i_limit_k_                '  threshold (mV) = max(duty_, duty_floor_) * i_limit_k_ >> 16
-                cmps    fold_net, tmpX              wcz ' Q: the net reading OVER the limit's count? (NC and NZ) SCA hands
-                                                        '  the threshold to this S (p2kbPasm2Sca), so tmpX itself is unread.
+                sca     tmpX, i_limit_k_                '  threshold t (mV) = max(duty_, duty_floor_) * i_limit_k_ >> 16
+                mov     tmpX, 0-0                       '  SCA hands t to this S (p2kbPasm2Sca): tmpX := t
+                add     tmpX, sense_zero_               ' PL-146 (DRIVER_REV 37): the DC-link reading is compared NET of
+                cmps    sense_i_, tmpX              wcz '  the board's rest offset, floored at 0. A driven bridge at rest
+                                                        '  (SM_BRAKE) read the raw offset (left ~8 mV) against a ~11 mV
+                                                        '  threshold at 1 A: counted on noise. sense_zero_ is the front's
+                                                        '  restZeroSenseMv (0 when unmeasured or out of band), mV as sense_i_
+                                                        '  is; sense_i_ itself stays raw, since it is reported (sense_i_mV).
+                                                        ' Q: the net reading OVER the limit's count? (NC and NZ) WP3, C3(c):
+                                                        '  max(i - z, 0) > t is i > t + z. SCA's result is unsigned, so t >= 0,
+                                                        '  and max(d, 0) > t is d > t for any t >= 0; |i| <= 2^19 (the MULS
+                                                        '  product SAR 11), t < 2^16 and z in [0, 36] (applySenseZero(), its one
+                                                        '  writer) cannot overflow either side. The flags differ only where
+                                                        '  i - z < 0 and t = 0, and both say "no fold" there; C and Z are then
+                                                        '  rewritten before any read (.servoTrim's CMP WZ, .dutyLimits' FLES WC).
                                                         '  DRIVER_REV 38: the reading is a whole mV count and the threshold t a
                                                         '  real one that SCA floors, so "reading >= t" is exactly "reading >
                                                         '  floor(t)" (= reading >= ceil(t)) but for a t that is a whole count,
                                                         '  where it folds one count late. The old "at or over floor(t)" folded
                                                         '  up to a count early -- and, at t < 1 (Rev A, 5 mV/A: t = 0.375 x amps
                                                         '  at the duty floor, so a limit under ~2.7 A), on every driven frame,
-                                                        '  since fold_net is never below 0. Rounding would not mend t < 0.5.
+                                                        '  since the net reading is never below 0. Rounding would not mend t < 0.5.
                                                         '  DRIVER_REV 40 (PL-163): duty_floor_ is raised for such a limit so
                                                         '  t >= FOLD_MIN_MV (4): a reading of 4 mV or less is inside the
                                                         '  chain's noise and zero error, so it folds nothing (setFoldLimit())
@@ -8201,13 +8218,11 @@ hall_angles     LONG    0           '-%000- can't happen forward-direction table
 
 tmpX            res 1       ' miscellaneous
 tmpY            res 1
-fold_net        res 1       ' PL-146 (DRIVER_REV 37): the fold-back's net reading, sense_i_ - sense_zero_ floored at 0 (.noFault)
 calibPeriod                 ' PL-32: widened ADC count period, start-of-driver GIO/VIO calibration only; and (C1)
 jrk_lim         res 1       '  jrk_lim, A, the acceleration limit of the side toward s, once the drive loop runs
 ' measurements
 drvrSrtTix      res 1
-ctrlSrtTix      res 1
-ctrlEndTix      res 1
+ctrlSrtTix      res 1       ' the drive pass's start; then, by .capDone's ADDCT1, the next pass's CT1 target (WP3)
 ' driver inputs
 tgt_incr        res 1       ' current user requested target increment
 sv_tgt_incr     res 1       ' holding area for prior value
@@ -8348,15 +8363,17 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
 '                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
 
 ' $1f8 for reg cogs
-    fit     496  ' 484 USED, 12 FREE, 2026-09-27 (DRIVER_REV 42, memory reduction WP2: countIllegal's 13 longs back in cog
-                 ' RAM, C2; 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) -- read from the
+    fit     496  ' 469 USED, 27 FREE, 2026-09-27 (DRIVER_REV 43, memory reduction WP3: the frame and drive-pass peepholes,
+                 ' C3, 13 code longs and 2 registers; 484 at DRIVER_REV 42, WP2, countIllegal's 13 longs back in cog RAM;
+                 ' 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) -- read from the
                  ' compiler, never hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`,
-                 ' PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1E3, the last register, so USED is $1E4). LUT
+                 ' PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1D4, the last register, so USED is $1D5). LUT
                  ' code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog
                  ' RAM, so REGISTERS are what this budget is for; code can live in the LUT images below (task 3535), read
-                 ' the same way (DRIVER_REV 42): the start image, lutCodeStart $200 to lutCodeEnd $290, 144 longs, and the
-                 ' run image loaded over it, runCodeStart $200 to runCodeEnd $3DC, 476 of 512 longs (36 free). Until
-                 ' DRIVER_REV 41 the LUT held 507 resident longs, with the planner's 126-long overlay over the start sequence.
+                 ' the same way (DRIVER_REV 43, unchanged since 42): the start image, lutCodeStart $200 to lutCodeEnd $290,
+                 ' 144 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3DC, 476 of 512 longs (36
+                 ' free). Until DRIVER_REV 41 the LUT held 507 resident longs, with the planner's 126-long overlay over the
+                 ' start sequence.
 
 ' =========================================================================
 '  LUT CODE ($200-$3FF), TWO IMAGES AT THE SAME ADDRESSES (DRIVER_REV 42, memory reduction WP2, C2):
@@ -8616,7 +8633,7 @@ driveinit                                               ' init drive pwm
 
 lutCodeEnd                                              ' the LUT START IMAGE ends here (task 3535; DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the start image is 144 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 42 (LUTCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the start image is 144 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 43 (LUTCODEEND's VALUE)
 
 ' =========================================================================
 '  THE LUT RUN IMAGE (DRIVER_REV 42, memory reduction WP2, C2): every routine that runs only once the drive loop has
@@ -9260,7 +9277,7 @@ rampOut
 
 runCodeEnd                                              ' the LUT RUN IMAGE ends here (DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the run image is 476 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 42 (RUNCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the run image is 476 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 43 (RUNCODEEND's VALUE)
 
 CON { license }
 {{
