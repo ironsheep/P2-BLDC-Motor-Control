@@ -122,23 +122,48 @@ Symptoms when bad hall order: the motor may not turn at all, or may just move a 
 
 #### Driver Startup: Hall Order
 
-When the user selects the motor type in their config file this tells our driver at runtime which hall sequence the motor needs and the appropriately ordered tables are copied into the driver image before the driver cog is started.
+When the user selects the motor type in their config file this tells our driver at runtime which hall sequence the motor needs and the appropriately ordered tables are put into the driver image before the driver cog is started.
 
-#### Refer to isp_bldc_motor.spin2:start() for Hall order setup
+Each motor has two tables in `isp_bldc_motor.spin2`'s `DAT { MOTOR-TYPE TABLES }` block:
 
-Refer to this code in the start() method. When adding a new motor you'll to add a value for your new motor which moves the correct table for your motor into place within the driver image.
+- an **angle table** (`hltbAngles`, `hltbAngl4k`): the rotor's angle within the hall cycle for each hall code, forward half then reverse half, 16 longs;
+- a **delta table** (`deltas65`, `deltas4k`): the position step for each hall transition, 64 bytes indexed `(old << 3) | new`. **Every entry must be -1, 0 or +1.** The driver packs each step into two bits, so `start()` checks every motor's delta table before it launches anything, and refuses to start with `ERR_BAD_MOTOR_TABLE` (-1022) if any entry holds another value. A debug build also prints which motor and which entry.
 
-```spin2
-    ' new build up our hall angle table for specific motor
-    case user.MOTOR_TYPE
-        MOTR_DOCO_4KRPM:
+#### Refer to isp_bldc_motor.spin2:init() for Hall order setup
+
+When adding a new motor you add your motor to three places in `isp_bldc_motor.spin2`.
+
+1. **`init()`** copies the angle table for the configured motor. Today it chooses between the two motors like this:
+
+    ```spin2
+        ' new build up our hall angle and position increment table for specific motor
+        if user.MOTOR_TYPE == MOTR_6_5_INCH
+            longmove(@hall_angles, @hltbAngles, 16)
+        else
             longmove(@hall_angles, @hltbAngl4k, 16)
-        MOTR_6_5_INCH:
-            longmove(@hall_angles, @hltbAngles, 16)
-        other:
-            ' default to our 6.5" motor form
-            longmove(@hall_angles, @hltbAngles, 16)
-```
+    ```
+
+    Turn it into a `case` on `user.MOTOR_TYPE` with a line for your motor's angle table.
+
+2. **`deltaTableForMotor()`** returns the delta table for a motor type. Add a case for your motor's table:
+
+    ```spin2
+        case eMotorType                                     ' the same choice as init()'s angle table
+            MOTR_6_5_INCH:
+                pDeltaBytes := @deltas65
+            other:
+                pDeltaBytes := @deltas4k
+    ```
+
+    `init()` hands this table to `packHallDeltas()`, which builds the driver's packed copy. You never write the packed form yourself.
+
+3. **`bHallDeltaTablesValid()`** checks the delta table of every motor type from `MOTR_6_5_INCH` to the last one. Extend its range to your motor:
+
+    ```spin2
+        repeat eMotorType from MOTR_6_5_INCH to MOTR_DOCO_4KRPM
+    ```
+
+    Change `MOTR_DOCO_4KRPM` to your new identifier, so your table is checked at every start.
 
 ### Low-Level: Mechanical offset of Hall Sensors
 

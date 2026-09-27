@@ -216,12 +216,13 @@ time; writing them afterwards has no effect on a running driver.
 start(basePin, voltage, detectMode)                   (steering: startOwned() per wheel)
   ├─ validate pin group, voltage, detect mode         → ERR_BAD_* on failure
   ├─ isAbiLayoutValid()                               → ERR_ABI_MISMATCH
+  ├─ bHallDeltaTablesValid(): every motor's steps     → ERR_BAD_MOTOR_TABLE
   ├─ stop any driver and front cog this instance already runs
   ├─ claim the pin group                              → ERR_PIN_GROUP_IN_USE
   ├─ init(...)
   │    ├─ derive tick constants from CLKFREQ
   │    ├─ getBoardType()                              ← detect the board revision
-  │    ├─ select the per-motor tables and offsets     ← copied into the driver image
+  │    ├─ select the per-motor tables and offsets     ← copied (the deltas packed) into the driver image
   │    ├─ compute frame_cnt, dead_gap, duty_min/max
   │    └─ confgurePowerLimits(voltage)                ← the power → increment table
   ├─ refuse an undetected board under BRD_AUTO_DET    → ERR_BOARD_NOT_DETECTED
@@ -320,11 +321,11 @@ tenth frame after the pass (about 230 µs).
 
 Registers live in cog RAM, because instruction operands reach only cog RAM; code may live in
 the LUT, which runs at cog speed. The `fit` comments in the source, read from the compiler at
-DRIVER_REV 43, give the budget:
+DRIVER_REV 44, give the budget:
 
 | Memory | Holds | Used |
 |---|---|---|
-| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `planFp` and `planCorner`, the constants and tables, and every register | **469 of 496** |
+| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `planFp` and `planCorner`, the constants and tables, and every register | **449 of 496** |
 | LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $290: the start sequence and `driveinit` | 144 (hidden under the run image) |
 | LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3DC: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **476 of 512** |
 
@@ -352,14 +353,28 @@ as `sense_i > t + sense_zero` (no `fold_net` register), `NEGC` for the signed la
 e-stop and duty-ceiling tests, and `ADDCT1` on `ctrlSrtTix` itself (no `ctrlEndTix`). The pins,
 the hub writes and every live register are unchanged.
 
+DRIVER_REV 44 took 20 more. The driver's `deltas` table is 8 longs of nibbles, not 64 bytes:
+nibble `new` of long `old`, read by `ALTGN`/`GETNIB`. Each nibble carries the transition's
+step (bits 1:0, −1/0/+1) and its integrity event: bit 2 a missed transition, bit 3 an entry
+into `%000` or `%111`. Both events are fixed by the pair and its step, so `init()` works them
+out once (`packHallDeltas()`), from the motor's byte table (`deltas65`, `deltas4k`, still the
+authoring format) with any test hall swap applied. The frame then needs 8 instructions where
+it had 20. A step outside −1..+1 cannot be packed, so every start checks every motor's byte
+table first and refuses a bad one with `ERR_BAD_MOTOR_TABLE` (`bHallDeltaTablesValid()`).
+
 ### The frame loop — commutation
 
 The three hall lines are read in **one instruction**, so all three bits come from the same
-instant. The 3-bit code, combined with the previous one as `(old << 3) | new`, indexes a
-`deltas` table giving −1, 0 or +1 — the position step for that transition. This is what makes
-`pos` a signed, direction-aware tick counter. A change with no legal step counts as a
-missed transition (`hall_missed`), and an entry into `%000` or `%111` is counted by kind
-(`hall_illegal`, low and high words).
+instant. The 3-bit code and the previous one, `(old << 3) | new`, select one 4-bit entry of
+the driver's `deltas` table: nibble `new` of long `old` (`ALTGN`/`GETNIB`). Bits 1:0 are the
+position step for that transition, −1, 0 or +1. This is what makes `pos` a signed,
+direction-aware tick counter. Bit 2 marks a missed transition, a change between two legal
+codes with no step (`hall_missed`). Bit 3 marks an entry into `%000` or `%111`, which is
+counted by kind (`hall_illegal`, low and high words). A change out of `%000` or `%111` counts
+nothing, since it was counted on entry. Both marks depend only on the transition and its step,
+so `init()` sets them once (`packHallDeltas()`) and the frame only tests them. The per-motor
+byte tables below are the source `init()` packs from; since DRIVER_REV 44 the driver no longer
+holds them as bytes.
 
 The hall code also indexes `hall_angles` for the rotor's angle within the hall cycle; bit 3 of
 the index selects the forward or reverse half. Per-motor tables are chosen in `init()`:

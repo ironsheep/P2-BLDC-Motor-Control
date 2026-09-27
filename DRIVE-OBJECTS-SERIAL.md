@@ -100,7 +100,7 @@ The stop reasons, event kinds and event wheels start at 40, 60 and 50, so none o
 - `geterror` reads `ERR_START_CHECK_FAILED (-1020)` for the platform and for each failing wheel.
 - `setstartchecks 0` starts the motors anyway.
 
-Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A start that failed for any other reason opens no host link.
+Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A start that failed for any other reason opens no host link. One such reason is `ERR_BAD_MOTOR_TABLE (-1022)`: a motor's hall delta table in the firmware holds a step other than -1, 0 or +1, so no motor starts until the table is corrected (see [Adding a Motor](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/ADDING_MOTOR.md#driver-startup-hall-order)).
 
 ### The 2-Wheel Steering Object PUBLIC Interface
 

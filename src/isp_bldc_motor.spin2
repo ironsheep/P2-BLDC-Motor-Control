@@ -185,7 +185,8 @@ CON { Public Interface Constants }
     '   ERR_COMMAND_TIMEOUT    - setCommandTimeout() is on and no drive command arrived within it: the motor was stopped
     '   ERR_START_CHECK_FAILED - start: a start check still failed after its retries, so the motor was not started (getHealth() says which)
     '   ERR_NOT_IMPLEMENTED    - the method is kept so programs compile, but does nothing (calibrate())
-    '   ERR_PROTECTIVE_STOP    - a protective stop is latched for a cause outside the named ones
+    '   ERR_BAD_MOTOR_TABLE    - start: a motor's hall delta table holds a step outside -1..+1; no driver launched
+    '   ERR_PROTECTIVE_STOP   - a protective stop is latched for a cause outside the named ones
     '   ERR_PLATFORM_BLOCKED   - a protective stop is latched: a commanded motor held at its current limit did not move
     NO_ERROR                = 0
     ERR_BAD_PIN_GROUP       = -1_001
@@ -209,6 +210,7 @@ CON { Public Interface Constants }
     ERR_COMMAND_TIMEOUT     = -1_019
     ERR_START_CHECK_FAILED  = -1_020
     ERR_NOT_IMPLEMENTED     = -1_021
+    ERR_BAD_MOTOR_TABLE     = -1_022
     ERR_PROTECTIVE_STOP     = -2_000
     ERR_PLATFORM_BLOCKED    = -2_001
 
@@ -4152,6 +4154,8 @@ PRI setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode) : eError
         eError := ERR_BAD_DETECT_MODE
     elseif isAbiLayoutValid() == FALSE
         eError := ERR_ABI_MISMATCH
+    elseif bHallDeltaTablesValid() == FALSE                                     ' DRIVER_REV 44 (C4): a table the driver
+        eError := ERR_BAD_MOTOR_TABLE                                           '  image cannot carry; no driver launched
 
     if eError == NO_ERROR
         ' 2. D2: free this instance's own driver/sense cog and pin claim before starting fresh
@@ -4251,20 +4255,19 @@ PRI launchFront(bReleaseDriver) : eError | frontCogId, startMs
         else
             debug[user.DBGCH_LIFECYCLE]("* Front COG #", sdec_(frontCogId))
 
-PRI swapHallTables(eSwap) | bitA, bitB, oldCode, newCode, angles[16], deltaBytes[16]
-' TEST USE (testSetHallSwap()): permute init()'s copy of the hall tables for two hall-code bits read as swapped. With the
-' wires swapped the driver would read P(code), P swapping the two bits, and index its tables with that. So each code's
-' entry becomes the entry the swapped reading would have indexed: angle'[c] = angle[P(c)], and
-' delta'[old<<3 | new] = delta[P(old)<<3 | P(new)]. Both halves of the angle table (forward, reverse) are permuted.
+PRI swapHallTables(eSwap) : bitA, bitB | hallCode, angles[16]
+' TEST USE (testSetHallSwap()): permute init()'s copy of the hall angle table for two hall-code bits read as swapped.
+' With the wires swapped the driver would read P(code), P swapping the two bits, and index its tables with that. So each
+' code's entry becomes the entry the swapped reading would have indexed: angle'[c] = angle[P(c)]. Both halves of the
+' angle table (forward, reverse) are permuted. The delta table's delta'[old<<3 | new] = delta[P(old)<<3 | P(new)] is
+' applied by packHallDeltas(), from the two bits returned here (DRIVER_REV 44, C4).
 '
 ' @param eSwap - HSW_HALLS_01, HSW_HALLS_12 or HSW_HALLS_02
+' @returns bitA - the first swapped hall-code bit
+' @returns bitB - the second swapped hall-code bit
 '
-' @local bitA - the first swapped hall-code bit
-' @local bitB - the second swapped hall-code bit
-' @local oldCode - the previous hall code, 0..7
-' @local newCode - the current hall code, 0..7
+' @local hallCode - the hall code, 0..7
 ' @local angles - the unpermuted angle table, 16 longs
-' @local deltaBytes - the unpermuted delta table, 64 bytes
 
     case eSwap
         HSW_HALLS_01:
@@ -4274,12 +4277,72 @@ PRI swapHallTables(eSwap) | bitA, bitB, oldCode, newCode, angles[16], deltaBytes
         other:
             bitA, bitB := 0, 2
     longmove(@angles, @hall_angles, 16)
-    bytemove(@deltaBytes, @deltas, 64)
+    repeat hallCode from 0 to 7
+        LONG[@hall_angles][hallCode] := angles[hallBitsSwapped(hallCode, bitA, bitB)]
+        LONG[@hall_angles][8 + hallCode] := angles[8 + hallBitsSwapped(hallCode, bitA, bitB)]
+
+PRI packHallDeltas(pDeltaBytes, bitA, bitB) | oldCode, newCode, delta, nibble
+' Fill the driver image's hall transition table (deltas, 8 longs: nibble [new] of long [old]) from a motor's byte
+' table {pDeltaBytes} (64 bytes, (old << 3) | new, each -1/0/+1), read through the hall-bit swap {bitA}/{bitB}
+' (bitA == bitB: no swap). DRIVER_REV 44 (memory reduction WP4, C4): each nibble carries the step and the pair's
+' integrity event, the same static rules .ctlMotor applied per frame until DRIVER_REV 43: an unchanged code or a
+' step counts nothing; a change INTO %000 or %111 is an illegal entry; a change out of %000/%111 counts nothing (it
+' was counted on entry); any other change with no step is a missed transition. The table must already be checked
+' (bHallDeltaTablesValid()): a byte outside -1..+1 would not fit bits 1:0.
+'
+' @param pDeltaBytes - hub address of the motor's 64-byte delta table (deltas65, deltas4k)
+' @param bitA - one swapped hall-code bit, 0..2
+' @param bitB - the other swapped hall-code bit, 0..2 (equal to bitA: no swap)
+'
+' @local oldCode - the previous hall code, 0..7, the long
+' @local newCode - the current hall code, 0..7, the nibble
+' @local delta - the pair's step, -1/0/+1
+' @local nibble - the pair's packed nibble
+
+    longfill(@deltas, 0, 8)
     repeat oldCode from 0 to 7
-        LONG[@hall_angles][oldCode] := angles[hallBitsSwapped(oldCode, bitA, bitB)]
-        LONG[@hall_angles][8 + oldCode] := angles[8 + hallBitsSwapped(oldCode, bitA, bitB)]
         repeat newCode from 0 to 7
-            BYTE[@deltas][(oldCode << 3) | newCode] := BYTE[@deltaBytes][(hallBitsSwapped(oldCode, bitA, bitB) << 3) | hallBitsSwapped(newCode, bitA, bitB)]
+            delta := BYTE[pDeltaBytes][(hallBitsSwapped(oldCode, bitA, bitB) << 3) | hallBitsSwapped(newCode, bitA, bitB)] SIGNX 7
+            nibble := delta & HALL_NIB_STEP_MASK
+            if (oldCode <> newCode) and (delta == 0)
+                if (newCode == HALL_CODE_ILL_LO) or (newCode == HALL_CODE_ILL_HI)
+                    nibble |= HALL_NIB_ILLEGAL
+                elseif (oldCode <> HALL_CODE_ILL_LO) and (oldCode <> HALL_CODE_ILL_HI)
+                    nibble |= HALL_NIB_MISSED
+            LONG[@deltas][oldCode] |= nibble << (newCode * HALL_NIB_BITS)
+
+PRI deltaTableForMotor(eMotorType) : pDeltaBytes
+' Return the hub address of {eMotorType}'s 64-byte hall delta table, the authoring format (ADDING_MOTOR.md).
+'
+' @param eMotorType - a MOTR_* motor type
+' @returns pDeltaBytes - hub address of that motor's delta table
+
+    case eMotorType                                     ' the same choice as init()'s angle table
+        MOTR_6_5_INCH:
+            pDeltaBytes := @deltas65
+        other:
+            pDeltaBytes := @deltas4k
+
+PRI bHallDeltaTablesValid() : bValid | eMotorType, pDeltaBytes, tableIdx, delta
+' Return TRUE when every motor's hall delta table holds only -1, 0 and +1, the one range the driver's packed nibble
+' can carry (DRIVER_REV 44, C4). Checked at every start, before anything is claimed or launched, for EVERY motor
+' type, not only the one configured, so a bad table is found by the first start of any build.
+'
+' @returns bValid - T/F where F means some motor's table holds a step outside -1..+1
+'
+' @local eMotorType - the MOTR_* motor type whose table is checked
+' @local pDeltaBytes - hub address of that motor's delta table
+' @local tableIdx - the entry, (old << 3) | new
+' @local delta - the entry's step, sign-extended
+
+    bValid := TRUE
+    repeat eMotorType from MOTR_6_5_INCH to MOTR_DOCO_4KRPM
+        pDeltaBytes := deltaTableForMotor(eMotorType)
+        repeat tableIdx from 0 to 63
+            delta := BYTE[pDeltaBytes][tableIdx] SIGNX 7
+            if (delta < -1) or (delta > 1)
+                bValid := FALSE
+                debug[user.DBGCH_ERROR]("! ERROR: hall delta table of motor ", udec_long(eMotorType), " entry ", udec_long(tableIdx), " is ", sdec_long(delta), ", outside -1..+1")
 
 PRI hallBitsSwapped(hallCode, bitA, bitB) : swappedCode
 ' TEST USE: {hallCode} with bits {bitA} and {bitB} exchanged
@@ -4293,7 +4356,7 @@ PRI hallBitsSwapped(hallCode, bitA, bitB) : swappedCode
     swappedCode |= ((hallCode >> bitA) & 1) << bitB
     swappedCode |= ((hallCode >> bitB) & 1) << bitA
 
-PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs, dutyAtFfLine
+PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees, gapInNs, dutyAtFfLine, swapBitA, swapBitB
 ' Initialise this instance's driver image and state for a validated, claimed start; cannot fail.
 '
 ' @param eMotorBasePin - The base pin ENUM (PINS_*) for adapter board for this motor, already validated and claimed
@@ -4305,6 +4368,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 ' @local revDegrees - reverse commutation offset for this motor, in degrees
 ' @local gapInNs - PWM dead-gap, in nanoseconds
 ' @local dutyAtFfLine - the duty the feedforward's back-EMF line was measured to reach at its increment (1/16ths)
+' @local swapBitA - TEST USE: one hall-code bit a test swap reads as exchanged (equal to swapBitB: no swap)
+' @local swapBitB - TEST USE: the other
 
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
@@ -4345,13 +4410,15 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' new build up our hall angle and position increment table for specific motor
     if user.MOTOR_TYPE == MOTR_6_5_INCH
         longmove(@hall_angles, @hltbAngles, 16)
-        bytemove(@deltas, @deltas65, 64)
     else
         longmove(@hall_angles, @hltbAngl4k, 16)
-        bytemove(@deltas, @deltas4k, 64)
+    swapBitA, swapBitB := 0, 0                                                  ' equal bits: no swap
     if testHallSwap <> HSW_NONE                                                 ' TEST USE: read two halls as swapped, this start only
-        swapHallTables(testHallSwap)
+        swapBitA, swapBitB := swapHallTables(testHallSwap)
         testHallSwap := HSW_NONE
+    ' DRIVER_REV 44 (C4): the delta table packed as nibbles with each pair's integrity event; setupForStart() has
+    '  checked every motor's byte table (bHallDeltaTablesValid()), so this cannot fail
+    packHallDeltas(deltaTableForMotor(user.MOTOR_TYPE), swapBitA, swapBitB)
 
 ' average is middle plus deflection for forward or reverse
 '  responsiveness of motor to desire
@@ -6736,6 +6803,13 @@ CON { driver internal Constants }
     HALL_ILL_LO_WORD = 0
     HALL_ILL_HI_WORD = 1
     HALL_ILL_WORD_MAX = $FFFF
+    ' DRIVER_REV 44 (memory reduction WP4, C4): the driver's packed hall transition nibble (packHallDeltas(), .ctlMotor)
+    HALL_NIB_STEP_MASK = %0011  ' bits 1:0: the position step, -1/0/+1 as two's complement %11/%00/%01 (SIGNX #1)
+    HALL_NIB_MISSED    = %0100  ' bit 2: a legal code changed to a different legal one with no step (hall_missed_)
+    HALL_NIB_ILLEGAL   = %1000  ' bit 3: a change INTO %000 or %111 with no step (countIllegal, hall_illegal_)
+    HALL_NIB_BITS      = 4      ' bits per nibble: nibble [new] of long [old]
+    HALL_CODE_ILL_LO   = %000   ' the two illegal hall codes
+    HALL_CODE_ILL_HI   = %111
 
 '44KHz seems to be sweetspot for DocoEng Motor
 '    FRAME   = 6_136             ' 44.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
@@ -6766,7 +6840,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 43      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 44      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6960,6 +7034,16 @@ CON { driver internal Constants }
                                             '     registers); start image 144 and run image 476 unchanged. Proved
                                             '     equivalent to mem-reduce-start by tools/pasm_equiv (2055 scenarios);
                                             '     PASM (cog) change; no ABI change
+                                            ' 44: memory reduction WP4 (C4): the hall transition table is 8 longs of
+                                            '     nibbles (was 64 bytes), each carrying the step and the pair's
+                                            '     integrity event (missed, illegal entry), which init() packs from the
+                                            '     unchanged byte tables (packHallDeltas()); the frame's lookup and
+                                            '     16-instruction integrity block become 8 instructions. start()
+                                            '     refuses (ERR_BAD_MOTOR_TABLE) any motor's byte table holding a step
+                                            '     outside -1..+1 (bHallDeltaTablesValid()). Cog 469 -> 449 of 496
+                                            '     (8 table longs, 12 code longs); start image 144 and run image 476
+                                            '     unchanged. Proved equivalent to mem-reduce-start by tools/pasm_equiv
+                                            '     (2055 scenarios); PASM (cog) and Spin2 (init) change; no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7829,36 +7913,27 @@ drvMotor                                                ' global (task 3535): en
     if_z        wypin   drive_w_, pin_pwm_w_h
 
                 alts    hall_port                       ' PL-90: the next S is INA or INB, chosen once at driver start
-                mov     tmpX, 0-0                       ' ONE read: all three (filtered) hall lines from the same instant
-                shr     tmpX, hall_shift                ' U to bit 0, V to bit 1, W to bit 2: the old W,V,U TESTP/RCL order
-                and     tmpX, #%111
+                mov     tmpY, 0-0                       ' ONE read: all three (filtered) hall lines from the same instant
+                shr     tmpY, hall_shift                ' U to bit 0, V to bit 1, W to bit 2: the old W,V,U TESTP/RCL order
+                and     tmpY, #%111                     ' tmpY := new, kept for countIllegal below
                 shl     hall_, #3                       ' last pass's code becomes "old"
-                or      hall_, tmpX
+                or      hall_, tmpY
                 and     hall_, #%111_111                ' (old << 3 | new) [_x_:ooo:nnn]
-                altgb   hall_, #deltas                  ' load byte deltas[hall_] -> [-1, 0, 1]
-                getbyte tmpY
-                signx   tmpY, #7                        ' sign-extend bit7
-                add     pos_, tmpY                      ' add to current pos_
-
-                ' hall integrity counters: hall_ is (old << 3 | new), tmpY is the table delta
-                '  counts EVENTS: a missed transition (legal -> different legal, no step), or an entry into
-                '  an illegal code (%000/%111); an illegal code is never also counted as a missed transition
-                mov     tmpX, hall_                     ' tmpX := old<<3 | new
-                shr     tmpX, #3                        ' tmpX := old
-                xor     tmpX, hall_                     ' low 3 bits := old ^ new
-                test    tmpX, #%111                 wz  ' Q: hall code unchanged since last pass?
-    if_z        jmp     #.hallCounted                   ' YES (NORMAL): nothing to count
-                cmp     tmpY, #0                    wz  ' Q: did the table report a step (delta <> 0)?
-    if_nz       jmp     #.hallCounted                   ' YES: legal adjacent transition, already in pos_
-                mov     tmpY, hall_                     ' tmpY := old<<3 | new (delta no longer needed)
-                and     tmpY, #%111                     ' tmpY := new
-                call    #countIllegal                   ' Z: changed INTO %000 or %111, counted in that code's own word
-    if_z        jmp     #.hallCounted                   ' ...never also a missed transition
-                mov     tmpY, hall_
-                shr     tmpY, #3                        ' tmpY := old
-                cmp     tmpY, #%000                 wz  ' Q: leaving an illegal code (already counted on entry)?
-    if_nz       cmp     tmpY, #%111                 wz
-    if_nz       add     hall_missed_, #1                ' legal -> different legal with no step: missed transition
+                ' WP4 (C4): ONE nibble per (old, new) carries the step AND the hall integrity event, both static
+                '  functions of the pair, packed by init() (packHallDeltas()): bits 1:0 the step -1/0/+1 (%11/%00/%01),
+                '  bit 2 a MISSED transition (legal -> different legal, no step), bit 3 an entry INTO an illegal code
+                '  (%000/%111, no step), counted in that code's own word. An illegal code is never also a missed
+                '  transition, and a change out of %000/%111 counts nothing (it was counted on entry).
+                '  ALTGN: register deltas + hall_[11:3] (= old, as hall_ < 64), nibble hall_[2:0] (= new) (p2kbPasm2Altgn)
+                altgn   hall_, #deltas
+                getnib  tmpX                            ' tmpX := the pair's nibble
+                testb   tmpX, #2                    wc  ' Q: a missed transition?
+    if_c        add     hall_missed_, #1                ' YES: counted
+                testb   tmpX, #3                    wc  ' Q: an entry into an illegal code? (C, kept for the CALL below)
+                signx   tmpX, #1                        ' the step, bits 1:0 sign-extended (no flag written, p2kbPasm2Signx)
+                add     pos_, tmpX                      ' add to current pos_
+    if_c        call    #countIllegal                   ' YES: counted in tmpY's own word (writes tmpX, tmpY, Z: all dead
+                                                        '  from here to .hallCounted's CMPM WCZ and the next writes)
 .hallCounted
                 setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
@@ -8166,17 +8241,12 @@ jrk_j           LONG    p_adc_1x | p_count_highs   ' +2 ; (C1) jrk_j: J, the jer
 ' max frequency is this...
 ' max ramp rate is this...
 
-' old bit shift up by 3 then new bits
-'   old is outer index
-'   new is inner index
-deltas          BYTE    0,  0,  0,  0,  0,  0,  0,  0  ' Hall-effect-sensor position deltas from (old<<3 | new)
-                BYTE    0,  0,  0, -1,  0,  1,  0,  0
-                BYTE    0,  0,  0,  1,  0,  0, -1,  0
-                BYTE    0,  1, -1,  0,  0,  0,  0,  0
-                BYTE    0,  0,  0,  0,  0, -1,  1,  0
-                BYTE    0, -1,  0,  0,  1,  0,  0,  0
-                BYTE    0,  0,  1,  0, -1,  0,  0,  0
-                BYTE    0,  0,  0,  0,  0,  0,  0,  0
+' DRIVER_REV 44 (memory reduction WP4, C4): the hall transition table, 8 longs of nibbles: long [old], nibble [new]
+'   (ALTGN hall_, #deltas). Each nibble: bits 1:0 the position step -1/0/+1, bit 2 a missed transition, bit 3 an
+'   entry into an illegal code (HALL_NIB_*). init() packs it (packHallDeltas()) from the motor's byte table
+'   (deltas65, deltas4k: the authoring format, ADDING_MOTOR.md), with a test hall swap applied, before coginit;
+'   a byte table outside -1..+1 cannot be packed, and start() refuses it (bHallDeltaTablesValid()).
+deltas          LONG    0[8]
 
 ' 32bit angles
 '  6.5" wheel
@@ -8363,14 +8433,15 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
 '                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
 
 ' $1f8 for reg cogs
-    fit     496  ' 469 USED, 27 FREE, 2026-09-27 (DRIVER_REV 43, memory reduction WP3: the frame and drive-pass peepholes,
-                 ' C3, 13 code longs and 2 registers; 484 at DRIVER_REV 42, WP2, countIllegal's 13 longs back in cog RAM;
+    fit     496  ' 449 USED, 47 FREE, 2026-09-27 (DRIVER_REV 44, memory reduction WP4: the hall table as nibbles carrying
+                 ' the integrity events, C4, 8 table longs and 12 code longs; 469 at DRIVER_REV 43, WP3, the frame and
+                 ' drive-pass peepholes; 484 at DRIVER_REV 42, WP2, countIllegal's 13 longs back in cog RAM;
                  ' 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) -- read from the
                  ' compiler, never hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`,
-                 ' PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1D4, the last register, so USED is $1D5). LUT
+                 ' PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1C0, the last register, so USED is $1C1). LUT
                  ' code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog
                  ' RAM, so REGISTERS are what this budget is for; code can live in the LUT images below (task 3535), read
-                 ' the same way (DRIVER_REV 43, unchanged since 42): the start image, lutCodeStart $200 to lutCodeEnd $290,
+                 ' the same way (DRIVER_REV 44, unchanged since 42): the start image, lutCodeStart $200 to lutCodeEnd $290,
                  ' 144 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3DC, 476 of 512 longs (36
                  ' free). Until DRIVER_REV 41 the LUT held 507 resident longs, with the planner's 126-long overlay over the
                  ' start sequence.
@@ -8633,7 +8704,7 @@ driveinit                                               ' init drive pwm
 
 lutCodeEnd                                              ' the LUT START IMAGE ends here (task 3535; DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the start image is 144 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 43 (LUTCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the start image is 144 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 44 (LUTCODEEND's VALUE)
 
 ' =========================================================================
 '  THE LUT RUN IMAGE (DRIVER_REV 42, memory reduction WP2, C2): every routine that runs only once the drive loop has
@@ -9277,7 +9348,7 @@ rampOut
 
 runCodeEnd                                              ' the LUT RUN IMAGE ends here (DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the run image is 476 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 43 (RUNCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the run image is 476 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 44 (RUNCODEEND's VALUE)
 
 CON { license }
 {{

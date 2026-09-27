@@ -307,6 +307,7 @@ Every code is below -1,000, so none can be mistaken for a cog id, a power, a dis
 | ERR\_COMMAND\_TIMEOUT | -1019 | setCommandTimeout() is on and no drive command arrived in time: the motors were stopped |
 | ERR\_START\_CHECK\_FAILED | -1020 | start(): a start check still failed after its retries, so the motor was not started; getHealth() says which |
 | ERR\_NOT\_IMPLEMENTED | -1021 | the method is kept so programs compile, but does nothing: calibrate() |
+| ERR\_BAD\_MOTOR\_TABLE | -1022 | start(): a motor's hall delta table holds a step other than -1, 0 or +1 (see ADDING\_MOTOR.md); nothing was launched |
 | ERR\_PROTECTIVE\_STOP | -2000 | a protective stop is latched for a cause other than the named ones |
 | ERR\_PLATFORM\_BLOCKED | -2001 | a protective stop is latched: a motor commanded to move did not turn for about a second |
 
