@@ -415,6 +415,19 @@
 ''               at the Powerpole) and PK_UNCAL1_MV 20_488 (debug_260926-163930.log BM-PKMARK), with the bench config's
 ''               PACK_SENSE_CAL_PERMILLE 1012. The next dual-pack judges pair 1 (R20-PACK-METER CAL_POINT_MV); pair 2 waits
 ''               for a pack voltage at least PK_V2_SEP_MV away
+''               27 Sep 2026 -- SRC_REV=56, FMT 35: three instrument defects from Visit 10 pass 7 (DOCs/analyses/bench/
+''               2026-09-26/pass7/, debug_260926-175052.log); the pass's verdicts stand. (D) PACK: a cycle's reference and
+''               the meter mark were the last PRESENT reading before the unplug was seen, which the driver's decaying
+''               average can catch part-way down (cycle 1 ref 20,505 against a steady 20,688, so the replug's 20,684 failed
+''               R20-PACK-ABSENT). They are now taken only before he is asked to unplug: cycle 1's and the mark from step
+''               1's mean (pkSteadyMeanMv()), a later cycle's from one reading just before its unplug line; the wait keeps
+''               no history (PK_MARK_STEP_MS, PK_MARK_SLOTS removed). (E) R19-DUAL-PACK-X judges the start's pack reading
+''               against the build's configuration (bSkPackAsConfig()): fitted, PACK_PRESENT at SK_PACK_LO_MV ..
+''               SK_PACK_HI_MV (15.0 .. 21.5 V, VOLTAGE-SENSOR.md's 5S table) with the left wheel's HLT_PACK checked and
+''               neither wheel's failed; unfitted, the old rule. Its criterion token becomes PACK_AS_CONFIGURED (was
+''               PACK_SEEN_FITTED). (F) R20-DUAL-EV-PATH / R20-DUAL-PATH-HUNT's precondition: a wheel held on one poll
+''               while its commanded partner reads free on D_BEHIND_POLLS polls running from it (dBehindPoll()), latched
+''               -- the fixed limiter releases the held wheel too soon for it to read held twice. No record changes shape
 ''
 '' =================================================================================================
 
@@ -484,7 +497,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 55                                  ' hand-bumped whenever this file changes
+    SRC_REV     = 56                                 ' hand-bumped whenever this file changes
     FMT_VERSION = 35                                      ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -1319,7 +1332,7 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     D_BLOCK_WAIT_MS       = 4_000                           ' BLOCKED_PASSES is ~1 s of front passes, plus the spin-up
     D_FOLD_HOLD_MS        = 3_000                           ' FOLDBACK: the drive is held this long under the low limit
     D_LIMIT_POLL_MS       = 50                              ' cadence of the limit-state reads inside a limit step
-    D_BEHIND_POLLS        = 2                               ' PL-141: polls running a wheel must read BEHIND to count as seen (reads are not simultaneous)
+    D_BEHIND_POLLS        = 2                               ' polls running the partner must read free, from the one that saw the wheel held (dBehindPoll())
     ' R18.4 (task 3584, DRIVE-INTEGRATION-DESIGN.md 5.5): the BLOCKED stall is also Visit 8's forced shortfall
     A7_SETTLE_MS          = 200                             ' A-7: the field has settled this long after the wheel first reads SHORT
     A7_SETTLE_PCT         = 10                              ' A-7: ...to at most this % of the commanded increment (shipped: 100 %)
@@ -2566,7 +2579,7 @@ sSfCritB4Pulse  BYTE    "WINDING_R_PULSE", 0
 sSfStudyB4      BYTE    "B-4", 0
 sSfNotBuilt     BYTE    "NOT_BUILT", 0
 ' task 3613 (R19.7): the START part's cells -- its own two (suffix S: the -X pair is FAULTRESP's), then the startup
-'  study's, the probe's control (PRBFLR) before the probe, and the unfitted pack sensor
+'  study's, the probe's control (PRBFLR) before the probe, and the pack sensor as configured
 sSfCellNoStallS BYTE    "R19-DUAL-NOSTALL-S", 0
 sSfCellDbgMaskS BYTE    "R19-DUAL-DBGMASK-S", 0
 sSfCellSkHealth BYTE    "R19-DUAL-HEALTH-X", 0
@@ -2580,7 +2593,7 @@ sSfCritSkRz     BYTE    "ZERO_OUT_OF_BAND", 0
 sSfCritSkPrbFlr BYTE    "FLOOR_UNDER_FOLLOW", 0
 sSfCritSkProbe  BYTE    "PROBES_FAILED", 0
 sSfCritSkWalk   BYTE    "WALKS_FAILED", 0
-sSfCritSkPack   BYTE    "PACK_SEEN_FITTED", 0
+sSfCritSkPack   BYTE    "PACK_AS_CONFIGURED", 0                ' SRC_REV 56: was PACK_SEEN_FITTED (bSkPackAsConfig())
 sSfStudyB5      BYTE    "B-5", 0
 ' task 3614: the START part's firmware negatives, each declared only in its own build (LEFT only)
 sSfCellSkPhNeg  BYTE    "R19-DUAL-PHNEG-X", 0
@@ -3088,7 +3101,8 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     LONG    hpLastPct[INST_MOTORS]                          ' the last pre-latch poll's following percentage
     LONG    bHpShortNow[INST_MOTORS]                        ' PL-141: this poll's SHORT, per wheel
     LONG    hpCmdNow[INST_MOTORS]                           ' ...its commanded increment
-    LONG    hpBehindRun[INST_MOTORS]                        ' ...consecutive polls it was BEHIND its partner
+    LONG    hpBehindRun[INST_MOTORS]                        ' ...polls running its partner stayed free since it was seen held (dBehindPoll())
+    LONG    bHpBehindSeen[INST_MOTORS]                      ' ...that run reached D_BEHIND_POLLS: seen behind, latched for the step
 
     LONG    sfStarts[INST_MOTORS]                           ' REVB/INTEG: wheel starts
     LONG    sfNotRevb[INST_MOTORS]
@@ -7084,7 +7098,8 @@ PRI dEvStage(stage) | logIdx, nPairs, bFormed, nCount, bOk, bRestored
         bDBlockDrained := TRUE
         ' PL-141: the path limiter now engages only for a wheel BEHIND its partner, so a stall of both wheels
         '  together (this step's, wheels up) no longer owes a pair; the positive half needs one seen behind
-        bDPathBehind := (hpBehindRun[SLOT_LEFT] >= D_BEHIND_POLLS) or (hpBehindRun[SLOT_RIGHT] >= D_BEHIND_POLLS)
+        '  (dBehindPoll(), latched, SRC_REV 56)
+        bDPathBehind := bHpBehindSeen[SLOT_LEFT] or bHpBehindSeen[SLOT_RIGHT]
 
 PRI dWaitDriversStopped() | startMs, eLeftState, eRightState
 ' Wait, bounded by D_REST_MS, until both drivers read DCS_STOPPED.
@@ -7619,25 +7634,41 @@ PRI dHoldProbeReset() | slotIdx
         bHpShortNow[slotIdx] := FALSE
         hpCmdNow[slotIdx] := 0
         hpBehindRun[slotIdx] := 0
+        bHpBehindSeen[slotIdx] := FALSE
 
-PRI dBehindPoll() | slotIdx, otherIdx, bBehind
-' PL-141: after both wheels' dHoldProbe() of one poll, count each wheel's consecutive polls BEHIND its partner -- held
-' (SHORT), while the partner is commanded and NOT held. The two readings are not taken at one instant, so a wheel counts
-' as seen behind (R20-DUAL-EV-PATH's positive precondition, bDPathBehind) only after D_BEHIND_POLLS polls running.
+PRI dBehindPoll() | slotIdx, otherIdx, bPartnerFree
+' PL-141: after both wheels' dHoldProbe() of one poll, judge whether a wheel is seen BEHIND its partner -- R20-DUAL-EV-PATH
+' and R20-DUAL-PATH-HUNT's positive precondition, bDPathBehind. A wheel is seen behind when it read held (SHORT) on a
+' poll whose commanded partner read NOT held, and the partner still read commanded and not held on the next poll: the
+' partner free on D_BEHIND_POLLS polls running, counted from the one that saw the wheel held. Latched for the step.
+'
+' WHY THE PARTNER, NOT THE HELD WHEEL, MUST HOLD ACROSS TWO POLLS (SRC_REV 56). The two readings of one poll are two
+' steering queries taken one after the other, not at one instant, so on one poll a partner's "not held" can predate its
+' own hold by that skew -- a stall of both wheels together can read "one held, the other not" once. D_BEHIND_POLLS
+' guarded that until SRC_REV 55 by asking the HELD wheel to read held on two polls running; but the fixed limiter
+' releases it by scaling the partner down within a slot or two, so it is held only briefly (pass 7,
+' debug_260926-175052.log: PATH_LIMIT engaged at 91 and released at 1000 exactly once, BM-HOLD LEFT first_short_ms 601,
+' the right never short) and the precondition read NOMEAS on two passes. The partner's reading on the next poll is
+' D_LIMIT_POLL_MS after the held reading, far longer than the skew, so a partner still commanded and free then was not
+' held when the wheel was; a stall of both together makes it read held on that poll and resets the run. The mechanism
+' under test does not erase this: scaling the partner down is what keeps it free.
 '
 ' NOT the steering object's own fraction rule (Visit 10 pass 6). That rule's gap is closed by the limiter itself within
-' one 8 ms slot of engaging -- it scales the partner down to the behind wheel's fraction -- so a 50 ms poll never saw it
-' twice running, and the cell read NOMEAS beside five engage/release pairs. "One held, the other not" is what the limiter
-' does not erase, and it does not share the rule under test.
+' one 8 ms slot of engaging, and it would share the rule under test.
 '
 ' @local slotIdx - motor slot
 ' @local otherIdx - its partner's slot
-' @local bBehind - T/F where T means this wheel is behind on this poll
+' @local bPartnerFree - T/F where T means the partner is commanded and not held on this poll
 
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         otherIdx := SLOT_RIGHT - slotIdx
-        bBehind := (bHpShortNow[slotIdx] == TRUE) and (hpCmdNow[otherIdx] <> 0) and (bHpShortNow[otherIdx] == FALSE)
-        hpBehindRun[slotIdx] := bBehind ? (hpBehindRun[slotIdx] + 1) <# LIM_SMALL : 0
+        bPartnerFree := (hpCmdNow[otherIdx] <> 0) and (bHpShortNow[otherIdx] == FALSE)
+        if bPartnerFree and ((bHpShortNow[slotIdx] == TRUE) or (hpBehindRun[slotIdx] > 0))
+            hpBehindRun[slotIdx] := (hpBehindRun[slotIdx] + 1) <# LIM_SMALL
+        else
+            hpBehindRun[slotIdx] := 0
+        if hpBehindRun[slotIdx] >= D_BEHIND_POLLS
+            bHpBehindSeen[slotIdx] := TRUE
 
 PRI dHoldProbe(slotIdx, elapsedMs) | nCmdIncr, nDrvIncr, bShort, nPermille, nPct, bPctOk
 ' One BLOCKED-step poll of a wheel's path-limiter view (R18.4, DRIVE-INTEGRATION-DESIGN.md 5.5).
@@ -12512,6 +12543,13 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
     SK_BAD_HI             = 0
     PACK_TOK_COUNT        = wheelL.PACK_PRESENT + 1         ' tokPack is indexed by the library's PACK_*
     TOKMAX_PACK           = 10
+    ' SRC_REV 56: R19-DUAL-PACK-X, fitted, wants a plausible 5S pack (VOLTAGE-SENSOR.md "The numbers (5S)", the pack
+    '  the sensor is sized for and the bench runs). LOW: the cutoff, 3.00 V/cell = 15.0 V -- under it the pack is not
+    '  one to run on, and both of the page's wrong readings lie under it (an unplugged sensor about 0 V, a floating pin
+    '  about 12.8 V). HIGH: fully charged, 4.20 V/cell = 21.0 V, plus 500 mV for the divider's gain error before
+    '  calibration (two 1 % resistors, up to about 2 %, 420 mV at 21 V; the bench's measured 1.2 %, cal 1012).
+    SK_PACK_LO_MV         = 15_000
+    SK_PACK_HI_MV         = 21_500
     ' task 3614: the firmware negatives' names (the motor object's own enums, reached as wheelL.<CONST>)
     SKNEG_SWAP_SEL        = wheelL.HSW_HALLS_01             ' the one hall pair START_NEG_SWAP reads as swapped
     PRB_TOK_COUNT         = wheelL.PRB_W + 1                ' tokPrbPhase is indexed by the library's PRB_*
@@ -12661,7 +12699,7 @@ VAR { START state -- cog 0 only }
     LONG    sfSkWalkN[INST_MOTORS]                          ' WALK: walks run
     LONG    sfSkWalkBad[INST_MOTORS]                        ' ...whose pre-registered reading did not hold
     LONG    sfSkPackN                                       ' PACK: starts read
-    LONG    sfSkPackBad                                     ' ...that did not read PACK_NOT_FITTED, 0 mV and no HLT_PACK
+    LONG    sfSkPackBad                                     ' ...whose pack reading did not match the configuration (bSkPackAsConfig())
     LONG    sfSkPhNegN                                      ' PHNEG (task 3614): armed starts read, LEFT
     LONG    sfSkPhNegBad                                    ' ...whose failed mask was not exactly the withheld phase's bit
     LONG    sfSkSwNegN                                      ' SWNEG (task 3614): armed walks run, LEFT
@@ -12952,16 +12990,16 @@ PRI skFloorWindow(slotIdx, winStartTotal, winEndTotal) | sampleIdx, startJ, endJ
                     skFloor[floorBase + 2] #>= abs(smpPhW(sampleIdx, slotIdx))
 
 PRI skFoldStart() | slotIdx, phaseIdx
-' Fold one lifetime into the cells. PACK: counted once a start, bad unless it read PACK_NOT_FITTED, 0 mV and neither
-' wheel checked HLT_PACK. HEALTH: bad on any failed bit, or when not every start check was checked. PROBE: each probe
-' judged (skFoldProbe()). RZSPREAD and PRBFLR: from the floated window, when it held samples.
+' Fold one lifetime into the cells. PACK: counted once a start, bad unless the start's pack reading matches the build's
+' configuration (bSkPackAsConfig()). HEALTH: bad on any failed bit, or when not every start check was checked. PROBE:
+' each probe judged (skFoldProbe()). RZSPREAD and PRBFLR: from the floated window, when it held samples.
 '
 ' @local slotIdx - motor slot
 ' @local phaseIdx - 0..SK_PHASES-1
 
     if bSkHealthRead
         sfSkPackN := (sfSkPackN + 1) <# LIM_SMALL
-        if (skPack <> wheelL.PACK_NOT_FITTED) or (skPackMv <> 0) or (((skChk[SLOT_LEFT] | skChk[SLOT_RIGHT]) & wheelL.HLT_PACK) <> 0)
+        if bSkPackAsConfig() == FALSE
             sfSkPackBad := (sfSkPackBad + 1) <# LIM_SMALL
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         if bSkHealthRead
@@ -12979,6 +13017,24 @@ PRI skFoldStart() | slotIdx, phaseIdx
             skFlN[slotIdx] := (skFlN[slotIdx] + 1) <# LIM_SMALL
             repeat phaseIdx from 0 to SK_PHASES - 1
                 skFlMax[slotIdx] #>= skFloor[(slotIdx * SK_PHASES) + phaseIdx]
+
+PRI bSkPackAsConfig() : bOk
+' Whether one start's pack reading (skReadHealth(): the steering object's getPackVoltage() and both wheels' getHealth())
+' matches the build's configuration -- R19-DUAL-PACK-X, PACK_AS_CONFIGURED. Until SRC_REV 56 it assumed no sensor, and
+' failed every start once the bench fitted one (pass 7).
+'  FITTED (user.PACK_SENSOR_FITTED TRUE): the steering object read PACK_PRESENT at SK_PACK_LO_MV .. SK_PACK_HI_MV (a
+'   plausible 5S pack, this part's CON), the left wheel -- the one isp_steering_2wheel starts the sensor on -- checked
+'   HLT_PACK, and neither wheel failed it. The right wheel's checked bit is not judged: which wheel reads the one pack
+'   is the steering object's choice, not this cell's claim.
+'  NOT FITTED: PACK_NOT_FITTED, 0 mV, and neither wheel checked HLT_PACK (the rule before SRC_REV 56).
+'
+' @returns bOk - T/F where T means the reading matches the configuration
+
+    if user.PACK_SENSOR_FITTED
+        bOk := (skPack == wheelL.PACK_PRESENT) and (skPackMv >= SK_PACK_LO_MV) and (skPackMv <= SK_PACK_HI_MV)
+        bOk &= ((skChk[SLOT_LEFT] & wheelL.HLT_PACK) <> 0) and (((skFail[SLOT_LEFT] | skFail[SLOT_RIGHT]) & wheelL.HLT_PACK) == 0)
+    else
+        bOk := (skPack == wheelL.PACK_NOT_FITTED) and (skPackMv == 0) and (((skChk[SLOT_LEFT] | skChk[SLOT_RIGHT]) & wheelL.HLT_PACK) == 0)
 
 PRI skFoldProbe(slotIdx) | probedIdx, readIdx, rowBase, drivenMv, folMv, bBad
 ' Judge one wheel's three probes by B-3's pre-registered reading, which is STRICTER than the driver's (a phase passes
@@ -13578,7 +13634,9 @@ PRI emitStartCells() | slotIdx, side
 '  PROBE    - COUNT: probes whose driven phase read under CONT_MIN_DRIVEN_MV or any follower under CONT_FOLLOW_PCT
 '  WALK     - COUNT: walks whose pre-registered reading did not hold; NOT_BUILT in the START_NO_WALK build
 '
-' and once, PACK - COUNT: starts that did not read PACK_NOT_FITTED, 0 mV and no HLT_PACK. Then, only in its own build
+' and once, PACK - COUNT: starts whose pack reading did not match the configuration (bSkPackAsConfig(): fitted,
+' PACK_PRESENT at SK_PACK_LO_MV .. SK_PACK_HI_MV and HLT_PACK checked, not failed; unfitted, PACK_NOT_FITTED, 0 mV and
+' no HLT_PACK). Then, only in its own build
 ' and LEFT only (task 3614):
 '
 '  PHNEG    - COUNT: armed starts whose LEFT failed mask was not exactly the withheld phase's bit (START_NEG_PHASE)
@@ -13861,12 +13919,22 @@ CON { --- PACK: the pack voltage sensor, fitted and certified (task 3611, R20.4)
   '   2  UNPLUG the sensor's Powerpole at the pack. Seen when the getter stops reading PACK_PRESENT; then, EV_SETTLE_MS
   '      on, the getter must read PACK_ABSENT with 0 mV and the drained log exactly one EV_PACK valued PACK_ABSENT.
   '   3  PLUG IT BACK IN. Seen when the getter reads PACK_PRESENT; then, EV_SETTLE_MS on, the reading must be within
-  '      PK_REPLUG_MV of the one just before the unplug, and the log exactly one EV_PACK valued PACK_PRESENT.
+  '      PK_REPLUG_MV of the cycle's reference, and the log exactly one EV_PACK valued PACK_PRESENT.
   '   4, 5  the same again: the second cycle, which is also the first's redo.
   '  Each of 2-5 must be seen within PK_ACT_MS of its line. One that is not is JUDGED, not skipped: an unplug that never
   '  reads absent is the D2 failure itself (a disconnected sensor reading as a voltage), and a program that cannot see
   '  his act cannot tell that from his not acting -- so both FAIL, and BM-PKCYCLE's why says OPERATOR_TIMEOUT. Nothing
   '  runs after a step not seen.
+  '
+  ' THE REFERENCE, AND THE MARK, ARE TAKEN BEFORE HE IS ASKED TO UNPLUG (SRC_REV 56). The driver's pack reading is a
+  '  running average: after the Powerpole is pulled it decays over several samples before it falls under PACK_ABSENT_MV
+  '  and reads ABSENT, so every reading while it decays still says PRESENT, and "the last PRESENT reading before the
+  '  unplug was seen" can be caught part-way down (pass 7, debug_260926-175052.log: steady mean 20,688 mV, least
+  '  20,678, but cycle 1's reference 20,505 and its mark 20,505 / uncal 20,261; the replug's 20,684 then lay 179 mV
+  '  from it and failed R20-PACK-ABSENT). No reading taken while an unplug is awaited is used. Cycle 1's reference and
+  '  the mark are step 1's mean (pkSteadyMeanMv()), whose window ends before the unplug line appears; each later
+  '  cycle's reference is one reading taken just before its own unplug line is printed (bPkCycle()), when he has not
+  '  been asked and so cannot have unplugged. The replug is compared with a true pre-unplug value either way.
   '
   ' WHERE HE UNPLUGS. At the PACK END (the sensor's Powerpole), never the header at the P2: VOLTAGE-SENSOR.md puts R4,
   '  the pull-down that makes an unplugged sensor read about 0 V, on the small board before the header, so a header
@@ -13876,8 +13944,9 @@ CON { --- PACK: the pack voltage sensor, fitted and certified (task 3611, R20.4)
   ' THE ONE-TIME CALIBRATION AND THE METER PAIRS -- NO NUMBER IS TYPED AT THE BENCH (overlay P2), AND EACH METER READING
   '  IS SPENT ONCE (overlay P1). A PAIR is one meter reading and the P2's reading at the same moment. The run asks for a
   '  meter reading only when a pair is still owed (pkPairOwed()), just before step 2: "read the meter now, remember it".
-  '  The unplug that follows marks the moment: the reading from PK_MARK_STEP_MS to twice that before the unplug was seen
-  '  is the P2's side (BM-PKMARK: mark_mV, and uncal_mV, the same reading without the calibration). He sends the meter
+  '  The P2's side is step 1's mean, taken over the minute that ends as that line appears (BM-PKMARK: mark_mV, and
+  '  uncal_mV, the same mean without the calibration; step 1's spread bounds how far the pack moved in it), and is kept
+  '  only once step 2's unplug is seen, so a run whose operator never acted takes no pair. He sends the meter
   '  number to the agent in chat after the run; the agent compiles it in here, beside BM-PKMARK's uncal_mV, and the NEXT
   '  dual-pack run prints the pair's verdict (BM-PKMETER, R20-PACK-METER):
   '   pair 1, CAL: taken while pair 1 is not yet compiled in (bPkCalSet() FALSE; the driver applies the divider's
@@ -13904,8 +13973,7 @@ CON { --- PACK: the pack voltage sensor, fitted and certified (task 3611, R20.4)
     PK_READ_EVERY_MS      = 2_000                           ' BM-PKREAD's cadence in step 1: 30 readings
     PK_CYCLES             = 2                               ' unplug-and-replug cycles: steps 2-3 and 4-5 (the lines say 1 OF 5 .. 5 OF 5)
     PK_ACT_MS             = 60_000                          ' each of steps 2-5 must be seen within this of its line
-    PK_MARK_STEP_MS       = 250                             ' while waiting for an unplug, the reading kept this often
-    PK_REPLUG_MV          = 100                             ' step 3 / 5: the replugged reading within this of the pre-unplug one
+    PK_REPLUG_MV          = 100                             ' step 3 / 5: the replugged reading within this of the cycle's reference
     PK_AGREE_MV           = 100                             ' R20-PACK-METER, both pairs (derived above)
     PK_V2_SEP_MV          = 1_000                           ' pair 2 at least this far from pair 1's meter reading
     PK_PERMILLE           = 1_000
@@ -13923,7 +13991,6 @@ CON { --- PACK: the pack voltage sensor, fitted and certified (task 3611, R20.4)
     PKP_COUNT             = PKP_SECOND + 1
     TOKMAX_PKPAIR         = 6                               ' SECOND
     TOKMAX_PKRULE         = 16                              ' sPkRule
-    PK_MARK_SLOTS         = 2                               ' [0] the older reading, [1] the newer
 
 #ifdef DBP_PACK
 DAT ' ---- PACK tables and the operator's lines (task 3611) ----
@@ -13966,16 +14033,14 @@ VAR { PACK state -- cog 0 only }
     LONG    bPkSteadyClean                                  ' that drain was clean
     LONG    pkGioRaw                                        ' the ADC's GIO reading at start (testGetPackRaw())
     LONG    pkVioRaw                                        ' ...its VIO reading
-    ' the pair and the mark (pkPairDue(), pkWaitStatus())
+    ' the pair and the mark (pkPairDue(), bPkCycle())
     LONG    pkPairDue                                       ' PKP_* this run takes
     LONG    pkPairWhy                                       ' why it takes none, WHY_NONE when it takes one
-    LONG    pkHistMv[PK_MARK_SLOTS]                         ' the getter's mV, kept every PK_MARK_STEP_MS while an unplug is awaited
-    LONG    pkHistUncal[PK_MARK_SLOTS]                      ' ...and the uncalibrated reading beside it
-    LONG    bPkMarked                                       ' step 2's unplug was seen, so the mark was taken
-    LONG    pkMarkMv                                        ' the mark: the getter's mV before the unplug
+    LONG    bPkMarked                                       ' step 2's unplug was seen, so the mark was kept
+    LONG    pkMarkMv                                        ' the mark: step 1's mean mV (pkSteadyMeanMv())
     LONG    pkMarkUncal                                     ' ...uncalibrated
     ' one cycle (bPkCycle())
-    LONG    pkRefMv                                         ' the getter's mV just before this cycle's unplug
+    LONG    pkRefMv                                         ' the cycle's reference: a reading taken before he was asked to unplug
     LONG    bPkOutSeen                                      ' the unplug was seen within PK_ACT_MS
     LONG    pkOutMs                                         ' ms from its line to it
     LONG    pkOutSt                                         ' the getter's status EV_SETTLE_MS after it
@@ -14015,8 +14080,6 @@ PRI pkResetCells()
     pkVioRaw := 0
     pkPairDue := PKP_NONE
     pkPairWhy := WHY_NONE
-    longfill(@pkHistMv, 0, PK_MARK_SLOTS)
-    longfill(@pkHistUncal, 0, PK_MARK_SLOTS)
     bPkMarked := FALSE
     pkMarkMv := 0
     pkMarkUncal := 0
@@ -14146,16 +14209,23 @@ PRI pkPairOwed() : ePair, whyCode | nMeanMv
         else
             whyCode := WHY_SAME_PACK_VOLTAGE
 
-PRI bPkCycle(cycleIdx) : bContinue | bClean
-' One unplug-and-replug cycle, steps 2-3 or 4-5: the line, the wait for the sensor to see his act, then EV_SETTLE_MS
-' on, the getter and the drained log; judged (pkFoldCycle()) and printed (BM-PKCYCLE). Cycle 1 carries the meter
-' line (or the line saying none is needed) and takes the mark. A step not seen ends the cycle, judged, and ends the
-' cycles.
+PRI bPkCycle(cycleIdx) : bContinue | bClean, ePackStatus, nMv
+' One unplug-and-replug cycle, steps 2-3 or 4-5: the reference, the line, the wait for the sensor to see his act, then
+' EV_SETTLE_MS on, the getter and the drained log; judged (pkFoldCycle()) and printed (BM-PKCYCLE). Cycle 1 carries the
+' meter line (or the line saying none is needed) and keeps the mark once its unplug is seen. A step not seen ends the
+' cycle, judged, and ends the cycles.
+'
+' THE REFERENCE IS TAKEN BEFORE THE UNPLUG LINE IS PRINTED, never from a reading made while the unplug is awaited
+' (this part's CON: the driver's average decays over several PRESENT readings after the pull). Cycle 1's, and the mark,
+' is step 1's mean; a later cycle's is one reading taken here, before its line, and 0 unless it read PACK_PRESENT (a
+' pack not read before the unplug cannot be read again after it, so its replug fails, as it should).
 '
 ' @param cycleIdx - 1..PK_CYCLES
 ' @returns bContinue - TRUE when both steps were seen
 '
 ' @local bClean - one step's drain was clean
+' @local ePackStatus - the reference reading's status (cycles after the first)
+' @local nMv - its mV
 
     bPkOutSeen := bPkInSeen := FALSE
     pkOutMs := pkInMs := 0
@@ -14165,15 +14235,17 @@ PRI bPkCycle(cycleIdx) : bContinue | bClean
     bPkCycClean := TRUE
     pkCycWhy := WHY_NONE
     if cycleIdx == 1
+        pkRefMv, _ := pkSteadyMeanMv()                      ' step 1's window closed before any line below appears
         if pkPairDue == PKP_NONE
             alignSay(@sPkSayNoMeter)
         else
             alignSay(@sPkSayMeter)
         alignSay(@sPkSayStep2)
     else
+        ePackStatus, nMv, _, _ := pkRead()                  ' before the line: he has not been asked, so it is the pack
+        pkRefMv := (ePackStatus == wheelL.PACK_PRESENT) ? nMv : 0
         alignSay(@sPkSayStep4)
     bPkOutSeen, pkOutMs := pkWaitStatus(FALSE)
-    pkRefMv := pkHistMv[0]
     if bPkOutSeen == FALSE
         pkCycWhy := WHY_OPERATOR_TIMEOUT
         alignSay(@sPkSayOutNone)
@@ -14181,9 +14253,8 @@ PRI bPkCycle(cycleIdx) : bContinue | bClean
             alignSay(@sPkSayNoPair)
     else
         if cycleIdx == 1
-            bPkMarked := TRUE
-            pkMarkMv := pkHistMv[0]
-            pkMarkUncal := pkHistUncal[0]
+            bPkMarked := TRUE                               ' he acted, so the pair is kept: step 1's mean, not the decaying average
+            pkMarkMv, pkMarkUncal := pkSteadyMeanMv()
         pkOutSt, pkOutMv, pkOutEvN, pkOutEvSum, bClean := pkSettleRead()
         bPkCycClean &= bClean
         if (pkOutSt == wheelL.PACK_ABSENT) and (pkOutMv == 0)
@@ -14209,27 +14280,21 @@ PRI bPkCycle(cycleIdx) : bContinue | bClean
     emitPkCycle(cycleIdx)
     bContinue := bPkOutSeen and bPkInSeen
 
-PRI pkWaitStatus(bWantPresent) : bSeen, nWaitMs | startMs, histMs, ePackStatus, nMv, nUncalMv
+PRI pkWaitStatus(bWantPresent) : bSeen, nWaitMs | startMs, ePackStatus
 ' Wait, beat-polled every SAMPLE_MS, for the getter to read PACK_PRESENT (bWantPresent) or to stop reading it: his act,
-' seen by the sensor, ends the step. At most PK_ACT_MS. While an unplug is awaited, the getter's reading is kept every
-' PK_MARK_STEP_MS in two slots, so when the unplug is seen pkHistMv[0] holds a reading from PK_MARK_STEP_MS to twice
-' that before it: the pack as it stood (the average needs about 190 ms to fall under PACK_ABSENT_MV).
+' seen by the sensor, ends the step. At most PK_ACT_MS. No reading taken here is kept: while an unplug is awaited the
+' driver's average may already be decaying under a PRESENT status, so none of them is a pre-unplug value (SRC_REV 56;
+' bPkCycle() takes the reference before the line).
 '
 ' @param bWantPresent - TRUE to wait for PACK_PRESENT, FALSE to wait for anything else
 ' @returns bSeen - TRUE when it was seen in time
 ' @returns nWaitMs - ms from the call to it (to PK_ACT_MS when not seen)
 '
 ' @local startMs - getms() at the call
-' @local histMs - the wait's ms of the next kept reading
 ' @local ePackStatus - one reading's status
-' @local nMv - its mV
-' @local nUncalMv - its uncalibrated mV
 
     bSeen := FALSE
-    ePackStatus, nMv, nUncalMv, _ := pkRead()
-    pkHistMv[0] := pkHistMv[1] := nMv                       ' both slots start at the reading as the line appears
-    pkHistUncal[0] := pkHistUncal[1] := nUncalMv
-    histMs := PK_MARK_STEP_MS
+    ePackStatus, _, _, _ := pkRead()
     startMs := getms()
     repeat
         beat(CP_LOOP_OPER)
@@ -14238,15 +14303,21 @@ PRI pkWaitStatus(bWantPresent) : bSeen, nWaitMs | startMs, histMs, ePackStatus, 
             quit
         if (getms() - startMs) >= PK_ACT_MS
             quit
-        if (bWantPresent == FALSE) and ((getms() - startMs) >= histMs)
-            pkHistMv[0] := pkHistMv[1]                      ' the newer becomes the older
-            pkHistUncal[0] := pkHistUncal[1]
-            pkHistMv[1] := nMv
-            pkHistUncal[1] := nUncalMv
-            histMs += PK_MARK_STEP_MS
         waitms(SAMPLE_MS)
-        ePackStatus, nMv, nUncalMv, _ := pkRead()
+        ePackStatus, _, _, _ := pkRead()
     nWaitMs := (getms() - startMs) <# PK_ACT_MS
+
+PRI pkSteadyMeanMv() : nMeanMv, nUncalMeanMv
+' Step 1's mean over its PRESENT readings (BM-PKSTEADY's mean_mV and uncal_mV): cycle 1's reference and the mark. Its
+' window closes before the unplug line is printed, so no reading in it can include the unplug.
+'
+' @returns nMeanMv - the mean of the getter's mV, 0 when no reading was PRESENT
+' @returns nUncalMeanMv - the mean of the uncalibrated mV, 0 likewise
+
+    nMeanMv := nUncalMeanMv := 0
+    if pkPresentN > 0
+        nMeanMv := pkSumMv / pkPresentN
+        nUncalMeanMv := pkUncalSum / pkPresentN
 
 PRI pkSettleRead() : ePackStatus, nMv, nEvN, nEvSum, bClean
 ' EV_SETTLE_MS after a step was seen: the getter, then the log drained. EV_PACK is queued on the event check within
@@ -14268,9 +14339,9 @@ PRI pkSettleRead() : ePackStatus, nMv, nEvN, nEvSum, bClean
     bClean := bEvdClean()
 
 PRI bPkInReadsPack() : bReads
-' Whether the replugged sensor reads the pack again: PACK_PRESENT, a voltage, and within PK_REPLUG_MV of the reading
-' just before this cycle's unplug -- the ABSENT cell's control, so a getter stuck at ABSENT, or one that comes back at
-' another voltage, fails it.
+' Whether the replugged sensor reads the pack again: PACK_PRESENT, a voltage, and within PK_REPLUG_MV of this cycle's
+' reference, taken before he was asked to unplug (bPkCycle()) -- the ABSENT cell's control, so a getter stuck at
+' ABSENT, or one that comes back at another voltage, fails it.
 '
 ' @returns bReads - TRUE when it does
 
@@ -14419,7 +14490,8 @@ PRI emitPkSteady() | bAny
     emitRecord()
 
 PRI emitPkCycle(cycleIdx)
-' BM-PKCYCLE: one unplug-and-replug cycle -- the reading just before the unplug (ref_mV); per step (o_ the unplug, i_
+' BM-PKCYCLE: one unplug-and-replug cycle -- its reference, taken before the unplug line (ref_mV: step 1's mean in
+' cycle 1, a reading just before the line after); per step (o_ the unplug, i_
 ' the replug) whether it was seen, ms from its line, the getter's status and mV EV_SETTLE_MS on, and the EV_PACK the
 ' drain held (count and summed value); whether both drains were clean, and the two cells' readings of it. Worst case
 ' 263 bytes.
@@ -14464,7 +14536,8 @@ PRI pkStepFields(pStName, pMvName, pEvName, pValName, bSeen, ePackStatus, nMv, n
 
 PRI emitPkMark()
 ' BM-PKMARK: the P2's half of this run's meter pair -- which pair was owed (NONE when none: why says why), whether the
-' meter was asked for, whether the mark was taken (step 2's unplug seen), the mark's calibrated and uncalibrated mV,
+' meter was asked for, whether the mark was kept (step 2's unplug seen), the mark's calibrated and uncalibrated mV
+' (step 1's means, SRC_REV 56),
 ' the calibration in force, step 1's spread, and the rule the agent sets PACK_SENSE_CAL_PERMILLE by from the meter
 ' reading he sends. Worst case 173 bytes.
 
@@ -22915,8 +22988,8 @@ PRI emitDEvCells() | nBad
 '                back, and a wheel that never derated logged none; NOMEAS unless one derated (SS6: wheels-up may not
 '                reach it); negative: none in either default-limit form. Bad: each wheel that did not match, each form
 '                with one
-'  EV-PATH     - positive: the BLOCK step, which saw a wheel BEHIND its partner (PL-141's rule, D_BEHIND_POLLS polls
-'                running), holds an EV_PATH_LIMIT engage (under 1000) and its release (1000), every LIMIT stage's
+'  EV-PATH     - positive: the BLOCK step, which saw a wheel BEHIND its partner (dBehindPoll(): held while its partner
+'                read commanded and free on D_BEHIND_POLLS polls running), holds an EV_PATH_LIMIT engage (under 1000) and its release (1000), every LIMIT stage's
 '                sequences well formed; NOMEAS unless a wheel was seen behind (a stall of both together is not);
 '                negative: none in STEERSEG. Bad: each malformed log, each unclean drain, no pair (1), STEERSEG with one
 '  EV-LATE     - per front-cog form (emitLateCells())

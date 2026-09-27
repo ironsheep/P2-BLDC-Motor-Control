@@ -1679,24 +1679,44 @@ PUB startPackSense() | nPin
             debug[user.DBGCH_WARNING]("! WARNING: PACK_SENSE_PIN ", sdec_long(nPin), " is not a free pin, the pack sensor is not read")
         else
             packCalibrate(nPin)
-            packAvgMv := packMvFromRaw(packRead(nPin)) << PACK_AVG_SHIFT
-            evLastPack := packStatusFor(packAvgMv >> PACK_AVG_SHIFT)            ' R20.1: EV_PACK reports changes from this, set before the front cog reads it
+            packAvgRaw := packRead(nPin) << PACK_AVG_SHIFT                      ' PL-161: the average is kept in raw counts
+            evLastPack := packStatusFor(packMvFromAvg())                        ' R20.1: EV_PACK reports changes from this, set before the front cog reads it
             bPackOwned := TRUE
             healthChecked |= HLT_PACK
-            if (packAvgMv >> PACK_AVG_SHIFT) < PACK_ABSENT_MV
+            if packMvFromAvg() < PACK_ABSENT_MV
                 healthFailed |= HLT_PACK
-            debug[user.DBGCH_LIFECYCLE]("* pack sensor ", sdec_long(nPin), sdec_long(packGioRaw), sdec_long(packVioRaw), sdec_long(packAvgMv >> PACK_AVG_SHIFT))
+            debug[user.DBGCH_LIFECYCLE]("* pack sensor ", sdec_long(nPin), sdec_long(packGioRaw), sdec_long(packVioRaw), sdec_long(packMvFromAvg()))
 
-PUB frontSamplePack()
-'' FRONT COG ONLY: once per pass -- fold the pack sensor's latest sample into its average (R19.5)
+PUB frontSamplePack(nRawSum, nSamples)
+'' FRONT COG ONLY: once every WINDOW_PASSES passes, on PACK_PHASE -- fold the pack samples summed since the last call into the average (R19.5)
 ''
-'' A no-op on an instance that does not read the sensor (startPackSense()).
+'' PL-161: the front cog reads the pin once a pass, inline, and only sums the raw samples (while isPackRead()); this
+'' folds that sum in once a slot, on the pass phase PACK_PHASE, which carries no other slot work. No conversion is made
+'' here: the average is kept in raw counts and converted to mV only when it is read (packMvFromAvg()). Every pass's
+'' sample still reaches the average, so its noise is as before; only the arithmetic moved off the per-pass path.
+'' A no-op on an instance that does not read the sensor (startPackSense()), or with no sample summed.
+''
+'' @param nRawSum - the pin's raw SINC2 samples (rdpin(user.PACK_SENSE_PIN)) summed since the last call
+'' @param nSamples - how many samples {nRawSum} holds: WINDOW_PASSES, except in a front cog's first slot
 
-    if bPackOwned == TRUE
-        packAvgMv += ((packMvFromRaw(rdpin(user.PACK_SENSE_PIN)) << PACK_AVG_SHIFT) - packAvgMv) SAR PACK_AVG_SHIFT
+    if (bPackOwned == TRUE) and (nSamples > 0)
+        packAvgRaw += (((nRawSum << PACK_AVG_SHIFT) / nSamples) - packAvgRaw) SAR PACK_AVG_SHIFT
+
+PUB isPackRead() : bRead
+'' INTERNAL USE: whether this instance reads the pack sensor (startPackSense() took the pin), so its front cog sums the pin (PL-161)
+''
+'' isp_steering_2wheel reads it once as its front cog starts: only then may a front cog read the pin, since a pin this
+'' instance refused may be a motor board's.
+''
+'' @returns bRead - T/F where T means the pack pin is this instance's to read; F when not fitted, refused or stopped
+
+    bRead := bPackOwned
 
 PUB getPackVoltage() : ePackStatus, nMilliVolts
 '' Return the pack voltage from the optional pack voltage sensor (VOLTAGE-SENSOR.md), averaged over about 64 ms
+''
+'' The average takes one sample a millisecond, folded in every 8 ms (PL-161), and follows a change with a time
+'' constant of about 60 ms.
 ''
 '' @returns ePackStatus - PACK_PRESENT, PACK_ABSENT (fitted, but it reads no pack: unplugged or an open lead), or PACK_NOT_FITTED
 '' @returns nMilliVolts - the pack voltage in mV, calibrated by user.PACK_SENSE_CAL_PERMILLE; 0 unless PACK_PRESENT
@@ -1704,7 +1724,7 @@ PUB getPackVoltage() : ePackStatus, nMilliVolts
     ePackStatus := PACK_NOT_FITTED
     nMilliVolts := 0
     if bPackOwned == TRUE
-        nMilliVolts := packAvgMv >> PACK_AVG_SHIFT
+        nMilliVolts := packMvFromAvg()
         ePackStatus := packStatusFor(nMilliVolts)
         if ePackStatus <> PACK_PRESENT
             nMilliVolts := 0
@@ -1727,7 +1747,7 @@ PUB testGetPackRaw() : nPinMv, nUncalMv, nGioRaw, nVioRaw | nRaw
     if (bPackOwned == TRUE) and (packVioRaw > packGioRaw)
         nRaw := rdpin(user.PACK_SENSE_PIN)
         nPinMv := muldiv64(nRaw - packGioRaw, PACK_FULL_SCALE_MV, packVioRaw - packGioRaw) #> 0
-        nUncalMv := muldiv64(packAvgMv >> PACK_AVG_SHIFT, 1000, user.PACK_SENSE_CAL_PERMILLE #> 1)
+        nUncalMv := muldiv64(packMvFromAvg(), 1000, user.PACK_SENSE_CAL_PERMILLE #> 1)
         nGioRaw := packGioRaw
         nVioRaw := packVioRaw
 
@@ -3002,7 +3022,7 @@ PUB frontEventChecks(nowMs) | nNow, ePackNow
         evLastIllegal := nNow
         evIllegalMs := nowMs
     if bPackOwned == TRUE
-        ePackNow := packStatusFor(packAvgMv >> PACK_AVG_SHIFT)
+        ePackNow := packStatusFor(packMvFromAvg())                              ' PL-161: converted here, once a slot, never per pass
         if (ePackNow <> evLastPack) and (nowMs - evPackMs >= EV_RATE_GAP_MS)
             frontQueueEvent(EV_PACK, ePackNow)
             evLastPack := ePackNow
@@ -3788,7 +3808,7 @@ PRI windVoltage() : ePackStatus, nMilliVolts | nPin, nSum
     nPin := user.PACK_SENSE_PIN
     if bPackPinUsable() == TRUE
         if bPackOwned == TRUE
-            nSum := packAvgMv >> PACK_AVG_SHIFT
+            nSum := packMvFromAvg()
         else
             packCalibrate(nPin)
             nSum := 0
@@ -3835,6 +3855,21 @@ PRI packMvFromRaw(nRaw) : nPackMv
     if packVioRaw > packGioRaw
         nPackMv := muldiv64(nRaw - packGioRaw, PACK_FULL_SCALE_MV, packVioRaw - packGioRaw) #> 0
         nPackMv := muldiv64(nPackMv, PACK_DIVIDER_X100 * user.PACK_SENSE_CAL_PERMILLE, 100 * 1000)
+
+PRI packMvFromAvg() : nPackMv
+' Return the pack voltage for the front cog's running average (packAvgRaw): packMvFromRaw()'s conversion, made only
+' when a reader asks (PL-161), so the front cog does no arithmetic on the pack but the sum and the average.
+'
+' The average carries PACK_AVG_SHIFT fraction bits, and they are kept through the conversion: the first step yields
+' the pack's hundredths of a mV before calibration (pin mV x PACK_DIVIDER_X100), never a whole pin mV. The old
+' per-sample conversion truncated each sample to a whole pin mV first, about 7.8 pack mV a step.
+'
+' @returns nPackMv - the averaged pack voltage, mV, never negative; 0 when the calibration is unusable
+
+    nPackMv := 0
+    if packVioRaw > packGioRaw
+        nPackMv := muldiv64(packAvgRaw - (packGioRaw << PACK_AVG_SHIFT), PACK_FULL_SCALE_MV * PACK_DIVIDER_X100, (packVioRaw - packGioRaw) << PACK_AVG_SHIFT) #> 0
+        nPackMv := muldiv64(nPackMv, user.PACK_SENSE_CAL_PERMILLE, 100 * 1000)
 
 PRI releasePinBaseClaim()
 ' AE: free whichever slot this instance currently owns (matched by @pinbase, a stable
@@ -4267,7 +4302,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     walkRevTicks := 0
     walkRecordReset()                                                       ' PL-137: no leg recorded, none watched
     bPackOwned := FALSE                                                     ' R19.5: startPackSense() takes the pin
-    packAvgMv := 0
+    packAvgRaw := 0
     ' R19.1: no hold before the front cog runs, so the driver at rest applies duty_min exactly as before
     hold_duty := duty_min
     hold_short := FALSE
@@ -5095,6 +5130,10 @@ CON ' -- TASK: the front cog --
     FRONT_LOOP_HZ          = 1_000      ' one pass per ms, on an absolute getct() schedule
     HALL_WINDOW_SIZE       = 125        ' rpm window slots: 125 slots x WINDOW_PASSES passes = 1 s span
     WINDOW_PASSES          = FRONT_LOOP_HZ / HALL_WINDOW_SIZE   ' 8: one window slot every 8 passes (125 Hz)
+    ' PL-161: the slot work's phases within WINDOW_PASSES, one job per pass so no pass carries two: 0 the rpm window (and
+    '  an owner's path limiter), WINDOW_PASSES / 2 the event checks, PACK_PHASE the pack's fold. An owner may use the
+    '  rest (isp_steering_2wheel's state report is on 3 / 4 of the way round).
+    PACK_PHASE             = WINDOW_PASSES / 4                  ' 2: the pack samples' fold into the average (frontSamplePack())
     DRIVE_PASS_US          = 523        ' one PASM drive pass, 522.7 us rounded up (PL-50)
     FRONT_SYNC_WAIT_PASSES = 4          ' bound on an in-pass driver wait (sync taken, e-stop left), in drive passes
     REQ_ACK_TIMEOUT_MS     = 20         ' bound on a posted request's answer; the front cog's worst case is 18.6 ms
@@ -5309,7 +5348,7 @@ PRI LALOOPEND()
   Nothing reachable from frontLoop() calls recordError() or recordCallerError().
 }
 
-PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, nowMs
+PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, nowMs, packRawSum, packSamples
 ' FRONT COG: this motor's loop -- apply posted requests, track position, enforce the stop limits, once per ms.
 '
 ' @param bReleaseDriver - T/F where T means the driver was launched parked and is released here with one ATN
@@ -5322,12 +5361,15 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
 ' @local passBodyTicks - ticks this pass's body took
 ' @local passCount - passes run so far, the rpm window's cadence counter
 ' @local nowMs - getms() once for this pass's limit and timeout checks
+' @local packRawSum - the pack pin's raw samples summed since the last fold (PL-161)
+' @local packSamples - how many samples packRawSum holds
 
     ' The entry writes none of targetIncre, e_stop or the stop limits: it adopts them, so a stop
     '  written directly inside start()'s window (no front cog yet) survives the launch.
     ticksPerPass := CLKFREQ / FRONT_LOOP_HZ
     lateMarginTicks := (CLKFREQ / US_PER_SEC) * LATE_MARGIN_US
     passCount := 0
+    packRawSum := packSamples := 0
     frontStartTracking()                                                        ' PL-153: the odometer and the limits' travel start at 0
     LAINIT()                                                                    ' init LA
     if bReleaseDriver == TRUE
@@ -5363,7 +5405,12 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
             frontProtectiveStop(ERR_PLATFORM_BLOCKED)
             frontRecordStop(SR_BLOCKED)
         frontHold()                                                             ' R19.1: the hold at rest, after this pass's stops
-        frontSamplePack()                                                       ' R19.5: the pack voltage, when fitted
+        if bPackOwned == TRUE                                                   ' R19.5, PL-161: the pack pin, one read a pass, summed
+            packRawSum += rdpin(user.PACK_SENSE_PIN)                            '  inline -- no call, no conversion
+            packSamples++
+        if (passCount +// WINDOW_PASSES) == PACK_PHASE                          ' PL-161: folded once a slot, on a pass with no other
+            frontSamplePack(packRawSum, packSamples)                            '  slot work
+            packRawSum := packSamples := 0
         if (passCount +// WINDOW_PASSES) == WINDOW_PASSES / 2                    ' R20.1: opposite the rpm window's slot pass
             frontEventChecks(nowMs)
             frontLateCheck(nowMs)
@@ -6231,7 +6278,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 35      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 36      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6303,6 +6350,15 @@ CON { driver internal Constants }
                                             '     setRampingValues() are kept across start() and may be set before it (the
                                             '     last ramp call wins); the built-in ramp is unchanged until one is called.
                                             '     No PASM change; no ABI change (the new longs are Spin2-only)
+                                            ' 36: Visit 10 pass 7. PL-146: the per-frame current fold-back (and its
+                                            '     foldback_frames count) acts only while the bridge is driven (BR_DRIVE); an
+                                            '     undriven bridge's rest offset no longer counts fold-back frames forever.
+                                            '     PASM change (one TJNZ and one label in .noFault); no ABI change. PL-161:
+                                            '     the front cog reads the pack pin inline each pass and only sums it; the sum
+                                            '     is folded in once per WINDOW_PASSES passes (PACK_PHASE, frontSamplePack()),
+                                            '     the average kept in raw counts and converted only when read; the steering
+                                            '     front cog's state report runs only when its debug channels compile, once
+                                            '     a slot, and it spends no bounded driver wait on a slot-work pass
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6410,7 +6466,8 @@ CON { driver internal Constants }
     WALK_NA                     = NEGX      ' testGetWalkLeg(): a reading that was not taken
     ' R19.5 (task 3611): the pack voltage sensor, VOLTAGE-SENSOR.md. P2AN001's ratiometric method: the pin, GIO and VIO
     '  read through one ADC path, pin mV = (pin - GIO) / (VIO - GIO) x 3300. SINC2 SAMPLING, not filtering: the front
-    '  cog reads once a pass, and sampling mode completes each conversion in hardware (p2kbArchSmartPin11000AdcInternalClock).
+    '  cog reads once a pass and folds the slot's samples in once every WINDOW_PASSES passes (PL-161, on PACK_PHASE), and
+    '  sampling mode completes each conversion in hardware (p2kbArchSmartPin11000AdcInternalClock).
     PACK_ADC_X                  = %00_1101  ' SINC2 sampling, a 2^13-clock sample
     PACK_SAMPLE_CLOCKS          = 1 << 13
     PACK_FLUSH_SAMPLES          = 4         ' samples discarded after a source switch (P2AN001: 3), then
@@ -6418,7 +6475,10 @@ CON { driver internal Constants }
     PACK_FULL_SCALE_MV          = 3_300     ' VIO - GIO
     PACK_DIVIDER_X100           = 781       ' pack = pin x 7.81: 10.0k / (68.1k + 10.0k), VOLTAGE-SENSOR.md
     PACK_ABSENT_MV              = 1_000     ' a pack under 1 V is no pack: R4 pulls an unplugged sensor to about 0 V
-    PACK_AVG_SHIFT              = 6         ' the reading's average over about 64 front passes (64 ms)
+    PACK_AVG_SHIFT              = 3         ' PL-161: the raw average over about 8 slots, each slot the mean of its
+                                            '  WINDOW_PASSES samples, one read a pass (8 x 8 ms = 64 ms; exact time constant
+                                            '  59.9 ms, plus the slot mean's 4 ms). It was 6 over single samples (64 x 1 ms;
+                                            '  63.5 ms). Same samples, same span, so the same noise; folded an eighth as often
     ' R20.4 (task 3611): the winding check's own pack reading (windVoltage()), taken before any front-cog average exists:
     '  this many packRead()s this far apart, the same ~64 ms the front cog's average spans
     PACK_CHECK_READS            = 16
@@ -6635,7 +6695,8 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    bPackOwned                  ' R19.5: T/F where T means this instance reads the pack sensor (startPackSense())
     LONG    packGioRaw                  ' R19.5: the pin's GIO reading, taken at start
     LONG    packVioRaw                  ' R19.5: the pin's VIO reading, taken at start
-    LONG    packAvgMv                   ' R19.5: front-written: the pack voltage, mV << PACK_AVG_SHIFT
+    LONG    packAvgRaw                  ' R19.5: front-written: the pin's SINC2 reading, averaged, << PACK_AVG_SHIFT (PL-161: raw
+                                        '  counts, converted to mV only when read -- packMvFromAvg())
     LONG    faultResyncsPrev            ' front-written (R19.3): the driver's fault_resyncs long on the previous pass
     LONG    faultResyncEvents           ' front-written (R19.3): faults answered by a re-sync and a controlled stop since start
     LONG    bFaultBegan                 ' front-written (R19.3): T/F where T means a fault of either kind began this pass
@@ -7270,7 +7331,18 @@ drvMotor                                                ' global (task 3535): en
                 mov     force_seen, force_seq_          ' a fault takes any forced request (undrivenPins drops one made while undriven)
                 call    #faultResponse                  ' at FAULT: report it, and respond per fault_mode_ (LUT-resident, R19.3)
 
-.noFault        mov     tmpX, duty_                     ' S-2: the MOSFET current limit, on a lower bound of phase current:
+.noFault        tjnz    bridge, #.servoTrim             ' PL-146 (DRIVER_REV 36): the fold-back acts only on a driven bridge
+                                                        '  (BR_DRIVE is 0). Undriven, sense_i_ is the board's rest offset
+                                                        '  (left ~8 mV), over a 1 A threshold at the duty floor (~11 mV)
+                                                        '  on noise alone; it counted foldback_frames every frame at rest,
+                                                        '  so EV_FOLDBACK never released. Skipped here: the compare, the
+                                                        '  duty cut and the count. The trim runs as on any unfolded frame,
+                                                        '  and .dutyLimits then applies duty_min_ and re-derives servo_acc,
+                                                        '  as it always did for an undriven bridge. TJNZ changes no flag
+                                                        '  (p2kbPasm2Tjnz), and from the undriven jump above tmpY still
+                                                        '  holds |err_|. A fault taken on this frame has already set the
+                                                        '  fault's bridge, so its frame skips too, as undriven hereafter.
+                mov     tmpX, duty_                     ' S-2: the MOSFET current limit, on a lower bound of phase current:
                 fges    tmpX, duty_floor_               '  I_dc >= 0.75 * m * I_peak, m = duty_ / (4 * frame_cnt), floored
                 sca     tmpX, i_limit_k_                '  threshold (mV) = max(duty_, duty_floor_) * i_limit_k_ >> 16
                 cmps    sense_i_, tmpX              wc  ' Q: at or over the limit? (NC)
@@ -7285,7 +7357,7 @@ drvMotor                                                ' global (task 3535): en
                 '  Symmetric and untruncated, so it holds a POINT (PL-101's band is gone), and scaled by duty,
                 '  so its gain follows the stiffness the rotor has -- an integral-only loop is stable only
                 '  below a gain that stiffness supports, and at low duty the old servo was above it (5.2).
-                sub     tmpY, #SERVO_SETPOINT           ' |err_| - setpoint, signed (tmpY holds |err_| from the fault test)
+.servoTrim      sub     tmpY, #SERVO_SETPOINT           ' |err_| - setpoint, signed (tmpY holds |err_| from the fault test)
                 mov     tmpX, duty_
                 shr     tmpX, #SERVO_DUTY_PRESHIFT      ' duty in MULS's 16 bits; keeps servo_acc inside 32 at duty_max_
                 muls    tmpY, tmpX
@@ -7612,9 +7684,9 @@ foldback_cnt_ res 1         ' R20.1: frames the current fold-back lowered duty_ 
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 494 USED, 2 FREE, 2026-09-26 (DRIVER_REV 29, PL-138's drv_release_) -- read from the compiler, never
+    fit     496  ' 495 USED, 1 FREE, 2026-09-27 (DRIVER_REV 36, PL-146's TJNZ in .noFault) -- read from the compiler, never
                  ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FOLDBACK_CNT_'s
-                 ' VALUE, whose top 12 bits are its cog address ($1ED, the last register, so USED is $1EE). LUT code runs at cog
+                 ' VALUE, whose top 12 bits are its cog address ($1EE, the last register, so USED is $1EF). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
                  ' lutCodeStart $200 to lutCodeEnd $318, 280 of 512 longs (DRIVER_REV 29, PL-138).

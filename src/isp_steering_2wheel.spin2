@@ -2404,6 +2404,13 @@ CON { -- TASK: the steering front cog -- }
                                         '  platform, only when its commanded partner's achieved fraction leads its own by more
                                         '  than this. Twice A-8's 50-thousandths agreement band, and five release steps
 
+  ' PL-161: the pass phases (passCount +// WINDOW_PASSES) that carry slot work, one job per pass. 0 is both wheels' rpm
+  '  window and the path limiter, WINDOW_PASSES / 2 the event and late checks, the motor object's PACK_PHASE the pack
+  '  samples' fold, and STATE_PHASE the state report. No bounded driver wait is spent on the two heavy ones (frontLoop()).
+  STATE_PHASE      = ltWheel.WINDOW_PASSES * 3 / 4      ' 6: showDriveStatesOnChange()
+  STATE_DBG_BITS   = user.STEER_DBG_MASK & (DECOD user.DBGCH_SENSE | DECOD user.DBGCH_FAULT)  ' the state report's debug
+                                        '  channels; 0 (the bench's quiet mask) means it prints nothing, so it is not gathered
+
 VAR { time values & arrays }
 
     long    ticks1ms
@@ -2489,8 +2496,17 @@ PRI LALOOPEND()
   Nothing reachable from frontLoop() calls recordError() or recordCallerError().
 }
 
-PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, bLeftBlocked, bRightBlocked, nowMs
+PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, bLeftBlocked, bRightBlocked, nowMs, slotPhase, bPackRead, packRawSum, packSamples
 ' FRONT COG: the platform's loop -- apply posted requests, track both wheels, enforce the platform stop limits and the current protection, once per ms.
+'
+' PL-161 (Visit 10 pass 7: a worst pass of 1_015 us, 3 late). The budget is one pass, 1 ms less LATE_MARGIN_US. A request
+' that waits for its drivers (bRequestWaits(): a synchronized drive's take, an e-stop's clear) busy-waits up to a drive
+' pass, 523 us, inside its pass; the rest of that pass is the loop's own work. So by construction: the slot work runs
+' one job per pass phase (see STATE_PHASE), no bounded wait is spent on the two heavy slot phases (such a request is
+' taken on the next pass, as a second waiting request already is), and work that needs no pass rate is not done a pass:
+' the pack's conversion (was every pass, two method calls and two muldiv64; now one inline read and add a pass, folded
+' once a slot), and the state report (was every pass, about 20 method calls, printing nothing unless its debug
+' channels compile).
 
 ' Local Variables:
 ' @local ticksPerPass - system ticks in one FRONT_LOOP_HZ pass
@@ -2502,12 +2518,18 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
 ' @local bLeftBlocked - T/F where T means the left wheel has been blocked long enough to latch a protective stop
 ' @local bRightBlocked - T/F where T means the right wheel has been blocked long enough to latch a protective stop
 ' @local nowMs - getms() once for this pass's limit and timeout checks
+' @local slotPhase - this pass's phase in the slot, passCount +// WINDOW_PASSES (PL-161)
+' @local bPackRead - T/F where T means the left wheel reads the pack pin, so this cog sums it (read once, at entry)
+' @local packRawSum - the pack pin's raw samples summed since the last fold (PL-161)
+' @local packSamples - how many samples packRawSum holds
 
     ' The entry writes no wheel command, e-stop or limit: it adopts them, so a stop written directly
     '  inside start()'s window survives the launch. The drivers were released before this cog existed.
     ticksPerPass := CLKFREQ / ltWheel.FRONT_LOOP_HZ
     lateMarginTicks := (CLKFREQ / ltWheel.US_PER_SEC) * ltWheel.LATE_MARGIN_US
     passCount := 0
+    bPackRead := ltWheel.isPackRead()                                           ' PL-161: start() took the pin (or not) before this cog
+    packRawSum := packSamples := 0
     ltWheel.frontStartTracking()                                                ' PL-153: each odometer and each wheel's travel start at 0
     rtWheel.frontStartTracking()
     platBaseLeft := 0                                                           '  and so does the platform limit's count
@@ -2528,13 +2550,15 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         passStartTicks := getct()
         frontPasses++                                                           ' heartbeat: start() waits for the first one
         passCount++
+        slotPhase := passCount +// ltWheel.WINDOW_PASSES
 
         ' 0. a stop written in an earlier pass is confirmed, or written again
         ltWheel.frontConfirmStop()
         rtWheel.frontConfirmStop()
 
-        ' 1. requests: securing first, then the rest in slot order, then EXIT
-        if bFrontServiceRequests() == TRUE
+        ' 1. requests: securing first, then the rest in slot order, then EXIT. PL-161: no bounded driver wait on the
+        '  rpm window's pass or the event checks' pass; a request that waits is taken on the next pass
+        if bFrontServiceRequests((slotPhase <> 0) and (slotPhase <> ltWheel.WINDOW_PASSES / 2)) == TRUE
             quit                                                                ' EXIT acknowledged: park below
 
         LALOOPSTART()
@@ -2546,7 +2570,7 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         frontPlatformFaultStop()                                                ' R19.2: one wheel faulted stops the other, ramped
         ' PL-137: never during a wiring walk -- it judges each wheel on its own, and a scale shared with the partner
         '  would stop a healthy wheel (at leg start, while its field is held) or fail it for its partner's stall
-        if ((passCount +// ltWheel.WINDOW_PASSES) == 0) and (ltWheel.isWalkWatched() == FALSE) and (rtWheel.isWalkWatched() == FALSE)
+        if (slotPhase == 0) and (ltWheel.isWalkWatched() == FALSE) and (rtWheel.isWalkWatched() == FALSE)
             frontLimitPath()                                                    ' R18.4 D-6: once per slot, after the wheels' own slot work
         nowMs := getms()
         ' R20.1: each stop's record follows its command writes, both wheels', so no record delays a stop (D6)
@@ -2577,13 +2601,20 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
             frontRecordBlocked(bLeftBlocked, bRightBlocked)                     ' R20.1: which wheel was blocked, which its partner
         ltWheel.frontHold()                                                     ' R19.1: each wheel's hold at rest, after this pass's stops
         rtWheel.frontHold()
-        ltWheel.frontSamplePack()                                               ' R19.5: the pack voltage, when fitted
+        if bPackRead == TRUE                                                    ' R19.5, PL-161: the pack pin, one read a pass, summed
+            packRawSum += rdpin(user.PACK_SENSE_PIN)                            '  inline -- no call, no conversion
+            packSamples++
+        if slotPhase == ltWheel.PACK_PHASE                                      ' PL-161: folded once a slot, on a pass with no other
+            ltWheel.frontSamplePack(packRawSum, packSamples)                    '  slot work
+            packRawSum := packSamples := 0
         ' R20.1: the logs' per-pass checks, on the phase opposite the rpm window's slot pass (its likely worst pass, D6)
-        if (passCount +// ltWheel.WINDOW_PASSES) == ltWheel.WINDOW_PASSES / 2
+        if slotPhase == ltWheel.WINDOW_PASSES / 2
             ltWheel.frontEventChecks(nowMs)
             rtWheel.frontEventChecks(nowMs)
             frontLateCheck(nowMs)
-        showDriveStatesOnChange()
+        if STATE_DBG_BITS <> 0                                                  ' PL-161: gathered only when it can print,
+            if slotPhase == STATE_PHASE                                         '  and once a slot, on its own pass
+                showDriveStatesOnChange()
         LALOOPEND()
 
         ' 4. accounting, then the absolute schedule
@@ -2702,9 +2733,17 @@ PRI bFrontPlatformLimitsDue(nowMs) : bFired
             motorStopHallTicks := 0                                             ' and clear user request
             bFired := TRUE
 
-PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken, seqTaken, eCmd, motorMask, nArg1, nArg2, nArg3, bWaited, bDidWait, eStatus, eLeftStatus, eRightStatus
+PRI bFrontServiceRequests(bWaitAllowed) : bExit | openMask, eClass, slotIdx, slotBit, bTaken, seqTaken, eCmd, motorMask, nArg1, nArg2, nArg3, bWaited, bDidWait, eStatus, eLeftStatus, eRightStatus
 ' FRONT COG: take, apply and answer the open request slots once: REQ_ESTOP, then REQ_STOP, then the rest, then EXIT.
 '
+' PL-161, THE ACKNOWLEDGEMENT BOUND with two of every WINDOW_PASSES passes barred from waiting (DERIVED, as
+' DOCs/plans/FRONT-COG-IMPLEMENTATION-PLAN.md 3.6 derives it): a platform leaves at most 5 application cogs (8 less two
+' drivers and this cog), so at most 5 waiting requests are ahead of any one. One is taken per wait-allowed pass, and 5 of
+' them span at most 7 passes (two barred), so 5 x (1 ms + one 2.1 ms bounded wait) + 2 x 1 ms = 17.5 ms, under
+' REQ_ACK_TIMEOUT_MS (20). A non-waiting request is still answered in the pass after it is posted.
+'
+' @param bWaitAllowed - T/F where F means this pass spends no bounded driver wait (PL-161): every request that would
+'   wait is left posted for the next pass, as a second waiting request always was; the rest are applied as ever
 ' @returns bExit - T/F where T means an EXIT was taken: every open slot has been answered and the loop must park
 
 ' Local Variables:
@@ -2719,7 +2758,7 @@ PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken
 ' @local nArg1 - the copied first argument
 ' @local nArg2 - the copied second argument
 ' @local nArg3 - the copied third argument
-' @local bWaited - T/F where T means a request has already spent this pass's one bounded wait
+' @local bWaited - T/F where T means a request has already spent this pass's one bounded wait, or the pass has none (PL-161)
 ' @local bDidWait - T/F where T means the request just applied waited
 ' @local eStatus - the applied request's platform status
 ' @local eLeftStatus - the applied request's left wheel status
@@ -2733,7 +2772,7 @@ PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken
             openMask |= 1 << slotIdx
 
     if openMask <> 0
-        bWaited := FALSE
+        bWaited := (bWaitAllowed == FALSE)                                      ' PL-161: a pass with no wait to spend starts spent
         repeat eClass from ltWheel.REQ_CLASS_ESTOP to ltWheel.REQ_CLASS_EXIT
             repeat slotIdx from 0 to ltWheel.COG_SLOT_COUNT - 1
                 slotBit := 1 << slotIdx

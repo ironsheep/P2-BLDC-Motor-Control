@@ -219,6 +219,16 @@
 ''               rate that step gives (T0A_DECEL_ANCHOR). In R20-T0-API-PERSIST: setAcceleration() and setDeceleration()
 ''               made with the motor stopped read back after each start() and the restart, and the kept deceleration is
 ''               the driver's decrRamp. No new debug() record: every check is a T0-26,chk.
+''               27 Sep 2026 -- SRC_REV 24 (PL-14, PL-51, PL-52): three fixes with no certifying check gain one, each
+''               able to FAIL. PL-14, in R20-T0-API-PERSIST: a start() at another voltage the motor supports (the next
+''               lower PWR_*, else the next higher) is taken, and getDriveVoltage() reads that voltage and its nominal
+''               mV; a restart at DRIVE_VOLTAGE reads DRIVE_VOLTAGE again. The pre-fix library ignored the argument, so
+''               it read DRIVE_VOLTAGE both times. Nothing is driven. PL-51, in R20-T0-API-STEER: steer's
+''               setMaxSpeedForDistance() per t0aSpeedTab reads back through steer.getMaxSpeedForDistance(), with the
+''               max speed left at its default 75, so the defect (it returned getMaxSpeed()) fails every row but the
+''               last. PL-52, in R20-T0-SR-COMMANDED (T0-25, already driving): getPower() reads T0_25_POWER as the
+''               COMMANDED leg drives and 0 after its stopMotor() (new record T0-25,power); the pre-fix getPower()
+''               still read 15 after the stop. T0-26 stays motionless.
 ''
 '' =================================================================================================
 
@@ -330,7 +340,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 23                                        ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 24                                       ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -963,7 +973,7 @@ sCritFreeRef    BYTE    "FREE_BAND_TICKS", 0
 sTaskReporting  BYTE    "3621", 0
 sCellEvHold     BYTE    "R20-T0-EV-HOLD", 0                     ' T0-24 rows 1-3: the hold's hand-offs reported as events
 sCritEvHold     BYTE    "EV_MATCHES_HOLD_STATE", 0
-sCellSrCmd      BYTE    "R20-T0-SR-COMMANDED", 0                ' T0-25: a stopMotor() reads SR_COMMANDED, and nothing before it
+sCellSrCmd      BYTE    "R20-T0-SR-COMMANDED", 0                ' T0-25: a stopMotor() reads SR_COMMANDED, and nothing before it; getPower() 0 after it (PL-52)
 sCellSrLimit    BYTE    "R20-T0-SR-ATLIMIT", 0                  ' ...a time limit reads SR_AT_LIMIT, an earlier stopMotor() not
 sCellSrEstop    BYTE    "R20-T0-SR-ESTOP", 0                    ' ...emergencyCutoff() reads SR_EMERGENCY, one at rest changes nothing
 sCellSrLink     BYTE    "R20-T0-SR-LINKLOST", 0                 ' ...the command timeout reads SR_LINK_LOST, a refreshed drive not
@@ -1180,6 +1190,8 @@ VAR { T0-25 helper reader cog (-D T0_STOPREASON only) }
     LONG    bT0rDone                                            ' helper: the counts above are final
     LONG    pT0rWheel                                           ' cog 0: the wheel T0-25 drives, "RIGHT" or "LEFT" (its cells' motor field)
     LONG    t0rBase                                             ' cog 0: that wheel's PINS_* group, for R20-T0-PERSIST's restart
+    LONG    t0rPwrRun                                           ' cog 0: getPower() as the COMMANDED leg drives (PL-52)
+    LONG    t0rPwrStop                                          ' cog 0: getPower() just after that leg's stopMotor() (PL-52)
 #endif
 
 #ifdef T0_STOPMODE
@@ -2710,7 +2722,9 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
 ' THE CELLS, each with the negative that lets it FAIL (SS6):
 '   R20-T0-SR-COMMANDED - stopMotor() reads SR_COMMANDED, still 500 ms later; NEGATIVE: every leg's read as its drive
 '                          opens is SR_NONE -- six of the seven follow a stop that left a reason, so a reason a new
-'                          drive does not clear fails here
+'                          drive does not clear fails here. SRC_REV 24 (PL-52): getPower() reads T0_25_POWER as the
+'                          COMMANDED leg drives and 0 just after its stopMotor() (record T0-25,power); the pre-fix
+'                          getPower() still read the power after the stop, and a getPower() stuck at 0 fails the first
 '   R20-T0-SR-ATLIMIT   - a time limit reads SR_AT_LIMIT; NEGATIVE: stopMotor() under the same armed limit reads
 '                          SR_COMMANDED, and still does after the limit's deadline passes at rest
 '   R20-T0-SR-ESTOP     - emergencyCutoff() at speed reads SR_EMERGENCY; NEGATIVE: one at rest after a stop leaves
@@ -2901,7 +2915,8 @@ PRI t0rStopLegs() | legIdx, legErr[T0R_LEGS], legOpen[T0R_LEGS], legStop[T0R_LEG
     repeat legIdx from 0 to T0R_LEGS - 1
         legErr[legIdx], legOpen[legIdx], legStop[legIdx], legAfter[legIdx] := t0rLeg(legIdx)
         bOpensNone &= (legOpen[legIdx] == motor.SR_NONE) and (legErr[legIdx] == motor.NO_ERROR)
-    emitCellBool(@sCellSrCmd, @sTaskReporting, pT0rWheel, @sCritSrCmd, TRUE, bOpensNone and (legStop[T0R_LEG_CMD] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_CMD] == motor.SR_COMMANDED), T0R_LEGS + 2)
+    debug("T0-25,power,run,", sdec_(t0rPwrRun), ",want,", udec_(T0_25_POWER), ",stopped,", sdec_(t0rPwrStop))
+    emitCellBool(@sCellSrCmd, @sTaskReporting, pT0rWheel, @sCritSrCmd, TRUE, bOpensNone and (legStop[T0R_LEG_CMD] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_CMD] == motor.SR_COMMANDED) and (t0rPwrRun == T0_25_POWER) and (t0rPwrStop == 0), T0R_LEGS + 4)
     emitCellBool(@sCellSrLimit, @sTaskReporting, pT0rWheel, @sCritSrLimit, TRUE, (legErr[T0R_LEG_LIMIT] == motor.NO_ERROR) and (legStop[T0R_LEG_LIMIT] == motor.SR_AT_LIMIT) and (legErr[T0R_LEG_LIMIT_NEG] == motor.NO_ERROR) and (legStop[T0R_LEG_LIMIT_NEG] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_LIMIT_NEG] == motor.SR_COMMANDED), 3)
     emitCellBool(@sCellSrEstop, @sTaskReporting, pT0rWheel, @sCritSrEstop, TRUE, (legErr[T0R_LEG_ESTOP] == motor.NO_ERROR) and (legStop[T0R_LEG_ESTOP] == motor.SR_EMERGENCY) and (legErr[T0R_LEG_ESTOP_NEG] == motor.NO_ERROR) and (legStop[T0R_LEG_ESTOP_NEG] == motor.SR_COMMANDED) and (legAfter[T0R_LEG_ESTOP_NEG] == motor.SR_COMMANDED), 3)
     emitCellBool(@sCellSrLink, @sTaskReporting, pT0rWheel, @sCritSrLink, TRUE, (legErr[T0R_LEG_LINK] == motor.NO_ERROR) and (legStop[T0R_LEG_LINK] == motor.SR_LINK_LOST) and (legErr[T0R_LEG_LINK_NEG] == motor.NO_ERROR) and (legOpen[T0R_LEG_LINK_NEG] == motor.SR_NONE) and (legStop[T0R_LEG_LINK_NEG] == motor.SR_COMMANDED), 3)
@@ -2937,8 +2952,10 @@ PRI t0rLeg(legIdx) : eErr, srOpen, srStop, srAfter | startMs, bRest
     case legIdx
         T0R_LEG_CMD:
             waitms(T0_25_RUN_MS)
+            t0rPwrRun := motor.getPower()                                       ' PL-52: the commanded power, as it drives
             motor.stopMotor()
             srStop := motor.getStopReason()
+            t0rPwrStop := motor.getPower()                                      ' PL-52: 0 once the stop is answered
             waitms(T0_25_STICKY_MS)
             srAfter := motor.getStopReason()
         T0R_LEG_LIMIT:
@@ -3619,7 +3636,7 @@ sTaskApi        BYTE    "API-0926", 0                           ' the owner's sc
 sCritApi        BYTE    "BAD_CALLS_ZERO", 0
 sUnitsApi       BYTE    "CALLS", 0
 sCellApiCal     BYTE    "R20-T0-API-CALIBRATE", 0               ' calibrate(): ERR_NOT_IMPLEMENTED, on both objects (PL-159)
-sCellApiPers    BYTE    "R20-T0-API-PERSIST", 0                 ' kept settings survive start() and a restart; protective ones reset (PL-155)
+sCellApiPers    BYTE    "R20-T0-API-PERSIST", 0                 ' kept settings survive start() and a restart; protective ones reset (PL-155); start()'s voltage honoured (PL-14)
 sCellApiAccel   BYTE    "R20-T0-API-ACCEL", 0                   ' setAcceleration(), setDeceleration() and their getters
 sCellApiSpeed   BYTE    "R20-T0-API-MAXSPEED", 0                ' setMaxSpeed(), setMaxSpeedForDistance()
 sCellApiHold    BYTE    "R20-T0-API-HOLD", 0                    ' holdAtStop(), setForwardIsReverse(), forwardIsReverse()
@@ -3627,7 +3644,7 @@ sCellApiFault   BYTE    "R20-T0-API-FAULTRESP", 0               ' setFaultRespon
 sCellApiHLim    BYTE    "R20-T0-API-HOLDLIMITS", 0              ' setHoldLimits()
 sCellApiTo      BYTE    "R20-T0-API-TIMEOUT", 0                 ' setCommandTimeout()
 sCellApiLim     BYTE    "R20-T0-API-LIMITS", 0                  ' stopAfterDistance(), stopAfterRotation(), stopAfterTime(), driveForDistance()'s refusals
-sCellApiSteer   BYTE    "R20-T0-API-STEER", 0                   ' the steering object's own validation: timeout, fault, hold limits, limits
+sCellApiSteer   BYTE    "R20-T0-API-STEER", 0                   ' the steering object's own validation: timeout, fault, hold limits, limits; its distance max speed (PL-51)
 
 VAR { the API contract's running count (T0-26) }
 
@@ -3636,7 +3653,7 @@ VAR { the API contract's running count (T0-26) }
 
 PRI testT0_26() | bReady
 ' T0-26, the API contract (-D T0_API only, tier t0-api): wheels up, unattended, NO MOTION -- every start() commands zero
-' speed, and the only drive command sent is refused. Under a minute: three starts, about 1.3 s each, and a few hundred
+' speed, and the only drive command sent is refused. Under a minute: five starts, about 1.3 s each, and a few hundred
 ' bounded calls. setStartChecks(FALSE) on both objects first: this tier checks the API, not the bridges, so a start check
 ' failing (PL-120's dead right bridge) does not void it; it is put back to TRUE at the end.
 '
@@ -3648,8 +3665,10 @@ PRI testT0_26() | bReady
 '   R20-T0-API-PERSIST    - with the motor stopped: max speeds, the hold, the reversal, the acceleration and the
 '                           deceleration are accepted and read back; the protective setters are refused
 '                           (ERR_NOT_STARTED); after start(), and after a second stop()/start(), the kept ones read back
-'                           (the ramp also as the driver's own steps) and the protective ones read their defaults
-'   R20-T0-API-ACCEL      - setAcceleration() at [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] gives a constant ramp and reads
+'                           (the ramp also as the driver's own steps) and the protective ones read their defaults;
+'                           a start() at another supported voltage is taken and getDriveVoltage() reads it, then a
+'                           restart at DRIVE_VOLTAGE reads that (PL-14, SRC_REV 24)
+'   R20-T0-API-ACCEL     - setAcceleration() at [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] gives a constant ramp and reads
 '                           back; setDeceleration() at [DECEL_MIN_MM_S2 .. DECEL_MAX_MM_S2] sets only the slow-down step
 '                           and reads back; just outside, 0 and negative, ERR_BAD_COUNT with the ramp and both getters
 '                           unchanged; a set deceleration is the running driver's decrRamp, at the step this file
@@ -3665,7 +3684,8 @@ PRI testT0_26() | bReady
 '   R20-T0-API-LIMITS     - at rest: stopAfterDistance(), stopAfterRotation() (DRU_DEGREES rounds to the nearest tick,
 '                           PL-158) and stopAfterTime() arm what they say and refuse count, unit and resolution errors
 '                           with the armed limit unchanged; driveForDistance() refuses the same and drives nothing
-'   R20-T0-API-STEER      - the steering object's own validation, the same way, on both wheels (3 cogs)
+'   R20-T0-API-STEER      - the steering object's own validation, the same way, on both wheels (3 cogs); and its
+'                           getMaxSpeedForDistance() reads what setMaxSpeedForDistance() set (PL-51, SRC_REV 24)
 '
 ' @local startResult - a start()'s return
 ' @local bReady - the motor came up ready
@@ -3764,7 +3784,7 @@ PRI t0aCalibrate() | eGot, eLeft
     t0aChk(@"steer.calibrate", 0, motor.ERR_NOT_IMPLEMENTED, eGot, motor.ERR_NOT_IMPLEMENTED, eLeft)
     t0aCell(@sCellApiCal, @"BOTH", TRUE)
 
-PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD
+PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD, eOther, eVolt, eGotVolt, nGotMv
 ' R20-T0-API-PERSIST (PL-155, PL-160). With `motor` stopped: the kept setters are accepted and read back at once; the
 ' protective setters are refused with ERR_NOT_STARTED. Then start(), stop() and start() again: after each start the kept
 ' settings read back -- the acceleration and deceleration also as the running driver's own ramp steps -- and the
@@ -3773,16 +3793,25 @@ PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD
 ' built-in one, which fails. Leaves the motor started and every kept setting back at its default (the ramp at the
 ' built-in values, read back before any call). NOMEAS when a start does not come up. (Each setter is called on a line
 ' of its own, then its getter: a read-back never depends on argument evaluation order.)
+' SRC_REV 24 (PL-14): then start() at another voltage this motor supports (t0aOtherVoltage()) is taken and
+' getDriveVoltage() reads that voltage and its nominal mV; a restart at DRIVE_VOLTAGE reads DRIVE_VOLTAGE again. NEGATIVE:
+' the pre-fix start() ignored its voltage argument, so getDriveVoltage() read DRIVE_VOLTAGE after the first. No getter
+' exposes the voltage-scaled speed ceiling without a drive, so it is not read. Nothing is driven. A motor supporting no
+' other voltage fails the voltage.other row and runs the restart only.
 '
 ' @returns bReady - the motor is started (the last start came up)
 '
 ' @local startResult - a start()'s return
-' @local passIdx - 1 after the first start, 2 after the restart
+' @local passIdx - 1 after the first start, 2 after the restart; 3 the other voltage's start, 4 DRIVE_VOLTAGE's (PL-14)
 ' @local eGot - a setter's return
 ' @local minD - the built-in ramp's ramp_min, read before any call
 ' @local maxD - ...ramp_max
 ' @local incD - ...ramp_inc
 ' @local decD - ...ramp_down
+' @local eOther - the other voltage PL-14's start uses, or INVALID_VOLTAGE
+' @local eVolt - the voltage a PL-14 start is given
+' @local eGotVolt - getDriveVoltage()'s PWR_* after it
+' @local nGotMv - getDriveVoltage()'s nominal mV after it
 
     t0aBad := 0
     t0aChecks := 0
@@ -3830,7 +3859,54 @@ PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD
     motor.setForwardIsReverse(FALSE)
     motor.setRampingValues(minD, maxD, incD, decD)                              ' PL-160: the built-in ramp's values
     motor.getError()
+    eOther := t0aOtherVoltage()                                                 ' PL-14: start() honours its voltage argument
+    t0aChk(@"voltage.other", eOther, T0A_OK, T0A_OK, TRUE, eOther <> motor.INVALID_VOLTAGE)
+    repeat passIdx from 3 to 4                                                  ' 3: the other voltage; 4: DRIVE_VOLTAGE again
+        eVolt := (passIdx == 3) ? eOther : user.DRIVE_VOLTAGE
+        if eVolt <> motor.INVALID_VOLTAGE                                       ' none other supported: only the restart runs
+            benchLog.cogEventBegin()
+            motor.stop()
+            startResult := motor.start(T0_MOTOR_BASE, eVolt, motor.BRD_AUTO_DET)
+            benchLog.cogEventEnd()
+            bReady &= bWaitReady(startResult)
+            debug("T0-26,persist,start,", udec_(passIdx), ",return,", sdec_(startResult))
+            t0aChk(@"start.voltage", eVolt, T0A_OK, motor.getError(), TRUE, startResult >= 0)
+            eGotVolt, nGotMv := motor.getDriveVoltage()
+            t0aChk(@"getDriveVoltage", eVolt, T0A_OK, T0A_OK, eVolt, eGotVolt)
+            t0aChk(@"getDriveVoltage.mV", eVolt, T0A_OK, T0A_OK, lookup(eVolt: 6_000, 7_400, 11_100, 12_000, 14_800, 18_500, 22_200, 24_000, 25_900), nGotMv)
+    motor.getError()
     t0aCell(@sCellApiPers, @"RIGHT", bReady)
+
+PRI t0aOtherVoltage() : eOther | eTry
+' PL-14: a voltage other than user.DRIVE_VOLTAGE that this motor supports (validVoltageForChoice() takes it) -- the
+' next lower PWR_*, else the next higher (the bench's 6.5in wheel at 18.5 V: PWR_14p8V). The PWR_* enum runs
+' PWR_6p0V..PWR_25p9V contiguously; a repeat's range counts either way, so each try is also checked in range and not
+' DRIVE_VOLTAGE itself.
+'
+' @returns eOther - that PWR_*, or motor.INVALID_VOLTAGE when this motor supports no other
+'
+' @local eTry - the PWR_* tried
+
+    eOther := motor.INVALID_VOLTAGE
+    repeat eTry from user.DRIVE_VOLTAGE - 1 to motor.PWR_6p0V
+        if bT0aOtherVoltage(eTry)
+            eOther := eTry
+            quit
+    if eOther == motor.INVALID_VOLTAGE
+        repeat eTry from user.DRIVE_VOLTAGE + 1 to motor.PWR_25p9V
+            if bT0aOtherVoltage(eTry)
+                eOther := eTry
+                quit
+
+PRI bT0aOtherVoltage(eTry) : bOther
+' Report whether a PWR_* is one this motor supports, other than user.DRIVE_VOLTAGE (PL-14).
+'
+' @param eTry - the PWR_* to check
+' @returns bOther - TRUE when it is in PWR_6p0V..PWR_25p9V, not DRIVE_VOLTAGE, and validVoltageForChoice() takes it
+
+    bOther := FALSE
+    if (eTry >= motor.PWR_6p0V) and (eTry <= motor.PWR_25p9V) and (eTry <> user.DRIVE_VOLTAGE)
+        bOther := (motor.validVoltageForChoice(eTry) == eTry)
 
 PRI bFaultIs(eMode, brakePct) : bSame | eGotMode, nGotPct
 ' Report whether `motor`'s fault response reads back as given.
@@ -4178,8 +4254,10 @@ PRI t0aSteer() | startResult, bReady, rowIdx, nMs, eWant, nWas, eGot, eModeWas, 
 ' started on T0_SECOND_BASE and T0_MOTOR_BASE (3 cogs), nothing driven. setCommandTimeout() per t0aTimeoutTab
 ' (getCommandTimeout()); setFaultResponse()'s refusals (getFaultResponse() unchanged) and one accepted row; setHoldLimits()'s
 ' refusals (getHoldLimits() unchanged); stopAfterRotation() per t0aRotTab and stopAfterDistance() per t0aDistTab
-' (testGetStopHallTicks()); stopAfterTime()'s refusals; driveForDistance()'s refusals (getPower() 0 on both). The
-' protective settings are put back to their defaults, and the platform stopped. NOMEAS when the start does not come up.
+' (testGetStopHallTicks()); stopAfterTime()'s refusals; driveForDistance()'s refusals (getPower() 0 on both);
+' SRC_REV 24 (PL-51): setMaxSpeedForDistance() per t0aSpeedTab read back through steer.getMaxSpeedForDistance(), the max
+' speed left at 75 (checked) -- NEGATIVE: the pre-fix getter returned getMaxSpeed(), 75, so every row but the last fails.
+' The protective settings are put back to their defaults, and the platform stopped. NOMEAS when the start does not come up.
 '
 ' @local startResult - steer.start()'s return
 ' @local bReady - it came up
@@ -4261,6 +4339,12 @@ PRI t0aSteer() | startResult, bReady, rowIdx, nMs, eWant, nWas, eGot, eModeWas, 
             nWas := steer.testGetStopHallTicks()
             eGot := steer.stopAfterTime(nCount, eUnits)
             t0aChk(@"steer.stopAfterTime", nCount, long[@t0aTimeTab][rowIdx * 3 + 2], eGot, nWas, steer.testGetStopHallTicks())
+        ' PL-51: the max speed is left at its default, so a getter returning it instead reads 75 on every row but the last
+        t0aChk(@"steer.getMaxSpeed", T0A_SPD_DEF, T0A_OK, T0A_OK, T0A_SPD_DEF, steer.getMaxSpeed())
+        repeat rowIdx from 0 to T0A_SPEED_ROWS - 1                             ' the last row puts the default back
+            nValue := long[@t0aSpeedTab][rowIdx * 2]
+            eGot := steer.setMaxSpeedForDistance(nValue)
+            t0aChk(@"steer.setMaxSpeedForDistance", nValue, T0A_OK, eGot, long[@t0aSpeedTab][rowIdx * 2 + 1], steer.getMaxSpeedForDistance())
         steer.setCommandTimeout(0)
         steer.setFaultResponse(motor.FAULT_RESPONSE_DEFAULT, motor.BRAKE_PCT_DEFAULT)
         steer.setHoldLimits(T0A_CEIL_DEF, T0A_RISE_DEF, T0A_LIMIT_DEF)
