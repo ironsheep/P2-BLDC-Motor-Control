@@ -136,7 +136,8 @@ multiplier is about 7.89, not 7.81. Expect a calibration value near 1010 before 
 3. Set `PACK_SENSE_CAL_PERMILLE` to 1000 × meter ÷ `getPackVoltage()`. For example, if the meter reads 18.62 V
    and the driver reads 18.50 V, set 1006.
 
-An unplugged or broken sensor reads as `PACK_ABSENT`, never as a voltage, and `getHealth()` reports it as
+A sensor whose sense lead is disconnected or broken reads as `PACK_ABSENT`, never as a voltage (the battery still
+powers the P2 through its main connector; only the sensor's own tap is open), and `getHealth()` reports it as
 `HLT_PACK`.
 
 ## Other pack sizes
