@@ -49,7 +49,7 @@ do the right thing, and then we can call them done without having to test on the
 | PL-154 | Serial: hold can't be set from the host example, commands can wait 1 s, non-numbers accepted | Fix the wrapper, the loop and the parser; serial certification run |
 | PL-157 | Serial and the Python host lag the 6.0 getters | Serial command + doc row + Python wrapper for each |
 | PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator; the API half certified at pass 7) | Build the generator (owner Q2-Q5), wheels-up cells, feel on the floor |
-| PL-161 | The steering front cog overruns its 1 ms slot | pass 8: R16-DUAL-FRONTST (late 0, max under 950 µs) |
+| PL-161 | The steering front cog overruns its 1 ms slot | RC pass: R20-DUAL-FRONTST-EV (dual-fault, max ≤ 950 µs, no late pass), R16-DUAL-FRONTST-D (dual-d, limits armed, under 1 ms, late 0), R22-T0-FRAMESLACK (t0-stopreason, no PWM frame overrun from the stop planner) |
 | PL-162 | Two pack cells judged with a wrong instrument (PACK-ABSENT reference, PACK-X criterion) | pass 8: R20-PACK-ABSENT and R19-DUAL-PACK-X |
 
 **Awaits certification** (fix built, not yet run)
@@ -66,7 +66,7 @@ do the right thing, and then we can call them done without having to test on the
 | PL-144 | The two-wheel path limiter cycled the platform between crawl and full | pass 8: R20-DUAL-PATH-HUNT = 1 (precondition fixed) |
 | PL-146 | The fold-back counted at rest on an undriven bridge, so the left never released | pass 8: R20-DUAL-EV-FOLDBACK 0 bad (DRIVER_REV 37: rest offset netted too) |
 
-| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | A Rev A board: `foldback_frames` stays 0 on an unloaded wheel at a 2 A limit |
+| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | `t0-reva` (optional block, a Rev A board swapped in): R22-T0-REVA-FOLD |
 
 **Watch**
 
@@ -2359,6 +2359,36 @@ judged against the configuration.
 
 **Disposition:** certifies on a Rev A board (Stephen has two). Not on the Rev B rig's sheets; whether a Rev A check
 rides the release-candidate pass is decided with that sheet.
+
+**2026-09-27, the residual, built (DRIVER_REV 40, uncommitted).**
+- **DERIVED:** DRIVER_REV 38 folds on a net reading above floor(t). At a 2 A Rev A limit near the duty floor t is
+  0.75 mV, so any 1 mV net reading folds, about 0.2 A of DC link. That decision sits below what the sense chain
+  resolves. Each reading is one frame, floored to whole mV. The noise is ±3 mV (CURRENT-LIMIT-AND-STOP-DESIGN.md §3.4;
+  PL-146's Rev B offset reached its threshold on noise). The netted zero is the truncated mean of floored readings,
+  so it sits 0.5–1.5 mV low. Zero current can therefore read up to 4 mV net.
+- **Built:** `FOLD_MIN_MV` = 4. `setFoldLimit()` writes `i_limit_k` and raises the fold's `duty_floor` to
+  ceil(4 × 65536 / K), so t never falls below 4 mV and a fold needs a 5 mV net reading. The two longs are written in
+  the order whose one-frame mix is the lower threshold. Above the raised floor, t is unchanged.
+  - Rev B is never raised: t ≥ 11 mV at 1 A. Neither is Rev A at 11 A and up, so the shipped 40 A and 27 A limits
+    are unchanged on both boards. Only a TEST-USE Rev A limit of 1–10 A changes. At 2 A the floor moves from
+    m = 0.10 to 0.53.
+  - The derate's estimate keeps m = 0.1 (`dutyFloorEst`).
+  - Spin2 only: cog RAM and LUT unchanged.
+- **Negative (desk model, 220,000 frames at duty 2,000, Rev A, 2 A, uniform ±3 mV noise):**
+
+  | Case | pre-DRIVER_REV 38 | DRIVER_REV 38–39 | fixed |
+  |---|---|---|---|
+  | Unloaded (0.09 A DC link) | 220,000 | ~145,000 | **0** |
+  | Overloaded (1.2 A DC link) | 220,000 | 220,000 | 165,000–201,000 (still folds) |
+
+- **What still protects at a raised floor:**
+  - the fold itself, on any net reading over 4 mV
+  - `duty_min` (m ≈ 0.065), since the fold never cut below it
+  - the lag gates and the blocked stop
+  - the 1 s derate average
+- **R22-T0-REVA-FOLD:** its PASS (a window rise of 0) still holds. Its record and notes still describe a threshold
+  floored to 0 and a 1 mV fold. They need the effective threshold and a positive control before they carry
+  certification (see the task report).
 
 ---
 

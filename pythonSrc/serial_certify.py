@@ -5,7 +5,8 @@ serial_certify.py -- host-side certification of the P2 serial control path (PL-1
 
 WHAT IT PROVES
   The serial top level (src/isp_steering_serial.spin2) answers a real host as DRIVE-OBJECTS-SERIAL.md says, on
-  the dual-motor platform. Nine cells, each printed as a SIGNOFF verdict line in the bench logs' shape:
+  the dual-motor platform, and the Python demo's wrapper class (P2-BLDC-Motor-Control-Demo.py, BLDCMotorControl) sends
+  and reads those commands correctly. Ten cells, each printed as a SIGNOFF verdict line in the bench logs' shape:
 
     R20-SER-ERRREPLY   an out-of-range command is refused with an ERROR naming the value and its range; a command
                        the drive refuses (a drive while e-stopped) is refused with "ERROR {cmd} failed: {NAME} ({code})";
@@ -16,8 +17,10 @@ WHAT IT PROVES
     R20-SER-VOLT       getvoltage returns the configured PWR_* number and its nominal mV
     R20-SER-FAULTRESP  getfaultresp reads FR_GRADED (1) at 10 % after start; setfaultresp round-trips; refused values
                        change nothing
-    R20-SER-PROTCLEAR  with no protective stop latched, getprot reads 0 0 and protclear is harmless (it does not
-                       release a user's e-stop). The latched half is NOMEAS: it needs a provoked protective stop (PL-106)
+    R20-SER-PROTCLEAR  (PL-111, the serial half) with no protective stop latched, getprot reads 0 0 and protclear
+                       replies OK and changes nothing: at rest, and during a drive, which keeps running; it does not
+                       release a user's e-stop; both commands refuse a parameter. The latched half is NOMEAS: it needs
+                       a provoked protective stop (PL-106), which a lifted rig cannot make
     R20-SER-LATENCY    (PL-154) a harmless getter's round trip, send to reply, stays under LATENCY_BOUND_MS: the P2's
                        idle poll plus the wire time at the baud rate plus this script's read poll
     R20-SER-NUMPARSE   (PL-154) a parameter that is not a decimal integer is refused with "ERROR Parameter {n} ({text})
@@ -26,13 +29,22 @@ WHAT IT PROVES
                        in gethealth (HLT_WIRING); setstartchecks is refused while the motors run. The refused-start
                        half of setstartchecks is NOMEAS: it needs a platform whose start checks fail
     R20-SER-RAMP       (PL-160) setaccel and setdecel round-trip through getaccel and getdecel; a value just outside
-                       either range is refused with an ERROR and changes nothing; after a fresh start getaccel reads 0
-                       (the built-in ramp, no single rate). Run last: the P2 keeps the rates until it is reset
+                       either range is refused with an ERROR and changes nothing; after a fresh start getaccel reads
+                       the built-in 1_000 and getdecel the built-in 1_470 (ACCEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2,
+                       DRIVER_REV 38; getaccel read 0 before it). Both rates are put back at the end
+    R20-SER-DEMOWRAP   (PL-148) the demo's BLDCMotorControl wrappers, loaded from the demo's own source, send each
+                       command in its documented form and return what the P2 replied; every reply over the whole run
+                       was one LF-terminated line (the demo reads one line per command). Run last
 
 PRECONDITION
   - WHEELS UP (platform on blocks, both wheels free) and HANDS OFF for the whole run. The wheels turn at power 30.
-  - The P2 runs src/isp_steering_serial.spin2 (the dual-motor serial top level), built at DRIVER_REV 35 or later
-    (R20-SER-RAMP's setdecel, getaccel and getdecel arrived at 35; the other cells need 32).
+  - The P2 runs src/isp_steering_serial.spin2 (the dual-motor serial top level), built at DRIVER_REV 40 or later
+    AND with isp_queue_serial.spin2's one-LF reply lines (the same change). Before it, OK and ERROR replies ended with
+    the two characters "\\n" and no LF: this script then stops at once with abort REPLY_NOT_LF_TERMINATED.
+    (getaccel's 1_000 needs DRIVER_REV 38; the walk band checkwiring judges, 40.)
+  - A dual-motor configuration has a wheel diameter, so getaccel and getdecel read mm/s^2 (0 only without one).
+  - For R20-SER-DEMOWRAP, P2-BLDC-Motor-Control-Demo.py beside this script (or --demo PATH). Only its source is read;
+    it is never run, so its own packages (sendgrid, watchdog, ...) are not needed. Missing: that cell is NOMEAS.
   - Wired as SERIAL-CONTROL.md describes: host Tx -> P2 pin 57, host Rx <- P2 pin 56, grounds joined, 624,000 baud.
   - Best: start this script, THEN reset/power the P2, so the script sees the P2's "ident:" line and the fault-response
     default is read from a fresh start. A P2 already waiting for its ident answer also counts as fresh.
@@ -40,7 +52,7 @@ PRECONDITION
 
 HOW LONG
   About 2 minutes. The P2's command loop looks for a command every 1 ms (PL-154; it slept up to 1 s before), so most
-  of the run is the three timeout cases' 45 s of timed motion and silence.
+  of the run is the three timeout cases' 45 s of timed motion and silence. Each checkwiring takes about 1.3 s.
 
 PANIC PROCEDURE
   Physically disconnect the drive battery. Ctrl-C makes the script send "stopmotors" and "settimeout 0" on the way
@@ -51,6 +63,7 @@ USAGE
   ./serial_certify.py --drive-voltage PWR_18p5V            # /dev/serial0 at 624000 (the demo's defaults)
   ./serial_certify.py --port /dev/ttyUSB0 --baud 624000 --drive-voltage PWR_12p0V
   ./serial_certify.py --dry-run                            # print the planned command sequence; no port is opened
+  ./serial_certify.py --demo ../P2-BLDC-Motor-Control-Demo.py --drive-voltage PWR_18p5V   # the demo elsewhere
 
 OUTPUT
   Every line sent and received, with a host timestamp, goes to serial-certify_<YYMMDD-HHMMSS>.log beside this script
@@ -58,13 +71,16 @@ OUTPUT
 """
 
 import argparse
+import ast
 import os
 import re
 import sys
 import time
+from collections import deque
 from datetime import datetime
+from enum import Enum
 
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 
 # -----------------------------------------------------------------------------
 # Values copied from the P2 source. Keep in sync with src/isp_bldc_motor.spin2 and src/isp_steering_serial.spin2.
@@ -80,7 +96,7 @@ ERR_CODES = {
     "ERR_NO_WHEEL_DIA": -1011, "ERR_LIMIT_UNRESOLVABLE": -1012, "ERR_SYNC_TIMEOUT": -1013, "ERR_BUSY": -1014,
     "ERR_FAULT_NOT_CLEARED": -1015, "ERR_EMERGENCY_STOPPED": -1016, "ERR_NO_RESPONSE": -1017,
     "ERR_BOARD_NOT_DETECTED": -1018, "ERR_COMMAND_TIMEOUT": -1019, "ERR_START_CHECK_FAILED": -1020,
-    "ERR_PROTECTIVE_STOP": -2000, "ERR_PLATFORM_BLOCKED": -2001,
+    "ERR_NOT_IMPLEMENTED": -1021, "ERR_PROTECTIVE_STOP": -2000, "ERR_PLATFORM_BLOCKED": -2001,
 }
 
 # PWR_* enum (isp_bldc_motor_userconfig.spin2) and nominalMilliVolts() (isp_bldc_motor.spin2)
@@ -96,24 +112,34 @@ DRU_HALL_TICKS, DDU_M = 1, 5
 MAX_SPEED_DEFAULT = 75              # setMaxSpeedForDistance() default, restored after the bounded case
 ACCEL_MIN_MM_S2, ACCEL_MAX_MM_S2 = 1, 10000     # setaccel's range (ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2)
 DECEL_MIN_MM_S2, DECEL_MAX_MM_S2 = 250, 10000   # setdecel's range (DECEL_MIN_MM_S2 .. DECEL_MAX_MM_S2), PL-160
+ACCEL_BUILTIN_MM_S2 = 1000          # DRIVER_REV 38: getaccel until setaccel (it read 0 before 38: no single rate)
+DECEL_BUILTIN_MM_S2 = 1470          # DRIVER_REV 38: getdecel until setdecel
+HOLD_CEILING_PCT, HOLD_RISE_MS, HOLD_LIMIT_MS = 10, 250, 10000  # setholdlimits' defaults (restored at start)
+EV_STOP = 62                        # getevtotal's first counted kind
+WALK_LEG_TIMEOUT_MS = 2000          # the motor object's bound on one checkwiring leg
 
 # -----------------------------------------------------------------------------
 # Test constants
 # -----------------------------------------------------------------------------
 REPLY_TIMEOUT_S = 3.0       # generous: the P2 answers within ms (1 ms idle poll, PL-154), plus the front cog's bounded
-                            #  answer; checkwiring blocks about 0.5 s
+                            #  answer
+CHECKWIRING_REPLY_S = 2 * WALK_LEG_TIMEOUT_MS / 1000.0 + 2.0   # checkwiring replies only after both legs: about 1.3 s
+                            #  (two ~0.63 s legs on the built-in ramp, DRIVER_REV 40), at most 2 x WALK_LEG_TIMEOUT_MS
 DRIVE_POWER = 30            # gentle, wheels up
 TIMEOUT_MS = 5000           # settimeout value. Must exceed the getters read after the last drive in the negative case
                             #  (sized when each could take ~1 s; now far more than enough)
-REST_BOUND_MS = 2500        # ramp down to rest after the timeout fires. DRIVE-OBJECTS.md: from top speed (441 ticks/s)
-                            #  the ramp takes ~380 ticks, about 1.7 s; power 30 takes far less. 2.5 s covers full speed
+REST_BOUND_MS = 2500        # ramp down to rest after the timeout fires. DRIVER_REV 38's jerk-limited stop from a cruise
+                            #  speed v takes v / A + A / J passes (A 49_918, J 104 built in; 522.7 us a pass). Power 30
+                            #  is v = 48_404_024 at 18.5 V: 1_450 passes, 0.76 s; 67_737_367 at 25.9 V: 0.96 s. Even the
+                            #  default top speed (75) at 25.9 V, v = 172_691_902, takes 2.06 s. 2.5 s covers all of them
 MID_POLL_S = 1.0            # when the "still running before the timeout" getstatus is sent after the drive
 RESEND_S = 0.5              # the negative case re-sends a drive at least this often (the P2's latency sets the real gap)
 RESEND_SPAN_MS = 3 * TIMEOUT_MS
 STILL_TICKS = 2             # at rest: hall ticks either wheel may move across the 1 s stillness check
 MIN_MOVE_TICKS = 10         # it ran: hall ticks each wheel must have moved
 DIST_SPEED = 30             # setspeedfordist for the bounded case
-DIST_METERS = 20            # far beyond what the wheels cover before the timeout (~2.5 m/s top speed x 5 s < 20 m)
+DIST_METERS = 20            # far beyond what the wheels cover before the timeout: speed 30 is 0.75 m/s at 18.5 V and
+                            #  1.04 m/s at 25.9 V, so 5 s plus the ramps is under 6 m
 
 # PL-154 latency: LATENCY_BOUND_MS = P2_IDLE_POLL_MS + the wire time of command and reply + READ_POLL_S
 P2_IDLE_POLL_MS = 1         # IDLE_POLL_MS in isp_steering_serial.spin2: the command loop's look-again period when idle
@@ -133,7 +159,10 @@ HLT_WIRING = 32
 SF_VERSION = 1
 SF_BIN = "SERIAL"
 CELLS = ["R20-SER-LATENCY", "R20-SER-NUMPARSE", "R20-SER-FAULTRESP", "R20-SER-VOLT", "R20-SER-PROTCLEAR",
-         "R20-SER-ERRREPLY", "R20-SER-GETTERS", "R20-SER-TIMEOUT", "R20-SER-RAMP"]
+         "R20-SER-ERRREPLY", "R20-SER-GETTERS", "R20-SER-TIMEOUT", "R20-SER-RAMP", "R20-SER-DEMOWRAP"]
+PROTCLEAR_DRIVE_S = 1.5     # PL-111: the drive protclear must leave running is read this long after it starts, and again
+                            #  after the protclear: past the ~1 s speed-up at power 30, so it is at speed both times
+DEMO_FILE = "P2-BLDC-Motor-Control-Demo.py"
 
 # PL-160 ramp round trips: (command, value) pairs set in turn, each read back; and the refused values, one step outside
 RAMP_SETS = [("setaccel", 800), ("setaccel", 1500), ("setdecel", 1000), ("setdecel", 2000)]
@@ -187,6 +216,7 @@ class Link:
         self.ser = None
         self.buf = b""
         self.silent_misses = 0
+        self.framing_defects = 0        # blank lines and literal "\n" text received: one reply must be one LF line
 
     def open(self):
         if self.dry:
@@ -205,12 +235,21 @@ class Link:
         self.ser.write((text + "\n").encode("utf-8"))
 
     def _read_line(self, deadline):
-        # a line ends with LF (sendOK / sendResponse / sendError in isp_queue_serial.spin2)
+        # a line ends with ONE LF (sendOK / sendResponse / sendError in isp_queue_serial.spin2). A reply that ended
+        #  with the two characters "\n" and no LF is the pre-6.0 framing: no host that reads lines can read it
         while True:
             if b"\n" in self.buf:
                 raw, self.buf = self.buf.split(b"\n", 1)
-                return raw.decode("utf-8", "replace").rstrip("\r")
+                text = raw.decode("utf-8", "replace").rstrip("\r")
+                if "\\n" in text:
+                    self.framing_defects += 1
+                    self.log.line("RX-FRAMING  literal \\n in [{}]".format(text))
+                return text
             if time.monotonic() >= deadline:
+                if self.buf.endswith(b"\\n"):
+                    self.log.line("RX-FRAMING  [{}] ends with a literal \\n and no LF".format(
+                        self.buf.decode("utf-8", "replace")))
+                    raise LinkDead("REPLY_NOT_LF_TERMINATED")
                 return None
             chunk = self.ser.read(self.ser.in_waiting or 1)
             if chunk:
@@ -249,8 +288,8 @@ class Link:
         self.log.line("SER-IDENT,seen,FALSE,fresh,FALSE", console=True)
         return False
 
-    def cmd(self, text):
-        """Send one command and return its one reply line, or None (dry run, or no reply in REPLY_TIMEOUT_S)."""
+    def cmd(self, text, reply_s=REPLY_TIMEOUT_S):
+        """Send one command and return its one reply line, or None (dry run, or no reply in reply_s)."""
         if self.dry:
             self.log.line("PLAN TX  {}".format(text))
             return None
@@ -264,12 +303,15 @@ class Link:
                 raise LinkDead("P2_RESET_MID_RUN")
             if stray:
                 self.log.line("RX-STRAY  {}".format(stray))
+            else:
+                self.framing_defects += 1
+                self.log.line("RX-FRAMING  blank line")
         self._send_raw(text)
-        deadline = time.monotonic() + REPLY_TIMEOUT_S
+        deadline = time.monotonic() + reply_s
         while True:
             reply = self._read_line(deadline)
             if reply is None:
-                self.log.line("RX-NONE  (no reply in {} s to '{}')".format(REPLY_TIMEOUT_S, text))
+                self.log.line("RX-NONE  (no reply in {} s to '{}')".format(reply_s, text))
                 self.silent_misses += 1
                 if self.silent_misses >= 3:
                     raise LinkDead("NO_REPLIES")
@@ -278,6 +320,10 @@ class Link:
                 self._answer_ident(reply)
                 raise LinkDead("P2_RESET_MID_RUN")
             if reply == "":
+                # a blank line is a framing defect: a host reading one line per command (the demo) takes it as the
+                #  next command's reply
+                self.framing_defects += 1
+                self.log.line("RX-FRAMING  blank line")
                 continue
             self.silent_misses = 0
             self.log.line("RX  {}".format(reply))
@@ -403,9 +449,13 @@ def cell_volt(link, cell, expected_enum, log):
 
 
 def cell_protclear(link, cell, log):
-    # Claim: with no protective stop latched, getprot reads "prot 0 0" and protclear replies OK and changes nothing.
-    # NEGATIVE: protclear must not release a user's e-stop (only emerclear does): after emercutoff + protclear a drive
-    #  is still refused with ERR_EMERGENCY_STOPPED. A protclear that released everything would FAIL here.
+    # Claim (PL-111's serial half, DRIVE-OBJECTS-SERIAL.md protclear): with no protective stop latched, getprot reads
+    #  "prot 0 0" and protclear replies OK and changes nothing (isp_steering_2wheel REQ_CLEAR_PROTECT releases only a
+    #  wheel whose getProtectiveStop() is set, and writes nothing otherwise).
+    # NEGATIVES: protclear must not release a user's e-stop (only emerclear does): after emercutoff + protclear a drive
+    #  is still refused with ERR_EMERGENCY_STOPPED. It must not stop a running drive: a protclear that wrote a stop or
+    #  a zero command would leave status 13 (DS_OFF) or power 0 and FAIL NOOP_WHILE_DRIVING. And both commands take no
+    #  parameter, so "protclear 1" and "getprot 1" are refused by the parser, never run.
     before = nums(link.cmd("getprot"), "prot", 2)
     clear_ok = is_ok(link.cmd("protclear"))
     after = nums(link.cmd("getprot"), "prot", 2)
@@ -425,6 +475,32 @@ def cell_protclear(link, cell, log):
     link.cmd("emerclear")
     cell.judge("NONE", "PROTCLEAR_KEEPS_ESTOP", estop_ok and clear2_ok and kept, True, True, "BOOL")
 
+    # the parser refuses a parameter to either: the command path's own refusal, and its reply form
+    extra = 0
+    for command in ("protclear", "getprot"):
+        if link.cmd("{} 1".format(command)) == "ERROR Missing/Extra parameter(s)":
+            extra += 1
+    cell.judge("NONE", "PROTCLEAR_COUNT_ENFORCED", extra if not link.dry else None, 2, 2, "COUNT", n=2)
+
+    # a no-op while a drive runs: the drive is still open (SR_NONE), moving, at its power, after the protclear
+    link.cmd("geterror")
+    drove = is_ok(link.cmd("drivepwr {} {}".format(DRIVE_POWER, DRIVE_POWER)))
+    link.pause(PROTCLEAR_DRIVE_S, "drive at speed before protclear")
+    stat1 = nums(link.cmd("getstatus"), "stat", 2)
+    clear3_ok = is_ok(link.cmd("protclear"))
+    link.pause(PROTCLEAR_DRIVE_S, "drive after protclear")
+    stat2 = nums(link.cmd("getstatus"), "stat", 2)
+    pwr2 = nums(link.cmd("getpwr"), "pwr", 2)
+    reason2 = nums(link.cmd("getstopreason"), "stopreason", 2)
+    prot2 = nums(link.cmd("getprot"), "prot", 2)
+    link.cmd("stopmotors")
+    link.pause(REST_BOUND_MS / 1000.0, "ramp down after stopmotors")
+    running = [DS_MOVING, DS_MOVING]
+    cell.judge("BOTH", "NOOP_WHILE_DRIVING",
+               drove and clear3_ok and stat1 == running and stat2 == running and pwr2 == [DRIVE_POWER, DRIVE_POWER]
+               and reason2 == [SR_NONE, SR_NONE] and prot2 == [0, 0], True, True, "BOOL")
+
+    # the latched half: a lifted rig cannot latch a protective stop (it needs a commanded wheel held still, PL-106)
     cell.nomeas("BOTH", "LATCHED_STOP_RELEASED", True, True, "BOOL", "NEEDS_PROVOKED_PROTECTIVE_STOP_PL-106", log)
 
 
@@ -551,16 +627,19 @@ def cell_timeout(link, cell, log):
 
     # --- positive, bounded: drivedist far beyond reach, then silence (no carve-outs, DRIVER_REV 32)
     link.cmd("geterror")
+    # PL-153 (DRIVER_REV 33): getrot is the odometer, total travel, which a drive never resets -- so the run is judged
+    #  against a reading taken just before it, not against 0 (every earlier case's travel would pass that)
+    rot0 = nums(link.cmd("getrot {}".format(DRU_HALL_TICKS)), "rot", 2)
     spd_ok = is_ok(link.cmd("setspeedfordist {}".format(DIST_SPEED)))
     set_ok = is_ok(link.cmd("settimeout {}".format(T)))
     t_send = time.monotonic()
-    drove = is_ok(link.cmd("drivedist {} {} {}".format(DIST_METERS, DIST_METERS, DDU_M)))   # resets tracking
+    drove = is_ok(link.cmd("drivedist {} {} {}".format(DIST_METERS, DIST_METERS, DDU_M)))
     link.wait_until(t_send + MID_POLL_S, t_send, "drivedist")
     mid = nums(link.cmd("getstatus"), "stat", 2)
     running = spd_ok and set_ok and drove and mid == [DS_MOVING, DS_MOVING]
     link.wait_until(t_send + bound_s, t_send, "drivedist (timeout + rest bound)")
     at_rest, reason, err0, rot1 = stopped_checks(link, "drivedist")
-    cell.judge("BOTH", "DIST_RUNNING_BEFORE_MS", running and moved([0, 0], rot1), True, True, "BOOL")
+    cell.judge("BOTH", "DIST_RUNNING_BEFORE_MS", running and moved(rot0, rot1), True, True, "BOOL")
     cell.judge("BOTH", "DIST_AT_REST_BY_BOUND", at_rest, True, True, "BOOL")
     cell.judge("BOTH", "DIST_REASON_LINK_LOST", reason == [SR_LINK_LOST, SR_LINK_LOST], True, True, "BOOL")
     cell.judge("NONE", "DIST_ERR_TIMEOUT", err0, ERR_CODES["ERR_COMMAND_TIMEOUT"], ERR_CODES["ERR_COMMAND_TIMEOUT"], "CODE")
@@ -662,8 +741,9 @@ def cell_getters(link, cell, log):
     cell.judge("NONE", "GETTERS_OUT_OF_RANGE", out_of_range if not link.dry else None, 0, 0, "COUNT", n=n)
     cell.judge("NONE", "GETTERS_COUNT_ENFORCED", extra_refused if not link.dry else None, n, n, "COUNT", n=n)
 
-    # checkwiring turns the platform a few degrees in place and back (wheels up): OK, then HLT_WIRING is checked on both
-    walk_ok = is_ok(link.cmd("checkwiring"))
+    # checkwiring turns the platform a few degrees in place and back (wheels up): OK, then HLT_WIRING is checked on both.
+    #  The verdict itself (a failed bit) is logged, not judged: DRIVER_REV 40 re-derived its band (3 .. 11 ticks a leg)
+    walk_ok = is_ok(link.cmd("checkwiring", CHECKWIRING_REPLY_S))      # replies after both legs, about 1.3 s
     health = nums(link.cmd("gethealth"), "health", 6)
     checked = health is not None and (health[0] & HLT_WIRING) != 0 and (health[3] & HLT_WIRING) != 0
     if health is not None:
@@ -688,18 +768,25 @@ def read_rates(link):
 
 def cell_ramp(link, cell, fresh, log):
     # Claim (PL-160, DRIVE-OBJECTS-SERIAL.md): setaccel {rate} and setdecel {rate} take mm/s^2 at the rim and read back
-    #  through getaccel and getdecel as the rate given; getaccel reads 0 while the built-in ramp (no single rate) is in use.
+    #  through getaccel and getdecel as the rate given. Until set, since DRIVER_REV 38, they read the built-in rates:
+    #  getaccel ACCEL_BUILTIN_MM_S2 (1_000; it read 0 before 38, when the built-in ramp had no single rate) and getdecel
+    #  DECEL_BUILTIN_MM_S2 (1_470). isp_bldc_motor.spin2 getAcceleration()/getDeceleration() with a wheel diameter set.
     # NEGATIVE: each round trip uses two different values per setter, so a getter that echoed a constant FAILs; a value one
     #  step outside either range must be refused with an ERROR and leave both rates as they were, so a range check that
-    #  was missing (or a refusal that still stored) FAILs. getaccel/getdecel sent with a parameter must be refused.
+    #  was missing (or a refusal that still stored) FAILs. getaccel/getdecel sent with a parameter must be refused. A P2
+    #  before DRIVER_REV 38 reads getaccel 0 on a fresh start and FAILs DEFAULT_ACCEL_BUILTIN.
     first = read_rates(link)
     log.line("SER-RAMP,start,accel,{},decel,{}".format(first[0] if first else "NA", first[1] if first else "NA"))
     if fresh:
-        cell.judge("NONE", "DEFAULT_ACCEL_NO_SINGLE_RATE", first[0] if first else None, 0, 0, "MM_S2")
-        cell.judge("NONE", "DEFAULT_DECEL_POSITIVE", first[1] if first else None, 1, DECEL_MAX_MM_S2, "MM_S2")
+        cell.judge("NONE", "DEFAULT_ACCEL_BUILTIN", first[0] if first else None, ACCEL_BUILTIN_MM_S2, ACCEL_BUILTIN_MM_S2,
+                   "MM_S2")
+        cell.judge("NONE", "DEFAULT_DECEL_BUILTIN", first[1] if first else None, DECEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2,
+                   "MM_S2")
     else:
-        cell.nomeas("NONE", "DEFAULT_ACCEL_NO_SINGLE_RATE", 0, 0, "MM_S2", "NOT_FRESH_START", log)
-        cell.nomeas("NONE", "DEFAULT_DECEL_POSITIVE", 1, DECEL_MAX_MM_S2, "MM_S2", "NOT_FRESH_START", log)
+        cell.nomeas("NONE", "DEFAULT_ACCEL_BUILTIN", ACCEL_BUILTIN_MM_S2, ACCEL_BUILTIN_MM_S2, "MM_S2", "NOT_FRESH_START",
+                    log)
+        cell.nomeas("NONE", "DEFAULT_DECEL_BUILTIN", DECEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2, "MM_S2", "NOT_FRESH_START",
+                    log)
 
     misses = 0
     for command, value in RAMP_SETS:
@@ -727,10 +814,217 @@ def cell_ramp(link, cell, fresh, log):
             extra += 1
     cell.judge("NONE", "GETTERS_COUNT_ENFORCED", extra if not link.dry else None, 2, 2, "COUNT", n=2)
 
-    # the deceleration read at the start is put back (every stop ramps at it); the speed-up rate has no serial way back
-    #  to the built-in ramp, so it stays at the last value set until the P2 is reset
+    # both rates read at the start are put back. Since DRIVER_REV 38 the built-in speed-up rate is a rate like any other
+    #  (setaccel 1000 converts to the built-in step, RAMP_ACCEL_BUILTIN_STEP, as the built-in does), so it can be
+    if first is not None and ACCEL_MIN_MM_S2 <= first[0] <= ACCEL_MAX_MM_S2:
+        link.cmd("setaccel {}".format(first[0]))
     if first is not None and DECEL_MIN_MM_S2 <= first[1] <= DECEL_MAX_MM_S2:
         link.cmd("setdecel {}".format(first[1]))
+
+
+# -----------------------------------------------------------------------------
+# The demo's wrappers (PL-148: "the Python demo"), certified from the demo's own source
+# -----------------------------------------------------------------------------
+# P2-BLDC-Motor-Control-Demo.py cannot be imported: its module level parses its own arguments, opens /dev/serial0,
+#  starts a listener thread and drives a square, and it needs sendgrid, watchdog, unidecode and colorama. So only its
+#  BLDCMotorControl class, its unit and status enums and its responseOK / responseERROR strings are taken from its source
+#  (ast), compiled, and run against this script's link through two stand-ins for the demo's own serial port and line
+#  queue. The code under test is the demo's, byte for byte; nothing of it is copied here.
+
+DEMO_NAMES = ("DrvDistUnits", "DrvRotUnits", "DrvTimeUnits", "DrvStatus", "DrvStopState", "responseOK", "responseERROR")
+
+
+class DemoLineQueue:
+    """Stands in for the demo's RxLineQueue (queueRxLines): the reply lines its listener thread would have queued."""
+
+    def __init__(self):
+        self.lines = deque()
+
+    def pushLine(self, text):
+        self.lines.append(text)
+
+    def popLine(self):
+        return self.lines.popleft() if self.lines else ""
+
+    def lineCount(self):
+        return len(self.lines)
+
+
+class DemoPort:
+    """Stands in for the demo's serial.Serial: each write() is one command, sent over this script's link; its one reply
+    line is queued as the demo's listener would queue it (a missing reply as an empty line, so the demo never waits)."""
+
+    def __init__(self, link, queue):
+        self.link = link
+        self.queue = queue
+        self.sent = None
+        self.reply = None
+
+    def write(self, data):
+        self.sent = data.decode("utf-8", "replace")
+        text = self.sent[:-1] if self.sent.endswith("\n") else self.sent
+        timeout_s = CHECKWIRING_REPLY_S if text == "checkwiring" else REPLY_TIMEOUT_S
+        self.reply = self.link.cmd(text, timeout_s)
+        self.queue.pushLine(self.reply if self.reply is not None else "")
+        return len(data)
+
+
+def load_demo_wrappers(path, log):
+    """Return (the demo's BLDCMotorControl class, its namespace), compiled from the demo's source only."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    keep = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "BLDCMotorControl":
+            keep.append(node)
+        elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in DEMO_NAMES for t in node.targets):
+            keep.append(node)
+    module = ast.Module(body=keep, type_ignores=[])
+    namespace = {
+        "Enum": Enum,
+        "sleep": time.sleep,
+        "print_line": lambda text, **kwargs: log.line("DEMO-PRINT  {}".format(text)),
+        "queueRxLines": DemoLineQueue(),
+    }
+    exec(compile(module, path, "exec"), namespace)
+    return namespace["BLDCMotorControl"], namespace
+
+
+def as_ints(value):
+    """A demo getter's result as a list of ints (it returns str, a tuple of str, int, or DrvStatus members); None if not."""
+    if value is None:
+        return None
+    items = value if isinstance(value, tuple) else (value,)
+    out = []
+    try:
+        for item in items:
+            out.append(int(item.value) if isinstance(item, Enum) else int(item))
+    except (TypeError, ValueError):
+        return None
+    return out
+
+
+def cell_demowrap(link, cell, demo_path, log):
+    # Claim (PL-148, "the Python demo"): each BLDCMotorControl wrapper sends its command in the form DRIVE-OBJECTS-SERIAL.md
+    #  documents, and each getter returns exactly the values the P2 replied; and every reply of the run was one line
+    #  ending in one LF, which is what the demo's reader (readline, one line per command) needs.
+    # NEGATIVES: the expected lines are written here from the document, not from the demo, so a wrapper that sends a
+    #  wrong name, order, enum value or boolean FAILs LINES; each command's reply is judged (OK, or the one refusal it
+    #  must get), so a line the P2 parsed differently FAILs REPLIES; each getter's return is compared with the reply read
+    #  on the wire, so a wrapper that mis-parsed or dropped a value FAILs GETTERS. Commands are chosen so nothing moves
+    #  but the walk: drives at power 0, limits of 0 (refused by value, after their units are parsed), and settings put
+    #  back to their defaults -- which also restores the ramp the RAMP cell changed (setaccel 1000, setdecel 1470).
+    if not os.path.isfile(demo_path):
+        for crit in ("WRAPPER_LINES_AS_DOCUMENTED", "WRAPPER_REPLIES_AS_EXPECTED", "WRAPPER_GETTERS_MATCH_REPLY"):
+            cell.nomeas("NONE", crit, 0, 0, "COUNT", "DEMO_NOT_FOUND", log)
+    else:
+        try:
+            wrapper_class, ns = load_demo_wrappers(demo_path, log)
+        except (SyntaxError, KeyError, OSError) as exc:
+            log.line("SER-DEMOWRAP,load_error,{}".format(exc))
+            wrapper_class = None
+        if wrapper_class is None:
+            for crit in ("WRAPPER_LINES_AS_DOCUMENTED", "WRAPPER_REPLIES_AS_EXPECTED", "WRAPPER_GETTERS_MATCH_REPLY"):
+                cell.nomeas("NONE", crit, 0, 0, "COUNT", "DEMO_NOT_LOADED", log)
+        else:
+            _demowrap_calls(link, cell, wrapper_class, ns, log)
+    cell.judge("NONE", "REPLY_FRAMING_DEFECTS", link.framing_defects if not link.dry else None, 0, 0, "COUNT")
+
+
+def _demowrap_calls(link, cell, wrapper_class, ns, log):
+    port = DemoPort(link, ns["queueRxLines"])
+    wheels = wrapper_class(port)
+    dist, rot, tim = ns["DrvDistUnits"], ns["DrvRotUnits"], ns["DrvTimeUnits"]
+    ok = "OK"
+    # (wrapper call, the documented line, the reply it must get: "OK", an ERROR prefix, or None for a getter
+    #  with (prefix, count) to compare its return against)
+    commands = [
+        (lambda: wheels.setMaxSpeed(MAX_SPEED_DEFAULT), "setspeed 75", ok),
+        (lambda: wheels.setMaxSpeedForDistance(MAX_SPEED_DEFAULT), "setspeedfordist 75", ok),
+        (lambda: wheels.holdAtStop(False), "hold 0", ok),
+        (lambda: wheels.setFaultResponse(FR_GRADED, BRAKE_PCT_DEFAULT), "setfaultresp 1 10", ok),
+        (lambda: wheels.setHoldLimits(HOLD_CEILING_PCT, HOLD_RISE_MS, HOLD_LIMIT_MS), "setholdlimits 10 250 10000", ok),
+        (lambda: wheels.setCommandTimeout(0), "settimeout 0", ok),
+        (lambda: wheels.setAcceleration(ACCEL_BUILTIN_MM_S2), "setaccel 1000", ok),
+        (lambda: wheels.setDeceleration(DECEL_BUILTIN_MM_S2), "setdecel 1470", ok),
+        (lambda: wheels.clearProtectiveStop(), "protclear", ok),
+        (lambda: wheels.driveAtPower(0, 0), "drivepwr 0 0", ok),
+        (lambda: wheels.driveDirection(0, 0), "drivedir 0 0", ok),
+        (lambda: wheels.emergencyCutoff(), "emercutoff", ok),
+        (lambda: wheels.driveAtPower(10, 10), "drivepwr 10 10", "ERROR drivepwr failed: ERR_EMERGENCY_STOPPED (-1016)"),
+        (lambda: wheels.clearEmergency(), "emerclear", ok),
+        (lambda: wheels.driveForDistance(0, 0, dist.DDU_M), "drivedist 0 0 5", "ERROR LT-distance (0)"),
+        (lambda: wheels.stopAfterRotation(0, rot.DRU_HALL_TICKS), "stopaftrot 0 1", "ERROR Rotation Count (0)"),
+        (lambda: wheels.stopAfterDistance(0, dist.DDU_MM), "stopaftdist 0 1", "ERROR Distance Value (0)"),
+        (lambda: wheels.stopAfterTime(0, tim.DTU_SECS), "stopafttime 0 2", "ERROR Time Value (0)"),
+        (lambda: wheels.setStartChecks(False), "setstartchecks 0", "ERROR StartChecks apply only"),
+        (lambda: wheels.checkWiring(), "checkwiring", ok),
+        (lambda: wheels.resetTracking(), "resettracking", ok),
+        (lambda: wheels.stopMotors(), "stopmotors", ok),
+    ]
+    getters = [
+        (lambda: wheels.getDistance(dist.DDU_MM), "getdist 1", ("dist", 2)),
+        (lambda: wheels.getRotationCount(rot.DRU_HALL_TICKS), "getrot 1", ("rot", 2)),
+        (lambda: wheels.getPower(), "getpwr", ("pwr", 2)),
+        (lambda: wheels.getStatus(), "getstatus", ("stat", 2)),
+        (lambda: wheels.getMaxSpeed(), "getmaxspd", ("speedmax", 1)),
+        (lambda: wheels.getMaxSpeedForDistance(), "getmaxspdfordist", ("speeddistmax", 1)),
+        (lambda: wheels.getAcceleration(), "getaccel", ("accel", 1)),
+        (lambda: wheels.getDeceleration(), "getdecel", ("decel", 1)),
+        (lambda: wheels.getDriveVoltage(), "getvoltage", ("volt", 2)),
+        (lambda: wheels.getProtectiveStop(), "getprot", ("prot", 2)),
+        (lambda: wheels.getStopReason(), "getstopreason", ("stopreason", 2)),
+        (lambda: wheels.getEvent(), "getevent", ("event", 4)),
+        (lambda: wheels.getEventTotal(EV_STOP), "getevtotal 62", ("evtotal", 3)),
+        (lambda: wheels.getError(), "geterror", ("err", 3)),
+        (lambda: wheels.getHealth(), "gethealth", ("health", 6)),
+        (lambda: wheels.getFaultResponse(), "getfaultresp", ("faultresp", 2)),
+        (lambda: wheels.getHoldLimits(), "getholdlimits", ("holdlimits", 3)),
+        (lambda: wheels.getPackVoltage(), "getpackvolt", ("packvolt", 2)),
+        (lambda: wheels.getCurrent(), "getcurrent", ("current", 4)),
+        (lambda: wheels.getFaultCause(), "getfaultcause", ("faultcause", 2)),
+        (lambda: wheels.getHoldStatus(), "getholdstatus", ("holdstatus", 4)),
+        (lambda: wheels.getHallIntegrityCounts(), "gethallcounts", ("hallcounts", 4)),
+        (lambda: wheels.getHallIllegalCodes(), "gethallillegal", ("hallillegal", 4)),
+    ]
+    bad_lines = 0
+    bad_replies = 0
+    for call, line, want in commands:
+        port.sent = port.reply = None
+        try:
+            call()
+        except Exception as exc:                  # a wrapper that raises is a wrapper that failed
+            log.line("SER-DEMOWRAP,cmd,{},raised,{}".format(line, type(exc).__name__))
+        if port.sent != line + "\n":
+            bad_lines += 1
+        reply_ok = port.reply is not None and (port.reply == want if want == ok else port.reply.startswith(want))
+        if not reply_ok:
+            bad_replies += 1
+        log.line("SER-DEMOWRAP,cmd,{},sent,{},reply,{},line_ok,{},reply_ok,{}".format(
+            line, repr(port.sent), port.reply, fmt(port.sent == line + "\n"), fmt(reply_ok)))
+    bad_getters = 0
+    for call, line, (prefix, count) in getters:
+        port.sent = port.reply = None
+        returned = None
+        try:
+            returned = call()
+        except Exception as exc:
+            log.line("SER-DEMOWRAP,get,{},raised,{}".format(line, type(exc).__name__))
+        if port.sent != line + "\n":
+            bad_lines += 1
+        wire = nums(port.reply, prefix, count)
+        got = as_ints(returned)
+        match = wire is not None and got == wire
+        if not match:
+            bad_getters += 1
+        log.line("SER-DEMOWRAP,get,{},sent,{},reply,{},returned,{},match,{}".format(
+            line, repr(port.sent), port.reply, repr(returned), fmt(match)))
+    n_all = len(commands) + len(getters)
+    cell.judge("NONE", "WRAPPER_LINES_AS_DOCUMENTED", bad_lines, 0, 0, "COUNT", n=n_all)
+    cell.judge("NONE", "WRAPPER_REPLIES_AS_EXPECTED", bad_replies if not link.dry else None, 0, 0, "COUNT",
+               n=len(commands))
+    cell.judge("NONE", "WRAPPER_GETTERS_MATCH_REPLY", bad_getters if not link.dry else None, 0, 0, "COUNT",
+               n=len(getters))
 
 
 # -----------------------------------------------------------------------------
@@ -755,6 +1049,9 @@ def main():
     parser.add_argument("--task", default="NA", help="todo task id for the SIGNOFF lines' task field (default NA)")
     parser.add_argument("--ident-wait", type=float, default=10.0, help="seconds to wait for the P2's ident line")
     parser.add_argument("--dry-run", action="store_true", help="print the planned command sequence; open no port")
+    parser.add_argument("--demo", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), DEMO_FILE),
+                        help="the Python demo whose wrappers R20-SER-DEMOWRAP certifies (default: {} beside this "
+                             "script); only its source is read".format(DEMO_FILE))
     args = parser.parse_args()
     expected_enum = parse_voltage(args.drive_voltage)
 
@@ -803,8 +1100,10 @@ def main():
         done.add("R20-SER-GETTERS")
         cell_timeout(link, cells["R20-SER-TIMEOUT"], log)
         done.add("R20-SER-TIMEOUT")
-        cell_ramp(link, cells["R20-SER-RAMP"], fresh, log)            # last: the P2 keeps the speed-up rate set here
+        cell_ramp(link, cells["R20-SER-RAMP"], fresh, log)            # after every cell a changed ramp could affect
         done.add("R20-SER-RAMP")
+        cell_demowrap(link, cells["R20-SER-DEMOWRAP"], args.demo, log)  # last: it judges the whole run's reply framing
+        done.add("R20-SER-DEMOWRAP")
     except LinkDead as why:
         abort_why = str(why)
     except KeyboardInterrupt:

@@ -503,7 +503,7 @@ PUB setAcceleration(rate) : eError | rampStep
         usrAccelStep := rampStep                                                ' PL-160: kept, first; a start() applies it
         usrAccel := rate
         if bSettingsLive == TRUE
-            applyRamps()                                                        '  and in effect now on a running motor
+            requestRamps()                                                      '  and in effect now on a running motor (its front cog applies it)
     else
         eError := recordError(eError)
         debug[user.DBGCH_ERROR]("! ERROR: setAcceleration() rejected ", sdec_long(eError), sdec_long(rate))
@@ -532,7 +532,7 @@ PUB setDeceleration(rate) : eError | rampStep
         usrDecelStep := rampStep                                                ' PL-160: kept, first; a start() applies it
         usrDecel := rate
         if bSettingsLive == TRUE
-            applyRamps()                                                        '  and in effect now on a running motor
+            requestRamps()                                                      '  and in effect now on a running motor (its front cog applies it)
     else
         eError := recordError(eError)
         debug[user.DBGCH_ERROR]("! ERROR: setDeceleration() rejected ", sdec_long(eError), sdec_long(rate))
@@ -595,7 +595,7 @@ PUB setRampingValues(minRamp, maxRamp, incRamp, decrRamp) : eError
         usrAccel := 0                                                           ' the rates asked for are replaced: the getters
         usrDecel := 0                                                           '  now read the rates these steps give
         if bSettingsLive == TRUE
-            applyRamps()                                                        '  and in effect now on a running motor
+            requestRamps()                                                      '  and in effect now on a running motor (its front cog applies it)
         eError := NO_ERROR
 
 PUB getRampingValues() : minRamp, maxRamp, incRamp, decrRamp
@@ -1425,9 +1425,14 @@ PUB restZeroFinish()
 '' A no-op (restZeroSenseMv stays at whatever restZeroBegin() left it, 0 on a failed begin) if
 '' restZeroAddSample() was never called since restZeroBegin(). Either way the driver's fold-back is handed the
 '' result (PL-146, applySenseZero()).
+'' DRIVER_REV 40: the offset, not the mean. Each sample is a FLOORED mV reading (the driver's sar #11), and with the
+'' +-3 mV noise spreading the true value over several counts a floored reading averages half a count low, so the
+'' offset is the mean + 0.5, rounded to the nearest mV: floor(mean + 1), with the mean floored (never truncated
+'' toward 0: a rest zero may be negative) -- unbiasedMeanMv(), which measureWindings() shares. Until then it was the
+'' TRUNCATED mean, 0.5 .. 1.5 mV under the offset.
 
     if restZeroSampleCount > 0
-        restZeroSenseMv := restZeroSampleSum / restZeroSampleCount
+        restZeroSenseMv := unbiasedMeanMv(restZeroSampleSum, restZeroSampleCount)
     applySenseZero()
 
 PUB captureRestZero() | idx
@@ -1519,12 +1524,14 @@ PUB checkWiring() : eError | nStartPos, nMidPos, nMissed0, nIllegal0, bLegsOk
 ''
 '' Opt-in: this moves the wheel, so call it only when the robot may move a little. It catches what start()'s checks,
 '' which move nothing, cannot: a swapped hall pair, swapped phase leads, a dead hall line or a motor that does not
-'' turn. Blocks about half a second, at most twice WALK_LEG_TIMEOUT_MS; the motor ends at rest per holdAtStop(). The
+'' turn. Blocks about 1.3 s (two legs of about 0.65 s on the built-in ramp), at most twice WALK_LEG_TIMEOUT_MS; the motor ends at rest per holdAtStop(). The
 '' walk's travel, both legs, adds to the odometer (getDistance(), getRotationCount()), which it no longer resets
 '' (PL-153); each leg's own distance counts from the leg's start. A leg that draws more current than a healthy
 '' walk ever does (miswiring stalls the rotor against the field) is ended at once by shorting the phases, and fails.
+'' The walk always runs on the built-in ramp (ACCEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2), whatever setAcceleration(),
+'' setDeceleration() or setRampingValues() chose, and puts the program's own ramp back as it ends (DRIVER_REV 40).
 ''
-'' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it), or ERR_NOT_STARTED, also recorded for getError()
+'' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it), or ERR_NOT_STARTED, or ERR_NO_RESPONSE (the front cog did not put the built-in ramp in force within its bound: nothing walked, nothing judged), also recorded for getError()
 
 ' Local Variables:
 ' @local nStartPos - the driver's hall position before the first leg
@@ -1540,13 +1547,43 @@ PUB checkWiring() : eError | nStartPos, nMidPos, nMissed0, nIllegal0, bLegsOk
         nMissed0 := hall_missed
         nIllegal0 := hall_illegal
         nStartPos := pos
-        bLegsOk := bWalkLeg(WLEG_OUT, WALK_POWER)
-        nMidPos := pos
-        if bLegsOk == TRUE
-            bLegsOk := bWalkLeg(WLEG_BACK, -WALK_POWER)
+        eError := walkRamps(TRUE)                                               ' DRIVER_REV 40: a fixed stimulus, IN FORCE before the first post
+        if eError == NO_ERROR
+            bLegsOk := bWalkLeg(WLEG_OUT, WALK_POWER)
+            nMidPos := pos
+            if bLegsOk == TRUE
+                bLegsOk := bWalkLeg(WLEG_BACK, -WALK_POWER)
+            else
+                walkNoteLeg(WLEG_BACK, FALSE)                                   ' PL-137: its record reads not run, never an earlier walk's
+            walkRamps(FALSE)                                                    ' every leg's ending (rest, fault, guard, timeout) returns here
+            bJudgeWalk(nMidPos - nStartPos, pos - nMidPos, bLegsOk, (hall_missed == nMissed0) and (hall_illegal == nIllegal0))
         else
-            walkNoteLeg(WLEG_BACK, FALSE)                                       ' PL-137: its record reads not run, never an earlier walk's
-        bJudgeWalk(nMidPos - nStartPos, pos - nMidPos, bLegsOk, (hall_missed == nMissed0) and (hall_illegal == nIllegal0))
+            walkRamps(FALSE)                                                    ' the flag back down: nothing walked, nothing judged
+            walkNoteLeg(WLEG_OUT, FALSE)                                        ' PL-137: neither record reads an earlier walk's
+            walkNoteLeg(WLEG_BACK, FALSE)
+            eError := recordError(eError)
+
+PUB walkRamps(bOn) : eError
+'' INTERNAL USE: run the wiring walk on the built-in ramp (TRUE), or put the program's kept ramp back (FALSE) -- checkWiring(), and isp_steering_2wheel's around both wheels' legs
+''
+'' DRIVER_REV 40: the walk is a diagnostic with a fixed stimulus. Its timeout (WALK_LEG_TIMEOUT_MS) and its pass band
+'' (WALK_SHORT_TICKS, WALK_OVERSHOOT_TICKS) are derived on the built-in ramp; on a user's slow ramp a leg could not
+'' finish (setAcceleration(1): the limit fires ~8.3 s in, against the 2 s timeout) and a correctly wired motor failed
+'' HLT_WIRING. The kept settings are never touched, so a setter called during the walk takes effect at its end.
+'' DRIVER_REV 40: it only sets the walk's flag; the front cog that serves this motor applies the ramp (requestRamps(),
+'' frontApplyRamps()), so a setter on another cog can no longer interleave with the restore and leave the built-in
+'' ramp in force. On a running motor it returns once the front cog has applied it.
+'' NO_ERROR from walkRamps(TRUE) is the walk's guarantee, and the only one: an apply that read the flag TRUE has
+'' finished, and every later apply reads it TRUE too until walkRamps(FALSE), so the built-in ramp stays in force
+'' however a setter interleaves. A caller posts no leg without it (checkWiring()); no walk request applies a ramp.
+''
+'' @param bOn - T/F where T means apply the built-in ramp now, F the kept one
+'' @returns eError - NO_ERROR once the front cog has applied it; ERR_NOT_STARTED when no start has applied the settings (only the flag is set: the next start() clears it, init()); ERR_NO_RESPONSE when the front cog did not apply it within REQ_ACK_TIMEOUT_MS (it stays asked for). Recorded nowhere
+
+    bWalkRamps := bOn                                                           ' first: the front cog's apply reads it
+    eError := ERR_NOT_STARTED
+    if bSettingsLive == TRUE
+        eError := requestRamps()
 
 PUB bJudgeWalk(nFwdTicks, nRevTicks, bLegsOk, bHallsClean) : bPassed
 '' INTERNAL USE: judge a wiring walk and record it as HLT_WIRING (checkWiring(), and isp_steering_2wheel's per wheel)
@@ -1559,8 +1596,9 @@ PUB bJudgeWalk(nFwdTicks, nRevTicks, bLegsOk, bHallsClean) : bPassed
 
     walkFwdTicks := nFwdTicks
     walkRevTicks := nRevTicks
-    bPassed := bLegsOk and bHallsClean and (abs(nFwdTicks) >= WALK_TICKS) and (abs(nFwdTicks) <= WALK_TICKS + WALK_OVERSHOOT_TICKS)
-    bPassed &= (abs(nRevTicks) >= WALK_TICKS) and (abs(nRevTicks) <= WALK_TICKS + WALK_OVERSHOOT_TICKS) and ((nFwdTicks > 0) <> (nRevTicks > 0))
+    ' DRIVER_REV 40: each leg's band is derived at WALK_SHORT_TICKS (the lag the rotor may take on after the limit fires)
+    bPassed := bLegsOk and bHallsClean and (abs(nFwdTicks) >= WALK_TICKS - WALK_SHORT_TICKS) and (abs(nFwdTicks) <= WALK_TICKS + WALK_OVERSHOOT_TICKS)
+    bPassed &= (abs(nRevTicks) >= WALK_TICKS - WALK_SHORT_TICKS) and (abs(nRevTicks) <= WALK_TICKS + WALK_OVERSHOOT_TICKS) and ((nFwdTicks > 0) <> (nRevTicks > 0))
     healthChecked |= HLT_WIRING
     if bPassed == TRUE
         healthFailed &= !HLT_WIRING
@@ -2876,23 +2914,25 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos
 '' @returns bBlocked - T/F where T means this motor has been blocked for BLOCKED_PASSES
 
 ' Local Variables:
-' @local dutyEff - the driver's duty, floored at duty_floor
-' @local dcMa - the DC-link current net of the rest zero, mA, never negative
+' @local dutyEff - the driver's duty, floored at the estimate's m = 0.1 (dutyFloorEst; the fold's own floor may be higher, PL-163)
+' @local dcMa - the DC-link current net of the rest zero, mA, never negative (the reading's floor made good: + 0.5 mV)
 ' @local phaseMa - this pass's phase-current lower bound, mA
 ' @local nowPos - the driver's hall position this pass
 
     if rSenseForBoard <> VALUE_NOT_SET
-        dutyEff := duty #> duty_floor
-        dcMa := muldiv64(sense_i_mV - restZeroSenseMv, 1_000, rSenseForBoard) #> 0
+        dutyEff := duty #> dutyFloorEst
+        ' DRIVER_REV 40: the reading is floored, so it averages half a count low; half a count is added back (x 2 + 1,
+        '  over 2) now the rest zero is the true offset (restZeroFinish()), so the ~1 s average centres on the current
+        dcMa := muldiv64(((((sense_i_mV - restZeroSenseMv) << 1) + 1) #> 0), 500, rSenseForBoard)
         phaseMa := muldiv64(dcMa, 16 * frame_cnt, 3 * dutyEff) <# PHASE_MA_MAX
         phaseAvgMa += ((phaseMa << CURRENT_AVG_SHIFT) - phaseAvgMa) SAR CURRENT_AVG_SHIFT
         if (bDerated == FALSE) and (phaseAvgMa >= (limitContA * 1_000) << CURRENT_AVG_SHIFT)
             bDerated := TRUE
-            i_limit_k := currentLimitK(limitContA)
+            setFoldLimit(limitContA)
             frontQueueEvent(EV_CURRENT_LIMIT, limitContA)                       ' R20.1: the limit now in force, after it is written
         elseif (bDerated == TRUE) and (phaseAvgMa < (limitContA * 10 * I_RESTORE_PCT) << CURRENT_AVG_SHIFT)
             bDerated := FALSE
-            i_limit_k := currentLimitK(limitPeakA)
+            setFoldLimit(limitPeakA)
             frontQueueEvent(EV_CURRENT_LIMIT, limitPeakA)
 
     nowPos := pos
@@ -2935,7 +2975,7 @@ PUB frontSetCurrentLimits(peakAmps, contAmps)
     limitContA := contAmps
     phaseAvgMa := 0
     bDerated := FALSE
-    i_limit_k := currentLimitK(limitPeakA)
+    setFoldLimit(limitPeakA)                                                    ' PL-163: with the fold's duty floor
 
 PUB frontSetHoldLimits(ceilingPct, riseMs, limitMs)
 '' FRONT COG ONLY (or init(), before the front cog starts): replace the hold's limits (R19.1)
@@ -3161,7 +3201,7 @@ PUB frontWalkNoteLimit()
             wlLimMs[walkWatchLeg] := getms() - wlPostMs[walkWatchLeg]         ' LAST: marks the limit noted
 
 PUB frontWalkGuard() | nNetMv
-'' FRONT COG ONLY: once per pass -- end an armed walk leg whose current reaches WALK_I_LIMIT_MV (PL-122), and follow a
+'' FRONT COG ONLY: once per pass -- end an armed walk leg whose current reaches WALK_I_LIMIT_MA (PL-122), and follow a
 '' watched walk leg's position (PL-137, frontWalkWatch())
 ''
 '' A wiring check must not stress what it checks. A zero command would ramp the field down for a few hundred ms more of
@@ -3169,13 +3209,16 @@ PUB frontWalkGuard() | nNetMv
 '' the phases on its next pass, and the rotor, barely turning, generates almost no current into the short. The walk
 '' releases that e-stop once the leg is over (bWalkLeg(), and isp_steering_2wheel's walkLeg()); a user's e-stop taken
 '' in the meantime is theirs, and is left alone (frontEStop()).
+'' DRIVER_REV 40: the compare needs no half-count correction. The reading r floors the net y it read, and r + 1/2 >= G
+'' is r >= G for a whole-mV guard G, which is exactly y >= G. EV_WALK_GUARD carries r as read, so its value is always
+'' at least walkGuardMv (testGetWalkGuardMv()).
 
 ' Local Variables:
 ' @local nNetMv - this pass's DC-link sense, net of the rest zero, mV
 
     if bWalkGuardArmed == TRUE
         nNetMv := sense_i_mV - restZeroSenseMv
-        if nNetMv >= WALK_I_LIMIT_MV
+        if nNetMv >= walkGuardMv                                                ' DRIVER_REV 40: WALK_I_LIMIT_MA on this board's scale
             frontEStop(TRUE)                                                    ' disarms the guard (frontCommand())
             bWalkTripped := TRUE                                                '  after the e-stop, which would clear it
             frontQueueEvent(EV_WALK_GUARD, nNetMv)                              ' R20.1: after the short is written
@@ -3189,6 +3232,18 @@ PUB isWalkGuardTripped() : bTripped
 '' @returns bTripped - T/F where T means the guard shorted the leg with this motor's e-stop, which is still the guard's
 
     bTripped := bWalkTripped
+
+PUB testGetWalkGuardMv() : nGuardMv
+'' TESTING USE: the wiring walk's current guard in force, on this board's sense scale (DRIVER_REV 40)
+''
+'' WALK_I_LIMIT_MA converted by the detected board's rSense at start (init()): 150 mV on Rev B, 5 mV on Rev A, never
+'' under FOLD_MIN_MV + 1. frontWalkGuard() ends a leg on a net reading at or above it, and EV_WALK_GUARD carries that
+'' reading, so a guard event's value is always at least this. A bench criterion judges against this, not against
+'' WALK_I_LIMIT_MV, which is Rev B's value only.
+''
+'' @returns nGuardMv - the guard, mV net of the rest zero; as set by the last start (init())
+
+    nGuardMv := walkGuardMv
 
 PUB isWalkWatched() : bWatched
 '' INTERNAL USE: whether a wiring walk leg's position is being watched -- from its post until the next drive command (PL-137)
@@ -3481,9 +3536,36 @@ PUB applyStartSettings()
 
     bSettingsLive := TRUE                                                       ' first: a setter racing this writes the working copy too
     applyUserSettings()
+    bRampsStale := TRUE                                                         ' DRIVER_REV 40: the ramp, by the front cog (frontApplyRamps())
     stop_mode := usrStopMode                                                    ' the stop mode last: the checks are over
     if stop_mode <> SM_BRAKE
         stop_mode := SM_FLOAT                                                   ' never set: coast, the default
+
+PUB frontApplyRamps()
+'' FRONT COG ONLY: apply this motor's ramp when a setter, the wiring walk or a start has asked (DRIVER_REV 40)
+''
+'' The one writer of the four working ramp longs once the driver runs. Setters, walkRamps() and applyStartSettings()
+'' only write their inputs and then raise bRampsStale (requestRamps()). The flag is lowered BEFORE the inputs are read,
+'' so an input written after it is lowered raises it again and the next call applies it: whatever the interleaving,
+'' the last apply reads the last inputs. bRampsBusy spans the apply, so a waiting caller can tell that the apply that
+'' read its inputs has finished.
+''
+'' PL-161 budget (DRIVER_REV 40), BY CONSTRUCTION: the owner's loop is its ONLY caller -- no request applies a ramp
+'' (a walk leg is posted only after walkRamps(TRUE) has seen its apply) -- and calls it only on an odd phase, which no
+'' slot job uses (RAMP_PHASE_BIT), for ONE motor a pass: this object's frontLoop() every odd phase,
+'' isp_steering_2wheel's the left wheel on 1 and 5 and the right on 3 and 7 (RAMP_WHEEL_BIT). Its cost: one compare
+'' while nothing is asked; else three flag writes and applyRamps() -- at most five calls (applyRamps(), keptRamps() or
+'' none, rampsFor(), jerkForAccel() twice), two MULDIV64, about twelve compares and clamps, four hub writes, and NO
+'' float: the built-in steps are init()'s (rampBuiltinUp, rampBuiltinDn), no longer converted from mm/s^2 here (that
+'' was two builtinStep() chains a wheel, each six calls and 13 float operations, 26 in all). The wait it answers is
+'' bounded: a raised flag is applied within 2 passes (this object) or 4 (a steering wheel), about 4 ms at worst,
+'' inside REQ_ACK_TIMEOUT_MS.
+
+    if bRampsStale <> FALSE
+        bRampsBusy := TRUE                                                      ' first: a caller that sees the flag down waits on this
+        bRampsStale := FALSE                                                    ' before the read: a later request is not lost
+        applyRamps()
+        bRampsBusy := FALSE
 
 PUB ticksForRotation(nRotationCount, eRotationUnits) : eError, nStopTicks | degreesPerTic, ticsPerRotation
 '' INTERNAL USE: validate a rotation and convert it to hall ticks, with no side effects and nothing recorded (for isp_steering_2wheel)
@@ -3650,6 +3732,27 @@ PRI bHallCodeLegal() : bLegal
 
     bLegal := ((hall & %111) <> %000) and ((hall & %111) <> %111)
 
+PRI unbiasedMeanMv(nSum, nCount) : nMv | nFloorMean
+' DRIVER_REV 40: return the mean of {nCount} FLOORED whole-mV sense readings, made unbiased: round(mean + 0.5).
+'
+' Each reading is the driver's sar #11 of a finer count, so it lies 0 .. 1 mV under what it read; with the +-3 mV
+' noise spreading the true value over several counts that error averages 0.5 mV, and the mean + 0.5 is unbiased. It
+' is rounded to a whole mV, round(mean + 0.5) = floor(mean) + 1, with the mean FLOORED, never truncated toward 0 (a
+' sum may be negative). restZeroFinish() (the rest zero) and measureWindings() (a winding's net mean) share it, so
+' both are the same estimate of the same kind of reading.
+'
+' @param nSum - the readings' sum, mV
+' @param nCount - how many readings, at least 1
+' @returns nMv - floor(nSum / nCount) + 1, mV
+
+' Local Variables:
+' @local nFloorMean - the readings' mean, floored
+
+    nFloorMean := nSum / nCount                                                 ' truncated toward 0 ...
+    if nFloorMean * nCount > nSum
+        nFloorMean--                                                            ' ... so floored below 0
+    nMv := nFloorMean + 1
+
 PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTaken, nStill, nPos, bTripped, nVoltMv, nLimitMv, nMinMv
 ' TEST USE (R19.4 1e, task 3610): drive each winding pair at WIND_DUTY_PCT and record its resistance (testGetWinding())
 '
@@ -3659,6 +3762,10 @@ PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTake
 ' current; a hall change discards them and starts again. The pair ends at once if the net DC-link reading passes
 ' WIND_I_LIMIT_MA. R = d^2 x V / I_dc = (nLevel / F)^2 x V x rSense / net. V is windVoltage()'s, read before the first
 ' pair and kept for testGetWindingVoltage() (R20.4): the measured pack when the sensor reads one, else the nominal.
+' DRIVER_REV 40: the net mean is unbiasedMeanMv()'s, as the rest zero is (it was the truncated mean, 0.5 .. 1.5 mV low).
+' The trip compare takes the same half count: a reading r floors the net y it read, so it passes the whole-mV bound n
+' when r + 1/2 > n, i.e. r >= n, which is exactly y >= n. Until then it was r > n, i.e. y >= n + 1: one count late
+' (6.7 mA on Rev B, the only board that drives a pair). The tripping reading is kept as read (WND_TRIPPED's value).
 '
 ' @local ePair - 0..2: U->V, V->W, W->U
 ' @local eFrom - the driven phase, PRB_*
@@ -3703,7 +3810,7 @@ PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTake
             repeat nElapsed from 1 to WIND_SETTLE_MAX_MS
                 waitms(1)
                 nNet := sense_i_mV - restZeroSenseMv
-                if nNet > nLimitMv
+                if nNet >= nLimitMv                                             ' DRIVER_REV 40: r + 1/2 > n (was r > n, a count late)
                     bTripped := TRUE
                     quit
                 if pos <> nPos                                                  ' the rotor turned: its back-EMF biased what was taken
@@ -3722,9 +3829,9 @@ PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTake
             probe_sink := PRB_NONE
             probe_y := 0
             if nTaken > 0
-                windNetMv[ePair] := nSum / nTaken
+                windNetMv[ePair] := unbiasedMeanMv(nSum, nTaken)                ' DRIVER_REV 40: restZeroFinish()'s mean (was the truncated one)
             if bTripped
-                windNetMv[ePair] := nNet                                        ' the reading that tripped it
+                windNetMv[ePair] := nNet                                        ' the reading that tripped it, as its compare read it
                 windState[ePair] := WND_TRIPPED
             elseif nTaken < WIND_SAMPLES
                 windState[ePair] := WND_UNSETTLED
@@ -4299,11 +4406,19 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' PL-155: floated for the rest zero and the start checks, WHATEVER holdAtStop() chose; the program's own stop mode
     '  is applied by applyStartSettings() once the checks pass (usrStopMode is kept, never reset here)
     bSettingsLive := FALSE
+    bWalkRamps  := FALSE                                ' DRIVER_REV 40: no walk runs across a start (walkRamps())
+    bRampsStale := FALSE                                ' DRIVER_REV 40: applied just below, by this cog: no front cog serves
+    bRampsBusy  := FALSE                                '  this motor yet, and a front cog stopped mid-apply left no wait behind
     stop_mode   := SM_FLOAT                             ' enum: [SM_FLOAT, SM_BRAKE]
     e_stop      := ES_OFF
     ' PL-155 / PL-160: the program's kept settings (max speeds, reversal, the ramp) are applied, never reset; init() once
     '  reset them here. The ramp is the built-in one (ACCEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2) until a ramp setter is called.
     applyUserSettings()
+    ' DRIVER_REV 40 (PL-161): the built-in rates' steps, converted once here (compile-time configuration, so the same
+    '  every start), so no front cog's apply converts mm/s^2 (rampsFor()); a step is at least 1, so never 0 once set
+    rampBuiltinUp := builtinStep(ACCEL_BUILTIN_MM_S2, RAMP_ACCEL_BUILTIN_STEP)
+    rampBuiltinDn := builtinStep(DECEL_BUILTIN_MM_S2, RAMP_DECEL_BUILTIN_STEP)
+    applyRamps()                                        ' the ramp's one write outside the front cog, before the driver runs
     fault := FALSE
     hall_missed := 0            ' hub copies of the driver's integrity counts: no stale values across stop()/start()
     hall_illegal := 0
@@ -4349,12 +4464,18 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
         rSenseForBoard := F_REV_A_RSENSE
     elseif eDetectedBoard == REV_B
         rSenseForBoard := F_REV_B_RSENSE
+    ' DRIVER_REV 40: the walk's current guard, WALK_I_LIMIT_MA on this board's sense scale (Rev B 150 mV, Rev A 5 mV), never
+    '  under FOLD_MIN_MV + 1, the least reading that is a measurement. No board, no scale: that least reading (no driver
+    '  starts on an undetected board, so no walk runs on it)
+    walkGuardMv := FOLD_MIN_MV + 1
+    if rSenseForBoard <> VALUE_NOT_SET
+        walkGuardMv #>= muldiv64(WALK_I_LIMIT_MA, rSenseForBoard, 1_000)
 
     ' S-2: the current limits start at the MOSFET values; nothing is latched or derated at start
     limitPeakA := I_PEAK_A
     limitContA := I_CONT_A
-    duty_floor := muldiv64(frame_cnt, 4 * DUTY_FLOOR_PCT, 100)              ' m = duty / (4 * frame_cnt)
-    i_limit_k := currentLimitK(limitPeakA)
+    dutyFloorEst := muldiv64(frame_cnt, 4 * DUTY_FLOOR_PCT, 100)            ' m = duty / (4 * frame_cnt)
+    setFoldLimit(limitPeakA)                                                ' i_limit_k, and duty_floor from it (PL-163)
     protectiveCode := NO_ERROR
     faultCause := FC_NONE                                                   ' S-7: no fault since this start
     bWasFaulted := FALSE
@@ -4421,7 +4542,8 @@ PRI applyUserSettings()
 ' PL-155: copy the program's kept settings into the working values the front cog reads: init() (before the driver
 ' runs) and applyStartSettings() (as a start ends). Each kept value is 0 until set -- a VAR is 0 at load -- and 0 reads
 ' as its default, so nothing needs a first-time initialisation. A setting added to the kept set adds its copy here,
-' and its setter the usr* store beside its working write. PL-160: the ramp is copied by applyRamps().
+' and its setter the usr* store beside its working write. PL-160: the ramp is copied by applyRamps(); DRIVER_REV 40:
+' not from here -- init() calls it itself, and after that only the front cog does (frontApplyRamps()).
 
     maxSpeed := usrMaxSpeed
     if maxSpeed == 0
@@ -4430,7 +4552,6 @@ PRI applyUserSettings()
     if maxSpeed4dist == 0
         maxSpeed4dist := MAX_SPEED_DEFAULT
     motorIsReversed := usrReversed
-    applyRamps()
 
 CON { PL-160: the jerk-limited ramp's internal limits, in the driver's units }
 
@@ -4468,20 +4589,40 @@ PRI keptRamps() : jerkUp, accelUp, jerkDn, accelDn
 ' PL-160: return the ramp the program has kept, as the driver's four parameters: the built-in rate for either part never set.
 '
 ' usrAccelStep is 0 until setAcceleration() or setRampingValues() sets the speed-up limit (a set step is at least 1),
-' and usrDecelStep 0 until setDeceleration() or setRampingValues() sets the slow-down limit. Each limit is capped at
-' ACCEL_STEP_CAP, and its jerk is the limit spread over RAMP_TAU_MS (jerkForAccel()).
+' and usrDecelStep 0 until setDeceleration() or setRampingValues() sets the slow-down limit.
 '
 ' @returns jerkUp - the speed-up jerk
 ' @returns accelUp - the speed-up acceleration limit
 ' @returns jerkDn - the slow-down jerk
 ' @returns accelDn - the slow-down acceleration limit
 
-    accelUp := usrAccelStep
+    jerkUp, accelUp, jerkDn, accelDn := rampsFor(usrAccelStep, usrDecelStep)
+
+PRI rampsFor(nUpStep, nDnStep) : jerkUp, accelUp, jerkDn, accelDn
+' PL-160: return the driver's four ramp parameters for two acceleration limits, 0 for either meaning its built-in rate.
+'
+' Each limit is capped at ACCEL_STEP_CAP, and its jerk is the limit spread over RAMP_TAU_MS (jerkForAccel()).
+' DRIVER_REV 40 (PL-161): a built-in rate's step is init()'s (rampBuiltinUp, rampBuiltinDn), so a front cog's apply
+' does no float. Only a caller before the first start() (getRampingValues()) finds them 0 and converts here; a front
+' cog never can, since none serves this motor before init() has set them.
+'
+' @param nUpStep - the speed-up acceleration limit, driver units; 0: ACCEL_BUILTIN_MM_S2
+' @param nDnStep - the slow-down acceleration limit, driver units; 0: DECEL_BUILTIN_MM_S2
+' @returns jerkUp - the speed-up jerk
+' @returns accelUp - the speed-up acceleration limit
+' @returns jerkDn - the slow-down jerk
+' @returns accelDn - the slow-down acceleration limit
+
+    accelUp := nUpStep
     if accelUp == 0
-        accelUp := builtinStep(ACCEL_BUILTIN_MM_S2, RAMP_ACCEL_BUILTIN_STEP)
-    accelDn := usrDecelStep
+        accelUp := rampBuiltinUp
+        if accelUp == 0
+            accelUp := builtinStep(ACCEL_BUILTIN_MM_S2, RAMP_ACCEL_BUILTIN_STEP)
+    accelDn := nDnStep
     if accelDn == 0
-        accelDn := builtinStep(DECEL_BUILTIN_MM_S2, RAMP_DECEL_BUILTIN_STEP)
+        accelDn := rampBuiltinDn
+        if accelDn == 0
+            accelDn := builtinStep(DECEL_BUILTIN_MM_S2, RAMP_DECEL_BUILTIN_STEP)
     accelUp := 1 #> accelUp <# ACCEL_STEP_CAP
     accelDn := 1 #> accelDn <# ACCEL_STEP_CAP
     jerkUp := jerkForAccel(accelUp)
@@ -4513,11 +4654,48 @@ PRI jerkForAccel(nAccel) : nJerk
 
 PRI applyRamps()
 ' PL-160: copy the kept ramp into the four working longs the driver block-copies every cycle (the params run), which
-' the driver's own stop plan also reads (PL-161, DRIVER_REV 39). Called by applyUserSettings()
-' and, on a running motor, by each ramp setter after its kept store. A running driver takes a new limit smoothly: an
+' the driver's own stop plan also reads (PL-161, DRIVER_REV 39). A running driver takes a new limit smoothly: an
 ' acceleration left above a lowered limit unwinds to it at the larger jerk (jerkStep).
+' DRIVER_REV 40: while a wiring walk runs (bWalkRamps, walkRamps()) it copies the BUILT-IN ramp instead, so a setter
+' called meanwhile keeps its value for the walk's end, which copies the kept ramp back.
+' DRIVER_REV 40: ONE WRITER. Called by init() before the driver runs, and after that only by frontApplyRamps() on the
+' front cog that serves this motor. Until DRIVER_REV 40 each setter and walkRamps() called it on its own cog, so a
+' setter on another cog could read bWalkRamps TRUE, lose the race to the walk's restore and write the built-in ramp
+' last, leaving it in force until the next setter or start().
 
-    jerk_up, accel_up, jerk_dn, accel_dn := keptRamps()
+    if bWalkRamps == TRUE
+        jerk_up, accel_up, jerk_dn, accel_dn := rampsFor(0, 0)
+    else
+        jerk_up, accel_up, jerk_dn, accel_dn := keptRamps()
+
+PRI requestRamps() : eError | startMs
+' DRIVER_REV 40, any cog but the front cog: ask the front cog that serves this motor to apply the ramp, and wait,
+' bounded, until an apply that read this cog's inputs has finished.
+'
+' Call it after the inputs are written (usrAccelStep, usrDecelStep, bWalkRamps). Raising bRampsStale after them is what
+' makes the front cog's next apply read them (frontApplyRamps()). The flag seen down proves a front apply lowered it
+' after it was raised here, and that apply reads the inputs afterwards; bRampsBusy, read after the flag, is up until
+' that apply ends. So the wait ends only once the ramp is in force, and a setter's read-back (getRampingValues())
+' sees it. The front cog applies a raised flag within 2 passes (4 for a steering wheel: RAMP_PHASE_BIT,
+' RAMP_WHEEL_BIT), about 4 ms at worst, so REQ_ACK_TIMEOUT_MS holds with room. A front cog that does not serve it
+' in that bound (stopping, or not started) ends the wait with ERR_NO_RESPONSE, which the setters do not report: the
+' flag stays up, so the front cog applies it on a later pass, and a start applies it.
+'
+' @returns eError - NO_ERROR once the apply has finished, or ERR_NO_RESPONSE when REQ_ACK_TIMEOUT_MS ran out first
+
+' Local Variables:
+' @local startMs - getms() when the wait began
+
+    eError := ERR_NO_RESPONSE
+    bRampsStale := TRUE
+    startMs := getms()
+    repeat
+        if bRampsStale == FALSE
+            if bRampsBusy == FALSE                                              ' read second: the apply that lowered the flag is over
+                eError := NO_ERROR
+                quit
+        if getms() - startMs > REQ_ACK_TIMEOUT_MS
+            quit
 
 PRI msForPasses(nPasses) : nMs
 ' Return the milliseconds {nPasses} drive passes take, rounded up; 0 for none (frontStopMs()).
@@ -4574,11 +4752,16 @@ PRI scaledCurrent() : fAmps, fWatts
     ' the driver's sense_i_mV is true millivolts (numerator 3300 << 11, restored by sar #11 in the
     '  control loop), and rSenseForBoard is millivolts per amp, so scale up before dividing -- a plain
     '  sense_i_mV / rSenseForBoard would truncate to whole amps
+    ' DRIVER_REV 40: the reading is FLOORED (sar #11), so it averages half a count under what it read; half a count is
+    '  added back ((net x 2 + 1) x units / 2), as bFrontProtect()'s dcMa does, now the rest zero is the offset itself
+    '  (restZeroFinish()). At rest the reading then averages 0 within the zero's rounding, +/-0.5 mV (it read 0 .. +1 mV
+    '  for a zero at or above 0, when the zero was the truncated mean and no half count was added).
+    '  Signed, never clamped: a clamp at 0 would bias the rest reading up again.
     if rSenseForBoard == VALUE_NOT_SET
         fAmps := 0
         fWatts := 0
     else
-        fAmps := (sense_i_mV - restZeroSenseMv) * CURRENT_UNITS_PER_AMP / rSenseForBoard  ' in multiples of 0.1mA
+        fAmps := (((sense_i_mV - restZeroSenseMv) << 1) + 1) * (CURRENT_UNITS_PER_AMP / 2) / rSenseForBoard  ' in multiples of 0.1mA
         fWatts := round((float(fAmps) *. fMotorVolts)/. F_SCALE_WATTS)              ' in mW
 
 CON { board detection and pin-group geometry }
@@ -5284,7 +5467,15 @@ CON ' -- TASK: the front cog --
     '  an owner's path limiter), WINDOW_PASSES / 2 the event checks, PACK_PHASE the pack's fold. An owner may use the
     '  rest (isp_steering_2wheel's state report is on 3 / 4 of the way round).
     PACK_PHASE             = WINDOW_PASSES / 4                  ' 2: the pack samples' fold into the average (frontSamplePack())
-    DRIVE_PASS_US          = 523        ' one PASM drive pass, 522.7 us rounded up (PL-50)
+    ' DRIVER_REV 40 (PL-161): the ramp's apply (frontApplyRamps()) runs only on a pass whose phase has this bit set, an
+    '  ODD phase. Every slot job's phase is even -- 0, PACK_PHASE (2), WINDOW_PASSES / 2 (4) and isp_steering_2wheel's
+    '  STATE_PHASE (6) -- for WINDOW_PASSES (8) is a multiple of 8, so no apply shares a pass with slot work. Changing
+    '  WINDOW_PASSES to other than a multiple of 8 breaks this: re-derive it then.
+    RAMP_PHASE_BIT         = 1
+    ' ...and a front cog serving two motors applies one a pass: the left on the odd phases with this bit clear (1, 5),
+    '  the right on those with it set (3, 7), so each wheel's apply comes round every 4 passes (isp_steering_2wheel)
+    RAMP_WHEEL_BIT         = 2
+    DRIVE_PASS_US          = 523       ' one PASM drive pass, 522.7 us rounded up (PL-50)
     FRONT_SYNC_WAIT_PASSES = 4          ' bound on an in-flight request's wait for its driver (fault left, sync taken, e-stop
                                         '  left), in drive passes; polled once a front pass, never waited in one (PL-161)
     REQ_ACK_TIMEOUT_MS     = 20         ' bound on a posted request's answer; the front cog's worst case is 19 ms (the
@@ -5396,6 +5587,8 @@ VAR { * sense buffer and stack arrays * }
     LONG    bFollowValid        ' T/F where T means the window is full and a non-zero rate was commanded
 
     LONG    rSenseForBoard
+    LONG    dutyFloorEst        ' PL-163: the phase estimate's duty floor, m = 0.1 (init()); the fold's own, duty_floor, may be raised
+    LONG    walkGuardMv         ' DRIVER_REV 40: the walk's current guard on this board's sense scale, mV (WALK_I_LIMIT_MA; init())
     LONG    restZeroSenseMv     ' PL-45: sense_i_mV's rest offset, taken floated at start; subtracted by getCurrent()
     LONG    restZeroSampleSum   ' S3: rest-zero accumulator, between restZeroBegin() and restZeroFinish()
     LONG    restZeroSampleCount ' S3: samples restZeroAddSample() has added since restZeroBegin()
@@ -5547,6 +5740,8 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
 
         ' 0. a stop written in an earlier pass is confirmed, or written again
         frontConfirmStop()
+        if ((passCount +// WINDOW_PASSES) & RAMP_PHASE_BIT) <> 0                ' DRIVER_REV 40: the ramp's one writer, before any
+            frontApplyRamps()                                                   '  request, on an odd phase: never a slot job's pass
 
         ' 1. requests: the one in flight polled first (PL-161: never waited on), then securing, the rest in slot
         '  order, then EXIT
@@ -5803,7 +5998,8 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus
                 frontDriveTail(eCmd, nArg1, nArg2, eStatus)
         REQ_WALK:
             ' PL-122: a checkWiring() leg: as REQ_DRIVE_DISTANCE, then under the current guard;
-            '  PL-137: arg1 names the leg, whose record opens once it is driven
+            '  PL-137: arg1 names the leg, whose record opens once it is driven. DRIVER_REV 40: no ramp is applied
+            '  here -- checkWiring() posts a leg only once walkRamps(TRUE) has seen the built-in ramp in force
             bCmdWatched := FALSE
             eStatus := frontRefusal()
             if eStatus == NO_ERROR
@@ -6079,6 +6275,7 @@ PRI currentLimitK(amps) : nK
 ' Return the driver's fold-back factor for a phase-current limit: threshold mV = duty x nK >> 16.
 '
 ' The driver folds on a whole-mV reading ABOVE that floored threshold (DRIVER_REV 38), i.e. at or above its ceiling.
+' The threshold's duty floor comes with it from setFoldLimit(), which keeps it at or above FOLD_MIN_MV (PL-163).
 '
 ' The driver compares the DC-link reading against 0.75 x m x amps x rSense, m = duty / (4 x frame_cnt),
 ' so nK = 3 x amps x rSense x 65536 / (16 x frame_cnt). With no board detected there is no scale, and
@@ -6092,6 +6289,29 @@ PRI currentLimitK(amps) : nK
         nK := $FFFF
     else
         nK := 1 #> muldiv64(3 * amps * rSenseForBoard, $1_0000, 16 * frame_cnt) <# $FFFF
+
+PRI setFoldLimit(amps) | nK, nFloor
+' Set the driver's fold-back to a phase-current limit: i_limit_k, and the fold's duty floor that keeps its threshold at
+' or above FOLD_MIN_MV (PL-163, DRIVER_REV 40). init() before the driver runs, then the front cog only.
+'
+' The floor is max(dutyFloorEst, ceil(FOLD_MIN_MV << 16 / nK)), so floor x nK >> 16 is at least FOLD_MIN_MV (and, nK
+' under $1_0000, exactly it when raised); SCA takes 16 bits, so it is capped at $FFFF. The two longs are written in the
+' order whose one-frame mix is the lower threshold: a lower nK first (its floor then rises), else the floor first.
+'
+' @param amps - the phase-current limit, amps
+
+' Local Variables:
+' @local nK - the limit's fold-back factor (currentLimitK())
+' @local nFloor - the fold's duty floor for it
+
+    nK := currentLimitK(amps)
+    nFloor := dutyFloorEst #> (((FOLD_MIN_MV << 16) + nK - 1) / nK) <# $FFFF
+    if nK < i_limit_k
+        i_limit_k := nK
+        duty_floor := nFloor
+    else
+        duty_floor := nFloor
+        i_limit_k := nK
 
 PRI frontCommand(nIncre, bSync)
 ' FRONT COG: write this motor's driver command, and mark a stop as needing confirmation on the next pass.
@@ -6546,7 +6766,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 39      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 40      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6659,6 +6879,54 @@ CON { driver internal Constants }
                                             '     into xStar, unchanged; the planner's core is a LUT overlay loaded over
                                             '     the spent start sequence (loadOverlay, planCodePtr). PASM (cog + LUT)
                                             '     and ABI change
+                                            ' 40: the wiring walk's pass band re-derived for the jerk-limited ramp and
+                                            '     the driver's stop plan: a leg passes at WALK_TICKS - WALK_SHORT_TICKS (3)
+                                            '     .. WALK_TICKS + WALK_OVERSHOOT_TICKS (5, was 3), i.e. 3 .. 11 ticks (was
+                                            '     6 .. 9). At 11.1 V and up the plan now fires a leg's limit ~196 ms in,
+                                            '     before the rotor's running lag has built, so a correct leg could rest
+                                            '     at 5 and fail HLT_WIRING. Derivation at WALK_SHORT_TICKS. The walk
+                                            '     also runs on the built-in ramp whatever the program set (walkRamps(),
+                                            '     both objects), the kept ramp put back as it ends: at
+                                            '     setAcceleration(1) a leg's limit fired ~8.3 s in, past
+                                            '     WALK_LEG_TIMEOUT_MS, and a correct motor failed HLT_WIRING (since
+                                            '     DRIVER_REV 35). And PL-163's residual: the fold-back's duty floor is
+                                            '     raised (setFoldLimit()) so its threshold is never under FOLD_MIN_MV
+                                            '     (4 mV); a Rev A limit of 1 .. 10 A no longer folds on noise at the
+                                            '     floor, Rev B and the 27 / 40 A limits are unchanged. Then three
+                                            '     fixes by construction. (a) The ramp has ONE WRITER: only the front
+                                            '     cog serving the motor runs applyRamps() once the driver runs
+                                            '     (frontApplyRamps(), on the passes (d) gives it); the setters
+                                            '     and walkRamps() write their inputs, raise bRampsStale and wait,
+                                            '     bounded, for the apply (requestRamps()), a start only raises it
+                                            '     (applyStartSettings()), so a setter on another
+                                            '     cog can no longer interleave with the walk's restore and leave the
+                                            '     built-in ramp in force. (b) The walk's current guard is set in amps,
+                                            '     WALK_I_LIMIT_MA (1 A, PL-122's own derivation), on each board's sense
+                                            '     scale (walkGuardMv): 150 mV on Rev B as before, 5 mV on Rev A, where
+                                            '     150 mV was 30 A and never acted. (c) The rest zero is the offset, not
+                                            '     the truncated mean of floored readings (0.5 .. 1.5 mV low): mean + 0.5,
+                                            '     rounded (restZeroFinish()), and the derate average adds back each
+                                            '     reading's half count. FOLD_MIN_MV re-derived on it: still 4. The
+                                            '     residuals, by construction. (d) PL-161's pass budget: at most ONE
+                                            '     motor's ramp apply a front pass, only on an odd phase, which no slot
+                                            '     job uses (RAMP_PHASE_BIT; the steering cog alternates wheels,
+                                            '     RAMP_WHEEL_BIT), and no request applies one: a walk leg is posted
+                                            '     only once walkRamps(TRUE) has seen the built-in ramp in force
+                                            '     (NO_ERROR, else checkWiring() walks nothing, ERR_NO_RESPONSE). The
+                                            '     apply does no float: the built-in steps are init()'s (rampBuiltinUp,
+                                            '     rampBuiltinDn), so it is at most five calls and two MULDIV64 (was two
+                                            '     builtinStep() chains, 26 float operations). A setter's wait is at
+                                            '     most 4 passes, inside REQ_ACK_TIMEOUT_MS. (e) getCurrent() (and the
+                                            '     HDMI current) adds the reading's half count, as the derate does, so
+                                            '     it reads 0 +/-0.5 mV at rest (was 0 .. +1 mV); the winding check's net
+                                            '     mean is the rest zero's own estimate (unbiasedMeanMv(), was
+                                            '     truncated), and its trip is r >= limit (was r > limit, a count
+                                            '     late); the walk guard's r >= guard was already exact.
+                                            '     testGetWalkGuardMv() for a bench criterion. (f) The rest-zero bands
+                                            '     are derived from the INA180's and the P2 ADC's figures, no longer
+                                            '     fitted or guessed (see REST_ZERO_MIN_MV): Rev B -17 .. 36 mV (was
+                                            '     -20 .. 40), Rev A -17 .. 17 mV (was -100 .. 200). No PASM change; no
+                                            '     ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6691,11 +6959,44 @@ CON { driver internal Constants }
                                             '  a physical margin below the pole slip (the driver's fault test trips near 3)
     HOLD_LIMIT_MS               = 10_000    ' ms at the ceiling before the hold hands off to the phase short
     ' R19.4 (task 3610): the start-time checks (runStartChecks()). PROVISIONAL bands; Visit 10's B-2 and B-3 size them.
-    REST_ZERO_MIN_MV            = -20       ' Rev B: the current sense's rest zero must lie in this band; a dead or railed
-    REST_ZERO_MAX_MV            = 40        '  channel falls outside it. Visit 10 pass 2 MEASURED 40 starts per board: left
-                                            '  6.7-9.0 mV, right -0.3-3.1 mV; about 3x margin on both
-    REST_ZERO_MIN_MV_REVA       = -100      ' Rev A (a different sense resistor): PROVISIONAL, no Rev A rest zero has been
-    REST_ZERO_MAX_MV_REVA       = 200       '  measured, so the band stays wide until one is
+    ' The rest-zero bands (HLT_SENSE_ZERO), DERIVED from component data, never from readings (DRIVER_REV 40). A band is
+    '  the zero-current readings a HEALTHY chain can reach, plus the estimate's own error. restZeroSenseMv is taken with
+    '  the bridge floated, so the shunt carries only MOSFET leakage (uA; 1 mA would be 0.15 mV on Rev B): 0 A.
+    '  Sources: TI INA180 datasheet SBOS741H (Jul 2022, ti.com/lit/ds/symlink/ina180.pdf), 7.5 Electrical
+    '  Characteristics (TA = 25 C, VS = 5 V) and 8.3.4 Rail-to-Rail Output Swing; P2KB P2AN001 (gotchas); vendor
+    '  64010 manuals (BOARD-REVISION-FACTS.md 1.2: Rev A 5 mOhm to the pin, no amplifier; Rev B 3 mOhm x INA180B2,
+    '  gain 50 V/V).
+    '  (1) INA180 at 0 A, low side (VIN+ = 0 V), referred to input: VOS <= 150 uV (VIN+ = 0 V row), drift <= 1 uV/C
+    '      over its -40..125 C span, <= 100 uV from 25 C, PSRR <= 40 uV/V (the board's amp supply is not in the
+    '      vendor text, so the part's whole 2.7..5.5 V range, <= 2.3 V from the 5 V test point, <= 92 uV): <= 342
+    '      uV; x 50 x (1 + 1% gain error) = 17.3 mV at most. 8.3.4: a positive offset sets the output to offset x
+    '      gain, or the swing to GND (VSN, 5 mV max) if larger; a negative one leaves it at that swing, which is at
+    '      or above GND. So a healthy Rev B amp outputs 0 .. 17.3 mV at 0 A. Rev A has no amplifier: 0 mV.
+    '  (2) Scale: the reading is ratiometric, 3300 x (pin - GIO) / (VIO - GIO), so VIO's error scales only the
+    '      pin's own voltage. No VIO tolerance is sourced; 10% is assumed as a conservative bound: <= 1.8 mV on
+    '      17.3 mV, 0 on Rev A's 0 mV.
+    '  (3) P2 ADC offset at the pin: NO SPECIFICATION exists (the P2 datasheet gives none). P2AN001 carries two
+    '      figures, neither a spec: <= 9 mV absolute error, hardware-verified on one pin with the same GIO/VIO
+    '      method, positive at low volts; and a ~15 mV pin-to-pin spread, a designer report not yet reproduced.
+    '      The wider, 15 mV, is taken in BOTH signs, so the band does not rest on the sign of either.
+    '  (4) The estimate: each reading is floored to 1 mV (a count is >= 0.54 mV) and unbiasedMeanMv() returns
+    '      floor(mean) + 1: +-1 mV whether or not the noise dithers the floor. The allowance for the mean of
+    '      REST_ZERO_SAMPLE_COUNT = 200 readings: +-1 mV, over 8 standard errors (sigma <= 1.73 mV for the +-3 mV
+    '      per-frame noise, FOLD_MIN_MV's note; standard error <= 0.12 mV).
+    '  Rev B: low 0 - 15 - 1 - 1 = -17 mV; high 17.3 + 1.8 + 15 + 1 + 1 = 36.1 mV, so 36 (the zero is a whole mV).
+    '  Rev A: +-(15 + 1 + 1) = +-17 mV.
+    '  THE NEGATIVE: what an unhealthy chain reads, all far outside: an open lead to the pin leaves it floating, and
+    '  the ADC reads its floating bias point, ~VIO / 2 = ~1650 mV (P2KB, P_ADC, EF-024); an amp output stuck or
+    '  shorted high, or a rail stuck high, reads at least VS - 30 mV (VSP), 2670 mV at VS = 2.7 V, clamped to the
+    '  3300 mV of VIO above that. NOT excluded, by construction: an amp output shorted to GND, an unpowered amp, or
+    '  a Rev A sense node shorted to GND all read ~0, which IS the healthy zero of a one-direction low-side sense;
+    '  no rest-zero band can tell them apart, only a driven current can.
+    '  CONSISTENCY (not a source): Visit 10's Rev B zeros, left 6.4-9.4 mV, right -0.3-3.1 mV (the manual), read
+    '  at most 1 mV higher as DRIVER_REV 40's zero (<= 10.4 mV); all inside -17 .. 36. No Rev A zero is measured.
+    REST_ZERO_MIN_MV            = -17       ' Rev B (150 mV/A): the rest zero must lie in this band (derived above)
+    REST_ZERO_MAX_MV            = 36        '  (was -20 .. 40, fitted to Visit 10's readings)
+    REST_ZERO_MIN_MV_REVA       = -17       ' Rev A (5 mV/A, no amplifier): the band (derived above)
+    REST_ZERO_MAX_MV_REVA       = 17        '  (was -100 .. 200, a provisional guess)
     PROBE_SETTLE_MS             = 5         ' ms the probe holds a phase before its readings are taken
     PROBE_SAMPLES               = 4         ' readings averaged per probe, 1 ms apart
     ' R20.1 (task 3621): start() re-checks a failed check before it refuses (setStartChecks()). A retry re-runs only the
@@ -6740,13 +7041,45 @@ CON { driver internal Constants }
     CONT_FOLLOW_PCT             = 50        ' an undriven phase follows when it reads at least this % of the driven one
     WALK_TICKS                  = HALL_TICKS_PER_CYCLE  ' checkWiring(): one electrical cycle each way
     WALK_POWER                  = 10        ' PROVISIONAL: the power each leg drives at; Visit 10's B-5 sizes it
-    WALK_OVERSHOOT_TICKS        = 3         ' a leg may coast this far past its limit and still pass
+    ' A leg passes when its rotor rests WALK_TICKS - WALK_SHORT_TICKS .. WALK_TICKS + WALK_OVERSHOOT_TICKS from where it
+    '  started (bJudgeWalk()). DRIVER_REV 40: DERIVED, not fitted. The old band, WALK_TICKS .. +3, assumed the leg's
+    '  limit fires late in the leg, when the rotor already trails the field by its running lag, so the lag it trails
+    '  by at rest is the same. Under DRIVER_REV 38/39 that no longer holds. At 11.1 V and up, the jerk-limited stop
+    '  from the leg's rising ramp is itself ~6 ticks, so the plan fires the limit ~196 ms in, after under one tick
+    '  of field travel, before that lag has built. (Desk simulation of jerkStep and planStage, built-in ramp 71 /
+    '  33_958 / 104 / 49_918, power 10: at 18.5 V the limit fires at trk 0 with the plan 6.00 and the field at rest
+    '  6.82 ticks from the seed, 627 ms after the command. At 6.0 and 7.4 V the leg reaches its speed first and fires
+    '  at trk 5 and 4.) So the lag's change counts. In the driver's own arithmetic (to err's 1/256-cycle unit): the
+    '  field is seeded at err 0 (initAngleFmHall), and each counted tick lowers err by one tick of angle, so count =
+    '  F - err (F the field's travel in ticks; err in ticks = err x 6 / 256). The limit fires at trk_f + floor(P) >=
+    '  WALK_TICKS. Both step by at most one a front pass at walk speed, so the sum is at most WALK_TICKS + 1. The field
+    '  then travels T, in [P - e, P] (e, the plan's over-statement, is at most 0.07 tick at walk speed). So
+    '  the rest count R = trk_f + T + err_f - err_e lies in [WALK_TICKS - e + err_f - err_e,
+    '  WALK_TICKS + 2 + err_f - err_e). The driver bounds err at both ends. The field advances only while err <
+    '  LAG_HOLD, so err <= 100 + one pass's advance (1.3 at 25.9 V) = 2.38 ticks. The premise, not a gate: before and
+    '  after the leg the rotor is never a whole sector (one tick) ahead of the field that pulls it, so err > -1 tick.
+    '  (Up to -1.5, the torque's zero at 90 deg, gives the same integers.) Then R > 6 - 0.07 - 1 - 2.38 = 2.55, so
+    '  R >= 3 (WALK_SHORT_TICKS 3). And R < 6 + 2 + 2.38 + 1 = 11.38, so R <= 11 (WALK_OVERSHOOT_TICKS 5).
+    '  What still fails: the reversed direction (the sign), a rotor that does not follow (0, or +-1 rocking in its
+    '  sector: under 3), a dead or crossed hall (the hall counts), a stall (the current guard or the fault test), and
+    '  a limit that never fires (WALK_LEG_TIMEOUT_MS). The limit's own accuracy is certified elsewhere, not here.
+    WALK_SHORT_TICKS            = 3         ' a leg may rest this far short of its limit and still pass (DRIVER_REV 40)
+    WALK_OVERSHOOT_TICKS        = 5         ' a leg may rest this far past its limit and still pass (was 3; DRIVER_REV 40)
     WALK_START_MS               = 20        ' ms a leg waits before it looks for the stop, so it does not read the rest it left
     WALK_LEG_TIMEOUT_MS         = 2_000     ' a leg that has not stopped by then fails
-    WALK_I_LIMIT_MV             = 150       ' PL-122: a leg whose DC-link sense, net of the rest zero, reaches this is shorted and
-                                            '  fails. Visit 10 pass 2 MEASURED healthy legs at 20-21 mV raw left (rest zero 7-9 mV,
-                                            '  so ~13 mV net) and 12-14 mV right; crossed halls 577, 3_858 and 594 mV. ~10x the
-                                            '  healthy peak, a quarter of the least miswired one (1 A at 150 mV/A)
+    WALK_I_LIMIT_MA             = 1_000     ' PL-122: a leg whose DC-link current, net of the rest zero, reaches this is shorted and
+                                            '  fails. Visit 10 pass 2 MEASURED (Rev B, 150 mV/A) healthy legs at 20-21 mV raw left
+                                            '  (rest zero 7-9 mV, so ~13 mV net, 0.087 A) and 12-14 mV right; crossed halls 577,
+                                            '  3_858 and 594 mV (3.8 A and up, net). ~10x the healthy peak, a quarter of the least
+                                            '  miswired one. DRIVER_REV 40: set in AMPS and converted per detected board
+                                            '  (walkGuardMv, init()), as the winding check's WIND_I_LIMIT_MA is. Until then it was
+                                            '  150 mV on both boards: on Rev A (5 mV/A) that is 30 A, above even the worst crossed
+                                            '  leg (25.7 A), so the guard never acted there. On Rev A 1 A is 5 mV, and the sense
+                                            '  resolves it: a reading with no current is at most FOLD_MIN_MV's zero-current bound, 3,
+                                            '  and a healthy leg's 0.087 A adds 0.43 mV, so a healthy Rev A leg reads at most 4; the
+                                            '  least miswired leg (3.8 A) reads 19 mV. The guard is never set under FOLD_MIN_MV + 1.
+    WALK_I_LIMIT_MV             = WALK_I_LIMIT_MA * F_REV_B_RSENSE / 1_000   ' Rev B's guard, 150 mV, kept for callers that
+                                            '  name it (test_bench_dual's guard cell); the guard in force is walkGuardMv, per board
     ' PL-137 (task 3610), TEST-USE: each wiring-walk leg keeps its own record (testGetWalkLeg()), so a leg that fails
     '  its judgement says how it ended. Which leg (REQ_WALK's arg1):
     '  WLEG_OUT  - the first leg: checkWiring() drives it at +WALK_POWER (isp_steering_2wheel: the left wheel +, the right -)
@@ -6793,6 +7126,31 @@ CON { driver internal Constants }
     CURRENT_AVG_SHIFT           = 10        ' the average's time constant: 2^10 front passes, about 1 s
     PHASE_MA_MAX                = 1_000_000 ' clamp on one pass's phase estimate, so the scaled average cannot overflow
     DUTY_FLOOR_PCT              = 10        ' the phase estimate's modulation floor, m = 0.1
+    ' PL-163 (DRIVER_REV 40): the fold-back decides only on a reading the sense chain can resolve. The driver folds on
+    '  a whole-mV net reading ABOVE floor(t), t = max(duty, duty_floor) x i_limit_k >> 16. What zero current can read,
+    '  net: sense_i_ is one frame's ADC count scaled to mV and FLOORED (sar #11; the count itself is finer, 3300 mV over
+    '  at most frame_cnt counts, >= 0.54 mV). Per-frame noise is +-3 mV (CURRENT-LIMIT-AND-STOP-DESIGN.md 3.4, Rev A;
+    '  Rev B's rest offset ~8 mV reached its 11 mV threshold on noise alone, PL-146). The netted zero, restZeroSenseMv,
+    '  was the TRUNCATED mean of 200 floored readings, 0.5 .. 1.5 mV under the true offset, so at zero current net <
+    '  3 + 1.5 = 4.5 mV. RE-DERIVED when restZeroFinish() made the zero the offset itself (DRIVER_REV 40): it is the
+    '  mean + 0.5, rounded, so it lies within 0.5 + d of the offset, d the 200-sample mean's own error (sigma <= 1.73
+    '  mV for noise spread over +-3 mV, so d's standard error <= 0.12 mV). At zero current a net reading is then at
+    '  most floor(3 + 0.5 + d), 3 for d < 0.5. But the fold acts only on a DRIVEN bridge, which always carries some
+    '  current: a healthy, unloaded low-duty leg drew 0.087 A (Visit 10 pass 2's walk, ~13 mV net at 150 mV/A), 0.43 mV
+    '  on Rev A, so an unloaded driven Rev A wheel reads at most floor(3.93 + d): 3, or 4 once d >= 0.07. So a reading
+    '  of 4 or less is still not a measurement of load, and FOLD_MIN_MV stays 4 (a fold needs 5 mV, 1 A of DC link on
+    '  Rev A), now with a full count of margin for d (it was 0.07 mV under the truncated zero). 3 would fold an unloaded
+    '  wheel on noise, and 5 would give up protection no premise asks for. The derivation's falsifier is T0-27's
+    '  PREMISE_NOISE: an unloaded net reading of FOLD_MIN_MV + 1. The walk's current guard is floored at FOLD_MIN_MV + 1
+    '  too (walkGuardMv). setFoldLimit() raises the fold's duty floor for a limit whose threshold there is under
+    '  it, so t never falls below FOLD_MIN_MV; above that floor t is unchanged. Rev B (150 mV/A: t >= 11 at 1 A) is never
+    '  raised, nor Rev A at 11 A and up, so I_PEAK_A and I_CONT_A are untouched on both boards; only a TEST-USE limit of
+    '  1 .. 10 A on Rev A is. Why not skip the fold at the floor instead: the fold cannot cut duty below duty_min (m
+    '  ~0.065) anyway, but a skipped fold would also ignore a resolvable overload there. What still protects at a raised
+    '  floor: the fold itself on any net reading over 4 mV; duty_min, which bounds a stall to m x V / R; the lag gates
+    '  (LAG_SOFT, LAG_HOLD, the fault test) and the blocked stop (BLOCKED_PASSES); and the 1 s derate average, which
+    '  resolves under 1 mV since it averages.
+    FOLD_MIN_MV                 = 4
     BLOCKED_PASSES              = 1_000     ' ~1 s of front passes held at the lag limit without a hall tick
 
     SYNC_TIMEOUT_MS             = 50        ' SyncStatus() bound: about 100 drive passes, each polling for ATN
@@ -6911,7 +7269,7 @@ VAR  {  Motor Parameters  }
     LONG    jerk_up         ' PL-160: the speed-up jerk, the most that acceleration changes per pass (was ramp_min); applyRamps()
     LONG    jerk_dn         ' PL-160: the slow-down jerk (was ramp_inc); applyRamps() derives both from their limits and RAMP_TAU_MS
     LONG    i_limit_k       ' S-2: current-limit threshold factor (currentLimitK()); init() before start, then the front cog only
-    LONG    duty_floor      ' S-2: duty floor for the phase-current estimate (m = 0.1)
+    LONG    duty_floor      ' S-2: the fold-back's duty floor: m = 0.1, raised so its threshold is never under FOLD_MIN_MV (PL-163, setFoldLimit())
     LONG    hold_duty       ' R19.1: the duty applied at rest (DCS_STOPPED); front-written, duty_min when not holding
     LONG    hold_short      ' R19.1: T/F where T means the hold at rest (SM_BRAKE) has handed off to the phase short
     LONG    fault_mode      ' R19.3: FR_SHIPPED or FR_GRADED, the response to a position fault
@@ -7099,7 +7457,12 @@ VAR { PL-153 / PL-155: the limits' travel, and the program's kept settings -- Sp
     LONG    usrDecelStep                ' PL-160: the slow-down acceleration limit, driver units (setDeceleration(), setRampingValues()); 0: built in
     LONG    usrAccel                    ' PL-160: the rate setAcceleration() was given, mm/s^2; 0: none (built in, or raw)
     LONG    usrDecel                    ' PL-160: the rate setDeceleration() was given, mm/s^2; 0: none (built in, or raw)
-    LONG    bSettingsLive              ' T/F where T means a start has applied the kept settings, so a setter writes the working value too
+    LONG    bWalkRamps                  ' DRIVER_REV 40: T/F where T means a wiring walk runs, so applyRamps() applies the built-in ramp (walkRamps()); init() clears it
+    LONG    bRampsStale                 ' DRIVER_REV 40: T/F where T means the ramp's inputs changed: raised on any cog (requestRamps()), lowered only by the front cog's apply (frontApplyRamps()) and init()
+    LONG    bRampsBusy                  ' DRIVER_REV 40: front-written: T/F where T means frontApplyRamps() is applying; init() clears it
+    LONG    rampBuiltinUp               ' DRIVER_REV 40: ACCEL_BUILTIN_MM_S2 as a driver step, set by init() so no front cog converts it (rampsFor()); 0 before the first start
+    LONG    rampBuiltinDn               ' DRIVER_REV 40: DECEL_BUILTIN_MM_S2 likewise
+    LONG    bSettingsLive             ' T/F where T means a start has applied the kept settings, so a setter writes the working value too
 
 VAR { PL-161: this object's front cog's one in-flight request -- Spin2 only, never addressed by the PASM driver }
     ' Placed after every PASM-addressed run, like the error record; isAbiLayoutValid() checks the block. Front-written
@@ -7503,6 +7866,9 @@ drvMotor                                                ' global (task 3535): en
                                                         '  up to a count early -- and, at t < 1 (Rev A, 5 mV/A: t = 0.375 x amps
                                                         '  at the duty floor, so a limit under ~2.7 A), on every driven frame,
                                                         '  since fold_net is never below 0. Rounding would not mend t < 0.5.
+                                                        '  DRIVER_REV 40 (PL-163): duty_floor_ is raised for such a limit so
+                                                        '  t >= FOLD_MIN_MV (4): a reading of 4 mV or less is inside the
+                                                        '  chain's noise and zero error, so it folds nothing (setFoldLimit())
     if_nc_and_nz mov    tmpY, duty_                     ' YES: fold back ~1.6 % per frame, and skip the servo this frame
     if_nc_and_nz shr    tmpY, #6
     if_nc_and_nz sub    duty_, tmpY
@@ -7863,7 +8229,7 @@ accel_up_   res 1           ' PL-160: the speed-up acceleration limit, A while |
 jerk_up_    res 1           ' PL-160: the speed-up jerk, J while |v| grows (was ramp_min_)
 jerk_dn_    res 1           ' PL-160: the slow-down jerk, J while |v| falls (was ramp_inc_)
 i_limit_k_  res 1           ' S-2: current-limit threshold factor, mV per duty count << 16 (see currentLimitK())
-duty_floor_ res 1           ' S-2: the duty below which the phase-current estimate is floored (m = 0.1)
+duty_floor_ res 1           ' S-2: the duty below which the fold's estimate is floored: m = 0.1, raised by setFoldLimit() (PL-163)
 hold_duty_  res 1           ' R19.1: the duty applied at rest (DCS_STOPPED), front-written
 hold_short_ res 1           ' R19.1: T/F where T means the hold at rest (SM_BRAKE) has handed off to the phase short
 fault_mode_ res 1           ' R19.3: FR_SHIPPED or FR_GRADED

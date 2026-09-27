@@ -435,7 +435,7 @@ class BLDCMotorControl:
         self.sendCommand(commandStr)
 
     # PUB checkWiring()
-    #  MOVES THE ROBOT: turns it a few degrees in place and back (about 0.5 s). The verdict is each wheel's
+    #  MOVES THE ROBOT: turns it a few degrees in place and back (about 1.3 s). The verdict is each wheel's
     #  HLT_WIRING bit (32) in getHealth()
     def checkWiring(self):
         commandStr = 'checkwiring\n'

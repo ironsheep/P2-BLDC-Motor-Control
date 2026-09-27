@@ -52,6 +52,15 @@
 ''               max_mV and watts_mW, which fed nothing. A hold that reached steadiness by TIMEOUT now
 ''               makes its SENSE, RPM and ISCALE instances NOMEAS instead of judging a window that may
 ''               hold the end of the ramp (MEASURED: 0 of 24 motion holds have ever timed out).
+''   Updated.... 27 Sep 2026 -- SRC_REV 13 (DRIVER_REV 40, the unbiased current): R2-CHAR-ISCALE's
+''               derivation took getCurrent() as sense_i_mV x 10_000 / rSense, but it nets the rest zero
+''               (PL-45) and now adds the reading's half count, so raw over getCurrent() was rSense x
+''               raw / net: 165 for an 8 mV zero under an 80 mV net, a correct driver at the band's
+''               edge, where the half count alone moves it a unit. The implied scale is now the hold's
+''               net (raw less its same-lifetime zero) over getCurrent(), NOMEAS under a 20 mV net
+''               (ISCALE_NET_MIN_X10, derived at RSENSE_IMPLIED_LO) or with no zero samples. The band is
+''               unchanged. No record changes shape; FMT stays 8. The other getCurrent() readings here
+''               feed no bound.
 ''
 '' =================================================================================================
 
@@ -152,7 +161,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 12                                       ' hand-bumped whenever this file changes (12: task 3605 -- the library's power map moved, STEER_POWER 13 -> 12)
+    SRC_REV     = 13                                       ' hand-bumped whenever this file changes (13: DRIVER_REV 40 -- R2-CHAR-ISCALE's implied scale is the net sense over getCurrent(), gated at ISCALE_NET_MIN_X10)
     FMT_VERSION = 8                                         ' BC- record-format version (3: phase B adds BC-WDSTART, BC-WATCHDOG, BC-WATCHDOG2, BC-END exit WATCHDOG; 4: phase C adds SIGNOFF-DECL and SIGNOFF sf 1; 5: phase D adds BC-STEER, BC-BRAKE and four sign-off cells; 6: task 3539 -- removed BC-STEER's "aborted" field (replaced by "drive_done") and BC-BRAKE's "abort" field: every trap used to capture a normal return is gone, so there is nothing left to name as aborted; 7: task 3560 -- adds BC-STEERERR and cell R16-CHAR-STEERERR, no existing record changes shape; 8: task 3574 -- BC-SENSE drops min_mV, max_mV and watts_mW)
 
 CON { timing }
@@ -337,15 +346,26 @@ CON ' ---- Sign-off Verdicts ----
     RPM_ROUND_HALF_X10 = RATE_X10_PER_RPM / 2                          ' 7
 
   ' R2-CHAR-ISCALE, crit RSENSE_IMPLIED, units COUNT (mV per amp).
-  ' DERIVED (design sec A.4 row 2): getCurrent() = sense_i_mV x 10_000 / rSenseForBoard
-  ' (isp_bldc_motor.spin2 getCurrent()), rSenseForBoard 150 on Rev B and 5 on Rev A (its comment,
-  ' and init()'s REV_A/REV_B selection); +/-10 % of 150 absorbs per-sample truncation and the
-  ' non-atomic sampling of two window means, and a Rev A misdetect's 5 cannot pass.
+  ' DERIVED (design sec A.4 row 2), its term CORRECTED at SRC_REV 13: getCurrent() is
+  ' (sense_i_mV - restZeroSenseMv + 0.5) x 10_000 / rSenseForBoard (isp_bldc_motor.spin2
+  ' scaledCurrent(), DRIVER_REV 40: the reading's half count added back, the rest zero the offset
+  ' rounded; it has netted the rest zero since PL-45), rSenseForBoard 150 on Rev B and 5 on Rev A.
+  ' The term this derivation once used, sense_i_mV x 10_000 / rSense, left the zero out: raw over
+  ' getCurrent() is rSense x raw / net, 1.10 x 150 = 165 for an 8 mV zero under an 80 mV net. So the
+  ' implied scale is the hold's NET (its raw mean less its same-lifetime zero, both means of the
+  ' same floored readings, so their half counts cancel) over getCurrent(). getCurrent() reads that
+  ' net plus e, the driver's zero's rounding: |e| <= 0.5 mV, + 3 sigma of the driver's and this
+  ' file's 200-reading zeros (0.37 mV each at the library's 1.73 mV a reading), + the two x10
+  ' floors (0.1 each): 1.44 mV. Over ISCALE_NET_MIN_X10 (20 mV) that is 7.8 % at most; the rest of
+  ' +/-10 % absorbs per-sample truncation and the non-atomic sampling of two window means. A hold
+  ' whose net is under it is NOMEAS: the scale is not resolved there. A Rev A misdetect's 5 cannot
+  ' pass (its net, in the Rev B board's mV, is not gated away). The band is Rev B's.
     RSENSE_IMPLIED_LO = 135
     RSENSE_IMPLIED_HI = 165
-  ' raw_mV_x10 x 1000 / amps_x10k = (10 mV)(1000) / (10_000 A) = mV / A
+    ISCALE_NET_MIN_X10 = 200                                ' 20 mV of net sense (0.13 A on Rev B), mV x10
+  ' net_mV_x10 x 1000 / amps_x10k = (10 mV)(1000) / (10_000 A) = mV / A
     ISCALE_RATIO_SCALE = 1000
-  ' |raw_mV_x10| at or under this: x ISCALE_RATIO_SCALE = 2e9 < POSX. The ADC spans 3.3 V (raw
+  ' |net_mV_x10| at or under this: x ISCALE_RATIO_SCALE = 2e9 < POSX. The ADC spans 3.3 V (net
   ' under 33_000); larger is reachable only by a scale regression, handled without overflow.
     ISCALE_DIRECT_RAW_X10_MAX = 2_000_000
     ISCALE_QUOT_MAX           = LIM_BIG / ISCALE_RATIO_SCALE              ' 999_999: x 1000 fits LIM_BIG
@@ -2649,28 +2669,31 @@ PRI rpmSignoffValue(holdIdx) : bMeasured, measuredVal, tickCount | expectedRpm, 
             tickCount := holdTicks[holdIdx]
             bMeasured := TRUE
 
-PRI iscaleSignoffValue(holdIdx) : bMeasured, measuredVal, sampleCount | rawX10, ampsMean, ampsPerThousand, quotVal, bBoardKnown
+PRI iscaleSignoffValue(holdIdx) : bMeasured, measuredVal, sampleCount | netX10, ampsMean, ampsPerThousand, quotVal, bBoardKnown
 ' R2-CHAR-ISCALE for one motion hold: the sense resistance getCurrent() used, recovered from its
-' two window means. Units: holdRawX10 is mV x10 and holdAmpsMean is amps x 10_000, so
-'   measuredVal = holdRawX10 x 1000 / holdAmpsMean = (10 mV)(1000) / (10_000 A) = mV / A
+' window mean and the hold's NET sense (SRC_REV 13: was its raw sense, which carries the rest zero
+' getCurrent() nets out -- the derivation at RSENSE_IMPLIED_LO). Units: holdNetX10 is mV x10 and
+' holdAmpsMean is amps x 10_000, so
+'   measuredVal = holdNetX10 x 1000 / holdAmpsMean = (10 mV)(1000) / (10_000 A) = mV / A
 ' which is rSenseForBoard: 150 on Rev B, 5 on a board detected as Rev A. At the largest plausible
-' raw mean (half speed ~900 mV, holdRawX10 9_000) the product is 9_000_000, far under POSX; the
+' net mean (half speed ~900 mV, holdNetX10 9_000) the product is 9_000_000, far under POSX; the
 ' direct form is used up to ISCALE_DIRECT_RAW_X10_MAX (product 2e9). Beyond it (a scale regression
 ' only) the divide goes first, so nothing overflows: by holdAmpsMean / 1000 when that is at least
 ' 1 (within 0.01 % wherever the ratio is near the band), otherwise the quotient clamped to
 ' ISCALE_QUOT_MAX then x 1000 (there the ratio exceeds 2_000_000, far outside the band). NOMEAS when
-' the window is not trusted (isWindowTrusted()), the window took no samples, the start-time board revision is not REV_A
-' or REV_B (PL-25: getCurrent() divides by -1 then), or holdAmpsMean <= 0.
+' the window is not trusted (isWindowTrusted()), the window or its zero took no samples, the start-time board revision
+' is not REV_A or REV_B (PL-25: getCurrent() divides by -1 then), holdAmpsMean <= 0, or the net is under
+' ISCALE_NET_MIN_X10.
 '
 ' @param holdIdx - HOLD_* motion hold
 ' @returns bMeasured - TRUE when the instance was measured
 ' @returns measuredVal - implied sense resistance in mV per amp, 0 when not measured
 ' @returns sampleCount - window samples behind the means, 0 when not measured
 '
-' @local rawX10 - window raw sense mean, mV x10
+' @local netX10 - window net sense mean (raw less the same-lifetime zero), mV x10
 ' @local ampsMean - window getCurrent() mean, amps x 10_000
 ' @local ampsPerThousand - ampsMean / ISCALE_RATIO_SCALE, for the divide-first form
-' @local quotVal - rawX10 / ampsMean, clamped, for the divide-first form
+' @local quotVal - netX10 / ampsMean, clamped, for the divide-first form
 ' @local bBoardKnown - TRUE when the start-time board revision is REV_A or REV_B
 
     bMeasured := FALSE
@@ -2678,16 +2701,16 @@ PRI iscaleSignoffValue(holdIdx) : bMeasured, measuredVal, sampleCount | rawX10, 
     sampleCount := 0
     bBoardKnown := (holdBoardRev[holdIdx] == wheelL.REV_A) or (holdBoardRev[holdIdx] == wheelL.REV_B)
     ampsMean := holdAmpsMean[holdIdx]
-    if isWindowTrusted(holdIdx) and (holdSamples[holdIdx] > 0) and bBoardKnown and (ampsMean > 0)
-        rawX10 := holdRawX10[holdIdx]
-        if absValue(rawX10) <= ISCALE_DIRECT_RAW_X10_MAX
-            measuredVal := (rawX10 * ISCALE_RATIO_SCALE) / ampsMean
+    netX10 := holdNetX10[holdIdx]
+    if isWindowTrusted(holdIdx) and (holdSamples[holdIdx] > 0) and (holdZeroSamples[holdIdx] > 0) and bBoardKnown and (ampsMean > 0) and (netX10 >= ISCALE_NET_MIN_X10)
+        if absValue(netX10) <= ISCALE_DIRECT_RAW_X10_MAX
+            measuredVal := (netX10 * ISCALE_RATIO_SCALE) / ampsMean
         else
             ampsPerThousand := ampsMean / ISCALE_RATIO_SCALE
             if ampsPerThousand > 0
-                measuredVal := rawX10 / ampsPerThousand
+                measuredVal := netX10 / ampsPerThousand
             else
-                quotVal := ((rawX10 / ampsMean) #> (0 - ISCALE_QUOT_MAX)) <# ISCALE_QUOT_MAX
+                quotVal := ((netX10 / ampsMean) #> (0 - ISCALE_QUOT_MAX)) <# ISCALE_QUOT_MAX
                 measuredVal := quotVal * ISCALE_RATIO_SCALE
         sampleCount := holdSamples[holdIdx]
         bMeasured := TRUE

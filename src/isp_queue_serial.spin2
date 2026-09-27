@@ -42,6 +42,7 @@ CON { driver config values }
 
     MAX_COMMAND_PARTS = 10      ' count, raw string, cmdStr, eCmd, 6 paramValues
 
+    LINE_END = $0A              ' LF: ends every received command line and every reply line sent
     RX_POLL_MS = 100            ' the RX task's receive timeout: how often, with no input, it checks for EXIT
     RX_EXIT_WAIT_MS = 250       ' bound on the RX task's EXIT acknowledgement (RX_POLL_MS plus margin)
 
@@ -299,29 +300,30 @@ PUB hasCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nIdx
                     dumpParsedCommand(@"hvCmd")
 
 PUB sendError(pMsg)
-'' Reply to sender with validation error message
+'' Reply to sender with validation error message: "ERROR {pMsg}", one line ending in one LF
 ''
 '' @param pMsg - pointer to the text to send
 
     serialChan.str(@"ERROR ")
     serialChan.str(pMsg)
-    serialChan.str(@"\n")
+    endReplyLine(pMsg)
     debug(" ERROR: [", zstr_(pMsg), "] raw=[", zstr_(@currSingleLineBffr), "]")
 
 PUB sendOK()
-'' Reply to sender with OK message
+'' Reply to sender with OK message: "OK", one line ending in one LF
 ''
 
-    serialChan.str(@"OK\n")
+    serialChan.str(@"OK")
+    serialChan.tx(LINE_END)
     debug(" OK: raw=[", zstr_(@currSingleLineBffr), "]")
 
 PUB sendResponse(pMsg)
-'' Send requested data back to sender
+'' Send requested data back to sender: {pMsg} as one line ending in one LF (a message that already ends in LF gets no second)
 ''
 '' @param pMsg - pointer to the text to send
 
     serialChan.str(pMsg)
-    serialChan.str(@"\n")
+    endReplyLine(pMsg)
     debug(" response: ", zstr_(pMsg))
 
 PUB getCommandParms() : opStatus, pValues
@@ -478,6 +480,22 @@ PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitVal
 
     'debug("CONV: [", zstr_(pHexStr), "]= ", uhex_long(valueOfHex))
 
+PRI endReplyLine(pMsg) | nLen
+' End a reply line: send one LF unless the text just sent already ended in one, so every reply is exactly one line.
+'
+' Before this, the replies ended with @"\n", which Spin2 stores as the two characters '\' and 'n' (a plain @"..."
+' string processes no escapes), so OK and ERROR replies carried no LF at all and a getter's reply (its format's own LF,
+' from sFormatStr()) was followed by a stray "\n" that began the next reply.
+'
+' @param pMsg - pointer to the text just sent
+
+' Local Variables:
+' @local nLen - the text's length in bytes
+
+    nLen := strsize(pMsg)
+    if (nLen == 0) or (byte[pMsg][nLen - 1] <> LINE_END)
+        serialChan.tx(LINE_END)
+
 PRI sendBadParam()
 ' Reply to sender naming the first parameter that is not a decimal integer: "ERROR Parameter {n} ({text}) is not a decimal integer"
 
@@ -485,7 +503,8 @@ PRI sendBadParam()
     serialChan.dec(nBadParamNbr)
     serialChan.str(@" (")
     serialChan.str(@badValueStr)
-    serialChan.str(@") is not a decimal integer\n")
+    serialChan.str(@") is not a decimal integer")
+    serialChan.tx(LINE_END)                                     ' one real LF (a plain @"\n" is two characters, no LF)
     debug(" ERROR: parameter #", udec_(nBadParamNbr), " [", zstr_(@badValueStr), "] not a number, raw=[", zstr_(@currSingleLineBffr), "]")
 
 PRI decimalForToken(pDecimalStr, nTokenLen) : bIsNumber, decimalValue | nIdx, nDigit, bHaveNeg, nFirstIdx

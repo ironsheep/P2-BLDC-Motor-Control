@@ -1336,18 +1336,22 @@ PUB getFaultCause() : eLeftCause, eRightCause
     eLeftCause := ltWheel.getFaultCause()
     eRightCause := rtWheel.getFaultCause()
 
-PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeftMissed, nLeftIllegal, nRightMissed, nRightIllegal, bLeftOk1, bRightOk1, bLeftOk2, bRightOk2
+PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeftMissed, nLeftIllegal, nRightMissed, nRightIllegal, bLeftOk1, bRightOk1, bLeftOk2, bRightOk2, eRightRamps
 '' Turn the platform a few degrees in place and back -- each wheel one electrical cycle each way -- to prove each wheel's
 '' hall and phase wiring, and record each verdict as that wheel's getHealth() HLT_WIRING
 ''
 '' Opt-in: this moves the robot, so call it only when it may turn a little in place. It catches what start()'s checks,
 '' which move nothing, cannot: a swapped hall pair, swapped phase leads, a dead hall line or a wheel that does not turn.
-'' Blocks about half a second; both wheels end at rest per holdAtStop(). The walk's travel adds to each wheel's odometer,
+'' Blocks about 1.3 s (two legs of about 0.65 s on the built-in ramp), at most twice the motor object's
+'' WALK_LEG_TIMEOUT_MS; both wheels end at rest per holdAtStop(). The walk's travel adds to each wheel's odometer,
 '' which it no longer resets (PL-153); each leg's own distance counts from the leg's start. A wheel whose
 '' leg draws more current than a healthy walk ever does is ended at once by shorting its phases, and fails.
+'' The walk always runs on the built-in ramp (ACCEL_BUILTIN_MM_S2, DECEL_BUILTIN_MM_S2), whatever setAcceleration() or
+'' setDeceleration() chose, and puts the program's own ramp back as it ends (DRIVER_REV 40).
 ''
 '' @returns eError - NO_ERROR once the walk has run, whatever its verdict (getHealth()'s HLT_WIRING says it for each wheel),
-''  or the ERR_* that kept it from running (ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED, ...), also recorded for getError()
+''  or the ERR_* that kept it from running (ERR_NOT_STARTED, ERR_EMERGENCY_STOPPED, ERR_NO_RESPONSE when a wheel's built-in
+''  ramp was not put in force within its bound, ...), also recorded for getError()
 
 ' Local Variables:
 ' @local nLeftStart - the left driver's hall position before the first leg
@@ -1362,14 +1366,26 @@ PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeft
 ' @local bRightOk1 - T/F where T means the right wheel's first leg came to rest without faulting
 ' @local bLeftOk2 - T/F where T means the left wheel's second leg came to rest without faulting
 ' @local bRightOk2 - T/F where T means the right wheel's second leg came to rest without faulting
+' @local eRightRamps - the right wheel's walkRamps(TRUE) status (DRIVER_REV 40)
 
     nLeftMissed, nLeftIllegal := ltWheel.getHallIntegrityCounts()
     nRightMissed, nRightIllegal := rtWheel.getHallIntegrityCounts()
     nLeftStart := ltWheel.getRawHallTicks()
     nRightStart := rtWheel.getRawHallTicks()
+    ' DRIVER_REV 40: both wheels walk on the built-in ramp, whatever setAcceleration() / setDeceleration() chose, and a
+    '  leg is posted only once each wheel's walkRamps(TRUE) has seen it IN FORCE: the walk request applies no ramp
+    '  (the front cog applies one wheel's a pass, on its own phase), so this is the walk's only guarantee of its stimulus
+    eError := ltWheel.walkRamps(TRUE)
+    eRightRamps := rtWheel.walkRamps(TRUE)
+    if eError == NO_ERROR
+        eError := eRightRamps
     ' each wheel is judged on its OWN legs: one wheel's failed leg never fails the other (a fault on one still stops
     '  both, R19.2, so the other's short leg shows in its ticks and nowhere else)
-    eError, bLeftOk1, bRightOk1 := walkLeg(ltWheel.WLEG_OUT, ltWheel.WALK_POWER, -ltWheel.WALK_POWER)     ' opposite powers: the platform turns in place
+    if eError == NO_ERROR
+        eError, bLeftOk1, bRightOk1 := walkLeg(ltWheel.WLEG_OUT, ltWheel.WALK_POWER, -ltWheel.WALK_POWER)     ' opposite powers: the platform turns in place
+    else
+        ltWheel.walkNoteLeg(ltWheel.WLEG_OUT, FALSE)                            ' PL-137: not driven, as a refused post reads
+        rtWheel.walkNoteLeg(ltWheel.WLEG_OUT, FALSE)
     nLeftMid := ltWheel.getRawHallTicks()
     nRightMid := rtWheel.getRawHallTicks()
     if eError == NO_ERROR
@@ -1377,6 +1393,8 @@ PUB checkWiring() : eError | nLeftStart, nRightStart, nLeftMid, nRightMid, nLeft
     else
         ltWheel.walkNoteLeg(ltWheel.WLEG_BACK, FALSE)                           ' PL-137: its record reads not run, never an earlier walk's
         rtWheel.walkNoteLeg(ltWheel.WLEG_BACK, FALSE)
+    ltWheel.walkRamps(FALSE)                                                    ' every leg's ending (rest, fault, guard, timeout, a
+    rtWheel.walkRamps(FALSE)                                                    '  refused post) returns here: the kept ramps back
     if eError == NO_ERROR
         ltWheel.bJudgeWalk(nLeftMid - nLeftStart, ltWheel.getRawHallTicks() - nLeftMid, bLeftOk1 and bLeftOk2, bHallsUnchanged(ltWheel.getHallIntegrityCounts(), nLeftMissed, nLeftIllegal))
         rtWheel.bJudgeWalk(nRightMid - nRightStart, rtWheel.getRawHallTicks() - nRightMid, bRightOk1 and bRightOk2, bHallsUnchanged(rtWheel.getHallIntegrityCounts(), nRightMissed, nRightIllegal))
@@ -1590,6 +1608,15 @@ PUB testGetBoardTypes() : eLeftBoard, eRightBoard
 
     eLeftBoard := ltWheel.getBoardType()
     eRightBoard := rtWheel.getBoardType()
+
+PUB testGetWalkGuardMv() : nLeftGuardMv, nRightGuardMv
+'' TESTING USE: return each wheel's wiring-walk current guard in force, on its own board's sense scale (DRIVER_REV 40)
+''
+'' @returns nLeftGuardMv - the left wheel's guard, mV net of its rest zero (the motor object's testGetWalkGuardMv())
+'' @returns nRightGuardMv - the right wheel's guard, likewise
+
+    nLeftGuardMv := ltWheel.testGetWalkGuardMv()
+    nRightGuardMv := rtWheel.testGetWalkGuardMv()
 
 PUB testGetFaultStatus() : bLtFaulted, bLtSignal, bRtFaulted, bRtSignal
 '' TESTING USE: return fault state and fault signal for each motor, without side effects
@@ -2425,6 +2452,8 @@ CON { -- TASK: the steering front cog -- }
   ' PL-161: the pass phases (passCount +// WINDOW_PASSES) that carry slot work, one job per pass. 0 is both wheels' rpm
   '  window and the path limiter, WINDOW_PASSES / 2 the event and late checks, the motor object's PACK_PHASE the pack
   '  samples' fold, and STATE_PHASE the state report. No pass waits on a driver (DRIVER_REV 37), so none is barred.
+  '  All four are even; the odd phases carry one wheel's ramp apply each (DRIVER_REV 40, the motor object's
+  '  RAMP_PHASE_BIT and RAMP_WHEEL_BIT), so STATE_PHASE must stay even.
   STATE_PHASE      = ltWheel.WINDOW_PASSES * 3 / 4      ' 6: showDriveStatesOnChange()
   STATE_DBG_BITS   = user.STEER_DBG_MASK & (DECOD user.DBGCH_SENSE | DECOD user.DBGCH_FAULT)  ' the state report's debug
                                         '  channels; 0 (the bench's quiet mask) means it prints nothing, so it is not gathered
@@ -2591,6 +2620,14 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         ' 0. a stop written in an earlier pass is confirmed, or written again
         ltWheel.frontConfirmStop()
         rtWheel.frontConfirmStop()
+        ' DRIVER_REV 40: each wheel's ramp has one writer, this cog, before any request (a flag test unless one is asked);
+        '  PL-161, by construction: ONE wheel's apply a pass, and only on an odd phase, which no slot job uses -- the
+        '  left on 1 and 5, the right on 3 and 7 (the motor object's RAMP_PHASE_BIT, RAMP_WHEEL_BIT). No request applies one
+        if (slotPhase & ltWheel.RAMP_PHASE_BIT) <> 0
+            if (slotPhase & ltWheel.RAMP_WHEEL_BIT) == 0
+                ltWheel.frontApplyRamps()
+            else
+                rtWheel.frontApplyRamps()
 
         ' 1. requests: the one in flight polled first (PL-161: never waited on, so no slot phase is barred), then
         '  securing, the rest in slot order, then EXIT
@@ -3073,7 +3110,9 @@ PRI frontApply(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eRi
                 ' PL-143, STEPHEN 2026-09-26 "no carve-outs": the command timeout watches this drive like any other
                 frontWatchCommand(FALSE)                                        ' refused: nothing armed, nothing driven
         ltWheel.REQ_WALK:
-            ' R19.4: as REQ_DRIVE_DISTANCE, with the caller's signed powers and WALK_TICKS for both wheels
+            ' R19.4: as REQ_DRIVE_DISTANCE, with the caller's signed powers and WALK_TICKS for both wheels. DRIVER_REV 40:
+            '  no ramp is applied here (one wheel's a pass, frontLoop()) -- checkWiring() posts a leg only once both
+            '  wheels' walkRamps(TRUE) have seen the built-in ramp in force
             bCmdWatched := FALSE
             eLeftStatus, eRightStatus := frontRefusals(bLeft, bRight)
             if (eLeftStatus == NO_ERROR) and (eRightStatus == NO_ERROR)

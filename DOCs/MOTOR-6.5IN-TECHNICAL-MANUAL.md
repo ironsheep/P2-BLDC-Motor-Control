@@ -674,7 +674,7 @@ retries) when a check fails. Wheels up, both Rev B units:
 
 | Check | Healthy reading | What a failure looked like | Label |
 |---|---|---|---|
-| Current-sense rest zero | LEFT 6.4–9.4 mV, RIGHT −0.3–3.1 mV; the band is −20…+40 mV | — | MEASURED, 60+ starts |
+| Current-sense rest zero | LEFT 6.4–9.4 mV, RIGHT −0.3–3.1 mV (read before DRIVER_REV 40, whose unbiased zero reads up to 1 mV higher); the band is −17…+36 mV, DERIVED from the INA180's and the P2 ADC's figures (the comment at `REST_ZERO_MIN_MV` in `src/isp_bldc_motor.spin2`; was −20…+40, fitted to these readings) | — | readings MEASURED, 60+ starts; band DERIVED |
 | Each lead drives its phase (probe) | driven phase 777–823 mV, undriven phases follow at ≥ 95 % | a withheld lead ≤ 31 mV; a bridge not driving, 11–27 mV on all three | MEASURED |
 | Halls present and legal | legal at every start | connector unplugged: `%111`, caught 10/10 | MEASURED |
 | Winding resistance (opt-in) | §2.4 | the withheld lead's two pairs go dark, 10/10 | MEASURED |
@@ -918,8 +918,11 @@ a Rev A phase reading, or the first Rev A leg is measuring the board.
 **Winding resistance will not come from the driver on Rev A.** At 5 mV/A a 0.1 A probe current is half
 a millivolt, so the winding check deliberately drives nothing on a Rev A board. A meter across each lead
 pair of the unpowered motor is the route there. It would also be the first check of §2.4's Rev B figure
-by an instrument that is not the driver. The start check's current rest-zero band is likewise sized
-only for Rev B (−20…+40 mV); Rev A keeps the wide provisional −100…+200 mV until one is measured.
+by an instrument that is not the driver. The start check's current rest-zero bands
+are DERIVED from component data, not fitted (the comment at `REST_ZERO_MIN_MV` in
+`src/isp_bldc_motor.spin2`, DRIVER_REV 40): Rev B −17…+36 mV (was −20…+40, fitted to Visit 10's
+readings), Rev A −17…+17 mV (was a provisional −100…+200). The Rev A band is DERIVED only: no Rev A
+rest zero has been measured, so its first start on the bench is the first check of it.
 
 **L — the lead — needs the motor driven, and that is the part that costs more.** Two reasons,
 both real:

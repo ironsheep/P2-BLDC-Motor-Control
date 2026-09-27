@@ -483,6 +483,40 @@
 ''               fault, to keep each record under 280 bytes; each run's names come from a table of its own, so a run that
 ''               grows prints "?" for its new longs instead of shifting every later name. Record shapes change, so FMT
 ''               goes to 38
+''               27 Sep 2026 -- SRC_REV=60, FMT 38: the floor run (part SPIN, tier dual-spin) re-checked against DRIVER_REV
+''               38's jerk-limited ramp and 39's stop plan (PL-160, PL-161), each bound re-derived from the S-curve's own
+''               passes and travel at the built-in rates. MOVED: the quarter's (BRISK) steady window, 500 -> 300 ms
+''               (spinWinMs): its spin-up now runs 40.1 ticks and its stop 31.2 (were 31 and 19), so the limit fires at
+''               ~178.8 of 211 and a 500 ms window would end ~90 ms after it, reading A-8, the path scale and the pair on
+''               the ramp-down; 300 ms ends ~11 ticks before it. RE-DERIVED AND KEPT (the derivation is at each constant):
+''               RD_MIN_TICKS (~38 needed at SLOW), BLK_WAIT_MS and BLK_LATCH_MIN_MS (latch ~1.3 s after the command).
+''               RE-CUT BY CONSTRUCTION, A-1 and A-2 (R19-DUAL-SPINSTRT-P, -SPINPEAK-P; spStartStats(), the SPIN CON
+''               states each term): the jerk-limited ramp-out broke both instruments. A-2's reference was the 60 ms
+''               before the first AT_SPEED, the ramp-out, still accelerating; it is now 60 ms of steady running,
+''               A2_REF_DELAY_MS (420) after the first AT_SPEED -- where the servo model that set 1.8 took its own --
+''               counted only when every sample to its end reads AT_SPEED, the driver's report that its acceleration is
+''               0. A-1's window ends A1_RAMPOUT_SAMPLES (RAMP_TAU_MS + one sample) before the first AT_SPEED, so it
+''               judges the rise, where the acceleration never falls, as the model's did. Both bounds (0.10, 1.8) are
+''               kept: their derivations hold against these windows. Their criterion tokens change with their meaning
+''               (RISE_DUTY_DROP_PM, was START_DUTY_DROP_PM; START_I_OVER_STEADY_X100, was START_I_RATIO_X100); the cell
+''               ids stay. No record changes shape, so FMT stays 38; BM-SPINLEG's win_ms reads 300 for the quarter's
+''               legs, and BM-SPINSTART's tail_x10 / tail_n are the steady reference's. And (DRIVER_REV 40) the START
+''               part's SKNEG_SWAP guard cell (SKR_GRD) judges each EV_WALK_GUARD value against the left wheel's guard
+''               IN FORCE, steering.testGetWalkGuardMv() -- WALK_I_LIMIT_MA on that wheel's own board, 150 mV on Rev B
+''               as before, 5 mV on Rev A -- not the constant WALK_I_LIMIT_MV, which is Rev B's value and failed a
+''               Rev A guard that did trip. The library's guard fires on a net reading at or above that value and logs
+''               that reading, so the bound is the guard's own. No record changes shape; FMT stays 38. And DRIVER_REV
+''               40's unbiased current (getCurrent() adds the reading's half count, the rest zero is the offset
+''               rounded, the winding net mean floor + 1 and its trip r >= limit): every bound on getCurrent(),
+''               the rest zero or the winding re-checked, none moved. The shift is at most 0.5 mV of sense, 3.3 mA
+''               on Rev B: the ratio cells (SPINSYM, SPINCTL, SPINLEAD, POSTFLT) take it in both terms, so a
+''               ratio R moves by at most |R - 1| x 3.3 mA / its smaller current: under one X100 unit at a bound
+''               for any current of 0.1 A or more (POSTFLT's own floor, RD_PRE_MIN, is 0.05 A: 0.035 at 1.5). Two
+''               lifetimes' readings now differ by at most 1 mV for the zero's rounding (up to 2 before). WINDR /
+''               WINDSPR move by at most 1 mV of a 12-23 mV net (300-600 mohm at 18.5 V), the same 1 mV in all
+''               three pairs of a lifetime, which only draws them together. The walk guard compares the driver's
+''               own reading. RZSPREAD judges the harness's own zero (raw means) against the driver's re-derived
+''               band: its terms are at the START part's CON. No record or cell changes
 ''
 '' =================================================================================================
 
@@ -552,7 +586,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 59                                 ' hand-bumped whenever this file changes
+    SRC_REV     = 60                                 ' hand-bumped whenever this file changes
     FMT_VERSION = 38                                     ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -2834,8 +2868,8 @@ sSfCritSpOff    BYTE    "PAIR_NOT_APPLIED", 0
 sSfCritSpDir    BYTE    "WHEEL_WRONG_WAY", 0
 sSfCritSpHunt   BYTE    "HUNTS_LOADED", 0
 sSfCritSpErr    BYTE    "ERR_OFF_POINT", 0
-sSfCritSpStrt   BYTE    "START_DUTY_DROP_PM", 0
-sSfCritSpPeak   BYTE    "START_I_RATIO_X100", 0
+sSfCritSpStrt   BYTE    "RISE_DUTY_DROP_PM", 0                 ' SRC_REV 60: was START_DUTY_DROP_PM (the window ends at the ramp-out)
+sSfCritSpPeak   BYTE    "START_I_OVER_STEADY_X100", 0          ' SRC_REV 60: was START_I_RATIO_X100 (a steady reference)
 sSfCritSpSym    BYTE    "DIR_RATIO_X100", 0
 sSfCritSpCtl    BYTE    "CONTROL_I_X100", 0
 sSfCritSpLead   BYTE    "SCHED_OVER_FIXED", 0
@@ -12825,6 +12859,12 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
   '  (holdAtStop(FALSE), nothing commanded), a ZERO_WINDOW_MS window through the instrument gives two things:
   '   - the REST ZERO, as lifetimeZero() takes every wheel lifetime's: the mean sense_i over the window. The driver's
   '     own restZeroSenseMv has no getter, and this part adds none; the driver's own verdict on it is HLT_SENSE_ZERO.
+  '     RZSPREAD judges THIS estimate against the driver's band, REST_ZERO_MIN_MV .. REST_ZERO_MAX_MV (-17 .. 36 mV,
+  '     DERIVED at DRIVER_REV 40 for the driver's own estimate, the offset rounded, with 2 mV allowed for it). This
+  '     one is the plain mean of floored readings (x10, truncated), so it reads the offset less 0.5 mV, less up to
+  '     0.1 for the x10 truncate, +/- 0.23 (3 sigma of ~500 samples at the library's 1.73 mV a reading): offset
+  '     -0.83 .. -0.27 mV. Inside the band's 2 mV either way: a healthy Rev B offset (-15 .. 34.1 mV by the
+  '     band's own terms) reads -15.83 .. 33.83. Not a reading the driver changed at DRIVER_REV 40 (raw sense_i).
   '   - the COAST FLOOR, each phase's largest |reading| over the window: THE PROBE'S ABLE-TO-REPORT CONTROL. An open
   '     lead reads this floor while its phase is probed, so the follower test can tell an open lead from a connected
   '     one only when the floor sits under the least a follower may read and pass (SK_FLOOR_HI_MV).
@@ -12897,7 +12937,7 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
     SK_FLOOR_LO_MV        = 0
     SK_FLOOR_HI_MV        = ((wheelL.CONT_MIN_DRIVEN_MV * wheelL.CONT_FOLLOW_PCT) / SK_PCT_SCALE) - 1
     ' B-5's pre-registered legs: one electrical cycle, plus the coast checkWiring() allows -- 6 .. 9 ticks each way
-    SK_LEG_LO_TICKS       = wheelL.WALK_TICKS
+    SK_LEG_LO_TICKS       = wheelL.WALK_TICKS - wheelL.WALK_SHORT_TICKS   ' the driver's own band (DRIVER_REV 40)
     SK_LEG_HI_TICKS       = wheelL.WALK_TICKS + wheelL.WALK_OVERSHOOT_TICKS
     SK_WALK_PRE_MS        = 20                              ' samples stored before the walk's mark
     SK_WALK_REST_MS       = 1_000                           ' bound on the rest confirm after checkWiring() returns
@@ -13755,7 +13795,7 @@ PRI skFoldModes() | wantMask, bTaken
         elseif BUILD_START_POS
             skrNote(SKR_NOREF, bTaken)
 
-PRI skEvents(bWalk) | bClean, missedL, illegalL, missedR, illegalR, wantMask, slotIdx, nGuard, seqIdx, bOk
+PRI skEvents(bWalk) | bClean, missedL, illegalL, missedR, illegalR, wantMask, slotIdx, nGuard, seqIdx, bOk, nGuardMv
 ' Task 3621: the lifetime's event log, drained EV_SETTLE_MS after its last act (so a rate-limited hall count is in it),
 ' with the hall counts read beside it, then folded into the START reporting cells this build judges (this part's CON,
 ' SKR_*). Called only for a started object, before its stop.
@@ -13772,6 +13812,7 @@ PRI skEvents(bWalk) | bClean, missedL, illegalL, missedR, illegalR, wantMask, sl
 ' @local nGuard - the left wheel's EV_WALK_GUARD events
 ' @local seqIdx - 0..nGuard-1
 ' @local bOk - one instance's reading held
+' @local nGuardMv - the left wheel's walk guard in force, mV on its board's scale (SRC_REV 60, DRIVER_REV 40)
 
     waitBeat(EV_SETTLE_MS, CP_LOOP_REST)
     evDrain(EVSRC_STEER, EVST_SKCHECK)
@@ -13800,9 +13841,12 @@ PRI skEvents(bWalk) | bClean, missedL, illegalL, missedR, illegalR, wantMask, sl
         if bWalk and bSkWalkRan
             nGuard := evCount(SLOT_LEFT, wheelL.EV_WALK_GUARD)
             bOk := bClean and (nGuard >= 1) and (nGuard <= EV_SEQ_MAX)
+            beat(CP_LIB_STEER_QUERY)                        ' SRC_REV 60 (DRIVER_REV 40): the guard in force on the left
+            nGuardMv, _ := steering.testGetWalkGuardMv()    '  wheel's own board, never Rev B's WALK_I_LIMIT_MV (5 mV on Rev A)
+            beat(CP_LIB_STEER_QUERY)
             if bOk                                          ' a Spin2 repeat from a higher bound counts down
                 repeat seqIdx from 0 to nGuard - 1
-                    bOk &= (evSeqAt(SLOT_LEFT, EVQ_GUARD, seqIdx) >= wheelL.WALK_I_LIMIT_MV)
+                    bOk &= (evSeqAt(SLOT_LEFT, EVQ_GUARD, seqIdx) >= nGuardMv)
             skrNote(SKR_GRD, bOk)
             skrNote(SKR_NOGRD, bClean and (evCount(SLOT_RIGHT, wheelL.EV_WALK_GUARD) == 0))
             if missedL > 0
@@ -15099,9 +15143,39 @@ CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task
 
   ' The pre-registered bands (BM-SPINPRE prints every one before anything moves). R18.3's are DRIVE-INTEGRATION-DESIGN.md
   '  5.5's loaded expectations, each "same" as unloaded unless stated; the offsets' are this tier's own.
+  ' SRC_REV 60 (DRIVER_REV 38, PL-160): A-1 AND A-2 RE-CUT BY CONSTRUCTION FOR THE JERK-LIMITED RAMP. Their bounds come
+  '  from DOCs/plans/servo-model (DRIVE-INTEGRATION-DESIGN.md 5.5), whose model ramp is the stepped one: ramp_min 1_500,
+  '  growing by ramp_inc 22 every pass (sim_servo.py), so its acceleration RISES until arrival -- 1_761 passes (920 ms)
+  '  and 40_220 a pass at 36.75 x 10^6 -- and start_metrics.py judges a 1.4 s trace: A-1 over the rise, A-2 against
+  '  "the trace's last 60 ms", which lie 418-478 ms after the model's arrival, at constant speed. So:
+  '  A-2's REFERENCE IS STEADY RUNNING, never the ramp. Until SRC_REV 60 this harness took the 60 ms just BEFORE the
+  '   first AT_SPEED sample, which under DRIVER_REV 38's S-curve is the ramp-out, still carrying up to 24 % of the
+  '   speed-up acceleration (115 passes x jerk 71 of 33_958), so a correct start with no spike could fail it. The
+  '   reference is now A2_TAIL_SAMPLES starting A2_REF_DELAY_MS after the first AT_SPEED sample: the model's own
+  '   placement (418 ms after its arrival, to the 2 ms sample), and past the ramp by more than RAMP_TAU_MS. It counts only
+  '   when every sample from the first AT_SPEED to the reference's end reads DCS_AT_SPEED: that is the driver's own report
+  '   that its acceleration is 0 -- jerkStep writes AT_SPEED only on the arrival pass (a <= one jerk step) and on every
+  '   later pass at the target, where it zeroes drv_accel_now in the same step (.steady), while a held pass turns it to
+  '   SPIN_UP (holdDecay) and a stop to SPIN_DN; every sample after the first is at least one 2 ms instrument period,
+  '   four drive passes, past the arrival, so it reads a = 0. The window lies inside SPIN_SETTLE_MS (420 + 60 < 1_000).
+  '   THE BOUND STAYS 1.8: its derivation (the model's 1.13-1.80 for the new servo, loaded "<= 1.8") WAS against steady
+  '   running, and the S-curve only lowers the peak's acceleration term -- its limit, 33_958 a pass, is under the model's
+  '   40_220 at arrival, and it eases in from 0 instead of starting at 1_500. NEGATIVE: the shipped servo's start spike,
+  '   1.94-3.04 (design 5.5, MEASURED; 2.57 at the model's delta bracket edge).
+  '  A-1's WINDOW ENDS WHERE THE RAMP-OUT BEGINS. The model's acceleration rose to arrival, so "a duty that climbs with
+  '   the ramp keeps the drop near 0" (start_metrics.py). The S-curve, for a target above accel_up^2 / jerk_up (16.2 x
+  '   10^6; the quarter is 36.7), holds accel_up and then removes it over accel_up / jerk_up passes, RAMP_TAU_MS exactly
+  '   (the library sets each jerk to its limit over RAMP_TAU_MS), so the torque it asks for falls by design in the last
+  '   RAMP_TAU_MS before arrival: duty may fall there with nothing hunting. The window now ends A1_RAMPOUT_SAMPLES before
+  '   the first AT_SPEED sample (RAMP_TAU_MS at 2 ms, and one sample for that first AT_SPEED reading up to 2 ms after the
+  '   arrival): the rise and the plateau, where the acceleration never falls, as the model's did. THE BOUND STAYS 0.10
+  '   (model 0.01-0.04 over a rise). NEGATIVE: the shipped servo's hunting during the rise, 0.34-0.53 (design 5.5).
     A1_DROP_PM_HI         = 100                             ' A-1: duty's largest fall from its running maximum, <= 0.10
-    A2_RATIO_X100_HI      = 180                             ' A-2: the START's current peak over its last 60 ms mean, <= 1.8
-    A2_TAIL_SAMPLES       = 31                              ' start_metrics.py's tail, t >= t_last - 60 ms at 2 ms: 31 samples
+    A1_RAMPOUT_SAMPLES    = (wheelL.RAMP_TAU_MS * INST_RATE_HZ) / MS_PER_SEC + 1                ' 126: RAMP_TAU_MS + one sample
+    A2_RATIO_X100_HI      = 180                             ' A-2: the START's current peak over the steady reference's mean, <= 1.8
+    A2_TAIL_SAMPLES       = 31                              ' start_metrics.py's tail, 60 ms at 2 ms: 31 samples
+    A2_REF_DELAY_MS       = 420                             ' the model's tail, 418 ms after its arrival, to the 2 ms sample
+    A2_REF_DELAY_SAMPLES  = (A2_REF_DELAY_MS * INST_RATE_HZ) / MS_PER_SEC                       ' 210
     SPIN_DUTY_FLOOR       = 1_600                           ' where duty "leaves its floor" (start_metrics.py floor = duty_min)
     A3_SWING_HI           = 400                             ' A-3: duty_pk - duty over a steady window, rungs 1 and 2
     A3_ERR_PK_HI          = 76                              ' A-3: err_pk there
@@ -15186,7 +15260,10 @@ CON { --- the floor run's load cells (SRC_REV 58): the re-drive after a fault le
     RD_RATIO_X100_HI      = 150                             ' 1.5x: loose against measurement noise, far under the defect's 3.8x
     RD_ABORT_X100         = 9_999                           ' an abort's score: over any band
     RD_PRE_MIN            = 500                             ' getCurrent() units, A x 10_000: 0.05 A, a divisor that is signal
-    RD_MIN_TICKS          = 80                              ' the re-drive needs ~15 ticks of spin-up, ~27 of window and ~10 of stop
+    RD_MIN_TICKS          = 80                              ' the re-drive needs ~15 ticks of spin-up, ~27 of window and ~10 of stop;
+                                                            '  SRC_REV 60, RE-DERIVED for DRIVER_REV 38's S-curve at SLOW: 5.3 up,
+                                                            '  27.0 of window, 4.4 of stop and the plan's early tick, ~38 -- 80
+                                                            '  still covers it twice over, unchanged
     RD_WIN_MIN_MS         = SPIN_FAULT_SETTLE_MS / 2        ' a window its limit cut shorter than this measures nothing
     RD_PCT_SCALE          = 100
 
@@ -15223,7 +15300,12 @@ CON { --- the floor run's load cells (SRC_REV 58): the re-drive after a fault le
   '   COAST trial read the short's 11-25 mV.
     BLK_POWER             = 13                              ' the command; a stall does not depend on it
     BLK_LIMIT_A           = 2                               ' peak and continuous: gentle on the chock, far under the abort
-    BLK_WAIT_MS           = 4_000                           ' the held field's ~1 s count starts ~1-2 s after the command
+    BLK_WAIT_MS           = 4_000                           ' the held field's ~1 s count starts ~1-2 s after the command;
+                                                            '  SRC_REV 60, RE-DERIVED for DRIVER_REV 38's S-curve: the chocked
+                                                            '  rotor stands, so |err| grows by the field's own travel and reaches
+                                                            '  LAG_SOFT (80 of 256 a cycle, +/- half a hall sector) after 437-524
+                                                            '  passes of the ramp to BLK_POWER (J n^3 / 6), 0.23-0.27 s; the
+                                                            '  latch is BLOCKED_PASSES later, ~1.3 s. Inside 1 .. 4 s, unchanged
     BLK_LATCH_MIN_MS      = (wheelL.BLOCKED_PASSES * MS_PER_SEC) / wheelL.FRONT_LOOP_HZ     ' 1_000
     BLK_MOVE_TICKS        = 3                               ' 17 mm at the tyre: the chock did not hold
     BLK_POLL_MS           = 50
@@ -15338,13 +15420,22 @@ CON { --- the floor run's load cells (SRC_REV 58): the re-drive after a fault le
 #ifdef DBP_SPIN
 DAT ' ---- SPIN tables ----
 
-' per SPIN_SPEED_*: the power driveAtPower() is given; the steady window's length (the quarter's leaves its limit about
-'  14 ticks: a 31-tick spin-up, 98 ticks of settle, 49 of window and a 19-tick stop inside 211); and the lead the
-'  schedule gives at the commanded increment, in tenths -- MIRRORED ON PURPOSE from isp_bldc_motor.spin2's leadTenthsTbl
-'  (205 up to the eighth, 50 at the quarter, the step between truncated by leadTenthsForIncrement()) as SPINOFF's
-'  independent expectation: reading it back from the driver would judge the driver against itself
+' per SPIN_SPEED_*: the power driveAtPower() is given; the steady window's length; and the lead the schedule gives at the
+'  commanded increment, in tenths -- MIRRORED ON PURPOSE from isp_bldc_motor.spin2's leadTenthsTbl (205 up to the
+'  eighth, 50 at the quarter, the step between truncated by leadTenthsForIncrement()) as SPINOFF's independent
+'  expectation: reading it back from the driver would judge the driver against itself.
+' THE WINDOWS MUST END BEFORE THE LEG'S LIMIT FIRES: the limit fires where the travel plus the stop's own plan reaches
+'  SPIN_LEG_TICKS, and a window cut by it reads its end values (spinReads(): A-8, the path scale, the pair) on the
+'  ramp-down. SRC_REV 60 (DRIVER_REV 38 / 39, PL-160 / PL-161), RE-DERIVED for the jerk-limited ramp, field ticks at the
+'  built-in rates (the S-curve, v / A + A / J passes at an average of v / 2 -- or 2 sqrt(v / J) below A^2 / J -- a
+'  pass-by-pass model of jerkStep): the QUARTER spins up in 1_561 passes, 40.1 ticks (the stepped ramp's was 31), holds
+'  98.2 ticks a second, and stops in 1_216 passes, 31.2 ticks (was 19), so its limit fires at 211 - 31.2 - the plan's
+'  early tick (STOP_PLAN_EARLY_TICKS), about 178.8. Spin-up, SPIN_SETTLE_MS and a 500 ms window reach 187.4 -- the old
+'  window would now be cut about 90 ms short by every quarter leg. 300 ms reaches 167.8: 11 ticks (about 110 ms) spare,
+'  the old design's 14 ticks (143 ms) of margin nearly kept, and still over SPIN_WIN_MIN_MS. SLOW (5.3 + 27.0 + 54.0 +
+'  4.4 ticks) and MEDIUM (15.0 + 53.7 + 53.7 + 12.3) fit far inside 211 and are unchanged.
 spinPower       LONG    7, 13, 23                           ' 10_093_936 / 20_087_872 / 36_744_432
-spinWinMs       LONG    2_000, 1_000, 500
+spinWinMs       LONG    2_000, 1_000, 300                   ' SRC_REV 60: the quarter's was 500 (above)
 spinSchedLead   LONG    205, 191, 51
 ' per pair (SPIN_PAIR_*): its commutation pair, speed and kind; each pair's two legs run RIGHT, then LEFT
 spinPairOffs    LONG    SPOFF_SCHED, SPOFF_SCHED, SPOFF_LEGACY, SPOFF_SCHED, SPOFF_FIXED, SPOFF_SCHED
@@ -16272,13 +16363,16 @@ PRI spinRecords(tid, legIdx, pairIdx, dirIdx, speedIdx, legKind) | slotIdx, othe
             spinFoldWheel(legIdx, pairIdx, speedIdx, slotIdx)
         spinFoldLeg(pairIdx, dirIdx, speedIdx)
 
-PRI spStartStats(slotIdx) | sampleIdx, atJ, leaveJ, dutyNow, tailJ, tailSum
-' One wheel's START from the drained capture (bTraceDrain() located the mark and the trace's first sample), exactly as
-' DOCs/plans/servo-model/start_metrics.py defines A-1 and A-2 on a trace that ends at AT_SPEED: the trace runs from its
-' first sample to this wheel's first AT_SPEED sample. A-1: from where duty last sat at or under SPIN_DUTY_FLOOR ("left
-' its floor for good") up to AT_SPEED, the largest fall of duty from its running maximum, per mille of that maximum.
-' A-2: the trace's current peak over the mean of its last A2_TAIL_SAMPLES (60 ms at 2 ms). Every stored sample counts,
-' where start_metrics.py sees only the emitted lines. Only samples with the driver up count (I3). Legal while FROZEN.
+PRI spStartStats(slotIdx) | sampleIdx, atJ, leaveJ, dutyNow, riseEndJ, tailJ, tailEndJ, tailSum, bSteady
+' One wheel's START from the drained capture (bTraceDrain() located the mark and the trace's first sample), as
+' DOCs/plans/servo-model/start_metrics.py defines A-1 and A-2, re-cut at SRC_REV 60 for DRIVER_REV 38's jerk-limited
+' ramp (the section's CON, A1_/A2_ constants, says why): the START runs from the trace's first sample to this wheel's
+' first AT_SPEED sample (atJ). A-1: from where duty last sat at or under SPIN_DUTY_FLOOR ("left its floor for good")
+' up to the ramp-out, A1_RAMPOUT_SAMPLES before atJ, the largest fall of duty from its running maximum, per mille of
+' that maximum. A-2: the START's current peak over the mean current of the STEADY REFERENCE -- A2_TAIL_SAMPLES (60 ms)
+' starting A2_REF_DELAY_SAMPLES after atJ -- measured only when every sample from atJ to the reference's end reads
+' DCS_AT_SPEED, the driver's own report that its acceleration is 0 (the CON). Every stored sample counts, where
+' start_metrics.py sees only the emitted lines. Only samples with the driver up count (I3). Legal while FROZEN.
 '
 ' @param slotIdx - motor slot
 '
@@ -16286,8 +16380,11 @@ PRI spStartStats(slotIdx) | sampleIdx, atJ, leaveJ, dutyNow, tailJ, tailSum
 ' @local atJ - the first AT_SPEED sample, -1 when none
 ' @local leaveJ - the first sample after duty's last visit to its floor
 ' @local dutyNow - this sample's duty
-' @local tailJ - the tail's first sample
-' @local tailSum - the tail's summed current, mV
+' @local riseEndJ - A-1's window ends before this sample: the ramp-out's first
+' @local tailJ - the steady reference's first sample
+' @local tailEndJ - its last
+' @local tailSum - the reference's summed current, mV
+' @local bSteady - T/F where T means the reference lies in the capture and every sample from atJ to its end read AT_SPEED
 
     atJ := -1
     if bDrMarkFound
@@ -16302,10 +16399,11 @@ PRI spStartStats(slotIdx) | sampleIdx, atJ, leaveJ, dutyNow, tailJ, tailSum
             beat(CP_LOOP_DRAIN)
             if bSmpUp(sampleIdx, slotIdx) and (smpDuty(sampleIdx, slotIdx) <= SPIN_DUTY_FLOOR)
                 leaveJ := sampleIdx + 1
+        riseEndJ := atJ - A1_RAMPOUT_SAMPLES
         spRunMax[slotIdx] := 0
         spDropPm[slotIdx] := 0
-        if leaveJ < atJ
-            repeat sampleIdx from leaveJ to atJ - 1
+        if leaveJ < riseEndJ
+            repeat sampleIdx from leaveJ to riseEndJ - 1
                 beat(CP_LOOP_DRAIN)
                 if bSmpUp(sampleIdx, slotIdx)
                     dutyNow := smpDuty(sampleIdx, slotIdx)
@@ -16317,17 +16415,24 @@ PRI spStartStats(slotIdx) | sampleIdx, atJ, leaveJ, dutyNow, tailJ, tailSum
             beat(CP_LOOP_DRAIN)
             if bSmpUp(sampleIdx, slotIdx)
                 spPeakI[slotIdx] #>= smpI(sampleIdx, slotIdx)
-        tailJ := (atJ - A2_TAIL_SAMPLES + 1) #> drStartJ
+        tailJ := atJ + A2_REF_DELAY_SAMPLES
+        tailEndJ := tailJ + A2_TAIL_SAMPLES - 1
+        bSteady := (tailEndJ <= drEndJ)
+        if bSteady
+            repeat sampleIdx from atJ to tailEndJ
+                beat(CP_LOOP_DRAIN)
+                if (bSmpUp(sampleIdx, slotIdx) == FALSE) or (smpState(sampleIdx, slotIdx) <> DCS_AT_SPEED)
+                    bSteady := FALSE
         tailSum := 0
         spTailN[slotIdx] := 0
-        repeat sampleIdx from tailJ to atJ
-            beat(CP_LOOP_DRAIN)
-            if bSmpUp(sampleIdx, slotIdx)
+        if bSteady
+            repeat sampleIdx from tailJ to tailEndJ
+                beat(CP_LOOP_DRAIN)
                 tailSum += smpI(sampleIdx, slotIdx)
                 spTailN[slotIdx] += 1
         spAtK[slotIdx] := atJ - drStartJ
         spLeaveK[slotIdx] := leaveJ - drStartJ
-        if (spTailN[slotIdx] > 0) and (tailSum > 0) and (spPeakI[slotIdx] <> NEGX)
+        if bSteady and (leaveJ < riseEndJ) and (spTailN[slotIdx] > 0) and (tailSum > 0) and (spPeakI[slotIdx] <> NEGX)
             spTailX10[slotIdx] := (tailSum * X10) / spTailN[slotIdx]
             spRatioX100[slotIdx] := (spPeakI[slotIdx] * SPIN_X100 * spTailN[slotIdx]) / tailSum
             bSpStartOk[slotIdx] := TRUE
@@ -17245,6 +17350,9 @@ PRI emitSpinStart(legIdx, slotIdx) | whyCode
 ' BM-SPINSTART: one wheel's START on a quarter-speed confirmed-pair leg (spStartStats()) -- trace k of its first
 ' AT_SPEED sample and of duty leaving its floor for good, duty's running maximum and largest fall from it (A-1, per
 ' mille), the current peak, the tail's mean (mV x10) and samples, and their ratio (A-2, x100). Worst case 199 bytes.
+' SRC_REV 60: A-1's fall is over the rise only (to the ramp-out), and tail_x10 / tail_n are the STEADY REFERENCE's,
+' A2_REF_DELAY_MS after the first AT_SPEED sample, every sample reading AT_SPEED (spStartStats()); why NOT_REACHED also
+' when that reference did not lie in the capture or was not all AT_SPEED. The record's shape is unchanged.
 '
 ' @param legIdx - 0..SPIN_LEGS-1
 ' @param slotIdx - motor slot

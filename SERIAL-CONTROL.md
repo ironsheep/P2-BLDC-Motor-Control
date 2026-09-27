@@ -190,9 +190,11 @@ Every form of `ERROR` reply is listed in [Commands and replies](DRIVE-OBJECTS-SE
 
 Send every value as a decimal integer, and send true and false as `-1` and `0`. The demo's wrappers do this for you.
 
+Every reply is one line, ending with a single LF. Read one line per command you send.
+
 The P2 checks for a new command every 1 ms, so it answers within a few ms. The exceptions are `checkwiring`, which
-takes about half a second, and a restart with `setstartchecks 0`. The demo's own reply loop checks every 0.2 s. If you
-use `settimeout`, shorten that loop or send your drive commands well inside the timeout.
+takes about 1.3 s (at most about 4 s), and a restart with `setstartchecks 0`. The demo's own reply loop checks every
+0.2 s. If you use `settimeout`, shorten that loop or send your drive commands well inside the timeout.
 
 The P2 never reports a command timeout by itself. After one, `getstopreason` reads 46 (SR\_LINK\_LOST) for each wheel
 and `geterror` reads -1019 (ERR\_COMMAND\_TIMEOUT). See

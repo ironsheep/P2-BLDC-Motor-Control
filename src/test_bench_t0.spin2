@@ -252,6 +252,34 @@
 ''               DRVR_STATUS_ACCEL_NOW_IDX (no longer the run's last long), and every stop-limit bound in T0-25 gains
 ''               the plan's early term, T0_25_PLAN_EARLY_TICKS: R20-T0-ROTSTOP and R20-T0-ODOMETER -4 .. +3 ticks
 ''               (were +/- 3); the new time legs -6 .. +4 ms, derived term by term in CON.
+''               27 Sep 2026 -- SRC_REV 26 (DRIVER_REV 39; PL-161, PL-163): two cells the release-candidate sheet
+''               named as not built. NEW in T0-25 (t0-stopreason): R22-T0-FRAMESLACK (PL-161) -- DRIVER_REV 39 plans
+''               the stop in the slack of the nine PWM frames after each drive pass, and its failure is a frame that
+''               overruns (or loses an ADC sample). A frame watcher cog (t0fWatch()) reads the driver's loop_ticks
+''               -- each control frame's ADC wait plus its own work -- on every frame for the whole of t0rRamp()'s
+''               drives, stops and mid-ramp limit stops, and the cell judges the least against the frame's own work
+''               bound, from frame_cnt (testGetDriveConstants()) and PL-161's per-frame work count (CON states each
+''               term); new record T0-25,frame. NEW build -D T0_REVA (tier t0-reva): T0-27, R22-T0-REVA-FOLD (PL-163)
+''               -- on a Rev A board, found by auto-detection on either pin group and printed, testSetCurrentLimits(2,
+''               2) and a driven, unloaded wheel at the duty floor count no foldback_frames over a stated window, at
+''               two powers; new records T0-27,*. No existing record or cell changes.
+''               27 Sep 2026 -- SRC_REV 26 extended (DRIVER_REV 40, PL-163's residual, FOLD_MIN_MV = 4): the fold's
+''               own duty floor is raised so its threshold is never under 4 mV -- a fold needs a 5 mV net reading,
+''               not the 1 mV this note's cell first assumed. R22-T0-REVA-FOLD is measured when the window's largest
+''               duty is at or under the driver's duty_floor (read from the parameter run), and T0-27,leg gains
+''               duty_floor_drv, t_eff_mv (4), net_max_mv and outcome (duty_floor is now duty_floor_est, t_floor_mv
+''               is gone, lim_err/peak_a/cont_a fold into lim_ok), its sense fields moving to a new T0-27,legsense
+''               (with samples) to keep each record under 255 bytes. A fold on 4 mV or less is the defect,
+''               FAIL; an unloaded net reading of 5 mV falsifies the noise premise, NOMEAS with crit PREMISE_NOISE.
+''               The window is read with no wait. NEW, ATTENDED: R22-T0-REVA-FOLDPOS, the positive control -- the
+''               same wheel at the same 2 A limit, gripped by hand (t0reva window, SPACE, GRIP) at a duty over m = 0.2,
+''               must fold on 5 mV or more; new records T0-27,hold,prompt, T0-27,holdsense and T0-27,hold.
+''               And DRIVER_REV 40's unbiased current (getCurrent() adds the reading's half count; the rest zero is
+''               the offset rounded, up to 1 mV above the truncated mean): every bound on getCurrent() or the rest
+''               zero re-checked, none moved. R16-T0-RESTZERO's +/-10 mA now states its terms (at SF_REST_LO): the
+''               rest reading is centred on 0 (was 0 .. +1 mV), 89 of 100 at worst on Rev B, and the band holds
+''               only on Rev B. T0-27's net_max_mv nets the driver's own zero, so it reads what the fold compares.
+''               No record or cell changes.
 ''
 '' =================================================================================================
 
@@ -326,6 +354,10 @@
 ' USB captures carried no display command at all (P2-HAZARD-REGISTER DBG-1, DBG-16). Gating the bodies
 ' takes t0-hand's DEBUG footprint from 15,674 to about 7,250 bytes, and changes nothing it prints.
 ' (Named T0_ATTENDED until task 3621: T0_STOPREASON runs its own test unattended, so "attended" no longer said it.)
+' SRC_REV 26: T0_REVA (tier t0-reva, T0-27, PL-163) is one more.
+#ifdef T0_REVA
+#define T0_OWN_TIER
+#endif
 #ifdef T0_HAND
 #define T0_OWN_TIER
 #endif
@@ -363,7 +395,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 25                                       ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 26                                       ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -385,6 +417,16 @@ CON { 6.0.0 cells (task 3560) }
     REST_SAMPLE_MS   = 20
     SF_REST_LO       = -100                                     ' DERIVED -- +/-10 mA (0.1 mA units); unfixed LEFT read ~535 (PL-45, Visit 1)
     SF_REST_HI       = 100
+' SF_REST_LO .. SF_REST_HI, its terms (SRC_REV 26 extended, DRIVER_REV 40), on Rev B (150 mV/A: 1 mV of sense is 66.7
+'  units). At rest getCurrent() reads the rest zero's own rounding: DRIVER_REV 40's zero is the offset rounded
+'  (restZeroFinish()) and the reading adds back its half count, so its mean is within 0.5 mV of 0: 33 units. (Until
+'  DRIVER_REV 40 it was 0 .. 1 mV for a zero at or above 0, the zero then the truncated mean: 0 .. 67.) Random terms,
+'  on the library's own noise premise (sigma <= 1.73 mV a reading, FOLD_MIN_MV's note): the zero's 200-reading mean,
+'  0.12 mV (8 units), and this cell's REST_SAMPLES mean, 0.245 mV (16); 3 sigma of both together is 54. Each reading's
+'  divide and the mean's truncate less than 1 unit each. 33 + 54 + 2 = 89, inside 100, so a correct Rev B driver
+'  passes. REV B ONLY: on Rev A (5 mV/A) one mV is 2_000 units, so the zero's rounding alone reaches 1_000 and a
+'  correct Rev A driver would fail this band by construction, so on any board but Rev B the cell is NOMEAS (the
+'  board is read from getBoardType(), the revision the running driver recorded).
 
 CON { API promise and regression cells (tasks 3577, 3574) }
 
@@ -550,6 +592,34 @@ CON { stop reasons and the event log (T0-25, -D T0_STOPREASON only; task 3621, D
   '  so a stop rests short of its limit by at most the travel of the plan's age and of its three extra passes -- (0.76 +
   '  1.57) ms of travel, 0.15 tick at T0_25_POWER's ~62 ticks/s and 0.51 tick at T0_25_RAMP_HI's 218: one whole tick.
     T0_25_PLAN_EARLY_TICKS = 1
+
+' SRC_REV 26 (DRIVER_REV 39, PL-161): R22-T0-FRAMESLACK and its FRAME WATCHER (t0fWatch(), a cog of its own, started and
+'  stopped with the sampler, so it covers every drive, stop, reversal and mid-ramp limit stop t0rRamp() makes). DRIVER_REV
+'  39 runs one stage of its stop planner (planStage) in each of the nine PWM frames after a drive pass, after that
+'  frame's status write, in the frame's slack. Its failure is a frame whose work runs past the next ADC sample: an
+'  overrun, or, a whole frame late, a lost ADC sample.
+'  WHAT THE DRIVER PUBLISHES: loop_ticks (loop_dtcks_) is one control frame's time from its start -- BEFORE it waits for
+'   its ADC sample (wait4adc) -- to the end of its own work W: its ADC wait plus W. Whatever ran between the previous
+'   frame's work and this frame's start -- that frame's status write, a planner stage, or the drive pass -- came out of
+'   this frame's wait: loop_ticks = frame_cnt - (the previous frame's work, its write, and its stage or drive pass) + W.
+'  THE NEGATIVE, what an overrun reads: the sample is already waiting, the wait is ~0, so loop_ticks is the frame's own
+'   work alone, at most T0F_WORK_MAX_CLK. A lost sample is an overrun of more than a frame and reads the same.
+'  THE CRITERION: the least loop_ticks of the watch is above T0F_WORK_MAX_CLK, so every frame's ADC wait was positive --
+'   no frame ran past its sample. T0F_WORK_MAX_CLK is PL-161's bound on one control frame's own work, 699 clocks
+'   (frame_clocks.py: every branch counted taken, 2 clocks an instruction), a count that does not scale with the clock.
+'   The frame is frame_cnt clocks, clkfreq / PWM_RATE_IN_HZ (6_136 at 270 MHz), read from the driver itself
+'   (testGetDriveConstants()). T0-25,frame prints frame_cnt - least + T0F_WORK_MAX_CLK, the most any frame can have
+'   used. EXPECTED at 270 MHz (PL-161's DERIVED stage costs): the least is a frame after a planner stage, stage 9's
+'   1_750 clocks the worst, so about 6_136 - 1_750 - the status write, ~4_350; a drive pass (<= 1_184) leaves ~4_900.
+'  MEASURED ONLY WHEN EVERY FRAME WAS READ, AND DRIVING WAS WATCHED: a loop_ticks value stands from one status write to
+'   the next, which are at least frame_cnt - T0F_WORK_MAX_CLK apart when no frame overruns (an overrun's own reading
+'   stands until the next frame's write, all but a whole frame later), so a watch whose largest gap between two reads
+'   is under that read every frame's value; and the watch must have covered driving -- the SHAPE watches or a mid-ramp
+'   limit stop measured (the planner's stages cost most with v and a both non-zero).
+    T0R_ST_LOOP         = 11                                    ' loop_ticks (loop_dtcks_): a control frame's ADC wait + its own work
+    T0F_WORK_MAX_CLK    = 699                                   ' PL-161's bound on one control frame's own work, clocks
+    T0F_STACK           = 48                                    ' the frame watcher's cog: one method, a few locals, no call
+    T0F_PARK_MS         = 100                                   ' the frame watcher's idle once its readings are posted
 
   ' T0-25's seven stop legs, run in this order (t0rLeg()); each reads getStopReason() as its drive opens, after its stop,
   '  and once more after the leg's own later act:
@@ -1123,6 +1193,17 @@ sCritRampRev    BYTE    "CROSSES_ZERO_NEVER_STOPPED", 0
 sCritRampUnw    BYTE    "UNWINDS_AT_JERK_IN_TAU", 0
 sCritPlanC      BYTE    "CRUISE_STOP_RESTS_AT_LIMIT", 0
 sCritPlanM      BYTE    "MIDRAMP_STOP_RESTS_AT_LIMIT", 0
+' SRC_REV 26 (DRIVER_REV 39): the stop planner's frame slack (T0-25) and the Rev A fold-back (T0-27); no todo-mcp task was
+'  named, so the PL ids stand in
+sTaskPl161      BYTE    "PL-161", 0
+sTaskPl163      BYTE    "PL-163", 0
+sCellFrameSlack BYTE    "R22-T0-FRAMESLACK", 0                  ' T0-25: no PWM frame ran past its ADC sample while the driver planned stops
+sCellRevaFold   BYTE    "R22-T0-REVA-FOLD", 0                   ' T0-27: Rev A at a 2 A limit, a driven unloaded wheel at the duty floor folds no frame
+sCellRevaFoldPos BYTE   "R22-T0-REVA-FOLDPOS", 0                ' ...and the same wheel held by hand, over m = 0.2, folds on 5 mV or more
+sCritFrameSlack BYTE    "LEAST_LOOP_OVER_FRAME_WORK", 0
+sCritRevaFold   BYTE    "NO_FOLD_2A_AT_DUTY_FLOOR", 0
+sCritRevaFoldPos BYTE   "HELD_FOLDS_ON_5MV", 0
+sCritPremNoise  BYTE    "PREMISE_NOISE", 0                      ' REVA-FOLD's NOMEAS when an unloaded leg read 5 mV net: FOLD_MIN_MV's premise falsified
 
 DAT { T0-12 hand-copy of the driver's hall-position-delta table (PL-39) }
 
@@ -1357,6 +1438,15 @@ VAR { T0-25 helper reader cog (-D T0_STOPREASON only) }
 ' cog 0's staging for the plan legs' records and cells
     LONG    t0pLegOk[T0P_LEGS]                                  ' the leg rested inside its tolerance or band
     LONG    t0pLegMeas[T0P_LEGS]                                ' the leg's precondition held: it fired from cruise (C) or mid-ramp (M)
+
+' SRC_REV 26 (PL-161): the frame watcher's cog (t0fWatch()). Cog 0 writes bT0fRun (TRUE before the start, FALSE to end
+' the watch); the watcher writes its three readings, then bT0fDone last. Each long has one writer.
+    LONG    t0fStack[T0F_STACK]
+    LONG    bT0fRun                                             ' cog 0: keep watching
+    LONG    bT0fDone                                            ' watcher: the readings below are final
+    LONG    t0fLoopMin                                          ' watcher: the least loop_ticks read, clocks
+    LONG    t0fGapPk                                            ' watcher: the largest gap between two reads, clocks
+    LONG    t0fReads                                            ' watcher: loop_ticks reads made
 #endif
 
 #ifdef T0_STOPMODE
@@ -1452,6 +1542,10 @@ PUB main() | trapCode
 #elseifdef T0_API
     ' T0-26 starts the motor and the steering object but drives nothing: its one drive command is refused
     debug("* test_bench_t0 -- T0-26 API contract: UNATTENDED, WHEELS UP, NO MOTION -- src_rev ", udec_(SRC_REV))
+#elseifdef T0_REVA
+    ' T0-27 drives the wheel on the Rev A board, found by auto-detection; the board each group read is printed next.
+    '  Its positive control waits on SPACE and asks the operator to grip that wheel.
+    debug("* test_bench_t0 -- T0-27 Rev A fold-back: THE WHEEL ON THE REV A BOARD IS DRIVEN SLOWLY, THEN ATTENDED: HOLD IT WHEN TOLD -- src_rev ", udec_(SRC_REV))
 #else
     debug("* test_bench_t0 -- Tier 0: no motion -- src_rev ", udec_(SRC_REV))
 #endif
@@ -1487,6 +1581,10 @@ PRI runTier0Tests()
     ' T0_API build (tier t0-api, SRC_REV 22): T0-26 only, the API contract. Unattended and motionless, but its own tier:
     ' it starts and stops the motor and the steering object three times, which plain t0's cells must not see.
     testT0_26()
+#elseifdef T0_REVA
+    ' T0_REVA build (tier t0-reva, SRC_REV 26): T0-27 only, the Rev A fold-back (PL-163). It needs a Rev A board swapped
+    ' onto the rig, it drives that board's wheel, and its positive control waits on a person, so it is its own tier.
+    testT0_27()
 #else
     ' Sign-off declarations (design rule 3, SS 0): one per cell this binary will judge, emitted
     ' before anything starts a cog. Row 8 (R8-T0-ZXS) covers all four channel variants (ZXS_I/
@@ -2628,7 +2726,8 @@ PRI testT0_19() | baseline, startResult, freeRunning, freeStopped, bPass, voltBe
 PRI testT0_20() | baseIdx, pinBase, pMotorTok, startResult, sampleIdx, ampsSum, amps, meanAmps, pVerdict
 ' R16-T0-RESTZERO (task 3556, PL-45): getCurrent() at rest reads near 0 on each board. start() samples the
 ' floated rest zero (~1 s) and getCurrent() nets it out; this averages REST_SAMPLES readings at zero command
-' and judges the mean against SF_REST_LO..SF_REST_HI (0.1 mA units). UNFIXED: the LEFT board read about 535
+' and judges the mean against SF_REST_LO..SF_REST_HI (0.1 mA units; the band's terms are at SF_REST_LO, Rev B
+' only). UNFIXED: the LEFT board read about 535
 ' (0.05 A, Visit 1). The RIGHT board's unfixed offset (~27) already sits inside the band, so only the LEFT
 ' instance discriminates; that is stated here and in the run sheet.
 '
@@ -2660,8 +2759,9 @@ PRI testT0_20() | baseIdx, pinBase, pMotorTok, startResult, sampleIdx, ampsSum, 
                 ampsSum += amps
             meanAmps := ampsSum / REST_SAMPLES
             pVerdict := ((meanAmps >= SF_REST_LO) and (meanAmps <= SF_REST_HI)) ? @"PASS" : @"FAIL"
-            debug("T0-20,base,", udec_(pinBase), ",mean_amps_x10k,", sdec_(meanAmps))
-            emitCellNum(@"R16-T0-RESTZERO", @"3556", pMotorTok, @"REST_AMPS_X10K", TRUE, meanAmps, SF_REST_LO, SF_REST_HI, @"AMPS_X10K", REST_SAMPLES, pVerdict)
+            debug("T0-20,base,", udec_(pinBase), ",mean_amps_x10k,", sdec_(meanAmps), ",rev_b,", sdec_(motor.getBoardType() == motor.REV_B))
+            ' the band is derived for Rev B only (see SF_REST_LO): any other board is NOMEAS, never a false FAIL
+            emitCellNum(@"R16-T0-RESTZERO", @"3556", pMotorTok, @"REST_AMPS_X10K", motor.getBoardType() == motor.REV_B, meanAmps, SF_REST_LO, SF_REST_HI, @"AMPS_X10K", REST_SAMPLES, pVerdict)
         else
             debug("T0-20,base,", udec_(pinBase), ",not_ready,start_return,", sdec_(startResult))
             emitCellNum(@"R16-T0-RESTZERO", @"3556", pMotorTok, @"REST_AMPS_X10K", FALSE, 0, SF_REST_LO, SF_REST_HI, @"AMPS_X10K", 0, 0)
@@ -2974,6 +3074,10 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
 '                          fires while the speed-up still accelerates and rests at its limit, as above but armed at rest
 '                          (no arming skew: -4 .. +3 ticks, -6 .. +4 ms). NEGATIVE: a plan that ignored the acceleration in
 '                          hand under-counts the unwind, ~20 ticks and ~170 ms past it
+'   R22-T0-FRAMESLACK   - (PL-161, SRC_REV 26) over every drive, stop and limit stop above, a frame watcher reads the
+'                          driver's loop_ticks on every PWM frame: the least is above T0F_WORK_MAX_CLK, so every frame
+'                          waited for its ADC sample -- the stop planner's stages fit the frames' slack. NEGATIVE: a frame
+'                          that overran its sample (or lost one) reads its own work alone, <= T0F_WORK_MAX_CLK (the CON)
 ' A start that does not come up ready leaves every cell NOMEAS, and the start's getError() is printed. A RIGHT start its
 ' checks refuse (ERR_START_CHECK_FAILED: pass 5 saw PL-120 outlast a reload) is followed by one start of the LEFT wheel
 ' (T0_SECOND_BASE), so one dead bridge does not void the tier; the cells then name LEFT. The cells certify the reporting,
@@ -3005,6 +3109,7 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
     emitCellDecl(@sCellRampUnw, @sTaskPl160)
     emitCellDecl(@sCellPlanC, @sTaskPl160)
     emitCellDecl(@sCellPlanM, @sTaskPl160)
+    emitCellDecl(@sCellFrameSlack, @sTaskPl161)
     debug("T0-25,begin,wheel,RIGHT_P16,power,", udec_(T0_25_POWER), ",legs,", udec_(T0R_LEGS), ",cycles,", udec_(T0_25_CYCLES))
 
     benchLog.cogEventBegin()
@@ -3558,22 +3663,26 @@ PRI t0rPersist() | eErr, startResult, bReady, nSpeed, nSpeed4d, bHold, bRev, eHo
     debug("T0-25,persist,start_return,", sdec_(startResult), ",speed,", sdec_(nSpeed), ",speed_dist,", sdec_(nSpeed4d), ",hold,", zstr_(t0rTF(bHold)), ",rev,", zstr_(t0rTF(bRev)), ",hold_state,", udec_(eHold), ",status,", udec_(eStatus), ",err,", sdec_(eErr))
     emitCellBool(@sCellPersist, @sTaskPl155, pT0rWheel, @sCritPersist, bReady, bPass, 5)
 
-PRI t0rRamp() | jerkUp, jerkDn, workerCog, bShapeMeas, bShapeOk, bMeas, bOk, legIdx
+PRI t0rRamp() | jerkUp, jerkDn, workerCog, frameCog, bShapeMeas, bShapeOk, bMeas, bOk, legIdx, bDrove
 ' R22-T0-RAMP-SHAPE, -REVERSE, -UNWIND, R22-T0-STOPPLAN-C and -M (PL-160, SRC_REV 25): the jerk-limited generator, wheels
 ' up, on the motor T0-25 runs on (the cells' motor field names it). The sampler cog (t0pWorker()) is started once, here,
 ' and stopped here, in quiet windows, whatever happened; with no cog free every cell is NOMEAS. Every watch is posted to
 ' the sampler BEFORE the command it judges is sent, so it sees the pass that takes the command. The section's CON states
 ' the sampler's limits, each leg's arithmetic and the time band; testT0_25() each cell's criterion and its negative.
 ' Prints T0-25,ramp, then per watch T0-25,rampseg and T0-25,rampend, T0-25,unwind and one T0-25,plan per leg.
+' SRC_REV 26 (PL-161): the frame watcher's cog (t0fWatch()) starts with the sampler and watches every frame of all of
+' the above; R22-T0-FRAMESLACK is judged after STOPPLAN-M (t0rFrameCell()), and prints T0-25,frame.
 '
 ' @local jerkUp - getRampingValues()'s speed-up jerk
 ' @local jerkDn - its slow-down jerk
 ' @local workerCog - cogspin()'s return; < 0 when no cog was free
+' @local frameCog - the frame watcher's cogspin() return; < 0 when no cog was free
 ' @local bShapeMeas - every SHAPE segment was measured
 ' @local bShapeOk - every SHAPE segment held
 ' @local bMeas - one watch's measured flag
 ' @local bOk - its verdict
 ' @local legIdx - T0P_LEG_*
+' @local bDrove - the frame watch covered driving: the SHAPE watches, or a mid-ramp limit stop, were measured
 
     jerkUp, t0pAccUp, jerkDn, t0pAccDn := motor.getRampingValues()
     t0pJerkX := jerkUp #> jerkDn
@@ -3581,10 +3690,16 @@ PRI t0rRamp() | jerkUp, jerkDn, workerCog, bShapeMeas, bShapeOk, bMeas, bOk, leg
     t0pJobSeq := 0
     t0pArmedSeq := 0
     t0pDoneSeq := 0
+    bT0fRun := TRUE
+    bT0fDone := FALSE
+    t0fLoopMin := 0
+    t0fGapPk := 0
+    t0fReads := 0
     bT0rRest()
     debug("T0-25,ramp,jerk_up,", udec_(jerkUp), ",acc_up,", udec_(t0pAccUp), ",jerk_dn,", udec_(jerkDn), ",acc_dn,", udec_(t0pAccDn), ",hi,", udec_(T0_25_RAMP_HI), ",lo,", udec_(T0_25_RAMP_LO), ",tau_ms,", udec_(motor.RAMP_TAU_MS))
     benchLog.cogEventBegin()
     workerCog := cogspin(NEWCOG, t0pWorker(), @t0pStack)
+    frameCog := cogspin(NEWCOG, t0fWatch(), @t0fStack)
     benchLog.cogEventEnd()
     if workerCog < 0
         t0rRampNoMeas()
@@ -3614,19 +3729,51 @@ PRI t0rRamp() | jerkUp, jerkDn, workerCog, bShapeMeas, bShapeOk, bMeas, bOk, leg
             t0rPlanLeg(legIdx)
         emitCellBool(@sCellPlanC, @sTaskPl160, pT0rWheel, @sCritPlanC, t0pLegMeas[T0P_LEG_ROT_C] and t0pLegMeas[T0P_LEG_MS_C], t0pLegOk[T0P_LEG_ROT_C] and t0pLegOk[T0P_LEG_MS_C], 2)
         emitCellBool(@sCellPlanM, @sTaskPl160, pT0rWheel, @sCritPlanM, t0pLegMeas[T0P_LEG_MM_M] and t0pLegMeas[T0P_LEG_ROT_M] and t0pLegMeas[T0P_LEG_MS_M], t0pLegOk[T0P_LEG_MM_M] and t0pLegOk[T0P_LEG_ROT_M] and t0pLegOk[T0P_LEG_MS_M], 3)
-        benchLog.cogEventBegin()
+        bDrove := bShapeMeas or t0pLegMeas[T0P_LEG_MM_M] or t0pLegMeas[T0P_LEG_ROT_M] or t0pLegMeas[T0P_LEG_MS_M]
+        t0rFrameCell(frameCog, bDrove)
+    benchLog.cogEventBegin()
+    if workerCog >= 0
         cogstop(workerCog)
+    if frameCog >= 0
+        cogstop(frameCog)
     bT0rRest()
     motor.getError()                                                            ' drain this cog's slot
 
 PRI t0rRampNoMeas()
-' The five generator cells NOMEAS: the motor did not come up, or no cog was free for the sampler.
+' The five generator cells and the frame cell NOMEAS: the motor did not come up, or no cog was free for the sampler.
 
     emitCellBool(@sCellRampShape, @sTaskPl160, pT0rWheel, @sCritRampShape, FALSE, FALSE, 0)
     emitCellBool(@sCellRampRev, @sTaskPl160, pT0rWheel, @sCritRampRev, FALSE, FALSE, 0)
     emitCellBool(@sCellRampUnw, @sTaskPl160, pT0rWheel, @sCritRampUnw, FALSE, FALSE, 0)
     emitCellBool(@sCellPlanC, @sTaskPl160, pT0rWheel, @sCritPlanC, FALSE, FALSE, 0)
     emitCellBool(@sCellPlanM, @sTaskPl160, pT0rWheel, @sCritPlanM, FALSE, FALSE, 0)
+    emitCellBool(@sCellFrameSlack, @sTaskPl161, pT0rWheel, @sCritFrameSlack, FALSE, FALSE, 0)
+
+PRI t0rFrameCell(frameCog, bDrove) | frameCnt, nCover, startMs, bMeasured, bOk
+' R22-T0-FRAMESLACK (PL-161, SRC_REV 26; the section's CON): end the frame watch, wait (bounded by T0_25_HANDSHAKE_MS)
+' for its readings, and judge them -- the least loop_ticks above T0F_WORK_MAX_CLK -- MEASURED when the watcher ran and
+' posted, read every frame (its largest read gap under frame_cnt - T0F_WORK_MAX_CLK) and covered driving. Prints
+' T0-25,frame.
+'
+' @param frameCog - the frame watcher's cogspin() return; < 0 when it never started
+' @param bDrove - T/F where T means the watch covered driving (t0rRamp())
+'
+' @local frameCnt - the driver's PWM frame, clocks (testGetDriveConstants())
+' @local nCover - the least time one loop_ticks value stands, clocks: a read gap under it misses no frame
+' @local startMs - getms() when the wait for the readings began
+' @local bMeasured - T/F where T means the watch may be judged
+' @local bOk - T/F where T means no frame ran past its ADC sample
+
+    bT0fRun := FALSE
+    startMs := getms()
+    repeat until bT0fDone or ((getms() - startMs) >= T0_25_HANDSHAKE_MS)
+        waitms(1)
+    _, _, _, _, _, frameCnt := motor.testGetDriveConstants()
+    nCover := frameCnt - T0F_WORK_MAX_CLK
+    bMeasured := (frameCog >= 0) and bT0fDone and bDrove and (t0fReads > 0) and (t0fGapPk < nCover)
+    bOk := (t0fLoopMin > T0F_WORK_MAX_CLK)
+    debug("T0-25,frame,reads,", udec_(t0fReads), ",gap_pk_clk,", udec_(t0fGapPk), ",cover_clk,", sdec_(nCover), ",loop_min_clk,", sdec_(t0fLoopMin), ",work_max_clk,", udec_(T0F_WORK_MAX_CLK), ",frame_clk,", udec_(frameCnt), ",used_pk_clk,", sdec_(frameCnt - t0fLoopMin + T0F_WORK_MAX_CLK), ",drove,", zstr_(t0rTF(bDrove)), ",posted,", zstr_(t0rTF(bT0fDone)))
+    emitCellBool(@sCellFrameSlack, @sTaskPl161, pT0rWheel, @sCritFrameSlack, bMeasured, bOk, 1)
 
 PRI t0rShapeSeg(pName, nPower, eMode) : bMeasured, bOk | bWatched, eErr
 ' One segment from a steady state (the segment before it arrived, or rest): watch it through t0rCommand() and judge it
@@ -3916,6 +4063,36 @@ PRI t0pWorker() | jobSeq
             t0pWatch(jobSeq)
         else
             waitus(T0P_IDLE_US)
+
+PRI t0fWatch() | nLoop, nowCt, lastCt, nMin, nGap, nReads
+' The frame watcher's cog (SRC_REV 26, PL-161; the section's CON): until cog 0 clears bT0fRun, it reads the driver's
+' loop_ticks as fast as it can, keeping the least and the largest gap between two reads; then it posts them, bT0fDone
+' last, and parks until cog 0 stops it. It prints nothing and calls no method -- everything it reads is a hub long.
+'
+' @local nLoop - loop_ticks, this read
+' @local nowCt - getct() just after it
+' @local lastCt - getct() just after the read before
+' @local nMin - the least loop_ticks read
+' @local nGap - the largest gap between two reads, clocks
+' @local nReads - reads made
+
+    nMin := POSX
+    nGap := 0
+    nReads := 0
+    lastCt := getct()
+    repeat while bT0fRun
+        nLoop := long[t0pStatus][T0R_ST_LOOP]
+        nowCt := getct()
+        nMin <#= nLoop
+        nGap #>= nowCt - lastCt
+        lastCt := nowCt
+        nReads++
+    t0fLoopMin := nMin
+    t0fGapPk := nGap
+    t0fReads := nReads
+    bT0fDone := TRUE
+    repeat
+        waitms(T0F_PARK_MS)
 
 PRI t0pWatch(jobSeq) | passCt, settleCt, boundCt, startCt, nowCt, goodCt, arriveCt, tgt, vNow, vAgain, accNow, eState, posNow, vPrev, aPrev, lagBase, bDone
 ' One watch (the section's CON: THE SAMPLER). From its baseline to its mode's end -- T0_25_SETTLE_MS after v first reads
@@ -5222,6 +5399,416 @@ PRI bSteerHoldIs(ceilingPct, riseMs, limitMs) : bSame | nCeil, nRise, nLimit
 
     nCeil, nRise, nLimit := steer.getHoldLimits()
     bSame := (nCeil == ceilingPct) and (nRise == riseMs) and (nLimit == limitMs)
+#endif
+
+#ifdef T0_REVA
+CON { the Rev A fold-back (T0-27, -D T0_REVA only; SRC_REV 26, DRIVER_REV 38-40, PL-163) }
+
+' PL-163. The driver's per-frame current fold-back compares the DC-link reading, net of the board's rest offset, with a
+'  threshold t = max(duty, duty_floor) x i_limit_k >> 16 mV (isp_bldc_motor .noFault; SCA floors t). On Rev A (5 mV
+'  per A; Rev B 150) t at the duty floor m = 0.1 is 0.375 x amps mV, under 1 below about 2.7 A, so it floored to 0.
+'  Before DRIVER_REV 38 the fold took "reading at or above floor(t)" -- true on every driven frame, since the net reading
+'  is never below 0 -- and the drive could not hold its duty. DRIVER_REV 38 folds only on a reading above floor(t).
+' THE LEG, twice (T0_27_POWER_HI, then T0_27_POWER_LO): the limits lowered to T0_27_LIMIT_A (testSetCurrentLimits(2, 2);
+'  i_limit_k 20 at 270 MHz), the unloaded (wheels up) wheel driven at the power, T0_27_SPIN_MS for its ramp (483 ms to
+'  power 10, 323 to power 5, the jerk-limited S-curve) and a settle, then a T0_27_WIN_MS window: foldback_frames' rise
+'  over the window is judged. MEASURED also needs the board REV_A, both limits read back T0_27_LIMIT_A and the drive
+'  taken; a leg whose duty rose above the driver's floor was not at the floor: NOMEAS.
+'  PASS: a rise of 0, and every window sample read the bridge driven (DCS_SPIN_UP, AT_SPEED, SPIN_DN or SLOW_TO_CHG).
+'  NEGATIVE (PL-163): before DRIVER_REV 38 the count rises on every driven frame, T0_27_FRAMES_WIN in the window (printed
+'   as frames_win); a drive the fold starves into a fault fails on its state.
+' DRIVER_REV 40 (PL-163's residual, FOLD_MIN_MV): setFoldLimit() raises the fold's own duty floor (duty_floor, the
+'  parameter run's long T0R_PR_DUTY_FLOOR) so the threshold never falls below motor.FOLD_MIN_MV, 4 mV: A FOLD NOW NEEDS A
+'  NET READING OF 5 mV (1 A of DC link on Rev A). At 2 A (i_limit_k 20) the floor moves from m = 0.10 to 0.53. The leg
+'  is MEASURED when the window's largest duty is at or under that driver floor -- equivalently its effective threshold,
+'  ((duty_pk #> duty_floor_drv) x i_limit_k) >> 16, is FOLD_MIN_MV -- and the record carries duty_floor_drv, t_eff_mv
+'  (4 when right) and net_max_mv, the window's largest raw reading less the driver's netted zero. Per measured leg:
+'   net_max_mv >= 5 on an unloaded wheel: the +-3 mV noise premise behind FOLD_MIN_MV is FALSIFIED -- outcome NOISE,
+'    NOMEAS, and the cell's SIGNOFF carries crit PREMISE_NOISE in place of its criterion (never PASS, whatever the count)
+'   else a window rise over 0, the bridge left undriven, or t_eff_mv not FOLD_MIN_MV: FAIL -- a fold on a reading of
+'    4 mV or less is the DEFECT FOLD_MIN_MV exists to prevent
+'   else PASS.
+'  The window is read as fast as the loop runs (no wait), so net_max_mv covers most frames; samples is printed. It is
+'   still a sample: a fold on an unsampled 5 mV frame reads as fold_win > 0 with net_max_mv <= 4.
+' THE POSITIVE CONTROL (R22-T0-REVA-FOLDPOS), ATTENDED, after both legs, on the same wheel at the same 2 A limit: the
+'  t0reva window asks for SPACE (bounded by T0_27_KEY_MAX_MS), the wheel is driven at T0_27_POWER_HOLD for T0_27_SPIN_MS,
+'  then the window says GRIP and the operator holds the tyre hard for T0_27_HOLD_WIN_MS, the judged window. It proves the
+'  fold still protects above FOLD_MIN_MV. MEASURED when the limits and drive took, SPACE came, the window's largest duty
+'  reached m = T0_27_HOLD_M_PCT / 100 (duty_gate), and the grip loaded the link or the fold acted (net_max_mv >= 5 or
+'  fold_win > 0). PASS: fold_win > 0 AND net_max_mv >= 5. A fold only on readings of 4 mV or less is the defect: FAIL.
+'  No fold with net_max_mv <= 4 is a grip that never loaded the link: NOMEAS, not a FAIL. The bridge need not stay
+'  driven: a held wheel may end in the blocked stop. t_eff_pk_mv, the threshold at the window's largest duty, is printed:
+'  above the raised floor the threshold is above 4 mV, so a FAIL with net_max_mv just over 5 is read against it.
+' The Rev A board may be on either group: the RIGHT (P16) is started first and, unless it reads REV_A, stopped and the
+'  LEFT (P32) started. Each start's detected board is printed (T0-27,board and the "* ... detected board" line).
+    T0_27_LIMIT_A       = 2                                     ' PL-163's own limit, peak and continuous
+    T0_27_POWER_HI      = 10                                    ' 15.09 x 10^6 at 18.5 V, about 40 ticks/s
+    T0_27_POWER_LO      = 5                                     ' 6.76 x 10^6, about 18 ticks/s: nearer the floor still
+    T0_27_SPIN_MS       = 1_500                                 ' the command to the window: the ramp and a settle
+    T0_27_WIN_MS        = 5_000                                 ' the judged window
+    T0_27_REST_MS       = 3_000                                 ' bound on DCS_STOPPED after a leg's stop
+    T0_27_FRAMES_WIN    = T0_27_WIN_MS * (motor.PWM_RATE_IN_HZ / 1_000)             ' 220_000 driven frames in the window
+    T0_27_K_ONE         = $1_0000                               ' SCA's 1.0: t = product / this, floored
+    T0_27_FOLD_HI       = 0
+    T0_27_NET_FOLD_MV   = motor.FOLD_MIN_MV + 1                 ' the least net reading a fold needs, 5 mV (DRIVER_REV 40)
+    T0_27_GROUPS        = 2                                     ' RIGHT (P16), then LEFT (P32)
+    T0_27_POWER_HOLD    = 20                                    ' the positive control's power: slow enough to grip
+    T0_27_HOLD_WIN_MS   = 4_000                                 ' ...its judged window, from the GRIP prompt
+    T0_27_HOLD_M_PCT    = 20                                    ' ...the modulation its largest duty must reach, m = 0.2
+    T0_27_KEY_MAX_MS    = 180_000                               ' bound on the wait for SPACE
+    T0_27_KEY_POLL_MS   = 100                                   ' pc_key()'s latch window (T0_12_KEY_POLLS' reasoning)
+    T0_27_KEY_GO        = " "                                   ' SPACE starts the positive control; no other key does
+    T0V_OUT_NOMEAS      = 0                                     ' a leg's outcome: not measured
+    T0V_OUT_PASS        = 1
+    T0V_OUT_FAIL        = 2
+    T0V_OUT_NOISE       = 3                                     ' ...measured, and net_max_mv >= 5 unloaded: PREMISE_NOISE
+    T0R_ST_SENSE_I      = 6                                     ' sense_i_mV, the raw DC-link reading
+    T0R_ST_DUTY         = 9                                     ' duty
+    T0R_ST_FOLD         = 20                                    ' foldback_frames
+    T0R_PR_DUTY_FLOOR   = 15                                    ' duty_floor in the parameter run (offset_fwd .. sense_zero):
+                                                                '  the library names no index for it, so it is counted here
+
+PRI testT0_27() | tryIdx, eBase, pWheel, pDriven, eBoard, bFound, legIdx, eOut, nMeas, nFail, nNoise, bPosMeas, bPosOk
+' T0-27, the Rev A fold-back (PL-163) -- compiled only under -D T0_REVA (tier t0-reva), because it drives a wheel and
+' needs a Rev A board swapped onto the rig. The two legs are unattended; the positive control after them is ATTENDED
+' (the operator grips the wheel when told). The section's CON states the legs, the control, the precondition and the
+' negative.
+'   R22-T0-REVA-FOLD    - on the group that auto-detects REV_A, at testSetCurrentLimits(2, 2), two legs at the
+'                          driver's (raised) duty floor: foldback_frames rises by 0 over each measured leg's window,
+'                          the bridge driven throughout, the effective threshold FOLD_MIN_MV. A fold needs 5 mV net.
+'                          FAIL on any leg's failure (a fold on 4 mV or less is the defect); else NOMEAS with crit
+'                          PREMISE_NOISE when any measured leg read net_max_mv >= 5 unloaded; else PASS.
+'                          NEGATIVE: the pre-DRIVER_REV 38 compare folds every driven frame (T0_27_FRAMES_WIN a window).
+'                          NOMEAS on a rig with no Rev A board (either group reads REV_B), and for a leg not at the floor.
+'   R22-T0-REVA-FOLDPOS - the positive control (t0vHoldLeg()): the same wheel and limit, held by hand at a duty over
+'                          m = 0.2, folds (fold_win > 0) on net readings of 5 mV or more. NOMEAS with no Rev A board,
+'                          no SPACE, a duty that never reached the gate, or a grip that never loaded the link.
+' Prints T0-27,begin, T0-27,board per group started, the detected-board line, T0-27,legsense and T0-27,leg per leg,
+' T0-27,hold,prompt, T0-27,holdsense, T0-27,hold and T0-27,end.
+'
+' @local tryIdx - 0 the RIGHT group, 1 the LEFT
+' @local eBase - that group's PINS_*
+' @local pWheel - its name
+' @local pDriven - the name of the group driven, "NONE" until a REV_A is found
+' @local eBoard - the board it read
+' @local bFound - a REV_A board came up ready
+' @local legIdx - 0 the T0_27_POWER_HI leg, 1 the T0_27_POWER_LO
+' @local eOut - one leg's outcome, T0V_OUT_*
+' @local nMeas - legs measured, PREMISE_NOISE legs included
+' @local nFail - legs that failed
+' @local nNoise - legs whose unloaded net reading reached 5 mV (PREMISE_NOISE)
+' @local bPosMeas - the positive control was measured
+' @local bPosOk - its verdict
+
+    emitCellDecl(@sCellRevaFold, @sTaskPl163)
+    emitCellDecl(@sCellRevaFoldPos, @sTaskPl163)
+    debug("T0-27,begin,limit_a,", udec_(T0_27_LIMIT_A), ",power_hi,", udec_(T0_27_POWER_HI), ",power_lo,", udec_(T0_27_POWER_LO), ",power_hold,", udec_(T0_27_POWER_HOLD), ",spin_ms,", udec_(T0_27_SPIN_MS), ",win_ms,", udec_(T0_27_WIN_MS), ",hold_win_ms,", udec_(T0_27_HOLD_WIN_MS), ",frames_win,", udec_(T0_27_FRAMES_WIN), ",fold_min_mv,", udec_(motor.FOLD_MIN_MV))
+    bFound := FALSE
+    pDriven := @"NONE"
+    nMeas := 0
+    nFail := 0
+    nNoise := 0
+    bPosMeas := FALSE
+    bPosOk := FALSE
+    repeat tryIdx from 0 to T0_27_GROUPS - 1
+        if bFound == FALSE
+            eBase := (tryIdx == 0) ? T0_MOTOR_BASE : T0_SECOND_BASE
+            pWheel := (tryIdx == 0) ? @"RIGHT" : @"LEFT"
+            eBoard := t0vStart(eBase, pWheel)
+            if eBoard == motor.REV_A
+                bFound := TRUE
+                pDriven := pWheel
+                debug("* test_bench_t0 -- T0-27 detected board: REV_A on the ", zstr_(pWheel), " group -- that wheel is driven")
+                repeat legIdx from 0 to 1
+                    eOut := t0vLeg(pWheel, (legIdx == 0) ? T0_27_POWER_HI : T0_27_POWER_LO)
+                    if eOut <> T0V_OUT_NOMEAS
+                        nMeas += 1
+                    if eOut == T0V_OUT_FAIL
+                        nFail += 1
+                    if eOut == T0V_OUT_NOISE
+                        nNoise += 1
+                bPosMeas, bPosOk := t0vHoldLeg(pWheel)
+            benchLog.cogEventBegin()
+            motor.stop()
+            motor.getError()                                                    ' drain this cog's slot
+    if bFound == FALSE
+        debug("* test_bench_t0 -- T0-27 detected board: NO REV A ready on either group -- nothing driven, both cells are NOMEAS")
+    if (nFail == 0) and (nNoise > 0)
+        emitCellBool(@sCellRevaFold, @sTaskPl163, pDriven, @sCritPremNoise, FALSE, FALSE, 0)
+    else
+        emitCellBool(@sCellRevaFold, @sTaskPl163, pDriven, @sCritRevaFold, nMeas > 0, nFail == 0, nMeas)
+    emitCellBool(@sCellRevaFoldPos, @sTaskPl163, pDriven, @sCritRevaFoldPos, bPosMeas, bPosOk, 1)
+    debug("T0-27,end,legs_measured,", udec_(nMeas), ",legs_failed,", udec_(nFail), ",legs_premise_noise,", udec_(nNoise))
+
+PRI t0vStart(eBase, pWheel) : eBoard | startResult, bReady, eStartErr, nChecked, nFailed, nRecovered
+' Start `motor` on one group with the board auto-detected and read the board it found (getBoardType(): the revision
+' recorded at the start while the driver runs; read live after a start that did not come up). A board that comes up
+' is set to coast at rest (holdAtStop(FALSE)): the fold-back acts only on a driven bridge, so only the legs drive it.
+' Prints T0-27,board.
+'
+' @param eBase - the group's PINS_*
+' @param pWheel - its name
+' @returns eBoard - REV_A or REV_B when a board came up ready at the group, else REV_Unknown
+'
+' @local startResult - start()'s return
+' @local bReady - TRUE when the driver came up ready
+' @local eStartErr - getError() after the start
+' @local nChecked - getHealth(): the HLT_* bits checked
+' @local nFailed - ...still failing
+' @local nRecovered - ...recovered on a retry
+
+    benchLog.cogEventBegin()
+    startResult := motor.start(eBase, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+    benchLog.cogEventEnd()
+    bReady := bWaitReady(startResult)
+    eStartErr := motor.getError()
+    eBoard := motor.getBoardType()
+    nChecked, nFailed, nRecovered := motor.getHealth()
+    debug("T0-27,board,wheel,", zstr_(pWheel), ",start_return,", sdec_(startResult), ",ready,", zstr_(t0vTF(bReady)), ",error,", sdec_(eStartErr), ",board,", zstr_(t0vBoardName(eBoard)), ",chk,", uhex_(nChecked), ",fail,", uhex_(nFailed), ",rec,", uhex_(nRecovered))
+    if bReady
+        motor.holdAtStop(FALSE)
+    else
+        eBoard := motor.REV_Unknown
+
+PRI t0vLeg(pWheel, nPower) : eOut | pStatus, pParams, bLimOk, nLimitK, frameCnt, dutyFloorEst, dutyFloorDrv, nZero, eErr, fold0, fold1, fold2, dutyPk, senseMax, senseSum, nSamples, bDriven, nThresh, netMax
+' One T0-27 leg (the section's CON): the limits lowered to T0_27_LIMIT_A, the drive at nPower, T0_27_SPIN_MS, then the
+' T0_27_WIN_MS window read from the driver's status run as fast as the loop runs (t0vWindow()) -- foldback_frames
+' before and after it, the largest duty, the raw DC-link reading and the state -- then the stop, and rest. Prints
+' T0-27,legsense, then T0-27,leg (two records: one would pass DEBUG's 255-byte record limit).
+'
+' @param pWheel - the group's name, for the record
+' @param nPower - driveAtPower()'s power
+' @returns eOut - T0V_OUT_NOMEAS unless the limits took, the drive was taken and the window's largest duty stayed at or
+'                  under the driver's duty floor; then T0V_OUT_NOISE when net_max_mv reached T0_27_NET_FOLD_MV (the
+'                  noise premise falsified), else T0V_OUT_PASS when foldback_frames did not rise, the bridge stayed
+'                  driven and the effective threshold read FOLD_MIN_MV, else T0V_OUT_FAIL
+'
+' @local pStatus - @drive_u, the driver's status run (testGetAbiAddrs())
+' @local pParams - @offset_fwd, its parameter run
+' @local bLimOk - the limits took and read back T0_27_LIMIT_A
+' @local nLimitK - the fold-back factor the driver reads
+' @local frameCnt - the PWM frame, clocks
+' @local dutyFloorEst - the phase estimate's duty floor, m = 0.1, the same arithmetic as init()'s
+' @local dutyFloorDrv - the fold's own duty floor as the driver reads it (duty_floor, raised by setFoldLimit())
+' @local nZero - the rest offset the fold-back nets out (sense_zero, the parameter run's last long), mV
+' @local eErr - driveAtPower()'s return
+' @local fold0 - foldback_frames before the command
+' @local fold1 - ...at the window's start
+' @local fold2 - ...at its end
+' @local dutyPk - the window's largest duty
+' @local senseMax - the window's largest raw reading, mV
+' @local senseSum - the readings' sum
+' @local nSamples - window samples
+' @local bDriven - every sample read a driven, running state
+' @local nThresh - the effective threshold at the window's largest duty, floored as SCA floors it, mV (t_eff_mv)
+' @local netMax - senseMax less nZero, the window's largest net reading, mV
+
+    _, pStatus, pParams := motor.testGetAbiAddrs()
+    bLimOk, nLimitK := t0vSetLimits()
+    _, _, _, _, _, frameCnt := motor.testGetDriveConstants()
+    dutyFloorEst := muldiv64(frameCnt, 4 * motor.DUTY_FLOOR_PCT, 100)
+    dutyFloorDrv := long[pParams][T0R_PR_DUTY_FLOOR]
+    nZero := long[pParams][motor.DRVR_PARAMS_LONGS_COUNT - 1]
+    fold0 := long[pStatus][T0R_ST_FOLD]
+    eErr := motor.driveAtPower(nPower)
+    waitms(T0_27_SPIN_MS)
+    fold1 := long[pStatus][T0R_ST_FOLD]
+    dutyPk, senseMax, senseSum, nSamples, bDriven := t0vWindow(pStatus, T0_27_WIN_MS)
+    fold2 := long[pStatus][T0R_ST_FOLD]
+    motor.stopMotor()
+    t0vRest()
+    nThresh := ((dutyPk #> dutyFloorDrv) * nLimitK) / T0_27_K_ONE
+    netMax := senseMax - nZero
+    eOut := T0V_OUT_NOMEAS
+    if bLimOk and (eErr == motor.NO_ERROR) and (dutyPk <= dutyFloorDrv)
+        if netMax >= T0_27_NET_FOLD_MV
+            eOut := T0V_OUT_NOISE
+        elseif ((fold2 - fold1) <= T0_27_FOLD_HI) and bDriven and (nThresh == motor.FOLD_MIN_MV)
+            eOut := T0V_OUT_PASS
+        else
+            eOut := T0V_OUT_FAIL
+    debug("T0-27,legsense,wheel,", zstr_(pWheel), ",power,", udec_(nPower), ",sense_max_mv,", sdec_(senseMax), ",sense_mean_mv,", sdec_(senseSum / (nSamples #> 1)), ",zero_mv,", sdec_(nZero), ",net_max_mv,", sdec_(netMax), ",samples,", udec_(nSamples))
+    debug("T0-27,leg,wheel,", zstr_(pWheel), ",power,", udec_(nPower), ",err,", sdec_(eErr), ",lim_ok,", zstr_(t0vTF(bLimOk)), ",limit_k,", udec_(nLimitK), ",duty_floor_est,", udec_(dutyFloorEst), ",duty_floor_drv,", udec_(dutyFloorDrv), ",duty_pk,", udec_(dutyPk), ",t_eff_mv,", udec_(nThresh), ",fold_ramp,", udec_(fold1 - fold0), ",fold_win,", udec_(fold2 - fold1), ",frames_win,", udec_(T0_27_FRAMES_WIN), ",driven,", zstr_(t0vTF(bDriven)), ",net_max_mv,", sdec_(netMax), ",outcome,", zstr_(t0vOutName(eOut)))
+
+PRI t0vHoldLeg(pWheel) : bMeasured, bOk | pStatus, pParams, bLimOk, nLimitK, frameCnt, dutyGate, dutyFloorDrv, nZero, bKey, eErr, fold0, fold1, fold2, dutyPk, senseMax, senseSum, nSamples, nThreshPk, netMax, eStateEnd
+' The positive control, R22-T0-REVA-FOLDPOS (the section's CON): ATTENDED. The t0reva window asks for SPACE, then the
+' wheel is driven at T0_27_POWER_HOLD for T0_27_SPIN_MS; the window says GRIP and the T0_27_HOLD_WIN_MS window is read
+' (t0vWindow()) while the operator holds the tyre; then LET GO, the stop and rest. Prints T0-27,hold,prompt, then
+' T0-27,holdsense and T0-27,hold.
+'
+' @param pWheel - the group's name, for the record
+' @returns bMeasured - T/F where T means the limits took, SPACE came, the drive was taken, the window's largest duty
+'                       reached dutyGate, and the grip loaded the link or the fold acted
+' @returns bOk - T/F where T means foldback_frames rose over the window and net_max_mv reached T0_27_NET_FOLD_MV
+'
+' @local pStatus - @drive_u, the driver's status run (testGetAbiAddrs())
+' @local pParams - @offset_fwd, its parameter run
+' @local bLimOk - the limits took and read back T0_27_LIMIT_A
+' @local nLimitK - the fold-back factor the driver reads
+' @local frameCnt - the PWM frame, clocks
+' @local dutyGate - the duty at m = T0_27_HOLD_M_PCT / 100, which the window's largest must reach
+' @local dutyFloorDrv - the fold's own duty floor as the driver reads it
+' @local nZero - the rest offset the fold-back nets out, mV
+' @local bKey - SPACE came inside T0_27_KEY_MAX_MS
+' @local eErr - driveAtPower()'s return, ERR_NOT_STARTED as a marker when it was never called
+' @local fold0 - foldback_frames before the command
+' @local fold1 - ...at the window's start (the GRIP prompt)
+' @local fold2 - ...at its end
+' @local dutyPk - the window's largest duty
+' @local senseMax - the window's largest raw reading, mV
+' @local senseSum - the readings' sum
+' @local nSamples - window samples
+' @local nThreshPk - the effective threshold at the window's largest duty, mV (t_eff_pk_mv)
+' @local netMax - senseMax less nZero, mV
+' @local eStateEnd - drv_state at the window's end
+
+    _, pStatus, pParams := motor.testGetAbiAddrs()
+    bLimOk, nLimitK := t0vSetLimits()
+    _, _, _, _, _, frameCnt := motor.testGetDriveConstants()
+    dutyGate := muldiv64(frameCnt, 4 * T0_27_HOLD_M_PCT, 100)
+    dutyFloorDrv := long[pParams][T0R_PR_DUTY_FLOOR]
+    nZero := long[pParams][motor.DRVR_PARAMS_LONGS_COUNT - 1]
+    debug(`PLOT t0reva TITLE 'T0-27 Rev A hold' SIZE 640 120 POS 60 80 HIDEXY)
+    debug(`t0reva clear set 320 60 text 14 'CLICK HERE - PRESS SPACE - THE WHEEL SPINS SLOWLY')
+    debug("T0-27,hold,prompt,click_the_t0reva_window_and_press_SPACE_then_grip_the_", zstr_(pWheel), "_tyre_when_it_says_GRIP")
+    bKey := bT0vWaitSpace()
+    eErr := motor.ERR_NOT_STARTED
+    fold0 := long[pStatus][T0R_ST_FOLD]
+    fold1 := fold0
+    fold2 := fold0
+    dutyPk := 0
+    senseMax := nZero
+    senseSum := 0
+    nSamples := 0
+    eStateEnd := long[pStatus][T0R_ST_STATE]
+    if bKey
+        eErr := motor.driveAtPower(T0_27_POWER_HOLD)
+        waitms(T0_27_SPIN_MS)
+        debug(`t0reva clear set 320 60 text 18 'GRIP THE TYRE NOW - HOLD IT HARD')
+        fold1 := long[pStatus][T0R_ST_FOLD]
+        dutyPk, senseMax, senseSum, nSamples, _ := t0vWindow(pStatus, T0_27_HOLD_WIN_MS)
+        fold2 := long[pStatus][T0R_ST_FOLD]
+        eStateEnd := long[pStatus][T0R_ST_STATE]
+        motor.stopMotor()
+        debug(`t0reva clear set 320 60 text 18 'LET GO - DONE')
+        t0vRest()
+    nThreshPk := ((dutyPk #> dutyFloorDrv) * nLimitK) / T0_27_K_ONE
+    netMax := senseMax - nZero
+    bOk := ((fold2 - fold1) > 0) and (netMax >= T0_27_NET_FOLD_MV)
+    bMeasured := bLimOk and bKey and (eErr == motor.NO_ERROR) and (dutyPk >= dutyGate) and ((netMax >= T0_27_NET_FOLD_MV) or ((fold2 - fold1) > 0))
+    debug("T0-27,holdsense,wheel,", zstr_(pWheel), ",sense_max_mv,", sdec_(senseMax), ",sense_mean_mv,", sdec_(senseSum / (nSamples #> 1)), ",zero_mv,", sdec_(nZero), ",net_max_mv,", sdec_(netMax), ",samples,", udec_(nSamples), ",state_end,", udec_(eStateEnd))
+    debug("T0-27,hold,wheel,", zstr_(pWheel), ",power,", udec_(T0_27_POWER_HOLD), ",key,", zstr_(t0vTF(bKey)), ",err,", sdec_(eErr), ",lim_ok,", zstr_(t0vTF(bLimOk)), ",limit_k,", udec_(nLimitK), ",duty_gate,", udec_(dutyGate), ",duty_floor_drv,", udec_(dutyFloorDrv), ",duty_pk,", udec_(dutyPk), ",t_eff_pk_mv,", udec_(nThreshPk), ",fold_ramp,", udec_(fold1 - fold0), ",fold_win,", udec_(fold2 - fold1), ",net_max_mv,", sdec_(netMax), ",measured,", zstr_(t0vTF(bMeasured)), ",ok,", zstr_(t0vTF(bOk)))
+
+PRI t0vSetLimits() : bLimOk, nLimitK | eLim, nPeakA, nContA
+' Lower both current limits to T0_27_LIMIT_A (testSetCurrentLimits()) and read them back.
+'
+' @returns bLimOk - T/F where T means the call took and both limits read back T0_27_LIMIT_A
+' @returns nLimitK - the fold-back factor the driver then reads
+'
+' @local eLim - testSetCurrentLimits()'s return
+' @local nPeakA - the peak limit then in effect, amps
+' @local nContA - the continuous limit, amps
+
+    eLim := motor.testSetCurrentLimits(T0_27_LIMIT_A, T0_27_LIMIT_A)
+    nPeakA, nContA, _, _, nLimitK := motor.testGetCurrentLimitState()
+    bLimOk := (eLim == motor.NO_ERROR) and (nPeakA == T0_27_LIMIT_A) and (nContA == T0_27_LIMIT_A)
+
+PRI t0vWindow(pStatus, winMs) : dutyPk, senseMax, senseSum, nSamples, bDriven | startMs, nSense, eState
+' Read the driver's status run for winMs as fast as the loop runs -- no wait, so most PWM frames' readings are seen
+' (the run is written every frame): the largest duty, the largest and summed raw DC-link reading, and whether every
+' sample read a driven, running state (DCS_SPIN_UP, AT_SPEED, SPIN_DN or SLOW_TO_CHG).
+'
+' @param pStatus - @drive_u, the driver's status run
+' @param winMs - the window, ms
+' @returns dutyPk - the largest duty
+' @returns senseMax - the largest raw reading, mV
+' @returns senseSum - the readings' sum
+' @returns nSamples - samples read
+' @returns bDriven - T/F where T means every sample read a driven, running state
+'
+' @local startMs - getms() at the window's start
+' @local nSense - one sample's raw reading, mV
+' @local eState - one sample's drv_state
+
+    senseMax := NEGX
+    bDriven := TRUE
+    startMs := getms()
+    repeat until (getms() - startMs) >= winMs
+        dutyPk #>= long[pStatus][T0R_ST_DUTY]
+        nSense := long[pStatus][T0R_ST_SENSE_I]
+        senseMax #>= nSense
+        senseSum += nSense
+        nSamples += 1
+        eState := long[pStatus][T0R_ST_STATE]
+        if (eState <> motor.DCS_SPIN_UP) and (eState <> motor.DCS_AT_SPEED) and (eState <> motor.DCS_SPIN_DN) and (eState <> motor.DCS_SLOW_TO_CHG)
+            bDriven := FALSE
+
+PRI bT0vWaitSpace() : bKey | keyCode, bArmed, startMs
+' Wait, bounded by T0_27_KEY_MAX_MS, for SPACE in the t0reva window -- T0-12's pc_key() pattern: a key reads only once a
+' 0 has been seen, so a key already held cannot register, and the poll matches PC_KEY's latch window.
+'
+' @returns bKey - T/F where T means SPACE came inside the bound
+'
+' @local keyCode - pc_key()'s last-read key code, 0 when none is latched
+' @local bArmed - TRUE once a 0 reading has been seen
+' @local startMs - getms() when the wait began
+
+    bArmed := FALSE
+    startMs := getms()
+    repeat until bKey or ((getms() - startMs) >= T0_27_KEY_MAX_MS)
+        debug(`t0reva `pc_key(@keyCode))
+        if keyCode == 0
+            bArmed := TRUE
+        elseif bArmed and (keyCode == T0_27_KEY_GO)
+            bKey := TRUE
+        waitms(T0_27_KEY_POLL_MS)
+
+PRI t0vOutName(eOut) : pName
+' The token a leg's outcome is printed as.
+'
+' @param eOut - T0V_OUT_*
+' @returns pName - pointer to "PASS", "FAIL", "PREMISE_NOISE" or "NOMEAS"
+
+    case eOut
+        T0V_OUT_PASS:
+            pName := @"PASS"
+        T0V_OUT_FAIL:
+            pName := @"FAIL"
+        T0V_OUT_NOISE:
+            pName := @sCritPremNoise
+        other:
+            pName := @"NOMEAS"
+
+PRI t0vRest() | startMs
+' Wait, bounded by T0_27_REST_MS, for the driver to read DCS_STOPPED.
+'
+' @local startMs - getms() when the wait began
+
+    startMs := getms()
+    repeat until (motor.getDriverState() == motor.DCS_STOPPED) or ((getms() - startMs) >= T0_27_REST_MS)
+        waitms(READY_POLL_MS)
+
+PRI t0vBoardName(eBoard) : pName
+' The token a board revision is printed as.
+'
+' @param eBoard - getBoardType()'s return
+' @returns pName - pointer to "REV_A", "REV_B" or "NONE"
+
+    case eBoard
+        motor.REV_A:
+            pName := @"REV_A"
+        motor.REV_B:
+            pName := @"REV_B"
+        other:
+            pName := @"NONE"
+
+PRI t0vTF(bValue) : pText
+' TRUE or FALSE, for a record.
+'
+' @param bValue - T/F
+' @returns pText - pointer to "TRUE" or "FALSE"
+
+    pText := (bValue <> FALSE) ? @"TRUE" : @"FALSE"
 #endif
 
 #ifdef T0_HAND

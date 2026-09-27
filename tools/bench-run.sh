@@ -114,7 +114,8 @@ Usage:  tools/bench-run.sh <tier>
                    t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
                    t0-stopmode    Tier 0's T0-24 stop-state hand test only -- 8 ROWS: OPERATOR PUSHES OR SPINS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
                    t0-stopmode-fltfirst  as t0-stopmode with the two powered fault rows before the e-stop row (PL-116's discriminator)  [WHEELS UP, ATTENDED]
-                   t0-stopreason  Tier 0's T0-25 only -- the RIGHT wheel driven slowly and stopped each way a program can, to read why it stopped and the driver's event log; then driven up to power 50, slowed, stopped and reversed while the ramp is watched pass by pass (PL-160)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   t0-stopreason  Tier 0's T0-25 only -- the RIGHT wheel driven slowly and stopped each way a program can, to read why it stopped and the driver's event log; then driven up to power 50, slowed, stopped and reversed while the ramp is watched pass by pass (PL-160) and every PWM frame's slack is watched (PL-161)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   t0-reva        Tier 0's T0-27 only -- A REV A BOARD SWAPPED ONTO ONE GROUP FIRST: at a 2 A limit its wheel is driven slowly twice and must fold back no frame, then you hold it by hand and it must fold back (PL-163); drives nothing on an all-Rev B rig  [BOARD SWAP, WHEELS UP, ATTENDED: ONE HAND HOLD]
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    spin-auto      as spin, the board revision auto-detected (PL-120's first factor)  [WHEELS UP, UNATTENDED]
                    spin-quiet     as spin, built quiet like the dual and T0 tests (PL-120's second factor)  [WHEELS UP, UNATTENDED]
@@ -237,10 +238,21 @@ case "$TIER" in
     # t0-stopreason (test_bench_t0 SRC_REV 25, DRIVER_REV 38/39, PL-160): after T0-25's stop-reason legs, the same build drives
     #  the wheel at powers 50 and 25 for the jerk-limited ramp's cells -- a speed-up, a slow-down, a stop, a reversal, a
     #  stop read mid speed-up, and five stops by distance, rotation and time limits (two at cruise, three mid-ramp) --
-    #  while a sampler cog watches every drive pass. About 30 s more than the legs alone.
+    #  while a sampler cog watches every drive pass. About 30 s more than the legs alone. SRC_REV 26 (PL-161): a frame
+    #  watcher cog reads every PWM frame's slack over the same drives (R22-T0-FRAMESLACK); it adds no motion and no time.
     t0-stopreason)  BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPREASON)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the program drives the RIGHT wheel (the P16 board; THE LEFT, the P32 board, INSTEAD if the right fails its start checks) slowly, at power 15, about 30 short times, and stops it each way a program can -- a normal stop, a timed stop, an EMERGENCY STOP THAT BRAKES IT ABRUPTLY, and the stop that comes when commands stop arriving -- then reads why each drive stopped and what the driver logged. Then it drives the wheel ONE FULL TURN to a stop-after-rotation limit, drives it again for a few seconds with no limit, and e-stops it once more at rest. THEN THE RAMP TESTS, FASTER: the wheel spins up to power 50 (about 145 rpm), slows to power 25, stops, spins up to 25 and REVERSES to -25 without stopping, stops, and then six more spin-ups to power 50, each ended by a stop the program or a limit sends -- every speed change is a smooth ramp of a second or two. IF THE RIGHT WAS REFUSED, it then tries to start the right every 10 s, for up to 3 minutes, to time its return. Nothing waits for you and no window opens. About 2 minutes, or up to about 5 if the right is refused"
+                    ;;
+    # t0-reva (test_bench_t0 SRC_REV 26, DRIVER_REV 40, PL-163) -- T0-27 only: the Rev A fold-back, two unloaded legs
+    #  (no fold) and one attended hand-held leg (must fold: the positive control). The rig is Rev B, so this
+    #  tier needs ONE board swapped for a Rev A (same headers, same pins; the bench config auto-detects the revision, so
+    #  there is no config edit). It starts the RIGHT group and, unless that reads REV_A, the LEFT, prints the board each
+    #  read, and drives only the Rev A board's wheel. On an all-Rev B rig it drives nothing and its cell is NOMEAS, so it
+    #  cannot disturb a Rev B run. BENCH_QUIET for the same reason as t0.
+    t0-reva)        BENCH_FILE="test_bench_t0.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D T0_REVA)
+                    PRECONDITION="BEFORE THE RUN, YOU SWAP ONE BOARD: battery OFF; take ONE Rev B driver board off its headers (the RIGHT, P16, or the LEFT, P32 -- either works) and seat a REV A board on the same headers, fully seated; note which board came off; battery ON. Then WHEELS UP, HANDS OFF AT FIRST: the program starts the RIGHT motor and, unless it reads Rev A, stops it and starts the LEFT (each start pulses the leads with nothing able to move); it prints which board each group read. On the Rev A board ONLY, with its current limit lowered to 2 A, it drives that wheel SLOWLY twice (power 10, then power 5), about 6.5 s each, and stops it. THEN HOLD THE REV A WHEEL WHEN TOLD: a window named t0reva opens -- click it and press SPACE; the Rev A wheel spins slowly (power 20); when the window says GRIP, grip that wheel's tyre firmly by hand and keep holding it until the window says LET GO, about 4 s (the wheel may stop against your hand; that is expected). If neither group reads Rev A it drives nothing and no window opens. About 45 seconds plus your key press. AFTER THE RUN: battery OFF, put the Rev B board back on the headers it came from, battery ON, before anything else runs -- every other tier is Rev B"
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"
                     PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"
