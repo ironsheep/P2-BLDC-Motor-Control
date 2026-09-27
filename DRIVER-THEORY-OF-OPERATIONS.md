@@ -95,9 +95,12 @@ base pin and the parameter-block pointer, and steps past `targetAngle` and `targ
 |---|---|---|---|
 | `targetAngle` | `ptra[-2]` | Spin2 → driver (test only) | 1 |
 | `targetIncre` | `ptra[-1]` | front cog ↔ driver (command and sync handshake) | 1 |
-| Status block, `drive_u` … `duty_capped` | `ptra[0..18]` | driver → Spin2, every frame | `DRVR_STATUS_LONGS_COUNT` = 19 |
-| `fault` | `ptra[19]` | driver → Spin2, on fault only | 1 |
-| Parameter block, `offset_fwd` … `duty_floor` | `params_ptr_` | Spin2 → driver, every frame | `DRVR_PARAMS_LONGS_COUNT` = 16 |
+| Status block, `drive_u` … `drv_stop_fp` | `ptra[0..23]` | driver → Spin2, every frame | `DRVR_STATUS_LONGS_COUNT` = 24 |
+| `fault` | `ptra[24]` | driver → Spin2, on fault only | 1 |
+| Parameter block, `offset_fwd` … `sense_zero` | `params_ptr_` | Spin2 → driver, every frame | `DRVR_PARAMS_LONGS_COUNT` = 27 |
+
+The launch quartet's own length is `DRVR_LAUNCH_LONGS_COUNT` = 4. The counts are as of
+DRIVER_REV 39; the constants in `isp_bldc_motor.spin2` are the authority, not this page.
 
 ### The invariants
 
@@ -105,40 +108,85 @@ base pin and the parameter-block pointer, and steps past `targetAngle` and `targ
 `targetAngle`, `targetIncre` are four contiguous longs, in that order, immediately before the
 status block.
 
-**Invariant 2 — the status block is 19 contiguous longs, and `fault` is the next one.**
+**Invariant 2 — the status block is 24 contiguous longs, and `fault` is the next one.**
 
-```
-drive_u, drive_v, drive_w,                          (3)
-sense_u_mV, sense_v_mV, sense_w_mV, sense_i_mV,     (4)
-hall, pos,                                          (2)
-duty, err,                                          (2)
-loop_ticks, loop_ctcks,                             (2)
-drv_state,                                          (1)
-hall_missed, hall_illegal,                          (2)
-drv_incr_now,                                       (1)
-lag_held, duty_capped                               (2)   = 19
-fault                                                     ← immediately after
-```
+| Index | Long | Meaning |
+|---|---|---|
+| 0–2 | `drive_u`, `drive_v`, `drive_w` | the three phase levels written this frame |
+| 3–6 | `sense_u_mV`, `sense_v_mV`, `sense_w_mV`, `sense_i_mV` | the three phase voltages and the DC-link current reading, mV |
+| 7 | `hall` | the hall code |
+| 8 | `pos` | the signed hall-tick position (§4) |
+| 9 | `duty` | the applied duty |
+| 10 | `err` | the commanded angle less the rotor's, 256ths of a cycle |
+| 11 | `loop_ticks` | the frame loop's duration, clock ticks |
+| 12 | `loop_ctcks` | the drive pass's duration, clock ticks |
+| 13 | `drv_state` | the `DCS_*` state |
+| 14 | `hall_missed` | hall changes with no countable step, since driver start |
+| 15 | `hall_illegal` | entries into `%000` (low word) and `%111` (high word), since driver start |
+| 16 | `drv_incr_now` | the field's angle increment per drive pass |
+| 17 | `lag_held` | passes on which the lag limiter withheld the field's advance (unbounded) |
+| 18 | `duty_capped` | passes on which the duty demand exceeded the cap (unbounded) |
+| 19 | `fault_resyncs` | faults answered by a re-sync and a controlled stop (unbounded) |
+| 20 | `foldback_frames` | frames the current fold-back lowered the duty (unbounded) |
+| 21 | `drv_accel_now` | the ramp generator's acceleration: the signed change of `drv_incr_now` per pass |
+| 22 | `drv_stop_passes` | the driver's stop plan: drive passes to rest for a stop written now (DRIVER_REV 39) |
+| 23 | `drv_stop_fp` | the driver's stop plan: the field's travel to rest, 1/256 hall tick (DRIVER_REV 39) |
+| 24 | `fault` | ← immediately after the run; written TRUE on every fault |
 
 The driver writes them in one burst (`setq #DRVR_STATUS_LONGS_COUNT-1` / `wrlong drive_u_,
-ptra`) and reports a fault by writing `ptra[DRVR_STATUS_LONGS_COUNT]`.
+ptra`) and reports a fault by writing `ptra[DRVR_STATUS_LONGS_COUNT]`. Since `drv_accel_now`
+is no longer the run's last long, a reader of the raw run (a bench harness) finds the three
+appended longs by the index constants `DRVR_STATUS_ACCEL_NOW_IDX` (21),
+`DRVR_STATUS_STOP_PASSES_IDX` (22) and `DRVR_STATUS_STOP_FP_IDX` (23), not by counting.
 
-**Invariant 3 — the parameter block is 16 contiguous longs.**
+**Invariant 3 — the parameter block is 27 contiguous longs.**
 
-```
-offset_fwd, offset_rev, duty_min, duty_max, servo_shift, ff_ceiling, dead_gap,
-ramp_down, cfg_ctcks, stop_mode, e_stop, ramp_max, ramp_min, ramp_inc,
-i_limit_k, duty_floor                                                         = 16
-```
+| # | Long | Meaning |
+|---|---|---|
+| 0 | `offset_fwd` | commutation offset applied to negative increments |
+| 1 | `offset_rev` | commutation offset applied to positive increments |
+| 2 | `duty_min` | the duty floor |
+| 3 | `duty_max` | the duty ceiling |
+| 4 | `servo_shift` | the trim accumulator's shift |
+| 5 | `ff_ceiling` | the motor's back-EMF line the feedforward scales by (not a speed ceiling) |
+| 6 | `dead_gap` | the dead gap between a half-bridge's two sides |
+| 7 | `accel_dn` | the slow-down acceleration limit (was `ramp_down`) |
+| 8 | `cfg_ctcks` | the drive pass's 500 µs deadline, clock ticks |
+| 9 | `stop_mode` | `SM_FLOAT` or `SM_BRAKE` |
+| 10 | `e_stop` | `ES_OFF`, or the kind of emergency stop latched |
+| 11 | `accel_up` | the speed-up acceleration limit (was `ramp_max`) |
+| 12 | `jerk_up` | the speed-up jerk (was `ramp_min`) |
+| 13 | `jerk_dn` | the slow-down jerk (was `ramp_inc`) |
+| 14 | `i_limit_k` | the current-limit threshold factor |
+| 15 | `duty_floor` | the duty floor for the phase-current estimate |
+| 16 | `hold_duty` | the duty applied at rest |
+| 17 | `hold_short` | TRUE once a braked hold at rest has handed off to the phase short |
+| 18 | `fault_mode` | `FR_SHIPPED` or `FR_GRADED`, the response to a position fault |
+| 19 | `brake_on` | the braking bridge's shorted frames per brake period |
+| 20 | `probe_phase` | the phase the start-time continuity probe drives at rest |
+| 21 | `force_seq` | test use: advanced to force one fault |
+| 22 | `fault_clr` | advanced by the front cog to clear `DCS_FAULTED` |
+| 23 | `probe_sink` | test use: the phase whose low side the probe holds on |
+| 24 | `probe_y` | test use: the probed phase's high-side duty |
+| 25 | `drv_release` | TRUE asks the driver to release the bridge and park; only `stop()` writes it |
+| 26 | `sense_zero` | the DC-link rest offset the fold-back nets out, mV — the last long |
 
 Read every frame by `setq #DRVR_PARAMS_LONGS_COUNT-1` / `rdlong params_ptr_+1, params_ptr_`.
 `frame_cnt` sits after the block and is deliberately outside it.
 
-**Three places must agree** for each block: the Spin2 `VAR` order, the PASM `res` order, and
-the count constant. **`start()` checks the layout before it launches anything**
-(`isAbiLayoutValid()`): the three runs must have the offsets the driver walks, and every
-Spin2-only array — the error slots, the request slots, the front cog's stack, the rpm window —
-must lie outside them. A mismatch refuses the start with `ERR_ABI_MISMATCH`. The check sees
+**Append only.** A new long goes at the end of its run — after `drv_stop_fp` (so `fault` moves
+up one) or after `sense_zero`. Reordering, inserting or removing a long anywhere else silently
+corrupts the driver.
+
+**Three places must agree** for each block, and change together: the Spin2 `VAR` order, the
+PASM `res` register block (`offset_fwd_` … `sense_zero_`, `drive_u_` … `stop_fp_`), and the
+count constant (with, for the status run, its index constants). **`start()` checks the layout
+before it launches anything** (`isAbiLayoutValid()`): the launch quartet must end where
+`drive_u` begins, `fault` must sit `DRVR_STATUS_LONGS_COUNT` longs after `drive_u`,
+`drv_accel_now`, `drv_stop_passes` and `drv_stop_fp` must sit at their `DRVR_STATUS_*_IDX`
+indexes with `drv_stop_fp` the run's last long, `sense_zero` must be the parameter run's
+`DRVR_PARAMS_LONGS_COUNT`-th long, and every Spin2-only array — the error slots, the request
+slots, the front cog's stack, the rpm window, its in-flight request — must lie outside the runs. A mismatch refuses the start with `ERR_ABI_MISMATCH`. The check sees
 offsets and sizes, not meaning: two longs swapped inside a run still pass it.
 
 ### `targetIncre` — a signed field with a stolen bit
@@ -155,7 +203,8 @@ value in the current tables is 545,000,000 (DocoEng, 11.1 V); the largest 6.5″
 
 ### One-shot DAT initialization
 
-`sync_required`, the per-motor tables (§4) and the LUT code pointer live in the driver's
+`sync_required`, the per-motor tables (§4) and the two LUT code pointers (`lutCodePtr`, the
+start sequence; `planCodePtr`, the stop planner's overlay) live in the driver's
 `DAT` image, written by `init()` **before** `coginit`. The cog receives its own copy at load
 time; writing them afterwards has no effect on a running driver.
 
@@ -184,7 +233,8 @@ start(basePin, voltage, detectMode)                   (steering: startOwned() pe
 Inside the driver cog: load the start sequence into LUT RAM and run it there, configure the
 six PWM smart pins (low sides inverted), calibrate the four ADC channels against GIO and VIO,
 compute per-channel scaling with the CORDIC, then — if `sync_required` — `waitatn` until
-released.
+released. The start sequence's last act is `loadOverlay`, which loads the stop planner over
+the now-spent start sequence (§4) and enters the drive loop.
 
 **Two wheels start in lockstep.** The steering object starts both drivers parked, reverses
 the right wheel (`forwardIsReverse()`, since the motors face opposite ways), and releases
@@ -213,7 +263,9 @@ The driver runs two nested loops.
 
 - **The frame loop** runs once per PWM frame, **44 kHz (22.7 µs)**: read the ADCs, compute
   and write the three phase levels, read the halls, compute the error, check for a fault,
-  apply the current limit, and servo the duty. It writes the 19-long status block every frame.
+  apply the current limit, and servo the duty. It writes the 24-long status block every frame.
+  On the nine frames after each drive pass it also works out the stop plan, a third of a plan
+  a frame, in the slack after that frame's status write (below).
 - **The drive pass** runs every **23 frames, about 1,913 times a second (522.7 µs)**: take
   the command, advance the ramp, and advance the commanded angle. `cfg_ctcks` is a 500 µs
   deadline, but it is tested only at frame boundaries, so the pass runs on the 23rd frame.
@@ -244,13 +296,36 @@ as it stands; the states are now only what it reports. Four parameter longs driv
 rises by at most a jerk a pass to its limit, and ramps back out to land exactly on the target;
 a limit lowered mid-ramp is unwound at the larger jerk. A reversal passes through zero in one
 continuous ramp: only a start from `DCS_STOPPED` seeds the field from the halls. The
-generator's present acceleration is the last status long, `drv_accel_now`. Built-in limits:
+generator's present acceleration is the status long `drv_accel_now`. Built-in limits:
 1,000 mm/s² up and 1,470 mm/s² down (33,958 and 49,918 on the 6.5″ wheel), provisional.
 `setAcceleration()` and `setDeceleration()` set the limits from mm/s²; `setRampingValues()`
 sets them raw, and its `minRamp` and `incRamp` have no effect.
 
 Steps 5 and 6 are why the driver seldom faults any more: the field never gets far enough
 ahead of the rotor to trip the 175.8° fault test unless the rotor is truly lost.
+
+### The stop plan
+
+**The driver plans its own stop** (DRIVER_REV 39, PL-161), so no front cog computes one.
+After each drive pass, `planStage` runs the jerk-limited stop's closed form in integers
+(`planA` … `planC`: 64-bit sums, `QSQRT` roots, no float), a third of a plan a frame over the
+next nine frames so that it fits at 160 MHz. It plans from the pass's own increment and
+acceleration, and from both ends of the accelerations the next pass could reach under any
+command, so the plan holds whether the stop is taken by the next pass or, if that pass has
+already read its command, by the one after. The largest passes-to-rest and the largest travel
+of the three are published as `drv_stop_passes` and `drv_stop_fp`, by the status write of the
+tenth frame after the pass (about 230 µs).
+
+### Cog and LUT memory
+
+Registers live in cog RAM, because instruction operands reach only cog RAM; code may live in
+the LUT, which runs at cog speed. The `fit` comments in the source, read from the compiler at
+DRIVER_REV 39, give the budget: cog RAM **492 of 496** longs; the LUT-resident block
+(`lutCodeStart` $200 … `lutCodeEnd`, the start sequence, `jerkStep` and the other per-pass
+routines) **507 of 512**. The stop planner costs no LUT the running driver had: it is an
+**overlay**, `planOvlStart` $200 … `planOvlEnd`, that `loadOverlay` block-loads from
+`planCodePtr` over the start sequence once that has run — **126 of the 129** longs below
+`gettgtincr`. Nothing may call into the overlay before the start sequence ends.
 
 ### The frame loop — commutation
 
@@ -348,19 +423,25 @@ schedule re-anchored, never replayed.
 2. tracking: latch a new fault's cause; accumulate hall ticks since the last pass
    every 8th pass (125 Hz): advance the 1-second rpm window, update the following
    reading, and re-derive the lead (6.5″ only)
-3. limits: a time or distance limit fires early by the stopping time or distance at
-   the current speed, so the motor comes to rest at the limit
+3. limits: a time or distance limit fires early by the stopping time or distance the
+   driver has published (drv_stop_passes / drv_stop_fp), so the motor comes to rest at
+   the limit
 4. the command timeout, when on
 5. protection: the phase-current average and the derate; the blocked-motor test
 ```
 
-**Stopping distance** is computed from the ramp by `stopPlan()`: the jerk-limited stop's
-phases (unwinding any acceleration still speeding up, the rise, the plateau at `accel_dn`, the
-ramp-out) summed in closed form from the field's present increment *and* acceleration, exact
-against the driver's own per-pass arithmetic, plus the one pass the stop may take to be read.
-From 196 ticks/s on the 6.5″ motor it is about 100 hall ticks, DERIVED and not yet measured;
-the constant-rate ramp before DRIVER_REV 38 gave 75, the figure the bench measured. Only one limit is live at a
-time: a time limit is checked first, and a distance limit only while no time limit is armed.
+**Stopping time and distance** are the driver's own stop plan (§4), read from the status run:
+the front cog computes nothing and only reads and compares. `frontStopTicks()` is
+`drv_stop_fp` in whole hall ticks; `frontStopMs()` is `drv_stop_passes` at 522.7 µs a pass,
+rounded up. The plan counts from the published pass's own time, and the run is read after
+that, so its age can only make a limit's stop early, never late. The plan is the jerk-limited
+stop's phases (unwinding any acceleration still speeding up, the rise, the plateau at
+`accel_dn`, the ramp-out) in closed form, exact against the driver's own per-pass arithmetic —
+the form the Spin2 `stopPlan()` computed at DRIVER_REV 38 (it is gone). From 196 ticks/s on
+the 6.5″ motor that form gave about 100 hall ticks, DERIVED and not yet measured; the
+constant-rate ramp before DRIVER_REV 38 gave 75, the figure the bench measured. Only one limit
+is live at a time: a time limit is checked first, and a distance limit only while no time
+limit is armed.
 
 **The following reading** divides the rpm window's measured rate by the commanded rate. The
 driver acts on it internally; no public method reports it.
