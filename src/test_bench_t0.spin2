@@ -229,6 +229,29 @@
 ''               last. PL-52, in R20-T0-SR-COMMANDED (T0-25, already driving): getPower() reads T0_25_POWER as the
 ''               COMMANDED leg drives and 0 after its stopMotor() (new record T0-25,power); the pre-fix getPower()
 ''               still read 15 after the stop. T0-26 stays motionless.
+''               27 Sep 2026 -- SRC_REV 25 (DRIVER_REV 38, PL-160): the jerk-limited ramp generator. NEW in T0-25
+''               (t0-stopreason), after R20-T0-MOVEDONE and before R20-T0-PERSIST: the wheel is driven at powers 50 and
+''               25 while a sampler cog reads the driver's status run pass by pass and judges only the pairs of passes
+''               it resolved (t0rRamp(), t0pWatch()). R22-T0-RAMP-SHAPE (a speed-up from rest, a slow-down, a stop:
+''               every pass's acceleration within one jerk step of the last and inside its limit, none after arrival,
+''               no overshoot, the stop never through zero), R22-T0-RAMP-REVERSE (a reversal crosses zero in one
+''               ramp, never DCS_STOPPED), R22-T0-RAMP-UNWIND (a stop read at the speed-up's limit unwinds it at the
+''               larger jerk, within RAMP_TAU_MS), R22-T0-STOPPLAN-C (stopAfterRotation() and stopAfterTime() armed
+''               at cruise come to rest at their limit: the plan's stop against the stop's own ticks and ms) and
+''               R22-T0-STOPPLAN-M (stopAfterDistance(), stopAfterRotation() and stopAfterTime() armed at rest fire
+''               mid-ramp and come to rest at their limit). New records T0-25,rampseg, T0-25,rampend, T0-25,unwind,
+''               T0-25,plan. NEW in T0-26 (t0-api): R22-T0-API-RAMPDEF, the built-in ramp -- getAcceleration()
+''               ACCEL_BUILTIN_MM_S2, getDeceleration() DECEL_BUILTIN_MM_S2 and getRampingValues() the four driver
+''               parameters derived from them -- before start() and on the running driver. RE-CERTIFIED: R17-T0-ACCEL
+''               (t0) reads setAcceleration()'s rate as the speed-up limit with its jerk, anchored on the 6.5in
+''               wheel's derived 33_958 steps for 1_000 mm/s^2 (token MM_S2_LIMIT_JERK, was MM_S2_CONST_RAMP);
+''               R20-T0-API-ACCEL and R20-T0-API-PERSIST judge the four parameters as the two limits and their jerks,
+''               the anchor on the derived 49_918 for DECEL_BUILTIN_MM_S2 (was 1% of the old 50_000 ramp_down).
+''               DRIVER_REV 39 (PL-161, the driver plans its own stop and publishes it ~232 us after each pass, never
+''               late, early by its age and its take-pass case): the sampler reads drv_accel_now by the library's
+''               DRVR_STATUS_ACCEL_NOW_IDX (no longer the run's last long), and every stop-limit bound in T0-25 gains
+''               the plan's early term, T0_25_PLAN_EARLY_TICKS: R20-T0-ROTSTOP and R20-T0-ODOMETER -4 .. +3 ticks
+''               (were +/- 3); the new time legs -6 .. +4 ms, derived term by term in CON.
 ''
 '' =================================================================================================
 
@@ -340,7 +363,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 24                                       ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 25                                       ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -365,13 +388,16 @@ CON { 6.0.0 cells (task 3560) }
 
 CON { API promise and regression cells (tasks 3577, 3574) }
 
-' R17-T0-ACCEL: the library documents its built-in ramp as starting "near 44 mm/s squared", and that ramp's
-'  start is the default ramp_min it reads back before any call. DERIVED: 1_500 steps x 0.02945 mm/s^2 per
-'  step (1913 passes/s, 6 ticks per electrical cycle, 5.76 mm per tick, 2^32 per cycle) = 44.2 mm/s^2. So
-'  setAcceleration(ACCEL_ANCHOR_MM_S2) must land within 1% of the default ramp_min: a factor wrong anywhere
-'  in the conversion moves it far outside that.
-    ACCEL_ANCHOR_MM_S2 = 44
-    ACCEL_ANCHOR_TOL_DIV = 100                                  ' 1% of the default ramp_min
+' R17-T0-ACCEL (SRC_REV 25, DRIVER_REV 38): setAcceleration() sets the speed-up acceleration LIMIT, getRampingValues()'s
+'  maxRamp, and its jerk, minRamp (PL-160). DERIVED, not read from the library: one step per drive pass is
+'  0.0294485 mm/s^2 at the rim of the 6.5in wheel (44_000 / 23 = 1_913.04 passes/s, squared, x 6 ticks per electrical
+'  cycle x 5.76 mm per tick / 2^32 per cycle), so 1_000 mm/s^2 is 33_957.6 steps, 33_958. setAcceleration(
+'  ACCEL_ANCHOR_MM_S2) must land within 1% of it: a factor wrong anywhere in the conversion moves it far outside that.
+'  The bench's wheel only (BENCH_CFG), as the anchor before it was. The anchor is NOT the built-in rate
+'  (ACCEL_BUILTIN_MM_S2), whose step the library converts with the same code, so it could not catch that code.
+    ACCEL_ANCHOR_MM_S2 = 1_000
+    ACCEL_ANCHOR_STEP  = 33_958                                 ' DERIVED above, the 6.5in wheel
+    ACCEL_ANCHOR_TOL_DIV = 100                                  ' 1% of it
     ACCEL_BELOW_RANGE  = -1                                     ' a negative rate, as well as the one just below range
 ' R17-T0-KMMI: exact unit identities the conversion must reproduce tick for tick
     M_PER_KM           = 1_000
@@ -424,19 +450,24 @@ CON { stop reasons and the event log (T0-25, -D T0_STOPREASON only; task 3621, D
                                                                 '  isp_bldc_motor's 49 at an eighth and 98 at a quarter) is ~1.5 s + the ramp
     T0_25_ROT_NEG_EXTRA_MS = 1_000                              ' the negative drives the positive's fire time plus this: ~59 more
                                                                 '  ticks, so a wheel nothing stopped is well past the limit
-  ' ROTSTOP's tolerance on the tracked ticks at rest against the limit, +/- this. DERIVED from the stop's own logic
+  ' ROTSTOP's tolerance on the tracked ticks at rest against the limit. DERIVED from the stop's own logic
   '  (isp_bldc_motor bFrontLimitsDue()): the stop is written in the first 1 ms front pass where
-  '  posTrkHallTicks + frontStopTicks() >= the limit. frontStopTicks() models the FIELD's ramp-down and floors
-  '  (muldiv64 of incr >> 9), and the rotor follows the field, not exactly; the library states the result as "at rest
-  '  at the limit (within about two hall ticks)" (stopAfterRotation()'s doc) -- 2 ticks. Plus one hall tick:
-  '  posTrkHallTicks counts whole ticks, so the crossing is seen up to one tick late -- 3 in all, either side. At
-  '  ~59 ticks/s a 1 ms pass carries ~0.06 ticks, so the pass cadence adds nothing further.
+  '  the travel since arming + frontStopTicks() >= the limit. frontStopTicks() is the FIELD's jerk-limited stop in
+  '  closed form, floored to a whole tick; the rotor follows the field, not exactly, and the library states the
+  '  result as "at rest at the limit (within about two hall ticks)" (stopAfterRotation()'s doc) -- 2 ticks. Plus one
+  '  hall tick: the travel counts whole ticks, so the crossing is seen up to one tick late -- 3 in all, either side.
+  '  At ~59 ticks/s a 1 ms pass carries ~0.06 ticks, so the pass cadence adds nothing further. SRC_REV 25: the plan is
+  '  the jerk-limited stop's (DRIVER_REV 38's front-cog stopPlan(), exact; DRIVER_REV 39's the driver's own, which
+  '  over-states the stop by its age and its take-pass case, so a stop may rest short by T0_25_PLAN_EARLY_TICKS more):
+  '  -(T0_25_ROT_TOL_TICKS + T0_25_PLAN_EARLY_TICKS) .. +T0_25_ROT_TOL_TICKS, -4 .. +3. (Before DRIVER_REV 38 the plan
+  '  was the stepped ramp-down's, incr x (incr / ramp_down + 1) / 2, and the band +/- 3.)
     T0_25_ROT_TOL_TICKS = 3
 
 ' SRC_REV 22 (DRIVER_REV 33): R20-T0-ODOMETER, R20-T0-MOVEDONE and R20-T0-PERSIST, run after R20-T0-ESTOPSTATUS (t0rOdometer(),
 '  t0rPersist()). Their stops fall after every event read, as ROTSTOP's do.
     T0_25_ODO_CM        = 30                                    ' ODOMETER: each driveForDistance(): 52 ticks on the 6.5" wheel (5.76 mm
-                                                                '  a tick), about a second at T0_25_POWER -- well past the ramp's 2 ticks
+                                                                '  a tick), about a second at T0_25_POWER -- past its ramps: SRC_REV 25
+                                                                '  (DRIVER_REV 38), ~18 ticks to reach 23.4 x 10^6 and ~15 to stop from it
     T0_25_ODO_WAIT_MS   = 10_000                                ' bound on each move ending (isMoveDone())
     T0_25_ESTOP_HOLD_MS = 100                                   ' the e-stop is held this long: 100 front passes, EACH of which zeroed
                                                                 '  the pre-33 odometer (frontTrack()), so one pass would do
@@ -444,6 +475,81 @@ CON { stop reasons and the event log (T0-25, -D T0_STOPREASON only; task 3621, D
     T0_25_PERSIST_DIST  = 30                                    ' ...setMaxSpeedForDistance(), likewise, and different from the first
     T0_25_HOLD_ARM_MS   = 500                                   ' bound on the restarted motor's hold reading HS_HOLDING: the front cog
                                                                 '  arms it on its first pass at rest, so ~1 ms; 500 is margin
+
+' SRC_REV 25 (DRIVER_REV 38, PL-160): the jerk-limited generator's cells (t0rRamp()), run after R20-T0-MOVEDONE and before
+'  R20-T0-PERSIST, which restarts the motor. Their stops are EV_STOP events nothing reads, after every read. Two powers:
+'  at 18.5 V on the 6.5in wheel incrementForPower() gives 81_717_144 (50) and 40_075_744 (25), 218 and 107 ticks/s. A
+'  ramp holds its acceleration limit A (at jerk J) only when it changes the speed by more than A^2 / J -- 16.2 x 10^6
+'  speeding up (33_958^2 / 71) and 24.0 x 10^6 slowing (49_918^2 / 104) on the built-in rates -- and every ramp below
+'  changes it by 40 x 10^6 or more, so each reaches its limit and holds it for a while.
+    T0_25_RAMP_HI       = 50                                    ' the upper power
+    T0_25_RAMP_LO       = 25                                    ' the lower power, and the reversal's
+    T0_25_RAMP_WAIT_MS  = 5_000                                 ' bound on one watch: the longest ramp, rest to T0_25_RAMP_HI, is
+                                                                '  A / J passes in, 1_928 at A and A / J out, ~2_885 passes (1.5 s)
+    T0_25_SETTLE_MS     = 100                                   ' watched at the target after arriving: ~190 passes, a = 0 on each
+    T0_25_MIN_JUDGED    = 100                                   ' a watch that judged fewer pairs of passes is NOMEAS
+    T0_25_WATCH_STACK   = 128                                   ' the sampler cog: t0pWatch() and its three callees, no library call
+    T0P_IDLE_US         = 100                                   ' the sampler cog's poll for its next watch
+  ' THE SAMPLER (t0pWatch(), on its own cog so that it is watching BEFORE cog 0 sends the command it judges) reads the
+  '  driver's status run directly, by its hub offsets from @drive_u (isp_bldc_motor VAR order, testGetAbiAddrs()), and the
+  '  launch run's target. A loop is a handful of hub reads and no method call, a few microseconds against a 522.7 us drive
+  '  pass (each watch prints gap_pk_us, its worst). A sample whose two reads of v differ straddled the driver's status
+  '  write and is skipped. A new pass is a sample whose v or a differs from the last; it is JUDGED with the last only when
+  '  the two good samples were under T0R_PASS_GAP_US apart, so no pass can lie between them, and only when its v changed
+  '  by its own a (v' = v + a'; the pass that reaches rest, v and a both 0, excepted). Anything else is counted, never
+  '  judged: unres (the gap) or incons (a change of v the generator did not make -- the hold decay). A pass whose v and a
+  '  both repeat the last is the generator at rest or at speed (a = 0 both times), so no judged step can hide in one.
+    T0R_ST_POS          = 8                                     ' pos
+    T0R_ST_STATE        = 13                                    ' drv_state
+    T0R_ST_INCR         = 16                                    ' drv_incr_now: v
+    T0R_ST_LAGHELD      = 17                                    ' lag_held
+    T0R_ST_ACCEL        = motor.DRVR_STATUS_ACCEL_NOW_IDX       ' drv_accel_now: a (21), after foldback_frames; the library's own
+                                                                '  index (DRIVER_REV 39: no longer the run's last long)
+    T0R_LN_TARGET       = 3                                     ' targetIncre, from @pinbase: the command the driver takes
+    T0R_PASS_GAP_US     = motor.DRIVE_PASS_US - 1               ' 522 us, under one drive pass (522.7 us)
+    T0R_US_PER_S        = 1_000_000
+    T0R_MS_PER_S        = 1_000
+  ' t0pWatch()'s modes: T0W_ARRIVE ends a watch T0_25_SETTLE_MS after v first reads the target, T0W_REST at DCS_STOPPED
+    #0, T0W_ARRIVE, T0W_REST
+  ' The stop plan's legs (t0rPlanLeg()). CRUISE: armed at T0_25_RAMP_HI's steady speed. MID-RAMP: armed at rest, then that
+  '  drive, so each fires while the speed-up still holds its limit (DERIVED, desk: it holds it from about 8 x 10^6 to 74 x
+  '  10^6; 90 ticks fires near 33 x 10^6, 600 mm (104 ticks) near 41 x 10^6, 1_600 ms near 38 x 10^6). A leg whose stop
+  '  is read at speed or at rest instead is NOMEAS: it did not test a stop from mid-ramp.
+    T0_25_PLAN_ROT_C    = 2                                     ' CRUISE: stopAfterRotation(2, DRU_ROTATIONS), 180 ticks; the stop
+                                                                '  from 81.7 x 10^6 runs ~121, so it fires ~0.27 s after arming
+    T0_25_PLAN_MS_C     = 1_500                                 ' CRUISE: stopAfterTime(), ms; the stop takes ~1_108 ms (2_118 passes)
+    T0_25_PLAN_MM_M     = 600                                   ' MID-RAMP: stopAfterDistance(600, DDU_MM)
+    T0_25_PLAN_ROT_M    = 1                                     ' MID-RAMP: stopAfterRotation(1, DRU_ROTATIONS), 90 ticks
+    T0_25_PLAN_MS_M     = 1_600                                 ' MID-RAMP: stopAfterTime(), ms
+    #0, T0P_LEG_ROT_C, T0P_LEG_MS_C, T0P_LEG_MM_M, T0P_LEG_ROT_M, T0P_LEG_MS_M
+    T0P_LEGS            = T0P_LEG_MS_M + 1
+  ' A distance leg's tolerance is ROTSTOP's (T0_25_ROT_TOL_TICKS late, and T0_25_PLAN_EARLY_TICKS more early), plus
+  '  T0_25_ARM_SKEW_TICKS either way for a limit armed at speed: the harness reads the position just before the call
+  '  and the front cog takes its own base a pass later, so a hall edge may fall between the two.
+    T0_25_ARM_SKEW_TICKS = 1
+  ' A time leg's band on (the field at zero) - (the deadline), ms, DERIVED as test_bench_dual's TIMESTOP band is, for
+  '  this sampler (microseconds, where TIMESTOP polls every ms). THE PLAN (DRIVER_REV 39, PL-161): the DRIVER publishes
+  '  its own stop plan about 232 us after each pass k (ten PWM frames): P passes counted from T_k, the largest of three
+  '  cases -- the stop taken by pass k + 1, or by k + 2 after a take pass whose acceleration is either end of
+  '  [a - Jx, a + Jx] (any command, any lag gate) -- and frontStopMs() is S = floor(P x 523 / 1_000) + 1. The field's
+  '  zero, at most T_k + P x 522.7 us, is therefore never after the fire instant + S: the plan is never late by
+  '  construction, and it runs early by what it over-states.
+  '  LATE: the limit is tested once a front pass against a getms() part-way through it, 2 x 1_000 / FRONT_LOOP_HZ; the
+  '   harness takes its deadline before the call, up to 1 ms before the library's own, 1; the zero instant is carried
+  '   from getct() to getms(), which truncates, 1. Total 4. (DRIVER_REV 38's front-cog plan also needed one pass for a
+  '   stop taken a pass beyond the state it read; DRIVER_REV 39's take-pass case covers that.)
+  '  EARLY: S is rounded up by up to 1 ms, 1; P may exceed the stop the field takes by the take pass and the +Jx end's
+  '   extra unwind pass and speed, three passes at most, 2 (1.57 ms); the plan's age -- counted from T_k, read up to
+  '   232 + 523 us later -- 1 (0.76 ms); DRIVE_PASS_US (523) overstates 522.7 us by under 1 ms for any stop under 3_333
+  '   passes, 1; the reading's getms() truncates, 1. Total 6 (4.9 in exact terms from 81.7 x 10^6 at the built-in
+  '   rates, of which the plan's own three -- rounding, extra passes, age -- are 3.3).
+    T0_25_TIME_LATE_MS  = 2 * (T0R_MS_PER_S / motor.FRONT_LOOP_HZ) + 1 + 1
+    T0_25_TIME_EARLY_MS = 1 + 2 + 1 + 1 + 1
+  ' The distance plan's over-statement (DRIVER_REV 39), the early side of every distance limit in T0-25 (ROTSTOP, ODOMETER,
+  '  the STOPPLAN tick legs): the published travel is the largest of the same three cases, counted from pass k's field,
+  '  so a stop rests short of its limit by at most the travel of the plan's age and of its three extra passes -- (0.76 +
+  '  1.57) ms of travel, 0.15 tick at T0_25_POWER's ~62 ticks/s and 0.51 tick at T0_25_RAMP_HI's 218: one whole tick.
+    T0_25_PLAN_EARLY_TICKS = 1
 
   ' T0-25's seven stop legs, run in this order (t0rLeg()); each reads getStopReason() as its drive opens, after its stop,
   '  and once more after the leg's own later act:
@@ -1005,6 +1111,18 @@ sCellPersist    BYTE    "R20-T0-PERSIST", 0                     ' ...settings ma
 sCritOdometer   BYTE    "EACH_MOVE_OWN_DIST_ESTOP_KEEPS", 0
 sCritMoveDone   BYTE    "FALSE_OPEN_TRUE_REST_ESTOP", 0
 sCritPersist    BYTE    "SET_STOPPED_READS_AFTER_START", 0
+' SRC_REV 25 (DRIVER_REV 38): the jerk-limited ramp generator's wheels-up cells; no todo-mcp task was named, so the PL id stands in
+sTaskPl160      BYTE    "PL-160", 0
+sCellRampShape  BYTE    "R22-T0-RAMP-SHAPE", 0                  ' T0-25: a speed-up, a slow-down and a stop, each pass jerk- and limit-bound
+sCellRampRev    BYTE    "R22-T0-RAMP-REVERSE", 0                ' ...a reversal crosses zero in one ramp, never DCS_STOPPED
+sCellRampUnw    BYTE    "R22-T0-RAMP-UNWIND", 0                 ' ...a stop read at the speed-up's limit unwinds it within RAMP_TAU_MS
+sCellPlanC      BYTE    "R22-T0-STOPPLAN-C", 0                  ' ...distance and time limits armed at cruise rest at their limit
+sCellPlanM      BYTE    "R22-T0-STOPPLAN-M", 0                  ' ...distance, rotation and time limits firing mid-ramp rest at theirs
+sCritRampShape  BYTE    "JERK_LIMIT_ARRIVE_NO_CROSS", 0
+sCritRampRev    BYTE    "CROSSES_ZERO_NEVER_STOPPED", 0
+sCritRampUnw    BYTE    "UNWINDS_AT_JERK_IN_TAU", 0
+sCritPlanC      BYTE    "CRUISE_STOP_RESTS_AT_LIMIT", 0
+sCritPlanM      BYTE    "MIDRAMP_STOP_RESTS_AT_LIMIT", 0
 
 DAT { T0-12 hand-copy of the driver's hall-position-delta table (PL-39) }
 
@@ -1192,6 +1310,53 @@ VAR { T0-25 helper reader cog (-D T0_STOPREASON only) }
     LONG    t0rBase                                             ' cog 0: that wheel's PINS_* group, for R20-T0-PERSIST's restart
     LONG    t0rPwrRun                                           ' cog 0: getPower() as the COMMANDED leg drives (PL-52)
     LONG    t0rPwrStop                                          ' cog 0: getPower() just after that leg's stopMotor() (PL-52)
+
+' SRC_REV 25 (PL-160): the pass sampler's cog (t0pWorker()) and its mailbox. Cog 0 writes the job longs, then t0pJobSeq
+' last; the sampler writes every reading, t0pArmedSeq once its baseline is taken and t0pDoneSeq last. Each long has
+' one writer; cog 0 reads the readings only after t0pDoneSeq names its job.
+    LONG    t0pStack[T0_25_WATCH_STACK]
+    LONG    t0pLaunch                                           ' cog 0, once: @pinbase of the motor watched
+    LONG    t0pStatus                                           ' cog 0, once: @drive_u
+    LONG    t0pJerkX                                            ' cog 0, once: max(jerk_up, jerk_dn), the largest step a pass may take
+    LONG    t0pAccUp                                            ' cog 0, once: accel_up, the speed-up limit
+    LONG    t0pAccDn                                            ' cog 0, once: accel_dn, the slow-down limit
+    LONG    t0pTgtBefore                                        ' cog 0: the target before the command; the take reads another
+    LONG    t0pMode                                             ' cog 0: T0W_ARRIVE or T0W_REST
+    LONG    t0pBoundMs                                          ' cog 0: the watch ends by this, from its start
+    LONG    t0pJobSeq                                           ' cog 0: bumped to post a watch
+    LONG    t0pArmedSeq                                         ' sampler: the watch's baseline is taken; cog 0 may command
+    LONG    t0pDoneSeq                                          ' sampler: the watch is over; its readings are final
+    LONG    t0pJudged                                           ' pairs of consecutive passes judged
+    LONG    t0pUnres                                            ' new passes not judged: more than a pass since the last good sample
+    LONG    t0pIncons                                           ' new passes whose v changed by other than their a (the rest pass excepted)
+    LONG    t0pGapPk                                            ' the largest gap between good samples, system ticks
+    LONG    t0pJerkPk                                           ' the largest |a' - a| judged
+    LONG    t0pAccPk                                            ' the largest |a| judged
+    LONG    bT0pLimitOk                                         ' every judged a inside its side's limit, or unwinding toward it
+    LONG    bT0pMonoOk                                          ' every a after the take zero or toward the target
+    LONG    bT0pTaken                                           ' the target changed: the command was written
+    LONG    t0pTakeCt                                           ' getct() at the take
+    LONG    t0pTarget                                           ' the target then
+    LONG    t0pVTake                                            ' v on the last pass before the take
+    LONG    t0pATake                                            ' a on it
+    LONG    t0pPosTake                                          ' pos at the take
+    LONG    t0pVMin                                             ' the least v from the take on
+    LONG    t0pVMax                                             ' the greatest
+    LONG    t0pPasses                                           ' new passes from the take on
+    LONG    t0pUnwind                                           ' those passes until a stopped pushing its old way (0, or its sign flipped); -1 when not seen
+    LONG    bT0pArrived                                         ' v read the target after the take
+    LONG    bT0pZeroAfter                                       ' a pass after the arrival read the target with a = 0
+    LONG    bT0pSettleOk                                        ' every pass after the arrival read the target with a = 0
+    LONG    bT0pStopSeen                                        ' DCS_STOPPED read after the take and before the arrival (a T0W_ARRIVE watch)
+    LONG    bT0pCrossed                                         ' a judged pair took v from off the target's side of zero onto it
+    LONG    bT0pRest                                            ' DCS_STOPPED with v 0 after the take (a T0W_REST watch)
+    LONG    t0pRestCt                                           ' getct() then
+    LONG    t0pPosRest                                          ' pos then
+    LONG    t0pLagHeld                                          ' lag_held's rise over the watch
+    LONG    bT0pEnded                                           ' the watch reached its mode's end (the settle, or rest), not its bound
+' cog 0's staging for the plan legs' records and cells
+    LONG    t0pLegOk[T0P_LEGS]                                  ' the leg rested inside its tolerance or band
+    LONG    t0pLegMeas[T0P_LEGS]                                ' the leg's precondition held: it fired from cruise (C) or mid-ramp (M)
 #endif
 
 #ifdef T0_STOPMODE
@@ -1538,72 +1703,83 @@ PRI bWaitReady(startResult) : bReady | readyMs
         bReady := motor.isReady()
 
 #ifndef T0_OWN_TIER
-PRI testT0_5() | minDef, maxDef, incDef, decrDef, eBelow, eNegative, eAbove, bRefuseOk, eAnchor, stepAnchor, bAnchorOk, eTop, stepTop, bTopOk, eRestore, bPass
-' G / R17-T0-ACCEL (task 3577): setAcceleration() takes a rate in mm/s^2 at the rim, refuses one outside
-' [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] with ERR_BAD_COUNT and changes nothing, and turns an accepted one into a
-' constant ramp -- ramp_min == ramp_max == the step for that rate, ramp_inc 0, ramp_down untouched. The step for
-' ACCEL_ANCHOR_MM_S2 must land within 1% of the default ramp_min (see the constant's derivation), and a larger
-' rate must give a larger step. Nothing starts: the test calls testSetup() itself for the wheel geometry.
-' UNFIXED: {rate} went straight into ramp_inc with no check, so every refused rate changed the ramp and an
-' accepted one left ramp_min and ramp_max at their defaults -- the cell FAILs on both halves.
+PRI testT0_5() | jerkUpDef, accUpDef, jerkDnDef, accDnDef, eBelow, eNegative, eAbove, bRefuseOk, eAnchor, stepAnchor, bAnchorOk, eTop, stepTop, bTopOk, eRestore, bPass
+' G / R17-T0-ACCEL (task 3577; SRC_REV 25, DRIVER_REV 38): setAcceleration() takes a rate in mm/s^2 at the rim,
+' refuses one outside [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] with ERR_BAD_COUNT and changes nothing, and turns an
+' accepted one into the jerk-limited ramp's speed-up LIMIT (PL-160): getRampingValues()'s maxRamp (accel_up) the step
+' for that rate, minRamp (jerk_up) that step's jerk (t0JerkFor()), and the slow-down pair (incRamp jerk_dn, decrRamp
+' accel_dn) untouched. The step for ACCEL_ANCHOR_MM_S2 must land within 1% of ACCEL_ANCHOR_STEP (the constant's
+' derivation: the 6.5in wheel's arithmetic, not the library's), and a larger rate must give a larger step. Nothing
+' starts: the test calls testSetup() itself for the wheel geometry.
+' NEGATIVES: before task 3577 {rate} went straight into ramp_inc with no check, so every refused rate changed the ramp
+' and an accepted one left the rest at their defaults; DRIVER_REV 35-37 made it a constant ramp, minRamp == maxRamp and
+' incRamp 0, which reads minRamp 33_958 where the jerk is 71 -- either FAILs.
 ' NOMEAS when the active config has no wheel diameter (ERR_NO_WHEEL_DIA): there is no rim to convert at.
 '
-' @local minDef - the default ramp_min, read back before any call
-' @local maxDef - the default ramp_max
-' @local incDef - the default ramp_inc
-' @local decrDef - the default ramp_down
+' @local jerkUpDef - the built-in ramp's jerk_up (minRamp), read back before any call
+' @local accUpDef - its accel_up (maxRamp)
+' @local jerkDnDef - its jerk_dn (incRamp)
+' @local accDnDef - its accel_dn (decrRamp)
 ' @local eBelow - setAcceleration(ACCEL_MIN_MM_S2 - 1)'s return (expected ERR_BAD_COUNT)
 ' @local eNegative - setAcceleration(ACCEL_BELOW_RANGE)'s return (expected ERR_BAD_COUNT)
 ' @local eAbove - setAcceleration(ACCEL_MAX_MM_S2 + 1)'s return (expected ERR_BAD_COUNT)
 ' @local bRefuseOk - every refusal returned its code and left the ramp as it was
 ' @local eAnchor - setAcceleration(ACCEL_ANCHOR_MM_S2)'s return
-' @local stepAnchor - the step it produced
-' @local bAnchorOk - the anchor call produced a constant ramp within 1% of the default ramp_min
+' @local stepAnchor - the speed-up limit it produced
+' @local bAnchorOk - the anchor call produced a jerk-limited speed-up within 1% of ACCEL_ANCHOR_STEP
 ' @local eTop - setAcceleration(ACCEL_MAX_MM_S2)'s return
-' @local stepTop - the step it produced
-' @local bTopOk - the top rate produced a constant ramp with a larger step than the anchor's
+' @local stepTop - the limit it produced
+' @local bTopOk - the top rate produced a jerk-limited speed-up with a larger limit than the anchor's
 ' @local eRestore - setRampingValues()'s return restoring the defaults
 ' @local bPass - the cell's measured value and verdict
 
     debug("T0-5,begin")
     motor.testSetup(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
     motor.getError()                                        ' start from a clear slot
-    minDef, maxDef, incDef, decrDef := motor.getRampingValues()
+    jerkUpDef, accUpDef, jerkDnDef, accDnDef := motor.getRampingValues()
 
     eBelow := motor.setAcceleration(motor.ACCEL_MIN_MM_S2 - 1)
-    bRefuseOk := (eBelow == motor.ERR_BAD_COUNT) and bRampEquals(minDef, maxDef, incDef, decrDef)
+    bRefuseOk := (eBelow == motor.ERR_BAD_COUNT) and bRampEquals(jerkUpDef, accUpDef, jerkDnDef, accDnDef)
     eNegative := motor.setAcceleration(ACCEL_BELOW_RANGE)
-    bRefuseOk := bRefuseOk and (eNegative == motor.ERR_BAD_COUNT) and bRampEquals(minDef, maxDef, incDef, decrDef)
+    bRefuseOk := bRefuseOk and (eNegative == motor.ERR_BAD_COUNT) and bRampEquals(jerkUpDef, accUpDef, jerkDnDef, accDnDef)
     eAbove := motor.setAcceleration(motor.ACCEL_MAX_MM_S2 + 1)
-    bRefuseOk := bRefuseOk and (eAbove == motor.ERR_BAD_COUNT) and bRampEquals(minDef, maxDef, incDef, decrDef)
+    bRefuseOk := bRefuseOk and (eAbove == motor.ERR_BAD_COUNT) and bRampEquals(jerkUpDef, accUpDef, jerkDnDef, accDnDef)
     motor.getError()                                        ' drain the refusals' recorded code
     debug("T0-5,refuse,below,", sdec_(eBelow), ",negative,", sdec_(eNegative), ",above,", sdec_(eAbove), ",unchanged,", zstr_(bRefuseOk ? @"TRUE" : @"FALSE"))
 
     eAnchor := motor.setAcceleration(ACCEL_ANCHOR_MM_S2)
-    stepAnchor, bAnchorOk := constRampStep(@"anchor", ACCEL_ANCHOR_MM_S2, eAnchor, decrDef)
-    bAnchorOk := bAnchorOk and (abs(stepAnchor - minDef) <= minDef / ACCEL_ANCHOR_TOL_DIV)
+    stepAnchor, bAnchorOk := limitRampStep(@"anchor", ACCEL_ANCHOR_MM_S2, eAnchor, jerkDnDef, accDnDef)
+    bAnchorOk := bAnchorOk and (abs(stepAnchor - ACCEL_ANCHOR_STEP) <= ACCEL_ANCHOR_STEP / ACCEL_ANCHOR_TOL_DIV)
     eTop := motor.setAcceleration(motor.ACCEL_MAX_MM_S2)
-    stepTop, bTopOk := constRampStep(@"top", motor.ACCEL_MAX_MM_S2, eTop, decrDef)
+    stepTop, bTopOk := limitRampStep(@"top", motor.ACCEL_MAX_MM_S2, eTop, jerkDnDef, accDnDef)
     bTopOk := bTopOk and (stepTop > stepAnchor)
 
-    eRestore := motor.setRampingValues(minDef, maxDef, incDef, decrDef)      ' later tests start this motor
+    eRestore := motor.setRampingValues(jerkUpDef, accUpDef, jerkDnDef, accDnDef)  ' later tests start this motor
     bPass := bRefuseOk and bAnchorOk and bTopOk and (eRestore == motor.NO_ERROR)
-    emitCellBool(@"R17-T0-ACCEL", @sTaskPromises, @"NONE", @"MM_S2_CONST_RAMP", eAnchor <> motor.ERR_NO_WHEEL_DIA, bPass, ACCEL_CALLS_JUDGED)
+    emitCellBool(@"R17-T0-ACCEL", @sTaskPromises, @"NONE", @"MM_S2_LIMIT_JERK", eAnchor <> motor.ERR_NO_WHEEL_DIA, bPass, ACCEL_CALLS_JUDGED)
 
-PRI constRampStep(pLabel, rateMmS2, eAccel, decrWant) : rampStep, bConst
-' Read back the ramp an accepted setAcceleration() left, judge that it is a constant ramp, and print it.
-' One debug() record serves every rate T0-5 accepts.
+PRI limitRampStep(pLabel, rateMmS2, eAccel, jerkDnWant, accDnWant) : rampStep, bLimit | nJerk
+' Read back the ramp an accepted setAcceleration() left, judge that it is a jerk-limited speed-up limit with the
+' slow-down pair untouched, and print it. One debug() record serves every rate T0-5 accepts.
 '
 ' @param pLabel - pointer to the rate's name, printed as the line's tag ("anchor" or "top")
 ' @param rateMmS2 - the rate that was set, mm/s squared
 ' @param eAccel - setAcceleration()'s return for it
-' @param decrWant - the ramp_down it must have left untouched
-' @returns rampStep - the step it produced: ramp_min read back
-' @returns bConst - TRUE when the call returned NO_ERROR and left ramp_min == ramp_max, ramp_inc 0, ramp_down untouched
+' @param jerkDnWant - the jerk_dn (incRamp) it must have left untouched
+' @param accDnWant - the accel_dn (decrRamp) it must have left untouched
+' @returns rampStep - the speed-up limit it produced: accel_up (maxRamp) read back
+' @returns bLimit - TRUE when the call returned NO_ERROR and left jerk_up = t0JerkFor(accel_up), the slow-down pair untouched
+'
+' @local nJerk - the jerk this harness derives for that limit
 
-    rampStep, _, _, _ := motor.getRampingValues()
-    bConst := (eAccel == motor.NO_ERROR) and bRampEquals(rampStep, rampStep, 0, decrWant)
-    debug("T0-5,", zstr_(pLabel), ",mm_s2,", sdec_(rateMmS2), ",status,", sdec_(eAccel), ",step,", sdec_(rampStep), ",constant,", zstr_(bConst ? @"TRUE" : @"FALSE"))
+    bLimit := (eAccel == motor.NO_ERROR)
+    rampStep := 0
+    if bLimit
+        _, rampStep, _, _ := motor.getRampingValues()
+    nJerk := t0JerkFor(rampStep)
+    if bLimit
+        bLimit := bRampEquals(nJerk, rampStep, jerkDnWant, accDnWant)
+    debug("T0-5,", zstr_(pLabel), ",mm_s2,", sdec_(rateMmS2), ",status,", sdec_(eAccel), ",step,", sdec_(rampStep), ",jerk,", sdec_(nJerk), ",limit_jerk,", zstr_(bLimit ? @"TRUE" : @"FALSE"))
 #endif
 
 PRI emitCellDecl(pCell, pTask)
@@ -1655,20 +1831,33 @@ PRI emitCellNum(pCell, pTask, pMotor, pCrit, bMeasured, measuredVal, loVal, hiVa
     else
         debug("SIGNOFF,sf,1,bin,T0,cell,", zstr_(pCell), ",task,", zstr_(pTask), ",motor,", zstr_(pMotor), ",crit,", zstr_(pCrit), ",measured,NA,lo,", sdec_(loVal), ",hi,", sdec_(hiVal), ",units,", zstr_(pUnits), ",n,", udec_(nCount), ",verdict,NOMEAS")
 
+PRI t0JerkFor(nAccel) : nJerk
+' The jerk the jerk-limited ramp pairs with an acceleration limit (PL-160, DRIVER_REV 38), worked out here from the
+' library's public periods: the limit spread over RAMP_TAU_MS of drive passes, RAMP_TAU_MS x PWM_RATE_IN_HZ / 1_000 /
+' DRIVE_PASS_FRAMES (478.3 at 250 ms), rounded, at least 1 -- 71 for 33_958, 104 for 49_918. T0-5 and T0-26 judge the
+' driver's jerks against it, so a jerk derived any other way reads back wrong. (The library's own jerkForAccel() is
+' PRI, so this is the arithmetic it documents, not a call to it.)
+'
+' @param nAccel - the acceleration limit, driver units (angle increment change per drive pass)
+' @returns nJerk - its jerk, driver units per pass, at least 1
+
+    nJerk := 1 #> ((muldiv64(nAccel, 2 * motor.DRIVE_PASS_FRAMES * T0R_MS_PER_S, motor.RAMP_TAU_MS * motor.PWM_RATE_IN_HZ) + 1) >> 1)
+
 #ifndef T0_OWN_TIER
 PRI bRampEquals(minWant, maxWant, incWant, decrWant) : bSame | minRamp, maxRamp, incRamp, decrRamp
-' Report whether `motor`'s four ramping values read back exactly as given.
+' Report whether `motor`'s four ramping values read back exactly as given (since DRIVER_REV 38: jerk_up, accel_up,
+' jerk_dn, accel_dn -- getRampingValues()'s minRamp, maxRamp, incRamp, decrRamp).
 '
-' @param minWant - expected ramp_min
-' @param maxWant - expected ramp_max
-' @param incWant - expected ramp_inc
-' @param decrWant - expected ramp_down
+' @param minWant - expected minRamp (jerk_up)
+' @param maxWant - expected maxRamp (accel_up)
+' @param incWant - expected incRamp (jerk_dn)
+' @param decrWant - expected decrRamp (accel_dn)
 ' @returns bSame - TRUE when all four read back equal
 '
-' @local minRamp - ramp_min read back
-' @local maxRamp - ramp_max read back
-' @local incRamp - ramp_inc read back
-' @local decrRamp - ramp_down read back
+' @local minRamp - minRamp read back
+' @local maxRamp - maxRamp read back
+' @local incRamp - incRamp read back
+' @local decrRamp - decrRamp read back
 
     minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
     bSame := (minRamp == minWant) and (maxRamp == maxWant) and (incRamp == incWant) and (decrRamp == decrWant)
@@ -2741,14 +2930,16 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
 '                          one of them fewer, which fails
 '   R20-T0-ROTSTOP      - (PL-151, after the cells above) stopAfterRotation(T0_25_ROT_TURNS, DRU_ROTATIONS) arms the
 '                          library's own ticks for it, and the drive rests within T0_25_ROT_TOL_TICKS of them reading
-'                          SR_AT_LIMIT; NEGATIVE: the same drive with nothing armed is still open (SR_NONE) that long
+'                          SR_AT_LIMIT (SRC_REV 25: and up to T0_25_PLAN_EARLY_TICKS more short of them, the jerk-limited
+'                          plan's over-statement); NEGATIVE: the same drive with nothing armed is still open (SR_NONE) that long
 '                          plus T0_25_ROT_NEG_EXTRA_MS, and past the limit -- a limit that never fires, fires on time
 '                          alone, or stops a drive it was not armed for fails
 '   R20-T0-ESTOPSTATUS  - (PL-151) getStatus() at rest is a real state other than DS_ESTOP, DS_ESTOP after
 '                          emergencyCutoff(), and a real state other than DS_ESTOP after clearEmergency(); a getter that
 '                          never reads DS_ESTOP, or keeps reading it after the clear, fails
 '   R20-T0-ODOMETER     - (PL-153, SRC_REV 22) two driveForDistance(T0_25_ODO_CM) in a row, from a reset odometer, each
-'                          travel the library's own ticks for it within T0_25_ROT_TOL_TICKS, reading SR_AT_LIMIT; then the
+'                          travel the library's own ticks for it within T0_25_ROT_TOL_TICKS (and T0_25_PLAN_EARLY_TICKS more
+'                          short, SRC_REV 25), reading SR_AT_LIMIT; then the
 '                          odometer holds across emergencyCutoff() for T0_25_ESTOP_HOLD_MS and clearEmergency(); NEGATIVE:
 '                          the pre-33 driver counts the second move from the odometer, so it fires at once, and zeroes the
 '                          odometer on every e-stopped pass, so it reads 0 after -- either fails
@@ -2759,6 +2950,30 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
 '                          made with the motor stopped read back after start(), and the hold is in force (HS_HOLDING);
 '                          NEGATIVE: the pre-33 start() reset them (75, 75, coast), which fails; a restart that does not
 '                          come up is NOMEAS. Every setting is put back to its default after
+'   R22-T0-RAMP-SHAPE   - (PL-160, SRC_REV 25, before PERSIST) a speed-up from rest to T0_25_RAMP_HI, a slow-down to
+'                          T0_25_RAMP_LO and a stop, each watched pass by pass (t0rRamp() says how): every judged pass's
+'                          acceleration within max(jerk_up, jerk_dn) of the last and inside its side's limit (or unwinding
+'                          toward it), always toward the target, never beyond it, a = 0 from the pass after the arrival, and
+'                          the stop never through zero. NEGATIVE: DRIVER_REV 37's stepped ramp took its whole first step
+'                          in one pass -- ramp_min 1_500 from rest, ramp_down 50_000 into a stop -- and dropped it to 0 on
+'                          arrival, each far over the 104 jerk step
+'   R22-T0-RAMP-REVERSE - a reversal from T0_25_RAMP_LO to -T0_25_RAMP_LO: the same per-pass rules, a judged pair that
+'                          carries v across zero, and no DCS_STOPPED on the way. NEGATIVE: DRIVER_REV 37 slowed to zero,
+'                          re-seeded the field from the halls and restarted, a step of 48_500 across the crossing (-50_000
+'                          a pass shedding, then -1_500 a pass growing)
+'   R22-T0-RAMP-UNWIND  - a stop read while a speed-up holds accel_up: a unwinds at max(jerk_up, jerk_dn) a pass, to 0 in
+'                          ceil(a / that) passes (one more if the stop is read a pass late), within RAMP_TAU_MS, then the
+'                          stop, never through zero. NEGATIVE: DRIVER_REV 37 reversed the acceleration in one pass (1)
+'   R22-T0-STOPPLAN-C   - stopAfterRotation() and stopAfterTime() armed at T0_25_RAMP_HI's cruise: the stop the plan
+'                          predicted against the one the field took -- at rest from T0_25_ROT_TOL_TICKS + T0_25_PLAN_EARLY_TICKS
+'                          + T0_25_ARM_SKEW_TICKS short of the limit to T0_25_ROT_TOL_TICKS + T0_25_ARM_SKEW_TICKS past it (-5
+'                          .. +4), and at zero inside -T0_25_TIME_EARLY_MS .. T0_25_TIME_LATE_MS of the deadline (-6 .. +4).
+'                          NEGATIVE: a plan that kept the stepped ramp's form fires about RAMP_TAU_MS late, ~27 ticks and
+'                          ~250 ms past its limit
+'   R22-T0-STOPPLAN-M   - stopAfterDistance(), stopAfterRotation() and stopAfterTime() armed at rest, then the drive: each
+'                          fires while the speed-up still accelerates and rests at its limit, as above but armed at rest
+'                          (no arming skew: -4 .. +3 ticks, -6 .. +4 ms). NEGATIVE: a plan that ignored the acceleration in
+'                          hand under-counts the unwind, ~20 ticks and ~170 ms past it
 ' A start that does not come up ready leaves every cell NOMEAS, and the start's getError() is printed. A RIGHT start its
 ' checks refuse (ERR_START_CHECK_FAILED: pass 5 saw PL-120 outlast a reload) is followed by one start of the LEFT wheel
 ' (T0_SECOND_BASE), so one dead bridge does not void the tier; the cells then name LEFT. The cells certify the reporting,
@@ -2785,6 +3000,11 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
     emitCellDecl(@sCellOdometer, @sTaskPl153)
     emitCellDecl(@sCellMoveDone, @sTaskPl156)
     emitCellDecl(@sCellPersist, @sTaskPl155)
+    emitCellDecl(@sCellRampShape, @sTaskPl160)
+    emitCellDecl(@sCellRampRev, @sTaskPl160)
+    emitCellDecl(@sCellRampUnw, @sTaskPl160)
+    emitCellDecl(@sCellPlanC, @sTaskPl160)
+    emitCellDecl(@sCellPlanM, @sTaskPl160)
     debug("T0-25,begin,wheel,RIGHT_P16,power,", udec_(T0_25_POWER), ",legs,", udec_(T0R_LEGS), ",cycles,", udec_(T0_25_CYCLES))
 
     benchLog.cogEventBegin()
@@ -2816,7 +3036,8 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
         t0rRotStop()                                            ' PL-151: after EV-STOP's read and EV-TOTAL's count
         t0rEstopStatus()
         t0rOdometer()                                           ' SRC_REV 22: ODOMETER and MOVEDONE, then PERSIST, which restarts
-        t0rPersist()                                            '  the motor (so it runs last)
+        t0rRamp()                                               '  the motor (so it runs last); SRC_REV 25: the generator's cells
+        t0rPersist()                                            '  before it, on the motor every cell above ran on
     else
         emitCellBool(@sCellSrCmd, @sTaskReporting, pT0rWheel, @sCritSrCmd, FALSE, FALSE, 0)
         emitCellBool(@sCellSrLimit, @sTaskReporting, pT0rWheel, @sCritSrLimit, FALSE, FALSE, 0)
@@ -2831,6 +3052,7 @@ PRI testT0_25() | startResult, bReady, eStartErr, bRightRefused, refusedMs
         emitCellBool(@sCellOdometer, @sTaskPl153, pT0rWheel, @sCritOdometer, FALSE, FALSE, 0)
         emitCellBool(@sCellMoveDone, @sTaskPl156, pT0rWheel, @sCritMoveDone, FALSE, FALSE, 0)
         emitCellBool(@sCellPersist, @sTaskPl155, pT0rWheel, @sCritPersist, FALSE, FALSE, 0)
+        t0rRampNoMeas()
     benchLog.cogEventBegin()
     motor.stop()
     motor.getError()                                            ' drain this cog's slot
@@ -3152,7 +3374,8 @@ PRI t0rRotStop() | ticsPerRot, wantTicks, eErr, armedTicks, startMs, fireMs, bFi
     srStop := motor.getStopReason()
     trkTicks := motor.getRotationCount(motor.DRU_HALL_TICKS)
     rotCount := motor.getRotationCount(motor.DRU_ROTATIONS)
-    bPass := (eErr == motor.NO_ERROR) and (armedTicks == wantTicks) and bFired and (srStop == motor.SR_AT_LIMIT) and bRest and (abs (trkTicks - armedTicks) <= T0_25_ROT_TOL_TICKS)
+    bPass := (eErr == motor.NO_ERROR) and (armedTicks == wantTicks) and bFired and (srStop == motor.SR_AT_LIMIT) and bRest
+    bPass &= (trkTicks - armedTicks >= 0 - T0_25_ROT_TOL_TICKS - T0_25_PLAN_EARLY_TICKS) and (trkTicks - armedTicks <= T0_25_ROT_TOL_TICKS)
     debug("T0-25,rotstop,turns,", udec_(T0_25_ROT_TURNS), ",want,", sdec_(wantTicks), ",armed,", sdec_(armedTicks), ",tol,", udec_(T0_25_ROT_TOL_TICKS), ",fired,", zstr_(bFired ? @"TRUE" : @"FALSE"), ",fire_ms,", udec_(fireMs), ",sr_stop,", udec_(srStop), ",rest,", zstr_(bRest ? @"TRUE" : @"FALSE"), ",trk,", sdec_(trkTicks), ",rot,", sdec_(rotCount), ",err,", sdec_(eErr))
 
     eErr := t0rFirstErr(eErr, motor.resetTracking())
@@ -3253,7 +3476,8 @@ PRI t0rOdometer() | wantTicks, eErr, odo0, odo1, odo2, sr1, sr2, bOpen1, bOpen2,
     motor.getError()                                                            ' drain this cog's slot
 
     bOdoPass := (eErr == motor.NO_ERROR) and (wantTicks > T0_25_ROT_TOL_TICKS) and (sr1 == motor.SR_AT_LIMIT) and (sr2 == motor.SR_AT_LIMIT)
-    bOdoPass &= (abs (odo1 - odo0 - wantTicks) <= T0_25_ROT_TOL_TICKS) and (abs (odo2 - odo1 - wantTicks) <= T0_25_ROT_TOL_TICKS)
+    bOdoPass &= (odo1 - odo0 - wantTicks >= 0 - T0_25_ROT_TOL_TICKS - T0_25_PLAN_EARLY_TICKS) and (odo1 - odo0 - wantTicks <= T0_25_ROT_TOL_TICKS)
+    bOdoPass &= (odo2 - odo1 - wantTicks >= 0 - T0_25_ROT_TOL_TICKS - T0_25_PLAN_EARLY_TICKS) and (odo2 - odo1 - wantTicks <= T0_25_ROT_TOL_TICKS)
     bOdoPass &= (odoBefore > 0) and (odoAfter >= odoBefore) and (odoAfter - odoBefore <= T0_25_ROT_TOL_TICKS) and (mmAfter >= mmBefore) and (mmAfter > 0)
     debug("T0-25,odometer,want,", sdec_(wantTicks), ",tol,", udec_(T0_25_ROT_TOL_TICKS), ",move1,", sdec_(odo1 - odo0), ",sr1,", udec_(sr1), ",move2,", sdec_(odo2 - odo1), ",sr2,", udec_(sr2), ",odo_before,", sdec_(odoBefore), ",odo_after,", sdec_(odoAfter), ",mm_before,", sdec_(mmBefore), ",mm_after,", sdec_(mmAfter), ",err,", sdec_(eErr))
     debug("T0-25,movedone,open1,", zstr_(t0rTF(bOpen1)), ",done1,", zstr_(t0rTF(bDone1)), ",open2,", zstr_(t0rTF(bOpen2)), ",done2,", zstr_(t0rTF(bDone2)), ",estop,", zstr_(t0rTF(bEstopDone)))
@@ -3333,6 +3557,544 @@ PRI t0rPersist() | eErr, startResult, bReady, nSpeed, nSpeed4d, bHold, bRev, eHo
     motor.getError()
     debug("T0-25,persist,start_return,", sdec_(startResult), ",speed,", sdec_(nSpeed), ",speed_dist,", sdec_(nSpeed4d), ",hold,", zstr_(t0rTF(bHold)), ",rev,", zstr_(t0rTF(bRev)), ",hold_state,", udec_(eHold), ",status,", udec_(eStatus), ",err,", sdec_(eErr))
     emitCellBool(@sCellPersist, @sTaskPl155, pT0rWheel, @sCritPersist, bReady, bPass, 5)
+
+PRI t0rRamp() | jerkUp, jerkDn, workerCog, bShapeMeas, bShapeOk, bMeas, bOk, legIdx
+' R22-T0-RAMP-SHAPE, -REVERSE, -UNWIND, R22-T0-STOPPLAN-C and -M (PL-160, SRC_REV 25): the jerk-limited generator, wheels
+' up, on the motor T0-25 runs on (the cells' motor field names it). The sampler cog (t0pWorker()) is started once, here,
+' and stopped here, in quiet windows, whatever happened; with no cog free every cell is NOMEAS. Every watch is posted to
+' the sampler BEFORE the command it judges is sent, so it sees the pass that takes the command. The section's CON states
+' the sampler's limits, each leg's arithmetic and the time band; testT0_25() each cell's criterion and its negative.
+' Prints T0-25,ramp, then per watch T0-25,rampseg and T0-25,rampend, T0-25,unwind and one T0-25,plan per leg.
+'
+' @local jerkUp - getRampingValues()'s speed-up jerk
+' @local jerkDn - its slow-down jerk
+' @local workerCog - cogspin()'s return; < 0 when no cog was free
+' @local bShapeMeas - every SHAPE segment was measured
+' @local bShapeOk - every SHAPE segment held
+' @local bMeas - one watch's measured flag
+' @local bOk - its verdict
+' @local legIdx - T0P_LEG_*
+
+    jerkUp, t0pAccUp, jerkDn, t0pAccDn := motor.getRampingValues()
+    t0pJerkX := jerkUp #> jerkDn
+    t0pLaunch, t0pStatus, _ := motor.testGetAbiAddrs()
+    t0pJobSeq := 0
+    t0pArmedSeq := 0
+    t0pDoneSeq := 0
+    bT0rRest()
+    debug("T0-25,ramp,jerk_up,", udec_(jerkUp), ",acc_up,", udec_(t0pAccUp), ",jerk_dn,", udec_(jerkDn), ",acc_dn,", udec_(t0pAccDn), ",hi,", udec_(T0_25_RAMP_HI), ",lo,", udec_(T0_25_RAMP_LO), ",tau_ms,", udec_(motor.RAMP_TAU_MS))
+    benchLog.cogEventBegin()
+    workerCog := cogspin(NEWCOG, t0pWorker(), @t0pStack)
+    benchLog.cogEventEnd()
+    if workerCog < 0
+        t0rRampNoMeas()
+    else
+        ' SHAPE: rest -> HI, HI -> LO, LO -> stop; each starts where the last arrived
+        bShapeMeas, bShapeOk := t0rShapeSeg(@"UP_FROM_REST", T0_25_RAMP_HI, T0W_ARRIVE)
+        bMeas, bOk := t0rShapeSeg(@"SLOW_DOWN", T0_25_RAMP_LO, T0W_ARRIVE)
+        bShapeMeas &= bMeas
+        bShapeOk &= bOk
+        bMeas, bOk := t0rShapeSeg(@"STOP", 0, T0W_REST)
+        bShapeMeas &= bMeas
+        bShapeOk &= bOk
+        emitCellBool(@sCellRampShape, @sTaskPl160, pT0rWheel, @sCritRampShape, bShapeMeas, bShapeOk, 3)
+        ' REVERSE: rest -> LO (not judged), then LO -> -LO, then the stop (not judged)
+        bT0rRest()
+        t0rShapeSeg(@"UP_TO_LO", T0_25_RAMP_LO, T0W_ARRIVE)
+        bMeas, bOk := t0rShapeSeg(@"REVERSE", 0 - T0_25_RAMP_LO, T0W_ARRIVE)
+        bMeas &= bT0pCrossed
+        bOk &= (bT0pStopSeen == FALSE)
+        t0rShapeSeg(@"STOP_REV", 0, T0W_REST)
+        emitCellBool(@sCellRampRev, @sTaskPl160, pT0rWheel, @sCritRampRev, bMeas, bOk, 1)
+        ' UNWIND
+        bMeas, bOk := t0rUnwind()
+        emitCellBool(@sCellRampUnw, @sTaskPl160, pT0rWheel, @sCritRampUnw, bMeas, bOk, 1)
+        ' STOPPLAN: two cruise legs, three mid-ramp legs
+        repeat legIdx from T0P_LEG_ROT_C to T0P_LEG_MS_M
+            t0rPlanLeg(legIdx)
+        emitCellBool(@sCellPlanC, @sTaskPl160, pT0rWheel, @sCritPlanC, t0pLegMeas[T0P_LEG_ROT_C] and t0pLegMeas[T0P_LEG_MS_C], t0pLegOk[T0P_LEG_ROT_C] and t0pLegOk[T0P_LEG_MS_C], 2)
+        emitCellBool(@sCellPlanM, @sTaskPl160, pT0rWheel, @sCritPlanM, t0pLegMeas[T0P_LEG_MM_M] and t0pLegMeas[T0P_LEG_ROT_M] and t0pLegMeas[T0P_LEG_MS_M], t0pLegOk[T0P_LEG_MM_M] and t0pLegOk[T0P_LEG_ROT_M] and t0pLegOk[T0P_LEG_MS_M], 3)
+        benchLog.cogEventBegin()
+        cogstop(workerCog)
+    bT0rRest()
+    motor.getError()                                                            ' drain this cog's slot
+
+PRI t0rRampNoMeas()
+' The five generator cells NOMEAS: the motor did not come up, or no cog was free for the sampler.
+
+    emitCellBool(@sCellRampShape, @sTaskPl160, pT0rWheel, @sCritRampShape, FALSE, FALSE, 0)
+    emitCellBool(@sCellRampRev, @sTaskPl160, pT0rWheel, @sCritRampRev, FALSE, FALSE, 0)
+    emitCellBool(@sCellRampUnw, @sTaskPl160, pT0rWheel, @sCritRampUnw, FALSE, FALSE, 0)
+    emitCellBool(@sCellPlanC, @sTaskPl160, pT0rWheel, @sCritPlanC, FALSE, FALSE, 0)
+    emitCellBool(@sCellPlanM, @sTaskPl160, pT0rWheel, @sCritPlanM, FALSE, FALSE, 0)
+
+PRI t0rShapeSeg(pName, nPower, eMode) : bMeasured, bOk | bWatched, eErr
+' One segment from a steady state (the segment before it arrived, or rest): watch it through t0rCommand() and judge it
+' by bT0rShapeOk(). Prints its T0-25,rampseg and T0-25,rampend.
+'
+' @param pName - the segment's name in its records
+' @param nPower - the power commanded (a T0W_ARRIVE segment)
+' @param eMode - T0W_ARRIVE for a drive, T0W_REST for the stop
+' @returns bMeasured - the command was taken and watched to its end, every pass resolved, enough of them judged
+' @returns bOk - every SHAPE criterion held
+'
+' @local bWatched - the sampler armed and finished the watch
+' @local eErr - the command's return
+
+    bWatched, eErr := t0rCommand(nPower, eMode)
+    bMeasured := bWatched and (eErr == motor.NO_ERROR) and bT0rWatchMeasured()
+    bOk := bT0rShapeOk()
+    t0rSegRecords(pName, eErr, bOk)
+
+PRI t0rCommand(nPower, eMode) : bWatched, eErr
+' Post a watch whose baseline is the target now, and once the sampler has armed send the command it watches:
+' driveAtPower(nPower) for a T0W_ARRIVE watch, stopMotor() for a T0W_REST one; then wait for the watch to end. A watch
+' that never armed sends nothing.
+'
+' @param nPower - driveAtPower()'s power (T0W_ARRIVE)
+' @param eMode - T0W_ARRIVE or T0W_REST
+' @returns bWatched - the sampler armed the watch and finished it
+' @returns eErr - the command's return, NO_ERROR when none was sent
+
+    eErr := motor.NO_ERROR
+    bWatched := FALSE
+    if bT0pPost(t0rTarget(), eMode, T0_25_RAMP_WAIT_MS)
+        if eMode == T0W_REST
+            eErr := motor.stopMotor()
+        else
+            eErr := motor.driveAtPower(nPower)
+        bWatched := bT0pDone()
+
+PRI bT0rWatchMeasured() : bMeasured
+' Report whether the last watch is a measurement: the command was taken, the watch reached its mode's end (not its
+' bound), the sampler resolved every new pass, and it judged at least T0_25_MIN_JUDGED pairs.
+'
+' @returns bMeasured - T/F where T means the watch's readings may be judged
+
+    bMeasured := bT0pTaken and bT0pEnded and (t0pUnres == 0) and (t0pJudged >= T0_25_MIN_JUDGED)
+
+PRI bT0rShapeOk() : bOk
+' Report whether the last watch, from a steady state, held the SHAPE criteria: its largest step of a within t0pJerkX; every
+' judged a inside its side's limit or unwinding toward it; every a after the take zero or toward the target; v never
+' beyond the target, nor back past where it started (so a stop never crosses zero); and, a T0W_ARRIVE watch, a = 0 with
+' v on the target from the pass after the arrival.
+'
+' @returns bOk - T/F where T means every criterion held
+
+    bOk := (t0pJerkPk <= t0pJerkX) and bT0pLimitOk and bT0pMonoOk
+    bOk &= (t0pVMin >= (t0pVTake <# t0pTarget)) and (t0pVMax <= (t0pVTake #> t0pTarget))
+    if t0pMode == T0W_ARRIVE
+        bOk &= bT0pZeroAfter and bT0pSettleOk
+
+PRI t0rUnwind() : bMeasured, bOk | eErr, startMs, bPlateau, nDriveTgt, bWatched, eStop, nLo, nHi
+' R22-T0-RAMP-UNWIND: T0_25_RAMP_HI from rest; once a reads accel_up (the speed-up holds its limit), a watch is posted
+' and stopMotor() sent. From a = A the stop's own jerk pushes the other way: alpha < 0, which unwinds at t0pJerkX to
+' exactly 0 (jerkStep), so a reaches 0 on pass ceil(A / t0pJerkX) of the stop -- one more when the stop is taken a pass
+' after the write -- and ceil(33_958 / 104) = 327 passes (171 ms) is inside RAMP_TAU_MS (478 passes) on the built-in
+' rates, as any rates' is, since t0pJerkX is at least jerk_up = accel_up / RAMP_TAU_MS. Then the stop, never through zero,
+' and v never beyond the drive's target. NOMEAS when a never read accel_up inside T0_25_RAMP_WAIT_MS, or the watch was
+' not a measurement. Prints T0-25,rampseg, T0-25,rampend and T0-25,unwind.
+'
+' @returns bMeasured - the precondition held and the watch was a measurement
+' @returns bOk - the unwind took its passes, within RAMP_TAU_MS, jerk- and limit-bound, and the stop stayed on its side
+'
+' @local eErr - the drive's return
+' @local startMs - getms() when the drive was sent
+' @local bPlateau - a read accel_up in size inside the bound
+' @local nDriveTgt - the drive's target
+' @local bWatched - the stop's watch armed and finished
+' @local eStop - stopMotor()'s return
+' @local nLo - the passes to a = 0 when the stop is taken at once
+' @local nHi - ...when it is taken a pass late
+
+    bT0rRest()
+    eErr := motor.driveAtPower(T0_25_RAMP_HI)
+    nDriveTgt := t0rTarget()
+    startMs := getms()
+    bPlateau := FALSE
+    repeat until bPlateau or ((getms() - startMs) >= T0_25_RAMP_WAIT_MS)
+        bPlateau := (abs(long[t0pStatus][T0R_ST_ACCEL]) == t0pAccUp)
+    bWatched := FALSE
+    eStop := motor.NO_ERROR
+    if bPlateau
+        bWatched, eStop := t0rCommand(0, T0W_REST)
+    else
+        motor.stopMotor()
+    bT0rRest()
+    nLo := (abs(t0pATake) + t0pJerkX - 1) / t0pJerkX
+    nHi := nLo + 1
+    bMeasured := bPlateau and bWatched and (eErr == motor.NO_ERROR) and (eStop == motor.NO_ERROR) and bT0rWatchMeasured() and (t0pATake <> 0)
+    bOk := (t0pUnwind >= nLo) and (t0pUnwind <= nHi) and (t0pUnwind * motor.DRIVE_PASS_US <= motor.RAMP_TAU_MS * T0R_MS_PER_S)
+    bOk &= (t0pJerkPk <= t0pJerkX) and bT0pLimitOk and (t0pVMin >= (0 <# nDriveTgt)) and (t0pVMax <= (0 #> nDriveTgt))
+    t0rSegRecords(@"UNWIND", eStop, bOk)
+    debug("T0-25,unwind,plateau,", zstr_(t0rTF(bPlateau)), ",drive_tgt,", sdec_(nDriveTgt), ",a_take,", sdec_(t0pATake), ",jerk_x,", udec_(t0pJerkX), ",passes,", sdec_(t0pUnwind), ",lo,", udec_(nLo), ",hi,", udec_(nHi), ",tau_ms,", udec_(motor.RAMP_TAU_MS), ",err,", sdec_(eErr))
+
+PRI t0rPlanLeg(legIdx) | bCruise, bTime, bWatched, eErr, nLimit, posArm, deadlineMs, nowCt, nowMs, takeMs, zeroMs, nPred, nActual, nOff, nLo, nHi, bFrom, pFrom
+' One stop-plan leg (the section's CON). CRUISE (T0P_LEG_ROT_C, T0P_LEG_MS_C): T0_25_RAMP_HI from rest to its steady
+' speed (a watched arrival), then the stop's watch posted and the limit armed. MID-RAMP (T0P_LEG_MM_M, T0P_LEG_ROT_M,
+' T0P_LEG_MS_M): the limit armed at rest, the drive sent, then the watch posted, long before the limit can fire. The
+' limit firing is the watch's take; it runs to rest.
+'  A DISTANCE leg: the travel is |pos at rest - pos at arming| (the driver's own hall position) against the ticks the
+'   library armed (testGetStopHallTicks()); the plan's prediction was the armed ticks less the travel at the take, the
+'   stop's actual travel what came after. PASS from T0_25_ROT_TOL_TICKS + T0_25_PLAN_EARLY_TICKS short to
+'   T0_25_ROT_TOL_TICKS past, and T0_25_ARM_SKEW_TICKS more either way at cruise.
+'  A TIME leg: the zero instant is the watch's DCS_STOPPED sample, carried to getms(), against a deadline taken just
+'   before the call; the prediction was the deadline less the take, the actual the zero less the take. PASS inside
+'   -T0_25_TIME_EARLY_MS .. T0_25_TIME_LATE_MS.
+' MEASURED only when the leg's stop was read from where it says: a CRUISE stop at the drive's target with a = 0, a
+' MID-RAMP stop below it with a <> 0. Prints T0-25,plan.
+'
+' @param legIdx - T0P_LEG_*
+'
+' @local bCruise - a CRUISE leg
+' @local bTime - a time leg
+' @local bWatched - the stop's watch armed and finished
+' @local eErr - the first non-zero call return, NO_ERROR when every one took
+' @local nLimit - the armed ticks (a distance leg) or the ms (a time leg)
+' @local posArm - pos just before the limit was armed
+' @local deadlineMs - getms() + the ms, taken just before a time leg's call
+' @local nowCt - getct() when the watch was read
+' @local nowMs - getms() then
+' @local takeMs - the take, in getms() terms
+' @local zeroMs - the field's zero, in getms() terms
+' @local nPred - the plan's stop: ticks or ms
+' @local nActual - the stop the field took
+' @local nOff - where it rested against the limit: ticks past it, or ms after the deadline
+' @local nLo - the least nOff that passes
+' @local nHi - the greatest
+' @local bFrom - T/F where T means the stop was read from where the leg says
+' @local pFrom - its name for the record: "CRUISE" or "MIDRAMP", else "OTHER"
+
+    bT0rRest()
+    bCruise := (legIdx == T0P_LEG_ROT_C) or (legIdx == T0P_LEG_MS_C)
+    bTime := (legIdx == T0P_LEG_MS_C) or (legIdx == T0P_LEG_MS_M)
+    eErr := motor.NO_ERROR
+    bWatched := FALSE
+    nLimit := 0
+    deadlineMs := 0
+    posArm := 0
+    if bCruise
+        bWatched, eErr := t0rCommand(T0_25_RAMP_HI, T0W_ARRIVE)
+        bWatched &= bT0pEnded                                                   ' arrived and settled: at cruise
+        if bWatched                                                             ' nested, never one `and`: bT0pPost() posts a watch
+            bWatched := bT0pPost(t0rTarget(), T0W_REST, T0_25_RAMP_WAIT_MS + T0_25_PLAN_MS_C)
+        if bWatched
+            posArm := long[t0pStatus][T0R_ST_POS]
+            deadlineMs, eErr, nLimit := t0rArmLeg(legIdx, eErr)
+            bWatched := bT0pDone()
+        else
+            motor.stopMotor()
+    else
+        posArm := long[t0pStatus][T0R_ST_POS]
+        deadlineMs, eErr, nLimit := t0rArmLeg(legIdx, eErr)
+        eErr := t0rFirstErr(eErr, motor.driveAtPower(T0_25_RAMP_HI))
+        if bT0pPost(t0rTarget(), T0W_REST, T0_25_RAMP_WAIT_MS + T0_25_PLAN_MS_M)
+            bWatched := bT0pDone()
+        else
+            motor.stopMotor()
+    nowCt := getct()
+    nowMs := getms()
+    bT0rRest()
+    takeMs := nowMs - (nowCt - t0pTakeCt) / (CLKFREQ / T0R_MS_PER_S)
+    zeroMs := nowMs - (nowCt - t0pRestCt) / (CLKFREQ / T0R_MS_PER_S)
+    if bTime
+        nPred := deadlineMs - takeMs
+        nActual := zeroMs - takeMs
+        nOff := zeroMs - deadlineMs
+        nLo := 0 - T0_25_TIME_EARLY_MS
+        nHi := T0_25_TIME_LATE_MS
+    else
+        nPred := nLimit - abs(t0pPosTake - posArm)
+        nActual := abs(t0pPosRest - t0pPosTake)
+        nOff := abs(t0pPosRest - posArm) - nLimit
+        nHi := T0_25_ROT_TOL_TICKS
+        if bCruise
+            nHi += T0_25_ARM_SKEW_TICKS
+        nLo := 0 - nHi - T0_25_PLAN_EARLY_TICKS
+    bFrom := FALSE
+    pFrom := @"OTHER"
+    if bCruise and (t0pATake == 0) and (t0pVTake == t0pTgtBefore)
+        bFrom := TRUE
+        pFrom := @"CRUISE"
+    elseif (bCruise == FALSE) and (t0pATake <> 0) and (abs(t0pVTake) < abs(t0pTgtBefore))
+        bFrom := TRUE
+        pFrom := @"MIDRAMP"
+    t0pLegMeas[legIdx] := bWatched and bT0pTaken and bT0pRest and bFrom
+    t0pLegOk[legIdx] := (eErr == motor.NO_ERROR) and (nOff >= nLo) and (nOff <= nHi)
+    debug("T0-25,plan,leg,", udec_(legIdx), ",from,", zstr_(pFrom), ",units,", zstr_(bTime ? @"MS" : @"TICKS"), ",limit,", sdec_(nLimit), ",pred,", sdec_(nPred), ",actual,", sdec_(nActual), ",off,", sdec_(nOff), ",lo,", sdec_(nLo), ",hi,", sdec_(nHi), ",v_take,", sdec_(t0pVTake), ",a_take,", sdec_(t0pATake), ",stop_ms,", sdec_(zeroMs - takeMs), ",passes,", udec_(t0pPasses), ",rest,", zstr_(t0rTF(bT0pRest)), ",err,", sdec_(eErr))
+
+PRI t0rArmLeg(legIdx, eErrIn) : deadlineMs, eErr, nLimit
+' Arm one stop-plan leg's limit, and read back what it armed: the ticks (testGetStopHallTicks()) for a distance leg, the
+' ms for a time leg, whose deadline is taken just before its call.
+'
+' @param legIdx - T0P_LEG_*
+' @param eErrIn - the first non-zero call return so far
+' @returns deadlineMs - a time leg's getms() + its ms, else 0
+' @returns eErr - eErrIn, or this call's return
+' @returns nLimit - the armed ticks, or the time leg's ms
+
+    deadlineMs := 0
+    nLimit := 0
+    eErr := eErrIn
+    case legIdx
+        T0P_LEG_ROT_C:
+            eErr := t0rFirstErr(eErr, motor.stopAfterRotation(T0_25_PLAN_ROT_C, motor.DRU_ROTATIONS))
+            nLimit := motor.testGetStopHallTicks()
+        T0P_LEG_MS_C:
+            nLimit := T0_25_PLAN_MS_C
+            deadlineMs := getms() + nLimit
+            eErr := t0rFirstErr(eErr, motor.stopAfterTime(nLimit, motor.DTU_MILLISEC))
+        T0P_LEG_MM_M:
+            eErr := t0rFirstErr(eErr, motor.stopAfterDistance(T0_25_PLAN_MM_M, motor.DDU_MM))
+            nLimit := motor.testGetStopHallTicks()
+        T0P_LEG_ROT_M:
+            eErr := t0rFirstErr(eErr, motor.stopAfterRotation(T0_25_PLAN_ROT_M, motor.DRU_ROTATIONS))
+            nLimit := motor.testGetStopHallTicks()
+        other:
+            nLimit := T0_25_PLAN_MS_M
+            deadlineMs := getms() + nLimit
+            eErr := t0rFirstErr(eErr, motor.stopAfterTime(nLimit, motor.DTU_MILLISEC))
+
+PRI t0rSegRecords(pName, eErr, bOk)
+' One watch's T0-25,rampseg (what the sampler judged) and T0-25,rampend (where the watch went), from the t0p* readings.
+'
+' @param pName - the watch's name
+' @param eErr - its command's return
+' @param bOk - the verdict its caller judged
+
+    debug("T0-25,rampseg,", zstr_(pName), ",target,", sdec_(t0pTarget), ",v_take,", sdec_(t0pVTake), ",a_take,", sdec_(t0pATake), ",judged,", udec_(t0pJudged), ",unres,", udec_(t0pUnres), ",incons,", udec_(t0pIncons), ",gap_pk_us,", udec_(t0pGapPk / (CLKFREQ / T0R_US_PER_S)), ",jerk_pk,", udec_(t0pJerkPk), ",jerk_x,", udec_(t0pJerkX), ",acc_pk,", udec_(t0pAccPk), ",lag_held,", udec_(t0pLagHeld))
+    debug("T0-25,rampend,", zstr_(pName), ",taken,", zstr_(t0rTF(bT0pTaken)), ",ended,", zstr_(t0rTF(bT0pEnded)), ",limit_ok,", zstr_(t0rTF(bT0pLimitOk)), ",mono,", zstr_(t0rTF(bT0pMonoOk)), ",v_min,", sdec_(t0pVMin), ",v_max,", sdec_(t0pVMax), ",zero_after,", zstr_(t0rTF(bT0pZeroAfter)), ",settle,", zstr_(t0rTF(bT0pSettleOk)), ",crossed,", zstr_(t0rTF(bT0pCrossed)), ",stop_seen,", zstr_(t0rTF(bT0pStopSeen)), ",passes,", udec_(t0pPasses), ",err,", sdec_(eErr), ",ok,", zstr_(t0rTF(bOk)))
+
+PRI t0rTarget() : nTarget
+' The driver's target now: targetIncre, the launch run's last long, read directly.
+'
+' @returns nTarget - the angle increment the driver is told to reach
+
+    nTarget := long[t0pLaunch][T0R_LN_TARGET]
+
+PRI bT0pPost(tgtBefore, eMode, boundMs) : bArmed | startMs
+' Post one watch to the sampler cog and wait, bounded by T0_25_HANDSHAKE_MS, until it has taken its baseline.
+'
+' @param tgtBefore - the target before the command
+' @param eMode - T0W_ARRIVE or T0W_REST
+' @param boundMs - the watch's own bound
+' @returns bArmed - T/F where T means the sampler is watching
+'
+' @local startMs - getms() when the wait began
+
+    t0pTgtBefore := tgtBefore
+    t0pMode := eMode
+    t0pBoundMs := boundMs
+    t0pJobSeq++
+    startMs := getms()
+    repeat until (t0pArmedSeq == t0pJobSeq) or ((getms() - startMs) >= T0_25_HANDSHAKE_MS)
+        waitms(1)
+    bArmed := (t0pArmedSeq == t0pJobSeq)
+
+PRI bT0pDone() : bDone | startMs
+' Wait, bounded by the posted watch's own bound plus T0_25_HANDSHAKE_MS, for the sampler cog to finish it.
+'
+' @returns bDone - T/F where T means its readings are final
+'
+' @local startMs - getms() when the wait began
+
+    startMs := getms()
+    repeat until (t0pDoneSeq == t0pJobSeq) or ((getms() - startMs) >= (t0pBoundMs + T0_25_HANDSHAKE_MS))
+        waitms(1)
+    bDone := (t0pDoneSeq == t0pJobSeq)
+
+PRI t0pWorker() | jobSeq
+' The pass sampler's cog (SRC_REV 25): it waits for cog 0's next watch (t0pJobSeq), runs it (t0pWatch()) and waits again.
+' It prints nothing and calls no library method -- everything it reads is a hub long -- and cog 0 stops it.
+'
+' @local jobSeq - the last watch it ran
+
+    jobSeq := t0pJobSeq
+    repeat
+        if t0pJobSeq <> jobSeq
+            jobSeq := t0pJobSeq
+            t0pWatch(jobSeq)
+        else
+            waitus(T0P_IDLE_US)
+
+PRI t0pWatch(jobSeq) | passCt, settleCt, boundCt, startCt, nowCt, goodCt, arriveCt, tgt, vNow, vAgain, accNow, eState, posNow, vPrev, aPrev, lagBase, bDone
+' One watch (the section's CON: THE SAMPLER). From its baseline to its mode's end -- T0_25_SETTLE_MS after v first reads
+' the target (T0W_ARRIVE), or DCS_STOPPED with v 0 (T0W_REST), either after the take -- or t0pBoundMs, whichever comes
+' first. The take is the first sample whose target is not t0pTgtBefore: the command written.
+'
+' @param jobSeq - the watch's number, written back when armed and when done
+'
+' @local passCt - T0R_PASS_GAP_US in system ticks
+' @local settleCt - T0_25_SETTLE_MS in system ticks
+' @local boundCt - t0pBoundMs in system ticks
+' @local startCt - getct() at the baseline
+' @local nowCt - getct() at this sample
+' @local goodCt - getct() at the last good sample
+' @local arriveCt - getct() at the arrival
+' @local tgt - the target this sample
+' @local vNow - v this sample
+' @local vAgain - v read again after the rest of the sample
+' @local accNow - a this sample
+' @local eState - drv_state this sample
+' @local posNow - pos this sample
+' @local vPrev - v on the last pass seen
+' @local aPrev - a on it
+' @local lagBase - lag_held at the baseline
+' @local bDone - T/F where T means the watch ends
+
+    t0pWatchReset()
+    passCt := (CLKFREQ / T0R_US_PER_S) * T0R_PASS_GAP_US
+    settleCt := (CLKFREQ / T0R_MS_PER_S) * T0_25_SETTLE_MS
+    boundCt := (CLKFREQ / T0R_MS_PER_S) * t0pBoundMs
+    lagBase := long[t0pStatus][T0R_ST_LAGHELD]
+    vPrev := long[t0pStatus][T0R_ST_INCR]
+    aPrev := long[t0pStatus][T0R_ST_ACCEL]
+    arriveCt := 0
+    bDone := FALSE
+    startCt := getct()
+    goodCt := startCt
+    t0pArmedSeq := jobSeq                                                       ' cog 0 may send the command now
+    repeat until bDone
+        nowCt := getct()
+        tgt := long[t0pLaunch][T0R_LN_TARGET]
+        vNow := long[t0pStatus][T0R_ST_INCR]
+        accNow := long[t0pStatus][T0R_ST_ACCEL]
+        eState := long[t0pStatus][T0R_ST_STATE]
+        posNow := long[t0pStatus][T0R_ST_POS]
+        vAgain := long[t0pStatus][T0R_ST_INCR]
+        if vNow == vAgain                                                       ' else it straddled a status write: skipped
+            t0pGapPk #>= nowCt - goodCt
+            if (bT0pTaken == FALSE) and (tgt <> t0pTgtBefore)
+                t0pTake(tgt, vPrev, aPrev, posNow, nowCt)
+            if (vNow <> vPrev) or (accNow <> aPrev)
+                t0pNewPass(vPrev, aPrev, vNow, accNow, (nowCt - goodCt) < passCt)
+                if bT0pTaken and (t0pMode == T0W_ARRIVE) and (bT0pArrived == FALSE) and (vNow == t0pTarget)
+                    bT0pArrived := TRUE
+                    arriveCt := nowCt
+                vPrev := vNow
+                aPrev := accNow
+            goodCt := nowCt
+            if bT0pTaken
+                if (t0pMode == T0W_ARRIVE) and (bT0pArrived == FALSE) and (eState == motor.DCS_STOPPED)
+                    bT0pStopSeen := TRUE
+                if (t0pMode == T0W_REST) and (eState == motor.DCS_STOPPED) and (vNow == 0)
+                    bT0pRest := TRUE
+                    t0pRestCt := nowCt
+                    t0pPosRest := posNow
+                    bT0pEnded := TRUE
+                    bDone := TRUE
+                elseif bT0pArrived and ((nowCt - arriveCt) >= settleCt)
+                    bT0pEnded := TRUE
+                    bDone := TRUE
+        if (nowCt - startCt) >= boundCt
+            bDone := TRUE
+    t0pLagHeld := long[t0pStatus][T0R_ST_LAGHELD] - lagBase
+    t0pDoneSeq := jobSeq
+
+PRI t0pWatchReset()
+' Clear one watch's readings (the sampler cog, before its baseline).
+
+    t0pJudged := 0
+    t0pUnres := 0
+    t0pIncons := 0
+    t0pGapPk := 0
+    t0pJerkPk := 0
+    t0pAccPk := 0
+    bT0pLimitOk := TRUE
+    bT0pMonoOk := TRUE
+    bT0pTaken := FALSE
+    t0pTakeCt := 0
+    t0pTarget := 0
+    t0pVTake := 0
+    t0pATake := 0
+    t0pPosTake := 0
+    t0pVMin := 0
+    t0pVMax := 0
+    t0pPasses := 0
+    t0pUnwind := -1
+    bT0pArrived := FALSE
+    bT0pZeroAfter := FALSE
+    bT0pSettleOk := TRUE
+    bT0pStopSeen := FALSE
+    bT0pCrossed := FALSE
+    bT0pRest := FALSE
+    t0pRestCt := 0
+    t0pPosRest := 0
+    t0pLagHeld := 0
+    bT0pEnded := FALSE
+
+PRI t0pTake(tgt, vPrev, aPrev, posNow, nowCt)
+' The take: the command is written. The pass state before it is the stop's or the ramp's starting point.
+'
+' @param tgt - the target written
+' @param vPrev - v on the last pass before it
+' @param aPrev - a on that pass
+' @param posNow - pos at this sample
+' @param nowCt - getct() at this sample
+
+    bT0pTaken := TRUE
+    t0pTakeCt := nowCt
+    t0pTarget := tgt
+    t0pVTake := vPrev
+    t0pATake := aPrev
+    t0pPosTake := posNow
+    t0pVMin := vPrev
+    t0pVMax := vPrev
+
+PRI t0pNewPass(vPrev, aPrev, vNow, accNow, bClose)
+' One new pass: judged with the last when resolved and consistent (t0pJudge()), else counted; then, from the take on,
+' its place in the watch -- the extremes of v, the direction of a, the unwind and the settle after the arrival.
+'
+' @param vPrev - v on the last pass seen
+' @param aPrev - a on it
+' @param vNow - v on this pass
+' @param accNow - a on this pass
+' @param bClose - T/F where T means the last good sample was under T0R_PASS_GAP_US ago: no pass between them
+
+    if bClose == FALSE
+        t0pUnres++
+    elseif ((vNow - vPrev) == accNow) or ((vNow == 0) and (accNow == 0))
+        t0pJudge(vPrev, aPrev, vNow, accNow)
+    else
+        t0pIncons++
+    if bT0pTaken
+        t0pPasses++
+        t0pVMin <#= vNow
+        t0pVMax #>= vNow
+        if (accNow <> 0) and ((accNow > 0) <> (t0pTarget > t0pVTake))
+            bT0pMonoOk := FALSE
+        if (t0pUnwind < 0) and (t0pATake <> 0) and ((accNow == 0) or ((accNow > 0) <> (t0pATake > 0)))
+            t0pUnwind := t0pPasses
+        if bT0pArrived
+            if (vNow == t0pTarget) and (accNow == 0)
+                bT0pZeroAfter := TRUE
+            else
+                bT0pSettleOk := FALSE
+
+PRI t0pJudge(vPrev, aPrev, vNow, accNow) | nLimit
+' Judge one pair of consecutive passes (jerkStep's rules): the step of a, the size of a against its side's limit -- the
+' speed-up limit when the pass grows |v| (v was 0, or a has v's sign), the slow-down limit when it sheds it -- unless a
+' is unwinding toward that limit (smaller than the last), and a crossing of zero onto the target's side.
+'
+' @param vPrev - v on the last pass
+' @param aPrev - a on it
+' @param vNow - v on this pass
+' @param accNow - a on this pass
+'
+' @local nLimit - the side's acceleration limit
+
+    t0pJudged++
+    t0pJerkPk #>= abs(accNow - aPrev)
+    t0pAccPk #>= abs(accNow)
+    if accNow <> 0
+        nLimit := t0pAccDn
+        if (vPrev == 0) or ((vPrev > 0) == (accNow > 0))
+            nLimit := t0pAccUp
+        if (abs(accNow) > nLimit) and (abs(accNow) >= abs(aPrev))
+            bT0pLimitOk := FALSE
+    if bT0pTaken
+        if ((t0pTarget > 0) and (vNow > 0) and (vPrev <= 0)) or ((t0pTarget < 0) and (vNow < 0) and (vPrev >= 0))
+            bT0pCrossed := TRUE
 
 PRI t0rTF(bValue) : pText
 ' TRUE or FALSE, for a record.
@@ -3533,14 +4295,28 @@ CON { the API contract (T0-26, -D T0_API only; SRC_REV 22, DRIVER_REV 33) }
     T0A_PERSIST_SPD = 40                                        ' PERSIST: setMaxSpeed() before start(), not the default 75
     T0A_PERSIST_DST = 30                                        ' ...setMaxSpeedForDistance(), different again
     T0A_PERSIST_ACC = 600                                       ' ...setAcceleration(), mm/s^2 (PL-160)
-    T0A_PERSIST_DEC = 900                                       ' ...setDeceleration(), mm/s^2, not the built-in ~1_473
+    T0A_PERSIST_DEC = 900                                       ' ...setDeceleration(), mm/s^2, not the built-in 1_470
     T0A_DECEL_PROBE = 2_000                                     ' ACCEL: the rate whose step is checked on the running driver
-    ' ACCEL: DERIVED -- the built-in ramp_down, 50_000 steps x 0.02945 mm/s^2 per step (1913 passes/s, 6 ticks per
-    '  electrical cycle, 5.76 mm per tick, 2^32 per cycle; see ACCEL_ANCHOR_MM_S2) = 1_473 mm/s^2. So
-    '  setDeceleration(T0A_DECEL_ANCHOR) must land within 1% of the built-in ramp_down: a factor wrong anywhere in the
-    '  conversion moves it far outside that. The bench's 6.5in wheel (BENCH_CFG) only.
-    T0A_DECEL_ANCHOR = 1_473
-    T0A_ANCHOR_TOL_DIV = 100                                    ' 1% of the built-in ramp_down
+    ' ACCEL (SRC_REV 25): setRampingValues()'s raw limits. maxRamp and decrRamp are the two limits; minRamp and incRamp
+    '  have no effect but are still checked (DRIVER_REV 38, owner Q3 open), so 1 and 0, the least they accept, must read
+    '  back as the jerks the limits give, and a minRamp of 0 is still refused; a limit above ACCEL_STEP_CAP runs at it.
+    T0A_RAW_UP      = 100_000
+    T0A_RAW_DN      = 150_000
+    ' ACCEL (SRC_REV 25, DRIVER_REV 38): DERIVED as ACCEL_ANCHOR_STEP is -- 0.0294485 mm/s^2 per step on the 6.5in wheel
+    '  -- 1_470 mm/s^2 is 49_917.6 steps, 49_918. setDeceleration(T0A_DECEL_ANCHOR) must land within 1% of it: a factor
+    '  wrong anywhere in the conversion moves it far outside that. The bench's 6.5in wheel (BENCH_CFG) only. (Until
+    '  DRIVER_REV 38 it was 1_473 against the built-in ramp_down 50_000; the built-in slow-down limit is now the
+    '  library's own conversion of DECEL_BUILTIN_MM_S2, so anchoring on it would check that code against itself.)
+    T0A_DECEL_ANCHOR = 1_470
+    T0A_DECEL_ANCHOR_STEP = 49_918                              ' DERIVED above, the 6.5in wheel
+    T0A_ANCHOR_TOL_DIV = 100                                    ' 1% of it
+    ' RAMPDEF (SRC_REV 25): the built-in ramp's four driver parameters on the bench's 6.5in wheel, DERIVED here and not read
+    '  from the library: accel_up 33_958 (ACCEL_ANCHOR_STEP, 1_000 mm/s^2), accel_dn 49_918 (1_470 mm/s^2), and each jerk
+    '  its limit over RAMP_TAU_MS' 478.3 passes, rounded: 71 and 104. Judged only while the built-in rates are the ones
+    '  they were derived for (ACCEL_BUILTIN_MM_S2 1_000, DECEL_BUILTIN_MM_S2 1_470: owner Q2 may retune them); the check
+    '  against this file's own conversion (t0aStepFor(), t0JerkFor()) runs whatever the rates.
+    T0A_BENCH_JERK_UP = 71
+    T0A_BENCH_JERK_DN = 104
     T0A_STATUS_MS   = 500                                       ' HOLD: bound on getStatus() following holdAtStop() at rest
     ' each table's rows (DAT below): a row added there is counted here
     T0A_ACCEL_ROWS  = 5
@@ -3645,6 +4421,7 @@ sCellApiHLim    BYTE    "R20-T0-API-HOLDLIMITS", 0              ' setHoldLimits(
 sCellApiTo      BYTE    "R20-T0-API-TIMEOUT", 0                 ' setCommandTimeout()
 sCellApiLim     BYTE    "R20-T0-API-LIMITS", 0                  ' stopAfterDistance(), stopAfterRotation(), stopAfterTime(), driveForDistance()'s refusals
 sCellApiSteer   BYTE    "R20-T0-API-STEER", 0                   ' the steering object's own validation: timeout, fault, hold limits, limits; its distance max speed (PL-51)
+sCellApiRampDef BYTE    "R22-T0-API-RAMPDEF", 0                 ' the built-in ramp: its two rates and its four driver parameters (PL-160, SRC_REV 25)
 
 VAR { the API contract's running count (T0-26) }
 
@@ -3653,7 +4430,7 @@ VAR { the API contract's running count (T0-26) }
 
 PRI testT0_26() | bReady
 ' T0-26, the API contract (-D T0_API only, tier t0-api): wheels up, unattended, NO MOTION -- every start() commands zero
-' speed, and the only drive command sent is refused. Under a minute: five starts, about 1.3 s each, and a few hundred
+' speed, and the only drive command sent is refused. Under a minute: six starts, about 1.3 s each, and a few hundred
 ' bounded calls. setStartChecks(FALSE) on both objects first: this tier checks the API, not the bridges, so a start check
 ' failing (PL-120's dead right bridge) does not void it; it is put back to TRUE at the end.
 '
@@ -3662,17 +4439,24 @@ PRI testT0_26() | bReady
 ' Each can FAIL: a setter whose range check were removed returns NO_ERROR where its ERR_* is wanted, and changes the
 ' read-back; a setter that did not store reads back its old value.
 '   R20-T0-API-CALIBRATE  - calibrate() on the motor and the steering object returns ERR_NOT_IMPLEMENTED and records it
+'   R22-T0-API-RAMPDEF    - (PL-160, SRC_REV 25) before any ramp setter, stopped and then on the running driver:
+'                           getAcceleration() reads ACCEL_BUILTIN_MM_S2, getDeceleration() DECEL_BUILTIN_MM_S2, and
+'                           getRampingValues() the jerk-limited ramp's four parameters this file derives from them
+'                           (t0aStepFor(), t0JerkFor()), and on the bench's wheel the four DERIVED in CON (71, 33_958,
+'                           104, 49_918). NEGATIVE: DRIVER_REV 37 read getAcceleration() 0 and 1_500, 200_000, 22, 50_000
 '   R20-T0-API-PERSIST    - with the motor stopped: max speeds, the hold, the reversal, the acceleration and the
 '                           deceleration are accepted and read back; the protective setters are refused
 '                           (ERR_NOT_STARTED); after start(), and after a second stop()/start(), the kept ones read back
 '                           (the ramp also as the driver's own steps) and the protective ones read their defaults;
 '                           a start() at another supported voltage is taken and getDriveVoltage() reads it, then a
 '                           restart at DRIVE_VOLTAGE reads that (PL-14, SRC_REV 24)
-'   R20-T0-API-ACCEL     - setAcceleration() at [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] gives a constant ramp and reads
-'                           back; setDeceleration() at [DECEL_MIN_MM_S2 .. DECEL_MAX_MM_S2] sets only the slow-down step
-'                           and reads back; just outside, 0 and negative, ERR_BAD_COUNT with the ramp and both getters
-'                           unchanged; a set deceleration is the running driver's decrRamp, at the step this file
-'                           converts it to, and the built-in rate's step lands within 1% of the built-in ramp_down
+'   R20-T0-API-ACCEL     - setAcceleration() at [ACCEL_MIN_MM_S2 .. ACCEL_MAX_MM_S2] sets only the speed-up pair --
+'                           accel_up the step this file converts the rate to (at most ACCEL_STEP_CAP), jerk_up its jerk --
+'                           and reads back; setDeceleration() at [DECEL_MIN_MM_S2 .. DECEL_MAX_MM_S2] sets only the
+'                           slow-down pair the same way and reads back; just outside, 0 and negative, ERR_BAD_COUNT with
+'                           the ramp and both getters unchanged; a set deceleration is the running driver's decrRamp,
+'                           at the step this file converts it to, and T0A_DECEL_ANCHOR's lands within 1% of the derived
+'                           T0A_DECEL_ANCHOR_STEP (SRC_REV 25: was a constant ramp, ramp_min = ramp_max, ramp_inc 0)
 '   R20-T0-API-MAXSPEED   - setMaxSpeed() and setMaxSpeedForDistance() return NO_ERROR and read back the value saturated to
 '                           [1..100]
 '   R20-T0-API-HOLD       - holdAtStop(TRUE/FALSE) reads back through isHoldAtStop(), and getStatus() follows it at rest
@@ -3700,11 +4484,13 @@ PRI testT0_26() | bReady
     emitCellDecl(@sCellApiTo, @sTaskApi)
     emitCellDecl(@sCellApiLim, @sTaskApi)
     emitCellDecl(@sCellApiSteer, @sTaskApi)
+    emitCellDecl(@sCellApiRampDef, @sTaskApi)
     debug("T0-26,begin,wheel,RIGHT_P16,driver_rev,", udec_(motor.DRIVER_REV))
     motor.setStartChecks(FALSE)
     steer.setStartChecks(FALSE)
 
     t0aCalibrate()
+    t0aRampDef()                                                 ' before any ramp setter: the built-in ramp
     bReady := bT0aPersist()                                      ' leaves the motor started when it came up
     if bReady
         t0aAccel()
@@ -3784,6 +4570,47 @@ PRI t0aCalibrate() | eGot, eLeft
     t0aChk(@"steer.calibrate", 0, motor.ERR_NOT_IMPLEMENTED, eGot, motor.ERR_NOT_IMPLEMENTED, eLeft)
     t0aCell(@sCellApiCal, @"BOTH", TRUE)
 
+PRI t0aRampDef() | stepUp, stepDn, passIdx, startResult, bReady
+' R22-T0-API-RAMPDEF (PL-160, SRC_REV 25): the built-in ramp, before any ramp setter has been called on `motor` -- first
+' stopped (the ramp the next start() applies), then started and read on the running driver (getRampingValues() reads
+' the driver's working longs once the kept settings are live), then stopped again. Each time: getAcceleration() reads
+' ACCEL_BUILTIN_MM_S2 and getDeceleration() DECEL_BUILTIN_MM_S2; getRampingValues() reads jerk_up, accel_up, jerk_dn,
+' accel_dn as this file derives them from those two rates (t0aStepFor(), t0JerkFor()); and on the bench's wheel, while the
+' built-in rates are the two the CON derived them for, 71, 33_958, 104 and 49_918. NEGATIVE: DRIVER_REV 37 read
+' getAcceleration() 0 (a growing ramp has no single rate) and the stepped ramp's 1_500, 200_000, 22, 50_000. NOMEAS when
+' the start does not come up (the stopped rows are still printed).
+'
+' @local stepUp - accel_up for ACCEL_BUILTIN_MM_S2, this file's conversion
+' @local stepDn - accel_dn for DECEL_BUILTIN_MM_S2
+' @local passIdx - 0 stopped, 1 started
+' @local startResult - start()'s return
+' @local bReady - the start came up ready
+
+    t0aBad := 0
+    t0aChecks := 0
+    motor.getError()
+    stepUp := t0aStepFor(motor.ACCEL_BUILTIN_MM_S2)
+    stepDn := t0aStepFor(motor.DECEL_BUILTIN_MM_S2)
+    bReady := TRUE
+    repeat passIdx from 0 to 1
+        if passIdx == 1
+            benchLog.cogEventBegin()
+            startResult := motor.start(T0_MOTOR_BASE, user.DRIVE_VOLTAGE, motor.BRD_AUTO_DET)
+            benchLog.cogEventEnd()
+            bReady := bWaitReady(startResult)
+            debug("T0-26,rampdef,start,return,", sdec_(startResult))
+        t0aChk(@"getAcceleration.builtin", passIdx, T0A_OK, T0A_OK, motor.ACCEL_BUILTIN_MM_S2, motor.getAcceleration())
+        t0aChk(@"getDeceleration.builtin", passIdx, T0A_OK, T0A_OK, motor.DECEL_BUILTIN_MM_S2, motor.getDeceleration())
+        t0aChk(@"ramp.builtin", passIdx, T0A_OK, T0A_OK, TRUE, bT0aRampIs(t0JerkFor(stepUp), stepUp, t0JerkFor(stepDn), stepDn))
+#ifdef BENCH_CFG
+        if (motor.ACCEL_BUILTIN_MM_S2 == ACCEL_ANCHOR_MM_S2) and (motor.DECEL_BUILTIN_MM_S2 == T0A_DECEL_ANCHOR)
+            t0aChk(@"ramp.builtin.bench", passIdx, T0A_OK, T0A_OK, TRUE, bT0aRampIs(T0A_BENCH_JERK_UP, ACCEL_ANCHOR_STEP, T0A_BENCH_JERK_DN, T0A_DECEL_ANCHOR_STEP))
+#endif
+    benchLog.cogEventBegin()
+    motor.stop()
+    motor.getError()
+    t0aCell(@sCellApiRampDef, @"RIGHT", bReady)
+
 PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD, eOther, eVolt, eGotVolt, nGotMv
 ' R20-T0-API-PERSIST (PL-155, PL-160). With `motor` stopped: the kept setters are accepted and read back at once; the
 ' protective setters are refused with ERR_NOT_STARTED. Then start(), stop() and start() again: after each start the kept
@@ -3804,10 +4631,10 @@ PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD,
 ' @local startResult - a start()'s return
 ' @local passIdx - 1 after the first start, 2 after the restart; 3 the other voltage's start, 4 DRIVE_VOLTAGE's (PL-14)
 ' @local eGot - a setter's return
-' @local minD - the built-in ramp's ramp_min, read before any call
-' @local maxD - ...ramp_max
-' @local incD - ...ramp_inc
-' @local decD - ...ramp_down
+' @local minD - the built-in ramp's minRamp (jerk_up since DRIVER_REV 38), read before any call
+' @local maxD - ...maxRamp (accel_up)
+' @local incD - ...incRamp (jerk_dn)
+' @local decD - ...decrRamp (accel_dn)
 ' @local eOther - the other voltage PL-14's start uses, or INVALID_VOLTAGE
 ' @local eVolt - the voltage a PL-14 start is given
 ' @local eGotVolt - getDriveVoltage()'s PWR_* after it
@@ -3852,12 +4679,13 @@ PRI bT0aPersist() : bReady | startResult, passIdx, eGot, minD, maxD, incD, decD,
         t0aChk(@"getHoldLimits.started", passIdx, T0A_OK, T0A_OK, TRUE, bHoldLimitsAre(T0A_CEIL_DEF, T0A_RISE_DEF, T0A_LIMIT_DEF))
         t0aChk(@"getAcceleration.started", passIdx, T0A_OK, T0A_OK, T0A_PERSIST_ACC, motor.getAcceleration())
         t0aChk(@"getDeceleration.started", passIdx, T0A_OK, T0A_OK, T0A_PERSIST_DEC, motor.getDeceleration())
-        t0aChk(@"ramp.started", passIdx, T0A_OK, T0A_OK, TRUE, bT0aRampIs(t0aStepFor(T0A_PERSIST_ACC), t0aStepFor(T0A_PERSIST_ACC), 0, t0aStepFor(T0A_PERSIST_DEC)))
+        ' SRC_REV 25 (DRIVER_REV 38): the running driver's four are the two limits these rates give and their jerks
+        t0aChk(@"ramp.started", passIdx, T0A_OK, T0A_OK, TRUE, bT0aRampIs(t0JerkFor(t0aStepFor(T0A_PERSIST_ACC)), t0aStepFor(T0A_PERSIST_ACC), t0JerkFor(t0aStepFor(T0A_PERSIST_DEC)), t0aStepFor(T0A_PERSIST_DEC)))
     motor.setMaxSpeed(T0A_SPD_DEF)                                              ' the defaults again: kept across starts now
     motor.setMaxSpeedForDistance(T0A_SPD_DEF)
     motor.holdAtStop(FALSE)
     motor.setForwardIsReverse(FALSE)
-    motor.setRampingValues(minD, maxD, incD, decD)                              ' PL-160: the built-in ramp's values
+    motor.setRampingValues(minD, maxD, incD, decD)                              ' PL-160: the built-in ramp's values (min and inc are its jerks, which DRIVER_REV 38 re-derives)
     motor.getError()
     eOther := t0aOtherVoltage()                                                 ' PL-14: start() honours its voltage argument
     t0aChk(@"voltage.other", eOther, T0A_OK, T0A_OK, TRUE, eOther <> motor.INVALID_VOLTAGE)
@@ -3938,18 +4766,24 @@ PRI bHoldLimitsAre(ceilingPct, riseMs, limitMs) : bSame | nCeil, nRise, nLimit
 
 PRI t0aAccel() | minD, maxD, incD, decD, tabIdx, pTab, nRows, rowIdx, nRate, eWant, eGot, nAccWas, nDecWas, nMin, nMax, nInc, nDec, rMin, rMax, rInc, rDec, bOk
 ' R20-T0-API-ACCEL: setAcceleration() per t0aAccelTab, then setDeceleration() per t0aDecelTab (PL-160), on the running
-' motor. setAcceleration() accepted: a constant ramp -- ramp_min = ramp_max > 0, ramp_inc 0 -- ramp_down untouched, and
-' getAcceleration() reads the rate. setDeceleration() accepted: ramp_down > 0, the speed-up ramp untouched, and
-' getDeceleration() reads the rate. Refused: ERR_BAD_COUNT, the ramp exactly as it was and both getters unchanged. Then
-' the driver check: setDeceleration(T0A_DECEL_PROBE) leaves getRampingValues()'s decrRamp (the running driver's own
-' ramp_down) at t0aStepFor()'s step, and setDeceleration(T0A_DECEL_ANCHOR) within 1% of the built-in ramp_down.
+' motor. SRC_REV 25 (DRIVER_REV 38): getRampingValues() reads the jerk-limited ramp's four parameters -- minRamp jerk_up,
+' maxRamp accel_up, incRamp jerk_dn, decrRamp accel_dn. setAcceleration() accepted: accel_up the step this file converts
+' the rate to (capped at ACCEL_STEP_CAP), jerk_up its jerk (t0JerkFor()), the slow-down pair untouched, and
+' getAcceleration() reads the rate. setDeceleration() accepted: the same for the slow-down pair, the speed-up pair
+' untouched, and getDeceleration() reads the rate. Refused: ERR_BAD_COUNT, the ramp exactly as it was and both getters
+' unchanged. Then the driver check: setDeceleration(T0A_DECEL_PROBE) leaves the running driver's decrRamp (accel_dn) at
+' t0aStepFor()'s step, and setDeceleration(T0A_DECEL_ANCHOR) within 1% of T0A_DECEL_ANCHOR_STEP (DERIVED in CON). Then
+' the raw setRampingValues(): minRamp 1 and incRamp 0 read back as the jerks of the two limits given (they have no effect
+' since DRIVER_REV 38), a minRamp of 0 is still refused with the ramp unchanged, and a speed-up limit of twice
+' ACCEL_STEP_CAP reads back as ACCEL_STEP_CAP with its jerk.
 ' NEGATIVE: a setter without its range check returns NO_ERROR where ERR_BAD_COUNT is wanted; a setDeceleration() that
-' did not reach ramp_down fails the driver check. The default ramp is put back after.
+' did not reach accel_dn fails the driver check; DRIVER_REV 35-37's constant ramp (minRamp = maxRamp, incRamp 0) fails
+' every accepted setAcceleration() row. The default ramp is put back after.
 '
-' @local minD - the ramp's ramp_min before the family (the built-in ramp, PERSIST put it back)
-' @local maxD - ...ramp_max
-' @local incD - ...ramp_inc
-' @local decD - ...ramp_down
+' @local minD - the ramp's minRamp (jerk_up) before the family (the built-in ramp, PERSIST put it back)
+' @local maxD - ...maxRamp (accel_up)
+' @local incD - ...incRamp (jerk_dn)
+' @local decD - ...decrRamp (accel_dn)
 ' @local tabIdx - 0 for setAcceleration()'s table, 1 for setDeceleration()'s
 ' @local pTab - the table
 ' @local nRows - its rows
@@ -3959,14 +4793,14 @@ PRI t0aAccel() | minD, maxD, incD, decD, tabIdx, pTab, nRows, rowIdx, nRate, eWa
 ' @local eGot - the setter's return
 ' @local nAccWas - getAcceleration() just before the call
 ' @local nDecWas - getDeceleration() just before the call
-' @local nMin - ramp_min just before the call
-' @local nMax - ramp_max just before
-' @local nInc - ramp_inc just before
-' @local nDec - ramp_down just before
-' @local rMin - ramp_min after
-' @local rMax - ramp_max after
-' @local rInc - ramp_inc after
-' @local rDec - ramp_down after
+' @local nMin - minRamp just before the call
+' @local nMax - maxRamp just before
+' @local nInc - incRamp just before
+' @local nDec - decrRamp just before
+' @local rMin - minRamp after
+' @local rMax - maxRamp after
+' @local rInc - incRamp after
+' @local rDec - decrRamp after
 ' @local bOk - the read-back held
 
     minD, maxD, incD, decD := motor.getRampingValues()
@@ -3988,10 +4822,10 @@ PRI t0aAccel() | minD, maxD, incD, decD, tabIdx, pTab, nRows, rowIdx, nRate, eWa
                 bOk := (rMin == nMin) and (rMax == nMax) and (rInc == nInc) and (rDec == nDec)
                 bOk &= (motor.getAcceleration() == nAccWas) and (motor.getDeceleration() == nDecWas)
             elseif tabIdx == 0
-                bOk := (rMin == rMax) and (rMin > 0) and (rInc == 0) and (rDec == nDec)
+                bOk := (rMax == (t0aStepFor(nRate) <# motor.ACCEL_STEP_CAP)) and (rMin == t0JerkFor(rMax)) and (rInc == nInc) and (rDec == nDec)
                 bOk &= (motor.getAcceleration() == nRate) and (motor.getDeceleration() == nDecWas)
             else
-                bOk := (rMin == nMin) and (rMax == nMax) and (rInc == nInc) and (rDec > 0)
+                bOk := (rMin == nMin) and (rMax == nMax) and (rDec == (t0aStepFor(nRate) <# motor.ACCEL_STEP_CAP)) and (rInc == t0JerkFor(rDec))
                 bOk &= (motor.getDeceleration() == nRate) and (motor.getAcceleration() == nAccWas)
             t0aChk((tabIdx == 0) ? @"setAcceleration" : @"setDeceleration", nRate, eWant, eGot, TRUE, bOk)
     eGot := motor.setDeceleration(T0A_DECEL_PROBE)
@@ -3999,7 +4833,14 @@ PRI t0aAccel() | minD, maxD, incD, decD, tabIdx, pTab, nRows, rowIdx, nRate, eWa
     t0aChk(@"setDeceleration.driver", T0A_DECEL_PROBE, T0A_OK, eGot, t0aStepFor(T0A_DECEL_PROBE), rDec)
     eGot := motor.setDeceleration(T0A_DECEL_ANCHOR)
     _, _, _, rDec := motor.getRampingValues()
-    t0aChk(@"setDeceleration.anchor", T0A_DECEL_ANCHOR, T0A_OK, eGot, TRUE, abs(rDec - decD) <= decD / T0A_ANCHOR_TOL_DIV)
+    t0aChk(@"setDeceleration.anchor", T0A_DECEL_ANCHOR, T0A_OK, eGot, TRUE, abs(rDec - T0A_DECEL_ANCHOR_STEP) <= T0A_DECEL_ANCHOR_STEP / T0A_ANCHOR_TOL_DIV)
+    ' SRC_REV 25: the raw setter -- min and inc read back as the jerks, a minRamp of 0 refused, a limit capped
+    eGot := motor.setRampingValues(1, T0A_RAW_UP, 0, T0A_RAW_DN)
+    t0aChk(@"setRampingValues.raw", T0A_RAW_UP, T0A_OK, eGot, TRUE, bT0aRampIs(t0JerkFor(T0A_RAW_UP), T0A_RAW_UP, t0JerkFor(T0A_RAW_DN), T0A_RAW_DN))
+    eGot := motor.setRampingValues(0, T0A_RAW_DN, 0, T0A_RAW_UP)
+    t0aChk(@"setRampingValues.min0", 0, T0A_BAD_COUNT, eGot, TRUE, bT0aRampIs(t0JerkFor(T0A_RAW_UP), T0A_RAW_UP, t0JerkFor(T0A_RAW_DN), T0A_RAW_DN))
+    eGot := motor.setRampingValues(1, motor.ACCEL_STEP_CAP * 2, 0, T0A_RAW_DN)
+    t0aChk(@"setRampingValues.cap", motor.ACCEL_STEP_CAP * 2, T0A_OK, eGot, TRUE, bT0aRampIs(t0JerkFor(motor.ACCEL_STEP_CAP), motor.ACCEL_STEP_CAP, t0JerkFor(T0A_RAW_DN), T0A_RAW_DN))
     motor.setRampingValues(minD, maxD, incD, decD)
     motor.getError()
     t0aCell(@sCellApiAccel, @"RIGHT", TRUE)
@@ -4024,18 +4865,19 @@ PRI t0aStepFor(nRate) : nStep | nTickInMM_x100, fPassesPerSec, fPerStep
         nStep := 1 #> round(float(nRate) /. fPerStep)
 
 PRI bT0aRampIs(minWant, maxWant, incWant, decrWant) : bSame | minRamp, maxRamp, incRamp, decrRamp
-' Report whether `motor`'s four ramping values read back exactly as given.
+' Report whether `motor`'s four ramping values read back exactly as given (since DRIVER_REV 38 jerk_up, accel_up,
+' jerk_dn, accel_dn).
 '
-' @param minWant - expected ramp_min
-' @param maxWant - expected ramp_max
-' @param incWant - expected ramp_inc
-' @param decrWant - expected ramp_down
+' @param minWant - expected minRamp (jerk_up)
+' @param maxWant - expected maxRamp (accel_up)
+' @param incWant - expected incRamp (jerk_dn)
+' @param decrWant - expected decrRamp (accel_dn)
 ' @returns bSame - TRUE when all four read back equal
 '
-' @local minRamp - ramp_min read back
-' @local maxRamp - ramp_max read back
-' @local incRamp - ramp_inc read back
-' @local decrRamp - ramp_down read back
+' @local minRamp - minRamp read back
+' @local maxRamp - maxRamp read back
+' @local incRamp - incRamp read back
+' @local decrRamp - decrRamp read back
 
     minRamp, maxRamp, incRamp, decrRamp := motor.getRampingValues()
     bSame := (minRamp == minWant) and (maxRamp == maxWant) and (incRamp == incWant) and (decrRamp == decrWant)

@@ -3273,37 +3273,57 @@ PUB frontTrack(passCount) | eDrvState, nowPos, nStep
     elseif (passCount +// WINDOW_PASSES) == 0
         updateWindowAccumulators()
 
-PUB frontStopTicks() : nTicks | nFieldFp
+PUB frontStopTicks() : nTicks
 '' FRONT COG ONLY: return the hall ticks the field still travels if a stop is written now
 ''
-'' PL-160 (DRIVER_REV 38): the driver's jerk-limited stop from the field's present increment AND acceleration, in
-'' closed form (stopPlan(), whose derivation it carries): exact against the driver's own per-pass arithmetic, to a
-'' few 1/256 of a tick, plus the one pass at the present increment the stop may take to be read (as the formula before
-'' DRIVER_REV 38 also counted). One hall cycle (2^32) is 6 ticks. Rounded down, as before.
+'' PL-161 (DRIVER_REV 39): the DRIVER's own plan of its jerk-limited stop (drv_stop_fp, the PASM planA .. planC and
+'' planStage), read from the status run: the front cog computes nothing. The plan is made from the (v, a) the
+'' published drive pass left, for a stop taken by the next pass or, if that pass has already read its command, by
+'' the one after it (one more pass first, under ANY command: planStage bounds them all); the largest travel. One
+'' hall cycle (2^32) is 6 ticks. Rounded down, as before. See frontStopMs() for why the status run's age needs no
+'' correction.
 ''
 '' @returns nTicks - the stopping distance in hall ticks; 0 at rest
 
-' Local Variables:
-' @local nFieldFp - the field's stopping travel, 1/256 hall tick
+    nTicks := drv_stop_fp >> STOP_FP_BITS
 
-    _, nFieldFp := stopPlan()
-    nTicks := nFieldFp >> STOP_FP_BITS
-
-PUB frontStopMs() : nMs | nPasses
+PUB frontStopMs() : nMs
 '' FRONT COG ONLY: return the milliseconds until the field is at rest if a stop is written now
 ''
-'' PL-160 (DRIVER_REV 38): the drive passes of the jerk-limited stop, exact against the driver (stopPlan()), with the
-'' pass the stop may take to be read, at DRIVE_PASS_US each.
+'' PL-161 (DRIVER_REV 39): the driver's own plan (drv_stop_passes, the largest of the takes above), at
+'' DRIVE_PASS_US each, rounded up. THE AGE: the plan counts passes from the published pass k's own time T_k, and the
+'' status run is read at some t >= T_k (it is written only after the pass), so the field's rest, at most
+'' T_k + passes x 522.7 us, is at most t + that: counting from now can only over-state the stop (early), never
+'' under-state it. Pass k + 2 cannot read its command before T_k + 1_000 us (each pass waits its 500 us CT1
+'' deadline), and the plan is published at most ~232 us after T_k (ten PWM frames), so a stop written within ~268 us
+'' of the read is taken by pass k + 1 or k + 2, the two cases the plan covers. Both front cogs write a limit's stop
+'' before any other work on its path, a few method calls after the read.
 ''
-'' @returns nMs - the stopping time, rounded up; 0 at rest
+'' @returns nMs - the stopping time, rounded up; a few ms at rest (a take pass might yet start a drive)
 
-' Local Variables:
-' @local nPasses - the drive passes until the field is at rest
+    nMs := msForPasses(drv_stop_passes)
 
-    nMs := 0
-    nPasses, _ := stopPlan()
-    if nPasses > 0
-        nMs := nPasses * DRIVE_PASS_US / 1_000 + 1
+PUB bFrontStopMsReaches(nowMs, nDeadlineMs) : bReaches
+'' FRONT COG ONLY: return TRUE when a stop written now leaves the field at rest at or after {nDeadlineMs}: nowMs + frontStopMs() >= nDeadlineMs
+''
+'' PL-161 (DRIVER_REV 39): the driver's plan, read (frontStopMs()); one compare, no computation.
+''
+'' @param nowMs - getms() for this pass
+'' @param nDeadlineMs - the time limit, a getms() value
+'' @returns bReaches - T/F where T means the stop must be written now for the field to be at rest by the deadline
+
+    bReaches := (nowMs + frontStopMs() >= nDeadlineMs)
+
+PUB bFrontStopTicksReaches(nTravelTicks, nLimitTicks) : bReaches
+'' FRONT COG ONLY: return TRUE when a stop written now leaves the field at rest at or past {nLimitTicks}: nTravelTicks + frontStopTicks() >= nLimitTicks
+''
+'' PL-161 (DRIVER_REV 39): the driver's plan, read (frontStopTicks()); one compare, no computation.
+''
+'' @param nTravelTicks - the hall ticks travelled toward the limit so far
+'' @param nLimitTicks - the limit, hall ticks
+'' @returns bReaches - T/F where T means the stop must be written now for the motor to be at rest at the limit
+
+    bReaches := (nTravelTicks + frontStopTicks() >= nLimitTicks)
 
 PUB frontSetLimits(nTicks, nMsDeadline)
 '' FRONT COG ONLY: arm this motor's stop limits (0 disarms either)
@@ -3337,7 +3357,7 @@ PUB frontTravelNow() : nTicks
 
     nTicks := trkTravelTicks + absDistanceInTics(pos, trackBasePos)
 
-PUB bFrontLimitsDue(nowMs) : bFired | nStopTicks
+PUB bFrontLimitsDue(nowMs) : bFired
 '' FRONT COG ONLY: return TRUE, and disarm the limit, when a stop written now leaves the motor at rest at its time or distance limit
 ''
 '' The stop begins early by the field's own stopping time or distance at its current speed (frontStopMs(),
@@ -3345,26 +3365,45 @@ PUB bFrontLimitsDue(nowMs) : bFired | nStopTicks
 '' stopping distance or time fires at once. The time limit is checked first; the distance limit only while no
 '' time limit is armed. The owner writes the stop, then frontWalkNoteLimit(), which reads the stopping ticks a fired
 '' distance limit allowed for (PL-137). PL-153: the distance is the travel since the limit was armed (frontSetLimits()).
+'' PL-161 (DRIVER_REV 39): the stopping time and distance are the driver's own plan, read from the status run
+'' (bFrontStopMsReaches(), bFrontStopTicksReaches()): the front cog computes no stop prediction. Nothing here
+'' prints or waits: the owner writes the stop straight after a TRUE, and only then calls frontReportLimit().
 ''
 '' @param nowMs - getms() for this pass
 '' @returns bFired - T/F where T means a limit fired in this call and the owner must stop the motor now
 
-' Local Variables:
-' @local nStopTicks - the field's stopping distance now, hall ticks
-
     bFired := FALSE
     if motorStopMSecs > 0
-        if nowMs + frontStopMs() >= motorStopMSecs
-            debug[user.DBGCH_SENSE]("-MOT- time limit reached")
+        if bFrontStopMsReaches(nowMs, motorStopMSecs) == TRUE
             motorStopMSecs := 0                                                 ' and clear user request
+            bLimitByTime := TRUE                                                ' for frontReportLimit(), after the stop's write
             bFired := TRUE
     elseif motorStopHallTicks > 0
-        nStopTicks := frontStopTicks()
-        if (trkTravelTicks - limitBaseTicks) + nStopTicks >= motorStopHallTicks  ' PL-153: travel since arming, not the odometer
-            debug[user.DBGCH_SENSE]("-MOT- distance limit reached")
+        if bFrontStopTicksReaches(trkTravelTicks - limitBaseTicks, motorStopHallTicks) == TRUE  ' PL-153: travel since arming
             motorStopHallTicks := 0                                             ' and clear user request
-            limitStopTicks := nStopTicks                                        ' PL-137: the decision's own figure, kept for the record
+            limitStopTicks := frontStopTicks()                                  ' PL-137: the decision's own figure (one hub read)
+            bLimitByTime := FALSE
             bFired := TRUE
+
+PUB frontReportLimit()
+'' FRONT COG ONLY: after a limit's stop is written, report which limit fired (debug output only)
+''
+'' PL-161 (DRIVER_REV 39): split out of bFrontLimitsDue() so a limit's stop is written before any output: a debug()
+'' line takes a variable, possibly long time, and the stop must reach the driver within ~268 us of the plan's read.
+
+    if bLimitByTime == TRUE
+        debug[user.DBGCH_SENSE]("-MOT- time limit reached")
+    else
+        debug[user.DBGCH_SENSE]("-MOT- distance limit reached")
+
+PUB frontWriteStop()
+'' FRONT COG ONLY: write a zero command to the driver at once, and nothing else -- a platform limit's first act
+''
+'' PL-161 (DRIVER_REV 39): the owner of two motors writes both zeros with this before either motor's frontZeroPower(),
+'' whose command write is followed by a debug() line; so neither wheel's stop waits behind the other's output. The
+'' frontZeroPower() that follows writes the same zero again and does the rest of the stop's bookkeeping.
+
+    targetIncre := 0
 
 PUB frontResetTracking(bWholeWindow) | nowPos
 '' FRONT COG ONLY: zero this motor's odometer from its current position (resetTracking()), and optionally the rpm window and HDMI maxima
@@ -4218,6 +4257,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     adc_fram    :=    frame_cnt                         ' set ADC to full PWM frame counts
     fram        :=    (frame_cnt / 2) << 16 + 1         ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
     lutCodePtr  :=    @lutCodeStart                     ' task 3535: hub addr of LUT-resident start sequence, block-loaded by the driver at coginit
+    planCodePtr :=    @planOvlStart                     ' PL-161 (DRIVER_REV 39): hub addr of the stop planner, loaded over that sequence as it ends
 
     ' setup driver parameters based on clock rate
     ' A1 / PL-9: both 64010 manuals specify a 250 ns minimum dead-gap regardless of board
@@ -4402,7 +4442,8 @@ CON { PL-160: the jerk-limited ramp's internal limits, in the driver's units }
     RAMP_DECEL_BUILTIN_STEP = 49_918        ' 1_470 mm/s^2 on the 6.5in wheel (the old ramp down was 50_000, 1_472)
     ' The largest acceleration limit the generator runs at: setRampingValues() accepts up to RAMP_STEP_MAX but runs above
     '  this at this. 1e6 is about 29_500 mm/s^2 on the 6.5in wheel, three times ACCEL_MAX_MM_S2. It keeps the stop
-    '  prediction's sums (stopPlan()) inside a long: a jerk-limited ramp lasts at most ~720 passes at any limit.
+    '  plan's products (the driver's planA .. planC, PL-161) inside their longs: a jerk-limited ramp lasts at most ~720
+    '  passes at any limit, and the jerk is at most ~2_100 (this over RAMP_TAU_MS).
     ACCEL_STEP_CAP          = 1_000_000
     ' The jerk is the limit spread over RAMP_TAU_MS: J = A / TAU_PASSES, TAU_PASSES = RAMP_TAU_MS / 1_000 x
     '  PWM_RATE_IN_HZ / DRIVE_PASS_FRAMES = 478.3 passes at 250 ms. jerkForAccel() computes it as
@@ -4412,12 +4453,16 @@ CON { PL-160: the jerk-limited ramp's internal limits, in the driver's units }
     ' PL-141 / D-5: the least field increment a path-scaled command runs at, and the floor of the hold decay. It was
     '  ramp_min (built in 1_500) until DRIVER_REV 38 reused that long as jerk_up.
     DRV_INCR_FLOOR          = 1_500
-    ' The stop prediction's fixed point: 1/256 of a hall tick. angle x 6 x 256 / 2^32 = angle x 3 / 2^23.
+    ' The stop prediction's fixed point: 1/256 of a hall tick. angle x 6 x 256 / 2^32 = angle x 3 / 2^23 (the driver's
+    '  stop_fp_; PL-161, DRIVER_REV 39).
     STOP_FP_BITS            = 8
-    STOP_FP_ANGLE_DIV       = 1 << (32 - STOP_FP_BITS - 1)
-    ' The stop prediction saturates beyond this many drive passes (~9 minutes): only a raw setRampingValues() slow-down
+    ' The stop plan saturates beyond this many drive passes (~9 minutes): only a raw setRampingValues() slow-down
     '  step of a few units can ask for a stop that long, and its sums would leave a long. A saturated stop is due at once.
     PLAN_PASSES_MAX         = 1 << 20
+    ' PL-161 (DRIVER_REV 39): the driver's stop planner saturates the plan (due at once) when an acceleration away from
+    '  rest would take more than this many passes to unwind (a jerk-limited ramp unwinds in ~480 at any limit; only a
+    '  jerk lowered mid-ramp asks for more), which keeps its products inside 32 and 64 bits.
+    PLAN_UNWIND_MAX         = 1_024
 
 PRI keptRamps() : jerkUp, accelUp, jerkDn, accelDn
 ' PL-160: return the ramp the program has kept, as the driver's four parameters: the built-in rate for either part never set.
@@ -4468,255 +4513,21 @@ PRI jerkForAccel(nAccel) : nJerk
 
 PRI applyRamps()
 ' PL-160: copy the kept ramp into the four working longs the driver block-copies every cycle (the params run), which
-' the front cog's stop prediction (frontStopTicks(), frontStopMs()) also reads live. Called by applyUserSettings()
+' the driver's own stop plan also reads (PL-161, DRIVER_REV 39). Called by applyUserSettings()
 ' and, on a running motor, by each ramp setter after its kept store. A running driver takes a new limit smoothly: an
 ' acceleration left above a lowered limit unwinds to it at the larger jerk (jerkStep).
 
     jerk_up, accel_up, jerk_dn, accel_dn := keptRamps()
 
-PRI stopPlan() : nPasses, nFieldFp | vNow, alpha, nJerk, nAccel, nJerkX, nSpeed, nSteps, nFirst, nCap, nRise, nRoom, nSum, bSaturated
-' PL-160: the drive passes and the field travel of the driver's jerk-limited stop, written now, in closed form (no loop over passes).
+PRI msForPasses(nPasses) : nMs
+' Return the milliseconds {nPasses} drive passes take, rounded up; 0 for none (frontStopMs()).
 '
-' THE RULE (jerkStep, in the PASM). Seen from a stop, V = |v| is the speed to shed and alpha = -a x sign(v) the
-' acceleration toward rest (alpha > 0 sheds speed). The stop runs on the slow-down pair, J = jerk_dn and A = accel_dn.
-' Each pass the driver takes alpha' = min(U, max(alpha - J, x*(E))) and then v' = v + a', E the speed still to shed and
-' U the jerk-limited step toward A. With
-'   f(x) = x + (x - J) + (x - 2J) + ... (terms while positive): the speed one pass at x sheds, followed by a pure
-'          ramp-out at J. For x in (mJ, (m + 1)J], f(x) = (m + 1) x - J m (m + 1) / 2, and f(mJ) = J m (m + 1) / 2.
-'   x*(E) = the largest x with f(x) <= E = floor((E + J h) / (m + 1)), m the largest with J m (m + 1) / 2 <= E,
-'          h = m (m + 1) / 2 (largestAccel()).
-' the stop is at most five runs, each of alpha in arithmetic progression:
-'  0.  the take pass: the stop may be read one pass late, at the present speed (the formula before DRIVER_REV 38
-'      counted it too).
-'  1a. alpha < 0, the field still speeding up: alpha unwinds to exactly 0 at Jx = max(jerk_up, jerk_dn),
-'      k = ceil(-alpha / Jx) passes, the last at 0.
-'  1b. the rise: y_i = y1 + i J, y1 = alpha + J, taken while y_i <= A and sum(j < i) y_j + f(y_i) <= E. That sum is
-'      J i^2 + 2 y1 i + f(y1), so the last i is floor((sqrt(y1^2 + J (E - f(y1))) - y1) / J): the root in float, then
-'      corrected in integers (risePasses()).
-'  2.  the plateau at A while f(A) <= E: floor((E - f(A)) / A) + 1 passes.
-'  3.  the ramp-out: x0 = x*(E), then x0 - J, x0 - 2J, ...: ceil(x0 / J) passes, and one more when x0 is a multiple of
-'      J and E > f(x0) (the remainder takes its own last pass). The driver spreads E - f(x0) (< m + 1) over the run as
-'      +1 steps; that moves the travel by under 1e-3 tick, and the sums leave it out.
-'  The corner: alpha - J > x*(V), a stop read just before a reversal's zero crossing. The field cannot stop without
-'   crossing zero, so the driver takes alpha - J, alpha - 2J, ... and stops the field AT zero on the pass it would
-'   cross: n, the least with n alpha - J n (n + 1) / 2 >= V (crossingPasses()).
-' Each run of n passes from speed vs with alpha_i = first + (i - 1) d leaves v_i = vs - i first - d i (i - 1) / 2,
-' summed in closed form by segmentFp(). The field advances v on every pass but the one that reaches rest (0 there).
-' An alpha above A (only a lower setDeceleration() while a stop ramps) is taken as A: the driver unwinds it at Jx.
-' Beyond PLAN_PASSES_MAX passes the plan saturates, and a limit fires at once.
-'
-' @returns nPasses - the drive passes until the field is at rest, the take pass included; 0 at rest
-' @returns nFieldFp - the field's travel until then, 1/256 hall tick (STOP_FP_BITS)
+' @param nPasses - drive passes, 0 to PLAN_PASSES_MAX
+' @returns nMs - their time, DRIVE_PASS_US each, plus 1 when there are any
 
-' Local Variables:
-' @local vNow - the field's increment, read once
-' @local alpha - the acceleration toward rest, driver units
-' @local nJerk - the slow-down jerk
-' @local nAccel - the slow-down acceleration limit
-' @local nJerkX - the larger jerk, at which an acceleration away from rest unwinds
-' @local nSpeed - the speed still to shed, |increment|, as each run ends
-' @local nSteps - the passes of the run in hand
-' @local nFirst - the run's first alpha
-' @local nCap - the rise's candidates at or under the limit
-' @local nRise - the rise's passes
-' @local nRoom - the speed left over the plateau's own ramp-out
-' @local nSum - the run's travel, 1/256 tick
-' @local bSaturated - T/F where T means the plateau exceeds PLAN_PASSES_MAX
-
-    nPasses := 0
-    nFieldFp := 0
-    bSaturated := FALSE
-    vNow := drv_incr_now
-    if vNow <> 0
-        alpha := drv_accel_now
-        if vNow > 0
-            alpha := -alpha
-        nJerk := jerk_dn
-        nAccel := accel_dn
-        nJerkX := jerk_up #> nJerk
-        alpha <#= nAccel
-        nSpeed := abs vNow
-        nPasses := 1                                                            ' 0. the take pass
-        nFieldFp := muldiv64(3, nSpeed, STOP_FP_ANGLE_DIV)
-        if alpha - nJerk > largestAccel(nSpeed, nJerk)
-            nSteps := crossingPasses(nSpeed, alpha, nJerk)                      ' the corner: stopped AT zero
-            nSum, _ := segmentFp(nSteps - 1, nSpeed, alpha - nJerk, -nJerk)
-            nFieldFp += nSum
-            nPasses += nSteps
-        else
-            if alpha < 0                                                        ' 1a. unwind to 0 at the larger jerk
-                nSteps := (nJerkX - 1 - alpha) / nJerkX
-                nSum, nSpeed := segmentFp(nSteps - 1, nSpeed, alpha + nJerkX, nJerkX)
-                nFieldFp += nSum + muldiv64(3, nSpeed, STOP_FP_ANGLE_DIV)       '  the last of them at 0
-                nPasses += nSteps
-                alpha := 0
-            nFirst := alpha + nJerk                                             ' 1b. the rise
-            nCap := 0
-            nRise := 0
-            if nFirst <= nAccel
-                nCap := (nAccel - nFirst) / nJerk + 1
-                nRise := risePasses(nSpeed, nFirst, nJerk, nCap)
-            nSum, nSpeed := segmentFp(nRise, nSpeed, nFirst, nJerk)
-            nFieldFp += nSum
-            nPasses += nRise
-            if nRise == nCap                                                    ' 2. the plateau, when the rise reached A
-                nRoom := nSpeed - rampOutDv(nAccel, nJerk)
-                if nRoom >= 0
-                    nSteps := nRoom / nAccel + 1
-                    if nSteps > PLAN_PASSES_MAX
-                        bSaturated := TRUE
-                    else
-                        nSum, nSpeed := segmentFp(nSteps, nSpeed, nAccel, 0)
-                        nFieldFp += nSum
-                        nPasses += nSteps
-            if bSaturated == TRUE
-                nPasses := PLAN_PASSES_MAX
-                nFieldFp := POSX
-            elseif nSpeed > 0                                                   ' 3. the ramp-out, from x*
-                nFirst := largestAccel(nSpeed, nJerk)
-                nSteps := (nFirst + nJerk - 1) / nJerk
-                nSum, _ := segmentFp(nSteps, nSpeed, nFirst, -nJerk)
-                nFieldFp += nSum
-                nPasses += nSteps
-                if ((nFirst // nJerk) == 0) and (nSpeed > rampOutDv(nFirst, nJerk))
-                    nPasses++                                                   '  the remainder's own last pass
-        nFieldFp #>= 0                                                          ' each run's terms floor apart: never below 0
-
-PRI rampOutDv(nAccel, nJerk) : nDv | nTerms
-' PL-160: return f(x): the speed one pass at acceleration {nAccel} sheds, followed by a pure ramp-out at {nJerk} (stopPlan()).
-'
-' @param nAccel - the pass's acceleration toward the target, driver units (at most ACCEL_STEP_CAP)
-' @param nJerk - the ramp-out's jerk, at least 1
-' @returns nDv - the speed shed, driver units; {nAccel} itself when it is 0 or less
-
-' Local Variables:
-' @local nTerms - the ramp-out's passes after this one, ceil(nAccel / nJerk) - 1
-
-    nDv := nAccel
-    if nAccel > 0
-        nTerms := (nAccel + nJerk - 1) / nJerk - 1
-        nDv := nAccel + nTerms * nAccel - nJerk * (nTerms * (nTerms + 1) / 2)
-
-PRI largestAccel(nDv, nJerk) : nAccel | nHalfSteps, nRamp, nPairs
-' PL-160: return x*(E), the largest acceleration from which a pure ramp-out at {nJerk} sheds no more than {nDv} (jerkStep's own arithmetic).
-'
-' @param nDv - the speed still to shed, driver units, at most POSX / 2
-' @param nJerk - the jerk, at least 1
-' @returns nAccel - x*, driver units
-
-' Local Variables:
-' @local nHalfSteps - t = floor(2 E / J)
-' @local nRamp - m, the largest with m (m + 1) <= t
-' @local nPairs - h = m (m + 1) / 2
-
-    nHalfSteps := (2 * nDv) / nJerk
-    nRamp := SQRT nHalfSteps
-    if nRamp * (nRamp + 1) > nHalfSteps
-        nRamp--
-    nPairs := nRamp * (nRamp + 1) / 2
-    nAccel := (nDv + nJerk * nPairs) / (nRamp + 1)
-
-PRI risePasses(nSpeed, nFirst, nJerk, nCap) : nRise | nRoom, nIdx, fRoot
-' PL-160: return the rise's passes: candidates nFirst + i nJerk, i < {nCap}, each taken while J i^2 + 2 y1 i + f(y1) <= E (stopPlan() 1b).
-'
-' @param nSpeed - E, the speed still to shed
-' @param nFirst - y1, the first candidate
-' @param nJerk - the jerk
-' @param nCap - the candidates at or under the acceleration limit, at least 1
-' @returns nRise - the passes taken, 0 to {nCap}
-
-' Local Variables:
-' @local nRoom - E - f(y1): the candidates' room
-' @local nIdx - the last candidate that fits
-' @local fRoot - the quadratic's root, float
-
-    nRise := 0
-    nRoom := nSpeed - rampOutDv(nFirst, nJerk)
-    if nRoom >= 0
-        if bRiseFits(nCap - 1, nFirst, nJerk, nRoom)
-            nRise := nCap                                                       ' the whole rise to the limit fits: no root needed
-        else
-            fRoot := (FSQRT(float(nFirst) *. float(nFirst) +. float(nJerk) *. float(nRoom)) -. float(nFirst)) /. float(nJerk)
-            nIdx := 0 #> trunc(fRoot) <# (nCap - 1)
-            repeat 2                                                            ' single-precision root: at most a step or two off
-                if (nIdx > 0) and (bRiseFits(nIdx, nFirst, nJerk, nRoom) == FALSE)
-                    nIdx--
-            repeat 2
-                if (nIdx + 1 < nCap) and (bRiseFits(nIdx + 1, nFirst, nJerk, nRoom) == TRUE)
-                    nIdx++
-            nRise := nIdx + 1
-
-PRI bRiseFits(nIdx, nFirst, nJerk, nRoom) : bFits
-' PL-160: return TRUE when the rise's candidate {nIdx} fits: J i^2 + 2 y1 i <= E - f(y1) (stopPlan() 1b).
-'
-' @param nIdx - i, the candidate, 0 based, with nFirst + i nJerk at or under the limit
-' @param nFirst - y1
-' @param nJerk - J
-' @param nRoom - E - f(y1)
-' @returns bFits - T/F where T means the rise takes candidate {nIdx}
-
-    bFits := (nJerk * nIdx * nIdx + 2 * nFirst * nIdx) <= nRoom
-
-PRI crossingPasses(nSpeed, nAlpha, nJerk) : nSteps | fB, fDisc
-' PL-160: return the passes to zero in stopPlan()'s corner: the least n with n alpha - J n (n + 1) / 2 >= V.
-'
-' @param nSpeed - V, the speed to shed
-' @param nAlpha - alpha, the acceleration toward rest, with alpha - J > x*(V)
-' @param nJerk - J
-' @returns nSteps - n, at least 1
-
-' Local Variables:
-' @local fB - 2 alpha - J, float
-' @local fDisc - (2 alpha - J)^2 - 8 J V, float
-
-    fB := float(2 * nAlpha - nJerk)
-    fDisc := fB *. fB -. 8.0 *. float(nJerk) *. float(nSpeed)
-    nSteps := 1
-    if fDisc >=. 0.0
-        nSteps := 1 #> trunc((fB -. FSQRT(fDisc)) /. (2.0 *. float(nJerk)))
-    repeat 2                                                                    ' single-precision root: corrected in integers
-        if (nSteps > 1) and ((nSteps - 1) * nAlpha - nJerk * ((nSteps - 1) * nSteps / 2) >= nSpeed)
-            nSteps--
-    repeat 3
-        if nSteps * nAlpha - nJerk * (nSteps * (nSteps + 1) / 2) < nSpeed
-            nSteps++
-
-PRI segmentFp(nSteps, nSpeed, nFirst, nStep) : nSumFp, nSpeedEnd | nTri, nTet
-' PL-160: return a run's field travel, sum of v_i = vs - i first - d i (i - 1) / 2 over i = 1..n, and its end speed (stopPlan()).
-'
-' sum = n vs - first n (n + 1) / 2 - d (n + 1) n (n - 1) / 6, each term scaled to 1/256 tick (x 3 / 2^23) through
-' MULDIV64 on non-negative operands. A plateau (d = 0) sums n (2 vs - first (n + 1)) / 2 instead, which holds for any n.
-'
-' @param nSteps - n, the run's passes (0 or less: nothing)
-' @param nSpeed - vs, the speed as the run starts
-' @param nFirst - the run's first acceleration toward rest
-' @param nStep - d, the change of acceleration per pass: +J, -J, or 0 for the plateau
-' @returns nSumFp - the run's field travel, 1/256 tick
-' @returns nSpeedEnd - the speed as the run ends
-
-' Local Variables:
-' @local nTri - n (n + 1) / 2
-' @local nTet - (n + 1) n (n - 1) / 6
-
-    nSumFp := 0
-    nSpeedEnd := nSpeed
-    if nSteps > 0
-        if nStep == 0
-            nSumFp := muldiv64(3 * nSteps, 2 * nSpeed - nFirst * (nSteps + 1), 2 * STOP_FP_ANGLE_DIV)
-            nSpeedEnd := nSpeed - nSteps * nFirst
-        else
-            nTri := nSteps * (nSteps + 1) / 2
-            nTet := (nSteps + 1) * nSteps * (nSteps - 1) / 6
-            nSumFp := muldiv64(3 * nSteps, nSpeed, STOP_FP_ANGLE_DIV)
-            if nFirst > 0
-                nSumFp -= muldiv64(3 * nFirst, nTri, STOP_FP_ANGLE_DIV)
-            else
-                nSumFp += muldiv64(-3 * nFirst, nTri, STOP_FP_ANGLE_DIV)
-            if nStep > 0
-                nSumFp -= muldiv64(3 * nStep, nTet, STOP_FP_ANGLE_DIV)
-            else
-                nSumFp += muldiv64(-3 * nStep, nTet, STOP_FP_ANGLE_DIV)
-            nSpeedEnd := nSpeed - nSteps * nFirst - nStep * (nSteps * (nSteps - 1) / 2)
+    nMs := 0
+    if nPasses > 0
+        nMs := nPasses * DRIVE_PASS_US / 1_000 + 1
 
 
 VAR { * user request values * }
@@ -5277,9 +5088,13 @@ PRI isAbiLayoutValid() : bValid
     ' the launch block (pinbase, params_ptr, targetAngle, targetIncre) sits right before the status run
     bValid := (@drive_u - @pinbase) == DRVR_LAUNCH_LONGS_COUNT * 4
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long;
-    '  PL-160 (DRIVER_REV 38): the run's last long is drv_accel_now (the driver's accel_now_, after foldback_cnt_)
+    '  PL-161 (DRIVER_REV 39): the run ends drv_accel_now, drv_stop_passes, drv_stop_fp (the driver's accel_now_,
+    '  stop_passes_, stop_fp_), at the indexes the DRVR_STATUS_*_IDX constants name
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
-    bValid &= (@drv_accel_now - @drive_u) == (DRVR_STATUS_LONGS_COUNT - 1) * 4
+    bValid &= (@drv_accel_now - @drive_u) == DRVR_STATUS_ACCEL_NOW_IDX * 4
+    bValid &= (@drv_stop_passes - @drive_u) == DRVR_STATUS_STOP_PASSES_IDX * 4
+    bValid &= (@drv_stop_fp - @drive_u) == DRVR_STATUS_STOP_FP_IDX * 4
+    bValid &= DRVR_STATUS_STOP_FP_IDX == DRVR_STATUS_LONGS_COUNT - 1
     ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd, the last sense_zero (PL-146)
     bValid &= (@sense_zero - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
@@ -5306,7 +5121,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@trkTravelTicks, @bSettingsLive)                ' PL-153 / PL-155: the limits' travel, the kept settings
     bValid &= bOutsideDriverRuns(@pendStage, @pendTicks)                         ' PL-161: the front cog's in-flight request
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@sense_zero - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@drv_stop_fp - @drive_u), udec_long(@sense_zero - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -5315,7 +5130,7 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault (fault follows drv_accel_now since DRIVER_REV 38); the parameter
+    ' the launch and status run is @pinbase..@fault (fault follows drv_stop_fp since DRIVER_REV 39); the parameter
     '  run is @offset_fwd..@sense_zero
     bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @sense_zero))
 
@@ -5746,6 +5561,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         ' R20.1: each stop's record follows its command write (D6)
         if bFrontLimitsDue(nowMs) == TRUE
             frontZeroPower()                                                    ' PL-52: a distance/time stop clears getPower() too
+            frontReportLimit()                                                  ' PL-161: output only after the stop's write
             frontRecordStop(SR_AT_LIMIT)
             frontWalkNoteLimit()                                                ' PL-137: a walk leg's limit, after its stop
         if bFrontCommandTimedOut(nowMs) == TRUE
@@ -6710,7 +6526,13 @@ CON { driver internal Constants }
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
-    DRVR_STATUS_LONGS_COUNT     = 22        ' drive_u .. drv_accel_now (R20.1 added foldback_frames, PL-160 drv_accel_now), then fault
+    DRVR_STATUS_LONGS_COUNT     = 24        ' drive_u .. drv_stop_fp (R20.1 added foldback_frames, PL-160 drv_accel_now, PL-161
+                                            '  drv_stop_passes and drv_stop_fp), then fault
+    ' PL-161 (DRIVER_REV 39): each appended status long's index in the run (drive_u is 0), for a reader of the raw run
+    '  (a bench harness): drv_accel_now is NO LONGER the run's last long
+    DRVR_STATUS_ACCEL_NOW_IDX   = 21        ' drv_accel_now, the generator's acceleration
+    DRVR_STATUS_STOP_PASSES_IDX = 22        ' drv_stop_passes, the driver's stop plan: drive passes to rest
+    DRVR_STATUS_STOP_FP_IDX     = 23        ' drv_stop_fp, the driver's stop plan: field travel to rest, 1/256 hall tick
     DRVR_PARAMS_LONGS_COUNT     = 27        ' offset_fwd .. sense_zero (PL-138 appended drv_release, PL-146 sense_zero)
 
     ' PL-138 (W4): the driver's release, which stop() asks for before its cogstop (driverRelease, stop())
@@ -6724,7 +6546,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 38      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 39      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6823,6 +6645,20 @@ CON { driver internal Constants }
                                             '     the generator's closed form (stopPlan()). The fold-back folds only above
                                             '     its threshold's integer count (was at or above a truncated one, which on
                                             '     Rev A under ~2.7 A folded every driven frame). PASM (cog + LUT) and ABI change
+                                            ' 39: PL-161 -- the DRIVER plans its own stop, so no front cog computes one:
+                                            '     after each drive pass, on the next nine frames' slack (planStage, a
+                                            '     third of a plan a frame, to fit 160 MHz), it runs the stop's closed
+                                            '     form in integers (planA .. planC: 64-bit sums, QSQRT roots, no float)
+                                            '     from the pass's (v, a) and from both ends of the take pass's reachable
+                                            '     accelerations (a -/+ Jx: any command, any lag gate), and publishes the
+                                            '     largest passes and travel as drv_stop_passes / drv_stop_fp (status
+                                            '     run 24 longs, fault
+                                            '     after them; DRVR_STATUS_*_IDX). frontStopMs() / frontStopTicks() and
+                                            '     bFrontStopMsReaches() / bFrontStopTicksReaches() only read them; the
+                                            '     Spin2 stopPlan() and its helpers are gone. x*(E) moved out of jerkStep
+                                            '     into xStar, unchanged; the planner's core is a LUT overlay loaded over
+                                            '     the spent start sequence (loadOverlay, planCodePtr). PASM (cog + LUT)
+                                            '     and ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6994,7 +6830,7 @@ VAR { * Data Structure for PASM Driver * }
 
     ' -------------------------------------
     ' VALUES copied from driver each cycle
-    ' 22 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 23rd, "fault" also from driver but only when happens
+    ' 24 (DRVR_STATUS_LONGS_COUNT) longs come from driver, the 25th, "fault" also from driver but only when happens
     '
     ' / ----------------------------
     LONG    drive_u, drive_v, drive_w           ' 3 sequential longs    returns data continually
@@ -7017,6 +6853,8 @@ VAR { * Data Structure for PASM Driver * }
     LONG    fault_resyncs                       ' 1 sequential long     R19.3: faults answered by a re-sync and a controlled stop since driver start, unbounded
     LONG    foldback_frames                     ' 1 sequential long     R20.1: frames the per-frame current fold-back lowered the duty since driver start, unbounded
     LONG    drv_accel_now                       ' 1 sequential long     PL-160: the generator's acceleration, the signed change of drv_incr_now per drive pass
+    LONG    drv_stop_passes                     ' 1 sequential long     PL-161 (DRIVER_REV 39): the driver's stop plan -- drive passes to rest for a stop written now
+    LONG    drv_stop_fp                         ' 1 sequential long     PL-161: and the field's travel to rest, 1/256 hall tick (frontStopMs(), frontStopTicks())
     ' \ ----------------------------
     LONG    fault                               ' 1 sequential long     written TRUE ($FFFF_FFFF) on every fault, re-synced or not; see faultResponse
 
@@ -7250,6 +7088,7 @@ VAR { PL-153 / PL-155: the limits' travel, and the program's kept settings -- Sp
                                         '  while it runs (the odometer, posTrkHallTicks, is reset by resetTracking())
     LONG    limitBaseTicks              ' front-written: frontTravelNow() when the distance limit was armed
     LONG    limitBasePos                ' front-written: pos when the distance limit was armed (a walk leg's post position)
+    LONG    bLimitByTime                ' front-written: T/F where T means the last limit bFrontLimitsDue() fired was the time limit
     ' The program's kept settings (PL-155), written by their setters on any cog, read by applyUserSettings() and the
     '  getters. NOT reset by init(), stop() or start(). 0 until set, and 0 reads as the default.
     LONG    usrMaxSpeed                 ' setMaxSpeed() [1..100]; 0: MAX_SPEED_DEFAULT
@@ -7430,6 +7269,7 @@ drvMotor                                                ' global (task 3535): en
 
 .endRqst
                 mov     drv_incr_s_, drv_incr           ' publish the field's increment (block-copied with the status run)
+                mov     plan_stage, #1                  ' PL-161: plan the stop from this pass's (v, a) on the next nine frames
                 call    #passEnd                        ' PL-138: a release asked for leaves here, and never returns; else
                                                         '  R18.4 D-1: the duty this pass's field speed needs (LUT-resident)
                 ' PL-55: duty ceiling -- during a ramp-down, duty scales with the field's speed (duty0 * |drv_incr|
@@ -7707,8 +7547,10 @@ drvMotor                                                ' global (task 3535): en
                 getct   loop_dtcks_                     ' how long was this iteration? send to host
                 sub     loop_dtcks_, drvrSrtTix
 
-                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal/drv_incr/lag_held/duty_capped/fault_resyncs/foldback_cnt/accel_now to hub
+                setq    #DRVR_STATUS_LONGS_COUNT-1      ' write drive[3]/sense[4]/hall/pos/duty/err/ticks[2]/state/hall_missed/hall_illegal/drv_incr/lag_held/duty_capped/fault_resyncs/foldback_cnt/accel_now/stop_passes/stop_fp to hub
                 wrlong  drive_u_, ptra
+                tjz     plan_stage, #.loop              ' PL-161 (DRIVER_REV 39): the stop plan, on the two frames after a drive
+                call    #planStage                      '  pass, in the frame's slack after its status write (LUT)
 .loop           jnct1   #.ctlMotor                      ' if not time for drv loop just go to ctl loop
                 jmp     #drvMotor
 
@@ -7753,6 +7595,75 @@ wait4adc
     if_nc       jmp     #.wait4adcAgn
 .noWait4adc     ret
 
+loadOverlay                                             ' PL-161 (DRIVER_REV 39): the start sequence's last jump. Its LUT longs are
+                mov     ptrb, planCodePtr               '  spent, so the stop planner is block-loaded over them (planOvlStart ..
+                setq2   #(planOvlEnd - planOvlStart - 1) '  planOvlEnd, below `fit $400`), from cog RAM, since the LUT code this
+                rdlong  0, ptrb                         '  overwrites is the code that jumped here; then the drive loop starts
+                jmp     #drvMotor
+
+planFp                                                  ' PL-161: the plan's field travel in 1/256 hall tick, from its two sums:
+                mov     pl_t, pl_Ul                     '  6 x SUM = 3 U + D (run), and the tick fixed point is SUM x 6 / 2^32
+                mov     pl_q, pl_Uh                     '  x 256 = 6 x SUM / 2^24. Out: pl_t, saturated at POSX. Writes C.
+                shl     pl_t, #1                    wc
+                rcl     pl_q, #1                        ' 2U
+                add     pl_t, pl_Ul                 wc
+                addx    pl_q, pl_Uh                     ' 3U
+                add     pl_t, pl_Dl                 wc
+                addx    pl_q, pl_Dh                     ' 3U + D, never below 0 (it is 6 x a sum of speeds)
+                shr     pl_t, #24
+                cmp     pl_q, ##$0080_0000          wc  ' Q: under 2^55, so the quotient fits a long (C)?
+                shl     pl_q, #8
+                or      pl_t, pl_q
+    if_nc       mov     pl_t, ##$7FFF_FFFF              ' NO: saturated
+                ret
+
+planCorner                                              ' PL-161: planA's corner (see planA), here for room: a stop read
+                mov     pl_t, pl_a                      '  just before a reversal's crossing stops the field AT zero. n, the least
+                shl     pl_t, #1                        '  with n alpha - J n (n + 1) / 2 >= V; n - 1 passes from alpha - J down
+                sub     pl_t, jerk_dn_                  '  by J, and the n-th at rest. B = 2 alpha - J
+                qmul    pl_t, pl_t
+                getqx   pl_u
+                getqy   pl_q                            ' B^2
+                qmul    pl_v, jerk_dn_
+                getqx   pl_c
+                getqy   pl_d                            ' J V
+                shl     pl_d, #3                        ' 8 J V, 64-bit
+                mov     pl_n, pl_c
+                shr     pl_n, #29
+                or      pl_d, pl_n
+                shl     pl_c, #3
+                sub     pl_u, pl_c                  wc
+                subx    pl_q, pl_d                      ' B^2 - 8 J V, at least 0 in the corner
+                qsqrt   pl_u, pl_q
+                getqx   pl_n                            ' its floor root
+                subr    pl_n, pl_t                      ' B - isqrt, at least 1
+                mov     pl_u, jerk_dn_
+                shl     pl_u, #1                        ' 2J
+                add     pl_n, pl_u
+                sub     pl_n, #1
+                qdiv    pl_n, pl_u
+                getqx   pl_n                            ' n = ceil((B - isqrt) / 2J): the least n, or one over it
+                mov     pl_c, pl_n
+                sub     pl_c, #1                        ' n - 1
+                mov     pl_u, pl_c
+                add     pl_u, #1
+                mul     pl_u, pl_c
+                shr     pl_u, #1                        ' (n - 1) n / 2
+                qmul    pl_u, jerk_dn_
+                getqx   pl_u
+                qmul    pl_c, pl_a
+                getqx   pl_q                            ' (n - 1) alpha
+                sub     pl_q, pl_u                      ' what n - 1 passes shed
+                cmps    pl_q, pl_v                  wc  ' Q: already V (NC)?
+    if_nc       mov     pl_n, pl_c                      ' YES: n - 1 is the least
+                add     pl_P, #1                        ' the crossing pass, at rest
+                sub     pl_n, #1
+                mov     pl_f, pl_a
+                sub     pl_f, jerk_dn_                  ' alpha - J, then down by J
+                neg     pl_d, jerk_dn_
+                call    #run                            ' (n - 1, alpha - J, -J)
+    _ret_       modc    _set                        wc  ' C = 1: the plan is complete (planA's return, which jumped here)
+
     ' countIllegal moved to the LUT-resident block (DRIVER_REV 37, PL-146): its 13 longs paid for the fold-back's rest
     '  offset (sense_zero_, fold_net and three instructions in .noFault). See it beside gettgtincr, below `fit 496`.
 
@@ -7785,6 +7696,7 @@ numerator       LONG    3300 << 11              ' ADC scale numerator: 3300 mV i
 maxNeg          LONG    $FFFF_FFFF              ' 32-bits of one (max negative signed value)
 sync_required   LONG    0                       ' non zero if motor loop should wait to start
 lutCodePtr      LONG    0                       ' hub addr of LUT-resident start sequence (task 3535); set by init()
+planCodePtr     LONG    0                       ' PL-161 (DRIVER_REV 39): hub addr of the stop planner's LUT overlay; set by init()
 
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
@@ -7967,7 +7879,7 @@ sense_zero_ res 1           ' PL-146 (DRIVER_REV 37): the DC-link rest offset, m
 ' ------------------------------
 '  PRECISE FORMAT:
 '   copied out-of driver each loop iteration
-drive_u_    res 1           ' 22 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
+drive_u_    res 1           ' 24 (DRVR_STATUS_LONGS_COUNT) contiguous longs for return data structure
 drive_v_    res 1
 drive_w_    res 1
 sense_u_    res 1
@@ -7989,17 +7901,41 @@ duty_capped_ res 1          ' R18.1: passes where the duty demand exceeded the c
 fault_resyncs_ res 1        ' R19.3: faults answered by a re-sync and a controlled stop -- unbounded, zeroed at driver start
 foldback_cnt_ res 1         ' R20.1: frames the current fold-back lowered duty_ -- unbounded, zeroed at driver start (hub foldback_frames)
 accel_now_  res 1           ' PL-160 (DRIVER_REV 38): the generator's acceleration a, the signed change of drv_incr per drive pass --
-                            '  jerkStep's state, and the LAST status long (hub drv_accel_now); zeroed at driver start and at rest
+                            '  jerkStep's state (hub drv_accel_now); zeroed at driver start and at rest
+stop_passes_ res 1          ' PL-161 (DRIVER_REV 39): the stop plan's drive passes to rest, from the pass after the one that set it
+                            '  (hub drv_stop_passes); planStage writes it nine frames after each drive pass, zeroed at driver start
+stop_fp_    res 1           ' PL-161: the stop plan's field travel to rest, 1/256 hall tick, the LAST status long (hub drv_stop_fp)
 ' fault is here... (but external only)
+' PL-161 (DRIVER_REV 39): the stop planner's working registers (planStage, planA .. planC, run, rampOut, planFp)
+plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.endRqst sets 1 every drive pass)
+pl_v            res 1       ' in: v; then V, the speed as each run starts
+pl_a            res 1       ' in: a; then alpha, the acceleration toward rest
+pl_P            res 1       ' the plan's passes
+pl_Ul           res 1       ' the U sum, (n - 1) V + (n + 1) v_end over the runs, 64-bit (low, high)
+pl_Uh           res 1
+pl_Dl           res 1       ' the D sum, d (n^3 - n) / 2 over the runs, 64-bit signed (low, high)
+pl_Dh           res 1
+pl_n            res 1       ' the run's passes
+pl_f            res 1       ' the run's first acceleration toward rest (signed)
+pl_d            res 1       ' the run's change of acceleration per pass (signed)
+pl_c            res 1       ' the rise's candidates (cap)
+pl_t            res 1       ' scratch
+pl_u            res 1
+pl_q            res 1
+sc_v            res 1       ' the take pass's v' (an end of its range), for its own advance
+sp_P            res 1       ' the largest passes so far (the m = 1 plan, then each take pass's)
+sp_F            res 1       '  and the largest travel, 1/256 tick
 
 ' $1f8 for reg cogs
-    fit     496  ' 403 USED, 93 FREE, 2026-09-27 (DRIVER_REV 38, PL-160: the old ramps' cog code replaced by one call to
-                 ' jerkStep in the LUT, -84; was 487 at DRIVER_REV 37) -- read from the compiler, never
-                 ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, ACCEL_NOW_'s
-                 ' VALUE, whose top 12 bits are its cog address ($192, the last register, so USED is $193). LUT code runs at cog
+    fit     496  ' 492 USED, 4 FREE, 2026-09-27 (DRIVER_REV 39, PL-161: the stop plan's 20 registers, loadOverlay, planFp and
+                 ' planCorner; was 403 at DRIVER_REV 38) -- read from the compiler, never hand-counted (a hand count here
+                 ' once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, SP_F's VALUE, whose top 12 bits are its cog
+                 ' address ($1EB, the last register, so USED is $1EC). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $392, 402 of 512 longs (DRIVER_REV 38, LUTCODEEND's VALUE the same way).
+                 ' lutCodeStart $200 to lutCodeEnd $3FB, 507 of 512 longs (DRIVER_REV 39, LUTCODEEND's VALUE the same way),
+                 ' and the stop planner's overlay over the spent start sequence, planOvlStart $200 to planOvlEnd $27E, 126 of
+                 ' the 129 longs below gettgtincr ($281).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -8180,6 +8116,9 @@ lutCodeStart
                 mov     loop_ctcks_, #0                 ' just in case
                 mov     drv_incr, #0                    ' reset incr to stopped
                 mov     accel_now_, #0                  ' PL-160: and no acceleration (the generator's state)
+                mov     stop_passes_, #0                ' PL-161: and no stop to plan until the first drive pass plans one
+                mov     stop_fp_, #0
+                mov     plan_stage, #0
                 mov     tgt_incr, #0                    ' just in case
                 mov     sv_tgt_incr, #0                 ' just in case
                 mov     fwdrev, #0                      ' just in case
@@ -8203,7 +8142,8 @@ lutCodeStart
                 mov     curr_stop, stop_mode_           ' save current stop mode
                 call    #checkstop                     ' set drive on or off according to stop mode
 
-                jmp     #drvMotor                       ' boundary crossing: LUT -> cog RAM, resume 2 kHz loop
+                jmp     #loadOverlay                    ' boundary crossing: LUT -> cog RAM; PL-161: the stop planner is loaded
+                                                        '  over this start sequence there, then the 2 kHz loop begins
 
     ' -------------------------------------------------------------------------
     ' gettgtincr and driveinit also moved here (task 3535): gettgtincr is used
@@ -8321,7 +8261,8 @@ holdDecay                                               ' R18.4 D-5: called on a
     '  ends any |a| up to Jx there (a larger one, a new target set at v mid-ramp, is pushed against). The state is only
     '  reported: SLOW_TO_CHG while v' is on the
     '  far side of zero from the target, SPIN_UP while |v'| < |target|, else SPIN_DN; a reversal crosses zero in one
-    '  continuous ramp and never stops there. stopPlan() is this rule's closed form, for the front cog's limits.
+    '  continuous ramp and never stops there. planA .. planC (the LUT overlay, PL-161) are this rule's closed form,
+    '  for the front cogs' limits.
     '  Uses tmpX, tmpY, jrk_*; one QDIV, QSQRT, QMUL and QDIV (about 230 clocks); C is the result, Z is not kept.
     ' -------------------------------------------------------------------------
 jerkStep
@@ -8348,28 +8289,8 @@ jerkStep
     if_nc_or_z  mov     jrk_j, jerk_up_
     if_nc_or_z  mov     jrk_lim, accel_up_
                 fge     jrk_j, #1                       ' J is at least 1 (applyRamps() ensures it; the QDIV needs it)
-                ' x*(E), the largest alpha a pure ramp-out at J lands from
-                mov     tmpY, jrk_e
-                shl     tmpY, #1                        ' 2E: E < 2^31, so no bit is lost
-                qdiv    tmpY, jrk_j
-                getqx   tmpY                            ' t := 2E / J
-                qsqrt   tmpY, #0                        ' {0, t} (p2kbPasm2Qsqrt: S is the high long)
-                getqx   tmpX                            ' m := isqrt(t) ...
-                mov     jrk_x, tmpX
-                add     jrk_x, #1
-                mul     jrk_x, tmpX                     ' m (m + 1): E is at most two top speeds (~1.1e9), so m < 47_000 and
-                cmp     tmpY, jrk_x                 wc  '  MUL's 16 x 16 bits hold both factors. Q: t < m (m + 1)?
-    if_c        sub     tmpX, #1                        ' ... the largest m with m (m + 1) <= t, i.e. J m (m + 1) / 2 <= E
-                mov     tmpY, tmpX
-                add     tmpY, #1                        ' m + 1
-                mov     jrk_x, tmpY
-                mul     jrk_x, tmpX
-                shr     jrk_x, #1                       ' h := m (m + 1) / 2
-                qmul    jrk_x, jrk_j
-                getqx   jrk_x                           ' J h, at most E
-                add     jrk_x, jrk_e                    ' E + J h, at most 2E
-                qdiv    jrk_x, tmpY
-                getqx   jrk_x                           ' x* := (E + J h) / (m + 1)
+                call    #xStar                          ' x*(E), the largest alpha a pure ramp-out at J lands from (PL-161,
+                                                        '  DRIVER_REV 39: the same instructions, moved out for the stop planner)
                 ' U, the jerk-limited step toward A
                 mov     tmpY, jerk_up_
                 fge     tmpY, jerk_dn_                  ' Jx := max(jerk_up_, jerk_dn_)
@@ -8582,9 +8503,342 @@ driverRelease                                           ' PL-138 (W3, W4): reach
 .park           waitatn                                 ' parked, doing nothing, until stop()'s cogstop. Nothing ATNs a released
                 jmp     #.park                          '  driver, and one that did would only go round again (p2kbPasm2Waitatn)
 
+    ' -------------------------------------------------------------------------
+    ' PL-161 (DRIVER_REV 39): x*(E), jerkStep's own arithmetic, moved out of it unchanged so the stop planner shares it.
+    '  In: jrk_e = E (0 <= E < 2^31), jrk_j = J (at least 1). Out: jrk_x = x*(E), the largest acceleration from which a
+    '  pure ramp-out at J (x, x - J, ... while positive) changes the speed by at most E: m the largest with
+    '  J m (m + 1) / 2 <= E, h = m (m + 1) / 2, x* = (E + J h) / (m + 1), floored. Uses tmpX, tmpY; writes C only.
+    '  One QDIV, QSQRT, QMUL and QDIV, each waited for before the next is issued.
+    ' -------------------------------------------------------------------------
+xStar
+                mov     tmpY, jrk_e
+                shl     tmpY, #1                        ' 2E: E < 2^31, so no bit is lost
+                qdiv    tmpY, jrk_j
+                getqx   tmpY                            ' t := 2E / J
+                qsqrt   tmpY, #0                        ' {0, t} (p2kbPasm2Qsqrt: S is the high long)
+                getqx   tmpX                            ' m := isqrt(t) ...
+                mov     jrk_x, tmpX
+                add     jrk_x, #1
+                mul     jrk_x, tmpX                     ' m (m + 1): E < 2^31 and J >= 1, so m < 65_536 and
+                cmp     tmpY, jrk_x                 wc  '  MUL's 16 x 16 bits hold both factors. Q: t < m (m + 1)?
+    if_c        sub     tmpX, #1                        ' ... the largest m with m (m + 1) <= t, i.e. J m (m + 1) / 2 <= E
+                mov     tmpY, tmpX
+                add     tmpY, #1                        ' m + 1
+                mov     jrk_x, tmpY
+                mul     jrk_x, tmpX
+                shr     jrk_x, #1                       ' h := m (m + 1) / 2
+                qmul    jrk_x, jrk_j
+                getqx   jrk_x                           ' J h, at most E
+                add     jrk_x, jrk_e                    ' E + J h, at most 2E
+                qdiv    jrk_x, tmpY
+    _ret_       getqx   jrk_x                           ' x* := (E + J h) / (m + 1)
+
+    ' -------------------------------------------------------------------------
+    ' PL-161 (DRIVER_REV 39): one run of the stop plan -- n passes whose acceleration toward rest is first, first + d,
+    '  first + 2d, ... -- added to the plan. In: pl_n = n (0: nothing), pl_f = first (signed), pl_d = d (signed; 0, or
+    '  n at most 65_535), pl_v = V, the speed as the run starts. Out: pl_P += n; pl_v = the speed as it ends,
+    '  v_end = V - n first - d n (n - 1) / 2; and the run's travel, SUM(i = 1..n) v_i with v_i = V - i first -
+    '  d i (i - 1) / 2 = n V - first n (n + 1) / 2 - d (n^3 - n) / 6, kept as 6 x SUM = 3 [(n - 1) V + (n + 1) v_end]
+    '  + d (n^3 - n) / 2 (exact: no division), in two 64-bit sums: pl_Uh:pl_Ul += (n - 1) V + (n + 1) v_end and
+    '  pl_Dh:pl_Dl += d (n^3 - n) / 2. Keeps pl_n and pl_c.
+    '  Up to five QMULs, each waited for before the next is issued. Uses pl_t, pl_u, pl_q; writes C and Z.
+    ' -------------------------------------------------------------------------
+run
+                cmp     pl_n, #0                    wz  ' Q: an empty run?
+    if_z        ret
+                add     pl_P, pl_n                      ' its passes
+                mov     pl_t, pl_n
+                sub     pl_t, #1
+                qmul    pl_t, pl_v                      ' (n - 1) V, 64-bit
+                getqx   pl_q
+                getqy   pl_u
+                add     pl_Ul, pl_q                 wc
+                addx    pl_Uh, pl_u
+                abs     pl_t, pl_f                  wc  ' |first|; C: first < 0
+                qmul    pl_t, pl_n                      ' n |first|: at most V + |first|, inside a long
+                getqx   pl_q
+    if_c        neg     pl_q                            ' n first (GETQX and QMUL leave C)
+                sub     pl_v, pl_q
+                mov     pl_t, pl_n
+                sub     pl_t, #1
+                mul     pl_t, pl_n                      ' n (n - 1): exact for n < 65_536, and only ever multiplied by d,
+                shr     pl_t, #1                        '  which is 0 in the one run longer (the plateau)
+                abs     pl_q, pl_d                  wc  ' |d|; C: d < 0
+                qmul    pl_t, pl_q                      ' |d| n (n - 1) / 2, inside a long
+                getqx   pl_u
+    if_c        neg     pl_u
+                sub     pl_v, pl_u                      ' V := v_end
+                mov     pl_t, pl_n
+                add     pl_t, #1
+                qmul    pl_t, pl_v                      ' (n + 1) v_end, 64-bit
+                getqx   pl_q
+                getqy   pl_u
+                add     pl_Ul, pl_q                 wc
+                addx    pl_Uh, pl_u
+                tjz     pl_d, #.runEnd                  ' d = 0 (the plateau, and the unwind's last pass): no d term
+                mov     pl_t, pl_n
+                mul     pl_t, pl_n
+                sub     pl_t, #1                        ' n^2 - 1 (n < 65_536 whenever d is not 0)
+                qmul    pl_t, pl_n
+                getqx   pl_t                            ' n^3 - n, inside a long for n < 1_625
+                shr     pl_t, #1                        ' (n^3 - n) / 2: (n - 1) n (n + 1) is even
+                abs     pl_q, pl_d
+                qmul    pl_t, pl_q                      ' |d| (n^3 - n) / 2, 64-bit
+                getqx   pl_q
+                getqy   pl_u
+                testb   pl_d, #31                   wz  ' Z: d < 0
+    if_nz       add     pl_Dl, pl_q                 wc
+    if_nz       addx    pl_Dh, pl_u
+    if_z        sub     pl_Dl, pl_q                 wc
+    if_z        subx    pl_Dh, pl_u
+.runEnd         ret
+
+    ' -------------------------------------------------------------------------
+    ' PL-161 (DRIVER_REV 39): THE STOP PLAN, computed by the driver so the front cogs only read it. Called from
+    '  .ctlMotor's loop, after a frame's status write, on the nine frames after each drive pass (plan_stage 1 .. 9),
+    '  one third of one plan a frame (planA, planB, planC), so a frame's worst case fits its slack at 160 MHz:
+    '  - stages 1-3: the plan from this pass's (v, a) -- a stop the next pass takes (m = 1);
+    '  - stages 4-6 and 7-9: the plan after a TAKE PASS -- the next pass having already read its command, so the stop
+    '    is taken by the pass after (m = 2) -- at each end of the take pass's reachable accelerations, a' = a - Jx and
+    '    a' = a + Jx (v' = v + a'), plus the take pass itself (one pass, |v'| of travel).
+    '  THE TAKE PASS UNDER ANY COMMAND: whatever that pass reads (the command this pass took, a new one the front wrote
+    '  after this pass read its own, a synchronized command released since, a stop) and whatever its lag gate does,
+    '  jerkStep gives a' within [a - Jx, a + Jx], Jx = max(jerk_up_, jerk_dn_): alpha' >= min(U, alpha - J) >=
+    '  alpha - Jx and alpha' <= U <= alpha + Jx on every branch (the unwind, above the limit, the rise, the lag
+    '  gate), and at a target |a| <= Jx gives 0; a stop reaching rest only shortens it. The plan after the take pass
+    '  is longest at an end of that range (from rest out to either end it only grows: more speed, more push away
+    '  from rest), so the two ends bound every command without knowing which one the pass will read.
+    '  stop_passes_ is the largest passes-to-rest of the three, counted from the pass after this one; stop_fp_ the
+    '  largest travel, 1/256 hall tick. Published by the status write of the tenth frame after the pass (~230 us).
+    ' -------------------------------------------------------------------------
+planStage
+                jmprel  plan_stage                      ' to the stage's entry below (1 .. 9)
+                ret                                     ' 0: none (never called with 0)
+                jmp     #.a0                            ' 1: m = 1, planA
+                jmp     #.b                             ' 2: planB
+                jmp     #.c0                            ' 3: planC, kept as the m = 1 figure
+                jmp     #.aLo                           ' 4: m = 2 at a' = a - Jx, planA
+                jmp     #.b                             ' 5: planB
+                jmp     #.cT                            ' 6: planC, folded in
+                jmp     #.aHi                           ' 7: m = 2 at a' = a + Jx, planA
+                jmp     #.b                             ' 8: planB
+                jmp     #.cT                            ' 9: planC, folded in, and published
+.a0             mov     pl_v, drv_incr
+                mov     pl_a, accel_now_
+                call    #planA
+    if_c        jmp     #.fin0                          ' the plan ended in planA (at rest, the corner, saturated)
+    _ret_       mov     plan_stage, #2
+.b              call    #planB
+    _ret_       add     plan_stage, #1
+.c0             call    #planC
+.fin0           call    #planFp
+                mov     sp_P, pl_P                      ' the m = 1 figure: the running maximum starts here
+                mov     sp_F, pl_t
+    _ret_       mov     plan_stage, #4
+.aLo            mov     pl_a, jerk_up_
+                fge     pl_a, jerk_dn_
+                neg     pl_a                            ' -Jx
+                jmp     #.aT
+.aHi            mov     pl_a, jerk_up_
+                fge     pl_a, jerk_dn_                  ' +Jx
+.aT             add     pl_a, accel_now_                ' a' = a -/+ Jx
+                mov     pl_v, drv_incr
+                add     pl_v, pl_a                      ' v' = v + a'
+                mov     sc_v, pl_v                      ' kept for the take pass's own advance
+                call    #planA
+    if_c        jmp     #.fold
+    _ret_       add     plan_stage, #1
+.cT             call    #planC
+.fold           add     pl_P, #1                        ' the take pass itself,
+                abs     pl_t, sc_v                      '  whose advance is |v'|: 6 |v'| = 3 x (2 |v'|), into the U sum
+                shl     pl_t, #1
+                add     pl_Ul, pl_t                 wc
+                addx    pl_Uh, #0
+                call    #planFp
+                fge     sp_P, pl_P                      ' the largest passes (unsigned max)
+                fge     sp_F, pl_t                      ' the largest travel
+                cmp     plan_stage, #7              wc  ' Q: the low end (stage 4 or 6) just done?
+    if_c        mov     plan_stage, #7                  ' YES: the high end next
+    if_c        ret
+                mov     stop_passes_, sp_P              ' NO: both ends done -- publish
+                fle     stop_passes_, ##PLAN_PASSES_MAX
+                mov     stop_fp_, sp_F
+    _ret_       mov     plan_stage, #0
+
 lutCodeEnd                                            ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 402 of 512 used, read from the compiler 2026-09-27 at DRIVER_REV 38 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 507 of 512 used, read from the compiler 2026-09-27 at DRIVER_REV 39 (see the cog fit above)
+
+' =========================================================================
+'  PL-161 (DRIVER_REV 39): THE STOP PLANNER'S LUT OVERLAY. The start sequence (lutCodeStart up to gettgtincr) runs
+'  once; when it ends, loadOverlay (cog RAM) block-loads this code over it, from planCodePtr (set by init()), and
+'  enters the drive loop. So these longs cost no LUT the running driver had. Nothing may call into this block
+'  before the start sequence ends, and the block must end at or before gettgtincr's address (the fit below).
+'  Like the org $200 block above, it must stay after every org-0 item in the file.
+' =========================================================================
+                org     $200
+planOvlStart
+
+    ' -------------------------------------------------------------------------
+    ' planA .. planC: the passes and the field travel of the driver's own jerk-limited stop, read at the next pass, from
+    '  (v, a) = (pl_v, pl_a), in closed form -- DRIVER_REV 38's Spin2 stopPlan() (PL-160), in integers. The stop runs
+    '  jerkStep with target 0: each pass alpha' = min(U, max(alpha - J, x*(E))), E the speed still to shed, where
+    '  f(x) = x + (x - J) + ... (terms while positive) is what one pass at x then a pure ramp-out at J sheds, and
+    '  x*(E) the largest x with f(x) <= E (xStar). So the stop is at most five runs, each of alpha in arithmetic
+    '  progression -- with A = accel_dn_, J = jerk_dn_, Jx = max(jerk_up_, J), V = |v| and alpha = -a sign(v)
+    '  at most A:
+    '   the corner (alpha - J > x*(V), a stop read just before a reversal's crossing): n, the least with
+    '    n alpha - J n (n + 1) / 2 >= V, from the 64-bit root: n = ceil((B - isqrt(B^2 - 8 J V)) / 2J), B = 2 alpha - J,
+    '    one pass fewer when n - 1 already reaches V (isqrt is at most one below the root, so n is at most one over);
+    '    n - 1 passes from alpha - J down by J, and the n-th at rest;
+    '   else 1a. alpha < 0: k = ceil(-alpha / Jx) passes, the first k - 1 from alpha + Jx up by Jx, the k-th at 0
+    '    (k over PLAN_UNWIND_MAX saturates the plan);
+    '   1b. the rise from y1 = alpha + J up by J, capped at cap = (A - y1) / J + 1 candidates: with R = V - f(y1), the
+    '    candidate i fits while J i^2 + 2 y1 i <= R, i.e. (J i + y1)^2 <= y1^2 + J R, so the last is
+    '    i = (isqrt(y1^2 + J R) - y1) / J, exactly, and the rise is min(cap, i + 1) (0 when R < 0);
+    '   2. the plateau at A when the rise reached cap: (V - f(A)) / A + 1 passes while V >= f(A) (over PLAN_PASSES_MAX
+    '    saturates);
+    '   3. the ramp-out from x0 = x*(V) down by J: ceil(x0 / J) passes, and one more when J divides x0 and V > f(x0).
+    '  Out: pl_P passes (the rest pass included), and the travel as 6 x SUM in pl_Uh:pl_Ul and pl_Dh:pl_Dl (run).
+    '  Every square root is QSQRT's 64-bit floor, so no step is float and no correction loop is needed.
+    '  Run in three parts on three frames (planStage), the state kept in the pl_ registers between them: planA (the
+    '  corner, or the unwind; returns C = 1 when the plan is already complete), planB (the rise), planC (the plateau
+    '  and the ramp-out).
+    ' -------------------------------------------------------------------------
+planA
+                mov     pl_P, #0
+                mov     pl_Ul, #0
+                mov     pl_Uh, #0
+                mov     pl_Dl, #0
+                mov     pl_Dh, #0
+                abs     pl_v, pl_v                  wcz ' V := |v|; C: v < 0; Z: at rest
+    if_z        jmp     #.done                          ' at rest: no passes, no travel
+    if_nc       neg     pl_a                            ' alpha, toward rest: -a for a forward field
+                fles    pl_a, accel_dn_                 ' at most A
+                mov     jrk_j, jerk_dn_
+                mov     jrk_e, pl_v
+                call    #xStar                          ' x*(V)
+                mov     pl_f, pl_a
+                sub     pl_f, jerk_dn_                  ' alpha - J
+                cmps    jrk_x, pl_f                 wc  ' Q: x*(V) < alpha - J, the corner?
+    if_c        jmp     #planCorner                     ' (cog RAM, for room; it returns for us, with C = 1)
+                cmps    pl_a, #0                    wc  ' 1a. Q: alpha < 0, still pushing away from rest?
+    if_nc       ret                                     ' NO: C = 0, planB next
+                mov     pl_d, jerk_up_
+                fge     pl_d, jerk_dn_                  ' Jx
+                mov     pl_t, pl_d
+                sub     pl_t, #1
+                sub     pl_t, pl_a                      ' Jx - 1 - alpha
+                qdiv    pl_t, pl_d
+                getqx   pl_n                            ' k = ceil(-alpha / Jx)
+                cmp     pl_n, ##PLAN_UNWIND_MAX + 1 wc  ' Q: an unwind too long to sum (a limit lowered mid-ramp)?
+    if_nc       jmp     #planSat
+                sub     pl_n, #1
+                mov     pl_f, pl_a
+                add     pl_f, pl_d                      ' alpha + Jx, then up by Jx
+                call    #run
+                mov     pl_n, #1                        ' the k-th pass, at 0
+                mov     pl_f, #0
+                mov     pl_d, #0
+                call    #run
+                mov     pl_a, #0
+    _ret_       modc    _clr                        wc  ' C = 0: planB next
+.done   _ret_   modc    _set                        wc  ' C = 1: the plan is complete
+
+planB           mov     pl_f, pl_a
+                add     pl_f, jerk_dn_                  ' 1b. y1
+                mov     pl_c, #0                        ' cap
+                mov     pl_n, #0                        ' the rise
+                cmps    accel_dn_, pl_f             wc  ' Q: A < y1, no candidate?
+    if_c        jmp     #.riseRun
+                mov     pl_t, accel_dn_
+                sub     pl_t, pl_f
+                qdiv    pl_t, jerk_dn_
+                getqx   pl_c
+                add     pl_c, #1                        ' cap
+                mov     pl_t, pl_f
+                call    #rampOut                        ' f(y1)
+                subr    pl_t, pl_v                      ' R = V - f(y1)
+                cmps    pl_t, #0                    wc
+    if_c        jmp     #.riseRun                       ' R < 0: no pass of the rise fits
+                qmul    pl_f, pl_f
+                getqx   pl_u
+                getqy   pl_q                            ' y1^2
+                qmul    pl_t, jerk_dn_
+                getqx   pl_t
+                getqy   pl_d                            ' J R
+                add     pl_u, pl_t                  wc
+                addx    pl_q, pl_d                      ' y1^2 + J R, 64-bit
+                qsqrt   pl_u, pl_q
+                getqx   pl_t                            ' its floor root, at least y1
+                sub     pl_t, pl_f
+                qdiv    pl_t, jerk_dn_
+                getqx   pl_n
+                add     pl_n, #1
+                fle     pl_n, pl_c                      ' the rise: min(cap, i + 1)
+.riseRun        mov     pl_d, jerk_dn_
+                jmp     #run                            ' (the rise, y1, J); run keeps pl_n and pl_c for planC
+
+planC           cmp     pl_n, pl_c                  wz  ' 2. Q: did the rise reach A?
+    if_nz       jmp     #.rampOut
+                mov     pl_t, accel_dn_
+                call    #rampOut                        ' f(A)
+                subr    pl_t, pl_v                      ' V - f(A)
+                cmps    pl_t, #0                    wc
+    if_c        jmp     #.rampOut
+                qdiv    pl_t, accel_dn_
+                getqx   pl_n
+                add     pl_n, #1                        ' the plateau's passes
+                cmp     pl_n, ##PLAN_PASSES_MAX + 1 wc
+    if_nc       jmp     #planSat
+                mov     pl_f, accel_dn_
+                mov     pl_d, #0
+                call    #run
+.rampOut        cmp     pl_v, #0                    wz  ' 3. Q: any speed left?
+    if_z        ret
+                mov     jrk_e, pl_v
+                call    #xStar                          ' x0 = x*(V)
+                mov     pl_f, jrk_x
+                mov     pl_t, pl_f
+                add     pl_t, jerk_dn_
+                sub     pl_t, #1
+                qdiv    pl_t, jerk_dn_
+                getqx   pl_n                            ' ceil(x0 / J)
+                getqy   pl_u                            ' J - 1 exactly when J divides x0
+                mov     pl_q, jerk_dn_
+                sub     pl_q, #1
+                cmp     pl_u, pl_q                  wz  ' Q: J divides x0?
+    if_z        mov     pl_t, pl_f
+    if_z        call    #rampOut                        ' f(x0) (rampOut writes no flag)
+    if_z        cmp     pl_t, pl_v                  wc  ' Q: f(x0) < V: the remainder takes its own last pass?
+    if_z_and_c  add     pl_P, #1
+                neg     pl_d, jerk_dn_
+                jmp     #run                            ' (ceil(x0 / J), x0, -J); run's return is ours
+planSat         modc    _set                        wc  ' a plan too long to count (C = 1: complete): a limit fires at once
+                mov     pl_P, ##PLAN_PASSES_MAX
+    _ret_       mov     pl_Uh, ##$0100_0000             ' 6 x SUM >= 2^56 (any D is under 2^44): planFp saturates it
+
+    ' -------------------------------------------------------------------------
+    ' rampOut: f(x) = x + (x - J) + (x - 2J) + ... (terms while positive), the speed one pass at x sheds followed by a
+    '  pure ramp-out at J (planB, planC). In: pl_t = x (1 to A). Out: pl_t. With t = ceil(x / J) - 1 = (x - 1) / J,
+    '  f = (t + 1) x - J t (t + 1) / 2. Uses pl_u, pl_q; writes no flag (the caller's Z and C survive).
+    ' -------------------------------------------------------------------------
+rampOut
+                mov     pl_q, pl_t
+                sub     pl_q, #1
+                qdiv    pl_q, jerk_dn_
+                getqx   pl_q                            ' t
+                mov     pl_u, pl_q
+                add     pl_u, #1
+                qmul    pl_u, pl_t
+                getqx   pl_t                            ' (t + 1) x, inside a long (x <= A, t < A / J + 1)
+                mul     pl_u, pl_q                      ' t (t + 1)
+                shr     pl_u, #1
+                qmul    pl_u, jerk_dn_
+                getqx   pl_u
+    _ret_       sub     pl_t, pl_u
+planOvlEnd
+                fit     gettgtincr                      ' the overlay ends where the start sequence did
 
 CON { license }
 {{

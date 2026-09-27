@@ -114,7 +114,7 @@ Usage:  tools/bench-run.sh <tier>
                    t0-hand        Tier 0's T0-12 hand-rotation anchor only -- OPERATOR TURNS ONE WHEEL, waits on a keypress, no sign-off cell
                    t0-stopmode    Tier 0's T0-24 stop-state hand test only -- 8 ROWS: OPERATOR PUSHES OR SPINS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
                    t0-stopmode-fltfirst  as t0-stopmode with the two powered fault rows before the e-stop row (PL-116's discriminator)  [WHEELS UP, ATTENDED]
-                   t0-stopreason  Tier 0's T0-25 only -- the RIGHT wheel driven slowly and stopped each way a program can, to read why it stopped and the driver's event log  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   t0-stopreason  Tier 0's T0-25 only -- the RIGHT wheel driven slowly and stopped each way a program can, to read why it stopped and the driver's event log; then driven up to power 50, slowed, stopped and reversed while the ramp is watched pass by pass (PL-160)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    spin-auto      as spin, the board revision auto-detected (PL-120's first factor)  [WHEELS UP, UNATTENDED]
                    spin-quiet     as spin, built quiet like the dual and T0 tests (PL-120's second factor)  [WHEELS UP, UNATTENDED]
@@ -232,11 +232,15 @@ case "$TIER" in
     #  build of the t0 binary, as t0-stopmode is; unlike it, nothing waits on a person. BENCH_QUIET for the same reason.
     t0-api)         BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_API)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING, NOTHING MOVES: the program calls every API setting with good and bad values and reads each back. It starts the right motor (the P16 board) twice and the platform once, and never drives a wheel. No window opens. About 15 seconds"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING, NOTHING MOVES: the program calls every API setting with good and bad values and reads each back. It starts the right motor (the P16 board) five times and the platform once, and never drives a wheel. No window opens. About 20 seconds"
                     ;;
+    # t0-stopreason (test_bench_t0 SRC_REV 25, DRIVER_REV 38/39, PL-160): after T0-25's stop-reason legs, the same build drives
+    #  the wheel at powers 50 and 25 for the jerk-limited ramp's cells -- a speed-up, a slow-down, a stop, a reversal, a
+    #  stop read mid speed-up, and five stops by distance, rotation and time limits (two at cruise, three mid-ramp) --
+    #  while a sampler cog watches every drive pass. About 30 s more than the legs alone.
     t0-stopreason)  BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPREASON)
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the program drives the RIGHT wheel (the P16 board; THE LEFT, the P32 board, INSTEAD if the right fails its start checks) slowly, at power 15, about 30 short times, and stops it each way a program can -- a normal stop, a timed stop, an EMERGENCY STOP THAT BRAKES IT ABRUPTLY, and the stop that comes when commands stop arriving -- then reads why each drive stopped and what the driver logged. Then it drives the wheel ONE FULL TURN to a stop-after-rotation limit, drives it again for a few seconds with no limit, and e-stops it once more at rest. IF THE RIGHT WAS REFUSED, it then tries to start the right every 10 s, for up to 3 minutes, to time its return. Nothing waits for you and no window opens. Under 1 minute, or up to about 4 if the right is refused"
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the program drives the RIGHT wheel (the P16 board; THE LEFT, the P32 board, INSTEAD if the right fails its start checks) slowly, at power 15, about 30 short times, and stops it each way a program can -- a normal stop, a timed stop, an EMERGENCY STOP THAT BRAKES IT ABRUPTLY, and the stop that comes when commands stop arriving -- then reads why each drive stopped and what the driver logged. Then it drives the wheel ONE FULL TURN to a stop-after-rotation limit, drives it again for a few seconds with no limit, and e-stops it once more at rest. THEN THE RAMP TESTS, FASTER: the wheel spins up to power 50 (about 145 rpm), slows to power 25, stops, spins up to 25 and REVERSES to -25 without stopping, stops, and then six more spin-ups to power 50, each ended by a stop the program or a limit sends -- every speed change is a smooth ramp of a second or two. IF THE RIGHT WAS REFUSED, it then tries to start the right every 10 s, for up to 3 minutes, to time its return. Nothing waits for you and no window opens. About 2 minutes, or up to about 5 if the right is refused"
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"
                     PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"

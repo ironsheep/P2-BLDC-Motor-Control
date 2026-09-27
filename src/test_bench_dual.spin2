@@ -456,6 +456,33 @@
 ''               label, all appended (tools/gen_dual_assets.py), so every existing cell is unchanged. New tokens: SEG
 ''               BLOCK and LOAD, five why, two cause, two prompt, OPEV BACK, SPSTOP HARNESS, two event stages. No
 ''               existing record changes shape; the record set grows, so FMT goes to 37
+''               27 Sep 2026 -- SRC_REV=59, FMT 38: DRIVER_REV 38's jerk-limited ramp generator (PL-160). The four ramp
+''               longs are now jerk_up, accel_up, jerk_dn and accel_dn (getRampingValues()'s min, max, inc, decr), and
+''               ramp_min and ramp_inc have no effect. Every cell and bound that encoded the stepped ramp is re-derived,
+''               none fitted: the ramp defaults are the built-in ramp's four DERIVED parameters (RAMP_DEF_*, 71, 33_958,
+''               104, 49_918), restored through setAcceleration()/setDeceleration() of the built-in rates, and
+''               R14-DUAL-RAMPREST-B judges them (BM-RAMPREST's fields become jerk_up, accel_up, jerk_dn, accel_dn);
+''               FAULTB sweeps the speed-up LIMIT (fbAccelUps: 33_958 .. 339_576, the setter's top) where it swept a
+''               ramp_inc that no longer does anything, and R16-DUAL-RMPDROOP-B judges the trials at or above the
+''               200_000 every Visit 2 fault reached (BM-FBTRIAL's ramp_inc becomes accel_up); LIMRAMP traces the speed-up
+''               and slow-down limits at 1x, 2x, 4x and 1x, 2x (BM-RAMP's ramp_inc and ramp_down become accel_up and
+''               accel_dn); BM-TRACE's header prints accel_up where it printed ramp_inc; X-4's ramp time is the S-curve's
+''               (frRampPredMs()); R16-DUAL-STPDECEL-C's band is re-centred on the S-curve's DERIVED 100 ticks from half
+''               speed (80 .. 126, the old band's proportions; was 60 .. 95 around the stepped ramp's 75); TIMESTOP's
+''               band is re-derived term by term for DRIVER_REV 39's plan (PL-161: the driver plans its own stop, never
+''               late, early by the plan's age and its take-pass case): -6 .. +6 ms (was -4 .. +7); R16-DUAL-STOPLIM-B,
+''               R17-DUAL-TURNDIST-B and the floor run's leg stop allow 3 ticks (was 2: the plan's early tick,
+''               STOP_PLAN_EARLY_TICKS); STOP_TIMEOUT_MS covers the S-curve stop from LIMTOP's top speed;
+''               R18-DUAL-TAKE-A judges the slower command TAKEN as the acceleration's fall
+''               within A6_WINDOW_MS and the increment's fall within A6_FALL_MS, the generator's unwind (it rose on for
+''               ~171 ms, and the old 20 ms fall failed a correct driver; BM-TAKE gains acc_before, acc_fell, acc_ms and
+''               fall_hi). BM-ABI*'s runs are sized from the library's counts (st_n 24, par_n 27; ABI_PARAMS_LONGS was a
+''               hard-coded 25) and name drv_accel_now, DRIVER_REV 39's drv_stop_passes and drv_stop_fp, the renamed four
+''               and drv_release, sense_zero; hall_missed and
+''               hall_illegal move from BM-ABIS3 to BM-ABIS2, and a new BM-ABIS4 carries the status run's tail and
+''               fault, to keep each record under 280 bytes; each run's names come from a table of its own, so a run that
+''               grows prints "?" for its new longs instead of shifting every later name. Record shapes change, so FMT
+''               goes to 38
 ''
 '' =================================================================================================
 
@@ -525,8 +552,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 58                                 ' hand-bumped whenever this file changes
-    FMT_VERSION = 37                                     ' BM- record-format version
+    SRC_REV     = 59                                 ' hand-bumped whenever this file changes
+    FMT_VERSION = 38                                     ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -1040,10 +1067,16 @@ CON { drive increments and powers }
     LOW_WINDOW_MS       = 4_000
     LOW_SETTLE_MS       = 1_000                             ' longer than LADDER_SETTLE_MS: these rungs settle slowly
     LOW_STEADY_MS       = 8_000                             ' AT_SPEED bound; the ramp to a low increment is not fast
-    FB_TRIALS           = 5                                 ' ramp_inc 22, 100, 500, 2_000, 10_000
-    ' RMPDROOP judges the trials whose ramp the motor cannot follow: the three that faulted 3 of 3 at
-    '  Visit 2 (VISIT-2-RESULTS.md sec 6). The two gentle ones are not a test of the limiter.
-    FB_DROOP_MIN_INC    = 500
+    FB_TRIALS           = 5                                 ' accel_up 33_958, 67_916, 135_832, 200_000, 339_576 (fbAccelUps)
+    ' RMPDROOP judges the trials whose ramp the motor cannot follow. Until SRC_REV 59: ramp_inc 500, 2_000 and 10_000,
+    '  the three that faulted 3 of 3 at Visit 2 (VISIT-2-RESULTS.md sec 6). Each of them grew its step to the old
+    '  ramp_max, 200_000 a pass (about 5_900 mm/s^2), and the two that stayed below it (ramp_inc 22 and 100, at most
+    '  about 70_000 and 148_000 by 110 x 10^6) did not fault. DRIVER_REV 38 has no ramp_inc (PL-160): the sweep is the
+    '  speed-up limit itself, and the trials judged are those whose limit is at or above what every Visit 2 fault
+    '  reached -- 200_000 and 339_576 (ACCEL_MAX_MM_S2, the setter's top). Their jerk is the limit over RAMP_TAU_MS, 418
+    '  and 710 a pass, against the 500 .. 10_000 a pass that grew the old steep steps, so this population is gentler at
+    '  the start and steeper at the top (339_576) than the one Visit 2 faulted.
+    FB_DROOP_MIN_ACCEL  = 200_000
     STOPMODE_REPS       = 2
     STOPMODE_SPEEDS     = 2                                 ' QTR, HALF
     LIVE_RUNGS          = 3                                 ' QTR, HALF, LIVE_TOP_INCRE
@@ -1102,11 +1135,25 @@ CON { drive increments and powers }
     FLTAPI_POLL_MS      = 6_000
     FLTAPI_LATCH_MS     = 3_000                             ' held this long past the fault to pass
 
-    ' ramp defaults (isp_bldc_motor.spin2 init()), restored and read back after every FAULTB trial (I11)
-    RAMP_DEF_MIN  = 1_500
-    RAMP_DEF_MAX  = 200_000
-    RAMP_DEF_INC  = 22
-    RAMP_DEF_DOWN = 50_000
+    ' The built-in ramp (SRC_REV 59, DRIVER_REV 38, PL-160), restored and read back after every FAULTB and LIMRAMP trial
+    '  (I11). Since DRIVER_REV 38 the four ramp longs are the jerk-limited generator's -- getRampingValues()'s minRamp,
+    '  maxRamp, incRamp, decrRamp are jerk_up, accel_up, jerk_dn, accel_dn -- and the built-in ramp is two rates,
+    '  ACCEL_BUILTIN_MM_S2 (1_000) and DECEL_BUILTIN_MM_S2 (1_470). MIRRORED on purpose, as LIB_MAX_FWD_INCRE is: the
+    '  restore's read-back is judged against this file's own derivation, not the library's. DERIVED for the 6.5in
+    '  wheel: one step per drive pass is 1_913.04^2 passes/s^2 x 6 ticks per electrical cycle x 5.76 mm per tick / 2^32
+    '  = 0.0294485 mm/s^2, so 1_000 mm/s^2 is 33_957.6 steps and 1_470 is 49_917.6; each jerk is its limit spread over
+    '  RAMP_TAU_MS (250 ms, 478.3 passes), rounded: 71 and 104. (The stepped ramp's defaults were 1_500 / 200_000 / 22 /
+    '  50_000, the last the fixed ramp-down step.)
+    RAMP_DEF_JERK_UP  = 71
+    RAMP_DEF_ACCEL_UP = 33_958
+    RAMP_DEF_JERK_DN  = 104
+    RAMP_DEF_ACCEL_DN = 49_918
+    RAMP_DEF_JERK_X   = RAMP_DEF_JERK_UP #> RAMP_DEF_JERK_DN   ' the larger jerk, at which an acceleration unwinds (jerkStep)
+    ' The jerk-limited stop from speed v, in drive passes, DERIVED from the rule (stopPlan()): the slow-down holds A only
+    '  when v > A^2 / J (24.0 x 10^6 on these rates); then it takes A / J passes to reach A, (v - A^2 / J) / A at A, and
+    '  A / J to leave it -- v / A + A / J in all -- and one pass more for the stop to be taken. Every stop this file
+    '  times is from above 24 x 10^6, so the plateau form holds for each (frRampPredMs(), STOP_TIMEOUT_MS, DECEL_TICKS_NOM).
+    RAMP_STOP_EXTRA_PASSES = RAMP_DEF_ACCEL_DN / RAMP_DEF_JERK_DN + 1
 
     ' C-1 prediction pred_x10 = incre x 6 ticks per electrical cycle x 1913.2 drive passes/s x 10 / 2^32, in two
     '  steps inside a long (design sec 3.2). PL-50: the driver runs one drive pass per 23 ADC frames, so the
@@ -1241,7 +1288,12 @@ CON { segment timing }
     WINDOW_MS             = 1_000
     CURRENT_POLL_MS       = 20                              ' getCurrent() during a ladder window
     REST_CONFIRM_MS       = 300                             ' pos and hwPos unchanged this long = at rest
-    STOP_TIMEOUT_MS       = 3_000
+    ' SRC_REV 59 (PL-160): a stop from speed now takes the S-curve's v / A + A / J passes (RAMP_STOP_EXTRA_PASSES): from
+    '  COMMAND_MAX_INCRE that is 2_817 ms in the LIMITS build (245 x 10^6; the stepped ramp's was 2_560) and 1_979 ms
+    '  elsewhere (165 x 10^6). The bound is that plus a second for REST_CONFIRM_MS and the rotor's settle, and never
+    '  under the 3_000 it was, so it moves only where the S-curve outgrew it: 3_817 ms in LIMITS, 3_000 elsewhere.
+    STOP_RAMP_MAX_MS      = (COMMAND_MAX_INCRE / RAMP_DEF_ACCEL_DN + RAMP_STOP_EXTRA_PASSES) * wheelL.DRIVE_PASS_US / MS_PER_SEC
+    STOP_TIMEOUT_MS       = 3_000 #> (STOP_RAMP_MAX_MS + 1_000)
     RESTART_REST_MS       = 500                             ' recovery step 3 rest
     FAULT_COOL_MS         = 5_000                           ' after any fault (scan :374)
     FAULT_TRIAL_COOL_MS   = 10_000                          ' FAULTB, open question Q3 default
@@ -1292,34 +1344,44 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     '  S = frontStopMs() (the steering object takes the larger of its wheels'), so the ramp ends AT the limit. The
     '  rest confirmed after it (SRC_REV 56's number) measured the rotor's coast. Every term below is DERIVED from a
     '  period in the library or this step, none from a reading:
+    '  SRC_REV 59 (DRIVER_REV 38 / 39; PL-160, PL-161): S is now the jerk-limited stop's own pass count. DRIVER_REV 39,
+    '  the build this derives for: the DRIVER plans its stop after each drive pass k and publishes it about 232 us after
+    '  T_k (ten PWM frames), P passes counted from T_k, the largest of three cases -- the stop taken by pass k + 1, or by
+    '  k + 2 after a take pass whose acceleration is either end of [a - Jx, a + Jx] (any command, any lag gate) -- and
+    '  S = frontStopMs() = floor(P x DRIVE_PASS_US / 1_000) + 1. The field's zero, at most T_k + P x 522.7 us, is never
+    '  later than the fire instant + S: the plan is never late by construction; it is early by what it over-states.
+    '  (DRIVER_REV 38's front-cog stopPlan() counted n = the passes plus one take pass, exact, and reached zero n - 2 to
+    '  n passes after the write: inside the same terms.)
     '  LATE, how far after D a correct stop can read:
     '   D_TIMESTOP_FIRE_MS - the limit is tested once a front pass (1_000 / FRONT_LOOP_HZ ms), against a getms() read
     '    part-way through a pass whose body varies by up to one pass: the firing test samples within one period plus
     '    one body of D - S. Truncation cannot delay it: getms() >= D - S holds from the true instant D - S on.
-    '   D_TIMESTOP_DRV_MS - three drive passes (DRIVE_PASS_US each), rounded up to whole ms: the driver takes the zero
-    '    command on its next pass (no ATN, no sync bit); the ramp reaches DCS_STOPPED at most ceil(n) + 1 passes
-    '    after it where frontStopMs() counts floor(n) + 1 (n = |incr| / ramp_down), so one more at most; and the
-    '    status run carrying the state is written every control iteration, inside a pass.
+    '   D_TIMESTOP_DRV_MS - one drive pass, rounded up to a whole ms: the ramp itself ends inside S (above), so what is
+    '    left is the status run carrying DCS_STOPPED, written every control iteration inside the pass. (Until SRC_REV 59
+    '    three passes: the stepped plan counted floor(n) + 1 of a ramp that could take ceil(n) + 1.)
     '   D_TIMESTOP_POLL_MS - this step reads the state this often.
     '   D_TIMESTOP_BODY_MS - one pass of the poll's own loop (a few direct hub reads, no request), under 1 ms.
     '   D_TIMESTOP_ANCHOR_MS - the step takes D from getms() BEFORE its call and the library from getms() after
     '    entering it, so the step's D is up to 1 ms (one truncation) EARLIER. It can only make a reading later.
     '  EARLY, how far before D a correct stop can read (D_TIMESTOP_EARLY_MS, one whole ms per term):
     '   1 - frontStopMs() rounds S up by up to 1 ms, so the stop fires up to 1 ms early;
-    '   1 - the ramp may reach DCS_STOPPED ceil(n) passes after the command, one pass fewer than S counts;
+    '   2 - P exceeds the stop the field takes by at most three passes (1.57 ms): at cruise the take pass, the +Jx end's
+    '       extra unwind pass, and one for the speed that end adds;
+    '   1 - the plan's age: counted from T_k, published ~232 us after it and read up to one pass later (0.76 ms);
     '   1 - DRIVE_PASS_US is 522.7 us rounded up to 523, which overstates S by 0.3 us a pass, under 1 ms for any
-    '       ramp under 3_333 passes (1.7 s; D_POWER's on the built-in ramp is about 1_235);
+    '       stop under 3_333 passes (1.7 s; D_POWER's, from 81.7 x 10^6, is 1_637 + 480 + 1 = 2_118 passes, 1.1 s);
     '   1 - the reading's own getms() truncates by up to 1 ms.
+    '   Total 6 (4.9 in exact terms at D_POWER, of which the plan's own three -- rounding, passes, age -- are 3.3; was 4).
     '  NOT IN THE BOUND, and each is a stop genuinely later than its deadline: a front pass that overran its period
-    '  as the limit came due (BM-TIMESTOP's late_pass counts them over the step), and ramp-down passes the driver
-    '  held because the rotor led the field by LAG_SOFT (.rampDn waits for the rotor).
+    '  as the limit came due (BM-TIMESTOP's late_pass counts them over the step), and ramp-down passes on which the
+    '  driver eased the acceleration because the rotor led the field by LAG_SOFT (jerkStep's lag gate).
     D_TIMESTOP_POLL_MS    = 1
     D_TIMESTOP_FIRE_MS    = 2 * (1_000 / wheelL.FRONT_LOOP_HZ)
-    D_TIMESTOP_DRV_MS     = (3 * wheelL.DRIVE_PASS_US + 999) / 1_000
+    D_TIMESTOP_DRV_MS     = (wheelL.DRIVE_PASS_US + 999) / 1_000
     D_TIMESTOP_BODY_MS    = 1
     D_TIMESTOP_ANCHOR_MS  = 1
     D_TIMESTOP_LATE_HI    = D_TIMESTOP_FIRE_MS + D_TIMESTOP_DRV_MS + D_TIMESTOP_POLL_MS + D_TIMESTOP_BODY_MS + D_TIMESTOP_ANCHOR_MS
-    D_TIMESTOP_EARLY_MS   = 1 + 1 + 1 + 1
+    D_TIMESTOP_EARLY_MS   = 1 + 2 + 1 + 1 + 1
     D_COOPSHUT_MS         = 20                              ' steering.stop() returns within this (front cog EXIT bound)
     D_TRACKRESET_MS       = 20                              ' resetTracking() returns within this (unfixed: >= 400 ms)
     D_TRACKRESET_TOL      = 2                               ' ticks the reset tracking may differ from the raw delta
@@ -1892,14 +1954,31 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     LAG_MAX_LO        = 0
     LAG_MAX_HI        = LAG_FAULT_TEST - 1
     ' STOPLIMIT (task 3559): each wheel comes to rest within this many ticks of its distance target
+    '  SRC_REV 59 (DRIVER_REV 39, PL-161): DERIVED per side. PAST the limit, as it was: the library's "at rest at the
+    '  limit (within about two hall ticks)" -- the plan floored to a whole tick, the travel counted in whole ticks, the
+    '  rotor following the field -- 2. SHORT of it, that and the plan's over-statement: the driver publishes the largest
+    '  of its three stop cases (taken by the next pass, or after a take pass at a - Jx or a + Jx) counted from the pass it
+    '  was made at, read up to ~755 us later, so a stop may rest short by the travel of that age and of up to three extra
+    '  passes: (0.76 + 1.57) ms at OVERSHT_POWER's ~218 ticks/s is 0.51 tick, one whole tick (STOP_PLAN_EARLY_TICKS) --
+    '  3. The cells judge |rest - target|, which cannot tell the sides apart, so their bound is the larger: 3 (was 2).
+    STOP_PLAN_EARLY_TICKS = 1
+    STOP_LIMIT_LATE   = 2
+    STOP_LIMIT_EARLY  = STOP_LIMIT_LATE + STOP_PLAN_EARLY_TICKS
     STOP_LIMIT_LO     = 0
-    STOP_LIMIT_HI     = 2
-    ' STPDECEL: a commanded stop from half speed still takes about as long as it did. MEASURED at Visit 3:
-    '  74-77 ticks from the stop command to rest. This is a NO-REGRESSION guard on the current limiting and
-    '  the lag limiter, which act on the ramp the stop uses, so the band is wide on purpose -- it is here to
-    '  catch a stop that has become much longer or much shorter, not to re-measure C-4.
-    DECEL_TICKS_LO    = 60
-    DECEL_TICKS_HI    = 95
+    STOP_LIMIT_HI     = STOP_LIMIT_LATE #> STOP_LIMIT_EARLY
+    ' STPDECEL: a commanded stop from half speed takes the distance its ramp gives. This is a NO-REGRESSION guard on
+    '  the current limiting and the lag limiter, which act on the ramp the stop uses, so the band is wide on purpose --
+    '  it is here to catch a stop that has become much longer or much shorter, not to re-measure C-4.
+    '  SRC_REV 59 (DRIVER_REV 38, PL-160): RE-CENTRED ON THE JERK-LIMITED STOP, DERIVED, not measured. From HALF
+    '  (73.5 x 10^6) the S-curve sheds its speed in v / A + A / J = 1_472.4 + 480.0 passes at an average of v / 2, so the
+    '  field travels 73.5 x 10^6 x 1_952.4 / 2 = 7.175 x 10^10 angle units = 100.2 ticks (x 6 / 2^32), and the take
+    '  pass adds 0.1: DECEL_TICKS_NOM. The band keeps the old one's proportions to its centre -- 60 and 95 about the
+    '  stepped ramp's 75.5 (MEASURED 74-77 at Visit 3, 73.5 x 10^6 x 1_471 / 2 = 75.5 DERIVED), -20 % and +26 % -- so
+    '  80 .. 126. NEGATIVE: the stepped ramp's 75 now FAILS (a stop that lost the S-curve's tail); so does a stop that
+    '  ran a whole ramp longer.
+    DECEL_TICKS_NOM   = 100
+    DECEL_TICKS_LO    = DECEL_TICKS_NOM * 80 / 100
+    DECEL_TICKS_HI    = DECEL_TICKS_NOM * 126 / 100
     ' RATELAW: a base rung's measured rate as a percentage of the speed law's prediction. Visit 2 measured
     '  0.946-0.965 of the 2000-pass model and PL-50 rescaled the prediction by 22/23, so a driver that is
     '  not folding back sits within a few percent of 100.
@@ -2314,8 +2393,10 @@ ladderAllIdx    LONG    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11            ' CLIMB,
 ' segment's OWN rung numbers 0..4, not indices into ladderIncre -- BM-RUNG's seg field says which table
 ' a rung number belongs to, as it already does for LIVE and CLOCK.
 lowIncre        LONG    1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000
-' FAULTB: ramp_inc per trial, ascending (plan :917-918)
-fbRampIncs      LONG    22, 100, 500, 2_000, 10_000
+' FAULTB: the speed-up limit (accel_up, setRampingValues()'s maxRamp) per trial, ascending (SRC_REV 59; was ramp_inc 22,
+'  100, 500, 2_000, 10_000, plan :917-918). The built-in 1_000 mm/s^2 (RAMP_DEF_ACCEL_UP), twice and four times it, the
+'  old ramp_max, and 10_000 mm/s^2 (ACCEL_MAX_MM_S2: 10_000 / 0.0294485 = 339_575.6), each DERIVED for the 6.5in wheel.
+fbAccelUps      LONG    RAMP_DEF_ACCEL_UP, RAMP_DEF_ACCEL_UP * 2, RAMP_DEF_ACCEL_UP * 4, 200_000, 339_576
 
 DAT { hand-maintained copy of the driver's hall-position-delta table }
 
@@ -3104,7 +3185,7 @@ VAR { record staging -- filled by the caller, read by one emitter }
     LONG    stFail                                          ' ...failed
     LONG    stRec                                           ' ...recovered
     LONG    fbTrial                                         ' BM-FBTRIAL
-    LONG    fbRampInc
+    LONG    fbAccelUp                                       ' the trial's speed-up limit, fbAccelUps (SRC_REV 59; was fbRampInc)
     LONG    fbIncre
     LONG    fbOffNeg
     LONG    fbOffPos
@@ -3222,8 +3303,12 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
 
     ' R18.4 Visit 8 (task 3584): A-6 / A-8 following in part A's TAKE segment, A-7 / A-8 not-following in part D's BLOCKED step
     LONG    bSfTakeRan[INST_MOTORS]                         ' A-6: the speed-down was issued while SPIN_UP at or above QTR
-    LONG    bSfTakeOk[INST_MOTORS]                          ' A-6: drv_incr fell within A6_WINDOW_MS of it
-    LONG    sfTakeMs[INST_MOTORS]                           ' A-6: ms from the command to the first fall seen
+    LONG    bSfTakeOk[INST_MOTORS]                          ' A-6: taken -- the acceleration turned and the increment fell, each in its bound (SRC_REV 59)
+    LONG    sfTakeMs[INST_MOTORS]                           ' A-6: ms from the command to the increment's first fall below its peak
+    LONG    bSfTakeFell[INST_MOTORS]                        ' A-6: the increment fell below its peak within A6_FALL_MS (SRC_REV 59)
+    LONG    bSfTakeAccFell[INST_MOTORS]                     ' A-6: drv_accel_now fell below its value before the command within A6_WINDOW_MS
+    LONG    sfTakeAccMs[INST_MOTORS]                        ' A-6: ms from the command to that fall
+    LONG    sfTakeAccBefore[INST_MOTORS]                    ' A-6: drv_accel_now just before the command
     LONG    bSfFolAgreeRan[INST_MOTORS]                     ' A-8 following: both readings valid at a steady QTR
     LONG    sfFolAgreeDiff[INST_MOTORS]                     ' A-8 following: |permille/10 - pct|, points
     LONG    hpFirstShortMs[INST_MOTORS]                     ' A-7: ms into the stall of the first SHORT poll, -1 before it
@@ -3988,8 +4073,8 @@ PRI segClock() | side, signMul
 
 #ifdef DBP_B
 PRI segFaultBoundary() | side, signMul, trialIdx, whyCode
-' FAULTB (part B, T1-7): the ramp_inc fault-boundary sweep (C-5, Z; S-1 not measured). Per motor x sign
-' one lifetime and FB_TRIALS trials, ramp_inc ascending.
+' FAULTB (part B, T1-7): the ramp fault-boundary sweep (C-5, Z; S-1 not measured). Per motor x sign
+' one lifetime and FB_TRIALS trials, the speed-up limit ascending (fbAccelUps; SRC_REV 59, was ramp_inc).
 '
 ' @local side - SIDE_LEFT then SIDE_RIGHT
 ' @local signMul - SIGN_NEG then SIGN_POS
@@ -4537,7 +4622,7 @@ PRI bPreflightWheel(side) : bMoved | slotIdx, safeEvent, ticksMoved, hwMoved, bM
 
 PRI pfTrace(side, whyCode, endCode) | slotIdx, offNeg, offPos
 ' PL-136: a PREFLT nudge's frozen ring as one wheel trace -- BM-TRACE (seg PREFLT, cause START: a start from rest at
-' PREFLIGHT_INCRE; the offsets and ramp_inc read back now), then bTraceDrain()'s BM-TS lines and BM-TRACE-END. The mark
+' PREFLIGHT_INCRE; the offsets and accel_up read back now), then bTraceDrain()'s BM-TS lines and BM-TRACE-END. The mark
 ' is the command, so every 2 ms sample of the drive's first TRACE_DENSE_SAMPLES (0.5 s of PREFLIGHT_MS) is a line, and
 ' after that every change and every 50 ms. BM-TS carries the three phases apart (u, v, w) beside their sum, current and
 ' duty: PL-120's leading reading -- the low-side switches not turning on, so one phase held high and then draining as its
@@ -4555,7 +4640,7 @@ PRI pfTrace(side, whyCode, endCode) | slotIdx, offNeg, offPos
     slotIdx := side - SIDE_LEFT
     pfTid := nextTraceId()
     offNeg, offPos := wheelGetOffsets(side)
-    emitTrace(pfTid, SEG_PREFLT, side, CAUSE_START, PREFLIGHT_INCRE, offNeg, offPos, MODE_FLOAT, wheelRampInc(side), whyCode)
+    emitTrace(pfTid, SEG_PREFLT, side, CAUSE_START, PREFLIGHT_INCRE, offNeg, offPos, MODE_FLOAT, wheelAccelUp(side), whyCode)
     bTraceDrain(pfTid, slotIdx, SLOT_RIGHT - slotIdx, endCode)
 #endif
 
@@ -4659,7 +4744,7 @@ PRI stopModeLifetime(seg, side, motorIncre, bWithStopCog, bWithStart) | whyCode
 #endif
 
 #ifdef DBG_EVTRACE
-PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | tid, whyCode, rampInc
+PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | tid, whyCode, accelUp
 ' One wheel trace, the trace routine STOPMODE, BASELINE and POSTFLT share: BRAKE requested before
 ' spin-up, on the wheel under test only (I6); eventCapture(); every side effect restored and read back,
 ' then BM-TRACE, BM-TS and BM-TRACE-END (traceEmitCapture()); recovery per sec 4.2, zero and wait
@@ -4676,15 +4761,15 @@ PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | 
 '
 ' @local tid - trace id
 ' @local whyCode - why the trial is skipped, WHY_NONE when it runs
-' @local rampInc - ramp_inc read back for the header
+' @local accelUp - accel_up (the speed-up limit, maxRamp) read back for the header
 
     tid := nextTraceId()
     cpReset()
     whyCode := trialSkipWhy(seg, side, skipWhy)
-    rampInc := wheelRampInc(side)
+    accelUp := wheelAccelUp(side)
     if whyCode <> WHY_NONE
         cpWantNeg, cpWantPos := wheelGetOffsets(side)
-        traceSkip(tid, seg, side, causeCode, motorIncre, reqMode, rampInc, whyCode)
+        traceSkip(tid, seg, side, causeCode, motorIncre, reqMode, accelUp, whyCode)
     else
         if reqMode == MODE_BRAKE
             wheelHold(side, TRUE)
@@ -4692,7 +4777,7 @@ PRI eventTrace(seg, side, motorIncre, causeCode, eventCode, reqMode, skipWhy) | 
             startCapture(side, motorIncre)
         else
             eventCapture(side, motorIncre, eventCode)
-        traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, rampInc)
+        traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, accelUp)
         ' STPDECEL rides BASELINE's floated stop from half speed -- the one condition Visit 3 measured
         '  74-77 ticks on -- so the no-regression reading costs no trial of its own
         if (seg == SEG_BASELINE) and (causeCode == CAUSE_STOPCMD) and (reqMode == MODE_FLOAT) and bTrStopValid
@@ -5583,22 +5668,23 @@ PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt
 #endif
 
 #ifdef DBP_B
-PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, rampInc, safeEvent, bReached, startMs, bStopped
-' One FAULTB trial (design sec 4.4, T1-7): wheel stopped; setRampingValues(1_500, 200_000, inc, 50_000)
-' read back; arm; mark; FB_INCRE from standstill; capture until AT_SPEED + FB_AT_SPEED_HOLD_MS, a fault,
+PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, accelUp, safeEvent, bReached, startMs, bStopped
+' One FAULTB trial (design sec 4.4, T1-7): wheel stopped; the trial's speed-up limit (fbAccelUps, SRC_REV 59: was
+' setRampingValues(1_500, 200_000, inc, 50_000)) with the built-in slow-down limit, through wheelSetRamp(), read
+' back; arm; mark; FB_INCRE from standstill; capture until AT_SPEED + FB_AT_SPEED_HOLD_MS, a fault,
 ' or FB_TIMEOUT_MS; freeze; restore the ramp defaults and read them back (BM-RAMPREST, I11) BEFORE any
 ' check; BM-TRACE cause RAMP, BM-TS, BM-TRACE-END; peaks and dsat from the trace; recovery (sec 4.2);
 ' BM-FBTRIAL; zero, wait stopped; cool FAULT_TRIAL_COOL_MS.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signMul - SIGN_NEG or SIGN_POS
-' @param trialIdx - 0-based trial, index into fbRampIncs
+' @param trialIdx - 0-based trial, index into fbAccelUps
 ' @param skipWhy - WHY_NONE to run, else why the lifetime could not start
 '
 ' @local slotIdx - motor slot
 ' @local tid - trace id
 ' @local motorIncre - signed increment
-' @local rampInc - ramp_inc read back for the header
+' @local accelUp - accel_up (the speed-up limit, maxRamp) read back for the header
 ' @local safeEvent - SAFE_* from the watched waits
 ' @local bReached - AT_SPEED was reached
 ' @local startMs - getms() at the command
@@ -5610,7 +5696,7 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
     motorIncre := FB_INCRE * signMul
     cpReset()
     fbTrial := trialIdx + 1
-    fbRampInc := fbRampIncs[trialIdx]
+    fbAccelUp := fbAccelUps[trialIdx]
     fbIncre := motorIncre
     fbResult := RES_OK
     fbTMs := 0
@@ -5628,11 +5714,11 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
     fbOffPos := cpWantPos
     fbWhy := trialSkipWhy(SEG_FAULTB, side, skipWhy)
     if fbWhy <> WHY_NONE
-        rampInc := wheelRampInc(side)
+        accelUp := wheelAccelUp(side)
         fbResult := RES_SKIPPED
-        traceSkip(tid, SEG_FAULTB, side, CAUSE_RAMP, motorIncre, MODE_FLOAT, rampInc, fbWhy)
+        traceSkip(tid, SEG_FAULTB, side, CAUSE_RAMP, motorIncre, MODE_FLOAT, accelUp, fbWhy)
     else
-        rampInc, _ := wheelSetRamp(side, fbRampInc, RAMP_DEF_DOWN)
+        accelUp, _ := wheelSetRamp(side, fbAccelUp, RAMP_DEF_ACCEL_DN)
         if bInstArm(INST_SRC_WHEELS, 1) == FALSE
             cpWhy := WHY_INST_NOACK
         else
@@ -5682,7 +5768,7 @@ PRI faultbTrial(side, signMul, trialIdx, skipWhy) | slotIdx, tid, motorIncre, ra
                 elseif bReached == FALSE
                     fbResult := RES_STEADY_TIMEOUT
                     cpWhy := WHY_STEADY_TIMEOUT
-        traceEmitCapture(SEG_FAULTB, side, tid, CAUSE_RAMP, motorIncre, MODE_FLOAT, rampInc)
+        traceEmitCapture(SEG_FAULTB, side, tid, CAUSE_RAMP, motorIncre, MODE_FLOAT, accelUp)
         if bCpFrozen
             traceFaultStats(slotIdx)
             traceStopCurrent(slotIdx)
@@ -5754,7 +5840,10 @@ PRI fbFoldCells(slotIdx, safeEvent, bReached)
 '              recorded in BM-STOPCUR; they are evidence for the reader, not the criterion.
 '  RMPDROOP  - a ramp the motor cannot follow now DROOPS instead of faulting. The three steep trials
 '              (ramp_inc 500, 2_000 and 10_000) faulted 3 of 3 at Visit 2, in 96-186 ms; with the lag
-'              limiter the field waits for the rotor and the trial reaches speed instead.
+'              limiter the field waits for the rotor and the trial reaches speed instead. SRC_REV 59
+'              (DRIVER_REV 38): judged on the trials whose speed-up limit is at or above FB_DROOP_MIN_ACCEL, the
+'              200_000 a pass each Visit 2 fault reached (the CON says why); the lag gate now eases the
+'              acceleration toward 0 rather than freezing the field.
 '
 ' @param slotIdx - motor slot
 ' @param safeEvent - SAFE_* that ended the trial
@@ -5763,7 +5852,7 @@ PRI fbFoldCells(slotIdx, safeEvent, bReached)
     if bScValid[slotIdx]
         bSfStopCurRan[slotIdx] := TRUE
         bSfStopCurOk[slotIdx] := bSfStopCurOk[slotIdx] and (scStopPk[slotIdx] <= STOPCUR_BOUND_MV) and (safeEvent <> SAFE_ABS_ABORT)
-    if fbRampInc >= FB_DROOP_MIN_INC
+    if fbAccelUp >= FB_DROOP_MIN_ACCEL
         bSfDroopRan[slotIdx] := TRUE
         bSfDroopOk[slotIdx] := bSfDroopOk[slotIdx] and bReached and (fbResult <> RES_FAULT) and (bCpFaultSeen == FALSE)
 
@@ -5930,6 +6019,13 @@ PRI overshootFoldCells(tid, sid, leftTgt, rightTgt, bStraight) | tickMmX100, wor
 '              driveForDistance() stops each wheel at its own distance rather than both at the first
 '              wheel's, so both are judged: the old shared stop left the slower wheel short, which this now
 '              fails. MEASURED before task 3559: about 77 ticks past, which is the whole deceleration.
+'              SRC_REV 59 (DRIVER_REV 38 / 39): the plan it trusts is now the jerk-limited stop's closed form, floored,
+'              from the speed AND acceleration in hand, so the 2-ft leg's stop, fired while the platform still
+'              accelerates, lands as the 10-ft's does; DRIVER_REV 39's plan (the driver's own) over-states the stop
+'              by its age and its take-pass case, so STOP_LIMIT_HI is 3 (STOP_LIMIT_EARLY; the CON derives both
+'              sides). A plan that kept the stepped form would rest about v x RAMP_TAU_MS / 2 past (~27 ticks at 218
+'              ticks/s), and one that ignored the acceleration in hand the unwind's ~20 ticks past on the 2-ft leg:
+'              either FAILS.
 '  TURNDIST  - task 3577: the same judgement on a TURN trial, where the two limits differ. The unfixed
 '              library stopped both wheels at the shorter distance, so the long wheel rested hundreds of
 '              ticks short and this fails.
@@ -6917,11 +7013,13 @@ PRI dStepTimeStop(side) | bArmed, bAtSpeed, deadlineMs, eError, fireMs, zeroMs, 
 ' judged.
 '
 ' THE NEGATIVE. A stop that fires at the deadline instead of one ramp before it -- the pre-task-3559 driver, or a
-' frontStopMs() that returned 0 -- reaches zero one whole ramp-down late. DERIVED for this step (not a reading): from
-' D_POWER, about 165 ticks/s (OVERSHT's power-50 leg), the increment is about 61.8M, the built-in ramp-down
-' (RAMP_DOWN_BUILTIN 50_000 a pass) takes about 1_235 passes, so it reads measured about +646 and FAILS against hi 7;
-' its BM-TIMESTOP reads fire_ms about 0, where a correct stop's reads about -646. A stop fired a ramp too EARLY
-' (S counted twice) reads about -646 and FAILS against lo -4.
+' frontStopMs() that returned 0 -- reaches zero one whole ramp-down late. DERIVED for this step (not a reading), SRC_REV
+' 59 (DRIVER_REV 38): D_POWER commands 81.7 x 10^6 (incrementForPower(50) at 18.5 V; the 165 ticks/s once quoted here
+' was OVERSHT's power-50 leg averaged over its ramps), and the jerk-limited stop from it takes 1_637 + 480 + 1 = 2_118
+' passes (RAMP_STOP_EXTRA_PASSES), 1_108 ms, so it reads measured about +1_108 and FAILS against hi 6; its BM-TIMESTOP
+' reads fire_ms about 0, where a correct stop's reads about -1_108. A stop fired a ramp too EARLY (S counted twice)
+' reads about -1_108 and FAILS against lo -6. A plan that kept the stepped ramp's form (n = |incr| / accel_dn) fires
+' about RAMP_TAU_MS late: about +250, which FAILS too.
 '
 ' PL-83, kept: the wait runs to the deadline plus D_REST_MS (a stop is only DUE D_TIMESTOP_MS after the call), and
 ' the deadline is taken BEFORE the call, so the library's own is never earlier than the step's.
@@ -7173,6 +7271,18 @@ PRI dStepFrontStats(side) | nPasses, nLate, nMaxTicks, nStackHi, nStackOf, slotI
 ' Read with the object still running and the platform at rest, so the numbers cover every step this part
 ' has just put the cog through. A late pass is counted and never replayed, so ZERO late passes is the
 ' criterion, not a small number of them.
+'
+' SRC_REV 59 (PL-160, PL-161): THIS READING COVERS PASSES WITH A STOP LIMIT ARMED, in both forms. On its passes while a
+' limit is armed the front cog tests it against the stop plan (frontStopMs() / frontStopTicks() -- the steering object
+' for both wheels on one pass), and the passes counted here include those of every step before this one in the same
+' lifetime: TIMESTOP (dStepTimeStop(), a stopAfterTime() armed at D_POWER's cruise and held until it fires, about 0.9 s
+' of passes, whenever the form reached speed) and CMDTIMEOUT's third limb (dStepCmdTimeout(), a driveForDistance() of
+' D_CMDTMO_BOUND_M from rest -- a distance limit armed through the ramp up and the timeout's ramp down -- run when its
+' first two limbs held). So R16-DUAL-FRONTST-D's max_us, late and ok, for SIDE_BOTH (STEERSEG) and for SIDE_LEFT
+' (LIMIT's wheel half), carry the armed limit's cost: at DRIVER_REV 38 the front cog's own closed-form plan (stopPlan())
+' at cruise and through a ramp; at DRIVER_REV 39, where the driver plans the stop and the front cog only reads two
+' status longs and compares, what is left of it. (The DRIVER_REV 39 plan's own cost is the driver's, inside its frame
+' slack; no FRONTST reading measures it.)
 '
 ' PL-75: THE STACK CRITERION IS AGAINST THE OWNING OBJECT'S OWN SIZE, not a constant kept in this
 ' file. It used to judge every cog against D_FRONT_STACK_HI, which no object ever sees; the two
@@ -8846,13 +8956,27 @@ CON { --- TAKE: a slower command is taken while ramping, and the two following r
 
   ' DRIVE-INTEGRATION-DESIGN.md 5.5 A-6 and A-8's following case, in part A. Per motor, one lifetime:
   '  1. A-6 (R18-DUAL-TAKE-A): command HALF from rest; once the field passes QTR while still SPIN_UP,
-  '     command an EIGHTH. The field's increment must FALL within A6_WINDOW_MS. The shipped driver threw
-  '     that command away unless STOPPED, AT_SPEED or FAULTED (PL-104), so its field kept climbing to
-  '     HALF -- the cell fails on it by construction.
+  '     command an EIGHTH. The shipped driver threw that command away unless STOPPED, AT_SPEED or FAULTED
+  '     (PL-104), so its field kept climbing to HALF -- the cell fails on it by construction.
+  '     SRC_REV 59 (DRIVER_REV 38, PL-160): THE TAKE IS THE ACCELERATION'S TURN, then the increment's fall. The
+  '     jerk-limited generator takes the command on its next pass, but at QTR it is accelerating at its limit
+  '     (accel_up), and it unwinds that acceleration at the larger jerk before the increment can turn: the field
+  '     climbs on for ceil(accel_up / RAMP_DEF_JERK_X) = 327 passes (171 ms) and only then falls. The old
+  '     criterion -- the increment falls within A6_WINDOW_MS -- therefore FAILED a correct driver. The cell now
+  '     needs both: drv_accel_now below its value before the command within A6_WINDOW_MS (the command TAKEN), and
+  '     the increment below its own peak since the command within A6_FALL_MS (the unwind done). The NEGATIVE is
+  '     unchanged: a driver that throws the command away keeps its acceleration at the limit and its field
+  '     climbing, and fails both. A6_FALL_MS, DERIVED: the unwind's passes from accel_up, one pass for the take
+  '     and one for the first falling pass, at DRIVE_PASS_US, rounded up, plus A6_WINDOW_MS for the command's own
+  '     round trip and this loop's reads -- 329 passes, 173 ms, + 20 = 193 ms.
   '  2. A-8 following (R18-DUAL-FOLAGREE-A): command QTR, hold until AT_SPEED and the rpm window has filled,
   '     then the path limiter's achieved fraction and the rpm window's percentage must agree within FOLAGREE_HI.
-  A6_WINDOW_MS          = 20                                ' the fall must be seen this soon after the command returns
-  TAKE_RAMP_WAIT_MS     = 3_000                             ' bound on reaching QTR while spinning up to HALF
+  A6_WINDOW_MS          = 20                                ' the acceleration must turn this soon after the command returns
+  A6_UNWIND_PASSES      = (RAMP_DEF_ACCEL_UP + RAMP_DEF_JERK_X - 1) / RAMP_DEF_JERK_X + 2
+  A6_FALL_MS            = (A6_UNWIND_PASSES * wheelL.DRIVE_PASS_US + 999) / 1_000 + A6_WINDOW_MS
+  ' bound on reaching QTR while spinning up to HALF: the S-curve reaches QTR (36.75 x 10^6) at about 1_322 passes, 0.7 s
+  '  (A / J passes in, then (QTR - A^2 / 2J) / A at A); the stepped ramp took about 0.9 s. The bound stands.
+  TAKE_RAMP_WAIT_MS     = 3_000
   TAKE_FOLLOW_HOLD_MS   = 3_000                             ' QTR's ~1 s ramp, then the 1 s rpm window filling
   FOLAGREE_LO           = 0
   FOLAGREE_HI           = 5                                 ' points: permille / 10 against pct
@@ -8869,7 +8993,7 @@ PRI segTake() | side
         takeWheel(side)
     segEnd(segWhy())
 
-PRI takeWheel(side) | slotIdx, startMs, cmdMs, nDrvBefore, nDrvNow, eDrvrState, nPermille, nPct, bPctOk
+PRI takeWheel(side) | slotIdx, startMs, cmdMs, nDrvBefore, nDrvNow, nDrvPeak, nAccNow, elapsedMs, eDrvrState, nPermille, nPct, bPctOk
 ' One motor's TAKE lifetime (see the section's CON). Emits BM-TAKE with what was read.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -8879,6 +9003,9 @@ PRI takeWheel(side) | slotIdx, startMs, cmdMs, nDrvBefore, nDrvNow, eDrvrState, 
 ' @local cmdMs - getms() when the EIGHTH command returned
 ' @local nDrvBefore - the field's increment just before the EIGHTH command
 ' @local nDrvNow - the field's increment while watching for the fall
+' @local nDrvPeak - |the increment|'s largest since the command: the unwind's top (SRC_REV 59)
+' @local nAccNow - drv_accel_now while watching for its turn
+' @local elapsedMs - ms since the command returned
 ' @local eDrvrState - the driver state just before the EIGHTH command
 ' @local nPermille - the path limiter's achieved fraction at the steady QTR
 ' @local nPct - the rpm window's following percentage at the steady QTR
@@ -8900,18 +9027,29 @@ PRI takeWheel(side) | slotIdx, startMs, cmdMs, nDrvBefore, nDrvNow, eDrvrState, 
             if (abs(nDrvBefore) >= QTR_SPEED_INCRE) or ((getms() - startMs) >= TAKE_RAMP_WAIT_MS)
                 quit
         _, eDrvrState, _ := wheelClearedState(side)
+        sfTakeAccBefore[slotIdx] := wheelAccelNow(side)
         wheelCommand(side, DRIVE_CEILING_INCRE / 8)
         cmdMs := getms()
         if (eDrvrState == wheelL.DCS_SPIN_UP) and (abs(nDrvBefore) >= QTR_SPEED_INCRE)
             bSfTakeRan[slotIdx] := TRUE
+            ' SRC_REV 59: the acceleration turns first (A6_WINDOW_MS), the increment falls below its own peak once
+            '  the unwind is done (A6_FALL_MS); both are watched in one loop, bounded by the longer
+            nDrvPeak := abs(nDrvBefore)
             repeat
                 _, _, nDrvNow := wheelDriveHealth(side)
-                if abs(nDrvNow) < abs(nDrvBefore)
-                    bSfTakeOk[slotIdx] := TRUE
-                    sfTakeMs[slotIdx] := (getms() - cmdMs) #> 1
+                nAccNow := wheelAccelNow(side)
+                elapsedMs := getms() - cmdMs
+                if (bSfTakeAccFell[slotIdx] == FALSE) and (elapsedMs < A6_WINDOW_MS) and (abs(nAccNow) < abs(sfTakeAccBefore[slotIdx]) or ((nAccNow < 0) <> (sfTakeAccBefore[slotIdx] < 0)))
+                    bSfTakeAccFell[slotIdx] := TRUE
+                    sfTakeAccMs[slotIdx] := elapsedMs #> 1
+                if abs(nDrvNow) < nDrvPeak
+                    bSfTakeFell[slotIdx] := (elapsedMs < A6_FALL_MS)
+                    sfTakeMs[slotIdx] := elapsedMs #> 1
                     quit
-                if (getms() - cmdMs) >= A6_WINDOW_MS
+                nDrvPeak #>= abs(nDrvNow)
+                if elapsedMs >= A6_FALL_MS
                     quit
+            bSfTakeOk[slotIdx] := bSfTakeAccFell[slotIdx] and bSfTakeFell[slotIdx]
         ' 2. A-8 following: a steady QTR, the rpm window full
         wheelCommand(side, QTR_SPEED_INCRE)
         waitBeat(TAKE_FOLLOW_HOLD_MS, CP_LOOP_POLL)
@@ -8930,7 +9068,12 @@ PRI takeWheel(side) | slotIdx, startMs, cmdMs, nDrvBefore, nDrvNow, eDrvrState, 
     emitTake(side, nDrvBefore, eDrvrState, nPermille, nPct, bPctOk)
 
 PRI emitTake(side, nDrvBefore, eDrvrState, nPermille, nPct, bPctOk) | slotIdx
-' BM-TAKE: one motor's TAKE readings -- A-6's precondition and fall, A-8's two following readings.
+' BM-TAKE: one motor's TAKE readings -- A-6's precondition and fall, A-8's two following readings. SRC_REV 59 (FMT 38):
+' fell is now the increment's fall below its peak within A6_FALL_MS (was: below drv_before within A6_WINDOW_MS), and
+' acc_before, acc_fell, acc_ms (the acceleration's turn within A6_WINDOW_MS) and fall_hi (A6_FALL_MS) are appended
+' before permille; take_ms is still the increment's fall. Worst case 217 bytes (tag 7 + seq 15 + motor 12 +
+' drv_before 24 + state 11 + take_ran 15 + fell 11 + take_ms 16 + acc_before 24 + acc_fell 15 + acc_ms 15 + fall_hi 16
+' + permille 17 + follow_pct 19).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param nDrvBefore - the field's increment just before the EIGHTH command
@@ -8947,8 +9090,12 @@ PRI emitTake(side, nDrvBefore, eDrvrState, nPermille, nPct, bPctOk) | slotIdx
     benchLog.numField(@"drv_before", nDrvBefore, LIM_BIG)
     benchLog.numField(@"state", eDrvrState, LIM_TINY)
     benchLog.boolField(@"take_ran", bSfTakeRan[slotIdx])
-    benchLog.boolField(@"fell", bSfTakeOk[slotIdx])
-    benchLog.naNumField(@"take_ms", sfTakeMs[slotIdx], LIM_SMALL, bSfTakeOk[slotIdx] == TRUE)
+    benchLog.boolField(@"fell", bSfTakeFell[slotIdx])
+    benchLog.naNumField(@"take_ms", sfTakeMs[slotIdx], LIM_SMALL, sfTakeMs[slotIdx] > 0)
+    benchLog.numField(@"acc_before", sfTakeAccBefore[slotIdx], LIM_BIG)
+    benchLog.boolField(@"acc_fell", bSfTakeAccFell[slotIdx])
+    benchLog.naNumField(@"acc_ms", sfTakeAccMs[slotIdx], LIM_SMALL, bSfTakeAccFell[slotIdx] == TRUE)
+    benchLog.numField(@"fall_hi", A6_FALL_MS, LIM_SMALL)
     benchLog.numField(@"permille", nPermille, LIM_SMALL)
     benchLog.naNumField(@"follow_pct", nPct, LIM_SMALL, bPctOk == TRUE)
     emitRecord()
@@ -9232,12 +9379,16 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
     FOLK_COUNT = FOLK_OVER + 1
     TOKMAX_FOLK = 4
 
-  ' LIMRAMP (E3). Per motor x sign, one lifetime: a START trace from rest to QTR at each ramp_inc, then a SLOWER
-  '  trace from the ceiling to QTR at each ramp_down, each followed by BM-RAMP; the defaults are restored and
+  ' LIMRAMP (E3). Per motor x sign, one lifetime: a START trace from rest to QTR at each speed-up limit, then a SLOWER
+  '  trace from the ceiling to QTR at each slow-down limit, each followed by BM-RAMP; the defaults are restored and
   '  read back at the end (BM-RAMPREST, I11). Duty drop and peak ratio are read from the trace by
-  '  DOCs/plans/servo-model/start_metrics.py, the code that judged A-1 / A-2 at Visit 8.
-  LIMRAMP_INCS          = 3                                 ' 22 (today), 44, 88
-  LIMRAMP_DOWNS         = 2                                 ' 50_000 (today), 100_000
+  '  DOCs/plans/servo-model/start_metrics.py, the code that judged A-1 / A-2 at Visit 8. SRC_REV 59 (DRIVER_REV 38): the
+  '  ramp is the jerk-limited generator's, whose only settings are its two limits (its jerks follow them over
+  '  RAMP_TAU_MS), so the traces step those: the built-in limit, twice and four times it speeding up, the built-in
+  '  and twice it slowing down. (They stepped ramp_inc 22 / 44 / 88 and ramp_down 50_000 / 100_000, and ramp_inc no
+  '  longer does anything.)
+  LIMRAMP_UPS           = 3                                 ' RAMP_DEF_ACCEL_UP x 1, 2, 4 (1_000, 2_000, 4_000 mm/s^2)
+  LIMRAMP_DOWNS         = 2                                 ' RAMP_DEF_ACCEL_DN x 1, 2 (1_470, 2_940 mm/s^2)
 
   ' LIMLOW (E4). Per motor x sign, one lifetime: four rungs from the old floor down, then the same four with
   '  duty_min halved (read back, and restored and read back after). The window is as long as the ring's
@@ -9263,8 +9414,8 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
 #ifdef DBP_LIMITS
 DAT ' ---- LIMITS tables ----
 
-limRampIncs     LONG    RAMP_DEF_INC, RAMP_DEF_INC * 2, RAMP_DEF_INC * 4
-limRampDowns    LONG    RAMP_DEF_DOWN, RAMP_DEF_DOWN * 2
+limRampUps      LONG    RAMP_DEF_ACCEL_UP, RAMP_DEF_ACCEL_UP * 2, RAMP_DEF_ACCEL_UP * 4
+limRampDowns    LONG    RAMP_DEF_ACCEL_DN, RAMP_DEF_ACCEL_DN * 2
 limLowIncre     LONG    544_628, 400_000, 250_000, 100_000                  ' the old confgurePowerLimits() floor, then below it (Visit 9 moved the floor to 100_000)
 tokEdge         BYTE    "NONE", 0, "FAULT", 0, "HOLD", 0, "SLOW", 0, "NOWIN", 0
 tokFolK         BYTE    "RUNG", 0, "OVER", 0
@@ -9710,8 +9861,8 @@ PRI segLimRamp() | side, signMul
     segEnd(segWhy())
 
 PRI limRampSign(side, signMul) | settingIdx, whyCode, qtrIncre
-' One motor x sign of LIMRAMP: the START traces at each ramp_inc, the SLOWER traces at each ramp_down, each with
-' BM-RAMP; then the defaults restored and read back, on every path.
+' One motor x sign of LIMRAMP: the START traces at each speed-up limit, the SLOWER traces at each slow-down limit, each
+' with BM-RAMP; then the defaults restored and read back, on every path.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signMul - SIGN_NEG or SIGN_POS
@@ -9726,45 +9877,45 @@ PRI limRampSign(side, signMul) | settingIdx, whyCode, qtrIncre
         whyCode := WHY_ABORTED
     elseif bWheelStart(SEG_LIMRAMP, side) == FALSE
         whyCode := stWhy
-    repeat settingIdx from 0 to LIMRAMP_INCS - 1
-        whyCode := limRampTrial(side, limRampIncs[settingIdx], RAMP_DEF_DOWN, CAUSE_START, 0, qtrIncre, whyCode)
+    repeat settingIdx from 0 to LIMRAMP_UPS - 1
+        whyCode := limRampTrial(side, limRampUps[settingIdx], RAMP_DEF_ACCEL_DN, CAUSE_START, 0, qtrIncre, whyCode)
     repeat settingIdx from 0 to LIMRAMP_DOWNS - 1
-        whyCode := limRampTrial(side, RAMP_DEF_INC, limRampDowns[settingIdx], CAUSE_SLOWER, DRIVE_CEILING_INCRE * signMul, qtrIncre, whyCode)
+        whyCode := limRampTrial(side, RAMP_DEF_ACCEL_UP, limRampDowns[settingIdx], CAUSE_SLOWER, DRIVE_CEILING_INCRE * signMul, qtrIncre, whyCode)
     if isWheelUp(side)
         bRestoreRamp(side)
     bInstIdle()
     wheelStop(side)
 
-PRI limRampTrial(side, incWant, downWant, causeCode, fromIncre, toIncre, skipWhy) : whyCode | incBack, downBack
+PRI limRampTrial(side, upWant, downWant, causeCode, fromIncre, toIncre, skipWhy) : whyCode | upBack, downBack
 ' One LIMRAMP trace and its BM-RAMP: set the ramp, then a START from rest to toIncre (fromIncre 0) or a SLOWER
 ' from fromIncre to toIncre. A skipped trial prints its why and no ramp settings of its own.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param incWant - ramp_inc for the trial
-' @param downWant - ramp_down for the trial
+' @param upWant - the speed-up limit, accel_up, for the trial
+' @param downWant - the slow-down limit, accel_dn, for the trial
 ' @param causeCode - CAUSE_START or CAUSE_SLOWER
 ' @param fromIncre - the speed a SLOWER starts from (0 for a START)
 ' @param toIncre - the speed commanded at the mark
 ' @param skipWhy - WHY_* already known, WHY_NONE when none
 ' @returns whyCode - why this and the remaining trials are skipped, WHY_NONE while they run
 '
-' @local incBack - ramp_inc read back, 0 when the trial was skipped
-' @local downBack - ramp_down read back, 0 when the trial was skipped
+' @local upBack - accel_up read back, 0 when the trial was skipped
+' @local downBack - accel_dn read back, 0 when the trial was skipped
 
     beat(CP_LOOP_POLL)
-    incBack := 0
+    upBack := 0
     downBack := 0
     whyCode := trialSkipWhy(SEG_LIMRAMP, side, skipWhy)
     if whyCode == WHY_NONE
-        incBack, downBack := wheelSetRamp(side, incWant, downWant)
+        upBack, downBack := wheelSetRamp(side, upWant, downWant)
     if causeCode == CAUSE_SLOWER
         cpSlowTo := toIncre
         eventTrace(SEG_LIMRAMP, side, fromIncre, CAUSE_SLOWER, EVT_SLOWER, MODE_FLOAT, whyCode)
     else
         eventTrace(SEG_LIMRAMP, side, toIncre, CAUSE_START, EVT_START, MODE_FLOAT, whyCode)
-    emitRampRec(side, causeCode, fromIncre, toIncre, incBack, downBack, whyCode)
+    emitRampRec(side, causeCode, fromIncre, toIncre, upBack, downBack, whyCode)
 
-PRI emitRampRec(side, causeCode, fromIncre, toIncre, incBack, downBack, skipWhy) | bFollowed
+PRI emitRampRec(side, causeCode, fromIncre, toIncre, upBack, downBack, skipWhy) | bFollowed
 ' BM-RAMP: the trace just taken's ramp -- its settings read back, mark to AT_SPEED, and the lag holds across it.
 ' followed is TRUE only when AT_SPEED was reached with no hold: the ramp never ran ahead of what the rotor could
 ' follow (LIMITS-RESET-PLAN.md E3's third criterion). The trace's own tid is the run's latest.
@@ -9773,8 +9924,8 @@ PRI emitRampRec(side, causeCode, fromIncre, toIncre, incBack, downBack, skipWhy)
 ' @param causeCode - CAUSE_START or CAUSE_SLOWER
 ' @param fromIncre - the speed the ramp started from (0 for a START)
 ' @param toIncre - the speed it was commanded to
-' @param incBack - ramp_inc read back
-' @param downBack - ramp_down read back
+' @param upBack - accel_up read back
+' @param downBack - accel_dn read back
 ' @param skipWhy - WHY_NONE when the trace ran, else why it was skipped (its staging is then empty)
 '
 ' @local bFollowed - T/F where T means AT_SPEED was reached with no lag hold
@@ -9788,8 +9939,8 @@ PRI emitRampRec(side, causeCode, fromIncre, toIncre, incBack, downBack, skipWhy)
     benchLog.tokenField(@"cause", tokenAt(@tokCause, CAUSE_COUNT, causeCode), TOKMAX_CAUSE)
     benchLog.numField(@"from_incre", fromIncre, LIM_BIG)
     benchLog.numField(@"to_incre", toIncre, LIM_BIG)
-    benchLog.numField(@"ramp_inc", incBack, LIM_BIG)
-    benchLog.numField(@"ramp_down", downBack, LIM_BIG)
+    benchLog.numField(@"accel_up", upBack, LIM_BIG)                          ' SRC_REV 59 (FMT 38): was ramp_inc
+    benchLog.numField(@"accel_dn", downBack, LIM_BIG)                        ' ...and ramp_down
     benchLog.boolField(@"reached", bCpRampReached)
     benchLog.naNumField(@"ramp_ms", cpRampMs, LIM_MID, bCpRampReached)
     benchLog.naNumField(@"lag_holds", cpRampLag, LIM_BIG, bCpRampLagValid)
@@ -10052,11 +10203,14 @@ CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 361
     FR_SECOND_WAIT_MS     = 50                              ' X-6: the bound on the mirror reading SPIN_DN before the second force
     FR_HOOK_SETTLE_MS     = 200                             ' HOOKREST: at rest this long before the force
     FR_HOOK_WIN_MS        = 500                             ' ...and watched this long after it
-    ' X-4's ramp. A re-synced stop reads its command as 0 and ramps down at ramp_down per drive pass, so from |incre| it
-    '  takes |incre| / RAMP_DEF_DOWN passes at FR_PASSES_PER_SEC. MEASURED against it: a commanded stop from half speed
-    '  took 730 ms to the start of rest (BASELINE, debug_260919-173537.log, mark_k 50 to rest_k 415) against 768 ms
-    '  predicted -- the last sparse ticks read as rest a little early. The re-synced stop must land inside
-    '  FR_RAMP_LO_PCT..FR_RAMP_HI_PCT of the prediction: a short (a few ms) or a stop that ran on fails it.
+    ' X-4's ramp. A re-synced stop reads its command as 0 and ramps down at the slow-down limit. SRC_REV 59 (DRIVER_REV
+    '  38, PL-160): the jerk-limited stop, so from |incre| it takes |incre| / RAMP_DEF_ACCEL_DN + RAMP_STOP_EXTRA_PASSES
+    '  passes at FR_PASSES_PER_SEC (the S-curve's v / A + A / J, and the take; every FLTRESP speed is above the 24 x 10^6
+    '  the plateau needs): 1_088 ms at 80 x 10^6, where the stepped ramp's |incre| / 50_000 gave 836. MEASURED against
+    '  the stepped form: a commanded stop from half speed took 730 ms to the start of rest (BASELINE,
+    '  debug_260919-173537.log, mark_k 50 to rest_k 415) against 768 ms predicted -- the last sparse ticks read as rest a
+    '  little early. The re-synced stop must land inside FR_RAMP_LO_PCT..FR_RAMP_HI_PCT of the prediction: a short (a few
+    '  ms) or a stop that ran on fails it; the band is the pre-registered one, unchanged.
     FR_PASSES_PER_SEC     = wheelL.PWM_RATE_IN_HZ / wheelL.DRIVE_PASS_FRAMES      ' 1_913
     FR_RAMP_LO_PCT        = 50
     FR_RAMP_HI_PCT        = 150
@@ -10083,7 +10237,9 @@ CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 361
     ' X-5. The other wheel must be at rest one ramp time after the fault. MEASURED: a commanded stop from half speed
     '  takes about 730 ms (BASELINE, debug_260919-173537.log, mark_k 50 to rest_k 415 at 2 ms); D_REST_MS, the
     '  harness's bound on the platform reaching rest after a stop, is used as the ramp time. The window after it must
-    '  show the wheel under FR_PLAT_REST_PCT of its pre-fault rate; a wheel driving on reads about 100 %.
+    '  show the wheel under FR_PLAT_REST_PCT of its pre-fault rate; a wheel driving on reads about 100 %. SRC_REV 59
+    '  (DRIVER_REV 38): the jerk-limited stop from FLTAPI_POWER's 81.7 x 10^6 is 2_118 passes, 1_108 ms (DERIVED as
+    '  frRampPredMs() is), still under D_REST_MS; the 730 ms above was the stepped ramp's.
     FR_PLAT_RAMP_MS       = D_REST_MS
     FR_PLAT_WIN_MS        = 500
     FR_PLAT_MARGIN_MS     = 200
@@ -10467,7 +10623,7 @@ PRI segFaultPlat()
     frPlatTrial(SIDE_RIGHT, wheelL.FR_GRADED)
     segEnd(segWhy())
 
-PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyCode, rampInc, bTimedOut
+PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyCode, accelUp, bTimedOut
 ' One wheel-frame X-cell trial in its own driver lifetime: start the wheel alone (the lifetime zero is read inside
 ' bWheelStart()); X-3 only, the phases at rest (the negative control, first); set the fault response (X-6 at its
 ' brake %); X-2 and X-6, holdAtStop(TRUE) before the spin-up; spin up, settle and force the fault -- X-6 and X6C a
@@ -10488,7 +10644,7 @@ PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyC
 ' @local tid - trace id
 ' @local motorIncre - signed increment
 ' @local whyCode - why the trial did not run, WHY_NONE when it did
-' @local rampInc - ramp_inc read back for the trace header
+' @local accelUp - accel_up (the speed-up limit, maxRamp) read back for the trace header
 ' @local bTimedOut - the capture ended STEADY_TIMEOUT (the wheel never reached AT_SPEED)
 
     slotIdx := side - SIDE_LEFT
@@ -10503,11 +10659,11 @@ PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyC
     elseif bWheelStart(SEG_FLTRESP, side) == FALSE
         whyCode := stWhy
     whyCode := trialSkipWhy(SEG_FLTRESP, side, whyCode)
-    rampInc := wheelRampInc(side)
+    accelUp := wheelAccelUp(side)
     if whyCode <> WHY_NONE
         frWhy := whyCode
         cpWantNeg, cpWantPos := wheelGetOffsets(side)
-        traceSkip(tid, SEG_FLTRESP, side, CAUSE_FAULT, motorIncre, frReqMode, rampInc, whyCode)
+        traceSkip(tid, SEG_FLTRESP, side, CAUSE_FAULT, motorIncre, frReqMode, accelUp, whyCode)
         emitFrTrial(tid, side, motorIncre)
     else
         _, frBrakeOnBase, _ := wheelFaultResponse(side)
@@ -10521,7 +10677,7 @@ PRI frTrial(side, cellKind, speedIdx, brakeIdx) | slotIdx, tid, motorIncre, whyC
         bTimedOut := (cpWhy == WHY_STEADY_TIMEOUT)
         frReadAfter(side)                                   ' reads only: the driver as the fault left it
         frRestore(side, slotIdx)                            ' I11: before anything is drained or judged
-        traceEmitCapture(SEG_FLTRESP, side, tid, CAUSE_FAULT, motorIncre, frReqMode, rampInc)
+        traceEmitCapture(SEG_FLTRESP, side, tid, CAUSE_FAULT, motorIncre, frReqMode, accelUp)
         if bCpFrozen
             frStats(slotIdx)
         frClassify()
@@ -11497,12 +11653,13 @@ PRI frFoldForced(slotIdx)
             sfForcedBad[slotIdx] := (sfForcedBad[slotIdx] + 1) <# LIM_SMALL
 
 PRI frRampPredMs() : nMs
-' The configured ramp's time to rest from the trial's speed: |incre| / RAMP_DEF_DOWN drive passes at FR_PASSES_PER_SEC.
-' 836 ms at 80 x 10^6.
+' The configured ramp's time to rest from the trial's speed (SRC_REV 59, DRIVER_REV 38): the jerk-limited stop's
+' |incre| / RAMP_DEF_ACCEL_DN + RAMP_STOP_EXTRA_PASSES drive passes (v / A + A / J, and the take) at FR_PASSES_PER_SEC.
+' 1_088 ms at 80 x 10^6 (the stepped ramp's |incre| / 50_000 gave 836).
 '
 ' @returns nMs - predicted ms from the stop's start to rest
 
-    nMs := ((ladderIncre[frRungIdx[frSpeedIdx]] / RAMP_DEF_DOWN) * MS_PER_SEC) / FR_PASSES_PER_SEC
+    nMs := ((ladderIncre[frRungIdx[frSpeedIdx]] / RAMP_DEF_ACCEL_DN + RAMP_STOP_EXTRA_PASSES) * MS_PER_SEC) / FR_PASSES_PER_SEC
 
 PRI bFrRampInBand() : bInBand
 ' Whether the fault-to-rest time sits inside FR_RAMP_LO_PCT .. FR_RAMP_HI_PCT of frRampPredMs().
@@ -14882,7 +15039,8 @@ CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task
     '  lands back on exactly SPIN_LEG_TICKS: 1_216 mm -> 211.1 -> 211. BM-SPINBUILD prints the round trip (tick_back).
     SPIN_LEG_MM           = ((SPIN_LEG_TICKS * TICK_MM_X100) + SPIN_X100 - 1) / SPIN_X100
     SPIN_OVERTRAVEL_TICKS = wheelL.HALL_TICKS_PER_CYCLE     ' 6: one electrical cycle, 35 mm, ~10 degrees of platform
-    SPIN_STOP_TOL_TICKS   = STOP_LIMIT_HI                   ' 2: the distance stop's promise, at rest within about two ticks
+    SPIN_STOP_TOL_TICKS   = STOP_LIMIT_HI                   ' 3: the distance stop's promise, at rest within about two ticks, and
+                                                            '  one more short of it for DRIVER_REV 39's plan (STOP_LIMIT_EARLY)
     SPIN_DIR_MIN_TICKS    = wheelL.HALL_TICKS_PER_CYCLE     ' a leg that moved less than this is not judged for its direction
     SPIN_LEGS             = 12                              ' MUST match tools/gen_dual_assets.py SPIN_LEGS (the LEG label)
     SPIN_PAIRS            = SPIN_LEGS / 2
@@ -19335,7 +19493,9 @@ CON { --- REG: PL-151's part-B half, pointed -- TURNDIST, FLTCAUSE and FLTRETRY 
     '  the instrument mirrors the flag within one 2 ms sample (FR_PROVOKE_MS's derivation: about 4 ms). 100 ms is 25x.
     REG_LATCH_MS          = 100
     ' the platform's rest after the fault: the partner's ramp from half speed (~730 ms MEASURED, FR_PLAT_RAMP_MS's
-    '  note), REST_CONFIRM_MS of stillness, and a margin; a lifted wheel's free coast from half speed is shorter
+    '  note), REST_CONFIRM_MS of stillness, and a margin; a lifted wheel's free coast from half speed is shorter.
+    '  SRC_REV 59 (DRIVER_REV 38): the jerk-limited ramp from REG_POWER's 81.7 x 10^6 is 1_108 ms (DERIVED, the
+    '  S-curve's v / A + A / J), and with REST_CONFIRM_MS still inside this bound
     REG_REST_MS           = 3_000
     REG_TRIALS            = 2                               ' one forced fault per wheel
     REG_BAD_LO            = 0
@@ -19661,6 +19821,17 @@ CON { --- KICK: the speed-change kick at the top of the range, pointed (SRC_REV 
   '  120->140, 140->147, 147->155, 155->165 and the slow-downs 165->155, 155->147, 147->140 (x 10^6). R21-DUAL-TRKICK-T
   '  is judged per wheel exactly as R17-DUAL-TRKICK-A is: the running peak tr_i_over over the judged transitions,
   '  PASS at TRKICK_EXCESS_MV (50 sense mV) or under. Negative: the pre-fix driver's 64-183 mV on these transitions fails.
+  '  SRC_REV 59 (DRIVER_REV 38, PL-160), THE STIMULUS CHECKED AND KEPT: each transition is still a command from one
+  '  steady rung to the next, and the transition window still runs from the command's mark to the steady window
+  '  (rungMeasure(): AT_SPEED, then LADDER_SETTLE_MS). The jerk-limited ramp changes only the ramp between them: a
+  '  step of 7-10 x 10^6 is now a triangle of acceleration (under A^2 / J, 16.2 x 10^6 up and 24.0 x 10^6 down, so it
+  '  never holds its limit), about 2 x sqrt(dv / J) passes -- 0.3-0.4 s, where the stepped ramp's took about 0.45 s --
+  '  the 20 x 10^6 step 120 -> 140 holds accel_up briefly, and the start from rest to 120 x 10^6 takes about 4_000
+  '  passes (2.1 s), inside LADDER_STEADY_MS. Its peak acceleration, sqrt(J x dv) on the small steps (22_000-27_000 a
+  '  pass up, 26_000-32_000 down) and 33_958 on 120 -> 140, is comparable to the stepped ramp's up (its growing step
+  '  reached about 21_000-30_000 by the end of these steps) and far under its fixed 50_000 down, so a transition loads
+  '  the drive no harder than the pre-fix runs whose kicks this cell was set against; the arrival pass still advances
+  '  the field (DRIVER_REV 34's fix, kept in jerkStep). The criterion and its negative are unchanged.
   '
   ' WHAT THE SHUNT CANNOT SEE. A slow-down can kick by regeneration, which drives current back into the bus and so
   '  under-reads, or reads negative, on the DC-link shunt. So each transition also prints BM-KICKTR from the same frozen
@@ -21116,7 +21287,7 @@ PRI traceEmptyEnd(tid, endCode, whyCode)
     trStride := 1
     emitTraceEnd(tid, endCode, whyCode)
 
-PRI traceSkip(tid, seg, side, causeCode, motorIncre, reqMode, rampInc, whyCode)
+PRI traceSkip(tid, seg, side, causeCode, motorIncre, reqMode, accelUp, whyCode)
 ' Emit a wheel trace that did not run: its header (offsets from cpWantNeg / cpWantPos) and an empty end
 ' whose why names the cause, so the analyser sees every planned trace.
 '
@@ -21126,13 +21297,13 @@ PRI traceSkip(tid, seg, side, causeCode, motorIncre, reqMode, rampInc, whyCode)
 ' @param causeCode - CAUSE_* the trace would have done
 ' @param motorIncre - signed increment
 ' @param reqMode - MODE_* requested
-' @param rampInc - ramp_inc read back
+' @param accelUp - accel_up (the speed-up limit, maxRamp) read back
 ' @param whyCode - WHY_* naming why it did not run
 
-    emitTrace(tid, seg, side, causeCode, motorIncre, cpWantNeg, cpWantPos, reqMode, rampInc, WHY_NONE)
+    emitTrace(tid, seg, side, causeCode, motorIncre, cpWantNeg, cpWantPos, reqMode, accelUp, WHY_NONE)
     traceEmptyEnd(tid, TEND_ABORT, whyCode)
 
-PRI traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, rampInc) | slotIdx, otherIdx
+PRI traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, accelUp) | slotIdx, otherIdx
 ' Finish a wheel trace's capture. First every side effect the trial created is undone and read back
 ' (I11: offsets with BM-OFFREST, the e-stop, the brake request, I6); only then BM-TRACE, and BM-TS /
 ' BM-TRACE-END from the frozen ring, folded into R14-DUAL-TRACES-* and R14-DUAL-IDLEFLT-A. An unfrozen
@@ -21144,7 +21315,7 @@ PRI traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, rampInc) | 
 ' @param causeCode - CAUSE_* done
 ' @param motorIncre - signed increment
 ' @param reqMode - MODE_* requested
-' @param rampInc - ramp_inc read back
+' @param accelUp - accel_up (the speed-up limit, maxRamp) read back
 '
 ' @local slotIdx - motor slot
 ' @local otherIdx - the idle motor slot
@@ -21159,7 +21330,7 @@ PRI traceEmitCapture(seg, side, tid, causeCode, motorIncre, reqMode, rampInc) | 
         bCpEstopSet := FALSE
     if bBrakeRequested[slotIdx]
         restoreStopMode(side)
-    emitTrace(tid, seg, side, causeCode, motorIncre, cpWantNeg, cpWantPos, reqMode, rampInc, cpWhy)
+    emitTrace(tid, seg, side, causeCode, motorIncre, cpWantNeg, cpWantPos, reqMode, accelUp, cpWhy)
     if bCpFrozen
         bTraceDrain(tid, slotIdx, otherIdx, cpEnd)
         foldIdleWheel(slotIdx, bCaptureIdleUp(otherIdx))
@@ -21219,15 +21390,28 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
   ' THE DUMP IS THE INSTRUMENT (D2): every value is the long as the driver holds it -- never scaled, clamped, decoded
   '  or named by a token -- in VAR declaration order under the VAR's own name, so a log reads against that block
   '  without the source. Each wheel's runs are copied with one longmove() apiece, before anything is printed, so the
-  '  eight records describe one moment and not eight. The names are tokAbiName's, written from the VAR block; BM-ABIL
+  '  nine records describe one moment and not nine. The names are abiName()'s, written from the VAR block; BM-ABIL
   '  prints the driver's own st_n and par_n beside them, so a driver whose runs changed length shows in the log
   '  rather than silently shifting every name after the change.
   '
   ' Records, each worst case under 280 bytes (header: tag 8 + seq 15 + where 15 + motor 12 + life 13 = 63, where
   '  widened by one for NOMOTION; a raw field is 2 + len(name) + 14, "-2_147_483_648"): BM-ABIL the launch run, motorCog,
-  '  st_n, par_n, why (233); BM-ABIS1 drive_u .. sense_i_mV (236); BM-ABIS2 hall .. drv_state (218); BM-ABIS3
-  '  hall_missed .. fault (278: foldback_frames, task 3621, adds 31); BM-ABIP1 offset_fwd .. dead_gap (240); BM-ABIP2 ramp_down .. i_limit_k (257); BM-ABIP3
-  '  duty_floor .. fault_clr (266); BM-ABIP4 probe_sink .. probe_y (112).
+  '  st_n, par_n, why (233); BM-ABIS1 drive_u .. sense_i_mV (236); BM-ABIS2 hall .. hall_illegal (273); BM-ABIS3
+  '  drv_incr_now .. drv_accel_now (231); BM-ABIS4 the status run's longs past drv_accel_now -- drv_stop_passes and
+  '  drv_stop_fp at DRIVER_REV 39 -- then fault (142, + 17 per unnamed long); BM-ABIP1 offset_fwd .. dead_gap (240);
+  '  BM-ABIP2 accel_dn .. i_limit_k (254); BM-ABIP3 duty_floor .. fault_clr (266); BM-ABIP4 probe_sink .. sense_zero,
+  '  and any longs past it (165, + 17 each).
+  ' SRC_REV 59 (FMT 38; DRIVER_REV 38 / 39, PL-160 / PL-161): both runs are sized from the library's own counts (the
+  '  parameter run was a literal 25 since PL-138 and PL-146 made it 27, so drv_release and sense_zero were never dumped),
+  '  and the names follow the VAR block: drv_accel_now after foldback_frames (DRVR_STATUS_ACCEL_NOW_IDX), then
+  '  DRIVER_REV 39's drv_stop_passes and drv_stop_fp, the driver's stop plan; the four ramp longs are accel_dn, accel_up, jerk_up
+  '  and jerk_dn where they were ramp_down, ramp_max, ramp_min and ramp_inc; drv_release and sense_zero close the
+  '  parameter run. hall_missed and hall_illegal move from BM-ABIS3 to BM-ABIS2, and the run's tail and fault get a
+  '  record of their own, BM-ABIS4. THE NAMES CANNOT SHIFT ANY MORE: the three runs have a table each (tokAbiLaunch,
+  '  tokAbiStatus, tokAbiParams), each read from its own run's first long; a long past its table's names -- a run that
+  '  grew after these names were written (ABI_STATUS_NAMED, ABI_PARAMS_NAMED) -- prints under "?" rather than under
+  '  the next long's name, and fault, the long after the status run, is named by its place, not by a count. BM-ABIL's
+  '  st_n and par_n print the library's counts beside them, so a "?" is read against them.
   '
   ' Where (token = tokAbiWhere):
   '  ABIW_SKSTART - part START, every lifetime whose steering start() returned a cog, both wheels through the steering
@@ -21249,38 +21433,45 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
     ABI_LAUNCH_LONGS = 4                                    ' pinbase, params_ptr, targetAngle, targetIncre
     ' task 3621: the status run is sized from the library's own count, plus fault after it, so a driver whose run grows
     '  cannot silently drop fault off the end of the copy (at src_rev 44 a literal 21 did, after R20.1's foldback_frames)
-    ABI_STATUS_LONGS = wheelL.DRVR_STATUS_LONGS_COUNT + 1   ' drive_u .. foldback_frames (21), then fault
-    ABI_PARAMS_LONGS = 25                                   ' offset_fwd .. probe_y (DRVR_PARAMS_LONGS_COUNT)
+    ABI_STATUS_LONGS = wheelL.DRVR_STATUS_LONGS_COUNT + 1   ' drive_u .. drv_stop_fp (24 at DRIVER_REV 39), then fault
+    ABI_PARAMS_LONGS = wheelL.DRVR_PARAMS_LONGS_COUNT       ' offset_fwd .. sense_zero (27; SRC_REV 59, was a literal 25)
+    ABI_STATUS_NAMED = 24                                   ' the status longs tokAbiStatus names: drive_u .. drv_stop_fp
+    ABI_PARAMS_NAMED = 27                                   ' the parameter longs tokAbiParams names: offset_fwd .. sense_zero
     ABI_STATUS_BASE  = ABI_LAUNCH_LONGS                     ' the status run's first long in a wheel's abiSnap row
     ABI_PARAMS_BASE  = ABI_STATUS_BASE + ABI_STATUS_LONGS   ' ...and the parameter run's
-    ABI_LONGS        = ABI_PARAMS_BASE + ABI_PARAMS_LONGS   ' 51 per wheel, the entries in tokAbiName
+    ABI_FAULT_IDX    = ABI_PARAMS_BASE - 1                  ' fault: the long after the status run
+    ABI_LONGS        = ABI_PARAMS_BASE + ABI_PARAMS_LONGS   ' 56 per wheel at DRIVER_REV 39
     ' each record's [first, last] in a wheel's abiSnap row, declaration order
     ABI_S1_FIRST = ABI_STATUS_BASE                          ' drive_u
     ABI_S2_FIRST = ABI_STATUS_BASE + 7                      ' hall
-    ABI_S3_FIRST = ABI_STATUS_BASE + 14                     ' hall_missed
+    ABI_S3_FIRST = ABI_STATUS_BASE + 16                     ' drv_incr_now (SRC_REV 59: was hall_missed, + 14)
+    ABI_S4_FIRST = ABI_STATUS_BASE + wheelL.DRVR_STATUS_ACCEL_NOW_IDX + 1   ' drv_stop_passes, the first long past drv_accel_now
     ABI_P1_FIRST = ABI_PARAMS_BASE                          ' offset_fwd
-    ABI_P2_FIRST = ABI_PARAMS_BASE + 7                      ' ramp_down
+    ABI_P2_FIRST = ABI_PARAMS_BASE + 7                      ' accel_dn (was ramp_down)
     ABI_P3_FIRST = ABI_PARAMS_BASE + 15                     ' duty_floor
     ABI_P4_FIRST = ABI_PARAMS_BASE + 23                     ' probe_sink
-    ABI_LAST     = ABI_LONGS - 1                            ' probe_y
+    ABI_LAST     = ABI_LONGS - 1                            ' sense_zero at DRIVER_REV 38 (was probe_y)
 
 DAT ' ---- ABI dump tables ----
 
 tokAbiWhere     BYTE    "SKSTART", 0, "PREFLT", 0, "TIMEOUT", 0, "NOMOTION", 0
-' isp_bldc_motor.spin2 VAR names, declaration order: the launch run, the status run and fault, the parameter run
-tokAbiName      BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "targetIncre", 0
-                BYTE    "drive_u", 0, "drive_v", 0, "drive_w", 0
+' isp_bldc_motor.spin2 VAR names, declaration order, one table per run (SRC_REV 59): the launch run, the status run
+'  (ABI_STATUS_NAMED of them; fault, after it, is named by its place), the parameter run (ABI_PARAMS_NAMED)
+tokAbiLaunch    BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "targetIncre", 0
+tokAbiStatus    BYTE    "drive_u", 0, "drive_v", 0, "drive_w", 0
                 BYTE    "sense_u_mV", 0, "sense_v_mV", 0, "sense_w_mV", 0, "sense_i_mV", 0
                 BYTE    "hall", 0, "pos", 0, "duty", 0, "err", 0, "loop_ticks", 0, "loop_ctcks", 0, "drv_state", 0
                 BYTE    "hall_missed", 0, "hall_illegal", 0, "drv_incr_now", 0, "lag_held", 0, "duty_capped", 0
-                BYTE    "fault_resyncs", 0, "foldback_frames", 0, "fault", 0
-                BYTE    "offset_fwd", 0, "offset_rev", 0, "duty_min", 0, "duty_max", 0, "servo_shift", 0
+                BYTE    "fault_resyncs", 0, "foldback_frames", 0, "drv_accel_now", 0
+                BYTE    "drv_stop_passes", 0, "drv_stop_fp", 0
+tokAbiParams    BYTE    "offset_fwd", 0, "offset_rev", 0, "duty_min", 0, "duty_max", 0, "servo_shift", 0
                 BYTE    "ff_ceiling", 0, "dead_gap", 0
-                BYTE    "ramp_down", 0, "cfg_ctcks", 0, "stop_mode", 0, "e_stop", 0, "ramp_max", 0, "ramp_min", 0
-                BYTE    "ramp_inc", 0, "i_limit_k", 0
+                BYTE    "accel_dn", 0, "cfg_ctcks", 0, "stop_mode", 0, "e_stop", 0, "accel_up", 0, "jerk_up", 0
+                BYTE    "jerk_dn", 0, "i_limit_k", 0
                 BYTE    "duty_floor", 0, "hold_duty", 0, "hold_short", 0, "fault_mode", 0, "brake_on", 0
                 BYTE    "probe_phase", 0, "force_seq", 0, "fault_clr", 0
-                BYTE    "probe_sink", 0, "probe_y", 0
+                BYTE    "probe_sink", 0, "probe_y", 0, "drv_release", 0, "sense_zero", 0
+sAbiFault       BYTE    "fault", 0
 ' the one long lineAddNum() cannot negate: NEGX printed as the signed decimal it is
 sAbiNegx        BYTE    "-2_147_483_648", 0
 
@@ -21353,7 +21544,7 @@ PRI abiSnapshot(slotIdx, pLaunch, pStatus, pParams) | rowBase
     longmove(@abiSnap[rowBase + ABI_PARAMS_BASE], pParams, ABI_PARAMS_LONGS)
 
 PRI emitAbi(slotIdx, whereCode, lifeValue) | rowBase, longIdx
-' BM-ABIL, then BM-ABIS1..3 and BM-ABIP1..4, from one wheel's abiSnap row (sizes in the section's CON note).
+' BM-ABIL, then BM-ABIS1..4 and BM-ABIP1..4, from one wheel's abiSnap row (sizes in the section's CON note).
 '
 ' @param slotIdx - motor slot
 ' @param whereCode - ABIW_* value
@@ -21365,7 +21556,7 @@ PRI emitAbi(slotIdx, whereCode, lifeValue) | rowBase, longIdx
     rowBase := slotIdx * ABI_LONGS
     abiHead(@"BM-ABIL", slotIdx, whereCode, lifeValue)
     repeat longIdx from 0 to ABI_LAUNCH_LONGS - 1
-        abiRawField(tokenAt(@tokAbiName, ABI_LONGS, longIdx), abiSnap[rowBase + longIdx])
+        abiRawField(abiName(longIdx), abiSnap[rowBase + longIdx])
     if bAbiCogValid[slotIdx]
         abiRawField(@"motorCog", abiCog[slotIdx])
     else
@@ -21379,7 +21570,8 @@ PRI emitAbi(slotIdx, whereCode, lifeValue) | rowBase, longIdx
     emitRecord()
     emitAbiRun(@"BM-ABIS1", slotIdx, whereCode, lifeValue, ABI_S1_FIRST, ABI_S2_FIRST - 1)
     emitAbiRun(@"BM-ABIS2", slotIdx, whereCode, lifeValue, ABI_S2_FIRST, ABI_S3_FIRST - 1)
-    emitAbiRun(@"BM-ABIS3", slotIdx, whereCode, lifeValue, ABI_S3_FIRST, ABI_P1_FIRST - 1)
+    emitAbiRun(@"BM-ABIS3", slotIdx, whereCode, lifeValue, ABI_S3_FIRST, ABI_S4_FIRST - 1)
+    emitAbiRun(@"BM-ABIS4", slotIdx, whereCode, lifeValue, ABI_S4_FIRST, ABI_FAULT_IDX)
     emitAbiRun(@"BM-ABIP1", slotIdx, whereCode, lifeValue, ABI_P1_FIRST, ABI_P2_FIRST - 1)
     emitAbiRun(@"BM-ABIP2", slotIdx, whereCode, lifeValue, ABI_P2_FIRST, ABI_P3_FIRST - 1)
     emitAbiRun(@"BM-ABIP3", slotIdx, whereCode, lifeValue, ABI_P3_FIRST, ABI_P4_FIRST - 1)
@@ -21401,8 +21593,25 @@ PRI emitAbiRun(pTag, slotIdx, whereCode, lifeValue, firstIdx, lastIdx) | rowBase
     rowBase := slotIdx * ABI_LONGS
     abiHead(pTag, slotIdx, whereCode, lifeValue)
     repeat longIdx from firstIdx to lastIdx
-        abiRawField(tokenAt(@tokAbiName, ABI_LONGS, longIdx), abiSnap[rowBase + longIdx])
+        abiRawField(abiName(longIdx), abiSnap[rowBase + longIdx])
     emitRecord()
+
+PRI abiName(longIdx) : pName
+' The VAR name of one long of a wheel's abiSnap row (SRC_REV 59): each run's from its own table, counted from that run's
+' first long, so a run that grew cannot shift the names of the runs after it; a long past its table prints "?"
+' (tokenAt()), and fault, the long after the status run, is named by its place.
+'
+' @param longIdx - index within the row
+' @returns pName - pointer to the name
+
+    if longIdx < ABI_STATUS_BASE
+        pName := tokenAt(@tokAbiLaunch, ABI_LAUNCH_LONGS, longIdx)
+    elseif longIdx < ABI_FAULT_IDX
+        pName := tokenAt(@tokAbiStatus, ABI_STATUS_NAMED, longIdx - ABI_STATUS_BASE)
+    elseif longIdx == ABI_FAULT_IDX
+        pName := @sAbiFault
+    else
+        pName := tokenAt(@tokAbiParams, ABI_PARAMS_NAMED, longIdx - ABI_PARAMS_BASE)
 
 PRI abiHead(pTag, slotIdx, whereCode, lifeValue)
 ' Begin one BM-ABI* record: tag, seq, where, motor, life.
@@ -22276,36 +22485,53 @@ PRI wheelEstop(side)
         wheelL.emergencyCutoff()
     beat(CP_LIB_ESTOP)
 
-PRI wheelRampInc(side) : incRamp
-' Read back one wheel's ramp_inc.
+PRI wheelAccelUp(side) : nAccelUp
+' Read back one wheel's speed-up limit, accel_up (getRampingValues()'s maxRamp since DRIVER_REV 38; SRC_REV 59 -- the
+' trace header printed ramp_inc, which DRIVER_REV 38 made the slow-down jerk).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @returns incRamp - ramp_inc read back
+' @returns nAccelUp - accel_up read back
 
     beat(CP_LIB_RAMP)
     if side == SIDE_RIGHT
-        _, _, incRamp, _ := wheelR.getRampingValues()
+        _, nAccelUp, _, _ := wheelR.getRampingValues()
     else
-        _, _, incRamp, _ := wheelL.getRampingValues()
+        _, nAccelUp, _, _ := wheelL.getRampingValues()
     beat(CP_LIB_RAMP)
 
-PRI wheelSetRamp(side, incWant, downWant) : incReadBack, downReadBack
-' Set a trial's ramp (the defaults with ramp_inc and ramp_down replaced) and read both back: FAULTB's trials
-' and LIMRAMP's (task 3604). Every caller restores the defaults with bRestoreRamp() afterwards (I11).
+PRI wheelAccelNow(side) : nAccel
+' One wheel's trajectory generator's acceleration now, the signed change of its field's increment per drive pass
+' (testGetAccelNow(), DRIVER_REV 38).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param incWant - the trial's ramp_inc
-' @param downWant - the trial's ramp_down
-' @returns incReadBack - ramp_inc read back
-' @returns downReadBack - ramp_down read back
+' @returns nAccel - drv_accel_now, signed
+
+    beat(CP_LIB_QUERY)
+    if side == SIDE_RIGHT
+        nAccel := wheelR.testGetAccelNow()
+    else
+        nAccel := wheelL.testGetAccelNow()
+    beat(CP_LIB_QUERY)
+
+PRI wheelSetRamp(side, accelUpWant, accelDnWant) : accelUpBack, accelDnBack
+' Set a trial's ramp and read both limits back: FAULTB's trials and LIMRAMP's (task 3604). SRC_REV 59 (DRIVER_REV 38):
+' the raw setter's maxRamp and decrRamp are the speed-up and slow-down limits and minRamp and incRamp have no effect, so
+' they are given 1 and 0, the least its checks accept; the driver pairs each limit with its jerk. Every caller restores
+' the built-in ramp with bRestoreRamp() afterwards (I11).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param accelUpWant - the trial's speed-up limit, accel_up
+' @param accelDnWant - the trial's slow-down limit, accel_dn
+' @returns accelUpBack - accel_up read back
+' @returns accelDnBack - accel_dn read back
 
     beat(CP_LIB_RAMP)
     if side == SIDE_RIGHT
-        wheelR.setRampingValues(RAMP_DEF_MIN, RAMP_DEF_MAX, incWant, downWant)
-        _, _, incReadBack, downReadBack := wheelR.getRampingValues()
+        wheelR.setRampingValues(1, accelUpWant, 0, accelDnWant)
+        _, accelUpBack, _, accelDnBack := wheelR.getRampingValues()
     else
-        wheelL.setRampingValues(RAMP_DEF_MIN, RAMP_DEF_MAX, incWant, downWant)
-        _, _, incReadBack, downReadBack := wheelL.getRampingValues()
+        wheelL.setRampingValues(1, accelUpWant, 0, accelDnWant)
+        _, accelUpBack, _, accelDnBack := wheelL.getRampingValues()
     beat(CP_LIB_RAMP)
 
 PRI wheelSetOffsets(side, negDegrees, posDegrees)
@@ -22742,30 +22968,36 @@ PRI bRecoverFault(seg, tid, side, motorIncre, coolMs) : bCleared | slotIdx, star
             wheelStop(side)
     waitBeat(coolMs, CP_LOOP_COOL)
 
-PRI bRestoreRamp(side) : bOk | minRamp, maxRamp, incRamp, downRamp
-' Restore the ramp defaults, read them back and emit BM-RAMPREST (I11). The last read-back of each
-' motor is R14-DUAL-RAMPREST-B's measurement.
+PRI bRestoreRamp(side) : bOk | jerkUp, accelUp, jerkDn, accelDn
+' Restore the built-in ramp, read it back and emit BM-RAMPREST (I11). The last read-back of each motor is
+' R14-DUAL-RAMPREST-B's measurement. SRC_REV 59 (DRIVER_REV 38): restored through the public API a program would use --
+' setAcceleration(ACCEL_BUILTIN_MM_S2) and setDeceleration(DECEL_BUILTIN_MM_S2) -- and judged against this file's own
+' derivation of the four parameters those rates give on the 6.5in wheel (RAMP_DEF_*: 71 / 33_958 / 104 / 49_918).
+' NEGATIVE: DRIVER_REV 35-37's constant speed-up ramp read 33_958 / 33_958 / 0 / 49_918, and the stepped defaults this
+' restore once wrote read 418 / 200_000 / 105 / 50_000 on DRIVER_REV 38: either FAILS.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @returns bOk - TRUE when 1_500 / 200_000 / 22 / 50_000 read back
+' @returns bOk - TRUE when RAMP_DEF_JERK_UP / RAMP_DEF_ACCEL_UP / RAMP_DEF_JERK_DN / RAMP_DEF_ACCEL_DN read back
 '
-' @local minRamp - ramp_min read back
-' @local maxRamp - ramp_max read back
-' @local incRamp - ramp_inc read back
-' @local downRamp - ramp_down read back
+' @local jerkUp - jerk_up (minRamp) read back
+' @local accelUp - accel_up (maxRamp) read back
+' @local jerkDn - jerk_dn (incRamp) read back
+' @local accelDn - accel_dn (decrRamp) read back
 
     beat(CP_LIB_RAMP)
     if side == SIDE_RIGHT
-        wheelR.setRampingValues(RAMP_DEF_MIN, RAMP_DEF_MAX, RAMP_DEF_INC, RAMP_DEF_DOWN)
-        minRamp, maxRamp, incRamp, downRamp := wheelR.getRampingValues()
+        wheelR.setAcceleration(wheelR.ACCEL_BUILTIN_MM_S2)
+        wheelR.setDeceleration(wheelR.DECEL_BUILTIN_MM_S2)
+        jerkUp, accelUp, jerkDn, accelDn := wheelR.getRampingValues()
     else
-        wheelL.setRampingValues(RAMP_DEF_MIN, RAMP_DEF_MAX, RAMP_DEF_INC, RAMP_DEF_DOWN)
-        minRamp, maxRamp, incRamp, downRamp := wheelL.getRampingValues()
+        wheelL.setAcceleration(wheelL.ACCEL_BUILTIN_MM_S2)
+        wheelL.setDeceleration(wheelL.DECEL_BUILTIN_MM_S2)
+        jerkUp, accelUp, jerkDn, accelDn := wheelL.getRampingValues()
     beat(CP_LIB_RAMP)
-    bOk := (minRamp == RAMP_DEF_MIN) and (maxRamp == RAMP_DEF_MAX) and (incRamp == RAMP_DEF_INC) and (downRamp == RAMP_DEF_DOWN)
+    bOk := (jerkUp == RAMP_DEF_JERK_UP) and (accelUp == RAMP_DEF_ACCEL_UP) and (jerkDn == RAMP_DEF_JERK_DN) and (accelDn == RAMP_DEF_ACCEL_DN)
     bSfRampRan[side - SIDE_LEFT] := TRUE
     bSfRampOk[side - SIDE_LEFT] := bOk
-    emitRampRest(side, minRamp, maxRamp, incRamp, downRamp, bOk)
+    emitRampRest(side, jerkUp, accelUp, jerkDn, accelDn, bOk)
 
 PRI bRestoreOffsets(side, wantNeg, wantPos) : bOk | offNeg, offPos
 ' Restore the offsets read at the trial's start, read them back and emit BM-OFFREST (I11). Every
@@ -23567,7 +23799,7 @@ PRI bEmitClock(side, adcFram, frameCnt, deadGap) : bFrameOk | expFrame, bSwept
 
 #endif
 
-PRI emitTrace(tid, seg, side, causeCode, motorIncre, offNeg, offPos, reqMode, rampInc, whyCode)
+PRI emitTrace(tid, seg, side, causeCode, motorIncre, offNeg, offPos, reqMode, accelUp, whyCode)
 ' BM-TRACE: a wheel trace header naming what was requested and what was done, never the outcome (I7).
 ' Worst case 233 bytes.
 '
@@ -23579,7 +23811,7 @@ PRI emitTrace(tid, seg, side, causeCode, motorIncre, offNeg, offPos, reqMode, ra
 ' @param offNeg - offset_fwd read back before the measurement
 ' @param offPos - offset_rev read back before the measurement
 ' @param reqMode - MODE_* requested
-' @param rampInc - ramp_inc read back
+' @param accelUp - accel_up (the speed-up limit, maxRamp) read back
 ' @param whyCode - WHY_* naming the cause of every NA
 
     recBegin(@"BM-TRACE")
@@ -23592,7 +23824,7 @@ PRI emitTrace(tid, seg, side, causeCode, motorIncre, offNeg, offPos, reqMode, ra
     benchLog.numField(@"off_neg", offNeg, LIM_TINY)
     benchLog.numField(@"off_pos", offPos, LIM_TINY)
     benchLog.tokenField(@"req_mode", tokenAt(@tokMode, MODE_COUNT, reqMode), TOKMAX_REQMODE)
-    benchLog.numField(@"ramp_inc", rampInc, LIM_MID)
+    benchLog.numField(@"accel_up", accelUp, LIM_MID)                         ' SRC_REV 59 (FMT 38): was ramp_inc
     benchLog.numField(@"period_us", INST_PERIOD_US, LIM_SMALL)
     benchLog.numField(@"decim", instDecimate, LIM_TINY)
     benchLog.numField(@"pre", TRACE_PRE_SAMPLES, LIM_SMALL)
@@ -23725,7 +23957,7 @@ PRI emitFbTrial(tid, side)
     benchLog.numField(@"tid", tid, LIM_SMALL)
     benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
     benchLog.numField(@"trial", fbTrial, LIM_TINY)
-    benchLog.numField(@"ramp_inc", fbRampInc, LIM_MID)
+    benchLog.numField(@"accel_up", fbAccelUp, LIM_MID)                       ' SRC_REV 59 (FMT 38): was ramp_inc
     benchLog.numField(@"incre", fbIncre, LIM_BIG)
     benchLog.numField(@"off_neg", fbOffNeg, LIM_TINY)
     benchLog.numField(@"off_pos", fbOffPos, LIM_TINY)
@@ -23742,22 +23974,23 @@ PRI emitFbTrial(tid, side)
 
 #endif
 
-PRI emitRampRest(side, minRamp, maxRamp, incRamp, downRamp, bOk)
-' BM-RAMPREST: the ramp restore read back (I11). Worst case 131 bytes.
+PRI emitRampRest(side, jerkUp, accelUp, jerkDn, accelDn, bOk)
+' BM-RAMPREST: the ramp restore read back (I11). Worst case 148 bytes. SRC_REV 59 (FMT 38): the four fields are
+' DRIVER_REV 38's names for getRampingValues()'s four (were min, max, inc, down).
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @param minRamp - ramp_min read back
-' @param maxRamp - ramp_max read back
-' @param incRamp - ramp_inc read back
-' @param downRamp - ramp_down read back
-' @param bOk - TRUE when the defaults read back
+' @param jerkUp - jerk_up read back
+' @param accelUp - accel_up read back
+' @param jerkDn - jerk_dn read back
+' @param accelDn - accel_dn read back
+' @param bOk - TRUE when the built-in ramp read back
 
     recBegin(@"BM-RAMPREST")
     benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
-    benchLog.numField(@"min", minRamp, LIM_MID)
-    benchLog.numField(@"max", maxRamp, LIM_MID)
-    benchLog.numField(@"inc", incRamp, LIM_MID)
-    benchLog.numField(@"down", downRamp, LIM_MID)
+    benchLog.numField(@"jerk_up", jerkUp, LIM_MID)
+    benchLog.numField(@"accel_up", accelUp, LIM_MID)
+    benchLog.numField(@"jerk_dn", jerkDn, LIM_MID)
+    benchLog.numField(@"accel_dn", accelDn, LIM_MID)
     benchLog.boolField(@"ok", bOk)
     whyField(WHY_NONE)
     emitRecord()

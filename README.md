@@ -246,6 +246,9 @@ Things we know about that still need attention:
   arithmetic, not measured (DRIVE-OBJECTS.md, "How far the motor travels
   while stopping").
 - calibrate() is not implemented.
+- The drive is tested at a 270 MHz system clock (_clkfreq = 270_000_000, as in
+  every demo). Below about 250 MHz its 1 ms control pass has not been shown to
+  keep time.
   v5.0.2
 - Drive status reporting is not working in the base objects, so it is also
   reported badly over the serial interface.

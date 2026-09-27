@@ -66,6 +66,8 @@ do the right thing, and then we can call them done without having to test on the
 | PL-144 | The two-wheel path limiter cycled the platform between crawl and full | pass 8: R20-DUAL-PATH-HUNT = 1 (precondition fixed) |
 | PL-146 | The fold-back counted at rest on an undriven bridge, so the left never released | pass 8: R20-DUAL-EV-FOLDBACK 0 bad (DRIVER_REV 37: rest offset netted too) |
 
+| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | A Rev A board: `foldback_frames` stays 0 on an unloaded wheel at a 2 A limit |
+
 **Watch**
 
 | Entry | What it is | What closes it |
@@ -2210,6 +2212,123 @@ Certifies at pass 8 (FRONTST late 0, max under 950 µs).
   ERR_SYNC_TIMEOUT or ERR_NO_RESPONSE on a live driver, or a ~1 drive-pass lag between the wheels' starts (lockstep).
   Certifies at pass 8.
 
+**2026-09-27, built (DRIVER_REV 39), the stop prediction moved out of the front cogs, by construction.** Not yet run
+on hardware.
+- **Found at the desk (DERIVED, not measured):** DRIVER_REV 38's `stopPlan()` (PL-160) ran on every front pass while
+  a limit was armed, once per query. The steering front cog made up to **4** runs a pass. A platform time limit asks
+  both wheels (`frontStopMs()`), and the distance is asked on every pass the time is not due. So a platform time limit
+  plus a platform distance limit (`REQ_LIMIT_TIME` and `REQ_LIMIT_TICKS` arm independently) makes 2 + 2 runs. So does
+  a platform time limit plus a `driveForDistance()`, whose `REQ_DRIVE_DISTANCE` keeps the time limit. A platform
+  distance and wheel distances are never armed together (each request disarms the other). The single-motor front cog
+  made at most 1 (time *or* distance). One run on its worst path costs 15 calls, 12 `muldiv64`, ~12 float operations
+  (one `FSQRT`) and 2 `SQRT`.
+- **Built (option D, the owner's ruling): the DRIVER plans its own stop; the front cogs only read it.**
+  - After each drive pass, `planStage` runs in the slack of the next **nine** PWM frames, after each frame's status
+    write, one third of one plan per frame (`planA` the corner or unwind, `planB` the rise, `planC` the plateau and
+    ramp-out; the state stays in the `pl_` registers). Stages 1-3 plan the stop from the pass's own (v, a) (m = 1).
+    Stages 4-6 and 7-9 plan it after a **take pass** at each end of that pass's reachable accelerations, a' = a - Jx
+    and a' = a + Jx (v' = v + a'), plus the take pass itself (m = 2). Stage 9 publishes the largest passes and travel
+    as `drv_stop_passes` / `drv_stop_fp`, seen at the tenth frame's status write, **≤ ~232 µs after the pass**.
+  - **The take pass under ANY command (closes last round's open gap by construction):** whatever the next pass reads
+    -- the command this pass took, a new command written after this pass read its own, a synchronized command
+    released since, a stop -- and whatever its lag gate does, `jerkStep` gives a' in [a - Jx, a + Jx],
+    Jx = max(jerk_up, jerk_dn). On every branch alpha' ≥ min(U, alpha - J) ≥ alpha - Jx and alpha' ≤ U ≤ alpha + Jx; at
+    a target |a| ≤ Jx gives 0; a stop reaching rest only shortens. The plan after the take pass is longest at an end of
+    that range. So the two ends bound every command without the front knowing which one the pass reads: no 25th
+    status long, no bookkeeping of command times, and no wait in the front cog are needed.
+  - The planner (`planA`/`planB`/`planC`) is the PL-160 closed form in integers. Its sums are exact 64-bit (6 x SUM = 3[(n-1)V + (n+1)v_end] +
+    d(n^3-n)/2 per run). The corner and rise roots are `QSQRT` floors, with no float and no correction loop. x*(E) is
+    moved out of `jerkStep` unchanged (`xStar`) and shared.
+  - `frontStopMs()`, `frontStopTicks()`, `bFrontStopMsReaches()` and `bFrontStopTicksReaches()` read the two longs.
+    The Spin2 `stopPlan()`, its helpers, and the interim kept-plan / cheap-bound machinery are deleted.
+  - **Front-cog stop-prediction cost: 1 hub read and 1 compare per limit query, for both front cogs.**
+  - **Read-to-write ordering (both front cogs):** every stop limit writes its stop before any output or bookkeeping.
+    `bFrontLimitsDue()` and the steering's `bFrontPlatformLimitsDue()` no longer print. `frontReportLimit()` /
+    `frontReportPlatformLimit()` print after the writes, and a platform stop writes both wheels' zeros first
+    (`frontWriteStop()`), then each `frontZeroPower()`.
+    - The worst read-to-write span is the platform distance limit's left wheel: ≤ 5 method calls, 8 returns and ~15
+      simple statements. There is no loop, wait or `debug()`.
+    - ESTIMATE: ≤ 500 clocks per call/return pair and ≤ 100 per statement gives ~4,750 clocks, ~30 µs at 160 MHz.
+      The proof needs **< ~268 µs** (the next-but-one pass cannot read its command before T_k + 1,000 µs, since each
+      pass waits its 500 µs CT1 deadline; publication takes ≤ ~232 µs). That is ~9x margin, by construction of the
+      ordering, whatever the debug mask.
+- **ABI:** status run 22 -> **24** longs, `fault` after them: `DRVR_STATUS_LONGS_COUNT` 24, plus named indexes
+  `DRVR_STATUS_ACCEL_NOW_IDX` 21, `DRVR_STATUS_STOP_PASSES_IDX` 22 and `DRVR_STATUS_STOP_FP_IDX` 23;
+  `isAbiLayoutValid()` checks all three. **`drv_accel_now` is no longer the run's last long.** test_bench_t0's
+  `T0R_ST_ACCEL = motor.DRVR_STATUS_LONGS_COUNT - 1` now indexes `drv_stop_fp`, and must become
+  `motor.DRVR_STATUS_ACCEL_NOW_IDX`. test_bench_dual's `ABI_STATUS_LONGS` follows the count. Harness owner's to change.
+- **Memory (read from the compiler listing):**
+  - cog RAM 492/496 (was 403): 20 registers, `loadOverlay`, `planFp` and `planCorner`.
+  - LUT 507/512 (was 402): `xStar`, `run` and `planStage`.
+  - The planner's core (`planA`/`planB`/`planC`, `planSat`, `rampOut`) is a **LUT overlay**: it is block-loaded over
+    the spent start sequence ($200-$280) as the start sequence ends. It uses 126 of those 129 longs
+    (`fit gettgtincr`).
+- **Clocks.** The lowest clock: nothing in the driver bounds clkfreq (frame_cnt = clkfreq / 44 kHz, the 500 µs CT1
+  deadline and the dead gap all scale with it; only a comment names 200/270/300 MHz), so **160 MHz**, as instructed.
+  Worst-case model: 2 clocks per instruction, 4 per taken branch/call/return, CORDIC issue up to 9 and result 55
+  later (p2kb), every operation waited for.
+  - Frame work is ≤ 699 clocks (`frame_clocks.py`, every branch counted as taken). A stage's worst, from the
+    interpreter (`desk_driverplan2.py` E), per stage 1-9: 1,296 / 1,052 / 1,726 / 1,324 / 1,052 / 1,740 / 1,328 /
+    1,052 / 1,750.
+
+    | Clock | Frame | Slack after frame work | Worst stage | Share of slack |
+    | --- | --- | --- | --- | --- |
+    | 160 MHz | 3,636 | 2,937 | 1,750 | 60% |
+    | 200 MHz | 4,545 | 3,846 | 1,750 | 46% |
+    | 270 MHz | 6,136 | 5,437 | 1,750 | 32% |
+
+  - The drive pass's own frame carries no stage: ≤ 699 + 1,184 = 1,883 of 3,636 clocks at 160 MHz (an upper bound;
+    pre-existing work plus ~10 clocks).
+  - **No floor on clkfreq is needed by this planner above 160 MHz.** Outside PL-161's scope, but found:
+    - the front cog's Spin2 pass (533 µs measured at 270 MHz) scales with the clock, to ~900 µs at 160 MHz;
+    - PL-50's "22 truncated frames fall short of 500 µs" does not hold at a clock that is an exact multiple of 44 kHz
+      (176 or 264 MHz), where the pass can run on the 22nd frame.
+- **The status run's age, and never-late (DERIVED; desk-checked):**
+  - A plan published for pass k counts passes from pass k's own time T_k. It is read at t ≥ T_k, so counting from
+    now can only over-state the stop. That makes it early, never late, and no age correction is needed.
+  - A stop the front writes after reading it is taken by pass k+1 (m = 1) or, if that pass has already read its
+    command, by pass k+2 (m = 2: the take pass first, under any command). The plan is the largest of those.
+  - m ≤ 2 holds when the read→write span is under 1,000 µs - 500 µs - ~232 µs ≈ **268 µs** (above). By the ordering
+    rule it is a few calls, whatever the debug mask.
+  - Remaining stated exclusion: the lag gate holding a pass DURING the stop (as for PL-160's plan and the harness's
+    TIMESTOP bound). The take pass's lag gate is covered by the range. An alpha above A (a lowered deceleration
+    mid-stop) is taken as A, as PL-160's plan did, and over-predicts only.
+  - At rest the plan is no longer 0: with the built-in rates, 3 passes (`frontStopMs()` 2 ms), 0 ticks, since the
+    take pass might yet start a drive.
+- **Desk check (`desk_driverplan2.py`, outside the tree, seed 5, 3,000 samples):** the PASM is executed from its
+  source lines by the instruction-level interpreter (392 instructions).
+  - **B, planA+B+C vs the pass-by-pass stop:** 2,977 stops. Passes: 0 under, 87 over (all alpha > A). Travel: 0 under.
+  - **C, the published pair vs its definition** (max of the m = 1 walk and 1 + the walk from each end, with |v'|):
+    2,983; 0 under.
+  - **G, the take-pass range:** 3,000 states x 4 random commands (a stop, the same, a reversal, any speed) with a
+    random lag gate: a' outside [a - Jx, a + Jx] **0**. An a' drawn inside the range beating both ends: **0 of
+    36,000**. The ends' maximality is sampled, not proved.
+  - **D, never late:** a timeline with passes 500-523 µs apart, a read anywhere the pair is visible, a stop written
+    within 268 µs, and **a new command written at any time after pass k read its own** (the take pass then runs
+    whatever the hub held at its read, with a random lag gate): 3,000 reads, **0 late**. Cruising at the built-in
+    rates (1-2 s stops), the prediction is ahead of the rest by at most 3.5 ms. That comes from the take pass
+    (+1 pass beyond DRIVER_REV 38's), the age (≤ ~0.75 ms), ms rounding, and 523 vs 522.7 µs.
+    **R16-DUAL-TIMESTOP's EARLY bound (4 ms) does not count the age term.** It is tight against this; the harness
+    owner should re-derive it.
+- **Desk-only intermediate steps this replaced, recorded because the owner ruled on them:** a kept plan with a
+  cheap-bound gate (its bound had 0 violations in 60,000), and a proposed one-plan-per-pass alternation. The
+  alternation was shown to fire late: the stop grows 2-6 ms per drive pass at built-in rates, up to ~40 ms per pass
+  across the setter range, and 132-159 ms at a reversal's crossing.
+- **Negative** (what shows it did not work): R16-DUAL-FRONTST late or max at or over 950 µs; a distance or time
+  limit coming to rest outside its cell's tolerance; a PWM frame overrun or ADC sample loss in the nine frames after
+  a drive pass (loop_dtcks), at the bench clock or at 160 MHz; any change in the start checks (the overlay loads
+  after them). Certifies at pass 8.
+- **Arbiter's ruling (2026-09-27):** the any-command bound is accepted in place of a 25th status long. It is
+  never late by construction, puts no wait back into the front pass (DRIVER_REV 37's rule), and costs up to one
+  pass of early firing.
+- **Found by the same work, recorded (DERIVED):**
+  - **The front cog's Spin2 pass scales with the system clock.** 533 µs measured at 270 MHz would be about 900 µs
+    at 160 MHz, against the 950 µs budget. The driver states no minimum clock, and every demo runs at 270 MHz,
+    so the release documents 270 MHz as the tested clock and says that below about 250 MHz the front cog's
+    1 ms pass has not been shown to keep its slot.
+  - **PL-50's 23-frame drive pass can be 22 frames** at clocks that are exact multiples of 44 kHz (176 and
+    264 MHz). Not at 270; ancillary to 6.0.
+
 ### PL-162 -- two pack cells are judged with a wrong instrument
 
 > **6.0 status (2026-09-26 audit):** RELEASE (instrument) — found at Visit 10 pass 7.
@@ -2223,6 +2342,23 @@ Certifies at pass 8 (FRONTST late 0, max under 950 µs).
 
 **Disposition: ⛔ FIX** (harness SRC_REV 56): the reference and the mark come from the steady reading, and PACK-X is
 judged against the configuration.
+
+### PL-163 -- on a Rev A board below about 2.7 A, the fold-back cut the drive on every driven frame
+
+> **6.0 status (2026-09-27):** AWAITS CERT — fix built (DRIVER_REV 38, 5cecb04); the rig is Rev B.
+
+**Found 2026-09-27** by the DRIVER_REV 37 desk review (PL-146's rest-offset work).
+- **DERIVED:** the fold-back threshold at the duty floor is `max(duty_, duty_floor_) * i_limit_k_ >> 16`. Rev A's
+  larger sense resistor gives a smaller mV-per-A, and below about 2.7 A the shift truncates the threshold to 0, so
+  every driven frame read above it and folded — a Rev A user setting a low current limit got a drive that could not
+  hold its duty.
+- **Fix (DRIVER_REV 38):** the compare folds only when the whole-mV reading is above floor(t) (`wcz`, `if_nc_and_nz`),
+  i.e. at or above ceil(t). Rounding the threshold instead would still fold every frame for t < 0.5 (1 A on Rev A).
+- **Negative:** on Rev A with `testSetCurrentLimits(2, 2)`, a driven, unloaded wheel at the duty floor counts
+  `foldback_frames` every frame; fixed, it counts none.
+
+**Disposition:** certifies on a Rev A board (Stephen has two). Not on the Rev B rig's sheets; whether a Rev A check
+rides the release-candidate pass is decided with that sheet.
 
 ---
 
