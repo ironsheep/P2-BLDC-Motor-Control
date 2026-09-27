@@ -6766,7 +6766,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 40      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 41      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6927,6 +6927,19 @@ CON { driver internal Constants }
                                             '     fitted or guessed (see REST_ZERO_MIN_MV): Rev B -17 .. 36 mV (was
                                             '     -20 .. 40), Rev A -17 .. 17 mV (was -100 .. 200). No PASM change; no
                                             '     ABI change
+                                            ' 41: memory reduction WP1 (DOCs/plans/PASM-MEMORY-REDUCTION-PLAN.md, C1):
+                                            '     the 21 cog longs dead once the start sequence has run (the entry
+                                            '     code, loadOverlay, all_pins, pwmt, pwmn, fram, numerator,
+                                            '     sync_required, lutCodePtr, planCodePtr, adc_modes, calibPeriod) are
+                                            '     also the homes of 21 registers only the drive loop uses (pl_v .. sp_F,
+                                            '     jrk_e .. jrk_lim), and the register block is 21 longs shorter: cog
+                                            '     492 -> 471 of 496; LUT 507 and the overlay's 126 unchanged. No
+                                            '     instruction changes but one: the first drive pass read err_ before
+                                            '     any frame had written it (COGINIT's copy of the hub bytes after the
+                                            '     image; with a command pending, the lag gate and LAG_HOLD acted on
+                                            '     it), and the start sequence now zeroes it, in the long of a dead
+                                            '     store (mov sv_tgt_incr, #0). Proved equivalent to mem-reduce-start by
+                                            '     tools/pasm_equiv (2055 scenarios); PASM (cog) change; no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7482,7 +7495,17 @@ DAT  {  Motor DRIVER  }
 '
                 org     0
 
-driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently stopped
+                ' DRIVER_REV 41 (memory reduction WP1, C1): the 21 cog longs that are dead once the start sequence
+                '  has run -- these five entry longs, loadOverlay's four, eight start-only constants, adc_modes' three
+                '  and calibPeriod -- are also the homes of 21 registers that only the drive loop uses: the stop
+                '  planner's 17 (pl_v .. sp_F) and four of jerkStep's (jrk_e .. jrk_lim). Each such register carries
+                '  a second label at its start-only long. Each is first accessed by a WRITE, only after loadOverlay
+                '  has jumped to drvMotor, and no instruction of the start sequence names any of them, so the two
+                '  uses of each long never overlap (proved equivalent to mem-reduce-start by tools/pasm_equiv).
+                '  A debug interrupt saves and restores cog $000..$00F (p2kbArchDebugInterrupt), so a -d build
+                '  keeps the registers here as well.
+driver                                                  ' (C1) and pl_v, once the drive loop runs
+pl_v            mov     drv_state_, #DCS_STOPPED        ' motor is currently stopped
 {
                 ' Logic Analyzer Instrumentation Code
                 drvl    motrCtlLpPnFld                  ' preset test pins to low
@@ -7509,13 +7532,13 @@ driver          mov     drv_state_, #DCS_STOPPED        ' motor is currently sto
                 ' and COGINIT would then load the wrong hub bytes into that cog register. Keeping
                 ' the LUT block textually after `fit 496` keeps the org-0 image's hub layout
                 ' contiguous and matching its cog addresses, 1:1.
-                mov     ptrb, lutCodePtr                ' hub address of the LUT-resident code (set by init())
-                setq2   #(lutCodeEnd - lutCodeStart - 1) ' block-load size, in longs, minus 1
-                rdlong  0, ptrb                          ' hub -> LUT: D is a LUT-relative address (0-511) under
+pl_a            mov     ptrb, lutCodePtr                ' hub address of the LUT-resident code (set by init())
+pl_P            setq2   #(lutCodeEnd - lutCodeStart - 1) ' block-load size, in longs, minus 1
+pl_Ul           rdlong  0, ptrb                          ' hub -> LUT: D is a LUT-relative address (0-511) under
                                                         ' SETQ2's block-to-LUT mode, so D=0 is LUT address 0,
                                                         ' i.e. cog address $200 -- lutCodeStart's own address,
                                                         ' since it is the very first instruction placed there
-                jmp     #lutCodeStart                   ' enter LUT-resident start sequence
+pl_Uh           jmp     #lutCodeStart                   ' enter LUT-resident start sequence
                                                         ' NOTE: lutCodeStart/lutCodeEnd, and wait4adc, checkstop,
                                                         ' initAngleFmHall, gettgtincr, driveinit, drvMotor, are
                                                         ' plain (non-dot) labels: PASM2 local (dot-prefixed)
@@ -7962,10 +7985,10 @@ wait4adc
 .noWait4adc     ret
 
 loadOverlay                                             ' PL-161 (DRIVER_REV 39): the start sequence's last jump. Its LUT longs are
-                mov     ptrb, planCodePtr               '  spent, so the stop planner is block-loaded over them (planOvlStart ..
-                setq2   #(planOvlEnd - planOvlStart - 1) '  planOvlEnd, below `fit $400`), from cog RAM, since the LUT code this
-                rdlong  0, ptrb                         '  overwrites is the code that jumped here; then the drive loop starts
-                jmp     #drvMotor
+pl_Dl           mov     ptrb, planCodePtr               '  spent, so the stop planner is block-loaded over them (planOvlStart ..
+pl_Dh           setq2   #(planOvlEnd - planOvlStart - 1) '  planOvlEnd, below `fit $400`), from cog RAM, since the LUT code this
+pl_n            rdlong  0, ptrb                         '  overwrites is the code that jumped here; then the drive loop starts
+pl_f            jmp     #drvMotor                       ' DRIVER_REV 41 (C1): these four longs are then pl_Dl .. pl_f
 
 planFp                                                  ' PL-161: the plan's field travel in 1/256 hall tick, from its two sums:
                 mov     pl_t, pl_Ul                     '  6 x SUM = 3 U + D (run), and the tick fixed point is SUM x 6 / 2^32
@@ -8049,19 +8072,30 @@ initAngleFmHallC                                        ' entry with C already s
     _ret_       mov     prior_angle, angle_             ' show we are already here
 '
 ' =========================================================================
+'  DRIVER_REV 41 (C1): each START-ONLY constant below is also the home of a drive-loop register, labelled on the
+'   line above it (see the note at `driver`). drive_pins, adc_pins, adc_fram, bias, third and maxNeg are read by
+'   the drive loop or driverRelease, so they host nothing.
+pl_d                                            ' (C1) the run's change of acceleration per pass
 all_pins        LONG    (13 << 6) + 0           ' all-pins variable (0 addpins 13) needs ADD/OR of basepin, skip last 2 pwm pins, not used
 drive_pins      LONG    (5 << 6) + 8            ' drive-pins variable (+8 addpins 5) needs ADD of basepin, skip last 2 pwm pins, not used
 adc_pins        LONG    (4 << 6) + 0            ' drive-pins variable (+0 addpins 4) needs ADD/OR of basepin, note total of 5 pins, adc_x not used
+pl_c                                            ' (C1) the rise's candidates (cap)
 pwmt            LONG    %000_000000_01_01000_0  ' PWM true (P_PWM_TRIANGLE | P_OE: TT = %01, output enabled REGARDLESS of DIR; PL-138)
+pl_t                                            ' (C1) the planner's scratch
 pwmn            LONG    %001_000000_01_01000_0  ' PWM not (P_INVERT_OUTPUT | P_PWM_TRIANGLE | P_OE): with DIR low it outputs HIGH, ON
 adc_fram        LONG    0                       ' set ADC to full PWM frame counts [was: LONG    FRAME]
+pl_u                                            ' (C1) the planner's scratch
 fram            LONG    0                       ' PWM frame: width=FRAME/2, div sysclk by 1 (no division) [was: LONG (FRAME / 2) << 16 + 1 ]
 bias            LONG    0                       ' PWM center-frame bias [was: LONG    FRAME / 4]
 third           LONG    1 FRAC 3                ' 120 degrees
+pl_q                                            ' (C1) the planner's scratch
 numerator       LONG    3300 << 11              ' ADC scale numerator: 3300 mV in fixed point, the control loop's sar #11 returns millivolts
 maxNeg          LONG    $FFFF_FFFF              ' 32-bits of one (max negative signed value)
+sc_v                                            ' (C1) the take pass's v' (an end of its range), for its own advance
 sync_required   LONG    0                       ' non zero if motor loop should wait to start
+sp_P                                            ' (C1) the largest passes so far (the m = 1 plan, then each take pass's)
 lutCodePtr      LONG    0                       ' hub addr of LUT-resident start sequence (task 3535); set by init()
+sp_F                                            ' (C1) and the largest travel, 1/256 tick
 planCodePtr     LONG    0                       ' PL-161 (DRIVER_REV 39): hub addr of the stop planner's LUT overlay; set by init()
 
     ' -----------------------------------
@@ -8075,9 +8109,10 @@ drvrTgglPnFld   LONG    TEST_PIN_LP_TOGL addpins 0  ' convert to pinfield
 drvrTggl2PnFld  LONG   TEST_PIN_UNKNOWN addpins 0  ' convert to pinfield
 '}
 
-adc_modes       LONG    p_adc_gio | p_count_highs  ' +0 : adc modes, by state
-                LONG    p_adc_vio | p_count_highs  ' +1
-                LONG    p_adc_1x | p_count_highs   ' +2
+jrk_e                                      ' (C1) E, the speed still to change, |tgt_incr - drv_incr|
+adc_modes       LONG    p_adc_gio | p_count_highs  ' +0 : adc modes, by state (start only)
+jrk_s           LONG    p_adc_vio | p_count_highs  ' +1 ; (C1) jrk_s: 1 when s, the way the generator pushes, is negative
+jrk_j           LONG    p_adc_1x | p_count_highs   ' +2 ; (C1) jrk_j: J, the jerk of the side toward s
 
 ' turn motor to view hall sequence ...  learn in known direction
 '   efficient: low current draw at given speed
@@ -8138,7 +8173,8 @@ hall_angles     LONG    0           '-%000- can't happen forward-direction table
 tmpX            res 1       ' miscellaneous
 tmpY            res 1
 fold_net        res 1       ' PL-146 (DRIVER_REV 37): the fold-back's net reading, sense_i_ - sense_zero_ floored at 0 (.noFault)
-calibPeriod     res 1       ' PL-32: widened ADC count period, start-of-driver GIO/VIO calibration only
+calibPeriod                 ' PL-32: widened ADC count period, start-of-driver GIO/VIO calibration only; and (C1)
+jrk_lim         res 1       '  jrk_lim, A, the acceleration limit of the side toward s, once the drive loop runs
 ' measurements
 drvrSrtTix      res 1
 ctrlSrtTix      res 1
@@ -8148,11 +8184,8 @@ tgt_incr        res 1       ' current user requested target increment
 sv_tgt_incr     res 1       ' holding area for prior value
 ' control loop variables
 drv_incr        res 1       ' current driver increment (v); its acceleration a is accel_now_, in the status run
-' PL-160 (DRIVER_REV 38): jerkStep's working registers, live only within the call (was prior_incr and the old ramp's three)
-jrk_e           res 1       ' E, the speed still to change, |tgt_incr - drv_incr|
-jrk_s           res 1       ' 1 when s, the way the generator pushes, is negative; else 0
-jrk_j           res 1       ' J, the jerk of the side toward s
-jrk_lim         res 1       ' A, the acceleration limit of the side toward s
+' PL-160 (DRIVER_REV 38): jerkStep's working registers, live only within the call (was prior_incr and the old ramp's three).
+'  DRIVER_REV 41 (C1): jrk_e, jrk_s and jrk_j live at adc_modes' three longs and jrk_lim at calibPeriod's; jrk_x stays here
 jrk_x           res 1       ' x*(E): the largest acceleration a pure ramp-out at J lands from
 
 ' driver actual
@@ -8274,32 +8307,25 @@ stop_fp_    res 1           ' PL-161: the stop plan's field travel to rest, 1/25
 ' fault is here... (but external only)
 ' PL-161 (DRIVER_REV 39): the stop planner's working registers (planStage, planA .. planC, run, rampOut, planFp)
 plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.endRqst sets 1 every drive pass)
-pl_v            res 1       ' in: v; then V, the speed as each run starts
-pl_a            res 1       ' in: a; then alpha, the acceleration toward rest
-pl_P            res 1       ' the plan's passes
-pl_Ul           res 1       ' the U sum, (n - 1) V + (n + 1) v_end over the runs, 64-bit (low, high)
-pl_Uh           res 1
-pl_Dl           res 1       ' the D sum, d (n^3 - n) / 2 over the runs, 64-bit signed (low, high)
-pl_Dh           res 1
-pl_n            res 1       ' the run's passes
-pl_f            res 1       ' the run's first acceleration toward rest (signed)
-pl_d            res 1       ' the run's change of acceleration per pass (signed)
-pl_c            res 1       ' the rise's candidates (cap)
-pl_t            res 1       ' scratch
-pl_u            res 1
-pl_q            res 1
-sc_v            res 1       ' the take pass's v' (an end of its range), for its own advance
-sp_P            res 1       ' the largest passes so far (the m = 1 plan, then each take pass's)
-sp_F            res 1       '  and the largest travel, 1/256 tick
+' DRIVER_REV 41 (C1): the other 17 live at start-only longs (see the note at `driver`), each labelled there:
+'  at the entry code, pl_v   in: v; then V, the speed as each run starts
+'                     pl_a   in: a; then alpha, the acceleration toward rest
+'                     pl_P   the plan's passes
+'                     pl_Ul, pl_Uh   the U sum, (n - 1) V + (n + 1) v_end over the runs, 64-bit (low, high)
+'  at loadOverlay,    pl_Dl, pl_Dh   the D sum, d (n^3 - n) / 2 over the runs, 64-bit signed (low, high)
+'                     pl_n   the run's passes
+'                     pl_f   the run's first acceleration toward rest (signed)
+'  at the constants,  pl_d (all_pins), pl_c (pwmt), pl_t (pwmn), pl_u (fram), pl_q (numerator),
+'                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
 
 ' $1f8 for reg cogs
-    fit     496  ' 492 USED, 4 FREE, 2026-09-27 (DRIVER_REV 39, PL-161: the stop plan's 20 registers, loadOverlay, planFp and
-                 ' planCorner; was 403 at DRIVER_REV 38) -- read from the compiler, never hand-counted (a hand count here
-                 ' once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, SP_F's VALUE, whose top 12 bits are its cog
-                 ' address ($1EB, the last register, so USED is $1EC). LUT code runs at cog
+    fit     496  ' 471 USED, 25 FREE, 2026-09-27 (DRIVER_REV 41, memory reduction WP1: 21 run-only registers moved onto
+                 ' start-only longs, C1; was 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) -- read from the compiler, never
+                 ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, PLAN_STAGE's
+                 ' VALUE, whose top 12 bits are its cog address ($1D6, the last register, so USED is $1D7). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $3FB, 507 of 512 longs (DRIVER_REV 39, LUTCODEEND's VALUE the same way),
+                 ' lutCodeStart $200 to lutCodeEnd $3FB, 507 of 512 longs (DRIVER_REV 41, LUTCODEEND's VALUE the same way),
                  ' and the stop planner's overlay over the spent start sequence, planOvlStart $200 to planOvlEnd $27E, 126 of
                  ' the 129 longs below gettgtincr ($281).
 
@@ -8486,7 +8512,13 @@ lutCodeStart
                 mov     stop_fp_, #0
                 mov     plan_stage, #0
                 mov     tgt_incr, #0                    ' just in case
-                mov     sv_tgt_incr, #0                 ' just in case
+                mov     err_, #0                        ' DRIVER_REV 41: the first drive pass runs before any frame, and its
+                                                        '  `mov lag_s, err_` read COGINIT's copy of whatever hub bytes follow
+                                                        '  the image: with a command already pending, the lag gate and
+                                                        '  LAG_HOLD acted on it. The rotor has not moved: no lag. This long
+                                                        '  was `mov sv_tgt_incr, #0`, a dead store: sv_tgt_incr's one reader,
+                                                        '  gettgtincr, has one caller, .noEStop, which writes it just before
+                                                        '  that call on every pass
                 mov     fwdrev, #0                      ' just in case
                 mov     angle_, #0                      ' just in case
                 mov     prior_angle, angle_             ' .ctlMotor's first cmpm reads prior_angle; only initAngleFmHall
@@ -9033,7 +9065,7 @@ planStage
 
 lutCodeEnd                                            ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 507 of 512 used, read from the compiler 2026-09-27 at DRIVER_REV 39 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 507 of 512 used, read from the compiler 2026-09-27 at DRIVER_REV 41, unchanged since 39 (see the cog fit above)
 
 ' =========================================================================
 '  PL-161 (DRIVER_REV 39): THE STOP PLANNER'S LUT OVERLAY. The start sequence (lutCodeStart up to gettgtincr) runs
