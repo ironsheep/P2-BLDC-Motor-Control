@@ -428,6 +428,18 @@
 ''               PACK_SEEN_FITTED). (F) R20-DUAL-EV-PATH / R20-DUAL-PATH-HUNT's precondition: a wheel held on one poll
 ''               while its commanded partner reads free on D_BEHIND_POLLS polls running from it (dBehindPoll()), latched
 ''               -- the fixed limiter releases the held wheel too soon for it to read held twice. No record changes shape
+''               27 Sep 2026 -- SRC_REV=57, FMT 36: PL-145. TIMESTOP (R16-DUAL-TIMESTOP-D, R16-DUAL-WTIMSTOP-D) judged
+''               REST CONFIRMED (the last hall tick plus the REST_CONFIRM_MS dwell) against the deadline, but the library
+''               times the stop so the FIELD reaches zero at the deadline, and the free rotor, which the ramp-down lets
+''               lead the field by up to LAG_SOFT, can still cross hall edges after it: the cell measured the coast
+''               (pass 7: 386 steering, 314 single). It now judges the instant every driver of the form reads
+''               DCS_STOPPED against the deadline, polled every D_TIMESTOP_POLL_MS, inside -D_TIMESTOP_EARLY_MS ..
+''               D_TIMESTOP_LATE_HI, both derived from the front cog's and the driver's own periods (the CON block
+''               states each term). The deadline is taken before the call, never after it. The criterion's meaning
+''               changes, so its token becomes FIELD_ZERO_BY_LIM (was AT_REST_BY_LIMIT); the cell ids stay. New record
+''               BM-TIMESTOP, one per time stop: fire_ms (getPower() first 0), zero_ms (the judged number), rest_ms (the
+''               old number, printed, not judged), late_pass (front-cog late passes over the step). The record set
+''               grows, so FMT goes to 36; no existing record changes shape
 ''
 '' =================================================================================================
 
@@ -497,8 +509,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 56                                 ' hand-bumped whenever this file changes
-    FMT_VERSION = 35                                      ' BM- record-format version
+    SRC_REV     = 57                                 ' hand-bumped whenever this file changes
+    FMT_VERSION = 36                                     ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -1254,11 +1266,40 @@ CON { part D -- the front cog's contract and current limiting (task 3560) }
     '  a smaller number nothing has measured.
     D_ORDERED_STACK_LONGS = wheelL.STACK_SIZE_LONGS
     D_TIMESTOP_MS         = 2_000                           ' stopAfterTime() limit, DTU_MILLISEC
-    D_TIMESTOP_SLACK_MS   = 20                              ' at rest by the deadline within this
-    ' PL-83: what the step can actually observe is not the instant of rest but the instant waitRest()
-    '  CONFIRMS it, which is REST_CONFIRM_MS of unchanged pos and hwPos later. The bound is the slack the
-    '  stop is allowed PLUS the dwell the confirmation costs, computed from both rather than restated.
-    D_TIMESTOP_LATE_HI    = D_TIMESTOP_SLACK_MS + REST_CONFIRM_MS
+    ' PL-145 (SRC_REV 57): TIMESTOP judges the instant the FIELD reached zero -- every driver of the form reads
+    '  DCS_STOPPED, which .endAtZero sets on the pass the ramp-down's increment is zero -- against the deadline D.
+    '  That is what stopAfterTime() promises: the front cog fires the stop at the first pass where getms() + S >= D,
+    '  S = frontStopMs() (the steering object takes the larger of its wheels'), so the ramp ends AT the limit. The
+    '  rest confirmed after it (SRC_REV 56's number) measured the rotor's coast. Every term below is DERIVED from a
+    '  period in the library or this step, none from a reading:
+    '  LATE, how far after D a correct stop can read:
+    '   D_TIMESTOP_FIRE_MS - the limit is tested once a front pass (1_000 / FRONT_LOOP_HZ ms), against a getms() read
+    '    part-way through a pass whose body varies by up to one pass: the firing test samples within one period plus
+    '    one body of D - S. Truncation cannot delay it: getms() >= D - S holds from the true instant D - S on.
+    '   D_TIMESTOP_DRV_MS - three drive passes (DRIVE_PASS_US each), rounded up to whole ms: the driver takes the zero
+    '    command on its next pass (no ATN, no sync bit); the ramp reaches DCS_STOPPED at most ceil(n) + 1 passes
+    '    after it where frontStopMs() counts floor(n) + 1 (n = |incr| / ramp_down), so one more at most; and the
+    '    status run carrying the state is written every control iteration, inside a pass.
+    '   D_TIMESTOP_POLL_MS - this step reads the state this often.
+    '   D_TIMESTOP_BODY_MS - one pass of the poll's own loop (a few direct hub reads, no request), under 1 ms.
+    '   D_TIMESTOP_ANCHOR_MS - the step takes D from getms() BEFORE its call and the library from getms() after
+    '    entering it, so the step's D is up to 1 ms (one truncation) EARLIER. It can only make a reading later.
+    '  EARLY, how far before D a correct stop can read (D_TIMESTOP_EARLY_MS, one whole ms per term):
+    '   1 - frontStopMs() rounds S up by up to 1 ms, so the stop fires up to 1 ms early;
+    '   1 - the ramp may reach DCS_STOPPED ceil(n) passes after the command, one pass fewer than S counts;
+    '   1 - DRIVE_PASS_US is 522.7 us rounded up to 523, which overstates S by 0.3 us a pass, under 1 ms for any
+    '       ramp under 3_333 passes (1.7 s; D_POWER's on the built-in ramp is about 1_235);
+    '   1 - the reading's own getms() truncates by up to 1 ms.
+    '  NOT IN THE BOUND, and each is a stop genuinely later than its deadline: a front pass that overran its period
+    '  as the limit came due (BM-TIMESTOP's late_pass counts them over the step), and ramp-down passes the driver
+    '  held because the rotor led the field by LAG_SOFT (.rampDn waits for the rotor).
+    D_TIMESTOP_POLL_MS    = 1
+    D_TIMESTOP_FIRE_MS    = 2 * (1_000 / wheelL.FRONT_LOOP_HZ)
+    D_TIMESTOP_DRV_MS     = (3 * wheelL.DRIVE_PASS_US + 999) / 1_000
+    D_TIMESTOP_BODY_MS    = 1
+    D_TIMESTOP_ANCHOR_MS  = 1
+    D_TIMESTOP_LATE_HI    = D_TIMESTOP_FIRE_MS + D_TIMESTOP_DRV_MS + D_TIMESTOP_POLL_MS + D_TIMESTOP_BODY_MS + D_TIMESTOP_ANCHOR_MS
+    D_TIMESTOP_EARLY_MS   = 1 + 1 + 1 + 1
     D_COOPSHUT_MS         = 20                              ' steering.stop() returns within this (front cog EXIT bound)
     D_TRACKRESET_MS       = 20                              ' resetTracking() returns within this (unfixed: >= 400 ms)
     D_TRACKRESET_TOL      = 2                               ' ticks the reset tracking may differ from the raw delta
@@ -1639,7 +1680,7 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  DST_ORDERED     - a stop ordered while another cog drives repeatedly leaves both wheels in one state
   '  DST_COOPSHUT    - stop() returns inside D_COOPSHUT_MS
   '  DST_TRACKRESET  - resetTracking() at speed returns inside D_TRACKRESET_MS and agrees with the raw delta
-  '  DST_TIMESTOP    - stopAfterTime() leaves the platform at rest by its deadline, with getPower() 0
+  '  DST_TIMESTOP    - stopAfterTime() brings every field to zero at its deadline, with getPower() 0 (PL-145)
   '  DST_LOCKSTEP    - both wheels leave DCS_STOPPED in the same instrument sample
   '  DST_FOLDBACK    - the judged phase average holds the lowered peak limit, with no fault and still turning
   '  DST_DERATE      - the derate arrives in its window and the peak limit returns after the stop
@@ -2486,7 +2527,7 @@ sSfCritEstopD   BYTE    "ESTOP_LATCHED", 0
 sSfCritOrdered  BYTE    "ORDERED_STOP", 0
 sSfCritCoopShut BYTE    "SHUTDOWN_BOUNDED", 0
 sSfCritTrackRst BYTE    "RESET_AT_SPEED", 0
-sSfCritTimeStop BYTE    "AT_REST_BY_LIMIT", 0
+sSfCritTimeStop BYTE    "FIELD_ZERO_BY_LIM", 0                 ' SRC_REV 57 (PL-145): was AT_REST_BY_LIMIT
 sSfCritLockStep BYTE    "WHEELS_TOGETHER", 0
 sSfCritFrontSt  BYTE    "FRONT_LOOP_HEALTH", 0
 sSfCritFoldBack BYTE    "FOLDBACK_HELD", 0
@@ -6761,51 +6802,113 @@ PRI orderedHelper()
         waitms(D_ORDERED_PERIOD_MS)
     bOdDone := TRUE
 
-PRI dStepTimeStop(side) | bArmed, bAtSpeed, deadlineMs, eError, restMs, lateMs, bRest
-' TIMESTOP: stopAfterTime() leaves the platform AT REST BY its deadline, with no power left standing.
+PRI dStepTimeStop(side) | bArmed, bAtSpeed, deadlineMs, eError, fireMs, zeroMs, restMs, lateMs, bFired, bZero, bRest, bOk, safeEvent, whyCode, nLateBase, nLateEnd
+' TIMESTOP: stopAfterTime() brings every field of the form to zero AT its deadline, with no power left standing.
 '
-' THE UNFIXED VALUE: before task 3559 the stop began AT the limit rather than early enough to finish by
-' it, so the platform was still ramping down when the deadline passed. The number below is signed: how
-' far past its deadline rest actually arrived.
+' WHAT IS JUDGED (PL-145, SRC_REV 57): the instant every driver of the form reads DCS_STOPPED -- its field's increment
+' ramped to zero -- against the deadline, signed, inside -D_TIMESTOP_EARLY_MS .. D_TIMESTOP_LATE_HI (the CON block
+' derives both). The library fires the stop early by the ramp-down's own time (bFrontLimitsDue(), frontStopMs(); the
+' steering object's bFrontPlatformLimitsDue()), so that instant IS the feature. Until SRC_REV 56 the cell judged rest
+' CONFIRMED (the last hall tick plus REST_CONFIRM_MS), which also holds the rotor's coast after the field is at zero:
+' the free rotor may lead the field by up to LAG_SOFT and cross hall edges after it, restarting the dwell, so pass 7
+' read 386 (steering) and 314 (single) with nothing late. That instant is still printed (BM-TIMESTOP rest_ms), and not
+' judged.
 '
-' PL-83 -- TWO REASONS THIS COULD NOT PASS, both fixed here, and neither was the driver. Visit 4 read
-' NOMEAS why STOP_TIMEOUT in BOTH forms, the steering object's and the single wheel's.
-'  1. THE WAIT WAS THE SAME LENGTH AS THE LIMIT IT WAS WAITING PAST. It called bDRest(), bounded by
-'     D_REST_MS, for a stop that is only DUE D_TIMESTOP_MS after the call -- and the two numbers are both
-'     2_000 ms, so the wait expired exactly as the stop began. It now waits D_TIMESTOP_MS + D_REST_MS:
-'     the limit, then the same bound every other step gives a stop.
-'  2. THE CRITERION IGNORED ITS OWN CONFIRMATION DWELL. waitRest() returns when pos and hwPos have been
-'     unchanged for REST_CONFIRM_MS, so restMs is at least that far past the instant the platform
-'     actually stopped -- against a criterion of lateMs <= D_TIMESTOP_SLACK_MS (20 ms). No stop of any
-'     quality could meet it. The bound is now the slack PLUS the dwell, and it is computed from the two
-'     constants rather than written as a number (doctrine D2: a criterion a correct system cannot meet
-'     has not failed, it has misreported).
+' THE NEGATIVE. A stop that fires at the deadline instead of one ramp before it -- the pre-task-3559 driver, or a
+' frontStopMs() that returned 0 -- reaches zero one whole ramp-down late. DERIVED for this step (not a reading): from
+' D_POWER, about 165 ticks/s (OVERSHT's power-50 leg), the increment is about 61.8M, the built-in ramp-down
+' (RAMP_DOWN_BUILTIN 50_000 a pass) takes about 1_235 passes, so it reads measured about +646 and FAILS against hi 7;
+' its BM-TIMESTOP reads fire_ms about 0, where a correct stop's reads about -646. A stop fired a ramp too EARLY
+' (S counted twice) reads about -646 and FAILS against lo -4.
+'
+' PL-83, kept: the wait runs to the deadline plus D_REST_MS (a stop is only DUE D_TIMESTOP_MS after the call), and
+' the deadline is taken BEFORE the call, so the library's own is never earlier than the step's.
 '
 ' @param side - SIDE_BOTH or SIDE_LEFT
 '
 ' @local bArmed - the instrument acknowledged the ARM
 ' @local bAtSpeed - the platform reached speed
-' @local deadlineMs - getms() the limit is due at
+' @local deadlineMs - getms() the limit is due at, taken before the call
 ' @local eError - stopAfterTime()'s return
-' @local restMs - getms() when rest was confirmed
-' @local lateMs - restMs - deadlineMs, signed
-' @local bRest - rest was confirmed inside the bound
+' @local fireMs - getms() when getPower() first read 0 for the form: the limit fired
+' @local zeroMs - getms() when every driver of the form first read DCS_STOPPED: the field at zero
+' @local restMs - getms() when rest was confirmed after it
+' @local lateMs - zeroMs - deadlineMs, signed: the judged number
+' @local bFired - getPower() read 0 inside the wait
+' @local bZero - every driver read DCS_STOPPED inside the wait
+' @local bRest - rest was confirmed inside D_REST_MS of the field's zero
+' @local bOk - every claim of the step held
+' @local safeEvent - SAFE_* that ended the wait, SAFE_NONE otherwise
+' @local whyCode - WHY_* for the step's row
+' @local nLateBase - the front cog's late passes before the call
+' @local nLateEnd - the same after the field's zero
 
     lateMs := 0
     bArmed := bDArm(side)
     bAtSpeed := bArmed and bDToSpeed(side)
     if bAtSpeed
-        eError := dStopAfterTime(side, D_TIMESTOP_MS)
+        _, nLateBase, _, _, _ := dFrontStats(side)
         deadlineMs := getms() + D_TIMESTOP_MS
-        bRest := bDRestWithin(side, D_TIMESTOP_MS + D_REST_MS)
-        restMs := getms()
-        lateMs := restMs - deadlineMs
-        dStepDone(DST_TIMESTOP, side, bRest, (eError == NO_ERROR) and (lateMs <= D_TIMESTOP_LATE_HI) and (dPowerSum(side) == 0), lateMs, 0 - D_TIMESTOP_MS, D_TIMESTOP_LATE_HI, bRest ? WHY_NONE : WHY_STOP_TIMEOUT)
+        eError := dStopAfterTime(side, D_TIMESTOP_MS)
+        bFired := bZero := bRest := FALSE
+        fireMs := zeroMs := restMs := 0
+        safetyReset()
+        safeEvent := SAFE_NONE
+        repeat
+            beat(CP_LOOP_CAPTURE)
+            if (bFired == FALSE) and (dPowerSum(side) == 0)
+                fireMs := getms()
+                bFired := TRUE
+            if bDFieldsStopped(side)
+                zeroMs := getms()                           ' after the read: never earlier than the reading
+                bZero := TRUE
+                quit
+            safeEvent := safetyPoll(side)
+            if safeEvent == SAFE_FAULT
+                safeEvent := SAFE_NONE                      ' as waitRest(..., FALSE): a fault never reads DCS_STOPPED, the bound ends it
+            if (safeEvent <> SAFE_NONE) or ((getms() - deadlineMs) >= D_REST_MS)
+                quit
+            waitms(D_TIMESTOP_POLL_MS)
+        _, nLateEnd, _, _, _ := dFrontStats(side)
+        if bZero
+            lateMs := zeroMs - deadlineMs
+            bRest := bDRestWithin(side, D_REST_MS)
+            restMs := getms()
+            whyCode := WHY_NONE
+        elseif safeEvent <> SAFE_NONE
+            whyCode := WHY_ABORTED
+        else
+            whyCode := WHY_STOP_TIMEOUT
+        bOk := (eError == NO_ERROR) and bFired and (lateMs >= 0 - D_TIMESTOP_EARLY_MS) and (lateMs <= D_TIMESTOP_LATE_HI) and (dPowerSum(side) == 0)
+        dStepDone(DST_TIMESTOP, side, bZero, bOk, lateMs, 0 - D_TIMESTOP_EARLY_MS, D_TIMESTOP_LATE_HI, whyCode)
+        emitTimeStop(side, bFired, fireMs - deadlineMs, bZero, lateMs, bRest, restMs - deadlineMs, nLateEnd - nLateBase)
     else
-        dStepDone(DST_TIMESTOP, side, FALSE, FALSE, 0, 0, D_TIMESTOP_LATE_HI, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
+        dStepDone(DST_TIMESTOP, side, FALSE, FALSE, 0, 0 - D_TIMESTOP_EARLY_MS, D_TIMESTOP_LATE_HI, bArmed ? WHY_NOT_REACHED : WHY_INST_NOACK)
     dStopMotion(side)
     bDRest(side)
     bInstIdle()
+
+PRI bDFieldsStopped(side) : bStopped | eLeftState, eRightState
+' Report whether every driver of this form reads DCS_STOPPED: its field is at zero (PL-145).
+'
+' The driver sets DCS_STOPPED on the pass its ramp-down finds the increment at its zero target (.endAtZero), and the
+' state is a direct read of its status run -- no request, so the read costs this cog no round trip.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @returns bStopped - TRUE when every driver of the form reads DCS_STOPPED
+'
+' @local eLeftState - the left driver's DCS_*, or this wheel's
+' @local eRightState - the right driver's DCS_*, or this wheel's again
+
+    beat(CP_LIB_STEER_QUERY)
+    if side == SIDE_BOTH
+        eLeftState, eRightState := steering.testGetDriverState()
+    elseif side == SIDE_RIGHT
+        eLeftState := eRightState := wheelR.getDriverState()
+    else
+        eLeftState := eRightState := wheelL.getDriverState()
+    beat(CP_LIB_STEER_QUERY)
+    bStopped := (eLeftState == DCS_STOPPED) and (eRightState == DCS_STOPPED)
 
 PRI dStepCmdTimeout(side) | bArmed, bAtSpeed, startMs, lastDriveMs, bHeld, eError, bRest, stopMs, bOk
 ' CMDTIMEOUT (task 3570, S-8): with setCommandTimeout() on, a drive that keeps being refreshed keeps running,
@@ -22044,6 +22147,33 @@ PRI emitDStep(side)
     benchLog.numField(@"hi", dsHi, LIM_MID)
     benchLog.tokenField(@"result", tokenAt(@tokDRes, DRES_COUNT, dsResult), TOKMAX_DRES)
     whyField(dsWhy)
+    emitRecord()
+
+PRI emitTimeStop(side, bFired, fireRelMs, bZero, zeroRelMs, bRest, restRelMs, nLatePasses)
+' BM-TIMESTOP (SRC_REV 57, PL-145): one time stop's three instants, each in ms from its deadline, signed (negative is
+' before it), NA for an instant not seen. zero_ms is the judged number, BM-DSTEP TIMESTOP's measured: every driver
+' first read DCS_STOPPED. fire_ms is when getPower() first read 0, the limit firing, a correct stop's one ramp-down
+' before the deadline. rest_ms is rest confirmed (REST_CONFIRM_MS of still pos and hwPos included), the number the cell
+' judged through SRC_REV 56, printed for continuity and NOT judged; its deadline is now taken before the call, so it
+' can read up to one request round trip later than a SRC_REV 56 reading of the same stop. late_pass is the front cog's
+' late passes over the step (testGetFrontStats()), not judged: whether an overrun fell inside it. Printed only for a
+' stop that was armed at speed. Worst case 104 bytes.
+'
+' @param side - SIDE_BOTH or SIDE_LEFT
+' @param bFired - TRUE when getPower() was seen at 0
+' @param fireRelMs - that instant, ms from the deadline
+' @param bZero - TRUE when every driver was seen at DCS_STOPPED
+' @param zeroRelMs - that instant, ms from the deadline
+' @param bRest - TRUE when rest was confirmed
+' @param restRelMs - that instant, ms from the deadline
+' @param nLatePasses - the front cog's late passes counted over the step
+
+    recBegin(@"BM-TIMESTOP")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.naNumField(@"fire_ms", fireRelMs, LIM_SMALL, bFired)
+    benchLog.naNumField(@"zero_ms", zeroRelMs, LIM_SMALL, bZero)
+    benchLog.naNumField(@"rest_ms", restRelMs, LIM_SMALL, bRest)
+    benchLog.numField(@"late_pass", nLatePasses, LIM_SMALL)
     emitRecord()
 
 PRI emitRestCoast(slotIdx, whyCode) | refIdx, trialIdx, eResult

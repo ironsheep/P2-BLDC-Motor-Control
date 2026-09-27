@@ -55,9 +55,9 @@ do the right thing, and then we can call them done without having to test on the
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-14 | The voltage argument to `start()` used to be ignored | A code-reading sign-off or a t0 cell |
-| PL-51 | The steering getter for distance speed returned the wrong value | A cell, or a code-reading sign-off |
-| PL-52 | `getPower()` kept reporting power after a stop | A cell, or a code-reading sign-off |
+| PL-14 | The voltage argument to `start()` used to be ignored | pass 8: R20-T0-API-PERSIST (t0 SRC_REV 24, start at 14.8 V reads back) |
+| PL-51 | The steering getter for distance speed returned the wrong value | pass 8: R20-T0-API-STEER (set/read-back rows) |
+| PL-52 | `getPower()` kept reporting power after a stop | pass 8: R20-T0-SR-COMMANDED (`T0-25,power` 15 then 0) |
 | PL-93 | After a fault and recovery, the next drive drew 3-4x current | The loaded floor run |
 | PL-95 | The drive ran saturated above mid-range and still reported AT_SPEED | The kick (PL-87) and the loaded floor run |
 | PL-111 | A serial host could not clear a protective stop | A provoked protective stop (PL-106) |
@@ -128,6 +128,9 @@ of this item.
 ### PL-14 -- `eMotorVoltage` is a documented public parameter that does nothing
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: no cell; certify by code reading or a t0 cell.
+> **2026-09-27:** cell built — t0 SRC_REV 24 (f9c1d81), R20-T0-API-PERSIST starts at a second supported voltage
+> (14.8 V on the bench) and reads it back through `getDriveVoltage()`, then restarts at DRIVE_VOLTAGE. The pre-fix
+> library would read 18.5 V. Certifies at pass 8 (`t0-api`).
 
 **Found 2026-09-10 while building the Tier 0 harness («#3474»). Not in the
 24 findings of `DRIVER-AUDIT-2026-09-09.md` -- this is a new one.**
@@ -643,6 +646,8 @@ now tells the truth.
 ### PL-51 -- the steering object's `getMaxSpeedForDistance()` returns the max speed, not the max speed for distance
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: no cell.
+> **2026-09-27:** cell built — t0 SRC_REV 24 (f9c1d81), R20-T0-API-STEER sets the steering distance speed across its
+> range and reads each back. The pre-fix getter returned `getMaxSpeed()` (75). Certifies at pass 8 (`t0-api`).
 
 **Found 2026-09-14** by «#3508» phase 2(b1), and confirmed by the arbiter reading source. DERIVED, not
 observed on hardware.
@@ -674,6 +679,9 @@ object was not checked for the same getter -- out of this task's scope.
 ### PL-52 -- `getPower()` keeps reporting the last power after the motor is stopped, against its own doc
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: no cell.
+> **2026-09-27:** cell built — t0 SRC_REV 24 (f9c1d81), T0-25's commanded-stop leg reads `getPower()` while driving
+> (want 15) and after `stopMotor()` returns (want 0), in R20-T0-SR-COMMANDED (record `T0-25,power`). The pre-fix
+> library read 15 after the stop. Certifies at pass 8 (`t0-stopreason`).
 
 **Found 2026-09-14** by «#3508» phase 2(b3), and confirmed by the arbiter reading source. DERIVED, not
 observed on hardware.
@@ -1938,6 +1946,18 @@ deadline, which the tick scatter cannot explain.
 being traced at the desk alongside the front-cog overrun (PL-161); late passes and the DRIVER_REV 33 limit bookkeeping
 are the candidates.
 
+**2026-09-27, desk root cause: the INSTRUMENT.** Neither candidate: the time-stop path is unchanged since DRIVER_REV
+29, and each pass re-reads `getms()`, so late passes can delay the stop by about 1 ms each, not 86. **DERIVED:** the
+driver brings the FIELD to zero at the deadline; the bridge then coasts, and the rotor, which the ramp-down lets lead
+the field by up to LAG_SOFT (~1.9 hall ticks), still crosses hall edges and restarts the cell's 300 ms rest dwell.
+The cell times coast, which friction sets, not the stop, which the driver sets. **Disposition: ⛔ FIX the cell,
+built** (`test_bench_dual` SRC_REV 57, FMT 36): TIMESTOP-D and WTIMSTOP-D now judge when every driver of the form
+first reads DCS_STOPPED (polled 1 ms), criterion FIELD_ZERO_BY_LIM, bound −4..+7 ms of the deadline, each term derived
+from library constants in the CON block. Negative: a stop fired at the deadline instead of a ramp-down before it
+reads about +646 ms. New record `BM-TIMESTOP` (`zero_ms` judged; `rest_ms` the old reading, unjudged; `late_pass`).
+Not covered by the bound, so it would FAIL as a real late stop: ramp-down passes held while the rotor leads by
+LAG_SOFT. Certifies at pass 8.
+
 ### PL-146 -- part D's event drains read a stalled wheel's log before its fold-back released
 
 > **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: pass 7 EV-FOLDBACK 0 bad.
@@ -1960,7 +1980,10 @@ for both drivers to read DCS_STOPPED; the settle counts from there. Certifies at
   `max(duty_, duty_floor_) * i_limit_k_ >> 16`, and it runs on an undriven bridge (`isp_bldc_motor.spin2`
   ~:7273-7280; the fault test's `tjnz bridge, #.noFault` falls into it). At the harness's 1 A limit the threshold at
   the duty floor is a few mV, so the left counts a fold-back on every frame at rest and never releases.
-- **FIX in progress:** fold-back acts only on a driven bridge (DRIVER_REV 36). Certifies at pass 8 (EV-FOLDBACK 0 bad).
+- **FIX built** (DRIVER_REV 36, f9c1d81): `tjnz bridge, #.servoTrim` at the head of `.noFault` — an undriven
+  bridge skips the compare, the duty cut and the count; `.dutyLimits` still applies `duty_min_` as before. Cog RAM
+  495 of 496. A wheel held at rest (SM_BRAKE) is driven, so its fold-back still acts; netting the rest offset out
+  would need a new parameter long (an ABI change) and is not done. Certifies at pass 8 (EV-FOLDBACK 0 bad).
 
 ### PL-148 -- the serial control path has never run on hardware
 
@@ -2085,6 +2108,18 @@ feel). Its built-in rates (owner Q2) are unanswered, and do not block anything u
 **Disposition: ⛔ FIX by construction** (DRIVER_REV 36): the pack is sampled at slot cadence with its conversion off
 the per-pass path, and the per-pass additions are reviewed. Separating the candidates on the bench is not needed.
 Certifies at pass 8 (FRONTST late 0, max under 950 µs).
+
+**2026-09-27, built (DRIVER_REV 36, f9c1d81).** The desk review found a third cause larger than either candidate:
+- **DERIVED:** the worst pass is a request pass that busy-waits for a synchronized driver take, up to one drive pass
+  (523 µs), on top of its own work. Pass 7's dual-start lifetimes of one binary read 533-1,058 µs, a spread of one
+  drive pass, so the +140 µs between passes cannot be pinned on added work.
+- **Built:** the pack pin is summed inline and folded once per slot (PACK_PHASE 2), kept in raw counts, converted
+  when read. The steering state report (~45% of a pass's calls, printing nothing in the bench build) runs only when
+  its debug channels compile, once per slot. A request that would wait is not taken on the slot-work phases 0 and 4;
+  it is taken on the next pass (the acknowledgement bound, 17.5 ms, stays under the 20 ms timeout). The odometer and
+  limit additions measured negligible.
+- **If pass 8 still shows a ~520 µs spread across dual-start lifetimes,** that spread is the wait itself, and the
+  remaining fix is answering synchronized requests on a later pass instead of waiting in it.
 
 ### PL-162 -- two pack cells are judged with a wrong instrument
 
