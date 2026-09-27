@@ -25,7 +25,7 @@ cells judge that `dual-start` and `dual-d` do not also exercise.
 
 ## ⛔ First: PUSH, then pull at the bench
 
-`git log --oneline -1 -- src/` at the bench must show **SHA_PENDING** or later (DRIVER_REV 36).
+`git log --oneline -1 -- src/` at the bench must show **ce8dd9d** or later (DRIVER_REV 36, test_bench_dual SRC_REV 57, test_bench_t0 SRC_REV 24).
 
 **What this invalidated:** DRIVER_REV 35→36 (fold-back on an undriven bridge; the front cog's slot schedule). Every
 cell in this pass's tiers runs against it.
