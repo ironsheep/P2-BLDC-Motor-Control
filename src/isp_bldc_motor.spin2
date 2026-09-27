@@ -1407,6 +1407,7 @@ PUB restZeroBegin() : eStatus | startMs
         waitms(REQ_POLL_MS)
     if eStatus <> NO_ERROR
         restZeroSenseMv := 0                                                       ' no correction, not a stale value
+        applySenseZero()                                                           ' PL-146: and none in the driver's fold-back
 
 PUB restZeroAddSample()
 '' INTERNAL USE: PL-45 step 2 of 3 -- accumulate one sense_i_mV sample into the rest-zero total
@@ -1421,10 +1422,12 @@ PUB restZeroFinish()
 '' INTERNAL USE: PL-45 step 3 of 3 -- average the accumulated samples into restZeroSenseMv
 ''
 '' A no-op (restZeroSenseMv stays at whatever restZeroBegin() left it, 0 on a failed begin) if
-'' restZeroAddSample() was never called since restZeroBegin().
+'' restZeroAddSample() was never called since restZeroBegin(). Either way the driver's fold-back is handed the
+'' result (PL-146, applySenseZero()).
 
     if restZeroSampleCount > 0
         restZeroSenseMv := restZeroSampleSum / restZeroSampleCount
+    applySenseZero()
 
 PUB captureRestZero() | idx
 '' INTERNAL USE: sample the current-sense rest zero, with the drive floated (PL-45); ~1 s
@@ -2697,50 +2700,57 @@ PUB getDebugData() : nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVar
     debug[user.DBGCH_HDMI_DUMP]("* MOTR Sent: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
     debug[user.DBGCH_HDMI_DUMP]("* =============")
 
-PUB frontClearFault() : eStatus, bDidWait
-'' FRONT COG ONLY: clear a FAULTED motor (PL-66), bounded; a no-op (NO_ERROR, no wait) when not FAULTED
+PUB bFrontClearFaultBegin() : bClearing
+'' FRONT COG ONLY: begin clearing a FAULTED motor (PL-66); a no-op (F) when not FAULTED -- never waits (PL-161)
 ''
-'' Shared by frontDrive() (single-motor and per-wheel use) and an owner that must clear several
-'' motors' faults together before writing any of their commands (isp_steering_2wheel) -- one
-'' fault-clear path either way.
+'' Shared by the single-motor front cog and an owner that must clear several motors' faults together before writing
+'' any of their commands (isp_steering_2wheel) -- one fault-clear path either way. The caller holds its request in
+'' flight (PST_FAULT_LEFT) and polls isFaulted() once a pass, bounded by bFrontWaitExpired(); it writes the requested
+'' command only once the fault has left, and answers ERR_NO_RESPONSE if the bound goes first (the zero stays written).
 ''
-'' @returns eStatus - NO_ERROR (nothing to clear, or cleared), or ERR_NO_RESPONSE when FAULTED and it did not clear in the bound (a zero command is left written)
-'' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
+'' @returns bClearing - T/F where T means the motor was FAULTED: a zero command is written and the clear is made
 
-    eStatus := NO_ERROR
-    bDidWait := FALSE
+    bClearing := FALSE
     if drv_state == DCS_FAULTED
         ' PL-66: only the front cog can tell a request that just arrived from one still standing, so the
         '  fault-clear edge is made here, not in the driver: fault_clr advances (task 3616), and the
         '  driver's latch releases on the pass it sees the advance (.noEStop -> .resetFault), for every
-        '  drive while FAULTED. The bounded wait is for drv_state leaving DCS_FAULTED.
+        '  drive while FAULTED. The caller's in-flight request watches drv_state leave DCS_FAULTED.
         frontStopCommanded()                                                ' PL-52: also clears getPower() while we try
-        bDidWait := TRUE
-        if bFrontWaitForDriver(WAIT_FAULT_LEFT) == FALSE
-            eStatus := ERR_NO_RESPONSE                                      ' did not clear in the bound; the zero command stays written
+        bClearing := TRUE
 
-PUB frontDrive(power, bSync) : eStatus, bDidWait | limitPwr, correctedPower
-'' FRONT COG ONLY: write this motor's command for {power}, unless it is protectively or emergency-stopped; a FAULTED
-'' motor is cleared first (frontClearFault(), PL-66), bounded, before the requested command is written; the owner sends any ATN
+PUB bFrontWaitExpired(nStartTicks) : bExpired
+'' FRONT COG ONLY: whether an in-flight request's driver wait, begun at {nStartTicks}, has outlived its bound (PL-161)
+''
+'' The bound is FRONT_SYNC_WAIT_PASSES drive passes, the margin every busy-wait it replaces had: a live driver acts
+'' within one drive pass (gettgtincr polls ATN every pass; a clear or a release is seen on the pass after it is made).
+'' The front cog polls once a pass, so a wait that never ends is given up on the first pass after the bound.
+''
+'' @param nStartTicks - getct() when the wait began
+'' @returns bExpired - T/F where T means more than FRONT_SYNC_WAIT_PASSES drive passes have gone by since {nStartTicks}
+
+    bExpired := (getct() - nStartTicks) > FRONT_SYNC_WAIT_PASSES * DRIVE_PASS_US * (CLKFREQ / US_PER_SEC)
+
+PUB frontDrive(power, bSync) : eStatus | limitPwr, correctedPower
+'' FRONT COG ONLY: write this motor's command for {power}, unless it is protectively or emergency-stopped; the owner sends any ATN
+''
+'' PL-161 (DRIVER_REV 37): never waits. A FAULTED motor is cleared BEFORE this is called (bFrontClearFaultBegin(), its
+'' request held in flight until the fault leaves), so this writes the command as it stands.
 ''
 '' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
 '' @param bSync - T/F where T means the command carries the sync bit and is taken only after its owner's ATN
-'' @returns eStatus - NO_ERROR; the protective code or ERR_EMERGENCY_STOPPED with nothing written; or ERR_NO_RESPONSE when a FAULTED motor did not clear in the bound (a zero command is left written and the requested command is never sent); never recorded
-'' @returns bDidWait - T/F where T means the bounded fault-clear wait was spent
+'' @returns eStatus - NO_ERROR, or the protective code or ERR_EMERGENCY_STOPPED with nothing written; never recorded
 
 ' Local Variables:
 ' @local limitPwr - {power} saturated to [(-100) to 100] and then to the max speed
 ' @local correctedPower - saturated power with this motor's reversal applied
 
-    bDidWait := FALSE
     eStatus := frontRefusal()               ' refused: a command written now would sit stale and drive on the clear
     if eStatus == NO_ERROR
-        eStatus, bDidWait := frontClearFault()
-        if eStatus == NO_ERROR
-            limitPwr :=  -100 #> power <# 100
-            motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
-            correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
-            frontCommand(incrementForPower(correctedPower), bSync)
+        limitPwr :=  -100 #> power <# 100
+        motorPower := limitPwr := -maxSpeed #> limitPwr <# maxSpeed
+        correctedPower := (motorIsReversed) ? 0 - limitPwr : limitPwr
+        frontCommand(incrementForPower(correctedPower), bSync)
 
 PUB frontWriteIncrement(nIncre, bSync)
 '' FRONT COG ONLY: write a raw driver increment (stops, and the TEST-USE path) with no emergency-stop check
@@ -3556,6 +3566,24 @@ PRI bSenseZeroOutOfBand() : bOut
     else
         bOut := (restZeroSenseMv < REST_ZERO_MIN_MV) or (restZeroSenseMv > REST_ZERO_MAX_MV)
 
+PRI applySenseZero() | nZeroMv
+' Hand the driver's per-frame current fold-back the rest offset it nets out (PL-146, DRIVER_REV 37): sense_zero, the
+' last long of the parameter run, which the driver reloads every frame.
+'
+' The offset is restZeroSenseMv, in sense_i_mV's own units (mV), so the driver subtracts it as read. Never negative: a
+' negative offset would ADD to every reading and fold back earlier than the raw reading did. And 0 when the rest zero
+' is outside this board's band (HLT_SENSE_ZERO fails): a channel reading a railed or dead zero must not be allowed to
+' blind the fold-back by that much; the raw compare, as before DRIVER_REV 37, is the safe side. Written only here, by
+' the cog running start() (restZeroBegin(), restZeroFinish()), as restZeroSenseMv itself is; one long, written once.
+
+' Local Variables:
+' @local nZeroMv - the offset handed over, mV
+
+    nZeroMv := 0
+    if bSenseZeroOutOfBand() == FALSE
+        nZeroMv := restZeroSenseMv #> 0
+    sense_zero := nZeroMv
+
 PRI bHallCodeLegal() : bLegal
 ' Return TRUE when the hall code the driver last read is legal, neither %000 nor %111.
 '
@@ -4285,6 +4313,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     probe_sink := PRB_NONE                                                  ' R19.4 1e: no return phase, and the probe's own 50 %
     probe_y := 0
     drv_release := FALSE                                                    ' PL-138: the new driver drives; only stop() asks it to let go
+    sense_zero := 0                                                         ' PL-146: no rest offset netted until this start measures one
     windState[0] := WND_NOT_RUN                                             ' and no winding reading until a start measures one
     windState[1] := WND_NOT_RUN
     windState[2] := WND_NOT_RUN
@@ -4947,8 +4976,8 @@ PRI isAbiLayoutValid() : bValid
     bValid := (@drive_u - @pinbase) == DRVR_LAUNCH_LONGS_COUNT * 4
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long
     bValid &= (@fault - @drive_u) == DRVR_STATUS_LONGS_COUNT * 4
-    ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd, the last drv_release (PL-138)
-    bValid &= (@drv_release - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd, the last sense_zero (PL-146)
+    bValid &= (@sense_zero - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -4971,8 +5000,9 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@bWindProbe, @windVoltSrc)                       ' R20.4: the run now ends at windVoltSrc
     bValid &= bOutsideDriverRuns(@walkWatchLeg, @bWlRan[WALK_LEGS - 1])          ' PL-137: the walk's per-leg record
     bValid &= bOutsideDriverRuns(@trkTravelTicks, @bSettingsLive)                ' PL-153 / PL-155: the limits' travel, the kept settings
+    bValid &= bOutsideDriverRuns(@pendStage, @pendTicks)                         ' PL-161: the front cog's in-flight request
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@drv_release - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@sense_zero - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -4981,8 +5011,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @param pLast - hub address of the last long of the Spin2-only array
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
-    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@drv_release
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @drv_release))
+    ' the launch and status run is @pinbase..@fault; the parameter run is @offset_fwd..@sense_zero
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @sense_zero))
 
 CON ' --- HDMI Debug Support ---
 
@@ -5135,8 +5165,10 @@ CON ' -- TASK: the front cog --
     '  rest (isp_steering_2wheel's state report is on 3 / 4 of the way round).
     PACK_PHASE             = WINDOW_PASSES / 4                  ' 2: the pack samples' fold into the average (frontSamplePack())
     DRIVE_PASS_US          = 523        ' one PASM drive pass, 522.7 us rounded up (PL-50)
-    FRONT_SYNC_WAIT_PASSES = 4          ' bound on an in-pass driver wait (sync taken, e-stop left), in drive passes
-    REQ_ACK_TIMEOUT_MS     = 20         ' bound on a posted request's answer; the front cog's worst case is 18.6 ms
+    FRONT_SYNC_WAIT_PASSES = 4          ' bound on an in-flight request's wait for its driver (fault left, sync taken, e-stop
+                                        '  left), in drive passes; polled once a front pass, never waited in one (PL-161)
+    REQ_ACK_TIMEOUT_MS     = 20         ' bound on a posted request's answer; the front cog's worst case is 19 ms (the
+                                        '  derivation is at bFrontServiceRequests())
     REQ_POLL_MS            = 1          ' caller-side poll period while waiting for an answer
     FRONT_START_TIMEOUT_MS = 100        ' bound on the front cog's first pass after cogspin()
     FRONT_PARK_MS          = 1_000      ' period of the parked front cog's idle wait after EXIT
@@ -5182,8 +5214,9 @@ CON { front cog requests }
     ' Request codes a caller posts to the front cog (arguments per code):
     '  REQ_ESTOP          - latch the emergency stop and write a zero command
     '  REQ_STOP           - write a zero command
-    '  REQ_CLEAR_ESTOP    - write a zero command, release the latch, wait (bounded) for the driver to leave DCS_ESTOP
-    '  REQ_DRIVE          - arg1 power, arg3 bSync: refused while emergency-stopped, else drive (sync: ATN and bounded wait)
+    '  REQ_CLEAR_ESTOP    - write a zero command, release the latch, answer once the driver leaves DCS_ESTOP (bounded)
+    '  REQ_DRIVE          - arg1 power, arg3 bSync: refused while emergency-stopped, else drive (sync: ATN, answered once
+    '                       taken, bounded)
     '  REQ_DRIVE_DISTANCE - arg1 stop ticks, arg2 power: refused while emergency-stopped, else arm the limit and drive
     '  REQ_LIMIT_TICKS    - arg1 stop ticks: arm the hall-tick stop limit
     '  REQ_LIMIT_TIME     - arg1 getms() deadline, never 0: arm the time stop limit
@@ -5211,11 +5244,16 @@ CON { front cog requests }
     '  REQ_CLASS_EXIT  - REQ_EXIT, last
     #0, REQ_CLASS_ESTOP, REQ_CLASS_STOP, REQ_CLASS_OTHER, REQ_CLASS_EXIT
 
-    ' What bFrontWaitForDriver() waits for:
-    '  WAIT_SYNC_TAKEN  - the driver cleared SYNC_BIT, having taken the synchronized command
-    '  WAIT_ESTOP_LEFT  - the driver no longer reports DCS_ESTOP
-    '  WAIT_FAULT_LEFT  - the driver no longer reports DCS_FAULTED (PL-66)
-    #0, WAIT_SYNC_TAKEN, WAIT_ESTOP_LEFT, WAIT_FAULT_LEFT
+    ' PL-161 (DRIVER_REV 37): what a front cog's in-flight request waits for. No front pass waits on a driver: a request
+    '  whose driver(s) must act is held in flight, polled once a pass, and answered on the pass that sees it done, or
+    '  once its bound (FRONT_SYNC_WAIT_PASSES drive passes, bFrontWaitExpired()) has gone:
+    '  PST_NONE        - no request in flight
+    '  PST_FAULT_LEFT  - a FAULTED motor's clear was made (bFrontClearFaultBegin()); the driver must leave DCS_FAULTED
+    '                    (PL-66) before the request's command is written. Bound gone: ERR_NO_RESPONSE, the zero kept
+    '  PST_SYNC_TAKEN  - a synchronized command was written and its ATN sent; the driver must clear SYNC_BIT, having
+    '                    taken it. Bound gone: ERR_SYNC_TIMEOUT, and the command is zeroed (audit M)
+    '  PST_ESTOP_LEFT  - an emergency stop was released; the driver must leave DCS_ESTOP. Bound gone: ERR_NO_RESPONSE
+    #0, PST_NONE, PST_FAULT_LEFT, PST_SYNC_TAKEN, PST_ESTOP_LEFT
 
 VAR { * sense buffer and stack arrays * }
     LONG    taskStack[STACK_SIZE_LONGS]
@@ -5345,6 +5383,11 @@ PRI LALOOPEND()
     4. apply (securing first, then the rest, then EXIT), producing a status as DATA -- nothing is recorded
     5. answer: ackStatus[c] := status FIRST, then ackSeq[c] := seqTaken
 
+  PL-161 (DRIVER_REV 37): step 4 never waits on the driver. A request whose driver must act first (a fault clear, a
+  synchronized take, an e-stop's release) is held IN FLIGHT (pendStage): at most one at a time, polled at the head of
+  every pass, and answered (step 5) on the pass that sees it done or its bound gone. While one is in flight no other
+  request is taken; they stay posted, and the pass that answers it goes on to take them in the usual order.
+
   Nothing reachable from frontLoop() calls recordError() or recordCallerError().
 }
 
@@ -5370,6 +5413,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
     lateMarginTicks := (CLKFREQ / US_PER_SEC) * LATE_MARGIN_US
     passCount := 0
     packRawSum := packSamples := 0
+    pendStage := PST_NONE                                                       ' PL-161: no request in flight
     frontStartTracking()                                                        ' PL-153: the odometer and the limits' travel start at 0
     LAINIT()                                                                    ' init LA
     if bReleaseDriver == TRUE
@@ -5384,7 +5428,8 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         ' 0. a stop written in an earlier pass is confirmed, or written again
         frontConfirmStop()
 
-        ' 1. requests: securing first, then the rest in slot order, then EXIT
+        ' 1. requests: the one in flight polled first (PL-161: never waited on), then securing, the rest in slot
+        '  order, then EXIT
         if bFrontServiceRequests() == TRUE
             quit                                                                ' EXIT acknowledged: park below
 
@@ -5435,8 +5480,26 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
     repeat
         waitms(FRONT_PARK_MS)
 
-PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken, seqTaken, eCmd, nArg1, nArg2, nArg3, bWaited, bDidWait, eStatus
-' FRONT COG: take, apply and answer the open request slots once: REQ_ESTOP, then REQ_STOP, then the rest, then EXIT.
+PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken, seqTaken, eCmd, nArg1, nArg2, nArg3, eStatus
+' FRONT COG: poll the request in flight, then take, apply and answer the open request slots once: REQ_ESTOP, then
+' REQ_STOP, then the rest, then EXIT.
+'
+' PL-161 (DRIVER_REV 37): NOTHING HERE WAITS ON THE DRIVER. A request whose driver must act first (a fault clear, a
+' synchronized take, an e-stop's release) is put in flight by its apply (pendStage) and answered by
+' frontPollPending() on a later pass. At most one is in flight: while it is, no request is taken -- securing ones
+' included, as a request posted during an in-pass wait was never taken before that wait ended -- and within a pass,
+' once one goes in flight, the rest stay posted. A live driver acts within one drive pass (523 us), under the ~0.9 ms
+' least interval between passes, so a request in flight is answered on the first pass after its apply, and that pass
+' goes on to take what was posted meanwhile, securing requests first; a driver that never acts is given up on at most
+' 3 passes after.
+'
+' THE ACKNOWLEDGEMENT BOUND (DERIVED, as DOCs/plans/FRONT-COG-IMPLEMENTATION-PLAN.md 3.6 derives it): a single motor
+' leaves at most 6 application cogs (8 less the driver and this cog), so at most 5 requests are ahead of any one. Each
+' holds the slot order for at most 3 passes (one stage, its bound gone: the bound is 2.09 ms and passes are at least
+' 0.9 ms apart), so one posted behind them is taken by the 15th pass after it and answered by the 18th: 18 ms at the
+' nominal 1 ms pass, and seen within the caller's 1 ms poll (19 ms), under REQ_ACK_TIMEOUT_MS (20).
+' A request needing two stages (a synchronized drive of a FAULTED motor) adds 3 passes when both bounds go, as the
+' two in-pass waits it replaces added 2 x 2.09 ms; with a live driver it is answered on the second pass.
 '
 ' @returns bExit - T/F where T means an EXIT was taken: every open slot has been answered and the loop must park
 
@@ -5451,39 +5514,41 @@ PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken
 ' @local nArg1 - the copied first argument
 ' @local nArg2 - the copied second argument
 ' @local nArg3 - the copied third argument
-' @local bWaited - T/F where T means a request has already spent this pass's one bounded wait
-' @local bDidWait - T/F where T means the request just applied waited
 ' @local eStatus - the applied request's status, answered as data
 
     bExit := FALSE
-    openMask := 0
-    repeat slotIdx from 0 to COG_SLOT_COUNT - 1
-        seqTaken := reqSeq[slotIdx]
-        if (seqTaken <> SEQ_IDLE) and (seqTaken <> ackSeq[slotIdx])
-            openMask |= 1 << slotIdx
+    if pendStage <> PST_NONE
+        frontPollPending()                                                      ' PL-161: answered once its driver has acted, or its bound gone
+    if pendStage == PST_NONE                                                    ' still in flight: every request stays posted
+        openMask := 0
+        repeat slotIdx from 0 to COG_SLOT_COUNT - 1
+            seqTaken := reqSeq[slotIdx]
+            if (seqTaken <> SEQ_IDLE) and (seqTaken <> ackSeq[slotIdx])
+                openMask |= 1 << slotIdx
 
-    if openMask <> 0
-        bWaited := FALSE
-        repeat eClass from REQ_CLASS_ESTOP to REQ_CLASS_EXIT
-            repeat slotIdx from 0 to COG_SLOT_COUNT - 1
-                slotBit := 1 << slotIdx
-                if (openMask & slotBit) <> 0
-                    bTaken, seqTaken, eCmd, nArg1, nArg2, nArg3 := frontTakeSlot(slotIdx)
-                    if bTaken == FALSE
-                        openMask &= !slotBit                                    ' withdrawn by its caller, or already answered
-                    elseif requestClass(eCmd) == eClass
-                        openMask &= !slotBit
-                        ' At most one bounded wait per pass: a second waiting request is left posted, and
-                        '  taken in the next pass. Non-waiting requests are applied regardless.
-                        if eClass == REQ_CLASS_EXIT
-                            bExit := TRUE                                       ' answered by frontAnswerForExit(), after every other slot
-                        elseif (bWaited == FALSE) or (bRequestWaits(eCmd, nArg3) == FALSE)
-                            eStatus, bDidWait := frontApply(eCmd, nArg1, nArg2, nArg3)
-                            if bDidWait == TRUE
-                                bWaited := TRUE
-                            answerSlot(slotIdx, seqTaken, eStatus)
-        if bExit == TRUE
-            frontAnswerForExit()
+        if openMask <> 0
+            repeat eClass from REQ_CLASS_ESTOP to REQ_CLASS_EXIT
+                repeat slotIdx from 0 to COG_SLOT_COUNT - 1
+                    slotBit := 1 << slotIdx
+                    if (openMask & slotBit) <> 0
+                        bTaken, seqTaken, eCmd, nArg1, nArg2, nArg3 := frontTakeSlot(slotIdx)
+                        if bTaken == FALSE
+                            openMask &= !slotBit                                ' withdrawn by its caller, or already answered
+                        elseif requestClass(eCmd) == eClass
+                            openMask &= !slotBit
+                            ' PL-161: once a request is in flight the rest of this pass's stay posted, EXIT too (it
+                            '  would answer the one in flight ERR_NOT_STARTED); taken on the pass that answers it
+                            if pendStage == PST_NONE
+                                if eClass == REQ_CLASS_EXIT
+                                    bExit := TRUE                               ' answered by frontAnswerForExit(), after every other slot
+                                else
+                                    eStatus := frontApply(eCmd, nArg1, nArg2, nArg3)
+                                    if pendStage <> PST_NONE                    ' in flight: answered by frontPollPending()
+                                        frontPendHold(slotIdx, seqTaken, eCmd, nArg1, nArg2, nArg3)
+                                    else
+                                        answerSlot(slotIdx, seqTaken, eStatus)
+            if bExit == TRUE
+                frontAnswerForExit()
 
 PRI frontAnswerForExit() | slotIdx, bTaken, seqTaken, eCmd, nArg1, nArg2, nArg3, eStatus
 ' FRONT COG, on EXIT: answer every other open request, then acknowledge each EXIT, so stop() cogstops a cog with nothing left to say.
@@ -5504,7 +5569,7 @@ PRI frontAnswerForExit() | slotIdx, bTaken, seqTaken, eCmd, nArg1, nArg2, nArg3,
         if (bTaken == TRUE) and (eCmd <> REQ_EXIT)
             eStatus := ERR_NOT_STARTED
             if requestClass(eCmd) <> REQ_CLASS_OTHER
-                eStatus, _ := frontApply(eCmd, nArg1, nArg2, nArg3)
+                eStatus := frontApply(eCmd, nArg1, nArg2, nArg3)                ' securing: never puts a request in flight
             answerSlot(slotIdx, seqTaken, eStatus)
     ' acknowledged last: the stop() waiting on this may cogstop this cog at once
     repeat slotIdx from 0 to COG_SLOT_COUNT - 1
@@ -5558,27 +5623,19 @@ PRI requestClass(eCmd) : eClass
         other:
             eClass := REQ_CLASS_OTHER
 
-PRI bRequestWaits(eCmd, nArg3) : bWaits
-' Return TRUE for a request whose apply may spend a bounded in-pass wait on the driver.
-'
-' @param eCmd - a REQ_* code
-' @param nArg3 - the request's third argument (bSync for REQ_DRIVE)
-' @returns bWaits - T/F where T means a REQ_CLEAR_ESTOP or REQ_CLEAR_PROTECT, a synchronized REQ_DRIVE, or any REQ_DRIVE while FAULTED (PL-66's fault-clear wait)
-
-    bWaits := (eCmd == REQ_CLEAR_ESTOP) or (eCmd == REQ_CLEAR_PROTECT) or ((eCmd == REQ_DRIVE) and ((nArg3 <> FALSE) or (drv_state == DCS_FAULTED)))
-
-PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
+PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus
 ' FRONT COG: apply one taken request to this motor; records nothing, the status travels back as data.
+'
+' PL-161: never waits. A request whose driver must act first is left IN FLIGHT (pendStage <> PST_NONE) and its status
+' here is provisional; bFrontServiceRequests() then holds it (frontPendHold()) and frontPollPending() answers it.
 '
 ' @param eCmd - the REQ_* code
 ' @param nArg1 - first argument, meaning per REQ_*
 ' @param nArg2 - second argument, meaning per REQ_*
 ' @param nArg3 - third argument, meaning per REQ_*
-' @returns eStatus - NO_ERROR, a protective code, ERR_EMERGENCY_STOPPED, ERR_SYNC_TIMEOUT or ERR_NO_RESPONSE
-' @returns bDidWait - T/F where T means this request spent a bounded wait on the driver
+' @returns eStatus - NO_ERROR, a protective code or ERR_EMERGENCY_STOPPED; ERR_SYNC_TIMEOUT and ERR_NO_RESPONSE come only from frontPollPending()
 
     eStatus := NO_ERROR
-    bDidWait := FALSE
     ' R20.1: every record (frontOpenDrive(), frontRecordStop()) follows the command its path writes (D6)
     case eCmd
         REQ_ESTOP:
@@ -5592,11 +5649,11 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
         REQ_CLEAR_ESTOP:
             eStatus := protectiveCode                                           ' a protective stop is released only by its own clear
             if eStatus == NO_ERROR
-                eStatus, bDidWait := frontClearEStopAndWait()
+                frontClearEStopBegin()                                          ' PL-161: in flight until the driver leaves DCS_ESTOP
         REQ_CLEAR_PROTECT:
             if protectiveCode <> NO_ERROR                                       ' with nothing latched, a user's e-stop is not released here
                 frontClearProtective()
-                eStatus, bDidWait := frontClearEStopAndWait()                       ' zero command first, then the latch released
+                frontClearEStopBegin()                                          ' zero command first, then the latch released
         REQ_SET_LIMITS:
             frontSetCurrentLimits(nArg1, nArg2)
         REQ_SET_HOLD:
@@ -5609,19 +5666,20 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             cmdTimeoutMs := nArg1
             lastDriveMs := getms()                                              ' the clock starts now, never from a stale command
         REQ_DRIVE:
-            eStatus, bDidWait := frontDriveAndSync(nArg1, nArg3 <> FALSE)
-            frontWatchCommand((eStatus == NO_ERROR) and (nArg1 <> 0))
-            frontNoteDriveCommand(eStatus, nArg1)
+            ' PL-161: frontDriveBegin() writes the command now, or leaves it in flight behind a fault clear; the tail
+            '  (frontDriveTail()) runs once the command is written, so each record still follows its write
+            eStatus := frontDriveBegin(nArg1, nArg3 <> FALSE)
+            if pendStage <> PST_FAULT_LEFT
+                frontDriveTail(eCmd, nArg1, nArg2, eStatus)
         REQ_DRIVE_DISTANCE:
             ' atomic: the limit is armed and the motor driven, or neither (I1 item 2)
             eStatus := frontRefusal()
             if eStatus == NO_ERROR
                 frontSetLimits(nArg1, motorStopMSecs)                           ' the time limit is kept, as before; PL-153: the
                                                                                 '  distance counts from here, not the odometer
-                eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
-                frontNoteDriveCommand(eStatus, nArg2)
-            ' PL-143, STEPHEN 2026-09-26 "no carve-outs": the command timeout watches this drive like any other
-            frontWatchCommand((eStatus == NO_ERROR) and (nArg2 <> 0))
+                eStatus := frontDriveBegin(nArg2, FALSE)
+            if pendStage <> PST_FAULT_LEFT
+                frontDriveTail(eCmd, nArg1, nArg2, eStatus)
         REQ_WALK:
             ' PL-122: a checkWiring() leg: as REQ_DRIVE_DISTANCE, then under the current guard;
             '  PL-137: arg1 names the leg, whose record opens once it is driven
@@ -5629,14 +5687,9 @@ PRI frontApply(eCmd, nArg1, nArg2, nArg3) : eStatus, bDidWait
             eStatus := frontRefusal()
             if eStatus == NO_ERROR
                 frontSetLimits(WALK_TICKS, 0)                                   ' PL-153: the leg counts from here; the odometer is kept
-                eStatus, bDidWait := frontDriveAndSync(nArg2, FALSE)
-                if eStatus == NO_ERROR
-                    frontArmWalkGuard()
-                    frontWalkBegin(nArg1)
-                else
-                    frontSetLimits(0, 0)                                        ' not driven: no limit stays armed either
-                ' R20.1: a walk leg opens no drive; one left open is ended by the program's own call, checkWiring()
-                frontRecordStop(SR_COMMANDED)
+                eStatus := frontDriveBegin(nArg2, FALSE)
+                if pendStage <> PST_FAULT_LEFT
+                    frontDriveTail(eCmd, nArg1, nArg2, eStatus)
         REQ_LIMIT_TICKS:
             frontSetLimits(nArg1, motorStopMSecs)                               ' PL-153: counts from here, not the odometer
         REQ_LIMIT_TIME:
@@ -5707,64 +5760,150 @@ PRI bFrontCommandTimedOut(nowMs) : bFired
         cmdTimeoutEvents++                                                      ' the front cog is this long's only writer
         bFired := TRUE
 
-PRI frontDriveAndSync(power, bSync) : eStatus, bDidWait
-' FRONT COG: drive this motor at {power}; with {bSync}, release the command with one ATN and wait, bounded, for the driver to take it.
+PRI frontDriveBegin(power, bSync) : eStatus
+' FRONT COG: begin a drive request (PL-161): refused; or, FAULTED, its fault cleared first and the request left in
+' flight (PST_FAULT_LEFT) with nothing else written; or its command written now (frontDriveWrite()).
 '
 ' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
 ' @param bSync - T/F where T means the command is synchronized with this front cog's ATN
-' @returns eStatus - NO_ERROR, ERR_EMERGENCY_STOPPED (nothing written), ERR_NO_RESPONSE (a FAULTED motor did not clear), or ERR_SYNC_TIMEOUT (the motor is then stopped)
-' @returns bDidWait - T/F where T means a bounded wait (a fault clear, the sync take, or both) was spent
+' @returns eStatus - NO_ERROR (so far, while in flight), or the protective code or ERR_EMERGENCY_STOPPED with nothing written
 
-    eStatus, bDidWait := frontDrive(power, bSync)                              ' PL-66: bDidWait already reflects a fault-clear wait
+    eStatus := frontRefusal()
+    if eStatus == NO_ERROR
+        if bFrontClearFaultBegin() == TRUE                                      ' PL-66: FAULTED, the clear made
+            frontPendBegin(PST_FAULT_LEFT)
+        else
+            eStatus := frontDriveWrite(power, bSync)
+
+PRI frontDriveWrite(power, bSync) : eStatus
+' FRONT COG: write this motor's command for {power}; with {bSync}, release it with one ATN and leave the request in
+' flight until the driver has taken it (PST_SYNC_TAKEN) -- never waited on here (PL-161).
+'
+' @param power - power [(-100) to 100], saturated to that range and then to setMaxSpeed(); 0 stops
+' @param bSync - T/F where T means the command is synchronized with this front cog's ATN
+' @returns eStatus - NO_ERROR, or the protective code or ERR_EMERGENCY_STOPPED with nothing written
+
+    eStatus := frontDrive(power, bSync)
     if (eStatus == NO_ERROR) and (bSync == TRUE)
-        bDidWait := TRUE
         cogatn(frontDriverCogBit())
-        if bFrontWaitForDriver(WAIT_SYNC_TAKEN) == FALSE
-            ' audit M: a command the driver did not take must not be left to be taken later
-            frontZeroPower()                                                   ' PL-52: a failed take stops the motor too
-            eStatus := ERR_SYNC_TIMEOUT
+        frontPendBegin(PST_SYNC_TAKEN)
 
-PRI frontClearEStopAndWait() : eStatus, bDidWait
-' FRONT COG: release this motor's emergency stop and wait, bounded, until the driver has left DCS_ESTOP.
+PRI frontDriveTail(eCmd, nArg1, nArg2, eStatus)
+' FRONT COG: a drive request's work after its command is written, or once it has failed (R20.1's records, S-8's watch,
+' a walk leg's guard and record) -- the code each REQ_* ran after its drive before PL-161, unchanged.
 '
-' @returns eStatus - NO_ERROR, or ERR_NO_RESPONSE when the driver still reports DCS_ESTOP after the bound
-' @returns bDidWait - T/F where T means the bounded wait was spent
+' PL-161: a synchronized command is written, and this runs with NO_ERROR, on the pass the request goes in flight, so a
+' stop the front cog makes on its own before the take is seen (a limit, the blocked test) still follows the drive's
+' records, as it did when the take was waited for in the pass. If the take then fails, this runs again with
+' ERR_SYNC_TIMEOUT, after the zero, and records the stop as before; a drive the program opened is then ended SR_COMMANDED.
+'
+' @param eCmd - REQ_DRIVE, REQ_DRIVE_DISTANCE or REQ_WALK (any other: nothing)
+' @param nArg1 - the request's first argument (REQ_DRIVE: power; REQ_WALK: the leg)
+' @param nArg2 - the request's second argument (REQ_DRIVE_DISTANCE and REQ_WALK: power)
+' @param eStatus - the drive's status: NO_ERROR, a refusal, ERR_NO_RESPONSE (the fault did not clear) or ERR_SYNC_TIMEOUT
 
-    eStatus := NO_ERROR
-    bDidWait := FALSE
+    case eCmd
+        REQ_DRIVE:
+            frontWatchCommand((eStatus == NO_ERROR) and (nArg1 <> 0))
+            frontNoteDriveCommand(eStatus, nArg1)
+        REQ_DRIVE_DISTANCE:
+            frontNoteDriveCommand(eStatus, nArg2)
+            ' PL-143, STEPHEN 2026-09-26 "no carve-outs": the command timeout watches this drive like any other
+            frontWatchCommand((eStatus == NO_ERROR) and (nArg2 <> 0))
+        REQ_WALK:
+            if eStatus == NO_ERROR
+                frontArmWalkGuard()
+                frontWalkBegin(nArg1)
+            else
+                frontSetLimits(0, 0)                                            ' not driven: no limit stays armed either
+            ' R20.1: a walk leg opens no drive; one left open is ended by the program's own call, checkWiring()
+            frontRecordStop(SR_COMMANDED)
+
+PRI frontClearEStopBegin()
+' FRONT COG: release this motor's emergency stop, and leave the request in flight until the driver has left DCS_ESTOP
+' (PST_ESTOP_LEFT), so a drive posted right after is not refused -- never waited on here (PL-161).
+
     frontEStop(FALSE)                                                           ' zero command first, then the latch released
-    ' answered only once the driver has left the state, so a drive posted right after is not refused
     if isEmergency() == TRUE
-        bDidWait := TRUE
-        if bFrontWaitForDriver(WAIT_ESTOP_LEFT) == FALSE
-            eStatus := ERR_NO_RESPONSE
+        frontPendBegin(PST_ESTOP_LEFT)
 
-PRI bFrontWaitForDriver(eWaitFor) : bDone | waitStartTicks, waitBoundTicks
-' FRONT COG: busy-wait, bounded to FRONT_SYNC_WAIT_PASSES drive passes, for the driver to reach a condition.
+PRI frontPendBegin(eStage)
+' FRONT COG: put the request being applied in flight at {eStage}, its bound starting now (PL-161).
 '
-' @param eWaitFor - WAIT_SYNC_TAKEN, WAIT_ESTOP_LEFT or WAIT_FAULT_LEFT
-' @returns bDone - T/F where F means the bound expired first
+' @param eStage - PST_FAULT_LEFT, PST_SYNC_TAKEN or PST_ESTOP_LEFT
+
+    pendStage := eStage
+    pendTicks := getct()
+
+PRI frontPendHold(slotIdx, seqTaken, eCmd, nArg1, nArg2, nArg3)
+' FRONT COG: keep the request frontApply() left in flight, so frontPollPending() can finish and answer it (PL-161).
+'
+' @param slotIdx - the request's slot, its caller's COGID()
+' @param seqTaken - the sequence it is answered under
+' @param eCmd - its REQ_* code
+' @param nArg1 - its first argument
+' @param nArg2 - its second argument
+' @param nArg3 - its third argument
+
+    pendSlot := slotIdx
+    pendSeq := seqTaken
+    pendCmd := eCmd
+    pendArg1 := nArg1
+    pendArg2 := nArg2
+    pendArg3 := nArg3
+
+PRI frontPollPending() | power, bSync, eStatus
+' FRONT COG: once a pass, at the head of the request service: look once at what the request in flight waits for, and
+' finish and answer it when the driver has done it, or when its bound (bFrontWaitExpired()) has gone (PL-161).
+'
+' The condition is read before the bound, as the busy-wait it replaces read it, so a driver that acts on the last pass
+' is answered as having acted. Each outcome and status is the one that busy-wait gave; nothing here waits.
 
 ' Local Variables:
-' @local waitStartTicks - getct() when the wait began
-' @local waitBoundTicks - the bound, in system ticks
+' @local power - PST_FAULT_LEFT: the power the request's command is written with once the fault has left
+' @local bSync - PST_FAULT_LEFT: T/F where T means that command is synchronized
+' @local eStatus - the request's status, answered as data
 
-    ' a live driver answers within one drive pass (gettgtincr polls ATN every pass; a zero command
-    '  written while FAULTED reaches .newRqst -> .resetFault -> DCS_STOPPED in that same pass, since
-    '  the driver's stop-request check runs before its standing-command compare -- read against
-    '  .noEStop/.notRqStop/.newRqst/.resetFault), so the bound is a 4x margin, same as the other waits.
-    waitBoundTicks := FRONT_SYNC_WAIT_PASSES * DRIVE_PASS_US * (CLKFREQ / US_PER_SEC)
-    waitStartTicks := getct()
-    repeat
-        case eWaitFor
-            WAIT_SYNC_TAKEN:
-                bDone := bFrontTakenSync()
-            WAIT_FAULT_LEFT:
-                bDone := (drv_state <> DCS_FAULTED)
-            other:
-                bDone := (isEmergency() == FALSE)
-        if (bDone == TRUE) or ((getct() - waitStartTicks) > waitBoundTicks)
-            quit
+    case pendStage
+        PST_ESTOP_LEFT:
+            if isEmergency() == FALSE
+                frontPendAnswer(NO_ERROR)
+            elseif bFrontWaitExpired(pendTicks) == TRUE
+                frontPendAnswer(ERR_NO_RESPONSE)                                ' still DCS_ESTOP after the bound
+        PST_FAULT_LEFT:
+            if drv_state <> DCS_FAULTED
+                ' PL-66: the fault has left, so the requested command is written now: REQ_DRIVE's power and sync are
+                '  arg1 and arg3, REQ_DRIVE_DISTANCE's and REQ_WALK's power arg2, never synchronized
+                power := pendArg2
+                bSync := FALSE
+                if pendCmd == REQ_DRIVE
+                    power := pendArg1
+                    bSync := (pendArg3 <> FALSE)
+                pendStage := PST_NONE                                           ' a synchronized write puts it back in flight
+                eStatus := frontDriveWrite(power, bSync)
+                frontDriveTail(pendCmd, pendArg1, pendArg2, eStatus)
+                if pendStage == PST_NONE
+                    answerSlot(pendSlot, pendSeq, eStatus)
+            elseif bFrontWaitExpired(pendTicks) == TRUE
+                ' did not clear in the bound: the zero command bFrontClearFaultBegin() wrote stays written
+                frontDriveTail(pendCmd, pendArg1, pendArg2, ERR_NO_RESPONSE)
+                frontPendAnswer(ERR_NO_RESPONSE)
+        PST_SYNC_TAKEN:
+            if bFrontTakenSync() == TRUE
+                frontPendAnswer(NO_ERROR)
+            elseif bFrontWaitExpired(pendTicks) == TRUE
+                ' audit M: a command the driver did not take must not be left to be taken later
+                frontZeroPower()                                                ' PL-52: a failed take stops the motor too
+                frontDriveTail(pendCmd, pendArg1, pendArg2, ERR_SYNC_TIMEOUT)
+                frontPendAnswer(ERR_SYNC_TIMEOUT)
+
+PRI frontPendAnswer(eStatus)
+' FRONT COG: answer the request in flight with {eStatus}, and end its flight (PL-161).
+'
+' @param eStatus - its status, NO_ERROR or an ERR_* code
+
+    answerSlot(pendSlot, pendSeq, eStatus)
+    pendStage := PST_NONE
 
 PRI postRequest(eCmd, nArg1, nArg2, nArg3) : eStatus | slotIdx, mySeq, startMs, bAnswered
 ' Post a request to this motor's front cog from the calling cog, and wait, bounded, for its answer; records nothing.
@@ -6265,7 +6404,7 @@ CON { driver internal Constants }
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 21        ' drive_u .. foldback_frames (R20.1 added foldback_frames), then fault
-    DRVR_PARAMS_LONGS_COUNT     = 26        ' offset_fwd .. drv_release (PL-138 appended drv_release)
+    DRVR_PARAMS_LONGS_COUNT     = 27        ' offset_fwd .. sense_zero (PL-138 appended drv_release, PL-146 sense_zero)
 
     ' PL-138 (W4): the driver's release, which stop() asks for before its cogstop (driverRelease, stop())
     RELEASE_WAIT_FRAMES         = 2         ' PWM frames the release holds the bridge COASTING before it drops the gate modes
@@ -6278,7 +6417,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 36      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 37      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -6359,6 +6498,14 @@ CON { driver internal Constants }
                                             '     the average kept in raw counts and converted only when read; the steering
                                             '     front cog's state report runs only when its debug channels compile, once
                                             '     a slot, and it spends no bounded driver wait on a slot-work pass
+                                            ' 37: PL-161 residual -- no front cog pass waits on a driver: a request that needs
+                                            '     its driver(s) to act (a synchronized drive's take, a fault clear, an e-stop's
+                                            '     release) is held in flight across passes and answered on the pass that sees
+                                            '     it done, or its FRONT_SYNC_WAIT_PASSES bound gone (single-motor and steering
+                                            '     front cogs alike; statuses unchanged). PL-146 residual -- the fold-back
+                                            '     compares the DC-link reading net of the rest offset, floored at 0 (sense_zero,
+                                            '     params run 27 longs; countIllegal moved to the LUT to pay for it). PASM (cog +
+                                            '     LUT) and ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -6590,7 +6737,7 @@ VAR  {  Motor Parameters  }
 ' -----------------------------------
 ' VALUES copied to driver each cycle
 ' -----------------------------------
-' TABLE of 26 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle, offset_fwd .. drv_release:
+' TABLE of 27 (DRVR_PARAMS_LONGS_COUNT) parameters the pasm2 driver reads every cycle, offset_fwd .. sense_zero:
 '  append only at the END, and change DRVR_PARAMS_LONGS_COUNT, the PASM register block (offset_fwd_ ..) and
 '  isAbiLayoutValid() with it
     LONG    offset_fwd      ' 96 frac 360 (Doug's motor)
@@ -6620,7 +6767,10 @@ VAR  {  Motor Parameters  }
     LONG    probe_y         ' R19.4 1e TEST-USE: the probed phase's high-side Y (its duty), 0 for the continuity probe's 50 %
     LONG    drv_release     ' PL-138: T/F where T asks the driver to release (coast, drop its gate modes, report DCS_RELEASED
                             '  and park); init() writes FALSE before the launch, and only stop() writes TRUE, once no front
-                            '  cog exists. The LAST long of the run
+                            '  cog exists
+    LONG    sense_zero      ' PL-146 (DRIVER_REV 37): the DC-link rest offset the fold-back nets out, mV (sense_i_mV's
+                            '  units), never negative; written only with restZeroSenseMv (applySenseZero()), 0 when it
+                            '  is unmeasured or out of band. The LAST long of the run
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -6795,6 +6945,18 @@ VAR { PL-153 / PL-155: the limits' travel, and the program's kept settings -- Sp
     LONG    usrAccel                    ' PL-160: the rate setAcceleration() was given, mm/s^2; 0: none (built in, or raw)
     LONG    usrDecel                    ' PL-160: the rate setDeceleration() was given, mm/s^2; 0: none (built in, or raw)
     LONG    bSettingsLive              ' T/F where T means a start has applied the kept settings, so a setter writes the working value too
+
+VAR { PL-161: this object's front cog's one in-flight request -- Spin2 only, never addressed by the PASM driver }
+    ' Placed after every PASM-addressed run, like the error record; isAbiLayoutValid() checks the block. Front-written
+    '  only (bFrontServiceRequests()); an owner's front cog (isp_steering_2wheel) keeps its own and never uses these.
+    LONG    pendStage                   ' PST_NONE, or the driver condition the request waits for (PST_*)
+    LONG    pendSlot                    ' the request's slot (its caller's COGID())
+    LONG    pendSeq                     ' the sequence it is answered under
+    LONG    pendCmd                     ' its REQ_* code
+    LONG    pendArg1                    ' its arguments, as taken
+    LONG    pendArg2
+    LONG    pendArg3
+    LONG    pendTicks                   ' getct() when the present stage began (bFrontWaitExpired())
 
 DAT  {  Motor DRIVER  }
 '
@@ -7342,10 +7504,18 @@ drvMotor                                                ' global (task 3535): en
                                                         '  (p2kbPasm2Tjnz), and from the undriven jump above tmpY still
                                                         '  holds |err_|. A fault taken on this frame has already set the
                                                         '  fault's bridge, so its frame skips too, as undriven hereafter.
+                mov     fold_net, sense_i_              ' PL-146 (DRIVER_REV 37): the DC-link reading NET of the board's
+                sub     fold_net, sense_zero_           '  rest offset, floored at 0. A driven bridge at rest (SM_BRAKE)
+                fges    fold_net, #0                    '  read the raw offset (left ~8 mV) against a ~11 mV threshold at
+                                                        '  1 A: counted on noise. sense_zero_ is the front's restZeroSenseMv
+                                                        '  (0 when unmeasured or out of band), mV as sense_i_ is; sense_i_
+                                                        '  itself stays raw, since it is reported (sense_i_mV). FGES is a
+                                                        '  signed floor (p2kbPasm2Fges); no flag is written until the CMPS.
                 mov     tmpX, duty_                     ' S-2: the MOSFET current limit, on a lower bound of phase current:
                 fges    tmpX, duty_floor_               '  I_dc >= 0.75 * m * I_peak, m = duty_ / (4 * frame_cnt), floored
                 sca     tmpX, i_limit_k_                '  threshold (mV) = max(duty_, duty_floor_) * i_limit_k_ >> 16
-                cmps    sense_i_, tmpX              wc  ' Q: at or over the limit? (NC)
+                cmps    fold_net, tmpX              wc  ' Q: the net reading at or over the limit? (NC) SCA hands the
+                                                        '  threshold to this S (p2kbPasm2Sca), so tmpX itself is unread
     if_nc       mov     tmpY, duty_                     ' YES: fold back ~1.6 % per frame, and skip the servo this frame
     if_nc       shr     tmpY, #6
     if_nc       sub     duty_, tmpY
@@ -7438,19 +7608,8 @@ wait4adc
     if_nc       jmp     #.wait4adcAgn
 .noWait4adc     ret
 
-countIllegal                                            ' PL-90: count an entry into illegal code tmpY (0..7) in its own word
-                mov     tmpX, #HALL_ILL_HI_WORD         '  of hall_illegal_ -- %000 low, %111 high -- saturating, so one
-                cmp     tmpY, #%000                 wz  '  word never carries into the other. Returns Z set when counted,
-    if_z        mov     tmpX, #HALL_ILL_LO_WORD         '  Z clear for a legal code. Global: the LUT start sequence calls it.
-    if_nz       cmp     tmpY, #%111                 wz
-    if_nz       ret                                     ' a legal code: nothing counted, Z clear
-                altgw   tmpX, #hall_illegal_            ' this code's 16-bit count
-                getword tmpY
-                cmp     tmpY, ##HALL_ILL_WORD_MAX   wz  ' Q: saturated?
-    if_nz       add     tmpY, #1
-                altsw   tmpX, #hall_illegal_
-                setword tmpY
-    _ret_       modz    _set                        wz  ' Z: counted, whatever the saturation test left in Z
+    ' countIllegal moved to the LUT-resident block (DRIVER_REV 37, PL-146): its 13 longs paid for the fold-back's rest
+    '  offset (sense_zero_, fold_net and three instructions in .noFault). See it beside gettgtincr, below `fit 496`.
 
 initAngleFmHall
                 ' init angle & prior from current motor position
@@ -7555,6 +7714,7 @@ hall_angles     LONG    0           '-%000- can't happen forward-direction table
 
 tmpX            res 1       ' miscellaneous
 tmpY            res 1
+fold_net        res 1       ' PL-146 (DRIVER_REV 37): the fold-back's net reading, sense_i_ - sense_zero_ floored at 0 (.noFault)
 calibPeriod     res 1       ' PL-32: widened ADC count period, start-of-driver GIO/VIO calibration only
 ' measurements
 drvrSrtTix      res 1
@@ -7630,7 +7790,7 @@ scl_levels      res 4
 '  PRECISE FORMAT:
 '   copied in-to driver each loop iteration
 params_ptr_ res 1           ' params_ptr must be followed by:
-offset_fwd_ res 1           '  26 (DRVR_PARAMS_LONGS_COUNT) parameters, offset_fwd_ .. drv_release_, in the hub run's order
+offset_fwd_ res 1           '  27 (DRVR_PARAMS_LONGS_COUNT) parameters, offset_fwd_ .. sense_zero_, in the hub run's order
 offset_rev_ res 1
 duty_min_   res 1           ' minimum duty cycle for pwm
 duty_max_   res 1           ' maximum duty cycle for pwm
@@ -7655,7 +7815,8 @@ force_seq_  res 1           ' R19.3 TEST-USE: advanced by testForceFault(); a dr
 fault_clr_  res 1           ' task 3616: advanced by the front cog to clear DCS_FAULTED; a drive pass whose fault_clr_seen differs clears it
 probe_sink_ res 1           ' R19.4 1e TEST-USE: PRB_* whose low side the probe holds ON, PRB_NONE for none
 probe_y_    res 1           ' R19.4 1e TEST-USE: the probed phase's high-side Y, 0 for 50 % (bias)
-drv_release_ res 1          ' PL-138: non-zero asks for the release (passEnd -> driverRelease); the LAST parameter
+drv_release_ res 1          ' PL-138: non-zero asks for the release (passEnd -> driverRelease)
+sense_zero_ res 1           ' PL-146 (DRIVER_REV 37): the DC-link rest offset, mV, the fold-back nets out; the LAST parameter
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -7684,12 +7845,13 @@ foldback_cnt_ res 1         ' R20.1: frames the current fold-back lowered duty_ 
 ' fault is here... (but external only)
 
 ' $1f8 for reg cogs
-    fit     496  ' 495 USED, 1 FREE, 2026-09-27 (DRIVER_REV 36, PL-146's TJNZ in .noFault) -- read from the compiler, never
+    fit     496  ' 487 USED, 9 FREE, 2026-09-27 (DRIVER_REV 37: PL-146's sense_zero_, fold_net and 3 instructions, +5;
+                 ' countIllegal's 13 moved to the LUT; was 495) -- read from the compiler, never
                  ' hand-counted (a hand count here once ran ~80 short): `pnut-ts -l isp_bldc_motor.spin2`, FOLDBACK_CNT_'s
-                 ' VALUE, whose top 12 bits are its cog address ($1EE, the last register, so USED is $1EF). LUT code runs at cog
+                 ' VALUE, whose top 12 bits are its cog address ($1E6, the last register, so USED is $1E7). LUT code runs at cog
                  ' speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but instruction operands reach only cog RAM, so REGISTERS
                  ' are what this budget is for; code can live in the LUT-resident block below (task 3535):
-                 ' lutCodeStart $200 to lutCodeEnd $318, 280 of 512 longs (DRIVER_REV 29, PL-138).
+                 ' lutCodeStart $200 to lutCodeEnd $325, 293 of 512 longs (DRIVER_REV 37, LUTCODEEND's VALUE the same way).
 
 ' =========================================================================
 '  LUT-RESIDENT CODE ($200-$3FF): the start sequence (task 3535) and the per-drive-pass
@@ -7916,6 +8078,22 @@ gettgtincr
     if_c_and_z  wrlong  tgt_incr, ptra[-1]              ' let caller know we have taken it by clearing sync bit
     _ret_       signx   tgt_incr, #30                   ' sign extend back to normal tgt_incr
 
+countIllegal                                            ' PL-90: count an entry into illegal code tmpY (0..7) in its own word
+                mov     tmpX, #HALL_ILL_HI_WORD         '  of hall_illegal_ -- %000 low, %111 high -- saturating, so one
+                cmp     tmpY, #%000                 wz  '  word never carries into the other. Returns Z set when counted,
+    if_z        mov     tmpX, #HALL_ILL_LO_WORD         '  Z clear for a legal code. Global: .ctlMotor (cog RAM) calls it on
+    if_nz       cmp     tmpY, #%111                 wz  '  a hall change the table did not step, and the start sequence
+    if_nz       ret                                     '  above once. A legal code: nothing counted, Z clear.
+                altgw   tmpX, #hall_illegal_            ' this code's 16-bit count
+                getword tmpY
+                cmp     tmpY, ##HALL_ILL_WORD_MAX   wz  ' Q: saturated?
+    if_nz       add     tmpY, #1
+                altsw   tmpX, #hall_illegal_
+                setword tmpY
+    _ret_       modz    _set                        wz  ' Z: counted, whatever the saturation test left in Z
+                                                        ' DRIVER_REV 37 (PL-146): moved here from cog RAM, unchanged; reached
+                                                        '  only by CALL, so its place after gettgtincr's _ret_ is never fallen into
+
 driveinit                                               ' init drive pwm
                 dirh    adc_pins                        ' enable ADC pins (base+0..4)
                 ' PL-138: the low sides take pwmn only here, in one unbroken run up to the DIR raise. WRPIN needs DIR low
@@ -8115,7 +8293,7 @@ driverRelease                                           ' PL-138 (W3, W4): reach
 
 lutCodeEnd                                            ' LUT-resident code ends here (task 3535)
 
-                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 280 of 512 used, COUNTED 2026-09-26 at DRIVER_REV 29 (see the cog fit above)
+                fit     $400  ' LUT RAM boundary (auto-limit for org >= $200); 293 of 512 used, read from the compiler 2026-09-27 at DRIVER_REV 37 (see the cog fit above)
 
 CON { license }
 {{

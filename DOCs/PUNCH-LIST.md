@@ -48,6 +48,7 @@ do the right thing, and then we can call them done without having to test on the
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | Two cells added to the floor run, then the floor run |
 | PL-154 | Serial: hold can't be set from the host example, commands can wait 1 s, non-numbers accepted | Fix the wrapper, the loop and the parser; serial certification run |
 | PL-157 | Serial and the Python host lag the 6.0 getters | Serial command + doc row + Python wrapper for each |
+| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator; the API half certified at pass 7) | Build the generator (owner Q2-Q5), wheels-up cells, feel on the floor |
 | PL-161 | The steering front cog overruns its 1 ms slot | pass 8: R16-DUAL-FRONTST (late 0, max under 950 µs) |
 | PL-162 | Two pack cells judged with a wrong instrument (PACK-ABSENT reference, PACK-X criterion) | pass 8: R20-PACK-ABSENT and R19-DUAL-PACK-X |
 
@@ -63,7 +64,7 @@ do the right thing, and then we can call them done without having to test on the
 | PL-111 | A serial host could not clear a protective stop | A provoked protective stop (PL-106) |
 | PL-132 | The blocked-wheel stop shorted the phases even under coast | The floor run |
 | PL-144 | The two-wheel path limiter cycled the platform between crawl and full | pass 8: R20-DUAL-PATH-HUNT = 1 (precondition fixed) |
-| PL-146 | The fold-back counted at rest on an undriven bridge, so the left never released | pass 8: R20-DUAL-EV-FOLDBACK 0 bad (DRIVER_REV 36) |
+| PL-146 | The fold-back counted at rest on an undriven bridge, so the left never released | pass 8: R20-DUAL-EV-FOLDBACK 0 bad (DRIVER_REV 37: rest offset netted too) |
 
 **Watch**
 
@@ -1985,6 +1986,22 @@ for both drivers to read DCS_STOPPED; the settle counts from there. Certifies at
   495 of 496. A wheel held at rest (SM_BRAKE) is driven, so its fold-back still acts; netting the rest offset out
   would need a new parameter long (an ABI change) and is not done. Certifies at pass 8 (EV-FOLDBACK 0 bad).
 
+**2026-09-27, built (DRIVER_REV 37), the driven-at-rest residual.**
+- **VERIFIED in source:** after DRIVER_REV 36 the compare still took the RAW `sense_i_` on a DRIVEN bridge, and a
+  wheel held at rest (SM_BRAKE, `checkstop` sets `BR_DRIVE`) is driven: the left's ~8 mV offset against a ~11 mV
+  threshold (DERIVED: 3 x 1 A x 150 x 10 / 400 at the duty floor, Rev B) counts on noise.
+- **Built:** a new parameter long `sense_zero`, APPENDED after `drv_release` (DRVR_PARAMS_LONGS_COUNT 26 -> 27,
+  `isAbiLayoutValid()` and `bOutsideDriverRuns()` now end the run at `sense_zero`). The Spin2 side hands it
+  `restZeroSenseMv` (same units as `sense_i_`, mV), never negative, and 0 when the rest zero is out of its band
+  (`applySenseZero()`, from `restZeroBegin()`/`restZeroFinish()`; `init()` writes 0). `.noFault` compares
+  `max(sense_i_ - sense_zero_, 0)` (new register `fold_net`); `sense_i_` itself stays raw, as it is reported.
+- **Cog RAM, from the compiler** (`pnut-ts -l`, FOLDBACK_CNT_'s VALUE): 495 -> 487 of 496. The fold-back cost 5 longs
+  (two registers, three instructions); `countIllegal` (13 longs, unchanged) moved to the LUT block to pay for it: LUT
+  280 -> 293 of 512 (LUTCODEEND $318 -> $325).
+- **Negative** (the reading that shows it did not work): R20-DUAL-EV-FOLDBACK still FAIL with a left engage and no
+  release, or `foldback_frames` still advancing on a wheel held at rest at the 1 A limit. The over-netting negative:
+  a stall at 1 A with no EV_FOLDBACK engage. Certifies at pass 8.
+
 ### PL-148 -- the serial control path has never run on hardware
 
 > **6.0 status (2026-09-26 audit):** RELEASE — a shipped deliverable with no hardware evidence.
@@ -2120,6 +2137,33 @@ Certifies at pass 8 (FRONTST late 0, max under 950 µs).
   limit additions measured negligible.
 - **If pass 8 still shows a ~520 µs spread across dual-start lifetimes,** that spread is the wait itself, and the
   remaining fix is answering synchronized requests on a later pass instead of waiting in it.
+
+**2026-09-27, built (DRIVER_REV 37), that remaining fix, by construction, in both front cogs.**
+- **VERIFIED in source:** three in-pass busy-waits were reachable from each front cog's request service: the
+  synchronized take (steering `frontWaitForDrivers(WAIT_SYNC_TAKEN)`, single `bFrontWaitForDriver()`), the e-stop
+  release (`WAIT_ESTOP_LEFT`) and the PL-66 fault clear (`frontClearFault()`, `WAIT_FAULT_LEFT`), each bounded at 4 drive
+  passes (2.09 ms), two in one pass for a drive of a FAULTED wheel. The single-motor front cog had the same pattern.
+- **Built:** all three are gone. A request whose drivers must act is held IN FLIGHT (`pendStage`: PST_FAULT_LEFT,
+  PST_SYNC_TAKEN, PST_ESTOP_LEFT), polled once at the head of each pass, and answered on the pass that sees the
+  condition, or `bFrontWaitExpired()` (the same 4-drive-pass bound, condition read first, as before). One in flight at
+  a time; while it is, nothing else is taken (as nothing was during an in-pass wait); the phase bar of DRIVER_REV 36 is
+  removed. Statuses are the busy-waits' (ERR_SYNC_TIMEOUT, ERR_NO_RESPONSE per wheel, the zeroes, audit M). Lockstep
+  is unchanged: both commands written, then ONE `cogatn()` of both drivers' bits, in the same pass as before.
+- **Worst pass, in operations:** no loop reachable from `frontLoop()` now exits on a driver's state; the request
+  service is bounded by its slots and classes (8-slot scan, at most 4 x 8 `frontTakeSlot()` copies, at most one apply
+  per open slot, at most one poll of 2-3 getter calls and one `getct()` compare). The in-flight write pass adds one
+  drive write per wheel, one `cogatn()` and the records, straight-line. So a pass's length no longer contains a term
+  set by a driver (was up to 523 µs live, 2 x 2.09 ms bounded); what remains is the fixed work pass 7 read as the
+  low end of the lifetimes (533 µs), plus DRIVER_REV 36's savings.
+- **Acknowledgement bound (DERIVED):** a live driver acts within one drive pass, under the 0.9 ms least pass interval,
+  so a request in flight is answered on the next pass (one pass later than before). With every bound gone: 15 ms
+  steering (4 ahead x 3 passes + 3), 18 ms single (5 x 3 + 3), under 20. A two-stage request (drive of a FAULTED wheel)
+  with both bounds gone adds 3 passes each (the old in-pass pair added 2 x 2.09 ms): not under 20 ms if every cog posts
+  one at once, as it was not before.
+- **Negative** (the reading that shows it did not work): R16-DUAL-FRONTST still late or max at or over 950 µs, or the
+  dual-start lifetimes' max still one drive pass (~520 µs) above their min. And for the change itself: any
+  ERR_SYNC_TIMEOUT or ERR_NO_RESPONSE on a live driver, or a ~1 drive-pass lag between the wheels' starts (lockstep).
+  Certifies at pass 8.
 
 ### PL-162 -- two pack cells are judged with a wrong instrument
 
