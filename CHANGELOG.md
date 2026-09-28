@@ -40,7 +40,7 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 ### Improvements
 
 - 6.5″ motor: commutation uses the motor's measured hall position and a lead that follows speed; unloaded
-  running current at low and middle speeds is 8 to 25 times lower
+  running current at low and middle speeds is 8 to 25 times lower than with v5.0.2's commutation offsets
 - Forward and reverse draw the same current, to within 8 %
 - Starting from rest is smooth: the current surge at spin-up is gone
 - Every ramp is jerk-limited: acceleration eases in and out over 250 ms, and a reversal passes through zero
@@ -93,7 +93,7 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
   steering object never had them). Use `setAcceleration()` and `setDeceleration()`, in mm/s², on either
   object or over serial (`setaccel`, `setdecel`).
 - **BREAKING**: every stop takes about 0.25 s longer and runs about speed × 0.125 s further than the same
-  deceleration without easing: from 1.13 m/s, about 0.57 m instead of 0.43 m. The stop limits and
+  deceleration without easing: from 1.13 m/s, about 0.57 m instead of 0.43 m (calculated). The stop limits and
   `driveForDistance()` allow for it; a plain `stopMotor()` / `stopMotors()` does not, so leave the room.
 
 ### Known Issues

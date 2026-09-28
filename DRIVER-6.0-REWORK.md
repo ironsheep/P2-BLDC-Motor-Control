@@ -22,9 +22,9 @@ them were not bugs in one place. They were missing pieces:
 - **One protection, and it gave up.** The only automatic protection was a last-resort test that switched
   the motor off once the rotor fell far enough behind the field. There was no current limit, no stall
   detection and no fallback.
-- **Commutation that was never measured for one direction.** The 6.5″ motor used one fixed offset, and
-  the other direction's offset was its arithmetic mirror. On a two-wheel platform the right motor runs
-  mirrored, so it always used the offset nobody had measured.
+- **One commutation offset, mirrored for the other direction.** The 6.5″ motor used one fixed offset
+  (43°), and the other direction's offset was its arithmetic mirror (317°). On a two-wheel platform the
+  right motor runs mirrored, so it always used the mirrored value.
 - **A start-up surge.** The duty servo hunted at low speed, so every start passed through a current surge.
 - **Errors that stopped the caller.** Bad arguments aborted the calling cog instead of returning an error.
 - **Two writers for the same state.** The caller's cog and the sense cog both wrote the drive command, the
@@ -34,13 +34,14 @@ them were not bugs in one place. They were missing pieces:
 
 **The motor is driven where it wants to be driven.** The commutation for the 6.5″ motor is now built from
 the motor's measured hall zero and a lead that follows speed, both measured on the motor itself. The effect
-is large: unloaded running current at low and middle speeds is 8 to 25 times lower than 5.x, and the two
-directions draw the same current to within a few percent. The
+is large. Measured on the same driver with only the offsets changed, unloaded running current at low and
+middle speeds is 8 to 25 times lower than with v5.0.2's offsets, and the two directions draw the same current
+to within a few percent. The
 [6.5″ motor manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) says how each number was found.
 
 **A servo that doesn't hunt.** The duty now comes from a feedforward, the duty a speed needs, plus a small
 trim whose gain scales with duty. The start-up surge is gone: peak current at a start is 1.2–1.5 times the
-settled value, against 1.9–3.0 before.
+settled value, against 1.9–3.0 with v5.0.2's duty servo (the same starts, on the same motors).
 
 **Motion that eases in and out.** Every start, speed change, stop and reversal is jerk-limited: the
 acceleration eases in and out over 250 ms, and a reversal passes through zero in one continuous ramp.
@@ -69,8 +70,9 @@ every command returns `NO_ERROR` or an `ERR_*` code. The cog count is fixed: 2 f
 ended, `getFaultCause()` why it faulted, `getHealth()` what the start checks found, and an event log records
 what the drive handled on its own.
 
-**Room to grow.** The PASM driver was reorganised to free memory: cog RAM from 492 to 441 of 496 longs, and
-the LUT from 507 to 457 of 512. Every step was proved to behave identically before it was accepted.
+**Room to grow.** With these functions in, the PASM driver had filled its memory: 492 of 496 cog RAM longs
+and 507 of 512 LUT longs. It was then reorganised, to 441 and 457, and every step was proved to behave
+identically before it was accepted.
 
 ## How it was checked
 

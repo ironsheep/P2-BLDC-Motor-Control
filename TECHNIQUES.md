@@ -259,7 +259,7 @@ of exploring.
 size of the step. The cause was in the code: on the one pass where a ramp reached its target, the field
 did not advance, so every arrival stepped the field back by a whole increment. A desk model reproduced
 the logged kicks to within about 10 mV before the fix was built. After the fix the worst kick fell from
-64–183 mV to 13–16 mV. The start surge of the 5.x driver was predicted the same way: an integral servo
+64–183 mV to 13–16 mV. The start surge of v5.0.2's duty servo was predicted the same way: an integral servo
 whose fixed gain was too high for a rotor that is only slightly stiff at low speed.
 
 ### 2.6 Say what is not known
