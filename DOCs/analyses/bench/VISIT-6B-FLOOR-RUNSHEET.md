@@ -2,7 +2,9 @@
 
 **Task:** «#3576» runs it; «#3591» built it, SRC_REV 58 added the load cells, SRC_REV 60 re-checked every cell against
 DRIVER_REV 38's jerk-limited ramp and DRIVER_REV 39's stop plan, and **SRC_REV 62 rebuilt it on Stephen's floor rules and
-the five situations he chose (2026-09-27)**; **SRC_REV 63 applies his two rulings on it (2026-09-28)**, below.
+the five situations he chose (2026-09-27)**; **SRC_REV 63 applies his two rulings on it (2026-09-28)**, below; **SRC_REV 64
+records what the run needs to say how the drive works for a platform of this size** ("record all we should to understand
+how we are working for this size platform", Stephen, 2026-09-28): see *The platform's size* below.
 **Tier:** `dual-spin` (part `DUAL_PART_SPIN`, one binary). **Burn-down:** `DOCs/PUNCH-LIST.md`, "Release burn-down".
 
 **Stephen's rulings (2026-09-28).**
@@ -57,14 +59,14 @@ Then battery off, the platform on the floor, and the floor run below.
 
 ## ⛔ First: push, then pull at the bench
 
-`git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 63** and the
+`git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 64** and the
 release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate pass leads to a fix).
 
 ## Check the banner before reading anything else
 
 | Every `dual-spin` log must read |
 |---|
-| `BM-BANNER,...,src_rev,63,fmt,40,part,SPIN` |
+| `BM-BANNER,...,src_rev,64,fmt,41,part,SPIN` |
 | `BM-BUILD ... drv_rev,46`: the driver under test. A lower number means an old tree. |
 | `BM-PLAN` rows in this order: `OBSTACLE`, `GRAB`, `INCLINE`, `FAULTRUN`, `SPIN` |
 | `BM-FLBUILD`, `BM-BLKBUILD`, `BM-LDBUILD`, `BM-CRPBUILD` and `BM-RDBUILD` present: every bound below was pre-registered |
@@ -88,8 +90,9 @@ release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate 
 
 | What | Value | Why |
 |---|---|---|
-| Incline angle, measured on the ramp surface | ____ ° (about 10°) | the creep cells judge a hold against this slope |
-| Platform mass | ____ kg | with the angle, the holding torque per wheel = m·g·sinθ·0.08255 m / 2 |
+| Incline angle, measured on the ramp surface | ____ ° (about 10°) | the creep cells judge a hold against this slope; with the mass, it is the force the climbs and the hold work against |
+| Platform mass | **7.71 kg (17.0 lb)** — given 2026-09-28, nothing to do | with the angle, the holding torque per wheel = m·g·sinθ·0.08255 m / 2 |
+| *(optional)* FAULTRUN's leg out, measured with a tape: how far the platform really went | ____ mm (the driver says 1,000) | the loaded tyre's rolling size: how true a distance command is on this platform. One reading; skip it if it costs more than it is worth to you |
 | The obstacle for OBSTACLE STOP | you / an object (circle one) | the log cannot tell which |
 | A straight lane | 1.5 m long, 0.5 m wide, hard floor, clear | GRAB and FAULTRUN drive 1 m out and back; OBSTACLE drives at most 1 m |
 | The incline | about 10°, at least 1 m of slope past the drive wheels plus the platform's own length, the flat at its foot | INCLINE climbs 171 ticks (0.98 m) from the foot |
@@ -108,7 +111,7 @@ release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate 
 | **Runs that carry state** | None. Every OBSTACLE and GRAB trial, the incline and the fault run each run in their own steering lifetime; SPIN pairs share one; a written offset pair is restored and read back (`BM-OFFREST`); the lowered current limits are restored before each lifetime stops. |
 | **Run length** | About **11 minutes of run**: OBSTACLE about 1.5, GRAB about 3 (up to three tries), INCLINE about 2 (three climbs of about 2.4 s, the three watches, the drive down in about 7 s, and the setup), FAULTRUN about 1 (with a 5 s fault cool-down), SPIN about 3.5. About **35 minutes at the rig** with the setups. Cap 30 minutes of run. About 30 clicks. |
 | **Repeatability** | Repeatable. Every READY screen has SKIP: to rerun only one situation, SKIP the ones before it. |
-| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 7,546 bytes (limit 12,404; unchanged by SRC_REV 62 and 63, which add no debug() statement). |
+| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 7,550 bytes (limit 12,404; SRC_REV 64 adds four fields to BM-FLLEG and no debug() statement). |
 
 ## The command — one
 
@@ -268,7 +271,8 @@ surface the tyres grip.
 
 **Recorded, not judged:** `BM-CREEP`/`BM-CREEPW` per stop (how the hold resolved, the hold duty against its ceiling,
 the time at the ceiling, current at hold: this sizes `HOLD_CEILING_PCT` under load), `BM-FLLEG` per climb and the drive
-down. No trace and no `BM-LOAD` come from the incline any more.
+down, each with its steady second's current per wheel and the pack voltage after it (SRC_REV 64). No trace and no
+`BM-LOAD` come from the incline any more.
 
 ### 4. FAULT RETURN RUN (segment `FAULTRUN`; PL-93, X-5 / PL-117)
 
@@ -355,6 +359,30 @@ peak and its steady reference.
 
 ---
 
+## The platform's size: what the run records, and what the analysis computes from it (SRC_REV 64)
+
+Stephen, 2026-09-28: *"record all we should to understand how we are working for this size platform"*. The Rev B platform
+is **7.71 kg (17.0 lb)**; its track is 387 mm and its wheel radius 82.55 mm. Nothing here adds a cell, a screen or a
+motion: every figure is computed at analysis from records the run already makes, and SRC_REV 64 adds the steady current
+per wheel and the pack voltage to every plain floor leg (`BM-FLLEG` gains `n`, `l_amps`, `r_amps`, `pack_mv`; `NA` when
+the leg's steady second was cut short).
+
+| What it tells a user about a platform this size | From | Expectation written before the run |
+|---|---|---|
+| **The force a slope asks, and what it costs in current.** m·g·sinθ, split between the wheels | the three climbs' `BM-FLLEG` against the flat drives back at the same power (GRAB's), per wheel | at 10°: **13.1 N** in all, 6.6 N and 0.54 N·m per wheel. At 0.155 m/s that is **2.0 W** of climbing work, so by energy alone a climb draws at least **2.0 W ÷ the pack voltage, about 0.05 A per wheel** more than the flat leg. Less than that means the current channel under-reads under load, or the slope is shallower than measured |
+| **How much of the pack's power reaches the slope.** climbing work ÷ the extra electrical power | the same, with `pack_mv` | none written: it is a first measurement, and it is judged against the energy bound above |
+| **The hold's force per unit of effort.** m·g·sinθ against the hold's duty and current at rest | stop 3's `BM-CREEPW` | the hold's 10 % ceiling holds at 10° (CREEP, CRPHOLD); its duty tells how much of the ceiling that slope used, and so what slope the ceiling leaves room for |
+| **Rolling on the floor.** the flat drives' steady current against the same speed wheels up | GRAB's drives back, FAULTRUN's leg out (`BM-RDRIVE l_fwd, r_fwd`) | none written: wheels up, the same power draws only the motors' own losses |
+| **Stops with the platform's mass behind them.** where each leg came to rest against its limit | every `BM-FLLEG` `l_trav`, `r_trav` against `ticks` | within 3 ticks of the limit, as wheels up: the built-in 1,470 mm/s² asks 11.3 N of the pair to stop this platform |
+| **How true a distance is on the floor** | the optional tape reading above | within the hall resolution, 5.76 mm, if the loaded tyre rolls at its nominal 6.5 in |
+
+**Not measured, named:** the force during a start or a stop (at the built-in rates it is 7.7–11.3 N for under half a
+second, too brief and too small against the current channel's noise to separate from the steady draw); the platform's
+centre of gravity, so nothing here says how hard a stop tips it; the platform's rotational inertia, so the spins say
+nothing about mass.
+
+---
+
 ## ⭐ PL-160: feel the new ramp, and write it down
 
 PL-160's feel is a floor item: no cell can judge it. **During every drive, watch and listen at every start and every stop
@@ -402,6 +430,8 @@ floor run.
 ## After the visit
 
 One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`, with your "PL-160 feel" line, the incline
-angle and the platform mass quoted. Then close every punch-list item its cells certify (PL-93, PL-95, PL-106, PL-132,
+angle and the platform mass quoted, and a section on the platform's size that computes each row of the table above. Its
+results go into the 6.5″ motor manual (§6.5 and §9's "behaviour under load"), with their sources in
+`DOCs/analyses/MOTOR-6.5IN-MANUAL-SOURCES.md`. Then close every punch-list item its cells certify (PL-93, PL-95, PL-106, PL-132,
 PL-144, PL-150, PL-111's API half, and PL-160's feel), and re-count the burn-down. PL-150's overload hold closes on
 GRAB's LDHOLD alone. If GRAB judged no try, LDHOLD is NOMEAS and PL-150 stays open.

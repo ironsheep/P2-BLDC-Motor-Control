@@ -562,6 +562,13 @@
 ''               loaded trial's kind (LDK_*) is gone. Records: BM-LOAD loses kind, BM-CRPBUILD loses ovl_a and ovl_ms;
 ''               tokens CAUSE CLIMB and EVST INCLINE removed (both were last); finds HOLD_CEIL_3608_LDHOLD is HOLD_CEIL_3608;
 ''               the panel's INC_OVL state row removed and INC_READY's text says three steps (tools/gen_dual_assets.py)
+''               28 Sep 2026 -- SRC_REV=64, FMT 41: what the floor run needs to say how the drive works for a platform of
+''               this size (Stephen, 2026-09-28: "record all we should to understand how we are working for this size
+''               platform"; the Rev B platform is 17.0 lb, 7.71 kg). Every plain floor leg now reads the steady window at
+''               speed that FAULTRUN's leg out already read (flLeg()'s bRefWin: the drives back, the incline's three
+''               climbs and its drive down), then the pack voltage once, outside every timed wait (flLegPack()).
+''               BM-FLLEG gains n, l_amps, r_amps and pack_mv. No cell, no screen and no motion changes: a climb still
+''               stops at its limit, and a window the stop cuts short reads NA
 ''
 '' =================================================================================================
 
@@ -637,8 +644,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 63                                 ' hand-bumped whenever this file changes
-    FMT_VERSION = 40                                     ' BM- record-format version
+    SRC_REV     = 64                                 ' hand-bumped whenever this file changes
+    FMT_VERSION = 41                                     ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -15774,6 +15781,8 @@ VAR { SPIN part state -- cog 0 only }
     LONG    bFllDriven                                      ' driveAtPower() was called
     LONG    fllMs                                           ' command to both wheels at rest at its end
     LONG    fllTravel[INST_MOTORS]                          ' each wheel's travel on its driver's pos, from the leg's start
+    LONG    bFllPack                                        ' SRC_REV 64: the pack was read after the leg's steady window
+    LONG    fllPackMv                                       ' SRC_REV 64: getPackVoltage() there, mV (PACK_PRESENT only)
     ' the cells' accumulators (spResetCells())
     LONG    sfSpStopN                                       ' SPINSTOP: legs that ended at the limit or past it
     LONG    sfSpStopBad                                     ' ...not at rest within SPIN_STOP_TOL_TICKS of it
@@ -17009,7 +17018,7 @@ PRI incStop(kind) : whyCode | slotIdx
         whyCode := WHY_INST_NOACK
     else
         waitBeat(SPIN_MIRROR_MS, CP_LOOP_READY)            ' the mirror refreshes on the instrument's next passes
-        whyCode := flLeg(FLL_INC_UP, SEG_INCLINE, PROMPT_INCLINE, BM_SCR_INC_CLIMB, BM_STATE_CRP_COAST + kind, INC_POWER, INC_LEG_TICKS, TRUE, FALSE)
+        whyCode := flLeg(FLL_INC_UP, SEG_INCLINE, PROMPT_INCLINE, BM_SCR_INC_CLIMB, BM_STATE_CRP_COAST + kind, INC_POWER, INC_LEG_TICKS, TRUE, TRUE)
         bIncOnSlope := TRUE
         if whyCode == WHY_NONE
             bCrReleased := TRUE                             ' at rest on the slope: the hold (or the float) is on from here
@@ -17064,7 +17073,7 @@ PRI incDown() : whyCode | slotIdx, netTicks
     if bRunContinue(SEG_INCLINE) == FALSE
         whyCode := WHY_ABORTED
     elseif netTicks > 0
-        whyCode := flLeg(FLL_INC_DOWN, SEG_INCLINE, PROMPT_INCLINE, BM_SCR_INC_DOWN, BM_STATE_INC_DOWN, 0 - INC_POWER, netTicks, TRUE, FALSE)
+        whyCode := flLeg(FLL_INC_DOWN, SEG_INCLINE, PROMPT_INCLINE, BM_SCR_INC_DOWN, BM_STATE_INC_DOWN, 0 - INC_POWER, netTicks, TRUE, TRUE)
         waitRest(SIDE_BOTH, STOP_TIMEOUT_MS, FALSE)
     if whyCode == WHY_NONE
         bIncOnSlope := FALSE                                ' back on the flat
@@ -18149,7 +18158,8 @@ PRI flLeg(kind, seg, promptCode, scr, stateIdx, power, legTicks, bByTicks, bRefW
 ' @param power - the power both wheels are driven at, signed
 ' @param legTicks - its declared travel, hall ticks
 ' @param bByTicks - TRUE to arm stopAfterRotation(legTicks); FALSE for a whole FL_LEG_MM leg, stopAfterDistance()
-' @param bRefWin - TRUE to read a steady getCurrent() window after AT_SPEED (FAULTRUN's leg out)
+' @param bRefWin - TRUE to read a steady getCurrent() window after AT_SPEED, and the pack after it (SRC_REV 64: every
+'                  plain leg -- FAULTRUN's leg out, the drives back, the incline's climbs and its drive down)
 ' @returns whyCode - WHY_NONE when it came to rest at its limit, else why its segment must end
 '
 ' @local safeEvent - SAFE_* from the watched waits
@@ -18164,6 +18174,8 @@ PRI flLeg(kind, seg, promptCode, scr, stateIdx, power, legTicks, bByTicks, bRefW
     fllStopBy := SPSTOP_NOT_RUN
     bFllDriven := FALSE
     fllMs := 0
+    bFllPack := FALSE
+    fllPackMv := 0
     whyCode := WHY_NONE
     safeEvent := SAFE_NONE
     bReached := FALSE
@@ -18204,12 +18216,29 @@ PRI flLeg(kind, seg, promptCode, scr, stateIdx, power, legTicks, bByTicks, bRefW
                         safeEvent, bReached := spinWatch(UNTIL_TIME, SPIN_FAULT_SETTLE_MS, TRUE)
                         if bReached == FALSE
                             spAmpsN := 0                    ' cut short (an event, the guard or the stop begun): no reference
+                        else
+                            flLegPack()                     ' SRC_REV 64: the pack under that load, between the two waits
                 if (safeEvent == SAFE_NONE) and (bSpOvertravel == FALSE)
                     safeEvent, bReached := spinWatch(UNTIL_STOPPED, FL_LEG_MS, FALSE)
                 whyCode := flLegEnd(seg, safeEvent, bReached)
             fllMs := getms() - startMs
     fllWhy := whyCode
     emitFlLeg()
+
+PRI flLegPack() | ePackStatus, nPackMv
+' SRC_REV 64: read the pack voltage once, just after a floor leg's steady window and outside every timed wait, so the
+' window's current can be read as power at the platform's size (the rig's mass is a rig fact). Recorded only when the
+' sensor reads PACK_PRESENT.
+'
+' @local ePackStatus - getPackVoltage()'s status
+' @local nPackMv - its reading, mV
+
+    beat(CP_LIB_STEER_QUERY)
+    ePackStatus, nPackMv := steering.getPackVoltage()
+    beat(CP_LIB_STEER_QUERY)
+    if ePackStatus == steering.PACK_PRESENT
+        bFllPack := TRUE
+        fllPackMv := nPackMv
 
 PRI flLegEnd(seg, safeEvent, bReached) : whyCode | eLeftCode, eRightCode
 ' Classify how a plain floor leg ended and take the stop it calls for, as spinEnd() does for a spin leg: the travel
@@ -18277,14 +18306,17 @@ PRI flDriveBack(seg, promptCode) : whyCode, bBack | backTicks
     if whyCode == WHY_OPERATOR_SKIP
         whyCode := WHY_NONE                                 ' he pushes it back instead (the BACK screen follows)
     elseif (whyCode == WHY_NONE) and (backTicks > 0)
-        whyCode := flLeg(FLL_BACK, seg, promptCode, BM_SCR_RETURN_DRIVE, BM_STATE_RET_DRIVE, 0 - FL_SLOW_POWER, backTicks, TRUE, FALSE)
+        whyCode := flLeg(FLL_BACK, seg, promptCode, BM_SCR_RETURN_DRIVE, BM_STATE_RET_DRIVE, 0 - FL_SLOW_POWER, backTicks, TRUE, TRUE)
         waitRest(SIDE_BOTH, STOP_TIMEOUT_MS, FALSE)
         bBack := (fllStopBy == SPSTOP_LIMIT)
 
 PRI emitFlLeg() | slotIdx
 ' BM-FLLEG (SRC_REV 62): one plain floor leg -- its segment and kind, its declared travel, the limit's and the drive's
 ' returns, what ended it, command to rest at its end, each wheel's travel on its driver's pos from the leg's start
-' (signed, raw), and why. Worst case 170 bytes.
+' (signed, raw), and why. SRC_REV 64: its steady window at speed -- the getCurrent() reads (n), each wheel's mean
+' (A x 10_000, NA without a whole window) -- and the pack voltage just after it (mV, NA unless PACK_PRESENT): with the
+' rig's mass and the incline angle, a climb's current against a flat leg's is the force the slope asks, as power.
+' Worst case 225 bytes.
 '
 ' @local slotIdx - motor slot
 
@@ -18300,6 +18332,10 @@ PRI emitFlLeg() | slotIdx
     benchLog.naNumField(@"ms", fllMs, LIM_SMALL, bFllDriven)
     benchLog.naNumField(@"l_trav", fllTravel[SLOT_LEFT], LIM_SMALL, bFllDriven)
     benchLog.naNumField(@"r_trav", fllTravel[SLOT_RIGHT], LIM_SMALL, bFllDriven)
+    benchLog.numField(@"n", spAmpsN, LIM_SMALL)
+    benchLog.naNumField(@"l_amps", spAmpsSum[SLOT_LEFT] / (spAmpsN #> 1), LIM_MID, spAmpsN > 0)
+    benchLog.naNumField(@"r_amps", spAmpsSum[SLOT_RIGHT] / (spAmpsN #> 1), LIM_MID, spAmpsN > 0)
+    benchLog.naNumField(@"pack_mv", fllPackMv, LIM_MID, bFllPack)
     whyField(fllWhy)
     emitRecord()
 
