@@ -1,0 +1,1292 @@
+'' =================================================================================================
+''
+''   File....... test_bench_rc.spin2
+''   Purpose.... The FlySky RC demo's control loop, unchanged, driven on the floor -- with a separate logger cog
+''               streaming both wheels' state and the drive's events, so the log can show erratic handling
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 27 Sep 2026
+''   Updated.... 28 Sep 2026
+''
+''   Revision history:
+''               27 Sep 2026 -- SRC_REV=1, FMT 1: first cut (tier floor-rc).
+''               28 Sep 2026 -- SRC_REV=2, FMT 1: re-copied the demo's part after the demo's DEBUG-footprint fit
+''                              (its lines built at run time and printed by one debug(), dbgShow()); every line
+''                              prints as before.
+''
+'' =================================================================================================
+
+{ WHAT THIS BINARY IS
+
+  THE CONTROL LOOP IS THE DEMO'S, UNCHANGED IN BEHAVIOUR. Everything from the CON block titled timing through map() is
+  copied from src/demo_dual_motor_rc.spin2 at its 28 Sep 2026 revision (HEAD e586ae9 plus the uncommitted batch, with
+  the demo's DEBUG-footprint fit; its header reads "Updated.... 28 Sep 2026"; sha256 of the file copied from:
+  2a20650fe60abe6084fabe6b3b6df1373d85d27f2e06506fe13e483fd85342d4): the same start (setStartChecks(true),
+  waitUntilMotorReady()), the same stick mapping, the same swA / swB / swC / swD / swE / VRA handling, the same event
+  and stop printing, the same doOneRotation(). To review, diff the two files. The ONLY differences in the demo's part:
+   - lines marked "' RC:" in main() -- the banner, the logger's start and stop, RC-END, DEBUG_END_SESSION, and the
+     cog-event quiet window (benchLog.cogEventBegin() / cogEventEnd(), PL-41 / PL-85) around each cog start and
+     stop, which every bench program keeps;
+   - one line marked "' RC:" in remoteControlMotor(), AFTER its loop: the quiet window before its wheels.stop();
+   - the constant VALUE_NOT_SET is named RC_VALUE_NOT_SET here (same value, -2). This file includes
+     isp_bldc_motor.spin2 for DRIVER_REV, whose own VALUE_NOT_SET (-1) the style gate would otherwise take this one
+     for a copy of (rule 2.4); -1 is TRUE, which is exactly the value the demo's -2 exists to avoid;
+   - the OBJ comment on the bench config names this tier, and a second OBJ block adds mtrConst and benchLog.
+  Everything else this file adds sits after map(), under the CON block titled "the logger".
+
+  HOW IT IS RUN (from the repo root)
+
+      tools/bench-run.sh floor-rc        ->  pnut-ts -l -d -D BENCH_CFG -D BENCH_QUIET test_bench_rc.spin2
+
+  pnut-term-ts, on the Raspberry Pi riding the platform, loads it over the PropPlug (P62/P63, 2 Mbaud) and logs every
+  line. The run ends when the operator closes the terminal. swC DOWN ends the demo's loop ("* swC DN - end control"),
+  and the program then reaches its natural end, prints DEBUG_END_SESSION and the terminal closes itself.
+
+  WHY -D BENCH_QUIET. NOTHING MAY PRINT FROM THE STEERING FRONT COG OR THE DRIVERS: the front cog has a 1 ms slot with
+  a ~517 us worst pass (PL-161), and one debug line costs hundreds of us. The drivers are PASM with no debug(). With
+  the library's full channels the front cog prints its state report (showDriveStatesOnChange(), SENSE|FAULT) and its
+  limit reports; the quiet masks (ERROR + WARNING, isp_bldc_motor_userconfig_bench.spin2) compile every one of them
+  out -- the motion harness's rule I5 -- and no ERROR or WARNING statement sits in a front*() routine of either
+  library object (read at DRIVER_REV 46). RC-BANNER prints quiet,TRUE|FALSE so a log says which build ran.
+  Under BENCH_QUIET the demo's own lines and events print exactly as in the demo; the library's COMMAND / SENSE
+  chatter on the main cog does not (swC middle prints "- drive states:", and showDriveStates() then prints nothing;
+  RC-TEL carries those states).
+
+  COG BUDGET, of 8: cog 0 main (the demo's control loop); the steering object's left driver, right driver and front
+  cog (3); the S.BUS receiver (jm_sbus_rx's PASM cog, 1); the logger (1). 6 in use, 2 free. The DEBUG kernel takes no
+  cog. RC-LOG prints free_cogs just after the logger starts, which should read 2.
+
+  THE LOGGER COG (logger(), below). Started once the receiver runs, just before the demo's loop; stopped
+  cooperatively (EXIT, a bounded wait for its acknowledgement, then cogstop) once the loop returns, so it is never
+  stopped inside a debug() and can never leak the DEBUG lock (PL-41). It commands nothing, starts nothing and holds
+  no lock but the DEBUG kernel's own. Every read is a hub read through a getter that holds no debug() at run time:
+  the steering object's getPower(), getCurrent(), getHoldStatus(), testGetRawHallTicks(), testGetPathScale(),
+  testLeftGetTelemetry() / testRightGetTelemetry(), testLeftGetDriveFollow() / testRightGetDriveFollow() and
+  getEvent(); the receiver object's hasSignal(), readChannel(), isSwitchOn() / isSwitchOff() and chanMinMax() (its
+  debug() lines are guarded by bShowDebug, FALSE unless showDebug(TRUE) is called, which nothing here does); and the
+  demo's own priorSpeed / priorDirection.
+
+  TORN READS -- the motion harness's rules (DOCs/plans/MOTION-HARNESS-DESIGN.md I3, I10), applied here:
+   - every value is one aligned hub long (or, for a stick, one hub word the S.BUS cog writes with WRWORD): each read
+     is atomic, so no single field can tear.
+   - a wheel's fields come from a few grouped getter calls, not one atomic copy: testGet*Telemetry() reads its eight
+     longs as one group (the motor object's own note: tighter than separate calls, still able to straddle one driver
+     pass). A record is therefore a snapshot within tens of us, never a mix of samples further apart.
+   - I3: a wheel's status is read as a measurement only while its driver runs (dcs <> DCS_Unknown; stop() writes
+     DCS_Unknown after its cogstop). A wheel that is not running prints dcs 0 and every other field 0.
+   - I10 in the one form this program allows: the logger never starts or stops a wheel; the demo's loop ends with
+     wheels.stop() while the logger still runs, and a sample straddling that stop is gated by dcs on the next pass,
+     as the harness's own stop exception is.
+   - the event log (getEvent()) is built for many reading cogs: each cog has its own cursor, and a copy the front cog
+     overwrote is detected by the log itself and reported as EV_LOST. The logger drains its OWN cursor, so the demo's
+     event lines on cog 0 lose nothing to it.
+   - the sticks: a word read cannot tear, but the channel set can straddle one S.BUS frame (the decode rewrites all
+     16 channels in ~4 us, 130 frames a second). jm_sbus_rx's busy() and count() could bracket a whole frame, but
+     isp_flysky_rx passes neither through; the demo reads the channels the same way.
+
+  RATE (LOG_RATE_HZ = 25, one RC-TEL each 40 ms).
+   - worst-case RC-TEL: 6 bytes of "CogN  " + 77 bytes of platform fields (tag, seq 9, ms 10, the stick and switch
+     fields, path 5, late 5, 13 commas) + 2 x 72 bytes of wheel fields (pos 10, ci/fi 8 each, ma 7, duty 6, 13 commas
+     each) + CR LF = 229 bytes; a typical record is about 150.
+   - the link: 2 Mbaud 8N1 = 200_000 bytes/s. 25 x 229 = 5_725 bytes/s worst, 2.9 % of the link (typical 1.9 %).
+     RC-EVT records are sporadic, at most LOG_EVENTS_PER_PASS (4) a pass, each under 90 bytes.
+   - the logger: a record is on the wire 229 x 5 us = 1.15 ms worst; with its reads (about 20 getter calls), the
+     line's formatting and a full event drain (4 x 0.45 ms) a pass is a few ms of its 40 ms period, so it cannot fall
+     behind. RC-TEL's late field and RC-END's late / skipped / max_late_us / max_pass_us measure that on the floor.
+   - why 25 and not 50: at 25 Hz one hall tick in a period is 25 ticks/s of tps; 50 Hz would double that coarseness
+     for crawling speeds and double the stream (5.7 % of the link), for handling changes that take ~100 ms. RC-TEL
+     carries each wheel's raw hall position (pos) too, so any rate can be re-derived over any window afterwards.
+
+  RECORDS (FMT 1). One debug() line each, tag first, comma-separated, positional after RC-FIELDS names them.
+   RC-BANNER  file,src_rev,fmt,drv_rev,cfg_id,clkfreq,quiet,mdbg,sdbg,log_hz,mirrors -- labelled pairs
+   RC-FIELDS  the field names of RC-TEL, then of RC-EVT (printed once, before the logger starts)
+   RC-ENUM    the dcs and hs values with their names, from the library's own constants
+   RC-LOG     started,<TRUE|FALSE>,cog,<id>,hz,<rate>,free_cogs,<n>
+   RC-TEL     seq,ms,sig,rt_vt,lt_hz,spd,dir,estop,sticks_off,cmd_spd,cmd_dir,path_pm,late, then per wheel, left
+              (l_) then right (r_): pwr,ci_k,fi_k,pos,tps,ma,dcs,err,duty,short,fol_pct,hs,flt
+   RC-EVT     seq,ms,wheel,kind,value -- wheel LEFT|RIGHT|PLATFORM, kind the EV_* name, value the SR_* name for
+              EV_STOP, else the number
+   RC-END     records,late,skipped,max_late_us,max_pass_us,acked -- labelled pairs, once, at the natural end
+  seq numbers RC-TEL and RC-EVT together, 1, 2, 3 ...: a gap means a lost line. ms is getms(), the clock the event
+  log stamps with. Numbers carry an underscore every three digits, as udec_() prints them. Flags print 0 / 1.
+   sig        1 while the receiver hears the transmitter (hasSignal())
+   rt_vt      right stick vertical, raw [0-2047] -- the demo's speed stick
+   lt_hz      left stick horizontal, raw -- the demo's direction stick
+   spd, dir   those two mapped exactly as the demo maps them, now [-100 to 100]
+   estop      1 while swD is in cut-off (the demo's bEmerCutoff)
+   sticks_off 1 while swA ignores the sticks (the demo's bIgnoreJoySticks)
+   cmd_spd    the speed / direction the demo last sent to driveDirection() (its priorSpeed / priorDirection); the
+   cmd_dir     demo reads the sticks once each 250 ms pass and sends only on a change
+   path_pm    the steering path limiter's scale on both wheels, thousandths (1000 = unscaled)
+   late       the logger's late passes so far (started more than 10 ms after due)
+   pwr        the wheel's last commanded power, platform sense (getPower())
+   ci_k       the increment last commanded, thousands; each MOTOR's own sense (the right wheel's is negated)
+   fi_k       the field's increment per drive pass now, thousands, motor sense -- the ramp's actual output
+   pos        the driver's raw hall-tick position, motor sense
+   tps        hall ticks per second over this sample's period, from pos, motor sense
+   ma         motor current, mA (getCurrent(), net of the rest zero)
+   dcs        driver state, DCS_* (RC-ENUM); 0 = driver not running, every other field of the wheel then 0
+   err        the driver's position error (lag), counts
+   duty       the driver's duty
+   short      1 while the lag limiter held the field within the last few slots (following fell short)
+   fol_pct    the rpm window's measured rate as % of commanded; -1 while not valid (window filling, or stopped)
+   hs         hold at rest, HS_* (RC-ENUM)
+   flt        1 once the driver has latched a fault (isFaultSignal()'s latch)
+}
+
+CON { timing }
+
+  CLK_FREQ = 270_000_000                                        ' system freq as a constant
+  _clkfreq = CLK_FREQ                                           ' set system clock
+
+CON { fixed io pins }
+
+  RX1      = 63  { I }                                          ' programming / debug
+  TX1      = 62  { O }
+
+  SF_CS    = 61  { O }                                          ' serial flash
+  SF_SCK   = 60  { O }
+  SF_SDO   = 59  { O }
+  SF_SDI   = 58  { I }
+
+CON { application io pins }
+
+    ' the S.BUS receiver's data line (README.md, "Wiring the FlySky Connection"). P58 is shared with the serial flash's
+    '  data line (SF_SDI above), which the flash drives only while it is selected. Motor pins are set in
+    '  isp_bldc_motor_userconfig.spin2.
+    SBUS_RX  = 58  { I }
+
+OBJ { our Drive Subsystem }
+
+#ifdef BENCH_CFG
+    user        : "isp_bldc_motor_userconfig_bench" ' bench rig configuration (-D BENCH_CFG, tools/bench-run.sh floor-rc)
+#else
+    user        : "isp_bldc_motor_userconfig"       ' driver configuration
+#endif
+    wheels      : "isp_steering_2wheel"             ' the dual-drive BLDC motors
+    remoteCtl   : "isp_flysky_rx"                   ' the FlySky Transmitter
+    names       : "demo_drive_names"                ' words for the drive's reported values, for the debug output
+
+OBJ { RC: test_bench_rc's own }
+
+    mtrConst    : "isp_bldc_motor"                  ' the constants only (DRIVER_REV): never started, never called
+    benchLog    : "isp_bench_log"                   ' the cog-event quiet window, the free-cog count, the number format
+
+VAR
+
+    long    remoteCog
+
+
+PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detectModeRt, senseCog
+'' DEMO Driving a two wheeled platform
+''
+
+' Local Variables:
+' @local statusOK - TRUE when the S.BUS receiver cog started
+' @local basePinLt - the validated left-motor base pin, or INVALID_PIN_BASE
+' @local basePinRt - the validated right-motor base pin, or INVALID_PIN_BASE
+' @local voltage - the validated drive voltage, or INVALID_VOLTAGE
+' @local motor - the validated motor type, or INVALID_MOTOR
+' @local detectModeLt - the validated left board detection mode, or INVALID_DET_MODE
+' @local detectModeRt - the validated right board detection mode, or INVALID_DET_MODE
+' @local senseCog - the steering front cog's id (0-7), or -1 when the motors did not start
+
+    emitBanner()                                                ' RC: the build, before the demo's first line
+    showLine(@"* demo dual motor control via R/C")
+
+    ' validate user settings/choices
+    '  do NOT start motor unless all are legit!
+    basePinLt := wheels.validBasePinForChoice(user.LEFT_MOTOR_BASE)
+    basePinRt := wheels.validBasePinForChoice(user.RIGHT_MOTOR_BASE)
+    detectModeLt := wheels.validDetectModeForChoice(user.LEFT_BOARD_TYPE)
+    detectModeRt := wheels.validDetectModeForChoice(user.RIGHT_BOARD_TYPE)
+    voltage := wheels.validVoltageForChoice(user.DRIVE_VOLTAGE)
+    motor := wheels.validMotorForChoice(user.MOTOR_TYPE)
+
+    if basePinLt <> wheels.INVALID_PIN_BASE and basePinRt <> wheels.INVALID_PIN_BASE and voltage <> wheels.INVALID_VOLTAGE and motor <> wheels.INVALID_MOTOR and detectModeLt <> wheels.INVALID_DET_MODE and detectModeRt <> wheels.INVALID_DET_MODE
+        ' 1. start() checks each wheel's hall sensors, current sense and motor leads with nothing moving, retries a
+        '  check that fails, and refuses to start if one still fails. TRUE is the default; setStartChecks(false),
+        '  called before start(), starts the platform anyway (getHealth() still reports what failed).
+        wheels.setStartChecks(true)
+
+        ' start our motor drivers (left and right)
+        benchLog.cogEventBegin()                                ' RC: the cog-event quiet window (PL-41, PL-85)
+        senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
+        benchLog.cogEventEnd()                                  ' RC: the new cogs' INIT lines are out
+        if senseCog < 0
+            ' start() returned -1: getError() says why, and for which wheel. A refused start check is
+            '  ERR_START_CHECK_FAILED, and getHealth() then names the check -- a disconnected motor lead, say
+            bCommandSucceeded(senseCog, @"start")
+            showHealth()
+        else
+            showHealth()                                        ' what the start checks found, even when they passed
+            showPack()
+            showFaultResponse()
+
+            ' override the default top speeds (75 %) with 100 %: the sticks reach the platform's full speed
+            wheels.setMaxSpeed(100)
+            wheels.setMaxSpeedForDistance(100)
+            ' coast at rest: the default, set here so you can find it. holdAtStop(true) holds each wheel's position at
+            '  rest instead, drawing current to do it
+            wheels.holdAtStop(false)
+
+            ' wait until both drivers are ready to be commanded, before anything moves
+            waitUntilMotorReady()
+
+            showLine(@"* Set up - remote control")
+
+            benchLog.cogEventBegin()                            ' RC: the cog-event quiet window
+            remoteCog := remoteCtl.start(SBUS_RX)
+            benchLog.cogEventEnd()                              ' RC: the receiver cog's INIT line is out
+            statusOK := remoteCog <> 0 ? TRUE : FALSE
+            if statusOK
+                ' if your transmitter's stick and knob ranges differ from isp_flysky_rx's defaults, calibrate them here:
+                '   remoteCtl.manualCalibrate()
+                showLine(@"R/C Running...")
+                loggerStart()                                   ' RC: the telemetry stream, once the receiver runs
+                remoteControlMotor()
+                loggerStop()                                    ' RC: before the receiver and the drives stop
+            else
+                showLine(@"* ERROR S.BUS receiver did not start")
+
+            ' turn off our SBUS drivers
+            benchLog.cogEventBegin()                            ' RC: the cog-event quiet window
+            remoteCtl.stop()
+        ' turn off our motor drivers (safe whether or not they started)
+        benchLog.cogEventBegin()                                ' RC: the cog-event quiet window
+        wheels.stop()
+    else
+        showLine(@"* ERROR user configuration NOT valid!")
+
+    showLine(@"* DONE")
+    emitEnd()                                                   ' RC: the logger's totals
+    debug("DEBUG_END_SESSION")                                  ' RC: QUOTED -- a backtick would make it a display command
+
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, bOneRotation, accRngMin, accRngMax
+'' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
+''
+
+' Local Variables:
+' @local bIgnoreJoySticks - TRUE while switch A is ON: joystick driving is disabled
+' @local bDoneTesting - TRUE when switch C is OFF: end the control loop
+' @local bShowState - TRUE while switch B is OFF: show the motor currents
+' @local bEmerCutoff - TRUE while switch D is OFF: emergency cutoff
+' @local bShowDriveStates - TRUE while switch C is in its middle position: show the drive states
+' @local accrate - the acceleration the VRA knob selects, mm/s squared
+' @local bOneRotation - the channel-11 switch state: OFF asks for one rotation, ON re-arms it
+' @local accRngMin - the VRA knob's lowest recorded reading
+' @local accRngMax - the VRA knob's highest recorded reading
+
+    waitms(500)    ' wait for 1/2 sec for backend to catch up
+
+    showLine(@"------")
+    showLine(@"- Lt Joy Hz - direction")
+    showLine(@"- Rt Joy Vt - speed")
+    showLine(@"------")
+    showLine(@"* swA DN     - enable joystick driving")
+    showLine(@"* swB DN     - show motor currents")
+    showLine(@"* swC MID    - show drive states")
+    showLine(@"* swC DN     - end control")
+    showLine(@"* swD DN     - emer cutoff; back UP releases it and any protective stop")
+    showLine(@"* swE DN     - 1 rotation")
+    showLine(@"* VRA        - acceleration")
+    showLine(@"------")
+
+    bLastShowState := RC_VALUE_NOT_SET ' value can't happen
+    bLastIgnoreJoyStks := RC_VALUE_NOT_SET ' value can't happen
+    bLastEmerCutoff := RC_VALUE_NOT_SET ' value can't happen
+    bLastShowDriveStates := RC_VALUE_NOT_SET ' value can't happen
+
+    repeat
+        ' SwA Ignore JoySticks
+        bIgnoreJoySticks := remoteCtl.isSwitchOn(remoteCtl.CTL_SW_A)
+        bShowState := remoteCtl.isSwitchOff(remoteCtl.CTL_SW_B)
+        ' SwC done, end loop!
+        bDoneTesting := remoteCtl.isSwitchOff(remoteCtl.CTL_SW_C)
+        bShowDriveStates := remoteCtl.isSwitchMiddle(remoteCtl.CTL_SW_C)
+        ' SwD down = Emergency Cutoff
+        bEmerCutoff := remoteCtl.isSwitchOff(remoteCtl.CTL_SW_D)
+
+        bOneRotation := remoteCtl.isSwitchOn(remoteCtl.CH_11)
+
+        ' setAcceleration() takes mm/s squared, so the knob's travel is mapped onto a range in those units
+        accRngMin, accRngMax := remoteCtl.chanMinMax(remoteCtl.CTL_VRA)
+        accrate := map(remoteCtl.readchannel(remoteCtl.CTL_VRA), accRngMin, accRngMax, RC_ACCEL_MIN_MM_S2, RC_ACCEL_MAX_MM_S2)
+
+        if bLastShowDriveStates <> bShowDriveStates
+            if bShowDriveStates
+                showLine(@"- drive states:")
+                wheels.showDriveStates()
+            bLastShowDriveStates := bShowDriveStates
+
+        if bShowState <> bLastShowState
+            if bShowState
+                showCurrents()
+            bLastShowState := bShowState
+
+        if bEmerCutoff <> bLastEmerCutoff
+            if bEmerCutoff
+                showLine(@"-------  Motor E-OFF")
+                wheels.emergencyCutoff()
+            else
+                ' 3. re-arming the kill switch is the operator's acknowledgement: it releases the emergency stop AND
+                '  any protective stop (a blocked wheel), each of which latches until the program clears it. Both
+                '  wheels stay stopped until the sticks command them.
+                wheels.clearEmergency()
+                wheels.clearProtectiveStop()
+                if not bIgnoreJoySticks
+                    showLine(@"  Motor Enabled")
+                else
+                    showLine(@"  Motor Disabled")
+            bLastEmerCutoff := bEmerCutoff
+
+        if bLastIgnoreJoyStks <> bIgnoreJoySticks
+            if bIgnoreJoySticks
+                showLine(@"  Motor CTL OFF")
+            else
+                showLine(@"  Motor CTL enabled")
+            bLastIgnoreJoyStks := bIgnoreJoySticks
+
+        if accrate <> 0 and nAccelerationRate <> accrate
+            nAccelerationRate := accrate
+            dbgBegin(@"  Setting Motor Acceleration:")
+            dbgText(@"nAccelerationRate = ")
+            dbgSdec(nAccelerationRate)
+            dbgShow()
+            wheels.setAcceleration(nAccelerationRate)
+
+        if (not bEmerCutoff) and (remoteCtl.hasSignal() == FALSE)
+            ' no transmitter -- the stick values are stale or the receiver's failsafe defaults, so
+            '  nothing may drive on them: stop once, and drive again only when the signal returns
+            if (priorSpeed <> 0) or (priorDirection <> 0)
+                showLine(@"- SIGNAL LOST: stopping the motors")
+                bCommandSucceeded(wheels.stopMotors(), @"signal lost stop")
+                priorSpeed := priorDirection := 0
+        elseif not bEmerCutoff
+            rcSpeed, rcDirection := updPosnBothJoy()
+            if not bIgnoreJoySticks
+                if priorDirection <> rcDirection or priorSpeed <> rcSpeed
+                    showJoy(@"- JOY")
+                    bCommandSucceeded(wheels.driveDirection(rcSpeed, rcDirection), @"joystick drive")
+                    priorDirection := rcDirection
+                    priorSpeed := rcSpeed
+            elseif priorSpeed <> 0 and rcSpeed == 0
+                ' if we were running when motors control stopped then allow a stop when it happens
+                showJoy(@"- JOY (last)")
+                bCommandSucceeded(wheels.driveDirection(rcSpeed, rcDirection), @"joystick stop")
+                priorDirection := rcDirection
+                priorSpeed := rcSpeed
+            elseif bOneRotation == false and nDoingOneRotation == false         ' no emergency cutoff and no joystick before accept 1 rotation
+                nDoingOneRotation := true
+                doOneRotation()
+            elseif bOneRotation == true and nDoingOneRotation == true           ' switch must be reset before allowed again
+                nDoingOneRotation := false
+
+        showEvents()                                            ' 2. whatever the drive handled on its own since the last pass
+
+        if bDoneTesting
+            showLine(@"--> quit loop")
+            quit
+
+        waitms(250) ' wait 1/4 second, before next loop
+
+    ' done, stop our motors
+    benchLog.cogEventBegin()                                    ' RC: the cog-event quiet window (PL-41, PL-85)
+    wheels.stop()
+
+PRI bCommandSucceeded(eError, pWhat) : bSucceeded | eSteerError, eLeftError, eRightError
+' Report a refused command with the cause and the wheel, and collect this cog's errors so the next failure records its own.
+'
+' @param eError - the result a command returned (a start()'s -1 is reported the same way)
+' @param pWhat - pointer to a short name of what was attempted, for the report
+' @returns bSucceeded - T/F where T means the command was accepted and its motion can be waited on
+
+' Local Variables:
+' @local eSteerError - this cog's first steering-object error (collected outside debug(), which a non-debug build removes)
+' @local eLeftError - this cog's first left-wheel error
+' @local eRightError - this cog's first right-wheel error
+
+    bSucceeded := (eError == wheels.NO_ERROR)
+    if bSucceeded == FALSE
+        eSteerError, eLeftError, eRightError := wheels.getError()
+        dbgBegin(@"* ERROR ")
+        dbgText(pWhat)
+        dbgText(@" refused: ")
+        dbgText(names.errorName(eSteerError))
+        dbgText(@", ")
+        dbgWheels(names.errorName(eLeftError), names.errorName(eRightError))
+        dbgShow()
+        explainRefusal()
+
+PRI explainRefusal() | eLeftCode, eRightCode
+' After a refused drive: say what is holding the platform stopped, and what clears it.
+'
+' A drive is refused while a stop latches: an emergency stop, or a protective stop (a wheel commanded to move that
+' could not -- blocked, say, against a kerb). getProtectiveStop() reads the latched cause without clearing it, and
+' getStopReason() says how the last drive ended (SR_BLOCKED for the blocked wheel, SR_PARTNER for the other).
+
+' Local Variables:
+' @local eLeftCode - the left wheel's latched protective cause, NO_ERROR when none
+' @local eRightCode - the right wheel's
+
+    eLeftCode, eRightCode := wheels.getProtectiveStop()
+    showStopReasons(@"  last stop")
+    if (eLeftCode <> wheels.NO_ERROR) or (eRightCode <> wheels.NO_ERROR)
+        dbgBegin(@"  PROTECTIVE STOP latched (")
+        dbgWheels(names.errorName(eLeftCode), names.errorName(eRightCode))
+        dbgText(@"): free the wheel, then flip swD to cut-off and back")
+        dbgShow()
+
+PRI showStopReasons(pLead) | eLeftReason, eRightReason
+' Print why each wheel's last drive ended (getStopReason()), after a lead-in: "<lead>: LEFT <reason>, RIGHT <reason>".
+' explainRefusal() and bWaitUntilMotorDone() both print this line.
+'
+' @param pLead - pointer to the text before ": LEFT"
+
+' Local Variables:
+' @local eLeftReason - the left wheel's SR_* value
+' @local eRightReason - the right wheel's SR_* value
+
+    eLeftReason, eRightReason := wheels.getStopReason()
+    dbgBegin(pLead)
+    dbgText(@": ")
+    dbgWheels(names.stopReason(eLeftReason), names.stopReason(eRightReason))
+    dbgShow()
+
+PRI showHealth() | nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered
+' Report what start() checked on each wheel, which checks failed, and which failed at first and passed on a retry.
+'
+' getHealth() returns three masks of HLT_* bits per wheel. A recovered check started the motor normally -- worth
+' knowing about (a loose connector can look like that), but not a failure.
+
+' Local Variables:
+' @local nLeftChecked - the left wheel's HLT_* bits that were checked
+' @local nLeftFailed - ...that still failed
+' @local nLeftRecovered - ...that failed, then passed on a retry
+' @local nRightChecked - the right wheel's, likewise
+' @local nRightFailed - the right wheel's still failing
+' @local nRightRecovered - the right wheel's recovered
+
+    nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered := wheels.getHealth()
+    dbgBegin(@"* start checks: LEFT checked ")
+    dbgHex(nLeftChecked, 2)
+    dbgText(@", RIGHT checked ")
+    dbgHex(nRightChecked, 2)
+    dbgShow()
+    showHealthBits(@"LEFT", @"FAILED", nLeftFailed)
+    showHealthBits(@"LEFT", @"recovered on a retry", nLeftRecovered)
+    showHealthBits(@"RIGHT", @"FAILED", nRightFailed)
+    showHealthBits(@"RIGHT", @"recovered on a retry", nRightRecovered)
+
+PRI showHealthBits(pWheel, pWhat, nBits) | nBit
+' Name each check set in a getHealth() mask.
+'
+' @param pWheel - pointer to the wheel's name
+' @param pWhat - pointer to what the mask means (failed, or recovered)
+' @param nBits - the mask of HLT_* bits
+
+' Local Variables:
+' @local nBit - the bit being tested
+
+    repeat nBit from 0 to names.HEALTH_BITS - 1
+        if nBits & (1 << nBit)
+            dbgBegin(@"*   ")
+            dbgText(pWheel)
+            dbgText(@" ")
+            dbgText(names.healthBit(nBit))
+            dbgText(@" ")
+            dbgText(pWhat)
+            dbgShow()
+
+PRI showPack() | ePackStatus, nMilliVolts
+' Report the battery pack's voltage, when the optional pack voltage sensor is fitted (VOLTAGE-SENSOR.md).
+
+' Local Variables:
+' @local ePackStatus - PACK_NOT_FITTED, PACK_ABSENT or PACK_PRESENT
+' @local nMilliVolts - the pack voltage, mV, when PACK_PRESENT
+
+    ePackStatus, nMilliVolts := wheels.getPackVoltage()
+    dbgBegin(@"* pack: ")
+    dbgText(names.packStatus(ePackStatus))
+    dbgText(@" ")
+    dbgUdec(nMilliVolts)
+    dbgText(@" mV")
+    dbgShow()
+
+PRI showFaultResponse() | eMode, brakePct
+' Report the fault response in effect.
+'
+' FR_GRADED, the default, re-syncs from the hall sensors and stops along the ramp when a wheel's rotor cannot follow
+' its field, which is gentle on a tall robot; if control is lost anyway it coasts, or with holdAtStop(TRUE) brakes at
+' 10 %. FR_SHIPPED coasts or brakes with the full short at once (per holdAtStop()) instead:
+'   wheels.setFaultResponse(wheels.FR_SHIPPED, 10)
+' start() restores the default, so a program sets its choice after each start().
+
+' Local Variables:
+' @local eMode - FR_SHIPPED or FR_GRADED
+' @local brakePct - the graded brake's share of a full short, %
+
+    eMode, brakePct := wheels.getFaultResponse()
+    dbgBegin(@"* fault response: ")
+    dbgText(names.faultResponse(eMode))
+    dbgText(@", brake ")
+    dbgUdec(brakePct)
+    dbgText(@" %")
+    dbgShow()
+
+PRI showEvents() | eKind, nMs, eWheel, nValue
+' Drain this cog's event log: what the drive handled on its own, oldest first, both wheels merged.
+'
+' Each cog reads every event for itself. A cog that falls more than EV_QUEUE_DEPTH events behind is told first, with
+' EV_LOST (its value: how many it lost) -- so a gap never reads as "nothing happened". EV_STOP carries the stop
+' reason: a stop you did not command (SR_FAULT_*, SR_BLOCKED, SR_PARTNER) is how a driver learns the robot stopped
+' itself. Most others carry a count or a measurement (DRIVE-OBJECTS.md, "Stop reasons and events").
+
+' Local Variables:
+' @local eKind - the event's EV_* kind; EV_NONE when all are read
+' @local nMs - getms() when it happened
+' @local eWheel - EVW_LEFT, EVW_RIGHT or EVW_PLATFORM
+' @local nValue - the event's value
+
+    repeat
+        eKind, nMs, eWheel, nValue := wheels.getEvent()
+        if eKind == wheels.EV_NONE
+            quit
+        dbgBegin(@"  event ")
+        dbgUdec(nMs)
+        dbgText(@" ms ")
+        dbgText(wheelName(eWheel))
+        dbgText(@" ")
+        dbgText(names.eventKind(eKind))
+        dbgText(@" ")
+        if eKind == wheels.EV_STOP
+            dbgText(names.stopReason(nValue))                  ' a stop's value is its reason, SR_*
+        else
+            dbgSdec(nValue)
+        dbgShow()
+
+PRI wheelName(eWheel) : pName
+' Name getEvent()'s wheel: the left's, the right's, or the platform's own event (a late front-cog pass, the pack).
+'
+' @param eWheel - EVW_LEFT, EVW_RIGHT or EVW_PLATFORM
+' @returns pName - pointer to its name
+
+    case eWheel
+        wheels.EVW_LEFT:
+            pName := @"LEFT"
+        wheels.EVW_RIGHT:
+            pName := @"RIGHT"
+        other:
+            pName := @"PLATFORM"
+
+PRI waitUntilMotorReady()
+' if wheels are NOT ready, then wait until they are ready
+
+    if wheels.isReady() == false
+        showLine(@"* wait motors ready...")
+        repeat
+            if wheels.isReady()
+                quit
+            else
+                waitms(2)
+    showLine(@"* Motors ready, let's drive!")
+
+PRI showCurrents()
+' Print both wheels' motor current and power.
+
+    ' getCurrent() reports each current in tenths of a mA (12_345 is 1.2345 A) and each power in mW
+    nLtAmps, nLtWatts, nRtAmps, nRtWatts := wheels.getCurrent()
+    dbgBegin(@"  current: LEFT ")
+    dbgSdec(nLtAmps)
+    dbgText(@" x0.1 mA ")
+    dbgSdec(nLtWatts)
+    dbgText(@" mW, RIGHT ")
+    dbgSdec(nRtAmps)
+    dbgText(@" x0.1 mA ")
+    dbgSdec(nRtWatts)
+    dbgText(@" mW")
+    dbgShow()
+
+PRI showJoy(pLead)
+' Print the stick drive about to be sent, rcSpeed and rcDirection, after a lead-in.
+'
+' @param pLead - pointer to the text before the values
+
+    dbgBegin(pLead)
+    dbgText(@" rcSpeed = ")
+    dbgSdec(rcSpeed)
+    dbgText(@", rcDirection = ")
+    dbgSdec(rcDirection)
+    dbgShow()
+
+PRI showLine(pText)
+' Print one line of fixed text.
+'
+' @param pText - pointer to the zero-terminated text to print
+
+    dbgBegin(pText)
+    dbgShow()
+
+CON { the debug line builder }
+
+' WHY THIS DEMO BUILDS ITS DEBUG LINES. Each debug() statement is compiled into its own record, its text and its
+' formatting included, and a -d image drops every record that lies too far into it (DOCs/procedures/
+' PLOT-DISPLAY-RULES.md, rules 1-2). So this demo builds each line it prints in a hub buffer, with ordinary code that
+' is in the image with or without -d, and prints it with the one debug() in dbgShow(). A line is started with
+' dbgBegin(), extended with dbgText() / dbgUdec() / dbgSdec() / dbgHex() / dbgWheels(), and printed with dbgShow().
+' The numbers come out as the debug formatters print them: dbgUdec() as udec_() and dbgSdec() as sdec_() (an
+' underscore every three digits, 20_711), dbgHex() as uhex_byte_() or uhex_long_() ($0F, $09F4_9F49). A labelled
+' formatter such as sdec(x) prints "x = 5", and ", " between two values in a row; those are written here as text.
+' One cog -- the demo's main cog -- builds and prints lines.
+
+    DBG_LINE_BYTES = 256                ' the longest line here is under 200 bytes; anything past the end is dropped
+
+VAR
+
+    byte    dbgLine[DBG_LINE_BYTES]     ' the line being built, zero-terminated
+    long    dbgLineLen                  ' its length, not counting the terminator
+
+PRI dbgBegin(pText)
+' Start a new debug line with {pText}.
+'
+' @param pText - pointer to the line's first text
+
+    dbgLineLen := 0
+    dbgLine[0] := 0
+    dbgText(pText)
+
+PRI dbgText(pText)
+' Append zero-terminated text to the debug line.
+'
+' @param pText - pointer to the text
+
+    repeat strsize(pText)
+        dbgChar(byte[pText++])
+
+PRI dbgWheels(pLeft, pRight)
+' Append the two wheels' words: "LEFT <left>, RIGHT <right>".
+'
+' @param pLeft - pointer to the left wheel's word
+' @param pRight - pointer to the right wheel's word
+
+    dbgText(@"LEFT ")
+    dbgText(pLeft)
+    dbgText(@", RIGHT ")
+    dbgText(pRight)
+
+PRI dbgUdec(nValue) | nPlace, nDigits
+' Append {nValue} as an unsigned decimal, as udec_() prints it: an underscore every three digits (20_711).
+'
+' @param nValue - the value, taken as unsigned
+
+' Local Variables:
+' @local nPlace - the place value of the digit being appended (1, 10, 100 ...)
+' @local nDigits - digits still to append
+
+    nPlace := 1
+    nDigits := 1
+    repeat while (nPlace < 1_000_000_000) and ((nValue +/ nPlace) >= 10)    ' +/ and +// are the unsigned divides
+        nPlace *= 10
+        nDigits++
+    repeat
+        dbgChar("0" + ((nValue +/ nPlace) +// 10))
+        nPlace /= 10
+        nDigits--
+        if (nDigits > 0) and (nDigits // 3 == 0)
+            dbgChar("_")
+    until nDigits == 0
+
+PRI dbgSdec(nValue)
+' Append {nValue} as a signed decimal, as sdec_() prints it (-15_090_904).
+'
+' @param nValue - the value
+
+    if nValue < 0
+        dbgChar("-")
+        nValue := 0 - nValue            ' -2_147_483_648 stays $8000_0000, which dbgUdec() prints as 2_147_483_648
+    dbgUdec(nValue)
+
+PRI dbgHex(nValue, nDigits) | nNibble
+' Append the low {nDigits} hex digits of {nValue} after a "$", with an underscore every four digits, as uhex_byte_()
+' (2 digits, $0F) and uhex_long_() (8 digits, $09F4_9F49) print them.
+'
+' @param nValue - the value
+' @param nDigits - how many hex digits to append
+
+' Local Variables:
+' @local nNibble - the digit's value, 0 to 15
+
+    dbgChar("$")
+    repeat while nDigits > 0
+        nDigits--
+        nNibble := (nValue >> (nDigits << 2)) & $F
+        dbgChar(nNibble < 10 ? "0" + nNibble : "A" + nNibble - 10)
+        if (nDigits > 0) and (nDigits // 4 == 0)
+            dbgChar("_")
+
+PRI dbgChar(charByte)
+' Append one character to the debug line, dropping any past its end.
+'
+' @param charByte - the character
+
+    if dbgLineLen < DBG_LINE_BYTES - 1
+        dbgLine[dbgLineLen] := charByte
+        dbgLineLen++
+        dbgLine[dbgLineLen] := 0
+
+PRI dbgShow()
+' Print the debug line: this demo's one debug() statement (the section's header says why).
+
+    debug(zstr_(@dbgLine))
+
+
+PRI bWaitUntilMotorDone(maxMs) : bDone | startMs
+' Wait, at most {maxMs}, for a limited drive to be over on both wheels -- however it ends -- then say why.
+'
+' Not used by the RC loop, which drives continuously; kept, bounded, for a program built from this one. isMoveDone() is
+' TRUE on a fault or an emergency stop too, so this cannot hang on one (waiting for isStopped() alone did); a drive whose
+' limit never fires is stopped at the bound.
+'
+' @param maxMs - the longest the drive may take, ms: its limit plus a margin
+' @returns bDone - T/F where T means the drive ended by itself within {maxMs}
+
+' Local Variables:
+' @local startMs - getms() when the wait began
+
+    startMs := getms()
+    repeat until wheels.isMoveDone() or (getms() - startMs >= maxMs)
+        waitms(MOVE_POLL_MS)
+    bDone := wheels.isMoveDone()
+    if bDone == FALSE
+        wheels.stopMotors()                                     ' the drive outlived its bound: end it
+    showStopReasons(bDone ? @"* Motors done" : @"* Motors TIMEOUT, stopped")   ' and why each wheel's drive ended
+
+CON
+
+   RC_VALUE_NOT_SET = -2                ' RC: the demo's VALUE_NOT_SET, renamed (the header says why); same value
+   MOVE_POLL_MS  = 10                   ' bWaitUntilMotorDone()'s poll
+
+   ' the VRA knob's travel maps onto this acceleration range, mm/s squared (setAcceleration())
+   RC_ACCEL_MIN_MM_S2 = 200
+   RC_ACCEL_MAX_MM_S2 = 3_000
+
+VAR
+
+    long    priorSpeed
+    long    priorDirection
+    long    rcSpeed
+    long    rcDirection
+    long    nLtAmps
+    long    nLtWatts
+    long    nRtAmps
+    long    nRtWatts
+
+    long    bLastShowState
+    long    bLastEmerCutoff
+    long    bLastIgnoreJoyStks
+    long    bLastShowDriveStates
+    long    nAccelerationRate
+    long    nDoingOneRotation
+
+PRI doOneRotation() | ltdegree, rtdegree, eError
+' Drive forward slowly for one full wheel rotation, reporting the odometers it starts from.
+'
+' The rotation limit counts from its own call, not from the odometer (getRotationCount()), so it is 360 degrees
+' whatever the odometer reads. This returns at once, so the control loop keeps reading the kill switch; the end of the
+' rotation arrives as an EV_STOP event (SR_AT_LIMIT), which the loop's showEvents() prints.
+
+' Local Variables:
+' @local ltdegree - the left wheel's odometer, degrees
+' @local rtdegree - the right wheel's odometer, degrees
+' @local eError - the result of the rotation limit, then of the drive it guards
+
+    ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' the odometers before the rotation
+    ' arm the limit first and drive only if it was accepted, so the wheels never run without one
+    eError := wheels.stopAfterRotation(360, wheels.DRU_DEGREES)                 ' stop after one wheel rotation
+    if eError == wheels.NO_ERROR
+        eError := wheels.driveDirection(10, 0)                                  ' drive forward slowly
+    if bCommandSucceeded(eError, @"one rotation")
+        dbgBegin(@"  one rotation: driving, odometers from")
+        dbgText(@"ltdegree = ")
+        dbgSdec(ltdegree)
+        dbgText(@", rtdegree = ")
+        dbgSdec(rtdegree)
+        dbgText(@" degrees")
+        dbgShow()
+
+PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
+' Read both joysticks and scale them to a drive speed and direction.
+'
+' @returns speed - the right stick's vertical position as a speed [-100 to 100]
+' @returns direction - the left stick's horizontal position as a direction [-100 to 100]
+
+' Local Variables:
+' @local rawSpeed - the right stick's vertical channel reading
+' @local rawDirection - the left stick's horizontal channel reading
+' @local rngMin - the channel's lowest recorded reading
+' @local rngMax - the channel's highest recorded reading
+
+    ' route Rt Joystick Vt (spring center) to FWD/REV (speed)
+    'debug("-- JOY -- JOY --")
+    rawSpeed := remoteCtl.readChannel(remoteCtl.CTL_RT_JOY_VT)
+    rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_RT_JOY_VT)
+    speed := map(rawSpeed, rngMin, rngMax, -100, +100)
+
+    ' route Lt Joystick Hz (spring center) to direction
+    rawDirection := remoteCtl.readChannel(remoteCtl.CTL_LT_JOY_HZ)
+    rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_LT_JOY_HZ)
+    direction := map(rawDirection, rngMin, rngMax, -100, +100)
+
+PRI map(inValue,  inMin,  inMax,  outMin,  outMax) : outValue
+' Re-map a value from one range onto another, after Arduino's map()
+'  (REF: https://www.arduino.cc/reference/en/language/functions/math/map), with two differences:
+'  - it clamps: an input at or beyond an end of [inMin, inMax] returns that end of the output range
+'  - so {inMin} must be below {inMax}; the output range may run either way (outMin > outMax reverses it)
+'  Integer math: fractions are truncated, not rounded.
+'
+' @param inValue - the value to re-map
+' @param inMin - the input range's low end
+' @param inMax - the input range's high end
+' @param outMin - the output value for {inMin}
+' @param outMax - the output value for {inMax}
+' @returns outValue - {inValue} re-mapped onto [outMin, outMax], clamped to its ends
+
+    if (inValue <= inMin)
+        outValue := outMin
+    elseif (inValue >= inMax)
+        outValue :=  outMax
+    else
+        outValue := (inValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin
+
+CON { --- the logger: everything below is test_bench_rc's own; nothing above calls it but the RC: lines --- }
+
+CON { build identity }
+
+    SRC_REV     = 2                                             ' hand-bumped whenever this file changes; printed in RC-BANNER
+    FMT_VERSION = 1                                             ' RC- record-format version: bumped when a record changes shape
+
+CON { logger cog }
+
+    LOG_RATE_HZ         = 25                                    ' one RC-TEL each 40 ms: the header's RATE section
+    LOG_PERIOD_TICKS    = CLK_FREQ / LOG_RATE_HZ                ' 10_800_000 at 270 MHz
+    LOG_LATE_TICKS      = LOG_PERIOD_TICKS / 4                  ' a pass later than this (10 ms) is counted late
+    TICKS_PER_US        = CLK_FREQ / 1_000_000
+    ' the smallest slack the logger will waitct() on: below it the target could pass before waitct() runs, which would
+    '  wait for the counter to wrap (~15.9 s at 270 MHz) -- the instrument cog's rule (test_bench_dual.spin2)
+    LOG_MIN_SLACK_TICKS = 200 * TICKS_PER_US
+    LOG_EVENTS_PER_PASS = 4                                     ' RC-EVT per pass at most: 100 a second, far above the log's rate
+    LOG_STACK_LONGS     = 256                                   ' the instrument's 128, doubled; its scratch lives in VAR too
+    LOG_ACK_TIMEOUT_MS  = 250                                   ' one period plus a pass, with margin
+    LOG_POLL_MS         = 1
+    LOG_PARK_MS         = 100
+    INCR_PER_K          = 1_000                                 ' ci_k and fi_k are increments / 1_000
+    TENTHS_MA_PER_MA    = 10                                    ' getCurrent() reports 0.1 mA
+    FOLLOW_NOT_VALID    = -1                                    ' fol_pct while the rpm window is not valid
+    ' the RC-TEL line: 221 bytes worst (the header's RATE section, less "CogN  " and CR LF); anything past the buffer
+    '  is dropped, so a line can come out short but never overrun. Numbers are clamped to benchLog.LIM_BIG, 12 bytes.
+    LINE_BUF_BYTES      = 256
+    ' the quiet debug masks (isp_bldc_motor_userconfig_bench.spin2 under -D BENCH_QUIET)
+    QUIET_DBG_MASK      = DECOD user.DBGCH_ERROR | DECOD user.DBGCH_WARNING
+
+  ' logger commands (cog 0 writes):
+  '  LOG_CMD_RUN  - sample and print
+  '  LOG_CMD_EXIT - finish this pass, acknowledge, park
+    #0, LOG_CMD_RUN, LOG_CMD_EXIT
+
+  ' logger states (the logger writes):
+  '  LOG_ST_NONE    - not started, or not yet in its loop
+  '  LOG_ST_RUNNING - sampling and printing
+  '  LOG_ST_EXITED  - parked, printing nothing; safe to cogstop
+    #0, LOG_ST_NONE, LOG_ST_RUNNING, LOG_ST_EXITED
+
+  ' the logger's per-wheel slots
+    #0, SLOT_LEFT, SLOT_RIGHT
+    LOG_SLOTS = 2
+
+VAR { logger shared memory -- one writer each }
+
+    ' written by cog 0, read by the logger
+    LONG    logCmd
+    ' written by the logger, read by cog 0 (the totals only once the logger has acknowledged EXIT or been stopped)
+    LONG    logState
+    LONG    logSeq                                          ' records emitted, RC-TEL and RC-EVT together
+    LONG    logLate                                         ' passes started more than LOG_LATE_TICKS after their due time
+    LONG    logSkipped                                      ' whole periods that got no sample
+    LONG    logMaxLateTicks
+    LONG    logMaxPassTicks                                 ' the longest pass: its reads, its RC-TEL and its RC-EVTs
+    ' owned by cog 0
+    LONG    logCogId                                        ' cogspin()'s return; < 0 when it failed or was never tried
+    LONG    bLogAcked                                       ' the logger acknowledged EXIT before its cogstop
+    LONG    logStack[LOG_STACK_LONGS]
+
+VAR { logger scratch -- written and read by the logger cog only (keeps its stack small) }
+
+    LONG    lgMs                                            ' getms() at the sample
+    LONG    lgSig
+    LONG    lgRawVt
+    LONG    lgRawHz
+    LONG    lgSpd
+    LONG    lgDir
+    LONG    lgEstop
+    LONG    lgIgnore
+    LONG    lgCmdSpd
+    LONG    lgCmdDir
+    LONG    lgPath
+    LONG    lgLastCt                                        ' getct() at the previous sample
+    LONG    lgPwr[LOG_SLOTS]
+    LONG    lgCi[LOG_SLOTS]
+    LONG    lgFi[LOG_SLOTS]
+    LONG    lgPos[LOG_SLOTS]
+    LONG    lgLastPos[LOG_SLOTS]
+    LONG    lgTps[LOG_SLOTS]
+    LONG    lgMa[LOG_SLOTS]
+    LONG    lgDcs[LOG_SLOTS]
+    LONG    lgErr[LOG_SLOTS]
+    LONG    lgDuty[LOG_SLOTS]
+    LONG    lgShort[LOG_SLOTS]
+    LONG    lgFol[LOG_SLOTS]
+    LONG    lgHs[LOG_SLOTS]
+    LONG    lgFlt[LOG_SLOTS]
+    LONG    lgLineLen                                       ' bytes in lgLine, excluding its terminator
+    BYTE    lgLine[LINE_BUF_BYTES]                          ' the RC-TEL line under assembly
+
+DAT { record text -- hub strings, emitted with zstr_() (DBG-2) }
+
+sFieldsTel      BYTE    "RC-FIELDS,RC-TEL,seq,ms,sig,rt_vt,lt_hz,spd,dir,estop,sticks_off,cmd_spd,cmd_dir,path_pm,late,"
+                BYTE    "l_pwr,l_ci_k,l_fi_k,l_pos,l_tps,l_ma,l_dcs,l_err,l_duty,l_short,l_fol_pct,l_hs,l_flt,"
+                BYTE    "r_pwr,r_ci_k,r_fi_k,r_pos,r_tps,r_ma,r_dcs,r_err,r_duty,r_short,r_fol_pct,r_hs,r_flt", 0
+sFieldsEvt      BYTE    "RC-FIELDS,RC-EVT,seq,ms,wheel,kind,value", 0
+#ifdef BENCH_CFG
+sCfgId          BYTE    "BENCH", 0
+#else
+sCfgId          BYTE    "USER", 0
+#endif
+sTrue           BYTE    "TRUE", 0
+sFalse          BYTE    "FALSE", 0
+
+PRI emitBanner() | bQuiet
+' RC-BANNER: the build -- this file's revision and record format, the library's DRIVER_REV, the config, the clock, and
+' whether the quiet debug masks are compiled (the front cog then holds no debug()). Worst case about 200 bytes.
+
+' Local Variables:
+' @local bQuiet - TRUE when both library masks are the quiet set (ERROR + WARNING)
+
+    bQuiet := (user.MOTOR_DBG_MASK == QUIET_DBG_MASK) and (user.STEER_DBG_MASK == QUIET_DBG_MASK)
+    debug("RC-BANNER,file,test_bench_rc,src_rev,", udec_(SRC_REV), ",fmt,", udec_(FMT_VERSION), ",drv_rev,", udec_(mtrConst.DRIVER_REV), ",cfg_id,", zstr_(@sCfgId), ",clkfreq,", udec_(clkfreq), ",quiet,", zstr_(boolToken(bQuiet)), ",mdbg,", udec_(user.MOTOR_DBG_MASK), ",sdbg,", udec_(user.STEER_DBG_MASK), ",log_hz,", udec_(LOG_RATE_HZ), ",mirrors,demo_dual_motor_rc")
+
+PRI loggerStart()
+' Name the stream's fields, then start the logger cog inside the cog-event quiet window, and report it (RC-LOG).
+' A logger that does not start leaves the demo running without telemetry: RC-LOG says so and RC-END reads 0 records.
+
+    logCmd := LOG_CMD_RUN
+    logState := LOG_ST_NONE
+    logSeq := 0
+    logLate := 0
+    logSkipped := 0
+    logMaxLateTicks := 0
+    logMaxPassTicks := 0
+    bLogAcked := FALSE
+    debug(zstr_(@sFieldsTel))
+    debug(zstr_(@sFieldsEvt))
+    debug("RC-ENUM,dcs,", udec_(wheels.DCS_Unknown), ",DCS_Unknown,", udec_(wheels.DCS_STOPPED), ",DCS_STOPPED,", udec_(wheels.DCS_SPIN_UP), ",DCS_SPIN_UP,", udec_(wheels.DCS_AT_SPEED), ",DCS_AT_SPEED,", udec_(wheels.DCS_SPIN_DN), ",DCS_SPIN_DN,", udec_(wheels.DCS_SLOW_TO_CHG), ",DCS_SLOW_TO_CHG,", udec_(wheels.DCS_FAULTED), ",DCS_FAULTED,", udec_(wheels.DCS_ESTOP), ",DCS_ESTOP,", udec_(wheels.DCS_RELEASED), ",DCS_RELEASED")
+    debug("RC-ENUM,hs,", udec_(wheels.HS_OFF), ",HS_OFF,", udec_(wheels.HS_HOLDING), ",HS_HOLDING,", udec_(wheels.HS_SLIPPED), ",HS_SLIPPED,", udec_(wheels.HS_LIMITED), ",HS_LIMITED")
+    benchLog.cogEventBegin()
+    logCogId := cogspin(NEWCOG, logger(), @logStack)
+    benchLog.cogEventEnd()
+    debug("RC-LOG,started,", zstr_(boolToken(logCogId >= 0)), ",cog,", sdec_(logCogId), ",hz,", udec_(LOG_RATE_HZ), ",free_cogs,", udec_(benchLog.countFreeCogs()))
+
+PRI loggerStop() | startMs
+' Stop the logger cooperatively: command EXIT, wait (bounded) for it to acknowledge from its park, then cogstop it.
+' It checks the command only between passes, so an acknowledged logger is never inside a debug() (PL-41).
+
+' Local Variables:
+' @local startMs - getms() when EXIT was commanded
+
+    if logCogId >= 0
+        logCmd := LOG_CMD_EXIT
+        startMs := getms()
+        repeat until (logState == LOG_ST_EXITED) or (getms() - startMs >= LOG_ACK_TIMEOUT_MS)
+            waitms(LOG_POLL_MS)
+        bLogAcked := (logState == LOG_ST_EXITED)
+        benchLog.cogEventBegin()
+        cogstop(logCogId)
+
+PRI emitEnd()
+' RC-END: the logger's totals, once, at the program's natural end -- how many records it emitted (the last seq), and
+' whether it ever fell behind. All 0 when it never started.
+
+    debug("RC-END,records,", udec_(logSeq), ",late,", udec_(logLate), ",skipped,", udec_(logSkipped), ",max_late_us,", udec_(logMaxLateTicks / TICKS_PER_US), ",max_pass_us,", udec_(logMaxPassTicks / TICKS_PER_US), ",acked,", zstr_(boolToken(bLogAcked)))
+
+PRI boolToken(bFlag) : pToken
+' Name a boolean for a labelled record field: TRUE or FALSE, never a number (the bench's decision 13).
+'
+' @param bFlag - the flag; any non-zero is TRUE
+' @returns pToken - pointer to "TRUE" or "FALSE"
+
+    pToken := (bFlag <> FALSE) ? @sTrue : @sFalse
+
+PRI flagDigit(bFlag) : nDigit
+' A flag as one digit for RC-TEL's positional fields: 1 or 0 (compact; a Spin2 TRUE would print as -1).
+'
+' @param bFlag - the flag; any non-zero counts as set
+' @returns nDigit - 1 when set, else 0
+
+    nDigit := 0
+    if bFlag <> FALSE
+        nDigit := 1
+
+CON { --- the logger cog: runs in its own cog; it prints, and nothing else it does can block the drive --- }
+
+PRI logger() | dueCt, slackTicks, passCt
+' THE LOGGER COG (loggerStart()'s cogspin). Paces itself on an absolute getct() schedule, LOG_RATE_HZ, never calling
+' waitct() without positive slack; each pass reads the sticks and both wheels, prints one RC-TEL, then drains up to
+' LOG_EVENTS_PER_PASS of its own events as RC-EVT. A late pass is counted and the schedule re-based, never replayed.
+' Reads only: commands nothing, starts and stops nothing. Checks the EXIT command between passes, acknowledges it,
+' and parks until loggerStop() cogstops it; it never returns.
+'
+' @local dueCt - getct() the next sample is due at
+' @local slackTicks - dueCt - getct(), signed (a GETCT difference is wrap-safe)
+' @local passCt - getct() when this pass's work began
+
+    lgLastCt := getct()
+    lgLastPos[SLOT_LEFT], lgLastPos[SLOT_RIGHT] := wheels.testGetRawHallTicks()
+    logState := LOG_ST_RUNNING
+    dueCt := getct() + LOG_PERIOD_TICKS
+    repeat while logCmd <> LOG_CMD_EXIT
+        slackTicks := dueCt - getct()
+        if slackTicks > LOG_MIN_SLACK_TICKS
+            waitct(dueCt)
+            dueCt += LOG_PERIOD_TICKS
+        elseif slackTicks > 0
+            dueCt += LOG_PERIOD_TICKS                           ' on time, too close to the target to wait on
+        else
+            logCountLate(0 - slackTicks)
+            if (0 - slackTicks) >= LOG_PERIOD_TICKS
+                dueCt := getct() + LOG_PERIOD_TICKS             ' re-base; the skipped periods were counted
+            else
+                dueCt += LOG_PERIOD_TICKS
+        passCt := getct()
+        logSample()
+        logEvents()
+        logMaxPassTicks #>= getct() - passCt
+    logState := LOG_ST_EXITED
+    repeat
+        waitms(LOG_PARK_MS)
+
+PRI logCountLate(lateTicks)
+' Count one pass that started after its due time (logger cog): late only past LOG_LATE_TICKS, the largest lateness,
+' and the whole periods that got no sample.
+'
+' @param lateTicks - how far past its due time the pass starts, in ticks (> 0)
+
+    if lateTicks > LOG_LATE_TICKS
+        logLate++
+    logMaxLateTicks #>= lateTicks
+    if lateTicks >= LOG_PERIOD_TICKS
+        logSkipped += lateTicks / LOG_PERIOD_TICKS
+
+PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPct, bFollowOk, bShort, bFault, nTenthsL, nTenthsR
+' Read one sample -- the sticks and switches the demo acts on, then both wheels -- and print it as one RC-TEL (logger
+' cog). Each wheel's telemetry group is read first: its dcs is the gate (I3) for the rest of that wheel's fields.
+'
+' @local nowCt - getct() at the sample, the rate's timebase
+' @local periodTicks - ticks since the previous sample
+' @local rngMin - a stick channel's lowest recorded reading
+' @local rngMax - a stick channel's highest recorded reading
+' @local slotIdx - wheel slot
+' @local nDelta - hall ticks since the previous sample
+' @local nFollowPct - the rpm window's following percentage, as read
+' @local bFollowOk - T/F where T means that percentage is valid
+' @local bShort - T/F where T means the lag limiter held the field lately
+' @local bFault - T/F where T means the driver's fault latch is set
+' @local nTenthsL - the left motor's current, 0.1 mA
+' @local nTenthsR - the right motor's current, 0.1 mA
+
+    lgMs := getms()
+    nowCt := getct()
+
+    ' 1. the sticks and switches, read and mapped as the demo reads and maps them
+    lgSig := flagDigit(remoteCtl.hasSignal())
+    lgRawVt := remoteCtl.readChannel(remoteCtl.CTL_RT_JOY_VT)
+    rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_RT_JOY_VT)
+    lgSpd := map(lgRawVt, rngMin, rngMax, -100, +100)
+    lgRawHz := remoteCtl.readChannel(remoteCtl.CTL_LT_JOY_HZ)
+    rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_LT_JOY_HZ)
+    lgDir := map(lgRawHz, rngMin, rngMax, -100, +100)
+    lgEstop := flagDigit(remoteCtl.isSwitchOff(remoteCtl.CTL_SW_D))
+    lgIgnore := flagDigit(remoteCtl.isSwitchOn(remoteCtl.CTL_SW_A))
+    lgCmdSpd := priorSpeed                                      ' the demo's last command, one long each
+    lgCmdDir := priorDirection
+
+    ' 2. each wheel: the telemetry group first (it carries the gate), then the rest
+    lgDuty[SLOT_LEFT], lgErr[SLOT_LEFT], _, _, _, _, lgDcs[SLOT_LEFT], bFault := wheels.testLeftGetTelemetry()
+    lgFlt[SLOT_LEFT] := flagDigit(bFault)
+    lgDuty[SLOT_RIGHT], lgErr[SLOT_RIGHT], _, _, _, _, lgDcs[SLOT_RIGHT], bFault := wheels.testRightGetTelemetry()
+    lgFlt[SLOT_RIGHT] := flagDigit(bFault)
+    lgCi[SLOT_LEFT], lgFi[SLOT_LEFT], bShort, _, nFollowPct, bFollowOk := wheels.testLeftGetDriveFollow()
+    lgShort[SLOT_LEFT] := flagDigit(bShort)
+    lgFol[SLOT_LEFT] := (bFollowOk <> FALSE) ? nFollowPct : FOLLOW_NOT_VALID
+    lgCi[SLOT_RIGHT], lgFi[SLOT_RIGHT], bShort, _, nFollowPct, bFollowOk := wheels.testRightGetDriveFollow()
+    lgShort[SLOT_RIGHT] := flagDigit(bShort)
+    lgFol[SLOT_RIGHT] := (bFollowOk <> FALSE) ? nFollowPct : FOLLOW_NOT_VALID
+    lgPwr[SLOT_LEFT], lgPwr[SLOT_RIGHT] := wheels.getPower()
+    lgPos[SLOT_LEFT], lgPos[SLOT_RIGHT] := wheels.testGetRawHallTicks()
+    nTenthsL, _, nTenthsR, _ := wheels.getCurrent()
+    lgMa[SLOT_LEFT] := nTenthsL / TENTHS_MA_PER_MA
+    lgMa[SLOT_RIGHT] := nTenthsR / TENTHS_MA_PER_MA
+    lgHs[SLOT_LEFT], _, lgHs[SLOT_RIGHT], _ := wheels.getHoldStatus()
+    lgPath := wheels.testGetPathScale()
+
+    ' 3. the rates, and the I3 gate: a wheel whose driver is not running reports dcs 0 and nothing else
+    periodTicks := nowCt - lgLastCt
+    lgLastCt := nowCt
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        nDelta := lgPos[slotIdx] - lgLastPos[slotIdx]
+        lgLastPos[slotIdx] := lgPos[slotIdx]
+        lgTps[slotIdx] := 0
+        if periodTicks > 0
+            lgTps[slotIdx] := muldiv64(abs(nDelta), CLK_FREQ, periodTicks)     ' magnitude first, then the sign
+            if nDelta < 0
+                lgTps[slotIdx] := 0 - lgTps[slotIdx]
+        lgCi[slotIdx] /= INCR_PER_K
+        lgFi[slotIdx] /= INCR_PER_K
+        if lgDcs[slotIdx] == wheels.DCS_Unknown
+            lgPwr[slotIdx] := lgCi[slotIdx] := lgFi[slotIdx] := lgPos[slotIdx] := lgTps[slotIdx] := 0
+            lgMa[slotIdx] := lgErr[slotIdx] := lgDuty[slotIdx] := lgShort[slotIdx] := lgFol[slotIdx] := 0
+            lgHs[slotIdx] := lgFlt[slotIdx] := 0
+
+    ' 4. one line, built here and sent with ONE zstr_(): a debug() takes at most 31 expressions and RC-TEL carries 39
+    logSeq++
+    lineBegin(@"RC-TEL")
+    lineNum(logSeq)
+    lineNum(lgMs)
+    lineNum(lgSig)
+    lineNum(lgRawVt)
+    lineNum(lgRawHz)
+    lineNum(lgSpd)
+    lineNum(lgDir)
+    lineNum(lgEstop)
+    lineNum(lgIgnore)
+    lineNum(lgCmdSpd)
+    lineNum(lgCmdDir)
+    lineNum(lgPath)
+    lineNum(logLate)
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        lineNum(lgPwr[slotIdx])
+        lineNum(lgCi[slotIdx])
+        lineNum(lgFi[slotIdx])
+        lineNum(lgPos[slotIdx])
+        lineNum(lgTps[slotIdx])
+        lineNum(lgMa[slotIdx])
+        lineNum(lgDcs[slotIdx])
+        lineNum(lgErr[slotIdx])
+        lineNum(lgDuty[slotIdx])
+        lineNum(lgShort[slotIdx])
+        lineNum(lgFol[slotIdx])
+        lineNum(lgHs[slotIdx])
+        lineNum(lgFlt[slotIdx])
+    debug(zstr_(@lgLine))
+
+PRI logEvents() | eKind, nMs, eWheel, nValue, nRead
+' Drain the LOGGER COG's own event cursor, at most LOG_EVENTS_PER_PASS a pass, one RC-EVT each (logger cog). The log
+' keeps a cursor per reading cog, so this takes nothing from the demo's showEvents() on cog 0; a lapped cursor reads
+' EV_LOST first, with how many were lost.
+'
+' @local eKind - the event's EV_* kind; EV_NONE when all are read
+' @local nMs - getms() when it happened
+' @local eWheel - EVW_LEFT, EVW_RIGHT or EVW_PLATFORM
+' @local nValue - the event's value (the SR_* reason for EV_STOP)
+' @local nRead - events read this pass
+
+    nRead := 0
+    repeat while nRead < LOG_EVENTS_PER_PASS
+        eKind, nMs, eWheel, nValue := wheels.getEvent()
+        if eKind == wheels.EV_NONE
+            quit
+        nRead++
+        logSeq++
+        if eKind == wheels.EV_STOP
+            debug("RC-EVT,", udec_(logSeq), ",", udec_(nMs), ",", zstr_(wheelName(eWheel)), ",", zstr_(names.eventKind(eKind)), ",", zstr_(names.stopReason(nValue)))
+        else
+            debug("RC-EVT,", udec_(logSeq), ",", udec_(nMs), ",", zstr_(wheelName(eWheel)), ",", zstr_(names.eventKind(eKind)), ",", sdec_(nValue))
+
+PRI lineBegin(pTag) | srcIdx
+' Start the RC-TEL line with its tag (logger cog).
+'
+' @param pTag - pointer to the record's tag text
+'
+' @local srcIdx - index into the tag
+
+    lgLineLen := 0
+    lgLine[0] := 0
+    repeat srcIdx from 0 to LINE_BUF_BYTES - 1
+        if byte[pTag][srcIdx] == 0
+            quit
+        lineChar(byte[pTag][srcIdx])
+
+PRI lineNum(numValue) | digitStack[benchLog.MAX_DEC_DIGITS], digitCount, absMagnitude, digitIdx
+' Append "," and a signed decimal with an underscore every three digits -- the form udec_() / sdec_() print and
+' isp_bench_log.spin2 builds -- clamped to +/- benchLog.LIM_BIG so no field runs wider than 12 bytes (logger cog).
+'
+' @param numValue - the field's value
+'
+' @local digitStack - decimal digits of the clamped value, least significant first
+' @local digitCount - how many entries of digitStack are in use
+' @local absMagnitude - magnitude of the clamped value, consumed by the extraction loop
+' @local digitIdx - index into digitStack while emitting
+
+    lineChar(",")
+    absMagnitude := (numValue #> (0 - benchLog.LIM_BIG)) <# benchLog.LIM_BIG
+    if absMagnitude < 0
+        lineChar("-")
+        absMagnitude := 0 - absMagnitude
+    digitCount := 0
+    repeat
+        digitStack[digitCount] := absMagnitude // benchLog.DEC_RADIX
+        absMagnitude /= benchLog.DEC_RADIX
+        digitCount += 1
+    until (absMagnitude == 0) or (digitCount == benchLog.MAX_DEC_DIGITS)
+    repeat digitIdx from digitCount - 1 to 0
+        lineChar("0" + digitStack[digitIdx])
+        if (digitIdx > 0) and (digitIdx // benchLog.DIGITS_PER_GROUP == 0)
+            lineChar("_")
+
+PRI lineChar(charByte)
+' Append one character to the RC-TEL line, dropping anything past the buffer (logger cog).
+'
+' @param charByte - the character to append
+
+    if lgLineLen < LINE_BUF_BYTES - 1
+        lgLine[lgLineLen] := charByte
+        lgLineLen += 1
+        lgLine[lgLineLen] := 0
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

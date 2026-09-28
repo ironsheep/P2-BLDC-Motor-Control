@@ -1,31 +1,27 @@
 # The floor run — run sheet (the last bench visit before 6.0)
 
-**Task:** «#3576» runs it; «#3591» built it, SRC_REV 58 added the load cells, and SRC_REV 60 re-checked every cell
-against DRIVER_REV 38's jerk-limited ramp and DRIVER_REV 39's stop plan. SRC_REV 61 (DRIVER_REV 46) changed nothing in
-part SPIN: the driver's later revisions (40's walk, guard and current fixes; 41–45's proved-equivalent memory
-reduction; 46's ramp-API removal) move no floor cell's bound: 40's unbiased current was checked against every
-current bound (test_bench_dual's SRC_REV 60 note), and the walk guard and band are read from the library. It runs after the release-candidate pass. **Tier:** `dual-spin` (part
-`DUAL_PART_SPIN`, one binary). **Burn-down:** `DOCs/PUNCH-LIST.md`, "Release burn-down".
+**Task:** «#3576» runs it; «#3591» built it, SRC_REV 58 added the load cells, SRC_REV 60 re-checked every cell against
+DRIVER_REV 38's jerk-limited ramp and DRIVER_REV 39's stop plan, and **SRC_REV 62 rebuilt it on Stephen's floor rules and
+the five situations he chose (2026-09-27)**. **Tier:** `dual-spin` (part `DUAL_PART_SPIN`, one binary). **Burn-down:**
+`DOCs/PUNCH-LIST.md`, "Release burn-down".
 
 **Why this visit exists:** the floor run keeps only the claims that need a load (Stephen, 2026-09-26). It is the last
 bench visit before 6.0, so it has to decide every load-dependent release item in one visit:
 
-| Closes | What it proves | Segment |
+| Closes | What it proves | Situation |
 |---|---|---|
-| PL-106 | the protective stop latches on a really blocked wheel, as `SR_BLOCKED`, within its ~1 s | BLOCK |
-| PL-111 (precondition) | a latched protective stop is cleared through the API: `clearProtectiveStop()`, not `clearEmergency()`. The serial half (`protclear`) is certified separately. | BLOCK |
-| PL-132 | the blocked-wheel stop coasts under `holdAtStop(FALSE)` (its control: it shorts under `TRUE`) | BLOCK |
-| PL-150 | under a real one-sided load both wheels slow together and the platform keeps its line; the overloaded wheel holds the speed it can sustain, without faulting | LOAD |
-| PL-93 | after a fault and its recovery, the next drive draws no extra current | SPIN (the re-drives) |
-| PL-95 | the drive never reports AT_SPEED while its field is held | BLOCK and LOAD |
-| PL-160 (the feel, under load) | the jerk-limited ramp eases every start, stop and speed change in and out under a real load: R19-DUAL-SPINSTRT-P and -SPINPEAK-P judge the quarter's START, and **you record what you feel** (below) | SPIN, and every segment that drives |
+| PL-106 | the protective stop latches on a really blocked wheel, as `SR_BLOCKED`, about a second after the wheel stops | 1 OBSTACLE STOP |
+| PL-111 (API half) | a latched protective stop is refused a drive, is not released by `clearEmergency()`, and is released by `clearProtectiveStop()`. The serial half (`protclear`) is not in this release. | 1 OBSTACLE STOP |
+| PL-132 | the protective stop coasts under `holdAtStop(FALSE)` (its control: it shorts under `TRUE`) | 1 OBSTACLE STOP |
+| PL-150 | under a real one-sided load both wheels slow together and the platform keeps its line; the overloaded wheel holds the speed it can sustain, without faulting | 2 GRAB ONE SIDE (and 3 INCLINE's climb, if its load arises) |
+| PL-144 | the path limiter does not hunt under a load (one engage for one hold) | 2 GRAB ONE SIDE |
+| PL-95 | the drive never reports AT_SPEED while its field is held | 1, 2 and 3 |
+| PL-93 | after a fault and its recovery, the next drive draws no extra current | 4 FAULT RETURN RUN |
+| PL-117 (X-5) | one wheel's fault stops the other along its ramp, on the floor | 4 FAULT RETURN RUN |
+| PL-160 (the feel, under load) | the jerk-limited ramp eases every start and stop in and out under a real load: SPINSTRT and SPINPEAK judge the quarter's START, and **you record what you feel** (below) | every drive |
 
-It also carries the floor run's own claims, unchanged since «#3591»: the commutation offsets under load, R18.3's loaded
-expectations, X-5 on the floor (PL-117), and the hold on an incline, which sizes `HOLD_CEILING_PCT`.
-
-The release-candidate pass (2026-09-27) adds two claims here: **PL-144**, the path limiter under load (LDPATH;
-PATH-HUNT's precondition never arises wheels up), and the hold's own question, **HOLDSET / NOTFOL** (pass 7's wheels-up
-PASS were an artifact of the PL-146 defect, so LDHOLD and HELDATSPD are now the hold's only evidence; PL-150's note).
+It also carries the floor run's own claims, unchanged since «#3591»: the commutation offsets under load and R18.3's
+loaded expectations (5 SPINS), and the hold on an incline, which sizes `HOLD_CEILING_PCT` (3 INCLINE).
 
 **The demos ran at the release-candidate pass (PL-149 certified).** The 27 A derate cannot be reached on this rig.
 
@@ -39,8 +35,9 @@ The release-candidate pass left three wheels-up items. They run first, on the sa
 | Order | Command | Why | Minutes |
 |---|---|---|---|
 | A1 | `tools/bench-run.sh t0-stopreason` | re-certifies RAMP-SHAPE, RAMP-UNWIND, RAMP-REVERSE, SR-ATLIMIT and EV-STOP after the three harness fixes (RC evaluation F1–F3); banner `src_rev 28` | 2 |
-| A2 | the serial step | **only if** it did not run at the RC pass: `VISIT-10-RUNSHEET.md` step 12, unchanged | 2 + wiring |
-| A3 | `tools/bench-run.sh t0-reva` | optional, your call (PL-163): the Rev A block in `VISIT-10-RUNSHEET.md` | 1 + swaps |
+| A2 | `tools/bench-run.sh t0-reva` | **pending your decision (PL-163)**, on a Rev A platform | 1 |
+
+Serial is not in this release (Stephen, 2026-09-27), so no serial step runs.
 
 What A1 decides (criteria in source, unchanged except as the SRC_REV 28 note says): R22-T0-RAMP-SHAPE, -REVERSE and
 -UNWIND PASS; R20-T0-SR-ATLIMIT reads SR_COMMANDED on its negative (`T0-25,leg,ATLIMIT_NEG,...,sr_stop,41`); R20-T0-EV-STOP
@@ -52,30 +49,43 @@ Then battery off, the platform on the floor, and the floor run below.
 
 ## ⛔ First: push, then pull at the bench
 
-`git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 61** and the
+`git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 62** and the
 release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate pass leads to a fix).
 
 ## Check the banner before reading anything else
 
-| Every `dual-*` log must read |
+| Every `dual-spin` log must read |
 |---|
-| `BM-BANNER,...,src_rev,61,fmt,38,part,SPIN` |
+| `BM-BANNER,...,src_rev,62,fmt,39,part,SPIN` |
 | `BM-BUILD ... drv_rev,46`: the driver under test. A lower number means an old tree. |
-| `BM-BLKBUILD`, `BM-LDBUILD` and `BM-RDBUILD` present: the load cells' numbers were pre-registered |
-| `BM-SPINLEG` for legs 7–10 (the quarter, BRISK) reads `win_ms,300` (SRC_REV 60; it was 500) |
+| `BM-PLAN` rows in this order: `OBSTACLE`, `GRAB`, `INCLINE`, `FAULTRUN`, `SPIN` |
+| `BM-FLBUILD`, `BM-BLKBUILD`, `BM-LDBUILD`, `BM-CRPBUILD` and `BM-RDBUILD` present: every bound below was pre-registered |
+| `BM-FLBUILD ... leg_mm,1000,leg_tk,173,over_tk,6`: the floor rule's 1 m, and the harness's own cap 6 ticks past it |
+| ten `BM-SPINLEG` rows; the quarter's (legs 7–10) read `win_ms,300` |
 
 ---
 
-## Before the run: he measures, gathers and writes down
+## Your floor rules (Stephen, 2026-09-27), and how the harness keeps them
+
+| Your rule | How it is built |
+|---|---|
+| Only distance-controlled test rigs run on the floor; spinning in place is allowed. | Every drive is armed with the steering object's own distance limit **before it moves** (`stopAfterDistance()` / `stopAfterRotation()`); a refused limit and the drive is never made. Each drive ends at rest at that limit. |
+| Straight runs at most 1 m forward and 1 m back to the start. | Every straight leg is armed at 1 m (173 hall ticks) or less. A drive back is armed with the travel the drive out actually made, never more. |
+| The incline at most 1 m up and 1 m back down, with stops. | Four climbs of 0.25 m (43 ticks), three of them ending at a stop on the slope, then one drive down by the net climb. |
+| The operator must know which test is running before it moves. | Every situation starts on a READY screen that names it, says what it will do and how far, and waits for your START. Every drive back, and FAULTRUN's two later drives, has a READY screen of its own. INCLINE runs its whole sequence on one START (its READY screen says the whole sequence), so the platform never waits on a screen while on the slope. |
+| The platform can damage its surroundings, so motion stays inside these limits. | **The harness's own hard cap:** every drive is watched on the drivers' own hall positions and the platform is e-stopped the moment either wheel is **6 ticks (35 mm) past** its drive's declared travel. The distance stop promises rest within 3 ticks of its limit, so 6 past it is a stop that did not happen. STOP (click or space bar) is live whenever a wheel can move; the 10 A abort and the fold-back apply throughout. |
+
+## Before the run: you measure, gather and write down
 
 | What | Value | Why |
 |---|---|---|
-| Incline angle, measured on the ramp surface | ____ ° (suggest near 5°) | the creep cells judge a hold against this slope |
-| Platform mass | ____ kg | with the angle, the holding torque per wheel = m·g·sinθ·0.08255 m / 2 |
-| Tether routing | from above the centre, or ≥ 3 m free | one full turn must not pull it, and LOAD drives up to 2 m down a lane |
-| Two chocks | wedges (door stops work) or blocks, ≥ 4 cm tall | BLOCK: one hard against the front of the LEFT tyre, one against the back |
-| A strap | about 1 m, tied to the frame beside the LEFT wheel | LOAD: his pull on it is the load |
-| A straight lane | ≥ 3 m, clear, hard floor | LOAD drives straight ahead, at most 2 m |
+| Incline angle, measured on the ramp surface | ____ ° (about 10°) | the creep cells judge a hold against this slope |
+| Platform mass | ____ kg | with the angle, the holding torque per wheel = m·g·sinθ·0.08255 m / 2; and it says which case INCLINE's overloaded climb was (below) |
+| The obstacle for OBSTACLE STOP | you / an object (circle one) | the log cannot tell which |
+| A straight lane | 1.5 m long, 0.5 m wide, hard floor, clear | GRAB and FAULTRUN drive 1 m out and back; OBSTACLE drives at most 1 m |
+| The incline | about 10°, at least 1 m of slope past the drive wheels plus the platform's own length, the flat at its foot | INCLINE climbs 1 m from the foot |
+| Space for SPIN | level floor, 1 m clear all round | a spin leg is at most one platform turn |
+| Tether routing | from above the centre, or ≥ 3 m free | 1 m out and back, and one turn in each direction |
 
 "LEFT" is the platform's left, the P32 board, as seen standing behind it facing forward.
 
@@ -84,206 +94,295 @@ release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate 
 | | |
 |---|---|
 | **Purpose** | **Certification** of the load claims above, on the release-candidate driver (DRIVER_REV 46), plus the floor run's measurements: loaded current by direction and pair, and the hold's duty and current on the incline. |
-| **Hardware risk** | **The highest this project has: wheels down, a person present.** SPIN turns the platform in place at up to about half a turn a second, at most one turn per leg; legs 11 and 12 fault one wheel on purpose. BLOCK drives only the chocked LEFT wheel, current-limited to 2 A (about 14 N at the tyre); if it turns 17 mm the harness stops it. LOAD drives the platform straight at a slow walk, current-limited to 4 A, at most 2 m, with an e-stop 35 mm past that; you walk behind it. On the incline the platform can roll up to about 17 mm (coast) or 35 mm (hold trials) before the harness brakes it. The 10 A abort and the fold-back limiter apply throughout. **Every start and stop now ramps smoothly and takes longer than at the last floor run: a stop from the quarter takes about 0.6 s and 31 ticks (18 cm of tyre), not 19.** **Stand outside the swept circle while it spins. Panic: disconnect the battery.** |
-| **Who observes / acts** | Stephen, on every screen: each says what is happening, the one next click, and what he should see. He chocks the wheel (BLOCK), pulls the strap (LOAD), handles the platform on the incline (CREEP), and records the ramp's feel (PL-160). |
-| **Runs that carry state** | None. Every pair of legs, every BLOCK and LOAD trial and every creep trial runs in its own steering lifetime; a written offset pair is restored and read back (`BM-OFFREST`); the lowered current limits are restored before each lifetime stops. |
-| **Run length** | About **14 minutes of run**: SPIN about 5.5 (12 legs and 2 re-drives), BLOCK about 1.5, LOAD about 4 (a free trial and 1 to 3 drag trials), CREEP about 2.5. The S-curve changes a leg's time by well under a second (a leg at SLOW still takes about 8.2 s). About **40 minutes at the rig** with the setups. Cap 30 minutes of run. About 35 clicks. |
-| **Repeatability** | Repeatable. Each segment's first screen has SKIP: to rerun only BLOCK, LOAD or the incline, SKIP leg 1 and each segment before the one you want. |
-| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 7,531 bytes (limit 12,404). |
+| **Hardware risk** | **The highest this project has: wheels down, a person present.** Every drive is at most 1 m (a spin leg at most one turn), armed before it moves, e-stopped by the harness 35 mm past its limit. The speeds are a slow walk: 0.16 m/s (OBSTACLE, GRAB, INCLINE), 0.23 m/s (FAULTRUN), and SPIN's at most power 23 (about half a platform turn a second). OBSTACLE pushes on its obstacle — you, if you choose — with at most about 14 N at each tyre (2 A) for about a second before it stops itself. FAULTRUN faults the LEFT wheel on purpose at 0.23 m/s: both wheels ramp down within half a second, the platform turning under 1° (up to about 7° if the faulted wheel coasts instead). On the incline the platform rolls back about 2 cm at the first stop before the harness brakes it, and slips and drags up to 35 mm at the second. **Stand outside the swept circle while it spins. Panic: disconnect the battery.** |
+| **Who observes / acts** | Stephen, on every screen: each says what is happening, the one next click, and what he should see. He is the obstacle or places it (OBSTACLE), holds the frame back (GRAB), sets the platform at the foot of the slope (INCLINE), and records the ramp's feel (PL-160). |
+| **Runs that carry state** | None. Every OBSTACLE and GRAB trial, the incline and the fault run each run in their own steering lifetime; SPIN pairs share one; a written offset pair is restored and read back (`BM-OFFREST`); the lowered current limits are restored before each lifetime stops. |
+| **Run length** | About **11 minutes of run**: OBSTACLE about 1.5, GRAB about 3 (up to three tries), INCLINE about 2, FAULTRUN about 1 (with a 5 s fault cool-down), SPIN about 3.5. About **35 minutes at the rig** with the setups. Cap 30 minutes of run. About 30 clicks. |
+| **Repeatability** | Repeatable. Every READY screen has SKIP: to rerun only one situation, SKIP the ones before it. |
+| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 7,546 bytes (limit 12,404; unchanged by SRC_REV 62, which adds no debug() statement). |
 
-## The commands — two, in this order
+## The command — one
 
 ```bash
-tools/bench-run.sh dual-ui      # 1: re-certify the shared panel screens (dual-brake's art is unchanged, but check it)
-tools/bench-run.sh dual-spin    # 2: the floor run: SPIN, BLOCK, LOAD, CREEP
+tools/bench-run.sh dual-spin    # the floor run: OBSTACLE, GRAB, INCLINE, FAULTRUN, SPIN
 ```
 
-`dual-ui` previews only the `dual-brake` screens. The new screens were appended after them, and a byte check showed
-every existing prompt, state and label cell unchanged. `ATTENDED-PANEL-SCREENS.md` lists every screen's wording.
+`dual-ui` is not on this sheet: it previews only `dual-brake`'s screens, which SRC_REV 62 left byte-for-byte as they
+were (the generator rewrote only the SPIN part's own rows), and a tier re-run to certify only the panel earns no slot
+(doctrine P10). `ATTENDED-PANEL-SCREENS.md` lists every screen's wording.
 
 ---
 
-## What he does, and when
+## The five situations, in order
 
-| When the panel shows | He does |
-|---|---|
-| SPIN legs 1–12 (READY) | stands outside the circle, tether slack, clicks START |
-| **after legs 11 and 12: "FAULT CLEARED. NEXT: THE SAME SLOW SPIN AGAIN"** | clicks START: the same slow spin, stopped by itself before the turn is up. SKIP skips only this re-drive. |
-| **BLOCKED-WHEEL TEST** | leaves the platform where it is. **Chocks the LEFT wheel front and back**, hard against the tyre. Hands clear, then clicks START. Two short trials follow: in each the left wheel pushes the chock and should stop itself within 4 s (about 1.3 s is expected). Nothing else to click. |
-| **LOADED-DRIVE TEST** | **removes both chocks**, aims the platform's front down the lane, tethers it slack along the lane, **ties the strap to the frame beside the LEFT wheel**, and stands behind holding its end slack. Clicks START. |
-| LOAD READY, "NEXT: KEEP THE STRAP SLACK" | the free trial: clicks START and walks behind, strap slack |
-| LOAD READY, "NEXT: YOU PULL WHEN TOLD" | clicks START and walks behind, strap slack |
-| **PULL** | **pulls back on the strap, firmly and steadily, while walking, until the number (its speed, % of command) reads about 50**. Never to 0: a platform that stops for a second latches the protective stop, and the trial is not judged. Keeps pulling until LET GO. |
-| LET GO | lets the strap go slack; the platform stops itself (about half a second of ramp) |
-| BACK | pushes the platform back to the start of the lane (its wheels roll freely), clicks DONE. **After the last trial, unties the strap first.** |
-| LOAD READY, "LAST TOO LIGHT: PULL HARDER" or "LAST STALLED: PULL LESS" | adjusts his pull, clicks START. There are up to three drag trials; the first judged one ends LOAD. |
-| NOW THE INCLINE | carries the platform onto the ramp, wheels rolling straight down the slope, holds it, clicks START; then DONE when he lets go, DONE when he holds it again |
+Each drive's travel below is hall ticks at 5.76 mm a tick. Every start and stop number comes from the pass-by-pass model
+of the driver's jerk-limited ramp at the built-in rates (the model gives the sheet's own stops to the tenth of a tick):
 
-### ⭐ PL-160: feel the new ramp, and write it down
+| Speed | Rate | Start | Stop |
+|---|---|---|---|
+| SLOW (power 7): OBSTACLE, GRAB, INCLINE, SPIN legs 1–2 | 26.9 ticks/s, 0.16 m/s | 0.39 s, 5.3 ticks | 0.31 s, 4.4 ticks |
+| power 10: FAULTRUN | 40.3 ticks/s, 0.23 m/s | 0.48 s, 9.7 ticks | 0.39 s, 8.0 ticks |
+| MEDIUM (power 13): SPIN legs 3–6 | 53.7 ticks/s | 0.56 s, 15.0 ticks | 0.46 s, 12.3 ticks |
+| the quarter (power 23): SPIN legs 7–10 | 98.2 ticks/s | 0.82 s, 40.1 ticks | 0.64 s, 31.2 ticks |
 
-PL-160's feel is a floor item: no cell can judge it. **During SPIN and LOAD, watch and listen at every start and every
-stop, and after the run write one line on the sheet:** "PL-160 feel: ____".
+### 1. OBSTACLE STOP (segment `OBSTACLE`; PL-106, PL-111's API half, PL-132, PL-95)
 
-- **What to expect.** Every start eases in and every stop eases out over about a quarter of a second. Nothing should
-  jolt, lurch, clunk or rock the platform at a start or a stop, or at LOAD's slow-down when you pull and speed-up when
-  you let go.
-- **The times, derived for the built-in rates:**
+**What you do and see.**
 
-  | Speed | Start | Stop |
-  |---|---|---|
-  | SLOW (power 7) | 0.39 s, 5 ticks | 0.33 s, 4 ticks |
-  | MEDIUM and LOAD (power 13) | 0.56 s, 15 ticks | 0.46 s, 12 ticks |
-  | the quarter (power 23) | 0.82 s, 40 ticks | 0.64 s, 31 ticks |
+| When the panel shows | You do | You should see |
+|---|---|---|
+| OBSTACLE STOP, "TRIAL 1: THE STOP COASTS" | Stand 0.3–0.8 m in front of the platform's front (or put an object there that cannot move), square across its path. Click START. | About 2 s later it drives slowly (0.16 m/s) straight at the obstacle. If you are the obstacle, stand still. |
+| DRIVING SLOWLY INTO THE OBSTACLE | Nothing. STOP stops it. | It meets the obstacle and pushes gently (at most about 14 N at each tyre); about **one second** after it stops moving, it stops itself. |
+| IT STOPPED ITSELF: CHECKING | Nothing. | It may push the obstacle once more for an instant (the harness checks a drive is taken again after the clear, and stops it at once). |
+| PULL IT BACK TO THE START | Pull the platform back to where it started, aimed at the obstacle again. Click DONE. | The wheels roll freely. |
+| "TRIAL 2: THE STOP BRAKES" | The same again. | The same, except that after it stops itself the wheels are shorted (harder to pull back). |
 
-- **The difference from the last floor run.** Stops are about a quarter second longer and run further than they did.
-  A quarter-speed stop covers 31 ticks (18 cm of tyre), where it covered 19.
-- **What counts against it.** A step you can feel at either end of a ramp is PL-160's negative. So is the platform
-  pitching at a stop, or a stop that stops dead.
+**The motion envelope.** Both wheels at SLOW, straight ahead, armed at 1 m (173 ticks) before moving; the harness
+e-stops at 179 ticks. Current limited to 2 A on both wheels (restored before the lifetime stops). The obstacle must be
+met at speed and before the drive's own stop begins: 0.3 m leaves ten times the 31 mm the start takes, and 0.8 m leaves
+the stop's 31 mm and the platform's own reach ahead of its wheels.
 
----
+**What it decides.**
 
-## SPIN: the legs
+| Cell | Criterion | Fails if (the negative) | NOMEAS when |
+|---|---|---|---|
+| **R21-DUAL-BLKSTOP-P** (BOTH, COUNT of bad trials) | both codes `ERR_PLATFORM_BLOCKED`; one wheel `SR_BLOCKED` and the other `SR_BLOCKED` or `SR_PARTNER`; **every SR_BLOCKED wheel stood still, no hall tick, from 988 ms to 1,168 ms before the latch** (criterion token `STILL_TO_LATCH_SR`, was `BLOCKED_STOP_SR`) | no latch after a wheel stood 1,180 ms (a driver without the stop leaves a stalled wheel commanded: Visit 6a's wheel sat at duty_max reporting AT_SPEED); a latch under 988 ms (a false fire, PL-116's class); another stop reason | the drive's own 1 m stop fired first (`why NOT_BLOCKED`: the obstacle was not met) |
+| **R21-DUAL-PROTCLR-P** (BOTH, COUNT) | every latched trial: a drive refused with `ERR_PLATFORM_BLOCKED`; `clearEmergency()` leaves it latched; `clearProtectiveStop()` returns NO_ERROR and both codes read NO_ERROR; the rest of the leg armed; the next drive taken | any step otherwise. The in-run negative is the refused drive, the same call the last step makes, before the clear; `clearEmergency()` was the serial host's only release before the fix (`emerclear`) and must not release it | no trial latched |
+| **R21-DUAL-BLKSHORT-P** (per motor, MV) | the BRAKE trial's phase sum at rest after the stop **< 80 mV**: a short | at or above: the instrument cannot see a short on that wheel, and its BLKCOAST PASS does not count | the BRAKE trial did not latch |
+| **R21-DUAL-BLKCOAST-P** (per motor, MV) | the COAST trial's phase sum at rest **≥ 80 mV**: a coast | under 80: shorted. **Measured negative:** before DRIVER_REV 20 the stop shorted under coast; a short reads 11–25 mV and a coast 160–174 mV (`debug_260923-192848.log`) | the COAST trial did not latch |
 
-Odd legs spin right (clockwise from above), even legs spin left.
+**How the latch window is derived (re-derived for an obstacle, never fitted).** The driver's own test (`bFrontProtect()`)
+latches when a commanded wheel's |err| is at least LAG_SOFT and its hall position has not changed for BLOCKED_PASSES
+(1,000) front passes at 1 kHz. So the latch cannot come sooner than **1,000 ms after the wheel's last tick**. It comes no
+later than the field's own travel to LAG_SOFT after that tick, plus the same 1,000 ms: the lag limiter holds |err| under
+LAG_HOLD, so the field travels at most LAG_HOLD + LAG_SOFT = 180 of its 256 units a cycle, 4.2 ticks, at the commanded
+26.9 ticks/s: **156 ms**. Each end carries 12 ms for when the harness sees each event (a watch pass and one instrument
+period). Band: 1,000 − 12 = **988** to 1,000 + 156 + 12 = **1,168 ms**; a wheel still 1,180 ms with no latch is the stop
+overdue. A wheel the obstacle met before both wheels read AT_SPEED had a slower field, so its trial is judged on
+everything but the upper bound. (SRC_REV 58's chocked-wheel trial timed 1–4 s from the command, which included the
+ramp; an obstacle is met at speed, so the time is taken from the wheel's own stop.)
+
+**Recorded, not judged:** `BM-BLOCK` (the latch time from the command, each wheel's stand still, both stop reasons),
+`BM-BLKCLR` (both codes, every API return, each wheel's phase sum and the bridge it reads, HELDATSPD's counts), a trace
+per trial, `BM-SR`.
+
+### 2. GRAB ONE SIDE (segment `GRAB`; PL-150, PL-144, PL-95)
+
+**What you do and see.**
+
+| When the panel shows | You do | You should see |
+|---|---|---|
+| GRAB ONE SIDE, "NEXT: GRAB WHEN TOLD" | Aim the platform down the lane (1.5 m clear), tether slack. Click START. Walk beside its **LEFT** side, hands off. | It drives straight at a slow walk (0.16 m/s). |
+| GRAB (the number is its LEFT wheel's speed, % of command) | At about 0.4 m the panel says GRAB: take hold of the frame's LEFT side and hold it back, firmly and steadily, walking, **so the number falls to about 50 — never to 0**. Hold until LET GO. | Both wheels slow together; the platform keeps its line (it may yaw slightly toward you). |
+| LET GO | Let go and step away. | It picks up speed again and stops by itself at 1 m. |
+| NEXT: DRIVE BACK TO START | Stand clear of the lane behind it. Click START (or SKIP, and push it back yourself). | It drives straight back 1 m and stops by itself at its start. |
+| "LAST TOO LIGHT: HOLD HARDER" / "LAST STALLED: HOLD LESS" | Adjust your hold and click START. Up to three tries; the first judged one ends GRAB. | |
+
+A hold that stops the platform for a second latches the protective stop (`STALLED`): correct behaviour, not judged, and
+the next try asks for less. **Hold once and steadily:** a hold let go and taken again is two engages and fails LDHUNT.
+
+**The motion envelope.** Both wheels at SLOW, current limited to 4 A (about 28 N at the left tyre). Out: armed at 1 m
+(173 ticks), guard at 179. Back: armed at the farther wheel's travel out, guard 6 past it.
+
+**The length and speed fit the judged window inside the half metre after the grab** (derived; the old LOAD, at power 13
+over 2 m, spent about 1.2 m on its window, and at power 13 the window alone would now cover 134 of the 173 ticks). At
+SLOW the platform is at speed by 5.3 ticks. GRAB comes at 69 ticks (0.4 m), so you take hold within the 1 s lead, at
+0.4–0.55 m. The lead at up to full speed is 27 ticks, and the 2.5 s window at up to 88 % (the held wheel under 80 %, the
+other within LDPATH's 10 % of it) is 59.4: 155.4 in all, against the stop's start at 173 − 4.4 − 1 = 167.6 — **12 ticks
+spare**. A try you hardly slow (100 % throughout) still ends its window at 163.5, before the stop begins.
+
+**What it decides.** A try is judged when its LEFT wheel read SHORT (its lag limiter held) in the window and ran under
+**80 %** of its command's rate, with no protective stop; or when a wheel faulted. Otherwise it was too light
+(`NOT_OVERLOADED`) or stalled (`STALLED`).
+
+| Cell | Criterion | Fails if (the negative) | NOMEAS when |
+|---|---|---|---|
+| **R21-DUAL-LDPATH-P** (PL-150, BOTH, PERMILLE) | in the judged window, \|left − right\| hall ticks ÷ the larger **≤ 100 ‰**: both slowed together, the line kept | above. **By construction:** without the limiter the free wheel keeps its whole command while the held one runs under 80 %: at least 200 ‰, which still reads over 133 ‰ at the least travel judged | no judged try, or the larger travel under **30 ticks** (re-derived from 20: two ticks of window-edge quantisation and one of the follower's delay must stay inside 100 ‰) |
+| **R21-DUAL-LDHUNT-P** (PL-144, BOTH, COUNT) — new | the path limiter's EV_PATH_LIMIT engages in the judged try's lifetime **exactly 1**: one engage for one hold, released after it | more: a hunting limiter. **Measured negative:** pass 6's pre-fix limiter cycled five times in 4 s (one every 720–790 ms), about four in this hold | no judged try |
+| **R21-DUAL-LDHOLD-P** (PL-150, per motor, MS) | in each judged window, that wheel's longest gap between hall ticks **≤ 1,000 ms**, and no fault. GRAB judges the LEFT | a fault (a driver with no lag limiter faults FC_LAG at \|err\| 125), or a longer gap with no protective stop (a hold whose field decayed to zero and stood still) | no judged window for that wheel |
+| **R21-DUAL-HELDATSPD-P** (PL-95, BOTH, COUNT) | over every OBSTACLE drive and every loaded window, both wheels: **no two samples in a row read AT_SPEED at \|err\| ≥ LAG_HOLD** | any such pair. **Measured negative:** PL-93's trace read AT_SPEED at e −101 and duty_max for eight samples running | no sample was ever held |
+
+**Recorded, not judged:** `BM-LOAD`/`BM-LOADW` for every try (each wheel's travel and % of command, the mismatch, the
+least path scale, the SHORT polls, each wheel's longest tick gap, the engages), `BM-FLLEG` for the drive back, a trace.
+
+### 3. INCLINE (segment `INCLINE`; the hold's creep and `HOLD_CEILING_PCT`; PL-150's overload hold climbing)
+
+**What you do and see.** ONE START runs the whole sequence, so the platform never waits on a screen while on the slope.
+
+| When the panel shows | You do | You should see |
+|---|---|---|
+| INCLINE, "NEXT: CLIMB, 3 STOPS, DOWN" | Put the platform on the flat at the foot of the slope, facing up it, its drive wheels just short of the slope. Click START. Stand beside it, a hand near. | It climbs 0.25 m. |
+| STOPPED ON THE SLOPE, "EXPECT: ROLLS DOWNHILL" (stop 1) | Hands off, hand near. | It rolls back about 2 cm (3 ticks) and the harness brakes it; then it climbs 0.25 m more. |
+| "EXPECT: SLIPS, THEN DRAGS" (stop 2) | Hands off. | Its hold slips and hands over to the short, which drags as it creeps down; the harness brakes it by 35 mm; then it climbs again. |
+| "EXPECT: DOES NOT MOVE" (stop 3) | Hands off, for 15 s. | It holds still. |
+| "TO THE TOP: OVERLOADED" | Nothing. | The last 0.25 m, at a lowered current limit (see below). |
+| DRIVING 1 M BACK DOWN TO THE START | Nothing. | It drives back down and stops by itself at its start, on the flat. |
+| TAKE HOLD OF THE PLATFORM (only if the sequence ended early on the slope) | Hold it still, click DONE; the wheels are then switched off: lift it off the slope. | |
+
+STOP on the incline **brakes the wheels at once** (it shorts them), as its screens say.
+
+**The motion envelope.** Four climbs of 0.25 m (43 ticks) at SLOW, each armed first, each guarded 6 ticks past; the
+drive down is armed at the net climb (the mean of both wheels' displacement from the start, on the drivers' own hall
+positions), at most 1 m. The coast control is braked after 3 ticks (17 mm) of roll; a hold stop that creeps 6 ticks
+(35 mm) is braked.
+
+**What it decides.**
+
+| Cell | Criterion | Fails if | Control / NOMEAS |
+|---|---|---|---|
+| **R19-DUAL-CRPCOAST-P** (control) | stop 1, floated: rolls **≥ 3 ticks** | it does not: the incline does not load the wheels past friction and cogging, and CREEP / CRPHOLD go NOMEAS | — |
+| **R19-DUAL-CRPLOW-P** (control) | stop 2, the hold at a 1 % ceiling (under duty_min): creeps **≥ 2 ticks** | it does not: the slope never asks more than duty_min, so the ceiling is not sized; repeat steeper | — |
+| **R19-DUAL-CREEP-P** (per motor) | stop 3, the hold at the provisional 10 % ceiling: **0 ticks** of creep while HOLDING, counted from where both wheels came to rest (where the driver arms its hold) | any creep | CRPCOAST; NOMEAS unless the coast control rolled |
+| **R19-DUAL-CRPHOLD-P** (per motor) | still HOLDING when the 15 s watch ends | LIMITED or SLIPPED | as CREEP |
+| **R21-DUAL-LDHOLD-P** (per motor) | the overloaded climb, per wheel judged: longest tick gap ≤ 1,000 ms, no fault | as GRAB's | the wheel was not overloaded (never SHORT, or at least 80 % of its command) |
+
+**"Commanded faster than the slope allows" — what the climb can and cannot show.** At a current limit the torque is
+fixed, and a constant slope asks the same torque at any speed within the pack's reach, so a climb either keeps its
+command or cannot hold the slope at all. The one place the slope holds a wheel *under* its command and still lets it
+climb is the start from rest, where the S-curve's acceleration (at SLOW it peaks near 0.79 m/s²) adds to the slope's
+g·sin 10° = 1.70 m/s². At the climb's 2 A limit — about 14 N at each tyre, 28 N for the platform — **a platform of 11.2 to
+16.5 kg is overloaded on its start and climbs (LDHOLD judged); a lighter one keeps its command (LDHOLD NOMEAS,
+`NOT_OVERLOADED`); a heavier one cannot hold the slope, and the protective stop latches (`STALLED`; the harness clears it
+and drives down).** The mass you record says which case this platform was. A faster command would need more than the
+1 m the rule allows (at power 50 the start alone takes 0.94 m).
+
+**Wheel slip is invisible to the halls.** A tyre that slides on a loose surface moves the platform with no hall tick,
+and one that spins in place ticks with no motion: to the harness either reads as rest, or as creep or travel. Use a
+surface the tyres grip.
+
+**Recorded, not judged:** `BM-CREEP`/`BM-CREEPW` per stop (how the hold resolved, the hold duty against its ceiling,
+the time at the ceiling, current at hold: this sizes `HOLD_CEILING_PCT` under load), `BM-FLLEG` per climb and the drive
+down, `BM-LOAD`/`BM-LOADW` and a trace for the overloaded climb.
+
+### 4. FAULT RETURN RUN (segment `FAULTRUN`; PL-93, X-5 / PL-117)
+
+**What you do and see.**
+
+| When the panel shows | You do | You should see |
+|---|---|---|
+| FAULT RETURN RUN, "NEXT: 1 M FORWARD, NO FAULT" | Aim the platform down the lane (1.5 m long, 0.5 m wide), tether slack. Stand clear. Click START. | It drives 1 m forward at 0.23 m/s and stops by itself. |
+| "NEXT: BACK, LEFT FAULTED" | Stand clear. Click START. | It drives back; about a second later the LEFT wheel is faulted on purpose and **both wheels stop within half a second**, the platform turning a few degrees at most. |
+| FAULT CLEARED. "NEXT: THE RETURN GOES ON" (after about 5 s) | Stand clear. Click START (or SKIP, and push it back yourself). | The same drive back goes on at the same speed and stops by itself at its start. |
+
+**The motion envelope and why power 10 (derived).** Out: armed at 1 m, guarded at 179 ticks. Back: armed at 1 m before
+it moves; the guard's zero and its 179 cover the re-drive too, and the re-drive is armed with what is left of the 1 m.
+Both steady seconds must fit inside the 1 m back with room for the fault: 9.7 ticks up + 40.3 of the steady "before" =
+50.0 at the fault, 8.0 for both ramps down (58.0), then the re-drive's 9.7 up + 40.3 of "after" + 8.0 down + the stop
+plan's early tick = 59.0 — **117 of 173 ticks, 56 spare**. Power 13 would leave 10, too few if the faulted wheel coasts
+(a free wheel at 0.31 m/s rolls about 40 ticks); power 10 leaves over twice the ~24 ticks such a coast takes at 0.23 m/s.
+A re-drive needs at least **64 ticks** left (re-derived from 80: the 59.0 needed, plus a tick for the model, a tick of
+quantisation and the stop's 3-tick tolerance).
+
+**The fault is the driver's own forced fault** (`testForceFault()`: taken at the driver's own fault test on its next
+driven frame, FC_LAG, the path a real lag fault takes), guarded by the harness. **The fault response is the shipped
+default, FR_GRADED:** the faulted wheel re-seeds from its halls and ramps down; the steering object ramps the other down
+at the same rate (`SR_PARTNER`).
+
+**The arc the platform turns during the partner's ramp-down.** Two equal ramps from one speed differ by the pass the
+fault is seen on and a hall step: about a tick, **6 mm of tyre over the 387 mm track, under 1°**. If the graded stop falls
+back to a coast (its halls lost, or a second fault), the arc is at most the partner's whole stop, 8.0 ticks (46 mm):
+**6.8°**, pivoting about the faulted wheel; the ~0.66 m still to go then ends about 8 cm to one side.
+
+**What it decides.**
+
+| Cell | Criterion | Fails if | NOMEAS when |
+|---|---|---|---|
+| **R21-DUAL-POSTFLT-P** (PL-93, per motor, X100) | the re-drive's getCurrent() over its first second at speed ÷ the leg back's own over its second before the fault **≤ 1.50** | above; an absolute-current abort scores 99.99. **Measured negative:** Visit 6a drew 3.8–4.2× and hit the 10 A abort on the drive-up (PL-93) | the fault did not latch, the recovery did not clear, under 64 ticks left, he skipped it, or the "before" is under **0.02 A** (re-derived from 0.05: before and after share a lifetime and a rest zero, each good to 3.3 mA, so a true 1.0 cannot read over 1.5 above 16.7 mA) |
+| **R19-DUAL-SPINPLAT-P** (X-5, the RIGHT wheel, PCT) | 2 s after the LEFT wheel's fault, the RIGHT runs at **≤ 10 %** of its rate before it (FLTPLAT's own criterion) | it keeps driving (a steering object with no platform fault policy: PL-117) | the fault did not latch, or the RIGHT was not turning before it |
+| R14-DUAL-RSTPROV-P (per motor) | the fault's recovery cleared it | as every part | as every part |
+
+**The second reference.** The leg out's own second at speed is printed beside the two (`BM-RDRIVE l_fwd, r_fwd`), not
+judged: it runs the other way on the same floor, and a direction may differ by 25 % (SPINSYM's band), so it cannot be held
+to 1.5 without its own derivation. It shows whether the "before" was itself ordinary.
+
+**Recorded, not judged:** `BM-FLLEG` for the leg out, the fault's trace and `BM-FRPLAT`, `BM-SR` (the faulted wheel's own
+reason, the other `SR_PARTNER`), `BM-RDRIVE`.
+
+### 5. SPINS (segment `SPIN`; the commutation offsets under load, R18.3's loaded expectations)
+
+**What you do and see.** On each READY screen: stand outside the circle, tether slack, click START. It spins in place
+as the screen says and stops by itself within one turn. Odd legs spin right (clockwise from above), even legs left.
 
 | Legs | Pair | Speed (power) | Pair each driver must apply | Steady window |
 |---|---|---|---|---|
 | 1–2 | the shipped lead schedule | SLOW (7) | 17 / 336 | 2,000 ms |
 | 3–4 | schedule | MEDIUM (13) | 15 / 337 | 1,000 ms |
 | 5–6 | **legacy 43/317, the control** | MEDIUM | 43 / 317 | 1,000 ms |
-| 7–8 | schedule, traced | BRISK (23), the quarter | 1 / 351 | **300 ms** (was 500) |
-| 9–10 | fixed 14/338 | BRISK | 14 / 338 | **300 ms** (was 500) |
-| 11–12 | schedule, **one wheel faulted, then the re-drive** | SLOW | 17 / 336 | — |
+| 7–8 | schedule, traced | BRISK (23), the quarter | 1 / 351 | 300 ms |
+| 9–10 | fixed 14/338 | BRISK | 14 / 338 | 300 ms |
 
-The travel limit is one revolution of the platform: π × 387 mm = 1,216 mm, 211 hall ticks. Each leg's limit is armed
-before it moves, and the harness e-stops 6 ticks past it. A re-drive's limit is whatever is left of its leg's turn
-(`BM-RDRIVE remain`), so the tether still winds at most one turn.
+SRC_REV 62 removed the old legs 11–12 (one wheel faulted, then a re-drive): FAULTRUN judges X-5 and PL-93 on a straight
+run instead, so no spin leg faults a wheel.
 
-## What DRIVER_REV 38 and 39 moved, re-derived (SRC_REV 60)
-
-Every number below comes from a pass-by-pass model of the driver's `jerkStep`. It uses the bench wheel's built-in rates:
-speed-up 33,958 per pass with jerk 71, slow-down 49,918 with jerk 104, 522.7 µs a pass, 6 ticks per 2³² of field
-angle. The model reproduces the harnesses' own figures at power 50: a 2,885-pass speed-up (test_bench_t0), and a
-2,117-pass stop (test_bench_dual's 2,118 counts the take pass). Each derivation is stated in
-`src/test_bench_dual.spin2` at its constant.
-
-| What | DRIVER_REV 37 | DRIVER_REV 38/39 | Verdict |
-|---|---|---|---|
-| **The quarter's leg budget** (spinWinMs) | 31-tick spin-up, 98 of settle, 49 of window, 19-tick stop: 14 ticks inside 211 | 40.1-tick spin-up and 31.2-tick stop, so the limit fires at about 178.8. A 500 ms window would end at 187.4, about 90 ms after the ramp-down began, and would read A-8, the path scale and the pair on the ramp-down | **MOVED: 500 → 300 ms.** The window now ends at 167.8, 11 ticks (about 110 ms) before the fire, still over SPIN_WIN_MIN_MS 250. SLOW (91 of 211) and MEDIUM (135) are unchanged |
-| **SPINSTOP**, rest against the limit | ±2 | DRIVER_REV 39's plan over-states the stop by its age and its take-pass case, so a stop can rest up to one tick short (STOP_PLAN_EARLY_TICKS) | **±3** (SRC_REV 59, SPIN_STOP_TOL_TICKS = STOP_LIMIT_HI). The 6-tick guard is unchanged |
-| **The re-drive's room** (RD_MIN_TICKS 80) | ~15 up, ~27 of window, ~10 of stop | at SLOW, 5.3 up, 27.0 of window, 4.4 of stop and the plan's early tick: about 38 | kept, with twice the margin |
-| **BLOCK's latch window** (1 … 4 s) | "the held field's count starts ~1–2 s after the command" | The chocked rotor stands, so the lag is the field's own travel. It reaches LAG_SOFT after 437–524 passes of the S-curve to power 13 (0.23–0.27 s). The latch then comes BLOCKED_PASSES later: **about 1.3 s** | kept. The 1 s floor holds by construction |
-| **LOAD's travel** (2 m, 347 ticks) | — | 15.0 up, 53.7 settle, at most 214.8 over PULL's 4 s, and a 12.3-tick stop (it was about 5.6) come to at most 296. The limit would fire at about 334 | kept, with 50 ticks spare. The distance stop never ends a normal trial |
-| **LDPATH**, the path limiter's line (≤ 100 ‰) | — | The undragged wheel now follows a scale change along the S-curve: 2√(Δv/J), about 0.2 s for a 20 % change, where the stepped ramp took about 0.04 s. A follower delayed by *d* mismatches the window by *d* × (the dragged wheel's speed at the window's end − at its start). Under the steady pull asked for, a 5 ticks/s change across the window adds about a tick, against a band of about 7 ticks (100 ‰ of ~67 ticks at half speed for 2.5 s) | kept. The negative is unchanged: with no limiter the mismatch is at least 200 ‰ by construction |
-| **X-5 / SPINPLAT** (the partner at ≤ 10 % after D_REST_MS, 2 s) | ~0.1 s stop at SLOW | 0.33 s at SLOW | kept |
-| **POSTFLT, HELDATSPD, LDHOLD, CREEP** | — | POSTFLT compares two windows of the same ramp. `holdDecay` still turns AT_SPEED to SPIN_UP on a held pass. The hold and the incline drive no ramp | unchanged |
-
-**Re-cut by construction: A-1 and A-2, the START cells (PL-160's feel under load).** The ramp change broke both
-instruments, so both windows were re-derived. Neither bound moved. The derivation is in the SPIN part's CON, at
-`A1_RAMPOUT_SAMPLES` and `A2_REF_DELAY_MS`.
-
-- **Where the bounds come from.** Both are the servo model's (`DOCs/plans/servo-model`, DRIVE-INTEGRATION-DESIGN.md
-  §5.5).
-  - The model's ramp is the stepped one. Its acceleration rises every pass until arrival: 40,220 a pass at 36.75 × 10⁶,
-    after 920 ms.
-  - `start_metrics.py` judges a 1.4 s trace. A-1 is judged over the rise. A-2's reference is "the trace's last 60 ms",
-    which lie 418–478 ms after the model's arrival, at constant speed.
-- **A-2** (SPINPEAK, ≤ 1.80): the START's current peak ÷ the mean current of **60 ms of steady running**.
-  - The reference is 31 samples (60 ms) starting 420 ms after the first AT_SPEED sample. That is where the model
-    placed its own, to the 2 ms sample, and more than RAMP_TAU_MS past the ramp.
-  - It counts only when every sample from the first AT_SPEED to the reference's end reads DCS_AT_SPEED. That is the
-    driver's own report that its acceleration is 0. `jerkStep` writes AT_SPEED only on the arrival pass and on every
-    later pass at the target, where it zeroes `drv_accel_now` in the same step. A held pass turns it to SPIN_UP, and
-    a stop turns it to SPIN_DN.
-  - Until SRC_REV 60 the reference was the 60 ms before the first AT_SPEED. Under the S-curve that is the ramp-out,
-    still carrying up to 24 % of the speed-up acceleration, so a correct start could fail.
-  - **The bound stays 1.80.** Its derivation was against steady running. The S-curve only lowers the peak's
-    acceleration term: its limit, 33,958 a pass, is under the model's 40,220, and it eases in from 0.
-  - **Negative:** the shipped servo's start spike, 1.94–3.04 (measured, design §5.5).
-- **A-1** (SPINSTRT, ≤ 0.10): duty's largest fall from its running maximum over the **rise** only.
-  - The window runs from duty leaving its floor to 126 samples before the first AT_SPEED: RAMP_TAU_MS, plus one
-    sample.
-  - The S-curve removes the acceleration over exactly RAMP_TAU_MS before arrival. There the torque demand falls by
-    design, and duty may fall with nothing hunting. The model's acceleration never fell.
-  - **The bound stays 0.10** (model 0.01–0.04 over a rise).
-  - **Negative:** the shipped servo's hunting during the rise, 0.34–0.53 (measured, design §5.5).
-- **Criterion tokens change with their meaning:** `RISE_DUTY_DROP_PM` (was `START_DUTY_DROP_PM`) and
-  `START_I_OVER_STEADY_X100` (was `START_I_RATIO_X100`). The cell ids are unchanged. `BM-SPINSTART`'s `tail_x10` and
-  `tail_n` are now the steady reference's.
-
-## What each cell decides, and how each can fail
-
-Every criterion is fixed in `src/test_bench_dual.spin2` before the run (the load cells' section is "the floor run's
-load cells"). Each claim that needs a control has one, and its PASS counts only when the control's did. Each cell
-prints NOMEAS when its precondition did not arise, and its record's `why` says which.
-
-### The load cells (SRC_REV 58; timing re-derived at SRC_REV 60)
-
-| Cell | Criterion | Fails if (the negative) | NOMEAS when |
-|---|---|---|---|
-| **R21-DUAL-POSTFLT-P** (per motor, PL-93) | after the fault and its recovery, the same spin's getCurrent() over its first second at speed ÷ the leg's own over the same second before the fault ≤ **1.50** | above; an absolute-current abort scores 99.99. **Negative, measured:** Visit 6a drew 3.8–4.2× and hit the 10 A abort on the drive-up (PL-93) | the fault did not latch, the recovery did not clear, too little turn left (under 80 ticks; about 38 are needed), he skipped it, or the "before" is under 0.05 A |
-| **R21-DUAL-BLKSTOP-P** (LEFT, PL-106) | every trial whose wheel stayed blocked: both codes `ERR_PLATFORM_BLOCKED` within 4 s but not before 1 s (about 1.3 s expected), and the left reads `SR_BLOCKED` | a trial not latched in 4 s (a driver without the stop leaves a stalled wheel commanded: Visit 6a's wheel sat at duty_max reporting AT_SPEED), a latch before 1 s (a false fire, PL-116's class), or another stop reason | the chock did not hold (the wheel turned 3 ticks: `why NOT_BLOCKED`, and BLOCK ends) |
-| **R21-DUAL-PROTCLR-P** (PL-111's precondition) | every latched trial: a drive is refused with `ERR_PLATFORM_BLOCKED`; `clearEmergency()` leaves it latched; `clearProtectiveStop()` returns NO_ERROR and both codes read NO_ERROR; the next drive is taken | any step otherwise. The in-run negative is the refused drive: the same call the last step makes, before the clear. `clearEmergency()` was the serial host's only release before the fix (`emerclear`), and it must not release | no trial latched |
-| **R21-DUAL-BLKSHORT-P** (LEFT, the control) | the BRAKE trial's phase sum at rest after the stop **< 80 mV**: a short | at or above: the instrument cannot see a short on this wheel, and BLKCOAST's PASS does not count | the BRAKE trial did not latch |
-| **R21-DUAL-BLKCOAST-P** (LEFT, PL-132) | the COAST trial's phase sum at rest after the stop **≥ 80 mV**: a coast | under 80: shorted. **Negative, measured:** before DRIVER_REV 20 the stop shorted under coast; a short at rest reads 11–25 mV and a coast 160–174 mV (`debug_260923-192848.log`, LEFT, X-2 against X-3) | the COAST trial did not latch |
-| **R21-DUAL-HELDATSPD-P** (LEFT, PL-95) | over every BLOCK drive and every LOAD window, **no two samples in a row read AT_SPEED at \|err\| ≥ LAG_HOLD** | any such pair. **Negative, measured:** PL-93's trace read AT_SPEED at e −101 and duty_max for eight samples running | no sample was ever held (\|err\| ≥ LAG_SOFT) |
-| **R21-DUAL-LDPATH-P** (PL-150, the path limiter) | in the judged drag window, \|left − right\| hall ticks ÷ the larger **≤ 100 thousandths**: both slowed together, the line kept | above. **Negative, by construction:** without the limiter the undragged wheel keeps its whole command while the judged window has the dragged one under 80 %: a mismatch of at least 200 thousandths | no drag trial was judged, or the window's travel was under 20 ticks |
-| **R21-DUAL-LDHOLD-P** (LEFT, PL-150, the overload hold) | in the judged drag window, the dragged wheel's longest gap between hall ticks **≤ 1,000 ms**, and no fault | a fault (a driver with no lag limiter faults FC_LAG at \|err\| 125), or a longer gap with no protective stop (a hold whose field decayed to zero and stood still) | no drag trial was judged |
-
-**When a drag trial is judged:** the left wheel read SHORT (its lag limiter held) in the window, *and* ran under
-**80 %** of its command's predicted rate, *and* no protective stop latched. It is also judged if a wheel faulted.
-Otherwise it was too light (`NOT_OVERLOADED`: the next READY asks for a harder pull) or it stalled (`STALLED`: the
-next asks for a lighter one).
-
-**Recorded, not judged:** `BM-LOAD`/`BM-LOADW` for every trial, the free trial included: each wheel's travel and %
-of command, the mismatch, the least path scale, the SHORT polls and the path limiter's engages. `BM-BLOCK`/`BM-BLKCLR`
-record the latch time, both codes and stop reasons, every API return, and both wheels' phase sums. Each BLOCK trial
-and each drag trial is traced.
-
-### The spin and incline cells
+**The motion envelope.** One revolution of the platform: π × 387 mm = 1,216 mm, 211 hall ticks. Each leg's limit is armed
+before it moves, and the harness e-stops 6 ticks past it. Each clockwise leg is followed by a counter-clockwise one, so
+the tether winds at most one turn.
 
 | Cell | Criterion | Fails if | Control |
 |---|---|---|---|
-| **R19-DUAL-SPINSTOP-P** | every leg ends within **±3 ticks** of the limit (±2 before DRIVER_REV 39: the plan may rest one tick short) | an overshoot, an undershoot, or the guard fires | — |
+| **R19-DUAL-SPINSTOP-P** | every leg ends within **±3 ticks** of the limit | an overshoot, an undershoot, or the guard fires | — |
 | **R19-DUAL-SPINOFF-P** | every driver applied the table's pair | a write that did not land | — |
 | **R19-DUAL-SPINDIR-P** | no wheel ran against its commanded direction | any did | — |
 | **R19-DUAL-SPINHUNT-P** (A-3) | slow and medium schedule legs: no window with duty_pk − duty > 400 or err_pk > 76 | any such window | the shipped servo read 800–1,650 / 75–89 wheels up |
 | **R19-DUAL-SPINERR-P** (A-4) | \|mean err\| within 47–49 in every schedule window | outside | — |
-| **R19-DUAL-SPINSTRT-P** (A-1, PL-160's feel) | worst duty drop over the START's rise (duty leaving its floor, to RAMP_TAU_MS + one sample before the first AT_SPEED) ≤ 100 per mille | above: the shipped servo's hunting read 340–530 | — |
-| **R19-DUAL-SPINPEAK-P** (A-2, PL-160's feel) | worst START current peak ÷ 60 ms of steady running, 420 ms after the first AT_SPEED, every sample to its end AT_SPEED (a = 0) ≤ 1.80 | above: the shipped servo's start spike read 1.94–3.04 | NOMEAS when the reference was not all AT_SPEED (a held or stopping wheel) |
+| **R19-DUAL-SPINSTRT-P** (A-1, PL-160) | worst duty drop over the START's rise ≤ 100 ‰ | above: the shipped servo's hunting read 340–530 | — |
+| **R19-DUAL-SPINPEAK-P** (A-2, PL-160) | worst START current peak ÷ 60 ms of steady running, 420 ms after the first AT_SPEED, ≤ 1.80 | above: the shipped servo's start spike read 1.94–3.04 | NOMEAS when the reference was not all AT_SPEED |
 | **R19-DUAL-SPINFOL-P** (A-8) | the two following readings within 5 points | they differ more | — |
 | **R19-DUAL-SPINSYM-P** | medium, schedule: larger direction's current ÷ smaller ≤ 1.25 | above | **SPINCTL** |
 | **R19-DUAL-SPINCTL-P** (control) | legacy current ÷ schedule current ≥ 1.25 | below: the load masks the offsets' effect | — |
-| **R19-DUAL-SPINLEAD-P** | schedule ÷ fixed at the quarter ≤ 1.05 (both now over 300 ms windows) | above | — |
-| **R19-DUAL-SPINPLAT-P** (X-5 on the floor) | 2 s after one wheel's fault, the other runs at ≤ 10 % of its earlier rate | it keeps driving (PL-117) | — |
-| **R19-DUAL-CRPCOAST-P** (control) | the coast rolls ≥ 3 ticks down the incline | it does not: CREEP/CRPHOLD go NOMEAS | — |
-| **R19-DUAL-CRPLOW-P** (control) | creep ≥ 2 ticks at a 1 % ceiling | it does not: repeat steeper | — |
-| **R19-DUAL-CREEP-P** | **0 ticks** of creep while HOLDING, at the 10 % ceiling | any creep | CRPCOAST, CRPLOW |
-| **R19-DUAL-CRPHOLD-P** | still HOLDING when the 15 s window ends | LIMITED or SLIPPED | — |
+| **R19-DUAL-SPINLEAD-P** | schedule ÷ fixed at the quarter ≤ 1.05 | above | — |
 | NOSTALL, DBGMASK, TRACES, RSTPROV, LAGBND (-P) | as every part | as every part | — |
 
-**Recorded, not judged:** `BM-CREEPW` sizes `HOLD_CEILING_PCT` under load; `BM-SPINW` gives loaded current per wheel
-and direction; `BM-SPINSTART` gives each quarter START's peak and its steady reference (A-2's two terms).
+**Recorded, not judged:** `BM-SPINW` gives loaded current per wheel and direction; `BM-SPINSTART` each quarter START's
+peak and its steady reference.
 
-**Known confounds:**
-- If his hand displaces a wheel by a tick before release on the incline, the hold ramps to its ceiling and hands off
-  at about 10 s. It shows as LIMITED, with `disp` 1.
-- In LOAD, a pull that stops the platform for a second latches the protective stop (`STALLED`): correct behaviour,
-  but not the overload claim, so that trial is not judged and the next asks for less.
+---
+
+## ⭐ PL-160: feel the new ramp, and write it down
+
+PL-160's feel is a floor item: no cell can judge it. **During every drive, watch and listen at every start and every stop
+— and at GRAB's slow-down when you hold and speed-up when you let go — and after the run write one line on the sheet:**
+"PL-160 feel: ____".
+
+- **What to expect.** Every start eases in and every stop eases out, over the times in the table above. Nothing should
+  jolt, lurch, clunk or rock the platform.
+- **What counts against it.** A step you can feel at either end of a ramp is PL-160's negative. So is the platform
+  pitching at a stop, or a stop that stops dead (other than the incline's braked stops and OBSTACLE's stop against the
+  obstacle, which are meant to).
+
+---
+
+## floor-rc — the FlySky RC run (placeholder)
+
+FlySky testing is in this release (Stephen, 2026-09-27). This block is a **placeholder for the `floor-rc` tier**, which
+another agent is building; its commands, envelope and what it decides are written there. It runs on the floor, after the
+floor run.
+
+---
+
+## Known confounds
+
+- OBSTACLE: an obstacle that yields (you step back) lets the wheels tick again, and the stand restarts; the stop then
+  comes a second after the last tick, which the cell measures correctly.
+- GRAB: a hold that stops the platform for a second latches the protective stop (`STALLED`): correct behaviour, not the
+  overload claim, so that try is not judged and the next asks for less. A hold let go and taken again reads 2 on LDHUNT.
+- INCLINE: wheel slip on a loose surface is indistinguishable from motion to the halls (above).
 
 ## What this visit cannot measure, named
 
 - A phase short's current (PL-118).
 - The 27 A derate: the rig cannot reach it.
 - Speeds above power 23 on the floor.
-- An overload the platform meets on its own, unassisted: LOAD's overload is his pull, set against a limit lowered to
-  4 A. That is the claim's construction, stated.
-- The feel of the ramp beyond what he reports: no cell measures jerk under load (t0-stopreason's R22 cells measure it
+- An overload the platform meets on its own, unassisted: GRAB's overload is your hold, set against a limit lowered to
+  4 A, and the incline's is its start against a limit lowered to 2 A. That is the claims' construction, stated.
+- A sustained overload on a slope: a constant slope gives no speed between its command and a stall at a current limit
+  (INCLINE, above).
+- The feel of the ramp beyond what you report: no cell measures jerk under load (t0-stopreason's R22 cells measure it
   wheels up, pass by pass).
-- The serial `protclear` path (PL-111's own certification) and the demos: the release-candidate pass.
+- The serial `protclear` path (PL-111's own certification): not in this release.
 
 ## After the visit
 
-One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`, with his "PL-160 feel" line quoted.
-Then close every punch-list item its cells certify (PL-93, PL-95, PL-106, PL-132, PL-150, PL-111's precondition, and
-PL-160's feel), and re-count the burn-down.
+One analysis per set of logs, under `DOCs/procedures/BENCH-RUN-PROCESSING.md`, with your "PL-160 feel" line, the incline
+angle and the platform mass quoted. Then close every punch-list item its cells certify (PL-93, PL-95, PL-106, PL-132,
+PL-144, PL-150, PL-111's API half, and PL-160's feel), and re-count the burn-down.

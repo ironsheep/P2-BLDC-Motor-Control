@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Generate the DEBUG PLOT assets for src/test_bench_dual.spin2's operator panel (window bmpanel), drawn
 by the attended OUTSIDE segment (-D DUAL_PART_BRAKE, bench-run.sh tier dual-brake) and FLOOR segment
-(-D DUAL_PART_FLOOR, tier dual-floor), by the tethered spin-in-place floor tier's SPIN and CREEP segments
-(-D DUAL_PART_SPIN, task 3591), and by the no-motor-control UICHECK walkthrough (-D DUAL_PART_UICHECK,
-tier dual-ui) -- DOCs/plans/MOTION-HARNESS-DESIGN.md sec 8.2 and 8.3, rebuilt per
+(-D DUAL_PART_FLOOR, tier dual-floor), by the floor run's five situations -- OBSTACLE, GRAB, INCLINE, FAULTRUN
+and SPIN (-D DUAL_PART_SPIN, tier dual-spin; task 3591, SRC_REV 62) -- and by the no-motor-control UICHECK
+walkthrough (-D DUAL_PART_UICHECK, tier dual-ui) -- DOCs/plans/MOTION-HARNESS-DESIGN.md sec 8.2 and 8.3, rebuilt per
 DOCs/analyses/ATTENDED-UI-AUDIT-2026-09-15.md sec 6 (PL-64).
 
 SRC_REV 58 APPENDED the floor run's load screens -- the PL-93 re-drive after each fault leg, the chocked-wheel BLOCK
 trials and the dragged LOAD trials -- their state words and the SPEED number label, after every existing row, so no
 existing index, prompt cell or state cell moves and the art shared with dual-brake is unchanged.
+
+SRC_REV 62 (Stephen's floor rules, 2026-09-27) REPLACED THE SPIN PART'S OWN ROWS -- every screen after UI_END and every
+state word after ENDED_EARLY, which only the dual-spin tier draws -- with the five floor situations' screens: OBSTACLE
+STOP, GRAB ONE SIDE, INCLINE, FAULT RETURN RUN and the SPIN legs. Every row the other parts draw (BRAKE_*, STOPPING,
+LOGGING, END, FLOOR_*, UI_*, the first 19 state words and the first 5 countdown labels) is unchanged in index, text
+and art, so dual-brake's previewed screens and dual-floor's are byte-for-byte what they were.
 
 Task 3591 added the SPIN and CREEP screens, the DONE button (row 1, key D: "I did what this screen asked", the
 way T0-24's DONE means it -- DOCs/procedures/PLOT-DISPLAY-RULES.md rule 10) and two number labels: LEG, whose
@@ -102,16 +108,24 @@ FLOOR_RUN_S = 2                            # a brief turn-direction observation 
 FLOOR_POWER = 50
 FLOOR_DIRECTION = 50
 # Task 3591 -- MUST match test_bench_dual.spin2's SPIN_LEGS (the LEG label's range) and SPIN_LEG_DEG (the prompts'
-# "ONE TURN": the travel limit is one revolution of the platform). Regenerate if either changes.
-SPIN_LEGS = 12
+# "ONE TURN": the travel limit is one revolution of the platform). Regenerate if either changes. SRC_REV 62: the two
+# fault legs moved to the FAULT RETURN RUN, so ten legs.
+SPIN_LEGS = 10
 SPIN_LEG_DEG = 360
-# SRC_REV 58 -- MUST match test_bench_dual.spin2's BLK_WAIT_MS / 1_000 (how long the chocked wheel is driven before the
-# harness gives up on the protective stop), LOAD_TRAVEL_MM / 1_000 (a LOAD trial's distance stop) and LOAD_LANE_M (the
-# lane the run sheet asks for: the travel limit plus the stop and a margin). BLK_CHOCK_CM is the run sheet's chock height.
-BLK_WAIT_S = 4
-BLK_CHOCK_CM = 4
-LOAD_TRAVEL_M = 2
-LOAD_LANE_M = 3
+# SRC_REV 62, the floor situations -- MUST match test_bench_dual.spin2: FL_LEG_MM / 1_000 (every straight leg's travel,
+# the floor rule's 1 m), FL_SLOW_POWER's speed (power 7, 26.9 hall ticks/s x 5.76 mm = 0.16 m/s), BLK_LIMIT_A (the
+# obstacle's current limit), LOAD_LIMIT_A (the grab's), OBS_NEAR_CM / OBS_FAR_CM (where the obstacle stands: past the
+# spin-up and its settle, short of the leg's stop), LOAD_LANE_CM (the lane: the leg, its stop and the platform's own
+# length) and FLR_LANE_CM (the fault run's lane width: the platform and its few degrees of turn). Regenerate if any
+# changes.
+FL_LEG_M = 1
+FL_SLOW_MPS = "0.16"
+BLK_LIMIT_A = 2
+LOAD_LIMIT_A = 4
+OBS_NEAR_M = "0.3"
+OBS_FAR_M = "0.8"
+LANE_M = "1.5"
+FLR_LANE_WIDTH_M = "0.5"
 
 # State words, in BM_STATE_* order. A screen names its default state; a few screens draw another at run time
 # (a UI check step's progress, and the end screens' outcome).
@@ -151,24 +165,34 @@ STATES = [
     ("SPN_L_MED", "SPINNING LEFT, MEDIUM"),
     ("SPN_R_BRISK", "SPINNING RIGHT, BRISK"),
     ("SPN_L_BRISK", "SPINNING LEFT, BRISK"),
-    ("FLT_NEXT_R", "NEXT: FAULT LEG, RIGHT"),
-    ("FLT_NEXT_L", "NEXT: FAULT LEG, LEFT"),
-    ("FLT_R", "FAULT LEG: SPINNING RIGHT"),
-    ("FLT_L", "FAULT LEG: SPINNING LEFT"),
-    # SPUN_: the SPIN segment's outcome, drawn on the CREEP segment's first screen (rule 10.4: a step that did not run)
-    ("SPUN_ALL", "SPIN LEGS: ALL RAN"),
-    ("SPUN_EARLY", "SPIN LEGS: ENDED EARLY"),
-    ("SPUN_STOP", "SPIN LEGS: STOPPED BY YOU"),
-    ("SPUN_SKIP", "SPIN LEGS: SKIPPED BY YOU"),
-    ("SPUN_TIMEOUT", "SPIN LEGS: TIMED OUT"),
-    # the CREEP segment: BASE + trial kind, kind COAST, LOWCEIL, HOLD (CRK_* there)
-    ("CRP_COAST", "COAST CONTROL"),
-    ("CRP_LOWCEIL", "LOW-CEILING CONTROL"),
-    ("CRP_HOLD", "HOLD AT THE CEILING"),
+    # SRC_REV 62, the floor situations (Stephen's floor rules, 2026-09-27). Everything from here on is drawn by the
+    #  dual-spin tier only. INDEXED BY ARITHMETIC where check_layout() says: OBS_ is BASE + trial kind (BLK_COAST,
+    #  BLK_BRAKE there); GR_ is BASE + ready kind (LDR_FIRST, LDR_LIGHT, LDR_STALL there); CRP_ and EXP_ are BASE + stop
+    #  kind (CRK_COAST, CRK_LOWCEIL, CRK_HOLD there).
+    # 1. OBSTACLE STOP
+    ("OBS_COAST", "TRIAL 1: THE STOP COASTS"),
+    ("OBS_BRAKE", "TRIAL 2: THE STOP BRAKES"),
+    ("OBS_LATCHED", "IT STOPPED ITSELF: CHECKING"),
+    ("OBS_BACK", "PULL IT BACK TO THE START"),
+    # 2. GRAB ONE SIDE
+    ("GR_FIRST", "NEXT: GRAB WHEN TOLD"),
+    ("GR_LIGHT", "LAST TOO LIGHT: HOLD HARDER"),
+    ("GR_STALL", "LAST STALLED: HOLD LESS"),
+    ("GR_HANDS", "HANDS OFF UNTIL GRAB"),
+    ("GR_HOLD", "HOLD IT BACK: KEEP IT MOVING"),
+    ("GR_LETGO", "LET GO NOW"),
+    ("GR_BACK", "PUSH IT BACK TO THE START"),
+    # the drive back to the start (GRAB, and the fault run's re-drive)
+    ("RET_NEXT", "NEXT: DRIVE BACK TO START"),
+    ("RET_DRIVE", "DRIVING BACK TO THE START"),
+    # 3. INCLINE: the climb to each stop, what the stop should do, and what it did (getHoldStatus()'s own words)
+    ("INC_NEXT", "NEXT: CLIMB, 3 STOPS, DOWN"),
+    ("CRP_COAST", "TO STOP 1: COAST CONTROL"),
+    ("CRP_LOWCEIL", "TO STOP 2: LOW CEILING"),
+    ("CRP_HOLD", "TO STOP 3: THE HOLD"),
     ("EXP_COAST", "EXPECT: ROLLS DOWNHILL"),
     ("EXP_LOWCEIL", "EXPECT: SLIPS, THEN DRAGS"),
     ("EXP_HOLD", "EXPECT: DOES NOT MOVE"),
-    # what a trial did, in the API's own words for the hold (getHoldStatus(): HOLDING, SLIPPED, LIMITED)
     ("RES_ROLLED", "RESULT: ROLLED, BRAKED"),
     ("RES_NOROLL", "RESULT: DID NOT ROLL"),
     ("RES_HOLDING", "RESULT: HOLDING, STILL"),
@@ -176,22 +200,14 @@ STATES = [
     ("RES_SLIPPED", "RESULT: SLIPPED"),
     ("RES_LIMITED", "RESULT: LIMITED"),
     ("RES_NOTRUN", "RESULT: NOT MEASURED"),
-    # SRC_REV 58, the floor run's load cells (BLOCK and LOAD segments). APPENDED, so every index above is unchanged.
-    #  BLK_ is BASE + trial kind (BLK_COAST, BLK_BRAKE there); LD_ is the READY screen's word, BASE + ready kind
-    #  (LDR_FREE, LDR_DRAG, LDR_LIGHT, LDR_STALL there). check_layout() asserts both orders.
-    ("BLK_CHOCK", "CHOCK THE LEFT WHEEL"),
-    ("BLK_COAST", "TRIAL 1: THE STOP COASTS"),
-    ("BLK_BRAKE", "TRIAL 2: THE STOP BRAKES"),
-    ("BLK_LATCHED", "IT STOPPED ITSELF: CHECKING"),
-    ("LD_SETUP", "STRAP ON, LANE CLEAR"),
-    ("LD_FREE", "NEXT: KEEP THE STRAP SLACK"),
-    ("LD_DRAG", "NEXT: YOU PULL WHEN TOLD"),
-    ("LD_LIGHT", "LAST TOO LIGHT: PULL HARDER"),
-    ("LD_STALL", "LAST STALLED: PULL LESS"),
-    ("LD_SLACK", "KEEP THE STRAP SLACK"),
-    ("LD_PULL", "PULL: SLOW IT, KEEP IT MOVING"),
-    ("LD_LETGO", "LET GO NOW"),
-    ("LD_BACK", "PUSH IT BACK TO THE START"),
+    ("INC_OVL", "TO THE TOP: OVERLOADED"),
+    ("INC_DOWN", "DRIVING DOWN TO THE START"),
+    # 4. FAULT RETURN RUN
+    ("FR_FWD", "NEXT: 1 M FORWARD, NO FAULT"),
+    ("FR_FWD_DRIVE", "FORWARD, NO FAULT"),
+    ("FR_BACK", "NEXT: BACK, LEFT FAULTED"),
+    ("FR_BACK_DRIVE", "BACK: FAULT IN A SECOND"),
+    ("FR_RD", "NEXT: THE RETURN GOES ON"),
 ]
 STATE = {name: idx for idx, (name, _) in enumerate(STATES)}
 
@@ -295,17 +311,16 @@ SCREENS = [
     ("UI_END",
      "UI CHECK FINISHED -- NO MOTOR RAN. THE RESULT IS BELOW. CLICK START (KEY S) TO CLOSE.",
      "UI_PASSED", ["START"], "CLOSES_IN", "OPER_END_TIMEOUT_MS"),
-    # Task 3591, the tethered spin-in-place floor tier (dual-spin). Every screen says what runs now, the one thing
-    #  to do next, and what he should see; the state line under the prompt names the leg or the trial (its word is
-    #  chosen at run time), and on the LEG screens the digits are the leg number (PLOT-DISPLAY-RULES.md rule 10).
+    # The dual-spin tier, the floor run. Every screen says what runs now, the one thing to do next, and what he should
+    #  see; the state line under the prompt names the leg, trial or stop (its word is chosen at run time), and on the
+    #  LEG screens the digits are the leg number (PLOT-DISPLAY-RULES.md rule 10). SRC_REV 62 (Stephen's floor rules,
+    #  2026-09-27): NOTHING MOVES BEFORE A START on a READY screen that names the test, every drive stops itself by its
+    #  own distance limit, and STOP is live whenever a wheel can move.
+    # 5. the SPIN legs (and the part's end screen)
     ("SPIN_READY",
      "SPIN LEG READY. STAND OUTSIDE THE CIRCLE THE PLATFORM SWEEPS, TETHER SLACK. CLICK START (KEY S): IT SPINS "
      "IN PLACE AS THE LINE BELOW SAYS AND STOPS BY ITSELF WITHIN ONE TURN. SKIP (KEY K) ENDS THE SPIN LEGS.",
      "NXT_R_SLOW", ["START", "SKIP"], "LEG", "OPER_START_TIMEOUT_MS"),
-    ("SPIN_FAULT_READY",
-     "FAULT LEG READY. IT SPINS SLOWLY, THEN ONE WHEEL IS FAULTED ON PURPOSE: YOU SHOULD SEE BOTH WHEELS STOP "
-     "WITHIN A MOMENT. STAND CLEAR. CLICK START (KEY S) TO RUN IT. SKIP (KEY K) ENDS THE SPIN LEGS.",
-     "FLT_NEXT_R", ["START", "SKIP"], "LEG", "OPER_START_TIMEOUT_MS"),
     ("SPIN_SETUP",
      "STARTING THE DRIVERS AND SETTING UP THE NEXT LEGS. NOTHING SPINS YET -- STAND CLEAR, THE LEG FOLLOWS AT "
      "ONCE. STOP (SPACE BAR) CANCELS IT.",
@@ -314,87 +329,107 @@ SCREENS = [
      "SPINNING IN PLACE. YOU SHOULD SEE A STEADY TURN WITH NO DRIFT ACROSS THE FLOOR, THEN A GENTLE STOP BY "
      "ITSELF WITHIN ONE TURN. STOP (SPACE BAR) STOPS IT NOW.",
      "SPN_R_SLOW", ["STOP"], "LEG", "SPIN_LEG_MS"),
-    ("SPIN_FAULT_DRIVE",
-     "SPINNING SLOWLY. IN ABOUT TWO SECONDS ONE WHEEL IS FAULTED ON PURPOSE: BOTH WHEELS SHOULD STOP WITHIN A "
-     "MOMENT, THE FAULTED ONE COASTING. STOP (SPACE BAR) STOPS IT NOW.",
-     "FLT_R", ["STOP"], "LEG", "SPIN_LEG_MS"),
-    ("CREEP_MOVE",
-     "NOW THE INCLINE. CARRY THE PLATFORM ONTO THE INCLINE YOU MEASURED, WHEELS ROLLING STRAIGHT DOWN THE SLOPE, "
-     "AND HOLD IT STILL WITH ONE HAND: ITS WHEELS ROLL FREELY. CLICK START (KEY S) WHILE HOLDING IT. SKIP (KEY K) "
-     "ENDS THE TIER.",
-     "SPUN_ALL", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
-    ("CREEP_SETUP",
-     "KEEP HOLDING THE PLATFORM STILL. THE HARNESS IS STARTING THE DRIVERS AND SETTING UP THE TRIAL NAMED BELOW. "
-     "NOTHING MOVES. WAIT FOR THE NEXT SCREEN.",
-     "CRP_COAST", [], "NONE", "0"),
-    ("CREEP_RELEASE",
-     "LET GO OF THE PLATFORM AND KEEP YOUR HAND JUST BELOW IT, THEN CLICK DONE (KEY D). WHAT IT SHOULD DO IS ON "
-     "THE LINE BELOW. STOP (SPACE BAR) BRAKES THE WHEELS AT ONCE.",
-     "EXP_COAST", ["STOP", "DONE"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
-    ("CREEP_WATCH",
-     "WATCHING FOR CREEP. HANDS OFF, YOUR HAND NEAR. IF IT ROLLS A FEW CENTIMETRES THE HARNESS BRAKES THE WHEELS "
-     "ITSELF. STOP (SPACE BAR) BRAKES THEM NOW.",
-     "EXP_COAST", ["STOP"], "WATCHING", "CREEP_WIN_MS"),
-    ("CREEP_CATCH",
-     "TAKE HOLD OF THE PLATFORM AGAIN AND KEEP IT STILL, THEN CLICK DONE (KEY D). THE WHEELS ARE THEN SWITCHED "
-     "OFF AND ROLL FREELY, AND THE NEXT TRIAL, IF ANY, SETS UP WHILE YOU HOLD IT.",
-     "RES_HOLDING", ["DONE"], "GIVES_UP", "OPER_ANSWER_TIMEOUT_MS"),
     ("SPIN_END",
-     "FINISHED. THE RESULT IS BELOW. WHEN THIS PANEL CLOSES THE WHEELS ARE OFF AND ROLL FREELY: IF THE PLATFORM "
-     "IS ON THE INCLINE, HOLD IT OR LIFT IT OFF. CLICK START (KEY S) TO CLOSE.",
+     "FINISHED. THE RESULT IS BELOW. WHEN THIS PANEL CLOSES THE WHEELS ARE OFF AND ROLL FREELY. CLICK START "
+     "(KEY S) TO CLOSE.",
      "DONE", ["START"], "CLOSES_IN", "OPER_END_TIMEOUT_MS"),
-    # SRC_REV 58, the floor run's load cells. APPENDED: every screen above keeps its index and its prompt cell.
-    #  SPIN_RD_READY -- after each FAULT leg's recovery, the same slow spin again (PL-93: the drive after a fault)
-    #  FLOOR_SETUP   -- a BLOCK or LOAD trial's steering start, nothing moving
-    #  BLOCK_*       -- the chocked left wheel and the protective stop (PL-106, PL-111, PL-132)
-    #  LOAD_*        -- a straight drive at a lowered current limit, dragged on one side (PL-150)
-    ("SPIN_RD_READY",
-     "FAULT CLEARED. NEXT: THE SAME SLOW SPIN AGAIN, THE SAME WAY, TO CHECK A DRIVE AFTER A FAULT DRAWS NO EXTRA "
-     "CURRENT. IT STOPS BY ITSELF BEFORE THE TURN IS UP. STAND CLEAR. CLICK START (KEY S). SKIP (KEY K) SKIPS ONLY "
-     "THIS RE-DRIVE.",
-     "NXT_R_SLOW", ["START", "SKIP"], "LEG", "OPER_START_TIMEOUT_MS"),
     ("FLOOR_SETUP",
      "STARTING THE DRIVERS AND SETTING UP THE TRIAL NAMED BELOW. NOTHING MOVES YET -- HANDS CLEAR, THE TRIAL "
      "FOLLOWS AT ONCE. STOP (SPACE BAR) CANCELS IT.",
      "STARTING", ["STOP"], "NONE", "0"),
-    ("BLOCK_SETUP",
-     "BLOCKED-WHEEL TEST. LEAVE THE PLATFORM WHERE IT IS. CHOCK THE LEFT WHEEL (P32 BOARD) FRONT AND BACK: A WEDGE "
-     "OR BLOCK AT LEAST %d CM TALL HARD AGAINST EACH SIDE OF THE TYRE. ONLY THE LEFT WHEEL IS DRIVEN, IN TWO SHORT "
-     "TRIALS. HANDS CLEAR, THEN CLICK START (KEY S). SKIP (KEY K) SKIPS THIS TEST." % BLK_CHOCK_CM,
-     "BLK_CHOCK", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
-    ("BLOCK_DRIVE",
-     "THE LEFT WHEEL IS DRIVEN GENTLY AGAINST THE CHOCKS. IT SHOULD NOT TURN, AND WITHIN %d SECONDS THE DRIVE "
-     "SHOULD STOP ITSELF. HANDS CLEAR. STOP (SPACE BAR) STOPS IT NOW." % BLK_WAIT_S,
-     "BLK_COAST", ["STOP"], "GIVES_UP", "BLK_WAIT_MS"),
-    ("BLOCK_CHECK",
-     "THE DRIVE STOPPED ITSELF. THE HARNESS READS THE STOP, CHECKS A DRIVE IS REFUSED, CLEARS THE STOP AND CHECKS "
-     "A DRIVE IS TAKEN AGAIN, STOPPING IT AT ONCE: THE CHOCKED WHEEL MAY PUSH FOR AN INSTANT. HANDS CLEAR, NOTHING "
-     "TO CLICK.",
-     "BLK_LATCHED", [], "NONE", "0"),
-    ("LOAD_SETUP",
-     "LOADED-DRIVE TEST. REMOVE THE CHOCKS. AIM THE PLATFORM'S FRONT DOWN A CLEAR STRAIGHT LANE AT LEAST %d M "
-     "LONG, TETHER SLACK. TIE A STRAP TO THE FRAME BESIDE THE LEFT WHEEL; STAND BEHIND HOLDING ITS END, SLACK. "
-     "CLICK START (KEY S). SKIP (KEY K) SKIPS THIS TEST." % LOAD_LANE_M,
-     "LD_SETUP", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
-    ("LOAD_READY",
-     "NEXT: THE PLATFORM DRIVES STRAIGHT AHEAD AT A SLOW WALK AND STOPS BY ITSELF WITHIN %d M. WALK BEHIND IT "
-     "HOLDING THE STRAP; THE LINE BELOW SAYS WHETHER YOU WILL PULL. CLICK START (KEY S). SKIP (KEY K) ENDS THIS "
-     "TEST." % LOAD_TRAVEL_M,
-     "LD_FREE", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
-    ("LOAD_DRIVE",
-     "DRIVING STRAIGHT. WALK BEHIND IT, STRAP SLACK, UNTIL THIS PANEL SAYS PULL. STOP (SPACE BAR) STOPS IT NOW.",
-     "LD_SLACK", ["STOP"], "NONE", "0"),
-    ("LOAD_PULL",
-     "PULL BACK ON THE STRAP, FIRMLY AND STEADILY, AS YOU WALK: IT SHOULD SLOW TO ABOUT HALF SPEED BUT KEEP MOVING, "
-     "STRAIGHT. THE NUMBER IS ITS SPEED. KEEP PULLING UNTIL THIS PANEL SAYS LET GO. STOP (SPACE BAR) STOPS IT.",
-     "LD_PULL", ["STOP"], "SPEED", "LOAD_PULL_MS"),
-    ("LOAD_LETGO",
-     "LET GO: KEEP THE STRAP SLACK. THE PLATFORM IS STOPPING BY ITSELF. STOP (SPACE BAR) STOPS IT NOW.",
-     "LD_LETGO", ["STOP"], "NONE", "0"),
-    ("LOAD_BACK",
-     "THE WHEELS ARE OFF AND ROLL FREELY. PUSH THE PLATFORM BACK TO WHERE IT STARTED AND AIM IT DOWN THE LANE "
-     "AGAIN, THEN CLICK DONE (KEY D). AFTER THE LAST TRIAL, UNTIE THE STRAP FIRST.",
-     "LD_BACK", ["DONE"], "GIVES_UP", "OPER_ANSWER_TIMEOUT_MS"),
+    # 1. OBSTACLE STOP (PL-106, PL-111's API half, PL-132, PL-95): both wheels driven slowly into an obstacle
+    ("OBST_READY",
+     "OBSTACLE STOP, THE TRIAL BELOW. THE OBSTACLE -- YOU STANDING, OR AN OBJECT THAT CANNOT MOVE -- %s TO %s M "
+     "IN FRONT, SQUARE ACROSS THE PATH. CLICK START (KEY S): ABOUT 2 S LATER IT DRIVES SLOWLY (%s M/S, %d A, AT "
+     "MOST %d M) INTO IT AND MUST STOP ITSELF. SKIP (KEY K) ENDS THIS TEST."
+     % (OBS_NEAR_M, OBS_FAR_M, FL_SLOW_MPS, BLK_LIMIT_A, FL_LEG_M),
+     "OBS_COAST", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("OBST_DRIVE",
+     "DRIVING SLOWLY INTO THE OBSTACLE. ONCE IT IS BLOCKED IT SHOULD STOP ITSELF ABOUT A SECOND LATER. IF YOU ARE "
+     "THE OBSTACLE, STAND STILL. STOP (SPACE BAR) STOPS IT NOW.",
+     "OBS_COAST", ["STOP"], "NONE", "0"),
+    ("OBST_CHECK",
+     "IT STOPPED ITSELF. THE HARNESS READS THE STOP, CHECKS A DRIVE IS REFUSED, CLEARS THE STOP AND CHECKS A DRIVE "
+     "IS TAKEN AGAIN, STOPPING IT AT ONCE: IT MAY PUSH THE OBSTACLE FOR AN INSTANT. NOTHING TO CLICK.",
+     "OBS_LATCHED", [], "NONE", "0"),
+    ("OBST_BACK",
+     "THE WHEELS ARE OFF AND ROLL FREELY. PULL THE PLATFORM BACK TO WHERE IT STARTED, AIMED AT THE OBSTACLE "
+     "AGAIN, THEN CLICK DONE (KEY D).",
+     "OBS_BACK", ["DONE"], "GIVES_UP", "OPER_ANSWER_TIMEOUT_MS"),
+    # 2. GRAB ONE SIDE (PL-150, PL-144, PL-95): 1 m forward, held back on the LEFT side, then 1 m back
+    ("GRAB_READY",
+     "GRAB ONE SIDE. AIM IT DOWN A CLEAR LANE %s M LONG, TETHER SLACK. CLICK START (KEY S): IT DRIVES STRAIGHT AT "
+     "A SLOW WALK (%s M/S, %d A) AND STOPS BY ITSELF AT %d M. WALK BESIDE ITS LEFT SIDE, HANDS OFF UNTIL THIS PANEL "
+     "SAYS GRAB. SKIP (KEY K) ENDS THIS TEST." % (LANE_M, FL_SLOW_MPS, LOAD_LIMIT_A, FL_LEG_M),
+     "GR_FIRST", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("GRAB_DRIVE",
+     "DRIVING STRAIGHT. WALK BESIDE ITS LEFT SIDE, HANDS OFF, UNTIL THIS PANEL SAYS GRAB (AT ABOUT HALF A "
+     "METRE). STOP (SPACE BAR) STOPS IT NOW.",
+     "GR_HANDS", ["STOP"], "NONE", "0"),
+    ("GRAB_HOLD",
+     "GRAB THE FRAME'S LEFT SIDE AND HOLD IT BACK, FIRMLY AND STEADILY, WALKING: THE NUMBER (ITS SPEED) SHOULD "
+     "FALL TO ABOUT 50, NEVER TO 0. HOLD UNTIL THIS PANEL SAYS LET GO. STOP (SPACE BAR) STOPS IT.",
+     "GR_HOLD", ["STOP"], "SPEED", "LOAD_PULL_MS"),
+    ("GRAB_LETGO",
+     "LET GO AND STEP AWAY. IT PICKS UP SPEED AGAIN AND STOPS BY ITSELF AT %d M. STOP (SPACE BAR) STOPS IT "
+     "NOW." % FL_LEG_M,
+     "GR_LETGO", ["STOP"], "NONE", "0"),
+    ("GRAB_BACK",
+     "THE WHEELS ARE OFF AND ROLL FREELY. PUSH THE PLATFORM BACK TO WHERE IT STARTED, AIMED DOWN THE LANE AGAIN, "
+     "THEN CLICK DONE (KEY D).",
+     "GR_BACK", ["DONE"], "GIVES_UP", "OPER_ANSWER_TIMEOUT_MS"),
+    # the drive back to the start, after a GRAB trial and for the fault run's re-drive
+    ("RETURN_READY",
+     "NEXT: IT DRIVES STRAIGHT BACK THE WAY IT CAME, SLOWLY, AND STOPS BY ITSELF AT ITS START. STAND CLEAR OF THE "
+     "LANE BEHIND IT. CLICK START (KEY S). SKIP (KEY K) LEAVES IT HERE: YOU PUSH IT BACK INSTEAD.",
+     "RET_NEXT", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("RETURN_DRIVE",
+     "DRIVING BACK TO ITS START. STAND CLEAR: IT STOPS BY ITSELF. STOP (SPACE BAR) STOPS IT NOW.",
+     "RET_DRIVE", ["STOP"], "NONE", "0"),
+    # 3. INCLINE (the hold's creep and HOLD_CEILING_PCT; the overload hold climbing): up in four legs, three stops, down
+    ("INC_READY",
+     "INCLINE. PUT THE PLATFORM ON THE FLAT AT THE FOOT OF THE SLOPE, FACING UP IT, ITS WHEELS JUST SHORT OF THE "
+     "SLOPE. CLICK START (KEY S): IT CLIMBS %d M IN FOUR STEPS, STOPPING THREE TIMES, THEN DRIVES %d M BACK DOWN BY "
+     "ITSELF. STAND BESIDE IT, A HAND NEAR. SKIP (KEY K) SKIPS IT." % (FL_LEG_M, FL_LEG_M),
+     "INC_NEXT", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("INC_CLIMB",
+     "CLIMBING TO THE STOP NAMED BELOW. STAND BESIDE IT, HANDS OFF, A HAND NEAR. STOP (SPACE BAR) BRAKES THE "
+     "WHEELS AT ONCE.",
+     "CRP_COAST", ["STOP"], "NONE", "0"),
+    ("CREEP_WATCH",
+     "STOPPED ON THE SLOPE: WATCHING FOR CREEP. WHAT IT SHOULD DO IS ON THE LINE BELOW. HANDS OFF, A HAND NEAR. "
+     "IF IT ROLLS A FEW CENTIMETRES THE HARNESS BRAKES THE WHEELS ITSELF. STOP (SPACE BAR) BRAKES THEM NOW.",
+     "EXP_COAST", ["STOP"], "WATCHING", "CREEP_WIN_MS"),
+    ("CREEP_CATCH",
+     "TAKE HOLD OF THE PLATFORM AND KEEP IT STILL, THEN CLICK DONE (KEY D). THE WHEELS ARE THEN SWITCHED OFF AND "
+     "ROLL FREELY: LIFT IT OFF THE SLOPE.",
+     "RES_HOLDING", ["DONE"], "GIVES_UP", "OPER_ANSWER_TIMEOUT_MS"),
+    ("INC_DOWN",
+     "DRIVING %d M BACK DOWN TO THE START. STAND BESIDE IT, HANDS OFF. STOP (SPACE BAR) BRAKES THE WHEELS AT "
+     "ONCE." % FL_LEG_M,
+     "INC_DOWN", ["STOP"], "NONE", "0"),
+    # 4. FAULT RETURN RUN (PL-93, X-5): 1 m forward unfaulted, then back with the LEFT wheel faulted, recovered, on
+    ("FR_READY",
+     "FAULT RETURN RUN. AIM IT DOWN A CLEAR LANE %s M LONG AND %s M WIDE, TETHER SLACK. CLICK START (KEY S): IT "
+     "DRIVES %d M FORWARD, NO FAULT, AND STOPS BY ITSELF; THE NEXT SCREEN SAYS WHAT THE DRIVE BACK DOES. STAND "
+     "CLEAR. SKIP (KEY K) SKIPS THIS TEST." % (LANE_M, FLR_LANE_WIDTH_M, FL_LEG_M),
+     "FR_FWD", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("FR_FWD_DRIVE",
+     "DRIVING %d M FORWARD, NO FAULT. STAND CLEAR: IT STOPS BY ITSELF. STOP (SPACE BAR) STOPS IT NOW." % FL_LEG_M,
+     "FR_FWD_DRIVE", ["STOP"], "NONE", "0"),
+    ("FR_BACK_READY",
+     "NEXT: IT DRIVES BACK TOWARD ITS START. AFTER ABOUT A SECOND THE LEFT WHEEL IS FAULTED ON PURPOSE: BOTH "
+     "WHEELS SHOULD STOP WITHIN HALF A SECOND, THE PLATFORM TURNING A FEW DEGREES. STAND CLEAR. CLICK START "
+     "(KEY S). SKIP (KEY K) ENDS THIS TEST.",
+     "FR_BACK", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
+    ("FR_BACK_DRIVE",
+     "DRIVING BACK. IN ABOUT A SECOND THE LEFT WHEEL IS FAULTED ON PURPOSE: BOTH SHOULD STOP WITHIN HALF A SECOND. "
+     "STAND CLEAR. STOP (SPACE BAR) STOPS IT NOW.",
+     "FR_BACK_DRIVE", ["STOP"], "NONE", "0"),
+    ("FR_RD_READY",
+     "FAULT CLEARED. NEXT: THE DRIVE BACK GOES ON TO THE START AT THE SAME SPEED, TO CHECK A DRIVE AFTER A FAULT "
+     "DRAWS NO EXTRA CURRENT. STAND CLEAR. CLICK START (KEY S). SKIP (KEY K) LEAVES IT HERE: YOU PUSH IT BACK.",
+     "FR_RD", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
 ]
 SCR = {name: idx for idx, (name, *_rest) in enumerate(SCREENS)}
 SCR_PREVIEW_FIRST, SCR_PREVIEW_LAST = SCR["BRAKE_START"], SCR["END"]
@@ -544,9 +579,11 @@ def check_layout():
     # task 3591: test_bench_dual.spin2 reaches these state words by BASE + offset, so their order is part of the contract
     runs = [("NXT_", ["R_SLOW", "L_SLOW", "R_MED", "L_MED", "R_BRISK", "L_BRISK"]),
             ("SPN_", ["R_SLOW", "L_SLOW", "R_MED", "L_MED", "R_BRISK", "L_BRISK"]),
-            ("FLT_NEXT_", ["R", "L"]), ("FLT_", ["R", "L"]),
             ("CRP_", ["COAST", "LOWCEIL", "HOLD"]), ("EXP_", ["COAST", "LOWCEIL", "HOLD"]),
-            ("BLK_", ["COAST", "BRAKE"]), ("LD_", ["FREE", "DRAG", "LIGHT", "STALL"])]
+            ("OBS_", ["COAST", "BRAKE"]), ("GR_", ["FIRST", "LIGHT", "STALL"])]
+    # SRC_REV 62: the other parts' rows are the contract with dual-brake's preview and dual-floor -- the SPIN part's
+    #  rows may be rewritten, those may not move
+    assert SCR["UI_END"] == 14 and STATE["ENDED_EARLY"] == 18 and CD["CLOSES_IN"] == 4, "a shared panel row moved"
     for prefix, suffixes in runs:
         base = STATE[prefix + suffixes[0]]
         for offset, suffix in enumerate(suffixes):
