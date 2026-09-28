@@ -50,7 +50,21 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$(cd "${SCRIPT_DIR}/../src" && pwd)"
+
+# A PREBUILT PACKAGE (tools/make-bench-pack.sh, STEPHEN 2026-09-28: "i need pre-compiled binaries for our test runs
+# zipped up so i can send one file to the test revB platform unpack it and then run them"). The package holds this
+# script, a BENCH-PACKAGE file naming the commit it was built from, and bins/<tier>.bin, each compiled by this script
+# with exactly the flags below. Run from inside the unpacked package, this script compiles nothing: it runs the tier's
+# packaged binary with the same pnut-term-ts line, the same precondition banner and the same PL-74 checks, with the
+# package folder as the working directory (so the logs land in its logs/). pnut-ts is not needed there.
+PACKAGE_FILE="${SCRIPT_DIR}/BENCH-PACKAGE"
+PREBUILT=""
+[ -f "$PACKAGE_FILE" ] && PREBUILT=1
+if [ -n "$PREBUILT" ]; then
+    SRC_DIR="$SCRIPT_DIR"
+else
+    SRC_DIR="$(cd "${SCRIPT_DIR}/../src" && pwd)"
+fi
 # Resolved, not "${SCRIPT_DIR}/.." -- otherwise every path this script prints
 # carries a "tools/.." in the middle and is annoying to copy-paste.
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -65,6 +79,11 @@ PNUT_TERM="${PNUT_TERM_TS:-pnut-term-ts}"
 # before any terminal, precondition banner or source patch. It lets the commit-time gate
 # measure every tier through this one tier table instead of a copy of it.
 MEASURE_ONLY="${BENCH_MEASURE_ONLY:-}"
+
+# BENCH_PACK_DIR=<dir> -- set by tools/make-bench-pack.sh, never typed at the bench. The tier is compiled exactly as
+# for a run (the one -l -d compile below), its binary is copied to <dir>/<tier>.bin, and the script exits before
+# any terminal or banner.
+PACK_DIR="${BENCH_PACK_DIR:-}"
 
 # The three clocks the dual-clock-* tiers sweep, in Hz, each named once by its tier
 # below. test_bench_dual.spin2 judges its CLKFRAME sign-off cell only at these (its
@@ -517,17 +536,25 @@ esac
 # ---- sanity checks ----------------------------------------------------------
 # command -v, not [ -x ] -- these are PATH names, not paths, and -x on a bare
 # name tests a file in the current directory.
-if ! command -v "$PNUT" >/dev/null 2>&1; then
+if [ -n "$PREBUILT" ] && { [ -n "$MEASURE_ONLY" ] || [ -n "$PACK_DIR" ]; }; then
+    die "this is a prebuilt package: it runs its binaries and builds none (BENCH_MEASURE_ONLY / BENCH_PACK_DIR belong to the source tree)"
+fi
+if [ -n "$PREBUILT" ]; then
+    PACK_BIN="bins/$TIER.bin"
+    if [ ! -f "$SCRIPT_DIR/$PACK_BIN" ]; then
+        die "this package has no binary for tier '$TIER'. It carries: $(cd "$SCRIPT_DIR/bins" 2>/dev/null && ls *.bin 2>/dev/null | sed 's/\.bin$//' | tr '\n' ' ')"
+    fi
+elif ! command -v "$PNUT" >/dev/null 2>&1; then
     echo "ERROR: '$PNUT' not found on PATH (override with PNUT_TS=/path/to/pnut-ts)" >&2
     exit 2
 fi
 
-if [ -z "$MEASURE_ONLY" ] && ! command -v "$PNUT_TERM" >/dev/null 2>&1; then
+if [ -z "$MEASURE_ONLY" ] && [ -z "$PACK_DIR" ] && ! command -v "$PNUT_TERM" >/dev/null 2>&1; then
     echo "ERROR: '$PNUT_TERM' not found on PATH (override with PNUT_TERM_TS=/path/to/pnut-term-ts)" >&2
     exit 2
 fi
 
-if [ -n "$PRECONDITION" ] && [ -z "$MEASURE_ONLY" ]; then
+if [ -n "$PRECONDITION" ] && [ -z "$MEASURE_ONLY" ] && [ -z "$PACK_DIR" ]; then
     echo ""
     echo "  ****************************************************************"
     echo "  ** $PRECONDITION"
@@ -543,6 +570,14 @@ fi
 echo "bench-run.sh: cd $SRC_DIR"
 cd "$SRC_DIR" || exit 2
 echo "bench-run.sh: pwd is now $(pwd)"
+
+# ---- a prebuilt package runs its tier's binary; everything down to the run is the source tree's ----------------
+if [ -n "$PREBUILT" ]; then
+    BINARY="$PACK_BIN"
+    echo "bench-run.sh: prebuilt package -- nothing is compiled here; running $BINARY"
+    sed 's/^/bench-run.sh: package: /' "$PACKAGE_FILE"
+fi
+if [ -z "$PREBUILT" ]; then
 
 # ---- optionally patch CLK_FREQ in test_bench_t0.spin2 -------------------------
 # The ONLY source mutation this script ever performs, and only when a
@@ -636,6 +671,11 @@ else
         die "command failed (exit $STATUS): $PNUT -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
     fi
     echo "bench-run.sh: DEBUG footprint not measured at the bench (PL-152) -- it is enforced at commit time by tools/build-check.sh, which measures every tier; image $(wc -c < "$BINARY" | tr -d ' ') bytes"
+    if [ -n "$PACK_DIR" ]; then
+        run cp -p "$BINARY" "$PACK_DIR/$TIER.bin" || die "could not copy $BINARY to $PACK_DIR/$TIER.bin"
+        echo "bench-run.sh: packed -- tier '$TIER' compiled for a prebuilt package; not run"
+        exit 0
+    fi
 fi
 
 # ---- refuse an image whose DEBUG data runs past its end (DBG-1) ----------------
@@ -669,6 +709,8 @@ if [ -n "$MEASURE_ONLY" ]; then
     echo "bench-run.sh: measure-only -- tier '$TIER' within the DEBUG footprint limit; not run"
     exit 0
 fi
+
+fi   # the source tree's compile; a prebuilt package resumes here, at the run
 
 # ---- run, with src/ as cwd, batch mode -----------------------------------------
 # --exit-on-end-session makes pnut-term-ts close itself once the tier's binary
@@ -738,7 +780,7 @@ fi
 # script's choosing threw the timestamp away and silently overwrote the earlier
 # run of the same tier on the same day. The log stays where the tool put it,
 # under the name the tool gave it.
-echo "bench-run.sh: binary:  src/$BINARY"
-echo "bench-run.sh: log:     src/logs/ (newest debug_*.log -- named by the tool, left where it landed)"
+echo "bench-run.sh: binary:  $SRC_DIR/$BINARY"
+echo "bench-run.sh: log:     $SRC_DIR/logs/ (newest debug_*.log -- named by the tool, left where it landed)"
 
 exit 0

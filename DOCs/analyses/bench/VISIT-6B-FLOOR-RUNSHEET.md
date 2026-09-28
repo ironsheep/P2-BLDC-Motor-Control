@@ -57,9 +57,16 @@ Then battery off, the platform on the floor, and the floor run below.
 
 ---
 
-## ⛔ First: push, then pull at the bench
+## ⛔ First: push, then pull at the bench — or use the prebuilt pack
 
-`git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 64** and the
+**The prebuilt pack (2026-09-28).** Instead of pulling and compiling at the rig, you can send it one file,
+`dist/bench-<commit>.zip` (built by `tools/make-bench-pack.sh` from a commit). Unzip it on the platform's Pi,
+`cd` into its `bench-<commit>/` folder, and type the same commands as below with `./bench-run.sh` in place of
+`tools/bench-run.sh`. It holds this visit's binaries (`t0-stopreason`, `t0-reva`, `dual-spin`, `floor-rc`),
+already compiled; it prints the commit it was built from and each binary's SHA-256 before it runs, and its logs
+land in the folder's `logs/`. Its `README.txt` says which binary each test runs. pnut-term-ts must be on the PATH.
+
+Pulling instead: `git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 64** and the
 release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate pass leads to a fix).
 
 ## Check the banner before reading anything else
