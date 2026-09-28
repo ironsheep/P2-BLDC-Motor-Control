@@ -67,7 +67,7 @@ do the right thing, and then we can call them done without having to test on the
 | --- | --- | --- |
 | PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | A blocked-wheel cell that trips SR_BLOCKED (the floor run «#3576» has none today) |
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | The floor run (cells built, SRC_REV 58-61); it now also carries HOLDSET/NOTFOL's question (RC F4) |
-| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Built (DRIVER_REV 38); wheels-up: t0-stopreason at SRC_REV 28 (RAMP-SHAPE, -UNWIND, -REVERSE failed at the RC pass on harness defects, fixed); feel on the floor (owner questions all ruled: Q4 → PL-102, Q5 → PL-166, both after 6.0) |
+| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Wheels-up half CERTIFIED 2026-09-28 (Block A: RAMP-SHAPE, -REVERSE, -UNWIND PASS); remaining: the feel under load on the floor (owner questions all ruled: Q4 → PL-102, Q5 → PL-166, both after 6.0) |
 
 **Awaits certification** (fix built, not yet run)
 
@@ -2234,6 +2234,11 @@ was keep them and confirm on the floor (the floor sheet's PL-160 feel line). Q4 
 public api change"*): nothing is added for 6.0; the held-ramp report moves to PL-102, after v6.0.0. **Q5 RULED
 2026-09-28 (STEPHEN: "Q5: A"): no inertia term in 6.0**; it is filed after v6.0.0 as PL-166. All of PL-160's owner
 questions are now answered; what remains is the wheels-up re-run (t0 SRC_REV 28) and the feel on the floor.
+
+**2026-09-28, Block A: the wheels-up half is CERTIFIED** (`analyses/bench/2026-09-28/blockA/BLOCK-A-EVALUATION.md`,
+`debug_260928-113930.log`, t0 SRC_REV 28): R22-T0-RAMP-SHAPE, -REVERSE and -UNWIND PASS, every stop's largest step of
+acceleration equal to the jerk (`jerk_pk,104`), the reversal `crossed,TRUE,stop_seen,FALSE`, STOPPLAN-C/-M PASS again.
+PL-160 stays open only for the feel under load (the floor run).
 
 ### PL-161 -- the steering front cog overruns its 1 ms slot
 
