@@ -7,12 +7,12 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Feb 2022
-''   Updated.... 26 Sep 2026
+''   Updated.... 28 Sep 2026
 ''
 ''   What it shows, in order:
 ''   1. start() checks the motor before anything moves, and refuses one that fails -- how to tell why (getHealth())
 ''   2. checkWiring(): an opt-in check that turns the wheel a little to prove the hall and phase wiring
-''   3. the fault response in effect, and how to choose the graded one (setFaultResponse())
+''   3. the fault response in effect (FR_GRADED by default), and how to choose another (setFaultResponse())
 ''   4. driving: always arm a limit BEFORE the drive it guards, so the motor never runs without one
 ''   5. after each drive: why it ended (getStopReason()), and what the drive handled on its own (getEvent())
 ''
@@ -39,8 +39,10 @@ CON { application io pins }
 
     HDMI_BASE_PIN       = tvDebug.PINS_P8_P15
 
-    'MTR_HOLD_AT_SPEED_IN_SEC = 6        ' use for LA capture of both sides (fwd, rev)
-    MTR_HOLD_AT_SPEED_IN_SEC = 15
+CON { the demo's drives }
+
+    MTR_HOLD_AT_SPEED_IN_SEC = 15       ' each time-limited drive's limit
+    END_HOLD_MS         = 20_000        ' a pause after the last drive, before stop(): the HDMI display stays live to read
 
     ' bWaitUntilMotorDone()'s bound: the limit armed for the drive, plus this for the ramp down and a margin. A drive that
     '  is not over by then is stopped, and reported: something ended it late, or its limit never fired.
@@ -92,13 +94,18 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
 ' @local detectMode - the validated board detection mode, or INVALID_DET_MODE
 ' @local eError - the start error, or the result of the latest command (the limit, then the drive it guards)
 
+    showLine(@"* single motor demo")
+
     ' start our HDMI debug output
     if bUseHDMI
         basePin := tvDebug.validBasePinForChoice(HDMI_BASE_PIN)
         if basePin <> tvDebug.INVALID_PIN_BASE
             tvDebug.start(basePin)
+            showLine(@"* HDMI started")
+        else
+            showLine(@"* ERROR HDMI base pin not valid: no display")
 
-    ' validate user settings/choicess
+    ' validate user settings/choices
     '  do NOT start motor unless all are legit!
     basePin := wheel.validBasePinForChoice(MOTOR_BASE)
     detectMode := wheel.validDetectModeForChoice(MOTOR_BOARD_TYPE)
@@ -113,13 +120,13 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
 
         ' start our single motor driver and its front cog, which enforces the stop limits (2 cogs)
         motorCog := wheel.start(basePin, voltage, detectMode)
-        'tvDebug.reportMotorCog(motorCog)
-
         if motorCog < 0
             ' start() refused: the cause is waiting in getError(). A refused start check is ERR_START_CHECK_FAILED,
             '  and getHealth() then names the check -- a disconnected motor lead, say
             eError := wheel.getError()
-            debug("* ERROR motor did not start: ", zstr_(names.errorName(eError)))
+            dbgBegin(@"* ERROR motor did not start: ")
+            dbgText(names.errorName(eError))
+            dbgShow()
             showHealth()
         else
             showHealth()                                        ' what the start checks found, even when they passed
@@ -127,9 +134,18 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
 
             if bUseHDMI
                 nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars := wheel.getDebugData()
-                debug("* Received: ", udec(nGroups), uhex_long(pGroupTitles), uhex_long(pGroupNames), uhex_long(pGroupVarCts), uhex_long(pGroupVars))
+                showReceived(@"* Received:", nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
 
                 tvDebug.registerDisplay(nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+
+            ' coast at rest: the default, set here so you can find it. holdAtStop(true) holds the shaft's position at
+            '  rest instead, drawing current to do it
+            wheel.holdAtStop(false)
+            ' override the default top speed (75 %) with 100 % for this demo
+            wheel.setMaxSpeed(100)
+
+            ' wait until the driver is ready to be commanded, before anything moves
+            waitUntilMotorReady()
 
             ' 2. prove the wiring. This TURNS THE WHEEL one electrical cycle (about 3.5 cm at the tyre) forward and
             '  back. Its verdict is getHealth()'s HLT_WIRING bit.
@@ -139,49 +155,40 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
             ' 3. what the motor does if its rotor cannot follow the field (an overload or a stall)
             showFaultResponse()
 
-            ' 4. ensure motor is ready be commanded
-            waitUntilMotorReady()
-            wheel.setMaxSpeed(100)  ' override 75% with 100% for these tests
-            'wheel.setMaxSpeed(90)  ' override 75% with 90% for these tests
-            'wheel.setMaxSpeed(50)  ' override 75% with 50% for these tests (offset checks)
-            'wheel.setMaxSpeed(15)  ' override 75% with 15% for these tests
-            ' now drive! -- always arm the limit BEFORE driving, so the motor never runs without one
-
-            eError := wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' set to hold at speed for 15 Sec
+            ' 4. now drive! -- always arm the limit BEFORE driving, so the motor never runs without one
+            showLine(@"* FWD at 100 % power")
+            eError := wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' stop after MTR_HOLD_AT_SPEED_IN_SEC
             if eError == wheel.NO_ERROR
-                eError := wheel.driveAtPower(100)                      ' now go FWD at 100% pwr
+                eError := wheel.driveAtPower(100)                       ' then go FWD at 100 % power
             if bCommandSucceeded(eError, @"FWD run")
                 bWaitUntilMotorDone(MTR_HOLD_AT_SPEED_IN_SEC * 1_000 + MOVE_MARGIN_MS)
             showWhatHappened()                                  ' 5. expect SR_AT_LIMIT: the time limit was reached
 
-            eError := wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' hold at speed for 15 Sec
+            showLine(@"* REV at 100 % power")
+            eError := wheel.stopAfterTime(MTR_HOLD_AT_SPEED_IN_SEC, wheel.DTU_SEC)      ' stop after MTR_HOLD_AT_SPEED_IN_SEC
             if eError == wheel.NO_ERROR
-                eError := wheel.driveAtPower(-100)                     ' REV at 100% pwr
+                eError := wheel.driveAtPower(-100)                      ' then go REV at 100 % power
             if bCommandSucceeded(eError, @"REV run")
                 bWaitUntilMotorDone(MTR_HOLD_AT_SPEED_IN_SEC * 1_000 + MOVE_MARGIN_MS)
             showWhatHappened()
 
-            debug("* holding for 20 secs...")
-            waitms(20000)   ' 20 seconds, then stop
-
-            ' TBA  let's add a drive loop
+            dbgBegin(@"* holding ")
+            dbgUdec(END_HOLD_MS / 1_000)
+            dbgText(@" s before stop()...")
+            dbgShow()
+            waitms(END_HOLD_MS)
 
         ' turn off our motor drivers (safe whether or not they started)
         wheel.stop()
+    else
+        showLine(@"* ERROR user configuration NOT valid!")
 
+    showLine(@"* DONE")
 #ifdef BENCH_CFG
-    ' bench builds only (tools/bench-run.sh demo-single): the marker that closes the terminal session. QUOTED, not
+    ' bench builds only (tools/bench-run.sh demo-single): the marker that closes the terminal session. Plain text, not
     '  backticked -- a backtick makes it a display command, and pnut-term-ts never sees the marker.
-    debug("DEBUG_END_SESSION")
+    showLine(@"DEBUG_END_SESSION")
 #endif
-
-VAR
-    ' work values
-    LONG    minX
-    LONG    minY
-    LONG    maxX
-    LONG    maxY
-
 
 PRI bCommandSucceeded(eError, pWhat) : bSucceeded | eFirstError
 ' Report a refused command, and collect its error so the next failure records its own cause.
@@ -196,7 +203,14 @@ PRI bCommandSucceeded(eError, pWhat) : bSucceeded | eFirstError
     bSucceeded := (eError == wheel.NO_ERROR)
     if bSucceeded == FALSE
         eFirstError := wheel.getError()
-        debug("* ERROR ", zstr_(pWhat), " refused: ", zstr_(names.errorName(eError)), " (first: ", zstr_(names.errorName(eFirstError)), ")")
+        dbgBegin(@"* ERROR ")
+        dbgText(pWhat)
+        dbgText(@" refused: ")
+        dbgText(names.errorName(eError))
+        dbgText(@" (first: ")
+        dbgText(names.errorName(eFirstError))
+        dbgText(@")")
+        dbgShow()
 
 PRI showHealth() | nChecked, nFailed, nRecovered
 ' Report what start() checked, which checks failed, and which failed at first and passed on a retry.
@@ -210,7 +224,9 @@ PRI showHealth() | nChecked, nFailed, nRecovered
 ' @local nRecovered - ...that failed, then passed on a retry
 
     nChecked, nFailed, nRecovered := wheel.getHealth()
-    debug("* start checks: checked ", uhex_byte_(nChecked))
+    dbgBegin(@"* start checks: checked ")
+    dbgHex(nChecked, 2)
+    dbgShow()
     showHealthBits(@"FAILED", nFailed)
     showHealthBits(@"recovered on a retry", nRecovered)
 
@@ -225,7 +241,11 @@ PRI showHealthBits(pWhat, nBits) | nBit
 
     repeat nBit from 0 to names.HEALTH_BITS - 1
         if nBits & (1 << nBit)
-            debug("*   ", zstr_(names.healthBit(nBit)), " ", zstr_(pWhat))
+            dbgBegin(@"*   ")
+            dbgText(names.healthBit(nBit))
+            dbgText(@" ")
+            dbgText(pWhat)
+            dbgShow()
 
 PRI showWiring() | nFailed
 ' Report checkWiring()'s verdict: its HLT_WIRING bit in getHealth()'s failed mask.
@@ -234,7 +254,9 @@ PRI showWiring() | nFailed
 ' @local nFailed - the failed bits
 
     _, nFailed, _ := wheel.getHealth()
-    debug("* wiring: ", zstr_((nFailed & wheel.HLT_WIRING) ? @"FAILED" : @"ok"))
+    dbgBegin(@"* wiring: ")
+    dbgText((nFailed & wheel.HLT_WIRING) ? @"FAILED" : @"ok")
+    dbgShow()
 
 PRI showPack() | ePackStatus, nMilliVolts
 ' Report the battery pack's voltage, when the optional pack voltage sensor is fitted (VOLTAGE-SENSOR.md).
@@ -244,14 +266,19 @@ PRI showPack() | ePackStatus, nMilliVolts
 ' @local nMilliVolts - the pack voltage, mV, when PACK_PRESENT
 
     ePackStatus, nMilliVolts := wheel.getPackVoltage()
-    debug("* pack: ", zstr_(names.packStatus(ePackStatus)), " ", udec_(nMilliVolts), " mV")
+    dbgBegin(@"* pack: ")
+    dbgText(names.packStatus(ePackStatus))
+    dbgText(@" ")
+    dbgUdec(nMilliVolts)
+    dbgText(@" mV")
+    dbgShow()
 
 PRI showFaultResponse() | eMode, brakePct
 ' Report the fault response in effect.
 '
 ' FR_GRADED, the default, re-syncs from the hall sensors and stops along the ramp when the rotor cannot follow its
-' field; if control is lost anyway it brakes at 10 %. FR_SHIPPED coasts or brakes with the full short at once (per
-' holdAtStop()) instead:
+' field; if control is lost anyway it coasts, or with holdAtStop(TRUE) brakes at 10 %. FR_SHIPPED coasts or brakes
+' with the full short at once (per holdAtStop()) instead:
 '   wheel.setFaultResponse(wheel.FR_SHIPPED, 10)
 ' start() restores the default, so a program sets its choice after each start().
 
@@ -260,7 +287,12 @@ PRI showFaultResponse() | eMode, brakePct
 ' @local brakePct - the graded brake's share of a full short, %
 
     eMode, brakePct := wheel.getFaultResponse()
-    debug("* fault response: ", zstr_(names.faultResponse(eMode)), ", brake ", udec_(brakePct), " %")
+    dbgBegin(@"* fault response: ")
+    dbgText(names.faultResponse(eMode))
+    dbgText(@", brake ")
+    dbgUdec(brakePct)
+    dbgText(@" %")
+    dbgShow()
 
 PRI showWhatHappened() | eReason
 ' After a drive: why it ended, then every event the drive logged since the last look.
@@ -273,7 +305,9 @@ PRI showWhatHappened() | eReason
 ' @local eReason - the SR_* value
 
     eReason := wheel.getStopReason()
-    debug("* stopped: ", zstr_(names.stopReason(eReason)))
+    dbgBegin(@"* stopped: ")
+    dbgText(names.stopReason(eReason))
+    dbgShow()
     showEvents()
 
 PRI showEvents() | eKind, nMs, nValue
@@ -292,20 +326,28 @@ PRI showEvents() | eKind, nMs, nValue
         eKind, nMs, nValue := wheel.getEvent()
         if eKind == wheel.EV_NONE
             quit
+        dbgBegin(@"*   event ")
+        dbgUdec(nMs)
+        dbgText(@" ms ")
+        dbgText(names.eventKind(eKind))
+        dbgText(@" ")
         if eKind == wheel.EV_STOP
-            debug("*   event ", udec_(nMs), " ms ", zstr_(names.eventKind(eKind)), " ", zstr_(names.stopReason(nValue)))
+            dbgText(names.stopReason(nValue))                  ' a stop's value is its reason, SR_*
         else
-            debug("*   event ", udec_(nMs), " ms ", zstr_(names.eventKind(eKind)), " ", sdec_(nValue))
+            dbgSdec(nValue)
+        dbgShow()
 
 PRI waitUntilMotorReady()
+' if the motor is NOT ready, then wait until it is
+
     if wheel.isReady() == false
-        debug("* wait motor ready...")
+        showLine(@"* wait motor ready...")
         repeat
             if wheel.isReady()
                 quit
             else
                 waitms(2)
-    debug("* Motor ready, let's drive!")
+    showLine(@"* Motor ready, let's drive!")
 
 
 PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eReason, eError
@@ -324,7 +366,7 @@ PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eReason, eError
 ' @local eReason - why the drive ended, getStopReason()
 ' @local eError - this cog's first recorded error, on a timeout (collected outside debug(), which a non-debug build removes)
 
-    debug("* wait until motor finishes...")
+    showLine(@"* wait until motor finishes...")
     startMs := getms()
     repeat until wheel.isMoveDone() or (getms() - startMs >= maxMs)
         waitms(MOVE_POLL_MS)
@@ -332,9 +374,161 @@ PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eReason, eError
     if bDone == FALSE
         wheel.stopMotor()                                       ' the drive outlived its bound: end it, then report
         eError := wheel.getError()
-        debug("* TIMEOUT: the drive was not over after ", udec_(maxMs), " ms, stopped; error: ", zstr_(names.errorName(eError)))
+        dbgBegin(@"* TIMEOUT: the drive was not over after ")
+        dbgUdec(maxMs)
+        dbgText(@" ms, stopped; error: ")
+        dbgText(names.errorName(eError))
+        dbgShow()
     eReason := wheel.getStopReason()
-    debug("* Motor done in ", udec_(getms() - startMs), " ms: ", zstr_(names.stopReason(eReason)))
+    dbgBegin(@"* Motor done in ")
+    dbgUdec(getms() - startMs)
+    dbgText(@" ms: ")
+    dbgText(names.stopReason(eReason))
+    dbgShow()
+
+PRI showReceived(pLead, nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars)
+' Print the display-table set main() is about to register, after a lead-in, each value labelled with main()'s name
+' for it.
+'
+' @param pLead - pointer to the text before the values
+' @param nGroups - number of display groups in the tables
+' @param pGroupTitles - pointer to the table of group-title string pointers
+' @param pGroupNames - pointer to the table of variable-name string pointers, by group
+' @param pGroupVarCts - pointer to the table of variable counts, one per group
+' @param pGroupVars - pointer to the table of variable-value pointers, by group
+
+    dbgBegin(pLead)
+    dbgText(@" nGroups = ")
+    dbgUdec(nGroups)
+    dbgText(@", pGroupTitles = ")
+    dbgHex(pGroupTitles, 8)
+    dbgText(@", pGroupNames = ")
+    dbgHex(pGroupNames, 8)
+    dbgText(@", pGroupVarCts = ")
+    dbgHex(pGroupVarCts, 8)
+    dbgText(@", pGroupVars = ")
+    dbgHex(pGroupVars, 8)
+    dbgShow()
+
+PRI showLine(pText)
+' Print one line of fixed text.
+'
+' @param pText - pointer to the zero-terminated text to print
+
+    dbgBegin(pText)
+    dbgShow()
+
+CON { the debug line builder }
+
+' WHY THIS DEMO BUILDS ITS DEBUG LINES. Each debug() statement is compiled into its own record, its text and its
+' formatting included, and a -d image drops every record that lies too far into it (DOCs/procedures/
+' PLOT-DISPLAY-RULES.md, rules 1-2). So this demo builds each line it prints in a hub buffer, with ordinary code that
+' is in the image with or without -d, and prints it with the one debug() in dbgShow(). A line is started with
+' dbgBegin(), extended with dbgText() / dbgUdec() / dbgSdec() / dbgHex() / dbgWheels(), and printed with dbgShow().
+' The numbers come out as the debug formatters print them: dbgUdec() as udec_() and dbgSdec() as sdec_() (an
+' underscore every three digits, 20_711), dbgHex() as uhex_byte_() or uhex_long_() ($0F, $09F4_9F49). A labelled
+' formatter such as sdec(x) prints "x = 5", and ", " between two values in a row; those are written here as text.
+' One cog -- the demo's main cog -- builds and prints lines.
+
+    DBG_LINE_BYTES = 256                ' the longest line here is under 200 bytes; anything past the end is dropped
+
+VAR
+
+    byte    dbgLine[DBG_LINE_BYTES]     ' the line being built, zero-terminated
+    long    dbgLineLen                  ' its length, not counting the terminator
+
+PRI dbgBegin(pText)
+' Start a new debug line with {pText}.
+'
+' @param pText - pointer to the line's first text
+
+    dbgLineLen := 0
+    dbgLine[0] := 0
+    dbgText(pText)
+
+PRI dbgText(pText)
+' Append zero-terminated text to the debug line.
+'
+' @param pText - pointer to the text
+
+    repeat strsize(pText)
+        dbgChar(byte[pText++])
+
+PRI dbgWheels(pLeft, pRight)
+' Append the two wheels' words: "LEFT <left>, RIGHT <right>".
+'
+' @param pLeft - pointer to the left wheel's word
+' @param pRight - pointer to the right wheel's word
+
+    dbgText(@"LEFT ")
+    dbgText(pLeft)
+    dbgText(@", RIGHT ")
+    dbgText(pRight)
+
+PRI dbgUdec(nValue) | nPlace, nDigits
+' Append {nValue} as an unsigned decimal, as udec_() prints it: an underscore every three digits (20_711).
+'
+' @param nValue - the value, taken as unsigned
+
+' Local Variables:
+' @local nPlace - the place value of the digit being appended (1, 10, 100 ...)
+' @local nDigits - digits still to append
+
+    nPlace := 1
+    nDigits := 1
+    repeat while (nPlace < 1_000_000_000) and ((nValue +/ nPlace) >= 10)    ' +/ and +// are the unsigned divides
+        nPlace *= 10
+        nDigits++
+    repeat
+        dbgChar("0" + ((nValue +/ nPlace) +// 10))
+        nPlace /= 10
+        nDigits--
+        if (nDigits > 0) and (nDigits // 3 == 0)
+            dbgChar("_")
+    until nDigits == 0
+
+PRI dbgSdec(nValue)
+' Append {nValue} as a signed decimal, as sdec_() prints it (-15_090_904).
+'
+' @param nValue - the value
+
+    if nValue < 0
+        dbgChar("-")
+        nValue := 0 - nValue            ' -2_147_483_648 stays $8000_0000, which dbgUdec() prints as 2_147_483_648
+    dbgUdec(nValue)
+
+PRI dbgHex(nValue, nDigits) | nNibble
+' Append the low {nDigits} hex digits of {nValue} after a "$", with an underscore every four digits, as uhex_byte_()
+' (2 digits, $0F) and uhex_long_() (8 digits, $09F4_9F49) print them.
+'
+' @param nValue - the value
+' @param nDigits - how many hex digits to append
+
+' Local Variables:
+' @local nNibble - the digit's value, 0 to 15
+
+    dbgChar("$")
+    repeat while nDigits > 0
+        nDigits--
+        nNibble := (nValue >> (nDigits << 2)) & $F
+        dbgChar(nNibble < 10 ? "0" + nNibble : "A" + nNibble - 10)
+        if (nDigits > 0) and (nDigits // 4 == 0)
+            dbgChar("_")
+
+PRI dbgChar(charByte)
+' Append one character to the debug line, dropping any past its end.
+'
+' @param charByte - the character
+
+    if dbgLineLen < DBG_LINE_BYTES - 1
+        dbgLine[dbgLineLen] := charByte
+        dbgLineLen++
+        dbgLine[dbgLineLen] := 0
+
+PRI dbgShow()
+' Print the debug line: this demo's one debug() statement (the section's header says why).
+
+    debug(zstr_(@dbgLine))
 
 CON { license }
 {{

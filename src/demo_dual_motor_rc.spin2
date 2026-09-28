@@ -7,7 +7,7 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Mar 2022
-''   Updated.... 26 Sep 2026
+''   Updated.... 28 Sep 2026
 ''
 ''   What it shows, beyond driving from the FlySky sticks:
 ''   1. start() checks each wheel before anything moves, and refuses a wheel that fails -- how to tell why (getHealth())
@@ -34,17 +34,21 @@ CON { fixed io pins }
   SF_SDO   = 59  { O }
   SF_SDI   = 58  { I }
 
-  LA_CHAN0 = 56  { O }
-  LA_CHAN1 = 57  { O }
+CON { application io pins }
 
-  SBUS_RX  = 58  { I }
-
-
+    ' the S.BUS receiver's data line (README.md, "Wiring the FlySky Connection"). P58 is shared with the serial flash's
+    '  data line (SF_SDI above), which the flash drives only while it is selected. Motor pins are set in
+    '  isp_bldc_motor_userconfig.spin2.
+    SBUS_RX  = 58  { I }
 
 OBJ { our Drive Subsystem }
 
+#ifdef BENCH_CFG
+    user        : "isp_bldc_motor_userconfig_bench" ' bench rig configuration (-D BENCH_CFG, tools/bench-run.sh demo-rc)
+#else
     user        : "isp_bldc_motor_userconfig"       ' driver configuration
-    wheels      : "isp_steering_2wheel"                    ' the dual-drive BLDC motors
+#endif
+    wheels      : "isp_steering_2wheel"             ' the dual-drive BLDC motors
     remoteCtl   : "isp_flysky_rx"                   ' the FlySky Transmitter
     names       : "demo_drive_names"                ' words for the drive's reported values, for the debug output
 
@@ -67,9 +71,9 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detec
 ' @local detectModeRt - the validated right board detection mode, or INVALID_DET_MODE
 ' @local senseCog - the steering front cog's id (0-7), or -1 when the motors did not start
 
-    debug("* demo dual motor control via R/C")
+    showLine(@"* demo dual motor control via R/C")
 
-    ' validate user settings/choicess
+    ' validate user settings/choices
     '  do NOT start motor unless all are legit!
     basePinLt := wheels.validBasePinForChoice(user.LEFT_MOTOR_BASE)
     basePinRt := wheels.validBasePinForChoice(user.RIGHT_MOTOR_BASE)
@@ -79,14 +83,16 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detec
     motor := wheels.validMotorForChoice(user.MOTOR_TYPE)
 
     if basePinLt <> wheels.INVALID_PIN_BASE and basePinRt <> wheels.INVALID_PIN_BASE and voltage <> wheels.INVALID_VOLTAGE and motor <> wheels.INVALID_MOTOR and detectModeLt <> wheels.INVALID_DET_MODE and detectModeRt <> wheels.INVALID_DET_MODE
-        ' start our dual motor driver
-
         ' 1. start() checks each wheel's hall sensors, current sense and motor leads with nothing moving, retries a
-        '  check that fails, and refuses to start if one still fails (setStartChecks(false), before start(), starts
-        '  the platform anyway)
+        '  check that fails, and refuses to start if one still fails. TRUE is the default; setStartChecks(false),
+        '  called before start(), starts the platform anyway (getHealth() still reports what failed).
+        wheels.setStartChecks(true)
+
+        ' start our motor drivers (left and right)
         senseCog := wheels.start(basePinLt, basePinRt, voltage, detectModeLt, detectModeRt)
         if senseCog < 0
-            ' start() returned -1: getError() says why, and which wheel; getHealth() names a failed check
+            ' start() returned -1: getError() says why, and for which wheel. A refused start check is
+            '  ERR_START_CHECK_FAILED, and getHealth() then names the check -- a disconnected motor lead, say
             bCommandSucceeded(senseCog, @"start")
             showHealth()
         else
@@ -94,39 +100,38 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detec
             showPack()
             showFaultResponse()
 
-            ' override defaults, use 100 %
+            ' override the default top speeds (75 %) with 100 %: the sticks reach the platform's full speed
             wheels.setMaxSpeed(100)
             wheels.setMaxSpeedForDistance(100)
-            ' just don't draw current at stop
+            ' coast at rest: the default, set here so you can find it. holdAtStop(true) holds each wheel's position at
+            '  rest instead, drawing current to do it
             wheels.holdAtStop(false)
 
-            ' ---- TEST TEST TEST ----
-            'remoteCtl.manualCalibrate()
-            'debug("-- HOLD --")
-            'repeat  ' hold here for now
-            ' ---- TEST TEST TEST ----
+            ' wait until both drivers are ready to be commanded, before anything moves
+            waitUntilMotorReady()
 
-            debug("* Set up - remote control")
+            showLine(@"* Set up - remote control")
 
             remoteCog := remoteCtl.start(SBUS_RX)
             statusOK := remoteCog <> 0 ? TRUE : FALSE
             if statusOK
-                'remoteCtl.manualCalibrate()
-                debug("R/C Running...")
+                ' if your transmitter's stick and knob ranges differ from isp_flysky_rx's defaults, calibrate them here:
+                '   remoteCtl.manualCalibrate()
+                showLine(@"R/C Running...")
                 remoteControlMotor()
             else
-                debug("EEEE: SBUS rcvr not started?!")
+                showLine(@"* ERROR S.BUS receiver did not start")
 
             ' turn off our SBUS drivers
             remoteCtl.stop()
         ' turn off our motor drivers (safe whether or not they started)
         wheels.stop()
     else
-        debug("* ERROR user configuration NOT valid!")
+        showLine(@"* ERROR user configuration NOT valid!")
 
-    debug("* DONE")
+    showLine(@"* DONE")
 
-PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, bShowDebugStatus, bEmerCutoff, bShowDriveStates, accrate, bOneRotation, accRngMin, accRngMax
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, bOneRotation, accRngMin, accRngMax
 '' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
 ''
 
@@ -134,8 +139,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
 ' @local bIgnoreJoySticks - TRUE while switch A is ON: joystick driving is disabled
 ' @local bDoneTesting - TRUE when switch C is OFF: end the control loop
 ' @local bShowState - TRUE while switch B is OFF: show the motor currents
-' @local loopCt - passes of the control loop
-' @local bShowDebugStatus - TRUE to turn on the receiver object's debug output for the switch-D read (fixed FALSE)
 ' @local bEmerCutoff - TRUE while switch D is OFF: emergency cutoff
 ' @local bShowDriveStates - TRUE while switch C is in its middle position: show the drive states
 ' @local accrate - the acceleration the VRA knob selects, mm/s squared
@@ -145,43 +148,33 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
 
     waitms(500)    ' wait for 1/2 sec for backend to catch up
 
-    'arm.gripClosed()
-    debug("------")
-    debug("- Lt Joy Hz - direction")
-    debug("- Rt Joy Vt - speed")
-    debug("------")
-    debug("* swA DN     - enable joystick servo control")
-    debug("* swB Toggle - show state")
-    'debug("* swC UP     - ---")
-    'debug("* swC MID    - ---")
-    debug("* swC DN     - end control")
-    debug("* swD DN     - emer cutoff")
-    debug("* swE DN     - 1 rotation")
-    debug("* VRA        - acceleration")
-    debug("------")
+    showLine(@"------")
+    showLine(@"- Lt Joy Hz - direction")
+    showLine(@"- Rt Joy Vt - speed")
+    showLine(@"------")
+    showLine(@"* swA DN     - enable joystick driving")
+    showLine(@"* swB DN     - show motor currents")
+    showLine(@"* swC MID    - show drive states")
+    showLine(@"* swC DN     - end control")
+    showLine(@"* swD DN     - emer cutoff; back UP releases it and any protective stop")
+    showLine(@"* swE DN     - 1 rotation")
+    showLine(@"* VRA        - acceleration")
+    showLine(@"------")
 
     bLastShowState := VALUE_NOT_SET ' value can't happen
     bLastIgnoreJoyStks := VALUE_NOT_SET ' value can't happen
     bLastEmerCutoff := VALUE_NOT_SET ' value can't happen
     bLastShowDriveStates := VALUE_NOT_SET ' value can't happen
 
-    loopCt := 0
     repeat
-        'debug("* ", udec_long(loopCt))
-        bShowDebugStatus := FALSE 'loopCt < 2 ? TRUE : FALSE
-        'remoteCtl.showDebug(bShowDebugStatus)
-
         ' SwA Ignore JoySticks
-        'debug("-- -- SW -- --")
         bIgnoreJoySticks := remoteCtl.isSwitchOn(remoteCtl.CTL_SW_A)
         bShowState := remoteCtl.isSwitchOff(remoteCtl.CTL_SW_B)
         ' SwC done, end loop!
         bDoneTesting := remoteCtl.isSwitchOff(remoteCtl.CTL_SW_C)
         bShowDriveStates := remoteCtl.isSwitchMiddle(remoteCtl.CTL_SW_C)
         ' SwD down = Emergency Cutoff
-        remoteCtl.showDebug(bShowDebugStatus)
         bEmerCutoff := remoteCtl.isSwitchOff(remoteCtl.CTL_SW_D)
-        remoteCtl.showDebug(FALSE)
 
         bOneRotation := remoteCtl.isSwitchOn(remoteCtl.CH_11)
 
@@ -190,22 +183,19 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
         accrate := map(remoteCtl.readchannel(remoteCtl.CTL_VRA), accRngMin, accRngMax, RC_ACCEL_MIN_MM_S2, RC_ACCEL_MAX_MM_S2)
 
         if bLastShowDriveStates <> bShowDriveStates
-            debug("- sho ", sdec_long_(bShowDriveStates))
             if bShowDriveStates
+                showLine(@"- drive states:")
                 wheels.showDriveStates()
             bLastShowDriveStates := bShowDriveStates
 
         if bShowState <> bLastShowState
-            'showServoPositions()
             if bShowState
-                nLtAmps, nLtWatts, nRtAmps, nRtWatts := wheels.getCurrent()
-                debug("  ltA=", sdec_long_(nLtAmps), ", rtA=", sdec_long_(nRtAmps))
+                showCurrents()
             bLastShowState := bShowState
 
         if bEmerCutoff <> bLastEmerCutoff
-            'debug("  NEW E VALUE")
             if bEmerCutoff
-                debug("-------  Motor E-OFF")
+                showLine(@"-------  Motor E-OFF")
                 wheels.emergencyCutoff()
             else
                 ' 3. re-arming the kill switch is the operator's acknowledgement: it releases the emergency stop AND
@@ -214,41 +204,44 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
                 wheels.clearEmergency()
                 wheels.clearProtectiveStop()
                 if not bIgnoreJoySticks
-                    debug("  Motor Enabled")
+                    showLine(@"  Motor Enabled")
                 else
-                    debug("  Motor Disabled")
+                    showLine(@"  Motor Disabled")
             bLastEmerCutoff := bEmerCutoff
 
-        if not bShowDebugStatus and bLastIgnoreJoyStks <> bIgnoreJoySticks
+        if bLastIgnoreJoyStks <> bIgnoreJoySticks
             if bIgnoreJoySticks
-                debug("  Motor CTL OFF")
+                showLine(@"  Motor CTL OFF")
             else
-                debug("  Motor CTL enabled")
+                showLine(@"  Motor CTL enabled")
             bLastIgnoreJoyStks := bIgnoreJoySticks
 
         if accrate <> 0 and nAccelerationRate <> accrate
             nAccelerationRate := accrate
-            debug("  Setting Motor Acceleration:", sdec(nAccelerationRate))
+            dbgBegin(@"  Setting Motor Acceleration:")
+            dbgText(@"nAccelerationRate = ")
+            dbgSdec(nAccelerationRate)
+            dbgShow()
             wheels.setAcceleration(nAccelerationRate)
 
         if (not bEmerCutoff) and (remoteCtl.hasSignal() == FALSE)
-            ' S-8: no transmitter -- the stick values are stale or the receiver's failsafe defaults, so
+            ' no transmitter -- the stick values are stale or the receiver's failsafe defaults, so
             '  nothing may drive on them: stop once, and drive again only when the signal returns
             if (priorSpeed <> 0) or (priorDirection <> 0)
-                debug("- SIGNAL LOST: stopping the motors")
+                showLine(@"- SIGNAL LOST: stopping the motors")
                 bCommandSucceeded(wheels.stopMotors(), @"signal lost stop")
                 priorSpeed := priorDirection := 0
         elseif not bEmerCutoff
             rcSpeed, rcDirection := updPosnBothJoy()
             if not bIgnoreJoySticks
                 if priorDirection <> rcDirection or priorSpeed <> rcSpeed
-                    debug("- JOY ", sdec_long(rcSpeed), sdec_long(rcDirection))
+                    showJoy(@"- JOY")
                     bCommandSucceeded(wheels.driveDirection(rcSpeed, rcDirection), @"joystick drive")
                     priorDirection := rcDirection
                     priorSpeed := rcSpeed
             elseif priorSpeed <> 0 and rcSpeed == 0
                 ' if we were running when motors control stopped then allow a stop when it happens
-                debug("- JOY (last) ", sdec_long(rcSpeed), sdec_long(rcDirection))
+                showJoy(@"- JOY (last)")
                 bCommandSucceeded(wheels.driveDirection(rcSpeed, rcDirection), @"joystick stop")
                 priorDirection := rcDirection
                 priorSpeed := rcSpeed
@@ -261,11 +254,10 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, loopCt, b
         showEvents()                                            ' 2. whatever the drive handled on its own since the last pass
 
         if bDoneTesting
-            debug("--> quit loop")
+            showLine(@"--> quit loop")
             quit
 
         waitms(250) ' wait 1/4 second, before next loop
-        loopCt++
 
     ' done, stop our motors
     wheels.stop()
@@ -285,10 +277,16 @@ PRI bCommandSucceeded(eError, pWhat) : bSucceeded | eSteerError, eLeftError, eRi
     bSucceeded := (eError == wheels.NO_ERROR)
     if bSucceeded == FALSE
         eSteerError, eLeftError, eRightError := wheels.getError()
-        debug("* ERROR ", zstr_(pWhat), " refused: ", zstr_(names.errorName(eSteerError)), ", LEFT ", zstr_(names.errorName(eLeftError)), ", RIGHT ", zstr_(names.errorName(eRightError)))
+        dbgBegin(@"* ERROR ")
+        dbgText(pWhat)
+        dbgText(@" refused: ")
+        dbgText(names.errorName(eSteerError))
+        dbgText(@", ")
+        dbgWheels(names.errorName(eLeftError), names.errorName(eRightError))
+        dbgShow()
         explainRefusal()
 
-PRI explainRefusal() | eLeftCode, eRightCode, eLeftReason, eRightReason
+PRI explainRefusal() | eLeftCode, eRightCode
 ' After a refused drive: say what is holding the platform stopped, and what clears it.
 '
 ' A drive is refused while a stop latches: an emergency stop, or a protective stop (a wheel commanded to move that
@@ -298,14 +296,30 @@ PRI explainRefusal() | eLeftCode, eRightCode, eLeftReason, eRightReason
 ' Local Variables:
 ' @local eLeftCode - the left wheel's latched protective cause, NO_ERROR when none
 ' @local eRightCode - the right wheel's
+
+    eLeftCode, eRightCode := wheels.getProtectiveStop()
+    showStopReasons(@"  last stop")
+    if (eLeftCode <> wheels.NO_ERROR) or (eRightCode <> wheels.NO_ERROR)
+        dbgBegin(@"  PROTECTIVE STOP latched (")
+        dbgWheels(names.errorName(eLeftCode), names.errorName(eRightCode))
+        dbgText(@"): free the wheel, then flip swD to cut-off and back")
+        dbgShow()
+
+PRI showStopReasons(pLead) | eLeftReason, eRightReason
+' Print why each wheel's last drive ended (getStopReason()), after a lead-in: "<lead>: LEFT <reason>, RIGHT <reason>".
+' explainRefusal() and bWaitUntilMotorDone() both print this line.
+'
+' @param pLead - pointer to the text before ": LEFT"
+
+' Local Variables:
 ' @local eLeftReason - the left wheel's SR_* value
 ' @local eRightReason - the right wheel's SR_* value
 
-    eLeftCode, eRightCode := wheels.getProtectiveStop()
     eLeftReason, eRightReason := wheels.getStopReason()
-    debug("  last stop: LEFT ", zstr_(names.stopReason(eLeftReason)), ", RIGHT ", zstr_(names.stopReason(eRightReason)))
-    if (eLeftCode <> wheels.NO_ERROR) or (eRightCode <> wheels.NO_ERROR)
-        debug("  PROTECTIVE STOP latched (", zstr_(names.errorName(eLeftCode)), "): free the wheel, then flip swD to cut-off and back")
+    dbgBegin(pLead)
+    dbgText(@": ")
+    dbgWheels(names.stopReason(eLeftReason), names.stopReason(eRightReason))
+    dbgShow()
 
 PRI showHealth() | nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered
 ' Report what start() checked on each wheel, which checks failed, and which failed at first and passed on a retry.
@@ -322,7 +336,11 @@ PRI showHealth() | nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRi
 ' @local nRightRecovered - the right wheel's recovered
 
     nLeftChecked, nLeftFailed, nLeftRecovered, nRightChecked, nRightFailed, nRightRecovered := wheels.getHealth()
-    debug("* start checks: LEFT checked ", uhex_byte_(nLeftChecked), ", RIGHT checked ", uhex_byte_(nRightChecked))
+    dbgBegin(@"* start checks: LEFT checked ")
+    dbgHex(nLeftChecked, 2)
+    dbgText(@", RIGHT checked ")
+    dbgHex(nRightChecked, 2)
+    dbgShow()
     showHealthBits(@"LEFT", @"FAILED", nLeftFailed)
     showHealthBits(@"LEFT", @"recovered on a retry", nLeftRecovered)
     showHealthBits(@"RIGHT", @"FAILED", nRightFailed)
@@ -340,7 +358,13 @@ PRI showHealthBits(pWheel, pWhat, nBits) | nBit
 
     repeat nBit from 0 to names.HEALTH_BITS - 1
         if nBits & (1 << nBit)
-            debug("*   ", zstr_(pWheel), " ", zstr_(names.healthBit(nBit)), " ", zstr_(pWhat))
+            dbgBegin(@"*   ")
+            dbgText(pWheel)
+            dbgText(@" ")
+            dbgText(names.healthBit(nBit))
+            dbgText(@" ")
+            dbgText(pWhat)
+            dbgShow()
 
 PRI showPack() | ePackStatus, nMilliVolts
 ' Report the battery pack's voltage, when the optional pack voltage sensor is fitted (VOLTAGE-SENSOR.md).
@@ -350,14 +374,19 @@ PRI showPack() | ePackStatus, nMilliVolts
 ' @local nMilliVolts - the pack voltage, mV, when PACK_PRESENT
 
     ePackStatus, nMilliVolts := wheels.getPackVoltage()
-    debug("* pack: ", zstr_(names.packStatus(ePackStatus)), " ", udec_(nMilliVolts), " mV")
+    dbgBegin(@"* pack: ")
+    dbgText(names.packStatus(ePackStatus))
+    dbgText(@" ")
+    dbgUdec(nMilliVolts)
+    dbgText(@" mV")
+    dbgShow()
 
 PRI showFaultResponse() | eMode, brakePct
 ' Report the fault response in effect.
 '
 ' FR_GRADED, the default, re-syncs from the hall sensors and stops along the ramp when a wheel's rotor cannot follow
-' its field, which is gentle on a tall robot; if control is lost anyway it brakes at 10 %. FR_SHIPPED coasts or brakes
-' with the full short at once (per holdAtStop()) instead:
+' its field, which is gentle on a tall robot; if control is lost anyway it coasts, or with holdAtStop(TRUE) brakes at
+' 10 %. FR_SHIPPED coasts or brakes with the full short at once (per holdAtStop()) instead:
 '   wheels.setFaultResponse(wheels.FR_SHIPPED, 10)
 ' start() restores the default, so a program sets its choice after each start().
 
@@ -366,7 +395,12 @@ PRI showFaultResponse() | eMode, brakePct
 ' @local brakePct - the graded brake's share of a full short, %
 
     eMode, brakePct := wheels.getFaultResponse()
-    debug("* fault response: ", zstr_(names.faultResponse(eMode)), ", brake ", udec_(brakePct), " %")
+    dbgBegin(@"* fault response: ")
+    dbgText(names.faultResponse(eMode))
+    dbgText(@", brake ")
+    dbgUdec(brakePct)
+    dbgText(@" %")
+    dbgShow()
 
 PRI showEvents() | eKind, nMs, eWheel, nValue
 ' Drain this cog's event log: what the drive handled on its own, oldest first, both wheels merged.
@@ -386,10 +420,18 @@ PRI showEvents() | eKind, nMs, eWheel, nValue
         eKind, nMs, eWheel, nValue := wheels.getEvent()
         if eKind == wheels.EV_NONE
             quit
+        dbgBegin(@"  event ")
+        dbgUdec(nMs)
+        dbgText(@" ms ")
+        dbgText(wheelName(eWheel))
+        dbgText(@" ")
+        dbgText(names.eventKind(eKind))
+        dbgText(@" ")
         if eKind == wheels.EV_STOP
-            debug("  event ", udec_(nMs), " ms ", zstr_(wheelName(eWheel)), " ", zstr_(names.eventKind(eKind)), " ", zstr_(names.stopReason(nValue)))
+            dbgText(names.stopReason(nValue))                  ' a stop's value is its reason, SR_*
         else
-            debug("  event ", udec_(nMs), " ms ", zstr_(wheelName(eWheel)), " ", zstr_(names.eventKind(eKind)), " ", sdec_(nValue))
+            dbgSdec(nValue)
+        dbgShow()
 
 PRI wheelName(eWheel) : pName
 ' Name getEvent()'s wheel: the left's, the right's, or the platform's own event (a late front-cog pass, the pack).
@@ -406,18 +448,168 @@ PRI wheelName(eWheel) : pName
             pName := @"PLATFORM"
 
 PRI waitUntilMotorReady()
+' if wheels are NOT ready, then wait until they are ready
+
     if wheels.isReady() == false
-        debug("* wait motors ready...")
+        showLine(@"* wait motors ready...")
         repeat
             if wheels.isReady()
                 quit
             else
                 waitms(2)
-    debug("* Motors ready, let's drive!")
+    showLine(@"* Motors ready, let's drive!")
+
+PRI showCurrents()
+' Print both wheels' motor current and power.
+
+    ' getCurrent() reports each current in tenths of a mA (12_345 is 1.2345 A) and each power in mW
+    nLtAmps, nLtWatts, nRtAmps, nRtWatts := wheels.getCurrent()
+    dbgBegin(@"  current: LEFT ")
+    dbgSdec(nLtAmps)
+    dbgText(@" x0.1 mA ")
+    dbgSdec(nLtWatts)
+    dbgText(@" mW, RIGHT ")
+    dbgSdec(nRtAmps)
+    dbgText(@" x0.1 mA ")
+    dbgSdec(nRtWatts)
+    dbgText(@" mW")
+    dbgShow()
+
+PRI showJoy(pLead)
+' Print the stick drive about to be sent, rcSpeed and rcDirection, after a lead-in.
+'
+' @param pLead - pointer to the text before the values
+
+    dbgBegin(pLead)
+    dbgText(@" rcSpeed = ")
+    dbgSdec(rcSpeed)
+    dbgText(@", rcDirection = ")
+    dbgSdec(rcDirection)
+    dbgShow()
+
+PRI showLine(pText)
+' Print one line of fixed text.
+'
+' @param pText - pointer to the zero-terminated text to print
+
+    dbgBegin(pText)
+    dbgShow()
+
+CON { the debug line builder }
+
+' WHY THIS DEMO BUILDS ITS DEBUG LINES. Each debug() statement is compiled into its own record, its text and its
+' formatting included, and a -d image drops every record that lies too far into it (DOCs/procedures/
+' PLOT-DISPLAY-RULES.md, rules 1-2). So this demo builds each line it prints in a hub buffer, with ordinary code that
+' is in the image with or without -d, and prints it with the one debug() in dbgShow(). A line is started with
+' dbgBegin(), extended with dbgText() / dbgUdec() / dbgSdec() / dbgHex() / dbgWheels(), and printed with dbgShow().
+' The numbers come out as the debug formatters print them: dbgUdec() as udec_() and dbgSdec() as sdec_() (an
+' underscore every three digits, 20_711), dbgHex() as uhex_byte_() or uhex_long_() ($0F, $09F4_9F49). A labelled
+' formatter such as sdec(x) prints "x = 5", and ", " between two values in a row; those are written here as text.
+' One cog -- the demo's main cog -- builds and prints lines.
+
+    DBG_LINE_BYTES = 256                ' the longest line here is under 200 bytes; anything past the end is dropped
+
+VAR
+
+    byte    dbgLine[DBG_LINE_BYTES]     ' the line being built, zero-terminated
+    long    dbgLineLen                  ' its length, not counting the terminator
+
+PRI dbgBegin(pText)
+' Start a new debug line with {pText}.
+'
+' @param pText - pointer to the line's first text
+
+    dbgLineLen := 0
+    dbgLine[0] := 0
+    dbgText(pText)
+
+PRI dbgText(pText)
+' Append zero-terminated text to the debug line.
+'
+' @param pText - pointer to the text
+
+    repeat strsize(pText)
+        dbgChar(byte[pText++])
+
+PRI dbgWheels(pLeft, pRight)
+' Append the two wheels' words: "LEFT <left>, RIGHT <right>".
+'
+' @param pLeft - pointer to the left wheel's word
+' @param pRight - pointer to the right wheel's word
+
+    dbgText(@"LEFT ")
+    dbgText(pLeft)
+    dbgText(@", RIGHT ")
+    dbgText(pRight)
+
+PRI dbgUdec(nValue) | nPlace, nDigits
+' Append {nValue} as an unsigned decimal, as udec_() prints it: an underscore every three digits (20_711).
+'
+' @param nValue - the value, taken as unsigned
+
+' Local Variables:
+' @local nPlace - the place value of the digit being appended (1, 10, 100 ...)
+' @local nDigits - digits still to append
+
+    nPlace := 1
+    nDigits := 1
+    repeat while (nPlace < 1_000_000_000) and ((nValue +/ nPlace) >= 10)    ' +/ and +// are the unsigned divides
+        nPlace *= 10
+        nDigits++
+    repeat
+        dbgChar("0" + ((nValue +/ nPlace) +// 10))
+        nPlace /= 10
+        nDigits--
+        if (nDigits > 0) and (nDigits // 3 == 0)
+            dbgChar("_")
+    until nDigits == 0
+
+PRI dbgSdec(nValue)
+' Append {nValue} as a signed decimal, as sdec_() prints it (-15_090_904).
+'
+' @param nValue - the value
+
+    if nValue < 0
+        dbgChar("-")
+        nValue := 0 - nValue            ' -2_147_483_648 stays $8000_0000, which dbgUdec() prints as 2_147_483_648
+    dbgUdec(nValue)
+
+PRI dbgHex(nValue, nDigits) | nNibble
+' Append the low {nDigits} hex digits of {nValue} after a "$", with an underscore every four digits, as uhex_byte_()
+' (2 digits, $0F) and uhex_long_() (8 digits, $09F4_9F49) print them.
+'
+' @param nValue - the value
+' @param nDigits - how many hex digits to append
+
+' Local Variables:
+' @local nNibble - the digit's value, 0 to 15
+
+    dbgChar("$")
+    repeat while nDigits > 0
+        nDigits--
+        nNibble := (nValue >> (nDigits << 2)) & $F
+        dbgChar(nNibble < 10 ? "0" + nNibble : "A" + nNibble - 10)
+        if (nDigits > 0) and (nDigits // 4 == 0)
+            dbgChar("_")
+
+PRI dbgChar(charByte)
+' Append one character to the debug line, dropping any past its end.
+'
+' @param charByte - the character
+
+    if dbgLineLen < DBG_LINE_BYTES - 1
+        dbgLine[dbgLineLen] := charByte
+        dbgLineLen++
+        dbgLine[dbgLineLen] := 0
+
+PRI dbgShow()
+' Print the debug line: this demo's one debug() statement (the section's header says why).
+
+    debug(zstr_(@dbgLine))
 
 
-PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eLeftReason, eRightReason
-' Wait, at most {maxMs}, for a limited drive to be over on both wheels -- however it ends -- then say why (PL-156).
+PRI bWaitUntilMotorDone(maxMs) : bDone | startMs
+' Wait, at most {maxMs}, for a limited drive to be over on both wheels -- however it ends -- then say why.
 '
 ' Not used by the RC loop, which drives continuously; kept, bounded, for a program built from this one. isMoveDone() is
 ' TRUE on a fault or an emergency stop too, so this cannot hang on one (waiting for isStopped() alone did); a drive whose
@@ -428,8 +620,6 @@ PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eLeftReason, eRightReason
 
 ' Local Variables:
 ' @local startMs - getms() when the wait began
-' @local eLeftReason - why the left wheel's drive ended, getStopReason()
-' @local eRightReason - why the right wheel's drive ended
 
     startMs := getms()
     repeat until wheels.isMoveDone() or (getms() - startMs >= maxMs)
@@ -437,8 +627,7 @@ PRI bWaitUntilMotorDone(maxMs) : bDone | startMs, eLeftReason, eRightReason
     bDone := wheels.isMoveDone()
     if bDone == FALSE
         wheels.stopMotors()                                     ' the drive outlived its bound: end it
-    eLeftReason, eRightReason := wheels.getStopReason()
-    debug("* Motors ", zstr_(bDone ? @"done" : @"TIMEOUT, stopped"), ": LEFT ", zstr_(names.stopReason(eLeftReason)), ", RIGHT ", zstr_(names.stopReason(eRightReason)))
+    showStopReasons(bDone ? @"* Motors done" : @"* Motors TIMEOUT, stopped")   ' and why each wheel's drive ended
 
 CON
 
@@ -468,25 +657,30 @@ VAR
     long    nDoingOneRotation
 
 PRI doOneRotation() | ltdegree, rtdegree, eError
-' Drive forward slowly until the left wheel turns one more full rotation, reporting the rotation counts.
+' Drive forward slowly for one full wheel rotation, reporting the odometers it starts from.
+'
+' The rotation limit counts from its own call, not from the odometer (getRotationCount()), so it is 360 degrees
+' whatever the odometer reads. This returns at once, so the control loop keeps reading the kill switch; the end of the
+' rotation arrives as an EV_STOP event (SR_AT_LIMIT), which the loop's showEvents() prints.
 
 ' Local Variables:
-' @local ltdegree - the left wheel's rotation count, degrees
-' @local rtdegree - the right wheel's rotation count, degrees
+' @local ltdegree - the left wheel's odometer, degrees
+' @local rtdegree - the right wheel's odometer, degrees
 ' @local eError - the result of the rotation limit, then of the drive it guards
 
-    ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' get current wheel rotation
+    ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' the odometers before the rotation
     ' arm the limit first and drive only if it was accepted, so the wheels never run without one
-    eError := wheels.stopAfterRotation(ltdegree+360, wheels.DRU_DEGREES)        ' stop after 360degree wheel rotation
+    eError := wheels.stopAfterRotation(360, wheels.DRU_DEGREES)                 ' stop after one wheel rotation
     if eError == wheels.NO_ERROR
         eError := wheels.driveDirection(10, 0)                                  ' drive forward slowly
     if bCommandSucceeded(eError, @"one rotation")
-        debug("  Onrotation Driving:", sdec(ltdegree), " ", sdec(rtdegree))
-        ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)       ' get current wheel rotation
-        debug("  Onrotation Stopped:", sdec(ltdegree), " ", sdec(rtdegree))
-        waitms(1000)
-        ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)       ' get current wheel rotation
-        debug("  Onrotation Check:", sdec(ltdegree), " ", sdec(rtdegree))
+        dbgBegin(@"  one rotation: driving, odometers from")
+        dbgText(@"ltdegree = ")
+        dbgSdec(ltdegree)
+        dbgText(@", rtdegree = ")
+        dbgSdec(rtdegree)
+        dbgText(@" degrees")
+        dbgShow()
 
 PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
 ' Read both joysticks and scale them to a drive speed and direction.
