@@ -37,12 +37,15 @@ cd "$ROOT" || exit 2
 #   DOCs/plans/     sprint working material
 #   DOCs/PUNCH-LIST.md  the findings register: it names methods as they were when
 #                   found, or as proposed, so its method names are records, not claims
+#   CHANGELOG.md    release history: an entry names a method as it was in that release,
+#                   including methods a later release removed
 #   .claude/        agent configuration, not shipped
 #   .todo-mcp/      agent tooling, replaced wholesale on upgrade
 DOCS=$(git ls-files '*.md' 2>/dev/null \
        | grep -v '^DOCs/analyses/' \
        | grep -v '^DOCs/plans/' \
        | grep -vx 'DOCs/PUNCH-LIST.md' \
+       | grep -vx 'CHANGELOG.md' \
        | grep -v '^\.claude/' \
        | grep -v '^\.todo-mcp/')
 
