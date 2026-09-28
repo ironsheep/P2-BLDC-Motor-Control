@@ -5,9 +5,8 @@
 [![License][license-shield]](LICENSE)
 
 Version 6.0 is a rework of the drive, not a feature release. This page says why it was needed, what
-changed, and how each change was checked. The full list of changes is the v6.0.0 entry in the
-[README's Latest Changes](README.md#current-status), and what still needs attention is in its
-[Known Issues](README.md#known-issues).
+changed, and how each change was checked. The full list of changes, and what still needs attention,
+is the v6.0.0 entry in the [CHANGELOG](CHANGELOG.md).
 
 ## Where it started
 
@@ -92,8 +91,8 @@ couldn't answer:
    ramps, the hold on a slope, stops from speed.
 
 The first three are complete for 6.0. Every figure on this page and in the motor manual was measured with
-the wheels lifted, and what that leaves unmeasured is listed in the README's
-[Known Issues](README.md#known-issues) and in the manual's
+the wheels lifted, and what that leaves unmeasured is listed in the Known Issues of the
+[CHANGELOG](CHANGELOG.md)'s v6.0.0 entry and in the manual's
 [What we do not know yet](MOTOR-6.5IN-TECHNICAL-MANUAL.md#9--what-we-do-not-know-yet).
 
 **What was validated.** 6.0 is validated on the 6.5″ hub motor at a 270 MHz system clock; the measurements

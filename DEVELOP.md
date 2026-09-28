@@ -28,9 +28,9 @@ Additional pages:
 
 ---
 
-## Download the latest release demo-archive-set.zip file
+## Download the latest release archive-set .zip file
 
-Go to the project [Releases page](https://github.com/ironsheep/P2-BLDC-Motor-Control/releases) expand the **Assets** heading to see the demo-archive-set.zip file link. Click on it to download the .zip file. Unpack it and move the files into your project. 
+Go to the project [Releases page](https://github.com/ironsheep/P2-BLDC-Motor-Control/releases) and expand the **Assets** heading. Each release carries three archive sets: **demo-1mot-archive-set.zip** (a single motor), **demo-2mot-archive-set.zip** (a two-wheel platform) and **serial-control-archive-set.zip** (driving a platform from a Raspberry Pi or Arduino). Download the one for your platform, unpack it and move the files into your project.
 
 The objects provided by this project read a user configuration to determine how to configure themselves.  You'll first adjust this file to describe your setup.  Then you'll include the motor/steering objects you need into your top-level file.
 
@@ -42,32 +42,28 @@ Lastly you'll start the objects and then add your drive code and any sensor code
 
 Edit the user configuration file, **isp\_bldc\_motor\_userconfig.spin2**, and adjust the settings to describe the configuration you will be using.
 
-Here's the Author's two-wheel setup:
+The file holds **two configurations**, and your top-level program chooses one of them with two lines at the very top of its file (see [Include Project Objects](#include-project-objects-in-your-top-object-file) below):
+
+- `CFG_SINGLE_MOTOR` — one motor, driven by `isp_bldc_motor` directly
+- `CFG_DUAL_MOTOR` — a two-wheel platform, driven by `isp_steering_2wheel`
+
+Edit the configuration your program selects. As shipped, the two-wheel configuration is:
 
 ```
-' -------------------------------------------------------------------
-' AUTHORs  TEST configuration (dual Motor)
-' -------------------------------------------------------------------
-{
-    ' using 6.5" hub motors
     MOTOR_TYPE = MOTR_6_5_INCH
 
-    ' using Mini Edge Breakout
-    LEFT_MOTOR_BASE = PINS_P0_P15
-    RIGHT_MOTOR_BASE = PINS_P16_P31
+    LEFT_MOTOR_BASE = PINS_P16_P31
+    RIGHT_MOTOR_BASE = PINS_P32_P47
 
-    ' using a 5s battery
     DRIVE_VOLTAGE = PWR_18p5V
 
     WHEEL_DIA_IN_INCH = 6.5   ' 6.5 inches (floating point constant)
 
-    ' let the driver recognize each board's revision
     LEFT_BOARD_TYPE = BRD_AUTO_DET
     RIGHT_BOARD_TYPE = BRD_AUTO_DET
-'}
 ```
 
-You will need to configure one of:
+In a configuration you set:
 
 - `ONLY_MOTOR_BASE` =  &nbsp; {pinBaseConstant}  &nbsp;  -OR-
 - `LEFT_MOTOR_BASE` = &nbsp; {pinBaseConstant} and `RIGHT_MOTOR_BASE` = {pinBaseConstant}
@@ -91,35 +87,39 @@ and the board detection, one of:
 
 Use `BRD_AUTO_DET` unless you have a reason not to. With it, `start()` refuses a pin group where it cannot detect a board, because without the board's revision the driver has no current limit for it. `BRD_REV_A` or `BRD_REV_B` forces a revision; forcing one that does not match your hardware will cause the driver to not work.
 
-Here's the Author's single motor setup:
+As shipped, the single-motor configuration is:
 
 ```
-' -------------------------------------------------------------------
-' AUTHORs  TEST configuration (docEng single Motor)
-' -------------------------------------------------------------------
-{
-    ' using smaller docoEng.com motor
     MOTOR_TYPE = MOTR_DOCO_4KRPM
 
-    ' using JonnyMac breakout board
     ONLY_MOTOR_BASE = PINS_P16_P31
 
     DRIVE_VOLTAGE = PWR_12p0V
 
-    ' no wheel attached to this motor
-    WHEEL_DIA_IN_INCH = 0.0   ' 0 inches (floating point constant)
+    WHEEL_DIA_IN_INCH = 0.0   ' no wheel attached (floating point constant)
 
     ONLY_BOARD_TYPE = BRD_AUTO_DET
-'}
 ```
 
-**NOTE:** *The constants you can use for {pinBaseConstant}, {motorTypeConstant}, {voltageConstant} and {detectModeConstant} are provided at the top of the file for you. Which voltages each motor supports is in [MOTOR_CHOICE.md](MOTOR_CHOICE.md).*
+**NOTE:** *The constants you can use for {pinBaseConstant}, {motorTypeConstant}, {voltageConstant} and {detectModeConstant} are provided at the top of the file for you, and more example settings are below the two configurations. Which voltages each motor supports is in [MOTOR_CHOICE.md](MOTOR_CHOICE.md).*
 
 Save your changes and you are ready to start adding the driver to your code.
 
 ## Include Project Objects in your top-object-file
 
 You now need to select objects based on if you are a one-wheel or two-wheel confuration.
+
+**First, select your configuration.** Put these two lines at the very top of your top-level file, before anything else. They choose which of the two configurations in `isp_bldc_motor_userconfig.spin2` is compiled. A program without them does not compile, and the error names these lines. (`#PRAGMA EXPORTDEF` needs the PNut-TS compiler.)
+
+```script
+' a two-wheel program:
+#DEFINE CFG_DUAL_MOTOR
+#PRAGMA EXPORTDEF CFG_DUAL_MOTOR
+
+' -- OR -- a single-motor program:
+#DEFINE CFG_SINGLE_MOTOR
+#PRAGMA EXPORTDEF CFG_SINGLE_MOTOR
+```
 
 ### Using Two Motor Objects
 
@@ -129,6 +129,9 @@ You now need to select objects based on if you are a one-wheel or two-wheel conf
 You simply include them with something like:
 
 ```script
+#DEFINE CFG_DUAL_MOTOR
+#PRAGMA EXPORTDEF CFG_DUAL_MOTOR
+
 OBJ { Objects Used by this Object }
 
     user    :    "isp_bldc_motor_userconfig"     ' project motor, power configuration
@@ -168,6 +171,9 @@ PUB main() | frontCog, eError, eLeftError, eRightError
 You simply include them with something like:
 
 ```script
+#DEFINE CFG_SINGLE_MOTOR
+#PRAGMA EXPORTDEF CFG_SINGLE_MOTOR
+
 OBJ { Objects Used by this Object }
 
     user    :    "isp_bldc_motor_userconfig"     ' project motor, power configuration

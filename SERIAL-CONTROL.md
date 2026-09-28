@@ -14,34 +14,7 @@ The code for this project implements an active serial receiver running on the P2
 
 ## Current status
 
-Latest Changes:
-
-```
-23 September 2026  v6.0.0
-- A command the drive refuses replies "ERROR {cmd} failed: {ERR_NAME} ({code})"
-  instead of OK
-- getstatus reports DS_FAULTED (14) and DS_ESTOP (15)
-- settimeout {ms}: opt-in link-loss guard that stops both motors when drive
-  commands stop arriving
-- getvoltage: the configured drive voltage
-- protclear and getprot: release and read a protective stop (a blocked
-  motor), which emerclear does not release
-- drivedist and stopaftdist accept DDU_KM (6) and DDU_MI (7)
-- Commands are handled about 1 ms after they arrive (an idle P2 used to
-  sleep up to 1 s between checks)
-- A value that is not a decimal integer is refused:
-  "ERROR Parameter {n} ({text}) is not a decimal integer"
-- New commands: getpackvolt, getcurrent, getfaultcause, getholdstatus,
-  gethallcounts, gethallillegal, checkwiring, setstartchecks
-- setaccel {rate} takes mm/s^2 at the wheel rim; setdecel {rate} sets the
-  slow-down and stop rate; getaccel and getdecel read them back (1,000 and
-  1,470 until set). Every ramp eases in and out over 250 ms, so every stop
-  takes about 0.25 s longer and runs about speed x 0.125 s further than
-  before (derived, not yet measured): leave that room after stopmotors
-- The Python demo sends hold as -1 / 0, and has a wrapper for every command
-04 May 2022 v2.0.0
-- Initial Public Release of Serial support
-```
+What changed in each release, serial control included, is in the project's [CHANGELOG](CHANGELOG.md).
 
 ## Table of Contents
 

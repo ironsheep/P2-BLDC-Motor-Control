@@ -347,15 +347,20 @@ and combine into a code the motor never produced. Read them together.
 look up the `old → new` transition in a table that gives the step and flags a missed or illegal
 transition.
 
-### 3.6 A compile gate that walks every configuration
+### 3.6 Select configuration at compile time, and gate every configuration
 
-**The idea.** When configuration is selected by commenting blocks in and out, "it compiles" only covers
-the configuration that happened to be active. Compile under each one.
+**The idea.** When one configuration file serves programs that need different settings, let each program
+select its settings by name at compile time, rather than having someone comment blocks in and out. Then
+"it compiles" can be checked for every configuration, and a program that selects nothing is an error
+rather than a silent default.
 
-**How.** `tools/build-check.sh` switches `isp_bldc_motor_userconfig.spin2` through each of its six
-configuration blocks in turn. It checks that every library object compiles under every block and that
-every program compiles under at least one, and it builds both flagship demos with and without `-d`
-(DEBUG). It restores your configuration when it exits, even on an interrupt.
+**How.** `isp_bldc_motor_userconfig.spin2` carries a single-motor and a two-wheel configuration inside
+`#IFDEF CFG_SINGLE_MOTOR` / `#ELSEIFDEF CFG_DUAL_MOTOR`, ending in `#ERROR`. A top-level program
+`#DEFINE`s its symbol and `#PRAGMA EXPORTDEF`s it, which carries it into every object it includes (a plain
+`#DEFINE` reaches only its own file). `tools/build-check.sh` then compiles every library object under
+each symbol with `-D`, compiles every program as written, checks that a build selecting neither is refused
+with its message, and builds both flagship demos with and without `-d` (DEBUG). It never edits a source
+file to do it.
 
 ### 3.7 Budget your DEBUG output, and keep headroom
 

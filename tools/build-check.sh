@@ -2,26 +2,30 @@
 #
 # build-check.sh -- compile gate for P2-BLDC-Motor-Control
 #
-# The user configuration file carries several mutually-exclusive config
-# blocks; exactly one is active at a time (its opening brace is commented
-# as '{ rather than {). A single-motor config cannot compile the dual-motor
-# tops and vice versa, so "compile everything" is not a thing you can do in
-# one pass. This walks every config block in turn.
+# The user configuration file carries two configurations, selected by a
+# preprocessor symbol: CFG_SINGLE_MOTOR or CFG_DUAL_MOTOR. A top-level program
+# selects one itself (#DEFINE plus #PRAGMA EXPORTDEF at its top); with neither,
+# the config refuses to compile. So the gate never edits the config: it compiles
+# each program as written, and compiles objects under each symbol with -D.
 #
 # Enforced:
-#   1. Every library object compiles under EVERY config block.
-#   2. Every top-level file compiles under AT LEAST ONE config block.
-#   3. RELEASE CERTIFICATION: both flagship demos -- demo_single_motor and
+#   1. Every library object compiles under EVERY configuration (-D each symbol).
+#   2. Every file compiles: a program that selects its configuration compiles as
+#      written; any other file compiles under AT LEAST ONE configuration.
+#   3. The config refuses a build that selects no configuration, with its
+#      message (the negative case: a silent fallback would drive a motor with
+#      another motor's settings).
+#   4. RELEASE CERTIFICATION: both flagship demos -- demo_single_motor and
 #      demo_dual_motor -- compile. Neither ships uncertified. Every demo_* top
 #      must also compile with -d (DEBUG), which a plain compile never checks (PL-142).
-#   4. Every bench tier's DEBUG footprint is within the limit measured to run
+#   5. Every bench tier's DEBUG footprint is within the limit measured to run
 #      intact (P2-HAZARD-REGISTER DBG-1), checked through tools/bench-run.sh's
 #      own tier table in measure-only mode -- so an image that would lose its
 #      last debug() records fails here, at commit time, not at the rig.
 #
-# The user config file is restored on exit, including on interrupt.
+# Nothing in src/ is modified; the .bin and .lst files it writes are removed on exit.
 #
-# Usage:  tools/build-check.sh [-v]      (-v lists per-config detail)
+# Usage:  tools/build-check.sh [-v]      (-v lists per-file detail)
 
 set -u
 
@@ -61,82 +65,25 @@ if [ -n "$STRAY" ]; then
     exit 2
 fi
 
-# ---- restore the user's config no matter how we leave -------------------
-# An explicit XXXXXX template works with both BSD (macOS) and GNU (Linux,
-# the dev container) mktemp; `mktemp -t prefix` is BSD-only and fails on
-# Linux. Without a backup the config cannot be restored, so stop here rather
-# than walk the blocks and leave the last one active.
-BACKUP="$(mktemp "${TMPDIR:-/tmp}/bldc-userconfig.XXXXXX")" || {
-    echo "ERROR: could not create a backup of $CONFIG" >&2
-    exit 2
-}
-cp -p "$CONFIG" "$BACKUP"
+# ---- clean up our own outputs no matter how we leave --------------------
 FP_DIR=""                                       # step 5's per-tier results, removed here too
 cleanup() {
-    cp -p "$BACKUP" "$CONFIG"
-    rm -f "$BACKUP"
     rm -f ./*.bin ./*.lst 2>/dev/null
     [ -n "$FP_DIR" ] && rm -rf "$FP_DIR"
 }
 trap cleanup EXIT
-# An interrupt must END the run, not just restore: a handler that only cleaned up let the walk carry on
-# with its backup deleted. Exiting here runs the EXIT trap's cleanup once.
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# ---- discover the config blocks -----------------------------------------
-# Emits one "lineno:kind" row per block opener, kind = single|dual.
-# (macOS ships bash 3.2 -- no mapfile, no associative arrays. Newline-
-# delimited strings throughout.)
-BLOCKS=$(python3 - "$CONFIG" <<'PYEOF'
-import re, sys
-lines = open(sys.argv[1]).read().split('\n')
-# The config region ends at the "Adjust your configuration ABOVE here" marker;
-# past it lie doc-comment braces that are not config blocks.
-end = next((i for i, l in enumerate(lines)
-            if 'Adjust your configuration' in l), len(lines))
-i, out = 0, []
-while i < end:
-    if re.match(r"^'?\{\s*$", lines[i]):
-        body = []
-        j = i + 1
-        while j < end and not re.match(r"^'?\}\s*$", lines[j]):
-            body.append(lines[j]); j += 1
-        text = '\n'.join(body)
-        if 'LEFT_MOTOR_BASE' in text:
-            kind = 'dual'
-        elif 'ONLY_MOTOR_BASE' in text:
-            kind = 'single'
-        else:
-            kind = 'other'
-        if kind != 'other':
-            out.append(f"{i}:{kind}")
-        i = j + 1
-    else:
-        i += 1
-print('\n'.join(out))
-PYEOF
-)
+# The configuration symbols, and the message the config gives when a build selects neither.
+# (macOS ships bash 3.2 -- no mapfile, no associative arrays. Newline- or space-delimited
+# strings throughout.)
+CFG_SYMBOLS="CFG_SINGLE_MOTOR CFG_DUAL_MOTOR"
+NO_CFG_MESSAGE="No configuration selected"
+N_CFGS=$(echo $CFG_SYMBOLS | wc -w | tr -d ' ')
 
-if [ -z "$BLOCKS" ]; then
-    echo "ERROR: found no config blocks in $CONFIG" >&2
-    exit 2
-fi
-N_BLOCKS=$(printf '%s\n' "$BLOCKS" | wc -l | tr -d ' ')
-
-# Activate block whose opener is at 0-based line $1; comment out all others.
-activate() {
-    python3 - "$CONFIG" "$1" <<'PYEOF'
-import re, sys
-path, want = sys.argv[1], int(sys.argv[2])
-lines = open(path).read().split('\n')
-end = next((i for i, l in enumerate(lines)
-            if 'Adjust your configuration' in l), len(lines))
-for i in range(end):
-    if re.match(r"^'?\{\s*$", lines[i]):
-        lines[i] = "'{" if i == want else "{"
-open(path, 'w').write('\n'.join(lines))
-PYEOF
+selects_config() {   # $1 = file; echoes the CFG_* symbol the file #DEFINEs for itself, empty if none
+    sed -nE 's/^#[Dd][Ee][Ff][Ii][Nn][Ee][[:space:]]+(CFG_[A-Z_]+).*/\1/p' "$1" | head -1
 }
 
 # The candidate list is derived MECHANICALLY from the tree, not hand-maintained
@@ -182,68 +129,85 @@ passed_label() {   # $1 = top name; echoes its label, empty if not yet passed
     printf '%s\n' "$PASSED" | sed -n "s/^$1=//p" | head -1
 }
 
-echo "P2-BLDC-Motor-Control build gate -- $N_BLOCKS config blocks, $N_TOPS files"
+echo "P2-BLDC-Motor-Control build gate -- $N_CFGS configurations ($CFG_SYMBOLS), $N_TOPS files"
 if [ -n "$EXCLUDED" ]; then
     echo "  excluded (not examined):"
     for x in $EXCLUDED; do echo "    $x -- see EXCLUDED in $(basename "$0") for why"; done
 fi
 echo
 
-for row in $BLOCKS; do
-    lineno="${row%%:*}"
-    kind="${row##*:}"
-    activate "$lineno"
-    label="config@line$((lineno + 1)) ($kind)"
-
-    # 1. library objects must compile under this config
+# 1. library objects must compile under every configuration
+for sym in $CFG_SYMBOLS; do
     for obj in $LIB_OBJECTS; do
-        if ! "$PNUT" -q "$obj.spin2" >/dev/null 2>&1; then
-            echo "  FAIL  [$label] library object $obj"
+        if ! "$PNUT" -q -D "$sym" "$obj.spin2" >/dev/null 2>&1; then
+            echo "  FAIL  [-D $sym] library object $obj"
             FAILED_LIB=1
         fi
     done
-
-    # 2. tops: try the ones not yet known good
-    n_new=0
-    for top in $TOPS; do
-        [ -n "$(passed_label "$top")" ] && continue
-        if "$PNUT" -q "$top.spin2" >/dev/null 2>&1; then
-            PASSED="$PASSED
-$top=$label"
-            N_PASSED=$((N_PASSED + 1))
-            n_new=$((n_new + 1))
-            [ $VERBOSE -eq 1 ] && echo "  ok    [$label] $top"
-            # PL-142: a shipped demo must also compile with DEBUG, under the block it passed in --
-            #  a plain compile skips every debug() line, so a broken one would ship unseen
-            case "$top" in
-                demo_*)
-                    if ! "$PNUT" -q -d "$top.spin2" >/dev/null 2>&1; then
-                        DEBUG_FAILED="$DEBUG_FAILED $top"
-                        echo "  FAIL  [$label] $top does not compile with -d (DEBUG)"
-                    fi
-                    ;;
-            esac
-        fi
-    done
-    [ $VERBOSE -eq 0 ] && echo "  $label: objects ok, +$n_new tops newly certified"
-    rm -f ./*.bin ./*.lst 2>/dev/null
 done
+[ $VERBOSE -eq 0 ] && [ $FAILED_LIB -eq 0 ] && echo "  library objects: ok under every configuration"
+
+# 2. every file: a program that selects its configuration compiles as written; any other file
+#    under at least one configuration
+for top in $TOPS; do
+    sym=$(selects_config "$top.spin2")
+    label=""
+    if [ -n "$sym" ]; then
+        "$PNUT" -q "$top.spin2" >/dev/null 2>&1 && label="selects $sym"
+    else
+        for try in $CFG_SYMBOLS; do
+            if "$PNUT" -q -D "$try" "$top.spin2" >/dev/null 2>&1; then
+                label="-D $try"
+                break
+            fi
+        done
+    fi
+    [ -z "$label" ] && continue
+    PASSED="$PASSED
+$top=$label"
+    N_PASSED=$((N_PASSED + 1))
+    [ $VERBOSE -eq 1 ] && echo "  ok    [$label] $top"
+    # PL-142: a shipped demo must also compile with DEBUG -- a plain compile skips every debug()
+    #  line, so a broken one would ship unseen
+    case "$top" in
+        demo_*)
+            dflag=""
+            [ -z "$sym" ] && dflag="-D ${label#-D }"
+            if ! "$PNUT" -q -d $dflag "$top.spin2" >/dev/null 2>&1; then
+                DEBUG_FAILED="$DEBUG_FAILED $top"
+                echo "  FAIL  [$label] $top does not compile with -d (DEBUG)"
+            fi
+            ;;
+    esac
+done
+rm -f ./*.bin ./*.lst 2>/dev/null
+[ $VERBOSE -eq 0 ] && echo "  files: $N_PASSED of $N_TOPS compile"
 
 echo
 RC=0
 [ $FAILED_LIB -ne 0 ] && RC=1
 
-# 3. every top must have compiled somewhere
 UNBUILT=""
 for top in $TOPS; do
     [ -z "$(passed_label "$top")" ] && UNBUILT="$UNBUILT $top"
 done
 if [ -n "$UNBUILT" ]; then
-    echo "FAIL: tops that compile under no config:$UNBUILT"
+    echo "FAIL: files that compile under no configuration:$UNBUILT"
     RC=1
 fi
 if [ -n "$DEBUG_FAILED" ]; then
     echo "FAIL: demos that do not compile with -d (DEBUG):$DEBUG_FAILED"
+    RC=1
+fi
+
+# 3. the negative case: with no configuration selected, the config refuses, with its message
+NOCFG_OUT=$("$PNUT" -q "$CONFIG" 2>&1)
+NOCFG_RC=$?
+rm -f ./*.bin ./*.lst 2>/dev/null
+if [ $NOCFG_RC -ne 0 ] && printf '%s\n' "$NOCFG_OUT" | grep -q "$NO_CFG_MESSAGE"; then
+    echo "No configuration selected: refused, with its message (as it must be)"
+else
+    echo "FAIL: $CONFIG compiled with no configuration selected, or refused without '$NO_CFG_MESSAGE'"
     RC=1
 fi
 
@@ -257,7 +221,7 @@ for top in $RELEASE_TOPS; do
     elif [ -n "$lbl" ]; then
         echo "  CERTIFIED  $top  ($lbl, plain and -d)"
     else
-        echo "  BLOCKED    $top  -- compiles under no config block"
+        echo "  BLOCKED    $top  -- does not compile"
         RC=1
     fi
 done
